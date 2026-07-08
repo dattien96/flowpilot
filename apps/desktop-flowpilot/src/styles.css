@@ -3187,6 +3187,23 @@ input {
   margin-top: 10px;
 }
 
+/* "Don't ask again" opt-in on shell-command approvals (BUG-246). */
+.approval-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 0.85em;
+  color: var(--muted, #888);
+  cursor: pointer;
+}
+.approval-remember input {
+  cursor: pointer;
+}
+.approval-remember code {
+  font-family: var(--mono);
+}
+
 /* grouped ask cards (concurrent approvals/questions folded into one collapsible block) */
 .card-group {
   max-width: 560px;
@@ -3332,6 +3349,14 @@ input {
   min-height: 60px;
   max-height: 240px;
   overflow-y: auto;
+  /* A hub's escalation gateReason can quote raw reviewer/diff output verbatim
+     (e.g. a git diffstat line like "25 +++++++++++++++++++++++"), a single
+     unbroken token with no spaces to wrap on. Without this, that token
+     overflows the card's fixed max-width instead of wrapping, which reads as
+     "the text just stops" even though overflow-y:auto is scrollable — the
+     content one would scroll to see is off to the side, not below. */
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 .flow-awaiting-user-feedback {
   display: block;
@@ -5635,15 +5660,19 @@ body.is-resizing-sidebar {
 }
 .ac-top {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 7px;
 }
 .ac-nm {
   font-weight: 600;
   font-size: 12.5px;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-all;
 }
 .ac-st {
   margin-left: auto;
+  flex-shrink: 0;
   font-size: 10px;
   display: inline-flex;
   align-items: center;
@@ -5756,6 +5785,11 @@ body.is-resizing-sidebar {
 .fti-error .fti-icon {
   border-color: var(--err);
   background: var(--err);
+}
+.fti-cancelled .fti-icon {
+  border-color: var(--text-dim);
+  background: rgba(154, 163, 191, 0.18);
+  color: var(--text-dim);
 }
 @keyframes fti-pulse {
   0%, 100% { box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.25); }
@@ -6077,7 +6111,6 @@ body.is-resizing-sidebar {
 /* --- Translate popup ----------------------------------------------------- */
 .translate-popover {
   position: fixed;
-  transform: translateX(-50%);
   z-index: 9999;
   display: flex;
   flex-direction: column;
@@ -6148,6 +6181,13 @@ body.is-resizing-sidebar {
   border-bottom: 1px solid var(--border);
   background: var(--bg-3);
 }
+.translate-drag-handle {
+  cursor: grab;
+  user-select: none;
+}
+.translate-drag-handle.is-dragging {
+  cursor: grabbing;
+}
 .translate-result-lang {
   flex: 1;
   font-size: 11px;
@@ -6161,6 +6201,9 @@ body.is-resizing-sidebar {
   line-height: 1.5;
   color: var(--text);
   white-space: pre-wrap;
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .translate-copy-btn,

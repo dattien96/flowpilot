@@ -31,6 +31,7 @@ import type { ScenarioName } from "@/client/mockData";
 import { ideBridge } from "@/client/ideBridge";
 import { getAdminUseCases } from "@/clientCore";
 import { ADMIN_WEB_URL } from "@/config";
+import { isSyncableRun } from "@/components/navigatorHistory";
 import {
   mapNavigatorStep,
   mapNavigatorWorkflow,
@@ -259,7 +260,7 @@ interface AppState {
   selectStep(stepId: string): void;
   setScenario(scenario: ScenarioName): void;
   sendPrompt(prompt: string, skills?: string[], attachments?: PromptAttachment[]): Promise<void>;
-  approve(approvalId: string, decision: string): Promise<void>;
+  approve(approvalId: string, decision: string, remember?: boolean): Promise<void>;
   answer(questionId: string, choice: string | string[]): Promise<void>;
   stop(): Promise<void>;
   reconnect(): Promise<void>;
@@ -287,7 +288,11 @@ interface AppState {
   syncHistoryRun(runId: string, projectId?: string): Promise<void>;
   syncAllInProject(projectId: string): Promise<void>;
   deleteHistoryRun(runId: string): Promise<void>;
-  restoreRemoteChatSession(summary: RemoteChatSessionSummary, cwd?: string): Promise<void>;
+  restoreRemoteChatSession(
+    summary: RemoteChatSessionSummary,
+    cwd?: string,
+    options?: { refresh?: boolean; open?: boolean },
+  ): Promise<void>;
   openHistoryRun(runId: string): Promise<void>;
   resetRun(): void;
   openInIde(path: string, line?: number): void;
@@ -1137,7 +1142,7 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  async approve(approvalId, decision) {
+  async approve(approvalId, decision, remember) {
     // Resolve the specific card the user clicked, not "whatever is pending" — a turn
     // can fan out several parallel tool calls awaiting approval at once, so more than
     // one entry may be in pendingApprovals simultaneously (BUG-157).
@@ -1151,7 +1156,7 @@ export const useStore = create<AppState>((set, get) => ({
       ),
     }));
     try {
-      await get().client.submitApproval(approvalId, decision);
+      await get().client.submitApproval(approvalId, decision, remember);
     } catch (err) {
       // BUG-172: mirror sendPrompt's error handling — an unhandled rejection here
       // (e.g. a transient network blip while YOLO fires off rapid step
@@ -1363,14 +1368,9 @@ export const useStore = create<AppState>((set, get) => ({
     // Sync every not-yet-synced chat run in the project, one at a time so we do
     // not hammer Drive. Per-item failures are swallowed (syncHistoryRun marks
     // the row failed) so one broken session does not abort the whole batch.
+    const { remoteChatSessions } = get();
     const targets = get()
-      .runHistory.filter(
-        (item) =>
-          item.projectId === projectId &&
-          item.runKind === "chat" &&
-          item.syncStatus !== "synced" &&
-          !item.unavailableReason,
-      )
+      .runHistory.filter((item) => item.projectId === projectId && isSyncableRun(item, remoteChatSessions))
       .map((item) => item.runId);
     for (const runId of targets) {
       try {
@@ -1386,26 +1386,13 @@ export const useStore = create<AppState>((set, get) => ({
     const wasActive = get().runId === runId;
     // Optimistically remove from local history so the UI responds immediately.
     set((s) => ({ runHistory: s.runHistory.filter((item) => item.runId !== runId) }));
-    // If the deleted run was the active session, reset the main panel to idle.
+    // If the deleted run was the active session, reset the whole workspace back to
+    // an empty new chat — reuse resetRun() (not a hand-rolled subset) so Flow Timeline
+    // and Agents panel state (mainRunId, agentRuns, workflowStepRuntime, etc.) and the
+    // orchestration/agent-focus streams are cleared the same way a fresh chat start
+    // clears them (BUG-258).
     if (wasActive) {
-      set({
-        runId: undefined,
-        activeStepId: undefined,
-        status: "idle",
-        timeline: [],
-        artifacts: [],
-        pendingApprovals: [],
-        pendingQuestions: [],
-        latestTokenUsage: undefined,
-        lastTurnInput: undefined,
-        recoverable: false,
-        pendingAccountSwitch: undefined,
-        accountSwitchLoading: false,
-        pendingProviderSwitch: undefined,
-        providerSwitchLoading: false,
-        _accountSwitchTriedIds: [],
-        _streamingAssistantId: undefined,
-      });
+      get().resetRun();
     }
     try {
       await client.deleteRun(runId);
@@ -1426,9 +1413,11 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  async restoreRemoteChatSession(summary, cwd) {
+  async restoreRemoteChatSession(summary, cwd, options) {
     const { client, selectedProjectId } = get();
     if (!selectedProjectId) return;
+    const refresh = options?.refresh ?? true;
+    const open = options?.open ?? true;
     const request: ChatSessionRestoreRequest = {
       projectId: selectedProjectId,
       sourceMachineId: summary.sourceMachineId,
@@ -1437,13 +1426,24 @@ export const useStore = create<AppState>((set, get) => ({
     };
     try {
       const result = await client.restoreChatRun(request);
-      await Promise.all([get().loadRunHistory(), get().loadRemoteChatSessions()]);
-      void get().openHistoryRun(result.runId);
+      // Batch restores (restoreAll) opt out of the per-item refresh/open: refreshing
+      // the full history + remote list after every single item in a multi-item
+      // restore serializes N extra round trips into the loop (each item waits for
+      // the previous one's full refresh before starting), which is what made a bulk
+      // restore's per-item spinner look "stuck" until the whole batch finished; and
+      // opening every restored run in turn would hijack the active chat panel N
+      // times over. The caller does one combined refresh after the whole batch.
+      if (refresh) {
+        await Promise.all([get().loadRunHistory(), get().loadRemoteChatSessions()]);
+      }
+      if (open) {
+        void get().openHistoryRun(result.runId);
+      }
     } catch (err) {
       if (err instanceof RunnerApiError && err.code === "cwd_remap_required" && !cwd) {
         const retryCwd = selectedProjectPath(get());
         if (retryCwd) {
-          await get().restoreRemoteChatSession(summary, retryCwd);
+          await get().restoreRemoteChatSession(summary, retryCwd, options);
           return;
         }
       }
@@ -1517,6 +1517,14 @@ export const useStore = create<AppState>((set, get) => ({
     // though the runner resumed it correctly. runKind is "chat" for normal_chat runs and
     // "workflow" (or, for older persisted rows, undefined) for everything else.
     const isWorkflowHistoryItem = historyItem?.runKind !== "chat";
+    // BUG-263: same "restore the mode this run actually was" gap as BUG-170
+    // above, but for the Chat-Mode orchestration picker (Bug tab / Built-in
+    // orchestration select) instead of chatMode/launchMode. Without this,
+    // reopening a run started via the picker left chatStartMode stuck at its
+    // default "normal", so the Chat Intent panel showed "Normal" selected
+    // (and locked) even though the run itself was correctly resumed as a
+    // flow-engine-driven Review Loop run underneath.
+    const chatStartMode: ChatStartMode = historyItem?.subMode === "bug" ? "bugfix" : "normal";
     set({
       runId: handle.runId,
       mainRunId: handle.runId,
@@ -1527,6 +1535,8 @@ export const useStore = create<AppState>((set, get) => ({
       ...(isWorkflowHistoryItem && historyItem?.workflowId
         ? { launchMode: "workflow", selectedWorkflowId: historyItem.workflowId }
         : {}),
+      chatStartMode,
+      flowRef: chatStartMode === "bugfix" ? historyItem?.flowRef : undefined,
       timeline: [],
       artifacts: [],
       pendingApprovals: [],

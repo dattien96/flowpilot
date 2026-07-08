@@ -6,7 +6,7 @@ import type { WorkflowStepRuntimeDTO, WorkflowStepRuntimeStatus } from "@/types/
 // WAITING_USER_APPROVAL gets its whole row highlighted so it reads as "you are here"
 // at a glance, matching BUG-153's original "see at a glance which step is active" goal.
 
-type TimelineVisualState = "idle" | "running" | "done" | "approval" | "error";
+type TimelineVisualState = "idle" | "running" | "done" | "approval" | "error" | "cancelled";
 
 function visualState(status: WorkflowStepRuntimeStatus): TimelineVisualState {
   switch (status) {
@@ -16,6 +16,8 @@ function visualState(status: WorkflowStepRuntimeStatus): TimelineVisualState {
       return "done";
     case "WAITING_USER_APPROVAL":
       return "approval";
+    case "CANCELED":
+      return "cancelled";
     case "FAILED":
       return "error";
     case "PENDING":
@@ -31,16 +33,29 @@ const STATE_GLYPH: Record<TimelineVisualState, string> = {
   done: "✓",
   approval: "!",
   error: "✕",
+  cancelled: "∅",
 };
 
 const STATE_LABEL: Record<WorkflowStepRuntimeStatus, string> = {
   PENDING: "pending",
   RUNNING: "running",
   WAITING_USER_APPROVAL: "waiting for approval",
+  CANCELED: "cancelled",
   DONE: "done",
   FAILED: "failed",
   SKIPPED: "skipped",
 };
+
+// A node's agentRef is stored as either a bare agent name or a full definition
+// path (the Agent-ref dropdown stores agent.path to disambiguate same-named
+// files across sources). The timeline only needs the human-readable name, which
+// is what the runtime resolves the ref to — so collapse a path to its base name
+// without extension, matching the clean name shown in the Agents panel.
+function agentRefLabel(agentRef: string): string {
+  const base = agentRef.split(/[\\/]/).pop() ?? agentRef;
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(0, dot) : base;
+}
 
 function stepName(step: WorkflowStepRuntimeDTO): string {
   // nodeId is the flow-graph node id ("coder", "reviewer_correctness"); stepType
@@ -92,10 +107,10 @@ export function FlowStepTimeline({
                   fti-{state} color classes and the current-step highlight, so the
                   step index is the more useful glyph than the sparse STATE_GLYPH set
                   (which was empty for idle/running — leaving expanded circles blank).
-                  Done/error keep their ✓/✕ mark, which reads as an at-a-glance
+                  Done/error/cancelled keep their terminal glyph, which reads as an at-a-glance
                   completion cue layered on top of the ordering the numbers give. */}
               <span className="fti-icon">
-                {state === "done" || state === "error" ? STATE_GLYPH[state] : index + 1}
+                {state === "done" || state === "error" || state === "cancelled" ? STATE_GLYPH[state] : index + 1}
               </span>
               {!isLast && <span className={`fti-line fti-line-${lineState}`} />}
             </div>
@@ -111,7 +126,7 @@ export function FlowStepTimeline({
                   <div className="fti-meta">
                     {provider && <span className={`pill-prov prov-${provider}`}>{provider.toUpperCase()}</span>}
                     {model && <span className="ac-model">{model}</span>}
-                    {step.agentRef && <span>agent: {step.agentRef}</span>}
+                    {step.agentRef && <span title={step.agentRef}>agent: {agentRefLabel(step.agentRef)}</span>}
                     {step.yoloMode && <span>yolo</span>}
                   </div>
                 )}

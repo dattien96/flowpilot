@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -180,6 +181,21 @@ type interactiveRun struct {
 	// exact existing behavior. When true, startTurn skips the bulk Progress call
 	// and the executor owns every step transition for this run.
 	flowEngineDriven bool
+	// chatSubMode/chatFlowRef record the explicit Chat-Mode orchestration
+	// picker selection (CP-42/Task-177 — Bug sub-mode's "Built-in
+	// orchestration" select) that started this run, e.g. subMode="bug",
+	// flowRef="flowpilot-core-flow-pack/review-loop". BUG-263: these used to
+	// exist only as transient TurnInput fields inside startTurn, never stored
+	// on the run itself or persisted, so a restart-and-resume (or reopening
+	// from run history) had nothing to restore the Chat Intent panel's Bug
+	// tab / Built-in orchestration selection from — it silently fell back to
+	// "Normal", even though the run's own flow (activeFlowNodes/Edges,
+	// flowEngineDriven) kept working correctly underneath. Set once, on the
+	// same first-turn branch that already sets flowEngineDriven, and
+	// round-tripped through ProviderSessionState so a resumed/reopened run
+	// can restore the exact picker selection it was started with.
+	chatSubMode string
+	chatFlowRef string
 	// planContextPackage is the FlowContextPackage built for the Plan step of this Flow
 	// Mode run. Non-nil only for workflow runs with a Coding step. Cached here so retries
 	// reuse the same package without rebuilding; cleared when a Plan step reruns (Task-169).
@@ -588,10 +604,13 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 				st.GateReason = fmt.Sprintf("cap %d reached with %d open issue(s)", cap, st.OpenIssues)
 				result = FlowControlResult{Status: "blocked", Round: st.Round, Cap: cap, OpenIssues: st.OpenIssues, NextAction: "awaiting_user"}
 			} else {
-				if st.Status == "" || st.Status == "blocked" {
-					st.Status = "running"
-					st.BlockReason = ""
-				}
+				// A new loop round is actively running, regardless of the prior
+				// reviewer verdict state ("rejected", "blocked", etc.). Leaving
+				// stale verdict statuses here prevents the re-entered coder from
+				// auto-advancing to the next reviewer cohort when it completes.
+				st.Status = "running"
+				st.BlockReason = ""
+				st.GateReason = ""
 				result = FlowControlResult{Status: "continue", Round: st.Round, Cap: cap, OpenIssues: st.OpenIssues, NextAction: "looping"}
 			}
 			return st
@@ -1283,6 +1302,7 @@ func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID,
 			summary: AgentRunSummary{
 				RunID:         child.id,
 				AgentName:     child.agentName,
+				Label:         child.label,
 				Role:          child.role,
 				Status:        child.status,
 				ParentRunID:   child.parentRunID,
@@ -1595,6 +1615,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		SyncUpdatedAt:       rs.syncUpdatedAt,
 		ParentRunID:         rs.parentRunID,
 		AgentName:           rs.agentName,
+		Label:               rs.label,
 		Role:                rs.role,
 		DependsOn:           append([]string(nil), rs.dependsOn...),
 		AgentStatus:         rs.agentStatus,
@@ -1607,6 +1628,8 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		FlowCohortID:        rs.flowCohortId,
 		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...),
 		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
+		ChatSubMode:         rs.chatSubMode,
+		ChatFlowRef:         rs.chatFlowRef,
 	}
 }
 
@@ -1778,7 +1801,7 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					if parent := s.runs[parentRunID]; parent != nil && parent.flowEngineDriven {
 						flowDriven = true
 						for _, e := range entries {
-							if e.Label != "" {
+							if e.Status == "completed" && e.Label != "" {
 								reviewerNodeIDs = append(reviewerNodeIDs, e.Label)
 							}
 						}
@@ -2105,13 +2128,31 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 	// operations; everything else falls through to ask-the-human. Every
 	// auto-decision is recorded AND returned so the adapter replies to the inbound
 	// request (the provider never hangs).
-	switch s.policy.Decide(details) {
-	case PolicyAutoApprove:
-		s.recordAutoApproval(b.rs, details, "approve", "policy_allowlist")
-		return "approve", nil
-	case PolicyAutoDeny:
+	//
+	// Denylist wins over everything (including a user-remembered rule), so it is
+	// evaluated first.
+	outcome := s.policy.Decide(details)
+	if outcome == PolicyAutoDeny {
 		s.recordAutoApproval(b.rs, details, "deny", "policy_denylist")
 		return "deny", nil
+	}
+
+	// BUG-246: a shell command the user previously chose "don't ask again" for
+	// auto-approves without a card. Provider-neutral — both Claude and Codex route
+	// shell approvals through here. Only "exec" approvals are eligible, and a
+	// compound command never matches (matchesApprovalRule rejects it), so a
+	// remembered `git status` never green-lights `git status && rm -rf /`.
+	if details.Kind == "exec" && b.rs.workspaceCwd != "" {
+		dotFP := filepath.Join(b.rs.workspaceCwd, ".flowpilot")
+		if matchesApprovalRule(details.Command, readApprovalAllowRules(dotFP)) {
+			s.recordAutoApproval(b.rs, details, "approve", "policy_user_remembered")
+			return "approve", nil
+		}
+	}
+
+	if outcome == PolicyAutoApprove {
+		s.recordAutoApproval(b.rs, details, "approve", "policy_allowlist")
+		return "approve", nil
 	}
 
 	s.mu.Lock()
@@ -2223,6 +2264,9 @@ func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, 
 	if b.rs.parentRunID != "" {
 		targetRunID = b.rs.parentRunID
 	}
+	if b.rs.currentTurnID != "" && b.svc.flowControlSubmittedForTurn(targetRunID, b.rs.currentTurnID) {
+		return FlowControlResult{}, fmt.Errorf("flow control already submitted for this provider turn")
+	}
 	return b.svc.applyFlowControl(targetRunID, in)
 }
 
@@ -2277,11 +2321,35 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	if in.AgentDefOverride != nil {
 		agentDef = in.AgentDefOverride
 	} else if defs := s.agentCatalog.listAgents(cwd); len(defs) > 0 {
+		// in.Agent may be a bare agent name (built-in flow-pack agents and
+		// name-authored refs) or a full definition path (the Agent-ref dropdown
+		// stores agent.path to disambiguate same-named files across sources).
+		// Match precisely first — Name, then full Path — so a path always
+		// resolves; otherwise agentDef stays nil and the child runs with the
+		// raw task prompt (no system prompt, no identity line).
 		for i := range defs {
-			if strings.EqualFold(defs[i].Name, in.Agent) {
+			if strings.EqualFold(defs[i].Name, in.Agent) ||
+				(defs[i].Path != "" && strings.EqualFold(defs[i].Path, in.Agent)) {
 				def := defs[i]
 				agentDef = &def
 				break
+			}
+		}
+		// Fallback: degrade a path that did not match exactly to its base name
+		// without extension, then match that against Name. This rescues a
+		// hand-typed or extensionless ref (e.g. "...\coder-agent" for the file
+		// "...\coder-agent.toml") and a definition that has since moved, rather
+		// than silently spawning an agent with no identity.
+		if agentDef == nil {
+			base := strings.TrimSuffix(filepath.Base(in.Agent), filepath.Ext(in.Agent))
+			if base != "" && !strings.EqualFold(base, in.Agent) {
+				for i := range defs {
+					if strings.EqualFold(defs[i].Name, base) {
+						def := defs[i]
+						agentDef = &def
+						break
+					}
+				}
 			}
 		}
 	}
@@ -2452,6 +2520,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
 		RunID:         handle.RunID,
 		AgentName:     childSnap.AgentName,
+		Label:         in.Label,
 		Role:          childSnap.Role,
 		Status:        RunStatus(childSnap.Status),
 		ParentRunID:   parentRunID,
@@ -2550,6 +2619,7 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 		out = append(out, AgentRunSummary{
 			RunID:         rs.id,
 			AgentName:     rs.agentName,
+			Label:         rs.label,
 			Role:          rs.role,
 			Status:        rs.status,
 			ParentRunID:   rs.parentRunID,
@@ -2583,15 +2653,25 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 				if _, seen := seenIDs[session.RunID]; seen {
 					continue
 				}
+				// BUG-251: a child neither in the live map (liveIDs) nor the
+				// orchestrator's in-memory historical cache is being read straight
+				// from disk after a restart -- nothing is actually tracking or
+				// executing it anymore. reconstructRun already normalizes this exact
+				// situation for a run's own top-level status via
+				// normalizeResumedStatus (running/starting/waiting_* -> cancelled);
+				// this disk-fallback branch skipped that normalization entirely, so
+				// a reviewer/coder child whose process was killed mid-turn showed a
+				// permanently stale "running" badge in the Agents panel with no way
+				// to ever tell it apart from one that's genuinely still executing.
 				out = append(out, AgentRunSummary{
 					RunID:       session.RunID,
 					AgentName:   session.AgentName,
 					Role:        session.Role,
-					Status:      session.Status,
+					Status:      normalizeResumedStatus(session.Status),
 					ParentRunID: session.ParentRunID,
 					CreatedAt:   session.StartedAt,
 					DependsOn:   append([]string(nil), session.DependsOn...),
-					AgentStatus: session.AgentStatus,
+					AgentStatus: string(normalizeResumedStatus(RunStatus(session.AgentStatus))),
 					ProviderKey: string(session.ProviderKey),
 					ModelName:   session.ModelName,
 				})
@@ -2800,7 +2880,10 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	s.ensureBaseline(rs.workspaceCwd)
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
-	if err == nil && !rs.flowEngineDriven {
+	s.mu.Lock()
+	turnFailed := rs.status == RunStatusFailed
+	s.mu.Unlock()
+	if err == nil && !turnFailed && !rs.flowEngineDriven {
 		// The provider turn owns interactive UX/events; once it returns cleanly we
 		// advance the shared workflow planner so the live run path no longer bypasses
 		// WorkflowStore/WorkflowOrchestrator entirely. A2 will replace the fake
@@ -2811,7 +2894,21 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		// is exactly what made a Flow-Mode run flip all steps to DONE out of
 		// order after the hub's turn. For these runs the flow executor emits the
 		// real per-node transitions instead (flow_step_runtime.go).
+		//
+		// BUG-259: some adapters (codex_adapter.go's SendTurn) return err==nil
+		// even when the terminal event was EventTurnFailed (e.g. a provider
+		// usage-limit error) — bridge.Emit already ran emitLocked synchronously
+		// and settled rs.status to Failed before SendTurn returned, so trusting
+		// err alone let a genuinely failed turn's still-PENDING workflow_steps
+		// get bulk-marked DONE by this legacy planner. Check the run's actual
+		// settled status too, not just the adapter's (unreliable) return value.
 		_, _ = s.orchestrator.Progress(ctx, rs.id, yolo)
+	} else if turnFailed && !rs.flowEngineDriven {
+		// BUG-259 (follow-up): skipping Progress() above is correct but leaves
+		// in.StepID stuck at whatever markStepRunning set it to (RUNNING) —
+		// nothing else ever settles it. A step that never actually finished
+		// must read as FAILED, not hang at "running" forever.
+		_ = s.markStepFailed(ctx, rs.id, in.StepID)
 	}
 
 	completed, fin := s.finishTurn(rs, turnID, err)
@@ -2847,7 +2944,21 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		geminiTurn = transcriptTurnForProviderTurnLocked(rs, turnID)
 	}
 	snap := sessionStateOf(rs)
+	isParent := rs.parentRunID == ""
 	s.mu.Unlock()
+	// BUG-257: sessionStateOf never carries LoopState (it isn't a field on
+	// interactiveRun; the live value lives in agentOrchestrator.loop). The
+	// startTurn persist already patches it in for parent/hub runs — this
+	// post-turn persist must do the same, or it silently overwrites an
+	// already-terminal "done" LoopState (written moments earlier by
+	// markFlowRunComplete when the hub's own synthesis turn called
+	// submit_review_outcome) with a zero-value LoopState once that same turn
+	// finishes. Since sessions.ndjson resume reads only the latest record,
+	// that clobbered record made a fully-completed flow run's hub/synthesis
+	// step resume as CANCELED instead of DONE after a server restart.
+	if isParent {
+		snap.LoopState = s.agentOrchestrator.graphSnapshot(rs.id).LoopState
+	}
 	_ = s.persistProviderSession(snap)
 	// Log the new Codex rollout session id so seedTranscriptFromDisk can load
 	// every per-turn rollout file on resume (BUG-083 F-3).
@@ -2951,6 +3062,24 @@ func (s *InteractiveService) markStepRunning(ctx context.Context, runID, stepID 
 		return err
 	}
 	return s.workflowStore.SetRunStatus(ctx, runID, RunStatusEngineRunning, "")
+}
+
+// markStepFailed settles stepID (started by markStepRunning) to FAILED. Used by
+// runTurn (BUG-259 follow-up) when the run's own turn fails on a non-flow-engine-
+// driven workflow run: skipping the legacy bulk Progress() call is correct, but
+// something still has to settle the step that was actually in flight — otherwise
+// it hangs at RUNNING forever, which reads just as misleadingly as the bulk-DONE
+// bug it replaces.
+func (s *InteractiveService) markStepFailed(ctx context.Context, runID, stepID string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	return s.workflowStore.ApplyStepTransition(ctx, runID, WorkflowStepTransition{
+		StepID: stepID,
+		Patch: WorkflowStepPatch{
+			Status:     StepStatusFailed,
+			FinishedAt: strptr(now),
+		},
+		Logs: []WorkflowLog{{LogError, "Provider turn failed."}},
+	})
 }
 
 // sendTurnWithRetry runs the adapter turn, re-sending on a recoverable error up to
@@ -3185,6 +3314,8 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" {
 			flowStartOnly = true
 			rs.flowEngineDriven = true
+			rs.chatSubMode = strings.TrimSpace(in.SubMode)
+			rs.chatFlowRef = flowRef
 			go s.startResolvedFlow(context.Background(), runID, flowRef, in.Prompt)
 		}
 	}
@@ -3361,6 +3492,14 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 
 // SubmitApprovalDecision is idempotent + first-write-wins.
 func (s *InteractiveService) SubmitApprovalDecision(approvalID, decision string) *apiErr {
+	return s.submitApprovalDecision(approvalID, decision, false)
+}
+
+// submitApprovalDecision resolves an approval card. When remember==true and the
+// user approved a shell command, it persists an executable+subcommand rule to
+// the project's approval-allowlist so the same command auto-approves next time
+// (BUG-246). Compound commands and non-exec approvals are never remembered.
+func (s *InteractiveService) submitApprovalDecision(approvalID, decision string, remember bool) *apiErr {
 	s.mu.Lock()
 	rec := s.approvals[approvalID]
 	if rec == nil {
@@ -3388,10 +3527,25 @@ func (s *InteractiveService) SubmitApprovalDecision(approvalID, decision string)
 	}
 	rec.status = "resolved"
 	rec.decision = decision
-	if rs := s.runs[rec.runID]; rs != nil && rs.pendingApprovalID == approvalID {
-		rs.pendingApprovalID = ""
+	details := rec.details
+	var rememberCwd string
+	if rs := s.runs[rec.runID]; rs != nil {
+		if rs.pendingApprovalID == approvalID {
+			rs.pendingApprovalID = ""
+		}
+		rememberCwd = rs.workspaceCwd
 	}
 	s.mu.Unlock()
+
+	// Persist the "don't ask again" rule outside the lock (file IO). Only shell
+	// commands the user actually approved are eligible; deriveApprovalRule
+	// rejects compound commands.
+	if remember && decision == "approve" && details.Kind == "exec" && rememberCwd != "" {
+		if rule, ok := deriveApprovalRule(details.Command); ok {
+			_ = addApprovalAllowRule(filepath.Join(rememberCwd, ".flowpilot"), rule)
+		}
+	}
+
 	rec.resolve <- decision
 	return nil
 }

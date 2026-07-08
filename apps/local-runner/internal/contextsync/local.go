@@ -7,10 +7,11 @@ import (
 )
 
 const (
-	LedgerFile      = "ledger/feature_history.ndjson"
-	ChatSummaryFile = "ledger/chat_summary.ndjson"
-	CatalogFile     = "catalog/features.ndjson"
-	FlowRulesFile   = "settings/flow-rules.json"
+	LedgerFile            = "ledger/feature_history.ndjson"
+	ChatSummaryFile       = "ledger/chat_summary.ndjson"
+	CatalogFile           = "catalog/features.ndjson"
+	FlowRulesFile         = "settings/flow-rules.json"
+	ApprovalAllowlistFile = "settings/approval-allowlist.json"
 )
 
 type EngineStore struct {
@@ -43,6 +44,10 @@ func (s *EngineStore) FlowRulesPath() string {
 	return filepath.Join(s.DotFlowpilotDir, FlowRulesFile)
 }
 
+func (s *EngineStore) ApprovalAllowlistPath() string {
+	return filepath.Join(s.DotFlowpilotDir, ApprovalAllowlistFile)
+}
+
 func (s *EngineStore) GuardDir() string {
 	return filepath.Join(s.DotFlowpilotDir, "guard")
 }
@@ -52,7 +57,7 @@ func (s *EngineStore) ToolingPath() string {
 }
 
 func (s *EngineStore) SharedFiles() []string {
-	return []string{s.LedgerPath(), s.ChatSummaryPath(), s.CatalogPath(), s.FlowRulesPath()}
+	return []string{s.LedgerPath(), s.ChatSummaryPath(), s.CatalogPath(), s.FlowRulesPath(), s.ApprovalAllowlistPath()}
 }
 
 func (s *EngineStore) IsLocalOnly(path string) bool {

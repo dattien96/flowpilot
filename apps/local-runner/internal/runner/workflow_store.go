@@ -82,6 +82,7 @@ type ProviderSessionState struct {
 	// ParentRunID is set for child agent runs (CP-19 / Task-082); empty for root runs.
 	ParentRunID string
 	AgentName   string
+	Label       string
 	Role        string
 	DependsOn   []string
 	AgentStatus string
@@ -112,6 +113,13 @@ type ProviderSessionState struct {
 	// Empty for a plain chat run never started via a resolved flowRef.
 	ActiveFlowEdges []agentpack.FlowEdge
 	ActiveFlowNodes []agentpack.FlowNode
+	// ChatSubMode/ChatFlowRef persist the explicit Chat-Mode orchestration
+	// picker selection (CP-42/Task-177) a run was started with, e.g.
+	// subMode="bug", flowRef="flowpilot-core-flow-pack/review-loop"
+	// (BUG-263). Empty for a plain chat run or a Flow-Mode workflow-picker
+	// launch (which has its own WorkflowID/launchMode restore path already).
+	ChatSubMode string
+	ChatFlowRef string
 }
 
 type ProviderApprovalState struct {

@@ -41,6 +41,8 @@ function now() {
   return new Date().toISOString();
 }
 
+const workflowStepInsertOrderOffset = 1_000_000;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -591,15 +593,19 @@ export class SupabaseAdminRepository implements
       // leaves the existing steps fully intact, and only a successful insert
       // triggers the delete that supersedes them.
       if (workflow.steps.length > 0) {
+        const replacementSteps = workflow.steps.map((step, index) => ({
+          workflow_id: saved.id,
+          step_type: step.stepType,
+          // Insert outside the live 0..N-1 range so replacement rows never
+          // collide with the old rows that still occupy those slots until the
+          // superseding delete runs.
+          order_index: (step.orderIndex ?? index) + workflowStepInsertOrderOffset,
+          is_enabled: step.isEnabled ?? true,
+          requires_approval: step.requiresApproval ?? true,
+        }));
         const { data: insertedSteps, error: stepsError } = await this.supabase
           .from("workflow_steps")
-          .insert(workflow.steps.map((step, index) => ({
-            workflow_id: saved.id,
-            step_type: step.stepType,
-            order_index: step.orderIndex ?? index,
-            is_enabled: step.isEnabled ?? true,
-            requires_approval: step.requiresApproval ?? true,
-          })))
+          .insert(replacementSteps)
           .select("id");
         assertNoError(stepsError, "Unable to save workflow steps.");
         const newStepIds = (insertedSteps ?? []).map((row: { id: string }) => row.id);
@@ -609,6 +615,13 @@ export class SupabaseAdminRepository implements
           .eq("workflow_id", saved.id)
           .not("id", "in", `(${newStepIds.join(",")})`);
         assertNoError(deleteError, "Unable to remove superseded workflow steps.");
+        for (const [index, id] of newStepIds.entries()) {
+          const { error: renormalizeError } = await this.supabase
+            .from("workflow_steps")
+            .update({ order_index: index })
+            .eq("id", id);
+          assertNoError(renormalizeError, "Unable to normalize workflow step order.");
+        }
       } else {
         // A deliberate "save with zero steps" has no prior insert to order
         // against — the delete is the entire operation, not a supersession.
@@ -667,14 +680,88 @@ export class SupabaseAdminRepository implements
     const clonedWorkflow = mapWorkflow(cloned);
 
     if (sourceSteps.length > 0) {
+      // BUG-262: step_definitions is a de-duplicated catalog keyed by
+      // step_type (BUG-164 — "a step type has exactly one configured
+      // model"), not a per-workflow table. Reusing the source's step_type
+      // here (the pre-fix behavior) meant the clone's workflow_steps row
+      // pointed at the SAME step_definitions row as the source, including a
+      // built-in's — so persistEdgeDerivedDependsOn's later save on the
+      // clone's own edges silently overwrote the source's dependsOn too.
+      // Cloning must instead give every cloned step its own fresh,
+      // workflow-scoped step_type and an independent step_definitions row,
+      // so the clone is genuinely isolated as the "Clone Workflow" dialog's
+      // own copy promises ("Creates an editable copy... The original stays
+      // unchanged").
+      const stepTypes = sourceSteps.map((step: WorkflowStep) => step.stepType);
+      const { data: definitionRows, error: definitionsError } = await this.supabase
+        .from("step_definitions")
+        .select("*")
+        .in("step_type", stepTypes);
+      assertNoError(definitionsError, "Unable to load step definitions to clone.");
+      const definitionByStepType = new Map<string, StepDefinition>(
+        (definitionRows ?? []).map((row: Row): [string, StepDefinition] => [
+          String(row.step_type),
+          mapStepDefinition(row),
+        ]),
+      );
+
+      const stepTypeRemap = new Map<string, string>();
+      const newDefinitionRows: Row[] = [];
+      for (const step of sourceSteps as WorkflowStep[]) {
+        const definition = definitionByStepType.get(step.stepType);
+        if (!definition) continue; // BUG-236: a dangling stepType has nothing to clone
+        const newStepType = `${clonedWorkflow.id}__${step.stepType}`;
+        stepTypeRemap.set(step.stepType, newStepType);
+        newDefinitionRows.push({
+          step_type: newStepType,
+          name: definition.name,
+          description: definition.description,
+          prompt_base: definition.promptBase,
+          required_mcps: definition.requiredMcps,
+          mcp_access_mode: definition.mcpAccessMode,
+          required_skills: definition.requiredSkills,
+          team_role: definition.teamRole,
+          subagent: definition.subagent,
+          model: definition.model,
+          reasoning_effort: definition.reasoningEffort,
+          yolo_mode: definition.yoloMode,
+          agent_type: definition.agentType,
+          // node_id (the flow-graph identity edges reference) is preserved
+          // as-is: it only needs to be unique within the clone's own edge
+          // graph, which it already is since it was copied from a valid
+          // source graph. Only step_type (the storage row's own key) needs
+          // to become workflow-scoped.
+          node_id: definition.nodeId,
+          behavior_id: definition.behaviorId,
+          agent_ref: definition.agentRef,
+          node_lifecycle: definition.nodeLifecycle,
+          depends_on_json: definition.dependsOn,
+          join_mode: definition.joinMode,
+          cohort: definition.cohort,
+          prompt_template_ref: definition.promptTemplateRef,
+          context_ref: definition.contextRef,
+          inputs_json: definition.inputs,
+          outputs_json: definition.outputs,
+          updated_at: now(),
+        });
+      }
+      if (newDefinitionRows.length > 0) {
+        const { error: insertDefinitionsError } = await this.supabase
+          .from("step_definitions")
+          .insert(newDefinitionRows);
+        assertNoError(insertDefinitionsError, "Unable to clone step definitions.");
+      }
+
       const { error: insertStepsError } = await this.supabase.from("workflow_steps").insert(
-        sourceSteps.map((step: WorkflowStep) => ({
-          workflow_id: clonedWorkflow.id,
-          step_type: step.stepType,
-          order_index: step.orderIndex,
-          is_enabled: step.isEnabled,
-          requires_approval: step.requiresApproval,
-        })),
+        sourceSteps
+          .filter((step: WorkflowStep) => stepTypeRemap.has(step.stepType))
+          .map((step: WorkflowStep) => ({
+            workflow_id: clonedWorkflow.id,
+            step_type: stepTypeRemap.get(step.stepType)!,
+            order_index: step.orderIndex,
+            is_enabled: step.isEnabled,
+            requires_approval: step.requiresApproval,
+          })),
       );
       assertNoError(insertStepsError, "Unable to clone workflow steps.");
     }

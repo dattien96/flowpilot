@@ -212,6 +212,55 @@ test("openHistoryRun marks unavailable history entries on typed resume errors", 
   assert.equal(state.runHistory[0]?.unavailableReason, "session data not found on this machine");
 });
 
+// Regression test for BUG-263: reopening a run started via Chat Mode's Bug
+// sub-mode "Built-in orchestration" picker (subMode="bug", flowRef=...) used
+// to leave chatStartMode stuck at its default "normal" after resume/restart
+// — the Chat Intent panel showed "Normal" selected (and locked) even though
+// the run itself was a correctly-resumed flow-engine-driven Review Loop run.
+// Mirrors BUG-170's own "restore the mode this run actually was" fix, but for
+// the Chat-Mode picker fields instead of chatMode/launchMode.
+test("openHistoryRun restores the Chat Mode orchestration picker selection (BUG-263)", async () => {
+  seedStore(makeClient(), [
+    {
+      runId: "run-review-loop",
+      projectId: "project-1",
+      providerKey: "claude",
+      status: "completed",
+      startedAt: "2026-07-08T09:00:00Z",
+      updatedAt: "2026-07-08T09:05:00Z",
+      runKind: "chat",
+      subMode: "bug",
+      flowRef: "flowpilot-core-flow-pack/review-loop",
+    },
+  ]);
+
+  await useStore.getState().openHistoryRun("run-review-loop");
+
+  const state = useStore.getState();
+  assert.equal(state.chatStartMode, "bugfix");
+  assert.equal(state.flowRef, "flowpilot-core-flow-pack/review-loop");
+});
+
+test("openHistoryRun leaves chatStartMode as normal for a plain chat run with no picker selection", async () => {
+  seedStore(makeClient(), [
+    {
+      runId: "run-plain-chat",
+      projectId: "project-1",
+      providerKey: "claude",
+      status: "completed",
+      startedAt: "2026-07-08T09:00:00Z",
+      updatedAt: "2026-07-08T09:05:00Z",
+      runKind: "chat",
+    },
+  ]);
+
+  await useStore.getState().openHistoryRun("run-plain-chat");
+
+  const state = useStore.getState();
+  assert.equal(state.chatStartMode, "normal");
+  assert.equal(state.flowRef, undefined);
+});
+
 test("selectProject resets the active chat run when switching projects", async () => {
   seedStore(makeClient({ listSkills: async () => [] }), []);
   useStore.setState({
@@ -241,6 +290,52 @@ test("selectProject resets the active chat run when switching projects", async (
   assert.deepEqual(state.timeline, []);
   assert.deepEqual(state.artifacts, []);
   assert.deepEqual(state.pendingApprovals, []);
+});
+
+test("deleteHistoryRun on the active chat clears Flow Timeline and Agents panel state, not just the timeline (BUG-258)", async () => {
+  const client = makeClient({
+    listRunHistory: async () => [],
+    deleteRun: async () => {},
+  });
+  seedStore(client, [
+    { runId: "current-run", projectId: "project-1", providerKey: "codex", status: "completed", startedAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+  ]);
+  useStore.setState({
+    runId: "current-run",
+    mainRunId: "current-run",
+    activeAgentRunId: "agent-1",
+    status: "running",
+    timeline: [{ kind: "prompt", id: "prompt-1", text: "keep current timeline" }],
+    agentRuns: [{ runId: "agent-1", agentName: "coder", role: "coder", providerKey: "codex", status: "completed", createdAt: "2026-01-01T00:00:00Z" }],
+    agentGraphSnapshot: { parentRunId: "current-run", runs: [], edges: [], busMessages: [], loopState: { status: "running", round: 1, roundCap: 3 } },
+    workflowStepRuntime: [{ stepId: "step-1", stepType: "flow-agent-delegate", status: "DONE", retryCount: 0, requiresApproval: false, nodeId: "coder" }],
+    workflowStepRuntimeMeta: { provider: "codex", model: "gpt-5", yoloMode: false },
+    _runSnapshots: {
+      "current-run": {
+        timeline: [],
+        artifacts: [],
+        status: "completed",
+        pendingApprovals: [],
+        pendingQuestions: [],
+        recoverable: false,
+        lastEventSeq: 3,
+      },
+    },
+  });
+
+  await useStore.getState().deleteHistoryRun("current-run");
+
+  const state = useStore.getState();
+  assert.equal(state.runId, undefined);
+  assert.equal(state.mainRunId, undefined);
+  assert.equal(state.activeAgentRunId, undefined);
+  assert.equal(state.status, "idle");
+  assert.deepEqual(state.timeline, []);
+  assert.deepEqual(state.agentRuns, []);
+  assert.equal(state.agentGraphSnapshot, undefined);
+  assert.deepEqual(state.workflowStepRuntime, []);
+  assert.deepEqual(state.workflowStepRuntimeMeta, {});
+  assert.deepEqual(state.runHistory, []);
 });
 
 test("setChatStartMode clears flowRef and builtin orchestration options on any mode change", () => {

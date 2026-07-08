@@ -49,30 +49,31 @@ func NewLocalFileSessionStore(dataDir string) (*localFileSessionStore, error) {
 
 // ndjsonSessionRecord is the on-disk JSON shape for a ProviderSessionState.
 type ndjsonSessionRecord struct {
-	RunID               string   `json:"run_id"`
-	ProjectID           string   `json:"project_id"`
-	WorkflowID          string   `json:"workflow_id,omitempty"`
-	ProviderKey         string   `json:"provider_key"`
-	ProviderSessionID   string   `json:"provider_session_id,omitempty"`
-	ProviderAccountID   string   `json:"provider_account_id,omitempty"`
-	WorkingDirectory    string   `json:"working_directory,omitempty"`
-	Status              string   `json:"status"`
-	LastPrompt          string   `json:"last_prompt,omitempty"`
-	LastMessage         string   `json:"last_message,omitempty"`
-	StartedAt           string   `json:"started_at,omitempty"`
-	UpdatedAt           string   `json:"updated_at,omitempty"`
-	RunKind             string   `json:"run_kind,omitempty"`
-	SourceMachineID     string   `json:"source_machine_id,omitempty"`
-	SourceRunID         string   `json:"source_run_id,omitempty"`
-	RestoredFrom        string   `json:"restored_from,omitempty"`
-	SyncStatus          string   `json:"sync_status,omitempty"`
-	SyncUpdatedAt       string   `json:"sync_updated_at,omitempty"`
-	ParentRunID         string   `json:"parent_run_id,omitempty"`
-	AgentName           string   `json:"agent_name,omitempty"`
-	Role                string   `json:"role,omitempty"`
-	DependsOn           []string `json:"depends_on,omitempty"`
-	AgentStatus         string   `json:"agent_status,omitempty"`
-	ModelName           string   `json:"model_name,omitempty"`
+	RunID               string          `json:"run_id"`
+	ProjectID           string          `json:"project_id"`
+	WorkflowID          string          `json:"workflow_id,omitempty"`
+	ProviderKey         string          `json:"provider_key"`
+	ProviderSessionID   string          `json:"provider_session_id,omitempty"`
+	ProviderAccountID   string          `json:"provider_account_id,omitempty"`
+	WorkingDirectory    string          `json:"working_directory,omitempty"`
+	Status              string          `json:"status"`
+	LastPrompt          string          `json:"last_prompt,omitempty"`
+	LastMessage         string          `json:"last_message,omitempty"`
+	StartedAt           string          `json:"started_at,omitempty"`
+	UpdatedAt           string          `json:"updated_at,omitempty"`
+	RunKind             string          `json:"run_kind,omitempty"`
+	SourceMachineID     string          `json:"source_machine_id,omitempty"`
+	SourceRunID         string          `json:"source_run_id,omitempty"`
+	RestoredFrom        string          `json:"restored_from,omitempty"`
+	SyncStatus          string          `json:"sync_status,omitempty"`
+	SyncUpdatedAt       string          `json:"sync_updated_at,omitempty"`
+	ParentRunID         string          `json:"parent_run_id,omitempty"`
+	AgentName           string          `json:"agent_name,omitempty"`
+	Label               string          `json:"label,omitempty"`
+	Role                string          `json:"role,omitempty"`
+	DependsOn           []string        `json:"depends_on,omitempty"`
+	AgentStatus         string          `json:"agent_status,omitempty"`
+	ModelName           string          `json:"model_name,omitempty"`
 	PendingAgentContext []string        `json:"pending_agent_context,omitempty"`
 	LoopState           *AgentLoopState `json:"loop_state,omitempty"`
 	AutoOrchestrate     bool            `json:"auto_orchestrate,omitempty"`
@@ -81,6 +82,10 @@ type ndjsonSessionRecord struct {
 	// topology across a restart (BUG-NOTE-CP42 #16); see ProviderSessionState.
 	ActiveFlowEdges []agentpack.FlowEdge `json:"active_flow_edges,omitempty"`
 	ActiveFlowNodes []agentpack.FlowNode `json:"active_flow_nodes,omitempty"`
+	// ChatSubMode/ChatFlowRef persist the Chat-Mode orchestration picker
+	// selection a run was started with (BUG-263); see ProviderSessionState.
+	ChatSubMode string `json:"chat_sub_mode,omitempty"`
+	ChatFlowRef string `json:"chat_flow_ref,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -242,6 +247,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		SyncUpdatedAt:       r.SyncUpdatedAt,
 		ParentRunID:         r.ParentRunID,
 		AgentName:           r.AgentName,
+		Label:               r.Label,
 		Role:                r.Role,
 		DependsOn:           append([]string(nil), r.DependsOn...),
 		AgentStatus:         r.AgentStatus,
@@ -252,6 +258,8 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		FlowCohortID:        r.FlowCohortID,
 		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), r.ActiveFlowEdges...),
 		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), r.ActiveFlowNodes...),
+		ChatSubMode:         r.ChatSubMode,
+		ChatFlowRef:         r.ChatFlowRef,
 	}
 }
 
@@ -446,6 +454,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		SyncUpdatedAt:       s.SyncUpdatedAt,
 		ParentRunID:         s.ParentRunID,
 		AgentName:           s.AgentName,
+		Label:               s.Label,
 		Role:                s.Role,
 		DependsOn:           append([]string(nil), s.DependsOn...),
 		AgentStatus:         s.AgentStatus,
@@ -456,6 +465,8 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		FlowCohortID:        s.FlowCohortID,
 		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), s.ActiveFlowEdges...),
 		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), s.ActiveFlowNodes...),
+		ChatSubMode:         s.ChatSubMode,
+		ChatFlowRef:         s.ChatFlowRef,
 	}
 }
 

@@ -181,6 +181,24 @@ function ChatStartIntentPanel(): React.ReactElement | null {
   const flowRef = useStore((s) => s.flowRef);
   const setFlowRef = useStore((s) => s.setFlowRef);
   const builtinOrchestrationOptions = useStore((s) => s.builtinOrchestrationOptions);
+  const loadBuiltinOrchestrationOptions = useStore((s) => s.loadBuiltinOrchestrationOptions);
+
+  // BUG-265: builtinOrchestrationOptions is normally loaded as a side effect
+  // of setChatStartMode (the Bug tab's onClick), so a chatStartMode of
+  // "bugfix" that instead arrives from elsewhere — restoring a reopened
+  // Chat-Mode run's picker selection (BUG-263's openHistoryRun fix), or any
+  // future path that sets chatStartMode directly — never triggers the fetch.
+  // The Built-in orchestration select then silently fails to render at all
+  // (its own condition below requires builtinOrchestrationOptions.length >
+  // 0), even though flowRef itself was correctly restored. Load it here,
+  // keyed only on chatStartMode actually being "bugfix" with nothing loaded
+  // yet, so every entry path is covered without needing to find and patch
+  // each one that can set chatStartMode.
+  useEffect(() => {
+    if (chatStartMode === "bugfix" && builtinOrchestrationOptions.length === 0) {
+      void loadBuiltinOrchestrationOptions("bug");
+    }
+  }, [chatStartMode, builtinOrchestrationOptions.length, loadBuiltinOrchestrationOptions]);
 
   if (chatMode !== "normal_chat") return null;
 

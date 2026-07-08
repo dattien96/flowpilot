@@ -271,7 +271,6 @@ export function validateFlowGraph(
     FLOW_BEHAVIOR_OPTIONS.filter((option) => option.requiresAgent).map((option) => option.id),
   );
   const nodeIds = new Set<string>();
-  let hasEntryNode = false;
 
   for (const step of enabledSteps) {
     const definition = defsByType.get(step.stepType);
@@ -281,9 +280,6 @@ export function validateFlowGraph(
     }
     if (definition.nodeId) {
       nodeIds.add(definition.nodeId);
-    }
-    if (!definition.dependsOn || definition.dependsOn.length === 0) {
-      hasEntryNode = true;
     }
     if (definition.behaviorId) {
       if (!knownBehaviorIds.has(definition.behaviorId)) {
@@ -298,9 +294,25 @@ export function validateFlowGraph(
     }
   }
 
+  // Owner finding (2026-07-06): a step-definition's own `dependsOn` field is
+  // now DERIVED from this workflow's edges when it saves (WorkflowsSettings.tsx
+  // persistEdgeDerivedDependsOn) rather than hand-maintained — so at
+  // validation time (before that derive-and-save step ever runs) it can be
+  // stale or simply blank for a brand-new node. Entry-node detection must
+  // therefore read the edges directly, not `dependsOn`: a node is an entry
+  // node iff no *forward* edge targets it (a back edge, e.g. a synthesis->
+  // coder loop re-entry, must not disqualify the true entry node).
+  const nodesWithIncomingForwardEdge = new Set(
+    edges.filter((edge) => edge.kind === "forward").map((edge) => edge.to),
+  );
+  const hasEntryNode = enabledSteps.some((step) => {
+    const definition = defsByType.get(step.stepType);
+    return Boolean(definition?.nodeId) && !nodesWithIncomingForwardEdge.has(definition!.nodeId!);
+  });
+
   if (!hasEntryNode) {
     issues.push(
-      "No entry node found — at least one enabled step must have no dependencies (empty Depends on) so the flow has somewhere to start.",
+      "No entry node found — at least one enabled step's node must have no incoming forward edge, so the flow has somewhere to start.",
     );
   }
 

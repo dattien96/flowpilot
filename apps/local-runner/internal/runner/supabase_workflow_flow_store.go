@@ -251,6 +251,158 @@ func (s *SupabaseWorkflowFlowStore) GetByPackFlow(ctx context.Context, packID, p
 	return s.fetchOne(ctx, query)
 }
 
+// flowHashID pairs a pack flow's stable id with its current content hash, the
+// two signals ReclaimOrRetireStaleBuiltinMirrors needs to tell "this orphaned
+// row IS one of the pack's current flows, just corrupted" from "this orphaned
+// row genuinely no longer corresponds to anything."
+type flowHashID struct {
+	FlowID string
+	Hash   string
+}
+
+// builtinStaleMirrorReclaimer is implemented by FlowDefinitionStore backends
+// that can look up and patch a builtin mirror row by its own storage identity
+// (id), not just by (pack_id, pack_flow_id) — BUG-249. FlowMirrorSyncService
+// type-asserts for this optional capability; a store that doesn't implement
+// it (e.g. the in-memory test fake) simply keeps the pre-BUG-249 behavior of
+// the normal per-flow Upsert inserting a fresh row whenever a mirror is
+// missing.
+type builtinStaleMirrorReclaimer interface {
+	ReclaimOrRetireStaleBuiltinMirrors(ctx context.Context, packID string, currentFlows []flowHashID) (handled int, err error)
+}
+
+type dbWorkflowIdentityRow struct {
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	PackFlowID *string `json:"pack_flow_id"`
+	PackHash   *string `json:"pack_hash"`
+}
+
+// staleMirrorSuffix marks a retired builtin mirror row's name so it reads as
+// self-explanatory rather than a mysteriously duplicated entry. Also used to
+// detect an already-retired row so a repeat sync doesn't append it twice.
+const staleMirrorSuffix = " (stale mirror — pack_flow_id no longer matches any current pack flow; safe to review/delete)"
+
+// ReclaimOrRetireStaleBuiltinMirrors implements builtinStaleMirrorReclaimer.
+//
+// BUG-249: a manually corrupted/renamed pack_flow_id (this is exactly CP-36
+// Scenario 14's manual-corruption reproduction) orphans a builtin mirror row
+// — Upsert's on_conflict=pack_id,pack_flow_id can no longer find it by its
+// old identity, so the plain per-flow sync loop in SyncBuiltins would insert
+// a brand-new row instead of repairing the existing one. That produced a
+// visible duplicate "Built-in" entry in Settings' Definitions list and the
+// Workflow Mode picker, and the fresh row lost whatever
+// provider_override/model_override/reasoning_effort_override/yolo_mode the
+// orphaned row had — those columns aren't part of FlowDefinitionRecord or the
+// pack schema at all (they're pure per-installation admin settings), so a
+// genuine INSERT falls through to the column's own Postgres default instead
+// of anything meaningful.
+//
+// Call this BEFORE the normal per-flow sync loop, once per pack. A row whose
+// pack_hash still matches one of currentFlows is reclaimed in place: only its
+// pack_flow_id is patched back to the correct value, by row id — every other
+// column (including the overrides) is left untouched, and the loop's own
+// subsequent GetByPackFlow lookup then finds it looking like an already
+// up-to-date mirror, so no separate "already reclaimed" branch is needed
+// there. A row that cannot be reclaimed (content also changed, the flow was
+// removed from the pack, or another row already occupies that flow's slot —
+// i.e. the duplicate has already happened) is instead retired: is_builtin
+// flips to false and editable to true so it stops rendering as a duplicate
+// built-in, and its name gets a "(stale mirror...)" suffix. Retiring instead
+// of deleting preserves any clone's `cloned_from` FK (Scenario 14 checklist
+// item 3) and is non-destructive — the row and its history remain, just no
+// longer masquerading as a live built-in.
+func (s *SupabaseWorkflowFlowStore) ReclaimOrRetireStaleBuiltinMirrors(ctx context.Context, packID string, currentFlows []flowHashID) (int, error) {
+	endpoint := fmt.Sprintf("%s/workflows?pack_id=eq.%s&is_builtin=eq.true&select=id,name,pack_flow_id,pack_hash",
+		s.restURL, url.QueryEscape(packID))
+	status, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
+	if err != nil {
+		return 0, err
+	}
+	if status < 200 || status >= 300 {
+		return 0, fmt.Errorf("supabase workflow flow list builtins for %q: status %d: %s", packID, status, string(body))
+	}
+	var rows []dbWorkflowIdentityRow
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return 0, fmt.Errorf("supabase workflow flow decode builtin identity rows: %w", err)
+	}
+
+	currentFlowIDs := make(map[string]bool, len(currentFlows))
+	hashToFlowID := make(map[string]string, len(currentFlows))
+	for _, f := range currentFlows {
+		currentFlowIDs[f.FlowID] = true
+		if f.Hash != "" {
+			hashToFlowID[f.Hash] = f.FlowID
+		}
+	}
+	// A flow slot already correctly occupied by a live row must never be
+	// targeted by a reclaim patch too — that would violate the
+	// unique(pack_id, pack_flow_id) index. This also covers the case where
+	// the duplicate has already happened (both the orphan and a freshly
+	// re-inserted correct row already exist): the orphan then falls through
+	// to retirement instead of a doomed reclaim attempt.
+	occupied := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if row.PackFlowID != nil && currentFlowIDs[*row.PackFlowID] {
+			occupied[*row.PackFlowID] = true
+		}
+	}
+
+	handled := 0
+	for _, row := range rows {
+		packFlowID := ""
+		if row.PackFlowID != nil {
+			packFlowID = *row.PackFlowID
+		}
+		if currentFlowIDs[packFlowID] {
+			continue // a live, correctly-keyed mirror -- leave it alone
+		}
+		hash := ""
+		if row.PackHash != nil {
+			hash = *row.PackHash
+		}
+		if flowID, ok := hashToFlowID[hash]; ok && hash != "" && !occupied[flowID] {
+			if err := s.patchWorkflowByID(ctx, row.ID, map[string]any{"pack_flow_id": flowID}); err != nil {
+				return handled, fmt.Errorf("reclaim stale builtin mirror %q -> %q: %w", row.ID, flowID, err)
+			}
+			occupied[flowID] = true
+			handled++
+			continue
+		}
+		if strings.Contains(row.Name, staleMirrorSuffix) {
+			continue // already retired and renamed in a prior pass
+		}
+		if err := s.patchWorkflowByID(ctx, row.ID, map[string]any{
+			"is_builtin": false,
+			"editable":   true,
+			"name":       row.Name + staleMirrorSuffix,
+		}); err != nil {
+			return handled, fmt.Errorf("retire stale builtin mirror %q: %w", row.ID, err)
+		}
+		handled++
+	}
+	return handled, nil
+}
+
+// patchWorkflowByID applies a targeted column patch to a single workflows row
+// by its own id, independent of the pack-identity-keyed on_conflict path
+// Upsert uses.
+func (s *SupabaseWorkflowFlowStore) patchWorkflowByID(ctx context.Context, id string, fields map[string]any) error {
+	endpoint := s.restURL + "/workflows?id=eq." + url.QueryEscape(id)
+	body, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	status, respBody, err := httpRequestFn(ctx, http.MethodPatch, endpoint, s.headers("return=minimal"), body)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("status %d: %s", status, string(respBody))
+	}
+	return nil
+}
+
 // GetByRef resolves a flowRef that is either a stable "packId/flowId" string
 // (built-ins) or a workflow's own UUID id (user-owned rows).
 func (s *SupabaseWorkflowFlowStore) GetByRef(ctx context.Context, flowRef string) (FlowDefinitionRecord, bool, error) {

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -55,7 +56,7 @@ func TestReviewOutcomeToolOfferedOnlyOnHubSynthesisTurn(t *testing.T) {
 		})
 	}
 
-	runTurnAndWait("start", 1)     // hub's first turn
+	runTurnAndWait("start", 1)      // hub's first turn
 	runTurnAndWait("synthesize", 2) // hub's synthesis turn
 
 	mu.Lock()
@@ -252,6 +253,48 @@ func TestFlowEngineDrivenRunSkipsBulkProgress(t *testing.T) {
 			t.Fatalf("s2 = %q, want still PENDING (bulk Progress must be skipped for flow-engine-driven runs)", s2.Status)
 		}
 	})
+
+	// BUG-259 regression: some adapters (codex_adapter.go's real SendTurn) emit
+	// EventTurnFailed but still return a nil error — mirrored here by a fake
+	// adapter doing exactly that. A NON-flow-engine-driven run (a plain
+	// workflow-attached chat, not a real flow-engine run) must still skip the
+	// bulk Progress() call when the turn actually failed, even though err==nil,
+	// or a provider error (e.g. hitting a usage limit) falsely bulk-completes
+	// every still-PENDING workflow step.
+	t.Run("failed_turn_with_nil_err_skips_despite_not_flow_engine_driven", func(t *testing.T) {
+		reg := newProviderRegistry()
+		reg.register(ProviderRegistration{
+			Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+			Capabilities: ProviderCapabilities{Streaming: true},
+			newAdapter: func() ProviderRuntimeAdapter {
+				return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+					b.Emit(ProviderEvent{Type: EventTurnFailed, Error: "You've hit your usage limit."})
+					return nil // the exact lie codex_adapter.go's SendTurn tells on failure
+				})
+			},
+		})
+		svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+		parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+		if err != nil {
+			t.Fatalf("createRun: %v", err)
+		}
+		seedTwoPendingSteps(svc, parent.RunID)
+		startAndWaitTurn(t, svc, parent.RunID)
+
+		svc.mu.Lock()
+		gotStatus := svc.runs[parent.RunID].status
+		svc.mu.Unlock()
+		if gotStatus != RunStatusFailed {
+			t.Fatalf("run status = %q, want failed", gotStatus)
+		}
+		steps, _ := svc.workflowStore.LoadRunSteps(context.Background(), parent.RunID)
+		if s1, _ := stepByID(steps, "s1"); s1.Status != StepStatusFailed {
+			t.Errorf("s1 = %q, want FAILED — the run's own turn failed while this step was in flight; it must settle to FAILED, not hang at RUNNING or get bulk-marked DONE", s1.Status)
+		}
+		if s2, _ := stepByID(steps, "s2"); s2.Status != StepStatusPending {
+			t.Fatalf("s2 = %q, want still PENDING (bulk Progress must be skipped when the turn actually failed, regardless of err==nil)", s2.Status)
+		}
+	})
 }
 
 // TestResolveWorkflowFlowRefAdoptsMirroredFlow proves F-1's bridge: a run whose
@@ -367,6 +410,33 @@ func TestMarkFlowRunCompleteSettlesEveryStep(t *testing.T) {
 	}
 }
 
+func TestMarkFlowRunCompletePreservesFailedAndSkipsUnstartedSteps(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, apiErr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if apiErr != nil {
+		t.Fatalf("createRun: %v", apiErr)
+	}
+	nodes := reviewLoopTestNodes()
+	svc.mu.Lock()
+	svc.runs[parent.RunID].activeFlowNodes = nodes
+	svc.mu.Unlock()
+	svc.reseedFlowStepRuntime(parent.RunID, nodes)
+
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "coder", StepStatusDone)
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "reviewer_correctness", StepStatusDone)
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "reviewer_security", StepStatusFailed)
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "synthesis", StepStatusPending)
+
+	svc.markFlowRunComplete(context.Background(), parent.RunID)
+
+	if got := flowStepStatus(t, svc, parent.RunID, "reviewer_security"); got != StepStatusFailed {
+		t.Errorf("failed reviewer status = %v, want FAILED after markFlowRunComplete", got)
+	}
+	if got := flowStepStatus(t, svc, parent.RunID, "synthesis"); got != StepStatusSkipped {
+		t.Errorf("pending synthesis status = %v, want SKIPPED after markFlowRunComplete", got)
+	}
+}
+
 // TestMarkFlowRunCompleteSettlesLingeringChildAgentRun is the regression test
 // for BUG-235: markFlowRunComplete settled the flow's STEP timeline but never
 // touched a child agent RUN whose own status update never landed, so it stayed
@@ -474,7 +544,7 @@ func TestReconstructWorkflowRunRestoresStepTimeline(t *testing.T) {
 func TestReconstructNonCompletedFlowRunRestoresPendingSteps(t *testing.T) {
 	svc, _ := newTestServer(t)
 	nodes := reviewLoopTestNodes()
-	if _, apiErr := svc.reconstructRun(ProviderSessionState{
+	rs, apiErr := svc.reconstructRun(ProviderSessionState{
 		RunID:           "run-mid",
 		ProjectID:       "proj",
 		ProviderKey:     ProviderKeyClaude,
@@ -484,8 +554,12 @@ func TestReconstructNonCompletedFlowRunRestoresPendingSteps(t *testing.T) {
 		StartedAt:       "2026-07-02T00:00:00Z",
 		UpdatedAt:       "2026-07-02T00:05:00Z",
 		ActiveFlowNodes: nodes,
-	}); apiErr != nil {
+	})
+	if apiErr != nil {
 		t.Fatalf("reconstructRun: %v", apiErr)
+	}
+	if rs.status != RunStatusCancelled {
+		t.Fatalf("reconstructed flow status = %q, want cancelled after restart", rs.status)
 	}
 	steps, _ := svc.workflowStore.LoadRunSteps(context.Background(), "run-mid")
 	if len(steps) != len(nodes) {
@@ -495,6 +569,405 @@ func TestReconstructNonCompletedFlowRunRestoresPendingSteps(t *testing.T) {
 		if st.Status != StepStatusPending {
 			t.Errorf("step %q status = %q, want PENDING for a non-completed run", st.ID, st.Status)
 		}
+	}
+}
+
+func TestReconstructIncompleteCompletedFlowRunCancelsResumeAndDisablesAutoOrchestrate(t *testing.T) {
+	svc, _ := newTestServer(t)
+	nodes := reviewLoopTestNodes()
+	rs, apiErr := svc.reconstructRun(ProviderSessionState{
+		RunID:               "run-mid-completed",
+		ProjectID:           "proj",
+		ProviderKey:         ProviderKeyCodex,
+		WorkflowID:          "wf-1",
+		RunKind:             "workflow",
+		Status:              RunStatusCompleted,
+		StartedAt:           "2026-07-02T00:00:00Z",
+		UpdatedAt:           "2026-07-02T00:05:00Z",
+		ActiveFlowNodes:     nodes,
+		AutoOrchestrate:     true,
+		PendingAgentContext: []string{"[flow-engine joined result note] something pending"},
+		LoopState:           AgentLoopState{Status: "running", Round: 1, RoundCap: 3, Cap: 3, Mode: "explicit"},
+	})
+	if apiErr != nil {
+		t.Fatalf("reconstructRun: %v", apiErr)
+	}
+	if rs.status != RunStatusCancelled {
+		t.Fatalf("status = %q, want cancelled for an incomplete flow restored after restart", rs.status)
+	}
+	if rs.autoOrchestrate {
+		t.Fatalf("autoOrchestrate = true, want false after restart-cancel normalization")
+	}
+}
+
+func TestReconstructResumeKeepsCompletedFlowNodesAndCancelsSyntheticHub(t *testing.T) {
+	store, err := NewLocalFileSessionStore(filepath.Join(t.TempDir(), ".flowpilot", "chats"))
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	svc := newInteractiveService(newProviderRegistry(), newInteractiveCatalog(), store)
+	ctx := context.Background()
+	nodes := []agentpack.FlowNode{
+		{ID: "coder-gpt", Behavior: "agent.delegate", Agent: "agents/coder-agent.md"},
+		{ID: "review-gpt", Behavior: "agent.delegate", Agent: "agents/reviewer-agent.md", DependsOn: []string{"coder-gpt"}},
+		{ID: "synthesis", Behavior: "hub.inline", Agent: "agents/synthesizer.md", DependsOn: []string{"review-gpt"}},
+	}
+	now := "2026-07-07T15:44:07Z"
+	for _, session := range []ProviderSessionState{
+		{
+			RunID: "run-coder-1", ParentRunID: "run-parent-1",
+			ProviderKey: ProviderKeyCodex, RunKind: "chat",
+			AgentName: "coder-agent", Role: "coder-agent",
+			Status: RunStatusCompleted, StartedAt: now, UpdatedAt: now,
+		},
+		{
+			RunID: "run-review-1", ParentRunID: "run-parent-1",
+			ProviderKey: ProviderKeyCodex, RunKind: "chat",
+			AgentName: "reviewer-agent", Role: "reviewer-agent",
+			Status: RunStatusCompleted, StartedAt: now, UpdatedAt: now,
+		},
+	} {
+		if err := store.UpsertProviderSession(ctx, session); err != nil {
+			t.Fatalf("UpsertProviderSession(%s): %v", session.RunID, err)
+		}
+	}
+
+	rs, apiErr := svc.reconstructRun(ProviderSessionState{
+		RunID:           "run-parent-1",
+		ProjectID:       "proj",
+		ProviderKey:     ProviderKeyCodex,
+		WorkflowID:      "wf-1",
+		RunKind:         "workflow",
+		Status:          RunStatusCompleted,
+		StartedAt:       now,
+		UpdatedAt:       now,
+		ActiveFlowNodes: nodes,
+		AutoOrchestrate: true,
+		PendingAgentContext: []string{
+			"[flow-engine joined result note]\nFlow round 0 — joined.",
+		},
+		LoopState: AgentLoopState{Status: "running", ActiveNode: "synthesis", Round: 0, Cap: 3, RoundCap: 3},
+	})
+	if apiErr != nil {
+		t.Fatalf("reconstructRun: %v", apiErr)
+	}
+	if rs.status != RunStatusCancelled {
+		t.Fatalf("status = %q, want cancelled", rs.status)
+	}
+	steps, err := svc.workflowStore.LoadRunSteps(ctx, "run-parent-1")
+	if err != nil {
+		t.Fatalf("LoadRunSteps: %v", err)
+	}
+	if got := flowStepStatus(t, svc, "run-parent-1", "coder-gpt"); got != StepStatusDone {
+		t.Fatalf("coder-gpt = %q, want DONE", got)
+	}
+	if got := flowStepStatus(t, svc, "run-parent-1", "review-gpt"); got != StepStatusDone {
+		t.Fatalf("review-gpt = %q, want DONE", got)
+	}
+	if got := flowStepStatus(t, svc, "run-parent-1", "synthesis"); got != StepStatusCanceled {
+		t.Fatalf("synthesis = %q, want CANCELED", got)
+	}
+	if len(steps) != len(nodes) {
+		t.Fatalf("restored steps = %d, want %d", len(steps), len(nodes))
+	}
+}
+
+// TestReconstructResumeKeepsFailedCohortMemberDespiteFlowReachingDone is the
+// BUG-260 regression: CA-251/BUG-254 let the hub declare a round done off the
+// surviving cohort members even when one member genuinely FAILED — a live
+// Claude repro (run-10239) hit a cohort of two reviewers where one failed
+// ("claude-review-fake-model") and one completed ("my-reviewer"); the hub still
+// escalated, got resolved, and reached loop_state.status "done". On restart,
+// resumedFlowStepRows's old fast path treated ANY terminal, non-blocked loop
+// state as "every node genuinely succeeded" and bulk-marked all nodes DONE,
+// silently overwriting the failed reviewer's real outcome. It must instead
+// still read FAILED from that reviewer's own persisted session.
+func TestReconstructResumeKeepsFailedCohortMemberDespiteFlowReachingDone(t *testing.T) {
+	store, err := NewLocalFileSessionStore(filepath.Join(t.TempDir(), ".flowpilot", "chats"))
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	svc := newInteractiveService(newProviderRegistry(), newInteractiveCatalog(), store)
+	ctx := context.Background()
+	nodes := []agentpack.FlowNode{
+		{ID: "my-coder", Behavior: "agent.delegate", Agent: "agents/coder-agent.md"},
+		{ID: "my-reviewer", Behavior: "agent.delegate", Agent: "agents/reviewer-agent.md", DependsOn: []string{"my-coder"}},
+		{ID: "claude-review-fake-model", Behavior: "agent.delegate", Agent: "agents/reviewer-agent.md", DependsOn: []string{"my-coder"}},
+		{ID: "synthesis", Behavior: "hub.inline", Agent: "agents/synthesizer.md", DependsOn: []string{"my-reviewer", "claude-review-fake-model"}},
+	}
+	now := "2026-07-08T01:39:31Z"
+	for _, session := range []ProviderSessionState{
+		{
+			RunID: "run-10244", ParentRunID: "run-10239",
+			ProviderKey: ProviderKeyClaude, RunKind: "chat",
+			Label: "my-coder", AgentName: "coder-agent", Role: "coder-agent",
+			Status: RunStatusCompleted, StartedAt: now, UpdatedAt: now,
+		},
+		{
+			RunID: "run-10331", ParentRunID: "run-10239",
+			ProviderKey: ProviderKeyClaude, RunKind: "chat",
+			Label: "my-reviewer", AgentName: "reviewer-agent", Role: "reviewer-agent",
+			FlowCohortID: "flow-auto-my-coder-round-0",
+			Status:       RunStatusCompleted, StartedAt: now, UpdatedAt: now,
+		},
+		{
+			RunID: "run-10339", ParentRunID: "run-10239",
+			ProviderKey: ProviderKeyClaude, RunKind: "chat",
+			Label: "claude-review-fake-model", AgentName: "reviewer-agent", Role: "reviewer-agent",
+			FlowCohortID: "flow-auto-my-coder-round-0",
+			Status:       RunStatusFailed, StartedAt: now, UpdatedAt: now,
+		},
+	} {
+		if err := store.UpsertProviderSession(ctx, session); err != nil {
+			t.Fatalf("UpsertProviderSession(%s): %v", session.RunID, err)
+		}
+	}
+
+	rs, apiErr := svc.reconstructRun(ProviderSessionState{
+		RunID:               "run-10239",
+		ProjectID:           "proj",
+		ProviderKey:         ProviderKeyClaude,
+		WorkflowID:          "wf-1",
+		RunKind:             "workflow",
+		Status:              RunStatusCompleted,
+		StartedAt:           now,
+		UpdatedAt:           now,
+		ActiveFlowNodes:     nodes,
+		AutoOrchestrate:     true,
+		PendingAgentContext: []string{"Flow completed."},
+		LoopState:           AgentLoopState{Status: "done", Round: 0, Cap: 3, RoundCap: 3, Mode: "explicit"},
+	})
+	if apiErr != nil {
+		t.Fatalf("reconstructRun: %v", apiErr)
+	}
+	_ = rs
+	if got := flowStepStatus(t, svc, "run-10239", "my-coder"); got != StepStatusDone {
+		t.Errorf("my-coder = %q, want DONE", got)
+	}
+	if got := flowStepStatus(t, svc, "run-10239", "my-reviewer"); got != StepStatusDone {
+		t.Errorf("my-reviewer = %q, want DONE", got)
+	}
+	if got := flowStepStatus(t, svc, "run-10239", "claude-review-fake-model"); got != StepStatusFailed {
+		t.Fatalf("claude-review-fake-model = %q, want FAILED — this reviewer genuinely failed; the flow reaching loop_state.status=done afterward must not overwrite it to DONE", got)
+	}
+	if got := flowStepStatus(t, svc, "run-10239", "synthesis"); got != StepStatusDone {
+		t.Errorf("synthesis = %q, want DONE (no child session evidence for the inline hub node — falls back to DONE because the flow genuinely completed)", got)
+	}
+}
+
+func TestReconstructResumeCancelsRunningReviewerButKeepsCompletedCoder(t *testing.T) {
+	store, err := NewLocalFileSessionStore(filepath.Join(t.TempDir(), ".flowpilot", "chats"))
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	svc := newInteractiveService(newProviderRegistry(), newInteractiveCatalog(), store)
+	ctx := context.Background()
+	nodes := []agentpack.FlowNode{
+		{ID: "coder-gpt", Behavior: "agent.delegate", Agent: "agents/coder-agent.md"},
+		{ID: "review-gpt", Behavior: "agent.delegate", Agent: "agents/reviewer-agent.md", DependsOn: []string{"coder-gpt"}},
+		{ID: "synthesis", Behavior: "hub.inline", Agent: "agents/synthesizer.md", DependsOn: []string{"review-gpt"}},
+	}
+	now := "2026-07-07T15:49:33Z"
+	for _, session := range []ProviderSessionState{
+		{
+			RunID: "run-coder-2", ParentRunID: "run-parent-2",
+			ProviderKey: ProviderKeyCodex, RunKind: "chat",
+			AgentName: "coder-agent", Role: "coder-agent",
+			Status: RunStatusCompleted, StartedAt: now, UpdatedAt: now,
+		},
+		{
+			RunID: "run-review-2", ParentRunID: "run-parent-2",
+			ProviderKey: ProviderKeyCodex, RunKind: "chat",
+			AgentName: "reviewer-agent", Role: "reviewer-agent",
+			Status: RunStatusRunning, StartedAt: now, UpdatedAt: now,
+		},
+	} {
+		if err := store.UpsertProviderSession(ctx, session); err != nil {
+			t.Fatalf("UpsertProviderSession(%s): %v", session.RunID, err)
+		}
+	}
+
+	rs, apiErr := svc.reconstructRun(ProviderSessionState{
+		RunID:           "run-parent-2",
+		ProjectID:       "proj",
+		ProviderKey:     ProviderKeyCodex,
+		WorkflowID:      "wf-1",
+		RunKind:         "workflow",
+		Status:          RunStatusCompleted,
+		StartedAt:       now,
+		UpdatedAt:       now,
+		ActiveFlowNodes: nodes,
+		AutoOrchestrate: true,
+		PendingAgentContext: []string{
+			"[flow-engine] An agent has already been spawned to work on this request.",
+		},
+	})
+	if apiErr != nil {
+		t.Fatalf("reconstructRun: %v", apiErr)
+	}
+	if rs.status != RunStatusCancelled {
+		t.Fatalf("status = %q, want cancelled", rs.status)
+	}
+	if got := flowStepStatus(t, svc, "run-parent-2", "coder-gpt"); got != StepStatusDone {
+		t.Fatalf("coder-gpt = %q, want DONE", got)
+	}
+	if got := flowStepStatus(t, svc, "run-parent-2", "review-gpt"); got != StepStatusCanceled {
+		t.Fatalf("review-gpt = %q, want CANCELED", got)
+	}
+	if got := flowStepStatus(t, svc, "run-parent-2", "synthesis"); got != StepStatusPending {
+		t.Fatalf("synthesis = %q, want PENDING because synthesis never started", got)
+	}
+}
+
+func TestReconstructResumeRestoresDistinctReviewerStatusesByPersistedLabel(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(dataDir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	ctx := context.Background()
+	nodes := []agentpack.FlowNode{
+		{ID: "coder-gpt", Behavior: "agent.delegate", Agent: "agents/coder-agent.md"},
+		{ID: "review-gpt", Behavior: "agent.delegate", Agent: "agents/reviewer-agent.md", DependsOn: []string{"coder-gpt"}},
+		{ID: "review-security-gpt", Behavior: "agent.delegate", Agent: "agents/reviewer-agent.md", DependsOn: []string{"coder-gpt"}},
+		{ID: "synthesis", Behavior: "hub.inline", Agent: "agents/synthesizer.md", DependsOn: []string{"review-gpt", "review-security-gpt"}},
+	}
+	now := "2026-07-07T22:12:36Z"
+	for _, session := range []ProviderSessionState{
+		{
+			RunID: "run-coder-3", ParentRunID: "run-parent-3",
+			ProjectID:   "proj",
+			ProviderKey: ProviderKeyCodex, RunKind: "chat",
+			AgentName: "coder-agent", Label: "coder-gpt", Role: "coder-agent",
+			Status: RunStatusCompleted, StartedAt: now, UpdatedAt: now,
+		},
+		{
+			RunID: "run-review-done-3", ParentRunID: "run-parent-3",
+			ProjectID:   "proj",
+			ProviderKey: ProviderKeyCodex, RunKind: "chat",
+			AgentName: "reviewer-agent", Label: "review-gpt", Role: "reviewer-agent",
+			Status: RunStatusCompleted, StartedAt: now, UpdatedAt: now,
+		},
+		{
+			RunID: "run-review-failed-3", ParentRunID: "run-parent-3",
+			ProjectID:   "proj",
+			ProviderKey: ProviderKeyCodex, RunKind: "chat",
+			AgentName: "reviewer-agent", Label: "review-security-gpt", Role: "reviewer-agent",
+			Status: RunStatusFailed, StartedAt: now, UpdatedAt: now,
+		},
+	} {
+		if err := store.UpsertProviderSession(ctx, session); err != nil {
+			t.Fatalf("UpsertProviderSession(%s): %v", session.RunID, err)
+		}
+	}
+
+	restartedStore, err := NewLocalFileSessionStore(dataDir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore(restart): %v", err)
+	}
+	svc := newInteractiveService(newProviderRegistry(), newInteractiveCatalog(), restartedStore)
+
+	rs, apiErr := svc.reconstructRun(ProviderSessionState{
+		RunID:           "run-parent-3",
+		ProjectID:       "proj",
+		ProviderKey:     ProviderKeyCodex,
+		WorkflowID:      "wf-1",
+		RunKind:         "workflow",
+		Status:          RunStatusCompleted,
+		StartedAt:       now,
+		UpdatedAt:       now,
+		ActiveFlowNodes: nodes,
+		AutoOrchestrate: true,
+		PendingAgentContext: []string{
+			"[flow-engine joined result note]\nFlow round 0 — joined.",
+		},
+		LoopState: AgentLoopState{Status: "running", ActiveNode: "synthesis", Round: 0, Cap: 3, RoundCap: 3},
+	})
+	if apiErr != nil {
+		t.Fatalf("reconstructRun: %v", apiErr)
+	}
+	if rs.status != RunStatusCancelled {
+		t.Fatalf("status = %q, want cancelled", rs.status)
+	}
+	if got := flowStepStatus(t, svc, "run-parent-3", "review-gpt"); got != StepStatusDone {
+		t.Fatalf("review-gpt = %q, want DONE", got)
+	}
+	if got := flowStepStatus(t, svc, "run-parent-3", "review-security-gpt"); got != StepStatusFailed {
+		t.Fatalf("review-security-gpt = %q, want FAILED", got)
+	}
+	if got := flowStepStatus(t, svc, "run-parent-3", "synthesis"); got != StepStatusCanceled {
+		t.Fatalf("synthesis = %q, want CANCELED", got)
+	}
+}
+
+func TestReconstructResumeInfersLegacyReviewerStatusesFromCohortOrder(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(dataDir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	ctx := context.Background()
+	nodes := []agentpack.FlowNode{
+		{ID: "coder-gpt", Behavior: "agent.delegate", Agent: "agents/coder-agent.md"},
+		{ID: "review-gpt", Behavior: "agent.delegate", Agent: "agents/reviewer-agent.md", DependsOn: []string{"coder-gpt"}},
+		{ID: "review-security-gpt", Behavior: "agent.delegate", Agent: "agents/reviewer-agent.md", DependsOn: []string{"coder-gpt"}},
+		{ID: "synthesis", Behavior: "hub.inline", Agent: "agents/synthesizer.md", DependsOn: []string{"review-gpt", "review-security-gpt"}},
+	}
+	edges := []agentpack.FlowEdge{
+		{From: "coder-gpt", To: "review-gpt", When: "done", Kind: "forward"},
+		{From: "coder-gpt", To: "review-security-gpt", When: "done", Kind: "forward"},
+		{From: "review-gpt", To: "synthesis", When: "done", Kind: "forward"},
+		{From: "review-security-gpt", To: "synthesis", When: "done", Kind: "forward"},
+	}
+	for _, session := range []ProviderSessionState{
+		{
+			RunID: "run-review-done-legacy", ParentRunID: "run-parent-legacy",
+			ProjectID: "proj", ProviderKey: ProviderKeyCodex, RunKind: "chat",
+			AgentName: "reviewer-agent", Role: "reviewer-agent", FlowCohortID: "flow-auto-coder-gpt-round-2",
+			Status: RunStatusCompleted, StartedAt: "2026-07-07T22:21:10Z", UpdatedAt: "2026-07-07T22:23:20Z",
+		},
+		{
+			RunID: "run-review-failed-legacy", ParentRunID: "run-parent-legacy",
+			ProjectID: "proj", ProviderKey: ProviderKeyCodex, RunKind: "chat",
+			AgentName: "reviewer-agent", Role: "reviewer-agent", FlowCohortID: "flow-auto-coder-gpt-round-2",
+			Status: RunStatusFailed, StartedAt: "2026-07-07T22:21:11Z", UpdatedAt: "2026-07-07T22:21:14Z",
+		},
+	} {
+		if err := store.UpsertProviderSession(ctx, session); err != nil {
+			t.Fatalf("UpsertProviderSession(%s): %v", session.RunID, err)
+		}
+	}
+
+	restartedStore, err := NewLocalFileSessionStore(dataDir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore(restart): %v", err)
+	}
+	svc := newInteractiveService(newProviderRegistry(), newInteractiveCatalog(), restartedStore)
+	_, apiErr := svc.reconstructRun(ProviderSessionState{
+		RunID:           "run-parent-legacy",
+		ProjectID:       "proj",
+		ProviderKey:     ProviderKeyCodex,
+		WorkflowID:      "wf-1",
+		RunKind:         "workflow",
+		Status:          RunStatusCompleted,
+		StartedAt:       "2026-07-07T22:08:01Z",
+		UpdatedAt:       "2026-07-07T22:23:27Z",
+		ActiveFlowNodes: nodes,
+		ActiveFlowEdges: edges,
+		AutoOrchestrate: true,
+		PendingAgentContext: []string{
+			"[flow-engine joined result note]\nFlow round 2 — joined.",
+		},
+		LoopState: AgentLoopState{Status: "blocked", ActiveNode: "synthesis", Round: 3, Cap: 3, RoundCap: 3},
+	})
+	if apiErr != nil {
+		t.Fatalf("reconstructRun: %v", apiErr)
+	}
+	if got := flowStepStatus(t, svc, "run-parent-legacy", "review-gpt"); got != StepStatusDone {
+		t.Fatalf("review-gpt = %q, want DONE", got)
+	}
+	if got := flowStepStatus(t, svc, "run-parent-legacy", "review-security-gpt"); got != StepStatusFailed {
+		t.Fatalf("review-security-gpt = %q, want FAILED", got)
 	}
 }
 

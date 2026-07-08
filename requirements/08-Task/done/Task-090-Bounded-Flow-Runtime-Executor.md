@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-06-23`
 - Last Updated: `2026-06-29`
-- Parent Documents: [CP-36: Generic Agent-Flow Engine And Review Loop](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SD-18: Main-Hub Agent Review Loop](../../06-System-Tech-Design/SD-18-Main-Hub-Agent-Review-Loop.md)
+- Parent Documents: [CP-36: Generic Agent-Flow Engine And Review Loop](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SD-18: Main-Hub Agent Review Loop](../../06-System-Tech-Design/SD-18-Main-Hub-Agent-Review-Loop.md)
 - Child Documents: `None`
 - Related Documents: [Task-089: Generic Flow Vocabulary And flow_control Handler](./Task-089-Generic-Flow-Vocabulary-And-Flow-Control-Handler.md), [Task-084: Dependency Feedback Loop And Orchestration Board](../done/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md)
 - Replaces: `None`
@@ -57,7 +57,7 @@ A bounded, hub-only executor that runs any node/edge/policy graph: spawn (inline
 
 ## 2. Parent Links
 
-- coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) `P-2`
+- coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) `P-2`
 - tech design: [SD-19](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md) §7; [SD-18](../../06-System-Tech-Design/SD-18-Main-Hub-Agent-Review-Loop.md) §7
 - system spec: [SS-16](../../05-System-Specs/SS-16-Agent-Flow-Engine.md) `AC-7`, `BR-6`
 - specific upstream ids: CP-36 `P-2`; SD-19 `D-1`, `D-6`

@@ -247,6 +247,7 @@ type SpawnAgentResult struct {
 type AgentRunSummary struct {
 	RunID       string    `json:"runId"`
 	AgentName   string    `json:"agentName"`
+	Label       string    `json:"label,omitempty"`
 	Role        string    `json:"role"`
 	Status      RunStatus `json:"status"`
 	ParentRunID string    `json:"parentRunId,omitempty"`
@@ -264,7 +265,6 @@ type AgentRunSummary struct {
 	// Zero for the first activation; omitted from JSON when zero.
 	ActivationSeq int `json:"activationSeq,omitempty"`
 }
-
 
 // setHistoricalChildren stores agent summaries from a restored sync manifest so that
 // listAgentRunSummaries can return them even when the live runs are no longer in memory.

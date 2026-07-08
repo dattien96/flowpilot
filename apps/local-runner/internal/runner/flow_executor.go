@@ -214,6 +214,35 @@ func (s *InteractiveService) resolveWorkflowFlowRef(ctx context.Context, runID s
 	return record.FlowRef, true
 }
 
+// explicitFlowRefResolves synchronously confirms an explicit chat flowRef
+// (Chat Mode's Bug sub-mode picker, CP-42/Task-177) actually resolves to a
+// valid stored/embedded flow definition, before handleStartTurn ever hands it
+// to startTurn.
+//
+// BUG-261: validateChatOrchestrationSelection only checks that flowRef is a
+// known option for the sub-mode (BuiltinOrchestrationOptions) — it never
+// confirms the underlying stored definition is still valid. Unlike the
+// sibling Flow-Mode workflow-picker path (resolveWorkflowFlowRef, above),
+// which already resolves synchronously before deciding to attach a flowRef,
+// the explicit chat path used to hand its raw flowRef straight to startTurn,
+// which unconditionally suppresses the hub's own turn (flowStartOnly=true)
+// the moment flowRef is non-empty — before startResolvedFlow's own async
+// resolve even runs. A corrupted/invalid stored definition (e.g. a
+// BUG-249-style manually-tampered built-in mirror row) then failed
+// resolution inside that goroutine with nothing to fall back to: the hub's
+// turn was already suppressed and nothing was ever spawned to reinvoke it,
+// so the run got stuck at "completed" forever with no assistant reply and no
+// error surfaced anywhere. Resolving here first lets handleStartTurn clear
+// an unresolvable flowRef before it ever reaches startTurn, matching the
+// same safe-bail contract resolveWorkflowFlowRef already provides.
+func (s *InteractiveService) explicitFlowRefResolves(ctx context.Context, flowRef string) bool {
+	s.mu.Lock()
+	store := s.flowDefinitionStore
+	s.mu.Unlock()
+	_, err := NewFlowDefinitionResolver(store).ResolveFlowRef(ctx, flowRef)
+	return err == nil
+}
+
 // startInlineEntryChain handles flows whose entry node is an inline behavior
 // (e.g. rag-harness's "context" node, behavior context.produce) rather than a
 // spawnable agent.delegate node. entryDelegateNodes alone cannot start such a
@@ -651,14 +680,14 @@ func (s *InteractiveService) reinvokeExistingFlowChild(parentRunID, nodeID, prom
 // 2 stayed stuck in the desktop's "Recently closed" section with no new
 // main-chat card, while a forward-spawned reviewer behaved correctly.
 //
-// - BUG-Rnd2 (Bug B): increments activationSeq so the desktop's monotonic
-//   terminal-status guard (mergeAgentRunsById) recognizes a genuine
-//   completed→running transition instead of discarding it as a stale
-//   snapshot — without this the run never leaves "completed" client-side and
-//   is miscategorized as closed regardless of what the backend just did.
-// - BUG-Rnd2 (Bug C): emits EventAgentSpawnedByUser so the parent thread
-//   renders a new agent card for this turn, matching the spawnChildRun path
-//   (idempotent by event id, so replay never duplicates the row).
+//   - BUG-Rnd2 (Bug B): increments activationSeq so the desktop's monotonic
+//     terminal-status guard (mergeAgentRunsById) recognizes a genuine
+//     completed→running transition instead of discarding it as a stale
+//     snapshot — without this the run never leaves "completed" client-side and
+//     is miscategorized as closed regardless of what the backend just did.
+//   - BUG-Rnd2 (Bug C): emits EventAgentSpawnedByUser so the parent thread
+//     renders a new agent card for this turn, matching the spawnChildRun path
+//     (idempotent by event id, so replay never duplicates the row).
 //
 // Returns true if a matching child was found (whether or not a new turn was
 // actually scheduled — a match with a turn already in flight still counts as
@@ -686,6 +715,7 @@ func (s *InteractiveService) reinvokeMatchingFlowChild(parentRunID, prompt strin
 		s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
 			RunID:         child.id,
 			AgentName:     child.agentName,
+			Label:         child.label,
 			Role:          child.role,
 			Status:        child.status,
 			ParentRunID:   child.parentRunID,
@@ -716,7 +746,6 @@ func (s *InteractiveService) reinvokeMatchingFlowChild(parentRunID, prompt strin
 	s.scheduleChildTurn(runID, stepID, prompt)
 	return true
 }
-
 
 // entryDelegateNodes returns a flow's entry nodes: agent.delegate-behavior
 // nodes declaring no dependsOn, in declared order. These are the nodes a flow

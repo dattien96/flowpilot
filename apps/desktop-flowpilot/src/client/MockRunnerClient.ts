@@ -650,7 +650,7 @@ export class MockRunnerClient implements RunnerClient {
     return { runId, providerSessionId, providerKey: "codex", status: "running" };
   }
 
-  async submitApproval(approvalId: string, decision: string): Promise<void> {
+  async submitApproval(approvalId: string, decision: string, _remember?: boolean): Promise<void> {
     const resolve = this.approvalGates.get(approvalId);
     if (resolve) {
       this.approvalGates.delete(approvalId);

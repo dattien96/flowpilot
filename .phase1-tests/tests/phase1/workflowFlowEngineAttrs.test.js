@@ -14,6 +14,8 @@ class FakeTable {
     responses;
     lastEqFilters = {};
     lastPayload;
+    insertPayloads = [];
+    updatePayloads = [];
     constructor(responses) {
         this.responses = responses;
     }
@@ -42,6 +44,12 @@ class FakeTable {
     }
     insert(payload) {
         this.lastPayload = payload;
+        this.insertPayloads.push(payload);
+        return this;
+    }
+    update(payload) {
+        this.lastPayload = payload;
+        this.updatePayloads.push(payload);
         return this;
     }
     delete() {
@@ -157,10 +165,17 @@ function builtinWorkflowRow(overrides = {}) {
     stepsTable.insert = function (payload) {
         callOrder.push("insert");
         this.lastPayload = payload;
+        this.insertPayloads.push(payload);
         return this;
     };
     stepsTable.delete = function () {
         callOrder.push("delete");
+        return this;
+    };
+    stepsTable.update = function (payload) {
+        callOrder.push("update");
+        this.lastPayload = payload;
+        this.updatePayloads.push(payload);
         return this;
     };
     supabase.register("workflow_steps", stepsTable);
@@ -170,7 +185,27 @@ function builtinWorkflowRow(overrides = {}) {
         name: "wf",
         steps: [{ stepType: "coding" }],
     });
-    strict_1.default.deepEqual(callOrder, ["insert", "delete"]);
+    strict_1.default.deepEqual(callOrder, ["insert", "delete", "update"]);
+});
+(0, node_test_1.default)("saveWorkflow offsets replacement step order_index before renormalizing", async () => {
+    const supabase = new FakeSupabase();
+    supabase.register("workflows", new FakeTable({
+        maybeSingle: { data: null, error: null },
+        single: { data: builtinWorkflowRow({ id: "wf-1", is_builtin: false, editable: true }), error: null },
+    }));
+    const stepsTable = new FakeTable({ write: { data: [{ id: "step-1" }, { id: "step-2" }], error: null } });
+    supabase.register("workflow_steps", stepsTable);
+    const repo = new supabaseAdminRepository_1.SupabaseAdminRepository(supabase);
+    await repo.saveWorkflow({
+        id: "wf-1",
+        name: "wf",
+        steps: [{ stepType: "coding", orderIndex: 0 }, { stepType: "review", orderIndex: 1 }],
+    });
+    strict_1.default.deepEqual(stepsTable.lastPayload, { order_index: 1 });
+    strict_1.default.deepEqual(stepsTable.updatePayloads, [{ order_index: 0 }, { order_index: 1 }]);
+    const insertPayload = stepsTable.insertPayloads[0];
+    strict_1.default.equal(Array.isArray(insertPayload), true);
+    strict_1.default.deepEqual(insertPayload?.map((row) => row.order_index), [1_000_000, 1_000_001]);
 });
 (0, node_test_1.default)("saveWorkflow does not delete existing steps when the insert fails", async () => {
     const supabase = new FakeSupabase();

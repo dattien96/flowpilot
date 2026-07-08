@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-06-19`
 - Last Updated: `2026-06-29`
-- Parent Documents: [CP-36: Generic Agent-Flow Engine And Review Loop](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md)
+- Parent Documents: [CP-36: Generic Agent-Flow Engine And Review Loop](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md)
 - Child Documents: `None`
 - Related Documents: [CP-19: Multiple Agents](../../07-Coding-Plan/done/CP-19-Multiple-Agents.md), [Task-090: Bounded Flow Runtime Executor](./Task-090-Bounded-Flow-Runtime-Executor.md), [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md)
 - Replaces: `Supersedes the original Task-085 scope (Flow-Mode Supabase Agent Runs And Message Bus)`
@@ -57,7 +57,7 @@ All multi-agent/flow run state persists locally through `localFileSessionStore`,
 
 ## 2. Parent Links
 
-- coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) `P-5`
+- coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) `P-5`
 - tech design: [SD-19](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md) `D-3`; [SD-14](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md)
 - system spec: [SS-16](../../05-System-Specs/SS-16-Agent-Flow-Engine.md) `BR-3`
 - specific upstream ids: CP-36 `P-5`, `Q-5`

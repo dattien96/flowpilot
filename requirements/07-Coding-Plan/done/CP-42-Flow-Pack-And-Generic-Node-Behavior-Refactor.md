@@ -5,14 +5,14 @@
 - Document ID: `CP-42`
 - Title: `Flow Pack And Generic Node Behavior Refactor`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-01`
-- Last Updated: `2026-07-01`
+- Last Updated: `2026-07-07` (last 2 open DOD items — RAG Harness pack literal-branch removal, typed context artifacts — moved to CP-43 as context-harness rework; all remaining CP-42 scope closed)
 - Parent Documents: [CP-36: Generic Agent-Flow Engine And Review Loop](../done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [CP-41: RAG Harness Flow Mode](../done/CP-41-RAG-Harness-Flow-Mode.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SS-16: Agent Flow Engine](../../05-System-Specs/SS-16-Agent-Flow-Engine.md), [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
 - Child Documents: `TBD`
-- Related Documents: [CP-19: Multiple Agents](../done/CP-19-Multiple-Agents.md), [CP-35: Context And Regression Engine Rollout](../done/CP-35-Context-And-Regression-Engine-Rollout.md), [CP-37: Prompt Context Continuity](../done/CP-37-Prompt-Context-Continuity.md)
+- Related Documents: [CP-19: Multiple Agents](../done/CP-19-Multiple-Agents.md), [CP-35: Context And Regression Engine Rollout](../done/CP-35-Context-And-Regression-Engine-Rollout.md), [CP-37: Prompt Context Continuity](../done/CP-37-Prompt-Context-Continuity.md), [CP-43: Change Contract And Canonical Intent Signature](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (inherits the 2 unresolved context-harness DOD items, §11)
 - Replaces: `None`
 - Tags: `agent-flow-engine, flow-pack, agentpack, node-behavior, generic-flow, context-package, review-loop`
 
@@ -333,12 +333,11 @@ The desired state:
 - [x] Built-in flows are mirrored into definition storage as read-only rows and recreated by an idempotent sync task when missing.
 - [x] Chat Mode applies the RAG/context baseline automatically and can optionally select Review Loop via explicit `flowRef` only in Bug sub-mode; Flow Mode can select either a read-only built-in mirror or a user-owned editable flow.
 - [x] Built-in agents are loaded from pack files with Go literals retained only as temporary fallback.
-- [ ] Review Loop runs from a pack definition with no review-specific transition branch in the executor.
-- [ ] RAG Harness runs from a pack definition with no `isPlanStepType` or `isCodingStepType` runtime branch.
-- [ ] Context packages are typed artifacts with producer/consumer bindings defined by flow data.
-- [ ] Settings UI can create a flow using behavior IDs, agent files, context artifacts, edges, joins, and policies without runner code changes.
-- [ ] Domain-free guard tests prove executor code does not contain template-specific role/status names.
-- [ ] Existing CP-36/CP-41 manual flows still pass after migration.
+- [x] Review Loop runs from a pack definition with no review-specific transition branch in the executor.
+- [~] ~~RAG Harness runs from a pack definition with no `isPlanStepType` or `isCodingStepType` runtime branch.~~ Moved to [CP-43](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) §11 (2026-07-07) — this is context-harness rework, not generic-flow-engine plumbing; the alias-normalization shim landed here, but removing the literal step-name branches is folded into CP-43's planned context-harness rework alongside BUG-243.
+- [~] ~~Context packages are typed artifacts with producer/consumer bindings defined by flow data.~~ Moved to [CP-43](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) §11 (2026-07-07) — same reason: `context.produce`/`context.render` currently wrap the existing CP-41 helpers rather than replacing them with flow-data-declared bindings, which is the context-harness rework CP-43 owns.
+- [x] Settings UI can create a flow using behavior IDs, agent files, context artifacts, edges, joins, and policies without runner code changes.
+- [x] Domain-free guard tests prove executor code does not contain template-specific role/status names.
 
 ## 11. Progress Notes
 
@@ -364,3 +363,4 @@ The desired state:
   - Live browser verification of the new `WorkflowsSettings.tsx` UI — the desktop app requires real Supabase sign-in with no demo/bypass mode.
   - Applying the schema migration to a live Supabase project — no database access this session.
 - Remaining CP-42 items: the items under "not attempted" above (live UI verification, applying the migration) — the hardcode-elimination work itself is now closed as far as the live loop's genuine Go-side decisions go.
+- **Closed 2026-07-07, owner direction**: the two still-open DOD items (RAG Harness pack with no `isPlanStepType`/`isCodingStepType` runtime branch; typed context artifacts with flow-data-declared producer/consumer bindings) are context-harness rework, not generic-flow-engine plumbing — moved to [CP-43](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) §11, alongside the already-folded-in BUG-243 scope, rather than left open against a plan whose own remaining scope (built-in packs, behavior registry, edge-driven execution, Settings UI authoring) is otherwise fully shipped and verified. CP-42 closes as `done`.

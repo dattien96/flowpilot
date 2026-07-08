@@ -96,6 +96,7 @@ export interface SpawnAgentResult {
 export interface AgentRunSummary {
   runId: string;
   agentName: string;
+  label?: string;
   role: string;
   status: RunStatus;
   parentRunId?: string;
@@ -164,6 +165,7 @@ export type WorkflowStepRuntimeStatus =
   | "PENDING"
   | "RUNNING"
   | "WAITING_USER_APPROVAL"
+  | "CANCELED"
   | "DONE"
   | "FAILED"
   | "SKIPPED";
@@ -356,6 +358,13 @@ export interface RunHistoryItem {
   agentName?: string;
   role?: string;
   agentStatus?: string;
+  /**
+   * Chat-Mode orchestration picker selection this run was started with
+   * (CP-42/Task-177), e.g. subMode="bug", flowRef="flowpilot-core-flow-pack/review-loop"
+   * (BUG-263). Undefined for a plain chat run or a Flow-Mode workflow launch.
+   */
+  subMode?: string;
+  flowRef?: string;
 }
 
 export interface ChatSessionSyncRequest {
@@ -580,6 +589,9 @@ export interface ApprovalDetails {
   command?: string;
   cwd?: string;
   reason?: string;
+  /** Classifies the approval. Only "exec" (a shell command) is eligible for the
+   *  per-project "don't ask again" allowlist (BUG-246). */
+  kind?: "exec" | "file" | "mcp" | "other";
   /** Decisions the runtime offers (e.g. approve / deny / approve_for_session). */
   decisions: { value: string; label: string }[];
 }
@@ -609,7 +621,7 @@ export interface RunnerClient {
   generateChatSummary(runId: string): Promise<ChatSummaryResult>;
   /** Streaming turn: yields normalized provider events until terminal. */
   sendTurn(input: TurnInput): AsyncIterable<ProviderEventDTO>;
-  submitApproval(approvalId: string, decision: string): Promise<void>;
+  submitApproval(approvalId: string, decision: string, remember?: boolean): Promise<void>;
   answerQuestion(questionId: string, choice: string | string[]): Promise<void>;
   /** Stop the in-flight turn (POST /client/workflow-runs/{runId}/interrupt). */
   interrupt(runId: string): Promise<void>;

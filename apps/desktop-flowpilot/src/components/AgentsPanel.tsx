@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useStore } from "@/state/store";
-import type { AgentDefinition } from "@/types/contract";
+import type { AgentDefinition, AgentRunSummary } from "@/types/contract";
 import { formatDependencyLabels } from "@/components/agentDependencies";
 
 interface SpawnDialogState {
@@ -31,6 +31,10 @@ export function resolveMainAgentDisplay(input: MainAgentDisplayInput): { mainPro
   const mainProvider = input.runtimeMetaProvider || input.resolvedProvider || input.selectedProvider || "codex";
   const mainModel = input.runtimeMetaModel || input.resolvedModel || input.selectedModel || "";
   return { mainProvider, mainModel };
+}
+
+export function agentRunDisplayName(run: Pick<AgentRunSummary, "agentName" | "label">): string {
+  return run.label || run.agentName;
 }
 
 export function AgentsPanel(): React.ReactElement | null {
@@ -202,7 +206,6 @@ export function AgentsPanel(): React.ReactElement | null {
   const spawnBlocked = mainCardBusy || hasBlockingChild;
 
   const dependencyCandidates = activeRuns;
-
   if (hideUntilFlowTargetSelected) {
     return null;
   }
@@ -270,7 +273,7 @@ export function AgentsPanel(): React.ReactElement | null {
               onClick={() => void focusAgentRun(run.runId)}
             >
               <div className="ac-top">
-                <span className="ac-nm">{run.agentName}</span>
+                <span className="ac-nm">{agentRunDisplayName(run)}</span>
                 <span className="ac-st">
                   <span className={`sd ${statusClass}`} />
                   {run.status}
@@ -330,7 +333,7 @@ export function AgentsPanel(): React.ReactElement | null {
                   onClick={() => void focusAgentRun(run.runId)}
                 >
                   <div className="ac-top">
-                    <span className="ac-nm">{run.agentName}</span>
+                    <span className="ac-nm">{agentRunDisplayName(run)}</span>
                     <span className="ac-st">
                       <span className="sd closed" />
                       {run.status}

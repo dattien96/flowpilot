@@ -18,6 +18,7 @@ package runner
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -112,6 +113,84 @@ func TestE2EReviewLoopApprovedPath(t *testing.T) {
 	}
 	if hubCalls != 1 {
 		t.Errorf("hub called %d times, want exactly 1", hubCalls)
+	}
+}
+
+// TestE2EReviewLoopApprovedPathPersistsTerminalLoopStateAfterHubTurnFinishes is
+// the BUG-257 regression: a fully-completed flow run (all reviewers approved,
+// hub called submit_review_outcome(done)) must persist LoopState.Status=="done"
+// on its LATEST sessions.ndjson record — the one a server-restart resume
+// actually reads. markFlowRunComplete's own persist (fired synchronously inside
+// applyFlowControl, before the tool call returns) got this right, but runTurn's
+// post-turn persist — which fires moments later when the hub's own synthesis
+// turn actually finishes streaming — rebuilt its snapshot via sessionStateOf,
+// which never carries LoopState, and clobbered the terminal "done" back to a
+// zero value. Because GetProviderSession/resume only ever reads the last
+// record, that trailing write made a genuinely-complete run's synthesis step
+// resume as CANCELED instead of DONE after a restart (run-7804 in the live
+// repro, ~4s between the tool call and the turn's own completion). The fake
+// adapter sleeps briefly between the tool call and TurnCompleted to reproduce
+// that same ordering deterministically instead of racing two goroutines. Uses
+// a real LocalFileSessionStore (not the in-memory fake) so this test reads
+// back exactly what a restart would see.
+func TestE2EReviewLoopApprovedPathPersistsTerminalLoopStateAfterHubTurnFinishes(t *testing.T) {
+	store, err := NewLocalFileSessionStore(filepath.Join(t.TempDir(), ".flowpilot", "chats"))
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if strings.Contains(req.Prompt, "Agent results ready") {
+					if _, err := b.SubmitFlowControl(FlowControlInput{Status: "done", Summary: "all reviewers approved"}); err != nil {
+						return err
+					}
+					// Give applyFlowControl's own `go persistParentSession` goroutine
+					// time to land its "done" write before this turn finishes and
+					// triggers runTurn's post-turn persist — matching the live repro's
+					// multi-second gap between the tool call and the turn's own
+					// TurnCompleted, and making the ordering deterministic instead of
+					// racing two goroutines.
+					time.Sleep(50 * time.Millisecond)
+					b.Emit(ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: req.ProviderTurnID, FinalMessage: "approved"})
+					return nil
+				}
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: req.ProviderTurnID, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+
+	svc := newInteractiveService(reg, newInteractiveCatalog(), store)
+	ph, apiErr := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if apiErr != nil {
+		t.Fatalf("createRun: %v", apiErr)
+	}
+	parentID := ph.RunID
+
+	svc.startResolvedFlow(context.Background(), parentID, "flowpilot-core-flow-pack/review-loop", "fix the bug where 1+1 != 2")
+
+	// Wait for the hub's synthesis turn to fully finish (not just for the loop
+	// state to flip to "done", which happens mid-turn, before the sleep above and
+	// before runTurn's post-turn persist even runs).
+	waitLoop(t, "hub turn settles and persists as completed", 8*time.Second, func() bool {
+		st, found, err := store.GetProviderSession(context.Background(), parentID)
+		return err == nil && found && st.Status == RunStatusCompleted
+	})
+
+	st, found, err := store.GetProviderSession(context.Background(), parentID)
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession(%q): found=%v err=%v", parentID, found, err)
+	}
+	if st.LoopState.Status != "done" {
+		t.Fatalf("persisted LoopState.Status = %q, want done — the latest record (what resume reads) lost the terminal loop state", st.LoopState.Status)
+	}
+	if !st.AutoOrchestrate {
+		t.Errorf("persisted AutoOrchestrate = false, want true (unrelated fields must survive the fix untouched)")
 	}
 }
 

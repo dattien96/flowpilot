@@ -337,6 +337,12 @@ func (s *InteractiveService) runEngineInit(
 	restoreErr, restoreDetail := s.restoreChatSummaryFromDrive(projectID, dotFlowpilotDir)
 	steps = append(steps, buildEngineStep("chat_summary_restore", restoreErr, restoreDetail))
 
+	// BUG-246: pull the user's "don't ask again" shell-approval allowlist from
+	// Drive before uploading, so a fresh machine inherits the same auto-approve
+	// behavior. Additive merge (union) — never clobbers local rules.
+	allowlistErr, allowlistDetail := s.restoreApprovalAllowlistFromDrive(projectID, dotFlowpilotDir)
+	steps = append(steps, buildEngineStep("approval_allowlist_restore", allowlistErr, allowlistDetail))
+
 	// P-8 (CP-35): create EngineStore subdirs, write local manifest, sync shared
 	// files to the project's Drive `context-engine/` folder (best-effort).
 	syncErr, syncDetail := s.syncContextEngineFiles(projectID, dotFlowpilotDir)

@@ -32,11 +32,11 @@ const (
 	// the per-turn --mcp-config. The tool names below encode it (claude's mcp__<server>__<tool>
 	// convention), and writeClaudeMCPConfig guards against an injected extra server shadowing
 	// it — so the name MUST be referenced via this const, never re-typed as a literal.
-	claudeMCPServerName            = "flowpilot"
-	claudeApproveToolName          = "mcp__" + claudeMCPServerName + "__approve"
-	claudeAskUserToolName          = "mcp__" + claudeMCPServerName + "__ask_user"
-	claudeSpawnAgentToolName       = "mcp__" + claudeMCPServerName + "__spawn_agent"
-	claudeReviewOutcomeToolName    = "mcp__" + claudeMCPServerName + "__submit_review_outcome"
+	claudeMCPServerName         = "flowpilot"
+	claudeApproveToolName       = "mcp__" + claudeMCPServerName + "__approve"
+	claudeAskUserToolName       = "mcp__" + claudeMCPServerName + "__ask_user"
+	claudeSpawnAgentToolName    = "mcp__" + claudeMCPServerName + "__spawn_agent"
+	claudeReviewOutcomeToolName = "mcp__" + claudeMCPServerName + "__submit_review_outcome"
 )
 
 // claudeArgs builds the headless stream-json invocation. YOLO drives --permission-mode
@@ -261,12 +261,20 @@ func claudeApprovalDetails(payload map[string]any) ApprovalDetails {
 	input, _ := payload["input"].(map[string]any)
 
 	command := str(payload, "command")
+	// kind classifies the approval so the runner's "don't ask again" allowlist
+	// only applies to shell commands (BUG-246): Bash -> exec, file-editing tools
+	// -> file, everything else -> other.
+	kind := "other"
 	if command == "" && input != nil {
 		if c := str(input, "command"); c != "" {
 			command = c
+			kind = "exec"
 		} else if fp := str(input, "file_path"); fp != "" {
 			command = fp
+			kind = "file"
 		}
+	} else if command != "" {
+		kind = "exec"
 	}
 	if command == "" {
 		command = toolName
@@ -278,6 +286,7 @@ func claudeApprovalDetails(payload map[string]any) ApprovalDetails {
 	return ApprovalDetails{
 		Command: command,
 		Cwd:     cwd,
+		Kind:    kind,
 		Reason:  toolName,
 		Decisions: []ApprovalDecisionOption{
 			{Value: "approve", Label: "Approve"},

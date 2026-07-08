@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 type fakeChatDriveFile struct {
@@ -390,16 +392,78 @@ func TestBuildChatSessionSyncManifestMissingRun(t *testing.T) {
 	}
 }
 
-func TestBuildChatSessionSyncManifestRejectsNonChatRun(t *testing.T) {
-	svc, _, store, _, workspace, accountHome := newChatSyncService(t)
-	state := seedLocalChatRun(t, store, accountHome, workspace, "run-workflow", []byte("session-body"))
-	state.RunKind = "workflow"
+// TestBuildChatSessionSyncManifestAcceptsFlowHubWithPlaceholderSession replaces
+// the old TestBuildChatSessionSyncManifestRejectsNonChatRun (Task-190 / CP-36
+// P-5): a flow-engine (workflow) run must now sync, including the common case
+// where its hub has no real provider transcript at all yet -- its own provider
+// turn is deliberately suppressed while the flow runs (BUG-250), so
+// provider_session_id never advances past the synthetic "thread-<n>"
+// placeholder assigned at spawn. A "chat" run reaching that same placeholder
+// state is a genuine anomaly and must still fail (session_unavailable) --
+// unaffected by this test.
+func TestBuildChatSessionSyncManifestAcceptsFlowHubWithPlaceholderSession(t *testing.T) {
+	svc, _, store, _, workspace, _ := newChatSyncService(t)
+	loopState := AgentLoopState{Status: "running", Round: 1, RoundCap: 3, ActiveNode: "coder"}
+	state := ProviderSessionState{
+		RunID:             "run-flow-hub",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "thread-0",
+		ProviderAccountID: "acct-sync",
+		WorkingDirectory:  workspace,
+		Status:            RunStatusRunning,
+		RunKind:           "workflow",
+		AutoOrchestrate:   true,
+		FlowCohortID:      "flow-auto-coder-round-0",
+		LoopState:         loopState,
+		ActiveFlowNodes:   []agentpack.FlowNode{{ID: "coder", Run: "delegate"}},
+	}
+	if err := store.UpsertProviderSession(context.Background(), state); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+	manifest, body, apiErr := svc.BuildChatSessionSyncManifest(context.Background(), state.RunID)
+	if apiErr != nil {
+		t.Fatalf("BuildChatSessionSyncManifest() failed: %v", apiErr)
+	}
+	if body != nil {
+		t.Fatalf("expected nil provider body for a placeholder-session flow hub, got %d bytes", len(body))
+	}
+	if manifest.ProviderFile.RelativePath != "" || manifest.ProviderFile.SHA256 != "" {
+		t.Fatalf("expected empty ProviderFile, got %#v", manifest.ProviderFile)
+	}
+	if manifest.RunKind != "workflow" || !manifest.AutoOrchestrate || manifest.FlowCohortID != "flow-auto-coder-round-0" {
+		t.Fatalf("expected flow fields to carry through, got %#v", manifest)
+	}
+	if manifest.LoopState == nil || *manifest.LoopState != loopState {
+		t.Fatalf("LoopState = %#v, want %#v", manifest.LoopState, loopState)
+	}
+	if len(manifest.ActiveFlowNodes) != 1 || manifest.ActiveFlowNodes[0].ID != "coder" {
+		t.Fatalf("ActiveFlowNodes = %#v", manifest.ActiveFlowNodes)
+	}
+}
+
+// TestBuildChatSessionSyncManifestChatRunStillRejectsPlaceholderSession keeps
+// the pre-Task-190 strict behavior for a "chat" run: it must never have a
+// placeholder-session escape hatch, since that state is only ever legitimate
+// for a flow-engine hub (BUG-250).
+func TestBuildChatSessionSyncManifestChatRunStillRejectsPlaceholderSession(t *testing.T) {
+	svc, _, store, _, workspace, _ := newChatSyncService(t)
+	state := ProviderSessionState{
+		RunID:             "run-chat-placeholder",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "thread-0",
+		ProviderAccountID: "acct-sync",
+		WorkingDirectory:  workspace,
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+	}
 	if err := store.UpsertProviderSession(context.Background(), state); err != nil {
 		t.Fatalf("UpsertProviderSession: %v", err)
 	}
 	_, _, apiErr := svc.BuildChatSessionSyncManifest(context.Background(), state.RunID)
-	if apiErr == nil || apiErr.code != "resume_unsupported" {
-		t.Fatalf("expected resume_unsupported, got %#v", apiErr)
+	if apiErr == nil || apiErr.code != "session_unavailable" {
+		t.Fatalf("expected session_unavailable, got %#v", apiErr)
 	}
 }
 
@@ -1101,6 +1165,115 @@ func TestRestoreChatRunFromDriveRemapsChildParentRunIDOnCollision(t *testing.T) 
 	}
 	if summaries[0].ParentRunID != restored.RunID {
 		t.Fatalf("child ParentRunID = %q, want %q", summaries[0].ParentRunID, restored.RunID)
+	}
+}
+
+// TestSyncAndRestoreFlowRunRoundTripAppliesFlowStateAndNormalizesStatus is
+// Task-190's core regression guard for CP-36 Scenario 6 (Drive Sync Cross-PC).
+// It syncs a flow-engine hub run -- whose own provider turn is still the
+// synthetic placeholder (BUG-250), so it has no transcript -- together with a
+// genuinely "running" child, then restores both on a fresh store/service
+// (Machine B). It asserts: (1) the sync/restore succeeds with no transcript for
+// the hub, (2) flow runtime state (LoopState/ActiveFlowNodes/AutoOrchestrate/
+// FlowCohortID) round-trips so the board can render round/children/status, and
+// (3) both the hub's and the child's in-flight "running" status are normalized
+// to "cancelled" on restore (BUG-251 parity) -- nothing is actually running
+// them on the machine that just restored the snapshot.
+func TestSyncAndRestoreFlowRunRoundTripAppliesFlowStateAndNormalizesStatus(t *testing.T) {
+	svc, instance, sourceStore, _, workspace, accountHome := newChatSyncService(t)
+
+	loopState := AgentLoopState{Status: "running", Round: 1, RoundCap: 3, ActiveNode: "reviewer_correctness"}
+	hub := ProviderSessionState{
+		RunID:             "run-flow-hub-roundtrip",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "thread-0",
+		ProviderAccountID: "acct-sync",
+		WorkingDirectory:  workspace,
+		Status:            RunStatusRunning,
+		RunKind:           "workflow",
+		AutoOrchestrate:   true,
+		FlowCohortID:      "flow-auto-coder-round-0",
+		LoopState:         loopState,
+		ActiveFlowNodes:   []agentpack.FlowNode{{ID: "coder", Run: "delegate"}, {ID: "reviewer_correctness", Run: "delegate"}},
+		ActiveFlowEdges:   []agentpack.FlowEdge{{From: "coder", To: "reviewer_correctness"}},
+	}
+	if err := sourceStore.UpsertProviderSession(context.Background(), hub); err != nil {
+		t.Fatalf("UpsertProviderSession hub: %v", err)
+	}
+
+	child := seedLocalChatRun(t, sourceStore, accountHome, workspace, "run-flow-reviewer-roundtrip", []byte("reviewer-session"))
+	child.ParentRunID = hub.RunID
+	child.AgentName = "reviewer_correctness"
+	child.Role = "reviewer"
+	child.Status = RunStatusRunning
+	child.AgentStatus = string(RunStatusRunning)
+	if err := sourceStore.UpsertProviderSession(context.Background(), child); err != nil {
+		t.Fatalf("UpsertProviderSession child: %v", err)
+	}
+
+	synced, apiErr := svc.syncChatRunToDrive(context.Background(), hub.RunID, ChatSessionSyncRequest{})
+	if apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+
+	restoredStore, err := NewLocalFileSessionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore restored: %v", err)
+	}
+	restoredService := NewInteractiveServiceWithStore(DefaultProviderRegistry(), nil, restoredStore)
+	restoredService.AttachRunner(instance)
+	restoredService.SetActiveAccount("acct-sync")
+
+	restored, apiErr := restoredService.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+		ProjectID:       "project-1",
+		SourceMachineID: synced.SourceMachineID,
+		SourceRunID:     synced.SourceRunID,
+		Cwd:             workspace,
+	})
+	if apiErr != nil {
+		t.Fatalf("restoreChatRunFromDrive() failed: %v", apiErr)
+	}
+
+	restoredHub, found, err := restoredStore.GetProviderSession(context.Background(), restored.RunID)
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession(hub) failed: found=%v err=%v", found, err)
+	}
+	if restoredHub.RunKind != "workflow" {
+		t.Fatalf("restored hub RunKind = %q, want workflow", restoredHub.RunKind)
+	}
+	if restoredHub.Status != RunStatusCancelled {
+		t.Fatalf("restored hub Status = %q, want cancelled (BUG-251 parity)", restoredHub.Status)
+	}
+	if !restoredHub.AutoOrchestrate || restoredHub.FlowCohortID != "flow-auto-coder-round-0" {
+		t.Fatalf("restored hub flow fields = %#v", restoredHub)
+	}
+	if restoredHub.LoopState != loopState {
+		t.Fatalf("restored hub LoopState = %#v, want %#v", restoredHub.LoopState, loopState)
+	}
+	if len(restoredHub.ActiveFlowNodes) != 2 || len(restoredHub.ActiveFlowEdges) != 1 {
+		t.Fatalf("restored hub flow topology = %#v", restoredHub)
+	}
+
+	sessions, err := restoredStore.ListAllProviderSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListAllProviderSessions: %v", err)
+	}
+	var restoredChild ProviderSessionState
+	for _, session := range sessions {
+		if session.ParentRunID == restored.RunID {
+			restoredChild = session
+			break
+		}
+	}
+	if restoredChild.RunID == "" {
+		t.Fatalf("restored sessions = %#v, want a persisted child of %q", sessions, restored.RunID)
+	}
+	if restoredChild.Status != RunStatusCancelled {
+		t.Fatalf("restored child Status = %q, want cancelled (BUG-251 parity)", restoredChild.Status)
+	}
+	if restoredChild.AgentStatus != string(RunStatusCancelled) {
+		t.Fatalf("restored child AgentStatus = %q, want cancelled (BUG-251 parity)", restoredChild.AgentStatus)
 	}
 }
 

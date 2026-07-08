@@ -31,6 +31,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/init", s.handleInitEngine)
 	mux.HandleFunc("GET /client/projects/{projectId}/engine/gate-config", s.handleGetEngineGateConfig)
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/gate-config", s.handleSetEngineGateConfig)
+	mux.HandleFunc("GET /client/projects/{projectId}/engine/approval-allowlist", s.handleGetApprovalAllowlist)
+	mux.HandleFunc("POST /client/projects/{projectId}/engine/approval-allowlist/remove", s.handleRemoveApprovalAllowRule)
 	mux.HandleFunc("POST /client/workflow-runs", s.handleStartRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/steps-runtime", s.handleGetWorkflowStepsRuntime)
@@ -294,6 +296,15 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 		if flowRef, ok := s.resolveWorkflowFlowRef(r.Context(), r.PathValue("runId")); ok {
 			body.FlowRef = flowRef
 		}
+	} else if !s.explicitFlowRefResolves(r.Context(), body.FlowRef) {
+		// BUG-261: an explicit chat flowRef (Bug sub-mode picker) that passed
+		// validateChatOrchestrationSelection's option check can still fail to
+		// resolve if its stored definition is corrupted/invalid. Clear it here,
+		// synchronously, so startTurn never suppresses the hub's own turn for a
+		// flow that can't actually start — the run falls through to a normal
+		// chat turn instead of getting stuck at "completed" with no reply.
+		log.Printf("[chat-flow-ref] flowRef %q for run %q failed to resolve; falling back to a normal chat turn", body.FlowRef, r.PathValue("runId"))
+		body.FlowRef = ""
 	}
 	turnID, e := s.startTurn(
 		r.PathValue("runId"),
@@ -343,12 +354,15 @@ func (s *InteractiveService) handleInterrupt(w http.ResponseWriter, r *http.Requ
 func (s *InteractiveService) handleApprovalDecision(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Decision string `json:"decision"`
+		// Remember persists a "don't ask again" rule for this shell command
+		// (BUG-246). Ignored for non-exec approvals and compound commands.
+		Remember bool `json:"remember"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
 		return
 	}
-	if e := s.SubmitApprovalDecision(r.PathValue("approvalId"), body.Decision); e != nil {
+	if e := s.submitApprovalDecision(r.PathValue("approvalId"), body.Decision, body.Remember); e != nil {
 		writeInteractiveError(w, e)
 		return
 	}
@@ -770,6 +784,35 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID}, nil
 }
 
+// skipsResumeSessionValidation reports whether resumeRun should skip the
+// strict ensureResumeReady/LocateSessionFile check for rs.
+//
+// Two independent reasons a check would be pointless:
+//   - the run is still resident in memory with a turn genuinely in flight (or
+//     is a read-only-viewable Gemini run) — refreshResumeHandleLocked only
+//     resolves realProviderSessionID once a turn finishes, so validating mid-turn
+//     would spuriously fail on the synthetic "thread-<n>" placeholder.
+//   - BUG-250: rs's session id is STILL that placeholder, full stop — a
+//     flow-engine-driven hub's own first provider turn is deliberately
+//     suppressed (CP-42; it only spawns the flow's entry node and is
+//     reinvoked later), so provider_session_id never advances past the
+//     placeholder assigned at spawn. That placeholder was never a real
+//     provider session, so LocateSessionFile can never resolve it — whether rs
+//     is still resident in memory or was just rebuilt from sessions.ndjson
+//     after a restart, which is exactly when the in-memory reason above stops
+//     applying (inMemory is permanently false for a rebuilt run, regardless of
+//     status). Codex is excluded from this second reason: its own
+//     ensureProviderResumeHandle already actively re-discovers a real rollout
+//     session id from disk even when the stored id is still a placeholder, so
+//     that stronger, self-healing path should still run for Codex.
+func (s *InteractiveService) skipsResumeSessionValidation(rs *interactiveRun, inMemory bool) bool {
+	isActiveInMemory := inMemory && rs.status != RunStatusCompleted && rs.status != RunStatusFailed && rs.status != RunStatusCancelled
+	isReadOnlyGeminiInMemory := inMemory && rs.providerKey == ProviderKeyGemini && len(rs.events) > 0
+	hasNoRealSession := strings.HasPrefix(s.resumeSessionID(rs), "thread-") &&
+		(rs.providerKey != ProviderKeyCodex || s.shouldTreatCodexFlowHubSessionAsSynthetic(rs))
+	return isActiveInMemory || isReadOnlyGeminiInMemory || hasNoRealSession
+}
+
 func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	s.mu.Lock()
 	rs := s.runs[runID]
@@ -784,12 +827,7 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 		}
 		rs = rebuilt
 	}
-	// Skip session-file validation for live active runs: refreshResumeHandleLocked
-	// only runs post-turn, so realProviderSessionID is "" while a turn is in-flight
-	// and LocateSessionFile would fail with the synthetic "thread-*" placeholder.
-	isActiveInMemory := inMemory && rs.status != RunStatusCompleted && rs.status != RunStatusFailed && rs.status != RunStatusCancelled
-	isReadOnlyGeminiInMemory := inMemory && rs.providerKey == ProviderKeyGemini && len(rs.events) > 0
-	if !isActiveInMemory && !isReadOnlyGeminiInMemory {
+	if !s.skipsResumeSessionValidation(rs, inMemory) {
 		if err := s.ensureResumeReady(rs); err != nil {
 			readOnlyChat := rs.runKind == "chat" && (err.code == "account_not_signed_in" || err.code == "account_unavailable")
 			if !readOnlyChat {
@@ -861,6 +899,12 @@ type runHistoryItem struct {
 	AgentName       string `json:"agentName,omitempty"`
 	Role            string `json:"role,omitempty"`
 	AgentStatus     string `json:"agentStatus,omitempty"`
+	// SubMode/FlowRef expose the Chat-Mode orchestration picker selection a
+	// run was started with (BUG-263), so reopening it from history can
+	// restore the Chat Intent panel's Bug tab / Built-in orchestration
+	// selection instead of silently falling back to "Normal".
+	SubMode string `json:"subMode,omitempty"`
+	FlowRef string `json:"flowRef,omitempty"`
 }
 
 func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryItem {
@@ -886,6 +930,8 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 			AgentName:   rs.agentName,
 			Role:        rs.role,
 			AgentStatus: rs.agentStatus,
+			SubMode:     rs.chatSubMode,
+			FlowRef:     rs.chatFlowRef,
 		})
 		seen[rs.id] = true
 	}
@@ -921,6 +967,8 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 					AgentName:       sess.AgentName,
 					Role:            sess.Role,
 					AgentStatus:     sess.AgentStatus,
+					SubMode:         sess.ChatSubMode,
+					FlowRef:         sess.ChatFlowRef,
 				})
 			}
 		}

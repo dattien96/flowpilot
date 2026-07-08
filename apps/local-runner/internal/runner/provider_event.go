@@ -71,9 +71,14 @@ type ApprovalDecisionOption struct {
 
 // ApprovalDetails describes what the runtime wants to do (permission_required).
 type ApprovalDetails struct {
-	Command   string                   `json:"command,omitempty"`
-	Cwd       string                   `json:"cwd,omitempty"`
-	Reason    string                   `json:"reason,omitempty"`
+	Command string `json:"command,omitempty"`
+	Cwd     string `json:"cwd,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	// Kind classifies the approval so the runner and desktop can treat shell
+	// commands differently from file writes / MCP prompts. Only "exec" approvals
+	// are eligible for the per-project "don't ask again" allowlist (BUG-246).
+	// One of: "exec", "file", "mcp", "other" (empty ~= "other").
+	Kind      string                   `json:"kind,omitempty"`
 	Decisions []ApprovalDecisionOption `json:"decisions"`
 }
 

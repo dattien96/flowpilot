@@ -32,8 +32,8 @@ func TestSharedFilesReturnsSharedPaths(t *testing.T) {
 	base := t.TempDir()
 	store, _ := NewEngineStore(base)
 	shared := store.SharedFiles()
-	if len(shared) != 4 {
-		t.Fatalf("SharedFiles() len = %d, want 4", len(shared))
+	if len(shared) != 5 {
+		t.Fatalf("SharedFiles() len = %d, want 5", len(shared))
 	}
 	// Verify each expected path is present
 	found := map[string]bool{}
@@ -45,6 +45,7 @@ func TestSharedFilesReturnsSharedPaths(t *testing.T) {
 		filepath.ToSlash(filepath.Join(base, ChatSummaryFile)),
 		filepath.ToSlash(filepath.Join(base, CatalogFile)),
 		filepath.ToSlash(filepath.Join(base, FlowRulesFile)),
+		filepath.ToSlash(filepath.Join(base, ApprovalAllowlistFile)),
 	} {
 		if !found[want] {
 			t.Errorf("SharedFiles() missing %q", want)
@@ -165,9 +166,9 @@ func TestSyncSharedFilesNilSyncer(t *testing.T) {
 	if len(result.Errors) != 0 {
 		t.Errorf("expected 0 errors, got %d", len(result.Errors))
 	}
-	// All 4 shared files should be skipped (1 exists but syncer nil, 3 don't exist).
-	if len(result.Skipped) != 4 {
-		t.Errorf("expected 4 skipped, got %d: %v", len(result.Skipped), result.Skipped)
+	// All 5 shared files should be skipped (1 exists but syncer nil, 4 don't exist).
+	if len(result.Skipped) != 5 {
+		t.Errorf("expected 5 skipped, got %d: %v", len(result.Skipped), result.Skipped)
 	}
 }
 
@@ -190,8 +191,8 @@ func TestSyncSharedFilesWithSyncer(t *testing.T) {
 	if len(result.Synced) != 3 {
 		t.Errorf("expected 3 synced, got %d: %v", len(result.Synced), result.Synced)
 	}
-	if len(result.Skipped) != 1 {
-		t.Errorf("expected 1 skipped (FlowRules absent), got %d", len(result.Skipped))
+	if len(result.Skipped) != 2 {
+		t.Errorf("expected 2 skipped (FlowRules + ApprovalAllowlist absent), got %d", len(result.Skipped))
 	}
 	if len(result.Errors) != 0 {
 		t.Errorf("expected 0 errors, got %v", result.Errors)
