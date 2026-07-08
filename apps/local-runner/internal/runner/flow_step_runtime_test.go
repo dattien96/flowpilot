@@ -252,6 +252,48 @@ func TestFlowEngineDrivenRunSkipsBulkProgress(t *testing.T) {
 			t.Fatalf("s2 = %q, want still PENDING (bulk Progress must be skipped for flow-engine-driven runs)", s2.Status)
 		}
 	})
+
+	// BUG-259 regression: some adapters (codex_adapter.go's real SendTurn) emit
+	// EventTurnFailed but still return a nil error — mirrored here by a fake
+	// adapter doing exactly that. A NON-flow-engine-driven run (a plain
+	// workflow-attached chat, not a real flow-engine run) must still skip the
+	// bulk Progress() call when the turn actually failed, even though err==nil,
+	// or a provider error (e.g. hitting a usage limit) falsely bulk-completes
+	// every still-PENDING workflow step.
+	t.Run("failed_turn_with_nil_err_skips_despite_not_flow_engine_driven", func(t *testing.T) {
+		reg := newProviderRegistry()
+		reg.register(ProviderRegistration{
+			Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+			Capabilities: ProviderCapabilities{Streaming: true},
+			newAdapter: func() ProviderRuntimeAdapter {
+				return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+					b.Emit(ProviderEvent{Type: EventTurnFailed, Error: "You've hit your usage limit."})
+					return nil // the exact lie codex_adapter.go's SendTurn tells on failure
+				})
+			},
+		})
+		svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+		parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+		if err != nil {
+			t.Fatalf("createRun: %v", err)
+		}
+		seedTwoPendingSteps(svc, parent.RunID)
+		startAndWaitTurn(t, svc, parent.RunID)
+
+		svc.mu.Lock()
+		gotStatus := svc.runs[parent.RunID].status
+		svc.mu.Unlock()
+		if gotStatus != RunStatusFailed {
+			t.Fatalf("run status = %q, want failed", gotStatus)
+		}
+		steps, _ := svc.workflowStore.LoadRunSteps(context.Background(), parent.RunID)
+		if s1, _ := stepByID(steps, "s1"); s1.Status != StepStatusFailed {
+			t.Errorf("s1 = %q, want FAILED — the run's own turn failed while this step was in flight; it must settle to FAILED, not hang at RUNNING or get bulk-marked DONE", s1.Status)
+		}
+		if s2, _ := stepByID(steps, "s2"); s2.Status != StepStatusPending {
+			t.Fatalf("s2 = %q, want still PENDING (bulk Progress must be skipped when the turn actually failed, regardless of err==nil)", s2.Status)
+		}
+	})
 }
 
 // TestResolveWorkflowFlowRefAdoptsMirroredFlow proves F-1's bridge: a run whose

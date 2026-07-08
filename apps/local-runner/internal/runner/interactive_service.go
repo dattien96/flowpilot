@@ -2853,7 +2853,10 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	s.ensureBaseline(rs.workspaceCwd)
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
-	if err == nil && !rs.flowEngineDriven {
+	s.mu.Lock()
+	turnFailed := rs.status == RunStatusFailed
+	s.mu.Unlock()
+	if err == nil && !turnFailed && !rs.flowEngineDriven {
 		// The provider turn owns interactive UX/events; once it returns cleanly we
 		// advance the shared workflow planner so the live run path no longer bypasses
 		// WorkflowStore/WorkflowOrchestrator entirely. A2 will replace the fake
@@ -2864,7 +2867,21 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		// is exactly what made a Flow-Mode run flip all steps to DONE out of
 		// order after the hub's turn. For these runs the flow executor emits the
 		// real per-node transitions instead (flow_step_runtime.go).
+		//
+		// BUG-259: some adapters (codex_adapter.go's SendTurn) return err==nil
+		// even when the terminal event was EventTurnFailed (e.g. a provider
+		// usage-limit error) — bridge.Emit already ran emitLocked synchronously
+		// and settled rs.status to Failed before SendTurn returned, so trusting
+		// err alone let a genuinely failed turn's still-PENDING workflow_steps
+		// get bulk-marked DONE by this legacy planner. Check the run's actual
+		// settled status too, not just the adapter's (unreliable) return value.
 		_, _ = s.orchestrator.Progress(ctx, rs.id, yolo)
+	} else if turnFailed && !rs.flowEngineDriven {
+		// BUG-259 (follow-up): skipping Progress() above is correct but leaves
+		// in.StepID stuck at whatever markStepRunning set it to (RUNNING) —
+		// nothing else ever settles it. A step that never actually finished
+		// must read as FAILED, not hang at "running" forever.
+		_ = s.markStepFailed(ctx, rs.id, in.StepID)
 	}
 
 	completed, fin := s.finishTurn(rs, turnID, err)
@@ -3018,6 +3035,24 @@ func (s *InteractiveService) markStepRunning(ctx context.Context, runID, stepID 
 		return err
 	}
 	return s.workflowStore.SetRunStatus(ctx, runID, RunStatusEngineRunning, "")
+}
+
+// markStepFailed settles stepID (started by markStepRunning) to FAILED. Used by
+// runTurn (BUG-259 follow-up) when the run's own turn fails on a non-flow-engine-
+// driven workflow run: skipping the legacy bulk Progress() call is correct, but
+// something still has to settle the step that was actually in flight — otherwise
+// it hangs at RUNNING forever, which reads just as misleadingly as the bulk-DONE
+// bug it replaces.
+func (s *InteractiveService) markStepFailed(ctx context.Context, runID, stepID string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	return s.workflowStore.ApplyStepTransition(ctx, runID, WorkflowStepTransition{
+		StepID: stepID,
+		Patch: WorkflowStepPatch{
+			Status:     StepStatusFailed,
+			FinishedAt: strptr(now),
+		},
+		Logs: []WorkflowLog{{LogError, "Provider turn failed."}},
+	})
 }
 
 // sendTurnWithRetry runs the adapter turn, re-sending on a recoverable error up to
