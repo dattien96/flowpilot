@@ -20,8 +20,22 @@ func (l *Ledger) GetFeatureHistory(featureKey string) ([]Entry, error) {
 		return nil, nil
 	}
 
-	sort.Slice(matched, func(i, j int) bool {
-		return matched[i].CommittedAt < matched[j].CommittedAt
+	// Sort must be stable AND fully deterministic. l.entries is a
+	// map[string]Entry (keyed by commit_hash); AllEntries ranges over it, and
+	// Go intentionally randomizes map-iteration order on every range call. Two
+	// entries with equal (or both-empty) CommittedAt used to have their
+	// relative order decided by that random map-iteration order — meaning
+	// "newest = current truth" (SD-17 D-3) could silently flip between two
+	// different commits across runs of the exact same ledger data
+	// (BUG-266). sort.SliceStable alone is not enough (it only preserves
+	// whatever order AllEntries happened to hand it); CommitHash is a stable,
+	// content-derived tiebreaker so the result no longer depends on map
+	// iteration at all.
+	sort.SliceStable(matched, func(i, j int) bool {
+		if matched[i].CommittedAt != matched[j].CommittedAt {
+			return matched[i].CommittedAt < matched[j].CommittedAt
+		}
+		return matched[i].CommitHash < matched[j].CommitHash
 	})
 
 	for i := range matched {
