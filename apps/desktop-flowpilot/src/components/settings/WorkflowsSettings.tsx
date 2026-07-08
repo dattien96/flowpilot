@@ -35,7 +35,24 @@ type BulkSelect = { kind: "workflow" | "step"; ids: Set<string> };
 type PickerModal =
   | { kind: "artifact-input"; mode: "detail" | "create" }
   | { kind: "artifact-output"; mode: "detail" | "create" }
-  | { kind: "mcp"; mode: "detail" | "create" };
+  | { kind: "mcp"; mode: "detail" | "create" }
+  | { kind: "context-source"; mode: "detail" | "create" };
+
+// Task-196 (CP-44 P-7): the selectable context-source ids, limited to what
+// the runner's ContextSourceRegistry actually supports (Task-191/192/195) —
+// never free text. This list is a manually-synced descriptor (CP-44 Q-1
+// option a); the Go registry stays the validation authority: an id here that
+// drifts out of sync with the registry fails flow load fast (Task-194 T-2),
+// it does not silently run without it. mcp.driver has no production adapter
+// wired yet (Task-195 shipped the seam + a test-only fake adapter only) — it
+// is listed because the registry accepts it, but selecting it will currently
+// degrade to a warning at runtime until a real adapter lands.
+const contextSourceOptions: { id: string; label: string }[] = [
+  { id: "feature.history", label: "Feature History" },
+  { id: "chat.summary", label: "Chat Summary" },
+  { id: "source.excerpt", label: "Source Excerpt" },
+  { id: "mcp.driver", label: "MCP Driver (not yet wired to a live source)" },
+];
 
 type WorkflowDraft = {
   id?: string;
@@ -114,6 +131,7 @@ function createEmptyStepDraft(modelId: string): StepDefinition {
     cohort: null,
     promptTemplateRef: null,
     contextRef: null,
+    contextSources: [],
     inputs: {},
     outputs: {},
     inputArtifactDefinitions: [],
@@ -1826,6 +1844,46 @@ export function WorkflowsSettings(): React.ReactElement {
             value={draft.contextRef ?? ""}
           />
         </label>
+        <div className="settings-field settings-field-full">
+          <div className="workflow-chip-row">
+            <span>Context Sources</span>
+            <button
+              className="secondary-btn workflow-chip-add-btn"
+              onClick={() => setPickerModal({ kind: "context-source", mode })}
+              type="button"
+            >
+              + Add
+            </button>
+          </div>
+          {draft.contextSources.length === 0 ? (
+            <div className="workflow-chip-empty">
+              None selected (falls back to the flow's default context sources)
+            </div>
+          ) : (
+            <div className="workflow-chips">
+              {draft.contextSources.map((sourceId) => (
+                <span className="workflow-chip" key={sourceId}>
+                  <span>
+                    {contextSourceOptions.find((option) => option.id === sourceId)?.label ?? sourceId}
+                  </span>
+                  <button
+                    aria-label={`Remove ${sourceId}`}
+                    className="workflow-chip-remove"
+                    onClick={() =>
+                      onChange({
+                        ...draft,
+                        contextSources: draft.contextSources.filter((id) => id !== sourceId),
+                      })
+                    }
+                    type="button"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
         <label className="settings-field">
           <span>Inputs</span>
           <input
@@ -1953,7 +2011,9 @@ export function WorkflowsSettings(): React.ReactElement {
         ? "Input Artifact Definitions"
         : pickerModal.kind === "artifact-output"
           ? "Output Artifact Definitions"
-          : "Required MCPs";
+          : pickerModal.kind === "context-source"
+            ? "Context Sources"
+            : "Required MCPs";
 
     return (
       <div className="settings-modal-backdrop" role="presentation">
@@ -2017,6 +2077,25 @@ export function WorkflowsSettings(): React.ReactElement {
                 </label>
               ) : null}
             </>
+          ) : pickerModal.kind === "context-source" ? (
+            <div className="workflow-choice-grid workflow-picker-grid">
+              {contextSourceOptions.map((option) => (
+                <label className="workflow-choice-card" key={option.id}>
+                  <input
+                    checked={draftSource?.contextSources.includes(option.id) ?? false}
+                    onChange={() => {
+                      if (!draftSource) return;
+                      updateDraft({ contextSources: toggleString(draftSource.contextSources, option.id) });
+                    }}
+                    type="checkbox"
+                  />
+                  <span>
+                    <strong>{option.label}</strong>
+                    <small>{option.id}</small>
+                  </span>
+                </label>
+              ))}
+            </div>
           ) : artifactDefinitions.length === 0 ? (
             <div className="settings-empty">No artifact definitions available yet.</div>
           ) : (

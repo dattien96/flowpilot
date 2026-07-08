@@ -214,6 +214,14 @@ export interface StepDefinition {
   cohort?: string | null;
   promptTemplateRef?: string | null;
   contextRef?: string | null;
+  /**
+   * Enabled context-source ids for this step's Plan-time context harness
+   * (CP-44 / Task-196), mirroring requiredMcps. Empty means "fall back to
+   * the flow-level `contexts.sources` binding, then the runner's default
+   * built-in set" (Task-194 precedence) — a step that never sets this keeps
+   * pre-Task-196 behavior unchanged.
+   */
+  contextSources: string[];
   inputs?: Record<string, string>;
   outputs?: Record<string, string>;
   inputArtifactDefinitions: string[];

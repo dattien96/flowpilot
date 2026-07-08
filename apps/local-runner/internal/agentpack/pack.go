@@ -122,6 +122,13 @@ type FlowNode struct {
 	Inputs         map[string]string
 	Outputs        map[string]string
 	PromptTemplate string
+	// ContextSources is this node's own enabled context-source ids (CP-44 P-7
+	// / Task-196), the step-definition-level equivalent of
+	// FlowContextBinding.Sources. Empty means "fall back to the flow-level
+	// contexts.<name>.sources binding, then the runner's default built-in
+	// set" — the same precedence pack-YAML flows and user-authored
+	// (step_definitions-backed) flows both resolve through.
+	ContextSources []string
 }
 
 type FlowEdge struct {
@@ -683,6 +690,7 @@ func flowNodeFromMap(m map[string]any) FlowNode {
 		DependsOn:      stringSliceField(m, "dependsOn"),
 		Inputs:         stringMapField(m, "inputs"),
 		Outputs:        stringMapField(m, "outputs"),
+		ContextSources: stringSliceField(m, "contextSources"),
 	}
 	return node
 }

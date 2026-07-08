@@ -77,6 +77,7 @@ type dbStepDefinitionRow struct {
 	Cohort            *string           `json:"cohort"`
 	PromptTemplateRef *string           `json:"prompt_template_ref"`
 	ContextRef        *string           `json:"context_ref"`
+	ContextSources    []string          `json:"context_sources"`
 	InputsJSON        map[string]string `json:"inputs_json"`
 	OutputsJSON       map[string]string `json:"outputs_json"`
 }
@@ -109,7 +110,7 @@ type dbWorkflowRow struct {
 	WorkflowSteps    []dbWorkflowStepRow         `json:"workflow_steps"`
 }
 
-const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,depends_on_json,join_mode,cohort,prompt_template_ref,context_ref,inputs_json,outputs_json))"
+const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,depends_on_json,join_mode,cohort,prompt_template_ref,context_ref,context_sources,inputs_json,outputs_json))"
 
 func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 	rec := FlowDefinitionRecord{
@@ -216,6 +217,9 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 		}
 		if len(defn.OutputsJSON) > 0 {
 			node.Outputs = defn.OutputsJSON
+		}
+		if len(defn.ContextSources) > 0 {
+			node.ContextSources = defn.ContextSources
 		}
 		def.Nodes = append(def.Nodes, node)
 	}

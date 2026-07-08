@@ -30,10 +30,12 @@ var defaultContextSourceIDs = []string{
 	string(ContextSourceSourceExcerpt),
 }
 
-// ValidateFlowContextSources checks every `contexts.<name>.sources` entry
-// declared in def resolves to a registered ContextSource, failing fast at
-// flow-load time rather than letting a flow silently run without an unknown
-// source (CP-44 P-4/D-4, Task-194 T-2). Mirrors the unknown-behavior-id check
+// ValidateFlowContextSources checks every declared context-source id — both
+// `contexts.<name>.sources` (flow-level, Task-194) and each node's own
+// `ContextSources` (step-definition-level, Task-196) — resolves to a
+// registered ContextSource, failing fast at flow-load time rather than
+// letting a flow silently run without an unknown source (CP-44 P-4/D-4,
+// Task-194 T-2, Task-196 T-2/DOD-3). Mirrors the unknown-behavior-id check
 // agentpack.ValidateFlowDefinition already does for node.Behavior, but lives
 // in the runner package because ContextSourceRegistry does.
 func ValidateFlowContextSources(def agentpack.FlowDefinition) error {
@@ -45,17 +47,28 @@ func ValidateFlowContextSources(def agentpack.FlowDefinition) error {
 			}
 		}
 	}
+	for _, node := range def.Nodes {
+		for _, id := range node.ContextSources {
+			if _, err := registry.Resolve(id); err != nil {
+				return fmt.Errorf("flow %q node %q declares unknown context source %q: %w", def.ID, node.ID, id, err)
+			}
+		}
+	}
 	return nil
 }
 
-// resolveEnabledContextSourceIDs finds the context binding a context-producing
-// node fills — by matching one of the node's declared Outputs keys against
-// def.Contexts (the same key convention rag-harness.yaml uses: node output
-// "main_context" binds to contexts.main_context) — and returns its declared
-// Sources. Returns nil (meaning: use the default built-in set) when the node
-// has no matching binding, or the binding declares no Sources (CP-44 P-4,
-// Task-194 T-1/T-4).
+// resolveEnabledContextSourceIDs resolves a context-producing node's enabled
+// source set by precedence (Task-196 T-3): (a) the node's own ContextSources
+// (step-definition-level, Task-196) when set; else (b) the flow-level
+// `contexts.<name>.sources` binding the node fills — found by matching one of
+// the node's declared Outputs keys against def.Contexts (the same key
+// convention rag-harness.yaml uses: node output "main_context" binds to
+// contexts.main_context); else (c) nil, meaning "use the runner's default
+// built-in set" (CP-44 P-4, Task-194 T-1/T-4).
 func resolveEnabledContextSourceIDs(def agentpack.FlowDefinition, node agentpack.FlowNode) []string {
+	if len(node.ContextSources) > 0 {
+		return node.ContextSources
+	}
 	for outputKey := range node.Outputs {
 		if binding, ok := def.Contexts[outputKey]; ok && len(binding.Sources) > 0 {
 			return binding.Sources
