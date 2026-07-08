@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
 )
 
@@ -46,6 +45,16 @@ type FlowContextHints struct {
 	SourceDocID         string   // e.g. "Task-168"
 	ChangedPaths        []string // from stack trace / diff
 	ExplicitSourcePaths []string // user-provided or catalog-glob
+
+	// Workspace, FeatureKey, and FeatureConfidence are populated internally by
+	// BuildFlowContextPackage (feature resolution runs as a pre-processing step,
+	// not a ContextSource — CP-44 P-2/Task-192 T-1) before Collect is called, so
+	// every ContextSource.Fetch call can look up feature-scoped data without
+	// re-resolving the feature key itself. Callers of BuildFlowContextPackage do
+	// not need to set these — they are overwritten by the builder.
+	Workspace         string
+	FeatureKey        string
+	FeatureConfidence FlowContextConfidence
 }
 
 // FlowContextPackage is the deterministic context package assembled by the Plan
@@ -69,14 +78,27 @@ type FlowContextPackage struct {
 }
 
 // BuildFlowContextPackage assembles a deterministic FlowContextPackage for the
-// Plan step of a Flow Mode run. It resolves the feature key from the user
-// prompt, loads change history and chat summaries from existing ledger seams,
-// and reads workspace-safe source excerpts.
+// Plan step of a Flow Mode run. It is a thin context.Background() wrapper
+// around BuildFlowContextPackageCtx, kept for the ~30 existing call sites
+// (mostly tests) that predate context propagation. Production code that has a
+// live context (currently behaviorContextProduce) should call
+// BuildFlowContextPackageCtx directly so a future context-aware source can
+// observe caller cancellation/timeout.
+func BuildFlowContextPackage(workspace string, hints FlowContextHints) (FlowContextPackage, error) {
+	return BuildFlowContextPackageCtx(context.Background(), workspace, hints)
+}
+
+// BuildFlowContextPackageCtx assembles a deterministic FlowContextPackage for
+// the Plan step of a Flow Mode run. It resolves the feature key from the user
+// prompt (a pre-processing step, not a ContextSource — CP-44 P-2/Task-192
+// T-1, since every source needs the resolved feature key), then runs the
+// enabled ContextSourceRegistry sources and projects their sections onto the
+// package's legacy fields.
 //
 // A missing catalog, unresolvable feature key, or absent ledger files produce
 // a package with Warnings instead of an error so a Flow Mode run degrades
 // gracefully (CP-41 P-2, Task-168 T-4).
-func BuildFlowContextPackage(workspace string, hints FlowContextHints) (FlowContextPackage, error) {
+func BuildFlowContextPackageCtx(ctx context.Context, workspace string, hints FlowContextHints) (FlowContextPackage, error) {
 	pkg := FlowContextPackage{
 		WorkflowRunID: hints.WorkflowRunID,
 		PlanStepRunID: hints.PlanStepRunID,
@@ -87,7 +109,8 @@ func BuildFlowContextPackage(workspace string, hints FlowContextHints) (FlowCont
 	}
 
 	// Step 1: resolve feature key via the existing deterministic resolver —
-	// no vector search, no model call.
+	// no vector search, no model call. This stays inline (not a ContextSource)
+	// because every other source needs the resolved key/confidence as input.
 	dotFP := filepath.Join(workspace, ".flowpilot")
 	catalog, err := featurecatalog.LoadCatalog(dotFP)
 	if err != nil {
@@ -97,22 +120,37 @@ func BuildFlowContextPackage(workspace string, hints FlowContextHints) (FlowCont
 		pkg.FeatureKey, pkg.FeatureConfidence = resolvePackageFeature(hints.UserPrompt, catalog, &pkg.Warnings)
 	}
 
-	// Step 2: load history and discussion only for verified features.
-	// Low / unresolved confidence must NOT inject the wrong feature's history.
-	if pkg.FeatureConfidence == ConfidenceVerified && pkg.FeatureKey != "" {
-		pkg.HistoryBlock, pkg.DiscussionBlock = loadFlowFeatureBlocks(dotFP, pkg.FeatureKey)
-		if pkg.HistoryBlock == "" {
-			pkg.Warnings = append(pkg.Warnings, "no change history found for feature: "+pkg.FeatureKey)
-		}
-	}
+	// Step 2: collect the enabled context sources (CP-44 P-2).
+	enrichedHints := hints
+	enrichedHints.Workspace = workspace
+	enrichedHints.FeatureKey = pkg.FeatureKey
+	enrichedHints.FeatureConfidence = pkg.FeatureConfidence
 
-	// Step 3: workspace-safe source excerpts from hints.
-	allPaths := fcpDedup(append(hints.ChangedPaths, hints.ExplicitSourcePaths...))
-	pkg.SourceExcerpts, pkg.Omitted = readSourceExcerpts(workspace, allPaths)
+	sections, sourceWarnings := DefaultContextSourceRegistry().Collect(ctx, defaultContextSourceIDs, enrichedHints)
+	pkg.Warnings = append(pkg.Warnings, sourceWarnings...)
+	projectContextSections(&pkg, sections)
 
-	// Step 4: deterministic package ID.
+	// Step 3: deterministic package ID.
 	pkg.PackageID = fcpPackageID(hints.WorkflowRunID, hints.PlanStepRunID, pkg.FeatureKey)
 	return pkg, nil
+}
+
+// projectContextSections maps registered-source output onto FlowContextPackage's
+// legacy fields (HistoryBlock/DiscussionBlock/SourceExcerpts/Omitted) so
+// existing consumers (RenderFlowContextPackage/Task-169, BuildAuditDraft/
+// Task-171) keep working unchanged (CP-44 P-3 backward-compat projection).
+func projectContextSections(pkg *FlowContextPackage, sections []FlowContextSection) {
+	for _, section := range sections {
+		switch ContextSourceID(section.SourceType) {
+		case ContextSourceFeatureHistory:
+			pkg.HistoryBlock = section.Body
+		case ContextSourceChatSummary:
+			pkg.DiscussionBlock = section.Body
+		case ContextSourceSourceExcerpt:
+			pkg.SourceExcerpts = section.Excerpts
+			pkg.Omitted = append(pkg.Omitted, section.Omitted...)
+		}
+	}
 }
 
 // resolvePackageFeature resolves the feature key from a user prompt. Returns
@@ -130,20 +168,6 @@ func resolvePackageFeature(prompt string, catalog *featurecatalog.Catalog, warni
 		return key, ConfidenceLow
 	}
 	return top.Key, ConfidenceVerified
-}
-
-// loadFlowFeatureBlocks loads the HistorySlot and ChatSummarySlot for featureKey
-// from .flowpilot. Returns ("", "") when ledgers are unavailable — never errors.
-func loadFlowFeatureBlocks(dotFP, featureKey string) (history, discussion string) {
-	ledger, err := changeledger.New(dotFP)
-	if err != nil {
-		return "", ""
-	}
-	history = strings.TrimSpace(featurecatalog.HistorySlot(featureKey, ledger))
-	if summaryLedger, err := changeledger.NewChatSummaryLedger(dotFP); err == nil {
-		discussion = strings.TrimSpace(featurecatalog.ChatSummarySlot(featureKey, summaryLedger))
-	}
-	return history, discussion
 }
 
 // readSourceExcerpts reads workspace-safe source file excerpts, capping each
