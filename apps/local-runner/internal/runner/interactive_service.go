@@ -1284,6 +1284,7 @@ func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID,
 			summary: AgentRunSummary{
 				RunID:         child.id,
 				AgentName:     child.agentName,
+				Label:         child.label,
 				Role:          child.role,
 				Status:        child.status,
 				ParentRunID:   child.parentRunID,
@@ -2495,6 +2496,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
 		RunID:         handle.RunID,
 		AgentName:     childSnap.AgentName,
+		Label:         in.Label,
 		Role:          childSnap.Role,
 		Status:        RunStatus(childSnap.Status),
 		ParentRunID:   parentRunID,
@@ -2593,6 +2595,7 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 		out = append(out, AgentRunSummary{
 			RunID:         rs.id,
 			AgentName:     rs.agentName,
+			Label:         rs.label,
 			Role:          rs.role,
 			Status:        rs.status,
 			ParentRunID:   rs.parentRunID,

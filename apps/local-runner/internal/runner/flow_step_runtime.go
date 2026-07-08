@@ -119,8 +119,11 @@ func (s *InteractiveService) flowStepRowsFromNodes(ctx context.Context, parentRu
 			Provider:   provider,
 			Model:      model,
 		}
-		if status == StepStatusDone {
+		switch status {
+		case StepStatusDone:
 			row.StartedAt = ts
+			row.FinishedAt = ts
+		case StepStatusFailed, StepStatusSkipped, StepStatusCanceled:
 			row.FinishedAt = ts
 		}
 		steps = append(steps, row)
@@ -146,7 +149,7 @@ func (s *InteractiveService) setFlowStepStatus(ctx context.Context, parentRunID,
 	case StepStatusRunning:
 		patch.StartedAt = strptr(now)
 		patch.FinishedAt = strptr("")
-	case StepStatusDone, StepStatusFailed:
+	case StepStatusDone, StepStatusFailed, StepStatusCanceled, StepStatusSkipped:
 		patch.FinishedAt = strptr(now)
 	case StepStatusPending:
 		patch.StartedAt = strptr("")
@@ -214,20 +217,22 @@ func (s *InteractiveService) setFlowStepPosture(ctx context.Context, parentRunID
 }
 
 // markFlowRunComplete is the terminal transition when the flow's control tool
-// reports "done". It is authoritative: every non-terminal step is settled to
-// DONE and the run marked DONE, so the timeline is consistent regardless of the
-// order prior async transitions landed (BUG-181) — e.g. the inline hub
-// (synthesis) node, or any reviewer whose DONE write lagged. The bulk planner is
-// gated off for flowEngineDriven runs, so this is the sole terminal settler.
+// reports "done". It is authoritative: running work is settled to DONE and
+// unstarted work is settled to SKIPPED, while previous terminal failures stay
+// visible. The bulk planner is gated off for flowEngineDriven runs, so this is
+// the sole terminal settler.
 func (s *InteractiveService) markFlowRunComplete(ctx context.Context, parentRunID string) {
 	s.flowDiagLog(parentRunID, "flow_run_complete_begin", "marking flow run complete")
 	if steps, err := s.workflowStore.LoadRunSteps(ctx, parentRunID); err == nil {
 		for _, st := range steps {
 			switch st.Status {
-			case StepStatusDone, StepStatusFailed, StepStatusSkipped:
+			case StepStatusDone, StepStatusFailed, StepStatusSkipped, StepStatusCanceled:
 				continue // already terminal
+			case StepStatusPending:
+				s.setFlowStepStatus(ctx, parentRunID, st.ID, StepStatusSkipped)
+			default:
+				s.setFlowStepStatus(ctx, parentRunID, st.ID, StepStatusDone)
 			}
-			s.setFlowStepStatus(ctx, parentRunID, st.ID, StepStatusDone)
 		}
 	} else {
 		log.Printf("[flow-step] mark run %q done: LoadRunSteps failed: %v", parentRunID, err)

@@ -19,6 +19,7 @@ const (
 	StepStatusPending        RuntimeWorkflowStepStatus = "PENDING"
 	StepStatusRunning        RuntimeWorkflowStepStatus = "RUNNING"
 	StepStatusWaitingUserApr RuntimeWorkflowStepStatus = "WAITING_USER_APPROVAL"
+	StepStatusCanceled       RuntimeWorkflowStepStatus = "CANCELED"
 	StepStatusDone           RuntimeWorkflowStepStatus = "DONE"
 	StepStatusFailed         RuntimeWorkflowStepStatus = "FAILED"
 	StepStatusSkipped        RuntimeWorkflowStepStatus = "SKIPPED"

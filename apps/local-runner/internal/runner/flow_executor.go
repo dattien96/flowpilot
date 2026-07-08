@@ -651,14 +651,14 @@ func (s *InteractiveService) reinvokeExistingFlowChild(parentRunID, nodeID, prom
 // 2 stayed stuck in the desktop's "Recently closed" section with no new
 // main-chat card, while a forward-spawned reviewer behaved correctly.
 //
-// - BUG-Rnd2 (Bug B): increments activationSeq so the desktop's monotonic
-//   terminal-status guard (mergeAgentRunsById) recognizes a genuine
-//   completed→running transition instead of discarding it as a stale
-//   snapshot — without this the run never leaves "completed" client-side and
-//   is miscategorized as closed regardless of what the backend just did.
-// - BUG-Rnd2 (Bug C): emits EventAgentSpawnedByUser so the parent thread
-//   renders a new agent card for this turn, matching the spawnChildRun path
-//   (idempotent by event id, so replay never duplicates the row).
+//   - BUG-Rnd2 (Bug B): increments activationSeq so the desktop's monotonic
+//     terminal-status guard (mergeAgentRunsById) recognizes a genuine
+//     completed→running transition instead of discarding it as a stale
+//     snapshot — without this the run never leaves "completed" client-side and
+//     is miscategorized as closed regardless of what the backend just did.
+//   - BUG-Rnd2 (Bug C): emits EventAgentSpawnedByUser so the parent thread
+//     renders a new agent card for this turn, matching the spawnChildRun path
+//     (idempotent by event id, so replay never duplicates the row).
 //
 // Returns true if a matching child was found (whether or not a new turn was
 // actually scheduled — a match with a turn already in flight still counts as
@@ -686,6 +686,7 @@ func (s *InteractiveService) reinvokeMatchingFlowChild(parentRunID, prompt strin
 		s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
 			RunID:         child.id,
 			AgentName:     child.agentName,
+			Label:         child.label,
 			Role:          child.role,
 			Status:        child.status,
 			ParentRunID:   child.parentRunID,
@@ -716,7 +717,6 @@ func (s *InteractiveService) reinvokeMatchingFlowChild(parentRunID, prompt strin
 	s.scheduleChildTurn(runID, stepID, prompt)
 	return true
 }
-
 
 // entryDelegateNodes returns a flow's entry nodes: agent.delegate-behavior
 // nodes declaring no dependsOn, in declared order. These are the nodes a flow

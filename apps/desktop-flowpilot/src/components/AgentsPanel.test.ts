@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { formatDependencyLabels } from "./agentDependencies";
-import { resolveMainAgentDisplay } from "./AgentsPanel";
+import { agentRunDisplayName, resolveMainAgentDisplay } from "./AgentsPanel";
 import type { AgentRunSummary } from "@/types/contract";
 
 const runs: AgentRunSummary[] = [
@@ -23,6 +23,11 @@ const runs: AgentRunSummary[] = [
 
 test("formatDependencyLabels resolves dependency run ids to agent names", () => {
   assert.deepEqual(formatDependencyLabels(["run-reviewer", "missing-run"], runs), ["reviewer", "missing-run"]);
+});
+
+test("agentRunDisplayName prefers flow node label over generic agent name", () => {
+  assert.equal(agentRunDisplayName({ agentName: "reviewer-agent", label: "review-security-gpt" }), "review-security-gpt");
+  assert.equal(agentRunDisplayName({ agentName: "reviewer-agent" }), "reviewer-agent");
 });
 
 // BUG-227: a started run's actual resolved posture (workflowStepRuntimeMeta,

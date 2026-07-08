@@ -2409,6 +2409,13 @@ func TestCohortFailedMemberIncludedInNote(t *testing.T) {
 	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
 	parentHandle2, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
 	parentRunID2 := parentHandle2.RunID
+	nodes := []agentpack.FlowNode{
+		{ID: "worker-0", Behavior: "agent.delegate"},
+		{ID: "worker-1", Behavior: "agent.delegate"},
+		{ID: "synthesis", Behavior: "hub.inline"},
+	}
+	svc.markFlowEngineDriven(parentRunID2)
+	svc.reseedFlowStepRuntime(parentRunID2, nodes)
 
 	for j := 0; j < 2; j++ {
 		lbl := fmt.Sprintf("worker-%d", j)
@@ -2428,6 +2435,9 @@ func TestCohortFailedMemberIncludedInNote(t *testing.T) {
 	}
 	if !strings.Contains(ctx[0], "failed:") || !strings.Contains(ctx[0], "connection reset") {
 		t.Errorf("note does not contain failed member info:\n%s", ctx[0])
+	}
+	if got := flowStepStatus(t, svc, parentRunID2, "worker-1"); got != StepStatusFailed {
+		t.Errorf("failed cohort member step status = %v, want FAILED after sibling completion joins the cohort", got)
 	}
 }
 

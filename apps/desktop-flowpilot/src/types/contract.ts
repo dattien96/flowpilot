@@ -96,6 +96,7 @@ export interface SpawnAgentResult {
 export interface AgentRunSummary {
   runId: string;
   agentName: string;
+  label?: string;
   role: string;
   status: RunStatus;
   parentRunId?: string;
