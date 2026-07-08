@@ -5,14 +5,14 @@
 - Document ID: `Task-196`
 - Title: `Per-Step Context Source Selection UI (User-Authored Flows)`
 - Phase: `task`
-- Status: `draft`
+- Status: `superseded`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-08`
 - Last Updated: `2026-07-08`
 - Parent Documents: [CP-44: Pluggable Context Source Registry](../../07-Coding-Plan/todo/CP-44-Pluggable-Context-Source-Registry.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
 - Child Documents: `None`
-- Related Documents: [Task-194: Per-Flow Context Source Binding](Task-194-Per-Flow-Context-Source-Binding.md), [Task-191: Context Source Interface And Registry](Task-191-Context-Source-Interface-And-Registry.md), [Task-195: MCP-Backed Context Source Adapter](Task-195-MCP-Backed-Context-Source-Adapter.md), [Task-179: Settings Flow Pack Authoring UI](../done/Task-179-Settings-Flow-Pack-Authoring-UI.md), [Task-189: Custom Flow Graph Authoring](../done/Task-189-Custom-Flow-Graph-Authoring.md), [BUG-236: Builtin Flow Mirror Stores Node Definition On Workflow Steps](../../09-BugFix/done/BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md)
+- Related Documents: [Task-194: Per-Flow Context Source Binding](Task-194-Per-Flow-Context-Source-Binding.md), [Task-191: Context Source Interface And Registry](Task-191-Context-Source-Interface-And-Registry.md), [Task-195: MCP-Backed Context Source Adapter](Task-195-MCP-Backed-Context-Source-Adapter.md), [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../../07-Coding-Plan/todo/CP-45-Generic-Artifact-Types-And-Instances.md), [Task-200: Step Artifact Instance Binding UI](Task-200-Step-Artifact-Instance-Binding-UI.md), [Task-201: Context Artifact Migration From Context Sources](Task-201-Context-Artifact-Migration-From-Context-Sources.md), [Task-179: Settings Flow Pack Authoring UI](../done/Task-179-Settings-Flow-Pack-Authoring-UI.md), [Task-189: Custom Flow Graph Authoring](../done/Task-189-Custom-Flow-Graph-Authoring.md), [BUG-236: Builtin Flow Mirror Stores Node Definition On Workflow Steps](../../09-BugFix/done/BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md)
 - Replaces: `None`
 - Tags: `context-regression-engine, flow-mode, context-source, settings-ui, custom-flow, step-definition`
 
@@ -20,6 +20,7 @@
 
 ### Summary
 
+- **SUPERSEDED, 2026-07-08:** CP-45 generalizes this task into artifact-instance binding. Do not implement this raw `contextSources[]` UI as the final UX unless CP-45 is explicitly deferred. The replacement path is [Task-200](Task-200-Step-Artifact-Instance-Binding-UI.md) (step selects artifact instances) + [Task-201](Task-201-Context-Artifact-Migration-From-Context-Sources.md) (`context_artifact.v1` stores selected context sources in instance config).
 - Task-194 cho **built-in / pack-YAML** flow khai báo context source qua `contexts.sources:`. Nhưng flow/step do **user tạo qua Settings UI** là DB-row (`step_definitions`/`workflows`), và đường lưu của UI (`saveWorkflow`/`saveStepDefinition`) **không** đụng tới binding đó — nên user không có cách nào tự chọn context source. Task-196 lấp đúng khoảng trống này.
 - Cho user **chọn tập context source cho một step** ngay trong step-form của `WorkflowsSettings.tsx`, **tái dùng đúng lane multi-select của `required_mcps`** (đã có sẵn), thay cho ô text `contextRef` đơn lẻ.
 - Lựa chọn được **giới hạn ở tập source app đang support** (các source đã đăng ký trên `ContextSourceRegistry` — Task-191), đúng ranh giới bảo mật CP-44 `P-7`/SD-22 `D-5`/SS-14 `AC-16`: không nhập id tùy ý.
@@ -28,10 +29,11 @@
 
 ### Current Ask
 
-- Thêm UI + persistence + resolve để một step do user tạo/sửa qua Settings có thể chọn context source từ danh sách app-support, và tập đó thực sự chạy ở Plan-time.
+- Superseded by CP-45: preserve this task as the record of the original CP-44 gap, but route implementation to artifact instance selection instead of raw context-source selection.
 
 ### Key Decisions
 
+- `T-0` **SUPERSEDED BY CP-45:** Step authoring should select a `context_artifact.v1` artifact instance, not raw `contextSources[]`, once CP-45 is active.
 - `T-1` Binding ở tầng **step-definition** (không phải `workflow_steps`), mirror `required_mcps`: thêm `contextSources: string[]` vào `StepDefinition`, cột `context_sources` trên bảng `step_definitions`. Giữ contract BUG-236 (node data chỉ ở step-definition; `workflow_steps` là bảng quan hệ thuần).
 - `T-2` Danh sách chọn được = **source đã đăng ký** trên registry (Task-191). UI chỉ render các id hợp lệ; registry là **authority validate** (fail-fast lúc load flow như Task-194 `T-2`). Không cho nhập tự do.
 - `T-3` `behaviorContextProduce` resolve tập enabled theo thứ tự ưu tiên: **(a) `step_definitions.context_sources`** nếu có → **(b)** flow-level `contexts.sources` (Task-194) → **(c)** `defaultSourceIDs` (3 nguồn built-in). Cùng một `registry.Collect(ctx, enabledIDs, hints)`.
@@ -40,6 +42,7 @@
 
 ### Constraints
 
+- Do not implement this task as written while CP-45 is the active direction; implement [Task-200](Task-200-Step-Artifact-Instance-Binding-UI.md) and [Task-201](Task-201-Context-Artifact-Migration-From-Context-Sources.md) instead.
 - Depends on Task-194 (plumbing `enabledIDs` → `Collect`, registry-as-validation, fail-fast) và Task-191 (registry). Task-195 không bắt buộc, nhưng khi có thì `mcp.driver` xuất hiện như một option chọn được.
 - Không phá flow/step hiện có: step không chọn source → resolve về flow-level rồi default (tương thích ngược tuyệt đối).
 - Giữ bất biến no-vector: chỉ liệt kê source `Deterministic()==true` đã đăng ký; không mở đường cho input tùy ý (SS-14 `AC-16`, CP-44 `P-7`).
@@ -63,7 +66,7 @@
 
 ## 1. Goal
 
-Cho user tạo/sửa một step qua Settings và **chọn được các context source mà app đang support** cho step đó, với lựa chọn thực sự chạy ở Plan-time. Sau task này, tính pluggable của CP-44 áp dụng cho **cả flow user-tạo**, không chỉ pack YAML; flow user-tạo không còn bị khoá cứng ở 3 nguồn default.
+Original goal: cho user tạo/sửa một step qua Settings và **chọn được các context source mà app đang support** cho step đó, với lựa chọn thực sự chạy ở Plan-time. Superseded goal after CP-45: user chọn một `context_artifact.v1` artifact instance cho step; selected context sources live in the artifact instance config instead of raw step fields.
 
 ## 2. Parent Links
 
@@ -75,6 +78,8 @@ Cho user tạo/sửa một step qua Settings và **chọn được các context 
 ## 3. Trigger
 
 CP-44 (Task-191..195) làm registry + per-flow YAML binding, nhưng chỉ pack/YAML flow tận dụng được. Flow do user tạo qua `WorkflowsSettings.tsx` là DB-row và đường lưu UI không ghi context-source binding — nên với người dùng cuối, "chọn loại context cho flow của tôi" coi như không tồn tại. Task này nối UI → persistence → runner để mục tiêu của CP-44 đúng cho cả flow user-tạo.
+
+**Supersession trigger (2026-07-08):** CP-45 lifts the model from "step selects context source IDs" to "step binds artifact instances." The CP-44 gap remains real, but the fix should land through CP-45's artifact instance model so the same UI/DB pattern can support context, file, review, and future artifact types.
 
 ## 4. Exact Change
 
@@ -135,6 +140,7 @@ CP-44 (Task-191..195) làm registry + per-flow YAML binding, nhưng chỉ pack/Y
 
 ## 7. Out of Scope
 
+- Final CP-45 artifact instance UX — owned by Task-200/Task-201.
 - Nguồn `jira.ticket` / MCP mới (task riêng theo Task-195 follow-up).
 - Per-project override tập nguồn (Task-194 `Q-2`).
 - Flow-level source editor riêng trên UI (chỉ step-level ở task này — Q-2).
@@ -143,6 +149,6 @@ CP-44 (Task-191..195) làm registry + per-flow YAML binding, nhưng chỉ pack/Y
 
 ## 8. Completion Notes
 
-- result: `TBD`
-- follow-ups: cân nhắc flow-level override UI; đồng bộ descriptor list ↔ Go registry chống drift (Q-1); CP-43 Canonical Head khi land cũng sẽ là một option chọn được ở đây.
-- upstream docs updated: `TBD`
+- result: `Superseded before implementation` — CP-45 replaces raw context source selection with artifact instance binding.
+- follow-ups: implement [Task-200](Task-200-Step-Artifact-Instance-Binding-UI.md) and [Task-201](Task-201-Context-Artifact-Migration-From-Context-Sources.md).
+- upstream docs updated: [CP-45](../../07-Coding-Plan/todo/CP-45-Generic-Artifact-Types-And-Instances.md)

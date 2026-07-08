@@ -28,7 +28,7 @@
 
 ### Current Ask
 
-- Runner-side substrate của CP-44 (`Task-191` → `Task-195`) đã land; phần còn mở là `Task-196` để user-authored step chọn/persist `context_sources` qua Settings UI và DB.
+- Runner-side substrate của CP-44 (`Task-191` → `Task-195`) đã land. Gap user-authored step vẫn còn, nhưng raw `context_sources` UI của `Task-196` đã được supersede bởi [CP-45](./CP-45-Generic-Artifact-Types-And-Instances.md): step sẽ chọn `context_artifact.v1` artifact instance thay vì chọn source-id trực tiếp.
 
 ### Key Decisions
 
@@ -42,7 +42,7 @@
 - `P-8` (chốt `Q-4`, 2026-07-08) **Tính đầy đủ quan trọng hơn thứ tự**: yêu cầu duy nhất là mọi context source đã enable đều được import vào package; thứ tự pack không phải ràng buộc cứng (giữ default theo `Priority` cho ổn định, nhưng không thêm cơ chế order per-flow).
 - `P-9` (chốt `Q-5`, 2026-07-08) v1 các source **độc lập**, không dependency graph (không source nào đọc output source khác).
 - `P-10` (chốt `Q-3`, 2026-07-08) Nguồn MCP gọi **đồng bộ tại Plan-time + timeout cứng** (degrade-mềm khi hết giờ/MCP down); cache là tối ưu về sau, không làm ở v1.
-- `P-11` (mới, 2026-07-08, `Q-6`) Tính pluggable phải với tới **flow/step do user tạo qua Settings UI**, không chỉ pack YAML. User chọn context source cho một step ngay trong authoring UI (Task-179/189), giới hạn ở tập source đã đăng ký/app-support (kế thừa `P-7`), persist vào `step_definitions` (giữ contract BUG-236). Đây là [Task-196](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md) — "UI wiring" **không còn** là gap ngoài phạm vi CP-44.
+- `P-11` (mới, 2026-07-08, `Q-6`) Tính pluggable phải với tới **flow/step do user tạo qua Settings UI**, không chỉ pack YAML. User cần chọn được context payload cho step Plan của họ, giới hạn ở tập source đã đăng ký/app-support (kế thừa `P-7`) và giữ contract BUG-236. Thiết kế raw `context_sources` của [Task-196](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md) đã được supersede bởi CP-45: triển khai cuối nên đi qua `context_artifact.v1` artifact instance ([Task-200](../../08-Task/todo/Task-200-Step-Artifact-Instance-Binding-UI.md) + [Task-201](../../08-Task/todo/Task-201-Context-Artifact-Migration-From-Context-Sources.md)).
 
 ### Constraints
 
@@ -60,7 +60,7 @@
 - `Q-3` **(RESOLVED → `P-10`)** Nguồn MCP: live + timeout cứng trước, cache sau. Chỉ áp dụng khi làm Task-195.
 - `Q-4` **(RESOLVED → `P-8`)** Thứ tự không quan trọng; yêu cầu là import đầy đủ mọi source enabled.
 - `Q-5` **(RESOLVED → `P-9`)** v1 các source độc lập, không dependency graph.
-- `Q-6` **(RESOLVED → `P-7` + `P-11`, 2026-07-08 → [Task-196](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md))** Flow/step do user tạo qua UI có chọn được context source không? Có — qua step-form Settings, giới hạn tập app-support, persist ở `step_definitions.context_sources`. Task-194 chỉ phủ pack-YAML binding; Task-196 phủ mặt UI/DB cho user-authored.
+- `Q-6` **(RESOLVED → `P-7` + `P-11`, 2026-07-08 → [Task-196](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md), superseded by CP-45)** Flow/step do user tạo qua UI có chọn được context source không? Có, nhưng không nên expose raw source-id là abstraction cuối. CP-45 thay bằng step bind tới `context_artifact.v1` artifact instance; instance config giữ `sources`. Task-194 chỉ phủ pack-YAML binding; [Task-200](../../08-Task/todo/Task-200-Step-Artifact-Instance-Binding-UI.md)/[Task-201](../../08-Task/todo/Task-201-Context-Artifact-Migration-From-Context-Sources.md) phủ mặt UI/DB cho user-authored.
 
 ### Source Refs
 
@@ -152,11 +152,11 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
 
 - `P-6` Test regression + extensibility (xem §7).
 
-- `P-7` UI + persistence cho **user-authored step** chọn context source — [Task-196](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md).
-  - Thêm `contextSources: string[]` vào `StepDefinition` + cột `step_definitions.context_sources`, mirror đúng lane `required_mcps` (map/save trong `supabaseAdminRepository.ts`).
-  - Step-form `WorkflowsSettings.tsx` thêm multi-select context-source (clone chip pattern của `requiredMcps`); options giới hạn ở source đã đăng ký/app-support (kế thừa `P-7`/`R-3`).
-  - `behaviorContextProduce` resolve enabled-set theo ưu tiên **step → flow (`P-4`) → default**, cùng `registry.Collect`; giữ fail-fast cho id lạ.
-  - Không thêm bảng Supabase (chỉ cột); giữ contract BUG-236 (`workflow_steps` không nhận field mới).
+- `P-7` UI + persistence cho **user-authored step** chọn context payload — original raw-source plan là [Task-196](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md), nay superseded bởi CP-45.
+  - Không triển khai final UX bằng `StepDefinition.contextSources`/`step_definitions.context_sources` nếu CP-45 đang active.
+  - Step-form `WorkflowsSettings.tsx` nên bind tới artifact instance qua [Task-200](../../08-Task/todo/Task-200-Step-Artifact-Instance-Binding-UI.md).
+  - `context_artifact.v1` instance config giữ danh sách source (`sources`) và migrate/fallback từ CP-44 qua [Task-201](../../08-Task/todo/Task-201-Context-Artifact-Migration-From-Context-Sources.md).
+  - Giữ invariant cũ: options giới hạn ở source đã đăng ký/app-support, runner fail-fast id lạ, và `workflow_steps` không nhận metadata mới (BUG-236).
 
 ## 5. Touched Areas
 
@@ -168,7 +168,7 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
   - `apps/local-runner/internal/featurecatalog/slots.go`, `chat_summary_slots.go` (bọc, không sửa hành vi)
   - `apps/local-runner/internal/agentpack/flow-pack/flows/rag-harness.yaml`
   - `apps/local-runner/internal/agentpack/flow-pack/contexts/flow-context-package.yaml`
-  - (P-7 / Task-196) `apps/desktop-flowpilot/src/components/settings/WorkflowsSettings.tsx`, `packages/flowpilot-client-core/src/domain/adminModels.ts`, `packages/flowpilot-client-core/src/data/supabaseAdminRepository.ts`, `apps/local-runner/internal/runner/flow_definition_resolver.go` + migration thêm cột `step_definitions.context_sources`
+  - (P-7 / CP-45 replacement) `apps/desktop-flowpilot/src/components/settings/WorkflowsSettings.tsx`, `packages/flowpilot-client-core/src/domain/adminModels.ts`, `packages/flowpilot-client-core/src/data/supabaseAdminRepository.ts`, `apps/local-runner/internal/runner/flow_definition_resolver.go` + Supabase tables `artifact_types`, `artifact_instances`, `step_artifact_bindings`
 - modules:
   - runner context assembly (Plan step)
   - feature catalog / change ledger / chat-summary ledger (qua bọc)
@@ -241,11 +241,11 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
 - [x] `DOD-6` Toàn bộ đường CP-44 không có vector DB/embedding/similarity-search dependency (guard test giữ nguyên từ CP-41).
 - [x] `DOD-7` Chứng minh (bằng test/PoC) `CP-43` có thể đăng ký Canonical Head như một source mà **không** sửa struct `FlowContextPackage`.
 - [x] `DOD-8` Package/source state gắn với `workflow_run_id` + Plan `workflow_step_run_id` hiện có, không tạo store context song song.
-- [ ] `DOD-9` User tạo/sửa một step qua Settings UI chọn được tập context source (giới hạn ở source app-support); lựa chọn persist vào `step_definitions` và `behaviorContextProduce` dùng đúng tập đó ở Plan-time; flow user-tạo không còn âm thầm rơi về default set (Task-196).
+- [ ] `DOD-9` User-authored step selection vẫn mở, nhưng raw `context_sources` UI của Task-196 đã superseded. Completion path hiện tại là CP-45: user tạo/chọn `context_artifact.v1` artifact instance ([Task-199](../../08-Task/todo/Task-199-Artifact-Instance-Settings-Page.md), [Task-200](../../08-Task/todo/Task-200-Step-Artifact-Instance-Binding-UI.md), [Task-201](../../08-Task/todo/Task-201-Context-Artifact-Migration-From-Context-Sources.md)); Plan-time vẫn phải dùng đúng source set trong instance config và flow user-tạo không âm thầm rơi về default set.
 
 ## 11. E2E Test Matrix
 
-> **Scope note.** Các use case dưới đây chỉ verify phần đã ship của CP-44 (`Task-191` → `Task-195`) ở runner/pack/runtime. **Không** bao phủ `Task-196`; phần UI/DB `step_definitions.context_sources` vẫn chưa done.
+> **Scope note.** Các use case dưới đây chỉ verify phần đã ship của CP-44 (`Task-191` → `Task-195`) ở runner/pack/runtime. **Không** bao phủ user-authored step selection; phần đó đã chuyển sang CP-45 artifact instance UX thay vì `step_definitions.context_sources` raw UI.
 
 ### 11.1 Default Built-In Flow Works Unchanged
 
