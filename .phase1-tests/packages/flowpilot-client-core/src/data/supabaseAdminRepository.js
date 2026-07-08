@@ -8,6 +8,7 @@ function assertNoError(error, fallback) {
 function now() {
     return new Date().toISOString();
 }
+const workflowStepInsertOrderOffset = 1_000_000;
 function isRecord(value) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -532,15 +533,19 @@ class SupabaseAdminRepository {
             // leaves the existing steps fully intact, and only a successful insert
             // triggers the delete that supersedes them.
             if (workflow.steps.length > 0) {
-                const { data: insertedSteps, error: stepsError } = await this.supabase
-                    .from("workflow_steps")
-                    .insert(workflow.steps.map((step, index) => ({
+                const replacementSteps = workflow.steps.map((step, index) => ({
                     workflow_id: saved.id,
                     step_type: step.stepType,
-                    order_index: step.orderIndex ?? index,
+                    // Insert outside the live 0..N-1 range so replacement rows never
+                    // collide with the old rows that still occupy those slots until the
+                    // superseding delete runs.
+                    order_index: (step.orderIndex ?? index) + workflowStepInsertOrderOffset,
                     is_enabled: step.isEnabled ?? true,
                     requires_approval: step.requiresApproval ?? true,
-                })))
+                }));
+                const { data: insertedSteps, error: stepsError } = await this.supabase
+                    .from("workflow_steps")
+                    .insert(replacementSteps)
                     .select("id");
                 assertNoError(stepsError, "Unable to save workflow steps.");
                 const newStepIds = (insertedSteps ?? []).map((row) => row.id);
@@ -550,6 +555,13 @@ class SupabaseAdminRepository {
                     .eq("workflow_id", saved.id)
                     .not("id", "in", `(${newStepIds.join(",")})`);
                 assertNoError(deleteError, "Unable to remove superseded workflow steps.");
+                for (const [index, id] of newStepIds.entries()) {
+                    const { error: renormalizeError } = await this.supabase
+                        .from("workflow_steps")
+                        .update({ order_index: index })
+                        .eq("id", id);
+                    assertNoError(renormalizeError, "Unable to normalize workflow step order.");
+                }
             }
             else {
                 // A deliberate "save with zero steps" has no prior insert to order

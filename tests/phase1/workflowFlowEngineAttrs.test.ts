@@ -10,6 +10,8 @@ import { SupabaseAdminRepository } from "../../packages/flowpilot-client-core/sr
 class FakeTable {
   public lastEqFilters: Record<string, unknown> = {};
   public lastPayload: unknown;
+  public insertPayloads: unknown[] = [];
+  public updatePayloads: unknown[] = [];
 
   constructor(
     private readonly responses: {
@@ -45,6 +47,12 @@ class FakeTable {
   }
   insert(payload: unknown) {
     this.lastPayload = payload;
+    this.insertPayloads.push(payload);
+    return this;
+  }
+  update(payload: unknown) {
+    this.lastPayload = payload;
+    this.updatePayloads.push(payload);
     return this;
   }
   delete() {
@@ -185,10 +193,17 @@ test("saveWorkflow inserts new steps before deleting superseded ones", async () 
   (stepsTable as any).insert = function (payload: unknown) {
     callOrder.push("insert");
     this.lastPayload = payload;
+    this.insertPayloads.push(payload);
     return this;
   };
   (stepsTable as any).delete = function () {
     callOrder.push("delete");
+    return this;
+  };
+  (stepsTable as any).update = function (payload: unknown) {
+    callOrder.push("update");
+    this.lastPayload = payload;
+    this.updatePayloads.push(payload);
     return this;
   };
   supabase.register("workflow_steps", stepsTable);
@@ -200,7 +215,36 @@ test("saveWorkflow inserts new steps before deleting superseded ones", async () 
     steps: [{ stepType: "coding" }],
   });
 
-  assert.deepEqual(callOrder, ["insert", "delete"]);
+  assert.deepEqual(callOrder, ["insert", "delete", "update"]);
+});
+
+test("saveWorkflow offsets replacement step order_index before renormalizing", async () => {
+  const supabase = new FakeSupabase();
+  supabase.register(
+    "workflows",
+    new FakeTable({
+      maybeSingle: { data: null, error: null },
+      single: { data: builtinWorkflowRow({ id: "wf-1", is_builtin: false, editable: true }), error: null },
+    }),
+  );
+  const stepsTable = new FakeTable({ write: { data: [{ id: "step-1" }, { id: "step-2" }], error: null } });
+  supabase.register("workflow_steps", stepsTable);
+  const repo = new SupabaseAdminRepository(supabase as any);
+
+  await repo.saveWorkflow({
+    id: "wf-1",
+    name: "wf",
+    steps: [{ stepType: "coding", orderIndex: 0 }, { stepType: "review", orderIndex: 1 }],
+  });
+
+  assert.deepEqual(stepsTable.lastPayload, { order_index: 1 });
+  assert.deepEqual(stepsTable.updatePayloads, [{ order_index: 0 }, { order_index: 1 }]);
+  const insertPayload = stepsTable.insertPayloads[0] as Array<Record<string, unknown>> | undefined;
+  assert.equal(Array.isArray(insertPayload), true);
+  assert.deepEqual(
+    insertPayload?.map((row) => row.order_index),
+    [1_000_000, 1_000_001],
+  );
 });
 
 test("saveWorkflow does not delete existing steps when the insert fails", async () => {
@@ -260,7 +304,7 @@ test("saveWorkflow never writes node-identity fields into workflow_steps (BUG-23
     steps: [{ stepType: "coding", orderIndex: 0, isEnabled: true, requiresApproval: false }],
   });
 
-  const payload = stepsTable.lastPayload as Array<Record<string, unknown>>;
+  const payload = stepsTable.insertPayloads[0] as Array<Record<string, unknown>>;
   assert.deepEqual(Object.keys(payload[0]).sort(), [
     "is_enabled",
     "order_index",
@@ -269,7 +313,7 @@ test("saveWorkflow never writes node-identity fields into workflow_steps (BUG-23
     "workflow_id",
   ]);
   assert.equal(payload[0].step_type, "coding");
-  assert.equal(payload[0].order_index, 0);
+  assert.equal(payload[0].order_index, 1_000_000);
   assert.equal(payload[0].is_enabled, true);
   assert.equal(payload[0].requires_approval, false);
   for (const nodeField of ["node_id", "behavior_id", "agent_ref", "depends_on_json", "join_mode", "cohort"]) {
