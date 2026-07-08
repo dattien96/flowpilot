@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useStore } from "@/state/store";
-import type { RunHistoryItem } from "@/types/contract";
-import { filterVisibleHistory, isAgentHistoryItem, isProjectSyncing } from "@/components/navigatorHistory";
+import type { RemoteChatSessionSummary, RunHistoryItem } from "@/types/contract";
+import { filterVisibleHistory, isAgentHistoryItem, isProjectSyncing, isSyncableRun } from "@/components/navigatorHistory";
 
 const HISTORY_LIMIT = 5;
 const REMOTE_CHATS_LIMIT = 4;
@@ -33,10 +33,6 @@ const RUN_LABEL: Record<RunHistoryItem["status"], string> = {
 function runTitle(text?: string): string {
   if (!text) return "Untitled run";
   return text.length > 68 ? `${text.slice(0, 65)}...` : text;
-}
-
-function isUnsyncedChat(item: RunHistoryItem): boolean {
-  return item.runKind === "chat" && !isAgentHistoryItem(item) && item.syncStatus !== "synced" && !item.unavailableReason;
 }
 
 function runTypeLabel(item: RunHistoryItem, statusOverride?: RunHistoryItem["status"]): string {
@@ -133,6 +129,7 @@ export function Navigator(): React.ReactElement {
   const [newlyCompleted, setNewlyCompleted] = useState<Set<string>>(new Set());
   const [recentProjectIds, setRecentProjectIds] = useState<string[]>([]);
   const [projectHistoryById, setProjectHistoryById] = useState<Record<string, RunHistoryItem[]>>({});
+  const [remoteChatSessionsByProjectId, setRemoteChatSessionsByProjectId] = useState<Record<string, RemoteChatSessionSummary[]>>({});
   const [expandedHistoryIds, setExpandedHistoryIds] = useState<Set<string>>(new Set());
   const [selectionModeProjectId, setSelectionModeProjectId] = useState<string | null>(null);
   const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set());
@@ -204,7 +201,12 @@ export function Navigator(): React.ReactElement {
   }, []);
 
   const requestConfirm = useCallback((type: "delete" | "sync", runIds: string[], projectId: string) => {
-    if (runIds.length === 0) return;
+    // A "sync" click must never be a silent dead click: even when the selection
+    // filters down to zero syncable items (e.g. all already synced/unavailable),
+    // still open the dialog so its "No syncable chats selected..." branch
+    // renders instead of nothing happening at all. "delete" has no such empty
+    // state to explain, so it still bails.
+    if (runIds.length === 0 && type !== "sync") return;
     setConfirmAction({ type, runIds, projectId });
   }, []);
 
@@ -226,16 +228,24 @@ export function Navigator(): React.ReactElement {
           const key = `${item.sourceMachineId}:${item.sourceRunId}`;
           setRestoringIds((prev) => new Set(prev).add(key));
           try {
-            await restoreRemoteChatSession(item);
+            // Skip the per-item history refresh + auto-open here: doing a full
+            // refresh after every single item serializes N extra round trips into
+            // the loop (each item waits on the previous one's refresh before it can
+            // even start), which is why the spinner looked stuck until the whole
+            // batch finished. One combined refresh after the loop below is enough,
+            // and auto-opening every restored run in turn would hijack the active
+            // chat panel N times over.
+            await restoreRemoteChatSession(item, undefined, { refresh: false, open: false });
           } finally {
             setRestoringIds((prev) => { const next = new Set(prev); next.delete(key); return next; });
           }
         }
       }
+      await Promise.all([loadRunHistory(), loadRemoteChatSessions()]);
     } finally {
       setRestoringAll(false);
     }
-  }, [remoteChatSessions, restoreRemoteChatSession]);
+  }, [remoteChatSessions, restoreRemoteChatSession, loadRunHistory, loadRemoteChatSessions]);
 
   const executeConfirm = useCallback(async () => {
     if (!confirmAction) return;
@@ -302,12 +312,41 @@ export function Navigator(): React.ReactElement {
   }, [selectedProjectId, historyLoading, visibleRunHistory]);
 
   useEffect(() => {
-    if (!selectedProjectId || historyLoading) return;
+    if (!selectedProjectId) return;
+    // Scope to the selected project's own items (rather than gating on
+    // historyLoading) so a mid-switch fetch never writes a different project's
+    // stale runHistory into this cache, while still letting same-project
+    // optimistic updates (sync-up's per-item syncStatus, pull-down's restored
+    // rows) flow through immediately instead of freezing until whatever
+    // background poll happens to be in flight resolves. Blanket-gating on
+    // historyLoading previously made a multi-chat sync/restore batch look
+    // "stuck" the whole time it overlapped a poll, only updating once that
+    // poll's own fetch finally settled.
+    const scoped = visibleRunHistory.filter((item) => item.projectId === selectedProjectId);
     setProjectHistoryById((current) => ({
       ...current,
-      [selectedProjectId]: sortByRecent(visibleRunHistory),
+      [selectedProjectId]: sortByRecent(scoped),
     }));
-  }, [historyLoading, selectedProjectId, visibleRunHistory]);
+  }, [selectedProjectId, visibleRunHistory]);
+
+  // Cache the remote (Drive-synced) chat list per project so switching back to an
+  // already-visited project shows its last-known list instantly instead of
+  // resetting to empty/"Loading" every time -- loadRemoteChatSessions still runs
+  // in the background on every switch to keep it fresh (stale-while-revalidate),
+  // but the visible list no longer has to wait on that round trip each time.
+  // Gated on remoteHistoryLoading (unlike the runHistory cache above) because,
+  // unlike sync-up's per-item optimistic updates, there is no same-project
+  // incremental local mutation of remoteChatSessions to protect -- it only ever
+  // changes via a full fetch completing, so waiting for that fetch to settle
+  // before caching is exactly what avoids writing a mid-switch project's stale
+  // list under the new project's cache key.
+  useEffect(() => {
+    if (!selectedProjectId || remoteHistoryLoading) return;
+    setRemoteChatSessionsByProjectId((current) => ({
+      ...current,
+      [selectedProjectId]: remoteChatSessions,
+    }));
+  }, [selectedProjectId, remoteHistoryLoading, remoteChatSessions]);
 
   useEffect(() => {
     setSelectionModeProjectId(null);
@@ -335,7 +374,8 @@ export function Navigator(): React.ReactElement {
   const activeHistory = selectedProjectId ? (projectHistoryById[selectedProjectId] ?? []) : [];
   const showAllHistory = expandedHistoryIds.has(selectedProjectId ?? "");
   const visibleHistory = showAllHistory ? activeHistory : activeHistory.slice(0, HISTORY_LIMIT);
-  const unsyncedCount = activeHistory.filter(isUnsyncedChat).length;
+  const activeRemoteChatSessions = selectedProjectId ? (remoteChatSessionsByProjectId[selectedProjectId] ?? []) : [];
+  const unsyncedCount = activeHistory.filter((item) => isSyncableRun(item, activeRemoteChatSessions)).length;
   const projectSyncing = isProjectSyncing(activeHistory, selectedProjectId ?? "");
 
   const toggleShowAllHistory = (projectId: string) => {
@@ -460,7 +500,7 @@ export function Navigator(): React.ReactElement {
                   onClick={() => {
                     const syncable = [...selectedRunIds].filter((id) => {
                       const it = activeHistory.find((h) => h.runId === id);
-                      return it && isUnsyncedChat(it);
+                      return it && isSyncableRun(it, activeRemoteChatSessions);
                     });
                     requestConfirm("sync", syncable, selectedProjectId!);
                   }}
@@ -507,7 +547,7 @@ export function Navigator(): React.ReactElement {
               const hasIcon = isNew || effectiveStatus === "running" || effectiveStatus === "starting" ||
                 effectiveStatus === "waiting_approval" || effectiveStatus === "waiting_question";
               const isUnavailable = Boolean(item.unavailableReason);
-              const showSync = isUnsyncedChat(item);
+              const showSync = isSyncableRun(item, activeRemoteChatSessions);
               const isSyncing = item.syncStatus === "syncing";
               const syncFailed = item.syncStatus === "failed";
               const inSelectionMode = selectionModeProjectId === selectedProjectId;
@@ -632,7 +672,7 @@ export function Navigator(): React.ReactElement {
                 ←
               </button>
             ) : (
-              remoteChatSessions.filter((item) => !item.unavailableReason).length > 0 && (
+              activeRemoteChatSessions.filter((item) => !item.unavailableReason).length > 0 && (
                 <button
                   type="button"
                   className="project-history-sync-all"
@@ -655,7 +695,7 @@ export function Navigator(): React.ReactElement {
           </div>
         )}
 
-        {remoteChatSessions.length === 0 ? (
+        {activeRemoteChatSessions.length === 0 ? (
           <div className="project-rail-empty">
             {selectedProjectId ? "No remote chats have been synced for this project yet." : "Select a project to load remote chats."}
           </div>
@@ -677,7 +717,7 @@ export function Navigator(): React.ReactElement {
                 </button>
               </div>
             )}
-            {(showAllRemoteChats ? remoteChatSessions : remoteChatSessions.slice(0, REMOTE_CHATS_LIMIT)).map((item) => {
+            {(showAllRemoteChats ? activeRemoteChatSessions : activeRemoteChatSessions.slice(0, REMOTE_CHATS_LIMIT)).map((item) => {
               const key = `${item.sourceMachineId}:${item.sourceRunId}`;
               const isRestoring = restoringIds.has(key);
               const isSelected = selectedRemoteKeys.has(key);
@@ -749,7 +789,7 @@ export function Navigator(): React.ReactElement {
                 </div>
               );
             })}
-            {remoteChatSessions.length > REMOTE_CHATS_LIMIT && (
+            {activeRemoteChatSessions.length > REMOTE_CHATS_LIMIT && (
               <button
                 type="button"
                 className="project-history-more"
@@ -757,7 +797,7 @@ export function Navigator(): React.ReactElement {
               >
                 {showAllRemoteChats
                   ? "Show less"
-                  : `Show all (${remoteChatSessions.length - REMOTE_CHATS_LIMIT} more)`}
+                  : `Show all (${activeRemoteChatSessions.length - REMOTE_CHATS_LIMIT} more)`}
               </button>
             )}
           </div>

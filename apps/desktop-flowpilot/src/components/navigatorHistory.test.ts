@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { filterVisibleHistory, isProjectSyncing } from "./navigatorHistory";
-import type { RunHistoryItem } from "@/types/contract";
+import { filterVisibleHistory, isProjectSyncing, isSyncableRun } from "./navigatorHistory";
+import type { RemoteChatSessionSummary, RunHistoryItem } from "@/types/contract";
 
 function makeItem(overrides: Partial<RunHistoryItem> = {}): RunHistoryItem {
   return {
@@ -64,4 +64,48 @@ test("filterVisibleHistory keeps main rows with agent-like metadata", () => {
   ];
 
   assert.deepEqual(filterVisibleHistory(history).map((item) => item.runId), ["main-run"]);
+});
+
+test("isSyncableRun accepts a plain chat run that is not yet synced", () => {
+  assert.equal(isSyncableRun(makeItem({ runKind: "chat" })), true);
+});
+
+test("isSyncableRun accepts a flow-engine (workflow) run -- Task-190 / CP-36 P-5", () => {
+  assert.equal(isSyncableRun(makeItem({ runKind: "workflow" })), true);
+  assert.equal(isSyncableRun(makeItem({ runKind: undefined })), true);
+});
+
+test("isSyncableRun rejects an already-synced or unavailable run", () => {
+  assert.equal(isSyncableRun(makeItem({ runKind: "chat", syncStatus: "synced" })), false);
+  assert.equal(isSyncableRun(makeItem({ runKind: "workflow", unavailableReason: "missing" })), false);
+});
+
+test("isSyncableRun rejects a child agent run even though children carry runKind chat", () => {
+  assert.equal(isSyncableRun(makeItem({ runKind: "chat", parentRunId: "run-hub" })), false);
+});
+
+test("isSyncableRun reconciles a stale local syncStatus against the confirmed remote index", () => {
+  // A local syncStatus flag can go stale (e.g. a background history poll wins a
+  // race against a just-set "synced" flag and overwrites it with the pre-sync
+  // snapshot it fetched). When the remote index already carries this exact
+  // sourceMachineId/sourceRunId, treat it as synced regardless of the local flag.
+  const item = makeItem({ runKind: "chat", syncStatus: "failed", sourceMachineId: "mch_abc", sourceRunId: "run-1" });
+  const remoteChatSessions: RemoteChatSessionSummary[] = [
+    { runId: "run-1", projectId: "project-1", providerKey: "codex", sourceMachineId: "mch_abc", sourceRunId: "run-1" },
+  ];
+
+  assert.equal(isSyncableRun(item), true, "without remote data, the stale local flag still marks it unsynced");
+  assert.equal(isSyncableRun(item, remoteChatSessions), false, "the confirmed remote record corrects the stale flag");
+});
+
+test("isSyncableRun does not reconcile a run that has never actually synced", () => {
+  // Before any sync attempt, sourceMachineId/sourceRunId are unset -- there is
+  // nothing to match against the remote index, so a never-synced run must stay
+  // syncable even when other unrelated runs already exist remotely.
+  const item = makeItem({ runKind: "chat" });
+  const remoteChatSessions: RemoteChatSessionSummary[] = [
+    { runId: "run-other", projectId: "project-1", providerKey: "codex", sourceMachineId: "mch_abc", sourceRunId: "run-other" },
+  ];
+
+  assert.equal(isSyncableRun(item, remoteChatSessions), true);
 });

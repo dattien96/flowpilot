@@ -31,6 +31,7 @@ import type { ScenarioName } from "@/client/mockData";
 import { ideBridge } from "@/client/ideBridge";
 import { getAdminUseCases } from "@/clientCore";
 import { ADMIN_WEB_URL } from "@/config";
+import { isSyncableRun } from "@/components/navigatorHistory";
 import {
   mapNavigatorStep,
   mapNavigatorWorkflow,
@@ -287,7 +288,11 @@ interface AppState {
   syncHistoryRun(runId: string, projectId?: string): Promise<void>;
   syncAllInProject(projectId: string): Promise<void>;
   deleteHistoryRun(runId: string): Promise<void>;
-  restoreRemoteChatSession(summary: RemoteChatSessionSummary, cwd?: string): Promise<void>;
+  restoreRemoteChatSession(
+    summary: RemoteChatSessionSummary,
+    cwd?: string,
+    options?: { refresh?: boolean; open?: boolean },
+  ): Promise<void>;
   openHistoryRun(runId: string): Promise<void>;
   resetRun(): void;
   openInIde(path: string, line?: number): void;
@@ -1363,14 +1368,9 @@ export const useStore = create<AppState>((set, get) => ({
     // Sync every not-yet-synced chat run in the project, one at a time so we do
     // not hammer Drive. Per-item failures are swallowed (syncHistoryRun marks
     // the row failed) so one broken session does not abort the whole batch.
+    const { remoteChatSessions } = get();
     const targets = get()
-      .runHistory.filter(
-        (item) =>
-          item.projectId === projectId &&
-          item.runKind === "chat" &&
-          item.syncStatus !== "synced" &&
-          !item.unavailableReason,
-      )
+      .runHistory.filter((item) => item.projectId === projectId && isSyncableRun(item, remoteChatSessions))
       .map((item) => item.runId);
     for (const runId of targets) {
       try {
@@ -1413,9 +1413,11 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  async restoreRemoteChatSession(summary, cwd) {
+  async restoreRemoteChatSession(summary, cwd, options) {
     const { client, selectedProjectId } = get();
     if (!selectedProjectId) return;
+    const refresh = options?.refresh ?? true;
+    const open = options?.open ?? true;
     const request: ChatSessionRestoreRequest = {
       projectId: selectedProjectId,
       sourceMachineId: summary.sourceMachineId,
@@ -1424,13 +1426,24 @@ export const useStore = create<AppState>((set, get) => ({
     };
     try {
       const result = await client.restoreChatRun(request);
-      await Promise.all([get().loadRunHistory(), get().loadRemoteChatSessions()]);
-      void get().openHistoryRun(result.runId);
+      // Batch restores (restoreAll) opt out of the per-item refresh/open: refreshing
+      // the full history + remote list after every single item in a multi-item
+      // restore serializes N extra round trips into the loop (each item waits for
+      // the previous one's full refresh before starting), which is what made a bulk
+      // restore's per-item spinner look "stuck" until the whole batch finished; and
+      // opening every restored run in turn would hijack the active chat panel N
+      // times over. The caller does one combined refresh after the whole batch.
+      if (refresh) {
+        await Promise.all([get().loadRunHistory(), get().loadRemoteChatSessions()]);
+      }
+      if (open) {
+        void get().openHistoryRun(result.runId);
+      }
     } catch (err) {
       if (err instanceof RunnerApiError && err.code === "cwd_remap_required" && !cwd) {
         const retryCwd = selectedProjectPath(get());
         if (retryCwd) {
-          await get().restoreRemoteChatSession(summary, retryCwd);
+          await get().restoreRemoteChatSession(summary, retryCwd, options);
           return;
         }
       }
