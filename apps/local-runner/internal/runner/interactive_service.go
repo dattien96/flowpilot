@@ -181,6 +181,21 @@ type interactiveRun struct {
 	// exact existing behavior. When true, startTurn skips the bulk Progress call
 	// and the executor owns every step transition for this run.
 	flowEngineDriven bool
+	// chatSubMode/chatFlowRef record the explicit Chat-Mode orchestration
+	// picker selection (CP-42/Task-177 — Bug sub-mode's "Built-in
+	// orchestration" select) that started this run, e.g. subMode="bug",
+	// flowRef="flowpilot-core-flow-pack/review-loop". BUG-263: these used to
+	// exist only as transient TurnInput fields inside startTurn, never stored
+	// on the run itself or persisted, so a restart-and-resume (or reopening
+	// from run history) had nothing to restore the Chat Intent panel's Bug
+	// tab / Built-in orchestration selection from — it silently fell back to
+	// "Normal", even though the run's own flow (activeFlowNodes/Edges,
+	// flowEngineDriven) kept working correctly underneath. Set once, on the
+	// same first-turn branch that already sets flowEngineDriven, and
+	// round-tripped through ProviderSessionState so a resumed/reopened run
+	// can restore the exact picker selection it was started with.
+	chatSubMode string
+	chatFlowRef string
 	// planContextPackage is the FlowContextPackage built for the Plan step of this Flow
 	// Mode run. Non-nil only for workflow runs with a Coding step. Cached here so retries
 	// reuse the same package without rebuilding; cleared when a Plan step reruns (Task-169).
@@ -1613,6 +1628,8 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		FlowCohortID:        rs.flowCohortId,
 		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...),
 		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
+		ChatSubMode:         rs.chatSubMode,
+		ChatFlowRef:         rs.chatFlowRef,
 	}
 }
 
@@ -3297,6 +3314,8 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" {
 			flowStartOnly = true
 			rs.flowEngineDriven = true
+			rs.chatSubMode = strings.TrimSpace(in.SubMode)
+			rs.chatFlowRef = flowRef
 			go s.startResolvedFlow(context.Background(), runID, flowRef, in.Prompt)
 		}
 	}

@@ -296,6 +296,15 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 		if flowRef, ok := s.resolveWorkflowFlowRef(r.Context(), r.PathValue("runId")); ok {
 			body.FlowRef = flowRef
 		}
+	} else if !s.explicitFlowRefResolves(r.Context(), body.FlowRef) {
+		// BUG-261: an explicit chat flowRef (Bug sub-mode picker) that passed
+		// validateChatOrchestrationSelection's option check can still fail to
+		// resolve if its stored definition is corrupted/invalid. Clear it here,
+		// synchronously, so startTurn never suppresses the hub's own turn for a
+		// flow that can't actually start — the run falls through to a normal
+		// chat turn instead of getting stuck at "completed" with no reply.
+		log.Printf("[chat-flow-ref] flowRef %q for run %q failed to resolve; falling back to a normal chat turn", body.FlowRef, r.PathValue("runId"))
+		body.FlowRef = ""
 	}
 	turnID, e := s.startTurn(
 		r.PathValue("runId"),
@@ -890,6 +899,12 @@ type runHistoryItem struct {
 	AgentName       string `json:"agentName,omitempty"`
 	Role            string `json:"role,omitempty"`
 	AgentStatus     string `json:"agentStatus,omitempty"`
+	// SubMode/FlowRef expose the Chat-Mode orchestration picker selection a
+	// run was started with (BUG-263), so reopening it from history can
+	// restore the Chat Intent panel's Bug tab / Built-in orchestration
+	// selection instead of silently falling back to "Normal".
+	SubMode string `json:"subMode,omitempty"`
+	FlowRef string `json:"flowRef,omitempty"`
 }
 
 func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryItem {
@@ -915,6 +930,8 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 			AgentName:   rs.agentName,
 			Role:        rs.role,
 			AgentStatus: rs.agentStatus,
+			SubMode:     rs.chatSubMode,
+			FlowRef:     rs.chatFlowRef,
 		})
 		seen[rs.id] = true
 	}
@@ -950,6 +967,8 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 					AgentName:       sess.AgentName,
 					Role:            sess.Role,
 					AgentStatus:     sess.AgentStatus,
+					SubMode:         sess.ChatSubMode,
+					FlowRef:         sess.ChatFlowRef,
 				})
 			}
 		}

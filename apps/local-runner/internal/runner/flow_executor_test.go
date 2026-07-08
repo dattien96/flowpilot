@@ -951,6 +951,162 @@ func TestChatModeHandleStartTurnMarksRunFlowEngineDriven(t *testing.T) {
 	}
 }
 
+// TestChatModeRunHistoryExposesOrchestrationPickerSelection is the
+// regression test for BUG-263: a run started via Chat Mode's explicit
+// flowRef picker must expose its subMode/flowRef in the run-history API
+// response, so the desktop can restore the Chat Intent panel's Bug tab /
+// Built-in orchestration selection after reopening the run (e.g. following a
+// runner restart) instead of silently falling back to "Normal".
+func TestChatModeRunHistoryExposesOrchestrationPickerSelection(t *testing.T) {
+	svc, srv := newTestServer(t)
+
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{
+		ProjectID:   "proj",
+		ChatMode:    "normal_chat",
+		ProviderKey: ProviderKeyCodex,
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start chat run status=%d body=%s", status, body)
+	}
+	var handle RunHandle
+	if err := json.Unmarshal(body, &handle); err != nil {
+		t.Fatalf("decode handle: %v", err)
+	}
+
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+handle.RunID+"/turns", map[string]any{
+		"stepId":  handle.StepID,
+		"prompt":  "fix the crash on startup",
+		"subMode": "bug",
+		"flowRef": "flowpilot-core-flow-pack/review-loop",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("send chat turn status=%d body=%s", status, body)
+	}
+
+	waitLoop(t, "coder entry node spawned", 3*time.Second, func() bool {
+		return countChildrenWithLabel(svc, handle.RunID, "coder") == 1
+	})
+
+	history := svc.projectRunHistory("proj")
+	var item *runHistoryItem
+	for i := range history {
+		if history[i].RunID == handle.RunID {
+			item = &history[i]
+			break
+		}
+	}
+	if item == nil {
+		t.Fatalf("run %q not found in project run history", handle.RunID)
+	}
+	if item.SubMode != "bug" {
+		t.Fatalf("runHistoryItem.SubMode = %q, want %q", item.SubMode, "bug")
+	}
+	if item.FlowRef != "flowpilot-core-flow-pack/review-loop" {
+		t.Fatalf("runHistoryItem.FlowRef = %q, want %q", item.FlowRef, "flowpilot-core-flow-pack/review-loop")
+	}
+}
+
+// TestChatModeExplicitFlowRefResolveFailureFallsBackToNormalTurn is the
+// regression test for BUG-261. It reproduces the exact live failure mode: an
+// explicit chat flowRef (Bug sub-mode picker) whose stored mirror definition
+// is corrupted/invalid (a node's dependsOn references a node id that doesn't
+// exist — the same shape as the live "claude-review-fake-model" corruption)
+// still passes validateChatOrchestrationSelection's option check (it only
+// checks the flowRef string is a known option, not that the stored
+// definition resolves), so it used to reach startTurn, which unconditionally
+// suppressed the hub's own turn (flowStartOnly=true) before
+// startResolvedFlow's async resolve ever ran and failed. With nothing ever
+// spawned to reinvoke the hub, the run got stuck forever at "completed" with
+// no assistant reply. The fix resolves the flowRef synchronously in
+// handleStartTurn and clears it on failure, so the turn falls through to a
+// normal provider call instead.
+func TestChatModeExplicitFlowRefResolveFailureFallsBackToNormalTurn(t *testing.T) {
+	store := newFakeFlowDefinitionStore()
+	if _, err := NewFlowMirrorSyncService(store).SyncBuiltins(context.Background()); err != nil {
+		t.Fatalf("SyncBuiltins: %v", err)
+	}
+	rec, ok, err := store.GetByPackFlow(context.Background(), "flowpilot-core-flow-pack", "review-loop")
+	if err != nil || !ok {
+		t.Fatalf("expected mirrored review-loop row, ok=%v err=%v", ok, err)
+	}
+	// Corrupt the stored mirror exactly like the live incident: a node's
+	// dependsOn references a node id that does not exist anywhere in the flow.
+	for i, node := range rec.Definition.Nodes {
+		if node.ID == "synthesis" {
+			rec.Definition.Nodes[i].DependsOn = append(node.DependsOn, "claude-review-fake-model")
+		}
+	}
+	if _, err := store.Upsert(context.Background(), rec); err != nil {
+		t.Fatalf("seed corrupted mirror row: %v", err)
+	}
+	// Sanity-check the corruption actually breaks resolution, so this test
+	// would fail loudly (not silently pass for an unrelated reason) if the
+	// fixture setup above ever stops matching agentpack.ValidateFlowDefinition's
+	// checks.
+	if _, err := NewFlowDefinitionResolver(store).ResolveFlowRef(context.Background(), "flowpilot-core-flow-pack/review-loop"); err == nil {
+		t.Fatal("fixture setup did not actually corrupt the mirror row; resolve unexpectedly succeeded")
+	}
+
+	svc, srv := newTestServer(t)
+	svc.SetFlowDefinitionStore(store)
+
+	status, body := doJSON(t, "POST", srv.URL+"/client/workflow-runs", StartRunInput{
+		ProjectID:   "proj",
+		ChatMode:    "normal_chat",
+		ProviderKey: ProviderKeyCodex,
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start chat run status=%d body=%s", status, body)
+	}
+	var handle RunHandle
+	if err := json.Unmarshal(body, &handle); err != nil {
+		t.Fatalf("decode handle: %v", err)
+	}
+
+	status, body = doJSON(t, "POST", srv.URL+"/client/workflow-runs/"+handle.RunID+"/turns", map[string]any{
+		"stepId":  handle.StepID,
+		"prompt":  "fix bug 1+1 != 2",
+		"subMode": "bug",
+		"flowRef": "flowpilot-core-flow-pack/review-loop",
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("send chat turn status=%d body=%s", status, body)
+	}
+
+	waitLoop(t, "turn settles via a real provider call, not the flow-handoff short-circuit", 2*time.Second, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		rs := svc.runs[handle.RunID]
+		return rs != nil && !rs.turnInFlight && rs.lastEventType == EventTurnCompleted
+	})
+
+	if countChildrenWithLabel(svc, handle.RunID, "coder") != 0 {
+		t.Fatal("no child should ever spawn when the flowRef fails to resolve")
+	}
+	if svc.isFlowEngineDriven(handle.RunID) {
+		t.Fatal("a run whose flowRef failed to resolve must not be flagged flow-engine-driven — nothing ever started")
+	}
+
+	svc.mu.Lock()
+	rs := svc.runs[handle.RunID]
+	events := append([]ProviderEvent(nil), rs.events...)
+	svc.mu.Unlock()
+
+	var gotReply bool
+	for _, ev := range events {
+		if ev.Type == EventMessageCompleted && strings.TrimSpace(ev.Text) != "" {
+			gotReply = true
+		}
+	}
+	if !gotReply {
+		t.Fatalf("expected a real assistant reply (EventMessageCompleted with text) once the turn fell back to normal chat; events=%#v", events)
+	}
+	last := events[len(events)-1]
+	if last.Type != EventTurnCompleted || strings.TrimSpace(last.FinalMessage) == "" {
+		t.Fatalf("expected a non-empty terminal EventTurnCompleted (the pre-fix bug produced an empty synthetic one), got %#v", last)
+	}
+}
+
 // TestContinueReinvokeUsesEdgeResolvedTargetForFlowStartedRun proves the
 // Task-180 edge-driven path end to end: a run started via startResolvedFlow
 // tracks the flow's edges, and applyFlowControl("continue") reinvokes the

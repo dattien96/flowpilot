@@ -82,6 +82,10 @@ type ndjsonSessionRecord struct {
 	// topology across a restart (BUG-NOTE-CP42 #16); see ProviderSessionState.
 	ActiveFlowEdges []agentpack.FlowEdge `json:"active_flow_edges,omitempty"`
 	ActiveFlowNodes []agentpack.FlowNode `json:"active_flow_nodes,omitempty"`
+	// ChatSubMode/ChatFlowRef persist the Chat-Mode orchestration picker
+	// selection a run was started with (BUG-263); see ProviderSessionState.
+	ChatSubMode string `json:"chat_sub_mode,omitempty"`
+	ChatFlowRef string `json:"chat_flow_ref,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -254,6 +258,8 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		FlowCohortID:        r.FlowCohortID,
 		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), r.ActiveFlowEdges...),
 		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), r.ActiveFlowNodes...),
+		ChatSubMode:         r.ChatSubMode,
+		ChatFlowRef:         r.ChatFlowRef,
 	}
 }
 
@@ -459,6 +465,8 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		FlowCohortID:        s.FlowCohortID,
 		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), s.ActiveFlowEdges...),
 		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), s.ActiveFlowNodes...),
+		ChatSubMode:         s.ChatSubMode,
+		ChatFlowRef:         s.ChatFlowRef,
 	}
 }
 

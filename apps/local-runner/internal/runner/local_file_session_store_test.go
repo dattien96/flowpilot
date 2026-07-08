@@ -192,6 +192,51 @@ func TestLocalFileSessionStoreActiveFlowTopologyRoundTrip(t *testing.T) {
 	}
 }
 
+// TestLocalFileSessionStoreChatOrchestrationSelectionRoundTrip is the
+// regression test for BUG-263: a run started via Chat Mode's explicit
+// flowRef picker (Bug sub-mode's Built-in orchestration select) must survive
+// an NDJSON write + reload with its ChatSubMode/ChatFlowRef intact, so the
+// desktop can restore the Chat Intent panel's selection after a restart
+// instead of silently falling back to "Normal".
+func TestLocalFileSessionStoreChatOrchestrationSelectionRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+
+	sess := ProviderSessionState{
+		RunID:       "run-review-loop",
+		ProjectID:   "proj-1",
+		ProviderKey: "claude",
+		Status:      "completed",
+		RunKind:     "chat",
+		ChatSubMode: "bug",
+		ChatFlowRef: "flowpilot-core-flow-pack/review-loop",
+	}
+	if err := store.UpsertProviderSession(context.Background(), sess); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	reloaded, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore reload: %v", err)
+	}
+	got, found, err := reloaded.GetProviderSession(context.Background(), "run-review-loop")
+	if err != nil {
+		t.Fatalf("GetProviderSession: %v", err)
+	}
+	if !found {
+		t.Fatal("expected session to be found")
+	}
+	if got.ChatSubMode != "bug" {
+		t.Fatalf("ChatSubMode after reload = %q, want %q", got.ChatSubMode, "bug")
+	}
+	if got.ChatFlowRef != "flowpilot-core-flow-pack/review-loop" {
+		t.Fatalf("ChatFlowRef after reload = %q, want %q", got.ChatFlowRef, "flowpilot-core-flow-pack/review-loop")
+	}
+}
+
 func TestLocalFileSessionStoreRestart(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
