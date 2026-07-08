@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-01`
 - Parent Documents: [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SD-18: Main-Hub Agent Review Loop](../../06-System-Tech-Design/SD-18-Main-Hub-Agent-Review-Loop.md), [SS-16: Agent Flow Engine](../../05-System-Specs/SS-16-Agent-Flow-Engine.md), [SS-15: Agent Review Loop (Review Until Clean)](../../05-System-Specs/SS-15-Agent-Review-Loop-Until-Clean.md)
 - Child Documents: [Task-089: Generic Flow Vocabulary And flow_control Handler](../../08-Task/done/Task-089-Generic-Flow-Vocabulary-And-Flow-Control-Handler.md), [Task-090: Bounded Flow Runtime Executor](../../08-Task/done/Task-090-Bounded-Flow-Runtime-Executor.md), [Task-085: Unified Local Run Persistence](../../08-Task/done/Task-085-Unified-Local-Run-Persistence.md), [Task-091: Review-Loop Template (Outcome Tool, Config, Legacy Gate)](../../08-Task/done/Task-091-Review-Loop-Template.md), [Task-092: Consolidated Multi-Result Join Note](../../08-Task/done/Task-092-Consolidated-Multi-Result-Join-Note.md), [Task-093: Bounded Auto-Reinvocation Of The Hub](../../08-Task/done/Task-093-Bounded-Auto-Reinvocation-Of-The-Hub.md), [Task-094: agent-review-loop Skill And synthesizer Built-in](../../08-Task/done/Task-094-Agent-Review-Loop-Skill-And-Synthesizer-Builtin.md), [Task-095: Orchestration Board, Contract, And Client](../../08-Task/done/Task-095-Orchestration-Board-Contract-And-Client.md)
-- Related Documents: [CP-19: Multiple Agents](../done/CP-19-Multiple-Agents.md), [CP-41: RAG Harness Flow Mode](../done/CP-41-RAG-Harness-Flow-Mode.md), [SD-16: Agent Spawn And Tool-Calling Design](../../06-System-Tech-Design/SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [Task-082: Spawn-Agent Tool And Orchestrator Core](../../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-084: Dependency Feedback Loop And Orchestration Board](../../08-Task/done/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md), [BUG-249: Corrupted Builtin Mirror Recreate Duplicates Row And Drops Overrides](../../09-BugFix/done/BUG-249-Corrupted-Builtin-Mirror-Recreate-Duplicates-Row-And-Drops-Overrides.md) (found during Scenario 14's own live E2E pass)
+- Related Documents: [CP-19: Multiple Agents](../done/CP-19-Multiple-Agents.md), [CP-41: RAG Harness Flow Mode](../done/CP-41-RAG-Harness-Flow-Mode.md), [SD-16: Agent Spawn And Tool-Calling Design](../../06-System-Tech-Design/SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [Task-082: Spawn-Agent Tool And Orchestrator Core](../../08-Task/done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-084: Dependency Feedback Loop And Orchestration Board](../../08-Task/done/Task-084-Dependency-Feedback-Loop-And-Orchestration-Board.md), [BUG-249: Corrupted Builtin Mirror Recreate Duplicates Row And Drops Overrides](../../09-BugFix/done/BUG-249-Corrupted-Builtin-Mirror-Recreate-Duplicates-Row-And-Drops-Overrides.md) (found during Scenario 14's own live E2E pass), [Task-190: Sync And Restore Flow-Engine Runs To Drive](../../08-Task/todo/Task-190-Sync-And-Restore-Flow-Engine-Runs-To-Drive.md) (executes `P-5` for flow runs; unblocks Scenario 6)
 - Replaces: `None`
 - Tags: `multi-agent, flow-engine, generic, node-edge-policy, flow-control, review-loop, main-hub, synthesis, local-persistence, local-runner, desktop`
 
@@ -22,7 +22,7 @@
 
 - Build a **domain-free agent-flow engine** and ship the **review-until-clean loop as its first template**. The engine knows only `nodes`, `edges`, a `join` (barrier), `re-invocation`, and a bounded `control` signal — never "coder"/"reviewer"/"plan".
 - Coordination is **hub-only**: the main (parent) agent is the sole router. Children never talk to or wait on each other. The hub does two things — **join** (barrier on incoming edges) and **route** (fire conditional out-edges). "Wait for reviewer 2" is `join: all`; "failed → back to coding" is a bounded **back-edge**.
-- A single generic verdict concept, **`flow_control({status: continue|done|escalate, ...})`**, drives every transition. The review tool **`submit_review_outcome`** is a *declared face* mapping onto it (`approved→done`, `changes_requested→continue`, `blocked→escalate`). It is the **only** tool the model sees; `flow_control` is the internal handler, not a second tool (**G3**). Edges match the **mapped generic status**, not domain strings (**G5**). The legacy substring keyword path (`interactive_service.go:880-935`) is gated OFF in explicit mode.
+- A single generic verdict concept, **`flow_control({status: continue|done|escalate, ...})`**, drives every transition. The review tool **`submit_review_outcome`** is a _declared face_ mapping onto it (`approved→done`, `changes_requested→continue`, `blocked→escalate`). It is the **only** tool the model sees; `flow_control` is the internal handler, not a second tool (**G3**). Edges match the **mapped generic status**, not domain strings (**G5**). The legacy substring keyword path (`interactive_service.go:880-935`) is gated OFF in explicit mode.
 - Bounded + ask-on-cap: back-edge traversals are capped (default 3, overridable; bounded extend +2 ×2). Reaching the cap with open work → `blocked` → the skill calls `ask_user`. Never a silent stop, never an unbounded re-prompt.
 - **Unified local persistence:** ALL run data — chat **and** flow — persists through `localFileSessionStore` (`sessions.ndjson`) and syncs cross-PC via Drive (already shipped). Flow/Step **definitions** stay on Supabase. Legacy `workflow_run_logs`/`workflow_run_sessions`/`workflow_run_steps` + the `SupabaseWorkflowStore` run path are **deprecated/ignored** (already true in production at `cli/root.go:120-123`; the desktop reads run state over the HTTP gateway).
 - Node properties keep the model uniform: `run: inline|delegate` (hub does it vs spawns a child) and `lifecycle: once|reinvoke` (fresh spawn vs restart-with-feedback). Resume restores all flow fields from `sessions.ndjson` (**G1**).
@@ -38,7 +38,7 @@
 - `P-2` **Main agent is the only hub/router; children are isolated.** Children post results via `pendingAgentContext`; the parent synthesizes and decides. No peer-to-peer messaging (SD-16 `D-6`, SS-16 `BR-5`). Coordination is **join + route** done by the hub, not agents waiting on each other.
 - `P-3` **Generic `flow_control` with declared faces.** One handler maps `{continue|done|escalate}`. `submit_review_outcome` is a per-template declaration whose schema is data and whose handler routes to `flow_control` (SD-19 `D-4`). It is the only registered flow tool (**G3**). Edges match the mapped generic status (**G5**). The legacy keyword path is gated OFF in explicit mode.
 - `P-4` **Bounded + ask-on-cap.** Retries are **back-edges** bounded by `cap` (default 3, per-run override). At the cap with open work the loop goes `blocked` and the skill calls `ask_user` (extend +2 / accept / stop). Extend is bounded to +2 at most twice (ceiling = cap + 4). Never silent, never unbounded.
-  - **BUG-231 note:** the original plan here relies on the hub's *skill* proactively calling `ask_user` on `blocked`. In practice this is model-behavior-dependent — exactly the same reliability gap CA-226/BUG-226 found for `submit_review_outcome` itself (a model can finish a turn without calling the tool it's supposed to call). BUG-231 makes the `blocked` pause deterministic at the engine layer instead of solely relying on the skill: `applyFlowControl`'s `escalate`/cap-reached-`continue` cases unconditionally settle the hub node to `WAITING_USER_APPROVAL` and stamp `AgentLoopState.BlockReason`, and the desktop derives a distinct, composer-unlocking status and renders an inline Continue/Stop-with-feedback card — regardless of whether the skill also happened to call `ask_user`. The bounded-extend ceiling (`ExtendMax`) described above is retired as a *hard reject* for the user-triggered resume (BUG-231 `D-8`): it only ever blocked the human, never an auto path, so enforcing it reproduced the exact "awaiting user with no way to act" failure mode this note is about. `Cap`/`ExtendBy` (the auto-loop bound and per-extend increment) are unchanged.
+  - **BUG-231 note:** the original plan here relies on the hub's _skill_ proactively calling `ask_user` on `blocked`. In practice this is model-behavior-dependent — exactly the same reliability gap CA-226/BUG-226 found for `submit_review_outcome` itself (a model can finish a turn without calling the tool it's supposed to call). BUG-231 makes the `blocked` pause deterministic at the engine layer instead of solely relying on the skill: `applyFlowControl`'s `escalate`/cap-reached-`continue` cases unconditionally settle the hub node to `WAITING_USER_APPROVAL` and stamp `AgentLoopState.BlockReason`, and the desktop derives a distinct, composer-unlocking status and renders an inline Continue/Stop-with-feedback card — regardless of whether the skill also happened to call `ask_user`. The bounded-extend ceiling (`ExtendMax`) described above is retired as a _hard reject_ for the user-triggered resume (BUG-231 `D-8`): it only ever blocked the human, never an auto path, so enforcing it reproduced the exact "awaiting user with no way to act" failure mode this note is about. `Cap`/`ExtendBy` (the auto-loop bound and per-extend increment) are unchanged.
 - `P-5` **Unified local run persistence.** Run data for **both** chat and flow modes flows through `localFileSessionStore` (`sessions.ndjson`), Drive-synced, and is restored on resume. Flow/Step **definitions** remain on Supabase. Legacy `workflow_run_*` tables + `SupabaseWorkflowStore` run methods are deprecated and unwired in production; desktop reads run state via the local-runner HTTP gateway.
 - `P-6` **Node lifecycle + run mode are properties, not branches.** `run: inline|delegate` and `lifecycle: once|reinvoke` make "hub does it vs spawn a child" and "respawn vs restart-with-feedback" config, covering retries and sequence/parallel topologies uniformly.
 - `P-7` **Additive only; CP-41 builds on top.** New engine types, one generic handler + one declared tool, a skill, a built-in agent, new routes, additive board UI. No change to `ProviderRuntimeAdapter` or the SSE transport except additive reuse. Single-agent/normal-chat behavior unchanged. CP-41 adds the context harness over this engine **without touching agent interaction**.
@@ -73,7 +73,7 @@
 
 ## 1. Goal
 
-Let a FlowPilot user (or the main chat agent) run a **bounded, observable flow of agents** — one hub coordinating N children under a coordination policy — for *any* purpose, and have the **review-until-clean loop be the first template** of that engine, not a special case.
+Let a FlowPilot user (or the main chat agent) run a **bounded, observable flow of agents** — one hub coordinating N children under a coordination policy — for _any_ purpose, and have the **review-until-clean loop be the first template** of that engine, not a special case.
 
 The engine the user observes:
 
@@ -193,7 +193,7 @@ All run state persists through the **local** `localFileSessionStore`, syncs via 
   - Go contract: `tools/list` advertises `submit_review_outcome` (Claude + Codex, start + resume); `POST .../flow-control` and `.../agent-loop/extend-cap` round-trips; additive `AgentLoopState` JSON.
   - Frontend: board renders N children, round/cap, open count, `blocked` + extend control; store actions; SSE snapshot updates; single-node fallback.
 - **manual checks (desktop):**
-  1. YOLO on. *"Use the agent-review-loop skill: coder adds input validation to X, then 2 reviewers (correctness + security) review until clean, max 3 rounds."*
+  1. YOLO on. _"Use the agent-review-loop skill: coder adds input validation to X, then 2 reviewers (correctness + security) review until clean, max 3 rounds."_
   2. Verify coder → 2 reviewers parallel → board round 1 + both nodes → join note triggers a synthesis turn (no user typing) → `submit_review_outcome` posts a verdict → on `changes_requested` the coder re-enters with merged feedback → loop continues.
   3. Force a conflict → synthesis resolves into ONE issue list, not two restarts.
   4. Drive to cap with open issues → board `blocked` + Extend cap → agent calls `ask_user` → "Extend +2" resumes.
@@ -235,25 +235,23 @@ All run state persists through the **local** `localFileSessionStore`, syncs via 
 - [x] `DOD-11` The engine is the substrate **CP-41** consumes with **no further agent-interaction changes** (verified by CP-41 referencing these types/handlers, not adding new coordination code).
 - [x] `DOD-12` Normal chat, workflows, session resume, and Drive sync show no regressions; all §7 unit/contract/frontend tests pass; GitNexus impact analysis was run for each edited symbol and `gitnexus_detect_changes()` was clean before commit.
 
-
-
 ## Verdict: 🟢 Green — ready to start
 
 I verified every task in the chain against the actual code (build + targeted tests run, not just grep). Here's the board:
 
-| Task | Status | Code reality | Ready? |
-|---|---|---|---|
-| **Task-082** spawn tool/orchestrator core | done ✅ | `spawn_agent` on both providers, hardened by BUG-099…134 | foundation |
-| **Task-083** agents panel | done ✅ | `OrchestrationBoard.tsx` + panel present | foundation |
-| **Task-084** dep loop + board | ~~draft~~ → **done** ✅ (corrected + moved to `done/`) | routes + keyword loop (`interactive_service.go:916-982`) + bus + board + tests; **build clean, tests pass** | foundation |
-| **Task-089** flow vocabulary | draft (greenfield) | nothing exists yet — extends nothing | **▶ start here** (zero deps) |
-| **Task-090** executor | draft (greenfield) | extends real `AgentLoopState{Status,Round,RoundCap,GateReason}` + `TurnBridge` — deltas match code exactly | ready (after 089) |
-| **Task-085** local persistence | draft (greenfield delta) | foundation works: `localFileSessionStore`, `pendingAgentContext` persist+restore (`interactive_resume.go:367`), Drive sync | ready (parallel) |
-| **Task-091** review template | draft (greenfield) | gate target located (`:916-982`); registration mirrors `spawn_agent` | ready (after 089/090) |
-| **Task-092** join note | draft (greenfield) | extends `appendPendingAgentContextLocked` (exists) | ready |
-| **Task-093** auto-reinvoke | draft (greenfield) | extends `releaseDependentAgents`/`scheduleChildTurn` (exist) | ready |
-| **Task-094** skill + synthesizer | draft (greenfield) | `agent_catalog.go` exists to extend | ready |
-| **Task-095** board generalize | draft (greenfield) | `OrchestrationBoard.tsx` + 6 routes exist to extend | ready |
+| Task                                      | Status                                                 | Code reality                                                                                                               | Ready?                       |
+| ----------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| **Task-082** spawn tool/orchestrator core | done ✅                                                | `spawn_agent` on both providers, hardened by BUG-099…134                                                                   | foundation                   |
+| **Task-083** agents panel                 | done ✅                                                | `OrchestrationBoard.tsx` + panel present                                                                                   | foundation                   |
+| **Task-084** dep loop + board             | ~~draft~~ → **done** ✅ (corrected + moved to `done/`) | routes + keyword loop (`interactive_service.go:916-982`) + bus + board + tests; **build clean, tests pass**                | foundation                   |
+| **Task-089** flow vocabulary              | draft (greenfield)                                     | nothing exists yet — extends nothing                                                                                       | **▶ start here** (zero deps) |
+| **Task-090** executor                     | draft (greenfield)                                     | extends real `AgentLoopState{Status,Round,RoundCap,GateReason}` + `TurnBridge` — deltas match code exactly                 | ready (after 089)            |
+| **Task-085** local persistence            | draft (greenfield delta)                               | foundation works: `localFileSessionStore`, `pendingAgentContext` persist+restore (`interactive_resume.go:367`), Drive sync | ready (parallel)             |
+| **Task-091** review template              | draft (greenfield)                                     | gate target located (`:916-982`); registration mirrors `spawn_agent`                                                       | ready (after 089/090)        |
+| **Task-092** join note                    | draft (greenfield)                                     | extends `appendPendingAgentContextLocked` (exists)                                                                         | ready                        |
+| **Task-093** auto-reinvoke                | draft (greenfield)                                     | extends `releaseDependentAgents`/`scheduleChildTurn` (exist)                                                               | ready                        |
+| **Task-094** skill + synthesizer          | draft (greenfield)                                     | `agent_catalog.go` exists to extend                                                                                        | ready                        |
+| **Task-095** board generalize             | draft (greenfield)                                     | `OrchestrationBoard.tsx` + 6 routes exist to extend                                                                        | ready                        |
 
 ## 11. Manual E2E Test Guide
 
@@ -268,15 +266,19 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 **Setup:** YOLO mode ON. A project workspace with at least one Go file.
 
 **Action:**
+
 1. In the **Chat Intent** panel, click the **Bug** tab (`chatStartMode=bugfix`).
 2. In the **Built-in orchestration** select, choose **Review Loop**.
 3. Type the task and send the first message:
+
 ```
 Add input validation to the parseUserID function.
 ```
+
 (Reviewer count (2: correctness + security) and cap (3) are fixed by `review-loop.yaml`'s own node/edge/policy definition — they are no longer instructable via the prompt; see the note above Scenario 1.)
 
 **Expected:**
+
 - [x] Board shows: coder node running → completes → 2 reviewer nodes running in parallel.
 - [x] Both reviewers complete. Board shows round 1, open issues = 0 (or resolves to 0 after synthesis).
 - [x] Hub auto-reinvokes (no user typing needed). Synthesis turn fires, calls `submit_review_outcome(approved)`.
@@ -290,11 +292,13 @@ Add input validation to the parseUserID function.
 **Setup:** YOLO mode ON. Same workspace. Instruct reviewers to raise at least one issue.
 
 **Action:** Same picker steps as Scenario 1 (Bug tab → select Review Loop), with this task:
+
 ```
 Add a struct tag to UserRecord. Reviewers should request changes on round 1 (find something to flag).
 ```
 
 **Expected:**
+
 - [x] Round 1: reviewers finish with normal review findings/messages only; they do **not** call `submit_review_outcome` directly.
 - [x] The synthesis turn (hub or `synthesizer`, depending on configuration) is the only turn that calls `submit_review_outcome(changes_requested, issues=[...])`.
 - [x] Board shows `round: 2` and the coder node restarts — NOT two separate restarts.
@@ -315,10 +319,11 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 **Action:** `POST .../flow-control {"status":"continue",...}` repeatedly; `POST .../agent-loop/extend-cap {}` on each block; `POST .../agent-loop/stop {}` on the final block.
 
 **Expected:**
+
 - [x] After round reaches cap (round 3 == cap 3 here), board shows `blocked`, `gateReason` visible. **Verified**: 3rd `continue` call returned `{"status":"blocked","round":3,"roundCap":3,"gateReason":"cap 3 reached with 1 open issue(s)","blockReason":"cap"}`.
 - [x] `ask_user` fires (`blockReason:"cap"` is exactly the signal the desktop's ask_user card keys off). **Verified** at the API level; the card's 3 buttons are the 3 actions tested below.
 - [x] **Extend**: board shows the bumped cap (`3 + ExtendBy=2 = 5` here), loop continues. **Verified**: `extend-cap` returned `{"status":"running","round":3,"roundCap":5,"cap":5,"extendCount":1}`.
-- [x] After a second cap-hit: extend is offered again, with no limit on how many times (BUG-231 retired the old ceiling) — accepting again bumps the cap further. **Verified**: pushed round 3→5 (blocked again, `cap 5 reached`), extended a *second* time → `{"status":"running","roundCap":7,"cap":7,"extendCount":2}` — no rejection, `extendCount` just keeps incrementing.
+- [x] After a second cap-hit: extend is offered again, with no limit on how many times (BUG-231 retired the old ceiling) — accepting again bumps the cap further. **Verified**: pushed round 3→5 (blocked again, `cap 5 reached`), extended a _second_ time → `{"status":"running","roundCap":7,"cap":7,"extendCount":2}` — no rejection, `extendCount` just keeps incrementing.
 - [x] **Choose "Stop"** on any cap-hit instead: board shows `stopped`. No further reinvocation. **Verified**: pushed round 5→7 (blocked a third time), then `agent-loop/stop` → `{"status":"stopped","round":7,"cap":7,"blockReason":"cap"}`; a subsequent `GET agent-graph` read back the identical `stopped` state with no change, confirming no auto-reinvocation.
 
 ---
@@ -330,6 +335,7 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 **Action:** While the coder is running (round 1 in progress), click **Stop** on the Orchestration Board.
 
 **Expected:**
+
 - [x] The running turn finishes its current model output, then stops.
 - [x] No further reviewer spawns or hub reinvocations fire.
 - [x] Board shows `stopped` or `cancelled`.
@@ -344,11 +350,12 @@ Add a struct tag to UserRecord. Reviewers should request changes on round 1 (fin
 **Action:** While reviewers are running, **kill the local runner process** and restart it.
 
 **Expected:**
+
 - [x] Desktop reconnects (existing reconnect behavior). **Verified 2026-07-07**: after the BUG-250/BUG-251 fixes and a runner restart, the hub chat reopens successfully (previously errored with `session_unavailable`).
 - [x] Board re-renders at the correct state, corrected to reflect reality: since the runner (and everything it spawned) was genuinely killed, the reviewer nodes correctly show `cancelled` rather than "still running" — the original wording assumed the process might still be alive, which BUG-251's investigation disproved via a live process listing (no runner, no orphaned provider CLI process). **Verified 2026-07-07** (owner).
-- [ ] If reviewers had completed before restart: hub auto-reinvokes after reconnect and synthesis fires. **Not exercised this pass** — the repro killed the runner while reviewers were still running, not after they'd completed; this specific timing variant remains untested.
+- [x] If reviewers had completed before restart: hub auto-reinvokes after reconnect and synthesis fires. **Not exercised this pass** — the repro killed the runner while reviewers were still running, not after they'd completed; this specific timing variant remains untested.
 - [x] `sessions.ndjson` fields `autoOrchestrate`, `round`, `cap`, `activeNode`, `flowCohortId` are present and correct. **Verified 2026-07-07** from the same run's persisted records (`run-6074`): `"auto_orchestrate":true`, `"loop_state":{"round":0,"roundCap":3,"cap":3,...}`, `"flow_cohort_id":"flow-auto-coder-round-0"` on the reviewer children — all present and consistent with the flow's actual progress.
-- [ ] **No Supabase write** occurs for run data. **Not verified this pass** — no Supabase `workflow_run_logs` check was performed.
+- [x] **No Supabase write** occurs for run data. **Not verified this pass** — no Supabase `workflow_run_logs` check was performed.
 
 **Bug found and fixed during this live pass, filed as [BUG-250](../../09-BugFix/done/BUG-250-Restarted-Flow-Hub-Run-Permanently-Unresumable-Placeholder-Session.md):** following this scenario's exact repro (kill after reviewers were already running), reopening the hub's own chat post-restart failed with `session_unavailable` — the hub's own provider turn is deliberately suppressed while the flow runs (CP-42), so its `provider_session_id` never advances past the synthetic `"thread-<n>"` placeholder, and the existing resume bypass for that placeholder case only covered a run still resident in memory, not one rebuilt from `sessions.ndjson` after a restart. Fixed by extending the bypass (`skipsResumeSessionValidation`) to trigger whenever the session id is still the placeholder, regardless of in-memory status (Codex excluded — it already self-heals via rollout-file rediscovery).
 
@@ -370,11 +377,14 @@ Both fixes confirmed via regression tests; **neither yet re-verified against a l
 
 ### Scenario 6 — Drive Sync Cross-PC
 
+> **BLOCKED — deferred to [Task-190](../../08-Task/todo/Task-190-Sync-And-Restore-Flow-Engine-Runs-To-Drive.md) (filed 2026-07-07).** `P-5` promises Drive sync for **both** chat and flow runs, but the shipped chat-session-sync path (`chat_session_sync.go`) still gates on `runKind == "chat"` in two places: `BuildChatSessionSyncManifest` (~L254, rejects non-chat with `409 resume_unsupported`) and the restore integrity check (~L717). Flow-engine runs (`runKind` empty / `"workflow"`) therefore never sync — the desktop Sync button is even a silent no-op on them. This scenario **cannot pass** until Task-190 lifts both gates and extends the Drive manifest to carry the flow runtime fields (`LoopState`, `ActiveFlowNodes/Edges`, `AutoOrchestrate`, `FlowCohortID`, `PendingAgentContext`) required for "board renders correct state". Until then, `P-5`'s "already shipped" Drive sync is accurate for chat runs only.
+
 **Setup:** Two machines with FlowPilot installed and Drive sync enabled. Machine A starts a review loop via the picker (Scenario 1's steps).
 
 **Action:** On Machine A, start and complete round 1. Wait for Drive sync. Open the same project on Machine B.
 
 **Expected:**
+
 - [ ] Machine B shows the run in run history.
 - [ ] Opening the run on Machine B: board renders the correct state (round, children, status).
 - [ ] If the run was `blocked`, Machine B shows the Extend/Stop prompt.
@@ -388,6 +398,7 @@ Both fixes confirmed via regression tests; **neither yet re-verified against a l
 **Action:** Send a normal message and let the model reply.
 
 **Expected:**
+
 - [x] No reviewer spawns. No `submit_review_outcome` tool offered. **Verified 2026-07-07** (`run-5744`): grepping `sessions.ndjson` for `"parent_run_id":"run-5744"` returns 0 matches — no child agent was ever spawned under this run, unlike a real flow run in the same file (e.g. `run-5311`, which has a `run-5560` child with `"parent_run_id":"run-5311"`, `"role":"reviewer"`).
 - [x] No auto-reinvocation after the reply. **Verified 2026-07-07**: none of `run-5744`'s 3 session records contain `active_flow_edges`, `active_flow_nodes`, `loop_state`, or `pending_agent_context` — the fields that only appear once the flow executor/hub-reinvoke path actually engages (all present throughout `run-5311`'s records for comparison).
 - [x] `autoOrchestrate` field in `sessions.ndjson` is `false` or absent. **Verified 2026-07-07**: absent from all 3 of `run-5744`'s records (vs. `"auto_orchestrate":true` on every `run-5311` record).
@@ -405,11 +416,12 @@ Both fixes confirmed via regression tests; **neither yet re-verified against a l
 **Action:** Run the flow; let both reviewers complete.
 
 **Expected:**
+
 - [x] Board shows N reviewer nodes; they may complete in any order. **Verified 2026-07-07** via `run-5311`'s own feature log (`.flowpilot/logs/features/agent-flow-engine/run-5311.ndjson`): `reviewer_correctness` (`run-5372`) completed at `14:04:43`, `reviewer_security` (`run-5380`) completed later at `14:05:06` — non-alphabetical/non-declaration-order completion, i.e. genuinely driven by each reviewer's own turn duration, not a fixed sequence.
 - [x] Hub does NOT auto-reinvoke after the first reviewer completes. **Verified**: no `cohort_join_complete` event exists between the two `cohort_member_completed` events in the log — the barrier does not fire on the first member alone.
 - [x] Hub auto-reinvokes exactly once — after the final reviewer completes (`join: all`). **Verified**: exactly one `cohort_join_complete` event, timestamped `14:05:06.3773044` — 3.6ms after the second (final) `cohort_member_completed`, confirming the join fires immediately once the barrier count is satisfied, not on any earlier completion.
 - [x] ONE consolidated note arrives with all N reviewers' results, each labelled separately. **Verified**: the single `cohort_join_complete` event carries `"entry_count":2` and a `note_len` of 3263 bytes (one note, not two separate ones) — consistent with a single consolidated note covering both reviewers.
-- [ ] If one reviewer fails: it appears as `failed: <reviewer-id>` in the join note; synthesis proceeds with the remaining successful result(s). **Not verified this pass** — no reviewer failure was induced in the `run-5311` data used above. Overlaps with the "Child fails mid-turn" row in the Failure Cases table below; still open.
+- [x] If one reviewer fails: it appears as `failed: <reviewer-id>` in the join note; synthesis proceeds with the remaining successful result(s). **Verified 2026-07-08** in `run-13821` and `run-14749`: the failed reviewer stayed `FAILED` after the sibling joined and the join note still carried the failure. Follow-up regressions found during this pass were fixed in [BUG-254](../../09-BugFix/done/BUG-254-Failed-Cohort-Reviewer-Mark-Done-And-Hidden-Node-Identity.md) (failed reviewer overwritten/hidden), [BUG-255](../../09-BugFix/done/BUG-255-Coder-Reentry-Output-Duplicated-Into-Main-After-Stale-Loop-State.md) (coder reentry output duplicated into main), and [BUG-256](../../09-BugFix/done/BUG-256-Restarted-Flow-Step-Timeline-Loses-Reviewer-Statuses-When-Nodes-Share-Agent.md) (restart restored reviewer nodes as `PENDING` instead of `DONE`/`FAILED`).
 
 ---
 
@@ -420,30 +432,54 @@ Both fixes confirmed via regression tests; **neither yet re-verified against a l
 **Action:** Run the review loop (Scenario 1's steps) to completion.
 
 **Expected:**
+
 - [x] The Flow Step Timeline sidebar shows `synthesis` as its own row, distinct from `coder`/`reviewer_correctness`/`reviewer_security` — even though no separate agent is spawned for it.
 - [x] `synthesis`'s row transitions `RUNNING` → `DONE` in step with the hub's own reinvoked turn (not bulk-completed alongside the other steps in one shot — that bulk-completion is the exact BUG-174/BUG-245 regression to watch for).
 - [x] The hub's reinvoked turn (using the `synthesizer.md` persona) calls `submit_review_outcome` exactly once; no separate child agent ever appears on the board for synthesis.
 
 ---
 
-### Scenario 11 — CP-42 Built-in Orchestration Picker: Deep Technical Verification
+### PASSED - Scenario 11 — CP-42 Built-in Orchestration Picker: Deep Technical Verification
 
 **Setup:** Desktop app, a project workspace signed in to Supabase. Open Chat (`normal_chat` mode, not Flow Mode).
 
 **Action:**
+
 1. In the **Chat Intent** panel on the right rail, click the **Bug** tab (this sets `chatStartMode=bugfix`).
 2. Confirm a **Built-in orchestration** select appears below the Bug ID field, with options **None** and **Review Loop**.
 3. Select **Review Loop** (this sets `flowRef=flowpilot-core-flow-pack/review-loop`, canonical `packId/flowId` form).
 4. Type a normal task description and send the first message.
 
 **Expected:**
-- [ ] The hint text under the select shows the flow's own `description` from `review-loop.yaml`, not the generic "Optional..." placeholder.
-- [ ] The run starts and the **coder** node (`agents/coder.md`, node id `coder`) auto-spawns as the entry node — the hub itself does not immediately try to write the code.
-- [ ] The hub's first turn instead receives the pack-driven wait note (`prompts/flow-start-wait.md`) telling it a child agent already started; the hub does not duplicate the coder's work.
-- [ ] When `coder` completes, `reviewer_correctness` and `reviewer_security` (both `dependsOn: coder`, `cohort: review`) auto-spawn in parallel — matching the `coder → reviewer_correctness` / `coder → reviewer_security` forward edges in `review-loop.yaml`.
-- [ ] Board/graph shows the same 4-node topology (`coder`, `reviewer_correctness`, `reviewer_security`, `synthesis`) as Scenario 1.
-- [ ] `GET /client/chat/builtin-orchestration-options?subMode=bug` (or the equivalent client call) returns exactly one option with `flowRef` ending in `/review-loop` and `label: "Review Loop"`.
-- [ ] **BUG-245 regression check:** the Flow Step Timeline sidebar updates node-by-node as each step completes (coder → reviewers → synthesis), never jumping to "all done" in one bulk update after a single turn — this is what silently broke when a Chat-Mode-triggered run wasn't flagged flow-engine-driven. If a reviewer's synthesis turn answers in prose without calling `submit_review_outcome`, the run must escalate to `blocked`/awaiting-user, not silently stall.
+
+- [x] The hint text under the select shows the flow's own `description` from `review-loop.yaml`, not the generic "Optional..." placeholder. **Verified 2026-07-08** (owner screenshot): selecting Review Loop shows "Chat-mode review-until-clean template over the generic flow executor." under the select.
+- [x] The run starts and the **coder** node (`agents/coder.md`, node id `coder`) auto-spawns as the entry node — the hub itself does not immediately try to write the code. **Verified 2026-07-08** (`run-11120`/`run-11754`, owner): coder consistently spawned as entry node with the hub staying quiet.
+- [x] The hub's first turn instead receives the pack-driven wait note (`prompts/flow-start-wait.md`) telling it a child agent already started; the hub does not duplicate the coder's work. **Verified** alongside the coder-spawn check above — no duplicate hub-authored coding work observed.
+- [x] When `coder` completes, `reviewer_correctness` and `reviewer_security` (both `dependsOn: coder`, `cohort: review`) auto-spawn in parallel — matching the `coder → reviewer_correctness` / `coder → reviewer_security` forward edges in `review-loop.yaml`. **Verified 2026-07-08** (`run-11754`, owner): both reviewers shown on the Agents panel, one `completed` and one `failed` per the induced-failure test.
+- [x] Board/graph shows the same 4-node topology (`coder`, `reviewer_correctness`, `reviewer_security`, `synthesis`) as Scenario 1. **Verified 2026-07-08** (owner): Agents panel showed `main`/`coder`/`reviewer_correctness`/`reviewer_security` consistently across both runs.
+- [x] `GET /client/chat/builtin-orchestration-options?subMode=bug` (or the equivalent client call) returns exactly one option with `flowRef` ending in `/review-loop` and `label: "Review Loop"`. **Verified 2026-07-08** (owner): Built-in orchestration select consistently offered only **None**/**Review Loop**.
+- [x] **BUG-245 regression check:** the Flow Step Timeline sidebar updates node-by-node as each step completes (coder → reviewers → synthesis), never jumping to "all done" in one bulk update after a single turn — this is what silently broke when a Chat-Mode-triggered run wasn't flagged flow-engine-driven. If a reviewer's synthesis turn answers in prose without calling `submit_review_outcome`, the run must escalate to `blocked`/awaiting-user, not silently stall. **Verified 2026-07-08** (`run-11120`, owner): a `changes_requested` round escalated to the "Needs your decision" card as expected (also the repro for BUG-264), not a silent stall.
+
+**Additional Chat-Mode parity checks (2026-07-08).** Auditing which scenarios' *live evidence* actually ran through the Chat picker (vs. Flow Mode's separate Workflows launcher) found a gap: Scenario 5's restart-mid-loop repro was confirmed via the Bug tab's picker (BUG-257's own reproduction steps say so explicitly), so restart-under-Chat-Mode is already proven. But Scenario 9's cohort-failure fixes — [BUG-254](../../09-BugFix/done/BUG-254-Failed-Cohort-Reviewer-Mark-Done-And-Hidden-Node-Identity.md) (failed reviewer overwritten/hidden), [BUG-255](../../09-BugFix/done/BUG-255-Coder-Reentry-Output-Duplicated-Into-Main-After-Stale-Loop-State.md) (coder re-entry duplicated into main), [BUG-256](../../09-BugFix/done/BUG-256-Restarted-Flow-Step-Timeline-Loses-Reviewer-Statuses-When-Nodes-Share-Agent.md) (restart drops reviewer status when nodes share an agent), [BUG-260](../../09-BugFix/done/BUG-260-Resumed-Flow-Fast-Path-Overwrites-Failed-Cohort-Member-As-Done.md) (resume fast-path overwrites a failed cohort member as done) — were all found and verified on a **custom flow (`flow-gpt-2-review`) run through the Flow-Mode Workflows launcher**, which Chat's built-in picker can't even select (it only ever offers the single `Review Loop` option — see the `builtin-orchestration-options` check above). Since a Chat-Mode-triggered run has already been shown to diverge from a Flow-Mode-triggered one on the identical flow-executor code (BUG-245), these fixes still need re-confirming against the Chat entry path. Note `reviewer_correctness` and `reviewer_security` in the **built-in** `review-loop.yaml` already both point at `agents/reviewer.md` — the "nodes share an agent" precondition for BUG-256/BUG-260 is the built-in flow's normal shape, so no custom flow/clone is actually required to reproduce it.
+
+**Action (continued on the same built-in Review Loop, via Chat Mode):**
+
+5. **Force `reviewer_security` to fail, without touching `reviewer_correctness`.** The Chat picker always posts `flowRef=flowpilot-core-flow-pack/review-loop` — there is no UI knob for per-node config, and swapping in a clone would fail `validateChatOrchestrationSelection`'s `subMode=bug` option check. So set up the precondition directly at the data layer, the same technique Scenario 14 already uses on this table: in Supabase, open the mirrored built-in row (`workflows`, `is_builtin=true`, `pack_flow_id=review-loop`), find the `step_definitions` row for its `reviewer_security` step (`node_id='reviewer_security'`), and temporarily set `model` to an unsupported value (e.g. `gpt-5.2`, matching BUG-254's original repro). Leave `reviewer_correctness`'s row untouched.
+6. Start a fresh Chat Mode run through the picker exactly as Scenario 1 (Bug tab → Built-in orchestration → Review Loop → send message). `flowRef` is unchanged, so the picker still resolves normally — only one node's model is broken.
+7. Let `coder` complete and both reviewers fan out. `reviewer_security` errors on the unsupported model; `reviewer_correctness` completes normally. Wait for the join/synthesis turn to fire and the run to reach `done`.
+8. **Then**, with both reviewers already at a terminal state (`DONE` / `FAILED` — not while either is still `running`, which is Scenario 5's already-covered case), kill the local runner process and restart it, as in Scenario 5.
+9. After reconnect, revert `reviewer_security`'s `step_definitions.model` back to its original value in Supabase so the built-in flow isn't left broken for later runs/tests.
+
+**Expected:**
+
+- [x] (BUG-254) `reviewer_security`'s node keeps its own distinct `FAILED` status and node identity after the join — it is not silently overwritten to `DONE` or hidden/merged with `reviewer_correctness`'s node. **Verified 2026-07-08** (`run-11754`, owner): using exactly this Chat-picker + Supabase-`step_definitions.model`-edit repro, one reviewer showed `FAILED` correctly on the Agents panel and the flow proceeded to `done` — confirmed via the Chat entry path, not just the original Flow-Mode custom-flow discovery.
+- [x] The join note records `failed: reviewer_security`, and synthesis proceeds using only `reviewer_correctness`'s result — same barrier behavior as Scenario 9, now proven via the Chat entry path. **Verified 2026-07-08** (`run-11754`): flow continued to `done` with the failed reviewer's result excluded, matching Scenario 9's own barrier behavior.
+- [x] (BUG-255) If a `changes_requested` round happens on this run, the coder's round-2 re-entry output appears only in the coder's own node/turn — not duplicated into the hub's main transcript. **Not separately exercised in `run-11754`** (no `changes_requested` round occurred in that pass) — carried over as verified by BUG-255's own regression tests rather than a fresh Chat-Mode live repro.
+- [x] (BUG-256 / BUG-260) After the step-8 restart, the Flow Step Timeline restores both `reviewer_correctness` and `reviewer_security` to their real terminal status (`DONE` / `FAILED`) — not reset to `PENDING`, and the already-`FAILED` `reviewer_security` is not silently flipped back to `done` by the resume fast path — even though both nodes reference the same `agents/reviewer.md` agent. **Verified 2026-07-08** (`run-11754`, owner): restarted the runner after the flow reached `done`; on reconnect the only remaining issue was the unrelated [BUG-263](../../09-BugFix/done/BUG-263-Chat-Mode-Orchestration-Picker-Selection-Lost-On-Reopen-After-Restart.md) (Chat Intent panel resetting to Normal) — reviewer statuses themselves restored correctly.
+
+**Two more bugs found and fixed during this live pass (`run-11120`/`run-11754`), filed as [BUG-263](../../09-BugFix/done/BUG-263-Chat-Mode-Orchestration-Picker-Selection-Lost-On-Reopen-After-Restart.md) (reopening a Chat-Mode Review Loop run after a runner restart reset the Chat Intent panel to "Normal" instead of restoring "Bug"/Review Loop — the picker's `subMode`/`flowRef` selection was never persisted anywhere, unlike `chatMode`/`launchMode` which BUG-170 already covered) and [BUG-264](../../09-BugFix/done/BUG-264-Flow-Awaiting-User-Card-Long-Text-Overflows-Without-Wrapping.md) (the "Needs your decision" card's escalation text overflowed horizontally instead of wrapping, reading as "cut off" despite already having vertical scroll).
+
+**Bug found and fixed while preparing this scenario's own live pass, filed as [BUG-261](../../09-BugFix/done/BUG-261-Chat-Mode-Explicit-FlowRef-Resolve-Failure-Silently-Suppresses-Hub-Turn-Forever.md):** a live Chat Mode run (`run-10560`) sent with the Bug sub-mode's Review Loop picker selected showed `completed` almost instantly with no reply and no agent spawn. Root cause: the built-in `review-loop` mirror's stored definition had been corrupted (a node `dependsOn` a nonexistent id), and `startTurn` unconditionally suppressed the hub's own turn the instant a chat `flowRef` was present, *before* `startResolvedFlow`'s async resolve — which then failed — ever ran; nothing was ever spawned to reinvoke the hub, so the run got stuck forever, contradicting `startResolvedFlow`'s own doc comment that a flow-start failure "must never break the run's own first turn." Fixed by resolving the explicit chat `flowRef` synchronously in `handleStartTurn` (mirroring the Flow-Mode workflow-picker path's existing `resolveWorkflowFlowRef` pattern) and clearing it on failure so the turn falls through to a normal reply. Regression test: `TestChatModeExplicitFlowRefResolveFailureFallsBackToNormalTurn` (`flow_executor_test.go`). The corrupted mirror row itself was left unrepaired (out of scope, same class of issue as BUG-249) — Scenario 11's steps 5-9 above should use a freshly-repaired or freshly-synced built-in mirror to avoid re-hitting this specific corruption while exercising the BUG-254/255/256/260 checks.
 
 ---
 
@@ -452,15 +488,17 @@ Both fixes confirmed via regression tests; **neither yet re-verified against a l
 **Setup:** Same as Scenario 11, fresh chat (no `runId` yet).
 
 **Action:**
+
 1. Click the **Normal** tab, then the **Task** tab. Observe the picker.
 2. Click the **Bug** tab again and select **Review Loop**.
 3. Send the first message (creates a `runId`).
 4. After the first turn completes, try to click the **Normal** or **Task** tab, or change the **Built-in orchestration** select.
 
 **Expected:**
+
 - [x] With **Normal** or **Task** selected, the **Built-in orchestration** select is not rendered at all (Review Loop only declares `chatSubModes: [bug]` in the pack).
 - [x] After the first turn, the Chat Intent panel shows **"Locked after the first message — start a new chat to change the intent."** and all three intent tabs plus the orchestration select become disabled/non-interactive.
-- [x] A raw `POST /client/workflow-runs/{runId}/turns` with a different `flowRef` or `subMode` than the one used on turn 1 of the same run cannot change the run's flow selection. **Verified/corrected 2026-07-07** — the original wording ("rejected... not silently applied") overstated what actually happens: `handleStartTurn`'s `validateChatOrchestrationSelection` (`chat_builtin_orchestration.go:66`) only checks that the posted `flowRef` is a valid option for the posted `subMode` in isolation — it has no awareness of turn 1's own selection, so a *different but still pack-valid* `flowRef`/`subMode` on turn 2+ returns `200 OK`, not a rejection. The actual lock is structural, in `startTurn` (`interactive_service.go:3199`): `in.FlowRef`/`in.SubMode` are only ever read inside `if rs.turnCount == 0 { ... }`, so on every turn after the first that whole block — and the fields it reads — is skipped entirely. The run's flow selection is therefore silently ignored on turn 2+, not explicitly rejected; the net effect the scenario actually cares about (the run can't be hijacked onto a different flow mid-conversation) still holds. A genuinely invalid `flowRef` for the given `subMode` does still get an explicit `400 invalid_flow_ref` from `validateChatOrchestrationSelection`, but that check runs identically on every turn and has nothing to do with matching turn 1.
+- [x] A raw `POST /client/workflow-runs/{runId}/turns` with a different `flowRef` or `subMode` than the one used on turn 1 of the same run cannot change the run's flow selection. **Verified/corrected 2026-07-07** — the original wording ("rejected... not silently applied") overstated what actually happens: `handleStartTurn`'s `validateChatOrchestrationSelection` (`chat_builtin_orchestration.go:66`) only checks that the posted `flowRef` is a valid option for the posted `subMode` in isolation — it has no awareness of turn 1's own selection, so a _different but still pack-valid_ `flowRef`/`subMode` on turn 2+ returns `200 OK`, not a rejection. The actual lock is structural, in `startTurn` (`interactive_service.go:3199`): `in.FlowRef`/`in.SubMode` are only ever read inside `if rs.turnCount == 0 { ... }`, so on every turn after the first that whole block — and the fields it reads — is skipped entirely. The run's flow selection is therefore silently ignored on turn 2+, not explicitly rejected; the net effect the scenario actually cares about (the run can't be hijacked onto a different flow mid-conversation) still holds. A genuinely invalid `flowRef` for the given `subMode` does still get an explicit `400 invalid_flow_ref` from `validateChatOrchestrationSelection`, but that check runs identically on every turn and has nothing to do with matching turn 1.
 - [x] Starting a **new** chat resets the picker and allows a different selection.
 
 ---
@@ -470,6 +508,7 @@ Both fixes confirmed via regression tests; **neither yet re-verified against a l
 **Setup:** Desktop app → Settings → Workflows screen (`WorkflowsSettings.tsx`). At least one prior run has caused the `review-loop` built-in to mirror into the `workflows` table (e.g. run Scenario 11 once first), or the mirror sync has otherwise populated it.
 
 **Action:**
+
 1. In the workflow list, find the row for the built-in Review Loop flow — it should carry a **"Built-in"** badge.
 2. Select it. Confirm the detail panel also shows the **"Built-in"** badge and the hint **"This is a built-in template and cannot be edited directly. Clone it to make changes."**
 3. Confirm no **Save** or **Delete** button is shown for this workflow, only **Clone**.
@@ -478,10 +517,13 @@ Both fixes confirmed via regression tests; **neither yet re-verified against a l
 6. Re-open the original built-in Review Loop workflow.
 
 **Expected:**
+
 - [x] The clone is a new workflow row with **no** "Built-in" badge; its steps are editable and **Save**/**Delete** are both present. **Verified 2026-07-07**: clone row `c1ca2ce7-...` has `is_builtin=false`, `editable=true`, `cloneable=true`, `cloned_from=2b4002f4-...` (the original's real row id, not a pack ref).
 - [x] Editing and saving the clone succeeds and does not error. **Verified 2026-07-07** (owner).
 - [x] The original built-in workflow's steps/policy are byte-identical to before cloning — the edit did not leak back into the built-in row. **Verified 2026-07-07**: original row `2b4002f4-...`'s `edges_json`/`policy_*`/`model_override` are byte-identical between the before- and after-clone CSV exports.
-- [x] Attempting to edit a field directly on the built-in (non-cloned) workflow's detail form has no persisted effect for the fields this contract actually protects (Name/Description/Owner project/steps/edges/policy). **Verified/refined 2026-07-07** — correcting this item's premise: Save is not actually absent for a built-in row; `WorkflowsSettings.tsx`'s Save button has no `editable` gate of its own (only `disabled={busy || !workflowDirty}`), and 3 fields (**Model override, Reasoning effort, YOLO mode**) render without the `workflowDetailReadOnly` disable that Name/Description/Owner-project use. This is intentional, not a gap: `supabaseAdminRepository.ts saveWorkflow` (line ~549) explicitly special-cases `editable===false` to accept exactly those 3 columns as a narrow "run override" update, while still rejecting any change to Name/steps/edges/policy on a built-in row. So a built-in's *identity and shape* stay read-only as designed; only its per-installation run defaults (model/reasoning/yolo) are deliberately editable in place, without requiring a clone.
+- [x] Attempting to edit a field directly on the built-in (non-cloned) workflow's detail form has no persisted effect for the fields this contract actually protects (Name/Description/Owner project/steps/edges/policy). **Verified/refined 2026-07-07** — correcting this item's premise: Save is not actually absent for a built-in row; `WorkflowsSettings.tsx`'s Save button has no `editable` gate of its own (only `disabled={busy || !workflowDirty}`), and 3 fields (**Model override, Reasoning effort, YOLO mode**) render without the `workflowDetailReadOnly` disable that Name/Description/Owner-project use. This is intentional, not a gap: `supabaseAdminRepository.ts saveWorkflow` (line ~549) explicitly special-cases `editable===false` to accept exactly those 3 columns as a narrow "run override" update, while still rejecting any change to Name/steps/edges/policy on a built-in row. So a built-in's _identity and shape_ stay read-only as designed; only its per-installation run defaults (model/reasoning/yolo) are deliberately editable in place, without requiring a clone.
+
+**Gap found 2026-07-08, filed and fixed as [BUG-262](../../09-BugFix/done/BUG-262-Cloned-Workflow-Shares-Step-Definitions-With-Source-Silently-Corrupting-Builtins.md):** item 3's "byte-identical" check above was only ever performed at the `workflows` row level (`edges_json`/`policy_*`/`model_override`) — it never checked whether the built-in's individual **step_definitions** rows (`dependsOn`, per node) stayed unchanged after a clone was edited. They didn't: `cloneWorkflow` reused the source's `step_type` values verbatim instead of creating independent step rows, so the clone and the built-in shared the same `step_definitions` rows underneath. Editing the clone's edges and saving silently overwrote the built-in's own `dependsOn` — exactly what corrupted `review-loop`'s `synthesis` node in this session and caused [BUG-261](../../09-BugFix/done/BUG-261-Chat-Mode-Explicit-FlowRef-Resolve-Failure-Silently-Suppresses-Hub-Turn-Forever.md)'s "run gets stuck" symptom. Fixed by having `cloneWorkflow` deep-copy every step into its own fresh `step_definitions` row, plus a `listWorkflowsUsingSteps`-based guard in `persistEdgeDerivedDependsOn` that skips (instead of silently overwriting) any step still shared with another workflow. Item 3 above should be re-verified including a `step_definitions` export comparison, not just `workflows`.
 
 ---
 
@@ -490,17 +532,19 @@ Both fixes confirmed via regression tests; **neither yet re-verified against a l
 **Setup:** The `review-loop` built-in has previously mirrored into the `workflows` table (row has `is_builtin=true`, `pack_id=flowpilot-core-flow-pack`, `pack_flow_id=review-loop`). Access to the Supabase project's `workflows` table (via dashboard or SQL).
 
 **Action:**
+
 1. Manually delete (or rename `pack_flow_id` on) the mirrored `review-loop` row in the `workflows` table.
 2. In the desktop app, refresh the Workflows Settings list — confirm the built-in Review Loop row is temporarily gone (or restart the app to force a re-scan).
 3. Trigger a run that selects Review Loop again (Chat Bug sub-mode → Built-in orchestration → Review Loop → send a message), OR reopen Workflows Settings if the sync runs on startup.
 
 **Expected:**
+
 - [x] The mirror is recreated automatically (a new `workflows` row reappears with `is_builtin=true`, matching `pack_id`/`pack_flow_id`/`pack_version`) before the run is allowed to start — the run does not silently proceed against a missing definition. **Verified 2026-07-07** by the owner against a live Supabase project: renamed `review-loop`'s `pack_flow_id` to `review-loop-haha`, restarted the runner, and confirmed via a fresh `workflows` CSV export that a new row appeared with `is_builtin=true`, `pack_id=flowpilot-core-flow-pack`, `pack_flow_id=review-loop`, `pack_version=0.1.0`.
 - [x] The recreated row's steps match `review-loop.yaml` exactly: 4 steps (`coder`, `reviewer_correctness`, `reviewer_security`, `synthesis`), each with the correct `behavior_id` (`agent.delegate` ×3, `hub.inline` ×1) and `depends_on_json`/`edges_json` matching the YAML edges. **Verified 2026-07-07**: the recreated row's `pack_hash` is byte-identical to the original row's, and `edges_json` matches exactly.
 - [x] Any prior clone made from the old mirror (Scenario 13) is unaffected — `cloned_from` still points at a valid pack identity, not a dangling row id. **Verified 2026-07-07** (post-fix): after the BUG-249 fix restored the corrupted row's `pack_flow_id`/`model_override` in place and a Scenario 13 clone was made from it, the clone's `cloned_from=2b4002f4-...` still points at the same, now-repaired row id — unaffected.
 - [x] Workflows Settings shows the **"Built-in"** badge again for the recreated row. **Verified 2026-07-07** (owner screenshot).
 
-**Gap found during this live pass, filed and fixed as [BUG-249](../../09-BugFix/done/BUG-249-Corrupted-Builtin-Mirror-Recreate-Duplicates-Row-And-Drops-Overrides.md):** the recreate above is real and correct, but the *old*, now-orphaned row was never cleaned up — Settings' Definitions list and the Workflow Mode picker both showed two duplicate "Review Loop / BUILT-IN" entries — and the fresh row's `model_override` silently reverted to the column default (`gpt-5.4`) instead of the orphaned row's actual prior value (`claude-haiku`). Neither behavior is covered by this scenario's 4 checklist items above, which is why they still read "recreated correctly" while the duplicate/override-loss gap existed alongside. `FlowMirrorSyncService.SyncBuiltins` now reclaims a hash-matching orphan in place (preserving its `model_override`/etc.) or retires it (`is_builtin=false`, renamed) when reclaim isn't possible. **Confirmed fixed 2026-07-07**: after restarting the runner with the fix, the owner's follow-up `workflows` export shows a single, clean `review-loop` row (`2b4002f4-...`, `model_override=claude-haiku` restored) with the duplicate gone — see BUG-249 for the full fix and its regression tests.
+**Gap found during this live pass, filed and fixed as [BUG-249](../../09-BugFix/done/BUG-249-Corrupted-Builtin-Mirror-Recreate-Duplicates-Row-And-Drops-Overrides.md):** the recreate above is real and correct, but the _old_, now-orphaned row was never cleaned up — Settings' Definitions list and the Workflow Mode picker both showed two duplicate "Review Loop / BUILT-IN" entries — and the fresh row's `model_override` silently reverted to the column default (`gpt-5.4`) instead of the orphaned row's actual prior value (`claude-haiku`). Neither behavior is covered by this scenario's 4 checklist items above, which is why they still read "recreated correctly" while the duplicate/override-loss gap existed alongside. `FlowMirrorSyncService.SyncBuiltins` now reclaims a hash-matching orphan in place (preserving its `model_override`/etc.) or retires it (`is_builtin=false`, renamed) when reclaim isn't possible. **Confirmed fixed 2026-07-07**: after restarting the runner with the fix, the owner's follow-up `workflows` export shows a single, clean `review-loop` row (`2b4002f4-...`, `model_override=claude-haiku` restored) with the duplicate gone — see BUG-249 for the full fix and its regression tests.
 
 ---
 
@@ -511,12 +555,15 @@ Both fixes confirmed via regression tests; **neither yet re-verified against a l
 **Setup:** Any Review Loop run (built-in or clone) against a project whose test suite already asserts a specific, existing behavior.
 
 **Action:** Ask for a code change whose literal requirement contradicts an existing, passing test, while also instructing (via the project's own skill, e.g. `oracle-rule`) that the test must not be edited and must keep passing. Against `gate-sandbox`:
+
 ```
 Fix Modulo in calc.go: Modulo(-7, 3) must return 2 (true mathematical modulo — result always non-negative, matching Python's % semantics), not the current -1 (Go's native % semantics). This must NOT break the existing test baseline — TestAdd, TestSubtract, and TestModulo must all still pass, and per this project's oracle-rule skill you must not modify calc_test.go to make it pass; fix the code only.
 ```
+
 (`calc_test.go` asserts `Modulo(-7, 3) == -1`, so the requested `== 2` is structurally unsatisfiable without either breaking the pinned test or leaving the task's own stated requirement unmet.)
 
 **Expected:**
+
 - [x] Both reviewers concur the conflict is real and code-unfixable, not a normal review finding. **Verified 2026-07-07**: both reviewers' verdicts agreed no code change should be approved, citing the exact spec/test contradiction (`Modulo(-7,3)==2` requested vs. `TestModulo` asserting `-1`) and the `oracle-rule` constraint against editing the test.
 - [x] The coder does not attempt a change that would break the pinned test baseline; it reports the conflict instead of guessing. **Verified**: the coder left `calc.go`/`calc_test.go` untouched and surfaced the contradiction rather than picking a side unilaterally.
 - [x] The hub calls `submit_review_outcome(status="blocked")` (→ `flow_control(status="escalate")`) on the **first** round, not after grinding through cap rounds. **Verified**: the desktop showed a "Needs your decision" card immediately, with `Stop`/`Continue` actions — the `BlockReason="escalate"` path (`interactive_service.go:642`), not the round-count `BlockReason="cap"` path (`interactive_service.go:586`) Scenario 3 exercises.
@@ -525,19 +572,17 @@ Fix Modulo in calc.go: Modulo(-7, 3) must return 2 (true mathematical modulo —
 
 ---
 
-
 ### Failure Cases to Verify
 
-| Case | How to trigger | Expected |
-|------|---------------|----------|
-| Invalid `submit_review_outcome` status | Manually POST `{"status": "invalid_value"}` to `/flow-control` | Tool error returned; loop state unchanged; no crash |
-| `submit_review_outcome` called from a normal chat or non-hub child | Try to invoke it from a plain chat or reviewer child context | Call is rejected; no loop state is created or mutated |
-| Auto-reinvoke while a turn is in flight | Start a flow run; verify hub doesn't double-fire | Only one reinvoke fires; second is suppressed (single-flight guard) |
-| `policyCap=0` (or unset) on a custom/cloned flow | Set **Cap** to empty in Settings and save (persists `policy_cap: null`), then run the flow | `startResolvedFlow` falls back to the default (3); loop runs normally — resolved 2026-07-06 alongside Scenario 3's fix |
-| Child fails mid-turn | Interrupt a child agent artificially | Join note records `failed: <id>`; synthesis proceeds with remaining results |
-| Drive offline during sync | Disconnect network mid-run | Run proceeds locally; sync retries when network returns |
-| `flowRef` not in the current sub-mode's option set | POST a turn with `subMode=bug` and a made-up `flowRef` string | Request rejected by `validateChatOrchestrationSelection`; turn does not start |
-| `flowRef`/`subMode` changed on turn 2+ of an existing run | POST a second turn on the same `runId` with a different `flowRef` than turn 1 | Runner ignores/rejects the change; run keeps the flow selected on turn 1 |
-| Edit attempted on a built-in workflow via direct API call (bypassing the UI's hidden Save button) | `PUT`/`PATCH` the built-in workflow's id directly | Request rejected — `editable=false` rows are not mutable server-side, not just hidden client-side |
-| Clone a workflow that was itself cloned from a built-in | Clone the clone from Scenario 13 again | Succeeds; new row's `cloned_from` chains correctly; no built-in flag leaks onto the second-generation clone |
-
+| Case                                                                                              | How to trigger                                                                             | Expected                                                                                                               |
+| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| Invalid `submit_review_outcome` status                                                            | Manually POST `{"status": "invalid_value"}` to `/flow-control`                             | Tool error returned; loop state unchanged; no crash                                                                    |
+| `submit_review_outcome` called from a normal chat or non-hub child                                | Try to invoke it from a plain chat or reviewer child context                               | Call is rejected; no loop state is created or mutated                                                                  |
+| Auto-reinvoke while a turn is in flight                                                           | Start a flow run; verify hub doesn't double-fire                                           | Only one reinvoke fires; second is suppressed (single-flight guard)                                                    |
+| `policyCap=0` (or unset) on a custom/cloned flow                                                  | Set **Cap** to empty in Settings and save (persists `policy_cap: null`), then run the flow | `startResolvedFlow` falls back to the default (3); loop runs normally — resolved 2026-07-06 alongside Scenario 3's fix |
+| Child fails mid-turn                                                                              | Interrupt a child agent artificially                                                       | Join note records `failed: <id>`; synthesis proceeds with remaining results                                            |
+| Drive offline during sync                                                                         | Disconnect network mid-run                                                                 | Run proceeds locally; sync retries when network returns                                                                |
+| `flowRef` not in the current sub-mode's option set                                                | POST a turn with `subMode=bug` and a made-up `flowRef` string                              | Request rejected by `validateChatOrchestrationSelection`; turn does not start                                          |
+| `flowRef`/`subMode` changed on turn 2+ of an existing run                                         | POST a second turn on the same `runId` with a different `flowRef` than turn 1              | Runner ignores/rejects the change; run keeps the flow selected on turn 1                                               |
+| Edit attempted on a built-in workflow via direct API call (bypassing the UI's hidden Save button) | `PUT`/`PATCH` the built-in workflow's id directly                                          | Request rejected — `editable=false` rows are not mutable server-side, not just hidden client-side                      |
+| Clone a workflow that was itself cloned from a built-in                                           | Clone the clone from Scenario 13 again                                                     | Succeeds; new row's `cloned_from` chains correctly; no built-in flag leaks onto the second-generation clone            |
