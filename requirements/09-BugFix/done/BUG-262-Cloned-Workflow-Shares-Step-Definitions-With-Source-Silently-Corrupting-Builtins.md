@@ -10,7 +10,7 @@
 - Reviewers: `FlowPilot`
 - Created: `2026-07-08`
 - Last Updated: `2026-07-08`
-- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 13, Scenario 14), [BUG-236: Builtin Flow Mirror Stores Node Definition On Workflow Steps Instead Of Step Definitions](./BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md) (established the `workflow_steps`/`step_definitions` split this bug's corruption exploits)
+- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 13, Scenario 14), [BUG-236: Builtin Flow Mirror Stores Node Definition On Workflow Steps Instead Of Step Definitions](./BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md) (established the `workflow_steps`/`step_definitions` split this bug's corruption exploits)
 - Child Documents: `none`
 - Related Documents: [BUG-249: Corrupted Builtin Mirror Recreate Duplicates Row And Drops Overrides](./BUG-249-Corrupted-Builtin-Mirror-Recreate-Duplicates-Row-And-Drops-Overrides.md) (same family: built-in mirror row corruption), [BUG-261: Chat-Mode Explicit FlowRef Resolve Failure Silently Suppresses Hub Turn Forever](./BUG-261-Chat-Mode-Explicit-FlowRef-Resolve-Failure-Silently-Suppresses-Hub-Turn-Forever.md) (this bug's corrupted `review-loop` row is what caused BUG-261's live symptom), [CA-260](../../../change-audit/CA-260-clone-workflow-copies-independent-step-definitions.md)
 - Replaces: `none`
@@ -60,7 +60,7 @@ The user cloned the built-in **Review Loop** workflow in Settings to build a cus
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 13 ("Clone A Built-in Flow In Settings; Original Stays Read-Only") — its own checklist already asserts "the edit did not leak back into the built-in row," verified at the time only for the `workflows` row's own columns (`edges_json`/`policy_*`/`model_override`), not for the step-level data this bug found leaking.
+- impacted coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 13 ("Clone A Built-in Flow In Settings; Original Stays Read-Only") — its own checklist already asserts "the edit did not leak back into the built-in row," verified at the time only for the `workflows` row's own columns (`edges_json`/`policy_*`/`model_override`), not for the step-level data this bug found leaking.
 - related: CP-36 Scenario 14 (built-in mirror recreation) and BUG-249 (mirror row corruption) are the same general class of "built-in row integrity" issue, via a different mechanism (pack_flow_id renaming vs. shared step_definitions).
 
 ## 3. Environment and Reproduction
@@ -110,5 +110,5 @@ The user cloned the built-in **Review Loop** workflow in Settings to build a cus
 
 ## 10. Follow-Up Document Updates
 
-- upstream docs that must change: [CP-36 Scenario 13](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) should get a note that its "original stays unchanged" checklist item is now also proven at the step-definitions level, not just the `workflows` row — added alongside this bug's filing.
+- upstream docs that must change: [CP-36 Scenario 13](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) should get a note that its "original stays unchanged" checklist item is now also proven at the step-definitions level, not just the `workflows` row — added alongside this bug's filing.
 - notes left unchanged on purpose: `step_definitions` remains a shared catalog by design for fields like `model` (BUG-164) when a workflow *deliberately* reuses an existing step via the "add step" dropdown — this fix only stops the *silent, edge-derived* `dependsOn` overwrite; it does not forbid intentional step sharing outright.

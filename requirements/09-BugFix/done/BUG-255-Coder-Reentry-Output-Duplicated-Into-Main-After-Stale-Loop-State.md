@@ -10,7 +10,7 @@
 - Reviewers: `FlowPilot`
 - Created: `2026-07-08`
 - Last Updated: `2026-07-08`
-- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 9)
+- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 9)
 - Child Documents: `none`
 - Related Documents: [BUG-254: Failed Cohort Reviewer Marked Done And Hidden Node Identity](./BUG-254-Failed-Cohort-Reviewer-Mark-Done-And-Hidden-Node-Identity.md), [BUG-242: Coder Reentry Miscategorized Closed And Synthesis Step Stuck Running](./BUG-242-Coder-Reentry-Miscategorized-Closed-And-Synthesis-Step-Stuck-Running.md)
 - Replaces: `none`
@@ -63,7 +63,7 @@ This happened after the first reviewer cohort requested changes and the hub subm
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 9
+- impacted coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 9
 - impacted task: none directly
 - impacted tech design: none directly
 - impacted system spec: none directly

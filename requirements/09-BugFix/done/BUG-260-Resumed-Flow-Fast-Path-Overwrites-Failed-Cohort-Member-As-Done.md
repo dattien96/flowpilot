@@ -10,7 +10,7 @@
 - Reviewers: `FlowPilot`
 - Created: `2026-07-08`
 - Last Updated: `2026-07-08`
-- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Manual E2E Test Guide, Scenario 9)
+- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Manual E2E Test Guide, Scenario 9)
 - Child Documents: `none`
 - Related Documents: [BUG-254: Failed Cohort Reviewer Mark Done And Hidden Node Identity](./BUG-254-Failed-Cohort-Reviewer-Mark-Done-And-Hidden-Node-Identity.md), [BUG-256: Restarted Flow Step Timeline Loses Reviewer Statuses When Nodes Share Agent](./BUG-256-Restarted-Flow-Step-Timeline-Loses-Reviewer-Statuses-When-Nodes-Share-Agent.md), [BUG-257: Restarted Flow Run Shows Completed Synthesis Step As Cancelled](./BUG-257-Restarted-Flow-Run-Shows-Completed-Synthesis-Step-As-Cancelled.md)
 - Replaces: `none`
@@ -54,7 +54,7 @@ After a custom Review Loop flow's cohort had one reviewer fail and one complete,
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Manual E2E Test Guide Scenario 9
+- impacted coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Manual E2E Test Guide Scenario 9
 - impacted task: none directly
 - impacted tech design: none directly
 - impacted system spec: none directly

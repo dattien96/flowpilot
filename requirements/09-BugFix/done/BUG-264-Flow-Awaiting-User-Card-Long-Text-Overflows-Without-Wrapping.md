@@ -10,7 +10,7 @@
 - Reviewers: `FlowPilot`
 - Created: `2026-07-08`
 - Last Updated: `2026-07-08`
-- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 11)
+- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 11)
 - Child Documents: `none`
 - Related Documents: [CA-262](../../../change-audit/CA-262-flow-awaiting-user-card-wraps-long-unbroken-text.md)
 - Replaces: `none`
@@ -55,7 +55,7 @@ During live CP-36 Scenario 11 testing, a review-loop escalation's reason text (q
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 11 — found during its Chat-Mode parity testing pass.
+- impacted coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 11 — found during its Chat-Mode parity testing pass.
 
 ## 3. Environment and Reproduction
 

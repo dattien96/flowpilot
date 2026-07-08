@@ -10,7 +10,7 @@
 - Reviewers: `FlowPilot`
 - Created: `2026-07-08`
 - Last Updated: `2026-07-08`
-- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 9), [Task-189: Custom Flow Graph Authoring](../../08-Task/done/Task-189-Custom-Flow-Graph-Authoring.md)
+- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 9), [Task-189: Custom Flow Graph Authoring](../../08-Task/done/Task-189-Custom-Flow-Graph-Authoring.md)
 - Child Documents: `none`
 - Related Documents: [BUG-253: Cloned Built-In Workflow Edit/Save Hits Workflow Step Order Unique Constraint](./BUG-253-Cloned-Builtin-Workflow-Edit-Save-Hits-Workflow-Step-Order-Unique-Constraint.md), [CA-236: Review Loop Runaway Advance And Cohort Node Settlement](../../../change-audit/CA-236-review-loop-runaway-advance-and-cohort-node-settlement.md)
 - Replaces: `none`
@@ -63,7 +63,7 @@ During live Scenario 9 verification, the owner created a custom flow with two re
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 9
+- impacted coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 9
 - impacted task: [Task-189](../../08-Task/done/Task-189-Custom-Flow-Graph-Authoring.md), custom two-reviewer flow authoring
 - impacted tech design: none directly
 - impacted system spec: none directly

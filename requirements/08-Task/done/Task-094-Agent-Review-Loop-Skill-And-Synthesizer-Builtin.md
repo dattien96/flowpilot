@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-06-23`
 - Last Updated: `2026-06-29`
-- Parent Documents: [CP-36: Generic Agent-Flow Engine And Review Loop](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [SD-18: Main-Hub Agent Review Loop](../../06-System-Tech-Design/SD-18-Main-Hub-Agent-Review-Loop.md), [SS-15: Agent Review Loop](../../05-System-Specs/SS-15-Agent-Review-Loop-Until-Clean.md)
+- Parent Documents: [CP-36: Generic Agent-Flow Engine And Review Loop](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [SD-18: Main-Hub Agent Review Loop](../../06-System-Tech-Design/SD-18-Main-Hub-Agent-Review-Loop.md), [SS-15: Agent Review Loop](../../05-System-Specs/SS-15-Agent-Review-Loop-Until-Clean.md)
 - Child Documents: `None`
 - Related Documents: [Task-091: Review-Loop Template](./Task-091-Review-Loop-Template.md), [Task-093: Bounded Auto-Reinvocation Of The Hub](./Task-093-Bounded-Auto-Reinvocation-Of-The-Hub.md)
 - Replaces: `None`
@@ -55,7 +55,7 @@ Provide the protocol + persona so the main agent can run the review-until-clean 
 
 ## 2. Parent Links
 
-- coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) `P-8`
+- coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) `P-8`
 - tech design: [SD-18](../../06-System-Tech-Design/SD-18-Main-Hub-Agent-Review-Loop.md) `D-1`, `D-8`, §7
 - system spec: [SS-15](../../05-System-Specs/SS-15-Agent-Review-Loop-Until-Clean.md) `AC-6`
 - specific upstream ids: CP-36 `P-8`; SD-18 `D-1`

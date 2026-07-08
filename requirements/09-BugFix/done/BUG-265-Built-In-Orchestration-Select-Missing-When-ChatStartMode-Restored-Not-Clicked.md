@@ -10,7 +10,7 @@
 - Reviewers: `FlowPilot`
 - Created: `2026-07-08`
 - Last Updated: `2026-07-08`
-- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 11)
+- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 11)
 - Child Documents: `none`
 - Related Documents: [BUG-263: Chat Mode Orchestration Picker Selection Lost On Reopen After Restart](./BUG-263-Chat-Mode-Orchestration-Picker-Selection-Lost-On-Reopen-After-Restart.md) (the fix that first made `chatStartMode` reach `"bugfix"` via a path other than the Bug tab's own click handler, surfacing this gap), [CA-263](../../../change-audit/CA-263-load-builtin-orchestration-options-whenever-bugfix-active.md)
 - Replaces: `none`
@@ -53,7 +53,7 @@ Immediately after confirming BUG-263's fix restored `chatStartMode`/`flowRef` co
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 11 — found immediately after re-verifying this session's BUG-263 fix.
+- impacted coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 11 — found immediately after re-verifying this session's BUG-263 fix.
 
 ## 3. Environment and Reproduction
 

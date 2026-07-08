@@ -10,7 +10,7 @@
 - Reviewers: `FlowPilot`
 - Created: `2026-07-07`
 - Last Updated: `2026-07-07`
-- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 5), [BUG-248: Stop Leaves Main Run Permanently Stuck Running](./BUG-248-Stop-Leaves-Main-Run-Permanently-Stuck-Running.md) (same symptom class, different trigger)
+- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 5), [BUG-248: Stop Leaves Main Run Permanently Stuck Running](./BUG-248-Stop-Leaves-Main-Run-Permanently-Stuck-Running.md) (same symptom class, different trigger)
 - Child Documents: `none`
 - Related Documents: [BUG-250: Restarted Flow Hub Run Permanently Unresumable — Placeholder Session](./BUG-250-Restarted-Flow-Hub-Run-Permanently-Unresumable-Placeholder-Session.md) (found in the same live-testing pass, immediately after BUG-250 was fixed), [CA-249: Normalize Stale Child Agent Status In Restart Disk Fallback](../../../change-audit/CA-249-normalize-stale-child-status-after-restart.md)
 - Replaces: `none`
@@ -54,7 +54,7 @@ Immediately after BUG-250 made it possible to reopen a restarted flow hub's chat
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 5 — found as a follow-on to BUG-250 during the same restart-mid-loop repro.
+- impacted coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 5 — found as a follow-on to BUG-250 during the same restart-mid-loop repro.
 - same symptom class as [BUG-248](./BUG-248-Stop-Leaves-Main-Run-Permanently-Stuck-Running.md) (a run/child stuck showing "running" after the thing driving it has actually stopped), but a materially different trigger and code path: BUG-248 was a synchronous-vs-async race in the explicit Stop button's handler (`stopAgentLoop`); this bug is a missing normalization step in the restart/rebuild-from-disk read path (`listAgentRunSummaries`), which BUG-248's fix never touched.
 
 ## 3. Environment and Reproduction
@@ -102,5 +102,5 @@ Immediately after BUG-250 made it possible to reopen a restarted flow hub's chat
 
 ## 10. Follow-Up Document Updates
 
-- upstream docs that must change: [CP-36 Scenario 5](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) gets a note recording this second finding from the same live pass.
+- upstream docs that must change: [CP-36 Scenario 5](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) gets a note recording this second finding from the same live pass.
 - notes left unchanged on purpose: the open question above (whether `spawned`/`waiting_dependency` should also normalize) is deliberately left as a candidate follow-up, not expanded into this fix's scope.

@@ -10,7 +10,7 @@
 - Reviewers: `FlowPilot`
 - Created: `2026-07-08`
 - Last Updated: `2026-07-08`
-- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 5, Scenario 11), [BUG-170: Workflow Flow Mode History Unresumable After Server Restart](./BUG-170-Workflow-Flow-Mode-History-Unresumable-After-Server-Restart.md) (established the chatMode/launchMode restore-on-reopen pattern this bug's fix mirrors for chatStartMode/flowRef)
+- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 5, Scenario 11), [BUG-170: Workflow Flow Mode History Unresumable After Server Restart](./BUG-170-Workflow-Flow-Mode-History-Unresumable-After-Server-Restart.md) (established the chatMode/launchMode restore-on-reopen pattern this bug's fix mirrors for chatStartMode/flowRef)
 - Child Documents: `none`
 - Related Documents: [BUG-261: Chat-Mode Explicit FlowRef Resolve Failure Silently Suppresses Hub Turn Forever](./BUG-261-Chat-Mode-Explicit-FlowRef-Resolve-Failure-Silently-Suppresses-Hub-Turn-Forever.md) (same live testing session, same explicit chat flowRef code path), [CA-261](../../../change-audit/CA-261-restore-chat-orchestration-picker-selection-on-reopen.md)
 - Replaces: `none`
@@ -60,7 +60,7 @@ A live CP-36 Scenario 11 test (`run-11120`) reopened a Chat Mode Review Loop run
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 5 (restart repro) and Scenario 11 (Chat-Mode picker deep verification) — found while running Scenario 11's additional Chat-Mode parity checks.
+- impacted coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 5 (restart repro) and Scenario 11 (Chat-Mode picker deep verification) — found while running Scenario 11's additional Chat-Mode parity checks.
 - impacted design precedent: BUG-170's chatMode/launchMode restore-on-reopen fix is the exact template this bug's fix follows for the newer CP-42/Task-177 picker fields.
 
 ## 3. Environment and Reproduction

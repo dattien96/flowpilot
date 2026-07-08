@@ -10,7 +10,7 @@
 - Reviewers: `FlowPilot`
 - Created: `2026-07-07`
 - Last Updated: `2026-07-07`
-- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 14), [Task-175: Built-In Flow Mirror Sync And Resolver](../../08-Task/done/Task-175-Builtin-Flow-Mirror-Sync-And-Resolver.md)
+- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 14), [Task-175: Built-In Flow Mirror Sync And Resolver](../../08-Task/done/Task-175-Builtin-Flow-Mirror-Sync-And-Resolver.md)
 - Child Documents: `none`
 - Related Documents: [CA-150: Flow Definition Resolver And Mirror Sync](../../../change-audit/CA-150-flow-definition-resolver-and-mirror-sync.md), [CA-160: Flow Definitions Migrated To Workflows Table](../../../change-audit/CA-160-flow-definitions-migrated-to-workflows-table.md), [CA-247: Reclaim Or Retire Stale Builtin Flow Mirrors](../../../change-audit/CA-247-reclaim-or-retire-stale-builtin-mirrors.md), [CP-42: Flow Pack And Generic Node Behavior Refactor](../../07-Coding-Plan/done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md)
 - Replaces: `none`
@@ -58,7 +58,7 @@ While manually executing CP-36 Scenario 14 against a real backend, the owner cor
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 14 ("Missing Built-in Mirror Row Is Recreated On Demand") — this bug was found *while* manually executing that scenario's own checklist; none of its 4 items call out duplicate-row or override-preservation behavior, which is exactly the gap this bug closes.
+- impacted coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 14 ("Missing Built-in Mirror Row Is Recreated On Demand") — this bug was found *while* manually executing that scenario's own checklist; none of its 4 items call out duplicate-row or override-preservation behavior, which is exactly the gap this bug closes.
 - impacted tech design: none directly (`SD-19`/`SS-16` describe the resolver's normalized-shape contract, not this recreate edge case).
 
 ## 3. Environment and Reproduction

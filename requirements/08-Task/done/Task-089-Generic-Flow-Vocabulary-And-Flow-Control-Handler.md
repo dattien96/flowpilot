@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-06-23`
 - Last Updated: `2026-06-29`
-- Parent Documents: [CP-36: Generic Agent-Flow Engine And Review Loop](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SS-16: Agent Flow Engine](../../05-System-Specs/SS-16-Agent-Flow-Engine.md)
+- Parent Documents: [CP-36: Generic Agent-Flow Engine And Review Loop](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SS-16: Agent Flow Engine](../../05-System-Specs/SS-16-Agent-Flow-Engine.md)
 - Child Documents: `None`
 - Related Documents: [Task-082: Spawn-Agent Tool And Orchestrator Core](../done/Task-082-Spawn-Agent-Tool-And-Orchestrator-Core.md), [Task-090: Bounded Flow Runtime Executor](./Task-090-Bounded-Flow-Runtime-Executor.md), [Task-091: Review-Loop Template](./Task-091-Review-Loop-Template.md)
 - Replaces: `None`
@@ -55,7 +55,7 @@ Provide the data vocabulary (`FlowNode`/`FlowEdge`/`FlowPolicy`), the generic `F
 
 ## 2. Parent Links
 
-- coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) `P-1`
+- coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) `P-1`
 - tech design: [SD-19](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md) `D-1`, `D-4`, §5/§6
 - system spec: [SS-16](../../05-System-Specs/SS-16-Agent-Flow-Engine.md) `AC-3`, `BR-1`
 - specific upstream ids: CP-36 `P-1`; SD-19 `D-4`

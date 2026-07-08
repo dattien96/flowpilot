@@ -10,7 +10,7 @@
 - Reviewers: `FlowPilot`
 - Created: `2026-07-07`
 - Last Updated: `2026-07-07`
-- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 5), [CP-42: Flow Pack And Generic Node Behavior Refactor](../../07-Coding-Plan/done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) (hub-reinvoke / suppressed first turn)
+- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 5), [CP-42: Flow Pack And Generic Node Behavior Refactor](../../07-Coding-Plan/done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) (hub-reinvoke / suppressed first turn)
 - Child Documents: `none`
 - Related Documents: [Task-067: Desktop Post-Restart Run Resume Via Provider Session Id](../../08-Task/done/Task-067-Desktop-Post-Restart-Run-Resume-Via-Provider-Session-Id.md), [BUG-249: Corrupted Builtin Mirror Recreate Duplicates Row And Drops Overrides](./BUG-249-Corrupted-Builtin-Mirror-Recreate-Duplicates-Row-And-Drops-Overrides.md) (same live-testing session), [CA-248: Generalize Resume Session-Validation Bypass For Placeholder Sessions](../../../change-audit/CA-248-generalize-resume-session-placeholder-bypass.md)
 - Replaces: `none`
@@ -56,7 +56,7 @@ While manually executing CP-36 Scenario 5 against a real backend, the owner star
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 5 ("Server Restart Mid-Loop") — found while executing that scenario's own documented repro steps.
+- impacted coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 5 ("Server Restart Mid-Loop") — found while executing that scenario's own documented repro steps.
 - impacted design precedent: CP-42's hub-first-turn suppression (a flow-engine-driven hub's own first provider call is skipped; only the entry node spawns) is the reason the hub's `provider_session_id` legitimately has nothing real to advance to until later — this bug is about the resume path not tolerating that already-intentional state after a restart.
 
 ## 3. Environment and Reproduction
@@ -106,5 +106,5 @@ While manually executing CP-36 Scenario 5 against a real backend, the owner star
 
 ## 10. Follow-Up Document Updates
 
-- upstream docs that must change: [CP-36 Scenario 5](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) gets a note recording this finding and the fix, since the scenario's own repro is what surfaced it.
+- upstream docs that must change: [CP-36 Scenario 5](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) gets a note recording this finding and the fix, since the scenario's own repro is what surfaced it.
 - notes left unchanged on purpose: CP-42's hub-first-turn suppression itself is correct and intentional — this fix does not touch when or whether the hub's own turn runs, only whether the UI can reopen the run's transcript while that turn is still pending.

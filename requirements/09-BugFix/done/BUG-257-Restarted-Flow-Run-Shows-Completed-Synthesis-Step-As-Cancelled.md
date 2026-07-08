@@ -10,7 +10,7 @@
 - Reviewers: `FlowPilot`
 - Created: `2026-07-08`
 - Last Updated: `2026-07-08`
-- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Manual E2E Test Guide, Scenario 5)
+- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Manual E2E Test Guide, Scenario 5)
 - Child Documents: `none`
 - Related Documents: [BUG-250: Restarted Flow Hub Run Permanently Unresumable Placeholder Session](./BUG-250-Restarted-Flow-Hub-Run-Permanently-Unresumable-Placeholder-Session.md), [BUG-251: Restarted Child Agent Shows Permanently Stale Running Status](./BUG-251-Restarted-Child-Agent-Shows-Permanently-Stale-Running-Status.md), [BUG-256: Restarted Flow Step Timeline Loses Reviewer Statuses When Nodes Share Agent](./BUG-256-Restarted-Flow-Step-Timeline-Loses-Reviewer-Statuses-When-Nodes-Share-Agent.md)
 - Replaces: `none`
@@ -55,7 +55,7 @@ After `run-7804` ran a full Review Loop to completion (round 1, both reviewers a
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Manual E2E Test Guide Scenario 5
+- impacted coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Manual E2E Test Guide Scenario 5
 - impacted task: none directly
 - impacted tech design: none directly
 - impacted system spec: none directly

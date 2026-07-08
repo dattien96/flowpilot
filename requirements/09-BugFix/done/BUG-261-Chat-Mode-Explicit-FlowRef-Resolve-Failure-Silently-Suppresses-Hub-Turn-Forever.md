@@ -10,7 +10,7 @@
 - Reviewers: `FlowPilot`
 - Created: `2026-07-08`
 - Last Updated: `2026-07-08`
-- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 11), [CP-42: Flow Pack And Generic Node Behavior Refactor](../../07-Coding-Plan/done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) (hub-first-turn suppression / `startResolvedFlow` design)
+- Parent Documents: [CP-36: Agent Review Loop And Main Hub Orchestration](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md) (Scenario 11), [CP-42: Flow Pack And Generic Node Behavior Refactor](../../07-Coding-Plan/done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) (hub-first-turn suppression / `startResolvedFlow` design)
 - Child Documents: `none`
 - Related Documents: [BUG-249: Corrupted Builtin Mirror Recreate Duplicates Row And Drops Overrides](./BUG-249-Corrupted-Builtin-Mirror-Recreate-Duplicates-Row-And-Drops-Overrides.md) (same class of built-in-mirror-corruption trigger, found via CP-36 Scenario 14), [BUG-250: Restarted Flow Hub Run Permanently Unresumable Placeholder Session](./BUG-250-Restarted-Flow-Hub-Run-Permanently-Unresumable-Placeholder-Session.md) (same "hub turn suppressed with nothing to reinvoke it" symptom family, different trigger), [CA-259: Fall Back To Normal Turn When Explicit FlowRef Resolve Fails](../../../change-audit/CA-259-fallback-to-normal-turn-when-explicit-flowref-resolve-fails.md)
 - Replaces: `none`
@@ -60,7 +60,7 @@ A user testing CP-36 Scenario 11 (Chat Mode's built-in Review Loop picker) sent 
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-36](../../07-Coding-Plan/inprogress/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 11 ("CP-42 Built-in Orchestration Picker: Deep Technical Verification") — found while preparing that scenario's Chat-Mode parity checks.
+- impacted coding plan: [CP-36](../../07-Coding-Plan/done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), Scenario 11 ("CP-42 Built-in Orchestration Picker: Deep Technical Verification") — found while preparing that scenario's Chat-Mode parity checks.
 - impacted design precedent: CP-42's hub-first-turn suppression design (`startResolvedFlow`'s "the hub's first provider turn is suppressed; it will be reinvoked only after the flow reaches a hub.inline node") is correct and unchanged by this fix — this bug is about the fallback path CP-42's own comment already promised for when that suppression's premise (a flow actually starts) turns out to be false.
 
 ## 3. Environment and Reproduction
