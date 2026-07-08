@@ -358,6 +358,13 @@ export interface RunHistoryItem {
   agentName?: string;
   role?: string;
   agentStatus?: string;
+  /**
+   * Chat-Mode orchestration picker selection this run was started with
+   * (CP-42/Task-177), e.g. subMode="bug", flowRef="flowpilot-core-flow-pack/review-loop"
+   * (BUG-263). Undefined for a plain chat run or a Flow-Mode workflow launch.
+   */
+  subMode?: string;
+  flowRef?: string;
 }
 
 export interface ChatSessionSyncRequest {

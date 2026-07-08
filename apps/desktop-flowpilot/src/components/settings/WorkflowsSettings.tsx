@@ -697,19 +697,46 @@ export function WorkflowsSettings(): React.ReactElement {
   // that actually declare edges get this treatment — a plain legacy/linear
   // workflow with edges: [] never had a graph-derived dependsOn to begin
   // with and is left alone).
+  //
+  // BUG-262: step_definitions is a de-duplicated catalog keyed by step_type
+  // (BUG-164), so a step_type can legitimately be referenced by more than
+  // one workflow's workflow_steps — cloneWorkflow no longer creates this
+  // situation itself (each clone now gets its own step_types), but a
+  // pre-existing shared row from before that fix, or a brand-new workflow
+  // that deliberately reuses an existing step from the "add step" dropdown,
+  // can still land here. This used to overwrite dependsOn unconditionally,
+  // silently corrupting every OTHER workflow (including a built-in) that
+  // also references the same step_type with whatever the CURRENT workflow's
+  // own local edge graph happens to say. Guard it the same way the delete
+  // flow already does (listWorkflowsUsingSteps/stepTypesUsedByBuiltin,
+  // above): skip the write and report the step back to the caller instead of
+  // silently corrupting a workflow the user isn't even looking at.
   const persistEdgeDerivedDependsOn = async (
     admin: Awaited<ReturnType<typeof getAdminUseCases>>,
     steps: WorkflowStep[],
     edges: WorkflowFlowEdge[],
-  ) => {
-    if (edges.length === 0) return;
+    currentWorkflowId: string,
+  ): Promise<string[]> => {
+    if (edges.length === 0) return [];
     const computed = computeDependsOnByStepType(steps, edges);
+    const pendingStepTypes = Array.from(computed.keys());
+    const usages =
+      pendingStepTypes.length > 0 ? await admin.workflows.listWorkflowsUsingSteps(pendingStepTypes) : [];
+    const sharedWithAnotherWorkflow = new Set(
+      usages.filter((usage) => usage.workflowId !== currentWorkflowId).map((usage) => usage.stepType),
+    );
+    const skipped: string[] = [];
     for (const [stepType, dependsOn] of computed) {
       const definition = stepDefinitions.find((d) => d.stepType === stepType);
       if (!definition) continue;
       if (arraysEqualUnordered(definition.dependsOn ?? [], dependsOn)) continue;
+      if (sharedWithAnotherWorkflow.has(stepType)) {
+        skipped.push(definition.name || stepType);
+        continue;
+      }
       await admin.workflows.saveStepDefinition({ ...definition, dependsOn });
     }
+    return skipped;
   };
 
   // Task-189: the flow graph's edges (Workflow.edges/edges_json) were already
@@ -872,8 +899,9 @@ export function WorkflowsSettings(): React.ReactElement {
       // point, so a failure syncing derived dependsOn must not be reported as
       // "Unable to save workflow" — that would wrongly suggest the save never
       // happened at all.
+      let skippedSteps: string[] = [];
       try {
-        await persistEdgeDerivedDependsOn(admin, workflowSteps, workflowDraft.edges);
+        skippedSteps = await persistEdgeDerivedDependsOn(admin, workflowSteps, workflowDraft.edges, saved.id);
       } catch (dependsOnError) {
         await refresh(saved.id, selectedStepType, { preserveCreateDrafts: true });
         setMessage(
@@ -882,7 +910,15 @@ export function WorkflowsSettings(): React.ReactElement {
         return;
       }
       await refresh(saved.id, selectedStepType, { preserveCreateDrafts: true });
-      setMessage("Workflow saved.");
+      setMessage(
+        skippedSteps.length > 0
+          ? `Workflow saved. Dependencies for ${skippedSteps.join(", ")} were NOT updated because ${
+              skippedSteps.length > 1 ? "they are" : "it is"
+            } shared with another workflow — clone this workflow or use dedicated steps to edit ${
+              skippedSteps.length > 1 ? "them" : "it"
+            } independently.`
+          : "Workflow saved.",
+      );
     } catch (error) {
       setMessage(toErrorMessage(error, "Unable to save workflow."));
     } finally {
@@ -926,8 +962,14 @@ export function WorkflowsSettings(): React.ReactElement {
       // point, so a failure syncing derived dependsOn must not be reported as
       // "Unable to create workflow" — that would wrongly suggest the create
       // never happened at all.
+      let skippedSteps: string[] = [];
       try {
-        await persistEdgeDerivedDependsOn(admin, createWorkflowSteps, createWorkflowDraft.edges);
+        skippedSteps = await persistEdgeDerivedDependsOn(
+          admin,
+          createWorkflowSteps,
+          createWorkflowDraft.edges,
+          saved.id,
+        );
       } catch (dependsOnError) {
         setWorkflowView("list");
         await refresh(saved.id, selectedStepType);
@@ -938,7 +980,15 @@ export function WorkflowsSettings(): React.ReactElement {
       }
       setWorkflowView("list");
       await refresh(saved.id, selectedStepType);
-      setMessage("Workflow created.");
+      setMessage(
+        skippedSteps.length > 0
+          ? `Workflow created. Dependencies for ${skippedSteps.join(", ")} were NOT updated because ${
+              skippedSteps.length > 1 ? "they are" : "it is"
+            } shared with another workflow — clone this workflow or use dedicated steps to edit ${
+              skippedSteps.length > 1 ? "them" : "it"
+            } independently.`
+          : "Workflow created.",
+      );
     } catch (error) {
       setMessage(toErrorMessage(error, "Unable to create workflow."));
     } finally {

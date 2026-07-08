@@ -1504,6 +1504,14 @@ export const useStore = create<AppState>((set, get) => ({
     // though the runner resumed it correctly. runKind is "chat" for normal_chat runs and
     // "workflow" (or, for older persisted rows, undefined) for everything else.
     const isWorkflowHistoryItem = historyItem?.runKind !== "chat";
+    // BUG-263: same "restore the mode this run actually was" gap as BUG-170
+    // above, but for the Chat-Mode orchestration picker (Bug tab / Built-in
+    // orchestration select) instead of chatMode/launchMode. Without this,
+    // reopening a run started via the picker left chatStartMode stuck at its
+    // default "normal", so the Chat Intent panel showed "Normal" selected
+    // (and locked) even though the run itself was correctly resumed as a
+    // flow-engine-driven Review Loop run underneath.
+    const chatStartMode: ChatStartMode = historyItem?.subMode === "bug" ? "bugfix" : "normal";
     set({
       runId: handle.runId,
       mainRunId: handle.runId,
@@ -1514,6 +1522,8 @@ export const useStore = create<AppState>((set, get) => ({
       ...(isWorkflowHistoryItem && historyItem?.workflowId
         ? { launchMode: "workflow", selectedWorkflowId: historyItem.workflowId }
         : {}),
+      chatStartMode,
+      flowRef: chatStartMode === "bugfix" ? historyItem?.flowRef : undefined,
       timeline: [],
       artifacts: [],
       pendingApprovals: [],

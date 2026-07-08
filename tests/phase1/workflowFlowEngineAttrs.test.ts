@@ -29,6 +29,10 @@ class FakeTable {
     this.lastEqFilters[column] = value;
     return this;
   }
+  in(column: string, values: unknown[]) {
+    this.lastEqFilters[column] = values;
+    return this;
+  }
   not() {
     return this;
   }
@@ -114,18 +118,49 @@ function builtinWorkflowRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-test("saveWorkflow rejects editing a non-editable (built-in) workflow", async () => {
+test("saveWorkflow limits built-in workflow saves to override fields only", async () => {
   const supabase = new FakeSupabase();
+  const workflowsTable = new FakeTable({
+    maybeSingle: { data: { editable: false }, error: null },
+    single: {
+      data: builtinWorkflowRow({
+        model_override: "gpt-5.4",
+        reasoning_effort_override: "high",
+        yolo_mode: true,
+        name: "Review Loop",
+      }),
+      error: null,
+    },
+  });
+  let updatePayload: Record<string, unknown> | null = null;
+  (workflowsTable as any).update = function (payload: Record<string, unknown>) {
+    updatePayload = payload;
+    return this;
+  };
   supabase.register(
     "workflows",
-    new FakeTable({ maybeSingle: { data: { editable: false }, error: null } }),
+    workflowsTable,
   );
   const repo = new SupabaseAdminRepository(supabase as any);
 
-  await assert.rejects(
-    () => repo.saveWorkflow({ id: "wf-builtin-1", name: "hacked name" }),
-    /built-in template/,
-  );
+  const saved = await repo.saveWorkflow({
+    id: "wf-builtin-1",
+    name: "hacked name",
+    modelOverride: "gpt-5.4",
+    reasoningEffortOverride: "high",
+    yoloMode: true,
+  });
+
+  assert.deepEqual(updatePayload, {
+    model_override: "gpt-5.4",
+    reasoning_effort_override: "high",
+    yolo_mode: true,
+    updated_at: updatePayload?.updated_at,
+  });
+  assert.equal(saved.name, "Review Loop");
+  assert.equal(saved.modelOverride, "gpt-5.4");
+  assert.equal(saved.reasoningEffortOverride, "high");
+  assert.equal(saved.yoloMode, true);
 });
 
 test("saveWorkflow allows editing when editable=true", async () => {
@@ -171,6 +206,88 @@ test("cloneWorkflow creates an editable, non-builtin copy referencing the source
   assert.equal(cloned.editable, true);
   assert.equal(cloned.clonedFrom, "wf-builtin-1");
   assert.equal(cloned.name, "My Review Loop");
+});
+
+// Regression test for BUG-262: cloneWorkflow used to reuse the source's
+// step_type verbatim for the clone's workflow_steps, so both workflows
+// pointed at the SAME step_definitions row. Editing the clone's edges and
+// saving (persistEdgeDerivedDependsOn -> saveStepDefinition) then silently
+// overwrote the SOURCE's (including a built-in's) dependsOn too — exactly
+// the live incident that corrupted the review-loop built-in's "synthesis"
+// node via an unrelated custom flow clone. The fix gives every cloned step
+// its own fresh, workflow-scoped step_type and an independent
+// step_definitions row.
+test("cloneWorkflow gives every cloned step its own step_definitions row, not the source's", async () => {
+  const supabase = new FakeSupabase();
+  const sourceRow = builtinWorkflowRow();
+  const clonedRow = builtinWorkflowRow({
+    id: "wf-clone-1",
+    is_builtin: false,
+    editable: true,
+    cloned_from: "wf-builtin-1",
+    name: "My Review Loop",
+  });
+  const workflowsResponses = [sourceRow, clonedRow];
+  const workflowsTable = new FakeTable({});
+  (workflowsTable as any).single = () =>
+    Promise.resolve({ data: workflowsResponses.shift(), error: null });
+  supabase.register("workflows", workflowsTable);
+
+  const sourceStepType = "flowpilot_core_flow_pack_review_loop_synthesis";
+  supabase.register(
+    "workflow_steps",
+    new FakeTable({
+      list: {
+        data: [
+          {
+            id: "wfstep-1",
+            workflow_id: "wf-builtin-1",
+            step_type: sourceStepType,
+            order_index: 3,
+            is_enabled: true,
+            requires_approval: true,
+          },
+        ],
+        error: null,
+      },
+    }),
+  );
+  const stepDefinitionsTable = new FakeTable({
+    write: {
+      data: [
+        {
+          step_type: sourceStepType,
+          name: "Review Loop: Synthesis",
+          description: "synthesis node",
+          node_id: "synthesis",
+          behavior_id: "hub.inline",
+          agent_ref: "agents/synthesizer.md",
+          node_lifecycle: "reinvoke",
+          depends_on_json: ["reviewer_correctness", "reviewer_security"],
+          model: "claude-haiku",
+        },
+      ],
+      error: null,
+    },
+  });
+  supabase.register("step_definitions", stepDefinitionsTable);
+
+  const repo = new SupabaseAdminRepository(supabase as any);
+  const cloned = await repo.cloneWorkflow("wf-builtin-1", "My Review Loop");
+
+  const newDefinitionRows = stepDefinitionsTable.insertPayloads[0] as Array<Record<string, unknown>>;
+  assert.equal(newDefinitionRows.length, 1);
+  const newStepType = newDefinitionRows[0].step_type as string;
+  assert.notEqual(newStepType, sourceStepType, "clone must not reuse the source's step_type");
+  assert.equal(newStepType, `${cloned.id}__${sourceStepType}`);
+  assert.equal(newDefinitionRows[0].node_id, "synthesis");
+  assert.deepEqual(newDefinitionRows[0].depends_on_json, ["reviewer_correctness", "reviewer_security"]);
+
+  const workflowStepsTable = supabase.tables.get("workflow_steps")!;
+  const newRelationRows = workflowStepsTable.insertPayloads[0] as Array<Record<string, unknown>>;
+  assert.equal(newRelationRows.length, 1);
+  assert.equal(newRelationRows[0].step_type, newStepType);
+  assert.equal(newRelationRows[0].workflow_id, cloned.id);
 });
 
 // Regression test for BUG-NOTE-CP42 #18: saveWorkflow used to DELETE every

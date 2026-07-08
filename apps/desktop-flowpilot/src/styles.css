@@ -3349,6 +3349,14 @@ input {
   min-height: 60px;
   max-height: 240px;
   overflow-y: auto;
+  /* A hub's escalation gateReason can quote raw reviewer/diff output verbatim
+     (e.g. a git diffstat line like "25 +++++++++++++++++++++++"), a single
+     unbroken token with no spaces to wrap on. Without this, that token
+     overflows the card's fixed max-width instead of wrapping, which reads as
+     "the text just stops" even though overflow-y:auto is scrollable — the
+     content one would scroll to see is off to the side, not below. */
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 .flow-awaiting-user-feedback {
   display: block;
