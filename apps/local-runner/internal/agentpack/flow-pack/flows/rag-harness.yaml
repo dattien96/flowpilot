@@ -19,6 +19,15 @@ policy:
 contexts:
   main_context:
     ref: contexts/flow-context-package.yaml
+    # CP-44 P-4/Task-194: explicit enabled-source declaration. Lists the same
+    # 3 built-in sources the runner defaults to when a flow declares none, so
+    # this is documentation-as-config, not a behavior change. Add a source id
+    # here (once registered in the runner) to extend this flow's context
+    # harness without touching Go code.
+    sources:
+      - feature.history
+      - chat.summary
+      - source.excerpt
 nodes:
   - id: context
     run: inline
