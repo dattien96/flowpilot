@@ -2900,7 +2900,21 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		geminiTurn = transcriptTurnForProviderTurnLocked(rs, turnID)
 	}
 	snap := sessionStateOf(rs)
+	isParent := rs.parentRunID == ""
 	s.mu.Unlock()
+	// BUG-257: sessionStateOf never carries LoopState (it isn't a field on
+	// interactiveRun; the live value lives in agentOrchestrator.loop). The
+	// startTurn persist already patches it in for parent/hub runs — this
+	// post-turn persist must do the same, or it silently overwrites an
+	// already-terminal "done" LoopState (written moments earlier by
+	// markFlowRunComplete when the hub's own synthesis turn called
+	// submit_review_outcome) with a zero-value LoopState once that same turn
+	// finishes. Since sessions.ndjson resume reads only the latest record,
+	// that clobbered record made a fully-completed flow run's hub/synthesis
+	// step resume as CANCELED instead of DONE after a server restart.
+	if isParent {
+		snap.LoopState = s.agentOrchestrator.graphSnapshot(rs.id).LoopState
+	}
 	_ = s.persistProviderSession(snap)
 	// Log the new Codex rollout session id so seedTranscriptFromDisk can load
 	// every per-turn rollout file on resume (BUG-083 F-3).
