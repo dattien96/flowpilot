@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-03`
 - Parent Documents: [SS-14: Code Context And Regression Safety](../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (US-3, AC-7, AC-8, BR-2)
 - Child Documents: [CP-43: Change Contract And Canonical Intent Signature](../07-Coding-Plan/todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md)
-- Related Documents: [SD-17: Context And Regression Engine](./SD-17-Context-And-Regression-Engine.md) (activates deferred `D-11`), [SD-20: Flow Gate Rule Semantics](./SD-20-Flow-Gate-Rule-Semantics.md), [SD-10: Context Resolver & RAG](./SD-10-Context-Resolver-RAG.md), [CP-35: Context And Regression Engine Rollout](../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md), [CP-23: Context Control & Wrong-Way Detection](../07-Coding-Plan/todo/CP-23-Auto-Learn-To-Skill.md)
+- Related Documents: [SD-22: Pluggable Context Source Registry](./SD-22-Pluggable-Context-Source-Registry.md) (**substrate** — Canonical Head is packed as a context source on SD-22's registry; SD-22 lands first), [SD-17: Context And Regression Engine](./SD-17-Context-And-Regression-Engine.md) (activates deferred `D-11`), [SD-20: Flow Gate Rule Semantics](./SD-20-Flow-Gate-Rule-Semantics.md), [SD-10: Context Resolver & RAG](./SD-10-Context-Resolver-RAG.md), [CP-35: Context And Regression Engine Rollout](../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md), [CP-23: Context Control & Wrong-Way Detection](../07-Coding-Plan/todo/CP-23-Auto-Learn-To-Skill.md)
 - Replaces: `None (activates SD-17 D-11; extends SD-20 Flow Gate rules)`
 - Tags: `change-contract, canonical-head, intent-signature, scope-drift, flow-gate, provenance, regression, gitnexus, local-runner`
 
