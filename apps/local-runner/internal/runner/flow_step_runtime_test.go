@@ -672,6 +672,89 @@ func TestReconstructResumeKeepsCompletedFlowNodesAndCancelsSyntheticHub(t *testi
 	}
 }
 
+// TestReconstructResumeKeepsFailedCohortMemberDespiteFlowReachingDone is the
+// BUG-260 regression: CA-251/BUG-254 let the hub declare a round done off the
+// surviving cohort members even when one member genuinely FAILED — a live
+// Claude repro (run-10239) hit a cohort of two reviewers where one failed
+// ("claude-review-fake-model") and one completed ("my-reviewer"); the hub still
+// escalated, got resolved, and reached loop_state.status "done". On restart,
+// resumedFlowStepRows's old fast path treated ANY terminal, non-blocked loop
+// state as "every node genuinely succeeded" and bulk-marked all nodes DONE,
+// silently overwriting the failed reviewer's real outcome. It must instead
+// still read FAILED from that reviewer's own persisted session.
+func TestReconstructResumeKeepsFailedCohortMemberDespiteFlowReachingDone(t *testing.T) {
+	store, err := NewLocalFileSessionStore(filepath.Join(t.TempDir(), ".flowpilot", "chats"))
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	svc := newInteractiveService(newProviderRegistry(), newInteractiveCatalog(), store)
+	ctx := context.Background()
+	nodes := []agentpack.FlowNode{
+		{ID: "my-coder", Behavior: "agent.delegate", Agent: "agents/coder-agent.md"},
+		{ID: "my-reviewer", Behavior: "agent.delegate", Agent: "agents/reviewer-agent.md", DependsOn: []string{"my-coder"}},
+		{ID: "claude-review-fake-model", Behavior: "agent.delegate", Agent: "agents/reviewer-agent.md", DependsOn: []string{"my-coder"}},
+		{ID: "synthesis", Behavior: "hub.inline", Agent: "agents/synthesizer.md", DependsOn: []string{"my-reviewer", "claude-review-fake-model"}},
+	}
+	now := "2026-07-08T01:39:31Z"
+	for _, session := range []ProviderSessionState{
+		{
+			RunID: "run-10244", ParentRunID: "run-10239",
+			ProviderKey: ProviderKeyClaude, RunKind: "chat",
+			Label: "my-coder", AgentName: "coder-agent", Role: "coder-agent",
+			Status: RunStatusCompleted, StartedAt: now, UpdatedAt: now,
+		},
+		{
+			RunID: "run-10331", ParentRunID: "run-10239",
+			ProviderKey: ProviderKeyClaude, RunKind: "chat",
+			Label: "my-reviewer", AgentName: "reviewer-agent", Role: "reviewer-agent",
+			FlowCohortID: "flow-auto-my-coder-round-0",
+			Status:       RunStatusCompleted, StartedAt: now, UpdatedAt: now,
+		},
+		{
+			RunID: "run-10339", ParentRunID: "run-10239",
+			ProviderKey: ProviderKeyClaude, RunKind: "chat",
+			Label: "claude-review-fake-model", AgentName: "reviewer-agent", Role: "reviewer-agent",
+			FlowCohortID: "flow-auto-my-coder-round-0",
+			Status:       RunStatusFailed, StartedAt: now, UpdatedAt: now,
+		},
+	} {
+		if err := store.UpsertProviderSession(ctx, session); err != nil {
+			t.Fatalf("UpsertProviderSession(%s): %v", session.RunID, err)
+		}
+	}
+
+	rs, apiErr := svc.reconstructRun(ProviderSessionState{
+		RunID:               "run-10239",
+		ProjectID:           "proj",
+		ProviderKey:         ProviderKeyClaude,
+		WorkflowID:          "wf-1",
+		RunKind:             "workflow",
+		Status:              RunStatusCompleted,
+		StartedAt:           now,
+		UpdatedAt:           now,
+		ActiveFlowNodes:     nodes,
+		AutoOrchestrate:     true,
+		PendingAgentContext: []string{"Flow completed."},
+		LoopState:           AgentLoopState{Status: "done", Round: 0, Cap: 3, RoundCap: 3, Mode: "explicit"},
+	})
+	if apiErr != nil {
+		t.Fatalf("reconstructRun: %v", apiErr)
+	}
+	_ = rs
+	if got := flowStepStatus(t, svc, "run-10239", "my-coder"); got != StepStatusDone {
+		t.Errorf("my-coder = %q, want DONE", got)
+	}
+	if got := flowStepStatus(t, svc, "run-10239", "my-reviewer"); got != StepStatusDone {
+		t.Errorf("my-reviewer = %q, want DONE", got)
+	}
+	if got := flowStepStatus(t, svc, "run-10239", "claude-review-fake-model"); got != StepStatusFailed {
+		t.Fatalf("claude-review-fake-model = %q, want FAILED — this reviewer genuinely failed; the flow reaching loop_state.status=done afterward must not overwrite it to DONE", got)
+	}
+	if got := flowStepStatus(t, svc, "run-10239", "synthesis"); got != StepStatusDone {
+		t.Errorf("synthesis = %q, want DONE (no child session evidence for the inline hub node — falls back to DONE because the flow genuinely completed)", got)
+	}
+}
+
 func TestReconstructResumeCancelsRunningReviewerButKeepsCompletedCoder(t *testing.T) {
 	store, err := NewLocalFileSessionStore(filepath.Join(t.TempDir(), ".flowpilot", "chats"))
 	if err != nil {

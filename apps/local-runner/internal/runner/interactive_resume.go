@@ -540,10 +540,18 @@ func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st Provider
 	if len(rs.activeFlowNodes) == 0 {
 		return nil
 	}
-	if !resumedFlowRunIncomplete(st) && strings.TrimSpace(st.LoopState.Status) != "blocked" {
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		return s.flowStepRowsFromNodes(context.Background(), rs.id, rs.activeFlowNodes, StepStatusDone, now)
-	}
+	// BUG-260: a flow can reach a genuinely terminal loop state ("done") even
+	// though one of its cohort members individually FAILED — CA-251/BUG-254
+	// deliberately let the hub proceed past a partial cohort failure (join only
+	// requires completed members; the hub can still declare the round done off
+	// the survivors' verdicts). The old code treated "flow reached terminal,
+	// non-blocked state" as "every node genuinely succeeded" and short-circuited
+	// straight to an unconditional all-DONE fast path, silently overwriting that
+	// failed member's own real outcome. flowComplete now only controls the
+	// DEFAULT for a node with no session evidence at all (e.g. an inline hub
+	// node, or a legacy run with no persisted children) — per-child evidence,
+	// including FAILED, set below always wins over that default.
+	flowComplete := !resumedFlowRunIncomplete(st) && strings.TrimSpace(st.LoopState.Status) != "blocked"
 	rows := s.flowStepRowsFromNodes(context.Background(), rs.id, rs.activeFlowNodes, StepStatusPending, "")
 	byID := make(map[string]*RuntimeWorkflowStep, len(rows))
 	for i := range rows {
@@ -584,8 +592,22 @@ func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st Provider
 	}
 	if hubID := hubInlineNodeID(rs.activeFlowNodes); hubID != "" {
 		if hub := byID[hubID]; hub != nil && hub.Status == StepStatusPending {
-			if strings.TrimSpace(st.LoopState.ActiveNode) == hubID || flowHubHadJoinedReviewNote(st) {
+			switch {
+			case flowComplete:
+				hub.Status = StepStatusDone
+			case strings.TrimSpace(st.LoopState.ActiveNode) == hubID || flowHubHadJoinedReviewNote(st):
 				hub.Status = StepStatusCanceled
+			}
+		}
+	}
+	if flowComplete {
+		// Fallback default for any other node no session evidence matched at all
+		// (e.g. a legacy run whose children predate persisted labels) — a node
+		// that genuinely failed or was canceled above is never still PENDING
+		// here, so this can only promote real gaps, not overwrite real evidence.
+		for i := range rows {
+			if rows[i].Status == StepStatusPending {
+				rows[i].Status = StepStatusDone
 			}
 		}
 	}
