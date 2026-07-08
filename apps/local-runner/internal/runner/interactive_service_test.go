@@ -3912,6 +3912,100 @@ func TestProjectRunHistoryExcludesPersistedChildAgentRuns(t *testing.T) {
 	}
 }
 
+func TestProjectRunHistoryExcludesResumedChildRunsAfterReopen(t *testing.T) {
+	store, err := NewLocalFileSessionStore(filepath.Join(t.TempDir(), ".flowpilot", "chats"))
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, session := range []ProviderSessionState{
+		{
+			RunID:             "parent-run",
+			ProjectID:         "proj-web",
+			WorkflowID:        "wf-feature",
+			ProviderSessionID: "thread-parent",
+			ProviderKey:       ProviderKeyClaude,
+			Status:            RunStatusCompleted,
+			StartedAt:         now,
+			UpdatedAt:         now,
+			LastPrompt:        "parent prompt",
+			RunKind:           "workflow",
+		},
+		{
+			RunID:             "child-run",
+			ProjectID:         "proj-web",
+			WorkflowID:        "wf-feature",
+			ProviderSessionID: "thread-child",
+			ProviderKey:       ProviderKeyClaude,
+			Status:            RunStatusCompleted,
+			StartedAt:         now,
+			UpdatedAt:         now,
+			LastPrompt:        "You are the reviewer sub-agent.",
+			RunKind:           "chat",
+			ParentRunID:       "parent-run",
+			AgentName:         "reviewer-agent",
+			Role:              "reviewer-agent",
+			AgentStatus:       string(RunStatusCompleted),
+		},
+	} {
+		if err := store.UpsertProviderSession(context.Background(), session); err != nil {
+			t.Fatalf("UpsertProviderSession(%s): %v", session.RunID, err)
+		}
+	}
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("child-run"); apiErr != nil {
+		t.Fatalf("resumeRun(child-run): %v", apiErr)
+	}
+
+	history := svc.projectRunHistory("proj-web")
+	if len(history) != 1 || history[0].RunID != "parent-run" {
+		t.Fatalf("history = %+v, want only parent after reopening a child run", history)
+	}
+}
+
+func TestReconstructRunPreservesChildMetadataForResumedAgentRun(t *testing.T) {
+	svc, _ := newTestServer(t)
+	rs, apiErr := svc.reconstructRun(ProviderSessionState{
+		RunID:             "child-run",
+		ProjectID:         "proj",
+		ProviderKey:       ProviderKeyClaude,
+		ProviderSessionID: "thread-child",
+		Status:            RunStatusCompleted,
+		RunKind:           "chat",
+		ParentRunID:       "parent-run",
+		AgentName:         "reviewer-agent",
+		Role:              "reviewer-agent",
+		AgentStatus:       string(RunStatusCompleted),
+		ModelName:         "claude-sonnet",
+		DependsOn:         []string{"coder-run"},
+		StartedAt:         "2026-07-07T16:00:00Z",
+		UpdatedAt:         "2026-07-07T16:01:00Z",
+		LastPrompt:        "You are the reviewer sub-agent.",
+		LastMessage:       "done",
+	})
+	if apiErr != nil {
+		t.Fatalf("reconstructRun: %v", apiErr)
+	}
+	if rs.parentRunID != "parent-run" {
+		t.Fatalf("parentRunID = %q, want parent-run", rs.parentRunID)
+	}
+	if rs.agentName != "reviewer-agent" {
+		t.Fatalf("agentName = %q, want reviewer-agent", rs.agentName)
+	}
+	if rs.role != "reviewer-agent" {
+		t.Fatalf("role = %q, want reviewer-agent", rs.role)
+	}
+	if rs.agentStatus != string(RunStatusCompleted) {
+		t.Fatalf("agentStatus = %q, want completed", rs.agentStatus)
+	}
+	if rs.modelName != "claude-sonnet" {
+		t.Fatalf("modelName = %q, want claude-sonnet", rs.modelName)
+	}
+	if !reflect.DeepEqual(rs.dependsOn, []string{"coder-run"}) {
+		t.Fatalf("dependsOn = %#v, want [coder-run]", rs.dependsOn)
+	}
+}
+
 func TestProjectRunHistoryExcludesLegacyOrphanAgentPromptRuns(t *testing.T) {
 	registry := DefaultProviderRegistry()
 	catalog := newInteractiveCatalog()
@@ -4348,6 +4442,19 @@ func TestSkipsResumeSessionValidation(t *testing.T) {
 			wantSkipped: false,
 		},
 		{
+			name: "Codex flow hub with only a synthetic placeholder and no rollout chain -- skip so history can reopen from turn log",
+			rs: &interactiveRun{
+				id:                "run-flow-hub-1",
+				providerKey:       ProviderKeyCodex,
+				providerSessionID: "thread-6075",
+				status:            RunStatusCompleted,
+				runKind:           "workflow",
+				activeFlowNodes:   []agentpack.FlowNode{{ID: "coder"}},
+			},
+			inMemory:    false,
+			wantSkipped: true,
+		},
+		{
 			name: "Claude placeholder session, still in memory with turn in flight -- skip for the pre-existing isActiveInMemory reason",
 			rs: &interactiveRun{
 				providerKey:       ProviderKeyClaude,
@@ -4444,5 +4551,240 @@ func TestResumeRunSucceedsForRebuiltRunWithPlaceholderSession(t *testing.T) {
 	}
 	if handle.RunID != "run-hub-1" {
 		t.Fatalf("handle.RunID = %q, want run-hub-1", handle.RunID)
+	}
+}
+
+func TestResumeRunSucceedsForRebuiltCodexFlowHubWithSyntheticPlaceholder(t *testing.T) {
+	store, err := NewLocalFileSessionStore(filepath.Join(t.TempDir(), ".flowpilot", "chats"))
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "run-codex-flow-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "thread-9001",
+		Status:            RunStatusCompleted,
+		RunKind:           "workflow",
+		ActiveFlowNodes:   []agentpack.FlowNode{{ID: "coder"}},
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	if err := store.AppendTurnLog(context.Background(), "run-codex-flow-1", turnLogLine{
+		Kind:   turnLogKindPrompt,
+		TurnID: "turn-1",
+		Prompt: "fix bug 1+1 != 2",
+	}); err != nil {
+		t.Fatalf("seed turn log: %v", err)
+	}
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	handle, apiErr := svc.resumeRun("run-codex-flow-1")
+	if apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+	if handle.ProviderSessionID != "thread-9001" {
+		t.Fatalf("handle.ProviderSessionID = %q, want synthetic placeholder preserved", handle.ProviderSessionID)
+	}
+}
+
+func TestResumeRunRebuildsParentAgentAnnotationsFromPersistedChildren(t *testing.T) {
+	store, err := NewLocalFileSessionStore(filepath.Join(t.TempDir(), ".flowpilot", "chats"))
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, session := range []ProviderSessionState{
+		{
+			RunID:             "parent-run",
+			ProjectID:         "proj",
+			ProviderKey:       ProviderKeyCodex,
+			ProviderSessionID: "thread-parent",
+			Status:            RunStatusCompleted,
+			RunKind:           "workflow",
+			StartedAt:         now,
+			UpdatedAt:         now,
+			LastPrompt:        "fix bug 1+1 != 2",
+			ActiveFlowNodes:   []agentpack.FlowNode{{ID: "coder"}},
+		},
+		{
+			RunID:             "child-coder",
+			ProjectID:         "proj",
+			ProviderKey:       ProviderKeyCodex,
+			ProviderSessionID: "thread-coder",
+			Status:            RunStatusCompleted,
+			RunKind:           "chat",
+			ParentRunID:       "parent-run",
+			AgentName:         "coder-agent",
+			Role:              "coder-agent",
+			AgentStatus:       string(RunStatusCompleted),
+			StartedAt:         now,
+			UpdatedAt:         now,
+			LastMessage:       "implemented the fix",
+		},
+	} {
+		if err := store.UpsertProviderSession(context.Background(), session); err != nil {
+			t.Fatalf("UpsertProviderSession(%s): %v", session.RunID, err)
+		}
+	}
+	if err := store.AppendTurnLog(context.Background(), "parent-run", turnLogLine{
+		Kind:   turnLogKindPrompt,
+		TurnID: "turn-1",
+		Prompt: "fix bug 1+1 != 2",
+	}); err != nil {
+		t.Fatalf("seed turn log: %v", err)
+	}
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	if _, apiErr := svc.resumeRun("parent-run"); apiErr != nil {
+		t.Fatalf("resumeRun(parent-run): %v", apiErr)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	var sawSpawn, sawResult bool
+	for _, ev := range svc.runs["parent-run"].events {
+		if ev.Type == EventAgentSpawnedByUser && ev.AgentName == "coder-agent" && ev.ChildRunID == "child-coder" {
+			sawSpawn = true
+		}
+		if ev.Type == EventAgentResultInjected && ev.AgentName == "coder-agent" && ev.FinalMessage == "implemented the fix" {
+			sawResult = true
+		}
+	}
+	if !sawSpawn {
+		t.Fatal("expected resumed parent timeline to include a Spawned agent annotation rebuilt from persisted child sessions")
+	}
+	if !sawResult {
+		t.Fatal("expected resumed parent timeline to include the completed child result annotation")
+	}
+}
+
+func TestResumeRunRebuildsParentAgentAnnotationsOnlyForRootRun(t *testing.T) {
+	store, err := NewLocalFileSessionStore(filepath.Join(t.TempDir(), ".flowpilot", "chats"))
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, session := range []ProviderSessionState{
+		{
+			RunID:             "parent-run",
+			ProjectID:         "proj",
+			ProviderKey:       ProviderKeyClaude,
+			ProviderSessionID: "thread-parent",
+			Status:            RunStatusCompleted,
+			RunKind:           "workflow",
+			StartedAt:         now,
+			UpdatedAt:         now,
+		},
+		{
+			RunID:             "child-run",
+			ProjectID:         "proj",
+			ProviderKey:       ProviderKeyClaude,
+			ProviderSessionID: "thread-child",
+			Status:            RunStatusCompleted,
+			RunKind:           "chat",
+			ParentRunID:       "parent-run",
+			AgentName:         "coder-agent",
+			Role:              "coder-agent",
+			AgentStatus:       string(RunStatusCompleted),
+			StartedAt:         now,
+			UpdatedAt:         now,
+			LastPrompt:        "You are the coder sub-agent.",
+			LastMessage:       "implemented the fix",
+		},
+	} {
+		if err := store.UpsertProviderSession(context.Background(), session); err != nil {
+			t.Fatalf("UpsertProviderSession(%s): %v", session.RunID, err)
+		}
+	}
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("child-run"); apiErr != nil {
+		t.Fatalf("resumeRun(child-run): %v", apiErr)
+	}
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	for _, ev := range svc.runs["child-run"].events {
+		if ev.Type == EventAgentSpawnedByUser || ev.Type == EventAgentResultInjected {
+			t.Fatalf("child timeline must not receive reconstructed parent-facing agent annotation events, saw %+v", ev)
+		}
+	}
+}
+
+func TestResumeRunRebuildsParentAgentAnnotationsWithoutDuplicatesAcrossReopen(t *testing.T) {
+	store, err := NewLocalFileSessionStore(filepath.Join(t.TempDir(), ".flowpilot", "chats"))
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, session := range []ProviderSessionState{
+		{
+			RunID:             "parent-run",
+			ProjectID:         "proj",
+			ProviderKey:       ProviderKeyCodex,
+			ProviderSessionID: "thread-parent",
+			Status:            RunStatusCompleted,
+			RunKind:           "workflow",
+			StartedAt:         now,
+			UpdatedAt:         now,
+			LastPrompt:        "fix bug 1+1 != 2",
+			ActiveFlowNodes:   []agentpack.FlowNode{{ID: "coder"}},
+		},
+		{
+			RunID:             "child-coder",
+			ProjectID:         "proj",
+			ProviderKey:       ProviderKeyCodex,
+			ProviderSessionID: "thread-coder",
+			Status:            RunStatusCompleted,
+			RunKind:           "chat",
+			ParentRunID:       "parent-run",
+			AgentName:         "coder-agent",
+			Role:              "coder-agent",
+			AgentStatus:       string(RunStatusCompleted),
+			StartedAt:         now,
+			UpdatedAt:         now,
+			LastMessage:       "implemented the fix",
+		},
+	} {
+		if err := store.UpsertProviderSession(context.Background(), session); err != nil {
+			t.Fatalf("UpsertProviderSession(%s): %v", session.RunID, err)
+		}
+	}
+	if err := store.AppendTurnLog(context.Background(), "parent-run", turnLogLine{
+		Kind:   turnLogKindPrompt,
+		TurnID: "turn-1",
+		Prompt: "fix bug 1+1 != 2",
+	}); err != nil {
+		t.Fatalf("seed turn log: %v", err)
+	}
+
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("parent-run"); apiErr != nil {
+		t.Fatalf("first resumeRun(parent-run): %v", apiErr)
+	}
+	svc.mu.Lock()
+	firstEvents := append([]ProviderEvent(nil), svc.runs["parent-run"].events...)
+	svc.mu.Unlock()
+
+	svc2 := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc2.resumeRun("parent-run"); apiErr != nil {
+		t.Fatalf("second resumeRun(parent-run): %v", apiErr)
+	}
+	svc2.mu.Lock()
+	defer svc2.mu.Unlock()
+	secondEvents := svc2.runs["parent-run"].events
+
+	countType := func(events []ProviderEvent, typ ProviderEventType) int {
+		n := 0
+		for _, ev := range events {
+			if ev.Type == typ {
+				n++
+			}
+		}
+		return n
+	}
+	if got, want := countType(secondEvents, EventAgentSpawnedByUser), countType(firstEvents, EventAgentSpawnedByUser); got != want {
+		t.Fatalf("spawn annotation count after reopen = %d, want %d", got, want)
+	}
+	if got, want := countType(secondEvents, EventAgentResultInjected), countType(firstEvents, EventAgentResultInjected); got != want {
+		t.Fatalf("result annotation count after reopen = %d, want %d", got, want)
 	}
 }

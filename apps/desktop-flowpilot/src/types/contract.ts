@@ -165,6 +165,7 @@ export type WorkflowStepRuntimeStatus =
   | "PENDING"
   | "RUNNING"
   | "WAITING_USER_APPROVAL"
+  | "CANCELED"
   | "DONE"
   | "FAILED"
   | "SKIPPED";

@@ -5778,6 +5778,11 @@ body.is-resizing-sidebar {
   border-color: var(--err);
   background: var(--err);
 }
+.fti-cancelled .fti-icon {
+  border-color: var(--text-dim);
+  background: rgba(154, 163, 191, 0.18);
+  color: var(--text-dim);
+}
 @keyframes fti-pulse {
   0%, 100% { box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.25); }
   50% { box-shadow: 0 0 0 6px rgba(76, 141, 255, 0.12); }

@@ -13,8 +13,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // --- F-2: injected-context filtering in the Codex loader ----------------------
@@ -269,6 +272,76 @@ func TestSeedTranscriptLoadsAllCodexRolloutFiles(t *testing.T) {
 	}
 	if len(assistants) != 2 {
 		t.Fatalf("expected 2 assistant messages, got %d: %v", len(assistants), assistants)
+	}
+}
+
+func TestSeedTranscriptFallsBackToTurnLogForSyntheticCodexFlowHub(t *testing.T) {
+	root := t.TempDir()
+	codexHome := filepath.Join(root, "codex-home")
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		t.Fatalf("mkdir codex home: %v", err)
+	}
+
+	writeProviderAccountsConfig083(t, root, []ProviderAccount{
+		{ID: "acct-x", ProviderKey: "codex", HomePath: codexHome, SlotIndex: 1, AuthStatus: "connected", IsActive: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+
+	store, err := NewLocalFileSessionStore(filepath.Join(root, ".flowpilot", "chats"))
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	runID := "run-bug083-fallback"
+	_ = store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             runID,
+		ProjectID:         "proj-1",
+		ProviderKey:       ProviderKeyCodex,
+		ProviderSessionID: "thread-123",
+		ProviderAccountID: "acct-x",
+		WorkingDirectory:  "/repo",
+		Status:            RunStatusCompleted,
+		RunKind:           "workflow",
+		StartedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		ActiveFlowNodes:   []agentpack.FlowNode{{ID: "coder"}},
+	})
+	_ = store.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindPrompt, Prompt: "fix bug 1+1 != 2"})
+	_ = store.AppendTurnLog(context.Background(), runID, turnLogLine{Kind: turnLogKindPrompt, Prompt: "[flow-engine] Agent results ready."})
+
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	svc.activeAccountID = "acct-x"
+
+	rs := &interactiveRun{
+		id:                runID,
+		providerKey:       ProviderKeyCodex,
+		providerSessionID: "thread-123",
+		providerAccountID: "acct-x",
+		workspaceCwd:      "/repo",
+		runKind:           "workflow",
+		status:            RunStatusCancelled,
+		createdAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		resumedFromDisk:   true,
+		activeFlowNodes:   []agentpack.FlowNode{{ID: "coder"}},
+		subs:              map[int64]chan ProviderEvent{},
+		idempotency:       map[string]string{},
+	}
+	svc.mu.Lock()
+	svc.runs[runID] = rs
+	svc.mu.Unlock()
+
+	svc.seedTranscriptFromDisk(rs)
+
+	svc.mu.Lock()
+	events := append([]ProviderEvent(nil), rs.events...)
+	svc.mu.Unlock()
+
+	var prompts []string
+	for _, e := range events {
+		if e.Type == EventTurnStarted && e.Prompt != "" {
+			prompts = append(prompts, e.Prompt)
+		}
+	}
+	if !reflect.DeepEqual(prompts, []string{"fix bug 1+1 != 2", "[flow-engine] Agent results ready."}) {
+		t.Fatalf("prompt-only fallback replay = %#v, want turn-log prompts in order", prompts)
 	}
 }
 

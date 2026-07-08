@@ -330,6 +330,278 @@ func (s *InteractiveService) deleteSessionIDsForRun(runID string, session Provid
 	return out
 }
 
+func terminalFlowLoopStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "done", "blocked", "stopped":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *InteractiveService) shouldTreatCodexFlowHubSessionAsSynthetic(rs *interactiveRun) bool {
+	if rs == nil || rs.providerKey != ProviderKeyCodex {
+		return false
+	}
+	if !strings.HasPrefix(s.resumeSessionID(rs), "thread-") {
+		return false
+	}
+	if rs.runKind != "workflow" || len(rs.activeFlowNodes) == 0 {
+		return false
+	}
+	logger, ok := s.workflowStore.(TurnLogStore)
+	if !ok {
+		return true
+	}
+	entries, err := logger.ReadTurnLog(context.Background(), rs.id)
+	if err != nil {
+		return true
+	}
+	for _, entry := range entries {
+		if entry.Kind == turnLogKindCodexSession && strings.TrimSpace(entry.SessionID) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func promptOnlyTranscriptEvents(rawPrompts []string) []ProviderEvent {
+	out := make([]ProviderEvent, 0, len(rawPrompts)*2)
+	for i, prompt := range rawPrompts {
+		prompt = strings.TrimSpace(prompt)
+		if prompt == "" {
+			continue
+		}
+		out = append(out, ProviderEvent{
+			Type:           EventTurnStarted,
+			Prompt:         prompt,
+			ProviderTurnID: fmt.Sprintf("replay-prompt-%d", i+1),
+		})
+		out = append(out, ProviderEvent{
+			Type:           EventTurnCompleted,
+			ProviderTurnID: fmt.Sprintf("replay-prompt-%d", i+1),
+		})
+	}
+	return out
+}
+
+func normalizeResumedFlowRun(rs *interactiveRun, st ProviderSessionState) {
+	if rs == nil || len(rs.activeFlowNodes) == 0 {
+		return
+	}
+	if !resumedFlowRunIncomplete(st) {
+		return
+	}
+	if st.Status == RunStatusFailed {
+		rs.autoOrchestrate = false
+		return
+	}
+	rs.status = RunStatusCancelled
+	rs.agentStatus = string(RunStatusCancelled)
+	rs.autoOrchestrate = false
+}
+
+func resumedFlowRunIncomplete(st ProviderSessionState) bool {
+	if terminalFlowLoopStatus(st.LoopState.Status) {
+		return false
+	}
+	if st.Status == RunStatusCompleted &&
+		!st.AutoOrchestrate &&
+		len(st.PendingAgentContext) == 0 &&
+		strings.TrimSpace(st.LoopState.Status) != "running" {
+		return false
+	}
+	return true
+}
+
+func resumedChildRunStepStatus(status RunStatus) RuntimeWorkflowStepStatus {
+	switch normalizeResumedStatus(status) {
+	case RunStatusCompleted:
+		return StepStatusDone
+	case RunStatusFailed:
+		return StepStatusFailed
+	case RunStatusCancelled:
+		return StepStatusCanceled
+	default:
+		return StepStatusPending
+	}
+}
+
+func flowHubHadJoinedReviewNote(st ProviderSessionState) bool {
+	if strings.Contains(st.LastPrompt, "[flow-engine joined result note]") {
+		return true
+	}
+	for _, note := range st.PendingAgentContext {
+		if strings.Contains(note, "[flow-engine joined result note]") {
+			return true
+		}
+	}
+	return false
+}
+
+func matchFlowNodeForSession(nodes []agentpack.FlowNode, session ProviderSessionState) string {
+	if label := strings.TrimSpace(session.Label); label != "" {
+		for _, node := range nodes {
+			if node.ID == label {
+				return node.ID
+			}
+		}
+	}
+	agentName := strings.TrimSpace(session.AgentName)
+	role := strings.TrimSpace(session.Role)
+	match := ""
+	for _, node := range nodes {
+		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); !ok || canonical != "agent.delegate" {
+			continue
+		}
+		nodeAgent := flowNodeAgentName(node)
+		if nodeAgent == "" {
+			continue
+		}
+		if nodeAgent != agentName && nodeAgent != role {
+			continue
+		}
+		if match != "" {
+			return ""
+		}
+		match = node.ID
+	}
+	return match
+}
+
+func flowCohortSourceNodeID(cohortID string) string {
+	const prefix = "flow-auto-"
+	rest := strings.TrimPrefix(strings.TrimSpace(cohortID), prefix)
+	if rest == cohortID {
+		return ""
+	}
+	idx := strings.LastIndex(rest, "-round-")
+	if idx <= 0 {
+		return ""
+	}
+	return rest[:idx]
+}
+
+func flowCohortTargetNodeIDs(nodes []agentpack.FlowNode, edges []agentpack.FlowEdge, cohortID string) []string {
+	sourceID := flowCohortSourceNodeID(cohortID)
+	if sourceID == "" {
+		return nil
+	}
+	delegate := make(map[string]struct{}, len(nodes))
+	for _, node := range nodes {
+		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.delegate" {
+			delegate[node.ID] = struct{}{}
+		}
+	}
+	targets := make([]string, 0)
+	for _, edge := range edges {
+		if edge.From != sourceID || edge.Kind != "forward" {
+			continue
+		}
+		if _, ok := delegate[edge.To]; !ok {
+			continue
+		}
+		targets = append(targets, edge.To)
+	}
+	return targets
+}
+
+func (s *InteractiveService) inferredFlowNodeByLegacyCohort(rs *interactiveRun, sessions []ProviderSessionState) map[string]string {
+	groups := make(map[string][]ProviderSessionState)
+	for _, session := range sessions {
+		if session.ParentRunID != rs.id || strings.TrimSpace(session.Label) != "" || strings.TrimSpace(session.FlowCohortID) == "" {
+			continue
+		}
+		groups[session.FlowCohortID] = append(groups[session.FlowCohortID], session)
+	}
+	out := make(map[string]string)
+	for cohortID, group := range groups {
+		targets := flowCohortTargetNodeIDs(rs.activeFlowNodes, rs.activeFlowEdges, cohortID)
+		if len(targets) == 0 {
+			continue
+		}
+		sort.SliceStable(group, func(i, j int) bool {
+			if group[i].StartedAt == group[j].StartedAt {
+				return group[i].RunID < group[j].RunID
+			}
+			return group[i].StartedAt < group[j].StartedAt
+		})
+		for i, session := range group {
+			if i >= len(targets) {
+				break
+			}
+			out[session.RunID] = targets[i]
+		}
+	}
+	return out
+}
+
+func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st ProviderSessionState) []RuntimeWorkflowStep {
+	if len(rs.activeFlowNodes) == 0 {
+		return nil
+	}
+	if !resumedFlowRunIncomplete(st) && strings.TrimSpace(st.LoopState.Status) != "blocked" {
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		return s.flowStepRowsFromNodes(context.Background(), rs.id, rs.activeFlowNodes, StepStatusDone, now)
+	}
+	rows := s.flowStepRowsFromNodes(context.Background(), rs.id, rs.activeFlowNodes, StepStatusPending, "")
+	byID := make(map[string]*RuntimeWorkflowStep, len(rows))
+	for i := range rows {
+		byID[rows[i].ID] = &rows[i]
+	}
+	if indexReader, ok := s.workflowStore.(SessionIndexReader); ok {
+		if sessions, err := indexReader.ListAllProviderSessions(context.Background()); err == nil {
+			legacyCohortNodeByRun := s.inferredFlowNodeByLegacyCohort(rs, sessions)
+			for _, session := range sessions {
+				if session.ParentRunID != rs.id {
+					continue
+				}
+				nodeID := matchFlowNodeForSession(rs.activeFlowNodes, session)
+				if nodeID == "" {
+					nodeID = legacyCohortNodeByRun[session.RunID]
+				}
+				if nodeID == "" {
+					continue
+				}
+				row := byID[nodeID]
+				if row == nil {
+					continue
+				}
+				switch resumedChildRunStepStatus(session.Status) {
+				case StepStatusDone:
+					row.Status = StepStatusDone
+				case StepStatusFailed:
+					if row.Status != StepStatusDone {
+						row.Status = StepStatusFailed
+					}
+				case StepStatusCanceled:
+					if row.Status == StepStatusPending {
+						row.Status = StepStatusCanceled
+					}
+				}
+			}
+		}
+	}
+	if hubID := hubInlineNodeID(rs.activeFlowNodes); hubID != "" {
+		if hub := byID[hubID]; hub != nil && hub.Status == StepStatusPending {
+			if strings.TrimSpace(st.LoopState.ActiveNode) == hubID || flowHubHadJoinedReviewNote(st) {
+				hub.Status = StepStatusCanceled
+			}
+		}
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for i := range rows {
+		switch rows[i].Status {
+		case StepStatusDone:
+			rows[i].StartedAt = now
+			rows[i].FinishedAt = now
+		case StepStatusFailed, StepStatusCanceled, StepStatusSkipped:
+			rows[i].FinishedAt = now
+		}
+	}
+	return rows
+}
+
 // normalizeResumedStatus maps an in-flight status read back from disk to a
 // terminal one. A run that was running / starting / waiting for approval or a
 // question cannot still be in flight after the owning process exited (server
@@ -359,6 +631,13 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		id:                     st.RunID,
 		projectID:              st.ProjectID,
 		workflowID:             st.WorkflowID,
+		parentRunID:            st.ParentRunID,
+		agentName:              st.AgentName,
+		label:                  st.Label,
+		role:                   st.Role,
+		dependsOn:              append([]string(nil), st.DependsOn...),
+		agentStatus:            st.AgentStatus,
+		modelName:              st.ModelName,
 		providerKey:            st.ProviderKey,
 		providerSessionID:      st.ProviderSessionID,
 		realProviderSessionID:  st.ProviderSessionID,
@@ -444,18 +723,86 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		// BUG-178: the local runner's step-runtime store is in-memory, so a
 		// flow run's step list is empty after a server restart and its history
 		// timeline showed "No step-runtime data for this run yet". Rebuild it
-		// from the persisted flow nodes (restored onto rs above). A completed
-		// run's steps are shown DONE; otherwise PENDING (per-step progress isn't
-		// persisted). flowEngineDriven is intentionally left as-is — this only
-		// restores the display; it does not re-engage the executor.
-		s.reseedFlowStepRuntimeForResume(rs.id, rs.activeFlowNodes, rs.status == RunStatusCompleted)
+		// from the persisted flow nodes plus any child/session evidence we still
+		// have on disk, so completed nodes remain DONE and in-flight nodes settle
+		// to CANCELED after a restart rather than reverting to a misleading all-
+		// PENDING/all-DONE display. flowEngineDriven is intentionally left as-is —
+		// this only restores the display; it does not re-engage the executor.
+		s.seedFlowStepRuntimeRows(rs.id, s.resumedFlowStepRows(rs, st))
 	}
 	// Restore flow-engine loop state so a restarted or Drive-synced run resumes
 	// at the correct round/cap/mode (Task-085 T-4).
 	if st.LoopState.Mode != "" || st.LoopState.Cap > 0 || st.LoopState.Round > 0 {
 		s.agentOrchestrator.setLoop(rs.id, st.LoopState)
 	}
+	normalizeResumedFlowRun(rs, st)
 	return rs, nil
+}
+
+func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) []ProviderEvent {
+	indexReader, ok := s.workflowStore.(SessionIndexReader)
+	if !ok || strings.TrimSpace(parentRunID) == "" {
+		return nil
+	}
+	sessions, err := indexReader.ListAllProviderSessions(context.Background())
+	if err != nil {
+		return nil
+	}
+	type childSession struct {
+		runID       string
+		agentName   string
+		lastMessage string
+		startedAt   string
+	}
+	children := make([]childSession, 0)
+	seen := make(map[string]struct{})
+	for _, session := range sessions {
+		if session.ParentRunID != parentRunID || strings.TrimSpace(session.RunID) == "" {
+			continue
+		}
+		if _, exists := seen[session.RunID]; exists {
+			continue
+		}
+		seen[session.RunID] = struct{}{}
+		children = append(children, childSession{
+			runID:       session.RunID,
+			agentName:   firstNonEmptyResumeValue(session.AgentName, session.Role, "agent"),
+			lastMessage: strings.TrimSpace(session.LastMessage),
+			startedAt:   session.StartedAt,
+		})
+	}
+	sort.Slice(children, func(i, j int) bool {
+		if children[i].startedAt == children[j].startedAt {
+			return children[i].runID < children[j].runID
+		}
+		return children[i].startedAt < children[j].startedAt
+	})
+	out := make([]ProviderEvent, 0, len(children)*2)
+	for _, child := range children {
+		out = append(out, ProviderEvent{
+			Type:       EventAgentSpawnedByUser,
+			AgentName:  child.agentName,
+			ChildRunID: child.runID,
+		})
+		if child.lastMessage != "" {
+			out = append(out, ProviderEvent{
+				Type:         EventAgentResultInjected,
+				AgentName:    child.agentName,
+				ChildRunID:   child.runID,
+				FinalMessage: child.lastMessage,
+			})
+		}
+	}
+	return out
+}
+
+func firstNonEmptyResumeValue(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (s *InteractiveService) resolveAccountHome(providerKey ProviderKey, accountID string) (string, bool) {
@@ -748,6 +1095,9 @@ func (s *InteractiveService) ensureProviderResumeHandle(rs *interactiveRun, acco
 	if rs.providerKey != ProviderKeyCodex {
 		return s.resumeSessionID(rs) != ""
 	}
+	if s.shouldTreatCodexFlowHubSessionAsSynthetic(rs) {
+		return true
+	}
 	if id := s.resumeSessionID(rs); id != "" && !strings.HasPrefix(id, "thread-") {
 		return true
 	}
@@ -787,6 +1137,7 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	}
 	if rs.providerKey == ProviderKeyGemini {
 		s.seedGeminiTranscriptFromState(rs)
+		s.appendResumedParentAnnotations(rs)
 		return
 	}
 	var loader func(string) []ProviderEvent
@@ -798,13 +1149,7 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	default:
 		return
 	}
-	home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
-	if !ok && (strings.TrimSpace(rs.providerAccountID) == "" || rs.providerAccountID == "default") {
-		home, ok = defaultProviderSessionHome(rs.providerKey)
-	}
-	if !ok {
-		return
-	}
+	defer s.appendResumedParentAnnotations(rs)
 
 	// Load turn log: raw prompts (F-1) and Codex per-turn session ids (F-3).
 	var rawPrompts []string
@@ -824,6 +1169,19 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 				}
 			}
 		}
+	}
+
+	home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
+	if !ok && (strings.TrimSpace(rs.providerAccountID) == "" || rs.providerAccountID == "default") {
+		home, ok = defaultProviderSessionHome(rs.providerKey)
+	}
+	if !ok {
+		historical := promptOnlyTranscriptEvents(rawPrompts)
+		if len(historical) == 0 {
+			return
+		}
+		s.appendTranscriptReplayEvents(rs, historical)
+		return
 	}
 
 	// Collect the session file path(s) to load.
@@ -851,11 +1209,9 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	// Fall back to the single stored session file: old Codex runs without a turn
 	// log, and all Claude runs (one JSONL holds the full conversation).
 	if len(filePaths) == 0 {
-		path, found := LocateSessionFile(rs.providerKey, home, sessionID, rs.workspaceCwd)
-		if !found {
-			return
+		if path, found := LocateSessionFile(rs.providerKey, home, sessionID, rs.workspaceCwd); found {
+			filePaths = []string{path}
 		}
-		filePaths = []string{path}
 	}
 
 	// Load events from all files.
@@ -864,7 +1220,10 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 		historical = append(historical, loader(fp)...)
 	}
 	if len(historical) == 0 {
-		return
+		historical = promptOnlyTranscriptEvents(rawPrompts)
+		if len(historical) == 0 {
+			return
+		}
 	}
 
 	// Override each replayed prompt with the stored raw input (F-1, BUG-083).
@@ -880,7 +1239,15 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 		}
 	}
 
+	s.appendTranscriptReplayEvents(rs, historical)
+}
+
+func (s *InteractiveService) appendTranscriptReplayEvents(rs *interactiveRun, historical []ProviderEvent) {
+	if rs == nil || len(historical) == 0 {
+		return
+	}
 	stepID := "chat-" + rs.id
+	sessionID := s.resumeSessionID(rs)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if rs.transcriptSeeded {
@@ -914,6 +1281,31 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 			ProviderKey:       rs.providerKey,
 			OccurredAt:        rs.createdAt,
 		})
+	}
+}
+
+func (s *InteractiveService) appendResumedParentAnnotations(rs *interactiveRun) {
+	if rs == nil || strings.TrimSpace(rs.parentRunID) != "" {
+		return
+	}
+	annotations := s.resumedParentAgentAnnotations(rs.id)
+	if len(annotations) == 0 {
+		return
+	}
+	sessionID := s.resumeSessionID(rs)
+	stepID := "chat-" + rs.id
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range annotations {
+		rs.seq++
+		annotations[i].Seq = rs.seq
+		annotations[i].ID = s.nextID("transcript")
+		annotations[i].WorkflowRunID = rs.id
+		annotations[i].WorkflowStepRunID = stepID
+		annotations[i].ProviderSessionID = sessionID
+		annotations[i].ProviderKey = rs.providerKey
+		annotations[i].OccurredAt = rs.createdAt
+		rs.events = append(rs.events, annotations[i])
 	}
 }
 

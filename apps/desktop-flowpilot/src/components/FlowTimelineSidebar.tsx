@@ -49,7 +49,12 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
   // BUG-159: "reached" (done, or currently on it), not just "fully done" — the
   // user is standing ON step 1 while it runs, so that should read "1/4", not "0/4".
   const reachedCount = steps.filter(
-    (s) => s.status === "DONE" || s.status === "RUNNING" || s.status === "WAITING_USER_APPROVAL",
+    (s) =>
+      s.status === "DONE" ||
+      s.status === "RUNNING" ||
+      s.status === "WAITING_USER_APPROVAL" ||
+      s.status === "FAILED" ||
+      s.status === "CANCELED",
   ).length;
 
   return (

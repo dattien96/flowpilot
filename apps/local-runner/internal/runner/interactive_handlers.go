@@ -799,7 +799,8 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 func (s *InteractiveService) skipsResumeSessionValidation(rs *interactiveRun, inMemory bool) bool {
 	isActiveInMemory := inMemory && rs.status != RunStatusCompleted && rs.status != RunStatusFailed && rs.status != RunStatusCancelled
 	isReadOnlyGeminiInMemory := inMemory && rs.providerKey == ProviderKeyGemini && len(rs.events) > 0
-	hasNoRealSession := rs.providerKey != ProviderKeyCodex && strings.HasPrefix(s.resumeSessionID(rs), "thread-")
+	hasNoRealSession := strings.HasPrefix(s.resumeSessionID(rs), "thread-") &&
+		(rs.providerKey != ProviderKeyCodex || s.shouldTreatCodexFlowHubSessionAsSynthetic(rs))
 	return isActiveInMemory || isReadOnlyGeminiInMemory || hasNoRealSession
 }
 

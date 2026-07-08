@@ -82,6 +82,7 @@ type ProviderSessionState struct {
 	// ParentRunID is set for child agent runs (CP-19 / Task-082); empty for root runs.
 	ParentRunID string
 	AgentName   string
+	Label       string
 	Role        string
 	DependsOn   []string
 	AgentStatus string

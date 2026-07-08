@@ -1600,6 +1600,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		SyncUpdatedAt:       rs.syncUpdatedAt,
 		ParentRunID:         rs.parentRunID,
 		AgentName:           rs.agentName,
+		Label:               rs.label,
 		Role:                rs.role,
 		DependsOn:           append([]string(nil), rs.dependsOn...),
 		AgentStatus:         rs.agentStatus,
@@ -1783,7 +1784,7 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					if parent := s.runs[parentRunID]; parent != nil && parent.flowEngineDriven {
 						flowDriven = true
 						for _, e := range entries {
-							if e.Label != "" {
+							if e.Status == "completed" && e.Label != "" {
 								reviewerNodeIDs = append(reviewerNodeIDs, e.Label)
 							}
 						}

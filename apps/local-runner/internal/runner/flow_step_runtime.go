@@ -76,17 +76,21 @@ func (s *InteractiveService) reseedFlowStepRuntime(parentRunID string, nodes []a
 // progress is not persisted. No-op if the store isn't a seeder or there are no
 // nodes (a plain, non-flow run has none).
 func (s *InteractiveService) reseedFlowStepRuntimeForResume(runID string, nodes []agentpack.FlowNode, completed bool) {
-	seeder, ok := s.workflowStore.(workflowRunSeeder)
-	if !ok || len(nodes) == 0 {
-		return
-	}
 	status := StepStatusPending
 	ts := ""
 	if completed {
 		status = StepStatusDone
 		ts = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	seeder.seed(runID, s.flowStepRowsFromNodes(context.Background(), runID, nodes, status, ts))
+	s.seedFlowStepRuntimeRows(runID, s.flowStepRowsFromNodes(context.Background(), runID, nodes, status, ts))
+}
+
+func (s *InteractiveService) seedFlowStepRuntimeRows(runID string, rows []RuntimeWorkflowStep) {
+	seeder, ok := s.workflowStore.(workflowRunSeeder)
+	if !ok || len(rows) == 0 {
+		return
+	}
+	seeder.seed(runID, rows)
 }
 
 // flowStepRowsFromNodes builds one step-runtime row per flow node (ID == NodeID
