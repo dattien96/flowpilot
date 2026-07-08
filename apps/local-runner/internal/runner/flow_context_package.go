@@ -61,6 +61,15 @@ type FlowContextHints struct {
 // step. It carries all grounding information downstream steps need without
 // broad re-retrieval. No vector DB, embedding index, or similarity search is
 // used at any stage of its construction (CP-41 P-2/P-3).
+//
+// Sections holds the raw output of every enabled ContextSource (CP-44 P-3 /
+// Task-193) — this is the extensible source of truth. HistoryBlock/
+// DiscussionBlock/SourceExcerpts/Omitted are a backward-compatibility
+// projection of the three built-in sections (feature.history/chat.summary/
+// source.excerpt) onto the pre-CP-44 fixed fields, kept so existing consumers
+// (RenderFlowContextPackage's known-section rendering, BuildAuditDraft) do
+// not need to change. A newly registered source shows up in Sections and in
+// the render's generic section output without any struct change here.
 type FlowContextPackage struct {
 	PackageID         string                `json:"packageId"`
 	WorkflowRunID     string                `json:"workflowRunId"`
@@ -71,6 +80,7 @@ type FlowContextPackage struct {
 	HistoryBlock      string                `json:"historyBlock,omitempty"`
 	DiscussionBlock   string                `json:"discussionBlock,omitempty"`
 	SourceExcerpts    []FlowContextExcerpt  `json:"sourceExcerpts,omitempty"`
+	Sections          []FlowContextSection  `json:"sections,omitempty"`
 	Constraints       []string              `json:"constraints,omitempty"`
 	Warnings          []string              `json:"warnings,omitempty"`
 	Omitted           []string              `json:"omitted,omitempty"`
@@ -127,6 +137,7 @@ func BuildFlowContextPackageCtx(ctx context.Context, workspace string, hints Flo
 	enrichedHints.FeatureConfidence = pkg.FeatureConfidence
 
 	sections, sourceWarnings := DefaultContextSourceRegistry().Collect(ctx, defaultContextSourceIDs, enrichedHints)
+	pkg.Sections = sections
 	pkg.Warnings = append(pkg.Warnings, sourceWarnings...)
 	projectContextSections(&pkg, sections)
 
@@ -148,8 +159,10 @@ func projectContextSections(pkg *FlowContextPackage, sections []FlowContextSecti
 			pkg.DiscussionBlock = section.Body
 		case ContextSourceSourceExcerpt:
 			pkg.SourceExcerpts = section.Excerpts
-			pkg.Omitted = append(pkg.Omitted, section.Omitted...)
 		}
+		// Omitted is collected across every source (not just source.excerpt) so
+		// a future source's skipped content is still surfaced (SD-22 D-7).
+		pkg.Omitted = append(pkg.Omitted, section.Omitted...)
 	}
 }
 
@@ -271,6 +284,7 @@ func RenderFlowContextPackage(pkg FlowContextPackage) string {
 			sb.WriteString("_(excerpt truncated)_\n")
 		}
 	}
+	renderGenericSections(&sb, pkg.Sections)
 	if len(pkg.Warnings) > 0 {
 		sb.WriteString("\n### Warnings\n\n")
 		for _, w := range pkg.Warnings {
@@ -284,6 +298,32 @@ func RenderFlowContextPackage(pkg FlowContextPackage) string {
 		}
 	}
 	return sb.String()
+}
+
+// renderGenericSections renders any section whose SourceType is not one of
+// the three built-in types already rendered above by name (feature.history/
+// chat.summary/source.excerpt) — so a newly registered ContextSource (CP-44
+// P-3/P-4, e.g. a future MCP-backed or Canonical Head source) appears in the
+// prompt without RenderFlowContextPackage needing a code change per source.
+// Sections with empty Body are skipped (nothing to show); Omitted/Warnings on
+// a section are still surfaced via the caller's existing Warnings/Omitted
+// blocks (projectContextSections merges them onto the package).
+func renderGenericSections(sb *strings.Builder, sections []FlowContextSection) {
+	for _, s := range sections {
+		switch ContextSourceID(s.SourceType) {
+		case ContextSourceFeatureHistory, ContextSourceChatSummary, ContextSourceSourceExcerpt:
+			continue // already rendered by name above
+		}
+		if strings.TrimSpace(s.Body) == "" {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("\n### %s\n\n", s.SourceType))
+		if s.SourceRef != "" {
+			sb.WriteString(fmt.Sprintf("_Source: %s_\n\n", s.SourceRef))
+		}
+		sb.WriteString(s.Body)
+		sb.WriteString("\n")
+	}
 }
 
 // PersistFlowContextPackage emits an EventFlowContextPackage event so the
