@@ -1555,6 +1555,12 @@ func (s *InteractiveService) AttachRunner(r *Runner) {
 	s.agentCatalog.providerHomeFn = func() []AgentDefinition {
 		return discoverActiveProviderHomeAgents(r)
 	}
+	// Task-204: wire mcp.driver's production Google Drive backing once a real
+	// *Runner is available. DefaultContextSourceRegistry() is a lazily
+	// constructed package-wide singleton, so this may run before or after any
+	// call that first constructs it — SetMCPDriverAdapter is safe either way
+	// (it mutates the already-registered mcp.driver source in place).
+	DefaultContextSourceRegistry().SetMCPDriverAdapter(&googleDriveDriverAdapter{runner: r})
 }
 
 // SetFlowDefinitionStore attaches the FlowDefinitionStore startResolvedFlow

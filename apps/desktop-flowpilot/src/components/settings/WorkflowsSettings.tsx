@@ -47,15 +47,16 @@ type PickerModal =
 // never free text. This list is a manually-synced descriptor (CP-44 Q-1
 // option a); the Go registry stays the validation authority: an id here that
 // drifts out of sync with the registry fails flow load fast (Task-194 T-2),
-// it does not silently run without it. mcp.driver has no production adapter
-// wired yet (Task-195 shipped the seam + a test-only fake adapter only) — it
-// is listed because the registry accepts it, but selecting it will currently
-// degrade to a warning at runtime until a real adapter lands.
+// it does not silently run without it. mcp.driver is backed by a production
+// Google Drive adapter (Task-204) — it reads whatever project-level Google
+// Drive account is connected, using the config_json.mcpDriverFileId field
+// this instance's editor shows when mcp.driver is checked. If no Google
+// Drive account is connected, it degrades to a warning exactly as before.
 const contextSourceOptions: { id: string; label: string }[] = [
   { id: "feature.history", label: "Feature History" },
   { id: "chat.summary", label: "Chat Summary" },
   { id: "source.excerpt", label: "Source Excerpt" },
-  { id: "mcp.driver", label: "MCP Driver (not yet wired to a live source)" },
+  { id: "mcp.driver", label: "MCP Driver (Google Drive)" },
 ];
 
 type WorkflowDraft = {
@@ -385,6 +386,22 @@ function ArtifactsTabContent(props: {
                 })}
               </div>
             </div>
+          ) : null}
+          {isContextType && draftSources.includes("mcp.driver") ? (
+            <label className="settings-field settings-field-full">
+              <span>Google Drive File ID (mcp.driver)</span>
+              <input
+                disabled={artifactInstanceDraft.isBuiltin}
+                onChange={(event) =>
+                  setArtifactInstanceDraft({
+                    ...artifactInstanceDraft,
+                    configJson: { ...artifactInstanceDraft.configJson, mcpDriverFileId: event.target.value },
+                  })
+                }
+                placeholder="1AbCdEfGhIjKlMnOpQrStUvWxYz..."
+                value={(artifactInstanceDraft.configJson.mcpDriverFileId as string | undefined) ?? ""}
+              />
+            </label>
           ) : null}
           {isFileType ? (
             <label className="settings-field settings-field-full">

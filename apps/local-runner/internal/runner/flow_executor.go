@@ -328,12 +328,14 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 		return false
 	}
 
+	mcpDriverRef, _ := resolveArtifactBoundMCPDriverRef(entry)
 	out, err := DefaultBehaviorRegistry().Dispatch(ctx, canonical, BehaviorInput{
 		NodeID:           entry.ID,
 		WorkflowRunID:    parentRunID,
 		WorkspaceCwd:     s.workspaceCwdFor(parentRunID),
 		Prompt:           userPrompt,
 		ContextSourceIDs: resolveEnabledContextSourceIDs(def, entry),
+		MCPDriverRef:     mcpDriverRef,
 	})
 	if err != nil {
 		log.Printf("[flow-executor] flow %q inline entry node %q failed: %v", flowRef, entry.ID, err)

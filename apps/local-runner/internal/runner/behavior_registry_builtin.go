@@ -86,6 +86,7 @@ func behaviorContextProduce(ctx context.Context, in BehaviorInput) (BehaviorOutp
 		WorkflowRunID: in.WorkflowRunID,
 		PlanStepRunID: in.StepRunID,
 		UserPrompt:    in.Prompt,
+		MCPDriverRef:  in.MCPDriverRef,
 	}
 	if in.Payload != nil {
 		if sourceDocID, ok := in.Payload["sourceDocId"].(string); ok {

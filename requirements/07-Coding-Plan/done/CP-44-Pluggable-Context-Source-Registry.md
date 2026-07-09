@@ -324,7 +324,7 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
   - Nội dung bị cap trong giới hạn bounded.
   - Flow vẫn render bình thường cùng các source khác.
 
-**VERIFIED 2026-07-09 — automated test, không manual E2E được**: `registerBuiltinContextSources` (`context_sources_builtin.go`) khởi tạo `&mcpDriverSource{priority: 6}` **không gán `adapter`** → trong production `adapter` luôn `nil`, `Fetch` luôn trả lỗi "no adapter configured" khi có `MCPDriverRef`. Production adapter thật là follow-up riêng ([Task-204](../../08-Task/todo/Task-204-Wire-Production-MCP-Driver-Adapter.md), vẫn `todo/`) — không có UI/đường nào trong desktop app để test live với MCP thật cho tới khi Task-204 làm. Case tự thân cũng ghi "dùng fake adapter" là cách hợp lệ (khớp Task-195 DOD-1). `TestMcpDriverSourceProducesBoundedSectionWithSourceRef` + `TestMcpDriverSourceBoundsLargeContent` + `TestMcpDriverSourceNoDriverRefIsEmptyNotError` (`context_source_mcp_test.go`) cover đủ 4 kỳ vọng — pass.
+**VERIFIED 2026-07-09 — automated test lúc viết case; production adapter đã có sau đó**: ban đầu `registerBuiltinContextSources` khởi tạo `&mcpDriverSource{priority: 6}` không gán `adapter` → production luôn degrade "no adapter configured". [Task-204](../../08-Task/done/Task-204-Wire-Production-MCP-Driver-Adapter.md) (đã làm xong, done cùng ngày) nối `mcp.driver` với Google Drive thật: `googleDriveDriverAdapter` tái dùng đúng chain resolve account/credential mà Chat mode MCP proxy đã dùng (`resolveGoogleDriveAccessTokenForRunner`, extract từ `proxyMcpServer.accessToken()`), wire qua `AttachRunner`. Giờ có thể test live qua UI: tạo `context_artifact.v1` instance, tick "MCP Driver (Google Drive)", điền "Google Drive File ID", bind vào step `context.produce`. Vẫn giữ `TestMcpDriverSourceProducesBoundedSectionWithSourceRef` + `TestMcpDriverSourceBoundsLargeContent` + `TestMcpDriverSourceNoDriverRefIsEmptyNotError` (fake-adapter, layer `ContextSourceRegistry.Collect`) + thêm `TestGoogleDriveDriverAdapterFetchesLiveDocument` (layer adapter thật, `context_source_mcp_production_test.go`) — tất cả pass.
 
 ### 11.6 - (PASSED, automated) MCP Timeout Or Down Degrades Gracefully
 
@@ -336,6 +336,8 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
   - Plan/context step vẫn hoàn tất.
   - Package có warning về `mcp.driver`.
   - Các source còn lại vẫn xuất hiện bình thường.
+
+**RE-VERIFIED 2026-07-09 sau Task-204**: `TestGoogleDriveDriverAdapterDegradesOnMissingCredential` (không có account Google Drive nào connect → adapter trả lỗi, không phải nội dung của account khác) cộng với `TestMcpDriverSourceDegradesOnMcpTimeout`/`TestMcpDriverSourceAdapterErrorDegrades` hiện có (layer `Collect`) — pass, degrade contract giữ nguyên với adapter thật.
 
 **VERIFIED 2026-07-09 — automated test, cùng lý do 11.5 (chưa có adapter thật để test live)**: `TestMcpDriverSourceDegradesOnMcpTimeout` + `TestMcpDriverSourceAdapterErrorDegrades` (`context_source_mcp_test.go`) — pass.
 

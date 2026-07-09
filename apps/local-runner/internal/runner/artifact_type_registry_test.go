@@ -64,6 +64,45 @@ func TestResolveArtifactBoundContextSourcesIgnoresInputAndOtherTypeBindings(t *t
 	}
 }
 
+// TestResolveArtifactBoundMCPDriverRefReadsConfiguredFileID is the regression
+// test for Task-204 Q-2: a context_artifact.v1 OUTPUT binding's
+// config_json.mcpDriverFileId is what threads into FlowContextHints.MCPDriverRef.
+func TestResolveArtifactBoundMCPDriverRefReadsConfiguredFileID(t *testing.T) {
+	node := agentpack.FlowNode{
+		ArtifactBindings: []agentpack.FlowArtifactBinding{
+			{
+				Direction:      "output",
+				ArtifactTypeID: ArtifactTypeContext,
+				ConfigJSON:     map[string]any{"sources": []any{"mcp.driver"}, "mcpDriverFileId": "  drive-file-abc  "},
+			},
+		},
+	}
+	ref, ok := resolveArtifactBoundMCPDriverRef(node)
+	if !ok {
+		t.Fatal("expected ok=true: mcpDriverFileId is configured")
+	}
+	if ref != "drive-file-abc" {
+		t.Fatalf("ref = %q, want trimmed %q", ref, "drive-file-abc")
+	}
+}
+
+// TestResolveArtifactBoundMCPDriverRefEmptyWhenUnconfigured verifies the
+// no-op case: no bound instance, or one with no mcpDriverFileId set, is a
+// normal "nothing configured" — not an error.
+func TestResolveArtifactBoundMCPDriverRefEmptyWhenUnconfigured(t *testing.T) {
+	node := agentpack.FlowNode{
+		ArtifactBindings: []agentpack.FlowArtifactBinding{
+			{Direction: "output", ArtifactTypeID: ArtifactTypeContext, ConfigJSON: map[string]any{"sources": []any{"feature.history"}}},
+		},
+	}
+	if _, ok := resolveArtifactBoundMCPDriverRef(node); ok {
+		t.Fatal("expected ok=false: no mcpDriverFileId configured")
+	}
+	if _, ok := resolveArtifactBoundMCPDriverRef(agentpack.FlowNode{}); ok {
+		t.Fatal("expected ok=false for a node with no artifact bindings at all")
+	}
+}
+
 func TestArtifactTypeRegistryRegisterRejectsDuplicate(t *testing.T) {
 	r := NewArtifactTypeRegistry()
 	if err := r.Register(&fileArtifactResolver{}); err != nil {
