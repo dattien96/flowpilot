@@ -17,8 +17,11 @@ func TestLoadBuiltinPack(t *testing.T) {
 	if len(pack.Agents) < 4 {
 		t.Fatalf("expected at least 4 built-in agents, got %d", len(pack.Agents))
 	}
-	if len(pack.Flows) != 2 {
-		t.Fatalf("expected 2 built-in flows, got %d", len(pack.Flows))
+	// CP-45/SD-23 Task-205 adds a third built-in flow
+	// (context-coding-review-synthesis.yaml) proving cross-step typed
+	// artifact I/O.
+	if len(pack.Flows) != 3 {
+		t.Fatalf("expected 3 built-in flows, got %d", len(pack.Flows))
 	}
 	names := SortedAgentNames(pack.Agents)
 	for _, want := range []string{"coder", "reviewer", "synthesizer", "tester"} {

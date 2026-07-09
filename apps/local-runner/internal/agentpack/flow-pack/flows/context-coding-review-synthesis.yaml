@@ -1,0 +1,105 @@
+# CP-45/SD-23 built-in artifact flow: Context -> Coding -> Review -> Synthesis.
+# Proves cross-step typed-artifact I/O end to end -- the context node's
+# context_artifact output is the same instance bound as input to
+# coder/reviewer_correctness/reviewer_security/synthesis (seeded by
+# EnsureBuiltinArtifactBindingsWithStore). Node/edge shape otherwise mirrors
+# review-loop.yaml exactly (same cohort/join/back-edge contract) with
+# rag-harness's inline context entry node prepended (startInlineEntryChain's
+# one supported inline-entry shape: exactly one no-dependency inline node with
+# a single forward hop to one agent.delegate node).
+id: context-coding-review-synthesis
+version: 1
+description: Flow Mode Context-to-Coding-to-Review-to-Synthesis template with typed artifact binding.
+mode: flow
+builtin:
+  editable: false
+  selectableIn:
+    - flow
+  cloneable: true
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 3
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+contexts:
+  main_context:
+    ref: contexts/flow-context-package.yaml
+    sources:
+      - feature.history
+      - chat.summary
+      - source.excerpt
+tools:
+  - tools/submit-review-outcome.yaml
+nodes:
+  - id: context
+    run: inline
+    lifecycle: once
+    behavior: context.produce
+    outputs:
+      main_context: flow_context_package.v1
+  - id: coder
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.delegate
+    agent: agents/coder.md
+    join: all
+  - id: reviewer_correctness
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/reviewer.md
+    dependsOn:
+      - coder
+    cohort: review
+    join: all
+  - id: reviewer_security
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/reviewer.md
+    dependsOn:
+      - coder
+    cohort: review
+    join: all
+  - id: synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+edges:
+  - from: context
+    to: coder
+    when: done
+    kind: forward
+  - from: coder
+    to: reviewer_correctness
+    when: done
+    kind: forward
+  - from: coder
+    to: reviewer_security
+    when: done
+    kind: forward
+  - from: reviewer_correctness
+    to: synthesis
+    when: done
+    kind: forward
+  - from: reviewer_security
+    to: synthesis
+    when: done
+    kind: forward
+  - from: synthesis
+    to: coder
+    when: continue
+    kind: back
+  - from: synthesis
+    to: done
+    when: done
+    kind: forward
+  - from: synthesis
+    to: ask_user
+    when: escalate
+    kind: forward
