@@ -240,6 +240,14 @@ type interactiveRun struct {
 	currentTurnID         string
 	lastFlowControlTurnID string
 	lastTurnID            string // id of the most-recently completed turn, for the rolling chat summary
+	// flowValidationRetryState is the in-memory Testing<->Coding retry loop
+	// state for a run driving rag-harness's validate node (BUG-243 F-1),
+	// keyed on the PARENT/hub run (not the per-turn coder child). Durable
+	// audit trail is the EventFlowValidationRetry events PersistRetryState
+	// emits on every transition; this in-memory copy is what the next
+	// validate dispatch reads to decide retrying/passed/failed without
+	// replaying the event log on every turn.
+	flowValidationRetryState *FlowValidationRetryState
 	turnCancel            context.CancelFunc
 
 	pendingApprovalID string

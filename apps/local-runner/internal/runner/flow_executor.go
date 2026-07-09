@@ -316,6 +316,20 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 	prompt := userPrompt
 	if pkg, ok := out.Payload["package"].(FlowContextPackage); ok {
 		prompt = renderFlowContextPrompt(ctx, pkg, userPrompt)
+		// BUG-243 F-0: stash the package on the run so a mid-flow node reached
+		// later (rag-harness's validate/audit) can read it back — previously
+		// it was only ever used for this one prompt render, then discarded.
+		s.mu.Lock()
+		if rs := s.runs[parentRunID]; rs != nil {
+			pkgCopy := pkg
+			rs.planContextPackage = &pkgCopy
+		}
+		s.mu.Unlock()
+		if store := s.persistenceStore(); store != nil {
+			if err := PersistFlowContextPackage(ctx, store, pkg); err != nil {
+				log.Printf("[flow-executor] inline entry: persist context package failed: %v", err)
+			}
+		}
 	}
 	// CP-45/SD-23 D-8/D-11 (Task-202): append any non-context artifact bound
 	// to the delegate target's input (e.g. file_artifact.v1) — proves the
@@ -487,6 +501,26 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		"target_ids", strings.Join(targetIDs, ","),
 		"result_len", len(resultMessage),
 	)
+
+	// BUG-243 F-0: a single forward-done target whose behavior is a
+	// registered INLINE-scope behavior (validate/audit, not a spawnable
+	// agent.delegate) previously fell straight through to the bail below —
+	// the executor had no path to dispatch an inline node reached mid-flow
+	// (only the flow's own entry node, via startInlineEntryChain, was ever
+	// dispatched in-process). Handling it here, before the delegate-only
+	// validation loop, preserves every existing multi-target cohort-spawn
+	// case (e.g. coder -> [reviewer_correctness, reviewer_security])
+	// unchanged: this only fires for the single-target inline case.
+	if len(targetIDs) == 1 {
+		if target, ok := findFlowNode(nodes, targetIDs[0]); ok {
+			if canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior); ok && canonical != "agent.delegate" {
+				if spec, err := DefaultBehaviorRegistry().Resolve(canonical); err == nil && spec.Scope == BehaviorScopeInline {
+					return s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, target, resultMessage)
+				}
+			}
+		}
+	}
+
 	targetNodes := make([]agentpack.FlowNode, 0, len(targetIDs))
 	for _, id := range targetIDs {
 		node, ok := findFlowNode(nodes, id)
