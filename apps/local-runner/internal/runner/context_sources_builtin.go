@@ -68,11 +68,41 @@ func ValidateFlowContextSources(def agentpack.FlowDefinition) error {
 // Task-203's validation/fallback closing task; mirrors
 // ValidateFlowContextSources' fail-fast contract at the same call sites
 // (flow_definition_resolver.go).
+//
+// BUG-269: also resolves every context_artifact.v1 binding's
+// config_json.sources entries against the ContextSourceRegistry, the same
+// registry ValidateFlowContextSources checks the flow-level/step-level tiers
+// against. Without this, an unknown id inside a bound instance's config
+// bypassed CP-44 P-4/Task-194 T-2's "fails flow-load fast, never silently
+// runs without it" guarantee entirely — resolveArtifactBoundContextSources
+// (SD-23 D-6, the framework's HIGHEST precedence tier) passed the id straight
+// to ContextSourceRegistry.Collect, which degrades unknown ids per-source
+// into a buried package warning instead of blocking the run. This is a
+// resolved binding's config CONTENT check, distinct from the required/
+// missing-instance check above it — it does not touch SD-23 F-1's soft
+// degrade for a dangling/optional binding.
 func ValidateFlowArtifactBindings(def agentpack.FlowDefinition) error {
+	registry := DefaultContextSourceRegistry()
 	for _, node := range def.Nodes {
 		for _, b := range node.ArtifactBindings {
 			if b.Required && b.ArtifactTypeID == "" {
 				return fmt.Errorf("flow %q node %q: required artifact binding to instance %q no longer resolves to an artifact instance (deleted or invalid)", def.ID, node.ID, b.ArtifactInstanceID)
+			}
+			if b.ArtifactTypeID != ArtifactTypeContext {
+				continue
+			}
+			raw, ok := b.ConfigJSON["sources"].([]any)
+			if !ok {
+				continue
+			}
+			for _, item := range raw {
+				id, ok := item.(string)
+				if !ok || id == "" {
+					continue
+				}
+				if _, err := registry.Resolve(id); err != nil {
+					return fmt.Errorf("flow %q node %q: context_artifact binding %q declares unknown source %q: %w", def.ID, node.ID, b.ArtifactInstanceID, id, err)
+				}
 			}
 		}
 	}

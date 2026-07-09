@@ -129,6 +129,97 @@ func TestValidateFlowArtifactBindingsAcceptsResolvedBindings(t *testing.T) {
 	}
 }
 
+// TestValidateFlowArtifactBindingsRejectsUnknownSourceInContextArtifactConfig
+// is the regression test for BUG-269: a context_artifact.v1 binding's
+// config_json.sources can carry an id the ContextSourceRegistry doesn't
+// recognize (e.g. a typo, or a source retired after the instance was
+// configured) — this must fail flow-load with a clear error naming the flow,
+// node, and instance, exactly like ValidateFlowContextSources already does
+// for the two older tiers, not silently degrade at resolve time.
+func TestValidateFlowArtifactBindingsRejectsUnknownSourceInContextArtifactConfig(t *testing.T) {
+	def := agentpack.FlowDefinition{
+		ID: "test-flow",
+		Nodes: []agentpack.FlowNode{
+			{
+				ID: "context",
+				ArtifactBindings: []agentpack.FlowArtifactBinding{
+					{
+						Direction:          "output",
+						ArtifactInstanceID: "history-only-context",
+						Required:           true,
+						ArtifactTypeID:     ArtifactTypeContext,
+						ConfigJSON:         map[string]any{"sources": []any{"feature.history", "totally.unknown.source"}},
+					},
+				},
+			},
+		},
+	}
+	err := ValidateFlowArtifactBindings(def)
+	if err == nil {
+		t.Fatal("expected error for a context_artifact binding declaring an unknown source id")
+	}
+	if !strings.Contains(err.Error(), "totally.unknown.source") {
+		t.Errorf("error should name the offending source id, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "history-only-context") {
+		t.Errorf("error should name the offending instance id, got: %v", err)
+	}
+}
+
+// TestValidateFlowArtifactBindingsAcceptsKnownSourcesInContextArtifactConfig
+// verifies a context_artifact.v1 binding whose declared sources are all
+// registered passes validation cleanly (mirrors
+// TestValidateFlowContextSourcesAcceptsKnownSources for this tier).
+func TestValidateFlowArtifactBindingsAcceptsKnownSourcesInContextArtifactConfig(t *testing.T) {
+	def := agentpack.FlowDefinition{
+		ID: "test-flow",
+		Nodes: []agentpack.FlowNode{
+			{
+				ID: "context",
+				ArtifactBindings: []agentpack.FlowArtifactBinding{
+					{
+						Direction:          "output",
+						ArtifactInstanceID: "history-only-context",
+						Required:           true,
+						ArtifactTypeID:     ArtifactTypeContext,
+						ConfigJSON:         map[string]any{"sources": []any{"feature.history"}},
+					},
+				},
+			},
+		},
+	}
+	if err := ValidateFlowArtifactBindings(def); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestValidateFlowArtifactBindingsIgnoresNonContextArtifactConfig verifies
+// the new sources check only inspects context_artifact.v1 bindings — a
+// file_artifact.v1 binding's unrelated config_json (paths, not sources) must
+// never be mistaken for a source list.
+func TestValidateFlowArtifactBindingsIgnoresNonContextArtifactConfig(t *testing.T) {
+	def := agentpack.FlowDefinition{
+		ID: "test-flow",
+		Nodes: []agentpack.FlowNode{
+			{
+				ID: "coder",
+				ArtifactBindings: []agentpack.FlowArtifactBinding{
+					{
+						Direction:          "input",
+						ArtifactInstanceID: "spec-file",
+						Required:           true,
+						ArtifactTypeID:     ArtifactTypeFile,
+						ConfigJSON:         map[string]any{"paths": []any{"README.md"}},
+					},
+				},
+			},
+		},
+	}
+	if err := ValidateFlowArtifactBindings(def); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // TestResolveEnabledContextSourceIDsOldCP44FlowUnaffectedByArtifactValidation
 // is a backward-compat guard (Task-203): a flow using neither CP-45 artifact
 // bindings nor step-level ContextSources has no ArtifactBindings at all, so
