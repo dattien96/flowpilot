@@ -1052,7 +1052,7 @@ export class SupabaseAdminRepository implements
       .from("artifact_instances")
       .upsert(
         {
-          id: instance.id,
+          ...(instance.id ? { id: instance.id } : {}),
           project_id: instance.projectId ?? null,
           artifact_type_id: instance.artifactTypeId,
           name: instance.name,

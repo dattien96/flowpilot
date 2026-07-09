@@ -14,8 +14,18 @@ const flowContextHandoffPrefix = "[FlowPilot flow context package]"
 
 // isFlowContextHandoff reports whether a prompt already carries a prepended
 // FlowContextPackage, preventing double-injection by injectFeatureHistoryPrompt.
+//
+// Contains, not HasPrefix: a Coding step's turn-1 prompt is
+// composeAgentSpawnPrompt's [agent system prompt] + [FlowPilot sub-agent
+// identity line] wrapped AROUND the package that startInlineEntryChain (or
+// injectFlowContextIfCoding) already embedded — so the marker sits partway
+// through the string, not at position 0. A HasPrefix check missed that
+// wrapped shape entirely, so injectFeatureHistoryPrompt never detected the
+// already-present package and re-injected a second "Prior work on X" feature
+// history block ahead of it every time (confirmed live via rag-harness and
+// reproduced in TestFlowCodingPromptSpawnWrappedDoesNotDuplicateHistory).
 func isFlowContextHandoff(prompt string) bool {
-	return strings.HasPrefix(strings.TrimSpace(prompt), flowContextHandoffPrefix)
+	return strings.Contains(prompt, flowContextHandoffPrefix)
 }
 
 // classifyStepBehavior resolves a step's canonical behavior, preferring its

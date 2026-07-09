@@ -249,7 +249,7 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
 
 > **Scope note.** Các use case dưới đây chỉ verify phần đã ship của CP-44 (`Task-191` → `Task-195`) ở runner/pack/runtime. **Không** bao phủ user-authored step selection; phần đó đã chuyển sang CP-45 artifact instance UX thay vì `step_definitions.context_sources` raw UI.
 
-### 11.1 Default Built-In Flow Works Unchanged
+### 11.1 - (PASSED) Default Built-In Flow Works Unchanged
 
 - Mục tiêu: chứng minh refactor registry không làm đổi hành vi `rag-harness` mặc định.
 - Cách test:
@@ -260,7 +260,10 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
   - Output tương đương hành vi cũ trước CP-44.
   - Không có lỗi unknown source hay missing section.
 
-### 11.2 Flow With Explicit Source Subset
+**VERIFIED 2026-07-09 (manual E2E, live app, run `db51ec26-1a0f-4b92-8ceb-b03dc8e9b363` / `run-13065`)**: chạy `rag-harness` qua "Run Flow" trên feature `calc-core` (`D:\working\gate-sandbox\calc.go`). `.flowpilot/logs/features/agent-flow-engine/run-13065.ndjson` cho thấy `context` chuyển `DONE` trước khi `implement` được spawn (`flow_start_inline_entry`), và prompt handoff (`run-13070/prompt-turn-13075.txt`) có đủ block `Flow Context Package` — feature `calc-core (confidence: verified)`, Change History, Prior Discussion, dòng `No vector retrieval used` — trước task chính. Flow chạy hết `context → implement → validate → audit` sạch, không lỗi. Lần chạy trước đó (`run-12804`, cùng phiên debug) từng lộ ra bug thật ở `entryDelegateNodes`/`entryNodesNoDeps` (edge-unaware entry detection, xem `flow_executor.go` doc comment) — đã fix trước lần verify này.
+- **RE-VERIFIED 2026-07-09 sau khi fix duplicate-history bug** (`run-4352` → child `run-4357`, `flow_ref: flowpilot-core-flow-pack/rag-harness`, feature `calc-core`): `run-4357/prompt-turn-4362.txt` có đúng 1 lần `### Change History` và đúng 1 lần `### Prior Discussion` — không còn preamble `## Prior work on`/`## Prior discussion on` bị chèn lặp lại phía trước `[FlowPilot sub-agent — ...]` như các lần chạy trước fix (`run-13065`, `run-13592`). Xem [BUG-268](../../09-BugFix/done/BUG-268-Flow-Coding-Prompt-Duplicates-Feature-History.md) cho root cause đầy đủ.
+
+### 11.2 - (PASSED) Flow With Explicit Source Subset
 
 - Mục tiêu: chứng minh per-flow binding thật sự giới hạn nguồn được dùng.
 - Cách test:
@@ -271,6 +274,12 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
   - `pkg.Sections` chỉ có `feature.history`.
   - `HistoryBlock` có dữ liệu.
   - `DiscussionBlock` và `SourceExcerpts` rỗng.
+
+**VERIFIED 2026-07-09 (manual E2E, live app, run `db51ec26-1a0f-4b92-8ceb-b03dc8e9b363` / `run-13587` → `run-13592`)**: dùng CP-45 artifact-binding thay cho YAML `contexts.main_context.sources` (tương đương về hiệu lực — cùng đi qua `resolveArtifactBoundContextSources`, tier ưu tiên cao nhất trong `resolveEnabledContextSourceIDs`). Clone `rag-harness`, tạo `context_artifact.v1` instance "History Only Context" (`config_json.sources: ["feature.history"]`), bind làm **output** trên step `context` của bản clone. Chạy trên feature `calc-core` (đủ cả history + chat-summary). Prompt handoff (`run-13592/prompt-turn-13597.txt`) chỉ còn section `### Change History` — không còn `### Prior Discussion` (chat.summary) — `prompt_len` giảm từ 4041 (default 3 nguồn, §11.1) xuống 1733. Đúng kỳ vọng.
+- Lần thử đầu (`run-13326`/`run-13331`) bị leak `chat.summary` do 2 bug thật phát hiện giữa lúc test, cả hai đã fix trước lần verify cuối:
+  1. Binding artifact bị lưu nhầm vào step của flow **built-in gốc** (`step_definition_id` không namespace) thay vì step của clone — do `WorkflowsSettings.tsx`'s `refresh()` validate `stepType` carry-over theo catalog `step_definitions` toàn cục thay vì theo `workflow_steps` của đúng workflow đang chọn ([WorkflowsSettings.tsx:731](../../../apps/desktop-flowpilot/src/components/settings/WorkflowsSettings.tsx:731)) — đã fix, đồng thời đã xoá binding contaminate khỏi built-in gốc.
+  2. `saveArtifactInstance` gửi `id: ""` cho instance mới → Postgres `invalid input syntax for type uuid` ([supabaseAdminRepository.ts:1055](../../../packages/flowpilot-client-core/src/data/supabaseAdminRepository.ts:1055)) — đã fix.
+- **RE-VERIFIED 2026-07-09 sau khi fix duplicate-history bug** (`run-4286` → child `run-4291`, flow clone, `config_json.sources: ["feature.history"]`): `run-4291/prompt-turn-4296.txt` chỉ có `### Change History`, không có `### Prior Discussion`, và không còn preamble lặp lại — đúng cả 2 kỳ vọng (giới hạn nguồn đúng, và không duplicate). Xem [BUG-268](../../09-BugFix/done/BUG-268-Flow-Coding-Prompt-Duplicates-Feature-History.md).
 
 ### 11.3 Unknown Source ID Fails Fast
 

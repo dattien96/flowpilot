@@ -728,10 +728,22 @@ export function WorkflowsSettings(): React.ReactElement {
         workflowId && nextWorkflows.some((item) => item.id === workflowId)
           ? workflowId
           : nextWorkflows[0]?.id ?? "";
+      // A cloned workflow's own steps carry a freshly namespaced step_type
+      // (BUG-262), distinct from the source's. A caller (e.g. cloneSelected)
+      // may still pass the PREVIOUSLY selected step's type, left over from
+      // before the switch — validating that against the full cross-workflow
+      // catalog (nextStepDefinitions) let a stale, unrelated-workflow
+      // step_type pass through as "valid" whenever it happened to also exist
+      // elsewhere in the catalog, silently loading (and, on Save, mutating)
+      // that OTHER workflow's step instead of one actually belonging to
+      // resolvedWorkflowId. Must validate against this workflow's own steps.
+      const nextWorkflowSteps = resolvedWorkflowId
+        ? await admin.workflows.listWorkflowSteps(resolvedWorkflowId)
+        : [];
       const resolvedStepType =
-        stepType && nextStepDefinitions.some((item) => item.stepType === stepType)
+        stepType && nextWorkflowSteps.some((item) => item.stepType === stepType)
           ? stepType
-          : nextStepDefinitions[0]?.stepType ?? "";
+          : nextWorkflowSteps[0]?.stepType ?? "";
 
       const builtinWorkflows = nextWorkflows.filter((workflow) => workflow.isBuiltin);
       const builtinStepLists = await Promise.all(
@@ -758,9 +770,6 @@ export function WorkflowsSettings(): React.ReactElement {
 
       const nextSelectedWorkflow =
         nextWorkflows.find((item) => item.id === resolvedWorkflowId) ?? null;
-      const nextWorkflowSteps = resolvedWorkflowId
-        ? await admin.workflows.listWorkflowSteps(resolvedWorkflowId)
-        : [];
       const nextDetailWorkflowStepType =
         nextStepDefinitions.find(
           (definition) =>
