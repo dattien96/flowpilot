@@ -146,6 +146,11 @@ type Runner struct {
 	claudeMCP    *claudeMCPServer
 	mcpBaseURLMu sync.RWMutex
 	mcpBaseURL   string
+
+	// grokProcess is the single shared `grok agent stdio` process (CP-46/Task-206),
+	// bound to the active provider account scope. nil until first ensure.
+	grokProcessMu sync.Mutex
+	grokProcess   *grokProcessHandle
 }
 
 func New(workspace string) (*Runner, error) {
