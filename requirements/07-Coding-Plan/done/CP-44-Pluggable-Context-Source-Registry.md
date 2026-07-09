@@ -311,7 +311,7 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
 
 **VERIFIED 2026-07-09 — automated test, không phải manual E2E**: case này tự thân đã ghi rõ "test harness hoặc local branch" — đăng ký 1 context source mới đòi hỏi viết code Go + recompile, không có UI nào trong desktop app cho phép làm việc này qua tay. `TestRegisterCustomSourceAppearsInPackageAndRender` (`context_package_sections_test.go`) cover đúng cả 4 kỳ vọng: đăng ký source `custom.thing` mới, verify nó xuất hiện trong `pkg.Sections`, verify render có heading `### custom.thing`, body, và `_Source: custom-ref-123_` — dùng nguyên `FlowContextPackage`/`FlowContextSection` struct hiện có, không sửa gì. `go test ./internal/runner/ -run TestRegisterCustomSourceAppearsInPackageAndRender` — pass.
 
-### 11.5 MCP Source Happy Path
+### 11.5 - (PASSED, automated) MCP Source Happy Path
 
 - Mục tiêu: chứng minh `mcp.driver` là source ngoài đầu tiên hoạt động end-to-end.
 - Cách test:
@@ -324,7 +324,9 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
   - Nội dung bị cap trong giới hạn bounded.
   - Flow vẫn render bình thường cùng các source khác.
 
-### 11.6 MCP Timeout Or Down Degrades Gracefully
+**VERIFIED 2026-07-09 — automated test, không manual E2E được**: `registerBuiltinContextSources` (`context_sources_builtin.go`) khởi tạo `&mcpDriverSource{priority: 6}` **không gán `adapter`** → trong production `adapter` luôn `nil`, `Fetch` luôn trả lỗi "no adapter configured" khi có `MCPDriverRef`. Production adapter thật là follow-up riêng ([Task-204](../../08-Task/todo/Task-204-Wire-Production-MCP-Driver-Adapter.md), vẫn `todo/`) — không có UI/đường nào trong desktop app để test live với MCP thật cho tới khi Task-204 làm. Case tự thân cũng ghi "dùng fake adapter" là cách hợp lệ (khớp Task-195 DOD-1). `TestMcpDriverSourceProducesBoundedSectionWithSourceRef` + `TestMcpDriverSourceBoundsLargeContent` + `TestMcpDriverSourceNoDriverRefIsEmptyNotError` (`context_source_mcp_test.go`) cover đủ 4 kỳ vọng — pass.
+
+### 11.6 - (PASSED, automated) MCP Timeout Or Down Degrades Gracefully
 
 - Mục tiêu: chứng minh MCP lỗi không làm fail Plan step.
 - Cách test:
@@ -334,6 +336,8 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
   - Plan/context step vẫn hoàn tất.
   - Package có warning về `mcp.driver`.
   - Các source còn lại vẫn xuất hiện bình thường.
+
+**VERIFIED 2026-07-09 — automated test, cùng lý do 11.5 (chưa có adapter thật để test live)**: `TestMcpDriverSourceDegradesOnMcpTimeout` + `TestMcpDriverSourceAdapterErrorDegrades` (`context_source_mcp_test.go`) — pass.
 
 ### 11.7 Safety And Determinism Guards
 
@@ -347,8 +351,11 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
   - Output vẫn có dòng `No vector retrieval used`.
   - Thứ tự section ổn định theo `Priority`, tie-break theo `SourceType`.
 
+**VERIFIED 2026-07-09 — automated test (3 guard đều là internal code behavior, không phải thứ click qua UI được)**: `TestFileArtifactResolverRejectsOutsideWorkspacePath` (guard workspace-safety, dùng chung `readSourceExcerpts` với `source.excerpt` theo đúng thiết kế — xem `artifact_type_registry.go`'s doc comment), `TestRenderFlowContextPackageStillHasNoVectorLine` (dòng `No vector retrieval used`), `TestContextSourceCollectStableOrderByPriorityThenID` (thứ tự ổn định theo Priority/SourceType) — cả 3 pass.
+
 ### 11.8 Suggested Automated Commands
 
 - `rtk go test ./apps/local-runner/internal/runner/...`
 - `rtk go test ./apps/local-runner/internal/changeledger/...`
-- `rtk go test ./apps/local-runner/internal/runner/... -run 'Test(BuildFlowContextPackageOutputUnchangedAfterRegistryRefactor|RegisterCustomSourceAppearsInPackageAndRender|FlowWithoutSourcesUsesDefaultSet|FlowWithExplicitSourceSubset|UnknownSourceIDFailsFlowLoad|McpDriverSource)'`
+- `rtk go test ./apps/local-runner/internal/runner/... -run 'Test(BuildFlowContextPackageOutputUnchangedAfterRegistryRefactor|RegisterCustomSourceAppearsInPackageAndRender|UnknownSourceIDFailsFlowLoad|McpDriverSource|ValidateFlowArtifactBindings|ResolveWorkflowFlowRefSurfacesArtifactBindingValidationError)'`
+  - Lưu ý: `FlowWithoutSourcesUsesDefaultSet`/`FlowWithExplicitSourceSubset` đã bị xoá khi retire tier-(c) node-`outputs:`-key matching (dọn dẹp legacy `artifact_definitions`/raw `inputs`/`outputs`, commit `5f5ac04`) — không còn trong danh sách trên.
