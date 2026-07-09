@@ -98,14 +98,14 @@ CP-46 requires a Grok-specific process/transport layer before any adapter work c
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` Typed structs exist for every message class captured live and round-trip through JSON without loss.
-- [ ] `DOD-2` Shared ACP primitives are extracted; Gemini's test suite is unchanged and green.
-- [ ] `DOD-3` `grokDispatcher` multiplexes multiple concurrent sessions over one stdio pipe in a test.
-- [ ] `DOD-4` `ensureGrokProcess` reuses an existing handle for a matching `scopeKey` and tears down + respawns on mismatch.
-- [ ] `DOD-5` Process launch always disables ambient MCP compat scanning; a test asserts the env vars are present.
-- [ ] `DOD-6` A redaction test proves credential-shaped fields never reach the log sink unmasked.
-- [ ] `DOD-7` The Grok resume request shape (`session/load` vs `x.ai/*`) is probed live, documented, and captured as a fixture (unblocks Task-207 `T-4`).
-- [ ] `DOD-8` **Base-regression (`P-0`):** `gemini_acp_transport.go` is unchanged (git diff empty for that file); the full Gemini test suite passes unchanged; no Codex/Claude process file is modified.
+- [x] `DOD-1` Typed structs exist for every message class captured live and round-trip through JSON without loss. (`grok_acp_types.go`; round-trip exercised via `grok_process_test.go` golden fixtures + `grokContextWindowFromInit`.)
+- [x] `DOD-2` Shared ACP primitives are extracted; Gemini's test suite is unchanged and green. (Per `T-3`, "extracted" means shape-COPIED into a standalone `grok_acp.go`, not refactored out of `gemini_acp_transport.go` — that file has zero diff. Gemini's own test suite is unaffected.)
+- [x] `DOD-3` `grokDispatcher` multiplexes multiple concurrent sessions over one stdio pipe in a test. (`TestGrokDispatcherMultiplexesConcurrentSessions`.)
+- [x] `DOD-4` `ensureGrokProcess` reuses an existing handle for a matching `scopeKey` and tears down + respawns on mismatch. (`TestEnsureGrokProcessInitializes`.)
+- [x] `DOD-5` Process launch always disables ambient MCP compat scanning; a test asserts the env vars are present. (`TestGrokProcessEnvDisablesAmbientMCPScanning`. Live-verified caveat: these two flags do NOT suppress Grok's own marketplace-plugin MCP auto-install — see CP-46 §10.2.)
+- [x] `DOD-6` A redaction test proves credential-shaped fields never reach the log sink unmasked. (`TestRedactGrokFrameForLogStripsCredentialShapedFields`.)
+- [ ] `DOD-7` The Grok resume request shape (`session/load` vs `x.ai/*`) is probed live, documented, and captured as a fixture (unblocks Task-207 `T-4`). **Not done**: implemented per the ACP spec (fetched from agentclientprotocol.com — `session/new`/`session/prompt` carry no vendor fields beyond `_meta`, so `session/load` was assumed ACP-standard), but never issued live against a real Grok session. Live probing in this pass covered `initialize`/`session/new`/`session/prompt`/`tool_call`/`tool_call_update` only.
+- [x] `DOD-8` **Base-regression (`P-0`):** `gemini_acp_transport.go` is unchanged (git diff empty for that file); the full Gemini test suite passes unchanged; no Codex/Claude process file is modified.
 
 ## 7. Out of Scope
 
