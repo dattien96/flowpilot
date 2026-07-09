@@ -9,6 +9,7 @@ export function resolveProviderKeyForModel(
     return "gemini";
   }
   if (modelId.startsWith("claude-")) return "claude";
+  if (modelId.startsWith("grok-") || modelId === "grok-build") return "grok";
   return (
     supportedModels.find((entry) => entry.modelId === modelId)?.providerKey ?? null
   );

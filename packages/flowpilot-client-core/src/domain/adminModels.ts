@@ -86,7 +86,7 @@ export interface Integration {
 
 export interface SupportedModel {
   id: string;
-  providerKey: "codex" | "claude" | "gemini";
+  providerKey: "codex" | "claude" | "gemini" | "grok";
   modelId: string;
   displayName: string;
   isEnabled: boolean;
