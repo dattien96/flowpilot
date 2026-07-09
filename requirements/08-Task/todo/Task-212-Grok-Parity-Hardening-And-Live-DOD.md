@@ -107,20 +107,20 @@ Task-207 through Task-211 individually build/prove transport, permission, MCP/ag
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` Skill/context injection parity proven against Codex/Claude baselines.
-- [ ] `DOD-2` `r-ca`/`r-bug`/`r-task` flow gates proven on Grok via the shared finalizer.
-- [ ] `DOD-3` Manual + idle summary generation proven for Grok chats.
-- [ ] `DOD-4` Live registry returns the real Grok adapter as default for `grok`; default registry remains placeholder-safe.
-- [ ] `DOD-5` Resume re-seed on runner restart proven (or typed mismatch proven, if cross-home resume is unsafe).
-- [ ] `DOD-6` Handoff-source decision made and documented (built + tested, or explicitly deferred with blocker).
-- [ ] `DOD-7` Full CP-46 `§7.1` E2E list executed against a real credentialed Grok account with recorded results.
-- [ ] `DOD-8` Drive sync / cross-PC restore works for Grok via a `LocateSessionFile` branch, or returns typed-unsupported without corrupting history (`GR-23`).
-- [ ] `DOD-9` Reopened Grok chats replay the typed user prompt, not the composed prompt (`GR-34`).
-- [ ] `DOD-10` Grok can drive a hub / review-loop to convergence (`GR-33`); Grok parent stop/delete cascades with no orphaned artifacts (`GR-36`).
-- [ ] `DOD-11` Token usage + `ModelContextWindow` verified live in a real Grok run (`GR-24`).
-- [ ] `DOD-12` CP-46 `§10.1`/`§10.2` updated to reflect only actually-proven state.
-- [ ] `DOD-13` Full CP-46 `§7.1` E2E list (`E2E-01`..`E2E-36`) executed against a real credentialed Grok account with recorded results.
-- [ ] `DOD-14` **Base-regression sweep (`P-0`):** complete existing Codex/Claude/Gemini suites pass unchanged; `gemini_acp_transport.go` diff empty; the five shared switched-functions return byte-identical values for codex/claude/gemini (`GR-BR`, `E2E-36`).
+- [ ] `DOD-1` Skill/context injection parity proven against Codex/Claude baselines. **Not tested.** The wiring is identical (`promptPrep` calls the same `r.injectSelectedSkills`, `shouldInjectFeatureHistory` includes `ProviderKeyGrok`), but no comparison test was written.
+- [ ] `DOD-2` `r-ca`/`r-bug`/`r-task` flow gates proven on Grok via the shared finalizer. **Not tested.** No flow-gate code path was touched for Grok (none needed to be — `finishTurn`/gate logic is provider-neutral), but no Grok-specific gate test exists.
+- [ ] `DOD-3` Manual + idle summary generation proven for Grok chats. **Wired, not tested.** `summarizerModelFor`/`supportsHandoffSource` gate/`resolvePromptExecutionAdapter` all have additive grok cases (one-shot `grok -p --output-format json`, the P-13 exception), but no summary was actually generated against a real or fake Grok exec call.
+- [x] `DOD-4` Live registry returns the real Grok adapter as default for `grok`; default registry remains placeholder-safe. (`TestProviderRegistryForGrokUsesLiveWhenFlagOnAndAccountResolvable` / `...UsesPlaceholderWhenFlagOff`.)
+- [ ] `DOD-5` Resume re-seed on runner restart proven (or typed mismatch proven, if cross-home resume is unsafe). **Not done.** `refreshResumeHandleLocked` (`interactive_service.go`) was never given a `ProviderKeyGrok` case — this is a real gap, not an oversight covered elsewhere; a runner restart today would not re-discover a Grok session id the way it does for Codex/Claude/Gemini.
+- [x] `DOD-6` Handoff-source decision made and documented (built + tested, or explicitly deferred with blocker). **Deferred**, documented at `handoff_context.go supportsHandoffSource` and CP-46 §10.2: no `~/.grok/sessions` SQLite extractor was attempted; Grok-as-target already works (reuses the provider-neutral handoff path), Grok-as-source stays disabled.
+- [ ] `DOD-7` Full CP-46 `§7.1` E2E list executed against a real credentialed Grok account with recorded results. **Not done** — see DOD-13.
+- [x] `DOD-8` Drive sync / cross-PC restore works for Grok via a `LocateSessionFile` branch, or returns typed-unsupported without corrupting history (`GR-23`). (`session_file_locator.go` explicit `ProviderKeyGrok` case returning typed-unsupported; matches the "no SQLite reader built" decision.)
+- [ ] `DOD-9` Reopened Grok chats replay the typed user prompt, not the composed prompt (`GR-34`). **Not attempted.** No Grok analog of `claudeUserPromptText`/transcript replay extractor was built.
+- [ ] `DOD-10` Grok can drive a hub / review-loop to convergence (`GR-33`); Grok parent stop/delete cascades with no orphaned artifacts (`GR-36`). **Not attempted.** Both rely on provider-neutral orchestration code untouched by this work, so they are plausible but unverified for Grok specifically.
+- [ ] `DOD-11` Token usage + `ModelContextWindow` verified live in a real Grok run (`GR-24`). Verified against **fake-transport fixtures** built from real live-captured token-usage payloads (`TestGrokAdapterSendTurnStreamsAndCompletes`), not a live run in this pass.
+- [x] `DOD-12` CP-46 `§10.1`/`§10.2` updated to reflect only actually-proven state. (This edit + CP-46 §10.2 rewrite.)
+- [ ] `DOD-13` Full CP-46 `§7.1` E2E list (`E2E-01`..`E2E-36`) executed against a real credentialed Grok account with recorded results. **Not done.** This requires a dedicated, deliberate live QA pass (each item touches real account state, tool execution, and in several cases account switching / spending) that was out of scope for an implementation pass; recommend scheduling it as a follow-up before removing the `FLOWPILOT_GROK_AGENT` gate in any shared/default environment.
+- [x] `DOD-14` **Base-regression sweep (`P-0`):** complete existing Codex/Claude/Gemini suites pass unchanged; `gemini_acp_transport.go` diff empty; the five shared switched-functions return byte-identical values for codex/claude/gemini (`GR-BR`, `E2E-36`). (Verified: `git diff --stat` on `gemini_acp_transport.go` is empty; full `go test ./...` before and after this work shows the identical 15 pre-existing, unrelated failures — zero regressions.)
 
 ## 7. Out of Scope
 
