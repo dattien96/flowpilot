@@ -57,6 +57,28 @@ func ValidateFlowContextSources(def agentpack.FlowDefinition) error {
 	return nil
 }
 
+// ValidateFlowArtifactBindings fails fast when a node's REQUIRED artifact
+// binding points at an instance that no longer resolves (deleted instance /
+// stale FK left dangling by an out-of-band delete — SD-23 F-1: "required
+// binding thiếu → lỗi rõ, optional thiếu → degrade-mềm"). An OPTIONAL
+// missing binding is not an error here; it already degrades at resolve time
+// (resolveArtifactBoundContextSources / resolveInputArtifactPrompt both skip
+// a binding whose ArtifactTypeID is the empty-string sentinel
+// recordFromWorkflowRow leaves on a stale FK — supabase_workflow_flow_store.go).
+// Task-203's validation/fallback closing task; mirrors
+// ValidateFlowContextSources' fail-fast contract at the same call sites
+// (flow_definition_resolver.go).
+func ValidateFlowArtifactBindings(def agentpack.FlowDefinition) error {
+	for _, node := range def.Nodes {
+		for _, b := range node.ArtifactBindings {
+			if b.Required && b.ArtifactTypeID == "" {
+				return fmt.Errorf("flow %q node %q: required artifact binding to instance %q no longer resolves to an artifact instance (deleted or invalid)", def.ID, node.ID, b.ArtifactInstanceID)
+			}
+		}
+	}
+	return nil
+}
+
 // resolveEnabledContextSourceIDs resolves a context-producing node's enabled
 // source set by precedence: (a) CP-45/SD-23 D-6 — a bound `context_artifact`
 // input artifact instance's config_json.sources, the framework's highest

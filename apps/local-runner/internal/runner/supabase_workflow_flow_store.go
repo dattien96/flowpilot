@@ -244,25 +244,28 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 			node.ContextSources = defn.ContextSources
 		}
 		for _, b := range defn.ArtifactBindings {
-			// A binding whose joined artifact_instances row is missing (deleted
-			// instance, stale FK left dangling by an out-of-band delete) is
-			// skipped here rather than surfaced as a resolved binding with an
-			// empty type — callers must never silently treat "instance gone" as
-			// "instance present with the empty-string type" (SD-23 F-1). Task-203
-			// surfaces this as a required-binding flow-load error / optional
-			// degrade-to-warning at the point that inspects ArtifactBindings.
-			if b.ArtifactInstance == nil {
-				continue
-			}
-			node.ArtifactBindings = append(node.ArtifactBindings, agentpack.FlowArtifactBinding{
+			binding := agentpack.FlowArtifactBinding{
 				Direction:          b.Direction,
 				SlotName:           b.SlotName,
 				ArtifactInstanceID: b.ArtifactInstanceID,
-				ArtifactTypeID:     b.ArtifactInstance.ArtifactTypeID,
-				ConfigJSON:         b.ArtifactInstance.ConfigJSON,
 				Required:           b.Required,
 				Position:           b.Position,
-			})
+			}
+			// A binding whose joined artifact_instances row is missing (deleted
+			// instance, stale FK left dangling by an out-of-band delete) is kept
+			// with ArtifactTypeID left empty (SD-23 F-1) rather than dropped: an
+			// empty type never matches any resolver's expected type, so
+			// resolveArtifactBoundContextSources/resolveInputArtifactPrompt
+			// already skip it exactly as if it were absent (a soft degrade for an
+			// OPTIONAL binding), while ValidateFlowArtifactBindings
+			// (context_sources_builtin.go) inspects this same empty-type sentinel
+			// to fail flow-load fast for a REQUIRED one — callers must never
+			// silently treat "instance gone" as "instance present."
+			if b.ArtifactInstance != nil {
+				binding.ArtifactTypeID = b.ArtifactInstance.ArtifactTypeID
+				binding.ConfigJSON = b.ArtifactInstance.ConfigJSON
+			}
+			node.ArtifactBindings = append(node.ArtifactBindings, binding)
 		}
 		def.Nodes = append(def.Nodes, node)
 	}
