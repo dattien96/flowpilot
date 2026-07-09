@@ -214,12 +214,83 @@ export interface StepDefinition {
   cohort?: string | null;
   promptTemplateRef?: string | null;
   contextRef?: string | null;
-  inputs?: Record<string, string>;
-  outputs?: Record<string, string>;
-  inputArtifactDefinitions: string[];
-  outputArtifactDefinitions: string[];
+  /**
+   * Enabled context-source ids for this step's Plan-time context harness
+   * (CP-44 / Task-196), mirroring requiredMcps. Empty means "fall back to
+   * the flow-level `contexts.sources` binding, then the runner's default
+   * built-in set" (Task-194 precedence) — a step that never sets this keeps
+   * pre-Task-196 behavior unchanged.
+   */
+  contextSources: string[];
+  /**
+   * CP-45/SD-23: typed artifact instances bound to this step's input/output
+   * slots — see `ArtifactType`/`ArtifactInstance`.
+   */
+  artifactBindings: StepArtifactBinding[];
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * CP-45/SD-23 D-1/D-2: the system-owned artifact type contract. Users never
+ * create rows here in v1 — only `ArtifactInstance` is user-authored. Code
+ * hardcodes this layer; the catalog is seeded via migration
+ * (20260709090000_add_artifact_types_catalog.sql) and is read-only to the
+ * app (RLS grants `authenticated` select only).
+ */
+export interface ArtifactType {
+  id: string;
+  version: number;
+  category: string;
+  producerBehavior: string;
+  consumerHints: Record<string, unknown>;
+  configSchema: Record<string, unknown>;
+  renderTemplate: string;
+  systemOwned: boolean;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * CP-45/SD-23 D-1/D-3: a configured instance of a built-in `ArtifactType`.
+ * `isBuiltin=true` rows are seeded (service role) and read-only to users,
+ * shown with a "built-in" tag, mirroring how a built-in `Workflow` is
+ * read-only (`editable=false`). `isBuiltin=false` rows are user-created,
+ * project-scoped (`projectId` set). `projectId` is null on built-in rows so
+ * they are visible from every project, mirroring `Workflow.projectId`.
+ */
+export interface ArtifactInstance {
+  id: string;
+  projectId: string | null;
+  artifactTypeId: string;
+  name: string;
+  description: string;
+  configJson: Record<string, unknown>;
+  isBuiltin: boolean;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ArtifactBindingDirection = "input" | "output";
+
+/**
+ * CP-45/SD-23 D-1/D-4/D-7: binds one `ArtifactInstance` to a step's input or
+ * output slot. A step may carry multiple bindings per direction (SD-23:
+ * "a step attaches a list of artifacts for both input and output"). Binding
+ * the same instance to step A's output and step B's input models cross-step
+ * artifact I/O (SD-23 D-1). Stored in `step_artifact_bindings`, never on
+ * `workflow_steps` (BUG-236).
+ */
+export interface StepArtifactBinding {
+  id: string;
+  direction: ArtifactBindingDirection;
+  slotName: string;
+  artifactInstanceId: string;
+  required: boolean;
+  position: number;
+  createdAt: string;
 }
 
 /**
@@ -340,17 +411,6 @@ export function validateFlowGraph(
   });
 
   return issues;
-}
-
-export interface ArtifactDefinition {
-  key: string;
-  name: string;
-  description: string;
-  localPathTemplate: string;
-  remotePathTemplate: string;
-  defaultFileName: string;
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface ArtifactRun {

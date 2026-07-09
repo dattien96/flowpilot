@@ -81,7 +81,7 @@ func behaviorHubInline(ctx context.Context, in BehaviorInput) (BehaviorOutput, e
 // node can be selected by behavior ID instead of a hardcoded "Plan step"
 // check. The built package is returned in Payload["package"] for a
 // context.render node to consume.
-func behaviorContextProduce(_ context.Context, in BehaviorInput) (BehaviorOutput, error) {
+func behaviorContextProduce(ctx context.Context, in BehaviorInput) (BehaviorOutput, error) {
 	hints := FlowContextHints{
 		WorkflowRunID: in.WorkflowRunID,
 		PlanStepRunID: in.StepRunID,
@@ -92,7 +92,7 @@ func behaviorContextProduce(_ context.Context, in BehaviorInput) (BehaviorOutput
 			hints.SourceDocID = sourceDocID
 		}
 	}
-	pkg, err := BuildFlowContextPackage(in.WorkspaceCwd, hints)
+	pkg, err := BuildFlowContextPackageWithSources(ctx, in.WorkspaceCwd, hints, in.ContextSourceIDs)
 	if err != nil {
 		return BehaviorOutput{}, fmt.Errorf("context.produce: %w", err)
 	}

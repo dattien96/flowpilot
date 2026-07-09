@@ -1,5 +1,4 @@
 import type {
-  ArtifactCatalogRepository,
   ArtifactRunRepository,
   IntegrationCrudRepository,
   ProjectRepository,
@@ -9,14 +8,16 @@ import type {
   WorkflowRepository,
 } from "../domain/adminRepositories";
 import type {
-  ArtifactDefinition,
+  ArtifactInstance,
   ArtifactRun,
+  ArtifactType,
   Integration,
   IntegrationType,
   Project,
   ProjectPlatform,
   ProjectWorkspaceBinding,
   ReasoningEffort,
+  StepArtifactBinding,
   StepDefinition,
   SupportedModel,
   Team,
@@ -45,12 +46,6 @@ const workflowStepInsertOrderOffset = 1_000_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function stringRecord(value: Record<string, unknown>): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => [key, String(item ?? "")]),
-  );
 }
 
 function mapProject(row: Row): Project {
@@ -221,23 +216,51 @@ function mapStepDefinition(row: Row): StepDefinition {
     cohort: row.cohort ? String(row.cohort) : null,
     promptTemplateRef: row.prompt_template_ref ? String(row.prompt_template_ref) : null,
     contextRef: row.context_ref ? String(row.context_ref) : null,
-    inputs: isRecord(row.inputs_json) ? stringRecord(row.inputs_json) : {},
-    outputs: isRecord(row.outputs_json) ? stringRecord(row.outputs_json) : {},
-    inputArtifactDefinitions: Array.isArray(row.input_artifact_definitions) ? row.input_artifact_definitions.map(String) : [],
-    outputArtifactDefinitions: Array.isArray(row.output_artifact_definitions) ? row.output_artifact_definitions.map(String) : [],
+    contextSources: Array.isArray(row.context_sources) ? row.context_sources.map(String) : [],
+    artifactBindings: Array.isArray(row.artifact_bindings) ? row.artifact_bindings.map(mapStepArtifactBinding) : [],
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
   };
 }
 
-function mapArtifactDefinition(row: Row): ArtifactDefinition {
+function mapStepArtifactBinding(row: Row): StepArtifactBinding {
   return {
-    key: String(row.key ?? ""),
+    id: String(row.id ?? ""),
+    direction: row.direction === "output" ? "output" : "input",
+    slotName: String(row.slot_name ?? ""),
+    artifactInstanceId: String(row.artifact_instance_id ?? ""),
+    required: Boolean(row.required ?? true),
+    position: Number(row.position ?? 0),
+    createdAt: String(row.created_at ?? ""),
+  };
+}
+
+function mapArtifactType(row: Row): ArtifactType {
+  return {
+    id: String(row.id ?? ""),
+    version: Number(row.version ?? 1),
+    category: String(row.category ?? ""),
+    producerBehavior: String(row.producer_behavior ?? ""),
+    consumerHints: isRecord(row.consumer_hints) ? row.consumer_hints : {},
+    configSchema: isRecord(row.config_schema) ? row.config_schema : {},
+    renderTemplate: String(row.render_template ?? ""),
+    systemOwned: Boolean(row.system_owned ?? true),
+    status: String(row.status ?? "active"),
+    createdAt: String(row.created_at ?? ""),
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
+function mapArtifactInstance(row: Row): ArtifactInstance {
+  return {
+    id: String(row.id ?? ""),
+    projectId: row.project_id ? String(row.project_id) : null,
+    artifactTypeId: String(row.artifact_type_id ?? ""),
     name: String(row.name ?? ""),
     description: String(row.description ?? ""),
-    localPathTemplate: String(row.local_path_template ?? ""),
-    remotePathTemplate: String(row.remote_path_template ?? ""),
-    defaultFileName: String(row.default_file_name ?? ""),
+    configJson: isRecord(row.config_json) ? row.config_json : {},
+    isBuiltin: Boolean(row.is_builtin ?? false),
+    status: String(row.status ?? "active"),
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
   };
@@ -286,7 +309,6 @@ export class SupabaseAdminRepository implements
   SupportedModelRepository,
   IntegrationCrudRepository,
   ProjectIntegrationRepository,
-  ArtifactCatalogRepository,
   ArtifactRunRepository
 {
   constructor(private readonly supabase: SupabaseLike) {}
@@ -740,8 +762,7 @@ export class SupabaseAdminRepository implements
           cohort: definition.cohort,
           prompt_template_ref: definition.promptTemplateRef,
           context_ref: definition.contextRef,
-          inputs_json: definition.inputs,
-          outputs_json: definition.outputs,
+          context_sources: definition.contextSources,
           updated_at: now(),
         });
       }
@@ -793,44 +814,28 @@ export class SupabaseAdminRepository implements
   }
 
   async listStepDefinitions() {
-    const [definitionsResult, inputBindingsResult, outputBindingsResult] = await Promise.all([
+    const [definitionsResult, artifactBindingsResult] = await Promise.all([
       this.supabase.from("step_definitions").select("*").order("name", { ascending: true }),
       this.supabase
-        .from("step_input_artifact_definitions")
-        .select("step_type, artifact_definition_key, order_index")
-        .order("order_index", { ascending: true }),
-      this.supabase
-        .from("step_output_artifact_definitions")
-        .select("step_type, artifact_definition_key, order_index")
-        .order("order_index", { ascending: true }),
+        .from("step_artifact_bindings")
+        .select("*")
+        .order("position", { ascending: true }),
     ]);
     assertNoError(definitionsResult.error, "Unable to list step definitions.");
-    assertNoError(inputBindingsResult.error, "Unable to list step input artifact bindings.");
-    assertNoError(outputBindingsResult.error, "Unable to list step output artifact bindings.");
+    assertNoError(artifactBindingsResult.error, "Unable to list step artifact bindings.");
 
-    const inputBindings = new Map<string, string[]>();
-    for (const row of inputBindingsResult.data ?? []) {
-      const stepType = String(row.step_type);
-      const current = inputBindings.get(stepType) ?? [];
-      current[Number(row.order_index ?? current.length)] = String(row.artifact_definition_key);
-      inputBindings.set(stepType, current.filter(Boolean));
-    }
-
-    const outputBindings = new Map<string, string[]>();
-    for (const row of outputBindingsResult.data ?? []) {
-      const stepType = String(row.step_type);
-      const current = outputBindings.get(stepType) ?? [];
-      current[Number(row.order_index ?? current.length)] = String(row.artifact_definition_key);
-      outputBindings.set(stepType, current.filter(Boolean));
+    const artifactBindings = new Map<string, Row[]>();
+    for (const row of artifactBindingsResult.data ?? []) {
+      const stepType = String(row.step_definition_id);
+      const current = artifactBindings.get(stepType) ?? [];
+      current.push(row);
+      artifactBindings.set(stepType, current);
     }
 
     return (definitionsResult.data ?? []).map((row: Row) =>
       mapStepDefinition({
         ...row,
-        input_artifact_definitions:
-          inputBindings.get(String(row.step_type)) ?? [],
-        output_artifact_definitions:
-          outputBindings.get(String(row.step_type)) ?? [],
+        artifact_bindings: artifactBindings.get(String(row.step_type)) ?? [],
       }),
     );
   }
@@ -859,72 +864,117 @@ export class SupabaseAdminRepository implements
       cohort: step.cohort ?? null,
       prompt_template_ref: step.promptTemplateRef ?? null,
       context_ref: step.contextRef ?? null,
-      inputs_json: step.inputs ?? {},
-      outputs_json: step.outputs ?? {},
+      context_sources: step.contextSources ?? [],
       updated_at: now(),
     }, { onConflict: "step_type" }).select("*").single();
     assertNoError(error, "Unable to save step definition.");
 
-    const { error: deleteInputError } = await this.supabase
-      .from("step_input_artifact_definitions")
+    const { error: deleteArtifactBindingsError } = await this.supabase
+      .from("step_artifact_bindings")
       .delete()
-      .eq("step_type", step.stepType);
-    assertNoError(deleteInputError, "Unable to reset step input artifact bindings.");
+      .eq("step_definition_id", step.stepType);
+    assertNoError(deleteArtifactBindingsError, "Unable to reset step artifact bindings.");
 
-    const { error: deleteOutputError } = await this.supabase
-      .from("step_output_artifact_definitions")
-      .delete()
-      .eq("step_type", step.stepType);
-    assertNoError(deleteOutputError, "Unable to reset step output artifact bindings.");
-
-    if (step.inputArtifactDefinitions.length > 0) {
-      const { error: inputError } = await this.supabase
-        .from("step_input_artifact_definitions")
+    if (step.artifactBindings.length > 0) {
+      const { error: artifactBindingsError } = await this.supabase
+        .from("step_artifact_bindings")
         .insert(
-          step.inputArtifactDefinitions.map((artifactDefinitionKey, orderIndex) => ({
-            step_type: step.stepType,
-            artifact_definition_key: artifactDefinitionKey,
-            order_index: orderIndex,
+          step.artifactBindings.map((binding, index) => ({
+            step_definition_id: step.stepType,
+            direction: binding.direction,
+            slot_name: binding.slotName,
+            artifact_instance_id: binding.artifactInstanceId,
+            required: binding.required,
+            position: binding.position ?? index,
           })),
         );
-      assertNoError(inputError, "Unable to save step input artifact bindings.");
-    }
-
-    if (step.outputArtifactDefinitions.length > 0) {
-      const { error: outputError } = await this.supabase
-        .from("step_output_artifact_definitions")
-        .insert(
-          step.outputArtifactDefinitions.map((artifactDefinitionKey, orderIndex) => ({
-            step_type: step.stepType,
-            artifact_definition_key: artifactDefinitionKey,
-            order_index: orderIndex,
-          })),
-        );
-      assertNoError(outputError, "Unable to save step output artifact bindings.");
+      assertNoError(artifactBindingsError, "Unable to save step artifact bindings.");
     }
 
     return mapStepDefinition({
       ...data,
-      input_artifact_definitions: step.inputArtifactDefinitions,
-      output_artifact_definitions: step.outputArtifactDefinitions,
+      artifact_bindings: step.artifactBindings.map((binding) => ({
+        id: binding.id,
+        direction: binding.direction,
+        slot_name: binding.slotName,
+        artifact_instance_id: binding.artifactInstanceId,
+        required: binding.required,
+        position: binding.position,
+        created_at: binding.createdAt,
+      })),
     });
   }
 
   async deleteStepDefinition(stepType: string) {
-    const { error: deleteInputError } = await this.supabase
-      .from("step_input_artifact_definitions")
+    const { error: deleteArtifactBindingsError } = await this.supabase
+      .from("step_artifact_bindings")
       .delete()
-      .eq("step_type", stepType);
-    assertNoError(deleteInputError, "Unable to delete step input artifact bindings.");
-
-    const { error: deleteOutputError } = await this.supabase
-      .from("step_output_artifact_definitions")
-      .delete()
-      .eq("step_type", stepType);
-    assertNoError(deleteOutputError, "Unable to delete step output artifact bindings.");
+      .eq("step_definition_id", stepType);
+    assertNoError(deleteArtifactBindingsError, "Unable to delete step artifact bindings.");
 
     const { error } = await this.supabase.from("step_definitions").delete().eq("step_type", stepType);
     assertNoError(error, "Unable to delete step definition.");
+  }
+
+  async listArtifactTypes() {
+    const { data, error } = await this.supabase.from("artifact_types").select("*").order("id", { ascending: true });
+    assertNoError(error, "Unable to list artifact types.");
+    return (data ?? []).map(mapArtifactType);
+  }
+
+  async listArtifactInstances() {
+    const { data, error } = await this.supabase
+      .from("artifact_instances")
+      .select("*")
+      .order("is_builtin", { ascending: false })
+      .order("name", { ascending: true });
+    assertNoError(error, "Unable to list artifact instances.");
+    return (data ?? []).map(mapArtifactInstance);
+  }
+
+  async saveArtifactInstance(instance: Partial<ArtifactInstance> & Pick<ArtifactInstance, "artifactTypeId" | "name">) {
+    if (instance.isBuiltin) {
+      throw new Error("Built-in artifact instances cannot be created or edited from Settings.");
+    }
+    const { data, error } = await this.supabase
+      .from("artifact_instances")
+      .upsert(
+        {
+          ...(instance.id ? { id: instance.id } : {}),
+          project_id: instance.projectId ?? null,
+          artifact_type_id: instance.artifactTypeId,
+          name: instance.name,
+          description: instance.description ?? "",
+          config_json: instance.configJson ?? {},
+          is_builtin: false,
+          status: instance.status ?? "active",
+          updated_at: now(),
+        },
+        instance.id ? { onConflict: "id" } : undefined,
+      )
+      .select("*")
+      .single();
+    assertNoError(error, "Unable to save artifact instance.");
+    return mapArtifactInstance(data);
+  }
+
+  async deleteArtifactInstance(instanceId: string) {
+    const { data: bound, error: boundError } = await this.supabase
+      .from("step_artifact_bindings")
+      .select("id")
+      .eq("artifact_instance_id", instanceId)
+      .limit(1);
+    assertNoError(boundError, "Unable to check artifact instance bindings.");
+    if ((bound ?? []).length > 0) {
+      throw new Error("This artifact instance is still bound to a step and cannot be deleted.");
+    }
+
+    const { error } = await this.supabase
+      .from("artifact_instances")
+      .delete()
+      .eq("id", instanceId)
+      .eq("is_builtin", false);
+    assertNoError(error, "Unable to delete artifact instance.");
   }
 
   async listWorkflowRuns(projectId?: string) {
@@ -933,26 +983,6 @@ export class SupabaseAdminRepository implements
     const { data, error } = await query;
     assertNoError(error, "Unable to list workflow runs.");
     return (data ?? []).map(mapWorkflowRun);
-  }
-
-  async listDefinitions() {
-    const { data, error } = await this.supabase.from("artifact_definitions").select("*").order("updated_at", { ascending: false });
-    assertNoError(error, "Unable to list artifact definitions.");
-    return (data ?? []).map(mapArtifactDefinition);
-  }
-
-  async saveDefinition(definition: ArtifactDefinition) {
-    const { data, error } = await this.supabase.from("artifact_definitions").upsert({
-      key: definition.key,
-      name: definition.name,
-      description: definition.description,
-      local_path_template: definition.localPathTemplate,
-      remote_path_template: definition.remotePathTemplate,
-      default_file_name: definition.defaultFileName,
-      updated_at: now(),
-    }).select("*").single();
-    assertNoError(error, "Unable to save artifact definition.");
-    return mapArtifactDefinition(data);
   }
 
   async listRuns(projectId?: string) {

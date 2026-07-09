@@ -67,18 +67,39 @@ type dbWorkflowStepRow struct {
 }
 
 type dbStepDefinitionRow struct {
-	StepType          string            `json:"step_type"`
-	NodeID            *string           `json:"node_id"`
-	NodeLifecycle     *string           `json:"node_lifecycle"`
-	BehaviorID        *string           `json:"behavior_id"`
-	AgentRef          *string           `json:"agent_ref"`
-	DependsOnJSON     []string          `json:"depends_on_json"`
-	JoinMode          *string           `json:"join_mode"`
-	Cohort            *string           `json:"cohort"`
-	PromptTemplateRef *string           `json:"prompt_template_ref"`
-	ContextRef        *string           `json:"context_ref"`
-	InputsJSON        map[string]string `json:"inputs_json"`
-	OutputsJSON       map[string]string `json:"outputs_json"`
+	StepType          string                    `json:"step_type"`
+	NodeID            *string                   `json:"node_id"`
+	NodeLifecycle     *string                   `json:"node_lifecycle"`
+	BehaviorID        *string                   `json:"behavior_id"`
+	AgentRef          *string                   `json:"agent_ref"`
+	DependsOnJSON     []string                  `json:"depends_on_json"`
+	JoinMode          *string                   `json:"join_mode"`
+	Cohort            *string                   `json:"cohort"`
+	PromptTemplateRef *string                   `json:"prompt_template_ref"`
+	ContextRef        *string                   `json:"context_ref"`
+	ContextSources    []string                  `json:"context_sources"`
+	ArtifactBindings  []dbStepArtifactBindingRow `json:"step_artifact_bindings"`
+}
+
+// dbStepArtifactBindingRow mirrors one `step_artifact_bindings` row joined
+// with its bound `artifact_instances` row (CP-45/SD-23 D-1/D-4). Embedding
+// the instance in the same PostgREST select avoids an N+1 lookup per node —
+// recordFromWorkflowRow denormalizes ArtifactTypeID/ConfigJSON directly onto
+// agentpack.FlowArtifactBinding.
+type dbStepArtifactBindingRow struct {
+	ID                 string                    `json:"id"`
+	Direction          string                    `json:"direction"`
+	SlotName           string                    `json:"slot_name"`
+	Required           bool                      `json:"required"`
+	Position           int                       `json:"position"`
+	ArtifactInstanceID string                    `json:"artifact_instance_id"`
+	ArtifactInstance   *dbArtifactInstanceRefRow `json:"artifact_instances"`
+}
+
+type dbArtifactInstanceRefRow struct {
+	ArtifactTypeID string         `json:"artifact_type_id"`
+	ConfigJSON     map[string]any `json:"config_json"`
+	Status         string         `json:"status"`
 }
 
 type dbFlowContextRow struct {
@@ -109,7 +130,7 @@ type dbWorkflowRow struct {
 	WorkflowSteps    []dbWorkflowStepRow         `json:"workflow_steps"`
 }
 
-const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,depends_on_json,join_mode,cohort,prompt_template_ref,context_ref,inputs_json,outputs_json))"
+const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,depends_on_json,join_mode,cohort,prompt_template_ref,context_ref,context_sources,step_artifact_bindings(id,direction,slot_name,required,position,artifact_instance_id,artifact_instances(artifact_type_id,config_json,status))))"
 
 func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 	rec := FlowDefinitionRecord{
@@ -211,11 +232,32 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 		if defn.PromptTemplateRef != nil {
 			node.PromptTemplate = *defn.PromptTemplateRef
 		}
-		if len(defn.InputsJSON) > 0 {
-			node.Inputs = defn.InputsJSON
+		if len(defn.ContextSources) > 0 {
+			node.ContextSources = defn.ContextSources
 		}
-		if len(defn.OutputsJSON) > 0 {
-			node.Outputs = defn.OutputsJSON
+		for _, b := range defn.ArtifactBindings {
+			binding := agentpack.FlowArtifactBinding{
+				Direction:          b.Direction,
+				SlotName:           b.SlotName,
+				ArtifactInstanceID: b.ArtifactInstanceID,
+				Required:           b.Required,
+				Position:           b.Position,
+			}
+			// A binding whose joined artifact_instances row is missing (deleted
+			// instance, stale FK left dangling by an out-of-band delete) is kept
+			// with ArtifactTypeID left empty (SD-23 F-1) rather than dropped: an
+			// empty type never matches any resolver's expected type, so
+			// resolveArtifactBoundContextSources/resolveInputArtifactPrompt
+			// already skip it exactly as if it were absent (a soft degrade for an
+			// OPTIONAL binding), while ValidateFlowArtifactBindings
+			// (context_sources_builtin.go) inspects this same empty-type sentinel
+			// to fail flow-load fast for a REQUIRED one — callers must never
+			// silently treat "instance gone" as "instance present."
+			if b.ArtifactInstance != nil {
+				binding.ArtifactTypeID = b.ArtifactInstance.ArtifactTypeID
+				binding.ConfigJSON = b.ArtifactInstance.ConfigJSON
+			}
+			node.ArtifactBindings = append(node.ArtifactBindings, binding)
 		}
 		def.Nodes = append(def.Nodes, node)
 	}
@@ -593,8 +635,6 @@ func (s *SupabaseWorkflowFlowStore) upsertNodeStepDefinitions(ctx context.Contex
 			"join_mode":           nilIfEmpty(node.Join),
 			"cohort":              nilIfEmpty(node.Cohort),
 			"prompt_template_ref": nilIfEmpty(node.PromptTemplate),
-			"inputs_json":         nonNilStringMap(node.Inputs),
-			"outputs_json":        nonNilStringMap(node.Outputs),
 		})
 	}
 	if len(rows) == 0 {
@@ -799,15 +839,6 @@ func edgesPayload(edges []agentpack.FlowEdge) []map[string]string {
 	return out
 }
 
-// nonNilStringMap mirrors nonNilStrings for map-shaped columns (inputs_json/
-// outputs_json): a nil Go map must still round-trip as `{}`, not `null`, so a
-// later read back never has to special-case a missing key vs an empty node.
-func nonNilStringMap(values map[string]string) map[string]string {
-	if values == nil {
-		return map[string]string{}
-	}
-	return values
-}
 
 // contextsPayload flattens a flow's named context bindings
 // ({name: {ref: "..."}}) into the JSON shape contexts_json stores.

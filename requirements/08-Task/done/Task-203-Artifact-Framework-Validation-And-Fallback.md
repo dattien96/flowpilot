@@ -1,0 +1,129 @@
+# Task-203: Artifact Framework Validation And Fallback
+
+## Metadata
+
+- Document ID: `Task-203`
+- Title: `Artifact Framework Validation And Fallback`
+- Phase: `task`
+- Status: `done`
+- Owner: `FlowPilot`
+- Reviewers: `TBD`
+- Created: `2026-07-08`
+- Last Updated: `2026-07-09`
+- Parent Documents: [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../../07-Coding-Plan/done/CP-45-Generic-Artifact-Types-And-Instances.md)
+- Child Documents: `None`
+- Related Documents: [Task-201: Context Artifact Migration From Context Sources](Task-201-Context-Artifact-Migration-From-Context-Sources.md), [Task-202: File Artifact Type Proof Of Generality](Task-202-File-Artifact-Type-Proof-Of-Generality.md), [CP-44: Pluggable Context Source Registry](../../07-Coding-Plan/todo/CP-44-Pluggable-Context-Source-Registry.md)
+- Replaces: `None`
+- Tags: `artifact, validation, fallback, migration, e2e`
+
+## AI Quick View
+
+### Summary
+
+- Adds validation and fallback coverage for CP-45 after type, instance, UI, binding, and runtime support exist.
+- Ensures old CP-44 flows still run while artifact-instance bindings roll out.
+- Defines E2E checks across context artifact, file artifact, stale bindings, and type mismatch.
+
+### Current Ask
+
+- Close CP-45 with migration safety, validation coverage, and documented fallback semantics.
+
+### Key Decisions
+
+- `T-1` Existing CP-44 flows remain valid until explicit migration removes the fallback.
+- `T-2` Invalid artifact bindings fail clearly at authoring/load time, not during an opaque provider turn.
+- `T-3` Missing optional artifacts degrade; missing required artifacts block with actionable UI.
+
+### Constraints
+
+- Depends on Task-197 through Task-202.
+- Do not remove CP-44 fallback in this task.
+- Validation must cover both UI authoring and runner flow-load paths.
+
+### Open Questions
+
+- `Q-1` **(RESOLVED, 2026-07-09)** **Settings validation** for authoring + **runtime error** for stale DB state; do **not** use the flow-gate modal machinery in v1.
+
+### Source Refs
+
+- `CP-45 P-7`
+- `CP-44 DOD-9`
+- current code: `flow_definition_resolver.go`, `WorkflowsSettings.tsx`, runner tests for context source binding
+
+## 1. Goal
+
+Make the artifact framework safe to roll out by proving compatibility, validation, and fallback behavior.
+
+## 2. Parent Links
+
+- coding plan: `CP-45`
+- tech design: `SD-23` (`§8` Failure Handling, `D-6` fallback)
+- system spec: `SS-13`
+- specific upstream ids: `CP-45 P-7`
+
+## 3. Trigger
+
+Once artifact instances and step bindings exist, stale/mismatched data and old CP-44 flows become the main rollout risk.
+
+## 4. Exact Change
+
+- `T-1` Add validation for missing artifact type, missing instance, mismatched type, and invalid config.
+- `T-2` Add fallback tests for old CP-44 `contexts.sources` flows.
+- `T-3` Add E2E/manual test matrix for context and file artifact instances.
+- `T-4` Update CP-44/Task-196 docs after CP-45 path is validated.
+
+## 5. Touched Areas
+
+- files:
+  - `apps/local-runner/internal/runner/flow_definition_resolver.go`
+  - `apps/local-runner/internal/runner/*_test.go`
+  - `apps/desktop-flowpilot/src/components/settings/WorkflowsSettings.tsx`
+  - CP/task docs
+- modules:
+  - runner validation
+  - settings validation
+  - migration docs
+- routes: none
+- tables:
+  - `artifact_types`
+  - `artifact_instances`
+  - `step_artifact_bindings`
+
+## 6. Acceptance Check
+
+- Old CP-44 default and flow-level source bindings still run.
+- New context artifact instance bindings run.
+- New file artifact instance bindings run.
+- Missing/mismatched required bindings fail with clear error.
+- Optional missing bindings degrade cleanly.
+
+### 6.1 Test Items
+
+Implemented (equivalent coverage; see note below on the dropped "type mismatch" test):
+
+- `TestValidateFlowArtifactBindingsFailsOnMissingRequiredInstance` (was `TestArtifactBindingMissingRequiredInstanceFailsClearly`)
+- `TestValidateFlowArtifactBindingsDegradesOnMissingOptionalInstance` (was `TestArtifactBindingOptionalMissingInstanceWarns`)
+- `TestValidateFlowArtifactBindingsAcceptsResolvedBindings`
+- `TestFlowDefinitionResolverRejectsRequiredArtifactBindingToMissingInstance` / `TestFlowDefinitionResolverAllowsOptionalArtifactBindingToMissingInstance` (end-to-end through the real resolver call site, not just the isolated validator)
+- `TestResolveEnabledContextSourceIDsOldCP44FlowUnaffectedByArtifactValidation` (was `TestOldContextSourcesFallbackStillWorks`)
+
+Not implemented: `TestArtifactBindingTypeMismatchFailsFlowLoad`. v1's type-compat rule (Task-200 `D-7`, simplified) is enforced at the **UI picker** layer (`compatibleArtifactInstancesFor`), not as a separate runner-level "declared slot type" schema — there is no per-slot type contract in this codebase's node model to check a mismatch against at flow-load time. The runner-level safety property that *does* exist and *is* tested is that a wrongly-typed/wrong-direction binding is simply never picked up by the resolver that would act on it (`TestResolveArtifactBoundContextSourcesIgnoresInputAndOtherTypeBindings`), which is the practical equivalent for v1's scope.
+
+### 6.2 Definition of Done
+
+- [x] `DOD-1` Validation covers stale/missing/mismatched artifact bindings. — `ValidateFlowArtifactBindings` (required-missing fails, optional-missing degrades); mismatched/wrong-direction bindings are inert (see note above).
+- [x] `DOD-2` CP-44 fallback path remains tested. — `TestResolveEnabledContextSourceIDsOldCP44FlowUnaffectedByArtifactValidation`.
+- [x] `DOD-3` Context and file artifact E2E checks are documented. — see `CP-45 §11` E2E matrix (`11.2`–`11.4`); manual E2E (create instance, bind, run flow) not run live in this session — no Supabase-backed environment available in the sandbox.
+- [x] `DOD-4` CP-44/Task-196 docs reflect the migration state. — done earlier this session (CP-44/Task-195/Task-196 updated when Task-198 was renumbered to Task-204).
+
+## 7. Out of Scope
+
+- Removing legacy context source fields.
+- Custom artifact type authoring.
+- Additional artifact types beyond context/file.
+
+## 8. Completion Notes
+
+- result: `done` — 2026-07-09: `ValidateFlowArtifactBindings` wired into `FlowDefinitionResolver`'s two flow-load call sites; closes CP-45.
+- follow-ups: later CP can remove transitional `contextSources[]` once CP-45 adoption is complete.
+- upstream docs updated: `TBD`

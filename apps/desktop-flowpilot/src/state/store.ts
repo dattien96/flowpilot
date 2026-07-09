@@ -213,6 +213,14 @@ interface AppState {
   };
   providerSwitchLoading: boolean;
   _accountSwitchTriedIds: string[];
+  /** Set when opening/restoring a history item fails because this machine has no matching
+   *  provider account signed in (BUG-267). Surfaced as an immediate modal, distinct from the
+   *  passive `unavailableReason` row/session stamping which stays as the list-view marker. */
+  historyOpenError?: {
+    code: "account_not_signed_in" | "account_unavailable";
+    message: string;
+    providerKey?: ProviderKey;
+  };
 
   // internal: id of the assistant bubble currently accumulating deltas
   _streamingAssistantId?: string;
@@ -307,6 +315,7 @@ interface AppState {
   dismissGateBlock(): void;
   /** Submit the user's choice on the r-reg gate decision card (Task-155). */
   submitGateDecision(option: string, customText?: string): Promise<void>;
+  dismissHistoryOpenError(): void;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -339,6 +348,7 @@ export const useStore = create<AppState>((set, get) => ({
   accountSwitchLoading: false,
   providerSwitchLoading: false,
   _accountSwitchTriedIds: [],
+  historyOpenError: undefined,
   launchMode: "workflow",
   chatMode: "normal_chat",
   selectedProvider: "codex",
@@ -1462,6 +1472,11 @@ export const useStore = create<AppState>((set, get) => ({
               ? { ...item, unavailableReason: err.message }
               : item,
           ),
+          // BUG-267: unavailableReason alone only surfaces in the disabled row/tooltip;
+          // provider-account mismatches need an immediate modal at click time.
+          ...((err.code === "account_not_signed_in" || err.code === "account_unavailable")
+            ? { historyOpenError: { code: err.code, message: err.message, providerKey: summary.providerKey } }
+            : {}),
         }));
         return;
       }
@@ -1496,6 +1511,11 @@ export const useStore = create<AppState>((set, get) => ({
           runHistory: s.runHistory.map((item) =>
             item.runId === runId ? { ...item, unavailableReason: err.message } : item
           ),
+          // BUG-267: unavailableReason alone only surfaces in the disabled row/tooltip;
+          // provider-account mismatches need an immediate modal at click time.
+          ...((err.code === "account_not_signed_in" || err.code === "account_unavailable")
+            ? { historyOpenError: { code: err.code, message: err.message, providerKey: historyProvider } }
+            : {}),
         }));
         return;
       }
@@ -1673,6 +1693,10 @@ export const useStore = create<AppState>((set, get) => ({
 
   dismissGateBlock() {
     set({ gateBlock: undefined });
+  },
+
+  dismissHistoryOpenError() {
+    set({ historyOpenError: undefined });
   },
 
   async submitGateDecision(option: string, customText?: string) {

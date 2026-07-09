@@ -291,7 +291,7 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 
 > **Relocated (2026-07-06):** the pure **context-harness** scenarios — deterministic feature-history retrieval, unknown-key degradation, no-chat-summary degradation (original `DOD-7`), and context-package rebuild on Plan rerun — plus the "Missing chat summary ledger" and "Runner restart after context-package creation" failure rows, were **moved to [CP-43 §11 (Relocated Context-Harness E2E Tests)](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11)**, because the context-harness logic they exercise is being reworked under CP-43. The scenario numbers below therefore have gaps (2/3/4/8 relocated); the remaining scenarios keep their original numbers.
 >
-> **Blocked-on-code note:** Scenarios 5/6/7 (Testing/validate retry) and 9/10 (Audit draft) are currently **not runnable end-to-end** — the `command.validate` and `artifact.audit_draft` behavior handlers are stubs not wired to their Task-170/171 implementations (see [BUG-243](../../09-BugFix/todo/BUG-243-Flow-Mode-Validate-And-Audit-Behaviors-Disconnected-From-Task-170-171.md)). Only the launch → context → coder portion (hops 1–4) is testable until BUG-243 is fixed.
+> **Blocked-on-code note:** Scenarios 5/6/7 (Testing/validate retry) and 9/10 (Audit draft) are currently **not runnable end-to-end** — the `command.validate` and `artifact.audit_draft` behavior handlers are stubs not wired to their Task-170/171 implementations (see [BUG-243](../../09-BugFix/done/BUG-243-Flow-Mode-Validate-And-Audit-Behaviors-Disconnected-From-Task-170-171.md)). Only the launch → context → coder portion (hops 1–4) is testable until BUG-243 is fixed.
 
 ---
 

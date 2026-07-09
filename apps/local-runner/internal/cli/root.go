@@ -144,8 +144,17 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			// best-effort, and a no-op when Supabase isn't configured (flowDefStore
 			// is nil) — a failure here must not block the server from starting.
 			go func() {
-				if _, err := runner.EnsureBuiltinFlowMirrorsWithStore(ctx, flowDefStore); err != nil {
+				synced, err := runner.EnsureBuiltinFlowMirrorsWithStore(ctx, flowDefStore)
+				if err != nil {
 					log.Printf("[runner] builtin flow mirror sync failed: %v", err)
+					return
+				}
+				// CP-45/SD-23 Task-205: seed the context-coding-review-synthesis
+				// built-in flow's typed artifact bindings. Best-effort, mirroring
+				// the flow mirror sync above -- a failure here must not block
+				// server startup.
+				if err := runner.EnsureBuiltinArtifactBindingsWithStore(ctx, flowDefStore, synced); err != nil {
+					log.Printf("[runner] builtin artifact binding seed failed: %v", err)
 				}
 			}()
 			mux.HandleFunc("GET /client/projects/{projectId}/chat-sync/google-drive/status", func(w http.ResponseWriter, r *http.Request) {

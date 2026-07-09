@@ -287,6 +287,64 @@ func TestFlowDefinitionResolverRejectsStoredDefinitionWithUnknownBehavior(t *tes
 	}
 }
 
+// TestFlowDefinitionResolverRejectsRequiredArtifactBindingToMissingInstance
+// verifies Task-203's DOD end to end through the real resolver call site
+// (not just ValidateFlowArtifactBindings in isolation): a stored flow whose
+// node carries a REQUIRED artifact binding with no resolvable instance
+// (ArtifactTypeID left empty by recordFromWorkflowRow on a stale FK) fails
+// ResolveFlowRef, mirroring how an unknown behavior_id already does above.
+func TestFlowDefinitionResolverRejectsRequiredArtifactBindingToMissingInstance(t *testing.T) {
+	store := newFakeFlowDefinitionStore()
+	store.byRef["33333333-3333-3333-3333-333333333333"] = FlowDefinitionRecord{
+		FlowRef: "33333333-3333-3333-3333-333333333333",
+		Source:  "supabase_user_definition",
+		Definition: agentpack.FlowDefinition{
+			ID: "custom-flow",
+			Nodes: []agentpack.FlowNode{
+				{
+					ID:       "context",
+					Behavior: "context.produce",
+					ArtifactBindings: []agentpack.FlowArtifactBinding{
+						{Direction: "output", ArtifactInstanceID: "deleted-instance", Required: true, ArtifactTypeID: ""},
+					},
+				},
+			},
+		},
+	}
+	resolver := NewFlowDefinitionResolver(store)
+	if _, err := resolver.ResolveFlowRef(context.Background(), "33333333-3333-3333-3333-333333333333"); err == nil {
+		t.Fatal("expected an error resolving a stored definition with a required artifact binding to a missing instance, got none")
+	}
+}
+
+// TestFlowDefinitionResolverAllowsOptionalArtifactBindingToMissingInstance
+// is the F-1 counterpart: the same dangling FK on an OPTIONAL binding must
+// not block resolution.
+func TestFlowDefinitionResolverAllowsOptionalArtifactBindingToMissingInstance(t *testing.T) {
+	store := newFakeFlowDefinitionStore()
+	store.byRef["44444444-4444-4444-4444-444444444444"] = FlowDefinitionRecord{
+		FlowRef: "44444444-4444-4444-4444-444444444444",
+		Source:  "supabase_user_definition",
+		Definition: agentpack.FlowDefinition{
+			ID: "custom-flow",
+			Nodes: []agentpack.FlowNode{
+				{
+					ID:       "coder",
+					Behavior: "agent.delegate",
+					Agent:    "agents/coder.md",
+					ArtifactBindings: []agentpack.FlowArtifactBinding{
+						{Direction: "input", ArtifactInstanceID: "deleted-instance", Required: false, ArtifactTypeID: ""},
+					},
+				},
+			},
+		},
+	}
+	resolver := NewFlowDefinitionResolver(store)
+	if _, err := resolver.ResolveFlowRef(context.Background(), "44444444-4444-4444-4444-444444444444"); err != nil {
+		t.Fatalf("expected an optional missing artifact binding to resolve without error, got: %v", err)
+	}
+}
+
 func TestCloneBuiltinCreatesEditableUserCopy(t *testing.T) {
 	store := newFakeFlowDefinitionStore()
 	resolver := NewFlowDefinitionResolver(store)

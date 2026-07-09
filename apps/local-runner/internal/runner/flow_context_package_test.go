@@ -30,9 +30,16 @@ func fcpFixture(t *testing.T) (workspace, repoDir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// CommittedAt values are set explicitly (and distinctly) so GetFeatureHistory's
+	// sort.Slice by CommittedAt has a real tiebreaker. Without this, both entries
+	// sort as equal and the final order depends on Go's randomized map iteration
+	// order inside Ledger.AllEntries (entries is a map[string]Entry) — a latent,
+	// pre-existing non-determinism in changeledger.GetFeatureHistory, unrelated to
+	// CP-44, that only a byte-exact assertion (context_source_migration_golden_test.go)
+	// was strict enough to expose.
 	if err := baseLedger.Upsert([]changeledger.Entry{
-		{CommitHash: "abc1", FeatureKey: "agent-flow-engine", Summary: "add FlowNode/FlowEdge types Task-089"},
-		{CommitHash: "abc2", FeatureKey: "agent-flow-engine", Summary: "add applyFlowControl state machine Task-090"},
+		{CommitHash: "abc1", FeatureKey: "agent-flow-engine", Summary: "add FlowNode/FlowEdge types Task-089", CommittedAt: "2026-06-01T00:00:00Z"},
+		{CommitHash: "abc2", FeatureKey: "agent-flow-engine", Summary: "add applyFlowControl state machine Task-090", CommittedAt: "2026-06-02T00:00:00Z"},
 	}); err != nil {
 		t.Fatal(err)
 	}

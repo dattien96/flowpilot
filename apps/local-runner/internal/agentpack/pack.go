@@ -101,6 +101,13 @@ type FlowPolicy struct {
 
 type FlowContextBinding struct {
 	Ref string
+	// Sources lists enabled ContextSource IDs for this binding (CP-44 P-4 /
+	// Task-194). Empty means "use the runner's default built-in set" — a flow
+	// that declares no sources keeps the pre-CP-44 behavior unchanged.
+	// Validated against the registered context sources at flow-load time
+	// (see runner.ValidateFlowContextSources); an unknown ID here fails flow
+	// resolution rather than silently running without it.
+	Sources []string
 }
 
 type FlowNode struct {
@@ -112,9 +119,38 @@ type FlowNode struct {
 	Join           string
 	Cohort         string
 	DependsOn      []string
-	Inputs         map[string]string
-	Outputs        map[string]string
 	PromptTemplate string
+	// ContextSources is this node's own enabled context-source ids (CP-44 P-7
+	// / Task-196), the step-definition-level equivalent of
+	// FlowContextBinding.Sources. Empty means "fall back to the flow-level
+	// contexts.<name>.sources binding, then the runner's default built-in
+	// set" — the same precedence pack-YAML flows and user-authored
+	// (step_definitions-backed) flows both resolve through.
+	ContextSources []string
+	// ArtifactBindings are this node's typed artifact instance bindings
+	// (CP-45/SD-23 D-1/D-4), resolved and denormalized at flow-definition
+	// read time (see supabase_workflow_flow_store.go's recordFromWorkflowRow)
+	// so the executor never needs a second round-trip to look up an
+	// instance's config. Populated from `step_artifact_bindings` joined with
+	// `artifact_instances`; empty for a node with no bindings (CP-44 fallback
+	// path stays unaffected — SD-23 D-6).
+	ArtifactBindings []FlowArtifactBinding
+}
+
+// FlowArtifactBinding is one resolved typed-artifact binding for a
+// FlowNode's input or output slot (CP-45/SD-23 D-1/D-4/D-7). ArtifactTypeID
+// and ConfigJSON are denormalized from the bound ArtifactInstance so
+// resolvers (e.g. context_artifact's ContextSourceRegistry reuse, Task-201;
+// file_artifact's path injection, Task-202) can act on a binding without a
+// second DB lookup.
+type FlowArtifactBinding struct {
+	Direction          string // "input" | "output"
+	SlotName           string
+	ArtifactInstanceID string
+	ArtifactTypeID     string
+	ConfigJSON         map[string]any
+	Required           bool
+	Position           int
 }
 
 type FlowEdge struct {
@@ -623,6 +659,7 @@ func flowFromMap(m map[string]any) (FlowDefinition, error) {
 			binding := FlowContextBinding{}
 			if rawMap, ok := raw.(map[string]any); ok {
 				binding.Ref = stringField(rawMap, "ref")
+				binding.Sources = stringSliceField(rawMap, "sources")
 			} else {
 				binding.Ref = fmt.Sprint(raw)
 			}
@@ -673,8 +710,7 @@ func flowNodeFromMap(m map[string]any) FlowNode {
 		Cohort:         stringField(m, "cohort"),
 		PromptTemplate: stringField(m, "promptTemplate"),
 		DependsOn:      stringSliceField(m, "dependsOn"),
-		Inputs:         stringMapField(m, "inputs"),
-		Outputs:        stringMapField(m, "outputs"),
+		ContextSources: stringSliceField(m, "contextSources"),
 	}
 	return node
 }
@@ -1040,18 +1076,6 @@ func stringSliceField(m map[string]any, key string) []string {
 		if s := strings.TrimSpace(fmt.Sprint(item)); s != "" {
 			out = append(out, s)
 		}
-	}
-	return out
-}
-
-func stringMapField(m map[string]any, key string) map[string]string {
-	raw, ok := mapField(m, key)
-	if !ok {
-		return nil
-	}
-	out := make(map[string]string, len(raw))
-	for k, v := range raw {
-		out[k] = strings.TrimSpace(fmt.Sprint(v))
 	}
 	return out
 }

@@ -295,6 +295,14 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 	if strings.TrimSpace(body.FlowRef) == "" {
 		if flowRef, ok := s.resolveWorkflowFlowRef(r.Context(), r.PathValue("runId")); ok {
 			body.FlowRef = flowRef
+		} else if invalidErr := s.takePendingFlowRefInvalidErr(r.PathValue("runId")); invalidErr != nil {
+			// BUG-270: the selected workflow resolved to a real flow
+			// definition that failed validation (e.g. BUG-269's unknown
+			// context-source id) — a genuine data problem, not "this isn't a
+			// flow." Surface it instead of silently falling through to a
+			// normal chat turn with no explanation.
+			writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "invalid_flow_definition", invalidErr.Error()))
+			return
 		}
 	} else if !s.explicitFlowRefResolves(r.Context(), body.FlowRef) {
 		// BUG-261: an explicit chat flowRef (Bug sub-mode picker) that passed

@@ -1,4 +1,25 @@
-import type { ApprovalDetails, ProviderEventDTO, QuestionOption, RunStatus } from "../types/contract";
+import type { ApprovalDetails, FlowAuditDraftDTO, ProviderEventDTO, QuestionOption, RunStatus } from "../types/contract";
+
+/** BUG-243 F-3: condenses a FlowAuditDraft into the inline timeline card's
+ *  markdown text. Mirrors RenderAuditDraftText's section order
+ *  (flow_audit_draft.go) but trimmed for a chat-sized card rather than a
+ *  full standalone document. */
+function renderAuditDraftSummary(draft: FlowAuditDraftDTO): string {
+  const lines: string[] = [];
+  const heading = draft.status === "ready" ? "📝 Audit draft ready" : `📝 Audit draft — ${draft.status}`;
+  lines.push(`**${heading}**`);
+  if (draft.featureKey) lines.push(`Feature: \`${draft.featureKey}\``);
+  lines.push(`Validation: ${draft.validationResult}`);
+  if (draft.whatChanged) lines.push(`\n${draft.whatChanged}`);
+  if (draft.commitMessage) lines.push(`\nSuggested commit:\n\`\`\`\n${draft.commitMessage}\n\`\`\``);
+  if (draft.changeLedgerBlock) lines.push(`\n${draft.changeLedgerBlock}`);
+  if (draft.status !== "ready") {
+    lines.push(
+      "\n_This is a draft only — no file was written and no commit was created._",
+    );
+  }
+  return lines.join("\n");
+}
 
 /** Lightweight image-attachment view for a sent prompt bubble (Task-052). Holds a
  *  preview thumbnail (when available) and the filename, never the full payload. */
@@ -336,6 +357,23 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
       // thinking row, so block rules don't leave a dangling "Thinking..." line.
       if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
         timeline.push({ kind: "system", id: e.id, text: `⚠ ${e.error}`, tone: "warn" });
+      }
+      shouldKeepThinking = thinkingItem !== undefined;
+      break;
+
+    case "flow_audit_draft":
+      // BUG-243 F-3: the first UI surface for a produced audit draft (Task-171's
+      // "inspectable before any write/commit" acceptance criterion — this
+      // renders the draft, it never writes a file or creates a commit itself).
+      // A blocked_* status is not an error, but it is not "ready" either, so
+      // it gets the same warn tone as a gate violation rather than plain info.
+      if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
+        timeline.push({
+          kind: "system",
+          id: e.id,
+          text: renderAuditDraftSummary(e.flowAuditDraft),
+          tone: e.flowAuditDraft.status === "ready" ? "info" : "warn",
+        });
       }
       shouldKeepThinking = thinkingItem !== undefined;
       break;

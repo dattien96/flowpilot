@@ -1,6 +1,7 @@
 import type {
-  ArtifactDefinition,
+  ArtifactInstance,
   ArtifactRun,
+  ArtifactType,
   Integration,
   IntegrationType,
   LocalRunnerArtifact,
@@ -64,11 +65,17 @@ export interface WorkflowRepository {
    * clonedFrom=workflowId, plus a deep copy of its steps (CP-42/Task-179).
    */
   cloneWorkflow(workflowId: string, name: string): Promise<Workflow>;
-}
 
-export interface ArtifactCatalogRepository {
-  listDefinitions(): Promise<ArtifactDefinition[]>;
-  saveDefinition(definition: ArtifactDefinition): Promise<ArtifactDefinition>;
+  /** CP-45/SD-23: the system-owned, read-only artifact type catalog. */
+  listArtifactTypes(): Promise<ArtifactType[]>;
+  /** CP-45/SD-23: built-in (isBuiltin=true, global) + user-authored, project-scoped instances. */
+  listArtifactInstances(): Promise<ArtifactInstance[]>;
+  /** Creates or updates a user-authored (isBuiltin=false) instance; throws if isBuiltin is set. */
+  saveArtifactInstance(
+    instance: Partial<ArtifactInstance> & Pick<ArtifactInstance, "artifactTypeId" | "name">,
+  ): Promise<ArtifactInstance>;
+  /** Throws if the instance is built-in, or still bound to a step (Task-199 delete-guard). */
+  deleteArtifactInstance(instanceId: string): Promise<void>;
 }
 
 export interface ArtifactRunRepository {
@@ -84,7 +91,7 @@ export interface StorageDriverRepository {
   saveStorageDriver(driver: Pick<LocalRunnerStorageDriver, "driverKey" | "enabled" | "remoteRootPath" | "remoteFolderName">): Promise<LocalRunnerStorageDriver>;
 }
 
-export interface ArtifactRepository extends ArtifactCatalogRepository, ArtifactRunRepository, LocalArtifactRepository, StorageDriverRepository {}
+export interface ArtifactRepository extends ArtifactRunRepository, LocalArtifactRepository, StorageDriverRepository {}
 
 export interface LocalProviderRepository {
   listLocalProviders(): Promise<LocalRunnerProvider[]>;

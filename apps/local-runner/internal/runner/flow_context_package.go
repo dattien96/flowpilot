@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
 )
 
@@ -46,12 +45,37 @@ type FlowContextHints struct {
 	SourceDocID         string   // e.g. "Task-168"
 	ChangedPaths        []string // from stack trace / diff
 	ExplicitSourcePaths []string // user-provided or catalog-glob
+
+	// Workspace, FeatureKey, and FeatureConfidence are populated internally by
+	// BuildFlowContextPackage (feature resolution runs as a pre-processing step,
+	// not a ContextSource — CP-44 P-2/Task-192 T-1) before Collect is called, so
+	// every ContextSource.Fetch call can look up feature-scoped data without
+	// re-resolving the feature key itself. Callers of BuildFlowContextPackage do
+	// not need to set these — they are overwritten by the builder.
+	Workspace         string
+	FeatureKey        string
+	FeatureConfidence FlowContextConfidence
+
+	// MCPDriverRef optionally names a driver reference for the mcp.driver
+	// context source (CP-44 P-5/Task-195), e.g. an MCP-connected driver file
+	// id. Empty means no MCP-backed source is configured for this run; the
+	// mcp.driver source degrades to an empty, warning-free section.
+	MCPDriverRef string
 }
 
 // FlowContextPackage is the deterministic context package assembled by the Plan
 // step. It carries all grounding information downstream steps need without
 // broad re-retrieval. No vector DB, embedding index, or similarity search is
 // used at any stage of its construction (CP-41 P-2/P-3).
+//
+// Sections holds the raw output of every enabled ContextSource (CP-44 P-3 /
+// Task-193) — this is the extensible source of truth. HistoryBlock/
+// DiscussionBlock/SourceExcerpts/Omitted are a backward-compatibility
+// projection of the three built-in sections (feature.history/chat.summary/
+// source.excerpt) onto the pre-CP-44 fixed fields, kept so existing consumers
+// (RenderFlowContextPackage's known-section rendering, BuildAuditDraft) do
+// not need to change. A newly registered source shows up in Sections and in
+// the render's generic section output without any struct change here.
 type FlowContextPackage struct {
 	PackageID         string                `json:"packageId"`
 	WorkflowRunID     string                `json:"workflowRunId"`
@@ -62,6 +86,7 @@ type FlowContextPackage struct {
 	HistoryBlock      string                `json:"historyBlock,omitempty"`
 	DiscussionBlock   string                `json:"discussionBlock,omitempty"`
 	SourceExcerpts    []FlowContextExcerpt  `json:"sourceExcerpts,omitempty"`
+	Sections          []FlowContextSection  `json:"sections,omitempty"`
 	Constraints       []string              `json:"constraints,omitempty"`
 	Warnings          []string              `json:"warnings,omitempty"`
 	Omitted           []string              `json:"omitted,omitempty"`
@@ -69,14 +94,49 @@ type FlowContextPackage struct {
 }
 
 // BuildFlowContextPackage assembles a deterministic FlowContextPackage for the
-// Plan step of a Flow Mode run. It resolves the feature key from the user
-// prompt, loads change history and chat summaries from existing ledger seams,
-// and reads workspace-safe source excerpts.
+// Plan step of a Flow Mode run. It is a thin context.Background() wrapper
+// around buildFlowContextPackage, kept for the ~30 existing call sites
+// (mostly tests) that predate context propagation. Production code that has a
+// live context (currently behaviorContextProduce) should call
+// BuildFlowContextPackageCtx directly so a future context-aware source can
+// observe caller cancellation/timeout.
+func BuildFlowContextPackage(workspace string, hints FlowContextHints) (FlowContextPackage, error) {
+	return buildFlowContextPackage(context.Background(), workspace, hints, nil)
+}
+
+// BuildFlowContextPackageCtx is BuildFlowContextPackage with an explicit
+// context, for callers (currently behaviorContextProduce) that have a live
+// ctx to propagate so a future context-aware source can observe caller
+// cancellation/timeout.
+func BuildFlowContextPackageCtx(ctx context.Context, workspace string, hints FlowContextHints) (FlowContextPackage, error) {
+	return buildFlowContextPackage(ctx, workspace, hints, nil)
+}
+
+// BuildFlowContextPackageWithSources is BuildFlowContextPackageCtx with an
+// explicit enabled-source-ID list, used when the active flow declares a
+// `contexts.<name>.sources` binding (CP-44 P-4 / Task-194). A nil or empty
+// sourceIDs falls back to the default built-in set, identical to
+// BuildFlowContextPackageCtx.
+func BuildFlowContextPackageWithSources(ctx context.Context, workspace string, hints FlowContextHints, sourceIDs []string) (FlowContextPackage, error) {
+	return buildFlowContextPackage(ctx, workspace, hints, sourceIDs)
+}
+
+// buildFlowContextPackage assembles a deterministic FlowContextPackage for
+// the Plan step of a Flow Mode run. It resolves the feature key from the user
+// prompt (a pre-processing step, not a ContextSource — CP-44 P-2/Task-192
+// T-1, since every source needs the resolved feature key), then runs the
+// enabled ContextSourceRegistry sources and projects their sections onto the
+// package's legacy fields (CP-44 P-3/Task-193 introduces the typed Sections
+// slice on top of this without changing this projection).
+//
+// enabledSourceIDs selects which registered sources run; nil/empty uses
+// defaultContextSourceIDs, reproducing the pre-CP-44 3-step hardcoded
+// retrieval exactly (CP-44 P-4/Task-194 T-1/T-3).
 //
 // A missing catalog, unresolvable feature key, or absent ledger files produce
 // a package with Warnings instead of an error so a Flow Mode run degrades
 // gracefully (CP-41 P-2, Task-168 T-4).
-func BuildFlowContextPackage(workspace string, hints FlowContextHints) (FlowContextPackage, error) {
+func buildFlowContextPackage(ctx context.Context, workspace string, hints FlowContextHints, enabledSourceIDs []string) (FlowContextPackage, error) {
 	pkg := FlowContextPackage{
 		WorkflowRunID: hints.WorkflowRunID,
 		PlanStepRunID: hints.PlanStepRunID,
@@ -87,7 +147,8 @@ func BuildFlowContextPackage(workspace string, hints FlowContextHints) (FlowCont
 	}
 
 	// Step 1: resolve feature key via the existing deterministic resolver —
-	// no vector search, no model call.
+	// no vector search, no model call. This stays inline (not a ContextSource)
+	// because every other source needs the resolved key/confidence as input.
 	dotFP := filepath.Join(workspace, ".flowpilot")
 	catalog, err := featurecatalog.LoadCatalog(dotFP)
 	if err != nil {
@@ -97,22 +158,44 @@ func BuildFlowContextPackage(workspace string, hints FlowContextHints) (FlowCont
 		pkg.FeatureKey, pkg.FeatureConfidence = resolvePackageFeature(hints.UserPrompt, catalog, &pkg.Warnings)
 	}
 
-	// Step 2: load history and discussion only for verified features.
-	// Low / unresolved confidence must NOT inject the wrong feature's history.
-	if pkg.FeatureConfidence == ConfidenceVerified && pkg.FeatureKey != "" {
-		pkg.HistoryBlock, pkg.DiscussionBlock = loadFlowFeatureBlocks(dotFP, pkg.FeatureKey)
-		if pkg.HistoryBlock == "" {
-			pkg.Warnings = append(pkg.Warnings, "no change history found for feature: "+pkg.FeatureKey)
-		}
+	// Step 2: collect the enabled context sources (CP-44 P-2/P-4).
+	ids := enabledSourceIDs
+	if len(ids) == 0 {
+		ids = defaultContextSourceIDs
 	}
+	enrichedHints := hints
+	enrichedHints.Workspace = workspace
+	enrichedHints.FeatureKey = pkg.FeatureKey
+	enrichedHints.FeatureConfidence = pkg.FeatureConfidence
 
-	// Step 3: workspace-safe source excerpts from hints.
-	allPaths := fcpDedup(append(hints.ChangedPaths, hints.ExplicitSourcePaths...))
-	pkg.SourceExcerpts, pkg.Omitted = readSourceExcerpts(workspace, allPaths)
+	sections, sourceWarnings := DefaultContextSourceRegistry().Collect(ctx, ids, enrichedHints)
+	pkg.Sections = sections
+	pkg.Warnings = append(pkg.Warnings, sourceWarnings...)
+	projectContextSections(&pkg, sections)
 
-	// Step 4: deterministic package ID.
+	// Step 3: deterministic package ID.
 	pkg.PackageID = fcpPackageID(hints.WorkflowRunID, hints.PlanStepRunID, pkg.FeatureKey)
 	return pkg, nil
+}
+
+// projectContextSections maps registered-source output onto FlowContextPackage's
+// legacy fields (HistoryBlock/DiscussionBlock/SourceExcerpts/Omitted) so
+// existing consumers (RenderFlowContextPackage/Task-169, BuildAuditDraft/
+// Task-171) keep working unchanged (CP-44 P-3 backward-compat projection).
+func projectContextSections(pkg *FlowContextPackage, sections []FlowContextSection) {
+	for _, section := range sections {
+		switch ContextSourceID(section.SourceType) {
+		case ContextSourceFeatureHistory:
+			pkg.HistoryBlock = section.Body
+		case ContextSourceChatSummary:
+			pkg.DiscussionBlock = section.Body
+		case ContextSourceSourceExcerpt:
+			pkg.SourceExcerpts = section.Excerpts
+		}
+		// Omitted is collected across every source (not just source.excerpt) so
+		// a future source's skipped content is still surfaced (SD-22 D-7).
+		pkg.Omitted = append(pkg.Omitted, section.Omitted...)
+	}
 }
 
 // resolvePackageFeature resolves the feature key from a user prompt. Returns
@@ -130,20 +213,6 @@ func resolvePackageFeature(prompt string, catalog *featurecatalog.Catalog, warni
 		return key, ConfidenceLow
 	}
 	return top.Key, ConfidenceVerified
-}
-
-// loadFlowFeatureBlocks loads the HistorySlot and ChatSummarySlot for featureKey
-// from .flowpilot. Returns ("", "") when ledgers are unavailable — never errors.
-func loadFlowFeatureBlocks(dotFP, featureKey string) (history, discussion string) {
-	ledger, err := changeledger.New(dotFP)
-	if err != nil {
-		return "", ""
-	}
-	history = strings.TrimSpace(featurecatalog.HistorySlot(featureKey, ledger))
-	if summaryLedger, err := changeledger.NewChatSummaryLedger(dotFP); err == nil {
-		discussion = strings.TrimSpace(featurecatalog.ChatSummarySlot(featureKey, summaryLedger))
-	}
-	return history, discussion
 }
 
 // readSourceExcerpts reads workspace-safe source file excerpts, capping each
@@ -247,6 +316,7 @@ func RenderFlowContextPackage(pkg FlowContextPackage) string {
 			sb.WriteString("_(excerpt truncated)_\n")
 		}
 	}
+	renderGenericSections(&sb, pkg.Sections)
 	if len(pkg.Warnings) > 0 {
 		sb.WriteString("\n### Warnings\n\n")
 		for _, w := range pkg.Warnings {
@@ -260,6 +330,32 @@ func RenderFlowContextPackage(pkg FlowContextPackage) string {
 		}
 	}
 	return sb.String()
+}
+
+// renderGenericSections renders any section whose SourceType is not one of
+// the three built-in types already rendered above by name (feature.history/
+// chat.summary/source.excerpt) — so a newly registered ContextSource (CP-44
+// P-3/P-4, e.g. a future MCP-backed or Canonical Head source) appears in the
+// prompt without RenderFlowContextPackage needing a code change per source.
+// Sections with empty Body are skipped (nothing to show); Omitted/Warnings on
+// a section are still surfaced via the caller's existing Warnings/Omitted
+// blocks (projectContextSections merges them onto the package).
+func renderGenericSections(sb *strings.Builder, sections []FlowContextSection) {
+	for _, s := range sections {
+		switch ContextSourceID(s.SourceType) {
+		case ContextSourceFeatureHistory, ContextSourceChatSummary, ContextSourceSourceExcerpt:
+			continue // already rendered by name above
+		}
+		if strings.TrimSpace(s.Body) == "" {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("\n### %s\n\n", s.SourceType))
+		if s.SourceRef != "" {
+			sb.WriteString(fmt.Sprintf("_Source: %s_\n\n", s.SourceRef))
+		}
+		sb.WriteString(s.Body)
+		sb.WriteString("\n")
+	}
 }
 
 // PersistFlowContextPackage emits an EventFlowContextPackage event so the

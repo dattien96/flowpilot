@@ -52,6 +52,12 @@ type BehaviorInput struct {
 	Prompt        string
 	RawArgs       map[string]any
 	Payload       map[string]any
+	// ContextSourceIDs is the enabled context-source set for a context.produce
+	// dispatch (CP-44 P-4 / Task-194), resolved by the caller from the active
+	// flow's declared `contexts.<name>.sources` binding. Empty means "use the
+	// runner's default built-in set" — most callers (and every pre-Task-194
+	// dispatch) leave this unset and get the pre-CP-44 behavior unchanged.
+	ContextSourceIDs []string
 }
 
 // BehaviorOutput is the generic result a behavior handler returns. The

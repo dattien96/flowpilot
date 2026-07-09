@@ -580,7 +580,39 @@ export type ProviderEventDTO =
       gateOptions?: string[];
       /** Specifically-identified regressed test names (Task-155). May be ["suite_regressed"]. */
       gateRegressedTests?: string[];
+    })
+  | (ProviderEventBaseDTO & {
+      /** BUG-243 F-3: rag-harness's Audit step draft, produced by the real
+       *  BuildAuditDraft (Task-171) once validate/audit are wired into the
+       *  live dispatch path (F-0/F-1/F-2). Never implies a write/commit
+       *  happened — this is strictly an inspectable draft. */
+      type: "flow_audit_draft";
+      flowAuditDraft: FlowAuditDraftDTO;
     });
+
+/** Mirrors the Go FlowAuditDraft struct (flow_audit_draft.go) field-for-field. */
+export interface FlowAuditDraftDTO {
+  workflowRunId: string;
+  planStepId?: string;
+  codingStepId?: string;
+  testingStepId?: string;
+  auditStepId?: string;
+  originalPackageId?: string;
+  featureKey: string;
+  sourceDocId?: string;
+  changeType?: string;
+  summary?: string;
+  whatChanged?: string;
+  whyChanged?: string;
+  changedFiles?: string[];
+  validationCommands?: string[];
+  validationResult: string;
+  residualNotes?: string;
+  commitMessage?: string;
+  changeLedgerBlock?: string;
+  /** "ready" | "blocked_missing_feature_key" | "blocked_validation_failed" */
+  status: string;
+}
 
 export type ProviderEventType = ProviderEventDTO["type"];
 

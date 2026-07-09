@@ -9,7 +9,6 @@ import type {
   StorageDriverRepository,
 } from "../domain/adminRepositories";
 import type {
-  ArtifactDefinition,
   Integration,
   IntegrationType,
   LocalRunnerArtifact,
@@ -150,12 +149,10 @@ export class RunnerAdminRepository implements
 
 export class CompositeArtifactRepository implements ArtifactRepository {
   constructor(
-    private readonly supabaseRepository: Pick<ArtifactRepository, "listDefinitions" | "saveDefinition" | "listRuns">,
+    private readonly supabaseRepository: Pick<ArtifactRepository, "listRuns">,
     private readonly runnerRepository: Pick<ArtifactRepository, "listLocalArtifacts" | "getStorageDriver" | "saveStorageDriver">,
   ) {}
 
-  listDefinitions() { return this.supabaseRepository.listDefinitions(); }
-  saveDefinition(definition: ArtifactDefinition) { return this.supabaseRepository.saveDefinition(definition); }
   listRuns(projectId?: string) { return this.supabaseRepository.listRuns(projectId); }
   listLocalArtifacts() { return this.runnerRepository.listLocalArtifacts(); }
   getStorageDriver() { return this.runnerRepository.getStorageDriver(); }

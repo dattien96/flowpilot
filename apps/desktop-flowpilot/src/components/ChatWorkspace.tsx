@@ -562,6 +562,45 @@ function GateBlockModal(): React.ReactElement | null {
   );
 }
 
+// BUG-267: opening/restoring history stamps `unavailableReason` on the row/session but never
+// told the user why — this modal fires immediately from the same catch path so the failure is
+// visible at click time instead of only in a disabled row's tooltip.
+function HistoryOpenErrorModal(): React.ReactElement | null {
+  const historyOpenError = useStore((s) => s.historyOpenError);
+  const dismissHistoryOpenError = useStore((s) => s.dismissHistoryOpenError);
+
+  if (!historyOpenError) return null;
+
+  const provider = historyOpenError.providerKey ? providerLabel(historyOpenError.providerKey) : "This provider";
+  const detail =
+    historyOpenError.code === "account_unavailable"
+      ? `${provider} isn't set up on this machine. This chat was created with a ${provider} account that isn't available here.`
+      : `${provider} is available on this machine, but the active account isn't signed in. Sign in to the account this chat was created with, then try again.`;
+
+  return (
+    <div
+      className="account-switch-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Can't open this chat"
+      onClick={dismissHistoryOpenError}
+    >
+      <div className="account-switch-modal gate-block-modal" onClick={(e) => e.stopPropagation()}>
+        <p className="gate-block-title">
+          <span className="gate-block-icon" aria-hidden="true">⚠️</span>
+          Can&apos;t open this chat
+        </p>
+        <p className="gate-block-detail">{detail}</p>
+        <div className="account-switch-actions">
+          <button type="button" className="project-history-confirm-ok" onClick={dismissHistoryOpenError}>
+            Got it
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ChatWorkspace({
   leftSidebarVisible,
   rightSidebarVisible,
@@ -665,6 +704,7 @@ export function ChatWorkspace({
       <ProviderSwitchModal />
       <AccountSwitchModal />
       <GateBlockModal />
+      <HistoryOpenErrorModal />
       {leftSidebarVisible && (
         <>
           <aside className="sidebar sidebar-left">

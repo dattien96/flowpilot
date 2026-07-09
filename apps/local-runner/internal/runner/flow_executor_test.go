@@ -43,6 +43,57 @@ func TestEntryDelegateNodesEmptyWhenNoMatch(t *testing.T) {
 	}
 }
 
+// TestEntryDelegateNodesExcludesEdgeOnlyDependencyTarget reproduces a real
+// live-test bug (found 2026-07-09 diagnosing rag-harness via
+// .flowpilot/logs/features/agent-flow-engine): rag-harness.yaml's "implement"
+// node declares its dependency on "context" purely through the edges list
+// (`context -> implement, when: done, kind: forward`), never a dependsOn
+// field. entryDelegateNodes used to check dependsOn only, so it wrongly
+// classified "implement" as a zero-dependency entry delegate node —
+// startResolvedFlow then spawned the coder directly and skipped
+// context.produce (and startInlineEntryChain's step-status wiring)
+// entirely. The fix: a node with an incoming FORWARD edge is never an entry,
+// regardless of its own dependsOn list.
+func TestEntryDelegateNodesExcludesEdgeOnlyDependencyTarget(t *testing.T) {
+	def := agentpack.FlowDefinition{
+		Nodes: []agentpack.FlowNode{
+			{ID: "context", Behavior: "context.produce"},
+			{ID: "implement", Behavior: "agent.delegate", Agent: "agents/coder.md"}, // no DependsOn — matches rag-harness.yaml verbatim
+		},
+		Edges: []agentpack.FlowEdge{
+			{From: "context", To: "implement", When: "done", Kind: "forward"},
+		},
+	}
+	if entries := entryDelegateNodes(def); len(entries) != 0 {
+		t.Fatalf("entryDelegateNodes = %#v, want none (implement has an incoming forward edge from context)", entries)
+	}
+	entries := entryNodesNoDeps(def)
+	if len(entries) != 1 || entries[0].ID != "context" {
+		t.Fatalf("entryNodesNoDeps = %#v, want exactly [context]", entries)
+	}
+}
+
+// TestEntryDelegateNodesBackEdgeDoesNotDisqualifyEntry verifies the fix does
+// NOT break review-loop's own shape: "coder" has an incoming BACK edge from
+// "synthesis" (the continue-loop), which must never disqualify it as the
+// entry node — only a FORWARD edge does.
+func TestEntryDelegateNodesBackEdgeDoesNotDisqualifyEntry(t *testing.T) {
+	def := agentpack.FlowDefinition{
+		Nodes: []agentpack.FlowNode{
+			{ID: "coder", Behavior: "agent.delegate", Agent: "agents/coder.md"},
+			{ID: "synthesis", Behavior: "hub.inline", Agent: "agents/synthesizer.md"},
+		},
+		Edges: []agentpack.FlowEdge{
+			{From: "coder", To: "synthesis", When: "done", Kind: "forward"},
+			{From: "synthesis", To: "coder", When: "continue", Kind: "back"},
+		},
+	}
+	entries := entryDelegateNodes(def)
+	if len(entries) != 1 || entries[0].ID != "coder" {
+		t.Fatalf("entries = %#v, want exactly [coder] (a back edge must not disqualify it)", entries)
+	}
+}
+
 func TestForwardDoneTargetsFindsFanOutTargets(t *testing.T) {
 	edges := []agentpack.FlowEdge{
 		{From: "coder", To: "reviewer_correctness", When: "done", Kind: "forward"},
@@ -1356,6 +1407,17 @@ func TestStartResolvedFlowStartsInlineEntryFlow(t *testing.T) {
 	if len(svc.runs[parent.RunID].activeFlowEdges) == 0 {
 		t.Fatal("expected activeFlowEdges to be tracked after an inline-entry flow start")
 	}
+	// BUG (found 2026-07-09 live-testing rag-harness): the assertions above
+	// (a lone "implement" child + non-empty activeFlowEdges) are satisfied
+	// EQUALLY by the correct path (context.produce runs, then implement is
+	// spawned) and by the bug (entryDelegateNodes wrongly treats "implement"
+	// itself as the entry, skipping context.produce entirely) — this test
+	// passed even while that bug was live. planContextPackage is only ever
+	// set by startInlineEntryChain after a successful context.produce
+	// dispatch, so asserting it here closes that exact blind spot.
+	if svc.runs[parent.RunID].planContextPackage == nil {
+		t.Fatal("expected planContextPackage to be set — context.produce must run before implement is spawned, not be bypassed by it")
+	}
 }
 
 // TestStartResolvedFlowSpawnsPackAgentEvenWhenProjectShadowsItsName is the
@@ -1536,6 +1598,70 @@ func TestCustomUserOwnedFlowResolvesSpawnsEntryAndAdvancesEdge(t *testing.T) {
 	waitLoop(t, "final_check auto-spawned once drafting's forward done edge advanced", 3*time.Second, func() bool {
 		return countChildrenWithLabel(svc, parent.RunID, "final_check") == 1
 	})
+}
+
+// TestResolveWorkflowFlowRefSurfacesArtifactBindingValidationError is the
+// regression test for BUG-270: a workflowID that resolves to a REAL flow
+// definition which then fails ValidateFlowArtifactBindings (BUG-269's own
+// case — an unknown source id inside a bound context_artifact.v1 instance)
+// must not bail the exact same silent way as a workflowID that isn't a flow
+// at all. resolveWorkflowFlowRef still returns ok=false either way (its
+// signature is unchanged, so every other caller/test keeps working), but it
+// must ALSO stash the validation error on the run so handleStartTurn can
+// surface it instead of silently falling through to a normal chat turn.
+func TestResolveWorkflowFlowRefSurfacesArtifactBindingValidationError(t *testing.T) {
+	const badFlowRef = "55555555-5555-5555-5555-555555555555"
+
+	svc, _ := newTestServer(t)
+	store := newFakeFlowDefinitionStore()
+	store.byRef[badFlowRef] = FlowDefinitionRecord{
+		FlowRef: badFlowRef,
+		Source:  "supabase_user_definition",
+		Definition: agentpack.FlowDefinition{
+			ID: "bad-context-binding-flow",
+			Nodes: []agentpack.FlowNode{
+				{
+					ID:       "context",
+					Behavior: "context.produce",
+					ArtifactBindings: []agentpack.FlowArtifactBinding{
+						{
+							Direction:          "output",
+							ArtifactInstanceID: "history-only-context",
+							Required:           true,
+							ArtifactTypeID:     ArtifactTypeContext,
+							ConfigJSON:         map[string]any{"sources": []any{"totally.unknown.source"}},
+						},
+					},
+				},
+			},
+		},
+	}
+	svc.SetFlowDefinitionStore(store)
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	svc.runs[parent.RunID].workflowID = badFlowRef
+	svc.mu.Unlock()
+
+	if _, ok := svc.resolveWorkflowFlowRef(context.Background(), parent.RunID); ok {
+		t.Fatal("resolveWorkflowFlowRef returned true for a flow definition that fails artifact-binding validation")
+	}
+
+	invalidErr := svc.takePendingFlowRefInvalidErr(parent.RunID)
+	if invalidErr == nil {
+		t.Fatal("expected resolveWorkflowFlowRef to stash a validation error for handleStartTurn to surface, got nil")
+	}
+	if !strings.Contains(invalidErr.Error(), "totally.unknown.source") {
+		t.Fatalf("stashed error should name the offending source id, got: %v", invalidErr)
+	}
+
+	// One-shot: a second read must not re-surface the same error for a later turn.
+	if again := svc.takePendingFlowRefInvalidErr(parent.RunID); again != nil {
+		t.Fatalf("takePendingFlowRefInvalidErr should clear on read, got a second non-nil error: %v", again)
+	}
 }
 
 // TestCustomFlowWithThreeReviewersJoinsAfterAllComplete directly answers a

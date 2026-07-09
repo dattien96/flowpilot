@@ -397,6 +397,78 @@ test("openHistoryRun treats active-account-not-signed-in as unavailable instead 
   const state = useStore.getState();
   assert.equal(state.runId, "current-run");
   assert.equal(state.runHistory[0]?.unavailableReason, "can't open — the active account isn't signed in");
+  assert.deepEqual(state.historyOpenError, {
+    code: "account_not_signed_in",
+    message: "can't open — the active account isn't signed in",
+    providerKey: "codex",
+  });
+});
+
+// BUG-267: account_not_signed_in / account_unavailable were previously downgraded to a silent
+// unavailableReason stamp with no active feedback — these assert the modal-trigger state fires
+// alongside it, for both the local-history and remote-restore paths.
+test("openHistoryRun surfaces a historyOpenError modal state on account_unavailable", async () => {
+  seedStore(
+    makeClient({
+      resumeRun: async () => {
+        throw new RunnerApiError(409, "account_unavailable", "active account home not found");
+      },
+    }),
+    [
+      {
+        runId: "run-1",
+        projectId: "project-1",
+        providerKey: "claude",
+        status: "completed",
+        startedAt: "2026-06-17T10:00:00Z",
+        updatedAt: "2026-06-17T10:05:00Z",
+      },
+    ],
+  );
+
+  await useStore.getState().openHistoryRun("run-1");
+
+  const state = useStore.getState();
+  assert.deepEqual(state.historyOpenError, {
+    code: "account_unavailable",
+    message: "active account home not found",
+    providerKey: "claude",
+  });
+});
+
+test("openHistoryRun does not set historyOpenError for non-provider-account failures", async () => {
+  seedStore(
+    makeClient({
+      resumeRun: async () => {
+        throw new RunnerApiError(409, "session_unavailable", "session data not found on this machine");
+      },
+    }),
+    [
+      {
+        runId: "run-1",
+        projectId: "project-1",
+        providerKey: "codex",
+        status: "completed",
+        startedAt: "2026-06-17T10:00:00Z",
+        updatedAt: "2026-06-17T10:05:00Z",
+      },
+    ],
+  );
+
+  await useStore.getState().openHistoryRun("run-1");
+
+  assert.equal(useStore.getState().historyOpenError, undefined);
+});
+
+test("dismissHistoryOpenError clears the modal state", () => {
+  seedStore(makeClient(), []);
+  useStore.setState({
+    historyOpenError: { code: "account_not_signed_in", message: "can't open — the active account isn't signed in", providerKey: "codex" },
+  });
+
+  useStore.getState().dismissHistoryOpenError();
+
+  assert.equal(useStore.getState().historyOpenError, undefined);
 });
 
 test("openHistoryRun clears unavailableReason after a successful open", async () => {
@@ -1824,6 +1896,37 @@ test("restoreRemoteChatSession marks remote entries unavailable on typed restore
   await useStore.getState().restoreRemoteChatSession(summary);
 
   assert.equal(useStore.getState().remoteChatSessions[0]?.unavailableReason, "remote provider session file failed integrity validation");
+  // Not a provider-account failure — must not trigger the BUG-267 modal (V-4).
+  assert.equal(useStore.getState().historyOpenError, undefined);
+});
+
+test("restoreRemoteChatSession surfaces a historyOpenError modal state on account_not_signed_in (BUG-267)", async () => {
+  const summary: RemoteChatSessionSummary = {
+    runId: "run-remote",
+    projectId: "project-1",
+    providerKey: "claude",
+    sourceMachineId: "mch_remote",
+    sourceRunId: "run-remote",
+  };
+  seedStore(
+    makeClient({
+      restoreChatRun: async () => {
+        throw new RunnerApiError(409, "account_not_signed_in", "can't open — the active account isn't signed in");
+      },
+    }),
+    [],
+  );
+  useStore.setState({ remoteChatSessions: [summary] });
+
+  await useStore.getState().restoreRemoteChatSession(summary);
+
+  const state = useStore.getState();
+  assert.equal(state.remoteChatSessions[0]?.unavailableReason, "can't open — the active account isn't signed in");
+  assert.deepEqual(state.historyOpenError, {
+    code: "account_not_signed_in",
+    message: "can't open — the active account isn't signed in",
+    providerKey: "claude",
+  });
 });
 
 // ── Account-switch tests ───────────────────────────────────────────────────

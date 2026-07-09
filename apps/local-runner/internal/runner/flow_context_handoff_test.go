@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 // planCodingSteps returns a two-step workflow: plan → coding.
@@ -320,5 +321,69 @@ func TestMaybeClearPlanContextIsNoOpForNonPlanStep(t *testing.T) {
 	svc.maybeClearPlanContextForPlanStep(context.Background(), "run-noop", rs, "step-testing")
 	if rs.planContextPackage == nil {
 		t.Error("planContextPackage must not be cleared for a Testing step")
+	}
+}
+
+// TestFlowCodingPromptSpawnWrappedDoesNotDuplicateHistory is the regression
+// test for a live bug found 2026-07-09 testing rag-harness end to end: a
+// freshly spawned Coding agent's turn-1 prompt is
+// startInlineEntryChain's package-embedded prompt (flowContextHandoffPrefix
+// at position 0 of THAT string) further wrapped by composeAgentSpawnPrompt
+// with [agent system prompt] + [FlowPilot sub-agent identity line] placed
+// AHEAD of it — so by the time injectFeatureHistoryPrompt runs, the marker
+// no longer sits at position 0 of the full prompt. isFlowContextHandoff used
+// strings.HasPrefix, missed the wrapped marker, and re-injected a second
+// "Prior work on X" feature-history block ahead of the one already inside
+// the rendered package. Runs the real rag-harness flow end to end
+// (startResolvedFlow -> startInlineEntryChain -> spawnChildRun -> the
+// spawned coder's own turn-1 provider prompt) rather than calling
+// injectFeatureHistoryPrompt in isolation, so it actually exercises the
+// wrapped shape the isolated unit tests above never construct.
+func TestFlowCodingPromptSpawnWrappedDoesNotDuplicateHistory(t *testing.T) {
+	workspace, _ := fcpFixture(t)
+
+	var captured string
+	captureDone := make(chan struct{})
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if strings.Contains(req.Prompt, "agent-flow-engine") {
+					captured = req.Prompt
+					close(captureDone)
+				}
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "ok"})
+				return nil
+			})
+		},
+	})
+
+	svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	svc.runs[parent.RunID].workspaceCwd = workspace
+	svc.mu.Unlock()
+
+	svc.startResolvedFlow(context.Background(), parent.RunID, "flowpilot-core-flow-pack/rag-harness", "agent-flow-engine: fix the thing")
+
+	select {
+	case <-captureDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("coder child turn did not fire within 3s")
+	}
+
+	if got := strings.Count(captured, "Prior work on"); got != 1 {
+		t.Errorf(`"Prior work on" appears %d times in the coder's turn-1 prompt, want 1 (duplicated feature history): %s`, got, captured)
+	}
+	if got := strings.Count(captured, flowContextHandoffPrefix); got != 1 {
+		t.Errorf("%q appears %d times, want 1: %s", flowContextHandoffPrefix, got, captured)
+	}
+	if !strings.Contains(captured, "## Flow Context Package") {
+		t.Error("coder's turn-1 prompt missing the rendered Flow Context Package")
 	}
 }
