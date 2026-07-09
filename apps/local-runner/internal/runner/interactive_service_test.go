@@ -3963,6 +3963,51 @@ func TestProjectRunHistoryExcludesResumedChildRunsAfterReopen(t *testing.T) {
 	}
 }
 
+func TestProjectRunHistoryKeepsCompletedStatusWhenReopeningLegacyFlowRun(t *testing.T) {
+	store, err := NewLocalFileSessionStore(filepath.Join(t.TempDir(), ".flowpilot", "chats"))
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID:             "flow-parent",
+		ProjectID:         "proj-web",
+		WorkflowID:        "wf-feature",
+		ProviderSessionID: "thread-parent",
+		ProviderKey:       ProviderKeyClaude,
+		Status:            RunStatusWaitingQuestion,
+		StartedAt:         now,
+		UpdatedAt:         now,
+		LastPrompt:        "parent prompt",
+		LastMessage:       "done",
+		RunKind:           "workflow",
+		AutoOrchestrate:   true,
+		PendingAgentContext: []string{
+			"[flow-engine] An agent has already been spawned to work on this request.",
+			"Flow completed. # Flow Audit Draft",
+		},
+		LoopState: AgentLoopState{Status: "done", Round: 0, Cap: 3, RoundCap: 3, Mode: "explicit"},
+		ActiveFlowNodes: []agentpack.FlowNode{
+			{ID: "coder", Behavior: "agent.delegate", Agent: "agents/coder-agent.md"},
+			{ID: "synthesis", Behavior: "hub.inline", Agent: "agents/synthesizer.md", DependsOn: []string{"coder"}},
+		},
+	}); err != nil {
+		t.Fatalf("seed parent flow session: %v", err)
+	}
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("flow-parent"); apiErr != nil {
+		t.Fatalf("resumeRun(flow-parent): %v", apiErr)
+	}
+
+	history := svc.projectRunHistory("proj-web")
+	if len(history) != 1 {
+		t.Fatalf("history len = %d, want 1", len(history))
+	}
+	if history[0].Status != RunStatusCompleted {
+		t.Fatalf("history status = %q, want completed after reopening a settled flow run with stale waiting_question status", history[0].Status)
+	}
+}
+
 func TestReconstructRunPreservesChildMetadataForResumedAgentRun(t *testing.T) {
 	svc, _ := newTestServer(t)
 	rs, apiErr := svc.reconstructRun(ProviderSessionState{

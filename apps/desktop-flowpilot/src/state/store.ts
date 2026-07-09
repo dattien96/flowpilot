@@ -72,6 +72,17 @@ interface RunSnapshot {
   lastEventSeq?: number;
 }
 
+function sanitizePendingSnapshotState(
+  status: RunStatus,
+  pendingApprovals: PendingApproval[],
+  pendingQuestions: PendingQuestion[],
+): { pendingApprovals: PendingApproval[]; pendingQuestions: PendingQuestion[] } {
+  return {
+    pendingApprovals: status === "waiting_approval" ? pendingApprovals : [],
+    pendingQuestions: status === "waiting_question" ? pendingQuestions : [],
+  };
+}
+
 function applyAgentGraphSnapshot(snapshot: AgentGraphSnapshot): Partial<AppState> {
   return {
     agentRuns: snapshot.runs,
@@ -665,7 +676,7 @@ export const useStore = create<AppState>((set, get) => ({
       mainRunId,
       activeAgentRunId: undefined,
       workspaceMainView: "chat",
-      ...restore,
+      ...restoreRunSnapshot(restore),
       _streamRunSeq: streamRunSeq,
     });
     void consumeAgentStream(
@@ -2380,12 +2391,13 @@ function runErrorMessage(err: unknown): string {
 }
 
 function snapshotRunState(state: AppState): RunSnapshot {
+  const pending = sanitizePendingSnapshotState(state.status, state.pendingApprovals, state.pendingQuestions);
   return {
     timeline: state.timeline,
     artifacts: state.artifacts,
     status: state.status,
-    pendingApprovals: state.pendingApprovals,
-    pendingQuestions: state.pendingQuestions,
+    pendingApprovals: pending.pendingApprovals,
+    pendingQuestions: pending.pendingQuestions,
     latestTokenUsage: state.latestTokenUsage,
     lastTurnInput: state.lastTurnInput,
     recoverable: state.recoverable,
@@ -2396,12 +2408,13 @@ function snapshotRunState(state: AppState): RunSnapshot {
 }
 
 function restoreRunSnapshot(snapshot: RunSnapshot): Partial<AppState> {
+  const pending = sanitizePendingSnapshotState(snapshot.status, snapshot.pendingApprovals, snapshot.pendingQuestions);
   return {
     timeline: snapshot.timeline,
     artifacts: snapshot.artifacts,
     status: snapshot.status,
-    pendingApprovals: snapshot.pendingApprovals,
-    pendingQuestions: snapshot.pendingQuestions,
+    pendingApprovals: pending.pendingApprovals,
+    pendingQuestions: pending.pendingQuestions,
     latestTokenUsage: snapshot.latestTokenUsage,
     lastTurnInput: snapshot.lastTurnInput,
     recoverable: snapshot.recoverable,

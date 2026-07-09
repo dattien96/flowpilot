@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { QuestionOption } from "@/types/contract";
+import { getRunnerBaseUrl } from "@/client/createRunnerClient";
 import { useStore } from "@/state/store";
 import { resolveQuestionManualSubmit } from "./questionAnswer";
 
@@ -12,6 +13,7 @@ interface Props {
 }
 
 const valueOf = (o: QuestionOption): string => o.value ?? o.label;
+const GOOGLE_DRIVE_PICKER_OPTION = "__google_drive_picker__";
 
 // The "popup with options" UX (the AskUserQuestion-style card). Backed in Part B
 // by the user-interaction bridge (04-04) — both the model-driven `ask_user` MCP
@@ -21,6 +23,36 @@ export function QuestionCard({ questionId, prompt, options, multiSelect, answer 
   const resolved = answer !== undefined;
   const [selected, setSelected] = useState<string[]>([]);
   const [other, setOther] = useState("");
+  const pickerMessageCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(
+    () => () => {
+      pickerMessageCleanupRef.current?.();
+      pickerMessageCleanupRef.current = null;
+    },
+    [],
+  );
+
+  const openGoogleDrivePicker = () => {
+    const base = getRunnerBaseUrl();
+    if (!base) return;
+    const popup = window.open(
+      `${base}/client/questions/${encodeURIComponent(questionId)}/google-drive-picker`,
+      "_blank",
+      "width=980,height=820",
+    );
+    if (!popup) return;
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type !== "flowpilot-google-drive-question-picked") return;
+      if (event.data?.questionId !== questionId || typeof event.data?.choice !== "string") return;
+      window.removeEventListener("message", handleMessage);
+      pickerMessageCleanupRef.current = null;
+      void submit(questionId, event.data.choice);
+    };
+    pickerMessageCleanupRef.current?.();
+    window.addEventListener("message", handleMessage);
+    pickerMessageCleanupRef.current = () => window.removeEventListener("message", handleMessage);
+  };
 
   const toggle = (value: string) => {
     if (multiSelect) {
@@ -29,6 +61,10 @@ export function QuestionCard({ questionId, prompt, options, multiSelect, answer 
   };
 
   const answerOption = (value: string) => {
+    if (value === GOOGLE_DRIVE_PICKER_OPTION) {
+      openGoogleDrivePicker();
+      return;
+    }
     if (!multiSelect) {
       void submit(questionId, value);
       return;

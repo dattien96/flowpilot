@@ -55,15 +55,12 @@ func resolveArtifactBoundContextSources(node agentpack.FlowNode) ([]string, bool
 	return nil, false
 }
 
-// resolveArtifactBoundMCPDriverRef reads config_json.mcpDriverFileId off the
-// same OUTPUT context_artifact.v1 binding resolveArtifactBoundContextSources
-// reads config_json.sources from (Task-204 Q-2): a flow that enables
-// "mcp.driver" via that binding's sources list configures WHICH Google Drive
-// file id it reads from the same instance's config, rather than a separate
-// per-step UI surface. ok=false (no bound instance, or no
-// mcpDriverFileId key set) means "mcp.driver has nothing configured" — the
-// same as never enabling it (mcpDriverSource.Fetch already treats an empty
-// driverRef as a normal, warning-free no-op).
+// resolveArtifactBoundMCPDriverRef reads the legacy optional
+// config_json.mcpDriverFileId off the same OUTPUT context_artifact.v1 binding
+// resolveArtifactBoundContextSources reads config_json.sources from. New runs
+// may ask for the file URL/id at runtime instead; this remains only as a
+// backward-compatible default for existing saved instances. ok=false means no
+// legacy default is configured.
 func resolveArtifactBoundMCPDriverRef(node agentpack.FlowNode) (string, bool) {
 	for _, b := range node.ArtifactBindings {
 		if b.Direction != "output" || b.ArtifactTypeID != ArtifactTypeContext {

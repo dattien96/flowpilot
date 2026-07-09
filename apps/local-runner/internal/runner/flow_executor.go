@@ -328,14 +328,19 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 		return false
 	}
 
-	mcpDriverRef, _ := resolveArtifactBoundMCPDriverRef(entry)
+	sourceIDs := resolveEnabledContextSourceIDs(def, entry)
+	mcpDriverTarget, err := s.resolveMCPDriverTargetForRun(ctx, parentRunID, entry, sourceIDs)
+	if err != nil {
+		log.Printf("[flow-executor] flow %q inline entry node %q failed to resolve mcp.driver target: %v", flowRef, entry.ID, err)
+		return false
+	}
+	contextSourceIDs := filterString(sourceIDs, string(ContextSourceMCPDriver))
 	out, err := DefaultBehaviorRegistry().Dispatch(ctx, canonical, BehaviorInput{
 		NodeID:           entry.ID,
 		WorkflowRunID:    parentRunID,
 		WorkspaceCwd:     s.workspaceCwdFor(parentRunID),
 		Prompt:           userPrompt,
-		ContextSourceIDs: resolveEnabledContextSourceIDs(def, entry),
-		MCPDriverRef:     mcpDriverRef,
+		ContextSourceIDs: contextSourceIDs,
 	})
 	if err != nil {
 		log.Printf("[flow-executor] flow %q inline entry node %q failed: %v", flowRef, entry.ID, err)
@@ -383,6 +388,7 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 			}
 		}
 	}
+	prompt = appendGoogleDriveTargetPrompt(prompt, mcpDriverTarget)
 	// CP-45/SD-23 D-8/D-11 (Task-202): append any non-context artifact bound
 	// to the delegate target's input (e.g. file_artifact.v1) — proves the
 	// framework's cross-step I/O beyond context without adding a new
@@ -429,6 +435,105 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 
 	s.notifyHubFlowStarted(parentRunID)
 	return true
+}
+
+func (s *InteractiveService) resolveMCPDriverTargetForRun(ctx context.Context, parentRunID string, node agentpack.FlowNode, sourceIDs []string) (string, error) {
+	legacyRef, _ := resolveArtifactBoundMCPDriverRef(node)
+	legacyRef = strings.TrimSpace(legacyRef)
+	if !containsString(sourceIDs, string(ContextSourceMCPDriver)) {
+		return "", nil
+	}
+	if legacyRef != "" {
+		return "file:" + legacyRef, nil
+	}
+	choice, apiErr := s.AskWorkflowQuestion(
+		ctx,
+		parentRunID,
+		"Google Drive context is enabled for this run. Open the picker to choose a Google Drive file or folder for this run, or skip Drive context this time.",
+		[]QuestionOption{
+			{
+				Label:       "Open Google Drive Picker",
+				Value:       "__google_drive_picker__",
+				Description: "Choose a Drive file or folder for this run.",
+			},
+			{
+				Label:       "Skip Google Drive",
+				Value:       "__skip__",
+				Description: "Run this flow without Google Drive context this time.",
+			},
+		},
+		false,
+	)
+	if apiErr != nil {
+		if apiErr.code == "question_expired" || apiErr.code == "interrupted" {
+			return "", nil
+		}
+		return "", apiErr
+	}
+	if len(choice) == 0 {
+		return "", nil
+	}
+	return normalizeGoogleDriveTarget(choice[0]), nil
+}
+
+func normalizeGoogleDriveTarget(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "__skip__" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "file:") || strings.HasPrefix(raw, "folder:") {
+		return raw
+	}
+	return "file:" + raw
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if strings.TrimSpace(item) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func filterString(items []string, target string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item) == target {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func appendGoogleDriveTargetPrompt(prompt, target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return prompt
+	}
+	kind := "file"
+	id := target
+	if strings.HasPrefix(target, "folder:") {
+		kind = "folder"
+		id = strings.TrimPrefix(target, "folder:")
+	} else if strings.HasPrefix(target, "file:") {
+		id = strings.TrimPrefix(target, "file:")
+	}
+	note := "\n\nGoogle Drive runtime target for this run:\n" +
+		"- kind: " + kind + "\n" +
+		"- id: " + id + "\n\n" +
+		"Use Google Drive MCP tools to inspect only this selected target when Drive context is needed.\n"
+	if kind == "folder" {
+		note += "Start with `listFolder` on the selected folder, then read only relevant files inside it.\n"
+	} else {
+		note += "Read the selected file directly with the Google Drive document-read tools.\n"
+	}
+	note += "Do not search other Drive locations unless the user explicitly asks.\n"
+	return prompt + note
 }
 
 // nodeHasIncomingForwardEdge reports whether any FORWARD edge targets

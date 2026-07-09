@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -54,6 +55,13 @@ func TestWorkflowDrivenQuestion(t *testing.T) {
 	if len(r.choice) != 1 || r.choice[0] != "yes" {
 		t.Fatalf("choice = %v, want [yes]", r.choice)
 	}
+	snapshot := getSnapshot(t, srv.URL, runID)
+	if snapshot.Status != RunStatusRunning {
+		t.Fatalf("run status after answer = %s, want running", snapshot.Status)
+	}
+	if snapshot.PendingQuestion != nil {
+		t.Fatalf("pending question after answer = %+v, want nil", snapshot.PendingQuestion)
+	}
 }
 
 func TestWorkflowDrivenQuestionExpires(t *testing.T) {
@@ -62,6 +70,72 @@ func TestWorkflowDrivenQuestionExpires(t *testing.T) {
 	_, e := svc.AskWorkflowQuestion(context.Background(), runID, "q?", []QuestionOption{{Label: "a", Value: "a"}}, false)
 	if e == nil || e.code != "question_expired" {
 		t.Fatalf("expected question_expired, got %v", e)
+	}
+}
+
+func TestWorkflowDrivenQuestionAnswerPersistsRunningStatus(t *testing.T) {
+	store, err := NewLocalFileSessionStore(filepath.Join(t.TempDir(), ".flowpilot", "chats"))
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyClaude,
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, _ TurnBridge) error {
+				return nil
+			})
+		},
+	})
+	svc := newInteractiveService(reg, newInteractiveCatalog(), store)
+	handle, createErr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyClaude})
+	if createErr != nil {
+		t.Fatalf("createRun: %v", createErr)
+	}
+
+	resCh := make(chan *apiErr, 1)
+	go func() {
+		_, e := svc.AskWorkflowQuestion(context.Background(), handle.RunID, "Use Drive?", []QuestionOption{
+			{Label: "Skip Google Drive", Value: "__skip__"},
+		}, false)
+		resCh <- e
+	}()
+
+	var qID string
+	waitFor(t, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		rs := svc.runs[handle.RunID]
+		if rs == nil || rs.pendingQuestionID == "" {
+			return false
+		}
+		qID = rs.pendingQuestionID
+		return true
+	}, "workflow question pending")
+
+	if e := svc.AnswerQuestion(qID, []string{"__skip__"}); e != nil {
+		t.Fatalf("AnswerQuestion: %v", e)
+	}
+	if e := <-resCh; e != nil {
+		t.Fatalf("AskWorkflowQuestion err: %v", e)
+	}
+
+	session, found, err := store.GetProviderSession(context.Background(), handle.RunID)
+	if err != nil || !found {
+		t.Fatalf("GetProviderSession: found=%v err=%v", found, err)
+	}
+	if session.Status != RunStatusRunning {
+		t.Fatalf("persisted status after question answer = %q, want running", session.Status)
+	}
+	restarted := newInteractiveService(reg, newInteractiveCatalog(), store)
+	resumed, resumeErr := restarted.resumeRun(handle.RunID)
+	if resumeErr != nil {
+		t.Fatalf("resumeRun: %v", resumeErr)
+	}
+	if resumed.Status != RunStatusRunning {
+		t.Fatalf("resumed status after question answer = %q, want running", resumed.Status)
 	}
 }
 

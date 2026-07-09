@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-09`
 - Parent Documents: [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
 - Child Documents: [Task-191: Context Source Interface And Registry](../../08-Task/done/Task-191-Context-Source-Interface-And-Registry.md) (P-1, done), [Task-192: Migrate Built-in Context Sources](../../08-Task/done/Task-192-Migrate-Builtin-Context-Sources.md) (P-2, done), [Task-193: Context Package Sections And Compatibility Projection](../../08-Task/done/Task-193-Context-Package-Sections-And-Compat-Projection.md) (P-3, done), [Task-194: Per-Flow Context Source Binding](../../08-Task/done/Task-194-Per-Flow-Context-Source-Binding.md) (P-4, done), [Task-195: MCP-Backed Context Source Adapter](../../08-Task/done/Task-195-MCP-Backed-Context-Source-Adapter.md) (P-5, done — fake adapter per its own DOD), [Task-196: Per-Step Context Source Selection UI](../../08-Task/done/Task-196-Per-Step-Context-Source-Selection-UI.md) (P-7, done)
-- Related Documents: [Task-204: Wire Production MCP Driver Adapter](../../08-Task/todo/Task-204-Wire-Production-MCP-Driver-Adapter.md) (follow-up, outside CP-44's own DOD-5 scope — production Google Drive backing for mcp.driver), [BUG-266: Changeledger Feature History Order Non-Deterministic](../../09-BugFix/done/BUG-266-Changeledger-Feature-History-Order-Nondeterministic-On-Equal-CommittedAt.md) (side-fix discovered while writing Task-192's golden test), [CP-41: RAG Harness Flow Mode](../inprogress/CP-41-RAG-Harness-Flow-Mode.md), [CP-42: Flow Pack And Generic Node Behavior Refactor](../done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) (mẫu registry gốc; **tiếp quản CP-42 `P-4`** "context packages become typed artifacts with declared bindings" — trước đây parked ở CP-43 §11, nay là charter của CP-44), [CP-43: Change Contract And Canonical Intent Signature](./CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (consumer — Canonical Head là 1 source cắm vào CP-44), [Task-168: Flow Mode Context Package Contract](../../08-Task/done/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-176: Node-Behavior Registry And Dispatch](../../08-Task/done/Task-176-Node-Behavior-Registry-And-Dispatch.md), [BUG-243: Flow Mode Validate And Audit Behaviors Disconnected](../../09-BugFix/done/BUG-243-Flow-Mode-Validate-And-Audit-Behaviors-Disconnected-From-Task-170-171.md)
+- Related Documents: [Task-204: Wire Production MCP Driver Adapter](../../08-Task/done/Task-204-Wire-Production-MCP-Driver-Adapter.md) (follow-up, outside CP-44's own DOD-5 scope — production Google Drive backing for mcp.driver), [BUG-266: Changeledger Feature History Order Non-Deterministic](../../09-BugFix/done/BUG-266-Changeledger-Feature-History-Order-Nondeterministic-On-Equal-CommittedAt.md) (side-fix discovered while writing Task-192's golden test), [CP-41: RAG Harness Flow Mode](../inprogress/CP-41-RAG-Harness-Flow-Mode.md), [CP-42: Flow Pack And Generic Node Behavior Refactor](../done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) (mẫu registry gốc; **tiếp quản CP-42 `P-4`** "context packages become typed artifacts with declared bindings" — trước đây parked ở CP-43 §11, nay là charter của CP-44), [CP-43: Change Contract And Canonical Intent Signature](./CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (consumer — Canonical Head là 1 source cắm vào CP-44), [Task-168: Flow Mode Context Package Contract](../../08-Task/done/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-176: Node-Behavior Registry And Dispatch](../../08-Task/done/Task-176-Node-Behavior-Registry-And-Dispatch.md), [BUG-243: Flow Mode Validate And Audit Behaviors Disconnected](../../09-BugFix/done/BUG-243-Flow-Mode-Validate-And-Audit-Behaviors-Disconnected-From-Task-170-171.md)
 - Replaces: `None`
 - Tags: `context-regression-engine`, `flow-mode`, `context-source`, `registry`, `extensibility`, `mcp`, `deterministic-retrieval`
 
@@ -313,47 +313,46 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
 
 ### 11.5 - (PASSED, automated) MCP Source Happy Path
 
-- Mục tiêu: chứng minh `mcp.driver` là source ngoài đầu tiên hoạt động end-to-end.
+- Mục tiêu: chứng minh Google Drive target cho `mcp.driver` được chọn ở runtime và được truyền vào prompt MCP đúng scope, không cần sửa settings mỗi lần run.
 - Cách test:
   1. Tạo flow test bật `mcp.driver`.
-  2. Cấp `MCPDriverRef` hợp lệ qua hints/path test.
-  3. Dùng fake adapter hoặc adapter integration tương đương để trả nội dung driver.
+  2. Khi run hỏi Drive context, chọn file hoặc folder qua Google Picker runtime.
+  3. Quan sát prompt prep của step AI sau `context.produce`.
 - Kỳ vọng:
-  - Package có section `mcp.driver`.
-  - Section có `SourceRef` dạng `mcp:<driver-ref>`.
-  - Nội dung bị cap trong giới hạn bounded.
-  - Flow vẫn render bình thường cùng các source khác.
+  - Không cần edit `Google Drive File ID` trong Artifact settings.
+  - Prompt có block target nhỏ kiểu `kind=file|folder`, `id=<drive-id>`.
+  - Prompt hướng AI dùng Google Drive MCP tools trong đúng scope target đã chọn.
+  - Không append full nội dung file/folder vào `FlowContextPackage`.
 
-**VERIFIED 2026-07-09 — automated test lúc viết case; production adapter đã có sau đó**: ban đầu `registerBuiltinContextSources` khởi tạo `&mcpDriverSource{priority: 6}` không gán `adapter` → production luôn degrade "no adapter configured". [Task-204](../../08-Task/done/Task-204-Wire-Production-MCP-Driver-Adapter.md) (đã làm xong, done cùng ngày) nối `mcp.driver` với Google Drive thật: `googleDriveDriverAdapter` tái dùng đúng chain resolve account/credential mà Chat mode MCP proxy đã dùng (`resolveGoogleDriveAccessTokenForRunner`, extract từ `proxyMcpServer.accessToken()`), wire qua `AttachRunner`. Giờ có thể test live qua UI: tạo `context_artifact.v1` instance, tick "MCP Driver (Google Drive)", điền "Google Drive File ID", bind vào step `context.produce`. Vẫn giữ `TestMcpDriverSourceProducesBoundedSectionWithSourceRef` + `TestMcpDriverSourceBoundsLargeContent` + `TestMcpDriverSourceNoDriverRefIsEmptyNotError` (fake-adapter, layer `ContextSourceRegistry.Collect`) + thêm `TestGoogleDriveDriverAdapterFetchesLiveDocument` (layer adapter thật, `context_source_mcp_production_test.go`) — tất cả pass.
+**RE-VERIFIED 2026-07-09 sau CA-268**: runtime UX đã đổi từ saved `Google Drive File ID` sang picker-per-run. `startInlineEntryChain` resolve target riêng cho run, loại `mcp.driver` khỏi `FlowContextPackage` collect path, rồi append target note vào prompt để AI tự dùng MCP tools. Automated coverage hiện nằm ở `TestNormalizeGoogleDriveTarget`, `TestAppendGoogleDriveTargetPrompt`, `TestResolveMCPDriverTargetForRunPromptsUserWhenSourceEnabled`, `TestResolveMCPDriverTargetForRunUsesLegacyConfiguredDefault`, cộng với adapter-level `TestGoogleDriveDriverAdapterFetchesLiveDocument` / source-level bounded-content tests còn giữ nguyên cho seam thấp hơn.
 
 ### 11.6 - (PASSED, automated) MCP Timeout Or Down Degrades Gracefully
 
-- Mục tiêu: chứng minh MCP lỗi không làm fail Plan step.
+- Mục tiêu: chứng minh target Google Drive không có hoặc Google Drive runtime chưa sẵn sàng không làm hỏng context/package path, và run vẫn có đường degrade rõ.
 - Cách test:
   1. Chạy flow có bật `mcp.driver`.
-  2. Làm adapter timeout hoặc trả lỗi.
+  2. Skip picker, để question expire/interrupted, hoặc làm adapter thật trả lỗi ở lúc AI dùng tool.
 - Kỳ vọng:
-  - Plan/context step vẫn hoàn tất.
-  - Package có warning về `mcp.driver`.
-  - Các source còn lại vẫn xuất hiện bình thường.
+  - `context.produce` vẫn dựng package từ các source còn lại.
+  - Không có hard dependency vào saved file id.
+  - Lỗi Google Drive thật vẫn fail-closed ở adapter path, không đọc nhầm account khác.
 
-**RE-VERIFIED 2026-07-09 sau Task-204**: `TestGoogleDriveDriverAdapterDegradesOnMissingCredential` (không có account Google Drive nào connect → adapter trả lỗi, không phải nội dung của account khác) cộng với `TestMcpDriverSourceDegradesOnMcpTimeout`/`TestMcpDriverSourceAdapterErrorDegrades` hiện có (layer `Collect`) — pass, degrade contract giữ nguyên với adapter thật.
-
-**VERIFIED 2026-07-09 — automated test, cùng lý do 11.5 (chưa có adapter thật để test live)**: `TestMcpDriverSourceDegradesOnMcpTimeout` + `TestMcpDriverSourceAdapterErrorDegrades` (`context_source_mcp_test.go`) — pass.
+**RE-VERIFIED 2026-07-09 sau CA-268**: run-level degrade path giờ chủ yếu là "không có target thì không inject target note", thay vì ép `mcp.driver` thành một package section. `TestResolveMCPDriverTargetForRunPromptsUserWhenSourceEnabled` + existing `TestWorkflowDrivenQuestion` prove the runtime question path; legacy adapter seam vẫn được giữ bằng `TestGoogleDriveDriverAdapterDegradesOnMissingCredential`, `TestMcpDriverSourceDegradesOnMcpTimeout`, và `TestMcpDriverSourceAdapterErrorDegrades` để đảm bảo fail-closed nếu một caller thấp hơn vẫn dùng seam đó.
 
 ### 11.7 Safety And Determinism Guards
 
 - Mục tiêu: verify các guard cốt lõi của CP-41/CP-44 vẫn còn load-bearing.
 - Cách test:
   1. Chạy case source excerpt có path ngoài workspace hoặc symlink escape.
-  2. Chạy render/package với source set có `mcp.driver`.
-  3. Chạy lặp lại cùng một input nhiều lần.
+  2. Chạy render/package bình thường và verify target note Drive chỉ là prompt annotation, không biến thành broad search instruction.
+  3. Chạy lặp lại cùng một target input nhiều lần.
 - Kỳ vọng:
   - Path không an toàn bị omitted với lý do rõ (`outside_workspace` hoặc tương đương).
   - Output vẫn có dòng `No vector retrieval used`.
-  - Thứ tự section ổn định theo `Priority`, tie-break theo `SourceType`.
+  - Thứ tự section của package vẫn ổn định theo `Priority`, tie-break theo `SourceType`.
+  - Prompt note giới hạn AI vào đúng `file:<id>` hoặc `folder:<id>` đã chọn.
 
-**VERIFIED 2026-07-09 — automated test (3 guard đều là internal code behavior, không phải thứ click qua UI được)**: `TestFileArtifactResolverRejectsOutsideWorkspacePath` (guard workspace-safety, dùng chung `readSourceExcerpts` với `source.excerpt` theo đúng thiết kế — xem `artifact_type_registry.go`'s doc comment), `TestRenderFlowContextPackageStillHasNoVectorLine` (dòng `No vector retrieval used`), `TestContextSourceCollectStableOrderByPriorityThenID` (thứ tự ổn định theo Priority/SourceType) — cả 3 pass.
+**RE-VERIFIED 2026-07-09 sau CA-268**: `TestFileArtifactResolverRejectsOutsideWorkspacePath`, `TestRenderFlowContextPackageStillHasNoVectorLine`, `TestContextSourceCollectStableOrderByPriorityThenID` vẫn giữ 3 guard cũ của package path; thêm `TestAppendGoogleDriveTargetPrompt` guard việc Drive integration chỉ append target-scoped instructions (`file` hoặc `folder`) thay vì broad search / inline blob content.
 
 ### 11.8 Suggested Automated Commands
 

@@ -647,6 +647,63 @@ test("openHistoryRun keeps an approval gate open when the replay ends on permiss
   assert.equal(card?.decision, undefined, "approval card should remain actionable");
 });
 
+test("openHistoryRun does not restore stale pendingQuestions from a completed cached snapshot", async () => {
+  const questionOptions = [{ label: "A", value: "a" }, { label: "B", value: "b" }];
+  const handle: RunHandle = {
+    runId: "run-1",
+    providerSessionId: "session-1",
+    providerKey: "codex",
+    status: "completed",
+    stepId: "chat-run-1",
+    lastEventSeq: 3,
+  };
+  async function* completedHistoryStream(): AsyncIterable<ProviderEventDTO> {
+    yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 1, type: "turn_started", providerTurnId: "turn-1", prompt: "hello" };
+    yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 2, type: "user_question_required", questionId: "q-1", prompt: "Pick one", options: questionOptions };
+    yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 3, type: "turn_completed", finalMessage: "done" };
+    await new Promise<never>(() => {});
+  }
+  seedStore(
+    makeClient({
+      resumeRun: async () => handle,
+      streamRun: () => completedHistoryStream(),
+      listSkills: async () => [],
+    }),
+    [
+      {
+        runId: "run-1",
+        projectId: "project-1",
+        providerKey: "codex",
+        status: "completed",
+        startedAt: "2026-06-17T10:00:00Z",
+        updatedAt: "2026-06-17T10:05:00Z",
+      },
+    ],
+  );
+  useStore.setState({
+    _runSnapshots: {
+      "run-1": {
+        timeline: [{ kind: "question", id: "evt-q1", questionId: "q-1", prompt: "Pick one", options: questionOptions }],
+        artifacts: [],
+        status: "completed",
+        pendingApprovals: [],
+        pendingQuestions: [{ questionId: "q-1", prompt: "Pick one", options: questionOptions }],
+        recoverable: false,
+        lastEventSeq: 3,
+      },
+    },
+  });
+
+  await useStore.getState().openHistoryRun("run-1");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const state = useStore.getState();
+  assert.equal(state.status, "completed");
+  assert.deepEqual(state.pendingQuestions, [], "completed snapshots must not resurrect stale question gates");
+  const questionCard = state.timeline.find((item) => item.kind === "question") as Extract<TimelineItem, { kind: "question" }> | undefined;
+  assert.equal(questionCard?.answer, "answered", "replayed completed run should stamp the old question resolved");
+});
+
 test("sendPrompt aborts an open-ended history replay stream before sending", async () => {
   const historyStreamStarted = deferred<void>();
   const historyStreamAborted = deferred<void>();

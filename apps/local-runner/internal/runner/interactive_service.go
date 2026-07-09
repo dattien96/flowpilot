@@ -257,7 +257,7 @@ type interactiveRun struct {
 	// validate dispatch reads to decide retrying/passed/failed without
 	// replaying the event log on every turn.
 	flowValidationRetryState *FlowValidationRetryState
-	turnCancel            context.CancelFunc
+	turnCancel               context.CancelFunc
 
 	pendingApprovalID string
 	pendingQuestionID string
@@ -3576,6 +3576,8 @@ func (s *InteractiveService) submitApprovalDecision(approvalID, decision string,
 // AnswerQuestion is idempotent + first-write-wins. Free-text ("Other") is allowed,
 // so any non-empty choice is accepted.
 func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) *apiErr {
+	var snapshot *ProviderQuestionState
+	var runID string
 	s.mu.Lock()
 	rec := s.questions[questionID]
 	if rec == nil {
@@ -3596,10 +3598,26 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 	}
 	rec.status = "resolved"
 	rec.choice = choice
+	runID = rec.runID
+	state := questionStateFromRecord(rec, "", "")
+	snapshot = &state
 	if rs := s.runs[rec.runID]; rs != nil && rs.pendingQuestionID == questionID {
 		rs.pendingQuestionID = ""
+		if rs.pendingApprovalID != "" {
+			rs.status = RunStatusWaitingApproval
+			rs.agentStatus = string(RunStatusWaitingApproval)
+		} else {
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+		}
 	}
 	s.mu.Unlock()
+	if snapshot != nil {
+		_ = s.persistQuestion(*snapshot)
+	}
+	if runID != "" {
+		s.persistParentSession(runID)
+	}
 	rec.resolve <- choice
 	return nil
 }

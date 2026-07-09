@@ -406,6 +406,12 @@ func resumedFlowRunIncomplete(st ProviderSessionState) bool {
 		return false
 	}
 	if st.Status == RunStatusCompleted &&
+		len(st.PendingAgentContext) == 0 &&
+		strings.TrimSpace(st.LoopState.Status) != "running" &&
+		strings.TrimSpace(st.LoopState.ActiveNode) == "" {
+		return false
+	}
+	if st.Status == RunStatusCompleted &&
 		!st.AutoOrchestrate &&
 		len(st.PendingAgentContext) == 0 &&
 		strings.TrimSpace(st.LoopState.Status) != "running" {
@@ -639,6 +645,13 @@ func normalizeResumedStatus(status RunStatus) RunStatus {
 	}
 }
 
+func normalizeResumedFlowStatus(st ProviderSessionState) RunStatus {
+	if len(st.ActiveFlowNodes) > 0 && strings.TrimSpace(st.LoopState.Status) == "done" {
+		return RunStatusCompleted
+	}
+	return normalizeResumedStatus(st.Status)
+}
+
 func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interactiveRun, *apiErr) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	// Preserve the persisted updatedAt — merely opening/viewing a chat must not bump its
@@ -667,7 +680,7 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		providerAccountID:      st.ProviderAccountID,
 		workspaceCwd:           st.WorkingDirectory,
 		runKind:                st.RunKind,
-		status:                 normalizeResumedStatus(st.Status),
+		status:                 normalizeResumedFlowStatus(st),
 		createdAt:              st.StartedAt,
 		updatedAt:              updatedAt,
 		lastPrompt:             st.LastPrompt,
