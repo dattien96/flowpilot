@@ -19,6 +19,9 @@ import (
 const (
 	CompatTestedClaudeVersion = "2.1.179"
 	CompatTestedCodexVersion  = "0.140.0"
+	// CompatTestedGrokVersion is seeded from the Grok Build binary live-verified
+	// during CP-46/Task-206/Task-210 authoring (appended last, CP-46 P-0).
+	CompatTestedGrokVersion = "0.2.93"
 )
 
 // compatClaudeFlags are the CLI flags passed on every `claude -p` invocation.
@@ -41,11 +44,17 @@ type CompatVersionInfo struct {
 	InstalledClaudeVersion string `json:"installedClaudeVersion"`
 	TestedCodexVersion     string `json:"testedCodexVersion"`
 	InstalledCodexVersion  string `json:"installedCodexVersion"`
+	// Appended last (CP-46 P-0/Task-210 T-11): fields above keep their order so
+	// CheckVersionSettings.tsx stays valid for Codex/Claude.
+	TestedGrokVersion    string `json:"testedGrokVersion"`
+	InstalledGrokVersion string `json:"installedGrokVersion"`
 }
 
 type CompatConfig struct {
 	TestedClaudeVersion string `json:"testedClaudeVersion"`
 	TestedCodexVersion  string `json:"testedCodexVersion"`
+	// Appended last (CP-46 P-0/Task-210 T-11).
+	TestedGrokVersion string `json:"testedGrokVersion"`
 }
 
 // CompatItem is one check result.
@@ -110,6 +119,8 @@ func (r *Runner) CompatLoadInfo(ctx context.Context) CompatVersionInfo {
 		InstalledClaudeVersion: compatRunVersion(ctx, "claude"),
 		TestedCodexVersion:     config.TestedCodexVersion,
 		InstalledCodexVersion:  compatRunVersion(ctx, "codex"),
+		TestedGrokVersion:      config.TestedGrokVersion,
+		InstalledGrokVersion:   compatRunVersion(ctx, grokBinaryName()),
 	}
 }
 
@@ -123,6 +134,7 @@ func (r *Runner) RunCompatCheck(ctx context.Context) CompatCheckResult {
 	// 1. Version checks
 	items = append(items, compatVersionItem("Claude version", info.InstalledClaudeVersion, info.TestedClaudeVersion))
 	items = append(items, compatVersionItem("Codex version", info.InstalledCodexVersion, info.TestedCodexVersion))
+	items = append(items, compatVersionItem("Grok version", info.InstalledGrokVersion, info.TestedGrokVersion))
 
 	// 2. Claude required flags (each is passed on every `claude -p` invocation)
 	claudeHelp := compatRunHelp(ctx, "claude")
@@ -201,17 +213,22 @@ func defaultCompatConfig() CompatConfig {
 	return CompatConfig{
 		TestedClaudeVersion: CompatTestedClaudeVersion,
 		TestedCodexVersion:  CompatTestedCodexVersion,
+		TestedGrokVersion:   CompatTestedGrokVersion,
 	}
 }
 
 func normalizeCompatConfig(config CompatConfig) CompatConfig {
 	config.TestedClaudeVersion = strings.TrimSpace(config.TestedClaudeVersion)
 	config.TestedCodexVersion = strings.TrimSpace(config.TestedCodexVersion)
+	config.TestedGrokVersion = strings.TrimSpace(config.TestedGrokVersion)
 	if config.TestedClaudeVersion == "" {
 		config.TestedClaudeVersion = CompatTestedClaudeVersion
 	}
 	if config.TestedCodexVersion == "" {
 		config.TestedCodexVersion = CompatTestedCodexVersion
+	}
+	if config.TestedGrokVersion == "" {
+		config.TestedGrokVersion = CompatTestedGrokVersion
 	}
 	return config
 }

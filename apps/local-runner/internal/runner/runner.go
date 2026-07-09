@@ -1501,6 +1501,25 @@ func providerSpecs() []providerSpec {
 			InstallHint: "Install Antigravity CLI, start agy to sign in, and refresh the runner inventory.",
 			Models:      defaultGeminiProviderModels(),
 		},
+		{
+			// Appended last (CP-46 P-0/Task-210 T-1): codex/claude/gemini specs above
+			// unchanged. BinaryName is overridable via FLOWPILOT_GROK_BIN
+			// (grokBinaryName, grok_process.go) for machines where an unrelated
+			// third-party `grok` tool shadows the real xAI Grok Build CLI on PATH
+			// (observed live during Task-206 authoring).
+			Key:         "grok",
+			Label:       "Grok",
+			BinaryName:  "grok",
+			InstallHint: "Install Grok Build (irm https://x.ai/cli/install.ps1 | iex on Windows, curl -fsSL https://x.ai/cli/install.sh | sh on mac/linux), log in, and restart the runner.",
+			Models:      defaultGrokProviderModels(),
+		},
+	}
+}
+
+func defaultGrokProviderModels() []ProviderModel {
+	return []ProviderModel{
+		{ID: "grok-4.5", DisplayName: "Grok 4.5", Source: "registry"},
+		{ID: "grok-build", DisplayName: "Grok Build", Source: "registry"},
 	}
 }
 
@@ -1798,6 +1817,13 @@ func defaultAuthCandidates(providerKey, dir string) []authCandidate {
 			{homePath: dir, authPath: filepath.Join(dir, ".gemini", "oauth_creds.json")},
 			{homePath: dir, authPath: filepath.Join(dir, "gemini", "oauth_creds.json")},
 		}
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-5): other cases above unchanged.
+		// Live-verified: ~/.grok/auth.json (map keyed by "issuer::userId").
+		return []authCandidate{
+			{homePath: filepath.Join(dir, ".grok"), authPath: filepath.Join(dir, ".grok", "auth.json")},
+			{homePath: filepath.Join(dir, "grok"), authPath: filepath.Join(dir, "grok", "auth.json")},
+		}
 	default:
 		return nil
 	}
@@ -1823,6 +1849,13 @@ func accountAuthPaths(providerKey, homePath string) []string {
 			filepath.Join(homePath, ".gemini", "oauth_creds.json"),
 			filepath.Join(homePath, "gemini", "oauth_creds.json"),
 		}
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-5). A managed grok GROK_HOME's
+		// auth.json lives directly at its root (mirrors ~/.grok/auth.json).
+		return []string{
+			filepath.Join(homePath, "auth.json"),
+			filepath.Join(homePath, ".grok", "auth.json"),
+		}
 	default:
 		return nil
 	}
@@ -1847,6 +1880,10 @@ func hasValidProviderAuthFile(providerKey, path string) bool {
 		return claudeAuthFileLooksValid(data)
 	case "gemini":
 		return strings.Contains(content, `"access_token"`) || strings.Contains(content, `"refresh_token"`)
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-5). Live-verified field names in
+		// ~/.grok/auth.json entries: refresh_token/email.
+		return strings.Contains(content, `"refresh_token"`) && strings.Contains(content, `"email"`)
 	default:
 		return false
 	}
@@ -1913,6 +1950,10 @@ func providerAuthStatus(spec providerSpec) string {
 		if hasAnyEnv("GOOGLE_API_KEY", "GEMINI_API_KEY") || hasLocalAuth("gemini") || hasGeminiAntigravityConfig() {
 			return "READY"
 		}
+	case "grok":
+		if hasAnyEnv("XAI_API_KEY") || hasLocalAuth("grok") {
+			return "READY"
+		}
 	}
 
 	return "AUTH_REQUIRED"
@@ -1965,6 +2006,15 @@ func providerInstallCommand(spec providerSpec) (string, []string, error) {
 			return "sh", []string{"-c", "curl -fsSL https://antigravity.google/cli/install.sh | bash"}, nil
 		case "windows":
 			return "cmd", []string{"/c", "curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd"}, nil
+		default:
+			return "", nil, fmt.Errorf("%s install is not supported on %s", spec.Label, runtime.GOOS)
+		}
+	case "grok":
+		switch runtime.GOOS {
+		case "darwin", "linux":
+			return "sh", []string{"-c", "curl -fsSL https://x.ai/cli/install.sh | sh"}, nil
+		case "windows":
+			return "powershell", []string{"-NoProfile", "-Command", "irm https://x.ai/cli/install.ps1 | iex"}, nil
 		default:
 			return "", nil, fmt.Errorf("%s install is not supported on %s", spec.Label, runtime.GOOS)
 		}
@@ -3482,6 +3532,11 @@ func (r *Runner) AuthenticateProvider(ctx context.Context, providerName string) 
 		authCommand = "claude auth login"
 	case "gemini":
 		authCommand = "agy"
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-4). `grok login --device-auth` is
+		// the headless/managed-home variant; StartInteractiveAuth below routes
+		// through that for non-default-slot accounts.
+		authCommand = "grok login"
 	default:
 		return fmt.Errorf("no auth command configured for provider %q", providerName)
 	}
@@ -3574,7 +3629,7 @@ func (r *Runner) getEnvForExecution(
 			continue
 		}
 		key := parts[0]
-		if key == "HOME" || key == "USERPROFILE" || key == "APPDATA" || key == "LOCALAPPDATA" || key == "HOMEPATH" || key == "HOMEDRIVE" || key == "XDG_CONFIG_HOME" || key == "CODEX_HOME" || key == "HTTP_PROXY" || key == "HTTPS_PROXY" {
+		if key == "HOME" || key == "USERPROFILE" || key == "APPDATA" || key == "LOCALAPPDATA" || key == "HOMEPATH" || key == "HOMEDRIVE" || key == "XDG_CONFIG_HOME" || key == "CODEX_HOME" || key == "GROK_HOME" || key == "HTTP_PROXY" || key == "HTTPS_PROXY" {
 			continue
 		}
 		if _, exists := customEnv[key]; exists {
@@ -3590,6 +3645,11 @@ func (r *Runner) getEnvForExecution(
 	switch strings.ToLower(providerKey) {
 	case "codex":
 		newEnv = append(newEnv, fmt.Sprintf("CODEX_HOME=%s", trimmedAccountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", trimmedAccountHomePath))
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-3): codex case above unchanged.
+		newEnv = append(newEnv, fmt.Sprintf("GROK_HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", trimmedAccountHomePath))
 	default:
@@ -3657,6 +3717,9 @@ func NextAccountHomePath(providerKey string, existing []string) (string, int, er
 		prefix = ".claudeHome"
 	case "gemini":
 		prefix = ".geminiHome"
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-2).
+		prefix = ".grokHome"
 	default:
 		return "", 0, fmt.Errorf("unsupported provider %q", providerKey)
 	}
@@ -3706,6 +3769,16 @@ func (r *Runner) StartInteractiveAuth(providerKey string, accountHomePath string
 		authCommand = fmt.Sprintf("%s login", authInvocation)
 	case "gemini":
 		authCommand = authInvocation
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-4). A managed (.grokHomeN) slot
+		// uses the headless device-auth flow so the fresh GROK_HOME isolates
+		// cleanly without borrowing the default home's browser session
+		// (CP-46 Q-6); slot 0 (~/.grok) uses the normal interactive login.
+		if prefix, ok := managedProviderHomePrefix("grok"); ok && strings.HasPrefix(filepath.Base(accountHomePath), prefix) {
+			authCommand = fmt.Sprintf("%s login --device-auth", authInvocation)
+		} else {
+			authCommand = fmt.Sprintf("%s login", authInvocation)
+		}
 	default:
 		return fmt.Errorf("provider %s does not support interactive CLI login", providerKey)
 	}
@@ -3744,6 +3817,9 @@ func providerEnvSetCommand(providerKey, homePath, shellType string) string {
 		switch strings.ToLower(providerKey) {
 		case "codex":
 			return fmt.Sprintf("export CODEX_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath, homePath)
+		case "grok":
+			// Appended last (CP-46 P-0/Task-210 T-3).
+			return fmt.Sprintf("export GROK_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath, homePath)
 		default:
 			return fmt.Sprintf("export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath)
 		}
@@ -3752,6 +3828,13 @@ func providerEnvSetCommand(providerKey, homePath, shellType string) string {
 		case "codex":
 			return strings.Join([]string{
 				fmt.Sprintf("set CODEX_HOME=%s", homePath),
+				fmt.Sprintf("set HOME=%s", homePath),
+				fmt.Sprintf("set USERPROFILE=%s", homePath),
+			}, "\r\n")
+		case "grok":
+			// Appended last (CP-46 P-0/Task-210 T-3).
+			return strings.Join([]string{
+				fmt.Sprintf("set GROK_HOME=%s", homePath),
 				fmt.Sprintf("set HOME=%s", homePath),
 				fmt.Sprintf("set USERPROFILE=%s", homePath),
 			}, "\r\n")

@@ -396,9 +396,51 @@ func loadAccountLaunchMetadata(account runner.ProviderAccount) (accountLaunchMet
 		return loadClaudeAccountMetadata(account.HomePath), nil
 	case "gemini":
 		return loadGeminiAccountMetadata(account.HomePath)
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-9): codex/claude/gemini cases above unchanged.
+		return loadGrokAccountMetadata(account.HomePath)
 	default:
 		return accountLaunchMetadata{}, nil
 	}
+}
+
+// grokAuthEntry is one value in ~/.grok/auth.json, which is keyed by
+// "<oidcIssuer>::<userId>" (live-verified structure, CP-46/Task-210
+// authoring). Grok Build exposes no machine-readable quota/usage endpoint
+// (CP-46 Q-5) — only the turn-time 402 personal-team-blocked:spending-limit
+// signal exists (isProviderUsageLimitError, interactive_service.go) — so this
+// deliberately does not fabricate a usage percentage.
+type grokAuthEntry struct {
+	Email     string `json:"email"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	TeamID    string `json:"team_id"`
+}
+
+func loadGrokAccountMetadata(homePath string) (accountLaunchMetadata, error) {
+	authPath := firstExistingPath(filepath.Join(homePath, "auth.json"))
+	metadata := accountLaunchMetadata{authStorePath: homePath}
+	if authPath == "" {
+		return metadata, nil
+	}
+
+	var raw map[string]grokAuthEntry
+	if err := readJSONFile(authPath, &raw); err != nil {
+		return metadata, nil
+	}
+	for _, entry := range raw {
+		metadata.accountEmail = entry.Email
+		if name := strings.TrimSpace(entry.FirstName + " " + entry.LastName); name != "" {
+			metadata.accountName = name
+		}
+		if entry.TeamID != "" {
+			metadata.usageSummary = "Team " + entry.TeamID
+		} else {
+			metadata.usageSummary = "Personal"
+		}
+		break // a single active auth entry is expected per home
+	}
+	return metadata, nil
 }
 
 func loadCodexAccountMetadata(homePath string) (accountLaunchMetadata, error) {

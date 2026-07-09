@@ -1904,8 +1904,17 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 		},
 	}
 
-	if len(payload.Providers) != len(cases) {
-		t.Fatalf("expected %d providers in inventory, got %d", len(cases), len(payload.Providers))
+	// CP-46/Task-210 added a grok providerSpec; this test doesn't mock a grok
+	// binary (out of scope for this fixture), so it must appear as a fourth,
+	// not-installed entry rather than changing the expectations for the three
+	// providers this test does mock.
+	if len(payload.Providers) != len(cases)+1 {
+		t.Fatalf("expected %d providers in inventory, got %d", len(cases)+1, len(payload.Providers))
+	}
+	if grok := findProviderJSON(payload.Providers, "grok"); grok == nil {
+		t.Fatal("expected a grok entry in the provider inventory")
+	} else if grok["install_status"] == "INSTALLED" {
+		t.Fatalf("expected grok to be not-installed (no mock binary on PATH), got %#v", grok["install_status"])
 	}
 
 	for _, want := range cases {

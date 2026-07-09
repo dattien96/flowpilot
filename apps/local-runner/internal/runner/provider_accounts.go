@@ -330,7 +330,7 @@ func (r *Runner) syncProviderAccounts(accounts []ProviderAccount) ([]ProviderAcc
 	synced := make([]ProviderAccount, len(accounts))
 	copy(synced, accounts)
 
-	for _, providerKey := range []string{"codex", "claude", "gemini"} {
+	for _, providerKey := range []string{"codex", "claude", "gemini", "grok"} {
 		defaultIndex := indexDefaultProviderAccount(synced, providerKey)
 		defaultPath, hasDefault := DetectDefaultAccountHomePath(providerKey)
 
@@ -642,6 +642,9 @@ func managedProviderHomePrefix(providerKey string) (string, bool) {
 		return ".claudeHome", true
 	case "gemini":
 		return ".geminiHome", true
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-2).
+		return ".grokHome", true
 	default:
 		return "", false
 	}
@@ -683,6 +686,9 @@ func DiscoverProviderAccountHomes(providerKey string) ([]string, error) {
 		return discoverGeminiAccountHomes()
 	case "claude":
 		return discoverClaudeAccountHomes()
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-4).
+		return discoverGrokAccountHomes()
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -813,6 +819,56 @@ func discoverClaudeAccountHomes() ([]string, error) {
 	}
 
 	return accountPaths, nil
+}
+
+// discoverGrokAccountHomes discovers Grok Build account home paths.
+// Checks:
+//   - GROK_HOME environment variable
+//   - ~/.grok (default account home — live-verified real layout: auth.json,
+//     config.toml, sessions/, mcp_credentials.json)
+//   - ~/.grokHomeN (FlowPilot-managed slots)
+//
+// Returns valid paths where auth.json/config.toml exists, plus existing
+// FlowPilot-managed slot directories so they can be configured before auth
+// (Task-210 T-4).
+func discoverGrokAccountHomes() ([]string, error) {
+	discovered := make(map[string]struct{})
+	var accountPaths []string
+
+	if grokHome := os.Getenv("GROK_HOME"); strings.TrimSpace(grokHome) != "" {
+		accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, grokHome, isValidGrokAccountPath)
+	}
+
+	homeDir := preferredUserHomeDir()
+	if homeDir != "" {
+		accountPaths = appendDiscoveredAccountPath(
+			accountPaths,
+			discovered,
+			filepath.Join(homeDir, ".grok"),
+			isValidGrokAccountPath,
+		)
+
+		for _, path := range discoverManagedProviderHomeSlots(homeDir, ".grokHome", isValidGrokAccountPath) {
+			accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, path, nil)
+		}
+	}
+
+	return accountPaths, nil
+}
+
+// isValidGrokAccountPath checks if a path is a valid Grok Build account home
+// path. Live-verified: config.toml and/or auth.json at the home root.
+func isValidGrokAccountPath(homePath string) bool {
+	info, err := os.Stat(homePath)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+
+	if _, err := os.Stat(filepath.Join(homePath, "config.toml")); err == nil {
+		return true
+	}
+
+	return HasLocalAuthAtPath("grok", homePath)
 }
 
 // discoverManagedCodexAccounts discovers managed Codex account slots from ~/codex-accounts/* directory.
