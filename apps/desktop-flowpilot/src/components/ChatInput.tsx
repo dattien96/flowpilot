@@ -38,6 +38,14 @@ function GeminiIcon(): React.ReactElement {
   );
 }
 
+function GrokIcon(): React.ReactElement {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M4 4h3.6l7 10.2V4H18v16h-3.6l-7-10.2V20H4V4z" />
+    </svg>
+  );
+}
+
 function StopIcon(): React.ReactElement {
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
@@ -59,11 +67,14 @@ const PROVIDER_CARDS: { value: ProviderKey; label: string; icon: React.ReactElem
   { value: "codex", label: "Codex", icon: <CodexIcon /> },
   { value: "claude", label: "Claude", icon: <ClaudeIcon /> },
   { value: "gemini", label: "Gemini", icon: <GeminiIcon /> },
+  { value: "grok", label: "Grok", icon: <GrokIcon /> },
 ];
 
 // Providers whose runner adapters advertise the Vision capability (Task-052). Mirrors
 // ProviderCapabilities.Vision in the Go runner; a follow-up should source this from the
 // provider registration the renderer loads instead of hardcoding it here.
+// Grok is deliberately excluded (CP-46/Task-211 T-3): initialize's
+// promptCapabilities.image was live-verified false for grok-4.5.
 const VISION_PROVIDERS = new Set<ProviderKey>(["codex", "claude"]);
 
 const REASONING_OPTIONS = [
