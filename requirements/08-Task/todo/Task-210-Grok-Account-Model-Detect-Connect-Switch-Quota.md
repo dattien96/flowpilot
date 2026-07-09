@@ -100,14 +100,14 @@ Task-207 makes Grok run turns for one account; this task makes Grok manageable t
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` Detection + version baseline work for Grok end to end via `flowpilot providers list/detect`.
-- [ ] `DOD-2` Multiple Grok accounts isolate correctly by `GROK_HOME` / `~/.grokHomeN`, with deterministic IDs for auto-discovered/managed slots.
-- [ ] `DOD-3` Connect (`grok login`, and a device-auth variant) works and flips account status to connected.
-- [ ] `DOD-4` Switch reuses existing `ActivateProviderAccount`/`SetActiveAccount` mechanics with no new code path; in-flight turns interrupt recoverably.
-- [ ] `DOD-5` Account metadata (email/plan/models) renders through the generic `ProviderAccountSummary` shape with no schema change.
-- [ ] `DOD-6` `402`/spending-limit is classified as terminal usage-limit, not login/retryable.
-- [ ] `DOD-7` **Base-regression (`P-0`):** every `grok` branch in the ~15 shared switches (`providerSpecs`, `managedProviderHomePrefix`, `NextAccountHomePath`, `getEnvForExecution` + strip-list, `providerEnvSetCommand`, `defaultAuthCandidates`, `accountAuthPaths`, `hasValidProviderAuthFile`, `isProviderUsageLimitError`, `compat.go` structs, `cli/root.go` loops) is appended without reordering; a per-function test asserts codex/claude/gemini inputs return byte-identical values; `getEnvForExecution` still strips `CODEX_HOME`/`GEMINI_HOME`/`HOME` exactly as before.
-- [ ] `DOD-8` Codex/Claude/Gemini account discovery, connect, switch, and quota tests remain green and unchanged.
+- [x] `DOD-1` Detection + version baseline work for Grok end to end via `flowpilot providers list/detect`. (`TestGrokProviderSpecRegistered`, `TestDetectProvidersPopulatesInventoryShape` extended to assert a not-installed grok row appears; `CompatTestedGrokVersion` wired into `RunCompatCheck`.)
+- [x] `DOD-2` Multiple Grok accounts isolate correctly by `GROK_HOME` / `~/.grokHomeN`, with deterministic IDs for auto-discovered/managed slots. (`TestManagedProviderHomePrefixBaseRegression`, `TestNextAccountHomePathGrokUsesGrokHomePrefix`; `discoverGrokAccountHomes` reuses the same deterministic-ID machinery (`syncManagedProviderAccounts`) all other providers share — not independently re-tested per-provider.)
+- [ ] `DOD-3` Connect (`grok login`, and a device-auth variant) works and flips account status to connected. Implemented (`StartInteractiveAuth` grok branch, device-auth for managed slots) but not live-exercised — connecting a real second account was not attempted in this pass.
+- [x] `DOD-4` Switch reuses existing `ActivateProviderAccount`/`SetActiveAccount` mechanics with no new code path; in-flight turns interrupt recoverably. (No new code path added — verified by inspection; these functions were not touched.)
+- [x] `DOD-5` Account metadata (email/plan/models) renders through the generic `ProviderAccountSummary` shape with no schema change. (`loadGrokAccountMetadata`, `internal/cli/provider_account_terminal.go` — no `ProviderAccountSummary`/`ProviderAccount` field added.)
+- [x] `DOD-6` `402`/spending-limit is classified as terminal usage-limit, not login/retryable. (`TestIsProviderUsageLimitErrorBaseRegressionPlusGrok402`.)
+- [x] `DOD-7` **Base-regression (`P-0`):** every `grok` branch in the ~15 shared switches is appended without reordering; a per-function test asserts codex/claude/gemini inputs return byte-identical values; `getEnvForExecution` still strips `CODEX_HOME`/`GEMINI_HOME`/`HOME` exactly as before. (`TestGetEnvForExecutionCodexBaseRegression`, `TestGetEnvForExecutionSetsGrokHomeAndStripsInheritedCodexHome`, plus the Task-207/209/212 base-regression tests covering the other switched functions.)
+- [x] `DOD-8` Codex/Claude/Gemini account discovery, connect, switch, and quota tests remain green and unchanged. (Full suite verified unchanged vs. clean baseline — identical 15 pre-existing, unrelated failures.)
 
 ## 7. Out of Scope
 
