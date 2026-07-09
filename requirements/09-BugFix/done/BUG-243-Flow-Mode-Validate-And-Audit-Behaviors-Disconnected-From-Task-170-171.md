@@ -5,12 +5,13 @@
 - Document ID: `BUG-243`
 - Title: `Flow Mode validate/audit Behaviors Disconnected From Task-170/171 Implementations`
 - Phase: `bugfix`
-- Status: `deferred` — **diagnosed + fix-plan-ready, deliberately PARKED (2026-07-08, owner direction).** The full fix plan is detailed and ready below (`F-0` mid-flow inline-node execution + `F-1/F-2` validate/audit wiring + `F-3` audit UI; `K-1..K-6`; `V-1..V-6`), but **not scheduled now**: current CP-41 focus is narrowed to **the Plan-step context harness only** (the `context` node — delivered via [CP-44](../../07-Coding-Plan/done/CP-44-Pluggable-Context-Source-Registry.md)). The `validate`/`audit` execution wiring on this bug is **flow-engine plumbing for the `validate`/`audit` nodes**, orthogonal to the context harness, so it is **un-folded from [CP-43](../../07-Coding-Plan/todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md)** and tracked standalone here, ready to pick up when the Testing/Audit half of Flow Mode is prioritized.
-  - _Prior note (2026-07-06, superseded): "deferred — folded into CP-43's planned context-harness rework." The fold-in is reversed (it is not context-harness); the "not now" posture stands._
+- Status: `done` — **fixed 2026-07-09**, per the fix plan below, in order `F-0 → F-1 → F-2 → F-3`. Picked up ahead of its own "not scheduled now" note because a live CP-44/CP-45 E2E test session on `rag-harness` hit exactly this gap (validate/audit never running after `implement`) and the owner asked to fix it immediately rather than continue testing around it.
+  - _Prior note (2026-07-08, superseded): "diagnosed + fix-plan-ready, deliberately PARKED — not scheduled now." Superseded once the gap blocked live E2E testing._
+  - _Prior note (2026-07-06, superseded): "deferred — folded into CP-43's planned context-harness rework." The fold-in is reversed (it is not context-harness)._
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-06`
-- Last Updated: `2026-07-06`
+- Last Updated: `2026-07-09`
 - Parent Documents: [CP-41: RAG Harness Flow Mode](../../07-Coding-Plan/inprogress/CP-41-RAG-Harness-Flow-Mode.md), [CP-42: Flow Pack And Generic Node Behavior Refactor](../../07-Coding-Plan/done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md)
 - Child Documents: `none`
 - Related Documents: [Task-170: Testing Feedback Retry Loop](../../08-Task/done/Task-170-Testing-Feedback-Retry-Loop.md), [Task-171: Audit Step Draft And Commit Prep](../../08-Task/done/Task-171-Audit-Step-Draft-And-Commit-Prep.md), [Task-176: Node Behavior Registry And Dispatch](../../08-Task/todo/Task-176-Node-Behavior-Registry-And-Dispatch.md)
@@ -118,18 +119,18 @@ Ordered by dependency — `F-0` is the prerequisite the original scoping missed:
 
 ## 8. Validation
 
-- `V-1` **Full-pipeline E2E:** extend `TestStartResolvedFlowStartsInlineEntryFlow` (or add a new test) to drive a full `context → implement → validate → audit` run with a fake-adapter coder and a real validation command; assert `validate` executes the command, the retry loop fires the back-edge on failure, and the produced `EventFlowAuditDraft` reflects real command output.
-- `V-2` **`F-0` mid-flow inline dispatch:** a completed delegate node whose forward-`done` target is an inline behavior node dispatches that node in-process and follows the mapped edge (assert `validate`'s `continue` follows the back-edge to `implement`, `done` follows forward to `audit`).
-- `V-3` **Retry cap across back-edge:** always-failing command → exactly 3 `EventFlowValidationRetry` then `escalate`/ask_user; no 4th coder spawn (CP-41 §11 Scenario 6).
-- `V-4` **Env-error no-retry:** missing binary → `skipped_env_error`, zero retries, forward to `audit` (CP-41 §11 Scenario 7).
-- `V-5` **Audit blocked states:** unregistered feature key → `EventFlowAuditDraft{status: blocked_missing_feature_key}`, empty commit message, no CA file written, clean `git status` (CP-41 §11 Scenario 10).
-- `V-6` **UI inspectability:** the desktop surface renders a `ready` draft and a `blocked_*` draft distinctly from `EventFlowAuditDraft`, before any write.
+- `V-1` **Full-pipeline E2E** — done, via new direct tests rather than extending `TestStartResolvedFlowStartsInlineEntryFlow`: `TestTryAdvanceFlowFromNodeValidatePassingCommandAdvancesToAudit` drives `implement → validate → audit` with a real command (`go version`) and asserts a real `EventFlowValidationResult` (exit code 0) plus a real `EventFlowAuditDraft`. `TestTryAdvanceFlowFromNodeRunsValidateSkippedNoCommandForwardsToAudit` covers the no-baseline-configured degrade path end to end.
+- `V-2` **`F-0` mid-flow inline dispatch** — done: `TestEdgeTargetFromMatchesExactTriple` (pure) + the integration tests above prove `validate`'s `continue` follows the back-edge to `implement` (`TestTryAdvanceFlowFromNodeValidateFailingCommandRetriesCoder`) and `done` follows forward to `audit`.
+- `V-3` **Retry cap across back-edge** — partially done: `TestTryAdvanceFlowFromNodeValidateMaxRetriesEscalates` seeds state at `RetryAttempt: 2` and asserts the 3rd failure escalates (loop status `blocked`) rather than retrying a 4th time. Does **not** separately re-drive 3 consecutive real coder-turn round-trips from a cold start — `AdvanceRetryState`'s own cap arithmetic is already covered by `flow_validation_retry_test.go`; this test targets the NEW plumbing (does `runValidateNode` correctly call `applyFlowControl("escalate")` at the boundary), not re-proving already-tested arithmetic.
+- `V-4` **Env-error no-retry** — not separately tested by a new test. `RunValidationCommand`'s env-error classification is already covered by `flow_validation_retry_test.go` ("this-binary-does-not-exist..."); `runValidateNode`'s `case "passed", "skipped_env_error":` branch forwarding to audit is correct by inspection (same code path `V-1`'s passed-case test exercises) but has no dedicated env-error-specific test. Flagged as a real, small follow-up gap, not silently claimed done.
+- `V-5` **Audit blocked states** — partially done: `TestTryAdvanceFlowFromNodeRunsValidateSkippedNoCommandForwardsToAudit` asserts `BuildAuditDraft`'s real status classification runs (not an echo), landing on `blocked_missing_feature_key` in that minimal fixture (no context package/feature-key registry set up). `BuildAuditDraft`'s own unregistered-key/CA-not-written logic is already covered by `flow_audit_draft_test.go`; not re-tested here with a dedicated `FEATURE-KEYS.md` fixture through the live dispatch path specifically.
+- `V-6` **UI inspectability** — done: `timelineReducer.test.ts`'s new tests assert a `ready` draft renders `tone: "info"` and a `blocked_*` draft renders `tone: "warn"` — visibly distinct, both before any write (this code path never writes a file or creates a commit).
 
 ## 9. Regression Guard
 
-- tests: to be added alongside the fix (see V-1).
+- tests: `flow_validate_audit_dispatch_test.go` (7 new Go tests: F-0/F-1/F-2 wiring) + `timelineReducer.test.ts` (3 new: F-3 UI). `go test ./apps/local-runner/...`: 1424 passed, 15 pre-existing unrelated failures unchanged, 0 regressions.
 - alerts: none.
-- audit checks: none yet — this note itself is the first record of the gap.
+- audit checks: this note is the closing record; `Task-170`/`Task-171`'s Completion Notes (already annotated pointing at this bug, §10 below) should be re-annotated to say the disconnect is fixed, not just flagged.
 
 ## 10. Follow-Up Document Updates
 
