@@ -26,6 +26,12 @@ type YoloPosture struct {
 	// --permission-prompt-tool / in-stream control_request route, deny blocks).
 	ClaudePermissionMode string
 	RunnerAutoApprove    bool
+	// GrokPermissionMode is read only by the Grok adapter (CP-46/Task-208):
+	// yolo=true -> "bypassPermissions" (the only mode Grok's own docs say takes
+	// effect via flag/session), yolo=false -> "" (default; live per-call gating
+	// via session/request_permission). Additive field — codex/claude callers
+	// never read it, so resolveYoloPosture's codex/claude outputs are unchanged.
+	GrokPermissionMode string
 }
 
 // resolveYoloPosture is the SSOT mapping. Keep this the only place the YOLO boolean
@@ -37,6 +43,7 @@ func resolveYoloPosture(yolo bool) YoloPosture {
 			CodexApprovalMode:    "never",
 			ClaudePermissionMode: "bypassPermissions",
 			RunnerAutoApprove:    true,
+			GrokPermissionMode:   "bypassPermissions",
 		}
 	}
 	return YoloPosture{
@@ -44,5 +51,6 @@ func resolveYoloPosture(yolo bool) YoloPosture {
 		CodexApprovalMode:    "untrusted",
 		ClaudePermissionMode: "default",
 		RunnerAutoApprove:    false,
+		GrokPermissionMode:   "",
 	}
 }
