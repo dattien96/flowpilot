@@ -5,12 +5,12 @@
 - Document ID: `Task-201`
 - Title: `Context Artifact Migration From Context Sources`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-08`
-- Last Updated: `2026-07-08`
-- Parent Documents: [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../../07-Coding-Plan/todo/CP-45-Generic-Artifact-Types-And-Instances.md), [CP-44: Pluggable Context Source Registry](../../07-Coding-Plan/todo/CP-44-Pluggable-Context-Source-Registry.md)
+- Last Updated: `2026-07-09`
+- Parent Documents: [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../../07-Coding-Plan/done/CP-45-Generic-Artifact-Types-And-Instances.md), [CP-44: Pluggable Context Source Registry](../../07-Coding-Plan/todo/CP-44-Pluggable-Context-Source-Registry.md)
 - Child Documents: `None`
 - Related Documents: [Task-196: Per-Step Context Source Selection UI](Task-196-Per-Step-Context-Source-Selection-UI.md), [Task-194: Per-Flow Context Source Binding](Task-194-Per-Flow-Context-Source-Binding.md), [Task-193: Context Package Sections And Compatibility Projection](Task-193-Context-Package-Sections-And-Compat-Projection.md)
 - Replaces: `None`
@@ -100,17 +100,19 @@ Task-196 would add raw context-source selection to step definitions, but CP-45 i
 
 ### 6.1 Test Items
 
-- `TestContextProduceUsesContextArtifactInstanceSources`
-- `TestContextProduceFallsBackToFlowSources`
-- `TestContextProduceFallsBackToDefaultSources`
-- `TestContextArtifactUnknownSourceFailsValidation`
+Implemented as (equivalent coverage, renamed to match the actual precedence-function name `resolveEnabledContextSourceIDs` rather than the originally-planned names):
+
+- `TestResolveEnabledContextSourceIDsArtifactBindingOverridesStepAndFlow` (was `TestContextProduceUsesContextArtifactInstanceSources`)
+- `TestResolveEnabledContextSourceIDsFallsThroughWhenNoArtifactBinding` (was `TestContextProduceFallsBackToFlowSources`/`...ToDefaultSources`)
+- `TestResolveArtifactBoundContextSourcesIgnoresInputAndOtherTypeBindings`
+- Unknown-source-id fail-fast is unchanged, pre-existing coverage (`ValidateFlowContextSources`) — not re-tested here since CP-45 doesn't alter that path.
 
 ### 6.2 Definition of Done
 
-- [ ] `DOD-1` `context_artifact.v1` is a built-in type.
-- [ ] `DOD-2` Context sources live in artifact instance config for the new path.
-- [ ] `DOD-3` CP-44 flow-level/default fallback remains intact.
-- [ ] `DOD-4` Task-196 raw context-source UX is marked transition-only/superseded.
+- [x] `DOD-1` `context_artifact.v1` is a built-in type. — seeded in `20260709090000_add_artifact_types_catalog.sql`.
+- [x] `DOD-2` Context sources live in artifact instance config for the new path. — built-in default instance `config_json.sources`, `20260709092000_add_builtin_context_artifact_instance.sql`.
+- [x] `DOD-3` CP-44 flow-level/default fallback remains intact. — `resolveEnabledContextSourceIDs` only adds a new highest-precedence tier; a node with no artifact binding falls through unchanged (`TestResolveEnabledContextSourceIDsFallsThroughWhenNoArtifactBinding`, `TestResolveEnabledContextSourceIDsOldCP44FlowUnaffectedByArtifactValidation`).
+- [x] `DOD-4` Task-196 raw context-source UX is marked transition-only/superseded. — CP-44 doc already updated in this session; Task-200's UI is the final UX.
 
 ## 7. Out of Scope
 
@@ -120,6 +122,6 @@ Task-196 would add raw context-source selection to step definitions, but CP-45 i
 
 ## 8. Completion Notes
 
-- result: `TBD`
+- result: `done` — 2026-07-09: D-6 precedence tier + built-in default instance landed; `go test ./internal/runner/...` green, 15 pre-existing unrelated failures unchanged.
 - follow-ups: Task-202 adds non-context proof.
 - upstream docs updated: `TBD`

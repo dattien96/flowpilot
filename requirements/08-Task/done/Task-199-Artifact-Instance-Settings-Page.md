@@ -5,12 +5,12 @@
 - Document ID: `Task-199`
 - Title: `Artifact Instance Settings Page`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-08`
-- Last Updated: `2026-07-08`
-- Parent Documents: [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../../07-Coding-Plan/todo/CP-45-Generic-Artifact-Types-And-Instances.md)
+- Last Updated: `2026-07-09`
+- Parent Documents: [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../../07-Coding-Plan/done/CP-45-Generic-Artifact-Types-And-Instances.md)
 - Child Documents: `None`
 - Related Documents: [Task-197: Artifact Type Catalog And Schema](Task-197-Artifact-Type-Catalog-And-Schema.md), [Task-198: Artifact Instance Model And Resolver](Task-198-Artifact-Instance-Model-And-Resolver.md), [Task-179: Settings Flow Pack Authoring UI](../done/Task-179-Settings-Flow-Pack-Authoring-UI.md)
 - Replaces: `None`
@@ -102,10 +102,10 @@ CP-45 intentionally keeps artifact configuration out of individual step forms. U
 
 ### 6.2 Definition of Done
 
-- [ ] `DOD-1` Settings page exists for artifact instance management.
-- [ ] `DOD-2` Create/edit/delete flows are wired to Supabase repo methods.
-- [ ] `DOD-3` Built-in type catalog is visible but read-only.
-- [ ] `DOD-4` Bound-instance delete protection exists.
+- [x] `DOD-1` Settings page exists for artifact instance management. — `ArtifactsTabContent`, 3rd tab in `WorkflowsSettings.tsx`.
+- [x] `DOD-2` Create/edit/delete flows are wired to Supabase repo methods. — `listArtifactTypes`/`listArtifactInstances`/`saveArtifactInstance`/`deleteArtifactInstance`.
+- [x] `DOD-3` Built-in type catalog is visible but read-only. — types list is `<input disabled>`/static list; no create/edit action rendered for types.
+- [x] `DOD-4` Bound-instance delete protection exists. — `deleteArtifactInstance` checks `step_artifact_bindings` first and throws if any row references the instance.
 
 ## 7. Out of Scope
 
@@ -115,6 +115,6 @@ CP-45 intentionally keeps artifact configuration out of individual step forms. U
 
 ## 8. Completion Notes
 
-- result: `TBD`
+- result: `done` — 2026-07-09: Artifacts tab landed with built-in read-only listing + user CRUD; `tsc --noEmit` clean. Full interactive click-through not verified in this session (needs a live local-runner + Supabase backend with migrations applied — not available in the sandbox; app blocks at its own bootstrap gate without one).
 - follow-ups: Task-200 binds instances to steps.
 - upstream docs updated: `TBD`

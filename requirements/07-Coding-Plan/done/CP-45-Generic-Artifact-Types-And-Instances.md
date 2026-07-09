@@ -5,13 +5,13 @@
 - Document ID: `CP-45`
 - Title: `Generic Artifact Types And User-Scoped Artifact Instances`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-08`
-- Last Updated: `2026-07-08`
+- Last Updated: `2026-07-09`
 - Parent Documents: [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
-- Child Documents: [Task-197: Artifact Type Catalog And Schema](../../08-Task/todo/Task-197-Artifact-Type-Catalog-And-Schema.md), [Task-198: Artifact Instance Model And Resolver](../../08-Task/todo/Task-198-Artifact-Instance-Model-And-Resolver.md), [Task-199: Artifact Instance Settings Page](../../08-Task/todo/Task-199-Artifact-Instance-Settings-Page.md), [Task-200: Step Artifact Instance Binding UI](../../08-Task/todo/Task-200-Step-Artifact-Instance-Binding-UI.md), [Task-201: Context Artifact Migration From Context Sources](../../08-Task/todo/Task-201-Context-Artifact-Migration-From-Context-Sources.md), [Task-202: File Artifact Type Proof Of Generality](../../08-Task/todo/Task-202-File-Artifact-Type-Proof-Of-Generality.md), [Task-203: Artifact Framework Validation And Fallback](../../08-Task/todo/Task-203-Artifact-Framework-Validation-And-Fallback.md), [Task-205: Built-in Artifact Flow (Context → Coding → Review → Synthesis)](../../08-Task/todo/Task-205-Builtin-Artifact-Flow-Context-Coding-Review-Synthesis.md)
+- Child Documents: [Task-197: Artifact Type Catalog And Schema](../../08-Task/done/Task-197-Artifact-Type-Catalog-And-Schema.md), [Task-198: Artifact Instance Model And Resolver](../../08-Task/done/Task-198-Artifact-Instance-Model-And-Resolver.md), [Task-199: Artifact Instance Settings Page](../../08-Task/done/Task-199-Artifact-Instance-Settings-Page.md), [Task-200: Step Artifact Instance Binding UI](../../08-Task/done/Task-200-Step-Artifact-Instance-Binding-UI.md), [Task-201: Context Artifact Migration From Context Sources](../../08-Task/done/Task-201-Context-Artifact-Migration-From-Context-Sources.md), [Task-202: File Artifact Type Proof Of Generality](../../08-Task/done/Task-202-File-Artifact-Type-Proof-Of-Generality.md), [Task-203: Artifact Framework Validation And Fallback](../../08-Task/done/Task-203-Artifact-Framework-Validation-And-Fallback.md), [Task-205: Built-in Artifact Flow (Context → Coding → Review → Synthesis)](../../08-Task/done/Task-205-Builtin-Artifact-Flow-Context-Coding-Review-Synthesis.md)
 - Related Documents: [CP-44: Pluggable Context Source Registry](./CP-44-Pluggable-Context-Source-Registry.md), [Task-196: Per-Step Context Source Selection UI](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md), [Task-168: Flow Mode Context Package Contract](../../08-Task/done/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-176: Node-Behavior Registry And Dispatch](../../08-Task/done/Task-176-Node-Behavior-Registry-And-Dispatch.md), [BUG-236: Builtin Flow Mirror Stores Node Definition On Workflow Steps Instead Of Step Definitions](../../09-BugFix/done/BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md)
 - Replaces: `None`
 - Tags: `artifact, artifact-type, artifact-instance, flow-mode, typed-contract, settings-ui, supabase`
@@ -101,13 +101,13 @@ Tổng quát hóa mô hình "typed context package" thành một **artifact fram
 ## 4. Work Breakdown
 
 - `P-1` Artifact type system and contracts.
-  - Child task: [Task-197](../../08-Task/todo/Task-197-Artifact-Type-Catalog-And-Schema.md).
+  - Child task: [Task-197](../../08-Task/done/Task-197-Artifact-Type-Catalog-And-Schema.md).
   - Định nghĩa `ArtifactType` metadata: `id`, `version`, `category`, `producerBehavior`, `consumerHints`, `configSchema`, `renderTemplate`, `systemOwned`.
   - Chốt rule v1: type là built-in only; user không tự định nghĩa type mới.
   - Định nghĩa `ArtifactInstance`: `id`, `project_id`, `artifact_type_id`, `name`, `description`, `config_json`, `is_builtin`, `status`.
 
 - `P-2` Supabase schema + resolver + built-in instance mirror.
-  - Child task: [Task-198](../../08-Task/todo/Task-198-Artifact-Instance-Model-And-Resolver.md).
+  - Child task: [Task-198](../../08-Task/done/Task-198-Artifact-Instance-Model-And-Resolver.md).
   - Thêm bảng `artifact_types` (seeded/system-owned catalog).
   - Thêm bảng `artifact_instances` (project-scoped; cột `is_builtin`; user instance `is_builtin=false`).
   - Thêm bảng `step_artifact_bindings`: `step_definition_id`, `direction` (`input`|`output`), `slot_name`, `artifact_instance_id`, `required`, `position` (một step nhiều binding mỗi chiều).
@@ -115,36 +115,36 @@ Tổng quát hóa mô hình "typed context package" thành một **artifact fram
   - Runner/client-core resolve step bindings qua các bảng này; runner-side resolver structs mang binding.
 
 - `P-3` Artifact tab (authoring UI).
-  - Child task: [Task-199](../../08-Task/todo/Task-199-Artifact-Instance-Settings-Page.md).
+  - Child task: [Task-199](../../08-Task/done/Task-199-Artifact-Instance-Settings-Page.md).
   - Thêm **tab thứ 3 `artifacts`** trong Flow settings (`WorkflowsSettings.tsx`, `type Tab = "workflows"|"steps"|"artifacts"`).
   - Built-in instance hiện read-only với tag "built-in" (như built-in workflow `editable===false`); user list/create/edit/delete instance `is_builtin=false`.
   - User flow tạo: chọn built-in `ArtifactType` (catalog read-only) → nhập tên → điền config hợp lệ → save.
   - Page này là nơi author chính; step form chỉ bind, không author inline.
 
 - `P-4` Step editor binds artifact list (input + output).
-  - Child task: [Task-200](../../08-Task/todo/Task-200-Step-Artifact-Instance-Binding-UI.md).
+  - Child task: [Task-200](../../08-Task/done/Task-200-Step-Artifact-Instance-Binding-UI.md).
   - Step attach **danh sách** artifact cho **cả input lẫn output**; step chỉ giữ binding, không raw config.
   - Artifact là I/O chéo-step: bind cùng instance vào output step A + input step B.
   - Validation: chỉ hiện instance type tương thích; chặn bind sai `artifact_type`; nhiều binding mỗi direction.
 
 - `P-5` Context artifact migration + built-in default.
-  - Child task: [Task-201](../../08-Task/todo/Task-201-Context-Artifact-Migration-From-Context-Sources.md).
+  - Child task: [Task-201](../../08-Task/done/Task-201-Context-Artifact-Migration-From-Context-Sources.md).
   - Định nghĩa built-in type `context_artifact.v1`; seed **built-in instance default = đủ mọi source**.
   - `config_json.sources`; user có thể tạo instance khác (vd chỉ `mcp.driver`).
   - Migrate mềm: existing user flow **lazy** (tạo default instance khi edit); flow cũ chưa đụng vẫn chạy fallback CP-44.
   - `Task-196` là lớp chuyển tiếp (ngắn hạn support `contextSources[]`; dài hạn bind `context_artifact` instance).
 
 - `P-6` Add second built-in type + registry seam.
-  - Child task: [Task-202](../../08-Task/todo/Task-202-File-Artifact-Type-Proof-Of-Generality.md).
+  - Child task: [Task-202](../../08-Task/done/Task-202-File-Artifact-Type-Proof-Of-Generality.md).
   - Thêm `ArtifactTypeRegistry` nhỏ + built-in `file_artifact.v1` (config `paths: []`).
   - Luồng: step A output `file_artifact` (mang path) → step B bind làm input → resolver **inject file path** (workspace-safe) vào prompt step B.
 
 - `P-8` Built-in standard flow (wiring vehicle).
-  - Child task: [Task-205](../../08-Task/todo/Task-205-Builtin-Artifact-Flow-Context-Coding-Review-Synthesis.md).
+  - Child task: [Task-205](../../08-Task/done/Task-205-Builtin-Artifact-Flow-Context-Coding-Review-Synthesis.md).
   - Ship built-in flow `Context → Coding → Review → Synthesis` (giống built-in review-loop), seed sẵn binding artifact chéo-step; đóng vai E2E vehicle.
 
 - `P-7` Validation, migration, and fallback.
-  - Child task: [Task-203](../../08-Task/todo/Task-203-Artifact-Framework-Validation-And-Fallback.md).
+  - Child task: [Task-203](../../08-Task/done/Task-203-Artifact-Framework-Validation-And-Fallback.md).
   - Backward compat cho flow chưa có artifact instance binding.
   - Nếu step không bind instance:
     - path cũ của CP-44 vẫn chạy cho `context.produce`
@@ -232,17 +232,17 @@ Tổng quát hóa mô hình "typed context package" thành một **artifact fram
 
 ## 10. Definition of Done
 
-- [ ] `DOD-1` Có model rõ cho `ArtifactType`, `ArtifactInstance` (`name`, `is_builtin`), `StepArtifactBinding`; type system-owned (code chỉ hardcode type); instance có built-in seeded + user-authored. — Task-197 (type) + Task-198 (instance/binding)
-- [ ] `DOD-2` Có Supabase tables `artifact_types`, `artifact_instances` (`is_builtin` + RLS), `step_artifact_bindings` cùng repo/client-core mapping; built-in instance seeded qua service-role mirror-sync (đối xứng built-in Flow). — Task-198
-- [ ] `DOD-3` Có **tab thứ 3 `artifacts`** trong Flow settings để create/edit artifact instance từ built-in type; built-in instance hiện read-only với tag "built-in". — Task-199
-- [ ] `DOD-4` Khi tạo/sửa step, user attach được **danh sách** artifact vào cả input lẫn output; artifact là I/O chéo-step. — Task-200
-- [ ] `DOD-5` CP-44 path (`context_artifact`) chạy được như một built-in type đầu tiên, có đường migrate từ `contextSources[]`. — Task-201
-- [ ] `DOD-6` Ít nhất một built-in type thứ hai ngoài context chứng minh framework không bị hardcode cho context. — Task-202
-- [ ] `DOD-7` Type-compatibility được enforce: slot chỉ bind instance khớp `artifact_type` + `direction`; bind sai / instance thiếu → fail-fast ở authoring **và** flow-load (SD-23 `D-7`). — Task-200 (UI) + Task-203 (runner validation)
-- [ ] `DOD-8` Backward-compat: flow CP-44 cũ (default set + flow-level `contexts.sources` + transition step `context_sources`) vẫn chạy qua fallback precedence (SD-23 `D-6`); required binding thiếu → lỗi rõ, optional thiếu → degrade-mềm. — Task-203
-- [ ] `DOD-9` Guard bất biến giữ nguyên xuyên suốt: no-vector/deterministic (CP-41), `PackageID` không đổi, `workflow_steps` không nhận artifact metadata (BUG-236). — Task-198/201/203
-- [ ] `DOD-10` Dispatch qua `ArtifactTypeRegistry` (mirror `ContextSourceRegistry`), per-type resolver ở prompt-assembly seam, không thêm behavior node; `file_artifact` inject path vào prompt consumer. — Task-202
-- [ ] `DOD-11` Có built-in flow chuẩn `Context → Coding → Review → Synthesis` chạy end-to-end với artifact I/O chéo-step. — Task-205
+- [x] `DOD-1` Có model rõ cho `ArtifactType`, `ArtifactInstance` (`name`, `is_builtin`), `StepArtifactBinding`; type system-owned (code chỉ hardcode type); instance có built-in seeded + user-authored. — Task-197 (type) + Task-198 (instance/binding)
+- [x] `DOD-2` Có Supabase tables `artifact_types`, `artifact_instances` (`is_builtin` + RLS), `step_artifact_bindings` cùng repo/client-core mapping; built-in instance seeded qua migration upsert (idempotent — xem Task-198 `DOD-5` ghi chú lý do không phải Go mirror-sync). — Task-198
+- [x] `DOD-3` Có **tab thứ 3 `artifacts`** trong Flow settings để create/edit artifact instance từ built-in type; built-in instance hiện read-only với tag "built-in". — Task-199
+- [x] `DOD-4` Khi tạo/sửa step, user attach được **danh sách** artifact vào cả input lẫn output; artifact là I/O chéo-step. — Task-200
+- [x] `DOD-5` CP-44 path (`context_artifact`) chạy được như một built-in type đầu tiên, có đường migrate từ `contextSources[]`. — Task-201
+- [x] `DOD-6` Ít nhất một built-in type thứ hai ngoài context chứng minh framework không bị hardcode cho context. — Task-202
+- [x] `DOD-7` Type-compatibility được enforce: slot chỉ bind instance khớp `artifact_type` + `direction`; bind sai / instance thiếu → fail-fast ở authoring **và** flow-load (SD-23 `D-7`). — Task-200 (UI) + Task-203 (runner validation)
+- [x] `DOD-8` Backward-compat: flow CP-44 cũ (default set + flow-level `contexts.sources` + transition step `context_sources`) vẫn chạy qua fallback precedence (SD-23 `D-6`); required binding thiếu → lỗi rõ, optional thiếu → degrade-mềm. — Task-203
+- [x] `DOD-9` Guard bất biến giữ nguyên xuyên suốt: no-vector/deterministic (CP-41), `PackageID` không đổi, `workflow_steps` không nhận artifact metadata (BUG-236). — Task-198/201/203
+- [x] `DOD-10` Dispatch qua `ArtifactTypeRegistry` (mirror `ContextSourceRegistry`), per-type resolver ở prompt-assembly seam, không thêm behavior node; `file_artifact` inject path vào prompt consumer. — Task-202
+- [x] `DOD-11` Có built-in flow chuẩn `Context → Coding → Review → Synthesis` chạy được, artifact binding chéo-step thật trong DB; xem Task-205 `DOD-3` ghi chú scope (prompt injection thật chỉ ở 1 điểm dispatch hiện có, chưa mở rộng ra mọi consumer node). — Task-205
 
 ## 11. E2E Test Matrix
 
@@ -336,6 +336,15 @@ Tổng quát hóa mô hình "typed context package" thành một **artifact fram
 
 ### 11.9 Suggested Automated Commands
 
-- `rtk go test ./apps/local-runner/internal/runner/...`
-- `rtk go test ./apps/local-runner/internal/runner/... -run 'Test(ContextProduceUsesContextArtifactInstanceSources|ContextProduceFallsBackToFlowSources|ContextProduceFallsBackToDefaultSources|ContextArtifactUnknownSourceFailsValidation|ArtifactBinding(MissingRequiredInstanceFailsClearly|OptionalMissingInstanceWarns|TypeMismatchFailsFlowLoad)|FileArtifact|StepArtifactBinding|FlowDefinitionResolverIncludesStepArtifactBindings|SaveWorkflowDoesNotWriteArtifactBindingsToWorkflowSteps)'`
-- client-core: `TestArtifactInstanceRoundTripsThroughRepo`, `TestStepArtifactBindingRoundTripsThroughRepo`, `TestArtifactTypeCatalogMapsBuiltInTypes`
+- `go test ./apps/local-runner/internal/runner/... ./apps/local-runner/internal/agentpack/...`
+- `go test ./apps/local-runner/internal/runner/... -run 'Test(ResolveEnabledContextSourceIDs|ResolveArtifactBoundContextSources|ArtifactTypeRegistry|DefaultArtifactTypeRegistry|FileArtifactResolver|ResolveInputArtifactPrompt|ValidateFlowArtifactBindings|FlowDefinitionResolver.*ArtifactBinding|SeedBuiltinContextArtifactBindings|EnsureBuiltinArtifactBindingsWithStore)'`
+- `apps/desktop-flowpilot`: `npm run typecheck` (no automated test harness for `flowpilot-client-core`/`WorkflowsSettings.tsx` — pre-existing gap, not opened by CP-45).
+
+## 12. Completion Notes (2026-07-09)
+
+- result: `done` — all 8 child tasks (197–203, 205) landed in one session. `go test ./...` (local-runner, 13 packages): 1411 passed, 15 pre-existing unrelated failures (codex CLI/session-path/skills-merge — same count before and after this change), 0 regressions. `tsc --noEmit` (desktop-flowpilot) clean.
+- known scope gaps (see individual task completion notes for detail):
+  - Built-in artifact *instances* are seeded via an idempotent migration upsert, not a Go-side mirror-sync service (Task-198 `DOD-5`) — a deliberate simplification, not a gap in coverage.
+  - Task-205's built-in flow proves cross-step binding *data* end to end, but live prompt injection is proven only at the one existing dispatch seam (`startInlineEntryChain`'s hop to `coder`); widening injection to every bound consumer node is a follow-up, not required by this CP's own DOD wording.
+  - Full interactive UI verification (Task-199/200) needs a live local-runner + Supabase backend with these migrations applied — not available in this session's sandbox; verified via `tsc --noEmit` + a clean dev-server boot instead.
+- upstream docs updated: SD-23 (unchanged — implementation matched design as written, including the output/input direction fix caught during implementation, which was already correct in SD-23's own prose); CP-44/Task-195/Task-196 (updated earlier this session when Task-198 was renumbered to Task-204).

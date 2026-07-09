@@ -5,12 +5,12 @@
 - Document ID: `Task-197`
 - Title: `Artifact Type Catalog And Schema`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-08`
-- Last Updated: `2026-07-08`
-- Parent Documents: [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../../07-Coding-Plan/todo/CP-45-Generic-Artifact-Types-And-Instances.md), [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
+- Last Updated: `2026-07-09`
+- Parent Documents: [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../../07-Coding-Plan/done/CP-45-Generic-Artifact-Types-And-Instances.md), [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
 - Child Documents: `None`
 - Related Documents: [CP-44: Pluggable Context Source Registry](../../07-Coding-Plan/todo/CP-44-Pluggable-Context-Source-Registry.md), [Task-168: Flow Mode Context Package Contract](../done/Task-168-Flow-Mode-Context-Package-Contract.md)
 - Replaces: `None`
@@ -99,10 +99,10 @@ CP-45 needs a stable system-owned type layer before user-created artifact instan
 
 ### 6.2 Definition of Done
 
-- [ ] `DOD-1` `ArtifactType` contract exists in docs/domain model.
-- [ ] `DOD-2` Built-in type IDs and config schema conventions are defined.
-- [ ] `DOD-3` V1 rule "system-owned types only" is enforced or clearly represented.
-- [ ] `DOD-4` Context artifact can be represented as a type without storing per-instance sources on the type.
+- [x] `DOD-1` `ArtifactType` contract exists in docs/domain model. — `adminModels.ts` (`ArtifactType`), migration `20260709090000_add_artifact_types_catalog.sql`.
+- [x] `DOD-2` Built-in type IDs and config schema conventions are defined. — `context_artifact.v1` seeded with `configSchema`; `file_artifact.v1` added in Task-202.
+- [x] `DOD-3` V1 rule "system-owned types only" is enforced or clearly represented. — no client-core method creates/updates/deletes `artifact_types`; RLS grants `authenticated` select-only (no write policy).
+- [x] `DOD-4` Context artifact can be represented as a type without storing per-instance sources on the type. — `sources` lives on `artifact_instances.config_json`, never on `artifact_types`.
 
 ## 7. Out of Scope
 
@@ -113,6 +113,6 @@ CP-45 needs a stable system-owned type layer before user-created artifact instan
 
 ## 8. Completion Notes
 
-- result: `TBD`
+- result: `done` — 2026-07-09: `artifact_types` table + RLS + `context_artifact.v1` seed landed in `20260709090000_add_artifact_types_catalog.sql`; `ArtifactType` domain model in `packages/flowpilot-client-core/src/domain/adminModels.ts`.
 - follow-ups: Task-198 persists instances and resolver state.
-- upstream docs updated: `TBD`
+- upstream docs updated: CP-45 (DOD-1/DOD-2 marked done).

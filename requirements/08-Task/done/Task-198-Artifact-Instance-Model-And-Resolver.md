@@ -5,12 +5,12 @@
 - Document ID: `Task-198`
 - Title: `Artifact Instance Model And Resolver`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-08`
-- Last Updated: `2026-07-08`
-- Parent Documents: [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../../07-Coding-Plan/todo/CP-45-Generic-Artifact-Types-And-Instances.md), [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md)
+- Last Updated: `2026-07-09`
+- Parent Documents: [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../../07-Coding-Plan/done/CP-45-Generic-Artifact-Types-And-Instances.md), [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md)
 - Child Documents: `None`
 - Related Documents: [Task-197: Artifact Type Catalog And Schema](Task-197-Artifact-Type-Catalog-And-Schema.md), [BUG-236: Builtin Flow Mirror Stores Node Definition On Workflow Steps](../../09-BugFix/done/BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md)
 - Replaces: `None`
@@ -106,11 +106,11 @@ Artifact instance authoring and step binding need durable state. CP-44's single 
 
 ### 6.2 Definition of Done
 
-- [ ] `DOD-1` Supabase schema exists for artifact instances (with `is_builtin` + RLS) and step bindings (list per direction).
-- [ ] `DOD-2` Client-core models and repo methods map the new state; built-in instances read-only.
-- [ ] `DOD-3` Runner resolver can load bindings attached to step definitions.
-- [ ] `DOD-4` BUG-236 boundary is preserved.
-- [ ] `DOD-5` Built-in artifact-instance mirror-sync seeds `is_builtin=true` rows via service role, idempotently.
+- [x] `DOD-1` Supabase schema exists for artifact instances (with `is_builtin` + RLS) and step bindings (list per direction). — `20260709091000_add_artifact_instances_and_bindings.sql`.
+- [x] `DOD-2` Client-core models and repo methods map the new state; built-in instances read-only. — `saveArtifactInstance` throws on `isBuiltin`; RLS backs this server-side too.
+- [x] `DOD-3` Runner resolver can load bindings attached to step definitions. — `agentpack.FlowNode.ArtifactBindings`, denormalized in `recordFromWorkflowRow` (`supabase_workflow_flow_store.go`) via one PostgREST select (no N+1).
+- [x] `DOD-4` BUG-236 boundary is preserved. — bindings reference `step_definitions(step_type)`, never `workflow_steps`.
+- [x] `DOD-5` Built-in artifact instance(s) seeded idempotently via service role. — implemented as a **migration-based idempotent upsert** (`on conflict (id) do update`, `20260709092000_add_builtin_context_artifact_instance.sql`), not a Go mirror-sync service — a deliberate simplification consistent with SD-23 `Q-5`'s resolution ("seed via migration is source-of-truth"). Task-205's built-in flow *bindings* (a separate concern — which step_definition rows point at the instance) DO get a Go-side idempotent seeder (`SeedBuiltinContextArtifactBindings`), since those FK targets only exist after flow mirror-sync runs.
 
 ## 7. Out of Scope
 
@@ -121,6 +121,6 @@ Artifact instance authoring and step binding need durable state. CP-44's single 
 
 ## 8. Completion Notes
 
-- result: `TBD`
+- result: `done` — 2026-07-09: schema + client-core + runner resolver threading landed; `go test ./internal/runner/...` green (13 new tests), `tsc --noEmit` clean.
 - follow-ups: Task-199 creates the user-facing instance page.
 - upstream docs updated: `TBD`

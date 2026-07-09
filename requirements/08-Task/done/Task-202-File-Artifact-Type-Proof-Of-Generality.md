@@ -5,12 +5,12 @@
 - Document ID: `Task-202`
 - Title: `File Artifact Type Proof Of Generality`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-08`
-- Last Updated: `2026-07-08`
-- Parent Documents: [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../../07-Coding-Plan/todo/CP-45-Generic-Artifact-Types-And-Instances.md)
+- Last Updated: `2026-07-09`
+- Parent Documents: [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../../07-Coding-Plan/done/CP-45-Generic-Artifact-Types-And-Instances.md)
 - Child Documents: `None`
 - Related Documents: [Task-197: Artifact Type Catalog And Schema](Task-197-Artifact-Type-Catalog-And-Schema.md), [Task-201: Context Artifact Migration From Context Sources](Task-201-Context-Artifact-Migration-From-Context-Sources.md)
 - Replaces: `None`
@@ -96,16 +96,20 @@ CP-45's DOD requires at least one non-context type so the framework does not qui
 
 ### 6.1 Test Items
 
-- `TestFileArtifactInstanceReadsWorkspaceSafePaths`
-- `TestFileArtifactRejectsOutsideWorkspacePath`
-- `TestStepConsumesFileArtifactInstance`
+Implemented (renamed to match `fileArtifactResolver`/`resolveInputArtifactPrompt`, the actual function names — equivalent coverage to the planned names below):
+
+- `TestFileArtifactResolverReadsWorkspaceSafePaths` (was `TestFileArtifactInstanceReadsWorkspaceSafePaths`)
+- `TestFileArtifactResolverRejectsOutsideWorkspacePath` (was `TestFileArtifactRejectsOutsideWorkspacePath`)
+- `TestResolveInputArtifactPromptInjectsFileArtifactContent` (was `TestStepConsumesFileArtifactInstance`)
+- `TestResolveInputArtifactPromptSkipsContextArtifactBindings`
+- `TestArtifactTypeRegistryRegisterRejectsDuplicate` / `...ResolveUnknownFails` / `TestDefaultArtifactTypeRegistryHasFileArtifact`
 
 ### 6.2 Definition of Done
 
-- [ ] `DOD-1` `file_artifact.v1` type exists.
-- [ ] `DOD-2` File artifact instance config can be authored.
-- [ ] `DOD-3` Runtime can resolve/render bounded file contents.
-- [ ] `DOD-4` Workspace-safety tests pass.
+- [x] `DOD-1` `file_artifact.v1` type exists. — `20260709093000_add_file_artifact_type.sql`.
+- [x] `DOD-2` File artifact instance config can be authored. — Artifacts tab (Task-199) file-paths textarea.
+- [x] `DOD-3` Runtime can resolve/render bounded file contents. — `fileArtifactResolver` (reuses `readSourceExcerpts`) via `ArtifactTypeRegistry`, injected into the delegate target's prompt at `flow_executor.go`'s `startInlineEntryChain`.
+- [x] `DOD-4` Workspace-safety tests pass. — `TestFileArtifactResolverRejectsOutsideWorkspacePath`.
 
 ## 7. Out of Scope
 
@@ -115,6 +119,6 @@ CP-45's DOD requires at least one non-context type so the framework does not qui
 
 ## 8. Completion Notes
 
-- result: `TBD`
+- result: `done` — 2026-07-09: `ArtifactTypeRegistry` + `fileArtifactResolver` + prompt injection landed; proves the framework generalizes beyond context.
 - follow-ups: richer artifact types after CP-45 stabilizes.
 - upstream docs updated: `TBD`

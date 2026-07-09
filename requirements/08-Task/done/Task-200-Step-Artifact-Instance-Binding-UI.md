@@ -5,12 +5,12 @@
 - Document ID: `Task-200`
 - Title: `Step Artifact Instance Binding UI`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-08`
-- Last Updated: `2026-07-08`
-- Parent Documents: [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../../07-Coding-Plan/todo/CP-45-Generic-Artifact-Types-And-Instances.md)
+- Last Updated: `2026-07-09`
+- Parent Documents: [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../../07-Coding-Plan/done/CP-45-Generic-Artifact-Types-And-Instances.md)
 - Child Documents: `None`
 - Related Documents: [Task-196: Per-Step Context Source Selection UI](Task-196-Per-Step-Context-Source-Selection-UI.md), [Task-199: Artifact Instance Settings Page](Task-199-Artifact-Instance-Settings-Page.md), [Task-189: Custom Flow Graph Authoring](../done/Task-189-Custom-Flow-Graph-Authoring.md)
 - Replaces: [Task-196: Per-Step Context Source Selection UI](Task-196-Per-Step-Context-Source-Selection-UI.md) for the long-term user-authored flow UX
@@ -105,10 +105,10 @@ Artifact instances become useful only when steps can declare which ones they con
 
 ### 6.2 Definition of Done
 
-- [ ] `DOD-1` Step editor can bind input/output artifact instances.
-- [ ] `DOD-2` Bindings persist through `step_artifact_bindings`.
-- [ ] `DOD-3` Compatibility filtering/validation exists.
-- [ ] `DOD-4` Existing flow authoring remains backward compatible.
+- [x] `DOD-1` Step editor can bind input/output artifact instances. — "Artifact Inputs"/"Artifact Outputs" chip rows + picker modal in `renderStepDefinitionForm`.
+- [x] `DOD-2` Bindings persist through `step_artifact_bindings`. — `saveStepDefinition` delete-then-bulk-insert, mirroring the legacy artifact-definitions pattern.
+- [x] `DOD-3` Compatibility filtering/validation exists. — UI: `compatibleArtifactInstancesFor` (context.produce sees `context_artifact` instances only, every other behavior sees non-context only); runner: `ValidateFlowArtifactBindings` fail-fast for a required binding to a missing instance (Task-203).
+- [x] `DOD-4` Existing flow authoring remains backward compatible. — a step with no `artifactBindings` resolves exactly as before CP-45 (`TestResolveEnabledContextSourceIDsOldCP44FlowUnaffectedByArtifactValidation`).
 
 ## 7. Out of Scope
 
@@ -118,6 +118,6 @@ Artifact instances become useful only when steps can declare which ones they con
 
 ## 8. Completion Notes
 
-- result: `TBD`
+- result: `done` — 2026-07-09: chip rows + picker modal + type-compat filter landed in `WorkflowsSettings.tsx`; `tsc --noEmit` clean.
 - follow-ups: Task-201 migrates context-source selection onto artifact instances.
 - upstream docs updated: `TBD`

@@ -44,7 +44,7 @@
 - `P-8` (chốt `Q-4`, 2026-07-08) **Tính đầy đủ quan trọng hơn thứ tự**: yêu cầu duy nhất là mọi context source đã enable đều được import vào package; thứ tự pack không phải ràng buộc cứng (giữ default theo `Priority` cho ổn định, nhưng không thêm cơ chế order per-flow).
 - `P-9` (chốt `Q-5`, 2026-07-08) v1 các source **độc lập**, không dependency graph (không source nào đọc output source khác).
 - `P-10` (chốt `Q-3`, 2026-07-08) Nguồn MCP gọi **đồng bộ tại Plan-time + timeout cứng** (degrade-mềm khi hết giờ/MCP down); cache là tối ưu về sau, không làm ở v1.
-- `P-11` (mới, 2026-07-08, `Q-6`) Tính pluggable phải với tới **flow/step do user tạo qua Settings UI**, không chỉ pack YAML. User cần chọn được context payload cho step Plan của họ, giới hạn ở tập source đã đăng ký/app-support (kế thừa `P-7`) và giữ contract BUG-236. Thiết kế raw `context_sources` của [Task-196](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md) đã được supersede bởi CP-45: triển khai cuối nên đi qua `context_artifact.v1` artifact instance ([Task-200](../../08-Task/todo/Task-200-Step-Artifact-Instance-Binding-UI.md) + [Task-201](../../08-Task/todo/Task-201-Context-Artifact-Migration-From-Context-Sources.md)).
+- `P-11` (mới, 2026-07-08, `Q-6`) Tính pluggable phải với tới **flow/step do user tạo qua Settings UI**, không chỉ pack YAML. User cần chọn được context payload cho step Plan của họ, giới hạn ở tập source đã đăng ký/app-support (kế thừa `P-7`) và giữ contract BUG-236. Thiết kế raw `context_sources` của [Task-196](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md) đã được supersede bởi CP-45: triển khai cuối nên đi qua `context_artifact.v1` artifact instance ([Task-200](../../08-Task/done/Task-200-Step-Artifact-Instance-Binding-UI.md) + [Task-201](../../08-Task/done/Task-201-Context-Artifact-Migration-From-Context-Sources.md)).
 
 ### Constraints
 
@@ -62,7 +62,7 @@
 - `Q-3` **(RESOLVED → `P-10`)** Nguồn MCP: live + timeout cứng trước, cache sau. Chỉ áp dụng khi làm Task-195.
 - `Q-4` **(RESOLVED → `P-8`)** Thứ tự không quan trọng; yêu cầu là import đầy đủ mọi source enabled.
 - `Q-5` **(RESOLVED → `P-9`)** v1 các source độc lập, không dependency graph.
-- `Q-6` **(RESOLVED → `P-7` + `P-11`, 2026-07-08 → [Task-196](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md), superseded by CP-45)** Flow/step do user tạo qua UI có chọn được context source không? Có, nhưng không nên expose raw source-id là abstraction cuối. CP-45 thay bằng step bind tới `context_artifact.v1` artifact instance; instance config giữ `sources`. Task-194 chỉ phủ pack-YAML binding; [Task-200](../../08-Task/todo/Task-200-Step-Artifact-Instance-Binding-UI.md)/[Task-201](../../08-Task/todo/Task-201-Context-Artifact-Migration-From-Context-Sources.md) phủ mặt UI/DB cho user-authored.
+- `Q-6` **(RESOLVED → `P-7` + `P-11`, 2026-07-08 → [Task-196](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md), superseded by CP-45)** Flow/step do user tạo qua UI có chọn được context source không? Có, nhưng không nên expose raw source-id là abstraction cuối. CP-45 thay bằng step bind tới `context_artifact.v1` artifact instance; instance config giữ `sources`. Task-194 chỉ phủ pack-YAML binding; [Task-200](../../08-Task/done/Task-200-Step-Artifact-Instance-Binding-UI.md)/[Task-201](../../08-Task/done/Task-201-Context-Artifact-Migration-From-Context-Sources.md) phủ mặt UI/DB cho user-authored.
 
 ### Source Refs
 
@@ -156,8 +156,8 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
 
 - `P-7` UI + persistence cho **user-authored step** chọn context payload — original raw-source plan là [Task-196](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md), nay superseded bởi CP-45.
   - Không triển khai final UX bằng `StepDefinition.contextSources`/`step_definitions.context_sources` nếu CP-45 đang active.
-  - Step-form `WorkflowsSettings.tsx` nên bind tới artifact instance qua [Task-200](../../08-Task/todo/Task-200-Step-Artifact-Instance-Binding-UI.md).
-  - `context_artifact.v1` instance config giữ danh sách source (`sources`) và migrate/fallback từ CP-44 qua [Task-201](../../08-Task/todo/Task-201-Context-Artifact-Migration-From-Context-Sources.md).
+  - Step-form `WorkflowsSettings.tsx` nên bind tới artifact instance qua [Task-200](../../08-Task/done/Task-200-Step-Artifact-Instance-Binding-UI.md).
+  - `context_artifact.v1` instance config giữ danh sách source (`sources`) và migrate/fallback từ CP-44 qua [Task-201](../../08-Task/done/Task-201-Context-Artifact-Migration-From-Context-Sources.md).
   - Giữ invariant cũ: options giới hạn ở source đã đăng ký/app-support, runner fail-fast id lạ, và `workflow_steps` không nhận metadata mới (BUG-236).
 
 ## 5. Touched Areas
