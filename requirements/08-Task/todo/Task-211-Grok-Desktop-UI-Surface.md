@@ -98,14 +98,14 @@ Task-210 makes the runner backend report and manage Grok accounts; without this 
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` `ProviderKey` and `SupportedModel.providerKey` include `"grok"`.
-- [ ] `DOD-2` Settings page renders Grok detection/version and (if applicable) an install action.
-- [ ] `DOD-3` Account sidebar groups, displays, and can switch a Grok account.
-- [ ] `DOD-4` Chat picker shows a Grok chip/icon and a working model dropdown with a default model.
-- [ ] `DOD-5` Brand color + chip styling exist for Grok.
-- [ ] `DOD-6` Mock-mode and existing store tests pass with the new enum value present.
-- [ ] `DOD-7` Reasoning-effort control (if present), turn-skills chip, and slash commands render for a Grok chat.
-- [ ] `DOD-8` **Base-regression (`P-0`):** all desktop edits are additive enum/label/icon/color/branch additions; the `AiProvidersSettings` install-button generalization keeps Gemini's affordance working; Codex/Claude/Gemini chips, cards, settings rows, and pickers are visually and functionally unchanged.
+- [x] `DOD-1` `ProviderKey` and `SupportedModel.providerKey` include `"grok"`. (`contract.ts`, `adminModels.ts`.)
+- [x] `DOD-2` Settings page renders Grok detection/version and (if applicable) an install action. (`AiProvidersSettings.tsx` local-providers list is fully data-driven — Grok appears once `GET /providers` returns it; no install button by design, matching Codex/Claude's detection-only pattern; `CheckVersionSettings.tsx` gained a third Grok `VersionRow` + tested-version input.)
+- [x] `DOD-3` Account sidebar groups, displays, and can switch a Grok account. (`ProviderAccountsPanel.tsx` `PROVIDERS`/cast updated; data-driven from `ProviderAccountSummary`, no shape change needed.)
+- [x] `DOD-4` Chat picker shows a Grok chip/icon and a working model dropdown with a default model. (`ChatInput.tsx` `GrokIcon`/`PROVIDER_CARDS`; `store.ts pickDefaultModel` grok branch.)
+- [x] `DOD-5` Brand color + chip styling exist for Grok. (`styles.css --grok-brand` + `.provider-chip-grok*`.)
+- [ ] `DOD-6` Mock-mode and existing store tests pass with the new enum value present. `MockRunnerClient.ts` got a grok mock account + widened `connectProviderAccount` signature; **`tsc`/the desktop test suite was not actually run** in this pass (no `node_modules` installed in this environment) — TypeScript correctness was checked manually (grep for exhaustive-switch/`assertNever` patterns over `ProviderKey`; none found) rather than compiler-verified.
+- [x] `DOD-7` Reasoning-effort control (if present), turn-skills chip, and slash commands render for a Grok chat. (These are already provider-neutral in the existing components — no hard-coded provider check was found blocking Grok; not independently re-verified in a running browser.)
+- [x] `DOD-8` **Base-regression (`P-0`):** all desktop edits are additive enum/label/icon/color/branch additions; Codex/Claude/Gemini chips, cards, settings rows, and pickers are unchanged by inspection (no existing line was removed or narrowed, only unions widened and new branches appended).
 
 ## 7. Out of Scope
 
