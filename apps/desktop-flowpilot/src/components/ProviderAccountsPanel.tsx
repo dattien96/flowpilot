@@ -8,6 +8,7 @@ const PROVIDERS = [
   { key: "claude", label: "Claude" },
   { key: "codex", label: "Codex" },
   { key: "gemini", label: "Gemini" },
+  { key: "grok", label: "Grok" },
 ] as const;
 
 function formatDateTime(value: string | null): string | null {
@@ -192,7 +193,7 @@ export function ProviderAccountsPanel(): React.ReactElement | null {
       const knownAccountIds = providerAccounts
         .filter((account) => account.providerKey === providerKey)
         .map((account) => account.id);
-      await client.connectProviderAccount(providerKey as "claude" | "codex" | "gemini");
+      await client.connectProviderAccount(providerKey as "claude" | "codex" | "gemini" | "grok");
       setPendingKnownAccountIds(knownAccountIds);
       setPendingProviderKey(providerKey);
       setMessage(
