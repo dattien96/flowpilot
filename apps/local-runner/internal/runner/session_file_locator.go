@@ -51,6 +51,16 @@ func LocateSessionFile(providerKey ProviderKey, accountHome, sessionID, cwd stri
 			return nil
 		})
 		return found, found != ""
+	case ProviderKeyGrok:
+		// Explicit typed-unsupported (CP-46 Task-212 T-7, GR-23): Grok sessions
+		// live in ~/.grok/sessions/ as per-session SQLite databases, not
+		// JSONL/directory-scannable files like Codex/Claude. No SQLite reader
+		// was built in this pass; returning false here (rather than falling
+		// through to default) documents this as a deliberate scope decision —
+		// cross-account/Drive stale-account recovery for Grok fails explicitly
+		// instead of silently resuming under the wrong account or corrupting
+		// history.
+		return "", false
 	default:
 		return "", false
 	}

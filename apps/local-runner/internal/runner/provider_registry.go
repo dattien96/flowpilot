@@ -404,5 +404,71 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 			return a
 		},
 	})
+	// Grok Build controlled-mode adapter over ACP `grok agent stdio` (CP-46).
+	// Gated behind FLOWPILOT_GROK_AGENT (grokAgentEnabled) so the default
+	// registry never requires a real grok binary — mirrors Codex's
+	// FLOWPILOT_CODEX_APPSERVER gate exactly (Task-212 T-4: "live registry
+	// enablement is the last code change in this task, gated on all upstream
+	// tasks' tests passing").
+	if grokAgentEnabled() {
+		reg.register(ProviderRegistration{
+			Key:         ProviderKeyGrok,
+			DisplayName: "Grok",
+			Status:      ProviderStatusAvailable,
+			Capabilities: ProviderCapabilities{
+				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true, Interrupt: true,
+			},
+			newAdapter: func() ProviderRuntimeAdapter {
+				scopeKey := "default"
+				env := map[string]string{}
+				account, err := r.ResolveProviderAccount(string(ProviderKeyGrok), "")
+				if err == nil {
+					scopeKey = account.ID
+					for key, value := range account.ExtraEnv {
+						env[key] = value
+					}
+					if account.HomePath != "" {
+						env["GROK_HOME"] = account.HomePath
+						env["HOME"] = account.HomePath
+						env["XDG_CONFIG_HOME"] = filepath.Join(account.HomePath, ".config")
+						if drive, path, ok := windowsHomeDriveAndPath(account.HomePath); ok {
+							env["USERPROFILE"] = account.HomePath
+							env["APPDATA"] = filepath.Join(account.HomePath, "AppData", "Roaming")
+							env["LOCALAPPDATA"] = filepath.Join(account.HomePath, "AppData", "Local")
+							env["HOMEDRIVE"] = drive
+							env["HOMEPATH"] = path
+						}
+					}
+				} else if grokHome := strings.TrimSpace(os.Getenv("GROK_HOME")); grokHome != "" {
+					scopeKey = "env:" + grokHome
+					env["GROK_HOME"] = grokHome
+				} else if hasAnyEnv("XAI_API_KEY") {
+					scopeKey = "env:xai-api-key"
+				} else {
+					return errorAdapter{key: ProviderKeyGrok, err: err}
+				}
+				h, ensureErr := r.ensureGrokProcess(context.Background(), scopeKey, r.workspace, env)
+				if ensureErr != nil {
+					return errorAdapter{key: ProviderKeyGrok, err: ensureErr}
+				}
+				a := h.adapter
+				a.sessionStore = ProviderSessionStoreFor(r)
+				a.promptPrep = func(req TurnRequest) string {
+					workspace := r.workspace
+					if req.Cwd != "" {
+						workspace = req.Cwd
+					}
+					return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills)
+				}
+				a.mcpServer = r.claudeMCP
+				a.mcpBaseURL = r.mcpBaseURLValue
+				accountHome := env["GROK_HOME"]
+				a.extraMCPServers = func(yolo bool) map[string]claudeMcpServer {
+					return r.flowpilotClaudeExtraMCPServers(accountHome, yolo)
+				}
+				return a
+			},
+		})
+	}
 	return reg
 }

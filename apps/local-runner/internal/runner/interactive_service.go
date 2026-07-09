@@ -3089,7 +3089,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 
 func (s *InteractiveService) shouldInjectFeatureHistory(providerKey ProviderKey) bool {
 	switch providerKey {
-	case ProviderKeyCodex, ProviderKeyClaude, ProviderKeyGemini:
+	case ProviderKeyCodex, ProviderKeyClaude, ProviderKeyGemini, ProviderKeyGrok:
 		return true
 	default:
 		return false
@@ -3184,7 +3184,13 @@ func isProviderUsageLimitError(err error) bool {
 		strings.Contains(message, "out of credits") ||
 		strings.Contains(message, "out_of_credits") ||
 		strings.Contains(message, "quota reset") ||
-		strings.Contains(message, "rate limit")
+		strings.Contains(message, "rate limit") ||
+		// Grok Build (CP-46/Task-210, GR-19): live-observed 402 signature during
+		// CP-46 authoring. Appended additively; other providers' classification
+		// above is unchanged.
+		strings.Contains(message, "personal-team-blocked") ||
+		strings.Contains(message, "spending-limit") ||
+		strings.Contains(message, "spending_limit")
 }
 
 // finishTurn does the locked post-turn bookkeeping: clears in-flight state, emits
@@ -3779,6 +3785,9 @@ func defaultModelForProvider(key ProviderKey) string {
 		return "gpt-5.4-mini"
 	case ProviderKeyClaude:
 		return "sonnet"
+	case ProviderKeyGrok:
+		// Appended last (CP-46 P-0/Task-209 T-11): codex/claude cases above unchanged.
+		return "grok-4.5"
 	default:
 		return ""
 	}

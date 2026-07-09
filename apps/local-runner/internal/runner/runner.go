@@ -794,6 +794,9 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, w
 		resolvedProvider = "gemini"
 	case strings.HasPrefix(lowerModel, "claude-"):
 		resolvedProvider = "claude"
+	case strings.HasPrefix(lowerModel, "grok-"), lowerModel == "grok-build":
+		// Appended last (CP-46 P-0/Task-212 T-3): codex/gemini/claude cases above unchanged.
+		resolvedProvider = "grok"
 	case resolvedProvider == "":
 		return "", nil, "", errors.New("model or provider is required")
 	}
@@ -837,6 +840,25 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, w
 		}
 		args := geminiCLIArgs(workspace, projectID, normalizeGeminiModelName(modelName), request.AllowWrite || request.YoloMode, resume, false)
 		return geminiBinaryName(), args, resolvedProvider, nil
+	case "grok":
+		// Appended last (CP-46 P-0/P-13, Task-212 T-3): the ONLY place Grok uses
+		// one-shot `grok -p/--single` instead of the ACP `agent stdio` turn loop
+		// — the summarizer/prompt-execution path, which has no session/tool/
+		// approval state to preserve. `-p, --single <PROMPT>` takes the prompt
+		// as the flag's own value (live-verified: `grok --help`), so the actual
+		// prompt text is appended by the caller (ExecutePrompt's usesPromptArg),
+		// same as Gemini's `--print <prompt>` — NOT via stdin like codex/claude.
+		// `--effort` accepts the full canonical vocabulary directly here
+		// (live-verified in docs, unlike the ACP session path which has no
+		// reasoningEffort field at all).
+		args := []string{"--output-format", "json"}
+		if modelName != "" {
+			args = append(args, "--model", modelName)
+		}
+		if request.ReasoningEffort != "" {
+			args = append(args, "--effort", strings.ToLower(strings.TrimSpace(request.ReasoningEffort)))
+		}
+		return grokBinaryName(), args, resolvedProvider, nil
 	default:
 		return "", nil, "", fmt.Errorf("provider %q is not supported", resolvedProvider)
 	}
@@ -941,9 +963,15 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	if err != nil {
 		return PromptExecutionResult{}, err
 	}
-	usesPromptArg := resolvedProvider == string(ProviderKeyGemini)
+	usesPromptArg := resolvedProvider == string(ProviderKeyGemini) || resolvedProvider == string(ProviderKeyGrok)
 	if usesPromptArg {
-		args = append(args, "--print", actualPrompt)
+		if resolvedProvider == string(ProviderKeyGrok) {
+			// Appended last (CP-46 P-0/Task-212 T-3): -p/--single takes the
+			// prompt as its own value, unlike Gemini's --print <prompt>.
+			args = append(args, "-p", actualPrompt)
+		} else {
+			args = append(args, "--print", actualPrompt)
+		}
 	}
 	if resolvedProvider == string(ProviderKeyGemini) {
 		projectID := ""
