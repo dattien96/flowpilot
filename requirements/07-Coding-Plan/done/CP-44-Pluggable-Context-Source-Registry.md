@@ -281,7 +281,7 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
   2. `saveArtifactInstance` gửi `id: ""` cho instance mới → Postgres `invalid input syntax for type uuid` ([supabaseAdminRepository.ts:1055](../../../packages/flowpilot-client-core/src/data/supabaseAdminRepository.ts:1055)) — đã fix.
 - **RE-VERIFIED 2026-07-09 sau khi fix duplicate-history bug** (`run-4286` → child `run-4291`, flow clone, `config_json.sources: ["feature.history"]`): `run-4291/prompt-turn-4296.txt` chỉ có `### Change History`, không có `### Prior Discussion`, và không còn preamble lặp lại — đúng cả 2 kỳ vọng (giới hạn nguồn đúng, và không duplicate). Xem [BUG-268](../../09-BugFix/done/BUG-268-Flow-Coding-Prompt-Duplicates-Feature-History.md).
 
-### 11.3 Unknown Source ID Fails Fast
+### 11.3 - (PASSED) Unknown Source ID Fails Fast
 
 - Mục tiêu: chứng minh pack sai không bị silent no-op.
 - Cách test:
@@ -291,7 +291,12 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
   - Resolve/load flow fail ngay.
   - Lỗi nêu rõ flow id, context binding, và source id lạ.
 
-### 11.4 Generic Section Rendering For New Source
+**VERIFIED 2026-07-09 (manual E2E, live app, run `db51ec26-1a0f-4b92-8ceb-b03dc8e9b363`)**: test qua CP-45 artifact-binding tier (không qua raw YAML `contexts.sources`, tier đó đã bị retire — xem §11.1/§11.2's Inputs/Outputs cleanup note). Sửa `config_json.sources` của instance "History Only Context" thành `["feature.history", "totally.unknown.source"]`, chạy "Run Flow" — phát hiện **2 bug thật liên tiếp**, cả hai đã fix:
+- **Lần thử 1** (`run-4864`/`run-4869`): flow chạy trót lọt, chỉ degrade thành warning ẩn trong package — vì tier CP-45 (artifact binding) chưa từng được nối vào guarantee "unknown id fails fast" mà CP-44/Task-194 đã đặt cho 2 tier cũ. Xem [BUG-269](../../09-BugFix/done/BUG-269-CP45-Artifact-Bound-Context-Sources-Bypass-Unknown-Source-Validation.md).
+- **Lần thử 2** (`run-5090`, sau khi fix BUG-269): lỗi validate đã fire đúng ở tầng Go, nhưng `resolveWorkflowFlowRef`'s "safe-bail" contract nuốt mất lỗi, khiến "Run Flow" âm thầm rơi về Normal Chat — còn tệ hơn lần 1 (không chạy flow, cũng không báo gì). Xem [BUG-270](../../09-BugFix/done/BUG-270-Flow-Ref-Resolution-Errors-Silently-Fall-Back-To-Normal-Chat.md).
+- **Lần thử 3** (sau khi fix cả 2): "Run Flow" hiển thị lỗi rõ ràng đúng kỳ vọng §11.3.
+
+### 11.4 - (PASSED) Generic Section Rendering For New Source
 
 - Mục tiêu: chứng minh thêm source mới không cần sửa `FlowContextPackage`.
 - Cách test:
@@ -303,6 +308,8 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
   - Renderer có heading generic `### <sourceType>`.
   - SourceRef và body của section mới được render.
   - Không cần thêm field mới vào struct package.
+
+**VERIFIED 2026-07-09 — automated test, không phải manual E2E**: case này tự thân đã ghi rõ "test harness hoặc local branch" — đăng ký 1 context source mới đòi hỏi viết code Go + recompile, không có UI nào trong desktop app cho phép làm việc này qua tay. `TestRegisterCustomSourceAppearsInPackageAndRender` (`context_package_sections_test.go`) cover đúng cả 4 kỳ vọng: đăng ký source `custom.thing` mới, verify nó xuất hiện trong `pkg.Sections`, verify render có heading `### custom.thing`, body, và `_Source: custom-ref-123_` — dùng nguyên `FlowContextPackage`/`FlowContextSection` struct hiện có, không sửa gì. `go test ./internal/runner/ -run TestRegisterCustomSourceAppearsInPackageAndRender` — pass.
 
 ### 11.5 MCP Source Happy Path
 

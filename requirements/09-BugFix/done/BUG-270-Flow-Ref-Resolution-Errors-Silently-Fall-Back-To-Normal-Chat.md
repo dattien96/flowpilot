@@ -99,7 +99,7 @@ A Flow-Mode "Run Flow" launch whose selected workflow resolves to a real, stored
 - `V-1` **New unit test** — done: `TestResolveWorkflowFlowRefSurfacesArtifactBindingValidationError` (`flow_executor_test.go`) drives a real `resolveWorkflowFlowRef` call against a stored flow definition with BUG-269's own bad-source-id shape, asserts `ok=false`, asserts the stashed error names the offending source id, and asserts a second read clears to nil (one-shot).
 - `V-2` **Existing contract tests unaffected** — done: `TestCustomUserOwnedFlowResolvesSpawnsEntryAndAdvancesEdge` (a valid custom flow resolving successfully through the same function) still passes unchanged, confirming the happy path and signature are untouched.
 - `V-3` **Full suite** — `go build ./...`, `go vet ./...` clean; `go test ./internal/...` shows no new failures beyond the same pre-existing, already-confirmed-unrelated environment-dependent flakes noted in BUG-268/BUG-269 (Codex/Claude CLI resume, skills-merge, live provider tests).
-- `V-4` **Live re-verification** — pending the maintainer's own re-run of the same reproduction (rebuild the runner, re-run "Run Flow" against the still-misconfigured flow from BUG-269's testing) to confirm the desktop app now shows a visible error instead of silently completing as chat; flagged here rather than claimed.
+- `V-4` **Live re-verification** — done 2026-07-09: maintainer rebuilt the runner and re-ran "Run Flow" against the same BUG-269 reproduction flow. The desktop app now surfaces a visible error instead of silently completing as a normal chat turn.
 
 ## 9. Regression Guard
 
