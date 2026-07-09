@@ -78,8 +78,6 @@ type dbStepDefinitionRow struct {
 	PromptTemplateRef *string                   `json:"prompt_template_ref"`
 	ContextRef        *string                   `json:"context_ref"`
 	ContextSources    []string                  `json:"context_sources"`
-	InputsJSON        map[string]string        `json:"inputs_json"`
-	OutputsJSON       map[string]string        `json:"outputs_json"`
 	ArtifactBindings  []dbStepArtifactBindingRow `json:"step_artifact_bindings"`
 }
 
@@ -132,7 +130,7 @@ type dbWorkflowRow struct {
 	WorkflowSteps    []dbWorkflowStepRow         `json:"workflow_steps"`
 }
 
-const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,depends_on_json,join_mode,cohort,prompt_template_ref,context_ref,context_sources,inputs_json,outputs_json,step_artifact_bindings(id,direction,slot_name,required,position,artifact_instance_id,artifact_instances(artifact_type_id,config_json,status))))"
+const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,depends_on_json,join_mode,cohort,prompt_template_ref,context_ref,context_sources,step_artifact_bindings(id,direction,slot_name,required,position,artifact_instance_id,artifact_instances(artifact_type_id,config_json,status))))"
 
 func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 	rec := FlowDefinitionRecord{
@@ -233,12 +231,6 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 		}
 		if defn.PromptTemplateRef != nil {
 			node.PromptTemplate = *defn.PromptTemplateRef
-		}
-		if len(defn.InputsJSON) > 0 {
-			node.Inputs = defn.InputsJSON
-		}
-		if len(defn.OutputsJSON) > 0 {
-			node.Outputs = defn.OutputsJSON
 		}
 		if len(defn.ContextSources) > 0 {
 			node.ContextSources = defn.ContextSources
@@ -643,8 +635,6 @@ func (s *SupabaseWorkflowFlowStore) upsertNodeStepDefinitions(ctx context.Contex
 			"join_mode":           nilIfEmpty(node.Join),
 			"cohort":              nilIfEmpty(node.Cohort),
 			"prompt_template_ref": nilIfEmpty(node.PromptTemplate),
-			"inputs_json":         nonNilStringMap(node.Inputs),
-			"outputs_json":        nonNilStringMap(node.Outputs),
 		})
 	}
 	if len(rows) == 0 {
@@ -849,15 +839,6 @@ func edgesPayload(edges []agentpack.FlowEdge) []map[string]string {
 	return out
 }
 
-// nonNilStringMap mirrors nonNilStrings for map-shaped columns (inputs_json/
-// outputs_json): a nil Go map must still round-trip as `{}`, not `null`, so a
-// later read back never has to special-case a missing key vs an empty node.
-func nonNilStringMap(values map[string]string) map[string]string {
-	if values == nil {
-		return map[string]string{}
-	}
-	return values
-}
 
 // contextsPayload flattens a flow's named context bindings
 // ({name: {ref: "..."}}) into the JSON shape contexts_json stores.

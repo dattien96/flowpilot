@@ -83,26 +83,22 @@ func ValidateFlowArtifactBindings(def agentpack.FlowDefinition) error {
 // source set by precedence: (a) CP-45/SD-23 D-6 — a bound `context_artifact`
 // input artifact instance's config_json.sources, the framework's highest
 // precedence tier; else (b) the node's own ContextSources (step-definition-
-// level, Task-196) when set; else (c) the flow-level
-// `contexts.<name>.sources` binding the node fills — found by matching one of
-// the node's declared Outputs keys against def.Contexts (the same key
-// convention rag-harness.yaml uses: node output "main_context" binds to
-// contexts.main_context); else (d) nil, meaning "use the runner's default
+// level, Task-196) when set; else (d) nil, meaning "use the runner's default
 // built-in set" (CP-44 P-4, Task-194 T-1/T-4). CP-45 only adds tier (a) on
-// top of the pre-existing (b)/(c)/(d) chain — a node with no artifact
-// binding resolves exactly as it did before CP-45 (SD-23 D-6 soft
-// migration, F-4).
+// top of the pre-existing (b)/(d) chain — a node with no artifact binding
+// resolves exactly as it did before CP-45 (SD-23 D-6 soft migration, F-4).
+//
+// A former tier (c) matched a node's declared `outputs:` slot key against
+// `contexts.<name>.sources` (the flow-level YAML binding, Task-194) — retired
+// alongside the raw `inputs:`/`outputs:` node fields once CP-45's artifact
+// binding (tier a) became the recommended way to restrict a flow's source
+// set; `outputKey`/`def.Contexts` matching is no longer reachable.
 func resolveEnabledContextSourceIDs(def agentpack.FlowDefinition, node agentpack.FlowNode) []string {
 	if ids, ok := resolveArtifactBoundContextSources(node); ok {
 		return ids
 	}
 	if len(node.ContextSources) > 0 {
 		return node.ContextSources
-	}
-	for outputKey := range node.Outputs {
-		if binding, ok := def.Contexts[outputKey]; ok && len(binding.Sources) > 0 {
-			return binding.Sources
-		}
 	}
 	return nil
 }

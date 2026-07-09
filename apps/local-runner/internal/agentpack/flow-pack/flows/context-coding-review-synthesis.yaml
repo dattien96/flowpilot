@@ -38,8 +38,6 @@ nodes:
     run: inline
     lifecycle: once
     behavior: context.produce
-    outputs:
-      main_context: flow_context_package.v1
   - id: coder
     run: delegate
     lifecycle: reinvoke

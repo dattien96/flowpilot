@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
-  ArtifactDefinition,
   ArtifactInstance,
   ArtifactType,
   Project,
@@ -36,14 +35,10 @@ type DeleteTarget =
 type BulkSelect = { kind: "workflow" | "step"; ids: Set<string> };
 
 type PickerModal =
-  | { kind: "artifact-input"; mode: "detail" | "create" }
-  | { kind: "artifact-output"; mode: "detail" | "create" }
   | { kind: "mcp"; mode: "detail" | "create" }
   | { kind: "context-source"; mode: "detail" | "create" }
   // CP-45/SD-23 Task-200: pick an ArtifactInstance to bind to this step's
-  // input or output slot. Distinct from "artifact-input"/"artifact-output"
-  // above, which pick from the older, unrelated ArtifactDefinition catalog
-  // (named-document lineage, e.g. PRD.md).
+  // input or output slot.
   | { kind: "artifact-binding-input"; mode: "detail" | "create" }
   | { kind: "artifact-binding-output"; mode: "detail" | "create" };
 
@@ -141,10 +136,6 @@ function createEmptyStepDraft(modelId: string): StepDefinition {
     promptTemplateRef: null,
     contextRef: null,
     contextSources: [],
-    inputs: {},
-    outputs: {},
-    inputArtifactDefinitions: [],
-    outputArtifactDefinitions: [],
     artifactBindings: [],
     createdAt: "",
     updatedAt: "",
@@ -231,10 +222,6 @@ function normalizeStepSnapshot(step: StepDefinition | null) {
     cohort: step.cohort ?? "",
     promptTemplateRef: step.promptTemplateRef ?? "",
     contextRef: step.contextRef ?? "",
-    inputs: step.inputs ?? {},
-    outputs: step.outputs ?? {},
-    inputArtifactDefinitions: step.inputArtifactDefinitions,
-    outputArtifactDefinitions: step.outputArtifactDefinitions,
     artifactBindings: [...step.artifactBindings]
       .map((binding) => `${binding.direction}:${binding.artifactInstanceId}:${binding.required}`)
       .sort(),
@@ -274,26 +261,6 @@ function compatibleArtifactInstancesFor(
 function artifactInstanceLabel(instance: ArtifactInstance | undefined, id: string): string {
   if (!instance) return id;
   return instance.isBuiltin ? `${instance.name} (built-in)` : instance.name;
-}
-
-function stringMapToText(values: Record<string, string> | undefined) {
-  return Object.entries(values ?? {})
-    .map(([key, value]) => `${key}=${value}`)
-    .join(", ");
-}
-
-function textToStringMap(value: string) {
-  return Object.fromEntries(
-    value
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .map((item) => {
-        const [key, ...rest] = item.split("=");
-        return [key.trim(), rest.join("=").trim()];
-      })
-      .filter(([key]) => Boolean(key)),
-  );
 }
 
 function toTitleCase(value: string) {
@@ -526,10 +493,8 @@ export function WorkflowsSettings(): React.ReactElement {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStep[]>([]);
   const [stepDefinitions, setStepDefinitions] = useState<StepDefinition[]>([]);
-  const [artifactDefinitions, setArtifactDefinitions] = useState<ArtifactDefinition[]>([]);
-  // CP-45/SD-23: the generic typed-artifact framework's catalog + instances,
-  // distinct from artifactDefinitions above (the older named-document
-  // lineage system). artifactTypes is read-only (system-owned, Task-197);
+  // CP-45/SD-23: the generic typed-artifact framework's catalog + instances.
+  // artifactTypes is read-only (system-owned, Task-197);
   // artifactInstances mixes built-in (isBuiltin=true, seeded, read-only) and
   // user-authored rows, managed from the new "Artifacts" tab (Task-199).
   const [artifactTypes, setArtifactTypes] = useState<ArtifactType[]>([]);
@@ -709,7 +674,6 @@ export function WorkflowsSettings(): React.ReactElement {
         nextWorkflows,
         nextStepDefinitions,
         nextModels,
-        nextArtifactDefinitions,
         nextArtifactTypes,
         nextArtifactInstances,
       ] = await Promise.all([
@@ -717,7 +681,6 @@ export function WorkflowsSettings(): React.ReactElement {
         admin.workflows.listWorkflows(),
         admin.workflows.listStepDefinitions(),
         admin.providers.listSupportedModels(),
-        admin.artifacts.listDefinitions(),
         admin.workflows.listArtifactTypes(),
         admin.workflows.listArtifactInstances(),
       ]);
@@ -755,7 +718,6 @@ export function WorkflowsSettings(): React.ReactElement {
       setWorkflows(nextWorkflows);
       setStepDefinitions(nextStepDefinitions);
       setModels(enabledModels);
-      setArtifactDefinitions(nextArtifactDefinitions);
       setArtifactTypes(nextArtifactTypes);
       setArtifactInstances(nextArtifactInstances);
       setSelectedWorkflowId(resolvedWorkflowId);
@@ -1887,8 +1849,6 @@ export function WorkflowsSettings(): React.ReactElement {
     mode: "detail" | "create",
   ) => {
     const requiredSkillsText = draft.requiredSkills.join(", ");
-    const inputsText = stringMapToText(draft.inputs);
-    const outputsText = stringMapToText(draft.outputs);
     return (
       <div className="settings-grid">
         <label className="settings-field">
@@ -2167,8 +2127,7 @@ export function WorkflowsSettings(): React.ReactElement {
         {/* CP-45/SD-23 Task-200: typed artifact instance bindings, distinct
             from "Context Sources" above (which selects raw
             ContextSourceRegistry ids directly, CP-44/Task-196's transition
-            layer) and from "Input/Output artifact definitions" below (the
-            older, unrelated named-document catalog). A step attaches a LIST
+            layer). A step attaches a LIST
             of artifact instances per direction (SD-23 D-1); options are
             filtered to instances whose type is compatible with this step's
             behavior (D-7 — context.produce steps see context_artifact
@@ -2226,22 +2185,6 @@ export function WorkflowsSettings(): React.ReactElement {
             </div>
           );
         })}
-        <label className="settings-field">
-          <span>Inputs</span>
-          <input
-            onChange={(event) => onChange({ ...draft, inputs: textToStringMap(event.target.value) })}
-            placeholder="main_context=flow_context_package.v1"
-            value={inputsText}
-          />
-        </label>
-        <label className="settings-field">
-          <span>Outputs</span>
-          <input
-            onChange={(event) => onChange({ ...draft, outputs: textToStringMap(event.target.value) })}
-            placeholder="main_context=flow_context_package.v1"
-            value={outputsText}
-          />
-        </label>
         <label className="settings-checkbox settings-field-full">
           <input
             checked={draft.yoloMode}
@@ -2250,88 +2193,6 @@ export function WorkflowsSettings(): React.ReactElement {
           />
           <span>YOLO for single-step runs</span>
         </label>
-        <div className="settings-field-full">
-          <div className="workflow-artifact-selector">
-            <div className="workflow-chip-row">
-              <strong>Input artifact definitions</strong>
-              <button
-                className="secondary-btn workflow-chip-add-btn"
-                onClick={() => setPickerModal({ kind: "artifact-input", mode })}
-                type="button"
-              >
-                + Add
-              </button>
-            </div>
-            {draft.inputArtifactDefinitions.length === 0 ? (
-              <div className="workflow-chip-empty">None selected</div>
-            ) : (
-              <div className="workflow-chips">
-                {draft.inputArtifactDefinitions.map((key) => {
-                  const def = artifactDefinitions.find((d) => d.key === key);
-                  return (
-                    <span className="workflow-chip" key={key}>
-                      <span>{def?.name ?? key}</span>
-                      <button
-                        aria-label={`Remove ${def?.name ?? key}`}
-                        className="workflow-chip-remove"
-                        onClick={() =>
-                          onChange({
-                            ...draft,
-                            inputArtifactDefinitions: draft.inputArtifactDefinitions.filter((k) => k !== key),
-                          })
-                        }
-                        type="button"
-                      >
-                        ×
-                      </button>
-                    </span>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="settings-field-full">
-          <div className="workflow-artifact-selector">
-            <div className="workflow-chip-row">
-              <strong>Output artifact definitions</strong>
-              <button
-                className="secondary-btn workflow-chip-add-btn"
-                onClick={() => setPickerModal({ kind: "artifact-output", mode })}
-                type="button"
-              >
-                + Add
-              </button>
-            </div>
-            {draft.outputArtifactDefinitions.length === 0 ? (
-              <div className="workflow-chip-empty">None selected</div>
-            ) : (
-              <div className="workflow-chips">
-                {draft.outputArtifactDefinitions.map((key) => {
-                  const def = artifactDefinitions.find((d) => d.key === key);
-                  return (
-                    <span className="workflow-chip" key={key}>
-                      <span>{def?.name ?? key}</span>
-                      <button
-                        aria-label={`Remove ${def?.name ?? key}`}
-                        className="workflow-chip-remove"
-                        onClick={() =>
-                          onChange({
-                            ...draft,
-                            outputArtifactDefinitions: draft.outputArtifactDefinitions.filter((k) => k !== key),
-                          })
-                        }
-                        type="button"
-                      >
-                        ×
-                      </button>
-                    </span>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
       </div>
     );
   };
@@ -2349,17 +2210,13 @@ export function WorkflowsSettings(): React.ReactElement {
     };
 
     const title =
-      pickerModal.kind === "artifact-input"
-        ? "Input Artifact Definitions"
-        : pickerModal.kind === "artifact-output"
-          ? "Output Artifact Definitions"
-          : pickerModal.kind === "context-source"
-            ? "Context Sources"
-            : pickerModal.kind === "artifact-binding-input"
-              ? "Artifact Inputs"
-              : pickerModal.kind === "artifact-binding-output"
-                ? "Artifact Outputs"
-                : "Required MCPs";
+      pickerModal.kind === "context-source"
+        ? "Context Sources"
+        : pickerModal.kind === "artifact-binding-input"
+          ? "Artifact Inputs"
+          : pickerModal.kind === "artifact-binding-output"
+            ? "Artifact Outputs"
+            : "Required MCPs";
 
     return (
       <div className="settings-modal-backdrop" role="presentation">
@@ -2499,38 +2356,7 @@ export function WorkflowsSettings(): React.ReactElement {
                 </div>
               );
             })()
-          ) : artifactDefinitions.length === 0 ? (
-            <div className="settings-empty">No artifact definitions available yet.</div>
-          ) : (
-            <div className="workflow-choice-grid workflow-picker-grid">
-              {artifactDefinitions.map((definition) => {
-                const selectedList =
-                  pickerModal.kind === "artifact-input"
-                    ? (draftSource?.inputArtifactDefinitions ?? [])
-                    : (draftSource?.outputArtifactDefinitions ?? []);
-                return (
-                  <label className="workflow-choice-card" key={definition.key}>
-                    <input
-                      checked={selectedList.includes(definition.key)}
-                      onChange={() => {
-                        const next = toggleString(selectedList, definition.key);
-                        updateDraft(
-                          pickerModal.kind === "artifact-input"
-                            ? { inputArtifactDefinitions: next }
-                            : { outputArtifactDefinitions: next },
-                        );
-                      }}
-                      type="checkbox"
-                    />
-                    <span>
-                      <strong>{definition.name}</strong>
-                      <small>{definition.key}</small>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-          )}
+          ) : null}
         </div>
       </div>
     );

@@ -222,17 +222,9 @@ export interface StepDefinition {
    * pre-Task-196 behavior unchanged.
    */
   contextSources: string[];
-  inputs?: Record<string, string>;
-  outputs?: Record<string, string>;
-  inputArtifactDefinitions: string[];
-  outputArtifactDefinitions: string[];
   /**
    * CP-45/SD-23: typed artifact instances bound to this step's input/output
-   * slots. Distinct from `inputArtifactDefinitions`/`outputArtifactDefinitions`
-   * above, which are the older, unrelated named-document-lineage system
-   * (`artifact_definitions`, path templates for generated docs like
-   * PRD.md). `artifactBindings` model typed grounding data (context
-   * packages, file references) — see `ArtifactType`/`ArtifactInstance`.
+   * slots — see `ArtifactType`/`ArtifactInstance`.
    */
   artifactBindings: StepArtifactBinding[];
   createdAt: string;
@@ -419,17 +411,6 @@ export function validateFlowGraph(
   });
 
   return issues;
-}
-
-export interface ArtifactDefinition {
-  key: string;
-  name: string;
-  description: string;
-  localPathTemplate: string;
-  remotePathTemplate: string;
-  defaultFileName: string;
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface ArtifactRun {

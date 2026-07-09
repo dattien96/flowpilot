@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ArtifactDefinition, ArtifactRun, LocalRunnerArtifact, LocalRunnerStorageDriver, Project } from "@flowpilot/client-core";
+import type { ArtifactRun, LocalRunnerArtifact, LocalRunnerStorageDriver, Project } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
 import { RUNNER_URL } from "@/config";
 import { formatTimestamp, toErrorMessage } from "@/components/settings/settingsHelpers";
 
-type Tab = "generated" | "storage" | "catalog";
+type Tab = "generated" | "storage";
 type GeneratedSubTab = "local" | "remote";
-type CatalogView = "list" | "create";
 
 export function ArtifactsSettings(): React.ReactElement {
   const [tab, setTab] = useState<Tab>("generated");
@@ -14,37 +13,31 @@ export function ArtifactsSettings(): React.ReactElement {
   const [projectId, setProjectId] = useState("");
   const [localArtifacts, setLocalArtifacts] = useState<LocalRunnerArtifact[]>([]);
   const [runs, setRuns] = useState<ArtifactRun[]>([]);
-  const [definitions, setDefinitions] = useState<ArtifactDefinition[]>([]);
   const [driver, setDriver] = useState<LocalRunnerStorageDriver | null>(null);
-  const [draft, setDraft] = useState<ArtifactDefinition | null>(null);
   const [storagePreference, setStoragePreference] = useState<"supabase" | "google_drive">("supabase");
   const [busy, setBusy] = useState(false);
   const [syncBusy, setSyncBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [generatedSubTab, setGeneratedSubTab] = useState<GeneratedSubTab>("local");
   const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
-  const [catalogView, setCatalogView] = useState<CatalogView>("list");
 
   const refresh = async () => {
     try {
       const admin = await getAdminUseCases();
-      const [nextProjects, nextLocal, nextRuns, nextDefinitions, nextDriver] = await Promise.all([
+      const [nextProjects, nextLocal, nextRuns, nextDriver] = await Promise.all([
         admin.projects.listProjects(),
         admin.artifacts.listLocalArtifacts(),
         admin.artifacts.listRuns(),
-        admin.artifacts.listDefinitions(),
         admin.artifacts.getStorageDriver(),
       ]);
       setProjects(nextProjects);
       setLocalArtifacts(nextLocal);
       setRuns(nextRuns);
-      setDefinitions(nextDefinitions);
       setDriver(nextDriver);
       const nextProjectId = projectId || nextProjects[0]?.id || "";
       setProjectId(nextProjectId);
       const project = nextProjects.find((item) => item.id === nextProjectId) ?? nextProjects[0] ?? null;
       setStoragePreference(project?.artifactStoragePreference ?? "supabase");
-      setDraft((current) => current ?? nextDefinitions[0] ?? null);
     } catch (error) {
       setMessage(toErrorMessage(error, "Unable to load artifacts."));
     }
@@ -117,37 +110,6 @@ export function ArtifactsSettings(): React.ReactElement {
     }
   };
 
-  const createDefinition = () => {
-    setDraft({
-      key: `artifact_${Date.now()}`,
-      name: "New Artifact",
-      description: "",
-      localPathTemplate: "",
-      remotePathTemplate: "",
-      defaultFileName: "artifact.md",
-      createdAt: "",
-      updatedAt: "",
-    });
-    setCatalogView("create");
-  };
-
-  const saveDefinition = async (returnToList: boolean) => {
-    if (!draft) return;
-    setBusy(true);
-    try {
-      const admin = await getAdminUseCases();
-      const saved = await admin.artifacts.saveDefinition(draft);
-      await refresh();
-      setDraft(saved);
-      if (returnToList) setCatalogView("list");
-      setMessage("Artifact definition saved.");
-    } catch (error) {
-      setMessage(toErrorMessage(error, "Unable to save artifact definition."));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const saveStorage = async () => {
     if (!driver) return;
     setBusy(true);
@@ -183,7 +145,6 @@ export function ArtifactsSettings(): React.ReactElement {
         <div className="header-tabs">
           <button className={`header-tab ${tab === "generated" ? "active" : ""}`} onClick={() => setTab("generated")} type="button">Generated</button>
           <button className={`header-tab ${tab === "storage" ? "active" : ""}`} onClick={() => setTab("storage")} type="button">Storage</button>
-          <button className={`header-tab ${tab === "catalog" ? "active" : ""}`} onClick={() => setTab("catalog")} type="button">Catalog</button>
         </div>
       </div>
       {message ? <div className="settings-feedback">{message}</div> : null}
@@ -379,82 +340,6 @@ export function ArtifactsSettings(): React.ReactElement {
         </div>
       ) : null}
 
-      {/* ── Catalog tab ───────────────────────────────────────── */}
-      {tab === "catalog" ? (
-        catalogView === "create" ? (
-          <div className="settings-subpanel">
-            <div className="settings-actions">
-              <button
-                className="secondary-btn"
-                onClick={() => { setCatalogView("list"); setDraft(definitions[0] ?? null); }}
-                type="button"
-              >
-                ← Back
-              </button>
-            </div>
-            <h3>New Artifact Definition</h3>
-            {draft ? (
-              <div className="settings-grid">
-                <label className="settings-field"><span>Key</span><input value={draft.key} onChange={(e) => setDraft((d) => d ? { ...d, key: e.target.value } : d)} /></label>
-                <label className="settings-field"><span>Name</span><input value={draft.name} onChange={(e) => setDraft((d) => d ? { ...d, name: e.target.value } : d)} /></label>
-                <label className="settings-field settings-field-full"><span>Description</span><textarea value={draft.description} onChange={(e) => setDraft((d) => d ? { ...d, description: e.target.value } : d)} /></label>
-                <label className="settings-field"><span>Local Path Template</span><input value={draft.localPathTemplate} onChange={(e) => setDraft((d) => d ? { ...d, localPathTemplate: e.target.value } : d)} /></label>
-                <label className="settings-field"><span>Remote Path Template</span><input value={draft.remotePathTemplate} onChange={(e) => setDraft((d) => d ? { ...d, remotePathTemplate: e.target.value } : d)} /></label>
-                <label className="settings-field"><span>Default File Name</span><input value={draft.defaultFileName} onChange={(e) => setDraft((d) => d ? { ...d, defaultFileName: e.target.value } : d)} /></label>
-              </div>
-            ) : null}
-            <div className="settings-actions">
-              <button className="primary-btn" disabled={busy || !draft} onClick={() => void saveDefinition(true)} type="button">
-                Save Definition
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="settings-two-column">
-            <div className="settings-subpanel">
-              <div className="settings-actions">
-                <button className="primary-btn" onClick={createDefinition} type="button">Create</button>
-              </div>
-              <div className="settings-list">
-                {definitions.map((def) => (
-                  <button
-                    className={`settings-list-item ${draft?.key === def.key ? "active" : ""}`}
-                    key={def.key}
-                    onClick={() => setDraft(def)}
-                    type="button"
-                  >
-                    <strong>{def.name}</strong>
-                    <span>{def.key}</span>
-                  </button>
-                ))}
-                {definitions.length === 0 ? <div className="settings-list-empty">No definitions yet.</div> : null}
-              </div>
-            </div>
-            <div className="settings-subpanel">
-              <h3>Edit Definition</h3>
-              {draft ? (
-                <>
-                  <div className="settings-grid">
-                    <label className="settings-field"><span>Key</span><input value={draft.key} onChange={(e) => setDraft((d) => d ? { ...d, key: e.target.value } : d)} /></label>
-                    <label className="settings-field"><span>Name</span><input value={draft.name} onChange={(e) => setDraft((d) => d ? { ...d, name: e.target.value } : d)} /></label>
-                    <label className="settings-field settings-field-full"><span>Description</span><textarea value={draft.description} onChange={(e) => setDraft((d) => d ? { ...d, description: e.target.value } : d)} /></label>
-                    <label className="settings-field"><span>Local Path Template</span><input value={draft.localPathTemplate} onChange={(e) => setDraft((d) => d ? { ...d, localPathTemplate: e.target.value } : d)} /></label>
-                    <label className="settings-field"><span>Remote Path Template</span><input value={draft.remotePathTemplate} onChange={(e) => setDraft((d) => d ? { ...d, remotePathTemplate: e.target.value } : d)} /></label>
-                    <label className="settings-field"><span>Default File Name</span><input value={draft.defaultFileName} onChange={(e) => setDraft((d) => d ? { ...d, defaultFileName: e.target.value } : d)} /></label>
-                  </div>
-                  <div className="settings-actions">
-                    <button className="primary-btn" disabled={busy} onClick={() => void saveDefinition(false)} type="button">
-                      Save Definition
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <div className="settings-list-empty">Select a definition to edit.</div>
-              )}
-            </div>
-          </div>
-        )
-      ) : null}
     </section>
   );
 }

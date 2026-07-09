@@ -33,32 +33,20 @@ nodes:
     run: inline
     lifecycle: once
     behavior: context.produce
-    outputs:
-      main_context: flow_context_package.v1
   - id: implement
     run: delegate
     lifecycle: reinvoke
     behavior: agent.delegate
     agent: agents/coder.md
-    inputs:
-      main_context: flow_context_package.v1
     promptTemplate: prompts/flow-context-handoff.md
   - id: validate
     run: inline
     lifecycle: once
     behavior: command.validate
-    inputs:
-      main_context: flow_context_package.v1
-    outputs:
-      validation_result: validation_result.v1
-      validation_retry: validation_retry.v1
   - id: audit
     run: inline
     lifecycle: once
     behavior: artifact.audit_draft
-    inputs:
-      main_context: flow_context_package.v1
-      validation_result: validation_result.v1
 edges:
   - from: context
     to: implement

@@ -1,5 +1,4 @@
 import type {
-  ArtifactDefinition,
   ArtifactInstance,
   ArtifactRun,
   ArtifactType,
@@ -79,11 +78,6 @@ export interface WorkflowRepository {
   deleteArtifactInstance(instanceId: string): Promise<void>;
 }
 
-export interface ArtifactCatalogRepository {
-  listDefinitions(): Promise<ArtifactDefinition[]>;
-  saveDefinition(definition: ArtifactDefinition): Promise<ArtifactDefinition>;
-}
-
 export interface ArtifactRunRepository {
   listRuns(projectId?: string): Promise<ArtifactRun[]>;
 }
@@ -97,7 +91,7 @@ export interface StorageDriverRepository {
   saveStorageDriver(driver: Pick<LocalRunnerStorageDriver, "driverKey" | "enabled" | "remoteRootPath" | "remoteFolderName">): Promise<LocalRunnerStorageDriver>;
 }
 
-export interface ArtifactRepository extends ArtifactCatalogRepository, ArtifactRunRepository, LocalArtifactRepository, StorageDriverRepository {}
+export interface ArtifactRepository extends ArtifactRunRepository, LocalArtifactRepository, StorageDriverRepository {}
 
 export interface LocalProviderRepository {
   listLocalProviders(): Promise<LocalRunnerProvider[]>;

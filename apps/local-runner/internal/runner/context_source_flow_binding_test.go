@@ -12,7 +12,11 @@ import (
 // minimalContextFlowYAML builds a tiny valid flow YAML with one inline
 // context.produce entry node whose `contexts.main_context` binding declares
 // sourcesYAML (a pre-formatted YAML list block, or "" to omit the field
-// entirely so the default set applies).
+// entirely). This binding is validated by ValidateFlowContextSources
+// (Task-194 T-2) but — since the retirement of the node-`outputs:`-to-
+// `contexts.<name>` matching tier (superseded by CP-45's artifact-binding
+// tier) — no longer affects what resolveEnabledContextSourceIDs returns for
+// this flow's context node; see context_sources_builtin.go's doc comment.
 func minimalContextFlowYAML(sourcesYAML string) string {
 	contextsBlock := "contexts:\n  main_context:\n    ref: contexts/flow-context-package.yaml\n"
 	if sourcesYAML != "" {
@@ -26,9 +30,7 @@ func minimalContextFlowYAML(sourcesYAML string) string {
 		"  - id: context\n" +
 		"    run: inline\n" +
 		"    lifecycle: once\n" +
-		"    behavior: context.produce\n" +
-		"    outputs:\n" +
-		"      main_context: flow_context_package.v1\n"
+		"    behavior: context.produce\n"
 }
 
 func parseTestFlow(t *testing.T, yamlContent string) agentpack.FlowDefinition {
@@ -39,29 +41,6 @@ func parseTestFlow(t *testing.T, yamlContent string) agentpack.FlowDefinition {
 		t.Fatalf("LoadFlowFS: %v", err)
 	}
 	return def
-}
-
-// TestFlowWithoutSourcesUsesDefaultSet verifies a flow that declares no
-// `contexts.<name>.sources` resolves to the default built-in set (Task-194 T-3).
-func TestFlowWithoutSourcesUsesDefaultSet(t *testing.T) {
-	def := parseTestFlow(t, minimalContextFlowYAML(""))
-	node := def.Nodes[0]
-	ids := resolveEnabledContextSourceIDs(def, node)
-	if ids != nil {
-		t.Fatalf("expected nil (default set) for a flow with no sources binding, got %v", ids)
-	}
-}
-
-// TestFlowWithExplicitSourceSubset verifies a flow that declares a source
-// subset resolves to exactly that subset (Task-194 T-1/T-4).
-func TestFlowWithExplicitSourceSubset(t *testing.T) {
-	def := parseTestFlow(t, minimalContextFlowYAML("      - feature.history\n"))
-	node := def.Nodes[0]
-	ids := resolveEnabledContextSourceIDs(def, node)
-	want := []string{"feature.history"}
-	if len(ids) != len(want) || ids[0] != want[0] {
-		t.Fatalf("ids = %v, want %v", ids, want)
-	}
 }
 
 // TestUnknownSourceIDFailsFlowLoad verifies a flow declaring a source id the
@@ -90,11 +69,14 @@ func TestValidateFlowContextSourcesAcceptsKnownSources(t *testing.T) {
 	}
 }
 
-// TestRagHarnessDeclaredSourcesMatchDefaultOutput verifies the built-in
-// rag-harness flow's explicit `sources:` declaration (added by Task-194 T-5)
-// resolves to the same set BuildFlowContextPackage's default already uses —
-// documentation-as-config, not a behavior change.
-func TestRagHarnessDeclaredSourcesMatchDefaultOutput(t *testing.T) {
+// TestRagHarnessContextNodeFallsThroughToDefaultSet verifies the built-in
+// rag-harness flow's context node — which declares no step-level
+// ContextSources and no artifact binding — resolves to nil from
+// resolveEnabledContextSourceIDs, the sentinel buildFlowContextPackage reads
+// as "use defaultContextSourceIDs" (Task-194 T-1/T-3). The flow's own
+// `contexts.main_context.sources:` declaration still passes
+// ValidateFlowContextSources but no longer feeds resolution (retired tier).
+func TestRagHarnessContextNodeFallsThroughToDefaultSet(t *testing.T) {
 	pack, err := agentpack.LoadBuiltinPack()
 	if err != nil {
 		t.Fatalf("LoadBuiltinPack: %v", err)
@@ -122,18 +104,8 @@ func TestRagHarnessDeclaredSourcesMatchDefaultOutput(t *testing.T) {
 			break
 		}
 	}
-	ids := resolveEnabledContextSourceIDs(def, contextNode)
-	if len(ids) != len(defaultContextSourceIDs) {
-		t.Fatalf("declared sources %v do not match default set %v in length", ids, defaultContextSourceIDs)
-	}
-	declared := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		declared[id] = true
-	}
-	for _, id := range defaultContextSourceIDs {
-		if !declared[id] {
-			t.Errorf("rag-harness declared sources %v missing default id %q", ids, id)
-		}
+	if ids := resolveEnabledContextSourceIDs(def, contextNode); ids != nil {
+		t.Fatalf("resolveEnabledContextSourceIDs = %v, want nil (falls through to defaultContextSourceIDs)", ids)
 	}
 }
 

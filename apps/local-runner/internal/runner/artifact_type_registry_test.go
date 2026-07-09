@@ -13,18 +13,11 @@ import (
 // verifies CP-45/SD-23 D-6's new highest precedence tier: a bound
 // context_artifact OUTPUT instance's config_json.sources (the context node
 // outputs a context_artifact — SD-23 D-5) wins even when the node also
-// carries a step-level ContextSources and the flow declares a
-// contexts.<name>.sources binding (Task-196/Task-194's existing tiers).
+// carries a step-level ContextSources (Task-196's existing tier).
 func TestResolveEnabledContextSourceIDsArtifactBindingOverridesStepAndFlow(t *testing.T) {
-	def := agentpack.FlowDefinition{
-		ID: "test-flow",
-		Contexts: map[string]agentpack.FlowContextBinding{
-			"main_context": {Ref: "contexts/flow-context-package.yaml", Sources: []string{"chat.summary"}},
-		},
-	}
+	def := agentpack.FlowDefinition{ID: "test-flow"}
 	node := agentpack.FlowNode{
 		ID:             "context",
-		Outputs:        map[string]string{"main_context": "flow_context_package.v1"},
 		ContextSources: []string{"feature.history"},
 		ArtifactBindings: []agentpack.FlowArtifactBinding{
 			{
@@ -36,7 +29,7 @@ func TestResolveEnabledContextSourceIDsArtifactBindingOverridesStepAndFlow(t *te
 	}
 	got := resolveEnabledContextSourceIDs(def, node)
 	if len(got) != 1 || got[0] != "mcp.driver" {
-		t.Fatalf("got %v, want artifact-binding [mcp.driver] to win over step- and flow-level", got)
+		t.Fatalf("got %v, want artifact-binding [mcp.driver] to win over step-level", got)
 	}
 }
 

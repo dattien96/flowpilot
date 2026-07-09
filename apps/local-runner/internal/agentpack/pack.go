@@ -119,8 +119,6 @@ type FlowNode struct {
 	Join           string
 	Cohort         string
 	DependsOn      []string
-	Inputs         map[string]string
-	Outputs        map[string]string
 	PromptTemplate string
 	// ContextSources is this node's own enabled context-source ids (CP-44 P-7
 	// / Task-196), the step-definition-level equivalent of
@@ -712,8 +710,6 @@ func flowNodeFromMap(m map[string]any) FlowNode {
 		Cohort:         stringField(m, "cohort"),
 		PromptTemplate: stringField(m, "promptTemplate"),
 		DependsOn:      stringSliceField(m, "dependsOn"),
-		Inputs:         stringMapField(m, "inputs"),
-		Outputs:        stringMapField(m, "outputs"),
 		ContextSources: stringSliceField(m, "contextSources"),
 	}
 	return node
@@ -1080,18 +1076,6 @@ func stringSliceField(m map[string]any, key string) []string {
 		if s := strings.TrimSpace(fmt.Sprint(item)); s != "" {
 			out = append(out, s)
 		}
-	}
-	return out
-}
-
-func stringMapField(m map[string]any, key string) map[string]string {
-	raw, ok := mapField(m, key)
-	if !ok {
-		return nil
-	}
-	out := make(map[string]string, len(raw))
-	for k, v := range raw {
-		out[k] = strings.TrimSpace(fmt.Sprint(v))
 	}
 	return out
 }

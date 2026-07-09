@@ -8,43 +8,17 @@ import (
 )
 
 // TestResolveEnabledContextSourceIDsStepOverridesFlow verifies Task-196 T-3's
-// precedence: a node's own ContextSources (step-definition-level) wins over
-// the flow-level contexts.<name>.sources binding.
+// precedence: a node's own ContextSources (step-definition-level) is used
+// when set.
 func TestResolveEnabledContextSourceIDsStepOverridesFlow(t *testing.T) {
-	def := agentpack.FlowDefinition{
-		ID: "test-flow",
-		Contexts: map[string]agentpack.FlowContextBinding{
-			"main_context": {Ref: "contexts/flow-context-package.yaml", Sources: []string{"chat.summary"}},
-		},
-	}
+	def := agentpack.FlowDefinition{ID: "test-flow"}
 	node := agentpack.FlowNode{
 		ID:             "context",
-		Outputs:        map[string]string{"main_context": "flow_context_package.v1"},
 		ContextSources: []string{"feature.history"},
 	}
 	got := resolveEnabledContextSourceIDs(def, node)
 	if len(got) != 1 || got[0] != "feature.history" {
-		t.Fatalf("got %v, want step-level [feature.history] to win over flow-level", got)
-	}
-}
-
-// TestResolveEnabledContextSourceIDsFallsBackToFlowWhenStepUnset verifies the
-// second precedence tier: no step-level selection falls back to the flow
-// binding (Task-194 behavior, unchanged by Task-196).
-func TestResolveEnabledContextSourceIDsFallsBackToFlowWhenStepUnset(t *testing.T) {
-	def := agentpack.FlowDefinition{
-		ID: "test-flow",
-		Contexts: map[string]agentpack.FlowContextBinding{
-			"main_context": {Ref: "contexts/flow-context-package.yaml", Sources: []string{"chat.summary"}},
-		},
-	}
-	node := agentpack.FlowNode{
-		ID:      "context",
-		Outputs: map[string]string{"main_context": "flow_context_package.v1"},
-	}
-	got := resolveEnabledContextSourceIDs(def, node)
-	if len(got) != 1 || got[0] != "chat.summary" {
-		t.Fatalf("got %v, want flow-level [chat.summary]", got)
+		t.Fatalf("got %v, want step-level [feature.history]", got)
 	}
 }
 
@@ -156,31 +130,22 @@ func TestValidateFlowArtifactBindingsAcceptsResolvedBindings(t *testing.T) {
 }
 
 // TestResolveEnabledContextSourceIDsOldCP44FlowUnaffectedByArtifactValidation
-// is a backward-compat guard (Task-203): a flow using ONLY the pre-CP-45
-// mechanisms (flow-level contexts.sources, step-level ContextSources, or
-// neither) has no ArtifactBindings at all, so ValidateFlowArtifactBindings
-// and the D-6 precedence tier are both no-ops — the CP-44 fallback chain
-// resolves exactly as it always did.
+// is a backward-compat guard (Task-203): a flow using neither CP-45 artifact
+// bindings nor step-level ContextSources has no ArtifactBindings at all, so
+// ValidateFlowArtifactBindings and the D-6 precedence tier are both no-ops —
+// resolveEnabledContextSourceIDs falls through to nil, the sentinel
+// buildFlowContextPackage reads as "use defaultContextSourceIDs" (Task-194
+// T-1/T-3), so the CP-44 default-set behavior is preserved end to end even
+// though this function's own contract no longer matches a flow-level
+// `contexts.<name>.sources` binding directly (that tier was retired).
 func TestResolveEnabledContextSourceIDsOldCP44FlowUnaffectedByArtifactValidation(t *testing.T) {
-	def := agentpack.FlowDefinition{
-		ID: "legacy-flow",
-		Contexts: map[string]agentpack.FlowContextBinding{
-			"main_context": {Ref: "contexts/flow-context-package.yaml", Sources: []string{"feature.history", "chat.summary", "source.excerpt"}},
-		},
-	}
-	node := agentpack.FlowNode{ID: "context", Outputs: map[string]string{"main_context": "flow_context_package.v1"}}
+	def := agentpack.FlowDefinition{ID: "legacy-flow"}
+	node := agentpack.FlowNode{ID: "context"}
 
 	if err := ValidateFlowArtifactBindings(def); err != nil {
 		t.Fatalf("unexpected error validating a flow with no artifact bindings: %v", err)
 	}
-	got := resolveEnabledContextSourceIDs(def, node)
-	want := []string{"feature.history", "chat.summary", "source.excerpt"}
-	if len(got) != len(want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-	for i, id := range want {
-		if got[i] != id {
-			t.Fatalf("got %v, want %v", got, want)
-		}
+	if got := resolveEnabledContextSourceIDs(def, node); got != nil {
+		t.Fatalf("got %v, want nil (falls through to defaultContextSourceIDs)", got)
 	}
 }
