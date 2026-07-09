@@ -67,6 +67,25 @@ type FlowDefinitionStore interface {
 // read-only built-in mirror row directly instead of cloning it first.
 var ErrDefinitionNotEditable = fmt.Errorf("flow definition is read-only; clone it before editing")
 
+// ErrFlowDefinitionInvalid wraps a validation failure (agentpack.ValidateFlowDefinition,
+// ValidateFlowContextSources, ValidateFlowArtifactBindings) for a flow
+// definition row that WAS found — as opposed to a flowRef/workflowID that
+// simply doesn't resolve to any flow at all (a plain admin workflow, or no
+// matching row). BUG-270: resolveWorkflowFlowRef's "safe bail on any error"
+// contract treated both cases identically, so a genuine data problem (e.g.
+// BUG-269's unknown context-source id) silently fell back to a normal chat
+// turn with no indication anything was wrong — the exact opposite of
+// CP-44/Task-194 T-2's "fails flow-load fast" guarantee the validation
+// itself provides. Callers use errors.As to distinguish this from a
+// legitimate "not a flow" bail and surface it to the user instead.
+type ErrFlowDefinitionInvalid struct {
+	FlowRef string
+	err     error
+}
+
+func (e *ErrFlowDefinitionInvalid) Error() string { return e.err.Error() }
+func (e *ErrFlowDefinitionInvalid) Unwrap() error  { return e.err }
+
 // canonicalFlowRef formats the canonical "packId/flowId" flowRef.
 func canonicalFlowRef(packID, flowID string) string {
 	return packID + "/" + flowID
@@ -116,13 +135,13 @@ func (r *FlowDefinitionResolver) ResolveFlowRef(ctx context.Context, flowRef str
 			return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: store lookup for %q: %w", flowRef, err)
 		} else if ok {
 			if err := agentpack.ValidateFlowDefinition(record.Definition); err != nil {
-				return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: stored definition for %q failed validation: %w", flowRef, err)
+				return FlowDefinitionRecord{}, &ErrFlowDefinitionInvalid{FlowRef: flowRef, err: fmt.Errorf("flow definition resolver: stored definition for %q failed validation: %w", flowRef, err)}
 			}
 			if err := ValidateFlowContextSources(record.Definition); err != nil {
-				return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: stored definition for %q failed validation: %w", flowRef, err)
+				return FlowDefinitionRecord{}, &ErrFlowDefinitionInvalid{FlowRef: flowRef, err: fmt.Errorf("flow definition resolver: stored definition for %q failed validation: %w", flowRef, err)}
 			}
 			if err := ValidateFlowArtifactBindings(record.Definition); err != nil {
-				return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: stored definition for %q failed validation: %w", flowRef, err)
+				return FlowDefinitionRecord{}, &ErrFlowDefinitionInvalid{FlowRef: flowRef, err: fmt.Errorf("flow definition resolver: stored definition for %q failed validation: %w", flowRef, err)}
 			}
 			return record, nil
 		}
@@ -142,14 +161,15 @@ func (r *FlowDefinitionResolver) ResolveBuiltin(ctx context.Context, packID, flo
 		if record, ok, err := r.store.GetByPackFlow(ctx, packID, flowID); err != nil {
 			return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: mirror lookup for %s/%s: %w", packID, flowID, err)
 		} else if ok {
+			mirrorRef := canonicalFlowRef(packID, flowID)
 			if err := agentpack.ValidateFlowDefinition(record.Definition); err != nil {
-				return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: mirrored definition for %s/%s failed validation: %w", packID, flowID, err)
+				return FlowDefinitionRecord{}, &ErrFlowDefinitionInvalid{FlowRef: mirrorRef, err: fmt.Errorf("flow definition resolver: mirrored definition for %s/%s failed validation: %w", packID, flowID, err)}
 			}
 			if err := ValidateFlowContextSources(record.Definition); err != nil {
-				return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: mirrored definition for %s/%s failed validation: %w", packID, flowID, err)
+				return FlowDefinitionRecord{}, &ErrFlowDefinitionInvalid{FlowRef: mirrorRef, err: fmt.Errorf("flow definition resolver: mirrored definition for %s/%s failed validation: %w", packID, flowID, err)}
 			}
 			if err := ValidateFlowArtifactBindings(record.Definition); err != nil {
-				return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: mirrored definition for %s/%s failed validation: %w", packID, flowID, err)
+				return FlowDefinitionRecord{}, &ErrFlowDefinitionInvalid{FlowRef: mirrorRef, err: fmt.Errorf("flow definition resolver: mirrored definition for %s/%s failed validation: %w", packID, flowID, err)}
 			}
 			return record, nil
 		}

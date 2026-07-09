@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"path"
@@ -213,6 +214,20 @@ func (s *InteractiveService) resolveWorkflowFlowRef(ctx context.Context, runID s
 	resolver := NewFlowDefinitionResolver(store)
 	record, err := resolver.ResolveFlowRef(ctx, workflowID)
 	if err != nil {
+		// BUG-270: a workflowID that resolves to an actual flow definition
+		// which then fails validation is a genuine data problem, not "this
+		// isn't a flow" — record it so handleStartTurn can surface it to the
+		// user instead of silently falling through to a normal chat turn.
+		var invalidErr *ErrFlowDefinitionInvalid
+		if errors.As(err, &invalidErr) {
+			s.mu.Lock()
+			if rs := s.runs[runID]; rs != nil {
+				rs.pendingFlowRefInvalidErr = err
+			}
+			s.mu.Unlock()
+			log.Printf("[flow-ref-resolve] run %q: workflowID %q resolved to flow %q but failed validation: %v", runID, workflowID, invalidErr.FlowRef, err)
+			return "", false
+		}
 		// Not a resolvable flow (a plain admin workflow, or no store): bail
 		// quietly and let the run proceed on its existing path.
 		log.Printf("[flow-ref-resolve] run %q: workflowID %q did not resolve to a flow definition: %v", runID, workflowID, err)
@@ -228,6 +243,21 @@ func (s *InteractiveService) resolveWorkflowFlowRef(ctx context.Context, runID s
 	}
 	log.Printf("[flow-ref-resolve] run %q: workflowID %q resolved to flowRef %q — flow-engine-driven path will run", runID, workflowID, record.FlowRef)
 	return record.FlowRef, true
+}
+
+// takePendingFlowRefInvalidErr reads and clears the validation error (if any)
+// resolveWorkflowFlowRef stashed on runID (BUG-270) — a one-shot read so a
+// stale error from an earlier turn is never re-surfaced for a later one.
+func (s *InteractiveService) takePendingFlowRefInvalidErr(runID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rs := s.runs[runID]
+	if rs == nil {
+		return nil
+	}
+	err := rs.pendingFlowRefInvalidErr
+	rs.pendingFlowRefInvalidErr = nil
+	return err
 }
 
 // explicitFlowRefResolves synchronously confirms an explicit chat flowRef

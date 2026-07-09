@@ -1600,6 +1600,70 @@ func TestCustomUserOwnedFlowResolvesSpawnsEntryAndAdvancesEdge(t *testing.T) {
 	})
 }
 
+// TestResolveWorkflowFlowRefSurfacesArtifactBindingValidationError is the
+// regression test for BUG-270: a workflowID that resolves to a REAL flow
+// definition which then fails ValidateFlowArtifactBindings (BUG-269's own
+// case — an unknown source id inside a bound context_artifact.v1 instance)
+// must not bail the exact same silent way as a workflowID that isn't a flow
+// at all. resolveWorkflowFlowRef still returns ok=false either way (its
+// signature is unchanged, so every other caller/test keeps working), but it
+// must ALSO stash the validation error on the run so handleStartTurn can
+// surface it instead of silently falling through to a normal chat turn.
+func TestResolveWorkflowFlowRefSurfacesArtifactBindingValidationError(t *testing.T) {
+	const badFlowRef = "55555555-5555-5555-5555-555555555555"
+
+	svc, _ := newTestServer(t)
+	store := newFakeFlowDefinitionStore()
+	store.byRef[badFlowRef] = FlowDefinitionRecord{
+		FlowRef: badFlowRef,
+		Source:  "supabase_user_definition",
+		Definition: agentpack.FlowDefinition{
+			ID: "bad-context-binding-flow",
+			Nodes: []agentpack.FlowNode{
+				{
+					ID:       "context",
+					Behavior: "context.produce",
+					ArtifactBindings: []agentpack.FlowArtifactBinding{
+						{
+							Direction:          "output",
+							ArtifactInstanceID: "history-only-context",
+							Required:           true,
+							ArtifactTypeID:     ArtifactTypeContext,
+							ConfigJSON:         map[string]any{"sources": []any{"totally.unknown.source"}},
+						},
+					},
+				},
+			},
+		},
+	}
+	svc.SetFlowDefinitionStore(store)
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	svc.runs[parent.RunID].workflowID = badFlowRef
+	svc.mu.Unlock()
+
+	if _, ok := svc.resolveWorkflowFlowRef(context.Background(), parent.RunID); ok {
+		t.Fatal("resolveWorkflowFlowRef returned true for a flow definition that fails artifact-binding validation")
+	}
+
+	invalidErr := svc.takePendingFlowRefInvalidErr(parent.RunID)
+	if invalidErr == nil {
+		t.Fatal("expected resolveWorkflowFlowRef to stash a validation error for handleStartTurn to surface, got nil")
+	}
+	if !strings.Contains(invalidErr.Error(), "totally.unknown.source") {
+		t.Fatalf("stashed error should name the offending source id, got: %v", invalidErr)
+	}
+
+	// One-shot: a second read must not re-surface the same error for a later turn.
+	if again := svc.takePendingFlowRefInvalidErr(parent.RunID); again != nil {
+		t.Fatalf("takePendingFlowRefInvalidErr should clear on read, got a second non-nil error: %v", again)
+	}
+}
+
 // TestCustomFlowWithThreeReviewersJoinsAfterAllComplete directly answers a
 // concrete question raised while reviewing CP-36's E2E guide's Scenario 9
 // (N=3 parallel reviewers): the built-in Review Loop's own review-loop.yaml

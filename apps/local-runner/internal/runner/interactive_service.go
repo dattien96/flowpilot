@@ -181,6 +181,15 @@ type interactiveRun struct {
 	// exact existing behavior. When true, startTurn skips the bulk Progress call
 	// and the executor owns every step transition for this run.
 	flowEngineDriven bool
+	// pendingFlowRefInvalidErr is set by resolveWorkflowFlowRef (BUG-270) when
+	// a run's selected workflowID resolved to an actual flow definition that
+	// then failed validation (agentpack.ValidateFlowDefinition,
+	// ValidateFlowContextSources, ValidateFlowArtifactBindings) — as opposed
+	// to the workflowID simply not being a flow at all. handleStartTurn reads
+	// and clears this right after resolveWorkflowFlowRef returns ok=false, so
+	// a genuine data problem surfaces to the user as an HTTP error instead of
+	// silently falling back to a normal chat turn with no explanation.
+	pendingFlowRefInvalidErr error
 	// chatSubMode/chatFlowRef record the explicit Chat-Mode orchestration
 	// picker selection (CP-42/Task-177 — Bug sub-mode's "Built-in
 	// orchestration" select) that started this run, e.g. subMode="bug",
