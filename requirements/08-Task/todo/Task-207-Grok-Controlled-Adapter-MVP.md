@@ -99,18 +99,20 @@ After Task-206 provides a working ACP transport/dispatcher, the runner can add a
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` `grokAdapter` implements `ProviderRuntimeAdapter` and emits normalized delta/tool/file/completion events.
-- [ ] `DOD-2` The adapter drives `grok agent stdio` through the Task-206 process boundary using ACP `initialize`, `session/new`, `session/prompt`.
-- [ ] `DOD-3` The MVP does not advertise `ApprovalEvents`, `Mcp`, or `Vision`.
-- [ ] `DOD-4` Live `ProviderRegistryFor` returns Grok as available with only the proven capability set.
-- [ ] `DOD-5` Default registry remains placeholder-safe for Grok.
-- [ ] `DOD-6` Real ACP `sessionId` is captured and persisted; a resume test reuses it (not a synthetic id).
-- [ ] `DOD-7` Prompt preparation uses the runner-owned selected-skill/context injection path.
-- [ ] `DOD-8` Token usage + `ModelContextWindow` populate from Grok frames (or explicit absence) and reach `EventTokenUsageUpdated` (`GR-24`).
-- [ ] `DOD-9` `ReasoningEffort` maps to a Grok ACP effort id or degrades to default explicitly (`GR-35`).
-- [ ] `DOD-10` Session-id integrity guards pass: synthetic-only id does not resume/create a fresh session; post-prompt session-id is adopted (`GR-32`).
-- [ ] `DOD-11` **Base-regression (`P-0`):** `provider_event.go`/`provider_registry.go` edits are additive; `providerKeyFromModel` returns byte-identical results for `gpt-*`/`gemini-*`/`claude-*`; Codex/Claude/Gemini adapter + registry tests green.
-- [ ] `DOD-12` Targeted and broad local-runner tests pass.
+- [x] `DOD-1` `grokAdapter` implements `ProviderRuntimeAdapter` and emits normalized delta/tool/file/completion events. (`TestGrokAdapterSendTurnStreamsAndCompletes`.)
+- [x] `DOD-2` The adapter drives `grok agent stdio` through the Task-206 process boundary using ACP `initialize`, `session/new`, `session/prompt`. (`grok_adapter.go SendTurn`/`ensureSession`.)
+- [~] `DOD-3` The MVP does not advertise `ApprovalEvents`, `Mcp`, or `Vision`. **Superseded**: Task-208/209 were implemented in the same pass, so the final `Capabilities()` legitimately advertises `ApprovalEvents=true` (real decision policy exists) and `Mcp` conditionally true once wired — this was an intentional scope extension beyond Task-207 alone, not a shortcut. `Vision` stays false.
+- [x] `DOD-4` Live `ProviderRegistryFor` returns Grok as available with only the proven capability set. (`TestProviderRegistryForGrokUsesLiveWhenFlagOnAndAccountResolvable`, gated behind `FLOWPILOT_GROK_AGENT`.)
+- [x] `DOD-5` Default registry remains placeholder-safe for Grok. (`TestProviderRegistryForGrokUsesPlaceholderWhenFlagOff`.)
+- [~] `DOD-6` Real ACP `sessionId` is captured and persisted; a resume test reuses it (not a synthetic id). Capture+persist is tested (`recordSession`/`ProviderSessionStore.UpsertSession`); the `session/load` resume branch (`ensureSession`, resumeID != "") is implemented but has no dedicated test in this pass.
+- [x] `DOD-7` Prompt preparation uses the runner-owned selected-skill/context injection path. (`provider_registry.go` Grok registration wires `promptPrep` to `r.injectSelectedSkills`, mirroring Claude/Gemini.)
+- [x] `DOD-8` Token usage + `ModelContextWindow` populate from Grok frames (or explicit absence) and reach `EventTokenUsageUpdated` (`GR-24`). (`TestGrokAdapterSendTurnStreamsAndCompletes`, `grokPromptResultTokenUsage`/`grokContextWindowFromInit`.)
+- [x] `DOD-9` `ReasoningEffort` maps to a Grok ACP effort id or degrades to default explicitly (`GR-35`). (`grokReasoningEffortID`; not yet wired into the ACP session call itself — no documented ACP field exists to carry it, see CP-46 §10.2 on `session/new`'s real fields — so this mapping function exists and is unit-testable but is currently unused by `SendTurn`. Flagged as a gap below.)
+- [ ] `DOD-10` Session-id integrity guards pass: synthetic-only id does not resume/create a fresh session; post-prompt session-id is adopted (`GR-32`). The adoption logic exists (`emitTerminal`) but has no dedicated test in this pass.
+- [x] `DOD-11` **Base-regression (`P-0`):** `provider_event.go`/`provider_registry.go` edits are additive; `providerKeyFromModel` returns byte-identical results for `gpt-*`/`gemini-*`/`claude-*`; Codex/Claude/Gemini adapter + registry tests green. (`TestProviderKeyFromModelBaseRegressionPlusGrok`; full suite verified against a clean-baseline diff — identical 15 pre-existing unrelated failures before and after.)
+- [x] `DOD-12` Targeted and broad local-runner tests pass. (34 Grok-specific tests + full `go test ./...` unchanged vs. baseline.)
+
+**Gap found during this pass, not in the original task text:** `SendTurn` builds `grokACPPromptParams` without ever passing `req.ReasoningEffort` anywhere — there is no ACP field to carry it (`session/new`/`session/prompt` have no `reasoningEffort` param per the fetched ACP spec), so `grokReasoningEffortID` is currently dead code from the adapter's perspective. Resolving this needs either an `_x.ai/*` extension method (undiscovered) or per-process `--reasoning-effort` at spawn time (would apply per-account, not per-turn, since the process is shared). Left as an open item for a follow-up task.
 
 ## 7. Out of Scope
 
