@@ -152,4 +152,4 @@ CP-44 (Task-191..195) làm registry + per-flow YAML binding, nhưng chỉ pack/Y
   - Client-core test items (`TestStepDefinitionContextSourcesRoundTripsThroughRepo`, `TestSaveWorkflowDoesNotWriteContextSourcesToWorkflowSteps`) **không viết được** — repo không có test harness cho `flowpilot-client-core` (0 file `*.test.ts` trong package này); verify bằng typecheck + đọc code thay vì test tự động.
   - `upsertNodeStepDefinitions` (Go-side mirror-writer, khác đường với UI save) **không** ghi `context_sources` — nhất quán vì nó cũng không ghi `context_ref` từ trước; không phải regression của task này.
 - follow-ups: cân nhắc flow-level override UI; đồng bộ descriptor list ↔ Go registry chống drift (Q-1); CP-43 Canonical Head khi land cũng sẽ là một option chọn được ở đây; badge connect-status (Q-3); test harness cho `flowpilot-client-core` (gap có sẵn, không riêng task này).
-- upstream docs updated: Task-195 (liên kết Task-198 follow-up).
+- upstream docs updated: Task-195 (liên kết Task-204 follow-up).

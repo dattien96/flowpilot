@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-09`
 - Parent Documents: [CP-44: Pluggable Context Source Registry](../../07-Coding-Plan/done/CP-44-Pluggable-Context-Source-Registry.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md)
 - Child Documents: `None`
-- Related Documents: [Task-194: Per-Flow Context Source Binding](Task-194-Per-Flow-Context-Source-Binding.md), [Task-191: Context Source Interface And Registry](Task-191-Context-Source-Interface-And-Registry.md), [Task-198: Wire Production MCP Driver Adapter](Task-198-Wire-Production-MCP-Driver-Adapter.md) (follow-up — production Google Drive backing for the seam shipped here)
+- Related Documents: [Task-194: Per-Flow Context Source Binding](Task-194-Per-Flow-Context-Source-Binding.md), [Task-191: Context Source Interface And Registry](Task-191-Context-Source-Interface-And-Registry.md), [Task-204: Wire Production MCP Driver Adapter](Task-204-Wire-Production-MCP-Driver-Adapter.md) (follow-up — production Google Drive backing for the seam shipped here)
 - Replaces: `None`
 - Tags: `context-regression-engine, flow-mode, context-source, mcp, driver, extensibility`
 
@@ -114,10 +114,10 @@ CP-44 chỉ thực sự chứng minh "add context type mà không đổi structu
 - Nguồn `jira.ticket` thật (cần MCP Jira — task riêng sau).
 - Cache kết quả MCP.
 - Canonical Head source (thuộc CP-43).
-- **Production adapter thật cho `mcp.driver`** — nghiên cứu trong phiên này tìm ra backing khả dụng (`readGoogleDriveDocument`, `google_drive_proxy_mcp.go:446`), nhưng wiring đúng cần account-resolution plumbing chưa có trong `ContextSource.Fetch`. Tách thành [Task-198](Task-198-Wire-Production-MCP-Driver-Adapter.md) theo yêu cầu chủ động của owner, tránh đoán sai logic resolve account (rủi ro bảo mật nếu lấy nhầm tài khoản).
+- **Production adapter thật cho `mcp.driver`** — nghiên cứu trong phiên này tìm ra backing khả dụng (`readGoogleDriveDocument`, `google_drive_proxy_mcp.go:446`), nhưng wiring đúng cần account-resolution plumbing chưa có trong `ContextSource.Fetch`. Tách thành [Task-204](Task-204-Wire-Production-MCP-Driver-Adapter.md) theo yêu cầu chủ động của owner, tránh đoán sai logic resolve account (rủi ro bảo mật nếu lấy nhầm tài khoản).
 
 ## 8. Completion Notes
 
 - result: `done` — 2026-07-09: seam + fake-adapter tests đầy đủ (`context_source_mcp_test.go`, 7 test), đúng theo DOD gốc ("chạy end-to-end với fake adapter"). `go test ./internal/runner/... ` sạch (chỉ 15 fail pre-existing không liên quan).
-- follow-ups: [Task-198](Task-198-Wire-Production-MCP-Driver-Adapter.md) (production adapter thật); MCP Jira source; cân nhắc cache; CP-43 cắm Canonical Head cùng cơ chế.
-- upstream docs updated: CP-44 (Task-195 marked done, Task-198 added as follow-up).
+- follow-ups: [Task-204](Task-204-Wire-Production-MCP-Driver-Adapter.md) (production adapter thật); MCP Jira source; cân nhắc cache; CP-43 cắm Canonical Head cùng cơ chế.
+- upstream docs updated: CP-44 (Task-195 marked done, Task-204 added as follow-up).

@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-09`
 - Parent Documents: [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
 - Child Documents: [Task-191: Context Source Interface And Registry](../../08-Task/done/Task-191-Context-Source-Interface-And-Registry.md) (P-1, done), [Task-192: Migrate Built-in Context Sources](../../08-Task/done/Task-192-Migrate-Builtin-Context-Sources.md) (P-2, done), [Task-193: Context Package Sections And Compatibility Projection](../../08-Task/done/Task-193-Context-Package-Sections-And-Compat-Projection.md) (P-3, done), [Task-194: Per-Flow Context Source Binding](../../08-Task/done/Task-194-Per-Flow-Context-Source-Binding.md) (P-4, done), [Task-195: MCP-Backed Context Source Adapter](../../08-Task/done/Task-195-MCP-Backed-Context-Source-Adapter.md) (P-5, done — fake adapter per its own DOD), [Task-196: Per-Step Context Source Selection UI](../../08-Task/done/Task-196-Per-Step-Context-Source-Selection-UI.md) (P-7, done)
-- Related Documents: [Task-198: Wire Production MCP Driver Adapter](../../08-Task/todo/Task-198-Wire-Production-MCP-Driver-Adapter.md) (follow-up, outside CP-44's own DOD-5 scope — production Google Drive backing for mcp.driver), [BUG-266: Changeledger Feature History Order Non-Deterministic](../../09-BugFix/done/BUG-266-Changeledger-Feature-History-Order-Nondeterministic-On-Equal-CommittedAt.md) (side-fix discovered while writing Task-192's golden test), [CP-41: RAG Harness Flow Mode](../inprogress/CP-41-RAG-Harness-Flow-Mode.md), [CP-42: Flow Pack And Generic Node Behavior Refactor](../done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) (mẫu registry gốc; **tiếp quản CP-42 `P-4`** "context packages become typed artifacts with declared bindings" — trước đây parked ở CP-43 §11, nay là charter của CP-44), [CP-43: Change Contract And Canonical Intent Signature](./CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (consumer — Canonical Head là 1 source cắm vào CP-44), [Task-168: Flow Mode Context Package Contract](../../08-Task/done/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-176: Node-Behavior Registry And Dispatch](../../08-Task/done/Task-176-Node-Behavior-Registry-And-Dispatch.md), [BUG-243: Flow Mode Validate And Audit Behaviors Disconnected](../../09-BugFix/todo/BUG-243-Flow-Mode-Validate-And-Audit-Behaviors-Disconnected-From-Task-170-171.md)
+- Related Documents: [Task-204: Wire Production MCP Driver Adapter](../../08-Task/todo/Task-204-Wire-Production-MCP-Driver-Adapter.md) (follow-up, outside CP-44's own DOD-5 scope — production Google Drive backing for mcp.driver), [BUG-266: Changeledger Feature History Order Non-Deterministic](../../09-BugFix/done/BUG-266-Changeledger-Feature-History-Order-Nondeterministic-On-Equal-CommittedAt.md) (side-fix discovered while writing Task-192's golden test), [CP-41: RAG Harness Flow Mode](../inprogress/CP-41-RAG-Harness-Flow-Mode.md), [CP-42: Flow Pack And Generic Node Behavior Refactor](../done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) (mẫu registry gốc; **tiếp quản CP-42 `P-4`** "context packages become typed artifacts with declared bindings" — trước đây parked ở CP-43 §11, nay là charter của CP-44), [CP-43: Change Contract And Canonical Intent Signature](./CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (consumer — Canonical Head là 1 source cắm vào CP-44), [Task-168: Flow Mode Context Package Contract](../../08-Task/done/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-176: Node-Behavior Registry And Dispatch](../../08-Task/done/Task-176-Node-Behavior-Registry-And-Dispatch.md), [BUG-243: Flow Mode Validate And Audit Behaviors Disconnected](../../09-BugFix/todo/BUG-243-Flow-Mode-Validate-And-Audit-Behaviors-Disconnected-From-Task-170-171.md)
 - Replaces: `None`
 - Tags: `context-regression-engine`, `flow-mode`, `context-source`, `registry`, `extensibility`, `mcp`, `deterministic-retrieval`
 
@@ -30,6 +30,8 @@
 
 - Thiết kế và lên kế hoạch triển khai một `ContextSourceRegistry` + interface `ContextSource` để mở rộng loại context ở Plan step một cách động, cắm được cả nguồn Go built-in lẫn nguồn MCP-backed, mà không đổi contract của `FlowContextPackage`.
 
+- Runner-side substrate của CP-44 (`Task-191` → `Task-195`) đã land. Task UI của `Task-196` đã được làm nhưng sẽ được update bởi [CP-45](./CP-45-Generic-Artifact-Types-And-Instances.md): step sẽ chọn `context_artifact.v1` artifact instance thay vì chọn source-id trực tiếp.
+
 ### Key Decisions
 
 - `P-1` Thêm interface `ContextSource` + `ContextSourceRegistry`, mirror `BehaviorRegistry` (CP-42 `P-1`, Task-176 `T-2/T-3`): pack/config chỉ **chọn source theo ID**; Go sở hữu implementation cho built-in; nguồn ngoài (MCP) cắm qua một adapter được khai báo trong pack.
@@ -42,7 +44,7 @@
 - `P-8` (chốt `Q-4`, 2026-07-08) **Tính đầy đủ quan trọng hơn thứ tự**: yêu cầu duy nhất là mọi context source đã enable đều được import vào package; thứ tự pack không phải ràng buộc cứng (giữ default theo `Priority` cho ổn định, nhưng không thêm cơ chế order per-flow).
 - `P-9` (chốt `Q-5`, 2026-07-08) v1 các source **độc lập**, không dependency graph (không source nào đọc output source khác).
 - `P-10` (chốt `Q-3`, 2026-07-08) Nguồn MCP gọi **đồng bộ tại Plan-time + timeout cứng** (degrade-mềm khi hết giờ/MCP down); cache là tối ưu về sau, không làm ở v1.
-- `P-11` (mới, 2026-07-08, `Q-6`) Tính pluggable phải với tới **flow/step do user tạo qua Settings UI**, không chỉ pack YAML. User chọn context source cho một step ngay trong authoring UI (Task-179/189), giới hạn ở tập source đã đăng ký/app-support (kế thừa `P-7`), persist vào `step_definitions` (giữ contract BUG-236). Đây là [Task-196](../../08-Task/done/Task-196-Per-Step-Context-Source-Selection-UI.md) — "UI wiring" **không còn** là gap ngoài phạm vi CP-44.
+- `P-11` (mới, 2026-07-08, `Q-6`) Tính pluggable phải với tới **flow/step do user tạo qua Settings UI**, không chỉ pack YAML. User cần chọn được context payload cho step Plan của họ, giới hạn ở tập source đã đăng ký/app-support (kế thừa `P-7`) và giữ contract BUG-236. Thiết kế raw `context_sources` của [Task-196](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md) đã được supersede bởi CP-45: triển khai cuối nên đi qua `context_artifact.v1` artifact instance ([Task-200](../../08-Task/todo/Task-200-Step-Artifact-Instance-Binding-UI.md) + [Task-201](../../08-Task/todo/Task-201-Context-Artifact-Migration-From-Context-Sources.md)).
 
 ### Constraints
 
@@ -60,7 +62,7 @@
 - `Q-3` **(RESOLVED → `P-10`)** Nguồn MCP: live + timeout cứng trước, cache sau. Chỉ áp dụng khi làm Task-195.
 - `Q-4` **(RESOLVED → `P-8`)** Thứ tự không quan trọng; yêu cầu là import đầy đủ mọi source enabled.
 - `Q-5` **(RESOLVED → `P-9`)** v1 các source độc lập, không dependency graph.
-- `Q-6` **(RESOLVED → `P-7` + `P-11`, 2026-07-08 → [Task-196](../../08-Task/done/Task-196-Per-Step-Context-Source-Selection-UI.md))** Flow/step do user tạo qua UI có chọn được context source không? Có — qua step-form Settings, giới hạn tập app-support, persist ở `step_definitions.context_sources`. Task-194 chỉ phủ pack-YAML binding; Task-196 phủ mặt UI/DB cho user-authored.
+- `Q-6` **(RESOLVED → `P-7` + `P-11`, 2026-07-08 → [Task-196](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md), superseded by CP-45)** Flow/step do user tạo qua UI có chọn được context source không? Có, nhưng không nên expose raw source-id là abstraction cuối. CP-45 thay bằng step bind tới `context_artifact.v1` artifact instance; instance config giữ `sources`. Task-194 chỉ phủ pack-YAML binding; [Task-200](../../08-Task/todo/Task-200-Step-Artifact-Instance-Binding-UI.md)/[Task-201](../../08-Task/todo/Task-201-Context-Artifact-Migration-From-Context-Sources.md) phủ mặt UI/DB cho user-authored.
 
 ### Source Refs
 
@@ -152,11 +154,11 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
 
 - `P-6` Test regression + extensibility (xem §7).
 
-- `P-7` UI + persistence cho **user-authored step** chọn context source — [Task-196](../../08-Task/done/Task-196-Per-Step-Context-Source-Selection-UI.md).
-  - Thêm `contextSources: string[]` vào `StepDefinition` + cột `step_definitions.context_sources`, mirror đúng lane `required_mcps` (map/save trong `supabaseAdminRepository.ts`).
-  - Step-form `WorkflowsSettings.tsx` thêm multi-select context-source (clone chip pattern của `requiredMcps`); options giới hạn ở source đã đăng ký/app-support (kế thừa `P-7`/`R-3`).
-  - `behaviorContextProduce` resolve enabled-set theo ưu tiên **step → flow (`P-4`) → default**, cùng `registry.Collect`; giữ fail-fast cho id lạ.
-  - Không thêm bảng Supabase (chỉ cột); giữ contract BUG-236 (`workflow_steps` không nhận field mới).
+- `P-7` UI + persistence cho **user-authored step** chọn context payload — original raw-source plan là [Task-196](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md), nay superseded bởi CP-45.
+  - Không triển khai final UX bằng `StepDefinition.contextSources`/`step_definitions.context_sources` nếu CP-45 đang active.
+  - Step-form `WorkflowsSettings.tsx` nên bind tới artifact instance qua [Task-200](../../08-Task/todo/Task-200-Step-Artifact-Instance-Binding-UI.md).
+  - `context_artifact.v1` instance config giữ danh sách source (`sources`) và migrate/fallback từ CP-44 qua [Task-201](../../08-Task/todo/Task-201-Context-Artifact-Migration-From-Context-Sources.md).
+  - Giữ invariant cũ: options giới hạn ở source đã đăng ký/app-support, runner fail-fast id lạ, và `workflow_steps` không nhận metadata mới (BUG-236).
 
 ## 5. Touched Areas
 
@@ -168,7 +170,7 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
   - `apps/local-runner/internal/featurecatalog/slots.go`, `chat_summary_slots.go` (bọc, không sửa hành vi)
   - `apps/local-runner/internal/agentpack/flow-pack/flows/rag-harness.yaml`
   - `apps/local-runner/internal/agentpack/flow-pack/contexts/flow-context-package.yaml`
-  - (P-7 / Task-196) `apps/desktop-flowpilot/src/components/settings/WorkflowsSettings.tsx`, `packages/flowpilot-client-core/src/domain/adminModels.ts`, `packages/flowpilot-client-core/src/data/supabaseAdminRepository.ts`, `apps/local-runner/internal/runner/flow_definition_resolver.go` + migration thêm cột `step_definitions.context_sources`
+  - (P-7 / CP-45 replacement) `apps/desktop-flowpilot/src/components/settings/WorkflowsSettings.tsx`, `packages/flowpilot-client-core/src/domain/adminModels.ts`, `packages/flowpilot-client-core/src/data/supabaseAdminRepository.ts`, `apps/local-runner/internal/runner/flow_definition_resolver.go` + Supabase tables `artifact_types`, `artifact_instances`, `step_artifact_bindings`
 - modules:
   - runner context assembly (Plan step)
   - feature catalog / change ledger / chat-summary ledger (qua bọc)
@@ -233,12 +235,104 @@ Bất biến kế thừa từ CP-41: toàn bộ retrieval là **deterministic, t
 
 ## 10. Definition of Done
 
-- [x] `DOD-1` `ContextSource` interface + `ContextSourceRegistry` tồn tại, có test (Register chặn trùng, Resolve fail-fast, từ chối non-deterministic). — Task-191
-- [x] `DOD-2` 4 nguồn hiện có (feature-history, chat-summary, source-excerpt + bước feature-resolve) đã migrate thành registered source; golden test chứng minh output package **không đổi**. — Task-192
-- [x] `DOD-3` `FlowContextPackage` hỗ trợ N source qua `Sections` + projection tương thích; thêm một source = đăng ký + khai báo, **không sửa struct/contract**. — Task-193
-- [x] `DOD-4` Có binding source per-flow trong pack YAML; flow không khai báo vẫn dùng default set (tương thích ngược). — Task-194
-- [x] `DOD-5` Ít nhất một nguồn MCP-backed (`mcp.driver`) hoạt động end-to-end, bounded, có SourceRef, degrade sạch khi MCP down. — Task-195, verified với **fake adapter** (đúng scope DOD gốc của Task-195); production adapter thật (Google Drive backing) tách thành [Task-198](../../08-Task/todo/Task-198-Wire-Production-MCP-Driver-Adapter.md), chưa land.
-- [x] `DOD-6` Toàn bộ đường CP-44 không có vector DB/embedding/similarity-search dependency (guard test giữ nguyên từ CP-41). — xuyên suốt Task-191..196.
-- [x] `DOD-7` Chứng minh (bằng test/PoC) `CP-43` có thể đăng ký Canonical Head như một source mà **không** sửa struct `FlowContextPackage`. — chứng minh 2 lần độc lập: `TestRegisterCustomSourceAppearsInPackageAndRender` (fake source, Task-193) và `mcp.driver` thật (Task-195) — cả hai thêm vào registry mà không sửa `FlowContextPackage`.
-- [x] `DOD-8` Package/source state gắn với `workflow_run_id` + Plan `workflow_step_run_id` hiện có, không tạo store context song song. — không đổi qua Task-191..196.
+- [x] `DOD-1` `ContextSource` interface + `ContextSourceRegistry` tồn tại, có test (Register chặn trùng, Resolve fail-fast, từ chối non-deterministic).
+- [x] `DOD-2` 4 nguồn hiện có (feature-history, chat-summary, source-excerpt + bước feature-resolve) đã migrate thành registered source; golden test chứng minh output package **không đổi**.
+- [x] `DOD-3` `FlowContextPackage` hỗ trợ N source qua `Sections` + projection tương thích; thêm một source = đăng ký + khai báo, **không sửa struct/contract**.
+- [x] `DOD-4` Có binding source per-flow trong pack YAML; flow không khai báo vẫn dùng default set (tương thích ngược).
+- [x] `DOD-5` Ít nhất một nguồn MCP-backed (`mcp.driver`) hoạt động end-to-end, bounded, có SourceRef, degrade sạch khi MCP down.
+- [x] `DOD-6` Toàn bộ đường CP-44 không có vector DB/embedding/similarity-search dependency (guard test giữ nguyên từ CP-41).
+- [x] `DOD-7` Chứng minh (bằng test/PoC) `CP-43` có thể đăng ký Canonical Head như một source mà **không** sửa struct `FlowContextPackage`.
+- [x] `DOD-8` Package/source state gắn với `workflow_run_id` + Plan `workflow_step_run_id` hiện có, không tạo store context song song.
 - [x] `DOD-9` User tạo/sửa một step qua Settings UI chọn được tập context source (giới hạn ở source app-support); lựa chọn persist vào `step_definitions` và `behaviorContextProduce` dùng đúng tập đó ở Plan-time; flow user-tạo không còn âm thầm rơi về default set (Task-196). — done.
+
+## 11. E2E Test Matrix
+
+> **Scope note.** Các use case dưới đây chỉ verify phần đã ship của CP-44 (`Task-191` → `Task-195`) ở runner/pack/runtime. **Không** bao phủ user-authored step selection; phần đó đã chuyển sang CP-45 artifact instance UX thay vì `step_definitions.context_sources` raw UI.
+
+### 11.1 Default Built-In Flow Works Unchanged
+
+- Mục tiêu: chứng minh refactor registry không làm đổi hành vi `rag-harness` mặc định.
+- Cách test:
+  1. Chạy flow `rag-harness` với prompt map rõ vào một feature đã có history/chat-summary.
+  2. Quan sát package render/prompt handoff của node `context`.
+  3. Xác nhận có đủ các block quen thuộc: feature history, chat summary, source excerpts, và dòng `No vector retrieval used`.
+- Kỳ vọng:
+  - Output tương đương hành vi cũ trước CP-44.
+  - Không có lỗi unknown source hay missing section.
+
+### 11.2 Flow With Explicit Source Subset
+
+- Mục tiêu: chứng minh per-flow binding thật sự giới hạn nguồn được dùng.
+- Cách test:
+  1. Clone một flow test từ `rag-harness` nhưng để `contexts.main_context.sources: [feature.history]`.
+  2. Chạy flow với prompt map vào feature có đủ history + chat-summary + excerpts.
+  3. Quan sát artifact/package của node `context`.
+- Kỳ vọng:
+  - `pkg.Sections` chỉ có `feature.history`.
+  - `HistoryBlock` có dữ liệu.
+  - `DiscussionBlock` và `SourceExcerpts` rỗng.
+
+### 11.3 Unknown Source ID Fails Fast
+
+- Mục tiêu: chứng minh pack sai không bị silent no-op.
+- Cách test:
+  1. Tạo flow test với `sources: [feature.history, totally.unknown.source]`.
+  2. Load/resolve flow qua runner.
+- Kỳ vọng:
+  - Resolve/load flow fail ngay.
+  - Lỗi nêu rõ flow id, context binding, và source id lạ.
+
+### 11.4 Generic Section Rendering For New Source
+
+- Mục tiêu: chứng minh thêm source mới không cần sửa `FlowContextPackage`.
+- Cách test:
+  1. Đăng ký một fake/custom source trong test harness hoặc local branch.
+  2. Enable source đó cùng default set.
+  3. Build + render package.
+- Kỳ vọng:
+  - Section mới xuất hiện trong `pkg.Sections`.
+  - Renderer có heading generic `### <sourceType>`.
+  - SourceRef và body của section mới được render.
+  - Không cần thêm field mới vào struct package.
+
+### 11.5 MCP Source Happy Path
+
+- Mục tiêu: chứng minh `mcp.driver` là source ngoài đầu tiên hoạt động end-to-end.
+- Cách test:
+  1. Tạo flow test bật `mcp.driver`.
+  2. Cấp `MCPDriverRef` hợp lệ qua hints/path test.
+  3. Dùng fake adapter hoặc adapter integration tương đương để trả nội dung driver.
+- Kỳ vọng:
+  - Package có section `mcp.driver`.
+  - Section có `SourceRef` dạng `mcp:<driver-ref>`.
+  - Nội dung bị cap trong giới hạn bounded.
+  - Flow vẫn render bình thường cùng các source khác.
+
+### 11.6 MCP Timeout Or Down Degrades Gracefully
+
+- Mục tiêu: chứng minh MCP lỗi không làm fail Plan step.
+- Cách test:
+  1. Chạy flow có bật `mcp.driver`.
+  2. Làm adapter timeout hoặc trả lỗi.
+- Kỳ vọng:
+  - Plan/context step vẫn hoàn tất.
+  - Package có warning về `mcp.driver`.
+  - Các source còn lại vẫn xuất hiện bình thường.
+
+### 11.7 Safety And Determinism Guards
+
+- Mục tiêu: verify các guard cốt lõi của CP-41/CP-44 vẫn còn load-bearing.
+- Cách test:
+  1. Chạy case source excerpt có path ngoài workspace hoặc symlink escape.
+  2. Chạy render/package với source set có `mcp.driver`.
+  3. Chạy lặp lại cùng một input nhiều lần.
+- Kỳ vọng:
+  - Path không an toàn bị omitted với lý do rõ (`outside_workspace` hoặc tương đương).
+  - Output vẫn có dòng `No vector retrieval used`.
+  - Thứ tự section ổn định theo `Priority`, tie-break theo `SourceType`.
+
+### 11.8 Suggested Automated Commands
+
+- `rtk go test ./apps/local-runner/internal/runner/...`
+- `rtk go test ./apps/local-runner/internal/changeledger/...`
+- `rtk go test ./apps/local-runner/internal/runner/... -run 'Test(BuildFlowContextPackageOutputUnchangedAfterRegistryRefactor|RegisterCustomSourceAppearsInPackageAndRender|FlowWithoutSourcesUsesDefaultSet|FlowWithExplicitSourceSubset|UnknownSourceIDFailsFlowLoad|McpDriverSource)'`

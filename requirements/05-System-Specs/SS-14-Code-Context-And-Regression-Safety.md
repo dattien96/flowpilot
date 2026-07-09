@@ -9,9 +9,9 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-23`
-- Last Updated: `2026-07-08` (added `US-9`/`AC-16` — extensible context sources)
+- Last Updated: `2026-07-09` (added `US-10`/`AC-17` — typed artifacts as first-class flow I/O; `2026-07-08` added `US-9`/`AC-16` — extensible context sources)
 - Parent Documents: `Product Vision`
-- Child Documents: [SD-17: Context And Regression Engine](../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SD-22: Pluggable Context Source Registry](../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md) (US-9), [CP-35: Context And Regression Engine Rollout](../07-Coding-Plan/inprogress/CP-35-Context-And-Regression-Engine-Rollout.md)
+- Child Documents: [SD-17: Context And Regression Engine](../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SD-22: Pluggable Context Source Registry](../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md) (US-9), [SD-23: Generic Artifact Framework](../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md) (US-10, AC-17; also US-9, AC-16 — generalizes SD-22 into typed artifacts), [CP-35: Context And Regression Engine Rollout](../07-Coding-Plan/inprogress/CP-35-Context-And-Regression-Engine-Rollout.md)
 - Related Documents: [SS-02: Project Context](./SS-02-Project-Context.md), [SS-09: Artifact Memory Context Retrieval](./SS-09-Artifact-Memory-Context-Retrieval.md), [SS-13: AI-Followable Document Contract](./SS-13-AI-Followable-Document-Contract.md)
 - Replaces: `None`
 - Tags: `context, regression, code-graph, oracle-guard, multi-tenant, accuracy`
@@ -103,6 +103,7 @@ A third, subtler failure compounds regressions: when a test fails, the AI "fixes
 - `US-7` As a developer, I describe a feature in plain words ("update the chat UI") without knowing any id, and the system finds the right feature and its ordered history for me.
 - `US-8` As a team lead, I want the system to force the AI to record what it did (change-audit, Task/BugFix doc) and keep tests honest, so the process cannot be silently skipped.
 - `US-9` As a developer — or the built-in pack itself — I want to add new *kinds* of context the AI is grounded on (e.g. an MCP driver file, a Jira/issue ticket, other external systems), without changing how the context package is structured, so the AI's grounding can grow to new inputs without a code refactor each time.
+- `US-10` As a developer — or the built-in pack itself — I want a flow step to declare its grounding inputs and outputs as **typed artifacts** (not just context — e.g. a set of files, and later a review bundle or other kinds), configured once as reusable instances and bound to steps by type, so the same grounding mechanism serves many kinds of step input/output without a new code path for each kind.
 
 ## 6. Acceptance Criteria
 
@@ -122,6 +123,7 @@ A third, subtler failure compounds regressions: when a test fails, the AI "fixes
 - `AC-14` A test that was passing before a change and fails after it (and was not itself changed by the task) is treated as a regression: the step is blocked, and the fix must restore the test by correcting the new code, not by changing the test.
 - `AC-15` Engine data is stored locally under the bound project, and the shared, machine-independent parts (feature-history summaries, catalog, flow rules) sync to the project's configured Drive folder using the same mechanism as chat; machine-specific data (tooling status, indexes) stays local.
 - `AC-16` A new source of context can be added and enabled per-flow *declaratively* (config/pack, not a code change to the context package): the context package composes an open set of typed sections rather than a fixed set of blocks. Every context source is deterministic (explicit lookup by key/reference — no similarity search), and when a source's backing system is unavailable it degrades to a warning rather than failing the step (`AC-9`, `AC-13`). External sources are limited to already-supported/connected integrations (e.g. MCP), never arbitrary command or path input.
+- `AC-17` Step grounding is modeled as **typed artifacts** with three layers: a system-owned artifact **type** (a versioned contract; users cannot define custom types in v1), a user-authored **instance** (a reusable, project-scoped configuration validated against its type), and a step **binding** that attaches an instance to a step's input or output slot. A slot accepts only an instance whose type matches the slot; an incompatible binding, or a missing *required* one, fails at authoring or flow-load time with an actionable error (never as an opaque provider-turn failure), while a missing *optional* one degrades to a warning (`AC-9`). Artifact producers stay deterministic and their external backings stay limited to already-supported integrations (`AC-16`). At least one artifact type beyond context (e.g. a set of files) exists, so the mechanism is not context-specific. Existing context-source configurations (`AC-16`) remain valid and resolve through a compatibility fallback rather than a hard cutover.
 
 ## 7. Business Rules
 

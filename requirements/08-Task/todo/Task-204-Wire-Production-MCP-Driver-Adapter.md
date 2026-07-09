@@ -1,8 +1,8 @@
-# Task-198: Wire Production `mcp.driver` Adapter (Google Drive Backing)
+# Task-204: Wire Production `mcp.driver` Adapter (Google Drive Backing)
 
 ## Metadata
 
-- Document ID: `Task-198`
+- Document ID: `Task-204`
 - Title: `Wire Production mcp.driver Adapter (Google Drive Backing)`
 - Phase: `task`
 - Status: `draft`
@@ -46,7 +46,7 @@
 
 - `Q-1` Exactly how does the interactive run currently know which Google Drive account is "active" for a given workspace/run, at the point `behaviorContextProduce`/`startInlineEntryChain` runs? (Needs the same research depth already done for `google_drive_proxy_mcp.go`, but for the *account selection* side — `proxyAccountConnection()` and its callers — before `T-1`/`T-2` can be implemented correctly.)
 - `Q-2` Is `driverRef` (per `FlowContextHints.MCPDriverRef`, Task-195) a Google Drive file ID directly, or an indirection (e.g. a named "driver" config that maps to a file ID)? Task-196's UI/step-definition work only carries a context-source *id* (`mcp.driver`), not a per-step driver reference yet — a driver-ref input surface may need its own small UI addition.
-- `Q-3` Per Task-198 `T-3`.
+- `Q-3` Per Task-204 `T-3`.
 
 ### Source Refs
 
