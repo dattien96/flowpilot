@@ -178,6 +178,9 @@ func providerKeyFromModel(model string) (ProviderKey, bool) {
 		return ProviderKeyGemini, true
 	case strings.HasPrefix(m, "claude-"):
 		return ProviderKeyClaude, true
+	case strings.HasPrefix(m, "grok-"), m == "grok-build":
+		// Appended last (CP-46 P-0): existing prefix cases above are unchanged.
+		return ProviderKeyGrok, true
 	}
 	return "", false
 }
