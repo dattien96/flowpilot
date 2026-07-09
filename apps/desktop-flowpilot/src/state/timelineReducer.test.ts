@@ -577,3 +577,62 @@ test("a reprompt flow_gate_violation keeps the prior status (a turn_started foll
   // prev was "completed" from turn_completed; reprompt keeps it (the follow-up turn_started flips to running).
   assert.equal(state.status, "completed");
 });
+
+test("a ready flow_audit_draft renders an info card with the commit message (BUG-243 F-3)", () => {
+  const state = foldEvents([
+    baseEvent({ id: "evt-tc", seq: 1, type: "turn_completed", finalMessage: "done" }),
+    baseEvent({
+      id: "evt-audit",
+      seq: 2,
+      type: "flow_audit_draft",
+      flowAuditDraft: {
+        workflowRunId: "run-1",
+        featureKey: "calc-core",
+        validationResult: "passed",
+        whatChanged: "Fixed Add to return a + b.",
+        commitMessage: "[BugFix][calc-core] fix Add returning wrong result",
+        changeLedgerBlock: "```flowpilot:change-ledger\nfeature_key: calc-core\n```",
+        status: "ready",
+      },
+    }),
+  ]);
+  const card = state.timeline.find((it) => it.kind === "system" && it.id === "evt-audit");
+  assert.ok(card, "the audit draft card is rendered");
+  assert.equal((card as { tone: string }).tone, "info");
+  const text = (card as { text: string }).text;
+  assert.match(text, /calc-core/);
+  assert.match(text, /fix Add returning wrong result/);
+});
+
+test("a blocked flow_audit_draft renders a warn card, not info (BUG-243 F-3)", () => {
+  const state = foldEvents([
+    baseEvent({
+      id: "evt-audit-blocked",
+      seq: 1,
+      type: "flow_audit_draft",
+      flowAuditDraft: {
+        workflowRunId: "run-1",
+        featureKey: "",
+        validationResult: "failed_validation_max_retries",
+        status: "blocked_validation_failed",
+      },
+    }),
+  ]);
+  const card = state.timeline.find((it) => it.kind === "system" && it.id === "evt-audit-blocked");
+  assert.ok(card, "the blocked audit draft card is still rendered (inspectable, not silently dropped)");
+  assert.equal((card as { tone: string }).tone, "warn");
+});
+
+test("re-applying the same flow_audit_draft does not duplicate the card (BUG-243 F-3)", () => {
+  const events: ProviderEventDTO[] = [
+    baseEvent({
+      id: "evt-audit",
+      seq: 1,
+      type: "flow_audit_draft",
+      flowAuditDraft: { workflowRunId: "run-1", featureKey: "calc-core", validationResult: "passed", status: "ready" },
+    }),
+  ];
+  const twice = foldEvents([...events, ...events]);
+  const cards = twice.timeline.filter((it) => it.kind === "system" && it.id === "evt-audit");
+  assert.equal(cards.length, 1, "re-streamed flow_audit_draft must not duplicate the card");
+});
