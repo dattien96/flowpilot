@@ -1,6 +1,8 @@
 import type {
   ArtifactDefinition,
+  ArtifactInstance,
   ArtifactRun,
+  ArtifactType,
   Integration,
   IntegrationType,
   LocalRunnerArtifact,
@@ -64,6 +66,17 @@ export interface WorkflowRepository {
    * clonedFrom=workflowId, plus a deep copy of its steps (CP-42/Task-179).
    */
   cloneWorkflow(workflowId: string, name: string): Promise<Workflow>;
+
+  /** CP-45/SD-23: the system-owned, read-only artifact type catalog. */
+  listArtifactTypes(): Promise<ArtifactType[]>;
+  /** CP-45/SD-23: built-in (isBuiltin=true, global) + user-authored, project-scoped instances. */
+  listArtifactInstances(): Promise<ArtifactInstance[]>;
+  /** Creates or updates a user-authored (isBuiltin=false) instance; throws if isBuiltin is set. */
+  saveArtifactInstance(
+    instance: Partial<ArtifactInstance> & Pick<ArtifactInstance, "artifactTypeId" | "name">,
+  ): Promise<ArtifactInstance>;
+  /** Throws if the instance is built-in, or still bound to a step (Task-199 delete-guard). */
+  deleteArtifactInstance(instanceId: string): Promise<void>;
 }
 
 export interface ArtifactCatalogRepository {

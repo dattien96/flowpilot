@@ -317,6 +317,12 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 	if pkg, ok := out.Payload["package"].(FlowContextPackage); ok {
 		prompt = renderFlowContextPrompt(ctx, pkg, userPrompt)
 	}
+	// CP-45/SD-23 D-8/D-11 (Task-202): append any non-context artifact bound
+	// to the delegate target's input (e.g. file_artifact.v1) — proves the
+	// framework's cross-step I/O beyond context without adding a new
+	// behavior node. context_artifact bindings are excluded here; they stay
+	// on the context.produce/render path above.
+	prompt += resolveInputArtifactPrompt(s.workspaceCwdFor(parentRunID), *delegateTarget)
 
 	// Same ordering rationale as the delegate-entry path above: track the
 	// flow's topology before spawning, not after, so a fast-completing child

@@ -136,6 +136,7 @@ function createEmptyStepDraft(modelId: string): StepDefinition {
     outputs: {},
     inputArtifactDefinitions: [],
     outputArtifactDefinitions: [],
+    artifactBindings: [],
     createdAt: "",
     updatedAt: "",
   };

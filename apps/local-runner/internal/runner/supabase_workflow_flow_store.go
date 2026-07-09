@@ -67,19 +67,41 @@ type dbWorkflowStepRow struct {
 }
 
 type dbStepDefinitionRow struct {
-	StepType          string            `json:"step_type"`
-	NodeID            *string           `json:"node_id"`
-	NodeLifecycle     *string           `json:"node_lifecycle"`
-	BehaviorID        *string           `json:"behavior_id"`
-	AgentRef          *string           `json:"agent_ref"`
-	DependsOnJSON     []string          `json:"depends_on_json"`
-	JoinMode          *string           `json:"join_mode"`
-	Cohort            *string           `json:"cohort"`
-	PromptTemplateRef *string           `json:"prompt_template_ref"`
-	ContextRef        *string           `json:"context_ref"`
-	ContextSources    []string          `json:"context_sources"`
-	InputsJSON        map[string]string `json:"inputs_json"`
-	OutputsJSON       map[string]string `json:"outputs_json"`
+	StepType          string                    `json:"step_type"`
+	NodeID            *string                   `json:"node_id"`
+	NodeLifecycle     *string                   `json:"node_lifecycle"`
+	BehaviorID        *string                   `json:"behavior_id"`
+	AgentRef          *string                   `json:"agent_ref"`
+	DependsOnJSON     []string                  `json:"depends_on_json"`
+	JoinMode          *string                   `json:"join_mode"`
+	Cohort            *string                   `json:"cohort"`
+	PromptTemplateRef *string                   `json:"prompt_template_ref"`
+	ContextRef        *string                   `json:"context_ref"`
+	ContextSources    []string                  `json:"context_sources"`
+	InputsJSON        map[string]string        `json:"inputs_json"`
+	OutputsJSON       map[string]string        `json:"outputs_json"`
+	ArtifactBindings  []dbStepArtifactBindingRow `json:"step_artifact_bindings"`
+}
+
+// dbStepArtifactBindingRow mirrors one `step_artifact_bindings` row joined
+// with its bound `artifact_instances` row (CP-45/SD-23 D-1/D-4). Embedding
+// the instance in the same PostgREST select avoids an N+1 lookup per node —
+// recordFromWorkflowRow denormalizes ArtifactTypeID/ConfigJSON directly onto
+// agentpack.FlowArtifactBinding.
+type dbStepArtifactBindingRow struct {
+	ID                 string                    `json:"id"`
+	Direction          string                    `json:"direction"`
+	SlotName           string                    `json:"slot_name"`
+	Required           bool                      `json:"required"`
+	Position           int                       `json:"position"`
+	ArtifactInstanceID string                    `json:"artifact_instance_id"`
+	ArtifactInstance   *dbArtifactInstanceRefRow `json:"artifact_instances"`
+}
+
+type dbArtifactInstanceRefRow struct {
+	ArtifactTypeID string         `json:"artifact_type_id"`
+	ConfigJSON     map[string]any `json:"config_json"`
+	Status         string         `json:"status"`
 }
 
 type dbFlowContextRow struct {
@@ -110,7 +132,7 @@ type dbWorkflowRow struct {
 	WorkflowSteps    []dbWorkflowStepRow         `json:"workflow_steps"`
 }
 
-const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,depends_on_json,join_mode,cohort,prompt_template_ref,context_ref,context_sources,inputs_json,outputs_json))"
+const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,depends_on_json,join_mode,cohort,prompt_template_ref,context_ref,context_sources,inputs_json,outputs_json,step_artifact_bindings(id,direction,slot_name,required,position,artifact_instance_id,artifact_instances(artifact_type_id,config_json,status))))"
 
 func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 	rec := FlowDefinitionRecord{
@@ -220,6 +242,27 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 		}
 		if len(defn.ContextSources) > 0 {
 			node.ContextSources = defn.ContextSources
+		}
+		for _, b := range defn.ArtifactBindings {
+			// A binding whose joined artifact_instances row is missing (deleted
+			// instance, stale FK left dangling by an out-of-band delete) is
+			// skipped here rather than surfaced as a resolved binding with an
+			// empty type — callers must never silently treat "instance gone" as
+			// "instance present with the empty-string type" (SD-23 F-1). Task-203
+			// surfaces this as a required-binding flow-load error / optional
+			// degrade-to-warning at the point that inspects ArtifactBindings.
+			if b.ArtifactInstance == nil {
+				continue
+			}
+			node.ArtifactBindings = append(node.ArtifactBindings, agentpack.FlowArtifactBinding{
+				Direction:          b.Direction,
+				SlotName:           b.SlotName,
+				ArtifactInstanceID: b.ArtifactInstanceID,
+				ArtifactTypeID:     b.ArtifactInstance.ArtifactTypeID,
+				ConfigJSON:         b.ArtifactInstance.ConfigJSON,
+				Required:           b.Required,
+				Position:           b.Position,
+			})
 		}
 		def.Nodes = append(def.Nodes, node)
 	}

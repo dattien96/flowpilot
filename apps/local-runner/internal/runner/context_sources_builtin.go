@@ -58,14 +58,22 @@ func ValidateFlowContextSources(def agentpack.FlowDefinition) error {
 }
 
 // resolveEnabledContextSourceIDs resolves a context-producing node's enabled
-// source set by precedence (Task-196 T-3): (a) the node's own ContextSources
-// (step-definition-level, Task-196) when set; else (b) the flow-level
+// source set by precedence: (a) CP-45/SD-23 D-6 — a bound `context_artifact`
+// input artifact instance's config_json.sources, the framework's highest
+// precedence tier; else (b) the node's own ContextSources (step-definition-
+// level, Task-196) when set; else (c) the flow-level
 // `contexts.<name>.sources` binding the node fills — found by matching one of
 // the node's declared Outputs keys against def.Contexts (the same key
 // convention rag-harness.yaml uses: node output "main_context" binds to
-// contexts.main_context); else (c) nil, meaning "use the runner's default
-// built-in set" (CP-44 P-4, Task-194 T-1/T-4).
+// contexts.main_context); else (d) nil, meaning "use the runner's default
+// built-in set" (CP-44 P-4, Task-194 T-1/T-4). CP-45 only adds tier (a) on
+// top of the pre-existing (b)/(c)/(d) chain — a node with no artifact
+// binding resolves exactly as it did before CP-45 (SD-23 D-6 soft
+// migration, F-4).
 func resolveEnabledContextSourceIDs(def agentpack.FlowDefinition, node agentpack.FlowNode) []string {
+	if ids, ok := resolveArtifactBoundContextSources(node); ok {
+		return ids
+	}
 	if len(node.ContextSources) > 0 {
 		return node.ContextSources
 	}
