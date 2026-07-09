@@ -679,6 +679,45 @@ export function WorkflowsSettings(): React.ReactElement {
     normalizeWorkflowSnapshot(workflowDraft, workflowSteps) !== workflowInitialSnapshot;
   const stepDirty = normalizeStepSnapshot(stepDraft) !== stepInitialSnapshot;
 
+  const syncWorkflowSelection = (
+    workflowId: string,
+    nextWorkflows: Workflow[] = workflows,
+    nextWorkflowSteps: WorkflowStep[],
+    nextStepDefinitions: StepDefinition[] = stepDefinitions,
+  ) => {
+    setSelectedWorkflowId(workflowId);
+    const nextSelectedWorkflow =
+      nextWorkflows.find((item) => item.id === workflowId) ?? null;
+    const nextDetailWorkflowStepType =
+      nextStepDefinitions.find(
+        (definition) =>
+          !nextWorkflowSteps.some((step) => step.stepType === definition.stepType),
+      )?.stepType ?? "";
+    setDetailWorkflowStepType(nextDetailWorkflowStepType);
+    setWorkflowSteps(nextWorkflowSteps);
+    const nextWorkflowDraft = mapWorkflowToDraft(nextSelectedWorkflow);
+    setWorkflowDraft(nextWorkflowDraft);
+    setWorkflowInitialSnapshot(
+      normalizeWorkflowSnapshot(nextWorkflowDraft, nextWorkflowSteps),
+    );
+  };
+
+  const selectStepDefinition = (stepType: string, definitions: StepDefinition[] = stepDefinitions) => {
+    setSelectedStepType(stepType);
+    const nextSelectedStep = definitions.find((item) => item.stepType === stepType) ?? null;
+    const nextStepDraft = nextSelectedStep ? { ...nextSelectedStep } : null;
+    setStepDraft(nextStepDraft);
+    setStepInitialSnapshot(normalizeStepSnapshot(nextStepDraft));
+  };
+
+  const selectWorkflowDefinition = async (workflowId: string) => {
+    const admin = await getAdminUseCases();
+    const nextWorkflowSteps = workflowId
+      ? await admin.workflows.listWorkflowSteps(workflowId)
+      : [];
+    syncWorkflowSelection(workflowId, workflows, nextWorkflowSteps, stepDefinitions);
+  };
+
   const refresh = async (
     workflowId?: string,
     stepType?: string,
@@ -737,8 +776,6 @@ export function WorkflowsSettings(): React.ReactElement {
       setModels(enabledModels);
       setArtifactTypes(nextArtifactTypes);
       setArtifactInstances(nextArtifactInstances);
-      setSelectedWorkflowId(resolvedWorkflowId);
-      setSelectedStepType(resolvedStepType);
       setStepTypesUsedByBuiltin(nextStepTypesUsedByBuiltin);
 
       if (!options?.preserveCreateDrafts) {
@@ -747,26 +784,13 @@ export function WorkflowsSettings(): React.ReactElement {
         setCreateStepDraft(createEmptyStepDraft(defaultModel));
       }
 
-      const nextSelectedWorkflow =
-        nextWorkflows.find((item) => item.id === resolvedWorkflowId) ?? null;
-      const nextDetailWorkflowStepType =
-        nextStepDefinitions.find(
-          (definition) =>
-            !nextWorkflowSteps.some((step) => step.stepType === definition.stepType),
-        )?.stepType ?? "";
-      setDetailWorkflowStepType(nextDetailWorkflowStepType);
-      setWorkflowSteps(nextWorkflowSteps);
-      const nextWorkflowDraft = mapWorkflowToDraft(nextSelectedWorkflow);
-      setWorkflowDraft(nextWorkflowDraft);
-      setWorkflowInitialSnapshot(
-        normalizeWorkflowSnapshot(nextWorkflowDraft, nextWorkflowSteps),
+      syncWorkflowSelection(
+        resolvedWorkflowId,
+        nextWorkflows,
+        nextWorkflowSteps,
+        nextStepDefinitions,
       );
-
-      const nextSelectedStep =
-        nextStepDefinitions.find((item) => item.stepType === resolvedStepType) ?? null;
-      const nextStepDraft = nextSelectedStep ? { ...nextSelectedStep } : null;
-      setStepDraft(nextStepDraft);
-      setStepInitialSnapshot(normalizeStepSnapshot(nextStepDraft));
+      selectStepDefinition(resolvedStepType, nextStepDefinitions);
     } catch (error) {
       setMessage(toErrorMessage(error, "Unable to load workflows and step definitions."));
     }
@@ -2713,11 +2737,11 @@ export function WorkflowsSettings(): React.ReactElement {
                         key={workflow.id}
                         onClick={() => {
                           if (consumeLongPressClick()) return;
-                          if (bulkModeActive) {
-                            if (longPressSelectable) toggleBulkSelected(workflow.id);
-                            return;
-                          }
-                          void refresh(workflow.id, selectedStepType, { preserveCreateDrafts: true });
+                        if (bulkModeActive) {
+                          if (longPressSelectable) toggleBulkSelected(workflow.id);
+                          return;
+                        }
+                          void selectWorkflowDefinition(workflow.id);
                           setMessage(null);
                         }}
                         onPointerCancel={clearLongPressTimer}
@@ -3093,7 +3117,7 @@ export function WorkflowsSettings(): React.ReactElement {
                           if (longPressSelectable) toggleBulkSelected(step.stepType);
                           return;
                         }
-                        void refresh(selectedWorkflowId, step.stepType, { preserveCreateDrafts: true });
+                        selectStepDefinition(step.stepType);
                         setMessage(null);
                       }}
                       onPointerCancel={clearLongPressTimer}
@@ -3293,6 +3317,21 @@ export function WorkflowsSettings(): React.ReactElement {
                     : "Delete Step"}
               </button>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {busy ? (
+        <div className="settings-modal-backdrop workflow-settings-loading-modal-backdrop" role="presentation">
+          <div
+            aria-live="polite"
+            aria-modal="true"
+            className="settings-modal workflow-settings-loading-modal"
+            role="status"
+          >
+            <span className="workflow-settings-loading-dot" />
+            <strong>Syncing changes…</strong>
+            <p>Saving updates and refreshing the latest list.</p>
           </div>
         </div>
       ) : null}
