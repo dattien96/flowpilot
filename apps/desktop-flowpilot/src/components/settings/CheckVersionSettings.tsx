@@ -82,6 +82,7 @@ export function CheckVersionSettings(): React.ReactElement {
   const [config, setConfig] = useState<CompatConfig>({
     testedClaudeVersion: "",
     testedCodexVersion: "",
+    testedGrokVersion: "",
   });
   const [deepRun, setDeepRun] = useState(false);
   const [info, setInfo] = useState<CompatVersionInfo | null>(null);
@@ -225,6 +226,11 @@ export function CheckVersionSettings(): React.ReactElement {
             label="Codex"
             tested={info.testedCodexVersion}
           />
+          <VersionRow
+            installed={info.installedGrokVersion}
+            label="Grok"
+            tested={info.testedGrokVersion}
+          />
         </div>
       ) : null}
 
@@ -249,6 +255,16 @@ export function CheckVersionSettings(): React.ReactElement {
                 setConfig((current) => ({ ...current, testedCodexVersion: event.target.value }))
               }
               value={config.testedCodexVersion}
+            />
+          </label>
+          <label className="settings-field">
+            <span>Grok</span>
+            <input
+              disabled={savingConfig}
+              onChange={(event) =>
+                setConfig((current) => ({ ...current, testedGrokVersion: event.target.value }))
+              }
+              value={config.testedGrokVersion}
             />
           </label>
         </div>
