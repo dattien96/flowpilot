@@ -190,8 +190,20 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 func (s *InteractiveService) resolveWorkflowFlowRef(ctx context.Context, runID string) (string, bool) {
 	s.mu.Lock()
 	rs := s.runs[runID]
-	if rs == nil || rs.turnCount != 0 || strings.TrimSpace(rs.workflowID) == "" {
+	if rs == nil {
 		s.mu.Unlock()
+		log.Printf("[flow-ref-resolve] run %q: no such run", runID)
+		return "", false
+	}
+	if rs.turnCount != 0 {
+		turnCount := rs.turnCount
+		s.mu.Unlock()
+		log.Printf("[flow-ref-resolve] run %q: bailing, turnCount=%d (only the first turn resolves workflowId->flowRef)", runID, turnCount)
+		return "", false
+	}
+	if strings.TrimSpace(rs.workflowID) == "" {
+		s.mu.Unlock()
+		log.Printf("[flow-ref-resolve] run %q: bailing, no workflowID set on this run", runID)
 		return "", false
 	}
 	workflowID := rs.workflowID
@@ -203,14 +215,18 @@ func (s *InteractiveService) resolveWorkflowFlowRef(ctx context.Context, runID s
 	if err != nil {
 		// Not a resolvable flow (a plain admin workflow, or no store): bail
 		// quietly and let the run proceed on its existing path.
+		log.Printf("[flow-ref-resolve] run %q: workflowID %q did not resolve to a flow definition: %v", runID, workflowID, err)
 		return "", false
 	}
 	if len(entryDelegateNodes(record.Definition)) == 0 && len(entryNodesNoDeps(record.Definition)) == 0 {
+		log.Printf("[flow-ref-resolve] run %q: workflowID %q resolved to flow %q but it has no spawnable entry node", runID, workflowID, record.FlowRef)
 		return "", false
 	}
 	if strings.TrimSpace(record.FlowRef) == "" {
+		log.Printf("[flow-ref-resolve] run %q: workflowID %q resolved but FlowRef is empty", runID, workflowID)
 		return "", false
 	}
+	log.Printf("[flow-ref-resolve] run %q: workflowID %q resolved to flowRef %q — flow-engine-driven path will run", runID, workflowID, record.FlowRef)
 	return record.FlowRef, true
 }
 
@@ -262,19 +278,23 @@ func (s *InteractiveService) explicitFlowRefResolves(ctx context.Context, flowRe
 // chain, no reachable delegate target) returns false so the caller logs and
 // bails rather than guessing at an unsupported topology.
 func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRunID, flowRef string, record FlowDefinitionRecord, userPrompt string) bool {
+	log.Printf("[inline-entry-chain] flow %q: entered for run %q", flowRef, parentRunID)
 	def := record.Definition
 	entries := entryNodesNoDeps(def)
 	if len(entries) != 1 {
+		log.Printf("[inline-entry-chain] flow %q: bailing, found %d no-dependency entry node(s), want exactly 1", flowRef, len(entries))
 		return false
 	}
 	entry := entries[0]
 
 	canonical, ok := agentpack.NormalizeBehaviorID(entry.Behavior)
 	if !ok {
+		log.Printf("[inline-entry-chain] flow %q: bailing, entry node %q behavior %q does not normalize", flowRef, entry.ID, entry.Behavior)
 		return false
 	}
 	spec, err := DefaultBehaviorRegistry().Resolve(canonical)
 	if err != nil || spec.Scope != BehaviorScopeInline {
+		log.Printf("[inline-entry-chain] flow %q: bailing, entry node %q behavior %q is not inline-scoped", flowRef, entry.ID, canonical)
 		return false
 	}
 
@@ -379,16 +399,51 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 	return true
 }
 
-// entryNodesNoDeps returns a flow's entry nodes — those declaring no
-// dependsOn — regardless of behavior, in declared order. Unlike
-// entryDelegateNodes this does not filter by behavior, so it also matches an
-// inline-behavior entry node (see startInlineEntryChain).
+// nodeHasIncomingForwardEdge reports whether any FORWARD edge targets
+// nodeID. A back edge (e.g. review-loop's synthesis->coder "continue" loop)
+// does NOT disqualify a node as an entry — only an incoming forward edge
+// means "something else must complete before this node starts." Mirrors the
+// exact edge-aware entry-detection rule
+// WorkflowsSettings.tsx's validateFlowGraph already documents and applies
+// client-side ("a node is an entry node iff no forward edge targets it").
+func nodeHasIncomingForwardEdge(edges []agentpack.FlowEdge, nodeID string) bool {
+	for _, e := range edges {
+		if strings.EqualFold(strings.TrimSpace(e.Kind), "forward") && e.To == nodeID {
+			return true
+		}
+	}
+	return false
+}
+
+// entryNodesNoDeps returns a flow's entry nodes — regardless of behavior, in
+// declared order — those with no incoming dependency, from EITHER the node's
+// own static dependsOn list OR a forward edge targeting it.
+//
+// BUG (found while diagnosing a live rag-harness test session, 2026-07-09):
+// this used to check only node.DependsOn. rag-harness.yaml's "implement" node
+// declares its dependency on "context" purely via the edges list
+// (`{from: context, to: implement, when: done, kind: forward}`), not a
+// dependsOn field — so entryDelegateNodes (below) wrongly classified
+// "implement" itself as a zero-dependency entry node, and startResolvedFlow
+// spawned the coder directly, skipping context.produce (and
+// startInlineEntryChain's step-status wiring) entirely. Confirmed via
+// .flowpilot/logs/features/agent-flow-engine: flow_start_resolved was
+// immediately followed by flow_start_entry_spawn_attempt{node_id:"implement"}
+// with no flow_start_inline_entry in between. Any flow whose entry
+// dependency is edge-only (not dependsOn-only), not just rag-harness, has
+// this exposure — including CP-45's context-coding-review-synthesis.yaml.
+// Unlike entryDelegateNodes this does not filter by behavior, so it also
+// matches an inline-behavior entry node (see startInlineEntryChain).
 func entryNodesNoDeps(def agentpack.FlowDefinition) []agentpack.FlowNode {
 	var out []agentpack.FlowNode
 	for _, node := range def.Nodes {
-		if len(node.DependsOn) == 0 {
-			out = append(out, node)
+		if len(node.DependsOn) > 0 {
+			continue
 		}
+		if nodeHasIncomingForwardEdge(def.Edges, node.ID) {
+			continue
+		}
+		out = append(out, node)
 	}
 	return out
 }
@@ -789,13 +844,25 @@ func (s *InteractiveService) reinvokeMatchingFlowChild(parentRunID, prompt strin
 }
 
 // entryDelegateNodes returns a flow's entry nodes: agent.delegate-behavior
-// nodes declaring no dependsOn, in declared order. These are the nodes a flow
-// run starts from; every other node is reached through edges once its
-// dependencies complete.
+// nodes with no incoming dependency (neither a declared dependsOn NOR an
+// incoming forward edge — see nodeHasIncomingForwardEdge), in declared
+// order. These are the nodes a flow run starts from; every other node is
+// reached through edges once its dependencies complete.
+//
+// The edge check is required, not optional: a flow whose entry dependency is
+// expressed purely via `edges:` (rag-harness's "context -> implement", CP-45's
+// "context -> coder" — no dependsOn field on the delegate node itself) would
+// otherwise have its true entry node (an inline behavior like
+// context.produce) silently bypassed in favor of the first delegate node,
+// which this function would wrongly also call an "entry." See
+// entryNodesNoDeps's doc comment for the live-test trace that found this.
 func entryDelegateNodes(def agentpack.FlowDefinition) []agentpack.FlowNode {
 	var out []agentpack.FlowNode
 	for _, node := range def.Nodes {
 		if len(node.DependsOn) > 0 {
+			continue
+		}
+		if nodeHasIncomingForwardEdge(def.Edges, node.ID) {
 			continue
 		}
 		canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior)

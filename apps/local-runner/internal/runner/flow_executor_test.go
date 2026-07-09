@@ -43,6 +43,57 @@ func TestEntryDelegateNodesEmptyWhenNoMatch(t *testing.T) {
 	}
 }
 
+// TestEntryDelegateNodesExcludesEdgeOnlyDependencyTarget reproduces a real
+// live-test bug (found 2026-07-09 diagnosing rag-harness via
+// .flowpilot/logs/features/agent-flow-engine): rag-harness.yaml's "implement"
+// node declares its dependency on "context" purely through the edges list
+// (`context -> implement, when: done, kind: forward`), never a dependsOn
+// field. entryDelegateNodes used to check dependsOn only, so it wrongly
+// classified "implement" as a zero-dependency entry delegate node —
+// startResolvedFlow then spawned the coder directly and skipped
+// context.produce (and startInlineEntryChain's step-status wiring)
+// entirely. The fix: a node with an incoming FORWARD edge is never an entry,
+// regardless of its own dependsOn list.
+func TestEntryDelegateNodesExcludesEdgeOnlyDependencyTarget(t *testing.T) {
+	def := agentpack.FlowDefinition{
+		Nodes: []agentpack.FlowNode{
+			{ID: "context", Behavior: "context.produce"},
+			{ID: "implement", Behavior: "agent.delegate", Agent: "agents/coder.md"}, // no DependsOn — matches rag-harness.yaml verbatim
+		},
+		Edges: []agentpack.FlowEdge{
+			{From: "context", To: "implement", When: "done", Kind: "forward"},
+		},
+	}
+	if entries := entryDelegateNodes(def); len(entries) != 0 {
+		t.Fatalf("entryDelegateNodes = %#v, want none (implement has an incoming forward edge from context)", entries)
+	}
+	entries := entryNodesNoDeps(def)
+	if len(entries) != 1 || entries[0].ID != "context" {
+		t.Fatalf("entryNodesNoDeps = %#v, want exactly [context]", entries)
+	}
+}
+
+// TestEntryDelegateNodesBackEdgeDoesNotDisqualifyEntry verifies the fix does
+// NOT break review-loop's own shape: "coder" has an incoming BACK edge from
+// "synthesis" (the continue-loop), which must never disqualify it as the
+// entry node — only a FORWARD edge does.
+func TestEntryDelegateNodesBackEdgeDoesNotDisqualifyEntry(t *testing.T) {
+	def := agentpack.FlowDefinition{
+		Nodes: []agentpack.FlowNode{
+			{ID: "coder", Behavior: "agent.delegate", Agent: "agents/coder.md"},
+			{ID: "synthesis", Behavior: "hub.inline", Agent: "agents/synthesizer.md"},
+		},
+		Edges: []agentpack.FlowEdge{
+			{From: "coder", To: "synthesis", When: "done", Kind: "forward"},
+			{From: "synthesis", To: "coder", When: "continue", Kind: "back"},
+		},
+	}
+	entries := entryDelegateNodes(def)
+	if len(entries) != 1 || entries[0].ID != "coder" {
+		t.Fatalf("entries = %#v, want exactly [coder] (a back edge must not disqualify it)", entries)
+	}
+}
+
 func TestForwardDoneTargetsFindsFanOutTargets(t *testing.T) {
 	edges := []agentpack.FlowEdge{
 		{From: "coder", To: "reviewer_correctness", When: "done", Kind: "forward"},
@@ -1355,6 +1406,17 @@ func TestStartResolvedFlowStartsInlineEntryFlow(t *testing.T) {
 	}
 	if len(svc.runs[parent.RunID].activeFlowEdges) == 0 {
 		t.Fatal("expected activeFlowEdges to be tracked after an inline-entry flow start")
+	}
+	// BUG (found 2026-07-09 live-testing rag-harness): the assertions above
+	// (a lone "implement" child + non-empty activeFlowEdges) are satisfied
+	// EQUALLY by the correct path (context.produce runs, then implement is
+	// spawned) and by the bug (entryDelegateNodes wrongly treats "implement"
+	// itself as the entry, skipping context.produce entirely) — this test
+	// passed even while that bug was live. planContextPackage is only ever
+	// set by startInlineEntryChain after a successful context.produce
+	// dispatch, so asserting it here closes that exact blind spot.
+	if svc.runs[parent.RunID].planContextPackage == nil {
+		t.Fatal("expected planContextPackage to be set — context.produce must run before implement is spawned, not be bypassed by it")
 	}
 }
 
