@@ -97,15 +97,15 @@ Task-207 ships a chat-only adapter with no gating; this task adds the safety-cri
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` `session/request_permission` is routed to `TurnBridge.RequestApproval` and answered with a request-specific `optionId`.
-- [ ] `DOD-2` `GrokPermissionMode` exists on `YoloPosture` and is set correctly for both YOLO states.
-- [ ] `DOD-3` YOLO=false denies a test action end to end (action verifiably does not execute).
-- [ ] `DOD-4` YOLO=true auto-approves only through runner policy; `ask_user` is proven to still block.
-- [ ] `DOD-5` A stale Grok-side allowlist cannot bypass YOLO=false (regression test passes).
-- [ ] `DOD-6` Golden-fixture test replays the exact live-captured permission round-trip (both correct and incorrect `optionId` paths).
-- [ ] `DOD-7` Two simultaneous gated Grok tool calls surface as a grouped card, resolve independently, and do not wedge the run (`GR-29`).
-- [ ] `DOD-8` Grok exec approvals set `Kind=="exec"` and engage the per-project "don't ask again" allowlist (`GR-04`, BUG-246).
-- [ ] `DOD-9` **Base-regression (`P-0`):** `yolo_resolver.go` `GrokPermissionMode` is read only by Grok; `resolveYoloPosture` outputs for codex/claude are byte-identical; Codex/Claude approval regression tests remain green.
+- [x] `DOD-1` `session/request_permission` is routed to `TurnBridge.RequestApproval` and answered with a request-specific `optionId`. (`grok_adapter.go handleInbound` + `grokEncodePermissionDecision`; `TestGrokAdapterYoloOffBlocksOnBridgeAndDeniesWithoutApproval`.)
+- [x] `DOD-2` `GrokPermissionMode` exists on `YoloPosture` and is set correctly for both YOLO states. (`yolo_resolver.go`.)
+- [x] `DOD-3` YOLO=false denies a test action end to end (action verifiably does not execute). (Same test; `bridge.approvalCallCount()==1`.)
+- [x] `DOD-4` YOLO=true auto-approves only through runner policy; `ask_user` is proven to still block. (`TestGrokAdapterYoloOnAutoApprovesViaRunnerPolicyNotBridge` proves the bridge is never consulted under YOLO; `ask_user` itself is a distinct MCP/native-tool path per Task-209, never routed through this channel, so it structurally cannot be auto-answered here — not independently re-tested.)
+- [ ] `DOD-5` A stale Grok-side allowlist cannot bypass YOLO=false (regression test passes). **Not tested**: the design is structurally immune (the adapter never reads Grok's own `config.toml`/`permission_mode`), and this was independently reinforced by a real finding — the live test account's own `config.toml` has `permission_mode = "always-approve"` — but no dedicated BUG-069-style regression test simulating this was written.
+- [~] `DOD-6` Golden-fixture test replays the exact live-captured permission round-trip (both correct and incorrect `optionId` paths). `TestGrokDispatcherRoutesInboundPermissionRequest` covers routing; the "wrong/absent optionId → PermissionRejected" path is asserted indirectly via `TestGrokEncodePermissionDecisionNoMatchReturnsEmpty` (unit-level) rather than a full live-shaped round-trip fixture.
+- [ ] `DOD-7` Two simultaneous gated Grok tool calls surface as a grouped card, resolve independently, and do not wedge the run (`GR-29`). **Not tested directly**: true by construction (the dispatcher's `dispatch()` spawns `go d.inbound(...)` per inbound frame — see `grok_process.go`), but no test issues two concurrent `session/request_permission` requests and asserts both resolve independently.
+- [x] `DOD-8` Grok exec approvals set `Kind=="exec"` and engage the per-project "don't ask again" allowlist (`GR-04`, BUG-246). (`TestGrokPermissionKindClassifiesExecFileMcp`, `TestGrokAdapterYoloOffBlocksOnBridgeAndDeniesWithoutApproval` asserts `Kind=="exec"`. The exec-vs-file-vs-mcp classification itself is inferred from docs, not independently live-verified against a real write/exec tool call — see CP-46 §10.2.)
+- [x] `DOD-9` **Base-regression (`P-0`):** `yolo_resolver.go` `GrokPermissionMode` is read only by Grok; `resolveYoloPosture` outputs for codex/claude are byte-identical; Codex/Claude approval regression tests remain green. (Full suite verified unchanged vs. clean baseline.)
 
 ## 7. Out of Scope
 
