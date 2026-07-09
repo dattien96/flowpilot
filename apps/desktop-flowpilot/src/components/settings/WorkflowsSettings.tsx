@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ArtifactDefinition,
+  ArtifactInstance,
+  ArtifactType,
   Project,
+  StepArtifactBinding,
   StepDefinition,
   SupportedModel,
   Workflow,
@@ -14,7 +17,7 @@ import { formatTimestamp, integrationTypes, toErrorMessage } from "@/components/
 import { createRunnerClient } from "@/client/createRunnerClient";
 import type { AgentDefinition } from "@/types/contract";
 
-type Tab = "workflows" | "steps";
+type Tab = "workflows" | "steps" | "artifacts";
 type ViewMode = "list" | "create";
 type DeleteTarget =
   | { kind: "workflow"; ids: string[]; labels: string[] }
@@ -36,7 +39,13 @@ type PickerModal =
   | { kind: "artifact-input"; mode: "detail" | "create" }
   | { kind: "artifact-output"; mode: "detail" | "create" }
   | { kind: "mcp"; mode: "detail" | "create" }
-  | { kind: "context-source"; mode: "detail" | "create" };
+  | { kind: "context-source"; mode: "detail" | "create" }
+  // CP-45/SD-23 Task-200: pick an ArtifactInstance to bind to this step's
+  // input or output slot. Distinct from "artifact-input"/"artifact-output"
+  // above, which pick from the older, unrelated ArtifactDefinition catalog
+  // (named-document lineage, e.g. PRD.md).
+  | { kind: "artifact-binding-input"; mode: "detail" | "create" }
+  | { kind: "artifact-binding-output"; mode: "detail" | "create" };
 
 // Task-196 (CP-44 P-7): the selectable context-source ids, limited to what
 // the runner's ContextSourceRegistry actually supports (Task-191/192/195) —
@@ -226,6 +235,9 @@ function normalizeStepSnapshot(step: StepDefinition | null) {
     outputs: step.outputs ?? {},
     inputArtifactDefinitions: step.inputArtifactDefinitions,
     outputArtifactDefinitions: step.outputArtifactDefinitions,
+    artifactBindings: [...step.artifactBindings]
+      .map((binding) => `${binding.direction}:${binding.artifactInstanceId}:${binding.required}`)
+      .sort(),
   });
 }
 
@@ -238,6 +250,30 @@ function buildModelOptions(models: SupportedModel[]) {
 
 function toggleString(list: string[], value: string) {
   return list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
+}
+
+// CP-45/SD-23 Task-200 D-7 (simplified v1 type-compat rule): a
+// `context.produce` step's only meaningful artifact slot is the
+// `context_artifact.v1` instance it outputs (resolveArtifactBoundContextSources
+// reads OUTPUT bindings of that type — artifact_type_registry.go); any other
+// step consumes/produces non-context artifact types only (e.g.
+// `file_artifact.v1` — resolveInputArtifactPrompt explicitly skips
+// context_artifact bindings). This keeps the picker from ever offering a
+// type-incompatible instance, without needing a fuller per-slot type-contract
+// system.
+function compatibleArtifactInstancesFor(
+  behaviorId: string | null | undefined,
+  instances: ArtifactInstance[],
+): ArtifactInstance[] {
+  const isContextStep = behaviorId === "context.produce";
+  return instances.filter((instance) =>
+    isContextStep ? instance.artifactTypeId === "context_artifact.v1" : instance.artifactTypeId !== "context_artifact.v1",
+  );
+}
+
+function artifactInstanceLabel(instance: ArtifactInstance | undefined, id: string): string {
+  if (!instance) return id;
+  return instance.isBuiltin ? `${instance.name} (built-in)` : instance.name;
 }
 
 function stringMapToText(values: Record<string, string> | undefined) {
@@ -267,6 +303,220 @@ function toTitleCase(value: string) {
     .join(" ");
 }
 
+// CP-45/SD-23 Task-199: the Flow settings "Artifacts" tab. Types are a
+// read-only catalog (system-owned, Task-197); instances split into built-in
+// (isBuiltin=true, seeded, read-only — shown with a "built-in" tag,
+// mirroring how a built-in Workflow is read-only) and user-authored
+// (isBuiltin=false, full CRUD here). Step binding happens in the Steps tab
+// (Task-200), not here — this page only authors reusable instances.
+function ArtifactsTabContent(props: {
+  artifactTypes: ArtifactType[];
+  artifactInstances: ArtifactInstance[];
+  artifactInstanceView: ViewMode;
+  artifactInstanceDraft: ArtifactInstance | null;
+  busy: boolean;
+  onCreateNew: (artifactTypeId: string) => void;
+  onSelect: (instance: ArtifactInstance) => void;
+  onSave: () => void;
+  onDelete: (instanceId: string) => void;
+  setArtifactInstanceView: (view: ViewMode) => void;
+  setArtifactInstanceDraft: (draft: ArtifactInstance | null) => void;
+}): React.ReactElement {
+  const {
+    artifactTypes,
+    artifactInstances,
+    artifactInstanceView,
+    artifactInstanceDraft,
+    busy,
+    onCreateNew,
+    onSelect,
+    onSave,
+    onDelete,
+    setArtifactInstanceView,
+    setArtifactInstanceDraft,
+  } = props;
+
+  const draftType = artifactTypes.find((type) => type.id === artifactInstanceDraft?.artifactTypeId);
+  const isFileType = artifactInstanceDraft?.artifactTypeId === "file_artifact.v1";
+  const isContextType = artifactInstanceDraft?.artifactTypeId === "context_artifact.v1";
+  const draftPaths = isFileType
+    ? ((artifactInstanceDraft?.configJson.paths as string[] | undefined) ?? []).join("\n")
+    : "";
+  const draftSources = isContextType
+    ? ((artifactInstanceDraft?.configJson.sources as string[] | undefined) ?? [])
+    : [];
+
+  if (artifactInstanceView === "create" && artifactInstanceDraft) {
+    return (
+      <div className="settings-subpanel">
+        <div className="settings-actions">
+          <button
+            className="secondary-btn"
+            onClick={() => {
+              setArtifactInstanceView("list");
+              setArtifactInstanceDraft(null);
+            }}
+            type="button"
+          >
+            ← Back
+          </button>
+        </div>
+        <h3>{artifactInstanceDraft.id ? "Edit Artifact Instance" : "New Artifact Instance"}</h3>
+        {artifactInstanceDraft.isBuiltin ? (
+          <div className="artifact-info-panel">
+            <strong>Built-in artifact instance</strong>
+            <p>Built-in instances are seeded by the system and cannot be edited here.</p>
+          </div>
+        ) : null}
+        <div className="settings-grid">
+          <label className="settings-field">
+            <span>Artifact Type</span>
+            <input disabled value={draftType?.id ?? artifactInstanceDraft.artifactTypeId} />
+          </label>
+          <label className="settings-field">
+            <span>Name</span>
+            <input
+              disabled={artifactInstanceDraft.isBuiltin}
+              onChange={(event) =>
+                setArtifactInstanceDraft({ ...artifactInstanceDraft, name: event.target.value })
+              }
+              value={artifactInstanceDraft.name}
+            />
+          </label>
+          <label className="settings-field settings-field-full">
+            <span>Description</span>
+            <textarea
+              disabled={artifactInstanceDraft.isBuiltin}
+              onChange={(event) =>
+                setArtifactInstanceDraft({ ...artifactInstanceDraft, description: event.target.value })
+              }
+              value={artifactInstanceDraft.description}
+            />
+          </label>
+          {isContextType ? (
+            <div className="settings-field settings-field-full">
+              <span>Context Sources</span>
+              <div className="workflow-chips">
+                {contextSourceOptions.map((option) => {
+                  const checked = draftSources.includes(option.id);
+                  return (
+                    <label className="settings-checkbox" key={option.id}>
+                      <input
+                        checked={checked}
+                        disabled={artifactInstanceDraft.isBuiltin}
+                        onChange={() =>
+                          setArtifactInstanceDraft({
+                            ...artifactInstanceDraft,
+                            configJson: { ...artifactInstanceDraft.configJson, sources: toggleString(draftSources, option.id) },
+                          })
+                        }
+                        type="checkbox"
+                      />
+                      <span>{option.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+          {isFileType ? (
+            <label className="settings-field settings-field-full">
+              <span>File Paths (one per line, workspace-relative)</span>
+              <textarea
+                disabled={artifactInstanceDraft.isBuiltin}
+                onChange={(event) =>
+                  setArtifactInstanceDraft({
+                    ...artifactInstanceDraft,
+                    configJson: {
+                      ...artifactInstanceDraft.configJson,
+                      paths: event.target.value.split("\n").map((line) => line.trim()).filter(Boolean),
+                    },
+                  })
+                }
+                value={draftPaths}
+              />
+            </label>
+          ) : null}
+        </div>
+        {!artifactInstanceDraft.isBuiltin ? (
+          <div className="settings-actions">
+            <button
+              className="primary-btn"
+              disabled={busy || !artifactInstanceDraft.name.trim()}
+              onClick={onSave}
+              type="button"
+            >
+              Save Artifact Instance
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className="settings-two-column">
+      <div className="settings-subpanel">
+        <h3>Artifact Types (built-in catalog)</h3>
+        <div className="settings-list">
+          {artifactTypes.map((type) => (
+            <div className="settings-list-item static" key={type.id}>
+              <strong>{type.id}</strong>
+              <span>{type.category} · {type.status}</span>
+            </div>
+          ))}
+          {artifactTypes.length === 0 ? <div className="settings-list-empty">No artifact types.</div> : null}
+        </div>
+        <div className="settings-actions" style={{ marginTop: "12px" }}>
+          {artifactTypes.map((type) => (
+            <button
+              className="secondary-btn"
+              key={type.id}
+              onClick={() => onCreateNew(type.id)}
+              type="button"
+            >
+              + New {type.id} instance
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="settings-subpanel">
+        <h3>Artifact Instances</h3>
+        <div className="settings-list">
+          {artifactInstances.map((instance) => (
+            <button
+              className="settings-list-item"
+              key={instance.id}
+              onClick={() => onSelect(instance)}
+              type="button"
+            >
+              <strong>
+                {instance.name}
+                {instance.isBuiltin ? " (built-in)" : ""}
+              </strong>
+              <span>{instance.artifactTypeId}</span>
+              {!instance.isBuiltin ? (
+                <button
+                  aria-label={`Delete ${instance.name}`}
+                  className="workflow-chip-remove"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void onDelete(instance.id);
+                  }}
+                  type="button"
+                >
+                  ×
+                </button>
+              ) : null}
+            </button>
+          ))}
+          {artifactInstances.length === 0 ? <div className="settings-list-empty">No artifact instances yet.</div> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function WorkflowsSettings(): React.ReactElement {
   const [tab, setTab] = useState<Tab>("workflows");
   const [workflowView, setWorkflowView] = useState<ViewMode>("list");
@@ -277,6 +527,15 @@ export function WorkflowsSettings(): React.ReactElement {
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStep[]>([]);
   const [stepDefinitions, setStepDefinitions] = useState<StepDefinition[]>([]);
   const [artifactDefinitions, setArtifactDefinitions] = useState<ArtifactDefinition[]>([]);
+  // CP-45/SD-23: the generic typed-artifact framework's catalog + instances,
+  // distinct from artifactDefinitions above (the older named-document
+  // lineage system). artifactTypes is read-only (system-owned, Task-197);
+  // artifactInstances mixes built-in (isBuiltin=true, seeded, read-only) and
+  // user-authored rows, managed from the new "Artifacts" tab (Task-199).
+  const [artifactTypes, setArtifactTypes] = useState<ArtifactType[]>([]);
+  const [artifactInstances, setArtifactInstances] = useState<ArtifactInstance[]>([]);
+  const [artifactInstanceDraft, setArtifactInstanceDraft] = useState<ArtifactInstance | null>(null);
+  const [artifactInstanceView, setArtifactInstanceView] = useState<ViewMode>("list");
   // Built-in workflows are read-only (see workflowDetailReadOnly below) and
   // can never be edited to drop a step, so a step definition still listed by
   // any built-in workflow can't be deleted either — doing so would leave
@@ -445,14 +704,23 @@ export function WorkflowsSettings(): React.ReactElement {
   ) => {
     try {
       const admin = await getAdminUseCases();
-      const [nextProjects, nextWorkflows, nextStepDefinitions, nextModels, nextArtifactDefinitions] =
-        await Promise.all([
-          admin.projects.listProjects(),
-          admin.workflows.listWorkflows(),
-          admin.workflows.listStepDefinitions(),
-          admin.providers.listSupportedModels(),
-          admin.artifacts.listDefinitions(),
-        ]);
+      const [
+        nextProjects,
+        nextWorkflows,
+        nextStepDefinitions,
+        nextModels,
+        nextArtifactDefinitions,
+        nextArtifactTypes,
+        nextArtifactInstances,
+      ] = await Promise.all([
+        admin.projects.listProjects(),
+        admin.workflows.listWorkflows(),
+        admin.workflows.listStepDefinitions(),
+        admin.providers.listSupportedModels(),
+        admin.artifacts.listDefinitions(),
+        admin.workflows.listArtifactTypes(),
+        admin.workflows.listArtifactInstances(),
+      ]);
 
       const enabledModels = nextModels.filter((model) => model.isEnabled);
       const defaultModel = enabledModels[0]?.modelId ?? DEFAULT_MODEL;
@@ -476,6 +744,8 @@ export function WorkflowsSettings(): React.ReactElement {
       setStepDefinitions(nextStepDefinitions);
       setModels(enabledModels);
       setArtifactDefinitions(nextArtifactDefinitions);
+      setArtifactTypes(nextArtifactTypes);
+      setArtifactInstances(nextArtifactInstances);
       setSelectedWorkflowId(resolvedWorkflowId);
       setSelectedStepType(resolvedStepType);
       setStepTypesUsedByBuiltin(nextStepTypesUsedByBuiltin);
@@ -1885,6 +2155,68 @@ export function WorkflowsSettings(): React.ReactElement {
             </div>
           )}
         </div>
+        {/* CP-45/SD-23 Task-200: typed artifact instance bindings, distinct
+            from "Context Sources" above (which selects raw
+            ContextSourceRegistry ids directly, CP-44/Task-196's transition
+            layer) and from "Input/Output artifact definitions" below (the
+            older, unrelated named-document catalog). A step attaches a LIST
+            of artifact instances per direction (SD-23 D-1); options are
+            filtered to instances whose type is compatible with this step's
+            behavior (D-7 — context.produce steps see context_artifact
+            instances, every other behavior sees non-context instances). */}
+        {(["output", "input"] as const).map((direction) => {
+          const bindings = draft.artifactBindings.filter((b) => b.direction === direction);
+          return (
+            <div className="settings-field settings-field-full" key={direction}>
+              <div className="workflow-chip-row">
+                <span>Artifact {direction === "input" ? "Inputs" : "Outputs"}</span>
+                <button
+                  className="secondary-btn workflow-chip-add-btn"
+                  onClick={() =>
+                    setPickerModal({
+                      kind: direction === "input" ? "artifact-binding-input" : "artifact-binding-output",
+                      mode,
+                    })
+                  }
+                  type="button"
+                >
+                  + Add
+                </button>
+              </div>
+              {bindings.length === 0 ? (
+                <div className="workflow-chip-empty">None bound</div>
+              ) : (
+                <div className="workflow-chips">
+                  {bindings.map((binding) => (
+                    <span className="workflow-chip" key={binding.artifactInstanceId}>
+                      <span>
+                        {artifactInstanceLabel(
+                          artifactInstances.find((i) => i.id === binding.artifactInstanceId),
+                          binding.artifactInstanceId,
+                        )}
+                      </span>
+                      <button
+                        aria-label={`Remove ${binding.artifactInstanceId}`}
+                        className="workflow-chip-remove"
+                        onClick={() =>
+                          onChange({
+                            ...draft,
+                            artifactBindings: draft.artifactBindings.filter(
+                              (b) => !(b.direction === direction && b.artifactInstanceId === binding.artifactInstanceId),
+                            ),
+                          })
+                        }
+                        type="button"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
         <label className="settings-field">
           <span>Inputs</span>
           <input
@@ -2014,7 +2346,11 @@ export function WorkflowsSettings(): React.ReactElement {
           ? "Output Artifact Definitions"
           : pickerModal.kind === "context-source"
             ? "Context Sources"
-            : "Required MCPs";
+            : pickerModal.kind === "artifact-binding-input"
+              ? "Artifact Inputs"
+              : pickerModal.kind === "artifact-binding-output"
+                ? "Artifact Outputs"
+                : "Required MCPs";
 
     return (
       <div className="settings-modal-backdrop" role="presentation">
@@ -2097,6 +2433,63 @@ export function WorkflowsSettings(): React.ReactElement {
                 </label>
               ))}
             </div>
+          ) : pickerModal.kind === "artifact-binding-input" || pickerModal.kind === "artifact-binding-output" ? (
+            // CP-45/SD-23 Task-200: options are filtered to instances whose
+            // type is compatible with this step's behavior (D-7), never the
+            // full unfiltered instance list.
+            (() => {
+              const direction = pickerModal.kind === "artifact-binding-input" ? "input" : "output";
+              const options = compatibleArtifactInstancesFor(draftSource?.behaviorId, artifactInstances);
+              if (options.length === 0) {
+                return (
+                  <div className="settings-empty">
+                    No compatible artifact instances yet — create one in the Artifacts tab.
+                  </div>
+                );
+              }
+              return (
+                <div className="workflow-choice-grid workflow-picker-grid">
+                  {options.map((instance) => {
+                    const bound = draftSource?.artifactBindings.some(
+                      (b) => b.direction === direction && b.artifactInstanceId === instance.id,
+                    );
+                    return (
+                      <label className="workflow-choice-card" key={instance.id}>
+                        <input
+                          checked={bound ?? false}
+                          onChange={() => {
+                            if (!draftSource) return;
+                            const existing = draftSource.artifactBindings.filter(
+                              (b) => !(b.direction === direction && b.artifactInstanceId === instance.id),
+                            );
+                            const next: StepArtifactBinding[] = bound
+                              ? existing
+                              : [
+                                  ...existing,
+                                  {
+                                    id: "",
+                                    direction,
+                                    slotName: "",
+                                    artifactInstanceId: instance.id,
+                                    required: true,
+                                    position: draftSource.artifactBindings.filter((b) => b.direction === direction).length,
+                                    createdAt: "",
+                                  },
+                                ];
+                            updateDraft({ artifactBindings: next });
+                          }}
+                          type="checkbox"
+                        />
+                        <span>
+                          <strong>{artifactInstanceLabel(instance, instance.id)}</strong>
+                          <small>{instance.artifactTypeId}</small>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              );
+            })()
           ) : artifactDefinitions.length === 0 ? (
             <div className="settings-empty">No artifact definitions available yet.</div>
           ) : (
@@ -2163,12 +2556,80 @@ export function WorkflowsSettings(): React.ReactElement {
           >
             Steps
           </button>
+          <button
+            className={`header-tab ${tab === "artifacts" ? "active" : ""}`}
+            onClick={() => {
+              setTab("artifacts");
+              exitBulkSelect();
+            }}
+            type="button"
+          >
+            Artifacts
+          </button>
         </div>
       </div>
 
       {message ? <div className={`settings-feedback ${message.toLowerCase().includes("unable") ? "error" : ""}`}>{message}</div> : null}
 
-      {tab === "workflows" ? (
+      {tab === "artifacts" ? (
+        <ArtifactsTabContent
+          artifactInstanceDraft={artifactInstanceDraft}
+          artifactInstances={artifactInstances}
+          artifactInstanceView={artifactInstanceView}
+          artifactTypes={artifactTypes}
+          busy={busy}
+          onCreateNew={(artifactTypeId) => {
+            setArtifactInstanceDraft({
+              id: "",
+              projectId: null,
+              artifactTypeId,
+              name: "",
+              description: "",
+              configJson: artifactTypeId === "file_artifact.v1" ? { paths: [] } : { sources: [] },
+              isBuiltin: false,
+              status: "active",
+              createdAt: "",
+              updatedAt: "",
+            });
+            setArtifactInstanceView("create");
+          }}
+          onDelete={async (instanceId) => {
+            setBusy(true);
+            try {
+              const admin = await getAdminUseCases();
+              await admin.workflows.deleteArtifactInstance(instanceId);
+              await refresh(selectedWorkflowId, selectedStepType, { preserveCreateDrafts: true });
+              setMessage("Artifact instance deleted.");
+            } catch (error) {
+              setMessage(toErrorMessage(error, "Unable to delete artifact instance."));
+            } finally {
+              setBusy(false);
+            }
+          }}
+          onSave={async () => {
+            if (!artifactInstanceDraft) return;
+            setBusy(true);
+            try {
+              const admin = await getAdminUseCases();
+              await admin.workflows.saveArtifactInstance(artifactInstanceDraft);
+              await refresh(selectedWorkflowId, selectedStepType, { preserveCreateDrafts: true });
+              setArtifactInstanceView("list");
+              setArtifactInstanceDraft(null);
+              setMessage("Artifact instance saved.");
+            } catch (error) {
+              setMessage(toErrorMessage(error, "Unable to save artifact instance."));
+            } finally {
+              setBusy(false);
+            }
+          }}
+          onSelect={(instance) => {
+            setArtifactInstanceDraft(instance);
+            setArtifactInstanceView("create");
+          }}
+          setArtifactInstanceDraft={setArtifactInstanceDraft}
+          setArtifactInstanceView={setArtifactInstanceView}
+        />
+      ) : tab === "workflows" ? (
         workflowView === "create" ? (
           <div className="workflow-editor-column">
             <div className="settings-subpanel">

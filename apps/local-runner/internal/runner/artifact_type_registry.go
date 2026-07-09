@@ -17,14 +17,17 @@ const (
 )
 
 // resolveArtifactBoundContextSources implements SD-23 D-5/D-6's highest
-// precedence tier for context.produce: if node has an input binding to a
-// context_artifact.v1 instance, its config_json.sources list wins over the
-// node's own step-level ContextSources (Task-196), the flow-level
-// contexts.<name>.sources binding (Task-194), and the runner default set.
-// ok=false means no context_artifact instance is bound here, so the caller
-// falls through to the pre-CP-45 precedence chain unchanged (CP-44 fallback,
-// SD-23 D-6/F-4) — resolveEnabledContextSourceIDs in context_sources_builtin.go
-// is the sole caller.
+// precedence tier for context.produce: if node has an OUTPUT binding to a
+// context_artifact.v1 instance (SD-23 D-5: "context_artifact.v1 là output
+// của Context step" — the context-producing node outputs the instance;
+// Coding/Review/Synthesis bind that same instance as their own INPUT), its
+// config_json.sources list wins over the node's own step-level
+// ContextSources (Task-196), the flow-level contexts.<name>.sources binding
+// (Task-194), and the runner default set. ok=false means no context_artifact
+// instance is bound here, so the caller falls through to the pre-CP-45
+// precedence chain unchanged (CP-44 fallback, SD-23 D-6/F-4) —
+// resolveEnabledContextSourceIDs in context_sources_builtin.go is the sole
+// caller.
 //
 // The instance's producer stays exactly BuildFlowContextPackageWithSources /
 // ContextSourceRegistry.Collect (SD-23 D-5: compose over SD-22, don't
@@ -32,7 +35,7 @@ const (
 // existing pipeline.
 func resolveArtifactBoundContextSources(node agentpack.FlowNode) ([]string, bool) {
 	for _, b := range node.ArtifactBindings {
-		if b.Direction != "input" || b.ArtifactTypeID != ArtifactTypeContext {
+		if b.Direction != "output" || b.ArtifactTypeID != ArtifactTypeContext {
 			continue
 		}
 		raw, ok := b.ConfigJSON["sources"].([]any)

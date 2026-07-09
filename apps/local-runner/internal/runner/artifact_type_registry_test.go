@@ -11,8 +11,9 @@ import (
 
 // TestResolveEnabledContextSourceIDsArtifactBindingOverridesStepAndFlow
 // verifies CP-45/SD-23 D-6's new highest precedence tier: a bound
-// context_artifact input instance's config_json.sources wins even when the
-// node also carries a step-level ContextSources and the flow declares a
+// context_artifact OUTPUT instance's config_json.sources (the context node
+// outputs a context_artifact — SD-23 D-5) wins even when the node also
+// carries a step-level ContextSources and the flow declares a
 // contexts.<name>.sources binding (Task-196/Task-194's existing tiers).
 func TestResolveEnabledContextSourceIDsArtifactBindingOverridesStepAndFlow(t *testing.T) {
 	def := agentpack.FlowDefinition{
@@ -27,7 +28,7 @@ func TestResolveEnabledContextSourceIDsArtifactBindingOverridesStepAndFlow(t *te
 		ContextSources: []string{"feature.history"},
 		ArtifactBindings: []agentpack.FlowArtifactBinding{
 			{
-				Direction:      "input",
+				Direction:      "output",
 				ArtifactTypeID: ArtifactTypeContext,
 				ConfigJSON:     map[string]any{"sources": []any{"mcp.driver"}},
 			},
@@ -52,20 +53,21 @@ func TestResolveEnabledContextSourceIDsFallsThroughWhenNoArtifactBinding(t *test
 	}
 }
 
-// TestResolveArtifactBoundContextSourcesIgnoresOutputAndOtherTypeBindings
-// verifies the D-6 lookup only considers input bindings of type
-// context_artifact.v1 — an output binding or a differently-typed input
-// binding (e.g. file_artifact.v1) must never be mistaken for a context
-// source list.
-func TestResolveArtifactBoundContextSourcesIgnoresOutputAndOtherTypeBindings(t *testing.T) {
+// TestResolveArtifactBoundContextSourcesIgnoresInputAndOtherTypeBindings
+// verifies the D-6 lookup only considers OUTPUT bindings of type
+// context_artifact.v1 — an input binding (a consumer's own binding to that
+// same instance, e.g. on a downstream coder/reviewer node) or a
+// differently-typed binding (e.g. file_artifact.v1) must never be mistaken
+// for a context source list on the producing node.
+func TestResolveArtifactBoundContextSourcesIgnoresInputAndOtherTypeBindings(t *testing.T) {
 	node := agentpack.FlowNode{
 		ArtifactBindings: []agentpack.FlowArtifactBinding{
-			{Direction: "output", ArtifactTypeID: ArtifactTypeContext, ConfigJSON: map[string]any{"sources": []any{"chat.summary"}}},
-			{Direction: "input", ArtifactTypeID: ArtifactTypeFile, ConfigJSON: map[string]any{"paths": []any{"README.md"}}},
+			{Direction: "input", ArtifactTypeID: ArtifactTypeContext, ConfigJSON: map[string]any{"sources": []any{"chat.summary"}}},
+			{Direction: "output", ArtifactTypeID: ArtifactTypeFile, ConfigJSON: map[string]any{"paths": []any{"README.md"}}},
 		},
 	}
 	if _, ok := resolveArtifactBoundContextSources(node); ok {
-		t.Fatal("expected ok=false: no input context_artifact binding present")
+		t.Fatal("expected ok=false: no output context_artifact binding present")
 	}
 }
 
