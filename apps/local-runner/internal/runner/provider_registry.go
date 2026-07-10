@@ -496,17 +496,17 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				}
 				a := h.adapter
 				a.sessionStore = ProviderSessionStoreFor(r)
-				// Task-209 GR-06: append grokAskUserReinforcement after skill
+				// Task-209 GR-06/GR-07: append grokToolReinforcements after skill
 				// injection (mirrors Claude/Codex live promptPrep). Without
 				// this, the registry override of preparePrompt drops the
 				// default reinforcement and the model prefers native
-				// ask_user_question (headless picker unavailable → plain text).
+				// ask_user_question / spawn_subagent (no QuestionCard / agent panel).
 				a.promptPrep = func(req TurnRequest) string {
 					workspace := r.workspace
 					if req.Cwd != "" {
 						workspace = req.Cwd
 					}
-					return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills) + grokAskUserReinforcement
+					return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills) + grokToolReinforcements
 				}
 				a.mcpServer = r.claudeMCP
 				a.mcpBaseURL = r.mcpBaseURLValue

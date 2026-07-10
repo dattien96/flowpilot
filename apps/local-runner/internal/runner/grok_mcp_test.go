@@ -145,11 +145,14 @@ func TestGrokAdapterDefaultPreparePromptAppendsAskUserReinforcement(t *testing.T
 	if !strings.Contains(got, "pick a language") {
 		t.Fatalf("expected original prompt preserved, got %q", got)
 	}
-	if !strings.Contains(got, grokAskUserReinforcement) {
-		t.Fatalf("default preparePrompt must append grokAskUserReinforcement, got %q", got)
+	if !strings.Contains(got, grokToolReinforcements) {
+		t.Fatalf("default preparePrompt must append grokToolReinforcements, got %q", got)
 	}
 	if !strings.Contains(got, "ask_user") || !strings.Contains(got, "ask_user_question") {
 		t.Fatalf("reinforcement must name FlowPilot ask_user and warn off native ask_user_question, got %q", got)
+	}
+	if !strings.Contains(got, "spawn_agent") || !strings.Contains(got, "spawn_subagent") {
+		t.Fatalf("reinforcement must name FlowPilot spawn_agent and warn off native spawn_subagent, got %q", got)
 	}
 }
 
@@ -160,14 +163,14 @@ func TestGrokPromptPrepAppendsAskUserReinforcement(t *testing.T) {
 	a := newGrokAdapter(newGrokDispatcher(nil, nil), "/tmp/x")
 	// Mirror the live registry hook shape (skills + reinforcement).
 	a.promptPrep = func(req TurnRequest) string {
-		return "SKILL\n" + req.Prompt + grokAskUserReinforcement
+		return "SKILL\n" + req.Prompt + grokToolReinforcements
 	}
 	got := a.preparePrompt(TurnRequest{Prompt: "need a choice"})
 	if !strings.HasPrefix(got, "SKILL\nneed a choice") {
 		t.Fatalf("expected skill prefix + prompt, got %q", got)
 	}
-	if !strings.Contains(got, grokAskUserReinforcement) {
-		t.Fatalf("live promptPrep must append grokAskUserReinforcement, got %q", got)
+	if !strings.Contains(got, grokToolReinforcements) {
+		t.Fatalf("live promptPrep must append grokToolReinforcements, got %q", got)
 	}
 }
 
@@ -209,8 +212,8 @@ func TestGrokSendTurnPromptIncludesAskUserReinforcement(t *testing.T) {
 	if capturedPrompt == "" {
 		t.Fatal("expected session/prompt on the wire with non-empty text; capture failed")
 	}
-	if !strings.Contains(capturedPrompt, grokAskUserReinforcement) {
-		t.Fatalf("session/prompt text must include grokAskUserReinforcement, got %q", capturedPrompt)
+	if !strings.Contains(capturedPrompt, grokToolReinforcements) {
+		t.Fatalf("session/prompt text must include grokToolReinforcements, got %q", capturedPrompt)
 	}
 	if !strings.Contains(capturedPrompt, "choose language") {
 		t.Fatalf("session/prompt text must include user prompt, got %q", capturedPrompt)
@@ -404,6 +407,92 @@ func TestGrokMcpSpawnAgentWaitModes(t *testing.T) {
 	}
 	if got.RunID != "child-bg-1" {
 		t.Fatalf("wait=false result runId = %q, want child-bg-1", got.RunID)
+	}
+}
+
+func TestParseGrokSpawnSubagentInputMapsToSpawnAgentInput(t *testing.T) {
+	in, err := parseGrokSpawnSubagentInput(map[string]any{
+		"prompt":        "implement feature X",
+		"description":   "feature work",
+		"subagent_type": "plan",
+		"background":    true,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if in.Agent != "synthesizer" || in.Prompt != "implement feature X" || in.Wait {
+		t.Fatalf("got %+v, want agent=synthesizer wait=false", in)
+	}
+
+	in2, err := parseGrokSpawnSubagentInput(map[string]any{
+		"prompt":      "run review",
+		"description": "review",
+	})
+	if err != nil {
+		t.Fatalf("parse default type: %v", err)
+	}
+	if in2.Agent != "coder" || !in2.Wait {
+		t.Fatalf("default subagent_type should map to coder with wait=true, got %+v", in2)
+	}
+
+	if _, err := parseGrokSpawnSubagentInput(map[string]any{"description": "no prompt"}); err == nil {
+		t.Fatal("expected error for missing prompt")
+	}
+}
+
+func TestGrokNormalizedToolDisplayNameAliasesNativeTools(t *testing.T) {
+	if got := grokNormalizedToolDisplayName("spawn_subagent"); got != "spawn_agent" {
+		t.Fatalf("spawn_subagent alias = %q, want spawn_agent", got)
+	}
+	if got := grokNormalizedToolDisplayName("ask_user_question"); got != "ask_user" {
+		t.Fatalf("ask_user_question alias = %q, want ask_user", got)
+	}
+	if got := grokNormalizedToolDisplayName("read_file"); got != "read_file" {
+		t.Fatalf("unrelated tool should pass through, got %q", got)
+	}
+}
+
+// TestGrokTryShimNativeSpawnSubagentRoutesToBridge proves Task-209 T-3/DOD-8: when the
+// model calls native spawn_subagent, the adapter mirrors it to TurnBridge.SpawnAgent.
+func TestGrokTryShimNativeSpawnSubagentRoutesToBridge(t *testing.T) {
+	a := newGrokAdapter(newGrokDispatcher(nil, nil), "/tmp/x")
+	a.mcpServer = newClaudeMCPServer()
+	bridge := &fakeGrokBridge{
+		spawnResult: SpawnAgentResult{RunID: "child-shim-1", ProviderKey: "grok"},
+	}
+	seen := map[string]struct{}{}
+	n := grokNotification{
+		Method: "session/update",
+		Params: map[string]any{
+			"sessionId": "session-spawn-shim",
+			"update": map[string]any{
+				"sessionUpdate": "tool_call",
+				"toolCallId":    "call-spawn-1",
+				"title":         "spawn_subagent",
+				"rawInput": map[string]any{
+					"prompt":        "review the code",
+					"description":   "code review",
+					"subagent_type": "explore",
+					"background":    false,
+				},
+				"_meta": map[string]any{"x.ai/tool": map[string]any{"name": "spawn_subagent"}},
+			},
+		},
+	}
+	a.tryShimGrokNativeSpawnSubagent("session-spawn-shim", bridge, n, seen)
+	time.Sleep(100 * time.Millisecond)
+	if bridge.spawnIn.Agent != "reviewer" || bridge.spawnIn.Prompt != "review the code" {
+		t.Fatalf("shim SpawnAgent args = %+v, want agent=reviewer prompt=review the code", bridge.spawnIn)
+	}
+	if !bridge.spawnIn.Wait {
+		t.Fatal("background=false must map to wait=true")
+	}
+	// Dedup: second call with same toolCallId must not re-spawn.
+	bridge.spawnIn = SpawnAgentInput{}
+	a.tryShimGrokNativeSpawnSubagent("session-spawn-shim", bridge, n, seen)
+	time.Sleep(50 * time.Millisecond)
+	if bridge.spawnIn.Agent != "" {
+		t.Fatalf("duplicate toolCallId must not re-spawn, got %+v", bridge.spawnIn)
 	}
 }
 

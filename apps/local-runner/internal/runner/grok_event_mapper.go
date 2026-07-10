@@ -138,6 +138,15 @@ func grokToolOutput(update map[string]any) any {
 // "Read `C:\...\sample.txt`") so the desktop's tool icon/grouping logic gets a
 // consistent name across the started/completed pair.
 func grokToolDisplayName(update map[string]any, fallbackTitle string) string {
+	if name := grokRawToolName(update, fallbackTitle); name != "" {
+		return grokNormalizedToolDisplayName(name)
+	}
+	return "tool"
+}
+
+// grokRawToolName returns the machine tool name from a tool_call/update frame
+// without UI-boundary normalization (used by native-tool shims).
+func grokRawToolName(update map[string]any, fallbackTitle string) string {
 	meta, _ := update["_meta"].(map[string]any)
 	if meta != nil {
 		if toolMeta, ok := meta["x.ai/tool"].(map[string]any); ok {
@@ -149,7 +158,21 @@ func grokToolDisplayName(update map[string]any, fallbackTitle string) string {
 	if fallbackTitle != "" {
 		return fallbackTitle
 	}
-	return "tool"
+	return ""
+}
+
+// grokNormalizedToolDisplayName maps Grok native tool names to FlowPilot's public tool
+// names at the UI/event boundary (Task-209 DOD-8 / GR-07, BUG-124). FlowPilot MCP
+// tools keep their own names; native Grok-only tools are aliased for desktop grouping.
+func grokNormalizedToolDisplayName(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "spawn_subagent":
+		return "spawn_agent"
+	case "ask_user_question":
+		return "ask_user"
+	default:
+		return name
+	}
 }
 
 func grokFirstLocationPath(v any) string {
