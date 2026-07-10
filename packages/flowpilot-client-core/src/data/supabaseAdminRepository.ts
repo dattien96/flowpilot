@@ -133,6 +133,12 @@ function mapSupportedModel(row: Row): SupportedModel {
     detectionMethod: row.detection_method ? String(row.detection_method) : null,
     detectedCliVersion: row.detected_cli_version ? String(row.detected_cli_version) : null,
     lastDetectedAt: row.last_detected_at ? String(row.last_detected_at) : null,
+    supportedReasoningEfforts: Array.isArray(row.supported_reasoning_efforts)
+      ? row.supported_reasoning_efforts.map(String)
+      : null,
+    defaultReasoningEffort: row.default_reasoning_effort ? String(row.default_reasoning_effort) : null,
+    contextWindowTokens: row.context_window_tokens == null ? null : Number(row.context_window_tokens),
+    maxContextWindowTokens: row.max_context_window_tokens == null ? null : Number(row.max_context_window_tokens),
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
   };
@@ -1010,6 +1016,10 @@ export class SupabaseAdminRepository implements
       detection_method: model.detectionMethod,
       detected_cli_version: model.detectedCliVersion,
       last_detected_at: model.lastDetectedAt,
+      supported_reasoning_efforts: model.supportedReasoningEfforts,
+      default_reasoning_effort: model.defaultReasoningEffort,
+      context_window_tokens: model.contextWindowTokens,
+      max_context_window_tokens: model.maxContextWindowTokens,
     }).select("*").single();
     assertNoError(error, "Unable to create supported model.");
     return mapSupportedModel(data);
@@ -1021,6 +1031,14 @@ export class SupabaseAdminRepository implements
     if (patch.displayName !== undefined) payload.display_name = patch.displayName;
     if (patch.isEnabled !== undefined) payload.is_enabled = patch.isEnabled;
     if (patch.sortOrder !== undefined) payload.sort_order = patch.sortOrder;
+    // Task-215: re-detect refreshes reasoning/context-window provenance on an
+    // already-registered row (unlike model rows themselves, which are
+    // insert-only per Task-213 T-3) — these are capability facts about the
+    // model, not user-editable state.
+    if (patch.supportedReasoningEfforts !== undefined) payload.supported_reasoning_efforts = patch.supportedReasoningEfforts;
+    if (patch.defaultReasoningEffort !== undefined) payload.default_reasoning_effort = patch.defaultReasoningEffort;
+    if (patch.contextWindowTokens !== undefined) payload.context_window_tokens = patch.contextWindowTokens;
+    if (patch.maxContextWindowTokens !== undefined) payload.max_context_window_tokens = patch.maxContextWindowTokens;
     const { data, error } = await this.supabase.from("ai_supported_models").update(payload).eq("id", id).select("*").single();
     assertNoError(error, "Unable to update supported model.");
     return mapSupportedModel(data);

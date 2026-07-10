@@ -39,6 +39,11 @@ interface RawLocalRunnerProviderModel {
   display_name: string;
   available: boolean;
   source: string;
+  // Task-215: see LocalRunnerProviderModel/ProviderModel (Go).
+  supported_reasoning_efforts?: string[];
+  default_reasoning_effort?: string;
+  context_window_tokens?: number;
+  max_context_window_tokens?: number;
 }
 
 interface RawLocalRunnerProvider {
@@ -59,6 +64,10 @@ function mapLocalRunnerProviderModel(raw: RawLocalRunnerProviderModel): LocalRun
     displayName: raw.display_name,
     available: raw.available,
     source: raw.source,
+    supportedReasoningEfforts: raw.supported_reasoning_efforts,
+    defaultReasoningEffort: raw.default_reasoning_effort,
+    contextWindowTokens: raw.context_window_tokens,
+    maxContextWindowTokens: raw.max_context_window_tokens,
   };
 }
 

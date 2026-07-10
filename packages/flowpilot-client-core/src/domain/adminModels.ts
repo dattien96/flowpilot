@@ -95,6 +95,15 @@ export interface SupportedModel {
   detectionMethod: string | null;
   detectedCliVersion: string | null;
   lastDetectedAt: string | null;
+  // Task-215: per-model reasoning-effort support and context-window size,
+  // detected from the same provider CLI calls Task-213 already makes
+  // (codex debug models / ~/.grok/models_cache.json). Null when the
+  // provider has no per-model catalog for this (Claude) or the row was
+  // never detected (manually added).
+  supportedReasoningEfforts: string[] | null;
+  defaultReasoningEffort: string | null;
+  contextWindowTokens: number | null;
+  maxContextWindowTokens: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -452,6 +461,13 @@ export interface LocalRunnerProviderModel {
   displayName: string;
   available: boolean;
   source: string;
+  // Task-215: mirrors the Go ProviderModel's new reasoning/context-window
+  // fields (see SupportedModel above) — carried on the live-detected entry
+  // before it is stamped onto a persisted ai_supported_models row.
+  supportedReasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
+  contextWindowTokens?: number;
+  maxContextWindowTokens?: number;
 }
 
 export interface LocalRunnerProvider {

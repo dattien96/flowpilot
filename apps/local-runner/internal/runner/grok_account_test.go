@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -148,8 +149,10 @@ func TestHasValidProviderAuthFileGrokRecognizesLiveShape(t *testing.T) {
 // ---- Task-213: detectGrokModels -------------------------------------------
 
 // liveGrokModelsCacheFixture mirrors the real ~/.grok/models_cache.json
-// captured live (Grok Build 0.2.93, Task-213 authoring), with an extra
-// hidden/unsupported entry added to prove the filter works.
+// captured live (Grok Build 0.2.93, Task-213 authoring; reasoning_efforts/
+// supports_reasoning_effort/reasoning_effort added Task-215 from a second
+// live capture), with an extra hidden/unsupported entry added to prove the
+// filter works.
 const liveGrokModelsCacheFixture = `{
   "fetched_at": "2026-07-09T23:54:35.533125300Z",
   "grok_version": "0.2.93",
@@ -162,7 +165,14 @@ const liveGrokModelsCacheFixture = `{
         "name": "Grok 4.5",
         "context_window": 500000,
         "hidden": false,
-        "supported_in_api": true
+        "supported_in_api": true,
+        "reasoning_effort": "high",
+        "supports_reasoning_effort": true,
+        "reasoning_efforts": [
+          {"id": "high", "value": "high", "label": "High Effort", "default": true},
+          {"id": "medium", "value": "medium", "label": "Medium Effort", "default": false},
+          {"id": "low", "value": "low", "label": "Low Effort", "default": false}
+        ]
       }
     },
     "grok-internal-preview": {
@@ -208,6 +218,16 @@ func TestDetectGrokModelsFiltersHiddenAndUnsupported(t *testing.T) {
 	}
 	if models[0].Source != "grok_models_cache" {
 		t.Fatalf("expected source=grok_models_cache, got %q", models[0].Source)
+	}
+	if models[0].ContextWindowTokens != 500000 {
+		t.Fatalf("expected context_window_tokens=500000, got %d", models[0].ContextWindowTokens)
+	}
+	if models[0].DefaultReasoningEffort != "high" {
+		t.Fatalf("expected default_reasoning_effort=high, got %q", models[0].DefaultReasoningEffort)
+	}
+	wantEfforts := []string{"high", "medium", "low"}
+	if !reflect.DeepEqual(models[0].SupportedReasoningEfforts, wantEfforts) {
+		t.Fatalf("expected supported_reasoning_efforts=%v, got %v", wantEfforts, models[0].SupportedReasoningEfforts)
 	}
 }
 

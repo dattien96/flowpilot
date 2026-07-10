@@ -1476,6 +1476,21 @@ type codexDebugModel struct {
 	DisplayName    string `json:"display_name"`
 	Visibility     string `json:"visibility"`
 	SupportedInAPI bool   `json:"supported_in_api"`
+	// DefaultReasoningLevel/SupportedReasoningLevels/ContextWindow/
+	// MaxContextWindow (Task-215) are live-verified fields `codex debug
+	// models` already returns per model (Codex Build 0.144.1: gpt-5.6-sol
+	// carries supported_reasoning_levels up to max/ultra and
+	// context_window/max_context_window/effective_context_window_percent) —
+	// previously silently dropped because this struct didn't type them.
+	DefaultReasoningLevel    string                     `json:"default_reasoning_level"`
+	SupportedReasoningLevels []codexDebugReasoningLevel `json:"supported_reasoning_levels"`
+	ContextWindow            int64                      `json:"context_window"`
+	MaxContextWindow         int64                      `json:"max_context_window"`
+}
+
+type codexDebugReasoningLevel struct {
+	Effort      string `json:"effort"`
+	Description string `json:"description"`
 }
 
 type mcpBackendSpec struct {
@@ -1657,15 +1672,28 @@ func resolveProviderModels(ctx context.Context, spec providerSpec, binaryPath st
 }
 
 // grokModelsCacheEntry mirrors one value in ~/.grok/models_cache.json's
-// "models" map (live-verified shape, Grok Build 0.2.93, Task-213 authoring).
-// Only the fields the runner reads are typed.
+// "models" map (live-verified shape, Grok Build 0.2.93, Task-213 authoring;
+// SupportsReasoningEffort/ReasoningEffort/ReasoningEfforts/ContextWindow
+// added Task-215 — live-verified present on the same entries but previously
+// untyped/dropped).
 type grokModelsCacheEntry struct {
 	Info struct {
-		ID             string `json:"id"`
-		Name           string `json:"name"`
-		Hidden         bool   `json:"hidden"`
-		SupportedInAPI bool   `json:"supported_in_api"`
+		ID                      string                       `json:"id"`
+		Name                    string                       `json:"name"`
+		Hidden                  bool                         `json:"hidden"`
+		SupportedInAPI          bool                         `json:"supported_in_api"`
+		ContextWindow           int64                        `json:"context_window"`
+		SupportsReasoningEffort bool                         `json:"supports_reasoning_effort"`
+		ReasoningEffort         string                       `json:"reasoning_effort"`
+		ReasoningEfforts        []grokModelsCacheEffortEntry `json:"reasoning_efforts"`
 	} `json:"info"`
+}
+
+type grokModelsCacheEffortEntry struct {
+	ID      string `json:"id"`
+	Value   string `json:"value"`
+	Label   string `json:"label"`
+	Default bool   `json:"default"`
 }
 
 type grokModelsCachePayload struct {
@@ -1723,7 +1751,25 @@ func detectGrokModels() ([]ProviderModel, error) {
 		if displayName == "" {
 			displayName = modelID
 		}
-		models = append(models, ProviderModel{ID: modelID, DisplayName: displayName, Source: "grok_models_cache"})
+
+		model := ProviderModel{
+			ID:                  modelID,
+			DisplayName:         displayName,
+			Source:              "grok_models_cache",
+			ContextWindowTokens: entry.Info.ContextWindow,
+		}
+		if entry.Info.SupportsReasoningEffort {
+			efforts := make([]string, 0, len(entry.Info.ReasoningEfforts))
+			for _, level := range entry.Info.ReasoningEfforts {
+				effort := strings.ToLower(strings.TrimSpace(level.Value))
+				if effort != "" {
+					efforts = append(efforts, effort)
+				}
+			}
+			model.SupportedReasoningEfforts = efforts
+			model.DefaultReasoningEffort = strings.ToLower(strings.TrimSpace(entry.Info.ReasoningEffort))
+		}
+		models = append(models, model)
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 
@@ -1758,10 +1804,22 @@ func detectCodexModels(ctx context.Context, binaryPath string) ([]ProviderModel,
 			displayName = model.Slug
 		}
 
+		efforts := make([]string, 0, len(model.SupportedReasoningLevels))
+		for _, level := range model.SupportedReasoningLevels {
+			effort := strings.ToLower(strings.TrimSpace(level.Effort))
+			if effort != "" {
+				efforts = append(efforts, effort)
+			}
+		}
+
 		models = append(models, ProviderModel{
-			ID:          model.Slug,
-			DisplayName: displayName,
-			Source:      "codex_debug_models",
+			ID:                        model.Slug,
+			DisplayName:               displayName,
+			Source:                    "codex_debug_models",
+			SupportedReasoningEfforts: efforts,
+			DefaultReasoningEffort:    strings.ToLower(strings.TrimSpace(model.DefaultReasoningLevel)),
+			ContextWindowTokens:       model.ContextWindow,
+			MaxContextWindowTokens:    model.MaxContextWindow,
 		})
 	}
 

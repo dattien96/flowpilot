@@ -88,6 +88,10 @@ export function AiProvidersSettings(): React.ReactElement {
         detectionMethod: null,
         detectedCliVersion: null,
         lastDetectedAt: null,
+        supportedReasoningEfforts: null,
+        defaultReasoningEffort: null,
+        contextWindowTokens: null,
+        maxContextWindowTokens: null,
       });
       setDraft({ providerKey: "codex", modelId: "", displayName: "" });
       await refresh();
@@ -104,8 +108,15 @@ export function AiProvidersSettings(): React.ReactElement {
   // Task-213: pull the runner's live-detected model list for one provider
   // (already loaded into `providers[].models` from GET /providers — no new
   // HTTP call) and insert whichever ones aren't yet in the ai_supported_models
-  // catalog. Never touches an existing row (skip-if-registered), mirroring
-  // apps/admin-web's "Check and import missing models" action.
+  // catalog. Never touches an existing row's model identity/user edits
+  // (skip-if-registered for those fields), mirroring apps/admin-web's "Check
+  // and import missing models" action.
+  //
+  // Task-215: additionally stamps/refreshes each model's detected reasoning-
+  // effort support and context-window size — for a newly-inserted row as
+  // part of the create, and for an already-registered row via a targeted
+  // update (unlike model identity, these are capability facts about the
+  // model, not user-editable state, so re-detecting is free to refresh them).
   const detectModels = async (providerKey: ProviderKey) => {
     setDetectingProviderKey(providerKey);
     setDetectError((prev) => {
@@ -124,17 +135,29 @@ export function AiProvidersSettings(): React.ReactElement {
         return;
       }
 
-      const registeredModelIds = new Set(
-        models.filter((model) => model.providerKey === providerKey).map((model) => model.modelId),
+      const registeredByModelId = new Map(
+        models.filter((model) => model.providerKey === providerKey).map((model) => [model.modelId, model] as const),
       );
       const maxSortOrder = models.reduce((max, model) => Math.max(max, model.sortOrder), 0);
 
       const admin = await getAdminUseCases();
       const lastDetectedAt = new Date().toISOString();
       let importedCount = 0;
+      let refreshedCount = 0;
       for (const detectedModel of detected) {
-        if (registeredModelIds.has(detectedModel.id)) continue;
-        await admin.providers.createSupportedModel({
+        const reasoningPatch = {
+          supportedReasoningEfforts: detectedModel.supportedReasoningEfforts ?? null,
+          defaultReasoningEffort: detectedModel.defaultReasoningEffort ?? null,
+          contextWindowTokens: detectedModel.contextWindowTokens ?? null,
+          maxContextWindowTokens: detectedModel.maxContextWindowTokens ?? null,
+        };
+        const existing = registeredByModelId.get(detectedModel.id);
+        if (existing) {
+          await admin.providers.updateSupportedModel(existing.id, reasoningPatch);
+          refreshedCount++;
+          continue;
+        }
+        const created = await admin.providers.createSupportedModel({
           providerKey,
           modelId: detectedModel.id,
           displayName: detectedModel.displayName || detectedModel.id,
@@ -144,15 +167,15 @@ export function AiProvidersSettings(): React.ReactElement {
           detectionMethod: detectedModel.source || null,
           detectedCliVersion: provider?.detectedVersion ?? null,
           lastDetectedAt,
+          ...reasoningPatch,
         });
-        registeredModelIds.add(detectedModel.id);
+        registeredByModelId.set(detectedModel.id, created);
         importedCount++;
       }
 
-      const skippedCount = detected.length - importedCount;
       setDetectSummary((prev) => ({
         ...prev,
-        [providerKey]: `${importedCount} new model(s) imported, ${skippedCount} already registered.`,
+        [providerKey]: `${importedCount} new model(s) imported, ${refreshedCount} refreshed with latest reasoning/context data.`,
       }));
       await refresh();
     } catch (error) {

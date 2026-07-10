@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { useStore } from "@/state/store";
 import type { ProviderKey, TokenUsageSnapshot } from "@/types/contract";
+import type { SupportedModel } from "@flowpilot/client-core";
 import {
   ACCEPT_ATTR,
   MAX_ATTACHMENTS,
@@ -77,12 +78,50 @@ const PROVIDER_CARDS: { value: ProviderKey; label: string; icon: React.ReactElem
 // promptCapabilities.image was live-verified false for grok-4.5.
 const VISION_PROVIDERS = new Set<ProviderKey>(["codex", "claude"]);
 
-const REASONING_OPTIONS = [
+// Fallback reasoning-effort options (Task-215): used only when the selected
+// model has no detected `supportedReasoningEfforts` in the catalog (a
+// manually-added model, or a provider Task-215's detectors don't cover —
+// Claude has no per-model catalog; the CLI validates `--effort` against one
+// global list, live-verified by inspecting the installed
+// @anthropic-ai/claude-code binary (2.1.191): `GD=["low","medium","high",
+// "xhigh","max"]`, applied uniformly regardless of model). When a model DOES
+// carry detected data, the Reasoning control derives its options from that
+// model instead of this static list — see `reasoningOptionsFor` below.
+const FALLBACK_REASONING_OPTIONS = [
   { value: "", label: "Default" },
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra High" },
+  { value: "max", label: "Max" },
 ];
+
+const REASONING_EFFORT_LABELS: Record<string, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+  ultra: "Ultra",
+};
+
+function reasoningEffortLabel(effort: string): string {
+  return REASONING_EFFORT_LABELS[effort] ?? effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+// Task-215: derive the Reasoning dropdown's options from the selected
+// model's own detected `supportedReasoningEfforts` (Codex/Grok already
+// report this per model — see Task-215) instead of one fixed list applied
+// to every model of a provider. Falls back to the static list when the
+// catalog has no reasoning data for this model.
+function reasoningOptionsFor(model: SupportedModel | undefined): { value: string; label: string }[] {
+  const efforts = model?.supportedReasoningEfforts;
+  if (!efforts || efforts.length === 0) return FALLBACK_REASONING_OPTIONS;
+  return [
+    { value: "", label: "Default" },
+    ...efforts.map((effort) => ({ value: effort, label: reasoningEffortLabel(effort) })),
+  ];
+}
 
 function skillSourceLabel(source: "provider" | "flowpilot" | "workspace"): string {
   return source === "provider" ? "Account" : "Project";
@@ -106,13 +145,23 @@ function usageSeparator(): React.ReactElement {
   return <span className="chat-usage-separator"> · </span>;
 }
 
-function usageSummaryLine(provider: ProviderKey | undefined, usage: TokenUsageSnapshot | undefined): ReactNode | null {
+// Task-215: `usage.modelContextWindow` is reported live by the running
+// provider process itself once a turn has produced usage data (Codex's
+// appserver events, Grok's ACP `initialize`/`session/new`). Before a live
+// value exists — e.g. no turn sent yet — `fallbackContextWindow` (the
+// catalog's detected `contextWindowTokens` for the selected model) fills the
+// same slot so the usage bar can show a window size from the first render.
+function usageSummaryLine(
+  provider: ProviderKey | undefined,
+  usage: TokenUsageSnapshot | undefined,
+  fallbackContextWindow?: number | null,
+): ReactNode | null {
   if (!provider) return null;
   if (!usage) return null;
 
   const last = usage.last;
   const total = usage.total;
-  const windowSize = usage.modelContextWindow ?? null;
+  const windowSize = usage.modelContextWindow ?? fallbackContextWindow ?? null;
   const contextUsed = total?.totalTokens ?? last?.totalTokens ?? null;
   const parts: ReactNode[] = [];
 
@@ -304,6 +353,23 @@ export function ChatInput(): React.ReactElement {
         .sort((a, b) => a.sortOrder - b.sortOrder),
     [selectedProvider, supportedModels],
   );
+  // Task-215: the catalog row for whichever model is currently selected, if
+  // any — the source of both the model-aware Reasoning options and the
+  // context-window fallback for the usage bar.
+  const selectedModelInfo = useMemo(
+    () => availableModels.find((model) => model.modelId === selectedModel),
+    [availableModels, selectedModel],
+  );
+  const reasoningOptions = useMemo(() => reasoningOptionsFor(selectedModelInfo), [selectedModelInfo]);
+  useEffect(() => {
+    if (reasoningEffort === undefined) return;
+    if (reasoningOptions.some((option) => option.value === reasoningEffort)) return;
+    // The previously-selected effort isn't valid for the newly-selected
+    // model (e.g. switching from a model that supports "xhigh" to one that
+    // only supports up to "high") — degrade to the model's default rather
+    // than silently sending an unsupported value to the CLI (Task-215 T-5).
+    setReasoningEffort(undefined);
+  }, [reasoningEffort, reasoningOptions, setReasoningEffort]);
   const slashFragment = useMemo(() => {
     if (!isChatMode) return null;
     const frag = findActiveSlash(text, cursorPos);
@@ -507,8 +573,8 @@ export function ChatInput(): React.ReactElement {
     (r) => r.waitForResult && (r.status === "running" || r.status === "waiting_approval" || r.status === "waiting_question"),
   );
   const usageLine = useMemo(
-    () => usageSummaryLine(selectedProvider, displayedTokenUsage),
-    [displayedTokenUsage, selectedProvider],
+    () => usageSummaryLine(selectedProvider, displayedTokenUsage, selectedModelInfo?.contextWindowTokens),
+    [displayedTokenUsage, selectedModelInfo, selectedProvider],
   );
 
   const canSend = isChatMode
@@ -895,7 +961,7 @@ export function ChatInput(): React.ReactElement {
                     onChange={(e) => setReasoningEffort(e.target.value || undefined)}
                     disabled={blocked}
                   >
-                    {REASONING_OPTIONS.map((option) => (
+                    {reasoningOptions.map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
                       </option>
