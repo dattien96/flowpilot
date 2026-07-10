@@ -4972,3 +4972,200 @@ func TestResumeRunRebuildsParentAgentAnnotationsWithoutDuplicatesAcrossReopen(t 
 		t.Fatalf("result annotation count after reopen = %d, want %d", got, want)
 	}
 }
+
+// TestReconstructRunStampsAnswerOnRestoredQuestionEventAfterFullRestart is the
+// regression test for BUG-StaleQuestion-Restart: a full process restart (not
+// merely an SSE reconnect while the runner stays alive, which subscribe()
+// already handles) rebuilds rs.events from scratch. Raw provider transcripts
+// (Claude/Codex) have no concept of FlowPilot's own user_question_required
+// gate, so without persisting the raw event + its resolution separately, a
+// resolved question would either vanish entirely or replay as a fresh
+// interactive form. This proves it survives, read-only, with the recorded
+// answer.
+func TestReconstructRunStampsAnswerOnRestoredQuestionEventAfterFullRestart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	if err := store.UpsertProviderSession(ctx, ProviderSessionState{
+		RunID:             "run-question-restart",
+		ProjectID:         "proj",
+		ProviderKey:       ProviderKeyClaude,
+		ProviderSessionID: "thread-question-restart",
+		Status:            RunStatusRunning,
+		RunKind:           "workflow",
+		StartedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	// The raw "asked" event, as emitLocked/persistEvent would have written it
+	// live — unresolved, no Answer.
+	if err := store.AppendEvent(ctx, ProviderEvent{
+		Type:          EventUserQuestionRequired,
+		WorkflowRunID: "run-question-restart",
+		QuestionID:    "q-drive-1",
+		Prompt:        "Use Drive?",
+		Options:       []QuestionOption{{Label: "Skip", Value: "__skip__"}},
+	}); err != nil {
+		t.Fatalf("seed question-required event: %v", err)
+	}
+	// The separately-tracked resolution, as AnswerQuestion's persistQuestion
+	// call would have written it live.
+	if err := store.UpsertQuestion(ctx, ProviderQuestionState{
+		QuestionID: "q-drive-1",
+		RunID:      "run-question-restart",
+		Prompt:     "Use Drive?",
+		Status:     "resolved",
+		Choice:     []string{"__skip__"},
+	}); err != nil {
+		t.Fatalf("seed resolved question state: %v", err)
+	}
+
+	// Simulate a full process restart: a brand new InteractiveService/store
+	// pointed at the same directory, nothing in memory.
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("run-question-restart"); apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+
+	svc.mu.Lock()
+	events := append([]ProviderEvent(nil), svc.runs["run-question-restart"].events...)
+	svc.mu.Unlock()
+
+	var found *ProviderEvent
+	for i := range events {
+		if events[i].Type == EventUserQuestionRequired && events[i].QuestionID == "q-drive-1" {
+			found = &events[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("user_question_required event for q-drive-1 did not survive a full restart")
+	}
+	if len(found.Answer) != 1 || found.Answer[0] != "__skip__" {
+		t.Fatalf("restored question Answer = %v, want [\"__skip__\"] so the client renders it read-only", found.Answer)
+	}
+}
+
+// TestReconstructRunDropsExpiredQuestionEventAfterFullRestart verifies the
+// companion case: a question that expired (never answered) before the restart
+// has no answer to show, and must not be restored as a fresh interactive
+// form — replaying it that way would let the user submit into an
+// already-expired question and hit the question_expired 409 (matches
+// subscribe()'s established reconnect-while-alive rule for expired
+// questions).
+func TestReconstructRunDropsExpiredQuestionEventAfterFullRestart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	if err := store.UpsertProviderSession(ctx, ProviderSessionState{
+		RunID:             "run-question-expired",
+		ProjectID:         "proj",
+		ProviderKey:       ProviderKeyClaude,
+		ProviderSessionID: "thread-question-expired",
+		Status:            RunStatusRunning,
+		RunKind:           "workflow",
+		StartedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	if err := store.AppendEvent(ctx, ProviderEvent{
+		Type:          EventUserQuestionRequired,
+		WorkflowRunID: "run-question-expired",
+		QuestionID:    "q-drive-2",
+		Prompt:        "Use Drive?",
+		Options:       []QuestionOption{{Label: "Skip", Value: "__skip__"}},
+	}); err != nil {
+		t.Fatalf("seed question-required event: %v", err)
+	}
+	if err := store.UpsertQuestion(ctx, ProviderQuestionState{
+		QuestionID: "q-drive-2",
+		RunID:      "run-question-expired",
+		Prompt:     "Use Drive?",
+		Status:     "expired",
+	}); err != nil {
+		t.Fatalf("seed expired question state: %v", err)
+	}
+
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("run-question-expired"); apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+
+	svc.mu.Lock()
+	events := append([]ProviderEvent(nil), svc.runs["run-question-expired"].events...)
+	svc.mu.Unlock()
+
+	for _, ev := range events {
+		if ev.Type == EventUserQuestionRequired && ev.QuestionID == "q-drive-2" {
+			t.Fatalf("expired question q-drive-2 was restored after restart, want it dropped: %+v", ev)
+		}
+	}
+}
+
+// TestLocalFileSessionStoreQuestionsSurviveRestart is the storage-layer unit
+// test for BUG-StaleQuestion-Restart: UpsertQuestion must write through to
+// questions.ndjson (mirroring sessions.ndjson, BUG-080) so a second store
+// instance pointed at the same directory (simulating a process restart) can
+// read the resolution back via ListQuestionsByRun.
+func TestLocalFileSessionStoreQuestionsSurviveRestart(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	store1, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	if err := store1.UpsertQuestion(ctx, ProviderQuestionState{
+		QuestionID: "q-1",
+		RunID:      "run-1",
+		Prompt:     "Pick one",
+		Status:     "resolved",
+		Choice:     []string{"a"},
+	}); err != nil {
+		t.Fatalf("UpsertQuestion: %v", err)
+	}
+	// A second upsert for a DIFFERENT question on the same run — the file is
+	// append-only, ListQuestionsByRun must return both.
+	if err := store1.UpsertQuestion(ctx, ProviderQuestionState{
+		QuestionID: "q-2",
+		RunID:      "run-1",
+		Prompt:     "Pick two",
+		Status:     "expired",
+	}); err != nil {
+		t.Fatalf("UpsertQuestion (second): %v", err)
+	}
+
+	// Simulate process restart — new store pointing at the same directory.
+	store2, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore (reload): %v", err)
+	}
+	states, err := store2.ListQuestionsByRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("ListQuestionsByRun: %v", err)
+	}
+	if len(states) != 2 {
+		t.Fatalf("ListQuestionsByRun returned %d states, want 2", len(states))
+	}
+	byID := map[string]ProviderQuestionState{}
+	for _, s := range states {
+		byID[s.QuestionID] = s
+	}
+	if q, ok := byID["q-1"]; !ok || q.Status != "resolved" || len(q.Choice) != 1 || q.Choice[0] != "a" {
+		t.Fatalf("q-1 after reload = %+v, want resolved with Choice=[a]", q)
+	}
+	if q, ok := byID["q-2"]; !ok || q.Status != "expired" {
+		t.Fatalf("q-2 after reload = %+v, want expired", q)
+	}
+}
