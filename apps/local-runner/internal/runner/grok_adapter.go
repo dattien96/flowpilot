@@ -209,15 +209,24 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 // (`session/load`) when req.ProviderSessionID is a real (non-empty,
 // non-synthetic) ACP session id. A resume attempt with an id this adapter has
 // no record of is still passed through to session/load as-is (Grok, not
-// FlowPilot, is the source of truth for whether that id is resumable) — the
-// synthetic-id guard (GR-32) lives at the caller/interactive_service layer,
-// which never hands this adapter a synthetic id in the first place.
+// FlowPilot, is the source of truth for whether that id is resumable).
+//
+// The "thread-" prefix check below guards against FlowPilot's own synthetic
+// per-run placeholder id (assigned before any real provider session exists —
+// same shape codex_adapter.go already guards against at its thread/resume
+// call). Live-verified bug (2026-07-10): the caller does NOT reliably filter
+// this out for Grok — a brand-new run's first turn arrived here with
+// ProviderSessionID="thread-<n>", which went straight into session/load and
+// Grok correctly replied with a hard error (FS_NOT_FOUND / "Path not found.",
+// since no session by that id had ever been created) instead of silently
+// starting a new one. Do not remove this guard on the assumption the caller
+// handles it.
 func (a *grokAdapter) ensureSession(ctx context.Context, req TurnRequest, cwd string, mcpServers []interface{}) (string, error) {
 	resumeID := strings.TrimSpace(req.ProviderSessionID)
 	method := "session/new"
 	var result map[string]any
 	var err error
-	if resumeID != "" {
+	if resumeID != "" && !strings.HasPrefix(resumeID, "thread-") {
 		method = "session/load"
 		result, err = a.dispatcher.call(ctx, method, grokACPSessionLoadParams(resumeID, cwd, mcpServers))
 	} else {

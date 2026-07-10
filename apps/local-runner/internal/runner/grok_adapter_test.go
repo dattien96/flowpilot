@@ -152,6 +152,47 @@ func TestGrokAdapterInterruptReturnsCtxErr(t *testing.T) {
 	}
 }
 
+// TestGrokAdapterSyntheticThreadIDUsesSessionNewNotLoad is a regression test
+// for a live-verified bug (2026-07-10): a brand-new run's first turn can carry
+// FlowPilot's synthetic per-run placeholder ProviderSessionID ("thread-<n>",
+// assigned before any real provider session exists), not just resume turns.
+// Before this fix, ensureSession treated any non-empty ProviderSessionID as a
+// real resumable id and called session/load, which Grok correctly rejected
+// (FS_NOT_FOUND / "Path not found.") since no session by that id was ever
+// created — codex_adapter.go already guards its own thread/resume call the
+// same way (line ~169); this mirrors that guard for Grok.
+func TestGrokAdapterSyntheticThreadIDUsesSessionNewNotLoad(t *testing.T) {
+	sessionID := "session-fresh-1"
+	d, fg := startFakeGrok(t, nil)
+	a := newGrokAdapter(d, "/tmp/x")
+
+	var mu sync.Mutex
+	var methodsSeen []string
+	fg.serve(func(fg *fakeGrok, m map[string]any) {
+		method, _ := m["method"].(string)
+		switch method {
+		case "session/new", "session/load":
+			mu.Lock()
+			methodsSeen = append(methodsSeen, method)
+			mu.Unlock()
+			fg.reply(m["id"], map[string]any{"sessionId": sessionID})
+		case "session/prompt":
+			fg.reply(m["id"], liveGrokPromptResult(sessionID))
+		}
+	})
+
+	bridge := &fakeGrokBridge{}
+	err := a.SendTurn(context.Background(), TurnRequest{RunID: "run-3", Prompt: "hi", ProviderSessionID: "thread-99"}, bridge)
+	if err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(methodsSeen) != 1 || methodsSeen[0] != "session/new" {
+		t.Fatalf("methods seen = %v, want exactly one session/new (synthetic thread- id must not trigger session/load)", methodsSeen)
+	}
+}
+
 // ---- Task-208: permission channel + YOLO -----------------------------------
 
 func TestGrokAdapterYoloOffBlocksOnBridgeAndDeniesWithoutApproval(t *testing.T) {
