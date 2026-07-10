@@ -21,28 +21,30 @@
 ### Summary
 
 - Live-verified (2026-07-10, real logged-in account): Grok's own CLI already natively discovers and auto-invokes skills. `~/.grok/skills/*/SKILL.md` exist on disk (bundled: `check-work`, `code-review`, `create-skill`, `docx`, `help`, `imagine`, `pptx`, `xlsx`); a live ACP capture shows the running process reload them on disk change (`{"id":"skills-reload","result":{"reloaded":1}}`, `testdata/grok_acp/live_probe_raw.txt:27-28`). Grok's own docs (`~/.grok/docs/user-guide/08-skills.md`) confirm the scan order `./.grok/skills` > `<repo_root>/.grok/skills` > `~/.grok/skills`, and — critically — that Grok **also scans `.agents/skills/` and `.claude/skills/` at every tier by default**, unless disabled via `GROK_CLAUDE_SKILLS_ENABLED`/`GROK_CURSOR_SKILLS_ENABLED` (a *different* flag pair than the `*_MCPS_ENABLED` ones the adapter already sets false in `grok_process.go`).
-- `skillpack.Install` (`apps/local-runner/internal/skillpack/install.go:138-179`, invoked on project bind from `engine_setup.go:289`) is **provider-agnostic**: it always writes FlowPilot's built-in `SKILL.md` files into both `<repo>/.claude/skills/` and `<repo>/.agents/skills/` for every bound project, regardless of which provider the project uses. Because Grok natively scans both of those directories, **FlowPilot's built-in skills already reach Grok's own automatic invocation with zero Grok-specific code** — this part needs no fix.
-- What is actually missing is FlowPilot's own **skill-selection feature** (the `SelectedSkills`/`injectSelectedSkills` picker used by chat/workflow steps to force-inject one specific skill's content into a turn's prompt) — a separate mechanism from Grok's native auto-invocation. Three small gaps, each additive:
-  1. `ProviderCapabilities.SkillSelection` is unset (`false`) for Grok's registration (`provider_registry.go:418-420`), even though `promptPrep` already calls `r.injectSelectedSkills(...)` for Grok (`provider_registry.go:456-461`) — that wiring is currently dead because the UI/flow that populates `TurnRequest.SelectedSkills` gates on this capability flag.
-  2. `interactive_catalog.go`'s `discoverProjectSkills`/`providerHomeSkillDirs` switches (lines 149-156, 194-213) only branch on `codex`/`gemini`/`claude` — there is no `grok` case, so FlowPilot's skill-catalog/picker never lists Grok's project-local (`.agents/skills`) or provider-home (`~/.grok/skills`) skills as selectable options.
-  3. `skillpack.providerStatuses` (`install.go:32-36`) — the table `Status()` reads to report per-provider install status — has no `grok` row, so a Settings-style "is this skill installed for Grok" query would silently omit Grok even though the file is actually installed at the shared `.agents/skills` path.
+- `skillpack.Install` (`apps/local-runner/internal/skillpack/install.go:138-179`, invoked on project bind from `engine_setup.go:289`) writes FlowPilot's built-in `SKILL.md` files into every root in `installRoots` (currently `<repo>/.claude/skills/` and `<repo>/.agents/skills/`) for every bound project, regardless of which provider the project uses — the `Provider` field on each root is a label, not a gate. **Correction (per review): Grok is architecturally like Claude, not like Codex/Gemini** — it has its own dedicated, documented, prioritized skill directory (`.grok/skills/`), the same way Claude has `.claude/skills/`. Codex/Gemini have no such native directory of their own, which is why they piggyback on the generic `.agents/skills` convention. So Grok should get its **own install root** (`.grok/skills`), not just a ride on `.agents/skills` — even though the latter also works via Grok's cross-scan, the native, doc-recommended, git-shareable location is `.grok/skills`.
+- What is actually missing is (a) a native `.grok/skills` install target, and (b) FlowPilot's own **skill-selection feature** (the `SelectedSkills`/`injectSelectedSkills` picker used by chat/workflow steps to force-inject one specific skill's content into a turn's prompt) — a separate mechanism from Grok's native auto-invocation. Four small gaps, each additive:
+  1. `installRoots` (`install.go:27-30`) has no `.grok/skills` entry — FlowPilot's builtin skills never get physically installed to Grok's own native directory (they'd still be visible to Grok via its `.agents/skills` cross-scan, but not at the location Grok's own docs recommend for project/team-shared skills).
+  2. `ProviderCapabilities.SkillSelection` is unset (`false`) for Grok's registration (`provider_registry.go:418-420`), even though `promptPrep` already calls `r.injectSelectedSkills(...)` for Grok (`provider_registry.go:456-461`) — that wiring is currently dead because the UI/flow that populates `TurnRequest.SelectedSkills` gates on this capability flag.
+  3. `interactive_catalog.go`'s `discoverProjectSkills`/`providerHomeSkillDirs` switches (lines 149-156, 194-213) only branch on `codex`/`gemini`/`claude` — there is no `grok` case, so FlowPilot's skill-catalog/picker never lists Grok's project-local (`.grok/skills`) or provider-home (`<GROK_HOME>/skills`) skills as selectable options.
+  4. `skillpack.providerStatuses` (`install.go:32-36`) — the table `Status()` reads to report per-provider install status — has no `grok` row, so a Settings-style "is this skill installed for Grok" query would silently omit Grok.
 
 ### Current Ask
 
-- Close the three FlowPilot-side gaps above so Grok has the same skill-*selection* surface Claude/Codex/Gemini already have, on top of the skill-*auto-invocation* parity that already works today via Grok's native `.agents/skills` scanning.
+- Give Grok its own native `.grok/skills` install target (mirroring Claude's `.claude/skills` treatment, not Codex/Gemini's shared `.agents/skills`), and close the three FlowPilot-side catalog/capability gaps so Grok has the same skill-*selection* surface Claude/Codex/Gemini already have.
 
 ### Key Decisions
 
-- `T-1` **No new writer, no new directory.** `skillpack.Install`'s `installRoots` (`.claude/skills`, `.agents/skills`) stay unchanged — they are provider-agnostic and Grok already reads `.agents/skills` natively per its own docs. Do **not** add a third `.grok/skills` install target; that would duplicate files for no behavioral gain and add a second thing to keep in sync.
+- `T-1` **Grok gets its own install root, like Claude.** Add `{Provider: "grok", RootPath: filepath.Join(".grok", "skills")}` to `installRoots` (`install.go:27-30`). This mirrors how Claude gets a dedicated `.claude/skills` root instead of relying solely on `.agents/skills` — Grok has the same kind of first-class, documented, prioritized skill directory Claude does, so it earns the same treatment. `.agents/skills` keeps being written too (unchanged, still read by Codex/Gemini and cross-scanned by Grok) — no existing root is removed.
 - `T-2` **Set `SkillSelection: true` on Grok's `ProviderCapabilities`** (`provider_registry.go:418-420`) — the minimal change that turns the already-existing `promptPrep`/`injectSelectedSkills` wiring live. Verify this doesn't implicitly change any other capability-gated UI path (grep every read of `ProviderCapabilities.SkillSelection` before flipping the flag).
-- `T-3` **Add a `grok` case to `discoverProjectSkills`** (`interactive_catalog.go:149-156`) mapping to `.agents/skills` with `Source:"flowpilot"` — same directory Codex/Gemini already use (`T-1`: no new directory), so this is a pure additive `case "codex", "gemini", "grok":` widen, not a new code path.
-- `T-4` **Add a `grok` case to `providerHomeSkillDirs`** (`interactive_catalog.go:194-213`) returning `[homePath/.grok/skills, homePath/skills]`, mirroring the Claude/Gemini two-path pattern (compat dir first, bare `skills` dir second) — `homePath` here is the resolved `GROK_HOME`/account home, not literally `~`, so this correctly respects multi-account isolation (`DiscoverProviderAccountHomes` already resolves per-account homes for every other provider this function serves).
-- `T-5` **Add a `grok` row to `skillpack.providerStatuses`** (`install.go:32-36`) pointing at `.agents/skills` (matching Codex/Gemini's row — the actual on-disk path is unchanged, this only widens what `Status()` reports).
-- `T-6` **Base-regression (`P-0`):** every change above is a `switch`/slice widen or a single struct-literal field addition — no existing `case`/entry for `codex`/`claude`/`gemini` is reordered, removed, or altered. Codex/Claude/Gemini skill discovery, install-status reporting, and capability-gated skill-selection UI must return byte-identical results for those three providers before and after.
+- `T-3` **Add a `grok` case to `discoverProjectSkills`** (`interactive_catalog.go:149-156`) mapping to `.grok/skills` with `Source:"workspace"` — same treatment as Claude's `.claude/skills` case (a dedicated case, not a shared-`.agents` widen), since `T-1` now installs there.
+- `T-4` **Add a `grok` case to `providerHomeSkillDirs`** (`interactive_catalog.go:194-213`) returning `[homePath/skills, homePath/.grok/skills]`, mirroring the **Codex** ordering (bare `skills` dir first, nested-compat dir second) rather than Claude's — because `homePath` here is the resolved account home (`GROK_HOME`, from `account.HomePath`) which, like `CODEX_HOME`, already points directly at the tool's own dot-directory (i.e. `GROK_HOME` *is* `~/.grok`, so skills live at `homePath/skills`, not `homePath/.grok/skills`). Claude's home-path convention differs (its `homePath` is a synthetic `$HOME` override that *contains* a `.claude` subfolder), which is why its case is ordered the other way.
+- `T-5` **Add a `grok` row to `skillpack.providerStatuses`** (`install.go:32-36`) pointing at `.grok/skills` (matching the new `T-1` install root, not `.agents/skills`).
+- `T-6` **Backfill existing projects.** `IsInstalled`'s sentinel list (`install.go:184-195`) gains a third sentinel (`.grok/skills/git-commit-format/SKILL.md`). Projects bound before this change will report `IsInstalled==false` once, which re-triggers `Install()` on the next bind check — self-healing the missing `.grok/skills` files (the two pre-existing roots are skipped via the version check, so this is a cheap no-op for them).
+- `T-7` **Base-regression (`P-0`):** every change above is a `switch`/slice widen, an appended slice entry, or a single struct-literal field addition — no existing `case`/entry/root for `codex`/`claude`/`gemini` is reordered, removed, or altered. Codex/Claude/Gemini skill discovery, install-status reporting, install-writing, and capability-gated skill-selection UI must return byte-identical results/files for those three providers before and after.
 
 ### Constraints
 
-- Do not touch `skillpack.Install`'s `installRoots` or `Install()`'s write logic — the writer is correct and provider-agnostic already (`T-1`).
+- `installRoots`/`Install()` gains exactly one new entry (`T-1`) — no existing root's path, order, or write behavior changes; `.claude/skills` and `.agents/skills` keep being written for every project exactly as before.
 - Do not disable or alter `GROK_CLAUDE_MCPS_ENABLED`/`GROK_CURSOR_MCPS_ENABLED` (unrelated to skills) or touch the separate `GROK_CLAUDE_SKILLS_ENABLED`/`GROK_CURSOR_SKILLS_ENABLED` compat flags — those are the account owner's/Grok's own config surface, not FlowPilot's to manage (mirrors the `permission_mode` "never clobber user config" precedent from Task-208).
 - `gemini_acp_transport.go` and any Codex/Claude-only file stay untouched (CP-46 `P-0`).
 
@@ -53,16 +55,17 @@
 
 ### Source Refs
 
-- Live evidence: `apps/local-runner/internal/runner/testdata/grok_acp/live_probe_raw.txt:27-28` (`skills-reload` ACP frame); real-machine `~/.grok/skills/*/SKILL.md`; real-machine `~/.grok/docs/user-guide/08-skills.md` (scan-order + `.agents/skills`/`.claude/skills` cross-scan default).
-- Writer (unchanged): `apps/local-runner/internal/skillpack/install.go:27-30,138-179` (`installRoots`, `Install`); invoked from `apps/local-runner/internal/runner/engine_setup.go:289` (bind trigger, `engineInitTriggerBind`).
+- Live evidence: `apps/local-runner/internal/runner/testdata/grok_acp/live_probe_raw.txt:27-28` (`skills-reload` ACP frame); real-machine `~/.grok/skills/*/SKILL.md`; real-machine `~/.grok/docs/user-guide/08-skills.md` (scan-order: `./.grok/skills` > `<repo_root>/.grok/skills` > `~/.grok/skills`, plus `.agents/skills`/`.claude/skills` cross-scan default).
+- Writer (gains one root, `T-1`): `apps/local-runner/internal/skillpack/install.go:27-30,138-179,184-195` (`installRoots`, `Install`, `IsInstalled`); invoked from `apps/local-runner/internal/runner/engine_setup.go:289` (bind trigger, `engineInitTriggerBind`).
 - Status reporting (gap): `apps/local-runner/internal/skillpack/install.go:32-36` (`providerStatuses`).
 - Catalog/picker (gap): `apps/local-runner/internal/runner/interactive_catalog.go:105-213` (`listSkills`, `discoverProjectSkills`, `discoverProviderHomeSkills`, `providerHomeSkillDirs`).
 - Capability + prompt injection (gap + existing dead wiring): `apps/local-runner/internal/runner/provider_registry.go:418-420` (Grok `Capabilities`), `:456-461` (Grok `promptPrep` already calling `r.injectSelectedSkills`); compare Claude/Codex/Gemini registrations at lines ~199, ~238, ~275, ~355 (`SkillSelection: true`).
+- Home-path convention proof: `apps/local-runner/internal/runner/provider_accounts.go:834-854` (`discoverGrokAccountHomes` returns `<homeDir>/.grok` directly, same shape as `discoverCodexAccountHomes`'s `~/.codex`).
 - Per-turn injection (unchanged): `apps/local-runner/internal/runner/runner.go:1160` (`injectSelectedSkills`), `:1234` (`listSkillsInWorkspace`).
 
 ## 1. Goal
 
-Give Grok the same FlowPilot skill-*selection* surface (catalog listing + capability-gated per-turn injection) that Claude/Codex/Gemini already have, without duplicating or touching the skill-*installation* writer, which already works for Grok today because Grok natively scans the same `.agents/skills` directory FlowPilot already installs into on every project bind.
+Give Grok its own native `.grok/skills` install root (matching how Claude gets `.claude/skills`, since Grok has the same kind of first-class, documented skill directory Claude does — unlike Codex/Gemini, which only have the shared `.agents/skills` convention), and give Grok the same FlowPilot skill-*selection* surface (catalog listing + capability-gated per-turn injection) that Claude/Codex/Gemini already have.
 
 ## 2. Parent Links
 
@@ -73,45 +76,48 @@ Give Grok the same FlowPilot skill-*selection* surface (catalog listing + capabi
 
 ## 3. Trigger
 
-While re-verifying the Grok adapter against a real logged-in account, inspecting `~/.grok/skills/` to answer "does Grok read `.grok/skills/`" surfaced that (a) Grok does, natively and dynamically, and (b) it also natively scans the exact `.agents/skills` directory FlowPilot's `skillpack.Install` already writes into for every project — but FlowPilot's own skill-selection catalog/capability code has never had a `grok` case added, so the picker and per-turn force-injection path are still Codex/Claude/Gemini-only.
+While re-verifying the Grok adapter against a real logged-in account, inspecting `~/.grok/skills/` to answer "does Grok read `.grok/skills/`" surfaced that (a) Grok does, natively and dynamically, with `.grok/skills` as its own first-class, doc-recommended, git-shareable skill location (same tier structure as `.claude/skills` for Claude), and (b) FlowPilot's `skillpack.Install` had never been given a matching `.grok/skills` root, nor had the skill-selection catalog/capability code ever had a `grok` case added — so neither the native-directory install nor the picker/force-injection path existed for Grok.
 
 ## 4. Exact Change
 
-- `T-1` `provider_registry.go:418-420`: add `SkillSelection: true` to Grok's `ProviderCapabilities` literal.
-- `T-2` `interactive_catalog.go:149-156` (`discoverProjectSkills`): widen `case "codex", "gemini":` to `case "codex", "gemini", "grok":` (same `.agents/skills` target, `Source:"flowpilot"`).
-- `T-3` `interactive_catalog.go:194-213` (`providerHomeSkillDirs`): add a `case "grok":` returning `[]string{filepath.Join(homePath, ".grok", "skills"), filepath.Join(homePath, "skills")}`.
-- `T-4` `install.go:32-36` (`providerStatuses`): append `{Provider: "grok", RootPath: filepath.Join(".agents", "skills")}`.
-- `T-5` Tests: a catalog test asserting `discoverProjectSkills("grok", cwd)` reads `.agents/skills` and `providerHomeSkillDirs("grok", home)` returns the two Grok-home paths; a capability test asserting Grok's `ProviderCapabilities.SkillSelection==true` and that Codex/Claude/Gemini/`SkillSelection` values are unchanged (base-regression); a `skillpack` test asserting `Status()` now includes a `grok` entry without altering the Codex/Claude/Gemini entries' paths/order.
-- `T-6` Manual/live check (reuse the account already logged in): confirm the desktop skill picker (wherever `SelectedSkills` is populated from — likely the same UI Codex/Claude/Gemini use) now lists Grok skills, and that selecting one actually changes the prompt `injectSelectedSkills` builds for a real Grok turn.
+- `T-1` `install.go:27-30` (`installRoots`): append `{Provider: "grok", RootPath: filepath.Join(".grok", "skills")}`.
+- `T-2` `install.go:184-195` (`IsInstalled`): append a third sentinel, `filepath.Join(targetRepoDir, ".grok", "skills", "git-commit-format", "SKILL.md")`.
+- `T-3` `install.go:32-36` (`providerStatuses`): append `{Provider: "grok", RootPath: filepath.Join(".grok", "skills")}`.
+- `T-4` `provider_registry.go:418-420`: add `SkillSelection: true` to Grok's `ProviderCapabilities` literal.
+- `T-5` `interactive_catalog.go:149-156` (`discoverProjectSkills`): add a dedicated `case "grok":` returning `providerSkillsFromDir(filepath.Join(cwd, ".grok", "skills"), "workspace")` (own case, not folded into the `codex, gemini` one — `.grok/skills` is a distinct path from `.agents/skills`).
+- `T-6` `interactive_catalog.go:194-213` (`providerHomeSkillDirs`): add a `case "grok":` returning `[]string{filepath.Join(homePath, "skills"), filepath.Join(homePath, ".grok", "skills")}` (Codex ordering — `homePath` already *is* the `.grok` dir; see the home-path-convention proof in Source Refs).
+- `T-7` Tests: a `skillpack` test asserting `Install` now writes `.grok/skills/<skill>/SKILL.md` alongside the two existing roots, and that `IsInstalled`/`Status()` include Grok without altering Codex/Claude/Gemini's entries/paths/order; a catalog test asserting `discoverProjectSkills("grok", cwd)` reads `.grok/skills` and `providerHomeSkillDirs("grok", home)` returns `[home/skills, home/.grok/skills]`; a capability test asserting Grok's `ProviderCapabilities.SkillSelection==true` and that Codex/Claude/Gemini `SkillSelection` values are unchanged (base-regression).
+- `T-8` Manual/live check (reuse the account already logged in): confirm a real project bind now creates `.grok/skills/*/SKILL.md`; confirm the desktop skill picker now lists Grok skills; confirm selecting one actually changes the prompt `injectSelectedSkills` builds for a real Grok turn.
 
 ## 5. Touched Areas
 
-- files: `apps/local-runner/internal/runner/provider_registry.go`, `apps/local-runner/internal/runner/interactive_catalog.go`, `apps/local-runner/internal/skillpack/install.go`.
-- modules: skill catalog/discovery, skill-install status reporting, Grok provider capability declaration.
-- routes: none new — reuses whatever endpoint already serves `listSkills`/`ProviderCapabilities` for Codex/Claude/Gemini.
+- files: `apps/local-runner/internal/skillpack/install.go`, `apps/local-runner/internal/runner/provider_registry.go`, `apps/local-runner/internal/runner/interactive_catalog.go`.
+- modules: skill install writer, skill install-status reporting, skill catalog/discovery, Grok provider capability declaration.
+- routes: none new — reuses whatever endpoint already serves `listSkills`/`ProviderCapabilities`/bind-init for Codex/Claude/Gemini.
 - tables: none.
 
 ## 6. Acceptance Check
 
+- Binding a project creates `.grok/skills/<skill>/SKILL.md` for every built-in skill, alongside the existing `.claude/skills` and `.agents/skills` writes (unchanged).
 - Grok's `ProviderCapabilities.SkillSelection` is `true`; Codex/Claude/Gemini values are unchanged.
-- `discoverProjectSkills("grok", cwd)` and `discoverProviderHomeSkills("grok")` return non-nil results when `.agents/skills` / `~/.grok/skills` (or the account's `GROK_HOME`) actually contain `SKILL.md` files; Codex/Claude/Gemini discovery is unchanged (byte-identical outputs for the same fixtures as before).
-- `skillpack.Status(...)` includes a `grok` provider entry; Codex/Claude/Gemini entries are unchanged.
+- `discoverProjectSkills("grok", cwd)` and `discoverProviderHomeSkills("grok")` return non-nil results when `.grok/skills` (project or `GROK_HOME`-resolved) actually contains `SKILL.md` files; Codex/Claude/Gemini discovery is unchanged (byte-identical outputs for the same fixtures as before).
+- `skillpack.Status(...)`/`IsInstalled(...)` include/require a `grok` entry; Codex/Claude/Gemini entries and existing `IsInstalled` behavior for already-installed pre-`T-1` projects are unchanged aside from the one-time self-heal (`T-6` in Key Decisions).
 - A live turn with a `SelectedSkills` entry set actually shows the selected skill's content in the prompt Grok receives (verified via the existing live-account harness, `FLOWPILOT_LIVE_GROK=1`).
 - Full existing suite passes unchanged (same pre-existing baseline failures, zero new ones).
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` Grok's `ProviderCapabilities.SkillSelection` is `true`; a base-regression test proves Codex/Claude/Gemini capability values are byte-identical to before.
-- [ ] `DOD-2` `discoverProjectSkills`/`providerHomeSkillDirs` have a `grok` case; a fixture-based test proves both project-local (`.agents/skills`) and provider-home (`~/.grok/skills`-shaped) discovery work; Codex/Claude/Gemini discovery is unchanged.
-- [ ] `DOD-3` `skillpack.providerStatuses` includes `grok`; a test proves `Status()` reports a Grok row without altering Codex/Claude/Gemini rows.
-- [ ] `DOD-4` A live check (real account, `FLOWPILOT_LIVE_GROK=1`) proves a `SelectedSkills` entry actually reaches the prompt Grok receives for a real turn.
-- [ ] `DOD-5` **Base-regression (`P-0`):** full existing suite passes unchanged (identical pre-existing baseline failures); no Codex/Claude/Gemini-only file is touched; `gemini_acp_transport.go` diff stays empty.
+- [ ] `DOD-1` `skillpack.Install` writes `.grok/skills/<skill>/SKILL.md` for every built-in skill on project bind, alongside the unchanged `.claude/skills`/`.agents/skills` writes; a test proves this without altering the other two roots' output.
+- [ ] `DOD-2` `IsInstalled` and `skillpack.providerStatuses`/`Status()` recognize the `.grok/skills` root; a test proves Codex/Claude/Gemini rows/paths are unchanged.
+- [ ] `DOD-3` Grok's `ProviderCapabilities.SkillSelection` is `true`; a base-regression test proves Codex/Claude/Gemini capability values are byte-identical to before.
+- [ ] `DOD-4` `discoverProjectSkills`/`providerHomeSkillDirs` have a `grok` case pointed at `.grok/skills`; a fixture-based test proves both project-local and provider-home (`GROK_HOME`-shaped) discovery work; Codex/Claude/Gemini discovery is unchanged.
+- [ ] `DOD-5` A live check (real account, `FLOWPILOT_LIVE_GROK=1`) proves a `SelectedSkills` entry actually reaches the prompt Grok receives for a real turn.
+- [ ] `DOD-6` **Base-regression (`P-0`):** full existing suite passes unchanged (identical pre-existing baseline failures); no Codex/Claude/Gemini-only file is touched; `gemini_acp_transport.go` diff stays empty.
 
 ## 7. Out of Scope
 
-- Any change to `skillpack.Install`'s writer or `installRoots` (`T-1` decision — not needed).
 - Surfacing Grok's own bundled/plugin skills or its `config.toml [skills]` overrides in FlowPilot's picker (`Q-1`/`Q-2`, deferred).
-- A native `.grok/skills` install target (deliberately rejected — `.agents/skills` already covers it).
+- Removing or consolidating the `.agents/skills` write/read path for Grok — it stays as a secondary, cross-scanned location; only `.grok/skills` is promoted to a first-class FlowPilot-managed root.
 
 ## 8. Completion Notes
 
