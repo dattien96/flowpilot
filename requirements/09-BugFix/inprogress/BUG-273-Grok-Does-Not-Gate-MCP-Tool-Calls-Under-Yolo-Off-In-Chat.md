@@ -10,9 +10,9 @@
 - Reviewers: `TBD`
 - Created: `2026-07-10`
 - Last Updated: `2026-07-10`
-- Parent Documents: [Task-209: Grok MCP Ask-User Spawn-Agent Parity](../../08-Task/inprogress/Task-209-Grok-MCP-Ask-User-Spawn-Agent-Parity.md), [Task-208: Grok Permission Channel And YOLO Posture](../../08-Task/done/Task-208-Grok-Permission-Channel-And-Yolo-Posture.md), [SS-08: Approve Gate](../../05-System-Specs/SS-08-Approve-Gate.md)
-- Child Documents: `none`
-- Related Documents: [Task-218: Grok YOLO Enforced Via Config Rewrite And Always-Approve Flag](../../08-Task/done/Task-218-Grok-Yolo-Enforced-Via-Config-Rewrite-And-Always-Approve-Flag.md)
+- Parent Documents: [Task-208: Grok Permission Channel And YOLO Posture](../../08-Task/done/Task-208-Grok-Permission-Channel-And-Yolo-Posture.md), [SS-08: Approve Gate](../../05-System-Specs/SS-08-Approve-Gate.md) — this is a permission/YOLO-gating gap (Task-208 lineage), not a tool-wiring gap.
+- Child Documents: [Task-221: Grok MCP Tool Gating Via PreToolUse Hook](../../08-Task/inprogress/Task-221-Grok-MCP-Tool-Gating-Via-PreToolUse-Hook.md)
+- Related Documents: [Task-209: Grok MCP Ask-User Spawn-Agent Parity](../../08-Task/inprogress/Task-209-Grok-MCP-Ask-User-Spawn-Agent-Parity.md) (tool wiring — separate concern; touches the same `CallMcpTool` path), [Task-218: Grok YOLO Enforced Via Config Rewrite And Always-Approve Flag](../../08-Task/done/Task-218-Grok-Yolo-Enforced-Via-Config-Rewrite-And-Always-Approve-Flag.md)
 - Replaces: `none`
 - Tags: `ai-providers`, `mcp-tools`, `grok`, `yolo-policy`, `approval`, `regression`
 
@@ -105,5 +105,5 @@ Under YOLO=off, Grok runs external MCP tool calls (Google Drive, ask_user) witho
 
 ## 10. Follow-Up Document Updates
 
-- upstream docs that must change: Task-209 (fold the MCP-permission-parity finding into its scope once fixed).
+- upstream docs that must change: the fix is tracked in [Task-221: Grok MCP Tool Gating Via PreToolUse Hook](../../08-Task/inprogress/Task-221-Grok-MCP-Tool-Gating-Via-PreToolUse-Hook.md) (permission/YOLO gating). Task-209 (MCP tool wiring) is a separate concern and stays as-is.
 - notes left unchanged on purpose: the Google Drive proxy's admin-web approval flow is unchanged; this bug is specifically the interactive-chat Grok MCP gate.
