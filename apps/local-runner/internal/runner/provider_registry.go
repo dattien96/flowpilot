@@ -405,11 +405,8 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 		},
 	})
 	// Grok Build controlled-mode adapter over ACP `grok agent stdio` (CP-46).
-	// Gated behind FLOWPILOT_GROK_AGENT (grokAgentEnabled) so the default
-	// registry never requires a real grok binary — mirrors Codex's
-	// FLOWPILOT_CODEX_APPSERVER gate exactly (Task-212 T-4: "live registry
-	// enablement is the last code change in this task, gated on all upstream
-	// tasks' tests passing").
+	// On by default (grokAgentEnabled); set FLOWPILOT_GROK_AGENT=0/false/no to
+	// opt back out (e.g. test/demo environments without a real grok binary).
 	if grokAgentEnabled() {
 		reg.register(ProviderRegistration{
 			Key:         ProviderKeyGrok,

@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// Task-212 (CP-46 T-4): live registry enablement, gated behind
-// FLOWPILOT_GROK_AGENT exactly like Codex's FLOWPILOT_CODEX_APPSERVER
-// (TestProviderRegistryForUsesFakeWhenFlagOff/OnLine, partd_test.go).
+// Task-212 (CP-46 T-4): live registry enablement, on by default via
+// grokAgentEnabled, with FLOWPILOT_GROK_AGENT=0/false/no as an explicit
+// opt-out escape hatch.
 
 func mockGrokInitProcess(t *testing.T) func() {
 	t.Helper()
@@ -58,16 +58,16 @@ func TestEnsureGrokProcessInitializes(t *testing.T) {
 	}
 }
 
-func TestProviderRegistryForGrokUsesPlaceholderWhenFlagOff(t *testing.T) {
+func TestProviderRegistryForGrokUsesPlaceholderWhenExplicitlyDisabled(t *testing.T) {
+	t.Setenv(grokAgentEnvFlag, "0")
 	r, _ := New(".")
-	reg := ProviderRegistryFor(r) // flag off by default
+	reg := ProviderRegistryFor(r)
 	if _, err := reg.Adapter(ProviderKeyGrok); err == nil {
-		t.Fatal("expected grok to be unavailable when FLOWPILOT_GROK_AGENT is off")
+		t.Fatal("expected grok to be unavailable when FLOWPILOT_GROK_AGENT=0")
 	}
 }
 
-func TestProviderRegistryForGrokUsesLiveWhenFlagOnAndAccountResolvable(t *testing.T) {
-	t.Setenv(grokAgentEnvFlag, "1")
+func TestProviderRegistryForGrokUsesLiveByDefaultWhenAccountResolvable(t *testing.T) {
 	t.Setenv("XAI_API_KEY", "test-key") // account resolution fallback path
 	defer mockGrokInitProcess(t)()
 	r, _ := New(".")

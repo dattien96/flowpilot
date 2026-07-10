@@ -32,12 +32,12 @@ import (
 
 const grokAgentEnvFlag = "FLOWPILOT_GROK_AGENT"
 
-// grokAgentEnabled reports whether the live Grok ACP path is turned on. Mirrors
-// codexAppServerEnabled: gated so the default registry/tests never require a
-// real grok binary.
+// grokAgentEnabled reports whether the live Grok ACP path is turned on. On by
+// default; set FLOWPILOT_GROK_AGENT=0/false/no to explicitly opt back out
+// (e.g. test/demo environments without a real grok binary).
 func grokAgentEnabled() bool {
 	v := strings.TrimSpace(strings.ToLower(os.Getenv(grokAgentEnvFlag)))
-	return v == "1" || v == "true" || v == "yes"
+	return v != "0" && v != "false" && v != "no"
 }
 
 // grokBinaryName is the `grok` binary; overridable for tests AND for machines
@@ -124,6 +124,7 @@ func (d *grokDispatcher) readLoop(r io.Reader) {
 		if line == "" {
 			continue
 		}
+		logGrokFrameDebug("recv", line)
 		var msg map[string]any
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
 			continue // skip malformed frame, keep the loop alive
@@ -233,6 +234,7 @@ func (d *grokDispatcher) write(msg map[string]any) error {
 	if err != nil {
 		return err
 	}
+	logGrokFrameDebug("send", string(b))
 	b = append(b, '\n')
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
