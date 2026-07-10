@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-09`
 - Last Updated: `2026-07-10`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/todo/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](./Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md)
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](./Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md)
 - Child Documents: `None`
 - Related Documents: [Task-036: Desktop Provider Accounts Sidebar](../done/Task-036-Desktop-Provider-Accounts-Sidebar.md), [Task-038: Desktop Provider Settings Connect Account](../done/Task-038-Desktop-Provider-Settings-Connect-Account.md), [Task-039: Desktop Provider Modal Connect Account](../done/Task-039-Desktop-Provider-Modal-Connect-Account.md), [Task-063: Desktop Chat Provider Card Picker](../done/Task-063-Desktop-Chat-Provider-Card-Picker.md), [Task-059: Desktop Check Version Tested Baseline Config](../done/Task-059-Desktop-Check-Version-Tested-Baseline-Config.md)
 - Replaces: `None`

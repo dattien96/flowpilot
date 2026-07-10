@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-09`
 - Last Updated: `2026-07-10`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/todo/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-208: Grok Permission Channel And YOLO Posture](./Task-208-Grok-Permission-Channel-And-Yolo-Posture.md)
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-208: Grok Permission Channel And YOLO Posture](./Task-208-Grok-Permission-Channel-And-Yolo-Posture.md)
 - Child Documents: `None`
 - Related Documents: [SD-16: Agent Spawn And Tool Calling Design](../../06-System-Tech-Design/SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [Task-055: Fix Claude Ask User Live Flow](../done/Task-055-Fix-Claude-Ask-User-Live-Flow.md), [Task-056: Fix Codex Ask User Live Flow](../done/Task-056-Fix-Codex-Ask-User-Live-Flow.md), [BUG-128: Inconsistent Agent Spawn Prompt Composition Across Providers](../done/BUG-128-Inconsistent-Agent-Spawn-Prompt-Composition-Across-Providers.md), [CP-29: MCP Proxy Google Drive](../../07-Coding-Plan/done/CP-29-MCP-Proxy-Google-Drive.md)
 - Replaces: `None`
