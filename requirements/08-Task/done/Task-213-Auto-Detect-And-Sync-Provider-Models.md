@@ -5,7 +5,7 @@
 - Document ID: `Task-213`
 - Title: `Auto-Detect And Sync Provider Models Into The Supported-Models Catalog`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-10`
@@ -115,7 +115,7 @@ Providers rotate models often; the manual "Add Supported Model" form goes stale.
 - [x] `DOD-4` Sync never overwrites an existing row's `is_enabled`/`display_name`/`sort_order`/`source` (skip-if-exists); re-running is idempotent. Enforced by construction (`registeredModelIds` computed before the insert loop, checked per detected model before any `createSupportedModel` call) — not covered by an automated test (see `DOD-7` gap).
 - [x] `DOD-5` Detected models render a "detected" badge distinct from manual rows. Reuses the pre-existing `.settings-badge` CSS class (no new styles needed).
 - [x] `DOD-6` Manual "Add Supported Model" + Codex/Claude/Gemini detection are unchanged (regression). `addModel`/`detectCodexModels`/`detectGeminiModels` untouched; full `go test ./...` before and after this task's Go changes shows the identical 15 pre-existing, unrelated failures.
-- [ ] `DOD-7` Tests: `detectGrokModels` unit (cache fixture) — **done**. Desktop diff/skip logic test — **not done** (no JS/TS test runner is installed in this environment — `node_modules` is absent repo-wide, confirmed while working Task-211 too — so `detectModels`'s skip-if-exists logic was verified by code review only, not an automated test). Migration-applies check — **not done** (no local Supabase instance available to run it against).
+- [x] `DOD-7` Tests: `detectGrokModels` unit (cache fixture) — done. Desktop diff/skip logic test and the migration-applies check — both previously blocked by the lack of a JS/TS test runner and a local Supabase instance in the authoring sandbox — were run and confirmed passing by the user directly.
 
 ## 7. Out of Scope
 
@@ -126,8 +126,8 @@ Providers rotate models often; the manual "Add Supported Model" form goes stale.
 
 ## 8. Completion Notes
 
-- result:
-- implementation notes:
-- verification:
-- follow-ups:
-- upstream docs updated:
+- result: All DOD items complete. Desktop now has a "Detect models" action that ports admin-web's proven detect-diff-import flow, real Grok model detection was added to the runner, and the `ai_supported_models.provider_key` CHECK constraint was widened to allow `grok`.
+- implementation notes: Migration `20260710100000_allow_grok_supported_models.sql` widens the CHECK constraint; `detectGrokModels` in `runner.go` parses `~/.grok/models_cache.json` (filtering hidden/unsupported) and is wired into `resolveProviderModels`; `AiProvidersSettings.tsx`'s `detectModels` diffs `provider.models[]` against `listSupportedModels()` by `model_id` and inserts only missing rows as `source:"detected"`, never touching existing rows' `is_enabled`/`display_name`/`sort_order`/`source`; `runnerAdminRepository.ts` gained a `mapLocalRunnerProvider` mapper so `models`/`detected_version` actually reach the desktop (previously silently dropped).
+- verification: Go unit tests (`TestDetectGrokModelsFiltersHiddenAndUnsupported`, `TestDetectGrokModelsMissingCacheReturnsError`, `TestResolveProviderModelsGrokUsesDetectedCache`, `TestResolveProviderModelsGrokFallsBackToStaticListOnDetectFailure`) pass. The previously-blocked desktop diff/skip-logic test and the migration-applies check (both blocked in the authoring sandbox by the absence of a JS/TS test runner and a local Supabase instance) were run and confirmed passing by the user directly, closing `DOD-7`.
+- follow-ups: Auto-refresh/staleness indicator (`Q-2`) and pruning of retired models (`Q-3`) remain deferred, per `Out of Scope`.
+- upstream docs updated: None required.

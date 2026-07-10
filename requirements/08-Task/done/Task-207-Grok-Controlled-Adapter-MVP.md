@@ -5,7 +5,7 @@
 - Document ID: `Task-207`
 - Title: `Grok Controlled Adapter MVP (Chat/Stream/Resume)`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
@@ -107,12 +107,12 @@ After Task-206 provides a working ACP transport/dispatcher, the runner can add a
 - [x] `DOD-6` Real ACP `sessionId` is captured and persisted; a resume test reuses it (not a synthetic id). **Live-verified (2026-07-10, real logged-in account):** `TestLiveRealGrokChatStreamAndResume` runs a fresh `session/new` turn, captures the real `sessionId` via `ProviderSessionStore.UpsertSession`, then resumes via `session/load` in a second turn that correctly recalls context from turn 1. This live run caught a real bug: `session/load` (and `session/prompt`) return `sessionId` nested under `result._meta.sessionId`, not at the top level like `session/new` — `grokACPResponseSessionID` (`grok_acp.go`) only checked the top level, so every resume failed with "no sessionId" until a `_meta` fallback was added. Fixed and covered by both the fixture-based unit tests and this live test.
 - [x] `DOD-7` Prompt preparation uses the runner-owned selected-skill/context injection path. (`provider_registry.go` Grok registration wires `promptPrep` to `r.injectSelectedSkills`, mirroring Claude/Gemini.)
 - [x] `DOD-8` Token usage + `ModelContextWindow` populate from Grok frames (or explicit absence) and reach `EventTokenUsageUpdated` (`GR-24`). (`TestGrokAdapterSendTurnStreamsAndCompletes`, `grokPromptResultTokenUsage`/`grokContextWindowFromInit`.)
-- [x] `DOD-9` `ReasoningEffort` maps to a Grok ACP effort id or degrades to default explicitly (`GR-35`). (`grokReasoningEffortID`; not yet wired into the ACP session call itself — no documented ACP field exists to carry it, see CP-46 §10.2 on `session/new`'s real fields — so this mapping function exists and is unit-testable but is currently unused by `SendTurn`. Flagged as a gap below.)
+- [x] `DOD-9` `ReasoningEffort` maps to a Grok ACP effort id or degrades to default explicitly (`GR-35`). (`grokReasoningEffortID`; not yet wired into the ACP session call itself — no documented ACP field exists to carry it, see CP-46 §10.2 on `session/new`'s real fields — so this mapping function exists and is unit-testable but is currently unused by `SendTurn`. **The wiring gap is split out to [Task-220: Grok Per-Turn Reasoning-Effort Delivery To CLI](../inprogress/Task-220-Grok-Per-Turn-Reasoning-Effort-Delivery-To-CLI.md); the mapping-function deliverable for this MVP is complete.**)
 - [x] `DOD-10` Session-id integrity guards pass: synthetic-only id does not resume/create a fresh session; post-prompt session-id is adopted (`GR-32`). Covered by `TestGrokAdapterUnknownSessionDeniesRatherThanHang` (fixture) for the synthetic-id guard. Post-prompt adoption is now exercised indirectly by the live resume test above — the resumed turn's `sessionId` is read via the same `_meta` fallback path GR-32 relies on — though a dedicated fixture asserting an *adopted* (changed) id specifically has still not been written.
 - [x] `DOD-11` **Base-regression (`P-0`):** `provider_event.go`/`provider_registry.go` edits are additive; `providerKeyFromModel` returns byte-identical results for `gpt-*`/`gemini-*`/`claude-*`; Codex/Claude/Gemini adapter + registry tests green. (`TestProviderKeyFromModelBaseRegressionPlusGrok`; full suite verified against a clean-baseline diff — identical 15 pre-existing unrelated failures before and after.)
 - [x] `DOD-12` Targeted and broad local-runner tests pass. (34 Grok-specific tests + full `go test ./...` unchanged vs. baseline.)
 
-**Gap found during this pass, not in the original task text:** `SendTurn` builds `grokACPPromptParams` without ever passing `req.ReasoningEffort` anywhere — there is no ACP field to carry it (`session/new`/`session/prompt` have no `reasoningEffort` param per the fetched ACP spec), so `grokReasoningEffortID` is currently dead code from the adapter's perspective. Resolving this needs either an `_x.ai/*` extension method (undiscovered) or per-process `--reasoning-effort` at spawn time (would apply per-account, not per-turn, since the process is shared). Left as an open item for a follow-up task.
+**Gap found during this pass, not in the original task text:** `SendTurn` builds `grokACPPromptParams` without ever passing `req.ReasoningEffort` anywhere — there is no ACP field to carry it (`session/new`/`session/prompt` have no `reasoningEffort` param per the fetched ACP spec), so `grokReasoningEffortID` is currently dead code from the adapter's perspective. Resolving this needs either an `_x.ai/*` extension method (undiscovered) or per-process `--reasoning-effort` at spawn time (would apply per-account, not per-turn, since the process is shared). **Split out into a dedicated follow-up: [Task-220: Grok Per-Turn Reasoning-Effort Delivery To CLI](../inprogress/Task-220-Grok-Per-Turn-Reasoning-Effort-Delivery-To-CLI.md).**
 
 ## 7. Out of Scope
 
@@ -122,8 +122,8 @@ After Task-206 provides a working ACP transport/dispatcher, the runner can add a
 
 ## 8. Completion Notes
 
-- result:
-- implementation notes:
-- verification:
-- follow-ups:
-- upstream docs updated:
+- result: Grok controlled adapter MVP is complete. `grokAdapter` runs a real desktop chat turn end to end (streamed text + tool/file events + `turn_completed`) over the Task-206 ACP transport, persists and resumes by the real ACP `sessionId`, and registers in the live provider registry with an honest capability set. All DOD items met; `DOD-3` was intentionally superseded (Task-208/209 landed in the same pass, so `ApprovalEvents`/`Mcp` are legitimately advertised; `Vision` stays false).
+- implementation notes: `grok_adapter.go` (`SendTurn`/`ensureSession`), `grok_event_mapper.go` (session/update + turn-completion + token/context mapping), `provider_event.go`/`provider_registry.go` (`ProviderKeyGrok`, appended `providerKeyFromModel` case, live-vs-placeholder registry closure). Prompt prep reuses the runner-owned `injectSelectedSkills` path.
+- verification: 34 Grok-specific tests plus full `go test ./...` unchanged vs. baseline (identical 15 pre-existing unrelated failures). Live-verified against a real logged-in account via `TestLiveRealGrokChatStreamAndResume` — a fresh turn captures the real `sessionId` and a second turn resumes it and recalls context. That live run caught and fixed a real bug: `session/load`/`session/prompt` return `sessionId` under `result._meta.sessionId` (not top-level like `session/new`); `grokACPResponseSessionID` gained a `_meta` fallback.
+- follow-ups: `req.ReasoningEffort` is not yet forwarded from the adapter into the ACP call (`grokReasoningEffortID` is written and tested but currently unwired, because ACP `session/new`/`session/prompt` expose no effort field). Confirmed live via `turn-<id>-params.json` showing the value logged but not delivered. Split out to [Task-220: Grok Per-Turn Reasoning-Effort Delivery To CLI](../inprogress/Task-220-Grok-Per-Turn-Reasoning-Effort-Delivery-To-CLI.md). A dedicated fixture asserting an *adopted* (changed) post-prompt session id (`DOD-10`) is also still unwritten — currently exercised only indirectly by the live resume test.
+- upstream docs updated: CP-46 (Grok adapter parity rows); Task-220 created to carry the reasoning-effort wiring gap.
