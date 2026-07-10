@@ -25,8 +25,8 @@ const (
 // perFileExcerptBytes caps each source file excerpt; totalExcerptBytes caps
 // the aggregate across all files in one package build.
 const (
-	perFileExcerptBytes  = 4 * 1024  // 4 KB
-	totalExcerptBytes    = 16 * 1024 // 16 KB
+	perFileExcerptBytes = 4 * 1024  // 4 KB
+	totalExcerptBytes   = 16 * 1024 // 16 KB
 )
 
 // FlowContextExcerpt is a bounded, workspace-safe excerpt from one source file.
@@ -57,9 +57,10 @@ type FlowContextHints struct {
 	FeatureConfidence FlowContextConfidence
 
 	// MCPDriverRef optionally names a driver reference for the mcp.driver
-	// context source (CP-44 P-5/Task-195), e.g. an MCP-connected driver file
-	// id. Empty means no MCP-backed source is configured for this run; the
-	// mcp.driver source degrades to an empty, warning-free section.
+	// context source (CP-44 P-5/Task-195), usually resolved at runtime for
+	// this run (with a legacy saved default still allowed). Empty means no
+	// MCP-backed source is configured for this run; the mcp.driver source
+	// degrades to an empty, warning-free section.
 	MCPDriverRef string
 }
 

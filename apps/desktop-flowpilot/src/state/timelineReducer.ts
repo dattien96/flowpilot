@@ -77,7 +77,10 @@ function statusFromEvent(e: ProviderEventDTO, prev: RunStatus): RunStatus {
     case "permission_required":
       return "waiting_approval";
     case "user_question_required":
-      return "waiting_question";
+      // A replayed already-resolved question (BUG-StaleQuestion, carries
+      // `answer`) is not a new pending state — it must not flip a settled run
+      // back to "waiting_question" on reconnect.
+      return e.answer !== undefined ? prev : "waiting_question";
     case "turn_completed":
       return "completed";
     case "turn_failed":
@@ -315,12 +318,19 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
         prompt: e.prompt,
         options: e.options,
         multiSelect: e.multiSelect,
+        answer: e.answer,
       });
+      // A replayed already-resolved question (BUG-StaleQuestion) must stay
+      // out of pendingQuestions — it renders read-only via `answer` above,
+      // not as a new interactive card the run is waiting on.
       return finalize(timeline, {
-        pendingQuestions: [
-          ...s.pendingQuestions,
-          { questionId: e.questionId, prompt: e.prompt, options: e.options, multiSelect: e.multiSelect },
-        ],
+        pendingQuestions:
+          e.answer !== undefined
+            ? s.pendingQuestions
+            : [
+                ...s.pendingQuestions,
+                { questionId: e.questionId, prompt: e.prompt, options: e.options, multiSelect: e.multiSelect },
+              ],
       });
 
     case "turn_completed":

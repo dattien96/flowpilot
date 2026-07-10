@@ -260,8 +260,42 @@ func (s *InteractiveService) markFlowRunComplete(ctx context.Context, parentRunI
 	// chat's inline run card, even though the flow that spawned it is now done.
 	// Settle any such orphaned child so "flow done" is a clean, fully-terminal
 	// state on both the step timeline and the agent-run list.
+	s.settleParentRunOnFlowDone(parentRunID)
 	s.reconcileChildRunsOnFlowDone(parentRunID)
 	s.flowDiagLog(parentRunID, "flow_run_complete_done", "flow run marked complete")
+}
+
+func (s *InteractiveService) settleParentRunOnFlowDone(parentRunID string) {
+	var approvalSnapshot *ProviderApprovalState
+	var questionSnapshot *ProviderQuestionState
+	s.mu.Lock()
+	if parent := s.runs[parentRunID]; parent != nil {
+		parent.status = RunStatusCompleted
+		parent.agentStatus = string(RunStatusCompleted)
+		if id := parent.pendingApprovalID; id != "" {
+			if rec := s.approvals[id]; rec != nil && rec.status == "pending" {
+				rec.status = "expired"
+				state := approvalStateFromRecord(parent, rec, "")
+				approvalSnapshot = &state
+			}
+			parent.pendingApprovalID = ""
+		}
+		if id := parent.pendingQuestionID; id != "" {
+			if rec := s.questions[id]; rec != nil && rec.status == "pending" {
+				rec.status = "expired"
+				state := questionStateFromRecord(rec, "", "")
+				questionSnapshot = &state
+			}
+			parent.pendingQuestionID = ""
+		}
+	}
+	s.mu.Unlock()
+	if approvalSnapshot != nil {
+		_ = s.persistApproval(*approvalSnapshot)
+	}
+	if questionSnapshot != nil {
+		_ = s.persistQuestion(*questionSnapshot)
+	}
 }
 
 // reconcileChildRunsOnFlowDone (BUG-235) force-settles any child of parentRunID

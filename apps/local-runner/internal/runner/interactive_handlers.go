@@ -47,6 +47,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/interrupt", s.handleInterrupt)
 	mux.HandleFunc("POST /client/approvals/{approvalId}/decision", s.handleApprovalDecision)
 	mux.HandleFunc("POST /client/questions/{questionId}/answer", s.handleAnswerQuestion)
+	mux.HandleFunc("GET /client/questions/{questionId}/google-drive-picker", s.handleGoogleDriveQuestionPicker)
+	mux.HandleFunc("GET /client/questions/{questionId}/google-drive-picker-token", s.handleGoogleDriveQuestionPickerToken)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/artifacts", s.handleListArtifacts)
 	mux.HandleFunc("GET /client/provider-skills", s.handleListSkills)
 	mux.HandleFunc("GET /client/agents", s.handleListAgents)
@@ -121,6 +123,28 @@ func (s *InteractiveService) handleListSkills(w http.ResponseWriter, r *http.Req
 	provider := r.URL.Query().Get("provider")
 	cwd := r.URL.Query().Get("cwd")
 	writeInteractiveJSON(w, http.StatusOK, s.skillsCatalog.listSkills(provider, cwd))
+}
+
+func (s *InteractiveService) handleGoogleDriveQuestionPicker(w http.ResponseWriter, r *http.Request) {
+	questionID := r.PathValue("questionId")
+	if strings.TrimSpace(questionID) == "" {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_question", "questionId is required"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if _, err := w.Write([]byte(RenderGoogleDriveQuestionPickerHTML(questionID))); err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "picker_render_failed", err.Error()))
+	}
+}
+
+func (s *InteractiveService) handleGoogleDriveQuestionPickerToken(w http.ResponseWriter, r *http.Request) {
+	questionID := r.PathValue("questionId")
+	token, err := s.GetGoogleDriveQuestionPickerToken(questionID)
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "google_drive_picker_unavailable", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, token)
 }
 
 // handleListBuiltinOrchestrationOptions serves the Chat Mode "Built-in
@@ -962,7 +986,15 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 					ProviderKey: sess.ProviderKey,
 					// Persisted-only runs are not in the in-memory map, so an
 					// in-flight status is stale after a restart (T-067 4.4).
-					Status:          normalizeResumedStatus(sess.Status),
+					// BUG-StaleCancel: use normalizeResumedFlowStatus, not
+					// normalizeResumedStatus, for persisted sessions. A flow
+					// whose LoopState.Status is "done" must show as completed
+					// even when the raw persisted status is still "running"
+					// (AnswerQuestion's persist can overwrite the early
+					// flowStartOnly "completed" persist before the async
+					// applyFlowControl goroutine has a chance to write the
+					// final "completed" record).
+					Status:          normalizeResumedFlowStatus(sess),
 					StartedAt:       sess.StartedAt,
 					UpdatedAt:       sess.UpdatedAt,
 					LastPrompt:      sess.LastPrompt,

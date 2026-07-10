@@ -58,6 +58,12 @@ type BehaviorInput struct {
 	// runner's default built-in set" — most callers (and every pre-Task-194
 	// dispatch) leave this unset and get the pre-CP-44 behavior unchanged.
 	ContextSourceIDs []string
+	// MCPDriverRef is the Google Drive file id mcp.driver reads when enabled.
+	// The caller resolves it either from the run's runtime question answer or
+	// from a legacy bound context_artifact.v1 default
+	// (resolveArtifactBoundMCPDriverRef). Empty means mcp.driver has nothing
+	// configured for this run — a normal no-op, not an error.
+	MCPDriverRef string
 }
 
 // BehaviorOutput is the generic result a behavior handler returns. The

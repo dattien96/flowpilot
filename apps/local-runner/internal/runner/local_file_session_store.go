@@ -92,6 +92,11 @@ type ndjsonSessionRecord struct {
 // populates the in-memory sessions map. Entries older than sessionStoreMaxAge
 // (measured by updated_at) are pruned. Malformed lines are silently skipped.
 func (s *localFileSessionStore) loadFromDisk() {
+	// Loaded unconditionally, before the sessions.ndjson-missing early return
+	// below: a fresh install/data dir with no session ever persisted yet but a
+	// question already asked must still load questions.ndjson.
+	s.loadQuestionsFromDisk()
+
 	f, err := os.Open(s.filePath)
 	if err != nil {
 		return // missing file is normal on first run
@@ -125,6 +130,41 @@ func (s *localFileSessionStore) loadFromDisk() {
 	s.fakeWorkflowStore.mu.Lock()
 	for _, rec := range seen {
 		s.fakeWorkflowStore.sessions[rec.RunID] = sessionStateFromRecord(rec)
+	}
+	s.fakeWorkflowStore.mu.Unlock()
+}
+
+// loadQuestionsFromDisk populates fakeWorkflowStore.questions from
+// questions.ndjson (BUG-StaleQuestion-Restart), last-write-wins per QuestionID
+// — mirrors loadFromDisk's session handling above. Missing file is normal
+// (no question has ever been asked yet).
+func (s *localFileSessionStore) loadQuestionsFromDisk() {
+	f, err := os.Open(s.questionsFilePath())
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	seen := map[string]ProviderQuestionState{}
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var rec ProviderQuestionState
+		if err := json.Unmarshal(line, &rec); err != nil {
+			continue
+		}
+		if rec.QuestionID == "" {
+			continue
+		}
+		seen[rec.QuestionID] = rec // last-wins
+	}
+
+	s.fakeWorkflowStore.mu.Lock()
+	for id, rec := range seen {
+		s.fakeWorkflowStore.questions[id] = rec
 	}
 	s.fakeWorkflowStore.mu.Unlock()
 }
@@ -322,6 +362,44 @@ func (s *localFileSessionStore) DeleteTurnLog(_ context.Context, runID string) e
 	return err
 }
 
+// questionsFilePath returns the path of the single questions.ndjson file that
+// durably tracks ProviderQuestionState across restarts (BUG-StaleQuestion-
+// Restart) — mirrors sessions.ndjson (BUG-080) but keyed by QuestionID.
+func (s *localFileSessionStore) questionsFilePath() string {
+	return filepath.Join(filepath.Dir(s.filePath), "questions.ndjson")
+}
+
+// UpsertQuestion updates the in-memory map (via the embedded fakeWorkflowStore)
+// and appends a NDJSON line to questions.ndjson so a question's resolution
+// state (resolved + Choice, or expired) survives a process restart
+// (BUG-StaleQuestion-Restart) — without this, reconstructRun has no way to
+// know whether a restored user_question_required event was already answered.
+func (s *localFileSessionStore) UpsertQuestion(ctx context.Context, question ProviderQuestionState) error {
+	if err := s.fakeWorkflowStore.UpsertQuestion(ctx, question); err != nil {
+		return err
+	}
+	line, err := json.Marshal(question)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fh, err := os.OpenFile(s.questionsFilePath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	_, err = fh.Write(append(line, '\n'))
+	return err
+}
+
+// ListQuestionsByRun returns every persisted question state for a run
+// (BUG-StaleQuestion-Restart), populated from questions.ndjson at startup and
+// kept current by UpsertQuestion. No extra file read is needed here.
+func (s *localFileSessionStore) ListQuestionsByRun(ctx context.Context, runID string) ([]ProviderQuestionState, error) {
+	return s.fakeWorkflowStore.ListQuestionsByRun(ctx, runID)
+}
+
 // flowEventsPath returns the path of the per-run CP-41 flow-events sidecar.
 // Returns an error when runID contains path separators that could escape the
 // store directory (path-traversal guard).
@@ -334,10 +412,18 @@ func (s *localFileSessionStore) flowEventsPath(runID string) (string, error) {
 
 // isFlowSidecarEventType reports whether the event type should be persisted to
 // the per-run flow-events sidecar so it survives process restarts.
+//
+// EventUserQuestionRequired is included so the raw "asked" event itself
+// survives a restart (BUG-StaleQuestion-Restart) — raw provider transcripts
+// (Claude/Codex) have no concept of it, so without this the question would not
+// exist at all in the reconstructed timeline, resolved or not. Whether it was
+// later answered/expired is tracked separately via ProviderQuestionState
+// (UpsertQuestion) and merged onto this replayed event in reconstructRun.
 func isFlowSidecarEventType(t ProviderEventType) bool {
 	switch t {
 	case EventFlowContextPackage, EventFlowValidationResult,
-		EventFlowValidationRetry, EventFlowAuditDraft:
+		EventFlowValidationRetry, EventFlowAuditDraft,
+		EventUserQuestionRequired:
 		return true
 	}
 	return false

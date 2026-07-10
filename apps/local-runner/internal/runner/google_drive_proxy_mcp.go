@@ -877,19 +877,30 @@ func (s *proxyMcpServer) authScopes() []string {
 }
 
 func (s *proxyMcpServer) accessToken() (string, error) {
+	return resolveGoogleDriveAccessTokenForRunner(s.runner)
+}
+
+// resolveGoogleDriveAccessTokenForRunner is accessToken()'s logic, extracted
+// to depend only on *Runner (Task-204 T-3) so a second caller — the
+// production mcp.driver context-source adapter, which has no proxyMcpServer
+// of its own — can resolve a live Google Drive access token through the
+// exact same account/credential chain the MCP proxy path already uses,
+// rather than inventing a second way to look up which account backs a
+// workspace (Task-204's own constraint).
+func resolveGoogleDriveAccessTokenForRunner(runner *Runner) (string, error) {
 	if flowpilotGoogleDriveProxyMcpEnabled() {
-		clientID, clientSecret, err := s.proxyOAuthClient()
+		clientID, clientSecret, err := resolveGoogleDriveOAuthClientForRunner(runner)
 		if err != nil {
 			if googleDriveCredentialNeedsAuth(err) {
 				return "", fmt.Errorf("mcp_auth_required: MCP_AUTH_REQUIRED: Google Drive OAuth config is missing; re-save Google Drive setup and reconnect Google Drive before using this MCP: %w", err)
 			}
 			return "", err
 		}
-		accountID, _, _, err := s.proxyAccountConnection()
+		accountID, _, _, err := resolveGoogleDriveAccountConnectionForRunner(runner)
 		if err != nil {
 			return "", err
 		}
-		creds, err := s.runner.loadGoogleDriveCredentialByAccount(accountID)
+		creds, err := runner.loadGoogleDriveCredentialByAccount(accountID)
 		if err != nil {
 			if refreshToken := strings.TrimSpace(os.Getenv(googleDriveProxyRefreshTokenEnv)); refreshToken != "" {
 				return googleDriveRefreshAccessToken(clientID, clientSecret, refreshToken)
@@ -902,7 +913,7 @@ func (s *proxyMcpServer) accessToken() (string, error) {
 		return googleDriveRefreshAccessToken(clientID, clientSecret, creds.RefreshToken)
 	}
 
-	status, err := s.runner.googleDriveMcpRuntimeConfig()
+	status, err := runner.googleDriveMcpRuntimeConfig()
 	if err != nil {
 		return "", err
 	}
@@ -927,7 +938,11 @@ func (s *proxyMcpServer) accessToken() (string, error) {
 }
 
 func (s *proxyMcpServer) proxyOAuthClient() (string, string, error) {
-	config, err := s.runner.resolveGoogleDriveProxyOAuthConfig()
+	return resolveGoogleDriveOAuthClientForRunner(s.runner)
+}
+
+func resolveGoogleDriveOAuthClientForRunner(runner *Runner) (string, string, error) {
+	config, err := runner.resolveGoogleDriveProxyOAuthConfig()
 	if err != nil {
 		return "", "", err
 	}
@@ -969,11 +984,15 @@ func (s *proxyMcpServer) proxyArtifactConnection() (string, artifactStorageGoogl
 }
 
 func (s *proxyMcpServer) proxyAccountConnection() (string, string, artifactStorageGoogleDriveConnectionRecord, error) {
-	configFile, err := s.runner.loadGoogleDriveWorkspaceConfigFile()
+	return resolveGoogleDriveAccountConnectionForRunner(s.runner)
+}
+
+func resolveGoogleDriveAccountConnectionForRunner(runner *Runner) (string, string, artifactStorageGoogleDriveConnectionRecord, error) {
+	configFile, err := runner.loadGoogleDriveWorkspaceConfigFile()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", "", artifactStorageGoogleDriveConnectionRecord{}, err
 	}
-	selection, err := s.runner.resolveGoogleDriveProxyAccountSelection(configFile)
+	selection, err := runner.resolveGoogleDriveProxyAccountSelection(configFile)
 	if err != nil {
 		return "", "", artifactStorageGoogleDriveConnectionRecord{}, err
 	}
@@ -983,7 +1002,7 @@ func (s *proxyMcpServer) proxyAccountConnection() (string, string, artifactStora
 		}
 	}
 
-	state, err := s.runner.loadArtifactStorageGoogleDriveState()
+	state, err := runner.loadArtifactStorageGoogleDriveState()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return selection.AccountID, selection.AccountEmail, artifactStorageGoogleDriveConnectionRecord{}, nil

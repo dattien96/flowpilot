@@ -55,6 +55,26 @@ func resolveArtifactBoundContextSources(node agentpack.FlowNode) ([]string, bool
 	return nil, false
 }
 
+// resolveArtifactBoundMCPDriverRef reads the legacy optional
+// config_json.mcpDriverFileId off the same OUTPUT context_artifact.v1 binding
+// resolveArtifactBoundContextSources reads config_json.sources from. New runs
+// may ask for the file URL/id at runtime instead; this remains only as a
+// backward-compatible default for existing saved instances. ok=false means no
+// legacy default is configured.
+func resolveArtifactBoundMCPDriverRef(node agentpack.FlowNode) (string, bool) {
+	for _, b := range node.ArtifactBindings {
+		if b.Direction != "output" || b.ArtifactTypeID != ArtifactTypeContext {
+			continue
+		}
+		ref, ok := b.ConfigJSON["mcpDriverFileId"].(string)
+		ref = strings.TrimSpace(ref)
+		if ok && ref != "" {
+			return ref, true
+		}
+	}
+	return "", false
+}
+
 // ArtifactResolveResult is what an ArtifactResolver produces for one bound
 // instance: bounded, prompt-injectable content plus a source ref and any
 // degrade warnings, mirroring ContextSource's FlowContextSection contract

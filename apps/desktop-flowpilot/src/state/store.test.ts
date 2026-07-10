@@ -7,7 +7,7 @@ import { shouldShowAgentTimelineHeader } from "@/components/Timeline";
 import { parseMentionRouting } from "@/components/ChatInput";
 import { MockRunnerClient } from "../client/MockRunnerClient";
 import { RunnerApiError } from "../client/HttpWsRunnerClient";
-import type { AgentGraphSnapshot, AgentRunSummary, ProviderAccountSummary, ProviderEventDTO, RemoteChatSessionSummary, RunHandle, RunHistoryItem, RunnerClient, TurnInput } from "../types/contract";
+import type { AgentGraphSnapshot, AgentRunSummary, ChatSessionSyncResult, ProviderAccountSummary, ProviderEventDTO, RemoteChatSessionSummary, RunHandle, RunHistoryItem, RunnerClient, TurnInput } from "../types/contract";
 
 async function* emptyStream(): AsyncIterable<ProviderEventDTO> {}
 
@@ -645,6 +645,63 @@ test("openHistoryRun keeps an approval gate open when the replay ends on permiss
   assert.deepEqual(state.pendingApprovals, [{ approvalId: "appr-1", details: approvalDetails }]);
   const card = state.timeline.find((item) => item.kind === "approval") as Extract<TimelineItem, { kind: "approval" }> | undefined;
   assert.equal(card?.decision, undefined, "approval card should remain actionable");
+});
+
+test("openHistoryRun does not restore stale pendingQuestions from a completed cached snapshot", async () => {
+  const questionOptions = [{ label: "A", value: "a" }, { label: "B", value: "b" }];
+  const handle: RunHandle = {
+    runId: "run-1",
+    providerSessionId: "session-1",
+    providerKey: "codex",
+    status: "completed",
+    stepId: "chat-run-1",
+    lastEventSeq: 3,
+  };
+  async function* completedHistoryStream(): AsyncIterable<ProviderEventDTO> {
+    yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 1, type: "turn_started", providerTurnId: "turn-1", prompt: "hello" };
+    yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 2, type: "user_question_required", questionId: "q-1", prompt: "Pick one", options: questionOptions };
+    yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 3, type: "turn_completed", finalMessage: "done" };
+    await new Promise<never>(() => {});
+  }
+  seedStore(
+    makeClient({
+      resumeRun: async () => handle,
+      streamRun: () => completedHistoryStream(),
+      listSkills: async () => [],
+    }),
+    [
+      {
+        runId: "run-1",
+        projectId: "project-1",
+        providerKey: "codex",
+        status: "completed",
+        startedAt: "2026-06-17T10:00:00Z",
+        updatedAt: "2026-06-17T10:05:00Z",
+      },
+    ],
+  );
+  useStore.setState({
+    _runSnapshots: {
+      "run-1": {
+        timeline: [{ kind: "question", id: "evt-q1", questionId: "q-1", prompt: "Pick one", options: questionOptions }],
+        artifacts: [],
+        status: "completed",
+        pendingApprovals: [],
+        pendingQuestions: [{ questionId: "q-1", prompt: "Pick one", options: questionOptions }],
+        recoverable: false,
+        lastEventSeq: 3,
+      },
+    },
+  });
+
+  await useStore.getState().openHistoryRun("run-1");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const state = useStore.getState();
+  assert.equal(state.status, "completed");
+  assert.deepEqual(state.pendingQuestions, [], "completed snapshots must not resurrect stale question gates");
+  const questionCard = state.timeline.find((item) => item.kind === "question") as Extract<TimelineItem, { kind: "question" }> | undefined;
+  assert.equal(questionCard?.answer, "answered", "replayed completed run should stamp the old question resolved");
 });
 
 test("sendPrompt aborts an open-ended history replay stream before sending", async () => {
@@ -1740,6 +1797,60 @@ test("syncHistoryRun marks syncing state while the request is in flight", async 
     remotePath: "chat-sessions/runs/mch_sync/run-sync/manifest.json",
   });
   await pending;
+});
+
+test("syncAllInProject reports x/y batch progress via syncRuns and clears it when the batch finishes", async () => {
+  const gates = { "run-a": deferred<ChatSessionSyncResult>(), "run-b": deferred<ChatSessionSyncResult>() };
+  seedStore(
+    makeClient({
+      syncChatRun: async (runId) => gates[runId as keyof typeof gates].promise,
+    }),
+    [
+      {
+        runId: "run-a",
+        projectId: "project-1",
+        providerKey: "codex",
+        status: "completed",
+        startedAt: "2026-06-17T10:00:00Z",
+        updatedAt: "2026-06-17T10:05:00Z",
+        runKind: "chat",
+      },
+      {
+        runId: "run-b",
+        projectId: "project-1",
+        providerKey: "codex",
+        status: "completed",
+        startedAt: "2026-06-17T10:01:00Z",
+        updatedAt: "2026-06-17T10:06:00Z",
+        runKind: "chat",
+      },
+    ],
+  );
+
+  const pending = useStore.getState().syncAllInProject("project-1");
+  assert.deepEqual(useStore.getState().syncBatchProgress, { projectId: "project-1", done: 0, total: 2 });
+
+  gates["run-a"].resolve({
+    runId: "run-a",
+    sourceMachineId: "mch_sync",
+    sourceRunId: "run-a",
+    syncStatus: "synced",
+    syncedAt: "2026-06-17T10:10:00Z",
+    remotePath: "chat-sessions/runs/mch_sync/run-a/manifest.json",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(useStore.getState().syncBatchProgress, { projectId: "project-1", done: 1, total: 2 });
+
+  gates["run-b"].resolve({
+    runId: "run-b",
+    sourceMachineId: "mch_sync",
+    sourceRunId: "run-b",
+    syncStatus: "synced",
+    syncedAt: "2026-06-17T10:11:00Z",
+    remotePath: "chat-sessions/runs/mch_sync/run-b/manifest.json",
+  });
+  await pending;
+  assert.equal(useStore.getState().syncBatchProgress, undefined);
 });
 
 test("syncHistoryRun typed error preserves current timeline", async () => {

@@ -257,7 +257,7 @@ type interactiveRun struct {
 	// validate dispatch reads to decide retrying/passed/failed without
 	// replaying the event log on every turn.
 	flowValidationRetryState *FlowValidationRetryState
-	turnCancel            context.CancelFunc
+	turnCancel               context.CancelFunc
 
 	pendingApprovalID string
 	pendingQuestionID string
@@ -591,7 +591,15 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			s.markFlowRunComplete(context.Background(), parentRunID)
 		}
 		s.emitAgentGraph(parentRunID, snap)
-		go s.persistParentSession(parentRunID)
+		// BUG-StaleCancel: persist synchronously here (not go goroutine) so the
+		// completed state is guaranteed to land in the NDJSON session file before
+		// any subsequent persist (e.g. from a concurrent AnswerQuestion on the
+		// same run) can overwrite the status back to "running". The goroutine was
+		// cheap but racy: if the runner stopped between the goroutine schedule and
+		// execution, the last persisted status was "running" → showed as cancelled
+		// on restart.
+		s.persistParentSession(parentRunID)
+
 		s.flowDiagLog(parentRunID, "flow_control_done", "flow marked done",
 			"next_action", "done",
 			"round", snap.LoopState.Round,
@@ -1555,6 +1563,12 @@ func (s *InteractiveService) AttachRunner(r *Runner) {
 	s.agentCatalog.providerHomeFn = func() []AgentDefinition {
 		return discoverActiveProviderHomeAgents(r)
 	}
+	// Task-204: wire mcp.driver's production Google Drive backing once a real
+	// *Runner is available. DefaultContextSourceRegistry() is a lazily
+	// constructed package-wide singleton, so this may run before or after any
+	// call that first constructs it — SetMCPDriverAdapter is safe either way
+	// (it mutates the already-registered mcp.driver source in place).
+	DefaultContextSourceRegistry().SetMCPDriverAdapter(&googleDriveDriverAdapter{runner: r})
 }
 
 // SetFlowDefinitionStore attaches the FlowDefinitionStore startResolvedFlow
@@ -2084,9 +2098,26 @@ func (s *InteractiveService) subscribe(runID string, after int64) (int64, chan P
 	}
 	snapshot := make([]ProviderEvent, 0, len(rs.events))
 	for _, e := range rs.events {
-		if e.Seq > after {
-			snapshot = append(snapshot, e)
+		if e.Seq <= after {
+			continue
 		}
+		// BUG-StaleQuestion: a resolved question must still be visible on
+		// reconnect (e.g. switches view and comes back) — just not
+		// interactive. Stamp the resolved choice onto the replayed event so
+		// the client renders the QuestionCard in its read-only "answered"
+		// state instead of a fresh interactive form. An expired question (no
+		// answer to show) is dropped, matching the pre-existing behavior.
+		if e.Type == EventUserQuestionRequired && e.QuestionID != "" {
+			if rec := s.questions[e.QuestionID]; rec != nil {
+				switch rec.status {
+				case "resolved":
+					e.Answer = append([]string(nil), rec.choice...)
+				case "expired":
+					continue
+				}
+			}
+		}
+		snapshot = append(snapshot, e)
 	}
 	id := rs.nextSub
 	rs.nextSub++
@@ -3570,6 +3601,8 @@ func (s *InteractiveService) submitApprovalDecision(approvalID, decision string,
 // AnswerQuestion is idempotent + first-write-wins. Free-text ("Other") is allowed,
 // so any non-empty choice is accepted.
 func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) *apiErr {
+	var snapshot *ProviderQuestionState
+	var runID string
 	s.mu.Lock()
 	rec := s.questions[questionID]
 	if rec == nil {
@@ -3590,10 +3623,26 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 	}
 	rec.status = "resolved"
 	rec.choice = choice
+	runID = rec.runID
+	state := questionStateFromRecord(rec, "", "")
+	snapshot = &state
 	if rs := s.runs[rec.runID]; rs != nil && rs.pendingQuestionID == questionID {
 		rs.pendingQuestionID = ""
+		if rs.pendingApprovalID != "" {
+			rs.status = RunStatusWaitingApproval
+			rs.agentStatus = string(RunStatusWaitingApproval)
+		} else {
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+		}
 	}
 	s.mu.Unlock()
+	if snapshot != nil {
+		_ = s.persistQuestion(*snapshot)
+	}
+	if runID != "" {
+		s.persistParentSession(runID)
+	}
 	rec.resolve <- choice
 	return nil
 }

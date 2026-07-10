@@ -47,15 +47,16 @@ type PickerModal =
 // never free text. This list is a manually-synced descriptor (CP-44 Q-1
 // option a); the Go registry stays the validation authority: an id here that
 // drifts out of sync with the registry fails flow load fast (Task-194 T-2),
-// it does not silently run without it. mcp.driver has no production adapter
-// wired yet (Task-195 shipped the seam + a test-only fake adapter only) — it
-// is listed because the registry accepts it, but selecting it will currently
-// degrade to a warning at runtime until a real adapter lands.
+// it does not silently run without it. mcp.driver is backed by a production
+// Google Drive adapter (Task-204) — it reads from the project-level Google
+// Drive account connected in Google Drive setup. This editor only enables the
+// source; when no legacy default file id is stored, the run asks for the file
+// URL/id at runtime instead of forcing a settings edit for every run.
 const contextSourceOptions: { id: string; label: string }[] = [
   { id: "feature.history", label: "Feature History" },
   { id: "chat.summary", label: "Chat Summary" },
   { id: "source.excerpt", label: "Source Excerpt" },
-  { id: "mcp.driver", label: "MCP Driver (not yet wired to a live source)" },
+  { id: "mcp.driver", label: "MCP Driver (Google Drive)" },
 ];
 
 type WorkflowDraft = {
@@ -384,6 +385,11 @@ function ArtifactsTabContent(props: {
                   );
                 })}
               </div>
+              {draftSources.includes("mcp.driver") ? (
+                <small>
+                  Uses the Google Drive account selected in Google Drive setup. The file URL or ID is chosen at runtime.
+                </small>
+              ) : null}
             </div>
           ) : null}
           {isFileType ? (
@@ -662,6 +668,45 @@ export function WorkflowsSettings(): React.ReactElement {
     normalizeWorkflowSnapshot(workflowDraft, workflowSteps) !== workflowInitialSnapshot;
   const stepDirty = normalizeStepSnapshot(stepDraft) !== stepInitialSnapshot;
 
+  const syncWorkflowSelection = (
+    workflowId: string,
+    nextWorkflows: Workflow[] = workflows,
+    nextWorkflowSteps: WorkflowStep[],
+    nextStepDefinitions: StepDefinition[] = stepDefinitions,
+  ) => {
+    setSelectedWorkflowId(workflowId);
+    const nextSelectedWorkflow =
+      nextWorkflows.find((item) => item.id === workflowId) ?? null;
+    const nextDetailWorkflowStepType =
+      nextStepDefinitions.find(
+        (definition) =>
+          !nextWorkflowSteps.some((step) => step.stepType === definition.stepType),
+      )?.stepType ?? "";
+    setDetailWorkflowStepType(nextDetailWorkflowStepType);
+    setWorkflowSteps(nextWorkflowSteps);
+    const nextWorkflowDraft = mapWorkflowToDraft(nextSelectedWorkflow);
+    setWorkflowDraft(nextWorkflowDraft);
+    setWorkflowInitialSnapshot(
+      normalizeWorkflowSnapshot(nextWorkflowDraft, nextWorkflowSteps),
+    );
+  };
+
+  const selectStepDefinition = (stepType: string, definitions: StepDefinition[] = stepDefinitions) => {
+    setSelectedStepType(stepType);
+    const nextSelectedStep = definitions.find((item) => item.stepType === stepType) ?? null;
+    const nextStepDraft = nextSelectedStep ? { ...nextSelectedStep } : null;
+    setStepDraft(nextStepDraft);
+    setStepInitialSnapshot(normalizeStepSnapshot(nextStepDraft));
+  };
+
+  const selectWorkflowDefinition = async (workflowId: string) => {
+    const admin = await getAdminUseCases();
+    const nextWorkflowSteps = workflowId
+      ? await admin.workflows.listWorkflowSteps(workflowId)
+      : [];
+    syncWorkflowSelection(workflowId, workflows, nextWorkflowSteps, stepDefinitions);
+  };
+
   const refresh = async (
     workflowId?: string,
     stepType?: string,
@@ -720,8 +765,6 @@ export function WorkflowsSettings(): React.ReactElement {
       setModels(enabledModels);
       setArtifactTypes(nextArtifactTypes);
       setArtifactInstances(nextArtifactInstances);
-      setSelectedWorkflowId(resolvedWorkflowId);
-      setSelectedStepType(resolvedStepType);
       setStepTypesUsedByBuiltin(nextStepTypesUsedByBuiltin);
 
       if (!options?.preserveCreateDrafts) {
@@ -730,26 +773,13 @@ export function WorkflowsSettings(): React.ReactElement {
         setCreateStepDraft(createEmptyStepDraft(defaultModel));
       }
 
-      const nextSelectedWorkflow =
-        nextWorkflows.find((item) => item.id === resolvedWorkflowId) ?? null;
-      const nextDetailWorkflowStepType =
-        nextStepDefinitions.find(
-          (definition) =>
-            !nextWorkflowSteps.some((step) => step.stepType === definition.stepType),
-        )?.stepType ?? "";
-      setDetailWorkflowStepType(nextDetailWorkflowStepType);
-      setWorkflowSteps(nextWorkflowSteps);
-      const nextWorkflowDraft = mapWorkflowToDraft(nextSelectedWorkflow);
-      setWorkflowDraft(nextWorkflowDraft);
-      setWorkflowInitialSnapshot(
-        normalizeWorkflowSnapshot(nextWorkflowDraft, nextWorkflowSteps),
+      syncWorkflowSelection(
+        resolvedWorkflowId,
+        nextWorkflows,
+        nextWorkflowSteps,
+        nextStepDefinitions,
       );
-
-      const nextSelectedStep =
-        nextStepDefinitions.find((item) => item.stepType === resolvedStepType) ?? null;
-      const nextStepDraft = nextSelectedStep ? { ...nextSelectedStep } : null;
-      setStepDraft(nextStepDraft);
-      setStepInitialSnapshot(normalizeStepSnapshot(nextStepDraft));
+      selectStepDefinition(resolvedStepType, nextStepDefinitions);
     } catch (error) {
       setMessage(toErrorMessage(error, "Unable to load workflows and step definitions."));
     }
@@ -2696,11 +2726,11 @@ export function WorkflowsSettings(): React.ReactElement {
                         key={workflow.id}
                         onClick={() => {
                           if (consumeLongPressClick()) return;
-                          if (bulkModeActive) {
-                            if (longPressSelectable) toggleBulkSelected(workflow.id);
-                            return;
-                          }
-                          void refresh(workflow.id, selectedStepType, { preserveCreateDrafts: true });
+                        if (bulkModeActive) {
+                          if (longPressSelectable) toggleBulkSelected(workflow.id);
+                          return;
+                        }
+                          void selectWorkflowDefinition(workflow.id);
                           setMessage(null);
                         }}
                         onPointerCancel={clearLongPressTimer}
@@ -3076,7 +3106,7 @@ export function WorkflowsSettings(): React.ReactElement {
                           if (longPressSelectable) toggleBulkSelected(step.stepType);
                           return;
                         }
-                        void refresh(selectedWorkflowId, step.stepType, { preserveCreateDrafts: true });
+                        selectStepDefinition(step.stepType);
                         setMessage(null);
                       }}
                       onPointerCancel={clearLongPressTimer}
@@ -3276,6 +3306,21 @@ export function WorkflowsSettings(): React.ReactElement {
                     : "Delete Step"}
               </button>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {busy ? (
+        <div className="settings-modal-backdrop workflow-settings-loading-modal-backdrop" role="presentation">
+          <div
+            aria-live="polite"
+            aria-modal="true"
+            className="settings-modal workflow-settings-loading-modal"
+            role="status"
+          >
+            <span className="workflow-settings-loading-dot" />
+            <strong>Syncing changes…</strong>
+            <p>Saving updates and refreshing the latest list.</p>
           </div>
         </div>
       ) : null}

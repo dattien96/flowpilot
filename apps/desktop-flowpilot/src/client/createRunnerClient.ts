@@ -31,6 +31,10 @@ function resolvedRunnerUrl(): string | null {
   return resolveRunnerUrlFromSources(viteEnv, processEnv);
 }
 
+export function getRunnerBaseUrl(): string | null {
+  return resolvedRunnerUrl();
+}
+
 export function createRunnerClient(): RunnerClient {
   const url = resolvedRunnerUrl();
   return url ? new HttpWsRunnerClient(url) : new MockRunnerClient();

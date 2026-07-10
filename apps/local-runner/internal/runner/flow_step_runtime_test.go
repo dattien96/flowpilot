@@ -491,6 +491,53 @@ func TestMarkFlowRunCompleteSettlesLingeringChildAgentRun(t *testing.T) {
 	}
 }
 
+func TestMarkFlowRunCompleteSettlesParentWaitingQuestion(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, apiErr := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if apiErr != nil {
+		t.Fatalf("createRun: %v", apiErr)
+	}
+	nodes := reviewLoopTestNodes()
+	svc.mu.Lock()
+	rs := svc.runs[parent.RunID]
+	rs.activeFlowNodes = nodes
+	rs.status = RunStatusWaitingQuestion
+	rs.agentStatus = string(RunStatusWaitingQuestion)
+	rec := &questionRecord{
+		id:      "q-runtime-drive",
+		runID:   parent.RunID,
+		prompt:  "Select Google Drive context",
+		status:  "pending",
+		resolve: make(chan []string, 1),
+	}
+	svc.questions[rec.id] = rec
+	rs.pendingQuestionID = rec.id
+	svc.mu.Unlock()
+	svc.markFlowEngineDriven(parent.RunID)
+	svc.reseedFlowStepRuntime(parent.RunID, nodes)
+
+	svc.markFlowRunComplete(context.Background(), parent.RunID)
+
+	svc.mu.Lock()
+	gotStatus := svc.runs[parent.RunID].status
+	gotAgentStatus := svc.runs[parent.RunID].agentStatus
+	gotPendingQuestionID := svc.runs[parent.RunID].pendingQuestionID
+	gotQuestionStatus := svc.questions[rec.id].status
+	svc.mu.Unlock()
+	if gotStatus != RunStatusCompleted {
+		t.Fatalf("parent status = %q, want completed after flow done", gotStatus)
+	}
+	if gotAgentStatus != string(RunStatusCompleted) {
+		t.Fatalf("parent agentStatus = %q, want completed after flow done", gotAgentStatus)
+	}
+	if gotPendingQuestionID != "" {
+		t.Fatalf("pendingQuestionID = %q, want cleared after flow done", gotPendingQuestionID)
+	}
+	if gotQuestionStatus != "expired" {
+		t.Fatalf("question status = %q, want expired so history reopen cannot replay the gate", gotQuestionStatus)
+	}
+}
+
 // TestReconstructWorkflowRunRestoresStepTimeline proves the BUG-178 fix: a
 // completed flow run reopened from history after a server restart (its
 // in-memory step store now empty) rebuilds its step timeline from the persisted
@@ -597,6 +644,33 @@ func TestReconstructIncompleteCompletedFlowRunCancelsResumeAndDisablesAutoOrches
 	}
 	if rs.autoOrchestrate {
 		t.Fatalf("autoOrchestrate = true, want false after restart-cancel normalization")
+	}
+}
+
+func TestReconstructCompletedAutoFlowWithoutLoopStateKeepsCompleted(t *testing.T) {
+	svc, _ := newTestServer(t)
+	nodes := reviewLoopTestNodes()
+	rs, apiErr := svc.reconstructRun(ProviderSessionState{
+		RunID:           "run-complete-legacy",
+		ProjectID:       "proj",
+		ProviderKey:     ProviderKeyCodex,
+		WorkflowID:      "wf-1",
+		RunKind:         "workflow",
+		Status:          RunStatusCompleted,
+		StartedAt:       "2026-07-02T00:00:00Z",
+		UpdatedAt:       "2026-07-02T00:05:00Z",
+		ActiveFlowNodes: nodes,
+		AutoOrchestrate: true,
+		LoopState:       AgentLoopState{},
+	})
+	if apiErr != nil {
+		t.Fatalf("reconstructRun: %v", apiErr)
+	}
+	if rs.status != RunStatusCompleted {
+		t.Fatalf("status = %q, want completed for a settled flow missing legacy loop-state metadata", rs.status)
+	}
+	if !rs.autoOrchestrate {
+		t.Fatalf("autoOrchestrate = false, want preserved for a completed flow")
 	}
 }
 

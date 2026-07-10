@@ -565,6 +565,10 @@ export type ProviderEventDTO =
       prompt: string;
       options: QuestionOption[];
       multiSelect?: boolean;
+      /** Populated only when replaying an already-resolved question on
+       *  reconnect (BUG-StaleQuestion) — render read-only/answered instead of
+       *  a fresh interactive form. */
+      answer?: string | string[];
     })
   | (ProviderEventBaseDTO & { type: "turn_failed"; error: string; recoverable: boolean })
   | (ProviderEventBaseDTO & { type: "turn_completed"; finalMessage: string })

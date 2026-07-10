@@ -56,6 +56,19 @@ type FlowEventStore interface {
 	DeleteFlowEvents(ctx context.Context, runID string) error
 }
 
+// QuestionHistoryReader is an optional extension of InteractiveStateStore that
+// lets reconstructRun re-synthesize resolved/expired user_question_required
+// events after a process restart (BUG-StaleQuestion-Restart). A restart rebuilds
+// rs.events from the sidecar/provider transcript, which has no concept of
+// FlowPilot's own ask_user gate — the raw asked event replays via FlowEventStore,
+// but whether it was later answered or expired lives in the separately-upserted
+// ProviderQuestionState. Stores that implement this let reconstructRun stamp the
+// resolved Answer (read-only render) or drop an expired question, instead of the
+// question either vanishing or replaying as a fresh interactive form.
+type QuestionHistoryReader interface {
+	ListQuestionsByRun(ctx context.Context, runID string) ([]ProviderQuestionState, error)
+}
+
 type SessionIndexReader interface {
 	ListAllProviderSessions(ctx context.Context) ([]ProviderSessionState, error)
 }
@@ -278,6 +291,18 @@ func (f *fakeWorkflowStore) UpsertQuestion(_ context.Context, question ProviderQ
 	defer f.mu.Unlock()
 	f.questions[question.QuestionID] = question
 	return nil
+}
+
+func (f *fakeWorkflowStore) ListQuestionsByRun(_ context.Context, runID string) ([]ProviderQuestionState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []ProviderQuestionState
+	for _, q := range f.questions {
+		if q.RunID == runID {
+			out = append(out, q)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeWorkflowStore) ListProviderSessionsByProject(_ context.Context, projectID string) ([]ProviderSessionState, error) {

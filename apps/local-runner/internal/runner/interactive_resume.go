@@ -406,6 +406,12 @@ func resumedFlowRunIncomplete(st ProviderSessionState) bool {
 		return false
 	}
 	if st.Status == RunStatusCompleted &&
+		len(st.PendingAgentContext) == 0 &&
+		strings.TrimSpace(st.LoopState.Status) != "running" &&
+		strings.TrimSpace(st.LoopState.ActiveNode) == "" {
+		return false
+	}
+	if st.Status == RunStatusCompleted &&
 		!st.AutoOrchestrate &&
 		len(st.PendingAgentContext) == 0 &&
 		strings.TrimSpace(st.LoopState.Status) != "running" {
@@ -639,6 +645,13 @@ func normalizeResumedStatus(status RunStatus) RunStatus {
 	}
 }
 
+func normalizeResumedFlowStatus(st ProviderSessionState) RunStatus {
+	if len(st.ActiveFlowNodes) > 0 && strings.TrimSpace(st.LoopState.Status) == "done" {
+		return RunStatusCompleted
+	}
+	return normalizeResumedStatus(st.Status)
+}
+
 func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interactiveRun, *apiErr) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	// Preserve the persisted updatedAt — merely opening/viewing a chat must not bump its
@@ -667,7 +680,7 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		providerAccountID:      st.ProviderAccountID,
 		workspaceCwd:           st.WorkingDirectory,
 		runKind:                st.RunKind,
-		status:                 normalizeResumedStatus(st.Status),
+		status:                 normalizeResumedFlowStatus(st),
 		createdAt:              st.StartedAt,
 		updatedAt:              updatedAt,
 		lastPrompt:             st.LastPrompt,
@@ -714,6 +727,41 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 					break
 				}
 			}
+		}
+	}
+	// Merge persisted question resolution state onto any restored
+	// user_question_required events (BUG-StaleQuestion-Restart): the sidecar
+	// reload above only has the raw "asked" event — whether it was later
+	// answered or expired lives separately in ProviderQuestionState. Stamp the
+	// resolved Answer (read-only render, mirrors subscribe()'s reconnect-while-
+	// alive behavior) and drop expired questions (no answer to show, and
+	// replaying them interactive would let the user submit into an already-
+	// expired question and hit a 409).
+	if qhr, ok := s.workflowStore.(QuestionHistoryReader); ok {
+		states, qErr := qhr.ListQuestionsByRun(context.Background(), st.RunID)
+		if qErr != nil {
+			log.Printf("reconstructRun: ListQuestionsByRun runID=%s: %v (resuming without question state)", st.RunID, qErr)
+		}
+		if len(states) > 0 {
+			byID := make(map[string]ProviderQuestionState, len(states))
+			for _, q := range states {
+				byID[q.QuestionID] = q
+			}
+			filtered := make([]ProviderEvent, 0, len(rs.events))
+			for _, ev := range rs.events {
+				if ev.Type == EventUserQuestionRequired && ev.QuestionID != "" {
+					if q, found := byID[ev.QuestionID]; found {
+						switch q.Status {
+						case "resolved":
+							ev.Answer = append([]string(nil), q.Choice...)
+						case "expired":
+							continue
+						}
+					}
+				}
+				filtered = append(filtered, ev)
+			}
+			rs.events = filtered
 		}
 	}
 

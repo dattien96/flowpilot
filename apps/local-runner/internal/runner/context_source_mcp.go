@@ -85,3 +85,61 @@ func (s *mcpDriverSource) Fetch(ctx context.Context, hints FlowContextHints) (Fl
 	section.Body = content
 	return section, nil
 }
+
+// googleDriveDriverAdapter is Task-204's production MCPDriverAdapter: it
+// backs mcp.driver with a real Google Drive document read instead of the
+// fake adapter Task-195's own tests use. driverRef is treated as a Google
+// Drive file id directly (Task-204 Q-2) — readGoogleDriveDocument already
+// takes one, and no per-step indirection layer exists to map anything else
+// onto it.
+//
+// Account resolution deliberately reuses resolveGoogleDriveAccessTokenForRunner
+// (extracted from proxyMcpServer.accessToken(), Task-204 T-3) — the exact
+// same OAuth-client + active-account + credential chain the Chat-mode Google
+// Drive MCP proxy already uses, per Task-204's constraint against inventing
+// a second way to resolve "which account backs this workspace." That chain
+// depends only on *Runner (process/workspace-scoped config), not on any
+// per-run state, so there is nothing to thread through FlowContextHints for
+// account identity (Task-204 Q-1) — this adapter is bound to a *Runner once,
+// not re-resolved per call.
+type googleDriveDriverAdapter struct {
+	runner *Runner
+}
+
+// Fetch resolves a live access token for whichever Google Drive account is
+// currently connected/selected for this workspace, then reads driverRef as a
+// file id. Any failure (no account connected, expired/missing credentials,
+// unreadable file) is returned as an error — ContextSourceRegistry.Collect
+// degrades that to a warning rather than failing the Plan step (Task-195's
+// existing contract, unchanged), and never falls back to a different
+// account's content (Task-204's fail-closed constraint).
+func (a *googleDriveDriverAdapter) Fetch(ctx context.Context, driverRef string) (string, error) {
+	if a.runner == nil {
+		return "", fmt.Errorf("mcp.driver: google drive runner not configured")
+	}
+	accessToken, err := resolveGoogleDriveAccessTokenForRunner(a.runner)
+	if err != nil {
+		return "", fmt.Errorf("mcp.driver: resolve google drive access token: %w", err)
+	}
+	content, err := readGoogleDriveDocument(accessToken, driverRef)
+	if err != nil {
+		return "", fmt.Errorf("mcp.driver: read google drive document %q: %w", driverRef, err)
+	}
+	return content, nil
+}
+
+// SetMCPDriverAdapter wires a production MCPDriverAdapter onto the already-
+// registered mcp.driver source (Task-204 T-4). A no-op if mcp.driver isn't
+// registered on r (shouldn't happen for DefaultContextSourceRegistry, whose
+// registerBuiltinContextSources always registers it) — this never fails
+// construction, it only leaves mcp.driver degrading exactly as it did before
+// this method was ever called.
+func (r *ContextSourceRegistry) SetMCPDriverAdapter(adapter MCPDriverAdapter) {
+	src, err := r.Resolve(string(ContextSourceMCPDriver))
+	if err != nil {
+		return
+	}
+	if mcp, ok := src.(*mcpDriverSource); ok {
+		mcp.adapter = adapter
+	}
+}

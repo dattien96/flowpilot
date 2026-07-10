@@ -114,6 +114,112 @@ func TestForwardDoneTargetsNoMatchReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestNormalizeGoogleDriveTarget(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "raw file id", raw: "drive-file-123", want: "file:drive-file-123"},
+		{name: "explicit file target", raw: "file:drive-file-456", want: "file:drive-file-456"},
+		{name: "explicit folder target", raw: "folder:drive-folder-789", want: "folder:drive-folder-789"},
+		{name: "skip sentinel", raw: "__skip__", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeGoogleDriveTarget(tt.raw); got != tt.want {
+				t.Fatalf("normalizeGoogleDriveTarget(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAppendGoogleDriveTargetPrompt(t *testing.T) {
+	filePrompt := appendGoogleDriveTargetPrompt("Base prompt", "file:drive-file-123")
+	if !strings.Contains(filePrompt, "- kind: file") || !strings.Contains(filePrompt, "- id: drive-file-123") {
+		t.Fatalf("file prompt missing target block: %q", filePrompt)
+	}
+	if !strings.Contains(filePrompt, "Read the selected file directly") {
+		t.Fatalf("file prompt missing file instruction: %q", filePrompt)
+	}
+
+	folderPrompt := appendGoogleDriveTargetPrompt("Base prompt", "folder:drive-folder-456")
+	if !strings.Contains(folderPrompt, "- kind: folder") || !strings.Contains(folderPrompt, "- id: drive-folder-456") {
+		t.Fatalf("folder prompt missing target block: %q", folderPrompt)
+	}
+	if !strings.Contains(folderPrompt, "Start with `listFolder`") {
+		t.Fatalf("folder prompt missing folder instruction: %q", folderPrompt)
+	}
+}
+
+func TestResolveMCPDriverTargetForRunPromptsUserWhenSourceEnabled(t *testing.T) {
+	svc, srv := newTestServer(t)
+	runID := startRun(t, srv.URL)
+	node := agentpack.FlowNode{
+		ID: "context",
+		ArtifactBindings: []agentpack.FlowArtifactBinding{{
+			Direction:      "output",
+			ArtifactTypeID: ArtifactTypeContext,
+			ConfigJSON:     map[string]any{"sources": []any{"mcp.driver"}},
+		}},
+	}
+	type result struct {
+		target string
+		err    error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		target, err := svc.resolveMCPDriverTargetForRun(context.Background(), runID, node, []string{"mcp.driver"})
+		resCh <- result{target: target, err: err}
+	}()
+
+	var qID string
+	waitFor(t, func() bool {
+		s := getSnapshot(t, srv.URL, runID)
+		if s.PendingQuestion != nil && strings.Contains(s.PendingQuestion.Prompt, "Google Drive context is enabled") {
+			qID = s.PendingQuestion.QuestionID
+			return true
+		}
+		return false
+	}, "runtime google drive question")
+
+	status, body := doJSON(
+		t,
+		"POST",
+		srv.URL+"/client/questions/"+qID+"/answer",
+		map[string]any{"choice": "folder:runtime-drive-folder-42"},
+		nil,
+	)
+	if status != http.StatusOK {
+		t.Fatalf("answer status=%d body=%s", status, body)
+	}
+	res := <-resCh
+	if res.err != nil {
+		t.Fatalf("resolveMCPDriverTargetForRun err: %v", res.err)
+	}
+	if res.target != "folder:runtime-drive-folder-42" {
+		t.Fatalf("target = %q, want folder:runtime-drive-folder-42", res.target)
+	}
+}
+
+func TestResolveMCPDriverTargetForRunUsesLegacyConfiguredDefault(t *testing.T) {
+	svc, _ := newTestServer(t)
+	node := agentpack.FlowNode{
+		ArtifactBindings: []agentpack.FlowArtifactBinding{{
+			Direction:      "output",
+			ArtifactTypeID: ArtifactTypeContext,
+			ConfigJSON:     map[string]any{"sources": []any{"mcp.driver"}, "mcpDriverFileId": "legacy-drive-file"},
+		}},
+	}
+	target, err := svc.resolveMCPDriverTargetForRun(context.Background(), "run-legacy", node, []string{"mcp.driver"})
+	if err != nil {
+		t.Fatalf("resolveMCPDriverTargetForRun err: %v", err)
+	}
+	if target != "file:legacy-drive-file" {
+		t.Fatalf("target = %q, want file:legacy-drive-file", target)
+	}
+}
+
 func TestFindFlowNodeReturnsMatchByID(t *testing.T) {
 	nodes := []agentpack.FlowNode{{ID: "coder", Agent: "agents/coder.md"}, {ID: "synthesis", Behavior: "hub.inline"}}
 	node, ok := findFlowNode(nodes, "synthesis")
