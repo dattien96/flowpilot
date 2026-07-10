@@ -122,6 +122,8 @@ func TestWorkflowDrivenQuestionAnswerPersistsRunningStatus(t *testing.T) {
 		t.Fatalf("AskWorkflowQuestion err: %v", e)
 	}
 
+	// Verify the persisted session reflects running (not waiting_question) so
+	// that a reconnect while the server is still alive sees the correct status.
 	session, found, err := store.GetProviderSession(context.Background(), handle.RunID)
 	if err != nil || !found {
 		t.Fatalf("GetProviderSession: found=%v err=%v", found, err)
@@ -129,13 +131,18 @@ func TestWorkflowDrivenQuestionAnswerPersistsRunningStatus(t *testing.T) {
 	if session.Status != RunStatusRunning {
 		t.Fatalf("persisted status after question answer = %q, want running", session.Status)
 	}
+
+	// After a server restart a run that was mid-flight (running) is intentionally
+	// normalized to cancelled by normalizeResumedStatus — the turn goroutine and
+	// pending records are gone, so leaving it as running would show a stuck
+	// spinner. Verify that the restart-resume status is cancelled, not running.
 	restarted := newInteractiveService(reg, newInteractiveCatalog(), store)
 	resumed, resumeErr := restarted.resumeRun(handle.RunID)
 	if resumeErr != nil {
 		t.Fatalf("resumeRun: %v", resumeErr)
 	}
-	if resumed.Status != RunStatusRunning {
-		t.Fatalf("resumed status after question answer = %q, want running", resumed.Status)
+	if resumed.Status != RunStatusCancelled {
+		t.Fatalf("resumed status after server restart = %q, want cancelled (normalizeResumedStatus)", resumed.Status)
 	}
 }
 

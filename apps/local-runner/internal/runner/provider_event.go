@@ -141,6 +141,11 @@ type ProviderEvent struct {
 	Prompt      string           `json:"prompt,omitempty"`
 	Options     []QuestionOption `json:"options,omitempty"`
 	MultiSelect bool             `json:"multiSelect,omitempty"`
+	// Answer is populated only when replaying an already-resolved question on
+	// reconnect (BUG-StaleQuestion) — it carries the recorded choice so the
+	// client renders the QuestionCard read-only instead of re-showing an
+	// interactive form for a question that was already answered.
+	Answer []string `json:"answer,omitempty"`
 	// turn_failed
 	Error       string `json:"error,omitempty"`
 	Recoverable bool   `json:"recoverable,omitempty"`

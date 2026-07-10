@@ -986,7 +986,15 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 					ProviderKey: sess.ProviderKey,
 					// Persisted-only runs are not in the in-memory map, so an
 					// in-flight status is stale after a restart (T-067 4.4).
-					Status:          normalizeResumedStatus(sess.Status),
+					// BUG-StaleCancel: use normalizeResumedFlowStatus, not
+					// normalizeResumedStatus, for persisted sessions. A flow
+					// whose LoopState.Status is "done" must show as completed
+					// even when the raw persisted status is still "running"
+					// (AnswerQuestion's persist can overwrite the early
+					// flowStartOnly "completed" persist before the async
+					// applyFlowControl goroutine has a chance to write the
+					// final "completed" record).
+					Status:          normalizeResumedFlowStatus(sess),
 					StartedAt:       sess.StartedAt,
 					UpdatedAt:       sess.UpdatedAt,
 					LastPrompt:      sess.LastPrompt,

@@ -254,6 +254,30 @@ test("user_question_required adds question card and sets pendingQuestions", () =
   assert.equal(next.status, "waiting_question");
 });
 
+test("BUG-StaleQuestion: reconnect replay of an already-resolved question renders read-only and does not re-enter pendingQuestions", () => {
+  // Server-side (subscribe()) now stamps `answer` onto a replayed
+  // user_question_required event for a question that was already resolved,
+  // instead of dropping the event entirely. The client must render it via
+  // QuestionCard's read-only path (answer !== undefined) and must not treat
+  // it as a fresh pending question or flip run status to waiting_question.
+  const state = approvalState({ status: "completed" });
+  const next = applyTimelineEvent(
+    state,
+    baseEvent({
+      type: "user_question_required",
+      questionId: "q-1",
+      prompt: "Use Drive?",
+      options: questionOptions,
+      answer: ["__skip__"],
+    }),
+  );
+
+  const card = next.timeline?.find((it) => it.kind === "question") as Extract<TimelineItem, { kind: "question" }> | undefined;
+  assert.deepEqual(card?.answer, ["__skip__"], "replayed question card should carry the resolved answer");
+  assert.deepEqual(next.pendingQuestions, [], "an already-resolved replayed question must not become pending again");
+  assert.equal(next.status, "completed", "replaying a resolved question must not flip a settled run back to waiting_question");
+});
+
 test("history replay: follow-up event after user_question_required stamps card as answered and clears pendingQuestions", () => {
   const state = approvalState({
     status: "waiting_question",
