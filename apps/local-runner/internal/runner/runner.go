@@ -147,10 +147,18 @@ type Runner struct {
 	mcpBaseURLMu sync.RWMutex
 	mcpBaseURL   string
 
-	// grokProcess is the single shared `grok agent stdio` process (CP-46/Task-206),
-	// bound to the active provider account scope. nil until first ensure.
+	// grokProcessMu guards grokProcesses.
 	grokProcessMu sync.Mutex
-	grokProcess   *grokProcessHandle
+	// grokProcesses holds live `grok agent stdio` processes keyed by
+	// scope+model+reasoningEffort+alwaysApprove (see grokProcessKey). Grok exposes
+	// model/effort/approve only as `grok agent` LAUNCH flags — there is no ACP
+	// session-level switch — so each distinct combination needs its own OS process.
+	// Unlike the original single-handle design (CP-46/Task-206), these now COEXIST
+	// instead of tearing each other down: a parent turn and a concurrently-spawned
+	// child turn with different launch flags each keep their own process, so the
+	// child no longer kills the parent's in-flight process ("grok agent process
+	// torn down"). Only an account/scope change reclaims processes. nil until first ensure.
+	grokProcesses map[string]*grokProcessHandle
 	// grokDesiredAlwaysApprove is the current YOLO posture for Grok (Task-218),
 	// set explicitly by ApplyGrokYoloPosture rather than threaded through the
 	// shared ProviderRegistration/Adapter() call chain (which Claude/Codex/Gemini

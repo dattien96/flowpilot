@@ -3203,6 +3203,70 @@ func TestApplyFlowControlDomainFreeGuard(t *testing.T) {
 	}
 }
 
+// TestGrokParentTurnModelAndEffortPersistForSpawnInheritance guards Task-209 DOD-2:
+// a Grok child spawned during a parent turn must inherit the parent's current per-turn
+// model and reasoning effort (sticky UI override), not the stale model from createRun.
+func TestGrokParentTurnModelAndEffortPersistForSpawnInheritance(t *testing.T) {
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyGrok,
+		DisplayName:  "Grok",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return capture },
+	})
+	svc.registry = reg
+
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat",
+		ProviderKey: ProviderKeyGrok, Model: "grok-build",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	currentModel := "grok-composer-2.5-fast"
+	if _, apiErr := svc.startTurn(parent.RunID, TurnInput{
+		StepID: "chat-" + parent.RunID, Prompt: "hi",
+		Model: &currentModel, ReasoningEffort: "high",
+	}, "", ""); apiErr != nil {
+		t.Fatalf("parent startTurn: %s", apiErr.msg)
+	}
+	parentReq := readTurnReqFor(t, capture.ch, parent.RunID)
+	if parentReq.ModelName != currentModel {
+		t.Fatalf("parent turn model = %q, want %q", parentReq.ModelName, currentModel)
+	}
+	if parentReq.ReasoningEffort != "high" {
+		t.Fatalf("parent turn reasoningEffort = %q, want high", parentReq.ReasoningEffort)
+	}
+
+	svc.mu.Lock()
+	pr := svc.runs[parent.RunID]
+	if pr.modelName != currentModel || pr.reasoningEffort != "high" {
+		t.Fatalf("parent run persisted model/effort = %q/%q, want %q/high", pr.modelName, pr.reasoningEffort, currentModel)
+	}
+	svc.mu.Unlock()
+
+	spawned, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "coder", Prompt: "work", Provider: "grok", Wait: false,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+
+	svc.mu.Lock()
+	child := svc.runs[spawned.RunID]
+	if child == nil {
+		t.Fatalf("child run %q missing", spawned.RunID)
+	}
+	if child.modelName != currentModel || child.reasoningEffort != "high" {
+		t.Fatalf("child inherited model/effort = %q/%q, want %q/high", child.modelName, child.reasoningEffort, currentModel)
+	}
+	svc.mu.Unlock()
+}
+
 // TestSpawnedChildInheritsParentYolo guards BUG-129: with YOLO enabled on the parent, a
 // child spawned via spawn_agent must run with YOLO too, so its gated actions auto-approve
 // instead of stalling the (often wait=true) parent on a child approval prompt. It also

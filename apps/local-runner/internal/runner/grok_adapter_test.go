@@ -21,6 +21,10 @@ type fakeGrokBridge struct {
 	questionMulti  bool
 	answer         []string
 	answerErr      error
+	// Task-209 DOD-2: capture spawn_agent → SpawnAgent inputs for MCP round-trip tests.
+	spawnIn     SpawnAgentInput
+	spawnResult SpawnAgentResult
+	spawnErr    error
 }
 
 func (b *fakeGrokBridge) Emit(ev ProviderEvent) {
@@ -48,8 +52,17 @@ func (b *fakeGrokBridge) AskQuestion(prompt string, options []QuestionOption, mu
 	}
 	return nil, nil
 }
-func (b *fakeGrokBridge) SpawnAgent(SpawnAgentInput) (SpawnAgentResult, error) {
-	return SpawnAgentResult{}, nil
+func (b *fakeGrokBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.spawnIn = in
+	if b.spawnErr != nil {
+		return SpawnAgentResult{}, b.spawnErr
+	}
+	if b.spawnResult.RunID != "" {
+		return b.spawnResult, nil
+	}
+	return SpawnAgentResult{RunID: "child-run-1", ProviderKey: in.Provider}, nil
 }
 func (b *fakeGrokBridge) SubmitFlowControl(FlowControlInput) (FlowControlResult, error) {
 	return FlowControlResult{}, nil

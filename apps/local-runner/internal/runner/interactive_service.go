@@ -2900,6 +2900,21 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if in.YoloMode != nil {
 		rs.yolo = yolo
 	}
+	// Persist the per-turn model/reasoning-effort as the run's current default,
+	// for the SAME reason YOLO is persisted just above. A child spawned during
+	// this turn reads parentRun.modelName / parentRun.reasoningEffort in
+	// spawnChildRun; without this it inherits the model the chat was CREATED
+	// with, not the model the user switched to via the sticky per-turn override
+	// (chat mode resends model/effort every turn). That stale inheritance made a
+	// Grok child launch on the wrong model (a "sonnet" label on a grok child)
+	// and, because model is a `grok agent` launch flag, forced a needless
+	// respawn that tore down the parent's in-flight process mid-turn.
+	if in.Model != nil {
+		rs.modelName = *in.Model
+	}
+	if in.ReasoningEffort != "" {
+		rs.reasoningEffort = effort
+	}
 	// pendingAgentContext was drained into capturedCtx by startTurn (atomically with
 	// turnInFlight=true) so rs.pendingAgentContext is already nil here.
 	if len(capturedCtx) > 0 {

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -310,6 +311,100 @@ func TestGrokMcpAskUserMultiSelectAndEmptyAnswer(t *testing.T) {
 			t.Fatalf("empty answer must yield controlled message, got %q", txt)
 		}
 	})
+}
+
+// TestGrokMcpSpawnAgentRoundTrip proves Task-209 DOD-2 wiring: when Grok calls
+// FlowPilot MCP tools/call spawn_agent with the registered turn token, the shared
+// handler routes to bridge.SpawnAgent (same path as Codex/Claude).
+func TestGrokMcpSpawnAgentRoundTrip(t *testing.T) {
+	mcp := newClaudeMCPServer()
+	bridge := &fakeGrokBridge{
+		spawnResult: SpawnAgentResult{
+			RunID:        "child-run-42",
+			ProviderKey:  "grok",
+			FinalMessage: "child done",
+		},
+	}
+	token := mcp.register(bridge, false)
+	defer mcp.unregister(token)
+
+	raw, errObj := mcp.dispatch("tools/call", map[string]any{
+		"params": map[string]any{
+			"name": "spawn_agent",
+			"arguments": map[string]any{
+				"agent":    "coder",
+				"prompt":   "implement the feature",
+				"provider": "grok",
+				"wait":     true,
+			},
+		},
+	}, token)
+	if errObj != nil {
+		t.Fatalf("tools/call spawn_agent error: %+v", errObj)
+	}
+	if bridge.spawnIn.Agent != "coder" || bridge.spawnIn.Prompt != "implement the feature" {
+		t.Fatalf("SpawnAgent not reached with expected args: %+v", bridge.spawnIn)
+	}
+	if bridge.spawnIn.Provider != "grok" || !bridge.spawnIn.Wait {
+		t.Fatalf("SpawnAgent provider/wait = %q/%v, want grok/true", bridge.spawnIn.Provider, bridge.spawnIn.Wait)
+	}
+
+	result, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %T %+v", raw, raw)
+	}
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("expected MCP text content result, got %+v", result)
+	}
+	block, _ := content[0].(map[string]any)
+	txt, _ := block["text"].(string)
+	var got SpawnAgentResult
+	if err := json.Unmarshal([]byte(txt), &got); err != nil {
+		t.Fatalf("spawn_agent result must be JSON SpawnAgentResult, got %q: %v", txt, err)
+	}
+	if got.RunID != "child-run-42" || got.ProviderKey != "grok" || got.FinalMessage != "child done" {
+		t.Fatalf("spawn_agent result = %+v, want runId=child-run-42 providerKey=grok finalMessage=child done", got)
+	}
+}
+
+// TestGrokMcpSpawnAgentWaitModes covers wait=false acknowledgement through the
+// shared MCP handler (wait=true shape is asserted in TestGrokMcpSpawnAgentRoundTrip).
+func TestGrokMcpSpawnAgentWaitModes(t *testing.T) {
+	mcp := newClaudeMCPServer()
+	bridge := &fakeGrokBridge{
+		spawnResult: SpawnAgentResult{RunID: "child-bg-1", ProviderKey: "grok"},
+	}
+	token := mcp.register(bridge, false)
+	defer mcp.unregister(token)
+
+	raw, errObj := mcp.dispatch("tools/call", map[string]any{
+		"params": map[string]any{
+			"name": "spawn_agent",
+			"arguments": map[string]any{
+				"agent":    "reviewer",
+				"prompt":   "review in background",
+				"provider": "grok",
+				"wait":     false,
+			},
+		},
+	}, token)
+	if errObj != nil {
+		t.Fatalf("tools/call spawn_agent error: %+v", errObj)
+	}
+	if bridge.spawnIn.Wait {
+		t.Fatal("wait=false must reach SpawnAgent with Wait=false")
+	}
+	result := raw.(map[string]any)
+	content := result["content"].([]any)
+	txt := content[0].(map[string]any)["text"].(string)
+	var got SpawnAgentResult
+	if err := json.Unmarshal([]byte(txt), &got); err != nil {
+		t.Fatalf("spawn_agent result must be JSON, got %q: %v", txt, err)
+	}
+	if got.RunID != "child-bg-1" {
+		t.Fatalf("wait=false result runId = %q, want child-bg-1", got.RunID)
+	}
 }
 
 // TestGrokUnsupportedInboundStillRepliesError guards that non-permission

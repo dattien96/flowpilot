@@ -59,7 +59,7 @@ func TestEnsureGrokProcessInitializes(t *testing.T) {
 		t.Fatalf("expected initResult to carry protocolVersion, got %+v", h.initResult)
 	}
 
-	// Reuse: same scope+model+effort returns the same handle (one shared process).
+	// Reuse: same scope+model+effort+approve returns the same handle (one process per key).
 	h2, err := r.ensureGrokProcess(context.Background(), "default", ".", nil, "", "", false)
 	if err != nil || h2 != h {
 		t.Fatalf("same-scope ensure should reuse the handle (h2==h=%v, err=%v)", h2 == h, err)
@@ -75,9 +75,9 @@ func TestEnsureGrokProcessInitializes(t *testing.T) {
 		t.Fatal("expected a new handle for a different scope")
 	}
 
-	// Model change on the SAME scope also tears down + recreates (Grok's CLI only
-	// accepts --model/--reasoning-effort as `grok agent` launch flags, so a
-	// turn-level model switch can only take effect via respawn).
+	// Model change on the SAME scope yields a NEW handle on its own key (Grok's CLI
+	// only accepts --model/--reasoning-effort as `grok agent` launch flags). The
+	// prior handle is left running (keyed processes coexist), not torn down.
 	h4, err := r.ensureGrokProcess(context.Background(), "acct-2", ".", nil, "grok-4.5", "", false)
 	if err != nil {
 		t.Fatalf("model-change ensure: %v", err)
@@ -98,6 +98,65 @@ func TestEnsureGrokProcessInitializes(t *testing.T) {
 	defer h5.close()
 	if h5 == h4 {
 		t.Fatal("expected a new handle when reasoningEffort changes for the same scope+model")
+	}
+}
+
+// TestEnsureGrokProcessCoexistsAcrossModelsOnSameScope is the regression test for
+// the "grok agent process torn down" bug: a child turn ensuring a DIFFERENT model
+// on the SAME account must NOT tear down the parent turn's in-flight process.
+// Before the keyed-process change, ensureGrokProcess held ONE shared handle, so the
+// second ensure closed the first (dispatcher.fail("grok agent process torn down")),
+// killing the parent's open session/prompt mid-turn while the child completed fine.
+func TestEnsureGrokProcessCoexistsAcrossModelsOnSameScope(t *testing.T) {
+	defer mockGrokInitProcess(t)()
+	r, _ := New(".")
+	defer r.closeAllGrokProcesses()
+
+	parent, err := r.ensureGrokProcess(context.Background(), "acct-1", ".", nil, "grok-composer-2.5-fast", "", false)
+	if err != nil {
+		t.Fatalf("ensureGrokProcess (parent): %v", err)
+	}
+	child, err := r.ensureGrokProcess(context.Background(), "acct-1", ".", nil, "grok-4.5", "", false)
+	if err != nil {
+		t.Fatalf("ensureGrokProcess (child): %v", err)
+	}
+	if child == parent {
+		t.Fatal("a different model on the same scope should get its own handle")
+	}
+	// The crux: the parent's process must still be alive after the child spawns.
+	if parent.dispatcher.isClosed() {
+		t.Fatal("parent grok process was torn down when a different-model child spawned (regression)")
+	}
+	if child.dispatcher.isClosed() {
+		t.Fatal("child grok process should be live")
+	}
+	// Re-ensuring the parent's exact tuple reuses the still-live parent handle.
+	again, err := r.ensureGrokProcess(context.Background(), "acct-1", ".", nil, "grok-composer-2.5-fast", "", false)
+	if err != nil {
+		t.Fatalf("ensureGrokProcess (parent re-ensure): %v", err)
+	}
+	if again != parent {
+		t.Fatal("re-ensuring the parent tuple should reuse the live parent handle, not respawn")
+	}
+}
+
+// TestEnsureGrokProcessAccountSwitchStillReclaims confirms a DIFFERENT scope still
+// tears down prior-scope processes (the account-switch recreate), so keyed
+// coexistence never leaks processes across accounts.
+func TestEnsureGrokProcessAccountSwitchStillReclaims(t *testing.T) {
+	defer mockGrokInitProcess(t)()
+	r, _ := New(".")
+	defer r.closeAllGrokProcesses()
+
+	a, err := r.ensureGrokProcess(context.Background(), "acct-1", ".", nil, "grok-4.5", "", false)
+	if err != nil {
+		t.Fatalf("ensureGrokProcess (acct-1): %v", err)
+	}
+	if _, err := r.ensureGrokProcess(context.Background(), "acct-2", ".", nil, "grok-4.5", "", false); err != nil {
+		t.Fatalf("ensureGrokProcess (acct-2): %v", err)
+	}
+	if !a.dispatcher.isClosed() {
+		t.Fatal("switching to a different account scope should tear down the prior scope's process")
 	}
 }
 
@@ -296,9 +355,7 @@ func TestProviderRegistryForGrokUsesLiveByDefaultWhenAccountResolvable(t *testin
 	if live.mcpServer == nil {
 		t.Fatal("expected the live registration to wire mcpServer (Task-209)")
 	}
-	if r.grokProcess != nil {
-		r.grokProcess.close()
-	}
+	r.closeAllGrokProcesses()
 }
 
 // TestProviderRegistryForGrokThreadsModelAndReasoningEffortIntoLaunch proves
@@ -329,9 +386,7 @@ func TestProviderRegistryForGrokThreadsModelAndReasoningEffortIntoLaunch(t *test
 			t.Fatalf("launch args = %v, want %v", args, want)
 		}
 	}
-	if r.grokProcess != nil {
-		r.grokProcess.close()
-	}
+	r.closeAllGrokProcesses()
 }
 
 // TestProviderRegistryForGrokMapsReasoningEffortToSupportedLaunchFlag proves
@@ -373,9 +428,7 @@ func TestProviderRegistryForGrokMapsReasoningEffortToSupportedLaunchFlag(t *test
 				t.Fatalf("expected live grok adapter, got %T", adapter)
 			}
 			defer func() {
-				if r.grokProcess != nil {
-					r.grokProcess.close()
-				}
+				r.closeAllGrokProcesses()
 			}()
 
 			want := []string{"agent", "--model", "grok-4.5"}

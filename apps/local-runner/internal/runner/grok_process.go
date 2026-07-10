@@ -408,11 +408,39 @@ func (h *grokProcessHandle) close() {
 	}
 }
 
-// ensureGrokProcess returns the shared grok agent stdio process handle for a
-// scope+model+reasoningEffort combination, spawning a fresh process (and
-// tearing down any handle bound to a different scope/model/effort — the
-// account-switch recreate, now also a model-change recreate) when needed.
-// Reuses a live handle only when scope, model, AND reasoningEffort all match.
+// grokProcessKey is the composite reuse key for a live grok process: two turns
+// share one process only when scope, model, reasoning-effort, AND always-approve
+// posture all match, because each is a `grok agent` launch-time flag.
+func grokProcessKey(scopeKey, model, reasoningEffort string, alwaysApprove bool) string {
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%t", scopeKey, model, reasoningEffort, alwaysApprove)
+}
+
+// closeAllGrokProcesses tears down every live grok process and clears the map.
+// Acquires grokProcessMu; used on a YOLO posture change and by tests for cleanup.
+func (r *Runner) closeAllGrokProcesses() {
+	r.grokProcessMu.Lock()
+	defer r.grokProcessMu.Unlock()
+	r.closeAllGrokProcessesLocked()
+}
+
+// closeAllGrokProcessesLocked is closeAllGrokProcesses's body; the caller must
+// already hold grokProcessMu.
+func (r *Runner) closeAllGrokProcessesLocked() {
+	for k, h := range r.grokProcesses {
+		h.close()
+		delete(r.grokProcesses, k)
+	}
+}
+
+// ensureGrokProcess returns a grok agent stdio process handle for a
+// scope+model+reasoningEffort+alwaysApprove combination, spawning a fresh
+// process when none matches. Handles are keyed by that full tuple (grokProcessKey)
+// and COEXIST: a live handle is reused only when scope, model, reasoningEffort,
+// AND alwaysApprove all match; a mismatch spawns an additional process rather than
+// tearing the existing one down. Only an account/scope change reclaims processes
+// (every handle bound to a different scope is closed here), so a parent turn and a
+// concurrently-spawned child turn on the same account but different launch flags no
+// longer kill each other's process.
 //
 // model/reasoningEffort are launch-time-only flags on `grok agent` (verified
 // via `grok agent --help`: `-m/--model <MODEL>`, `--reasoning-effort <EFFORT>`
@@ -435,15 +463,29 @@ func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, ex
 	r.grokProcessMu.Lock()
 	defer r.grokProcessMu.Unlock()
 
-	if r.grokProcess != nil && r.grokProcess.scopeKey == scopeKey &&
-		r.grokProcess.model == model && r.grokProcess.reasoningEffort == reasoningEffort &&
-		r.grokProcess.alwaysApprove == alwaysApprove &&
-		!r.grokProcess.dispatcher.isClosed() {
-		return r.grokProcess, nil
+	if r.grokProcesses == nil {
+		r.grokProcesses = make(map[string]*grokProcessHandle)
 	}
-	if r.grokProcess != nil {
-		r.grokProcess.close()
-		r.grokProcess = nil
+
+	// Account switch still reclaims processes: close every handle bound to a
+	// DIFFERENT scope. Same-scope handles that differ only by model/effort/approve
+	// are LEFT RUNNING so a parent turn and a concurrently-spawned child turn with
+	// different launch flags coexist instead of tearing each other's process down.
+	for k, h := range r.grokProcesses {
+		if h.scopeKey != scopeKey {
+			h.close()
+			delete(r.grokProcesses, k)
+		}
+	}
+
+	key := grokProcessKey(scopeKey, model, reasoningEffort, alwaysApprove)
+	if h := r.grokProcesses[key]; h != nil {
+		if !h.dispatcher.isClosed() {
+			return h, nil
+		}
+		// Dead process for this key (crashed or torn down): drop it and respawn.
+		h.close()
+		delete(r.grokProcesses, key)
 	}
 
 	// AUTO-ENFORCE YOLO=false gating (Task-218, SS-08 YOLO-is-SSOT): Grok has no
@@ -518,7 +560,7 @@ func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, ex
 	adapter.initResult = initResult
 
 	h := &grokProcessHandle{scopeKey: scopeKey, model: model, reasoningEffort: reasoningEffort, alwaysApprove: alwaysApprove, dispatcher: dispatcher, adapter: adapter, initResult: initResult, kill: kill}
-	r.grokProcess = h
+	r.grokProcesses[key] = h
 	return h, nil
 }
 
@@ -716,12 +758,12 @@ func setGrokConfigPermissionMode(grokHome, desiredMode string) (changed bool, er
 // rewriting it, and every unnecessary write is one more chance to race a
 // concurrently open grok TUI for no benefit.
 //
-// Known, accepted limitation: grokProcess is a single shared OS process per
-// account (keyed by scopeKey == account.ID), so two concurrent runs on the
-// SAME Grok account with different desired YOLO values will thrash — this is
-// the same pre-existing tradeoff model/reasoningEffort changes already have
-// (see ensureGrokProcess's own doc comment), not a new regression introduced
-// here.
+// Concurrency note: grok processes are now keyed by scope+model+effort+approve
+// (ensureGrokProcess), so concurrent same-account runs that differ only by
+// model/reasoningEffort each get their own process instead of thrashing one
+// shared handle. This eager posture endpoint still closes ALL of them, because a
+// YOLO change is account-global; the next turn on each configuration respawns
+// under the new posture.
 func (r *Runner) ApplyGrokYoloPosture(ctx context.Context, yolo bool) error {
 	account, err := r.ResolveProviderAccount(string(ProviderKeyGrok), "")
 	if err != nil {
@@ -739,10 +781,9 @@ func (r *Runner) ApplyGrokYoloPosture(ctx context.Context, yolo bool) error {
 
 	r.grokProcessMu.Lock()
 	r.grokDesiredAlwaysApprove = yolo
-	if r.grokProcess != nil {
-		r.grokProcess.close()
-		r.grokProcess = nil
-	}
+	// A posture change is account-global (it may have rewritten config.toml above),
+	// so close every live process; the next turn respawns under the new posture.
+	r.closeAllGrokProcessesLocked()
 	r.grokProcessMu.Unlock()
 	return nil
 }

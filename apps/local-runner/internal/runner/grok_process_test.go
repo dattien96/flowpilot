@@ -658,11 +658,11 @@ func TestApplyGrokYoloPostureFalseRewritesConfigAndClosesLiveProcess(t *testing.
 		t.Fatalf("config.toml mode=%q bypasses=%v after YOLO=false, want (default, false)", mode, bypasses)
 	}
 	r.grokProcessMu.Lock()
-	live := r.grokProcess
+	liveCount := len(r.grokProcesses)
 	desired := r.grokDesiredAlwaysApprove
 	r.grokProcessMu.Unlock()
-	if live != nil {
-		t.Fatal("expected the live grok process to be closed/nil'd so the next turn respawns under the new posture")
+	if liveCount != 0 {
+		t.Fatal("expected all live grok processes to be closed/cleared so the next turn respawns under the new posture")
 	}
 	if desired {
 		t.Fatal("grokDesiredAlwaysApprove should be false after ApplyGrokYoloPosture(false)")
