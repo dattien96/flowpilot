@@ -15,6 +15,12 @@ type fakeGrokBridge struct {
 	approvalCalls []ApprovalDetails
 	approval      string
 	approvalErr   error
+	// Task-209 GR-06: capture ask_user → AskQuestion inputs for MCP round-trip tests.
+	questionPrompt string
+	questionOpts   []QuestionOption
+	questionMulti  bool
+	answer         []string
+	answerErr      error
 }
 
 func (b *fakeGrokBridge) Emit(ev ProviderEvent) {
@@ -28,7 +34,18 @@ func (b *fakeGrokBridge) RequestApproval(d ApprovalDetails) (string, error) {
 	b.mu.Unlock()
 	return b.approval, b.approvalErr
 }
-func (b *fakeGrokBridge) AskQuestion(string, []QuestionOption, bool) ([]string, error) {
+func (b *fakeGrokBridge) AskQuestion(prompt string, options []QuestionOption, multi bool) ([]string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.questionPrompt = prompt
+	b.questionOpts = options
+	b.questionMulti = multi
+	if b.answerErr != nil {
+		return nil, b.answerErr
+	}
+	if len(b.answer) > 0 {
+		return b.answer, nil
+	}
 	return nil, nil
 }
 func (b *fakeGrokBridge) SpawnAgent(SpawnAgentInput) (SpawnAgentResult, error) {

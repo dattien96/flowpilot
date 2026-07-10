@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -131,5 +132,219 @@ func TestGrokAdapterNoMcpServerIsANoOp(t *testing.T) {
 	}
 	if len(capturedMcpServers) != 0 {
 		t.Fatalf("expected zero mcpServers when mcpServer is nil, got %+v", capturedMcpServers)
+	}
+}
+
+// TestGrokAdapterDefaultPreparePromptAppendsAskUserReinforcement guards Task-209
+// GR-06: bare adapters (no registry promptPrep) still steer the model onto
+// FlowPilot MCP ask_user instead of native ask_user_question.
+func TestGrokAdapterDefaultPreparePromptAppendsAskUserReinforcement(t *testing.T) {
+	a := newGrokAdapter(newGrokDispatcher(nil, nil), "/tmp/x")
+	got := a.preparePrompt(TurnRequest{Prompt: "pick a language"})
+	if !strings.Contains(got, "pick a language") {
+		t.Fatalf("expected original prompt preserved, got %q", got)
+	}
+	if !strings.Contains(got, grokAskUserReinforcement) {
+		t.Fatalf("default preparePrompt must append grokAskUserReinforcement, got %q", got)
+	}
+	if !strings.Contains(got, "ask_user") || !strings.Contains(got, "ask_user_question") {
+		t.Fatalf("reinforcement must name FlowPilot ask_user and warn off native ask_user_question, got %q", got)
+	}
+}
+
+// TestGrokPromptPrepAppendsAskUserReinforcement guards the live registry path:
+// when promptPrep overrides preparePrompt it must still append the reinforcement
+// (provider_registry.go Grok block) or the model loses the steer.
+func TestGrokPromptPrepAppendsAskUserReinforcement(t *testing.T) {
+	a := newGrokAdapter(newGrokDispatcher(nil, nil), "/tmp/x")
+	// Mirror the live registry hook shape (skills + reinforcement).
+	a.promptPrep = func(req TurnRequest) string {
+		return "SKILL\n" + req.Prompt + grokAskUserReinforcement
+	}
+	got := a.preparePrompt(TurnRequest{Prompt: "need a choice"})
+	if !strings.HasPrefix(got, "SKILL\nneed a choice") {
+		t.Fatalf("expected skill prefix + prompt, got %q", got)
+	}
+	if !strings.Contains(got, grokAskUserReinforcement) {
+		t.Fatalf("live promptPrep must append grokAskUserReinforcement, got %q", got)
+	}
+}
+
+// TestGrokSendTurnPromptIncludesAskUserReinforcement asserts the reinforcement
+// actually reaches session/prompt on the wire (not only preparePrompt unit path).
+// Intentionally leaves mcpServer nil so waitReady does not delay the turn — the
+// wire assertion is about prompt text, not MCP connect (covered elsewhere).
+func TestGrokSendTurnPromptIncludesAskUserReinforcement(t *testing.T) {
+	sessionID := "session-mcp-ask-prompt"
+	d, fg := startFakeGrok(t, nil)
+	a := newGrokAdapter(d, "/tmp/x")
+	a.initResult = liveGrokInitializeResult()
+
+	var capturedPrompt string
+	fg.serve(func(fg *fakeGrok, m map[string]any) {
+		switch m["method"] {
+		case "session/new":
+			fg.reply(m["id"], map[string]any{"sessionId": sessionID})
+		case "session/prompt":
+			if params, ok := m["params"].(map[string]any); ok {
+				// prompt is []{type,text} blocks from grokACPPromptParams;
+				// JSON unmarshaling yields []any of map[string]any.
+				if blocks, ok := params["prompt"].([]map[string]string); ok && len(blocks) > 0 {
+					capturedPrompt = blocks[0]["text"]
+				} else if rawBlocks, ok := params["prompt"].([]any); ok && len(rawBlocks) > 0 {
+					if block, ok := rawBlocks[0].(map[string]any); ok {
+						capturedPrompt, _ = block["text"].(string)
+					}
+				}
+			}
+			fg.reply(m["id"], liveGrokPromptResult(sessionID))
+		}
+	})
+
+	bridge := &fakeGrokBridge{}
+	if err := a.SendTurn(context.Background(), TurnRequest{RunID: "run-mcp-ask-prompt", Prompt: "choose language"}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	if capturedPrompt == "" {
+		t.Fatal("expected session/prompt on the wire with non-empty text; capture failed")
+	}
+	if !strings.Contains(capturedPrompt, grokAskUserReinforcement) {
+		t.Fatalf("session/prompt text must include grokAskUserReinforcement, got %q", capturedPrompt)
+	}
+	if !strings.Contains(capturedPrompt, "choose language") {
+		t.Fatalf("session/prompt text must include user prompt, got %q", capturedPrompt)
+	}
+}
+
+// TestGrokMcpAskUserRoundTrip proves Task-209 DOD-1 wiring: when Grok calls
+// FlowPilot MCP tools/call ask_user with the registered turn token, the shared
+// handler routes to bridge.AskQuestion (same QuestionCard path as Codex/Claude).
+func TestGrokMcpAskUserRoundTrip(t *testing.T) {
+	mcp := newClaudeMCPServer()
+	bridge := &fakeGrokBridge{answer: []string{"Python"}}
+	token := mcp.register(bridge, false)
+	defer mcp.unregister(token)
+
+	raw, errObj := mcp.dispatch("tools/call", map[string]any{
+		"params": map[string]any{
+			"name": "ask_user",
+			"arguments": map[string]any{
+				"prompt":  "Which programming language do you prefer for the Hello World file?",
+				"options": []any{"Python", "TypeScript", "Go"},
+			},
+		},
+	}, token)
+	if errObj != nil {
+		t.Fatalf("tools/call ask_user error: %+v", errObj)
+	}
+	if bridge.questionPrompt == "" || len(bridge.questionOpts) != 3 {
+		t.Fatalf("AskQuestion not reached: prompt=%q opts=%d", bridge.questionPrompt, len(bridge.questionOpts))
+	}
+	if bridge.questionOpts[0].Label != "Python" || bridge.questionOpts[2].Label != "Go" {
+		t.Fatalf("unexpected options: %+v", bridge.questionOpts)
+	}
+	result, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %T %+v", raw, raw)
+	}
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("expected MCP text content result, got %+v", result)
+	}
+	block, _ := content[0].(map[string]any)
+	if txt, _ := block["text"].(string); txt != "Python" {
+		t.Fatalf("ask_user result = %q, want Python", txt)
+	}
+}
+
+// TestGrokMcpAskUserMultiSelectAndEmptyAnswer covers multiSelect=true and the
+// empty-answer / error path that must return a controlled tool result (not hang).
+func TestGrokMcpAskUserMultiSelectAndEmptyAnswer(t *testing.T) {
+	mcp := newClaudeMCPServer()
+
+	t.Run("multiSelect", func(t *testing.T) {
+		bridge := &fakeGrokBridge{answer: []string{"Python", "Go"}}
+		token := mcp.register(bridge, false)
+		defer mcp.unregister(token)
+		raw, errObj := mcp.dispatch("tools/call", map[string]any{
+			"params": map[string]any{
+				"name": "ask_user",
+				"arguments": map[string]any{
+					"prompt":      "Pick languages",
+					"options":     []any{"Python", "TypeScript", "Go"},
+					"multiSelect": true,
+				},
+			},
+		}, token)
+		if errObj != nil {
+			t.Fatalf("error: %+v", errObj)
+		}
+		if !bridge.questionMulti {
+			t.Fatal("expected multiSelect=true to reach AskQuestion")
+		}
+		result := raw.(map[string]any)
+		content := result["content"].([]any)
+		txt := content[0].(map[string]any)["text"].(string)
+		if txt != "Python, Go" {
+			t.Fatalf("got %q, want Python, Go", txt)
+		}
+	})
+
+	t.Run("emptyAnswer", func(t *testing.T) {
+		bridge := &fakeGrokBridge{answer: nil} // AskQuestion returns nil,nil
+		token := mcp.register(bridge, false)
+		defer mcp.unregister(token)
+		raw, errObj := mcp.dispatch("tools/call", map[string]any{
+			"params": map[string]any{
+				"name":      "ask_user",
+				"arguments": map[string]any{"prompt": "Pick one"},
+			},
+		}, token)
+		if errObj != nil {
+			t.Fatalf("error: %+v", errObj)
+		}
+		result := raw.(map[string]any)
+		content := result["content"].([]any)
+		txt := content[0].(map[string]any)["text"].(string)
+		if txt != "No answer was provided." {
+			t.Fatalf("empty answer must yield controlled message, got %q", txt)
+		}
+	})
+}
+
+// TestGrokUnsupportedInboundStillRepliesError guards that non-permission
+// inbound methods get a controlled JSON-RPC error (never hang the dispatcher).
+func TestGrokUnsupportedInboundStillRepliesError(t *testing.T) {
+	d, fg := startFakeGrok(t, nil)
+	_ = newGrokAdapter(d, "/tmp/x") // wires handleInbound
+
+	replied := make(chan map[string]any, 1)
+	go func() {
+		for m := range fg.requests {
+			if m["id"] == float64(901) {
+				replied <- m
+				return
+			}
+		}
+	}()
+	fg.send(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      901,
+		"method":  "session/unknown_ask",
+		"params":  map[string]any{},
+	})
+
+	select {
+	case m := <-replied:
+		errObj, _ := m["error"].(map[string]any)
+		if errObj == nil {
+			t.Fatalf("expected JSON-RPC error for unsupported inbound, got %+v", m)
+		}
+		msg, _ := errObj["message"].(string)
+		if !strings.Contains(msg, "unsupported") {
+			t.Fatalf("expected unsupported error message, got %q", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("unsupported inbound must still be replied to, not left hanging")
 	}
 }

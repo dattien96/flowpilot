@@ -71,6 +71,23 @@ func newGrokAdapter(dispatcher *grokDispatcher, cwd string) *grokAdapter {
 
 func (a *grokAdapter) Key() ProviderKey { return ProviderKeyGrok }
 
+// grokAskUserReinforcement steers the model onto FlowPilot's MCP `ask_user` tool
+// (Task-209 / GR-06). Same "act first, ask only when blocked" bias as Codex's
+// askUserReinforcement and Claude's claudeAskUserReinforcement, plus Grok-specific
+// guardrails:
+//
+//   - Grok's native `ask_user_question` runs inside the agent process; under
+//     FlowPilot's controlled ACP (`grok agent stdio`) there is no TTY picker, so
+//     the tool fails with "interactive picker isn't available" and the model
+//     falls back to a plain-text numbered list — never emitting
+//     user_question_required / QuestionCard (Claude class defect fixed via
+//     --disallowed-tools AskUserQuestion; Grok's `agent` subcommand has no
+//     equivalent denylist flag — verified against `grok agent --help`).
+//   - FlowPilot registers MCP server `flowpilot` with tool `ask_user`
+//     (prompt, options[], multiSelect?) via session/new mcpServers; that path
+//     is the only one that hits bridge.AskQuestion → desktop QuestionCard.
+const grokAskUserReinforcement = "\n\n---\nComplete the clear, unambiguous parts of the task directly — your normal tools and approval gates still apply. Only when a required decision genuinely blocks you and you cannot reasonably infer the answer, call the FlowPilot MCP tool `ask_user` on server `flowpilot` with arguments `prompt` (string), `options` (string array of choices), and optional `multiSelect` (boolean). Do NOT use the native `ask_user_question` tool or any interactive terminal picker — it is unavailable in this FlowPilot desktop-controlled ACP environment and will not show the options form. Do not fall back to a numbered plain-text list when structured options are available via `ask_user`."
+
 // Capabilities advertises only what has a passing test (CP-46 P-11): Streaming/
 // Resume/FileEvents/Interrupt (Task-207), ApprovalEvents (Task-208 — the real
 // session/request_permission decision policy below). Mcp lands in Task-209;
@@ -93,11 +110,15 @@ func (a *grokAdapter) Capabilities() ProviderCapabilities {
 	}
 }
 
+// preparePrompt builds the final turn prompt. Default applies
+// grokAskUserReinforcement (Task-209 GR-06). When promptPrep is set (live
+// registry), that hook is responsible for appending the same reinforcement
+// after skill/context injection — otherwise the override would drop it.
 func (a *grokAdapter) preparePrompt(req TurnRequest) string {
 	if a.promptPrep != nil {
 		return a.promptPrep(req)
 	}
-	return req.Prompt
+	return req.Prompt + grokAskUserReinforcement
 }
 
 func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge TurnBridge) error {
