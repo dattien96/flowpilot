@@ -118,11 +118,11 @@ func TestGrokAdapterSendTurnStreamsAndCompletes(t *testing.T) {
 func TestGrokAdapterCapabilitiesMatchProvenSet(t *testing.T) {
 	a := newGrokAdapter(&grokDispatcher{waiters: map[int64]chan grokResponse{}, sessionSubs: map[string]chan grokNotification{}, done: make(chan struct{})}, "/tmp/x")
 	caps := a.Capabilities()
-	if !caps.Streaming || !caps.Resume || !caps.FileEvents || !caps.Interrupt || !caps.ApprovalEvents {
-		t.Fatalf("expected streaming/resume/fileEvents/interrupt/approvalEvents true, got %+v", caps)
+	if !caps.Streaming || !caps.Resume || !caps.FileEvents || !caps.Interrupt || !caps.ApprovalEvents || !caps.SkillSelection {
+		t.Fatalf("expected streaming/resume/fileEvents/interrupt/approvalEvents/skillSelection true, got %+v", caps)
 	}
-	if caps.Mcp || caps.Vision || caps.SkillSelection {
-		t.Fatalf("expected mcp/vision/skillSelection false (not yet proven), got %+v", caps)
+	if caps.Mcp || caps.Vision {
+		t.Fatalf("expected mcp/vision false (not yet proven), got %+v", caps)
 	}
 }
 

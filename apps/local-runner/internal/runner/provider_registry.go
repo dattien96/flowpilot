@@ -417,6 +417,7 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 			Status:      ProviderStatusAvailable,
 			Capabilities: ProviderCapabilities{
 				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true, Interrupt: true,
+				SkillSelection: true,
 			},
 			newAdapter: func() ProviderRuntimeAdapter {
 				scopeKey := "default"

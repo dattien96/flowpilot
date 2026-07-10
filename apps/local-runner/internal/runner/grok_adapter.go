@@ -74,8 +74,10 @@ func (a *grokAdapter) Key() ProviderKey { return ProviderKeyGrok }
 // Capabilities advertises only what has a passing test (CP-46 P-11): Streaming/
 // Resume/FileEvents/Interrupt (Task-207), ApprovalEvents (Task-208 — the real
 // session/request_permission decision policy below). Mcp lands in Task-209;
-// Vision stays false (initialize reported promptCapabilities.image=false,
-// live-verified).
+// SkillSelection lands in Task-214 (promptPrep already calls
+// injectSelectedSkills unconditionally, so unlike Mcp it needs no
+// instance-wiring check). Vision stays false (initialize reported
+// promptCapabilities.image=false, live-verified).
 func (a *grokAdapter) Capabilities() ProviderCapabilities {
 	return ProviderCapabilities{
 		Streaming:      true,
@@ -83,6 +85,7 @@ func (a *grokAdapter) Capabilities() ProviderCapabilities {
 		FileEvents:     true,
 		Interrupt:      true,
 		ApprovalEvents: true,
+		SkillSelection: true,
 		// Mcp is only true once this instance is actually wired to the
 		// runner-hosted MCP server (Task-209) — a bare newGrokAdapter() (tests,
 		// or a not-yet-registered instance) truthfully reports false (CP-46 P-11).
