@@ -5,12 +5,12 @@
 - Document ID: `Task-208`
 - Title: `Grok Permission Channel And YOLO Posture`
 - Phase: `task`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
-- Last Updated: `2026-07-09`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/todo/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-207: Grok Controlled Adapter MVP (Chat/Stream/Resume)](./Task-207-Grok-Controlled-Adapter-MVP.md)
+- Last Updated: `2026-07-10`
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-207: Grok Controlled Adapter MVP (Chat/Stream/Resume)](./Task-207-Grok-Controlled-Adapter-MVP.md)
 - Child Documents: `None`
 - Related Documents: [SS-08: Approve Gate](../../05-System-Specs/SS-08-Approve-Gate.md), [SD-09: Approval Gates](../../06-System-Tech-Design/SD-09-Approval-Gates.md), [BUG-069: Claude YOLO Off Always Auto-Approves](../done/BUG-069-Claude-YOLO-Off-Always-Auto-Approves.md)
 - Replaces: `None`
@@ -97,15 +97,15 @@ Task-207 ships a chat-only adapter with no gating; this task adds the safety-cri
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` `session/request_permission` is routed to `TurnBridge.RequestApproval` and answered with a request-specific `optionId`.
-- [ ] `DOD-2` `GrokPermissionMode` exists on `YoloPosture` and is set correctly for both YOLO states.
-- [ ] `DOD-3` YOLO=false denies a test action end to end (action verifiably does not execute).
-- [ ] `DOD-4` YOLO=true auto-approves only through runner policy; `ask_user` is proven to still block.
-- [ ] `DOD-5` A stale Grok-side allowlist cannot bypass YOLO=false (regression test passes).
-- [ ] `DOD-6` Golden-fixture test replays the exact live-captured permission round-trip (both correct and incorrect `optionId` paths).
-- [ ] `DOD-7` Two simultaneous gated Grok tool calls surface as a grouped card, resolve independently, and do not wedge the run (`GR-29`).
-- [ ] `DOD-8` Grok exec approvals set `Kind=="exec"` and engage the per-project "don't ask again" allowlist (`GR-04`, BUG-246).
-- [ ] `DOD-9` **Base-regression (`P-0`):** `yolo_resolver.go` `GrokPermissionMode` is read only by Grok; `resolveYoloPosture` outputs for codex/claude are byte-identical; Codex/Claude approval regression tests remain green.
+- [x] `DOD-1` `session/request_permission` is routed to `TurnBridge.RequestApproval` and answered with a request-specific `optionId`. (`grok_adapter.go handleInbound` + `grokEncodePermissionDecision`; `TestGrokAdapterYoloOffBlocksOnBridgeAndDeniesWithoutApproval`.)
+- [x] `DOD-2` `GrokPermissionMode` exists on `YoloPosture` and is set correctly for both YOLO states. (`yolo_resolver.go`.)
+- [x] `DOD-3` YOLO=false denies a test action end to end (action verifiably does not execute). (Same test; `bridge.approvalCallCount()==1`.)
+- [x] `DOD-4` YOLO=true auto-approves only through runner policy; `ask_user` is proven to still block. (`TestGrokAdapterYoloOnAutoApprovesViaRunnerPolicyNotBridge` proves the bridge is never consulted under YOLO; `ask_user` itself is a distinct MCP/native-tool path per Task-209, never routed through this channel, so it structurally cannot be auto-answered here — not independently re-tested.)
+- [~] `DOD-5` A stale Grok-side allowlist cannot bypass YOLO=false (regression test passes). **Live-verified finding, partially resolved (2026-07-10, real logged-in account):** the runner-side design is structurally immune — the adapter never reads Grok's own `config.toml`. However live testing found the ACP channel itself is not: this account's real `~/.grok/config.toml` has `[ui] permission_mode="always-approve"` (set by Grok's own `/always-approve` slash command), which makes Grok skip `session/request_permission` entirely — confirmed via a controlled experiment (temporarily flipped to `permission_mode="default"`, re-ran, `session/request_permission` fired and a runner deny correctly blocked the write; original file restored exactly). There is no `grok agent stdio` flag to override this. Since FlowPilot cannot safely rewrite the user's config file (mirrors the Claude `ensureClaudeConfigSettings` "never clobber" precedent), `grokConfigPermissionModeBypassesGating` (`grok_process.go`) now detects and logs a clear warning at process-ensure time instead — diagnostic, not a fix for the underlying ACP-level gap. `TestLiveRealGrokPermissionGateDenyBlocksWrite` self-skips with this exact explanation on affected accounts rather than false-failing. No BUG-069-style regression test was added on top of this (the mitigation is a warning, not a code-level guard, so there is nothing to regression-test yet).
+- [~] `DOD-6` Golden-fixture test replays the exact live-captured permission round-trip (both correct and incorrect `optionId` paths). `TestGrokDispatcherRoutesInboundPermissionRequest` covers routing; the "wrong/absent optionId → PermissionRejected" path is asserted indirectly via `TestGrokEncodePermissionDecisionNoMatchReturnsEmpty` (unit-level) rather than a full live-shaped round-trip fixture.
+- [ ] `DOD-7` Two simultaneous gated Grok tool calls surface as a grouped card, resolve independently, and do not wedge the run (`GR-29`). **Not tested directly**: true by construction (the dispatcher's `dispatch()` spawns `go d.inbound(...)` per inbound frame — see `grok_process.go`), but no test issues two concurrent `session/request_permission` requests and asserts both resolve independently.
+- [x] `DOD-8` Grok exec approvals set `Kind=="exec"` and engage the per-project "don't ask again" allowlist (`GR-04`, BUG-246). (`TestGrokPermissionKindClassifiesExecFileMcp`, `TestGrokAdapterYoloOffBlocksOnBridgeAndDeniesWithoutApproval` asserts `Kind=="exec"`. The exec-vs-file-vs-mcp classification itself is inferred from docs, not independently live-verified against a real write/exec tool call — see CP-46 §10.2.)
+- [x] `DOD-9` **Base-regression (`P-0`):** `yolo_resolver.go` `GrokPermissionMode` is read only by Grok; `resolveYoloPosture` outputs for codex/claude are byte-identical; Codex/Claude approval regression tests remain green. (Full suite verified unchanged vs. clean baseline.)
 
 ## 7. Out of Scope
 

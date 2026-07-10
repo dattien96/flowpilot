@@ -3595,7 +3595,7 @@ func TestCatalogAndRegistry(t *testing.T) {
 		}
 	}
 	// disabled/placeholder adapters surface the typed error
-	if _, err := svc.registry.Adapter(ProviderKeyClaude); err == nil {
+	if _, err := svc.registry.Adapter(ProviderKeyClaude, "", ""); err == nil {
 		t.Fatal("expected UnsupportedProviderRuntimeError for claude")
 	} else if _, ok := err.(*UnsupportedProviderRuntimeError); !ok {
 		t.Fatalf("expected UnsupportedProviderRuntimeError, got %T", err)

@@ -119,6 +119,85 @@ func TestIsInstalled_TrueAfterInstall(t *testing.T) {
 	}
 }
 
+// TestInstall_WritesGrokSkillsRoot proves Grok gets its own native install
+// root (.grok/skills), matching Claude's dedicated-directory treatment,
+// without altering the pre-existing .claude/skills or .agents/skills writes
+// (Task-214 T-1).
+func TestInstall_WritesGrokSkillsRoot(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, err := Install(dir, "none"); err != nil {
+		t.Fatalf("Install returned error: %v", err)
+	}
+
+	for _, skill := range commonSkills {
+		if _, statErr := os.Stat(filepath.Join(dir, ".grok", "skills", skill, "SKILL.md")); statErr != nil {
+			t.Errorf("expected Grok skill missing for %s: %v", skill, statErr)
+		}
+		// Pre-existing roots must be unaffected by the new root.
+		if _, statErr := os.Stat(filepath.Join(dir, ".claude", "skills", skill, "SKILL.md")); statErr != nil {
+			t.Errorf("expected Claude skill missing for %s: %v", skill, statErr)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, ".agents", "skills", skill, "SKILL.md")); statErr != nil {
+			t.Errorf("expected agents skill missing for %s: %v", skill, statErr)
+		}
+	}
+}
+
+func TestIsInstalled_RequiresGrokSentinel(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(dir, ".claude", "skills", "git-commit-format"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".claude", "skills", "git-commit-format", "SKILL.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".agents", "skills", "git-commit-format"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".agents", "skills", "git-commit-format", "SKILL.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-Task-214 shape: .claude and .agents sentinels exist but .grok does
+	// not (simulates a project bound before this change) -- IsInstalled must
+	// now report false so the next bind check re-runs Install and backfills
+	// .grok/skills (Task-214 T-2's self-heal).
+	if IsInstalled(dir) {
+		t.Fatal("IsInstalled should be false when the .grok sentinel is missing")
+	}
+
+	if _, err := Install(dir, "none"); err != nil {
+		t.Fatalf("Install failed: %v", err)
+	}
+
+	if !IsInstalled(dir) {
+		t.Fatal("IsInstalled should be true once all three sentinels exist")
+	}
+}
+
+func TestProviderStatuses_IncludesGrokWithoutAlteringOthers(t *testing.T) {
+	want := map[string]string{
+		"claude": filepath.Join(".claude", "skills"),
+		"codex":  filepath.Join(".agents", "skills"),
+		"gemini": filepath.Join(".agents", "skills"),
+		"grok":   filepath.Join(".grok", "skills"),
+	}
+	if len(providerStatuses) != len(want) {
+		t.Fatalf("providerStatuses has %d entries, want %d", len(providerStatuses), len(want))
+	}
+	for _, entry := range providerStatuses {
+		wantPath, ok := want[entry.Provider]
+		if !ok {
+			t.Fatalf("unexpected provider %q in providerStatuses", entry.Provider)
+		}
+		if entry.RootPath != wantPath {
+			t.Errorf("providerStatuses[%q].RootPath = %q, want %q", entry.Provider, entry.RootPath, wantPath)
+		}
+	}
+}
+
 func TestInstall_SkipsExistingSameVersionFiles(t *testing.T) {
 	dir := t.TempDir()
 

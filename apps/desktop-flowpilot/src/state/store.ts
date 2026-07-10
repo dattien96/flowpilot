@@ -105,6 +105,14 @@ function pickDefaultModel(provider: ProviderKey | undefined, models: SupportedMo
   if (provider === "claude") {
     return enabled.find((m) => m.modelId.toLowerCase().includes("sonnet"))?.modelId;
   }
+  if (provider === "grok") {
+    // Appended last (CP-46 P-0/Task-211 T-6). Prefer grok-4.5 (the model
+    // live-verified against Grok Build 0.2.93) over the grok-build alias.
+    return (
+      enabled.find((m) => m.modelId.toLowerCase() === "grok-4.5")?.modelId ??
+      enabled[0]?.modelId
+    );
+  }
   return undefined;
 }
 
@@ -1830,6 +1838,7 @@ export function accountLabel(account: ProviderAccountSummary): string {
 export function providerLabel(providerKey: string): string {
   if (providerKey === "claude") return "Claude";
   if (providerKey === "codex") return "Codex";
+  if (providerKey === "grok") return "Grok";
   return providerKey;
 }
 

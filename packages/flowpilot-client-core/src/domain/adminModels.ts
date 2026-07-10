@@ -86,7 +86,7 @@ export interface Integration {
 
 export interface SupportedModel {
   id: string;
-  providerKey: "codex" | "claude" | "gemini";
+  providerKey: "codex" | "claude" | "gemini" | "grok";
   modelId: string;
   displayName: string;
   isEnabled: boolean;
@@ -95,6 +95,15 @@ export interface SupportedModel {
   detectionMethod: string | null;
   detectedCliVersion: string | null;
   lastDetectedAt: string | null;
+  // Task-215: per-model reasoning-effort support and context-window size,
+  // detected from the same provider CLI calls Task-213 already makes
+  // (codex debug models / ~/.grok/models_cache.json). Null when the
+  // provider has no per-model catalog for this (Claude) or the row was
+  // never detected (manually added).
+  supportedReasoningEfforts: string[] | null;
+  defaultReasoningEffort: string | null;
+  contextWindowTokens: number | null;
+  maxContextWindowTokens: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -445,6 +454,22 @@ export interface WorkflowRun {
   errorMessage: string | null;
 }
 
+// LocalRunnerProviderModel is one entry in the runner's live-detected model
+// list for a provider (Task-213) — mirrors the Go ProviderModel DTO.
+export interface LocalRunnerProviderModel {
+  id: string;
+  displayName: string;
+  available: boolean;
+  source: string;
+  // Task-215: mirrors the Go ProviderModel's new reasoning/context-window
+  // fields (see SupportedModel above) — carried on the live-detected entry
+  // before it is stamped onto a persisted ai_supported_models row.
+  supportedReasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
+  contextWindowTokens?: number;
+  maxContextWindowTokens?: number;
+}
+
 export interface LocalRunnerProvider {
   key: string;
   label: string;
@@ -452,6 +477,13 @@ export interface LocalRunnerProvider {
   version: string | null;
   authStatus?: string;
   installHint: string | null;
+  // Appended last (Task-213): the runner's own detected version/model list for
+  // this provider (e.g. `codex debug models`, `agy models`, or Grok's
+  // ~/.grok/models_cache.json) — the source Task-213's "Detect models" sync
+  // reads from.
+  detectedVersion?: string | null;
+  detectedBinary?: string | null;
+  models?: LocalRunnerProviderModel[];
 }
 
 export interface LocalRunnerMcpBackend {

@@ -28,6 +28,10 @@ export function AiProvidersSettings(): React.ReactElement {
   const [draft, setDraft] = useState<ProviderDraft>({ providerKey: "codex", modelId: "", displayName: "" });
   const [editingModelId, setEditingModelId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<{ modelId: string; displayName: string }>({ modelId: "", displayName: "" });
+  // Task-213: per-provider "Detect models" sync state.
+  const [detectingProviderKey, setDetectingProviderKey] = useState<ProviderKey | null>(null);
+  const [detectSummary, setDetectSummary] = useState<Record<string, string>>({});
+  const [detectError, setDetectError] = useState<Record<string, string>>({});
 
   const refresh = async () => {
     try {
@@ -84,6 +88,10 @@ export function AiProvidersSettings(): React.ReactElement {
         detectionMethod: null,
         detectedCliVersion: null,
         lastDetectedAt: null,
+        supportedReasoningEfforts: null,
+        defaultReasoningEffort: null,
+        contextWindowTokens: null,
+        maxContextWindowTokens: null,
       });
       setDraft({ providerKey: "codex", modelId: "", displayName: "" });
       await refresh();
@@ -94,6 +102,89 @@ export function AiProvidersSettings(): React.ReactElement {
       setMessage(toErrorMessage(error, "Unable to add supported model."));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Task-213: pull the runner's live-detected model list for one provider
+  // (already loaded into `providers[].models` from GET /providers — no new
+  // HTTP call) and insert whichever ones aren't yet in the ai_supported_models
+  // catalog. Never touches an existing row's model identity/user edits
+  // (skip-if-registered for those fields), mirroring apps/admin-web's "Check
+  // and import missing models" action.
+  //
+  // Task-215: additionally stamps/refreshes each model's detected reasoning-
+  // effort support and context-window size — for a newly-inserted row as
+  // part of the create, and for an already-registered row via a targeted
+  // update (unlike model identity, these are capability facts about the
+  // model, not user-editable state, so re-detecting is free to refresh them).
+  const detectModels = async (providerKey: ProviderKey) => {
+    setDetectingProviderKey(providerKey);
+    setDetectError((prev) => {
+      const next = { ...prev };
+      delete next[providerKey];
+      return next;
+    });
+    try {
+      const provider = providers.find((p) => p.key === providerKey);
+      const detected = provider?.models ?? [];
+      if (detected.length === 0) {
+        setDetectSummary((prev) => ({
+          ...prev,
+          [providerKey]: "No models detected — is the CLI installed and authenticated?",
+        }));
+        return;
+      }
+
+      const registeredByModelId = new Map(
+        models.filter((model) => model.providerKey === providerKey).map((model) => [model.modelId, model] as const),
+      );
+      const maxSortOrder = models.reduce((max, model) => Math.max(max, model.sortOrder), 0);
+
+      const admin = await getAdminUseCases();
+      const lastDetectedAt = new Date().toISOString();
+      let importedCount = 0;
+      let refreshedCount = 0;
+      for (const detectedModel of detected) {
+        const reasoningPatch = {
+          supportedReasoningEfforts: detectedModel.supportedReasoningEfforts ?? null,
+          defaultReasoningEffort: detectedModel.defaultReasoningEffort ?? null,
+          contextWindowTokens: detectedModel.contextWindowTokens ?? null,
+          maxContextWindowTokens: detectedModel.maxContextWindowTokens ?? null,
+        };
+        const existing = registeredByModelId.get(detectedModel.id);
+        if (existing) {
+          await admin.providers.updateSupportedModel(existing.id, reasoningPatch);
+          refreshedCount++;
+          continue;
+        }
+        const created = await admin.providers.createSupportedModel({
+          providerKey,
+          modelId: detectedModel.id,
+          displayName: detectedModel.displayName || detectedModel.id,
+          isEnabled: true,
+          sortOrder: maxSortOrder + importedCount + 1,
+          source: "detected",
+          detectionMethod: detectedModel.source || null,
+          detectedCliVersion: provider?.detectedVersion ?? null,
+          lastDetectedAt,
+          ...reasoningPatch,
+        });
+        registeredByModelId.set(detectedModel.id, created);
+        importedCount++;
+      }
+
+      setDetectSummary((prev) => ({
+        ...prev,
+        [providerKey]: `${importedCount} new model(s) imported, ${refreshedCount} refreshed with latest reasoning/context data.`,
+      }));
+      await refresh();
+    } catch (error) {
+      setDetectError((prev) => ({
+        ...prev,
+        [providerKey]: toErrorMessage(error, "Unable to detect models."),
+      }));
+    } finally {
+      setDetectingProviderKey(null);
     }
   };
 
@@ -203,8 +294,37 @@ export function AiProvidersSettings(): React.ReactElement {
       <div className="settings-panel-head"><div><div className="settings-eyebrow">AI Providers</div><h2>AI Providers</h2><p>Inspect local provider readiness and manage supported models.</p></div></div>
       {message ? <div className={`settings-feedback${messageTone === "error" ? " error" : ""}`}>{message}</div> : null}
       <div className="settings-two-column">
-        <div className="settings-subpanel"><h3>Local Providers</h3><div className="settings-list">{providers.map((provider) => <div className="settings-list-item static" key={provider.key}><div className="settings-provider-meta"><strong>{provider.label}</strong><span>{provider.installed ? "installed" : "not installed"} / {provider.version ?? "unknown"}</span><span>{providerAccountSummary(provider.key as ProviderKey)}</span></div><div className="settings-provider-actions">{provider.key === "gemini" ? <button className="secondary-btn" disabled={busy || installingProviderKey === provider.key || provider.installed} onClick={() => void installProvider(provider.key as ProviderKey)} type="button">{installingProviderKey === provider.key ? "Installing AGY..." : provider.installed ? "AGY Installed" : "Install AGY CLI"}</button> : null}<button className="secondary-btn" disabled={busy || connectingProviderKey === provider.key || !provider.installed} onClick={() => void connectAccount(provider.key as ProviderKey)} type="button">{connectingProviderKey === provider.key || pendingProviderKey === provider.key ? "Connecting..." : "Connect New Account"}</button></div></div>)}</div></div>
-        <div className="settings-subpanel"><h3>Add Supported Model</h3><div className="settings-grid"><label className="settings-field"><span>Provider</span><select value={draft.providerKey} onChange={(event) => setDraft((current) => ({ ...current, providerKey: event.target.value as "codex" | "claude" | "gemini" }))}><option value="codex">codex</option><option value="claude">claude</option><option value="gemini">gemini</option></select></label><label className="settings-field"><span>Model ID</span><input value={draft.modelId} onChange={(event) => setDraft((current) => ({ ...current, modelId: event.target.value }))} /></label><label className="settings-field settings-field-full"><span>Display Name</span><input value={draft.displayName} onChange={(event) => setDraft((current) => ({ ...current, displayName: event.target.value }))} /></label></div><div className="settings-actions"><button className="primary-btn" disabled={busy} onClick={() => void addModel()} type="button">Add Model</button></div></div>
+        <div className="settings-subpanel">
+          <h3>Local Providers</h3>
+          <div className="settings-list">
+            {providers.map((provider) => (
+              <div className="settings-list-item static" key={provider.key}>
+                <div className="settings-provider-meta">
+                  <strong>{provider.label}</strong>
+                  <span>{provider.installed ? "installed" : "not installed"} / {provider.detectedVersion ?? provider.version ?? "unknown"}</span>
+                  <span>{providerAccountSummary(provider.key as ProviderKey)}</span>
+                  {detectSummary[provider.key] ? <span className="settings-feedback">{detectSummary[provider.key]}</span> : null}
+                  {detectError[provider.key] ? <span className="settings-feedback error">{detectError[provider.key]}</span> : null}
+                </div>
+                <div className="settings-provider-actions">
+                  {provider.key === "gemini" ? (
+                    <button className="secondary-btn" disabled={busy || installingProviderKey === provider.key || provider.installed} onClick={() => void installProvider(provider.key as ProviderKey)} type="button">
+                      {installingProviderKey === provider.key ? "Installing AGY..." : provider.installed ? "AGY Installed" : "Install AGY CLI"}
+                    </button>
+                  ) : null}
+                  <button className="secondary-btn" disabled={busy || connectingProviderKey === provider.key || !provider.installed} onClick={() => void connectAccount(provider.key as ProviderKey)} type="button">
+                    {connectingProviderKey === provider.key || pendingProviderKey === provider.key ? "Connecting..." : "Connect New Account"}
+                  </button>
+                  {/* Task-213: pull the runner's live-detected model list into the catalog below. */}
+                  <button className="secondary-btn" disabled={busy || detectingProviderKey === provider.key || !provider.installed} onClick={() => void detectModels(provider.key as ProviderKey)} type="button">
+                    {detectingProviderKey === provider.key ? "Detecting..." : "Detect models"}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="settings-subpanel"><h3>Add Supported Model</h3><div className="settings-grid"><label className="settings-field"><span>Provider</span><select value={draft.providerKey} onChange={(event) => setDraft((current) => ({ ...current, providerKey: event.target.value as "codex" | "claude" | "gemini" | "grok" }))}><option value="codex">codex</option><option value="claude">claude</option><option value="gemini">gemini</option><option value="grok">grok</option></select></label><label className="settings-field"><span>Model ID</span><input value={draft.modelId} onChange={(event) => setDraft((current) => ({ ...current, modelId: event.target.value }))} /></label><label className="settings-field settings-field-full"><span>Display Name</span><input value={draft.displayName} onChange={(event) => setDraft((current) => ({ ...current, displayName: event.target.value }))} /></label></div><div className="settings-actions"><button className="primary-btn" disabled={busy} onClick={() => void addModel()} type="button">Add Model</button></div></div>
       </div>
       <div className="settings-subpanel">
         <h3>Supported Models</h3>
@@ -242,7 +362,8 @@ export function AiProvidersSettings(): React.ReactElement {
             return (
               <div className="settings-list-item static" key={model.id}>
                 <div>
-                  <strong>{model.displayName}</strong>
+                  <strong>{model.displayName}</strong>{" "}
+                  {model.source === "detected" ? <span className="settings-badge">detected</span> : null}
                   <span>{model.providerKey} / {model.modelId} / {model.isEnabled ? "enabled" : "disabled"}</span>
                 </div>
                 <div style={{ display: "flex", gap: "0.5rem" }}>

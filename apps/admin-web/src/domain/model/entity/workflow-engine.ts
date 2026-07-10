@@ -49,13 +49,19 @@ export interface SupportedModel {
   updatedAt: string;
 }
 
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+// Task-215: widened to include "max" — codex debug models live-verified to
+// support a level beyond "xhigh" ("max", plus a provider-specific "ultra"
+// the desktop's per-model Reasoning control surfaces directly from the
+// catalog; this static list stays the fallback here since admin-web's
+// workflow builder isn't wired to the live-detected per-model catalog).
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export const REASONING_EFFORT_OPTIONS = [
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
   { value: "xhigh", label: "Extra High" },
+  { value: "max", label: "Max" },
 ] as const;
 
 export type WorkflowStartMode = "workflow-definition" | "single-step";

@@ -45,6 +45,12 @@ func summarizerModelFor(providerKey ProviderKey) string {
 		// account's configured default. Set FLOWPILOT_SUMMARIZER_MODEL_CODEX (e.g.
 		// a *-mini model) to force the cheap tier.
 		return ""
+	case ProviderKeyGrok:
+		// Appended last (CP-46 P-0/Task-212 T-3). No distinct cheap-tier model id
+		// is known for Grok Build beyond grok-4.5 itself; empty lets the one-shot
+		// `grok -p` exec adapter (P-13 exception, resolvePromptExecutionAdapter)
+		// use the account's configured default model.
+		return ""
 	default:
 		return ""
 	}
@@ -68,8 +74,11 @@ func (r *Runner) SummarizeChatTranscript(ctx context.Context, transcript string,
 	if transcript == "" {
 		return "", errors.New("empty transcript")
 	}
-	if !supportsHandoffSource(providerKey) && providerKey != ProviderKeyGemini {
-		// Only providers with a one-shot exec adapter can summarize.
+	if !supportsHandoffSource(providerKey) && providerKey != ProviderKeyGemini && providerKey != ProviderKeyGrok {
+		// Only providers with a one-shot exec adapter can summarize. Grok
+		// summarizes via the same one-shot `grok -p` exec adapter as Gemini's
+		// `agy --print` (P-13 exception) despite not being a handoff SOURCE yet
+		// (CP-46 Task-212 T-5, Q-7) — those are deliberately independent gates.
 		return "", fmt.Errorf("provider %q has no summarizer adapter", providerKey)
 	}
 	if len(transcript) > summarizerMaxInputBytes {

@@ -124,6 +124,32 @@ const MOCK_PROVIDER_ACCOUNTS: ProviderAccountSummary[] = [
     usageDetailLines: [{ label: "Remaining quota", remainingPercent: 73, resetAt: "2026-06-13T00:00:00.000Z" }],
   },
   {
+    // Appended last (CP-46 P-0/Task-211 T-11).
+    id: "acct-grok-1",
+    providerKey: "grok",
+    displayName: "Account 1",
+    displayLabel: "grok.user@example.com",
+    homePath: "/Users/demo/.grok",
+    authStorePath: "/Users/demo/.grok",
+    slotIndex: 0,
+    authStatus: "connected",
+    isActive: true,
+    createdAt: "2026-07-09T10:00:00.000Z",
+    lastAuthenticatedAt: "2026-07-09T10:00:00.000Z",
+    accountEmail: "grok.user@example.com",
+    accountName: "Grok User",
+    usageSummary: "Personal",
+    remaining5hPercent: null,
+    remaining7dPercent: null,
+    remaining5hResetAt: null,
+    remaining7dResetAt: null,
+    usageSource: "provider_api",
+    accessTokenExpiresAt: null,
+    refreshTokenExpiresAt: null,
+    refreshTokenExpiryNote: null,
+    usageDetailLines: [],
+  },
+  {
     id: "acct-codex-2",
     providerKey: "codex",
     displayName: "Account 2",
@@ -331,7 +357,7 @@ export class MockRunnerClient implements RunnerClient {
     return { runId, generated: true, skipped: false };
   }
 
-  async connectProviderAccount(providerKey: "codex" | "claude" | "gemini"): Promise<void> {
+  async connectProviderAccount(providerKey: "codex" | "claude" | "gemini" | "grok"): Promise<void> {
     await delay(80);
     const nextSlotIndex =
       MOCK_PROVIDER_ACCOUNTS.filter((account) => account.providerKey === providerKey).reduce(

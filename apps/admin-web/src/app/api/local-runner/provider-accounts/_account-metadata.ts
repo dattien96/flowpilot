@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 
-type ProviderKey = "codex" | "claude" | "gemini";
+type ProviderKey = "codex" | "claude" | "gemini" | "grok";
 
 type ProviderAccountRow = {
   id: string;
@@ -731,6 +731,159 @@ async function geminiMetadata(homePath: string): Promise<AccountMetadata> {
   };
 }
 
+// grokAuthEntry mirrors one value in ~/.grok/auth.json (live-verified shape,
+// CP-46/Task-210 authoring). Task-216 corrects CP-46 Q-5/Task-210 Q-1's "no
+// machine-readable quota endpoint" finding: `key` is the same cached OAuth
+// bearer token Grok Build's own `/usage` TUI command uses, and
+// loadGrokQuota below calls the real billing endpoint behind it
+// (live-verified 2026-07-10).
+type GrokAuthEntry = {
+  email?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  team_id?: string | null;
+  key?: string | null;
+};
+
+// GROK_CLI_CHAT_PROXY_BASE_URL is Grok Build's own backend base URL
+// (live-verified string in the installed `grok` binary, Task-216).
+const GROK_CLI_CHAT_PROXY_BASE_URL = "https://cli-chat-proxy.grok.com/v1";
+
+type GrokBillingValue = {
+  val?: number | null;
+};
+
+// GrokBillingConfig mirrors GET {GROK_CLI_CHAT_PROXY_BASE_URL}/billing's
+// `config` object (live-verified response shape, Task-216). Grok bills
+// either a monthly or a weekly cycle depending on plan; only one of
+// monthlyLimit/weeklyLimit is expected to be present on any given account.
+type GrokBillingConfig = {
+  monthlyLimit?: GrokBillingValue | null;
+  weeklyLimit?: GrokBillingValue | null;
+  used?: GrokBillingValue | null;
+  billingPeriodEnd?: string | null;
+};
+
+type GrokBillingResponse = {
+  config?: GrokBillingConfig | null;
+};
+
+// grokQuotaFromBilling is the pure mapping half of loadGrokQuota, split out
+// so tests can exercise it against a captured response fixture without a
+// live network call (mirrors mapGeminiQuotaUsageDetailLines's split).
+//
+// Labeled "Team Credits", not "Weekly limit": this endpoint reports the
+// account's shared billing/credit pool (Task-216). Live-testing against a
+// SuperGrok account (2026-07-10) showed the CLI's own `/usage`-style status
+// line ("Weekly limit: 1%", resets weekly) is a DIFFERENT, still-unlocated
+// metric — the personal SuperGrok included-usage allowance — not derivable
+// from this /billing response. Do not rename this label to "Weekly limit"
+// until that second endpoint is found and confirmed (tracked as a Task-216
+// follow-up); doing so would misrepresent which quota is being shown.
+export function grokQuotaFromBilling(
+  billing: GrokBillingResponse | null | undefined,
+): AccountMetadata["usageDetailLines"][number] | null {
+  const config = billing?.config;
+  if (!config) {
+    return null;
+  }
+
+  let limit = config.monthlyLimit;
+  let label = "Team Credits (Monthly)";
+  if (!limit) {
+    limit = config.weeklyLimit;
+    label = "Team Credits (Weekly)";
+  }
+
+  const limitVal = limit?.val;
+  const usedVal = config.used?.val;
+  if (typeof limitVal !== "number" || limitVal <= 0 || typeof usedVal !== "number") {
+    return null;
+  }
+
+  return {
+    label,
+    remainingPercent: Math.max(
+      0,
+      Math.min(100, Math.trunc(100 - (usedVal / limitVal) * 100)),
+    ),
+    resetAt: parseResetTime(config.billingPeriodEnd ?? null),
+  };
+}
+
+async function loadGrokQuota(bearerToken: string | null | undefined) {
+  const token = String(bearerToken ?? "").trim();
+  if (!token) {
+    return null;
+  }
+
+  try {
+    const response = await fetch(`${GROK_CLI_CHAT_PROXY_BASE_URL}/billing`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const billing = (await response.json()) as GrokBillingResponse;
+    return grokQuotaFromBilling(billing);
+  } catch {
+    return null;
+  }
+}
+
+async function grokMetadata(homePath: string): Promise<AccountMetadata> {
+  const authPath = firstExistingPath([path.join(homePath, "auth.json")]);
+  const base: AccountMetadata = {
+    authStorePath: homePath,
+    accountEmail: null,
+    accountName: null,
+    usageSummary: null,
+    remaining5hPercent: null,
+    remaining7dPercent: null,
+    remaining5hResetAt: null,
+    remaining7dResetAt: null,
+    usageSource: "unavailable",
+    accessTokenExpiresAt: null,
+    refreshTokenExpiresAt: null,
+    refreshTokenExpiryNote: null,
+    usageDetailLines: [],
+  };
+  if (!authPath) {
+    return base;
+  }
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(authPath, "utf8")) as Record<
+      string,
+      GrokAuthEntry
+    >;
+    const entry = Object.values(raw)[0];
+    if (!entry) {
+      return base;
+    }
+
+    const accountName = `${entry.first_name ?? ""} ${entry.last_name ?? ""}`.trim();
+    const usageSummary = entry.team_id ? `Team ${entry.team_id}` : "Personal";
+    const quotaLine = await loadGrokQuota(entry.key);
+
+    return {
+      ...base,
+      accountEmail: entry.email ?? null,
+      accountName: accountName.length > 0 ? accountName : null,
+      usageSummary,
+      usageSource: quotaLine ? "provider_api" : "unavailable",
+      usageDetailLines: quotaLine ? [quotaLine] : [],
+    };
+  } catch {
+    return base;
+  }
+}
+
 function metadataForAccount(providerKey: ProviderKey, homePath: string) {
   switch (providerKey) {
     case "codex":
@@ -739,6 +892,8 @@ function metadataForAccount(providerKey: ProviderKey, homePath: string) {
       return claudeMetadata(homePath);
     case "gemini":
       return geminiMetadata(homePath);
+    case "grok":
+      return grokMetadata(homePath);
   }
 }
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -495,7 +496,8 @@ func TestResolvePromptExecutionAdapterReasoningEffort(t *testing.T) {
 		{"codex", "gpt-5.4", "high", "codex", []string{"-c", "model_reasoning_effort=high"}},
 		{"codex", "gpt-5.5", "low", "codex", []string{"-c", "model_reasoning_effort=low"}},
 		{"claude", "claude-sonnet", "high", "claude", []string{"--effort", "high"}},
-		{"claude", "claude-opus", "xhigh", "claude", []string{"--effort", "max"}},
+		{"claude", "claude-opus", "xhigh", "claude", []string{"--effort", "xhigh"}},
+		{"claude", "claude-opus", "max", "claude", []string{"--effort", "max"}},
 		{"gemini", "gemini-pro", "high", "agy", []string{}}, // gemini doesn't append reasoning flags
 	}
 
@@ -1904,8 +1906,17 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 		},
 	}
 
-	if len(payload.Providers) != len(cases) {
-		t.Fatalf("expected %d providers in inventory, got %d", len(cases), len(payload.Providers))
+	// CP-46/Task-210 added a grok providerSpec; this test doesn't mock a grok
+	// binary (out of scope for this fixture), so it must appear as a fourth,
+	// not-installed entry rather than changing the expectations for the three
+	// providers this test does mock.
+	if len(payload.Providers) != len(cases)+1 {
+		t.Fatalf("expected %d providers in inventory, got %d", len(cases)+1, len(payload.Providers))
+	}
+	if grok := findProviderJSON(payload.Providers, "grok"); grok == nil {
+		t.Fatal("expected a grok entry in the provider inventory")
+	} else if grok["install_status"] == "INSTALLED" {
+		t.Fatalf("expected grok to be not-installed (no mock binary on PATH), got %#v", grok["install_status"])
 	}
 
 	for _, want := range cases {
@@ -1970,6 +1981,54 @@ func TestDetectProvidersPopulatesInventoryShape(t *testing.T) {
 				t.Fatalf("expected provider %q model %d source %s, got %#v", want.key, idx, expectedSource, model["source"])
 			}
 		}
+	}
+}
+
+// TestDetectCodexModelsCapturesReasoningAndContextWindow (Task-215): codex
+// debug models already returns default_reasoning_level/
+// supported_reasoning_levels/context_window/max_context_window per model
+// (live-verified, Codex Build 0.144.1, gpt-5.6-sol) — this asserts
+// detectCodexModels maps them onto ProviderModel instead of silently
+// dropping them (the pre-Task-215 behavior).
+func TestDetectCodexModelsCapturesReasoningAndContextWindow(t *testing.T) {
+	originalRunCommand := runCommandFn
+	t.Cleanup(func() { runCommandFn = originalRunCommand })
+	runCommandFn = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte(`{"models":[
+			{"slug":"gpt-5.6-sol","display_name":"GPT-5.6-Sol","visibility":"list","supported_in_api":true,
+			 "default_reasoning_level":"low",
+			 "supported_reasoning_levels":[
+				{"effort":"low","description":"Fast responses with lighter reasoning"},
+				{"effort":"medium","description":"Balances speed and reasoning depth for everyday tasks"},
+				{"effort":"high","description":"Greater reasoning depth for complex problems"},
+				{"effort":"xhigh","description":"Extra high reasoning depth for complex problems"},
+				{"effort":"max","description":"Maximum reasoning depth for the hardest problems"},
+				{"effort":"ultra","description":"Maximum reasoning with automatic task delegation"}
+			 ],
+			 "context_window":272000,"max_context_window":1000000,"effective_context_window_percent":95}
+		]}`), nil
+	}
+
+	models, err := detectCodexModels(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("detectCodexModels: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("expected exactly 1 model, got %d: %+v", len(models), models)
+	}
+	model := models[0]
+	if model.DefaultReasoningEffort != "low" {
+		t.Fatalf("expected default_reasoning_effort=low, got %q", model.DefaultReasoningEffort)
+	}
+	wantEfforts := []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+	if !reflect.DeepEqual(model.SupportedReasoningEfforts, wantEfforts) {
+		t.Fatalf("expected supported_reasoning_efforts=%v, got %v", wantEfforts, model.SupportedReasoningEfforts)
+	}
+	if model.ContextWindowTokens != 272000 {
+		t.Fatalf("expected context_window_tokens=272000, got %d", model.ContextWindowTokens)
+	}
+	if model.MaxContextWindowTokens != 1000000 {
+		t.Fatalf("expected max_context_window_tokens=1000000, got %d", model.MaxContextWindowTokens)
 	}
 }
 

@@ -417,6 +417,7 @@ export function AgentsPanel(): React.ReactElement | null {
                   <span className={`chip ${dialog?.providerOverride === "claude" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "claude" } : null)}>✳ Claude</span>
                   <span className={`chip ${dialog?.providerOverride === "codex" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "codex" } : null)}>◎ Codex</span>
                   <span className={`chip ${dialog?.providerOverride === "gemini" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "gemini" } : null)}>◆ Gemini</span>
+                  <span className={`chip ${dialog?.providerOverride === "grok" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "grok" } : null)}>✦ Grok</span>
                 </div>
               </div>
 

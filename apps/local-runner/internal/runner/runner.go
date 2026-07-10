@@ -146,6 +146,11 @@ type Runner struct {
 	claudeMCP    *claudeMCPServer
 	mcpBaseURLMu sync.RWMutex
 	mcpBaseURL   string
+
+	// grokProcess is the single shared `grok agent stdio` process (CP-46/Task-206),
+	// bound to the active provider account scope. nil until first ensure.
+	grokProcessMu sync.Mutex
+	grokProcess   *grokProcessHandle
 }
 
 func New(workspace string) (*Runner, error) {
@@ -789,6 +794,9 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, w
 		resolvedProvider = "gemini"
 	case strings.HasPrefix(lowerModel, "claude-"):
 		resolvedProvider = "claude"
+	case strings.HasPrefix(lowerModel, "grok-"), lowerModel == "grok-build":
+		// Appended last (CP-46 P-0/Task-212 T-3): codex/gemini/claude cases above unchanged.
+		resolvedProvider = "grok"
 	case resolvedProvider == "":
 		return "", nil, "", errors.New("model or provider is required")
 	}
@@ -818,11 +826,11 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, w
 			args = append(args, "--model", cliModel)
 		}
 		if request.ReasoningEffort != "" {
-			effort := strings.ToLower(request.ReasoningEffort)
-			if effort == "xhigh" {
-				effort = "max"
-			}
-			args = append(args, "--effort", effort)
+			// No xhigh->max remap here: the claude CLI's --effort validator
+			// accepts both as distinct values (live-verified against the
+			// installed @anthropic-ai/claude-code binary, Task-215 follow-up)
+			// — see normalizeClaudeEffort's doc comment for the same finding.
+			args = append(args, "--effort", strings.ToLower(request.ReasoningEffort))
 		}
 		return "claude", args, resolvedProvider, nil
 	case "gemini":
@@ -832,6 +840,25 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, w
 		}
 		args := geminiCLIArgs(workspace, projectID, normalizeGeminiModelName(modelName), request.AllowWrite || request.YoloMode, resume, false)
 		return geminiBinaryName(), args, resolvedProvider, nil
+	case "grok":
+		// Appended last (CP-46 P-0/P-13, Task-212 T-3): the ONLY place Grok uses
+		// one-shot `grok -p/--single` instead of the ACP `agent stdio` turn loop
+		// — the summarizer/prompt-execution path, which has no session/tool/
+		// approval state to preserve. `-p, --single <PROMPT>` takes the prompt
+		// as the flag's own value (live-verified: `grok --help`), so the actual
+		// prompt text is appended by the caller (ExecutePrompt's usesPromptArg),
+		// same as Gemini's `--print <prompt>` — NOT via stdin like codex/claude.
+		// `--effort` accepts the full canonical vocabulary directly here
+		// (live-verified in docs, unlike the ACP session path which has no
+		// reasoningEffort field at all).
+		args := []string{"--output-format", "json"}
+		if modelName != "" {
+			args = append(args, "--model", modelName)
+		}
+		if request.ReasoningEffort != "" {
+			args = append(args, "--effort", strings.ToLower(strings.TrimSpace(request.ReasoningEffort)))
+		}
+		return grokBinaryName(), args, resolvedProvider, nil
 	default:
 		return "", nil, "", fmt.Errorf("provider %q is not supported", resolvedProvider)
 	}
@@ -936,9 +963,15 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	if err != nil {
 		return PromptExecutionResult{}, err
 	}
-	usesPromptArg := resolvedProvider == string(ProviderKeyGemini)
+	usesPromptArg := resolvedProvider == string(ProviderKeyGemini) || resolvedProvider == string(ProviderKeyGrok)
 	if usesPromptArg {
-		args = append(args, "--print", actualPrompt)
+		if resolvedProvider == string(ProviderKeyGrok) {
+			// Appended last (CP-46 P-0/Task-212 T-3): -p/--single takes the
+			// prompt as its own value, unlike Gemini's --print <prompt>.
+			args = append(args, "-p", actualPrompt)
+		} else {
+			args = append(args, "--print", actualPrompt)
+		}
 	}
 	if resolvedProvider == string(ProviderKeyGemini) {
 		projectID := ""
@@ -1443,6 +1476,21 @@ type codexDebugModel struct {
 	DisplayName    string `json:"display_name"`
 	Visibility     string `json:"visibility"`
 	SupportedInAPI bool   `json:"supported_in_api"`
+	// DefaultReasoningLevel/SupportedReasoningLevels/ContextWindow/
+	// MaxContextWindow (Task-215) are live-verified fields `codex debug
+	// models` already returns per model (Codex Build 0.144.1: gpt-5.6-sol
+	// carries supported_reasoning_levels up to max/ultra and
+	// context_window/max_context_window/effective_context_window_percent) —
+	// previously silently dropped because this struct didn't type them.
+	DefaultReasoningLevel    string                     `json:"default_reasoning_level"`
+	SupportedReasoningLevels []codexDebugReasoningLevel `json:"supported_reasoning_levels"`
+	ContextWindow            int64                      `json:"context_window"`
+	MaxContextWindow         int64                      `json:"max_context_window"`
+}
+
+type codexDebugReasoningLevel struct {
+	Effort      string `json:"effort"`
+	Description string `json:"description"`
 }
 
 type mcpBackendSpec struct {
@@ -1496,6 +1544,25 @@ func providerSpecs() []providerSpec {
 			InstallHint: "Install Antigravity CLI, start agy to sign in, and refresh the runner inventory.",
 			Models:      defaultGeminiProviderModels(),
 		},
+		{
+			// Appended last (CP-46 P-0/Task-210 T-1): codex/claude/gemini specs above
+			// unchanged. BinaryName is overridable via FLOWPILOT_GROK_BIN
+			// (grokBinaryName, grok_process.go) for machines where an unrelated
+			// third-party `grok` tool shadows the real xAI Grok Build CLI on PATH
+			// (observed live during Task-206 authoring).
+			Key:         "grok",
+			Label:       "Grok",
+			BinaryName:  "grok",
+			InstallHint: "Install Grok Build (irm https://x.ai/cli/install.ps1 | iex on Windows, curl -fsSL https://x.ai/cli/install.sh | sh on mac/linux), log in, and restart the runner.",
+			Models:      defaultGrokProviderModels(),
+		},
+	}
+}
+
+func defaultGrokProviderModels() []ProviderModel {
+	return []ProviderModel{
+		{ID: "grok-4.5", DisplayName: "Grok 4.5", Source: "registry"},
+		{ID: "grok-build", DisplayName: "Grok Build", Source: "registry"},
 	}
 }
 
@@ -1593,8 +1660,123 @@ func resolveProviderModels(ctx context.Context, spec providerSpec, binaryPath st
 			return models
 		}
 	}
+	if spec.Key == "grok" {
+		// Appended last (CP-46 P-0/Task-213 T-2): codex/gemini branches above
+		// unchanged.
+		if models, err := detectGrokModels(); err == nil && len(models) > 0 {
+			return models
+		}
+	}
 
 	return spec.Models
+}
+
+// grokModelsCacheEntry mirrors one value in ~/.grok/models_cache.json's
+// "models" map (live-verified shape, Grok Build 0.2.93, Task-213 authoring;
+// SupportsReasoningEffort/ReasoningEffort/ReasoningEfforts/ContextWindow
+// added Task-215 — live-verified present on the same entries but previously
+// untyped/dropped).
+type grokModelsCacheEntry struct {
+	Info struct {
+		ID                      string                       `json:"id"`
+		Name                    string                       `json:"name"`
+		Hidden                  bool                         `json:"hidden"`
+		SupportedInAPI          bool                         `json:"supported_in_api"`
+		ContextWindow           int64                        `json:"context_window"`
+		SupportsReasoningEffort bool                         `json:"supports_reasoning_effort"`
+		ReasoningEffort         string                       `json:"reasoning_effort"`
+		ReasoningEfforts        []grokModelsCacheEffortEntry `json:"reasoning_efforts"`
+	} `json:"info"`
+}
+
+type grokModelsCacheEffortEntry struct {
+	ID      string `json:"id"`
+	Value   string `json:"value"`
+	Label   string `json:"label"`
+	Default bool   `json:"default"`
+}
+
+type grokModelsCachePayload struct {
+	Models map[string]grokModelsCacheEntry `json:"models"`
+}
+
+// grokModelsCachePath resolves ~/.grok/models_cache.json (or $GROK_HOME/
+// models_cache.json when set), the file the real Grok Build CLI itself writes
+// after every successful model-list fetch (verified live: fetched_at/
+// grok_version/origin/etag + the models map). Detection reads this cached
+// snapshot rather than spawning the CLI, so it works offline and never
+// triggers the ambient-MCP-scan hazard (CP-46 R-1).
+func grokModelsCachePath() string {
+	if grokHome := strings.TrimSpace(os.Getenv("GROK_HOME")); grokHome != "" {
+		return filepath.Join(grokHome, "models_cache.json")
+	}
+	if home := preferredUserHomeDir(); home != "" {
+		return filepath.Join(home, ".grok", "models_cache.json")
+	}
+	return ""
+}
+
+// detectGrokModels reads the live model catalog Grok Build itself cached
+// (Task-213 T-5), filtering out hidden/unsupported entries. Returns an error
+// (never a partial/fabricated list) when the cache is missing or unreadable
+// so resolveProviderModels falls back to the static default list, exactly
+// like detectCodexModels/detectGeminiModels degrade on failure.
+func detectGrokModels() ([]ProviderModel, error) {
+	path := grokModelsCachePath()
+	if path == "" {
+		return nil, fmt.Errorf("grok models cache: unable to resolve home directory")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var payload grokModelsCachePayload
+	if err := json.Unmarshal(stripUTF8BOM(raw), &payload); err != nil {
+		return nil, err
+	}
+
+	models := make([]ProviderModel, 0, len(payload.Models))
+	for id, entry := range payload.Models {
+		if entry.Info.Hidden || !entry.Info.SupportedInAPI {
+			continue
+		}
+		modelID := strings.TrimSpace(entry.Info.ID)
+		if modelID == "" {
+			modelID = strings.TrimSpace(id)
+		}
+		if modelID == "" {
+			continue
+		}
+		displayName := strings.TrimSpace(entry.Info.Name)
+		if displayName == "" {
+			displayName = modelID
+		}
+
+		model := ProviderModel{
+			ID:                  modelID,
+			DisplayName:         displayName,
+			Source:              "grok_models_cache",
+			ContextWindowTokens: entry.Info.ContextWindow,
+		}
+		if entry.Info.SupportsReasoningEffort {
+			efforts := make([]string, 0, len(entry.Info.ReasoningEfforts))
+			for _, level := range entry.Info.ReasoningEfforts {
+				effort := strings.ToLower(strings.TrimSpace(level.Value))
+				if effort != "" {
+					efforts = append(efforts, effort)
+				}
+			}
+			model.SupportedReasoningEfforts = efforts
+			model.DefaultReasoningEffort = strings.ToLower(strings.TrimSpace(entry.Info.ReasoningEffort))
+		}
+		models = append(models, model)
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+
+	if len(models) == 0 {
+		return nil, fmt.Errorf("grok models cache: no supported models found in %s", path)
+	}
+	return models, nil
 }
 
 func detectCodexModels(ctx context.Context, binaryPath string) ([]ProviderModel, error) {
@@ -1622,10 +1804,22 @@ func detectCodexModels(ctx context.Context, binaryPath string) ([]ProviderModel,
 			displayName = model.Slug
 		}
 
+		efforts := make([]string, 0, len(model.SupportedReasoningLevels))
+		for _, level := range model.SupportedReasoningLevels {
+			effort := strings.ToLower(strings.TrimSpace(level.Effort))
+			if effort != "" {
+				efforts = append(efforts, effort)
+			}
+		}
+
 		models = append(models, ProviderModel{
-			ID:          model.Slug,
-			DisplayName: displayName,
-			Source:      "codex_debug_models",
+			ID:                        model.Slug,
+			DisplayName:               displayName,
+			Source:                    "codex_debug_models",
+			SupportedReasoningEfforts: efforts,
+			DefaultReasoningEffort:    strings.ToLower(strings.TrimSpace(model.DefaultReasoningLevel)),
+			ContextWindowTokens:       model.ContextWindow,
+			MaxContextWindowTokens:    model.MaxContextWindow,
 		})
 	}
 
@@ -1793,6 +1987,13 @@ func defaultAuthCandidates(providerKey, dir string) []authCandidate {
 			{homePath: dir, authPath: filepath.Join(dir, ".gemini", "oauth_creds.json")},
 			{homePath: dir, authPath: filepath.Join(dir, "gemini", "oauth_creds.json")},
 		}
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-5): other cases above unchanged.
+		// Live-verified: ~/.grok/auth.json (map keyed by "issuer::userId").
+		return []authCandidate{
+			{homePath: filepath.Join(dir, ".grok"), authPath: filepath.Join(dir, ".grok", "auth.json")},
+			{homePath: filepath.Join(dir, "grok"), authPath: filepath.Join(dir, "grok", "auth.json")},
+		}
 	default:
 		return nil
 	}
@@ -1818,6 +2019,13 @@ func accountAuthPaths(providerKey, homePath string) []string {
 			filepath.Join(homePath, ".gemini", "oauth_creds.json"),
 			filepath.Join(homePath, "gemini", "oauth_creds.json"),
 		}
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-5). A managed grok GROK_HOME's
+		// auth.json lives directly at its root (mirrors ~/.grok/auth.json).
+		return []string{
+			filepath.Join(homePath, "auth.json"),
+			filepath.Join(homePath, ".grok", "auth.json"),
+		}
 	default:
 		return nil
 	}
@@ -1842,6 +2050,10 @@ func hasValidProviderAuthFile(providerKey, path string) bool {
 		return claudeAuthFileLooksValid(data)
 	case "gemini":
 		return strings.Contains(content, `"access_token"`) || strings.Contains(content, `"refresh_token"`)
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-5). Live-verified field names in
+		// ~/.grok/auth.json entries: refresh_token/email.
+		return strings.Contains(content, `"refresh_token"`) && strings.Contains(content, `"email"`)
 	default:
 		return false
 	}
@@ -1908,6 +2120,10 @@ func providerAuthStatus(spec providerSpec) string {
 		if hasAnyEnv("GOOGLE_API_KEY", "GEMINI_API_KEY") || hasLocalAuth("gemini") || hasGeminiAntigravityConfig() {
 			return "READY"
 		}
+	case "grok":
+		if hasAnyEnv("XAI_API_KEY") || hasLocalAuth("grok") {
+			return "READY"
+		}
 	}
 
 	return "AUTH_REQUIRED"
@@ -1960,6 +2176,15 @@ func providerInstallCommand(spec providerSpec) (string, []string, error) {
 			return "sh", []string{"-c", "curl -fsSL https://antigravity.google/cli/install.sh | bash"}, nil
 		case "windows":
 			return "cmd", []string{"/c", "curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd"}, nil
+		default:
+			return "", nil, fmt.Errorf("%s install is not supported on %s", spec.Label, runtime.GOOS)
+		}
+	case "grok":
+		switch runtime.GOOS {
+		case "darwin", "linux":
+			return "sh", []string{"-c", "curl -fsSL https://x.ai/cli/install.sh | sh"}, nil
+		case "windows":
+			return "powershell", []string{"-NoProfile", "-Command", "irm https://x.ai/cli/install.ps1 | iex"}, nil
 		default:
 			return "", nil, fmt.Errorf("%s install is not supported on %s", spec.Label, runtime.GOOS)
 		}
@@ -3477,6 +3702,11 @@ func (r *Runner) AuthenticateProvider(ctx context.Context, providerName string) 
 		authCommand = "claude auth login"
 	case "gemini":
 		authCommand = "agy"
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-4). `grok login --device-auth` is
+		// the headless/managed-home variant; StartInteractiveAuth below routes
+		// through that for non-default-slot accounts.
+		authCommand = "grok login"
 	default:
 		return fmt.Errorf("no auth command configured for provider %q", providerName)
 	}
@@ -3569,7 +3799,7 @@ func (r *Runner) getEnvForExecution(
 			continue
 		}
 		key := parts[0]
-		if key == "HOME" || key == "USERPROFILE" || key == "APPDATA" || key == "LOCALAPPDATA" || key == "HOMEPATH" || key == "HOMEDRIVE" || key == "XDG_CONFIG_HOME" || key == "CODEX_HOME" || key == "HTTP_PROXY" || key == "HTTPS_PROXY" {
+		if key == "HOME" || key == "USERPROFILE" || key == "APPDATA" || key == "LOCALAPPDATA" || key == "HOMEPATH" || key == "HOMEDRIVE" || key == "XDG_CONFIG_HOME" || key == "CODEX_HOME" || key == "GROK_HOME" || key == "HTTP_PROXY" || key == "HTTPS_PROXY" {
 			continue
 		}
 		if _, exists := customEnv[key]; exists {
@@ -3585,6 +3815,11 @@ func (r *Runner) getEnvForExecution(
 	switch strings.ToLower(providerKey) {
 	case "codex":
 		newEnv = append(newEnv, fmt.Sprintf("CODEX_HOME=%s", trimmedAccountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", trimmedAccountHomePath))
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-3): codex case above unchanged.
+		newEnv = append(newEnv, fmt.Sprintf("GROK_HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", trimmedAccountHomePath))
 	default:
@@ -3652,6 +3887,9 @@ func NextAccountHomePath(providerKey string, existing []string) (string, int, er
 		prefix = ".claudeHome"
 	case "gemini":
 		prefix = ".geminiHome"
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-2).
+		prefix = ".grokHome"
 	default:
 		return "", 0, fmt.Errorf("unsupported provider %q", providerKey)
 	}
@@ -3701,6 +3939,16 @@ func (r *Runner) StartInteractiveAuth(providerKey string, accountHomePath string
 		authCommand = fmt.Sprintf("%s login", authInvocation)
 	case "gemini":
 		authCommand = authInvocation
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-4). A managed (.grokHomeN) slot
+		// uses the headless device-auth flow so the fresh GROK_HOME isolates
+		// cleanly without borrowing the default home's browser session
+		// (CP-46 Q-6); slot 0 (~/.grok) uses the normal interactive login.
+		if prefix, ok := managedProviderHomePrefix("grok"); ok && strings.HasPrefix(filepath.Base(accountHomePath), prefix) {
+			authCommand = fmt.Sprintf("%s login --device-auth", authInvocation)
+		} else {
+			authCommand = fmt.Sprintf("%s login", authInvocation)
+		}
 	default:
 		return fmt.Errorf("provider %s does not support interactive CLI login", providerKey)
 	}
@@ -3739,6 +3987,9 @@ func providerEnvSetCommand(providerKey, homePath, shellType string) string {
 		switch strings.ToLower(providerKey) {
 		case "codex":
 			return fmt.Sprintf("export CODEX_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath, homePath)
+		case "grok":
+			// Appended last (CP-46 P-0/Task-210 T-3).
+			return fmt.Sprintf("export GROK_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath, homePath)
 		default:
 			return fmt.Sprintf("export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath)
 		}
@@ -3747,6 +3998,13 @@ func providerEnvSetCommand(providerKey, homePath, shellType string) string {
 		case "codex":
 			return strings.Join([]string{
 				fmt.Sprintf("set CODEX_HOME=%s", homePath),
+				fmt.Sprintf("set HOME=%s", homePath),
+				fmt.Sprintf("set USERPROFILE=%s", homePath),
+			}, "\r\n")
+		case "grok":
+			// Appended last (CP-46 P-0/Task-210 T-3).
+			return strings.Join([]string{
+				fmt.Sprintf("set GROK_HOME=%s", homePath),
 				fmt.Sprintf("set HOME=%s", homePath),
 				fmt.Sprintf("set USERPROFILE=%s", homePath),
 			}, "\r\n")

@@ -70,7 +70,7 @@ func TestEnsureCodexAppServerInitializes(t *testing.T) {
 func TestProviderRegistryForUsesFakeWhenFlagOff(t *testing.T) {
 	r, _ := New(".")
 	reg := ProviderRegistryFor(r) // flag off by default
-	adapter, err := reg.Adapter(ProviderKeyCodex)
+	adapter, err := reg.Adapter(ProviderKeyCodex, "", "")
 	if err != nil {
 		t.Fatalf("codex adapter: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestProviderRegistryForUsesLiveWhenFlagOn(t *testing.T) {
 	defer mockCodexInitProcess(t)()
 	r, _ := New(".")
 	reg := ProviderRegistryFor(r)
-	adapter, err := reg.Adapter(ProviderKeyCodex)
+	adapter, err := reg.Adapter(ProviderKeyCodex, "", "")
 	if err != nil {
 		t.Fatalf("codex adapter: %v", err)
 	}

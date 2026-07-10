@@ -13,6 +13,9 @@ const (
 	ProviderKeyCodex  ProviderKey = "codex"
 	ProviderKeyClaude ProviderKey = "claude"
 	ProviderKeyGemini ProviderKey = "gemini"
+	// ProviderKeyGrok is Grok Build over ACP (CP-46). Appended last — existing
+	// cases/order are unchanged (CP-46 P-0 base-regression guard).
+	ProviderKeyGrok ProviderKey = "grok"
 )
 
 // RunStatus mirrors the client-facing RunStatus set (04-01) — the user-facing

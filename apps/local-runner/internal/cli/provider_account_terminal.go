@@ -396,8 +396,152 @@ func loadAccountLaunchMetadata(account runner.ProviderAccount) (accountLaunchMet
 		return loadClaudeAccountMetadata(account.HomePath), nil
 	case "gemini":
 		return loadGeminiAccountMetadata(account.HomePath)
+	case "grok":
+		// Appended last (CP-46 P-0/Task-210 T-9): codex/claude/gemini cases above unchanged.
+		return loadGrokAccountMetadata(account.HomePath)
 	default:
 		return accountLaunchMetadata{}, nil
+	}
+}
+
+// grokAuthEntry is one value in ~/.grok/auth.json, which is keyed by
+// "<oidcIssuer>::<userId>" (live-verified structure, CP-46/Task-210
+// authoring). CP-46 Q-5/Task-210 Q-1 originally concluded Grok exposes no
+// machine-readable quota/usage endpoint (only the turn-time 402
+// personal-team-blocked:spending-limit signal, isProviderUsageLimitError in
+// interactive_service.go) — that was based solely on the ACP JSON-RPC
+// stream. Task-216 corrects it: the `key` field below is the same cached
+// OAuth bearer token Grok Build's own `/usage` TUI command uses, and
+// loadGrokQuota calls the real billing endpoint behind it (live-verified).
+type grokAuthEntry struct {
+	Email     string `json:"email"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	TeamID    string `json:"team_id"`
+	Key       string `json:"key"`
+}
+
+// grokCLIChatProxyBaseURL is Grok Build's own backend base URL, overridable
+// via GROK_CLI_CHAT_PROXY_BASE_URL (live-verified string in the installed
+// `grok` binary, Task-216). The billing/usage route lives under it.
+const grokCLIChatProxyBaseURL = "https://cli-chat-proxy.grok.com/v1"
+
+type grokBillingValue struct {
+	Val float64 `json:"val"`
+}
+
+// grokBillingConfig mirrors GET {grokCLIChatProxyBaseURL}/billing's `config`
+// object (live-verified response shape, Task-216). Grok bills either a
+// monthly or a weekly cycle depending on plan (the binary's `BillingCycle`
+// enum has both variants); only one of MonthlyLimit/WeeklyLimit is expected
+// to be present on any given account.
+type grokBillingConfig struct {
+	MonthlyLimit     *grokBillingValue `json:"monthlyLimit"`
+	WeeklyLimit      *grokBillingValue `json:"weeklyLimit"`
+	Used             *grokBillingValue `json:"used"`
+	BillingPeriodEnd string            `json:"billingPeriodEnd"`
+}
+
+type grokBillingResponse struct {
+	Config grokBillingConfig `json:"config"`
+}
+
+func loadGrokAccountMetadata(homePath string) (accountLaunchMetadata, error) {
+	authPath := firstExistingPath(filepath.Join(homePath, "auth.json"))
+	metadata := accountLaunchMetadata{authStorePath: homePath}
+	if authPath == "" {
+		return metadata, nil
+	}
+
+	var raw map[string]grokAuthEntry
+	if err := readJSONFile(authPath, &raw); err != nil {
+		return metadata, nil
+	}
+	for _, entry := range raw {
+		metadata.accountEmail = entry.Email
+		if name := strings.TrimSpace(entry.FirstName + " " + entry.LastName); name != "" {
+			metadata.accountName = name
+		}
+		if entry.TeamID != "" {
+			metadata.usageSummary = "Team " + entry.TeamID
+		} else {
+			metadata.usageSummary = "Personal"
+		}
+		if line := loadGrokQuota(entry.Key); line != nil {
+			metadata.usageDetailLines = append(metadata.usageDetailLines, *line)
+		}
+		break // a single active auth entry is expected per home
+	}
+	return metadata, nil
+}
+
+// loadGrokQuota calls the same billing endpoint Grok Build's `/usage` TUI
+// command uses, authenticated with the account's cached OAuth bearer token
+// (live-verified 2026-07-10, Task-216 — corrects CP-46 Q-5/Task-210 Q-1).
+func loadGrokQuota(bearerToken string) *usageDetailLine {
+	token := strings.TrimSpace(bearerToken)
+	if token == "" {
+		return nil
+	}
+
+	request, err := http.NewRequest(http.MethodGet, grokCLIChatProxyBaseURL+"/billing", nil)
+	if err != nil {
+		return nil
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Accept", "application/json")
+
+	response, err := httpClient().Do(request)
+	if err != nil {
+		return nil
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil
+	}
+
+	var billing grokBillingResponse
+	if err := json.NewDecoder(response.Body).Decode(&billing); err != nil {
+		return nil
+	}
+
+	return grokQuotaFromBilling(billing)
+}
+
+// grokQuotaFromBilling is the pure mapping half of loadGrokQuota, split out
+// so tests can exercise it against a captured response fixture without a
+// live network call (mirrors codexQuotaFromWindow's split).
+//
+// Labeled "Team Credits", not "Weekly limit": this endpoint reports the
+// account's shared billing/credit pool (Task-216). Live-testing against a
+// SuperGrok account (2026-07-10) showed the CLI's own `/usage`-style status
+// line ("Weekly limit: 1%", resets weekly) is a DIFFERENT, still-unlocated
+// metric — the personal SuperGrok included-usage allowance — not derivable
+// from this /billing response. Do not rename this label to "Weekly limit"
+// until that second endpoint is found and confirmed (tracked as a Task-216
+// follow-up); doing so would misrepresent which quota is being shown.
+func grokQuotaFromBilling(billing grokBillingResponse) *usageDetailLine {
+	limit := billing.Config.MonthlyLimit
+	label := "Team Credits (Monthly)"
+	if limit == nil {
+		limit = billing.Config.WeeklyLimit
+		label = "Team Credits (Weekly)"
+	}
+	if limit == nil || limit.Val <= 0 || billing.Config.Used == nil {
+		return nil
+	}
+
+	remaining := clampInt(int(100 - (billing.Config.Used.Val/limit.Val)*100))
+	resetAt := ""
+	if parsed, err := time.Parse(time.RFC3339, billing.Config.BillingPeriodEnd); err == nil {
+		resetAt = parsed.UTC().Format(time.RFC3339)
+	}
+
+	return &usageDetailLine{
+		label:            label,
+		remainingPercent: remaining,
+		resetAt:          resetAt,
 	}
 }
 

@@ -5,12 +5,12 @@
 - Document ID: `Task-206`
 - Title: `Grok ACP Transport And Process/Dispatcher`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
-- Last Updated: `2026-07-09`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/todo/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md)
+- Last Updated: `2026-07-10`
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md)
 - Child Documents: `None`
 - Related Documents: [Task-164: Gemini ACP Transport Extraction](../done/Task-164-Gemini-ACP-Transport-Extraction.md), [05 - Codex AppServer Migration Detail](../../10-Refactor/New-System/05-Codex-AppServer-Migration-Detail.md)
 - Replaces: `None`
@@ -98,14 +98,14 @@ CP-46 requires a Grok-specific process/transport layer before any adapter work c
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` Typed structs exist for every message class captured live and round-trip through JSON without loss.
-- [ ] `DOD-2` Shared ACP primitives are extracted; Gemini's test suite is unchanged and green.
-- [ ] `DOD-3` `grokDispatcher` multiplexes multiple concurrent sessions over one stdio pipe in a test.
-- [ ] `DOD-4` `ensureGrokProcess` reuses an existing handle for a matching `scopeKey` and tears down + respawns on mismatch.
-- [ ] `DOD-5` Process launch always disables ambient MCP compat scanning; a test asserts the env vars are present.
-- [ ] `DOD-6` A redaction test proves credential-shaped fields never reach the log sink unmasked.
-- [ ] `DOD-7` The Grok resume request shape (`session/load` vs `x.ai/*`) is probed live, documented, and captured as a fixture (unblocks Task-207 `T-4`).
-- [ ] `DOD-8` **Base-regression (`P-0`):** `gemini_acp_transport.go` is unchanged (git diff empty for that file); the full Gemini test suite passes unchanged; no Codex/Claude process file is modified.
+- [x] `DOD-1` Typed structs exist for every message class captured live and round-trip through JSON without loss. (`grok_acp_types.go`; round-trip exercised via `grok_process_test.go` golden fixtures + `grokContextWindowFromInit`.)
+- [x] `DOD-2` Shared ACP primitives are extracted; Gemini's test suite is unchanged and green. (Per `T-3`, "extracted" means shape-COPIED into a standalone `grok_acp.go`, not refactored out of `gemini_acp_transport.go` — that file has zero diff. Gemini's own test suite is unaffected.)
+- [x] `DOD-3` `grokDispatcher` multiplexes multiple concurrent sessions over one stdio pipe in a test. (`TestGrokDispatcherMultiplexesConcurrentSessions`.)
+- [x] `DOD-4` `ensureGrokProcess` reuses an existing handle for a matching `scopeKey` and tears down + respawns on mismatch. (`TestEnsureGrokProcessInitializes`.)
+- [x] `DOD-5` Process launch always disables ambient MCP compat scanning; a test asserts the env vars are present. (`TestGrokProcessEnvDisablesAmbientMCPScanning`. Live-verified caveat: these two flags do NOT suppress Grok's own marketplace-plugin MCP auto-install — see CP-46 §10.2.)
+- [x] `DOD-6` A redaction test proves credential-shaped fields never reach the log sink unmasked. (`TestRedactGrokFrameForLogStripsCredentialShapedFields`.)
+- [x] `DOD-7` The Grok resume request shape (`session/load` vs `x.ai/*`) is probed live, documented, and captured as a fixture (unblocks Task-207 `T-4`). **Live-verified (2026-07-10, real logged-in account):** `session/load{sessionId,cwd,mcpServers}` is confirmed as the real, ACP-standard resume shape — `TestLiveRealGrokChatStreamAndResume` issues it against a real `grok agent stdio` process and the resumed turn correctly recalls turn-1 context. Live probing also surfaced a real shape gap the original ACP-spec-only implementation missed: `session/load`'s response nests `sessionId` under `result._meta.sessionId`, not top-level like `session/new` — fixed in `grokACPResponseSessionID` (see Task-207 `DOD-6`).
+- [x] `DOD-8` **Base-regression (`P-0`):** `gemini_acp_transport.go` is unchanged (git diff empty for that file); the full Gemini test suite passes unchanged; no Codex/Claude process file is modified.
 
 ## 7. Out of Scope
 

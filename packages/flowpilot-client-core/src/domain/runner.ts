@@ -10,11 +10,15 @@ export interface CompatVersionInfo {
   installedClaudeVersion: string;
   testedCodexVersion: string;
   installedCodexVersion: string;
+  // Appended last (CP-46 P-0/Task-211 T-10).
+  testedGrokVersion: string;
+  installedGrokVersion: string;
 }
 
 export interface CompatConfig {
   testedClaudeVersion: string;
   testedCodexVersion: string;
+  testedGrokVersion: string;
 }
 
 export interface CompatItem {

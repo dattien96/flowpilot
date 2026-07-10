@@ -15,6 +15,7 @@
   --codex-brand: #e0e0e0;
   --claude-brand: #e17554;
   --gemini-brand: #7c6ff0;
+  --grok-brand: #ff6b4a;
   --role-main: #4c8dff;
   --role-coder: #3fb950;
   --role-reviewer: #b07cff;
@@ -3669,6 +3670,7 @@ input {
 .provider-chip-codex .provider-chip-icon { color: var(--codex-brand); }
 .provider-chip-claude .provider-chip-icon { color: var(--claude-brand); }
 .provider-chip-gemini .provider-chip-icon { color: var(--gemini-brand); }
+.provider-chip-grok .provider-chip-icon { color: var(--grok-brand); }
 .provider-chip-codex.provider-chip-selected {
   border-color: var(--codex-brand);
   background: rgba(224, 224, 224, 0.07);
@@ -3684,6 +3686,11 @@ input {
   background: rgba(124, 111, 240, 0.09);
 }
 .provider-chip-gemini.provider-chip-selected .provider-chip-name { color: var(--gemini-brand); }
+.provider-chip-grok.provider-chip-selected {
+  border-color: var(--grok-brand);
+  background: rgba(255, 107, 74, 0.09);
+}
+.provider-chip-grok.provider-chip-selected .provider-chip-name { color: var(--grok-brand); }
 .chat-controller-switch {
   align-content: start;
 }

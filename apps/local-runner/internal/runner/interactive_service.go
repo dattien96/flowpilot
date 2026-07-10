@@ -2828,19 +2828,29 @@ func (s *InteractiveService) clearPendingQuestion(id string) {
 	}
 }
 
+// resolveTurnModelAndEffort applies this turn's model/reasoning-effort override
+// onto the run-level default (BUG-063) — the single source of truth used both
+// before the adapter is constructed (startTurn, so Grok's process-launch-time
+// model selection sees the right value) and when building TurnRequest (runTurn).
+func resolveTurnModelAndEffort(rs *interactiveRun, in TurnInput) (model, effort string) {
+	effort = rs.reasoningEffort
+	if in.ReasoningEffort != "" {
+		effort = in.ReasoningEffort
+	}
+	model = rs.modelName
+	if in.Model != nil {
+		model = *in.Model
+	}
+	return model, effort
+}
+
 func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, adapter ProviderRuntimeAdapter, in TurnInput, scenario, turnID string, capturedCtx []string) {
 	// Turn-level model/reasoning/YOLO override the run-level defaults when supplied
 	// (BUG-063). Chat mode resends these every turn so they can change between prompts;
 	// the providers re-apply them per turn (Codex thread/start per turn, Claude spawn-per-
-	// turn). A nil pointer means "not supplied" and keeps the run-level default.
-	effort := rs.reasoningEffort
-	if in.ReasoningEffort != "" {
-		effort = in.ReasoningEffort
-	}
-	model := rs.modelName
-	if in.Model != nil {
-		model = *in.Model
-	}
+	// turn, Grok respawn-per-turn). A nil pointer means "not supplied" and keeps the
+	// run-level default.
+	model, effort := resolveTurnModelAndEffort(rs, in)
 	yolo := rs.yolo
 	if in.YoloMode != nil {
 		yolo = *in.YoloMode
@@ -2902,6 +2912,11 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		toolWorkspace = s.runner.workspace
 	}
 	logComposedPrompt(toolWorkspace, rs.projectID, rs.id, turnID, providerPrompt)
+	// Chat-mode parity with Flow mode's flowDiagLog: persist the actual
+	// provider/model/reasoning/cwd/yolo values passed for this turn, not just
+	// the prompt — needed to diagnose provider-side failures (e.g. a bad cwd)
+	// without guessing what was actually sent.
+	logTurnProviderParams(toolWorkspace, rs.projectID, rs.id, turnID, string(rs.providerKey), model, effort, rs.workspaceCwd, yolo)
 	req := TurnRequest{
 		RunID:                  rs.id,
 		StepID:                 in.StepID,
@@ -3089,7 +3104,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 
 func (s *InteractiveService) shouldInjectFeatureHistory(providerKey ProviderKey) bool {
 	switch providerKey {
-	case ProviderKeyCodex, ProviderKeyClaude, ProviderKeyGemini:
+	case ProviderKeyCodex, ProviderKeyClaude, ProviderKeyGemini, ProviderKeyGrok:
 		return true
 	default:
 		return false
@@ -3184,7 +3199,13 @@ func isProviderUsageLimitError(err error) bool {
 		strings.Contains(message, "out of credits") ||
 		strings.Contains(message, "out_of_credits") ||
 		strings.Contains(message, "quota reset") ||
-		strings.Contains(message, "rate limit")
+		strings.Contains(message, "rate limit") ||
+		// Grok Build (CP-46/Task-210, GR-19): live-observed 402 signature during
+		// CP-46 authoring. Appended additively; other providers' classification
+		// above is unchanged.
+		strings.Contains(message, "personal-team-blocked") ||
+		strings.Contains(message, "spending-limit") ||
+		strings.Contains(message, "spending_limit")
 }
 
 // finishTurn does the locked post-turn bookkeeping: clears in-flight state, emits
@@ -3209,6 +3230,11 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 	case errors.Is(err, errApprovalExpired) || errors.Is(err, errQuestionExpired):
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: err.Error(), Recoverable: true})
 	default:
+		// This EventTurnFailed only ever reached the UI's event stream, never
+		// runner.log — diagnosing a failed turn required reproducing it live.
+		// Logging the terminal error here (alongside logTurnProviderParams'
+		// model/reasoning/cwd/yolo) makes the failure reason findable after the fact.
+		log.Printf("[turn-failed] run=%s turn=%s provider=%s error=%q", rs.id, turnID, rs.providerKey, err.Error())
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: err.Error(), Recoverable: false})
 	}
 	return false, finalizeInput{}
@@ -3280,7 +3306,11 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		return "", newAPIErr(http.StatusBadRequest, "invalid_request", "stepId is required")
 	}
 
-	adapter, aerr := s.registry.Adapter(rs.providerKey)
+	// Resolved here (not just in runTurn) so a provider whose adapter construction
+	// is model-dependent (Grok — see ProviderRegistration.newAdapterForTurn) gets
+	// the right value at construction time, not just when TurnRequest is built.
+	turnModel, turnEffort := resolveTurnModelAndEffort(rs, in)
+	adapter, aerr := s.registry.Adapter(rs.providerKey, turnModel, turnEffort)
 	if aerr != nil {
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusBadRequest, "provider_unavailable", aerr.Error())
@@ -3779,6 +3809,9 @@ func defaultModelForProvider(key ProviderKey) string {
 		return "gpt-5.4-mini"
 	case ProviderKeyClaude:
 		return "sonnet"
+	case ProviderKeyGrok:
+		// Appended last (CP-46 P-0/Task-209 T-11): codex/claude cases above unchanged.
+		return "grok-4.5"
 	default:
 		return ""
 	}

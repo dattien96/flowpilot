@@ -368,7 +368,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 
 				defaults := make([]map[string]string, 0, 3)
-				for _, providerKey := range []string{"codex", "claude", "gemini"} {
+				for _, providerKey := range []string{"codex", "claude", "gemini", "grok"} {
 					homePath, ok := runner.DetectDefaultAccountHomePath(providerKey)
 					if !ok {
 						continue
@@ -389,7 +389,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 
 				defaults := make([]map[string]string, 0, 3)
-				for _, providerKey := range []string{"codex", "claude", "gemini"} {
+				for _, providerKey := range []string{"codex", "claude", "gemini", "grok"} {
 					homePath, ok := runner.DetectDefaultAccountHomePath(providerKey)
 					if !ok {
 						continue

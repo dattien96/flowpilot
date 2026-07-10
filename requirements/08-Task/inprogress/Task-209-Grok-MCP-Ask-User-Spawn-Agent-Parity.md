@@ -5,12 +5,12 @@
 - Document ID: `Task-209`
 - Title: `Grok MCP, Ask-User, And Spawn-Agent Parity`
 - Phase: `task`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
-- Last Updated: `2026-07-09`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/todo/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-208: Grok Permission Channel And YOLO Posture](./Task-208-Grok-Permission-Channel-And-Yolo-Posture.md)
+- Last Updated: `2026-07-10`
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-208: Grok Permission Channel And YOLO Posture](./Task-208-Grok-Permission-Channel-And-Yolo-Posture.md)
 - Child Documents: `None`
 - Related Documents: [SD-16: Agent Spawn And Tool Calling Design](../../06-System-Tech-Design/SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [Task-055: Fix Claude Ask User Live Flow](../done/Task-055-Fix-Claude-Ask-User-Live-Flow.md), [Task-056: Fix Codex Ask User Live Flow](../done/Task-056-Fix-Codex-Ask-User-Live-Flow.md), [BUG-128: Inconsistent Agent Spawn Prompt Composition Across Providers](../done/BUG-128-Inconsistent-Agent-Spawn-Prompt-Composition-Across-Providers.md), [CP-29: MCP Proxy Google Drive](../../07-Coding-Plan/done/CP-29-MCP-Proxy-Google-Drive.md)
 - Replaces: `None`
@@ -99,17 +99,17 @@ Task-208 makes tool-call gating safe; this task adds the actual FlowPilot-owned 
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` `ask_user` works end to end for Grok through the shared bridge/question-card contract.
-- [ ] `DOD-2` `spawn_agent` works end to end for Grok with both wait modes and correct child persistence/panel visibility.
-- [ ] `DOD-3` Google Drive (or another configured external MCP server) is visible to Grok in the same turn as FlowPilot tools, or is explicitly and honestly marked unsupported.
-- [ ] `DOD-4` `OfferReviewOutcomeTool` gating parity is implemented and tested.
-- [ ] `DOD-5` Spawn-prompt composition parity test passes against Codex/Claude baselines.
-- [ ] `DOD-6` MCP-ready gate withholds the prompt until FlowPilot tools connect; slow init still yields `ask_user`/`spawn_agent` on turn 1 (`GR-30`, BUG-114).
-- [ ] `DOD-7` Resumed Grok turns re-attach `mcpServers` + permission channel; gated tool + `ask_user` work after resume (`GR-31`, BUG-087).
-- [ ] `DOD-8` FlowPilot tool names do not collide with native `spawn_subagent`/`ask_user_question`; normalized at the UI boundary (`GR-07`, BUG-124).
-- [ ] `DOD-9` UI-initiated child spawn emits `EventAgentSpawnedByUser` and injects into the Grok parent's next turn (`GR-22`, BUG-121).
-- [ ] `DOD-10` `defaultModelForProvider("grok")` returns a valid default; cross-provider spawn onto Grok with no model does not fail (additive edit).
-- [ ] `DOD-11` **Base-regression (`P-0`):** shared `claudeMCP`/`agent_orchestrator`/`defaultModelForProvider` are reused/appended-only; Codex/Claude MCP + spawn_agent tests remain green and unchanged.
+- [ ] `DOD-1` `ask_user` works end to end for Grok through the shared bridge/question-card contract. **Not independently verified.** Wiring reuses the exact same `claudeMCPServer`/tool defs Claude/Codex already use (never mutated), so it should work once Grok actually calls `tools/call` on the endpoint — but no live or fake-transport test drives an actual `ask_user` tool call through this adapter.
+- [ ] `DOD-2` `spawn_agent` works end to end for Grok with both wait modes and correct child persistence/panel visibility. **Not independently verified**, same reasoning as DOD-1.
+- [x] `DOD-3` Google Drive (or another configured external MCP server) is visible to Grok in the same turn as FlowPilot tools, or is explicitly and honestly marked unsupported. (`TestGrokAdapterBuildsMcpServersArrayAndRegistersBridge` proves both entries land in the ACP `mcpServers[]` array sent to `session/new`.)
+- [ ] `DOD-4` `OfferReviewOutcomeTool` gating parity is implemented and tested. **Implemented** (`req.OfferReviewOutcomeTool` is passed through to `mcpServer.register`, the same gate Claude/Codex use) but has no Grok-specific test.
+- [ ] `DOD-5` Spawn-prompt composition parity test passes against Codex/Claude baselines. **Not attempted** in this pass.
+- [x] `DOD-6` MCP-ready gate withholds the prompt until FlowPilot tools connect; slow init still yields `ask_user`/`spawn_agent` on turn 1 (`GR-30`, BUG-114). (`TestGrokAdapterMcpReadyGateDoesNotHangOnTimeout` proves the gate degrades rather than hangs; the "still yields the tools on turn 1" half follows from DOD-3's wiring but isn't independently re-asserted.)
+- [ ] `DOD-7` Resumed Grok turns re-attach `mcpServers` + permission channel; gated tool + `ask_user` work after resume (`GR-31`, BUG-087). `ensureSession`'s `session/load` branch does pass `mcpServers` again structurally, but no dedicated resume test exists.
+- [ ] `DOD-8` FlowPilot tool names do not collide with native `spawn_subagent`/`ask_user_question`; normalized at the UI boundary (`GR-07`, BUG-124). **Could not verify either way**: the second live probe's `initialize` result carried no tool list at all (only slash commands) — see CP-46 §10.2. No rename shim was added since no collision was observed, but this is inconclusive, not a clean bill of health.
+- [ ] `DOD-9` UI-initiated child spawn emits `EventAgentSpawnedByUser` and injects into the Grok parent's next turn (`GR-22`, BUG-121). Relies entirely on existing provider-neutral runner logic (untouched); not re-verified specifically for Grok.
+- [x] `DOD-10` `defaultModelForProvider("grok")` returns a valid default; cross-provider spawn onto Grok with no model does not fail (additive edit). (`TestDefaultModelForProviderBaseRegressionPlusGrok`.)
+- [x] `DOD-11` **Base-regression (`P-0`):** shared `claudeMCP`/`agent_orchestrator`/`defaultModelForProvider` are reused/appended-only; Codex/Claude MCP + spawn_agent tests remain green and unchanged. (Full suite verified unchanged vs. clean baseline.)
 
 ## 7. Out of Scope
 

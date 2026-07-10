@@ -27,12 +27,14 @@ type installRoot struct {
 var installRoots = []installRoot{
 	{Provider: "claude", RootPath: filepath.Join(".claude", "skills")},
 	{Provider: "agents", RootPath: filepath.Join(".agents", "skills")},
+	{Provider: "grok", RootPath: filepath.Join(".grok", "skills")},
 }
 
 var providerStatuses = []installRoot{
 	{Provider: "claude", RootPath: filepath.Join(".claude", "skills")},
 	{Provider: "codex", RootPath: filepath.Join(".agents", "skills")},
 	{Provider: "gemini", RootPath: filepath.Join(".agents", "skills")},
+	{Provider: "grok", RootPath: filepath.Join(".grok", "skills")},
 }
 
 // skillRef identifies one embedded skill by its flow-pack group and skill name.
@@ -131,6 +133,7 @@ func skillsForPlatform(platform string) ([]skillRef, error) {
 // Install copies every embedded SKILL.md for the project's platform into:
 // - <targetRepoDir>/.claude/skills/<skill>/SKILL.md
 // - <targetRepoDir>/.agents/skills/<skill>/SKILL.md
+// - <targetRepoDir>/.grok/skills/<skill>/SKILL.md
 // The common group is always installed; a platform contributes its own group
 // (kmm also pulls android + ios). An existing file is skipped when it already
 // declares the current PackVersion. All errors are collected and returned in
@@ -185,6 +188,7 @@ func IsInstalled(targetRepoDir string) bool {
 	sentinels := []string{
 		filepath.Join(targetRepoDir, ".claude", "skills", "git-commit-format", "SKILL.md"),
 		filepath.Join(targetRepoDir, ".agents", "skills", "git-commit-format", "SKILL.md"),
+		filepath.Join(targetRepoDir, ".grok", "skills", "git-commit-format", "SKILL.md"),
 	}
 	for _, sentinel := range sentinels {
 		if _, err := os.Stat(sentinel); err != nil {

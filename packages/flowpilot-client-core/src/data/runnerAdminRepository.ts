@@ -14,6 +14,7 @@ import type {
   LocalRunnerArtifact,
   LocalRunnerMcpBackend,
   LocalRunnerProvider,
+  LocalRunnerProviderModel,
   LocalRunnerStorageDriver,
   SupportedModel,
 } from "../domain/adminModels";
@@ -25,6 +26,63 @@ async function readJson<T>(response: Response): Promise<T> {
     throw new Error(text || `Request failed with status ${response.status}.`);
   }
   return (await response.json()) as T;
+}
+
+// Task-213: the Go runner's Provider/ProviderModel DTOs use a mix of
+// snake_case (detected_binary/detected_version/models[].display_name) and
+// pre-existing camelCase (binaryPath/installHint) JSON tags. readJson casts
+// the raw response with no transform, so this repository maps the wire shape
+// into LocalRunnerProvider explicitly (mirroring apps/admin-web's
+// local-runner-mappers.ts) instead of silently dropping detected_version/models.
+interface RawLocalRunnerProviderModel {
+  id: string;
+  display_name: string;
+  available: boolean;
+  source: string;
+  // Task-215: see LocalRunnerProviderModel/ProviderModel (Go).
+  supported_reasoning_efforts?: string[];
+  default_reasoning_effort?: string;
+  context_window_tokens?: number;
+  max_context_window_tokens?: number;
+}
+
+interface RawLocalRunnerProvider {
+  key: string;
+  label: string;
+  installed: boolean;
+  version: string | null;
+  auth_status?: string;
+  installHint: string | null;
+  detected_binary?: string | null;
+  detected_version?: string | null;
+  models?: RawLocalRunnerProviderModel[];
+}
+
+function mapLocalRunnerProviderModel(raw: RawLocalRunnerProviderModel): LocalRunnerProviderModel {
+  return {
+    id: raw.id,
+    displayName: raw.display_name,
+    available: raw.available,
+    source: raw.source,
+    supportedReasoningEfforts: raw.supported_reasoning_efforts,
+    defaultReasoningEffort: raw.default_reasoning_effort,
+    contextWindowTokens: raw.context_window_tokens,
+    maxContextWindowTokens: raw.max_context_window_tokens,
+  };
+}
+
+function mapLocalRunnerProvider(raw: RawLocalRunnerProvider): LocalRunnerProvider {
+  return {
+    key: raw.key,
+    label: raw.label,
+    installed: raw.installed,
+    version: raw.version,
+    authStatus: raw.auth_status,
+    installHint: raw.installHint,
+    detectedBinary: raw.detected_binary,
+    detectedVersion: raw.detected_version,
+    models: raw.models?.map(mapLocalRunnerProviderModel),
+  };
 }
 
 export class RunnerAdminRepository implements
@@ -41,7 +99,8 @@ export class RunnerAdminRepository implements
 
   async listLocalProviders(): Promise<LocalRunnerProvider[]> {
     const response = await this.httpClient.request(new URL("/providers", this.runnerBaseUrl), { cache: "no-store" });
-    return readJson<LocalRunnerProvider[]>(response).catch(() => []);
+    const raw = await readJson<RawLocalRunnerProvider[]>(response).catch(() => []);
+    return raw.map(mapLocalRunnerProvider);
   }
 
   async installLocalProvider(providerKey: string): Promise<LocalRunnerProvider[]> {
@@ -50,8 +109,8 @@ export class RunnerAdminRepository implements
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ providerName: providerKey }),
     });
-    const payload = await readJson<{ providers: LocalRunnerProvider[] }>(response);
-    return payload.providers ?? [];
+    const payload = await readJson<{ providers: RawLocalRunnerProvider[] }>(response);
+    return (payload.providers ?? []).map(mapLocalRunnerProvider);
   }
 
   async authenticateProvider(providerKey: string): Promise<void> {

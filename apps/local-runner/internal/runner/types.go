@@ -31,6 +31,19 @@ type ProviderModel struct {
 	DisplayName string `json:"display_name"`
 	Available   bool   `json:"available"`
 	Source      string `json:"source"`
+	// SupportedReasoningEfforts/DefaultReasoningEffort/ContextWindowTokens/
+	// MaxContextWindowTokens (Task-215) carry per-model capability data the
+	// provider's own CLI already reports (codex debug models'
+	// supported_reasoning_levels/default_reasoning_level/context_window/
+	// max_context_window; Grok's models_cache.json reasoning_efforts/
+	// reasoning_effort/context_window) so the desktop Reasoning control and
+	// context-usage display can be model-aware instead of one static list/
+	// value for every model of a provider. Empty/zero for providers or
+	// models with no such data (e.g. Claude, or the static-fallback path).
+	SupportedReasoningEfforts []string `json:"supported_reasoning_efforts,omitempty"`
+	DefaultReasoningEffort    string   `json:"default_reasoning_effort,omitempty"`
+	ContextWindowTokens       int64    `json:"context_window_tokens,omitempty"`
+	MaxContextWindowTokens    int64    `json:"max_context_window_tokens,omitempty"`
 }
 
 type ProviderDiscoveredAccount struct {

@@ -91,6 +91,15 @@ type ProviderRegistration struct {
 	Status       ProviderStatus       `json:"status"`
 	Capabilities ProviderCapabilities `json:"capabilities"`
 	newAdapter   func() ProviderRuntimeAdapter
+	// newAdapterForTurn, when set, is preferred over newAdapter and receives the
+	// turn's resolved model/reasoningEffort. Only Grok sets this: Codex/Claude
+	// forward model/reasoningEffort as a per-call/per-thread runtime param
+	// (thread/start, --model), but Grok's CLI only accepts them as `grok agent`
+	// LAUNCH flags (verified via `grok agent --help`) -- there is no ACP
+	// session-level way to switch model mid-process. Constructing the adapter
+	// for THIS turn must know the model before the shared process is
+	// ensured/respawned, so newAdapter's zero-arg shape can't carry it.
+	newAdapterForTurn func(model, reasoningEffort string) ProviderRuntimeAdapter
 }
 
 // ProviderRegistry holds provider registrations in a stable order.
@@ -126,14 +135,19 @@ func (r *ProviderRegistry) Get(key ProviderKey) (ProviderRegistration, bool) {
 }
 
 // Adapter returns the adapter for a provider, or UnsupportedProviderRuntimeError if
-// the provider is disabled/placeholder (no adapter factory).
-func (r *ProviderRegistry) Adapter(key ProviderKey) (ProviderRuntimeAdapter, error) {
+// the provider is disabled/placeholder (no adapter factory). model/reasoningEffort
+// are this turn's resolved values; only a registration with newAdapterForTurn set
+// (Grok) actually uses them -- see ProviderRegistration.newAdapterForTurn.
+func (r *ProviderRegistry) Adapter(key ProviderKey, model, reasoningEffort string) (ProviderRuntimeAdapter, error) {
 	reg, ok := r.regs[key]
 	// Only an available provider with a factory yields an adapter; disabled/
 	// placeholder providers surface the typed error here (runner-side boundary),
 	// regardless of whether a placeholder factory is registered.
-	if !ok || reg.newAdapter == nil || reg.Status != ProviderStatusAvailable {
+	if !ok || (reg.newAdapter == nil && reg.newAdapterForTurn == nil) || reg.Status != ProviderStatusAvailable {
 		return nil, &UnsupportedProviderRuntimeError{ProviderKey: key}
+	}
+	if reg.newAdapterForTurn != nil {
+		return reg.newAdapterForTurn(model, reasoningEffort), nil
 	}
 	return reg.newAdapter(), nil
 }
@@ -147,7 +161,7 @@ func (r *ProviderRegistry) Selectable(key ProviderKey) (ProviderRegistration, er
 	if !ok {
 		return ProviderRegistration{}, &UnsupportedProviderRuntimeError{ProviderKey: key}
 	}
-	if reg.newAdapter == nil || reg.Status != ProviderStatusAvailable {
+	if (reg.newAdapter == nil && reg.newAdapterForTurn == nil) || reg.Status != ProviderStatusAvailable {
 		return ProviderRegistration{}, &UnsupportedProviderRuntimeError{ProviderKey: key}
 	}
 	return reg, nil
@@ -178,6 +192,9 @@ func providerKeyFromModel(model string) (ProviderKey, bool) {
 		return ProviderKeyGemini, true
 	case strings.HasPrefix(m, "claude-"):
 		return ProviderKeyClaude, true
+	case strings.HasPrefix(m, "grok-"), m == "grok-build":
+		// Appended last (CP-46 P-0): existing prefix cases above are unchanged.
+		return ProviderKeyGrok, true
 	}
 	return "", false
 }
@@ -401,5 +418,74 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 			return a
 		},
 	})
+	// Grok Build controlled-mode adapter over ACP `grok agent stdio` (CP-46).
+	// On by default (grokAgentEnabled); set FLOWPILOT_GROK_AGENT=0/false/no to
+	// opt back out (e.g. test/demo environments without a real grok binary).
+	if grokAgentEnabled() {
+		reg.register(ProviderRegistration{
+			Key:         ProviderKeyGrok,
+			DisplayName: "Grok",
+			Status:      ProviderStatusAvailable,
+			Capabilities: ProviderCapabilities{
+				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true, Interrupt: true,
+				SkillSelection: true,
+			},
+			newAdapterForTurn: func(model, reasoningEffort string) ProviderRuntimeAdapter {
+				scopeKey := "default"
+				env := map[string]string{}
+				account, err := r.ResolveProviderAccount(string(ProviderKeyGrok), "")
+				if err == nil {
+					scopeKey = account.ID
+					for key, value := range account.ExtraEnv {
+						env[key] = value
+					}
+					if account.HomePath != "" {
+						env["GROK_HOME"] = account.HomePath
+						env["HOME"] = account.HomePath
+						env["XDG_CONFIG_HOME"] = filepath.Join(account.HomePath, ".config")
+						if drive, path, ok := windowsHomeDriveAndPath(account.HomePath); ok {
+							env["USERPROFILE"] = account.HomePath
+							env["APPDATA"] = filepath.Join(account.HomePath, "AppData", "Roaming")
+							env["LOCALAPPDATA"] = filepath.Join(account.HomePath, "AppData", "Local")
+							env["HOMEDRIVE"] = drive
+							env["HOMEPATH"] = path
+						}
+					}
+				} else if grokHome := strings.TrimSpace(os.Getenv("GROK_HOME")); grokHome != "" {
+					scopeKey = "env:" + grokHome
+					env["GROK_HOME"] = grokHome
+				} else if hasAnyEnv("XAI_API_KEY") {
+					scopeKey = "env:xai-api-key"
+				} else {
+					return errorAdapter{key: ProviderKeyGrok, err: err}
+				}
+				// model/reasoningEffort are `grok agent` LAUNCH flags, not a per-call
+				// param (grok agent --help has no session-level model switch) -- so
+				// ensureGrokProcess tears down and respawns the shared process
+				// whenever either changes from what it was last launched with, the
+				// same way an account switch already forces a respawn.
+				h, ensureErr := r.ensureGrokProcess(context.Background(), scopeKey, r.workspace, env, model, reasoningEffort)
+				if ensureErr != nil {
+					return errorAdapter{key: ProviderKeyGrok, err: ensureErr}
+				}
+				a := h.adapter
+				a.sessionStore = ProviderSessionStoreFor(r)
+				a.promptPrep = func(req TurnRequest) string {
+					workspace := r.workspace
+					if req.Cwd != "" {
+						workspace = req.Cwd
+					}
+					return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills)
+				}
+				a.mcpServer = r.claudeMCP
+				a.mcpBaseURL = r.mcpBaseURLValue
+				accountHome := env["GROK_HOME"]
+				a.extraMCPServers = func(yolo bool) map[string]claudeMcpServer {
+					return r.flowpilotClaudeExtraMCPServers(accountHome, yolo)
+				}
+				return a
+			},
+		})
+	}
 	return reg
 }
