@@ -445,6 +445,15 @@ export interface WorkflowRun {
   errorMessage: string | null;
 }
 
+// LocalRunnerProviderModel is one entry in the runner's live-detected model
+// list for a provider (Task-213) — mirrors the Go ProviderModel DTO.
+export interface LocalRunnerProviderModel {
+  id: string;
+  displayName: string;
+  available: boolean;
+  source: string;
+}
+
 export interface LocalRunnerProvider {
   key: string;
   label: string;
@@ -452,6 +461,13 @@ export interface LocalRunnerProvider {
   version: string | null;
   authStatus?: string;
   installHint: string | null;
+  // Appended last (Task-213): the runner's own detected version/model list for
+  // this provider (e.g. `codex debug models`, `agy models`, or Grok's
+  // ~/.grok/models_cache.json) — the source Task-213's "Detect models" sync
+  // reads from.
+  detectedVersion?: string | null;
+  detectedBinary?: string | null;
+  models?: LocalRunnerProviderModel[];
 }
 
 export interface LocalRunnerMcpBackend {
