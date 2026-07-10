@@ -5,7 +5,7 @@
 - Document ID: `Task-209`
 - Title: `Grok MCP, Ask-User, And Spawn-Agent Parity`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
@@ -103,7 +103,7 @@ Task-208 makes tool-call gating safe; this task adds the actual FlowPilot-owned 
 - [x] `DOD-2` `spawn_agent` works end to end for Grok with both wait modes and correct child persistence/panel visibility. **Closed 2026-07-11 (CA-279):** keyed `grokProcesses` coexistence + per-turn model/effort inheritance so parent turns survive child spawn; MCP `tools/call spawn_agent` → `TurnBridge.SpawnAgent` (`TestGrokMcpSpawnAgentRoundTrip`, wait modes, process coexistence, inheritance tests). **Live desktop confirmed:** child spawn without `grok agent process torn down`; child visible in agent panel; parent returns idle after `wait=false` and `wait=true` child completion (user retest 2026-07-11).
 - [x] `DOD-3` Google Drive (or another configured external MCP server) is visible to Grok in the same turn as FlowPilot tools, or is explicitly and honestly marked unsupported. (`TestGrokAdapterBuildsMcpServersArrayAndRegistersBridge` proves both entries land in the ACP `mcpServers[]` array sent to `session/new`.)
 - [x] `DOD-4` `OfferReviewOutcomeTool` gating parity is implemented and tested. **Closed 2026-07-11:** `grok_adapter.SendTurn` passes `req.OfferReviewOutcomeTool` to `mcpServer.register` (same gate as Claude/Codex). Tests: `TestGrokMcpReviewOutcomeGatingToolsList`, `TestGrokMcpSubmitReviewOutcomeRejectedWhenNotAllowed`, `TestGrokMcpSubmitReviewOutcomeRoundTrip` in `grok_mcp_test.go`.
-- [ ] `DOD-5` Spawn-prompt composition parity test passes against Codex/Claude baselines. **Not attempted** in this pass.
+- [x] `DOD-5` Spawn-prompt composition parity test passes against Codex/Claude baselines. **Closed 2026-07-11:** `TestGrokSpawnPromptCompositionMatchesClaudeCodexBaseline` asserts Grok/Claude/Codex child first-turn provider prompts are byte-identical for the same built-in `coder` agent, user prompt, and workspace (shared `composeAgentSpawnPrompt` via `spawnChildRun`, BUG-128).
 - [x] `DOD-6` MCP-ready gate withholds the prompt until FlowPilot tools connect; slow init still yields `ask_user`/`spawn_agent` on turn 1 (`GR-30`, BUG-114). (`TestGrokAdapterMcpReadyGateDoesNotHangOnTimeout` proves the gate degrades rather than hangs; the "still yields the tools on turn 1" half follows from DOD-3's wiring but isn't independently re-asserted.)
 - [x] `DOD-7` Resumed Grok turns re-attach `mcpServers` + permission channel; gated tool + `ask_user` work after resume (`GR-31`, BUG-087). **Closed 2026-07-11 (live):** user resumed Grok chat and `ask_user` / `spawn_agent` still work on follow-up turns; `ensureSession` `session/load` re-passes `mcpServers` and permission channel re-arms per turn (structural path unchanged). No dedicated automated resume test added — live desktop retest accepted.
 - [x] `DOD-8` FlowPilot tool names do not collide with native `spawn_subagent`/`ask_user_question`; normalized at the UI boundary (`GR-07`, BUG-124). **Closed 2026-07-11 (CA-281):** distinct names (`spawn_agent` vs `spawn_subagent`); `grokNormalizedToolDisplayName` aliases native tools at the event boundary; `grokSpawnAgentReinforcement` + `spawn_subagent` notification shim routes to `TurnBridge.SpawnAgent`. **Live desktop confirmed:** Grok reports `spawn_agent` (FlowPilot MCP); child visible in agent panel; parent returns idle.
@@ -119,8 +119,8 @@ Task-208 makes tool-call gating safe; this task adds the actual FlowPilot-owned 
 
 ## 8. Completion Notes
 
-- result: **DOD-1/2/3/4/6/7/8/9/10/11 closed.** Task-209 remains `in_progress` for **DOD-5** only (spawn-prompt composition parity test vs Codex/Claude baselines).
+- result: **All DOD-1…DOD-11 closed.** Task-209 complete (MCP-over-ACP primary path, ask_user + spawn_agent parity, live desktop retest 2026-07-11).
 - implementation notes: Primary path is MCP-over-ACP (Task-209 T-1 / Q-1). ask_user: `grokAskUserReinforcement` appended in `preparePrompt`/`promptPrep`. spawn_agent: keyed `grokProcesses` map + `runTurn` model/effort stickiness (CA-279); spawn steer + native shim (CA-281).
 - verification: `go test ./internal/runner -run 'Grok.*(AskUser|Mcp|Prompt|Native|Spawn|Process)'` PASS; live desktop retest 2026-07-11 — QuestionCard (DOD-1), MCP `spawn_agent` wait=false/wait=true + main idle (DOD-2), resume ask/spawn (DOD-7), model uses `spawn_agent` not native collision (DOD-8), UI-initiated spawn (DOD-9).
-- follow-ups: DOD-5 only; optional PreToolUse denylist if reinforcement ever fails on a future Grok version (Task-221 adjacent).
-- upstream docs updated: CA-278 (DOD-1), CA-279 (DOD-2), CA-281 (DOD-8).
+- follow-ups: optional PreToolUse denylist if reinforcement ever fails on a future Grok version (Task-221 adjacent); dedicated automated Grok resume test if regressions appear (DOD-7 accepted live-only).
+- upstream docs updated: CA-278 (DOD-1), CA-279 (DOD-2), CA-281 (DOD-8), CA-282 (DOD-5).

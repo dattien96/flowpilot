@@ -3410,6 +3410,87 @@ func TestComposeAgentSpawnPromptIsProviderConsistent(t *testing.T) {
 	}
 }
 
+// TestGrokSpawnPromptCompositionMatchesClaudeCodexBaseline closes Task-209 DOD-5
+// (BUG-128 regression): spawnChildRun uses the shared composeAgentSpawnPrompt path
+// for every provider, so a Grok child's first provider turn prompt must match the
+// Claude and Codex baselines for identical agent/prompt/cwd inputs — no Grok-specific
+// drift in the composed spawn shape (adapter-only reinforcements are out of scope).
+func TestGrokSpawnPromptCompositionMatchesClaudeCodexBaseline(t *testing.T) {
+	const userPrompt = "implement the widget API"
+	cwd := t.TempDir()
+
+	catalog := newAgentCatalog()
+	var coderDef *AgentDefinition
+	for _, def := range catalog.listAgents(cwd) {
+		if def.Name == "coder" {
+			d := def
+			coderDef = &d
+			break
+		}
+	}
+	if coderDef == nil {
+		t.Fatal("built-in coder agent missing from catalog")
+	}
+	expectedCore := composeAgentSpawnPrompt(coderDef, userPrompt)
+
+	cases := []struct {
+		name    string
+		parent  ProviderKey
+		childPK string
+	}{
+		{"claude", ProviderKeyClaude, "claude"},
+		{"codex", ProviderKeyCodex, "codex"},
+		{"grok", ProviderKeyGrok, "grok"},
+	}
+
+	var baseline string
+	for i, tc := range cases {
+		capture := &captureTurnAdapter{ch: make(chan TurnRequest, 4)}
+		reg := newProviderRegistry()
+		reg.register(ProviderRegistration{
+			Key:          tc.parent,
+			DisplayName:  string(tc.parent),
+			Status:       ProviderStatusAvailable,
+			Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+			newAdapter:   func() ProviderRuntimeAdapter { return capture },
+		})
+		svc := NewInteractiveService()
+		svc.registry = reg
+
+		parent, err := svc.createRun(StartRunInput{
+			ProjectID: "proj", ChatMode: "normal_chat",
+			ProviderKey: tc.parent, Model: defaultModelForProvider(tc.parent), Cwd: cwd,
+		})
+		if err != nil {
+			t.Fatalf("%s createRun: %v", tc.name, err)
+		}
+
+		spawn, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+			Agent: "coder", Prompt: userPrompt, Provider: tc.childPK, Wait: true,
+		})
+		if spawnErr != nil {
+			t.Fatalf("%s spawnChildRun: %v", tc.name, spawnErr)
+		}
+
+		childReq := readTurnReqFor(t, capture.ch, spawn.RunID)
+		if !strings.Contains(childReq.Prompt, expectedCore) {
+			t.Fatalf("%s: child prompt must contain composed spawn core;\nexpected core:\n%s\ngot:\n%s", tc.name, expectedCore, childReq.Prompt)
+		}
+		if !strings.Contains(childReq.Prompt, "[FlowPilot sub-agent — agent: coder | role: coder |") {
+			t.Fatalf("%s: identity line missing from child prompt: %q", tc.name, childReq.Prompt)
+		}
+		if !strings.HasSuffix(strings.TrimSpace(childReq.Prompt), userPrompt) {
+			t.Fatalf("%s: user prompt must be suffix of child prompt, got %q", tc.name, childReq.Prompt)
+		}
+
+		if i == 0 {
+			baseline = childReq.Prompt
+		} else if childReq.Prompt != baseline {
+			t.Fatalf("%s child prompt differs from baseline:\n--- baseline ---\n%s\n--- got ---\n%s", tc.name, baseline, childReq.Prompt)
+		}
+	}
+}
+
 func TestUISpawnInjectsContextIntoParentProviderTurn(t *testing.T) {
 	svc := NewInteractiveService()
 	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}
