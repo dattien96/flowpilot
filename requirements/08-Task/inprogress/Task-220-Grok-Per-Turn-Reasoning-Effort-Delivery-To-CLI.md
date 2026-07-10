@@ -96,12 +96,12 @@ Task-207 shipped the Grok adapter MVP and, during that pass, discovered that `re
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` The ACP transport investigation (`T-1`) is complete and its outcome (per-turn field found / spawn-time only / not supported) is recorded in this doc and CP-46.
-- [ ] `DOD-2` `req.ReasoningEffort` reaches the Grok CLI through the chosen mechanism, or the chosen honest-degrade behavior is implemented — `grokReasoningEffortID` is wired into the real turn path either way.
-- [ ] `DOD-3` Unmapped/unsupported effort values degrade to the model default explicitly (`GR-35`), covered by a test.
-- [ ] `DOD-4` If effort cannot be honored per-turn, the desktop Reasoning control for Grok is annotated/disabled so it does not imply a false effect (`Q-3`).
-- [ ] `DOD-5` **Base-regression (`P-0`):** Codex/Claude/Gemini reasoning-effort transmission is byte-identical; Grok changes are additive.
-- [ ] `DOD-6` Targeted and broad local-runner tests pass.
+- [x] `DOD-1` The ACP transport investigation (`T-1`) is complete and its outcome recorded. **Outcome: spawn-time flag, and the spawn plumbing already existed.** The live probe (`testdata/grok_acp/live_probe_raw.txt`) confirms ACP `session/new`/`session/prompt` carry no client→server reasoning-effort field — effort is session-config state (`_meta["x.ai/sessionConfig"].options[]` with `category:"mode"`) set at process launch. `grok agent --help` exposes `--reasoning-effort <EFFORT>` as a launch-time flag, and `ensureGrokProcess` (grok_process.go, added by in-flight Task-218) already builds `grok agent --model <m> --reasoning-effort <e> stdio` and respawns the shared process when the effort changes per turn. The only missing piece was the canonical→supported mapping.
+- [x] `DOD-2` `req.ReasoningEffort` reaches the Grok CLI: the turn's resolved effort flows `resolveTurnModelAndEffort` → `registry.Adapter` → `newAdapterForTurn` → `ensureGrokProcess` → `--reasoning-effort` launch flag, and `grokReasoningEffortID` is now wired into that path in the Grok `newAdapterForTurn` closure (`provider_registry.go`) — no longer dead code.
+- [x] `DOD-3` Unmapped/unsupported effort values degrade to a supported id (xhigh/max→high, none/minimal→low) or omit the flag so the model default applies (`GR-35`). Covered by `TestProviderRegistryForGrokMapsReasoningEffortToSupportedLaunchFlag` (table-driven: high/xhigh/max/medium/low/minimal/none/empty/unknown).
+- [~] `DOD-4` **N/A** — effort IS honored per-turn (via respawn), so the desktop Reasoning control is truthful as-is; no annotation/disable needed. `Q-3` resolved: not applicable.
+- [x] `DOD-5` **Base-regression (`P-0`):** the change is confined to the Grok `newAdapterForTurn` closure plus a Grok-only test; no Codex/Claude/Gemini path touched. Their reasoning-effort transmission is unchanged.
+- [x] `DOD-6` Targeted and broad local-runner tests pass. Targeted: 74 Grok tests green (incl. the new degrade test). Broad `go test ./internal/runner/` shows 12 failures, all pre-existing and unrelated to this change (Codex resume, compat, cross-account, flow-executor synthesis timeout, Google Drive MCP, skills-merge, auth-workspace) — none Grok, none in the touched `newAdapterForTurn` closure; consistent with the concurrent-WIP baseline documented in Task-207/210/213/215.
 
 ## 7. Out of Scope
 
@@ -111,8 +111,15 @@ Task-207 shipped the Grok adapter MVP and, during that pass, discovered that `re
 
 ## 8. Completion Notes
 
-- result:
+- result: Code complete and unit-verified; pending a live E2E confirmation against a real Grok account. A user's per-turn reasoning-effort selection now reaches the Grok CLI as a validated `--reasoning-effort` launch flag, degrading unsupported values instead of being silently dropped (the Task-207 `DOD-9` gap).
 - implementation notes:
+  - Investigation (`T-1`) showed the spawn-time mechanism already existed: `ensureGrokProcess` (grok_process.go, in-flight Task-218 WIP) launches `grok agent --model <m> --reasoning-effort <e> stdio` and respawns the shared process when model/effort/yolo change per turn (`grok agent --help` confirms these are launch-only flags; ACP `session/new`/`session/prompt` carry no per-turn effort field per `testdata/grok_acp/live_probe_raw.txt`). The turn's effort already flowed `resolveTurnModelAndEffort` → `registry.Adapter` → `newAdapterForTurn` → `ensureGrokProcess`, but as the **raw canonical value** — so `xhigh`/`max` (unsupported by grok-4.5) would be passed to the CLI verbatim, and `grokReasoningEffortID` was dead code.
+  - Fix (`T-2`/`T-3`): the Grok `newAdapterForTurn` closure in `provider_registry.go` now maps the incoming effort through `grokReasoningEffortID` before `ensureGrokProcess` — supported values pass through, unsupported degrade (xhigh/max→high, none/minimal→low), unmappable yields "" so the flag is omitted and the model default applies (`GR-35`). Mapping the value here also fixes the respawn-reuse comparison (two turns whose efforts both degrade to "high" reuse one process).
+  - `DOD-4`/`Q-3` resolved N/A: because effort is honored per-turn via respawn, the desktop Reasoning control is truthful and needs no annotation/disable.
 - verification:
-- follow-ups:
-- upstream docs updated:
+  - Go: `go build ./...` clean. New `TestProviderRegistryForGrokMapsReasoningEffortToSupportedLaunchFlag` (9-case table: high/xhigh/max/medium/low/minimal/none/empty/unknown) asserts the exact launch argv, plus the pre-existing `TestProviderRegistryForGrokThreadsModelAndReasoningEffortIntoLaunch` still passes; 74 Grok tests green. `grokReasoningEffortID` now has a production call site (`provider_registry.go`).
+  - Broad `go test ./internal/runner/`: 12 pre-existing, unrelated failures (see `DOD-6`); none Grok/effort-related.
+  - **Not yet live-verified** against a real Grok account (no credentials in this environment) that selecting e.g. `xhigh` produces observably higher-effort behavior end to end — the unit test proves the correct flag is launched; a credentialed run would prove the CLI honors it.
+  - **Concurrent-WIP caveat:** `provider_registry.go` and `grok_process.go` also carry uncommitted Task-218 (`--always-approve`/YOLO) work in the same files; this task's change is the `grokReasoningEffortID` mapping in the Grok closure only. A missing `os` import in `grok_registry_test.go` (introduced by concurrent Task-218 config-yolo tests) was added so the package compiles.
+- follow-ups: Live E2E verification with a credentialed Grok account (confirm the CLI observably changes behavior for a degraded/mapped effort). If a future ACP release adds a real per-turn reasoning-effort field, prefer it over respawn to avoid the process-restart cost on effort change.
+- upstream docs updated: Task-207 `DOD-9` and its gap note link here.
