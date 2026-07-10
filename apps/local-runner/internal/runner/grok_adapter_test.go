@@ -310,6 +310,103 @@ func TestGrokEncodePermissionDecisionNoMatchReturnsEmpty(t *testing.T) {
 	}
 }
 
+// TestGrokAdapterApproveRoundTripRepliesWithAllowOptionId closes Task-208 DOD-6's
+// "correct optionId path": on approve, the reply sent back to Grok must carry the
+// request's own allow-shaped optionId in outcome{selected}. Complements the deny
+// path (TestGrokAdapterYoloOffBlocks...) and the encoder unit tests for a full
+// live-shaped round-trip over the wire.
+func TestGrokAdapterApproveRoundTripRepliesWithAllowOptionId(t *testing.T) {
+	sessionID := "session-approve-rt"
+	d, fg := startFakeGrok(t, nil)
+	a := newGrokAdapter(d, "/tmp/x")
+	a.initResult = liveGrokInitializeResult()
+
+	const permReqID = float64(777)
+	gotReply := make(chan map[string]any, 1)
+	fg.serve(func(fg *fakeGrok, m map[string]any) {
+		switch m["method"] {
+		case "session/new", "session/load":
+			fg.reply(m["id"], map[string]any{"sessionId": sessionID})
+		case "session/prompt":
+			id := m["id"]
+			go func() {
+				fg.send(map[string]any{"jsonrpc": "2.0", "id": permReqID, "method": "session/request_permission", "params": map[string]any{
+					"sessionId": sessionID,
+					"toolCall":  map[string]any{"title": "write", "_meta": map[string]any{"x.ai/tool": map[string]any{"name": "write", "kind": "write"}}},
+					"options": []any{
+						map[string]any{"optionId": "allow-once-RT", "kind": "allow_once"},
+						map[string]any{"optionId": "reject-once-RT", "kind": "reject_once"},
+					},
+				}})
+				time.Sleep(150 * time.Millisecond)
+				fg.reply(id, liveGrokPromptResult(sessionID))
+			}()
+		default:
+			// The permission reply is an id-matched response (no method).
+			if m["method"] == nil && m["id"] == permReqID {
+				select {
+				case gotReply <- m:
+				default:
+				}
+			}
+		}
+	})
+
+	bridge := &fakeGrokBridge{approval: "approve"}
+	if err := a.SendTurn(context.Background(), TurnRequest{RunID: "run-rt", Prompt: "write a file", YoloMode: false}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	select {
+	case reply := <-gotReply:
+		result, _ := reply["result"].(map[string]any)
+		outcome, _ := result["outcome"].(map[string]any)
+		if outcome["outcome"] != "selected" {
+			t.Fatalf("expected outcome=selected, got %v", outcome["outcome"])
+		}
+		if outcome["optionId"] != "allow-once-RT" {
+			t.Fatalf("approve round-trip replied optionId=%v, want allow-once-RT", outcome["optionId"])
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no permission reply captured within timeout")
+	}
+	if bridge.approvalCallCount() != 1 {
+		t.Fatalf("expected exactly 1 bridge approval call, got %d", bridge.approvalCallCount())
+	}
+}
+
+// TestGrokAdapterTwoConcurrentGatesResolveIndependently closes Task-208 DOD-7:
+// two session/request_permission requests in flight during one turn must each
+// reach the bridge and resolve independently, without wedging the turn (the
+// dispatcher spawns a goroutine per inbound frame). Asserts both gates surfaced
+// (approvalCallCount==2) and the turn still completed.
+func TestGrokAdapterTwoConcurrentGatesResolveIndependently(t *testing.T) {
+	sessionID := "session-concurrent"
+	a, fg := newTestGrokAdapter(t, sessionID, liveGrokPromptResult(sessionID), nil, 400*time.Millisecond)
+
+	bridge := &fakeGrokBridge{approval: "approve"}
+	go func() {
+		time.Sleep(60 * time.Millisecond)
+		for i, id := range []float64{601, 602} {
+			_ = i
+			fg.send(map[string]any{"jsonrpc": "2.0", "id": id, "method": "session/request_permission", "params": map[string]any{
+				"sessionId": sessionID,
+				"toolCall":  map[string]any{"title": "write", "_meta": map[string]any{"x.ai/tool": map[string]any{"name": "write", "kind": "write"}}},
+				"options": []any{
+					map[string]any{"optionId": "allow-once", "kind": "allow_once"},
+					map[string]any{"optionId": "reject-once", "kind": "reject_once"},
+				},
+			}})
+		}
+	}()
+
+	if err := a.SendTurn(context.Background(), TurnRequest{RunID: "run-concurrent", Prompt: "do two gated things", YoloMode: false}, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	if bridge.approvalCallCount() != 2 {
+		t.Fatalf("expected 2 independent gates to reach the bridge, got %d (a wedged pump would drop or serialize one)", bridge.approvalCallCount())
+	}
+}
+
 func TestGrokPermissionKindClassifiesExecFileMcp(t *testing.T) {
 	cases := []struct {
 		name string
