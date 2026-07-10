@@ -74,16 +74,28 @@ func grokACPPromptParams(sessionID, prompt string) map[string]interface{} {
 	}
 }
 
-// grokACPResponseSessionID reads sessionId out of a session/new or
-// session/prompt result (Task-207 T-5/GR-32: session/prompt may return a
+// grokACPResponseSessionID reads sessionId out of a session/new, session/load,
+// or session/prompt result (Task-207 T-5/GR-32: session/prompt may return a
 // different sessionId than session/new, which the adapter must adopt).
+//
+// Live-verified during Task-213 re-verification against a real `grok agent
+// stdio` process: session/new puts sessionId at the top level of result, but
+// session/load and session/prompt only carry it nested under result._meta —
+// the top-level field is absent from both. Without the _meta fallback, resume
+// (session/load) always failed with "no sessionId", and the GR-32
+// post-prompt session-id-adoption check silently never fired.
 func grokACPResponseSessionID(message map[string]interface{}) string {
 	result, ok := message["result"].(map[string]interface{})
 	if !ok {
 		return ""
 	}
-	if sessionID, ok := result["sessionId"].(string); ok {
+	if sessionID, ok := result["sessionId"].(string); ok && strings.TrimSpace(sessionID) != "" {
 		return strings.TrimSpace(sessionID)
+	}
+	if meta, ok := result["_meta"].(map[string]interface{}); ok {
+		if sessionID, ok := meta["sessionId"].(string); ok {
+			return strings.TrimSpace(sessionID)
+		}
 	}
 	return ""
 }
