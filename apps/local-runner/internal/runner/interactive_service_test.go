@@ -5417,3 +5417,65 @@ func TestSubmitApprovalDecisionPersistsResolvedApprovalForRestart(t *testing.T) 
 		t.Fatalf("persisted approval = %+v, want resolved/approve", states[0])
 	}
 }
+
+// TestReconstructRunBackfillsRecordlessApprovalAsReadOnlyAfterRestart covers the
+// old-chat case (BUG-272 backfill): a permission_required event whose approval
+// was resolved by a pre-persist-fix build has NO record in approvals.ndjson.
+// On restart it can never be live-actionable again, so reconstructRun must stamp
+// it read-only (generic "resolved") rather than leaving it interactive and
+// flipping the run back to waiting_approval. This is what makes chats created
+// before the persist fix stop showing a broken Approve/Deny prompt on reopen.
+func TestReconstructRunBackfillsRecordlessApprovalAsReadOnlyAfterRestart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	if err := store.UpsertProviderSession(ctx, ProviderSessionState{
+		RunID:             "run-appr-oldchat",
+		ProjectID:         "proj",
+		ProviderKey:       ProviderKeyClaude,
+		ProviderSessionID: "thread-appr-oldchat",
+		Status:            RunStatusCompleted,
+		RunKind:           "workflow",
+		StartedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	// Raw asked event persisted to the sidecar, but NO approvals.ndjson record
+	// (the pre-fix approve path never wrote one).
+	if err := store.AppendEvent(ctx, ProviderEvent{
+		Type:          EventPermissionRequired,
+		WorkflowRunID: "run-appr-oldchat",
+		ApprovalID:    "appr-old",
+		Details:       &ApprovalDetails{Command: "npm test", Kind: "exec"},
+	}); err != nil {
+		t.Fatalf("seed permission-required event: %v", err)
+	}
+
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("run-appr-oldchat"); apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+
+	svc.mu.Lock()
+	events := append([]ProviderEvent(nil), svc.runs["run-appr-oldchat"].events...)
+	svc.mu.Unlock()
+
+	var found *ProviderEvent
+	for i := range events {
+		if events[i].Type == EventPermissionRequired && events[i].ApprovalID == "appr-old" {
+			found = &events[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("record-less permission_required event did not survive restart")
+	}
+	if found.Decision == "" {
+		t.Fatal("record-less approval must be backfilled read-only (Decision set), got interactive (empty Decision)")
+	}
+}

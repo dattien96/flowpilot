@@ -771,39 +771,52 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 	// ProviderApprovalState. Stamp the recorded Decision (read-only render) and
 	// drop expired approvals (nothing to show, and replaying them interactive
 	// would let the user submit into an already-expired approval and hit a 409).
+	//
+	// Runs whenever the store can read approval history at all (not only when
+	// some state exists), because the else-branch below MUST fire even for a run
+	// with an empty approvals.ndjson: reconstructRun is exclusively the
+	// after-restart path, so no replayed permission_required can still be
+	// live-actionable (its turn goroutine is gone). A record-less event is
+	// therefore either a pre-persist-fix resolution (BUG-272 first pass, or a
+	// chat created before that landed) or a process that died mid-approval —
+	// both must render read-only, never as a fresh interactive prompt that would
+	// flip a settled run back to waiting_approval. Stamping a generic "resolved"
+	// backfills those old chats (we cannot recover the exact approve/deny, since
+	// it was never persisted — new resolutions carry the concrete decision).
 	if ahr, ok := s.workflowStore.(ApprovalHistoryReader); ok {
 		states, aErr := ahr.ListApprovalsByRun(context.Background(), st.RunID)
 		if aErr != nil {
 			log.Printf("reconstructRun: ListApprovalsByRun runID=%s: %v (resuming without approval state)", st.RunID, aErr)
 		}
-		if len(states) > 0 {
-			byID := make(map[string]ProviderApprovalState, len(states))
-			for _, a := range states {
-				byID[a.ApprovalID] = a
-			}
-			filtered := make([]ProviderEvent, 0, len(rs.events))
-			for _, ev := range rs.events {
-				if ev.Type == EventPermissionRequired && ev.ApprovalID != "" {
-					if a, found := byID[ev.ApprovalID]; found {
-						switch a.Status {
-						case "resolved":
-							// Prefer the concrete approve/deny; fall back to a
-							// generic "resolved" so the card still renders
-							// read-only when only Status was recorded.
-							if strings.TrimSpace(a.Decision) != "" {
-								ev.Decision = a.Decision
-							} else {
-								ev.Decision = "resolved"
-							}
-						case "expired":
-							continue
-						}
-					}
-				}
-				filtered = append(filtered, ev)
-			}
-			rs.events = filtered
+		byID := make(map[string]ProviderApprovalState, len(states))
+		for _, a := range states {
+			byID[a.ApprovalID] = a
 		}
+		filtered := make([]ProviderEvent, 0, len(rs.events))
+		for _, ev := range rs.events {
+			if ev.Type == EventPermissionRequired && ev.ApprovalID != "" {
+				if a, found := byID[ev.ApprovalID]; found {
+					switch a.Status {
+					case "resolved":
+						// Prefer the concrete approve/deny; fall back to a
+						// generic "resolved" so the card still renders
+						// read-only when only Status was recorded.
+						if strings.TrimSpace(a.Decision) != "" {
+							ev.Decision = a.Decision
+						} else {
+							ev.Decision = "resolved"
+						}
+					case "expired":
+						continue
+					}
+				} else {
+					// No persisted resolution — backfill read-only (see above).
+					ev.Decision = "resolved"
+				}
+			}
+			filtered = append(filtered, ev)
+		}
+		rs.events = filtered
 	}
 	// Record how many sidecar-origin events are sitting at the front of
 	// rs.events so seedTranscriptFromDisk can move them after the real
