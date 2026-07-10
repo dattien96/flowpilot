@@ -107,6 +107,8 @@ func (c *interactiveCatalog) ListWorkflowSteps(_ context.Context, workflowID str
 // - project-local provider skills:
 //   - Codex/Gemini from `.agents/skills` as `flowpilot`
 //   - Claude from `.claude/skills` as `workspace`
+//   - Grok from `.grok/skills` as `workspace` (Grok has the same kind of
+//     first-class, doc-recommended skill directory Claude does — Task-214)
 //
 // - provider-home skills as `provider`
 // using project-local > provider precedence by skill name.
@@ -151,6 +153,8 @@ func discoverProjectSkills(provider string, cwd string) []ProviderSkill {
 		return providerSkillsFromDir(filepath.Join(cwd, ".agents", "skills"), "flowpilot")
 	case "claude":
 		return providerSkillsFromDir(filepath.Join(cwd, ".claude", "skills"), "workspace")
+	case "grok":
+		return providerSkillsFromDir(filepath.Join(cwd, ".grok", "skills"), "workspace")
 	default:
 		return nil
 	}
@@ -206,6 +210,14 @@ func providerHomeSkillDirs(provider string, homePath string) []string {
 		return []string{
 			filepath.Join(homePath, ".gemini", "skills"),
 			filepath.Join(homePath, "skills"),
+		}
+	case "grok":
+		// GROK_HOME (homePath here) already points directly at the .grok
+		// directory itself, same as CODEX_HOME — so skills live at
+		// homePath/skills, not a nested homePath/.grok/skills (Task-214 T-6).
+		return []string{
+			filepath.Join(homePath, "skills"),
+			filepath.Join(homePath, ".grok", "skills"),
 		}
 	default:
 		return nil
