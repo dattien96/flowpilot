@@ -2902,6 +2902,11 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		toolWorkspace = s.runner.workspace
 	}
 	logComposedPrompt(toolWorkspace, rs.projectID, rs.id, turnID, providerPrompt)
+	// Chat-mode parity with Flow mode's flowDiagLog: persist the actual
+	// provider/model/reasoning/cwd/yolo values passed for this turn, not just
+	// the prompt — needed to diagnose provider-side failures (e.g. a bad cwd)
+	// without guessing what was actually sent.
+	logTurnProviderParams(toolWorkspace, rs.projectID, rs.id, turnID, string(rs.providerKey), model, effort, rs.workspaceCwd, yolo)
 	req := TurnRequest{
 		RunID:                  rs.id,
 		StepID:                 in.StepID,
@@ -3215,6 +3220,11 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 	case errors.Is(err, errApprovalExpired) || errors.Is(err, errQuestionExpired):
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: err.Error(), Recoverable: true})
 	default:
+		// This EventTurnFailed only ever reached the UI's event stream, never
+		// runner.log — diagnosing a failed turn required reproducing it live.
+		// Logging the terminal error here (alongside logTurnProviderParams'
+		// model/reasoning/cwd/yolo) makes the failure reason findable after the fact.
+		log.Printf("[turn-failed] run=%s turn=%s provider=%s error=%q", rs.id, turnID, rs.providerKey, err.Error())
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: err.Error(), Recoverable: false})
 	}
 	return false, finalizeInput{}
