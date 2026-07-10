@@ -92,7 +92,7 @@ function pickerAllowedReferrers(runnerUrl: string): string[] {
   if (url.hostname === "localhost") hosts.add("127.0.0.1");
   return Array.from(hosts).map((host) => `${url.protocol}//${host}${port}/*`);
 }
-const PROVIDER_LABELS: Record<string, string> = { codex: "Codex", gemini: "Gemini", claude: "Claude" };
+const PROVIDER_LABELS: Record<string, string> = { codex: "Codex", gemini: "Gemini", claude: "Claude", grok: "Grok" };
 
 function runnerFetch(path: string, init?: RequestInit): Promise<Response> {
   return fetch(new URL(path, RUNNER_URL).toString(), { cache: "no-store", ...init });
@@ -841,7 +841,7 @@ export function GoogleDriveSettings(): React.ReactElement {
             <div>
               <div className="settings-eyebrow">Step 7</div>
               <h3 style={{ marginTop: 4 }}>Google Drive proxy MCP setup</h3>
-              <p className="gdrive-step-copy">Configure Codex, Gemini, and Claude against the FlowPilot proxy MCP.</p>
+              <p className="gdrive-step-copy">Configure Codex, Gemini, Claude, and Grok against the FlowPilot proxy MCP.</p>
             </div>
             <button
               className="primary-btn"

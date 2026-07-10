@@ -192,6 +192,49 @@ type claudeMcpServer struct {
 	Timeout int               `json:"timeout,omitempty"`
 }
 
+// Grok config.toml uses the same [mcp_servers.<name>] shape as Codex, but its config.toml
+// routinely carries other top-level sections ([cli], [marketplace], [models], [ui],
+// [plugins]) that a McpServers-only struct would silently drop on a Marshal round-trip. So
+// unlike codexConfig, we never decode the whole document into a typed struct — the
+// ensure/check functions below round-trip the document as a generic map and only touch the
+// mcp_servers.google-drive sub-table.
+type grokMcpServer struct {
+	Command           string            `toml:"command"`
+	Args              []string          `toml:"args"`
+	Enabled           bool              `toml:"enabled"`
+	StartupTimeoutSec int               `toml:"startup_timeout_sec,omitempty"`
+	ToolTimeoutSec    int               `toml:"tool_timeout_sec,omitempty"`
+	Env               map[string]string `toml:"env"`
+}
+
+// grokServerToMap converts a typed server into the generic map shape needed to splice into
+// a document decoded as map[string]interface{}.
+func grokServerToMap(server grokMcpServer) (map[string]interface{}, error) {
+	raw, err := toml.Marshal(server)
+	if err != nil {
+		return nil, err
+	}
+	m := map[string]interface{}{}
+	if err := toml.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// grokServerFromMap converts a generic mcp_servers.google-drive entry back into a typed
+// struct for comparison. Returns ok=false if the entry doesn't decode as a Grok MCP server.
+func grokServerFromMap(m map[string]interface{}) (grokMcpServer, bool) {
+	raw, err := toml.Marshal(m)
+	if err != nil {
+		return grokMcpServer{}, false
+	}
+	var server grokMcpServer
+	if err := toml.Unmarshal(raw, &server); err != nil {
+		return grokMcpServer{}, false
+	}
+	return server, true
+}
+
 func classifyGoogleDriveServer(command string, args []string) (configKind string, mode string) {
 	command = strings.TrimSpace(command)
 	if _, _, parsedMode, _, ok := parseGoogleDriveProxyMcpInvocation(command, args); ok {
@@ -269,6 +312,8 @@ func (r *Runner) EnsureGoogleDriveMcpProviderConfig(req GoogleDriveMcpProviderCo
 		return r.ensureGeminiGoogleDriveMcpConfig(accountHomePath, mode, req.YoloMode, runtimeMcpStatus)
 	case "claude":
 		return r.ensureClaudeGoogleDriveMcpConfig(accountHomePath, mode, req.YoloMode, runtimeMcpStatus)
+	case "grok":
+		return r.ensureGrokGoogleDriveMcpConfig(accountHomePath, mode, req.YoloMode, runtimeMcpStatus)
 	default:
 		return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -827,6 +872,115 @@ func expectedClaudeGoogleDriveMcpServer(workspace string, accountHomePath string
 	}
 }
 
+// ensureGrokGoogleDriveMcpConfig configures Grok's config.toml. See the grokMcpServer
+// comment: the document is round-tripped as a generic map so unrelated top-level sections
+// (marketplace, models, ui, ...) survive the write.
+func (r *Runner) ensureGrokGoogleDriveMcpConfig(accountHomePath string, mode string, yoloMode bool, mcpStatus googleDriveMcpRuntimeConfig) (GoogleDriveMcpProviderConfigResponse, error) {
+	configPath := filepath.Join(accountHomePath, "config.toml")
+
+	doc := map[string]interface{}{}
+	changed := false
+
+	raw, err := os.ReadFile(configPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to read Grok config: %w", err)
+	}
+	if err == nil {
+		if unmarshalErr := toml.Unmarshal(raw, &doc); unmarshalErr != nil {
+			doc = map[string]interface{}{}
+			changed = true
+		}
+	}
+
+	mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
+	if mcpServers == nil {
+		mcpServers = map[string]interface{}{}
+	}
+
+	expectedServer := expectedGrokGoogleDriveMcpServer(r.workspace, accountHomePath, mode, yoloMode, mcpStatus)
+
+	existingMatches := false
+	if existingRaw, exists := mcpServers[googleDriveMcpServerName]; exists {
+		if existingMap, ok := existingRaw.(map[string]interface{}); ok {
+			if existingServer, ok := grokServerFromMap(existingMap); ok {
+				existingMatches = grokServerConfigMatches(existingServer, expectedServer)
+			}
+		}
+	}
+	if !existingMatches {
+		expectedMap, mapErr := grokServerToMap(expectedServer)
+		if mapErr != nil {
+			return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to build Grok MCP server entry: %w", mapErr)
+		}
+		mcpServers[googleDriveMcpServerName] = expectedMap
+		doc["mcp_servers"] = mcpServers
+		changed = true
+	}
+
+	if changed {
+		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+			return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to create config directory: %w", err)
+		}
+
+		out, err := toml.Marshal(doc)
+		if err != nil {
+			return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to marshal TOML: %w", err)
+		}
+
+		if err := os.WriteFile(configPath, out, 0o644); err != nil {
+			return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to write config: %w", err)
+		}
+	}
+
+	return GoogleDriveMcpProviderConfigResponse{
+		ProviderKey: "grok",
+		ServerName:  googleDriveMcpServerName,
+		Status:      "configured",
+		Changed:     changed,
+		ConfigPath:  configPath,
+	}, nil
+}
+
+// grokServerConfigMatches checks if existing server config matches expected
+func grokServerConfigMatches(existing, expected grokMcpServer) bool {
+	if existing.Command != expected.Command {
+		return false
+	}
+	if existing.Enabled != expected.Enabled {
+		return false
+	}
+	if existing.StartupTimeoutSec != expected.StartupTimeoutSec {
+		return false
+	}
+	if existing.ToolTimeoutSec != expected.ToolTimeoutSec {
+		return false
+	}
+	if len(existing.Args) != len(expected.Args) {
+		return false
+	}
+	for i, arg := range existing.Args {
+		if arg != expected.Args[i] {
+			return false
+		}
+	}
+	if !envMatches(existing.Env, expected.Env) {
+		return false
+	}
+	return true
+}
+
+func expectedGrokGoogleDriveMcpServer(workspace string, accountHomePath string, mode string, yoloMode bool, mcpStatus googleDriveMcpRuntimeConfig) grokMcpServer {
+	command, argsPrefix := googleDriveProxyMcpCommand(workspace)
+	return grokMcpServer{
+		Command:           command,
+		Args:              append(argsPrefix, googleDriveProxyMcpArgs(workspace, accountHomePath, mode, yoloMode)...),
+		Enabled:           true,
+		StartupTimeoutSec: 20,
+		ToolTimeoutSec:    120,
+		Env:               googleDriveProxyMcpServerEnv(mcpStatus),
+	}
+}
+
 // flowpilotClaudeExtraMCPServers returns FlowPilot-managed MCP servers to merge into a
 // Claude turn's --mcp-config (keyed by server name). claude is launched with
 // --strict-mcp-config and only the flowpilot permission server in its --mcp-config, so it
@@ -894,12 +1048,12 @@ func (r *Runner) resolveGoogleDriveMcpProviderStatuses() ([]GoogleDriveMcpProvid
 	runtimeMcpStatus := googleDriveMcpStatusRuntimeConfig(mcpStatus)
 	r.hydrateGoogleDriveProxyOAuthRuntimeConfig(&runtimeMcpStatus)
 
-	statuses := make([]GoogleDriveMcpProviderConfigStatus, 0, 3)
+	statuses := make([]GoogleDriveMcpProviderConfigStatus, 0, 4)
 	now := time.Now().UTC().Format(time.RFC3339)
 	accounts, _ := r.ListProviderAccounts()
 
 	// Check each provider
-	for _, providerKey := range []string{"codex", "gemini", "claude"} {
+	for _, providerKey := range []string{"codex", "gemini", "claude", "grok"} {
 		accountHomes, discoverErr := DiscoverProviderAccountHomes(providerKey)
 		if discoverErr != nil {
 			statuses = append(statuses, GoogleDriveMcpProviderConfigStatus{
@@ -1025,6 +1179,8 @@ func getProviderConfigPath(providerKey string, accountHomePath string) string {
 		return filepath.Join(accountHomePath, ".gemini", "settings.json")
 	case "claude":
 		return filepath.Join(accountHomePath, ".claude.json")
+	case "grok":
+		return filepath.Join(accountHomePath, "config.toml")
 	default:
 		return ""
 	}
@@ -1051,6 +1207,8 @@ func (r *Runner) checkProviderGoogleDriveMcpConfig(
 		return r.checkGeminiGoogleDriveMcpConfig(result, configPath, mcpStatus)
 	case "claude":
 		return r.checkClaudeGoogleDriveMcpConfig(result, configPath, mcpStatus)
+	case "grok":
+		return r.checkGrokGoogleDriveMcpConfig(result, configPath, mcpStatus)
 	default:
 		return result, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -1212,6 +1370,68 @@ func detectStaleClaudeConfig(server claudeMcpServer, workspace string, accountHo
 	return !claudeServerConfigMatches(server, expectedClaudeGoogleDriveMcpServer(workspace, "", googleDriveMcpStatusMode, false, mcpStatus))
 }
 
+// checkGrokGoogleDriveMcpConfig checks Grok config.toml for google-drive MCP. See the
+// grokMcpServer comment: the document is decoded as a generic map so unrelated sections
+// aren't mistaken for parse failures.
+func (r *Runner) checkGrokGoogleDriveMcpConfig(
+	result GoogleDriveMcpProviderConfigStatus,
+	configPath string,
+	mcpStatus googleDriveMcpRuntimeConfig,
+) (GoogleDriveMcpProviderConfigStatus, error) {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return result, fmt.Errorf("failed to read Grok config: %w", err)
+	}
+
+	doc := map[string]interface{}{}
+	if err := toml.Unmarshal(raw, &doc); err != nil {
+		result.Status = "failed"
+		return result, fmt.Errorf("invalid TOML config: %w", err)
+	}
+
+	mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
+	rawServer, exists := mcpServers[googleDriveMcpServerName]
+	if !exists {
+		result.Status = "not_started"
+		return result, nil
+	}
+	serverMap, ok := rawServer.(map[string]interface{})
+	if !ok {
+		result.Status = "failed"
+		return result, fmt.Errorf("invalid Grok mcp_servers.%s entry", googleDriveMcpServerName)
+	}
+	server, ok := grokServerFromMap(serverMap)
+	if !ok {
+		result.Status = "failed"
+		return result, fmt.Errorf("invalid Grok mcp_servers.%s entry", googleDriveMcpServerName)
+	}
+	result = applyDetectedServerStatus(result, server.Command, server.Args, "")
+
+	// Check if paths match current runtime config
+	if detectStaleGrokConfig(server, r.workspace, result.AccountHomePath, mcpStatus) {
+		result.Status = "config_stale"
+		return result, nil
+	}
+
+	result.Status = "configured"
+	return result, nil
+}
+
+// detectStaleGrokConfig detects if Grok config drifts from the expected MCP server shape.
+func detectStaleGrokConfig(server grokMcpServer, workspace string, accountHomePath string, mcpStatus googleDriveMcpRuntimeConfig) bool {
+	parsedWorkspace, parsedAccountHome, parsedMode, parsedYoloMode, ok := parseGoogleDriveProxyMcpInvocation(server.Command, server.Args)
+	if !ok {
+		return true
+	}
+	if strings.TrimSpace(filepath.Clean(workspace)) != parsedWorkspace || strings.TrimSpace(accountHomePath) != parsedAccountHome {
+		return true
+	}
+	expected := expectedGrokGoogleDriveMcpServer(workspace, accountHomePath, parsedMode, parsedYoloMode, mcpStatus)
+	expected.Command = server.Command
+	expected.Args = append([]string(nil), server.Args...)
+	return !grokServerConfigMatches(server, expected)
+}
+
 // detectProviderConfigStale checks if provider config paths are stale
 func (r *Runner) detectProviderConfigStale(providerKey string, configPath string, mcpStatus googleDriveMcpRuntimeConfig) (bool, error) {
 	switch providerKey {
@@ -1259,6 +1479,30 @@ func (r *Runner) detectProviderConfigStale(providerKey string, configPath string
 			return false, nil // Not configured
 		}
 		return detectStaleClaudeConfig(server, "", filepath.Dir(configPath), mcpStatus), nil
+
+	case "grok":
+		raw, err := os.ReadFile(configPath)
+		if err != nil {
+			return false, err
+		}
+		doc := map[string]interface{}{}
+		if err := toml.Unmarshal(raw, &doc); err != nil {
+			return false, nil // If invalid, not necessarily stale
+		}
+		mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
+		rawServer, exists := mcpServers[googleDriveMcpServerName]
+		if !exists {
+			return false, nil // Not configured
+		}
+		serverMap, ok := rawServer.(map[string]interface{})
+		if !ok {
+			return false, nil
+		}
+		server, ok := grokServerFromMap(serverMap)
+		if !ok {
+			return false, nil
+		}
+		return detectStaleGrokConfig(server, "", filepath.Dir(configPath), mcpStatus), nil
 
 	default:
 		return false, fmt.Errorf("unsupported provider: %s", providerKey)
