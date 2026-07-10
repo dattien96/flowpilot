@@ -290,11 +290,12 @@ export function ChatInput(): React.ReactElement {
   const selectedModel = useStore((s) => s.selectedModel);
   const reasoningEffort = useStore((s) => s.reasoningEffort);
   const yoloMode = useStore((s) => s.yoloMode);
+  const grokYoloPostureLoading = useStore((s) => s.grokYoloPostureLoading);
   const loadSkills = useStore((s) => s.loadSkills);
   const selectProvider = useStore((s) => s.selectProvider);
   const setSelectedModel = useStore((s) => s.setSelectedModel);
   const setReasoningEffort = useStore((s) => s.setReasoningEffort);
-  const setYoloMode = useStore((s) => s.setYoloMode);
+  const toggleYoloForActiveProvider = useStore((s) => s.toggleYoloForActiveProvider);
   const generateChatSummary = useStore((s) => s.generateChatSummary);
   const summaryGenerating = useStore((s) => s.summaryGenerating);
   const pendingApprovals = useStore((s) => s.pendingApprovals);
@@ -866,13 +867,15 @@ export function ChatInput(): React.ReactElement {
                       role="switch"
                       aria-checked={yoloMode}
                       className={`yolo-toggle ${yoloMode ? "active" : ""}`}
-                      onClick={() => setYoloMode(!yoloMode)}
-                      disabled={blocked}
+                      onClick={() => toggleYoloForActiveProvider(!yoloMode)}
+                      disabled={blocked || grokYoloPostureLoading}
                     >
                       <span className="yolo-toggle-track" aria-hidden="true">
                         <span className="yolo-toggle-thumb" />
                       </span>
-                      <span className="yolo-toggle-label">{yoloMode ? "On" : "Off"}</span>
+                      <span className="yolo-toggle-label">
+                        {grokYoloPostureLoading ? "…" : yoloMode ? "On" : "Off"}
+                      </span>
                     </button>
                   </div>
                   <div className="chat-controller-switch chat-controller-switch-top">

@@ -721,6 +721,15 @@ export interface RunnerClient {
   continueFlow?(parentRunId: string, feedback: string): Promise<AgentGraphSnapshot>;
   connectProviderAccount(providerKey: ProviderKey): Promise<void>;
   activateProviderAccount(accountId: string): Promise<void>;
+  /**
+   * Grok-only YOLO enforcement (Task-218). Unlike Claude/Codex, where YOLO is
+   * just a CLI flag re-derived on the next turn, Grok's YOLO=false direction
+   * requires the backend to rewrite the active account's own config.toml and
+   * respawn its shared process for gating to actually take effect -- so this
+   * call is awaited (with a loading modal) instead of a synchronous local
+   * state flip. See store.ts's toggleYoloForActiveProvider.
+   */
+  applyGrokYoloPosture(yolo: boolean): Promise<void>;
   openProviderAccountTerminal(accountId: string): Promise<void>;
   /** System control — mirrors admin-web's runner gateway (`POST /system/restart`). */
   restartStack(): Promise<void>;

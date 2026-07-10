@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -46,7 +47,7 @@ func TestEnsureGrokProcessInitializes(t *testing.T) {
 	defer mockGrokInitProcess(t)()
 	r, _ := New(".")
 
-	h, err := r.ensureGrokProcess(context.Background(), "default", ".", nil, "", "")
+	h, err := r.ensureGrokProcess(context.Background(), "default", ".", nil, "", "", false)
 	if err != nil {
 		t.Fatalf("ensureGrokProcess: %v", err)
 	}
@@ -59,13 +60,13 @@ func TestEnsureGrokProcessInitializes(t *testing.T) {
 	}
 
 	// Reuse: same scope+model+effort returns the same handle (one shared process).
-	h2, err := r.ensureGrokProcess(context.Background(), "default", ".", nil, "", "")
+	h2, err := r.ensureGrokProcess(context.Background(), "default", ".", nil, "", "", false)
 	if err != nil || h2 != h {
 		t.Fatalf("same-scope ensure should reuse the handle (h2==h=%v, err=%v)", h2 == h, err)
 	}
 
 	// Account switch: a different scope tears down + recreates (new handle).
-	h3, err := r.ensureGrokProcess(context.Background(), "acct-2", ".", nil, "", "")
+	h3, err := r.ensureGrokProcess(context.Background(), "acct-2", ".", nil, "", "", false)
 	if err != nil {
 		t.Fatalf("recreate ensure: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestEnsureGrokProcessInitializes(t *testing.T) {
 	// Model change on the SAME scope also tears down + recreates (Grok's CLI only
 	// accepts --model/--reasoning-effort as `grok agent` launch flags, so a
 	// turn-level model switch can only take effect via respawn).
-	h4, err := r.ensureGrokProcess(context.Background(), "acct-2", ".", nil, "grok-4.5", "")
+	h4, err := r.ensureGrokProcess(context.Background(), "acct-2", ".", nil, "grok-4.5", "", false)
 	if err != nil {
 		t.Fatalf("model-change ensure: %v", err)
 	}
@@ -90,7 +91,7 @@ func TestEnsureGrokProcessInitializes(t *testing.T) {
 	}
 
 	// Reasoning-effort change on the SAME scope+model also tears down + recreates.
-	h5, err := r.ensureGrokProcess(context.Background(), "acct-2", ".", nil, "grok-4.5", "high")
+	h5, err := r.ensureGrokProcess(context.Background(), "acct-2", ".", nil, "grok-4.5", "high", false)
 	if err != nil {
 		t.Fatalf("reasoning-effort-change ensure: %v", err)
 	}
@@ -114,7 +115,7 @@ func TestEnsureGrokProcessPassesModelAndReasoningEffortAsLaunchFlags(t *testing.
 	defer mockGrokInitProcessCapturingArgs(t, &args)()
 	r, _ := New(".")
 
-	h, err := r.ensureGrokProcess(context.Background(), "default", ".", nil, "grok-4.5", "high")
+	h, err := r.ensureGrokProcess(context.Background(), "default", ".", nil, "grok-4.5", "high", false)
 	if err != nil {
 		t.Fatalf("ensureGrokProcess: %v", err)
 	}
@@ -139,7 +140,7 @@ func TestEnsureGrokProcessOmitsEmptyModelAndReasoningEffortFlags(t *testing.T) {
 	defer mockGrokInitProcessCapturingArgs(t, &args)()
 	r, _ := New(".")
 
-	h, err := r.ensureGrokProcess(context.Background(), "default", ".", nil, "", "")
+	h, err := r.ensureGrokProcess(context.Background(), "default", ".", nil, "", "", false)
 	if err != nil {
 		t.Fatalf("ensureGrokProcess: %v", err)
 	}
@@ -149,6 +150,125 @@ func TestEnsureGrokProcessOmitsEmptyModelAndReasoningEffortFlags(t *testing.T) {
 	if len(args) != len(want) || args[0] != want[0] || args[1] != want[1] {
 		t.Fatalf("launch args = %v, want %v", args, want)
 	}
+}
+
+// TestEnsureGrokProcessPassesAlwaysApproveFlagWhenRequested is a regression
+// test for Task-218: YOLO=true must actually reach the spawned process as
+// --always-approve, not rely solely on the runner-side bridge auto-answering
+// session/request_permission (which only helps if Grok happens to ask at
+// all -- see Task-208 Open Question Q-1).
+func TestEnsureGrokProcessPassesAlwaysApproveFlagWhenRequested(t *testing.T) {
+	var args []string
+	defer mockGrokInitProcessCapturingArgs(t, &args)()
+	r, _ := New(".")
+
+	h, err := r.ensureGrokProcess(context.Background(), "default", ".", nil, "", "", true)
+	if err != nil {
+		t.Fatalf("ensureGrokProcess: %v", err)
+	}
+	defer h.close()
+
+	want := []string{"agent", "--always-approve", "stdio"}
+	if len(args) != len(want) {
+		t.Fatalf("launch args = %v, want %v", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("launch args = %v, want %v", args, want)
+		}
+	}
+	if !h.alwaysApprove {
+		t.Fatal("handle.alwaysApprove = false, want true")
+	}
+}
+
+// TestEnsureGrokProcessRespawnsWhenAlwaysApproveFlips is a regression test for
+// Task-218: a YOLO change on the SAME scope/model/effort must still force a
+// respawn (mirroring the existing model/reasoningEffort respawn behavior),
+// since a live process only picked up whatever posture it was launched with.
+func TestEnsureGrokProcessRespawnsWhenAlwaysApproveFlips(t *testing.T) {
+	defer mockGrokInitProcess(t)()
+	r, _ := New(".")
+
+	h1, err := r.ensureGrokProcess(context.Background(), "default", ".", nil, "", "", false)
+	if err != nil {
+		t.Fatalf("ensureGrokProcess (false): %v", err)
+	}
+	defer h1.close()
+
+	h2, err := r.ensureGrokProcess(context.Background(), "default", ".", nil, "", "", true)
+	if err != nil {
+		t.Fatalf("ensureGrokProcess (true): %v", err)
+	}
+	defer h2.close()
+
+	if h2 == h1 {
+		t.Fatal("expected a new handle when alwaysApprove flips for the same scope/model/effort")
+	}
+	if !h2.alwaysApprove {
+		t.Fatal("handle.alwaysApprove = false after flipping to true, want true")
+	}
+
+	// Flipping back to false is also a respawn, not a reuse of h2.
+	h3, err := r.ensureGrokProcess(context.Background(), "default", ".", nil, "", "", false)
+	if err != nil {
+		t.Fatalf("ensureGrokProcess (false again): %v", err)
+	}
+	defer h3.close()
+	if h3 == h2 {
+		t.Fatal("expected a new handle when alwaysApprove flips back to false")
+	}
+}
+
+// TestEnsureGrokProcessAutoEnforcesGatingUnderYoloOff is the regression test for
+// Task-218's auto-enforcement: spawning under YOLO=false (alwaysApprove=false)
+// against an account whose config.toml bypasses the permission channel
+// (permission_mode="always-approve") must rewrite it to "default" BEFORE the
+// process starts — automatically, without the user ever toggling the desktop
+// YOLO switch. YOLO=true must leave the file untouched.
+func TestEnsureGrokProcessAutoEnforcesGatingUnderYoloOff(t *testing.T) {
+	defer mockGrokInitProcess(t)()
+
+	t.Run("yolo-off rewrites always-approve to default", func(t *testing.T) {
+		grokHome := writeGrokConfigTomlFixture(t, "always-approve")
+		r, _ := New(".")
+		h, err := r.ensureGrokProcess(context.Background(), "acct-1", ".", map[string]string{"GROK_HOME": grokHome}, "", "", false)
+		if err != nil {
+			t.Fatalf("ensureGrokProcess: %v", err)
+		}
+		defer h.close()
+		if mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome); bypasses {
+			t.Fatalf("config.toml still bypasses after YOLO=false spawn: mode=%q", mode)
+		}
+	})
+
+	t.Run("yolo-on leaves always-approve untouched", func(t *testing.T) {
+		grokHome := writeGrokConfigTomlFixture(t, "always-approve")
+		r, _ := New(".")
+		h, err := r.ensureGrokProcess(context.Background(), "acct-2", ".", map[string]string{"GROK_HOME": grokHome}, "", "", true)
+		if err != nil {
+			t.Fatalf("ensureGrokProcess: %v", err)
+		}
+		defer h.close()
+		if _, bypasses := grokConfigPermissionModeBypassesGating(grokHome); !bypasses {
+			t.Fatal("YOLO=true must not rewrite config.toml (--always-approve covers bypass), but permission_mode changed")
+		}
+	})
+
+	t.Run("yolo-off leaves a non-bypassing config untouched", func(t *testing.T) {
+		grokHome := writeGrokConfigTomlFixture(t, "default")
+		info1, _ := os.Stat(filepath.Join(grokHome, "config.toml"))
+		r, _ := New(".")
+		h, err := r.ensureGrokProcess(context.Background(), "acct-3", ".", map[string]string{"GROK_HOME": grokHome}, "", "", false)
+		if err != nil {
+			t.Fatalf("ensureGrokProcess: %v", err)
+		}
+		defer h.close()
+		info2, _ := os.Stat(filepath.Join(grokHome, "config.toml"))
+		if info1 != nil && info2 != nil && !info1.ModTime().Equal(info2.ModTime()) {
+			t.Fatal("a config that does not bypass must not be rewritten under YOLO=false")
+		}
+	})
 }
 
 func TestProviderRegistryForGrokUsesPlaceholderWhenExplicitlyDisabled(t *testing.T) {
@@ -211,6 +331,67 @@ func TestProviderRegistryForGrokThreadsModelAndReasoningEffortIntoLaunch(t *test
 	}
 	if r.grokProcess != nil {
 		r.grokProcess.close()
+	}
+}
+
+// TestProviderRegistryForGrokMapsReasoningEffortToSupportedLaunchFlag proves
+// Task-220 (GR-35): the canonical FlowPilot reasoning-effort a turn resolves is
+// mapped to a Grok-supported effort id before it becomes the `grok agent
+// --reasoning-effort` launch flag. grok-4.5 only accepts high/medium/low, so an
+// unsupported value (xhigh/max) must degrade to the nearest supported id, and an
+// unmappable value must omit the flag entirely (model default applies) rather
+// than passing a value the CLI would reject.
+func TestProviderRegistryForGrokMapsReasoningEffortToSupportedLaunchFlag(t *testing.T) {
+	t.Setenv("XAI_API_KEY", "test-key")
+	cases := []struct {
+		name       string
+		effortIn   string
+		wantEffort string // "" means the --reasoning-effort flag must be absent
+	}{
+		{"high stays high", "high", "high"},
+		{"xhigh degrades to high", "xhigh", "high"},
+		{"max degrades to high", "max", "high"},
+		{"medium stays medium", "medium", "medium"},
+		{"low stays low", "low", "low"},
+		{"minimal degrades to low", "minimal", "low"},
+		{"none degrades to low", "none", "low"},
+		{"empty omits the flag", "", ""},
+		{"unknown omits the flag", "turbo", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var args []string
+			defer mockGrokInitProcessCapturingArgs(t, &args)()
+			r, _ := New(".")
+			reg := ProviderRegistryFor(r)
+
+			adapter, err := reg.Adapter(ProviderKeyGrok, "grok-4.5", tc.effortIn)
+			if err != nil {
+				t.Fatalf("grok adapter: %v", err)
+			}
+			if _, ok := adapter.(*grokAdapter); !ok {
+				t.Fatalf("expected live grok adapter, got %T", adapter)
+			}
+			defer func() {
+				if r.grokProcess != nil {
+					r.grokProcess.close()
+				}
+			}()
+
+			want := []string{"agent", "--model", "grok-4.5"}
+			if tc.wantEffort != "" {
+				want = append(want, "--reasoning-effort", tc.wantEffort)
+			}
+			want = append(want, "stdio")
+			if len(args) != len(want) {
+				t.Fatalf("launch args = %v, want %v", args, want)
+			}
+			for i := range want {
+				if args[i] != want[i] {
+					t.Fatalf("launch args = %v, want %v", args, want)
+				}
+			}
+		})
 	}
 }
 

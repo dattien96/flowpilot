@@ -271,6 +271,9 @@ export class HttpWsRunnerClient implements RunnerClient {
   activateProviderAccount(accountId: string): Promise<void> {
     return this.postJSON<void>("/provider-accounts/activate", { accountId });
   }
+  applyGrokYoloPosture(yolo: boolean): Promise<void> {
+    return this.postJSON<void>("/provider-accounts/grok-yolo-posture", { yolo });
+  }
   openProviderAccountTerminal(accountId: string): Promise<void> {
     return this.postJSON<void>("/provider-accounts/test", { accountId });
   }

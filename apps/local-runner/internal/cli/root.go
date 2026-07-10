@@ -457,6 +457,33 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 
 				writeHTTPJSON(w, map[string]any{"account": account})
 			})
+			// /provider-accounts/grok-yolo-posture (Task-218): the Grok-only
+			// counterpart to the desktop's YOLO toggle. Unlike Claude/Codex, whose
+			// YOLO posture is just a CLI flag re-derived on the next turn, Grok's
+			// YOLO=false direction requires rewriting the active account's own
+			// config.toml and respawning the shared process -- so the desktop
+			// awaits this call (showing a loading modal) instead of flipping local
+			// state immediately. See ApplyGrokYoloPosture (grok_process.go).
+			mux.HandleFunc("/provider-accounts/grok-yolo-posture", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload struct {
+					Yolo bool `json:"yolo"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				if err := instance.ApplyGrokYoloPosture(r.Context(), payload.Yolo); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				writeHTTPJSON(w, map[string]any{"ok": true})
+			})
 			mux.HandleFunc("/provider-accounts/test", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

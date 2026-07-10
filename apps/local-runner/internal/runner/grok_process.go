@@ -383,10 +383,17 @@ type grokProcessHandle struct {
 	// can detect a turn-level change and respawn -- see ensureGrokProcess.
 	model           string
 	reasoningEffort string
-	dispatcher      *grokDispatcher
-	adapter         *grokAdapter
-	initResult      map[string]any
-	kill            func()
+	// alwaysApprove records whether this running process was launched with
+	// --always-approve (Task-218/YOLO=true). Compared alongside model/
+	// reasoningEffort so a YOLO flip also forces a respawn, the same way a
+	// model/effort change already does -- otherwise a live process launched
+	// under the old posture would keep running with it until something else
+	// happened to bump scope/model/effort.
+	alwaysApprove bool
+	dispatcher    *grokDispatcher
+	adapter       *grokAdapter
+	initResult    map[string]any
+	kill          func()
 }
 
 func (h *grokProcessHandle) close() {
@@ -417,12 +424,20 @@ func (h *grokProcessHandle) close() {
 // and Claude (spawned fresh per turn with `--model`), the only way FlowPilot
 // can make Grok honor a turn-level model/reasoning-effort change is to
 // respawn the whole process with the new flags.
-func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, extraEnv map[string]string, model, reasoningEffort string) (*grokProcessHandle, error) {
+//
+// alwaysApprove (Task-218) mirrors the same launch-time-only constraint: it is
+// the caller's current desired YOLO posture (Runner.grokDesiredAlwaysApprove),
+// applied as --always-approve when true. It is also compared in the reuse
+// check below so a YOLO flip forces a respawn exactly like a model/effort
+// change does — Grok's ACP protocol has no session-level way to change this
+// mid-process either.
+func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, extraEnv map[string]string, model, reasoningEffort string, alwaysApprove bool) (*grokProcessHandle, error) {
 	r.grokProcessMu.Lock()
 	defer r.grokProcessMu.Unlock()
 
 	if r.grokProcess != nil && r.grokProcess.scopeKey == scopeKey &&
 		r.grokProcess.model == model && r.grokProcess.reasoningEffort == reasoningEffort &&
+		r.grokProcess.alwaysApprove == alwaysApprove &&
 		!r.grokProcess.dispatcher.isClosed() {
 		return r.grokProcess, nil
 	}
@@ -431,14 +446,30 @@ func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, ex
 		r.grokProcess = nil
 	}
 
-	if grokHome := strings.TrimSpace(extraEnv["GROK_HOME"]); grokHome != "" {
+	// AUTO-ENFORCE YOLO=false gating (Task-218, SS-08 YOLO-is-SSOT): Grok has no
+	// CLI flag for the gated direction (confirmed live, Task-208 DOD-5), so when
+	// a process is about to spawn under YOLO=false the ONLY lever is the account's
+	// own config.toml. If it currently bypasses the permission channel
+	// (permission_mode="always-approve", set by the user's own `/always-approve`
+	// TUI toggle), rewrite it to "default" HERE — before `grok` reads it at
+	// startup — so gating is enforced on every launch automatically, without
+	// waiting for the user to flip the desktop YOLO toggle (which drives
+	// ApplyGrokYoloPosture). Deliberately conservative: only rewrites when the
+	// value genuinely bypasses, so a config that is already default/absent/other
+	// is never touched. No-op-safe (setGrokConfigPermissionMode returns
+	// changed=false when the value already matches). YOLO=true never touches the
+	// file — --always-approve below covers bypass regardless of the file.
+	if grokHome := strings.TrimSpace(extraEnv["GROK_HOME"]); grokHome != "" && !alwaysApprove {
 		if mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome); bypasses {
-			log.Printf("[grok-acp] WARNING: %s/config.toml has [ui] permission_mode=%q — Grok will not send "+
-				"session/request_permission at all for this account, so YOLO=false deny-by-default is NOT "+
-				"enforced end-to-end (live-verified during Task-213 re-verification). FlowPilot does not "+
-				"rewrite this file (mirrors the Claude ensureClaudeConfigSettings 'never clobber' precedent) — "+
-				"the account owner must set permission_mode to \"default\" (or run `/always-approve off` in the "+
-				"grok TUI) for gating to actually take effect.", grokHome, mode)
+			if changed, werr := setGrokConfigPermissionMode(grokHome, "default"); werr != nil {
+				log.Printf("[grok-acp] WARNING: could not auto-enforce YOLO=false gating: rewriting %s/config.toml "+
+					"permission_mode (was %q) failed: %v — Grok may still skip session/request_permission this launch.",
+					grokHome, mode, werr)
+			} else if changed {
+				log.Printf("[grok-acp] auto-enforced YOLO=false gating: rewrote %s/config.toml permission_mode %q -> "+
+					"\"default\" so Grok sends session/request_permission and the runner deny-by-default takes effect.",
+					grokHome, mode)
+			}
 		}
 	}
 
@@ -448,6 +479,9 @@ func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, ex
 	}
 	if e := strings.TrimSpace(reasoningEffort); e != "" {
 		args = append(args, "--reasoning-effort", e)
+	}
+	if alwaysApprove {
+		args = append(args, "--always-approve")
 	}
 	args = append(args, "stdio")
 	cmd := commandContextFn(ctx, grokBinaryName(), args...)
@@ -483,7 +517,7 @@ func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, ex
 	adapter.grokHome = strings.TrimSpace(extraEnv["GROK_HOME"])
 	adapter.initResult = initResult
 
-	h := &grokProcessHandle{scopeKey: scopeKey, model: model, reasoningEffort: reasoningEffort, dispatcher: dispatcher, adapter: adapter, initResult: initResult, kill: kill}
+	h := &grokProcessHandle{scopeKey: scopeKey, model: model, reasoningEffort: reasoningEffort, alwaysApprove: alwaysApprove, dispatcher: dispatcher, adapter: adapter, initResult: initResult, kill: kill}
 	r.grokProcess = h
 	return h, nil
 }
@@ -520,9 +554,14 @@ func grokProcessEnv(extraEnv map[string]string) []string {
 // permission-channel round-trip (Task-208's deny-by-default is unreachable —
 // there is nothing to deny); with permission_mode="default" the same write
 // correctly triggered session/request_permission and a runner deny blocked
-// it. This is diagnostic-only — FlowPilot never rewrites the file, mirroring
-// ensureClaudeConfigSettings's "never clobber an existing settings.json"
-// precedent for the identical Claude-side risk (BUG-069/CA-079 class).
+// it. This reader itself is diagnostic-only and never writes anything — but
+// unlike Claude's settings.json (never touched at all, matching
+// ensureClaudeConfigSettings's "never clobber" precedent), Grok's config.toml
+// IS deliberately rewritten elsewhere, by setGrokConfigPermissionMode /
+// ApplyGrokYoloPosture (Task-218), because there is no `grok agent stdio` flag
+// that can force gating back on the way Codex's `-c approval_policy=...` or
+// Claude's `--permission-mode` can — this file is the only lever left for
+// that direction, so it can no longer be treated as fully hands-off.
 //
 // Deliberately conservative: only the one value actually observed to bypass
 // gating is treated as unsafe. Grok's own `/always-approve` slash command
@@ -553,4 +592,157 @@ func grokConfigPermissionModeBypassesGating(grokHome string) (mode string, bypas
 		return mode, strings.EqualFold(mode, "always-approve")
 	}
 	return "", false
+}
+
+// setGrokConfigPermissionMode rewrites <grokHome>/config.toml's [ui]
+// permission_mode to desiredMode (Task-218). This is the only lever FlowPilot
+// has to force Grok's gating back on for an account that has its own
+// permission_mode="always-approve" persisted (e.g. via the account owner's own
+// `/always-approve` slash command) — there is no `grok agent stdio` flag for
+// this direction (confirmed live, Task-208 DOD-5), unlike Codex's
+// `-c approval_policy=...` or Claude's `--permission-mode`, which never touch
+// a file on disk at all.
+//
+// Deliberately minimal: this is a line-based patch of exactly the one key,
+// mirroring grokConfigPermissionModeBypassesGating's own line-scanning read
+// above rather than a full TOML parse/re-marshal — every other line (other
+// keys, comments, section ordering, blank lines) is preserved byte-for-byte.
+// If the [ui] section exists but the key is missing, the key is inserted
+// right after the section header; if the section itself is missing, a new
+// [ui] section is appended at the end of the file; if the file doesn't exist
+// at all, a minimal one is created. Returns changed=false, nil if the value
+// already matches (no write performed) — avoids racing/thrashing a
+// concurrently open grok TUI for no reason.
+//
+// Written atomically (temp file in the same directory + os.Rename), mirroring
+// local_file_session_store.go's own sessions.ndjson rewrite.
+func setGrokConfigPermissionMode(grokHome, desiredMode string) (changed bool, err error) {
+	path := filepath.Join(grokHome, "config.toml")
+	raw, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return false, readErr
+	}
+
+	lines := strings.Split(string(raw), "\n")
+	if len(raw) == 0 {
+		lines = nil
+	}
+
+	uiSectionLine := -1
+	keyLine := -1
+	inUISection := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			inUISection = trimmed == "[ui]"
+			if inUISection {
+				uiSectionLine = i
+			}
+			continue
+		}
+		if !inUISection || !strings.HasPrefix(trimmed, "permission_mode") {
+			continue
+		}
+		key, _, ok := strings.Cut(trimmed, "=")
+		if !ok || strings.TrimSpace(key) != "permission_mode" {
+			continue
+		}
+		keyLine = i
+		break
+	}
+
+	desiredLine := fmt.Sprintf("permission_mode = %q", desiredMode)
+
+	switch {
+	case keyLine >= 0:
+		if strings.TrimSpace(lines[keyLine]) == desiredLine {
+			return false, nil
+		}
+		lines[keyLine] = desiredLine
+	case uiSectionLine >= 0:
+		out := make([]string, 0, len(lines)+1)
+		out = append(out, lines[:uiSectionLine+1]...)
+		out = append(out, desiredLine)
+		out = append(out, lines[uiSectionLine+1:]...)
+		lines = out
+	default:
+		if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) != "" {
+			lines = append(lines, "")
+		}
+		lines = append(lines, "[ui]", desiredLine)
+	}
+
+	content := strings.Join(lines, "\n")
+	if err := os.MkdirAll(grokHome, 0o755); err != nil {
+		return false, err
+	}
+	tmpPath := path + ".tmp"
+	tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return false, err
+	}
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return false, err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ApplyGrokYoloPosture is the entry point for the desktop's Grok-only YOLO
+// toggle (Task-218; POST /provider-accounts/grok-yolo-posture). Unlike
+// Claude/Codex, where flipping YOLO only changes a CLI flag passed on the next
+// launch, Grok's YOLO=false direction has no such flag — the account's own
+// config.toml must be rewritten and the live process respawned for gating to
+// actually take effect, which is why this call is synchronous/awaited by the
+// UI (with a loading modal) instead of a fire-and-forget local state flip.
+//
+// This endpoint is the EAGER path: it applies the change immediately (rewrite +
+// respawn now) so the modal reflects a real, completed change. Enforcement is
+// ALSO automatic on every launch — ensureGrokProcess rewrites an always-approve
+// config to "default" whenever it spawns under YOLO=false, so gating holds even
+// if the user never touches this toggle. This endpoint just makes it instant.
+//
+// yolo=true never touches config.toml: --always-approve (passed by
+// ensureGrokProcess whenever grokDesiredAlwaysApprove is true) bypasses
+// regardless of whatever the file says, so there's nothing to gain from also
+// rewriting it, and every unnecessary write is one more chance to race a
+// concurrently open grok TUI for no benefit.
+//
+// Known, accepted limitation: grokProcess is a single shared OS process per
+// account (keyed by scopeKey == account.ID), so two concurrent runs on the
+// SAME Grok account with different desired YOLO values will thrash — this is
+// the same pre-existing tradeoff model/reasoningEffort changes already have
+// (see ensureGrokProcess's own doc comment), not a new regression introduced
+// here.
+func (r *Runner) ApplyGrokYoloPosture(ctx context.Context, yolo bool) error {
+	account, err := r.ResolveProviderAccount(string(ProviderKeyGrok), "")
+	if err != nil {
+		return fmt.Errorf("resolve active grok account: %w", err)
+	}
+	if strings.TrimSpace(account.HomePath) == "" {
+		return fmt.Errorf("active grok account %q has no home path", account.ID)
+	}
+
+	if !yolo {
+		if _, err := setGrokConfigPermissionMode(account.HomePath, "default"); err != nil {
+			return fmt.Errorf("rewrite %s/config.toml: %w", account.HomePath, err)
+		}
+	}
+
+	r.grokProcessMu.Lock()
+	r.grokDesiredAlwaysApprove = yolo
+	if r.grokProcess != nil {
+		r.grokProcess.close()
+		r.grokProcess = nil
+	}
+	r.grokProcessMu.Unlock()
+	return nil
 }

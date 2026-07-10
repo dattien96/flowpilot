@@ -151,6 +151,12 @@ type Runner struct {
 	// bound to the active provider account scope. nil until first ensure.
 	grokProcessMu sync.Mutex
 	grokProcess   *grokProcessHandle
+	// grokDesiredAlwaysApprove is the current YOLO posture for Grok (Task-218),
+	// set explicitly by ApplyGrokYoloPosture rather than threaded through the
+	// shared ProviderRegistration/Adapter() call chain (which Claude/Codex/Gemini
+	// would also have to accept and ignore). ensureGrokProcess reads this to
+	// decide whether to pass --always-approve at launch. Guarded by grokProcessMu.
+	grokDesiredAlwaysApprove bool
 }
 
 func New(workspace string) (*Runner, error) {

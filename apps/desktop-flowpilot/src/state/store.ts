@@ -158,6 +158,11 @@ interface AppState {
   selectedModel?: string;
   reasoningEffort?: string;
   yoloMode: boolean;
+  /** True while toggleYoloForActiveProvider's Grok-only async path is applying
+   *  the new posture on the backend (config.toml rewrite + process respawn,
+   *  Task-218) — Claude/Codex/Gemini never set this, their YOLO toggle stays
+   *  fully synchronous. Drives the loading modal in ChatWorkspace.tsx. */
+  grokYoloPostureLoading: boolean;
   summaryGenerating: boolean;
   chatStartMode: ChatStartMode;
   chatSourceDocId: string;
@@ -281,6 +286,15 @@ interface AppState {
   setSelectedModel(model?: string): void;
   setReasoningEffort(effort?: string): void;
   setYoloMode(yolo: boolean): void;
+  /**
+   * User-facing YOLO toggle entry point. For every provider except Grok this
+   * is a synchronous local flip identical to setYoloMode. For Grok (Task-218)
+   * it awaits client.applyGrokYoloPosture — YOLO=false there requires the
+   * backend to rewrite the active account's config.toml and respawn its
+   * shared process, so yoloMode only updates once that resolves; failure
+   * leaves yoloMode at its prior value and surfaces a timeline error.
+   */
+  toggleYoloForActiveProvider(next: boolean): Promise<void>;
   generateChatSummary(): Promise<void>;
   setChatStartMode(mode: ChatStartMode): void;
   setChatSourceDocId(sourceDocId: string): void;
@@ -377,6 +391,7 @@ export const useStore = create<AppState>((set, get) => ({
   chatMode: "normal_chat",
   selectedProvider: "codex",
   yoloMode: false,
+  grokYoloPostureLoading: false,
   summaryGenerating: false,
   chatStartMode: "normal",
   chatSourceDocId: "",
@@ -915,6 +930,36 @@ export const useStore = create<AppState>((set, get) => ({
 
   setYoloMode(yolo) {
     set({ yoloMode: yolo });
+  },
+
+  async toggleYoloForActiveProvider(next) {
+    const { client, selectedProvider } = get();
+    if (selectedProvider !== "grok") {
+      set({ yoloMode: next });
+      return;
+    }
+
+    set({ grokYoloPostureLoading: true });
+    try {
+      await client.applyGrokYoloPosture(next);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] applyGrokYoloPosture failed:", err);
+      set((s) => ({
+        grokYoloPostureLoading: false,
+        timeline: [
+          ...s.timeline,
+          {
+            kind: "system",
+            id: `grok-yolo-err-${s.timeline.length}`,
+            text: `Failed to ${next ? "enable" : "disable"} YOLO for Grok: ${String(err)}`,
+            tone: "error",
+          },
+        ],
+      }));
+      return;
+    }
+    set({ yoloMode: next, grokYoloPostureLoading: false });
   },
 
   async generateChatSummary() {
