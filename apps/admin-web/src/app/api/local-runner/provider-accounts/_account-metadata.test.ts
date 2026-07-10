@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildClaudeUsageSummary,
+  grokQuotaFromBilling,
   mapGeminiQuotaUsageDetailLines,
 } from "./_account-metadata";
 
@@ -108,5 +109,45 @@ describe("buildClaudeUsageSummary", () => {
         extraUsageDisabledReason: null,
       }),
     ).toBe("Stripe Subscription | extra usage enabled");
+  });
+});
+
+// Task-216: corrects CP-46 Q-5/Task-210 Q-1's "no machine-readable quota
+// endpoint" finding — this is the exact response shape captured live from
+// GET {cli-chat-proxy.grok.com}/v1/billing.
+describe("grokQuotaFromBilling", () => {
+  it("maps a monthly billing config to a remaining-percent line", () => {
+    expect(
+      grokQuotaFromBilling({
+        config: {
+          monthlyLimit: { val: 15000 },
+          used: { val: 56 },
+          billingPeriodEnd: "2026-08-01T00:00:00+00:00",
+        },
+      }),
+    ).toEqual({
+      label: "Team Credits (Monthly)",
+      remainingPercent: 99,
+      resetAt: "2026-08-01T00:00:00.000Z",
+    });
+  });
+
+  it("falls back to weeklyLimit when monthlyLimit is absent", () => {
+    expect(
+      grokQuotaFromBilling({
+        config: {
+          weeklyLimit: { val: 100 },
+          used: { val: 40 },
+        },
+      }),
+    ).toMatchObject({
+      label: "Team Credits (Weekly)",
+      remainingPercent: 60,
+    });
+  });
+
+  it("returns null when neither limit field is present", () => {
+    expect(grokQuotaFromBilling({ config: {} })).toBeNull();
+    expect(grokQuotaFromBilling(null)).toBeNull();
   });
 });

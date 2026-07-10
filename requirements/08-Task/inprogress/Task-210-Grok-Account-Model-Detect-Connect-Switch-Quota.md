@@ -46,7 +46,7 @@
 
 ### Open Questions
 
-- `Q-1` (CP-46 `Q-5`) Does Grok expose any machine-readable quota/usage endpoint beyond the turn-time `402`, or is the account card limited to email/plan?
+- `Q-1` (CP-46 `Q-5`) Does Grok expose any machine-readable quota/usage endpoint beyond the turn-time `402`, or is the account card limited to email/plan? **Corrected (2026-07-10):** the "no endpoint" conclusion below was based only on the ACP JSON-RPC stream. Confirmed live: `GET https://cli-chat-proxy.grok.com/v1/billing`, authenticated with the same cached bearer token already in `~/.grok/auth.json`, returns a real `monthlyLimit`/`weeklyLimit`+`used`+`billingPeriodEnd` billing body. `loadGrokAccountMetadata` now populates a real `usageDetailLine` from it. See [Task-216: Grok Real Usage/Quota Fetch](../done/Task-216-Grok-Real-Usage-Quota-Fetch.md).
 - `Q-2` (CP-46 `Q-6`) Does `grok login --device-auth` cleanly isolate to a fresh `GROK_HOME` the same way Codex's device flow does, with no cross-contamination of a previously-logged-in default home?
 
 ### Source Refs
