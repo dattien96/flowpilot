@@ -5,7 +5,7 @@
 - Document ID: `Task-220`
 - Title: `Grok Per-Turn Reasoning-Effort Delivery To CLI`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-10`
