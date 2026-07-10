@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
-- Last Updated: `2026-07-10`
+- Last Updated: `2026-07-11`
 - Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-208: Grok Permission Channel And YOLO Posture](./Task-208-Grok-Permission-Channel-And-Yolo-Posture.md)
 - Child Documents: `None`
 - Related Documents: [SD-16: Agent Spawn And Tool Calling Design](../../06-System-Tech-Design/SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [Task-055: Fix Claude Ask User Live Flow](../done/Task-055-Fix-Claude-Ask-User-Live-Flow.md), [Task-056: Fix Codex Ask User Live Flow](../done/Task-056-Fix-Codex-Ask-User-Live-Flow.md), [BUG-128: Inconsistent Agent Spawn Prompt Composition Across Providers](../done/BUG-128-Inconsistent-Agent-Spawn-Prompt-Composition-Across-Providers.md), [CP-29: MCP Proxy Google Drive](../../07-Coding-Plan/done/CP-29-MCP-Proxy-Google-Drive.md)
@@ -100,7 +100,7 @@ Task-208 makes tool-call gating safe; this task adds the actual FlowPilot-owned 
 ### 6.1 Definition of Done (DOD)
 
 - [x] `DOD-1` `ask_user` works end to end for Grok through the shared bridge/question-card contract. **Closed 2026-07-10 (CA-278):** unit path `tools/call ask_user` → `bridge.AskQuestion` (`TestGrokMcpAskUserRoundTrip`, multiSelect/empty-answer, wire reinforcement); live registry + default `preparePrompt` append `grokAskUserReinforcement` so the model uses FlowPilot MCP `ask_user` instead of native `ask_user_question`. **Live desktop confirmed:** structured Question card (options form) appears for Grok chat and answering resumes the turn (user retest after runner restart).
-- [ ] `DOD-2` `spawn_agent` works end to end for Grok with both wait modes and correct child persistence/panel visibility. **Not independently verified**, same reasoning as DOD-1.
+- [x] `DOD-2` `spawn_agent` works end to end for Grok with both wait modes and correct child persistence/panel visibility. **Closed 2026-07-11 (CA-279):** keyed `grokProcesses` coexistence + per-turn model/effort inheritance so parent turns survive child spawn; MCP `tools/call spawn_agent` → `TurnBridge.SpawnAgent` (`TestGrokMcpSpawnAgentRoundTrip`, wait modes, process coexistence, inheritance tests). **Live desktop confirmed:** user spawned child agent during Grok parent turn without `grok agent process torn down`; child visible in agent panel.
 - [x] `DOD-3` Google Drive (or another configured external MCP server) is visible to Grok in the same turn as FlowPilot tools, or is explicitly and honestly marked unsupported. (`TestGrokAdapterBuildsMcpServersArrayAndRegistersBridge` proves both entries land in the ACP `mcpServers[]` array sent to `session/new`.)
 - [ ] `DOD-4` `OfferReviewOutcomeTool` gating parity is implemented and tested. **Implemented** (`req.OfferReviewOutcomeTool` is passed through to `mcpServer.register`, the same gate Claude/Codex use) but has no Grok-specific test.
 - [ ] `DOD-5` Spawn-prompt composition parity test passes against Codex/Claude baselines. **Not attempted** in this pass.
@@ -119,8 +119,8 @@ Task-208 makes tool-call gating safe; this task adds the actual FlowPilot-owned 
 
 ## 8. Completion Notes
 
-- result: **DOD-1 (GR-06) closed** via CA-278. Task-209 remains `in_progress` for remaining DOD-2/4/5/7/8/9 (spawn_agent, review-outcome test, resume, name collision proof, UI-initiated spawn). Already green: DOD-3, DOD-6, DOD-10, DOD-11.
-- implementation notes: Primary path is MCP-over-ACP (Task-209 T-1 / Q-1). Added `grokAskUserReinforcement` (use MCP `ask_user` on server `flowpilot`; do not use native `ask_user_question`). Appended in default `preparePrompt` and live `provider_registry` Grok `promptPrep`. No `--disallowed-tools` (unsupported on `grok agent`); no native-inbound shim without a captured ACP frame.
-- verification: `go test ./internal/runner -run 'Grok.*(AskUser|Mcp|Prompt|Native|Unsupported)'` PASS; Claude/Codex ask_user smoke PASS; live desktop QuestionCard confirmed by user.
-- follow-ups: DOD-2 spawn_agent E2E; optional PreToolUse denylist if reinforcement ever fails on a future Grok version; DOD-7 resume re-attach tests.
-- upstream docs updated: CA-278; DOD-1 closed annotation.
+- result: **DOD-1 (GR-06) closed** via CA-278; **DOD-2 (GR-07/GR-22) closed** via CA-279. Task-209 remains `in_progress` for DOD-4/5/7/8/9 (review-outcome test, spawn-prompt parity, resume, name collision proof, UI-initiated spawn). Already green: DOD-1, DOD-2, DOD-3, DOD-6, DOD-10, DOD-11.
+- implementation notes: Primary path is MCP-over-ACP (Task-209 T-1 / Q-1). ask_user: `grokAskUserReinforcement` appended in `preparePrompt`/`promptPrep`. spawn_agent: keyed `grokProcesses` map + `runTurn` model/effort stickiness (CA-279) so concurrent parent/child Grok turns coexist and children inherit the parent's current launch tuple.
+- verification: `go test ./internal/runner -run 'Grok.*(AskUser|Mcp|Prompt|Native|Spawn|Process)'` PASS; live desktop QuestionCard (DOD-1) and spawn_agent without parent tear-down (DOD-2) confirmed by user 2026-07-11.
+- follow-ups: DOD-4/5/7/8/9; optional PreToolUse denylist if reinforcement ever fails on a future Grok version (Task-221 adjacent).
+- upstream docs updated: CA-278 (DOD-1), CA-279 (DOD-2).

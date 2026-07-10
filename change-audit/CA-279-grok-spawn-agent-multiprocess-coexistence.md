@@ -22,11 +22,11 @@ Fixes Task-209 DOD-2 live regression: spawning a Grok child agent during a paren
 ## Verification
 
 - `go test ./internal/runner -run 'TestGrokMcpSpawn|TestEnsureGrokProcess|TestGrokParentTurnModel|TestApplyGrokYolo'` — PASS.
-- Live DOD-2 E2E (spawn wait=true/false without parent failure): pending user confirmation after runner restart.
+- Live DOD-2 E2E: **confirmed by user 2026-07-11** — child agent spawned during Grok parent turn without `grok agent process torn down`; child visible in agent panel.
 
 ## Follow-ups
 
-- Task-209 remaining: DOD-4/5/7/8/9 after live spawn E2E is confirmed.
+- Task-209 remaining: DOD-4/5/7/8/9.
 - Task-221 adjacent: MCP tool gating under YOLO=off is separate from this process-lifecycle fix.
 
 # ---8<--- flowpilot:change-ledger
