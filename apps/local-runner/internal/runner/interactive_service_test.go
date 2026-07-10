@@ -5355,3 +5355,65 @@ func TestLocalFileSessionStoreApprovalsSurviveRestart(t *testing.T) {
 		t.Fatalf("a-2 after reload = %+v, want expired", a)
 	}
 }
+
+// TestSubmitApprovalDecisionPersistsResolvedApprovalForRestart is the
+// end-to-end guard for BUG-273: the LIVE interactive approve path must write
+// the resolved decision through to approvals.ndjson, not just resolve the
+// record in memory. Before the fix, submitApprovalDecision set rec.status in
+// memory only (unlike AnswerQuestion, which persisted), so after a restart the
+// approval card replayed as a fresh interactive prompt and flipped a settled
+// run back to waiting_approval. This drives the real code path (not a
+// hand-seeded approvals.ndjson) and proves a second store instance — a process
+// restart — reads the resolution back.
+func TestSubmitApprovalDecisionPersistsResolvedApprovalForRestart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	rs := &interactiveRun{id: "run-appr-live", providerKey: ProviderKeyClaude, workspaceCwd: t.TempDir()}
+	rec := &approvalRecord{
+		id:      "appr-live-1",
+		runID:   rs.id,
+		status:  "pending",
+		resolve: make(chan string, 1),
+		details: ApprovalDetails{
+			Command: "npm test",
+			Kind:    "exec",
+			Decisions: []ApprovalDecisionOption{
+				{Value: "approve", Label: "Approve"},
+				{Value: "deny", Label: "Deny"},
+			},
+		},
+	}
+	svc.mu.Lock()
+	svc.runs[rs.id] = rs
+	svc.approvals[rec.id] = rec
+	svc.mu.Unlock()
+
+	if apiErr := svc.SubmitApprovalDecision(rec.id, "approve"); apiErr != nil {
+		t.Fatalf("SubmitApprovalDecision: %v", apiErr)
+	}
+	if got := <-rec.resolve; got != "approve" {
+		t.Fatalf("resolve = %q, want approve", got)
+	}
+
+	// A fresh store instance pointed at the same directory (== a process
+	// restart) must read the resolved decision back.
+	store2, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore (reload): %v", err)
+	}
+	states, err := store2.ListApprovalsByRun(context.Background(), rs.id)
+	if err != nil {
+		t.Fatalf("ListApprovalsByRun: %v", err)
+	}
+	if len(states) != 1 {
+		t.Fatalf("ListApprovalsByRun returned %d states, want 1 — the live approve path did not persist", len(states))
+	}
+	if states[0].Status != "resolved" || states[0].Decision != "approve" {
+		t.Fatalf("persisted approval = %+v, want resolved/approve", states[0])
+	}
+}

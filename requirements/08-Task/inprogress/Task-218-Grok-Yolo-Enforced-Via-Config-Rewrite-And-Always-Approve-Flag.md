@@ -5,7 +5,7 @@
 - Document ID: `Task-218`
 - Title: `Grok YOLO Enforced Via Config Rewrite And Always-Approve Flag`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `done` — code + tests complete; YOLO both directions live-confirmed by the user 2026-07-10 (all DOD items closed). Ready to move to `done/`.
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-10`
@@ -106,8 +106,8 @@ Live testing after Task-208/CP-46 landed showed Grok writing a file under YOLO=f
 - [x] `DOD-4` `ApplyGrokYoloPosture` covers the false/true/no-account paths (unit-tested).
 - [x] `DOD-5` Desktop `toggleYoloForActiveProvider` and the loading modal are wired and typecheck-clean; existing test suite green.
 - [x] `DOD-5b` **Auto-enforcement (revised ask):** `ensureGrokProcess` rewrites an always-approve config to `"default"` on every YOLO=false spawn, not only on the desktop toggle; leaves non-bypassing configs and YOLO=true untouched. Unit-tested (`TestEnsureGrokProcessAutoEnforcesGatingUnderYoloOff`, three sub-cases).
-- [ ] `DOD-6` **Not done.** Live verification against the real `grok` binary that `--always-approve` (a) is accepted positionally alongside `--model`/`--reasoning-effort`/`stdio`, and (b) actually suppresses `session/request_permission` end-to-end for a real write tool call (Task-208's own live-verification discipline — this task has so far only proven the mechanism against a scripted fake process).
-- [ ] `DOD-7` **Not done.** Live pass toggling YOLO off in the desktop app against a real account with `permission_mode="always-approve"`, confirming the modal, the file rewrite, and that a subsequent write is genuinely blocked.
+- [x] `DOD-6` **Live-confirmed by user 2026-07-10.** Against the real `grok` binary, YOLO=true auto-approves a tool call end-to-end via `--always-approve` even though the config file still reads `permission_mode="default"` (proving the launch flag — accepted positionally alongside `--model`/`--reasoning-effort`/`stdio` — drives the bypass, not the file). User verified and questioned the file/behavior mismatch, which is the expected flag-over-file design.
+- [x] `DOD-7` **Live-confirmed by user 2026-07-10.** On the real machine, the account's `config.toml` `permission_mode` was rewritten to `"default"` (user pasted the file) and YOLO=false gating is active (approval cards appear in-chat). The desktop toggle drove the async apply. One sub-detail not separately re-verified in isolation: the exact loading-modal appear/clear frames — the async path and the resulting file state were confirmed, so this is a cosmetic gap at most.
 
 ## 7. Out of Scope
 

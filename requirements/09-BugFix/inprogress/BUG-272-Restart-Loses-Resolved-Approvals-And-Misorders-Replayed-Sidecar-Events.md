@@ -88,6 +88,7 @@ After a full FlowPilot server restart, reopening a Claude/Codex chat that had a 
 - `F-2` Merge approval resolution in `reconstructRun`: stamp `Decision` onto the replayed `permission_required` event when resolved (fallback `"resolved"` when only `Status` was recorded); drop expired approvals. New `Decision` field on `ProviderEvent`/DTO.
 - `F-3` Frontend read-only replay: `permission_required` with `decision` set renders read-only, stays out of `pendingApprovals`, and does not flip status to `waiting_approval` (mirrors the question `answer` path).
 - `F-4` Ordering: `reconstructRun` sets `sidecarPrefixCount`; `seedTranscriptFromDisk` calls `reorderSidecarPrefixToEnd` to move the prefix after the replayed transcript and renumber `Seq`.
+- `F-5` **Persist on the live approve path (found in live re-test 2026-07-10, after F-1..F-4 landed).** The first pass added the read side (sidecar + `approvals.ndjson` reader + reconstruct merge) but the LIVE interactive approve path (`submitApprovalDecision`) still resolved the record in memory only — it never called `persistApproval`, unlike `AnswerQuestion` which persists via `persistQuestion`. So a genuinely user-approved action left no resolved record on disk, and after a restart the card still replayed interactive and flipped the run to `waiting_approval` (the reported symptom, for both Claude and Grok). Fixed by building a `ProviderApprovalState` snapshot in `submitApprovalDecision` and calling `persistApproval` outside the lock — the exact analog of the question path. F-1..F-4's unit tests seeded `approvals.ndjson` directly, which is why they passed while the live path silently didn't persist; `V-7` now drives the real path.
 
 ## 8. Validation
 
@@ -96,7 +97,8 @@ After a full FlowPilot server restart, reopening a Claude/Codex chat that had a 
 - `V-3` `TestLocalFileSessionStoreApprovalsSurviveRestart` — `approvals.ndjson` round-trips through a fresh store instance.
 - `V-4` `TestSeedTranscriptFromDiskMovesSidecarPrefixAfterReplayedTranscript` — sidecar prefix moves to the end with gap-free `Seq`.
 - `V-5` Frontend `timelineReducer.test.ts`: `BUG-ApprovalReplay-Restart: replay of an already-resolved approval renders read-only and does not re-enter pendingApprovals`.
-- `V-6` **Pending (live):** real restart of a Claude chat with a prior approval, confirming the card replays read-only at the right position.
+- `V-7` `TestSubmitApprovalDecisionPersistsResolvedApprovalForRestart` — drives the real `SubmitApprovalDecision` path (not a hand-seeded file) and proves a second store instance (a restart) reads the resolved decision back. Guards F-5.
+- `V-6` **Pending (live):** real restart of a Claude/Grok chat with a prior approval, confirming the card replays read-only at the right position and the run does not flip to `waiting_approval`.
 
 ## 9. Regression Guard
 

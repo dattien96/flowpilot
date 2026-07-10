@@ -3657,13 +3657,31 @@ func (s *InteractiveService) submitApprovalDecision(approvalID, decision string,
 	rec.decision = decision
 	details := rec.details
 	var rememberCwd string
+	var snapshot *ProviderApprovalState
 	if rs := s.runs[rec.runID]; rs != nil {
 		if rs.pendingApprovalID == approvalID {
 			rs.pendingApprovalID = ""
 		}
 		rememberCwd = rs.workspaceCwd
+		state := approvalStateFromRecord(rs, rec, "")
+		snapshot = &state
+	} else {
+		state := approvalStateFromRecord(nil, rec, "")
+		snapshot = &state
 	}
 	s.mu.Unlock()
+
+	// Persist the resolved approval so its decision survives a full server
+	// restart (BUG-272, completing the persistence half its first pass missed):
+	// without this, the interactive approve path resolved the record in memory
+	// only, so reconstructRun found no resolved ProviderApprovalState and the
+	// approval card replayed as a fresh interactive prompt (flipping a settled
+	// run back to waiting_approval). Mirrors AnswerQuestion's persistQuestion
+	// call — the question path already did this, which is why questions survived
+	// a restart but approvals did not.
+	if snapshot != nil {
+		_ = s.persistApproval(*snapshot)
+	}
 
 	// Persist the "don't ask again" rule outside the lock (file IO). Only shell
 	// commands the user actually approved are eligible; deriveApprovalRule
