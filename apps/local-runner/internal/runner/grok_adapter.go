@@ -211,19 +211,21 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 // which never hands this adapter a synthetic id in the first place.
 func (a *grokAdapter) ensureSession(ctx context.Context, req TurnRequest, cwd string, mcpServers []interface{}) (string, error) {
 	resumeID := strings.TrimSpace(req.ProviderSessionID)
+	method := "session/new"
 	var result map[string]any
 	var err error
 	if resumeID != "" {
-		result, err = a.dispatcher.call(ctx, "session/load", grokACPSessionLoadParams(resumeID, cwd, mcpServers))
+		method = "session/load"
+		result, err = a.dispatcher.call(ctx, method, grokACPSessionLoadParams(resumeID, cwd, mcpServers))
 	} else {
-		result, err = a.dispatcher.call(ctx, "session/new", grokACPSessionNewParams(cwd, mcpServers))
+		result, err = a.dispatcher.call(ctx, method, grokACPSessionNewParams(cwd, mcpServers))
 	}
 	if err != nil {
 		return "", err
 	}
 	sessionID := grokACPResponseSessionID(map[string]interface{}{"result": result})
 	if sessionID == "" {
-		return "", fmt.Errorf("grok session/new returned no sessionId")
+		return "", fmt.Errorf("grok %s returned no sessionId", method)
 	}
 	a.recordSession(ctx, req, sessionID)
 	return sessionID, nil
