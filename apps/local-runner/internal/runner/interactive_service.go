@@ -2828,19 +2828,29 @@ func (s *InteractiveService) clearPendingQuestion(id string) {
 	}
 }
 
+// resolveTurnModelAndEffort applies this turn's model/reasoning-effort override
+// onto the run-level default (BUG-063) — the single source of truth used both
+// before the adapter is constructed (startTurn, so Grok's process-launch-time
+// model selection sees the right value) and when building TurnRequest (runTurn).
+func resolveTurnModelAndEffort(rs *interactiveRun, in TurnInput) (model, effort string) {
+	effort = rs.reasoningEffort
+	if in.ReasoningEffort != "" {
+		effort = in.ReasoningEffort
+	}
+	model = rs.modelName
+	if in.Model != nil {
+		model = *in.Model
+	}
+	return model, effort
+}
+
 func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, adapter ProviderRuntimeAdapter, in TurnInput, scenario, turnID string, capturedCtx []string) {
 	// Turn-level model/reasoning/YOLO override the run-level defaults when supplied
 	// (BUG-063). Chat mode resends these every turn so they can change between prompts;
 	// the providers re-apply them per turn (Codex thread/start per turn, Claude spawn-per-
-	// turn). A nil pointer means "not supplied" and keeps the run-level default.
-	effort := rs.reasoningEffort
-	if in.ReasoningEffort != "" {
-		effort = in.ReasoningEffort
-	}
-	model := rs.modelName
-	if in.Model != nil {
-		model = *in.Model
-	}
+	// turn, Grok respawn-per-turn). A nil pointer means "not supplied" and keeps the
+	// run-level default.
+	model, effort := resolveTurnModelAndEffort(rs, in)
 	yolo := rs.yolo
 	if in.YoloMode != nil {
 		yolo = *in.YoloMode
@@ -3296,7 +3306,11 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		return "", newAPIErr(http.StatusBadRequest, "invalid_request", "stepId is required")
 	}
 
-	adapter, aerr := s.registry.Adapter(rs.providerKey)
+	// Resolved here (not just in runTurn) so a provider whose adapter construction
+	// is model-dependent (Grok — see ProviderRegistration.newAdapterForTurn) gets
+	// the right value at construction time, not just when TurnRequest is built.
+	turnModel, turnEffort := resolveTurnModelAndEffort(rs, in)
+	adapter, aerr := s.registry.Adapter(rs.providerKey, turnModel, turnEffort)
 	if aerr != nil {
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusBadRequest, "provider_unavailable", aerr.Error())

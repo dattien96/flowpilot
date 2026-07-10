@@ -377,11 +377,16 @@ func logGrokFrameDebug(direction, rawLine string) {
 // ---- process lifecycle -------------------------------------------------------
 
 type grokProcessHandle struct {
-	scopeKey   string
-	dispatcher *grokDispatcher
-	adapter    *grokAdapter
-	initResult map[string]any
-	kill       func()
+	scopeKey string
+	// model/reasoningEffort record what this running process was actually
+	// launched with (grok agent --model/--reasoning-effort), so ensureGrokProcess
+	// can detect a turn-level change and respawn -- see ensureGrokProcess.
+	model           string
+	reasoningEffort string
+	dispatcher      *grokDispatcher
+	adapter         *grokAdapter
+	initResult      map[string]any
+	kill            func()
 }
 
 func (h *grokProcessHandle) close() {
@@ -397,14 +402,28 @@ func (h *grokProcessHandle) close() {
 }
 
 // ensureGrokProcess returns the shared grok agent stdio process handle for a
-// scope, spawning a fresh process (and tearing down any handle bound to a
-// different scope — the account-switch recreate) when needed. Reuses a live
-// handle for the same scope.
-func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, extraEnv map[string]string) (*grokProcessHandle, error) {
+// scope+model+reasoningEffort combination, spawning a fresh process (and
+// tearing down any handle bound to a different scope/model/effort — the
+// account-switch recreate, now also a model-change recreate) when needed.
+// Reuses a live handle only when scope, model, AND reasoningEffort all match.
+//
+// model/reasoningEffort are launch-time-only flags on `grok agent` (verified
+// via `grok agent --help`: `-m/--model <MODEL>`, `--reasoning-effort <EFFORT>`
+// are options on the `agent` subcommand, not `stdio`) — Grok's ACP protocol
+// has no session-level way to switch model mid-process (confirmed: no
+// `session/set_model`-shaped method appears anywhere in the live-captured
+// testdata/grok_acp/live_probe_raw.txt, and `session/new`/`session/prompt`
+// carry no model field at all). So unlike Codex (thread/start's `model` param)
+// and Claude (spawned fresh per turn with `--model`), the only way FlowPilot
+// can make Grok honor a turn-level model/reasoning-effort change is to
+// respawn the whole process with the new flags.
+func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, extraEnv map[string]string, model, reasoningEffort string) (*grokProcessHandle, error) {
 	r.grokProcessMu.Lock()
 	defer r.grokProcessMu.Unlock()
 
-	if r.grokProcess != nil && r.grokProcess.scopeKey == scopeKey && !r.grokProcess.dispatcher.isClosed() {
+	if r.grokProcess != nil && r.grokProcess.scopeKey == scopeKey &&
+		r.grokProcess.model == model && r.grokProcess.reasoningEffort == reasoningEffort &&
+		!r.grokProcess.dispatcher.isClosed() {
 		return r.grokProcess, nil
 	}
 	if r.grokProcess != nil {
@@ -423,7 +442,15 @@ func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, ex
 		}
 	}
 
-	cmd := commandContextFn(ctx, grokBinaryName(), "agent", "stdio")
+	args := []string{"agent"}
+	if m := strings.TrimSpace(model); m != "" {
+		args = append(args, "--model", m)
+	}
+	if e := strings.TrimSpace(reasoningEffort); e != "" {
+		args = append(args, "--reasoning-effort", e)
+	}
+	args = append(args, "stdio")
+	cmd := commandContextFn(ctx, grokBinaryName(), args...)
 	cmd.Env = grokProcessEnv(extraEnv)
 	cmd.Dir = cwd
 
@@ -456,7 +483,7 @@ func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, ex
 	adapter.grokHome = strings.TrimSpace(extraEnv["GROK_HOME"])
 	adapter.initResult = initResult
 
-	h := &grokProcessHandle{scopeKey: scopeKey, dispatcher: dispatcher, adapter: adapter, initResult: initResult, kill: kill}
+	h := &grokProcessHandle{scopeKey: scopeKey, model: model, reasoningEffort: reasoningEffort, dispatcher: dispatcher, adapter: adapter, initResult: initResult, kill: kill}
 	r.grokProcess = h
 	return h, nil
 }

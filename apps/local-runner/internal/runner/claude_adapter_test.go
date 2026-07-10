@@ -427,7 +427,7 @@ func TestClaudeRegistryIgnoresStaleUsageLimitMetadata(t *testing.T) {
 		t.Fatalf("save account state: %v", err)
 	}
 
-	adapter, err := ProviderRegistryFor(r).Adapter(ProviderKeyClaude)
+	adapter, err := ProviderRegistryFor(r).Adapter(ProviderKeyClaude, "", "")
 	if err != nil {
 		t.Fatalf("Claude adapter should be available: %v", err)
 	}
@@ -474,7 +474,7 @@ func TestClaudeRegistryUsesCredentialConfigDirForAccount(t *testing.T) {
 		t.Fatalf("save account state: %v", err)
 	}
 
-	adapter, err := ProviderRegistryFor(r).Adapter(ProviderKeyClaude)
+	adapter, err := ProviderRegistryFor(r).Adapter(ProviderKeyClaude, "", "")
 	if err != nil {
 		t.Fatalf("Claude adapter should be available: %v", err)
 	}

@@ -91,6 +91,15 @@ type ProviderRegistration struct {
 	Status       ProviderStatus       `json:"status"`
 	Capabilities ProviderCapabilities `json:"capabilities"`
 	newAdapter   func() ProviderRuntimeAdapter
+	// newAdapterForTurn, when set, is preferred over newAdapter and receives the
+	// turn's resolved model/reasoningEffort. Only Grok sets this: Codex/Claude
+	// forward model/reasoningEffort as a per-call/per-thread runtime param
+	// (thread/start, --model), but Grok's CLI only accepts them as `grok agent`
+	// LAUNCH flags (verified via `grok agent --help`) -- there is no ACP
+	// session-level way to switch model mid-process. Constructing the adapter
+	// for THIS turn must know the model before the shared process is
+	// ensured/respawned, so newAdapter's zero-arg shape can't carry it.
+	newAdapterForTurn func(model, reasoningEffort string) ProviderRuntimeAdapter
 }
 
 // ProviderRegistry holds provider registrations in a stable order.
@@ -126,14 +135,19 @@ func (r *ProviderRegistry) Get(key ProviderKey) (ProviderRegistration, bool) {
 }
 
 // Adapter returns the adapter for a provider, or UnsupportedProviderRuntimeError if
-// the provider is disabled/placeholder (no adapter factory).
-func (r *ProviderRegistry) Adapter(key ProviderKey) (ProviderRuntimeAdapter, error) {
+// the provider is disabled/placeholder (no adapter factory). model/reasoningEffort
+// are this turn's resolved values; only a registration with newAdapterForTurn set
+// (Grok) actually uses them -- see ProviderRegistration.newAdapterForTurn.
+func (r *ProviderRegistry) Adapter(key ProviderKey, model, reasoningEffort string) (ProviderRuntimeAdapter, error) {
 	reg, ok := r.regs[key]
 	// Only an available provider with a factory yields an adapter; disabled/
 	// placeholder providers surface the typed error here (runner-side boundary),
 	// regardless of whether a placeholder factory is registered.
-	if !ok || reg.newAdapter == nil || reg.Status != ProviderStatusAvailable {
+	if !ok || (reg.newAdapter == nil && reg.newAdapterForTurn == nil) || reg.Status != ProviderStatusAvailable {
 		return nil, &UnsupportedProviderRuntimeError{ProviderKey: key}
+	}
+	if reg.newAdapterForTurn != nil {
+		return reg.newAdapterForTurn(model, reasoningEffort), nil
 	}
 	return reg.newAdapter(), nil
 }
@@ -147,7 +161,7 @@ func (r *ProviderRegistry) Selectable(key ProviderKey) (ProviderRegistration, er
 	if !ok {
 		return ProviderRegistration{}, &UnsupportedProviderRuntimeError{ProviderKey: key}
 	}
-	if reg.newAdapter == nil || reg.Status != ProviderStatusAvailable {
+	if (reg.newAdapter == nil && reg.newAdapterForTurn == nil) || reg.Status != ProviderStatusAvailable {
 		return ProviderRegistration{}, &UnsupportedProviderRuntimeError{ProviderKey: key}
 	}
 	return reg, nil
@@ -416,7 +430,7 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true, Interrupt: true,
 				SkillSelection: true,
 			},
-			newAdapter: func() ProviderRuntimeAdapter {
+			newAdapterForTurn: func(model, reasoningEffort string) ProviderRuntimeAdapter {
 				scopeKey := "default"
 				env := map[string]string{}
 				account, err := r.ResolveProviderAccount(string(ProviderKeyGrok), "")
@@ -445,7 +459,12 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				} else {
 					return errorAdapter{key: ProviderKeyGrok, err: err}
 				}
-				h, ensureErr := r.ensureGrokProcess(context.Background(), scopeKey, r.workspace, env)
+				// model/reasoningEffort are `grok agent` LAUNCH flags, not a per-call
+				// param (grok agent --help has no session-level model switch) -- so
+				// ensureGrokProcess tears down and respawns the shared process
+				// whenever either changes from what it was last launched with, the
+				// same way an account switch already forces a respawn.
+				h, ensureErr := r.ensureGrokProcess(context.Background(), scopeKey, r.workspace, env, model, reasoningEffort)
 				if ensureErr != nil {
 					return errorAdapter{key: ProviderKeyGrok, err: ensureErr}
 				}
