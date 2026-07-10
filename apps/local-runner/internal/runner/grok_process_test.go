@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -435,5 +437,59 @@ func TestRedactGrokFrameForLogStripsCredentialShapedFields(t *testing.T) {
 func TestRedactGrokFrameForLogHandlesMalformedInput(t *testing.T) {
 	if redactGrokFrameForLog("not json") == "" {
 		t.Fatal("expected a placeholder for malformed input, got empty string")
+	}
+}
+
+// ---- grokConfigPermissionModeBypassesGating (Task-213 live re-verification) ----
+//
+// Live-verified: a real account with [ui] permission_mode="always-approve"
+// let a write tool call execute with zero session/request_permission
+// round-trip (Task-208's deny-by-default was unreachable); the same account
+// with permission_mode="default" correctly triggered the permission channel
+// and a runner deny blocked the write. See grok_process.go for the full
+// finding writeup.
+
+func writeGrokConfigTomlFixture(t *testing.T, permissionMode string) string {
+	t.Helper()
+	grokHome := t.TempDir()
+	content := "[cli]\ninstaller = \"internal\"\n\n[ui]\nyolo = false\n"
+	if permissionMode != "" {
+		content += "permission_mode = \"" + permissionMode + "\"\n"
+	}
+	if err := os.WriteFile(filepath.Join(grokHome, "config.toml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write config.toml fixture: %v", err)
+	}
+	return grokHome
+}
+
+func TestGrokConfigPermissionModeBypassesGatingDetectsAlwaysApprove(t *testing.T) {
+	grokHome := writeGrokConfigTomlFixture(t, "always-approve")
+	mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome)
+	if mode != "always-approve" || !bypasses {
+		t.Fatalf("expected (always-approve, true), got (%q, %v)", mode, bypasses)
+	}
+}
+
+func TestGrokConfigPermissionModeBypassesGatingAllowsDefault(t *testing.T) {
+	grokHome := writeGrokConfigTomlFixture(t, "default")
+	mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome)
+	if mode != "default" || bypasses {
+		t.Fatalf("expected (default, false), got (%q, %v)", mode, bypasses)
+	}
+}
+
+func TestGrokConfigPermissionModeBypassesGatingNoConfigFile(t *testing.T) {
+	grokHome := t.TempDir() // no config.toml written at all
+	mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome)
+	if mode != "" || bypasses {
+		t.Fatalf("expected (\"\", false) when config.toml is missing, got (%q, %v)", mode, bypasses)
+	}
+}
+
+func TestGrokConfigPermissionModeBypassesGatingNoPermissionModeKey(t *testing.T) {
+	grokHome := writeGrokConfigTomlFixture(t, "")
+	mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome)
+	if mode != "" || bypasses {
+		t.Fatalf("expected (\"\", false) when permission_mode is absent, got (%q, %v)", mode, bypasses)
 	}
 }

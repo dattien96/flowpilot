@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -409,6 +410,17 @@ func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, ex
 		r.grokProcess = nil
 	}
 
+	if grokHome := strings.TrimSpace(extraEnv["GROK_HOME"]); grokHome != "" {
+		if mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome); bypasses {
+			log.Printf("[grok-acp] WARNING: %s/config.toml has [ui] permission_mode=%q — Grok will not send "+
+				"session/request_permission at all for this account, so YOLO=false deny-by-default is NOT "+
+				"enforced end-to-end (live-verified during Task-213 re-verification). FlowPilot does not "+
+				"rewrite this file (mirrors the Claude ensureClaudeConfigSettings 'never clobber' precedent) — "+
+				"the account owner must set permission_mode to \"default\" (or run `/always-approve off` in the "+
+				"grok TUI) for gating to actually take effect.", grokHome, mode)
+		}
+	}
+
 	cmd := commandContextFn(ctx, grokBinaryName(), "agent", "stdio")
 	cmd.Env = grokProcessEnv(extraEnv)
 	cmd.Dir = cwd
@@ -469,4 +481,47 @@ func grokProcessEnv(extraEnv map[string]string) []string {
 		env = append(env, fmt.Sprintf("%s=%s", key, value))
 	}
 	return env
+}
+
+// grokConfigPermissionModeBypassesGating inspects <grokHome>/config.toml for
+// a [ui] permission_mode value that makes Grok stop sending
+// session/request_permission entirely. Live-verified during Task-213
+// re-verification against a real, previously-connected account: with
+// permission_mode="always-approve" a write tool call executed with ZERO
+// permission-channel round-trip (Task-208's deny-by-default is unreachable —
+// there is nothing to deny); with permission_mode="default" the same write
+// correctly triggered session/request_permission and a runner deny blocked
+// it. This is diagnostic-only — FlowPilot never rewrites the file, mirroring
+// ensureClaudeConfigSettings's "never clobber an existing settings.json"
+// precedent for the identical Claude-side risk (BUG-069/CA-079 class).
+//
+// Deliberately conservative: only the one value actually observed to bypass
+// gating is treated as unsafe. Grok's own `/always-approve` slash command
+// (seen in initialize's availableCommands: "Toggle always-approve mode (skip
+// all permission prompts)") is the mechanism that writes this value, so it is
+// trusted as the complete bypass vocabulary until another value is proven to
+// behave the same way.
+func grokConfigPermissionModeBypassesGating(grokHome string) (mode string, bypasses bool) {
+	raw, err := os.ReadFile(filepath.Join(grokHome, "config.toml"))
+	if err != nil {
+		return "", false
+	}
+	inUISection := false
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			inUISection = trimmed == "[ui]"
+			continue
+		}
+		if !inUISection || !strings.HasPrefix(trimmed, "permission_mode") {
+			continue
+		}
+		key, value, ok := strings.Cut(trimmed, "=")
+		if !ok || strings.TrimSpace(key) != "permission_mode" {
+			continue
+		}
+		mode = strings.Trim(strings.TrimSpace(value), `"`)
+		return mode, strings.EqualFold(mode, "always-approve")
+	}
+	return "", false
 }
