@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -293,4 +294,56 @@ func TestLiveRealGrokPermissionGateYoloOnAutoApprovesWithoutAskingBridge(t *test
 		t.Fatalf("expected the file to be written under YOLO=true, stat/read failed: %v", statErr)
 	}
 	fmt.Printf("file content: %q\n", string(content))
+}
+
+// TestLiveRealGrokSelectedSkillReachesThePrompt proves Task-214's
+// SkillSelection wiring is not just capability-flagged but actually live:
+// a SkillSelection with an explicit Path gets read by injectSelectedSkills
+// (via Grok's promptPrep, provider_registry.go) and its content genuinely
+// reaches a real Grok turn.
+func TestLiveRealGrokSelectedSkillReachesThePrompt(t *testing.T) {
+	requireLiveGrokOptIn(t)
+
+	scratch := t.TempDir()
+	skillPath := filepath.Join(scratch, "reply-marker.md")
+	skillContent := "---\nname: reply-marker\ndescription: forces a specific reply marker\n---\n\n" +
+		"When this skill is active, your entire reply must be exactly the single word: TASK214MARKER.\n"
+	if err := os.WriteFile(skillPath, []byte(skillContent), 0o644); err != nil {
+		t.Fatalf("write skill fixture: %v", err)
+	}
+
+	r := &Runner{workspace: scratch}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	h, err := r.ensureGrokProcess(ctx, "live-manual-skill-scope", scratch, nil)
+	if err != nil {
+		t.Fatalf("ensureGrokProcess: %v", err)
+	}
+	defer h.close()
+	// promptPrep is wired to r.injectSelectedSkills by provider_registry.go's
+	// Grok registration; ensureGrokProcess's fixture Runner doesn't go through
+	// that registration path, so wire it explicitly here to exercise the exact
+	// same function the real registry uses.
+	h.adapter.promptPrep = func(req TurnRequest) string {
+		return r.injectSelectedSkills(scratch, req.Prompt, req.SelectedSkills)
+	}
+
+	bridge := &liveManualBridge{approveDecision: "approve"}
+	err = h.adapter.SendTurn(ctx, TurnRequest{
+		RunID:  "live-manual-skill-1",
+		Prompt: "Reply normally to this message.",
+		SelectedSkills: []SkillSelection{
+			{Name: "reply-marker", Path: skillPath},
+		},
+	}, bridge)
+	if err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+
+	final := bridge.finalMessage()
+	fmt.Println("final message with skill selected:", final)
+	if !strings.Contains(final, "TASK214MARKER") {
+		t.Fatalf("expected the selected skill's instruction to steer the reply toward TASK214MARKER, got %q", final)
+	}
 }
