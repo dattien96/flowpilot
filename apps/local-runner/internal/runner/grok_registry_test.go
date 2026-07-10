@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -89,6 +90,19 @@ func TestProviderRegistryForGrokUsesLiveWhenFlagOnAndAccountResolvable(t *testin
 
 func TestProviderRegistryForGrokWithoutAccountReturnsErrorAdapter(t *testing.T) {
 	t.Setenv(grokAgentEnvFlag, "1")
+	// Isolate from this machine's real ~/.grok (a live-authenticated account may
+	// genuinely exist on a dev box that has run the CP-46/Task-206 live probes) —
+	// otherwise ResolveProviderAccount finds it for real and this test spawns an
+	// actual grok process instead of exercising the no-account error path.
+	isolatedHome := t.TempDir()
+	t.Setenv("HOME", isolatedHome)
+	t.Setenv("USERPROFILE", isolatedHome)
+	t.Setenv("XAI_API_KEY", "")
+	// Also isolate the persisted provider-accounts.json (normally
+	// %AppData%/FlowPilot/..., unaffected by the HOME/USERPROFILE override
+	// above) so a real account saved during earlier live-probe work on this
+	// machine can't be loaded from disk either.
+	t.Setenv("FLOWPILOT_PROVIDER_ACCOUNTS_CONFIG_PATH", filepath.Join(isolatedHome, "provider-accounts.json"))
 	r, _ := New(".")
 	reg := ProviderRegistryFor(r)
 	adapter, err := reg.Adapter(ProviderKeyGrok)
