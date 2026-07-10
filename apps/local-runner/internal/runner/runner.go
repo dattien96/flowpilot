@@ -1645,8 +1645,92 @@ func resolveProviderModels(ctx context.Context, spec providerSpec, binaryPath st
 			return models
 		}
 	}
+	if spec.Key == "grok" {
+		// Appended last (CP-46 P-0/Task-213 T-2): codex/gemini branches above
+		// unchanged.
+		if models, err := detectGrokModels(); err == nil && len(models) > 0 {
+			return models
+		}
+	}
 
 	return spec.Models
+}
+
+// grokModelsCacheEntry mirrors one value in ~/.grok/models_cache.json's
+// "models" map (live-verified shape, Grok Build 0.2.93, Task-213 authoring).
+// Only the fields the runner reads are typed.
+type grokModelsCacheEntry struct {
+	Info struct {
+		ID             string `json:"id"`
+		Name           string `json:"name"`
+		Hidden         bool   `json:"hidden"`
+		SupportedInAPI bool   `json:"supported_in_api"`
+	} `json:"info"`
+}
+
+type grokModelsCachePayload struct {
+	Models map[string]grokModelsCacheEntry `json:"models"`
+}
+
+// grokModelsCachePath resolves ~/.grok/models_cache.json (or $GROK_HOME/
+// models_cache.json when set), the file the real Grok Build CLI itself writes
+// after every successful model-list fetch (verified live: fetched_at/
+// grok_version/origin/etag + the models map). Detection reads this cached
+// snapshot rather than spawning the CLI, so it works offline and never
+// triggers the ambient-MCP-scan hazard (CP-46 R-1).
+func grokModelsCachePath() string {
+	if grokHome := strings.TrimSpace(os.Getenv("GROK_HOME")); grokHome != "" {
+		return filepath.Join(grokHome, "models_cache.json")
+	}
+	if home := preferredUserHomeDir(); home != "" {
+		return filepath.Join(home, ".grok", "models_cache.json")
+	}
+	return ""
+}
+
+// detectGrokModels reads the live model catalog Grok Build itself cached
+// (Task-213 T-5), filtering out hidden/unsupported entries. Returns an error
+// (never a partial/fabricated list) when the cache is missing or unreadable
+// so resolveProviderModels falls back to the static default list, exactly
+// like detectCodexModels/detectGeminiModels degrade on failure.
+func detectGrokModels() ([]ProviderModel, error) {
+	path := grokModelsCachePath()
+	if path == "" {
+		return nil, fmt.Errorf("grok models cache: unable to resolve home directory")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var payload grokModelsCachePayload
+	if err := json.Unmarshal(stripUTF8BOM(raw), &payload); err != nil {
+		return nil, err
+	}
+
+	models := make([]ProviderModel, 0, len(payload.Models))
+	for id, entry := range payload.Models {
+		if entry.Info.Hidden || !entry.Info.SupportedInAPI {
+			continue
+		}
+		modelID := strings.TrimSpace(entry.Info.ID)
+		if modelID == "" {
+			modelID = strings.TrimSpace(id)
+		}
+		if modelID == "" {
+			continue
+		}
+		displayName := strings.TrimSpace(entry.Info.Name)
+		if displayName == "" {
+			displayName = modelID
+		}
+		models = append(models, ProviderModel{ID: modelID, DisplayName: displayName, Source: "grok_models_cache"})
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+
+	if len(models) == 0 {
+		return nil, fmt.Errorf("grok models cache: no supported models found in %s", path)
+	}
+	return models, nil
 }
 
 func detectCodexModels(ctx context.Context, binaryPath string) ([]ProviderModel, error) {

@@ -1,8 +1,10 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -140,5 +142,102 @@ func TestHasValidProviderAuthFileGrokRecognizesLiveShape(t *testing.T) {
 	}
 	if !hasValidProviderAuthFile("grok", authPath) {
 		t.Fatal("expected the live-shaped grok auth.json to be recognized as valid")
+	}
+}
+
+// ---- Task-213: detectGrokModels -------------------------------------------
+
+// liveGrokModelsCacheFixture mirrors the real ~/.grok/models_cache.json
+// captured live (Grok Build 0.2.93, Task-213 authoring), with an extra
+// hidden/unsupported entry added to prove the filter works.
+const liveGrokModelsCacheFixture = `{
+  "fetched_at": "2026-07-09T23:54:35.533125300Z",
+  "grok_version": "0.2.93",
+  "auth_method": "session",
+  "origin": "https://cli-chat-proxy.grok.com/v1/models",
+  "models": {
+    "grok-4.5": {
+      "info": {
+        "id": "grok-4.5",
+        "name": "Grok 4.5",
+        "context_window": 500000,
+        "hidden": false,
+        "supported_in_api": true
+      }
+    },
+    "grok-internal-preview": {
+      "info": {
+        "id": "grok-internal-preview",
+        "name": "Grok Internal Preview",
+        "hidden": true,
+        "supported_in_api": true
+      }
+    },
+    "grok-legacy": {
+      "info": {
+        "id": "grok-legacy",
+        "name": "Grok Legacy",
+        "hidden": false,
+        "supported_in_api": false
+      }
+    }
+  }
+}`
+
+func writeGrokModelsCacheFixture(t *testing.T, content string) {
+	t.Helper()
+	grokHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(grokHome, "models_cache.json"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write models_cache.json fixture: %v", err)
+	}
+	t.Setenv("GROK_HOME", grokHome)
+}
+
+func TestDetectGrokModelsFiltersHiddenAndUnsupported(t *testing.T) {
+	writeGrokModelsCacheFixture(t, liveGrokModelsCacheFixture)
+
+	models, err := detectGrokModels()
+	if err != nil {
+		t.Fatalf("detectGrokModels: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("expected exactly 1 non-hidden, supported model, got %d: %+v", len(models), models)
+	}
+	if models[0].ID != "grok-4.5" || models[0].DisplayName != "Grok 4.5" {
+		t.Fatalf("unexpected model: %+v", models[0])
+	}
+	if models[0].Source != "grok_models_cache" {
+		t.Fatalf("expected source=grok_models_cache, got %q", models[0].Source)
+	}
+}
+
+func TestDetectGrokModelsMissingCacheReturnsError(t *testing.T) {
+	t.Setenv("GROK_HOME", t.TempDir()) // no models_cache.json written
+	if _, err := detectGrokModels(); err == nil {
+		t.Fatal("expected an error when models_cache.json does not exist")
+	}
+}
+
+func TestResolveProviderModelsGrokFallsBackToStaticListOnDetectFailure(t *testing.T) {
+	t.Setenv("GROK_HOME", t.TempDir()) // no cache file -> detectGrokModels fails
+	spec, ok := lookupProviderSpec("grok")
+	if !ok {
+		t.Fatal("expected a registered grok providerSpec")
+	}
+	models := resolveProviderModels(context.Background(), spec, "grok")
+	if len(models) == 0 {
+		t.Fatal("expected the static default model list as a fallback")
+	}
+}
+
+func TestResolveProviderModelsGrokUsesDetectedCache(t *testing.T) {
+	writeGrokModelsCacheFixture(t, liveGrokModelsCacheFixture)
+	spec, ok := lookupProviderSpec("grok")
+	if !ok {
+		t.Fatal("expected a registered grok providerSpec")
+	}
+	models := resolveProviderModels(context.Background(), spec, "grok")
+	if len(models) != 1 || models[0].ID != "grok-4.5" {
+		t.Fatalf("expected the detected cache list, got %+v", models)
 	}
 }
