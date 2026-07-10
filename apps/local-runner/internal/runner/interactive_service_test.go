@@ -5169,3 +5169,189 @@ func TestLocalFileSessionStoreQuestionsSurviveRestart(t *testing.T) {
 		t.Fatalf("q-2 after reload = %+v, want expired", q)
 	}
 }
+
+// TestReconstructRunStampsDecisionOnRestoredApprovalEventAfterFullRestart is the
+// approval-side twin of the question restart test (BUG-ApprovalReplay-Restart):
+// a full server restart rebuilds rs.events from the sidecar/provider
+// transcript, which has no concept of FlowPilot's own permission_required
+// approval card. Without persisting the raw event (now a sidecar type) plus
+// its resolution separately, a resolved approval card vanished entirely on
+// restart (only the question survived — the exact symptom reported). This
+// proves it survives, read-only, with the recorded decision stamped.
+func TestReconstructRunStampsDecisionOnRestoredApprovalEventAfterFullRestart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	if err := store.UpsertProviderSession(ctx, ProviderSessionState{
+		RunID:             "run-appr-restart",
+		ProjectID:         "proj",
+		ProviderKey:       ProviderKeyClaude,
+		ProviderSessionID: "thread-appr-restart",
+		Status:            RunStatusRunning,
+		RunKind:           "workflow",
+		StartedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	// The raw "asked" event, as emitLocked/AppendEvent would have written it
+	// live — unresolved, no Decision.
+	if err := store.AppendEvent(ctx, ProviderEvent{
+		Type:          EventPermissionRequired,
+		WorkflowRunID: "run-appr-restart",
+		ApprovalID:    "appr-1",
+		Details:       &ApprovalDetails{Command: "npm test", Kind: "exec"},
+	}); err != nil {
+		t.Fatalf("seed permission-required event: %v", err)
+	}
+	// The separately-tracked resolution, as submitApprovalDecision's
+	// persistApproval call would have written it live.
+	if err := store.UpsertApproval(ctx, ProviderApprovalState{
+		ApprovalID: "appr-1",
+		RunID:      "run-appr-restart",
+		Status:     "resolved",
+		Decision:   "approve",
+	}); err != nil {
+		t.Fatalf("seed resolved approval state: %v", err)
+	}
+
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("run-appr-restart"); apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+
+	svc.mu.Lock()
+	events := append([]ProviderEvent(nil), svc.runs["run-appr-restart"].events...)
+	svc.mu.Unlock()
+
+	var found *ProviderEvent
+	for i := range events {
+		if events[i].Type == EventPermissionRequired && events[i].ApprovalID == "appr-1" {
+			found = &events[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("permission_required event for appr-1 did not survive a full restart")
+	}
+	if found.Decision != "approve" {
+		t.Fatalf("restored approval Decision = %q, want \"approve\" so the client renders it read-only", found.Decision)
+	}
+}
+
+// TestReconstructRunDropsExpiredApprovalEventAfterFullRestart is the companion:
+// an approval that expired (never resolved) before the restart has no decision
+// to show and must not be restored as a fresh interactive prompt — replaying
+// it that way would let the user submit into an already-expired approval and
+// hit the question_expired 409. Mirrors the expired-question test.
+func TestReconstructRunDropsExpiredApprovalEventAfterFullRestart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	if err := store.UpsertProviderSession(ctx, ProviderSessionState{
+		RunID:             "run-appr-expired",
+		ProjectID:         "proj",
+		ProviderKey:       ProviderKeyClaude,
+		ProviderSessionID: "thread-appr-expired",
+		Status:            RunStatusRunning,
+		RunKind:           "workflow",
+		StartedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	if err := store.AppendEvent(ctx, ProviderEvent{
+		Type:          EventPermissionRequired,
+		WorkflowRunID: "run-appr-expired",
+		ApprovalID:    "appr-2",
+		Details:       &ApprovalDetails{Command: "rm -rf build", Kind: "exec"},
+	}); err != nil {
+		t.Fatalf("seed permission-required event: %v", err)
+	}
+	if err := store.UpsertApproval(ctx, ProviderApprovalState{
+		ApprovalID: "appr-2",
+		RunID:      "run-appr-expired",
+		Status:     "expired",
+	}); err != nil {
+		t.Fatalf("seed expired approval state: %v", err)
+	}
+
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("run-appr-expired"); apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+
+	svc.mu.Lock()
+	events := append([]ProviderEvent(nil), svc.runs["run-appr-expired"].events...)
+	svc.mu.Unlock()
+
+	for _, ev := range events {
+		if ev.Type == EventPermissionRequired && ev.ApprovalID == "appr-2" {
+			t.Fatalf("expired approval appr-2 was restored after restart, want it dropped: %+v", ev)
+		}
+	}
+}
+
+// TestLocalFileSessionStoreApprovalsSurviveRestart is the storage-layer unit
+// test for BUG-ApprovalReplay-Restart: UpsertApproval must write through to
+// approvals.ndjson (mirroring questions.ndjson) so a second store instance
+// pointed at the same directory (simulating a process restart) can read the
+// resolution back via ListApprovalsByRun.
+func TestLocalFileSessionStoreApprovalsSurviveRestart(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	store1, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	if err := store1.UpsertApproval(ctx, ProviderApprovalState{
+		ApprovalID: "a-1",
+		RunID:      "run-1",
+		Command:    "npm test",
+		Status:     "resolved",
+		Decision:   "approve",
+	}); err != nil {
+		t.Fatalf("UpsertApproval: %v", err)
+	}
+	if err := store1.UpsertApproval(ctx, ProviderApprovalState{
+		ApprovalID: "a-2",
+		RunID:      "run-1",
+		Command:    "rm -rf build",
+		Status:     "expired",
+	}); err != nil {
+		t.Fatalf("UpsertApproval (second): %v", err)
+	}
+
+	// Simulate process restart — new store pointing at the same directory.
+	store2, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore (reload): %v", err)
+	}
+	states, err := store2.ListApprovalsByRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("ListApprovalsByRun: %v", err)
+	}
+	if len(states) != 2 {
+		t.Fatalf("ListApprovalsByRun returned %d states, want 2", len(states))
+	}
+	byID := map[string]ProviderApprovalState{}
+	for _, s := range states {
+		byID[s.ApprovalID] = s
+	}
+	if a, ok := byID["a-1"]; !ok || a.Status != "resolved" || a.Decision != "approve" {
+		t.Fatalf("a-1 after reload = %+v, want resolved with Decision=approve", a)
+	}
+	if a, ok := byID["a-2"]; !ok || a.Status != "expired" {
+		t.Fatalf("a-2 after reload = %+v, want expired", a)
+	}
+}

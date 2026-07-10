@@ -102,7 +102,12 @@ type interactiveRun struct {
 	// Codex turn so per-turn rollout ids can be logged without replacing the
 	// stable durable resume handle.
 	lastCodexTurnSessionID string
-	providerAccountID      string
+	// lastGrokTurnSessionID is the Grok twin of lastCodexTurnSessionID: the
+	// newest ~/.grok/sessions/<enc-cwd>/<id>/ session id discovered after a Grok
+	// turn, so each turn's id is logged once for precise transcript replay
+	// (BUG-GrokReplay-Restart).
+	lastGrokTurnSessionID string
+	providerAccountID     string
 	workspaceCwd           string
 	stepID                 string
 	modelName              string
@@ -279,6 +284,15 @@ type interactiveRun struct {
 	// loaded from disk, so that pre-loaded flow events in rs.events (from the
 	// CP-41 flow-events sidecar) do not suppress transcript seeding.
 	transcriptSeeded bool
+	// sidecarPrefixCount is the number of CP-41/question sidecar events
+	// reconstructRun prepended to rs.events before any real transcript was
+	// loaded (reconstructRun runs before seedTranscriptFromDisk, so it has no
+	// choice but to seed them first). seedTranscriptFromDisk moves this many
+	// leading events to the end of the timeline once the real transcript has
+	// been appended, so a restored resolved question (or other sidecar event)
+	// no longer renders pinned above the entire prior conversation after a
+	// full server restart (see reorderSidecarPrefixToEnd).
+	sidecarPrefixCount int64
 }
 
 type approvalRecord struct {
@@ -3001,7 +3015,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// Persist settled state (status, lastMessage, updatedAt) for history survival
 	// across restarts (BUG-080 F-3). Take a snapshot under lock; persist outside.
 	s.mu.Lock()
-	newCodexSessionID := s.refreshResumeHandleLocked(rs, adapter)
+	newTurnSessionID := s.refreshResumeHandleLocked(rs, adapter)
 	geminiTurn := transcriptTurn{}
 	if rs.providerKey == ProviderKeyGemini && completed {
 		geminiTurn = transcriptTurnForProviderTurnLocked(rs, turnID)
@@ -3023,11 +3037,17 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		snap.LoopState = s.agentOrchestrator.graphSnapshot(rs.id).LoopState
 	}
 	_ = s.persistProviderSession(snap)
-	// Log the new Codex rollout session id so seedTranscriptFromDisk can load
-	// every per-turn rollout file on resume (BUG-083 F-3).
-	if newCodexSessionID != "" {
+	// Log the new per-turn provider session id so seedTranscriptFromDisk can
+	// load every per-turn transcript file on resume: Codex rollout files
+	// (BUG-083 F-3) and Grok per-turn session dirs (BUG-GrokReplay-Restart)
+	// both use one file per turn with a distinct id.
+	if newTurnSessionID != "" {
 		if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
-			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{Kind: turnLogKindCodexSession, SessionID: newCodexSessionID})
+			kind := turnLogKindCodexSession
+			if rs.providerKey == ProviderKeyGrok {
+				kind = turnLogKindGrokSession
+			}
+			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{Kind: kind, SessionID: newTurnSessionID})
 		}
 	}
 	if strings.TrimSpace(geminiTurn.User) != "" || strings.TrimSpace(geminiTurn.Assistant) != "" {
@@ -3563,6 +3583,36 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 				rs.lastCodexTurnSessionID = rolloutID
 				return rolloutID
 			}
+		}
+	case ProviderKeyGrok:
+		// Grok twin of the Codex case (BUG-GrokReplay-Restart): FlowPilot never
+		// feeds the real ACP session id back for session/load, so each turn
+		// writes a fresh ~/.grok/sessions/<enc-cwd>/<id>/ dir. Discover the newest
+		// one (this turn's) and, when it changed, return it so the caller logs it
+		// to the turn log for precise per-turn transcript replay. Best-effort:
+		// grokHome may be a bare ~/.grok (default account) if no account home
+		// resolves.
+		home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
+		if !ok {
+			if defaultHome, defOK := defaultProviderSessionHome(rs.providerKey); defOK {
+				home, ok = defaultHome, true
+			}
+		}
+		if !ok {
+			return ""
+		}
+		dirs := discoverGrokSessionDirs(home, rs.workspaceCwd)
+		if len(dirs) == 0 {
+			return ""
+		}
+		// Deliberately does NOT touch rs.realProviderSessionID: that drives the
+		// resume-continuation path (ensureSession → session/load), which is
+		// Task-212 T-7/DOD-5 territory and out of scope here. This is display-only
+		// transcript replay — we only record the per-turn id in the turn log.
+		newest := dirs[len(dirs)-1]
+		if newest != rs.lastGrokTurnSessionID {
+			rs.lastGrokTurnSessionID = newest
+			return newest
 		}
 	}
 	return ""

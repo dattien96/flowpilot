@@ -75,7 +75,10 @@ function statusFromEvent(e: ProviderEventDTO, prev: RunStatus): RunStatus {
     case "turn_started":
       return "running";
     case "permission_required":
-      return "waiting_approval";
+      // A replayed already-resolved approval (BUG-ApprovalReplay-Restart,
+      // carries `decision`) is not a new pending state — it must not flip a
+      // settled run back to "waiting_approval" on a full server restart.
+      return e.decision !== undefined ? prev : "waiting_approval";
     case "user_question_required":
       // A replayed already-resolved question (BUG-StaleQuestion, carries
       // `answer`) is not a new pending state — it must not flip a settled run
@@ -304,9 +307,16 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
 
     case "permission_required":
       closeAssistant();
-      timeline.push({ kind: "approval", id: e.id, approvalId: e.approvalId, details: e.details });
+      timeline.push({ kind: "approval", id: e.id, approvalId: e.approvalId, details: e.details, decision: e.decision });
+      // A replayed already-resolved approval (BUG-ApprovalReplay-Restart) must
+      // stay out of pendingApprovals — it renders read-only via `decision`
+      // above, not as a new interactive card the run is waiting on. Mirrors the
+      // user_question_required `answer` handling below.
       return finalize(timeline, {
-        pendingApprovals: [...s.pendingApprovals, { approvalId: e.approvalId, details: e.details }],
+        pendingApprovals:
+          e.decision !== undefined
+            ? s.pendingApprovals
+            : [...s.pendingApprovals, { approvalId: e.approvalId, details: e.details }],
       });
 
     case "user_question_required":

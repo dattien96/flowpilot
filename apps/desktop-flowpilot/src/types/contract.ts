@@ -558,6 +558,11 @@ export type ProviderEventDTO =
       approvalId: string;
       provider: ProviderKey;
       details: ApprovalDetails;
+      /** Populated only when replaying an already-resolved approval on a full
+       *  server restart (BUG-ApprovalReplay-Restart) — render the approval card
+       *  read-only with this decision instead of a fresh interactive prompt.
+       *  The approval-side twin of user_question_required.answer. */
+      decision?: string;
     })
   | (ProviderEventBaseDTO & {
       type: "user_question_required";

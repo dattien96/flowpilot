@@ -764,6 +764,56 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 			rs.events = filtered
 		}
 	}
+	// Merge persisted approval resolution onto any restored permission_required
+	// events (BUG-ApprovalReplay-Restart) — the approval-side twin of the
+	// question merge above. The sidecar reload has only the raw "asked" event;
+	// whether it was approved/denied/expired lives separately in
+	// ProviderApprovalState. Stamp the recorded Decision (read-only render) and
+	// drop expired approvals (nothing to show, and replaying them interactive
+	// would let the user submit into an already-expired approval and hit a 409).
+	if ahr, ok := s.workflowStore.(ApprovalHistoryReader); ok {
+		states, aErr := ahr.ListApprovalsByRun(context.Background(), st.RunID)
+		if aErr != nil {
+			log.Printf("reconstructRun: ListApprovalsByRun runID=%s: %v (resuming without approval state)", st.RunID, aErr)
+		}
+		if len(states) > 0 {
+			byID := make(map[string]ProviderApprovalState, len(states))
+			for _, a := range states {
+				byID[a.ApprovalID] = a
+			}
+			filtered := make([]ProviderEvent, 0, len(rs.events))
+			for _, ev := range rs.events {
+				if ev.Type == EventPermissionRequired && ev.ApprovalID != "" {
+					if a, found := byID[ev.ApprovalID]; found {
+						switch a.Status {
+						case "resolved":
+							// Prefer the concrete approve/deny; fall back to a
+							// generic "resolved" so the card still renders
+							// read-only when only Status was recorded.
+							if strings.TrimSpace(a.Decision) != "" {
+								ev.Decision = a.Decision
+							} else {
+								ev.Decision = "resolved"
+							}
+						case "expired":
+							continue
+						}
+					}
+				}
+				filtered = append(filtered, ev)
+			}
+			rs.events = filtered
+		}
+	}
+	// Record how many sidecar-origin events are sitting at the front of
+	// rs.events so seedTranscriptFromDisk can move them after the real
+	// transcript once it loads one (see reorderSidecarPrefixToEnd) — without
+	// this, any restored user_question_required (or other CP-41 event)
+	// permanently renders above the entire prior conversation, regardless of
+	// when it actually happened, because reconstructRun necessarily assigns
+	// these events the lowest Seq numbers before seedTranscriptFromDisk ever
+	// runs (BUG-StaleQuestion-Restart-Ordering).
+	rs.sidecarPrefixCount = int64(len(rs.events))
 
 	s.mu.Lock()
 	s.runs[rs.id] = rs
@@ -1207,8 +1257,17 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	if !rs.resumedFromDisk {
 		return
 	}
+	// Whatever branch below appends (or doesn't, e.g. Grok/default today — see
+	// Task-212 DOD-5/DOD-9), move any sidecar-origin events reconstructRun had
+	// to seed first back after the real transcript (reorderSidecarPrefixToEnd).
+	defer s.reorderSidecarPrefixToEnd(rs)
 	if rs.providerKey == ProviderKeyGemini {
 		s.seedGeminiTranscriptFromState(rs)
+		s.appendResumedParentAnnotations(rs)
+		return
+	}
+	if rs.providerKey == ProviderKeyGrok {
+		s.seedGrokTranscriptFromDisk(rs)
 		s.appendResumedParentAnnotations(rs)
 		return
 	}
@@ -1379,6 +1438,105 @@ func (s *InteractiveService) appendResumedParentAnnotations(rs *interactiveRun) 
 		annotations[i].OccurredAt = rs.createdAt
 		rs.events = append(rs.events, annotations[i])
 	}
+}
+
+// reorderSidecarPrefixToEnd moves the CP-41/question sidecar events that
+// reconstructRun had to seed into rs.events before any real transcript was
+// loaded (rs.sidecarPrefixCount, see reconstructRun) to the end of the
+// timeline, after everything seedTranscriptFromDisk just appended.
+//
+// reconstructRun runs before seedTranscriptFromDisk (they are two separate
+// calls the caller makes back to back — resumeRun, loadHandoffSourceRun), so
+// it has no choice but to assign the sidecar/question events the lowest Seq
+// numbers in rs.events. Left there, a restored resolved user_question_required
+// (BUG-271/Task-183) permanently renders pinned above the entire prior
+// conversation on the desktop after a full server restart, regardless of when
+// it actually happened, because the client (timelineReducer) simply appends
+// events in the Seq order the server streams them — it does not reorder.
+//
+// This is not a perfect chronological fix: the transcript loader does not
+// preserve real per-turn timestamps to interleave sidecar events against (all
+// replayed transcript events share one OccurredAt, rs.createdAt), so exact
+// interleaving isn't recoverable here. But moving the sidecar prefix after the
+// replayed transcript is uniformly closer to correct than always-first, and
+// matches what these events actually are — durable *current* state (the
+// latest flow-context package, validation result, audit draft, or question),
+// not history.
+//
+// A no-op when nothing was appended after reconstructRun (e.g. Grok/default
+// today, Task-212 DOD-5/DOD-9 — there is no transcript loader for Grok yet, so
+// there is nothing to move the prefix after).
+func (s *InteractiveService) reorderSidecarPrefixToEnd(rs *interactiveRun) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := int(rs.sidecarPrefixCount)
+	rs.sidecarPrefixCount = 0
+	if n <= 0 || n >= len(rs.events) {
+		return
+	}
+	reordered := make([]ProviderEvent, 0, len(rs.events))
+	reordered = append(reordered, rs.events[n:]...)
+	reordered = append(reordered, rs.events[:n]...)
+	for i := range reordered {
+		reordered[i].Seq = int64(i + 1)
+	}
+	rs.events = reordered
+	rs.seq = int64(len(reordered))
+}
+
+// seedGrokTranscriptFromDisk replays a resumed Grok chat's history from its
+// per-session chat_history.jsonl files (BUG-GrokReplay-Restart / Task-212 T-6).
+// Grok writes one session dir per FlowPilot turn (see grok_transcript_loader.go),
+// so this concatenates them in order — precise per-turn ids from the run's turn
+// log when present, else a best-effort mtime-ordered discovery of every Grok
+// session for the workspace (covers runs created before per-turn capture).
+func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
+	home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
+	if !ok {
+		home, ok = defaultProviderSessionHome(rs.providerKey)
+	}
+	if !ok {
+		return
+	}
+
+	var sessionIDs []string
+	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
+		if entries, _ := logger.ReadTurnLog(context.Background(), rs.id); len(entries) > 0 {
+			seen := map[string]bool{}
+			for _, e := range entries {
+				if e.Kind == turnLogKindGrokSession && e.SessionID != "" && !seen[e.SessionID] {
+					seen[e.SessionID] = true
+					sessionIDs = append(sessionIDs, e.SessionID)
+				}
+			}
+		}
+	}
+	// Fallback for runs with no per-turn ids logged (created before the capture
+	// landed): replay every Grok session dir for this workspace, oldest-first.
+	if len(sessionIDs) == 0 {
+		sessionIDs = discoverGrokSessionDirs(home, rs.workspaceCwd)
+	}
+	if len(sessionIDs) == 0 {
+		return
+	}
+
+	var historical []ProviderEvent
+	for _, sid := range sessionIDs {
+		historical = append(historical, loadGrokTranscriptEvents(grokChatHistoryPath(home, rs.workspaceCwd, sid))...)
+	}
+	if len(historical) == 0 {
+		return
+	}
+	// Distinct replay turn ids so the desktop derives unique prompt bubble ids
+	// ("prompt-${providerTurnId}") across concatenated per-turn session files.
+	var promptN int
+	for i := range historical {
+		if historical[i].Type == EventTurnStarted && historical[i].Prompt != "" {
+			promptN++
+			historical[i].ProviderTurnID = fmt.Sprintf("replay-prompt-%d", promptN)
+		}
+	}
+	s.appendTranscriptReplayEvents(rs, historical)
 }
 
 func (s *InteractiveService) seedGeminiTranscriptFromState(rs *interactiveRun) {
