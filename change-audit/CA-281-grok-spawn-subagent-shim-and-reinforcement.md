@@ -23,12 +23,11 @@ Task-209 DOD-8 follow-up: Grok models prefer native `spawn_subagent` over FlowPi
 ## Verification
 
 - `go test ./internal/runner -run 'Grok.*(Spawn|Subagent|Mcp|Prompt|Native|Normalized|ParseGrok)'` — PASS.
-- Live desktop DOD-8 retest: pending user confirmation that Grok uses MCP `spawn_agent` or shim-visible children after reinforcement.
+- **Live desktop DOD-8 confirmed 2026-07-11:** Grok reports `spawn_agent` (FlowPilot MCP); child in agent panel; parent idle after `wait=false` and `wait=true`; UI-initiated spawn also OK (DOD-9).
 
 ## Follow-ups
 
-- Task-209 DOD-4/5/7/9 remain open.
-- Parent hang after UI spawn while main `running` is a separate status-persistence issue.
+- Task-209 DOD-4/5 remain open.
 
 # ---8<--- flowpilot:change-ledger
 feature_key: mcp-tools
