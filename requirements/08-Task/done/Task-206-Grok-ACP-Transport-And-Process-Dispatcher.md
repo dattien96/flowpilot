@@ -5,11 +5,11 @@
 - Document ID: `Task-206`
 - Title: `Grok ACP Transport And Process/Dispatcher`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
-- Last Updated: `2026-07-09`
+- Last Updated: `2026-07-10`
 - Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/todo/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md)
 - Child Documents: `None`
 - Related Documents: [Task-164: Gemini ACP Transport Extraction](../done/Task-164-Gemini-ACP-Transport-Extraction.md), [05 - Codex AppServer Migration Detail](../../10-Refactor/New-System/05-Codex-AppServer-Migration-Detail.md)

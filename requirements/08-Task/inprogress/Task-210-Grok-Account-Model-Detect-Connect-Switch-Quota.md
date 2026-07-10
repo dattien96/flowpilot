@@ -5,11 +5,11 @@
 - Document ID: `Task-210`
 - Title: `Grok Account Model — Detect, Connect, Switch, Quota`
 - Phase: `task`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
-- Last Updated: `2026-07-09`
+- Last Updated: `2026-07-10`
 - Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/todo/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-207: Grok Controlled Adapter MVP (Chat/Stream/Resume)](./Task-207-Grok-Controlled-Adapter-MVP.md)
 - Child Documents: `None`
 - Related Documents: [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md), [Task-018: Auto Switch Account](../done/Task-018-Auto-Switch-Account.md), [Task-059: Desktop Check Version Tested Baseline Config](../done/Task-059-Desktop-Check-Version-Tested-Baseline-Config.md), [Task-080: Claude Account Quota Usage Fetch](../done/Task-080-Claude-Account-Quota-Usage-Fetch.md), [BUG-092: History Resume Fails When Persisted Provider Account ID Is Stale](../done/BUG-092-History-Resume-Fails-When-Persisted-Provider-Account-ID-Is-Stale.md)

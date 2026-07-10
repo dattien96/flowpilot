@@ -5,7 +5,7 @@
 - Document ID: `Task-213`
 - Title: `Auto-Detect And Sync Provider Models Into The Supported-Models Catalog`
 - Phase: `task`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-10`

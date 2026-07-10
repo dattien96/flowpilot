@@ -5,11 +5,11 @@
 - Document ID: `Task-207`
 - Title: `Grok Controlled Adapter MVP (Chat/Stream/Resume)`
 - Phase: `task`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
-- Last Updated: `2026-07-09`
+- Last Updated: `2026-07-10`
 - Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/todo/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-206: Grok ACP Transport And Process/Dispatcher](./Task-206-Grok-ACP-Transport-And-Process-Dispatcher.md)
 - Child Documents: `None`
 - Related Documents: [Task-165: Gemini Controlled Adapter MVP](../done/Task-165-Gemini-Controlled-Adapter-MVP.md)
