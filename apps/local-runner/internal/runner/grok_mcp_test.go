@@ -371,6 +371,113 @@ func TestGrokMcpSpawnAgentRoundTrip(t *testing.T) {
 	}
 }
 
+// ---- Task-209 DOD-4: OfferReviewOutcomeTool gating (shared claudeMCPServer) ----
+//
+// Grok reaches FlowPilot tools via ACP mcpServers → the reused claudeMCPServer.
+// grok_adapter.SendTurn registers each turn with mcpServer.register(bridge,
+// req.OfferReviewOutcomeTool) — same gate Claude/Codex use (BUG-NOTE-CP42 #24).
+
+// TestGrokMcpReviewOutcomeGatingToolsList proves submit_review_outcome is only
+// advertised when the turn registered with allowReviewOutcome=true (flow hub).
+func TestGrokMcpReviewOutcomeGatingToolsList(t *testing.T) {
+	mcp := newClaudeMCPServer()
+
+	normalTok := mcp.register(&fakeGrokBridge{}, false)
+	defer mcp.unregister(normalTok)
+	_, list := postMCP(t, mcp, normalTok, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	lr, _ := list["result"].(map[string]any)
+	tools, _ := lr["tools"].([]any)
+	for _, def := range tools {
+		if m, ok := def.(map[string]any); ok && m["name"] == "submit_review_outcome" {
+			t.Fatalf("submit_review_outcome must not be advertised for normal_chat (OfferReviewOutcomeTool=false), got %+v", tools)
+		}
+	}
+
+	hubTok := mcp.register(&fakeGrokBridge{}, true)
+	defer mcp.unregister(hubTok)
+	_, list2 := postMCP(t, mcp, hubTok, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+	lr2, _ := list2["result"].(map[string]any)
+	tools2, _ := lr2["tools"].([]any)
+	found := false
+	for _, def := range tools2 {
+		if m, ok := def.(map[string]any); ok && m["name"] == "submit_review_outcome" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("submit_review_outcome must be advertised for flow-hub turn (OfferReviewOutcomeTool=true), got %+v", tools2)
+	}
+}
+
+// TestGrokMcpSubmitReviewOutcomeRejectedWhenNotAllowed is defense-in-depth: a model
+// must not mutate loop state via tools/call when the turn never offered the tool.
+func TestGrokMcpSubmitReviewOutcomeRejectedWhenNotAllowed(t *testing.T) {
+	mcp := newClaudeMCPServer()
+	bridge := &fakeGrokBridge{}
+	tok := mcp.register(bridge, false)
+	defer mcp.unregister(tok)
+
+	_, resp := postMCP(t, mcp, tok, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{
+			"name":      "submit_review_outcome",
+			"arguments": map[string]any{"status": "approved"},
+		},
+	})
+	if _, hasError := resp["error"]; !hasError {
+		t.Fatalf("expected error rejecting submit_review_outcome for non-hub turn, got %+v", resp)
+	}
+	if bridge.flowControlIn.Status != "" {
+		t.Fatalf("SubmitFlowControl must not run when tool not offered, got %+v", bridge.flowControlIn)
+	}
+}
+
+// TestGrokMcpSubmitReviewOutcomeRoundTrip proves Task-209 DOD-4 wiring: when Grok's
+// MCP client calls tools/call submit_review_outcome on a hub turn token, the shared
+// handler routes to bridge.SubmitFlowControl (same path as Claude/Codex).
+func TestGrokMcpSubmitReviewOutcomeRoundTrip(t *testing.T) {
+	mcp := newClaudeMCPServer()
+	bridge := &fakeGrokBridge{
+		flowControlResult: FlowControlResult{Status: "continue", Round: 1, Cap: 3},
+	}
+	tok := mcp.register(bridge, true)
+	defer mcp.unregister(tok)
+
+	raw, errObj := mcp.dispatch("tools/call", map[string]any{
+		"params": map[string]any{
+			"name": "submit_review_outcome",
+			"arguments": map[string]any{
+				"status":   "changes_requested",
+				"feedback": "fix the null check",
+				"issues": []any{
+					map[string]any{"title": "nil deref", "severity": "error", "file": "main.go"},
+				},
+			},
+		},
+	}, tok)
+	if errObj != nil {
+		t.Fatalf("tools/call submit_review_outcome error: %+v", errObj)
+	}
+	if bridge.flowControlIn.Status != "continue" {
+		t.Fatalf("SubmitFlowControl status = %q, want continue (changes_requested face)", bridge.flowControlIn.Status)
+	}
+	if bridge.flowControlIn.Summary != "fix the null check" {
+		t.Fatalf("SubmitFlowControl summary = %q, want fix the null check", bridge.flowControlIn.Summary)
+	}
+	result, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %T %+v", raw, raw)
+	}
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("expected MCP text content result, got %+v", result)
+	}
+	txt, _ := content[0].(map[string]any)["text"].(string)
+	if !strings.Contains(txt, "continue") {
+		t.Fatalf("result text should include flow-control status, got %q", txt)
+	}
+}
+
 // TestGrokMcpSpawnAgentWaitModes covers wait=false acknowledgement through the
 // shared MCP handler (wait=true shape is asserted in TestGrokMcpSpawnAgentRoundTrip).
 func TestGrokMcpSpawnAgentWaitModes(t *testing.T) {

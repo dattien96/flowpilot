@@ -25,6 +25,10 @@ type fakeGrokBridge struct {
 	spawnIn     SpawnAgentInput
 	spawnResult SpawnAgentResult
 	spawnErr    error
+	// Task-209 DOD-4: capture submit_review_outcome → SubmitFlowControl inputs.
+	flowControlIn     FlowControlInput
+	flowControlResult FlowControlResult
+	flowControlErr    error
 }
 
 func (b *fakeGrokBridge) Emit(ev ProviderEvent) {
@@ -64,7 +68,16 @@ func (b *fakeGrokBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error
 	}
 	return SpawnAgentResult{RunID: "child-run-1", ProviderKey: in.Provider}, nil
 }
-func (b *fakeGrokBridge) SubmitFlowControl(FlowControlInput) (FlowControlResult, error) {
+func (b *fakeGrokBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.flowControlIn = in
+	if b.flowControlErr != nil {
+		return FlowControlResult{}, b.flowControlErr
+	}
+	if b.flowControlResult.Status != "" {
+		return b.flowControlResult, nil
+	}
 	return FlowControlResult{}, nil
 }
 
