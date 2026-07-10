@@ -115,8 +115,9 @@ export function Navigator(): React.ReactElement {
   const loadRunHistory = useStore((s) => s.loadRunHistory);
   const loadRemoteChatSessions = useStore((s) => s.loadRemoteChatSessions);
   const openHistoryRun = useStore((s) => s.openHistoryRun);
-  const syncHistoryRun = useStore((s) => s.syncHistoryRun);
+  const syncRuns = useStore((s) => s.syncRuns);
   const syncAllInProject = useStore((s) => s.syncAllInProject);
+  const syncBatchProgress = useStore((s) => s.syncBatchProgress);
   const deleteHistoryRun = useStore((s) => s.deleteHistoryRun);
   const restoreRemoteChatSession = useStore((s) => s.restoreRemoteChatSession);
   const visibleRunHistory = useMemo(() => filterVisibleHistory(runHistory), [runHistory]);
@@ -137,6 +138,7 @@ export function Navigator(): React.ReactElement {
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [restoringIds, setRestoringIds] = useState<Set<string>>(new Set());
   const [restoringAll, setRestoringAll] = useState(false);
+  const [restoreProgress, setRestoreProgress] = useState<{ done: number; total: number } | null>(null);
   const [showAllRemoteChats, setShowAllRemoteChats] = useState(false);
   const [remoteSelectionMode, setRemoteSelectionMode] = useState(false);
   const [selectedRemoteKeys, setSelectedRemoteKeys] = useState<Set<string>>(new Set());
@@ -221,29 +223,31 @@ export function Navigator(): React.ReactElement {
   }, [restoreRemoteChatSession]);
 
   const restoreAll = useCallback(async () => {
+    const targets = remoteChatSessions.filter((item) => !item.unavailableReason);
     setRestoringAll(true);
+    setRestoreProgress({ done: 0, total: targets.length });
     try {
-      for (const item of remoteChatSessions) {
-        if (!item.unavailableReason) {
-          const key = `${item.sourceMachineId}:${item.sourceRunId}`;
-          setRestoringIds((prev) => new Set(prev).add(key));
-          try {
-            // Skip the per-item history refresh + auto-open here: doing a full
-            // refresh after every single item serializes N extra round trips into
-            // the loop (each item waits on the previous one's refresh before it can
-            // even start), which is why the spinner looked stuck until the whole
-            // batch finished. One combined refresh after the loop below is enough,
-            // and auto-opening every restored run in turn would hijack the active
-            // chat panel N times over.
-            await restoreRemoteChatSession(item, undefined, { refresh: false, open: false });
-          } finally {
-            setRestoringIds((prev) => { const next = new Set(prev); next.delete(key); return next; });
-          }
+      for (const item of targets) {
+        const key = `${item.sourceMachineId}:${item.sourceRunId}`;
+        setRestoringIds((prev) => new Set(prev).add(key));
+        try {
+          // Skip the per-item history refresh + auto-open here: doing a full
+          // refresh after every single item serializes N extra round trips into
+          // the loop (each item waits on the previous one's refresh before it can
+          // even start), which is why the spinner looked stuck until the whole
+          // batch finished. One combined refresh after the loop below is enough,
+          // and auto-opening every restored run in turn would hijack the active
+          // chat panel N times over.
+          await restoreRemoteChatSession(item, undefined, { refresh: false, open: false });
+        } finally {
+          setRestoringIds((prev) => { const next = new Set(prev); next.delete(key); return next; });
+          setRestoreProgress((prev) => (prev ? { ...prev, done: prev.done + 1 } : prev));
         }
       }
       await Promise.all([loadRunHistory(), loadRemoteChatSessions()]);
     } finally {
       setRestoringAll(false);
+      setRestoreProgress(null);
     }
   }, [remoteChatSessions, restoreRemoteChatSession, loadRunHistory, loadRemoteChatSessions]);
 
@@ -257,11 +261,9 @@ export function Navigator(): React.ReactElement {
         try { await deleteHistoryRun(runId); } catch { /* best effort */ }
       }
     } else {
-      for (const runId of runIds) {
-        try { await syncHistoryRun(runId, projectId); } catch { /* best effort */ }
-      }
+      await syncRuns(runIds, projectId);
     }
-  }, [confirmAction, deleteHistoryRun, exitSelectionMode, syncHistoryRun]);
+  }, [confirmAction, deleteHistoryRun, exitSelectionMode, syncRuns]);
 
   useEffect(() => {
     void loadProjects();
@@ -376,7 +378,17 @@ export function Navigator(): React.ReactElement {
   const visibleHistory = showAllHistory ? activeHistory : activeHistory.slice(0, HISTORY_LIMIT);
   const activeRemoteChatSessions = selectedProjectId ? (remoteChatSessionsByProjectId[selectedProjectId] ?? []) : [];
   const unsyncedCount = activeHistory.filter((item) => isSyncableRun(item, activeRemoteChatSessions)).length;
-  const projectSyncing = isProjectSyncing(activeHistory, selectedProjectId ?? "");
+  const activeSyncProgress =
+    syncBatchProgress && syncBatchProgress.projectId === selectedProjectId ? syncBatchProgress : undefined;
+  // Drive the chip off the batch itself (active continuously from the first item to the last),
+  // not off isProjectSyncing's per-row "is some row syncing at this exact instant" snapshot --
+  // that flips false in the gap between one item finishing and the next one starting (the row
+  // is briefly "synced" while the next row hasn't flipped to "syncing" yet), which made the
+  // spinner and x/y counter flicker away and reappear between every item instead of holding
+  // steady until the whole batch reaches total/total. isProjectSyncing stays as a fallback for
+  // any row-level sync state that did not originate from a syncRuns-driven batch.
+  const projectSyncing = Boolean(activeSyncProgress) || isProjectSyncing(activeHistory, selectedProjectId ?? "");
+  const syncProgressLabel = activeSyncProgress ? `${activeSyncProgress.done}/${activeSyncProgress.total}` : "Syncing…";
 
   const toggleShowAllHistory = (projectId: string) => {
     setExpandedHistoryIds((current) => {
@@ -458,17 +470,17 @@ export function Navigator(): React.ReactElement {
                   disabled={projectSyncing}
                   title={
                     projectSyncing
-                      ? `Syncing ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`
+                      ? `Syncing chats to Drive (${syncProgressLabel})`
                       : `Sync ${unsyncedCount} chat${unsyncedCount > 1 ? "s" : ""} to Drive`
                   }
                   aria-label={
                     projectSyncing
-                      ? `Syncing all ${unsyncedCount} unsynced chats to Drive`
+                      ? `Syncing chats to Drive, ${syncProgressLabel} done`
                       : `Sync all ${unsyncedCount} unsynced chats to Drive`
                   }
                 >
                   {projectSyncing ? <span className="history-status-spinner" aria-hidden="true" /> : <SyncGlyph />}
-                  <span>{projectSyncing ? "Syncing…" : unsyncedCount}</span>
+                  <span>{projectSyncing ? syncProgressLabel : unsyncedCount}</span>
                 </button>
               )
             )}
@@ -678,10 +690,11 @@ export function Navigator(): React.ReactElement {
                   className="project-history-sync-all"
                   onClick={() => void restoreAll()}
                   disabled={restoringAll || restoringIds.size > 0}
-                  title={restoringAll ? "Restoring…" : "Restore all remote chats"}
-                  aria-label="Restore all remote chats"
+                  title={restoringAll && restoreProgress ? `Restoring ${restoreProgress.done}/${restoreProgress.total}…` : "Restore all remote chats"}
+                  aria-label={restoringAll && restoreProgress ? `Restoring remote chats, ${restoreProgress.done}/${restoreProgress.total} done` : "Restore all remote chats"}
                 >
                   {restoringAll ? <span className="history-status-spinner" aria-hidden="true" /> : <RestoreGlyph />}
+                  {restoringAll && restoreProgress && <span>{restoreProgress.done}/{restoreProgress.total}</span>}
                 </button>
               )
             )}
@@ -713,7 +726,8 @@ export function Navigator(): React.ReactElement {
                   onClick={() => void restoreAll()}
                   title="Restore all remote chats"
                 >
-                  <RestoreGlyph /> Restore All
+                  {restoringAll ? <span className="history-status-spinner" aria-hidden="true" /> : <RestoreGlyph />}
+                  {restoringAll && restoreProgress ? `Restoring ${restoreProgress.done}/${restoreProgress.total}` : "Restore All"}
                 </button>
               </div>
             )}

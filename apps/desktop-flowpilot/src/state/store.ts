@@ -183,6 +183,9 @@ interface AppState {
   artifacts: Artifact[];
   runHistory: RunHistoryItem[];
   remoteChatSessions: RemoteChatSessionSummary[];
+  /** Progress of an in-flight batch sync-to-Drive (syncAllInProject / selection-mode
+   *  "Sync" confirm), so the Navigator can show "Syncing x/y…" instead of a bare spinner. */
+  syncBatchProgress?: { projectId: string; done: number; total: number };
   historyLoading: boolean;
   historyLoadError?: string;
   remoteHistoryLoading: boolean;
@@ -305,6 +308,7 @@ interface AppState {
   openAgentSpawnGuide(agentName?: string): void;
   clearAgentSpawnGuide(): void;
   syncHistoryRun(runId: string, projectId?: string): Promise<void>;
+  syncRuns(runIds: string[], projectId: string): Promise<void>;
   syncAllInProject(projectId: string): Promise<void>;
   deleteHistoryRun(runId: string): Promise<void>;
   restoreRemoteChatSession(
@@ -345,6 +349,7 @@ export const useStore = create<AppState>((set, get) => ({
   pendingQuestions: [],
   runHistory: [],
   remoteChatSessions: [],
+  syncBatchProgress: undefined,
   agentRuns: [],
   agentGraphSnapshot: undefined,
   agentBusMessages: [],
@@ -1385,21 +1390,39 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
+  async syncRuns(runIds, projectId) {
+    // Shared batch-sync loop for both the project-level "Sync all" chip
+    // (syncAllInProject) and the selection-mode "Sync" confirm action, so both
+    // surfaces drive the same x/y progress counter instead of two parallel ones.
+    // One at a time so we do not hammer Drive; per-item failures are swallowed
+    // (syncHistoryRun marks the row failed) so one broken session does not abort
+    // the whole batch.
+    set({ syncBatchProgress: { projectId, done: 0, total: runIds.length } });
+    try {
+      for (const runId of runIds) {
+        try {
+          await get().syncHistoryRun(runId, projectId);
+        } catch {
+          // already reflected as syncStatus: "failed" on the row
+        }
+        set((s) =>
+          s.syncBatchProgress && s.syncBatchProgress.projectId === projectId
+            ? { syncBatchProgress: { ...s.syncBatchProgress, done: s.syncBatchProgress.done + 1 } }
+            : {},
+        );
+      }
+    } finally {
+      set((s) => (s.syncBatchProgress?.projectId === projectId ? { syncBatchProgress: undefined } : {}));
+    }
+  },
+
   async syncAllInProject(projectId) {
-    // Sync every not-yet-synced chat run in the project, one at a time so we do
-    // not hammer Drive. Per-item failures are swallowed (syncHistoryRun marks
-    // the row failed) so one broken session does not abort the whole batch.
+    // Sync every not-yet-synced chat run in the project.
     const { remoteChatSessions } = get();
     const targets = get()
       .runHistory.filter((item) => item.projectId === projectId && isSyncableRun(item, remoteChatSessions))
       .map((item) => item.runId);
-    for (const runId of targets) {
-      try {
-        await get().syncHistoryRun(runId, projectId);
-      } catch {
-        // already reflected as syncStatus: "failed" on the row
-      }
-    }
+    await get().syncRuns(targets, projectId);
   },
 
   async deleteHistoryRun(runId) {
