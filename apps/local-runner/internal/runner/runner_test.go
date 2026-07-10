@@ -495,7 +495,8 @@ func TestResolvePromptExecutionAdapterReasoningEffort(t *testing.T) {
 		{"codex", "gpt-5.4", "high", "codex", []string{"-c", "model_reasoning_effort=high"}},
 		{"codex", "gpt-5.5", "low", "codex", []string{"-c", "model_reasoning_effort=low"}},
 		{"claude", "claude-sonnet", "high", "claude", []string{"--effort", "high"}},
-		{"claude", "claude-opus", "xhigh", "claude", []string{"--effort", "max"}},
+		{"claude", "claude-opus", "xhigh", "claude", []string{"--effort", "xhigh"}},
+		{"claude", "claude-opus", "max", "claude", []string{"--effort", "max"}},
 		{"gemini", "gemini-pro", "high", "agy", []string{}}, // gemini doesn't append reasoning flags
 	}
 

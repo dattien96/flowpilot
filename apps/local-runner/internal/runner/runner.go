@@ -826,11 +826,11 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, w
 			args = append(args, "--model", cliModel)
 		}
 		if request.ReasoningEffort != "" {
-			effort := strings.ToLower(request.ReasoningEffort)
-			if effort == "xhigh" {
-				effort = "max"
-			}
-			args = append(args, "--effort", effort)
+			// No xhigh->max remap here: the claude CLI's --effort validator
+			// accepts both as distinct values (live-verified against the
+			// installed @anthropic-ai/claude-code binary, Task-215 follow-up)
+			// — see normalizeClaudeEffort's doc comment for the same finding.
+			args = append(args, "--effort", strings.ToLower(request.ReasoningEffort))
 		}
 		return "claude", args, resolvedProvider, nil
 	case "gemini":

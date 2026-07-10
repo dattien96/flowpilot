@@ -1173,12 +1173,16 @@ func isSyntheticGeminiSessionID(providerSessionID string) bool {
 		strings.HasPrefix(trimmed, "thread-")
 }
 
+// normalizeClaudeEffort lowercases/trims a reasoning-effort value for the
+// claude CLI's --effort flag. Previously mapped "xhigh"->"max", on the
+// assumption they were synonyms; live inspection of the installed
+// @anthropic-ai/claude-code binary (2.1.191) during Task-215 found the CLI's
+// actual --effort validator accepts five DISTINCT values
+// (GD=["low","medium","high","xhigh","max"]) — "xhigh" and "max" are
+// different effort tiers, not aliases, so selecting "Extra High" must send
+// "xhigh", not silently upgrade to "max".
 func normalizeClaudeEffort(reasoningEffort string) string {
-	normalized := strings.ToLower(strings.TrimSpace(reasoningEffort))
-	if normalized == "xhigh" {
-		return "max"
-	}
-	return normalized
+	return strings.ToLower(strings.TrimSpace(reasoningEffort))
 }
 
 func normalizeClaudeModelName(model string) string {
