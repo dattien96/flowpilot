@@ -5,7 +5,7 @@
 - Document ID: `Task-214`
 - Title: `Grok Skill-Catalog And Selection Parity`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-10`
@@ -107,12 +107,12 @@ While re-verifying the Grok adapter against a real logged-in account, inspecting
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` `skillpack.Install` writes `.grok/skills/<skill>/SKILL.md` for every built-in skill on project bind, alongside the unchanged `.claude/skills`/`.agents/skills` writes; a test proves this without altering the other two roots' output.
-- [ ] `DOD-2` `IsInstalled` and `skillpack.providerStatuses`/`Status()` recognize the `.grok/skills` root; a test proves Codex/Claude/Gemini rows/paths are unchanged.
-- [ ] `DOD-3` Grok's `ProviderCapabilities.SkillSelection` is `true`; a base-regression test proves Codex/Claude/Gemini capability values are byte-identical to before.
-- [ ] `DOD-4` `discoverProjectSkills`/`providerHomeSkillDirs` have a `grok` case pointed at `.grok/skills`; a fixture-based test proves both project-local and provider-home (`GROK_HOME`-shaped) discovery work; Codex/Claude/Gemini discovery is unchanged.
-- [ ] `DOD-5` A live check (real account, `FLOWPILOT_LIVE_GROK=1`) proves a `SelectedSkills` entry actually reaches the prompt Grok receives for a real turn.
-- [ ] `DOD-6` **Base-regression (`P-0`):** full existing suite passes unchanged (identical pre-existing baseline failures); no Codex/Claude/Gemini-only file is touched; `gemini_acp_transport.go` diff stays empty.
+- [x] `DOD-1` `skillpack.Install` writes `.grok/skills/<skill>/SKILL.md` for every built-in skill on project bind, alongside the unchanged `.claude/skills`/`.agents/skills` writes; a test proves this without altering the other two roots' output. (`TestInstall_WritesGrokSkillsRoot`.)
+- [x] `DOD-2` `IsInstalled` and `skillpack.providerStatuses`/`Status()` recognize the `.grok/skills` root; a test proves Codex/Claude/Gemini rows/paths are unchanged. (`TestIsInstalled_RequiresGrokSentinel`, `TestProviderStatuses_IncludesGrokWithoutAlteringOthers`.)
+- [x] `DOD-3` Grok's `ProviderCapabilities.SkillSelection` is `true`; a base-regression test proves Codex/Claude/Gemini capability values are byte-identical to before. Set on both the authoritative instance method (`grokAdapter.Capabilities()`) and the static `ProviderRegistration` literal. (`TestGrokAdapterCapabilitiesMatchProvenSet`, updated.)
+- [x] `DOD-4` `discoverProjectSkills`/`providerHomeSkillDirs` have a `grok` case pointed at `.grok/skills`; a fixture-based test proves both project-local and provider-home (`GROK_HOME`-shaped) discovery work; Codex/Claude/Gemini discovery is unchanged. (`interactive_catalog_test.go`: `TestDiscoverProjectSkillsGrokReadsDotGrokSkills`, `TestDiscoverProjectSkillsBaseRegression`, `TestProviderHomeSkillDirsGrokMirrorsCodexOrdering`, `TestProviderHomeSkillDirsBaseRegression`.)
+- [x] `DOD-5` A live check (real account, `FLOWPILOT_LIVE_GROK=1`) proves a `SelectedSkills` entry actually reaches the prompt Grok receives for a real turn. (`TestLiveRealGrokSelectedSkillReachesThePrompt`: gave Grok a skill file mandating an exact reply marker; Grok called `read_file` on the referenced skill path and replied with the mandated marker — full round trip proven live, not just fixture-tested.)
+- [x] `DOD-6` **Base-regression (`P-0`):** full existing suite passes unchanged (identical pre-existing baseline failures); no Codex/Claude/Gemini-only file is touched; `gemini_acp_transport.go` diff stays empty. (`go vet ./...` clean; full suite: 1296 passed / 15 failed / 18 skipped — the same 15 pre-existing, unrelated failures as the clean baseline verified earlier this session, zero new ones; `git diff --stat` on `gemini_acp_transport.go` is empty.)
 
 ## 7. Out of Scope
 
@@ -121,8 +121,8 @@ While re-verifying the Grok adapter against a real logged-in account, inspecting
 
 ## 8. Completion Notes
 
-- result:
-- implementation notes:
-- verification:
-- follow-ups:
-- upstream docs updated:
+- result: All 6 DOD items done. Grok now has (a) its own native `.grok/skills` install root alongside `.claude/skills`/`.agents/skills`, (b) `SkillSelection: true` on both the live adapter and the static registration, and (c) `discoverProjectSkills`/`providerHomeSkillDirs` cases pointed at `.grok/skills`/`<GROK_HOME>/skills`.
+- implementation notes: `providerHomeSkillDirs("grok", ...)` deliberately mirrors Codex's ordering (`homePath/skills` first), not Claude's, because `GROK_HOME` already points directly at the `.grok` directory itself (same as `CODEX_HOME`) — proven against the real `discoverGrokAccountHomes` implementation, not assumed.
+- verification: `go build ./...` / `go vet ./...` clean; full suite 1296 passed / 15 failed (identical pre-existing baseline) / 18 skipped; live-verified end to end against the real logged-in account (`FLOWPILOT_LIVE_GROK=1`) — a real Grok turn read a selected skill file via `read_file` and followed its instruction exactly.
+- follow-ups: `Q-1`/`Q-2` (surfacing Grok's own bundled/plugin skills and `config.toml [skills]` overrides in FlowPilot's picker) remain open, deferred.
+- upstream docs updated: CP-46 §10.2 not yet touched for this task (skills weren't part of its original DOD table) — no update needed there; this doc is the record of record.
