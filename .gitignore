@@ -44,6 +44,8 @@ next-env.d.ts
 .agents/
 .claude/
 .codex/
+.grok/
+/mcps/
 core-ai-rules/
 .cursorrules
 .qwen/
