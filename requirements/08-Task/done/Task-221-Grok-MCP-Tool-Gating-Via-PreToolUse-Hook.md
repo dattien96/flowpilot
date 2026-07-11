@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-10`
 - Last Updated: `2026-07-11`
-- Parent Documents: [BUG-273: Grok Does Not Gate MCP Tool Calls Under YOLO=Off In Chat](../../09-BugFix/done/BUG-273-Grok-Does-Not-Gate-MCP-Tool-Calls-Under-Yolo-Off-In-Chat.md), [Task-208: Grok Permission Channel And YOLO Posture](./Task-208-Grok-Permission-Channel-And-Yolo-Posture.md), [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md)
+- Parent Documents: [BUG-273: Grok Does Not Gate MCP Tool Calls Under YOLO=Off In Chat](../../09-BugFix/done/BUG-273-Grok-Does-Not-Gate-MCP-Tool-Calls-Under-Yolo-Off-In-Chat.md), [Task-208: Grok Permission Channel And YOLO Posture](./Task-208-Grok-Permission-Channel-And-Yolo-Posture.md), [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md)
 - Child Documents: `None`
 - Related Documents: [Task-209: Grok MCP Ask-User Spawn-Agent Parity](./Task-209-Grok-MCP-Ask-User-Spawn-Agent-Parity.md) (wires MCP tools; prompt reinforcement is **not** the Drive gate), [Task-218: Grok YOLO Enforced Via Config Rewrite And Always-Approve Flag](./Task-218-Grok-Yolo-Enforced-Via-Config-Rewrite-And-Always-Approve-Flag.md), [SS-08: Approve Gate](../../05-System-Specs/SS-08-Approve-Gate.md), [SD-09: Approval Gates](../../06-System-Tech-Design/SD-09-Approval-Gates.md)
 - Replaces: `None`

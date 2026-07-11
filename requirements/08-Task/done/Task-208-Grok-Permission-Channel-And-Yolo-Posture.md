@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-09`
 - Last Updated: `2026-07-10`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-207: Grok Controlled Adapter MVP (Chat/Stream/Resume)](./Task-207-Grok-Controlled-Adapter-MVP.md)
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-207: Grok Controlled Adapter MVP (Chat/Stream/Resume)](./Task-207-Grok-Controlled-Adapter-MVP.md)
 - Child Documents: `None`
 - Related Documents: [SS-08: Approve Gate](../../05-System-Specs/SS-08-Approve-Gate.md), [SD-09: Approval Gates](../../06-System-Tech-Design/SD-09-Approval-Gates.md), [BUG-069: Claude YOLO Off Always Auto-Approves](../done/BUG-069-Claude-YOLO-Off-Always-Auto-Approves.md)
 - Replaces: `None`

@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-10`
 - Last Updated: `2026-07-10`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md)
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md)
 - Child Documents: `None`
 - Related Documents: [Task-213: Auto-Detect And Sync Provider Models Into The Supported-Models Catalog](./../inprogress/Task-213-Auto-Detect-And-Sync-Provider-Models.md), [Task-211: Grok Desktop UI Surface](./../inprogress/Task-211-Grok-Desktop-UI-Surface.md)
 - Replaces: `None`

@@ -5,14 +5,14 @@
 - Document ID: `CP-46`
 - Title: `Grok Build Controlled Adapter Over ACP Transport`
 - Phase: `coding_plan`
-- Status: `todo`
+- Status: `done` — product path closed 2026-07-11 (Task-212 live smoke). Residual: [Task-210](../../08-Task/inprogress/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md) multi-account connect live (DOD-3) deferred until a second Grok account is available for QA.
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
 - Last Updated: `2026-07-11`
 - Parent Documents: [SS-05: Workflow AI Provider](../../05-System-Specs/SS-05-Workflow-Ai-Provider.md), [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md), [SS-12: Multiple Agents](../../05-System-Specs/SS-12-Multiple-Agents.md), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md), [SD-16: Agent Spawn And Tool Calling Design](../../06-System-Tech-Design/SD-16-Agent-Spawn-And-Tool-Calling-Design.md)
 - Child Documents: [Task-206: Grok ACP Transport And Process/Dispatcher](../../08-Task/done/Task-206-Grok-ACP-Transport-And-Process-Dispatcher.md), [Task-207: Grok Controlled Adapter MVP (Chat/Stream/Resume)](../../08-Task/done/Task-207-Grok-Controlled-Adapter-MVP.md), [Task-208: Grok Permission Channel And YOLO Posture](../../08-Task/done/Task-208-Grok-Permission-Channel-And-Yolo-Posture.md), [Task-209: Grok MCP, Ask-User, And Spawn-Agent Parity](../../08-Task/done/Task-209-Grok-MCP-Ask-User-Spawn-Agent-Parity.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](../../08-Task/inprogress/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md), [Task-211: Grok Desktop UI Surface](../../08-Task/done/Task-211-Grok-Desktop-UI-Surface.md), [Task-212: Grok Parity Hardening And Live DOD](../../08-Task/done/Task-212-Grok-Parity-Hardening-And-Live-DOD.md), [Task-213: Auto-Detect And Sync Provider Models](../../08-Task/done/Task-213-Auto-Detect-And-Sync-Provider-Models.md) (spin-off — provider-agnostic model-catalog auto-sync; Grok surfaced the gap), [Task-214: Grok Skill-Catalog And Selection Parity](../../08-Task/done/Task-214-Grok-Skill-Catalog-And-Selection-Parity.md) (spin-off — Grok's native `.grok/skills` support surfaced the gap), [Task-218: Grok YOLO Enforced Via Config Rewrite And Always-Approve Flag](../../08-Task/done/Task-218-Grok-Yolo-Enforced-Via-Config-Rewrite-And-Always-Approve-Flag.md), [Task-221: Grok MCP Tool Gating Via PreToolUse Hook](../../08-Task/done/Task-221-Grok-MCP-Tool-Gating-Via-PreToolUse-Hook.md) (**cancelled / won't-do PreToolUse** — MCP Drive gate met via Task-208/218; closes [BUG-273](../../09-BugFix/done/BUG-273-Grok-Does-Not-Gate-MCP-Tool-Calls-Under-Yolo-Off-In-Chat.md))
-- Related Documents: [03 - Solution And System Design](../../10-Refactor/New-System/03-Solution-And-System-Design.md), [04 - Detailed Coding Plan](../../10-Refactor/New-System/04-Detailed-Coding-Plan.md), [07 — Claude Provider Adapter Plan](../../10-Refactor/New-System/07-Claude-Adapter-Plan.md), [04-07 — Phase 7: Providers Capability Packaging](../../10-Refactor/New-System/04-07-Phase7-Providers-Capability-Packaging.md), [CP-40: Gemini Controlled Adapter Over ACP Transport](./CP-40-Gemini-Adapter-Plan.md)
+- Related Documents: [03 - Solution And System Design](../../10-Refactor/New-System/03-Solution-And-System-Design.md), [04 - Detailed Coding Plan](../../10-Refactor/New-System/04-Detailed-Coding-Plan.md), [07 — Claude Provider Adapter Plan](../../10-Refactor/New-System/07-Claude-Adapter-Plan.md), [04-07 — Phase 7: Providers Capability Packaging](../../10-Refactor/New-System/04-07-Phase7-Providers-Capability-Packaging.md), [CP-40: Gemini Controlled Adapter Over ACP Transport](../todo/CP-40-Gemini-Adapter-Plan.md)
 - Replaces: `None`
 - Tags: `grok, grok-build, xai, ai-providers, adapter, acp, json-rpc, local-runner, desktop-chat`
 
@@ -28,7 +28,8 @@
 
 ### Current Ask
 
-- Produce a detailed, code-grounded implementation plan to add a real Grok Build provider adapter so desktop chat and runner-driven workflow turns can use Grok through the same controlled runner abstraction (`ProviderRuntimeAdapter`, `TurnBridge`, normalized `ProviderEvent`, provider registry) as Codex, Claude, and Gemini — including provider detection, multi-account config-file isolation, add/switch account, and current-account limit/model display in the desktop.
+- **Closed.** Grok is a first-class controlled provider for chat/parity smoke. Follow-up only: Task-210 connect/switch live when a second account is available.
+
 
 ### Key Decisions
 
@@ -98,7 +99,7 @@ Implement Grok Build as a real controlled-mode provider adapter for desktop chat
 - [04 - Detailed Coding Plan](../../10-Refactor/New-System/04-Detailed-Coding-Plan.md)
 - [07 — Claude Provider Adapter Plan](../../10-Refactor/New-System/07-Claude-Adapter-Plan.md)
 - [04-07 — Phase 7: Providers Capability Packaging](../../10-Refactor/New-System/04-07-Phase7-Providers-Capability-Packaging.md)
-- [CP-40: Gemini Controlled Adapter Over ACP Transport](./CP-40-Gemini-Adapter-Plan.md)
+- [CP-40: Gemini Controlled Adapter Over ACP Transport](../todo/CP-40-Gemini-Adapter-Plan.md)
 
 ## 3. Implementation Strategy
 
@@ -486,3 +487,10 @@ _Updated through Task-221/BUG-273 close-out (2026-07-11). Earlier rows retain Ta
 | Usage/quota | Signal only (unchanged) | Turn-time `402 personal-team-blocked:spending-limit` still the only known signal (`Q-5`); classified in `isProviderUsageLimitError`. No machine-readable quota endpoint found. |
 | Adapter / registry / desktop UI / accounts | **Built** | `grokAdapter`/`grokDispatcher`/`grok_process.go`/`grok_permission.go`/`grok_event_mapper.go` implement chat/stream/resume/YOLO/permission/MCP-wiring/token-usage/reasoning-effort-mapping; live registry enablement is wired behind `FLOWPILOT_GROK_AGENT` (off by default, mirrors Codex); ~15 additive provider switches across `runner.go`/`provider_accounts.go`/`compat.go`/`cli/root.go` cover detect/connect/switch/quota-classification; desktop `contract.ts`/`adminModels.ts`/`adminLogic.ts`/`ChatInput.tsx`/`ProviderAccountsPanel.tsx`/`store.ts`/`styles.css`/`AgentsPanel.tsx`/`MockRunnerClient.ts`/`AiProvidersSettings.tsx`/`CheckVersionSettings.tsx`/`runner.ts` all carry the `"grok"` case. 43 Grok-specific Go tests pass (34 fake-transport/unit + 6 free live-detect/read-only checks + 3 opt-in `FLOWPILOT_LIVE_GROK=1` live E2E tests, all against a real logged-in account); the full existing suite is unchanged (same 15 pre-existing, unrelated failures as the clean baseline, verified before and after). |
 | Full CP-46 DOD parity | **Task-212 live smoke closed 2026-07-11** | Task-212 closed with credentialed desktop smoke (skills/context, r-ca/r-task/r-bug, Gen summary, Grok→Codex handoff, resume continue, token UI, orchestration/stop). Formal E2E-01..36 matrix not fully tabulated — accepted as smoke. Prior: session/load + YOLO permission fixes. Handoff source: **enabled** via jsonl (`supportsHandoffSource(grok)=true`), not SQLite. Residual optional: exhaustive E2E table, multi-account switch depth (Task-210). |
+
+## 11. Completion Notes
+
+- result: **done** 2026-07-11. Core CP-46 goals shipped and live-smoked via Task-206..212 (+ spin-offs 213–216, 218, 220–221).
+- residual: **Task-210** remains `inprogress` — multi-account connect (`grok login` / second `GROK_HOME`) not live-exercised; re-test when another Grok account is available. Does not block product Grok chat path.
+- formal E2E-01..36 matrix: accepted as smoke via Task-212 (not a full tabulated matrix).
+- upstream: this CP moved to `done/`; Task-210 stays open on purpose.

@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-10`
 - Last Updated: `2026-07-10`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md)
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md)
 - Child Documents: `None`
 - Related Documents: [Task-209: Grok MCP, Ask-User, And Spawn-Agent Parity](../inprogress/Task-209-Grok-MCP-Ask-User-Spawn-Agent-Parity.md), [Task-213: Auto-Detect And Sync Provider Models Into The Supported-Models Catalog](../inprogress/Task-213-Auto-Detect-And-Sync-Provider-Models.md)
 - Replaces: `None`

@@ -15,7 +15,7 @@ Docs close-out only: Grok Google Drive MCP under YOLO=off already surfaces the s
 - `requirements/08-Task/done/Task-221-…` — status `cancelled` (won't-do PreToolUse); product DOD-P1..P5 closed by live verify.
 - `requirements/09-BugFix/done/BUG-273-…` — status `done` (fixed-by-existing-path).
 - Removed inprogress copies of both docs.
-- `requirements/07-Coding-Plan/inprogress/CP-46-…` — Q-3 answered, R-4 mitigated, §10/§10.1/§10.2 MCP YOLO gate marked done, child links updated.
+- `requirements/07-Coding-Plan/done/CP-46-…` — Q-3 answered, R-4 mitigated, §10/§10.1/§10.2 MCP YOLO gate marked done, child links updated.
 - `Task-209` follow-up note: Task-221 cancelled for MCP gating.
 - `CA-281` verification: live DOD-8/9 confirmed 2026-07-11 (pre-existing working-tree note).
 

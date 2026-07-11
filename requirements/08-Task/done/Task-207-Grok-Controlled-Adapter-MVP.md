@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-09`
 - Last Updated: `2026-07-10`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-206: Grok ACP Transport And Process/Dispatcher](../done/Task-206-Grok-ACP-Transport-And-Process-Dispatcher.md)
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-206: Grok ACP Transport And Process/Dispatcher](../done/Task-206-Grok-ACP-Transport-And-Process-Dispatcher.md)
 - Child Documents: `None`
 - Related Documents: [Task-165: Gemini Controlled Adapter MVP](../done/Task-165-Gemini-Controlled-Adapter-MVP.md)
 - Replaces: `None`

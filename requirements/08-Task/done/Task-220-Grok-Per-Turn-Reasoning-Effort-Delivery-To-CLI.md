@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-10`
 - Last Updated: `2026-07-10`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-207: Grok Controlled Adapter MVP (Chat/Stream/Resume)](../done/Task-207-Grok-Controlled-Adapter-MVP.md)
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-207: Grok Controlled Adapter MVP (Chat/Stream/Resume)](../done/Task-207-Grok-Controlled-Adapter-MVP.md)
 - Child Documents: `None`
 - Related Documents: [Task-215: Per-Model Reasoning-Effort Detection And Model-Aware UI](../done/Task-215-Per-Model-Reasoning-Effort-Detection-And-Model-Aware-UI.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](./Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md)
 - Replaces: `None`
