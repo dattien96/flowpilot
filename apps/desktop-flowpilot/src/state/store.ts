@@ -979,7 +979,9 @@ export const useStore = create<AppState>((set, get) => ({
             id: `chat-summary-${s.timeline.length}`,
             text: result.generated
               ? "Chat summary updated."
-              : `Chat summary unchanged${result.reason ? ` (${result.reason})` : ""}.`,
+              : result.reason
+                ? `Chat summary skipped (${result.reason}).`
+                : "Chat summary unchanged.",
             tone: "info",
           },
         ],

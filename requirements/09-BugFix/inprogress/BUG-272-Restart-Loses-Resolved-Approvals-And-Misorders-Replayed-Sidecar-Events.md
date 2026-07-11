@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-10`
 - Parent Documents: [BUG-271: Resolved Question Vanishes Or Reappears Interactive After Server Restart](../done/BUG-271-Resolved-Question-Vanishes-Or-Reappears-Interactive-After-Server-Restart.md)
 - Child Documents: `none`
-- Related Documents: [Task-212: Grok Parity Hardening And Live DOD](../../08-Task/inprogress/Task-212-Grok-Parity-Hardening-And-Live-DOD.md) (the sibling Grok transcript-replay gap, DOD-5/DOD-9, closed in the same session)
+- Related Documents: [Task-212: Grok Parity Hardening And Live DOD](../../08-Task/done/Task-212-Grok-Parity-Hardening-And-Live-DOD.md) (the sibling Grok transcript-replay gap, DOD-5/DOD-9, closed in the same session)
 - Replaces: `none`
 - Tags: `agent-flow-engine`, `resume`, `approval`, `regression`, `restart`
 

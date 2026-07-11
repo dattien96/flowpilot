@@ -212,6 +212,9 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 
 	var lastText string
 	shimmedSpawnCalls := map[string]struct{}{}
+	// Per-turn toolCallId → mutation kind/path cache (Task-212 DOD-2). Live Grok
+	// strips kind/locations from status=completed tool_call_update frames.
+	pendingToolCalls := map[string]grokPendingToolCall{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -232,6 +235,7 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 				return fmt.Errorf("grok agent stdio stream closed mid-turn")
 			}
 			a.tryShimGrokNativeSpawnSubagent(sessionID, bridge, n, shimmedSpawnCalls)
+			n = grokCorrelateToolNotification(pendingToolCalls, n)
 			events, mapped := mapGrokNotification(n)
 			if !mapped {
 				continue

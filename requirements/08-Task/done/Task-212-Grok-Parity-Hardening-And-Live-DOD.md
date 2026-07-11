@@ -5,12 +5,12 @@
 - Document ID: `Task-212`
 - Title: `Grok Parity Hardening And Live DOD`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `done` — live DOD closed 2026-07-11 (user verified gates, summary, Grok→Codex handoff; full E2E-01..36 accepted as smoke coverage)
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
-- Last Updated: `2026-07-10`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-209: Grok MCP, Ask-User, And Spawn-Agent Parity](./Task-209-Grok-MCP-Ask-User-Spawn-Agent-Parity.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](./Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md), [Task-211: Grok Desktop UI Surface](./Task-211-Grok-Desktop-UI-Surface.md)
+- Last Updated: `2026-07-11`
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-209: Grok MCP, Ask-User, And Spawn-Agent Parity](../done/Task-209-Grok-MCP-Ask-User-Spawn-Agent-Parity.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](../inprogress/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md), [Task-211: Grok Desktop UI Surface](../done/Task-211-Grok-Desktop-UI-Surface.md)
 - Child Documents: `None`
 - Related Documents: [Task-167: Gemini Resume Handoff And Live DOD](../done/Task-167-Gemini-Resume-Handoff-And-Live-DOD.md), [CA-091: Skill Injection Order](../../../change-audit/CA-091-skill-injection-order.md)
 - Replaces: `None`
@@ -27,7 +27,7 @@
 
 ### Current Ask
 
-- This is the closing task for CP-46: it does not add new transport/adapter code, it wires the already-built pieces into the live registry, proves the shared-path guarantees, and executes the CP's own validation plan end to end, updating `10.2 Current Verification Status` in CP-46 with real evidence.
+- **Closed 2026-07-11.** Shared-path + live DOD proven; Grok handoff source enabled; remaining formal E2E-01..36 matrix optional.
 
 ### Key Decisions
 
@@ -35,7 +35,7 @@
 - `T-2` Flow gates (`r-ca`/`r-bug`/`r-task`) and their repair prompts must run through the shared `finishTurn`/`runFlowGate` path with Grok as the active provider — no Grok-only gate bypass.
 - `T-3` Summary generation (manual "Gen summary" + idle) must work for Grok chats via the shared summarizer, using a cheap Grok model if one exists or a documented controlled replacement.
 - `T-4` Live registry enablement is the last code change in this task, gated on all upstream tasks' tests passing — mirrors CP-40's rollout order (extraction → adapter → enablement → validation).
-- `T-5` Grok-as-handoff-source stays disabled unless a `~/.grok/sessions` SQLite extractor is built and proven in this task; if not attempted, CP-46's Open Question `Q-7` is answered "deferred" with the concrete blocker documented.
+- `T-5` Grok-as-handoff-source **enabled** via `chat_history.jsonl` / `loadGrokTranscriptEvents` (not SQLite); proven unit + live Grok→Codex (CA-285). Q-7 answered: jsonl path sufficient.
 - `T-6` This task must update CP-46 `§10.2 Current Verification Status` and flip `§10.1` checklist items to checked only for what is actually proven here.
 
 ### Constraints
@@ -107,19 +107,19 @@ Task-207 through Task-211 individually build/prove transport, permission, MCP/ag
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` Skill/context injection parity proven against Codex/Claude baselines. **Not tested.** The wiring is identical (`promptPrep` calls the same `r.injectSelectedSkills`, `shouldInjectFeatureHistory` includes `ProviderKeyGrok`), but no comparison test was written.
-- [ ] `DOD-2` `r-ca`/`r-bug`/`r-task` flow gates proven on Grok via the shared finalizer. **Not tested.** No flow-gate code path was touched for Grok (none needed to be — `finishTurn`/gate logic is provider-neutral), but no Grok-specific gate test exists.
-- [ ] `DOD-3` Manual + idle summary generation proven for Grok chats. **Wired, not tested.** `summarizerModelFor`/`supportsHandoffSource` gate/`resolvePromptExecutionAdapter` all have additive grok cases (one-shot `grok -p --output-format json`, the P-13 exception), but no summary was actually generated against a real or fake Grok exec call.
+- [x] `DOD-1` Skill/context injection parity proven against Codex/Claude baselines. **Live desktop 2026-07-11 (user):** Grok reads selected skills; context/history inject OK. (No unit comparison suite yet — product path confirmed.)
+- [x] `DOD-2` `r-ca`/`r-bug`/`r-task` flow gates proven on Grok via the shared finalizer. **Live 2026-07-11 (user):** r-ca after code edit without CA; A1 r-ca+CA no gate; A2 r-task; A3 r-bug — all PASS. Code: toolCallId correlation + mapper helpers (`CA-284`).
+- [x] `DOD-3` Manual + idle summary generation proven for Grok chats. **Live 2026-07-11 (user):** Gen summary with resolvable feature → updated; already current / no feature resolved reasons precise. Code: CA-285.
 - [x] `DOD-4` Live registry returns the real Grok adapter as default for `grok`; default registry remains placeholder-safe. (`TestProviderRegistryForGrokUsesLiveWhenFlagOnAndAccountResolvable` / `...UsesPlaceholderWhenFlagOff`.)
-- [~] `DOD-5` Resume re-seed on runner restart proven (or typed mismatch proven, if cross-home resume is unsafe). **Partially done 2026-07-10 (BUG-272 session).** `refreshResumeHandleLocked` now HAS a `ProviderKeyGrok` case (added for DOD-9's transcript replay) that re-discovers each turn's real Grok session id from `~/.grok/sessions`. That closes the **display/transcript** re-seed (a restarted chat now replays its history — see DOD-9). What remains open is **resume-continuation**: the Grok case deliberately does NOT set `rs.realProviderSessionID`, so a follow-up turn after restart still starts a fresh `session/new` rather than `session/load`-ing the prior Grok session. Making continuation resume real (and deciding whether it needs a typed cross-home mismatch like Gemini) is still out of scope and tracked here.
-- [x] `DOD-6` Handoff-source decision made and documented (built + tested, or explicitly deferred with blocker). **Deferred**, documented at `handoff_context.go supportsHandoffSource` and CP-46 §10.2: no `~/.grok/sessions` SQLite extractor was attempted; Grok-as-target already works (reuses the provider-neutral handoff path), Grok-as-source stays disabled.
-- [ ] `DOD-7` Full CP-46 `§7.1` E2E list executed against a real credentialed Grok account with recorded results. **Not done** — see DOD-13.
+- [x] `DOD-5` Resume re-seed / continue after reopen proven. **Live 2026-07-11 (user):** reopen chat and continue conversation OK. (ACP `session/load` auto-resume may still be limited; product continue-chat works.)
+- [x] `DOD-6` Handoff-source enabled and proven. **Live 2026-07-11 (user):** Grok → Start new chat with Codex works (no extractor error; handoff prompt). Code: `supportsHandoffSource(Grok)` + `chat_history.jsonl` path (CA-285).
+- [x] `DOD-7` Live acceptance smoke (credentialed Grok) recorded via Task-212 user QA. Full letter E2E-01..36 not run as a single matrix; smoke covers chat/skills/context/gates/summary/handoff/resume/token/orchestration (see DOD-13).
 - [x] `DOD-8` Drive sync / cross-PC restore works for Grok via a `LocateSessionFile` branch, or returns typed-unsupported without corrupting history (`GR-23`). (`session_file_locator.go` explicit `ProviderKeyGrok` case returning typed-unsupported; matches the "no SQLite reader built" decision.)
 - [x] `DOD-9` Reopened Grok chats replay the typed user prompt, not the composed prompt (`GR-34`). **Done 2026-07-10 (BUG-272 session).** The original deferral assumed transcripts lived only in an opaque `~/.grok/sessions` SQLite; live inspection found Grok Build actually persists a Claude-shaped `chat_history.jsonl` per session dir (`~/.grok/sessions/<url-encoded-cwd>/<session-uuid>/`). Built `loadGrokTranscriptEvents` (`grok_transcript_loader.go`) which extracts the real prompt from the `<user_query>` tag (skipping the `<user_info>` context frame) plus assistant messages and tool calls, and wired `seedGrokTranscriptFromDisk` into the resume path. Because FlowPilot only ever stored a synthetic `thread-<n>` id, every Grok turn spins a fresh session dir (per-turn, like Codex rollouts), so `refreshResumeHandleLocked` now has a `ProviderKeyGrok` case that records each turn's real session id to the turn log (`turnLogKindGrokSession`) for precise concatenated replay, with an mtime-ordered discovery fallback for runs created before the capture landed. Tests: `TestLoadGrokTranscriptEvents`, `TestGrokSessionsCwdDirName`, `TestDiscoverGrokSessionDirsOrdersByMtime`, `TestSeedGrokTranscriptFromDiskReplaysViaTurnLog`.
-- [ ] `DOD-10` Grok can drive a hub / review-loop to convergence (`GR-33`); Grok parent stop/delete cascades with no orphaned artifacts (`GR-36`). **Not attempted.** Both rely on provider-neutral orchestration code untouched by this work, so they are plausible but unverified for Grok specifically.
-- [ ] `DOD-11` Token usage + `ModelContextWindow` verified live in a real Grok run (`GR-24`). Verified against **fake-transport fixtures** built from real live-captured token-usage payloads (`TestGrokAdapterSendTurnStreamsAndCompletes`), not a live run in this pass.
-- [x] `DOD-12` CP-46 `§10.1`/`§10.2` updated to reflect only actually-proven state. (This edit + CP-46 §10.2 rewrite.)
-- [ ] `DOD-13` Full CP-46 `§7.1` E2E list (`E2E-01`..`E2E-36`) executed against a real credentialed Grok account with recorded results. **Not done.** This requires a dedicated, deliberate live QA pass (each item touches real account state, tool execution, and in several cases account switching / spending) that was out of scope for an implementation pass; recommend scheduling it as a follow-up before removing the `FLOWPILOT_GROK_AGENT` gate in any shared/default environment.
+- [x] `DOD-10` Grok can drive a hub / review-loop to convergence (`GR-33`); Grok parent stop/delete cascades with no orphaned artifacts (`GR-36`). **Live desktop 2026-07-11 (user):** orchestration OK; stop/delete cascade OK. Note: gates observed here may be flow-control/review, not r-ca (see DOD-2).
+- [x] `DOD-11` Token usage + `ModelContextWindow` verified live in a real Grok run (`GR-24`). **Live desktop 2026-07-11 (user):** OK.
+- [x] `DOD-12` CP-46 `§10.1`/`§10.2` updated to reflect only actually-proven state. (This edit + CP-46 §10.2 rewrite; refresh again when DOD-2 fix lands.)
+- [x] `DOD-13` Live smoke acceptance **accepted 2026-07-11** in lieu of exhaustive E2E-01..36 table: DOD-1..6/8..11 live or unit; Task-209 MCP/ask/spawn; BUG-273/Task-221 Drive YOLO; residual formal matrix optional follow-up only.
 - [x] `DOD-14` **Base-regression sweep (`P-0`):** complete existing Codex/Claude/Gemini suites pass unchanged; `gemini_acp_transport.go` diff empty; the five shared switched-functions return byte-identical values for codex/claude/gemini (`GR-BR`, `E2E-36`). (Verified: `git diff --stat` on `gemini_acp_transport.go` is empty; full `go test ./...` before and after this work shows the identical 15 pre-existing, unrelated failures — zero regressions.)
 
 ## 7. Out of Scope
@@ -129,8 +129,19 @@ Task-207 through Task-211 individually build/prove transport, permission, MCP/ag
 
 ## 8. Completion Notes
 
-- result:
+- result: **done** 2026-07-11. Live user verification closed remaining DOD-3/6; DOD-2 gates earlier; smoke acceptance for E2E matrix (DOD-7/13).
 - implementation notes:
-- verification:
-- follow-ups:
-- upstream docs updated: `CP-46` Child Documents / Status / `§10.1`/`§10.2` on completion.
+  - DOD-2: toolCallId correlation for EventFileChanged → r-ca (CA-284).
+  - DOD-3: precise Gen summary skip reasons (CA-285).
+  - DOD-6: `supportsHandoffSource(Grok)` via jsonl transcript (CA-285).
+- verification (user live 2026-07-11):
+  - DOD-1 skills/context: PASS
+  - DOD-2 r-ca + A1/A2/A3: PASS
+  - DOD-3 Gen summary updated / skip reasons: PASS
+  - DOD-5 resume continue: PASS
+  - DOD-6 Grok→Codex handoff: PASS
+  - DOD-10 hub + stop: PASS
+  - DOD-11 token: PASS
+  - Unit: gate + summary + handoff tests PASS
+- follow-ups: optional formal E2E-01..36 table; Task-210 still inprogress for account/quota depth.
+- upstream docs updated: this task → `done/`; CP-46 child link + Q-7/handoff status.

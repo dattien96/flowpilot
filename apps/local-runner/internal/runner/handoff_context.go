@@ -141,14 +141,14 @@ func (s *InteractiveService) loadHandoffSourceRun(runID string) (*interactiveRun
 
 func supportsHandoffSource(key ProviderKey) bool {
 	switch key {
-	case ProviderKeyClaude, ProviderKeyCodex:
+	case ProviderKeyClaude, ProviderKeyCodex, ProviderKeyGrok:
+		// Grok: chat_history.jsonl via loadGrokTranscriptEvents +
+		// seedGrokTranscriptFromDisk (Task-212 DOD-6 / DOD-9). buildHandoffContext
+		// packs provider-neutral transcriptTurnsFromRun after loadHandoffSourceRun
+		// seeds disk events — no SQLite extractor required.
 		return true
-	// ProviderKeyGrok deliberately falls to default (CP-46 Task-212 T-5,
-	// Open Question Q-7): a ~/.grok/sessions SQLite transcript extractor was
-	// not attempted in this pass, so Grok stays handoff-TARGET-only, never a
-	// source, until one is built and proven. Do not flip this without adding
-	// the extractor + a passing test.
 	default:
+		// Gemini remains unsupported until a proven transcript extractor lands.
 		return false
 	}
 }

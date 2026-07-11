@@ -800,6 +800,113 @@ func TestGenerateChatSummaryNow(t *testing.T) {
 	if resp2.Generated || !resp2.Skipped {
 		t.Fatalf("expected second call skipped (no change), got %+v", resp2)
 	}
+	if resp2.Reason != "summary already current" {
+		t.Fatalf("second call reason = %q, want summary already current", resp2.Reason)
+	}
+}
+
+func TestGenerateChatSummaryNowGrokResolvableFeature(t *testing.T) {
+	workspace, _, _ := chatSummarySyncFixture(t)
+	svc := NewInteractiveService()
+	svc.syncContextEngineFilesHook = func(string, string) (error, string) { return nil, "ok" }
+
+	rs := &interactiveRun{
+		id:           "run-grok-summary",
+		projectID:    "proj-grok-summary",
+		runKind:      "chat",
+		providerKey:  ProviderKeyGrok,
+		workspaceCwd: workspace,
+		events: []ProviderEvent{
+			{Type: EventTurnStarted, Prompt: "chat-ui improve the composer"},
+			{Type: EventTurnCompleted, FinalMessage: "updated the chat composer behavior"},
+		},
+	}
+	svc.mu.Lock()
+	svc.runs[rs.id] = rs
+	svc.mu.Unlock()
+
+	resp, apiErr := svc.generateChatSummaryNow(rs.id)
+	if apiErr != nil {
+		t.Fatalf("generateChatSummaryNow: %+v", apiErr)
+	}
+	if !resp.Generated {
+		t.Fatalf("expected Generated=true for Grok + resolvable feature, got %+v", resp)
+	}
+
+	// Unchanged transcript → already current.
+	resp2, apiErr := svc.generateChatSummaryNow(rs.id)
+	if apiErr != nil {
+		t.Fatalf("second call: %+v", apiErr)
+	}
+	if resp2.Generated || resp2.Reason != "summary already current" {
+		t.Fatalf("expected already current, got %+v", resp2)
+	}
+}
+
+func TestGenerateChatSummaryNowGrokNoFeatureResolved(t *testing.T) {
+	workspace, _, _ := chatSummarySyncFixture(t)
+	svc := NewInteractiveService()
+	svc.syncContextEngineFilesHook = func(string, string) (error, string) { return nil, "ok" }
+
+	rs := &interactiveRun{
+		id:           "run-grok-nofeature",
+		projectID:    "proj-grok-nofeature",
+		runKind:      "chat",
+		providerKey:  ProviderKeyGrok,
+		workspaceCwd: workspace,
+		events: []ProviderEvent{
+			// No keyword matching FEATURE-KEYS / catalog in the fixture.
+			{Type: EventTurnStarted, Prompt: "xyzzy unrelated gibberish qqq"},
+			{Type: EventTurnCompleted, FinalMessage: "nothing useful"},
+		},
+	}
+	svc.mu.Lock()
+	svc.runs[rs.id] = rs
+	svc.mu.Unlock()
+
+	resp, apiErr := svc.generateChatSummaryNow(rs.id)
+	if apiErr != nil {
+		t.Fatalf("generateChatSummaryNow: %+v", apiErr)
+	}
+	if resp.Generated || !resp.Skipped {
+		t.Fatalf("expected skip, got %+v", resp)
+	}
+	if resp.Reason != "no feature resolved" {
+		t.Fatalf("reason = %q, want no feature resolved", resp.Reason)
+	}
+}
+
+func TestBuildHandoffContextAllowsLiveGrokSource(t *testing.T) {
+	svc := NewInteractiveService()
+	rs := &interactiveRun{
+		id:          "run-grok-handoff",
+		providerKey: ProviderKeyGrok,
+		runKind:     "chat",
+		events: []ProviderEvent{
+			{Type: EventTurnStarted, Prompt: "fix the handoff path for grok"},
+			{Type: EventTurnCompleted, FinalMessage: "handoff source transcript is ready"},
+		},
+	}
+	svc.mu.Lock()
+	svc.runs[rs.id] = rs
+	svc.mu.Unlock()
+
+	result, apiErr := svc.buildHandoffContext(context.Background(), rs.id, handoffContextRequest{TargetProviderKey: ProviderKeyCodex})
+	if apiErr != nil {
+		t.Fatalf("buildHandoffContext: %+v", apiErr)
+	}
+	if result.SourceProviderKey != ProviderKeyGrok {
+		t.Fatalf("SourceProviderKey = %q, want grok", result.SourceProviderKey)
+	}
+	if result.TargetProviderKey != ProviderKeyCodex {
+		t.Fatalf("TargetProviderKey = %q, want codex", result.TargetProviderKey)
+	}
+	if !strings.Contains(result.Prompt, "fix the handoff path for grok") {
+		t.Fatalf("handoff prompt missing user turn: %q", result.Prompt)
+	}
+	if !strings.Contains(strings.ToLower(result.Prompt), "grok") {
+		t.Fatalf("handoff prompt should mention source provider grok: %q", result.Prompt)
+	}
 }
 
 func TestNormalizeSummaryBullets(t *testing.T) {
