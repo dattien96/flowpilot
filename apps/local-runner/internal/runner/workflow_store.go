@@ -69,6 +69,20 @@ type QuestionHistoryReader interface {
 	ListQuestionsByRun(ctx context.Context, runID string) ([]ProviderQuestionState, error)
 }
 
+// ApprovalHistoryReader is the approval-side twin of QuestionHistoryReader
+// (BUG-ApprovalReplay-Restart). A restart rebuilds rs.events from the
+// sidecar/provider transcript, which has no concept of FlowPilot's own
+// permission_required approval card — the raw asked event replays via
+// FlowEventStore (EventPermissionRequired is now a sidecar type), but whether
+// it was approved/denied/expired lives in the separately-upserted
+// ProviderApprovalState. Stores that implement this let reconstructRun stamp
+// the recorded Decision (read-only render) or drop an expired approval,
+// instead of the card either vanishing or replaying as a fresh interactive
+// prompt the run appears to be waiting on. Mirrors QuestionHistoryReader.
+type ApprovalHistoryReader interface {
+	ListApprovalsByRun(ctx context.Context, runID string) ([]ProviderApprovalState, error)
+}
+
 type SessionIndexReader interface {
 	ListAllProviderSessions(ctx context.Context) ([]ProviderSessionState, error)
 }
@@ -300,6 +314,18 @@ func (f *fakeWorkflowStore) ListQuestionsByRun(_ context.Context, runID string) 
 	for _, q := range f.questions {
 		if q.RunID == runID {
 			out = append(out, q)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeWorkflowStore) ListApprovalsByRun(_ context.Context, runID string) ([]ProviderApprovalState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []ProviderApprovalState
+	for _, a := range f.approvals {
+		if a.RunID == runID {
+			out = append(out, a)
 		}
 	}
 	return out, nil

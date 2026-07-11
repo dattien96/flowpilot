@@ -5,12 +5,12 @@
 - Document ID: `Task-210`
 - Title: `Grok Account Model — Detect, Connect, Switch, Quota`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `in_progress` — residual after **CP-46 done**: live multi-account connect (DOD-3) deferred until second Grok account available for QA.
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
-- Last Updated: `2026-07-10`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-207: Grok Controlled Adapter MVP (Chat/Stream/Resume)](./Task-207-Grok-Controlled-Adapter-MVP.md)
+- Last Updated: `2026-07-11`
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-207: Grok Controlled Adapter MVP (Chat/Stream/Resume)](../done/Task-207-Grok-Controlled-Adapter-MVP.md)
 - Child Documents: `None`
 - Related Documents: [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md), [Task-018: Auto Switch Account](../done/Task-018-Auto-Switch-Account.md), [Task-059: Desktop Check Version Tested Baseline Config](../done/Task-059-Desktop-Check-Version-Tested-Baseline-Config.md), [Task-080: Claude Account Quota Usage Fetch](../done/Task-080-Claude-Account-Quota-Usage-Fetch.md), [BUG-092: History Resume Fails When Persisted Provider Account ID Is Stale](../done/BUG-092-History-Resume-Fails-When-Persisted-Provider-Account-ID-Is-Stale.md)
 - Replaces: `None`
@@ -116,6 +116,9 @@ Task-207 makes Grok run turns for one account; this task makes Grok manageable t
 - Grok-as-handoff-source transcript extraction (Task-212).
 
 ## 8. Completion Notes
+
+- note (2026-07-11): Parent **CP-46 is done** with residual this task open. Keep inprogress until second Grok account is available to live-verify DOD-3 connect (`grok login` / managed home). Other DOD-1/2/4–8 largely unit-proven.
+
 
 - result:
 - implementation notes:

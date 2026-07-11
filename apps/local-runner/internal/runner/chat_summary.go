@@ -100,6 +100,47 @@ type generateChatSummaryResponse struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
+// chatSummaryStatus is an internal classifier for manual/idle summary outcomes
+// (Task-212 DOD-3). The HTTP API still exposes generated/skipped/reason only.
+type chatSummaryStatus string
+
+const (
+	chatSummaryGenerated      chatSummaryStatus = "generated"
+	chatSummaryAlreadyCurrent chatSummaryStatus = "already_current"
+	chatSummaryNoTranscript   chatSummaryStatus = "no_transcript"
+	chatSummaryNoFeature      chatSummaryStatus = "no_feature"
+	chatSummaryEmptySummary   chatSummaryStatus = "empty_summary"
+	chatSummaryWriteFailed    chatSummaryStatus = "write_failed"
+	chatSummaryCatalogFailed  chatSummaryStatus = "catalog_failed"
+)
+
+type chatSummaryResult struct {
+	generated bool
+	status    chatSummaryStatus
+}
+
+func (r chatSummaryResult) reason() string {
+	switch r.status {
+	case chatSummaryAlreadyCurrent:
+		return "summary already current"
+	case chatSummaryNoFeature:
+		return "no feature resolved"
+	case chatSummaryNoTranscript:
+		return "no usable transcript"
+	case chatSummaryEmptySummary:
+		return "summary model returned no usable summary"
+	case chatSummaryWriteFailed:
+		return "summary could not be saved"
+	case chatSummaryCatalogFailed:
+		return "feature catalog unavailable"
+	default:
+		if r.generated {
+			return ""
+		}
+		return "summary skipped"
+	}
+}
+
 // handleGenerateChatSummary serves the manual "Gen summary" button: it generates
 // the rolling summary immediately (bypassing the idle wait), errors if the chat
 // is mid-turn, and is a no-op when the stored summary already matches.
@@ -132,11 +173,20 @@ func (s *InteractiveService) generateChatSummaryNow(runID string) (generateChatS
 
 	// Manual trigger bypasses the idle wait and supersedes any pending timer.
 	s.cancelChatSummary(runID)
-	generated := s.recordChatSummarySync(rs, turnID)
+	// Resumed Grok chats may not have hydrated chat_history.jsonl into rs.events
+	// until seedTranscriptFromDisk runs (Task-212 DOD-3 / DOD-9).
+	if rs.providerKey == ProviderKeyGrok && len(rs.events) == 0 {
+		s.seedTranscriptFromDisk(rs)
+	}
+	detailed := s.recordChatSummarySyncDetailed(rs, turnID)
 
-	resp := generateChatSummaryResponse{RunID: runID, Generated: generated, Skipped: !generated}
-	if !generated {
-		resp.Reason = "summary already current or no feature resolved"
+	resp := generateChatSummaryResponse{
+		RunID:     runID,
+		Generated: detailed.generated,
+		Skipped:   !detailed.generated,
+	}
+	if !detailed.generated {
+		resp.Reason = detailed.reason()
 	}
 	return resp, nil
 }
@@ -188,20 +238,31 @@ func (s *InteractiveService) ScanPersistedChatsForSummaries(ctx context.Context)
 // completed turn. Used by the manual-trigger endpoint and by tests that assert
 // the ledger immediately; the idle timer and startup scan call the core directly.
 func (s *InteractiveService) recordChatSummarySync(rs *interactiveRun, turnID string) bool {
-	job, ok := s.newChatSummaryJob(rs, turnID)
+	return s.recordChatSummarySyncDetailed(rs, turnID).generated
+}
+
+// recordChatSummarySyncDetailed is the same as recordChatSummarySync but returns
+// a classified skip reason for the manual Gen summary endpoint (Task-212 DOD-3).
+func (s *InteractiveService) recordChatSummarySyncDetailed(rs *interactiveRun, turnID string) chatSummaryResult {
+	job, status, ok := s.newChatSummaryJobDetailed(rs, turnID)
 	if !ok {
-		return false
+		return chatSummaryResult{generated: false, status: status}
 	}
-	return s.runChatSummaryJob(job)
+	return s.runChatSummaryJobDetailed(job)
 }
 
 func (s *InteractiveService) newChatSummaryJob(rs *interactiveRun, turnID string) (chatSummaryJob, bool) {
+	job, _, ok := s.newChatSummaryJobDetailed(rs, turnID)
+	return job, ok
+}
+
+func (s *InteractiveService) newChatSummaryJobDetailed(rs *interactiveRun, turnID string) (chatSummaryJob, chatSummaryStatus, bool) {
 	if rs == nil || rs.runKind != "chat" || rs.workspaceCwd == "" {
-		return chatSummaryJob{}, false
+		return chatSummaryJob{}, chatSummaryNoTranscript, false
 	}
 	turns := transcriptTurnsFromRun(rs)
 	if len(turns) == 0 {
-		return chatSummaryJob{}, false
+		return chatSummaryJob{}, chatSummaryNoTranscript, false
 	}
 	return chatSummaryJob{
 		runID:     rs.id,
@@ -210,7 +271,7 @@ func (s *InteractiveService) newChatSummaryJob(rs *interactiveRun, turnID string
 		turnID:    turnID,
 		provider:  rs.providerKey,
 		turns:     turns,
-	}, true
+	}, "", true
 }
 
 // runChatSummaryJob produces the rolling summary for the conversation's current
@@ -218,14 +279,18 @@ func (s *InteractiveService) newChatSummaryJob(rs *interactiveRun, turnID string
 // summary was written, false when nothing changed (hash match) or no feature
 // resolved — so the manual-trigger endpoint can report generated vs. skipped.
 func (s *InteractiveService) runChatSummaryJob(job chatSummaryJob) bool {
+	return s.runChatSummaryJobDetailed(job).generated
+}
+
+func (s *InteractiveService) runChatSummaryJobDetailed(job chatSummaryJob) chatSummaryResult {
 	dotFP := filepath.Join(job.cwd, ".flowpilot")
 	catalog, err := featurecatalog.LoadCatalog(dotFP)
 	if err != nil {
-		return false
+		return chatSummaryResult{generated: false, status: chatSummaryCatalogFailed}
 	}
 	top, ok := resolveTurnsFeature(job.turns, catalog)
 	if !ok {
-		return false
+		return chatSummaryResult{generated: false, status: chatSummaryNoFeature}
 	}
 
 	// Summarize only the turns belonging to this feature (no cross-feature
@@ -235,7 +300,7 @@ func (s *InteractiveService) runChatSummaryJob(job chatSummaryJob) bool {
 
 	ledger, err := changeledger.NewChatSummaryLedger(dotFP)
 	if err != nil {
-		return false
+		return chatSummaryResult{generated: false, status: chatSummaryWriteFailed}
 	}
 
 	// Cache by transcript state: when the stored summary for this run+feature
@@ -243,13 +308,13 @@ func (s *InteractiveService) runChatSummaryJob(job chatSummaryJob) bool {
 	stateKey := transcriptStateKey(job.runID, featureTurns)
 	if existing, err := ledger.GetFeatureSummariesForRun(top.Key, job.runID); err == nil && len(existing) > 0 {
 		if existing[len(existing)-1].StateKey == stateKey {
-			return false
+			return chatSummaryResult{generated: false, status: chatSummaryAlreadyCurrent}
 		}
 	}
 
 	summary := s.summarizeChatTurns(job.provider, job.cwd, featureTurns)
 	if strings.TrimSpace(summary) == "" {
-		return false
+		return chatSummaryResult{generated: false, status: chatSummaryEmptySummary}
 	}
 
 	entry := changeledger.ChatSummaryEntry{
@@ -261,10 +326,10 @@ func (s *InteractiveService) runChatSummaryJob(job chatSummaryJob) bool {
 		CreatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if err := ledger.UpsertForRun(entry); err != nil {
-		return false
+		return chatSummaryResult{generated: false, status: chatSummaryWriteFailed}
 	}
 	_, _ = s.syncContextEngineFilesBestEffort(job.projectID, dotFP)
-	return true
+	return chatSummaryResult{generated: true, status: chatSummaryGenerated}
 }
 
 // summarizeChatTurns produces a discussion summary for a chat. It prefers a

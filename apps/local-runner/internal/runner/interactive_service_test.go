@@ -800,6 +800,113 @@ func TestGenerateChatSummaryNow(t *testing.T) {
 	if resp2.Generated || !resp2.Skipped {
 		t.Fatalf("expected second call skipped (no change), got %+v", resp2)
 	}
+	if resp2.Reason != "summary already current" {
+		t.Fatalf("second call reason = %q, want summary already current", resp2.Reason)
+	}
+}
+
+func TestGenerateChatSummaryNowGrokResolvableFeature(t *testing.T) {
+	workspace, _, _ := chatSummarySyncFixture(t)
+	svc := NewInteractiveService()
+	svc.syncContextEngineFilesHook = func(string, string) (error, string) { return nil, "ok" }
+
+	rs := &interactiveRun{
+		id:           "run-grok-summary",
+		projectID:    "proj-grok-summary",
+		runKind:      "chat",
+		providerKey:  ProviderKeyGrok,
+		workspaceCwd: workspace,
+		events: []ProviderEvent{
+			{Type: EventTurnStarted, Prompt: "chat-ui improve the composer"},
+			{Type: EventTurnCompleted, FinalMessage: "updated the chat composer behavior"},
+		},
+	}
+	svc.mu.Lock()
+	svc.runs[rs.id] = rs
+	svc.mu.Unlock()
+
+	resp, apiErr := svc.generateChatSummaryNow(rs.id)
+	if apiErr != nil {
+		t.Fatalf("generateChatSummaryNow: %+v", apiErr)
+	}
+	if !resp.Generated {
+		t.Fatalf("expected Generated=true for Grok + resolvable feature, got %+v", resp)
+	}
+
+	// Unchanged transcript → already current.
+	resp2, apiErr := svc.generateChatSummaryNow(rs.id)
+	if apiErr != nil {
+		t.Fatalf("second call: %+v", apiErr)
+	}
+	if resp2.Generated || resp2.Reason != "summary already current" {
+		t.Fatalf("expected already current, got %+v", resp2)
+	}
+}
+
+func TestGenerateChatSummaryNowGrokNoFeatureResolved(t *testing.T) {
+	workspace, _, _ := chatSummarySyncFixture(t)
+	svc := NewInteractiveService()
+	svc.syncContextEngineFilesHook = func(string, string) (error, string) { return nil, "ok" }
+
+	rs := &interactiveRun{
+		id:           "run-grok-nofeature",
+		projectID:    "proj-grok-nofeature",
+		runKind:      "chat",
+		providerKey:  ProviderKeyGrok,
+		workspaceCwd: workspace,
+		events: []ProviderEvent{
+			// No keyword matching FEATURE-KEYS / catalog in the fixture.
+			{Type: EventTurnStarted, Prompt: "xyzzy unrelated gibberish qqq"},
+			{Type: EventTurnCompleted, FinalMessage: "nothing useful"},
+		},
+	}
+	svc.mu.Lock()
+	svc.runs[rs.id] = rs
+	svc.mu.Unlock()
+
+	resp, apiErr := svc.generateChatSummaryNow(rs.id)
+	if apiErr != nil {
+		t.Fatalf("generateChatSummaryNow: %+v", apiErr)
+	}
+	if resp.Generated || !resp.Skipped {
+		t.Fatalf("expected skip, got %+v", resp)
+	}
+	if resp.Reason != "no feature resolved" {
+		t.Fatalf("reason = %q, want no feature resolved", resp.Reason)
+	}
+}
+
+func TestBuildHandoffContextAllowsLiveGrokSource(t *testing.T) {
+	svc := NewInteractiveService()
+	rs := &interactiveRun{
+		id:          "run-grok-handoff",
+		providerKey: ProviderKeyGrok,
+		runKind:     "chat",
+		events: []ProviderEvent{
+			{Type: EventTurnStarted, Prompt: "fix the handoff path for grok"},
+			{Type: EventTurnCompleted, FinalMessage: "handoff source transcript is ready"},
+		},
+	}
+	svc.mu.Lock()
+	svc.runs[rs.id] = rs
+	svc.mu.Unlock()
+
+	result, apiErr := svc.buildHandoffContext(context.Background(), rs.id, handoffContextRequest{TargetProviderKey: ProviderKeyCodex})
+	if apiErr != nil {
+		t.Fatalf("buildHandoffContext: %+v", apiErr)
+	}
+	if result.SourceProviderKey != ProviderKeyGrok {
+		t.Fatalf("SourceProviderKey = %q, want grok", result.SourceProviderKey)
+	}
+	if result.TargetProviderKey != ProviderKeyCodex {
+		t.Fatalf("TargetProviderKey = %q, want codex", result.TargetProviderKey)
+	}
+	if !strings.Contains(result.Prompt, "fix the handoff path for grok") {
+		t.Fatalf("handoff prompt missing user turn: %q", result.Prompt)
+	}
+	if !strings.Contains(strings.ToLower(result.Prompt), "grok") {
+		t.Fatalf("handoff prompt should mention source provider grok: %q", result.Prompt)
+	}
 }
 
 func TestNormalizeSummaryBullets(t *testing.T) {
@@ -3203,6 +3310,70 @@ func TestApplyFlowControlDomainFreeGuard(t *testing.T) {
 	}
 }
 
+// TestGrokParentTurnModelAndEffortPersistForSpawnInheritance guards Task-209 DOD-2:
+// a Grok child spawned during a parent turn must inherit the parent's current per-turn
+// model and reasoning effort (sticky UI override), not the stale model from createRun.
+func TestGrokParentTurnModelAndEffortPersistForSpawnInheritance(t *testing.T) {
+	svc := NewInteractiveService()
+	capture := &captureTurnAdapter{ch: make(chan TurnRequest, 8)}
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key:          ProviderKeyGrok,
+		DisplayName:  "Grok",
+		Status:       ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return capture },
+	})
+	svc.registry = reg
+
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat",
+		ProviderKey: ProviderKeyGrok, Model: "grok-build",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+
+	currentModel := "grok-composer-2.5-fast"
+	if _, apiErr := svc.startTurn(parent.RunID, TurnInput{
+		StepID: "chat-" + parent.RunID, Prompt: "hi",
+		Model: &currentModel, ReasoningEffort: "high",
+	}, "", ""); apiErr != nil {
+		t.Fatalf("parent startTurn: %s", apiErr.msg)
+	}
+	parentReq := readTurnReqFor(t, capture.ch, parent.RunID)
+	if parentReq.ModelName != currentModel {
+		t.Fatalf("parent turn model = %q, want %q", parentReq.ModelName, currentModel)
+	}
+	if parentReq.ReasoningEffort != "high" {
+		t.Fatalf("parent turn reasoningEffort = %q, want high", parentReq.ReasoningEffort)
+	}
+
+	svc.mu.Lock()
+	pr := svc.runs[parent.RunID]
+	if pr.modelName != currentModel || pr.reasoningEffort != "high" {
+		t.Fatalf("parent run persisted model/effort = %q/%q, want %q/high", pr.modelName, pr.reasoningEffort, currentModel)
+	}
+	svc.mu.Unlock()
+
+	spawned, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "coder", Prompt: "work", Provider: "grok", Wait: false,
+	})
+	if spawnErr != nil {
+		t.Fatalf("spawnChildRun: %v", spawnErr)
+	}
+
+	svc.mu.Lock()
+	child := svc.runs[spawned.RunID]
+	if child == nil {
+		t.Fatalf("child run %q missing", spawned.RunID)
+	}
+	if child.modelName != currentModel || child.reasoningEffort != "high" {
+		t.Fatalf("child inherited model/effort = %q/%q, want %q/high", child.modelName, child.reasoningEffort, currentModel)
+	}
+	svc.mu.Unlock()
+}
+
 // TestSpawnedChildInheritsParentYolo guards BUG-129: with YOLO enabled on the parent, a
 // child spawned via spawn_agent must run with YOLO too, so its gated actions auto-approve
 // instead of stalling the (often wait=true) parent on a child approval prompt. It also
@@ -3343,6 +3514,87 @@ func TestComposeAgentSpawnPromptIsProviderConsistent(t *testing.T) {
 	// A nil agent definition (unknown agent) leaves the user prompt untouched.
 	if got := composeAgentSpawnPrompt(nil, "just this"); got != "just this" {
 		t.Fatalf("nil agentDef must pass the prompt through unchanged, got %q", got)
+	}
+}
+
+// TestGrokSpawnPromptCompositionMatchesClaudeCodexBaseline closes Task-209 DOD-5
+// (BUG-128 regression): spawnChildRun uses the shared composeAgentSpawnPrompt path
+// for every provider, so a Grok child's first provider turn prompt must match the
+// Claude and Codex baselines for identical agent/prompt/cwd inputs — no Grok-specific
+// drift in the composed spawn shape (adapter-only reinforcements are out of scope).
+func TestGrokSpawnPromptCompositionMatchesClaudeCodexBaseline(t *testing.T) {
+	const userPrompt = "implement the widget API"
+	cwd := t.TempDir()
+
+	catalog := newAgentCatalog()
+	var coderDef *AgentDefinition
+	for _, def := range catalog.listAgents(cwd) {
+		if def.Name == "coder" {
+			d := def
+			coderDef = &d
+			break
+		}
+	}
+	if coderDef == nil {
+		t.Fatal("built-in coder agent missing from catalog")
+	}
+	expectedCore := composeAgentSpawnPrompt(coderDef, userPrompt)
+
+	cases := []struct {
+		name    string
+		parent  ProviderKey
+		childPK string
+	}{
+		{"claude", ProviderKeyClaude, "claude"},
+		{"codex", ProviderKeyCodex, "codex"},
+		{"grok", ProviderKeyGrok, "grok"},
+	}
+
+	var baseline string
+	for i, tc := range cases {
+		capture := &captureTurnAdapter{ch: make(chan TurnRequest, 4)}
+		reg := newProviderRegistry()
+		reg.register(ProviderRegistration{
+			Key:          tc.parent,
+			DisplayName:  string(tc.parent),
+			Status:       ProviderStatusAvailable,
+			Capabilities: ProviderCapabilities{Streaming: true, SkillSelection: true, ApprovalEvents: true},
+			newAdapter:   func() ProviderRuntimeAdapter { return capture },
+		})
+		svc := NewInteractiveService()
+		svc.registry = reg
+
+		parent, err := svc.createRun(StartRunInput{
+			ProjectID: "proj", ChatMode: "normal_chat",
+			ProviderKey: tc.parent, Model: defaultModelForProvider(tc.parent), Cwd: cwd,
+		})
+		if err != nil {
+			t.Fatalf("%s createRun: %v", tc.name, err)
+		}
+
+		spawn, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+			Agent: "coder", Prompt: userPrompt, Provider: tc.childPK, Wait: true,
+		})
+		if spawnErr != nil {
+			t.Fatalf("%s spawnChildRun: %v", tc.name, spawnErr)
+		}
+
+		childReq := readTurnReqFor(t, capture.ch, spawn.RunID)
+		if !strings.Contains(childReq.Prompt, expectedCore) {
+			t.Fatalf("%s: child prompt must contain composed spawn core;\nexpected core:\n%s\ngot:\n%s", tc.name, expectedCore, childReq.Prompt)
+		}
+		if !strings.Contains(childReq.Prompt, "[FlowPilot sub-agent — agent: coder | role: coder |") {
+			t.Fatalf("%s: identity line missing from child prompt: %q", tc.name, childReq.Prompt)
+		}
+		if !strings.HasSuffix(strings.TrimSpace(childReq.Prompt), userPrompt) {
+			t.Fatalf("%s: user prompt must be suffix of child prompt, got %q", tc.name, childReq.Prompt)
+		}
+
+		if i == 0 {
+			baseline = childReq.Prompt
+		} else if childReq.Prompt != baseline {
+			t.Fatalf("%s child prompt differs from baseline:\n--- baseline ---\n%s\n--- got ---\n%s", tc.name, baseline, childReq.Prompt)
+		}
 	}
 }
 
@@ -5167,5 +5419,315 @@ func TestLocalFileSessionStoreQuestionsSurviveRestart(t *testing.T) {
 	}
 	if q, ok := byID["q-2"]; !ok || q.Status != "expired" {
 		t.Fatalf("q-2 after reload = %+v, want expired", q)
+	}
+}
+
+// TestReconstructRunStampsDecisionOnRestoredApprovalEventAfterFullRestart is the
+// approval-side twin of the question restart test (BUG-ApprovalReplay-Restart):
+// a full server restart rebuilds rs.events from the sidecar/provider
+// transcript, which has no concept of FlowPilot's own permission_required
+// approval card. Without persisting the raw event (now a sidecar type) plus
+// its resolution separately, a resolved approval card vanished entirely on
+// restart (only the question survived — the exact symptom reported). This
+// proves it survives, read-only, with the recorded decision stamped.
+func TestReconstructRunStampsDecisionOnRestoredApprovalEventAfterFullRestart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	if err := store.UpsertProviderSession(ctx, ProviderSessionState{
+		RunID:             "run-appr-restart",
+		ProjectID:         "proj",
+		ProviderKey:       ProviderKeyClaude,
+		ProviderSessionID: "thread-appr-restart",
+		Status:            RunStatusRunning,
+		RunKind:           "workflow",
+		StartedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	// The raw "asked" event, as emitLocked/AppendEvent would have written it
+	// live — unresolved, no Decision.
+	if err := store.AppendEvent(ctx, ProviderEvent{
+		Type:          EventPermissionRequired,
+		WorkflowRunID: "run-appr-restart",
+		ApprovalID:    "appr-1",
+		Details:       &ApprovalDetails{Command: "npm test", Kind: "exec"},
+	}); err != nil {
+		t.Fatalf("seed permission-required event: %v", err)
+	}
+	// The separately-tracked resolution, as submitApprovalDecision's
+	// persistApproval call would have written it live.
+	if err := store.UpsertApproval(ctx, ProviderApprovalState{
+		ApprovalID: "appr-1",
+		RunID:      "run-appr-restart",
+		Status:     "resolved",
+		Decision:   "approve",
+	}); err != nil {
+		t.Fatalf("seed resolved approval state: %v", err)
+	}
+
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("run-appr-restart"); apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+
+	svc.mu.Lock()
+	events := append([]ProviderEvent(nil), svc.runs["run-appr-restart"].events...)
+	svc.mu.Unlock()
+
+	var found *ProviderEvent
+	for i := range events {
+		if events[i].Type == EventPermissionRequired && events[i].ApprovalID == "appr-1" {
+			found = &events[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("permission_required event for appr-1 did not survive a full restart")
+	}
+	if found.Decision != "approve" {
+		t.Fatalf("restored approval Decision = %q, want \"approve\" so the client renders it read-only", found.Decision)
+	}
+}
+
+// TestReconstructRunDropsExpiredApprovalEventAfterFullRestart is the companion:
+// an approval that expired (never resolved) before the restart has no decision
+// to show and must not be restored as a fresh interactive prompt — replaying
+// it that way would let the user submit into an already-expired approval and
+// hit the question_expired 409. Mirrors the expired-question test.
+func TestReconstructRunDropsExpiredApprovalEventAfterFullRestart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	if err := store.UpsertProviderSession(ctx, ProviderSessionState{
+		RunID:             "run-appr-expired",
+		ProjectID:         "proj",
+		ProviderKey:       ProviderKeyClaude,
+		ProviderSessionID: "thread-appr-expired",
+		Status:            RunStatusRunning,
+		RunKind:           "workflow",
+		StartedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	if err := store.AppendEvent(ctx, ProviderEvent{
+		Type:          EventPermissionRequired,
+		WorkflowRunID: "run-appr-expired",
+		ApprovalID:    "appr-2",
+		Details:       &ApprovalDetails{Command: "rm -rf build", Kind: "exec"},
+	}); err != nil {
+		t.Fatalf("seed permission-required event: %v", err)
+	}
+	if err := store.UpsertApproval(ctx, ProviderApprovalState{
+		ApprovalID: "appr-2",
+		RunID:      "run-appr-expired",
+		Status:     "expired",
+	}); err != nil {
+		t.Fatalf("seed expired approval state: %v", err)
+	}
+
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("run-appr-expired"); apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+
+	svc.mu.Lock()
+	events := append([]ProviderEvent(nil), svc.runs["run-appr-expired"].events...)
+	svc.mu.Unlock()
+
+	for _, ev := range events {
+		if ev.Type == EventPermissionRequired && ev.ApprovalID == "appr-2" {
+			t.Fatalf("expired approval appr-2 was restored after restart, want it dropped: %+v", ev)
+		}
+	}
+}
+
+// TestLocalFileSessionStoreApprovalsSurviveRestart is the storage-layer unit
+// test for BUG-ApprovalReplay-Restart: UpsertApproval must write through to
+// approvals.ndjson (mirroring questions.ndjson) so a second store instance
+// pointed at the same directory (simulating a process restart) can read the
+// resolution back via ListApprovalsByRun.
+func TestLocalFileSessionStoreApprovalsSurviveRestart(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	store1, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	if err := store1.UpsertApproval(ctx, ProviderApprovalState{
+		ApprovalID: "a-1",
+		RunID:      "run-1",
+		Command:    "npm test",
+		Status:     "resolved",
+		Decision:   "approve",
+	}); err != nil {
+		t.Fatalf("UpsertApproval: %v", err)
+	}
+	if err := store1.UpsertApproval(ctx, ProviderApprovalState{
+		ApprovalID: "a-2",
+		RunID:      "run-1",
+		Command:    "rm -rf build",
+		Status:     "expired",
+	}); err != nil {
+		t.Fatalf("UpsertApproval (second): %v", err)
+	}
+
+	// Simulate process restart — new store pointing at the same directory.
+	store2, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore (reload): %v", err)
+	}
+	states, err := store2.ListApprovalsByRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("ListApprovalsByRun: %v", err)
+	}
+	if len(states) != 2 {
+		t.Fatalf("ListApprovalsByRun returned %d states, want 2", len(states))
+	}
+	byID := map[string]ProviderApprovalState{}
+	for _, s := range states {
+		byID[s.ApprovalID] = s
+	}
+	if a, ok := byID["a-1"]; !ok || a.Status != "resolved" || a.Decision != "approve" {
+		t.Fatalf("a-1 after reload = %+v, want resolved with Decision=approve", a)
+	}
+	if a, ok := byID["a-2"]; !ok || a.Status != "expired" {
+		t.Fatalf("a-2 after reload = %+v, want expired", a)
+	}
+}
+
+// TestSubmitApprovalDecisionPersistsResolvedApprovalForRestart is the
+// end-to-end guard for BUG-273: the LIVE interactive approve path must write
+// the resolved decision through to approvals.ndjson, not just resolve the
+// record in memory. Before the fix, submitApprovalDecision set rec.status in
+// memory only (unlike AnswerQuestion, which persisted), so after a restart the
+// approval card replayed as a fresh interactive prompt and flipped a settled
+// run back to waiting_approval. This drives the real code path (not a
+// hand-seeded approvals.ndjson) and proves a second store instance — a process
+// restart — reads the resolution back.
+func TestSubmitApprovalDecisionPersistsResolvedApprovalForRestart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	rs := &interactiveRun{id: "run-appr-live", providerKey: ProviderKeyClaude, workspaceCwd: t.TempDir()}
+	rec := &approvalRecord{
+		id:      "appr-live-1",
+		runID:   rs.id,
+		status:  "pending",
+		resolve: make(chan string, 1),
+		details: ApprovalDetails{
+			Command: "npm test",
+			Kind:    "exec",
+			Decisions: []ApprovalDecisionOption{
+				{Value: "approve", Label: "Approve"},
+				{Value: "deny", Label: "Deny"},
+			},
+		},
+	}
+	svc.mu.Lock()
+	svc.runs[rs.id] = rs
+	svc.approvals[rec.id] = rec
+	svc.mu.Unlock()
+
+	if apiErr := svc.SubmitApprovalDecision(rec.id, "approve"); apiErr != nil {
+		t.Fatalf("SubmitApprovalDecision: %v", apiErr)
+	}
+	if got := <-rec.resolve; got != "approve" {
+		t.Fatalf("resolve = %q, want approve", got)
+	}
+
+	// A fresh store instance pointed at the same directory (== a process
+	// restart) must read the resolved decision back.
+	store2, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore (reload): %v", err)
+	}
+	states, err := store2.ListApprovalsByRun(context.Background(), rs.id)
+	if err != nil {
+		t.Fatalf("ListApprovalsByRun: %v", err)
+	}
+	if len(states) != 1 {
+		t.Fatalf("ListApprovalsByRun returned %d states, want 1 — the live approve path did not persist", len(states))
+	}
+	if states[0].Status != "resolved" || states[0].Decision != "approve" {
+		t.Fatalf("persisted approval = %+v, want resolved/approve", states[0])
+	}
+}
+
+// TestReconstructRunBackfillsRecordlessApprovalAsReadOnlyAfterRestart covers the
+// old-chat case (BUG-272 backfill): a permission_required event whose approval
+// was resolved by a pre-persist-fix build has NO record in approvals.ndjson.
+// On restart it can never be live-actionable again, so reconstructRun must stamp
+// it read-only (generic "resolved") rather than leaving it interactive and
+// flipping the run back to waiting_approval. This is what makes chats created
+// before the persist fix stop showing a broken Approve/Deny prompt on reopen.
+func TestReconstructRunBackfillsRecordlessApprovalAsReadOnlyAfterRestart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	if err := store.UpsertProviderSession(ctx, ProviderSessionState{
+		RunID:             "run-appr-oldchat",
+		ProjectID:         "proj",
+		ProviderKey:       ProviderKeyClaude,
+		ProviderSessionID: "thread-appr-oldchat",
+		Status:            RunStatusCompleted,
+		RunKind:           "workflow",
+		StartedAt:         now,
+		UpdatedAt:         now,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	// Raw asked event persisted to the sidecar, but NO approvals.ndjson record
+	// (the pre-fix approve path never wrote one).
+	if err := store.AppendEvent(ctx, ProviderEvent{
+		Type:          EventPermissionRequired,
+		WorkflowRunID: "run-appr-oldchat",
+		ApprovalID:    "appr-old",
+		Details:       &ApprovalDetails{Command: "npm test", Kind: "exec"},
+	}); err != nil {
+		t.Fatalf("seed permission-required event: %v", err)
+	}
+
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	if _, apiErr := svc.resumeRun("run-appr-oldchat"); apiErr != nil {
+		t.Fatalf("resumeRun: %v", apiErr)
+	}
+
+	svc.mu.Lock()
+	events := append([]ProviderEvent(nil), svc.runs["run-appr-oldchat"].events...)
+	svc.mu.Unlock()
+
+	var found *ProviderEvent
+	for i := range events {
+		if events[i].Type == EventPermissionRequired && events[i].ApprovalID == "appr-old" {
+			found = &events[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("record-less permission_required event did not survive restart")
+	}
+	if found.Decision == "" {
+		t.Fatal("record-less approval must be backfilled read-only (Decision set), got interactive (empty Decision)")
 	}
 }

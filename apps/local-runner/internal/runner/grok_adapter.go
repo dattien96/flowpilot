@@ -2,7 +2,9 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 )
@@ -71,6 +73,39 @@ func newGrokAdapter(dispatcher *grokDispatcher, cwd string) *grokAdapter {
 
 func (a *grokAdapter) Key() ProviderKey { return ProviderKeyGrok }
 
+// grokAskUserReinforcement steers the model onto FlowPilot's MCP `ask_user` tool
+// (Task-209 / GR-06). Same "act first, ask only when blocked" bias as Codex's
+// askUserReinforcement and Claude's claudeAskUserReinforcement, plus Grok-specific
+// guardrails:
+//
+//   - Grok's native `ask_user_question` runs inside the agent process; under
+//     FlowPilot's controlled ACP (`grok agent stdio`) there is no TTY picker, so
+//     the tool fails with "interactive picker isn't available" and the model
+//     falls back to a plain-text numbered list — never emitting
+//     user_question_required / QuestionCard (Claude class defect fixed via
+//     --disallowed-tools AskUserQuestion; Grok's `agent` subcommand has no
+//     equivalent denylist flag — verified against `grok agent --help`).
+//   - FlowPilot registers MCP server `flowpilot` with tool `ask_user`
+//     (prompt, options[], multiSelect?) via session/new mcpServers; that path
+//     is the only one that hits bridge.AskQuestion → desktop QuestionCard.
+const grokAskUserReinforcement = "\n\n---\nComplete the clear, unambiguous parts of the task directly — your normal tools and approval gates still apply. Only when a required decision genuinely blocks you and you cannot reasonably infer the answer, call the FlowPilot MCP tool `ask_user` on server `flowpilot` with arguments `prompt` (string), `options` (string array of choices), and optional `multiSelect` (boolean). Do NOT use the native `ask_user_question` tool or any interactive terminal picker — it is unavailable in this FlowPilot desktop-controlled ACP environment and will not show the options form. Do not fall back to a numbered plain-text list when structured options are available via `ask_user`."
+
+// grokNativeSpawnSubagentToolName is Grok's built-in sub-agent launcher (live-verified in
+// initialize tool list). Distinct from FlowPilot MCP `spawn_agent` — no name collision
+// (BUG-124 / Task-209 T-9), but the model often prefers this native tool unless steered.
+const grokNativeSpawnSubagentToolName = "spawn_subagent"
+
+// grokSpawnAgentReinforcement steers the model onto FlowPilot's MCP `spawn_agent` tool
+// (Task-209 GR-07 / DOD-8). Mirrors grokAskUserReinforcement: native `spawn_subagent`
+// runs only inside the Grok process and never reaches TurnBridge.SpawnAgent, so children
+// do not appear in the FlowPilot agent panel or inherit orchestration context.
+const grokSpawnAgentReinforcement = "\n\n---\nWhen you need to spawn a sub-agent for parallel or delegated work, call the FlowPilot MCP tool `spawn_agent` on server `flowpilot` with arguments `agent` (string), `prompt` (string), optional `provider` (string), and optional `wait` (boolean — true to block until the child completes). Do NOT use the native `spawn_subagent` tool — it runs only inside the Grok agent process and will not create a visible, persistent child run in the FlowPilot desktop agent panel or participate in the shared orchestration bridge."
+
+// grokToolReinforcements is appended to every Grok turn prompt (default preparePrompt and
+// live registry promptPrep). Keeps ask-user and spawn guidance together so overrides that
+// replace preparePrompt only need one suffix constant.
+const grokToolReinforcements = grokAskUserReinforcement + grokSpawnAgentReinforcement
+
 // Capabilities advertises only what has a passing test (CP-46 P-11): Streaming/
 // Resume/FileEvents/Interrupt (Task-207), ApprovalEvents (Task-208 — the real
 // session/request_permission decision policy below). Mcp lands in Task-209;
@@ -93,11 +128,15 @@ func (a *grokAdapter) Capabilities() ProviderCapabilities {
 	}
 }
 
+// preparePrompt builds the final turn prompt. Default applies
+// grokAskUserReinforcement (Task-209 GR-06). When promptPrep is set (live
+// registry), that hook is responsible for appending the same reinforcement
+// after skill/context injection — otherwise the override would drop it.
 func (a *grokAdapter) preparePrompt(req TurnRequest) string {
 	if a.promptPrep != nil {
 		return a.promptPrep(req)
 	}
-	return req.Prompt
+	return req.Prompt + grokToolReinforcements
 }
 
 func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge TurnBridge) error {
@@ -172,6 +211,10 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 	}()
 
 	var lastText string
+	shimmedSpawnCalls := map[string]struct{}{}
+	// Per-turn toolCallId → mutation kind/path cache (Task-212 DOD-2). Live Grok
+	// strips kind/locations from status=completed tool_call_update frames.
+	pendingToolCalls := map[string]grokPendingToolCall{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -191,6 +234,8 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 			if !ok {
 				return fmt.Errorf("grok agent stdio stream closed mid-turn")
 			}
+			a.tryShimGrokNativeSpawnSubagent(sessionID, bridge, n, shimmedSpawnCalls)
+			n = grokCorrelateToolNotification(pendingToolCalls, n)
 			events, mapped := mapGrokNotification(n)
 			if !mapped {
 				continue
@@ -288,6 +333,89 @@ func (a *grokAdapter) emitTerminal(ctx context.Context, req TurnRequest, bridge 
 	}
 	bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: finalText})
 	return nil
+}
+
+// tryShimGrokNativeSpawnSubagent mirrors a native `spawn_subagent` tool_call notification
+// to TurnBridge.SpawnAgent when FlowPilot MCP is wired (Task-209 T-3 / DOD-8 fallback).
+// Reinforcement is the primary steer; this shim ensures children still reach the agent
+// panel if the model calls the native tool anyway. Deduped per toolCallId.
+func (a *grokAdapter) tryShimGrokNativeSpawnSubagent(sessionID string, bridge TurnBridge, n grokNotification, seen map[string]struct{}) {
+	if a.mcpServer == nil || bridge == nil {
+		return
+	}
+	if n.Method != "session/update" {
+		return
+	}
+	update, _ := n.Params["update"].(map[string]any)
+	if update == nil {
+		return
+	}
+	kind, _ := update["sessionUpdate"].(string)
+	if kind != "tool_call" {
+		return
+	}
+	toolCallID, _ := update["toolCallId"].(string)
+	if toolCallID == "" {
+		return
+	}
+	if _, ok := seen[toolCallID]; ok {
+		return
+	}
+	if grokRawToolName(update, "") != grokNativeSpawnSubagentToolName {
+		return
+	}
+
+	rawInput, _ := update["rawInput"].(map[string]any)
+	if rawInput == nil {
+		if raw, ok := update["rawInput"].(string); ok && strings.TrimSpace(raw) != "" {
+			_ = json.Unmarshal([]byte(raw), &rawInput)
+		}
+	}
+	in, err := parseGrokSpawnSubagentInput(rawInput)
+	if err != nil {
+		log.Printf("[grok-spawn-shim] session=%s toolCallId=%s parse error: %v", sessionID, toolCallID, err)
+		return
+	}
+	seen[toolCallID] = struct{}{}
+	go func() {
+		if _, spawnErr := bridge.SpawnAgent(in); spawnErr != nil {
+			log.Printf("[grok-spawn-shim] session=%s toolCallId=%s SpawnAgent failed: %v", sessionID, toolCallID, spawnErr)
+		}
+	}()
+}
+
+// parseGrokSpawnSubagentInput maps Grok's native spawn_subagent schema to SpawnAgentInput.
+// Live schema (grok-build): prompt, description (required), subagent_type, background.
+func parseGrokSpawnSubagentInput(args map[string]any) (SpawnAgentInput, error) {
+	if args == nil {
+		return SpawnAgentInput{}, fmt.Errorf("spawn_subagent: missing arguments")
+	}
+	prompt, _ := args["prompt"].(string)
+	if strings.TrimSpace(prompt) == "" {
+		return SpawnAgentInput{}, fmt.Errorf("spawn_subagent: prompt is required")
+	}
+	subagentType, _ := args["subagent_type"].(string)
+	background, _ := args["background"].(bool)
+	return SpawnAgentInput{
+		Agent:  grokSubagentTypeToFlowPilotAgent(subagentType),
+		Prompt: prompt,
+		Wait:   !background,
+	}, nil
+}
+
+// grokSubagentTypeToFlowPilotAgent maps Grok native subagent_type values to FlowPilot
+// built-in agent names so spawnChildRun can attach identity when possible.
+func grokSubagentTypeToFlowPilotAgent(subagentType string) string {
+	switch strings.ToLower(strings.TrimSpace(subagentType)) {
+	case "explore":
+		return "reviewer"
+	case "plan":
+		return "synthesizer"
+	case "codex:codex-rescue", "general-purpose", "":
+		return "coder"
+	default:
+		return subagentType
+	}
 }
 
 // handleInbound routes a server->client request. session/request_permission

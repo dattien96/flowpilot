@@ -642,6 +642,10 @@ export class MockRunnerClient implements RunnerClient {
     }
   }
 
+  async applyGrokYoloPosture(_yolo: boolean): Promise<void> {
+    await delay(300); // mirrors the real config.toml rewrite + process respawn taking a moment
+  }
+
   async openProviderAccountTerminal(_accountId: string): Promise<void> {
     await delay(60);
   }

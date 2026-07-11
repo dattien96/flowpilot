@@ -53,6 +53,7 @@ function makeClient(overrides: Partial<RunnerClient> = {}): RunnerClient {
     listSkills: async () => [],
     connectProviderAccount: async () => {},
     activateProviderAccount: async () => {},
+    applyGrokYoloPosture: async () => {},
     openProviderAccountTerminal: async () => {},
     restartStack: async () => {},
     shutdownStack: async () => {},

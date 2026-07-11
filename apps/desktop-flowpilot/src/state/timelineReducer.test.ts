@@ -233,6 +233,25 @@ test("BUG-157: new permission_required while a previous approval is still pendin
   assert.equal(next.status, "waiting_approval");
 });
 
+test("BUG-ApprovalReplay-Restart: replay of an already-resolved approval renders read-only and does not re-enter pendingApprovals", () => {
+  // Server-side (reconstructRun) now stamps `decision` onto a replayed
+  // permission_required event for an approval that was already resolved, so
+  // it survives a full server restart. The client must render the approval
+  // card read-only (decision !== undefined) and must not treat it as a fresh
+  // pending approval or flip run status to waiting_approval — the approval-side
+  // twin of the resolved-question replay above.
+  const state = approvalState({ status: "completed" });
+  const next = applyTimelineEvent(
+    state,
+    baseEvent({ type: "permission_required", approvalId: "appr-1", provider: "claude", details: approvalDetails, decision: "approve" }),
+  );
+
+  const card = next.timeline?.find((it) => it.kind === "approval") as Extract<TimelineItem, { kind: "approval" }> | undefined;
+  assert.equal(card?.decision, "approve", "replayed approval card should carry the recorded decision");
+  assert.deepEqual(next.pendingApprovals, [], "an already-resolved replayed approval must not become pending again");
+  assert.equal(next.status, "completed", "replaying a resolved approval must not flip a settled run back to waiting_approval");
+});
+
 // Question stale detection tests
 
 const questionOptions = [

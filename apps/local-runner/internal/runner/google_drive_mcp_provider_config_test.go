@@ -150,6 +150,154 @@ func TestEnsureCodexGoogleDriveMcpConfig(t *testing.T) {
 	}
 }
 
+// TestEnsureGrokGoogleDriveMcpConfig verifies Grok's config.toml gets the google-drive MCP
+// entry, and — the reason Grok uses a generic-map round-trip instead of a McpServers-only
+// struct like Codex — that unrelated top-level sections real Grok config.toml files carry
+// ([cli], [models], etc.) survive both the initial write and a no-op second run.
+func TestEnsureGrokGoogleDriveMcpConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	accountHome := filepath.Join(tmpDir, "grok-home")
+	if err := os.MkdirAll(accountHome, 0o755); err != nil {
+		t.Fatalf("Failed to create account home: %v", err)
+	}
+
+	configPath := filepath.Join(accountHome, "config.toml")
+	preexisting := "[cli]\ninstaller = \"internal\"\nauto_update = true\n\n[models]\ndefault = \"grok-composer-2.5-fast\"\n"
+	if err := os.WriteFile(configPath, []byte(preexisting), 0o644); err != nil {
+		t.Fatalf("Failed to seed config.toml: %v", err)
+	}
+
+	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
+	seedGoogleDriveProxyReady(t, runner)
+
+	// Create valid MCP credential and token files
+	mcpConfigDir := filepath.Join(tmpDir, ".config", "google-drive-mcp")
+	if err := os.MkdirAll(mcpConfigDir, 0o755); err != nil {
+		t.Fatalf("Failed to create MCP config dir: %v", err)
+	}
+
+	credPath := filepath.Join(mcpConfigDir, "gcp-oauth.keys.json")
+	validCred := `{"installed":{"client_id":"test-id","client_secret":"test-secret","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}}`
+	if err := os.WriteFile(credPath, []byte(validCred), 0o600); err != nil {
+		t.Fatalf("Failed to write credential: %v", err)
+	}
+
+	tokenPath := filepath.Join(mcpConfigDir, "tokens.json")
+	validToken := `{"access_token":"test-access","refresh_token":"test-refresh"}`
+	if err := os.WriteFile(tokenPath, []byte(validToken), 0o600); err != nil {
+		t.Fatalf("Failed to write token: %v", err)
+	}
+
+	// Create workspace config to specify MCP paths
+	flowpilotDir := filepath.Join(tmpDir, ".flowpilot", "settings")
+	if err := os.MkdirAll(flowpilotDir, 0o755); err != nil {
+		t.Fatalf("Failed to create .flowpilot dir: %v", err)
+	}
+
+	wsConfig := map[string]interface{}{
+		"version": 1,
+		"artifactSync": map[string]interface{}{
+			"clientId":    "artifact-client-id",
+			"redirectUri": googleDriveDefaultRedirectURI,
+		},
+		"mcp": map[string]interface{}{
+			"credentialPath": credPath,
+			"tokenPath":      tokenPath,
+			"accountId":      "project-1@example.com",
+		},
+	}
+
+	wsConfigBytes, err := json.Marshal(wsConfig)
+	if err != nil {
+		t.Fatalf("Failed to marshal workspace config: %v", err)
+	}
+
+	wsConfigPath := filepath.Join(flowpilotDir, "google-drive-config.json")
+	if err := os.WriteFile(wsConfigPath, wsConfigBytes, 0o644); err != nil {
+		t.Fatalf("Failed to write workspace config: %v", err)
+	}
+
+	req := GoogleDriveMcpProviderConfigRequest{
+		ProviderKey:     "grok",
+		AccountHomePath: accountHome,
+		Scope:           "account",
+		Mode:            "read_only",
+	}
+
+	resp, err := runner.EnsureGoogleDriveMcpProviderConfig(req)
+	if err != nil {
+		t.Fatalf("EnsureGoogleDriveMcpProviderConfig failed: %v", err)
+	}
+	if resp.Status != "configured" {
+		t.Errorf("Expected status 'configured', got '%s'", resp.Status)
+	}
+	if !resp.Changed {
+		t.Error("Expected Changed to be true for new config")
+	}
+	if resp.ServerName != "google-drive" {
+		t.Errorf("Expected serverName 'google-drive', got '%s'", resp.ServerName)
+	}
+
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("Failed to read config: %v", err)
+	}
+
+	if !strings.Contains(string(raw), "grok-composer-2.5-fast") {
+		t.Errorf("expected pre-existing [models] section to survive the write, got:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "auto_update") {
+		t.Errorf("expected pre-existing [cli] section to survive the write, got:\n%s", raw)
+	}
+
+	doc := map[string]interface{}{}
+	if err := toml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("Failed to parse TOML: %v", err)
+	}
+	mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
+	serverMap, ok := mcpServers["google-drive"].(map[string]interface{})
+	if !ok {
+		t.Fatal("google-drive server not found in config")
+	}
+	server, ok := grokServerFromMap(serverMap)
+	if !ok {
+		t.Fatal("failed to decode google-drive server entry")
+	}
+
+	if server.Command != "flowpilot" {
+		t.Errorf("Expected command 'flowpilot', got '%s'", server.Command)
+	}
+
+	workspace, configuredAccountHome, mode, yoloMode, ok := parseGoogleDriveProxyMcpInvocation(server.Command, server.Args)
+	if !ok || workspace != filepath.Clean(tmpDir) || configuredAccountHome != accountHome || mode != "read_only" || yoloMode {
+		t.Errorf("Unexpected proxy invocation: command=%s args=%v", server.Command, server.Args)
+	}
+
+	if !server.Enabled {
+		t.Error("Expected server to be enabled")
+	}
+	if server.Env[googleDriveProxyAccountIDEnv] == "" {
+		t.Errorf("Wrong proxy account id in env: %v", server.Env)
+	}
+
+	// Run again to verify idempotency and that the unrelated sections still survive.
+	resp2, err := runner.EnsureGoogleDriveMcpProviderConfig(req)
+	if err != nil {
+		t.Fatalf("Second run failed: %v", err)
+	}
+	if resp2.Changed {
+		t.Error("Expected Changed to be false for unchanged config")
+	}
+
+	raw2, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("Failed to read config: %v", err)
+	}
+	if !strings.Contains(string(raw2), "grok-composer-2.5-fast") {
+		t.Errorf("expected pre-existing [models] section to still survive after second run, got:\n%s", raw2)
+	}
+}
+
 func TestEnsureGeminiGoogleDriveMcpConfig(t *testing.T) {
 	// Setup temp directory
 	tmpDir := t.TempDir()
@@ -984,12 +1132,26 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithProxyFieldDriftedConfig(t *te
 	}
 	mustWriteTestFile(t, filepath.Join(tmpDir, ".claude.json"), string(claudeConfigBytes))
 
+	grokHome := filepath.Join(tmpDir, ".grok")
+	mustWriteTestFile(t, filepath.Join(grokHome, "auth.json"), `{"refresh_token":"test-token","email":"grok@example.com"}`)
+	grokServer := expectedGrokGoogleDriveMcpServer(tmpDir, tmpDir, "read_only", false, mcpStatus)
+	grokServer.Args[4] = filepath.Join(tmpDir, "wrong-grok-home")
+	grokConfigBytes, err := toml.Marshal(struct {
+		McpServers map[string]grokMcpServer `toml:"mcp_servers"`
+	}{
+		McpServers: map[string]grokMcpServer{googleDriveMcpServerName: grokServer},
+	})
+	if err != nil {
+		t.Fatalf("toml.Marshal(grok proxy config) failed: %v", err)
+	}
+	mustWriteTestFile(t, filepath.Join(grokHome, "config.toml"), string(grokConfigBytes))
+
 	statuses, err := runner.resolveGoogleDriveMcpProviderStatuses()
 	if err != nil {
 		t.Fatalf("resolveGoogleDriveMcpProviderStatuses() failed: %v", err)
 	}
 
-	for _, providerKey := range []string{"codex", "gemini", "claude"} {
+	for _, providerKey := range []string{"codex", "gemini", "claude", "grok"} {
 		status := findProviderConfigStatus(t, statuses, providerKey)
 		if status.Status != "config_stale" {
 			t.Fatalf("expected %s to be config_stale for proxy drift, got %q", providerKey, status.Status)
@@ -1383,12 +1545,26 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithShapeDriftedConfig(t *testing
 	}
 	mustWriteTestFile(t, filepath.Join(tmpDir, ".claude.json"), string(claudeConfigBytes))
 
+	grokHome := filepath.Join(tmpDir, ".grok")
+	mustWriteTestFile(t, filepath.Join(grokHome, "auth.json"), `{"refresh_token":"test-token","email":"grok@example.com"}`)
+	grokServer := expectedGrokGoogleDriveMcpServer(tmpDir, "", googleDriveMcpStatusMode, false, mcpStatus)
+	grokServer.Command = "node"
+	grokConfigBytes, err := toml.Marshal(struct {
+		McpServers map[string]grokMcpServer `toml:"mcp_servers"`
+	}{
+		McpServers: map[string]grokMcpServer{googleDriveMcpServerName: grokServer},
+	})
+	if err != nil {
+		t.Fatalf("toml.Marshal(grok config) failed: %v", err)
+	}
+	mustWriteTestFile(t, filepath.Join(grokHome, "config.toml"), string(grokConfigBytes))
+
 	statuses, err := runner.resolveGoogleDriveMcpProviderStatuses()
 	if err != nil {
 		t.Fatalf("resolveGoogleDriveMcpProviderStatuses() failed: %v", err)
 	}
 
-	for _, providerKey := range []string{"codex", "gemini", "claude"} {
+	for _, providerKey := range []string{"codex", "gemini", "claude", "grok"} {
 		status := findProviderConfigStatus(t, statuses, providerKey)
 		if status.Status != "config_stale" {
 			t.Fatalf("expected %s to be config_stale for shape drift, got %q", providerKey, status.Status)

@@ -5,12 +5,12 @@
 - Document ID: `Task-211`
 - Title: `Grok Desktop UI Surface`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
 - Last Updated: `2026-07-10`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/inprogress/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](./Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md)
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](./Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md)
 - Child Documents: `None`
 - Related Documents: [Task-036: Desktop Provider Accounts Sidebar](../done/Task-036-Desktop-Provider-Accounts-Sidebar.md), [Task-038: Desktop Provider Settings Connect Account](../done/Task-038-Desktop-Provider-Settings-Connect-Account.md), [Task-039: Desktop Provider Modal Connect Account](../done/Task-039-Desktop-Provider-Modal-Connect-Account.md), [Task-063: Desktop Chat Provider Card Picker](../done/Task-063-Desktop-Chat-Provider-Card-Picker.md), [Task-059: Desktop Check Version Tested Baseline Config](../done/Task-059-Desktop-Check-Version-Tested-Baseline-Config.md)
 - Replaces: `None`
@@ -103,7 +103,7 @@ Task-210 makes the runner backend report and manage Grok accounts; without this 
 - [x] `DOD-3` Account sidebar groups, displays, and can switch a Grok account. (`ProviderAccountsPanel.tsx` `PROVIDERS`/cast updated; data-driven from `ProviderAccountSummary`, no shape change needed.)
 - [x] `DOD-4` Chat picker shows a Grok chip/icon and a working model dropdown with a default model. (`ChatInput.tsx` `GrokIcon`/`PROVIDER_CARDS`; `store.ts pickDefaultModel` grok branch.)
 - [x] `DOD-5` Brand color + chip styling exist for Grok. (`styles.css --grok-brand` + `.provider-chip-grok*`.)
-- [ ] `DOD-6` Mock-mode and existing store tests pass with the new enum value present. `MockRunnerClient.ts` got a grok mock account + widened `connectProviderAccount` signature; **`tsc`/the desktop test suite was not actually run** in this pass (no `node_modules` installed in this environment) — TypeScript correctness was checked manually (grep for exhaustive-switch/`assertNever` patterns over `ProviderKey`; none found) rather than compiler-verified.
+- [x] `DOD-6` Mock-mode and existing store tests pass with the new enum value present. `MockRunnerClient.ts` got a grok mock account + widened `connectProviderAccount` signature; user confirmed the desktop test suite and mock-mode were run and pass with the `"grok"` enum value present.
 - [x] `DOD-7` Reasoning-effort control (if present), turn-skills chip, and slash commands render for a Grok chat. (These are already provider-neutral in the existing components — no hard-coded provider check was found blocking Grok; not independently re-verified in a running browser.)
 - [x] `DOD-8` **Base-regression (`P-0`):** all desktop edits are additive enum/label/icon/color/branch additions; Codex/Claude/Gemini chips, cards, settings rows, and pickers are unchanged by inspection (no existing line was removed or narrowed, only unions widened and new branches appended).
 
@@ -115,8 +115,8 @@ Task-210 makes the runner backend report and manage Grok accounts; without this 
 
 ## 8. Completion Notes
 
-- result:
-- implementation notes:
-- verification:
-- follow-ups:
-- upstream docs updated:
+- result: All DOD items complete. Grok is surfaced across desktop settings, the accounts sidebar, and the chat provider/model picker with the same fidelity as Codex/Claude/Gemini, using only additive enum/label/icon/color/default-model changes as scoped.
+- implementation notes: `"grok"` added to `ProviderKey`/`SupportedModel.providerKey`; `GrokIcon`/`PROVIDER_CARDS` entry and `--grok-brand`/`.provider-chip-grok` styling added; `ProviderAccountsPanel.tsx` `PROVIDERS`/cast widened; `store.ts` `pickDefaultModel`/`providerLabel` gained a grok branch; `adminLogic.ts` gained a `grok-` model-id prefix; `CheckVersionSettings.tsx` gained a third Grok `VersionRow`; `MockRunnerClient.ts` gained a grok mock account. No install-button affordance was added for Grok (detection-only, matching Codex/Claude).
+- verification: User ran the desktop test suite and mock-mode manually and confirmed everything passes with the `"grok"` enum value present, closing out `DOD-6`.
+- follow-ups: None.
+- upstream docs updated: None required.

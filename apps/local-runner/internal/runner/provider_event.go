@@ -139,6 +139,12 @@ type ProviderEvent struct {
 	ApprovalID string           `json:"approvalId,omitempty"`
 	Provider   ProviderKey      `json:"provider,omitempty"`
 	Details    *ApprovalDetails `json:"details,omitempty"`
+	// Decision is populated only when replaying an already-resolved approval on
+	// a full server restart (BUG-ApprovalReplay-Restart) — it carries the
+	// recorded approve/deny (or "resolved") so the client renders the approval
+	// card read-only instead of re-showing an interactive prompt the run
+	// appears to be waiting on. The approval-side twin of Answer above.
+	Decision string `json:"decision,omitempty"`
 	// user_question_required
 	QuestionID  string           `json:"questionId,omitempty"`
 	Prompt      string           `json:"prompt,omitempty"`

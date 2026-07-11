@@ -1,5 +1,5 @@
 ---
-name: Task-213-Desktop-Chat-Sync-Restore-Batch-Progress-Indicator
+name: Task-219-Desktop-Chat-Sync-Restore-Batch-Progress-Indicator
 description: Replace the single spinner on Navigator's batch sync-to-Drive and batch restore-from-Drive actions with an x/y (done/total) progress indicator.
 metadata:
   type: task
@@ -7,7 +7,7 @@ metadata:
 
 ## Metadata
 
-- Document ID: `Task-213`
+- Document ID: `Task-219`
 - Title: Desktop Chat Sync/Restore Batch Progress Indicator
 - Phase: `task`
 - Status: `done`

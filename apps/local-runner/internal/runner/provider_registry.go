@@ -464,18 +464,49 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				// ensureGrokProcess tears down and respawns the shared process
 				// whenever either changes from what it was last launched with, the
 				// same way an account switch already forces a respawn.
-				h, ensureErr := r.ensureGrokProcess(context.Background(), scopeKey, r.workspace, env, model, reasoningEffort)
+				//
+				// alwaysApprove (Task-218) is read here rather than threaded through
+				// this function's own params: ApplyGrokYoloPosture sets it explicitly
+				// when the desktop's Grok-only YOLO toggle fires, so ensureGrokProcess
+				// always launches (or respawns) under the current desired posture
+				// without widening newAdapterForTurn's shared signature that
+				// Claude/Codex/Gemini would also have to accept and ignore.
+				r.grokProcessMu.Lock()
+				alwaysApprove := r.grokDesiredAlwaysApprove
+				r.grokProcessMu.Unlock()
+				// Task-220 (GR-35): map FlowPilot's canonical reasoning-effort value
+				// to a Grok-supported effort id before it becomes the `grok agent
+				// --reasoning-effort` launch flag. grok-4.5 only accepts high/medium/
+				// low (live-verified), so an unsupported value (e.g. xhigh/max) must
+				// degrade to the nearest supported id rather than being passed
+				// verbatim and rejected by the CLI. An unmappable value yields "" so
+				// ensureGrokProcess omits the flag entirely and the model's own
+				// default applies. Mapping here (not in resolveTurnModelAndEffort,
+				// which is provider-neutral and also feeds other providers) keeps the
+				// transform Grok-local. Passing the mapped id to ensureGrokProcess
+				// also makes its respawn-reuse comparison correct: two turns whose raw
+				// efforts both degrade to "high" reuse one process instead of churning.
+				grokEffort := ""
+				if mapped, ok := grokReasoningEffortID(reasoningEffort); ok {
+					grokEffort = mapped
+				}
+				h, ensureErr := r.ensureGrokProcess(context.Background(), scopeKey, r.workspace, env, model, grokEffort, alwaysApprove)
 				if ensureErr != nil {
 					return errorAdapter{key: ProviderKeyGrok, err: ensureErr}
 				}
 				a := h.adapter
 				a.sessionStore = ProviderSessionStoreFor(r)
+				// Task-209 GR-06/GR-07: append grokToolReinforcements after skill
+				// injection (mirrors Claude/Codex live promptPrep). Without
+				// this, the registry override of preparePrompt drops the
+				// default reinforcement and the model prefers native
+				// ask_user_question / spawn_subagent (no QuestionCard / agent panel).
 				a.promptPrep = func(req TurnRequest) string {
 					workspace := r.workspace
 					if req.Cwd != "" {
 						workspace = req.Cwd
 					}
-					return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills)
+					return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills) + grokToolReinforcements
 				}
 				a.mcpServer = r.claudeMCP
 				a.mcpBaseURL = r.mcpBaseURLValue

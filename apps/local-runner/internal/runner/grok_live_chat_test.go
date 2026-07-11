@@ -158,7 +158,7 @@ func TestLiveRealGrokChatStreamAndResume(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	h, err := r.ensureGrokProcess(ctx, "live-manual-scope", scratch, nil, "", "")
+	h, err := r.ensureGrokProcess(ctx, "live-manual-scope", scratch, nil, "", "", false)
 	if err != nil {
 		t.Fatalf("ensureGrokProcess: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestLiveRealGrokPermissionGateDenyBlocksWrite(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	h, err := r.ensureGrokProcess(ctx, "live-manual-deny-scope", scratch, nil, "", "")
+	h, err := r.ensureGrokProcess(ctx, "live-manual-deny-scope", scratch, nil, "", "", false)
 	if err != nil {
 		t.Fatalf("ensureGrokProcess: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestLiveRealGrokPermissionGateYoloOnAutoApprovesWithoutAskingBridge(t *test
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	h, err := r.ensureGrokProcess(ctx, "live-manual-yolo-scope", scratch, nil, "", "")
+	h, err := r.ensureGrokProcess(ctx, "live-manual-yolo-scope", scratch, nil, "", "", false)
 	if err != nil {
 		t.Fatalf("ensureGrokProcess: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestLiveRealGrokSelectedSkillReachesThePrompt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	h, err := r.ensureGrokProcess(ctx, "live-manual-skill-scope", scratch, nil, "", "")
+	h, err := r.ensureGrokProcess(ctx, "live-manual-skill-scope", scratch, nil, "", "", false)
 	if err != nil {
 		t.Fatalf("ensureGrokProcess: %v", err)
 	}

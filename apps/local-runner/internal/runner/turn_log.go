@@ -13,6 +13,13 @@ const (
 	// each turn.  Codex writes one rollout file per turn with a distinct session
 	// id, so seedTranscriptFromDisk needs the full chain to replay every turn.
 	turnLogKindCodexSession turnLogKind = "codex_session"
+	// turnLogKindGrokSession records the real Grok ACP session id produced for
+	// each turn (BUG-GrokReplay-Restart). FlowPilot never feeds the real id back
+	// for session/load, so every Grok turn spins a fresh session dir under
+	// ~/.grok/sessions/<enc-cwd>/<id>/ — the exact per-turn shape Codex has. This
+	// records the chain so seedTranscriptFromDisk can replay each turn's
+	// chat_history.jsonl precisely (instead of the cwd-wide mtime fallback).
+	turnLogKindGrokSession turnLogKind = "grok_session"
 	// turnLogKindAssistant records the full assistant response for providers
 	// that do not expose a provider-owned transcript file for replay.
 	turnLogKindAssistant turnLogKind = "assistant"

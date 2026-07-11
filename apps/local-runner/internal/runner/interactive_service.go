@@ -102,7 +102,12 @@ type interactiveRun struct {
 	// Codex turn so per-turn rollout ids can be logged without replacing the
 	// stable durable resume handle.
 	lastCodexTurnSessionID string
-	providerAccountID      string
+	// lastGrokTurnSessionID is the Grok twin of lastCodexTurnSessionID: the
+	// newest ~/.grok/sessions/<enc-cwd>/<id>/ session id discovered after a Grok
+	// turn, so each turn's id is logged once for precise transcript replay
+	// (BUG-GrokReplay-Restart).
+	lastGrokTurnSessionID string
+	providerAccountID     string
 	workspaceCwd           string
 	stepID                 string
 	modelName              string
@@ -279,6 +284,15 @@ type interactiveRun struct {
 	// loaded from disk, so that pre-loaded flow events in rs.events (from the
 	// CP-41 flow-events sidecar) do not suppress transcript seeding.
 	transcriptSeeded bool
+	// sidecarPrefixCount is the number of CP-41/question sidecar events
+	// reconstructRun prepended to rs.events before any real transcript was
+	// loaded (reconstructRun runs before seedTranscriptFromDisk, so it has no
+	// choice but to seed them first). seedTranscriptFromDisk moves this many
+	// leading events to the end of the timeline once the real transcript has
+	// been appended, so a restored resolved question (or other sidecar event)
+	// no longer renders pinned above the entire prior conversation after a
+	// full server restart (see reorderSidecarPrefixToEnd).
+	sidecarPrefixCount int64
 }
 
 type approvalRecord struct {
@@ -2886,6 +2900,21 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if in.YoloMode != nil {
 		rs.yolo = yolo
 	}
+	// Persist the per-turn model/reasoning-effort as the run's current default,
+	// for the SAME reason YOLO is persisted just above. A child spawned during
+	// this turn reads parentRun.modelName / parentRun.reasoningEffort in
+	// spawnChildRun; without this it inherits the model the chat was CREATED
+	// with, not the model the user switched to via the sticky per-turn override
+	// (chat mode resends model/effort every turn). That stale inheritance made a
+	// Grok child launch on the wrong model (a "sonnet" label on a grok child)
+	// and, because model is a `grok agent` launch flag, forced a needless
+	// respawn that tore down the parent's in-flight process mid-turn.
+	if in.Model != nil {
+		rs.modelName = *in.Model
+	}
+	if in.ReasoningEffort != "" {
+		rs.reasoningEffort = effort
+	}
 	// pendingAgentContext was drained into capturedCtx by startTurn (atomically with
 	// turnInFlight=true) so rs.pendingAgentContext is already nil here.
 	if len(capturedCtx) > 0 {
@@ -3001,7 +3030,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// Persist settled state (status, lastMessage, updatedAt) for history survival
 	// across restarts (BUG-080 F-3). Take a snapshot under lock; persist outside.
 	s.mu.Lock()
-	newCodexSessionID := s.refreshResumeHandleLocked(rs, adapter)
+	newTurnSessionID := s.refreshResumeHandleLocked(rs, adapter)
 	geminiTurn := transcriptTurn{}
 	if rs.providerKey == ProviderKeyGemini && completed {
 		geminiTurn = transcriptTurnForProviderTurnLocked(rs, turnID)
@@ -3023,11 +3052,17 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		snap.LoopState = s.agentOrchestrator.graphSnapshot(rs.id).LoopState
 	}
 	_ = s.persistProviderSession(snap)
-	// Log the new Codex rollout session id so seedTranscriptFromDisk can load
-	// every per-turn rollout file on resume (BUG-083 F-3).
-	if newCodexSessionID != "" {
+	// Log the new per-turn provider session id so seedTranscriptFromDisk can
+	// load every per-turn transcript file on resume: Codex rollout files
+	// (BUG-083 F-3) and Grok per-turn session dirs (BUG-GrokReplay-Restart)
+	// both use one file per turn with a distinct id.
+	if newTurnSessionID != "" {
 		if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
-			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{Kind: turnLogKindCodexSession, SessionID: newCodexSessionID})
+			kind := turnLogKindCodexSession
+			if rs.providerKey == ProviderKeyGrok {
+				kind = turnLogKindGrokSession
+			}
+			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{Kind: kind, SessionID: newTurnSessionID})
 		}
 	}
 	if strings.TrimSpace(geminiTurn.User) != "" || strings.TrimSpace(geminiTurn.Assistant) != "" {
@@ -3564,6 +3599,36 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 				return rolloutID
 			}
 		}
+	case ProviderKeyGrok:
+		// Grok twin of the Codex case (BUG-GrokReplay-Restart): FlowPilot never
+		// feeds the real ACP session id back for session/load, so each turn
+		// writes a fresh ~/.grok/sessions/<enc-cwd>/<id>/ dir. Discover the newest
+		// one (this turn's) and, when it changed, return it so the caller logs it
+		// to the turn log for precise per-turn transcript replay. Best-effort:
+		// grokHome may be a bare ~/.grok (default account) if no account home
+		// resolves.
+		home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
+		if !ok {
+			if defaultHome, defOK := defaultProviderSessionHome(rs.providerKey); defOK {
+				home, ok = defaultHome, true
+			}
+		}
+		if !ok {
+			return ""
+		}
+		dirs := discoverGrokSessionDirs(home, rs.workspaceCwd)
+		if len(dirs) == 0 {
+			return ""
+		}
+		// Deliberately does NOT touch rs.realProviderSessionID: that drives the
+		// resume-continuation path (ensureSession → session/load), which is
+		// Task-212 T-7/DOD-5 territory and out of scope here. This is display-only
+		// transcript replay — we only record the per-turn id in the turn log.
+		newest := dirs[len(dirs)-1]
+		if newest != rs.lastGrokTurnSessionID {
+			rs.lastGrokTurnSessionID = newest
+			return newest
+		}
 	}
 	return ""
 }
@@ -3607,13 +3672,31 @@ func (s *InteractiveService) submitApprovalDecision(approvalID, decision string,
 	rec.decision = decision
 	details := rec.details
 	var rememberCwd string
+	var snapshot *ProviderApprovalState
 	if rs := s.runs[rec.runID]; rs != nil {
 		if rs.pendingApprovalID == approvalID {
 			rs.pendingApprovalID = ""
 		}
 		rememberCwd = rs.workspaceCwd
+		state := approvalStateFromRecord(rs, rec, "")
+		snapshot = &state
+	} else {
+		state := approvalStateFromRecord(nil, rec, "")
+		snapshot = &state
 	}
 	s.mu.Unlock()
+
+	// Persist the resolved approval so its decision survives a full server
+	// restart (BUG-272, completing the persistence half its first pass missed):
+	// without this, the interactive approve path resolved the record in memory
+	// only, so reconstructRun found no resolved ProviderApprovalState and the
+	// approval card replayed as a fresh interactive prompt (flipping a settled
+	// run back to waiting_approval). Mirrors AnswerQuestion's persistQuestion
+	// call — the question path already did this, which is why questions survived
+	// a restart but approvals did not.
+	if snapshot != nil {
+		_ = s.persistApproval(*snapshot)
+	}
 
 	// Persist the "don't ask again" rule outside the lock (file IO). Only shell
 	// commands the user actually approved are eligible; deriveApprovalRule

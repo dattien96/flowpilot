@@ -1,6 +1,9 @@
 package runner
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Task-207 (CP-46 P-4): maps Grok ACP `session/update` (and select `_x.ai/*`)
 // notifications into normalized ProviderEvent(s). Modeled on
@@ -77,6 +80,11 @@ func mapGrokSessionUpdate(params map[string]any) ([]ProviderEvent, bool) {
 // A file-mutating call (kind "edit"/"write"/"create"/"delete") emits BOTH a
 // tool_completed AND a file_changed event; a read-only call (kind "read") emits
 // only tool_completed.
+//
+// Task-212 DOD-2: Grok often puts mutation kind under `_meta.x.ai/tool.kind`
+// (or only the tool name) and the path under `rawInput` rather than top-level
+// `kind` + `locations`. Post-turn flowgate r-ca only sees WrittenPaths from
+// EventFileChanged, so those mutations must still map here.
 func mapGrokToolCallUpdate(update map[string]any) ([]ProviderEvent, bool) {
 	status, _ := update["status"].(string)
 	if status == "" {
@@ -84,8 +92,8 @@ func mapGrokToolCallUpdate(update map[string]any) ([]ProviderEvent, bool) {
 		// client-facing event yet.
 		return nil, false
 	}
-	kind, _ := update["kind"].(string)
 	title, _ := update["title"].(string)
+	mutationKind := grokToolMutationKind(update)
 
 	events := []ProviderEvent{{
 		Type:     EventToolCompleted,
@@ -94,12 +102,12 @@ func mapGrokToolCallUpdate(update map[string]any) ([]ProviderEvent, bool) {
 		Output:   grokToolOutput(update),
 	}}
 
-	if grokIsFileMutationKind(kind) {
-		if path := grokFirstLocationPath(update["locations"]); path != "" {
+	if mutationKind != "" {
+		for _, path := range grokMutationPaths(update) {
 			events = append(events, ProviderEvent{
 				Type:       EventFileChanged,
 				Path:       path,
-				ChangeType: kind,
+				ChangeType: mutationKind,
 			})
 		}
 	}
@@ -113,6 +121,251 @@ func grokIsFileMutationKind(kind string) bool {
 	default:
 		return false
 	}
+}
+
+// grokToolMutationKind resolves the file-mutation kind for a tool_call/_update.
+// Order: top-level kind → _meta.x.ai/tool.kind → known tool name (meta/title).
+// Returns "" when the call is not a file mutation.
+func grokToolMutationKind(update map[string]any) string {
+	if update == nil {
+		return ""
+	}
+	if kind, _ := update["kind"].(string); grokIsFileMutationKind(kind) {
+		return strings.ToLower(strings.TrimSpace(kind))
+	}
+	if toolMeta := grokXAIToolMeta(update); toolMeta != nil {
+		if kind, _ := toolMeta["kind"].(string); grokIsFileMutationKind(kind) {
+			return strings.ToLower(strings.TrimSpace(kind))
+		}
+		if name, _ := toolMeta["name"].(string); name != "" {
+			if mapped := grokMutationKindFromToolName(name); mapped != "" {
+				return mapped
+			}
+		}
+	}
+	if title, _ := update["title"].(string); title != "" {
+		if mapped := grokMutationKindFromToolName(title); mapped != "" {
+			return mapped
+		}
+	}
+	return ""
+}
+
+// grokMutationKindFromToolName maps Grok native tool names onto the narrow
+// mutation allowlist used for EventFileChanged / r-ca WrittenPaths.
+func grokMutationKindFromToolName(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "write", "write_file", "create", "create_file":
+		return "write"
+	case "delete", "delete_file":
+		return "delete"
+	case "edit", "search_replace", "strreplace", "str_replace", "apply_patch":
+		return "edit"
+	default:
+		return ""
+	}
+}
+
+func grokXAIToolMeta(update map[string]any) map[string]any {
+	if update == nil {
+		return nil
+	}
+	meta, _ := update["_meta"].(map[string]any)
+	if meta == nil {
+		return nil
+	}
+	toolMeta, _ := meta["x.ai/tool"].(map[string]any)
+	return toolMeta
+}
+
+// grokMutationPaths returns de-duplicated file paths for a mutation tool call.
+// Prefer locations[].path; fall back to structured rawInput path fields and
+// `_meta.x.ai/tool.input` (live Grok search_replace).
+func grokMutationPaths(update map[string]any) []string {
+	if update == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	for _, p := range grokLocationPaths(update["locations"]) {
+		add(p)
+	}
+	if len(out) == 0 {
+		for _, p := range grokPathsFromRawInput(update["rawInput"]) {
+			add(p)
+		}
+	}
+	if len(out) == 0 {
+		if toolMeta := grokXAIToolMeta(update); toolMeta != nil {
+			if input, ok := toolMeta["input"].(map[string]any); ok {
+				for _, p := range grokPathsFromRawInputMap(input) {
+					add(p)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// grokPendingToolCall caches mutation kind/path from earlier tool_call /
+// mid-flight tool_call_update frames. Live Grok (0.2.x) puts kind+locations on
+// the first tool_call_update (status unset) but the final
+// status=completed frame only has content/rawOutput — so without this cache
+// EventFileChanged never fires and flowgate r-ca WrittenPaths stays empty
+// (Task-212 DOD-2, live gate-sandbox 2026-07-11).
+type grokPendingToolCall struct {
+	mutationKind string
+	paths        []string
+}
+
+// grokRememberToolCall stores mutation metadata from a tool_call or
+// tool_call_update update map into cache (keyed by toolCallId).
+func grokRememberToolCall(cache map[string]grokPendingToolCall, update map[string]any) {
+	if cache == nil || update == nil {
+		return
+	}
+	id, _ := update["toolCallId"].(string)
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return
+	}
+	kind := grokToolMutationKind(update)
+	paths := grokMutationPaths(update)
+	if kind == "" && len(paths) == 0 {
+		return
+	}
+	prev := cache[id]
+	if kind != "" {
+		prev.mutationKind = kind
+	}
+	if len(paths) > 0 {
+		prev.paths = paths
+	}
+	cache[id] = prev
+}
+
+// grokEnrichToolCallUpdate merges cached kind/paths into a completed
+// tool_call_update that no longer carries them. Returns a shallow-copied update.
+func grokEnrichToolCallUpdate(cache map[string]grokPendingToolCall, update map[string]any) map[string]any {
+	if update == nil {
+		return update
+	}
+	id, _ := update["toolCallId"].(string)
+	prev, ok := cache[strings.TrimSpace(id)]
+	if !ok {
+		return update
+	}
+	out := make(map[string]any, len(update)+4)
+	for k, v := range update {
+		out[k] = v
+	}
+	kind, _ := out["kind"].(string)
+	if !grokIsFileMutationKind(kind) && prev.mutationKind != "" {
+		out["kind"] = prev.mutationKind
+	}
+	if len(grokMutationPaths(out)) == 0 && len(prev.paths) > 0 {
+		locs := make([]any, 0, len(prev.paths))
+		for _, p := range prev.paths {
+			locs = append(locs, map[string]any{"path": p})
+		}
+		out["locations"] = locs
+	}
+	return out
+}
+
+// grokCorrelateToolNotification remembers tool mutation metadata and enriches
+// completed tool_call_update frames before mapping. Safe no-op for non-tool notifications.
+func grokCorrelateToolNotification(cache map[string]grokPendingToolCall, n grokNotification) grokNotification {
+	if cache == nil || n.Method != "session/update" || n.Params == nil {
+		return n
+	}
+	update, _ := n.Params["update"].(map[string]any)
+	if update == nil {
+		return n
+	}
+	su, _ := update["sessionUpdate"].(string)
+	if su != "tool_call" && su != "tool_call_update" {
+		return n
+	}
+	grokRememberToolCall(cache, update)
+	if su != "tool_call_update" {
+		return n
+	}
+	status, _ := update["status"].(string)
+	if status == "" {
+		return n
+	}
+	// completed / failed / in_progress with stripped fields — enrich from cache
+	enriched := grokEnrichToolCallUpdate(cache, update)
+	params := make(map[string]any, len(n.Params))
+	for k, v := range n.Params {
+		params[k] = v
+	}
+	params["update"] = enriched
+	n.Params = params
+	return n
+}
+
+func grokLocationPaths(v any) []string {
+	locations, _ := v.([]any)
+	if len(locations) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(locations))
+	for _, raw := range locations {
+		loc, _ := raw.(map[string]any)
+		if loc == nil {
+			continue
+		}
+		if path, _ := loc["path"].(string); strings.TrimSpace(path) != "" {
+			out = append(out, strings.TrimSpace(path))
+		}
+	}
+	return out
+}
+
+func grokPathsFromRawInput(v any) []string {
+	switch raw := v.(type) {
+	case map[string]any:
+		return grokPathsFromRawInputMap(raw)
+	case string:
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			return nil
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(s), &m); err != nil {
+			return nil
+		}
+		return grokPathsFromRawInputMap(m)
+	default:
+		return nil
+	}
+}
+
+func grokPathsFromRawInputMap(m map[string]any) []string {
+	if m == nil {
+		return nil
+	}
+	keys := []string{"path", "file_path", "target_file", "target_path", "filename"}
+	var out []string
+	for _, k := range keys {
+		if s, _ := m[k].(string); strings.TrimSpace(s) != "" {
+			out = append(out, strings.TrimSpace(s))
+		}
+	}
+	return out
 }
 
 func grokToolStatus(status string) string {
@@ -138,18 +391,38 @@ func grokToolOutput(update map[string]any) any {
 // "Read `C:\...\sample.txt`") so the desktop's tool icon/grouping logic gets a
 // consistent name across the started/completed pair.
 func grokToolDisplayName(update map[string]any, fallbackTitle string) string {
-	meta, _ := update["_meta"].(map[string]any)
-	if meta != nil {
-		if toolMeta, ok := meta["x.ai/tool"].(map[string]any); ok {
-			if name, _ := toolMeta["name"].(string); name != "" {
-				return name
-			}
+	if name := grokRawToolName(update, fallbackTitle); name != "" {
+		return grokNormalizedToolDisplayName(name)
+	}
+	return "tool"
+}
+
+// grokRawToolName returns the machine tool name from a tool_call/update frame
+// without UI-boundary normalization (used by native-tool shims).
+func grokRawToolName(update map[string]any, fallbackTitle string) string {
+	if toolMeta := grokXAIToolMeta(update); toolMeta != nil {
+		if name, _ := toolMeta["name"].(string); name != "" {
+			return name
 		}
 	}
 	if fallbackTitle != "" {
 		return fallbackTitle
 	}
-	return "tool"
+	return ""
+}
+
+// grokNormalizedToolDisplayName maps Grok native tool names to FlowPilot's public tool
+// names at the UI/event boundary (Task-209 DOD-8 / GR-07, BUG-124). FlowPilot MCP
+// tools keep their own names; native Grok-only tools are aliased for desktop grouping.
+func grokNormalizedToolDisplayName(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "spawn_subagent":
+		return "spawn_agent"
+	case "ask_user_question":
+		return "ask_user"
+	default:
+		return name
+	}
 }
 
 func grokFirstLocationPath(v any) string {

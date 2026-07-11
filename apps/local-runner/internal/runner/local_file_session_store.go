@@ -94,8 +94,10 @@ type ndjsonSessionRecord struct {
 func (s *localFileSessionStore) loadFromDisk() {
 	// Loaded unconditionally, before the sessions.ndjson-missing early return
 	// below: a fresh install/data dir with no session ever persisted yet but a
-	// question already asked must still load questions.ndjson.
+	// question/approval already asked must still load questions.ndjson /
+	// approvals.ndjson.
 	s.loadQuestionsFromDisk()
+	s.loadApprovalsFromDisk()
 
 	f, err := os.Open(s.filePath)
 	if err != nil {
@@ -165,6 +167,41 @@ func (s *localFileSessionStore) loadQuestionsFromDisk() {
 	s.fakeWorkflowStore.mu.Lock()
 	for id, rec := range seen {
 		s.fakeWorkflowStore.questions[id] = rec
+	}
+	s.fakeWorkflowStore.mu.Unlock()
+}
+
+// loadApprovalsFromDisk populates fakeWorkflowStore.approvals from
+// approvals.ndjson (BUG-ApprovalReplay-Restart), last-write-wins per
+// ApprovalID — the approval-side twin of loadQuestionsFromDisk above. Missing
+// file is normal (no approval has ever been asked yet).
+func (s *localFileSessionStore) loadApprovalsFromDisk() {
+	f, err := os.Open(s.approvalsFilePath())
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	seen := map[string]ProviderApprovalState{}
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var rec ProviderApprovalState
+		if err := json.Unmarshal(line, &rec); err != nil {
+			continue
+		}
+		if rec.ApprovalID == "" {
+			continue
+		}
+		seen[rec.ApprovalID] = rec // last-wins
+	}
+
+	s.fakeWorkflowStore.mu.Lock()
+	for id, rec := range seen {
+		s.fakeWorkflowStore.approvals[id] = rec
 	}
 	s.fakeWorkflowStore.mu.Unlock()
 }
@@ -400,6 +437,45 @@ func (s *localFileSessionStore) ListQuestionsByRun(ctx context.Context, runID st
 	return s.fakeWorkflowStore.ListQuestionsByRun(ctx, runID)
 }
 
+// approvalsFilePath returns the path of the single approvals.ndjson file that
+// durably tracks ProviderApprovalState across restarts (BUG-ApprovalReplay-
+// Restart) — the approval-side twin of questionsFilePath, keyed by ApprovalID.
+func (s *localFileSessionStore) approvalsFilePath() string {
+	return filepath.Join(filepath.Dir(s.filePath), "approvals.ndjson")
+}
+
+// UpsertApproval updates the in-memory map (via the embedded fakeWorkflowStore)
+// and appends a NDJSON line to approvals.ndjson so an approval's resolution
+// (approve/deny/expired + decision) survives a process restart
+// (BUG-ApprovalReplay-Restart) — without this, reconstructRun has no way to
+// know whether a restored permission_required event was already resolved.
+// Mirrors UpsertQuestion exactly.
+func (s *localFileSessionStore) UpsertApproval(ctx context.Context, approval ProviderApprovalState) error {
+	if err := s.fakeWorkflowStore.UpsertApproval(ctx, approval); err != nil {
+		return err
+	}
+	line, err := json.Marshal(approval)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fh, err := os.OpenFile(s.approvalsFilePath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	_, err = fh.Write(append(line, '\n'))
+	return err
+}
+
+// ListApprovalsByRun returns every persisted approval state for a run
+// (BUG-ApprovalReplay-Restart), populated from approvals.ndjson at startup and
+// kept current by UpsertApproval. No extra file read is needed here.
+func (s *localFileSessionStore) ListApprovalsByRun(ctx context.Context, runID string) ([]ProviderApprovalState, error) {
+	return s.fakeWorkflowStore.ListApprovalsByRun(ctx, runID)
+}
+
 // flowEventsPath returns the path of the per-run CP-41 flow-events sidecar.
 // Returns an error when runID contains path separators that could escape the
 // store directory (path-traversal guard).
@@ -419,11 +495,20 @@ func (s *localFileSessionStore) flowEventsPath(runID string) (string, error) {
 // exist at all in the reconstructed timeline, resolved or not. Whether it was
 // later answered/expired is tracked separately via ProviderQuestionState
 // (UpsertQuestion) and merged onto this replayed event in reconstructRun.
+//
+// EventPermissionRequired is included for the exact same reason on the
+// approval side (BUG-ApprovalReplay-Restart): the provider transcript has
+// tool_use/tool_result but no concept of FlowPilot's own approval card, so
+// without persisting the raw asked event the resolved approval card vanished
+// entirely on a full server restart (only the question survived). Its
+// approve/deny/expired resolution is tracked separately via
+// ProviderApprovalState (UpsertApproval) and merged onto this replayed event
+// in reconstructRun.
 func isFlowSidecarEventType(t ProviderEventType) bool {
 	switch t {
 	case EventFlowContextPackage, EventFlowValidationResult,
 		EventFlowValidationRetry, EventFlowAuditDraft,
-		EventUserQuestionRequired:
+		EventUserQuestionRequired, EventPermissionRequired:
 		return true
 	}
 	return false

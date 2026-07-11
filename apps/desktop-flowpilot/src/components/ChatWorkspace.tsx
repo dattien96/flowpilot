@@ -347,6 +347,26 @@ function AccountSwitchModal(): React.ReactElement | null {
   );
 }
 
+// GrokYoloPostureModal (Task-218): unlike Claude/Codex/Gemini's YOLO toggle
+// (a synchronous local flip), Grok's requires the backend to rewrite the
+// active account's config.toml and respawn its shared process for gating to
+// actually take effect -- shown for however long toggleYoloForActiveProvider's
+// applyGrokYoloPosture call takes. Non-dismissible while loading, mirroring
+// AccountSwitchModal's own overlay/modal shell (no cancel path -- there's
+// nothing to cancel, the call is already in flight).
+function GrokYoloPostureModal(): React.ReactElement | null {
+  const grokYoloPostureLoading = useStore((s) => s.grokYoloPostureLoading);
+  if (!grokYoloPostureLoading) return null;
+
+  return (
+    <div className="account-switch-overlay" role="dialog" aria-modal="true" aria-label="Applying Grok YOLO setting">
+      <div className="account-switch-modal">
+        <p className="account-switch-loading">Applying YOLO setting for Grok…</p>
+      </div>
+    </div>
+  );
+}
+
 function ProviderSwitchModal(): React.ReactElement | null {
   const pendingProviderSwitch = useStore((s) => s.pendingProviderSwitch);
   const providerSwitchLoading = useStore((s) => s.providerSwitchLoading);
@@ -703,6 +723,7 @@ export function ChatWorkspace({
     <div ref={shellRef} className={`app-body workspace-shell ${leftSidebarVisible ? "left-visible" : "left-hidden"} ${rightSidebarVisible ? "right-visible" : "right-hidden"}`} style={workspaceStyle}>
       <ProviderSwitchModal />
       <AccountSwitchModal />
+      <GrokYoloPostureModal />
       <GateBlockModal />
       <HistoryOpenErrorModal />
       {leftSidebarVisible && (

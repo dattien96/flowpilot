@@ -462,6 +462,20 @@ func writeGrokConfigTomlFixture(t *testing.T, permissionMode string) string {
 	return grokHome
 }
 
+// writeGrokAuthFileFixture writes a minimal <grokHome>/auth.json that
+// hasValidProviderAuthFile("grok", ...) accepts (live-verified field names:
+// refresh_token/email), so a ProviderAccount fixture with SlotIndex>0 survives
+// syncManagedProviderAccounts's own live re-check as "connected" instead of
+// being flipped to "failed" for lacking real auth on disk (Task-218 tests
+// need ResolveProviderAccount to actually succeed against a fixture home).
+func writeGrokAuthFileFixture(t *testing.T, grokHome string) {
+	t.Helper()
+	content := `{"issuer::user-1":{"refresh_token":"test-refresh-token","email":"test@example.com"}}`
+	if err := os.WriteFile(filepath.Join(grokHome, "auth.json"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write auth.json fixture: %v", err)
+	}
+}
+
 func TestGrokConfigPermissionModeBypassesGatingDetectsAlwaysApprove(t *testing.T) {
 	grokHome := writeGrokConfigTomlFixture(t, "always-approve")
 	mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome)
@@ -491,5 +505,216 @@ func TestGrokConfigPermissionModeBypassesGatingNoPermissionModeKey(t *testing.T)
 	mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome)
 	if mode != "" || bypasses {
 		t.Fatalf("expected (\"\", false) when permission_mode is absent, got (%q, %v)", mode, bypasses)
+	}
+}
+
+// ---- setGrokConfigPermissionMode (Task-218) ----
+//
+// Task-218 gives FlowPilot the one lever Grok's CLI itself doesn't offer: no
+// `grok agent stdio` flag can force gating back on for an account whose own
+// config.toml persists permission_mode="always-approve" (Task-208 DOD-5), so
+// YOLO=false must rewrite that value directly. These tests prove the rewrite
+// touches only the one key and leaves everything else in the file untouched.
+
+func TestSetGrokConfigPermissionModeChangesExistingValue(t *testing.T) {
+	grokHome := writeGrokConfigTomlFixture(t, "always-approve")
+
+	changed, err := setGrokConfigPermissionMode(grokHome, "default")
+	if err != nil {
+		t.Fatalf("setGrokConfigPermissionMode: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true when the value actually differs")
+	}
+
+	mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome)
+	if mode != "default" || bypasses {
+		t.Fatalf("after rewrite: mode=%q bypasses=%v, want (default, false)", mode, bypasses)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(grokHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read back config.toml: %v", err)
+	}
+	if !strings.Contains(string(raw), `[cli]`) || !strings.Contains(string(raw), `installer = "internal"`) {
+		t.Fatalf("rewrite must preserve unrelated sections/keys, got:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "yolo = false") {
+		t.Fatalf("rewrite must preserve unrelated keys in the same [ui] section, got:\n%s", raw)
+	}
+}
+
+func TestSetGrokConfigPermissionModeInsertsKeyWhenSectionExistsButKeyMissing(t *testing.T) {
+	grokHome := writeGrokConfigTomlFixture(t, "") // [ui] section present, no permission_mode key
+
+	changed, err := setGrokConfigPermissionMode(grokHome, "default")
+	if err != nil {
+		t.Fatalf("setGrokConfigPermissionMode: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true when the key was missing")
+	}
+	mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome)
+	if mode != "default" || bypasses {
+		t.Fatalf("mode=%q bypasses=%v, want (default, false)", mode, bypasses)
+	}
+}
+
+func TestSetGrokConfigPermissionModeAppendsSectionWhenMissingEntirely(t *testing.T) {
+	grokHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(grokHome, "config.toml"), []byte("[cli]\ninstaller = \"internal\"\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	changed, err := setGrokConfigPermissionMode(grokHome, "default")
+	if err != nil {
+		t.Fatalf("setGrokConfigPermissionMode: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true when [ui] section itself was missing")
+	}
+	mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome)
+	if mode != "default" || bypasses {
+		t.Fatalf("mode=%q bypasses=%v, want (default, false)", mode, bypasses)
+	}
+	raw, _ := os.ReadFile(filepath.Join(grokHome, "config.toml"))
+	if !strings.Contains(string(raw), "installer = \"internal\"") {
+		t.Fatalf("must preserve the pre-existing [cli] section, got:\n%s", raw)
+	}
+}
+
+func TestSetGrokConfigPermissionModeCreatesFileWhenMissing(t *testing.T) {
+	grokHome := t.TempDir() // no config.toml at all
+
+	changed, err := setGrokConfigPermissionMode(grokHome, "default")
+	if err != nil {
+		t.Fatalf("setGrokConfigPermissionMode: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true when the file didn't exist")
+	}
+	mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome)
+	if mode != "default" || bypasses {
+		t.Fatalf("mode=%q bypasses=%v, want (default, false)", mode, bypasses)
+	}
+}
+
+func TestSetGrokConfigPermissionModeNoOpWhenAlreadyCorrect(t *testing.T) {
+	grokHome := writeGrokConfigTomlFixture(t, "default")
+	info1, statErr := os.Stat(filepath.Join(grokHome, "config.toml"))
+	if statErr != nil {
+		t.Fatalf("stat fixture: %v", statErr)
+	}
+
+	changed, err := setGrokConfigPermissionMode(grokHome, "default")
+	if err != nil {
+		t.Fatalf("setGrokConfigPermissionMode: %v", err)
+	}
+	if changed {
+		t.Fatal("expected changed=false when the value already matches (no write should happen)")
+	}
+	info2, statErr := os.Stat(filepath.Join(grokHome, "config.toml"))
+	if statErr != nil {
+		t.Fatalf("stat after no-op: %v", statErr)
+	}
+	if !info1.ModTime().Equal(info2.ModTime()) {
+		t.Fatal("no-op path must not touch the file (mtime changed)")
+	}
+}
+
+// ---- ApplyGrokYoloPosture (Task-218) ----
+
+func TestApplyGrokYoloPostureFalseRewritesConfigAndClosesLiveProcess(t *testing.T) {
+	// Isolate HOME/USERPROFILE from this machine's real ~/.grok (which may
+	// genuinely exist on a dev box, per TestProviderRegistryForGrokWithoutAccountReturnsErrorAdapter's
+	// own note) so syncProviderAccounts doesn't inject a competing real
+	// "Default Account" entry alongside the fixture below.
+	isolatedHome := t.TempDir()
+	t.Setenv("HOME", isolatedHome)
+	t.Setenv("USERPROFILE", isolatedHome)
+	t.Setenv("XAI_API_KEY", "")
+
+	grokHome := writeGrokConfigTomlFixture(t, "always-approve")
+	writeGrokAuthFileFixture(t, grokHome)
+	root := t.TempDir()
+	writeProviderAccountsConfig083(t, root, []ProviderAccount{
+		{ID: "acct-grok", ProviderKey: "grok", HomePath: grokHome, SlotIndex: 1, AuthStatus: "connected", IsActive: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+
+	defer mockGrokInitProcess(t)()
+	r, _ := New(".")
+	h, err := r.ensureGrokProcess(context.Background(), "acct-grok", ".", nil, "", "", true)
+	if err != nil {
+		t.Fatalf("ensureGrokProcess: %v", err)
+	}
+	_ = h
+
+	if err := r.ApplyGrokYoloPosture(context.Background(), false); err != nil {
+		t.Fatalf("ApplyGrokYoloPosture(false): %v", err)
+	}
+
+	mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome)
+	if mode != "default" || bypasses {
+		t.Fatalf("config.toml mode=%q bypasses=%v after YOLO=false, want (default, false)", mode, bypasses)
+	}
+	r.grokProcessMu.Lock()
+	liveCount := len(r.grokProcesses)
+	desired := r.grokDesiredAlwaysApprove
+	r.grokProcessMu.Unlock()
+	if liveCount != 0 {
+		t.Fatal("expected all live grok processes to be closed/cleared so the next turn respawns under the new posture")
+	}
+	if desired {
+		t.Fatal("grokDesiredAlwaysApprove should be false after ApplyGrokYoloPosture(false)")
+	}
+}
+
+func TestApplyGrokYoloPostureTrueNeverTouchesConfigFile(t *testing.T) {
+	isolatedHome := t.TempDir()
+	t.Setenv("HOME", isolatedHome)
+	t.Setenv("USERPROFILE", isolatedHome)
+	t.Setenv("XAI_API_KEY", "")
+
+	grokHome := writeGrokConfigTomlFixture(t, "default")
+	writeGrokAuthFileFixture(t, grokHome)
+	root := t.TempDir()
+	writeProviderAccountsConfig083(t, root, []ProviderAccount{
+		{ID: "acct-grok", ProviderKey: "grok", HomePath: grokHome, SlotIndex: 1, AuthStatus: "connected", IsActive: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+	})
+	info1, statErr := os.Stat(filepath.Join(grokHome, "config.toml"))
+	if statErr != nil {
+		t.Fatalf("stat fixture: %v", statErr)
+	}
+
+	r, _ := New(".")
+	if err := r.ApplyGrokYoloPosture(context.Background(), true); err != nil {
+		t.Fatalf("ApplyGrokYoloPosture(true): %v", err)
+	}
+
+	info2, statErr := os.Stat(filepath.Join(grokHome, "config.toml"))
+	if statErr != nil {
+		t.Fatalf("stat after apply: %v", statErr)
+	}
+	if !info1.ModTime().Equal(info2.ModTime()) {
+		t.Fatal("YOLO=true must never rewrite config.toml (--always-approve covers it regardless of the file)")
+	}
+	r.grokProcessMu.Lock()
+	desired := r.grokDesiredAlwaysApprove
+	r.grokProcessMu.Unlock()
+	if !desired {
+		t.Fatal("grokDesiredAlwaysApprove should be true after ApplyGrokYoloPosture(true)")
+	}
+}
+
+func TestApplyGrokYoloPostureNoAccountReturnsTypedError(t *testing.T) {
+	isolatedHome := t.TempDir()
+	t.Setenv("HOME", isolatedHome)
+	t.Setenv("USERPROFILE", isolatedHome)
+	t.Setenv("XAI_API_KEY", "")
+	t.Setenv("FLOWPILOT_PROVIDER_ACCOUNTS_CONFIG_PATH", filepath.Join(isolatedHome, "provider-accounts.json"))
+
+	r, _ := New(".")
+	if err := r.ApplyGrokYoloPosture(context.Background(), false); err == nil {
+		t.Fatal("expected an error when no Grok account can be resolved")
 	}
 }
