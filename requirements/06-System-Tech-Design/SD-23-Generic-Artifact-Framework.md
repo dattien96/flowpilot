@@ -5,14 +5,14 @@
 - Document ID: `SD-23`
 - Title: `Generic Artifact Framework (Types, Instances, Step Bindings)`
 - Phase: `tech_design`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
-- Last Updated: `2026-07-09`
+- Last Updated: `2026-07-12`
 - Parent Documents: [SS-13: AI-Followable Document Contract](../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [SS-14: Code Context And Regression Safety](../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (**US-10**, **AC-17** — typed artifacts as first-class flow I/O; also US-9, AC-16, US-1, US-2, US-5, US-7, AC-9, AC-13, AC-15)
 - Child Documents: [CP-45: Generic Artifact Types And User-Scoped Artifact Instances](../07-Coding-Plan/done/CP-45-Generic-Artifact-Types-And-Instances.md)
-- Related Documents: [SD-22: Pluggable Context Source Registry](./SD-22-Pluggable-Context-Source-Registry.md) (substrate — `context_artifact.v1` producer tái dùng `ContextSourceRegistry`), [SD-17: Context And Regression Engine](./SD-17-Context-And-Regression-Engine.md) (D-4 context package), [SD-21: Change Contract And Canonical Intent Signature](./SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [CP-44: Pluggable Context Source Registry](../07-Coding-Plan/done/CP-44-Pluggable-Context-Source-Registry.md) (vertical slice đầu tiên), [CP-42: Flow Pack And Generic Node Behavior Refactor](../07-Coding-Plan/done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) (mẫu registry gốc), [BUG-236: Builtin Flow Mirror Stores Node Definition On Workflow Steps Instead Of Step Definitions](../09-BugFix/done/BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md)
+- Related Documents: [SD-22: Pluggable Context Source Registry](./SD-22-Pluggable-Context-Source-Registry.md) (substrate — `context_artifact.v1` producer tái dùng `ContextSourceRegistry`), [SD-17: Context And Regression Engine](./SD-17-Context-And-Regression-Engine.md) (D-4 context package), [SD-21: Change Contract And Canonical Intent Signature](./SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [CP-44: Pluggable Context Source Registry](../07-Coding-Plan/done/CP-44-Pluggable-Context-Source-Registry.md) (vertical slice đầu tiên), [CP-42: Flow Pack And Generic Node Behavior Refactor](../07-Coding-Plan/done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) (mẫu registry gốc), [BUG-236: Builtin Flow Mirror Stores Node Definition On Workflow Steps Instead Of Step Definitions](../09-BugFix/done/BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md), [BUG-276: File Artifact Input Path-Only](../09-BugFix/done/BUG-276-File-Artifact-Input-Should-Mention-Paths-Not-Paste-Content.md), [Task-223: File Artifact Output Contract](../08-Task/done/Task-223-File-Artifact-Output-Contract-And-Review-Input-Chain.md), [Task-224: Flow Prompt Scoping](../08-Task/done/Task-224-Flow-Prompt-Scoping-And-Coder-Output-Why-Template.md), [Task-225: File Artifact Output Heading Gate](../08-Task/todo/Task-225-File-Artifact-Output-Heading-Gate.md)
 - Replaces: `None`
 - Tags: `artifact, artifact-type, artifact-instance, step-binding, flow-mode, typed-contract, supabase, extensibility`
 
@@ -30,7 +30,7 @@
 
 ### Current Ask
 
-- Chốt thiết kế kỹ thuật cho artifact framework: mô hình type/instance/binding, schema Supabase, resolver precedence, ranh giới type-compatibility, và đường migrate từ CP-44 — đủ để CP-45 (Task-197..203) code theo mà không phát sinh edge-case về cấu trúc, và không phá runner path hiện có.
+- **Implemented via CP-45** (live-verified 2026-07-12). Design remains authority for type/instance/binding; consumer prompt rules for `file_artifact` refined by BUG-276 / Task-223 / Task-224 (see `D-8` amendment below).
 
 ### Key Decisions
 
@@ -41,10 +41,13 @@
 - `D-5` **`context_artifact.v1` là vertical slice đầu tiên** và producer của nó **tái dùng `ContextSourceRegistry`** (SD-22): `config_json.sources` = danh sách context-source-id đã đăng ký. Artifact framework **compose lên** SD-22; không viết lại thu-thập-context.
 - `D-6` **Resolver precedence có fallback**, migrate mềm không hard-cut: step **artifact binding** → (transition) step `context_sources` (CP-44/Task-196) → flow-level `contexts.sources` (SD-22 `D-4`) → default set. Flow chưa có binding vẫn chạy nguyên đường CP-44.
 - `D-7` **Type-compatibility là ranh giới cứng**: một slot chỉ bind được instance có `artifact_type` khớp type mong đợi của slot + đúng `direction`. Bind sai type → **fail-fast** ở authoring (UI) và ở flow-load (runner), không silent.
-- `D-8` **Bắt buộc ≥1 type ngoài context** (`file_artifact.v1`, config `{ paths: [] }`) để chứng minh framework **không hardcode cho context**. Luồng file-artifact: step A khai output là một `file_artifact` instance mang **file path**; step B bind chính instance đó làm input → resolver **inject file path** (workspace-safe, tái dùng bảo vệ của `source.excerpt` SD-22 `F-6`) vào prompt của step B để step B biết file mà đọc.
+- `D-8` **Bắt buộc ≥1 type ngoài context** (`file_artifact.v1`, config `{ paths: string[] }`) để chứng minh framework **không hardcode cho context**. **Direction semantics (amended 2026-07-12, BUG-276 / Task-223 / Task-224):**
+  - **OUTPUT** binding: **write contract** — agent must create/update the designated path(s); flow-gate may enforce existence (`r-artifact-output`). Prompt lists paths + optional What/Why/Baseline guidance (heading **enforcement** is Task-225 Phase-2).
+  - **INPUT** binding: **path reference only** — prompt **mentions** workspace-relative path(s) and instructs the agent to open them with tools. **Do not paste full file body/excerpts** into the consumer prompt (unlike `context_artifact` / Flow Context Package, which must push content because it has no durable path handle).
+  - Workspace-safety for existence/path resolution reuses `source.excerpt` protections (SD-22 `F-6`) where paths are validated; outside-workspace / symlink escape → omit or treat as missing, not silent success.
 - `D-9` Bất biến **deterministic/no-vector** của CP-41/SD-17 `D-3` áp cho **mọi** artifact producer (không riêng context): producer là explicit lookup theo config, không similarity search; degrade-mềm khi backing unavailable (`AC-9`/`AC-13`).
 - `D-10` **Ship một built-in flow chuẩn** làm nơi wiring artifact chain sẵn (giống built-in review-loop): `Context → Coding → Review → Synthesis`, trong đó `context_artifact` là output của Context step và input của các step sau. User tạo flow riêng sau này **tự quyết** có dùng Context/artifact nào. Đây cũng là E2E vehicle chứng minh cross-step I/O. Triển khai: [Task-205](../08-Task/done/Task-205-Builtin-Artifact-Flow-Context-Coding-Review-Synthesis.md).
-- `D-11` **Dispatch seam** cho producer/consumer: thêm một `ArtifactTypeRegistry` nhỏ (mirror `ContextSourceRegistry`) với per-type resolver, gọi ở **prompt-assembly seam** — **không** thêm behavior node mới. `context_artifact` resolver tái dùng `ContextSourceRegistry.Collect`; `file_artifact` resolver inject path. Executor không đổi.
+- `D-11` **Dispatch seam** cho producer/consumer: thêm một `ArtifactTypeRegistry` nhỏ (mirror `ContextSourceRegistry`) với per-type helpers ở **prompt-assembly seam** — **không** thêm behavior node mới. `context_artifact` → `ContextSourceRegistry.Collect` (full package content). `file_artifact` **INPUT** → path-list mention only (BUG-276); **OUTPUT** → required-path write contract + template guidance (Task-223/224). Optional registry resolver that reads excerpts may exist for tooling/tests but **must not** be the default consumer prompt path for INPUT.
 
 ### Constraints
 
@@ -133,8 +136,11 @@ Tổng quát hóa mô hình "typed context package" (SD-22) thành một **artif
 
 ### 3.8 `D-8` Non-context type proves generality
 
-- `D-8` `file_artifact.v1` (`config { paths: string[] }`) là type thứ hai; reader dùng bảo vệ workspace-safe của `source.excerpt`.
-- Why: DOD của CP-45 yêu cầu framework không âm thầm chỉ phục vụ context.
+- `D-8` `file_artifact.v1` (`config { paths: string[] }`) là type thứ hai.
+- **OUTPUT:** write contract on designated paths (existence gate; optional heading gate = Task-225).
+- **INPUT:** path mention + tools-read only — **not** full-body excerpt inject into the consumer prompt (BUG-276). Contrast: `context_artifact` still pushes package content.
+- Workspace-safe path checks reuse SD-22 `source.excerpt` / `F-6` style protections where applicable.
+- Why: DOD của CP-45 yêu cầu framework không âm thầm chỉ phục vụ context; live product further separates path-based I/O from content-package I/O.
 
 ### 3.9 `D-9` Determinism/no-vector across all producers
 
@@ -147,7 +153,7 @@ Tổng quát hóa mô hình "typed context package" (SD-22) thành một **artif
 
 ### 3.11 `D-11` Artifact type registry + built-in instance mirror
 
-- `D-11` **Producer/consumer dispatch**: `ArtifactTypeRegistry` nhỏ (mirror `ContextSourceRegistry`), per-type resolver gọi ở prompt-assembly seam — không thêm behavior node. `context_artifact` resolver → `ContextSourceRegistry.Collect`; `file_artifact` resolver → inject path.
+- `D-11` **Producer/consumer dispatch**: `ArtifactTypeRegistry` / prompt-assembly helpers — không thêm behavior node. `context_artifact` → package content via `ContextSourceRegistry.Collect`; `file_artifact` INPUT → path mentions only; OUTPUT → write-contract path list (+ template).
 - `D-11b` **Built-in instance seeding**: mirror cơ chế built-in Flow — `is_builtin=true` rows seeded qua service-role mirror-sync (đối xứng `EnsureBuiltinFlowMirrorsWithStore`), RLS chặn `authenticated` ghi row `is_builtin=true`. Không hardcode instance trong Go runtime path; chỉ hardcode **type**.
 - Why: giữ executor bất biến, tái dùng đúng pattern registry + built-in-mirror đã chứng minh ở CP-42/built-in workflows.
 
@@ -165,7 +171,7 @@ Tổng quát hóa mô hình "typed context package" (SD-22) thành một **artif
   - runner artifact-binding resolver structs.
 - Reused unchanged / composed:
   - `ContextSourceRegistry` + built-in sources (SD-22) as `context_artifact.v1` resolver backing.
-  - `readSourceExcerpts` workspace-safe reader for `file_artifact.v1`.
+  - Workspace-safe path validation patterns from `source.excerpt` / `readSourceExcerpts` (existence/outside-workspace), without using full excerpt dump as the default INPUT prompt contract.
   - built-in mirror pattern (`is_builtin` + RLS `is_builtin=false` + service-role sync) từ built-in workflows.
   - `WorkflowStore` persistence for package; `PackageID` formula.
 - New DB surface: `artifact_types`, `artifact_instances` (có `is_builtin`), `step_artifact_bindings` (project-scoped, Supabase; local-first + Drive sync per SD-17 `§5.1`).
@@ -189,7 +195,10 @@ Tổng quát hóa mô hình "typed context package" (SD-22) thành một **artif
 - Instance CRUD (user, `is_builtin=false`): client-core repo methods (list/create/update/delete) qua `supabaseAdminRepository.ts`; delete instance đang bound → chặn/guard (Task-199 `T-4`).
 - Binding: round-trip qua `step_artifact_bindings` (danh sách per direction); resolver load kèm step definition.
 - `context_artifact.v1` resolver contract: nhận `config_json.sources` → gọi `registry.Collect(enabledIDs, hints)` (SD-22 `§5`) → `FlowContextPackage` (Sections + projection, `PackageID` không đổi).
-- `file_artifact.v1` resolver contract: nhận `config_json.paths`; là output của producer step → là input của consumer step; resolver **inject file path** (workspace-safe) vào prompt của consumer; outside-workspace → omitted reason.
+- `file_artifact.v1` prompt contract:
+  - **OUTPUT:** list required path(s); agent must write them; gate may enforce existence; template may require What/Why/Baseline (guidance now; heading gate = Task-225).
+  - **INPUT:** list path(s) + “read with tools”; **do not** paste file body into the prompt (BUG-276).
+  - outside-workspace / invalid paths → omit or fail existence checks, not silent success.
 - Fallback contract (`D-6`): resolver deterministic theo precedence; unknown source-id vẫn fail-fast qua registry (SD-22 `F-2`).
 
 ## 7. Execution Flow
@@ -198,7 +207,7 @@ Tổng quát hóa mô hình "typed context package" (SD-22) thành một **artif
 2. **Authoring (Settings → tab Artifacts)**: user chọn built-in `ArtifactType` (catalog read-only) → nhập `name` + `config_json` hợp lệ theo `configSchema` → save user instance (`is_builtin=false`, project-scoped). Built-in instance hiện read-only.
 3. **Binding (step editor)**: user attach **danh sách** artifact cho input/output của step; UI lọc theo type-compat (`D-7`) → save `step_artifact_bindings` (gắn `step_definition_id`).
 4. **Flow load (runner)**: resolve step definitions kèm artifact bindings; validate type-compat + instance tồn tại → fail-fast nếu sai/mất (required) hoặc warn (optional).
-5. **Produce/consume (cross-step)**: producer step khai output artifact; `ArtifactTypeRegistry` resolver tính nội dung (`context_artifact` → package qua `ContextSourceRegistry`; `file_artifact` → path). Consumer step bind cùng instance làm input → resolver inject vào prompt qua prompt-assembly seam; giữ dòng `No vector retrieval used`.
+5. **Produce/consume (cross-step)**: producer step binds artifact as **OUTPUT** (`context_artifact` → build package content; `file_artifact` → write-contract paths). Consumer binds same instance as **INPUT** (`context_artifact` package content already assembled on the context hop; `file_artifact` → path mentions only in prompt). Keep no-vector invariant for context packages.
 
 ## 8. Failure and Edge Handling
 
@@ -245,7 +254,7 @@ Tổng quát hóa mô hình "typed context package" (SD-22) thành một **artif
   - built-in instance seeded (`is_builtin=true`) xuất hiện read-only ở tab Artifacts; user không sửa/xóa (UI + RLS); mirror-sync idempotent (đối xứng built-in workflow tests).
 - manual/E2E:
   - built-in flow `Context→Coding→Review→Synthesis` chạy: `context_artifact` (output của Context) được Coding/Review/Synthesis consume làm input.
-  - tạo 2 instance cùng type khác config (default-đủ-source vs mcp-only), bind 2 step khác nhau, run flow; `file_artifact` output của step A → path inject vào prompt step B.
+  - tạo 2 instance cùng type khác config (default-đủ-source vs mcp-only), bind 2 step khác nhau, run flow; `file_artifact` OUTPUT on step A + INPUT on step B → step B prompt **mentions path only** (agent reads with tools; no full body paste).
 - observability: count instance theo type/`is_builtin`; count binding theo direction/type; runner warning cho binding thiếu/mismatch.
 
 ## 12. Traceability to Spec

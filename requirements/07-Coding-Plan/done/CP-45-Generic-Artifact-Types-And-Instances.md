@@ -9,10 +9,10 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-08`
-- Last Updated: `2026-07-09`
+- Last Updated: `2026-07-12`
 - Parent Documents: [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
-- Child Documents: [Task-197: Artifact Type Catalog And Schema](../../08-Task/done/Task-197-Artifact-Type-Catalog-And-Schema.md), [Task-198: Artifact Instance Model And Resolver](../../08-Task/done/Task-198-Artifact-Instance-Model-And-Resolver.md), [Task-199: Artifact Instance Settings Page](../../08-Task/done/Task-199-Artifact-Instance-Settings-Page.md), [Task-200: Step Artifact Instance Binding UI](../../08-Task/done/Task-200-Step-Artifact-Instance-Binding-UI.md), [Task-201: Context Artifact Migration From Context Sources](../../08-Task/done/Task-201-Context-Artifact-Migration-From-Context-Sources.md), [Task-202: File Artifact Type Proof Of Generality](../../08-Task/done/Task-202-File-Artifact-Type-Proof-Of-Generality.md), [Task-203: Artifact Framework Validation And Fallback](../../08-Task/done/Task-203-Artifact-Framework-Validation-And-Fallback.md), [Task-205: Built-in Artifact Flow (Context → Coding → Review → Synthesis)](../../08-Task/done/Task-205-Builtin-Artifact-Flow-Context-Coding-Review-Synthesis.md)
-- Related Documents: [CP-44: Pluggable Context Source Registry](./CP-44-Pluggable-Context-Source-Registry.md), [Task-196: Per-Step Context Source Selection UI](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md), [Task-168: Flow Mode Context Package Contract](../../08-Task/done/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-176: Node-Behavior Registry And Dispatch](../../08-Task/done/Task-176-Node-Behavior-Registry-And-Dispatch.md), [BUG-236: Builtin Flow Mirror Stores Node Definition On Workflow Steps Instead Of Step Definitions](../../09-BugFix/done/BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md)
+- Child Documents: [Task-197: Artifact Type Catalog And Schema](../../08-Task/done/Task-197-Artifact-Type-Catalog-And-Schema.md), [Task-198: Artifact Instance Model And Resolver](../../08-Task/done/Task-198-Artifact-Instance-Model-And-Resolver.md), [Task-199: Artifact Instance Settings Page](../../08-Task/done/Task-199-Artifact-Instance-Settings-Page.md), [Task-200: Step Artifact Instance Binding UI](../../08-Task/done/Task-200-Step-Artifact-Instance-Binding-UI.md), [Task-201: Context Artifact Migration From Context Sources](../../08-Task/done/Task-201-Context-Artifact-Migration-From-Context-Sources.md), [Task-202: File Artifact Type Proof Of Generality](../../08-Task/done/Task-202-File-Artifact-Type-Proof-Of-Generality.md), [Task-203: Artifact Framework Validation And Fallback](../../08-Task/done/Task-203-Artifact-Framework-Validation-And-Fallback.md), [Task-205: Built-in Artifact Flow (Context → Coding → Review → Synthesis)](../../08-Task/done/Task-205-Builtin-Artifact-Flow-Context-Coding-Review-Synthesis.md), [Task-222: Artifact-Only Step UX](../../08-Task/done/Task-222-Artifact-Only-Step-UX-And-File-Artifact-Semantics-Copy.md), [Task-223: File Artifact Output Contract](../../08-Task/done/Task-223-File-Artifact-Output-Contract-And-Review-Input-Chain.md), [Task-224: Flow Prompt Scoping And Coder Why Template](../../08-Task/done/Task-224-Flow-Prompt-Scoping-And-Coder-Output-Why-Template.md)
+- Related Documents: [CP-44: Pluggable Context Source Registry](./CP-44-Pluggable-Context-Source-Registry.md), [Task-196: Per-Step Context Source Selection UI](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md), [Task-168: Flow Mode Context Package Contract](../../08-Task/done/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-176: Node-Behavior Registry And Dispatch](../../08-Task/done/Task-176-Node-Behavior-Registry-And-Dispatch.md), [BUG-236: Builtin Flow Mirror Stores Node Definition On Workflow Steps Instead Of Step Definitions](../../09-BugFix/done/BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md), [Task-225: File Artifact Output Heading Gate](../../08-Task/todo/Task-225-File-Artifact-Output-Heading-Gate.md) (Phase-2 polish, not blocking CP-45)
 - Replaces: `None`
 - Tags: `artifact, artifact-type, artifact-instance, flow-mode, typed-contract, settings-ui, supabase`
 
@@ -28,7 +28,7 @@
 
 ### Current Ask
 
-- Thiết kế một framework artifact tổng quát hơn CP-44: type hệ thống + instance do user tạo + step binding theo instance, đủ để sau này context/file/review artifact dùng chung một cơ chế.
+- **Closed (2026-07-12).** Implementation + live E2E verified (gate-sandbox). Residual polish (optional What/Why heading gate) tracked as Task-225, not blocking this CP.
 
 ### Key Decisions
 
@@ -286,10 +286,11 @@ Tổng quát hóa mô hình "typed context package" thành một **artifact fram
 - Mục tiêu: chứng minh type ngoài context (`file_artifact.v1`) chạy trên cùng framework.
 - Cách test:
   1. Seed `file_artifact.v1`; tạo instance với `paths: [<workspace-file>]`.
-  2. Bind vào input slot của một step; run flow.
-- Kỳ vọng:
-  - Consumer step nhận bounded excerpt + `SourceRef`.
-  - Path ngoài workspace/symlink escape → omitted (`outside_workspace`).
+  2. Bind as **OUTPUT** on producer step and **INPUT** on consumer step; run flow.
+- Kỳ vọng (aligned BUG-276 / SD-23 `D-8` / Task-223–225):
+  - **OUTPUT:** producer prompt lists required path(s) as write contract; existence may be gated (`r-artifact-output`). Optional structural What/Why/Baseline heading gate = Task-225.
+  - **INPUT:** consumer step receives **path mention only** and must read with tools; **no** full body/excerpt inject into the consumer prompt (unlike `context_artifact` package content).
+  - Path ngoài workspace/symlink escape → omit or fail existence, not silent success.
 
 ### 11.5 Type-Mismatch And Unknown-Source Fail Fast
 
@@ -381,14 +382,16 @@ Target: `/Users/tiendat/Desktop/BE/gate-sandbox`.
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Chat_summary ledger **noise** in package Prior discussion | **Open (sandbox data)** | Old E2E agent text stored in `chat_summary.ndjson` under gate-sandbox; not an inject bug. Clean ledger locally if desired. |
-| Optional heading gate for What/Why/Baseline | **Deferred** | Task-224 v1 = prompt guidance only; Phase-2 optional reprompt |
-| Optional `prompt-index.jsonl` | **Deferred** | P4 discoverability only; `last-prompt` overwrite is expected |
-| SD-23 / Task-202 prose still mentioning INPUT excerpts | **Doc follow-up optional** | Product rule is path-only (BUG-276); authority note already on Task-202 |
+| Chat_summary ledger **noise** in package Prior discussion | **Open (sandbox data)** | Old E2E agent text in gate-sandbox `chat_summary.ndjson`; not an inject bug |
+| Optional heading gate for What/Why/Baseline | **Tracked as Task-225** | Phase-2; not required to close CP-45 |
+| Optional `prompt-index.jsonl` | **Deferred** | P4 discoverability only; `last-prompt` overwrite expected |
+| SD-23 file_artifact INPUT/OUTPUT semantics | **Aligned 2026-07-12** | Path mention + tools for INPUT; write contract for OUTPUT (BUG-276 / Task-223) |
 
 ### 13.4 Live evidence
 
 - Pre-Task-224: `run-41047` hub, `run-41052` coder, `run-41359` reviewer (and later `run-309`/`314`/`658`).
 - Post-Task-224: `run-723` coder, `run-1024` reviewer, `run-718` hub — package + Why template; path-first review; no Prior work on review/hub synthesis.
 
-**CP-45 product live verification: complete** for artifact framework + agreed residuals above. Remaining items are non-blocking hygiene / deferred polish.
+### 13.5 Closeout
+
+**CP-45 is done** — implementation (Task-197–205), live E2E (A–E + residuals Task-222–224 / BUG-274–277), and authority docs (this §13 + SD-23 D-8 alignment). Follow-up: [Task-225](../../08-Task/todo/Task-225-File-Artifact-Output-Heading-Gate.md) only if product wants enforced `## What`/`## Why`/`## Baseline` headings after file existence.
