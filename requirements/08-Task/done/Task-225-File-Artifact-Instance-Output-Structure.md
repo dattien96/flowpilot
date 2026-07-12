@@ -150,6 +150,6 @@ Make `file_artifact` OUTPUT **instance-correct**: required paths must exist; onl
 
 ## 8. Completion Notes
 
-- result: `done` 2026-07-12 — CA-290: per-instance `structure` prompt + `r-artifact-output-structure` gate; paths-only existence only; flex ATX match; migration schema + coder-summary heuristic; same-path section merge.
-- follow-ups: Artifacts UI to edit `structure.sections`; more seeded examples; optional aliases.
+- result: `done` 2026-07-12 — CA-290 runner/gate; CA-291 Artifacts UI: checkbox + section titles + coding-memo preset on file instance form (`WorkflowsSettings` / `fileArtifactConfig.ts`).
+- follow-ups: more seeded examples; optional aliases; list-view badge when structure enabled.
 - upstream docs: SD-23 / CP-45 / Task-224 cross-links; walkthrough.md.

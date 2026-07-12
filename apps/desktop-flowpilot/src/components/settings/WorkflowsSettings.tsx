@@ -13,6 +13,15 @@ import type {
 import { FLOW_BEHAVIOR_OPTIONS, FLOW_EDGE_TERMINALS, validateFlowGraph } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
 import { formatTimestamp, integrationTypes, toErrorMessage } from "@/components/settings/settingsHelpers";
+import {
+  DEFAULT_CODING_MEMO_SECTIONS,
+  emptyFileArtifactConfig,
+  isFileArtifactStructureEnabled,
+  normalizeFileArtifactConfigForSave,
+  parseFileArtifactStructure,
+  sectionsToTextarea,
+  withFileArtifactStructure,
+} from "@/components/settings/fileArtifactConfig";
 import { createRunnerClient } from "@/client/createRunnerClient";
 import type { AgentDefinition } from "@/types/contract";
 
@@ -334,6 +343,14 @@ function ArtifactsTabContent(props: {
   const draftPaths = isFileType
     ? ((artifactInstanceDraft?.configJson.paths as string[] | undefined) ?? []).join("\n")
     : "";
+  const draftConfig = artifactInstanceDraft?.configJson as Record<string, unknown> | undefined;
+  const structureEnabled = isFileType && isFileArtifactStructureEnabled(draftConfig);
+  const draftFileStructure = isFileType ? parseFileArtifactStructure(draftConfig) : null;
+  // When structure is off, keep sections text empty so enabling does not
+  // silently inject coding-memo titles (defaults apply on Save or preset button).
+  const draftStructureSections = structureEnabled
+    ? sectionsToTextarea(draftFileStructure?.sections ?? [])
+    : "";
   const draftSources = isContextType
     ? ((artifactInstanceDraft?.configJson.sources as string[] | undefined) ?? [])
     : [];
@@ -422,29 +439,103 @@ function ArtifactsTabContent(props: {
             </div>
           ) : null}
           {isFileType ? (
-            <label className="settings-field settings-field-full">
-              <span>File Paths (one per line, workspace-relative)</span>
-              <small className="settings-field-help">
-                Workspace-relative path(s) this instance designates (Task-223 / BUG-276).{" "}
-                <strong>Output</strong> = write contract (agent must create/update these files; gate reprompts if
-                missing). <strong>Input</strong> = path mention only — agent is told to open/read those paths with
-                tools; file body is not pasted into the prompt (unlike context packages).
-              </small>
-              <textarea
-                disabled={artifactInstanceDraft.isBuiltin}
-                onChange={(event) =>
-                  setArtifactInstanceDraft({
-                    ...artifactInstanceDraft,
-                    configJson: {
-                      ...artifactInstanceDraft.configJson,
-                      paths: event.target.value.split("\n").map((line) => line.trim()).filter(Boolean),
-                    },
-                  })
-                }
-                placeholder={"docs/coder-summary.md"}
-                value={draftPaths}
-              />
-            </label>
+            <>
+              <label className="settings-field settings-field-full">
+                <span>File Paths (one per line, workspace-relative)</span>
+                <small className="settings-field-help">
+                  Workspace-relative path(s) this instance designates (Task-223 / BUG-276).{" "}
+                  <strong>Output</strong> = write contract (agent must create/update these files; gate reprompts if
+                  missing). <strong>Input</strong> = path mention only — agent is told to open/read those paths with
+                  tools; file body is not pasted into the prompt (unlike context packages).
+                </small>
+                <textarea
+                  disabled={artifactInstanceDraft.isBuiltin}
+                  onChange={(event) =>
+                    setArtifactInstanceDraft({
+                      ...artifactInstanceDraft,
+                      configJson: {
+                        ...artifactInstanceDraft.configJson,
+                        paths: event.target.value.split("\n").map((line) => line.trim()).filter(Boolean),
+                      },
+                    })
+                  }
+                  placeholder={"docs/coder-summary.md"}
+                  value={draftPaths}
+                />
+              </label>
+              <div className="settings-field settings-field-full">
+                <label className="settings-checkbox">
+                  <input
+                    checked={structureEnabled}
+                    disabled={artifactInstanceDraft.isBuiltin}
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      setArtifactInstanceDraft({
+                        ...artifactInstanceDraft,
+                        configJson: withFileArtifactStructure(
+                          artifactInstanceDraft.configJson as Record<string, unknown>,
+                          enabled,
+                          // Enable with empty sections; Save or "Use coding memo" fills defaults.
+                          "",
+                          { fillDefaultWhenEmpty: false },
+                        ),
+                      });
+                    }}
+                    type="checkbox"
+                  />
+                  <span>Require markdown sections (OUTPUT template + gate)</span>
+                </label>
+                <small className="settings-field-help">
+                  Task-225: optional per-instance structure. When enabled and this instance is bound as a{" "}
+                  <strong>required Output</strong>, the agent prompt lists these section titles and the flow gate
+                  checks they exist as ATX headings after the file is written (flexible level/casing). Leave off for
+                  testing/planning/raw notes (existence-only). Does not affect Input path-only behavior.
+                </small>
+                {structureEnabled ? (
+                  <>
+                    <label className="settings-field settings-field-full" style={{ marginTop: "8px" }}>
+                      <span>Section titles (one per line)</span>
+                      <textarea
+                        disabled={artifactInstanceDraft.isBuiltin}
+                        onChange={(event) =>
+                          setArtifactInstanceDraft({
+                            ...artifactInstanceDraft,
+                            configJson: withFileArtifactStructure(
+                              artifactInstanceDraft.configJson as Record<string, unknown>,
+                              true,
+                              event.target.value,
+                            ),
+                          })
+                        }
+                        placeholder={"What\nWhy\nBaseline"}
+                        rows={4}
+                        value={draftStructureSections}
+                      />
+                    </label>
+                    {!artifactInstanceDraft.isBuiltin ? (
+                      <div className="settings-actions" style={{ marginTop: "8px" }}>
+                        <button
+                          className="secondary-btn"
+                          onClick={() =>
+                            setArtifactInstanceDraft({
+                              ...artifactInstanceDraft,
+                              configJson: withFileArtifactStructure(
+                                artifactInstanceDraft.configJson as Record<string, unknown>,
+                                true,
+                                sectionsToTextarea([...DEFAULT_CODING_MEMO_SECTIONS]),
+                              ),
+                            })
+                          }
+                          type="button"
+                        >
+                          Use coding memo (What / Why / Baseline)
+                        </button>
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            </>
           ) : null}
         </div>
         {!artifactInstanceDraft.isBuiltin ? (
@@ -475,7 +566,9 @@ function ArtifactsTabContent(props: {
               {type.id === "file_artifact.v1" ? (
                 <small>
                   Path-designated file artifact: bind as <strong>Output</strong> so the step must write those
-                  path(s); bind as <strong>Input</strong> so the step reads them (e.g. coder → review).
+                  path(s); bind as <strong>Input</strong> so the step reads them (e.g. coder → review). Optional{" "}
+                  <strong>markdown sections</strong> on the instance configure OUTPUT template + structure gate
+                  (Task-225).
                 </small>
               ) : null}
               {type.id === "context_artifact.v1" ? (
@@ -2498,7 +2591,7 @@ export function WorkflowsSettings(): React.ReactElement {
               artifactTypeId,
               name: "",
               description: "",
-              configJson: artifactTypeId === "file_artifact.v1" ? { paths: [] } : { sources: [] },
+              configJson: artifactTypeId === "file_artifact.v1" ? emptyFileArtifactConfig() : { sources: [] },
               isBuiltin: false,
               status: "active",
               createdAt: "",
@@ -2524,7 +2617,16 @@ export function WorkflowsSettings(): React.ReactElement {
             setBusy(true);
             try {
               const admin = await getAdminUseCases();
-              await admin.workflows.saveArtifactInstance(artifactInstanceDraft);
+              const draftToSave =
+                artifactInstanceDraft.artifactTypeId === "file_artifact.v1"
+                  ? {
+                      ...artifactInstanceDraft,
+                      configJson: normalizeFileArtifactConfigForSave(
+                        artifactInstanceDraft.configJson as Record<string, unknown>,
+                      ),
+                    }
+                  : artifactInstanceDraft;
+              await admin.workflows.saveArtifactInstance(draftToSave);
               await refresh(selectedWorkflowId, selectedStepType, { preserveCreateDrafts: true });
               setArtifactInstanceView("list");
               setArtifactInstanceDraft(null);
