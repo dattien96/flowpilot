@@ -179,6 +179,23 @@ function createEmptyWorkflowDraft(projects: Project[], modelId: string): Workflo
   };
 }
 
+// normalizeWorkflowEdgesSnapshot stabilizes edges for dirty comparison
+// (BUG-274: order is non-semantic for save enablement).
+function normalizeWorkflowEdgesSnapshot(edges: Workflow["edges"] | undefined) {
+  return [...(edges ?? [])]
+    .map((edge) => ({
+      from: edge.from ?? "",
+      to: edge.to ?? "",
+      kind: edge.kind ?? "",
+      when: edge.when ?? "",
+    }))
+    .sort((a, b) => {
+      const ak = `${a.from}\0${a.to}\0${a.kind}\0${a.when}`;
+      const bk = `${b.from}\0${b.to}\0${b.kind}\0${b.when}`;
+      return ak.localeCompare(bk);
+    });
+}
+
 function normalizeWorkflowSnapshot(draft: WorkflowDraft | null, steps: WorkflowStep[]) {
   if (!draft) return "";
   return JSON.stringify({
@@ -189,6 +206,13 @@ function normalizeWorkflowSnapshot(draft: WorkflowDraft | null, steps: WorkflowS
     modelOverride: draft.modelOverride ?? "",
     reasoningEffortOverride: draft.reasoningEffortOverride ?? "",
     yoloMode: draft.yoloMode,
+    // BUG-274: edges + policy must participate in dirty fingerprint or
+    // edges-only edits leave Save Workflow disabled.
+    policyCap: draft.policyCap ?? null,
+    policyOnCap: draft.policyOnCap ?? null,
+    policyExtendBy: draft.policyExtendBy ?? null,
+    policyExtendMax: draft.policyExtendMax ?? null,
+    edges: normalizeWorkflowEdgesSnapshot(draft.edges),
     steps: steps.map((step, index) => ({
       stepType: step.stepType,
       orderIndex: index,
@@ -364,6 +388,11 @@ function ArtifactsTabContent(props: {
           {isContextType ? (
             <div className="settings-field settings-field-full">
               <span>Context Sources</span>
+              <small className="settings-field-help">
+                Primary authoring path (CP-45): sources live on this <code>context_artifact.v1</code> instance.
+                Bind the instance on a <code>context.produce</code> step as Artifact Output — do not use raw
+                Step-level Context Sources chips.
+              </small>
               <div className="workflow-chips">
                 {contextSourceOptions.map((option) => {
                   const checked = draftSources.includes(option.id);
@@ -395,6 +424,12 @@ function ArtifactsTabContent(props: {
           {isFileType ? (
             <label className="settings-field settings-field-full">
               <span>File Paths (one per line, workspace-relative)</span>
+              <small className="settings-field-help">
+                Workspace-relative path(s) this instance designates (Task-223 / BUG-276).{" "}
+                <strong>Output</strong> = write contract (agent must create/update these files; gate reprompts if
+                missing). <strong>Input</strong> = path mention only — agent is told to open/read those paths with
+                tools; file body is not pasted into the prompt (unlike context packages).
+              </small>
               <textarea
                 disabled={artifactInstanceDraft.isBuiltin}
                 onChange={(event) =>
@@ -406,6 +441,7 @@ function ArtifactsTabContent(props: {
                     },
                   })
                 }
+                placeholder={"docs/coder-summary.md"}
                 value={draftPaths}
               />
             </label>
@@ -436,6 +472,15 @@ function ArtifactsTabContent(props: {
             <div className="settings-list-item static" key={type.id}>
               <strong>{type.id}</strong>
               <span>{type.category} · {type.status}</span>
+              {type.id === "file_artifact.v1" ? (
+                <small>
+                  Path-designated file artifact: bind as <strong>Output</strong> so the step must write those
+                  path(s); bind as <strong>Input</strong> so the step reads them (e.g. coder → review).
+                </small>
+              ) : null}
+              {type.id === "context_artifact.v1" ? (
+                <small>Context package producer: configure sources on the instance, then bind as step Artifact I/O.</small>
+              ) : null}
             </div>
           ))}
           {artifactTypes.length === 0 ? <div className="settings-list-empty">No artifact types.</div> : null}
@@ -2114,22 +2159,22 @@ export function WorkflowsSettings(): React.ReactElement {
             value={draft.contextRef ?? ""}
           />
         </label>
-        <div className="settings-field settings-field-full">
-          <div className="workflow-chip-row">
-            <span>Context Sources</span>
-            <button
-              className="secondary-btn workflow-chip-add-btn"
-              onClick={() => setPickerModal({ kind: "context-source", mode })}
-              type="button"
-            >
-              + Add
-            </button>
-          </div>
-          {draft.contextSources.length === 0 ? (
-            <div className="workflow-chip-empty">
-              None selected (falls back to the flow's default context sources)
+        {/* Task-222 / CP-45 residual: default Step UX is artifact-only.
+            Raw step contextSources remains a D-6 transition/fallback data field
+            (runner still honors it when no context_artifact binding wins). Hide
+            the authoring chips by default; only surface a legacy readout when
+            saved data still has raw ids so old flows are not silent. */}
+        {draft.contextSources.length > 0 ? (
+          <div className="settings-field settings-field-full">
+            <div className="workflow-chip-row">
+              <span>Legacy context sources (clear only)</span>
             </div>
-          ) : (
+            <small className="settings-field-help">
+              Transition data from CP-44/Task-196. Prefer Artifacts tab →{" "}
+              <code>context_artifact.v1</code> instance sources, then bind under Artifact
+              Inputs/Outputs. Runner still applies these raw ids only when no artifact
+              binding supplies sources (SD-23 D-6). Clear by removing chips if you no longer need them.
+            </small>
             <div className="workflow-chips">
               {draft.contextSources.map((sourceId) => (
                 <span className="workflow-chip" key={sourceId}>
@@ -2137,7 +2182,7 @@ export function WorkflowsSettings(): React.ReactElement {
                     {contextSourceOptions.find((option) => option.id === sourceId)?.label ?? sourceId}
                   </span>
                   <button
-                    aria-label={`Remove ${sourceId}`}
+                    aria-label={`Remove legacy ${sourceId}`}
                     className="workflow-chip-remove"
                     onClick={() =>
                       onChange({
@@ -2152,16 +2197,14 @@ export function WorkflowsSettings(): React.ReactElement {
                 </span>
               ))}
             </div>
-          )}
-        </div>
-        {/* CP-45/SD-23 Task-200: typed artifact instance bindings, distinct
-            from "Context Sources" above (which selects raw
-            ContextSourceRegistry ids directly, CP-44/Task-196's transition
-            layer). A step attaches a LIST
-            of artifact instances per direction (SD-23 D-1); options are
-            filtered to instances whose type is compatible with this step's
-            behavior (D-7 — context.produce steps see context_artifact
-            instances, every other behavior sees non-context instances). */}
+          </div>
+        ) : null}
+        {/* CP-45/SD-23 Task-200 + Task-222: primary Step authoring is typed
+            artifact instance bindings. Raw step contextSources is fallback-only
+            data (D-6), not the default UX. A step attaches a LIST of instances
+            per direction (D-1); picker options are filtered by behavior (D-7 —
+            context.produce → context_artifact; other behaviors → non-context,
+            e.g. file_artifact). */}
         {(["output", "input"] as const).map((direction) => {
           const bindings = draft.artifactBindings.filter((b) => b.direction === direction);
           return (
@@ -2181,6 +2224,11 @@ export function WorkflowsSettings(): React.ReactElement {
                   + Add
                 </button>
               </div>
+              <small className="settings-field-help">
+                {direction === "output"
+                  ? "Output: this step must produce the bound file_artifact path(s) (write contract)."
+                  : "Input: prompt mentions bound file path(s); agent reads via tools (no full-file paste)."}
+              </small>
               {bindings.length === 0 ? (
                 <div className="workflow-chip-empty">None bound</div>
               ) : (
