@@ -9,10 +9,10 @@ import (
 
 func TestDefaultRules(t *testing.T) {
 	rules := DefaultRules()
-	if len(rules) != 7 {
-		t.Fatalf("expected 7 rules, got %d", len(rules))
+	if len(rules) != 8 {
+		t.Fatalf("expected 8 rules, got %d", len(rules))
 	}
-	ids := []string{"r-ca", "r-fk", "r-bug", "r-task", "r-tests", "r-reg", "r-dep"}
+	ids := []string{"r-ca", "r-fk", "r-bug", "r-task", "r-tests", "r-reg", "r-dep", "r-artifact-output"}
 	for i, id := range ids {
 		if rules[i].ID != id {
 			t.Errorf("rules[%d].ID = %q, want %q", i, rules[i].ID, id)
@@ -20,6 +20,103 @@ func TestDefaultRules(t *testing.T) {
 		if !rules[i].Enabled {
 			t.Errorf("rules[%d] should be enabled", i)
 		}
+	}
+}
+
+func TestEvaluateRequiredArtifactOutputMissing(t *testing.T) {
+	dir := t.TempDir()
+	tr := TurnResult{
+		WorkspaceCwd:                dir,
+		RequiredFileArtifactOutputs: []string{"docs/coder-summary.md"},
+	}
+	violations := Evaluate(tr, DefaultRules())
+	found := false
+	for _, v := range violations {
+		if v.Rule.ID == "r-artifact-output" {
+			found = true
+			if !strings.Contains(v.Detail, "docs/coder-summary.md") {
+				t.Fatalf("detail should name missing path, got %q", v.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected r-artifact-output when required path is missing")
+	}
+}
+
+func TestEvaluateRequiredArtifactOutputPresent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "docs", "coder-summary.md"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tr := TurnResult{
+		WorkspaceCwd:                dir,
+		RequiredFileArtifactOutputs: []string{"docs/coder-summary.md"},
+	}
+	for _, v := range Evaluate(tr, DefaultRules()) {
+		if v.Rule.ID == "r-artifact-output" {
+			t.Fatalf("unexpected r-artifact-output when file exists: %+v", v)
+		}
+	}
+}
+
+func TestRepromptPromptNamesMissingArtifactOutputPaths(t *testing.T) {
+	result := Enforce([]Violation{{
+		Rule:   Rule{ID: "r-artifact-output", Trigger: "required_artifact_output_missing", Action: "reprompt", Enabled: true},
+		Detail: "required file artifact output missing: docs/coder-summary.md",
+	}}, "enforce")
+	prompt := RepromptPrompt(result)
+	if !strings.Contains(prompt, "docs/coder-summary.md") {
+		t.Fatalf("reprompt should name missing path, got %q", prompt)
+	}
+	if !strings.Contains(prompt, GateRepromptPrefix) {
+		t.Fatalf("reprompt should use gate prefix, got %q", prompt)
+	}
+}
+
+func TestMissingRequiredFileArtifactOutputsRejectsOutsideWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	missing := MissingRequiredFileArtifactOutputs(dir, []string{"../outside.md", "/tmp/abs.md"})
+	if len(missing) != 2 {
+		t.Fatalf("expected both paths missing/rejected, got %v", missing)
+	}
+}
+
+func TestMergeDefaultRulesAddsMissingArtifactOutput(t *testing.T) {
+	old := []Rule{
+		{ID: "r-ca", Scope: "step", Trigger: "code_changed", Action: "reprompt", Enabled: true},
+	}
+	merged := MergeDefaultRules(old)
+	found := false
+	for _, r := range merged {
+		if r.ID == "r-artifact-output" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected MergeDefaultRules to append r-artifact-output")
+	}
+	if merged[0].ID != "r-ca" {
+		t.Fatalf("expected loaded rules first, got %q", merged[0].ID)
+	}
+}
+
+func TestMissingRequiredFileArtifactOutputsRejectsSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.md")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "escape.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	missing := MissingRequiredFileArtifactOutputs(dir, []string{"escape.md"})
+	if len(missing) != 1 || missing[0] != "escape.md" {
+		t.Fatalf("expected symlink escape treated as missing, got %v", missing)
 	}
 }
 

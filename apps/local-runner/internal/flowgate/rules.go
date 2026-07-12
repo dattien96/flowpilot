@@ -45,6 +45,13 @@ type TurnResult struct {
 	ChangedPaths         []string    `json:"changed_paths,omitempty"`
 	KnownFeatureKeys     []string    `json:"known_feature_keys,omitempty"`
 	SuggestedFeatureKeys []string    `json:"suggested_feature_keys,omitempty"`
+	// WorkspaceCwd is the project root used to check required file-artifact
+	// output existence on disk (Task-223). Empty skips the filesystem check.
+	WorkspaceCwd string `json:"workspace_cwd,omitempty"`
+	// RequiredFileArtifactOutputs lists workspace-relative paths that must
+	// exist after this turn when the active flow node has required
+	// file_artifact.v1 OUTPUT bindings (Task-223 write contract).
+	RequiredFileArtifactOutputs []string `json:"required_file_artifact_outputs,omitempty"`
 }
 
 type Violation struct {
@@ -69,6 +76,8 @@ func DefaultRules() []Rule {
 		{ID: "r-tests", Scope: "step", Trigger: "tests_failed", RequiredOutput: "tests_green_or_explained", Action: "block", Enabled: true},
 		{ID: "r-reg", Scope: "step", Trigger: "regression_test_broke", RequiredOutput: "restore_green_without_weakening", Action: "block", Enabled: true},
 		{ID: "r-dep", Scope: "step", Trigger: "removed_referenced_code", RequiredOutput: "confirm_or_update_callers", Action: "block", Enabled: true},
+		// Task-223: required file_artifact.v1 OUTPUT paths must exist after the turn.
+		{ID: "r-artifact-output", Scope: "step", Trigger: "required_artifact_output_missing", RequiredOutput: "file_artifact_paths", Action: "reprompt", Enabled: true},
 	}
 }
 
@@ -85,7 +94,30 @@ func LoadRules(settingsDir string) ([]Rule, error) {
 	if err := json.Unmarshal(data, &rules); err != nil {
 		return nil, err
 	}
-	return rules, nil
+	// Task-223: old flow-rules.json files predate r-artifact-output; merge any
+	// default rules missing by ID so new enforcement is not silently disabled.
+	return MergeDefaultRules(rules), nil
+}
+
+// MergeDefaultRules returns loaded rules with any DefaultRules entries whose
+// ID is absent appended (preserving loaded order and settings first).
+func MergeDefaultRules(loaded []Rule) []Rule {
+	if len(loaded) == 0 {
+		return DefaultRules()
+	}
+	seen := make(map[string]bool, len(loaded))
+	for _, r := range loaded {
+		if r.ID != "" {
+			seen[r.ID] = true
+		}
+	}
+	out := append([]Rule(nil), loaded...)
+	for _, d := range DefaultRules() {
+		if !seen[d.ID] {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 func SaveRules(settingsDir string, rules []Rule) error {

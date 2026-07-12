@@ -1,6 +1,9 @@
 package flowgate
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -107,8 +110,67 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 				return &Violation{Rule: rule, Detail: "Removed: " + f.Path}
 			}
 		}
+
+	case "required_artifact_output_missing":
+		// Task-223: enforce file_artifact OUTPUT write contract via filesystem
+		// existence (WrittenPaths alone is incomplete across providers).
+		missing := MissingRequiredFileArtifactOutputs(tr.WorkspaceCwd, tr.RequiredFileArtifactOutputs)
+		if len(missing) > 0 {
+			return &Violation{
+				Rule:   rule,
+				Detail: "required file artifact output missing: " + strings.Join(missing, ", "),
+			}
+		}
 	}
 	return nil
+}
+
+// MissingRequiredFileArtifactOutputs returns required paths that do not exist
+// as regular files under workspaceCwd. Empty workspace or empty required list
+// yields nil (no violation). Paths that escape the workspace (including
+// symlink escapes after EvalSymlinks) are treated as missing so they cannot
+// silently satisfy the write contract.
+func MissingRequiredFileArtifactOutputs(workspaceCwd string, required []string) []string {
+	workspaceCwd = strings.TrimSpace(workspaceCwd)
+	if workspaceCwd == "" || len(required) == 0 {
+		return nil
+	}
+	root, err := filepath.Abs(workspaceCwd)
+	if err != nil {
+		return append([]string(nil), required...)
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	var missing []string
+	for _, rel := range required {
+		rel = strings.TrimSpace(rel)
+		if rel == "" {
+			continue
+		}
+		clean := filepath.Clean(filepath.FromSlash(rel))
+		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			missing = append(missing, rel)
+			continue
+		}
+		abs := filepath.Join(root, clean)
+		// Resolve symlinks; if the target is outside root, treat as missing.
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			abs = resolved
+		} else if !errors.Is(err, os.ErrNotExist) && !os.IsNotExist(err) {
+			// Broken path / not found handled below via Stat.
+			_ = err
+		}
+		if !strings.HasPrefix(abs, root+string(filepath.Separator)) && abs != root {
+			missing = append(missing, rel)
+			continue
+		}
+		st, err := os.Stat(abs)
+		if err != nil || st.IsDir() {
+			missing = append(missing, rel)
+		}
+	}
+	return missing
 }
 
 func missingFeatureKey(commitSubjects []string, knownKeys []string) bool {
