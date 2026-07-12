@@ -229,6 +229,7 @@ func TestRequiredFileArtifactOutputPathsExtractsRequiredOutputBindings(t *testin
 }
 
 func TestRequiredFileArtifactOutputPromptListsPaths(t *testing.T) {
+	// Task-225: paths-only — write contract without global What/Why/Baseline.
 	node := agentpack.FlowNode{
 		ArtifactBindings: []agentpack.FlowArtifactBinding{
 			{Direction: "output", ArtifactTypeID: ArtifactTypeFile, Required: true, ConfigJSON: map[string]any{"paths": []any{"docs/coder-summary.md"}}},
@@ -238,11 +239,103 @@ func TestRequiredFileArtifactOutputPromptListsPaths(t *testing.T) {
 	if !strings.Contains(got, "Required file outputs") || !strings.Contains(got, "docs/coder-summary.md") {
 		t.Fatalf("expected write-contract section, got %q", got)
 	}
-	// Task-224: What / Why / Baseline template guidance
-	for _, want := range []string{"## What", "## Why", "## Baseline", "Past decisions already closed"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("expected OUTPUT template to include %q, got %q", want, got)
+	for _, ban := range []string{"## What", "## Why", "## Baseline", "Past decisions already closed"} {
+		if strings.Contains(got, ban) {
+			t.Fatalf("paths-only OUTPUT must not include global template %q, got %q", ban, got)
 		}
+	}
+}
+
+func TestFileArtifactStructureParsePathsOnly(t *testing.T) {
+	if secs := fileArtifactStructureFromConfig(map[string]any{"paths": []any{"a.md"}}); len(secs) != 0 {
+		t.Fatalf("paths-only should have no structure, got %v", secs)
+	}
+}
+
+func TestFileArtifactStructureParseSections(t *testing.T) {
+	cfg := map[string]any{
+		"paths": []any{"docs/coder-summary.md"},
+		"structure": map[string]any{
+			"kind":     "markdown_sections",
+			"sections": []any{"What", "Why", "Baseline"},
+		},
+	}
+	secs := fileArtifactStructureFromConfig(cfg)
+	if len(secs) != 3 || secs[0] != "What" || secs[1] != "Why" || secs[2] != "Baseline" {
+		t.Fatalf("got %v", secs)
+	}
+	// Unknown kind ignored.
+	if got := fileArtifactStructureFromConfig(map[string]any{
+		"structure": map[string]any{"kind": "other", "sections": []any{"What"}},
+	}); len(got) != 0 {
+		t.Fatalf("unknown kind should be empty, got %v", got)
+	}
+}
+
+func TestAppendRequiredOutputArtifactPromptWithStructureIncludesSections(t *testing.T) {
+	node := agentpack.FlowNode{
+		ArtifactBindings: []agentpack.FlowArtifactBinding{
+			{Direction: "output", ArtifactTypeID: ArtifactTypeFile, Required: true, ConfigJSON: map[string]any{
+				"paths": []any{"docs/coder-summary.md"},
+				"structure": map[string]any{
+					"kind":     "markdown_sections",
+					"sections": []any{"What", "Why", "Baseline"},
+				},
+			}},
+		},
+	}
+	got := appendRequiredOutputArtifactPrompt("base", node)
+	for _, want := range []string{"docs/coder-summary.md", "## What", "## Why", "## Baseline", "Past decisions already closed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("structured OUTPUT should include %q, got %q", want, got)
+		}
+	}
+}
+
+func TestRequiredStructuredFileArtifactOutputsMergesSamePath(t *testing.T) {
+	node := agentpack.FlowNode{
+		ArtifactBindings: []agentpack.FlowArtifactBinding{
+			{Direction: "output", ArtifactTypeID: ArtifactTypeFile, Required: true, ConfigJSON: map[string]any{
+				"paths":     []any{"docs/out.md"},
+				"structure": map[string]any{"kind": "markdown_sections", "sections": []any{"What", "Why"}},
+			}},
+			{Direction: "output", ArtifactTypeID: ArtifactTypeFile, Required: true, ConfigJSON: map[string]any{
+				"paths":     []any{"docs/out.md"},
+				"structure": map[string]any{"kind": "markdown_sections", "sections": []any{"Why", "Baseline"}},
+			}},
+		},
+	}
+	got := requiredStructuredFileArtifactOutputs(node)
+	if len(got) != 1 || got[0].Path != "docs/out.md" {
+		t.Fatalf("got %+v", got)
+	}
+	// Merge should keep What, Why, Baseline (first-seen order).
+	want := []string{"What", "Why", "Baseline"}
+	if len(got[0].Sections) != 3 {
+		t.Fatalf("sections = %v, want %v", got[0].Sections, want)
+	}
+	for i, s := range want {
+		if !strings.EqualFold(got[0].Sections[i], s) {
+			t.Fatalf("sections = %v, want %v", got[0].Sections, want)
+		}
+	}
+	// Prompt must still include all merged sections.
+	prompt := appendRequiredOutputArtifactPrompt("base", node)
+	for _, sec := range want {
+		if !strings.Contains(prompt, "## "+sec) {
+			t.Fatalf("prompt missing merged section %q: %s", sec, prompt)
+		}
+	}
+}
+
+func TestFileArtifactStructureIgnoresFormatField(t *testing.T) {
+	// Stale format key must not invent sections; only structure does.
+	cfg := map[string]any{
+		"paths":  []any{"a.md"},
+		"format": "coder_decision_memo",
+	}
+	if secs := fileArtifactStructureFromConfig(cfg); len(secs) != 0 {
+		t.Fatalf("format field must be ignored, got %v", secs)
 	}
 }
 

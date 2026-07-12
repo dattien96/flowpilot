@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/flowgate"
 )
 
 // Built-in artifact type ids (CP-45/SD-23 D-2). Code hardcodes this layer;
@@ -279,6 +280,103 @@ func requiredFileArtifactOutputPaths(node agentpack.FlowNode) []string {
 	return paths
 }
 
+// fileArtifactStructureFromConfig parses optional config_json.structure
+// (Task-225). Only kind "markdown_sections" with a non-empty sections list
+// is accepted. There is no separate format/preset field.
+func fileArtifactStructureFromConfig(config map[string]any) []string {
+	if config == nil {
+		return nil
+	}
+	raw, ok := config["structure"]
+	if !ok || raw == nil {
+		return nil
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	kind, _ := obj["kind"].(string)
+	if strings.TrimSpace(kind) != "markdown_sections" {
+		return nil
+	}
+	secRaw, ok := obj["sections"].([]any)
+	if !ok || len(secRaw) == 0 {
+		return nil
+	}
+	var sections []string
+	seen := make(map[string]bool)
+	for _, item := range secRaw {
+		s, ok := item.(string)
+		if !ok {
+			continue
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		key := strings.ToLower(s)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		sections = append(sections, s)
+	}
+	return sections
+}
+
+// requiredStructuredFileArtifactOutputs returns required OUTPUT file paths
+// that declare structure.sections (Task-225). Paths without structure are
+// omitted (existence-only). When multiple required bindings share a path,
+// section lists are merged (stable first-seen order) so structure is not lost.
+func requiredStructuredFileArtifactOutputs(node agentpack.FlowNode) []flowgate.StructuredFileArtifactOutput {
+	// path -> ordered unique sections
+	byPath := make(map[string][]string)
+	var order []string
+	for _, b := range node.ArtifactBindings {
+		if b.Direction != "output" || b.ArtifactTypeID != ArtifactTypeFile || !b.Required {
+			continue
+		}
+		sections := fileArtifactStructureFromConfig(b.ConfigJSON)
+		if len(sections) == 0 {
+			continue
+		}
+		for _, p := range fileArtifactPathsFromConfig(b.ConfigJSON) {
+			if _, ok := byPath[p]; !ok {
+				order = append(order, p)
+			}
+			byPath[p] = mergeSectionTitles(byPath[p], sections)
+		}
+	}
+	out := make([]flowgate.StructuredFileArtifactOutput, 0, len(order))
+	for _, p := range order {
+		out = append(out, flowgate.StructuredFileArtifactOutput{Path: p, Sections: byPath[p]})
+	}
+	return out
+}
+
+// mergeSectionTitles appends titles from add that are not already present
+// (case-insensitive), preserving first-seen order.
+func mergeSectionTitles(base, add []string) []string {
+	seen := make(map[string]bool, len(base)+len(add))
+	out := append([]string(nil), base...)
+	for _, s := range base {
+		seen[strings.ToLower(strings.TrimSpace(s))] = true
+	}
+	for _, s := range add {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		key := strings.ToLower(s)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, s)
+	}
+	return out
+}
+
 // appendInputArtifactPrompt appends INPUT file_artifact **path mentions**
 // (BUG-276) — not file bodies — plus a short instruction to read via tools.
 func appendInputArtifactPrompt(workspaceCwd, prompt string, node agentpack.FlowNode) string {
@@ -307,34 +405,109 @@ func nodeHasFileArtifactInput(node agentpack.FlowNode) bool {
 }
 
 // appendRequiredOutputArtifactPrompt appends the Task-223 write-contract
-// section for required file_artifact OUTPUT paths, plus Task-224 What/Why/
-// Baseline template guidance so review can stay deliverable-centric.
+// section for required file_artifact OUTPUT paths. Task-225: section template
+// is per-instance structure only — paths-only bindings get no What/Why block.
 func appendRequiredOutputArtifactPrompt(prompt string, node agentpack.FlowNode) string {
+	// Build path list + merged structure per path (same merge as gate).
 	paths := requiredFileArtifactOutputPaths(node)
 	if len(paths) == 0 {
 		return prompt
 	}
+	structByPath := make(map[string][]string)
+	for _, item := range requiredStructuredFileArtifactOutputs(node) {
+		structByPath[item.Path] = item.Sections
+	}
+	type outItem struct {
+		path     string
+		sections []string
+	}
+	items := make([]outItem, 0, len(paths))
+	for _, p := range paths {
+		items = append(items, outItem{path: p, sections: structByPath[p]})
+	}
 	var b strings.Builder
 	b.WriteString("\n\n## Required file outputs (write contract)\n")
 	b.WriteString("Before you finish this turn you MUST create or update each of these workspace-relative paths:\n")
-	for _, p := range paths {
+	for _, it := range items {
 		b.WriteString("- `")
-		b.WriteString(p)
+		b.WriteString(it.path)
 		b.WriteString("`\n")
 	}
 	b.WriteString("Do not only describe the content in chat — write the file(s) with your tools. ")
 	b.WriteString("The flow gate will reprompt if any required path is missing after your turn.\n")
-	b.WriteString("\nEach required file MUST be markdown including at least these sections:\n\n")
-	b.WriteString("## What\n")
-	b.WriteString("- What you produced or changed (paths, scope).\n\n")
-	b.WriteString("## Why\n")
-	b.WriteString("- Why this approach **now** (not rejected alternatives).\n")
-	b.WriteString("- Past decisions already closed from Prior work / Prior discussion / the Flow Context Package — list them; do not silently reopen.\n")
-	b.WriteString("- If you conflict with a closed decision, state the conflict explicitly.\n\n")
-	b.WriteString("## Baseline\n")
-	b.WriteString("- feature_key:\n")
-	b.WriteString("- source_doc_id / CA / Task / BUG / commit:\n")
+
+	// Group paths that share the same section list for one template block.
+	type structGroup struct {
+		paths    []string
+		sections []string
+	}
+	var groups []structGroup
+	for _, it := range items {
+		if len(it.sections) == 0 {
+			continue
+		}
+		// Find matching group by section equality.
+		matched := false
+		for gi := range groups {
+			if sameStringSliceFold(groups[gi].sections, it.sections) {
+				groups[gi].paths = append(groups[gi].paths, it.path)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			groups = append(groups, structGroup{
+				paths:    []string{it.path},
+				sections: append([]string(nil), it.sections...),
+			})
+		}
+	}
+	for _, g := range groups {
+		b.WriteString("\nFor ")
+		for i, p := range g.paths {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString("`")
+			b.WriteString(p)
+			b.WriteString("`")
+		}
+		b.WriteString(" write markdown including at least these sections (heading level and casing may vary):\n\n")
+		hasWhy := false
+		for _, sec := range g.sections {
+			b.WriteString("## ")
+			b.WriteString(sec)
+			b.WriteString("\n")
+			if strings.EqualFold(sec, "Why") {
+				hasWhy = true
+				b.WriteString("- Why this approach **now** (not rejected alternatives).\n")
+				b.WriteString("- Past decisions already closed from Prior work / Prior discussion / the Flow Context Package — list them; do not silently reopen.\n")
+				b.WriteString("- If you conflict with a closed decision, state the conflict explicitly.\n")
+			} else if strings.EqualFold(sec, "What") {
+				b.WriteString("- What you produced or changed (paths, scope).\n")
+			} else if strings.EqualFold(sec, "Baseline") {
+				b.WriteString("- feature_key:\n")
+				b.WriteString("- source_doc_id / CA / Task / BUG / commit:\n")
+			} else {
+				b.WriteString("- …\n")
+			}
+			b.WriteString("\n")
+		}
+		_ = hasWhy
+	}
 	return prompt + b.String()
+}
+
+func sameStringSliceFold(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !strings.EqualFold(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // composeFlowNodeAgentPrompt applies Task-223 INPUT read inject then OUTPUT

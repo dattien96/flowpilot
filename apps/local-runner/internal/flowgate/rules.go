@@ -52,6 +52,17 @@ type TurnResult struct {
 	// exist after this turn when the active flow node has required
 	// file_artifact.v1 OUTPUT bindings (Task-223 write contract).
 	RequiredFileArtifactOutputs []string `json:"required_file_artifact_outputs,omitempty"`
+	// RequiredStructuredFileArtifactOutputs lists required OUTPUT paths that
+	// also declare instance structure.sections (Task-225). Evaluated only
+	// after existence passes for each path.
+	RequiredStructuredFileArtifactOutputs []StructuredFileArtifactOutput `json:"required_structured_file_artifact_outputs,omitempty"`
+}
+
+// StructuredFileArtifactOutput is a required file_artifact OUTPUT path with
+// optional markdown section titles from instance config_json.structure.
+type StructuredFileArtifactOutput struct {
+	Path     string   `json:"path"`
+	Sections []string `json:"sections,omitempty"`
 }
 
 type Violation struct {
@@ -78,6 +89,9 @@ func DefaultRules() []Rule {
 		{ID: "r-dep", Scope: "step", Trigger: "removed_referenced_code", RequiredOutput: "confirm_or_update_callers", Action: "block", Enabled: true},
 		// Task-223: required file_artifact.v1 OUTPUT paths must exist after the turn.
 		{ID: "r-artifact-output", Scope: "step", Trigger: "required_artifact_output_missing", RequiredOutput: "file_artifact_paths", Action: "reprompt", Enabled: true},
+		// Task-225: required structured file_artifact OUTPUT paths must contain
+		// the declared section headings after the file exists.
+		{ID: "r-artifact-output-structure", Scope: "step", Trigger: "required_artifact_output_structure_missing", RequiredOutput: "file_artifact_structure", Action: "reprompt", Enabled: true},
 	}
 }
 

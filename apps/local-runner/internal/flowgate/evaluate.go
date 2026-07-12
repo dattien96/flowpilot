@@ -121,6 +121,17 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 				Detail: "required file artifact output missing: " + strings.Join(missing, ", "),
 			}
 		}
+
+	case "required_artifact_output_structure_missing":
+		// Task-225: after existence, require declared structure.sections headings.
+		// Paths still missing on disk are owned by r-artifact-output only.
+		gaps := MissingRequiredFileArtifactStructures(tr.WorkspaceCwd, tr.RequiredStructuredFileArtifactOutputs)
+		if len(gaps) > 0 {
+			return &Violation{
+				Rule:   rule,
+				Detail: "required file artifact structure missing: " + strings.Join(gaps, "; "),
+			}
+		}
 	}
 	return nil
 }
@@ -171,6 +182,137 @@ func MissingRequiredFileArtifactOutputs(workspaceCwd string, required []string) 
 		}
 	}
 	return missing
+}
+
+// MissingRequiredFileArtifactStructures returns human-readable gap strings for
+// required structured outputs that exist but lack one or more section headings.
+// Paths that fail existence/safety are skipped (existence gate owns them).
+// Format: "path (SectionA, SectionB)".
+func MissingRequiredFileArtifactStructures(workspaceCwd string, required []StructuredFileArtifactOutput) []string {
+	workspaceCwd = strings.TrimSpace(workspaceCwd)
+	if workspaceCwd == "" || len(required) == 0 {
+		return nil
+	}
+	// Existence-missing set so we do not double-fire structure on absent files.
+	var paths []string
+	for _, item := range required {
+		p := strings.TrimSpace(item.Path)
+		if p == "" || len(item.Sections) == 0 {
+			continue
+		}
+		paths = append(paths, p)
+	}
+	missingExist := map[string]bool{}
+	for _, p := range MissingRequiredFileArtifactOutputs(workspaceCwd, paths) {
+		missingExist[p] = true
+	}
+
+	root, err := filepath.Abs(workspaceCwd)
+	if err != nil {
+		return nil
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+
+	var gaps []string
+	for _, item := range required {
+		rel := strings.TrimSpace(item.Path)
+		if rel == "" || len(item.Sections) == 0 || missingExist[rel] {
+			continue
+		}
+		clean := filepath.Clean(filepath.FromSlash(rel))
+		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			continue
+		}
+		abs := filepath.Join(root, clean)
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			abs = resolved
+		}
+		if !strings.HasPrefix(abs, root+string(filepath.Separator)) && abs != root {
+			continue
+		}
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			continue
+		}
+		missingSecs := MissingMarkdownSections(string(data), item.Sections)
+		if len(missingSecs) == 0 {
+			continue
+		}
+		gaps = append(gaps, rel+" ("+strings.Join(missingSecs, ", ")+")")
+	}
+	return gaps
+}
+
+// MissingMarkdownSections returns required section titles not found as ATX
+// headings in content. Matching is flexible: heading levels 1–6, case-
+// insensitive titles, trim whitespace, light trailing punctuation (Task-225).
+func MissingMarkdownSections(content string, required []string) []string {
+	if len(required) == 0 {
+		return nil
+	}
+	present := map[string]bool{}
+	for _, line := range strings.Split(content, "\n") {
+		title, ok := parseATXHeadingTitle(line)
+		if !ok {
+			continue
+		}
+		present[normalizeSectionTitle(title)] = true
+	}
+	var missing []string
+	for _, sec := range required {
+		sec = strings.TrimSpace(sec)
+		if sec == "" {
+			continue
+		}
+		if !present[normalizeSectionTitle(sec)] {
+			missing = append(missing, sec)
+		}
+	}
+	return missing
+}
+
+// parseATXHeadingTitle extracts the title from a CommonMark-ish ATX heading line.
+// Accepts 1–6 leading # characters; requires at least one non-# character after.
+func parseATXHeadingTitle(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || line[0] != '#' {
+		return "", false
+	}
+	i := 0
+	for i < len(line) && line[i] == '#' {
+		i++
+	}
+	if i == 0 || i > 6 || i >= len(line) {
+		return "", false
+	}
+	// Prefer space after hashes (CommonMark) but allow tight forms for flexibility.
+	title := strings.TrimSpace(line[i:])
+	if title == "" {
+		return "", false
+	}
+	// Closed ATX: strip trailing # run.
+	title = strings.TrimRight(title, "#")
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "", false
+	}
+	return title, true
+}
+
+func normalizeSectionTitle(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimRight(s, "#")
+	s = strings.TrimSpace(s)
+	for {
+		trimmed := strings.TrimRight(s, ":.")
+		if trimmed == s {
+			break
+		}
+		s = strings.TrimSpace(trimmed)
+	}
+	return strings.ToLower(s)
 }
 
 func missingFeatureKey(commitSubjects []string, knownKeys []string) bool {

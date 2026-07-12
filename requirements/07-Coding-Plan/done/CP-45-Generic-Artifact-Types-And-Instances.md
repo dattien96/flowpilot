@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-12`
 - Parent Documents: [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
 - Child Documents: [Task-197: Artifact Type Catalog And Schema](../../08-Task/done/Task-197-Artifact-Type-Catalog-And-Schema.md), [Task-198: Artifact Instance Model And Resolver](../../08-Task/done/Task-198-Artifact-Instance-Model-And-Resolver.md), [Task-199: Artifact Instance Settings Page](../../08-Task/done/Task-199-Artifact-Instance-Settings-Page.md), [Task-200: Step Artifact Instance Binding UI](../../08-Task/done/Task-200-Step-Artifact-Instance-Binding-UI.md), [Task-201: Context Artifact Migration From Context Sources](../../08-Task/done/Task-201-Context-Artifact-Migration-From-Context-Sources.md), [Task-202: File Artifact Type Proof Of Generality](../../08-Task/done/Task-202-File-Artifact-Type-Proof-Of-Generality.md), [Task-203: Artifact Framework Validation And Fallback](../../08-Task/done/Task-203-Artifact-Framework-Validation-And-Fallback.md), [Task-205: Built-in Artifact Flow (Context → Coding → Review → Synthesis)](../../08-Task/done/Task-205-Builtin-Artifact-Flow-Context-Coding-Review-Synthesis.md), [Task-222: Artifact-Only Step UX](../../08-Task/done/Task-222-Artifact-Only-Step-UX-And-File-Artifact-Semantics-Copy.md), [Task-223: File Artifact Output Contract](../../08-Task/done/Task-223-File-Artifact-Output-Contract-And-Review-Input-Chain.md), [Task-224: Flow Prompt Scoping And Coder Why Template](../../08-Task/done/Task-224-Flow-Prompt-Scoping-And-Coder-Output-Why-Template.md)
-- Related Documents: [CP-44: Pluggable Context Source Registry](./CP-44-Pluggable-Context-Source-Registry.md), [Task-196: Per-Step Context Source Selection UI](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md), [Task-168: Flow Mode Context Package Contract](../../08-Task/done/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-176: Node-Behavior Registry And Dispatch](../../08-Task/done/Task-176-Node-Behavior-Registry-And-Dispatch.md), [BUG-236: Builtin Flow Mirror Stores Node Definition On Workflow Steps Instead Of Step Definitions](../../09-BugFix/done/BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md), [Task-225: File Artifact Output Heading Gate](../../08-Task/todo/Task-225-File-Artifact-Output-Heading-Gate.md) (Phase-2 polish, not blocking CP-45)
+- Related Documents: [CP-44: Pluggable Context Source Registry](./CP-44-Pluggable-Context-Source-Registry.md), [Task-196: Per-Step Context Source Selection UI](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md), [Task-168: Flow Mode Context Package Contract](../../08-Task/done/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-176: Node-Behavior Registry And Dispatch](../../08-Task/done/Task-176-Node-Behavior-Registry-And-Dispatch.md), [BUG-236: Builtin Flow Mirror Stores Node Definition On Workflow Steps Instead Of Step Definitions](../../09-BugFix/done/BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md), [Task-225: File Artifact Instance Output Structure](../../08-Task/done/Task-225-File-Artifact-Instance-Output-Structure.md) (Phase-2 polish, not blocking CP-45)
 - Replaces: `None`
 - Tags: `artifact, artifact-type, artifact-instance, flow-mode, typed-contract, settings-ui, supabase`
 
@@ -28,7 +28,7 @@
 
 ### Current Ask
 
-- **Closed (2026-07-12).** Implementation + live E2E verified (gate-sandbox). Residual polish (optional What/Why heading gate) tracked as Task-225, not blocking this CP.
+- **Closed (2026-07-12).** Implementation + live E2E verified (gate-sandbox). Residual polish (per-instance file output structure + optional section gate) tracked as Task-225, not blocking this CP.
 
 ### Key Decisions
 
@@ -288,7 +288,7 @@ Tổng quát hóa mô hình "typed context package" thành một **artifact fram
   1. Seed `file_artifact.v1`; tạo instance với `paths: [<workspace-file>]`.
   2. Bind as **OUTPUT** on producer step and **INPUT** on consumer step; run flow.
 - Kỳ vọng (aligned BUG-276 / SD-23 `D-8` / Task-223–225):
-  - **OUTPUT:** producer prompt lists required path(s) as write contract; existence may be gated (`r-artifact-output`). Optional structural What/Why/Baseline heading gate = Task-225.
+  - **OUTPUT:** producer prompt lists required path(s) as write contract; existence may be gated (`r-artifact-output`). Optional **per-instance** structure (Task-225) for template + section gate when configured.
   - **INPUT:** consumer step receives **path mention only** and must read with tools; **no** full body/excerpt inject into the consumer prompt (unlike `context_artifact` package content).
   - Path ngoài workspace/symlink escape → omit or fail existence, not silent success.
 
@@ -383,7 +383,7 @@ Target: `/Users/tiendat/Desktop/BE/gate-sandbox`.
 | Item | Status | Notes |
 |------|--------|-------|
 | Chat_summary ledger **noise** in package Prior discussion | **Open (sandbox data)** | Old E2E agent text in gate-sandbox `chat_summary.ndjson`; not an inject bug |
-| Optional heading gate for What/Why/Baseline | **Tracked as Task-225** | Phase-2; not required to close CP-45 |
+| Per-instance file OUTPUT structure (+ optional section gate) | **Done (Task-225 / CA-290)** | Phase-2; structure-only config; paths-only = existence |
 | Optional `prompt-index.jsonl` | **Deferred** | P4 discoverability only; `last-prompt` overwrite expected |
 | SD-23 file_artifact INPUT/OUTPUT semantics | **Aligned 2026-07-12** | Path mention + tools for INPUT; write contract for OUTPUT (BUG-276 / Task-223) |
 
@@ -394,4 +394,4 @@ Target: `/Users/tiendat/Desktop/BE/gate-sandbox`.
 
 ### 13.5 Closeout
 
-**CP-45 is done** — implementation (Task-197–205), live E2E (A–E + residuals Task-222–224 / BUG-274–277), and authority docs (this §13 + SD-23 D-8 alignment). Follow-up: [Task-225](../../08-Task/todo/Task-225-File-Artifact-Output-Heading-Gate.md) only if product wants enforced `## What`/`## Why`/`## Baseline` headings after file existence.
+**CP-45 is done** — implementation (Task-197–205), live E2E (A–E + residuals Task-222–224 / BUG-274–277), and authority docs (this §13 + SD-23 D-8 alignment). Follow-up: [Task-225](../../08-Task/done/Task-225-File-Artifact-Instance-Output-Structure.md) for per-instance file OUTPUT structure (template + optional section gate; default paths-only = existence only).

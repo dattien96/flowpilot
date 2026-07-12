@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-12`
 - Parent Documents: [CP-45: Generic Artifact Types And Instances](../../07-Coding-Plan/done/CP-45-Generic-Artifact-Types-And-Instances.md), [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md)
 - Child Documents: `None`
-- Related Documents: [Task-223: File Artifact Output Contract And Review Input Chain](../done/Task-223-File-Artifact-Output-Contract-And-Review-Input-Chain.md), [Task-222: Artifact-Only Step UX](../done/Task-222-Artifact-Only-Step-UX-And-File-Artifact-Semantics-Copy.md), [Task-169: Plan To Coding Context Handoff](../done/Task-169-Plan-To-Coding-Context-Handoff.md), [BUG-277: Flow Ledger History Over-Injected On Non-Context Consumers](../../09-BugFix/done/BUG-277-Flow-Ledger-History-Over-Injected-On-Non-Context-Consumers.md), [BUG-276: File Artifact Input Path-Only](../../09-BugFix/done/BUG-276-File-Artifact-Input-Should-Mention-Paths-Not-Paste-Content.md), [Task-225: File Artifact Output Heading Gate](../todo/Task-225-File-Artifact-Output-Heading-Gate.md), [CA-288](../../../change-audit/CA-288-cp45-e2e-edge-dirty-file-path-only-hub-dedupe.md), [CA-289](../../../change-audit/CA-289-task-224-flow-prompt-scoping-and-coder-why-template.md)
+- Related Documents: [Task-223: File Artifact Output Contract And Review Input Chain](../done/Task-223-File-Artifact-Output-Contract-And-Review-Input-Chain.md), [Task-222: Artifact-Only Step UX](../done/Task-222-Artifact-Only-Step-UX-And-File-Artifact-Semantics-Copy.md), [Task-169: Plan To Coding Context Handoff](../done/Task-169-Plan-To-Coding-Context-Handoff.md), [BUG-277: Flow Ledger History Over-Injected On Non-Context Consumers](../../09-BugFix/done/BUG-277-Flow-Ledger-History-Over-Injected-On-Non-Context-Consumers.md), [BUG-276: File Artifact Input Path-Only](../../09-BugFix/done/BUG-276-File-Artifact-Input-Should-Mention-Paths-Not-Paste-Content.md), [Task-225: File Artifact Instance Output Structure](../done/Task-225-File-Artifact-Instance-Output-Structure.md), [CA-288](../../../change-audit/CA-288-cp45-e2e-edge-dirty-file-path-only-hub-dedupe.md), [CA-289](../../../change-audit/CA-289-task-224-flow-prompt-scoping-and-coder-why-template.md)
 - Replaces: none
 - Tags: `flow-mode, prompt-composition, feature-history, file-artifact, coder-template, review-handoff, context-package, cp-45`
 
@@ -55,7 +55,7 @@
 - `Q-1` **RESOLVED (default):** omit coder final body when file INPUT paths are bound; no 600-char brief required in v1.
 - `Q-2` Whether hub **first** user turn after flow start always injects history even when flow already ran context package on child (recommend **yes** for main UX).
 - `Q-3` Whether validate/audit mid-flow nodes ever need package excerpts — **out of v1** unless a later CP requires it.
-- `Q-4` **RESOLVED (default) for heading check:** v1 ships **prompt/template guidance only** for What/Why/Baseline headings; optional gate reprompt on missing headings is Phase-2 → [Task-225](../todo/Task-225-File-Artifact-Output-Heading-Gate.md) (not required for AC-4 / CP-45 closeout).
+- `Q-4` **SUPERSEDED by Task-225:** global What/Why/Baseline for every required file OUTPUT was over-broad. Phase-2 moves template + optional section gate to **per-instance structure** → [Task-225](../done/Task-225-File-Artifact-Instance-Output-Structure.md) (not required for AC-4 / CP-45 closeout).
 
 ### Source Refs
 
@@ -121,7 +121,7 @@ CP-45 live E2E on gate-sandbox showed:
 - source_doc_id / CA / Task / commit:
 ```
 
-- `T-4` v1: prompt/template guidance only for headings. Phase-2 optional: if required file exists but missing `## Why` / `## Baseline`, warn or single reprompt → [Task-225](../todo/Task-225-File-Artifact-Output-Heading-Gate.md) (not required for AC-4).
+- `T-4` v1 shipped a **global** What/Why/Baseline template on every required OUTPUT as an **interim coding-path behavior only** (known over-reach for testing/planning/raw-note instances). Phase-2 → [Task-225](../done/Task-225-File-Artifact-Instance-Output-Structure.md): structure per instance; flex section gate only when configured.
 
 ### 4.3 Prompt log hygiene (P4)
 
@@ -162,4 +162,4 @@ CP-45 live E2E on gate-sandbox showed:
 
 - result: `done` 2026-07-12 — implemented CA-289: history inject skip for flow-engine/review handoff; review omits coder body when file INPUT; OUTPUT What/Why/Baseline template.
 - Owner discuss 2026-07-11 captured in task; live retest recommended on gate-sandbox.
-- follow-ups: Phase-2 structural heading gate tracked as [Task-225](../todo/Task-225-File-Artifact-Output-Heading-Gate.md).
+- follow-ups: Phase-2 per-instance file OUTPUT structure tracked as [Task-225](../done/Task-225-File-Artifact-Instance-Output-Structure.md).

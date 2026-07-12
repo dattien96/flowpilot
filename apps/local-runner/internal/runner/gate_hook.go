@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
 	"flowpilot-runner/internal/flowgate"
@@ -213,16 +214,18 @@ func (s *InteractiveService) runChildArtifactOutputGate(
 		return false
 	}
 	required := requiredFileArtifactOutputsForRun(s, rs)
-	if len(required) == 0 {
+	structured := requiredStructuredFileArtifactOutputsForRun(s, rs)
+	if len(required) == 0 && len(structured) == 0 {
 		return false
 	}
 	tr := flowgate.TurnResult{
-		RunID:                       rs.id,
-		StepID:                      rs.stepID,
-		FinalMessage:                fin.FinalMessage,
-		WrittenPaths:                fin.ChangedFiles,
-		WorkspaceCwd:                cwd,
-		RequiredFileArtifactOutputs: required,
+		RunID:                                 rs.id,
+		StepID:                                rs.stepID,
+		FinalMessage:                          fin.FinalMessage,
+		WrittenPaths:                          fin.ChangedFiles,
+		WorkspaceCwd:                          cwd,
+		RequiredFileArtifactOutputs:           required,
+		RequiredStructuredFileArtifactOutputs: structured,
 	}
 	// Prefer defaults merged with any on-disk rules so r-artifact-output is
 	// present even when an old flow-rules.json predates Task-223.
@@ -230,10 +233,14 @@ func (s *InteractiveService) runChildArtifactOutputGate(
 	if loaded, err := flowgate.LoadRules(filepath.Join(cwd, ".flowpilot", "settings")); err == nil {
 		rules = flowgate.MergeDefaultRules(loaded)
 	}
-	// Only evaluate the artifact-output family on children (BUG-152).
+	// Only evaluate the artifact-output family on children (BUG-152 / Task-225).
 	var only []flowgate.Rule
 	for _, r := range rules {
-		if r.ID == "r-artifact-output" && r.Enabled {
+		if !r.Enabled {
+			continue
+		}
+		switch r.ID {
+		case "r-artifact-output", "r-artifact-output-structure":
 			only = append(only, r)
 		}
 	}
@@ -279,32 +286,51 @@ func (s *InteractiveService) runChildArtifactOutputGate(
 // (label matches node id on the parent hub) and returns required file_artifact
 // OUTPUT paths (Task-223). Empty when not a flow child or no required outputs.
 func requiredFileArtifactOutputsForRun(s *InteractiveService, rs *interactiveRun) []string {
-	if s == nil || rs == nil {
+	node, ok := flowNodeForRun(s, rs)
+	if !ok {
 		return nil
+	}
+	return requiredFileArtifactOutputPaths(node)
+}
+
+// requiredStructuredFileArtifactOutputsForRun returns Task-225 structured
+// required OUTPUT paths for the active flow node of this run.
+func requiredStructuredFileArtifactOutputsForRun(s *InteractiveService, rs *interactiveRun) []flowgate.StructuredFileArtifactOutput {
+	node, ok := flowNodeForRun(s, rs)
+	if !ok {
+		return nil
+	}
+	return requiredStructuredFileArtifactOutputs(node)
+}
+
+// flowNodeForRun resolves the active flow node for a child (or hub) run.
+func flowNodeForRun(s *InteractiveService, rs *interactiveRun) (agentpack.FlowNode, bool) {
+	if s == nil || rs == nil {
+		return agentpack.FlowNode{}, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	label := strings.TrimSpace(rs.label)
 	if label == "" {
-		return nil
+		return agentpack.FlowNode{}, false
 	}
 	parentID := strings.TrimSpace(rs.parentRunID)
 	if parentID == "" {
 		// Hub itself rarely has file OUTPUT bindings; still check local topology.
 		if node, ok := findFlowNode(rs.activeFlowNodes, label); ok {
-			return requiredFileArtifactOutputPaths(node)
+			return node, true
 		}
-		return nil
+		return agentpack.FlowNode{}, false
 	}
 	parent := s.runs[parentID]
 	if parent == nil {
-		return nil
+		return agentpack.FlowNode{}, false
 	}
 	node, ok := findFlowNode(parent.activeFlowNodes, label)
 	if !ok {
-		return nil
+		return agentpack.FlowNode{}, false
 	}
-	return requiredFileArtifactOutputPaths(node)
+	return node, true
 }
 
 // SubmitGateDecision handles the user's r-reg decision card choice (Task-155).
