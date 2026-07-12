@@ -9,10 +9,10 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-08`
-- Last Updated: `2026-07-09`
+- Last Updated: `2026-07-12`
 - Parent Documents: [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md), [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
-- Child Documents: [Task-197: Artifact Type Catalog And Schema](../../08-Task/done/Task-197-Artifact-Type-Catalog-And-Schema.md), [Task-198: Artifact Instance Model And Resolver](../../08-Task/done/Task-198-Artifact-Instance-Model-And-Resolver.md), [Task-199: Artifact Instance Settings Page](../../08-Task/done/Task-199-Artifact-Instance-Settings-Page.md), [Task-200: Step Artifact Instance Binding UI](../../08-Task/done/Task-200-Step-Artifact-Instance-Binding-UI.md), [Task-201: Context Artifact Migration From Context Sources](../../08-Task/done/Task-201-Context-Artifact-Migration-From-Context-Sources.md), [Task-202: File Artifact Type Proof Of Generality](../../08-Task/done/Task-202-File-Artifact-Type-Proof-Of-Generality.md), [Task-203: Artifact Framework Validation And Fallback](../../08-Task/done/Task-203-Artifact-Framework-Validation-And-Fallback.md), [Task-205: Built-in Artifact Flow (Context → Coding → Review → Synthesis)](../../08-Task/done/Task-205-Builtin-Artifact-Flow-Context-Coding-Review-Synthesis.md)
-- Related Documents: [CP-44: Pluggable Context Source Registry](./CP-44-Pluggable-Context-Source-Registry.md), [Task-196: Per-Step Context Source Selection UI](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md), [Task-168: Flow Mode Context Package Contract](../../08-Task/done/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-176: Node-Behavior Registry And Dispatch](../../08-Task/done/Task-176-Node-Behavior-Registry-And-Dispatch.md), [BUG-236: Builtin Flow Mirror Stores Node Definition On Workflow Steps Instead Of Step Definitions](../../09-BugFix/done/BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md)
+- Child Documents: [Task-197: Artifact Type Catalog And Schema](../../08-Task/done/Task-197-Artifact-Type-Catalog-And-Schema.md), [Task-198: Artifact Instance Model And Resolver](../../08-Task/done/Task-198-Artifact-Instance-Model-And-Resolver.md), [Task-199: Artifact Instance Settings Page](../../08-Task/done/Task-199-Artifact-Instance-Settings-Page.md), [Task-200: Step Artifact Instance Binding UI](../../08-Task/done/Task-200-Step-Artifact-Instance-Binding-UI.md), [Task-201: Context Artifact Migration From Context Sources](../../08-Task/done/Task-201-Context-Artifact-Migration-From-Context-Sources.md), [Task-202: File Artifact Type Proof Of Generality](../../08-Task/done/Task-202-File-Artifact-Type-Proof-Of-Generality.md), [Task-203: Artifact Framework Validation And Fallback](../../08-Task/done/Task-203-Artifact-Framework-Validation-And-Fallback.md), [Task-205: Built-in Artifact Flow (Context → Coding → Review → Synthesis)](../../08-Task/done/Task-205-Builtin-Artifact-Flow-Context-Coding-Review-Synthesis.md), [Task-222: Artifact-Only Step UX](../../08-Task/done/Task-222-Artifact-Only-Step-UX-And-File-Artifact-Semantics-Copy.md), [Task-223: File Artifact Output Contract](../../08-Task/done/Task-223-File-Artifact-Output-Contract-And-Review-Input-Chain.md), [Task-224: Flow Prompt Scoping And Coder Why Template](../../08-Task/done/Task-224-Flow-Prompt-Scoping-And-Coder-Output-Why-Template.md)
+- Related Documents: [CP-44: Pluggable Context Source Registry](./CP-44-Pluggable-Context-Source-Registry.md), [Task-196: Per-Step Context Source Selection UI](../../08-Task/todo/Task-196-Per-Step-Context-Source-Selection-UI.md), [Task-168: Flow Mode Context Package Contract](../../08-Task/done/Task-168-Flow-Mode-Context-Package-Contract.md), [Task-176: Node-Behavior Registry And Dispatch](../../08-Task/done/Task-176-Node-Behavior-Registry-And-Dispatch.md), [BUG-236: Builtin Flow Mirror Stores Node Definition On Workflow Steps Instead Of Step Definitions](../../09-BugFix/done/BUG-236-Builtin-Flow-Mirror-Stores-Node-Definition-On-Workflow-Steps-Instead-Of-Step-Definitions.md), [Task-225: File Artifact Instance Output Structure](../../08-Task/done/Task-225-File-Artifact-Instance-Output-Structure.md) (Phase-2 polish, not blocking CP-45)
 - Replaces: `None`
 - Tags: `artifact, artifact-type, artifact-instance, flow-mode, typed-contract, settings-ui, supabase`
 
@@ -28,7 +28,7 @@
 
 ### Current Ask
 
-- Thiết kế một framework artifact tổng quát hơn CP-44: type hệ thống + instance do user tạo + step binding theo instance, đủ để sau này context/file/review artifact dùng chung một cơ chế.
+- **Closed (2026-07-12).** Implementation + live E2E verified (gate-sandbox). Residual polish (per-instance file output structure + optional section gate) tracked as Task-225, not blocking this CP.
 
 ### Key Decisions
 
@@ -286,10 +286,11 @@ Tổng quát hóa mô hình "typed context package" thành một **artifact fram
 - Mục tiêu: chứng minh type ngoài context (`file_artifact.v1`) chạy trên cùng framework.
 - Cách test:
   1. Seed `file_artifact.v1`; tạo instance với `paths: [<workspace-file>]`.
-  2. Bind vào input slot của một step; run flow.
-- Kỳ vọng:
-  - Consumer step nhận bounded excerpt + `SourceRef`.
-  - Path ngoài workspace/symlink escape → omitted (`outside_workspace`).
+  2. Bind as **OUTPUT** on producer step and **INPUT** on consumer step; run flow.
+- Kỳ vọng (aligned BUG-276 / SD-23 `D-8` / Task-223–225):
+  - **OUTPUT:** producer prompt lists required path(s) as write contract; existence may be gated (`r-artifact-output`). Optional **per-instance** structure (Task-225) for template + section gate when configured.
+  - **INPUT:** consumer step receives **path mention only** and must read with tools; **no** full body/excerpt inject into the consumer prompt (unlike `context_artifact` package content).
+  - Path ngoài workspace/symlink escape → omit or fail existence, not silent success.
 
 ### 11.5 Type-Mismatch And Unknown-Source Fail Fast
 
@@ -348,3 +349,49 @@ Tổng quát hóa mô hình "typed context package" thành một **artifact fram
   - Task-205's built-in flow proves cross-step binding *data* end to end, but live prompt injection is proven only at the one existing dispatch seam (`startInlineEntryChain`'s hop to `coder`); widening injection to every bound consumer node is a follow-up, not required by this CP's own DOD wording.
   - Full interactive UI verification (Task-199/200) needs a live local-runner + Supabase backend with these migrations applied — not available in this session's sandbox; verified via `tsc --noEmit` + a clean dev-server boot instead.
 - upstream docs updated: SD-23 (unchanged — implementation matched design as written, including the output/input direction fix caught during implementation, which was already correct in SD-23's own prose); CP-44/Task-195/Task-196 (updated earlier this session when Task-198 was renumbered to Task-204).
+
+## 13. Live E2E ledger (gate-sandbox, 2026-07-11 → 2026-07-12)
+
+Target: `/Users/tiendat/Desktop/BE/gate-sandbox`.
+
+### 13.1 Wave status
+
+| Wave | Status | Notes |
+|------|--------|-------|
+| **A1–A9** Artifact UI authoring | **PASS** | Types, instances, type-filter pickers; legacy Step Context Sources hidden (Task-222) |
+| **B** Bind flows | **PASS** | Binding OK; edges-only Save dirty fixed (BUG-274) |
+| **C** Fail-fast | **PASS** | Unknown source + type filter confirmed |
+| **D** Context package | **PASS** | Coder receives Flow Context Package (`calc-core` verified); history inside package |
+| **E** File write→read | **PASS** | OUTPUT write contract + gate (Task-223); INPUT path-only (BUG-276); What/Why/Baseline template (Task-224) |
+| **Hub synthesis** | **PASS** | Join note once; no feature self-resolve on flow-engine (BUG-275); no full Prior work dump on synthesis (Task-224) |
+| **Reviewer prompt scoping** | **PASS** | No ledger inject + no full coder final body when file INPUT (BUG-277 / Task-224); live `run-1024` |
+
+### 13.2 Follow-up tasks / bugs closed this verification
+
+| ID | Status | CA |
+|----|--------|-----|
+| Task-222 Artifact-only Step UX | **done** | CA-286 |
+| Task-223 File artifact write→read chain | **done** | CA-287 |
+| BUG-274 Edge dirty snapshot | **done** | CA-288 |
+| BUG-275 Hub join dedupe + feature resolve | **done** | CA-288 |
+| BUG-276 File INPUT path-only | **done** | CA-288 |
+| Task-224 Prompt scoping + Why template | **done** | CA-289 |
+| BUG-277 Ledger over-inject on review | **done** | CA-289 |
+
+### 13.3 Residual / not CP-45 blockers
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Chat_summary ledger **noise** in package Prior discussion | **Open (sandbox data)** | Old E2E agent text in gate-sandbox `chat_summary.ndjson`; not an inject bug |
+| Per-instance file OUTPUT structure (+ optional section gate) | **Done (Task-225 / CA-290)** | Phase-2; structure-only config; paths-only = existence |
+| Optional `prompt-index.jsonl` | **Deferred** | P4 discoverability only; `last-prompt` overwrite expected |
+| SD-23 file_artifact INPUT/OUTPUT semantics | **Aligned 2026-07-12** | Path mention + tools for INPUT; write contract for OUTPUT (BUG-276 / Task-223) |
+
+### 13.4 Live evidence
+
+- Pre-Task-224: `run-41047` hub, `run-41052` coder, `run-41359` reviewer (and later `run-309`/`314`/`658`).
+- Post-Task-224: `run-723` coder, `run-1024` reviewer, `run-718` hub — package + Why template; path-first review; no Prior work on review/hub synthesis.
+
+### 13.5 Closeout
+
+**CP-45 is done** — implementation (Task-197–205), live E2E (A–E + residuals Task-222–224 / BUG-274–277), and authority docs (this §13 + SD-23 D-8 alignment). Follow-up: [Task-225](../../08-Task/done/Task-225-File-Artifact-Instance-Output-Structure.md) for per-instance file OUTPUT structure (template + optional section gate; default paths-only = existence only).

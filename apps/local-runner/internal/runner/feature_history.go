@@ -15,7 +15,11 @@ func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []tr
 	// it embeds gate-reprompt lines naming feature keys and would mis-resolve.
 	// A flow context package (Task-169) carries its own history block; skip to
 	// avoid duplicating the same feature history in the Coding prompt.
-	if isHandoffPrompt(prompt) || isFlowContextHandoff(prompt) {
+	// Task-224 / BUG-277: skip full Prior work block for flow-engine synthesis
+	// and flow review handoffs — history bulk belongs to hub user turns and the
+	// first post-context.produce consumer (via package), not every late node.
+	if isHandoffPrompt(prompt) || isFlowContextHandoff(prompt) ||
+		isFlowEnginePrompt(prompt) || isFlowReviewHandoffPrompt(prompt) {
 		return prompt
 	}
 	dotFlowpilotDir := filepath.Join(workspace, ".flowpilot")
@@ -32,6 +36,15 @@ func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []tr
 		return prompt
 	}
 	return block + "\n\n---\n\n" + prompt
+}
+
+// isFlowReviewHandoffPrompt reports a flow-executor auto-advance review brief
+// (tryAdvanceFlowFromNode). Those nodes are deliverable-centric (Task-224);
+// ledger history must not be re-injected on top of the package already given
+// to the first post-context consumer.
+func isFlowReviewHandoffPrompt(prompt string) bool {
+	p := strings.TrimSpace(prompt)
+	return strings.Contains(p, "[flow-engine] Review this result from node")
 }
 
 // composeFeatureBlocks returns the prior-work (+ prior-discussion) blocks for a
@@ -125,11 +138,39 @@ func isHandoffPrompt(prompt string) bool {
 	return strings.Contains(prompt, handoffPromptPrefix)
 }
 
-// isSystemPrompt reports whether a prompt is system-generated (a gate reprompt or
-// a handoff envelope). Such prompts describe process / embed prior conversation, so
-// their text must not drive feature resolution, recording, or bucketing.
+// isFlowEnginePrompt reports whether a prompt is an internal flow-engine /
+// hub-orchestration message (cohort join notes, synthesis reinvoke, agent
+// results ready, UI sub-agent system notes). These embed child/reviewer text
+// and must not drive feature resolution (BUG-275 — hub drifted
+// calc-core → calc-format → sandbox-meta on synthesis turns).
+func isFlowEnginePrompt(prompt string) bool {
+	p := strings.TrimSpace(prompt)
+	if p == "" {
+		return false
+	}
+	if strings.HasPrefix(p, "[flow-engine]") ||
+		strings.HasPrefix(p, "[flow-engine joined result note]") ||
+		strings.HasPrefix(p, "[FlowPilot system note — sub-agents") ||
+		strings.HasPrefix(p, "[FlowPilot system note - sub-agents") {
+		return true
+	}
+	// Embedded join note + synthesis instruction (maybeAutoReinvokeHubWithNote).
+	if strings.Contains(p, "[flow-engine joined result note]") {
+		return true
+	}
+	if strings.Contains(p, "[flow-engine] Agent results ready") ||
+		strings.Contains(p, "submit_review_outcome") && strings.Contains(p, "[flow-engine]") {
+		return true
+	}
+	return false
+}
+
+// isSystemPrompt reports whether a prompt is system-generated (gate reprompt,
+// handoff envelope, or flow-engine/hub orchestration). Such prompts describe
+// process / embed prior conversation, so their text must not drive feature
+// resolution, recording, or bucketing.
 func isSystemPrompt(prompt string) bool {
-	return isGateReprompt(prompt) || isHandoffPrompt(prompt)
+	return isGateReprompt(prompt) || isHandoffPrompt(prompt) || isFlowEnginePrompt(prompt)
 }
 
 // continuationPhrases are explicit "keep going" instructions that carry no topic

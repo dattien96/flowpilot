@@ -570,6 +570,24 @@ input {
   color: var(--text);
   padding: 11px 12px;
 }
+/* Checkboxes/radios inside .settings-field must not inherit text-field chrome
+   (width:100% + padding made them look like empty range bars — Task-225 UI). */
+.auth-field input[type="checkbox"],
+.auth-field input[type="radio"],
+.settings-field input[type="checkbox"],
+.settings-field input[type="radio"] {
+  width: auto;
+  min-width: 1rem;
+  max-width: none;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  border: initial;
+  border-radius: 0;
+  background: transparent;
+  accent-color: var(--accent, #3b82f6);
+  flex-shrink: 0;
+}
 .settings-field select,
 .settings-field textarea,
 .settings-inline-input,
@@ -938,9 +956,12 @@ input {
   gap: 10px;
 }
 .settings-checkbox {
+  /* Keep checkbox + label on one compact row (not full-width text-field chrome). */
   display: flex;
   align-items: center;
   gap: 8px;
+  width: fit-content;
+  max-width: 100%;
   color: var(--text);
 }
 .settings-inline-actions {

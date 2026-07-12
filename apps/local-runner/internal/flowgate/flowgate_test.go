@@ -9,10 +9,10 @@ import (
 
 func TestDefaultRules(t *testing.T) {
 	rules := DefaultRules()
-	if len(rules) != 7 {
-		t.Fatalf("expected 7 rules, got %d", len(rules))
+	if len(rules) != 9 {
+		t.Fatalf("expected 9 rules, got %d", len(rules))
 	}
-	ids := []string{"r-ca", "r-fk", "r-bug", "r-task", "r-tests", "r-reg", "r-dep"}
+	ids := []string{"r-ca", "r-fk", "r-bug", "r-task", "r-tests", "r-reg", "r-dep", "r-artifact-output", "r-artifact-output-structure"}
 	for i, id := range ids {
 		if rules[i].ID != id {
 			t.Errorf("rules[%d].ID = %q, want %q", i, rules[i].ID, id)
@@ -20,6 +20,242 @@ func TestDefaultRules(t *testing.T) {
 		if !rules[i].Enabled {
 			t.Errorf("rules[%d] should be enabled", i)
 		}
+	}
+}
+
+func TestEvaluateRequiredArtifactOutputMissing(t *testing.T) {
+	dir := t.TempDir()
+	tr := TurnResult{
+		WorkspaceCwd:                dir,
+		RequiredFileArtifactOutputs: []string{"docs/coder-summary.md"},
+	}
+	violations := Evaluate(tr, DefaultRules())
+	found := false
+	for _, v := range violations {
+		if v.Rule.ID == "r-artifact-output" {
+			found = true
+			if !strings.Contains(v.Detail, "docs/coder-summary.md") {
+				t.Fatalf("detail should name missing path, got %q", v.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected r-artifact-output when required path is missing")
+	}
+}
+
+func TestEvaluateRequiredArtifactOutputPresent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "docs", "coder-summary.md"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tr := TurnResult{
+		WorkspaceCwd:                dir,
+		RequiredFileArtifactOutputs: []string{"docs/coder-summary.md"},
+	}
+	for _, v := range Evaluate(tr, DefaultRules()) {
+		if v.Rule.ID == "r-artifact-output" {
+			t.Fatalf("unexpected r-artifact-output when file exists: %+v", v)
+		}
+	}
+}
+
+func TestRepromptPromptNamesMissingArtifactOutputPaths(t *testing.T) {
+	result := Enforce([]Violation{{
+		Rule:   Rule{ID: "r-artifact-output", Trigger: "required_artifact_output_missing", Action: "reprompt", Enabled: true},
+		Detail: "required file artifact output missing: docs/coder-summary.md",
+	}}, "enforce")
+	prompt := RepromptPrompt(result)
+	if !strings.Contains(prompt, "docs/coder-summary.md") {
+		t.Fatalf("reprompt should name missing path, got %q", prompt)
+	}
+	if !strings.Contains(prompt, GateRepromptPrefix) {
+		t.Fatalf("reprompt should use gate prefix, got %q", prompt)
+	}
+}
+
+func TestMatchMarkdownSectionsFlexibleLevelAndCase(t *testing.T) {
+	content := "# What\n\nbody\n\n### why:\n\nmore\n\n## Baseline .\n"
+	missing := MissingMarkdownSections(content, []string{"What", "Why", "Baseline"})
+	if len(missing) != 0 {
+		t.Fatalf("expected all sections present with flex match, missing %v", missing)
+	}
+}
+
+func TestMatchMarkdownSectionsRejectsNonHeading(t *testing.T) {
+	content := "What\nWhy\nBaseline\n"
+	missing := MissingMarkdownSections(content, []string{"What", "Why", "Baseline"})
+	if len(missing) != 3 {
+		t.Fatalf("plain lines must not count as headings, missing %v", missing)
+	}
+	// Synonyms are not accepted in v1.
+	content2 := "## Rationale\n## What\n## Baseline\n"
+	missing2 := MissingMarkdownSections(content2, []string{"What", "Why", "Baseline"})
+	if len(missing2) != 1 || missing2[0] != "Why" {
+		t.Fatalf("want missing Why only, got %v", missing2)
+	}
+}
+
+func TestEvaluateRequiredArtifactOutputStructurePresent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "## What\n\nx\n\n## Why\n\ny\n\n## Baseline\n\nz\n"
+	if err := os.WriteFile(filepath.Join(dir, "docs", "coder-summary.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tr := TurnResult{
+		WorkspaceCwd:                dir,
+		RequiredFileArtifactOutputs: []string{"docs/coder-summary.md"},
+		RequiredStructuredFileArtifactOutputs: []StructuredFileArtifactOutput{{
+			Path:     "docs/coder-summary.md",
+			Sections: []string{"What", "Why", "Baseline"},
+		}},
+	}
+	for _, v := range Evaluate(tr, DefaultRules()) {
+		if v.Rule.ID == "r-artifact-output-structure" {
+			t.Fatalf("unexpected structure violation: %+v", v)
+		}
+	}
+}
+
+func TestEvaluateRequiredArtifactOutputStructureMissingSection(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Flex present for What/Baseline but missing Why.
+	body := "### what\n\n## Baseline\n"
+	if err := os.WriteFile(filepath.Join(dir, "docs", "coder-summary.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tr := TurnResult{
+		WorkspaceCwd:                dir,
+		RequiredFileArtifactOutputs: []string{"docs/coder-summary.md"},
+		RequiredStructuredFileArtifactOutputs: []StructuredFileArtifactOutput{{
+			Path:     "docs/coder-summary.md",
+			Sections: []string{"What", "Why", "Baseline"},
+		}},
+	}
+	found := false
+	for _, v := range Evaluate(tr, DefaultRules()) {
+		if v.Rule.ID == "r-artifact-output-structure" {
+			found = true
+			if !strings.Contains(v.Detail, "docs/coder-summary.md") || !strings.Contains(v.Detail, "Why") {
+				t.Fatalf("detail should name path and Why, got %q", v.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected r-artifact-output-structure when Why missing")
+	}
+}
+
+func TestEvaluateRequiredArtifactOutputStructureSkipsWhenFileMissing(t *testing.T) {
+	dir := t.TempDir()
+	tr := TurnResult{
+		WorkspaceCwd:                dir,
+		RequiredFileArtifactOutputs: []string{"docs/coder-summary.md"},
+		RequiredStructuredFileArtifactOutputs: []StructuredFileArtifactOutput{{
+			Path:     "docs/coder-summary.md",
+			Sections: []string{"What", "Why", "Baseline"},
+		}},
+	}
+	var exist, structure bool
+	for _, v := range Evaluate(tr, DefaultRules()) {
+		switch v.Rule.ID {
+		case "r-artifact-output":
+			exist = true
+		case "r-artifact-output-structure":
+			structure = true
+		}
+	}
+	if !exist {
+		t.Fatal("expected existence violation when file missing")
+	}
+	if structure {
+		t.Fatal("structure gate must not fire when file is missing")
+	}
+}
+
+func TestEvaluateRequiredArtifactOutputStructureSkipsWhenNoStructure(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "docs", "notes.md"), []byte("no headings"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tr := TurnResult{
+		WorkspaceCwd:                dir,
+		RequiredFileArtifactOutputs: []string{"docs/notes.md"},
+		// No RequiredStructuredFileArtifactOutputs
+	}
+	for _, v := range Evaluate(tr, DefaultRules()) {
+		if v.Rule.ID == "r-artifact-output-structure" {
+			t.Fatalf("paths-only must not structure-gate: %+v", v)
+		}
+	}
+}
+
+func TestRepromptPromptNamesMissingArtifactOutputStructure(t *testing.T) {
+	result := Enforce([]Violation{{
+		Rule:   Rule{ID: "r-artifact-output-structure", Trigger: "required_artifact_output_structure_missing", Action: "reprompt", Enabled: true},
+		Detail: "required file artifact structure missing: docs/coder-summary.md (Why)",
+	}}, "enforce")
+	prompt := RepromptPrompt(result)
+	if !strings.Contains(prompt, "docs/coder-summary.md") || !strings.Contains(prompt, "Why") {
+		t.Fatalf("reprompt should name path and section, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "structure incomplete") {
+		t.Fatalf("reprompt should mention structure, got %q", prompt)
+	}
+}
+
+func TestMissingRequiredFileArtifactOutputsRejectsOutsideWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	missing := MissingRequiredFileArtifactOutputs(dir, []string{"../outside.md", "/tmp/abs.md"})
+	if len(missing) != 2 {
+		t.Fatalf("expected both paths missing/rejected, got %v", missing)
+	}
+}
+
+func TestMergeDefaultRulesAddsMissingArtifactOutput(t *testing.T) {
+	old := []Rule{
+		{ID: "r-ca", Scope: "step", Trigger: "code_changed", Action: "reprompt", Enabled: true},
+	}
+	merged := MergeDefaultRules(old)
+	found := false
+	for _, r := range merged {
+		if r.ID == "r-artifact-output" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected MergeDefaultRules to append r-artifact-output")
+	}
+	if merged[0].ID != "r-ca" {
+		t.Fatalf("expected loaded rules first, got %q", merged[0].ID)
+	}
+}
+
+func TestMissingRequiredFileArtifactOutputsRejectsSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.md")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "escape.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	missing := MissingRequiredFileArtifactOutputs(dir, []string{"escape.md"})
+	if len(missing) != 1 || missing[0] != "escape.md" {
+		t.Fatalf("expected symlink escape treated as missing, got %v", missing)
 	}
 }
 

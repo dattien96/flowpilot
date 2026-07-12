@@ -1059,6 +1059,53 @@ func TestResolveInjectionFeatureGateRepromptInheritsEstablishedFeature(t *testin
 	}
 }
 
+// Task-224 / BUG-277: review handoff and flow-engine synthesis must not get a
+// full Prior work block prepended (history bulk is package + hub user turns).
+func TestInjectFeatureHistorySkipsFlowReviewAndEnginePrompts(t *testing.T) {
+	dir := t.TempDir()
+	// Minimal catalog+ledger so inject would otherwise succeed on a normal prompt.
+	// Empty ledger still returns "" for composeFeatureBlocks — use a real workspace
+	// with FEATURE-KEYS and ledger if needed. Here we only assert skip paths return
+	// the prompt unchanged (prefix not "Prior work").
+	review := "[flow-engine] Review this result from node \"coder\" and report your findings.\n\nhello"
+	if got := injectFeatureHistoryPrompt(dir, review, nil); got != review {
+		t.Fatalf("review handoff must skip history inject, got %q", got)
+	}
+	engine := "[flow-engine joined result note]\nApprove\n\n---\n\n[flow-engine] Agent results ready."
+	if got := injectFeatureHistoryPrompt(dir, engine, nil); got != engine {
+		t.Fatalf("flow-engine prompt must skip history inject, got %q", got)
+	}
+	pkg := "[FlowPilot sub-agent — agent: coder]\n\n[FlowPilot flow context package]\n\n## Flow Context Package\n"
+	if got := injectFeatureHistoryPrompt(dir, pkg, nil); got != pkg {
+		t.Fatalf("package prompt must skip history inject, got %q", got)
+	}
+}
+
+// BUG-275: hub synthesis / joined-result prompts must inherit the established
+// feature, not self-resolve on embedded reviewer text (calc-format, sandbox-meta).
+func TestResolveInjectionFeatureFlowEngineJoinedNoteInheritsFeature(t *testing.T) {
+	catalog := featurecatalog.New()
+	catalog.Add(featurecatalog.Feature{Key: "calc-core", Keywords: []string{"calc", "arithmetic", "addby"}})
+	catalog.Add(featurecatalog.Feature{Key: "calc-format", Keywords: []string{"format", "sign", "clamp"}})
+	catalog.Add(featurecatalog.Feature{Key: "sandbox-meta", Keywords: []string{"sandbox", "meta", "fixture"}})
+
+	prior := []transcriptTurn{{User: "Feature: calc-core. Add a short markdown note summarizing arithmetic helpers."}}
+	joined := "[flow-engine joined result note]\nFlow round 0 — 1 results joined.\n" +
+		"\"reviewer\": Content matches calc.go. Sign/Clamp correctly omitted (calc-format). " +
+		"pin clean engine fixture sandbox-meta. Approve."
+
+	top, ok := resolveInjectionFeature(joined, prior, catalog)
+	if !ok || top.Key != "calc-core" {
+		t.Fatalf("joined note should inherit calc-core, got ok=%v key=%q", ok, top.Key)
+	}
+
+	synth := joined + "\n\n---\n\n[flow-engine] Agent results ready.\nRead the joined result note above, synthesize, call submit_review_outcome."
+	top2, ok2 := resolveInjectionFeature(synth, prior, catalog)
+	if !ok2 || top2.Key != "calc-core" {
+		t.Fatalf("synthesis prompt should inherit calc-core, got ok=%v key=%q", ok2, top2.Key)
+	}
+}
+
 // A cross-provider handoff envelope must not self-resolve a feature from its own
 // text — it embeds the prior conversation and gate-reprompt lines that name feature
 // keys (e.g. "Suggested feature keys: sandbox-meta"). On a fresh target run (no
@@ -3097,6 +3144,34 @@ func TestAutoReinvokeHubNoPendingContextNoDefer(t *testing.T) {
 	svc.mu.Unlock()
 	if pending {
 		t.Error("pendingHubReinvoke must not be set when pendingAgentContext is empty: in-flight turn already consumed the signal")
+	}
+}
+
+// TestAutoReinvokeHubWithNoteDedupesEmbeddedNoteFromPendingContext verifies
+// BUG-275: when the idle path embeds cohortNote in the synthesis prompt, that
+// exact note is removed from pendingAgentContext so startTurn does not also
+// wrap it under the sub-agents system note (duplicate joined result).
+func TestAutoReinvokeHubWithNoteDedupesEmbeddedNoteFromPendingContext(t *testing.T) {
+	svc, _ := newTestServer(t)
+	handle, _ := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	runID := handle.RunID
+	note := "[flow-engine joined result note]\nFlow round 0 — 1 results joined.\n\"reviewer\": Approve"
+
+	svc.mu.Lock()
+	svc.runs[runID].autoOrchestrate = true
+	svc.runs[runID].pendingAgentContext = []string{note, "other-note"}
+	svc.mu.Unlock()
+
+	svc.maybeAutoReinvokeHubWithNote(runID, note)
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	rs := svc.runs[runID]
+	if !rs.reinvokeInFlight {
+		t.Fatal("expected reinvokeInFlight after idle schedule")
+	}
+	if len(rs.pendingAgentContext) != 1 || rs.pendingAgentContext[0] != "other-note" {
+		t.Fatalf("pendingAgentContext = %#v, want only other-note after dedupe", rs.pendingAgentContext)
 	}
 }
 

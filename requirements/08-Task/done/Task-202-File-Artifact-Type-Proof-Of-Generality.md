@@ -23,6 +23,7 @@
 - Adds a second built-in artifact type, `file_artifact.v1`, to prove CP-45 is not hardcoded to context artifacts.
 - Stores file path lists in artifact instance config and validates workspace-safe path handling.
 - Allows a consuming step to receive/render file artifact content according to type contract.
+- **Product semantics amendment (Task-223):** Task-202 shipped the **read/inject substrate**. OUTPUT write enforcement + review INPUT chain are Task-223 (not only "read existing paths").
 
 ### Current Ask
 

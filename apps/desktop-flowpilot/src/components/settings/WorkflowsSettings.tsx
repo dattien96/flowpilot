@@ -13,6 +13,15 @@ import type {
 import { FLOW_BEHAVIOR_OPTIONS, FLOW_EDGE_TERMINALS, validateFlowGraph } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
 import { formatTimestamp, integrationTypes, toErrorMessage } from "@/components/settings/settingsHelpers";
+import {
+  DEFAULT_CODING_MEMO_SECTIONS,
+  emptyFileArtifactConfig,
+  isFileArtifactStructureEnabled,
+  normalizeFileArtifactConfigForSave,
+  parseFileArtifactStructure,
+  sectionsToTextarea,
+  withFileArtifactStructure,
+} from "@/components/settings/fileArtifactConfig";
 import { createRunnerClient } from "@/client/createRunnerClient";
 import type { AgentDefinition } from "@/types/contract";
 
@@ -179,6 +188,23 @@ function createEmptyWorkflowDraft(projects: Project[], modelId: string): Workflo
   };
 }
 
+// normalizeWorkflowEdgesSnapshot stabilizes edges for dirty comparison
+// (BUG-274: order is non-semantic for save enablement).
+function normalizeWorkflowEdgesSnapshot(edges: Workflow["edges"] | undefined) {
+  return [...(edges ?? [])]
+    .map((edge) => ({
+      from: edge.from ?? "",
+      to: edge.to ?? "",
+      kind: edge.kind ?? "",
+      when: edge.when ?? "",
+    }))
+    .sort((a, b) => {
+      const ak = `${a.from}\0${a.to}\0${a.kind}\0${a.when}`;
+      const bk = `${b.from}\0${b.to}\0${b.kind}\0${b.when}`;
+      return ak.localeCompare(bk);
+    });
+}
+
 function normalizeWorkflowSnapshot(draft: WorkflowDraft | null, steps: WorkflowStep[]) {
   if (!draft) return "";
   return JSON.stringify({
@@ -189,6 +215,13 @@ function normalizeWorkflowSnapshot(draft: WorkflowDraft | null, steps: WorkflowS
     modelOverride: draft.modelOverride ?? "",
     reasoningEffortOverride: draft.reasoningEffortOverride ?? "",
     yoloMode: draft.yoloMode,
+    // BUG-274: edges + policy must participate in dirty fingerprint or
+    // edges-only edits leave Save Workflow disabled.
+    policyCap: draft.policyCap ?? null,
+    policyOnCap: draft.policyOnCap ?? null,
+    policyExtendBy: draft.policyExtendBy ?? null,
+    policyExtendMax: draft.policyExtendMax ?? null,
+    edges: normalizeWorkflowEdgesSnapshot(draft.edges),
     steps: steps.map((step, index) => ({
       stepType: step.stepType,
       orderIndex: index,
@@ -310,6 +343,14 @@ function ArtifactsTabContent(props: {
   const draftPaths = isFileType
     ? ((artifactInstanceDraft?.configJson.paths as string[] | undefined) ?? []).join("\n")
     : "";
+  const draftConfig = artifactInstanceDraft?.configJson as Record<string, unknown> | undefined;
+  const structureEnabled = isFileType && isFileArtifactStructureEnabled(draftConfig);
+  const draftFileStructure = isFileType ? parseFileArtifactStructure(draftConfig) : null;
+  // When structure is off, keep sections text empty so enabling does not
+  // silently inject coding-memo titles (defaults apply on Save or preset button).
+  const draftStructureSections = structureEnabled
+    ? sectionsToTextarea(draftFileStructure?.sections ?? [])
+    : "";
   const draftSources = isContextType
     ? ((artifactInstanceDraft?.configJson.sources as string[] | undefined) ?? [])
     : [];
@@ -364,6 +405,11 @@ function ArtifactsTabContent(props: {
           {isContextType ? (
             <div className="settings-field settings-field-full">
               <span>Context Sources</span>
+              <small className="settings-field-help">
+                Primary authoring path (CP-45): sources live on this <code>context_artifact.v1</code> instance.
+                Bind the instance on a <code>context.produce</code> step as Artifact Output — do not use raw
+                Step-level Context Sources chips.
+              </small>
               <div className="workflow-chips">
                 {contextSourceOptions.map((option) => {
                   const checked = draftSources.includes(option.id);
@@ -393,22 +439,105 @@ function ArtifactsTabContent(props: {
             </div>
           ) : null}
           {isFileType ? (
-            <label className="settings-field settings-field-full">
-              <span>File Paths (one per line, workspace-relative)</span>
-              <textarea
-                disabled={artifactInstanceDraft.isBuiltin}
-                onChange={(event) =>
-                  setArtifactInstanceDraft({
-                    ...artifactInstanceDraft,
-                    configJson: {
-                      ...artifactInstanceDraft.configJson,
-                      paths: event.target.value.split("\n").map((line) => line.trim()).filter(Boolean),
-                    },
-                  })
-                }
-                value={draftPaths}
-              />
-            </label>
+            <>
+              <label className="settings-field settings-field-full">
+                <span>File Paths (one per line, workspace-relative)</span>
+                <small className="settings-field-help">
+                  Workspace-relative path(s) this instance designates (Task-223 / BUG-276).{" "}
+                  <strong>Output</strong> = write contract (agent must create/update these files; gate reprompts if
+                  missing). <strong>Input</strong> = path mention only — agent is told to open/read those paths with
+                  tools; file body is not pasted into the prompt (unlike context packages).
+                </small>
+                <textarea
+                  disabled={artifactInstanceDraft.isBuiltin}
+                  onChange={(event) =>
+                    setArtifactInstanceDraft({
+                      ...artifactInstanceDraft,
+                      configJson: {
+                        ...artifactInstanceDraft.configJson,
+                        paths: event.target.value.split("\n").map((line) => line.trim()).filter(Boolean),
+                      },
+                    })
+                  }
+                  placeholder={"docs/coder-summary.md"}
+                  value={draftPaths}
+                />
+              </label>
+              {/* Checkbox is NOT nested as a .settings-field > input (text-field CSS
+                  stretched checkboxes into full-width bars). Use the same pattern as YOLO. */}
+              <div className="settings-field-full" style={{ display: "grid", gap: "8px" }}>
+                <label className="settings-checkbox">
+                  <input
+                    checked={structureEnabled}
+                    disabled={artifactInstanceDraft.isBuiltin}
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      setArtifactInstanceDraft({
+                        ...artifactInstanceDraft,
+                        configJson: withFileArtifactStructure(
+                          artifactInstanceDraft.configJson as Record<string, unknown>,
+                          enabled,
+                          // Enable with empty sections; Save or "Use coding memo" fills defaults.
+                          "",
+                          { fillDefaultWhenEmpty: false },
+                        ),
+                      });
+                    }}
+                    type="checkbox"
+                  />
+                  <span>Require markdown sections (OUTPUT template + gate)</span>
+                </label>
+                <small className="settings-field-help">
+                  Task-225: optional per-instance structure. When enabled and this instance is bound as a{" "}
+                  <strong>required Output</strong>, the agent prompt lists these section titles and the flow gate
+                  checks they exist as ATX headings after the file is written (flexible level/casing). Leave off for
+                  testing/planning/raw notes (existence-only). Does not affect Input path-only behavior.
+                </small>
+                {structureEnabled ? (
+                  <>
+                    <label className="settings-field settings-field-full">
+                      <span>Section titles (one per line)</span>
+                      <textarea
+                        disabled={artifactInstanceDraft.isBuiltin}
+                        onChange={(event) =>
+                          setArtifactInstanceDraft({
+                            ...artifactInstanceDraft,
+                            configJson: withFileArtifactStructure(
+                              artifactInstanceDraft.configJson as Record<string, unknown>,
+                              true,
+                              event.target.value,
+                            ),
+                          })
+                        }
+                        placeholder={"What\nWhy\nBaseline"}
+                        rows={4}
+                        value={draftStructureSections}
+                      />
+                    </label>
+                    {!artifactInstanceDraft.isBuiltin ? (
+                      <div className="settings-actions">
+                        <button
+                          className="secondary-btn"
+                          onClick={() =>
+                            setArtifactInstanceDraft({
+                              ...artifactInstanceDraft,
+                              configJson: withFileArtifactStructure(
+                                artifactInstanceDraft.configJson as Record<string, unknown>,
+                                true,
+                                sectionsToTextarea([...DEFAULT_CODING_MEMO_SECTIONS]),
+                              ),
+                            })
+                          }
+                          type="button"
+                        >
+                          Use coding memo (What / Why / Baseline)
+                        </button>
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            </>
           ) : null}
         </div>
         {!artifactInstanceDraft.isBuiltin ? (
@@ -436,6 +565,17 @@ function ArtifactsTabContent(props: {
             <div className="settings-list-item static" key={type.id}>
               <strong>{type.id}</strong>
               <span>{type.category} · {type.status}</span>
+              {type.id === "file_artifact.v1" ? (
+                <small>
+                  Path-designated file artifact: bind as <strong>Output</strong> so the step must write those
+                  path(s); bind as <strong>Input</strong> so the step reads them (e.g. coder → review). Optional{" "}
+                  <strong>markdown sections</strong> on the instance configure OUTPUT template + structure gate
+                  (Task-225).
+                </small>
+              ) : null}
+              {type.id === "context_artifact.v1" ? (
+                <small>Context package producer: configure sources on the instance, then bind as step Artifact I/O.</small>
+              ) : null}
             </div>
           ))}
           {artifactTypes.length === 0 ? <div className="settings-list-empty">No artifact types.</div> : null}
@@ -2114,22 +2254,22 @@ export function WorkflowsSettings(): React.ReactElement {
             value={draft.contextRef ?? ""}
           />
         </label>
-        <div className="settings-field settings-field-full">
-          <div className="workflow-chip-row">
-            <span>Context Sources</span>
-            <button
-              className="secondary-btn workflow-chip-add-btn"
-              onClick={() => setPickerModal({ kind: "context-source", mode })}
-              type="button"
-            >
-              + Add
-            </button>
-          </div>
-          {draft.contextSources.length === 0 ? (
-            <div className="workflow-chip-empty">
-              None selected (falls back to the flow's default context sources)
+        {/* Task-222 / CP-45 residual: default Step UX is artifact-only.
+            Raw step contextSources remains a D-6 transition/fallback data field
+            (runner still honors it when no context_artifact binding wins). Hide
+            the authoring chips by default; only surface a legacy readout when
+            saved data still has raw ids so old flows are not silent. */}
+        {draft.contextSources.length > 0 ? (
+          <div className="settings-field settings-field-full">
+            <div className="workflow-chip-row">
+              <span>Legacy context sources (clear only)</span>
             </div>
-          ) : (
+            <small className="settings-field-help">
+              Transition data from CP-44/Task-196. Prefer Artifacts tab →{" "}
+              <code>context_artifact.v1</code> instance sources, then bind under Artifact
+              Inputs/Outputs. Runner still applies these raw ids only when no artifact
+              binding supplies sources (SD-23 D-6). Clear by removing chips if you no longer need them.
+            </small>
             <div className="workflow-chips">
               {draft.contextSources.map((sourceId) => (
                 <span className="workflow-chip" key={sourceId}>
@@ -2137,7 +2277,7 @@ export function WorkflowsSettings(): React.ReactElement {
                     {contextSourceOptions.find((option) => option.id === sourceId)?.label ?? sourceId}
                   </span>
                   <button
-                    aria-label={`Remove ${sourceId}`}
+                    aria-label={`Remove legacy ${sourceId}`}
                     className="workflow-chip-remove"
                     onClick={() =>
                       onChange({
@@ -2152,16 +2292,14 @@ export function WorkflowsSettings(): React.ReactElement {
                 </span>
               ))}
             </div>
-          )}
-        </div>
-        {/* CP-45/SD-23 Task-200: typed artifact instance bindings, distinct
-            from "Context Sources" above (which selects raw
-            ContextSourceRegistry ids directly, CP-44/Task-196's transition
-            layer). A step attaches a LIST
-            of artifact instances per direction (SD-23 D-1); options are
-            filtered to instances whose type is compatible with this step's
-            behavior (D-7 — context.produce steps see context_artifact
-            instances, every other behavior sees non-context instances). */}
+          </div>
+        ) : null}
+        {/* CP-45/SD-23 Task-200 + Task-222: primary Step authoring is typed
+            artifact instance bindings. Raw step contextSources is fallback-only
+            data (D-6), not the default UX. A step attaches a LIST of instances
+            per direction (D-1); picker options are filtered by behavior (D-7 —
+            context.produce → context_artifact; other behaviors → non-context,
+            e.g. file_artifact). */}
         {(["output", "input"] as const).map((direction) => {
           const bindings = draft.artifactBindings.filter((b) => b.direction === direction);
           return (
@@ -2181,6 +2319,11 @@ export function WorkflowsSettings(): React.ReactElement {
                   + Add
                 </button>
               </div>
+              <small className="settings-field-help">
+                {direction === "output"
+                  ? "Output: this step must produce the bound file_artifact path(s) (write contract)."
+                  : "Input: prompt mentions bound file path(s); agent reads via tools (no full-file paste)."}
+              </small>
               {bindings.length === 0 ? (
                 <div className="workflow-chip-empty">None bound</div>
               ) : (
@@ -2450,7 +2593,7 @@ export function WorkflowsSettings(): React.ReactElement {
               artifactTypeId,
               name: "",
               description: "",
-              configJson: artifactTypeId === "file_artifact.v1" ? { paths: [] } : { sources: [] },
+              configJson: artifactTypeId === "file_artifact.v1" ? emptyFileArtifactConfig() : { sources: [] },
               isBuiltin: false,
               status: "active",
               createdAt: "",
@@ -2476,7 +2619,16 @@ export function WorkflowsSettings(): React.ReactElement {
             setBusy(true);
             try {
               const admin = await getAdminUseCases();
-              await admin.workflows.saveArtifactInstance(artifactInstanceDraft);
+              const draftToSave =
+                artifactInstanceDraft.artifactTypeId === "file_artifact.v1"
+                  ? {
+                      ...artifactInstanceDraft,
+                      configJson: normalizeFileArtifactConfigForSave(
+                        artifactInstanceDraft.configJson as Record<string, unknown>,
+                      ),
+                    }
+                  : artifactInstanceDraft;
+              await admin.workflows.saveArtifactInstance(draftToSave);
               await refresh(selectedWorkflowId, selectedStepType, { preserveCreateDrafts: true });
               setArtifactInstanceView("list");
               setArtifactInstanceDraft(null);

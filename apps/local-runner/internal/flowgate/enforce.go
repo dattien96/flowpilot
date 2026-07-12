@@ -141,6 +141,18 @@ func remediationFor(v Violation) string {
 		return "• Missing or unverified feature key. " + shortlist +
 			"Use a verified key from `change-audit/FEATURE-KEYS.md`, or register a new one there first if none fits. " +
 			"Then update the commit subject to use `[Type][feature][layer?]` before retrying."
+	case "required_artifact_output_missing":
+		// Detail already names the missing paths from Evaluate.
+		return "• Missing required file artifact output(s). " + v.Detail + ". " +
+			"Create or update each listed workspace-relative path with your tools now " +
+			"(this is a file_artifact.v1 OUTPUT write contract — chat text alone is not enough). " +
+			"Do not invent other paths; write exactly the bound artifact path(s)."
+	case "required_artifact_output_structure_missing":
+		// Task-225: files exist but lack declared structure.sections headings.
+		return "• Required file artifact structure incomplete. " + v.Detail + ". " +
+			"Update each listed existing file in place and add the missing markdown section headings " +
+			"(ATX headings such as `## SectionName` — level and casing may vary). " +
+			"Do not invent new paths; edit the bound artifact path(s) only."
 	default:
 		return "• " + v.Detail
 	}
