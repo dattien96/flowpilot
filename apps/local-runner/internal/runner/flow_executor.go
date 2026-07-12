@@ -136,9 +136,10 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 			"agent_name", agentName,
 		)
 		agentDef, _ := resolvePackAgentDefinition(agentName)
+		entryPrompt := composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), userPrompt, node)
 		if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
 			Agent:             agentName,
-			Prompt:            userPrompt,
+			Prompt:            entryPrompt,
 			Wait:              false,
 			Label:             node.ID,
 			AutoOrchestrate:   true,
@@ -389,12 +390,9 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 		}
 	}
 	prompt = appendGoogleDriveTargetPrompt(prompt, mcpDriverTarget)
-	// CP-45/SD-23 D-8/D-11 (Task-202): append any non-context artifact bound
-	// to the delegate target's input (e.g. file_artifact.v1) — proves the
-	// framework's cross-step I/O beyond context without adding a new
-	// behavior node. context_artifact bindings are excluded here; they stay
-	// on the context.produce/render path above.
-	prompt += resolveInputArtifactPrompt(s.workspaceCwdFor(parentRunID), *delegateTarget)
+	// Task-202/223: INPUT file artifacts (read) + OUTPUT file write contract
+	// for the delegate target. context_artifact stays on the package path above.
+	prompt = composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), prompt, *delegateTarget)
 
 	// Same ordering rationale as the delegate-entry path above: track the
 	// flow's topology before spawning, not after, so a fast-completing child
@@ -748,10 +746,6 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 	// tests) just asks the reviewer to review and report findings as its own
 	// final message; only the hub's own synthesis turn (after the join
 	// completes) is supposed to call the control tool. Match that convention.
-	prompt := fmt.Sprintf(
-		"[flow-engine] Review this result from node %q and report your findings (approve or request changes, with specifics) as your final message:\n\n%s",
-		completedNodeID, truncateDisplayField(resultMessage, 2000),
-	)
 	// BUG-174: the node that just completed is DONE on the step timeline; its
 	// forward targets become RUNNING as they are spawned below. Gated to
 	// flow-engine-driven runs so the AI-driven spawn_agent path is untouched.
@@ -759,6 +753,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 	if flowDriven {
 		s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
 	}
+	cwd := s.workspaceCwdFor(parentRunID)
 
 	spawnedAny := false
 	for i, node := range targetNodes {
@@ -785,6 +780,12 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 			)
 			continue
 		}
+		// Task-224 / BUG-277: deliverable-centric review — when the target has
+		// file_artifact INPUT paths, omit the full coder final message body
+		// (path+tools is enough). Otherwise keep a truncated handoff body.
+		baseReviewPrompt := buildFlowReviewHandoffPrompt(completedNodeID, resultMessage, node)
+		// Task-223: each target node gets its own INPUT path inject + OUTPUT write contract.
+		prompt := composeFlowNodeAgentPrompt(cwd, baseReviewPrompt, node)
 		if flowNodeReusesChild(node) {
 			if reused := s.reinvokeExistingFlowChild(parentRunID, node.ID, prompt); reused {
 				spawnedAny = true
@@ -847,6 +848,24 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		"target_count", len(targetNodes),
 	)
 	return spawnedAny
+}
+
+// buildFlowReviewHandoffPrompt builds the tryAdvanceFlowFromNode brief for a
+// downstream delegate. Task-224: when node has file_artifact INPUT paths,
+// omit the full upstream final message (deliverable is the file path).
+func buildFlowReviewHandoffPrompt(completedNodeID, resultMessage string, node agentpack.FlowNode) string {
+	if nodeHasFileArtifactInput(node) {
+		return fmt.Sprintf(
+			"[flow-engine] Review this result from node %q and report your findings (approve or request changes, with specifics) as your final message.\n\n"+
+				"The upstream deliverable is in the bound file artifact path(s) listed below — open them with your tools. "+
+				"Coder final message body is omitted on purpose (path-first handoff).",
+			completedNodeID,
+		)
+	}
+	return fmt.Sprintf(
+		"[flow-engine] Review this result from node %q and report your findings (approve or request changes, with specifics) as your final message:\n\n%s",
+		completedNodeID, truncateDisplayField(resultMessage, 2000),
+	)
 }
 
 // forwardDoneTargets returns the (deduplicated) targets of fromNodeID's
