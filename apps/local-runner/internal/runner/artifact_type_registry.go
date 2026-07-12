@@ -183,34 +183,164 @@ func (fileArtifactResolver) Resolve(workspaceCwd string, binding agentpack.FlowA
 	}, nil
 }
 
-// resolveInputArtifactPrompt renders every non-context input artifact
-// binding on node (via DefaultArtifactTypeRegistry) into one prompt-appendable
-// string (CP-45/SD-23 D-8/D-11, Task-202: "step B binds the same instance as
-// input; the resolver injects the file path into step B's prompt"). A
-// resolve error degrades to a warning line rather than failing the node —
-// consistent with ContextSource.Collect's degrade-soft contract (SD-23 D-9,
-// F-7) — since a stale/misconfigured non-required artifact must never block
-// the step it's attached to.
+// resolveInputArtifactPrompt renders non-context INPUT artifact bindings for
+// a consumer node prompt.
+//
+// BUG-276 / owner product rule: file_artifact.v1 has durable workspace paths —
+// the prompt only **mentions those paths** and tells the agent to open them
+// with tools. Full file body is NOT pasted (contrast context_artifact / Flow
+// Context Package, which must push content because it has no path handle).
+//
+// Task-202's excerpt resolver remains available for other call sites; INPUT
+// prompt assembly intentionally does not use it.
 func resolveInputArtifactPrompt(workspaceCwd string, node agentpack.FlowNode) string {
-	var out strings.Builder
+	_ = workspaceCwd // reserved for optional existence soft-checks
+	var paths []string
+	seen := make(map[string]bool)
 	for _, b := range node.ArtifactBindings {
 		if b.Direction != "input" || b.ArtifactTypeID == ArtifactTypeContext {
 			continue // context_artifact stays on its own context.produce/render pipeline
 		}
-		resolver, err := DefaultArtifactTypeRegistry().Resolve(b.ArtifactTypeID)
-		if err != nil {
-			out.WriteString(fmt.Sprintf("\n\n[artifact %s: %v]", b.ArtifactInstanceID, err))
+		if b.ArtifactTypeID != ArtifactTypeFile {
+			// Unknown non-context types: path-only when config has paths; else skip body dump.
+			for _, p := range fileArtifactPathsFromConfig(b.ConfigJSON) {
+				if !seen[p] {
+					seen[p] = true
+					paths = append(paths, p)
+				}
+			}
 			continue
 		}
-		result, err := resolver.Resolve(workspaceCwd, b)
-		if err != nil {
-			out.WriteString(fmt.Sprintf("\n\n[artifact %s: %v]", b.ArtifactInstanceID, err))
-			continue
+		for _, p := range fileArtifactPathsFromConfig(b.ConfigJSON) {
+			if seen[p] {
+				continue
+			}
+			seen[p] = true
+			paths = append(paths, p)
 		}
-		if result.Body == "" {
-			continue
-		}
-		out.WriteString(fmt.Sprintf("\n\n### Bound artifact (%s, %s)\n%s", b.ArtifactTypeID, result.SourceRef, result.Body))
+	}
+	if len(paths) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	for _, p := range paths {
+		out.WriteString("\n- `")
+		out.WriteString(p)
+		out.WriteString("`")
 	}
 	return out.String()
+}
+
+// fileArtifactPathsFromConfig extracts workspace-relative paths from a
+// file_artifact.v1 binding's config_json.paths list.
+func fileArtifactPathsFromConfig(config map[string]any) []string {
+	if config == nil {
+		return nil
+	}
+	raw, ok := config["paths"].([]any)
+	if !ok {
+		return nil
+	}
+	paths := make([]string, 0, len(raw))
+	seen := make(map[string]bool, len(raw))
+	for _, item := range raw {
+		s, ok := item.(string)
+		if !ok {
+			continue
+		}
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		paths = append(paths, s)
+	}
+	return paths
+}
+
+// requiredFileArtifactOutputPaths returns designated paths from required
+// OUTPUT bindings of type file_artifact.v1 (Task-223 write contract).
+// Optional (Required=false) outputs are skipped for hard enforcement.
+func requiredFileArtifactOutputPaths(node agentpack.FlowNode) []string {
+	var paths []string
+	seen := make(map[string]bool)
+	for _, b := range node.ArtifactBindings {
+		if b.Direction != "output" || b.ArtifactTypeID != ArtifactTypeFile || !b.Required {
+			continue
+		}
+		for _, p := range fileArtifactPathsFromConfig(b.ConfigJSON) {
+			if seen[p] {
+				continue
+			}
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	}
+	return paths
+}
+
+// appendInputArtifactPrompt appends INPUT file_artifact **path mentions**
+// (BUG-276) — not file bodies — plus a short instruction to read via tools.
+func appendInputArtifactPrompt(workspaceCwd, prompt string, node agentpack.FlowNode) string {
+	block := resolveInputArtifactPrompt(workspaceCwd, node)
+	if block == "" {
+		return prompt
+	}
+	header := "\n\n## Bound file artifacts (read with tools)\n" +
+		"Open and read these workspace paths with your tools before proceeding. " +
+		"File contents are not pasted into this prompt — use the paths as the source of truth.\n"
+	return prompt + header + block
+}
+
+// nodeHasFileArtifactInput reports whether node has any file_artifact INPUT
+// paths (Task-224: review handoff omits full coder final message when true).
+func nodeHasFileArtifactInput(node agentpack.FlowNode) bool {
+	for _, b := range node.ArtifactBindings {
+		if b.Direction != "input" || b.ArtifactTypeID != ArtifactTypeFile {
+			continue
+		}
+		if len(fileArtifactPathsFromConfig(b.ConfigJSON)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// appendRequiredOutputArtifactPrompt appends the Task-223 write-contract
+// section for required file_artifact OUTPUT paths, plus Task-224 What/Why/
+// Baseline template guidance so review can stay deliverable-centric.
+func appendRequiredOutputArtifactPrompt(prompt string, node agentpack.FlowNode) string {
+	paths := requiredFileArtifactOutputPaths(node)
+	if len(paths) == 0 {
+		return prompt
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## Required file outputs (write contract)\n")
+	b.WriteString("Before you finish this turn you MUST create or update each of these workspace-relative paths:\n")
+	for _, p := range paths {
+		b.WriteString("- `")
+		b.WriteString(p)
+		b.WriteString("`\n")
+	}
+	b.WriteString("Do not only describe the content in chat — write the file(s) with your tools. ")
+	b.WriteString("The flow gate will reprompt if any required path is missing after your turn.\n")
+	b.WriteString("\nEach required file MUST be markdown including at least these sections:\n\n")
+	b.WriteString("## What\n")
+	b.WriteString("- What you produced or changed (paths, scope).\n\n")
+	b.WriteString("## Why\n")
+	b.WriteString("- Why this approach **now** (not rejected alternatives).\n")
+	b.WriteString("- Past decisions already closed from Prior work / Prior discussion / the Flow Context Package — list them; do not silently reopen.\n")
+	b.WriteString("- If you conflict with a closed decision, state the conflict explicitly.\n\n")
+	b.WriteString("## Baseline\n")
+	b.WriteString("- feature_key:\n")
+	b.WriteString("- source_doc_id / CA / Task / BUG / commit:\n")
+	return prompt + b.String()
+}
+
+// composeFlowNodeAgentPrompt applies Task-223 INPUT read inject then OUTPUT
+// write-contract inject to a base agent prompt for a flow node.
+func composeFlowNodeAgentPrompt(workspaceCwd, prompt string, node agentpack.FlowNode) string {
+	prompt = appendInputArtifactPrompt(workspaceCwd, prompt, node)
+	prompt = appendRequiredOutputArtifactPrompt(prompt, node)
+	return prompt
 }
