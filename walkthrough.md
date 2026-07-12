@@ -1,68 +1,98 @@
-# CP-37 Review Walkthrough
+# Task-224 / BUG-277 Implementation Review
 
 ## Scope
 
-- Reviewed CP-37 chat-summary Drive sync update and related docs/tests.
-- Files inspected: `contextsync` shared-file/manifest code and tests, runner context-engine sync helper, engine init call site, chat-summary post-turn hook, CP-37/CP-35/SD-17 docs, and CA-132.
-- Verification run: `cd apps/local-runner && go test ./internal/contextsync ./internal/runner -count=1`; `git diff --check`.
+Reviewed the Task-224 / BUG-277 / CA-289 implementation in:
 
-## Decision
+- `apps/local-runner/internal/runner/feature_history.go`
+- `apps/local-runner/internal/runner/flow_executor.go`
+- `apps/local-runner/internal/runner/artifact_type_registry.go`
+- `apps/local-runner/internal/runner/artifact_type_registry_test.go`
+- `apps/local-runner/internal/runner/interactive_service_test.go`
 
-Pass.
+Reviewed against:
 
-## Findings
+- `requirements/08-Task/done/Task-224-Flow-Prompt-Scoping-And-Coder-Output-Why-Template.md`
+- `requirements/09-BugFix/done/BUG-277-Flow-Ledger-History-Over-Injected-On-Non-Context-Consumers.md`
+- `change-audit/CA-289-task-224-flow-prompt-scoping-and-coder-why-template.md`
 
-- No blocking findings.
+Limitations:
 
-## Acceptance Audit
+- GitNexus MCP tools required by `AGENTS.md` were not exposed in this session, so I could not run `gitnexus_impact` or `gitnexus_detect_changes`.
+- `code-review-skill` asks for reviewer-agent delegation, but current tool policy only allows spawning sub-agents when the user explicitly asks for delegation. This review is direct/self-contained.
 
-| Criterion | Result | Evidence |
-|---|---:|---|
-| Shared files include `ledger/chat_summary.ndjson` | Pass | `EngineStore.SharedFiles()` includes `ChatSummaryPath()` |
-| `WriteManifest` includes chat summary when present | Pass | Manifest iterates `SharedFiles()`; test writes chat summary and expects three manifest entries with flow rules absent |
-| Engine init syncs through one helper | Pass | `runEngineInit` delegates to `syncContextEngineFiles` |
-| Post-summary append runs best-effort context sync | Pass | `recordChatSummaryIfNeeded` invokes `syncContextEngineFilesBestEffort`; runner tests cover sync trigger and swallowed sync failure |
-| Focused tests cover fourth shared file | Pass | `contextsync_test.go` covers shared path list, manifest, and sync with chat summary |
-| CP-37 Section 7 includes Drive E2E validation rows | Pass | `V-161-06`, `V-161-07`, and `V-161-08` cover sync inclusion, post-turn trigger, and Drive-unavailable degrade |
+## Verdict
 
-## Skill Audit Matrix
+**PASS**
 
-| Skill | Reviewer Verification |
-|---|---|
-| token-optimization-skill | Used targeted reads around the provided scope and exact phase docs. |
-| architecture-skill | No Clean Architecture boundary violation found in the Go runner/contextsync slice. |
-| code-style-skill | Naming and helper extraction are consistent with existing Go package style. |
-| testing-skill | Direct coverage now exists for post-append sync trigger and swallowed sync failure. |
-| code-review-skill | Reviewed correctness, regressions, missing tests, and boundary risks against acceptance criteria. |
-| coding-skill | No tactical hygiene issue found in the scoped Go changes. UI/Compose rules were not applicable. |
-| compose-ui-skill | Not applicable: no Compose/UI code in the requested review scope. |
-| refactor-skill | Helper extraction preserved engine init behavior and reduced duplication. |
-| common-mistakes-skill | Checked scope boundaries against a wider dirty worktree and avoided unrelated files. |
-| ut-logic-sync-skill | CP-37 Drive sync validation rows align with current code and tests. |
+The implementation matches the Task-224 / BUG-277 acceptance criteria. I found no blocking correctness bug in the requested changed files. The remaining items are test hardening and one scope-risk note for generic non-context artifact inputs.
+
+## Acceptance Match
+
+| AC | Result | Notes |
+|---|---|---|
+| AC-1 Coder still gets Flow Context Package | PASS | `startInlineEntryChain` still renders the context package before applying node artifact prompts, then `injectFeatureHistoryPrompt` skips double injection via `isFlowContextHandoff`; see `flow_executor.go:392-395` and `feature_history.go:21-23`. |
+| AC-2 Reviewer does not get full Prior work ledger inject | PASS | `injectFeatureHistoryPrompt` now skips flow-engine prompts and review handoffs; review handoff detection uses `strings.Contains`, so it still works after child-prompt wrapping; see `feature_history.go:21-23` and `feature_history.go:45-47`. |
+| AC-3 Reviewer with file INPUT gets no full coder final message | PASS | `tryAdvanceFlowFromNode` builds per-target prompts, and `buildFlowReviewHandoffPrompt` omits `resultMessage` when `nodeHasFileArtifactInput` is true; see `flow_executor.go:783-788` and `flow_executor.go:856-864`. |
+| AC-4 OUTPUT template requires What / Why / Baseline | PASS | Required file output prompt now includes the three markdown headings and explicit closed-decision guidance in Why; see `artifact_type_registry.go:327-336`. |
+| AC-5 Hub pure synthesis does not re-dump Prior work | PASS | `isFlowEnginePrompt` classifies synthesis/join/system flow prompts and `injectFeatureHistoryPrompt` returns them unchanged; see `feature_history.go:146-164`. |
+| AC-6 Task-223 write gate + BUG-276 path-only still green | PASS | OUTPUT write contract still lists required paths, INPUT file artifacts remain path-only, and focused tests pass; see `artifact_type_registry.go:282-292` and `artifact_type_registry.go:309-337`. |
+| Do not regress context package handoff skip | PASS | Existing `isFlowContextHandoff` sentinel remains in the injection skip path; focused wrapped-context test also passes. |
+
+## Bugs / Edge Cases / Null Paths
+
+No blocking bugs found.
+
+Edge cases reviewed:
+
+- `nodeHasFileArtifactInput` handles nil or missing `ConfigJSON` safely because `fileArtifactPathsFromConfig` returns nil for nil maps, missing `paths`, non-string values, blank strings, and duplicates; see `artifact_type_registry.go:236-258` and `artifact_type_registry.go:297-306`.
+- Empty or unconfigured file INPUT paths do not trigger coder-body omission. That is correct for Task-224 because omission is tied to actual bound file path(s), not merely an empty binding.
+- Wrapped review prompts are covered by `isFlowReviewHandoffPrompt` using `Contains`, so a child prompt with an agent-system prefix still skips ledger injection. This is important because `isFlowEnginePrompt` alone would only catch the review handoff when `[flow-engine]` is at the beginning.
+- Review handoff body is still included, truncated, when the target has no file artifact INPUT. That matches the implementation note and does not violate AC-3.
+
+Scope-risk note:
+
+- `resolveInputArtifactPrompt` now bypasses `DefaultArtifactTypeRegistry().Resolve` for every non-context input and only emits `config_json.paths` when present; see `artifact_type_registry.go:197-231`. For the current product surface this is fine because `file_artifact.v1` is the only registered non-context artifact, and BUG-276 requires path-only. If SD-23 later adds another resolver-backed non-context artifact whose prompt input is not path-based, this helper will need to be generalized again. Not a Task-224 blocker.
+
+## Test Gaps
+
+The added tests cover the core helper behavior:
+
+- Path-only INPUT and no body paste: `artifact_type_registry_test.go:197-214`, `artifact_type_registry_test.go:272-305`.
+- Required OUTPUT What / Why / Baseline template: `artifact_type_registry_test.go:231-247`.
+- Review handoff omits coder final body when file INPUT is bound: `artifact_type_registry_test.go:249-270`.
+- Injection skips review / engine / package prompts: `interactive_service_test.go:1064-1082`.
+
+Gaps worth closing later:
+
+- `TestInjectFeatureHistorySkipsFlowReviewAndEnginePrompts` uses an empty temp workspace, so it proves the skip path returns unchanged, but not that a real ledger/catalog would otherwise have injected. Add a fixture with `FEATURE-KEYS` and a ledger entry to make this a stronger regression test.
+- There is no full `tryAdvanceFlowFromNode` integration test asserting the spawned reviewer provider prompt simultaneously has no `## Prior work`, no coder final body, and has the bound file path section. The helper tests strongly cover this, but an end-to-end prompt capture would better protect the composition order.
+- There is no explicit test for a wrapped review handoff prompt with agent-system prefix. The implementation should pass because `isFlowReviewHandoffPrompt` uses `Contains`; add a direct test to prevent future refactors from switching back to `HasPrefix`.
+- AC-6 references Task-223 write gate and BUG-276 path-only. Existing focused tests passed, but I did not run the entire runner/flowgate suite in this review.
+
+## Scope Creep
+
+No feature rewrite or unrelated architecture change found in the requested files.
+
+The only mild scope expansion is the generic non-context artifact input behavior noted above: unknown/non-file artifact inputs are no longer resolved through the registry and only get path mentions if they expose `paths`. This is aligned with the current file-artifact policy but should be documented as current limitation rather than a general artifact framework rule.
 
 ## Verification
 
-- `go test ./internal/contextsync ./internal/runner -count=1`: pass.
-- `git diff --check`: pass.
+Ran:
 
----
+```bash
+go test ./internal/runner -run 'TestRequiredFile|TestBuildFlowReview|TestInjectFeatureHistorySkips|TestComposeFlow|TestFlowCodingPromptSpawnWrappedDoesNotDuplicateHistory' -count=1
+```
 
-# BUG-252 Translate Popup Follow-up
+Result: PASS (`6 passed in 1 packages`).
 
-## Scope
+## Concrete Fix List For Grok
 
-- Updated [`TranslatePopup.tsx`](/Users/tiendat/Desktop/flowpilot/flowpilot/apps/desktop-flowpilot/src/components/TranslatePopup.tsx) and [`styles.css`](/Users/tiendat/Desktop/flowpilot/flowpilot/apps/desktop-flowpilot/src/styles.css) for the translate-popup interaction follow-up.
-- Scope stayed inside the desktop timeline translate popup: no API contract or runner changes.
+Verdict is **PASS**, so there is no required fix before acceptance.
 
-## Decision
+Recommended follow-ups:
 
-Pass.
-
-## Verification
-
-- `npm run typecheck` in `apps/desktop-flowpilot`: pass.
-- Manual code-path review confirms:
-  - popup prefers below-selection placement and flips above when space below is insufficient
-  - popup header can drag the result card while keeping it bounded to the viewport
-  - inside popup pointer interaction does not dismiss
-  - outside pointer interaction dismisses
+1. Strengthen `TestInjectFeatureHistorySkipsFlowReviewAndEnginePrompts` with a real catalog + ledger fixture so the test proves injection would happen without the new skip.
+2. Add an end-to-end prompt-capture test for coder -> reviewer auto-advance with file INPUT: assert no `## Prior work`, no unique coder final body, and bound path section present.
+3. Add a wrapped review-handoff detector test where the prompt starts with an agent-system prefix before `[flow-engine] Review this result from node`.
+4. Add a short comment or future task noting that non-context artifact INPUT prompt rendering is currently path-oriented and will need extension for future resolver-backed artifact types.

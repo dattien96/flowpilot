@@ -348,3 +348,47 @@ Tổng quát hóa mô hình "typed context package" thành một **artifact fram
   - Task-205's built-in flow proves cross-step binding *data* end to end, but live prompt injection is proven only at the one existing dispatch seam (`startInlineEntryChain`'s hop to `coder`); widening injection to every bound consumer node is a follow-up, not required by this CP's own DOD wording.
   - Full interactive UI verification (Task-199/200) needs a live local-runner + Supabase backend with these migrations applied — not available in this session's sandbox; verified via `tsc --noEmit` + a clean dev-server boot instead.
 - upstream docs updated: SD-23 (unchanged — implementation matched design as written, including the output/input direction fix caught during implementation, which was already correct in SD-23's own prose); CP-44/Task-195/Task-196 (updated earlier this session when Task-198 was renumbered to Task-204).
+
+## 13. Live E2E ledger (gate-sandbox, 2026-07-11 → 2026-07-12)
+
+Target: `/Users/tiendat/Desktop/BE/gate-sandbox`.
+
+### 13.1 Wave status
+
+| Wave | Status | Notes |
+|------|--------|-------|
+| **A1–A9** Artifact UI authoring | **PASS** | Types, instances, type-filter pickers; legacy Step Context Sources hidden (Task-222) |
+| **B** Bind flows | **PASS** | Binding OK; edges-only Save dirty fixed (BUG-274) |
+| **C** Fail-fast | **PASS** | Unknown source + type filter confirmed |
+| **D** Context package | **PASS** | Coder receives Flow Context Package (`calc-core` verified); history inside package |
+| **E** File write→read | **PASS** | OUTPUT write contract + gate (Task-223); INPUT path-only (BUG-276); What/Why/Baseline template (Task-224) |
+| **Hub synthesis** | **PASS** | Join note once; no feature self-resolve on flow-engine (BUG-275); no full Prior work dump on synthesis (Task-224) |
+| **Reviewer prompt scoping** | **PASS** | No ledger inject + no full coder final body when file INPUT (BUG-277 / Task-224); live `run-1024` |
+
+### 13.2 Follow-up tasks / bugs closed this verification
+
+| ID | Status | CA |
+|----|--------|-----|
+| Task-222 Artifact-only Step UX | **done** | CA-286 |
+| Task-223 File artifact write→read chain | **done** | CA-287 |
+| BUG-274 Edge dirty snapshot | **done** | CA-288 |
+| BUG-275 Hub join dedupe + feature resolve | **done** | CA-288 |
+| BUG-276 File INPUT path-only | **done** | CA-288 |
+| Task-224 Prompt scoping + Why template | **done** | CA-289 |
+| BUG-277 Ledger over-inject on review | **done** | CA-289 |
+
+### 13.3 Residual / not CP-45 blockers
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Chat_summary ledger **noise** in package Prior discussion | **Open (sandbox data)** | Old E2E agent text stored in `chat_summary.ndjson` under gate-sandbox; not an inject bug. Clean ledger locally if desired. |
+| Optional heading gate for What/Why/Baseline | **Deferred** | Task-224 v1 = prompt guidance only; Phase-2 optional reprompt |
+| Optional `prompt-index.jsonl` | **Deferred** | P4 discoverability only; `last-prompt` overwrite is expected |
+| SD-23 / Task-202 prose still mentioning INPUT excerpts | **Doc follow-up optional** | Product rule is path-only (BUG-276); authority note already on Task-202 |
+
+### 13.4 Live evidence
+
+- Pre-Task-224: `run-41047` hub, `run-41052` coder, `run-41359` reviewer (and later `run-309`/`314`/`658`).
+- Post-Task-224: `run-723` coder, `run-1024` reviewer, `run-718` hub — package + Why template; path-first review; no Prior work on review/hub synthesis.
+
+**CP-45 product live verification: complete** for artifact framework + agreed residuals above. Remaining items are non-blocking hygiene / deferred polish.
