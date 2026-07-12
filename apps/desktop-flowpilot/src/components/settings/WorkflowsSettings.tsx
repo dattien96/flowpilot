@@ -463,7 +463,9 @@ function ArtifactsTabContent(props: {
                   value={draftPaths}
                 />
               </label>
-              <div className="settings-field settings-field-full">
+              {/* Checkbox is NOT nested as a .settings-field > input (text-field CSS
+                  stretched checkboxes into full-width bars). Use the same pattern as YOLO. */}
+              <div className="settings-field-full" style={{ display: "grid", gap: "8px" }}>
                 <label className="settings-checkbox">
                   <input
                     checked={structureEnabled}
@@ -493,7 +495,7 @@ function ArtifactsTabContent(props: {
                 </small>
                 {structureEnabled ? (
                   <>
-                    <label className="settings-field settings-field-full" style={{ marginTop: "8px" }}>
+                    <label className="settings-field settings-field-full">
                       <span>Section titles (one per line)</span>
                       <textarea
                         disabled={artifactInstanceDraft.isBuiltin}
@@ -513,7 +515,7 @@ function ArtifactsTabContent(props: {
                       />
                     </label>
                     {!artifactInstanceDraft.isBuiltin ? (
-                      <div className="settings-actions" style={{ marginTop: "8px" }}>
+                      <div className="settings-actions">
                         <button
                           className="secondary-btn"
                           onClick={() =>
