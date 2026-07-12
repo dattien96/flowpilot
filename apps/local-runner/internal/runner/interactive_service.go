@@ -956,7 +956,10 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 			// hub reinvoke. Do not drop the joined note just because the single-flight
 			// guard is closed; the scheduled/current turn will either drain it, or a
 			// deferred reinvoke below will consume it on the next turn.
-			s.appendPendingAgentContextLocked(parentRunID, cohortNote)
+			// BUG-275: join path often already appended this note — avoid a second copy.
+			if !pendingAgentContextContains(parent.pendingAgentContext, cohortNote) {
+				s.appendPendingAgentContextLocked(parentRunID, cohortNote)
+			}
 		}
 		// startTurn drains pendingAgentContext atomically with setting turnInFlight=true
 		// (both under s.mu) before releasing the lock. So when we see turnInFlight=true
@@ -993,6 +996,13 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 	}
 	stepID := s.nextID("step")
 	parent.reinvokeInFlight = true
+	// BUG-275: join handler already put cohortNote in pendingAgentContext, and
+	// we embed the same note in the scheduled prompt. Remove one exact copy so
+	// startTurn's composeAgentContextBlock does not also wrap it under
+	// "[FlowPilot system note — sub-agents...]" (duplicate joined note).
+	if strings.TrimSpace(cohortNote) != "" {
+		parent.pendingAgentContext = removeOnePendingAgentContext(parent.pendingAgentContext, cohortNote)
+	}
 	s.mu.Unlock()
 	s.flowDiagLog(parentRunID, "hub_reinvoke_scheduled", "hub reinvoke scheduled",
 		"step_id", stepID,
@@ -1011,6 +1021,37 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 		prompt = cohortNote + "\n\n---\n\n" + prompt
 	}
 	s.scheduleChildTurn(parentRunID, stepID, prompt)
+}
+
+func pendingAgentContextContains(notes []string, note string) bool {
+	want := strings.TrimSpace(note)
+	if want == "" {
+		return false
+	}
+	for _, n := range notes {
+		if strings.TrimSpace(n) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// removeOnePendingAgentContext drops the first note equal to target (trimmed).
+func removeOnePendingAgentContext(notes []string, target string) []string {
+	want := strings.TrimSpace(target)
+	if want == "" || len(notes) == 0 {
+		return notes
+	}
+	out := make([]string, 0, len(notes))
+	removed := false
+	for _, n := range notes {
+		if !removed && strings.TrimSpace(n) == want {
+			removed = true
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // buildCoderReentryPrompt composes the full prompt for coder re-entry from the
@@ -1135,9 +1176,21 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 		}
 		flowDriven = parent.flowEngineDriven
 	}
-	if hasTargetNode && !flowNodeReusesChild(targetNode) {
-		s.mu.Unlock()
-		agentName := flowNodeAgentName(targetNode)
+	cwd := ""
+	if parent := s.runs[parentRunID]; parent != nil {
+		cwd = parent.workspaceCwd
+	}
+	// Snapshot node under lock; compose prompts after unlock (filesystem I/O).
+	composeNode := targetNode
+	composeOK := hasTargetNode
+	reuseChild := hasTargetNode && flowNodeReusesChild(targetNode)
+	s.mu.Unlock()
+	if composeOK {
+		// Task-223: re-attach INPUT read + OUTPUT write-contract on continue re-entry.
+		prompt = composeFlowNodeAgentPrompt(cwd, prompt, composeNode)
+	}
+	if composeOK && !reuseChild {
+		agentName := flowNodeAgentName(composeNode)
 		if agentName == "" {
 			return
 		}
@@ -1146,21 +1199,20 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 			Agent:            agentName,
 			Prompt:           prompt,
 			Wait:             false,
-			Label:            targetNode.ID,
+			Label:            composeNode.ID,
 			AutoOrchestrate:  true,
 			AgentDefOverride: agentDef,
-			Model:            s.resolveFlowNodeModel(context.Background(), targetNode),
+			Model:            s.resolveFlowNodeModel(context.Background(), composeNode),
 		}); err != nil {
-			log.Printf("[flow-executor] continue: spawn node %q (agent %q) failed: %v", targetNode.ID, agentName, err)
+			log.Printf("[flow-executor] continue: spawn node %q (agent %q) failed: %v", composeNode.ID, agentName, err)
 			return
 		}
 		if flowDriven {
-			s.setFlowStepStatus(context.Background(), parentRunID, targetNode.ID, StepStatusRunning)
-			s.stampFlowNodePosture(context.Background(), parentRunID, targetNode)
+			s.setFlowStepStatus(context.Background(), parentRunID, composeNode.ID, StepStatusRunning)
+			s.stampFlowNodePosture(context.Background(), parentRunID, composeNode)
 		}
 		return
 	}
-	s.mu.Unlock()
 	// BUG-242: delegate to the single reinvoke implementation instead of a
 	// second, older inline copy that never got the BUG-Rnd2 activationSeq/
 	// EventAgentSpawnedByUser fixes — this is the actual code path a
@@ -3105,11 +3157,16 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 
 	// Post-turn flow gate (CP-35 P-4/P-5): observe diff, evaluate rules, enforce.
 	// Non-fatal: any internal error inside runFlowGate degrades to pass.
-	// Child agent runs (coder, reviewer) are exempt: CA note enforcement is the
-	// hub/root run's responsibility. Gating child turns causes false violations
-	// because children make code changes but never write CA notes. (BUG-152)
-	if completed && rs.parentRunID == "" {
-		if s.runFlowGate(ctx, rs, turnID, fin) {
+	// Child agent runs (coder, reviewer) are exempt from full CA/task/test
+	// gates: that is the hub/root responsibility (BUG-152). Task-223 still
+	// evaluates the file_artifact OUTPUT write contract on the child that
+	// owns the OUTPUT binding — otherwise coder never gets r-artifact-output.
+	if completed {
+		if rs.parentRunID == "" {
+			if s.runFlowGate(ctx, rs, turnID, fin) {
+				completed = false
+			}
+		} else if s.runChildArtifactOutputGate(ctx, rs, turnID, fin) {
 			completed = false
 		}
 	}
