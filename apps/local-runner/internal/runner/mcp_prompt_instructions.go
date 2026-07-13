@@ -8,14 +8,75 @@ import (
 	"strings"
 )
 
+// mcpInstructionSpec is the per-MCP contract Task-227 generalizes
+// mcp_prompt_instructions.go around (CP-05-06 P-6): a FlowPilot-internal MCP
+// key (`google_drive`, and later `jira`, `firebase`, `telegram`) paired with
+// its prompt-instruction builder and its preflight checker. Adding a new
+// MCP's prompt-injection + preflight becomes "register a spec via
+// registerMcpInstructionSpec", not "add another hardcoded branch" to
+// InjectRequiredMcpInstructions/preparePromptForRequiredMcps/
+// applyRequiredMcpFailureStatus.
+type mcpInstructionSpec struct {
+	key               string
+	buildInstructions func(providerKey string, allowWrite bool, yoloMode bool) string
+	preflight         func(r *Runner, providerKey string, accountHomePath string) MCPPreflightCheck
+}
+
+// mcpInstructionSpecs holds every registered per-MCP contract. google_drive
+// is registered here unconditionally (it is a compile-time built-in, exactly
+// like the built-in context sources in registerBuiltinContextSources);
+// jira/firebase/telegram specs register themselves the same way once their
+// own tasks land, without touching this file.
+var mcpInstructionSpecs = map[string]mcpInstructionSpec{
+	"google_drive": {
+		key:               "google_drive",
+		buildInstructions: buildGoogleDriveMcpInstructions,
+		preflight:         (*Runner).PreflightGoogleDriveMcp,
+	},
+	"jira": {
+		key:               "jira",
+		buildInstructions: buildJiraMcpInstructions,
+		preflight:         (*Runner).PreflightJiraMcp,
+	},
+	"firebase": {
+		key:               "firebase",
+		buildInstructions: buildFirebaseMcpInstructions,
+		preflight:         (*Runner).PreflightFirebaseMcp,
+	},
+}
+
+// registerMcpInstructionSpec adds or overwrites the prompt-instruction +
+// preflight contract for an MCP key. Not used by google_drive (registered as
+// a package-level var above); later tasks (Jira, Firebase, Telegram) call
+// this from their own files' init-time registration.
+func registerMcpInstructionSpec(spec mcpInstructionSpec) {
+	mcpInstructionSpecs[spec.key] = spec
+}
+
+// resolveRequiredMcpSpec returns the first registered spec whose key appears
+// in requiredMcps (case-insensitive, matching the original google_drive-only
+// comparison semantics). With only google_drive registered, this reproduces
+// requiresGoogleDriveMcp's exact true/false outcome for every existing
+// caller and test.
+func resolveRequiredMcpSpec(requiredMcps []string) (mcpInstructionSpec, bool) {
+	for _, mcp := range requiredMcps {
+		key := strings.ToLower(strings.TrimSpace(mcp))
+		if spec, ok := mcpInstructionSpecs[key]; ok {
+			return spec, true
+		}
+	}
+	return mcpInstructionSpec{}, false
+}
+
 // InjectRequiredMcpInstructions adds MCP usage instructions to a prompt
 func InjectRequiredMcpInstructions(prompt string, requiredMcps []string, providerKey string, allowWrite bool, yoloMode bool) string {
-	if !requiresGoogleDriveMcp(requiredMcps) {
+	spec, ok := resolveRequiredMcpSpec(requiredMcps)
+	if !ok {
 		return prompt
 	}
 
 	// Build MCP instructions section
-	instructions := buildGoogleDriveMcpInstructions(providerKey, allowWrite, yoloMode)
+	instructions := spec.buildInstructions(providerKey, allowWrite, yoloMode)
 
 	// Insert instructions after any existing headers or at the start
 	if strings.Contains(prompt, "\n\n") {
@@ -26,16 +87,6 @@ func InjectRequiredMcpInstructions(prompt string, requiredMcps []string, provide
 
 	// Prepend instructions
 	return instructions + "\n\n" + prompt
-}
-
-func requiresGoogleDriveMcp(requiredMcps []string) bool {
-	for _, mcp := range requiredMcps {
-		if strings.EqualFold(strings.TrimSpace(mcp), "google_drive") {
-			return true
-		}
-	}
-
-	return false
 }
 
 // buildGoogleDriveMcpInstructions creates the MCP usage section
@@ -93,6 +144,22 @@ func buildGoogleDriveMcpInstructions(providerKey string, allowWrite bool, yoloMo
 	}
 
 	return sb.String()
+}
+
+// PreflightMcp dispatches to whichever spec is registered for key (Task-227
+// generalization of PreflightGoogleDriveMcp). Later per-MCP preflight checkers
+// (Jira, Firebase, Telegram) reuse the MCPPreflightCheck result shape even
+// though its field names still read "GoogleDrive...": that shape predates
+// this generalization and renaming it would ripple through every existing
+// Drive call site for no behavior change, so new specs just populate the same
+// two booleans + ErrorMessage generically ("is this MCP ready" / "is the
+// provider configured for it").
+func (r *Runner) PreflightMcp(key string, providerKey string, accountHomePath string) MCPPreflightCheck {
+	spec, ok := mcpInstructionSpecs[strings.ToLower(strings.TrimSpace(key))]
+	if !ok {
+		return MCPPreflightCheck{ErrorMessage: fmt.Sprintf("no MCP preflight registered for key: %s", key)}
+	}
+	return spec.preflight(r, providerKey, accountHomePath)
 }
 
 // MCPPreflightCheck validates Google Drive MCP readiness
@@ -226,15 +293,16 @@ func (r *Runner) preparePromptForRequiredMcps(
 	allowWrite bool,
 	yoloMode bool,
 ) (string, error) {
-	if !requiresGoogleDriveMcp(requiredMcps) {
+	spec, ok := resolveRequiredMcpSpec(requiredMcps)
+	if !ok {
 		return prompt, nil
 	}
 
 	if strings.TrimSpace(accountHomePath) == "" {
-		return "", errors.New("accountHomePath is required when requiredMcps includes google_drive")
+		return "", fmt.Errorf("accountHomePath is required when requiredMcps includes %s", spec.key)
 	}
 
-	preflight := r.PreflightGoogleDriveMcp(providerKey, accountHomePath)
+	preflight := spec.preflight(r, providerKey, accountHomePath)
 	if !preflight.GoogleDriveReady || !preflight.ProviderConfigured {
 		if strings.TrimSpace(preflight.ErrorMessage) != "" {
 			return "", errors.New(preflight.ErrorMessage)
@@ -246,7 +314,10 @@ func (r *Runner) preparePromptForRequiredMcps(
 }
 
 func applyRequiredMcpFailureStatus(result *PromptExecutionResult, requiredMcps []string) {
-	if result == nil || !requiresGoogleDriveMcp(requiredMcps) {
+	if result == nil {
+		return
+	}
+	if _, ok := resolveRequiredMcpSpec(requiredMcps); !ok {
 		return
 	}
 

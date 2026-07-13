@@ -21,6 +21,31 @@ const mcpDriverTimeout = 5 * time.Second
 // discipline every context source must follow (CP-41 T-3: bounded + source-referenced).
 const mcpDriverContentCap = 8 * 1024 // 8 KB
 
+// mcpBoundedFetch is the shared bounded-fetch contract every MCP-backed
+// context source follows (CP-44 D-5, Task-226): call an external MCP under a
+// hard timeout, cap the returned content, and wrap any failure so
+// ContextSourceRegistry.Collect degrades it to a warning rather than failing
+// the Plan step. Task-226 extracts this out of mcpDriverSource so new
+// MCP-backed sources (jira.issue, jira.sprint, firebase.crashlytics) reuse the
+// same timeout/cap/degrade discipline instead of re-deriving it — each new
+// source still owns its own struct + adapter interface (mirroring
+// mcpDriverSource below), it just shares this one call shape.
+func mcpBoundedFetch(ctx context.Context, timeout time.Duration, defaultTimeout time.Duration, cap int, sourceID string, ref string, fetch func(context.Context, string) (string, error)) (string, error) {
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	content, err := fetch(callCtx, ref)
+	if err != nil {
+		return "", fmt.Errorf("%s: fetch %q: %w", sourceID, ref, err)
+	}
+	if cap > 0 && len(content) > cap {
+		content = content[:cap]
+	}
+	return content, nil
+}
+
 // MCPDriverAdapter fetches raw content for a driver reference from an
 // already-connected MCP integration. CP-44 P-7 restricts this to MCPs the
 // system already supports/connects — never an arbitrary command or path, so
@@ -68,19 +93,9 @@ func (s *mcpDriverSource) Fetch(ctx context.Context, hints FlowContextHints) (Fl
 	}
 	section.SourceRef = "mcp:" + driverRef
 
-	timeout := s.timeout
-	if timeout <= 0 {
-		timeout = mcpDriverTimeout
-	}
-	callCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	content, err := s.adapter.Fetch(callCtx, driverRef)
+	content, err := mcpBoundedFetch(ctx, s.timeout, mcpDriverTimeout, mcpDriverContentCap, s.ID(), driverRef, s.adapter.Fetch)
 	if err != nil {
-		return section, fmt.Errorf("mcp.driver: fetch %q: %w", driverRef, err)
-	}
-	if len(content) > mcpDriverContentCap {
-		content = content[:mcpDriverContentCap]
+		return section, err
 	}
 	section.Body = content
 	return section, nil

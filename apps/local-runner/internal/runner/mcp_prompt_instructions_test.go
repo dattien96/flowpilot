@@ -62,6 +62,38 @@ func writeValidGoogleDriveWorkspaceConfig(t *testing.T, runner *Runner) (string,
 	return credPath, tokenPath
 }
 
+// TestRegisterMcpInstructionSpecInjectsOwnBlockNotGoogleDrive verifies
+// Task-227's generalization: registering a second, independent MCP spec
+// injects that spec's own instruction block (not Google Drive's), and does
+// not fire when its key is absent — proving new MCPs (Jira/Firebase/
+// Telegram) plug in via registerMcpInstructionSpec without touching
+// InjectRequiredMcpInstructions/preparePromptForRequiredMcps.
+func TestRegisterMcpInstructionSpecInjectsOwnBlockNotGoogleDrive(t *testing.T) {
+	registerMcpInstructionSpec(mcpInstructionSpec{
+		key: "fake_mcp",
+		buildInstructions: func(providerKey string, allowWrite bool, yoloMode bool) string {
+			return "## Required MCP Usage\n\nfake_mcp block for " + providerKey
+		},
+		preflight: func(r *Runner, providerKey string, accountHomePath string) MCPPreflightCheck {
+			return MCPPreflightCheck{GoogleDriveReady: true, ProviderConfigured: true}
+		},
+	})
+	defer delete(mcpInstructionSpecs, "fake_mcp")
+
+	result := InjectRequiredMcpInstructions("Task.\n\nDo the thing.", []string{"fake_mcp"}, "codex", false, false)
+	if !strings.Contains(result, "fake_mcp block for codex") {
+		t.Errorf("expected fake_mcp instructions injected, got: %s", result)
+	}
+	if strings.Contains(result, "google_drive") || strings.Contains(result, "Google Drive") {
+		t.Errorf("fake_mcp injection must not pull in Google Drive instructions, got: %s", result)
+	}
+
+	untouched := InjectRequiredMcpInstructions("Task.\n\nDo the thing.", []string{"other_mcp"}, "codex", false, false)
+	if untouched != "Task.\n\nDo the thing." {
+		t.Errorf("unregistered MCP key must leave prompt unchanged, got: %s", untouched)
+	}
+}
+
 func TestInjectRequiredMcpInstructions_NoMcps(t *testing.T) {
 	prompt := "Original prompt"
 	result := InjectRequiredMcpInstructions(prompt, []string{}, "codex", false, false)
