@@ -9,10 +9,10 @@ import (
 
 func TestDefaultRules(t *testing.T) {
 	rules := DefaultRules()
-	if len(rules) != 9 {
-		t.Fatalf("expected 9 rules, got %d", len(rules))
+	if len(rules) != 11 {
+		t.Fatalf("expected 11 rules, got %d", len(rules))
 	}
-	ids := []string{"r-ca", "r-fk", "r-bug", "r-task", "r-tests", "r-reg", "r-dep", "r-artifact-output", "r-artifact-output-structure"}
+	ids := []string{"r-ca", "r-fk", "r-bug", "r-task", "r-tests", "r-reg", "r-dep", "r-artifact-output", "r-artifact-output-structure", "r-contract", "r-scope"}
 	for i, id := range ids {
 		if rules[i].ID != id {
 			t.Errorf("rules[%d].ID = %q, want %q", i, rules[i].ID, id)

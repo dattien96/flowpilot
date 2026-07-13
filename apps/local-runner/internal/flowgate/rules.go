@@ -56,6 +56,24 @@ type TurnResult struct {
 	// also declare instance structure.sections (Task-225). Evaluated only
 	// after existence passes for each path.
 	RequiredStructuredFileArtifactOutputs []StructuredFileArtifactOutput `json:"required_structured_file_artifact_outputs,omitempty"`
+	// Task-185 (CP-43 P-2): scope-drift signals. Computed by the caller from
+	// changecontract.Store + changecontract.ScopeDiff/HighSeverity before
+	// Evaluate runs — flowgate cannot import changecontract (infer.go already
+	// imports flowgate for ChangedFile, so the reverse import would cycle).
+	//
+	// ContractDeclared is true only when the AI's own [Change Contract] block
+	// was found this turn (confidence=declared); false for an inferred or
+	// altogether-missing contract.
+	ContractDeclared bool `json:"contract_declared,omitempty"`
+	// ScopeOutOfScopePaths are the diff paths outside the turn's declared
+	// scope (empty for an inferred contract, which trivially matches its own
+	// diff — see changecontract.ScopeDiff).
+	ScopeOutOfScopePaths []string `json:"scope_out_of_scope_paths,omitempty"`
+	// ScopeHighSeverity is true only when structure.Available() AND at least
+	// one out-of-scope path has dependents (changecontract.HighSeverity) —
+	// the sole condition under which r-scope may resolve to "block" rather
+	// than "warn" (SD-21 D-5/Q-2: file-level truth alone never blocks).
+	ScopeHighSeverity bool `json:"scope_high_severity,omitempty"`
 }
 
 // StructuredFileArtifactOutput is a required file_artifact OUTPUT path with
@@ -92,6 +110,13 @@ func DefaultRules() []Rule {
 		// Task-225: required structured file_artifact OUTPUT paths must contain
 		// the declared section headings after the file exists.
 		{ID: "r-artifact-output-structure", Scope: "step", Trigger: "required_artifact_output_structure_missing", RequiredOutput: "file_artifact_structure", Action: "reprompt", Enabled: true},
+		// Task-185 (CP-43 P-2): the AI did not declare a Change Contract before
+		// editing (an inferred contract was used instead) — nag once, never block.
+		{ID: "r-contract", Scope: "step", Trigger: "code_changed_no_contract", RequiredOutput: "declared_change_contract", Action: "reprompt", Enabled: true},
+		// Task-185 (CP-43 P-2): an edit landed outside the turn's declared scope.
+		// Warn by default; checkRule downgrades any configured "block" back to
+		// "warn" unless TurnResult.ScopeHighSeverity is true (SD-21 D-5/Q-2).
+		{ID: "r-scope", Scope: "step", Trigger: "edit_outside_declared_scope", RequiredOutput: "confirm_or_revert_out_of_scope", Action: "warn", Enabled: true},
 	}
 }
 

@@ -132,6 +132,28 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 				Detail: "required file artifact structure missing: " + strings.Join(gaps, "; "),
 			}
 		}
+
+	case "code_changed_no_contract":
+		// Task-185 (CP-43 P-2): a code-changing turn used an inferred contract
+		// rather than an AI-declared one. Same WrittenPaths reasoning as
+		// "code_changed" above — a dirty working tree the AI didn't touch must
+		// not itself trigger this.
+		if HasCodeChangesInList(tr.WrittenPaths) && !tr.ContractDeclared {
+			return &Violation{Rule: rule, Detail: "code changed without a declared Change Contract (used an inferred one)"}
+		}
+
+	case "edit_outside_declared_scope":
+		// Task-185 (CP-43 P-2): actual_touched \ declared_scope is non-empty.
+		// Never resolve to "block" on file-level truth alone (SD-21 D-5/Q-2) —
+		// downgrade the configured action to "warn" unless the caller marked
+		// this high-severity (structure available AND out-of-scope dependents).
+		if len(tr.ScopeOutOfScopePaths) > 0 {
+			effective := rule
+			if !tr.ScopeHighSeverity && effective.Action == "block" {
+				effective.Action = "warn"
+			}
+			return &Violation{Rule: effective, Detail: "edit outside declared scope: " + strings.Join(tr.ScopeOutOfScopePaths, ", ")}
+		}
 	}
 	return nil
 }

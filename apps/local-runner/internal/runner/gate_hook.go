@@ -15,6 +15,8 @@ import (
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
 	"flowpilot-runner/internal/flowgate"
+	"flowpilot-runner/internal/structure"
+	"flowpilot-runner/internal/tooling"
 )
 
 const maxFlowGateReprompts = 2
@@ -35,7 +37,7 @@ type gateBlockInfo struct {
 // All errors inside this function are non-fatal: if the gate cannot observe or
 // evaluate it returns false (degraded = safe, turn completes normally).
 func (s *InteractiveService) runFlowGate(
-	_ context.Context, rs *interactiveRun, turnID string, fin finalizeInput,
+	ctx context.Context, rs *interactiveRun, turnID string, fin finalizeInput,
 ) (block bool) {
 	cwd := rs.workspaceCwd
 	if cwd == "" {
@@ -56,9 +58,9 @@ func (s *InteractiveService) runFlowGate(
 
 	// 1b. Task-184 (CP-43 P-1): capture this turn's Change Contract, declared
 	// (parsed from the AI's own final message) or inferred from the diff when
-	// absent. Non-fatal — a capture failure never blocks the turn (AC-9);
-	// Task-185 is what actually acts on the stored Contract.
-	captureChangeContract(cwd, rs.id, rs.stepID, fin.FinalMessage, diff, suggestedFeatureKeys)
+	// absent. Task-185 (P-2): compute scope drift against it. Both non-fatal —
+	// a capture/scope failure never blocks the turn (AC-9).
+	contractDeclared, scopeOutOfScopePaths, scopeHighSeverity := captureChangeContract(ctx, cwd, rs.id, rs.stepID, fin.FinalMessage, diff, suggestedFeatureKeys)
 
 	// 2. Load test baseline — non-fatal.
 	baseline, _ := flowgate.LoadBaseline(dotFP)
@@ -101,6 +103,9 @@ func (s *InteractiveService) runFlowGate(
 		ChangeType:                  rs.changeType,
 		WorkspaceCwd:                cwd,
 		RequiredFileArtifactOutputs: requiredArtifactOutputs,
+		ContractDeclared:            contractDeclared,
+		ScopeOutOfScopePaths:        scopeOutOfScopePaths,
+		ScopeHighSeverity:           scopeHighSeverity,
 	}
 
 	// 7. Load rules; fall back to defaults when flow-rules.json is absent.
@@ -568,18 +573,20 @@ func suggestFeatureKeys(dotFP string, changedPaths []string, message string) []s
 }
 
 // captureChangeContract persists this turn's Change Contract (Task-184,
-// CP-43 P-1): declared if the AI's final message contains a
+// CP-43 P-1) — declared if the AI's final message contains a
 // `[Change Contract]` block (T-2), otherwise inferred from the observed diff
-// (T-4). Entirely best-effort — every failure is logged and swallowed so a
-// changecontract problem can never block a turn (SS-14 AC-9).
-func captureChangeContract(cwd, runID, stepID, finalMessage string, diff []flowgate.ChangedFile, suggestedFeatureKeys []string) {
+// (T-4) — and computes scope drift against it (Task-185, P-2). Entirely
+// best-effort: every failure is logged and degrades to
+// (declared=false, no out-of-scope paths, not high-severity) so a
+// changecontract/scope problem can never block a turn (SS-14 AC-9).
+func captureChangeContract(ctx context.Context, cwd, runID, stepID, finalMessage string, diff []flowgate.ChangedFile, suggestedFeatureKeys []string) (declared bool, outOfScopePaths []string, highSeverity bool) {
 	if cwd == "" {
-		return
+		return false, nil, false
 	}
 	store, err := changecontract.NewStore(cwd)
 	if err != nil {
 		log.Printf("[changecontract] store open failed: %v", err)
-		return
+		return false, nil, false
 	}
 	featureKey := ""
 	if len(suggestedFeatureKeys) > 0 {
@@ -600,6 +607,17 @@ func captureChangeContract(cwd, runID, stepID, finalMessage string, diff []flowg
 	if err := store.Save(c); err != nil {
 		log.Printf("[changecontract] save failed: %v", err)
 	}
+
+	// Task-185: scope diff needs no structure.Provider (nil is safe — see
+	// changecontract.ScopeDiff); only construct one, at the cost of a
+	// gitnexus probe, if there is actually something out-of-scope to weigh.
+	outOfScopePaths, _ = changecontract.ScopeDiff(c, diff, nil)
+	if len(outOfScopePaths) > 0 {
+		hasGitNexus := tooling.CheckTool("gitnexus", cwd).Status == "ok"
+		sp := structure.New(cwd, hasGitNexus)
+		highSeverity = changecontract.HighSeverity(ctx, sp, outOfScopePaths)
+	}
+	return declared, outOfScopePaths, highSeverity
 }
 
 // captureGitHead returns the current HEAD SHA in repoDir, trimmed of whitespace.

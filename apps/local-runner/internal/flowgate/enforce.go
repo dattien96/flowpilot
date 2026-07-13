@@ -147,6 +147,10 @@ func remediationFor(v Violation) string {
 			"Create or update each listed workspace-relative path with your tools now " +
 			"(this is a file_artifact.v1 OUTPUT write contract — chat text alone is not enough). " +
 			"Do not invent other paths; write exactly the bound artifact path(s)."
+	case "code_changed_no_contract":
+		return "• Missing Change Contract. Before your next edit, start your response with:\n\n" +
+			"  [Change Contract]\n  feature: <feature_key>\n  intent: <one-line intended behavior change>\n  files: <comma-separated paths you expect to touch>\n\n" +
+			"This does not block the current turn — it lets the gate flag edits that land outside what you declared."
 	case "required_artifact_output_structure_missing":
 		// Task-225: files exist but lack declared structure.sections headings.
 		return "• Required file artifact structure incomplete. " + v.Detail + ". " +

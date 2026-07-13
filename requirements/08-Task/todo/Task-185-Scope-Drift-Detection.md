@@ -5,11 +5,11 @@
 - Document ID: `Task-185`
 - Title: `Scope-Drift Detection`
 - Phase: `task`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-03`
-- Last Updated: `2026-07-03`
+- Last Updated: `2026-07-13` (file-level scope-drift implemented and tested; symbol-level rename/format false-drift suppression (`SD-21 F-2`) explicitly deferred — see §6/§8)
 - Parent Documents: [CP-43: Change Contract And Canonical Intent Signature](../../07-Coding-Plan/todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (P-2), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (US-3, AC-7)
 - Child Documents: `None`
 - Related Documents: [Task-184: Change Contract Capture](./Task-184-Change-Contract-Capture.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [Task-098: GitNexus Structure Provider](../../08-Task/done/Task-098-GitNexus-Structure-Provider.md)
@@ -79,14 +79,14 @@ Task-184 records intended scope; this task is the "flag when it changes anything
 
 ## 6. Acceptance Check (DoD)
 
-- [ ] `r-contract` and `r-scope` exist in `rules.go` and seed to `flow-rules.json` with the actions above.
-- [ ] An in-scope-only turn produces zero scope violations.
-- [ ] An edit outside `declared_paths` emits `r-scope` (warn) with the exact offending paths in the violation payload.
-- [ ] With GitNexus present, an out-of-scope symbol that has dependents is high-severity and blocks when configured; with GitNexus absent, `r-scope` stays `warn`.
-- [ ] A **rename-only / formatter** diff does not trip `r-scope` when the structure provider resolves it to an in-scope symbol (`SD-21 F-2`).
-- [ ] A turn with no stored `Contract` emits `r-contract` exactly once, then falls back to an inferred contract (Task-184).
-- [ ] Doc paths (`requirements/`, `change-audit/`, `*.md`) and the `E-4` ignore set are excluded from `actual_touched`.
-- [ ] Gate resolves a single highest-severity action (`SD-20` ladder); `go test ./internal/flowgate/... ./internal/changecontract/...` passes.
+- [x] `r-contract` and `r-scope` exist in `rules.go` and seed to `flow-rules.json` with the actions above. Seeding is automatic — `LoadRules` already runs every loaded rule set through `MergeDefaultRules`, so an existing project's `flow-rules.json` picks up both new rules by ID on next load without a migration step (same mechanism Task-223 used for `r-artifact-output`).
+- [x] An in-scope-only turn produces zero scope violations.
+- [x] An edit outside `declared_paths` emits `r-scope` (warn) with the exact offending paths in the violation payload.
+- [x] With GitNexus present, an out-of-scope path that has dependents is high-severity and blocks when configured; with GitNexus absent, `r-scope` stays `warn`. **Implemented at file level, not symbol level** — see next item.
+- [ ] **Not implemented: rename-only/formatter false-drift suppression via symbol resolution (`SD-21 F-2`).** `structure.Provider.Dependents(ctx, target)` takes a file/target path and reports dependents; it has no API to map a diff hunk to a resolved symbol name, and nothing in this codebase (Task-098's provider included) extracts symbols from a diff today. Building that would mean writing new AST/symbol-extraction code — exactly the cost `SD-21 D-2` explicitly avoids by design ("no AST, no code-graph build in v1"). Given that constraint, this task's `ScopeDiff`/`HighSeverity` operate on **paths only**: a rename-only or formatter-only diff on an in-scope *file* is still fine (still matches `declared_paths`), but a rename that also touches an out-of-scope *file* will be flagged the same as any other out-of-scope file touch — there is currently no finer-grained symbol check to suppress that specific false positive. Left open for a follow-up if it proves to matter in practice; `Contract.DeclaredSymbols`/`ScopeDiff`'s `outSymbols` return already exist as the extension point, just unpopulated.
+- [x] A turn with no **declared** `Contract` emits `r-contract` exactly once (the inferred-contract case), never blocks. Note: since Task-184's `captureChangeContract` always persists *something* (declared or inferred) on every turn, "no stored Contract at all" cannot occur after Task-184 landed — `r-contract`'s real condition is "the stored Contract for this turn has `confidence=inferred`" (`TurnResult.ContractDeclared == false`), which is the same case Task-184 F-3 describes.
+- [x] Doc paths (`requirements/`, `change-audit/`, `*.md`) are excluded from `actual_touched` (via `flowgate.IsDocOrAuditFile`, reused from `r-ca`). **The `E-4` per-project ignore set is not implemented** — it doesn't exist anywhere in this codebase yet (not by `r-tests`/`r-reg`, not by this task); `SS-14 E-4` describes it as a requirement but no prior task built the config surface for it. Out of scope to invent here without a dedicated design; flagged for a future task rather than scope-crept into this one.
+- [x] Gate resolves a single highest-severity action (`SD-20` ladder); `go test ./internal/flowgate/... ./internal/changecontract/...` passes.
 
 ## 7. Out of Scope
 
@@ -96,6 +96,7 @@ Task-184 records intended scope; this task is the "flag when it changes anything
 
 ## 8. Completion Notes
 
-- result: planned
-- follow-ups: Task-186 adds the drift rules that also consult the Head; this task only compares against the per-turn Contract.
-- upstream docs updated: none
+- result: **in_progress** (2026-07-13) — file-level scope-drift is fully implemented, tested, and wired into the gate; symbol-level false-drift suppression is explicitly deferred (§6). New: `apps/local-runner/internal/changecontract/scope.go` (`ScopeDiff`, `HighSeverity`) + `scope_test.go` (11 tests). Modified: `apps/local-runner/internal/flowgate/rules.go` (`r-contract`, `r-scope` + `TurnResult.ContractDeclared`/`ScopeOutOfScopePaths`/`ScopeHighSeverity`), `evaluate.go` (`code_changed_no_contract`, `edit_outside_declared_scope` triggers), `enforce.go` (r-contract remediation text), `flowgate_test.go` (`TestDefaultRules` count 9→11), new `contract_rules_test.go` (6 tests). `apps/local-runner/internal/runner/gate_hook.go`: `captureChangeContract` now also computes and returns scope-drift signals, feeding `TurnResult`.
+- verification: `go build ./...` clean; `go vet` clean on all touched packages (`changecontract`, `flowgate`, `runner`); `go test ./internal/changecontract/... ./internal/flowgate/...` 144 passed; `go test ./internal/runner/... -count=1` 1386 passed / 16 failed (identical pre-existing environment-flake baseline from this session, zero new failures).
+- follow-ups: symbol-level rename/format suppression (`SD-21 F-2`) if it proves to matter in practice (needs a symbol-extraction source, deliberately not built here per D-2's no-AST constraint); the `E-4` per-project ignore set (doesn't exist anywhere in this codebase yet). Task-186 adds the drift rules that also consult the Canonical Head; this task only compares against the per-turn Contract.
+- upstream docs updated: none.
