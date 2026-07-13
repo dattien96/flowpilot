@@ -3,6 +3,7 @@ package contextsync
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -19,7 +20,7 @@ type EngineStore struct {
 }
 
 func NewEngineStore(dotFlowpilotDir string) (*EngineStore, error) {
-	subdirs := []string{"ledger", "catalog", "settings", "guard", "structure"}
+	subdirs := []string{"ledger", "catalog", "settings", "guard", "structure", "canonical"}
 	for _, sub := range subdirs {
 		if err := os.MkdirAll(filepath.Join(dotFlowpilotDir, sub), 0o755); err != nil {
 			return nil, err
@@ -56,8 +57,25 @@ func (s *EngineStore) ToolingPath() string {
 	return filepath.Join(s.DotFlowpilotDir, "tooling.json")
 }
 
+// CanonicalDir is where Task-186's per-feature Canonical Head JSON files live
+// (`.flowpilot/canonical/<feature_key>.json`). Unlike the other shared files,
+// this is an unbounded, dynamically-growing set — one file per feature — so
+// SharedFiles globs it rather than naming individual paths.
+func (s *EngineStore) CanonicalDir() string {
+	return filepath.Join(s.DotFlowpilotDir, "canonical")
+}
+
+// SharedFiles returns every file the CP-35 P-8 Drive sync mechanism uploads
+// to context-engine/. Task-188 (CP-43 P-5) adds every `canonical/*.json`
+// Canonical Head to this set; `contracts/contracts.ndjson` (Task-184's local,
+// per-turn Change Contract store) is deliberately never listed here — it
+// lives under its own `contracts/` directory, not `canonical/`, and this
+// function only ever globs the latter.
 func (s *EngineStore) SharedFiles() []string {
-	return []string{s.LedgerPath(), s.ChatSummaryPath(), s.CatalogPath(), s.FlowRulesPath(), s.ApprovalAllowlistPath()}
+	files := []string{s.LedgerPath(), s.ChatSummaryPath(), s.CatalogPath(), s.FlowRulesPath(), s.ApprovalAllowlistPath()}
+	matches, _ := filepath.Glob(filepath.Join(s.CanonicalDir(), "*.json"))
+	sort.Strings(matches)
+	return append(files, matches...)
 }
 
 func (s *EngineStore) IsLocalOnly(path string) bool {
