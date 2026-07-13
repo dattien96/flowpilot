@@ -88,6 +88,10 @@ Minimum fields:
 - `Replaces`
 - `Tags`
 
+Optional fields:
+
+- `Feature Keys` — for a **governing** SS/SD/CP doc, the `feature_key`(s) from `change-audit/FEATURE-KEYS.md` whose intended behavior this doc defines, e.g. `- Feature Keys: \`change-contract\`` (comma-separate multiple). The Feature Catalog (`Task-097`) reads this to attach the doc to that feature's governing-doc set, which the Canonical Head (`CP-43`/`Task-186`) hashes for intent-signature and spec-drift detection. Omit when the doc does not govern a specific feature. Without it, a feature's Canonical Head stays `spec_less` (BUG-280).
+
 Recommended status values:
 
 - `draft`

@@ -260,6 +260,7 @@ func loadFeatureKeys(c *Catalog, path string) error {
 func loadDocRefs(c *Catalog, repoDir string) error {
 	patterns := []string{
 		filepath.Join(repoDir, "requirements", "05-System-Specs", "SS-*.md"),
+		filepath.Join(repoDir, "requirements", "06-System-Tech-Design", "SD-*.md"),
 		filepath.Join(repoDir, "requirements", "07-Coding-Plan", "**", "CP-*.md"),
 	}
 
@@ -272,7 +273,9 @@ func loadDocRefs(c *Catalog, repoDir string) error {
 		files = append(files, matches...)
 	}
 
-	// filepath.Glob does not support **, so walk for CP docs
+	// filepath.Glob does not support **, so walk for docs under nested folders.
+	// SD docs (BUG-280) and CP docs can live in todo/inprogress/done subfolders.
+	_ = walkGlob(filepath.Join(repoDir, "requirements", "06-System-Tech-Design"), "SD-*.md", &files)
 	cpDir := filepath.Join(repoDir, "requirements", "07-Coding-Plan")
 	_ = walkGlob(cpDir, "CP-*.md", &files)
 
@@ -287,15 +290,32 @@ func loadDocRefs(c *Catalog, repoDir string) error {
 	}
 
 	for _, path := range unique {
-		title, summary, keywords := parseDocFile(path)
+		title, summary, keywords, featureKeys := parseDocFile(path)
 		stem := docStem(path)
 		if stem == "" {
 			continue
 		}
 
-		// Try to match an existing feature by stem (e.g. "SS-14" won't match a feature key directly;
-		// we attach doc metadata to features that reference this doc, or create a doc-level entry).
-		// Per spec: add to existing feature if key matches, else add new Feature.
+		// BUG-280: the primary linkage — a governing doc declares which real
+		// feature_key(s) it governs via a "Feature Keys:" metadata line, and
+		// its stem is attached to each of those features' DocRefs. Real feature
+		// keys were loaded from FEATURE-KEYS.md in Build step (a), before this
+		// runs, so they resolve here. This is what makes a feature spec-backed
+		// (before this, DocRefs only ever matched doc-stem-named phantom
+		// features and real features were left spec_less forever).
+		for _, fk := range featureKeys {
+			if feat, ok := c.Get(fk); ok {
+				if !containsStr(feat.DocRefs, stem) {
+					feat.DocRefs = append(feat.DocRefs, stem)
+				}
+				feat.Keywords = mergeKeywords(feat.Keywords, keywords)
+				c.Add(feat)
+			}
+		}
+
+		// Legacy fallback (Task-097): attach to a feature whose key equals the
+		// doc stem, else create a doc-stem-named entry. Kept for backward compat
+		// with resolver behavior; harmless alongside the feature-key linkage.
 		existing, exists := c.Get(stem)
 		if exists {
 			existing.Title = title
@@ -340,7 +360,30 @@ func walkGlob(dir, pattern string, out *[]string) error {
 	})
 }
 
-func parseDocFile(path string) (title, summary string, keywords []string) {
+// featureKeysLineRe matches a governing doc's metadata line declaring which
+// real feature_key(s) it governs, e.g. "- Feature Keys: change-contract" or
+// "Feature Keys: `change-contract`, `other`" (BUG-280). Case-insensitive on
+// the label; singular "Feature Key" also accepted.
+var featureKeysLineRe = regexp.MustCompile("(?i)^-?\\s*feature\\s*keys?\\s*:\\s*(.+)$")
+
+// parseFeatureKeysLine returns the declared feature keys on a metadata line, or
+// nil when the line is not a Feature Keys declaration. Backticks are stripped.
+func parseFeatureKeysLine(trimmed string) []string {
+	m := featureKeysLineRe.FindStringSubmatch(trimmed)
+	if m == nil {
+		return nil
+	}
+	raw := strings.ReplaceAll(m[1], "`", "")
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if key := strings.TrimSpace(part); key != "" {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+func parseDocFile(path string) (title, summary string, keywords, featureKeys []string) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -358,6 +401,13 @@ func parseDocFile(path string) (title, summary string, keywords []string) {
 		if title == "" && strings.HasPrefix(trimmed, "# ") {
 			title = strings.TrimSpace(trimmed[2:])
 			keywords = append(keywords, tokenize(title)...)
+			continue
+		}
+
+		// BUG-280: a governing doc may declare which real feature_key(s) it
+		// governs, so its stem can be attached to that feature's DocRefs.
+		if fk := parseFeatureKeysLine(trimmed); fk != nil {
+			featureKeys = append(featureKeys, fk...)
 			continue
 		}
 

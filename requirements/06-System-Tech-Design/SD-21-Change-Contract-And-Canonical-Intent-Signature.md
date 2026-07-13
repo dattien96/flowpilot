@@ -4,6 +4,7 @@
 
 - Document ID: `SD-21`
 - Title: `Change Contract And Canonical Intent Signature`
+- Feature Keys: `change-contract`
 - Phase: `tech_design`
 - Status: `approved`
 - Owner: `FlowPilot`
