@@ -133,6 +133,16 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 			}
 		}
 
+	case "required_telegram_send_missing":
+		// Task-233: verify a real message_id, not just that a tool was called.
+		missing := MissingTelegramSends(tr.FinalMessage, tr.RequiredTelegramSends)
+		if len(missing) > 0 {
+			return &Violation{
+				Rule:   rule,
+				Detail: "required Telegram notification not confirmed sent (no message_id evidence) for: " + strings.Join(missing, ", "),
+			}
+		}
+
 	case "code_changed_no_contract":
 		// Task-185 (CP-43 P-2): a code-changing turn used an inferred contract
 		// rather than an AI-declared one. Same WrittenPaths reasoning as
@@ -154,8 +164,63 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 			}
 			return &Violation{Rule: effective, Detail: "edit outside declared scope: " + strings.Join(tr.ScopeOutOfScopePaths, ", ")}
 		}
+
+	case "governing_spec_changed":
+		// Task-186 (CP-43 P-3): the feature's governing doc(s) changed since
+		// the Canonical Head last recorded them.
+		if tr.HeadSpecDrifted {
+			return &Violation{Rule: rule, Detail: "governing spec changed since the Canonical Head was last computed — reconcile the Head"}
+		}
+
+	case "code_diverged_from_intent":
+		// Task-186 (CP-43 P-3): out-of-contract code change, spec unchanged.
+		if tr.HeadCodeDrifted {
+			return &Violation{Rule: rule, Detail: "code changed out of contract with no corresponding spec/behavior update"}
+		}
+
+	case "governing_spec_added_to_spec_less":
+		// Task-186 (CP-43 P-3): a spec_less feature just gained a governing
+		// doc — human must confirm the new spec matches current behavior
+		// before the Head is rebaselined (never automatic, BR-2).
+		if tr.HeadAttachSpecPending {
+			return &Violation{Rule: rule, Detail: "a governing spec was added to a previously spec-less feature — confirm it matches current behavior to rebaseline the Canonical Head"}
+		}
+
+	case "feature_rename_merge_or_deprecate":
+		// Task-187 (CP-43 P-4): a retire intent was detected for the active
+		// feature — human must confirm the target(s) before RetireHead runs
+		// (never automatic, BR-2).
+		if tr.HeadRetirePending {
+			return &Violation{Rule: rule, Detail: "a rename/merge/deprecate was detected for this feature — confirm the target(s) before retiring its Canonical Head"}
+		}
 	}
 	return nil
+}
+
+var telegramMessageIDPattern = regexp.MustCompile(`(?i)message_id["':=\s]*\d+`)
+
+// MissingTelegramSends returns the required chat ids for which no evidence
+// of a successful Telegram send was found in finalMessage (Task-233,
+// CP-05-05 Q-4 resolved: a real message_id in the tool-call response is the
+// only acceptable evidence, not merely "the AI mentioned sending a
+// message" — mirrors CP-05-03 §12.3's lesson that quoted guidance text must
+// not be mistaken for actual tool use).
+//
+// v1 simplification: this scans FinalMessage's text for message_id
+// occurrences and requires at least as many as there are required targets —
+// it cannot reliably attribute a specific occurrence to a specific chat id
+// from unstructured provider output. When that distinction matters (multiple
+// simultaneous Telegram targets in one turn), a future iteration should
+// parse structured tool-call/response logs instead of scanning FinalMessage.
+func MissingTelegramSends(finalMessage string, required []string) []string {
+	if len(required) == 0 {
+		return nil
+	}
+	matches := telegramMessageIDPattern.FindAllString(finalMessage, -1)
+	if len(matches) >= len(required) {
+		return nil
+	}
+	return append([]string(nil), required...)
 }
 
 // MissingRequiredFileArtifactOutputs returns required paths that do not exist

@@ -9,10 +9,12 @@ import (
 
 func TestDefaultRules(t *testing.T) {
 	rules := DefaultRules()
-	if len(rules) != 11 {
-		t.Fatalf("expected 11 rules, got %d", len(rules))
+	if len(rules) != 16 {
+		t.Fatalf("expected 16 rules, got %d", len(rules))
 	}
-	ids := []string{"r-ca", "r-fk", "r-bug", "r-task", "r-tests", "r-reg", "r-dep", "r-artifact-output", "r-artifact-output-structure", "r-contract", "r-scope"}
+	// Task-233 added r-artifact-telegram-sent alongside the file_artifact
+	// OUTPUT rule pair.
+	ids := []string{"r-ca", "r-fk", "r-bug", "r-task", "r-tests", "r-reg", "r-dep", "r-artifact-output", "r-artifact-output-structure", "r-artifact-telegram-sent", "r-contract", "r-scope", "r-spec-drift", "r-code-drift", "r-attach-spec", "r-retire"}
 	for i, id := range ids {
 		if rules[i].ID != id {
 			t.Errorf("rules[%d].ID = %q, want %q", i, rules[i].ID, id)
