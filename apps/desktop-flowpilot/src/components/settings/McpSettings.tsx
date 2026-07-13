@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Integration, IntegrationType, LocalRunnerMcpBackend, Project } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
-import { buildConfig, createEmptyConfig, formatTimestamp, integrationTypes, providerFields, toErrorMessage } from "@/components/settings/settingsHelpers";
+import { buildConfig, createEmptyConfig, findDuplicateJiraIntegration, formatTimestamp, integrationTypes, providerFields, stripSecretFields, toErrorMessage } from "@/components/settings/settingsHelpers";
 
 type McpSettingsMode = "all" | "google-drive" | "jira";
 
@@ -69,19 +69,39 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
 
   const createIntegration = async () => {
     if (!projectId) return;
+    if (type === "jira") {
+      const duplicate = findDuplicateJiraIntegration(integrations, projectId, config.workspaceUrl ?? "");
+      if (duplicate) {
+        setMessage("A Jira MCP for this Atlassian site already exists in this project.");
+        return;
+      }
+    }
     setBusy(true);
     try {
       const admin = await getAdminUseCases();
-      await admin.integrations.createIntegration({
+      const fullConfig = buildConfig(type, config);
+      const needsConnect = type === "jira" || type === "firebase" || type === "telegram";
+      const created = await admin.integrations.createIntegration({
         projectId,
         type,
         label,
-        configEncrypted: buildConfig(type, config),
-        status: type === "jira" ? "pending" : "connected",
+        // SD-11 §6 secret boundary: the raw credential (apiToken /
+        // serviceAccountJson) must never land in Supabase config_encrypted —
+        // only the runner keyring. It is sent to the runner once, below, via
+        // testIntegration (which posts to /integrations/connect), never
+        // persisted here.
+        configEncrypted: stripSecretFields(type, fullConfig),
+        status: needsConnect ? "pending" : "connected",
         mcpTypeEnabled: true,
       });
+      if (needsConnect) {
+        const result = await admin.integrations.testIntegration(projectId, created.id, type, fullConfig as Record<string, string>);
+        await admin.integrations.updateIntegration(created.id, { status: "connected" });
+        setMessage(result ?? "MCP integration created and connected.");
+      } else {
+        setMessage("MCP integration created.");
+      }
       await refresh();
-      setMessage("MCP integration created.");
     } catch (error) {
       setMessage(toErrorMessage(error, "Unable to create MCP integration."));
     } finally {
@@ -130,7 +150,7 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
         <div className="settings-subpanel"><h3>Runner Backends</h3><div className="settings-list">{backends.map((backend) => <div className="settings-list-item static" key={backend.key}><div><strong>{backend.label}</strong><span>{backend.providerType} / {backend.state} / {formatTimestamp(backend.lastCheckedAt)}</span></div><button className="secondary-btn" disabled={busy || !projectId} onClick={() => void runBackendAction(backend)} type="button">{backend.actionLabel}</button></div>)}</div></div>
         <div className="settings-subpanel"><h3>Create Integration</h3><div className="settings-grid"><label className="settings-field"><span>Project</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>{mode === "all" ? <label className="settings-field"><span>Type</span><select value={type} onChange={(event) => changeType(event.target.value as IntegrationType)}>{types.map((option) => <option key={option} value={option}>{option}</option>)}</select></label> : null}<label className="settings-field settings-field-full"><span>Label</span><input value={label} onChange={(event) => setLabel(event.target.value)} /></label>{providerFields[type].map((field) => <label className="settings-field" key={field.key}><span>{field.label}</span><input type={field.type ?? "text"} value={config[field.key] ?? ""} onChange={(event) => setConfig((current) => ({ ...current, [field.key]: event.target.value }))} /></label>)}</div><div className="settings-actions"><button className="primary-btn" disabled={busy || !projectId} onClick={() => void createIntegration()} type="button">Create Integration</button></div></div>
       </div>
-      <div className="settings-subpanel"><h3>Existing Integrations</h3><div className="settings-list">{integrations.map((integration) => <div className="settings-list-item static" key={integration.id}><div><strong>{integration.label}</strong><span>{integration.type} / {integration.status} / project {integration.projectId}</span></div>{integration.type === "jira" || integration.type === "google_drive" ? <button className="secondary-btn" disabled={busy} onClick={() => void testIntegration(integration)} type="button">Test</button> : null}</div>)}</div></div>
+      <div className="settings-subpanel"><h3>Existing Integrations</h3><div className="settings-list">{integrations.map((integration) => <div className="settings-list-item static" key={integration.id}><div><strong>{integration.label}</strong><span>{integration.type} / {integration.status} / project {integration.projectId}</span></div>{integration.type === "jira" || integration.type === "google_drive" || integration.type === "firebase" || integration.type === "telegram" ? <button className="secondary-btn" disabled={busy} onClick={() => void testIntegration(integration)} type="button">Test</button> : null}</div>)}</div></div>
     </section>
   );
 }
