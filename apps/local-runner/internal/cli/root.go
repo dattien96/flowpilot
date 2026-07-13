@@ -47,6 +47,7 @@ func NewRootCommand() *cobra.Command {
 	rootCmd.AddCommand(newInstallProviderCommand(cfg))
 	rootCmd.AddCommand(newBackendsCommand(cfg))
 	rootCmd.AddCommand(newGoogleDriveMcpCommand(cfg))
+	rootCmd.AddCommand(newTelegramMcpCommand(cfg))
 	rootCmd.AddCommand(newSkillsCommand(cfg))
 	rootCmd.AddCommand(newFlowsCommand(cfg))
 
@@ -1836,6 +1837,25 @@ func newGoogleDriveMcpCommand(cfg *config) *cobra.Command {
 	cmd.Flags().BoolVar(&yoloMode, "yolo-mode", false, "Enable yolo approval mode for proxy MCP approval handling")
 
 	return cmd
+}
+
+// newTelegramMcpCommand (Task-232, CP-05-05 P-2): runs the FlowPilot-owned
+// Telegram Bot-API proxy MCP server over stdio, mirroring
+// newGoogleDriveMcpCommand's shape. No token/chat-id flags — the bot
+// token/channel id are resolved from the runner keyring at launch, never
+// passed as process arguments.
+func newTelegramMcpCommand(cfg *config) *cobra.Command {
+	return &cobra.Command{
+		Use:   "telegram-mcp",
+		Short: "Run the FlowPilot Telegram (send-only) proxy MCP server over stdio",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			instance, err := runner.New(cfg.workspace)
+			if err != nil {
+				return err
+			}
+			return instance.RunTelegramProxyMcpServer(cmd.Context())
+		},
+	}
 }
 
 func newSkillsCommand(cfg *config) *cobra.Command {

@@ -418,9 +418,22 @@ func (r *Runner) ListMcpBackends(ctx context.Context) ([]McpBackend, error) {
 
 	for _, spec := range specs {
 		var backend McpBackend
-		if spec.Key == "jira" {
+		switch spec.Key {
+		case "jira":
 			backend = r.detectJiraBackend(records[spec.Key])
-		} else {
+		case "firebase":
+			// Task-230: firebase's launcher is npx (a real external
+			// dependency, like Drive), but its connected/installed state is
+			// keyring-backed like jira, not launcher-probe-based — spec.detect
+			// would incorrectly gate "installed" on npx being resolvable via
+			// lookPathFn even when a valid service account is already stored.
+			backend = r.detectFirebaseBackend(records[spec.Key])
+		case "telegram":
+			// Task-232: telegram's "launcher" is this same FlowPilot binary,
+			// not an externally-resolvable PATH command — spec.detect's
+			// lookPathFn(spec.Launcher) check doesn't apply here at all.
+			backend = r.detectTelegramBackend(records[spec.Key])
+		default:
 			backend = spec.detect(records[spec.Key])
 		}
 		backends = append(backends, backend)
@@ -736,7 +749,89 @@ func (r *Runner) TriggerIntegrationConnection(
 			backend.Label,
 			request.ProjectID,
 		)
-	case "firebase", "telegram", "figma":
+	case "firebase":
+		parsed, err := validateFirebaseServiceAccountJSON(request.ServiceAccountJSON)
+		if err != nil {
+			message = err.Error()
+			return IntegrationConnectionResult{
+				RequestStatus:     "rejected",
+				IntegrationID:     integrationID,
+				IntegrationStatus: "failed",
+				RunID:             nil,
+				Message:           &message,
+			}, nil
+		}
+		projectID := strings.TrimSpace(request.FirebaseProjectID)
+		if projectID == "" {
+			projectID = parsed.ProjectID
+		}
+		creds := firebaseCredential{
+			ProjectID:          projectID,
+			Environment:        request.FirebaseEnvironment,
+			ServiceAccountJSON: request.ServiceAccountJSON,
+		}
+		if err := r.saveFirebaseCredential(integrationID, creds); err != nil {
+			message = err.Error()
+			return IntegrationConnectionResult{
+				RequestStatus:     "rejected",
+				IntegrationID:     integrationID,
+				IntegrationStatus: "failed",
+				RunID:             nil,
+				Message:           &message,
+			}, nil
+		}
+		backend := r.detectFirebaseBackend(mcpBackendRecord{
+			Installed:     true,
+			LastCheckedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			LastError:     "",
+			SecretKey:     firebaseCredentialKey(integrationID),
+		})
+		_ = r.saveMcpBackendRecord(backend)
+		status = "connected"
+		message = fmt.Sprintf(
+			"%s connection is ready for project %s.",
+			backend.Label,
+			request.ProjectID,
+		)
+	case "telegram":
+		if err := validateTelegramCredentialFields(request.BotToken, request.ChannelID); err != nil {
+			message = err.Error()
+			return IntegrationConnectionResult{
+				RequestStatus:     "rejected",
+				IntegrationID:     integrationID,
+				IntegrationStatus: "failed",
+				RunID:             nil,
+				Message:           &message,
+			}, nil
+		}
+		if err := r.saveTelegramCredential(integrationID, telegramCredential{
+			BotToken:    request.BotToken,
+			ChannelID:   request.ChannelID,
+			AutoApprove: request.TelegramAutoApprove,
+		}); err != nil {
+			message = err.Error()
+			return IntegrationConnectionResult{
+				RequestStatus:     "rejected",
+				IntegrationID:     integrationID,
+				IntegrationStatus: "failed",
+				RunID:             nil,
+				Message:           &message,
+			}, nil
+		}
+		backend := r.detectTelegramBackend(mcpBackendRecord{
+			Installed:     true,
+			LastCheckedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			LastError:     "",
+			SecretKey:     telegramCredentialKey(integrationID),
+		})
+		_ = r.saveMcpBackendRecord(backend)
+		status = "connected"
+		message = fmt.Sprintf(
+			"%s connection is ready for project %s.",
+			backend.Label,
+			request.ProjectID,
+		)
+	case "figma":
 		message = fmt.Sprintf(
 			"%s connection request accepted for project %s.",
 			providerLabel,
@@ -2305,6 +2400,24 @@ func mcpBackendSpecs() []mcpBackendSpec {
 			Transport:    "remote",
 			Launcher:     "remote",
 			InstallHint:  "Open the Jira MCP form, read the Atlassian guide, and paste an API token so the runner can connect to the Atlassian remote MCP server.",
+		},
+		{
+			Key:          "firebase",
+			ProviderType: "firebase",
+			Label:        "Firebase MCP",
+			Transport:    "launcher",
+			Launcher:     "npx",
+			InstallArgs:  []string{"-y", "firebase-tools", "--version"},
+			VerifyArgs:   []string{"-y", "firebase-tools", "--version"},
+			InstallHint:  "Install Node.js, then upload a Google Cloud service account JSON with Crashlytics access.",
+		},
+		{
+			Key:          "telegram",
+			ProviderType: "telegram",
+			Label:        "Telegram MCP",
+			Transport:    "launcher",
+			Launcher:     "flowpilot",
+			InstallHint:  "Add a Telegram bot token and channel id so the runner can connect the Telegram MCP (send-only, FlowPilot-owned proxy).",
 		},
 	}
 }

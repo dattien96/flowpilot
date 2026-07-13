@@ -446,6 +446,20 @@ type IntegrationConnectionRequest struct {
 	BoardID      string `json:"boardId,omitempty"`
 	Email        string `json:"email,omitempty"`
 	ApiToken     string `json:"apiToken,omitempty"`
+	// FirebaseProjectID/FirebaseEnvironment/ServiceAccountJSON back the
+	// Firebase connection flow (Task-230, CP-05-04). ServiceAccountJSON is
+	// the raw contents of the uploaded GCP service-account key file — it is
+	// sent once to the runner and stored only in the runner keyring
+	// (firebaseCredential), never persisted in Supabase config_encrypted.
+	FirebaseProjectID   string `json:"firebaseProjectId,omitempty"`
+	FirebaseEnvironment string `json:"firebaseEnvironment,omitempty"`
+	ServiceAccountJSON  string `json:"serviceAccountJson,omitempty"`
+	// BotToken/ChannelID back the Telegram connection flow (Task-232,
+	// CP-05-05). BotToken is stored only in the runner keyring
+	// (telegramCredential), never in Supabase config_encrypted.
+	BotToken            string `json:"botToken,omitempty"`
+	ChannelID           string `json:"channelId,omitempty"`
+	TelegramAutoApprove bool   `json:"telegramAutoApprove,omitempty"`
 }
 
 type McpBackendActionRequest struct {

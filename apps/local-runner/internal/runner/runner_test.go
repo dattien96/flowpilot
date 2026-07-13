@@ -54,9 +54,14 @@ func (s *memorySecretStore) Delete(key string) error {
 func TestTriggerIntegrationConnectionAcceptsValidRequest(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir()}
 
+	// Task-232 gave "telegram" real credential validation (bot token/channel
+	// id required, status becomes "connected"/"failed" instead of a bare
+	// placeholder "pending" acknowledgement) — this test now exercises
+	// "figma", the one remaining provider still on the generic no-op
+	// placeholder path this test was originally written to cover.
 	result, err := instance.TriggerIntegrationConnection(context.Background(), "integration-1", IntegrationConnectionRequest{
 		ProjectID:    "project-alpha",
-		ProviderType: "telegram",
+		ProviderType: "figma",
 		Action:       "test",
 	})
 	if err != nil {
