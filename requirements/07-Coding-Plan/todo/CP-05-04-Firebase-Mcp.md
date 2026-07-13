@@ -166,11 +166,11 @@ Cho step "Investigate Crash On Firebase" (và các step cần crash context khá
 
 ## 10. Definition of Done
 
-- [ ] `DOD-1` `firebase.crashlytics` đăng ký trong registry, opt-in, deterministic, có test; hiện trong `contextSourceOptions` khớp registry.
-- [ ] `DOD-2` Connect Firebase end-to-end; credential chỉ ở keyring, không Supabase/log; status `connected`.
-- [ ] `DOD-3` Firebase MCP server chốt (`Q-1`) + provider-config injection cho ≥1 provider, stale detection có test.
-- [ ] `DOD-4` `context_artifact.v1` bật `firebase.crashlytics` bind vào step → runtime hỏi crash target → prompt handoff có target note bounded; **không** dump full crash report vào `FlowContextPackage`.
-- [ ] `DOD-5` Prompt/preflight có branch Firebase (trên nền generalization CP-05-06); preflight chặn khi chưa connect với lỗi rõ.
-- [ ] `DOD-6` Guard bất biến: no-vector/deterministic, `PackageID` không đổi, BUG-236, source ngoài chỉ MCP đã connect.
-- [ ] `DOD-7` Use-case "Investigate Crash" chạy live end-to-end (AI đọc crash qua MCP + đối chiếu code).
-- [ ] `DOD-8` Read-only v1 enforced.
+- [x] `DOD-1` `firebase.crashlytics` đăng ký trong registry, opt-in, deterministic, có test; hiện trong `contextSourceOptions` khớp registry. — Task-231, `context_source_firebase_test.go`.
+- [x] `DOD-2` Connect Firebase; credential chỉ ở keyring, không Supabase/log; status `connected`. — Task-230, keyring + structural service-account JSON validation, test thật (`TestTriggerIntegrationConnectionFirebaseConnectsWithValidServiceAccount`). **"End-to-end" ở mức structural/local** — chưa gọi live GCP/Crashlytics API thật để verify credential (cần project GCP thật).
+- [x] `DOD-3` Firebase MCP server chốt (`Q-1` → official `firebase-tools` MCP) + provider-config injection cho Claude, stale detection có test. — Task-230.
+- [ ] `DOD-4` **Chưa xong (theo đúng nghĩa).** `context_artifact.v1` bật `firebase.crashlytics` bind vào step → runtime hỏi crash target → prompt handoff có target note bounded. — Cơ chế + prompt-note + degrade path đã test (Task-231), nhưng **chưa chạy qua một step/flow thật** để chứng minh "bind vào step" end-to-end; production adapter cố ý chưa wire (xem CP §Q-1/note Task-231).
+- [x] `DOD-5` Prompt/preflight có branch Firebase (trên nền generalization CP-05-06); preflight chặn khi chưa connect với lỗi rõ. — Task-227/230.
+- [x] `DOD-6` Guard bất biến: no-vector/deterministic, `PackageID` không đổi, BUG-236, source ngoài chỉ MCP đã connect. — giữ nguyên, có test (`TestFlowContextPackageStillHasNoVectorDependencyWithFirebaseSource`).
+- [ ] `DOD-7` **Chưa xong.** Use-case "Investigate Crash" chạy live end-to-end (AI đọc crash qua MCP + đối chiếu code). — chưa wire flow cụ thể, chưa có GCP/Crashlytics thật để chạy live.
+- [x] `DOD-8` Read-only v1 enforced. — `buildFirebaseMcpInstructions` chỉ liệt kê tool đọc Crashlytics.

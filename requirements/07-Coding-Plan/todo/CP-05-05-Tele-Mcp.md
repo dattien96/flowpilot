@@ -176,10 +176,10 @@ Cho step cuối của một flow khả năng **bắn final notification lên Tel
 ## 10. Definition of Done
 
 - [x] `DOD-1` SD-11 §3.3 **đã amend** (2026-07-13) hợp thức hóa AI-gọi-MCP path; native Go giữ làm fallback (`Q-1` done).
-- [ ] `DOD-2` `telegram.v1` artifact type seeded trong `artifact_types`, read-only, hiện trong catalog tab Artifacts; instance user tạo được với config `{ integrationId, chatId, template }`.
-- [ ] `DOD-3` Telegram MCP server chốt (`Q-2`) + provider-config injection cho ≥1 provider; bot token chỉ ở keyring.
-- [ ] `DOD-4` OUTPUT binding `telegram.v1` chèn write-contract vào prompt qua seam thật (`composeFlowNodeAgentPrompt`), không dùng `ArtifactResolver` chết; chỉ bind OUTPUT (compat).
-- [ ] `DOD-5` Verify gate `r-artifact-telegram-sent` bằng `message_id` thật trong tool-response (không chỉ tên tool được gọi); thiếu/lỗi API → reprompt; không false-positive khi quote guidance.
-- [ ] `DOD-6` Approval-gated send: mặc định user confirm trước khi gửi thật; auto mode opt-in.
-- [ ] `DOD-7` End-to-end: bind `telegram.v1` OUTPUT vào step cuối → run flow → AI gửi noti thật lên channel (qua approval) → gate xác nhận.
-- [ ] `DOD-8` Guard: type system-owned, binding ở `step_definitions` (BUG-236), secret boundary (SD-11 §6), source ngoài chỉ MCP đã connect.
+- [x] `DOD-2` `telegram.v1` artifact type seeded trong `artifact_types`, read-only, hiện trong catalog tab Artifacts; instance user tạo được với config. — Task-232 migration; config thực tế = `{ chatId, messageTemplate }` (bỏ `integrationId` — dead field không ai đọc, sửa lại cho khớp model "1 connection/workspace" giống Jira/Firebase, xem Task-233 completion notes).
+- [x] `DOD-3` Telegram MCP server chốt (`Q-2` → tự viết FlowPilot-owned Bot-API proxy) + provider-config injection cho Claude; bot token chỉ ở keyring. — Task-232, test thật với `httptest` (không phải live Telegram).
+- [x] `DOD-4` OUTPUT binding `telegram.v1` chèn write-contract vào prompt qua seam thật (`composeFlowNodeAgentPrompt`), không dùng `ArtifactResolver` chết; chỉ bind OUTPUT (compat). — Task-233, có test xác nhận đúng seam production.
+- [x] `DOD-5` Verify gate `r-artifact-telegram-sent` bằng `message_id` thật trong tool-response (không chỉ tên tool được gọi); thiếu/lỗi API → reprompt; không false-positive khi quote guidance. — Task-233, `telegram_rules_test.go`.
+- [ ] `DOD-6` **Chưa đúng nghĩa.** Approval-gated send: mặc định user confirm trước khi gửi thật; auto mode opt-in. — Đã build **cờ config tĩnh** `autoApprove` (mặc định `false`, chặn gửi cho tới khi bật trong settings) — **không phải** popup xác nhận live per-lần-gửi như DOD mô tả. Live approval round-trip cần proxy gọi ngược HTTP vào `InteractiveService.AskWorkflowQuestion` đang chạy — thiết kế/plumbing riêng, chưa làm (xem Task-233 follow-ups).
+- [ ] `DOD-7` **Chưa xong.** End-to-end: bind `telegram.v1` OUTPUT vào step cuối → run flow → AI gửi noti thật lên channel (qua approval) → gate xác nhận. — chưa có bot token thật để chạy live.
+- [x] `DOD-8` Guard: type system-owned, binding ở `step_definitions` (BUG-236), secret boundary (SD-11 §6), source ngoài chỉ MCP đã connect. — kế thừa framework sẵn có, không đổi; secret boundary có test riêng (`stripSecretFields`).

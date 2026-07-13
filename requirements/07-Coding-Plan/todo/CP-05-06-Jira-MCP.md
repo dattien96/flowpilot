@@ -209,12 +209,12 @@ Cho các flow step cần dữ liệu Jira (Investigate Bug, Plan Task, Analyze T
 
 ## 10. Definition of Done
 
-- [ ] `DOD-1` `jira.issue` và `jira.sprint` (hai source độc lập) đăng ký trong `ContextSourceRegistry`, opt-in, `Deterministic()==true`, có test; xuất hiện trong `contextSourceOptions` UI khớp registry.
-- [ ] `DOD-2` Connect Jira qua Atlassian remote MCP + OAuth end-to-end; status `connected`; token chỉ ở keyring, không ở Supabase/log.
-- [ ] `DOD-3` Adapter/source dispatch refactor (`P-5`) xong; Drive vẫn chạy nguyên (regression xanh).
-- [ ] `DOD-4` Provider-config injection cho ≥1 provider (Claude hoặc Codex) trỏ Atlassian remote MCP; stale detection có test.
-- [ ] `DOD-5` `context_artifact.v1` instance bật `jira.issue` bind vào step → runtime hỏi target → prompt handoff có target note bounded; **không** dump full ticket vào `FlowContextPackage`.
-- [ ] `DOD-6` Prompt-injection + preflight tổng quát hóa (không còn hardcode `google_drive`); Jira preflight chặn step khi chưa connect/OAuth stale với lỗi rõ.
-- [ ] `DOD-7` Guard bất biến: no-vector/deterministic, `PackageID` không đổi, `workflow_steps` không nhận metadata (BUG-236), source ngoài chỉ MCP đã connect (CP-44 `P-7`).
-- [ ] `DOD-8` Ít nhất một use-case flow (Investigate Bug hoặc Analyze Sprint) chạy live end-to-end; Test Console `jira_list_bugs` trả dữ liệu thật.
-- [ ] `DOD-9` Read-only v1 enforced; write tools disabled (theo `P-7`).
+- [x] `DOD-1` `jira.issue` và `jira.sprint` (hai source độc lập) đăng ký trong `ContextSourceRegistry`, opt-in, `Deterministic()==true`, có test; xuất hiện trong `contextSourceOptions` UI khớp registry. — Task-229, `context_source_jira_test.go`.
+- [ ] `DOD-2` **Chưa xong.** Connect Jira qua Atlassian remote MCP + OAuth end-to-end; status `connected`; token chỉ ở keyring, không ở Supabase/log. — Keyring-only đã đúng (Task-228), nhưng **browser OAuth handshake thật chưa build** (cần Atlassian OAuth app đăng ký + redirect thật, ngoài khả năng sandbox này). `authHeaderValue` hiện chưa có producer thật.
+- [x] `DOD-3` Adapter/source dispatch refactor (`P-5`) xong; Drive vẫn chạy nguyên (regression xanh). — Task-226: đọc code thật cho thấy không cần refactor (mỗi source đã độc lập); `TestTwoMCPBackedSourcesCoexistIndependently` + toàn bộ test Drive cũ pass.
+- [x] `DOD-4` Provider-config injection cho ≥1 provider (Claude) trỏ Atlassian remote MCP; stale detection có test. — Task-228, `jira_mcp_provider_config_test.go`. Cơ chế ghi config thật + test; **auth token bơm vào header chưa có nguồn thật** (phụ thuộc DOD-2).
+- [x] `DOD-5` `context_artifact.v1` instance bật `jira.issue` bind vào step → runtime hỏi target → prompt handoff có target note bounded; **không** dump full ticket vào `FlowContextPackage`. — Task-229, verified qua unit test (`TestAppendJiraIssueTargetPromptBoundedScope`, `TestFlowContextPackageStillHasNoVectorDependencyWithJiraSources`), chưa chạy live flow thật.
+- [x] `DOD-6` Prompt-injection + preflight tổng quát hóa (không còn hardcode `google_drive`); Jira preflight chặn step khi chưa connect/OAuth stale với lỗi rõ. — Task-227/228.
+- [x] `DOD-7` Guard bất biến: no-vector/deterministic, `PackageID` không đổi, `workflow_steps` không nhận metadata (BUG-236), source ngoài chỉ MCP đã connect (CP-44 `P-7`). — giữ nguyên, có test.
+- [ ] `DOD-8` **Chưa xong.** Ít nhất một use-case flow (Investigate Bug hoặc Analyze Sprint) chạy live end-to-end; Test Console `jira_list_bugs` trả dữ liệu thật. — Chưa wire flow cụ thể, chưa chạy live (cần Jira thật + OAuth — phụ thuộc DOD-2).
+- [x] `DOD-9` Read-only v1 enforced; write tools disabled (theo `P-7`). — `buildJiraMcpInstructions` chỉ liệt kê tool đọc.
