@@ -5,11 +5,11 @@
 - Document ID: `Task-186`
 - Title: `Canonical Head And Intent Signature`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-03`
-- Last Updated: `2026-07-03`
+- Last Updated: `2026-07-13`
 - Parent Documents: [CP-43: Change Contract And Canonical Intent Signature](../../07-Coding-Plan/todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (P-3), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (AC-7, AC-8, BR-2)
 - Child Documents: `None`
 - Related Documents: [Task-184: Change Contract Capture](./Task-184-Change-Contract-Capture.md), [Task-187: Superseding Decision Records And Retire](./Task-187-Superseding-Decision-Records-And-Retire.md), [Task-096: Commit-History Ledger](../../08-Task/done/Task-096-Commit-History-Ledger.md), [Task-097: Feature Catalog And Resolver](../../08-Task/done/Task-097-Feature-Catalog-And-Resolver.md)
@@ -81,15 +81,15 @@ CP-35 packs ordered history but has no single "current truth" record and no inte
 
 ## 6. Acceptance Check (DoD)
 
-- [ ] Each feature has a `CanonicalHead` JSON with a reproducible `intent_signature`; recomputing on identical inputs yields the identical hash.
-- [ ] Editing a governing SS/SD changes its stored hash → Head flips to `spec_drifted` → `r-spec-drift` (warn); no auto-rewrite of `behavior_statement` (`BR-2`).
-- [ ] An out-of-contract code change with unchanged spec/behavior flips the Head to `code_drifted` → `r-code-drift` (warn).
-- [ ] An in-contract, gate-passing change runs `UpdateHead`, refreshes the signature, and keeps `status=current`.
-- [ ] **Birth**: a brand-new `feature_key` with no history mints a Head from the Contract `intent`; with no governing docs it is `spec_less` and flagged low-confidence.
-- [ ] **Attach-spec**: adding the first governing doc to a `spec_less` feature raises `r-attach-spec` (approve), and on approval re-baselines to `current` — and is **not** reported as `spec_drift`.
-- [ ] A missing/deleted governing doc does not panic; the Head is flagged, signature recompute is safe (`F-1`).
-- [ ] Backfill builds Heads for existing features from `changeledger` + `featurecatalog` on bind.
-- [ ] `go test ./internal/changecontract/... ./internal/flowgate/...` passes; no `changeledger`/`featurecatalog` regression.
+- [x] Each feature has a `CanonicalHead` JSON with a reproducible `intent_signature`; recomputing on identical inputs yields the identical hash. (`ComputeSignature`, `TestComputeSignatureReproducible`.)
+- [x] Editing a governing SS/SD changes its stored hash → Head flips to `spec_drifted` → `r-spec-drift` (warn); no auto-rewrite of `behavior_statement` (`BR-2`). (`SpecDrifted`, `updateCanonicalHead` leaves the Head untouched when drifted, `r-spec-drift` rule.)
+- [x] An out-of-contract code change with unchanged spec/behavior flips the Head to `code_drifted` → `r-code-drift` (warn). (`CodeDrifted`, `r-code-drift` rule.)
+- [x] An in-contract, gate-passing change runs `UpdateHead`, refreshes the signature, and keeps `status=current`. (`updateCanonicalHead` calls `UpdateHead`+`SaveHead` only when not drifted/pending.)
+- [x] **Birth**: a brand-new `feature_key` with no history mints a Head from the Contract `intent`; with no governing docs it is `spec_less` and flagged low-confidence. (`BuildHead`, `TestBuildHeadBirthWithNoHistoryOrDocsIsSpecLess`.)
+- [x] **Attach-spec**: adding the first governing doc to a `spec_less` feature raises `r-attach-spec` (approve), and on approval re-baselines to `current` — and is **not** reported as `spec_drift`. Detection is wired (`updateCanonicalHead` sets `attachSpecPending` and freezes the Head until resolved; `r-attach-spec` fires) and the **approval-confirmation caller now exists** (added 2026-07-13, follow-up): `POST /client/projects/{projectId}/features/{featureKey}/canonical-head/rebaseline` resolves the feature's governing DocRefs from the catalog and calls `RebaselineWithSpec`, wired to a "Confirm spec & rebaseline" button in the desktop app's Canonical Head panel (`ProjectsSettings.tsx`). Verified with `TestHandleRebaselineCanonicalHead` (+ the no-governing-docs 400 case). This is an explicit user action (the human confirmation), not the SD-16 flow-gate approval modal — a deliberate design choice (see Completion Notes).
+- [x] A missing/deleted governing doc does not panic; the Head is flagged, signature recompute is safe (`F-1`). (`HashDoc` returns an error not a panic; `hashGoverningDocs` records `""`; `TestSpecDriftedTrueWhenDocDeleted`, `TestHashDocReturnsErrorNotPanicOnMissingFile`.)
+- [x] Backfill builds Heads for existing features from `changeledger` + `featurecatalog` on bind. (`BuildHead`, `TestBuildHeadWithGoverningDocsIsSpecBacked`, `TestBuildHeadBackfillsFromLedgerHistory`.)
+- [x] `go test ./internal/changecontract/... ./internal/flowgate/...` passes; no `changeledger`/`featurecatalog` regression. (172 tests passed, `go vet` clean, 2026-07-13.)
 
 ## 7. Out of Scope
 
@@ -99,6 +99,7 @@ CP-35 packs ordered history but has no single "current truth" record and no inte
 
 ## 8. Completion Notes
 
-- result: planned
-- follow-ups: Task-187 folds decisions into the Head and handles retire; Task-188 packs the Head first.
-- upstream docs updated: none
+- result: **done** — core Head store, signature, backfill/birth, drift detection, and the 3 flowgate rules are implemented and unit-tested; the attach-spec re-baseline confirmation caller (rebaseline endpoint + desktop button) was added as a follow-up on 2026-07-13, so `r-attach-spec` is now fully round-trippable (fire → human confirms → Head flips to current). All DoD items checked.
+- design decision (resolves part of SD-21's Open Question): attach-spec re-baseline is an **explicit user action** in the desktop app, not the SD-16 flow-gate approval modal. Rationale: the transition is a deliberate one-off human judgement ("does this spec describe current behavior?"), better served by a Projects-settings action than by an inline gate modal that would re-appear every turn.
+- follow-ups: Task-187 folds decisions into the Head and handles retire (done); Task-188 packs the Head first and adds desktop visibility (done). The status should be flipped `in_progress → done` and the file moved to `08-Task/done/` at commit time.
+- upstream docs updated: none (doc terminology already aligned during doc-prep before Task-184 began)
