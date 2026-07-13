@@ -6,7 +6,7 @@ This document covers three MCP-related integrations in FlowPilot:
 
 - Google Drive via the FlowPilot-owned proxy MCP plus runner-local account OAuth and optional artifact folder binding
 - Jira via Atlassian's official remote MCP server
-- Telegram via a native Go integration
+- Telegram via an MCP-backed output notification artifact (`telegram.v1`): the AI provider CLI calls a Telegram MCP tool to send. Native Go adapter retained only as a fallback. **(Amended 2026-07-13 — see §3.3 and [CP-05-05](../07-Coding-Plan/todo/CP-05-05-Tele-Mcp.md).)**
 
 ---
 
@@ -27,7 +27,7 @@ flowchart LR
 
   Runner -->|Google Drive| GDMCP[FlowPilot Google Drive proxy MCP]
   Runner -->|Jira| AMCP[Atlassian Remote MCP server]
-  Runner -->|Telegram| TG[Native Go Telegram adapter]
+  Runner -->|Telegram| TG[Telegram MCP server<br/>provider CLI is the client]
 
   GDMCP --> GDAPI[Google Drive APIs]
   AMCP --> ATLAS[Atlassian Cloud via /v1/mcp/authv2]
@@ -128,11 +128,16 @@ Reference docs:
 
 ### 3.3 Telegram
 
-Telegram does not use a third-party MCP server in the MVP design.
+> **Amendment (2026-07-13).** The original MVP design below made Telegram a **native Go adapter with no MCP server**. That is superseded: Telegram is now an **MCP-backed OUTPUT notification artifact** (`telegram.v1`) — the AI provider CLI calls a Telegram MCP tool (`send_message`) during its turn, consistent with the artifact framework ([SD-23](./SD-23-Generic-Artifact-Framework.md) `D-8`/`D-11`) and the "provider CLI owns MCP" principle (CP-05-03 §11). Owner decision recorded in [CP-05-05](../07-Coding-Plan/todo/CP-05-05-Tele-Mcp.md) (`Q-1`). The native Go adapter (original text, preserved below) is retained **only as a documented fallback** if no reliable Telegram MCP server is available (CP-05-05 `Q-3`).
 
-Instead, FlowPilot should use a native Go adapter because the user goal is notification and data push/pull behavior, not a separate hosted MCP backend.
+Current (amended) design:
 
-Flow:
+1. **Connection (per-project):** user clicks `Add MCP`, UI creates the Telegram integration row, runner validates the bot token + destination channel/chat via a lightweight Bot API check and marks status. The bot token is stored in the runner keyring, never in Supabase (§6).
+2. **Server:** FlowPilot configures a Telegram MCP server for the selected provider account (community MCP or a FlowPilot-owned proxy wrapping the Telegram Bot API — chosen in CP-05-05 `Q-2`), the same way Google Drive MCP is injected into each provider CLI config.
+3. **Send (per-run):** a flow step binds a `telegram.v1` artifact as **output**; the runner injects a write-contract prompt instructing the AI to send the final notification via the Telegram MCP tool. The send happens inside the AI's tool loop.
+4. **Verify + approve:** because sending a message is an irreversible outward-facing action, the send is **approval-gated** by default, and a flow-gate verifies the tool call occurred (tool-call detection, not filesystem existence).
+
+Fallback (original MVP design — native Go, kept if MCP path proves unreliable):
 
 1. user clicks `Add MCP`
 2. UI creates the Telegram integration row
@@ -140,7 +145,7 @@ Flow:
 4. runner performs a lightweight native API check
 5. runner stores the result and marks the integration accordingly
 
-This path does not need an MCP backend install step.
+The native-Go fallback does not need an MCP backend install step.
 
 ---
 
@@ -166,7 +171,7 @@ Install is provider-specific:
 
 - Google Drive uses the FlowPilot proxy MCP launcher path and runner-local OAuth state
 - Jira uses Atlassian's official remote MCP setup path through the local proxy
-- Telegram skips this step because it is native Go
+- Telegram configures a Telegram MCP server for the provider CLI (amended 2026-07-13, §3.3); the native-Go fallback would skip this step
 
 ### 4.2 Verify
 
@@ -218,6 +223,6 @@ If the user presses `Add MCP`:
 - the local runner checks the provider path
 - Google Drive connects a runner-local account, validates proxy MCP readiness, and optionally validates a project folder binding
 - Jira connects through Atlassian's official remote MCP server at `/v1/mcp/authv2`
-- Telegram uses native Go without a third-party MCP backend install
+- Telegram sends via a Telegram MCP tool called by the provider CLI (`telegram.v1` output artifact, approval-gated; amended 2026-07-13, §3.3); native Go is a fallback
 - the runner returns the real state
 - the UI writes that state back to Supabase
