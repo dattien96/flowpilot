@@ -5,11 +5,11 @@
 - Document ID: `Task-184`
 - Title: `Change Contract Capture`
 - Phase: `task`
-- Status: `draft`
+- Status: `approved`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-03`
-- Last Updated: `2026-07-03`
+- Last Updated: `2026-07-13` (CP-43 approved; this is P-1, the first task to implement — deps CP-35 changecontract substrate ready)
 - Parent Documents: [CP-43: Change Contract And Canonical Intent Signature](../../07-Coding-Plan/todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (P-1), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (US-3)
 - Child Documents: `None`
 - Related Documents: [Task-185: Scope-Drift Detection](./Task-185-Scope-Drift-Detection.md), [CP-35: Context And Regression Engine Rollout](../../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md) (P-2 resolver, P-6 skill pack)
