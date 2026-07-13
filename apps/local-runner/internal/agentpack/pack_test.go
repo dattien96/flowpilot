@@ -406,3 +406,23 @@ func TestLoadAgentSpecParsesMarkdownFrontmatter(t *testing.T) {
 		t.Fatalf("unexpected system prompt: %q", spec.SystemPrompt)
 	}
 }
+
+// TestCoderAgentPromptForbidsUnapprovedCommitsAndOutOfScopeFileChanges guards
+// BUG-278: the Coding-step agent may still write its own change-audit note
+// (r-ca, SD-20 §2.1, is unaffected) but must not run git commit itself — the
+// Audit step owns the actual commit, gated on explicit approval — and must
+// not touch/revert/delete files outside its own task scope.
+func TestCoderAgentPromptForbidsUnapprovedCommitsAndOutOfScopeFileChanges(t *testing.T) {
+	spec, err := LoadAgentSpecFS(embeddedPackFS, "flow-pack/agents/coder.md")
+	if err != nil {
+		t.Fatalf("LoadAgentSpecFS: %v", err)
+	}
+	for _, want := range []string{"git commit", "Audit step", "not yours"} {
+		if !strings.Contains(spec.SystemPrompt, want) {
+			t.Fatalf("coder.md system prompt missing BUG-278 guard text %q:\n%s", want, spec.SystemPrompt)
+		}
+	}
+	if strings.Contains(spec.SystemPrompt, "Do not create or edit") {
+		t.Fatal("coder.md must not forbid writing its own change-audit note — that conflicts with r-ca (SD-20 §2.1)")
+	}
+}

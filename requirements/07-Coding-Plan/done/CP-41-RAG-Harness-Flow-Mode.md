@@ -282,7 +282,7 @@ The runner already advances this model through `WorkflowOrchestrator.Progress`, 
 - [x] `DOD-4` `Task-171` prepares audit and commit-message drafts with `feature_key` and source-doc traceability.
 - [x] `DOD-5` The complete implementation does not call or require any vector DB, embedding index, or similarity-search service.
 - [x] `DOD-6` All child tasks include DOD and explicit test items.
-- [ ] `DOD-7` Manual Flow Mode run confirms graceful degradation when history/chat summaries are absent.
+- [x] `DOD-7` Manual Flow Mode run confirms graceful degradation when history/chat summaries are absent. Verified 2026-07-13 in `D:\working\gate-sandbox` (`run-9954`/`run-9959`): `chat_summary.ndjson` removed, `feature_key: calc-core` resolved `verified`, `historyBlock` populated, `chat.summary` section body empty with no warnings, and the Coding-step prompt (`run-9959-turns.ndjson`) contains `## Prior work on "calc-core"` with no "Prior discussion" section — no crash. See CP-43 §11 CH-3 for the same evidence.
 - [x] `DOD-8` Package, retry, validation, and audit state are attached to existing workflow run/step persistence, not a parallel session model.
 
 ## 11. Manual E2E Test Guide
@@ -291,7 +291,8 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 
 > **Relocated (2026-07-06):** the pure **context-harness** scenarios — deterministic feature-history retrieval, unknown-key degradation, no-chat-summary degradation (original `DOD-7`), and context-package rebuild on Plan rerun — plus the "Missing chat summary ledger" and "Runner restart after context-package creation" failure rows, were **moved to [CP-43 §11 (Relocated Context-Harness E2E Tests)](../todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md#11-relocated-context-harness-e2e-tests-from-cp-41-11)**, because the context-harness logic they exercise is being reworked under CP-43. The scenario numbers below therefore have gaps (2/3/4/8 relocated); the remaining scenarios keep their original numbers.
 >
-> **Blocked-on-code note:** Scenarios 5/6/7 (Testing/validate retry) and 9/10 (Audit draft) are currently **not runnable end-to-end** — the `command.validate` and `artifact.audit_draft` behavior handlers are stubs not wired to their Task-170/171 implementations (see [BUG-243](../../09-BugFix/done/BUG-243-Flow-Mode-Validate-And-Audit-Behaviors-Disconnected-From-Task-170-171.md)). Only the launch → context → coder portion (hops 1–4) is testable until BUG-243 is fixed.
+> **Resolved (2026-07-13):** the note below was stale — [BUG-243](../../09-BugFix/done/BUG-243-Flow-Mode-Validate-And-Audit-Behaviors-Disconnected-From-Task-170-171.md) wired `command.validate`/`artifact.audit_draft` to their real Task-170/171 implementations on 2026-07-09, and Scenarios 5, 6, 7, 9, and 10 were all live-verified end-to-end in `D:\working\gate-sandbox` on 2026-07-13 (see each scenario's own "Verified" note below). Two coder-agent bugs found during that verification — [BUG-278](../../09-BugFix/done/BUG-278-Flow-Mode-Coding-Step-Agent-Autonomously-Commits-And-Writes-Audit-Notes.md) and [BUG-279](../../09-BugFix/done/BUG-279-Flow-Mode-Validate-Retry-Ignores-Implement-Node-Reinvoke-Lifecycle.md) — are both fixed and live-verified too.
+> ~~**Blocked-on-code note:** Scenarios 5/6/7 (Testing/validate retry) and 9/10 (Audit draft) are currently **not runnable end-to-end** — the `command.validate` and `artifact.audit_draft` behavior handlers are stubs not wired to their Task-170/171 implementations. Only the launch → context → coder portion (hops 1–4) is testable until BUG-243 is fixed.~~
 
 ---
 
@@ -308,13 +309,15 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 6. Let the Audit step complete.
 
 **Expected:**
-- [ ] The entry inline context node starts successfully from the flow definition; the run is not inert before Coding begins.
-- [ ] Plan step: `FlowContextPackage` is emitted as `EventFlowContextPackage` in the run events. Package has `featureConfidence: verified` and `featureKey: agent-flow-engine`.
-- [ ] Coding step: prompt starts with `[FlowPilot flow context package]` sentinel. The `## Flow Context Package` section is present. Feature history block and/or chat summary block are included.
-- [ ] Testing step: validation command runs; `EventFlowValidationResult` emitted with `exitCode: 0`. No retry triggered.
-- [ ] Audit step: `EventFlowAuditDraft` emitted. Draft has `status: ready`, `featureKey: agent-flow-engine`, a valid `changeLedgerBlock` containing `feature_key:` and `source_doc_id:`.
-- [ ] Suggested commit message follows `[Feature][agent-flow-engine] ...` format.
-- [ ] Inspect draft before any write — no file is created automatically.
+- [x] The entry inline context node starts successfully from the flow definition; the run is not inert before Coding begins.
+- [x] Plan step: `FlowContextPackage` is emitted as `EventFlowContextPackage` in the run events. Package has `featureConfidence: verified` and `featureKey: agent-flow-engine`.
+- [x] Coding step: prompt starts with `[FlowPilot flow context package]` sentinel. The `## Flow Context Package` section is present. Feature history block and/or chat summary block are included.
+- [x] Testing step: validation command runs; `EventFlowValidationResult` emitted with `exitCode: 0`. No retry triggered.
+- [x] Audit step: `EventFlowAuditDraft` emitted. Draft has `status: ready`, `featureKey: agent-flow-engine`, a valid `changeLedgerBlock` containing `feature_key:` and `source_doc_id:`.
+- [x] Suggested commit message follows `[Feature][agent-flow-engine] ...` format.
+- [x] Inspect draft before any write — no file is created automatically.
+
+**Covered by equivalent verification (2026-07-13), not a separate literal run against `agent-flow-engine`:** every mechanic this scenario checks (context-package emission with `featureConfidence: verified`, the `[FlowPilot flow context package]` prompt sentinel, a clean `exitCode: 0` no-retry validate, and an `EventFlowAuditDraft` with `status: ready` + correct `[Feature][...]` commit-message format + no auto-write) was directly verified against `D:\working\gate-sandbox`'s `calc-core` feature key in Scenario 9 (`run-9954`/`run-4286`) and Scenario 5. Same code path, same event types, different feature key — not re-run separately against `agent-flow-engine`.
 
 ---
 
@@ -333,12 +336,16 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 **Action:** Let the Coding → Testing → retry-Coding → Testing cycle run.
 
 **Expected:**
-- [ ] After first Testing failure: `EventFlowValidationResult` with `exitCode != 0` emitted.
-- [ ] `EventFlowValidationRetry` emitted with `retryAttempt: 1`, `status: retrying`.
-- [ ] Coding step re-enters. Retry prompt starts with `[FlowPilot flow context package]` AND contains `## Validation Failure — Retry 1/3`.
-- [ ] Retry prompt includes **key failure lines** (bounded, not full log).
-- [ ] On the second Testing run: `exitCode: 0`. Loop ends. `EventFlowValidationResult` with passing result emitted.
-- [ ] `retryAttempt` never exceeds 3.
+- [x] After first Testing failure: `EventFlowValidationResult` with `exitCode != 0` emitted.
+- [x] `EventFlowValidationRetry` emitted with `retryAttempt: 1`, `status: retrying`.
+- [x] Coding step re-enters. Retry prompt starts with `[FlowPilot flow context package]` AND contains `## Validation Failure — Retry 1/3`.
+- [x] Retry prompt includes **key failure lines** (bounded, not full log).
+- [x] On the second Testing run: `exitCode: 0`. Loop ends. `EventFlowValidationResult` with passing result emitted.
+- [x] `retryAttempt` never exceeds 3.
+
+**Verified 2026-07-13** in `D:\working\gate-sandbox` (`run-10622`/`run-10673`): `test_command` set to a marker-file PowerShell script (fails once, passes on 2nd call). First `flow_validation_result`: `exitCode: 1`. `flow_validation_retry`: `retryAttempt: 1`, `status: "retrying"`. Retry prompt (`run-10673-turns.ndjson`, `turn-10678`) contains exactly `## Validation Failure — Retry 1/3`, `**Command**`/`**Exit code**: 1`, a bounded "Files changed in previous attempt" list, and the oracle-rule-aligned instruction *"Do NOT edit tests to make them pass."* Second `flow_validation_result`: `exitCode: 0`, `status: "passed"`. `retryAttempt` stayed at 1 (single retry needed).
+
+**Same coder-autonomy issue recurred ([BUG-278](../../09-BugFix/done/BUG-278-Flow-Mode-Coding-Step-Agent-Autonomously-Commits-And-Writes-Audit-Notes.md)):** during the retry's Coding turn, the coder reverted the test's `test_baseline.json` edit back to its committed content (treating my temporary test scaffolding as unwanted dirty state) and made yet another real commit (`39ba0a6`, `[Docs][sandbox-meta]`) — added as further evidence to BUG-278, not a new bug.
 
 ---
 
@@ -349,11 +356,13 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 **Action:** Let the retry loop run to exhaustion.
 
 **Expected:**
-- [ ] 3 `EventFlowValidationRetry` events emitted (`retryAttempt: 1`, `2`, `3`).
-- [ ] After attempt 3: `status: failed_validation_max_retries`.
-- [ ] No 4th Coding retry spawned.
-- [ ] `EventFlowValidationResult` on the 3rd attempt is the final one.
-- [ ] User is surfaced a clear failure state (not a silent stop).
+- [x] 3 `EventFlowValidationRetry` events emitted (`retryAttempt: 1`, `2`, `3`).
+- [x] After attempt 3: `status: failed_validation_max_retries`.
+- [x] No 4th Coding retry spawned.
+- [x] `EventFlowValidationResult` on the 3rd attempt is the final one.
+- [x] User is surfaced a clear failure state (not a silent stop).
+
+**Originally BLOCKED 2026-07-13 by BUG-278** (see prior attempt in `run-10853`, where the retry's Coding-step agent reverted the deliberately-broken `test_baseline.json` instead of failing genuinely). **Unblocked and PASSED 2026-07-13** after [BUG-278](../../09-BugFix/done/BUG-278-Flow-Mode-Coding-Step-Agent-Autonomously-Commits-And-Writes-Audit-Notes.md) and [BUG-279](../../09-BugFix/done/BUG-279-Flow-Mode-Validate-Retry-Ignores-Implement-Node-Reinvoke-Lifecycle.md) landed — re-verified in `D:\working\gate-sandbox` (`run-4505`, same `test_command: "go test ./nonexistent"` setup). This time the coder, instead of silently reverting the config, surfaced an `ask_user` question about the broken validation command per its updated prompt guard (a further positive side effect of the BUG-278 fix); once answered, the flow's own retry loop ran cleanly to completion: `flow_validation_retry` shows `retryAttempt: 1` → `2` → `3`, each `status: "retrying"` except the last (`status: "failed_validation_max_retries"`), each with the correct bounded `FailureLines: ["stat D:\\working\\gate-sandbox\\nonexistent: directory not found"]`. No 4th retry fired. The user was surfaced a clear "Needs your decision — Validation failed after the maximum number of retries" card with Stop/Continue, matching the expected non-silent failure state.
 
 ---
 
@@ -364,10 +373,12 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 **Action:** Let the Testing step run.
 
 **Expected:**
-- [ ] `EventFlowValidationResult` emitted with `envError` field set (e.g. `"exec: not found in $PATH"`).
-- [ ] `status: skipped_env_error` — NOT `retrying`.
-- [ ] **No Coding retry spawned.** The env error is reported, not treated as a code failure.
-- [ ] `retryAttempt` remains 0.
+- [x] `EventFlowValidationResult` emitted with `envError` field set (e.g. `"exec: not found in $PATH"`).
+- [x] `status: skipped_env_error` — NOT `retrying`.
+- [x] **No Coding retry spawned.** The env error is reported, not treated as a code failure.
+- [x] `retryAttempt` remains 0.
+
+**Verified 2026-07-13** in `D:\working\gate-sandbox` (`run-10991`): `test_command` set to `definitely-not-a-real-binary-xyz` (nonexistent binary). `EventFlowValidationResult` shows `envError: "exec: \"definitely-not-a-real-binary-xyz\": executable file not found in %PATH%"`, `EventFlowValidationRetry` shows `status: "skipped_env_error"` with `retryAttempt: 0` (unchanged). Only one Coding-step child run exists for this run (no retry spawned). Audit correctly shows `blocked_validation_failed` (validation never reached `passed`). Clean pass — the coder did not interfere with the test setup this time (`test-config.json` survived, unlike in the Scenario 5/6 attempts).
 
 ---
 
@@ -382,11 +393,15 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 **Action:** Inspect the Audit step's run events before clicking any "Commit" or "Write" button.
 
 **Expected:**
-- [ ] `EventFlowAuditDraft` event is present in the run events.
-- [ ] Draft contains: `featureKey`, `sourceDocId`, `whatChanged`, `whyChanged`, `changedFiles`, `validationResult: passed`, `changeLedgerBlock`, `commitMessage`.
-- [ ] **No CA note file has been written** to the workspace yet (check `change-audit/` directory — no new files).
-- [ ] **No git commit has been made** (run `git status` — working tree is clean or shows only coding changes, not a new commit).
-- [ ] The rendered draft text is human-readable markdown with all sections present.
+- [x] `EventFlowAuditDraft` event is present in the run events.
+- [x] Draft contains: `featureKey`, `sourceDocId`, `whatChanged`, `whyChanged`, `changedFiles`, `validationResult: passed`, `changeLedgerBlock`, `commitMessage`.
+- [x] **No CA note file has been written** to the workspace yet (check `change-audit/` directory — no new files). *(Note below.)*
+- [x] **No git commit has been made** (run `git status` — working tree is clean or shows only coding changes, not a new commit).
+- [x] The rendered draft text is human-readable markdown with all sections present.
+
+**Verified 2026-07-13** in `D:\working\gate-sandbox` (`run-9954`/`run-9959`): `EventFlowAuditDraft` emitted with `status: ready`, all fields populated (`featureKey: calc-core`, `changedFiles`, `validationResult: passed`, `changeLedgerBlock`, `commitMessage`), `git log` still at pre-run HEAD (no new commit) — confirming the **Audit node itself** (`BuildAuditDraft`/`PersistAuditDraft`) never auto-writes or auto-commits, per its BUG-243 contract.
+
+**Caveat (accepted, not a flow-engine bug):** the underlying **Coding-step agent** wrote `change-audit/CA-938.md` directly to disk mid-implementation (before the Audit step ran), following this repo's own audit-logging convention baked into its own prompt/skills — this is coder-agent behavior, orthogonal to the RAG-harness Audit node's own draft-only contract. Marked pass with this caveat per explicit owner decision. Related to [BUG-278](../../09-BugFix/done/BUG-278-Flow-Mode-Coding-Step-Agent-Autonomously-Commits-And-Writes-Audit-Notes.md) (`done`, fixed 2026-07-13), which was actually about the Coding step making a **real git commit** on its own in a later run — writing the CA note itself was never the problem (it's expected per `r-ca`).
 
 ---
 
@@ -397,10 +412,14 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 **Action:** Complete Plan → Coding → Testing successfully, then observe the Audit step.
 
 **Expected:**
-- [ ] `EventFlowAuditDraft` emitted with `status: blocked_missing_feature_key`.
-- [ ] `commitMessage` is empty.
-- [ ] `changeLedgerBlock` is empty.
-- [ ] User sees a clear "blocked" state — not a partially-written audit note.
+- [x] `EventFlowAuditDraft` emitted with `status: blocked_missing_feature_key`.
+- [x] `commitMessage` is empty.
+- [x] `changeLedgerBlock` is empty.
+- [x] User sees a clear "blocked" state — not a partially-written audit note. *(inferred from `timelineReducer.ts` BUG-243 F-3 rendering — not visually re-confirmed in-app this pass.)*
+
+**Verified 2026-07-13** in `D:\working\gate-sandbox` (`run-10494`): `calc-core` removed from `FEATURE-KEYS.md` and the file made read-only (`attrib +R`) so the coder could not self-heal the missing registration (a first attempt without the read-only lock failed — see caveat below). `run-10494-flow-events.ndjson` shows `EventFlowAuditDraft` with `status: "blocked_missing_feature_key"` and no `commitMessage`/`changeLedgerBlock` fields present.
+
+**Caveat found during this test:** on the first attempt (`run-10399`, file not locked), the Coding-step agent detected the missing registry line and **wrote it back into `FEATURE-KEYS.md` itself**, defeating the test precondition — audit came back `ready` instead of blocked. On the locked-file retry (`run-10494`), the coder could not fix the registry file, but instead **made a real `git commit`** (`4d7b822`, in `D:\working\gate-sandbox`) containing `calc.go`, `calc_test.go`, `change-audit/CA-938.md`, and the `FEATURE-KEYS.md` deletion — with no explicit user/workflow approval gate. This is the Coding-step agent's own autonomous behavior (following the repo's own audit-logging/git-commit-format skills), not the flow-engine's Audit node (which correctly stayed draft-only per BUG-243) — but it does mean a real, hard-to-casually-revert git commit can land during what CP-41 P-6/R-4 intend to be an explicit-approval-gated step. Filed as [BUG-278](../../09-BugFix/done/BUG-278-Flow-Mode-Coding-Step-Agent-Autonomously-Commits-And-Writes-Audit-Notes.md) — fixed and live-verified 2026-07-13.
 
 ---
 
@@ -414,12 +433,14 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 3. Start a Flow Mode run against this built-in (or its clone) with a real task.
 
 **Expected:**
-- [ ] The `context` node (an **inline** node, `run: inline`, `lifecycle: once`) auto-starts as the flow's entry node — the run is not inert waiting for a user-authored "Plan" step by that literal name.
-- [ ] `EventFlowContextPackage` is emitted exactly as in Scenario 1, driven by the `context.produce` behavior handler, not by a hardcoded "Plan" step-type check.
-- [ ] The `implement` node (delegate, `agents/coder.md`) receives `main_context: flow_context_package.v1` as declared in its `inputs`, and its prompt is composed from `promptTemplate: prompts/flow-context-handoff.md`.
-- [ ] The `validate` node runs inline via `command.validate` and, on failure, the `validate→implement when continue` back-edge re-enters `implement` — matching Scenario 5's retry behavior, but driven by the YAML edge instead of a `isCodingStepType`/`isPlanStepType` literal branch.
-- [ ] The `audit` node runs last, matching Scenario 9's audit draft behavior.
-- [ ] End-to-end node sequence and events are behaviorally identical to Scenario 1, even though the underlying step identification is now behavior-ID-based.
+- [x] The `context` node (an **inline** node, `run: inline`, `lifecycle: once`) auto-starts as the flow's entry node — the run is not inert waiting for a user-authored "Plan" step by that literal name.
+- [x] `EventFlowContextPackage` is emitted exactly as in Scenario 1, driven by the `context.produce` behavior handler, not by a hardcoded "Plan" step-type check.
+- [x] The `implement` node (delegate, `agents/coder.md`) receives `main_context: flow_context_package.v1` as declared in its `inputs`, and its prompt is composed from `promptTemplate: prompts/flow-context-handoff.md`.
+- [x] The `validate` node runs inline via `command.validate` and, on failure, the `validate→implement when continue` back-edge re-enters `implement` — matching Scenario 5's retry behavior, but driven by the YAML edge instead of a `isCodingStepType`/`isPlanStepType` literal branch.
+- [x] The `audit` node runs last, matching Scenario 9's audit draft behavior.
+- [x] End-to-end node sequence and events are behaviorally identical to Scenario 1, even though the underlying step identification is now behavior-ID-based.
+
+**Covered by the 2026-07-13 gate-sandbox verification pass:** every run cited in Scenarios 5/6/7/9/10 (`run-9954`, `run-4286`, `run-4505`, `run-10991`, etc.) executed through this exact `rag-harness.yaml` node graph — `context`→`implement`→`validate`→`audit` with the `validate→implement when continue` back-edge — via the built-in/mirrored RAG Harness flow in the desktop app, not a hand-rolled test harness. The context/validate/audit event shapes, the retry back-edge, and the audit draft were all directly observed working exactly as this scenario describes.
 
 ---
 
@@ -433,10 +454,12 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 3. Run this cloned flow with a real task.
 
 **Expected:**
-- [ ] `classifyStepBehavior` resolves the renamed steps correctly via their `BehaviorID` field (`context.produce` → treated as the Plan-equivalent step; `agent.delegate` → treated as the Coding-equivalent step) — despite neither step being named "plan" or "coding".
-- [ ] The renamed context step still triggers `FlowContextPackage` emission; the renamed delegate step still receives the context handoff prompt with the `[FlowPilot flow context package]` sentinel.
-- [ ] `findPlanStepID`-style lookback (used to find the most recent Plan-equivalent step preceding a Coding-equivalent step) still finds `gather_ctx` even though it is not literally named "Plan".
-- [ ] This confirms `flow_context_handoff.go`'s `isPlanStepType`/`isCodingStepType` route through `agentpack.NormalizeBehaviorID` rather than string-matching the step's name/`step_type` (CA-147/CP-42 `P-3`).
+- [x] `classifyStepBehavior` resolves the renamed steps correctly via their `BehaviorID` field (`context.produce` → treated as the Plan-equivalent step; `agent.delegate` → treated as the Coding-equivalent step) — despite neither step being named "plan" or "coding".
+- [x] The renamed context step still triggers `FlowContextPackage` emission; the renamed delegate step still receives the context handoff prompt with the `[FlowPilot flow context package]` sentinel.
+- [x] `findPlanStepID`-style lookback (used to find the most recent Plan-equivalent step preceding a Coding-equivalent step) still finds `gather_ctx` even though it is not literally named "Plan".
+- [x] This confirms `flow_context_handoff.go`'s `isPlanStepType`/`isCodingStepType` route through `agentpack.NormalizeBehaviorID` rather than string-matching the step's name/`step_type` (CA-147/CP-42 `P-3`).
+
+**Covered by automated test, not a separate manual UI click-through:** `TestGenericFlowStepTypeClassifiesByBehaviorID` and `TestArbitraryNodeStepTypeIsInertWithoutRunnerChange` (`apps/local-runner/internal/runner/flow_pack_migration_test.go`) directly assert `isCodingStepType`/`isPlanStepType` classify purely off `BehaviorID`, ignoring step name/`step_type`, for exactly this custom-naming case. `go test ./internal/runner/... -run TestGenericFlowStepTypeClassifiesByBehaviorID` passes.
 
 ---
 
@@ -447,9 +470,11 @@ Run these scenarios yourself after deployment. Each scenario lists the **setup**
 **Action:** Run this legacy flow through the current runner build.
 
 **Expected:**
-- [ ] `classifyStepBehavior` falls back to normalizing the legacy `step_type` value (since `behaviorID` is empty) and still correctly classifies the step as Plan-equivalent or Coding-equivalent.
-- [ ] Context package emission and handoff behave identically to a step with an explicit `behavior_id` — no regression for flows that predate this refactor.
-- [ ] No crash or "unclassifiable step" error occurs for a legacy `step_type` value that the alias table recognizes.
+- [x] `classifyStepBehavior` falls back to normalizing the legacy `step_type` value (since `behaviorID` is empty) and still correctly classifies the step as Plan-equivalent or Coding-equivalent.
+- [x] Context package emission and handoff behave identically to a step with an explicit `behavior_id` — no regression for flows that predate this refactor.
+- [x] No crash or "unclassifiable step" error occurs for a legacy `step_type` value that the alias table recognizes.
+
+**Covered by automated test, not a separate manual UI click-through:** `TestLegacyPlanCodingStepTypesStillResolveThroughAliasTable` (`apps/local-runner/internal/runner/flow_pack_migration_test.go`) asserts every recognized legacy `step_type` value still resolves to Plan/Coding classification through the alias table when `BehaviorID` is empty.
 
 ---
 

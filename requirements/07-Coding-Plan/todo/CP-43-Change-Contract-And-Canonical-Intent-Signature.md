@@ -297,10 +297,12 @@ The Head is a mandatory slot; raw history is optional/lower-priority in the budg
 **Action:** Run the context/Plan step for a known feature key.
 
 **Expected:**
-- [ ] `FlowContextPackage` has `historyBlock` populated (commit history present).
-- [ ] `discussionBlock` is empty or absent — no crash due to missing chat summary ledger.
-- [ ] Coding step prompt includes the history block but no discussion section.
-- [ ] `warnings` does NOT mention chat summary as a fatal error (graceful degradation).
+- [x] `FlowContextPackage` has `historyBlock` populated (commit history present).
+- [x] `discussionBlock` is empty or absent — no crash due to missing chat summary ledger.
+- [x] Coding step prompt includes the history block but no discussion section.
+- [x] `warnings` does NOT mention chat summary as a fatal error (graceful degradation).
+
+**Verified 2026-07-13** in `D:\working\gate-sandbox`: `chat_summary.ndjson` deleted, prompt `"Implement a small improvement to the calc-core arithmetic divide operation"`. `run-9954-flow-events.ndjson` shows `featureKey: calc-core`, `featureConfidence: verified`, `historyBlock` populated, the `chat.summary` package section has an empty `Body` and no `warnings` field at all. `run-9959-turns.ndjson` (the Coding-step prompt) contains `## Prior work on "calc-core"` with no "Prior discussion" section anywhere. No crash — the run completed through validate/audit.
 
 ### Scenario CH-4 — Plan Step Reruns → Coding Gets Fresh Context Package
 

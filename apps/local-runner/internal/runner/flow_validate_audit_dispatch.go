@@ -212,10 +212,22 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 		if agentName == "" {
 			return false
 		}
-		agentDef, _ := resolvePackAgentDefinition(agentName)
 		if s.isFlowEngineDriven(parentRunID) {
 			s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusDone)
 		}
+		// BUG-279: a target node declared lifecycle: reinvoke must reuse its
+		// existing child run/provider session for the retry turn, same as the
+		// forward-edge auto-advance path (flowNodeReusesChild check before
+		// reinvokeExistingFlowChild) — spawning a brand new child here silently
+		// dropped the coder's own working memory of the prior attempt every retry.
+		if flowNodeReusesChild(targetNode) && s.reinvokeExistingFlowChild(parentRunID, targetNode.ID, prompt) {
+			if s.isFlowEngineDriven(parentRunID) {
+				s.setFlowStepStatus(ctx, parentRunID, targetNode.ID, StepStatusRunning)
+				s.stampFlowNodePosture(ctx, parentRunID, targetNode)
+			}
+			return true
+		}
+		agentDef, _ := resolvePackAgentDefinition(agentName)
 		if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
 			Agent:            agentName,
 			Prompt:           prompt,
