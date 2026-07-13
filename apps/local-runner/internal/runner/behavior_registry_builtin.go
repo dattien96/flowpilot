@@ -87,6 +87,9 @@ func behaviorContextProduce(ctx context.Context, in BehaviorInput) (BehaviorOutp
 		PlanStepRunID: in.StepRunID,
 		UserPrompt:    in.Prompt,
 		MCPDriverRef:  in.MCPDriverRef,
+		JiraIssueRef:     in.JiraIssueRef,
+		JiraSprintRef:    in.JiraSprintRef,
+		FirebaseCrashRef: in.FirebaseCrashRef,
 	}
 	if in.Payload != nil {
 		if sourceDocID, ok := in.Payload["sourceDocId"].(string); ok {

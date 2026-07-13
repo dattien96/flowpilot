@@ -62,6 +62,18 @@ type FlowContextHints struct {
 	// MCP-backed source is configured for this run; the mcp.driver source
 	// degrades to an empty, warning-free section.
 	MCPDriverRef string
+
+	// JiraIssueRef/JiraSprintRef mirror MCPDriverRef's shape for the jira.issue
+	// / jira.sprint context sources (Task-229): a runtime-resolved target
+	// (issue key / sprint id, or "active" for the connected board's current
+	// sprint), empty when that source isn't enabled or the run-time question
+	// was skipped.
+	JiraIssueRef  string
+	JiraSprintRef string
+
+	// FirebaseCrashRef mirrors JiraIssueRef for firebase.crashlytics
+	// (Task-231): a runtime-resolved Crashlytics crash issue id.
+	FirebaseCrashRef string
 }
 
 // FlowContextPackage is the deterministic context package assembled by the Plan

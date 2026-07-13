@@ -1635,6 +1635,10 @@ func (s *InteractiveService) AttachRunner(r *Runner) {
 	// call that first constructs it — SetMCPDriverAdapter is safe either way
 	// (it mutates the already-registered mcp.driver source in place).
 	DefaultContextSourceRegistry().SetMCPDriverAdapter(&googleDriveDriverAdapter{runner: r})
+	// Task-229: wire jira.issue/jira.sprint's production REST backing the same
+	// way, once a real *Runner is available.
+	DefaultContextSourceRegistry().SetJiraIssueAdapter(&jiraRestIssueAdapter{runner: r})
+	DefaultContextSourceRegistry().SetJiraSprintAdapter(&jiraRestSprintAdapter{runner: r})
 }
 
 // SetFlowDefinitionStore attaches the FlowDefinitionStore startResolvedFlow
