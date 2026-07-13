@@ -10,28 +10,19 @@ import (
 // shape (context_source_jira.go) — opt-in, excluded from the live AI-turn
 // collect path in favor of a runtime-target prompt note.
 //
-// Unlike jira.issue/jira.sprint, this source's production adapter is
-// deliberately left UNWIRED (no SetFirebaseCrashlyticsAdapter call in
-// AttachRunner). Jira already had a working REST integration to reuse
-// (CP-05-01/02); Firebase has none, and CP-05-04 P-1/Q-1 already resolved
-// the sole intended access path as the official firebase-tools MCP
-// (`crashlytics_get_issue`/`crashlytics_list_events`) called by the AI
-// itself during its turn — hand-rolling an unverified Crashlytics
-// Management API v1alpha REST client (with its own OAuth/JWT exchange from
-// the service-account credential) would be fabricated, untested surface
-// area this task does not need: the registry/validation/runtime-question/
-// prompt-note plumbing below is the real deliverable, and it degrades
-// gracefully (FlowContextSection error → Collect warning, never a hard
-// failure) via Fetch's existing "no adapter configured" branch, exactly the
-// same contract mcpDriverSource/jiraIssueSource already use.
+// Its production adapter (firebaseToolsMcpAdapter, firebase_tools_mcp_client.go,
+// wired in AttachRunner) is a real MCP CLIENT speaking to a spawned
+// `firebase-tools mcp --only crashlytics` process — the official access path
+// CP-05-04 P-1/Q-1 resolved on, not a hand-rolled Crashlytics REST client
+// (whose exact wire contract this codebase has no way to verify without a
+// live Firebase project). Fetch still degrades gracefully (FlowContextSection
+// error → Collect warning, never a hard failure) on any adapter error, same
+// contract mcpDriverSource/jiraIssueSource already use.
 const ContextSourceFirebaseCrashlytics ContextSourceID = "firebase.crashlytics"
 
 // FirebaseCrashlyticsAdapter fetches a single Crashlytics issue's bounded
 // content by crash issue id. Mirrors JiraIssueAdapter's shape
-// (context_source_jira.go). No production implementation is wired in this
-// task (see package doc above) — a future task may add one once a
-// deterministic, testable Crashlytics access path exists outside the
-// AI-turn's own MCP tool calls.
+// (context_source_jira.go).
 type FirebaseCrashlyticsAdapter interface {
 	Fetch(ctx context.Context, crashRef string) (content string, err error)
 }
@@ -67,9 +58,7 @@ func (s *firebaseCrashlyticsSource) Fetch(ctx context.Context, hints FlowContext
 
 // SetFirebaseCrashlyticsAdapter wires a production FirebaseCrashlyticsAdapter
 // onto the already-registered firebase.crashlytics source, mirroring
-// SetJiraIssueAdapter. Not currently called from AttachRunner (see package
-// doc above) — available for a future task to wire once a deterministic
-// backing exists.
+// SetJiraIssueAdapter. Wired in AttachRunner with firebaseToolsMcpAdapter.
 func (r *ContextSourceRegistry) SetFirebaseCrashlyticsAdapter(adapter FirebaseCrashlyticsAdapter) {
 	src, err := r.Resolve(string(ContextSourceFirebaseCrashlytics))
 	if err != nil {

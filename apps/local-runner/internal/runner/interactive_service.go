@@ -108,10 +108,10 @@ type interactiveRun struct {
 	// (BUG-GrokReplay-Restart).
 	lastGrokTurnSessionID string
 	providerAccountID     string
-	workspaceCwd           string
-	stepID                 string
-	modelName              string
-	yolo                   bool
+	workspaceCwd          string
+	stepID                string
+	modelName             string
+	yolo                  bool
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
 	changeType      string
@@ -1639,6 +1639,10 @@ func (s *InteractiveService) AttachRunner(r *Runner) {
 	// way, once a real *Runner is available.
 	DefaultContextSourceRegistry().SetJiraIssueAdapter(&jiraRestIssueAdapter{runner: r})
 	DefaultContextSourceRegistry().SetJiraSprintAdapter(&jiraRestSprintAdapter{runner: r})
+	// Task-231 DOD-4 revisit: wire firebase.crashlytics's production backing —
+	// a real MCP client speaking to a spawned firebase-tools process (the
+	// official access path, CP-05-04 P-1/Q-1), not a hand-rolled REST client.
+	DefaultContextSourceRegistry().SetFirebaseCrashlyticsAdapter(newFirebaseToolsMcpAdapter(r))
 }
 
 // SetFlowDefinitionStore attaches the FlowDefinitionStore startResolvedFlow
