@@ -1,7 +1,7 @@
 ---
 name: context-discipline
 description: Use the latest feature history entry as the starting point before changing code or docs.
-version: 5
+version: 6
 ---
 
 # context-discipline
@@ -19,6 +19,16 @@ The change ledger records the canonical history of every feature. Before writing
 3. **Never duplicate prior work.** If the feature history shows a function, module, or behavior already exists, reuse or extend it — do not create a parallel copy.
 4. **Cite the source doc id.** Every substantive decision in code or docs must be traceable to a `Task-NNN`, `BUG-NNN`, or `CP-NN` document. Include it in comments, commit messages, and CA entries.
 5. **When in doubt, read history first.** Run `gitnexus_context` or inspect the change-audit ledger before assuming a feature is absent.
+6. **Declare scope before editing (CP-43 P-1).** Before making any code-mutating edit, emit a short declaration block at the start of your response, exactly in this shape:
+
+   ```
+   [Change Contract]
+   feature: <feature_key>
+   intent: <one-line statement of the intended behavior change>
+   files: <comma-separated paths you expect to touch>
+   ```
+
+   Keep the declared `files:` list to what you actually intend to change — an edit outside this scope will be flagged. If you are genuinely uncertain of the full file list up front, declare your best estimate; the runner tolerates drift, it does not block on a first offense.
 
 ## What "Building on" Means
 

@@ -1,7 +1,7 @@
 ---
 name: ios-conventions
 description: iOS project conventions for FlowPilot. Placeholder â€” expand with platform-specific rules.
-version: 5
+version: 6
 ---
 
 # iOS conventions

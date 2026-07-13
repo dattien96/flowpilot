@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/changecontract"
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
 	"flowpilot-runner/internal/flowgate"
@@ -52,6 +53,12 @@ func (s *InteractiveService) runFlowGate(
 	commitSubjects := collectCommitSubjectsSince(cwd, baseSHA)
 	knownFeatureKeys := loadKnownFeatureKeys(cwd)
 	suggestedFeatureKeys := suggestFeatureKeys(dotFP, changedPaths, strings.Join(commitSubjects, "\n"))
+
+	// 1b. Task-184 (CP-43 P-1): capture this turn's Change Contract, declared
+	// (parsed from the AI's own final message) or inferred from the diff when
+	// absent. Non-fatal — a capture failure never blocks the turn (AC-9);
+	// Task-185 is what actually acts on the stored Contract.
+	captureChangeContract(cwd, rs.id, rs.stepID, fin.FinalMessage, diff, suggestedFeatureKeys)
 
 	// 2. Load test baseline — non-fatal.
 	baseline, _ := flowgate.LoadBaseline(dotFP)
@@ -558,6 +565,41 @@ func suggestFeatureKeys(dotFP string, changedPaths []string, message string) []s
 		keys = append(keys, candidates[i].Key)
 	}
 	return keys
+}
+
+// captureChangeContract persists this turn's Change Contract (Task-184,
+// CP-43 P-1): declared if the AI's final message contains a
+// `[Change Contract]` block (T-2), otherwise inferred from the observed diff
+// (T-4). Entirely best-effort — every failure is logged and swallowed so a
+// changecontract problem can never block a turn (SS-14 AC-9).
+func captureChangeContract(cwd, runID, stepID, finalMessage string, diff []flowgate.ChangedFile, suggestedFeatureKeys []string) {
+	if cwd == "" {
+		return
+	}
+	store, err := changecontract.NewStore(cwd)
+	if err != nil {
+		log.Printf("[changecontract] store open failed: %v", err)
+		return
+	}
+	featureKey := ""
+	if len(suggestedFeatureKeys) > 0 {
+		featureKey = suggestedFeatureKeys[0]
+	}
+
+	c, declared := changecontract.ParseDeclaration(finalMessage)
+	if declared {
+		if c.FeatureKey == "" {
+			c.FeatureKey = featureKey
+		}
+	} else {
+		c = changecontract.InferFromDiff(featureKey, diff)
+	}
+	c.RunID = runID
+	c.StepID = stepID
+
+	if err := store.Save(c); err != nil {
+		log.Printf("[changecontract] save failed: %v", err)
+	}
 }
 
 // captureGitHead returns the current HEAD SHA in repoDir, trimmed of whitespace.

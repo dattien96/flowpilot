@@ -1,7 +1,7 @@
 ---
 name: git-commit-format
 description: Use PROACTIVELY when preparing commit messages or finalizing a task. Enforce the FlowPilot commit contract so the change ledger extracts the exact feature.
-version: 5
+version: 6
 ---
 
 # git-commit-format
