@@ -17,6 +17,7 @@ import type {
   LocalRunnerProviderModel,
   LocalRunnerStorageDriver,
   SupportedModel,
+  TelegramApprovalRecord,
 } from "../domain/adminModels";
 import type { HttpClient } from "./http";
 
@@ -187,6 +188,22 @@ export class RunnerAdminRepository implements
     return payload.message ?? null;
   }
 
+  async listTelegramProxyApprovals(status?: string): Promise<TelegramApprovalRecord[]> {
+    const url = new URL("/telegram-proxy-approvals", this.runnerBaseUrl);
+    if (status) url.searchParams.set("status", status);
+    const response = await this.httpClient.request(url, { cache: "no-store" });
+    return readJson<TelegramApprovalRecord[]>(response).catch(() => []);
+  }
+
+  async decideTelegramProxyApproval(id: string, decision: "approved" | "rejected", comment?: string): Promise<TelegramApprovalRecord> {
+    const response = await this.httpClient.request(new URL(`/telegram-proxy-approvals/${id}/decision`, this.runnerBaseUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision, comment }),
+    });
+    return readJson<TelegramApprovalRecord>(response);
+  }
+
   async pickDirectory() {
     const response = await this.httpClient.request(new URL("/directories/pick", this.runnerBaseUrl), {
       method: "POST",
@@ -238,7 +255,7 @@ export class CompositeProviderRepository implements ProviderRepository {
 export class CompositeIntegrationRepository implements IntegrationRepository {
   constructor(
     private readonly supabaseRepository: Pick<IntegrationRepository, "listIntegrations" | "createIntegration" | "updateIntegration" | "listLinkedIntegrations" | "setProjectIntegration">,
-    private readonly runnerRepository: Pick<IntegrationRepository, "listMcpBackends" | "runMcpBackendAction" | "testIntegration">,
+    private readonly runnerRepository: Pick<IntegrationRepository, "listMcpBackends" | "runMcpBackendAction" | "testIntegration" | "listTelegramProxyApprovals" | "decideTelegramProxyApproval">,
   ) {}
 
   listIntegrations() { return this.supabaseRepository.listIntegrations(); }
@@ -256,5 +273,9 @@ export class CompositeIntegrationRepository implements IntegrationRepository {
   }
   testIntegration(projectId: string, integrationId: string, providerType: string, fields?: Record<string, string | undefined>) {
     return this.runnerRepository.testIntegration(projectId, integrationId, providerType, fields);
+  }
+  listTelegramProxyApprovals(status?: string) { return this.runnerRepository.listTelegramProxyApprovals(status); }
+  decideTelegramProxyApproval(id: string, decision: "approved" | "rejected", comment?: string) {
+    return this.runnerRepository.decideTelegramProxyApproval(id, decision, comment);
   }
 }
