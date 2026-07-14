@@ -108,35 +108,44 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
     ? integrations.find((integration) => integration.id === editingIntegrationId) ?? null
     : null;
 
-  const refresh = async () => {
+  const refresh = async (allowed: IntegrationType[] = types) => {
     try {
       const admin = await getAdminUseCases();
       const [nextProjects, nextIntegrations, nextBackends, nextTelegramApprovals] = await Promise.all([
         admin.projects.listProjects(),
         admin.integrations.listIntegrations(),
         admin.integrations.listMcpBackends(),
-        admin.integrations.listTelegramProxyApprovals("pending"),
+        // Only Telegram cares about the pending-send queue; skip the call on
+        // other single-type modes so a slow/failed approvals fetch cannot
+        // block Jira/Firebase pages (and never surface Telegram-only UI there).
+        mode === "telegram" || mode === "all"
+          ? admin.integrations.listTelegramProxyApprovals("pending")
+          : Promise.resolve([] as TelegramApprovalRecord[]),
       ]);
       setProjects(nextProjects);
-      setIntegrations(nextIntegrations.filter((integration) => types.includes(integration.type)));
-      setBackends(nextBackends);
+      setIntegrations(nextIntegrations.filter((integration) => allowed.includes(integration.type)));
+      setBackends(
+        nextBackends.filter(
+          (backend) =>
+            allowed.includes(backend.providerType as IntegrationType) ||
+            allowed.includes(backend.key as IntegrationType),
+        ),
+      );
       setTelegramApprovals(nextTelegramApprovals);
       setProjectId((current) => current || nextProjects[0]?.id || "");
-      if (ensurePath) {
+      if (providerConfigEnsurePath[allowed[0] ?? "jira"]) {
         const accountsResponse = await runnerFetch("/provider-accounts");
         if (accountsResponse.ok) {
           const payload = (await accountsResponse.json()) as { accounts?: RunnerProviderAccount[] };
           setProviderAccounts((payload.accounts ?? []).filter((account) => account.home_path?.trim().length > 0));
         }
+      } else {
+        setProviderAccounts([]);
       }
     } catch (error) {
       setErrorModal({ title: "Unable to load MCP settings", body: toErrorMessage(error, "Unable to load MCP settings.") });
     }
   };
-
-  useEffect(() => {
-    void refresh();
-  }, []);
 
   const changeType = (nextType: IntegrationType) => {
     setEditingIntegrationId(null);
@@ -146,6 +155,10 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
     setOwnerScope(nextType === "jira" || nextType === "firebase" || nextType === "telegram" ? "global" : "project");
   };
 
+  // Reset editor + re-fetch scoped lists whenever the Settings nav page changes.
+  // SettingsShell reuses <McpSettings> across jira/firebase/telegram (same
+  // component type); without this, integrations/backends/form fields from the
+  // previous tab stay mounted and look "swapped" (e.g. Telegram form on Jira).
   useEffect(() => {
     const firstType = types[0] ?? "jira";
     setType(firstType);
@@ -153,6 +166,16 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
     setLabel(labelForIntegrationType(firstType));
     setOwnerScope(firstType === "jira" || firstType === "firebase" || firstType === "telegram" ? "global" : "project");
     setEditingIntegrationId(null);
+    setMessage(null);
+    setConfigureMessage(null);
+    setErrorModal(null);
+    // Drop stale lists immediately so the previous tab's rows don't flash.
+    setIntegrations([]);
+    setBackends([]);
+    setTelegramApprovals([]);
+    setProviderAccounts([]);
+    void refresh(types);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally mode-scoped; refresh closes over latest types via arg
   }, [mode]);
 
   const beginEditIntegration = (integration: Integration) => {
@@ -420,7 +443,9 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
             {mode === "all" ? <label className="settings-field"><span>Type</span><select disabled={Boolean(editingIntegration)} value={type} onChange={(event) => changeType(event.target.value as IntegrationType)}>{types.map((option) => <option key={option} value={option}>{option}</option>)}</select></label> : null}
             <label className="settings-field settings-field-full"><span>Label</span><input value={label} onChange={(event) => setLabel(event.target.value)} /></label>
             {providerFields[type].map((field) => (
-              <div className="settings-field" key={field.key}>
+              // Include type in the key so React does not reuse an input DOM
+              // node (and its displayed value) when switching MCP pages.
+              <div className="settings-field" key={`${type}:${field.key}`}>
                 <span>{field.label}{field.required ? " *" : ""}</span>
                 <input type={field.type ?? "text"} value={config[field.key] ?? ""} onChange={(event) => setConfig((current) => ({ ...current, [field.key]: event.target.value }))} />
                 {renderFieldGuide(field)}
@@ -476,7 +501,7 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
           </div>
         </div>
       ) : null}
-      {integrations.some((integration) => integration.type === "telegram") ? (
+      {(mode === "telegram" || mode === "all") && integrations.some((integration) => integration.type === "telegram") ? (
         <div className="settings-subpanel">
           <h3>Pending Telegram Approvals</h3>
           <small className="settings-field-help">
