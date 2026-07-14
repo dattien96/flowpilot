@@ -279,6 +279,62 @@ func TestListProviderAccountsMarksClaudeMetadataOnlyAccountFailed(t *testing.T) 
 	}
 }
 
+// TestListProviderAccountsConnectsKeychainClaudeAccount covers the Windows /
+// macOS keychain case: Claude Code stores the real OAuth token in the OS
+// keychain and writes .claude/.credentials.json with EMPTY accessToken/
+// refreshToken strings, keeping only session metadata (expiresAt,
+// subscriptionType, scopes). The account must still be detected as connected —
+// otherwise the Jira MCP config never lands in the user's ~/.claude.json.
+func TestListProviderAccountsConnectsKeychainClaudeAccount(t *testing.T) {
+	homeDir := t.TempDir()
+	configDir := filepath.Join(homeDir, ".config")
+	t.Setenv("HOME", filepath.Join(homeDir, "codexHome4"))
+	t.Setenv("USERPROFILE", filepath.Join(homeDir, "codexHome4"))
+	t.Setenv("APPDATA", filepath.Join(homeDir, "AppData", "Roaming"))
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	accountHome := filepath.Join(homeDir, "real-user")
+	mustWriteTestFile(t, filepath.Join(accountHome, ".claude", ".credentials.json"),
+		`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":9999999999999,"subscriptionType":"pro","scopes":["user:inference"]}}`)
+
+	r, err := New(".")
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	state := providerAccountState{
+		Accounts: []ProviderAccount{
+			{
+				ID:          "keychain-claude",
+				ProviderKey: "claude",
+				DisplayName: "Default Account",
+				HomePath:    accountHome,
+				SlotIndex:   0,
+				IsActive:    false,
+				AuthStatus:  "failed",
+				CreatedAt:   "2026-06-15T00:00:00Z",
+				ExtraEnv:    map[string]string{},
+			},
+		},
+	}
+	if err := r.saveProviderAccountState(state); err != nil {
+		t.Fatalf("saveProviderAccountState() failed: %v", err)
+	}
+
+	accounts, err := r.ListProviderAccounts()
+	if err != nil {
+		t.Fatalf("ListProviderAccounts() failed: %v", err)
+	}
+
+	claudeAccounts := filterProviderAccounts(accounts, "claude")
+	if len(claudeAccounts) != 1 {
+		t.Fatalf("expected one Claude account, got %d: %#v", len(claudeAccounts), claudeAccounts)
+	}
+	if claudeAccounts[0].AuthStatus != "connected" {
+		t.Fatalf("expected keychain Claude account to be connected, got %#v", claudeAccounts[0])
+	}
+}
+
 func filterProviderAccounts(accounts []ProviderAccount, providerKey string) []ProviderAccount {
 	filtered := make([]ProviderAccount, 0)
 	for _, account := range accounts {

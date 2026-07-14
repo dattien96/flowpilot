@@ -2152,12 +2152,36 @@ func claudeAuthFileLooksValid(data []byte) bool {
 		return false
 	}
 	if oauth, ok := payload["claudeAiOauth"].(map[string]any); ok {
-		return hasNonEmptyJSONString(oauth, "accessToken") || hasNonEmptyJSONString(oauth, "refreshToken")
+		if hasNonEmptyJSONString(oauth, "accessToken") || hasNonEmptyJSONString(oauth, "refreshToken") {
+			return true
+		}
+		// Windows/macOS keychain path: Claude Code stores the real access/refresh
+		// token in the OS keychain (Credential Manager / Keychain) and leaves the
+		// accessToken/refreshToken strings EMPTY in .claude/.credentials.json,
+		// keeping only session metadata (expiresAt, subscriptionType, scopes).
+		// That metadata is proof of a real login, so a claudeAiOauth block carrying
+		// it counts as authenticated even without inline tokens — otherwise Windows
+		// / macOS users are never detected as a Claude provider account (their Jira
+		// MCP config then never lands in ~/.claude.json). Note: this only relaxes
+		// the claudeAiOauth case; an oauthAccount-only .claude.json stays "failed".
+		if hasNonEmptyJSONString(oauth, "subscriptionType") ||
+			jsonHasPositiveNumber(oauth, "expiresAt") ||
+			jsonHasPositiveNumber(oauth, "refreshTokenExpiresAt") {
+			return true
+		}
+		return false
 	}
 	if tokens, ok := payload["tokens"].(map[string]any); ok {
 		return hasNonEmptyJSONString(tokens, "access_token") || hasNonEmptyJSONString(tokens, "refresh_token")
 	}
 	return hasNonEmptyJSONString(payload, "accessToken") || hasNonEmptyJSONString(payload, "refreshToken")
+}
+
+// jsonHasPositiveNumber reports whether m[key] is a JSON number greater than
+// zero (JSON numbers unmarshal into float64 through encoding/json).
+func jsonHasPositiveNumber(m map[string]any, key string) bool {
+	value, ok := m[key].(float64)
+	return ok && value > 0
 }
 
 func DetectDefaultAccountHomePath(providerKey string) (string, bool) {
