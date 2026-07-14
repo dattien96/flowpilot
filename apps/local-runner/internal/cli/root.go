@@ -1053,46 +1053,6 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 				writeHTTPJSON(w, record)
 			})
-			mux.HandleFunc("/telegram-proxy-approvals", func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodGet {
-					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-					return
-				}
-				records, err := instance.ListTelegramProxyApprovals(
-					r.URL.Query().Get("workflowRunId"),
-					r.URL.Query().Get("workflowStepRunId"),
-					r.URL.Query().Get("status"),
-				)
-				if err != nil {
-					writeHTTPError(w, http.StatusInternalServerError, err)
-					return
-				}
-				writeHTTPJSON(w, records)
-			})
-			mux.HandleFunc("/telegram-proxy-approvals/", func(w http.ResponseWriter, r *http.Request) {
-				trimmed := strings.TrimPrefix(r.URL.Path, "/telegram-proxy-approvals/")
-				parts := strings.Split(trimmed, "/")
-				if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || parts[1] != "decision" {
-					http.NotFound(w, r)
-					return
-				}
-				if r.Method != http.MethodPost {
-					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-					return
-				}
-
-				var payload runner.TelegramProxyApprovalDecisionRequest
-				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
-					return
-				}
-				record, err := instance.DecideTelegramProxyApproval(parts[0], payload)
-				if err != nil {
-					writeHTTPError(w, http.StatusBadRequest, err)
-					return
-				}
-				writeHTTPJSON(w, record)
-			})
 			mux.HandleFunc("/jira-config/mcp-provider-config/ensure", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

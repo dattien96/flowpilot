@@ -497,30 +497,6 @@ export interface LocalRunnerMcpBackend {
   lastError: string | null;
 }
 
-/**
- * Task-233 DOD-6 revisit: a pending/approved/rejected/executed Telegram
- * send_message approval record (telegram_proxy_approval.go). The AI's first
- * send_message call for a given (run, step, process, chat, text) tuple
- * always comes back "pending" here; the user approves/rejects via
- * decideTelegramProxyApproval and the AI's identical retry then executes or
- * reports the rejection.
- */
-export interface TelegramApprovalRecord {
-  id: string;
-  workflowRunId: string;
-  workflowStepRunId: string;
-  processKey: string;
-  chatId: string;
-  text: string;
-  status: "pending" | "approved" | "rejected" | "executed" | "expired";
-  decisionComment: string;
-  requestedAt: string;
-  decidedAt: string;
-  expiresAt: string;
-  resultMessageId: number;
-  errorMessage: string;
-}
-
 export interface LocalRunnerArtifact {
   artifactId: string;
   title: string;

@@ -13,7 +13,7 @@ import type {
   SupportedModel,
   Team,
   TeamMember,
-  TelegramApprovalRecord,
+
   Workflow,
   WorkflowRun,
   WorkflowStep,
@@ -142,9 +142,6 @@ export interface McpBackendRepository {
   listMcpBackends(): Promise<LocalRunnerMcpBackend[]>;
   runMcpBackendAction(backendKey: string, action: "install" | "verify", projectId?: string, integrationId?: string): Promise<void>;
   testIntegration(projectId: string | undefined, integrationId: string, providerType: string, fields?: Record<string, string | boolean | undefined>): Promise<IntegrationConnectionOutcome>;
-  /** Task-233 DOD-6 revisit: real Telegram send_message approval queue. */
-  listTelegramProxyApprovals(status?: string): Promise<TelegramApprovalRecord[]>;
-  decideTelegramProxyApproval(id: string, decision: "approved" | "rejected", comment?: string): Promise<TelegramApprovalRecord>;
 }
 
 export interface IntegrationRepository extends IntegrationCrudRepository, ProjectIntegrationRepository, McpBackendRepository {}

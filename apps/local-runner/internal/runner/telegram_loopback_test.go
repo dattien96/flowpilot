@@ -116,8 +116,6 @@ func TestTelegramMcpLoopbackDoesNotReadChildKeyring(t *testing.T) {
 		loopbackBaseURL: ts.URL,
 		loopbackToken:   token,
 		client:          ts.Client(),
-		// Empty secret store would fail if child tried resolveConnectedTelegramCredential.
-		runner: &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()},
 	}
 	params, _ := json.Marshal(map[string]any{"name": "send_message", "arguments": map[string]any{"text": "no child keyring"}})
 	if _, err := child.callTool(context.Background(), params); err != nil {
@@ -128,11 +126,10 @@ func TestTelegramMcpLoopbackDoesNotReadChildKeyring(t *testing.T) {
 	}
 }
 
-func TestTelegramMcpLoopbackPreservesApprovalQueue(t *testing.T) {
+func TestTelegramMcpLoopbackRequiresAutoApprove(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 	instance.SetMCPBaseURL("http://127.0.0.1:4317")
 	connectTestTelegramBackend(t, instance)
-	// Leave autoApprove false; use approval scope instead.
 	token, err := instance.ensureTelegramLoopbackToken()
 	if err != nil {
 		t.Fatalf("token: %v", err)
@@ -149,35 +146,34 @@ func TestTelegramMcpLoopbackPreservesApprovalQueue(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	child := &telegramProxyMcpServer{
-		loopbackMode:      true,
-		loopbackBaseURL:   ts.URL,
-		loopbackToken:     token,
-		client:            ts.Client(),
-		workflowRunID:     "run-1",
-		workflowStepRunID: "step-1",
-		processKey:        "process-1",
+		loopbackMode:    true,
+		loopbackBaseURL: ts.URL,
+		loopbackToken:   token,
+		client:          ts.Client(),
 	}
-	params, _ := json.Marshal(map[string]any{"name": "send_message", "arguments": map[string]any{"text": "needs approval"}})
+	params, _ := json.Marshal(map[string]any{"name": "send_message", "arguments": map[string]any{"text": "blocked until auto-approve"}})
 
 	_, err = child.callTool(context.Background(), params)
 	if err == nil || !strings.Contains(err.Error(), "MCP_TOOL_APPROVAL_REQUIRED") {
-		t.Fatalf("expected pending approval, got %v", err)
+		t.Fatalf("expected MCP_TOOL_APPROVAL_REQUIRED, got %v", err)
 	}
 	if sendCount != 0 {
-		t.Fatalf("must not send while pending, sendCount=%d", sendCount)
+		t.Fatalf("must not send when auto-approve is off, sendCount=%d", sendCount)
 	}
 
-	records, err := instance.ListTelegramProxyApprovals("run-1", "step-1", "pending")
-	if err != nil || len(records) != 1 {
-		t.Fatalf("expected 1 pending approval, got %#v err=%v", records, err)
-	}
-	if _, err := instance.DecideTelegramProxyApproval(records[0].ID, TelegramProxyApprovalDecisionRequest{Decision: "approved"}); err != nil {
-		t.Fatalf("approve: %v", err)
+	auto := true
+	if _, err := instance.TriggerIntegrationConnection(context.Background(), "integration-telegram", IntegrationConnectionRequest{
+		ProjectID:           "project-alpha",
+		ProviderType:        "telegram",
+		Action:              "test",
+		TelegramAutoApprove: &auto,
+	}); err != nil {
+		t.Fatalf("enable auto-approve: %v", err)
 	}
 
 	result, err := child.callTool(context.Background(), params)
 	if err != nil {
-		t.Fatalf("approved retry: %v", err)
+		t.Fatalf("auto-approved send: %v", err)
 	}
 	text, _ := result["content"].([]any)[0].(map[string]any)["text"].(string)
 	if !strings.Contains(text, "message_id: 12") {
@@ -185,19 +181,6 @@ func TestTelegramMcpLoopbackPreservesApprovalQueue(t *testing.T) {
 	}
 	if sendCount != 1 {
 		t.Fatalf("expected exactly one Telegram send, got %d", sendCount)
-	}
-
-	// Third identical call replays — no second send.
-	result, err = child.callTool(context.Background(), params)
-	if err != nil {
-		t.Fatalf("replay: %v", err)
-	}
-	text, _ = result["content"].([]any)[0].(map[string]any)["text"].(string)
-	if !strings.Contains(text, "message_id: 12") {
-		t.Fatalf("expected replay message_id, got %q", text)
-	}
-	if sendCount != 1 {
-		t.Fatalf("expected no double-send, sendCount=%d", sendCount)
 	}
 }
 
