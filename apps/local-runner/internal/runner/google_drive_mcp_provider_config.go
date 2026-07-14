@@ -361,50 +361,36 @@ func (r *Runner) EnsureGoogleDriveMcpProviderConfig(req GoogleDriveMcpProviderCo
 func (r *Runner) ensureCodexGoogleDriveMcpConfig(accountHomePath string, mode string, yoloMode bool, mcpStatus googleDriveMcpRuntimeConfig) (GoogleDriveMcpProviderConfigResponse, error) {
 	configPath := filepath.Join(accountHomePath, "config.toml")
 
-	// Load existing config or create new
-	var config codexConfig
-	changed := false
-
+	// Generic-map splice (not a typed codexConfig round-trip): codexConfig models
+	// only mcp_servers, so marshaling it back dropped every other top-level key
+	// (model, [projects] trust levels, [tui], [windows]) whenever this rewrote —
+	// the same latent data-loss bug the jira writer had. Touch only
+	// mcp_servers.google-drive; error (don't silently reset) on an unparseable
+	// config so we never clobber a config we can't read.
+	doc := map[string]interface{}{}
 	raw, err := os.ReadFile(configPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to read Codex config: %w", err)
 	}
-
-	if err == nil {
-		// Parse existing config
-		if err := toml.Unmarshal(raw, &config); err != nil {
-			config = codexConfig{}
-			changed = true
+	if err == nil && len(strings.TrimSpace(string(raw))) > 0 {
+		if tomlErr := toml.Unmarshal(raw, &doc); tomlErr != nil {
+			// Unparseable existing config: there are no other keys to preserve,
+			// so recover by starting from an empty doc and writing a valid one
+			// (a parseable config with a stale entry preserves its keys via the
+			// splice below — only garbage is reset).
+			doc = map[string]interface{}{}
 		}
-	}
-
-	// Initialize mcp_servers if not present
-	if config.McpServers == nil {
-		config.McpServers = make(map[string]codexMcpServer)
 	}
 
 	expectedServer := expectedCodexGoogleDriveMcpServer(r.workspace, accountHomePath, mode, yoloMode, mcpStatus)
-
-	// Check if config needs update
-	existingServer, exists := config.McpServers[googleDriveMcpServerName]
-	if !exists || !codexServerConfigMatches(existingServer, expectedServer) {
-		config.McpServers[googleDriveMcpServerName] = expectedServer
-		changed = true
+	changed, spliceErr := spliceCodexServerEntry(doc, googleDriveMcpServerName, expectedServer, codexServerConfigMatches)
+	if spliceErr != nil {
+		return GoogleDriveMcpProviderConfigResponse{}, spliceErr
 	}
 
-	// Write config if changed
 	if changed {
-		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
-			return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to create config directory: %w", err)
-		}
-
-		out, err := toml.Marshal(config)
-		if err != nil {
-			return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to marshal TOML: %w", err)
-		}
-
-		if err := os.WriteFile(configPath, out, 0o644); err != nil {
-			return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to write config: %w", err)
+		if err := writeCodexConfigDoc(configPath, doc); err != nil {
+			return GoogleDriveMcpProviderConfigResponse{}, err
 		}
 	}
 
@@ -1095,6 +1081,90 @@ func (r *Runner) flowpilotClaudeExtraMCPServers(accountHomePath string, yolo boo
 
 	out[googleDriveMcpServerName] = expectedClaudeGoogleDriveMcpServer(r.workspace, accountHomePath, mode, yolo, runtime)
 	return out
+}
+
+// syncCodexGoogleDriveMcpLive re-resolves Codex's config.toml google-drive entry
+// to the currently-selected Drive account on every turn — the parity Codex lacks.
+// Claude and Grok re-resolve google-drive live each turn in
+// flowpilotClaudeExtraMCPServers (reading the current account + keyring token),
+// so they always use the selected account. Codex reads only its static
+// config.toml, so a Drive account switch left it authenticating as whatever
+// account's refresh token was frozen into config.toml at the last Configure
+// Providers run — the exact reason "Codex shows a different Drive account than
+// Claude/Grok" was reported.
+//
+// Only the credential env keys (account id / refresh token / client id+secret)
+// are refreshed from the live runtime; command/args/mode/approval/tools are
+// preserved via a generic-map splice. Returns changed so the caller can respawn
+// the app-server (Codex reads mcp_servers only at boot). No-op when Drive isn't
+// configured for Codex or can't be resolved — it never strips a working entry.
+func (r *Runner) syncCodexGoogleDriveMcpLive(accountHomePath string) (bool, error) {
+	accountHomePath = strings.TrimSpace(accountHomePath)
+	if accountHomePath == "" {
+		return false, nil
+	}
+	configPath := filepath.Join(accountHomePath, "config.toml")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return false, nil // no config yet → nothing to sync
+	}
+	doc := map[string]interface{}{}
+	if toml.Unmarshal(raw, &doc) != nil {
+		return false, nil // unparseable → leave it for Configure Providers to recover
+	}
+	mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
+	if mcpServers == nil {
+		return false, nil
+	}
+
+	entry, ok := mcpServers[googleDriveMcpServerName].(map[string]interface{})
+	if !ok {
+		return false, nil // Drive not configured for Codex → nothing to sync
+	}
+
+	// Resolve the current account + token exactly as the Claude/Grok live merge does.
+	configFile, ferr := r.loadGoogleDriveWorkspaceConfigFile()
+	if ferr != nil && !errors.Is(ferr, os.ErrNotExist) {
+		return false, nil
+	}
+	mcpStatus := r.resolveGoogleDriveMcpStatus(configFile)
+	if !mcpStatus.Configured {
+		return false, nil
+	}
+	runtime := googleDriveMcpStatusRuntimeConfig(mcpStatus)
+	r.hydrateGoogleDriveProxyOAuthRuntimeConfig(&runtime)
+	fresh := googleDriveProxyMcpServerEnv(runtime)
+
+	env, _ := entry["env"].(map[string]interface{})
+	if env == nil {
+		env = map[string]interface{}{}
+	}
+	changed := false
+	for _, key := range []string{
+		googleDriveProxyAccountIDEnv,
+		googleDriveProxyRefreshTokenEnv,
+		googleDriveClientIDEnv,
+		googleDriveClientSecretEnv,
+	} {
+		want, has := fresh[key]
+		if !has {
+			continue // resolution didn't supply this key → don't strip the existing one
+		}
+		if cur, _ := env[key].(string); cur != want {
+			env[key] = want
+			changed = true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	entry["env"] = env
+	mcpServers[googleDriveMcpServerName] = entry
+	doc["mcp_servers"] = mcpServers
+	if err := writeCodexConfigDoc(configPath, doc); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // resolveGoogleDriveMcpProviderStatuses checks provider config status for all providers

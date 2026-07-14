@@ -520,6 +520,88 @@ func TestEnsureClaudeGoogleDriveMcpConfig(t *testing.T) {
 	}
 }
 
+// TestSyncCodexGoogleDriveMcpLiveRestoresStaleTokenPreservingKeys verifies the
+// Codex Drive live-sync: Claude/Grok re-resolve google-drive live each turn, but
+// Codex reads only its static config.toml, so a Drive account switch left it
+// authenticating as whatever refresh token was frozen in. syncCodexGoogleDriveMcpLive
+// must refresh the credential env to the currently-selected account WITHOUT
+// dropping other top-level Codex config keys.
+func TestSyncCodexGoogleDriveMcpLiveRestoresStaleTokenPreservingKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	setDiscoveryTestHome(t, tmpDir)
+
+	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
+	writeTestGoogleDriveMcpRuntime(t, runner, tmpDir)
+	stubGoogleDriveOAuthTokenRefresh(t)
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+
+	// Seed the selected account's credential (the "correct" current token).
+	if err := runner.saveGoogleDriveCredentialByAccount("project-1@example.com", googleDriveCredential{
+		RefreshToken: "cambt-correct-token",
+		AccountEmail: "project-1@example.com",
+	}); err != nil {
+		t.Fatalf("seed drive credential: %v", err)
+	}
+
+	accountHome := filepath.Join(tmpDir, "codex-home")
+	if err := os.MkdirAll(accountHome, 0o755); err != nil {
+		t.Fatalf("Failed to create account home: %v", err)
+	}
+
+	// Write a correct config, then confirm it carries the current token.
+	if _, err := runner.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
+		ProviderKey: "codex", AccountHomePath: accountHome, Scope: "account", Mode: "read_only",
+	}); err != nil {
+		t.Fatalf("EnsureGoogleDriveMcpProviderConfig(codex): %v", err)
+	}
+	configPath := filepath.Join(accountHome, "config.toml")
+	good, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(good), "cambt-correct-token") {
+		t.Fatalf("expected current token in written config, got: %s", good)
+	}
+
+	// Freeze a stale token into the file (simulating an old account) and add an
+	// unrelated top-level key, then sync.
+	corrupted := "model = \"gpt-5.4-mini\"\n" + strings.Replace(string(good), "cambt-correct-token", "STALE-hothuy-token", 1)
+	if err := os.WriteFile(configPath, []byte(corrupted), 0o644); err != nil {
+		t.Fatalf("write corrupted config: %v", err)
+	}
+
+	changed, err := runner.syncCodexGoogleDriveMcpLive(accountHome)
+	if err != nil {
+		t.Fatalf("syncCodexGoogleDriveMcpLive: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected changed=true when restoring a stale Drive token")
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after sync: %v", err)
+	}
+	got := string(after)
+	if !strings.Contains(got, "cambt-correct-token") {
+		t.Fatalf("expected current token restored, got: %s", got)
+	}
+	if strings.Contains(got, "STALE-hothuy-token") {
+		t.Fatalf("stale token not replaced, got: %s", got)
+	}
+	if !strings.Contains(got, "gpt-5.4-mini") {
+		t.Fatalf("sync dropped unrelated top-level key 'model', got: %s", got)
+	}
+
+	// Idempotent: nothing to do on a second pass.
+	changedAgain, err := runner.syncCodexGoogleDriveMcpLive(accountHome)
+	if err != nil {
+		t.Fatalf("second syncCodexGoogleDriveMcpLive: %v", err)
+	}
+	if changedAgain {
+		t.Fatalf("expected changed=false on second sync with unchanged account")
+	}
+}
+
 func TestEnsureCodexGoogleDriveMcpConfig_ProxyPathUsesYoloApproval(t *testing.T) {
 	tmpDir := t.TempDir()
 	setDiscoveryTestHome(t, tmpDir)
@@ -572,7 +654,7 @@ func TestEnsureCodexGoogleDriveMcpConfig_ProxyPathUsesYoloApproval(t *testing.T)
 				t.Fatalf("Failed to parse TOML: %v", err)
 			}
 
-			server, exists := config.McpServers[googleDriveMcpServerName]
+			server, exists := config.McpServers["google-drive"]
 			if !exists {
 				t.Fatal("google-drive server not found in config")
 			}
@@ -664,7 +746,7 @@ func TestEnsureCodexGoogleDriveMcpConfig_ProxyPathInjectsSelectedAccountID(t *te
 		t.Fatalf("Failed to parse TOML: %v", err)
 	}
 
-	server := config.McpServers[googleDriveMcpServerName]
+	server := config.McpServers["google-drive"]
 	if got := strings.TrimSpace(server.Env[googleDriveProxyAccountIDEnv]); got != selectedAccountID {
 		t.Fatalf("expected selected account id env to be injected, got %q", got)
 	}
@@ -801,7 +883,7 @@ func TestEnsureGeminiAndClaudeGoogleDriveMcpConfig_ProxyPathIncludesAccountHome(
 				if err := json.Unmarshal(raw, &config); err != nil {
 					t.Fatalf("Failed to parse JSON: %v", err)
 				}
-				server, exists := config.McpServers[googleDriveMcpServerName]
+				server, exists := config.McpServers["google-drive"]
 				if !exists {
 					t.Fatal("google-drive server not found in config")
 				}
@@ -832,7 +914,7 @@ func TestEnsureGeminiAndClaudeGoogleDriveMcpConfig_ProxyPathIncludesAccountHome(
 			if err := json.Unmarshal(raw, &config); err != nil {
 				t.Fatalf("Failed to parse JSON: %v", err)
 			}
-			server, exists := config.McpServers[googleDriveMcpServerName]
+			server, exists := config.McpServers["google-drive"]
 			if !exists {
 				t.Fatal("google-drive server not found in config")
 			}
@@ -928,7 +1010,7 @@ func TestEnsureGoogleDriveMcpProviderConfig_ProxyConfigsIncludeSharedAccountHome
 				if err := toml.Unmarshal(raw, &config); err != nil {
 					t.Fatalf("Failed to parse Codex TOML: %v", err)
 				}
-				server := config.McpServers[googleDriveMcpServerName]
+				server := config.McpServers["google-drive"]
 				expectedCommand, expectedPrefix := googleDriveProxyMcpCommand(tmpDir)
 				if server.Command != expectedCommand {
 					t.Fatalf("expected command %q, got %q", expectedCommand, server.Command)
@@ -948,7 +1030,7 @@ func TestEnsureGoogleDriveMcpProviderConfig_ProxyConfigsIncludeSharedAccountHome
 				if err := json.Unmarshal(raw, &config); err != nil {
 					t.Fatalf("Failed to parse Gemini JSON: %v", err)
 				}
-				server := config.McpServers[googleDriveMcpServerName]
+				server := config.McpServers["google-drive"]
 				expectedCommand, expectedPrefix := googleDriveProxyMcpCommand(tmpDir)
 				if server.Command != expectedCommand {
 					t.Fatalf("expected command %q, got %q", expectedCommand, server.Command)
@@ -963,7 +1045,7 @@ func TestEnsureGoogleDriveMcpProviderConfig_ProxyConfigsIncludeSharedAccountHome
 				if err := json.Unmarshal(raw, &config); err != nil {
 					t.Fatalf("Failed to parse Claude JSON: %v", err)
 				}
-				server := config.McpServers[googleDriveMcpServerName]
+				server := config.McpServers["google-drive"]
 				expectedCommand, expectedPrefix := googleDriveProxyMcpCommand(tmpDir)
 				if server.Command != expectedCommand {
 					t.Fatalf("expected command %q, got %q", expectedCommand, server.Command)
@@ -1041,7 +1123,7 @@ func TestEnsureGoogleDriveMcpProviderConfig_ProxyCodexApprovalAndToolSurfaceFoll
 				t.Fatalf("Failed to parse TOML: %v", err)
 			}
 
-			server := config.McpServers[googleDriveMcpServerName]
+			server := config.McpServers["google-drive"]
 			expectedArgs := googleDriveProxyMcpArgs(tmpDir, accountHome, tc.mode, tc.yoloMode)
 			assertStringSliceEqual(t, server.Args, expectedArgs)
 			if server.ApprovalMode != tc.wantApproval {
@@ -1100,7 +1182,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithProxyFieldDriftedConfig(t *te
 	codexServer.ApprovalMode = "prompt"
 	codexConfigBytes, err := toml.Marshal(codexConfig{
 		McpServers: map[string]codexMcpServer{
-			googleDriveMcpServerName: codexServer,
+			"google-drive": codexServer,
 		},
 	})
 	if err != nil {
@@ -1112,7 +1194,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithProxyFieldDriftedConfig(t *te
 	geminiServer.Args[4] = filepath.Join(tmpDir, "wrong-gemini-home")
 	geminiConfigBytes, err := json.Marshal(geminiSettings{
 		McpServers: map[string]geminiMcpServer{
-			googleDriveMcpServerName: geminiServer,
+			"google-drive": geminiServer,
 		},
 	})
 	if err != nil {
@@ -1124,7 +1206,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithProxyFieldDriftedConfig(t *te
 	claudeServer.Args[4] = filepath.Join(tmpDir, "wrong-claude-home")
 	claudeConfigBytes, err := json.Marshal(claudeConfig{
 		McpServers: map[string]claudeMcpServer{
-			googleDriveMcpServerName: claudeServer,
+			"google-drive": claudeServer,
 		},
 	})
 	if err != nil {
@@ -1139,7 +1221,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithProxyFieldDriftedConfig(t *te
 	grokConfigBytes, err := toml.Marshal(struct {
 		McpServers map[string]grokMcpServer `toml:"mcp_servers"`
 	}{
-		McpServers: map[string]grokMcpServer{googleDriveMcpServerName: grokServer},
+		McpServers: map[string]grokMcpServer{"google-drive": grokServer},
 	})
 	if err != nil {
 		t.Fatalf("toml.Marshal(grok proxy config) failed: %v", err)
@@ -1191,7 +1273,7 @@ func TestEnsureGoogleDriveMcpProviderConfig_RewritesInvalidExistingConfigs(t *te
 					t.Fatalf("expected rewritten codex config to be valid TOML: %v", err)
 				}
 
-				server := config.McpServers[googleDriveMcpServerName]
+				server := config.McpServers["google-drive"]
 				expectedCommand, expectedPrefix := googleDriveProxyMcpCommand(tmpDir)
 				if server.Command != expectedCommand {
 					t.Fatalf("expected command %q, got %q", expectedCommand, server.Command)
@@ -1226,7 +1308,7 @@ func TestEnsureGoogleDriveMcpProviderConfig_RewritesInvalidExistingConfigs(t *te
 					t.Fatalf("expected rewritten gemini config to be valid JSON: %v", err)
 				}
 
-				server := config.McpServers[googleDriveMcpServerName]
+				server := config.McpServers["google-drive"]
 				expectedCommand, expectedPrefix := googleDriveProxyMcpCommand(tmpDir)
 				if server.Command != expectedCommand {
 					t.Fatalf("expected command %q, got %q", expectedCommand, server.Command)
@@ -1257,7 +1339,7 @@ func TestEnsureGoogleDriveMcpProviderConfig_RewritesInvalidExistingConfigs(t *te
 					t.Fatalf("expected rewritten claude config to be valid JSON: %v", err)
 				}
 
-				server := config.McpServers[googleDriveMcpServerName]
+				server := config.McpServers["google-drive"]
 				expectedCommand, expectedPrefix := googleDriveProxyMcpCommand(tmpDir)
 				if server.Command != expectedCommand {
 					t.Fatalf("expected command %q, got %q", expectedCommand, server.Command)
@@ -1513,7 +1595,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithShapeDriftedConfig(t *testing
 	codexServer.EnabledTools = []string{"search"}
 	codexConfigBytes, err := toml.Marshal(codexConfig{
 		McpServers: map[string]codexMcpServer{
-			googleDriveMcpServerName: codexServer,
+			"google-drive": codexServer,
 		},
 	})
 	if err != nil {
@@ -1525,7 +1607,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithShapeDriftedConfig(t *testing
 	geminiServer.Command = "node"
 	geminiConfigBytes, err := json.Marshal(geminiSettings{
 		McpServers: map[string]geminiMcpServer{
-			googleDriveMcpServerName: geminiServer,
+			"google-drive": geminiServer,
 		},
 	})
 	if err != nil {
@@ -1537,7 +1619,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithShapeDriftedConfig(t *testing
 	claudeServer.Type = "sse"
 	claudeConfigBytes, err := json.Marshal(claudeConfig{
 		McpServers: map[string]claudeMcpServer{
-			googleDriveMcpServerName: claudeServer,
+			"google-drive": claudeServer,
 		},
 	})
 	if err != nil {
@@ -1552,7 +1634,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithShapeDriftedConfig(t *testing
 	grokConfigBytes, err := toml.Marshal(struct {
 		McpServers map[string]grokMcpServer `toml:"mcp_servers"`
 	}{
-		McpServers: map[string]grokMcpServer{googleDriveMcpServerName: grokServer},
+		McpServers: map[string]grokMcpServer{"google-drive": grokServer},
 	})
 	if err != nil {
 		t.Fatalf("toml.Marshal(grok config) failed: %v", err)
@@ -1585,7 +1667,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithFieldDriftedConfig(t *testing
 				server := expectedCodexGoogleDriveMcpServer(tmpDir, filepath.Join(tmpDir, ".codexHome"), googleDriveMcpStatusMode, false, mcpStatus)
 				server.StartupTimeoutSec++
 				raw, err := toml.Marshal(codexConfig{
-					McpServers: map[string]codexMcpServer{googleDriveMcpServerName: server},
+					McpServers: map[string]codexMcpServer{"google-drive": server},
 				})
 				if err != nil {
 					t.Fatalf("toml.Marshal(codex startup timeout drift) failed: %v", err)
@@ -1600,7 +1682,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithFieldDriftedConfig(t *testing
 				server := expectedCodexGoogleDriveMcpServer(tmpDir, filepath.Join(tmpDir, ".codexHome"), googleDriveMcpStatusMode, false, mcpStatus)
 				server.ToolTimeoutSec++
 				raw, err := toml.Marshal(codexConfig{
-					McpServers: map[string]codexMcpServer{googleDriveMcpServerName: server},
+					McpServers: map[string]codexMcpServer{"google-drive": server},
 				})
 				if err != nil {
 					t.Fatalf("toml.Marshal(codex tool timeout drift) failed: %v", err)
@@ -1615,7 +1697,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithFieldDriftedConfig(t *testing
 				server := expectedCodexGoogleDriveMcpServer(tmpDir, filepath.Join(tmpDir, ".codexHome"), googleDriveMcpStatusMode, false, mcpStatus)
 				server.Enabled = false
 				raw, err := toml.Marshal(codexConfig{
-					McpServers: map[string]codexMcpServer{googleDriveMcpServerName: server},
+					McpServers: map[string]codexMcpServer{"google-drive": server},
 				})
 				if err != nil {
 					t.Fatalf("toml.Marshal(codex enabled drift) failed: %v", err)
@@ -1630,7 +1712,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithFieldDriftedConfig(t *testing
 				server := expectedCodexGoogleDriveMcpServer(tmpDir, filepath.Join(tmpDir, ".codexHome"), googleDriveMcpStatusMode, false, mcpStatus)
 				server.ApprovalMode = "never"
 				raw, err := toml.Marshal(codexConfig{
-					McpServers: map[string]codexMcpServer{googleDriveMcpServerName: server},
+					McpServers: map[string]codexMcpServer{"google-drive": server},
 				})
 				if err != nil {
 					t.Fatalf("toml.Marshal(codex approval mode drift) failed: %v", err)
@@ -1645,7 +1727,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithFieldDriftedConfig(t *testing
 				server := expectedGeminiGoogleDriveMcpServer(tmpDir, "", googleDriveMcpStatusMode, false, mcpStatus)
 				server.Timeout++
 				raw, err := json.Marshal(geminiSettings{
-					McpServers: map[string]geminiMcpServer{googleDriveMcpServerName: server},
+					McpServers: map[string]geminiMcpServer{"google-drive": server},
 				})
 				if err != nil {
 					t.Fatalf("json.Marshal(gemini timeout drift) failed: %v", err)
@@ -1660,7 +1742,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithFieldDriftedConfig(t *testing
 				server := expectedGeminiGoogleDriveMcpServer(tmpDir, "", googleDriveMcpStatusMode, false, mcpStatus)
 				server.Trust = true
 				raw, err := json.Marshal(geminiSettings{
-					McpServers: map[string]geminiMcpServer{googleDriveMcpServerName: server},
+					McpServers: map[string]geminiMcpServer{"google-drive": server},
 				})
 				if err != nil {
 					t.Fatalf("json.Marshal(gemini trust drift) failed: %v", err)
@@ -1675,7 +1757,7 @@ func TestResolveGoogleDriveMcpProviderStatuses_WithFieldDriftedConfig(t *testing
 				server := expectedClaudeGoogleDriveMcpServer(tmpDir, "", googleDriveMcpStatusMode, false, mcpStatus)
 				server.Timeout++
 				raw, err := json.Marshal(claudeConfig{
-					McpServers: map[string]claudeMcpServer{googleDriveMcpServerName: server},
+					McpServers: map[string]claudeMcpServer{"google-drive": server},
 				})
 				if err != nil {
 					t.Fatalf("json.Marshal(claude timeout drift) failed: %v", err)

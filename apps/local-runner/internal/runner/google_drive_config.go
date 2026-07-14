@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -219,7 +220,35 @@ func (r *Runner) SaveGoogleDriveWorkspaceConfig(input GoogleDriveWorkspaceConfig
 		return GoogleDriveWorkspaceConfigResponse{}, err
 	}
 
+	// When the active MCP account changed, push it into providers that read a
+	// STATIC config (Codex, incl. standalone codex-cli) so they follow the switch
+	// immediately — Claude/Grok already re-resolve google-drive live each turn in
+	// flowpilotClaudeExtraMCPServers, which is why only Codex drifted to a stale
+	// account. Best-effort; never blocks the save.
+	if strings.TrimSpace(input.MCPAccountID) != "" {
+		r.rePushGoogleDriveConfigToStaticProviders()
+	}
+
 	return r.resolveGoogleDriveWorkspaceStatus()
+}
+
+// rePushGoogleDriveConfigToStaticProviders refreshes the google-drive credential
+// env in each Codex account home's config.toml to the currently-selected Drive
+// account. Codex reads mcp_servers only from config.toml (no per-turn live merge
+// like Claude/Grok), so without this a Drive account switch never reaches it —
+// or its standalone codex-cli. syncCodexGoogleDriveMcpLive is a no-op for homes
+// that never configured Drive, so this only touches configs that already opted in.
+func (r *Runner) rePushGoogleDriveConfigToStaticProviders() {
+	homes, err := DiscoverProviderAccountHomes("codex")
+	if err != nil {
+		log.Printf("[google-drive] codex home discovery for re-push skipped: %v", err)
+		return
+	}
+	for _, home := range homes {
+		if _, err := r.syncCodexGoogleDriveMcpLive(home); err != nil {
+			log.Printf("[google-drive] codex config re-push for %s skipped: %v", home, err)
+		}
+	}
 }
 
 func (r *Runner) ResetGoogleDriveWorkspaceConfig() error {
