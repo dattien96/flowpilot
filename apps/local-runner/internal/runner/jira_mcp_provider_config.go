@@ -1,23 +1,94 @@
 package runner
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
-// Task-228 (CP-05-06 P-1/P-2): Jira connects through Atlassian's official
-// remote MCP server (SD-11 §3.2), not a runner-launched local process — so
-// unlike Google Drive's stdio launcher config, the provider-config entry
-// here is a *remote* MCP server (URL + auth header), and the runner never
-// spawns anything for it.
+// Task-228 (CP-05-06 P-1/P-2) + Jira-MCP-API-Token-Auth: Jira connects through
+// Atlassian's official Rovo remote MCP server — not a runner-launched local
+// process. Auth primary path is personal API token (Basic email:apiToken →
+// /v1/mcp) per Atlassian headless docs; optional Bearer override for service
+// accounts / OAuth-style paste uses /v1/mcp/authv2.
 const (
 	jiraMcpServerName = "jira"
-	jiraMcpRemoteURL  = "https://mcp.atlassian.com/v1/mcp/authv2"
+	// jiraMcpAPITokenRemoteURL is the official personal-API-token / headless endpoint.
+	jiraMcpAPITokenRemoteURL = "https://mcp.atlassian.com/v1/mcp"
+	// jiraMcpOAuthRemoteURL is the authv2 endpoint used for Bearer override path.
+	jiraMcpOAuthRemoteURL = "https://mcp.atlassian.com/v1/mcp/authv2"
+	// Deprecated alias kept so older test strings / comments that referenced a
+	// single URL still compile if anything imported it — prefer the two consts above.
+	jiraMcpRemoteURL = jiraMcpOAuthRemoteURL
 )
+
+// jiraMcpAuthConfig is the resolved remote-MCP URL + Authorization header value
+// written into every provider config and the per-turn live merge.
+type jiraMcpAuthConfig struct {
+	Authorization string
+	URL           string
+	// Mode is "basic" (personal API token) or "bearer" (explicit override).
+	Mode string
+}
+
+// resolveJiraMcpAuth picks Authorization + URL for Rovo MCP.
+// Precedence:
+//  1. non-empty requestBearer (persisted as override)
+//  2. persisted creds.BearerToken
+//  3. connected Email+ApiToken → Basic base64(email:apiToken) + /v1/mcp
+func (r *Runner) resolveJiraMcpAuth(requestBearer string) (jiraMcpAuthConfig, error) {
+	requestBearer = strings.TrimSpace(requestBearer)
+	if requestBearer != "" {
+		if err := r.persistConnectedJiraBearerToken(requestBearer); err != nil {
+			return jiraMcpAuthConfig{}, fmt.Errorf("persist jira bearer token: %w", err)
+		}
+		return jiraMcpAuthConfig{
+			Authorization: normalizeJiraBearerAuthorization(requestBearer),
+			URL:           jiraMcpOAuthRemoteURL,
+			Mode:          "bearer",
+		}, nil
+	}
+	if token, err := r.resolveConnectedJiraBearerToken(); err == nil && strings.TrimSpace(token) != "" {
+		return jiraMcpAuthConfig{
+			Authorization: normalizeJiraBearerAuthorization(token),
+			URL:           jiraMcpOAuthRemoteURL,
+			Mode:          "bearer",
+		}, nil
+	}
+	creds, err := r.resolveConnectedJiraCredential()
+	if err != nil {
+		return jiraMcpAuthConfig{}, err
+	}
+	email := strings.TrimSpace(creds.Email)
+	apiToken := strings.TrimSpace(creds.ApiToken)
+	if email == "" || apiToken == "" {
+		return jiraMcpAuthConfig{}, errors.New("jira MCP auth requires a connected email+apiToken (or an optional Authorization override)")
+	}
+	basic := base64.StdEncoding.EncodeToString([]byte(email + ":" + apiToken))
+	return jiraMcpAuthConfig{
+		Authorization: "Basic " + basic,
+		URL:           jiraMcpAPITokenRemoteURL,
+		Mode:          "basic",
+	}, nil
+}
+
+// normalizeJiraBearerAuthorization leaves values that already start with
+// "Basic " or "Bearer " alone; bare tokens get a Bearer prefix (service-account
+// / OAuth access token paste).
+func normalizeJiraBearerAuthorization(raw string) string {
+	raw = strings.TrimSpace(raw)
+	lower := strings.ToLower(raw)
+	if strings.HasPrefix(lower, "bearer ") || strings.HasPrefix(lower, "basic ") {
+		return raw
+	}
+	return "Bearer " + raw
+}
 
 // JiraMcpProviderConfigResponse mirrors GoogleDriveMcpProviderConfigResponse's
 // shape (ProviderKey/ServerName/Status/Changed/ConfigPath) so callers already
@@ -51,16 +122,24 @@ type claudeRemoteMcpServer struct {
 // here to Claude's JSON document instead of assuming the whole document
 // matches the typed claudeConfig struct.
 //
-// authHeaderValue is the exact `Authorization` header value to send with
-// every request to the remote MCP endpoint (e.g. "Bearer <oauth-token>").
-// Task-228 ships the provider-config plumbing only: acquiring a real
-// Atlassian OAuth bearer token requires a registered Atlassian OAuth app and
-// a live browser redirect, which this runner cannot stand up or verify in
-// this environment — that handshake is a separate follow-up. Until it lands,
-// callers should treat an empty authHeaderValue as "not ready" and avoid
-// calling this with one (see PreflightJiraMcp, which gates on Jira being
-// connected before provider config is attempted).
+// EnsureClaudeJiraMcpConfig writes mcpServers.jira for Claude. Prefer
+// EnsureJiraMcpProviderConfig which resolves Basic vs Bearer. This helper
+// still picks the URL from the Authorization value so direct callers cannot
+// put Bearer tokens on the API-token endpoint (or Basic on authv2).
 func (r *Runner) EnsureClaudeJiraMcpConfig(accountHomePath string, authHeaderValue string) (JiraMcpProviderConfigResponse, error) {
+	return r.ensureClaudeJiraMcpConfigWithURL(accountHomePath, authHeaderValue, jiraRemoteURLForAuthorization(authHeaderValue))
+}
+
+// jiraRemoteURLForAuthorization maps Basic → /v1/mcp, Bearer/other → /authv2.
+func jiraRemoteURLForAuthorization(authHeaderValue string) string {
+	lower := strings.ToLower(strings.TrimSpace(authHeaderValue))
+	if strings.HasPrefix(lower, "basic ") {
+		return jiraMcpAPITokenRemoteURL
+	}
+	return jiraMcpOAuthRemoteURL
+}
+
+func (r *Runner) ensureClaudeJiraMcpConfigWithURL(accountHomePath string, authHeaderValue string, remoteURL string) (JiraMcpProviderConfigResponse, error) {
 	accountHomePath = strings.TrimSpace(accountHomePath)
 	if accountHomePath == "" {
 		return JiraMcpProviderConfigResponse{}, errors.New("accountHomePath is required")
@@ -68,6 +147,10 @@ func (r *Runner) EnsureClaudeJiraMcpConfig(accountHomePath string, authHeaderVal
 	authHeaderValue = strings.TrimSpace(authHeaderValue)
 	if authHeaderValue == "" {
 		return JiraMcpProviderConfigResponse{}, errors.New("authHeaderValue is required")
+	}
+	remoteURL = strings.TrimSpace(remoteURL)
+	if remoteURL == "" {
+		remoteURL = jiraMcpAPITokenRemoteURL
 	}
 
 	configPath := filepath.Join(accountHomePath, ".claude.json")
@@ -93,7 +176,7 @@ func (r *Runner) EnsureClaudeJiraMcpConfig(accountHomePath string, authHeaderVal
 
 	expected := claudeRemoteMcpServer{
 		Type:    "http",
-		URL:     jiraMcpRemoteURL,
+		URL:     remoteURL,
 		Headers: map[string]string{"Authorization": authHeaderValue},
 	}
 
@@ -138,6 +221,289 @@ type claudeJiraMcpConfigStatus struct {
 	Stale      bool
 }
 
+// JiraMcpProviderConfigRequest is the HTTP-facing request for
+// EnsureJiraMcpProviderConfig. BearerToken is an *optional* Authorization
+// override (service-account Bearer or OAuth access token). When empty, the
+// runner derives Basic auth from the connected email+apiToken (official
+// Rovo MCP personal API token path).
+type JiraMcpProviderConfigRequest struct {
+	ProviderKey     string `json:"providerKey"`
+	AccountHomePath string `json:"accountHomePath"`
+	BearerToken     string `json:"bearerToken"`
+}
+
+// EnsureJiraMcpProviderConfig writes Rovo remote MCP into the selected
+// provider account. Primary auth = connected API token Basic → /v1/mcp;
+// optional BearerToken override → authv2. G2 Grok HTTP path preserved.
+func (r *Runner) EnsureJiraMcpProviderConfig(req JiraMcpProviderConfigRequest) (JiraMcpProviderConfigResponse, error) {
+	providerKey := strings.ToLower(strings.TrimSpace(req.ProviderKey))
+	if providerKey == "" {
+		return JiraMcpProviderConfigResponse{}, errors.New("providerKey is required")
+	}
+	accountHomePath := strings.TrimSpace(req.AccountHomePath)
+	if accountHomePath == "" {
+		return JiraMcpProviderConfigResponse{}, errors.New("accountHomePath is required")
+	}
+
+	auth, err := r.resolveJiraMcpAuth(req.BearerToken)
+	if err != nil {
+		return JiraMcpProviderConfigResponse{}, err
+	}
+
+	switch providerKey {
+	case "claude":
+		return r.ensureClaudeJiraMcpConfigWithURL(accountHomePath, auth.Authorization, auth.URL)
+	case "codex":
+		return r.ensureCodexJiraMcpConfig(accountHomePath, auth)
+	case "gemini":
+		return r.ensureGeminiJiraMcpConfig(accountHomePath, auth)
+	case "grok":
+		return r.ensureGrokJiraMcpConfig(accountHomePath, auth)
+	default:
+		return JiraMcpProviderConfigResponse{}, fmt.Errorf("Jira MCP provider config is not yet implemented for provider: %s", providerKey)
+	}
+}
+
+// persistConnectedJiraBearerToken stores the Atlassian OAuth bearer token
+// onto the same keyring record resolveConnectedJiraCredential already reads
+// (the "one connected Jira integration per workspace" model), so it survives
+// across provider-config calls and per-turn merges without re-entry.
+func (r *Runner) persistConnectedJiraBearerToken(token string) error {
+	records, err := r.loadMcpBackendRecords()
+	if err != nil {
+		return fmt.Errorf("load MCP backend records: %w", err)
+	}
+	secretKey := strings.TrimSpace(records["jira"].SecretKey)
+	if secretKey == "" {
+		return errors.New("jira is not connected for this workspace")
+	}
+	creds, err := r.loadJiraCredential(secretKey)
+	if err != nil {
+		return err
+	}
+	creds.BearerToken = strings.TrimSpace(token)
+	raw, err := json.Marshal(creds)
+	if err != nil {
+		return err
+	}
+	return r.ensureSecretStore().Set(secretKey, string(raw))
+}
+
+// resolveConnectedJiraBearerToken reads back the token persistConnectedJiraBearerToken
+// stored, for the per-turn merge and for idempotent re-runs of EnsureJiraMcpProviderConfig.
+func (r *Runner) resolveConnectedJiraBearerToken() (string, error) {
+	creds, err := r.resolveConnectedJiraCredential()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(creds.BearerToken), nil
+}
+
+// jiraLiveMCPServer builds the per-turn claudeMcpServer entry for Jira when
+// connected credentials can resolve Rovo MCP auth (Basic apiToken or Bearer
+// override), for flowpilotClaudeExtraMCPServers + Grok ACP HTTP forward.
+func (r *Runner) jiraLiveMCPServer() (claudeMcpServer, bool) {
+	auth, err := r.resolveJiraMcpAuth("")
+	if err != nil || auth.Authorization == "" {
+		return claudeMcpServer{}, false
+	}
+	return claudeMcpServer{
+		Type:    "http",
+		URL:     auth.URL,
+		Headers: map[string]string{"Authorization": auth.Authorization},
+	}, true
+}
+
+// ensureCodexJiraMcpConfig writes Codex mcp_servers.jira. Bearer override uses
+// bearer_token_env_var (Codex prepends Bearer semantics). Basic personal API
+// token uses http_headers with the full Authorization value so Codex does not
+// wrap "Basic …" as a Bearer token.
+func (r *Runner) ensureCodexJiraMcpConfig(accountHomePath string, auth jiraMcpAuthConfig) (JiraMcpProviderConfigResponse, error) {
+	configPath := filepath.Join(accountHomePath, "config.toml")
+
+	var config codexConfig
+	changed := false
+	raw, err := os.ReadFile(configPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to read Codex config: %w", err)
+	}
+	if err == nil {
+		if tomlErr := toml.Unmarshal(raw, &config); tomlErr != nil {
+			config = codexConfig{}
+			changed = true
+		}
+	}
+	if config.McpServers == nil {
+		config.McpServers = make(map[string]codexMcpServer)
+	}
+
+	var expected codexMcpServer
+	if auth.Mode == "basic" {
+		expected = codexMcpServer{
+			Enabled:     true,
+			URL:         auth.URL,
+			HTTPHeaders: map[string]string{"Authorization": auth.Authorization},
+		}
+	} else {
+		// Strip leading "Bearer " for env var — Codex bearer_token_env_var adds it.
+		token := strings.TrimSpace(auth.Authorization)
+		if strings.HasPrefix(strings.ToLower(token), "bearer ") {
+			token = strings.TrimSpace(token[7:])
+		}
+		expected = codexMcpServer{
+			Enabled:           true,
+			URL:               auth.URL,
+			BearerTokenEnvVar: "JIRA_BEARER_TOKEN",
+			Env:               map[string]string{"JIRA_BEARER_TOKEN": token},
+		}
+	}
+	existing, exists := config.McpServers[jiraMcpServerName]
+	if !exists || existing.URL != expected.URL || existing.BearerTokenEnvVar != expected.BearerTokenEnvVar || !envMatches(existing.Env, expected.Env) || !envMatches(existing.HTTPHeaders, expected.HTTPHeaders) {
+		config.McpServers[jiraMcpServerName] = expected
+		changed = true
+	}
+
+	if changed {
+		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+			return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to create config directory: %w", err)
+		}
+		out, err := toml.Marshal(config)
+		if err != nil {
+			return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to marshal TOML: %w", err)
+		}
+		if err := os.WriteFile(configPath, out, 0o644); err != nil {
+			return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to write config: %w", err)
+		}
+	}
+
+	return JiraMcpProviderConfigResponse{
+		ProviderKey: "codex",
+		ServerName:  jiraMcpServerName,
+		Status:      "configured",
+		Changed:     changed,
+		ConfigPath:  configPath,
+	}, nil
+}
+
+// ensureGrokJiraMcpConfig writes Grok config.toml [mcp_servers.jira] with
+// url + headers.Authorization (Basic or Bearer) — G2 generic-map splice.
+func (r *Runner) ensureGrokJiraMcpConfig(accountHomePath string, auth jiraMcpAuthConfig) (JiraMcpProviderConfigResponse, error) {
+	configPath := filepath.Join(accountHomePath, "config.toml")
+
+	doc := map[string]interface{}{}
+	changed := false
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to read Grok config: %w", readErr)
+	}
+	if readErr == nil {
+		if tomlErr := toml.Unmarshal(raw, &doc); tomlErr != nil {
+			doc = map[string]interface{}{}
+			changed = true
+		}
+	}
+
+	mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
+	if mcpServers == nil {
+		mcpServers = map[string]interface{}{}
+	}
+
+	expected := grokMcpServer{
+		Enabled: true,
+		URL:     auth.URL,
+		Headers: map[string]string{"Authorization": auth.Authorization},
+	}
+	existingMatches := false
+	if existingRaw, exists := mcpServers[jiraMcpServerName]; exists {
+		if existingMap, ok := existingRaw.(map[string]interface{}); ok {
+			if existingServer, ok := grokServerFromMap(existingMap); ok {
+				existingMatches = grokServerConfigMatches(existingServer, expected)
+			}
+		}
+	}
+	if !existingMatches {
+		expectedMap, mapErr := grokServerToMap(expected)
+		if mapErr != nil {
+			return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to build Grok jira MCP server entry: %w", mapErr)
+		}
+		mcpServers[jiraMcpServerName] = expectedMap
+		doc["mcp_servers"] = mcpServers
+		changed = true
+	}
+
+	if changed {
+		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+			return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to create config directory: %w", err)
+		}
+		out, err := toml.Marshal(doc)
+		if err != nil {
+			return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to marshal TOML: %w", err)
+		}
+		if err := os.WriteFile(configPath, out, 0o644); err != nil {
+			return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to write config: %w", err)
+		}
+	}
+
+	return JiraMcpProviderConfigResponse{
+		ProviderKey: "grok",
+		ServerName:  jiraMcpServerName,
+		Status:      "configured",
+		Changed:     changed,
+		ConfigPath:  configPath,
+	}, nil
+}
+
+// ensureGeminiJiraMcpConfig writes Gemini settings.json mcpServers.jira with
+// httpUrl + headers.Authorization.
+func (r *Runner) ensureGeminiJiraMcpConfig(accountHomePath string, auth jiraMcpAuthConfig) (JiraMcpProviderConfigResponse, error) {
+	configDir := filepath.Join(accountHomePath, ".gemini")
+	configPath := filepath.Join(configDir, "settings.json")
+
+	var config geminiSettings
+	changed := false
+	raw, err := os.ReadFile(configPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to read Gemini config: %w", err)
+	}
+	if err == nil {
+		if jsonErr := json.Unmarshal(raw, &config); jsonErr != nil {
+			config = geminiSettings{}
+			changed = true
+		}
+	}
+	if config.McpServers == nil {
+		config.McpServers = make(map[string]geminiMcpServer)
+	}
+
+	expected := geminiMcpServer{HTTPURL: auth.URL, Headers: map[string]string{"Authorization": auth.Authorization}}
+	existing, exists := config.McpServers[jiraMcpServerName]
+	if !exists || existing.HTTPURL != expected.HTTPURL || existing.Headers["Authorization"] != auth.Authorization {
+		config.McpServers[jiraMcpServerName] = expected
+		changed = true
+	}
+
+	if changed {
+		if err := os.MkdirAll(configDir, 0o755); err != nil {
+			return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to create config directory: %w", err)
+		}
+		out, err := json.MarshalIndent(config, "", "  ")
+		if err != nil {
+			return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		if err := os.WriteFile(configPath, out, 0o644); err != nil {
+			return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to write config: %w", err)
+		}
+	}
+
+	return JiraMcpProviderConfigResponse{
+		ProviderKey: "gemini",
+		ServerName:  jiraMcpServerName,
+		Status:      "configured",
+		Changed:     changed,
+		ConfigPath:  configPath,
+	}, nil
+}
+
 // checkClaudeJiraMcpConfig reads (without writing) the current
 // mcpServers.jira entry to answer "is Claude ready to use Jira MCP right
 // now" — used by PreflightJiraMcp so preflight never has side effects.
@@ -167,7 +533,14 @@ func (r *Runner) checkClaudeJiraMcpConfig(accountHomePath string) (claudeJiraMcp
 	if !ok {
 		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
 	}
-	if server.Type != "http" || server.URL != jiraMcpRemoteURL {
+	if server.Type != "http" {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	// Accept either API-token (/v1/mcp) or Bearer override (/v1/mcp/authv2).
+	if server.URL != jiraMcpAPITokenRemoteURL && server.URL != jiraMcpOAuthRemoteURL {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	if strings.TrimSpace(server.Headers["Authorization"]) == "" {
 		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
 	}
 	return claudeJiraMcpConfigStatus{Configured: true, Stale: false}, nil
@@ -276,13 +649,76 @@ func (r *Runner) PreflightJiraMcp(providerKey string, accountHomePath string) MC
 			result.ErrorMessage = "Provider has stale Jira MCP config. Re-run Configure Providers."
 			return result
 		}
+	case "grok":
+		// G2: static config.toml is what Configure Providers writes; live ACP
+		// also gets jira via grokACPExtraMCPServers, but preflight still
+		// requires the on-disk entry so "Configure Providers" is the clear
+		// setup step (mirrors Claude checking .claude.json).
+		status, err := r.checkGrokJiraMcpConfig(accountHomePath)
+		if err != nil {
+			result.ErrorMessage = fmt.Sprintf("Failed to check Grok Jira MCP config: %v", err)
+			return result
+		}
+		if !status.Configured {
+			result.ErrorMessage = "The selected AI provider is not configured with the jira MCP server. Run Configure Providers first."
+			return result
+		}
+		if status.Stale {
+			result.ErrorMessage = "Provider has stale Jira MCP config. Re-run Configure Providers."
+			return result
+		}
 	default:
+		// codex/gemini Ensure writers exist; preflight for those providers is
+		// still a follow-up (not G2). Empty providerKey already returned above.
 		result.ErrorMessage = fmt.Sprintf("Jira MCP provider config is not yet implemented for provider: %s", providerKey)
 		return result
 	}
 
 	result.ProviderConfigured = true
 	return result
+}
+
+// checkGrokJiraMcpConfig is a read-only check of config.toml mcp_servers.jira
+// (G2). Configured=true when the entry exists; Stale=true when it exists but
+// URL is wrong, disabled, or Authorization header is empty.
+func (r *Runner) checkGrokJiraMcpConfig(accountHomePath string) (claudeJiraMcpConfigStatus, error) {
+	configPath := filepath.Join(strings.TrimSpace(accountHomePath), "config.toml")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return claudeJiraMcpConfigStatus{}, nil
+		}
+		return claudeJiraMcpConfigStatus{}, fmt.Errorf("failed to read Grok config: %w", err)
+	}
+	doc := map[string]interface{}{}
+	if len(strings.TrimSpace(string(raw))) > 0 {
+		if err := toml.Unmarshal(raw, &doc); err != nil {
+			return claudeJiraMcpConfigStatus{}, fmt.Errorf("failed to parse Grok config: %w", err)
+		}
+	}
+	mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
+	if mcpServers == nil {
+		return claudeJiraMcpConfigStatus{}, nil
+	}
+	existingRaw, ok := mcpServers[jiraMcpServerName]
+	if !ok {
+		return claudeJiraMcpConfigStatus{}, nil
+	}
+	existingMap, ok := existingRaw.(map[string]interface{})
+	if !ok {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	server, ok := grokServerFromMap(existingMap)
+	if !ok {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	if !server.Enabled || strings.TrimSpace(server.Headers["Authorization"]) == "" {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	if server.URL != jiraMcpAPITokenRemoteURL && server.URL != jiraMcpOAuthRemoteURL {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	return claudeJiraMcpConfigStatus{Configured: true, Stale: false}, nil
 }
 
 // buildJiraMcpInstructions creates the "## Required MCP Usage" prompt block

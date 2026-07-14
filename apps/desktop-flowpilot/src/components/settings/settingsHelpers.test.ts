@@ -21,7 +21,7 @@ test("normalizeAtlassianSiteUrl returns empty string for blank/unparsable input"
   assert.equal(normalizeAtlassianSiteUrl("   "), "");
 });
 
-function fakeJiraIntegration(overrides: Partial<{ projectId: string; workspaceUrl: string }> = {}) {
+function fakeJiraIntegration(overrides: Partial<{ projectId: string | null; workspaceUrl: string }> = {}) {
   return {
     id: "int-1",
     projectId: overrides.projectId ?? "project-alpha",
@@ -51,6 +51,12 @@ test("findDuplicateJiraIntegration ignores a different project", () => {
   const existing = fakeJiraIntegration({ projectId: "project-beta" });
   const dup = findDuplicateJiraIntegration([existing], "project-alpha", "https://flowpilot899.atlassian.net");
   assert.equal(dup, null);
+});
+
+test("findDuplicateJiraIntegration scopes workspace-global integrations separately", () => {
+  const existing = fakeJiraIntegration({ projectId: null });
+  const dup = findDuplicateJiraIntegration([existing], null, "https://flowpilot899.atlassian.net");
+  assert.equal(dup, existing);
 });
 
 test("findDuplicateJiraIntegration ignores a different Atlassian site", () => {
@@ -85,8 +91,24 @@ test("stripSecretFields removes botToken for telegram", () => {
   assert.deepEqual(stripped, { channelId: "-100123456" });
 });
 
-test("stripSecretFields leaves non-secret-bearing types unchanged", () => {
-  const config = { workspaceUrl: "https://x.atlassian.net", projectKey: "SCRUM" };
+test("stripSecretFields removes apiToken for jira (SD-11 keyring-only)", () => {
+  const config = {
+    workspaceUrl: "https://x.atlassian.net",
+    projectKey: "SCRUM",
+    email: "name@company.com",
+    apiToken: "secret-jira-token",
+  };
   const stripped = stripSecretFields("jira", config);
+  assert.deepEqual(stripped, {
+    workspaceUrl: "https://x.atlassian.net",
+    projectKey: "SCRUM",
+    email: "name@company.com",
+  });
+  assert.equal(config.apiToken, "secret-jira-token");
+});
+
+test("stripSecretFields leaves non-secret-bearing types unchanged", () => {
+  const config = { folderId: "1AbCdEf" };
+  const stripped = stripSecretFields("google_drive", config);
   assert.deepEqual(stripped, config);
 });

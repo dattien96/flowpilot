@@ -155,14 +155,26 @@ type codexConfig struct {
 }
 
 type codexMcpServer struct {
-	Command           string            `toml:"command"`
-	Args              []string          `toml:"args"`
+	Command           string            `toml:"command,omitempty"`
+	Args              []string          `toml:"args,omitempty"`
 	StartupTimeoutSec int               `toml:"startup_timeout_sec,omitempty"`
 	ToolTimeoutSec    int               `toml:"tool_timeout_sec,omitempty"`
 	Enabled           bool              `toml:"enabled"`
 	EnabledTools      []string          `toml:"enabled_tools,omitempty"`
 	ApprovalMode      string            `toml:"default_tools_approval_mode,omitempty"`
-	Env               map[string]string `toml:"env"`
+	Env               map[string]string `toml:"env,omitempty"`
+	// URL/BearerTokenEnvVar (Task-234) are additive fields for a
+	// Streamable-HTTP remote MCP entry (Jira) — Codex selects transport by
+	// which keys are present ("command" => stdio, "url" => http), reading
+	// the bearer value from the env var this names rather than an inline
+	// header. Both omitempty so stdio entries (Google Drive/Firebase/
+	// Telegram) are unaffected.
+	URL               string `toml:"url,omitempty"`
+	BearerTokenEnvVar string `toml:"bearer_token_env_var,omitempty"`
+	// HTTPHeaders carries a full Authorization value (e.g. Basic …) when
+	// bearer_token_env_var would incorrectly wrap it as Bearer (Rovo personal
+	// API token path). omitempty keeps stdio entries clean.
+	HTTPHeaders map[string]string `toml:"http_headers,omitempty"`
 }
 
 // Gemini settings JSON structures
@@ -177,6 +189,13 @@ type geminiMcpServer struct {
 	Timeout      int               `json:"timeout,omitempty"`
 	Trust        bool              `json:"trust"`
 	IncludeTools []string          `json:"includeTools,omitempty"`
+	// HTTPURL/Headers (Task-234) are additive fields for a Streamable-HTTP
+	// remote MCP entry (Jira) — Gemini's documented shape: `httpUrl` selects
+	// the Streamable HTTP transport (distinct from `url`, which Gemini treats
+	// as SSE), with `headers` carrying the Authorization value directly.
+	// Both omitempty so stdio entries are unaffected.
+	HTTPURL string            `json:"httpUrl,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Claude config JSON structures
@@ -190,6 +209,13 @@ type claudeMcpServer struct {
 	Args    []string          `json:"args"`
 	Env     map[string]string `json:"env"`
 	Timeout int               `json:"timeout,omitempty"`
+	// URL/Headers are additive fields (Task-234 T-1) for remote HTTP MCP
+	// servers (Jira) merged into the per-turn --mcp-config alongside the
+	// existing stdio-shaped entries (Firebase/Telegram/Google Drive). Both
+	// omitempty so they never appear on the stdio entries this struct
+	// already served before this change.
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Grok config.toml uses the same [mcp_servers.<name>] shape as Codex, but its config.toml
@@ -205,6 +231,11 @@ type grokMcpServer struct {
 	StartupTimeoutSec int               `toml:"startup_timeout_sec,omitempty"`
 	ToolTimeoutSec    int               `toml:"tool_timeout_sec,omitempty"`
 	Env               map[string]string `toml:"env"`
+	// URL/Headers are additive (G2 / Task-234 Q-2) for remote HTTP MCP
+	// servers such as Jira. omitempty keeps stdio entries (Drive/Firebase/
+	// Telegram) free of empty url/headers keys in config.toml.
+	URL     string            `toml:"url,omitempty"`
+	Headers map[string]string `toml:"headers,omitempty"`
 }
 
 // grokServerToMap converts a typed server into the generic map shape needed to splice into
@@ -955,6 +986,9 @@ func grokServerConfigMatches(existing, expected grokMcpServer) bool {
 	if existing.ToolTimeoutSec != expected.ToolTimeoutSec {
 		return false
 	}
+	if existing.URL != expected.URL {
+		return false
+	}
 	if len(existing.Args) != len(expected.Args) {
 		return false
 	}
@@ -964,6 +998,9 @@ func grokServerConfigMatches(existing, expected grokMcpServer) bool {
 		}
 	}
 	if !envMatches(existing.Env, expected.Env) {
+		return false
+	}
+	if !envMatches(existing.Headers, expected.Headers) {
 		return false
 	}
 	return true
@@ -995,6 +1032,21 @@ func expectedGrokGoogleDriveMcpServer(workspace string, accountHomePath string, 
 // turn never breaks over an optional MCP.
 func (r *Runner) flowpilotClaudeExtraMCPServers(accountHomePath string, yolo bool) map[string]claudeMcpServer {
 	out := map[string]claudeMcpServer{}
+
+	// Task-234 T-1 + G2: jira/firebase/telegram are merged the same way
+	// regardless of accountHomePath — derived from "integration connected"
+	// (runner keyring). Shared by Claude (--mcp-config) and Grok ACP
+	// (grokACPExtraMCPServers forwards both stdio and HTTP shapes).
+	if server, ok := r.jiraLiveMCPServer(); ok {
+		out[jiraMcpServerName] = server
+	}
+	if server, ok := r.firebaseLiveMCPServer(); ok {
+		out[firebaseMcpServerName] = server
+	}
+	if server, ok := r.telegramLiveMCPServer(); ok {
+		out[telegramMcpServerName] = server
+	}
+
 	accountHomePath = strings.TrimSpace(accountHomePath)
 	if accountHomePath == "" {
 		return out

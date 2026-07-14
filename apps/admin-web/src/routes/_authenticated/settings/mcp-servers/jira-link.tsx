@@ -148,8 +148,13 @@ export function JiraMcpLinkPage() {
                 Runner-side Jira MCP link
               </h3>
               <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-                This page owns the Atlassian MCP backend status. Create reusable Jira MCP
-                connections from the Create MCP flow after this link is enabled.
+                Connect with email + API token (legacy form). FlowPilot writes Atlassian{" "}
+                <strong>Rovo remote MCP</strong> into AI provider configs (
+                <code className="text-xs">Basic</code> →{" "}
+                <code className="text-xs">mcp.atlassian.com/v1/mcp</code>). Org admins must allow API token
+                authentication for Rovo MCP. If Jira returns <code className="text-xs">403 Forbidden</code> from
+                Teamwork Graph, reconnect with a modern scoped token; legacy tokens may be rejected. The old MCP
+                Test Console UI was removed; REST helpers remain in the runner for internal use only.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -160,9 +165,22 @@ export function JiraMcpLinkPage() {
               >
                 Create MCP
               </Link>
-              <Link className={secondaryLinkButtonClass} to="/settings/mcp-servers/mcp-connect-test">
-                Open Test Console
-              </Link>
+              <a
+                className={secondaryLinkButtonClass}
+                href="https://support.atlassian.com/security-and-access-policies/docs/control-atlassian-rovo-mcp-server-settings/#Configure-authentication"
+                rel="noreferrer"
+                target="_blank"
+              >
+                Enable Rovo MCP API token (admin)
+              </a>
+              <a
+                className={secondaryLinkButtonClass}
+                href="https://id.atlassian.com/manage-profile/security/api-tokens?autofillToken&expiryDays=max&appId=mcp&selectedScopes=all"
+                rel="noreferrer"
+                target="_blank"
+              >
+                Create MCP-scoped API token
+              </a>
             </div>
           </div>
 
@@ -307,6 +325,15 @@ export function JiraMcpLinkPage() {
                 <p className="mt-3 text-sm text-muted-foreground">
                   Last sync: {formatTimestamp(integration.lastSyncedAt)}
                 </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Link
+                    className={secondaryLinkButtonClass}
+                    search={{ integrationId: integration.id, provider: "jira" }}
+                    to="/settings/mcp-servers/create"
+                  >
+                    Edit / Rotate token
+                  </Link>
+                </div>
               </div>
             ))}
           </div>

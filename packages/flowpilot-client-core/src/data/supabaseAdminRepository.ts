@@ -108,7 +108,7 @@ function mapMember(row: Row): TeamMember {
 function mapIntegration(row: Row): Integration {
   return {
     id: String(row.id),
-    projectId: String(row.project_id),
+    projectId: row.project_id ? String(row.project_id) : null,
     type: row.type as IntegrationType,
     label: String(row.label ?? ""),
     mcpTypeEnabled: Boolean(row.mcp_type_enabled ?? false),
@@ -510,7 +510,7 @@ export class SupabaseAdminRepository implements
     return (data ?? []).map(mapIntegration);
   }
 
-  async createIntegration(input: { projectId: string; type: IntegrationType; label: string; configEncrypted: Record<string, unknown>; status: string; mcpTypeEnabled?: boolean }) {
+  async createIntegration(input: { projectId: string | null; type: IntegrationType; label: string; configEncrypted: Record<string, unknown>; status: string; mcpTypeEnabled?: boolean }) {
     const { data, error } = await this.supabase.from("integrations").insert({
       project_id: input.projectId,
       type: input.type,
@@ -532,6 +532,11 @@ export class SupabaseAdminRepository implements
     const { data, error } = await this.supabase.from("integrations").update(payload).eq("id", id).select("*").single();
     assertNoError(error, "Unable to update integration.");
     return mapIntegration(data);
+  }
+
+  async deleteIntegration(id: string) {
+    const { error } = await this.supabase.from("integrations").delete().eq("id", id);
+    assertNoError(error, "Unable to delete integration.");
   }
 
   async listLinkedIntegrations(projectId: string) {

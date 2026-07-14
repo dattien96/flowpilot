@@ -72,7 +72,7 @@ export type IntegrationStatus = "pending" | "awaiting_oauth" | "connected" | "fa
 
 export interface Integration {
   id: string;
-  projectId: string;
+  projectId: string | null;
   type: IntegrationType;
   label: string;
   mcpTypeEnabled: boolean;

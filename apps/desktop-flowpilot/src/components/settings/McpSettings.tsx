@@ -1,9 +1,57 @@
 import { useEffect, useState } from "react";
 import type { Integration, IntegrationType, LocalRunnerMcpBackend, Project, TelegramApprovalRecord } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
+import { RUNNER_URL } from "@/config";
 import { buildConfig, createEmptyConfig, findDuplicateJiraIntegration, formatTimestamp, integrationTypes, providerFields, stripSecretFields, toErrorMessage } from "@/components/settings/settingsHelpers";
 
-type McpSettingsMode = "all" | "google-drive" | "jira";
+// Task-228/230/232 shipped EnsureClaude{Jira,Firebase,Telegram}McpConfig but
+// no HTTP route or UI ever called them — Google Drive is the only one of the
+// four MCP integrations whose provider-config write-up actually ran in
+// production, via a "Configure Providers" loop button (GoogleDriveSettings.tsx
+// configureAiProviders) that walks every discovered account of all four
+// provider CLIs. Task-234 T-2/T-4 gives Jira/Firebase/Telegram the same
+// button, reusing the same /provider-accounts listing endpoint and looping
+// over every account regardless of provider_key (not a single manual pick).
+interface RunnerProviderAccount {
+  provider_key: string;
+  home_path: string;
+  display_name: string;
+  is_active: boolean;
+}
+
+const PROVIDER_LABELS: Record<string, string> = { codex: "Codex", gemini: "Gemini", claude: "Claude", grok: "Grok" };
+
+interface McpProviderConfigResult {
+  providerKey: string;
+  serverName: string;
+  status: string;
+  changed: boolean;
+  configPath: string;
+}
+
+function runnerFetch(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(new URL(path, RUNNER_URL).toString(), { cache: "no-store", ...init });
+}
+
+async function readRunnerError(response: Response): Promise<string> {
+  const text = await response.text().catch(() => "");
+  if (!text) return `Request failed with status ${response.status}.`;
+  try {
+    const payload = JSON.parse(text) as { error?: string };
+    return payload.error || text;
+  } catch {
+    return text;
+  }
+}
+
+const providerConfigEnsurePath: Partial<Record<IntegrationType, string>> = {
+  jira: "/jira-config/mcp-provider-config/ensure",
+  firebase: "/firebase-config/mcp-provider-config/ensure",
+  telegram: "/telegram-config/mcp-provider-config/ensure",
+};
+
+type McpSettingsMode = "all" | "google-drive" | "jira" | "firebase" | "telegram";
+type IntegrationOwnerScope = "global" | "project";
 
 interface McpSettingsProps {
   mode?: McpSettingsMode;
@@ -12,13 +60,25 @@ interface McpSettingsProps {
 function modeLabel(mode: McpSettingsMode) {
   if (mode === "google-drive") return "Google Drive";
   if (mode === "jira") return "Jira MCP";
+  if (mode === "firebase") return "Firebase MCP";
+  if (mode === "telegram") return "Telegram MCP";
   return "MCP";
 }
 
 function allowedTypes(mode: McpSettingsMode): IntegrationType[] {
   if (mode === "google-drive") return ["google_drive"];
   if (mode === "jira") return ["jira"];
+  if (mode === "firebase") return ["firebase"];
+  if (mode === "telegram") return ["telegram"];
   return integrationTypes;
+}
+
+function labelForIntegrationType(type: IntegrationType): string {
+  if (type === "jira") return "Jira MCP";
+  if (type === "google_drive") return "Google Drive MCP";
+  if (type === "firebase") return "Firebase MCP";
+  if (type === "telegram") return "Telegram MCP";
+  return `${type} MCP`;
 }
 
 export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElement {
@@ -27,12 +87,25 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [backends, setBackends] = useState<LocalRunnerMcpBackend[]>([]);
   const [projectId, setProjectId] = useState("");
+  const [ownerScope, setOwnerScope] = useState<IntegrationOwnerScope>("global");
   const [type, setType] = useState<IntegrationType>(types[0] ?? "jira");
-  const [label, setLabel] = useState(types[0] === "google_drive" ? "Google Drive MCP" : "Jira MCP");
+  const [label, setLabel] = useState(labelForIntegrationType(types[0] ?? "jira"));
   const [config, setConfig] = useState<Record<string, string>>(createEmptyConfig(types[0] ?? "jira"));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [editingIntegrationId, setEditingIntegrationId] = useState<string | null>(null);
   const [telegramApprovals, setTelegramApprovals] = useState<TelegramApprovalRecord[]>([]);
+  const [providerAccounts, setProviderAccounts] = useState<RunnerProviderAccount[]>([]);
+  const [jiraBearerToken, setJiraBearerToken] = useState("");
+  const [configureMessage, setConfigureMessage] = useState<string | null>(null);
+  const [configureError, setConfigureError] = useState<string | null>(null);
+
+  const ensurePath = providerConfigEnsurePath[type];
+  const supportsGlobalScope = type === "jira" || type === "firebase" || type === "telegram";
+  const ownerProjectId = supportsGlobalScope && ownerScope === "global" ? null : (projectId || null);
+  const editingIntegration = editingIntegrationId
+    ? integrations.find((integration) => integration.id === editingIntegrationId) ?? null
+    : null;
 
   const refresh = async () => {
     try {
@@ -48,6 +121,13 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
       setBackends(nextBackends);
       setTelegramApprovals(nextTelegramApprovals);
       setProjectId((current) => current || nextProjects[0]?.id || "");
+      if (ensurePath) {
+        const accountsResponse = await runnerFetch("/provider-accounts");
+        if (accountsResponse.ok) {
+          const payload = (await accountsResponse.json()) as { accounts?: RunnerProviderAccount[] };
+          setProviderAccounts((payload.accounts ?? []).filter((account) => account.home_path?.trim().length > 0));
+        }
+      }
     } catch (error) {
       setMessage(toErrorMessage(error, "Unable to load MCP settings."));
     }
@@ -58,65 +138,149 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
   }, []);
 
   const changeType = (nextType: IntegrationType) => {
+    setEditingIntegrationId(null);
     setType(nextType);
     setConfig(createEmptyConfig(nextType));
-    setLabel(nextType === "jira" ? "Jira MCP" : nextType === "google_drive" ? "Google Drive MCP" : `${nextType} MCP`);
+    setLabel(labelForIntegrationType(nextType));
+    setOwnerScope(nextType === "jira" || nextType === "firebase" || nextType === "telegram" ? "global" : "project");
   };
 
   useEffect(() => {
     const firstType = types[0] ?? "jira";
     setType(firstType);
     setConfig(createEmptyConfig(firstType));
-    setLabel(firstType === "google_drive" ? "Google Drive MCP" : "Jira MCP");
+    setLabel(labelForIntegrationType(firstType));
+    setOwnerScope(firstType === "jira" || firstType === "firebase" || firstType === "telegram" ? "global" : "project");
+    setEditingIntegrationId(null);
   }, [mode]);
 
-  const createIntegration = async () => {
-    if (!projectId) return;
-    if (type === "jira") {
-      const duplicate = findDuplicateJiraIntegration(integrations, projectId, config.workspaceUrl ?? "");
-      if (duplicate) {
-        setMessage("A Jira MCP for this Atlassian site already exists in this project.");
-        return;
-      }
+  const beginEditIntegration = (integration: Integration) => {
+    setEditingIntegrationId(integration.id);
+    setType(integration.type);
+    setLabel(integration.label);
+    setOwnerScope(integration.projectId ? "project" : "global");
+    setProjectId(integration.projectId ?? projects[0]?.id ?? "");
+    const nextConfig = createEmptyConfig(integration.type);
+    for (const field of providerFields[integration.type]) {
+      if (integration.type === "jira" && field.key === "apiToken") continue;
+      const raw = (integration.configEncrypted as Record<string, unknown>)[field.key];
+      nextConfig[field.key] = typeof raw === "string" ? raw : "";
     }
+    setConfig(nextConfig);
+    setMessage(null);
+  };
+
+  const resetEditor = () => {
+    const nextType = types[0] ?? "jira";
+    setEditingIntegrationId(null);
+    setType(nextType);
+    setConfig(createEmptyConfig(nextType));
+    setLabel(labelForIntegrationType(nextType));
+    setOwnerScope(nextType === "jira" || nextType === "firebase" || nextType === "telegram" ? "global" : "project");
+    setProjectId((current) => current || projects[0]?.id || "");
+  };
+
+  const createIntegration = async () => {
     setBusy(true);
     try {
       const admin = await getAdminUseCases();
       const fullConfig = buildConfig(type, config);
       const needsConnect = type === "jira" || type === "firebase" || type === "telegram";
-      const created = await admin.integrations.createIntegration({
-        projectId,
-        type,
-        label,
-        // SD-11 §6 secret boundary: the raw credential (apiToken /
-        // serviceAccountJson) must never land in Supabase config_encrypted —
-        // only the runner keyring. It is sent to the runner once, below, via
-        // testIntegration (which posts to /integrations/connect), never
-        // persisted here.
-        configEncrypted: stripSecretFields(type, fullConfig),
-        status: needsConnect ? "pending" : "connected",
-        mcpTypeEnabled: true,
-      });
+      const duplicate = type === "jira" && !editingIntegration
+        ? findDuplicateJiraIntegration(integrations, ownerProjectId, String(fullConfig.workspaceUrl ?? ""))
+        : null;
+      const persistedConfig = stripSecretFields(type, fullConfig);
+      const created = editingIntegration
+        ? await admin.integrations.updateIntegration(editingIntegration.id, {
+          label,
+          configEncrypted: persistedConfig,
+          status: needsConnect ? "pending" : editingIntegration.status,
+          mcpTypeEnabled: editingIntegration.mcpTypeEnabled,
+        })
+        : duplicate
+        ? await admin.integrations.updateIntegration(duplicate.id, {
+          label,
+          configEncrypted: persistedConfig,
+          status: needsConnect ? "pending" : "connected",
+          mcpTypeEnabled: true,
+        })
+        : await admin.integrations.createIntegration({
+          projectId: ownerProjectId,
+          type,
+          label,
+          // SD-11 §6 secret boundary: the raw credential (apiToken /
+          // serviceAccountJson) must never land in Supabase config_encrypted —
+          // only the runner keyring. It is sent to the runner once, below, via
+          // testIntegration (which posts to /integrations/{id}/connection), never
+          // persisted here.
+          configEncrypted: persistedConfig,
+          status: needsConnect ? "pending" : "connected",
+          mcpTypeEnabled: true,
+        });
       if (needsConnect) {
-        const result = await admin.integrations.testIntegration(projectId, created.id, type, fullConfig as Record<string, string>);
+        const result = await admin.integrations.testIntegration(undefined, created.id, type, fullConfig as Record<string, string>);
         await admin.integrations.updateIntegration(created.id, { status: "connected" });
-        setMessage(result ?? "MCP integration created and connected.");
+        setMessage(result ?? (editingIntegration ? "MCP integration updated and reconnected." : duplicate ? "Existing MCP integration reconnected." : "MCP integration created and connected."));
       } else {
-        setMessage("MCP integration created.");
+        setMessage(editingIntegration ? "MCP integration updated." : duplicate ? "Existing MCP integration updated." : "MCP integration created.");
       }
+      resetEditor();
       await refresh();
     } catch (error) {
-      setMessage(toErrorMessage(error, "Unable to create MCP integration."));
+      setMessage(toErrorMessage(error, `Unable to ${editingIntegration ? "update" : "create"} MCP integration.`));
     } finally {
       setBusy(false);
     }
+  };
+
+  // configureProviders (Task-234 T-4) loops every discovered account across
+  // all four provider CLIs and writes this MCP's config into each — mirrors
+  // GoogleDriveSettings.tsx's configureAiProviders Step-7 loop button exactly,
+  // instead of a single manual account pick.
+  const configureProviders = async () => {
+    if (!ensurePath || providerAccounts.length === 0) return;
+    setBusy(true);
+    setConfigureMessage(null);
+    setConfigureError(null);
+    const errors: string[] = [];
+    let bearerTokenToPersist = type === "jira" ? jiraBearerToken.trim() : "";
+    for (const account of providerAccounts) {
+      try {
+        const body: Record<string, string> =
+          type === "jira"
+            ? { providerKey: account.provider_key, accountHomePath: account.home_path, bearerToken: bearerTokenToPersist }
+            : { providerKey: account.provider_key, accountHomePath: account.home_path };
+        const response = await runnerFetch(ensurePath, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) {
+          throw new Error(await readRunnerError(response));
+        }
+        // The bearer token only needs to be sent once — the runner persists
+        // it onto the connected Jira credential and reuses it automatically
+        // on every later call in this loop and on future turns.
+        bearerTokenToPersist = "";
+      } catch (error) {
+        errors.push(`${PROVIDER_LABELS[account.provider_key] ?? account.provider_key} (${account.display_name || account.home_path}): ${toErrorMessage(error, "Unknown error")}`);
+      }
+    }
+    await refresh();
+    if (errors.length > 0) {
+      setConfigureError(errors.join("\n"));
+    } else {
+      setConfigureMessage(`Configured ${providerAccounts.length} account${providerAccounts.length === 1 ? "" : "s"} successfully.`);
+      if (type === "jira") setJiraBearerToken("");
+    }
+    setBusy(false);
   };
 
   const runBackendAction = async (backend: LocalRunnerMcpBackend) => {
     setBusy(true);
     try {
       const admin = await getAdminUseCases();
-      await admin.integrations.runMcpBackendAction(backend.key, backend.action, projectId);
+      await admin.integrations.runMcpBackendAction(backend.key, backend.action);
       await refresh();
       setMessage(`${backend.label} action completed.`);
     } catch (error) {
@@ -131,7 +295,7 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
     try {
       const admin = await getAdminUseCases();
       const result = await admin.integrations.testIntegration(
-        integration.projectId,
+        undefined,
         integration.id,
         integration.type,
         integration.configEncrypted as Record<string, string>,
@@ -143,6 +307,53 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
     } finally {
       setBusy(false);
     }
+  };
+
+  const deleteIntegration = async (integration: Integration) => {
+    if (!window.confirm(`Delete integration "${integration.label}"?`)) return;
+    setBusy(true);
+    try {
+      const admin = await getAdminUseCases();
+      if (integration.type === "jira" || integration.type === "google_drive" || integration.type === "firebase" || integration.type === "telegram") {
+        const response = await runnerFetch(`/integrations/${encodeURIComponent(integration.id)}/connection`, { method: "DELETE" });
+        if (!response.ok) {
+          throw new Error(await readRunnerError(response));
+        }
+      }
+      await admin.integrations.deleteIntegration(integration.id);
+      await refresh();
+      setMessage("Integration deleted.");
+    } catch (error) {
+      setMessage(toErrorMessage(error, "Unable to delete MCP integration."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const renderFieldGuide = (field: (typeof providerFields)[IntegrationType][number]) => {
+    if (!field.helpTitle && !field.helpBody && !field.helpItems?.length && !field.helpLinks?.length) return null;
+    return (
+      <details className="mcp-field-guide">
+        <summary>{field.helpTitle ?? `How to get ${field.label}`}</summary>
+        {field.helpBody ? <p>{field.helpBody}</p> : null}
+        {field.helpItems?.length ? (
+          <ul className="mcp-field-guide-list">
+            {field.helpItems.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        ) : null}
+        {field.helpLinks?.length ? (
+          <div className="mcp-field-guide-links">
+            {field.helpLinks.map((link) => (
+              <a href={link.href} key={link.href} rel="noreferrer" target="_blank">
+                {link.label}
+              </a>
+            ))}
+          </div>
+        ) : null}
+      </details>
+    );
   };
 
   const decideTelegramApproval = async (id: string, decision: "approved" | "rejected") => {
@@ -161,13 +372,125 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
 
   return (
     <section className="settings-panel">
-      <div className="settings-panel-head"><div><div className="settings-eyebrow">MCP</div><h2>{modeLabel(mode)}</h2><p>Manage runner MCP backends and project-bound MCP integrations.</p></div></div>
+      <div className="settings-panel-head"><div><div className="settings-eyebrow">MCP</div><h2>{modeLabel(mode)}</h2><p>Manage runner MCP backends and reusable MCP integrations that can be linked to any project or step later.</p></div></div>
       {message ? <div className="settings-feedback">{message}</div> : null}
       <div className="settings-two-column">
-        <div className="settings-subpanel"><h3>Runner Backends</h3><div className="settings-list">{backends.map((backend) => <div className="settings-list-item static" key={backend.key}><div><strong>{backend.label}</strong><span>{backend.providerType} / {backend.state} / {formatTimestamp(backend.lastCheckedAt)}</span></div><button className="secondary-btn" disabled={busy || !projectId} onClick={() => void runBackendAction(backend)} type="button">{backend.actionLabel}</button></div>)}</div></div>
-        <div className="settings-subpanel"><h3>Create Integration</h3><div className="settings-grid"><label className="settings-field"><span>Project</span><select value={projectId} onChange={(event) => setProjectId(event.target.value)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>{mode === "all" ? <label className="settings-field"><span>Type</span><select value={type} onChange={(event) => changeType(event.target.value as IntegrationType)}>{types.map((option) => <option key={option} value={option}>{option}</option>)}</select></label> : null}<label className="settings-field settings-field-full"><span>Label</span><input value={label} onChange={(event) => setLabel(event.target.value)} /></label>{providerFields[type].map((field) => <label className="settings-field" key={field.key}><span>{field.label}</span><input type={field.type ?? "text"} value={config[field.key] ?? ""} onChange={(event) => setConfig((current) => ({ ...current, [field.key]: event.target.value }))} /></label>)}</div><div className="settings-actions"><button className="primary-btn" disabled={busy || !projectId} onClick={() => void createIntegration()} type="button">Create Integration</button></div></div>
+        <div className="settings-subpanel"><h3>Runner Backends</h3><div className="settings-list">{backends.map((backend) => <div className="settings-list-item static" key={backend.key}><div><strong>{backend.label}</strong><span>{backend.providerType} / {backend.state} / {formatTimestamp(backend.lastCheckedAt)}</span></div><button className="secondary-btn" disabled={busy} onClick={() => void runBackendAction(backend)} type="button">{backend.actionLabel}</button></div>)}</div></div>
+        <div className="settings-subpanel">
+          <h3>{editingIntegration ? "Edit Integration" : "Create Integration"}</h3>
+          {type === "jira" ? (
+            <small className="settings-field-help">
+              Connect with your Atlassian <strong>email + API token</strong> (same as the old form). FlowPilot stores
+              the token in the runner keyring and uses it for Atlassian <strong>Rovo MCP</strong> (
+              <code>Basic</code> → <code>mcp.atlassian.com/v1/mcp</code>) after Configure Providers. Your org admin may
+              need to enable API token auth for Rovo MCP.{" "}
+              <a href="https://support.atlassian.com/security-and-access-policies/docs/control-atlassian-rovo-mcp-server-settings/#Configure-authentication" rel="noreferrer" target="_blank">
+                Enable Rovo MCP API token (admin)
+              </a>
+              {" · "}
+              <a href="https://id.atlassian.com/manage-profile/security/api-tokens?autofillToken&expiryDays=max&appId=mcp&selectedScopes=all" rel="noreferrer" target="_blank">
+                Create MCP-scoped API token
+              </a>
+              {" · "}
+              <a href="https://support.atlassian.com/atlassian-rovo-mcp-server/docs/configuring-authentication-via-api-token/" rel="noreferrer" target="_blank">
+                Auth via API token docs
+              </a>
+            </small>
+          ) : null}
+          <div className="settings-grid">
+            {supportsGlobalScope ? (
+              <label className="settings-field">
+                <span>Owner scope</span>
+                <select disabled={Boolean(editingIntegration)} value={ownerScope} onChange={(event) => setOwnerScope(event.target.value as IntegrationOwnerScope)}>
+                  <option value="global">Workspace global</option>
+                  <option value="project">Project scoped</option>
+                </select>
+              </label>
+            ) : null}
+            {supportsGlobalScope && ownerScope === "project" ? (
+              <label className="settings-field">
+                <span>Owner project</span>
+                <select disabled={Boolean(editingIntegration)} value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+                  {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+                </select>
+              </label>
+            ) : null}
+            {mode === "all" ? <label className="settings-field"><span>Type</span><select disabled={Boolean(editingIntegration)} value={type} onChange={(event) => changeType(event.target.value as IntegrationType)}>{types.map((option) => <option key={option} value={option}>{option}</option>)}</select></label> : null}
+            <label className="settings-field settings-field-full"><span>Label</span><input value={label} onChange={(event) => setLabel(event.target.value)} /></label>
+            {providerFields[type].map((field) => (
+              <div className="settings-field" key={field.key}>
+                <span>{field.label}{field.required ? " *" : ""}</span>
+                <input type={field.type ?? "text"} value={config[field.key] ?? ""} onChange={(event) => setConfig((current) => ({ ...current, [field.key]: event.target.value }))} />
+                {renderFieldGuide(field)}
+              </div>
+            ))}
+          </div>
+          <div className="settings-actions">
+            <button className="primary-btn" disabled={busy || (supportsGlobalScope && ownerScope === "project" && !projectId)} onClick={() => void createIntegration()} type="button">{editingIntegration ? "Save and Reconnect" : "Create Integration"}</button>
+            {editingIntegration ? <button className="secondary-btn" disabled={busy} onClick={() => resetEditor()} type="button">Cancel Edit</button> : null}
+          </div></div>
       </div>
-      <div className="settings-subpanel"><h3>Existing Integrations</h3><div className="settings-list">{integrations.map((integration) => <div className="settings-list-item static" key={integration.id}><div><strong>{integration.label}</strong><span>{integration.type} / {integration.status} / project {integration.projectId}</span></div>{integration.type === "jira" || integration.type === "google_drive" || integration.type === "firebase" || integration.type === "telegram" ? <button className="secondary-btn" disabled={busy} onClick={() => void testIntegration(integration)} type="button">Test</button> : null}</div>)}</div></div>
+      <div className="settings-subpanel"><h3>Existing Integrations</h3><div className="settings-list">{integrations.map((integration) => <div className="settings-list-item static" key={integration.id}><div><strong>{integration.label}</strong><span>{integration.type} / {integration.status} / {integration.projectId ? `project ${integration.projectId}` : "workspace global"}</span></div><div className="settings-actions"><button className="secondary-btn" disabled={busy} onClick={() => beginEditIntegration(integration)} type="button">{integration.type === "jira" ? "Edit / Rotate token" : "Edit"}</button>{integration.type === "jira" || integration.type === "google_drive" || integration.type === "firebase" || integration.type === "telegram" ? <button className="secondary-btn" disabled={busy} onClick={() => void testIntegration(integration)} type="button">Test</button> : null}<button className="secondary-btn danger-btn" disabled={busy} onClick={() => void deleteIntegration(integration)} type="button">Delete</button></div></div>)}</div></div>
+      {ensurePath ? (
+        <div className="settings-subpanel">
+          <h3>Configure Providers</h3>
+          <small className="settings-field-help">
+            {type === "jira"
+              ? "Writes mcpServers.jira (Atlassian Rovo remote MCP) into every discovered AI provider account (Claude, Codex, Gemini, Grok). Uses the connected email+API token as Basic auth against mcp.atlassian.com/v1/mcp by default. Optional Authorization override (service-account Bearer) below. Live Claude/Grok turns also merge this server automatically when connected."
+              : `Writes mcpServers.${type} into every discovered AI provider account (Claude, Codex, Gemini, Grok) so each can launch the ${type === "firebase" ? "firebase-tools" : "flowpilot telegram-mcp"} server.`}
+          </small>
+          {type === "jira" ? (
+            <small className="settings-field-help">
+              Admin must allow API token auth for Rovo MCP:{" "}
+              <a href="https://support.atlassian.com/security-and-access-policies/docs/control-atlassian-rovo-mcp-server-settings/#Configure-authentication" rel="noreferrer" target="_blank">
+                Control Rovo MCP authentication
+              </a>
+            </small>
+          ) : null}
+          {configureMessage ? <div className="settings-feedback">{configureMessage}</div> : null}
+          {configureError ? <div className="settings-feedback error" style={{ whiteSpace: "pre-line" }}>{configureError}</div> : null}
+          <div className="settings-list">
+            {providerAccounts.length === 0 ? (
+              <div className="settings-list-empty">No AI provider accounts found.</div>
+            ) : (
+              providerAccounts.map((account) => (
+                <div className="settings-list-item static" key={`${account.provider_key}:${account.home_path}`}>
+                  <div>
+                    <strong>{PROVIDER_LABELS[account.provider_key] ?? account.provider_key}</strong>
+                    <span>{account.display_name || account.home_path}</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          {type === "jira" ? (
+            <div className="settings-grid">
+              <label className="settings-field settings-field-full">
+                <span>Authorization override (optional)</span>
+                <input
+                  type="password"
+                  value={jiraBearerToken}
+                  onChange={(event) => setJiraBearerToken(event.target.value)}
+                  placeholder="Leave empty to use connected API token (Basic)"
+                />
+                <small className="settings-field-help">
+                  Only if you need a service-account API key or OAuth access token. Personal API token from Connect is enough for most setups.
+                </small>
+              </label>
+            </div>
+          ) : null}
+          <div className="settings-actions">
+            <button
+              className="primary-btn"
+              disabled={busy || providerAccounts.length === 0}
+              onClick={() => void configureProviders()}
+              type="button"
+            >
+              Configure Providers
+            </button>
+          </div>
+        </div>
+      ) : null}
       {integrations.some((integration) => integration.type === "telegram") ? (
         <div className="settings-subpanel">
           <h3>Pending Telegram Approvals</h3>

@@ -184,34 +184,66 @@ func grokACPFlowPilotMCPServers(baseURL, token string) []interface{} {
 // grokACPExtraMCPServers converts the shared claudeMcpServer config map (the
 // same shape flowpilotClaudeExtraMCPServers/writeClaudeMCPConfig already build
 // for Codex/Claude, google_drive_mcp_provider_config.go) into ACP mcpServers[]
-// entries (Task-209 T-2). ACP entries are stdio-launched (command/args/env),
-// mirroring config.toml's own [mcp_servers.*] shape rather than Claude's HTTP
-// entry — Grok's mcpCapabilities only advertised http/sse for server-hosted
-// tools (like the flowpilot entry above); externally-launched servers (Google
-// Drive) go through the stdio launcher shape instead.
+// entries (Task-209 T-2).
+//
+// Two shapes are forwarded (G2 / Task-234 Q-2):
+//   - stdio: Command set → type "stdio" + command/args/env (Drive/Firebase/Telegram)
+//   - http:  URL set, Command empty → type "http" + url/headers (Jira remote MCP)
+//
+// FlowPilot's own runner-hosted tools already use the HTTP shape via
+// grokACPFlowPilotMCPServers; Grok advertises mcpCapabilities.http=true.
 func grokACPExtraMCPServers(extra map[string]claudeMcpServer) []interface{} {
 	if len(extra) == 0 {
 		return nil
 	}
 	out := make([]interface{}, 0, len(extra))
 	for name, server := range extra {
-		if strings.TrimSpace(name) == "" || strings.TrimSpace(server.Command) == "" {
+		name = strings.TrimSpace(name)
+		if name == "" {
 			continue
 		}
-		entry := map[string]interface{}{
-			"type":    "stdio",
-			"name":    name,
-			"command": server.Command,
-			"args":    server.Args,
-		}
-		if len(server.Env) > 0 {
-			env := make(map[string]interface{}, len(server.Env))
-			for k, v := range server.Env {
-				env[k] = v
+		command := strings.TrimSpace(server.Command)
+		url := strings.TrimSpace(server.URL)
+		switch {
+		case command != "":
+			entry := map[string]interface{}{
+				"type":    "stdio",
+				"name":    name,
+				"command": command,
+				"args":    server.Args,
 			}
-			entry["env"] = env
+			if len(server.Env) > 0 {
+				env := make(map[string]interface{}, len(server.Env))
+				for k, v := range server.Env {
+					env[k] = v
+				}
+				entry["env"] = env
+			}
+			out = append(out, entry)
+		case url != "":
+			entry := map[string]interface{}{
+				"type": "http",
+				"name": name,
+				"url":  url,
+			}
+			// Prefer a map for Authorization headers (matches config.toml and
+			// _x.ai/mcp/servers_updated fixtures). FlowPilot's own empty
+			// headers use []interface{}{} in grokACPFlowPilotMCPServers; when
+			// we have real headers, a map is the verified notification shape.
+			if len(server.Headers) > 0 {
+				headers := make(map[string]interface{}, len(server.Headers))
+				for k, v := range server.Headers {
+					headers[k] = v
+				}
+				entry["headers"] = headers
+			} else {
+				entry["headers"] = []interface{}{}
+			}
+			out = append(out, entry)
+		default:
+			// Neither stdio nor http — skip (misconfigured entry).
+			continue
 		}
-		out = append(out, entry)
 	}
 	return out
 }

@@ -1,5 +1,21 @@
 import type { DirectoryRepository, Integration, IntegrationType, ProjectWorkspaceBinding } from "@flowpilot/client-core";
 
+export interface IntegrationFieldGuideLink {
+  label: string;
+  href: string;
+}
+
+export interface IntegrationFieldDefinition {
+  key: string;
+  label: string;
+  type?: string;
+  required?: boolean;
+  helpTitle?: string;
+  helpBody?: string;
+  helpItems?: string[];
+  helpLinks?: IntegrationFieldGuideLink[];
+}
+
 export function toErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
@@ -51,13 +67,71 @@ export const integrationTypes: IntegrationType[] = [
   "telegram",
 ];
 
-export const providerFields: Record<IntegrationType, Array<{ key: string; label: string; type?: string; required?: boolean }>> = {
+export const providerFields: Record<IntegrationType, IntegrationFieldDefinition[]> = {
   jira: [
-    { key: "workspaceUrl", label: "Workspace URL", type: "url", required: true },
-    { key: "projectKey", label: "Project Key", required: true },
-    { key: "boardId", label: "Board ID", type: "number" },
-    { key: "email", label: "Atlassian Email", type: "email", required: true },
-    { key: "apiToken", label: "API Token", type: "password", required: true },
+    {
+      key: "workspaceUrl",
+      label: "Workspace URL",
+      type: "url",
+      required: true,
+      helpTitle: "How to get the Workspace URL",
+      helpBody: "Use the base Atlassian site URL for the workspace, not a deep Jira page.",
+      helpItems: [
+        "Open Jira or Confluence in the browser.",
+        "Copy the origin only, for example https://your-company.atlassian.net.",
+        "Do not paste board paths, ticket URLs, or query parameters.",
+      ],
+    },
+    {
+      key: "projectKey",
+      label: "Project Key",
+      required: true,
+      helpTitle: "How to get the Project Key",
+      helpBody: "This is the short Jira key such as SCRUM or FLOW, not the display name.",
+      helpItems: [
+        "Open the Jira project.",
+        "Look for the key in issue IDs like SCRUM-123.",
+        "You can also find it in Project settings or the sidebar header.",
+      ],
+    },
+    {
+      key: "boardId",
+      label: "Board ID",
+      type: "number",
+      helpTitle: "How to get the Board ID",
+      helpBody: "Board ID is optional and is mainly useful for sprint-oriented flows.",
+      helpItems: [
+        "Open the board in Jira.",
+        "Read the numeric id from the board URL.",
+        "Leave this blank if you only need issue-level access.",
+      ],
+    },
+    {
+      key: "email",
+      label: "Atlassian Email",
+      type: "email",
+      required: true,
+      helpTitle: "Which email to use",
+      helpBody: "Use the Atlassian account email that owns the API token and has access to the target Jira site.",
+    },
+    {
+      key: "apiToken",
+      label: "API Token",
+      type: "password",
+      required: true,
+      helpTitle: "How to get the API token",
+      helpBody: "Create an Atlassian API token with MCP access. FlowPilot sends it once to the runner keyring and does not store it in Supabase config. If Jira returns 403 Forbidden from Teamwork Graph, reconnect with a modern scoped token — legacy tokens may be rejected.",
+      helpItems: [
+        "Open the Atlassian API token page.",
+        "Create an MCP-scoped token with the required scopes.",
+        "If you see 403 Forbidden from Jira Teamwork Graph, do not reuse a legacy token; generate a modern scoped token instead.",
+        "Paste the token here once for Connect and Configure Providers.",
+      ],
+      helpLinks: [
+        { label: "Create MCP-scoped API token", href: "https://id.atlassian.com/manage-profile/security/api-tokens?autofillToken&expiryDays=max&appId=mcp&selectedScopes=all" },
+        { label: "Atlassian MCP API token docs", href: "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/configuring-authentication-via-api-token/" },
+      ],
+    },
   ],
   figma: [
     { key: "fileKey", label: "File Key", required: true },
@@ -73,13 +147,64 @@ export const providerFields: Record<IntegrationType, Array<{ key: string; label:
     // configEncrypted flat into the connect request body — firebaseProjectId
     // (not projectId) to avoid colliding with the request's own top-level
     // FlowPilot projectId field in the same flat JSON body.
-    { key: "firebaseProjectId", label: "Firebase Project ID", required: true },
-    { key: "firebaseEnvironment", label: "Environment", required: true },
-    { key: "serviceAccountJson", label: "Service Account JSON", type: "password", required: true },
+    {
+      key: "firebaseProjectId",
+      label: "Firebase Project ID",
+      required: true,
+      helpTitle: "How to get the Firebase Project ID",
+      helpBody: "Use the stable Firebase project id, not the display name.",
+      helpItems: [
+        "Open Firebase Console.",
+        "Go to Project settings.",
+        "Copy the Project ID value.",
+      ],
+    },
+    {
+      key: "firebaseEnvironment",
+      label: "Environment",
+      required: true,
+      helpTitle: "What to put in Environment",
+      helpBody: "Use the label that helps your team distinguish targets such as production, staging, or development.",
+    },
+    {
+      key: "serviceAccountJson",
+      label: "Service Account JSON",
+      type: "password",
+      required: true,
+      helpTitle: "How to get the Service Account JSON",
+      helpBody: "Paste the raw JSON contents of a GCP service account key that can read Crashlytics for this Firebase project.",
+      helpItems: [
+        "Open Google Cloud Console for the same project.",
+        "Create or reuse a service account with the required Firebase or Crashlytics read permissions.",
+        "Generate a JSON key and paste the full file contents here.",
+      ],
+    },
   ],
   telegram: [
-    { key: "botToken", label: "Bot Token", required: true },
-    { key: "channelId", label: "Channel ID", required: true },
+    {
+      key: "botToken",
+      label: "Bot Token",
+      required: true,
+      helpTitle: "How to get the Bot Token",
+      helpBody: "Create a Telegram bot with BotFather and copy the token it returns.",
+      helpItems: [
+        "In Telegram, open BotFather.",
+        "Run /newbot or select an existing bot.",
+        "Copy the bot token and paste it here once for Connect.",
+      ],
+    },
+    {
+      key: "channelId",
+      label: "Channel ID",
+      required: true,
+      helpTitle: "How to get the Channel or Chat ID",
+      helpBody: "Use the destination id that the bot can send to. The bot must already be a member or admin where required.",
+      helpItems: [
+        "Add the bot to the target channel or group.",
+        "Use a Telegram ID bot or inspect the chat id from a test message.",
+        "Channels typically use a negative numeric id like -100123456789.",
+      ],
+    },
   ],
 };
 
@@ -111,7 +236,7 @@ export function normalizeAtlassianSiteUrl(rawUrl: string): string {
  */
 export function findDuplicateJiraIntegration(
   integrations: Integration[],
-  projectId: string,
+  projectId: string | null,
   candidateWorkspaceUrl: string,
 ): Integration | null {
   const candidate = normalizeAtlassianSiteUrl(candidateWorkspaceUrl);
@@ -144,13 +269,14 @@ export function buildConfig(type: IntegrationType, values: Record<string, string
 /**
  * Field keys that must never be persisted into Supabase `config_encrypted`
  * (SD-11 §6 secret boundary) — the runner keyring is the only allowed store
- * for these. `buildConfig`'s output goes to the runner's `/integrations/connect`
- * (via testIntegration) where the runner extracts and stores these in its own
- * keyring; `stripSecretFields` is what the Supabase-facing `createIntegration`
- * call should send instead, so a raw credential never round-trips through
- * config_encrypted.
+ * for these. `buildConfig`'s output goes to the runner's
+ * `/integrations/{id}/connection` endpoint (via testIntegration) where the
+ * runner extracts and stores these in its own keyring; `stripSecretFields` is
+ * what the Supabase-facing `createIntegration` call should send instead, so a
+ * raw credential never round-trips through `config_encrypted`.
  */
 const secretConfigFields: Partial<Record<IntegrationType, string[]>> = {
+  jira: ["apiToken"],
   firebase: ["serviceAccountJson"],
   telegram: ["botToken"],
 };

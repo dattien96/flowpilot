@@ -523,15 +523,6 @@ func (r *Runner) VerifyMcpBackend(
 		if err != nil {
 			return backend, err
 		}
-		requestProjectID := strings.TrimSpace(projectID)
-		if strings.TrimSpace(creds.ProjectID) == "" && requestProjectID != "" {
-			creds.ProjectID = requestProjectID
-			if strings.TrimSpace(integrationID) != "" {
-				if saveErr := r.saveJiraCredential(integrationID, creds); saveErr != nil {
-					return backend, saveErr
-				}
-			}
-		}
 		if err := r.verifyJiraCredential(ctx, creds); err != nil {
 			backend.LastError = err.Error()
 			backend.LastCheckedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -662,9 +653,6 @@ func (r *Runner) TriggerIntegrationConnection(
 	if strings.TrimSpace(integrationID) == "" {
 		return IntegrationConnectionResult{}, errors.New("integrationId is required")
 	}
-	if strings.TrimSpace(request.ProjectID) == "" {
-		return IntegrationConnectionResult{}, errors.New("projectId is required")
-	}
 	if strings.TrimSpace(request.ProviderType) == "" {
 		return IntegrationConnectionResult{}, errors.New("providerType is required")
 	}
@@ -676,7 +664,7 @@ func (r *Runner) TriggerIntegrationConnection(
 
 	providerType := strings.TrimSpace(request.ProviderType)
 	providerLabel := providerLabelForType(providerType)
-	message := fmt.Sprintf("Connection request accepted for project %s.", request.ProjectID)
+	message := "Connection request accepted."
 	status := "pending"
 
 	switch providerType {
@@ -699,11 +687,7 @@ func (r *Runner) TriggerIntegrationConnection(
 			}, nil
 		}
 		status = "awaiting_oauth"
-		message = fmt.Sprintf(
-			"%s backend is ready for project %s. Complete provider auth in the browser if prompted.",
-			backend.Label,
-			request.ProjectID,
-		)
+		message = fmt.Sprintf("%s backend is ready. Complete provider auth in the browser if prompted.", backend.Label)
 	case "jira":
 		creds, err := r.resolveJiraCredential(integrationID, request)
 		if err != nil {
@@ -744,11 +728,7 @@ func (r *Runner) TriggerIntegrationConnection(
 		})
 		_ = r.saveMcpBackendRecord(backend)
 		status = "connected"
-		message = fmt.Sprintf(
-			"%s API-token connection is ready for project %s.",
-			backend.Label,
-			request.ProjectID,
-		)
+		message = fmt.Sprintf("%s API-token connection is ready.", backend.Label)
 	case "firebase":
 		parsed, err := validateFirebaseServiceAccountJSON(request.ServiceAccountJSON)
 		if err != nil {
@@ -788,11 +768,7 @@ func (r *Runner) TriggerIntegrationConnection(
 		})
 		_ = r.saveMcpBackendRecord(backend)
 		status = "connected"
-		message = fmt.Sprintf(
-			"%s connection is ready for project %s.",
-			backend.Label,
-			request.ProjectID,
-		)
+		message = fmt.Sprintf("%s connection is ready.", backend.Label)
 	case "telegram":
 		if err := validateTelegramCredentialFields(request.BotToken, request.ChannelID); err != nil {
 			message = err.Error()
@@ -826,17 +802,9 @@ func (r *Runner) TriggerIntegrationConnection(
 		})
 		_ = r.saveMcpBackendRecord(backend)
 		status = "connected"
-		message = fmt.Sprintf(
-			"%s connection is ready for project %s.",
-			backend.Label,
-			request.ProjectID,
-		)
+		message = fmt.Sprintf("%s connection is ready.", backend.Label)
 	case "figma":
-		message = fmt.Sprintf(
-			"%s connection request accepted for project %s.",
-			providerLabel,
-			request.ProjectID,
-		)
+		message = fmt.Sprintf("%s connection request accepted.", providerLabel)
 	default:
 		return IntegrationConnectionResult{}, fmt.Errorf("unsupported provider type %q", providerType)
 	}
@@ -2494,6 +2462,12 @@ type jiraCredential struct {
 	WorkspaceURL string `json:"workspaceUrl"`
 	ProjectKey   string `json:"projectKey"`
 	BoardID      string `json:"boardId"`
+	// BearerToken (Task-234 T-1) is the Atlassian OAuth bearer value for the
+	// remote Jira MCP — separate auth mechanism from ApiToken's legacy REST
+	// basic auth (CP-05-06 P-1). Stored on the same "one connected Jira
+	// integration" record so it can be resolved automatically on every turn
+	// without the user re-pasting it each time.
+	BearerToken string `json:"bearerToken,omitempty"`
 }
 
 func (r *Runner) ensureSecretStore() SecretStore {
@@ -2643,7 +2617,7 @@ func (r *Runner) detectJiraBackend(record mcpBackendRecord) McpBackend {
 
 	if strings.TrimSpace(creds.WorkspaceURL) != "" && strings.TrimSpace(creds.ProjectKey) != "" {
 		backend.InstallHint = fmt.Sprintf(
-			"Connected to %s for project %s. Use the Jira MCP form to rotate the API token or verify access.",
+			"Connected to %s (%s). Use the Jira MCP form to rotate the API token or verify access.",
 			strings.TrimSpace(creds.WorkspaceURL),
 			creds.ProjectKey,
 		)
@@ -2962,13 +2936,6 @@ func (r *Runner) executeMcpTest(
 		creds, loadErr := r.loadJiraCredential(jiraCredentialKey(request.IntegrationID))
 		if loadErr != nil {
 			return "", loadErr.Error(), "", "GET https://mcp.atlassian.com/v1/mcp/authv2", loadErr
-		}
-		requestProjectID := strings.TrimSpace(request.ProjectID)
-		if strings.TrimSpace(creds.ProjectID) == "" {
-			creds.ProjectID = requestProjectID
-			if saveErr := r.saveJiraCredential(request.IntegrationID, creds); saveErr != nil {
-				return "", saveErr.Error(), "", "", saveErr
-			}
 		}
 		return executeJiraMcpPrompt(ctx, request, creds)
 	default:

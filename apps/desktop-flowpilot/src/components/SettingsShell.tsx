@@ -28,6 +28,8 @@ export type SettingsSection =
   | "ai-providers"
   | "google-drive"
   | "jira-mcp"
+  | "firebase-mcp"
+  | "telegram-mcp"
   | "check-version"
   | "runner";
 
@@ -54,6 +56,8 @@ const defaultSectionOrder: readonly SettingsSection[] = [
   "ai-providers",
   "google-drive",
   "jira-mcp",
+  "firebase-mcp",
+  "telegram-mcp",
   "check-version",
   "supabase",
   "runner",
@@ -100,17 +104,21 @@ export function SettingsShell({
                 ? "AI Providers"
                 : section === "engine"
                   ? "Engine"
-                : section === "workflows"
-                  ? "Workflows/Steps"
-                : section === "google-drive"
-                  ? "Google Drive"
-                  : section === "jira-mcp"
-                    ? "Jira MCP"
-                    : section === "check-version"
-                      ? "Check Version"
-                      : section === "runner"
-                        ? "Runner"
-                        : section.charAt(0).toUpperCase() + section.slice(1);
+                  : section === "workflows"
+                    ? "Workflows/Steps"
+                    : section === "google-drive"
+                      ? "Google Drive"
+                      : section === "jira-mcp"
+                        ? "Jira MCP"
+                        : section === "firebase-mcp"
+                          ? "Firebase MCP"
+                          : section === "telegram-mcp"
+                            ? "Telegram MCP"
+                            : section === "check-version"
+                              ? "Check Version"
+                              : section === "runner"
+                                ? "Runner"
+                                : section.charAt(0).toUpperCase() + section.slice(1);
 
             return (
               <button
@@ -178,6 +186,10 @@ export function SettingsShell({
           <GoogleDriveSettings />
         ) : currentSection === "jira-mcp" ? (
           <McpSettings mode="jira" />
+        ) : currentSection === "firebase-mcp" ? (
+          <McpSettings mode="firebase" />
+        ) : currentSection === "telegram-mcp" ? (
+          <McpSettings mode="telegram" />
         ) : currentSection === "check-version" ? (
           <CheckVersionSettings />
         ) : (

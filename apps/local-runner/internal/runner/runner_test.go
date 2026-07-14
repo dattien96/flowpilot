@@ -60,7 +60,6 @@ func TestTriggerIntegrationConnectionAcceptsValidRequest(t *testing.T) {
 	// "figma", the one remaining provider still on the generic no-op
 	// placeholder path this test was originally written to cover.
 	result, err := instance.TriggerIntegrationConnection(context.Background(), "integration-1", IntegrationConnectionRequest{
-		ProjectID:    "project-alpha",
 		ProviderType: "figma",
 		Action:       "test",
 	})
@@ -77,8 +76,8 @@ func TestTriggerIntegrationConnectionAcceptsValidRequest(t *testing.T) {
 	if result.IntegrationStatus != "pending" {
 		t.Fatalf("expected pending integration status, got %q", result.IntegrationStatus)
 	}
-	if result.Message == nil || !strings.Contains(*result.Message, "project-alpha") {
-		t.Fatalf("expected message to mention project id, got %#v", result.Message)
+	if result.Message == nil || !strings.Contains(strings.ToLower(*result.Message), "accepted") {
+		t.Fatalf("expected acceptance message, got %#v", result.Message)
 	}
 }
 
@@ -808,15 +807,6 @@ func TestTriggerIntegrationConnectionRejectsInvalidInput(t *testing.T) {
 	}
 
 	_, err = instance.TriggerIntegrationConnection(context.Background(), "integration-1", IntegrationConnectionRequest{
-		ProjectID:    "",
-		ProviderType: "google_drive",
-		Action:       "test",
-	})
-	if err == nil {
-		t.Fatal("expected project id validation error")
-	}
-
-	_, err = instance.TriggerIntegrationConnection(context.Background(), "integration-1", IntegrationConnectionRequest{
 		ProjectID:    "project-alpha",
 		ProviderType: "google_drive",
 		Action:       "invalid",
@@ -1464,7 +1454,7 @@ func TestRunMcpTestLoadsJiraTicketContent(t *testing.T) {
 	}
 }
 
-func TestRunMcpTestBackfillsLegacyJiraProjectScope(t *testing.T) {
+func TestRunMcpTestDoesNotBackfillLegacyJiraProjectScope(t *testing.T) {
 	instance := &Runner{
 		workspace:   t.TempDir(),
 		secretStore: newMemorySecretStore(),
@@ -1485,8 +1475,8 @@ func TestRunMcpTestBackfillsLegacyJiraProjectScope(t *testing.T) {
 	})
 
 	executeJiraRequestFn = func(ctx context.Context, method string, endpoint string, creds jiraCredential, payload []byte) ([]byte, error) {
-		if creds.ProjectID != "project-alpha" {
-			t.Fatalf("expected legacy credential to be backfilled with project scope, got %#v", creds)
+		if creds.ProjectID != "" {
+			t.Fatalf("expected legacy credential to stay project-agnostic, got %#v", creds)
 		}
 		return []byte(`{"issues":[]}`), nil
 	}
@@ -1510,8 +1500,8 @@ func TestRunMcpTestBackfillsLegacyJiraProjectScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load jira credential: %v", err)
 	}
-	if creds.ProjectID != "project-alpha" {
-		t.Fatalf("expected saved credential project id project-alpha, got %q", creds.ProjectID)
+	if creds.ProjectID != "" {
+		t.Fatalf("expected saved credential to remain project-agnostic, got %q", creds.ProjectID)
 	}
 }
 

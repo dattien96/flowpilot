@@ -438,7 +438,7 @@ type BackupResult struct {
 }
 
 type IntegrationConnectionRequest struct {
-	ProjectID    string `json:"projectId"`
+	ProjectID    string `json:"projectId,omitempty"`
 	ProviderType string `json:"providerType"`
 	Action       string `json:"action"`
 	WorkspaceURL string `json:"workspaceUrl,omitempty"`
@@ -463,7 +463,7 @@ type IntegrationConnectionRequest struct {
 }
 
 type McpBackendActionRequest struct {
-	ProjectID     string `json:"projectId"`
+	ProjectID     string `json:"projectId,omitempty"`
 	IntegrationID string `json:"integrationId"`
 	Action        string `json:"action"`
 }

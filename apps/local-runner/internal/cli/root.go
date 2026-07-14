@@ -1090,6 +1090,57 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 				writeHTTPJSON(w, record)
 			})
+			mux.HandleFunc("/jira-config/mcp-provider-config/ensure", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload runner.JiraMcpProviderConfigRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				result, err := instance.EnsureJiraMcpProviderConfig(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
+			})
+			mux.HandleFunc("/firebase-config/mcp-provider-config/ensure", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload runner.FirebaseMcpProviderConfigRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				result, err := instance.EnsureFirebaseMcpProviderConfig(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
+			})
+			mux.HandleFunc("/telegram-config/mcp-provider-config/ensure", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload runner.TelegramMcpProviderConfigRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				result, err := instance.EnsureTelegramMcpProviderConfig(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
+			})
 			mux.HandleFunc("/backup", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1480,6 +1531,40 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
+			})
+			mux.HandleFunc("/integrations/connect", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				var payload runner.IntegrationConnectionRequest
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				rawIntegrationID, _ := body["integrationId"].(string)
+				if strings.TrimSpace(rawIntegrationID) == "" {
+					writeHTTPError(w, http.StatusBadRequest, errors.New("integrationId is required"))
+					return
+				}
+				payloadBytes, err := json.Marshal(body)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("marshal request body: %w", err))
+					return
+				}
+				if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				result, err := instance.TriggerIntegrationConnection(r.Context(), rawIntegrationID, payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
 			})
 			mux.HandleFunc("/execute", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {

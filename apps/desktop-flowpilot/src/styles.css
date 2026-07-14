@@ -4439,6 +4439,56 @@ body.is-resizing-sidebar {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+.mcp-field-guide {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 8px 10px;
+}
+.mcp-field-guide summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 12px;
+  user-select: none;
+}
+.mcp-field-guide summary:hover {
+  color: var(--text);
+}
+.mcp-field-guide p {
+  margin: 10px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.mcp-field-guide-list {
+  list-style: none;
+  padding: 0;
+  margin: 10px 0 0;
+  display: grid;
+  gap: 6px;
+}
+.mcp-field-guide-list li {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-3);
+  padding: 6px 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.mcp-field-guide-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+.mcp-field-guide-links a {
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
 .gdrive-code-row {
   margin-top: 10px;
   padding: 10px 12px;

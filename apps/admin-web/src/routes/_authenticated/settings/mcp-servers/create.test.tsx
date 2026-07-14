@@ -3,13 +3,14 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { JiraMcpLinkPage } from "./mcp-servers/jira-link";
+import { McpCreatePage } from "./create";
 
 const mocks = vi.hoisted(() => ({
   createGatewayBundle: vi.fn(),
   invalidate: vi.fn(),
   navigate: vi.fn(),
   useLoaderData: vi.fn(),
+  useSearch: vi.fn(),
 }));
 
 vi.mock("@/data/repository/browser-factory", () => ({
@@ -34,6 +35,10 @@ vi.mock("@/components/common/page-frame", () => ({
   ),
 }));
 
+vi.mock("@/presentation/components/ui/badge", () => ({
+  Badge: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
+
 vi.mock("@tanstack/react-router", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-router")>(
     "@tanstack/react-router",
@@ -46,21 +51,9 @@ vi.mock("@tanstack/react-router", async () => {
     }),
     createFileRoute: () => () => ({
       useLoaderData: mocks.useLoaderData,
+      useSearch: mocks.useSearch,
     }),
-    Link: ({ children, to, search, className, onClick, ...props }: any) => (
-      <button
-        className={className}
-        onClick={(event) => {
-          onClick?.(event);
-          if (to) {
-            mocks.navigate(search ? { to, search } : { to });
-          }
-        }}
-        {...props}
-      >
-        {children}
-      </button>
-    ),
+    Link: ({ children }: { children: ReactNode }) => <>{children}</>,
   };
 });
 
@@ -74,85 +67,17 @@ function renderSubject() {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <JiraMcpLinkPage />
+      <McpCreatePage />
     </QueryClientProvider>,
   );
 }
 
-describe("Jira MCP Link page", () => {
+describe("McpCreatePage edit flow", () => {
   beforeEach(() => {
     mocks.invalidate.mockReset();
     mocks.navigate.mockReset();
     mocks.createGatewayBundle.mockReset();
-    mocks.useLoaderData.mockReturnValue({
-      allIntegrations: [],
-      backends: [
-        {
-          key: "jira",
-          providerType: "jira",
-          label: "Atlassian MCP",
-          transport: "remote",
-          state: "launcher_available",
-          launcher: "npx",
-          installed: false,
-          binaryPath: null,
-          command: "npx @modelcontextprotocol/server-atlassian",
-          installHint: null,
-          action: "install",
-          actionLabel: "Install",
-          lastCheckedAt: "2026-06-04T15:00:00.000Z",
-          lastError: null,
-        },
-      ],
-      health: {
-        status: "online",
-        runnerVersion: "0.1.0",
-        cwd: "/workspace",
-        os: "darwin",
-        startedAt: "2026-06-04T15:00:00.000Z",
-        baseUrl: "http://127.0.0.1:4317",
-        errorMessage: null,
-      },
-      projects: [
-        {
-          id: "project-alpha",
-          name: "Alpha",
-        },
-      ],
-    });
-    mocks.createGatewayBundle.mockReturnValue({
-      integrationGateway: {
-        updateIntegration: vi.fn(),
-      },
-      localRunnerGateway: {
-        installMcpBackend: vi.fn().mockResolvedValue(undefined),
-        triggerMcpBackendAction: vi.fn().mockResolvedValue(undefined),
-      },
-    });
-  });
-
-  it("keeps the install action available without a connected Jira instance", () => {
-    renderSubject();
-
-    expect(screen.getByRole("button", { name: "Install" })).toBeEnabled();
-    expect(screen.getByText(/403 Forbidden/i)).toBeInTheDocument();
-    expect(screen.getByText(/modern scoped token/i)).toBeInTheDocument();
-  });
-
-  it("sends first-time enable flows to Create MCP", async () => {
-    renderSubject();
-
-    fireEvent.click(screen.getByRole("button", { name: "Enable" }));
-
-    await waitFor(() => {
-      expect(mocks.navigate).toHaveBeenCalledWith({
-        to: "/settings/mcp-servers/create",
-        search: { provider: "jira" },
-      });
-    });
-  });
-
-  it("navigates to edit flow for an existing Jira instance", async () => {
+    mocks.useSearch.mockReturnValue({ integrationId: "jira-1", provider: "jira" });
     mocks.useLoaderData.mockReturnValue({
       allIntegrations: [
         {
@@ -164,6 +89,7 @@ describe("Jira MCP Link page", () => {
           configEncrypted: {
             workspaceUrl: "https://flowpilot899.atlassian.net",
             projectKey: "SCRUM",
+            boardId: "7",
             email: "name@company.com",
           },
           status: "connected",
@@ -202,16 +128,64 @@ describe("Jira MCP Link page", () => {
       },
       projects: [{ id: "project-alpha", name: "Alpha" }],
     });
+    mocks.createGatewayBundle.mockReturnValue({
+      integrationGateway: {
+        updateIntegration: vi.fn().mockImplementation(async (id: string, patch: Record<string, unknown>) => ({
+          id,
+          projectId: String(patch.projectId ?? "project-alpha"),
+          type: String(patch.type ?? "jira"),
+          label: String(patch.label ?? "Shared Jira"),
+          mcpTypeEnabled: Boolean(patch.mcpTypeEnabled ?? true),
+          configEncrypted: (patch.configEncrypted as Record<string, unknown>) ?? {},
+          status: String(patch.status ?? "connected"),
+          lastSyncedAt: patch.lastSyncedAt ? String(patch.lastSyncedAt) : null,
+          lastError: patch.lastError ? String(patch.lastError) : null,
+          createdAt: "2026-06-04T15:00:00.000Z",
+          updatedAt: "2026-06-04T15:00:00.000Z",
+        })),
+        createIntegration: vi.fn(),
+      },
+      localRunnerGateway: {
+        triggerIntegrationConnection: vi.fn().mockResolvedValue({
+          requestStatus: "accepted",
+          integrationStatus: "connected",
+          message: "ok",
+        }),
+      },
+    });
+  });
 
+  it("prefills existing Jira config and reconnects with a rotated token", async () => {
     renderSubject();
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit / Rotate token" }));
+    expect(screen.getByRole("heading", { name: "Edit MCP" })).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Shared Jira")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("https://flowpilot899.atlassian.net")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("SCRUM")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("7")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("name@company.com")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Paste the Atlassian API token"), {
+      target: { value: "new-token" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save and Reconnect" }));
 
     await waitFor(() => {
-      expect(mocks.navigate).toHaveBeenCalledWith({
-        to: "/settings/mcp-servers/create",
-        search: { integrationId: "jira-1", provider: "jira" },
+      const gatewayBundle = mocks.createGatewayBundle.mock.results.at(-1)?.value;
+      expect(gatewayBundle.integrationGateway.updateIntegration).toHaveBeenCalled();
+      expect(gatewayBundle.localRunnerGateway.triggerIntegrationConnection).toHaveBeenCalledWith({
+        projectId: "project-alpha",
+        integrationId: "jira-1",
+        providerType: "jira",
+        action: "test",
+        workspaceUrl: "https://flowpilot899.atlassian.net",
+        projectKey: "SCRUM",
+        boardId: "7",
+        email: "name@company.com",
+        apiToken: "new-token",
       });
     });
+
+    expect(mocks.navigate).toHaveBeenCalledWith({ to: "/settings/mcp-servers" });
   });
 });

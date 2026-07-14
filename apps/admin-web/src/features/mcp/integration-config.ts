@@ -21,12 +21,20 @@ export const integrationTypes: IntegrationType[] = [
 
 export const jiraMcpGuideLinks = [
   {
-    label: "Atlassian Remote MCP guide",
+    label: "Atlassian Rovo MCP — getting started",
     href: "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/",
   },
   {
-    label: "Atlassian API token page",
-    href: "https://id.atlassian.com/manage-profile/security/api-tokens",
+    label: "Enable API token auth for Rovo MCP (admin)",
+    href: "https://support.atlassian.com/security-and-access-policies/docs/control-atlassian-rovo-mcp-server-settings/#Configure-authentication",
+  },
+  {
+    label: "Configure auth via API token (Basic)",
+    href: "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/configuring-authentication-via-api-token/",
+  },
+  {
+    label: "Create MCP-scoped personal API token",
+    href: "https://id.atlassian.com/manage-profile/security/api-tokens?autofillToken&expiryDays=max&appId=mcp&selectedScopes=all",
   },
 ] as const;
 

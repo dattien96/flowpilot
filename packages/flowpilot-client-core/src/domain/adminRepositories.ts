@@ -112,7 +112,7 @@ export interface ProviderRepository extends LocalProviderRepository, SupportedMo
 export interface IntegrationCrudRepository {
   listIntegrations(): Promise<Integration[]>;
   createIntegration(input: {
-    projectId: string;
+    projectId: string | null;
     type: IntegrationType;
     label: string;
     configEncrypted: Record<string, unknown>;
@@ -120,6 +120,7 @@ export interface IntegrationCrudRepository {
     mcpTypeEnabled?: boolean;
   }): Promise<Integration>;
   updateIntegration(id: string, patch: Partial<Integration>): Promise<Integration>;
+  deleteIntegration(id: string): Promise<void>;
 }
 
 export interface ProjectIntegrationRepository {
@@ -129,8 +130,8 @@ export interface ProjectIntegrationRepository {
 
 export interface McpBackendRepository {
   listMcpBackends(): Promise<LocalRunnerMcpBackend[]>;
-  runMcpBackendAction(backendKey: string, action: "install" | "verify", projectId: string, integrationId?: string): Promise<void>;
-  testIntegration(projectId: string, integrationId: string, providerType: string, fields?: Record<string, string | undefined>): Promise<string | null>;
+  runMcpBackendAction(backendKey: string, action: "install" | "verify", projectId?: string, integrationId?: string): Promise<void>;
+  testIntegration(projectId: string | undefined, integrationId: string, providerType: string, fields?: Record<string, string | undefined>): Promise<string | null>;
   /** Task-233 DOD-6 revisit: real Telegram send_message approval queue. */
   listTelegramProxyApprovals(status?: string): Promise<TelegramApprovalRecord[]>;
   decideTelegramProxyApproval(id: string, decision: "approved" | "rejected", comment?: string): Promise<TelegramApprovalRecord>;
