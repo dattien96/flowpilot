@@ -419,6 +419,16 @@ func (r *Runner) ensureGrokJiraMcpConfig(accountHomePath string, auth jiraMcpAut
 			if existingServer, ok := grokServerFromMap(existingMap); ok {
 				existingMatches = grokServerConfigMatches(existingServer, expected)
 			}
+			// Heal an older config that wrote stale stdio keys (command = "" /
+			// args = []) onto this remote HTTP entry — the typed comparison
+			// above treats an empty command as a match, so force a rewrite when
+			// those keys are physically present so they get dropped.
+			if _, hasCommand := existingMap["command"]; hasCommand {
+				existingMatches = false
+			}
+			if _, hasArgs := existingMap["args"]; hasArgs {
+				existingMatches = false
+			}
 		}
 	}
 	if !existingMatches {

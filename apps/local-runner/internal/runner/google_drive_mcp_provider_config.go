@@ -225,8 +225,15 @@ type claudeMcpServer struct {
 // ensure/check functions below round-trip the document as a generic map and only touch the
 // mcp_servers.google-drive sub-table.
 type grokMcpServer struct {
-	Command           string            `toml:"command"`
-	Args              []string          `toml:"args"`
+	// Command/Args use omitempty so a remote HTTP entry (Jira: empty command,
+	// no args) does NOT serialize `command = ""` / `args = []` into config.toml.
+	// Grok treats a present `command` as a stdio server and tries to launch it;
+	// an empty command made the Jira entry show as `[unavailable]` in Grok CLI.
+	// This mirrors codexMcpServer, whose Command/Args are already omitempty so
+	// its remote jira entry stays stdio-field-free (see the Codex assertion in
+	// jira_mcp_provider_config_test.go).
+	Command           string            `toml:"command,omitempty"`
+	Args              []string          `toml:"args,omitempty"`
 	Enabled           bool              `toml:"enabled"`
 	StartupTimeoutSec int               `toml:"startup_timeout_sec,omitempty"`
 	ToolTimeoutSec    int               `toml:"tool_timeout_sec,omitempty"`

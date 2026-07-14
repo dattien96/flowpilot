@@ -189,6 +189,65 @@ func TestEnsureJiraMcpProviderConfigDispatchesToGrok(t *testing.T) {
 	if !server.Enabled {
 		t.Fatal("expected enabled=true")
 	}
+	// A remote HTTP entry must not carry stdio command/args — Grok treats a
+	// present command as a launchable stdio server and marks the entry
+	// [unavailable] when it's empty (mirrors the Codex assertion below).
+	if v, ok := jiraRaw["command"]; ok && strings.TrimSpace(fmt.Sprint(v)) != "" {
+		t.Fatalf("grok remote jira must not serialize a stdio command, got %v", v)
+	}
+	if v, ok := jiraRaw["args"]; ok {
+		if arr, isArr := v.([]any); !isArr || len(arr) != 0 {
+			t.Fatalf("grok remote jira must not serialize stdio args, got %v", v)
+		}
+	}
+}
+
+// TestEnsureGrokJiraMcpConfigHealsStaleStdioKeys verifies that a config.toml
+// written by an older build (remote jira entry carrying command = "" / args =
+// []) is rewritten to drop those stdio keys — otherwise Grok CLI keeps showing
+// the entry as [unavailable].
+func TestEnsureGrokJiraMcpConfigHealsStaleStdioKeys(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	connectTestJiraBackend(t, instance)
+	grokHome := t.TempDir()
+
+	stale := "[mcp_servers.jira]\n" +
+		"command = \"\"\n" +
+		"args = []\n" +
+		"enabled = true\n" +
+		"url = \"https://mcp.atlassian.com/v1/mcp\"\n\n" +
+		"[mcp_servers.jira.headers]\n" +
+		"Authorization = \"Basic stale\"\n"
+	if err := os.WriteFile(filepath.Join(grokHome, "config.toml"), []byte(stale), 0o644); err != nil {
+		t.Fatalf("seed stale grok config: %v", err)
+	}
+
+	if _, err := instance.EnsureJiraMcpProviderConfig(JiraMcpProviderConfigRequest{
+		ProviderKey:     "grok",
+		AccountHomePath: grokHome,
+	}); err != nil {
+		t.Fatalf("EnsureJiraMcpProviderConfig(grok): %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(grokHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read grok config: %v", err)
+	}
+	doc := map[string]interface{}{}
+	if err := toml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse grok config: %v", err)
+	}
+	servers, _ := doc["mcp_servers"].(map[string]interface{})
+	jiraRaw, ok := servers["jira"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected mcp_servers.jira map, got: %s", raw)
+	}
+	if _, has := jiraRaw["command"]; has {
+		t.Fatalf("stale command key should have been dropped, got: %s", raw)
+	}
+	if _, has := jiraRaw["args"]; has {
+		t.Fatalf("stale args key should have been dropped, got: %s", raw)
+	}
 }
 
 func TestPreflightJiraMcpReadyWhenGrokProviderConfigured(t *testing.T) {

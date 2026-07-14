@@ -1,6 +1,9 @@
 package runner
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // Task-206 (CP-46 P-2/P-4, Task-206 T-2): standalone Grok ACP primitives.
 //
@@ -226,19 +229,22 @@ func grokACPExtraMCPServers(extra map[string]claudeMcpServer) []interface{} {
 				"name": name,
 				"url":  url,
 			}
-			// Prefer a map for Authorization headers (matches config.toml and
-			// _x.ai/mcp/servers_updated fixtures). FlowPilot's own empty
-			// headers use []interface{}{} in grokACPFlowPilotMCPServers; when
-			// we have real headers, a map is the verified notification shape.
-			if len(server.Headers) > 0 {
-				headers := make(map[string]interface{}, len(server.Headers))
-				for k, v := range server.Headers {
-					headers[k] = v
-				}
-				entry["headers"] = headers
-			} else {
-				entry["headers"] = []interface{}{}
+			// ACP's HttpMcpServer.headers is an ARRAY of {name, value} objects
+			// (HttpHeader[]) — the same shape grokACPFlowPilotMCPServers uses for
+			// its empty header list. Sending a {"Authorization": "..."} MAP made
+			// Grok reject session/new with "Invalid params" (-32602); the Jira
+			// remote MCP was the first entry to carry a real header, so the map
+			// shape had never actually been exercised against a live session.
+			keys := make([]string, 0, len(server.Headers))
+			for k := range server.Headers {
+				keys = append(keys, k)
 			}
+			sort.Strings(keys)
+			headers := make([]interface{}, 0, len(keys))
+			for _, k := range keys {
+				headers = append(headers, map[string]interface{}{"name": k, "value": server.Headers[k]})
+			}
+			entry["headers"] = headers
 			out = append(out, entry)
 		default:
 			// Neither stdio nor http — skip (misconfigured entry).

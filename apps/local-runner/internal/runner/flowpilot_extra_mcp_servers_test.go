@@ -72,10 +72,29 @@ func TestGrokACPExtraMCPServersForwardsBasicJiraWhenApiTokenConnected(t *testing
 	if jira["type"] != "http" || jira["url"] != jiraMcpAPITokenRemoteURL {
 		t.Fatalf("unexpected jira entry: %+v", jira)
 	}
-	headers, _ := jira["headers"].(map[string]interface{})
-	if headers["Authorization"] != wantBasic {
-		t.Fatalf("Authorization = %v, want %s", headers["Authorization"], wantBasic)
+	headers, ok := jira["headers"].([]interface{})
+	if !ok {
+		t.Fatalf("jira headers should be an ACP HttpHeader[] array, got %T (%v)", jira["headers"], jira["headers"])
 	}
+	if v, found := acpHeaderValue(headers, "Authorization"); !found || v != wantBasic {
+		t.Fatalf("Authorization = %v, want %s", v, wantBasic)
+	}
+}
+
+// acpHeaderValue looks up a header value in an ACP HttpHeader[] array
+// ([]{"name":..,"value":..}) as sent in session/new mcpServers[].headers.
+func acpHeaderValue(headers []interface{}, name string) (string, bool) {
+	for _, raw := range headers {
+		h, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if h["name"] == name {
+			v, _ := h["value"].(string)
+			return v, true
+		}
+	}
+	return "", false
 }
 
 func TestFlowpilotClaudeExtraMCPServersOmitsJiraWhenNotConnected(t *testing.T) {
@@ -154,11 +173,11 @@ func TestGrokACPExtraMCPServersForwardsStdioAndHTTPEntries(t *testing.T) {
 	if jira["url"] != jiraMcpOAuthRemoteURL {
 		t.Fatalf("jira url = %v, want %s", jira["url"], jiraMcpOAuthRemoteURL)
 	}
-	headers, ok := jira["headers"].(map[string]interface{})
+	headers, ok := jira["headers"].([]interface{})
 	if !ok {
-		t.Fatalf("jira headers should be a map, got %T (%v)", jira["headers"], jira["headers"])
+		t.Fatalf("jira headers should be an ACP HttpHeader[] array, got %T (%v)", jira["headers"], jira["headers"])
 	}
-	if headers["Authorization"] != "Bearer live-token" {
-		t.Fatalf("jira Authorization = %v, want Bearer live-token", headers["Authorization"])
+	if v, found := acpHeaderValue(headers, "Authorization"); !found || v != "Bearer live-token" {
+		t.Fatalf("jira Authorization = %v, want Bearer live-token", v)
 	}
 }
