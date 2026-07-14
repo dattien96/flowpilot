@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -264,6 +265,36 @@ func (r *Runner) EnsureJiraMcpProviderConfig(req JiraMcpProviderConfigRequest) (
 	}
 }
 
+// rePushJiraConfigToConnectedProviders re-writes each locally-authenticated
+// provider's static Jira MCP config to the currently-connected account. Called
+// when the Jira connection changes (TriggerIntegrationConnection) so a switched
+// account is reflected on disk immediately — not only inside a FlowPilot turn.
+// This is what makes standalone `codex-cli` (which reads config.toml directly
+// and has no FlowPilot per-turn live-injection) pick up the new account without
+// a manual "Configure Providers" run.
+//
+// It targets only providers with a detected local auth file
+// (DetectDefaultAccountHomePath is pure detection — it never creates a home),
+// so it never introduces configs for providers the user hasn't set up.
+// Best-effort: a per-provider failure is logged and skipped so it can never
+// block the connect result. EnsureJiraMcpProviderConfig is idempotent (writes
+// only when the entry differs), so re-pushing an already-correct config is a
+// no-op.
+func (r *Runner) rePushJiraConfigToConnectedProviders() {
+	for _, providerKey := range []string{"codex", "claude", "grok", "gemini"} {
+		home, ok := DetectDefaultAccountHomePath(providerKey)
+		if !ok || strings.TrimSpace(home) == "" {
+			continue
+		}
+		if _, err := r.EnsureJiraMcpProviderConfig(JiraMcpProviderConfigRequest{
+			ProviderKey:     providerKey,
+			AccountHomePath: home,
+		}); err != nil {
+			log.Printf("[jira-mcp] re-push config for %s skipped: %v", providerKey, err)
+		}
+	}
+}
+
 // persistConnectedJiraBearerToken stores the Atlassian OAuth bearer token
 // onto the same keyring record resolveConnectedJiraCredential already reads
 // (the "one connected Jira integration per workspace" model), so it survives
@@ -321,58 +352,32 @@ func (r *Runner) jiraLiveMCPServer() (claudeMcpServer, bool) {
 func (r *Runner) ensureCodexJiraMcpConfig(accountHomePath string, auth jiraMcpAuthConfig) (JiraMcpProviderConfigResponse, error) {
 	configPath := filepath.Join(accountHomePath, "config.toml")
 
-	var config codexConfig
-	changed := false
+	// Generic-map splice (not a typed codexConfig round-trip): codexConfig models
+	// only mcp_servers, so marshaling it back would drop every other top-level
+	// key (model, [projects] trust levels, [tui], [windows]). Configure Providers
+	// must preserve them. An unparseable config is a hard error here rather than a
+	// silent reset — resetting would be exactly the data loss this splice avoids.
+	doc := map[string]interface{}{}
 	raw, err := os.ReadFile(configPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to read Codex config: %w", err)
 	}
-	if err == nil {
-		if tomlErr := toml.Unmarshal(raw, &config); tomlErr != nil {
-			config = codexConfig{}
-			changed = true
+	if err == nil && len(strings.TrimSpace(string(raw))) > 0 {
+		if tomlErr := toml.Unmarshal(raw, &doc); tomlErr != nil {
+			// Unparseable existing config: nothing to preserve, recover by
+			// writing a fresh one (a parseable config keeps its keys via splice).
+			doc = map[string]interface{}{}
 		}
-	}
-	if config.McpServers == nil {
-		config.McpServers = make(map[string]codexMcpServer)
 	}
 
-	var expected codexMcpServer
-	if auth.Mode == "basic" {
-		expected = codexMcpServer{
-			Enabled:     true,
-			URL:         auth.URL,
-			HTTPHeaders: map[string]string{"Authorization": auth.Authorization},
-		}
-	} else {
-		// Strip leading "Bearer " for env var — Codex bearer_token_env_var adds it.
-		token := strings.TrimSpace(auth.Authorization)
-		if strings.HasPrefix(strings.ToLower(token), "bearer ") {
-			token = strings.TrimSpace(token[7:])
-		}
-		expected = codexMcpServer{
-			Enabled:           true,
-			URL:               auth.URL,
-			BearerTokenEnvVar: "JIRA_BEARER_TOKEN",
-			Env:               map[string]string{"JIRA_BEARER_TOKEN": token},
-		}
-	}
-	existing, exists := config.McpServers[jiraMcpServerName]
-	if !exists || existing.URL != expected.URL || existing.BearerTokenEnvVar != expected.BearerTokenEnvVar || !envMatches(existing.Env, expected.Env) || !envMatches(existing.HTTPHeaders, expected.HTTPHeaders) {
-		config.McpServers[jiraMcpServerName] = expected
-		changed = true
+	changed, spliceErr := spliceCodexJiraEntry(doc, auth)
+	if spliceErr != nil {
+		return JiraMcpProviderConfigResponse{}, spliceErr
 	}
 
 	if changed {
-		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
-			return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to create config directory: %w", err)
-		}
-		out, err := toml.Marshal(config)
-		if err != nil {
-			return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to marshal TOML: %w", err)
-		}
-		if err := os.WriteFile(configPath, out, 0o644); err != nil {
-			return JiraMcpProviderConfigResponse{}, fmt.Errorf("failed to write config: %w", err)
+		if err := writeCodexConfigDoc(configPath, doc); err != nil {
+			return JiraMcpProviderConfigResponse{}, err
 		}
 	}
 
@@ -383,6 +388,178 @@ func (r *Runner) ensureCodexJiraMcpConfig(accountHomePath string, auth jiraMcpAu
 		Changed:     changed,
 		ConfigPath:  configPath,
 	}, nil
+}
+
+// codexJiraExpectedServer builds the codexMcpServer entry for a resolved Rovo
+// auth config. Basic (personal API token) uses http_headers with the full
+// Authorization value so Codex does not wrap "Basic …" as a Bearer token;
+// Bearer override strips the prefix into an env var Codex re-wraps. Shared by
+// the Configure-Providers writer (ensureCodexJiraMcpConfig) and the per-turn
+// live sync (syncCodexJiraMcpLive) so the two can never build a different entry.
+func codexJiraExpectedServer(auth jiraMcpAuthConfig) codexMcpServer {
+	if auth.Mode == "basic" {
+		return codexMcpServer{
+			Enabled:     true,
+			URL:         auth.URL,
+			HTTPHeaders: map[string]string{"Authorization": auth.Authorization},
+		}
+	}
+	// Strip leading "Bearer " for env var — Codex bearer_token_env_var adds it.
+	token := strings.TrimSpace(auth.Authorization)
+	if strings.HasPrefix(strings.ToLower(token), "bearer ") {
+		token = strings.TrimSpace(token[7:])
+	}
+	return codexMcpServer{
+		Enabled:           true,
+		URL:               auth.URL,
+		BearerTokenEnvVar: "JIRA_BEARER_TOKEN",
+		Env:               map[string]string{"JIRA_BEARER_TOKEN": token},
+	}
+}
+
+// codexJiraServerMatches reports whether an on-disk Codex jira entry already
+// carries the expected transport-selecting keys (url/env/http_headers). Same
+// field set ensureCodexJiraMcpConfig compared inline before this was extracted.
+func codexJiraServerMatches(existing, expected codexMcpServer) bool {
+	return existing.URL == expected.URL &&
+		existing.BearerTokenEnvVar == expected.BearerTokenEnvVar &&
+		envMatches(existing.Env, expected.Env) &&
+		envMatches(existing.HTTPHeaders, expected.HTTPHeaders)
+}
+
+// codexServerToMap / codexServerFromMap round-trip a typed codexMcpServer through
+// a generic map so a single mcp_servers.<name> entry can be spliced into a
+// config.toml decoded as map[string]interface{} — the same preserve-all-other-
+// keys technique grokServerToMap uses. This matters for the live sync: the
+// typed whole-document codexConfig round-trip (used by Configure Providers)
+// only models mcp_servers, so marshaling it back drops every other top-level
+// Codex key (model, [projects] trust levels, [tui], [windows]). A per-turn
+// writer must not do that, so it splices generically instead.
+func codexServerToMap(server codexMcpServer) (map[string]interface{}, error) {
+	raw, err := toml.Marshal(server)
+	if err != nil {
+		return nil, err
+	}
+	m := map[string]interface{}{}
+	if err := toml.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func codexServerFromMap(m map[string]interface{}) (codexMcpServer, bool) {
+	raw, err := toml.Marshal(m)
+	if err != nil {
+		return codexMcpServer{}, false
+	}
+	var server codexMcpServer
+	if err := toml.Unmarshal(raw, &server); err != nil {
+		return codexMcpServer{}, false
+	}
+	return server, true
+}
+
+// spliceCodexServerEntry sets mcp_servers.<serverName> on a generic config doc
+// to the expected entry, preserving every other key (including all OTHER
+// mcp_servers). Returns changed=false when the existing entry already matches
+// per `matches`. Pure (no IO) so every writer — Configure Providers, the
+// per-turn live sync, the Google Drive writer — shares the compare/build logic
+// while each keeps its own read/parse/write policy. Using this instead of a
+// typed whole-document codexConfig round-trip is what stops those writers from
+// dropping non-mcp_servers keys (model, [projects], [tui], [windows]).
+func spliceCodexServerEntry(
+	doc map[string]interface{},
+	serverName string,
+	expected codexMcpServer,
+	matches func(existing, expected codexMcpServer) bool,
+) (bool, error) {
+	mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
+	if mcpServers == nil {
+		mcpServers = map[string]interface{}{}
+	}
+	if existingRaw, exists := mcpServers[serverName]; exists {
+		if existingMap, ok := existingRaw.(map[string]interface{}); ok {
+			if existing, ok := codexServerFromMap(existingMap); ok && matches(existing, expected) {
+				return false, nil
+			}
+		}
+	}
+	expectedMap, err := codexServerToMap(expected)
+	if err != nil {
+		return false, fmt.Errorf("failed to build Codex %q MCP server entry: %w", serverName, err)
+	}
+	mcpServers[serverName] = expectedMap
+	doc["mcp_servers"] = mcpServers
+	return true, nil
+}
+
+// spliceCodexJiraEntry is the jira-specific wrapper around spliceCodexServerEntry.
+func spliceCodexJiraEntry(doc map[string]interface{}, auth jiraMcpAuthConfig) (bool, error) {
+	return spliceCodexServerEntry(doc, jiraMcpServerName, codexJiraExpectedServer(auth), codexJiraServerMatches)
+}
+
+// writeCodexConfigDoc marshals a generic Codex config doc back to config.toml,
+// creating the directory if needed.
+func writeCodexConfigDoc(configPath string, doc map[string]interface{}) error {
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+	out, err := toml.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("failed to marshal TOML: %w", err)
+	}
+	if err := os.WriteFile(configPath, out, 0o644); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+	return nil
+}
+
+// syncCodexJiraMcpLive keeps Codex's config.toml [mcp_servers.jira] entry in
+// lockstep with the currently-connected Jira credential on every turn. Codex —
+// unlike Claude and Grok — has no per-turn extraMCPServers live merge; its
+// shared app-server reads mcp_servers from config.toml once at process start.
+// So a token written by an earlier Configure Providers run (for a different
+// Atlassian account) silently persisted, and Codex kept answering as that stale
+// account even after the workspace connected a new one. This rewrites the entry
+// to the current account via a generic-map splice that preserves every other
+// Codex config key, and returns changed=true so the caller can respawn the
+// app-server to re-read the new token.
+//
+// It only ever updates (never removes): resolveJiraMcpAuth errors both when Jira
+// is genuinely disconnected and on a transient keyring read, and stripping a
+// working entry on a transient error would be worse than leaving a possibly
+// stale one, so a resolve failure is a no-op here.
+func (r *Runner) syncCodexJiraMcpLive(accountHomePath string) (bool, error) {
+	accountHomePath = strings.TrimSpace(accountHomePath)
+	if accountHomePath == "" {
+		return false, nil
+	}
+	auth, authErr := r.resolveJiraMcpAuth("")
+	if authErr != nil || strings.TrimSpace(auth.Authorization) == "" {
+		return false, nil
+	}
+
+	configPath := filepath.Join(accountHomePath, "config.toml")
+	doc := map[string]interface{}{}
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return false, fmt.Errorf("failed to read Codex config: %w", readErr)
+	}
+	if readErr == nil && len(strings.TrimSpace(string(raw))) > 0 {
+		if tomlErr := toml.Unmarshal(raw, &doc); tomlErr != nil {
+			// Unparseable config: don't risk clobbering it on a background sync.
+			return false, nil
+		}
+	}
+
+	changed, spliceErr := spliceCodexJiraEntry(doc, auth)
+	if spliceErr != nil || !changed {
+		return false, spliceErr
+	}
+	if err := writeCodexConfigDoc(configPath, doc); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ensureGrokJiraMcpConfig writes Grok config.toml [mcp_servers.jira] with

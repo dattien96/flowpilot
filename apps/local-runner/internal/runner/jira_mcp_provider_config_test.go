@@ -145,6 +145,154 @@ func TestEnsureJiraMcpProviderConfigDispatchesToCodexAndGemini(t *testing.T) {
 	}
 }
 
+// TestSyncCodexJiraMcpLiveRewritesStaleTokenPreservingOtherKeys verifies the
+// Codex live-sync fix: Codex has no per-turn extraMCPServers merge, so a jira
+// token written by an earlier Configure Providers run (a different Atlassian
+// account) would persist in config.toml and Codex kept answering as that stale
+// account. syncCodexJiraMcpLive must rewrite the entry to the currently-connected
+// account WITHOUT dropping any other top-level Codex config key (a whole-document
+// codexConfig round-trip would silently drop model/[projects]/[tui]).
+func TestSyncCodexJiraMcpLiveRewritesStaleTokenPreservingOtherKeys(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	connectTestJiraBackend(t, instance) // connects name@company.com : secret-token
+
+	codexHome := t.TempDir()
+	staleToken := "Basic c3RhbGUtYWNjb3VudEBleGFtcGxlLmNvbTpTVEFMRQ==" // stale-account@example.com
+	staleConfig := `model = "gpt-5.4-mini"
+
+[projects.'c:\working\flowpilot']
+trust_level = "trusted"
+
+[tui.model_availability_nux]
+"gpt-5.6-sol" = 1
+
+[mcp_servers.jira]
+enabled = true
+url = 'https://mcp.atlassian.com/v1/mcp'
+
+[mcp_servers.jira.http_headers]
+Authorization = '` + staleToken + `'
+`
+	configPath := filepath.Join(codexHome, "config.toml")
+	if err := os.WriteFile(configPath, []byte(staleConfig), 0o644); err != nil {
+		t.Fatalf("seed stale codex config: %v", err)
+	}
+
+	changed, err := instance.syncCodexJiraMcpLive(codexHome)
+	if err != nil {
+		t.Fatalf("syncCodexJiraMcpLive: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected changed=true when rewriting a stale token")
+	}
+
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	got := string(raw)
+
+	expectedAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("name@company.com:secret-token"))
+	if !strings.Contains(got, expectedAuth) {
+		t.Fatalf("expected current account Authorization %q in config, got: %s", expectedAuth, got)
+	}
+	if strings.Contains(got, staleToken) {
+		t.Fatalf("stale token was not replaced, got: %s", got)
+	}
+	// Other top-level keys must survive the generic-map splice.
+	for _, want := range []string{`model = 'gpt-5.4-mini'`, "gpt-5.4-mini", "trust_level", "model_availability_nux"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected preserved key %q in config, got: %s", want, got)
+		}
+	}
+
+	// Idempotent: a second sync with the same connected account is a no-op.
+	changedAgain, err := instance.syncCodexJiraMcpLive(codexHome)
+	if err != nil {
+		t.Fatalf("second syncCodexJiraMcpLive: %v", err)
+	}
+	if changedAgain {
+		t.Fatalf("expected changed=false on second sync with unchanged account")
+	}
+}
+
+// TestEnsureCodexJiraMcpConfigPreservesOtherTopLevelKeys guards the data-loss
+// fix on the Configure-Providers path: the writer used to round-trip the whole
+// document through the mcp_servers-only codexConfig struct, silently dropping
+// model / [projects] / [tui] / [windows]. It now splices only mcp_servers.jira
+// via a generic map, leaving every other top-level key intact.
+func TestEnsureCodexJiraMcpConfigPreservesOtherTopLevelKeys(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	connectTestJiraBackend(t, instance) // connects name@company.com : secret-token
+
+	codexHome := t.TempDir()
+	seed := `model = "gpt-5.4-mini"
+model_reasoning_effort = "medium"
+
+[projects.'c:\working\flowpilot']
+trust_level = "trusted"
+
+[tui.model_availability_nux]
+"gpt-5.6-sol" = 2
+
+[windows]
+sandbox = "unelevated"
+
+[mcp_servers.jira]
+enabled = true
+url = 'https://mcp.atlassian.com/v1/mcp'
+
+[mcp_servers.jira.http_headers]
+Authorization = 'Basic c3RhbGUtYWNjb3VudEBleGFtcGxlLmNvbTpTVEFMRQ=='
+`
+	configPath := filepath.Join(codexHome, "config.toml")
+	if err := os.WriteFile(configPath, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed codex config: %v", err)
+	}
+
+	if _, err := instance.EnsureJiraMcpProviderConfig(JiraMcpProviderConfigRequest{
+		ProviderKey:     "codex",
+		AccountHomePath: codexHome,
+	}); err != nil {
+		t.Fatalf("EnsureJiraMcpProviderConfig(codex): %v", err)
+	}
+
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	got := string(raw)
+
+	expectedAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("name@company.com:secret-token"))
+	if !strings.Contains(got, expectedAuth) {
+		t.Fatalf("expected connected account Authorization in config, got: %s", got)
+	}
+	for _, want := range []string{"gpt-5.4-mini", "model_reasoning_effort", "trust_level", "model_availability_nux", "sandbox"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Configure Providers dropped top-level key %q, got: %s", want, got)
+		}
+	}
+}
+
+// TestSyncCodexJiraMcpLiveNoopWhenNotConnected verifies the live-sync leaves
+// config.toml untouched (and never errors) when Jira cannot be resolved — a
+// transient keyring read must not strip a possibly-working entry.
+func TestSyncCodexJiraMcpLiveNoopWhenNotConnected(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	codexHome := t.TempDir()
+
+	changed, err := instance.syncCodexJiraMcpLive(codexHome)
+	if err != nil {
+		t.Fatalf("syncCodexJiraMcpLive (not connected): %v", err)
+	}
+	if changed {
+		t.Fatalf("expected changed=false when Jira is not connected")
+	}
+	if _, err := os.Stat(filepath.Join(codexHome, "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("expected no config.toml written when not connected, stat err = %v", err)
+	}
+}
+
 // TestEnsureJiraMcpProviderConfigDispatchesToGrok closes G2: Grok gets a
 // remote-HTTP mcp_servers.jira entry in config.toml (url + headers + enabled).
 func TestEnsureJiraMcpProviderConfigDispatchesToGrok(t *testing.T) {

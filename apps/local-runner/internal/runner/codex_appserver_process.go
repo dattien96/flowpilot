@@ -147,6 +147,21 @@ func (r *Runner) ensureCodexAppServer(ctx context.Context, scopeKey, cwd string,
 	return h, nil
 }
 
+// resetCodexAppServer tears down the shared app-server so the next
+// ensureCodexAppServer spawns a fresh process. Codex reads mcp_servers from
+// config.toml only at boot, so after syncCodexJiraMcpLive rewrites the jira
+// token the running process would keep serving the old account until it is
+// respawned. Called only when the on-disk config actually changed, so steady
+// state (same account) never churns the process.
+func (r *Runner) resetCodexAppServer() {
+	r.codexAppServerMu.Lock()
+	defer r.codexAppServerMu.Unlock()
+	if r.codexAppServer != nil {
+		r.codexAppServer.close()
+		r.codexAppServer = nil
+	}
+}
+
 // errorAdapter is returned by the live registry when the app-server cannot be
 // ensured, so a turn fails cleanly (typed) instead of hanging.
 type errorAdapter struct {

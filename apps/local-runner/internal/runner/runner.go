@@ -734,6 +734,12 @@ func (r *Runner) TriggerIntegrationConnection(
 			SecretKey:     jiraCredentialKey(integrationID),
 		})
 		_ = r.saveMcpBackendRecord(backend)
+		// Push the new account into every locally-authenticated provider's static
+		// config immediately, so a Jira account switch shows up on disk right away
+		// — this is what lets codex-cli (which reads config.toml directly, with no
+		// FlowPilot live-injection) pick up the switch without a manual Configure
+		// Providers run. Best-effort; never blocks the connect result.
+		r.rePushJiraConfigToConnectedProviders()
 		status = "connected"
 		message = fmt.Sprintf("%s API-token connection is ready.", backend.Label)
 		if warning != "" {

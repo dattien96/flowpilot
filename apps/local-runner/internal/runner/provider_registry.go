@@ -269,6 +269,17 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				} else {
 					return errorAdapter{key: ProviderKeyCodex, err: err}
 				}
+				// Codex has no per-turn extraMCPServers live merge (Claude/Grok do):
+				// its shared app-server reads mcp_servers from config.toml only at
+				// boot. Sync the jira entry to the currently-connected account before
+				// (re)using the process, and force a respawn when it changed so the
+				// app-server re-reads the new token instead of serving a stale one
+				// left by an earlier Configure Providers run.
+				if home := strings.TrimSpace(env["CODEX_HOME"]); home != "" {
+					if changed, syncErr := r.syncCodexJiraMcpLive(home); syncErr == nil && changed {
+						r.resetCodexAppServer()
+					}
+				}
 				h, err := r.ensureCodexAppServer(context.Background(), scopeKey, r.workspace, env)
 				if err != nil {
 					return errorAdapter{key: ProviderKeyCodex, err: err}
