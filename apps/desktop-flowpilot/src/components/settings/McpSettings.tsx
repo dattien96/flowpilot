@@ -98,6 +98,10 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
   const [errorModal, setErrorModal] = useState<{ title: string; body: string } | null>(null);
   const [editingIntegrationId, setEditingIntegrationId] = useState<string | null>(null);
   const [telegramApprovals, setTelegramApprovals] = useState<TelegramApprovalRecord[]>([]);
+  // Task-233 / CLI E2E: when true, telegram-mcp skips the pending-approval
+  // queue for out-of-run-scope calls (Codex CLI standalone). Stored in the
+  // runner keyring credential as autoApprove (not Supabase secrets).
+  const [telegramAutoApprove, setTelegramAutoApprove] = useState(false);
   const [providerAccounts, setProviderAccounts] = useState<RunnerProviderAccount[]>([]);
   const [configureMessage, setConfigureMessage] = useState<string | null>(null);
 
@@ -153,6 +157,7 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
     setConfig(createEmptyConfig(nextType));
     setLabel(labelForIntegrationType(nextType));
     setOwnerScope(nextType === "jira" || nextType === "firebase" || nextType === "telegram" ? "global" : "project");
+    setTelegramAutoApprove(false);
   };
 
   // Reset editor + re-fetch scoped lists whenever the Settings nav page changes.
@@ -166,6 +171,7 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
     setLabel(labelForIntegrationType(firstType));
     setOwnerScope(firstType === "jira" || firstType === "firebase" || firstType === "telegram" ? "global" : "project");
     setEditingIntegrationId(null);
+    setTelegramAutoApprove(false);
     setMessage(null);
     setConfigureMessage(null);
     setErrorModal(null);
@@ -191,6 +197,9 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
       nextConfig[field.key] = typeof raw === "string" ? raw : "";
     }
     setConfig(nextConfig);
+    // UI mirror of keyring autoApprove (non-secret); source of truth is runner keyring.
+    const mirror = (integration.configEncrypted as Record<string, unknown>).autoApprove;
+    setTelegramAutoApprove(mirror === true || mirror === "true");
     setMessage(null);
   };
 
@@ -202,6 +211,7 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
     setLabel(labelForIntegrationType(nextType));
     setOwnerScope(nextType === "jira" || nextType === "firebase" || nextType === "telegram" ? "global" : "project");
     setProjectId((current) => current || projects[0]?.id || "");
+    setTelegramAutoApprove(false);
   };
 
   const createIntegration = async () => {
@@ -213,7 +223,12 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
       const duplicate = type === "jira" && !editingIntegration
         ? findDuplicateJiraIntegration(integrations, ownerProjectId, String(fullConfig.workspaceUrl ?? ""))
         : null;
-      const persistedConfig = stripSecretFields(type, fullConfig);
+      // autoApprove is a non-secret UI mirror only; the runner keyring holds
+      // the authoritative flag (telegramCredential.autoApprove).
+      const persistedConfig =
+        type === "telegram"
+          ? { ...stripSecretFields(type, fullConfig), autoApprove: telegramAutoApprove }
+          : stripSecretFields(type, fullConfig);
       const created = editingIntegration
         ? await admin.integrations.updateIntegration(editingIntegration.id, {
           label,
@@ -242,7 +257,13 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
           mcpTypeEnabled: true,
         });
       if (needsConnect) {
-        const outcome = await admin.integrations.testIntegration(undefined, created.id, type, fullConfig as Record<string, string>);
+        const connectFields: Record<string, string | boolean | undefined> = {
+          ...(fullConfig as Record<string, string>),
+        };
+        if (type === "telegram") {
+          connectFields.telegramAutoApprove = telegramAutoApprove;
+        }
+        const outcome = await admin.integrations.testIntegration(undefined, created.id, type, connectFields);
         await admin.integrations.updateIntegration(created.id, { status: outcome.ok ? "connected" : "failed" });
         if (!outcome.ok) {
           setErrorModal({ title: "Connection failed", body: outcome.message ?? "The runner rejected the connection." });
@@ -257,6 +278,44 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
       await refresh();
     } catch (error) {
       setErrorModal({ title: editingIntegration ? "Unable to update integration" : "Unable to create integration", body: toErrorMessage(error, `Unable to ${editingIntegration ? "update" : "create"} MCP integration.`) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Toggle keyring autoApprove without re-pasting the bot token (reuses the
+  // stored credential; sends only telegramAutoApprove pointer to the runner).
+  const setTelegramAutoApproveOnIntegration = async (integration: Integration, enabled: boolean) => {
+    setBusy(true);
+    try {
+      const admin = await getAdminUseCases();
+      const outcome = await admin.integrations.testIntegration(undefined, integration.id, "telegram", {
+        telegramAutoApprove: enabled,
+      });
+      if (!outcome.ok) {
+        setErrorModal({
+          title: "Unable to update auto-approve",
+          body: outcome.message ?? "The runner rejected the auto-approve update.",
+        });
+        return;
+      }
+      await admin.integrations.updateIntegration(integration.id, {
+        configEncrypted: {
+          ...(integration.configEncrypted as Record<string, unknown>),
+          autoApprove: enabled,
+        },
+      });
+      await refresh();
+      setMessage(
+        enabled
+          ? "Telegram auto-approve enabled (CLI / no-scope sends will go through without Pending Approvals)."
+          : "Telegram auto-approve disabled (CLI sends require this flag or a FlowPilot run approval).",
+      );
+    } catch (error) {
+      setErrorModal({
+        title: "Unable to update auto-approve",
+        body: toErrorMessage(error, "Unable to update Telegram auto-approve."),
+      });
     } finally {
       setBusy(false);
     }
@@ -451,13 +510,104 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
                 {renderFieldGuide(field)}
               </div>
             ))}
+            {type === "telegram" ? (
+              <label className="settings-checkbox settings-field-full">
+                <input
+                  checked={telegramAutoApprove}
+                  onChange={(event) => setTelegramAutoApprove(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>
+                  Auto-approve sends (CLI / dev)
+                  <small className="settings-field-help">
+                    When checked, <code>send_message</code> without a FlowPilot run scope (e.g. Codex CLI)
+                    sends immediately. Unchecked (default) refuses those calls with{" "}
+                    <code>MCP_TOOL_APPROVAL_REQUIRED</code>. In-app FlowPilot runs still use the Pending
+                    Approvals queue when run/step scope is present. Flag is stored in the{" "}
+                    <strong>runner keyring</strong> with the bot credential — not in Supabase secrets.
+                  </small>
+                </span>
+              </label>
+            ) : null}
           </div>
           <div className="settings-actions">
             <button className="primary-btn" disabled={busy || (supportsGlobalScope && ownerScope === "project" && !projectId)} onClick={() => void createIntegration()} type="button">{editingIntegration ? "Save and Reconnect" : "Create Integration"}</button>
             {editingIntegration ? <button className="secondary-btn" disabled={busy} onClick={() => resetEditor()} type="button">Cancel Edit</button> : null}
           </div></div>
       </div>
-      <div className="settings-subpanel"><h3>Existing Integrations</h3><div className="settings-list">{integrations.map((integration) => <div className="settings-list-item static" key={integration.id}><div><strong>{integration.label}</strong><span>{integration.type} / {integration.status} / {integration.projectId ? `project ${integration.projectId}` : "workspace global"}</span></div><div className="settings-actions"><button className="secondary-btn" disabled={busy} onClick={() => beginEditIntegration(integration)} type="button">{integration.type === "jira" ? "Edit / Rotate token" : "Edit"}</button>{integration.type === "jira" || integration.type === "google_drive" || integration.type === "firebase" || integration.type === "telegram" ? <button className="secondary-btn" disabled={busy} onClick={() => void testIntegration(integration)} type="button">Test</button> : null}<button className="secondary-btn danger-btn" disabled={busy} onClick={() => void deleteIntegration(integration)} type="button">Delete</button></div></div>)}</div></div>
+      <div className="settings-subpanel">
+        <h3>Existing Integrations</h3>
+        <div className="settings-list">
+          {integrations.map((integration) => {
+            const autoApproveOn =
+              integration.type === "telegram" &&
+              ((integration.configEncrypted as Record<string, unknown>).autoApprove === true ||
+                (integration.configEncrypted as Record<string, unknown>).autoApprove === "true");
+            return (
+              <div className="settings-list-item static" key={integration.id}>
+                <div>
+                  <strong>{integration.label}</strong>
+                  <span>
+                    {integration.type} / {integration.status} /{" "}
+                    {integration.projectId ? `project ${integration.projectId}` : "workspace global"}
+                    {integration.type === "telegram"
+                      ? autoApproveOn
+                        ? " / auto-approve ON"
+                        : " / auto-approve OFF"
+                      : ""}
+                  </span>
+                </div>
+                <div className="settings-actions">
+                  <button
+                    className="secondary-btn"
+                    disabled={busy}
+                    onClick={() => beginEditIntegration(integration)}
+                    type="button"
+                  >
+                    {integration.type === "jira" ? "Edit / Rotate token" : "Edit"}
+                  </button>
+                  {integration.type === "jira" ||
+                  integration.type === "google_drive" ||
+                  integration.type === "firebase" ||
+                  integration.type === "telegram" ? (
+                    <button
+                      className="secondary-btn"
+                      disabled={busy}
+                      onClick={() => void testIntegration(integration)}
+                      type="button"
+                    >
+                      Test
+                    </button>
+                  ) : null}
+                  {integration.type === "telegram" ? (
+                    <button
+                      className="secondary-btn"
+                      disabled={busy}
+                      onClick={() => void setTelegramAutoApproveOnIntegration(integration, !autoApproveOn)}
+                      type="button"
+                      title={
+                        autoApproveOn
+                          ? "Disable auto-approve (CLI sends will require this flag again)"
+                          : "Enable auto-approve so Codex CLI can send without Pending Approvals"
+                      }
+                    >
+                      {autoApproveOn ? "Disable auto-approve" : "Enable auto-approve"}
+                    </button>
+                  ) : null}
+                  <button
+                    className="secondary-btn danger-btn"
+                    disabled={busy}
+                    onClick={() => void deleteIntegration(integration)}
+                    type="button"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
       {ensurePath ? (
         <div className="settings-subpanel">
           <h3>Configure Providers</h3>
@@ -505,8 +655,10 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
         <div className="settings-subpanel">
           <h3>Pending Telegram Approvals</h3>
           <small className="settings-field-help">
-            The AI must wait here before a Telegram message actually sends (Task-233). Approve to let the AI's next
-            retry send it for real; reject to block it permanently.
+            Per-send queue for <strong>in-app FlowPilot runs</strong> that have run/step scope (Task-233). Stored
+            under the workspace as <code>.flowpilot/telegram-proxy-approvals.json</code>. Approve → AI retries the
+            same <code>send_message</code> and it sends for real; Reject blocks it. Separate from the integration{" "}
+            <strong>Auto-approve</strong> flag (keyring), which only covers CLI / no-scope calls.
           </small>
           <div className="settings-list">
             {telegramApprovals.length === 0 ? (

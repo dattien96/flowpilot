@@ -173,7 +173,7 @@ export class RunnerAdminRepository implements
     });
   }
 
-  async testIntegration(projectId: string | undefined, integrationId: string, providerType: string, fields?: Record<string, string | undefined>): Promise<IntegrationConnectionOutcome> {
+  async testIntegration(projectId: string | undefined, integrationId: string, providerType: string, fields?: Record<string, string | boolean | undefined>): Promise<IntegrationConnectionOutcome> {
     const response = await this.httpClient.request(new URL(`/integrations/${encodeURIComponent(integrationId)}/connection`, this.runnerBaseUrl), {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -273,7 +273,7 @@ export class CompositeIntegrationRepository implements IntegrationRepository {
   runMcpBackendAction(backendKey: string, action: "install" | "verify", projectId?: string, integrationId?: string) {
     return this.runnerRepository.runMcpBackendAction(backendKey, action, projectId, integrationId);
   }
-  testIntegration(projectId: string | undefined, integrationId: string, providerType: string, fields?: Record<string, string | undefined>) {
+  testIntegration(projectId: string | undefined, integrationId: string, providerType: string, fields?: Record<string, string | boolean | undefined>) {
     return this.runnerRepository.testIntegration(projectId, integrationId, providerType, fields);
   }
   listTelegramProxyApprovals(status?: string) { return this.runnerRepository.listTelegramProxyApprovals(status); }

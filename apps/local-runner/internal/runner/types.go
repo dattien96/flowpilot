@@ -457,9 +457,13 @@ type IntegrationConnectionRequest struct {
 	// BotToken/ChannelID back the Telegram connection flow (Task-232,
 	// CP-05-05). BotToken is stored only in the runner keyring
 	// (telegramCredential), never in Supabase config_encrypted.
-	BotToken            string `json:"botToken,omitempty"`
-	ChannelID           string `json:"channelId,omitempty"`
-	TelegramAutoApprove bool   `json:"telegramAutoApprove,omitempty"`
+	BotToken  string `json:"botToken,omitempty"`
+	ChannelID string `json:"channelId,omitempty"`
+	// TelegramAutoApprove is a pointer so a re-Test of an already-connected
+	// integration (desktop sends stripped config without this field) does not
+	// wipe a previously-enabled auto-approve flag via JSON's false zero-value.
+	// nil = leave existing keyring AutoApprove unchanged; non-nil = set it.
+	TelegramAutoApprove *bool `json:"telegramAutoApprove,omitempty"`
 }
 
 type McpBackendActionRequest struct {

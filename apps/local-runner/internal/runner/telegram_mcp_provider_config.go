@@ -82,6 +82,55 @@ func validateTelegramCredentialFields(botToken, channelID string) error {
 	return nil
 }
 
+// resolveTelegramCredential mirrors resolveJiraCredential's keyring fallback:
+// a "test"/"retry" call against an ALREADY-CONNECTED integration can't resend
+// the bot token, because SD-11 §6 strips secret fields (botToken) from
+// Supabase config_encrypted before it's ever read back — the desktop's "Test"
+// button on an existing integration row resends that stripped config
+// verbatim. Without this fallback, re-testing an already-connected Telegram
+// integration always failed with "a bot token is required for Telegram" even
+// though a token was pasted at Create time.
+//
+// AutoApprove uses *bool on the request: nil leaves the stored flag alone
+// (plain re-Test), non-nil sets it (Create / Save with checkbox, or the
+// dedicated Enable/Disable auto-approve control). The flag lives only in the
+// runner keyring credential JSON — not Supabase secrets (SD-11 §6).
+func (r *Runner) resolveTelegramCredential(integrationID string, request IntegrationConnectionRequest) (telegramCredential, error) {
+	secretKey := telegramCredentialKey(integrationID)
+	botToken := strings.TrimSpace(request.BotToken)
+	channelID := strings.TrimSpace(request.ChannelID)
+
+	if botToken != "" && channelID != "" {
+		autoApprove := false
+		if request.TelegramAutoApprove != nil {
+			autoApprove = *request.TelegramAutoApprove
+		}
+		return telegramCredential{
+			BotToken:    botToken,
+			ChannelID:   channelID,
+			AutoApprove: autoApprove,
+		}, nil
+	}
+
+	creds, err := r.loadTelegramCredential(secretKey)
+	if err != nil {
+		return telegramCredential{}, errors.New("a bot token and channel id are required for Telegram")
+	}
+	if botToken != "" {
+		creds.BotToken = botToken
+	}
+	if channelID != "" {
+		creds.ChannelID = channelID
+	}
+	if request.TelegramAutoApprove != nil {
+		creds.AutoApprove = *request.TelegramAutoApprove
+	}
+	if err := validateTelegramCredentialFields(creds.BotToken, creds.ChannelID); err != nil {
+		return telegramCredential{}, err
+	}
+	return creds, nil
+}
+
 func (r *Runner) detectTelegramBackend(record mcpBackendRecord) McpBackend {
 	backend := McpBackend{
 		Key:          "telegram",

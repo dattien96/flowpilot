@@ -110,6 +110,124 @@ func TestTriggerIntegrationConnectionTelegramRejectsMissingFields(t *testing.T) 
 	}
 }
 
+// TestTriggerIntegrationConnectionTelegramRetestReusesStoredCredential guards
+// against the bug where clicking "Test" on an ALREADY-CONNECTED Telegram
+// integration always failed with "a bot token is required for Telegram": the
+// desktop's Existing-Integrations "Test" button resends integration.configEncrypted
+// verbatim, but SD-11 §6 strips botToken from that Supabase-facing config before
+// it's ever read back, so the resend carries an empty botToken. The runner must
+// fall back to the previously-connected credential in its own keyring instead of
+// requiring the client to resend the secret (mirrors resolveJiraCredential's
+// existing fallback).
+func TestTriggerIntegrationConnectionTelegramRetestReusesStoredCredential(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	connectTestTelegramBackend(t, instance)
+
+	// Re-test with an empty BotToken/ChannelID, as the desktop UI does when
+	// resending a stripped configEncrypted for an existing integration.
+	result, err := instance.TriggerIntegrationConnection(context.Background(), "integration-telegram", IntegrationConnectionRequest{
+		ProjectID:    "project-alpha",
+		ProviderType: "telegram",
+		Action:       "test",
+	})
+	if err != nil {
+		t.Fatalf("re-test telegram connection: %v", err)
+	}
+	if result.RequestStatus != "accepted" || result.IntegrationStatus != "connected" {
+		t.Fatalf("expected re-test to succeed via stored credential, got %#v (message=%v)", result, result.Message)
+	}
+
+	creds, err := instance.loadTelegramCredential(telegramCredentialKey("integration-telegram"))
+	if err != nil {
+		t.Fatalf("load telegram credential after re-test: %v", err)
+	}
+	if creds.BotToken != "123456:ABC-fake-token" || creds.ChannelID != "-100123456" {
+		t.Fatalf("expected stored credential preserved, got %+v", creds)
+	}
+}
+
+// TestTriggerIntegrationConnectionTelegramRetestFailsWhenNothingStored verifies
+// the fallback still rejects cleanly (not a panic/500) when there is no prior
+// connection to fall back to.
+func TestTriggerIntegrationConnectionTelegramRetestFailsWhenNothingStored(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	result, err := instance.TriggerIntegrationConnection(context.Background(), "integration-telegram-never-connected", IntegrationConnectionRequest{
+		ProjectID:    "project-alpha",
+		ProviderType: "telegram",
+		Action:       "test",
+	})
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if result.RequestStatus != "rejected" || result.IntegrationStatus != "failed" {
+		t.Fatalf("expected rejected/failed result, got %#v", result)
+	}
+}
+
+// TestTriggerIntegrationConnectionTelegramAutoApproveToggle verifies the
+// desktop "Enable auto-approve" path: re-Test without botToken but with an
+// explicit telegramAutoApprove pointer updates the keyring flag (and a plain
+// re-Test without the field leaves it alone).
+func TestTriggerIntegrationConnectionTelegramAutoApproveToggle(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	connectTestTelegramBackend(t, instance)
+
+	creds, err := instance.loadTelegramCredential(telegramCredentialKey("integration-telegram"))
+	if err != nil {
+		t.Fatalf("load after connect: %v", err)
+	}
+	if creds.AutoApprove {
+		t.Fatalf("default AutoApprove must be false, got %+v", creds)
+	}
+
+	enabled := true
+	if _, err := instance.TriggerIntegrationConnection(context.Background(), "integration-telegram", IntegrationConnectionRequest{
+		ProviderType:        "telegram",
+		Action:              "test",
+		TelegramAutoApprove: &enabled,
+	}); err != nil {
+		t.Fatalf("enable auto-approve: %v", err)
+	}
+	creds, err = instance.loadTelegramCredential(telegramCredentialKey("integration-telegram"))
+	if err != nil {
+		t.Fatalf("load after enable: %v", err)
+	}
+	if !creds.AutoApprove {
+		t.Fatalf("expected AutoApprove=true after explicit toggle, got %+v", creds)
+	}
+
+	// Plain re-Test (nil pointer) must not wipe the flag — desktop Test button.
+	if _, err := instance.TriggerIntegrationConnection(context.Background(), "integration-telegram", IntegrationConnectionRequest{
+		ProviderType: "telegram",
+		Action:       "test",
+	}); err != nil {
+		t.Fatalf("plain re-test: %v", err)
+	}
+	creds, err = instance.loadTelegramCredential(telegramCredentialKey("integration-telegram"))
+	if err != nil {
+		t.Fatalf("load after plain re-test: %v", err)
+	}
+	if !creds.AutoApprove {
+		t.Fatalf("plain re-test must preserve AutoApprove=true, got %+v", creds)
+	}
+
+	disabled := false
+	if _, err := instance.TriggerIntegrationConnection(context.Background(), "integration-telegram", IntegrationConnectionRequest{
+		ProviderType:        "telegram",
+		Action:              "test",
+		TelegramAutoApprove: &disabled,
+	}); err != nil {
+		t.Fatalf("disable auto-approve: %v", err)
+	}
+	creds, err = instance.loadTelegramCredential(telegramCredentialKey("integration-telegram"))
+	if err != nil {
+		t.Fatalf("load after disable: %v", err)
+	}
+	if creds.AutoApprove {
+		t.Fatalf("expected AutoApprove=false after disable, got %+v", creds)
+	}
+}
+
 func TestTriggerIntegrationConnectionTelegramConnectsWithValidFields(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 	connectTestTelegramBackend(t, instance)
