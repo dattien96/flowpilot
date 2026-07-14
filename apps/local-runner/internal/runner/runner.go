@@ -523,7 +523,8 @@ func (r *Runner) VerifyMcpBackend(
 		if err != nil {
 			return backend, err
 		}
-		if err := r.verifyJiraCredential(ctx, creds); err != nil {
+		warning, err := r.verifyJiraCredential(ctx, creds)
+		if err != nil {
 			backend.LastError = err.Error()
 			backend.LastCheckedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			_ = r.saveMcpBackendRecord(backend)
@@ -533,7 +534,9 @@ func (r *Runner) VerifyMcpBackend(
 		backend.State = "installed"
 		backend.Action = "verify"
 		backend.ActionLabel = "Verify"
-		backend.LastError = ""
+		// warning is non-fatal (e.g. token valid but project not browsable);
+		// keep the backend "installed" and record the note for the UI.
+		backend.LastError = warning
 		backend.LastCheckedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		if err := r.saveMcpBackendRecord(backend); err != nil {
 			return backend, err
@@ -700,7 +703,11 @@ func (r *Runner) TriggerIntegrationConnection(
 				Message:           &message,
 			}, nil
 		}
-		if err := r.verifyJiraCredential(ctx, creds); err != nil {
+		// Store the origin (scheme://host) so a pasted board deep link still
+		// yields a valid REST base for verify and every later Jira tool call.
+		creds.WorkspaceURL = normalizeJiraWorkspaceURL(creds.WorkspaceURL)
+		warning, err := r.verifyJiraCredential(ctx, creds)
+		if err != nil {
 			message = err.Error()
 			return IntegrationConnectionResult{
 				RequestStatus:     "rejected",
@@ -729,6 +736,9 @@ func (r *Runner) TriggerIntegrationConnection(
 		_ = r.saveMcpBackendRecord(backend)
 		status = "connected"
 		message = fmt.Sprintf("%s API-token connection is ready.", backend.Label)
+		if warning != "" {
+			message = message + " " + warning
+		}
 	case "firebase":
 		parsed, err := validateFirebaseServiceAccountJSON(request.ServiceAccountJSON)
 		if err != nil {
@@ -2562,21 +2572,79 @@ func (r *Runner) resolveJiraCredential(
 	return creds, nil
 }
 
-func (r *Runner) verifyJiraCredential(ctx context.Context, creds jiraCredential) error {
-	workspaceURL := strings.TrimRight(strings.TrimSpace(creds.WorkspaceURL), "/")
-	projectKey := url.QueryEscape(strings.TrimSpace(creds.ProjectKey))
-	if workspaceURL == "" || projectKey == "" {
-		return errors.New("workspaceUrl and projectKey are required for Jira")
+// normalizeJiraWorkspaceURL reduces a pasted Atlassian URL to its origin
+// (scheme://host), tolerating deep links like
+// https://site.atlassian.net/jira/software/projects/SCRUM/boards/1, trailing
+// slashes, and surrounding whitespace, and defaulting a missing scheme to
+// https. Returns "" when the input has no usable host. Mirrors the desktop
+// UI's normalizeJiraSiteUrl so a board URL pasted into workspaceUrl still
+// produces the correct REST base rather than a 404 on a bogus path.
+func normalizeJiraWorkspaceURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return strings.TrimRight(raw, "/")
+	}
+	scheme := parsed.Scheme
+	if scheme == "" {
+		scheme = "https"
+	}
+	return scheme + "://" + parsed.Host
+}
+
+// verifyJiraCredential validates a Jira credential before it is saved and
+// returns an optional human-readable warning plus a hard error.
+//
+// It verifies against the Atlassian Rovo MCP endpoint the credential is
+// actually used with (mcp.atlassian.com/v1/mcp, Basic email:apiToken) — NOT
+// the classic site REST API. The classic REST gate was wrong twice over:
+//   - a modern *scoped* API token (which the Rovo Teamwork Graph tools REQUIRE)
+//     often returns 401/403 on classic endpoints like /rest/api/3/myself, so a
+//     classic-REST gate rejected exactly the token type Rovo needs;
+//   - a 404 on /project/{key} only meant "can't browse that project", not "bad
+//     credential", yet it blocked the save.
+//
+// The Rovo MCP gateway authenticates the Basic header before any MCP protocol
+// handling, so only 401/403 means the credential was rejected. Any other status
+// (a protocol 2xx/4xx) means auth passed. A transport error doesn't block the
+// save — it returns a warning so a network hiccup can't stop a valid token.
+func (r *Runner) verifyJiraCredential(ctx context.Context, creds jiraCredential) (string, error) {
+	email := strings.TrimSpace(creds.Email)
+	apiToken := strings.TrimSpace(creds.ApiToken)
+	if email == "" || apiToken == "" {
+		return "", errors.New("Atlassian email and API token are required")
 	}
 
-	_, err := executeJiraRequestFn(
-		ctx,
-		http.MethodGet,
-		workspaceURL+"/rest/api/3/project/"+projectKey,
-		creds,
-		nil,
-	)
-	return err
+	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte(email+":"+apiToken))
+	headers := map[string]string{
+		"Authorization": auth,
+		"Content-Type":  "application/json",
+		"Accept":        "application/json, text/event-stream",
+	}
+	// Minimal MCP initialize handshake — enough for the gateway to run auth.
+	initBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"flowpilot-connection-check","version":"1"}}}`)
+
+	statusCode, _, err := httpRequestFn(ctx, http.MethodPost, jiraMcpAPITokenRemoteURL, headers, initBody)
+	if err != nil {
+		return fmt.Sprintf(
+			"Saved, but could not reach the Atlassian Rovo MCP server to verify the token (%v). It will be used as-is when a provider runs.",
+			err,
+		), nil
+	}
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+		return "", fmt.Errorf(
+			"Atlassian rejected the email + API token (HTTP %d). Use a valid Atlassian API token for this email — a modern token with scopes is recommended — and make sure your admin enabled API-token auth for Rovo MCP",
+			statusCode,
+		)
+	}
+
+	return "", nil
 }
 
 func (r *Runner) detectJiraBackend(record mcpBackendRecord) McpBackend {
