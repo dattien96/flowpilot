@@ -5,14 +5,14 @@
 - Document ID: `Task-210`
 - Title: `Grok Account Model — Detect, Connect, Switch, Quota`
 - Phase: `task`
-- Status: `in_progress` — residual after **CP-46 done**: live multi-account connect (DOD-3) deferred until second Grok account available for QA.
+- Status: `done` — live-verified 2026-07-15: second Grok account connect (`~/.grokHomeN`), active switch, cross-account chat continue, and resume after runner restart.
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-09`
-- Last Updated: `2026-07-11`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-207: Grok Controlled Adapter MVP (Chat/Stream/Resume)](../done/Task-207-Grok-Controlled-Adapter-MVP.md)
+- Last Updated: `2026-07-15`
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-207: Grok Controlled Adapter MVP (Chat/Stream/Resume)](Task-207-Grok-Controlled-Adapter-MVP.md)
 - Child Documents: `None`
-- Related Documents: [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md), [Task-018: Auto Switch Account](../done/Task-018-Auto-Switch-Account.md), [Task-059: Desktop Check Version Tested Baseline Config](../done/Task-059-Desktop-Check-Version-Tested-Baseline-Config.md), [Task-080: Claude Account Quota Usage Fetch](../done/Task-080-Claude-Account-Quota-Usage-Fetch.md), [BUG-092: History Resume Fails When Persisted Provider Account ID Is Stale](../done/BUG-092-History-Resume-Fails-When-Persisted-Provider-Account-ID-Is-Stale.md)
+- Related Documents: [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md), [Task-018: Auto Switch Account](Task-018-Auto-Switch-Account.md), [Task-059: Desktop Check Version Tested Baseline Config](Task-059-Desktop-Check-Version-Tested-Baseline-Config.md), [Task-080: Claude Account Quota Usage Fetch](Task-080-Claude-Account-Quota-Usage-Fetch.md), [BUG-092: History Resume Fails When Persisted Provider Account ID Is Stale](../../09-BugFix/done/BUG-092-History-Resume-Fails-When-Persisted-Provider-Account-ID-Is-Stale.md), [Task-216: Grok Real Usage/Quota Fetch](Task-216-Grok-Real-Usage-Quota-Fetch.md)
 - Replaces: `None`
 - Tags: `grok, grok-build, accounts, grok-home, detection, quota, multi-account`
 
@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Make `flowpilot providers list --json` report Grok's install/version/auth state; make "connect account" create an isolated `GROK_HOME`; make account switch work exactly like Codex/Claude (lazy per-turn resolve + in-flight turn interrupt); make the account card show whatever Grok exposes for email/plan/models, and classify quota exhaustion correctly.
+- Done: `flowpilot providers list --json` reports Grok install/version/auth; connect creates isolated `GROK_HOME`; account switch + cross-account chat continue work like Codex/Claude; account card shows Grok email/plan/usage; quota exhaustion classified correctly.
 
 ### Key Decisions
 
@@ -46,8 +46,8 @@
 
 ### Open Questions
 
-- `Q-1` (CP-46 `Q-5`) Does Grok expose any machine-readable quota/usage endpoint beyond the turn-time `402`, or is the account card limited to email/plan? **Corrected (2026-07-10):** the "no endpoint" conclusion below was based only on the ACP JSON-RPC stream. Confirmed live: `GET https://cli-chat-proxy.grok.com/v1/billing`, authenticated with the same cached bearer token already in `~/.grok/auth.json`, returns a real `monthlyLimit`/`weeklyLimit`+`used`+`billingPeriodEnd` billing body. `loadGrokAccountMetadata` now populates a real `usageDetailLine` from it. See [Task-216: Grok Real Usage/Quota Fetch](../done/Task-216-Grok-Real-Usage-Quota-Fetch.md).
-- `Q-2` (CP-46 `Q-6`) Does `grok login --device-auth` cleanly isolate to a fresh `GROK_HOME` the same way Codex's device flow does, with no cross-contamination of a previously-logged-in default home?
+- `Q-1` (CP-46 `Q-5`) Does Grok expose any machine-readable quota/usage endpoint beyond the turn-time `402`, or is the account card limited to email/plan? **Corrected (2026-07-10):** the "no endpoint" conclusion below was based only on the ACP JSON-RPC stream. Confirmed live: `GET https://cli-chat-proxy.grok.com/v1/billing`, authenticated with the same cached bearer token already in `~/.grok/auth.json`, returns a real `monthlyLimit`/`weeklyLimit`+`used`+`billingPeriodEnd` billing body. `loadGrokAccountMetadata` now populates a real `usageDetailLine` from it. See [Task-216: Grok Real Usage/Quota Fetch](Task-216-Grok-Real-Usage-Quota-Fetch.md).
+- `Q-2` (CP-46 `Q-6`) Does `grok login --device-auth` cleanly isolate to a fresh `GROK_HOME` the same way Codex's device flow does, with no cross-contamination of a previously-logged-in default home? **Deferred:** live QA used interactive `grok login` connect for the second account (`~/.grokHomeN`); device-auth variant implemented but not separately live-exercised.
 
 ### Source Refs
 
@@ -102,8 +102,8 @@ Task-207 makes Grok run turns for one account; this task makes Grok manageable t
 
 - [x] `DOD-1` Detection + version baseline work for Grok end to end via `flowpilot providers list/detect`. (`TestGrokProviderSpecRegistered`, `TestDetectProvidersPopulatesInventoryShape` extended to assert a not-installed grok row appears; `CompatTestedGrokVersion` wired into `RunCompatCheck`.)
 - [x] `DOD-2` Multiple Grok accounts isolate correctly by `GROK_HOME` / `~/.grokHomeN`, with deterministic IDs for auto-discovered/managed slots. (`TestManagedProviderHomePrefixBaseRegression`, `TestNextAccountHomePathGrokUsesGrokHomePrefix`; `discoverGrokAccountHomes` reuses the same deterministic-ID machinery (`syncManagedProviderAccounts`) all other providers share — not independently re-tested per-provider.)
-- [ ] `DOD-3` Connect (`grok login`, and a device-auth variant) works and flips account status to connected. Implemented (`StartInteractiveAuth` grok branch, device-auth for managed slots) but not live-exercised — connecting a real second account was not attempted in this pass.
-- [x] `DOD-4` Switch reuses existing `ActivateProviderAccount`/`SetActiveAccount` mechanics with no new code path; in-flight turns interrupt recoverably. (No new code path added — verified by inspection; these functions were not touched.)
+- [x] `DOD-3` Connect (`grok login`, and a device-auth variant) works and flips account status to connected. Live-verified 2026-07-15: second Grok account added via FlowPilot connect, isolated `~/.grokHomeN` created, active switch between accounts works. Device-auth variant implemented; interactive connect path exercised live (`Q-2` device-auth-only path deferred).
+- [x] `DOD-4` Switch reuses existing `ActivateProviderAccount`/`SetActiveAccount` mechanics with no new code path; in-flight turns interrupt recoverably. Live-verified: switch active Grok account and continue same chat; survives runner restart (cross-account session relocate — CA-312).
 - [x] `DOD-5` Account metadata (email/plan/models) renders through the generic `ProviderAccountSummary` shape with no schema change. (`loadGrokAccountMetadata`, `internal/cli/provider_account_terminal.go` — no `ProviderAccountSummary`/`ProviderAccount` field added.)
 - [x] `DOD-6` `402`/spending-limit is classified as terminal usage-limit, not login/retryable. (`TestIsProviderUsageLimitErrorBaseRegressionPlusGrok402`.)
 - [x] `DOD-7` **Base-regression (`P-0`):** every `grok` branch in the ~15 shared switches is appended without reordering; a per-function test asserts codex/claude/gemini inputs return byte-identical values; `getEnvForExecution` still strips `CODEX_HOME`/`GEMINI_HOME`/`HOME` exactly as before. (`TestGetEnvForExecutionCodexBaseRegression`, `TestGetEnvForExecutionSetsGrokHomeAndStripsInheritedCodexHome`, plus the Task-207/209/212 base-regression tests covering the other switched functions.)
@@ -118,10 +118,9 @@ Task-207 makes Grok run turns for one account; this task makes Grok manageable t
 ## 8. Completion Notes
 
 - note (2026-07-11): Parent **CP-46 is done** with residual this task open. Keep inprogress until second Grok account is available to live-verify DOD-3 connect (`grok login` / managed home). Other DOD-1/2/4–8 largely unit-proven.
-
-
-- result:
-- implementation notes:
-- verification:
-- follow-ups:
-- upstream docs updated:
+- note (2026-07-15): **Closed.** Live QA: connect second Grok account → `~/.grokHomeN`; switch active account back and forth; continue same chat after switch; resume same chat after runner restart. Cross-account session directory relocate + real ACP `session/load` shipped in CA-312.
+- result: All 8 DOD items satisfied. Grok is a fully account-manageable provider with detection, isolated homes, connect, switch, quota display, and usage-limit classification — zero schema changes to the generic account layer.
+- implementation notes: Cross-account chat continue (Option B) landed post–initial DOD pass via `LocateSessionFile`/`RelocateSessionFile` Grok directory support, `ensureGrokProviderResumeHandle` turn-log promotion, and `LastGrokSessionID` adapter plumbing (CA-312). Hotfixes for session-id steal (run-536) and MCP env shape (run-584) included.
+- verification: Unit tests for discovery/env/usage-limit/base-regression; live manual QA for connect (DOD-3), switch+continue chat (DOD-4), and post-restart resume.
+- follow-ups: Optional live exercise of `grok login --device-auth` isolation (`Q-2`); Drive restore packaging for Grok session directories (out of scope, noted in CA-312).
+- upstream docs updated: this task → `done/`; CP-46 residual note cleared.

@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-10`
 - Last Updated: `2026-07-10`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](../../08-Task/inprogress/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md), [SS-05: Workflow AI Provider](../../05-System-Specs/SS-05-Workflow-Ai-Provider.md), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md)
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md), [SS-05: Workflow AI Provider](../../05-System-Specs/SS-05-Workflow-Ai-Provider.md), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md)
 - Child Documents: `None`
 - Related Documents: [Task-080: Claude Account Quota Usage Fetch](../../08-Task/done/Task-080-Claude-Account-Quota-Usage-Fetch.md), [Task-036: Desktop Provider Accounts Sidebar](../../08-Task/done/Task-036-Desktop-Provider-Accounts-Sidebar.md)
 - Replaces: `None`
@@ -84,7 +84,7 @@ A user asked why the Grok account card shows no token/usage bar while noting Gro
 
 ## 5. Touched Areas
 
-- files: `apps/local-runner/internal/cli/provider_account_terminal.go`, `apps/local-runner/internal/cli/provider_account_terminal_test.go`, `apps/admin-web/src/app/api/local-runner/provider-accounts/_account-metadata.ts`, `apps/admin-web/src/app/api/local-runner/provider-accounts/_account-metadata.test.ts`, `requirements/08-Task/inprogress/Task-210-...md`, `requirements/07-Coding-Plan/done/CP-46-...md`
+- files: `apps/local-runner/internal/cli/provider_account_terminal.go`, `apps/local-runner/internal/cli/provider_account_terminal_test.go`, `apps/admin-web/src/app/api/local-runner/provider-accounts/_account-metadata.ts`, `apps/admin-web/src/app/api/local-runner/provider-accounts/_account-metadata.test.ts`, `requirements/08-Task/done/Task-210-...md`, `requirements/07-Coding-Plan/done/CP-46-...md`
 - modules: provider-accounts metadata enrichment (Go CLI + admin-web API route)
 - routes: `apps/admin-web/src/app/api/local-runner/provider-accounts` (Next.js route consuming `_account-metadata.ts`)
 - tables: none (no `provider-accounts.json`/Supabase schema change)
@@ -109,4 +109,4 @@ A user asked why the Grok account card shows no token/usage bar while noting Gro
 
 - result: Implemented and verified. The Grok billing endpoint was found and confirmed live (`GET https://cli-chat-proxy.grok.com/v1/billing`), wired into both the Go CLI metadata builder and the admin-web TypeScript twin, and covered by new unit tests in both languages. `Task-210 Q-1` and `CP-46 Q-5` were corrected in place. Labels renamed to `"Team Credits (Monthly/Weekly)"` after a post-ship comparison against the real `grok` CLI showed a second, distinct SuperGrok weekly-allowance metric this task's endpoint does not report.
 - follow-ups: Re-verify the `weeklyLimit` branch against a real weekly/free-tier Grok account if one becomes available (`Q-1` above); consider caching/backoff if the billing endpoint proves rate-limited under frequent account-panel refreshes (`Q-2` above); find and surface the separate SuperGrok weekly included-usage allowance, tracked as [Task-217](../todo/Task-217-Grok-SuperGrok-Weekly-Included-Usage-Fetch.md).
-- upstream docs updated: `requirements/08-Task/inprogress/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md` (`Q-1` annotated), `requirements/07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md` (`Q-5` annotated).
+- upstream docs updated: `requirements/08-Task/done/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md` (`Q-1` annotated), `requirements/07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md` (`Q-5` annotated).

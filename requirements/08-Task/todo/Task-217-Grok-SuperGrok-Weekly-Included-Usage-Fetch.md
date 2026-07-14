@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-10`
 - Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-216: Grok Real Usage/Quota Fetch](../../08-Task/done/Task-216-Grok-Real-Usage-Quota-Fetch.md)
 - Child Documents: `None`
-- Related Documents: [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](../../08-Task/inprogress/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md)
+- Related Documents: [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](../done/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md)
 - Replaces: `None`
 - Tags: `grok, grok-build, xai, supergrok, quota, usage, billing, provider-accounts, local-runner, desktop-chat`
 
