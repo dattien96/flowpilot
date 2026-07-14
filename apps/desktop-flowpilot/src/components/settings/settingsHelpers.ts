@@ -201,8 +201,9 @@ export const providerFields: Record<IntegrationType, IntegrationFieldDefinition[
       helpBody: "Use the destination id that the bot can send to. The bot must already be a member or admin where required.",
       helpItems: [
         "Add the bot to the target channel or group.",
-        "Use a Telegram ID bot or inspect the chat id from a test message.",
-        "Channels typically use a negative numeric id like -100123456789.",
+        "Send any message in that channel or group, then open https://api.telegram.org/bot<TOKEN>/getUpdates in a browser (replace <TOKEN> with the bot token) and read the chat.id field in the response.",
+        "Or use a Telegram ID bot (e.g. forward a message from the chat to it) to read the chat id instead.",
+        "Channels/groups typically use a negative numeric id like -100123456789.",
       ],
     },
   ],

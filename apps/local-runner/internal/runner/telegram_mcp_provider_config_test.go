@@ -53,9 +53,11 @@ func TestEnsureTelegramMcpProviderConfigRejectsUnsupportedProvider(t *testing.T)
 
 // TestEnsureTelegramMcpProviderConfigDispatchesToCodexGeminiGrok verifies
 // Task-234 T-2: Telegram's stdio shape round-trips into all three remaining
-// provider config formats.
+// provider config formats — and CA-315: args include --workspace (not a bare
+// go-build temp path without workspace).
 func TestEnsureTelegramMcpProviderConfigDispatchesToCodexGeminiGrok(t *testing.T) {
-	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	workspace := t.TempDir()
+	instance := &Runner{workspace: workspace, secretStore: newMemorySecretStore()}
 	connectTestTelegramBackend(t, instance)
 
 	codexHome := t.TempDir()
@@ -78,8 +80,31 @@ func TestEnsureTelegramMcpProviderConfigDispatchesToCodexGeminiGrok(t *testing.T
 	if _, err := instance.EnsureTelegramMcpProviderConfig(TelegramMcpProviderConfigRequest{ProviderKey: "grok", AccountHomePath: grokHome}); err != nil {
 		t.Fatalf("EnsureTelegramMcpProviderConfig(grok): %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(grokHome, "config.toml")); err != nil {
+	raw, err := os.ReadFile(filepath.Join(grokHome, "config.toml"))
+	if err != nil {
 		t.Fatalf("expected grok config.toml written: %v", err)
+	}
+	// Grok Configure Providers must rewrite the Drive-like shape, not
+	// os.Executable() go-build temp without --workspace.
+	body := string(raw)
+	if !strings.Contains(body, "flowpilot_telegram") {
+		t.Fatalf("expected flowpilot_telegram in grok config, got:\n%s", body)
+	}
+	if !strings.Contains(body, "telegram-mcp") || !strings.Contains(body, "--workspace") {
+		t.Fatalf("expected telegram-mcp + --workspace in grok config, got:\n%s", body)
+	}
+	// command must be the stable launcher (PATH flowpilot or go run), never a
+	// go-build/.../exe/flowpilot temp path. Workspace may still live under
+	// /var/folders (t.TempDir) — that is fine.
+	if strings.Contains(body, "go-build") && strings.Contains(body, "exe/flowpilot") {
+		t.Fatalf("grok telegram command must not use go-build temp path, got:\n%s", body)
+	}
+	if !strings.Contains(body, "command = 'flowpilot'") && !strings.Contains(body, "command = 'go'") {
+		t.Fatalf("expected command flowpilot or go, got:\n%s", body)
+	}
+	// Workspace path appears in args (cleaned).
+	if !strings.Contains(body, filepath.Clean(workspace)) {
+		t.Fatalf("expected workspace path %q in grok config, got:\n%s", workspace, body)
 	}
 }
 
@@ -277,8 +302,17 @@ func TestEnsureClaudeTelegramMcpConfigWritesStdioEntry(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected mcpServers.telegram entry, got %#v", config.McpServers)
 	}
-	if server.Type != "stdio" || len(server.Args) == 0 || server.Args[0] != "telegram-mcp" {
-		t.Fatalf("unexpected server entry: %#v", server)
+	if server.Type != "stdio" || !telegramMcpArgsLookHealthy(server.Args) {
+		t.Fatalf("unexpected server entry (want telegram-mcp + --workspace): %#v", server)
+	}
+	// BUG-281: provider config must carry loop-back URL + token (never bot token).
+	if strings.TrimSpace(server.Env[flowpilotRunnerURLEnv]) == "" || strings.TrimSpace(server.Env[flowpilotRunnerMCPTokenEnv]) == "" {
+		t.Fatalf("expected loopback env on telegram MCP entry, got %#v", server.Env)
+	}
+	for _, v := range server.Env {
+		if strings.Contains(v, "123456:ABC-fake-token") {
+			t.Fatalf("bot token must not appear in MCP env: %#v", server.Env)
+		}
 	}
 }
 

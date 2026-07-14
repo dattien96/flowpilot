@@ -49,6 +49,14 @@ type telegramProxyMcpServer struct {
 	workflowRunID     string
 	workflowStepRunID string
 	processKey        string
+
+	// BUG-281 loop-back mode: when set, send_message posts to the main
+	// runner instead of reading keyring / calling Telegram Bot API in-process.
+	// Used when the MCP child inherits a provider account HOME that cannot
+	// resolve flowpilot-runner keyring items.
+	loopbackBaseURL string
+	loopbackToken   string
+	loopbackMode    bool
 }
 
 // telegramBotAPIBase is a var (not const), matching the executeJiraRequestFn
@@ -56,30 +64,45 @@ type telegramProxyMcpServer struct {
 // instead of the real Telegram API.
 var telegramBotAPIBase = "https://api.telegram.org"
 
-// RunTelegramProxyMcpServer launches the stdio server, resolving the
-// connected Telegram credential from the runner keyring itself (mirrors
-// RunGoogleDriveProxyMcpServer's shape/lifecycle) — the bot token never
-// travels through provider config or process args, only this in-process
-// resolution. Run-scope env vars (same constants Google Drive's proxy
-// defines) are read here too, set by EnsureClaudeTelegramMcpConfig's
-// per-turn config merge (flowpilotClaudeExtraMCPServers).
+// RunTelegramProxyMcpServer launches the stdio server.
+//
+// BUG-281: when FLOWPILOT_RUNNER_URL + FLOWPILOT_RUNNER_MCP_TOKEN are present
+// (provider-spawned MCP entries), this process does NOT read the keyring or
+// hold the bot token — it is a thin loop-back client to the main runner,
+// which owns credential resolution under the real user HOME. Without those
+// env vars (manual `flowpilot telegram-mcp`), direct keyring mode remains
+// available for developer/offline use.
+//
+// Run-scope env vars (same constants Google Drive's proxy defines) are read
+// here too for approval scope on both paths.
 func (r *Runner) RunTelegramProxyMcpServer(ctx context.Context) error {
-	creds, err := r.resolveConnectedTelegramCredential()
-	if err != nil {
-		return fmt.Errorf("telegram-mcp: %w", err)
-	}
 	server := &telegramProxyMcpServer{
-		botToken:          strings.TrimSpace(creds.BotToken),
-		chatID:            strings.TrimSpace(creds.ChannelID),
 		stdin:             bufio.NewScanner(os.Stdin),
 		stdout:            os.Stdout,
-		client:            &http.Client{Timeout: 15 * time.Second},
-		runner:            r,
-		autoApprove:       creds.AutoApprove,
+		client:            &http.Client{Timeout: 20 * time.Second},
 		workflowRunID:     strings.TrimSpace(os.Getenv(googleDriveProxyWorkflowRunIDEnv)),
 		workflowStepRunID: strings.TrimSpace(os.Getenv(googleDriveProxyWorkflowStepIDEnv)),
 		processKey:        strings.TrimSpace(os.Getenv(googleDriveProxyProcessKeyEnv)),
 	}
+
+	if baseURL, token, enabled := loopbackEnvFromProcess(); enabled {
+		server.loopbackMode = true
+		server.loopbackBaseURL = baseURL
+		server.loopbackToken = token
+		// runner pointer is intentionally nil in loopback mode — approval and
+		// keyring live on the main runner process behind the HTTP endpoint.
+	} else {
+		creds, err := r.resolveConnectedTelegramCredential()
+		if err != nil {
+			return fmt.Errorf("telegram-mcp: %w", err)
+		}
+		server.botToken = strings.TrimSpace(creds.BotToken)
+		server.chatID = strings.TrimSpace(creds.ChannelID)
+		server.runner = r
+		server.autoApprove = creds.AutoApprove
+		server.client = &http.Client{Timeout: 15 * time.Second}
+	}
+
 	server.stdin.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	return server.serve(ctx)
 }
@@ -193,6 +216,17 @@ func (s *telegramProxyMcpServer) callTool(ctx context.Context, rawParams json.Ra
 	if text == "" {
 		return nil, fmt.Errorf("text is required")
 	}
+
+	if s.loopbackMode {
+		return s.callToolViaLoopback(ctx, text)
+	}
+
+	return s.callToolLocal(ctx, text)
+}
+
+// callToolLocal is the in-process path (manual telegram-mcp or the runner
+// loop-back endpoint itself after keyring resolution).
+func (s *telegramProxyMcpServer) callToolLocal(ctx context.Context, text string) (map[string]any, error) {
 	if s.botToken == "" || s.chatID == "" {
 		return nil, fmt.Errorf("telegram proxy is not configured with a bot token/chat id")
 	}
@@ -211,6 +245,62 @@ func (s *telegramProxyMcpServer) callTool(ctx context.Context, rawParams json.Ra
 		return nil, err
 	}
 	return textToolResult(fmt.Sprintf("Message sent to Telegram chat %s. message_id: %d", s.chatID, messageID)), nil
+}
+
+// callToolViaLoopback posts send_message to the main FlowPilot runner
+// (BUG-281). The child never touches keyring or the bot token.
+func (s *telegramProxyMcpServer) callToolViaLoopback(ctx context.Context, text string) (map[string]any, error) {
+	if strings.TrimSpace(s.loopbackBaseURL) == "" || strings.TrimSpace(s.loopbackToken) == "" {
+		return nil, fmt.Errorf("MCP_UNAVAILABLE: FlowPilot runner is not reachable for Telegram send (loopback env incomplete; refusing direct keyring fallback in provider mode)")
+	}
+
+	resp, err := postTelegramLoopbackSend(ctx, s.loopbackBaseURL, s.loopbackToken, telegramLoopbackSendRequest{
+		Text:              text,
+		WorkflowRunID:     s.workflowRunID,
+		WorkflowStepRunID: s.workflowStepRunID,
+		ProcessKey:        s.processKey,
+	}, s.client)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.ErrorCode == "MCP_TOOL_APPROVAL_REQUIRED" || resp.Status == "pending" {
+		msg := strings.TrimSpace(resp.Error)
+		if msg == "" {
+			msg = fmt.Sprintf(
+				"MCP_TOOL_APPROVAL_REQUIRED: FlowPilot created approval request %s. Wait for user approval before retrying this exact send_message call.",
+				resp.ApprovalID,
+			)
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+	if !resp.OK {
+		if strings.TrimSpace(resp.Error) != "" {
+			return nil, fmt.Errorf("%s", resp.Error)
+		}
+		return nil, fmt.Errorf("telegram loopback send failed")
+	}
+
+	if resp.Status == "rejected" {
+		msg := strings.TrimSpace(resp.Error)
+		if msg == "" {
+			chatID := strings.TrimSpace(resp.ChatID)
+			if chatID == "" {
+				chatID = "configured-chat"
+			}
+			msg = fmt.Sprintf("Message to chat %s was rejected by the user and was not sent.", chatID)
+		}
+		return textToolResult(msg), nil
+	}
+
+	chatID := strings.TrimSpace(resp.ChatID)
+	if chatID == "" {
+		chatID = "configured-chat"
+	}
+	if resp.MessageID == 0 {
+		return nil, fmt.Errorf("telegram sendMessage response did not include a message_id")
+	}
+	return textToolResult(fmt.Sprintf("Message sent to Telegram chat %s. message_id: %d", chatID, resp.MessageID)), nil
 }
 
 // callToolWithApprovalQueue is the live, per-send human-approval path

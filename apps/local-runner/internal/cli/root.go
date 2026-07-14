@@ -217,6 +217,9 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			// Runner-hosted MCP server for the Claude permission/ask_user tools (07):
 			// the per-turn --mcp-config URL points claude back at this route.
 			mux.Handle(runner.ClaudeMCPPath, instance.ClaudeMCPHandler())
+			// BUG-281: provider-spawned telegram-mcp children call this loop-back
+			// route so keyring + Bot API stay in the main runner process.
+			mux.Handle(runner.TelegramLoopbackSendPath, instance.TelegramLoopbackSendHandler())
 
 			mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {

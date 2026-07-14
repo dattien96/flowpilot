@@ -118,8 +118,8 @@ func TestFlowpilotClaudeExtraMCPServersIncludesFirebaseAndTelegramWhenConnected(
 		t.Fatalf("expected firebase stdio entry, got: %+v (ok=%v)", firebase, ok)
 	}
 	telegram, ok := extra[telegramMcpServerName]
-	if !ok || len(telegram.Args) == 0 || telegram.Args[0] != "telegram-mcp" {
-		t.Fatalf("expected telegram stdio entry, got: %+v (ok=%v)", telegram, ok)
+	if !ok || !telegramMcpArgsLookHealthy(telegram.Args) {
+		t.Fatalf("expected telegram stdio entry with --workspace, got: %+v (ok=%v)", telegram, ok)
 	}
 }
 
@@ -163,6 +163,19 @@ func TestGrokACPExtraMCPServersForwardsStdioAndHTTPEntries(t *testing.T) {
 	if byName[firebaseMcpServerName] == nil || byName[telegramMcpServerName] == nil {
 		t.Fatalf("expected firebase and telegram stdio entries, got: %+v", byName)
 	}
+	// run-584: stdio env must be ACP [{name,value}] arrays, not maps. Drive always
+	// carries env — a map shape rejects session/new with Invalid params.
+	for _, name := range []string{firebaseMcpServerName, telegramMcpServerName} {
+		entry := byName[name]
+		if entry == nil {
+			continue
+		}
+		if env, ok := entry["env"]; ok {
+			if _, isArr := env.([]interface{}); !isArr {
+				t.Fatalf("%s env must be []interface{} ACP name/value list, got %T (%v)", name, env, env)
+			}
+		}
+	}
 	jira, ok := byName[jiraMcpServerName]
 	if !ok {
 		t.Fatalf("expected jira HTTP entry in Grok ACP servers, got: %+v", byName)
@@ -179,5 +192,40 @@ func TestGrokACPExtraMCPServersForwardsStdioAndHTTPEntries(t *testing.T) {
 	}
 	if v, found := acpHeaderValue(headers, "Authorization"); !found || v != "Bearer live-token" {
 		t.Fatalf("jira Authorization = %v, want Bearer live-token", v)
+	}
+}
+
+// TestGrokACPExtraMCPServersStdioEnvIsNameValueArray (run-584): Drive-like
+// stdio MCP with env must encode env as [{name,value}], not a string map.
+func TestGrokACPExtraMCPServersStdioEnvIsNameValueArray(t *testing.T) {
+	entries := grokACPExtraMCPServers(map[string]claudeMcpServer{
+		"google-drive": {
+			Command: "go",
+			Args:    []string{"run", "drive"},
+			Env: map[string]string{
+				"FLOWPILOT_GOOGLE_DRIVE_REFRESH_TOKEN": "rt",
+				"GOOGLE_DRIVE_CLIENT_ID":               "cid",
+			},
+		},
+	})
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	entry, _ := entries[0].(map[string]interface{})
+	env, ok := entry["env"].([]interface{})
+	if !ok {
+		t.Fatalf("env type = %T, want []interface{}", entry["env"])
+	}
+	if len(env) != 2 {
+		t.Fatalf("env len = %d, want 2", len(env))
+	}
+	// Sorted keys: FLOWPILOT_... then GOOGLE_...
+	first, _ := env[0].(map[string]interface{})
+	if first["name"] != "FLOWPILOT_GOOGLE_DRIVE_REFRESH_TOKEN" || first["value"] != "rt" {
+		t.Fatalf("first env entry = %+v", first)
+	}
+	// Must not be a map shape.
+	if _, isMap := entry["env"].(map[string]interface{}); isMap {
+		t.Fatal("env must not be a plain map")
 	}
 }

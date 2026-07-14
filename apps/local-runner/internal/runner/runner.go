@@ -147,6 +147,11 @@ type Runner struct {
 	mcpBaseURLMu sync.RWMutex
 	mcpBaseURL   string
 
+	// telegramLoopback holds the workspace-scoped auth token for BUG-281's
+	// provider-spawned telegram-mcp → runner loop-back send path. Lazy-init
+	// via ensureTelegramLoopbackToken; never holds the Telegram bot token.
+	telegramLoopback *telegramLoopbackTokenState
+
 	// grokProcessMu guards grokProcesses.
 	grokProcessMu sync.Mutex
 	// grokProcesses holds live `grok agent stdio` processes keyed by
@@ -786,7 +791,8 @@ func (r *Runner) TriggerIntegrationConnection(
 		status = "connected"
 		message = fmt.Sprintf("%s connection is ready.", backend.Label)
 	case "telegram":
-		if err := validateTelegramCredentialFields(request.BotToken, request.ChannelID); err != nil {
+		creds, err := r.resolveTelegramCredential(integrationID, request)
+		if err != nil {
 			message = err.Error()
 			return IntegrationConnectionResult{
 				RequestStatus:     "rejected",
@@ -796,11 +802,7 @@ func (r *Runner) TriggerIntegrationConnection(
 				Message:           &message,
 			}, nil
 		}
-		if err := r.saveTelegramCredential(integrationID, telegramCredential{
-			BotToken:    request.BotToken,
-			ChannelID:   request.ChannelID,
-			AutoApprove: request.TelegramAutoApprove,
-		}); err != nil {
+		if err := r.saveTelegramCredential(integrationID, creds); err != nil {
 			message = err.Error()
 			return IntegrationConnectionResult{
 				RequestStatus:     "rejected",

@@ -175,15 +175,95 @@ type TelegramMcpProviderConfigResponse struct {
 	ConfigPath  string `json:"configPath"`
 }
 
-// expectedClaudeTelegramMcpServer launches the FlowPilot binary's own
-// `telegram-mcp` subcommand (mirrors the google-drive-mcp subcommand
-// pattern) rather than an `npx` package — this proxy IS FlowPilot code.
-func expectedClaudeTelegramMcpServer(flowpilotBinaryPath string) claudeMcpServer {
+// telegramProxyMcpCommand reuses Google Drive's launcher resolution: prefer a
+// PATH-installed `flowpilot`, else `go -C <workspace>/apps/local-runner run
+// ./cmd/flowpilot`. Never persist os.Executable() when that path is a go-build
+// temp binary (Configure Providers used to write those and Grok MCP handshake
+// failed once the temp file was gone or keyring lookup needed --workspace).
+func telegramProxyMcpCommand(workspace string) (string, []string) {
+	return googleDriveProxyMcpCommand(workspace)
+}
+
+// telegramProxyMcpArgs is the stdio argv after the launcher prefix:
+//   telegram-mcp --workspace <abs>
+// Workspace is required so the proxy can find .flowpilot/mcp-backend-state.json
+// and resolve the keyring secretKey when Grok/Codex spawn from a foreign cwd.
+func telegramProxyMcpArgs(workspace string) []string {
+	return []string{
+		"telegram-mcp",
+		"--workspace",
+		strings.TrimSpace(filepath.Clean(workspace)),
+	}
+}
+
+func telegramProxyMcpInvocation(workspace string) (command string, args []string) {
+	command, prefix := telegramProxyMcpCommand(workspace)
+	return command, append(prefix, telegramProxyMcpArgs(workspace)...)
+}
+
+// expectedClaudeTelegramMcpServer launches FlowPilot's telegram-mcp the same
+// way Drive's proxy is launched (stable go-run / PATH flowpilot + --workspace).
+// BUG-281: Env carries loop-back runner URL + auth token so the child never
+// needs keyring access under a provider account HOME.
+func (r *Runner) expectedClaudeTelegramMcpServer() claudeMcpServer {
+	command, args := telegramProxyMcpInvocation(r.workspace)
 	return claudeMcpServer{
 		Type:    "stdio",
-		Command: flowpilotBinaryPath,
-		Args:    []string{"telegram-mcp"},
+		Command: command,
+		Args:    args,
+		Env:     r.telegramLoopbackMcpEnv(),
 	}
+}
+
+func (r *Runner) expectedCodexTelegramMcpServer() codexMcpServer {
+	command, args := telegramProxyMcpInvocation(r.workspace)
+	return codexMcpServer{
+		Command:           command,
+		Args:              args,
+		StartupTimeoutSec: 20,
+		ToolTimeoutSec:    120,
+		Enabled:           true,
+		Env:               r.telegramLoopbackMcpEnv(),
+	}
+}
+
+func (r *Runner) expectedGrokTelegramMcpServer() grokMcpServer {
+	command, args := telegramProxyMcpInvocation(r.workspace)
+	return grokMcpServer{
+		Command:           command,
+		Args:              args,
+		Enabled:           true,
+		StartupTimeoutSec: 20,
+		ToolTimeoutSec:    120,
+		Env:               r.telegramLoopbackMcpEnv(),
+	}
+}
+
+func (r *Runner) expectedGeminiTelegramMcpServer() geminiMcpServer {
+	command, args := telegramProxyMcpInvocation(r.workspace)
+	return geminiMcpServer{
+		Command: command,
+		Args:    args,
+		Timeout: 600000,
+		Trust:   false,
+		Env:     r.telegramLoopbackMcpEnv(),
+	}
+}
+
+// telegramMcpArgsLookHealthy reports whether a persisted args list still has
+// the telegram-mcp subcommand and a non-empty --workspace (staleness check).
+func telegramMcpArgsLookHealthy(args []string) bool {
+	hasSubcommand := false
+	hasWorkspace := false
+	for i, arg := range args {
+		if arg == "telegram-mcp" {
+			hasSubcommand = true
+		}
+		if arg == "--workspace" && i+1 < len(args) && strings.TrimSpace(args[i+1]) != "" {
+			hasWorkspace = true
+		}
+	}
+	return hasSubcommand && hasWorkspace
 }
 
 // EnsureClaudeTelegramMcpConfig writes/updates Claude's `mcpServers.telegram`
@@ -196,10 +276,6 @@ func (r *Runner) EnsureClaudeTelegramMcpConfig(accountHomePath string) (Telegram
 	}
 	if _, err := r.resolveConnectedTelegramCredential(); err != nil {
 		return TelegramMcpProviderConfigResponse{}, err
-	}
-	binaryPath, err := os.Executable()
-	if err != nil {
-		return TelegramMcpProviderConfigResponse{}, fmt.Errorf("resolve flowpilot binary path: %w", err)
 	}
 
 	configPath := filepath.Join(accountHomePath, ".claude.json")
@@ -228,7 +304,7 @@ func (r *Runner) EnsureClaudeTelegramMcpConfig(accountHomePath string) (Telegram
 		}
 	}
 
-	expected := expectedClaudeTelegramMcpServer(binaryPath)
+	expected := r.expectedClaudeTelegramMcpServer()
 	existing, exists := config.McpServers[telegramMcpServerName]
 	if !exists || !claudeServerConfigMatches(existing, expected) {
 		config.McpServers[telegramMcpServerName] = expected
@@ -296,25 +372,18 @@ func (r *Runner) EnsureTelegramMcpProviderConfig(req TelegramMcpProviderConfigRe
 // telegramLiveMCPServer builds the per-turn claudeMcpServer entry for
 // Telegram when connected, for flowpilotClaudeExtraMCPServers (Task-234
 // T-1). Its stdio shape reaches Grok automatically too via
-// grokACPExtraMCPServers.
+// grokACPExtraMCPServers. BUG-281: includes loop-back env so Grok's
+// provider HOME isolation does not break Telegram send.
 func (r *Runner) telegramLiveMCPServer() (claudeMcpServer, bool) {
 	if _, err := r.resolveConnectedTelegramCredential(); err != nil {
 		return claudeMcpServer{}, false
 	}
-	binaryPath, err := os.Executable()
-	if err != nil {
-		return claudeMcpServer{}, false
-	}
-	return expectedClaudeTelegramMcpServer(binaryPath), true
+	return r.expectedClaudeTelegramMcpServer(), true
 }
 
 func (r *Runner) ensureCodexTelegramMcpConfig(accountHomePath string) (TelegramMcpProviderConfigResponse, error) {
 	if _, err := r.resolveConnectedTelegramCredential(); err != nil {
 		return TelegramMcpProviderConfigResponse{}, err
-	}
-	binaryPath, err := os.Executable()
-	if err != nil {
-		return TelegramMcpProviderConfigResponse{}, fmt.Errorf("resolve flowpilot binary path: %w", err)
 	}
 	configPath := filepath.Join(accountHomePath, "config.toml")
 
@@ -342,13 +411,7 @@ func (r *Runner) ensureCodexTelegramMcpConfig(accountHomePath string) (TelegramM
 		}
 	}
 
-	expected := codexMcpServer{
-		Command:           binaryPath,
-		Args:              []string{"telegram-mcp"},
-		StartupTimeoutSec: 20,
-		ToolTimeoutSec:    120,
-		Enabled:           true,
-	}
+	expected := r.expectedCodexTelegramMcpServer()
 	existing, exists := config.McpServers[telegramMcpServerName]
 	if !exists || !codexServerConfigMatches(existing, expected) {
 		config.McpServers[telegramMcpServerName] = expected
@@ -381,10 +444,6 @@ func (r *Runner) ensureGeminiTelegramMcpConfig(accountHomePath string) (Telegram
 	if _, err := r.resolveConnectedTelegramCredential(); err != nil {
 		return TelegramMcpProviderConfigResponse{}, err
 	}
-	binaryPath, err := os.Executable()
-	if err != nil {
-		return TelegramMcpProviderConfigResponse{}, fmt.Errorf("resolve flowpilot binary path: %w", err)
-	}
 	configDir := filepath.Join(accountHomePath, ".gemini")
 	configPath := filepath.Join(configDir, "settings.json")
 
@@ -412,12 +471,7 @@ func (r *Runner) ensureGeminiTelegramMcpConfig(accountHomePath string) (Telegram
 		}
 	}
 
-	expected := geminiMcpServer{
-		Command: binaryPath,
-		Args:    []string{"telegram-mcp"},
-		Timeout: 600000,
-		Trust:   false,
-	}
+	expected := r.expectedGeminiTelegramMcpServer()
 	existing, exists := config.McpServers[telegramMcpServerName]
 	if !exists || !geminiServerConfigMatches(existing, expected) {
 		config.McpServers[telegramMcpServerName] = expected
@@ -450,10 +504,6 @@ func (r *Runner) ensureGrokTelegramMcpConfig(accountHomePath string) (TelegramMc
 	if _, err := r.resolveConnectedTelegramCredential(); err != nil {
 		return TelegramMcpProviderConfigResponse{}, err
 	}
-	binaryPath, err := os.Executable()
-	if err != nil {
-		return TelegramMcpProviderConfigResponse{}, fmt.Errorf("resolve flowpilot binary path: %w", err)
-	}
 	configPath := filepath.Join(accountHomePath, "config.toml")
 
 	doc := map[string]interface{}{}
@@ -483,11 +533,10 @@ func (r *Runner) ensureGrokTelegramMcpConfig(accountHomePath string) (TelegramMc
 		}
 	}
 
-	expected := grokMcpServer{
-		Command: binaryPath,
-		Args:    []string{"telegram-mcp"},
-		Enabled: true,
-	}
+	// Same shape as Drive's Grok ensure: stable launcher + --workspace + timeouts
+	// + BUG-281 loop-back env. Configure Providers (McpSettings) is the write
+	// path — do not hand-edit config.toml.
+	expected := r.expectedGrokTelegramMcpServer()
 	existingMatches := false
 	if existingRaw, exists := mcpServers[telegramMcpServerName]; exists {
 		if existingMap, ok := existingRaw.(map[string]interface{}); ok {
@@ -547,7 +596,7 @@ func (r *Runner) checkClaudeTelegramMcpConfig(accountHomePath string) (configure
 	if !ok {
 		return false, false, nil
 	}
-	if existing.Type != "stdio" || strings.TrimSpace(existing.Command) == "" || len(existing.Args) == 0 || existing.Args[0] != "telegram-mcp" {
+	if existing.Type != "stdio" || strings.TrimSpace(existing.Command) == "" || !telegramMcpArgsLookHealthy(existing.Args) {
 		return true, true, nil
 	}
 	return true, false, nil
