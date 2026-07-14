@@ -1,6 +1,7 @@
 import type {
   ArtifactRepository,
   DirectoryRepository,
+  IntegrationConnectionOutcome,
   IntegrationRepository,
   LocalArtifactRepository,
   LocalProviderRepository,
@@ -172,7 +173,7 @@ export class RunnerAdminRepository implements
     });
   }
 
-  async testIntegration(projectId: string | undefined, integrationId: string, providerType: string, fields?: Record<string, string | undefined>): Promise<string | null> {
+  async testIntegration(projectId: string | undefined, integrationId: string, providerType: string, fields?: Record<string, string | undefined>): Promise<IntegrationConnectionOutcome> {
     const response = await this.httpClient.request(new URL(`/integrations/${encodeURIComponent(integrationId)}/connection`, this.runnerBaseUrl), {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -183,8 +184,9 @@ export class RunnerAdminRepository implements
         ...fields,
       }),
     });
-    const payload = await readJson<{ message?: string | null }>(response);
-    return payload.message ?? null;
+    const payload = await readJson<{ message?: string | null; requestStatus?: string; integrationStatus?: string }>(response);
+    const ok = payload.requestStatus !== "rejected" && payload.integrationStatus !== "failed";
+    return { message: payload.message ?? null, ok };
   }
 
   async listTelegramProxyApprovals(status?: string): Promise<TelegramApprovalRecord[]> {

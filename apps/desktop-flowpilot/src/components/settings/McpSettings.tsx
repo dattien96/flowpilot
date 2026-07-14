@@ -93,12 +93,13 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
   const [config, setConfig] = useState<Record<string, string>>(createEmptyConfig(types[0] ?? "jira"));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  // Errors surface in a blocking modal (settings-modal pattern) so a failed
+  // Jira verify / token rejection can't be missed as inline feedback text.
+  const [errorModal, setErrorModal] = useState<{ title: string; body: string } | null>(null);
   const [editingIntegrationId, setEditingIntegrationId] = useState<string | null>(null);
   const [telegramApprovals, setTelegramApprovals] = useState<TelegramApprovalRecord[]>([]);
   const [providerAccounts, setProviderAccounts] = useState<RunnerProviderAccount[]>([]);
-  const [jiraBearerToken, setJiraBearerToken] = useState("");
   const [configureMessage, setConfigureMessage] = useState<string | null>(null);
-  const [configureError, setConfigureError] = useState<string | null>(null);
 
   const ensurePath = providerConfigEnsurePath[type];
   const supportsGlobalScope = type === "jira" || type === "firebase" || type === "telegram";
@@ -129,7 +130,7 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
         }
       }
     } catch (error) {
-      setMessage(toErrorMessage(error, "Unable to load MCP settings."));
+      setErrorModal({ title: "Unable to load MCP settings", body: toErrorMessage(error, "Unable to load MCP settings.") });
     }
   };
 
@@ -218,16 +219,21 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
           mcpTypeEnabled: true,
         });
       if (needsConnect) {
-        const result = await admin.integrations.testIntegration(undefined, created.id, type, fullConfig as Record<string, string>);
-        await admin.integrations.updateIntegration(created.id, { status: "connected" });
-        setMessage(result ?? (editingIntegration ? "MCP integration updated and reconnected." : duplicate ? "Existing MCP integration reconnected." : "MCP integration created and connected."));
+        const outcome = await admin.integrations.testIntegration(undefined, created.id, type, fullConfig as Record<string, string>);
+        await admin.integrations.updateIntegration(created.id, { status: outcome.ok ? "connected" : "failed" });
+        if (!outcome.ok) {
+          setErrorModal({ title: "Connection failed", body: outcome.message ?? "The runner rejected the connection." });
+          await refresh();
+          return;
+        }
+        setMessage(outcome.message ?? (editingIntegration ? "MCP integration updated and reconnected." : duplicate ? "Existing MCP integration reconnected." : "MCP integration created and connected."));
       } else {
         setMessage(editingIntegration ? "MCP integration updated." : duplicate ? "Existing MCP integration updated." : "MCP integration created.");
       }
       resetEditor();
       await refresh();
     } catch (error) {
-      setMessage(toErrorMessage(error, `Unable to ${editingIntegration ? "update" : "create"} MCP integration.`));
+      setErrorModal({ title: editingIntegration ? "Unable to update integration" : "Unable to create integration", body: toErrorMessage(error, `Unable to ${editingIntegration ? "update" : "create"} MCP integration.`) });
     } finally {
       setBusy(false);
     }
@@ -241,15 +247,12 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
     if (!ensurePath || providerAccounts.length === 0) return;
     setBusy(true);
     setConfigureMessage(null);
-    setConfigureError(null);
     const errors: string[] = [];
-    let bearerTokenToPersist = type === "jira" ? jiraBearerToken.trim() : "";
     for (const account of providerAccounts) {
       try {
-        const body: Record<string, string> =
-          type === "jira"
-            ? { providerKey: account.provider_key, accountHomePath: account.home_path, bearerToken: bearerTokenToPersist }
-            : { providerKey: account.provider_key, accountHomePath: account.home_path };
+        // Jira MCP uses the connected email + API token (Basic auth against the
+        // Rovo MCP server); no OAuth/service-account Bearer override is sent.
+        const body: Record<string, string> = { providerKey: account.provider_key, accountHomePath: account.home_path };
         const response = await runnerFetch(ensurePath, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -258,20 +261,15 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
         if (!response.ok) {
           throw new Error(await readRunnerError(response));
         }
-        // The bearer token only needs to be sent once — the runner persists
-        // it onto the connected Jira credential and reuses it automatically
-        // on every later call in this loop and on future turns.
-        bearerTokenToPersist = "";
       } catch (error) {
         errors.push(`${PROVIDER_LABELS[account.provider_key] ?? account.provider_key} (${account.display_name || account.home_path}): ${toErrorMessage(error, "Unknown error")}`);
       }
     }
     await refresh();
     if (errors.length > 0) {
-      setConfigureError(errors.join("\n"));
+      setErrorModal({ title: "Configure Providers failed", body: errors.join("\n") });
     } else {
       setConfigureMessage(`Configured ${providerAccounts.length} account${providerAccounts.length === 1 ? "" : "s"} successfully.`);
-      if (type === "jira") setJiraBearerToken("");
     }
     setBusy(false);
   };
@@ -284,7 +282,7 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
       await refresh();
       setMessage(`${backend.label} action completed.`);
     } catch (error) {
-      setMessage(toErrorMessage(error, "Unable to run MCP backend action."));
+      setErrorModal({ title: `${backend.label} action failed`, body: toErrorMessage(error, "Unable to run MCP backend action.") });
     } finally {
       setBusy(false);
     }
@@ -294,16 +292,20 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
     setBusy(true);
     try {
       const admin = await getAdminUseCases();
-      const result = await admin.integrations.testIntegration(
+      const outcome = await admin.integrations.testIntegration(
         undefined,
         integration.id,
         integration.type,
         integration.configEncrypted as Record<string, string>,
       );
       await refresh();
-      setMessage(result ?? "Integration test started.");
+      if (!outcome.ok) {
+        setErrorModal({ title: `${integration.label} test failed`, body: outcome.message ?? "The runner rejected the connection." });
+        return;
+      }
+      setMessage(outcome.message ?? "Integration test started.");
     } catch (error) {
-      setMessage(toErrorMessage(error, "Unable to test MCP integration."));
+      setErrorModal({ title: "Unable to test integration", body: toErrorMessage(error, "Unable to test MCP integration.") });
     } finally {
       setBusy(false);
     }
@@ -324,7 +326,7 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
       await refresh();
       setMessage("Integration deleted.");
     } catch (error) {
-      setMessage(toErrorMessage(error, "Unable to delete MCP integration."));
+      setErrorModal({ title: "Unable to delete integration", body: toErrorMessage(error, "Unable to delete MCP integration.") });
     } finally {
       setBusy(false);
     }
@@ -364,7 +366,7 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
       await refresh();
       setMessage(decision === "approved" ? "Telegram message approved. It will send on the AI's next retry." : "Telegram message rejected.");
     } catch (error) {
-      setMessage(toErrorMessage(error, "Unable to decide Telegram approval."));
+      setErrorModal({ title: "Unable to decide Telegram approval", body: toErrorMessage(error, "Unable to decide Telegram approval.") });
     } finally {
       setBusy(false);
     }
@@ -436,7 +438,7 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
           <h3>Configure Providers</h3>
           <small className="settings-field-help">
             {type === "jira"
-              ? "Writes mcpServers.jira (Atlassian Rovo remote MCP) into every discovered AI provider account (Claude, Codex, Gemini, Grok). Uses the connected email+API token as Basic auth against mcp.atlassian.com/v1/mcp by default. Optional Authorization override (service-account Bearer) below. Live Claude/Grok turns also merge this server automatically when connected."
+              ? "Writes mcpServers.jira (Atlassian Rovo remote MCP) into every discovered AI provider account (Claude, Codex, Gemini, Grok). Uses the connected email+API token as Basic auth against mcp.atlassian.com/v1/mcp. Live Claude/Grok turns also merge this server automatically when connected."
               : `Writes mcpServers.${type} into every discovered AI provider account (Claude, Codex, Gemini, Grok) so each can launch the ${type === "firebase" ? "firebase-tools" : "flowpilot telegram-mcp"} server.`}
           </small>
           {type === "jira" ? (
@@ -448,7 +450,6 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
             </small>
           ) : null}
           {configureMessage ? <div className="settings-feedback">{configureMessage}</div> : null}
-          {configureError ? <div className="settings-feedback error" style={{ whiteSpace: "pre-line" }}>{configureError}</div> : null}
           <div className="settings-list">
             {providerAccounts.length === 0 ? (
               <div className="settings-list-empty">No AI provider accounts found.</div>
@@ -463,22 +464,6 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
               ))
             )}
           </div>
-          {type === "jira" ? (
-            <div className="settings-grid">
-              <label className="settings-field settings-field-full">
-                <span>Authorization override (optional)</span>
-                <input
-                  type="password"
-                  value={jiraBearerToken}
-                  onChange={(event) => setJiraBearerToken(event.target.value)}
-                  placeholder="Leave empty to use connected API token (Basic)"
-                />
-                <small className="settings-field-help">
-                  Only if you need a service-account API key or OAuth access token. Personal API token from Connect is enough for most setups.
-                </small>
-              </label>
-            </div>
-          ) : null}
           <div className="settings-actions">
             <button
               className="primary-btn"
@@ -520,6 +505,22 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
                 </div>
               ))
             )}
+          </div>
+        </div>
+      ) : null}
+      {errorModal ? (
+        <div className="settings-modal-backdrop" role="presentation" onClick={() => setErrorModal(null)}>
+          <div className="settings-modal mcp-error-modal" role="alertdialog" aria-modal="true" aria-label={errorModal.title} onClick={(event) => event.stopPropagation()}>
+            <div className="settings-panel-head">
+              <div>
+                <div className="settings-eyebrow">Error</div>
+                <h2>{errorModal.title}</h2>
+              </div>
+            </div>
+            <p className="mcp-error-modal-body">{errorModal.body}</p>
+            <div className="settings-actions">
+              <button className="primary-btn" autoFocus onClick={() => setErrorModal(null)} type="button">Close</button>
+            </div>
           </div>
         </div>
       ) : null}

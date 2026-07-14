@@ -755,6 +755,20 @@ input {
   background: var(--bg-2);
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.42);
 }
+.mcp-error-modal {
+  width: min(520px, 100%);
+  border-color: rgba(248, 81, 73, 0.35);
+}
+.mcp-error-modal .settings-eyebrow {
+  color: var(--err);
+}
+.mcp-error-modal-body {
+  margin: 14px 0 22px;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+  color: var(--text);
+}
 .settings-panel {
   max-width: 1200px;
   margin: 0 auto;
