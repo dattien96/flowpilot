@@ -11,7 +11,7 @@
 - Created: `2026-07-13`
 - Last Updated: `2026-07-13`
 - Parent Documents: [SD-11: MCP Connection Flows](../../06-System-Tech-Design/SD-11-MCP-Connection-Flows.md), [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md)
-- Child Documents: [Task-230: Firebase Crashlytics MCP Connection And Provider Config](../../08-Task/todo/Task-230-Firebase-Crashlytics-MCP-Connection-And-Provider-Config.md) (`P-1`/`P-2`), [Task-231: Firebase Crashlytics Context Source And Runtime Target](../../08-Task/todo/Task-231-Firebase-Crashlytics-Context-Source-And-Runtime-Target.md) (`P-3`/`P-4`/`P-5`); prereq: [Task-226](../../08-Task/todo/Task-226-MCP-Context-Source-Adapter-Dispatch-Refactor.md) + [Task-227](../../08-Task/todo/Task-227-Generalize-MCP-Prompt-Injection-And-Preflight.md) (shared refactors, parented to CP-05-06)
+- Child Documents: [Task-230: Firebase Crashlytics MCP Connection And Provider Config](../../08-Task/done/Task-230-Firebase-Crashlytics-MCP-Connection-And-Provider-Config.md) (`P-1`/`P-2`), [Task-231: Firebase Crashlytics Context Source And Runtime Target](../../08-Task/done/Task-231-Firebase-Crashlytics-Context-Source-And-Runtime-Target.md) (`P-3`/`P-4`/`P-5`); prereq: [Task-226](../../08-Task/done/Task-226-MCP-Context-Source-Adapter-Dispatch-Refactor.md) + [Task-227](../../08-Task/done/Task-227-Generalize-MCP-Prompt-Injection-And-Preflight.md) (shared refactors, parented to CP-05-06)
 - Related Documents: [CP-05-06: Jira MCP As A Context Artifact Source](./CP-05-06-Jira-MCP.md) (sibling input source — chia chung refactor adapter-dispatch + prompt-generalization), [CP-44: Pluggable Context Source Registry](../done/CP-44-Pluggable-Context-Source-Registry.md), [CP-45: Generic Artifact Types And Instances](../done/CP-45-Generic-Artifact-Types-And-Instances.md), [CP-05-03: Google Drive MCP Current Implementation Notes](../done/CP-05-03-Driver-Mcp.md) (mẫu provider-CLI-owns-MCP), [CP-05-05: Telegram MCP](./CP-05-05-Tele-Mcp.md)
 - Replaces: `None`
 - Tags: `mcp`, `firebase`, `crashlytics`, `context-source`, `context-artifact`, `artifact-framework`, `flow-mode`
@@ -108,7 +108,7 @@ Cho step "Investigate Crash On Firebase" (và các step cần crash context khá
   - Thêm `{ id: "firebase.crashlytics", label: "Firebase Crashlytics" }` vào `contextSourceOptions` ([WorkflowsSettings.tsx:64](../../../apps/desktop-flowpilot/src/components/settings/WorkflowsSettings.tsx:64)); sub-config: target mode (`ask`/`fixed`/`from-prompt`), chọn connected Firebase integration + default app.
 - `P-5` **Runtime target resolver + question.**
   - `resolveFirebaseTargetForRun` mirror `resolveMCPDriverTargetForRun`; question options = crash issue id (free-text) / chọn app / date range; `filterString` loại `firebase.*` khỏi collect; `appendFirebaseTargetPrompt` inject note bounded (đọc stack trace + top frames của crash đã chọn, không broad).
-- `P-6` **Use-case wiring:** built-in/pack step "Investigate Crash" bind `context_artifact.v1` (`firebase.crashlytics` + `source.excerpt`).
+- `P-6` ~~**Use-case wiring:** built-in "Investigate Crash" pack~~ **out of scope** (2026-07-15): user tự bind `context_artifact.v1` (`firebase.crashlytics`) trong workflow editor.
 - `P-7` **Test Console (CP-05-02):** thêm Firebase read action (`firebase_get_crash`) khi shell sẵn.
 
 ## 5. Touched Areas

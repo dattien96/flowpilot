@@ -5,11 +5,11 @@
 - Document ID: `Task-227`
 - Title: `Generalize MCP Prompt-Injection And Preflight`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-13`
-- Last Updated: `2026-07-13`
+- Last Updated: `2026-07-15`
 - Parent Documents: [CP-05-06: Jira MCP As A Context Artifact Source](../../07-Coding-Plan/todo/CP-05-06-Jira-MCP.md) (`P-6`), [SD-11: MCP Connection Flows](../../06-System-Tech-Design/SD-11-MCP-Connection-Flows.md), [CP-05-03: Google Drive MCP Current Implementation Notes](../../07-Coding-Plan/done/CP-05-03-Driver-Mcp.md) (§11.10, §11.11)
 - Child Documents: `None`
 - Related Documents: [Task-226: MCP Context-Source Adapter Dispatch Refactor](./Task-226-MCP-Context-Source-Adapter-Dispatch-Refactor.md) (sibling foundation), [CP-05-04: Firebase MCP](../../07-Coding-Plan/todo/CP-05-04-Firebase-Mcp.md), [CP-05-05: Telegram MCP](../../07-Coding-Plan/todo/CP-05-05-Tele-Mcp.md)
