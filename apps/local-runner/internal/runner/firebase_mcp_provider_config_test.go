@@ -31,6 +31,78 @@ func connectTestFirebaseBackend(t *testing.T, instance *Runner) {
 	}
 }
 
+func TestEnsureFirebaseMcpProviderConfigDispatchesToClaudeInProduction(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	connectTestFirebaseBackend(t, instance)
+	accountHome := t.TempDir()
+
+	resp, err := instance.EnsureFirebaseMcpProviderConfig(FirebaseMcpProviderConfigRequest{
+		ProviderKey:     "claude",
+		AccountHomePath: accountHome,
+	})
+	if err != nil {
+		t.Fatalf("EnsureFirebaseMcpProviderConfig: %v", err)
+	}
+	if resp.ServerName != "firebase" || !resp.Changed {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestEnsureFirebaseMcpProviderConfigRejectsUnsupportedProvider(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	connectTestFirebaseBackend(t, instance)
+	if _, err := instance.EnsureFirebaseMcpProviderConfig(FirebaseMcpProviderConfigRequest{
+		ProviderKey:     "unknown-provider",
+		AccountHomePath: t.TempDir(),
+	}); err == nil {
+		t.Fatal("expected error for unsupported provider")
+	}
+}
+
+// TestEnsureFirebaseMcpProviderConfigDispatchesToCodexGeminiGrok verifies
+// Task-234 T-2: Firebase's stdio shape (unlike Jira's remote HTTP) round-trips
+// into all three remaining provider config formats.
+func TestEnsureFirebaseMcpProviderConfigDispatchesToCodexGeminiGrok(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	connectTestFirebaseBackend(t, instance)
+
+	codexHome := t.TempDir()
+	if _, err := instance.EnsureFirebaseMcpProviderConfig(FirebaseMcpProviderConfigRequest{ProviderKey: "codex", AccountHomePath: codexHome}); err != nil {
+		t.Fatalf("EnsureFirebaseMcpProviderConfig(codex): %v", err)
+	}
+	codexRaw, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	if !strings.Contains(string(codexRaw), "firebase-tools") {
+		t.Fatalf("expected firebase-tools command in codex config, got: %s", codexRaw)
+	}
+
+	geminiHome := t.TempDir()
+	if _, err := instance.EnsureFirebaseMcpProviderConfig(FirebaseMcpProviderConfigRequest{ProviderKey: "gemini", AccountHomePath: geminiHome}); err != nil {
+		t.Fatalf("EnsureFirebaseMcpProviderConfig(gemini): %v", err)
+	}
+	geminiRaw, err := os.ReadFile(filepath.Join(geminiHome, ".gemini", "settings.json"))
+	if err != nil {
+		t.Fatalf("read gemini config: %v", err)
+	}
+	if !strings.Contains(string(geminiRaw), "firebase-tools") {
+		t.Fatalf("expected firebase-tools command in gemini config, got: %s", geminiRaw)
+	}
+
+	grokHome := t.TempDir()
+	if _, err := instance.EnsureFirebaseMcpProviderConfig(FirebaseMcpProviderConfigRequest{ProviderKey: "grok", AccountHomePath: grokHome}); err != nil {
+		t.Fatalf("EnsureFirebaseMcpProviderConfig(grok): %v", err)
+	}
+	grokRaw, err := os.ReadFile(filepath.Join(grokHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read grok config: %v", err)
+	}
+	if !strings.Contains(string(grokRaw), "firebase-tools") {
+		t.Fatalf("expected firebase-tools command in grok config, got: %s", grokRaw)
+	}
+}
+
 func TestValidateFirebaseServiceAccountJSONAcceptsValidKey(t *testing.T) {
 	parsed, err := validateFirebaseServiceAccountJSON(validFirebaseServiceAccountJSON)
 	if err != nil {

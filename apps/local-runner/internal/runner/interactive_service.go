@@ -1635,14 +1635,20 @@ func (s *InteractiveService) AttachRunner(r *Runner) {
 	// call that first constructs it — SetMCPDriverAdapter is safe either way
 	// (it mutates the already-registered mcp.driver source in place).
 	DefaultContextSourceRegistry().SetMCPDriverAdapter(&googleDriveDriverAdapter{runner: r})
-	// Task-229: wire jira.issue/jira.sprint's production REST backing the same
-	// way, once a real *Runner is available.
-	DefaultContextSourceRegistry().SetJiraIssueAdapter(&jiraRestIssueAdapter{runner: r})
-	DefaultContextSourceRegistry().SetJiraSprintAdapter(&jiraRestSprintAdapter{runner: r})
-	// Task-231 DOD-4 revisit: wire firebase.crashlytics's production backing —
-	// a real MCP client speaking to a spawned firebase-tools process (the
-	// official access path, CP-05-04 P-1/Q-1), not a hand-rolled REST client.
-	DefaultContextSourceRegistry().SetFirebaseCrashlyticsAdapter(newFirebaseToolsMcpAdapter(r))
+	// Task-234 T-5: jira.issue/jira.sprint/firebase.crashlytics's live-fetch
+	// adapters (jiraRestIssueAdapter, jiraRestSprintAdapter,
+	// firebaseToolsMcpAdapter — wired here since Task-229/231) are
+	// deliberately left unwired now. These sources are already filtered out
+	// of the live AI-turn collect path (flow_executor.go's filterString
+	// calls) in favor of a bounded prompt note — so their Fetch adapters were
+	// never actually invoked in a live turn (CP-05-06 R-1: REST is scoped to
+	// pick-list use, not live content). Keeping the adapter code/files intact
+	// per explicit instruction, only removing the wiring, in case a future
+	// non-live consumer (e.g. a Test Console direct-collect path) wants them.
+	//
+	// DefaultContextSourceRegistry().SetJiraIssueAdapter(&jiraRestIssueAdapter{runner: r})
+	// DefaultContextSourceRegistry().SetJiraSprintAdapter(&jiraRestSprintAdapter{runner: r})
+	// DefaultContextSourceRegistry().SetFirebaseCrashlyticsAdapter(newFirebaseToolsMcpAdapter(r))
 }
 
 // SetFlowDefinitionStore attaches the FlowDefinitionStore startResolvedFlow

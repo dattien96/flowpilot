@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 // Task-230 (CP-05-04 P-1/P-2): Firebase connects through the OFFICIAL
@@ -252,6 +254,257 @@ func (r *Runner) EnsureClaudeFirebaseMcpConfig(accountHomePath string) (Firebase
 
 	return FirebaseMcpProviderConfigResponse{
 		ProviderKey: "claude",
+		ServerName:  firebaseMcpServerName,
+		Status:      "configured",
+		Changed:     changed,
+		ConfigPath:  configPath,
+	}, nil
+}
+
+// FirebaseMcpProviderConfigRequest is the HTTP-facing request for
+// EnsureFirebaseMcpProviderConfig, mirroring JiraMcpProviderConfigRequest.
+type FirebaseMcpProviderConfigRequest struct {
+	ProviderKey     string `json:"providerKey"`
+	AccountHomePath string `json:"accountHomePath"`
+}
+
+// EnsureFirebaseMcpProviderConfig is the dispatch entry point mirroring
+// EnsureJiraMcpProviderConfig — the production call site that was missing
+// entirely before this change (only EnsureClaudeFirebaseMcpConfig existed,
+// called from tests only). All four providers are wired: Firebase is a
+// local stdio launcher (unlike Jira's remote HTTP), so the same
+// npx-firebase-tools shape already proven for Claude round-trips cleanly
+// into Codex/Gemini/Grok's own config formats, mirroring Google Drive's
+// per-provider writers exactly.
+func (r *Runner) EnsureFirebaseMcpProviderConfig(req FirebaseMcpProviderConfigRequest) (FirebaseMcpProviderConfigResponse, error) {
+	providerKey := strings.ToLower(strings.TrimSpace(req.ProviderKey))
+	if providerKey == "" {
+		return FirebaseMcpProviderConfigResponse{}, errors.New("providerKey is required")
+	}
+	accountHomePath := strings.TrimSpace(req.AccountHomePath)
+	if accountHomePath == "" {
+		return FirebaseMcpProviderConfigResponse{}, errors.New("accountHomePath is required")
+	}
+	switch providerKey {
+	case "claude":
+		return r.EnsureClaudeFirebaseMcpConfig(accountHomePath)
+	case "codex":
+		return r.ensureCodexFirebaseMcpConfig(accountHomePath)
+	case "gemini":
+		return r.ensureGeminiFirebaseMcpConfig(accountHomePath)
+	case "grok":
+		return r.ensureGrokFirebaseMcpConfig(accountHomePath)
+	default:
+		return FirebaseMcpProviderConfigResponse{}, fmt.Errorf("Firebase MCP provider config is not yet implemented for provider: %s", providerKey)
+	}
+}
+
+// resolveMaterializedFirebaseCredentialPath resolves the connected Firebase
+// credential and materializes it to disk (GOOGLE_APPLICATION_CREDENTIALS
+// needs a file path, not inline JSON) — shared by every provider writer plus
+// firebaseLiveMCPServer, so each doesn't reimplement resolve+materialize.
+func (r *Runner) resolveMaterializedFirebaseCredentialPath() (string, error) {
+	creds, err := r.resolveConnectedFirebaseCredential()
+	if err != nil {
+		return "", err
+	}
+	return writeFirebaseCredentialFile(r.workspace, creds.ServiceAccountJSON)
+}
+
+// firebaseLiveMCPServer builds the per-turn claudeMcpServer entry for
+// Firebase when connected, for flowpilotClaudeExtraMCPServers (Task-234
+// T-1). Its stdio shape (Command set) reaches Grok automatically too via
+// grokACPExtraMCPServers.
+func (r *Runner) firebaseLiveMCPServer() (claudeMcpServer, bool) {
+	credentialPath, err := r.resolveMaterializedFirebaseCredentialPath()
+	if err != nil || credentialPath == "" {
+		return claudeMcpServer{}, false
+	}
+	return expectedClaudeFirebaseMcpServer(credentialPath), true
+}
+
+func (r *Runner) ensureCodexFirebaseMcpConfig(accountHomePath string) (FirebaseMcpProviderConfigResponse, error) {
+	credentialPath, err := r.resolveMaterializedFirebaseCredentialPath()
+	if err != nil {
+		return FirebaseMcpProviderConfigResponse{}, err
+	}
+	configPath := filepath.Join(accountHomePath, "config.toml")
+
+	var config codexConfig
+	changed := false
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return FirebaseMcpProviderConfigResponse{}, fmt.Errorf("failed to read Codex config: %w", readErr)
+	}
+	if readErr == nil {
+		if tomlErr := toml.Unmarshal(raw, &config); tomlErr != nil {
+			config = codexConfig{}
+			changed = true
+		}
+	}
+	if config.McpServers == nil {
+		config.McpServers = make(map[string]codexMcpServer)
+	}
+
+	expected := codexMcpServer{
+		Command:           "npx",
+		Args:              []string{"-y", "firebase-tools", "mcp", "--only", "crashlytics"},
+		StartupTimeoutSec: 20,
+		ToolTimeoutSec:    120,
+		Enabled:           true,
+		Env:               map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": credentialPath},
+	}
+	existing, exists := config.McpServers[firebaseMcpServerName]
+	if !exists || !codexServerConfigMatches(existing, expected) {
+		config.McpServers[firebaseMcpServerName] = expected
+		changed = true
+	}
+
+	if changed {
+		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+			return FirebaseMcpProviderConfigResponse{}, fmt.Errorf("failed to create config directory: %w", err)
+		}
+		out, err := toml.Marshal(config)
+		if err != nil {
+			return FirebaseMcpProviderConfigResponse{}, fmt.Errorf("failed to marshal TOML: %w", err)
+		}
+		if err := os.WriteFile(configPath, out, 0o644); err != nil {
+			return FirebaseMcpProviderConfigResponse{}, fmt.Errorf("failed to write config: %w", err)
+		}
+	}
+
+	return FirebaseMcpProviderConfigResponse{
+		ProviderKey: "codex",
+		ServerName:  firebaseMcpServerName,
+		Status:      "configured",
+		Changed:     changed,
+		ConfigPath:  configPath,
+	}, nil
+}
+
+func (r *Runner) ensureGeminiFirebaseMcpConfig(accountHomePath string) (FirebaseMcpProviderConfigResponse, error) {
+	credentialPath, err := r.resolveMaterializedFirebaseCredentialPath()
+	if err != nil {
+		return FirebaseMcpProviderConfigResponse{}, err
+	}
+	configDir := filepath.Join(accountHomePath, ".gemini")
+	configPath := filepath.Join(configDir, "settings.json")
+
+	var config geminiSettings
+	changed := false
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return FirebaseMcpProviderConfigResponse{}, fmt.Errorf("failed to read Gemini config: %w", readErr)
+	}
+	if readErr == nil {
+		if jsonErr := json.Unmarshal(raw, &config); jsonErr != nil {
+			config = geminiSettings{}
+			changed = true
+		}
+	}
+	if config.McpServers == nil {
+		config.McpServers = make(map[string]geminiMcpServer)
+	}
+
+	expected := geminiMcpServer{
+		Command: "npx",
+		Args:    []string{"-y", "firebase-tools", "mcp", "--only", "crashlytics"},
+		Env:     map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": credentialPath},
+		Timeout: 600000,
+		Trust:   false,
+	}
+	existing, exists := config.McpServers[firebaseMcpServerName]
+	if !exists || !geminiServerConfigMatches(existing, expected) {
+		config.McpServers[firebaseMcpServerName] = expected
+		changed = true
+	}
+
+	if changed {
+		if err := os.MkdirAll(configDir, 0o755); err != nil {
+			return FirebaseMcpProviderConfigResponse{}, fmt.Errorf("failed to create config directory: %w", err)
+		}
+		out, err := json.MarshalIndent(config, "", "  ")
+		if err != nil {
+			return FirebaseMcpProviderConfigResponse{}, fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		if err := os.WriteFile(configPath, out, 0o644); err != nil {
+			return FirebaseMcpProviderConfigResponse{}, fmt.Errorf("failed to write config: %w", err)
+		}
+	}
+
+	return FirebaseMcpProviderConfigResponse{
+		ProviderKey: "gemini",
+		ServerName:  firebaseMcpServerName,
+		Status:      "configured",
+		Changed:     changed,
+		ConfigPath:  configPath,
+	}, nil
+}
+
+func (r *Runner) ensureGrokFirebaseMcpConfig(accountHomePath string) (FirebaseMcpProviderConfigResponse, error) {
+	credentialPath, err := r.resolveMaterializedFirebaseCredentialPath()
+	if err != nil {
+		return FirebaseMcpProviderConfigResponse{}, err
+	}
+	configPath := filepath.Join(accountHomePath, "config.toml")
+
+	doc := map[string]interface{}{}
+	changed := false
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return FirebaseMcpProviderConfigResponse{}, fmt.Errorf("failed to read Grok config: %w", readErr)
+	}
+	if readErr == nil {
+		if tomlErr := toml.Unmarshal(raw, &doc); tomlErr != nil {
+			doc = map[string]interface{}{}
+			changed = true
+		}
+	}
+
+	mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
+	if mcpServers == nil {
+		mcpServers = map[string]interface{}{}
+	}
+
+	expected := grokMcpServer{
+		Command: "npx",
+		Args:    []string{"-y", "firebase-tools", "mcp", "--only", "crashlytics"},
+		Enabled: true,
+		Env:     map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": credentialPath},
+	}
+	existingMatches := false
+	if existingRaw, exists := mcpServers[firebaseMcpServerName]; exists {
+		if existingMap, ok := existingRaw.(map[string]interface{}); ok {
+			if existingServer, ok := grokServerFromMap(existingMap); ok {
+				existingMatches = grokServerConfigMatches(existingServer, expected)
+			}
+		}
+	}
+	if !existingMatches {
+		expectedMap, mapErr := grokServerToMap(expected)
+		if mapErr != nil {
+			return FirebaseMcpProviderConfigResponse{}, fmt.Errorf("failed to build Grok MCP server entry: %w", mapErr)
+		}
+		mcpServers[firebaseMcpServerName] = expectedMap
+		doc["mcp_servers"] = mcpServers
+		changed = true
+	}
+
+	if changed {
+		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+			return FirebaseMcpProviderConfigResponse{}, fmt.Errorf("failed to create config directory: %w", err)
+		}
+		out, err := toml.Marshal(doc)
+		if err != nil {
+			return FirebaseMcpProviderConfigResponse{}, fmt.Errorf("failed to marshal TOML: %w", err)
+		}
+		if err := os.WriteFile(configPath, out, 0o644); err != nil {
+			return FirebaseMcpProviderConfigResponse{}, fmt.Errorf("failed to write config: %w", err)
+		}
+	}
+
+	return FirebaseMcpProviderConfigResponse{
+		ProviderKey: "grok",
 		ServerName:  firebaseMcpServerName,
 		Status:      "configured",
 		Changed:     changed,
