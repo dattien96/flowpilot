@@ -9,7 +9,7 @@ Grok multi-account isolation sets `HOME=/Users/tiendat/.grokHome2` on the provid
 1. **Runner endpoint** `POST /internal/mcp/telegram/send` (`TelegramLoopbackSendPath`)
    - Loopback-only (`isLoopbackRequest`)
    - Auth via short-lived/workspace token (`FLOWPILOT_RUNNER_MCP_TOKEN`, persisted under `.flowpilot/telegram-mcp-loopback-token`, mode 0600)
-   - Resolves bot token from runner keyring, reuses approval queue + `sendMessage`
+   - Resolves bot token from runner keyring, honors `autoApprove` gate + `sendMessage`
 
 2. **`telegram-mcp` child**
    - When `FLOWPILOT_RUNNER_URL` + `FLOWPILOT_RUNNER_MCP_TOKEN` are present: thin loopback client (no keyring, no bot token)
@@ -25,7 +25,7 @@ Grok multi-account isolation sets `HOME=/Users/tiendat/.grokHome2` on the provid
 - `TestTelegramMcpLoopbackRequiresRunnerToken`
 - `TestTelegramMcpLoopbackWorksUnderProviderHome`
 - `TestTelegramMcpLoopbackDoesNotReadChildKeyring`
-- `TestTelegramMcpLoopbackPreservesApprovalQueue`
+- `TestTelegramMcpLoopbackRequiresAutoApprove`
 - `TestTelegramMcpDirectModeDisabledOrExplicitWhenRunnerEndpointMissing`
 - `TestGrokTelegramLiveMCPServerIncludesLoopbackEnv`
 - `TestEnsureGrokTelegramMcpConfigWritesLoopbackEnv`

@@ -106,7 +106,7 @@
 |----|------|----------|--------|
 | S-01 | Settings → MCP Servers: có mode/page **Jira**, **Firebase**, **Telegram** | 3 entry riêng | ☐ |
 | S-02 | Mỗi page có form create + Existing Integrations + nút **Configure Providers** | hiện đủ | ☐ |
-| S-03 | Telegram page có panel **Pending Telegram Approvals** | empty OK | ☐ |
+| S-03 | Telegram page có toggle **Allow Telegram sends** / **Enable auto-approve** trên integration | hiện đủ | ☐ |
 | S-04 | Workflows → Artifacts: catalog có type **`telegram.v1`** | thấy type | ☐ |
 | S-05 | New `context_artifact.v1`: checkbox **Jira Issue**, **Jira Sprint**, **Firebase Crashlytics** | 3 option | ☐ |
 | S-06 | Step bind artifact: output-only artifact chỉ hiện ở slot **Output** | không hiện ở Input | ☐ |
@@ -283,7 +283,7 @@ Rules:
 2. Use the chat/channel id from the Telegram OUTPUT write-contract / artifact config for this step.
 3. Message body: short final status of this run (what was done, pass/fail, 2–5 lines). If a message template is provided, follow it.
 4. Do NOT only claim that you sent a message — actually invoke `send_message`.
-5. If the tool returns pending-approval, tell the user to Approve in Settings → MCP → Telegram → Pending Telegram Approvals, then retry the exact same send.
+5. If the tool returns MCP_TOOL_APPROVAL_REQUIRED, tell the user to enable **Allow Telegram sends** in Settings → MCP → Telegram, then retry the exact same send.
 6. If the tool returns a real `message_id`, you may finish.
 7. If MCP is unavailable, report MCP_UNAVAILABLE and stop.
 8. Never print or request the bot token.
@@ -407,13 +407,13 @@ Với **mỗi provider**, chọn provider đó trước khi Start run.
 | T-R8 | Mở Telegram: **đúng 1** tin test | ☐ | ☐ | ☐ |
 | T-R9 | Không lộ bot token trong transcript | ☐ | ☐ | ☐ |
 
-### 8.1 Telegram approval / gate (Claude ưu tiên)
+### 8.1 Telegram auto-approve / gate (Claude ưu tiên)
 
 | ID | Step | Expected | Result |
 |----|------|----------|--------|
-| T-A1 | Nếu pending: Settings → Telegram → **Pending Telegram Approvals** → Reject | **không** gửi tin; agent nhận reject | ☐ |
-| T-A2 | Run lại → Approve | gửi 1 tin; có `message_id` | ☐ |
-| T-A3 | Gọi lại cùng text (nếu queue replay) | **không** double-send | ☐ |
+| T-A1 | Auto-approve **OFF** → gọi `send_message` | `MCP_TOOL_APPROVAL_REQUIRED`; **không** gửi tin | ☐ |
+| T-A2 | Bật **Allow Telegram sends** → retry | gửi 1 tin; có `message_id` | ☐ |
+| T-A3 | Tắt auto-approve → retry | lại bị refuse | ☐ |
 | T-A4 | Step prompt §5.5 fake-send (no tool) | gate FAIL / reprompt | ☐ |
 
 ---
