@@ -334,6 +334,13 @@ export function ChatInput(): React.ReactElement {
   const [attachError, setAttachError] = useState<string | null>(null);
   const [previewAtt, setPreviewAtt] = useState<PendingAttachment | null>(null);
   const [displayedTokenUsage, setDisplayedTokenUsage] = useState<TokenUsageSnapshot | undefined>(undefined);
+  // Composer height driven by the top-edge drag handle (px). null = rows={2}
+  // default. Kept in component state (not tied to the textarea's clearSeq key)
+  // so a dragged height survives the remount-on-send. The panel sits at the
+  // bottom of the screen, so the handle lives on the TOP edge and dragging up
+  // grows the box upward — a native bottom-right resize grip would grow it off
+  // the bottom of the viewport where there is no room.
+  const [composerHeight, setComposerHeight] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
@@ -640,6 +647,32 @@ export function ChatInput(): React.ReactElement {
       }
     }, 0);
     openAgentSpawnGuide();
+  };
+
+  // Top-edge resize handle. Dragging up grows the textarea (the panel is pinned
+  // to the bottom of the screen, so it must grow upward). Move/up are bound on
+  // `window` for the duration of the drag so it never stalls when the cursor
+  // leaves the thin bar — the previous pointer-capture-on-the-handle approach
+  // dropped events and made the drag feel dead. Clamped to [rows={2}, 60vh].
+  const RESIZE_MIN = 46;
+  const onResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = textAreaRef.current?.getBoundingClientRect().height ?? composerHeight ?? RESIZE_MIN;
+    const max = Math.round(window.innerHeight * 0.6);
+    const onMove = (ev: PointerEvent) => {
+      const next = Math.min(max, Math.max(RESIZE_MIN, startHeight + (startY - ev.clientY)));
+      setComposerHeight(next);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.userSelect = "";
+    };
+    // Suppress text selection while dragging the handle.
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   };
 
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -1129,6 +1162,19 @@ export function ChatInput(): React.ReactElement {
       )}
 
       <div className="input-bar">
+        {!childRunFocused && (
+          <div
+            className="composer-resize-handle"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Drag to resize the message box"
+            title="Drag to resize the message box (double-click to reset)"
+            onPointerDown={onResizePointerDown}
+            onDoubleClick={() => setComposerHeight(null)}
+          >
+            <span className="composer-resize-grip" aria-hidden="true" />
+          </div>
+        )}
         {isChatMode && !controllerExpanded && !childRunFocused && (
           <button
             type="button"
@@ -1204,6 +1250,7 @@ export function ChatInput(): React.ReactElement {
                 ref={textAreaRef}
                 className="text-area"
                 rows={2}
+                style={composerHeight ? { height: `${composerHeight}px` } : undefined}
                 placeholder={placeholder}
                 value={text}
                 onChange={(e) => {

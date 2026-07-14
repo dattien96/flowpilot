@@ -3419,7 +3419,43 @@ input {
   flex: 1;
 }
 .text-area {
+  /* Height is driven by the custom top-edge drag handle (.composer-resize-handle),
+     not the native bottom-right grip: this panel is anchored to the bottom of the
+     screen, so growth must go upward. min-height pins the rows={2} floor; the
+     handle's JS clamp enforces the 60vh ceiling. */
   resize: none;
+  min-height: 46px;
+}
+/* Top-edge drag bar for the composer. Absolutely positioned on the top edge of
+   the input bar (not a grid row) so it sits exactly on the box's top border and
+   is not pushed away by the .chat-input grid gap. Drag up grows the textarea
+   upward (the panel is pinned to the bottom of the screen); double-click resets.
+   Full width + a tall-enough hit area so it's easy to grab. */
+.composer-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  transform: translateY(-50%);
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ns-resize;
+  touch-action: none;
+  z-index: 6;
+}
+.composer-resize-grip {
+  width: 46px;
+  height: 4px;
+  border-radius: 4px;
+  background: var(--border);
+  transition: background 0.12s ease, width 0.12s ease;
+}
+.composer-resize-handle:hover .composer-resize-grip,
+.composer-resize-handle:active .composer-resize-grip {
+  background: var(--accent);
+  width: 64px;
 }
 .flow-awaiting-user-detail {
   min-height: 60px;
@@ -3805,8 +3841,12 @@ input {
 .input-bar {
   display: flex;
   gap: 6px;
-  align-items: center;
+  /* flex-end so the attach/send controls stay pinned to the bottom of the
+     composer as the textarea is dragged taller, instead of floating in its
+     vertical center. position:relative anchors the top-edge resize handle. */
+  align-items: flex-end;
   min-width: 0;
+  position: relative;
 }
 .chat-usage-line {
   margin-top: 6px;
