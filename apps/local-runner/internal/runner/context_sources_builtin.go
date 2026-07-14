@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/changecontract"
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
 )
@@ -142,6 +143,9 @@ func registerBuiltinContextSources(r *ContextSourceRegistry) {
 	mustRegisterContextSource(r, &chatSummarySource{priority: 5})
 	mustRegisterContextSource(r, &sourceExcerptSource{priority: 4})
 	mustRegisterContextSource(r, &mcpDriverSource{priority: 6})
+	mustRegisterContextSource(r, &jiraIssueSource{priority: 7})
+	mustRegisterContextSource(r, &jiraSprintSource{priority: 8})
+	mustRegisterContextSource(r, &firebaseCrashlyticsSource{priority: 9})
 }
 
 // mustRegisterContextSource panics on a registration conflict among the
@@ -178,6 +182,22 @@ func (s *featureHistorySource) Fetch(_ context.Context, hints FlowContextHints) 
 	if err == nil {
 		history = strings.TrimSpace(featurecatalog.HistorySlot(hints.FeatureKey, ledger))
 	}
+
+	// Task-188 (CP-43 P-5, SD-21 D-3): the Canonical Head is mandatory and
+	// leads the section — the AI reads current truth + rejected dead-ends
+	// before any raw ordered history. A missing/unreadable Head degrades to
+	// "no Head block", never an error (AC-9); this never removes the
+	// underlying history body, only prepends to it.
+	if head, found, err := changecontract.LoadHead(hints.Workspace, hints.FeatureKey); err == nil && found {
+		if block := changecontract.RenderHeadBlock(head); block != "" {
+			if history != "" {
+				history = block + "\n" + history
+			} else {
+				history = block
+			}
+		}
+	}
+
 	section.Body = history
 	if history == "" {
 		// Preserves the original warning text/condition exactly: fires whenever

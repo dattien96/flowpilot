@@ -1,6 +1,9 @@
 package runner
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // Task-206 (CP-46 P-2/P-4, Task-206 T-2): standalone Grok ACP primitives.
 //
@@ -184,34 +187,80 @@ func grokACPFlowPilotMCPServers(baseURL, token string) []interface{} {
 // grokACPExtraMCPServers converts the shared claudeMcpServer config map (the
 // same shape flowpilotClaudeExtraMCPServers/writeClaudeMCPConfig already build
 // for Codex/Claude, google_drive_mcp_provider_config.go) into ACP mcpServers[]
-// entries (Task-209 T-2). ACP entries are stdio-launched (command/args/env),
-// mirroring config.toml's own [mcp_servers.*] shape rather than Claude's HTTP
-// entry — Grok's mcpCapabilities only advertised http/sse for server-hosted
-// tools (like the flowpilot entry above); externally-launched servers (Google
-// Drive) go through the stdio launcher shape instead.
+// entries (Task-209 T-2).
+//
+// Two shapes are forwarded (G2 / Task-234 Q-2):
+//   - stdio: Command set → type "stdio" + command/args/env (Drive/Firebase/Telegram)
+//   - http:  URL set, Command empty → type "http" + url/headers (Jira remote MCP)
+//
+// FlowPilot's own runner-hosted tools already use the HTTP shape via
+// grokACPFlowPilotMCPServers; Grok advertises mcpCapabilities.http=true.
 func grokACPExtraMCPServers(extra map[string]claudeMcpServer) []interface{} {
 	if len(extra) == 0 {
 		return nil
 	}
 	out := make([]interface{}, 0, len(extra))
 	for name, server := range extra {
-		if strings.TrimSpace(name) == "" || strings.TrimSpace(server.Command) == "" {
+		name = strings.TrimSpace(name)
+		if name == "" {
 			continue
 		}
-		entry := map[string]interface{}{
-			"type":    "stdio",
-			"name":    name,
-			"command": server.Command,
-			"args":    server.Args,
-		}
-		if len(server.Env) > 0 {
-			env := make(map[string]interface{}, len(server.Env))
-			for k, v := range server.Env {
-				env[k] = v
+		command := strings.TrimSpace(server.Command)
+		url := strings.TrimSpace(server.URL)
+		switch {
+		case command != "":
+			entry := map[string]interface{}{
+				"type":    "stdio",
+				"name":    name,
+				"command": command,
+				"args":    server.Args,
 			}
-			entry["env"] = env
+			if len(server.Env) > 0 {
+				// Live-verified (run-584): Grok's StdioMcpServer.env is an ARRAY of
+				// {name,value} objects — same ACP HttpHeader[] pattern as headers.
+				// A plain {"KEY":"val"} map makes session/new fail with
+				// -32602 Invalid params ("did not match any variant of untagged
+				// enum McpServer"). Drive MCP always carries env, so every Grok
+				// first turn broke when Drive was connected.
+				entry["env"] = grokACPNameValueList(server.Env)
+			}
+			out = append(out, entry)
+		case url != "":
+			entry := map[string]interface{}{
+				"type": "http",
+				"name": name,
+				"url":  url,
+			}
+			// ACP's HttpMcpServer.headers is an ARRAY of {name, value} objects
+			// (HttpHeader[]) — the same shape grokACPFlowPilotMCPServers uses for
+			// its empty header list. Sending a {"Authorization": "..."} MAP made
+			// Grok reject session/new with "Invalid params" (-32602); the Jira
+			// remote MCP was the first entry to carry a real header, so the map
+			// shape had never actually been exercised against a live session.
+			entry["headers"] = grokACPNameValueList(server.Headers)
+			out = append(out, entry)
+		default:
+			// Neither stdio nor http — skip (misconfigured entry).
+			continue
 		}
-		out = append(out, entry)
+	}
+	return out
+}
+
+// grokACPNameValueList converts a string map to ACP's array-of-{name,value}
+// shape used for both HttpMcpServer.headers and StdioMcpServer.env.
+func grokACPNameValueList(m map[string]string) []interface{} {
+	if len(m) == 0 {
+		return []interface{}{}
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]interface{}, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, map[string]interface{}{"name": k, "value": m[k]})
 	}
 	return out
 }

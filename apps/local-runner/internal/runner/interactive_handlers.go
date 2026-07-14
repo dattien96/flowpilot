@@ -33,6 +33,12 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/gate-config", s.handleSetEngineGateConfig)
 	mux.HandleFunc("GET /client/projects/{projectId}/engine/approval-allowlist", s.handleGetApprovalAllowlist)
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/approval-allowlist/remove", s.handleRemoveApprovalAllowRule)
+	// Task-188 (CP-43 P-5): Canonical Head panel read endpoints.
+	mux.HandleFunc("GET /client/projects/{projectId}/features/{featureKey}/canonical-head", s.handleGetCanonicalHead)
+	mux.HandleFunc("GET /client/workflow-runs/{runId}/steps/{stepId}/contract", s.handleGetStepContract)
+	// Task-186 r-attach-spec / Task-187 r-retire: human-confirmed Head lifecycle actions.
+	mux.HandleFunc("POST /client/projects/{projectId}/features/{featureKey}/canonical-head/rebaseline", s.handleRebaselineCanonicalHead)
+	mux.HandleFunc("POST /client/projects/{projectId}/features/{featureKey}/canonical-head/retire", s.handleRetireCanonicalHead)
 	mux.HandleFunc("POST /client/workflow-runs", s.handleStartRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/steps-runtime", s.handleGetWorkflowStepsRuntime)

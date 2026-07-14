@@ -57,7 +57,7 @@ type GoogleDriveConfigWithProviders struct {
 }
 
 const (
-	googleDriveMcpServerName        = "google-drive"
+	googleDriveMcpServerName        = "flowpilot_drive"
 	googleDriveMcpStatusMode        = "read_only"
 	googleDriveProxyMcpFlag         = "FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"
 	googleDriveProxyAccountIDEnv    = "FLOWPILOT_GOOGLE_DRIVE_ACCOUNT_ID"
@@ -155,14 +155,26 @@ type codexConfig struct {
 }
 
 type codexMcpServer struct {
-	Command           string            `toml:"command"`
-	Args              []string          `toml:"args"`
+	Command           string            `toml:"command,omitempty"`
+	Args              []string          `toml:"args,omitempty"`
 	StartupTimeoutSec int               `toml:"startup_timeout_sec,omitempty"`
 	ToolTimeoutSec    int               `toml:"tool_timeout_sec,omitempty"`
 	Enabled           bool              `toml:"enabled"`
 	EnabledTools      []string          `toml:"enabled_tools,omitempty"`
 	ApprovalMode      string            `toml:"default_tools_approval_mode,omitempty"`
-	Env               map[string]string `toml:"env"`
+	Env               map[string]string `toml:"env,omitempty"`
+	// URL/BearerTokenEnvVar (Task-234) are additive fields for a
+	// Streamable-HTTP remote MCP entry (Jira) — Codex selects transport by
+	// which keys are present ("command" => stdio, "url" => http), reading
+	// the bearer value from the env var this names rather than an inline
+	// header. Both omitempty so stdio entries (Google Drive/Firebase/
+	// Telegram) are unaffected.
+	URL               string `toml:"url,omitempty"`
+	BearerTokenEnvVar string `toml:"bearer_token_env_var,omitempty"`
+	// HTTPHeaders carries a full Authorization value (e.g. Basic …) when
+	// bearer_token_env_var would incorrectly wrap it as Bearer (Rovo personal
+	// API token path). omitempty keeps stdio entries clean.
+	HTTPHeaders map[string]string `toml:"http_headers,omitempty"`
 }
 
 // Gemini settings JSON structures
@@ -177,6 +189,13 @@ type geminiMcpServer struct {
 	Timeout      int               `json:"timeout,omitempty"`
 	Trust        bool              `json:"trust"`
 	IncludeTools []string          `json:"includeTools,omitempty"`
+	// HTTPURL/Headers (Task-234) are additive fields for a Streamable-HTTP
+	// remote MCP entry (Jira) — Gemini's documented shape: `httpUrl` selects
+	// the Streamable HTTP transport (distinct from `url`, which Gemini treats
+	// as SSE), with `headers` carrying the Authorization value directly.
+	// Both omitempty so stdio entries are unaffected.
+	HTTPURL string            `json:"httpUrl,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Claude config JSON structures
@@ -190,6 +209,13 @@ type claudeMcpServer struct {
 	Args    []string          `json:"args"`
 	Env     map[string]string `json:"env"`
 	Timeout int               `json:"timeout,omitempty"`
+	// URL/Headers are additive fields (Task-234 T-1) for remote HTTP MCP
+	// servers (Jira) merged into the per-turn --mcp-config alongside the
+	// existing stdio-shaped entries (Firebase/Telegram/Google Drive). Both
+	// omitempty so they never appear on the stdio entries this struct
+	// already served before this change.
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Grok config.toml uses the same [mcp_servers.<name>] shape as Codex, but its config.toml
@@ -199,12 +225,24 @@ type claudeMcpServer struct {
 // ensure/check functions below round-trip the document as a generic map and only touch the
 // mcp_servers.google-drive sub-table.
 type grokMcpServer struct {
-	Command           string            `toml:"command"`
-	Args              []string          `toml:"args"`
+	// Command/Args use omitempty so a remote HTTP entry (Jira: empty command,
+	// no args) does NOT serialize `command = ""` / `args = []` into config.toml.
+	// Grok treats a present `command` as a stdio server and tries to launch it;
+	// an empty command made the Jira entry show as `[unavailable]` in Grok CLI.
+	// This mirrors codexMcpServer, whose Command/Args are already omitempty so
+	// its remote jira entry stays stdio-field-free (see the Codex assertion in
+	// jira_mcp_provider_config_test.go).
+	Command           string            `toml:"command,omitempty"`
+	Args              []string          `toml:"args,omitempty"`
 	Enabled           bool              `toml:"enabled"`
 	StartupTimeoutSec int               `toml:"startup_timeout_sec,omitempty"`
 	ToolTimeoutSec    int               `toml:"tool_timeout_sec,omitempty"`
 	Env               map[string]string `toml:"env"`
+	// URL/Headers are additive (G2 / Task-234 Q-2) for remote HTTP MCP
+	// servers such as Jira. omitempty keeps stdio entries (Drive/Firebase/
+	// Telegram) free of empty url/headers keys in config.toml.
+	URL     string            `toml:"url,omitempty"`
+	Headers map[string]string `toml:"headers,omitempty"`
 }
 
 // grokServerToMap converts a typed server into the generic map shape needed to splice into
@@ -323,50 +361,36 @@ func (r *Runner) EnsureGoogleDriveMcpProviderConfig(req GoogleDriveMcpProviderCo
 func (r *Runner) ensureCodexGoogleDriveMcpConfig(accountHomePath string, mode string, yoloMode bool, mcpStatus googleDriveMcpRuntimeConfig) (GoogleDriveMcpProviderConfigResponse, error) {
 	configPath := filepath.Join(accountHomePath, "config.toml")
 
-	// Load existing config or create new
-	var config codexConfig
-	changed := false
-
+	// Generic-map splice (not a typed codexConfig round-trip): codexConfig models
+	// only mcp_servers, so marshaling it back dropped every other top-level key
+	// (model, [projects] trust levels, [tui], [windows]) whenever this rewrote —
+	// the same latent data-loss bug the jira writer had. Touch only
+	// mcp_servers.google-drive; error (don't silently reset) on an unparseable
+	// config so we never clobber a config we can't read.
+	doc := map[string]interface{}{}
 	raw, err := os.ReadFile(configPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to read Codex config: %w", err)
 	}
-
-	if err == nil {
-		// Parse existing config
-		if err := toml.Unmarshal(raw, &config); err != nil {
-			config = codexConfig{}
-			changed = true
+	if err == nil && len(strings.TrimSpace(string(raw))) > 0 {
+		if tomlErr := toml.Unmarshal(raw, &doc); tomlErr != nil {
+			// Unparseable existing config: there are no other keys to preserve,
+			// so recover by starting from an empty doc and writing a valid one
+			// (a parseable config with a stale entry preserves its keys via the
+			// splice below — only garbage is reset).
+			doc = map[string]interface{}{}
 		}
-	}
-
-	// Initialize mcp_servers if not present
-	if config.McpServers == nil {
-		config.McpServers = make(map[string]codexMcpServer)
 	}
 
 	expectedServer := expectedCodexGoogleDriveMcpServer(r.workspace, accountHomePath, mode, yoloMode, mcpStatus)
-
-	// Check if config needs update
-	existingServer, exists := config.McpServers[googleDriveMcpServerName]
-	if !exists || !codexServerConfigMatches(existingServer, expectedServer) {
-		config.McpServers[googleDriveMcpServerName] = expectedServer
-		changed = true
+	changed, spliceErr := spliceCodexServerEntry(doc, googleDriveMcpServerName, expectedServer, codexServerConfigMatches)
+	if spliceErr != nil {
+		return GoogleDriveMcpProviderConfigResponse{}, spliceErr
 	}
 
-	// Write config if changed
 	if changed {
-		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
-			return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to create config directory: %w", err)
-		}
-
-		out, err := toml.Marshal(config)
-		if err != nil {
-			return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to marshal TOML: %w", err)
-		}
-
-		if err := os.WriteFile(configPath, out, 0o644); err != nil {
-			return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("failed to write config: %w", err)
+		if err := writeCodexConfigDoc(configPath, doc); err != nil {
+			return GoogleDriveMcpProviderConfigResponse{}, err
 		}
 	}
 
@@ -671,6 +695,14 @@ func (r *Runner) ensureGeminiGoogleDriveMcpConfig(accountHomePath string, mode s
 		config.McpServers = make(map[string]geminiMcpServer)
 	}
 
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(googleDriveMcpServerName); legacy != "" {
+		if _, ok := config.McpServers[legacy]; ok {
+			delete(config.McpServers, legacy)
+			changed = true
+		}
+	}
+
 	expectedServer := expectedGeminiGoogleDriveMcpServer(r.workspace, accountHomePath, mode, yoloMode, mcpStatus)
 
 	// Check if config needs update
@@ -791,6 +823,14 @@ func (r *Runner) ensureClaudeGoogleDriveMcpConfig(accountHomePath string, mode s
 		config.McpServers = make(map[string]claudeMcpServer)
 	}
 
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(googleDriveMcpServerName); legacy != "" {
+		if _, ok := config.McpServers[legacy]; ok {
+			delete(config.McpServers, legacy)
+			changed = true
+		}
+	}
+
 	expectedServer := expectedClaudeGoogleDriveMcpServer(r.workspace, accountHomePath, mode, yoloMode, mcpStatus)
 
 	// Check if config needs update
@@ -897,6 +937,15 @@ func (r *Runner) ensureGrokGoogleDriveMcpConfig(accountHomePath string, mode str
 		mcpServers = map[string]interface{}{}
 	}
 
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(googleDriveMcpServerName); legacy != "" {
+		if _, ok := mcpServers[legacy]; ok {
+			delete(mcpServers, legacy)
+			doc["mcp_servers"] = mcpServers
+			changed = true
+		}
+	}
+
 	expectedServer := expectedGrokGoogleDriveMcpServer(r.workspace, accountHomePath, mode, yoloMode, mcpStatus)
 
 	existingMatches := false
@@ -955,6 +1004,9 @@ func grokServerConfigMatches(existing, expected grokMcpServer) bool {
 	if existing.ToolTimeoutSec != expected.ToolTimeoutSec {
 		return false
 	}
+	if existing.URL != expected.URL {
+		return false
+	}
 	if len(existing.Args) != len(expected.Args) {
 		return false
 	}
@@ -964,6 +1016,9 @@ func grokServerConfigMatches(existing, expected grokMcpServer) bool {
 		}
 	}
 	if !envMatches(existing.Env, expected.Env) {
+		return false
+	}
+	if !envMatches(existing.Headers, expected.Headers) {
 		return false
 	}
 	return true
@@ -995,6 +1050,21 @@ func expectedGrokGoogleDriveMcpServer(workspace string, accountHomePath string, 
 // turn never breaks over an optional MCP.
 func (r *Runner) flowpilotClaudeExtraMCPServers(accountHomePath string, yolo bool) map[string]claudeMcpServer {
 	out := map[string]claudeMcpServer{}
+
+	// Task-234 T-1 + G2: jira/firebase/telegram are merged the same way
+	// regardless of accountHomePath — derived from "integration connected"
+	// (runner keyring). Shared by Claude (--mcp-config) and Grok ACP
+	// (grokACPExtraMCPServers forwards both stdio and HTTP shapes).
+	if server, ok := r.jiraLiveMCPServer(); ok {
+		out[jiraMcpServerName] = server
+	}
+	if server, ok := r.firebaseLiveMCPServer(); ok {
+		out[firebaseMcpServerName] = server
+	}
+	if server, ok := r.telegramLiveMCPServer(); ok {
+		out[telegramMcpServerName] = server
+	}
+
 	accountHomePath = strings.TrimSpace(accountHomePath)
 	if accountHomePath == "" {
 		return out
@@ -1036,6 +1106,110 @@ func (r *Runner) flowpilotClaudeExtraMCPServers(accountHomePath string, yolo boo
 
 	out[googleDriveMcpServerName] = expectedClaudeGoogleDriveMcpServer(r.workspace, accountHomePath, mode, yolo, runtime)
 	return out
+}
+
+// syncCodexGoogleDriveMcpLive re-resolves Codex's config.toml google-drive entry
+// to the currently-selected Drive account on every turn — the parity Codex lacks.
+// Claude and Grok re-resolve google-drive live each turn in
+// flowpilotClaudeExtraMCPServers (reading the current account + keyring token),
+// so they always use the selected account. Codex reads only its static
+// config.toml, so a Drive account switch left it authenticating as whatever
+// account's refresh token was frozen into config.toml at the last Configure
+// Providers run — the exact reason "Codex shows a different Drive account than
+// Claude/Grok" was reported.
+//
+// Only the credential env keys (account id / refresh token / client id+secret)
+// are refreshed from the live runtime; command/args/mode/approval/tools are
+// preserved via a generic-map splice. Returns changed so the caller can respawn
+// the app-server (Codex reads mcp_servers only at boot). No-op when Drive isn't
+// configured for Codex or can't be resolved — it never strips a working entry.
+func (r *Runner) syncCodexGoogleDriveMcpLive(accountHomePath string) (bool, error) {
+	accountHomePath = strings.TrimSpace(accountHomePath)
+	if accountHomePath == "" {
+		return false, nil
+	}
+	configPath := filepath.Join(accountHomePath, "config.toml")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return false, nil // no config yet → nothing to sync
+	}
+	doc := map[string]interface{}{}
+	if toml.Unmarshal(raw, &doc) != nil {
+		return false, nil // unparseable → leave it for Configure Providers to recover
+	}
+	mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
+	if mcpServers == nil {
+		return false, nil
+	}
+
+	// Migration: drop the pre-rename key so old+new don't coexist. Tracked
+	// separately so a legacy-only cleanup still writes even when the env sync
+	// below finds nothing to change.
+	legacyRemoved := false
+	if legacy := legacyMcpServerName(googleDriveMcpServerName); legacy != "" {
+		if _, ok := mcpServers[legacy]; ok {
+			delete(mcpServers, legacy)
+			legacyRemoved = true
+		}
+	}
+
+	entry, ok := mcpServers[googleDriveMcpServerName].(map[string]interface{})
+	if !ok {
+		if legacyRemoved {
+			// Legacy entry stripped but no new entry to sync — persist the cleanup.
+			doc["mcp_servers"] = mcpServers
+			if err := writeCodexConfigDoc(configPath, doc); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
+		return false, nil // Drive not configured for Codex → nothing to sync
+	}
+
+	// Resolve the current account + token exactly as the Claude/Grok live merge does.
+	configFile, ferr := r.loadGoogleDriveWorkspaceConfigFile()
+	if ferr != nil && !errors.Is(ferr, os.ErrNotExist) {
+		return false, nil
+	}
+	mcpStatus := r.resolveGoogleDriveMcpStatus(configFile)
+	if !mcpStatus.Configured {
+		return false, nil
+	}
+	runtime := googleDriveMcpStatusRuntimeConfig(mcpStatus)
+	r.hydrateGoogleDriveProxyOAuthRuntimeConfig(&runtime)
+	fresh := googleDriveProxyMcpServerEnv(runtime)
+
+	env, _ := entry["env"].(map[string]interface{})
+	if env == nil {
+		env = map[string]interface{}{}
+	}
+	// A legacy-key removal above is itself a change that must be persisted.
+	changed := legacyRemoved
+	for _, key := range []string{
+		googleDriveProxyAccountIDEnv,
+		googleDriveProxyRefreshTokenEnv,
+		googleDriveClientIDEnv,
+		googleDriveClientSecretEnv,
+	} {
+		want, has := fresh[key]
+		if !has {
+			continue // resolution didn't supply this key → don't strip the existing one
+		}
+		if cur, _ := env[key].(string); cur != want {
+			env[key] = want
+			changed = true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	entry["env"] = env
+	mcpServers[googleDriveMcpServerName] = entry
+	doc["mcp_servers"] = mcpServers
+	if err := writeCodexConfigDoc(configPath, doc); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // resolveGoogleDriveMcpProviderStatuses checks provider config status for all providers

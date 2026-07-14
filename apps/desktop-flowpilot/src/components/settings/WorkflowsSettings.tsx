@@ -61,11 +61,18 @@ type PickerModal =
 // Drive account connected in Google Drive setup. This editor only enables the
 // source; when no legacy default file id is stored, the run asks for the file
 // URL/id at runtime instead of forcing a settings edit for every run.
+// Task-229 (CP-05-06 Q-3, resolved 2026-07-13): jira.issue and jira.sprint
+// are two independent sources, not one source with a "target mode" — mirrors
+// mcp.driver: the run asks for the issue key / sprint at runtime when
+// enabled, instead of forcing a settings edit for every run.
 const contextSourceOptions: { id: string; label: string }[] = [
   { id: "feature.history", label: "Feature History" },
   { id: "chat.summary", label: "Chat Summary" },
   { id: "source.excerpt", label: "Source Excerpt" },
   { id: "mcp.driver", label: "MCP Driver (Google Drive)" },
+  { id: "jira.issue", label: "Jira Issue" },
+  { id: "jira.sprint", label: "Jira Sprint" },
+  { id: "firebase.crashlytics", label: "Firebase Crashlytics" },
 ];
 
 type WorkflowDraft = {
@@ -282,14 +289,19 @@ function toggleString(list: string[], value: string) {
 // context_artifact bindings). This keeps the picker from ever offering a
 // type-incompatible instance, without needing a fuller per-slot type-contract
 // system.
+// direction (Task-233): telegram.v1 is an OUTPUT-only "action" artifact — it
+// has no meaningful INPUT semantics (there is nothing to read back from a
+// sent Telegram message), so it must never appear in an INPUT picker.
 function compatibleArtifactInstancesFor(
   behaviorId: string | null | undefined,
   instances: ArtifactInstance[],
+  direction: "input" | "output" = "output",
 ): ArtifactInstance[] {
   const isContextStep = behaviorId === "context.produce";
-  return instances.filter((instance) =>
-    isContextStep ? instance.artifactTypeId === "context_artifact.v1" : instance.artifactTypeId !== "context_artifact.v1",
-  );
+  return instances.filter((instance) => {
+    if (instance.artifactTypeId === "telegram.v1") return direction === "output";
+    return isContextStep ? instance.artifactTypeId === "context_artifact.v1" : instance.artifactTypeId !== "context_artifact.v1";
+  });
 }
 
 function artifactInstanceLabel(instance: ArtifactInstance | undefined, id: string): string {
@@ -340,6 +352,11 @@ function ArtifactsTabContent(props: {
   const draftType = artifactTypes.find((type) => type.id === artifactInstanceDraft?.artifactTypeId);
   const isFileType = artifactInstanceDraft?.artifactTypeId === "file_artifact.v1";
   const isContextType = artifactInstanceDraft?.artifactTypeId === "context_artifact.v1";
+  const isTelegramType = artifactInstanceDraft?.artifactTypeId === "telegram.v1";
+  const draftTelegramChatId = isTelegramType ? ((artifactInstanceDraft?.configJson.chatId as string | undefined) ?? "") : "";
+  const draftTelegramTemplate = isTelegramType
+    ? ((artifactInstanceDraft?.configJson.messageTemplate as string | undefined) ?? "")
+    : "";
   const draftPaths = isFileType
     ? ((artifactInstanceDraft?.configJson.paths as string[] | undefined) ?? []).join("\n")
     : "";
@@ -434,6 +451,19 @@ function ArtifactsTabContent(props: {
               {draftSources.includes("mcp.driver") ? (
                 <small>
                   Uses the Google Drive account selected in Google Drive setup. The file URL or ID is chosen at runtime.
+                </small>
+              ) : null}
+              {draftSources.includes("jira.issue") || draftSources.includes("jira.sprint") ? (
+                <small>
+                  Uses the Jira MCP connected in MCP Servers settings. The issue key or sprint is chosen at runtime — the
+                  run asks before it starts, and the AI reads only the selected issue/sprint via the Jira MCP tools.
+                </small>
+              ) : null}
+              {draftSources.includes("firebase.crashlytics") ? (
+                <small>
+                  Uses the Firebase MCP connected in MCP Servers settings. The crash issue id is chosen at runtime — the
+                  run asks before it starts, and the AI reads only the selected crash via the Firebase Crashlytics MCP
+                  tools.
                 </small>
               ) : null}
             </div>
@@ -539,6 +569,48 @@ function ArtifactsTabContent(props: {
               </div>
             </>
           ) : null}
+          {isTelegramType ? (
+            <>
+              <label className="settings-field settings-field-full">
+                <span>Telegram Chat/Channel ID</span>
+                <small className="settings-field-help">
+                  The Telegram chat or channel id this instance sends to. Bind this instance as a step's{" "}
+                  <strong>Output only</strong> (Task-233) — the bound step must send a notification here via the
+                  Telegram MCP tool before finishing; the flow gate verifies a real message was sent.
+                </small>
+                <input
+                  disabled={artifactInstanceDraft.isBuiltin}
+                  onChange={(event) =>
+                    setArtifactInstanceDraft({
+                      ...artifactInstanceDraft,
+                      configJson: { ...artifactInstanceDraft.configJson, chatId: event.target.value.trim() },
+                    })
+                  }
+                  placeholder="-100123456789"
+                  value={draftTelegramChatId}
+                />
+              </label>
+              <label className="settings-field settings-field-full">
+                <span>Message Template (optional)</span>
+                <small className="settings-field-help">
+                  Optional template for the notification text (CP-05-05 Q-5). Leave blank to let the agent summarize
+                  the run's outcome freely.
+                </small>
+                <textarea
+                  disabled={artifactInstanceDraft.isBuiltin}
+                  onChange={(event) =>
+                    setArtifactInstanceDraft({
+                      ...artifactInstanceDraft,
+                      configJson: { ...artifactInstanceDraft.configJson, messageTemplate: event.target.value },
+                    })
+                  }
+                  placeholder={"Run finished: {{status}}\nSummary: ..."}
+                  rows={3}
+                  value={draftTelegramTemplate}
+                />
+              </label>
+            </>
+          ) : null}
         </div>
         {!artifactInstanceDraft.isBuiltin ? (
           <div className="settings-actions">
@@ -575,6 +647,13 @@ function ArtifactsTabContent(props: {
               ) : null}
               {type.id === "context_artifact.v1" ? (
                 <small>Context package producer: configure sources on the instance, then bind as step Artifact I/O.</small>
+              ) : null}
+              {type.id === "telegram.v1" ? (
+                <small>
+                  Send-only notification action (Task-233): bind as a step's <strong>Output only</strong> — the step
+                  must send a Telegram message via the MCP tool before finishing; the flow gate verifies a real
+                  message_id, not a file.
+                </small>
               ) : null}
             </div>
           ))}
@@ -2478,7 +2557,7 @@ export function WorkflowsSettings(): React.ReactElement {
             // full unfiltered instance list.
             (() => {
               const direction = pickerModal.kind === "artifact-binding-input" ? "input" : "output";
-              const options = compatibleArtifactInstancesFor(draftSource?.behaviorId, artifactInstances);
+              const options = compatibleArtifactInstancesFor(draftSource?.behaviorId, artifactInstances, direction);
               if (options.length === 0) {
                 return (
                   <div className="settings-empty">
@@ -2593,7 +2672,12 @@ export function WorkflowsSettings(): React.ReactElement {
               artifactTypeId,
               name: "",
               description: "",
-              configJson: artifactTypeId === "file_artifact.v1" ? emptyFileArtifactConfig() : { sources: [] },
+              configJson:
+                artifactTypeId === "file_artifact.v1"
+                  ? emptyFileArtifactConfig()
+                  : artifactTypeId === "telegram.v1"
+                    ? { chatId: "", messageTemplate: "" }
+                    : { sources: [] },
               isBuiltin: false,
               status: "active",
               createdAt: "",

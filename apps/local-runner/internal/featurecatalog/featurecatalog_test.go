@@ -154,6 +154,65 @@ func TestBuild_SupersededFeatureKeyUsesSuccessor(t *testing.T) {
 	}
 }
 
+// TestBuild_GoverningDocAttachesToDeclaredFeature verifies BUG-280: a governing
+// doc that declares a "Feature Keys:" metadata line has its stem attached to
+// that real feature's DocRefs (so the feature becomes spec-backed), instead of
+// only ever matching a doc-stem-named phantom feature.
+func TestBuild_GoverningDocAttachesToDeclaredFeature(t *testing.T) {
+	repoDir := t.TempDir()
+	dotDir := t.TempDir()
+
+	writeTempFeatureKeys(t, repoDir, "- calc-core — divide function\n")
+
+	specDir := filepath.Join(repoDir, "requirements", "05-System-Specs")
+	if err := os.MkdirAll(specDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(specDir, "SS-99-Calc.md"),
+		[]byte("# SS-99 Calc\n\n## Metadata\n\n- Feature Keys: `calc-core`\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cat, err := Build(repoDir, &stubLedger{}, dotDir)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	feat, ok := cat.Get("calc-core")
+	if !ok {
+		t.Fatal("expected calc-core feature")
+	}
+	found := false
+	for _, ref := range feat.DocRefs {
+		if ref == "SS-99-Calc" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected SS-99-Calc attached to calc-core DocRefs, got %v", feat.DocRefs)
+	}
+}
+
+func TestParseFeatureKeysLine(t *testing.T) {
+	cases := map[string][]string{
+		"- Feature Keys: `change-contract`":         {"change-contract"},
+		"Feature Keys: change-contract, other-feat": {"change-contract", "other-feat"},
+		"- Feature Key: `calc-core`":                {"calc-core"},
+		"- Parent Documents: [CP-43](x)":            nil,
+		"regular text":                              nil,
+	}
+	for line, want := range cases {
+		got := parseFeatureKeysLine(line)
+		if len(got) != len(want) {
+			t.Fatalf("%q → %v, want %v", line, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("%q → %v, want %v", line, got, want)
+			}
+		}
+	}
+}
+
 // --- ResolveFeature ---
 
 func catalogWithFeatures(features ...Feature) *Catalog {

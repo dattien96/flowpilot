@@ -56,6 +56,44 @@ type TurnResult struct {
 	// also declare instance structure.sections (Task-225). Evaluated only
 	// after existence passes for each path.
 	RequiredStructuredFileArtifactOutputs []StructuredFileArtifactOutput `json:"required_structured_file_artifact_outputs,omitempty"`
+	// RequiredTelegramSends lists chat ids that must show evidence of a
+	// successful Telegram send (a real message_id, not just a tool call —
+	// CP-05-05 Q-4) after this turn, when the active flow node has required
+	// telegram.v1 OUTPUT bindings (Task-233 write contract). There is no
+	// filesystem artifact to check — evidence comes from FinalMessage.
+	RequiredTelegramSends []string `json:"required_telegram_sends,omitempty"`
+	// Task-185 (CP-43 P-2): scope-drift signals. Computed by the caller from
+	// changecontract.Store + changecontract.ScopeDiff/HighSeverity before
+	// Evaluate runs — flowgate cannot import changecontract (infer.go already
+	// imports flowgate for ChangedFile, so the reverse import would cycle).
+	//
+	// ContractDeclared is true only when the AI's own [Change Contract] block
+	// was found this turn (confidence=declared); false for an inferred or
+	// altogether-missing contract.
+	ContractDeclared bool `json:"contract_declared,omitempty"`
+	// ScopeOutOfScopePaths are the diff paths outside the turn's declared
+	// scope (empty for an inferred contract, which trivially matches its own
+	// diff — see changecontract.ScopeDiff).
+	ScopeOutOfScopePaths []string `json:"scope_out_of_scope_paths,omitempty"`
+	// ScopeHighSeverity is true only when structure.Available() AND at least
+	// one out-of-scope path has dependents (changecontract.HighSeverity) —
+	// the sole condition under which r-scope may resolve to "block" rather
+	// than "warn" (SD-21 D-5/Q-2: file-level truth alone never blocks).
+	ScopeHighSeverity bool `json:"scope_high_severity,omitempty"`
+	// Task-186 (CP-43 P-3): Canonical Head drift signals, computed by the
+	// caller from changecontract.SpecDrifted/CodeDrifted before Evaluate runs
+	// (same import-cycle reason as the Task-185 fields above).
+	HeadSpecDrifted bool `json:"head_spec_drifted,omitempty"`
+	HeadCodeDrifted bool `json:"head_code_drifted,omitempty"`
+	// HeadAttachSpecPending is true when a spec_less feature's Head gained a
+	// governing doc this turn — a re-baseline candidate (r-attach-spec), not
+	// a drift (SD-21 §5: "spec_less -> current" via attach-spec is distinct
+	// from "current -> spec_drifted").
+	HeadAttachSpecPending bool `json:"head_attach_spec_pending,omitempty"`
+	// Task-187 (CP-43 P-4): true when the caller has detected a retire intent
+	// (rename/merge/deprecate) for the active feature awaiting human
+	// confirmation of targets before RetireHead runs (BR-2, never automatic).
+	HeadRetirePending bool `json:"head_retire_pending,omitempty"`
 }
 
 // StructuredFileArtifactOutput is a required file_artifact OUTPUT path with
@@ -92,6 +130,33 @@ func DefaultRules() []Rule {
 		// Task-225: required structured file_artifact OUTPUT paths must contain
 		// the declared section headings after the file exists.
 		{ID: "r-artifact-output-structure", Scope: "step", Trigger: "required_artifact_output_structure_missing", RequiredOutput: "file_artifact_structure", Action: "reprompt", Enabled: true},
+		// Task-233 (CP-05-05 P-4): required telegram.v1 OUTPUT bindings must
+		// show real message_id evidence of a successful send after the turn —
+		// not just that a tool was called (CP-05-03 §12.3's quote-guidance
+		// false-positive lesson).
+		{ID: "r-artifact-telegram-sent", Scope: "step", Trigger: "required_telegram_send_missing", RequiredOutput: "telegram_message_id", Action: "reprompt", Enabled: true},
+		// Task-185 (CP-43 P-2): the AI did not declare a Change Contract before
+		// editing (an inferred contract was used instead) — nag once, never block.
+		{ID: "r-contract", Scope: "step", Trigger: "code_changed_no_contract", RequiredOutput: "declared_change_contract", Action: "reprompt", Enabled: true},
+		// Task-185 (CP-43 P-2): an edit landed outside the turn's declared scope.
+		// Warn by default; checkRule downgrades any configured "block" back to
+		// "warn" unless TurnResult.ScopeHighSeverity is true (SD-21 D-5/Q-2).
+		{ID: "r-scope", Scope: "step", Trigger: "edit_outside_declared_scope", RequiredOutput: "confirm_or_revert_out_of_scope", Action: "warn", Enabled: true},
+		// Task-186 (CP-43 P-3): a feature's governing spec changed since its
+		// Canonical Head last recorded it. Surfaced for human reconciliation,
+		// never auto-rewritten (BR-2).
+		{ID: "r-spec-drift", Scope: "step", Trigger: "governing_spec_changed", RequiredOutput: "reconcile_canonical_head", Action: "warn", Enabled: true},
+		// Task-186 (CP-43 P-3): out-of-contract code change with no
+		// corresponding spec/behavior update to explain it.
+		{ID: "r-code-drift", Scope: "step", Trigger: "code_diverged_from_intent", RequiredOutput: "reconcile_or_revert", Action: "warn", Enabled: true},
+		// Task-186 (CP-43 P-3): a spec_less feature just gained its first
+		// governing doc — a re-baseline candidate, requires human confirmation
+		// before the Head is rebaselined (not auto-applied).
+		{ID: "r-attach-spec", Scope: "step", Trigger: "governing_spec_added_to_spec_less", RequiredOutput: "confirm_spec_matches_behavior_then_rebaseline", Action: "approve", Enabled: true},
+		// Task-187 (CP-43 P-4): a feature is being renamed/merged/deprecated.
+		// Requires human confirmation of the target(s) before RetireHead runs —
+		// never automatic (BR-2).
+		{ID: "r-retire", Scope: "step", Trigger: "feature_rename_merge_or_deprecate", RequiredOutput: "confirm_targets_then_retire", Action: "approve", Enabled: true},
 	}
 }
 

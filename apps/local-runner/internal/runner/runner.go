@@ -147,6 +147,11 @@ type Runner struct {
 	mcpBaseURLMu sync.RWMutex
 	mcpBaseURL   string
 
+	// telegramLoopback holds the workspace-scoped auth token for BUG-281's
+	// provider-spawned telegram-mcp → runner loop-back send path. Lazy-init
+	// via ensureTelegramLoopbackToken; never holds the Telegram bot token.
+	telegramLoopback *telegramLoopbackTokenState
+
 	// grokProcessMu guards grokProcesses.
 	grokProcessMu sync.Mutex
 	// grokProcesses holds live `grok agent stdio` processes keyed by
@@ -418,9 +423,22 @@ func (r *Runner) ListMcpBackends(ctx context.Context) ([]McpBackend, error) {
 
 	for _, spec := range specs {
 		var backend McpBackend
-		if spec.Key == "jira" {
+		switch spec.Key {
+		case "jira":
 			backend = r.detectJiraBackend(records[spec.Key])
-		} else {
+		case "firebase":
+			// Task-230: firebase's launcher is npx (a real external
+			// dependency, like Drive), but its connected/installed state is
+			// keyring-backed like jira, not launcher-probe-based — spec.detect
+			// would incorrectly gate "installed" on npx being resolvable via
+			// lookPathFn even when a valid service account is already stored.
+			backend = r.detectFirebaseBackend(records[spec.Key])
+		case "telegram":
+			// Task-232: telegram's "launcher" is this same FlowPilot binary,
+			// not an externally-resolvable PATH command — spec.detect's
+			// lookPathFn(spec.Launcher) check doesn't apply here at all.
+			backend = r.detectTelegramBackend(records[spec.Key])
+		default:
 			backend = spec.detect(records[spec.Key])
 		}
 		backends = append(backends, backend)
@@ -510,16 +528,8 @@ func (r *Runner) VerifyMcpBackend(
 		if err != nil {
 			return backend, err
 		}
-		requestProjectID := strings.TrimSpace(projectID)
-		if strings.TrimSpace(creds.ProjectID) == "" && requestProjectID != "" {
-			creds.ProjectID = requestProjectID
-			if strings.TrimSpace(integrationID) != "" {
-				if saveErr := r.saveJiraCredential(integrationID, creds); saveErr != nil {
-					return backend, saveErr
-				}
-			}
-		}
-		if err := r.verifyJiraCredential(ctx, creds); err != nil {
+		warning, err := r.verifyJiraCredential(ctx, creds)
+		if err != nil {
 			backend.LastError = err.Error()
 			backend.LastCheckedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			_ = r.saveMcpBackendRecord(backend)
@@ -529,7 +539,9 @@ func (r *Runner) VerifyMcpBackend(
 		backend.State = "installed"
 		backend.Action = "verify"
 		backend.ActionLabel = "Verify"
-		backend.LastError = ""
+		// warning is non-fatal (e.g. token valid but project not browsable);
+		// keep the backend "installed" and record the note for the UI.
+		backend.LastError = warning
 		backend.LastCheckedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		if err := r.saveMcpBackendRecord(backend); err != nil {
 			return backend, err
@@ -649,9 +661,6 @@ func (r *Runner) TriggerIntegrationConnection(
 	if strings.TrimSpace(integrationID) == "" {
 		return IntegrationConnectionResult{}, errors.New("integrationId is required")
 	}
-	if strings.TrimSpace(request.ProjectID) == "" {
-		return IntegrationConnectionResult{}, errors.New("projectId is required")
-	}
 	if strings.TrimSpace(request.ProviderType) == "" {
 		return IntegrationConnectionResult{}, errors.New("providerType is required")
 	}
@@ -663,7 +672,7 @@ func (r *Runner) TriggerIntegrationConnection(
 
 	providerType := strings.TrimSpace(request.ProviderType)
 	providerLabel := providerLabelForType(providerType)
-	message := fmt.Sprintf("Connection request accepted for project %s.", request.ProjectID)
+	message := "Connection request accepted."
 	status := "pending"
 
 	switch providerType {
@@ -686,11 +695,7 @@ func (r *Runner) TriggerIntegrationConnection(
 			}, nil
 		}
 		status = "awaiting_oauth"
-		message = fmt.Sprintf(
-			"%s backend is ready for project %s. Complete provider auth in the browser if prompted.",
-			backend.Label,
-			request.ProjectID,
-		)
+		message = fmt.Sprintf("%s backend is ready. Complete provider auth in the browser if prompted.", backend.Label)
 	case "jira":
 		creds, err := r.resolveJiraCredential(integrationID, request)
 		if err != nil {
@@ -703,7 +708,11 @@ func (r *Runner) TriggerIntegrationConnection(
 				Message:           &message,
 			}, nil
 		}
-		if err := r.verifyJiraCredential(ctx, creds); err != nil {
+		// Store the origin (scheme://host) so a pasted board deep link still
+		// yields a valid REST base for verify and every later Jira tool call.
+		creds.WorkspaceURL = normalizeJiraWorkspaceURL(creds.WorkspaceURL)
+		warning, err := r.verifyJiraCredential(ctx, creds)
+		if err != nil {
 			message = err.Error()
 			return IntegrationConnectionResult{
 				RequestStatus:     "rejected",
@@ -730,18 +739,90 @@ func (r *Runner) TriggerIntegrationConnection(
 			SecretKey:     jiraCredentialKey(integrationID),
 		})
 		_ = r.saveMcpBackendRecord(backend)
+		// Push the new account into every locally-authenticated provider's static
+		// config immediately, so a Jira account switch shows up on disk right away
+		// — this is what lets codex-cli (which reads config.toml directly, with no
+		// FlowPilot live-injection) pick up the switch without a manual Configure
+		// Providers run. Best-effort; never blocks the connect result.
+		r.rePushJiraConfigToConnectedProviders()
 		status = "connected"
-		message = fmt.Sprintf(
-			"%s API-token connection is ready for project %s.",
-			backend.Label,
-			request.ProjectID,
-		)
-	case "firebase", "telegram", "figma":
-		message = fmt.Sprintf(
-			"%s connection request accepted for project %s.",
-			providerLabel,
-			request.ProjectID,
-		)
+		message = fmt.Sprintf("%s API-token connection is ready.", backend.Label)
+		if warning != "" {
+			message = message + " " + warning
+		}
+	case "firebase":
+		parsed, err := validateFirebaseServiceAccountJSON(request.ServiceAccountJSON)
+		if err != nil {
+			message = err.Error()
+			return IntegrationConnectionResult{
+				RequestStatus:     "rejected",
+				IntegrationID:     integrationID,
+				IntegrationStatus: "failed",
+				RunID:             nil,
+				Message:           &message,
+			}, nil
+		}
+		projectID := strings.TrimSpace(request.FirebaseProjectID)
+		if projectID == "" {
+			projectID = parsed.ProjectID
+		}
+		creds := firebaseCredential{
+			ProjectID:          projectID,
+			Environment:        request.FirebaseEnvironment,
+			ServiceAccountJSON: request.ServiceAccountJSON,
+		}
+		if err := r.saveFirebaseCredential(integrationID, creds); err != nil {
+			message = err.Error()
+			return IntegrationConnectionResult{
+				RequestStatus:     "rejected",
+				IntegrationID:     integrationID,
+				IntegrationStatus: "failed",
+				RunID:             nil,
+				Message:           &message,
+			}, nil
+		}
+		backend := r.detectFirebaseBackend(mcpBackendRecord{
+			Installed:     true,
+			LastCheckedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			LastError:     "",
+			SecretKey:     firebaseCredentialKey(integrationID),
+		})
+		_ = r.saveMcpBackendRecord(backend)
+		status = "connected"
+		message = fmt.Sprintf("%s connection is ready.", backend.Label)
+	case "telegram":
+		creds, err := r.resolveTelegramCredential(integrationID, request)
+		if err != nil {
+			message = err.Error()
+			return IntegrationConnectionResult{
+				RequestStatus:     "rejected",
+				IntegrationID:     integrationID,
+				IntegrationStatus: "failed",
+				RunID:             nil,
+				Message:           &message,
+			}, nil
+		}
+		if err := r.saveTelegramCredential(integrationID, creds); err != nil {
+			message = err.Error()
+			return IntegrationConnectionResult{
+				RequestStatus:     "rejected",
+				IntegrationID:     integrationID,
+				IntegrationStatus: "failed",
+				RunID:             nil,
+				Message:           &message,
+			}, nil
+		}
+		backend := r.detectTelegramBackend(mcpBackendRecord{
+			Installed:     true,
+			LastCheckedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			LastError:     "",
+			SecretKey:     telegramCredentialKey(integrationID),
+		})
+		_ = r.saveMcpBackendRecord(backend)
+		status = "connected"
+		message = fmt.Sprintf("%s connection is ready.", backend.Label)
+	case "figma":
+		message = fmt.Sprintf("%s connection request accepted.", providerLabel)
 	default:
 		return IntegrationConnectionResult{}, fmt.Errorf("unsupported provider type %q", providerType)
 	}
@@ -2079,12 +2160,36 @@ func claudeAuthFileLooksValid(data []byte) bool {
 		return false
 	}
 	if oauth, ok := payload["claudeAiOauth"].(map[string]any); ok {
-		return hasNonEmptyJSONString(oauth, "accessToken") || hasNonEmptyJSONString(oauth, "refreshToken")
+		if hasNonEmptyJSONString(oauth, "accessToken") || hasNonEmptyJSONString(oauth, "refreshToken") {
+			return true
+		}
+		// Windows/macOS keychain path: Claude Code stores the real access/refresh
+		// token in the OS keychain (Credential Manager / Keychain) and leaves the
+		// accessToken/refreshToken strings EMPTY in .claude/.credentials.json,
+		// keeping only session metadata (expiresAt, subscriptionType, scopes).
+		// That metadata is proof of a real login, so a claudeAiOauth block carrying
+		// it counts as authenticated even without inline tokens — otherwise Windows
+		// / macOS users are never detected as a Claude provider account (their Jira
+		// MCP config then never lands in ~/.claude.json). Note: this only relaxes
+		// the claudeAiOauth case; an oauthAccount-only .claude.json stays "failed".
+		if hasNonEmptyJSONString(oauth, "subscriptionType") ||
+			jsonHasPositiveNumber(oauth, "expiresAt") ||
+			jsonHasPositiveNumber(oauth, "refreshTokenExpiresAt") {
+			return true
+		}
+		return false
 	}
 	if tokens, ok := payload["tokens"].(map[string]any); ok {
 		return hasNonEmptyJSONString(tokens, "access_token") || hasNonEmptyJSONString(tokens, "refresh_token")
 	}
 	return hasNonEmptyJSONString(payload, "accessToken") || hasNonEmptyJSONString(payload, "refreshToken")
+}
+
+// jsonHasPositiveNumber reports whether m[key] is a JSON number greater than
+// zero (JSON numbers unmarshal into float64 through encoding/json).
+func jsonHasPositiveNumber(m map[string]any, key string) bool {
+	value, ok := m[key].(float64)
+	return ok && value > 0
 }
 
 func DetectDefaultAccountHomePath(providerKey string) (string, bool) {
@@ -2306,6 +2411,24 @@ func mcpBackendSpecs() []mcpBackendSpec {
 			Launcher:     "remote",
 			InstallHint:  "Open the Jira MCP form, read the Atlassian guide, and paste an API token so the runner can connect to the Atlassian remote MCP server.",
 		},
+		{
+			Key:          "firebase",
+			ProviderType: "firebase",
+			Label:        "Firebase MCP",
+			Transport:    "launcher",
+			Launcher:     "npx",
+			InstallArgs:  []string{"-y", "firebase-tools", "--version"},
+			VerifyArgs:   []string{"-y", "firebase-tools", "--version"},
+			InstallHint:  "Install Node.js, then upload a Google Cloud service account JSON with Crashlytics access.",
+		},
+		{
+			Key:          "telegram",
+			ProviderType: "telegram",
+			Label:        "Telegram MCP",
+			Transport:    "launcher",
+			Launcher:     "flowpilot",
+			InstallHint:  "Add a Telegram bot token and channel id so the runner can connect the Telegram MCP (send-only, FlowPilot-owned proxy).",
+		},
 	}
 }
 
@@ -2381,6 +2504,12 @@ type jiraCredential struct {
 	WorkspaceURL string `json:"workspaceUrl"`
 	ProjectKey   string `json:"projectKey"`
 	BoardID      string `json:"boardId"`
+	// BearerToken (Task-234 T-1) is the Atlassian OAuth bearer value for the
+	// remote Jira MCP — separate auth mechanism from ApiToken's legacy REST
+	// basic auth (CP-05-06 P-1). Stored on the same "one connected Jira
+	// integration" record so it can be resolved automatically on every turn
+	// without the user re-pasting it each time.
+	BearerToken string `json:"bearerToken,omitempty"`
 }
 
 func (r *Runner) ensureSecretStore() SecretStore {
@@ -2475,21 +2604,79 @@ func (r *Runner) resolveJiraCredential(
 	return creds, nil
 }
 
-func (r *Runner) verifyJiraCredential(ctx context.Context, creds jiraCredential) error {
-	workspaceURL := strings.TrimRight(strings.TrimSpace(creds.WorkspaceURL), "/")
-	projectKey := url.QueryEscape(strings.TrimSpace(creds.ProjectKey))
-	if workspaceURL == "" || projectKey == "" {
-		return errors.New("workspaceUrl and projectKey are required for Jira")
+// normalizeJiraWorkspaceURL reduces a pasted Atlassian URL to its origin
+// (scheme://host), tolerating deep links like
+// https://site.atlassian.net/jira/software/projects/SCRUM/boards/1, trailing
+// slashes, and surrounding whitespace, and defaulting a missing scheme to
+// https. Returns "" when the input has no usable host. Mirrors the desktop
+// UI's normalizeJiraSiteUrl so a board URL pasted into workspaceUrl still
+// produces the correct REST base rather than a 404 on a bogus path.
+func normalizeJiraWorkspaceURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return strings.TrimRight(raw, "/")
+	}
+	scheme := parsed.Scheme
+	if scheme == "" {
+		scheme = "https"
+	}
+	return scheme + "://" + parsed.Host
+}
+
+// verifyJiraCredential validates a Jira credential before it is saved and
+// returns an optional human-readable warning plus a hard error.
+//
+// It verifies against the Atlassian Rovo MCP endpoint the credential is
+// actually used with (mcp.atlassian.com/v1/mcp, Basic email:apiToken) — NOT
+// the classic site REST API. The classic REST gate was wrong twice over:
+//   - a modern *scoped* API token (which the Rovo Teamwork Graph tools REQUIRE)
+//     often returns 401/403 on classic endpoints like /rest/api/3/myself, so a
+//     classic-REST gate rejected exactly the token type Rovo needs;
+//   - a 404 on /project/{key} only meant "can't browse that project", not "bad
+//     credential", yet it blocked the save.
+//
+// The Rovo MCP gateway authenticates the Basic header before any MCP protocol
+// handling, so only 401/403 means the credential was rejected. Any other status
+// (a protocol 2xx/4xx) means auth passed. A transport error doesn't block the
+// save — it returns a warning so a network hiccup can't stop a valid token.
+func (r *Runner) verifyJiraCredential(ctx context.Context, creds jiraCredential) (string, error) {
+	email := strings.TrimSpace(creds.Email)
+	apiToken := strings.TrimSpace(creds.ApiToken)
+	if email == "" || apiToken == "" {
+		return "", errors.New("Atlassian email and API token are required")
 	}
 
-	_, err := executeJiraRequestFn(
-		ctx,
-		http.MethodGet,
-		workspaceURL+"/rest/api/3/project/"+projectKey,
-		creds,
-		nil,
-	)
-	return err
+	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte(email+":"+apiToken))
+	headers := map[string]string{
+		"Authorization": auth,
+		"Content-Type":  "application/json",
+		"Accept":        "application/json, text/event-stream",
+	}
+	// Minimal MCP initialize handshake — enough for the gateway to run auth.
+	initBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"flowpilot-connection-check","version":"1"}}}`)
+
+	statusCode, _, err := httpRequestFn(ctx, http.MethodPost, jiraMcpAPITokenRemoteURL, headers, initBody)
+	if err != nil {
+		return fmt.Sprintf(
+			"Saved, but could not reach the Atlassian Rovo MCP server to verify the token (%v). It will be used as-is when a provider runs.",
+			err,
+		), nil
+	}
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+		return "", fmt.Errorf(
+			"Atlassian rejected the email + API token (HTTP %d). Use a valid Atlassian API token for this email — a modern token with scopes is recommended — and make sure your admin enabled API-token auth for Rovo MCP",
+			statusCode,
+		)
+	}
+
+	return "", nil
 }
 
 func (r *Runner) detectJiraBackend(record mcpBackendRecord) McpBackend {
@@ -2530,7 +2717,7 @@ func (r *Runner) detectJiraBackend(record mcpBackendRecord) McpBackend {
 
 	if strings.TrimSpace(creds.WorkspaceURL) != "" && strings.TrimSpace(creds.ProjectKey) != "" {
 		backend.InstallHint = fmt.Sprintf(
-			"Connected to %s for project %s. Use the Jira MCP form to rotate the API token or verify access.",
+			"Connected to %s (%s). Use the Jira MCP form to rotate the API token or verify access.",
 			strings.TrimSpace(creds.WorkspaceURL),
 			creds.ProjectKey,
 		)
@@ -2849,13 +3036,6 @@ func (r *Runner) executeMcpTest(
 		creds, loadErr := r.loadJiraCredential(jiraCredentialKey(request.IntegrationID))
 		if loadErr != nil {
 			return "", loadErr.Error(), "", "GET https://mcp.atlassian.com/v1/mcp/authv2", loadErr
-		}
-		requestProjectID := strings.TrimSpace(request.ProjectID)
-		if strings.TrimSpace(creds.ProjectID) == "" {
-			creds.ProjectID = requestProjectID
-			if saveErr := r.saveJiraCredential(request.IntegrationID, creds); saveErr != nil {
-				return "", saveErr.Error(), "", "", saveErr
-			}
 		}
 		return executeJiraMcpPrompt(ctx, request, creds)
 	default:

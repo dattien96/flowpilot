@@ -13,6 +13,7 @@ import type {
   SupportedModel,
   Team,
   TeamMember,
+  TelegramApprovalRecord,
   Workflow,
   WorkflowRun,
   WorkflowStep,
@@ -111,7 +112,7 @@ export interface ProviderRepository extends LocalProviderRepository, SupportedMo
 export interface IntegrationCrudRepository {
   listIntegrations(): Promise<Integration[]>;
   createIntegration(input: {
-    projectId: string;
+    projectId: string | null;
     type: IntegrationType;
     label: string;
     configEncrypted: Record<string, unknown>;
@@ -119,6 +120,7 @@ export interface IntegrationCrudRepository {
     mcpTypeEnabled?: boolean;
   }): Promise<Integration>;
   updateIntegration(id: string, patch: Partial<Integration>): Promise<Integration>;
+  deleteIntegration(id: string): Promise<void>;
 }
 
 export interface ProjectIntegrationRepository {
@@ -126,10 +128,23 @@ export interface ProjectIntegrationRepository {
   setProjectIntegration(projectId: string, type: IntegrationType, integrationId: string | null): Promise<void>;
 }
 
+/**
+ * Result of a connection/test attempt against an MCP integration. `ok` is
+ * false when the runner rejected the connection (e.g. a Jira verify failure),
+ * so the UI can surface `message` as an error rather than as normal feedback.
+ */
+export interface IntegrationConnectionOutcome {
+  message: string | null;
+  ok: boolean;
+}
+
 export interface McpBackendRepository {
   listMcpBackends(): Promise<LocalRunnerMcpBackend[]>;
-  runMcpBackendAction(backendKey: string, action: "install" | "verify", projectId: string, integrationId?: string): Promise<void>;
-  testIntegration(projectId: string, integrationId: string, providerType: string, fields?: Record<string, string | undefined>): Promise<string | null>;
+  runMcpBackendAction(backendKey: string, action: "install" | "verify", projectId?: string, integrationId?: string): Promise<void>;
+  testIntegration(projectId: string | undefined, integrationId: string, providerType: string, fields?: Record<string, string | boolean | undefined>): Promise<IntegrationConnectionOutcome>;
+  /** Task-233 DOD-6 revisit: real Telegram send_message approval queue. */
+  listTelegramProxyApprovals(status?: string): Promise<TelegramApprovalRecord[]>;
+  decideTelegramProxyApproval(id: string, decision: "approved" | "rejected", comment?: string): Promise<TelegramApprovalRecord>;
 }
 
 export interface IntegrationRepository extends IntegrationCrudRepository, ProjectIntegrationRepository, McpBackendRepository {}

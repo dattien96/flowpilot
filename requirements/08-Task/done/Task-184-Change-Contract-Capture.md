@@ -5,11 +5,11 @@
 - Document ID: `Task-184`
 - Title: `Change Contract Capture`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-03`
-- Last Updated: `2026-07-03`
+- Last Updated: `2026-07-13` (implemented — `internal/changecontract/` built, wired into `gate_hook.go`, `context-discipline` skill bumped; see §6/§8)
 - Parent Documents: [CP-43: Change Contract And Canonical Intent Signature](../../07-Coding-Plan/todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (P-1), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (US-3)
 - Child Documents: `None`
 - Related Documents: [Task-185: Scope-Drift Detection](./Task-185-Scope-Drift-Detection.md), [CP-35: Context And Regression Engine Rollout](../../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md) (P-2 resolver, P-6 skill pack)
@@ -80,14 +80,14 @@ Every code-mutating step begins with a stored `Contract` describing the intended
 
 ## 6. Acceptance Check (DoD)
 
-- [ ] `Contract` struct persists to `.flowpilot/contracts/contracts.ndjson`, one line per `(run_id, step_id)`, last-wins on re-save.
-- [ ] `contract.declare` slot registers at priority 1 and runs after `feature.resolve`; a declared turn yields `confidence="declared"` with parsed `feature_key`/`intent`/`declared_paths`.
-- [ ] A turn with no declaration produces an `inferred` contract from the first diff and does **not** block.
-- [ ] `ParseDeclaration` returns `ok=false` (not an error) when no block is present; malformed blocks degrade gracefully.
-- [ ] `InferFromDiff` excludes `requirements/`, `change-audit/`, `*.md` and buckets by top-level dir.
-- [ ] `context-discipline` skill contains the declare-scope clause; pack version bumped; re-bind re-syncs it (CP-35 P-6).
-- [ ] `contracts.ndjson` is **not** added to the `contextsync` shared set (stays local — verified in Task-188 too).
-- [ ] `go build ./...` and `go test ./internal/changecontract/...` pass; no regression in `contextresolver` tests.
+- [x] `Contract` struct persists to `.flowpilot/contracts/contracts.ndjson`, one line per `(run_id, step_id)`, last-wins on re-save.
+- [x] Declared-scope capture runs on every code-mutating turn and yields `confidence="declared"` with parsed `feature_key`/`intent`/`declared_paths`. **Implementation note:** the doc's original "`contract.declare` resolver slot at priority 1, pre-turn, after `feature.resolve`" wording predates CP-44's `ContextSourceRegistry` (which didn't exist when this Task was authored) and doesn't map onto it — `ContextSource.Fetch` is for *fetching content to inject*, not *parsing the AI's own declaration back out of its message*. Implemented instead as `captureChangeContract` (`gate_hook.go`), called from the existing post-`finishTurn` gate hook (`runFlowGate`) right after the diff/`suggestedFeatureKeys` are observed — the only point where both the AI's `FinalMessage` (to parse) and the `GitDiff` (for the inferred fallback) are already available. Functionally equivalent to the spec's intent; timing is post-turn instead of pre-turn since a declaration can only be read back from a message that has already been generated.
+- [x] A turn with no declaration produces an `inferred` contract from the first diff and does **not** block.
+- [x] `ParseDeclaration` returns `ok=false` (not an error) when no block is present; malformed/partial blocks degrade gracefully (missing lines just leave those fields empty).
+- [x] `InferFromDiff` excludes `requirements/`, `change-audit/`, `*.md` (via `flowgate.IsDocOrAuditFile`) and buckets by top-level dir.
+- [x] `context-discipline` skill contains the declare-scope clause (rule 6); pack version bumped **5→6 globally** (`skillpack.PackVersion` + all 17 skill files' own `version:` field, not just this one — `fileMatchesVersion` compares every file against the single pack-wide constant); re-bind re-syncs it (CP-35 P-6).
+- [x] `contracts.ndjson` is **not** added to the `contextsync` shared set — confirmed by inspection: `contextsync/local.go` uses an explicit allowlist (`ledger/`, `catalog/`, `settings/`, `guard/`, `structure/` subdirs + two named ledger files); `contracts/` isn't in it, so it's local-only by construction, no extra exclusion code needed.
+- [x] `go build ./...` and `go test ./internal/changecontract/...` pass; no regression in `contextresolver` tests. **Implementation note:** there is no `internal/contextresolver` package in this codebase (see note above) — the equivalent regression check is `go test ./internal/runner/...` (which covers `context_source_registry_test.go` and the gate-hook path this change touches).
 
 ## 7. Out of Scope
 
@@ -97,6 +97,7 @@ Every code-mutating step begins with a stored `Contract` describing the intended
 
 ## 8. Completion Notes
 
-- result: planned
-- follow-ups: Task-185 consumes the stored `Contract` to compute scope drift.
-- upstream docs updated: none
+- result: **done** (2026-07-13). New files: `apps/local-runner/internal/changecontract/{contract,parse,infer}.go` + `_test.go` (15 tests). Modified: `apps/local-runner/internal/runner/gate_hook.go` (new `captureChangeContract` call + function, wired into `runFlowGate`), `apps/local-runner/internal/skillpack/flow-pack/common/context-discipline/SKILL.md` (rule 6 + version 6), `apps/local-runner/internal/skillpack/install.go` (`PackVersion = 6`), all 16 other skill files (`version: 5` → `6`, lockstep pack version).
+- verification: `go build ./...` clean; `go vet ./internal/changecontract/... ./internal/runner/... ./internal/skillpack/...` clean; `go test ./internal/changecontract/...` 15 passed; `go test ./internal/skillpack/...` 13 passed; `go test ./internal/runner/... -count=1` 1386 passed / 16 failed (all pre-existing environment-dependent flakes — Codex CLI resume, account-home, skills-merge, auth-workspace — identical to the baseline established earlier this session; zero new failures).
+- follow-ups: Task-185 consumes the stored `Contract` (via `Store.Get(runID, stepID)`) to compute scope drift (`r-contract`/`r-scope`).
+- upstream docs updated: none (SD-21/CP-43 already reflect this design; no design change was needed to implement it — only the "contract.declare slot" wording turned out to be stale relative to CP-44, noted in §6 rather than requiring an SD-21 edit).

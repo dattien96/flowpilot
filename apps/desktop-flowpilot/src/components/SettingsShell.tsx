@@ -28,6 +28,8 @@ export type SettingsSection =
   | "ai-providers"
   | "google-drive"
   | "jira-mcp"
+  | "firebase-mcp"
+  | "telegram-mcp"
   | "check-version"
   | "runner";
 
@@ -54,6 +56,8 @@ const defaultSectionOrder: readonly SettingsSection[] = [
   "ai-providers",
   "google-drive",
   "jira-mcp",
+  "firebase-mcp",
+  "telegram-mcp",
   "check-version",
   "supabase",
   "runner",
@@ -100,17 +104,21 @@ export function SettingsShell({
                 ? "AI Providers"
                 : section === "engine"
                   ? "Engine"
-                : section === "workflows"
-                  ? "Workflows/Steps"
-                : section === "google-drive"
-                  ? "Google Drive"
-                  : section === "jira-mcp"
-                    ? "Jira MCP"
-                    : section === "check-version"
-                      ? "Check Version"
-                      : section === "runner"
-                        ? "Runner"
-                        : section.charAt(0).toUpperCase() + section.slice(1);
+                  : section === "workflows"
+                    ? "Workflows/Steps"
+                    : section === "google-drive"
+                      ? "Google Drive"
+                      : section === "jira-mcp"
+                        ? "Jira MCP"
+                        : section === "firebase-mcp"
+                          ? "Firebase MCP"
+                          : section === "telegram-mcp"
+                            ? "Telegram MCP"
+                            : section === "check-version"
+                              ? "Check Version"
+                              : section === "runner"
+                                ? "Runner"
+                                : section.charAt(0).toUpperCase() + section.slice(1);
 
             return (
               <button
@@ -177,7 +185,14 @@ export function SettingsShell({
         ) : currentSection === "google-drive" ? (
           <GoogleDriveSettings />
         ) : currentSection === "jira-mcp" ? (
-          <McpSettings mode="jira" />
+          // key forces a full remount when switching MCP pages so form/list
+          // state never leaks across Jira / Firebase / Telegram (same component
+          // type + only a mode prop change would otherwise reuse the instance).
+          <McpSettings key="jira-mcp" mode="jira" />
+        ) : currentSection === "firebase-mcp" ? (
+          <McpSettings key="firebase-mcp" mode="firebase" />
+        ) : currentSection === "telegram-mcp" ? (
+          <McpSettings key="telegram-mcp" mode="telegram" />
         ) : currentSection === "check-version" ? (
           <CheckVersionSettings />
         ) : (

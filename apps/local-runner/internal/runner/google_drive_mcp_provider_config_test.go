@@ -92,7 +92,7 @@ func TestEnsureCodexGoogleDriveMcpConfig(t *testing.T) {
 		t.Error("Expected Changed to be true for new config")
 	}
 
-	if resp.ServerName != "google-drive" {
+	if resp.ServerName != googleDriveMcpServerName {
 		t.Errorf("Expected serverName 'google-drive', got '%s'", resp.ServerName)
 	}
 
@@ -113,7 +113,7 @@ func TestEnsureCodexGoogleDriveMcpConfig(t *testing.T) {
 		t.Fatalf("Failed to parse TOML: %v", err)
 	}
 
-	server, exists := config.McpServers["google-drive"]
+	server, exists := config.McpServers[googleDriveMcpServerName]
 	if !exists {
 		t.Fatal("google-drive server not found in config")
 	}
@@ -234,7 +234,7 @@ func TestEnsureGrokGoogleDriveMcpConfig(t *testing.T) {
 	if !resp.Changed {
 		t.Error("Expected Changed to be true for new config")
 	}
-	if resp.ServerName != "google-drive" {
+	if resp.ServerName != googleDriveMcpServerName {
 		t.Errorf("Expected serverName 'google-drive', got '%s'", resp.ServerName)
 	}
 
@@ -255,7 +255,7 @@ func TestEnsureGrokGoogleDriveMcpConfig(t *testing.T) {
 		t.Fatalf("Failed to parse TOML: %v", err)
 	}
 	mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
-	serverMap, ok := mcpServers["google-drive"].(map[string]interface{})
+	serverMap, ok := mcpServers[googleDriveMcpServerName].(map[string]interface{})
 	if !ok {
 		t.Fatal("google-drive server not found in config")
 	}
@@ -392,7 +392,7 @@ func TestEnsureGeminiGoogleDriveMcpConfig(t *testing.T) {
 		t.Fatalf("Failed to parse JSON: %v", err)
 	}
 
-	server, exists := config.McpServers["google-drive"]
+	server, exists := config.McpServers[googleDriveMcpServerName]
 	if !exists {
 		t.Fatal("google-drive server not found in config")
 	}
@@ -504,7 +504,7 @@ func TestEnsureClaudeGoogleDriveMcpConfig(t *testing.T) {
 		t.Fatalf("Failed to parse JSON: %v", err)
 	}
 
-	server, exists := config.McpServers["google-drive"]
+	server, exists := config.McpServers[googleDriveMcpServerName]
 	if !exists {
 		t.Fatal("google-drive server not found in config")
 	}
@@ -517,6 +517,88 @@ func TestEnsureClaudeGoogleDriveMcpConfig(t *testing.T) {
 	}
 	if workspace, configuredAccountHome, mode, yoloMode, ok := parseGoogleDriveProxyMcpInvocation(server.Command, server.Args); !ok || workspace != filepath.Clean(tmpDir) || configuredAccountHome != accountHome || mode != "read_only" || yoloMode {
 		t.Errorf("Unexpected proxy invocation: command=%s args=%v", server.Command, server.Args)
+	}
+}
+
+// TestSyncCodexGoogleDriveMcpLiveRestoresStaleTokenPreservingKeys verifies the
+// Codex Drive live-sync: Claude/Grok re-resolve google-drive live each turn, but
+// Codex reads only its static config.toml, so a Drive account switch left it
+// authenticating as whatever refresh token was frozen in. syncCodexGoogleDriveMcpLive
+// must refresh the credential env to the currently-selected account WITHOUT
+// dropping other top-level Codex config keys.
+func TestSyncCodexGoogleDriveMcpLiveRestoresStaleTokenPreservingKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	setDiscoveryTestHome(t, tmpDir)
+
+	runner := &Runner{workspace: tmpDir, secretStore: newMemorySecretStore()}
+	writeTestGoogleDriveMcpRuntime(t, runner, tmpDir)
+	stubGoogleDriveOAuthTokenRefresh(t)
+	t.Setenv(googleDriveProxyMcpFlag, "true")
+
+	// Seed the selected account's credential (the "correct" current token).
+	if err := runner.saveGoogleDriveCredentialByAccount("project-1@example.com", googleDriveCredential{
+		RefreshToken: "cambt-correct-token",
+		AccountEmail: "project-1@example.com",
+	}); err != nil {
+		t.Fatalf("seed drive credential: %v", err)
+	}
+
+	accountHome := filepath.Join(tmpDir, "codex-home")
+	if err := os.MkdirAll(accountHome, 0o755); err != nil {
+		t.Fatalf("Failed to create account home: %v", err)
+	}
+
+	// Write a correct config, then confirm it carries the current token.
+	if _, err := runner.EnsureGoogleDriveMcpProviderConfig(GoogleDriveMcpProviderConfigRequest{
+		ProviderKey: "codex", AccountHomePath: accountHome, Scope: "account", Mode: "read_only",
+	}); err != nil {
+		t.Fatalf("EnsureGoogleDriveMcpProviderConfig(codex): %v", err)
+	}
+	configPath := filepath.Join(accountHome, "config.toml")
+	good, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(good), "cambt-correct-token") {
+		t.Fatalf("expected current token in written config, got: %s", good)
+	}
+
+	// Freeze a stale token into the file (simulating an old account) and add an
+	// unrelated top-level key, then sync.
+	corrupted := "model = \"gpt-5.4-mini\"\n" + strings.Replace(string(good), "cambt-correct-token", "STALE-hothuy-token", 1)
+	if err := os.WriteFile(configPath, []byte(corrupted), 0o644); err != nil {
+		t.Fatalf("write corrupted config: %v", err)
+	}
+
+	changed, err := runner.syncCodexGoogleDriveMcpLive(accountHome)
+	if err != nil {
+		t.Fatalf("syncCodexGoogleDriveMcpLive: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected changed=true when restoring a stale Drive token")
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after sync: %v", err)
+	}
+	got := string(after)
+	if !strings.Contains(got, "cambt-correct-token") {
+		t.Fatalf("expected current token restored, got: %s", got)
+	}
+	if strings.Contains(got, "STALE-hothuy-token") {
+		t.Fatalf("stale token not replaced, got: %s", got)
+	}
+	if !strings.Contains(got, "gpt-5.4-mini") {
+		t.Fatalf("sync dropped unrelated top-level key 'model', got: %s", got)
+	}
+
+	// Idempotent: nothing to do on a second pass.
+	changedAgain, err := runner.syncCodexGoogleDriveMcpLive(accountHome)
+	if err != nil {
+		t.Fatalf("second syncCodexGoogleDriveMcpLive: %v", err)
+	}
+	if changedAgain {
+		t.Fatalf("expected changed=false on second sync with unchanged account")
 	}
 }
 

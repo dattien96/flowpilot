@@ -438,7 +438,7 @@ type BackupResult struct {
 }
 
 type IntegrationConnectionRequest struct {
-	ProjectID    string `json:"projectId"`
+	ProjectID    string `json:"projectId,omitempty"`
 	ProviderType string `json:"providerType"`
 	Action       string `json:"action"`
 	WorkspaceURL string `json:"workspaceUrl,omitempty"`
@@ -446,10 +446,28 @@ type IntegrationConnectionRequest struct {
 	BoardID      string `json:"boardId,omitempty"`
 	Email        string `json:"email,omitempty"`
 	ApiToken     string `json:"apiToken,omitempty"`
+	// FirebaseProjectID/FirebaseEnvironment/ServiceAccountJSON back the
+	// Firebase connection flow (Task-230, CP-05-04). ServiceAccountJSON is
+	// the raw contents of the uploaded GCP service-account key file — it is
+	// sent once to the runner and stored only in the runner keyring
+	// (firebaseCredential), never persisted in Supabase config_encrypted.
+	FirebaseProjectID   string `json:"firebaseProjectId,omitempty"`
+	FirebaseEnvironment string `json:"firebaseEnvironment,omitempty"`
+	ServiceAccountJSON  string `json:"serviceAccountJson,omitempty"`
+	// BotToken/ChannelID back the Telegram connection flow (Task-232,
+	// CP-05-05). BotToken is stored only in the runner keyring
+	// (telegramCredential), never in Supabase config_encrypted.
+	BotToken  string `json:"botToken,omitempty"`
+	ChannelID string `json:"channelId,omitempty"`
+	// TelegramAutoApprove is a pointer so a re-Test of an already-connected
+	// integration (desktop sends stripped config without this field) does not
+	// wipe a previously-enabled auto-approve flag via JSON's false zero-value.
+	// nil = leave existing keyring AutoApprove unchanged; non-nil = set it.
+	TelegramAutoApprove *bool `json:"telegramAutoApprove,omitempty"`
 }
 
 type McpBackendActionRequest struct {
-	ProjectID     string `json:"projectId"`
+	ProjectID     string `json:"projectId,omitempty"`
 	IntegrationID string `json:"integrationId"`
 	Action        string `json:"action"`
 }

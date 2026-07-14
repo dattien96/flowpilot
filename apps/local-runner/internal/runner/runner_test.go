@@ -54,9 +54,13 @@ func (s *memorySecretStore) Delete(key string) error {
 func TestTriggerIntegrationConnectionAcceptsValidRequest(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir()}
 
+	// Task-232 gave "telegram" real credential validation (bot token/channel
+	// id required, status becomes "connected"/"failed" instead of a bare
+	// placeholder "pending" acknowledgement) — this test now exercises
+	// "figma", the one remaining provider still on the generic no-op
+	// placeholder path this test was originally written to cover.
 	result, err := instance.TriggerIntegrationConnection(context.Background(), "integration-1", IntegrationConnectionRequest{
-		ProjectID:    "project-alpha",
-		ProviderType: "telegram",
+		ProviderType: "figma",
 		Action:       "test",
 	})
 	if err != nil {
@@ -72,8 +76,8 @@ func TestTriggerIntegrationConnectionAcceptsValidRequest(t *testing.T) {
 	if result.IntegrationStatus != "pending" {
 		t.Fatalf("expected pending integration status, got %q", result.IntegrationStatus)
 	}
-	if result.Message == nil || !strings.Contains(*result.Message, "project-alpha") {
-		t.Fatalf("expected message to mention project id, got %#v", result.Message)
+	if result.Message == nil || !strings.Contains(strings.ToLower(*result.Message), "accepted") {
+		t.Fatalf("expected acceptance message, got %#v", result.Message)
 	}
 }
 
@@ -623,19 +627,19 @@ func TestTriggerIntegrationConnectionUsesJiraApiToken(t *testing.T) {
 		secretStore: newMemorySecretStore(),
 	}
 
-	originalRequest := executeJiraRequestFn
+	originalRequest := httpRequestFn
 	t.Cleanup(func() {
-		executeJiraRequestFn = originalRequest
+		httpRequestFn = originalRequest
 	})
 
 	var observedEndpoint string
 	var observedMethod string
-	var observedCreds jiraCredential
-	executeJiraRequestFn = func(ctx context.Context, method string, endpoint string, creds jiraCredential, payload []byte) ([]byte, error) {
+	var observedAuth string
+	httpRequestFn = func(ctx context.Context, method string, endpoint string, headers map[string]string, body []byte) (int, []byte, error) {
 		observedEndpoint = endpoint
 		observedMethod = method
-		observedCreds = creds
-		return []byte(`{"id":"10000","key":"SCRUM"}`), nil
+		observedAuth = headers["Authorization"]
+		return http.StatusOK, []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`), nil
 	}
 
 	result, err := instance.TriggerIntegrationConnection(context.Background(), "integration-jira", IntegrationConnectionRequest{
@@ -658,14 +662,16 @@ func TestTriggerIntegrationConnectionUsesJiraApiToken(t *testing.T) {
 	if result.IntegrationStatus != "connected" {
 		t.Fatalf("expected connected integration status, got %q", result.IntegrationStatus)
 	}
-	if observedEndpoint != "https://flowpilot899.atlassian.net/rest/api/3/project/SCRUM" {
-		t.Fatalf("expected Jira project verification endpoint, got %q", observedEndpoint)
+	// Verify now probes the Rovo MCP endpoint (Basic auth), not classic REST.
+	if observedEndpoint != jiraMcpAPITokenRemoteURL {
+		t.Fatalf("expected Jira verify to hit the Rovo MCP endpoint, got %q", observedEndpoint)
 	}
-	if observedMethod != http.MethodGet {
-		t.Fatalf("expected Jira verify GET request, got %q", observedMethod)
+	if observedMethod != http.MethodPost {
+		t.Fatalf("expected Jira verify POST request, got %q", observedMethod)
 	}
-	if observedCreds.Email != "name@company.com" || observedCreds.ApiToken != "secret-token" {
-		t.Fatalf("expected stored Jira credentials to be used, got %#v", observedCreds)
+	expectedAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("name@company.com:secret-token"))
+	if observedAuth != expectedAuth {
+		t.Fatalf("expected Basic auth from stored Jira credentials, got %q", observedAuth)
 	}
 
 	backends, err := instance.ListMcpBackends(context.Background())
@@ -736,15 +742,15 @@ func TestVerifyMcpBackendUsesRequestedJiraIntegrationScope(t *testing.T) {
 		t.Fatalf("save jira backend record: %v", err)
 	}
 
-	originalRequest := executeJiraRequestFn
+	originalRequest := httpRequestFn
 	t.Cleanup(func() {
-		executeJiraRequestFn = originalRequest
+		httpRequestFn = originalRequest
 	})
 
-	var observedCreds jiraCredential
-	executeJiraRequestFn = func(ctx context.Context, method string, endpoint string, creds jiraCredential, payload []byte) ([]byte, error) {
-		observedCreds = creds
-		return []byte(`{"id":"10000","key":"SCRUM"}`), nil
+	var observedAuth string
+	httpRequestFn = func(ctx context.Context, method string, endpoint string, headers map[string]string, body []byte) (int, []byte, error) {
+		observedAuth = headers["Authorization"]
+		return http.StatusOK, []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`), nil
 	}
 
 	backend, err := instance.VerifyMcpBackend(
@@ -757,8 +763,9 @@ func TestVerifyMcpBackendUsesRequestedJiraIntegrationScope(t *testing.T) {
 		t.Fatalf("verify jira backend with scoped integration: %v", err)
 	}
 
-	if observedCreds.Email != "target@company.com" || observedCreds.ApiToken != "target-token" {
-		t.Fatalf("expected verify to use requested integration credential, got %#v", observedCreds)
+	expectedAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("target@company.com:target-token"))
+	if observedAuth != expectedAuth {
+		t.Fatalf("expected verify to use requested integration credential, got auth %q", observedAuth)
 	}
 	if backend.SecretKey != jiraCredentialKey("integration-target") {
 		t.Fatalf("expected backend secret key to switch to target integration, got %q", backend.SecretKey)
@@ -800,15 +807,6 @@ func TestTriggerIntegrationConnectionRejectsInvalidInput(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected integration id validation error")
-	}
-
-	_, err = instance.TriggerIntegrationConnection(context.Background(), "integration-1", IntegrationConnectionRequest{
-		ProjectID:    "",
-		ProviderType: "google_drive",
-		Action:       "test",
-	})
-	if err == nil {
-		t.Fatal("expected project id validation error")
 	}
 
 	_, err = instance.TriggerIntegrationConnection(context.Background(), "integration-1", IntegrationConnectionRequest{
@@ -1459,7 +1457,7 @@ func TestRunMcpTestLoadsJiraTicketContent(t *testing.T) {
 	}
 }
 
-func TestRunMcpTestBackfillsLegacyJiraProjectScope(t *testing.T) {
+func TestRunMcpTestDoesNotBackfillLegacyJiraProjectScope(t *testing.T) {
 	instance := &Runner{
 		workspace:   t.TempDir(),
 		secretStore: newMemorySecretStore(),
@@ -1480,8 +1478,8 @@ func TestRunMcpTestBackfillsLegacyJiraProjectScope(t *testing.T) {
 	})
 
 	executeJiraRequestFn = func(ctx context.Context, method string, endpoint string, creds jiraCredential, payload []byte) ([]byte, error) {
-		if creds.ProjectID != "project-alpha" {
-			t.Fatalf("expected legacy credential to be backfilled with project scope, got %#v", creds)
+		if creds.ProjectID != "" {
+			t.Fatalf("expected legacy credential to stay project-agnostic, got %#v", creds)
 		}
 		return []byte(`{"issues":[]}`), nil
 	}
@@ -1505,8 +1503,8 @@ func TestRunMcpTestBackfillsLegacyJiraProjectScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load jira credential: %v", err)
 	}
-	if creds.ProjectID != "project-alpha" {
-		t.Fatalf("expected saved credential project id project-alpha, got %q", creds.ProjectID)
+	if creds.ProjectID != "" {
+		t.Fatalf("expected saved credential to remain project-agnostic, got %q", creds.ProjectID)
 	}
 }
 
@@ -1631,24 +1629,95 @@ func TestRunMcpTestReturnsFailedResultWhenJiraVerificationFails(t *testing.T) {
 	}
 }
 
-func TestVerifyJiraCredentialRejectsNon2xxStatuses(t *testing.T) {
-	originalRequest := executeJiraRequestFn
+func TestVerifyJiraCredentialRejectsAuthFailure(t *testing.T) {
+	originalRequest := httpRequestFn
 	t.Cleanup(func() {
-		executeJiraRequestFn = originalRequest
+		httpRequestFn = originalRequest
 	})
 
-	executeJiraRequestFn = func(ctx context.Context, method string, endpoint string, creds jiraCredential, payload []byte) ([]byte, error) {
-		return nil, errors.New("jira request failed: 429 rate limited")
+	httpRequestFn = func(ctx context.Context, method string, endpoint string, headers map[string]string, body []byte) (int, []byte, error) {
+		return http.StatusUnauthorized, []byte(`{"error":"unauthorized"}`), nil
 	}
 
-	err := (&Runner{}).verifyJiraCredential(context.Background(), jiraCredential{
+	// A 401/403 from the Rovo MCP gateway means the credential was rejected.
+	_, err := (&Runner{}).verifyJiraCredential(context.Background(), jiraCredential{
 		Email:        "name@company.com",
 		ApiToken:     "secret-token",
 		WorkspaceURL: "https://flowpilot899.atlassian.net",
 		ProjectKey:   "SCRUM",
 	})
-	if err == nil || !strings.Contains(err.Error(), "429") {
-		t.Fatalf("expected non-2xx verification failure, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("expected auth rejection error, got %v", err)
+	}
+}
+
+// TestVerifyJiraCredentialAcceptsScopedTokenNonAuthStatus is the core Rovo fix:
+// a modern scoped token that authenticates to the MCP gateway must pass save,
+// even if the probe response is a non-2xx protocol status (anything but
+// 401/403). The old classic-REST gate rejected such tokens.
+func TestVerifyJiraCredentialAcceptsScopedTokenNonAuthStatus(t *testing.T) {
+	originalRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalRequest
+	})
+
+	httpRequestFn = func(ctx context.Context, method string, endpoint string, headers map[string]string, body []byte) (int, []byte, error) {
+		// Authenticated but the minimal handshake isn't a full MCP session.
+		return http.StatusBadRequest, []byte(`{"error":"bad protocol"}`), nil
+	}
+
+	warning, err := (&Runner{}).verifyJiraCredential(context.Background(), jiraCredential{
+		Email:        "name@company.com",
+		ApiToken:     "scoped-token",
+		WorkspaceURL: "https://flowpilot899.atlassian.net",
+		ProjectKey:   "SCRUM",
+	})
+	if err != nil {
+		t.Fatalf("expected authenticated (non-401/403) probe to pass, got error %v", err)
+	}
+	if warning != "" {
+		t.Fatalf("expected no warning on a clean auth pass, got %q", warning)
+	}
+}
+
+// TestVerifyJiraCredentialTransportErrorIsNonBlocking: a network failure to the
+// MCP host must not block the save — it returns a warning and nil error.
+func TestVerifyJiraCredentialTransportErrorIsNonBlocking(t *testing.T) {
+	originalRequest := httpRequestFn
+	t.Cleanup(func() {
+		httpRequestFn = originalRequest
+	})
+
+	httpRequestFn = func(ctx context.Context, method string, endpoint string, headers map[string]string, body []byte) (int, []byte, error) {
+		return 0, nil, errors.New("dial tcp: lookup mcp.atlassian.com: no such host")
+	}
+
+	warning, err := (&Runner{}).verifyJiraCredential(context.Background(), jiraCredential{
+		Email:        "name@company.com",
+		ApiToken:     "secret-token",
+		WorkspaceURL: "https://flowpilot899.atlassian.net",
+		ProjectKey:   "SCRUM",
+	})
+	if err != nil {
+		t.Fatalf("expected transport error to be non-blocking, got error %v", err)
+	}
+	if !strings.Contains(warning, "could not reach") {
+		t.Fatalf("expected a reachability warning, got %q", warning)
+	}
+}
+
+func TestNormalizeJiraWorkspaceURL(t *testing.T) {
+	cases := map[string]string{
+		"https://flowpilot899.atlassian.net":                                  "https://flowpilot899.atlassian.net",
+		"https://flowpilot899.atlassian.net/":                                 "https://flowpilot899.atlassian.net",
+		"https://flowpilot899.atlassian.net/jira/software/projects/SCRUM/b/1": "https://flowpilot899.atlassian.net",
+		"  flowpilot899.atlassian.net  ":                                      "https://flowpilot899.atlassian.net",
+		"":                                                                    "",
+	}
+	for input, want := range cases {
+		if got := normalizeJiraWorkspaceURL(input); got != want {
+			t.Fatalf("normalizeJiraWorkspaceURL(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 

@@ -269,6 +269,21 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				} else {
 					return errorAdapter{key: ProviderKeyCodex, err: err}
 				}
+				// Codex has no per-turn extraMCPServers live merge (Claude/Grok do):
+				// its shared app-server reads mcp_servers from config.toml only at
+				// boot. Sync the FlowPilot-managed entries (jira account, google-drive
+				// account/token) to the currently-selected accounts before (re)using
+				// the process, and force a respawn when either changed so the app-server
+				// re-reads them instead of serving values frozen by an earlier Configure
+				// Providers run — the reason Codex drifted to a stale Jira/Drive account
+				// while Claude/Grok (which re-resolve live) stayed correct.
+				if home := strings.TrimSpace(env["CODEX_HOME"]); home != "" {
+					jiraChanged, _ := r.syncCodexJiraMcpLive(home)
+					driveChanged, _ := r.syncCodexGoogleDriveMcpLive(home)
+					if jiraChanged || driveChanged {
+						r.resetCodexAppServer()
+					}
+				}
 				h, err := r.ensureCodexAppServer(context.Background(), scopeKey, r.workspace, env)
 				if err != nil {
 					return errorAdapter{key: ProviderKeyCodex, err: err}

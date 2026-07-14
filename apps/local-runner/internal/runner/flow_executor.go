@@ -335,7 +335,25 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 		log.Printf("[flow-executor] flow %q inline entry node %q failed to resolve mcp.driver target: %v", flowRef, entry.ID, err)
 		return false
 	}
+	jiraIssueTarget, err := s.resolveJiraIssueTargetForRun(ctx, parentRunID, entry, sourceIDs)
+	if err != nil {
+		log.Printf("[flow-executor] flow %q inline entry node %q failed to resolve jira.issue target: %v", flowRef, entry.ID, err)
+		return false
+	}
+	jiraSprintTarget, err := s.resolveJiraSprintTargetForRun(ctx, parentRunID, entry, sourceIDs)
+	if err != nil {
+		log.Printf("[flow-executor] flow %q inline entry node %q failed to resolve jira.sprint target: %v", flowRef, entry.ID, err)
+		return false
+	}
+	firebaseCrashTarget, err := s.resolveFirebaseCrashTargetForRun(ctx, parentRunID, entry, sourceIDs)
+	if err != nil {
+		log.Printf("[flow-executor] flow %q inline entry node %q failed to resolve firebase.crashlytics target: %v", flowRef, entry.ID, err)
+		return false
+	}
 	contextSourceIDs := filterString(sourceIDs, string(ContextSourceMCPDriver))
+	contextSourceIDs = filterString(contextSourceIDs, string(ContextSourceJiraIssue))
+	contextSourceIDs = filterString(contextSourceIDs, string(ContextSourceJiraSprint))
+	contextSourceIDs = filterString(contextSourceIDs, string(ContextSourceFirebaseCrashlytics))
 	out, err := DefaultBehaviorRegistry().Dispatch(ctx, canonical, BehaviorInput{
 		NodeID:           entry.ID,
 		WorkflowRunID:    parentRunID,
@@ -390,6 +408,9 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 		}
 	}
 	prompt = appendGoogleDriveTargetPrompt(prompt, mcpDriverTarget)
+	prompt = appendJiraIssueTargetPrompt(prompt, jiraIssueTarget)
+	prompt = appendJiraSprintTargetPrompt(prompt, jiraSprintTarget)
+	prompt = appendFirebaseCrashTargetPrompt(prompt, firebaseCrashTarget)
 	// Task-202/223: INPUT file artifacts (read) + OUTPUT file write contract
 	// for the delegate target. context_artifact stays on the package path above.
 	prompt = composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), prompt, *delegateTarget)
@@ -485,6 +506,134 @@ func normalizeGoogleDriveTarget(raw string) string {
 	return "file:" + raw
 }
 
+// resolveJiraIssueTargetForRun mirrors resolveMCPDriverTargetForRun (Task-229,
+// CP-05-06 P-6b): jira.issue is opt-in per-flow, and when enabled the run asks
+// the user for an issue key rather than the runner guessing one. A skipped or
+// expired/interrupted question degrades to "" (no target), not an error.
+func (s *InteractiveService) resolveJiraIssueTargetForRun(ctx context.Context, parentRunID string, node agentpack.FlowNode, sourceIDs []string) (string, error) {
+	if !containsString(sourceIDs, string(ContextSourceJiraIssue)) {
+		return "", nil
+	}
+	choice, apiErr := s.AskWorkflowQuestion(
+		ctx,
+		parentRunID,
+		"Jira issue context is enabled for this run. Enter the Jira issue key (e.g. SCRUM-123) to focus on, or skip Jira issue context this time.",
+		[]QuestionOption{
+			{
+				Label:       "Skip Jira issue",
+				Value:       "__skip__",
+				Description: "Run this flow without Jira issue context this time.",
+			},
+		},
+		false,
+	)
+	if apiErr != nil {
+		if apiErr.code == "question_expired" || apiErr.code == "interrupted" {
+			return "", nil
+		}
+		return "", apiErr
+	}
+	if len(choice) == 0 {
+		return "", nil
+	}
+	return normalizeJiraIssueTarget(choice[0]), nil
+}
+
+func normalizeJiraIssueTarget(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "__skip__" {
+		return ""
+	}
+	return raw
+}
+
+// resolveJiraSprintTargetForRun mirrors resolveJiraIssueTargetForRun for
+// jira.sprint, defaulting the offered choice to the connected board's active
+// sprint (the common case) while still allowing an explicit sprint id/name.
+func (s *InteractiveService) resolveJiraSprintTargetForRun(ctx context.Context, parentRunID string, node agentpack.FlowNode, sourceIDs []string) (string, error) {
+	if !containsString(sourceIDs, string(ContextSourceJiraSprint)) {
+		return "", nil
+	}
+	choice, apiErr := s.AskWorkflowQuestion(
+		ctx,
+		parentRunID,
+		"Jira sprint context is enabled for this run. Use the active sprint, enter a specific sprint id, or skip Jira sprint context this time.",
+		[]QuestionOption{
+			{
+				Label:       "Use Active Sprint",
+				Value:       "__active_sprint__",
+				Description: "Use the connected board's current active sprint.",
+			},
+			{
+				Label:       "Skip Jira Sprint",
+				Value:       "__skip__",
+				Description: "Run this flow without Jira sprint context this time.",
+			},
+		},
+		false,
+	)
+	if apiErr != nil {
+		if apiErr.code == "question_expired" || apiErr.code == "interrupted" {
+			return "", nil
+		}
+		return "", apiErr
+	}
+	if len(choice) == 0 {
+		return "", nil
+	}
+	return normalizeJiraSprintTarget(choice[0]), nil
+}
+
+func normalizeJiraSprintTarget(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "__skip__" {
+		return ""
+	}
+	if raw == "__active_sprint__" {
+		return "active"
+	}
+	return raw
+}
+
+// resolveFirebaseCrashTargetForRun mirrors resolveJiraIssueTargetForRun for
+// firebase.crashlytics (Task-231, CP-05-04 P-3/P-4).
+func (s *InteractiveService) resolveFirebaseCrashTargetForRun(ctx context.Context, parentRunID string, node agentpack.FlowNode, sourceIDs []string) (string, error) {
+	if !containsString(sourceIDs, string(ContextSourceFirebaseCrashlytics)) {
+		return "", nil
+	}
+	choice, apiErr := s.AskWorkflowQuestion(
+		ctx,
+		parentRunID,
+		"Firebase Crashlytics context is enabled for this run. Enter the crash issue id to investigate, or skip Firebase context this time.",
+		[]QuestionOption{
+			{
+				Label:       "Skip Firebase Crashlytics",
+				Value:       "__skip__",
+				Description: "Run this flow without Firebase Crashlytics context this time.",
+			},
+		},
+		false,
+	)
+	if apiErr != nil {
+		if apiErr.code == "question_expired" || apiErr.code == "interrupted" {
+			return "", nil
+		}
+		return "", apiErr
+	}
+	if len(choice) == 0 {
+		return "", nil
+	}
+	return normalizeFirebaseCrashTarget(choice[0]), nil
+}
+
+func normalizeFirebaseCrashTarget(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "__skip__" {
+		return ""
+	}
+	return raw
+}
+
 func containsString(items []string, target string) bool {
 	for _, item := range items {
 		if strings.TrimSpace(item) == target {
@@ -531,6 +680,57 @@ func appendGoogleDriveTargetPrompt(prompt, target string) string {
 		note += "Read the selected file directly with the Google Drive document-read tools.\n"
 	}
 	note += "Do not search other Drive locations unless the user explicitly asks.\n"
+	return prompt + note
+}
+
+// appendJiraIssueTargetPrompt mirrors appendGoogleDriveTargetPrompt for the
+// jira.issue runtime target (Task-229, CP-05-06 P-4): a bounded note telling
+// the AI which single issue it may read via the jira MCP server, not a dump
+// of the issue's content — the live AI turn fetches it itself with real MCP
+// tools, same division of labor as mcp.driver.
+func appendJiraIssueTargetPrompt(prompt, issueKey string) string {
+	issueKey = strings.TrimSpace(issueKey)
+	if issueKey == "" {
+		return prompt
+	}
+	note := "\n\nJira runtime target for this run:\n" +
+		"- issue key: " + issueKey + "\n\n" +
+		fmt.Sprintf("Use Jira MCP tools from the `%s` server to read only this selected issue when Jira context is needed. ", jiraMcpServerName) +
+		"Do not search or read other Jira issues unless the user explicitly asks.\n"
+	return prompt + note
+}
+
+// appendJiraSprintTargetPrompt mirrors appendJiraIssueTargetPrompt for the
+// jira.sprint runtime target.
+func appendJiraSprintTargetPrompt(prompt, sprintTarget string) string {
+	sprintTarget = strings.TrimSpace(sprintTarget)
+	if sprintTarget == "" {
+		return prompt
+	}
+	scope := "the active sprint"
+	if sprintTarget != "active" {
+		scope = "sprint " + sprintTarget
+	}
+	note := "\n\nJira sprint runtime target for this run:\n" +
+		"- sprint: " + sprintTarget + "\n\n" +
+		fmt.Sprintf("Use Jira MCP tools from the `%s` server to list and read issues only within %s on the configured board. ", jiraMcpServerName, scope) +
+		"Do not read issues outside this sprint unless the user explicitly asks.\n"
+	return prompt + note
+}
+
+// appendFirebaseCrashTargetPrompt mirrors appendJiraIssueTargetPrompt for the
+// firebase.crashlytics runtime target (Task-231, CP-05-04 P-4): a bounded
+// note, not crash content — the AI reads the crash itself via the firebase
+// MCP server's Crashlytics tools.
+func appendFirebaseCrashTargetPrompt(prompt, crashRef string) string {
+	crashRef = strings.TrimSpace(crashRef)
+	if crashRef == "" {
+		return prompt
+	}
+	note := "\n\nFirebase Crashlytics runtime target for this run:\n" +
+		"- crash issue id: " + crashRef + "\n\n" +
+		fmt.Sprintf("Use Firebase MCP tools from the `%s` server (crashlytics_get_issue, crashlytics_list_events) to read only this selected crash issue when crash context is needed. ", firebaseMcpServerName) +
+		"Do not search or read other Crashlytics issues unless the user explicitly asks.\n"
 	return prompt + note
 }
 

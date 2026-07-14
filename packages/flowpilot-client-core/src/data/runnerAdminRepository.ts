@@ -1,6 +1,7 @@
 import type {
   ArtifactRepository,
   DirectoryRepository,
+  IntegrationConnectionOutcome,
   IntegrationRepository,
   LocalArtifactRepository,
   LocalProviderRepository,
@@ -17,6 +18,7 @@ import type {
   LocalRunnerProviderModel,
   LocalRunnerStorageDriver,
   SupportedModel,
+  TelegramApprovalRecord,
 } from "../domain/adminModels";
 import type { HttpClient } from "./http";
 
@@ -158,12 +160,12 @@ export class RunnerAdminRepository implements
     return readJson<LocalRunnerMcpBackend[]>(response).catch(() => []);
   }
 
-  async runMcpBackendAction(backendKey: string, action: "install" | "verify", projectId: string, integrationId?: string): Promise<void> {
+  async runMcpBackendAction(backendKey: string, action: "install" | "verify", projectId?: string, integrationId?: string): Promise<void> {
     const path = action === "install" ? `/mcp/backends/${backendKey}/install` : `/mcp/backends/${backendKey}/actions`;
     const response = await this.httpClient.request(new URL(path, this.runnerBaseUrl), {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action, projectId, integrationId }),
+      body: JSON.stringify({ action, ...(projectId ? { projectId } : {}), ...(integrationId ? { integrationId } : {}) }),
     });
     await readJson<unknown>(response).catch(async (error) => {
       if (error instanceof SyntaxError) return;
@@ -171,20 +173,36 @@ export class RunnerAdminRepository implements
     });
   }
 
-  async testIntegration(projectId: string, integrationId: string, providerType: string, fields?: Record<string, string | undefined>): Promise<string | null> {
-    const response = await this.httpClient.request(new URL("/integrations/connect", this.runnerBaseUrl), {
+  async testIntegration(projectId: string | undefined, integrationId: string, providerType: string, fields?: Record<string, string | boolean | undefined>): Promise<IntegrationConnectionOutcome> {
+    const response = await this.httpClient.request(new URL(`/integrations/${encodeURIComponent(integrationId)}/connection`, this.runnerBaseUrl), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        projectId,
-        integrationId,
+        ...(projectId ? { projectId } : {}),
         providerType,
         action: "test",
         ...fields,
       }),
     });
-    const payload = await readJson<{ message?: string | null }>(response);
-    return payload.message ?? null;
+    const payload = await readJson<{ message?: string | null; requestStatus?: string; integrationStatus?: string }>(response);
+    const ok = payload.requestStatus !== "rejected" && payload.integrationStatus !== "failed";
+    return { message: payload.message ?? null, ok };
+  }
+
+  async listTelegramProxyApprovals(status?: string): Promise<TelegramApprovalRecord[]> {
+    const url = new URL("/telegram-proxy-approvals", this.runnerBaseUrl);
+    if (status) url.searchParams.set("status", status);
+    const response = await this.httpClient.request(url, { cache: "no-store" });
+    return readJson<TelegramApprovalRecord[]>(response).catch(() => []);
+  }
+
+  async decideTelegramProxyApproval(id: string, decision: "approved" | "rejected", comment?: string): Promise<TelegramApprovalRecord> {
+    const response = await this.httpClient.request(new URL(`/telegram-proxy-approvals/${id}/decision`, this.runnerBaseUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision, comment }),
+    });
+    return readJson<TelegramApprovalRecord>(response);
   }
 
   async pickDirectory() {
@@ -237,24 +255,29 @@ export class CompositeProviderRepository implements ProviderRepository {
 
 export class CompositeIntegrationRepository implements IntegrationRepository {
   constructor(
-    private readonly supabaseRepository: Pick<IntegrationRepository, "listIntegrations" | "createIntegration" | "updateIntegration" | "listLinkedIntegrations" | "setProjectIntegration">,
-    private readonly runnerRepository: Pick<IntegrationRepository, "listMcpBackends" | "runMcpBackendAction" | "testIntegration">,
+    private readonly supabaseRepository: Pick<IntegrationRepository, "listIntegrations" | "createIntegration" | "updateIntegration" | "deleteIntegration" | "listLinkedIntegrations" | "setProjectIntegration">,
+    private readonly runnerRepository: Pick<IntegrationRepository, "listMcpBackends" | "runMcpBackendAction" | "testIntegration" | "listTelegramProxyApprovals" | "decideTelegramProxyApproval">,
   ) {}
 
   listIntegrations() { return this.supabaseRepository.listIntegrations(); }
-  createIntegration(input: { projectId: string; type: IntegrationType; label: string; configEncrypted: Record<string, unknown>; status: string; mcpTypeEnabled?: boolean }) {
+  createIntegration(input: { projectId: string | null; type: IntegrationType; label: string; configEncrypted: Record<string, unknown>; status: string; mcpTypeEnabled?: boolean }) {
     return this.supabaseRepository.createIntegration(input);
   }
   updateIntegration(id: string, patch: Partial<Integration>) { return this.supabaseRepository.updateIntegration(id, patch); }
+  deleteIntegration(id: string) { return this.supabaseRepository.deleteIntegration(id); }
   listLinkedIntegrations(projectId: string) { return this.supabaseRepository.listLinkedIntegrations(projectId); }
   setProjectIntegration(projectId: string, type: IntegrationType, integrationId: string | null) {
     return this.supabaseRepository.setProjectIntegration(projectId, type, integrationId);
   }
   listMcpBackends() { return this.runnerRepository.listMcpBackends(); }
-  runMcpBackendAction(backendKey: string, action: "install" | "verify", projectId: string, integrationId?: string) {
+  runMcpBackendAction(backendKey: string, action: "install" | "verify", projectId?: string, integrationId?: string) {
     return this.runnerRepository.runMcpBackendAction(backendKey, action, projectId, integrationId);
   }
-  testIntegration(projectId: string, integrationId: string, providerType: string, fields?: Record<string, string | undefined>) {
+  testIntegration(projectId: string | undefined, integrationId: string, providerType: string, fields?: Record<string, string | boolean | undefined>) {
     return this.runnerRepository.testIntegration(projectId, integrationId, providerType, fields);
+  }
+  listTelegramProxyApprovals(status?: string) { return this.runnerRepository.listTelegramProxyApprovals(status); }
+  decideTelegramProxyApproval(id: string, decision: "approved" | "rejected", comment?: string) {
+    return this.runnerRepository.decideTelegramProxyApproval(id, decision, comment);
   }
 }

@@ -1,7 +1,7 @@
 ---
 name: react-native-conventions
 description: React Native project conventions for FlowPilot. Placeholder â€” expand with platform-specific rules.
-version: 5
+version: 6
 ---
 
 # React Native conventions

@@ -161,7 +161,13 @@ func (s *InteractiveService) deleteProviderFilesForSession(runID string, session
 		}
 		for _, sessionID := range sessionIDs {
 			filePath, ok := LocateSessionFile(session.ProviderKey, account.HomePath, sessionID, session.WorkingDirectory)
-			if ok {
+			if !ok {
+				continue
+			}
+			// Grok session artifacts are directories; Codex/Claude are single files.
+			if session.ProviderKey == ProviderKeyGrok {
+				_ = os.RemoveAll(filePath)
+			} else {
 				_ = os.Remove(filePath)
 			}
 		}
@@ -310,11 +316,14 @@ func (s *InteractiveService) deleteSessionIDsForRun(runID string, session Provid
 	}
 
 	add(session.ProviderSessionID)
-	if session.ProviderKey == ProviderKeyCodex {
+	if session.ProviderKey == ProviderKeyCodex || session.ProviderKey == ProviderKeyGrok {
 		if logger, ok := s.workflowStore.(TurnLogStore); ok {
 			if entries, err := logger.ReadTurnLog(context.Background(), runID); err == nil {
 				for _, entry := range entries {
-					if entry.Kind == turnLogKindCodexSession {
+					if session.ProviderKey == ProviderKeyCodex && entry.Kind == turnLogKindCodexSession {
+						add(entry.SessionID)
+					}
+					if session.ProviderKey == ProviderKeyGrok && entry.Kind == turnLogKindGrokSession {
 						add(entry.SessionID)
 					}
 				}
@@ -1147,6 +1156,10 @@ func (s *InteractiveService) prepareCrossAccountResume(rs *interactiveRun, srcPa
 		log.Printf("[chat-history-open] turn-log relocation failed run_id=%q provider=%q active_account_id=%q error=%q", rs.id, rs.providerKey, activeAccountID, err)
 		return newAPIErr(http.StatusConflict, "session_unavailable", "could not prepare the session on the active account")
 	}
+	if err := s.relocateGrokTurnLogSessions(rs, sourceHome, targetHome); err != nil {
+		log.Printf("[chat-history-open] grok turn-log relocation failed run_id=%q provider=%q active_account_id=%q error=%q", rs.id, rs.providerKey, activeAccountID, err)
+		return newAPIErr(http.StatusConflict, "session_unavailable", "could not prepare the session on the active account")
+	}
 	rs.providerAccountID = activeAccountID
 	if snapErr := s.persistProviderSession(sessionStateOf(rs)); snapErr != nil {
 		log.Printf("[chat-history-open] account rebind persistence failed run_id=%q active_account_id=%q error=%q", rs.id, activeAccountID, snapErr)
@@ -1182,6 +1195,44 @@ func (s *InteractiveService) relocateCodexTurnLogSessions(rs *interactiveRun, so
 			continue
 		}
 		if _, err := RelocateSessionFile(rs.providerKey, srcPath, targetHome, entry.SessionID, rs.workspaceCwd); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// relocateGrokTurnLogSessions copies every real Grok session directory referenced
+// by the run's turn log into the target account home (Task-210 Option B). The
+// durable resume handle is already relocated by prepareCrossAccountResume; this
+// mirrors relocateCodexTurnLogSessions so transcript replay stays complete after
+// rebind. Missing extra turn-log dirs hard-fail so rebind does not silently drop
+// history under the new account.
+func (s *InteractiveService) relocateGrokTurnLogSessions(rs *interactiveRun, sourceHome, targetHome string) error {
+	if rs.providerKey != ProviderKeyGrok || sourceHome == "" || targetHome == "" {
+		return nil
+	}
+	logger, ok := s.workflowStore.(TurnLogStore)
+	if !ok {
+		return nil
+	}
+	entries, err := logger.ReadTurnLog(context.Background(), rs.id)
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	if stableID := s.resumeSessionID(rs); isGrokRealSessionID(stableID) {
+		seen[stableID] = true
+	}
+	for _, entry := range entries {
+		if entry.Kind != turnLogKindGrokSession || !isGrokRealSessionID(entry.SessionID) || seen[entry.SessionID] {
+			continue
+		}
+		seen[entry.SessionID] = true
+		srcPath, found := LocateSessionFile(ProviderKeyGrok, sourceHome, entry.SessionID, rs.workspaceCwd)
+		if !found {
+			return fmt.Errorf("grok session dir missing for turn-log id %q under %s", entry.SessionID, sourceHome)
+		}
+		if _, err := RelocateSessionFile(ProviderKeyGrok, srcPath, targetHome, entry.SessionID, rs.workspaceCwd); err != nil {
 			return err
 		}
 	}
@@ -1227,6 +1278,9 @@ func (s *InteractiveService) syncCodexStableSessionToKnownAccounts(rs *interacti
 }
 
 func (s *InteractiveService) ensureProviderResumeHandle(rs *interactiveRun, accountHome string) bool {
+	if rs.providerKey == ProviderKeyGrok {
+		return s.ensureGrokProviderResumeHandle(rs, accountHome)
+	}
 	if rs.providerKey != ProviderKeyCodex {
 		return s.resumeSessionID(rs) != ""
 	}
@@ -1245,6 +1299,40 @@ func (s *InteractiveService) ensureProviderResumeHandle(rs *interactiveRun, acco
 		rs.providerSessionID = id
 	}
 	return true
+}
+
+// ensureGrokProviderResumeHandle promotes a real ACP session id into the run's
+// durable resume handle so LocateSessionFile can resolve the session directory.
+//
+// Allowed sources only (Task-210 Option B + run-536/584 safety):
+//  1. already-real resumeSessionID (persisted realProviderSessionID / provider_session_id)
+//  2. latest run-owned turn-log grok_session id (legacy thread-* rows like run-370)
+//
+// NEVER promote from discoverGrokSessionDirs: GROK_HOME+cwd is shared across
+// chats, so "exactly one dir" still means "someone else's chat" for a synthetic
+// run with no turn-log entry (Codex review + run-536 class).
+func (s *InteractiveService) ensureGrokProviderResumeHandle(rs *interactiveRun, accountHome string) bool {
+	if id := s.resumeSessionID(rs); isGrokRealSessionID(id) {
+		return true
+	}
+	if logger, ok := s.workflowStore.(TurnLogStore); ok {
+		if entries, err := logger.ReadTurnLog(context.Background(), rs.id); err == nil {
+			var latest string
+			for _, entry := range entries {
+				if entry.Kind == turnLogKindGrokSession && isGrokRealSessionID(entry.SessionID) {
+					latest = entry.SessionID
+				}
+			}
+			if latest != "" {
+				rs.realProviderSessionID = latest
+				if rs.resumedFromDisk {
+					rs.providerSessionID = latest
+				}
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *InteractiveService) resumeSessionID(rs *interactiveRun) string {

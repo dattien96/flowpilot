@@ -755,6 +755,20 @@ input {
   background: var(--bg-2);
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.42);
 }
+.mcp-error-modal {
+  width: min(520px, 100%);
+  border-color: rgba(248, 81, 73, 0.35);
+}
+.mcp-error-modal .settings-eyebrow {
+  color: var(--err);
+}
+.mcp-error-modal-body {
+  margin: 14px 0 22px;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+  color: var(--text);
+}
 .settings-panel {
   max-width: 1200px;
   margin: 0 auto;
@@ -3405,7 +3419,43 @@ input {
   flex: 1;
 }
 .text-area {
+  /* Height is driven by the custom top-edge drag handle (.composer-resize-handle),
+     not the native bottom-right grip: this panel is anchored to the bottom of the
+     screen, so growth must go upward. min-height pins the rows={2} floor; the
+     handle's JS clamp enforces the 60vh ceiling. */
   resize: none;
+  min-height: 46px;
+}
+/* Top-edge drag bar for the composer. Absolutely positioned on the top edge of
+   the input bar (not a grid row) so it sits exactly on the box's top border and
+   is not pushed away by the .chat-input grid gap. Drag up grows the textarea
+   upward (the panel is pinned to the bottom of the screen); double-click resets.
+   Full width + a tall-enough hit area so it's easy to grab. */
+.composer-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  transform: translateY(-50%);
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ns-resize;
+  touch-action: none;
+  z-index: 6;
+}
+.composer-resize-grip {
+  width: 46px;
+  height: 4px;
+  border-radius: 4px;
+  background: var(--border);
+  transition: background 0.12s ease, width 0.12s ease;
+}
+.composer-resize-handle:hover .composer-resize-grip,
+.composer-resize-handle:active .composer-resize-grip {
+  background: var(--accent);
+  width: 64px;
 }
 .flow-awaiting-user-detail {
   min-height: 60px;
@@ -3791,8 +3841,12 @@ input {
 .input-bar {
   display: flex;
   gap: 6px;
-  align-items: center;
+  /* flex-end so the attach/send controls stay pinned to the bottom of the
+     composer as the textarea is dragged taller, instead of floating in its
+     vertical center. position:relative anchors the top-edge resize handle. */
+  align-items: flex-end;
   min-width: 0;
+  position: relative;
 }
 .chat-usage-line {
   margin-top: 6px;
@@ -4434,6 +4488,56 @@ body.is-resizing-sidebar {
 .gdrive-guide-link {
   display: inline-block;
   margin-top: 8px;
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.mcp-field-guide {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 8px 10px;
+}
+.mcp-field-guide summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 12px;
+  user-select: none;
+}
+.mcp-field-guide summary:hover {
+  color: var(--text);
+}
+.mcp-field-guide p {
+  margin: 10px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.mcp-field-guide-list {
+  list-style: none;
+  padding: 0;
+  margin: 10px 0 0;
+  display: grid;
+  gap: 6px;
+}
+.mcp-field-guide-list li {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-3);
+  padding: 6px 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.mcp-field-guide-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+.mcp-field-guide-links a {
   color: var(--accent);
   font-size: 12px;
   text-decoration: underline;

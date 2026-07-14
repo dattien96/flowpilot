@@ -447,7 +447,7 @@ func TestSendMessageRequiredGoogleDriveMcpPreflightFailsBeforeProviderCall(t *te
 	if err == nil {
 		t.Fatal("expected preflight error when provider config is missing")
 	}
-	if !strings.Contains(err.Error(), "not configured with the google-drive MCP server") {
+	if !strings.Contains(err.Error(), "not configured with the flowpilot_drive MCP server") {
 		t.Fatalf("expected provider config error, got %v", err)
 	}
 	if stdin.Len() != 0 {
@@ -512,10 +512,10 @@ func TestSendMessageInjectsRequiredGoogleDriveInstructionsIntoActualPrompt(t *te
 	if !strings.Contains(result.ActualPromptText, "## Required MCP Usage") {
 		t.Fatalf("expected injected MCP section in actual prompt, got %q", result.ActualPromptText)
 	}
-	if !strings.Contains(result.ActualPromptText, "google-drive") {
+	if !strings.Contains(result.ActualPromptText, "flowpilot_drive") {
 		t.Fatalf("expected server name in actual prompt, got %q", result.ActualPromptText)
 	}
-	if !strings.Contains(stdin.String(), "google-drive") {
+	if !strings.Contains(stdin.String(), "flowpilot_drive") {
 		t.Fatalf("expected provider request to contain injected prompt, got %q", stdin.String())
 	}
 	if !strings.Contains(stdin.String(), `"model":"gpt-5.4-mini"`) {

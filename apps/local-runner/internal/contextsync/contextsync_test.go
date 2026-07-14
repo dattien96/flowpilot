@@ -53,6 +53,58 @@ func TestSharedFilesReturnsSharedPaths(t *testing.T) {
 	}
 }
 
+// TestSharedFilesIncludesCanonicalHeads verifies Task-188 (CP-43 P-5): every
+// `canonical/<feature_key>.json` Canonical Head is included in the shared/
+// Drive-synced set.
+func TestSharedFilesIncludesCanonicalHeads(t *testing.T) {
+	base := t.TempDir()
+	store, _ := NewEngineStore(base)
+
+	if err := os.WriteFile(filepath.Join(store.CanonicalDir(), "calc-core.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write canonical head: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.CanonicalDir(), "user-auth.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write canonical head: %v", err)
+	}
+
+	shared := store.SharedFiles()
+	found := map[string]bool{}
+	for _, p := range shared {
+		found[filepath.ToSlash(p)] = true
+	}
+	for _, want := range []string{
+		filepath.ToSlash(filepath.Join(store.CanonicalDir(), "calc-core.json")),
+		filepath.ToSlash(filepath.Join(store.CanonicalDir(), "user-auth.json")),
+	} {
+		if !found[want] {
+			t.Errorf("SharedFiles() missing canonical head %q, got %v", want, shared)
+		}
+	}
+}
+
+// TestSharedFilesNeverIncludesContracts verifies Task-184's contracts.ndjson
+// stays local-only even after Task-188 added canonical/*.json to the shared
+// set — the two live under different directories and SharedFiles only globs
+// canonical/.
+func TestSharedFilesNeverIncludesContracts(t *testing.T) {
+	base := t.TempDir()
+	store, _ := NewEngineStore(base)
+
+	contractsDir := filepath.Join(base, "contracts")
+	if err := os.MkdirAll(contractsDir, 0o755); err != nil {
+		t.Fatalf("mkdir contracts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(contractsDir, "contracts.ndjson"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write contracts.ndjson: %v", err)
+	}
+
+	for _, p := range store.SharedFiles() {
+		if strings.Contains(filepath.ToSlash(p), "contracts") {
+			t.Fatalf("expected contracts.ndjson never to appear in SharedFiles(), got %q", p)
+		}
+	}
+}
+
 func TestIsLocalOnly(t *testing.T) {
 	base := t.TempDir()
 	store, _ := NewEngineStore(base)

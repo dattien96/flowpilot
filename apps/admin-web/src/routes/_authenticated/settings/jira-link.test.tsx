@@ -47,13 +47,13 @@ vi.mock("@tanstack/react-router", async () => {
     createFileRoute: () => () => ({
       useLoaderData: mocks.useLoaderData,
     }),
-    Link: ({ children, to, className, onClick, ...props }: any) => (
+    Link: ({ children, to, search, className, onClick, ...props }: any) => (
       <button
         className={className}
         onClick={(event) => {
           onClick?.(event);
           if (to) {
-            mocks.navigate({ to });
+            mocks.navigate(search ? { to, search } : { to });
           }
         }}
         {...props}
@@ -135,6 +135,8 @@ describe("Jira MCP Link page", () => {
     renderSubject();
 
     expect(screen.getByRole("button", { name: "Install" })).toBeEnabled();
+    expect(screen.getByText(/403 Forbidden/i)).toBeInTheDocument();
+    expect(screen.getByText(/modern scoped token/i)).toBeInTheDocument();
   });
 
   it("sends first-time enable flows to Create MCP", async () => {
@@ -146,6 +148,69 @@ describe("Jira MCP Link page", () => {
       expect(mocks.navigate).toHaveBeenCalledWith({
         to: "/settings/mcp-servers/create",
         search: { provider: "jira" },
+      });
+    });
+  });
+
+  it("navigates to edit flow for an existing Jira instance", async () => {
+    mocks.useLoaderData.mockReturnValue({
+      allIntegrations: [
+        {
+          id: "jira-1",
+          projectId: "project-alpha",
+          type: "jira",
+          label: "Shared Jira",
+          mcpTypeEnabled: true,
+          configEncrypted: {
+            workspaceUrl: "https://flowpilot899.atlassian.net",
+            projectKey: "SCRUM",
+            email: "name@company.com",
+          },
+          status: "connected",
+          lastSyncedAt: "2026-06-04T15:00:00.000Z",
+          lastError: null,
+          createdAt: "2026-06-04T15:00:00.000Z",
+          updatedAt: "2026-06-04T15:00:00.000Z",
+        },
+      ],
+      backends: [
+        {
+          key: "jira",
+          providerType: "jira",
+          label: "Atlassian MCP",
+          transport: "remote",
+          state: "installed",
+          launcher: "npx",
+          installed: true,
+          binaryPath: null,
+          command: "npx @modelcontextprotocol/server-atlassian",
+          installHint: null,
+          action: "verify",
+          actionLabel: "Verify",
+          lastCheckedAt: "2026-06-04T15:00:00.000Z",
+          lastError: null,
+        },
+      ],
+      health: {
+        status: "online",
+        runnerVersion: "0.1.0",
+        cwd: "/workspace",
+        os: "darwin",
+        startedAt: "2026-06-04T15:00:00.000Z",
+        baseUrl: "http://127.0.0.1:4317",
+        errorMessage: null,
+      },
+      projects: [{ id: "project-alpha", name: "Alpha" }],
+    });
+
+    renderSubject();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit / Rotate token" }));
+
+    await waitFor(() => {
+      expect(mocks.navigate).toHaveBeenCalledWith({
+        to: "/settings/mcp-servers/create",
+        search: { integrationId: "jira-1", provider: "jira" },
       });
     });
   });

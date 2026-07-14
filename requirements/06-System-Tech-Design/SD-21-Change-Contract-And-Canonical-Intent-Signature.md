@@ -4,12 +4,13 @@
 
 - Document ID: `SD-21`
 - Title: `Change Contract And Canonical Intent Signature`
+- Feature Keys: `change-contract`
 - Phase: `tech_design`
-- Status: `draft`
+- Status: `approved`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-03`
-- Last Updated: `2026-07-03`
+- Last Updated: `2026-07-13` (Q-1..Q-4 resolved — folded back from CP-43's 2026-07-08 resolutions; design signed off as record for CP-43)
 - Parent Documents: [SS-14: Code Context And Regression Safety](../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (US-3, AC-7, AC-8, BR-2)
 - Child Documents: [CP-43: Change Contract And Canonical Intent Signature](../07-Coding-Plan/todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md)
 - Related Documents: [SD-22: Pluggable Context Source Registry](./SD-22-Pluggable-Context-Source-Registry.md) (**substrate** — Canonical Head is packed as a context source on SD-22's registry; SD-22 lands first), [SD-17: Context And Regression Engine](./SD-17-Context-And-Regression-Engine.md) (activates deferred `D-11`), [SD-20: Flow Gate Rule Semantics](./SD-20-Flow-Gate-Rule-Semantics.md), [SD-10: Context Resolver & RAG](./SD-10-Context-Resolver-RAG.md), [CP-35: Context And Regression Engine Rollout](../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md), [CP-23: Context Control & Wrong-Way Detection](../07-Coding-Plan/todo/CP-23-Auto-Learn-To-Skill.md)
@@ -48,10 +49,12 @@
 
 ### Open Questions
 
-- `Q-1` Contract capture: explicit AI declaration turn vs inferred-from-first-diff-then-confirm. (Trade-off in `§3` D-7.)
-- `Q-2` Should `r-scope` ever block at **file** level (structure absent), or always warn until symbol truth exists? (Ties to `SD-17 R-1`.)
-- `Q-3` Governing-doc discovery for the signature — trust `featurecatalog.DocRefs`, or require an explicit `governs:` field in SS/SD front-matter?
-- `Q-4` Canonical Head granularity: per `feature_key` (v1) or also per code-unit where GitNexus gives stable symbol identity?
+_All resolved 2026-07-08 (recorded in CP-43) and folded back here 2026-07-13._
+
+- `Q-1` **(RESOLVED → hybrid capture.)** Prefer **explicit** AI declaration (a `feature/intent/files` block before editing, Confidence=`declared`, via the `context-discipline`/`git-commit-format` skill pack); **fall back to inferred** from the first diff (Confidence=`inferred`) when the AI does not declare; prompt-confirm the inferred case **only in `enforce` mode**. Rejected: forced-explicit-always (+1 turn on every trivial edit) and inferred-only (drift baked in). This is what `D-7`/`P-1` encode.
+- `Q-2` **(RESOLVED → block only with symbol truth.)** `r-scope` may escalate to `block` **only when `structure.Available()`** (GitNexus indexed the project — the common case on the primary project). Where structure is absent it **degrades to file-level warn-only**, never a hard block on file-level alone (avoids `SD-17 R-1` false-drift).
+- `Q-3` **(RESOLVED → trust `featurecatalog.DocRefs` in v1.)** Governing-doc ids for the signature come from `featurecatalog.DocRefs`. An explicit `governs:` front-matter field in SS/SD is a **future enhancement**, not required for v1.
+- `Q-4` **(RESOLVED → per `feature_key` only.)** Canonical Head granularity is per `feature_key` in v1; per-symbol granularity (even where GitNexus gives stable symbol identity) is not pursued now.
 
 ### Source Refs
 

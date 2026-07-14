@@ -5,11 +5,11 @@
 - Document ID: `Task-187`
 - Title: `Superseding Decision Records And Retire`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-03`
-- Last Updated: `2026-07-03`
+- Last Updated: `2026-07-13`
 - Parent Documents: [CP-43: Change Contract And Canonical Intent Signature](../../07-Coding-Plan/todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (P-4), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (AC-3)
 - Child Documents: `None`
 - Related Documents: [Task-186: Canonical Head And Intent Signature](./Task-186-Canonical-Head-And-Intent-Signature.md), [Task-161: Per-Feature Chat-Summary Timeline](../../08-Task/done/Task-161-Per-Feature-Chat-Summary-Timeline.md)
@@ -78,13 +78,13 @@ The value of a messy history is the rejected approaches and their reasons — th
 
 ## 6. Acceptance Check (DoD)
 
-- [ ] `FoldDecisions` returns rejected/reverted approaches with reasons and `source_doc_id`, sourced deterministically from `chat_summary` + revert-type ledger entries.
-- [ ] For a feature that went `A → B(rejected) → A`, the Head shows current-A plus a `Decision` for B; the **packed prompt does not replay** B/C positive churn (verified with Task-188 packing, asserted here at the data level).
-- [ ] `RetireHead` for `renamed`/`merged` copies `decisions` into each target Head and sets `superseded_by` + `retired_at`; `deprecated` sets `retired_at` and drops from packing while keeping the file.
-- [ ] `r-retire` is `approve` and does not mutate any Head until a human confirms the targets (reuses `SD-16` gate).
-- [ ] Retired Heads remain retrievable for provenance (not deleted).
-- [ ] Only decision *text* is AI-generated; ordering/linkage are deterministic and reproducible.
-- [ ] `go test ./internal/changecontract/... ./internal/flowgate/...` passes.
+- [x] `FoldDecisions` returns rejected/reverted approaches with reasons and `source_doc_id`, sourced deterministically from `chat_summary` + revert-type ledger entries. **Deviation, documented honestly**: neither source has a structured `tried/outcome/reason` field (`ChatSummaryEntry.Summary` is a free-text bullet list; `changeledger.Entry` has no `revert` `ChangeType`). Extraction is therefore a deterministic keyword match — `rejectionMarkers` against each chat-summary bullet, `revertMarkers` against `bugfix`-type ledger entries' `CAExcerpt`/`Summary` — mirroring the same heuristic-classification idiom already used by `runner/chat_summary.go`'s `summarizeSentences`. Only the *matching* is deterministic and reproducible; there is no second AI pass — the bullet/entry text itself (already written by a human turn or an earlier summarizer call) is used verbatim as `Reason`.
+- [x] For a feature that went `A → B(rejected) → A`, the Head shows current-A plus a `Decision` for B; the packed prompt does not replay B/C positive churn. `FoldDecisions` + `UpdateHead` integration verified at the data level (`TestFoldDecisionsExtractsRejectedFromChatSummary`, `TestFoldDecisionsExtractsRevertedFromLedgerBugfix`); actual prompt-packing behavior is Task-188's job, not asserted here.
+- [x] `RetireHead` for `renamed`/`merged` copies `decisions` into each target Head and sets `superseded_by` + `retired_at`; `deprecated` sets `retired_at` and drops from packing while keeping the file. (`retire.go`, `TestRetireHeadMergedCopiesDecisionsToTargetAndSetsSupersededBy`, `TestRetireHeadRenamedCopiesDecisions`, `TestRetireHeadDeprecatedDoesNotTouchTargets`.)
+- [x] `r-retire` is `approve` and does not mutate any Head until a human confirms the targets. **Resolved (2026-07-13, follow-up)** — the SD-21 Open Question ("`FEATURE-KEYS.md` diff vs explicit user action?") is answered **explicit user action**: the actual retire is `POST /client/projects/{projectId}/features/{featureKey}/canonical-head/retire` (action + targets), wired to a retire form in the desktop Canonical Head panel — the human clicking IS the confirmation, so no Head mutates automatically (BR-2). Separately, `r-retire` now *does* fire as a conservative nudge: `detectRetirePending` (`gate_hook.go`) sets `HeadRetirePending=true` when a **spec-backed, not-yet-retired** Head's key has vanished from `FEATURE-KEYS.md` (spec_less/inferred-key Heads are exempt to avoid false positives). Verified: `TestHandleRetireCanonicalHeadMerged`, `TestHandleRetireCanonicalHeadRenameRequiresTargets`, `TestDetectRetirePending`, plus the `r-retire` rule tests in `head_rules_test.go`.
+- [x] Retired Heads remain retrievable for provenance (not deleted). `RetireHead` never deletes a Head file; the retire endpoint `SaveHead`s the retired Head (status set, `retired_at` stamped) plus each updated target. Verified via `TestHandleRetireCanonicalHeadMerged` (target Head created + carries the folded decision) and the `retire_test.go` unit tests.
+- [x] Only decision *text* is AI-generated; ordering/linkage are deterministic and reproducible. Ordering is chronological by source timestamp; inclusion is a plain keyword match (see deviation note above) — no AI pass decides which bullets/entries become Decisions.
+- [x] `go test ./internal/changecontract/... ./internal/flowgate/...` passes. (183 tests passed, `go vet` clean, 2026-07-13.)
 
 ## 7. Out of Scope
 
@@ -94,6 +94,8 @@ The value of a messy history is the rejected approaches and their reasons — th
 
 ## 8. Completion Notes
 
-- result: planned
-- follow-ups: Task-188 renders the folded decisions in the packed Head block and the Admin panel.
+- result: **done** — `FoldDecisions`/`RetireHead` implemented, unit-tested, and wired into `gate_hook.go`'s `UpdateHead` fold path (every gate-passing turn refreshes the active feature's Head `Decisions`, best-effort). The retire lifecycle is now fully callable: an explicit desktop retire action (`POST .../canonical-head/retire`) performs the migration, and `detectRetirePending` makes `r-retire` fire as a conservative nudge. All DoD items checked.
+- design decision (resolves SD-21's retire-intent Open Question): retire is an **explicit human action** from the desktop app, not auto-detected from a `FEATURE-KEYS.md` diff — a diff-based detector is fragile (rename ≈ delete+add, typo ≈ retire). The gate rule `r-retire` is a *safety-net nudge* only, gated to spec-backed Heads to stay low-noise.
+- known heuristic limitation: the FoldDecisions keyword-matching (from Task-187's original scope) is unchanged — a rejection phrased without a marker keyword is still missed.
+- follow-ups: Task-188 renders the folded decisions in the packed Head block (done). Flip Status `in_progress → done` and move to `08-Task/done/` at commit time.
 - upstream docs updated: none

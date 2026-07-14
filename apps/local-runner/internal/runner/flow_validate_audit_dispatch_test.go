@@ -1,9 +1,12 @@
 package runner
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"flowpilot-runner/internal/agentpack"
 )
@@ -287,6 +290,119 @@ func TestTryAdvanceFlowFromNodeValidateMaxRetriesEscalates(t *testing.T) {
 	}
 	if validationStatus != "failed_validation_max_retries" {
 		t.Fatalf("retry state status = %q, want failed_validation_max_retries", validationStatus)
+	}
+}
+
+// TestTryAdvanceFlowFromNodeValidateRetryReinvokesLifecycleReinvokeTarget
+// verifies BUG-279's fix: a validate-retry back-edge into a node declared
+// lifecycle: reinvoke (rag-harness's "implement") must reuse the existing
+// child run/provider session for the retry turn, exactly like the
+// forward-edge auto-advance path already does — not spawn a brand new child
+// (which silently dropped the coder's own memory of the failed attempt).
+func TestTryAdvanceFlowFromNodeValidateRetryReinvokesLifecycleReinvokeTarget(t *testing.T) {
+	var mu sync.Mutex
+	var prompts []string
+	reg := newProviderRegistry()
+	reg.register(ProviderRegistration{
+		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter: func() ProviderRuntimeAdapter {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				mu.Lock()
+				prompts = append(prompts, req.Prompt)
+				mu.Unlock()
+				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "fixed"})
+				return nil
+			})
+		},
+	})
+
+	store := newFakeWorkflowStore()
+	svc := newInteractiveService(reg, newInteractiveCatalog(), store)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+
+	edges, nodes := flowFixtureEdgesNodes()
+	for i := range nodes {
+		if nodes[i].ID == "implement" {
+			nodes[i].Lifecycle = "reinvoke"
+		}
+	}
+
+	dir := t.TempDir()
+	const failingCommand = "go build ./this-package-does-not-exist-xyz"
+	writeBaseline(t, dir, failingCommand)
+	// ensureBaseline (gate_hook.go) fires async on every runTurn and, since this
+	// bare temp dir isn't a git repo, always sees the hand-written baseline above
+	// as stale (its HeadSHA is empty) and re-captures — which, with no test-config
+	// override, falls back to DetectTestRunner and finds nothing in an empty dir,
+	// silently emptying the command out from under this test's own initial turn.
+	// An explicit test-config.json (CaptureBaseline's higher-priority source)
+	// keeps the recapture pinned to the same failing command regardless of when
+	// that async goroutine runs relative to the rest of this test.
+	settingsDir := filepath.Join(dir, ".flowpilot", "settings")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		t.Fatalf("mkdir settings dir: %v", err)
+	}
+	testConfig := `{"test_command":"` + failingCommand + `"}`
+	if err := os.WriteFile(filepath.Join(settingsDir, "test-config.json"), []byte(testConfig), 0o644); err != nil {
+		t.Fatalf("write test-config.json: %v", err)
+	}
+
+	svc.mu.Lock()
+	rs := svc.runs[parent.RunID]
+	rs.activeFlowEdges = edges
+	rs.activeFlowNodes = nodes
+	rs.flowEngineDriven = true
+	rs.workspaceCwd = dir
+	svc.mu.Unlock()
+
+	if _, err := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "agents/coder.md", Prompt: "initial implement", Label: "implement", Wait: false,
+	}); err != nil {
+		t.Fatalf("spawnChildRun(implement): %v", err)
+	}
+	waitLoop(t, "initial implement completed", 3*time.Second, func() bool {
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		for _, run := range svc.runs {
+			// Wait for turnInFlight to clear too, not just status: finishTurn (which
+			// resets turnInFlight) runs some real work (git head capture, orchestrator
+			// progress, session persistence) after status flips to Completed inside
+			// the adapter's synchronous EventTurnCompleted emit, so a bare status
+			// check can race ahead of reinvokeMatchingFlowChild's own turnInFlight
+			// guard and make it think a turn is still in flight.
+			if run.parentRunID == parent.RunID && run.label == "implement" && run.status == RunStatusCompleted && !run.turnInFlight {
+				return true
+			}
+		}
+		return false
+	})
+
+	before := countChildrenWithLabel(svc, parent.RunID, "implement")
+	if !svc.tryAdvanceFlowFromNode(parent.RunID, "implement", "fixed the bug") {
+		t.Fatal("expected tryAdvanceFlowFromNode to retry (return true), not bail")
+	}
+	waitLoop(t, "implement reinvoked for retry", 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(prompts) >= 2
+	})
+	if after := countChildrenWithLabel(svc, parent.RunID, "implement"); after != before {
+		t.Fatalf("implement child count = %d, want unchanged %d for lifecycle=reinvoke retry", after, before)
+	}
+
+	var validationStatus string
+	for _, ev := range store.events[parent.RunID] {
+		if ev.Type == EventFlowValidationRetry && ev.FlowValidationRetryState != nil {
+			validationStatus = ev.FlowValidationRetryState.Status
+		}
+	}
+	if validationStatus != "retrying" {
+		t.Fatalf("retry state status = %q, want retrying", validationStatus)
 	}
 }
 

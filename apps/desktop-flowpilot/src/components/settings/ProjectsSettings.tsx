@@ -22,7 +22,7 @@ import {
 
 type BindingDraft = Pick<ProjectWorkspaceBinding, "id" | "localPath" | "label"> & { persisted: boolean };
 type ProjectTargetSection = "teams" | "workflows" | "artifacts" | "google-drive" | "jira-mcp";
-type ProjectPanelKey = "overview" | "bindings" | "teams" | "mcp" | "runs" | "artifacts" | "chatSync";
+type ProjectPanelKey = "overview" | "bindings" | "teams" | "mcp" | "runs" | "artifacts" | "chatSync" | "canonicalHead";
 
 interface ChatSyncGoogleDriveAccountStatus {
   accountId: string;
@@ -71,6 +71,39 @@ interface ChatSyncGoogleDriveConnectSession {
   sessionId: string;
   connectUrl?: string;
   status: string;
+}
+
+// Canonical Head / Change Contract (Task-188, CP-43 P-5) — mirrors
+// apps/local-runner's changecontract.CanonicalHead / changecontract.Contract
+// JSON shapes served by canonical_head_handlers.go.
+interface CanonicalHeadDecision {
+  tried: string;
+  outcome: "adopted" | "rejected" | "reverted";
+  reason: string;
+  superseded_by?: string;
+  source_doc_id?: string;
+  at?: string | null;
+}
+
+interface CanonicalHeadResult {
+  feature_key: string;
+  behavior_statement: string;
+  intent_signature: string;
+  status: string;
+  spec_confidence: string;
+  decisions: CanonicalHeadDecision[];
+  found: boolean;
+}
+
+interface StepContractResult {
+  run_id: string;
+  step_id: string;
+  feature_key: string;
+  intent: string;
+  declared_paths: string[];
+  declared_symbols: string[];
+  confidence: string;
+  found: boolean;
 }
 
 interface ProjectsSettingsProps {
@@ -134,6 +167,7 @@ function defaultExpandedPanels(): Record<ProjectPanelKey, boolean> {
     runs: false,
     artifacts: false,
     chatSync: false,
+    canonicalHead: false,
   };
 }
 
@@ -193,6 +227,18 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
   const [chatSyncLoading, setChatSyncLoading] = useState(false);
   const [chatSyncBusyAction, setChatSyncBusyAction] = useState<string | null>(null);
   const [chatSyncSelectedAccountId, setChatSyncSelectedAccountId] = useState("");
+  const [canonicalHeadFeatureKey, setCanonicalHeadFeatureKey] = useState("");
+  const [canonicalHeadResult, setCanonicalHeadResult] = useState<CanonicalHeadResult | null>(null);
+  const [canonicalHeadLoading, setCanonicalHeadLoading] = useState(false);
+  const [canonicalHeadError, setCanonicalHeadError] = useState<string | null>(null);
+  const [stepContractRunId, setStepContractRunId] = useState("");
+  const [stepContractStepId, setStepContractStepId] = useState("");
+  const [stepContractResult, setStepContractResult] = useState<StepContractResult | null>(null);
+  const [stepContractLoading, setStepContractLoading] = useState(false);
+  const [stepContractError, setStepContractError] = useState<string | null>(null);
+  const [headActionBusy, setHeadActionBusy] = useState(false);
+  const [retireAction, setRetireAction] = useState<"renamed" | "merged" | "deprecated">("renamed");
+  const [retireTargets, setRetireTargets] = useState("");
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -317,6 +363,118 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
       return null;
     } finally {
       setChatSyncLoading(false);
+    }
+  };
+
+  // Task-188 (CP-43 P-5): admin Canonical Head lookup — a manual feature-key
+  // form, not a feature browser (the runner has no "list features" endpoint).
+  const loadCanonicalHead = async () => {
+    if (!selectedProject?.directoryPath || !canonicalHeadFeatureKey.trim()) {
+      return;
+    }
+    setCanonicalHeadLoading(true);
+    setCanonicalHeadError(null);
+    try {
+      const params = new URLSearchParams({ workingDirectory: selectedProject.directoryPath });
+      const response = await runnerFetch(
+        `/client/projects/${encodeURIComponent(selectedProject.id)}/features/${encodeURIComponent(canonicalHeadFeatureKey.trim())}/canonical-head?${params.toString()}`,
+      );
+      if (!response.ok) {
+        throw new Error(await readRunnerError(response));
+      }
+      setCanonicalHeadResult((await response.json()) as CanonicalHeadResult);
+    } catch (error) {
+      setCanonicalHeadResult(null);
+      setCanonicalHeadError(toErrorMessage(error, "Unable to load the Canonical Head."));
+    } finally {
+      setCanonicalHeadLoading(false);
+    }
+  };
+
+  const loadStepContract = async () => {
+    if (!stepContractRunId.trim() || !stepContractStepId.trim()) {
+      return;
+    }
+    setStepContractLoading(true);
+    setStepContractError(null);
+    try {
+      const response = await runnerFetch(
+        `/client/workflow-runs/${encodeURIComponent(stepContractRunId.trim())}/steps/${encodeURIComponent(stepContractStepId.trim())}/contract`,
+      );
+      if (!response.ok) {
+        throw new Error(await readRunnerError(response));
+      }
+      setStepContractResult((await response.json()) as StepContractResult);
+    } catch (error) {
+      setStepContractResult(null);
+      setStepContractError(toErrorMessage(error, "Unable to load the step Contract."));
+    } finally {
+      setStepContractLoading(false);
+    }
+  };
+
+  // Task-186 r-attach-spec: human confirms the newly attached spec matches
+  // current behavior, flipping a spec_less Head to current.
+  const rebaselineCanonicalHead = async () => {
+    if (!selectedProject?.directoryPath || !canonicalHeadResult?.feature_key) {
+      return;
+    }
+    setHeadActionBusy(true);
+    setCanonicalHeadError(null);
+    try {
+      const response = await runnerFetch(
+        `/client/projects/${encodeURIComponent(selectedProject.id)}/features/${encodeURIComponent(canonicalHeadResult.feature_key)}/canonical-head/rebaseline`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ workingDirectory: selectedProject.directoryPath }),
+        },
+      );
+      if (!response.ok) {
+        throw new Error(await readRunnerError(response));
+      }
+      setCanonicalHeadResult((await response.json()) as CanonicalHeadResult);
+    } catch (error) {
+      setCanonicalHeadError(toErrorMessage(error, "Unable to rebaseline the Canonical Head."));
+    } finally {
+      setHeadActionBusy(false);
+    }
+  };
+
+  // Task-187 r-retire: human-initiated rename/merge/deprecate. Preserves the
+  // retiring Head's decisions into the target(s) for rename/merge.
+  const retireCanonicalHead = async () => {
+    if (!selectedProject?.directoryPath || !canonicalHeadResult?.feature_key) {
+      return;
+    }
+    const targets = retireTargets
+      .split(",")
+      .map((value) => value.trim())
+      .filter((value) => value !== "");
+    if ((retireAction === "renamed" || retireAction === "merged") && targets.length === 0) {
+      setCanonicalHeadError("Rename/merge requires at least one target feature key.");
+      return;
+    }
+    setHeadActionBusy(true);
+    setCanonicalHeadError(null);
+    try {
+      const response = await runnerFetch(
+        `/client/projects/${encodeURIComponent(selectedProject.id)}/features/${encodeURIComponent(canonicalHeadResult.feature_key)}/canonical-head/retire`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ workingDirectory: selectedProject.directoryPath, action: retireAction, targets }),
+        },
+      );
+      if (!response.ok) {
+        throw new Error(await readRunnerError(response));
+      }
+      setCanonicalHeadResult((await response.json()) as CanonicalHeadResult);
+      setRetireTargets("");
+    } catch (error) {
+      setCanonicalHeadError(toErrorMessage(error, "Unable to retire the Canonical Head."));
+    } finally {
+      setHeadActionBusy(false);
     }
   };
 
@@ -825,6 +983,99 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
                       ) : (
                         <div className="settings-empty">No Google Drive account is connected on this runner.</div>
                       )}
+                    </div>
+                  </div>,
+                )}
+
+                {renderCollapsibleSection(
+                  "canonicalHead",
+                  "Canonical Head",
+                  "Look up a feature's Canonical Head (behavior, signature status, rejected decisions) and a step's declared Change Contract.",
+                  null,
+                  <div className="project-inline-list">
+                    <div className="project-inline-card">
+                      <strong>Feature</strong>
+                      <div className="settings-inline-row">
+                        <input
+                          onChange={(event) => setCanonicalHeadFeatureKey(event.target.value)}
+                          placeholder="feature_key, e.g. calc-core"
+                          value={canonicalHeadFeatureKey}
+                        />
+                        <button className="secondary-btn" disabled={canonicalHeadLoading || !canonicalHeadFeatureKey.trim() || !selectedProject?.directoryPath} onClick={() => void loadCanonicalHead()} type="button">
+                          {canonicalHeadLoading ? "Loading..." : "Look up"}
+                        </button>
+                      </div>
+                      {!selectedProject?.directoryPath ? <div className="settings-empty">This project has no directory bound yet.</div> : null}
+                      {canonicalHeadError ? <div className="settings-feedback error">{canonicalHeadError}</div> : null}
+                      {canonicalHeadResult ? (
+                        canonicalHeadResult.found ? (
+                          <>
+                            <div className="project-inline-row"><span>Status</span><span>{canonicalHeadResult.status}{canonicalHeadResult.spec_confidence === "spec_less" ? " (spec-less — low confidence)" : ""}</span></div>
+                            <div className="project-inline-row"><span>Signature</span><span>{canonicalHeadResult.intent_signature.slice(0, 12)}</span></div>
+                            <div className="project-inline-row"><span>Behavior</span><span>{canonicalHeadResult.behavior_statement || "(none recorded)"}</span></div>
+                            {canonicalHeadResult.decisions.filter((d) => d.outcome !== "adopted").length > 0 ? (
+                              <>
+                                <div className="project-inline-row"><span>Do NOT re-attempt</span><span /></div>
+                                {canonicalHeadResult.decisions.filter((d) => d.outcome !== "adopted").map((d, index) => (
+                                  <div className="project-inline-row" key={`${d.tried}-${index}`}>
+                                    <span>{d.tried}</span>
+                                    <span>{d.reason && d.reason !== d.tried ? d.reason : ""}</span>
+                                  </div>
+                                ))}
+                              </>
+                            ) : null}
+                            {canonicalHeadResult.spec_confidence === "spec_less" ? (
+                              <div className="settings-inline-actions">
+                                <button className="secondary-btn" disabled={headActionBusy} onClick={() => void rebaselineCanonicalHead()} type="button">
+                                  {headActionBusy ? "Working..." : "Confirm spec & rebaseline"}
+                                </button>
+                                <small className="settings-field-hint">Attaches the feature's governing docs and flips the Head to current (r-attach-spec).</small>
+                              </div>
+                            ) : null}
+                            <div className="settings-inline-row">
+                              <select value={retireAction} onChange={(event) => setRetireAction(event.target.value as "renamed" | "merged" | "deprecated")}>
+                                <option value="renamed">renamed</option>
+                                <option value="merged">merged</option>
+                                <option value="deprecated">deprecated</option>
+                              </select>
+                              {retireAction !== "deprecated" ? (
+                                <input onChange={(event) => setRetireTargets(event.target.value)} placeholder="target feature keys (comma-separated)" value={retireTargets} />
+                              ) : null}
+                              <button className="ghost-btn" disabled={headActionBusy} onClick={() => void retireCanonicalHead()} type="button">
+                                {headActionBusy ? "Working..." : "Retire feature"}
+                              </button>
+                            </div>
+                            <small className="settings-field-hint">Retire preserves this Head's rejected decisions into the target(s) for rename/merge (r-retire); the file is kept for provenance.</small>
+                          </>
+                        ) : (
+                          <div className="settings-empty">No Canonical Head found yet for this feature — it is minted on its first gate-passing turn.</div>
+                        )
+                      ) : null}
+                    </div>
+                    <div className="project-inline-card">
+                      <strong>Step Contract</strong>
+                      <div className="settings-inline-row">
+                        <input onChange={(event) => setStepContractRunId(event.target.value)} placeholder="run id" value={stepContractRunId} />
+                        <input onChange={(event) => setStepContractStepId(event.target.value)} placeholder="step id" value={stepContractStepId} />
+                        <button className="secondary-btn" disabled={stepContractLoading || !stepContractRunId.trim() || !stepContractStepId.trim()} onClick={() => void loadStepContract()} type="button">
+                          {stepContractLoading ? "Loading..." : "Look up"}
+                        </button>
+                      </div>
+                      {stepContractError ? <div className="settings-feedback error">{stepContractError}</div> : null}
+                      {stepContractResult ? (
+                        stepContractResult.found ? (
+                          <>
+                            <div className="project-inline-row"><span>Feature key</span><span>{stepContractResult.feature_key || "(none)"}</span></div>
+                            <div className="project-inline-row"><span>Confidence</span><span>{stepContractResult.confidence}</span></div>
+                            <div className="project-inline-row"><span>Intent</span><span>{stepContractResult.intent || "(none declared)"}</span></div>
+                            {stepContractResult.declared_paths.length > 0 ? (
+                              <div className="project-inline-row"><span>Declared paths</span><span>{stepContractResult.declared_paths.join(", ")}</span></div>
+                            ) : null}
+                          </>
+                        ) : (
+                          <div className="settings-empty">No Contract found for that run/step.</div>
+                        )
+                      ) : null}
                     </div>
                   </div>,
                 )}

@@ -12,7 +12,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-06`
 - Last Updated: `2026-07-09`
-- Parent Documents: [CP-41: RAG Harness Flow Mode](../../07-Coding-Plan/inprogress/CP-41-RAG-Harness-Flow-Mode.md), [CP-42: Flow Pack And Generic Node Behavior Refactor](../../07-Coding-Plan/done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md)
+- Parent Documents: [CP-41: RAG Harness Flow Mode](../../07-Coding-Plan/done/CP-41-RAG-Harness-Flow-Mode.md), [CP-42: Flow Pack And Generic Node Behavior Refactor](../../07-Coding-Plan/done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md)
 - Child Documents: `none`
 - Related Documents: [Task-170: Testing Feedback Retry Loop](../../08-Task/done/Task-170-Testing-Feedback-Retry-Loop.md), [Task-171: Audit Step Draft And Commit Prep](../../08-Task/done/Task-171-Audit-Step-Draft-And-Commit-Prep.md), [Task-176: Node Behavior Registry And Dispatch](../../08-Task/todo/Task-176-Node-Behavior-Registry-And-Dispatch.md)
 - Replaces: `none`

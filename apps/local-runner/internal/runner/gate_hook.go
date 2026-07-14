@@ -11,9 +11,12 @@ import (
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/changecontract"
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
 	"flowpilot-runner/internal/flowgate"
+	"flowpilot-runner/internal/structure"
+	"flowpilot-runner/internal/tooling"
 )
 
 const maxFlowGateReprompts = 2
@@ -34,7 +37,7 @@ type gateBlockInfo struct {
 // All errors inside this function are non-fatal: if the gate cannot observe or
 // evaluate it returns false (degraded = safe, turn completes normally).
 func (s *InteractiveService) runFlowGate(
-	_ context.Context, rs *interactiveRun, turnID string, fin finalizeInput,
+	ctx context.Context, rs *interactiveRun, turnID string, fin finalizeInput,
 ) (block bool) {
 	cwd := rs.workspaceCwd
 	if cwd == "" {
@@ -52,6 +55,14 @@ func (s *InteractiveService) runFlowGate(
 	commitSubjects := collectCommitSubjectsSince(cwd, baseSHA)
 	knownFeatureKeys := loadKnownFeatureKeys(cwd)
 	suggestedFeatureKeys := suggestFeatureKeys(dotFP, changedPaths, strings.Join(commitSubjects, "\n"))
+
+	// 1b. Task-184 (CP-43 P-1): capture this turn's Change Contract, declared
+	// (parsed from the AI's own final message) or inferred from the diff when
+	// absent. Task-185 (P-2): compute scope drift against it. Task-186 (P-3):
+	// update the feature's Canonical Head. All non-fatal — a capture/scope/
+	// head failure never blocks the turn (AC-9).
+	contractDeclared, scopeOutOfScopePaths, scopeHighSeverity, headSpecDrifted, headCodeDrifted, headAttachSpecPending :=
+		captureChangeContract(ctx, cwd, rs.id, rs.stepID, fin.FinalMessage, diff, suggestedFeatureKeys)
 
 	// 2. Load test baseline — non-fatal.
 	baseline, _ := flowgate.LoadBaseline(dotFP)
@@ -94,6 +105,13 @@ func (s *InteractiveService) runFlowGate(
 		ChangeType:                  rs.changeType,
 		WorkspaceCwd:                cwd,
 		RequiredFileArtifactOutputs: requiredArtifactOutputs,
+		ContractDeclared:            contractDeclared,
+		ScopeOutOfScopePaths:        scopeOutOfScopePaths,
+		ScopeHighSeverity:           scopeHighSeverity,
+		HeadSpecDrifted:             headSpecDrifted,
+		HeadCodeDrifted:             headCodeDrifted,
+		HeadAttachSpecPending:       headAttachSpecPending,
+		HeadRetirePending:           detectRetirePending(cwd, knownFeatureKeys),
 	}
 
 	// 7. Load rules; fall back to defaults when flow-rules.json is absent.
@@ -215,7 +233,8 @@ func (s *InteractiveService) runChildArtifactOutputGate(
 	}
 	required := requiredFileArtifactOutputsForRun(s, rs)
 	structured := requiredStructuredFileArtifactOutputsForRun(s, rs)
-	if len(required) == 0 && len(structured) == 0 {
+	telegramSends := requiredTelegramSendsForRun(s, rs)
+	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 {
 		return false
 	}
 	tr := flowgate.TurnResult{
@@ -226,6 +245,7 @@ func (s *InteractiveService) runChildArtifactOutputGate(
 		WorkspaceCwd:                          cwd,
 		RequiredFileArtifactOutputs:           required,
 		RequiredStructuredFileArtifactOutputs: structured,
+		RequiredTelegramSends:                 telegramSends,
 	}
 	// Prefer defaults merged with any on-disk rules so r-artifact-output is
 	// present even when an old flow-rules.json predates Task-223.
@@ -240,7 +260,7 @@ func (s *InteractiveService) runChildArtifactOutputGate(
 			continue
 		}
 		switch r.ID {
-		case "r-artifact-output", "r-artifact-output-structure":
+		case "r-artifact-output", "r-artifact-output-structure", "r-artifact-telegram-sent":
 			only = append(only, r)
 		}
 	}
@@ -291,6 +311,24 @@ func requiredFileArtifactOutputsForRun(s *InteractiveService, rs *interactiveRun
 		return nil
 	}
 	return requiredFileArtifactOutputPaths(node)
+}
+
+// requiredTelegramSendsForRun mirrors requiredFileArtifactOutputsForRun for
+// telegram.v1 OUTPUT bindings (Task-233).
+func requiredTelegramSendsForRun(s *InteractiveService, rs *interactiveRun) []string {
+	node, ok := flowNodeForRun(s, rs)
+	if !ok {
+		return nil
+	}
+	targets := requiredTelegramOutputTargets(node)
+	if len(targets) == 0 {
+		return nil
+	}
+	chatIDs := make([]string, 0, len(targets))
+	for _, t := range targets {
+		chatIDs = append(chatIDs, t.chatID)
+	}
+	return chatIDs
 }
 
 // requiredStructuredFileArtifactOutputsForRun returns Task-225 structured
@@ -558,6 +596,170 @@ func suggestFeatureKeys(dotFP string, changedPaths []string, message string) []s
 		keys = append(keys, candidates[i].Key)
 	}
 	return keys
+}
+
+// captureChangeContract persists this turn's Change Contract (Task-184,
+// CP-43 P-1) — declared if the AI's final message contains a
+// `[Change Contract]` block (T-2), otherwise inferred from the observed diff
+// (T-4) — computes scope drift against it (Task-185, P-2), and updates the
+// feature's Canonical Head (Task-186, P-3). Entirely best-effort: every
+// failure is logged and degrades toward "nothing to report" so a
+// changecontract/scope/head problem can never block a turn (SS-14 AC-9).
+func captureChangeContract(ctx context.Context, cwd, runID, stepID, finalMessage string, diff []flowgate.ChangedFile, suggestedFeatureKeys []string) (declared bool, outOfScopePaths []string, highSeverity, specDrifted, codeDrifted, attachSpecPending bool) {
+	if cwd == "" {
+		return false, nil, false, false, false, false
+	}
+	store, err := changecontract.NewStore(cwd)
+	if err != nil {
+		log.Printf("[changecontract] store open failed: %v", err)
+		return false, nil, false, false, false, false
+	}
+	featureKey := ""
+	if len(suggestedFeatureKeys) > 0 {
+		featureKey = suggestedFeatureKeys[0]
+	}
+
+	c, declared := changecontract.ParseDeclaration(finalMessage)
+	if declared {
+		if c.FeatureKey == "" {
+			c.FeatureKey = featureKey
+		}
+	} else {
+		c = changecontract.InferFromDiff(featureKey, diff)
+	}
+	c.RunID = runID
+	c.StepID = stepID
+
+	if err := store.Save(c); err != nil {
+		log.Printf("[changecontract] save failed: %v", err)
+	}
+
+	// Task-185: scope diff needs no structure.Provider (nil is safe — see
+	// changecontract.ScopeDiff); only construct one, at the cost of a
+	// gitnexus probe, if there is actually something out-of-scope to weigh.
+	outOfScopePaths, _ = changecontract.ScopeDiff(c, diff, nil)
+	if len(outOfScopePaths) > 0 {
+		hasGitNexus := tooling.CheckTool("gitnexus", cwd).Status == "ok"
+		sp := structure.New(cwd, hasGitNexus)
+		highSeverity = changecontract.HighSeverity(ctx, sp, outOfScopePaths)
+	}
+
+	if c.FeatureKey != "" {
+		specDrifted, codeDrifted, attachSpecPending = updateCanonicalHead(cwd, c, len(outOfScopePaths) > 0)
+	}
+
+	return declared, outOfScopePaths, highSeverity, specDrifted, codeDrifted, attachSpecPending
+}
+
+// updateCanonicalHead loads (or backfills/mints) c.FeatureKey's Canonical
+// Head (Task-186), checks it for spec/code drift, and — only when neither
+// drifted — folds this in-contract turn into the Head. A drifted turn is
+// surfaced via the caller's TurnResult flags for a human to reconcile
+// (BR-2); the Head itself is left untouched until that happens, so a
+// drifted state is never silently overwritten.
+func updateCanonicalHead(cwd string, c changecontract.Contract, hasOutOfContractChange bool) (specDrifted, codeDrifted, attachSpecPending bool) {
+	dotFP := filepath.Join(cwd, ".flowpilot")
+	catalog, _ := featurecatalog.LoadCatalog(dotFP)
+
+	head, found, err := changecontract.LoadHead(cwd, c.FeatureKey)
+	if err != nil {
+		log.Printf("[changecontract] head load failed for %q: %v", c.FeatureKey, err)
+		return false, false, false
+	}
+	if !found {
+		ledger, _ := changeledger.New(dotFP)
+		head = changecontract.BuildHead(cwd, c.FeatureKey, ledger, catalog, &c)
+		if err := changecontract.SaveHead(cwd, head); err != nil {
+			log.Printf("[changecontract] head save (birth/backfill) failed for %q: %v", c.FeatureKey, err)
+		}
+		return false, false, false // a just-minted Head cannot itself be drifted
+	}
+
+	// r-attach-spec: a spec_less Head whose feature has since gained a
+	// governing doc in the catalog. Never auto-applied — surfaced for human
+	// confirmation; RebaselineWithSpec runs only once that is given.
+	if head.SpecConfidence == changecontract.SpecConfidenceSpecLess && catalog != nil {
+		if feat, ok := catalog.Get(c.FeatureKey); ok && len(feat.DocRefs) > 0 {
+			attachSpecPending = true
+		}
+	}
+
+	specDrifted = changecontract.SpecDrifted(cwd, head)
+	codeDrifted = changecontract.CodeDrifted(hasOutOfContractChange, specDrifted)
+
+	if !specDrifted && !codeDrifted && !attachSpecPending {
+		updated := changecontract.UpdateHead(head, c)
+		if decisions, ok := foldCanonicalHeadDecisions(dotFP, c.FeatureKey); ok {
+			updated.Decisions = decisions
+			updated.IntentSignature = changecontract.ComputeSignature(updated)
+		}
+		if err := changecontract.SaveHead(cwd, updated); err != nil {
+			log.Printf("[changecontract] head save (update) failed for %q: %v", c.FeatureKey, err)
+		}
+	}
+	return specDrifted, codeDrifted, attachSpecPending
+}
+
+// foldCanonicalHeadDecisions folds negative knowledge (rejected chat_summary
+// approaches + revert-type changeledger bugfix entries, Task-187) into a
+// Head's Decisions on every gate-passing update. Best-effort: ok=false on any
+// load/fold failure so the caller leaves the Head's existing Decisions
+// untouched rather than silently clobbering them with an empty set (AC-9).
+func foldCanonicalHeadDecisions(dotFP, featureKey string) ([]changecontract.Decision, bool) {
+	chatLedger, err := changeledger.NewChatSummaryLedger(dotFP)
+	if err != nil {
+		log.Printf("[changecontract] chat summary ledger load failed for %q: %v", featureKey, err)
+		return nil, false
+	}
+	ledger, err := changeledger.New(dotFP)
+	if err != nil {
+		log.Printf("[changecontract] ledger load failed for %q: %v", featureKey, err)
+		return nil, false
+	}
+	decisions, err := changecontract.FoldDecisions(featureKey, chatLedger, ledger)
+	if err != nil {
+		log.Printf("[changecontract] FoldDecisions failed for %q: %v", featureKey, err)
+		return nil, false
+	}
+	return decisions, true
+}
+
+// detectRetirePending reports whether any spec-backed Canonical Head exists for
+// a feature key that is no longer among the workspace's known feature keys
+// (change-audit/FEATURE-KEYS.md) — a signal the feature was renamed/merged/
+// removed there but its Head has not yet been migrated (Task-187 r-retire).
+// This is a deliberately conservative nudge, not auto-retire: it only flags
+// spec_backed, not-yet-retired Heads (a born-spec_less Head may carry an
+// inferred key that was never registered, so exempting them avoids false
+// positives). The actual retire is always an explicit human action via
+// handleRetireCanonicalHead (BR-2 — never automatic).
+func detectRetirePending(cwd string, knownFeatureKeys []string) bool {
+	matches, _ := filepath.Glob(filepath.Join(cwd, ".flowpilot", "canonical", "*.json"))
+	if len(matches) == 0 {
+		return false
+	}
+	known := make(map[string]bool, len(knownFeatureKeys))
+	for _, key := range knownFeatureKeys {
+		known[key] = true
+	}
+	for _, path := range matches {
+		key := strings.TrimSuffix(filepath.Base(path), ".json")
+		if key == "" || known[key] {
+			continue
+		}
+		head, found, err := changecontract.LoadHead(cwd, key)
+		if err != nil || !found {
+			continue
+		}
+		if head.RetiredAt != nil {
+			continue // already retired
+		}
+		if head.SpecConfidence != changecontract.SpecConfidenceSpecBacked {
+			continue // exempt spec_less (possibly inferred, never-registered keys)
+		}
+		return true
+	}
+	return false
 }
 
 // captureGitHead returns the current HEAD SHA in repoDir, trimmed of whitespace.

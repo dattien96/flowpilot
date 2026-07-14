@@ -4,6 +4,7 @@
 
 - Document ID: `SS-14`
 - Title: `Code Context And Regression Safety`
+- Feature Keys: `change-contract`
 - Phase: `system_spec`
 - Status: `draft`
 - Owner: `FlowPilot`

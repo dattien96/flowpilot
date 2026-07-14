@@ -64,6 +64,14 @@ type BehaviorInput struct {
 	// (resolveArtifactBoundMCPDriverRef). Empty means mcp.driver has nothing
 	// configured for this run — a normal no-op, not an error.
 	MCPDriverRef string
+	// JiraIssueRef/JiraSprintRef mirror MCPDriverRef for the jira.issue /
+	// jira.sprint context sources (Task-229): the caller resolves them from
+	// the run's runtime question answer, same as MCPDriverRef. Empty means
+	// that source has nothing configured for this run.
+	JiraIssueRef  string
+	JiraSprintRef string
+	// FirebaseCrashRef mirrors JiraIssueRef for firebase.crashlytics (Task-231).
+	FirebaseCrashRef string
 }
 
 // BehaviorOutput is the generic result a behavior handler returns. The

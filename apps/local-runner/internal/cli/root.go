@@ -47,6 +47,7 @@ func NewRootCommand() *cobra.Command {
 	rootCmd.AddCommand(newInstallProviderCommand(cfg))
 	rootCmd.AddCommand(newBackendsCommand(cfg))
 	rootCmd.AddCommand(newGoogleDriveMcpCommand(cfg))
+	rootCmd.AddCommand(newTelegramMcpCommand(cfg))
 	rootCmd.AddCommand(newSkillsCommand(cfg))
 	rootCmd.AddCommand(newFlowsCommand(cfg))
 
@@ -216,6 +217,9 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			// Runner-hosted MCP server for the Claude permission/ask_user tools (07):
 			// the per-turn --mcp-config URL points claude back at this route.
 			mux.Handle(runner.ClaudeMCPPath, instance.ClaudeMCPHandler())
+			// BUG-281: provider-spawned telegram-mcp children call this loop-back
+			// route so keyring + Bot API stay in the main runner process.
+			mux.Handle(runner.TelegramLoopbackSendPath, instance.TelegramLoopbackSendHandler())
 
 			mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
@@ -1049,6 +1053,97 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 				writeHTTPJSON(w, record)
 			})
+			mux.HandleFunc("/telegram-proxy-approvals", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				records, err := instance.ListTelegramProxyApprovals(
+					r.URL.Query().Get("workflowRunId"),
+					r.URL.Query().Get("workflowStepRunId"),
+					r.URL.Query().Get("status"),
+				)
+				if err != nil {
+					writeHTTPError(w, http.StatusInternalServerError, err)
+					return
+				}
+				writeHTTPJSON(w, records)
+			})
+			mux.HandleFunc("/telegram-proxy-approvals/", func(w http.ResponseWriter, r *http.Request) {
+				trimmed := strings.TrimPrefix(r.URL.Path, "/telegram-proxy-approvals/")
+				parts := strings.Split(trimmed, "/")
+				if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || parts[1] != "decision" {
+					http.NotFound(w, r)
+					return
+				}
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				var payload runner.TelegramProxyApprovalDecisionRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				record, err := instance.DecideTelegramProxyApproval(parts[0], payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, record)
+			})
+			mux.HandleFunc("/jira-config/mcp-provider-config/ensure", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload runner.JiraMcpProviderConfigRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				result, err := instance.EnsureJiraMcpProviderConfig(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
+			})
+			mux.HandleFunc("/firebase-config/mcp-provider-config/ensure", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload runner.FirebaseMcpProviderConfigRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				result, err := instance.EnsureFirebaseMcpProviderConfig(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
+			})
+			mux.HandleFunc("/telegram-config/mcp-provider-config/ensure", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload runner.TelegramMcpProviderConfigRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				result, err := instance.EnsureTelegramMcpProviderConfig(payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
+			})
 			mux.HandleFunc("/backup", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1439,6 +1534,40 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
+			})
+			mux.HandleFunc("/integrations/connect", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+
+				var payload runner.IntegrationConnectionRequest
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+				rawIntegrationID, _ := body["integrationId"].(string)
+				if strings.TrimSpace(rawIntegrationID) == "" {
+					writeHTTPError(w, http.StatusBadRequest, errors.New("integrationId is required"))
+					return
+				}
+				payloadBytes, err := json.Marshal(body)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("marshal request body: %w", err))
+					return
+				}
+				if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				result, err := instance.TriggerIntegrationConnection(r.Context(), rawIntegrationID, payload)
+				if err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeHTTPJSON(w, result)
 			})
 			mux.HandleFunc("/execute", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
@@ -1836,6 +1965,25 @@ func newGoogleDriveMcpCommand(cfg *config) *cobra.Command {
 	cmd.Flags().BoolVar(&yoloMode, "yolo-mode", false, "Enable yolo approval mode for proxy MCP approval handling")
 
 	return cmd
+}
+
+// newTelegramMcpCommand (Task-232, CP-05-05 P-2): runs the FlowPilot-owned
+// Telegram Bot-API proxy MCP server over stdio, mirroring
+// newGoogleDriveMcpCommand's shape. No token/chat-id flags — the bot
+// token/channel id are resolved from the runner keyring at launch, never
+// passed as process arguments.
+func newTelegramMcpCommand(cfg *config) *cobra.Command {
+	return &cobra.Command{
+		Use:   "telegram-mcp",
+		Short: "Run the FlowPilot Telegram (send-only) proxy MCP server over stdio",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			instance, err := runner.New(cfg.workspace)
+			if err != nil {
+				return err
+			}
+			return instance.RunTelegramProxyMcpServer(cmd.Context())
+		},
+	}
 }
 
 func newSkillsCommand(cfg *config) *cobra.Command {

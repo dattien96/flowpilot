@@ -13,8 +13,9 @@ import (
 // (20260709090000_add_artifact_types_catalog.sql,
 // 20260709093000_add_file_artifact_type.sql) and never user-created.
 const (
-	ArtifactTypeContext = "context_artifact.v1"
-	ArtifactTypeFile    = "file_artifact.v1"
+	ArtifactTypeContext  = "context_artifact.v1"
+	ArtifactTypeFile     = "file_artifact.v1"
+	ArtifactTypeTelegram = "telegram.v1"
 )
 
 // resolveArtifactBoundContextSources implements SD-23 D-5/D-6's highest
@@ -510,10 +511,76 @@ func sameStringSliceFold(a, b []string) bool {
 	return true
 }
 
-// composeFlowNodeAgentPrompt applies Task-223 INPUT read inject then OUTPUT
-// write-contract inject to a base agent prompt for a flow node.
+// telegramOutputTarget is one bound telegram.v1 OUTPUT instance's send
+// target, extracted from its config_json (Task-233, CP-05-05 P-1/P-3).
+type telegramOutputTarget struct {
+	chatID          string
+	messageTemplate string
+}
+
+// requiredTelegramOutputTargets mirrors requiredFileArtifactOutputPaths'
+// shape for telegram.v1 OUTPUT bindings — this is the seam a Telegram
+// notification actually cares about being real (composeFlowNodeAgentPrompt),
+// NOT the ArtifactResolver/ArtifactTypeRegistry interface (Task-233 doc:
+// that interface has zero production callers and no OUTPUT/side-effect
+// method — dispatching there would be building on dead scaffolding).
+func requiredTelegramOutputTargets(node agentpack.FlowNode) []telegramOutputTarget {
+	var targets []telegramOutputTarget
+	for _, b := range node.ArtifactBindings {
+		if b.Direction != "output" || b.ArtifactTypeID != ArtifactTypeTelegram || !b.Required {
+			continue
+		}
+		chatID, _ := b.ConfigJSON["chatId"].(string)
+		chatID = strings.TrimSpace(chatID)
+		if chatID == "" {
+			continue
+		}
+		template, _ := b.ConfigJSON["messageTemplate"].(string)
+		targets = append(targets, telegramOutputTarget{chatID: chatID, messageTemplate: strings.TrimSpace(template)})
+	}
+	return targets
+}
+
+// appendTelegramOutputPrompt is Telegram's OUTPUT write-contract (Task-233,
+// mirrors appendRequiredOutputArtifactPrompt's shape but the "artifact" is a
+// sent message, not a file): the AI MUST call the `send_message` tool on the
+// `telegram` MCP server (Task-232) before finishing, once per bound target.
+// Verification (flowgate r-artifact-telegram-sent) checks for a real
+// message_id in the tool-call response, not a file on disk — there is
+// nothing to os.Stat here.
+func appendTelegramOutputPrompt(prompt string, node agentpack.FlowNode) string {
+	targets := requiredTelegramOutputTargets(node)
+	if len(targets) == 0 {
+		return prompt
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## Required Telegram notification (write contract)\n")
+	b.WriteString(fmt.Sprintf("Before you finish this turn you MUST send a Telegram notification using the `send_message` tool on the `%s` MCP server, for each target below:\n", telegramMcpServerName))
+	for _, t := range targets {
+		b.WriteString("- chat: `")
+		b.WriteString(t.chatID)
+		b.WriteString("`")
+		if t.messageTemplate != "" {
+			b.WriteString(" — message should follow this template:\n\n")
+			b.WriteString(t.messageTemplate)
+			b.WriteString("\n")
+		} else {
+			b.WriteString(" — summarize this run's final outcome in the message.\n")
+		}
+	}
+	b.WriteString("\nDo not only describe the notification in chat — actually call `send_message`. ")
+	b.WriteString("If the tool call succeeds, the response includes a `message_id`; do not claim success without it. ")
+	b.WriteString(fmt.Sprintf("If `%s` is unavailable, stop and end the response with `MCP_FAILURE_CODE: MCP_UNAVAILABLE`. ", telegramMcpServerName))
+	b.WriteString("The flow gate will reprompt if no successful send is detected after your turn.\n")
+	return prompt + b.String()
+}
+
+// composeFlowNodeAgentPrompt applies Task-223 INPUT read inject, OUTPUT
+// write-contract inject, and Task-233's Telegram OUTPUT write-contract to a
+// base agent prompt for a flow node.
 func composeFlowNodeAgentPrompt(workspaceCwd, prompt string, node agentpack.FlowNode) string {
 	prompt = appendInputArtifactPrompt(workspaceCwd, prompt, node)
 	prompt = appendRequiredOutputArtifactPrompt(prompt, node)
+	prompt = appendTelegramOutputPrompt(prompt, node)
 	return prompt
 }

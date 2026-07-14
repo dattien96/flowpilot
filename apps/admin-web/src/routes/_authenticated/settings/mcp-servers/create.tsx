@@ -18,6 +18,7 @@ import { ListProjectsUseCase } from "@/domain/usecase/projects/list-projects-use
 import {
   buildConfigFromDraft,
   buildJiraConnectionRequestFields,
+  configToDraftValues,
   createEmptyDraftConfig,
   findDuplicateJiraIntegration,
   jiraMcpGuideLinks,
@@ -73,6 +74,7 @@ function JiraMcpGuide() {
 export const Route = createFileRoute("/_authenticated/settings/mcp-servers/create")({
   validateSearch: (search: Record<string, unknown>) => ({
     provider: typeof search.provider === "string" ? search.provider : undefined,
+    integrationId: typeof search.integrationId === "string" ? search.integrationId : undefined,
   }),
   loader: async () => {
     const gateways = await createGatewayBundle();
@@ -88,7 +90,7 @@ export const Route = createFileRoute("/_authenticated/settings/mcp-servers/creat
   component: McpCreatePage,
 });
 
-function McpCreatePage() {
+export function McpCreatePage() {
   const { allIntegrations, backends, health, projects } = Route.useLoaderData();
   const search = Route.useSearch();
   const router = useRouter();
@@ -109,16 +111,33 @@ function McpCreatePage() {
     ? requestedProvider
     : null;
   const providerOptions = forcedProvider ? [forcedProvider] : enabledTypes;
+  const editingIntegration = search.integrationId
+    ? allIntegrations.find((integration) => integration.id === search.integrationId) ?? null
+    : null;
+  const editingType = editingIntegration?.type ?? null;
+  const initialType = editingType ?? (providerOptions[0] ?? "jira");
 
-  const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.id ?? "");
-  const [draftType, setDraftType] = useState<IntegrationType>(providerOptions[0] ?? "jira");
-  const [draftLabel, setDraftLabel] = useState(defaultLabel(providerOptions[0] ?? "jira"));
+  const [selectedProjectId, setSelectedProjectId] = useState(
+    editingIntegration?.projectId ?? projects[0]?.id ?? "",
+  );
+  const [draftType, setDraftType] = useState<IntegrationType>(initialType);
+  const [draftLabel, setDraftLabel] = useState(editingIntegration?.label ?? defaultLabel(initialType));
   const [draftConfigValues, setDraftConfigValues] = useState<Record<string, string>>(
-    createEmptyDraftConfig(providerOptions[0] ?? "jira"),
+    editingIntegration
+      ? configToDraftValues(editingIntegration.type, editingIntegration.configEncrypted)
+      : createEmptyDraftConfig(initialType),
   );
   const [editorError, setEditorError] = useState<string | null>(null);
+  const canRenderForm = Boolean(editingIntegration) || providerOptions.length > 0;
 
   useEffect(() => {
+    if (editingIntegration) {
+      setSelectedProjectId(editingIntegration.projectId);
+      setDraftType(editingIntegration.type);
+      setDraftLabel(editingIntegration.label);
+      setDraftConfigValues(configToDraftValues(editingIntegration.type, editingIntegration.configEncrypted));
+      return;
+    }
     const nextType = providerOptions[0] ?? "jira";
     if (providerOptions.length === 0) {
       return;
@@ -129,7 +148,7 @@ function McpCreatePage() {
     setDraftType(nextType);
     setDraftLabel(defaultLabel(nextType));
     setDraftConfigValues(createEmptyDraftConfig(nextType));
-  }, [draftType, providerOptions]);
+  }, [draftType, editingIntegration, providerOptions]);
 
   const saveIntegration = useMutation({
     mutationFn: async () => {
@@ -169,7 +188,7 @@ function McpCreatePage() {
       }
 
       const gateways = await createGatewayBundle();
-      if (draftType === "jira") {
+      if (draftType === "jira" && !editingIntegration) {
         const duplicateIntegration = findDuplicateJiraIntegration(allIntegrations, draftConfigValues);
         if (duplicateIntegration) {
           throw new Error(
@@ -179,13 +198,24 @@ function McpCreatePage() {
       }
 
       const parsedConfig = buildConfigFromDraft(draftType, draftConfigValues);
-      const integration = await gateways.integrationGateway.createIntegration({
-        projectId: selectedProjectId,
-        type: draftType,
-        label,
-        configEncrypted: parsedConfig,
-        mcpTypeEnabled: true,
-      });
+      const integration = editingIntegration
+        ? await gateways.integrationGateway.updateIntegration(editingIntegration.id, {
+          projectId: selectedProjectId,
+          type: draftType,
+          label,
+          configEncrypted: parsedConfig,
+          status: editingIntegration.status,
+          lastError: editingIntegration.lastError,
+          lastSyncedAt: editingIntegration.lastSyncedAt,
+          mcpTypeEnabled: editingIntegration.mcpTypeEnabled,
+        })
+        : await gateways.integrationGateway.createIntegration({
+          projectId: selectedProjectId,
+          type: draftType,
+          label,
+          configEncrypted: parsedConfig,
+          mcpTypeEnabled: true,
+        });
 
       const result = await gateways.localRunnerGateway.triggerIntegrationConnection({
         projectId: integration.projectId,
@@ -208,7 +238,7 @@ function McpCreatePage() {
       });
 
       if (result.requestStatus === "rejected" || result.integrationStatus === "failed") {
-        throw new Error(result.message ?? "Unable to save MCP.");
+        throw new Error(result.message ?? `Unable to ${editingIntegration ? "update" : "save"} MCP.`);
       }
     },
     onMutate: () => {
@@ -238,8 +268,12 @@ function McpCreatePage() {
 
   return (
     <PageFrame
-      description="Create a reusable MCP instance from the MCP types that are currently enabled."
-      title="Create MCP"
+      description={
+        editingIntegration
+          ? "Update an existing MCP instance and reconnect it through the local runner."
+          : "Create a reusable MCP instance from the MCP types that are currently enabled."
+      }
+      title={editingIntegration ? "Edit MCP" : "Create MCP"}
     >
       <section className="rounded-[1.6rem] border border-border bg-background/70 p-6">
         <div className="flex items-start justify-between gap-4">
@@ -248,11 +282,12 @@ function McpCreatePage() {
               MCP Instance Setup
             </p>
             <h3 className="mt-3 text-2xl font-semibold tracking-tight">
-              Create and connect an MCP instance
+              {editingIntegration ? "Edit and reconnect an MCP instance" : "Create and connect an MCP instance"}
             </h3>
             <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-              Choose an owner project, select an enabled MCP type, and let the runner verify the
-              connection after creation.
+              {editingIntegration
+                ? "Update the saved MCP metadata, optionally rotate the Jira API token, then let the runner verify the connection again."
+                : "Choose an owner project, select an enabled MCP type, and let the runner verify the connection after creation."}
             </p>
           </div>
           <Badge tone={runnerOnline ? "success" : "danger"}>
@@ -260,13 +295,13 @@ function McpCreatePage() {
           </Badge>
         </div>
 
-        {forcedProvider ? (
+        {forcedProvider && !editingIntegration ? (
           <div className="mt-4 rounded-2xl border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-foreground">
             Creating the first {toTitleCase(forcedProvider)} MCP instance will also enable that MCP type.
           </div>
         ) : null}
 
-        {providerOptions.length === 0 ? (
+        {!canRenderForm ? (
           <div className="mt-4 rounded-2xl border border-dashed border-border bg-background/60 p-4 text-sm text-muted-foreground">
             No enabled MCP types are available yet. Enable an MCP type from the global MCP Servers page first.
           </div>
@@ -278,6 +313,7 @@ function McpCreatePage() {
                 className="mt-2 w-full rounded-2xl border border-border bg-card px-4 py-3"
                 onChange={(event) => setSelectedProjectId(event.target.value)}
                 value={selectedProjectId}
+                disabled={Boolean(editingIntegration)}
               >
                 {projects.map((project) => (
                   <option key={project.id} value={project.id}>
@@ -287,11 +323,11 @@ function McpCreatePage() {
               </select>
             </label>
 
-            {forcedProvider ? (
+            {forcedProvider || editingIntegration ? (
               <div className="text-sm font-medium">
                 Provider
                 <div className="mt-2 rounded-2xl border border-border bg-card px-4 py-3">
-                  {toTitleCase(forcedProvider)}
+                  {toTitleCase(editingIntegration?.type ?? forcedProvider ?? draftType)}
                 </div>
               </div>
             ) : (
@@ -350,11 +386,11 @@ function McpCreatePage() {
 
             <div className="flex flex-wrap gap-2">
               <Button
-                disabled={!runnerOnline || projects.length === 0 || providerOptions.length === 0 || saveIntegration.isPending}
+                disabled={!runnerOnline || projects.length === 0 || !canRenderForm || saveIntegration.isPending}
                 onClick={() => saveIntegration.mutate()}
                 type="button"
               >
-                {saveIntegration.isPending ? "Creating..." : "Create and Connect"}
+                {saveIntegration.isPending ? (editingIntegration ? "Saving..." : "Creating...") : (editingIntegration ? "Save and Reconnect" : "Create and Connect")}
               </Button>
               <Button
                 onClick={() => router.navigate({ to: "/settings/mcp-servers" })}
