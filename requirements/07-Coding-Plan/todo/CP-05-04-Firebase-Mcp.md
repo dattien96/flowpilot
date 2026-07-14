@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-13`
 - Parent Documents: [SD-11: MCP Connection Flows](../../06-System-Tech-Design/SD-11-MCP-Connection-Flows.md), [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md)
 - Child Documents: [Task-230: Firebase Crashlytics MCP Connection And Provider Config](../../08-Task/done/Task-230-Firebase-Crashlytics-MCP-Connection-And-Provider-Config.md) (`P-1`/`P-2`), [Task-231: Firebase Crashlytics Context Source And Runtime Target](../../08-Task/done/Task-231-Firebase-Crashlytics-Context-Source-And-Runtime-Target.md) (`P-3`/`P-4`/`P-5`); prereq: [Task-226](../../08-Task/done/Task-226-MCP-Context-Source-Adapter-Dispatch-Refactor.md) + [Task-227](../../08-Task/done/Task-227-Generalize-MCP-Prompt-Injection-And-Preflight.md) (shared refactors, parented to CP-05-06)
-- Related Documents: [CP-05-06: Jira MCP As A Context Artifact Source](./CP-05-06-Jira-MCP.md) (sibling input source — chia chung refactor adapter-dispatch + prompt-generalization), [CP-44: Pluggable Context Source Registry](../done/CP-44-Pluggable-Context-Source-Registry.md), [CP-45: Generic Artifact Types And Instances](../done/CP-45-Generic-Artifact-Types-And-Instances.md), [CP-05-03: Google Drive MCP Current Implementation Notes](../done/CP-05-03-Driver-Mcp.md) (mẫu provider-CLI-owns-MCP), [CP-05-05: Telegram MCP](./CP-05-05-Tele-Mcp.md)
+- Related Documents: [CP-05-06: Jira MCP As A Context Artifact Source](../done/CP-05-06-Jira-MCP.md) (sibling input source — chia chung refactor adapter-dispatch + prompt-generalization), [CP-44: Pluggable Context Source Registry](../done/CP-44-Pluggable-Context-Source-Registry.md), [CP-45: Generic Artifact Types And Instances](../done/CP-45-Generic-Artifact-Types-And-Instances.md), [CP-05-03: Google Drive MCP Current Implementation Notes](../done/CP-05-03-Driver-Mcp.md) (mẫu provider-CLI-owns-MCP), [CP-05-05: Telegram MCP](../done/CP-05-05-Tele-Mcp.md)
 - Replaces: `None`
 - Tags: `mcp`, `firebase`, `crashlytics`, `context-source`, `context-artifact`, `artifact-framework`, `flow-mode`
 
@@ -78,7 +78,7 @@ Cho step "Investigate Crash On Firebase" (và các step cần crash context khá
 - `requirements/07-Coding-Plan/done/CP-44-Pluggable-Context-Source-Registry.md`
 - `requirements/07-Coding-Plan/done/CP-45-Generic-Artifact-Types-And-Instances.md`
 - `requirements/07-Coding-Plan/done/CP-05-03-Driver-Mcp.md`
-- `requirements/07-Coding-Plan/todo/CP-05-06-Jira-MCP.md`
+- `requirements/07-Coding-Plan/done/CP-05-06-Jira-MCP.md`
 - `apps/local-runner/internal/runner/context_source_mcp.go`
 - `apps/local-runner/internal/runner/mcp_prompt_instructions.go`
 - `apps/local-runner/internal/runner/flow_executor.go`

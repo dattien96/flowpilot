@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-13`
 - Last Updated: `2026-07-15`
-- Parent Documents: [CP-05-05: Telegram MCP As An Output Notification Artifact](../../07-Coding-Plan/todo/CP-05-05-Tele-Mcp.md) (`P-1`, `P-2`), [SD-11: MCP Connection Flows](../../06-System-Tech-Design/SD-11-MCP-Connection-Flows.md) (§3.3, amended 2026-07-13), [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md)
+- Parent Documents: [CP-05-05: Telegram MCP As An Output Notification Artifact](../../07-Coding-Plan/done/CP-05-05-Tele-Mcp.md) (`P-1`, `P-2`), [SD-11: MCP Connection Flows](../../06-System-Tech-Design/SD-11-MCP-Connection-Flows.md) (§3.3, amended 2026-07-13), [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md)
 - Child Documents: `None`
 - Related Documents: [CP-05-03: Google Drive MCP Current Implementation Notes](../../07-Coding-Plan/done/CP-05-03-Driver-Mcp.md) (mẫu FlowPilot-owned proxy MCP `google_drive_proxy_mcp.go`), [Task-197: Artifact Type Catalog And Schema](../done/Task-197-Artifact-Type-Catalog-And-Schema.md) (mẫu seed type), [Task-233: Telegram Output Write-Contract, Verify Gate, And Approval](./Task-233-Telegram-Output-Write-Contract-Verify-Gate-And-Approval.md)
 - Replaces: `None`

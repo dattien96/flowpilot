@@ -5,14 +5,14 @@
 - Document ID: `CP-05-06`
 - Title: `Jira MCP As A Context Artifact Source`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-13`
-- Last Updated: `2026-07-14` (DOD-8 live-verified for Claude/Codex; Rovo verify probe fix CA-304, Claude keychain detection fix CA-305, Grok headers/config.toml fix CA-306 pending live re-verify, MCP error modal CA-307)
+- Last Updated: `2026-07-15` (DOD-8 live-verified for Claude/Codex; Rovo verify probe fix CA-304, Claude keychain detection fix CA-305, Grok headers/config.toml fix CA-306 pending live re-verify, MCP error modal CA-307)
 - Parent Documents: [SD-11: MCP Connection Flows](../../06-System-Tech-Design/SD-11-MCP-Connection-Flows.md), [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md)
 - Child Documents: [Task-226: MCP Context-Source Adapter Dispatch Refactor](../../08-Task/done/Task-226-MCP-Context-Source-Adapter-Dispatch-Refactor.md) (`P-5`), [Task-227: Generalize MCP Prompt-Injection And Preflight](../../08-Task/done/Task-227-Generalize-MCP-Prompt-Injection-And-Preflight.md) (`P-6`), [Task-228: Jira Remote-MCP Connection And Provider Config](../../08-Task/done/Task-228-Jira-Remote-MCP-Connection-And-Provider-Config.md) (`P-1`/`P-2`), [Task-229: Jira Issue Context Source And Runtime Target Picker](../../08-Task/done/Task-229-Jira-Issue-Context-Source-And-Runtime-Target-Picker.md) (`P-3`/`P-4`/`P-6b`)
-- Related Documents: [CP-44: Pluggable Context Source Registry](../done/CP-44-Pluggable-Context-Source-Registry.md) (substrate — `mcp.driver` là mẫu source ngoài), [CP-45: Generic Artifact Types And Instances](../done/CP-45-Generic-Artifact-Types-And-Instances.md) (artifact framework — Jira cắm vào `context_artifact.v1`), [CP-05-03: Google Drive MCP Current Implementation Notes](../done/CP-05-03-Driver-Mcp.md) (mẫu provider-CLI-owns-MCP), [CP-05-01: Jira MCP API Token Flow](../done/CP-05-01-Jira-Mcp-Api-Token.md) (legacy token path — nay là fallback, không phải primary), [CP-05-02: MCP Test Console](../done/CP-05-02-Mcp-Test-Console.md) (test surface), [CP-05-04: Firebase MCP](./CP-05-04-Firebase-Mcp.md) (sibling input source), [CP-05-05: Telegram MCP](./CP-05-05-Tele-Mcp.md) (sibling output artifact)
+- Related Documents: [CP-44: Pluggable Context Source Registry](../done/CP-44-Pluggable-Context-Source-Registry.md) (substrate — `mcp.driver` là mẫu source ngoài), [CP-45: Generic Artifact Types And Instances](../done/CP-45-Generic-Artifact-Types-And-Instances.md) (artifact framework — Jira cắm vào `context_artifact.v1`), [CP-05-03: Google Drive MCP Current Implementation Notes](../done/CP-05-03-Driver-Mcp.md) (mẫu provider-CLI-owns-MCP), [CP-05-01: Jira MCP API Token Flow](../done/CP-05-01-Jira-Mcp-Api-Token.md) (legacy token path — nay là fallback, không phải primary), [CP-05-02: MCP Test Console](../done/CP-05-02-Mcp-Test-Console.md) (test surface), [CP-05-04: Firebase MCP](../todo/CP-05-04-Firebase-Mcp.md) (sibling input source), [CP-05-05: Telegram MCP](./CP-05-05-Tele-Mcp.md) (sibling output artifact)
 - Replaces: `None`
 - Tags: `mcp`, `jira`, `atlassian`, `context-source`, `context-artifact`, `artifact-framework`, `remote-mcp`, `flow-mode`
 

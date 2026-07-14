@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-14`
 - Last Updated: `2026-07-14`
-- Parent Documents: [CP-05-05: Telegram MCP As An Output Notification Artifact](../../07-Coding-Plan/todo/CP-05-05-Tele-Mcp.md), [Task-232: Telegram Output Artifact Type And Bot-API Proxy MCP](../../08-Task/todo/Task-232-Telegram-Output-Artifact-Type-And-Bot-API-Proxy-MCP.md), [Task-233: Telegram Output Write-Contract, Verify Gate, And Approval](../../08-Task/todo/Task-233-Telegram-Output-Write-Contract-Verify-Gate-And-Approval.md), [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md)
+- Parent Documents: [CP-05-05: Telegram MCP As An Output Notification Artifact](../../07-Coding-Plan/done/CP-05-05-Tele-Mcp.md), [Task-232: Telegram Output Artifact Type And Bot-API Proxy MCP](../../08-Task/done/Task-232-Telegram-Output-Artifact-Type-And-Bot-API-Proxy-MCP.md), [Task-233: Telegram Output Write-Contract, Verify Gate, And Approval](../../08-Task/done/Task-233-Telegram-Output-Write-Contract-Verify-Gate-And-Approval.md), [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md)
 - Child Documents: `None`
 - Related Documents: `run-689`, `/Users/tiendat/.codex/config.toml`, `/Users/tiendat/.grokHome2/config.toml`, [CA-315: Telegram MCP Configure Providers Workspace](../../../change-audit/CA-315-telegram-mcp-configure-providers-workspace.md), [CA-316: Telegram MCP loopback for provider HOME keyring isolation](../../../change-audit/CA-316-telegram-mcp-loopback-keyring-isolation.md)
 - Replaces: `None`

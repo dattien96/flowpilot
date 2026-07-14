@@ -10,9 +10,9 @@
 - Created: `2026-07-13`
 - Last Updated: `2026-07-14` (Session B: Jira DOD-8 live-verified for Claude/Codex; Grok live-tested, blocked, root-caused and fixed in code — CA-304/305/306 — pending re-verify after rebuild)
 - Parent Documents:
-  - [CP-05-06: Jira MCP](../todo/CP-05-06-Jira-MCP.md)
+  - [CP-05-06: Jira MCP](../done/CP-05-06-Jira-MCP.md)
   - [CP-05-04: Firebase MCP](../todo/CP-05-04-Firebase-Mcp.md)
-  - [CP-05-05: Telegram MCP](../todo/CP-05-05-Tele-Mcp.md)
+  - [CP-05-05: Telegram MCP](../done/CP-05-05-Tele-Mcp.md)
   - [Task-234: Auto Provider Config](../../08-Task/done/Task-234-Auto-Provider-Config-For-New-MCPs-And-Drop-Fetch-Adapters.md) (`Q-2` done — CA-300)
 - Related: CP-44, CP-45, CP-05-03 (Google Drive MCP pattern)
 - Tags: `manual-e2e`, `mcp`, `jira`, `firebase`, `telegram`, `claude`, `codex`, `grok`

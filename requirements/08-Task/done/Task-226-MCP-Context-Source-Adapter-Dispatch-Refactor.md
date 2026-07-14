@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-13`
 - Last Updated: `2026-07-15`
-- Parent Documents: [CP-05-06: Jira MCP As A Context Artifact Source](../../07-Coding-Plan/todo/CP-05-06-Jira-MCP.md) (`P-5`), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md)
+- Parent Documents: [CP-05-06: Jira MCP As A Context Artifact Source](../../07-Coding-Plan/done/CP-05-06-Jira-MCP.md) (`P-5`), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md)
 - Child Documents: `None`
 - Related Documents: [CP-05-04: Firebase MCP](../../07-Coding-Plan/todo/CP-05-04-Firebase-Mcp.md) (consumer — Firebase source dùng dispatch này), [Task-204: Wire Production MCP Driver Adapter](../done/Task-204-Wire-Production-MCP-Driver-Adapter.md) (Drive adapter hiện tại), [Task-227: Generalize MCP Prompt-Injection And Preflight](./Task-227-Generalize-MCP-Prompt-Injection-And-Preflight.md) (sibling refactor)
 - Replaces: `None`

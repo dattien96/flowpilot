@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-13`
 - Last Updated: `2026-07-15`
-- Parent Documents: [CP-05-05: Telegram MCP As An Output Notification Artifact](../../07-Coding-Plan/todo/CP-05-05-Tele-Mcp.md) (`P-3`, `P-4`, `P-5`, `P-6`, `P-7`)
+- Parent Documents: [CP-05-05: Telegram MCP As An Output Notification Artifact](../../07-Coding-Plan/done/CP-05-05-Tele-Mcp.md) (`P-3`, `P-4`, `P-5`, `P-6`, `P-7`)
 - Child Documents: `None`
 - Related Documents: [Task-232: Telegram Output Artifact Type And Bot-API Proxy MCP](./Task-232-Telegram-Output-Artifact-Type-And-Bot-API-Proxy-MCP.md) (blocker), [Task-223: File Artifact Output Contract](../done/Task-223-File-Artifact-Output-Contract-And-Review-Input-Chain.md) (mẫu OUTPUT write-contract + gate), [Task-227: Generalize MCP Prompt-Injection And Preflight](./Task-227-Generalize-MCP-Prompt-Injection-And-Preflight.md)
 - Replaces: `None`

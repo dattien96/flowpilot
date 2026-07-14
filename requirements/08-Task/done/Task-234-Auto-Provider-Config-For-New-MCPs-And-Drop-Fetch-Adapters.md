@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-13`
 - Last Updated: `2026-07-13`
-- Parent Documents: [CP-05-06: Jira MCP](../../07-Coding-Plan/todo/CP-05-06-Jira-MCP.md) (`P-1`, `P-2`), [CP-05-04: Firebase MCP](../../07-Coding-Plan/todo/CP-05-04-Firebase-Mcp.md) (`P-1`, `P-2`), [CP-05-05: Telegram MCP](../../07-Coding-Plan/todo/CP-05-05-Tele-Mcp.md) (`P-1`, `P-2`), [CP-05-03: Driver MCP](../../07-Coding-Plan/done/CP-05-03-Driver-Mcp.md) (`§11` provider-CLI-is-client, Step-7 provider-config loop)
+- Parent Documents: [CP-05-06: Jira MCP](../../07-Coding-Plan/done/CP-05-06-Jira-MCP.md) (`P-1`, `P-2`), [CP-05-04: Firebase MCP](../../07-Coding-Plan/todo/CP-05-04-Firebase-Mcp.md) (`P-1`, `P-2`), [CP-05-05: Telegram MCP](../../07-Coding-Plan/done/CP-05-05-Tele-Mcp.md) (`P-1`, `P-2`), [CP-05-03: Driver MCP](../../07-Coding-Plan/done/CP-05-03-Driver-Mcp.md) (`§11` provider-CLI-is-client, Step-7 provider-config loop)
 - Child Documents: `None`
 - Related Documents: [Task-228: Jira Remote-MCP Connection And Provider Config](./Task-228-Jira-Remote-MCP-Connection-And-Provider-Config.md), [Task-229: Jira Issue Context Source And Runtime Target Picker](./Task-229-Jira-Issue-Context-Source-And-Runtime-Target-Picker.md), [Task-230: Firebase Crashlytics MCP Connection And Provider Config](./Task-230-Firebase-Crashlytics-MCP-Connection-And-Provider-Config.md), [Task-231: Firebase Crashlytics Context Source And Runtime Target](./Task-231-Firebase-Crashlytics-Context-Source-And-Runtime-Target.md), [Task-232: Telegram Artifact Type And Bot-API Proxy MCP](./Task-232-Telegram-Artifact-Type-And-Bot-API-Proxy-MCP.md), [Task-233: Telegram Output Write-Contract, Verify Gate, And Approval](./Task-233-Telegram-Output-Write-Contract-Verify-Gate-And-Approval.md)
 - Replaces: `None`

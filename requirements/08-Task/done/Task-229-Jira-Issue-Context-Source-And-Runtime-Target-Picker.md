@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-13`
 - Last Updated: `2026-07-15`
-- Parent Documents: [CP-05-06: Jira MCP As A Context Artifact Source](../../07-Coding-Plan/todo/CP-05-06-Jira-MCP.md) (`P-3`, `P-4`, `P-6b`, `P-7`)
+- Parent Documents: [CP-05-06: Jira MCP As A Context Artifact Source](../../07-Coding-Plan/done/CP-05-06-Jira-MCP.md) (`P-3`, `P-4`, `P-6b`, `P-7`)
 - Child Documents: `None`
 - Related Documents: [Task-226: MCP Context-Source Adapter Dispatch Refactor](./Task-226-MCP-Context-Source-Adapter-Dispatch-Refactor.md) (blocker), [Task-227: Generalize MCP Prompt-Injection And Preflight](./Task-227-Generalize-MCP-Prompt-Injection-And-Preflight.md) (blocker), [Task-228: Jira Remote-MCP Connection And Provider Config](./Task-228-Jira-Remote-MCP-Connection-And-Provider-Config.md) (blocker), [CP-44: Pluggable Context Source Registry](../../07-Coding-Plan/done/CP-44-Pluggable-Context-Source-Registry.md)
 - Replaces: `None`
