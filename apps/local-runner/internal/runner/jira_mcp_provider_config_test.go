@@ -716,4 +716,16 @@ func TestInjectRequiredMcpInstructionsJiraProducesJiraBlockNotDrive(t *testing.T
 	if !strings.Contains(result, "JIRA_CONTENT_NOT_FOUND") {
 		t.Errorf("expected jira failure codes present, got: %s", result)
 	}
+	if !strings.Contains(result, "getAccessibleAtlassianResources") {
+		t.Errorf("expected jira bootstrap instructions to require getAccessibleAtlassianResources first, got: %s", result)
+	}
+	if !strings.Contains(result, "Never send an empty `cloudId`") {
+		t.Errorf("expected jira bootstrap instructions to forbid empty cloudId, got: %s", result)
+	}
+	if !strings.Contains(result, "atlassianUserInfo") || !strings.Contains(result, "`account_id`") {
+		t.Errorf("expected jira bootstrap instructions to require atlassianUserInfo for current user resolution, got: %s", result)
+	}
+	if !strings.Contains(result, "Do not use `objectIdentifier: \"current\"`") {
+		t.Errorf("expected jira bootstrap instructions to forbid objectIdentifier=current, got: %s", result)
+	}
 }
