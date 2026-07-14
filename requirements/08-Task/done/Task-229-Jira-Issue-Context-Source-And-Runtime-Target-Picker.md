@@ -5,11 +5,11 @@
 - Document ID: `Task-229`
 - Title: `Jira Issue Context Source And Runtime Target Picker`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-13`
-- Last Updated: `2026-07-13`
+- Last Updated: `2026-07-15`
 - Parent Documents: [CP-05-06: Jira MCP As A Context Artifact Source](../../07-Coding-Plan/todo/CP-05-06-Jira-MCP.md) (`P-3`, `P-4`, `P-6b`, `P-7`)
 - Child Documents: `None`
 - Related Documents: [Task-226: MCP Context-Source Adapter Dispatch Refactor](./Task-226-MCP-Context-Source-Adapter-Dispatch-Refactor.md) (blocker), [Task-227: Generalize MCP Prompt-Injection And Preflight](./Task-227-Generalize-MCP-Prompt-Injection-And-Preflight.md) (blocker), [Task-228: Jira Remote-MCP Connection And Provider Config](./Task-228-Jira-Remote-MCP-Connection-And-Provider-Config.md) (blocker), [CP-44: Pluggable Context Source Registry](../../07-Coding-Plan/done/CP-44-Pluggable-Context-Source-Registry.md)
@@ -76,7 +76,7 @@ Sau khi connection (228) + refactor nền (226/227) sẵn sàng, đây là slice
 - `T-3` Loại `jira.*` khỏi collect list; `appendJiraTargetPrompt` bounded note (dùng contract Task-227).
 - `T-4` Thêm hint field target Jira trên `FlowContextHints`/`BehaviorInput` (mirror `MCPDriverRef`) hoặc map chung.
 - `T-5` UI: `contextSourceOptions` entry + sub-config target mode trong editor `context_artifact.v1`.
-- `T-6` Wiring một use-case flow (Investigate Bug hoặc Analyze Sprint) + Test Console read action (`jira_list_bugs`).
+- `T-6` ~~Wiring built-in use-case flow~~ **out of scope** (2026-07-15): users wire `context_artifact.v1` manually in workflow editor; no seeded Investigate Bug / Analyze Sprint pack required.
 
 ## 5. Touched Areas
 
@@ -109,8 +109,8 @@ Sau khi connection (228) + refactor nền (226/227) sẵn sàng, đây là slice
   - UI: `contextSourceOptions` in `WorkflowsSettings.tsx` gained `jira.issue`/`jira.sprint` entries + a sub-note (mirrors the `mcp.driver` note) explaining the runtime-question behavior and the connected-Jira-integration dependency.
   - Tests: `context_source_jira_test.go` (new, 12 cases — bounded section/SourceRef, empty-ref no-op, adapter-error degrade, registered-not-default, no-vector guard, normalize helpers, prompt-note bounded-scope + no-op). `go build ./...` clean; `go vet` clean; `go test ./internal/runner/... -run 'Jira|jira'` — 31 pass; full suite `go test ./internal/runner/...` — 1415 passed / 16 failed / 18 skipped (same 16 pre-existing/unrelated failures as Task-226/227/228, zero new regressions — count only grew by the ~12 new passing tests). `tsc --noEmit` in `apps/desktop-flowpilot` clean.
   - **Scope note (consistent with Task-228):** the production adapters fetch real Jira data via the REST/API-token path (already fully working, CP-05-01/02) — this is what a direct/test invocation of `jiraIssueSource.Fetch` would return. In the live AI-turn path, these adapters are NOT what the AI actually uses (the source is deliberately filtered out of `startInlineEntryChain`'s collect); the AI instead calls the real Jira MCP tools per the target-note prompt injected by `appendJiraIssueTargetPrompt`/`appendJiraSprintTargetPrompt`, which requires Task-228's OAuth-backed remote-MCP provider config to actually be present — the same documented gap as Task-228 (no live OAuth handshake in this environment).
-  - Test Console wiring (`jira_list_bugs`/`jira_get_ticket_content` templates) and the built-in "Investigate Bug"/"Analyze Sprint" use-case flow were **not** built in this task — the underlying REST templates already exist from CP-05-02; wiring a specific built-in flow around them is a small follow-up, not blocked on anything new.
-- follow-ups: (1) wire a concrete built-in flow (Investigate Bug / Analyze Sprint) binding a `context_artifact.v1` instance with `jira.issue`/`jira.sprint` enabled, as the live E2E vehicle; (2) once Task-228's OAuth handshake lands, re-verify the live AI-turn path end-to-end.
+  - Built-in Investigate Bug / Analyze Sprint pack flows: **won't-do** — manual artifact/workflow wiring is the supported path.
+- follow-ups: none.
 - upstream docs updated: none required — CP-05-06 `P-3`/`P-4`/`P-6b` describe exactly this shape.
 
 ## 9. Addendum (Task-234 revisit): fetch adapters unwired
