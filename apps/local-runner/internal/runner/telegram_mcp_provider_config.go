@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 // Task-232 (CP-05-05 P-1/P-2): connection layer + Claude provider-config
@@ -191,6 +193,252 @@ func (r *Runner) EnsureClaudeTelegramMcpConfig(accountHomePath string) (Telegram
 
 	return TelegramMcpProviderConfigResponse{
 		ProviderKey: "claude",
+		ServerName:  telegramMcpServerName,
+		Status:      "configured",
+		Changed:     changed,
+		ConfigPath:  configPath,
+	}, nil
+}
+
+// TelegramMcpProviderConfigRequest is the HTTP-facing request for
+// EnsureTelegramMcpProviderConfig, mirroring JiraMcpProviderConfigRequest.
+type TelegramMcpProviderConfigRequest struct {
+	ProviderKey     string `json:"providerKey"`
+	AccountHomePath string `json:"accountHomePath"`
+}
+
+// EnsureTelegramMcpProviderConfig is the dispatch entry point mirroring
+// EnsureJiraMcpProviderConfig — the production call site that was missing
+// entirely before this change (only EnsureClaudeTelegramMcpConfig existed,
+// called from tests only). All four providers are wired — Telegram is a
+// local stdio launcher (this repo's own binary), so the same shape proven
+// for Claude round-trips cleanly into Codex/Gemini/Grok's config formats.
+func (r *Runner) EnsureTelegramMcpProviderConfig(req TelegramMcpProviderConfigRequest) (TelegramMcpProviderConfigResponse, error) {
+	providerKey := strings.ToLower(strings.TrimSpace(req.ProviderKey))
+	if providerKey == "" {
+		return TelegramMcpProviderConfigResponse{}, errors.New("providerKey is required")
+	}
+	accountHomePath := strings.TrimSpace(req.AccountHomePath)
+	if accountHomePath == "" {
+		return TelegramMcpProviderConfigResponse{}, errors.New("accountHomePath is required")
+	}
+	switch providerKey {
+	case "claude":
+		return r.EnsureClaudeTelegramMcpConfig(accountHomePath)
+	case "codex":
+		return r.ensureCodexTelegramMcpConfig(accountHomePath)
+	case "gemini":
+		return r.ensureGeminiTelegramMcpConfig(accountHomePath)
+	case "grok":
+		return r.ensureGrokTelegramMcpConfig(accountHomePath)
+	default:
+		return TelegramMcpProviderConfigResponse{}, fmt.Errorf("Telegram MCP provider config is not yet implemented for provider: %s", providerKey)
+	}
+}
+
+// telegramLiveMCPServer builds the per-turn claudeMcpServer entry for
+// Telegram when connected, for flowpilotClaudeExtraMCPServers (Task-234
+// T-1). Its stdio shape reaches Grok automatically too via
+// grokACPExtraMCPServers.
+func (r *Runner) telegramLiveMCPServer() (claudeMcpServer, bool) {
+	if _, err := r.resolveConnectedTelegramCredential(); err != nil {
+		return claudeMcpServer{}, false
+	}
+	binaryPath, err := os.Executable()
+	if err != nil {
+		return claudeMcpServer{}, false
+	}
+	return expectedClaudeTelegramMcpServer(binaryPath), true
+}
+
+func (r *Runner) ensureCodexTelegramMcpConfig(accountHomePath string) (TelegramMcpProviderConfigResponse, error) {
+	if _, err := r.resolveConnectedTelegramCredential(); err != nil {
+		return TelegramMcpProviderConfigResponse{}, err
+	}
+	binaryPath, err := os.Executable()
+	if err != nil {
+		return TelegramMcpProviderConfigResponse{}, fmt.Errorf("resolve flowpilot binary path: %w", err)
+	}
+	configPath := filepath.Join(accountHomePath, "config.toml")
+
+	var config codexConfig
+	changed := false
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return TelegramMcpProviderConfigResponse{}, fmt.Errorf("failed to read Codex config: %w", readErr)
+	}
+	if readErr == nil {
+		if tomlErr := toml.Unmarshal(raw, &config); tomlErr != nil {
+			config = codexConfig{}
+			changed = true
+		}
+	}
+	if config.McpServers == nil {
+		config.McpServers = make(map[string]codexMcpServer)
+	}
+
+	expected := codexMcpServer{
+		Command:           binaryPath,
+		Args:              []string{"telegram-mcp"},
+		StartupTimeoutSec: 20,
+		ToolTimeoutSec:    120,
+		Enabled:           true,
+	}
+	existing, exists := config.McpServers[telegramMcpServerName]
+	if !exists || !codexServerConfigMatches(existing, expected) {
+		config.McpServers[telegramMcpServerName] = expected
+		changed = true
+	}
+
+	if changed {
+		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+			return TelegramMcpProviderConfigResponse{}, fmt.Errorf("failed to create config directory: %w", err)
+		}
+		out, err := toml.Marshal(config)
+		if err != nil {
+			return TelegramMcpProviderConfigResponse{}, fmt.Errorf("failed to marshal TOML: %w", err)
+		}
+		if err := os.WriteFile(configPath, out, 0o644); err != nil {
+			return TelegramMcpProviderConfigResponse{}, fmt.Errorf("failed to write config: %w", err)
+		}
+	}
+
+	return TelegramMcpProviderConfigResponse{
+		ProviderKey: "codex",
+		ServerName:  telegramMcpServerName,
+		Status:      "configured",
+		Changed:     changed,
+		ConfigPath:  configPath,
+	}, nil
+}
+
+func (r *Runner) ensureGeminiTelegramMcpConfig(accountHomePath string) (TelegramMcpProviderConfigResponse, error) {
+	if _, err := r.resolveConnectedTelegramCredential(); err != nil {
+		return TelegramMcpProviderConfigResponse{}, err
+	}
+	binaryPath, err := os.Executable()
+	if err != nil {
+		return TelegramMcpProviderConfigResponse{}, fmt.Errorf("resolve flowpilot binary path: %w", err)
+	}
+	configDir := filepath.Join(accountHomePath, ".gemini")
+	configPath := filepath.Join(configDir, "settings.json")
+
+	var config geminiSettings
+	changed := false
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return TelegramMcpProviderConfigResponse{}, fmt.Errorf("failed to read Gemini config: %w", readErr)
+	}
+	if readErr == nil {
+		if jsonErr := json.Unmarshal(raw, &config); jsonErr != nil {
+			config = geminiSettings{}
+			changed = true
+		}
+	}
+	if config.McpServers == nil {
+		config.McpServers = make(map[string]geminiMcpServer)
+	}
+
+	expected := geminiMcpServer{
+		Command: binaryPath,
+		Args:    []string{"telegram-mcp"},
+		Timeout: 600000,
+		Trust:   false,
+	}
+	existing, exists := config.McpServers[telegramMcpServerName]
+	if !exists || !geminiServerConfigMatches(existing, expected) {
+		config.McpServers[telegramMcpServerName] = expected
+		changed = true
+	}
+
+	if changed {
+		if err := os.MkdirAll(configDir, 0o755); err != nil {
+			return TelegramMcpProviderConfigResponse{}, fmt.Errorf("failed to create config directory: %w", err)
+		}
+		out, err := json.MarshalIndent(config, "", "  ")
+		if err != nil {
+			return TelegramMcpProviderConfigResponse{}, fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		if err := os.WriteFile(configPath, out, 0o644); err != nil {
+			return TelegramMcpProviderConfigResponse{}, fmt.Errorf("failed to write config: %w", err)
+		}
+	}
+
+	return TelegramMcpProviderConfigResponse{
+		ProviderKey: "gemini",
+		ServerName:  telegramMcpServerName,
+		Status:      "configured",
+		Changed:     changed,
+		ConfigPath:  configPath,
+	}, nil
+}
+
+func (r *Runner) ensureGrokTelegramMcpConfig(accountHomePath string) (TelegramMcpProviderConfigResponse, error) {
+	if _, err := r.resolveConnectedTelegramCredential(); err != nil {
+		return TelegramMcpProviderConfigResponse{}, err
+	}
+	binaryPath, err := os.Executable()
+	if err != nil {
+		return TelegramMcpProviderConfigResponse{}, fmt.Errorf("resolve flowpilot binary path: %w", err)
+	}
+	configPath := filepath.Join(accountHomePath, "config.toml")
+
+	doc := map[string]interface{}{}
+	changed := false
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return TelegramMcpProviderConfigResponse{}, fmt.Errorf("failed to read Grok config: %w", readErr)
+	}
+	if readErr == nil {
+		if tomlErr := toml.Unmarshal(raw, &doc); tomlErr != nil {
+			doc = map[string]interface{}{}
+			changed = true
+		}
+	}
+
+	mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
+	if mcpServers == nil {
+		mcpServers = map[string]interface{}{}
+	}
+
+	expected := grokMcpServer{
+		Command: binaryPath,
+		Args:    []string{"telegram-mcp"},
+		Enabled: true,
+	}
+	existingMatches := false
+	if existingRaw, exists := mcpServers[telegramMcpServerName]; exists {
+		if existingMap, ok := existingRaw.(map[string]interface{}); ok {
+			if existingServer, ok := grokServerFromMap(existingMap); ok {
+				existingMatches = grokServerConfigMatches(existingServer, expected)
+			}
+		}
+	}
+	if !existingMatches {
+		expectedMap, mapErr := grokServerToMap(expected)
+		if mapErr != nil {
+			return TelegramMcpProviderConfigResponse{}, fmt.Errorf("failed to build Grok MCP server entry: %w", mapErr)
+		}
+		mcpServers[telegramMcpServerName] = expectedMap
+		doc["mcp_servers"] = mcpServers
+		changed = true
+	}
+
+	if changed {
+		if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+			return TelegramMcpProviderConfigResponse{}, fmt.Errorf("failed to create config directory: %w", err)
+		}
+		out, err := toml.Marshal(doc)
+		if err != nil {
+			return TelegramMcpProviderConfigResponse{}, fmt.Errorf("failed to marshal TOML: %w", err)
+		}
+		if err := os.WriteFile(configPath, out, 0o644); err != nil {
+			return TelegramMcpProviderConfigResponse{}, fmt.Errorf("failed to write config: %w", err)
+		}
+	}
+
+	return TelegramMcpProviderConfigResponse{
+		ProviderKey: "grok",
 		ServerName:  telegramMcpServerName,
 		Status:      "configured",
 		Changed:     changed,

@@ -23,6 +23,66 @@ func connectTestTelegramBackend(t *testing.T, instance *Runner) {
 	}
 }
 
+func TestEnsureTelegramMcpProviderConfigDispatchesToClaudeInProduction(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	connectTestTelegramBackend(t, instance)
+	accountHome := t.TempDir()
+
+	resp, err := instance.EnsureTelegramMcpProviderConfig(TelegramMcpProviderConfigRequest{
+		ProviderKey:     "claude",
+		AccountHomePath: accountHome,
+	})
+	if err != nil {
+		t.Fatalf("EnsureTelegramMcpProviderConfig: %v", err)
+	}
+	if resp.ServerName != "telegram" || !resp.Changed {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestEnsureTelegramMcpProviderConfigRejectsUnsupportedProvider(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	connectTestTelegramBackend(t, instance)
+	if _, err := instance.EnsureTelegramMcpProviderConfig(TelegramMcpProviderConfigRequest{
+		ProviderKey:     "unknown-provider",
+		AccountHomePath: t.TempDir(),
+	}); err == nil {
+		t.Fatal("expected error for unsupported provider")
+	}
+}
+
+// TestEnsureTelegramMcpProviderConfigDispatchesToCodexGeminiGrok verifies
+// Task-234 T-2: Telegram's stdio shape round-trips into all three remaining
+// provider config formats.
+func TestEnsureTelegramMcpProviderConfigDispatchesToCodexGeminiGrok(t *testing.T) {
+	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
+	connectTestTelegramBackend(t, instance)
+
+	codexHome := t.TempDir()
+	if _, err := instance.EnsureTelegramMcpProviderConfig(TelegramMcpProviderConfigRequest{ProviderKey: "codex", AccountHomePath: codexHome}); err != nil {
+		t.Fatalf("EnsureTelegramMcpProviderConfig(codex): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(codexHome, "config.toml")); err != nil {
+		t.Fatalf("expected codex config.toml written: %v", err)
+	}
+
+	geminiHome := t.TempDir()
+	if _, err := instance.EnsureTelegramMcpProviderConfig(TelegramMcpProviderConfigRequest{ProviderKey: "gemini", AccountHomePath: geminiHome}); err != nil {
+		t.Fatalf("EnsureTelegramMcpProviderConfig(gemini): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(geminiHome, ".gemini", "settings.json")); err != nil {
+		t.Fatalf("expected gemini settings.json written: %v", err)
+	}
+
+	grokHome := t.TempDir()
+	if _, err := instance.EnsureTelegramMcpProviderConfig(TelegramMcpProviderConfigRequest{ProviderKey: "grok", AccountHomePath: grokHome}); err != nil {
+		t.Fatalf("EnsureTelegramMcpProviderConfig(grok): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(grokHome, "config.toml")); err != nil {
+		t.Fatalf("expected grok config.toml written: %v", err)
+	}
+}
+
 func TestValidateTelegramCredentialFieldsRejectsMissing(t *testing.T) {
 	if err := validateTelegramCredentialFields("", "chat"); err == nil {
 		t.Fatal("expected error for missing bot token")
