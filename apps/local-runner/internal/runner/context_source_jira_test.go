@@ -178,7 +178,7 @@ func TestAppendJiraIssueTargetPromptBoundedScope(t *testing.T) {
 	if !strings.Contains(result, "issue key: SCRUM-123") {
 		t.Errorf("expected issue key in note, got: %s", result)
 	}
-	if !strings.Contains(result, "`jira`") {
+	if !strings.Contains(result, "`flowpilot_jira`") {
 		t.Errorf("expected jira server name mentioned, got: %s", result)
 	}
 	if !strings.Contains(result, "Do not search or read other Jira issues") {

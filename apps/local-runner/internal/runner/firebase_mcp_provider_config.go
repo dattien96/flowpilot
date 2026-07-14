@@ -26,7 +26,7 @@ import (
 // existing convention for Google Drive's `npx -y @piotr-agier/google-drive-mcp`
 // (also unpinned) — the CP-05-04 survey recommendation to pin a specific
 // version remains a follow-up hardening item, not a deviation to invent here.
-const firebaseMcpServerName = "firebase"
+const firebaseMcpServerName = "flowpilot_firebase"
 
 // firebaseCredential is the runner-managed secret for a connected Firebase
 // integration — mirrors jiraCredential's shape/lifecycle exactly.
@@ -232,6 +232,14 @@ func (r *Runner) EnsureClaudeFirebaseMcpConfig(accountHomePath string) (Firebase
 		config.McpServers = make(map[string]claudeMcpServer)
 	}
 
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(firebaseMcpServerName); legacy != "" {
+		if _, ok := config.McpServers[legacy]; ok {
+			delete(config.McpServers, legacy)
+			changed = true
+		}
+	}
+
 	expected := expectedClaudeFirebaseMcpServer(credentialPath)
 	existing, exists := config.McpServers[firebaseMcpServerName]
 	if !exists || !claudeServerConfigMatches(existing, expected) {
@@ -346,6 +354,14 @@ func (r *Runner) ensureCodexFirebaseMcpConfig(accountHomePath string) (FirebaseM
 		config.McpServers = make(map[string]codexMcpServer)
 	}
 
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(firebaseMcpServerName); legacy != "" {
+		if _, ok := config.McpServers[legacy]; ok {
+			delete(config.McpServers, legacy)
+			changed = true
+		}
+	}
+
 	expected := codexMcpServer{
 		Command:           "npx",
 		Args:              []string{"-y", "firebase-tools", "mcp", "--only", "crashlytics"},
@@ -406,6 +422,14 @@ func (r *Runner) ensureGeminiFirebaseMcpConfig(accountHomePath string) (Firebase
 		config.McpServers = make(map[string]geminiMcpServer)
 	}
 
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(firebaseMcpServerName); legacy != "" {
+		if _, ok := config.McpServers[legacy]; ok {
+			delete(config.McpServers, legacy)
+			changed = true
+		}
+	}
+
 	expected := geminiMcpServer{
 		Command: "npx",
 		Args:    []string{"-y", "firebase-tools", "mcp", "--only", "crashlytics"},
@@ -464,6 +488,15 @@ func (r *Runner) ensureGrokFirebaseMcpConfig(accountHomePath string) (FirebaseMc
 	mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
 	if mcpServers == nil {
 		mcpServers = map[string]interface{}{}
+	}
+
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(firebaseMcpServerName); legacy != "" {
+		if _, ok := mcpServers[legacy]; ok {
+			delete(mcpServers, legacy)
+			doc["mcp_servers"] = mcpServers
+			changed = true
+		}
 	}
 
 	expected := grokMcpServer{
@@ -601,16 +634,16 @@ func buildFirebaseMcpInstructions(providerKey string, allowWrite bool, yoloMode 
 	var sb strings.Builder
 	sb.WriteString("## Required MCP Usage\n\n")
 	sb.WriteString("This workflow step requires FlowPilot MCP `firebase`.\n")
-	sb.WriteString("The configured provider MCP server name is `firebase`.\n\n")
+	sb.WriteString(fmt.Sprintf("The configured provider MCP server name is `%s`.\n\n", firebaseMcpServerName))
 	sb.WriteString("This step is restricted to `read_only` Firebase Crashlytics operations.\n")
-	sb.WriteString("Before producing the final answer, use Firebase MCP tools from `firebase` to fetch the crash context this run requires.\n\n")
+	sb.WriteString(fmt.Sprintf("Before producing the final answer, use Firebase MCP tools from `%s` to fetch the crash context this run requires.\n\n", firebaseMcpServerName))
 	sb.WriteString("Preferred tools:\n")
 	sb.WriteString("- `crashlytics_get_issue` for the selected crash issue's metadata\n")
 	sb.WriteString("- `crashlytics_list_events` or `crashlytics_batch_get_events` for stack traces / sample crash events\n\n")
 	sb.WriteString("Rules:\n")
 	sb.WriteString("- Do not invent crash content or stack traces.\n")
 	sb.WriteString("- Only read the crash issue already selected for this run; do not run a broader Crashlytics search.\n")
-	sb.WriteString("- If `firebase` is unavailable, stop and end the response with `MCP_FAILURE_CODE: MCP_UNAVAILABLE`.\n")
+	sb.WriteString(fmt.Sprintf("- If `%s` is unavailable, stop and end the response with `MCP_FAILURE_CODE: MCP_UNAVAILABLE`.\n", firebaseMcpServerName))
 	sb.WriteString("- If auth is missing or invalid, stop and end the response with `MCP_FAILURE_CODE: MCP_AUTH_REQUIRED`.\n")
 	sb.WriteString("- If the required crash issue cannot be found, end the response with `MCP_FAILURE_CODE: FIREBASE_CONTENT_NOT_FOUND`.\n")
 	sb.WriteString("- Include the crash issue id for every crash event used.\n")

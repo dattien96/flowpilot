@@ -126,7 +126,7 @@ func TestAppendFirebaseCrashTargetPromptBoundedScope(t *testing.T) {
 	if !strings.Contains(result, "crash issue id: crash-123") {
 		t.Errorf("expected crash issue id in note, got: %s", result)
 	}
-	if !strings.Contains(result, "`firebase`") {
+	if !strings.Contains(result, "`flowpilot_firebase`") {
 		t.Errorf("expected firebase server name mentioned, got: %s", result)
 	}
 	if !strings.Contains(result, "Do not search or read other Crashlytics issues") {

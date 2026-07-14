@@ -19,7 +19,7 @@ import (
 // /v1/mcp) per Atlassian headless docs; optional Bearer override for service
 // accounts / OAuth-style paste uses /v1/mcp/authv2.
 const (
-	jiraMcpServerName = "jira"
+	jiraMcpServerName = "flowpilot_jira"
 	// jiraMcpAPITokenRemoteURL is the official personal-API-token / headless endpoint.
 	jiraMcpAPITokenRemoteURL = "https://mcp.atlassian.com/v1/mcp"
 	// jiraMcpOAuthRemoteURL is the authv2 endpoint used for Bearer override path.
@@ -173,6 +173,14 @@ func (r *Runner) ensureClaudeJiraMcpConfigWithURL(accountHomePath string, authHe
 	mcpServersRaw, _ := doc["mcpServers"].(map[string]any)
 	if mcpServersRaw == nil {
 		mcpServersRaw = map[string]any{}
+	}
+
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(jiraMcpServerName); legacy != "" {
+		if _, ok := mcpServersRaw[legacy]; ok {
+			delete(mcpServersRaw, legacy)
+			changed = true
+		}
 	}
 
 	expected := claudeRemoteMcpServer{
@@ -459,6 +467,26 @@ func codexServerFromMap(m map[string]interface{}) (codexMcpServer, bool) {
 	return server, true
 }
 
+// legacyMcpServerName maps a current flowpilot_-prefixed server name back to the
+// pre-rename key it replaced, or "" if there is none. Writers delete this old
+// key when they write the new one so the two never coexist — and so a legacy
+// name like "google-drive" stops colliding with a provider's own native
+// connector (e.g. Codex's built-in Google Drive connector).
+func legacyMcpServerName(current string) string {
+	switch current {
+	case jiraMcpServerName:
+		return "jira"
+	case googleDriveMcpServerName:
+		return "google-drive"
+	case firebaseMcpServerName:
+		return "firebase"
+	case telegramMcpServerName:
+		return "telegram"
+	default:
+		return ""
+	}
+}
+
 // spliceCodexServerEntry sets mcp_servers.<serverName> on a generic config doc
 // to the expected entry, preserving every other key (including all OTHER
 // mcp_servers). Returns changed=false when the existing entry already matches
@@ -477,10 +505,22 @@ func spliceCodexServerEntry(
 	if mcpServers == nil {
 		mcpServers = map[string]interface{}{}
 	}
+	// Migration: drop the pre-rename entry (e.g. "jira"/"google-drive") so it
+	// doesn't linger beside the flowpilot_-prefixed one.
+	legacyRemoved := false
+	if legacy := legacyMcpServerName(serverName); legacy != "" {
+		if _, ok := mcpServers[legacy]; ok {
+			delete(mcpServers, legacy)
+			legacyRemoved = true
+		}
+	}
 	if existingRaw, exists := mcpServers[serverName]; exists {
 		if existingMap, ok := existingRaw.(map[string]interface{}); ok {
 			if existing, ok := codexServerFromMap(existingMap); ok && matches(existing, expected) {
-				return false, nil
+				// Entry already current; only report a change if we also had to
+				// strip a legacy entry (so the caller still writes the cleanup).
+				doc["mcp_servers"] = mcpServers
+				return legacyRemoved, nil
 			}
 		}
 	}
@@ -585,6 +625,15 @@ func (r *Runner) ensureGrokJiraMcpConfig(accountHomePath string, auth jiraMcpAut
 		mcpServers = map[string]interface{}{}
 	}
 
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(jiraMcpServerName); legacy != "" {
+		if _, ok := mcpServers[legacy]; ok {
+			delete(mcpServers, legacy)
+			doc["mcp_servers"] = mcpServers
+			changed = true
+		}
+	}
+
 	expected := grokMcpServer{
 		Enabled: true,
 		URL:     auth.URL,
@@ -660,6 +709,14 @@ func (r *Runner) ensureGeminiJiraMcpConfig(accountHomePath string, auth jiraMcpA
 	}
 	if config.McpServers == nil {
 		config.McpServers = make(map[string]geminiMcpServer)
+	}
+
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(jiraMcpServerName); legacy != "" {
+		if _, ok := config.McpServers[legacy]; ok {
+			delete(config.McpServers, legacy)
+			changed = true
+		}
 	}
 
 	expected := geminiMcpServer{HTTPURL: auth.URL, Headers: map[string]string{"Authorization": auth.Authorization}}
@@ -829,7 +886,7 @@ func (r *Runner) PreflightJiraMcp(providerKey string, accountHomePath string) MC
 			return result
 		}
 		if !status.Configured {
-			result.ErrorMessage = "The selected AI provider is not configured with the jira MCP server. Run Configure Providers first."
+			result.ErrorMessage = fmt.Sprintf("The selected AI provider is not configured with the %s MCP server. Run Configure Providers first.", jiraMcpServerName)
 			return result
 		}
 		if status.Stale {
@@ -847,7 +904,7 @@ func (r *Runner) PreflightJiraMcp(providerKey string, accountHomePath string) MC
 			return result
 		}
 		if !status.Configured {
-			result.ErrorMessage = "The selected AI provider is not configured with the jira MCP server. Run Configure Providers first."
+			result.ErrorMessage = fmt.Sprintf("The selected AI provider is not configured with the %s MCP server. Run Configure Providers first.", jiraMcpServerName)
 			return result
 		}
 		if status.Stale {
@@ -917,9 +974,9 @@ func buildJiraMcpInstructions(providerKey string, allowWrite bool, yoloMode bool
 	var sb strings.Builder
 	sb.WriteString("## Required MCP Usage\n\n")
 	sb.WriteString("This workflow step requires FlowPilot MCP `jira`.\n")
-	sb.WriteString("The configured provider MCP server name is `jira`.\n\n")
+	sb.WriteString(fmt.Sprintf("The configured provider MCP server name is `%s`.\n\n", jiraMcpServerName))
 	sb.WriteString("This step is restricted to `read_only` Jira operations.\n")
-	sb.WriteString("Before producing the final answer, use Jira MCP tools from `jira` to fetch the ticket/sprint context this run requires.\n\n")
+	sb.WriteString(fmt.Sprintf("Before producing the final answer, use Jira MCP tools from `%s` to fetch the ticket/sprint context this run requires.\n\n", jiraMcpServerName))
 	sb.WriteString("Atlassian bootstrap sequence:\n")
 	sb.WriteString("- First call `getAccessibleAtlassianResources` and use the returned resource `id` as `cloudId`. Never send an empty `cloudId`.\n")
 	sb.WriteString("- If you need the current Atlassian user, call `atlassianUserInfo` first and use its `account_id` as the Teamwork Graph `objectIdentifier`.\n")
@@ -928,7 +985,7 @@ func buildJiraMcpInstructions(providerKey string, allowWrite bool, yoloMode bool
 	sb.WriteString("Rules:\n")
 	sb.WriteString("- Do not invent Jira ticket or sprint content.\n")
 	sb.WriteString("- Only read the ticket(s)/sprint already selected for this run; do not run a broader Jira search.\n")
-	sb.WriteString("- If `jira` is unavailable, stop and end the response with `MCP_FAILURE_CODE: MCP_UNAVAILABLE`.\n")
+	sb.WriteString(fmt.Sprintf("- If `%s` is unavailable, stop and end the response with `MCP_FAILURE_CODE: MCP_UNAVAILABLE`.\n", jiraMcpServerName))
 	sb.WriteString("- If auth is missing or expired, stop and end the response with `MCP_FAILURE_CODE: MCP_AUTH_REQUIRED`.\n")
 	sb.WriteString("- If the required ticket or sprint cannot be found, end the response with `MCP_FAILURE_CODE: JIRA_CONTENT_NOT_FOUND`.\n")
 	sb.WriteString("- Include the issue key (e.g. `SCRUM-123`) for every Jira item used.\n")

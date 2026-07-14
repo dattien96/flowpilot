@@ -555,7 +555,7 @@ func appendTelegramOutputPrompt(prompt string, node agentpack.FlowNode) string {
 	}
 	var b strings.Builder
 	b.WriteString("\n\n## Required Telegram notification (write contract)\n")
-	b.WriteString("Before you finish this turn you MUST send a Telegram notification using the `send_message` tool on the `telegram` MCP server, for each target below:\n")
+	b.WriteString(fmt.Sprintf("Before you finish this turn you MUST send a Telegram notification using the `send_message` tool on the `%s` MCP server, for each target below:\n", telegramMcpServerName))
 	for _, t := range targets {
 		b.WriteString("- chat: `")
 		b.WriteString(t.chatID)
@@ -570,7 +570,7 @@ func appendTelegramOutputPrompt(prompt string, node agentpack.FlowNode) string {
 	}
 	b.WriteString("\nDo not only describe the notification in chat — actually call `send_message`. ")
 	b.WriteString("If the tool call succeeds, the response includes a `message_id`; do not claim success without it. ")
-	b.WriteString("If `telegram` is unavailable, stop and end the response with `MCP_FAILURE_CODE: MCP_UNAVAILABLE`. ")
+	b.WriteString(fmt.Sprintf("If `%s` is unavailable, stop and end the response with `MCP_FAILURE_CODE: MCP_UNAVAILABLE`. ", telegramMcpServerName))
 	b.WriteString("The flow gate will reprompt if no successful send is detected after your turn.\n")
 	return prompt + b.String()
 }

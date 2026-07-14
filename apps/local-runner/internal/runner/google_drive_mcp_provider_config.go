@@ -57,7 +57,7 @@ type GoogleDriveConfigWithProviders struct {
 }
 
 const (
-	googleDriveMcpServerName        = "google-drive"
+	googleDriveMcpServerName        = "flowpilot_drive"
 	googleDriveMcpStatusMode        = "read_only"
 	googleDriveProxyMcpFlag         = "FLOWPILOT_GOOGLE_DRIVE_PROXY_MCP"
 	googleDriveProxyAccountIDEnv    = "FLOWPILOT_GOOGLE_DRIVE_ACCOUNT_ID"
@@ -695,6 +695,14 @@ func (r *Runner) ensureGeminiGoogleDriveMcpConfig(accountHomePath string, mode s
 		config.McpServers = make(map[string]geminiMcpServer)
 	}
 
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(googleDriveMcpServerName); legacy != "" {
+		if _, ok := config.McpServers[legacy]; ok {
+			delete(config.McpServers, legacy)
+			changed = true
+		}
+	}
+
 	expectedServer := expectedGeminiGoogleDriveMcpServer(r.workspace, accountHomePath, mode, yoloMode, mcpStatus)
 
 	// Check if config needs update
@@ -815,6 +823,14 @@ func (r *Runner) ensureClaudeGoogleDriveMcpConfig(accountHomePath string, mode s
 		config.McpServers = make(map[string]claudeMcpServer)
 	}
 
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(googleDriveMcpServerName); legacy != "" {
+		if _, ok := config.McpServers[legacy]; ok {
+			delete(config.McpServers, legacy)
+			changed = true
+		}
+	}
+
 	expectedServer := expectedClaudeGoogleDriveMcpServer(r.workspace, accountHomePath, mode, yoloMode, mcpStatus)
 
 	// Check if config needs update
@@ -919,6 +935,15 @@ func (r *Runner) ensureGrokGoogleDriveMcpConfig(accountHomePath string, mode str
 	mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
 	if mcpServers == nil {
 		mcpServers = map[string]interface{}{}
+	}
+
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(googleDriveMcpServerName); legacy != "" {
+		if _, ok := mcpServers[legacy]; ok {
+			delete(mcpServers, legacy)
+			doc["mcp_servers"] = mcpServers
+			changed = true
+		}
 	}
 
 	expectedServer := expectedGrokGoogleDriveMcpServer(r.workspace, accountHomePath, mode, yoloMode, mcpStatus)
@@ -1117,8 +1142,27 @@ func (r *Runner) syncCodexGoogleDriveMcpLive(accountHomePath string) (bool, erro
 		return false, nil
 	}
 
+	// Migration: drop the pre-rename key so old+new don't coexist. Tracked
+	// separately so a legacy-only cleanup still writes even when the env sync
+	// below finds nothing to change.
+	legacyRemoved := false
+	if legacy := legacyMcpServerName(googleDriveMcpServerName); legacy != "" {
+		if _, ok := mcpServers[legacy]; ok {
+			delete(mcpServers, legacy)
+			legacyRemoved = true
+		}
+	}
+
 	entry, ok := mcpServers[googleDriveMcpServerName].(map[string]interface{})
 	if !ok {
+		if legacyRemoved {
+			// Legacy entry stripped but no new entry to sync — persist the cleanup.
+			doc["mcp_servers"] = mcpServers
+			if err := writeCodexConfigDoc(configPath, doc); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
 		return false, nil // Drive not configured for Codex → nothing to sync
 	}
 
@@ -1139,7 +1183,8 @@ func (r *Runner) syncCodexGoogleDriveMcpLive(accountHomePath string) (bool, erro
 	if env == nil {
 		env = map[string]interface{}{}
 	}
-	changed := false
+	// A legacy-key removal above is itself a change that must be persisted.
+	changed := legacyRemoved
 	for _, key := range []string{
 		googleDriveProxyAccountIDEnv,
 		googleDriveProxyRefreshTokenEnv,

@@ -13,7 +13,7 @@ import (
 
 // Task-232 (CP-05-05 P-1/P-2): connection layer + Claude provider-config
 // injection for the Telegram Bot-API proxy MCP (telegram_proxy_mcp.go).
-const telegramMcpServerName = "telegram"
+const telegramMcpServerName = "flowpilot_telegram"
 
 // telegramCredential is the runner-managed secret for a connected Telegram
 // integration — mirrors jiraCredential/firebaseCredential's shape/lifecycle.
@@ -171,6 +171,14 @@ func (r *Runner) EnsureClaudeTelegramMcpConfig(accountHomePath string) (Telegram
 		config.McpServers = make(map[string]claudeMcpServer)
 	}
 
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(telegramMcpServerName); legacy != "" {
+		if _, ok := config.McpServers[legacy]; ok {
+			delete(config.McpServers, legacy)
+			changed = true
+		}
+	}
+
 	expected := expectedClaudeTelegramMcpServer(binaryPath)
 	existing, exists := config.McpServers[telegramMcpServerName]
 	if !exists || !claudeServerConfigMatches(existing, expected) {
@@ -277,6 +285,14 @@ func (r *Runner) ensureCodexTelegramMcpConfig(accountHomePath string) (TelegramM
 		config.McpServers = make(map[string]codexMcpServer)
 	}
 
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(telegramMcpServerName); legacy != "" {
+		if _, ok := config.McpServers[legacy]; ok {
+			delete(config.McpServers, legacy)
+			changed = true
+		}
+	}
+
 	expected := codexMcpServer{
 		Command:           binaryPath,
 		Args:              []string{"telegram-mcp"},
@@ -339,6 +355,14 @@ func (r *Runner) ensureGeminiTelegramMcpConfig(accountHomePath string) (Telegram
 		config.McpServers = make(map[string]geminiMcpServer)
 	}
 
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(telegramMcpServerName); legacy != "" {
+		if _, ok := config.McpServers[legacy]; ok {
+			delete(config.McpServers, legacy)
+			changed = true
+		}
+	}
+
 	expected := geminiMcpServer{
 		Command: binaryPath,
 		Args:    []string{"telegram-mcp"},
@@ -399,6 +423,15 @@ func (r *Runner) ensureGrokTelegramMcpConfig(accountHomePath string) (TelegramMc
 	mcpServers, _ := doc["mcp_servers"].(map[string]interface{})
 	if mcpServers == nil {
 		mcpServers = map[string]interface{}{}
+	}
+
+	// Migration: drop the pre-rename key so old+new don't coexist.
+	if legacy := legacyMcpServerName(telegramMcpServerName); legacy != "" {
+		if _, ok := mcpServers[legacy]; ok {
+			delete(mcpServers, legacy)
+			doc["mcp_servers"] = mcpServers
+			changed = true
+		}
 	}
 
 	expected := grokMcpServer{

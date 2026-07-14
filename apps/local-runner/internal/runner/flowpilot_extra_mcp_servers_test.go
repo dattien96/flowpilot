@@ -19,7 +19,7 @@ func TestFlowpilotClaudeExtraMCPServersIncludesJiraWhenBearerTokenPersisted(t *t
 	}
 
 	extra := instance.flowpilotClaudeExtraMCPServers("", false)
-	server, ok := extra["jira"]
+	server, ok := extra[jiraMcpServerName]
 	if !ok {
 		t.Fatal("expected jira in extra MCP servers")
 	}
@@ -36,7 +36,7 @@ func TestFlowpilotClaudeExtraMCPServersIncludesJiraWhenApiTokenConnected(t *test
 	wantBasic := "Basic " + base64.StdEncoding.EncodeToString([]byte("name@company.com:secret-token"))
 
 	extra := instance.flowpilotClaudeExtraMCPServers("", false)
-	server, ok := extra["jira"]
+	server, ok := extra[jiraMcpServerName]
 	if !ok {
 		t.Fatal("expected jira in extra MCP servers when email+apiToken are connected")
 	}
@@ -61,7 +61,7 @@ func TestGrokACPExtraMCPServersForwardsBasicJiraWhenApiTokenConnected(t *testing
 		if !ok {
 			continue
 		}
-		if m["name"] == "jira" {
+		if m["name"] == jiraMcpServerName {
 			jira = m
 			break
 		}
@@ -101,7 +101,7 @@ func TestFlowpilotClaudeExtraMCPServersOmitsJiraWhenNotConnected(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 
 	extra := instance.flowpilotClaudeExtraMCPServers("", false)
-	if _, ok := extra["jira"]; ok {
+	if _, ok := extra[jiraMcpServerName]; ok {
 		t.Fatal("did not expect jira in extra MCP servers when Jira is not connected")
 	}
 }
@@ -113,11 +113,11 @@ func TestFlowpilotClaudeExtraMCPServersIncludesFirebaseAndTelegramWhenConnected(
 
 	extra := instance.flowpilotClaudeExtraMCPServers("", false)
 
-	firebase, ok := extra["firebase"]
+	firebase, ok := extra[firebaseMcpServerName]
 	if !ok || firebase.Command != "npx" {
 		t.Fatalf("expected firebase stdio entry, got: %+v (ok=%v)", firebase, ok)
 	}
-	telegram, ok := extra["telegram"]
+	telegram, ok := extra[telegramMcpServerName]
 	if !ok || len(telegram.Args) == 0 || telegram.Args[0] != "telegram-mcp" {
 		t.Fatalf("expected telegram stdio entry, got: %+v (ok=%v)", telegram, ok)
 	}
@@ -127,10 +127,10 @@ func TestFlowpilotClaudeExtraMCPServersOmitsFirebaseTelegramWhenNotConnected(t *
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 
 	extra := instance.flowpilotClaudeExtraMCPServers("", false)
-	if _, ok := extra["firebase"]; ok {
+	if _, ok := extra[firebaseMcpServerName]; ok {
 		t.Fatal("did not expect firebase in extra MCP servers when not connected")
 	}
-	if _, ok := extra["telegram"]; ok {
+	if _, ok := extra[telegramMcpServerName]; ok {
 		t.Fatal("did not expect telegram in extra MCP servers when not connected")
 	}
 }
@@ -160,10 +160,10 @@ func TestGrokACPExtraMCPServersForwardsStdioAndHTTPEntries(t *testing.T) {
 			byName[name] = m
 		}
 	}
-	if byName["firebase"] == nil || byName["telegram"] == nil {
+	if byName[firebaseMcpServerName] == nil || byName[telegramMcpServerName] == nil {
 		t.Fatalf("expected firebase and telegram stdio entries, got: %+v", byName)
 	}
-	jira, ok := byName["jira"]
+	jira, ok := byName[jiraMcpServerName]
 	if !ok {
 		t.Fatalf("expected jira HTTP entry in Grok ACP servers, got: %+v", byName)
 	}

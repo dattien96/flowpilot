@@ -695,7 +695,7 @@ func appendJiraIssueTargetPrompt(prompt, issueKey string) string {
 	}
 	note := "\n\nJira runtime target for this run:\n" +
 		"- issue key: " + issueKey + "\n\n" +
-		"Use Jira MCP tools from the `jira` server to read only this selected issue when Jira context is needed. " +
+		fmt.Sprintf("Use Jira MCP tools from the `%s` server to read only this selected issue when Jira context is needed. ", jiraMcpServerName) +
 		"Do not search or read other Jira issues unless the user explicitly asks.\n"
 	return prompt + note
 }
@@ -713,7 +713,7 @@ func appendJiraSprintTargetPrompt(prompt, sprintTarget string) string {
 	}
 	note := "\n\nJira sprint runtime target for this run:\n" +
 		"- sprint: " + sprintTarget + "\n\n" +
-		"Use Jira MCP tools from the `jira` server to list and read issues only within " + scope + " on the configured board. " +
+		fmt.Sprintf("Use Jira MCP tools from the `%s` server to list and read issues only within %s on the configured board. ", jiraMcpServerName, scope) +
 		"Do not read issues outside this sprint unless the user explicitly asks.\n"
 	return prompt + note
 }
@@ -729,7 +729,7 @@ func appendFirebaseCrashTargetPrompt(prompt, crashRef string) string {
 	}
 	note := "\n\nFirebase Crashlytics runtime target for this run:\n" +
 		"- crash issue id: " + crashRef + "\n\n" +
-		"Use Firebase MCP tools from the `firebase` server (crashlytics_get_issue, crashlytics_list_events) to read only this selected crash issue when crash context is needed. " +
+		fmt.Sprintf("Use Firebase MCP tools from the `%s` server (crashlytics_get_issue, crashlytics_list_events) to read only this selected crash issue when crash context is needed. ", firebaseMcpServerName) +
 		"Do not search or read other Crashlytics issues unless the user explicitly asks.\n"
 	return prompt + note
 }

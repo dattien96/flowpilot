@@ -54,7 +54,7 @@ func TestAppendTelegramOutputPromptListsChatAndTemplate(t *testing.T) {
 	if !strings.Contains(got, "Run finished: {{status}}") {
 		t.Fatalf("expected message template in prompt, got %q", got)
 	}
-	if !strings.Contains(got, "send_message") || !strings.Contains(got, "`telegram`") {
+	if !strings.Contains(got, "send_message") || !strings.Contains(got, "`flowpilot_telegram`") {
 		t.Fatalf("expected send_message tool + telegram server name mentioned, got %q", got)
 	}
 	if !strings.Contains(got, "message_id") {

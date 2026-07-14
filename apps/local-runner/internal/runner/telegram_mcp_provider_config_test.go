@@ -35,7 +35,7 @@ func TestEnsureTelegramMcpProviderConfigDispatchesToClaudeInProduction(t *testin
 	if err != nil {
 		t.Fatalf("EnsureTelegramMcpProviderConfig: %v", err)
 	}
-	if resp.ServerName != "telegram" || !resp.Changed {
+	if resp.ServerName != telegramMcpServerName || !resp.Changed {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
@@ -143,7 +143,7 @@ func TestEnsureClaudeTelegramMcpConfigWritesStdioEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureClaudeTelegramMcpConfig: %v", err)
 	}
-	if !resp.Changed || resp.ServerName != "telegram" {
+	if !resp.Changed || resp.ServerName != telegramMcpServerName {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
 
@@ -155,7 +155,7 @@ func TestEnsureClaudeTelegramMcpConfigWritesStdioEntry(t *testing.T) {
 	if err := json.Unmarshal(raw, &config); err != nil {
 		t.Fatalf("unmarshal claude config: %v", err)
 	}
-	server, ok := config.McpServers["telegram"]
+	server, ok := config.McpServers[telegramMcpServerName]
 	if !ok {
 		t.Fatalf("expected mcpServers.telegram entry, got %#v", config.McpServers)
 	}

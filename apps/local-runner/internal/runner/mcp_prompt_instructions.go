@@ -95,14 +95,14 @@ func buildGoogleDriveMcpInstructions(providerKey string, allowWrite bool, yoloMo
 
 	sb.WriteString("## Required MCP Usage\n\n")
 	sb.WriteString("This workflow step requires FlowPilot MCP `google_drive`.\n")
-	sb.WriteString("The configured provider MCP server name is `google-drive`.\n\n")
+	sb.WriteString(fmt.Sprintf("The configured provider MCP server name is `%s`.\n\n", googleDriveMcpServerName))
 
 	if allowWrite {
 		sb.WriteString("This step is allowed to perform read and write operations on Google Drive.\n")
 		sb.WriteString("Write operations are allowed for this step.\n\n")
 	} else {
 		sb.WriteString("This step is restricted to `read_only` Google Drive operations.\n")
-		sb.WriteString("Before producing the final answer, use Google Drive MCP tools from `google-drive` when Drive context is needed for this task.\n\n")
+		sb.WriteString(fmt.Sprintf("Before producing the final answer, use Google Drive MCP tools from `%s` when Drive context is needed for this task.\n\n", googleDriveMcpServerName))
 	}
 
 	if yoloMode {
@@ -131,7 +131,7 @@ func buildGoogleDriveMcpInstructions(providerKey string, allowWrite bool, yoloMo
 
 	sb.WriteString("Rules:\n")
 	sb.WriteString("- Do not invent Google Drive content.\n")
-	sb.WriteString("- If `google-drive` is unavailable, stop and end the response with `MCP_FAILURE_CODE: MCP_UNAVAILABLE`.\n")
+	sb.WriteString(fmt.Sprintf("- If `%s` is unavailable, stop and end the response with `MCP_FAILURE_CODE: MCP_UNAVAILABLE`.\n", googleDriveMcpServerName))
 	sb.WriteString("- If auth is missing or expired, stop and end the response with `MCP_FAILURE_CODE: MCP_AUTH_REQUIRED`.\n")
 	sb.WriteString("- If the required Drive file or folder cannot be found, end the response with `MCP_FAILURE_CODE: DRIVE_CONTENT_NOT_FOUND`.\n")
 	sb.WriteString("- Include the file name and file ID for every Drive item used.\n")
@@ -254,7 +254,7 @@ func (r *Runner) PreflightGoogleDriveMcp(providerKey string, accountHomePath str
 		}
 
 		if !configExists {
-			result.ErrorMessage = fmt.Sprintf("The selected AI provider is not configured with the google-drive MCP server. Config path: %s", configPath)
+			result.ErrorMessage = fmt.Sprintf("The selected AI provider is not configured with the %s MCP server. Config path: %s", googleDriveMcpServerName, configPath)
 			return result
 		}
 

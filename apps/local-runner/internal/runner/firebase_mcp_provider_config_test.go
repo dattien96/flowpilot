@@ -43,7 +43,7 @@ func TestEnsureFirebaseMcpProviderConfigDispatchesToClaudeInProduction(t *testin
 	if err != nil {
 		t.Fatalf("EnsureFirebaseMcpProviderConfig: %v", err)
 	}
-	if resp.ServerName != "firebase" || !resp.Changed {
+	if resp.ServerName != firebaseMcpServerName || !resp.Changed {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
@@ -204,7 +204,7 @@ func TestEnsureClaudeFirebaseMcpConfigWritesStdioEntryAndCredentialFile(t *testi
 	if err != nil {
 		t.Fatalf("EnsureClaudeFirebaseMcpConfig: %v", err)
 	}
-	if !resp.Changed || resp.ServerName != "firebase" || resp.Status != "configured" {
+	if !resp.Changed || resp.ServerName != firebaseMcpServerName || resp.Status != "configured" {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
 
@@ -216,7 +216,7 @@ func TestEnsureClaudeFirebaseMcpConfigWritesStdioEntryAndCredentialFile(t *testi
 	if err := json.Unmarshal(raw, &config); err != nil {
 		t.Fatalf("unmarshal claude config: %v", err)
 	}
-	server, ok := config.McpServers["firebase"]
+	server, ok := config.McpServers[firebaseMcpServerName]
 	if !ok {
 		t.Fatalf("expected mcpServers.firebase entry, got %#v", config.McpServers)
 	}

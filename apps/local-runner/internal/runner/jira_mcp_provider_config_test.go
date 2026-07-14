@@ -52,7 +52,7 @@ func TestEnsureJiraMcpProviderConfigDispatchesToClaudeInProduction(t *testing.T)
 	if err != nil {
 		t.Fatalf("EnsureJiraMcpProviderConfig: %v", err)
 	}
-	if resp.ServerName != "jira" || !resp.Changed {
+	if resp.ServerName != jiraMcpServerName || !resp.Changed {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	raw, err := os.ReadFile(filepath.Join(accountHome, ".claude.json"))
@@ -113,7 +113,7 @@ func TestEnsureJiraMcpProviderConfigDispatchesToCodexAndGemini(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureJiraMcpProviderConfig(codex): %v", err)
 	}
-	if codexResp.ServerName != "jira" || !codexResp.Changed {
+	if codexResp.ServerName != jiraMcpServerName || !codexResp.Changed {
 		t.Fatalf("unexpected codex response: %+v", codexResp)
 	}
 	codexRaw, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
@@ -133,7 +133,7 @@ func TestEnsureJiraMcpProviderConfigDispatchesToCodexAndGemini(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureJiraMcpProviderConfig(gemini): %v", err)
 	}
-	if geminiResp.ServerName != "jira" || !geminiResp.Changed {
+	if geminiResp.ServerName != jiraMcpServerName || !geminiResp.Changed {
 		t.Fatalf("unexpected gemini response: %+v", geminiResp)
 	}
 	geminiRaw, err := os.ReadFile(filepath.Join(geminiHome, ".gemini", "settings.json"))
@@ -166,11 +166,11 @@ trust_level = "trusted"
 [tui.model_availability_nux]
 "gpt-5.6-sol" = 1
 
-[mcp_servers.jira]
+[mcp_servers.flowpilot_jira]
 enabled = true
 url = 'https://mcp.atlassian.com/v1/mcp'
 
-[mcp_servers.jira.http_headers]
+[mcp_servers.flowpilot_jira.http_headers]
 Authorization = '` + staleToken + `'
 `
 	configPath := filepath.Join(codexHome, "config.toml")
@@ -238,11 +238,11 @@ trust_level = "trusted"
 [windows]
 sandbox = "unelevated"
 
-[mcp_servers.jira]
+[mcp_servers.flowpilot_jira]
 enabled = true
 url = 'https://mcp.atlassian.com/v1/mcp'
 
-[mcp_servers.jira.http_headers]
+[mcp_servers.flowpilot_jira.http_headers]
 Authorization = 'Basic c3RhbGUtYWNjb3VudEBleGFtcGxlLmNvbTpTVEFMRQ=='
 `
 	configPath := filepath.Join(codexHome, "config.toml")
@@ -308,7 +308,7 @@ func TestEnsureJiraMcpProviderConfigDispatchesToGrok(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureJiraMcpProviderConfig(grok): %v", err)
 	}
-	if resp.ServerName != "jira" || resp.ProviderKey != "grok" || !resp.Changed {
+	if resp.ServerName != jiraMcpServerName || resp.ProviderKey != "grok" || !resp.Changed {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	raw, err := os.ReadFile(filepath.Join(grokHome, "config.toml"))
@@ -320,7 +320,7 @@ func TestEnsureJiraMcpProviderConfigDispatchesToGrok(t *testing.T) {
 		t.Fatalf("parse grok config: %v", err)
 	}
 	servers, _ := doc["mcp_servers"].(map[string]interface{})
-	jiraRaw, ok := servers["jira"].(map[string]interface{})
+	jiraRaw, ok := servers[jiraMcpServerName].(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected mcp_servers.jira map, got: %s", raw)
 	}
@@ -359,12 +359,12 @@ func TestEnsureGrokJiraMcpConfigHealsStaleStdioKeys(t *testing.T) {
 	connectTestJiraBackend(t, instance)
 	grokHome := t.TempDir()
 
-	stale := "[mcp_servers.jira]\n" +
+	stale := "[mcp_servers.flowpilot_jira]\n" +
 		"command = \"\"\n" +
 		"args = []\n" +
 		"enabled = true\n" +
 		"url = \"https://mcp.atlassian.com/v1/mcp\"\n\n" +
-		"[mcp_servers.jira.headers]\n" +
+		"[mcp_servers.flowpilot_jira.headers]\n" +
 		"Authorization = \"Basic stale\"\n"
 	if err := os.WriteFile(filepath.Join(grokHome, "config.toml"), []byte(stale), 0o644); err != nil {
 		t.Fatalf("seed stale grok config: %v", err)
@@ -386,7 +386,7 @@ func TestEnsureGrokJiraMcpConfigHealsStaleStdioKeys(t *testing.T) {
 		t.Fatalf("parse grok config: %v", err)
 	}
 	servers, _ := doc["mcp_servers"].(map[string]interface{})
-	jiraRaw, ok := servers["jira"].(map[string]interface{})
+	jiraRaw, ok := servers[jiraMcpServerName].(map[string]interface{})
 	if !ok {
 		t.Fatalf("expected mcp_servers.jira map, got: %s", raw)
 	}
@@ -431,7 +431,7 @@ func TestPreflightJiraMcpFailsWhenGrokProviderStale(t *testing.T) {
 	instance := &Runner{workspace: t.TempDir(), secretStore: newMemorySecretStore()}
 	connectTestJiraBackend(t, instance)
 	grokHome := t.TempDir()
-	stale := `[mcp_servers.jira]
+	stale := `[mcp_servers.flowpilot_jira]
 url = "https://example.com/wrong"
 enabled = true
 `
@@ -596,7 +596,7 @@ func TestEnsureJiraMcpProviderConfigUsesConnectedApiTokenBasic(t *testing.T) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	jira, _ := doc["mcpServers"].(map[string]any)["jira"].(map[string]any)
+	jira, _ := doc["mcpServers"].(map[string]any)[jiraMcpServerName].(map[string]any)
 	if jira["url"] != jiraMcpAPITokenRemoteURL {
 		t.Fatalf("url = %v, want %s", jira["url"], jiraMcpAPITokenRemoteURL)
 	}
@@ -616,7 +616,7 @@ func TestEnsureClaudeJiraMcpConfigWritesRemoteServerEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureClaudeJiraMcpConfig: %v", err)
 	}
-	if !resp.Changed || resp.Status != "configured" || resp.ServerName != "jira" {
+	if !resp.Changed || resp.Status != "configured" || resp.ServerName != jiraMcpServerName {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
 
@@ -629,7 +629,7 @@ func TestEnsureClaudeJiraMcpConfigWritesRemoteServerEntry(t *testing.T) {
 		t.Fatalf("unmarshal claude config: %v", err)
 	}
 	servers, _ := doc["mcpServers"].(map[string]any)
-	jira, ok := servers["jira"].(map[string]any)
+	jira, ok := servers[jiraMcpServerName].(map[string]any)
 	if !ok {
 		t.Fatalf("expected mcpServers.jira entry, got %#v", servers)
 	}
@@ -653,7 +653,7 @@ func TestEnsureClaudeJiraMcpConfigBasicUsesAPITokenURL(t *testing.T) {
 	raw, _ := os.ReadFile(filepath.Join(accountHome, ".claude.json"))
 	var doc map[string]any
 	_ = json.Unmarshal(raw, &doc)
-	jira, _ := doc["mcpServers"].(map[string]any)["jira"].(map[string]any)
+	jira, _ := doc["mcpServers"].(map[string]any)[jiraMcpServerName].(map[string]any)
 	if jira["url"] != jiraMcpAPITokenRemoteURL {
 		t.Fatalf("url = %v, want %s", jira["url"], jiraMcpAPITokenRemoteURL)
 	}
@@ -676,7 +676,7 @@ func TestEnsureJiraMcpProviderConfigBasicNoOverrideForCodexGeminiGrok(t *testing
 	if err := toml.Unmarshal(codexRaw, &codexDoc); err != nil {
 		t.Fatalf("parse codex: %v", err)
 	}
-	codexJira, _ := codexDoc["mcp_servers"].(map[string]any)["jira"].(map[string]any)
+	codexJira, _ := codexDoc["mcp_servers"].(map[string]any)[jiraMcpServerName].(map[string]any)
 	if codexJira["url"] != jiraMcpAPITokenRemoteURL {
 		t.Fatalf("codex url = %v", codexJira["url"])
 	}
@@ -731,7 +731,7 @@ func TestEnsureJiraMcpProviderConfigBasicNoOverrideForCodexGeminiGrok(t *testing
 	if err := json.Unmarshal(geminiRaw, &geminiDoc); err != nil {
 		t.Fatalf("parse gemini: %v", err)
 	}
-	geminiJira, _ := geminiDoc["mcpServers"].(map[string]any)["jira"].(map[string]any)
+	geminiJira, _ := geminiDoc["mcpServers"].(map[string]any)[jiraMcpServerName].(map[string]any)
 	if geminiJira["httpUrl"] != jiraMcpAPITokenRemoteURL {
 		t.Fatalf("gemini httpUrl = %v", geminiJira["httpUrl"])
 	}
@@ -752,7 +752,7 @@ func TestEnsureJiraMcpProviderConfigBasicNoOverrideForCodexGeminiGrok(t *testing
 	if err := toml.Unmarshal(grokRaw, &grokDoc); err != nil {
 		t.Fatalf("parse grok: %v", err)
 	}
-	grokJira, _ := grokDoc["mcp_servers"].(map[string]any)["jira"].(map[string]any)
+	grokJira, _ := grokDoc["mcp_servers"].(map[string]any)[jiraMcpServerName].(map[string]any)
 	if grokJira["url"] != jiraMcpAPITokenRemoteURL {
 		t.Fatalf("grok url = %v", grokJira["url"])
 	}
@@ -816,7 +816,7 @@ func TestEnsureClaudeJiraMcpConfigPreservesOtherKeysAndServers(t *testing.T) {
 	if _, ok := servers["google-drive"]; !ok {
 		t.Fatalf("expected google-drive server entry preserved, got %#v", servers)
 	}
-	if _, ok := servers["jira"]; !ok {
+	if _, ok := servers[jiraMcpServerName]; !ok {
 		t.Fatalf("expected jira server entry added, got %#v", servers)
 	}
 }
@@ -843,7 +843,7 @@ func TestCheckClaudeJiraMcpConfigDetectsStaleURL(t *testing.T) {
 
 	seed := map[string]any{
 		"mcpServers": map[string]any{
-			"jira": map[string]any{
+			jiraMcpServerName: map[string]any{
 				"type": "http",
 				"url":  "https://old-endpoint.example.com/mcp",
 			},

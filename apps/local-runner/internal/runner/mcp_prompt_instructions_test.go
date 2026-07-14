@@ -120,8 +120,8 @@ func TestInjectRequiredMcpInstructions_GoogleDriveReadOnly(t *testing.T) {
 		t.Error("Result should contain MCP instructions header")
 	}
 
-	if !strings.Contains(result, "google-drive") {
-		t.Error("Result should mention server name 'google-drive'")
+	if !strings.Contains(result, "flowpilot_drive") {
+		t.Error("Result should mention server name 'flowpilot_drive'")
 	}
 
 	if !strings.Contains(result, "authGetStatus") {
@@ -302,7 +302,7 @@ func TestPreparePromptForRequiredMcps_InjectsAfterSuccessfulPreflight(t *testing
 	if !strings.Contains(result, "## Required MCP Usage") {
 		t.Fatal("expected injected MCP section")
 	}
-	if !strings.Contains(result, "google-drive") {
+	if !strings.Contains(result, "flowpilot_drive") {
 		t.Fatal("expected injected server name")
 	}
 	if !strings.Contains(result, "Original prompt") {
