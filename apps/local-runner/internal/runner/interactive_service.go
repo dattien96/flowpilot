@@ -2935,8 +2935,11 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if in.YoloMode != nil {
 		yolo = *in.YoloMode
 	}
+	// Prefer the durable real provider handle when present (Codex rollouts and
+	// Grok ACP session ids). Synthetic thread-* remains only until the first
+	// successful turn promotes a real id (Task-210 Option B for Grok).
 	providerSessionID := rs.providerSessionID
-	if rs.providerKey == ProviderKeyCodex && rs.realProviderSessionID != "" {
+	if rs.realProviderSessionID != "" {
 		providerSessionID = rs.realProviderSessionID
 	}
 	// Fold any pending UI-spawn context into the provider prompt (NOT the displayed prompt,
@@ -3671,35 +3674,30 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 			}
 		}
 	case ProviderKeyGrok:
-		// Grok twin of the Codex case (BUG-GrokReplay-Restart): FlowPilot never
-		// feeds the real ACP session id back for session/load, so each turn
-		// writes a fresh ~/.grok/sessions/<enc-cwd>/<id>/ dir. Discover the newest
-		// one (this turn's) and, when it changed, return it so the caller logs it
-		// to the turn log for precise per-turn transcript replay. Best-effort:
-		// grokHome may be a bare ~/.grok (default account) if no account home
-		// resolves.
-		home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
-		if !ok {
-			if defaultHome, defOK := defaultProviderSessionHome(rs.providerKey); defOK {
-				home, ok = defaultHome, true
+		// Task-210 Option B + run-536 hotfix:
+		// NEVER promote realProviderSessionID from workspace-wide session-dir
+		// discovery. Multiple Grok chats share one cwd under GROK_HOME; the
+		// newest dir often belongs to a different run. Stealing it made a
+		// brand-new chat persist another chat's ACP id and break first-turn
+		// continuity (run-536: first chat logged 019f60f2 from an older dir).
+		//
+		// Only promote an id the adapter actually opened this turn via
+		// session/new or session/load (LastGrokSessionID). That is the durable
+		// handle for same-account session/load and cross-account relocate.
+		if reporter, ok := adapter.(interface{ LastGrokSessionID() string }); ok {
+			if id := strings.TrimSpace(reporter.LastGrokSessionID()); isGrokRealSessionID(id) {
+				rs.realProviderSessionID = id
+				if id != rs.lastGrokTurnSessionID {
+					rs.lastGrokTurnSessionID = id
+					return id
+				}
+				return ""
 			}
 		}
-		if !ok {
-			return ""
-		}
-		dirs := discoverGrokSessionDirs(home, rs.workspaceCwd)
-		if len(dirs) == 0 {
-			return ""
-		}
-		// Deliberately does NOT touch rs.realProviderSessionID: that drives the
-		// resume-continuation path (ensureSession → session/load), which is
-		// Task-212 T-7/DOD-5 territory and out of scope here. This is display-only
-		// transcript replay — we only record the per-turn id in the turn log.
-		newest := dirs[len(dirs)-1]
-		if newest != rs.lastGrokTurnSessionID {
-			rs.lastGrokTurnSessionID = newest
-			return newest
-		}
+		// No adapter-reported id (failed ensureSession, or non-live double):
+		// do not invent one from disk. Leave realProviderSessionID unchanged so
+		// a failed first turn cannot rebind the run onto someone else's session.
+		return ""
 	}
 	return ""
 }

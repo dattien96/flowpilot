@@ -45,6 +45,12 @@ type grokAdapter struct {
 
 	mu      sync.Mutex
 	bridges map[string]TurnBridge // sessionId -> active turn bridge
+	// lastSessionID is the real ACP session id from the most recent successful
+	// ensureSession (session/new or session/load) on this adapter instance.
+	// InteractiveService reads it after the turn to promote realProviderSessionID
+	// without scanning the whole workspace (stealing another chat's session dir
+	// was the run-536 regression).
+	lastSessionID string
 	// allowReviewOutcome tracks, per sessionId, whether this turn actually
 	// advertised submit_review_outcome (BUG-NOTE-CP42 #24 defense in depth,
 	// mirrors codexAdapter.allowReviewOutcome).
@@ -144,6 +150,12 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 	if req.Cwd != "" {
 		cwd = req.Cwd
 	}
+
+	// Clear last-turn session handle so a failed ensureSession cannot leave a
+	// stale id for InteractiveService to promote onto the wrong chat.
+	a.mu.Lock()
+	a.lastSessionID = ""
+	a.mu.Unlock()
 
 	// Task-209: register this turn's bridge on the runner-hosted FlowPilot MCP
 	// server (same mechanism Claude/Codex use — reused, not mutated) and build
@@ -284,8 +296,20 @@ func (a *grokAdapter) ensureSession(ctx context.Context, req TurnRequest, cwd st
 	if sessionID == "" {
 		return "", fmt.Errorf("grok %s returned no sessionId", method)
 	}
+	a.mu.Lock()
+	a.lastSessionID = sessionID
+	a.mu.Unlock()
 	a.recordSession(ctx, req, sessionID)
 	return sessionID, nil
+}
+
+// LastGrokSessionID returns the real ACP session id from the most recent
+// successful ensureSession on this adapter (empty if the last turn never
+// opened a session). Used by refreshResumeHandleLocked for durable resume.
+func (a *grokAdapter) LastGrokSessionID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastSessionID
 }
 
 // recordSession persists the real ACP sessionId (Task-207 T-5).
@@ -314,6 +338,9 @@ func (a *grokAdapter) emitTerminal(ctx context.Context, req TurnRequest, bridge 
 		return nil
 	}
 	if adopted := grokACPResponseSessionID(map[string]interface{}{"result": result}); adopted != "" && adopted != sessionID {
+		a.mu.Lock()
+		a.lastSessionID = adopted
+		a.mu.Unlock()
 		a.recordSession(ctx, req, adopted)
 	}
 

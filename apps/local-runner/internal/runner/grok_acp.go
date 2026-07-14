@@ -216,11 +216,13 @@ func grokACPExtraMCPServers(extra map[string]claudeMcpServer) []interface{} {
 				"args":    server.Args,
 			}
 			if len(server.Env) > 0 {
-				env := make(map[string]interface{}, len(server.Env))
-				for k, v := range server.Env {
-					env[k] = v
-				}
-				entry["env"] = env
+				// Live-verified (run-584): Grok's StdioMcpServer.env is an ARRAY of
+				// {name,value} objects — same ACP HttpHeader[] pattern as headers.
+				// A plain {"KEY":"val"} map makes session/new fail with
+				// -32602 Invalid params ("did not match any variant of untagged
+				// enum McpServer"). Drive MCP always carries env, so every Grok
+				// first turn broke when Drive was connected.
+				entry["env"] = grokACPNameValueList(server.Env)
 			}
 			out = append(out, entry)
 		case url != "":
@@ -235,21 +237,30 @@ func grokACPExtraMCPServers(extra map[string]claudeMcpServer) []interface{} {
 			// Grok reject session/new with "Invalid params" (-32602); the Jira
 			// remote MCP was the first entry to carry a real header, so the map
 			// shape had never actually been exercised against a live session.
-			keys := make([]string, 0, len(server.Headers))
-			for k := range server.Headers {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			headers := make([]interface{}, 0, len(keys))
-			for _, k := range keys {
-				headers = append(headers, map[string]interface{}{"name": k, "value": server.Headers[k]})
-			}
-			entry["headers"] = headers
+			entry["headers"] = grokACPNameValueList(server.Headers)
 			out = append(out, entry)
 		default:
 			// Neither stdio nor http — skip (misconfigured entry).
 			continue
 		}
+	}
+	return out
+}
+
+// grokACPNameValueList converts a string map to ACP's array-of-{name,value}
+// shape used for both HttpMcpServer.headers and StdioMcpServer.env.
+func grokACPNameValueList(m map[string]string) []interface{} {
+	if len(m) == 0 {
+		return []interface{}{}
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]interface{}, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, map[string]interface{}{"name": k, "value": m[k]})
 	}
 	return out
 }

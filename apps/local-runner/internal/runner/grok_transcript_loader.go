@@ -187,10 +187,42 @@ func grokSessionsCwdDirName(cwd string) string {
 	return b.String()
 }
 
+// grokSessionDirPath returns the Grok session directory for a real ACP session
+// id under a workspace cwd: <grokHome>/sessions/<encoded-cwd>/<sessionID>/.
+func grokSessionDirPath(grokHome, cwd, sessionID string) string {
+	return filepath.Join(grokHome, "sessions", grokSessionsCwdDirName(cwd), sessionID)
+}
+
+// isGrokRealSessionID reports whether sessionID is a provider-owned Grok ACP
+// session id safe to use as a single path segment under sessions/<cwd>/.
+// Rejects FlowPilot synthetic thread-* handles and any id that could escape
+// the session tree (path separators, . / .., absolute paths).
+func isGrokRealSessionID(sessionID string) bool {
+	id := strings.TrimSpace(sessionID)
+	if id == "" || strings.HasPrefix(id, "thread-") {
+		return false
+	}
+	if id == "." || id == ".." {
+		return false
+	}
+	if strings.ContainsAny(id, `/\`) {
+		return false
+	}
+	// filepath.IsAbs catches Windows drive paths when present; Clean would
+	// otherwise let ".." through before the ContainsAny check above.
+	if filepath.IsAbs(id) {
+		return false
+	}
+	if filepath.Base(id) != id {
+		return false
+	}
+	return true
+}
+
 // grokChatHistoryPath returns the chat_history.jsonl path for a given Grok
 // session id under a workspace cwd.
 func grokChatHistoryPath(grokHome, cwd, sessionID string) string {
-	return filepath.Join(grokHome, "sessions", grokSessionsCwdDirName(cwd), sessionID, "chat_history.jsonl")
+	return filepath.Join(grokSessionDirPath(grokHome, cwd, sessionID), "chat_history.jsonl")
 }
 
 // discoverGrokSessionDirs returns the session ids under <grokHome>/sessions/

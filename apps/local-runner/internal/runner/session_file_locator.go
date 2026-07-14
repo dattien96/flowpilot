@@ -13,7 +13,9 @@ import (
 	"time"
 )
 
-// LocateSessionFile returns the provider-owned session file for a resume handle.
+// LocateSessionFile returns the provider-owned session artifact for a resume
+// handle. For Codex/Claude this is a single session file; for Grok it is the
+// session directory at GROK_HOME/sessions/<encoded-cwd>/<session-id>/.
 func LocateSessionFile(providerKey ProviderKey, accountHome, sessionID, cwd string) (string, bool) {
 	if strings.TrimSpace(accountHome) == "" || strings.TrimSpace(sessionID) == "" {
 		return "", false
@@ -52,15 +54,20 @@ func LocateSessionFile(providerKey ProviderKey, accountHome, sessionID, cwd stri
 		})
 		return found, found != ""
 	case ProviderKeyGrok:
-		// Explicit typed-unsupported (CP-46 Task-212 T-7, GR-23): Grok sessions
-		// live in ~/.grok/sessions/ as per-session SQLite databases, not
-		// JSONL/directory-scannable files like Codex/Claude. No SQLite reader
-		// was built in this pass; returning false here (rather than falling
-		// through to default) documents this as a deliberate scope decision —
-		// cross-account/Drive stale-account recovery for Grok fails explicitly
-		// instead of silently resuming under the wrong account or corrupting
-		// history.
-		return "", false
+		// Task-210 Option B: Grok stores a full session directory (chat_history.jsonl
+		// + sidecars). Synthetic FlowPilot thread-* handles are not provider artifacts.
+		if !isGrokRealSessionID(sessionID) {
+			return "", false
+		}
+		dir := grokSessionDirPath(accountHome, cwd, sessionID)
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			return "", false
+		}
+		if _, err := os.Stat(filepath.Join(dir, "chat_history.jsonl")); err != nil {
+			return "", false
+		}
+		return dir, true
 	default:
 		return "", false
 	}
@@ -170,9 +177,9 @@ func migrateCodexReservedSpawnAgentTool(path string) (bool, error) {
 	return true, nil
 }
 
-// RelocateSessionFile copies a provider session file into the target account home.
-// If srcPath and the computed destination are the same file (both accounts share
-// the same home directory), it returns srcPath immediately without copying.
+// RelocateSessionFile copies a provider session artifact into the target account
+// home. Codex/Claude artifacts are single files; Grok artifacts are session
+// directories (full tree copy). Same-home source/destination is a successful no-op.
 func RelocateSessionFile(providerKey ProviderKey, srcPath, targetHome, sessionID, cwd string) (string, error) {
 	if strings.TrimSpace(srcPath) == "" || strings.TrimSpace(targetHome) == "" {
 		return "", errors.New("source path and target home are required")
@@ -186,6 +193,9 @@ func RelocateSessionFile(providerKey ProviderKey, srcPath, targetHome, sessionID
 	// copy; return success so the caller can rebind providerAccountID and persist.
 	if filepath.Clean(dstPath) == filepath.Clean(srcPath) {
 		return srcPath, nil
+	}
+	if providerKey == ProviderKeyGrok {
+		return relocateGrokSessionDir(srcPath, dstPath)
 	}
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 		return "", err
@@ -228,6 +238,160 @@ func RelocateSessionFile(providerKey ProviderKey, srcPath, targetHome, sessionID
 		return "", err
 	}
 	return dstPath, nil
+}
+
+func relocateGrokSessionDir(srcPath, dstPath string) (string, error) {
+	srcInfo, err := os.Stat(srcPath)
+	if err != nil {
+		return "", err
+	}
+	if !srcInfo.IsDir() {
+		return "", errors.New("grok session source must be a directory")
+	}
+	if _, err := os.Stat(dstPath); err == nil {
+		same, cmpErr := sameDirContents(srcPath, dstPath)
+		if cmpErr != nil {
+			return "", cmpErr
+		}
+		if same {
+			return dstPath, nil
+		}
+		return "", errors.New("destination session artifact already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if err := copyDirRecursive(srcPath, dstPath); err != nil {
+		_ = os.RemoveAll(dstPath)
+		return "", err
+	}
+	return dstPath, nil
+}
+
+// pathUnderRoot reports whether candidate is the root directory itself or a
+// descendant of it after cleaning both sides (Task-210 path-safety for Grok).
+func pathUnderRoot(root, candidate string) bool {
+	rootClean := filepath.Clean(root)
+	candClean := filepath.Clean(candidate)
+	if rootClean == "" || candClean == "" {
+		return false
+	}
+	sep := string(filepath.Separator)
+	if candClean == rootClean {
+		return true
+	}
+	return strings.HasPrefix(candClean, rootClean+sep)
+}
+
+func copyDirRecursive(srcDir, dstDir string) error {
+	return filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(srcDir, path)
+		if relErr != nil {
+			return relErr
+		}
+		target := filepath.Join(dstDir, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			// Skip symlinks to avoid escaping the session tree.
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return copyFileContents(path, target)
+	})
+}
+
+func copyFileContents(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	info, err := src.Stat()
+	if err != nil {
+		return err
+	}
+	dst, err := os.OpenFile(dstPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		return err
+	}
+	return nil
+}
+
+func sameDirContents(srcDir, dstDir string) (bool, error) {
+	type fileMeta struct {
+		size int64
+	}
+	srcFiles := map[string]fileMeta{}
+	err := filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		rel, relErr := filepath.Rel(srcDir, path)
+		if relErr != nil {
+			return relErr
+		}
+		info, statErr := d.Info()
+		if statErr != nil {
+			return statErr
+		}
+		srcFiles[filepath.ToSlash(rel)] = fileMeta{size: info.Size()}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	dstFiles := map[string]fileMeta{}
+	err = filepath.WalkDir(dstDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		rel, relErr := filepath.Rel(dstDir, path)
+		if relErr != nil {
+			return relErr
+		}
+		info, statErr := d.Info()
+		if statErr != nil {
+			return statErr
+		}
+		dstFiles[filepath.ToSlash(rel)] = fileMeta{size: info.Size()}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	if len(srcFiles) != len(dstFiles) {
+		return false, nil
+	}
+	for rel, meta := range srcFiles {
+		dstMeta, ok := dstFiles[rel]
+		if !ok || dstMeta.size != meta.size {
+			return false, nil
+		}
+		same, cmpErr := sameFileContents(filepath.Join(srcDir, filepath.FromSlash(rel)), filepath.Join(dstDir, filepath.FromSlash(rel)))
+		if cmpErr != nil {
+			return false, cmpErr
+		}
+		if !same {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func updateCodexDestinationIfSameSessionExtends(srcPath, dstPath string) (bool, error) {
@@ -312,6 +476,8 @@ func defaultProviderSessionHome(providerKey ProviderKey) (string, bool) {
 		return filepath.Join(userHome, ".codex"), true
 	case ProviderKeyClaude:
 		return userHome, true
+	case ProviderKeyGrok:
+		return filepath.Join(userHome, ".grok"), true
 	default:
 		return "", false
 	}
@@ -402,6 +568,30 @@ func relocationTargetPath(providerKey ProviderKey, srcPath, targetHome, sessionI
 	case ProviderKeyClaude:
 		hashDir := filepath.Base(filepath.Dir(srcPath))
 		return filepath.Join(targetHome, ".claude", "projects", hashDir, sessionID+".jsonl"), nil
+	case ProviderKeyGrok:
+		id := strings.TrimSpace(sessionID)
+		if id == "" {
+			id = filepath.Base(filepath.Clean(srcPath))
+		}
+		if !isGrokRealSessionID(id) {
+			return "", errors.New("grok relocation requires a real ACP session id")
+		}
+		var dst string
+		if strings.TrimSpace(cwd) == "" {
+			// Fall back to the encoded cwd segment from the source path:
+			// .../sessions/<enc-cwd>/<session-id>
+			parent := filepath.Base(filepath.Dir(filepath.Clean(srcPath)))
+			if parent == "" || parent == "." || parent == "sessions" || parent == ".." || strings.ContainsAny(parent, `/\`) {
+				return "", errors.New("grok relocation requires cwd")
+			}
+			dst = filepath.Join(targetHome, "sessions", parent, id)
+		} else {
+			dst = grokSessionDirPath(targetHome, cwd, id)
+		}
+		if !pathUnderRoot(targetHome, dst) {
+			return "", errors.New("grok relocation target escapes account home")
+		}
+		return dst, nil
 	default:
 		return "", errors.New("unsupported provider session relocation")
 	}
