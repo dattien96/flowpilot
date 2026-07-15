@@ -219,8 +219,10 @@ func (s *InteractiveService) runFlowGate(
 }
 
 // runChildArtifactOutputGate enforces Task-223 file_artifact OUTPUT write
-// contracts on spawned flow children only (not the full CA/test rule set).
-// Returns true when the turn should be blocked/reprompted.
+// contracts on spawned flow children and Task-242 tier-1 doc/scope rules when
+// the child is an agent.delegate with a non-empty turn diff. Reviewer/inline
+// turns with empty diff remain zero-cost (BUG-152). Returns true when the turn
+// should be blocked/reprompted.
 func (s *InteractiveService) runChildArtifactOutputGate(
 	_ context.Context, rs *interactiveRun, turnID string, fin finalizeInput,
 ) (block bool) {
@@ -234,39 +236,115 @@ func (s *InteractiveService) runChildArtifactOutputGate(
 	required := requiredFileArtifactOutputsForRun(s, rs)
 	structured := requiredStructuredFileArtifactOutputsForRun(s, rs)
 	telegramSends := requiredTelegramSendsForRun(s, rs)
-	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 {
-		return false
-	}
-	tr := flowgate.TurnResult{
-		RunID:                                 rs.id,
-		StepID:                                rs.stepID,
-		FinalMessage:                          fin.FinalMessage,
-		WrittenPaths:                          fin.ChangedFiles,
-		WorkspaceCwd:                          cwd,
-		RequiredFileArtifactOutputs:           required,
-		RequiredStructuredFileArtifactOutputs: structured,
-		RequiredTelegramSends:                 telegramSends,
-	}
+
 	// Prefer defaults merged with any on-disk rules so r-artifact-output is
 	// present even when an old flow-rules.json predates Task-223.
 	rules := flowgate.MergeDefaultRules(nil)
 	if loaded, err := flowgate.LoadRules(filepath.Join(cwd, ".flowpilot", "settings")); err == nil {
 		rules = flowgate.MergeDefaultRules(loaded)
 	}
-	// Only evaluate the artifact-output family on children (BUG-152 / Task-225).
+
+	// Artifact family (Task-223+) — always considered when bindings exist.
 	var only []flowgate.Rule
 	for _, r := range rules {
 		if !r.Enabled {
 			continue
 		}
-		switch r.ID {
-		case "r-artifact-output", "r-artifact-output-structure", "r-artifact-telegram-sent":
+		if flowgate.IsArtifactRule(r.ID) {
 			only = append(only, r)
 		}
 	}
+
+	// Task-242 tier-1: doc/scope on coding delegate children with non-empty diff.
+	s.mu.Lock()
+	baseSHA := rs.turnStartGitHead
+	parentID := rs.parentRunID
+	changeType := rs.changeType
+	if parentID != "" {
+		if parent := s.runs[parentID]; parent != nil && parent.changeType != "" {
+			changeType = parent.changeType
+		}
+	}
+	s.mu.Unlock()
+	diff, _ := flowgate.ObserveGitDiffSince(cwd, baseSHA)
+	node, nodeOK := flowNodeForRun(s, rs)
+	isDelegate := false
+	if nodeOK {
+		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.delegate" {
+			isDelegate = true
+		}
+	}
+	if isDelegate && len(diff) > 0 {
+		for _, r := range rules {
+			if !r.Enabled {
+				continue
+			}
+			if flowgate.IsDocScopeRule(r.ID) {
+				only = append(only, r)
+			}
+		}
+		// Task-242 tier-2b: flows without command.validate also run test rules
+		// on the coding child (review-loop). Flows with validate leave tests to
+		// that node (rag-harness).
+		if parentID != "" && !parentFlowHasValidateNode(s, parentID) {
+			for _, r := range rules {
+				if !r.Enabled {
+					continue
+				}
+				for _, id := range flowgate.TestRuleIDs() {
+					if r.ID == id {
+						only = append(only, r)
+					}
+				}
+			}
+		}
+	}
+
 	if len(only) == 0 {
 		return false
 	}
+	// Artifact-only path with no bindings and no doc rules selected → no-op.
+	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 && !isDelegate {
+		return false
+	}
+	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 && len(diff) == 0 {
+		return false
+	}
+
+	tr := flowgate.TurnResult{
+		RunID:                                 rs.id,
+		StepID:                                rs.stepID,
+		FinalMessage:                          fin.FinalMessage,
+		WrittenPaths:                          fin.ChangedFiles,
+		WorkspaceCwd:                          cwd,
+		GitDiff:                               diff,
+		ChangedPaths:                          changedPathsFromDiff(diff),
+		ChangeType:                            changeType,
+		RequiredFileArtifactOutputs:           required,
+		RequiredStructuredFileArtifactOutputs: structured,
+		RequiredTelegramSends:                 telegramSends,
+	}
+	// Optional oracle for tier-2b when test rules are in `only`.
+	needsOracle := false
+	for _, r := range only {
+		for _, id := range flowgate.TestRuleIDs() {
+			if r.ID == id {
+				needsOracle = true
+			}
+		}
+	}
+	if needsOracle {
+		dotFP := filepath.Join(cwd, ".flowpilot")
+		baseline, _ := flowgate.LoadBaseline(dotFP)
+		overrides, _ := flowgate.LoadOverrides(dotFP)
+		oracle := flowgate.RunOracle(cwd, baseline, diff, overrides)
+		var failedTests []string
+		if oracle.HasRegression {
+			failedTests = oracle.Regressed
+		}
+		tr.Tests = flowgate.TestOutcome{Ran: baseline != nil, Failed: failedTests}
+	}
+
 	violations := flowgate.Evaluate(tr, only)
 	if len(violations) == 0 {
 		return false
@@ -282,6 +360,14 @@ func (s *InteractiveService) runChildArtifactOutputGate(
 	s.mu.Unlock()
 	switch result.Action {
 	case "block":
+		// Tier-2b always-block on child maps to parent escalate (actionable), not
+		// an unanswerable child block (Task-242 T-9 / SD-20 Flow Mode mapping).
+		if parentID != "" && needsOracle {
+			_, _ = s.applyFlowControl(parentID, FlowControlInput{
+				Status:  "escalate",
+				Summary: "flow gate block on coding step: " + result.Message,
+			})
+		}
 		return true
 	case "reprompt":
 		s.mu.Lock()
@@ -290,8 +376,8 @@ func (s *InteractiveService) runChildArtifactOutputGate(
 		stepID := rs.lastTurnStepID
 		runID := rs.id
 		s.mu.Unlock()
-		log.Printf("[gate] child artifact-output reprompt attempt=%d run=%q stepID=%q missing=%v",
-			attempts, runID, stepID, required)
+		log.Printf("[gate] child gate reprompt attempt=%d run=%q stepID=%q",
+			attempts, runID, stepID)
 		if attempts < maxFlowGateReprompts {
 			go func(runID, stepID, prompt string) {
 				_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
@@ -339,6 +425,72 @@ func requiredStructuredFileArtifactOutputsForRun(s *InteractiveService, rs *inte
 		return nil
 	}
 	return requiredStructuredFileArtifactOutputs(node)
+}
+
+// isFlowCodingCommitAttempt reports whether this approval is a git commit from
+// a flow-engine coding child (Task-242 T-4). Token-aware — does not match
+// substrings like "git commitment".
+func isFlowCodingCommitAttempt(s *InteractiveService, rs *interactiveRun, details ApprovalDetails) bool {
+	if s == nil || rs == nil {
+		return false
+	}
+	if details.Kind != "exec" && details.Kind != "" {
+		// Only shell/exec approvals; empty Kind treated as possible shell on some providers.
+	}
+	if !looksLikeGitCommitCommand(details.Command) {
+		return false
+	}
+	if strings.TrimSpace(rs.parentRunID) == "" {
+		return false
+	}
+	if !s.isFlowEngineDriven(rs.parentRunID) {
+		return false
+	}
+	node, ok := flowNodeForRun(s, rs)
+	if !ok {
+		return false
+	}
+	canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior)
+	return ok && canonical == "agent.delegate"
+}
+
+func looksLikeGitCommitCommand(cmd string) bool {
+	fields := strings.Fields(cmd)
+	for i := 0; i < len(fields); i++ {
+		tok := strings.Trim(fields[i], `"'`)
+		// Accept bare "git" or a path ending in /git or \git (e.g. /usr/bin/git).
+		base := tok
+		if j := strings.LastIndexAny(tok, `/\`); j >= 0 {
+			base = tok[j+1:]
+		}
+		if (base == "git" || base == "git.exe") && i+1 < len(fields) {
+			next := strings.Trim(fields[i+1], `"'`)
+			if next == "commit" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// parentFlowHasValidateNode reports whether the parent flow topology includes a
+// command.validate node (Task-242 tier-2 ownership).
+func parentFlowHasValidateNode(s *InteractiveService, parentRunID string) bool {
+	if s == nil || parentRunID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	parent := s.runs[parentRunID]
+	if parent == nil {
+		return false
+	}
+	for _, n := range parent.activeFlowNodes {
+		if canonical, ok := agentpack.NormalizeBehaviorID(n.Behavior); ok && canonical == "command.validate" {
+			return true
+		}
+	}
+	return false
 }
 
 // flowNodeForRun resolves the active flow node for a child (or hub) run.
