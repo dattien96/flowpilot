@@ -218,7 +218,6 @@ export interface StepDefinition {
   behaviorId?: string | null;
   agentRef?: string | null;
   nodeLifecycle?: string | null;
-  dependsOn?: string[];
   joinMode?: string | null;
   cohort?: string | null;
   promptTemplateRef?: string | null;
@@ -374,14 +373,13 @@ export function validateFlowGraph(
     }
   }
 
-  // Owner finding (2026-07-06): a step-definition's own `dependsOn` field is
-  // now DERIVED from this workflow's edges when it saves (WorkflowsSettings.tsx
-  // persistEdgeDerivedDependsOn) rather than hand-maintained — so at
-  // validation time (before that derive-and-save step ever runs) it can be
-  // stale or simply blank for a brand-new node. Entry-node detection must
-  // therefore read the edges directly, not `dependsOn`: a node is an entry
-  // node iff no *forward* edge targets it (a back edge, e.g. a synthesis->
-  // coder loop re-entry, must not disqualify the true entry node).
+  // BUG-282 (was a 2026-07-06 owner finding): a step's flow dependency is NOT
+  // stored on the step definition — topology lives only on the flow's own
+  // `edges` (workflows.edges_json), so a step reused across flows resolves
+  // against each flow's edges instead of dragging in another flow's node ids.
+  // Entry-node detection therefore reads the edges directly: a node is an
+  // entry node iff no *forward* edge targets it (a back edge, e.g. a
+  // synthesis->coder loop re-entry, must not disqualify the true entry node).
   const nodesWithIncomingForwardEdge = new Set(
     edges.filter((edge) => edge.kind === "forward").map((edge) => edge.to),
   );

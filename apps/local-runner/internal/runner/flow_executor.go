@@ -750,6 +750,38 @@ func nodeHasIncomingForwardEdge(edges []agentpack.FlowEdge, nodeID string) bool 
 	return false
 }
 
+// forwardEdgeSources returns the node ids that must complete before nodeID can
+// start: the `from` of every FORWARD edge targeting nodeID, in stable declared
+// order, de-duplicated. Back edges (loop re-entry, e.g. review-loop's
+// synthesis->coder "continue") are excluded, matching nodeHasIncomingForwardEdge
+// and the client-side computeDependsOnByStepType (WorkflowsSettings.tsx).
+//
+// BUG-282: this is the per-flow, edge-derived replacement for
+// step_definitions.depends_on_json. Topology is authoritative on
+// workflows.edges_json (a flow-scoped column); the shared step_definitions
+// catalog (keyed by step_type, reusable across flows) must not carry it. A
+// Supabase-backed flow's nodes get their DependsOn from here at load time
+// (supabase_workflow_flow_store.go), so reusing one step across flows resolves
+// against each flow's own edges instead of dragging in another flow's node ids.
+func forwardEdgeSources(edges []agentpack.FlowEdge, nodeID string) []string {
+	if nodeID == "" {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]bool)
+	for _, e := range edges {
+		if !strings.EqualFold(strings.TrimSpace(e.Kind), "forward") || e.To != nodeID {
+			continue
+		}
+		if e.From == "" || seen[e.From] {
+			continue
+		}
+		seen[e.From] = true
+		out = append(out, e.From)
+	}
+	return out
+}
+
 // entryNodesNoDeps returns a flow's entry nodes — regardless of behavior, in
 // declared order — those with no incoming dependency, from EITHER the node's
 // own static dependsOn list OR a forward edge targeting it.

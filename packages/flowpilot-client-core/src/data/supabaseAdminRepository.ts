@@ -217,7 +217,6 @@ function mapStepDefinition(row: Row): StepDefinition {
     behaviorId: row.behavior_id ? String(row.behavior_id) : null,
     agentRef: row.agent_ref ? String(row.agent_ref) : null,
     nodeLifecycle: row.node_lifecycle ? String(row.node_lifecycle) : null,
-    dependsOn: Array.isArray(row.depends_on_json) ? row.depends_on_json.map(String) : [],
     joinMode: row.join_mode ? String(row.join_mode) : null,
     cohort: row.cohort ? String(row.cohort) : null,
     promptTemplateRef: row.prompt_template_ref ? String(row.prompt_template_ref) : null,
@@ -718,13 +717,16 @@ export class SupabaseAdminRepository implements
       // model"), not a per-workflow table. Reusing the source's step_type
       // here (the pre-fix behavior) meant the clone's workflow_steps row
       // pointed at the SAME step_definitions row as the source, including a
-      // built-in's — so persistEdgeDerivedDependsOn's later save on the
-      // clone's own edges silently overwrote the source's dependsOn too.
-      // Cloning must instead give every cloned step its own fresh,
-      // workflow-scoped step_type and an independent step_definitions row,
-      // so the clone is genuinely isolated as the "Clone Workflow" dialog's
-      // own copy promises ("Creates an editable copy... The original stays
-      // unchanged").
+      // built-in's — so editing the clone could silently mutate the source's
+      // shared fields (model, prompt_base, ...). Cloning must instead give
+      // every cloned step its own fresh, workflow-scoped step_type and an
+      // independent step_definitions row, so the clone is genuinely isolated
+      // as the "Clone Workflow" dialog's own copy promises ("Creates an
+      // editable copy... The original stays unchanged").
+      // BUG-282: flow topology (`dependsOn`) is no longer stored on
+      // step_definitions at all — it lives only on workflows.edges_json, which
+      // cloneWorkflow already deep-copies onto the clone's own row — so there
+      // is nothing edge-derived left to cross-write here.
       const stepTypes = sourceSteps.map((step: WorkflowStep) => step.stepType);
       const { data: definitionRows, error: definitionsError } = await this.supabase
         .from("step_definitions")
@@ -768,7 +770,6 @@ export class SupabaseAdminRepository implements
           behavior_id: definition.behaviorId,
           agent_ref: definition.agentRef,
           node_lifecycle: definition.nodeLifecycle,
-          depends_on_json: definition.dependsOn,
           join_mode: definition.joinMode,
           cohort: definition.cohort,
           prompt_template_ref: definition.promptTemplateRef,
@@ -870,7 +871,6 @@ export class SupabaseAdminRepository implements
       behavior_id: step.behaviorId ?? null,
       agent_ref: step.agentRef ?? null,
       node_lifecycle: step.nodeLifecycle ?? null,
-      depends_on_json: step.dependsOn ?? [],
       join_mode: step.joinMode ?? null,
       cohort: step.cohort ?? null,
       prompt_template_ref: step.promptTemplateRef ?? null,
