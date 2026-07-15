@@ -42,6 +42,12 @@ const (
 // telegramLoopbackSendRequest is the body the MCP child posts to the runner.
 type telegramLoopbackSendRequest struct {
 	Text string `json:"text"`
+	// ChatID is an optional per-call override of the connected integration's
+	// default channel. The provider-spawned MCP child never sets it (it always
+	// sends to the connected channel), so the loop-back HTTP path is unchanged;
+	// only the in-runner telegram.notify flow node (runTelegramNotifyNode) sets
+	// it, to honor the chatId bound on the node's telegram.v1 OUTPUT artifact.
+	ChatID string `json:"chatId,omitempty"`
 }
 
 // telegramLoopbackSendResponse is the runner's reply. The MCP child maps
@@ -235,9 +241,13 @@ func (r *Runner) executeTelegramLoopbackSend(ctx context.Context, payload telegr
 		}, http.StatusServiceUnavailable
 	}
 
+	chatID := strings.TrimSpace(payload.ChatID)
+	if chatID == "" {
+		chatID = strings.TrimSpace(creds.ChannelID)
+	}
 	server := &telegramProxyMcpServer{
 		botToken:    strings.TrimSpace(creds.BotToken),
-		chatID:      strings.TrimSpace(creds.ChannelID),
+		chatID:      chatID,
 		client:      &http.Client{Timeout: 15 * time.Second},
 		autoApprove: creds.AutoApprove,
 	}
