@@ -454,16 +454,51 @@ func isFlowCodingCommitAttempt(s *InteractiveService, rs *interactiveRun, detail
 	return ok && canonical == "agent.delegate"
 }
 
+// shellFields splits a command line with simple quote awareness so paths that
+// contain spaces stay one token (Codex review Important: git -C "C:\repo with spaces").
+// Supports "double" and 'single' quotes; quote characters are stripped.
+func shellFields(cmd string) []string {
+	var out []string
+	var b strings.Builder
+	var quote rune // 0 | '"' | '\''
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		out = append(out, b.String())
+		b.Reset()
+	}
+	for _, r := range cmd {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				b.WriteRune(r)
+			}
+		case r == '"' || r == '\'':
+			quote = r
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			flush()
+		default:
+			b.WriteRune(r)
+		}
+	}
+	flush()
+	return out
+}
+
 // looksLikeGitCommitCommand detects git-commit invocations including forms that
 // insert global options before the verb (Codex review Important #1):
 //   git commit -m x
 //   git -C . commit -m x
 //   git -c user.name=a commit -m x
+//   git -C "C:\repo with spaces" commit -m x
 //   /usr/bin/git --git-dir=... commit
 func looksLikeGitCommitCommand(cmd string) bool {
-	fields := strings.Fields(cmd)
+	fields := shellFields(cmd)
 	for i := 0; i < len(fields); i++ {
-		tok := strings.Trim(fields[i], `"'`)
+		tok := fields[i]
 		base := tok
 		if j := strings.LastIndexAny(tok, `/\`); j >= 0 {
 			base = tok[j+1:]
@@ -474,7 +509,7 @@ func looksLikeGitCommitCommand(cmd string) bool {
 		// Walk remaining args: skip global options that take a value, then
 		// the first non-option token is the git verb.
 		for j := i + 1; j < len(fields); j++ {
-			arg := strings.Trim(fields[j], `"'`)
+			arg := fields[j]
 			if arg == "" {
 				continue
 			}
@@ -485,11 +520,10 @@ func looksLikeGitCommitCommand(cmd string) bool {
 			switch arg {
 			case "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env",
 				"--super-prefix", "--list-cmds":
-				j++ // skip value
+				j++ // skip value (already one shell field even with spaces)
 				continue
 			}
 			if strings.HasPrefix(arg, "-c") && strings.Contains(arg, "=") {
-				// -cuser.name=x style (rare) or -c=...
 				continue
 			}
 			if strings.HasPrefix(arg, "--git-dir=") || strings.HasPrefix(arg, "--work-tree=") ||
@@ -497,7 +531,6 @@ func looksLikeGitCommitCommand(cmd string) bool {
 				continue
 			}
 			if strings.HasPrefix(arg, "-") {
-				// Other global flags without values (-p, --no-pager, --bare, …).
 				continue
 			}
 			// First non-option token: the git subcommand.
