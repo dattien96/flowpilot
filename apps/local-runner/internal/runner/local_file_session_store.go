@@ -86,6 +86,8 @@ type ndjsonSessionRecord struct {
 	// selection a run was started with (BUG-263); see ProviderSessionState.
 	ChatSubMode string `json:"chat_sub_mode,omitempty"`
 	ChatFlowRef string `json:"chat_flow_ref,omitempty"`
+	// FlowStartGitHead persists Task-242 tier-3 audit aggregate base (Codex review Important #3).
+	FlowStartGitHead string `json:"flow_start_git_head,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -337,6 +339,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), r.ActiveFlowNodes...),
 		ChatSubMode:         r.ChatSubMode,
 		ChatFlowRef:         r.ChatFlowRef,
+		FlowStartGitHead:    r.FlowStartGitHead,
 	}
 }
 
@@ -730,6 +733,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), s.ActiveFlowNodes...),
 		ChatSubMode:         s.ChatSubMode,
 		ChatFlowRef:         s.ChatFlowRef,
+		FlowStartGitHead:    s.FlowStartGitHead,
 	}
 }
 

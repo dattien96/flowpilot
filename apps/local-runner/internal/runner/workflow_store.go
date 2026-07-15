@@ -147,6 +147,10 @@ type ProviderSessionState struct {
 	// launch (which has its own WorkflowID/launchMode restore path already).
 	ChatSubMode string
 	ChatFlowRef string
+	// FlowStartGitHead is the workspace HEAD captured at startResolvedFlow
+	// (Task-242 tier-3). Persisted so audit aggregate diff survives restart
+	// (Codex review Important #3).
+	FlowStartGitHead string
 }
 
 type ProviderApprovalState struct {
