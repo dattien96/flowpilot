@@ -844,6 +844,45 @@ func resolveContinueBackEdgeTarget(edges []agentpack.FlowEdge) (string, bool) {
 	return "", false
 }
 
+// forwardReachableNodeIDs (BUG-286) returns every node id reachable from
+// startID by following only FORWARD edges (a back edge, e.g. synthesis's own
+// re-entry edge, must not be walked here — that would make the loop's re-entry
+// point "reachable from itself" and defeat the purpose of this scoping).
+// startID itself is never included, so callers can freely re-mark it RUNNING
+// while resetting only what actually needs to re-run. Terminal pseudo-nodes
+// ("done", "ask_user") are never added, matching FLOW_EDGE_TERMINALS.
+//
+// Used by the "continue" (new review round) reset in applyFlowControl: only
+// nodes forward-reachable from the back-edge's re-entry target (e.g. "coder")
+// should reset to PENDING for the new round. A node that is NOT
+// forward-reachable from there — e.g. rag-harness/context-coding-review-
+// synthesis's own "context" entry node, which sits BEFORE the loop and only
+// ever runs once (lifecycle: once) — must keep its prior DONE status instead
+// of being wrongly reset to PENDING and then never revisited.
+func forwardReachableNodeIDs(edges []agentpack.FlowEdge, startID string) map[string]bool {
+	reachable := make(map[string]bool)
+	if startID == "" {
+		return reachable
+	}
+	queue := []string{startID}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, e := range edges {
+			if !strings.EqualFold(strings.TrimSpace(e.Kind), "forward") || e.From != cur {
+				continue
+			}
+			to := strings.TrimSpace(e.To)
+			if to == "" || to == "done" || to == "ask_user" || reachable[to] {
+				continue
+			}
+			reachable[to] = true
+			queue = append(queue, to)
+		}
+	}
+	return reachable
+}
+
 // notifyHubFlowStarted tells the hub (parent run) an agent has already been
 // spawned to do the actual work, so the hub's own reasoning doesn't
 // redundantly try to also write the code itself. Delivered through the same

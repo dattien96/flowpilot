@@ -53,6 +53,16 @@ func (s *InteractiveService) activeFlowNodesFor(parentRunID string) []agentpack.
 	return nil
 }
 
+// activeFlowEdgesFor mirrors activeFlowNodesFor for the run's edge list.
+func (s *InteractiveService) activeFlowEdgesFor(parentRunID string) []agentpack.FlowEdge {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rs := s.runs[parentRunID]; rs != nil {
+		return append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...)
+	}
+	return nil
+}
+
 // reseedFlowStepRuntime replaces parentRunID's step list with one row per flow
 // node so the timeline reflects the flow's real topology (coder → reviewers →
 // synthesis) with correct node identities, instead of the generic catalog
