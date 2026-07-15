@@ -97,6 +97,10 @@ type FlowPolicy struct {
 	OnCap     string
 	ExtendBy  int
 	ExtendMax int
+	// StallTimeoutSec is the Task-241 / T-11 member stall window in seconds.
+	// Zero means "use runner default" (10 minutes). Additive — packs without
+	// the field keep pre-Task-241 behavior via the default.
+	StallTimeoutSec int
 }
 
 type FlowContextBinding struct {
@@ -652,10 +656,11 @@ func flowFromMap(m map[string]any) (FlowDefinition, error) {
 	}
 	if policy, ok := mapField(m, "policy"); ok {
 		def.Policy = FlowPolicy{
-			Cap:       intField(policy, "cap"),
-			OnCap:     stringField(policy, "onCap"),
-			ExtendBy:  intField(policy, "extendBy"),
-			ExtendMax: intField(policy, "extendMax"),
+			Cap:             intField(policy, "cap"),
+			OnCap:           stringField(policy, "onCap"),
+			ExtendBy:        intField(policy, "extendBy"),
+			ExtendMax:       intField(policy, "extendMax"),
+			StallTimeoutSec: intField(policy, "stallTimeoutSec"),
 		}
 	}
 	if contexts, ok := mapField(m, "contexts"); ok {

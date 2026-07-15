@@ -1341,14 +1341,16 @@ func (s *InteractiveService) handleExtendCap(w http.ResponseWriter, r *http.Requ
 }
 
 // handleContinueFlow handles POST /client/workflow-runs/{runId}/agent-loop/continue.
-// Body: {"feedback": "..."} (feedback optional). BUG-231's unified "Continue"
-// action: resumes a blocked/awaiting-user loop, letting the hub re-decide.
+// Body: {"feedback": "...", "memberAction": {"action":"retry|skip","node":"..."}} (both optional).
+// BUG-231's unified "Continue" action: resumes a blocked/awaiting-user loop.
+// Task-241: when blockReason=member_stalled, memberAction selects Retry/Skip.
 // Returns an AgentGraphSnapshot so the caller can update without a separate
 // refresh round-trip, matching handleExtendCap's contract.
 func (s *InteractiveService) handleContinueFlow(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("runId")
 	var body struct {
-		Feedback string `json:"feedback"`
+		Feedback     string       `json:"feedback"`
+		MemberAction MemberAction `json:"memberAction"`
 	}
 	if r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -1356,6 +1358,19 @@ func (s *InteractiveService) handleContinueFlow(w http.ResponseWriter, r *http.R
 			return
 		}
 	}
+	if strings.TrimSpace(body.MemberAction.Action) != "" {
+		snap, handled, err := s.handleMemberAction(runID, body.MemberAction)
+		if err != nil {
+			writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "member_action_failed", err.Error()))
+			return
+		}
+		if handled {
+			writeInteractiveJSON(w, http.StatusOK, snap)
+			return
+		}
+	}
+	// Task-241: opportunistically check stalls before resume (lazy Q-2).
+	_ = s.checkAndBlockStalledMembers(runID)
 	snap, err := s.resumeFlowWithFeedback(runID, body.Feedback)
 	if err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "continue_flow_failed", err.Error()))
