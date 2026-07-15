@@ -51,6 +51,8 @@ func TestDefaultRegistryResolvesAllAliasesFromPack(t *testing.T) {
 		"command.validate", "validation.command",
 		"validation.summarize",
 		"artifact.audit_draft", "audit.draft",
+		"telegram.notify", "notify.telegram",
+		"hub.notify", "notify.hub",
 		"flow.control", "flow.control_tool",
 		"user.confirm",
 	}
