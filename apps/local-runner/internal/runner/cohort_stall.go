@@ -54,6 +54,34 @@ func (o *AgentOrchestrator) memberAlreadyBuffered(parentRunID, cohortID, label s
 	return false
 }
 
+// maybeScheduleStallCheck arms a delayed stall sweep so silent cohort stalls
+// surface without waiting for the user to press Continue (Codex review
+// Important #2). Safe to call often; checkAndBlockStalledMembers is idempotent
+// when the loop is already blocked/done.
+func (s *InteractiveService) maybeScheduleStallCheck(parentRunID string) {
+	if parentRunID == "" || s == nil {
+		return
+	}
+	s.mu.Lock()
+	parent := s.runs[parentRunID]
+	if parent == nil || !parent.flowEngineDriven {
+		s.mu.Unlock()
+		return
+	}
+	timeout := parent.stallTimeout
+	if timeout <= 0 {
+		timeout = defaultStallTimeout
+	}
+	s.mu.Unlock()
+	if !s.agentOrchestrator.hasOpenCohort(parentRunID) {
+		return
+	}
+	// +1s buffer past the policy window so age >= timeout when the timer fires.
+	time.AfterFunc(timeout+time.Second, func() {
+		s.checkAndBlockStalledMembers(parentRunID)
+	})
+}
+
 // checkAndBlockStalledMembers implements Task-241 T-11(b) / I-16: if a cohort
 // member has produced no provider events for stallTimeout AND is not holding a
 // user-visible gate, park the hub as blocked with BlockReason=member_stalled.

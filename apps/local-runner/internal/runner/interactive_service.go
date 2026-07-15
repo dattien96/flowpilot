@@ -2038,6 +2038,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
 		ChatSubMode:         rs.chatSubMode,
 		ChatFlowRef:         rs.chatFlowRef,
+		FlowStartGitHead:    rs.flowStartGitHead,
 	}
 }
 
@@ -2107,6 +2108,11 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	rs.updatedAt = ev.OccurredAt
 	// Task-241 T-11: stall detector measures "no provider event" from this stamp.
 	rs.lastProviderEventAt = time.Now().UTC()
+	// Arm delayed stall sweep for the parent when this child is in an open cohort
+	// (Codex review Important #2 — do not rely solely on Continue).
+	if rs.parentRunID != "" && rs.flowCohortId != "" {
+		go s.maybeScheduleStallCheck(rs.parentRunID)
+	}
 	switch ev.Type {
 	case EventMessageCompleted:
 		if ev.Text != "" {
