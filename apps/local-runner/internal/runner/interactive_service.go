@@ -176,6 +176,19 @@ type interactiveRun struct {
 	// binding) to auto-spawn the next node(s) deterministically instead of
 	// leaving a bare completion note for the hub AI to infer from.
 	activeFlowNodes []agentpack.FlowNode
+	// activeHubNodeID (Task-235) is the flow node id of whichever hub-driven
+	// inline node (hub.inline / hub.notify) is currently awaiting the hub's own
+	// flow_control("done") call. Empty until the first such node completes;
+	// advanceHubDoneThroughEdge falls back to hubInlineNodeID(nodes) (the
+	// flow's sole hub.inline node, e.g. "synthesis") when this is empty, which
+	// reproduces the pre-Task-235 behavior for every existing built-in flow
+	// unchanged. Set to a hub.notify node's own id when that node is dispatched,
+	// so a SECOND hub-turn's "done" (e.g. after synthesis --done--> notify) is
+	// resolved against notify's own forward edge instead of re-finding synthesis
+	// and looping forever. Known limitation: not persisted across a restart —
+	// resuming mid-hub.notify-turn falls back to the flow's sole hub.inline node,
+	// which is wrong for that one edge case (see Task-235 Open Questions).
+	activeHubNodeID string
 	// flowEngineDriven marks a run whose step-runtime timeline is driven by the
 	// CP-42 flow executor's real node lifecycle (spawn → RUNNING, complete →
 	// DONE, flow "done" → run DONE) rather than the legacy per-turn
@@ -221,6 +234,17 @@ type interactiveRun struct {
 	// is still in flight (turnInFlight==true). runTurn clears turnInFlight and then
 	// retries the reinvoke so the coder-completion note is not silently dropped.
 	pendingHubReinvoke bool
+	// pendingHubReinvokePrompt (Task-235 follow-up, BUG-284) is the FULL custom
+	// prompt a deferred hub.notify reinvoke (maybeAutoReinvokeHubWithPrompt)
+	// must retry with once the current turn clears turnInFlight. Without this,
+	// the generic pendingHubReinvoke retry (runTurn, below) always re-fires the
+	// synthesis-shaped maybeAutoReinvokeHub instead — silently losing the
+	// hub.notify dispatch, since a hub.notify "done" is ALWAYS observed while
+	// turnInFlight is still true (it arrives as a tool call from the very turn
+	// that is finishing), so this defer path is the COMMON case, not an edge
+	// case. Empty means "no custom prompt pending" — the existing generic
+	// retry behavior for cohort-join reinvokes is unaffected.
+	pendingHubReinvokePrompt string
 	// pendingAgentContext holds notes about UI-spawned children (and their results) that
 	// have not yet been folded into this (parent) run's provider conversation. They are
 	// prepended to the next provider turn's prompt and then cleared. Persisted to
@@ -656,8 +680,27 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		})
 		if result.NextAction == "looping" {
 			// BUG-174: a new review round is starting — reset the downstream nodes
-			// to PENDING and re-run the entry (coder) node on the step timeline so
-			// the loop reads honestly instead of every node staying DONE.
+			// to PENDING and re-run the re-entry node (e.g. "coder") on the step
+			// timeline so the loop reads honestly instead of every node staying DONE.
+			//
+			// BUG-286: this used to resolve the re-entry node via flowEntryNodeID,
+			// which finds the flow's zero-DEPENDENCY entry node (entryDelegateNodes).
+			// For a Supabase-mirrored flow, BUG-282's edge-derived DependsOn means
+			// "coder" carries DependsOn=["context"] (the forward edge from context),
+			// so entryDelegateNodes excludes it — flowEntryNodeID returned "" for
+			// every review-loop-shaped flow reached via the "continue" back-edge.
+			// The observed effects: setFlowStepStatus(parentRunID, "", RUNNING) was
+			// a silent no-op (coder never shown RUNNING — the desktop kept reading
+			// it as PENDING through the whole re-run, only flipping to DONE when it
+			// actually finished), AND every node including "context" (the flow's
+			// once-only entry node, upstream of the loop, never meant to re-run) got
+			// wrongly reset to PENDING and then never revisited, leaving it stuck.
+			// The correct re-entry node is the "continue" back-edge's own target
+			// (resolveContinueBackEdgeTarget, already used elsewhere for this exact
+			// purpose), and only nodes FORWARD-reachable from it should reset to
+			// PENDING — which naturally excludes an upstream once-only node like
+			// "context" while still covering every node in the new round
+			// (reviewers, synthesis, and anything chained after it, e.g. hub.notify).
 			//
 			// BUG-233: this MUST complete before emitAgentGraph below. emitAgentGraph
 			// fires the agent_graph_updated SSE event that the desktop reacts to by
@@ -667,13 +710,37 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			// landed and render the stale "all done" snapshot from the prior round.
 			if s.isFlowEngineDriven(parentRunID) {
 				nodes := s.activeFlowNodesFor(parentRunID)
-				entryID := flowEntryNodeID(nodes)
-				for _, n := range nodes {
-					if n.ID != entryID {
-						s.setFlowStepStatus(context.Background(), parentRunID, n.ID, StepStatusPending)
-					}
+				edges := s.activeFlowEdgesFor(parentRunID)
+				reentryID, ok := resolveContinueBackEdgeTarget(edges)
+				if !ok {
+					// Defensive fallback for a looping result with no declared
+					// continue back-edge (shouldn't occur for any flow that can
+					// legitimately reach NextAction=="looping" today) — preserves
+					// the pre-BUG-286 behavior rather than resetting nothing.
+					reentryID = flowEntryNodeID(nodes)
 				}
-				s.setFlowStepStatus(context.Background(), parentRunID, entryID, StepStatusRunning)
+				if reentryID != "" {
+					// No edges recorded at all (e.g. a minimal/synthetic run whose
+					// topology was never populated) means there is nothing to derive
+					// reachability from — fall back to the pre-BUG-286 blanket reset
+					// (every other node) rather than silently resetting nothing. Once
+					// real edges ARE present, trust forwardReachableNodeIDs fully: a
+					// node it excludes (e.g. an upstream once-only "context" entry) is
+					// a deliberate, correct exclusion, not a gap to paper over.
+					var resetIDs map[string]bool
+					if len(edges) > 0 {
+						resetIDs = forwardReachableNodeIDs(edges, reentryID)
+					}
+					for _, n := range nodes {
+						if n.ID == reentryID {
+							continue
+						}
+						if len(edges) == 0 || resetIDs[n.ID] {
+							s.setFlowStepStatus(context.Background(), parentRunID, n.ID, StepStatusPending)
+						}
+					}
+					s.setFlowStepStatus(context.Background(), parentRunID, reentryID, StepStatusRunning)
+				}
 			}
 		} else if result.NextAction == "awaiting_user" {
 			// BUG-231/BUG-233: the round cap paused the loop awaiting the user —
@@ -828,17 +895,48 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		return snap, nil
 	}
 
+	// BUG-284: a hub.notify reinvoke that was blocked (re-armed in
+	// maybeAutoReinvokeHubWithPrompt) takes priority over the generic
+	// synthesis reinvoke below — resuming must retry the SAME node's own
+	// prompt, not restart the hub.inline node's review turn again. Without
+	// this, activeHubNodeID stays pointed at the notify node while resume
+	// fires a generic reinvoke; that reinvoke's eventual "done" then gets
+	// misattributed as the notify node's own completion (its edge trivially
+	// resolves to the terminal), settling the flow and marking the node DONE
+	// without it ever actually running — the message is never sent.
+	s.mu.Lock()
+	pendingPrompt := ""
+	if rs := s.runs[parentRunID]; rs != nil && rs.pendingHubReinvokePrompt != "" {
+		pendingPrompt = rs.pendingHubReinvokePrompt
+		rs.pendingHubReinvoke = false
+		rs.pendingHubReinvokePrompt = ""
+	}
+	activeHubNodeID := ""
+	if rs := s.runs[parentRunID]; rs != nil {
+		activeHubNodeID = rs.activeHubNodeID
+	}
+	s.mu.Unlock()
+
 	// BUG-233: settle the hub node before emitAgentGraph (not in a goroutine) —
 	// emitAgentGraph fires the SSE event that triggers the desktop's step-runtime
 	// refresh, which could otherwise read the store before this write landed and
 	// render the pre-Continue (WAITING_USER_APPROVAL / stale-done) snapshot.
 	if s.isFlowEngineDriven(parentRunID) {
-		if hubID := hubInlineNodeID(s.activeFlowNodesFor(parentRunID)); hubID != "" {
+		hubID := activeHubNodeID
+		if hubID == "" {
+			hubID = hubInlineNodeID(s.activeFlowNodesFor(parentRunID))
+		}
+		if hubID != "" {
 			s.setFlowStepStatus(context.Background(), parentRunID, hubID, StepStatusRunning)
 		}
 	}
 	s.emitAgentGraph(parentRunID, snap)
 	go s.persistParentSession(parentRunID)
+
+	if pendingPrompt != "" {
+		go s.maybeAutoReinvokeHubWithPrompt(parentRunID, pendingPrompt)
+		return snap, nil
+	}
 
 	resumeNote := ""
 	if feedback != "" {
@@ -1020,6 +1118,82 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 	if strings.TrimSpace(cohortNote) != "" {
 		prompt = cohortNote + "\n\n---\n\n" + prompt
 	}
+	s.scheduleChildTurn(parentRunID, stepID, prompt)
+}
+
+// maybeAutoReinvokeHubWithPrompt (Task-235) is maybeAutoReinvokeHubWithNote's
+// sibling for a hub.notify node: it reinvokes the SAME hub session for one more
+// turn using a FULLY custom prompt (not cohortNote + the generic
+// autoReinvokePromptText() "synthesize the join note" tail, which does not fit
+// a notify node — there is no join note here). It duplicates the single-flight/
+// loop-status/cap guard block verbatim rather than refactoring
+// maybeAutoReinvokeHubWithNote to take an optional full-prompt override, since
+// that function is exercised by every existing review-loop-shaped flow
+// (BUG-275/BUG-234/etc.) and GitNexus impact analysis was unavailable this
+// session to safely verify a shared-code-path edit's blast radius; a small,
+// additive sibling carries zero risk to that path.
+//
+// BUG-284: a hub.notify "done" is observed via SubmitFlowControl — i.e. from
+// INSIDE the very turn that is finishing — so turnInFlight is essentially
+// ALWAYS true here; deferring is the common case, not a rare race. Unlike
+// maybeAutoReinvokeHubWithNote's defer (whose retry only needs to re-fire the
+// generic synthesis reinvoke, since its content already lives in
+// pendingAgentContext), this prompt is NOT threaded through pendingAgentContext
+// at all, so it must be remembered verbatim: stashed in
+// parent.pendingHubReinvokePrompt, consumed by the SAME turn-completion retry
+// site that already drains pendingHubReinvoke (runTurn) — see that site for
+// the dispatch-the-right-function half of this fix.
+func (s *InteractiveService) maybeAutoReinvokeHubWithPrompt(parentRunID, prompt string) {
+	s.mu.Lock()
+	parent := s.runs[parentRunID]
+	if parent == nil || !parent.autoOrchestrate || parent.reinvokeInFlight || parent.turnInFlight {
+		if parent != nil && parent.autoOrchestrate && parent.turnInFlight && !parent.reinvokeInFlight {
+			parent.pendingHubReinvoke = true
+			parent.pendingHubReinvokePrompt = prompt
+		}
+		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "hub_notify_reinvoke_deferred", "hub.notify reinvoke was deferred or skipped by current state",
+			"has_parent", parent != nil,
+		)
+		return
+	}
+	st := s.agentOrchestrator.loopStateFor(parentRunID)
+	switch st.Status {
+	case "paused", "stopped", "blocked":
+		// BUG-284 follow-up: re-arm rather than silently drop. The turn that
+		// dispatched hub.notify can ALSO call escalate()/pause in the same turn
+		// (observed live — see the Status/NextAction fix above), so the loop can
+		// already be blocked by the time this deferred retry actually runs.
+		// Without re-arming here, resumeFlowWithFeedback's own unblock path has
+		// no way to know a hub.notify send is still owed, resumes the GENERIC
+		// synthesis reinvoke instead, and — because activeHubNodeID is still
+		// pointed at the notify node from dispatchHubNotifyNode — a later,
+		// unrelated "done" call gets misattributed as that node's own
+		// completion: the flow settles and the node is swept to DONE without
+		// ever actually running, and no message is ever sent.
+		parent.pendingHubReinvoke = true
+		parent.pendingHubReinvokePrompt = prompt
+		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "hub_notify_reinvoke_blocked", "hub.notify reinvoke blocked by loop status; re-armed for resume")
+		return
+	case "done":
+		// The whole flow already settled through some other path; nothing to
+		// resume into, so no point re-arming.
+		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "hub_notify_reinvoke_blocked", "hub.notify reinvoke blocked: loop already done")
+		return
+	}
+	if st.Round >= effectiveCap(st) {
+		parent.pendingHubReinvoke = true
+		parent.pendingHubReinvokePrompt = prompt
+		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "hub_notify_reinvoke_cap_blocked", "hub.notify reinvoke blocked by round cap; re-armed for resume")
+		return
+	}
+	stepID := s.nextID("step")
+	parent.reinvokeInFlight = true
+	s.mu.Unlock()
+	s.flowDiagLog(parentRunID, "hub_notify_reinvoke_scheduled", "hub.notify reinvoke scheduled", "step_id", stepID)
 	s.scheduleChildTurn(parentRunID, stepID, prompt)
 }
 
@@ -2395,7 +2569,124 @@ func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, 
 	if b.rs.currentTurnID != "" && b.svc.flowControlSubmittedForTurn(targetRunID, b.rs.currentTurnID) {
 		return FlowControlResult{}, fmt.Errorf("flow control already submitted for this provider turn")
 	}
+	if res, handled := b.svc.advanceHubDoneThroughEdge(targetRunID, in); handled {
+		return res, nil
+	}
 	return b.svc.applyFlowControl(targetRunID, in)
+}
+
+// advanceHubDoneThroughEdge generalizes flow completion so a hub/synthesis node
+// is not hardcoded as the flow's last node. When the flow's inline hub
+// (hub.inline / synthesis) node has a forward "done" edge to a REAL successor
+// node — not the terminal "done"/"ask_user" — a synthesizer's
+// submit_review_outcome(done) must dispatch that successor (e.g. a
+// telegram.notify node that sends the run summary) instead of settling the
+// whole flow immediately. It returns (result, true) when it took over the
+// transition; (_, false) means "not applicable — settle exactly as before".
+//
+// The built-in flows are unaffected: review-loop / context-coding-review-
+// synthesis both wire "synthesis --done--> done" (the terminal), which resolves
+// to "done" here and returns false, so applyFlowControl settles them unchanged.
+// Only a user-authored flow that points synthesis at another node takes the new
+// path. Non-flow runs (no tracked topology / no hub.inline node) also return
+// false.
+func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in FlowControlInput) (FlowControlResult, bool) {
+	if in.Status != "done" || !s.isFlowEngineDriven(targetRunID) {
+		return FlowControlResult{}, false
+	}
+	s.mu.Lock()
+	rs := s.runs[targetRunID]
+	var edges []agentpack.FlowEdge
+	var nodes []agentpack.FlowNode
+	var activeHubNodeID string
+	if rs != nil {
+		edges = rs.activeFlowEdges
+		nodes = rs.activeFlowNodes
+		activeHubNodeID = rs.activeHubNodeID
+	}
+	s.mu.Unlock()
+	// Task-235: a second (or later) hub-driven node — e.g. hub.notify reached
+	// after synthesis — must resolve this "done" against ITS OWN forward edge,
+	// not synthesis's again. Fall back to the flow's sole hub.inline node only
+	// when no hub-driven node has taken over yet (every pre-Task-235 flow).
+	hubID := activeHubNodeID
+	if hubID == "" {
+		hubID = hubInlineNodeID(nodes)
+	}
+	if hubID == "" {
+		return FlowControlResult{}, false
+	}
+	target, ok := edgeTargetFrom(edges, hubID, "done", "forward")
+	if !ok || target == "" || target == "done" || target == "ask_user" {
+		s.mu.Lock()
+		if rs := s.runs[targetRunID]; rs != nil {
+			rs.activeHubNodeID = ""
+		}
+		s.mu.Unlock()
+		return FlowControlResult{}, false
+	}
+	if targetNode, ok := findFlowNode(nodes, target); ok {
+		if canonical, ok := agentpack.NormalizeBehaviorID(targetNode.Behavior); ok && canonical == "hub.notify" {
+			// hub.notify runs as another turn of the SAME hub session (Task-235),
+			// not a Go-deterministic handler and not a spawned child. Leave the
+			// loop running — it settles for real once that turn calls
+			// flow_control("done") and this function runs again, resolved against
+			// the new activeHubNodeID dispatchHubNotifyNode just set.
+			s.dispatchHubNotifyNode(targetRunID, targetNode)
+			st := s.agentOrchestrator.loopStateFor(targetRunID)
+			// BUG-284 follow-up: report Status:"done" (not "continue") — the
+			// caller's own review verdict WAS accepted; "continue" reads to the
+			// model as "your done call was rejected, keep looping" (observed live:
+			// a synthesizer turn called done(), got "continue" back, then called
+			// escalate() in the same turn out of apparent confusion, which — via a
+			// separate gap this task also fixes — caused the eventual notify send
+			// to be silently dropped). NextAction "advancing" (not "looping") is
+			// similarly non-review-loop-specific language for this generic engine.
+			return FlowControlResult{Status: "done", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "advancing"}, true
+		}
+	}
+	// Dispatch the successor chain synchronously (telegram.notify / audit / etc.
+	// are Go-inline); a terminal reached at the end still calls applyFlowControl,
+	// so the loop settles for real by the time this returns.
+	s.advanceToNextInlineOrDelegate(context.Background(), targetRunID, edges, nodes, hubID, "done", in.Summary)
+	st := s.agentOrchestrator.loopStateFor(targetRunID)
+	nextAction := "looping"
+	switch st.Status {
+	case "done":
+		nextAction = "done"
+	case "blocked":
+		nextAction = "awaiting_user"
+	}
+	return FlowControlResult{Status: st.Status, Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: nextAction}, true
+}
+
+// dispatchHubNotifyNode (Task-235) is the single entry point for reaching a
+// hub.notify node, shared by advanceHubDoneThroughEdge (reached from a
+// hub-driven node's own "done") and advanceToNextInlineOrDelegate (reached
+// from any other inline node's forward edge, e.g. audit --done--> notify) so
+// hub.notify behaves identically regardless of what precedes it in the graph.
+// Marks node as the run's active hub node (so its OWN eventual "done" resolves
+// against its own forward edge, not an earlier hub node's) and reinvokes the
+// hub session with node's write-contract prompt.
+//
+// BUG-284: also stamps node RUNNING on the step timeline immediately. Without
+// this the node stays PENDING until the flow settles — markFlowRunComplete
+// (flow_step_runtime.go) sweeps any still-PENDING step to SKIPPED (only a
+// RUNNING/other-non-terminal step is swept to DONE), so a hub.notify node
+// whose reinvoke got deferred (the common case — see
+// maybeAutoReinvokeHubWithPrompt) rendered as silently "skipped" even on a run
+// where the notification never actually needed to be dropped.
+func (s *InteractiveService) dispatchHubNotifyNode(parentRunID string, node agentpack.FlowNode) {
+	s.mu.Lock()
+	if rs := s.runs[parentRunID]; rs != nil {
+		rs.activeHubNodeID = node.ID
+	}
+	s.mu.Unlock()
+	if s.isFlowEngineDriven(parentRunID) {
+		s.setFlowStepStatus(context.Background(), parentRunID, node.ID, StepStatusRunning)
+		s.stampFlowNodePosture(context.Background(), parentRunID, node)
+	}
+	s.maybeAutoReinvokeHubWithPrompt(parentRunID, composeHubNotifyPrompt(node))
 }
 
 // spawnChildRun is the shared spawn path for the spawn_agent tool and the HTTP handler.
@@ -3163,13 +3454,26 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// coder completion fired. This prevents the review loop from stalling when the
 	// coder finishes before the hub's current turn has cleared.
 	pendingHubReinvoke := rs.parentRunID == "" && rs.pendingHubReinvoke
+	// BUG-284: a hub.notify dispatch stashes its FULL prompt in
+	// pendingHubReinvokePrompt (see maybeAutoReinvokeHubWithPrompt) because a
+	// hub.notify "done" is observed from INSIDE the very turn that is
+	// finishing, so this defer/retry path is the common case for it, not rare.
+	// Retrying with the generic maybeAutoReinvokeHub (as below) would fire the
+	// wrong prompt and silently drop the notify dispatch entirely.
+	pendingHubReinvokePrompt := ""
 	if pendingHubReinvoke {
 		rs.pendingHubReinvoke = false
+		pendingHubReinvokePrompt = rs.pendingHubReinvokePrompt
+		rs.pendingHubReinvokePrompt = ""
 	}
 	s.mu.Unlock()
 
 	if pendingHubReinvoke {
-		go s.maybeAutoReinvokeHub(rs.id)
+		if pendingHubReinvokePrompt != "" {
+			go s.maybeAutoReinvokeHubWithPrompt(rs.id, pendingHubReinvokePrompt)
+		} else {
+			go s.maybeAutoReinvokeHub(rs.id)
+		}
 	}
 
 	// Post-turn flow gate (CP-35 P-4/P-5): observe diff, evaluate rules, enforce.
