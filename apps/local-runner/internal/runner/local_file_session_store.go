@@ -603,6 +603,98 @@ func (s *localFileSessionStore) DeleteFlowEvents(_ context.Context, runID string
 	return err
 }
 
+// stepTransitionsPath returns the path of the per-run step-transition sidecar
+// (Task-239 / T-10). Same traversal guard as flowEventsPath.
+//
+// Q-2 (Drive sync): local-only, same posture as flow-events — mid-flow cross-PC
+// resume is not a required use case; both sidecars live under the same dataDir
+// and are not listed in Drive chat-session sync manifests today.
+func (s *localFileSessionStore) stepTransitionsPath(runID string) (string, error) {
+	if runID == "" || filepath.Base(runID) != runID || strings.ContainsAny(runID, "/\\") {
+		return "", fmt.Errorf("invalid run ID %q: must not contain path separators", runID)
+	}
+	return filepath.Join(filepath.Dir(s.filePath), runID+"-step-transitions.ndjson"), nil
+}
+
+// AppendStepTransition appends one step transition line (Task-239). Best-effort
+// from the caller's perspective — errors are returned so the caller can log-warn.
+func (s *localFileSessionStore) AppendStepTransition(_ context.Context, runID string, line stepTransitionLine) error {
+	data, err := json.Marshal(line)
+	if err != nil {
+		return err
+	}
+	path, err := s.stepTransitionsPath(runID)
+	if err != nil {
+		return err
+	}
+	fh, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	_, err = fh.Write(append(data, '\n'))
+	return err
+}
+
+// LoadStepTransitions reads all step-transition lines for a run. Returns nil, nil
+// when the sidecar does not exist. Malformed lines are skipped (same posture as
+// LoadFlowEvents) so a single corrupt line cannot block resume.
+func (s *localFileSessionStore) LoadStepTransitions(_ context.Context, runID string) ([]stepTransitionLine, error) {
+	path, err := s.stepTransitionsPath(runID)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	var lines []stepTransitionLine
+	br := bufio.NewReaderSize(f, 1<<20)
+	lineNum := 0
+	for {
+		raw, readErr := br.ReadBytes('\n')
+		if len(raw) > 0 {
+			lineNum++
+			for len(raw) > 0 && (raw[len(raw)-1] == '\n' || raw[len(raw)-1] == '\r') {
+				raw = raw[:len(raw)-1]
+			}
+			if len(raw) > 0 {
+				var line stepTransitionLine
+				if jsonErr := json.Unmarshal(raw, &line); jsonErr == nil && strings.TrimSpace(line.NodeID) != "" {
+					lines = append(lines, line)
+				} else if jsonErr != nil {
+					log.Printf("LoadStepTransitions: runID=%s line=%d: malformed JSON: %v", runID, lineNum, jsonErr)
+				}
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return nil, readErr
+		}
+	}
+	return lines, nil
+}
+
+// DeleteStepTransitions removes the per-run step-transition sidecar (Task-239 B5).
+// No-op when the file does not exist.
+func (s *localFileSessionStore) DeleteStepTransitions(_ context.Context, runID string) error {
+	path, err := s.stepTransitionsPath(runID)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 	return ndjsonSessionRecord{
 		RunID:               s.RunID,

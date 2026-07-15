@@ -65,6 +65,13 @@ func (s *InteractiveService) deleteChatSession(runID string) *apiErr {
 		}
 	}
 
+	// --- remove per-run step-transition sidecar (Task-239 B5) ---
+	if tlog, ok := s.workflowStore.(StepTransitionLogStore); ok {
+		for _, id := range deleteOrder {
+			_ = tlog.DeleteStepTransitions(context.Background(), id)
+		}
+	}
+
 	return nil
 }
 
@@ -645,9 +652,16 @@ func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st Provider
 // restart): the turn goroutine and any pending approval/question records are
 // gone. Reading it back verbatim would leave the UI showing a spinner or a
 // resolved-but-unanswerable prompt forever, so we surface it as cancelled.
+//
+// Task-239 / BUG-251 follow-up: agent-status values "spawned" and
+// "waiting_dependency" are also in-flight (cast through RunStatus when used as
+// AgentStatus) and must normalize to cancelled so listAgentRunSummaries disk
+// fallback does not leave a permanent spinner.
 func normalizeResumedStatus(status RunStatus) RunStatus {
 	switch status {
 	case RunStatusRunning, RunStatusStarting, RunStatusWaitingApproval, RunStatusWaitingQuestion:
+		return RunStatusCancelled
+	case RunStatus("spawned"), RunStatus("waiting_dependency"):
 		return RunStatusCancelled
 	default:
 		return status
@@ -872,7 +886,47 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		// to CANCELED after a restart rather than reverting to a misleading all-
 		// PENDING/all-DONE display. flowEngineDriven is intentionally left as-is —
 		// this only restores the display; it does not re-engage the executor.
-		s.seedFlowStepRuntimeRows(rs.id, s.resumedFlowStepRows(rs, st))
+		//
+		// Task-239 / T-10 / I-17: when a step-transition log exists, merge it
+		// on top of the evidence-walk (last-wins per node that has log lines;
+		// nodes never logged keep evidence-walk — legacy no-label merge rule).
+		// LoadStepTransitions is I/O and must run outside s.mu (already unlocked).
+		rows := s.resumedFlowStepRows(rs, st)
+		if tlog, ok := s.workflowStore.(StepTransitionLogStore); ok {
+			if lines, loadErr := tlog.LoadStepTransitions(context.Background(), rs.id); loadErr != nil {
+				log.Printf("reconstructRun: LoadStepTransitions runID=%s: %v (falling back to evidence-walk)", rs.id, loadErr)
+			} else if len(lines) > 0 {
+				var pendingApprovals []ProviderApprovalState
+				var pendingQuestions []ProviderQuestionState
+				if ahr, ok := s.workflowStore.(ApprovalHistoryReader); ok {
+					if states, err := ahr.ListApprovalsByRun(context.Background(), st.RunID); err == nil {
+						pendingApprovals = states
+					}
+				}
+				if qhr, ok := s.workflowStore.(QuestionHistoryReader); ok {
+					if states, err := qhr.ListQuestionsByRun(context.Background(), st.RunID); err == nil {
+						pendingQuestions = states
+					}
+				}
+				keepWaiting := keepWaitingNodeIDsForResume(st, rs.activeFlowNodes, pendingApprovals, pendingQuestions)
+				rows = applyStepTransitionReplay(rows, lines, keepWaiting)
+				// Hub precedence when flow genuinely completed (mirrors evidence-walk):
+				// hub PENDING → DONE. I-3: never promote FAILED/CANCELED.
+				if normalizeResumedFlowStatus(st) == RunStatusCompleted {
+					if hubID := hubInlineNodeID(rs.activeFlowNodes); hubID != "" {
+						for i := range rows {
+							if rows[i].ID == hubID && rows[i].Status == StepStatusPending {
+								rows[i].Status = StepStatusDone
+								nowTS := time.Now().UTC().Format(time.RFC3339Nano)
+								rows[i].StartedAt = nowTS
+								rows[i].FinishedAt = nowTS
+							}
+						}
+					}
+				}
+			}
+		}
+		s.seedFlowStepRuntimeRows(rs.id, rows)
 	}
 	// Restore flow-engine loop state so a restarted or Drive-synced run resumes
 	// at the correct round/cap/mode (Task-085 T-4).

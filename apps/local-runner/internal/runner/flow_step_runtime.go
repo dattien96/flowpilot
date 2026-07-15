@@ -179,7 +179,11 @@ func (s *InteractiveService) setFlowStepStatus(ctx context.Context, parentRunID,
 			"status", string(status),
 			"error", err.Error(),
 		)
+		return
 	}
+	// Task-239 / T-10: append best-effort transition log for flow-engine runs so
+	// resume can replay settled status (I-17). Never blocks orchestration (T-5).
+	s.appendStepTransitionLog(parentRunID, nodeID, string(status), "", "")
 }
 
 // setFlowStepAwaitingUser transitions the flow's hub inline node (the
@@ -227,6 +231,36 @@ func (s *InteractiveService) setFlowStepPosture(ctx context.Context, parentRunID
 			"model", model,
 			"error", err.Error(),
 		)
+		return
+	}
+	// Task-239: posture-only line (empty Status) so provider/model survive restart.
+	s.appendStepTransitionLog(parentRunID, nodeID, "", provider, model)
+}
+
+// appendStepTransitionLog writes one transition/posture line when the store
+// implements StepTransitionLogStore and the run is flow-engine-driven (Task-239).
+// Errors are log-warn only — step writes must never break orchestration.
+func (s *InteractiveService) appendStepTransitionLog(parentRunID, nodeID, status, provider, model string) {
+	if parentRunID == "" || nodeID == "" {
+		return
+	}
+	if !s.isFlowEngineDriven(parentRunID) {
+		return
+	}
+	tlog, ok := s.workflowStore.(StepTransitionLogStore)
+	if !ok {
+		return
+	}
+	line := stepTransitionLine{
+		RunID:    parentRunID,
+		NodeID:   nodeID,
+		Status:   status,
+		Provider: provider,
+		Model:    model,
+		TS:       time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := tlog.AppendStepTransition(context.Background(), parentRunID, line); err != nil {
+		log.Printf("[flow-step] append transition log run=%q node=%q status=%q: %v", parentRunID, nodeID, status, err)
 	}
 }
 
