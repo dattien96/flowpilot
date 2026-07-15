@@ -454,20 +454,54 @@ func isFlowCodingCommitAttempt(s *InteractiveService, rs *interactiveRun, detail
 	return ok && canonical == "agent.delegate"
 }
 
+// looksLikeGitCommitCommand detects git-commit invocations including forms that
+// insert global options before the verb (Codex review Important #1):
+//   git commit -m x
+//   git -C . commit -m x
+//   git -c user.name=a commit -m x
+//   /usr/bin/git --git-dir=... commit
 func looksLikeGitCommitCommand(cmd string) bool {
 	fields := strings.Fields(cmd)
 	for i := 0; i < len(fields); i++ {
 		tok := strings.Trim(fields[i], `"'`)
-		// Accept bare "git" or a path ending in /git or \git (e.g. /usr/bin/git).
 		base := tok
 		if j := strings.LastIndexAny(tok, `/\`); j >= 0 {
 			base = tok[j+1:]
 		}
-		if (base == "git" || base == "git.exe") && i+1 < len(fields) {
-			next := strings.Trim(fields[i+1], `"'`)
-			if next == "commit" {
+		if base != "git" && base != "git.exe" {
+			continue
+		}
+		// Walk remaining args: skip global options that take a value, then
+		// the first non-option token is the git verb.
+		for j := i + 1; j < len(fields); j++ {
+			arg := strings.Trim(fields[j], `"'`)
+			if arg == "" {
+				continue
+			}
+			if arg == "commit" {
 				return true
 			}
+			// Global options that consume the next token as a value.
+			switch arg {
+			case "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env",
+				"--super-prefix", "--list-cmds":
+				j++ // skip value
+				continue
+			}
+			if strings.HasPrefix(arg, "-c") && strings.Contains(arg, "=") {
+				// -cuser.name=x style (rare) or -c=...
+				continue
+			}
+			if strings.HasPrefix(arg, "--git-dir=") || strings.HasPrefix(arg, "--work-tree=") ||
+				strings.HasPrefix(arg, "--namespace=") || strings.HasPrefix(arg, "--config-env=") {
+				continue
+			}
+			if strings.HasPrefix(arg, "-") {
+				// Other global flags without values (-p, --no-pager, --bare, …).
+				continue
+			}
+			// First non-option token: the git subcommand.
+			return arg == "commit"
 		}
 	}
 	return false
