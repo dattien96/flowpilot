@@ -45,7 +45,7 @@ func TestAppendTelegramOutputPromptListsChatAndTemplate(t *testing.T) {
 		},
 	}
 	got := appendTelegramOutputPrompt("base", node)
-	if !strings.Contains(got, "Required Telegram notification") {
+	if !strings.Contains(got, "sending a Telegram notification") {
 		t.Fatalf("expected write-contract heading, got %q", got)
 	}
 	if !strings.Contains(got, "-100123456") {
@@ -79,7 +79,7 @@ func TestComposeFlowNodeAgentPromptIncludesTelegramWriteContract(t *testing.T) {
 		},
 	}
 	got := composeFlowNodeAgentPrompt(t.TempDir(), "base prompt", node)
-	if !strings.Contains(got, "Required Telegram notification") {
+	if !strings.Contains(got, "sending a Telegram notification") {
 		t.Fatalf("expected composeFlowNodeAgentPrompt to include the Telegram write contract, got %q", got)
 	}
 }

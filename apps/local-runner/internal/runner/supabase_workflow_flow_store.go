@@ -72,7 +72,6 @@ type dbStepDefinitionRow struct {
 	NodeLifecycle     *string                   `json:"node_lifecycle"`
 	BehaviorID        *string                   `json:"behavior_id"`
 	AgentRef          *string                   `json:"agent_ref"`
-	DependsOnJSON     []string                  `json:"depends_on_json"`
 	JoinMode          *string                   `json:"join_mode"`
 	Cohort            *string                   `json:"cohort"`
 	PromptTemplateRef *string                   `json:"prompt_template_ref"`
@@ -130,7 +129,7 @@ type dbWorkflowRow struct {
 	WorkflowSteps    []dbWorkflowStepRow         `json:"workflow_steps"`
 }
 
-const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,depends_on_json,join_mode,cohort,prompt_template_ref,context_ref,context_sources,step_artifact_bindings(id,direction,slot_name,required,position,artifact_instance_id,artifact_instances(artifact_type_id,config_json,status))))"
+const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,join_mode,cohort,prompt_template_ref,context_ref,context_sources,step_artifact_bindings(id,direction,slot_name,required,position,artifact_instance_id,artifact_instances(artifact_type_id,config_json,status))))"
 
 func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 	rec := FlowDefinitionRecord{
@@ -210,10 +209,19 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 	sort.Slice(steps, func(i, j int) bool { return steps[i].OrderIndex < steps[j].OrderIndex })
 	for _, st := range steps {
 		defn := st.StepDefinition
-		node := agentpack.FlowNode{DependsOn: defn.DependsOnJSON}
+		node := agentpack.FlowNode{}
 		if defn.NodeID != nil {
 			node.ID = *defn.NodeID
 		}
+		// BUG-282: derive this node's graph dependency from the flow's own
+		// forward edges (workflows.edges_json — per-flow authoritative), NOT
+		// from step_definitions.depends_on_json. step_definitions is a shared
+		// catalog keyed by step_type, so a step reused across flows would
+		// otherwise drag in the FIRST flow's node ids (absent from THIS flow)
+		// and break entry/barrier resolution. Mirrors the client-side
+		// computeDependsOnByStepType (WorkflowsSettings.tsx). depends_on_json
+		// is no longer stored (dropped by migration).
+		node.DependsOn = forwardEdgeSources(def.Edges, node.ID)
 		if defn.NodeLifecycle != nil {
 			node.Lifecycle = *defn.NodeLifecycle
 		}
@@ -631,7 +639,6 @@ func (s *SupabaseWorkflowFlowStore) upsertNodeStepDefinitions(ctx context.Contex
 			"node_lifecycle":      nilIfEmpty(node.Lifecycle),
 			"behavior_id":         nilIfEmpty(node.Behavior),
 			"agent_ref":           nilIfEmpty(node.Agent),
-			"depends_on_json":     nonNilStrings(node.DependsOn),
 			"join_mode":           nilIfEmpty(node.Join),
 			"cohort":              nilIfEmpty(node.Cohort),
 			"prompt_template_ref": nilIfEmpty(node.PromptTemplate),

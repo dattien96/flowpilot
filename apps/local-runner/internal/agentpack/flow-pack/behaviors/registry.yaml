@@ -238,6 +238,60 @@ behaviors:
     usedBy:
       - flows/rag-harness.yaml#audit
 
+  - id: telegram.notify
+    scope: inline
+    aliases:
+      - notify.telegram
+    purpose: Send a bound telegram.v1 OUTPUT message deterministically, with no AI turn.
+    runtimeHandler: behaviorTelegramNotify
+    aiRole:
+      sees:
+        - Nothing; no provider turn runs for this node.
+      does:
+        - Nothing — the message text is the artifact's own Message Template, or a fixed default summary.
+    goRuntime:
+      inputs:
+        - node.ArtifactBindings (telegram.v1 OUTPUT, chatId + optional messageTemplate)
+      does:
+        - Sends via executeTelegramLoopbackSend (resolves the connected bot credential, honors auto-approve).
+        - Verifies a real message_id before following the forward "done" edge.
+        - Escalates (ask_user) instead of settling done when the send did not complete.
+      usesExistingLogic:
+        - executeTelegramLoopbackSend (telegram_loopback.go)
+      doesNotDo:
+        - No AI composition of the message.
+        - No template variable substitution (Message Template is sent verbatim).
+    usedBy:
+      - Any flow node bound to a telegram.v1 OUTPUT artifact where a fixed/templated message is enough.
+
+  - id: hub.notify
+    scope: inline
+    aliases:
+      - notify.hub
+    purpose: Reinvoke the SAME hub/main agent session for one more turn to compose and send a notification, with no child agent spawned.
+    runtimeHandler: behaviorHubNotify
+    aiRole:
+      sees:
+        - A write-contract prompt (telegram.v1 OUTPUT target + optional Message Template, when bound) plus an instruction to call the flow's control tool with status=done when finished.
+      does:
+        - Composes the notification (e.g. fills the Message Template's free-text/variable parts) and calls send_message itself, then calls the flow control tool.
+      doesNotDo:
+        - Does not spawn a child agent — this IS the hub's own next turn.
+    goRuntime:
+      inputs:
+        - node (for its telegram.v1 OUTPUT binding, if any)
+      does:
+        - Marks node as the run's active hub node so its own later "done" resolves against its own forward edge.
+        - Reinvokes the hub session (maybeAutoReinvokeHubWithPrompt) with composeHubNotifyPrompt's prompt.
+      usesExistingLogic:
+        - The same hub-reinvoke mechanism (scheduleChildTurn) hub.inline/synthesis already uses — no new agent-spawn path.
+      doesNotDo:
+        - No provider call inside the handler itself; the reinvoked turn is a normal hub turn.
+    runtimeEffects:
+      - Leaves the flow loop running (not settled) until the reinvoked turn calls flow_control("done").
+    usedBy:
+      - A node placed after synthesis (or any other node) when the message should be AI-composed from a template, without the token/session cost of a fresh child agent.
+
   - id: flow.control
     scope: control
     aliases:

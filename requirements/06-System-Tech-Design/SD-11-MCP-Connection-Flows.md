@@ -6,7 +6,7 @@ This document covers three MCP-related integrations in FlowPilot:
 
 - Google Drive via the FlowPilot-owned proxy MCP plus runner-local account OAuth and optional artifact folder binding
 - Jira via Atlassian's official remote MCP server
-- Telegram via an MCP-backed output notification artifact (`telegram.v1`): the AI provider CLI calls a Telegram MCP tool to send. Native Go adapter retained only as a fallback. **(Amended 2026-07-13 — see §3.3 and [CP-05-05](../07-Coding-Plan/todo/CP-05-05-Tele-Mcp.md).)**
+- Telegram via an MCP-backed output notification artifact (`telegram.v1`): the AI provider CLI calls a Telegram MCP tool to send. Native Go adapter retained only as a fallback. **(Amended 2026-07-13 — see §3.3 and [CP-05-05](../07-Coding-Plan/done/CP-05-05-Tele-Mcp.md).)**
 
 ---
 
@@ -128,7 +128,7 @@ Reference docs:
 
 ### 3.3 Telegram
 
-> **Amendment (2026-07-13).** The original MVP design below made Telegram a **native Go adapter with no MCP server**. That is superseded: Telegram is now an **MCP-backed OUTPUT notification artifact** (`telegram.v1`) — the AI provider CLI calls a Telegram MCP tool (`send_message`) during its turn, consistent with the artifact framework ([SD-23](./SD-23-Generic-Artifact-Framework.md) `D-8`/`D-11`) and the "provider CLI owns MCP" principle (CP-05-03 §11). Owner decision recorded in [CP-05-05](../07-Coding-Plan/todo/CP-05-05-Tele-Mcp.md) (`Q-1`). The native Go adapter (original text, preserved below) is retained **only as a documented fallback** if no reliable Telegram MCP server is available (CP-05-05 `Q-3`).
+> **Amendment (2026-07-13).** The original MVP design below made Telegram a **native Go adapter with no MCP server**. That is superseded: Telegram is now an **MCP-backed OUTPUT notification artifact** (`telegram.v1`) — the AI provider CLI calls a Telegram MCP tool (`send_message`) during its turn, consistent with the artifact framework ([SD-23](./SD-23-Generic-Artifact-Framework.md) `D-8`/`D-11`) and the "provider CLI owns MCP" principle (CP-05-03 §11). Owner decision recorded in [CP-05-05](../07-Coding-Plan/done/CP-05-05-Tele-Mcp.md) (`Q-1`). The native Go adapter (original text, preserved below) is retained **only as a documented fallback** if no reliable Telegram MCP server is available (CP-05-05 `Q-3`).
 
 Current (amended) design:
 

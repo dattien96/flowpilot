@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Integration, IntegrationType, LocalRunnerMcpBackend, Project, TelegramApprovalRecord } from "@flowpilot/client-core";
+import type { Integration, IntegrationType, LocalRunnerMcpBackend, Project } from "@flowpilot/client-core";
 import { getAdminUseCases } from "@/clientCore";
 import { RUNNER_URL } from "@/config";
 import { buildConfig, createEmptyConfig, findDuplicateJiraIntegration, formatTimestamp, integrationTypes, providerFields, stripSecretFields, toErrorMessage } from "@/components/settings/settingsHelpers";
@@ -97,10 +97,8 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
   // Jira verify / token rejection can't be missed as inline feedback text.
   const [errorModal, setErrorModal] = useState<{ title: string; body: string } | null>(null);
   const [editingIntegrationId, setEditingIntegrationId] = useState<string | null>(null);
-  const [telegramApprovals, setTelegramApprovals] = useState<TelegramApprovalRecord[]>([]);
-  // Task-233 / CLI E2E: when true, telegram-mcp skips the pending-approval
-  // queue for out-of-run-scope calls (Codex CLI standalone). Stored in the
-  // runner keyring credential as autoApprove (not Supabase secrets).
+  // Task-233: when true, telegram-mcp allows send_message. Stored in the runner
+  // keyring credential as autoApprove (not Supabase secrets).
   const [telegramAutoApprove, setTelegramAutoApprove] = useState(false);
   const [providerAccounts, setProviderAccounts] = useState<RunnerProviderAccount[]>([]);
   const [configureMessage, setConfigureMessage] = useState<string | null>(null);
@@ -115,16 +113,10 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
   const refresh = async (allowed: IntegrationType[] = types) => {
     try {
       const admin = await getAdminUseCases();
-      const [nextProjects, nextIntegrations, nextBackends, nextTelegramApprovals] = await Promise.all([
+      const [nextProjects, nextIntegrations, nextBackends] = await Promise.all([
         admin.projects.listProjects(),
         admin.integrations.listIntegrations(),
         admin.integrations.listMcpBackends(),
-        // Only Telegram cares about the pending-send queue; skip the call on
-        // other single-type modes so a slow/failed approvals fetch cannot
-        // block Jira/Firebase pages (and never surface Telegram-only UI there).
-        mode === "telegram" || mode === "all"
-          ? admin.integrations.listTelegramProxyApprovals("pending")
-          : Promise.resolve([] as TelegramApprovalRecord[]),
       ]);
       setProjects(nextProjects);
       setIntegrations(nextIntegrations.filter((integration) => allowed.includes(integration.type)));
@@ -135,7 +127,6 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
             allowed.includes(backend.key as IntegrationType),
         ),
       );
-      setTelegramApprovals(nextTelegramApprovals);
       setProjectId((current) => current || nextProjects[0]?.id || "");
       if (providerConfigEnsurePath[allowed[0] ?? "jira"]) {
         const accountsResponse = await runnerFetch("/provider-accounts");
@@ -178,7 +169,7 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
     // Drop stale lists immediately so the previous tab's rows don't flash.
     setIntegrations([]);
     setBackends([]);
-    setTelegramApprovals([]);
+
     setProviderAccounts([]);
     void refresh(types);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally mode-scoped; refresh closes over latest types via arg
@@ -440,20 +431,6 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
     );
   };
 
-  const decideTelegramApproval = async (id: string, decision: "approved" | "rejected") => {
-    setBusy(true);
-    try {
-      const admin = await getAdminUseCases();
-      await admin.integrations.decideTelegramProxyApproval(id, decision);
-      await refresh();
-      setMessage(decision === "approved" ? "Telegram message approved. It will send on the AI's next retry." : "Telegram message rejected.");
-    } catch (error) {
-      setErrorModal({ title: "Unable to decide Telegram approval", body: toErrorMessage(error, "Unable to decide Telegram approval.") });
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <section className="settings-panel">
       <div className="settings-panel-head"><div><div className="settings-eyebrow">MCP</div><h2>{modeLabel(mode)}</h2><p>Manage runner MCP backends and reusable MCP integrations that can be linked to any project or step later.</p></div></div>
@@ -518,13 +495,12 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
                   type="checkbox"
                 />
                 <span>
-                  Auto-approve sends (CLI / dev)
+                  Allow Telegram sends
                   <small className="settings-field-help">
-                    When checked, <code>send_message</code> without a FlowPilot run scope (e.g. Codex CLI)
-                    sends immediately. Unchecked (default) refuses those calls with{" "}
-                    <code>MCP_TOOL_APPROVAL_REQUIRED</code>. In-app FlowPilot runs still use the Pending
-                    Approvals queue when run/step scope is present. Flag is stored in the{" "}
-                    <strong>runner keyring</strong> with the bot credential — not in Supabase secrets.
+                    When checked, <code>send_message</code> is allowed for flow runs and provider CLI turns.
+                    Unchecked (default) refuses sends with <code>MCP_TOOL_APPROVAL_REQUIRED</code>. Stored in the{" "}
+                    <strong>runner keyring</strong> with the bot credential — not in Supabase secrets. Use{" "}
+                    <strong>Enable auto-approve</strong> on an existing integration to toggle without reconnecting.
                   </small>
                 </span>
               </label>
@@ -587,8 +563,8 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
                       type="button"
                       title={
                         autoApproveOn
-                          ? "Disable auto-approve (CLI sends will require this flag again)"
-                          : "Enable auto-approve so Codex CLI can send without Pending Approvals"
+                          ? "Disable Telegram sends until re-enabled"
+                          : "Allow Telegram send_message for flow runs and provider CLI"
                       }
                     >
                       {autoApproveOn ? "Disable auto-approve" : "Enable auto-approve"}
@@ -648,40 +624,6 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
             >
               Configure Providers
             </button>
-          </div>
-        </div>
-      ) : null}
-      {(mode === "telegram" || mode === "all") && integrations.some((integration) => integration.type === "telegram") ? (
-        <div className="settings-subpanel">
-          <h3>Pending Telegram Approvals</h3>
-          <small className="settings-field-help">
-            Per-send queue for <strong>in-app FlowPilot runs</strong> that have run/step scope (Task-233). Stored
-            under the workspace as <code>.flowpilot/telegram-proxy-approvals.json</code>. Approve → AI retries the
-            same <code>send_message</code> and it sends for real; Reject blocks it. Separate from the integration{" "}
-            <strong>Auto-approve</strong> flag (keyring), which only covers CLI / no-scope calls.
-          </small>
-          <div className="settings-list">
-            {telegramApprovals.length === 0 ? (
-              <div className="settings-list-empty">No pending Telegram sends.</div>
-            ) : (
-              telegramApprovals.map((approval) => (
-                <div className="settings-list-item static" key={approval.id}>
-                  <div>
-                    <strong>To chat {approval.chatId}</strong>
-                    <span>{approval.text}</span>
-                    <span>requested {formatTimestamp(approval.requestedAt)}</span>
-                  </div>
-                  <div className="settings-actions">
-                    <button className="primary-btn" disabled={busy} onClick={() => void decideTelegramApproval(approval.id, "approved")} type="button">
-                      Approve
-                    </button>
-                    <button className="secondary-btn" disabled={busy} onClick={() => void decideTelegramApproval(approval.id, "rejected")} type="button">
-                      Reject
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
           </div>
         </div>
       ) : null}

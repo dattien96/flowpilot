@@ -208,15 +208,15 @@ test("cloneWorkflow creates an editable, non-builtin copy referencing the source
   assert.equal(cloned.name, "My Review Loop");
 });
 
-// Regression test for BUG-262: cloneWorkflow used to reuse the source's
-// step_type verbatim for the clone's workflow_steps, so both workflows
-// pointed at the SAME step_definitions row. Editing the clone's edges and
-// saving (persistEdgeDerivedDependsOn -> saveStepDefinition) then silently
-// overwrote the SOURCE's (including a built-in's) dependsOn too — exactly
-// the live incident that corrupted the review-loop built-in's "synthesis"
-// node via an unrelated custom flow clone. The fix gives every cloned step
-// its own fresh, workflow-scoped step_type and an independent
-// step_definitions row.
+// Regression test for BUG-262 (+ BUG-282): cloneWorkflow used to reuse the
+// source's step_type verbatim for the clone's workflow_steps, so both
+// workflows pointed at the SAME step_definitions row; editing the clone's
+// edges then silently overwrote the source's shared fields. The fix gives
+// every cloned step its own fresh, workflow-scoped step_type and an
+// independent step_definitions row. BUG-282 additionally removes flow
+// topology from step_definitions entirely — `depends_on_json` is no longer a
+// column and the clone must NOT copy it (topology lives only on the workflow's
+// own edges_json, which cloneWorkflow copies onto the clone's row).
 test("cloneWorkflow gives every cloned step its own step_definitions row, not the source's", async () => {
   const supabase = new FakeSupabase();
   const sourceRow = builtinWorkflowRow();
@@ -281,7 +281,13 @@ test("cloneWorkflow gives every cloned step its own step_definitions row, not th
   assert.notEqual(newStepType, sourceStepType, "clone must not reuse the source's step_type");
   assert.equal(newStepType, `${cloned.id}__${sourceStepType}`);
   assert.equal(newDefinitionRows[0].node_id, "synthesis");
-  assert.deepEqual(newDefinitionRows[0].depends_on_json, ["reviewer_correctness", "reviewer_security"]);
+  // BUG-282: flow topology is not stored on the step definition, so the clone
+  // must not copy depends_on_json — even though the seeded source row (a legacy
+  // row from before the column was dropped) still carries it.
+  assert.ok(
+    !("depends_on_json" in newDefinitionRows[0]),
+    "clone must not copy flow topology onto the cloned step definition",
+  );
 
   const workflowStepsTable = supabase.tables.get("workflow_steps")!;
   const newRelationRows = workflowStepsTable.insertPayloads[0] as Array<Record<string, unknown>>;
@@ -394,9 +400,12 @@ test("saveWorkflow does not delete existing steps when the insert fails", async 
 });
 
 // Task-189 (owner-confirmed 2026-07-06, = BUG-236 contract): node identity
-// (nodeId/behaviorId/agentRef/dependsOn/joinMode/cohort) lives ONLY on
-// StepDefinition — WorkflowStep/workflow_steps is a pure relation/order
-// table and must never carry node data. This test used to be named
+// (nodeId/behaviorId/agentRef/joinMode/cohort) lives ONLY on StepDefinition —
+// WorkflowStep/workflow_steps is a pure relation/order table and must never
+// carry node data. (BUG-282: flow topology, formerly `depends_on_json`, no
+// longer lives on StepDefinition either — it lives only on the workflow's
+// edges_json — so workflow_steps still must never carry it.) This test used
+// to be named
 // "mapWorkflowStep round-trips the new flow-engine attrs" and asserted the
 // OPPOSITE (that saveWorkflow wrote node_id/behavior_id/etc into the
 // workflow_steps insert payload) — that was the design BUG-236 explicitly

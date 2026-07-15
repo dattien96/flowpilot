@@ -139,7 +139,7 @@ function createEmptyStepDraft(modelId: string): StepDefinition {
     requiredSkills: [],
     teamRole: null,
     subagent: null,
-    model: "",
+    model: null,
     reasoningEffort: DEFAULT_REASONING,
     yoloMode: false,
     agentType: "standard",
@@ -147,7 +147,6 @@ function createEmptyStepDraft(modelId: string): StepDefinition {
     behaviorId: null,
     agentRef: null,
     nodeLifecycle: null,
-    dependsOn: [],
     joinMode: null,
     cohort: null,
     promptTemplateRef: null,
@@ -258,7 +257,6 @@ function normalizeStepSnapshot(step: StepDefinition | null) {
     behaviorId: step.behaviorId ?? "",
     agentRef: step.agentRef ?? "",
     nodeLifecycle: step.nodeLifecycle ?? "",
-    dependsOn: [...(step.dependsOn ?? [])].sort(),
     joinMode: step.joinMode ?? "",
     cohort: step.cohort ?? "",
     promptTemplateRef: step.promptTemplateRef ?? "",
@@ -278,6 +276,36 @@ function buildModelOptions(models: SupportedModel[]) {
 
 function toggleString(list: string[], value: string) {
   return list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
+}
+
+// A step whose Behavior ID requires an agent (agent.delegate) but has no
+// Agent ref set resolves at runtime to flowNodeAgentName(node) === "" — the
+// executor logs "entry node has no resolvable agent; skipped" and the node
+// never spawns, with no error surfaced to the user anywhere in the UI. This
+// mirrors validateFlowGraph's same check (which only ever runs at Save
+// Workflow time, and only once a flow has edges) at the point the step
+// itself is actually authored, so the gap can't be saved in the first place.
+function stepDefinitionAgentRefIssue(
+  behaviorId: string | null | undefined,
+  agentRef: string | null | undefined,
+): string | null {
+  const requiresAgent = FLOW_BEHAVIOR_OPTIONS.find((option) => option.id === behaviorId)?.requiresAgent ?? false;
+  if (requiresAgent && !agentRef?.trim()) {
+    return `Behavior "${behaviorId}" requires an Agent ref — set one before saving this step.`;
+  }
+  return null;
+}
+
+// A step's Model/Reasoning effort only matter for a real provider turn: an
+// agent.delegate node (spawns a child) or a step with NO behaviorId at all
+// (a plain, pre-flow catalog step — still a normal agent turn). Every other
+// (inline/control) behavior is Go-deterministic and never consumes them —
+// resolveFlowNodeModel (flow_executor.go) returns "" for any non-delegate
+// node already — so the authoring UI must not force a choice here, and the
+// fields are hidden entirely for those behaviors.
+function stepDefinitionRequiresModel(behaviorId: string | null | undefined): boolean {
+  if (!behaviorId) return true;
+  return FLOW_BEHAVIOR_OPTIONS.find((option) => option.id === behaviorId)?.requiresAgent ?? false;
 }
 
 // CP-45/SD-23 Task-200 D-7 (simplified v1 type-compat rule): a
@@ -1162,91 +1190,15 @@ export function WorkflowsSettings(): React.ReactElement {
     return Array.from(new Set(ids));
   };
 
-  // Owner finding (2026-07-06): step_definitions.dependsOn used to be a
-  // manually-typed field kept separately from this workflow's own edges —
-  // two sources of truth for the same fact (which nodes must complete before
-  // this one is an entry vs. downstream node), with nothing keeping them in
-  // sync. A node reachable only via an edge, but with a stale/blank
-  // dependsOn, would be misidentified as an entry node by the runner's
-  // entryDelegateNodes (flow_executor.go) and double-spawned. dependsOn is
-  // now DERIVED from this workflow's own edges on every save — the "Depends
-  // on" field in the step-definition form is read-only display only.
-  //
-  // Only forward edges count as a real dependency: a back edge (e.g.
-  // synthesis -> coder on "continue") represents loop re-entry, not an
-  // initial-run prerequisite, and must not make the entry node look
-  // non-entry.
-  const computeDependsOnByStepType = (
-    steps: WorkflowStep[],
-    edges: WorkflowFlowEdge[],
-  ): Map<string, string[]> => {
-    const result = new Map<string, string[]>();
-    for (const step of steps) {
-      const definition = stepDefinitions.find((d) => d.stepType === step.stepType);
-      const nodeId = definition?.nodeId;
-      if (!nodeId) continue;
-      const incoming = edges
-        .filter((edge) => edge.to === nodeId && edge.kind === "forward")
-        .map((edge) => edge.from);
-      result.set(step.stepType, Array.from(new Set(incoming)));
-    }
-    return result;
-  };
-
-  const arraysEqualUnordered = (a: string[], b: string[]): boolean => {
-    if (a.length !== b.length) return false;
-    const sortedA = [...a].sort();
-    const sortedB = [...b].sort();
-    return sortedA.every((value, index) => value === sortedB[index]);
-  };
-
-  // Persists the edge-derived dependsOn onto each affected step-definition.
-  // Called from saveWorkflow/saveNewWorkflow after the workflow itself saves
-  // successfully, gated the same way validateFlowGraph is (only workflows
-  // that actually declare edges get this treatment — a plain legacy/linear
-  // workflow with edges: [] never had a graph-derived dependsOn to begin
-  // with and is left alone).
-  //
-  // BUG-262: step_definitions is a de-duplicated catalog keyed by step_type
-  // (BUG-164), so a step_type can legitimately be referenced by more than
-  // one workflow's workflow_steps — cloneWorkflow no longer creates this
-  // situation itself (each clone now gets its own step_types), but a
-  // pre-existing shared row from before that fix, or a brand-new workflow
-  // that deliberately reuses an existing step from the "add step" dropdown,
-  // can still land here. This used to overwrite dependsOn unconditionally,
-  // silently corrupting every OTHER workflow (including a built-in) that
-  // also references the same step_type with whatever the CURRENT workflow's
-  // own local edge graph happens to say. Guard it the same way the delete
-  // flow already does (listWorkflowsUsingSteps/stepTypesUsedByBuiltin,
-  // above): skip the write and report the step back to the caller instead of
-  // silently corrupting a workflow the user isn't even looking at.
-  const persistEdgeDerivedDependsOn = async (
-    admin: Awaited<ReturnType<typeof getAdminUseCases>>,
-    steps: WorkflowStep[],
-    edges: WorkflowFlowEdge[],
-    currentWorkflowId: string,
-  ): Promise<string[]> => {
-    if (edges.length === 0) return [];
-    const computed = computeDependsOnByStepType(steps, edges);
-    const pendingStepTypes = Array.from(computed.keys());
-    const usages =
-      pendingStepTypes.length > 0 ? await admin.workflows.listWorkflowsUsingSteps(pendingStepTypes) : [];
-    const sharedWithAnotherWorkflow = new Set(
-      usages.filter((usage) => usage.workflowId !== currentWorkflowId).map((usage) => usage.stepType),
-    );
-    const skipped: string[] = [];
-    for (const [stepType, dependsOn] of computed) {
-      const definition = stepDefinitions.find((d) => d.stepType === stepType);
-      if (!definition) continue;
-      if (arraysEqualUnordered(definition.dependsOn ?? [], dependsOn)) continue;
-      if (sharedWithAnotherWorkflow.has(stepType)) {
-        skipped.push(definition.name || stepType);
-        continue;
-      }
-      await admin.workflows.saveStepDefinition({ ...definition, dependsOn });
-    }
-    return skipped;
-  };
+  // BUG-282: a step's flow dependency is no longer persisted anywhere on the
+  // step definition — topology lives only on the workflow's own edges
+  // (workflows.edges_json), and the Go runner derives each node's dependency
+  // from those edges at flow-load time (forwardEdgeSources, flow_executor.go).
+  // There is therefore nothing edge-derived to write back onto step_definitions
+  // when a workflow saves, so the former persistEdgeDerivedDependsOn /
+  // computeDependsOnByStepType helpers (and their BUG-262 shared-step guard)
+  // are gone; a step reused across flows can no longer carry another flow's
+  // node ids because it carries no topology at all.
 
   // Task-189: the flow graph's edges (Workflow.edges/edges_json) were already
   // round-tripped by saveWorkflow/saveNewWorkflow (BUG-NOTE-CP42 #14 passes
@@ -1404,30 +1356,11 @@ export function WorkflowsSettings(): React.ReactElement {
         edges: workflowDraft.edges,
         steps: workflowSteps.map((step, orderIndex) => ({ ...step, orderIndex })),
       });
-      // Own try/catch: the workflow itself already saved successfully by this
-      // point, so a failure syncing derived dependsOn must not be reported as
-      // "Unable to save workflow" — that would wrongly suggest the save never
-      // happened at all.
-      let skippedSteps: string[] = [];
-      try {
-        skippedSteps = await persistEdgeDerivedDependsOn(admin, workflowSteps, workflowDraft.edges, saved.id);
-      } catch (dependsOnError) {
-        await refresh(saved.id, selectedStepType, { preserveCreateDrafts: true });
-        setMessage(
-          `Workflow saved, but some step dependencies could not sync: ${toErrorMessage(dependsOnError, "unknown error")}`,
-        );
-        return;
-      }
+      // BUG-282: the workflow's edges are the only home for flow topology, and
+      // they were just persisted above. Nothing further to sync onto the step
+      // definitions.
       await refresh(saved.id, selectedStepType, { preserveCreateDrafts: true });
-      setMessage(
-        skippedSteps.length > 0
-          ? `Workflow saved. Dependencies for ${skippedSteps.join(", ")} were NOT updated because ${
-              skippedSteps.length > 1 ? "they are" : "it is"
-            } shared with another workflow — clone this workflow or use dedicated steps to edit ${
-              skippedSteps.length > 1 ? "them" : "it"
-            } independently.`
-          : "Workflow saved.",
-      );
+      setMessage("Workflow saved.");
     } catch (error) {
       setMessage(toErrorMessage(error, "Unable to save workflow."));
     } finally {
@@ -1467,37 +1400,11 @@ export function WorkflowsSettings(): React.ReactElement {
         edges: createWorkflowDraft.edges,
         steps: createWorkflowSteps.map((step, orderIndex) => ({ ...step, orderIndex })),
       });
-      // Own try/catch: the workflow itself already saved successfully by this
-      // point, so a failure syncing derived dependsOn must not be reported as
-      // "Unable to create workflow" — that would wrongly suggest the create
-      // never happened at all.
-      let skippedSteps: string[] = [];
-      try {
-        skippedSteps = await persistEdgeDerivedDependsOn(
-          admin,
-          createWorkflowSteps,
-          createWorkflowDraft.edges,
-          saved.id,
-        );
-      } catch (dependsOnError) {
-        setWorkflowView("list");
-        await refresh(saved.id, selectedStepType);
-        setMessage(
-          `Workflow created, but some step dependencies could not sync: ${toErrorMessage(dependsOnError, "unknown error")}`,
-        );
-        return;
-      }
+      // BUG-282: flow topology lives only on the workflow's edges (persisted
+      // above); nothing further to sync onto the step definitions.
       setWorkflowView("list");
       await refresh(saved.id, selectedStepType);
-      setMessage(
-        skippedSteps.length > 0
-          ? `Workflow created. Dependencies for ${skippedSteps.join(", ")} were NOT updated because ${
-              skippedSteps.length > 1 ? "they are" : "it is"
-            } shared with another workflow — clone this workflow or use dedicated steps to edit ${
-              skippedSteps.length > 1 ? "them" : "it"
-            } independently.`
-          : "Workflow created.",
-      );
+      setMessage("Workflow created.");
     } catch (error) {
       setMessage(toErrorMessage(error, "Unable to create workflow."));
     } finally {
@@ -1507,8 +1414,14 @@ export function WorkflowsSettings(): React.ReactElement {
 
   const saveStepDefinition = async () => {
     if (!stepDraft) return;
-    if (!stepDraft.model) {
+    const requiresModel = stepDefinitionRequiresModel(stepDraft.behaviorId);
+    if (requiresModel && !stepDraft.model) {
       setMessage("Model is required.");
+      return;
+    }
+    const agentRefIssue = stepDefinitionAgentRefIssue(stepDraft.behaviorId, stepDraft.agentRef);
+    if (agentRefIssue) {
+      setMessage(agentRefIssue);
       return;
     }
     setBusy(true);
@@ -1517,6 +1430,12 @@ export function WorkflowsSettings(): React.ReactElement {
       const admin = await getAdminUseCases();
       const saved = await admin.workflows.saveStepDefinition({
         ...stepDraft,
+        // A behavior that doesn't need a model (inline/control) must not
+        // silently persist a stale value left over from before the user
+        // switched Behavior ID — the fields are hidden in the form, so there
+        // is no UI left to clear them manually.
+        model: requiresModel ? stepDraft.model : null,
+        reasoningEffort: requiresModel ? stepDraft.reasoningEffort : null,
         promptBase:
           stepDraft.promptBase?.trim() ||
           deriveStepPromptBase({
@@ -1539,8 +1458,14 @@ export function WorkflowsSettings(): React.ReactElement {
       setMessage("Step key is required.");
       return;
     }
-    if (!createStepDraft.model) {
+    const requiresModel = stepDefinitionRequiresModel(createStepDraft.behaviorId);
+    if (requiresModel && !createStepDraft.model) {
       setMessage("Model is required.");
+      return;
+    }
+    const agentRefIssue = stepDefinitionAgentRefIssue(createStepDraft.behaviorId, createStepDraft.agentRef);
+    if (agentRefIssue) {
+      setMessage(agentRefIssue);
       return;
     }
     setBusy(true);
@@ -1552,6 +1477,8 @@ export function WorkflowsSettings(): React.ReactElement {
         stepType: createStepDraft.stepType.trim(),
         name: createStepDraft.name.trim() || createStepDraft.stepType.trim(),
         description: createStepDraft.description.trim(),
+        model: requiresModel ? createStepDraft.model : null,
+        reasoningEffort: requiresModel ? createStepDraft.reasoningEffort : null,
         promptBase:
           createStepDraft.promptBase?.trim() ||
           deriveStepPromptBase({
@@ -2223,35 +2150,48 @@ export function WorkflowsSettings(): React.ReactElement {
             value={draft.promptBase ?? ""}
           />
         </label>
-        <label className="settings-field">
-          <span>Model</span>
-          <select
-            onChange={(event) => onChange({ ...draft, model: event.target.value })}
-            value={draft.model ?? ""}
-          >
-            <option value="">Select a model...</option>
-            {modelOptions.map((model) => (
-              <option key={model.value} value={model.value}>
-                {model.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="settings-field">
-          <span>Reasoning effort</span>
-          <select
-            onChange={(event) =>
-              onChange({ ...draft, reasoningEffort: event.target.value })
-            }
-            value={draft.reasoningEffort ?? DEFAULT_REASONING}
-          >
-            {REASONING_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {stepDefinitionRequiresModel(draft.behaviorId) ? (
+          <>
+            <label className="settings-field">
+              <span>Model</span>
+              <select
+                onChange={(event) => onChange({ ...draft, model: event.target.value || null })}
+                value={draft.model ?? ""}
+              >
+                <option value="">Select a model...</option>
+                {modelOptions.map((model) => (
+                  <option key={model.value} value={model.value}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="settings-field">
+              <span>Reasoning effort</span>
+              <select
+                onChange={(event) =>
+                  onChange({ ...draft, reasoningEffort: event.target.value })
+                }
+                value={draft.reasoningEffort ?? DEFAULT_REASONING}
+              >
+                {REASONING_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        ) : (
+          // Inline/control behaviors (context.produce, command.validate,
+          // artifact.audit_draft, telegram.notify, ...) are Go-deterministic
+          // and never spawn a provider turn, so Model/Reasoning effort do not
+          // apply — hidden rather than forcing a meaningless choice.
+          <div className="settings-field settings-field-full project-muted-copy">
+            Model / Reasoning effort not applicable — Behavior "{draft.behaviorId}" runs inline,
+            with no provider turn.
+          </div>
+        )}
         <label className="settings-field">
           <span>Behavior ID</span>
           <select

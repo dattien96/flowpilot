@@ -5,11 +5,11 @@
 - Document ID: `Task-231`
 - Title: `Firebase Crashlytics Context Source And Runtime Target`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-13`
-- Last Updated: `2026-07-13`
+- Last Updated: `2026-07-15`
 - Parent Documents: [CP-05-04: Firebase MCP As A Crash-Context Artifact Source](../../07-Coding-Plan/todo/CP-05-04-Firebase-Mcp.md) (`P-3`, `P-4`, `P-5`, `P-6`)
 - Child Documents: `None`
 - Related Documents: [Task-226: MCP Context-Source Adapter Dispatch Refactor](./Task-226-MCP-Context-Source-Adapter-Dispatch-Refactor.md) (blocker), [Task-227: Generalize MCP Prompt-Injection And Preflight](./Task-227-Generalize-MCP-Prompt-Injection-And-Preflight.md) (blocker), [Task-230: Firebase Crashlytics MCP Connection And Provider Config](./Task-230-Firebase-Crashlytics-MCP-Connection-And-Provider-Config.md) (blocker), [Task-229: Jira Issue Context Source And Runtime Target Picker](./Task-229-Jira-Issue-Context-Source-And-Runtime-Target-Picker.md) (mẫu song song)
@@ -106,7 +106,7 @@ Sau connection (230) + refactor nền (226/227), đây là slice biến Firebase
   - `FlowContextHints`/`BehaviorInput` gained `FirebaseCrashRef` (mirror `JiraIssueRef`).
   - UI: `contextSourceOptions` gained `firebase.crashlytics` + a sub-note (mirrors the Jira note) explaining the runtime-question behavior and the connected-Firebase dependency.
   - Tests: `context_source_firebase_test.go` (new, 9 cases — bounded section/SourceRef, empty-ref no-op, **no-adapter degrade** (the key Task-231-specific case), adapter-error degrade, registered-not-default, no-vector guard, normalize helper, prompt-note bounded-scope + no-op). `go build ./...` clean; `go vet` clean; `go test ./internal/runner/... -run 'Firebase|firebase'` — 23 pass (14 from Task-230 + 9 new); full suite `go test ./internal/runner/...` — 1438 passed / 16 failed / 18 skipped (same 16 pre-existing/unrelated failures across all six tasks so far, zero new regressions). `tsc --noEmit` in `apps/desktop-flowpilot` clean.
-- follow-ups: (1) if a deterministic, testable Crashlytics access path is ever wanted outside the AI-turn's own MCP tool calls (e.g. for the Test Console), wire a real `FirebaseCrashlyticsAdapter` then — the seam (`SetFirebaseCrashlyticsAdapter`) is already in place; (2) wire a concrete built-in "Investigate Crash" flow binding `context_artifact.v1` with `firebase.crashlytics` + `source.excerpt` enabled, as the live E2E vehicle (same follow-up shape as Task-229's).
+- follow-ups: built-in "Investigate Crash" pack flow **won't-do** (manual wiring only). Optional: wire `FirebaseCrashlyticsAdapter` for Test Console direct-collect if ever needed.
 - upstream docs updated: none required — CP-05-04 `P-3`/`P-4`/`P-5` describe exactly this shape, including the "no REST fallback, MCP-only" framing that justifies the no-adapter decision above.
 
 ## 9. Addendum (same session, later): production adapter wired

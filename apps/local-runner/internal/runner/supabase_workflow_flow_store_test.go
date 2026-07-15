@@ -35,7 +35,7 @@ func TestSupabaseWorkflowFlowStoreGetByRefBuiltinPackFlowID(t *testing.T) {
 						"step_definitions": map[string]any{
 							"step_type": "flowpilot_core_flow_pack__review_loop__coder", "node_id": "coder",
 							"node_lifecycle": "reinvoke", "behavior_id": "agent.delegate",
-							"agent_ref": "agents/coder.md", "depends_on_json": []string{},
+							"agent_ref": "agents/coder.md",
 						},
 					},
 				},
@@ -105,14 +105,14 @@ func TestSupabaseWorkflowFlowStoreGetByRefDecodesContexts(t *testing.T) {
 						"step_type": "flowpilot_core_flow_pack__rag_harness__implement", "order_index": 0,
 						"step_definitions": map[string]any{
 							"step_type": "flowpilot_core_flow_pack__rag_harness__implement", "node_id": "implement",
-							"behavior_id": "agent.delegate", "agent_ref": "agents/coder.md", "depends_on_json": []string{"context"},
+							"behavior_id": "agent.delegate", "agent_ref": "agents/coder.md",
 						},
 					},
 					{
 						"step_type": "flowpilot_core_flow_pack__rag_harness__context", "order_index": 1,
 						"step_definitions": map[string]any{
 							"step_type": "flowpilot_core_flow_pack__rag_harness__context", "node_id": "context",
-							"behavior_id": "context.produce", "depends_on_json": []string{},
+							"behavior_id": "context.produce",
 						},
 					},
 				},
@@ -134,6 +134,85 @@ func TestSupabaseWorkflowFlowStoreGetByRefDecodesContexts(t *testing.T) {
 	binding, ok := record.Definition.Contexts["main_context"]
 	if !ok || binding.Ref != "contexts/flow-context-package.yaml" {
 		t.Fatalf("Definition.Contexts[main_context] = %#v, ok=%v; want ref contexts/flow-context-package.yaml", binding, ok)
+	}
+}
+
+// TestSupabaseWorkflowFlowStoreGetByRefDerivesDependsOnFromEdges is the
+// regression test for BUG-282: a node's graph dependency is derived from the
+// flow's own forward edges (workflows.edges_json), NOT from a
+// step_definitions.depends_on_json column (which no longer exists). This is
+// what makes a step reusable across flows: its dependency resolves against
+// whichever flow's edges reference it, never another flow's node ids. Back
+// edges (loop re-entry) must NOT count as a dependency.
+func TestSupabaseWorkflowFlowStoreGetByRefDerivesDependsOnFromEdges(t *testing.T) {
+	original := httpRequestFn
+	defer func() { httpRequestFn = original }()
+
+	httpRequestFn = func(_ context.Context, _ string, _ string, _ map[string]string, _ []byte) (int, []byte, error) {
+		rows := []map[string]any{
+			{
+				"id": "88888888-8888-8888-8888-888888888888", "name": "My Flow",
+				"is_builtin": false, "editable": true, "cloneable": true,
+				"edges_json": []any{
+					map[string]any{"from": "coder", "to": "reviewer", "when": "done", "kind": "forward"},
+					map[string]any{"from": "synthesis", "to": "coder", "when": "continue", "kind": "back"},
+				},
+				"workflow_steps": []map[string]any{
+					// No depends_on_json anywhere — the column is gone; edges are
+					// the only topology source.
+					{
+						"step_type": "flow_coder", "order_index": 0,
+						"step_definitions": map[string]any{
+							"step_type": "flow_coder", "node_id": "coder",
+							"behavior_id": "agent.delegate", "agent_ref": "agents/coder.md",
+						},
+					},
+					{
+						"step_type": "flow_reviewer", "order_index": 1,
+						"step_definitions": map[string]any{
+							"step_type": "flow_reviewer", "node_id": "reviewer",
+							"behavior_id": "agent.delegate", "agent_ref": "agents/reviewer.md",
+						},
+					},
+					{
+						"step_type": "flow_synthesis", "order_index": 2,
+						"step_definitions": map[string]any{
+							"step_type": "flow_synthesis", "node_id": "synthesis",
+							"behavior_id": "hub.inline", "agent_ref": "agents/synthesizer.md",
+						},
+					},
+				},
+			},
+		}
+		b, _ := json.Marshal(rows)
+		return 200, b, nil
+	}
+
+	store := NewSupabaseWorkflowFlowStore(SupabaseWorkspaceConfig{APIURL: "https://proj.supabase.co/"}, "k")
+	record, ok, err := store.GetByRef(context.Background(), "88888888-8888-8888-8888-888888888888")
+	if err != nil {
+		t.Fatalf("GetByRef: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected record found")
+	}
+
+	deps := map[string][]string{}
+	for _, node := range record.Definition.Nodes {
+		deps[node.ID] = node.DependsOn
+	}
+	// reviewer depends on coder via the forward edge.
+	if got := deps["reviewer"]; len(got) != 1 || got[0] != "coder" {
+		t.Fatalf("reviewer DependsOn = %#v, want [coder] (from forward edge)", got)
+	}
+	// coder's only incoming edge is the synthesis->coder BACK edge, which must
+	// not count — coder is the entry node with no dependency.
+	if got := deps["coder"]; len(got) != 0 {
+		t.Fatalf("coder DependsOn = %#v, want [] (back edges are not dependencies)", got)
+	}
+	// synthesis has no incoming forward edge in this graph.
+	if got := deps["synthesis"]; len(got) != 0 {
+		t.Fatalf("synthesis DependsOn = %#v, want []", got)
 	}
 }
 

@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-14`
 - Last Updated: `2026-07-14`
-- Parent Documents: [CP-05-05: Telegram MCP As An Output Notification Artifact](../../07-Coding-Plan/todo/CP-05-05-Tele-Mcp.md), [Task-232: Telegram Output Artifact Type And Bot-API Proxy MCP](../../08-Task/todo/Task-232-Telegram-Output-Artifact-Type-And-Bot-API-Proxy-MCP.md), [Task-233: Telegram Output Write-Contract, Verify Gate, And Approval](../../08-Task/todo/Task-233-Telegram-Output-Write-Contract-Verify-Gate-And-Approval.md), [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md)
+- Parent Documents: [CP-05-05: Telegram MCP As An Output Notification Artifact](../../07-Coding-Plan/done/CP-05-05-Tele-Mcp.md), [Task-232: Telegram Output Artifact Type And Bot-API Proxy MCP](../../08-Task/done/Task-232-Telegram-Output-Artifact-Type-And-Bot-API-Proxy-MCP.md), [Task-233: Telegram Output Write-Contract, Verify Gate, And Approval](../../08-Task/done/Task-233-Telegram-Output-Write-Contract-Verify-Gate-And-Approval.md), [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md)
 - Child Documents: `None`
 - Related Documents: `run-689`, `/Users/tiendat/.codex/config.toml`, `/Users/tiendat/.grokHome2/config.toml`, [CA-315: Telegram MCP Configure Providers Workspace](../../../change-audit/CA-315-telegram-mcp-configure-providers-workspace.md), [CA-316: Telegram MCP loopback for provider HOME keyring isolation](../../../change-audit/CA-316-telegram-mcp-loopback-keyring-isolation.md)
 - Replaces: `None`
@@ -39,7 +39,7 @@
 ### Constraints
 
 - The fix must preserve FlowPilot's multi-account provider homes (`GROK_HOME`, `CODEX_HOME`, Claude config dirs).
-- Telegram send is an outward-facing side effect; approval queue semantics from Task-233 must remain intact.
+- Telegram send is an outward-facing side effect; auto-approve gate from Task-233 must remain intact (`autoApprove` keyring flag; per-send queue removed CA-318).
 - Bot token must stay out of provider-visible config, provider logs, prompts, and debug dumps.
 - The local runner might be unavailable; the MCP child must fail with a typed actionable error, not silently bypass or fall back to sending directly with leaked credentials.
 
@@ -69,7 +69,7 @@ The failure is not caused by a missing Telegram entry in `/Users/tiendat/.grokHo
 ## 2. Parent Links
 
 - impacted coding plan: `CP-05-05` (`P-5`, `DOD-6`, secret boundary), `CP-46` (`P-10`, multi-account via `GROK_HOME`)
-- impacted task: `Task-232` (`RunTelegramProxyMcpServer`, keyring credential resolution), `Task-233` (approval queue and Telegram send semantics)
+- impacted task: `Task-232` (`RunTelegramProxyMcpServer`, keyring credential resolution), `Task-233` (auto-approve gate and Telegram send semantics)
 - impacted tech design: `SD-11` §6 (secret boundary), `SD-23` `D-8` (OUTPUT write contract)
 - impacted system spec: `SS-14` if Telegram output notification acceptance criteria require live end-to-end delivery
 
@@ -150,11 +150,10 @@ The failure is not caused by a missing Telegram entry in `/Users/tiendat/.grokHo
   - For Grok ACP live merge, `telegramLiveMCPServer` must include the loop-back env values when the runner server is active.
   - Preserve `--workspace` for state lookup and diagnostics, but do not rely on child keyring lookup for provider-spawned usage.
 
-- `F-5` Preserve existing approval semantics.
-  - Reuse `telegram_proxy_approval.go` state machine where possible.
-  - If approval scope is already available in env, endpoint should create/resolve the same approval queue records.
-  - If approval scope is missing, preserve the current fallback behavior: require explicit `AutoApprove` before sending.
-  - Ensure duplicate identical retries replay the recorded result rather than sending twice.
+- `F-5` Preserve existing auto-approve semantics.
+  - Runner endpoint must honor `telegramCredential.AutoApprove` before sending.
+  - Without auto-approve, return `MCP_TOOL_APPROVAL_REQUIRED` (same as `telegram_proxy_mcp.go` today).
+  - No per-send approval queue (removed CA-318).
 
 - `F-6` Keep a narrow direct mode for manual invocation only if needed.
   - If `telegram-mcp` is run outside a provider and no runner endpoint is provided, decide between:
@@ -168,7 +167,7 @@ The failure is not caused by a missing Telegram entry in `/Users/tiendat/.grokHo
 - `V-2` Add a test where `telegram-mcp` runs with `HOME=/tmp/provider-home` but loop-back endpoint env is present; `tools/call send_message` succeeds and returns `message_id`.
 - `V-3` Add a test that loop-back endpoint rejects missing/invalid token and never sends Telegram.
 - `V-4` Add a test that the endpoint reads the keyring through the main runner path, not through the MCP child process.
-- `V-5` Add a test that approval queue behavior is preserved: pending on first call, send only after approve, no double-send after executed.
+- `V-5` Add a test that auto-approve behavior is preserved: refuse when `autoApprove=false`, send when `autoApprove=true`.
 - `V-6` Add a test for runner-unavailable path: `telegram-mcp` returns a typed `MCP_UNAVAILABLE` error and does not attempt direct token/env fallback in provider-configured mode.
 - `V-7` Manual validation: start Grok under `/Users/tiendat/.grokHome2`, invoke `flowpilot_telegram.send_message`, confirm Telegram receives the message and Grok no longer reports `secret not found in keyring`.
 - `V-8` Run targeted tests:

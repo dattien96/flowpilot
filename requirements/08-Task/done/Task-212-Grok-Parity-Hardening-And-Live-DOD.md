@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-09`
 - Last Updated: `2026-07-11`
-- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-209: Grok MCP, Ask-User, And Spawn-Agent Parity](../done/Task-209-Grok-MCP-Ask-User-Spawn-Agent-Parity.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](../inprogress/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md), [Task-211: Grok Desktop UI Surface](../done/Task-211-Grok-Desktop-UI-Surface.md)
+- Parent Documents: [CP-46: Grok Build Controlled Adapter Over ACP Transport](../../07-Coding-Plan/done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [Task-209: Grok MCP, Ask-User, And Spawn-Agent Parity](../done/Task-209-Grok-MCP-Ask-User-Spawn-Agent-Parity.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md), [Task-211: Grok Desktop UI Surface](../done/Task-211-Grok-Desktop-UI-Surface.md)
 - Child Documents: `None`
 - Related Documents: [Task-167: Gemini Resume Handoff And Live DOD](../done/Task-167-Gemini-Resume-Handoff-And-Live-DOD.md), [CA-091: Skill Injection Order](../../../change-audit/CA-091-skill-injection-order.md)
 - Replaces: `None`
@@ -143,5 +143,5 @@ Task-207 through Task-211 individually build/prove transport, permission, MCP/ag
   - DOD-10 hub + stop: PASS
   - DOD-11 token: PASS
   - Unit: gate + summary + handoff tests PASS
-- follow-ups: optional formal E2E-01..36 table; Task-210 still inprogress for account/quota depth.
+- follow-ups: optional formal E2E-01..36 table; Task-210 closed 2026-07-15 for multi-account connect/switch/resume.
 - upstream docs updated: this task → `done/`; CP-46 child link + Q-7/handoff status.

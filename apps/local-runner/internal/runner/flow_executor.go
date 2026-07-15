@@ -750,6 +750,38 @@ func nodeHasIncomingForwardEdge(edges []agentpack.FlowEdge, nodeID string) bool 
 	return false
 }
 
+// forwardEdgeSources returns the node ids that must complete before nodeID can
+// start: the `from` of every FORWARD edge targeting nodeID, in stable declared
+// order, de-duplicated. Back edges (loop re-entry, e.g. review-loop's
+// synthesis->coder "continue") are excluded, matching nodeHasIncomingForwardEdge
+// and the client-side computeDependsOnByStepType (WorkflowsSettings.tsx).
+//
+// BUG-282: this is the per-flow, edge-derived replacement for
+// step_definitions.depends_on_json. Topology is authoritative on
+// workflows.edges_json (a flow-scoped column); the shared step_definitions
+// catalog (keyed by step_type, reusable across flows) must not carry it. A
+// Supabase-backed flow's nodes get their DependsOn from here at load time
+// (supabase_workflow_flow_store.go), so reusing one step across flows resolves
+// against each flow's own edges instead of dragging in another flow's node ids.
+func forwardEdgeSources(edges []agentpack.FlowEdge, nodeID string) []string {
+	if nodeID == "" {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]bool)
+	for _, e := range edges {
+		if !strings.EqualFold(strings.TrimSpace(e.Kind), "forward") || e.To != nodeID {
+			continue
+		}
+		if e.From == "" || seen[e.From] {
+			continue
+		}
+		seen[e.From] = true
+		out = append(out, e.From)
+	}
+	return out
+}
+
 // entryNodesNoDeps returns a flow's entry nodes — regardless of behavior, in
 // declared order — those with no incoming dependency, from EITHER the node's
 // own static dependsOn list OR a forward edge targeting it.
@@ -810,6 +842,45 @@ func resolveContinueBackEdgeTarget(edges []agentpack.FlowEdge) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// forwardReachableNodeIDs (BUG-286) returns every node id reachable from
+// startID by following only FORWARD edges (a back edge, e.g. synthesis's own
+// re-entry edge, must not be walked here — that would make the loop's re-entry
+// point "reachable from itself" and defeat the purpose of this scoping).
+// startID itself is never included, so callers can freely re-mark it RUNNING
+// while resetting only what actually needs to re-run. Terminal pseudo-nodes
+// ("done", "ask_user") are never added, matching FLOW_EDGE_TERMINALS.
+//
+// Used by the "continue" (new review round) reset in applyFlowControl: only
+// nodes forward-reachable from the back-edge's re-entry target (e.g. "coder")
+// should reset to PENDING for the new round. A node that is NOT
+// forward-reachable from there — e.g. rag-harness/context-coding-review-
+// synthesis's own "context" entry node, which sits BEFORE the loop and only
+// ever runs once (lifecycle: once) — must keep its prior DONE status instead
+// of being wrongly reset to PENDING and then never revisited.
+func forwardReachableNodeIDs(edges []agentpack.FlowEdge, startID string) map[string]bool {
+	reachable := make(map[string]bool)
+	if startID == "" {
+		return reachable
+	}
+	queue := []string{startID}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, e := range edges {
+			if !strings.EqualFold(strings.TrimSpace(e.Kind), "forward") || e.From != cur {
+				continue
+			}
+			to := strings.TrimSpace(e.To)
+			if to == "" || to == "done" || to == "ask_user" || reachable[to] {
+				continue
+			}
+			reachable[to] = true
+			queue = append(queue, to)
+		}
+	}
+	return reachable
 }
 
 // notifyHubFlowStarted tells the hub (parent run) an agent has already been

@@ -36,6 +36,8 @@ func NewDefaultBehaviorRegistry() *BehaviorRegistry {
 	mustRegister(r, BehaviorSpec{ID: BehaviorCommandValidate, Scope: BehaviorScopeInline, Handler: behaviorCommandValidate})
 	mustRegister(r, BehaviorSpec{ID: BehaviorValidationSummarize, Scope: BehaviorScopeInline, Handler: behaviorValidationSummarize})
 	mustRegister(r, BehaviorSpec{ID: BehaviorArtifactAuditDraft, Scope: BehaviorScopeInline, Handler: behaviorArtifactAuditDraft})
+	mustRegister(r, BehaviorSpec{ID: BehaviorTelegramNotify, Scope: BehaviorScopeInline, Handler: behaviorTelegramNotify})
+	mustRegister(r, BehaviorSpec{ID: BehaviorHubNotify, Scope: BehaviorScopeInline, Handler: behaviorHubNotify})
 	mustRegister(r, BehaviorSpec{ID: BehaviorFlowControl, Scope: BehaviorScopeControl, Handler: behaviorFlowControl})
 	mustRegister(r, BehaviorSpec{ID: BehaviorUserConfirm, Scope: BehaviorScopeControl, Handler: behaviorUserConfirm})
 	return r
@@ -220,6 +222,28 @@ func behaviorArtifactAuditDraft(_ context.Context, in BehaviorInput) (BehaviorOu
 		Summary: "audit draft ready for confirmation",
 		Payload: map[string]any{"draftSummary": summary},
 	}, nil
+}
+
+// behaviorTelegramNotify is the registry stub for the telegram.notify inline
+// behavior. The actual, side-effecting send runs in the executor dispatch
+// (runTelegramNotifyNode, flow_validate_audit_dispatch.go) — exactly like
+// command.validate/artifact.audit_draft, whose real work also lives in the
+// dispatch layer rather than the registry handler. This entry exists so the
+// inline-scope guard in tryAdvanceFlowFromNode (DefaultBehaviorRegistry().
+// Resolve → BehaviorScopeInline) resolves; it is never the send path.
+func behaviorTelegramNotify(_ context.Context, _ BehaviorInput) (BehaviorOutput, error) {
+	return BehaviorOutput{Status: "done"}, nil
+}
+
+// behaviorHubNotify (Task-235) is the registry stub for hub.notify, mirroring
+// behaviorTelegramNotify's shape: the real work (reinvoking the hub session
+// with a write-contract prompt, via dispatchHubNotifyNode) runs in the
+// executor dispatch layer (flow_validate_audit_dispatch.go / interactive_
+// service.go), not this handler. This entry exists only so the inline-scope
+// guard in tryAdvanceFlowFromNode (DefaultBehaviorRegistry().Resolve →
+// BehaviorScopeInline) resolves for a hub.notify node.
+func behaviorHubNotify(_ context.Context, _ BehaviorInput) (BehaviorOutput, error) {
+	return BehaviorOutput{Status: "done"}, nil
 }
 
 // behaviorFlowControl wraps parseFlowControlInput so a declared tool face's

@@ -14,9 +14,10 @@ exposed a control, so every Connect saved `autoApprove: false`.
 
 | Mechanism | When used | Storage |
 |-----------|-----------|---------|
-| **Auto-approve flag** | No run/step/process scope (Codex CLI, offline MCP) | Runner **keyring** credential JSON (`telegram:<integrationId>` → `{ botToken, channelId, autoApprove }`) |
-| **Pending Approvals queue** | FlowPilot run with env scope set | Workspace file **`<workspace>/.flowpilot/telegram-proxy-approvals.json`** (pending → approved/rejected/executed) |
+| **Auto-approve flag** | All Telegram sends (v1 sole gate; CA-318) | Runner **keyring** credential JSON (`telegram:<integrationId>` → `{ botToken, channelId, autoApprove }`) |
 | UI mirror `autoApprove` | Display only on Existing Integrations | Supabase `integrations.config_encrypted.autoApprove` (non-secret boolean; not the secret boundary) |
+
+> **Update (CA-318):** per-send Pending Approvals queue (`telegram-proxy-approvals.json`, HTTP routes, UI panel) was removed; auto-approve toggle is the only send gate.
 
 Bot token never leaves the keyring path (SD-11 §6).
 
@@ -27,7 +28,7 @@ Bot token never leaves the keyring path (SD-11 §6).
    - Create/Edit checkbox **Auto-approve sends (CLI / dev)**
    - Existing row button **Enable / Disable auto-approve**
    - Status line `auto-approve ON|OFF`
-   - Pending Approvals help text documents the two stores
+   - Help text documents auto-approve as the sole send gate
 3. **client-core**: `testIntegration` fields accept `boolean` for `telegramAutoApprove`.
 4. Test: `TestTriggerIntegrationConnectionTelegramAutoApproveToggle`.
 

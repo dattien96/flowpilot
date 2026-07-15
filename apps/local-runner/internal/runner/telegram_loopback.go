@@ -41,23 +41,25 @@ const (
 
 // telegramLoopbackSendRequest is the body the MCP child posts to the runner.
 type telegramLoopbackSendRequest struct {
-	Text              string `json:"text"`
-	WorkflowRunID     string `json:"workflowRunId,omitempty"`
-	WorkflowStepRunID string `json:"workflowStepRunId,omitempty"`
-	ProcessKey        string `json:"processKey,omitempty"`
+	Text string `json:"text"`
+	// ChatID is an optional per-call override of the connected integration's
+	// default channel. The provider-spawned MCP child never sets it (it always
+	// sends to the connected channel), so the loop-back HTTP path is unchanged;
+	// only the in-runner telegram.notify flow node (runTelegramNotifyNode) sets
+	// it, to honor the chatId bound on the node's telegram.v1 OUTPUT artifact.
+	ChatID string `json:"chatId,omitempty"`
 }
 
 // telegramLoopbackSendResponse is the runner's reply. The MCP child maps
 // Status/Error into the same tool error/result strings Task-233 already
 // expects (message_id evidence, MCP_TOOL_APPROVAL_REQUIRED, …).
 type telegramLoopbackSendResponse struct {
-	OK         bool   `json:"ok"`
-	Status     string `json:"status,omitempty"` // sent|pending|rejected|executed|error
-	MessageID  int64  `json:"messageId,omitempty"`
-	ChatID     string `json:"chatId,omitempty"`
-	ApprovalID string `json:"approvalId,omitempty"`
-	Error      string `json:"error,omitempty"`
-	ErrorCode  string `json:"errorCode,omitempty"`
+	OK        bool   `json:"ok"`
+	Status    string `json:"status,omitempty"` // sent|error
+	MessageID int64  `json:"messageId,omitempty"`
+	ChatID    string `json:"chatId,omitempty"`
+	Error     string `json:"error,omitempty"`
+	ErrorCode string `json:"errorCode,omitempty"`
 }
 
 // telegramLoopbackToken holds the workspace-scoped auth token the main
@@ -223,7 +225,7 @@ func writeTelegramLoopbackJSON(w http.ResponseWriter, status int, resp telegramL
 }
 
 // executeTelegramLoopbackSend resolves the bot token from the runner keyring
-// (correct HOME context) and reuses the existing approval + send path.
+// (correct HOME context) and sends when auto-approve is enabled.
 func (r *Runner) executeTelegramLoopbackSend(ctx context.Context, payload telegramLoopbackSendRequest) (telegramLoopbackSendResponse, int) {
 	text := strings.TrimSpace(payload.Text)
 	if text == "" {
@@ -239,15 +241,15 @@ func (r *Runner) executeTelegramLoopbackSend(ctx context.Context, payload telegr
 		}, http.StatusServiceUnavailable
 	}
 
+	chatID := strings.TrimSpace(payload.ChatID)
+	if chatID == "" {
+		chatID = strings.TrimSpace(creds.ChannelID)
+	}
 	server := &telegramProxyMcpServer{
-		botToken:          strings.TrimSpace(creds.BotToken),
-		chatID:            strings.TrimSpace(creds.ChannelID),
-		client:            &http.Client{Timeout: 15 * time.Second},
-		runner:            r,
-		autoApprove:       creds.AutoApprove,
-		workflowRunID:     strings.TrimSpace(payload.WorkflowRunID),
-		workflowStepRunID: strings.TrimSpace(payload.WorkflowStepRunID),
-		processKey:        strings.TrimSpace(payload.ProcessKey),
+		botToken:    strings.TrimSpace(creds.BotToken),
+		chatID:      chatID,
+		client:      &http.Client{Timeout: 15 * time.Second},
+		autoApprove: creds.AutoApprove,
 	}
 
 	result, callErr := server.callToolLocal(ctx, text)
@@ -258,31 +260,17 @@ func (r *Runner) executeTelegramLoopbackSend(ctx context.Context, payload telegr
 		if strings.Contains(msg, "MCP_TOOL_APPROVAL_REQUIRED") {
 			code = "MCP_TOOL_APPROVAL_REQUIRED"
 			status = http.StatusOK
-			approvalID := extractApprovalIDFromMessage(msg)
 			return telegramLoopbackSendResponse{
-				OK:         false,
-				Status:     "pending",
-				ApprovalID: approvalID,
-				ChatID:     server.chatID,
-				ErrorCode:  code,
-				Error:      msg,
+				OK:        false,
+				Status:    "error",
+				ChatID:    server.chatID,
+				ErrorCode: code,
+				Error:     msg,
 			}, status
 		}
 		return telegramLoopbackSendResponse{
 			OK: false, Status: "error", ErrorCode: code, Error: msg, ChatID: server.chatID,
 		}, http.StatusBadRequest
-	}
-
-	resultText := toolResultText(result)
-	// Rejection is a successful tool outcome (no send) — pass text through so the
-	// MCP child can surface the same non-error tool result Task-233 expects.
-	if strings.Contains(resultText, "was rejected by the user") {
-		return telegramLoopbackSendResponse{
-			OK:     true,
-			Status: "rejected",
-			ChatID: server.chatID,
-			Error:  resultText,
-		}, http.StatusOK
 	}
 
 	messageID := extractMessageIDFromToolResult(result)
@@ -311,21 +299,6 @@ func toolResultText(result map[string]any) string {
 	block, _ := content[0].(map[string]any)
 	text, _ := block["text"].(string)
 	return text
-}
-
-func extractApprovalIDFromMessage(msg string) string {
-	// "... approval request <id>. Wait for user approval ..."
-	const marker = "approval request "
-	idx := strings.Index(msg, marker)
-	if idx < 0 {
-		return ""
-	}
-	rest := msg[idx+len(marker):]
-	end := strings.IndexAny(rest, ". \t\n")
-	if end < 0 {
-		return strings.TrimSpace(rest)
-	}
-	return strings.TrimSpace(rest[:end])
 }
 
 func extractMessageIDFromToolResult(result map[string]any) int64 {

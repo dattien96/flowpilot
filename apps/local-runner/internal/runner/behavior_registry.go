@@ -21,6 +21,8 @@ const (
 	BehaviorCommandValidate     BehaviorID = "command.validate"
 	BehaviorValidationSummarize BehaviorID = "validation.summarize"
 	BehaviorArtifactAuditDraft  BehaviorID = "artifact.audit_draft"
+	BehaviorTelegramNotify      BehaviorID = "telegram.notify"
+	BehaviorHubNotify           BehaviorID = "hub.notify"
 	BehaviorFlowControl         BehaviorID = "flow.control"
 	BehaviorUserConfirm         BehaviorID = "user.confirm"
 )

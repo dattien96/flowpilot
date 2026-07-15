@@ -177,6 +177,11 @@ export interface FlowBehaviorOption {
 export const FLOW_BEHAVIOR_OPTIONS: FlowBehaviorOption[] = [
   { id: "agent.delegate", label: "Agent delegate — spawn an agent", requiresAgent: true },
   { id: "hub.inline", label: "Hub inline — synthesis / orchestration turn", requiresAgent: false },
+  // Task-238: renamed for clarity after a user picked telegram.notify expecting
+  // an AI-composed message — the two labels must read as opposites at a glance,
+  // not as near-synonyms differing only in "(no agent)" vs "(no child agent)".
+  { id: "telegram.notify", label: "Telegram notify — STATIC message, no AI (fixed text / template sent verbatim)", requiresAgent: false },
+  { id: "hub.notify", label: "Telegram notify — AI-COMPOSED message (main agent's own turn, no child agent)", requiresAgent: false },
   { id: "context.produce", label: "Context produce — build a context package", requiresAgent: false },
   { id: "context.render", label: "Context render — render a context package into a prompt", requiresAgent: false },
   { id: "command.validate", label: "Command validate — run a validation command", requiresAgent: false },
@@ -210,7 +215,12 @@ export interface StepDefinition {
   requiredSkills: string[];
   teamRole: string | null;
   subagent: string | null;
-  model: string;
+  // Only agent.delegate node behaviors (and a plain step with no behaviorId,
+  // i.e. a non-flow catalog step) ever spawn a provider turn and consume this
+  // field — every other (inline/control) behavior ignores it at runtime
+  // (resolveFlowNodeModel, flow_executor.go), so it is null for those steps
+  // rather than a fabricated model choice.
+  model: string | null;
   reasoningEffort: string | null;
   yoloMode: boolean;
   agentType: "standard" | "autonomous";
@@ -218,7 +228,6 @@ export interface StepDefinition {
   behaviorId?: string | null;
   agentRef?: string | null;
   nodeLifecycle?: string | null;
-  dependsOn?: string[];
   joinMode?: string | null;
   cohort?: string | null;
   promptTemplateRef?: string | null;
@@ -374,14 +383,13 @@ export function validateFlowGraph(
     }
   }
 
-  // Owner finding (2026-07-06): a step-definition's own `dependsOn` field is
-  // now DERIVED from this workflow's edges when it saves (WorkflowsSettings.tsx
-  // persistEdgeDerivedDependsOn) rather than hand-maintained — so at
-  // validation time (before that derive-and-save step ever runs) it can be
-  // stale or simply blank for a brand-new node. Entry-node detection must
-  // therefore read the edges directly, not `dependsOn`: a node is an entry
-  // node iff no *forward* edge targets it (a back edge, e.g. a synthesis->
-  // coder loop re-entry, must not disqualify the true entry node).
+  // BUG-282 (was a 2026-07-06 owner finding): a step's flow dependency is NOT
+  // stored on the step definition — topology lives only on the flow's own
+  // `edges` (workflows.edges_json), so a step reused across flows resolves
+  // against each flow's edges instead of dragging in another flow's node ids.
+  // Entry-node detection therefore reads the edges directly: a node is an
+  // entry node iff no *forward* edge targets it (a back edge, e.g. a
+  // synthesis->coder loop re-entry, must not disqualify the true entry node).
   const nodesWithIncomingForwardEdge = new Set(
     edges.filter((edge) => edge.kind === "forward").map((edge) => edge.to),
   );
@@ -495,30 +503,6 @@ export interface LocalRunnerMcpBackend {
   actionLabel: string;
   lastCheckedAt: string | null;
   lastError: string | null;
-}
-
-/**
- * Task-233 DOD-6 revisit: a pending/approved/rejected/executed Telegram
- * send_message approval record (telegram_proxy_approval.go). The AI's first
- * send_message call for a given (run, step, process, chat, text) tuple
- * always comes back "pending" here; the user approves/rejects via
- * decideTelegramProxyApproval and the AI's identical retry then executes or
- * reports the rejection.
- */
-export interface TelegramApprovalRecord {
-  id: string;
-  workflowRunId: string;
-  workflowStepRunId: string;
-  processKey: string;
-  chatId: string;
-  text: string;
-  status: "pending" | "approved" | "rejected" | "executed" | "expired";
-  decisionComment: string;
-  requestedAt: string;
-  decidedAt: string;
-  expiresAt: string;
-  resultMessageId: number;
-  errorMessage: string;
 }
 
 export interface LocalRunnerArtifact {

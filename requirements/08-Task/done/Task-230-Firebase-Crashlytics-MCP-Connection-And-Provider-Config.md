@@ -5,11 +5,11 @@
 - Document ID: `Task-230`
 - Title: `Firebase Crashlytics MCP Connection And Provider Config`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-13`
-- Last Updated: `2026-07-13`
+- Last Updated: `2026-07-15`
 - Parent Documents: [CP-05-04: Firebase MCP As A Crash-Context Artifact Source](../../07-Coding-Plan/todo/CP-05-04-Firebase-Mcp.md) (`P-1`, `P-2`), [SD-11: MCP Connection Flows](../../06-System-Tech-Design/SD-11-MCP-Connection-Flows.md)
 - Child Documents: `None`
 - Related Documents: [CP-05-03: Google Drive MCP Current Implementation Notes](../../07-Coding-Plan/done/CP-05-03-Driver-Mcp.md) (mẫu provider-config injection), [Task-227: Generalize MCP Prompt-Injection And Preflight](./Task-227-Generalize-MCP-Prompt-Injection-And-Preflight.md), [Task-228: Jira Remote-MCP Connection And Provider Config](./Task-228-Jira-Remote-MCP-Connection-And-Provider-Config.md) (mẫu song song)
