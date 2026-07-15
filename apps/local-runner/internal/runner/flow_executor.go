@@ -7,6 +7,7 @@ import (
 	"log"
 	"path"
 	"strings"
+	"time"
 
 	"flowpilot-runner/internal/agentpack"
 )
@@ -67,6 +68,20 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 	if extendBy <= 0 {
 		extendBy = 2
 	}
+	// Task-241 T-6: stall timeout from pack policy; default 10 minutes when 0.
+	stallTimeout := 10 * time.Minute
+	if record.Definition.Policy.StallTimeoutSec > 0 {
+		stallTimeout = time.Duration(record.Definition.Policy.StallTimeoutSec) * time.Second
+	}
+	s.mu.Lock()
+	if rs := s.runs[parentRunID]; rs != nil {
+		rs.stallTimeout = stallTimeout
+		// Task-242 tier-3: capture workspace HEAD once for aggregate audit diff.
+		if head, err := captureGitHead(rs.workspaceCwd); err == nil {
+			rs.flowStartGitHead = head
+		}
+	}
+	s.mu.Unlock()
 	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		st.Cap = cap
 		st.RoundCap = cap

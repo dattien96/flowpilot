@@ -358,13 +358,61 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 		}
 		workspace = rs.workspaceCwd
 		changeType = rs.changeType
-		baseSHA = rs.turnStartGitHead
+		// Task-242 tier-3: prefer flow-start HEAD so audit sees the whole-flow
+		// aggregate diff, not only the hub's last turn.
+		baseSHA = rs.flowStartGitHead
+		if baseSHA == "" {
+			baseSHA = rs.turnStartGitHead
+		}
 	}
 	s.mu.Unlock()
 
 	// BuildAuditDraft derives SourceDocID from pkg.SourceDocIDs[0] itself
 	// (flow_audit_draft.go) — no separate source needed here.
 	changedFiles := changedFilesSince(workspace, baseSHA)
+
+	// Task-242 tier-3: re-evaluate doc-family rules on the aggregate flow diff
+	// before settling done. Missing required docs → escalate with remediation
+	// instead of finalizing (defense-in-depth; tier-1 should have caught earlier).
+	if workspace != "" && len(changedFiles) > 0 {
+		diff, _ := flowgate.ObserveGitDiffSince(workspace, baseSHA)
+		if len(diff) > 0 {
+			rules := flowgate.DefaultRules()
+			var docRules []flowgate.Rule
+			for _, r := range rules {
+				if r.Enabled && flowgate.IsDocScopeRule(r.ID) {
+					docRules = append(docRules, r)
+				}
+			}
+			tr := flowgate.TurnResult{
+				FinalMessage: resultMessage,
+				GitDiff:      diff,
+				ChangedPaths: changedFiles,
+				WrittenPaths: changedFiles,
+				ChangeType:   changeType,
+				WorkspaceCwd: workspace,
+			}
+			if vios := flowgate.Evaluate(tr, docRules); len(vios) > 0 {
+				result := flowgate.Enforce(vios, loadGateMode(filepath.Join(workspace, ".flowpilot")))
+				if result.Action == "reprompt" || result.Action == "block" {
+					log.Printf("[flow-executor] audit tier-3 gate: %s (tier-1 should have caught earlier)", result.Message)
+					s.flowDiagLog(parentRunID, "flow_audit_tier3_block", "audit aggregate gate blocked done",
+						"node_id", node.ID, "message", result.Message,
+					)
+					if s.isFlowEngineDriven(parentRunID) {
+						s.setFlowStepAwaitingUser(ctx, parentRunID)
+					}
+					if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
+						Status:  "escalate",
+						Summary: "Audit gate (aggregate): " + result.Message,
+					}); err != nil {
+						log.Printf("[flow-executor] audit tier-3 escalate failed: %v", err)
+					}
+					return true
+				}
+			}
+		}
+	}
 
 	draft := BuildAuditDraft(AuditDraftInput{
 		WorkflowRunID:   parentRunID,
