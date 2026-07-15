@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"flowpilot-runner/internal/changecontract"
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
 	"flowpilot-runner/internal/flowgate"
@@ -52,21 +53,29 @@ func isFlowReviewHandoffPrompt(prompt string) bool {
 // injection and the cross-provider handoff (which resolves its feature from the
 // clean source transcript rather than the envelope text).
 func composeFeatureBlocks(dotFlowpilotDir string, featureKey string) string {
-	ledger, err := changeledger.New(dotFlowpilotDir)
-	if err != nil {
-		return ""
+	// Task-245 (CP-50 P-2): head-first even when history is empty (head-only inject).
+	var parts []string
+	workspace := dotFlowpilotDir
+	if filepath.Base(dotFlowpilotDir) == ".flowpilot" {
+		workspace = filepath.Dir(dotFlowpilotDir)
 	}
-	history := featurecatalog.HistorySlot(featureKey, ledger)
-	if strings.TrimSpace(history) == "" {
-		return ""
-	}
-	combined := history
-	if summaryLedger, err := changeledger.NewChatSummaryLedger(dotFlowpilotDir); err == nil {
-		if discussion := featurecatalog.ChatSummarySlot(featureKey, summaryLedger); strings.TrimSpace(discussion) != "" {
-			combined += "\n\n" + discussion
+	if head, found, err := changecontract.LoadHead(workspace, featureKey); err == nil && found {
+		if block := strings.TrimSpace(changecontract.RenderHeadBlock(head)); block != "" {
+			parts = append(parts, block)
 		}
 	}
-	return combined
+	ledger, err := changeledger.New(dotFlowpilotDir)
+	if err == nil {
+		if history := strings.TrimSpace(featurecatalog.HistorySlot(featureKey, ledger)); history != "" {
+			parts = append(parts, history)
+		}
+	}
+	if summaryLedger, err := changeledger.NewChatSummaryLedger(dotFlowpilotDir); err == nil {
+		if discussion := strings.TrimSpace(featurecatalog.ChatSummarySlot(featureKey, summaryLedger)); discussion != "" {
+			parts = append(parts, discussion)
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // resolveInjectionFeature decides which feature's history to inject for the
