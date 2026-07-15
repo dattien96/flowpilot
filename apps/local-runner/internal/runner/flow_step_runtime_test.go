@@ -254,6 +254,33 @@ func TestFlowEngineDrivenRunSkipsBulkProgress(t *testing.T) {
 		}
 	})
 
+	// Task-241 D-10 / BUG-259: flow-engine-driven + failed turn must also skip bulk Progress.
+	t.Run("flow_engine_driven_failed_turn_skips", func(t *testing.T) {
+		reg := newProviderRegistry()
+		reg.register(ProviderRegistration{
+			Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+			Capabilities: ProviderCapabilities{Streaming: true},
+			newAdapter: func() ProviderRuntimeAdapter {
+				return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+					b.Emit(ProviderEvent{Type: EventTurnFailed, Error: "provider failed"})
+					return nil
+				})
+			},
+		})
+		svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+		parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+		if err != nil {
+			t.Fatalf("createRun: %v", err)
+		}
+		seedTwoPendingSteps(svc, parent.RunID)
+		svc.markFlowEngineDriven(parent.RunID)
+		startAndWaitTurn(t, svc, parent.RunID)
+		steps, _ := svc.workflowStore.LoadRunSteps(context.Background(), parent.RunID)
+		if s2, _ := stepByID(steps, "s2"); s2.Status == StepStatusDone {
+			t.Fatalf("s2 must not bulk-complete on failed flow-engine turn, got DONE")
+		}
+	})
+
 	// BUG-259 regression: some adapters (codex_adapter.go's real SendTurn) emit
 	// EventTurnFailed but still return a nil error — mirrored here by a fake
 	// adapter doing exactly that. A NON-flow-engine-driven run (a plain
