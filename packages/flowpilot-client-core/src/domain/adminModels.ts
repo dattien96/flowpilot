@@ -177,6 +177,11 @@ export interface FlowBehaviorOption {
 export const FLOW_BEHAVIOR_OPTIONS: FlowBehaviorOption[] = [
   { id: "agent.delegate", label: "Agent delegate — spawn an agent", requiresAgent: true },
   { id: "hub.inline", label: "Hub inline — synthesis / orchestration turn", requiresAgent: false },
+  // Task-238: renamed for clarity after a user picked telegram.notify expecting
+  // an AI-composed message — the two labels must read as opposites at a glance,
+  // not as near-synonyms differing only in "(no agent)" vs "(no child agent)".
+  { id: "telegram.notify", label: "Telegram notify — STATIC message, no AI (fixed text / template sent verbatim)", requiresAgent: false },
+  { id: "hub.notify", label: "Telegram notify — AI-COMPOSED message (main agent's own turn, no child agent)", requiresAgent: false },
   { id: "context.produce", label: "Context produce — build a context package", requiresAgent: false },
   { id: "context.render", label: "Context render — render a context package into a prompt", requiresAgent: false },
   { id: "command.validate", label: "Command validate — run a validation command", requiresAgent: false },
