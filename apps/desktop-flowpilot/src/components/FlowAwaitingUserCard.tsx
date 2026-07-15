@@ -15,6 +15,9 @@ import { useStore } from "@/state/store";
 // (approve -> done, changes requested -> back to the coder, still stuck ->
 // blocked again and this card reappears). Stop reuses the existing
 // stop-the-loop + interrupt path.
+//
+// Task-241: blockReason=member_stalled shows Retry / Skip / Stop instead of
+// the generic Continue form (I-16).
 export function FlowAwaitingUserCard(): React.ReactElement | null {
   const loopState = useStore((s) => s.agentGraphSnapshot?.loopState);
   const continueFlow = useStore((s) => s.continueFlow);
@@ -24,12 +27,20 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
 
   if (!loopState || loopState.status !== "blocked") return null;
 
-  const reasonLabel = loopState.blockReason === "cap" ? "Round limit reached" : "Needs your decision";
+  const stalled = loopState.blockReason === "member_stalled";
+  const reasonLabel =
+    loopState.blockReason === "cap"
+      ? "Round limit reached"
+      : stalled
+        ? "Member stalled"
+        : "Needs your decision";
   const detail =
     loopState.gateReason ||
     (loopState.blockReason === "cap"
       ? "The review loop reached its round limit."
-      : "The flow paused and is waiting for your input.");
+      : stalled
+        ? "A cohort member stopped producing events. Retry it, skip it (mark failed and join), or stop the flow."
+        : "The flow paused and is waiting for your input.");
 
   const handleContinue = async () => {
     if (submitting) return;
@@ -37,6 +48,16 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
     try {
       await continueFlow(feedback.trim());
       setFeedback("");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleMemberAction = async (action: "retry" | "skip") => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await continueFlow("", { action, node: loopState.activeNode });
     } finally {
       setSubmitting(false);
     }
@@ -58,21 +79,34 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
         <span className="badge badge-ask">{reasonLabel}</span>
       </div>
       <p className="card-prompt flow-awaiting-user-detail">{detail}</p>
-      <textarea
-        className="text-input flow-awaiting-user-feedback"
-        placeholder="Optional — give the flow guidance before continuing…"
-        value={feedback}
-        onChange={(e) => setFeedback(e.target.value)}
-        rows={4}
-        disabled={submitting}
-      />
+      {!stalled && (
+        <textarea
+          className="text-input flow-awaiting-user-feedback"
+          placeholder="Optional — give the flow guidance before continuing…"
+          value={feedback}
+          onChange={(e) => setFeedback(e.target.value)}
+          rows={4}
+          disabled={submitting}
+        />
+      )}
       <div className="other-row">
         <button type="button" className="btn btn-ghost" onClick={() => void handleStop()} disabled={submitting}>
           Stop
         </button>
-        <button type="button" className="btn btn-primary" onClick={() => void handleContinue()} disabled={submitting}>
-          Continue
-        </button>
+        {stalled ? (
+          <>
+            <button type="button" className="btn btn-ghost" onClick={() => void handleMemberAction("skip")} disabled={submitting}>
+              Skip member
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => void handleMemberAction("retry")} disabled={submitting}>
+              Retry member
+            </button>
+          </>
+        ) : (
+          <button type="button" className="btn btn-primary" onClick={() => void handleContinue()} disabled={submitting}>
+            Continue
+          </button>
+        )}
       </div>
     </div>
   );
