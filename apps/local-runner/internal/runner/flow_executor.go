@@ -152,6 +152,7 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 		)
 		agentDef, _ := resolvePackAgentDefinition(agentName)
 		entryPrompt := composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), userPrompt, node)
+		entryPrompt = appendChangeContractIfAny(s.workspaceCwdFor(parentRunID), parentRunID, entryPrompt)
 		if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
 			Agent:             agentName,
 			Prompt:            entryPrompt,
@@ -429,6 +430,7 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 	// Task-202/223: INPUT file artifacts (read) + OUTPUT file write contract
 	// for the delegate target. context_artifact stays on the package path above.
 	prompt = composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), prompt, *delegateTarget)
+	prompt = appendChangeContractIfAny(s.workspaceCwdFor(parentRunID), parentRunID, prompt)
 
 	// Same ordering rationale as the delegate-entry path above: track the
 	// flow's topology before spawning, not after, so a fast-completing child
@@ -1072,6 +1074,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		baseReviewPrompt := buildFlowReviewHandoffPrompt(completedNodeID, resultMessage, node)
 		// Task-223: each target node gets its own INPUT path inject + OUTPUT write contract.
 		prompt := composeFlowNodeAgentPrompt(cwd, baseReviewPrompt, node)
+		prompt = appendChangeContractIfAny(cwd, parentRunID, prompt)
 		if flowNodeReusesChild(node) {
 			if reused := s.reinvokeExistingFlowChild(parentRunID, node.ID, prompt); reused {
 				spawnedAny = true

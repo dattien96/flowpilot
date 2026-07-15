@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -116,4 +117,84 @@ func (s *Store) Get(runID, stepID string) (Contract, bool) {
 	defer s.mu.Unlock()
 	c, ok := s.byKey[(Contract{RunID: runID, StepID: stepID}).key()]
 	return c, ok
+}
+
+// OpenStoreReadOnly loads an existing contracts.ndjson without creating the
+// contracts directory (Task-247). Missing file → empty store, no error.
+func OpenStoreReadOnly(workspace string) (*Store, error) {
+	path := filepath.Join(workspace, ".flowpilot", "contracts", "contracts.ndjson")
+	s := &Store{
+		filePath: path,
+		byKey:    make(map[string]Contract),
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return s, nil
+		}
+		return nil, err
+	}
+	s.loadFromDisk()
+	return s, nil
+}
+
+// GetLatestForRun returns the most recently DeclaredAt Contract for runID
+// across any step (Task-247 v1: one contract per run, last-wins).
+func (s *Store) GetLatestForRun(runID string) (Contract, bool) {
+	if s == nil || runID == "" {
+		return Contract{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var best Contract
+	var found bool
+	for _, c := range s.byKey {
+		if c.RunID != runID {
+			continue
+		}
+		if !found || c.DeclaredAt.After(best.DeclaredAt) {
+			best = c
+			found = true
+		}
+	}
+	return best, found
+}
+
+// RenderContractBlock renders c as a headerless prompt body (Task-247;
+// CP-50 P-4: callers own the heading). Zero-value → "".
+func RenderContractBlock(c Contract) string {
+	if strings.TrimSpace(c.FeatureKey) == "" && len(c.DeclaredPaths) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if fk := strings.TrimSpace(c.FeatureKey); fk != "" {
+		b.WriteString("Feature: ")
+		b.WriteString(fk)
+		b.WriteByte('\n')
+	}
+	if intent := strings.TrimSpace(c.Intent); intent != "" {
+		b.WriteString("Intent: ")
+		b.WriteString(intent)
+		b.WriteByte('\n')
+	}
+	b.WriteString("Declared scope (KHÔNG sửa ngoài các path này):\n")
+	if len(c.DeclaredPaths) == 0 {
+		b.WriteString("- (none declared)\n")
+	} else {
+		for _, p := range c.DeclaredPaths {
+			b.WriteString("- ")
+			b.WriteString(p)
+			b.WriteByte('\n')
+		}
+	}
+	conf := strings.TrimSpace(c.Confidence)
+	if conf == "" {
+		conf = ConfidenceDeclared
+	}
+	b.WriteString("Confidence: ")
+	b.WriteString(conf)
+	if conf == ConfidenceInferred {
+		b.WriteString(" (suy ra từ diff, chưa được AI xác nhận)")
+	}
+	b.WriteByte('\n')
+	return strings.TrimSpace(b.String())
 }

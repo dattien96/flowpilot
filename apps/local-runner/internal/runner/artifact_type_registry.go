@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/changecontract"
 	"flowpilot-runner/internal/flowgate"
 )
 
@@ -585,9 +586,41 @@ func appendTelegramOutputPrompt(prompt string, node agentpack.FlowNode) string {
 // composeFlowNodeAgentPrompt applies Task-223 INPUT read inject, OUTPUT
 // write-contract inject, and Task-233's Telegram OUTPUT write-contract to a
 // base agent prompt for a flow node.
+// changeContractPromptMarker guards against double-append on reprompt/retry (Task-247).
+const changeContractPromptMarker = "Declared scope (KHÔNG sửa ngoài"
+
 func composeFlowNodeAgentPrompt(workspaceCwd, prompt string, node agentpack.FlowNode) string {
 	prompt = appendInputArtifactPrompt(workspaceCwd, prompt, node)
 	prompt = appendRequiredOutputArtifactPrompt(prompt, node)
 	prompt = appendTelegramOutputPrompt(prompt, node)
+	// Task-247: inject latest Change Contract for the run when available.
+	// parent/run id is not on node; callers pass it via workspace-side store lookup
+	// using optional WorkflowRunID on a package-level helper when available.
+	// Neo here only when prompt already carries a run marker or we can resolve store
+	// by workspace alone is insufficient — inject when prompt does not yet contain
+	// the contract marker and a package-global pending run is not required.
+	// Actual run-scoped inject is applied by appendChangeContractIfAny from
+	// flow_executor with the real parentRunID.
 	return prompt
+}
+
+// appendChangeContractIfAny appends the run's latest Change Contract to a node
+// prompt once (Task-247). Used from flow_executor after composeFlowNodeAgentPrompt.
+func appendChangeContractIfAny(workspaceCwd, parentRunID, prompt string) string {
+	if parentRunID == "" || workspaceCwd == "" || strings.Contains(prompt, changeContractPromptMarker) {
+		return prompt
+	}
+	store, err := changecontract.OpenStoreReadOnly(workspaceCwd)
+	if err != nil || store == nil {
+		return prompt
+	}
+	c, ok := store.GetLatestForRun(parentRunID)
+	if !ok {
+		return prompt
+	}
+	body := changecontract.RenderContractBlock(c)
+	if body == "" {
+		return prompt
+	}
+	return prompt + "\n\n## Change Contract đã khai cho run này\n" + body + "\n"
 }
