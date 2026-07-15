@@ -98,6 +98,13 @@ func behaviorContextProduce(ctx context.Context, in BehaviorInput) (BehaviorOutp
 			hints.SourceDocID = sourceDocID
 		}
 	}
+	// Task-246 (CP-50 P-3): derive excerpt hints deterministically at Plan-time —
+	// paths named in the prompt + the workspace's uncommitted diff. Both degrade
+	// to nil so fixture/behavior tests and the golden path are unaffected.
+	if in.WorkspaceCwd != "" {
+		hints.ExplicitSourcePaths = extractPromptSourcePaths(in.Prompt)
+		hints.ChangedPaths = uncommittedChangedPaths(in.WorkspaceCwd)
+	}
 	pkg, err := BuildFlowContextPackageWithSources(ctx, in.WorkspaceCwd, hints, in.ContextSourceIDs)
 	if err != nil {
 		return BehaviorOutput{}, fmt.Errorf("context.produce: %w", err)
