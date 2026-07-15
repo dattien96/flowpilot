@@ -313,6 +313,14 @@ func RenderFlowContextPackage(pkg FlowContextPackage) string {
 	}
 	sb.WriteString("- **No vector retrieval used**\n")
 
+	// Task-244 (SD-21 D-3): Canonical Head leads — current truth before raw history.
+	// Body already carries "## Canonical state …"; write verbatim and skip generic pass.
+	for _, s := range pkg.Sections {
+		if ContextSourceID(s.SourceType) == ContextSourceCanonicalHead && strings.TrimSpace(s.Body) != "" {
+			sb.WriteString("\n" + strings.TrimSpace(s.Body) + "\n")
+		}
+	}
+
 	if pkg.HistoryBlock != "" {
 		sb.WriteString("\n### Change History\n\n")
 		sb.WriteString(pkg.HistoryBlock)
@@ -356,8 +364,8 @@ func RenderFlowContextPackage(pkg FlowContextPackage) string {
 func renderGenericSections(sb *strings.Builder, sections []FlowContextSection) {
 	for _, s := range sections {
 		switch ContextSourceID(s.SourceType) {
-		case ContextSourceFeatureHistory, ContextSourceChatSummary, ContextSourceSourceExcerpt:
-			continue // already rendered by name above
+		case ContextSourceFeatureHistory, ContextSourceChatSummary, ContextSourceSourceExcerpt, ContextSourceCanonicalHead:
+			continue // already rendered by name / head-first pass above
 		}
 		if strings.TrimSpace(s.Body) == "" {
 			continue
