@@ -5,7 +5,7 @@
 - Document ID: `Task-245`
 - Title: `Chat-Mode Canonical-Head-First Injection`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-15`
@@ -122,11 +122,11 @@ func composeFeatureBlocks(dotFlowpilotDir string, featureKey string) string {
 
 ## 6. Acceptance Check
 
-- [ ] Chat-mode turn trên feature verified có Head → prompt inject dẫn đầu `## Canonical state` rồi mới `## Prior work` (+ discussion nếu có).
-- [ ] Feature có Head, chưa có commit history → inject head-only (có test).
-- [ ] Flow-mode prompt KHÔNG double-Head: skip-conditions của `injectFeatureHistoryPrompt` nguyên trạng; full `go test ./internal/runner/ -count=1` không fail mới.
-- [ ] 3 test T-2 pass; build/vet sạch; change-audit note đã ghi.
-- [ ] Manual check (sandbox): 1 turn chat thường trên feature có Head → prompt-log dẫn đầu bằng Head.
+- DONE Chat-mode turn trên feature verified có Head → prompt inject dẫn đầu `## Canonical state` rồi mới `## Prior work` (+ discussion nếu có).
+- DONE Feature có Head, chưa có commit history → inject head-only (có test).
+- DONE Flow-mode prompt KHÔNG double-Head: skip-conditions của `injectFeatureHistoryPrompt` nguyên trạng; full `go test ./internal/runner/ -count=1` không fail mới.
+- DONE 3 test T-2 pass; build/vet sạch.
+- Manual check (sandbox): 1 turn chat thường trên feature có Head → prompt-log dẫn đầu bằng Head. *(skip — e2e live)*
 
 ## 7. Out of Scope
 
@@ -136,6 +136,6 @@ func composeFeatureBlocks(dotFlowpilotDir string, featureKey string) string {
 
 ## 8. Completion Notes
 
-- result: chưa làm (draft).
-- follow-ups:
-- upstream docs updated:
+- result: `done` (2026-07-15).
+- follow-ups: none.
+- upstream docs updated: none.

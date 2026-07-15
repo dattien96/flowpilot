@@ -5,7 +5,7 @@
 - Document ID: `CP-50`
 - Title: `Context Source Completion (canonical.head, Chat-Mode Head, source.excerpt, change.contract)`
 - Phase: `coding_plan`
-- Status: `approved`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-15`

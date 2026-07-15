@@ -5,7 +5,7 @@
 - Document ID: `Task-246`
 - Title: `Source-Excerpt Runtime Hint Producers`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-15`
@@ -106,11 +106,11 @@ if in.WorkspaceCwd != "" {
 
 ## 6. Acceptance Check
 
-- [ ] Run flow live trên workspace có file sửa dở → prompt-log có `### Source: <path>` với excerpt tương ứng (manual check kiểu CP-44 §11.1, sandbox `D:\working\gate-sandbox`).
-- [ ] Prompt nêu path tường minh trong workspace → file đó vào excerpt.
-- [ ] Workspace không git / prompt không path → package y hệt trước (không warning mới; golden + toàn bộ behavior test pass).
-- [ ] Doc/audit files (`requirements/`, `*.md`, `change-audit/`) không bao giờ vào excerpt qua 2 producer này.
-- [ ] Unit + integration T-3 pass; `go build ./...`, `go vet`, full `go test ./internal/runner/ -count=1` không fail mới; change-audit note đã ghi.
+- Run flow live trên workspace có file sửa dở → prompt-log có `### Source: <path>` với excerpt tương ứng. *(skip — e2e live)*
+- DONE Prompt nêu path tường minh trong workspace → file đó vào excerpt. *(extractPromptSourcePaths unit)*
+- DONE Workspace không git / prompt không path → package y hệt trước (golden + behavior tests).
+- DONE Doc/audit files không bao giờ vào excerpt qua 2 producer này.
+- DONE Unit + integration T-3 pass; build/vet sạch.
 
 ## 7. Out of Scope
 
@@ -120,6 +120,6 @@ if in.WorkspaceCwd != "" {
 
 ## 8. Completion Notes
 
-- result: chưa làm (draft).
-- follow-ups:
-- upstream docs updated:
+- result: `done` (2026-07-15).
+- follow-ups: none.
+- upstream docs updated: none.

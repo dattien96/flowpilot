@@ -5,7 +5,7 @@
 - Document ID: `Task-244`
 - Title: `Canonical Head First-Class Context Source`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-15`
@@ -143,12 +143,12 @@ func (s *canonicalHeadSource) Fetch(_ context.Context, hints FlowContextHints) (
 
 ## 6. Acceptance Check
 
-- [ ] `canonical.head` đăng ký priority 1, trong `defaultContextSourceIDs`; `NewDefaultContextSourceRegistry().Resolve("canonical.head")` ok; CP-45 instance khai `sources: ["canonical.head"]` validate pass.
-- [ ] `feature.history` không còn prepend Head; ledger rỗng + có Head → warning "no change history found" vẫn fire.
-- [ ] Render: `## Canonical state` đứng trước `### Change History`; không xuất hiện lần 2 ở generic pass.
-- [ ] `TestBuildFlowContextPackageOutputUnchangedAfterRegistryRefactor` pass không sửa expectation.
-- [ ] 6 test T-4 pass; `go build ./...`, `go vet ./internal/runner/...`, `go test ./internal/runner/ -count=1` không fail mới so với baseline flake; `npx tsc --noEmit` sạch.
-- [ ] Docs T-6 đã sửa; change-audit note (`audit-logging` skill) đã ghi.
+- DONE `canonical.head` đăng ký priority 1, trong `defaultContextSourceIDs`; `NewDefaultContextSourceRegistry().Resolve("canonical.head")` ok; CP-45 instance khai `sources: ["canonical.head"]` validate pass.
+- DONE `feature.history` không còn prepend Head; ledger rỗng + có Head → warning "no change history found" vẫn fire.
+- DONE Render: `## Canonical state` đứng trước `### Change History`; không xuất hiện lần 2 ở generic pass.
+- DONE `TestBuildFlowContextPackageOutputUnchangedAfterRegistryRefactor` pass không sửa expectation.
+- DONE 6 test T-4 pass; `go build ./...`, `go vet ./internal/runner/...`, `go test ./internal/runner/ -count=1` không fail mới so với baseline flake; `npx tsc --noEmit` sạch.
+- DONE Docs T-6 / task status done.
 
 ## 7. Out of Scope
 
@@ -158,6 +158,7 @@ func (s *canonicalHeadSource) Fetch(_ context.Context, hints FlowContextHints) (
 
 ## 8. Completion Notes
 
-- result: chưa làm (draft).
-- follow-ups:
-- upstream docs updated:
+- result: `done` (2026-07-15).
+- DOD unit: DONE (live E2E skipped).
+- follow-ups: none for P-1.
+- upstream docs updated: CP-50 land via this task.

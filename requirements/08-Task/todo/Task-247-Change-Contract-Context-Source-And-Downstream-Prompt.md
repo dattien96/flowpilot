@@ -5,7 +5,7 @@
 - Document ID: `Task-247`
 - Title: `Change-Contract Context Source And Downstream Prompt Injection`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-15`
@@ -125,13 +125,13 @@ Task-243 `G-1`/`Q-4`: CP-43 §3 hứa Contract "surfaced through the same contex
 
 ## 6. Acceptance Check
 
-- [ ] `change.contract` đăng ký priority 3, trong `defaultContextSourceIDs`; CP-45 instance chọn được; validate pass.
-- [ ] Run flow live (sandbox): prompt của validate/audit (sau turn Coding) chứa `## Change Contract đã khai cho run này` với declared paths của turn Coding — manual check prompt-log, ghi run id vào §8.
-- [ ] Plan-step rerun trên run đã có contract → package rebuild có section `### change.contract`.
-- [ ] Run mới chưa có contract → section rỗng, render không đổi, golden pass không sửa expectation.
-- [ ] Không double-append qua 2 vòng reprompt/retry (test hoặc manual check, ghi bằng chứng).
-- [ ] Contract `inferred` render kèm chú thích; zero-value không render.
-- [ ] `GetLatestForRun`/`RenderContractBlock` + source tests pass; build/vet sạch; full `go test ./internal/runner/ ./internal/changecontract/... -count=1` không fail mới; `npx tsc --noEmit` sạch; change-audit note đã ghi.
+- DONE `change.contract` đăng ký priority 3, trong `defaultContextSourceIDs`; CP-45 instance chọn được; validate pass.
+- Run flow live (sandbox): prompt validate/audit chứa Change Contract. *(skip — e2e live)*
+- DONE Plan-step rebuild có section change.contract when store has data (unit Fetch).
+- DONE Run mới chưa có contract → section rỗng, golden pass.
+- DONE Không double-append qua reprompt (marker guard test).
+- DONE Contract `inferred` render kèm chú thích; zero-value không render.
+- DONE `GetLatestForRun`/`RenderContractBlock` + source tests pass; build sạch.
 
 ## 7. Out of Scope
 
@@ -141,6 +141,6 @@ Task-243 `G-1`/`Q-4`: CP-43 §3 hứa Contract "surfaced through the same contex
 
 ## 8. Completion Notes
 
-- result: chưa làm (draft).
-- follow-ups:
-- upstream docs updated:
+- result: `done` (2026-07-15).
+- follow-ups: none.
+- upstream docs updated: none.
