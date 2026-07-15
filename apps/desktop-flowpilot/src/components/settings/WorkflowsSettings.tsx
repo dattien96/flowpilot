@@ -139,7 +139,7 @@ function createEmptyStepDraft(modelId: string): StepDefinition {
     requiredSkills: [],
     teamRole: null,
     subagent: null,
-    model: "",
+    model: null,
     reasoningEffort: DEFAULT_REASONING,
     yoloMode: false,
     agentType: "standard",
@@ -276,6 +276,36 @@ function buildModelOptions(models: SupportedModel[]) {
 
 function toggleString(list: string[], value: string) {
   return list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
+}
+
+// A step whose Behavior ID requires an agent (agent.delegate) but has no
+// Agent ref set resolves at runtime to flowNodeAgentName(node) === "" — the
+// executor logs "entry node has no resolvable agent; skipped" and the node
+// never spawns, with no error surfaced to the user anywhere in the UI. This
+// mirrors validateFlowGraph's same check (which only ever runs at Save
+// Workflow time, and only once a flow has edges) at the point the step
+// itself is actually authored, so the gap can't be saved in the first place.
+function stepDefinitionAgentRefIssue(
+  behaviorId: string | null | undefined,
+  agentRef: string | null | undefined,
+): string | null {
+  const requiresAgent = FLOW_BEHAVIOR_OPTIONS.find((option) => option.id === behaviorId)?.requiresAgent ?? false;
+  if (requiresAgent && !agentRef?.trim()) {
+    return `Behavior "${behaviorId}" requires an Agent ref — set one before saving this step.`;
+  }
+  return null;
+}
+
+// A step's Model/Reasoning effort only matter for a real provider turn: an
+// agent.delegate node (spawns a child) or a step with NO behaviorId at all
+// (a plain, pre-flow catalog step — still a normal agent turn). Every other
+// (inline/control) behavior is Go-deterministic and never consumes them —
+// resolveFlowNodeModel (flow_executor.go) returns "" for any non-delegate
+// node already — so the authoring UI must not force a choice here, and the
+// fields are hidden entirely for those behaviors.
+function stepDefinitionRequiresModel(behaviorId: string | null | undefined): boolean {
+  if (!behaviorId) return true;
+  return FLOW_BEHAVIOR_OPTIONS.find((option) => option.id === behaviorId)?.requiresAgent ?? false;
 }
 
 // CP-45/SD-23 Task-200 D-7 (simplified v1 type-compat rule): a
@@ -1384,8 +1414,14 @@ export function WorkflowsSettings(): React.ReactElement {
 
   const saveStepDefinition = async () => {
     if (!stepDraft) return;
-    if (!stepDraft.model) {
+    const requiresModel = stepDefinitionRequiresModel(stepDraft.behaviorId);
+    if (requiresModel && !stepDraft.model) {
       setMessage("Model is required.");
+      return;
+    }
+    const agentRefIssue = stepDefinitionAgentRefIssue(stepDraft.behaviorId, stepDraft.agentRef);
+    if (agentRefIssue) {
+      setMessage(agentRefIssue);
       return;
     }
     setBusy(true);
@@ -1394,6 +1430,12 @@ export function WorkflowsSettings(): React.ReactElement {
       const admin = await getAdminUseCases();
       const saved = await admin.workflows.saveStepDefinition({
         ...stepDraft,
+        // A behavior that doesn't need a model (inline/control) must not
+        // silently persist a stale value left over from before the user
+        // switched Behavior ID — the fields are hidden in the form, so there
+        // is no UI left to clear them manually.
+        model: requiresModel ? stepDraft.model : null,
+        reasoningEffort: requiresModel ? stepDraft.reasoningEffort : null,
         promptBase:
           stepDraft.promptBase?.trim() ||
           deriveStepPromptBase({
@@ -1416,8 +1458,14 @@ export function WorkflowsSettings(): React.ReactElement {
       setMessage("Step key is required.");
       return;
     }
-    if (!createStepDraft.model) {
+    const requiresModel = stepDefinitionRequiresModel(createStepDraft.behaviorId);
+    if (requiresModel && !createStepDraft.model) {
       setMessage("Model is required.");
+      return;
+    }
+    const agentRefIssue = stepDefinitionAgentRefIssue(createStepDraft.behaviorId, createStepDraft.agentRef);
+    if (agentRefIssue) {
+      setMessage(agentRefIssue);
       return;
     }
     setBusy(true);
@@ -1429,6 +1477,8 @@ export function WorkflowsSettings(): React.ReactElement {
         stepType: createStepDraft.stepType.trim(),
         name: createStepDraft.name.trim() || createStepDraft.stepType.trim(),
         description: createStepDraft.description.trim(),
+        model: requiresModel ? createStepDraft.model : null,
+        reasoningEffort: requiresModel ? createStepDraft.reasoningEffort : null,
         promptBase:
           createStepDraft.promptBase?.trim() ||
           deriveStepPromptBase({
@@ -2100,35 +2150,48 @@ export function WorkflowsSettings(): React.ReactElement {
             value={draft.promptBase ?? ""}
           />
         </label>
-        <label className="settings-field">
-          <span>Model</span>
-          <select
-            onChange={(event) => onChange({ ...draft, model: event.target.value })}
-            value={draft.model ?? ""}
-          >
-            <option value="">Select a model...</option>
-            {modelOptions.map((model) => (
-              <option key={model.value} value={model.value}>
-                {model.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="settings-field">
-          <span>Reasoning effort</span>
-          <select
-            onChange={(event) =>
-              onChange({ ...draft, reasoningEffort: event.target.value })
-            }
-            value={draft.reasoningEffort ?? DEFAULT_REASONING}
-          >
-            {REASONING_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {stepDefinitionRequiresModel(draft.behaviorId) ? (
+          <>
+            <label className="settings-field">
+              <span>Model</span>
+              <select
+                onChange={(event) => onChange({ ...draft, model: event.target.value || null })}
+                value={draft.model ?? ""}
+              >
+                <option value="">Select a model...</option>
+                {modelOptions.map((model) => (
+                  <option key={model.value} value={model.value}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="settings-field">
+              <span>Reasoning effort</span>
+              <select
+                onChange={(event) =>
+                  onChange({ ...draft, reasoningEffort: event.target.value })
+                }
+                value={draft.reasoningEffort ?? DEFAULT_REASONING}
+              >
+                {REASONING_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        ) : (
+          // Inline/control behaviors (context.produce, command.validate,
+          // artifact.audit_draft, telegram.notify, ...) are Go-deterministic
+          // and never spawn a provider turn, so Model/Reasoning effort do not
+          // apply — hidden rather than forcing a meaningless choice.
+          <div className="settings-field settings-field-full project-muted-copy">
+            Model / Reasoning effort not applicable — Behavior "{draft.behaviorId}" runs inline,
+            with no provider turn.
+          </div>
+        )}
         <label className="settings-field">
           <span>Behavior ID</span>
           <select

@@ -209,7 +209,7 @@ function mapStepDefinition(row: Row): StepDefinition {
     requiredSkills: Array.isArray(row.required_skills) ? row.required_skills.map(String) : [],
     teamRole: row.team_role ? String(row.team_role) : null,
     subagent: row.subagent ? String(row.subagent) : null,
-    model: String(row.model ?? "gpt-5.4"),
+    model: row.model != null ? String(row.model) : null,
     reasoningEffort: row.reasoning_effort ? String(row.reasoning_effort) : null,
     yoloMode: Boolean(row.yolo_mode ?? false),
     agentType: row.agent_type === "autonomous" ? "autonomous" : "standard",

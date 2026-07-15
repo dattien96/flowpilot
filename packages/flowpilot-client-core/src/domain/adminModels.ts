@@ -215,7 +215,12 @@ export interface StepDefinition {
   requiredSkills: string[];
   teamRole: string | null;
   subagent: string | null;
-  model: string;
+  // Only agent.delegate node behaviors (and a plain step with no behaviorId,
+  // i.e. a non-flow catalog step) ever spawn a provider turn and consume this
+  // field — every other (inline/control) behavior ignores it at runtime
+  // (resolveFlowNodeModel, flow_executor.go), so it is null for those steps
+  // rather than a fabricated model choice.
+  model: string | null;
   reasoningEffort: string | null;
   yoloMode: boolean;
   agentType: "standard" | "autonomous";
