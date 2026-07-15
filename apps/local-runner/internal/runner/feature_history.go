@@ -48,12 +48,11 @@ func isFlowReviewHandoffPrompt(prompt string) bool {
 	return strings.Contains(p, "[flow-engine] Review this result from node")
 }
 
-// composeFeatureBlocks returns the prior-work (+ prior-discussion) blocks for a
-// known feature key, or "" when there is no committed history. Shared by per-turn
-// injection and the cross-provider handoff (which resolves its feature from the
-// clean source transcript rather than the envelope text).
+// composeFeatureBlocks returns Canonical Head + prior-work (+ prior-discussion)
+// for a known feature key, or "" when the feature has neither a Head nor
+// history/discussion. Shared by per-turn injection and cross-provider handoff.
+// Task-245: head-only inject when history is empty is intentional.
 func composeFeatureBlocks(dotFlowpilotDir string, featureKey string) string {
-	// Task-245 (CP-50 P-2): head-first even when history is empty (head-only inject).
 	var parts []string
 	workspace := dotFlowpilotDir
 	if filepath.Base(dotFlowpilotDir) == ".flowpilot" {
