@@ -553,9 +553,18 @@ func appendTelegramOutputPrompt(prompt string, node agentpack.FlowNode) string {
 	if len(targets) == 0 {
 		return prompt
 	}
+	// Deliberately plain, non-imperative phrasing (CA-follow-up to Task-233):
+	// an earlier version of this section read "you MUST ... The flow gate
+	// will reprompt if no successful send is detected", which a receiving
+	// model can pattern-match as a coerced/urgent instruction embedded in
+	// task content and refuse to act on as a suspected prompt injection —
+	// even though this text is this run's own top-level task, authored by
+	// FlowPilot on the user's behalf, not third-party observed content. This
+	// section instead states the task as a plain part of the turn's work,
+	// the same register as the rest of the composed prompt.
 	var b strings.Builder
-	b.WriteString("\n\n## Required Telegram notification (write contract)\n")
-	b.WriteString(fmt.Sprintf("Before you finish this turn you MUST send a Telegram notification using the `send_message` tool on the `%s` MCP server, for each target below:\n", telegramMcpServerName))
+	b.WriteString("\n\n## This step's task includes sending a Telegram notification\n")
+	b.WriteString(fmt.Sprintf("As part of finishing this turn, send a Telegram message using the `send_message` tool on the `%s` MCP server, for each target below:\n", telegramMcpServerName))
 	for _, t := range targets {
 		b.WriteString("- chat: `")
 		b.WriteString(t.chatID)
@@ -568,10 +577,8 @@ func appendTelegramOutputPrompt(prompt string, node agentpack.FlowNode) string {
 			b.WriteString(" — summarize this run's final outcome in the message.\n")
 		}
 	}
-	b.WriteString("\nDo not only describe the notification in chat — actually call `send_message`. ")
-	b.WriteString("If the tool call succeeds, the response includes a `message_id`; do not claim success without it. ")
-	b.WriteString(fmt.Sprintf("If `%s` is unavailable, stop and end the response with `MCP_FAILURE_CODE: MCP_UNAVAILABLE`. ", telegramMcpServerName))
-	b.WriteString("The flow gate will reprompt if no successful send is detected after your turn.\n")
+	b.WriteString("\nCall the tool itself rather than only describing the notification in chat; a successful call returns a `message_id`, so only report the message as sent once you have one. ")
+	b.WriteString(fmt.Sprintf("If `%s` is unavailable, end the response with `MCP_FAILURE_CODE: MCP_UNAVAILABLE` instead of a fabricated confirmation.\n", telegramMcpServerName))
 	return prompt + b.String()
 }
 
