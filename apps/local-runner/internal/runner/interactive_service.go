@@ -277,7 +277,22 @@ type interactiveRun struct {
 	lastTurnStepID        string // CP-35: stepID of the most-recently started turn, used by gate reprompts
 	currentTurnID         string
 	lastFlowControlTurnID string
-	lastTurnID            string // id of the most-recently completed turn, for the rolling chat summary
+	// lastEscalateReason / lastEscalateCohortLen track Task-241 T-8 bounded
+	// progress against confirm-loop: re-escalate with the same reason and no
+	// new cohort results appends a "no progress" GateReason suffix.
+	lastEscalateReason    string
+	lastEscalateCohortLen int
+	// lastProviderEventAt is stamped on every emitLocked for stall detection
+	// (Task-241 T-11). Zero means no event yet (member just spawned).
+	lastProviderEventAt time.Time
+	// stallTimeout is the parent-run stall window (Task-241). Default 10m when
+	// flow policy leaves StallTimeoutSec at 0.
+	stallTimeout time.Duration
+	// flowStartGitHead is the workspace HEAD captured once at startResolvedFlow
+	// (Task-242 tier-3). Audit uses it as the aggregate-diff base so multi-child
+	// edits are visible, not only the hub's last turnStartGitHead.
+	flowStartGitHead string
+	lastTurnID       string // id of the most-recently completed turn, for the rolling chat summary
 	// flowValidationRetryState is the in-memory Testing<->Coding retry loop
 	// state for a run driving rag-harness's validate node (BUG-243 F-1),
 	// keyed on the PARENT/hub run (not the per-turn coder child). Durable
@@ -544,6 +559,13 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) AgentGraphSnapsho
 		}
 	}
 	cancelledChildIDs := make([]string, 0)
+	// Task-241 B1: cancelled cohort members must append as terminal so the
+	// barrier can join (cancelled = terminal). restart-cancel path appends via
+	// Task-239 resume rebuild, not here.
+	type cancelledCohortMember struct {
+		parentRunID, cohortID, label, provider string
+	}
+	var cancelledCohort []cancelledCohortMember
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		if child := s.runs[childID]; child != nil {
 			child.pendingTurnPrompt = ""
@@ -552,6 +574,14 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) AgentGraphSnapsho
 				child.status = RunStatusCancelled // BUG-248: see parent.status comment above.
 				child.agentStatus = string(RunStatusCancelled)
 				cancelledChildIDs = append(cancelledChildIDs, childID)
+				if child.flowCohortId != "" {
+					cancelledCohort = append(cancelledCohort, cancelledCohortMember{
+						parentRunID: child.parentRunID,
+						cohortID:    child.flowCohortId,
+						label:       child.label,
+						provider:    string(child.providerKey),
+					})
+				}
 			}
 		}
 	}
@@ -568,6 +598,46 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) AgentGraphSnapsho
 			summary.Status = RunStatusCancelled
 			summary.AgentStatus = string(RunStatusCancelled)
 			s.agentOrchestrator.upsertSummary(parentRunID, summary)
+		}
+	}
+	// Task-241: append cancelled members to cohort buffer (orchestrator lock only —
+	// never re-enter s.mu). If barrier completes, join via maybeAutoReinvokeHubWithNote.
+	for _, m := range cancelledCohort {
+		s.agentOrchestrator.appendCohortResult(m.parentRunID, m.cohortID, cohortEntry{
+			Label: m.label, Provider: m.provider, Status: "cancelled",
+		})
+		if s.isFlowEngineDriven(m.parentRunID) && m.label != "" {
+			s.setFlowStepStatus(context.Background(), m.parentRunID, m.label, StepStatusCanceled)
+		}
+		if s.agentOrchestrator.cohortComplete(m.parentRunID, m.cohortID) {
+			entries := s.agentOrchestrator.drainCohort(m.parentRunID, m.cohortID)
+			round := s.agentOrchestrator.loopStateFor(m.parentRunID).Round
+			note := buildCohortNote(m.parentRunID, m.cohortID, entries, round)
+			s.appendPendingAgentContext(m.parentRunID, note)
+			s.mu.Lock()
+			if parent := s.runs[m.parentRunID]; parent != nil {
+				parent.lastCohortNote = note
+			}
+			s.mu.Unlock()
+			if s.isFlowEngineDriven(m.parentRunID) {
+				for _, e := range entries {
+					if e.Label == "" {
+						continue
+					}
+					switch e.Status {
+					case "completed":
+						s.setFlowStepStatus(context.Background(), m.parentRunID, e.Label, StepStatusDone)
+					case "failed":
+						s.setFlowStepStatus(context.Background(), m.parentRunID, e.Label, StepStatusFailed)
+					case "cancelled":
+						s.setFlowStepStatus(context.Background(), m.parentRunID, e.Label, StepStatusCanceled)
+					}
+				}
+				if hubID := hubInlineNodeID(s.activeFlowNodesFor(m.parentRunID)); hubID != "" && s.loopIsAdvancing(m.parentRunID) {
+					s.setFlowStepStatus(context.Background(), m.parentRunID, hubID, StepStatusRunning)
+				}
+			}
+			go s.maybeAutoReinvokeHubWithNote(m.parentRunID, note)
 		}
 	}
 	snap := s.agentGraphSnapshot(parentRunID)
@@ -593,9 +663,20 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		"summary_len", len(strings.TrimSpace(in.Summary)),
 	)
 	// Validate the target run exists before mutating orchestrator state (MEDIUM finding).
+	// Task-241 I-5: at most one effective flow_control decision per provider turn —
+	// reject a second apply with the same currentTurnID (tool bridge also checks).
 	s.mu.Lock()
 	rs, runExists := s.runs[parentRunID]
 	if runExists && rs.currentTurnID != "" {
+		if rs.lastFlowControlTurnID == rs.currentTurnID {
+			s.mu.Unlock()
+			s.flowDiagLog(parentRunID, "flow_control_rejected_one_decision",
+				"flow control already submitted for this provider turn",
+				"status", in.Status,
+				"turn_id", rs.currentTurnID,
+			)
+			return FlowControlResult{}, fmt.Errorf("flow control already submitted for this provider turn")
+		}
 		rs.lastFlowControlTurnID = rs.currentTurnID
 	}
 	s.mu.Unlock()
@@ -604,6 +685,30 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			"status", in.Status,
 		)
 		return FlowControlResult{}, fmt.Errorf("applyFlowControl: run %q not found", parentRunID)
+	}
+	// Task-240 T-4 / BUG-179: soft-defer done/continue while a registered cohort
+	// is still incomplete. Do not mutate loop or settle steps — the hub will be
+	// reinvoked after join and can call flow_control again.
+	// Soft-defer does NOT count as a decision — clear lastFlowControlTurnID so the
+	// hub can re-apply after join on the same turn if needed. (Decision was stamped
+	// above; for incomplete-cohort we undo so join-then-done still works.)
+	if (in.Status == "done" || in.Status == "continue") && s.agentOrchestrator.hasOpenCohort(parentRunID) {
+		s.mu.Lock()
+		if rs := s.runs[parentRunID]; rs != nil && rs.currentTurnID != "" && rs.lastFlowControlTurnID == rs.currentTurnID {
+			rs.lastFlowControlTurnID = ""
+		}
+		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "flow_control_rejected_cohort_incomplete",
+			"flow control deferred: cohort still incomplete",
+			"status", in.Status,
+		)
+		snap := s.agentOrchestrator.graphSnapshot(parentRunID)
+		return FlowControlResult{
+			Status:     in.Status,
+			Round:      snap.LoopState.Round,
+			Cap:        effectiveCap(snap.LoopState),
+			NextAction: "rejected_cohort_incomplete",
+		}, nil
 	}
 	switch in.Status {
 	case "done":
@@ -779,15 +884,29 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		// orchestrator loop state, which flips in-memory here with no SSE of its
 		// own). Doing mutateLoop first left a window where the loop read
 		// "blocked" while the step was still RUNNING.
+		// Task-241 T-8: same reason + no new cohort progress → "no progress" suffix.
+		gateReason := strings.TrimSpace(in.Summary)
+		if gateReason == "" {
+			gateReason = "escalated"
+		}
+		s.mu.Lock()
+		if rs := s.runs[parentRunID]; rs != nil {
+			// Approximate cohort length via open-cohort presence; use last note as proxy
+			// for progress. When re-escalate with identical summary, mark no progress.
+			if rs.lastEscalateReason != "" && rs.lastEscalateReason == gateReason {
+				gateReason = gateReason + " (no progress since last continue)"
+			}
+			rs.lastEscalateReason = strings.TrimSpace(in.Summary)
+			if rs.lastEscalateReason == "" {
+				rs.lastEscalateReason = "escalated"
+			}
+		}
+		s.mu.Unlock()
 		s.setFlowStepAwaitingUser(context.Background(), parentRunID)
 		snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 			st.Status = "blocked"
 			st.BlockReason = "escalate" // BUG-231
-			if in.Summary != "" {
-				st.GateReason = in.Summary
-			} else {
-				st.GateReason = "escalated"
-			}
+			st.GateReason = gateReason
 			return st
 		})
 		s.emitAgentGraph(parentRunID, snap)
@@ -959,9 +1078,13 @@ func buildCohortNote(parentRunID, cohortID string, entries []cohortEntry, round 
 		if label == "" {
 			label = "agent"
 		}
-		if e.Status == "failed" {
+		switch e.Status {
+		case "failed":
 			fmt.Fprintf(&b, "%q (%s): failed: %s\n", label, e.Provider, e.Err)
-		} else {
+		case "cancelled":
+			// Task-241: cancelled is terminal at the barrier (I-11 / T-2).
+			fmt.Fprintf(&b, "%q (%s): cancelled\n", label, e.Provider)
+		default:
 			msg := strings.TrimSpace(e.FinalMessage)
 			if msg == "" {
 				msg = "(completed with no final message captured)"
@@ -1982,6 +2105,8 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	rs.events = append(rs.events, ev)
 	rs.lastEventType = ev.Type
 	rs.updatedAt = ev.OccurredAt
+	// Task-241 T-11: stall detector measures "no provider event" from this stamp.
+	rs.lastProviderEventAt = time.Now().UTC()
 	switch ev.Type {
 	case EventMessageCompleted:
 		if ev.Text != "" {
@@ -2417,6 +2542,14 @@ func (b *turnBridge) Emit(ev ProviderEvent) {
 
 func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 	s := b.svc
+
+	// Task-242 T-4 / D-7: deny git commit on flow-mode coding children BEFORE
+	// YOLO auto-approve (denylist after YOLO is bypassed when YOLO=on). Commit
+	// is reserved for the audit/commit-prep step (CP-41 P-6).
+	if isFlowCodingCommitAttempt(s, b.rs, details) {
+		s.recordAutoApproval(b.rs, details, "deny", "flow_coding_commit_reserved_for_audit")
+		return "deny", nil
+	}
 
 	// YOLO=true (RunnerAutoApprove): the runtime runs in "never" approval mode and
 	// should not ask; if a request still arrives, auto-approve and audit as
@@ -3639,7 +3772,20 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 		return rs.status == RunStatusCompleted, s.finalizeInputLocked(rs, turnID)
 	case errors.Is(err, context.Canceled):
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "interrupted by user", Recoverable: true})
-		rs.status = RunStatusCancelled // override the failed mapping for a clean interrupt
+		// Task-240 T-5 / BUG-248: emitLocked maps TurnFailed → Failed in the
+		// summary cache before we override the run status. Patch summary + parent
+		// graph so consumers see cancelled, not failed (stopAgentLoop already
+		// does this for the stop-from-hub path; finishTurn covers Interrupt).
+		rs.status = RunStatusCancelled
+		rs.agentStatus = string(RunStatusCancelled)
+		if parentID := strings.TrimSpace(rs.parentRunID); parentID != "" {
+			if summary, ok := s.agentOrchestrator.currentSummary(parentID, rs.id); ok {
+				summary.Status = RunStatusCancelled
+				summary.AgentStatus = string(RunStatusCancelled)
+				s.agentOrchestrator.upsertSummary(parentID, summary)
+			}
+			s.emitAgentGraphLocked(parentID, s.agentOrchestrator.graphSnapshot(parentID))
+		}
 	case errors.Is(err, errApprovalExpired) || errors.Is(err, errQuestionExpired):
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: err.Error(), Recoverable: true})
 	default:
