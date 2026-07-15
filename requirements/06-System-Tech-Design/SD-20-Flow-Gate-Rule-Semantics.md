@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-24`
-- Last Updated: `2026-06-25`
+- Last Updated: `2026-07-15`
 - Parent Documents: [SD-17: Context And Regression Engine](./SD-17-Context-And-Regression-Engine.md)
 - Child Documents: [CP-35: Context And Regression Engine Rollout](../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md)
 - Related Documents: [SD-16: Agent Spawn And Tool-Calling Design](./SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [SS-14: Code Context And Regression Safety](../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [Task-155: Regression Block Decision Card (r-reg)](../08-Task/todo/Task-155-update-r-reg.md), [Task-156: Regression Oracle — Polyglot Signal And Baseline Cost](../08-Task/todo/Task-156-R-Test-Performance.md), [Task-157: Feature-Key Accuracy For History Context](../08-Task/done/Task-157-Improve-Context-Hardness.md)
@@ -40,6 +40,14 @@
 - `D-4` The test baseline is captured once, **before** the first turn executes, and reused for the session; the gate only ever *loads* it. **→ Planned (Task-156):** supersede "capture once" with a HEAD-SHA + dirty-tree-keyed baseline that is re-captured only when the tree changed (per chat, not per turn), so a legitimate committed behavior change refreshes the baseline (`Q-2`) without re-running an unchanged suite.
 - `D-5` `r-tests`/`r-reg` coupling is accepted for v1; the emitted message is deduped so the user sees one line, not two.
 - `D-6` Running the full suite per turn is the v1 regression mechanism; its cost is a known trade-off recorded here for a later pass (scoped/affected-tests-only, caching, or opt-in). **→ Planned (Task-156):** the regression signal moves to the suite **exit code** against an explicit per-project `test_command` (universal across Go/Node/Python/Android/iOS/…), with named-test granularity only where a structured format is parseable; scope-to-changed-packages + async capture address the cost.
+- `D-7` **Flow Mode three-tier gate (Task-238 `T-9` / Task-242).** Rules run by *nature*, not only on the hub turn:
+  | Tier | When | Rules | Action mapping |
+  |---|---|---|---|
+  | 1 — step self-gate | `agent.delegate` child turn with non-empty git diff | `r-ca`, `r-fk`, `r-bug`, `r-task`, `r-contract`, `r-scope` | reprompt routes to **same child** (`startTurn` on that run; ≤2). Empty-diff (reviewer) → no-op (BUG-152). |
+  | 2 — tests/reg | Flow has `command.validate` → that node owns suite; else coding child turn (review-loop fallback) | `r-tests`, `r-reg` | Always-block spirit preserved: validate uses bounded retry (cap 3 → escalate, Task-170); child fallback maps block → parent `applyFlowControl(escalate)` so the hub is actionable. |
+  | 3 — audit aggregate | `artifact.audit_draft` node before draft settle | doc family on **flow-start HEAD → now** aggregate diff | Violations escalate (do not `done`); `git commit` is **tool-denied** on coding children (reserved for audit/commit-prep, CP-41 P-6). |
+  Chat Mode (`parentRunID == ""`) still runs full `runFlowGate` as before (`D-1`..`D-6`).
+- `D-3` **nới cho Flow Mode (Task-242):** always-block of `r-tests`/`r-reg` in Flow Mode is realized as **bounded-retry-then-escalate** (validate) or **escalate-to-hub** (no-validate fallback), still ending at human stop — not silent auto-pass and not an unanswerable child modal.
 
 ### Constraints
 
