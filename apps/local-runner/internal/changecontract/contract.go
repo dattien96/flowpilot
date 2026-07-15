@@ -44,6 +44,9 @@ type Store struct {
 	mu       sync.Mutex
 	filePath string
 	byKey    map[string]Contract
+	// latestByRun tracks append-order last-wins per runID for GetLatestForRun
+	// (Task-247 / Codex review: do not pick by DeclaredAt alone).
+	latestByRun map[string]Contract
 }
 
 // NewStore creates a Store rooted at <workspace>/.flowpilot/contracts/. The
@@ -55,8 +58,9 @@ func NewStore(workspace string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{
-		filePath: filepath.Join(dir, "contracts.ndjson"),
-		byKey:    make(map[string]Contract),
+		filePath:    filepath.Join(dir, "contracts.ndjson"),
+		byKey:       make(map[string]Contract),
+		latestByRun: make(map[string]Contract),
 	}
 	s.loadFromDisk()
 	return s, nil
@@ -80,7 +84,10 @@ func (s *Store) loadFromDisk() {
 		if err := json.Unmarshal(line, &c); err != nil {
 			continue // tolerate a corrupt/partial line, never fail the load
 		}
-		s.byKey[c.key()] = c // last-wins
+		s.byKey[c.key()] = c // last-wins by (run,step)
+		if rid := strings.TrimSpace(c.RunID); rid != "" {
+			s.latestByRun[rid] = c // append-order last-wins per run
+		}
 	}
 }
 
@@ -108,6 +115,9 @@ func (s *Store) Save(c Contract) error {
 		return err
 	}
 	s.byKey[c.key()] = c
+	if rid := strings.TrimSpace(c.RunID); rid != "" {
+		s.latestByRun[rid] = c
+	}
 	return nil
 }
 
@@ -124,8 +134,9 @@ func (s *Store) Get(runID, stepID string) (Contract, bool) {
 func OpenStoreReadOnly(workspace string) (*Store, error) {
 	path := filepath.Join(workspace, ".flowpilot", "contracts", "contracts.ndjson")
 	s := &Store{
-		filePath: path,
-		byKey:    make(map[string]Contract),
+		filePath:    path,
+		byKey:       make(map[string]Contract),
+		latestByRun: make(map[string]Contract),
 	}
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
@@ -137,26 +148,17 @@ func OpenStoreReadOnly(workspace string) (*Store, error) {
 	return s, nil
 }
 
-// GetLatestForRun returns the most recently DeclaredAt Contract for runID
-// across any step (Task-247 v1: one contract per run, last-wins).
+// GetLatestForRun returns the append-order last-wins Contract for runID
+// across any step (Task-247 v1). Independent of DeclaredAt so a later append
+// with an older/equal timestamp still wins.
 func (s *Store) GetLatestForRun(runID string) (Contract, bool) {
 	if s == nil || runID == "" {
 		return Contract{}, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var best Contract
-	var found bool
-	for _, c := range s.byKey {
-		if c.RunID != runID {
-			continue
-		}
-		if !found || c.DeclaredAt.After(best.DeclaredAt) {
-			best = c
-			found = true
-		}
-	}
-	return best, found
+	c, ok := s.latestByRun[runID]
+	return c, ok
 }
 
 // RenderContractBlock renders c as a headerless prompt body (Task-247;
