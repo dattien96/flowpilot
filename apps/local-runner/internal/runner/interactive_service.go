@@ -2709,6 +2709,24 @@ func durableIdempotencyKeyGen(k string) int64 {
 	return n
 }
 
+// BUG-288 R19-2: durable idempotency is two-phase.
+//   prep:<turnID>  — pre-persist succeeded; provider not launched yet
+//   <turnID>       — launch-ack; full idempotency replay is valid
+// Bare (non-prefixed) values are treated as launched for backward compatibility
+// with sessions written before R19.
+const durableIdemPreparedPrefix = "prep:"
+
+func durableIdemPreparedValue(turnID string) string {
+	return durableIdemPreparedPrefix + turnID
+}
+
+func parseDurableIdemValue(raw string) (turnID string, launched bool) {
+	if strings.HasPrefix(raw, durableIdemPreparedPrefix) {
+		return strings.TrimPrefix(raw, durableIdemPreparedPrefix), false
+	}
+	return raw, true
+}
+
 func (s *InteractiveService) persistApproval(record ProviderApprovalState) error {
 	store := s.persistenceStore()
 	if store == nil {
@@ -3299,6 +3317,9 @@ func (s *InteractiveService) markPendingFlowGateSettleLocked(rs *interactiveRun,
 	}
 	// BUG-288 P1-16 / R15–R17: checkpoint must be durable. Retry; stamp blocked;
 	// third persist; if all fail mark gateCheckpointNotDurable (no gate pass).
+	// BUG-288 R19-5: if the third persist succeeds, clear the blocked marker and
+	// persist a clean snapshot — otherwise restart/RequeueBlockedIntent reports
+	// false blocked after a successful checkpoint.
 	if err := s.persistProviderSession(snap); err != nil {
 		log.Printf("[flow-gate] persist pendingFlowGateSettle checkpoint run=%q turn=%q: %v (retrying once)", rs.id, rs.pendingFlowGateTurnID, err)
 		if err2 := s.persistProviderSession(snap); err2 != nil {
@@ -3314,6 +3335,18 @@ func (s *InteractiveService) markPendingFlowGateSettleLocked(rs *interactiveRun,
 				log.Printf("[flow-gate] persist gate_settle_checkpoint blocked state FAILED run=%q: %v (blocking gate pass until durable)", rs.id, err3)
 				rs.gateCheckpointNotDurable = true
 				return false
+			}
+			// Third persist durableized the settle + blocked stamp. Clear the
+			// transient blocked marker so recovery does not park a healthy run.
+			rs.intentBlockedKind = ""
+			rs.intentBlockedReason = ""
+			rs.intentBlockedAt = ""
+			snapClean := sessionStateOf(rs)
+			if rs.parentRunID == "" {
+				snapClean.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+			}
+			if err4 := s.persistProviderSession(snapClean); err4 != nil {
+				log.Printf("[flow-gate] clear gate_settle_checkpoint marker after durable settle failed run=%q: %v (RAM cleared; next persist will drop marker)", rs.id, err4)
 			}
 		}
 	}
@@ -4832,8 +4865,9 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		isFlowEnginePrompt(providerPrompt) || isFlowReviewHandoffPrompt(providerPrompt)
 	// Legacy text marker still honored only when paired with trusted HTML comment
 	// (keeps unit tests / non-interactive paths working).
-	// BUG-288 R13-15: bind marker id to this run (and optional package id).
-	if !skipHistory && isFlowContextHandoff(providerPrompt, rs.id) {
+	// BUG-288 R13-15 / R19-4: bind marker id to this run and verify with this
+	// service's secret only (not the global multi-secret bag).
+	if !skipHistory && isFlowContextHandoffWithSecret(s.markerSecret, providerPrompt, rs.id) {
 		skipHistory = true
 	}
 	s.mu.Unlock()
@@ -5669,10 +5703,22 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// Idempotency replay must win over every other gate below: a retry carrying
 	// the same key as an already-started turn is not a new turn request, so it
 	// must not be rejected by state that only applies to genuinely new turns.
+	//
+	// BUG-288 R19-2: durable keys are two-phase. Only a launched (non-prep)
+	// value is a full short-circuit. prep:<turnID> means pre-persist landed but
+	// provider was never launched — recovery must re-enter the launch path with
+	// the same turnID so callers do not clear pending intent on a ghost accept.
+	var preparedReuseTurnID string
 	if idempotencyKey != "" {
-		if tid, ok := rs.idempotency[idempotencyKey]; ok {
-			s.mu.Unlock()
-			return tid, nil
+		if raw, ok := rs.idempotency[idempotencyKey]; ok {
+			tid, launched := parseDurableIdemValue(raw)
+			if tid != "" && (launched || !strings.HasPrefix(idempotencyKey, "durable-")) {
+				s.mu.Unlock()
+				return tid, nil
+			}
+			if tid != "" && strings.HasPrefix(idempotencyKey, "durable-") && !launched {
+				preparedReuseTurnID = tid
+			}
 		}
 	}
 	// V10R4 P0: reject turns while a durable approval/question card is still pending
@@ -5769,51 +5815,59 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		}
 	}
 
+	// BUG-288 R19-2: prepared relaunch reuses the pre-persisted turnID and skips
+	// first-turn bookkeeping that already applied before the crash window.
+	isPreparedRelaunch := preparedReuseTurnID != ""
 	turnID := s.nextID("turn")
+	if isPreparedRelaunch {
+		turnID = preparedReuseTurnID
+	}
 	rs.turnInFlight = true
 	rs.reinvokeInFlight = false // the turn the reinvoke scheduled is now in flight
 	flowStartOnly := false
 	// A new turn resets the idle-summary window to zero (a pending summary timer
 	// is cancelled here and re-armed when this turn completes).
 	s.cancelChatSummary(rs.id)
-	if rs.turnCount == 0 {
-		if changeType := normalizeChangeType(in.ChangeType); changeType != "" {
-			rs.changeType = changeType
+	if !isPreparedRelaunch {
+		if rs.turnCount == 0 {
+			if changeType := normalizeChangeType(in.ChangeType); changeType != "" {
+				rs.changeType = changeType
+			}
+			rs.sourceDocID = resolveSourceDocID(rs.workspaceCwd, rs.changeType, in.SourceDocID)
+			// CP-42/Task-177: a validated flowRef on the first turn starts the
+			// built-in flow's entry node(s) deterministically instead of relying on
+			// the hub's own AI judgement to decide whether to spawn a review loop.
+			// The hub's first provider turn is suppressed; it will be reinvoked only
+			// after the flow reaches a hub.inline node. Scheduled async because
+			// spawnChildRun manages its own locking and must not run while this
+			// function still holds s.mu.
+			//
+			// BUG-NOTE (Chat Mode Review Loop): flowEngineDriven is set HERE,
+			// inline (not via the markFlowEngineDriven helper, which would
+			// deadlock on s.mu — already held across this whole function), so
+			// every caller that reaches this branch is covered by construction.
+			// It used to be set only by handleStartTurn's separate
+			// resolveWorkflowFlowRef branch (the Flow-Mode workflow-picker path),
+			// so a Chat Mode "bug" sub-mode launch — which sends flowRef directly
+			// and never goes through that branch — spawned its flow's entry node
+			// correctly but never got flagged flow-engine-driven. That silently
+			// disabled every isFlowEngineDriven-gated behavior for Chat Mode: the
+			// legacy bulk step planner kept running alongside the executor
+			// (BUG-174's fix, undone for chat), the BUG-226 no-tool-call escalation
+			// safety net never fired, and BUG-234's per-node step settlement was
+			// skipped. Both the workflowID-resolved and explicit chat flowRef
+			// paths set in.FlowRef before calling startTurn, so flagging it here
+			// once covers both.
+			if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" {
+				flowStartOnly = true
+				rs.flowEngineDriven = true
+				rs.chatSubMode = strings.TrimSpace(in.SubMode)
+				rs.chatFlowRef = flowRef
+				go s.startResolvedFlow(context.Background(), runID, flowRef, in.Prompt)
+			}
 		}
-		rs.sourceDocID = resolveSourceDocID(rs.workspaceCwd, rs.changeType, in.SourceDocID)
-		// CP-42/Task-177: a validated flowRef on the first turn starts the
-		// built-in flow's entry node(s) deterministically instead of relying on
-		// the hub's own AI judgement to decide whether to spawn a review loop.
-		// The hub's first provider turn is suppressed; it will be reinvoked only
-		// after the flow reaches a hub.inline node. Scheduled async because
-		// spawnChildRun manages its own locking and must not run while this
-		// function still holds s.mu.
-		//
-		// BUG-NOTE (Chat Mode Review Loop): flowEngineDriven is set HERE,
-		// inline (not via the markFlowEngineDriven helper, which would
-		// deadlock on s.mu — already held across this whole function), so
-		// every caller that reaches this branch is covered by construction.
-		// It used to be set only by handleStartTurn's separate
-		// resolveWorkflowFlowRef branch (the Flow-Mode workflow-picker path),
-		// so a Chat Mode "bug" sub-mode launch — which sends flowRef directly
-		// and never goes through that branch — spawned its flow's entry node
-		// correctly but never got flagged flow-engine-driven. That silently
-		// disabled every isFlowEngineDriven-gated behavior for Chat Mode: the
-		// legacy bulk step planner kept running alongside the executor
-		// (BUG-174's fix, undone for chat), the BUG-226 no-tool-call escalation
-		// safety net never fired, and BUG-234's per-node step settlement was
-		// skipped. Both the workflowID-resolved and explicit chat flowRef
-		// paths set in.FlowRef before calling startTurn, so flagging it here
-		// once covers both.
-		if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" {
-			flowStartOnly = true
-			rs.flowEngineDriven = true
-			rs.chatSubMode = strings.TrimSpace(in.SubMode)
-			rs.chatFlowRef = flowRef
-			go s.startResolvedFlow(context.Background(), runID, flowRef, in.Prompt)
-		}
+		rs.turnCount++
 	}
-	rs.turnCount++
 	rs.stepID = in.StepID         // durable for rehydrate-approve restart (V10R P1)
 	rs.lastTurnStepID = in.StepID // CP-35: remember for gate reprompts
 	rs.currentTurnID = turnID
@@ -5831,17 +5885,29 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	rs.updatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	ctx, cancel := context.WithCancel(context.Background())
 	rs.turnCancel = cancel
+	// BUG-288 R19-2: durable pre-persist stores prep:<turnID> only. Full launch
+	// ack (bare turnID) is written after revalidation + side effects, right before
+	// the provider goroutine starts.
+	durableKey := strings.HasPrefix(idempotencyKey, "durable-")
 	if idempotencyKey != "" {
 		if rs.idempotency == nil {
 			rs.idempotency = map[string]string{}
 		}
-		rs.idempotency[idempotencyKey] = turnID
+		if durableKey {
+			rs.idempotency[idempotencyKey] = durableIdemPreparedValue(turnID)
+		} else {
+			rs.idempotency[idempotencyKey] = turnID
+		}
 	}
 	// BUG-288 R18-7: for durable-* keys, persist session BEFORE markStepRunning
 	// / EventTurnStarted so a persist failure cannot leave a ghost RUNNING step
 	// and TurnStarted event with no provider turn.
-	durableKey := strings.HasPrefix(idempotencyKey, "durable-")
+	// BUG-288 R19-1: capture start token before unlock; after relock revalidate
+	// before any markStepRunning / EventTurnStarted so Stop mid-persist cannot
+	// resurrect a Cancelled workflow.
 	isParent := rs.parentRunID == ""
+	parentRunID := rs.parentRunID
+	startToken := turnID
 	if durableKey {
 		snap := sessionStateOfProtectingIdem(rs, idempotencyKey)
 		s.mu.Unlock()
@@ -5867,10 +5933,8 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		}
 		s.mu.Lock()
 		rs = s.runs[runID]
-		if rs == nil {
-			s.mu.Unlock()
-			cancel()
-			return "", newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+		if abort, aerr := s.abortDurableStartIfStaleLocked(runID, rs, startToken, idempotencyKey, parentRunID, isParent, cancel); abort {
+			return "", aerr
 		}
 	}
 	if err := s.markStepRunning(ctx, runID, in.StepID); err != nil {
@@ -5885,6 +5949,15 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		return "", newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
 	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: in.Prompt})
+	// BUG-288 R19-2: promote prepared → launched only after TurnStarted side
+	// effects and immediately before provider launch. Recovery short-circuits
+	// only on this launched form.
+	if durableKey && idempotencyKey != "" {
+		if rs.idempotency == nil {
+			rs.idempotency = map[string]string{}
+		}
+		rs.idempotency[idempotencyKey] = turnID
+	}
 	snap := sessionStateOfProtectingIdem(rs, idempotencyKey)
 	// Drain pendingAgentContext atomically with turnInFlight=true so that any concurrent
 	// maybeAutoReinvokeHub call sees an empty slice after this unlock and does not set
@@ -5895,8 +5968,17 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if isParent {
 		snap.LoopState = s.agentOrchestrator.graphSnapshot(rs.id).LoopState
 	}
-	// Non-durable: best-effort session persist after start (BUG-080 F-3).
-	if !durableKey {
+	// Durable launch-ack persist (best-effort with one retry). Failure still
+	// proceeds to provider launch — step/event already emitted — but logs loudly.
+	if durableKey {
+		if err := s.persistProviderSession(snap); err != nil {
+			log.Printf("[turn] persist durable launch-ack run=%s key=%s: %v (retrying)", runID, idempotencyKey, err)
+			if err2 := s.persistProviderSession(snap); err2 != nil {
+				log.Printf("[turn] persist durable launch-ack FAILED run=%s key=%s: %v (continuing provider launch)", runID, idempotencyKey, err2)
+			}
+		}
+	} else {
+		// Non-durable: best-effort session persist after start (BUG-080 F-3).
 		_ = s.persistProviderSession(snap)
 	}
 	// Persist raw user prompt for transcript replay (BUG-083 F-1): the provider
@@ -5918,6 +6000,13 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			current.currentTurnID = ""
 			current.turnCancel = nil
 			current.lastTurnID = turnID
+			// Synthetic completion still counts as launch-ack for durable keys.
+			if durableKey && idempotencyKey != "" {
+				if current.idempotency == nil {
+					current.idempotency = map[string]string{}
+				}
+				current.idempotency[idempotencyKey] = turnID
+			}
 			snap = sessionStateOf(current)
 		}
 		s.mu.Unlock()
@@ -5933,6 +6022,60 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 
 	go s.runTurn(ctx, rs, adapter, in, scenario, turnID, capturedCtx)
 	return turnID, nil
+}
+
+// abortDurableStartIfStaleLocked validates post-persist state before side effects
+// (BUG-288 R19-1). Caller holds s.mu. On abort, unlocks and cancels.
+func (s *InteractiveService) abortDurableStartIfStaleLocked(
+	runID string, rs *interactiveRun, startToken, idempotencyKey, parentRunID string, isParent bool, cancel context.CancelFunc,
+) (aborted bool, err *apiErr) {
+	if rs == nil {
+		s.mu.Unlock()
+		cancel()
+		return true, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+	}
+	// Stop / concurrent clear must win over late durable start.
+	if rs.currentTurnID != startToken || !rs.turnInFlight {
+		if rs.currentTurnID == startToken {
+			rs.turnInFlight = false
+			rs.currentTurnID = ""
+			rs.turnCancel = nil
+			if idempotencyKey != "" {
+				delete(rs.idempotency, idempotencyKey)
+			}
+		}
+		s.mu.Unlock()
+		cancel()
+		return true, newAPIErr(http.StatusConflict, "turn_aborted", "durable start aborted: turn no longer in flight after persist")
+	}
+	if rs.status == RunStatusCancelled {
+		rs.turnInFlight = false
+		rs.currentTurnID = ""
+		rs.turnCancel = nil
+		if idempotencyKey != "" {
+			delete(rs.idempotency, idempotencyKey)
+		}
+		s.mu.Unlock()
+		cancel()
+		return true, newAPIErr(http.StatusConflict, "flow_stopped", "run was cancelled during durable start persist")
+	}
+	// Loop / parent loop stopped (Stop bumps loop under s.mu before persist of cancel).
+	loopID := runID
+	if !isParent && parentRunID != "" {
+		loopID = parentRunID
+	}
+	if st := s.agentOrchestrator.loopStateFor(loopID).Status; st == "stopped" || st == "done" {
+		rs.turnInFlight = false
+		rs.currentTurnID = ""
+		rs.turnCancel = nil
+		if idempotencyKey != "" {
+			delete(rs.idempotency, idempotencyKey)
+		}
+		s.mu.Unlock()
+		cancel()
+		return true, newAPIErr(http.StatusConflict, "flow_stopped", "flow loop stopped during durable start persist")
+	}
+	return false, nil
 }
 
 func transcriptTurnForProviderTurnLocked(rs *interactiveRun, turnID string) transcriptTurn {

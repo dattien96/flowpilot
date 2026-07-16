@@ -536,7 +536,8 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 		}
 		prompt := resultMessage
 		if hasPkg {
-			prompt = ComposeRetryPrompt(pkg, state)
+			// BUG-288 R19-4: per-service marker secret on validation retry compose.
+			prompt = ComposeRetryPromptWithSecret(pkg, state, s.markerSecret)
 		}
 		// Task-247 / CP-50 P-4: re-entry after validate must still see declared scope.
 		prompt = composeFlowNodeAgentPrompt(cwd, prompt, targetNode)

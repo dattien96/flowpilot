@@ -401,9 +401,16 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		return true
 	}
 
-	// "warn" or "approve": log only, let the turn complete normally â€” still commit
+	// "warn" or "approve": log only, let the turn complete normally — still commit
 	// contract/head because the turn is allowed.
-	commitChangeContract(cwd, prepared)
+	// BUG-288 R19-3: must use withGateEpochDurable (epoch + fail-closed I/O),
+	// same as the zero-violation allow path — direct commitChangeContract discarded
+	// errors and raced Stop before contract/head write.
+	if !s.withGateEpochDurable(runID, epoch, func() error {
+		return commitChangeContract(cwd, prepared)
+	}) {
+		return true
+	}
 	return false
 }
 

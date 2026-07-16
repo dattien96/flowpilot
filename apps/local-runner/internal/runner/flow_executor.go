@@ -407,7 +407,8 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 
 	prompt := userPrompt
 	if pkg, ok := out.Payload["package"].(FlowContextPackage); ok {
-		prompt = renderFlowContextPrompt(ctx, pkg, userPrompt)
+		// BUG-288 R19-4: per-service marker secret for inline FCP render.
+		prompt = renderFlowContextPromptWithSecret(ctx, pkg, userPrompt, s.markerSecret)
 		// BUG-243 F-0: stash the package on the run so a mid-flow node reached
 		// later (rag-harness's validate/audit) can read it back â€” previously
 		// it was only ever used for this one prompt render, then discarded.

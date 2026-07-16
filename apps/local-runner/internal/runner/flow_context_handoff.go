@@ -160,6 +160,7 @@ func runMarkerMAC(kind, id string) string {
 
 // verifyRunMarkerMAC reports whether tag is the correct MAC for kind+id.
 // Accepts the active secret or any loaded per-dir secret (multi-store in-process).
+// Prefer verifyRunMarkerMACWith for per-service isolation (BUG-288 R19-4).
 func verifyRunMarkerMAC(kind, id, tag string) bool {
 	if tag == "" {
 		return false
@@ -181,6 +182,20 @@ func verifyRunMarkerMAC(kind, id, tag string) bool {
 		}
 	}
 	return false
+}
+
+// verifyRunMarkerMACWith checks tag against a single explicit secret only
+// (BUG-288 R19-4). Service A must not trust markers minted with B's secret.
+func verifyRunMarkerMACWith(secret []byte, kind, id, tag string) bool {
+	if tag == "" || len(secret) == 0 {
+		return false
+	}
+	m := hmac.New(sha256.New, secret)
+	m.Write([]byte(kind))
+	m.Write([]byte{0})
+	m.Write([]byte(id))
+	w := hex.EncodeToString(m.Sum(nil))[:16]
+	return hmac.Equal([]byte(tag), []byte(w))
 }
 
 // flowContextTrustedMarker returns a run-scoped inject token only ComposeFlowCodingPrompt
@@ -213,6 +228,13 @@ func flowContextTrustedMarker(runOrPackageID string) string {
 // of them (typically rs.id and plan package id) so a valid MAC from another
 // run cannot be replayed cross-run.
 func isFlowContextHandoff(prompt string, expectedIDs ...string) bool {
+	return isFlowContextHandoffWithSecret(nil, prompt, expectedIDs...)
+}
+
+// isFlowContextHandoffWithSecret is isFlowContextHandoff verifying against an
+// explicit per-service secret when non-nil (BUG-288 R19-4). Nil secret falls
+// back to multi-secret package verify (tests / legacy callers).
+func isFlowContextHandoffWithSecret(secret []byte, prompt string, expectedIDs ...string) bool {
 	for _, line := range strings.Split(prompt, "\n") {
 		t := strings.TrimSpace(line)
 		if !strings.HasPrefix(t, "<!-- flowpilot-fcp:") || !strings.HasSuffix(t, "-->") {
@@ -225,7 +247,14 @@ func isFlowContextHandoff(prompt string, expectedIDs ...string) bool {
 			continue
 		}
 		id, tag := body[:idx], body[idx+1:]
-		if id == "" || !verifyRunMarkerMAC("fcp", id, tag) {
+		if id == "" {
+			continue
+		}
+		if len(secret) > 0 {
+			if !verifyRunMarkerMACWith(secret, "fcp", id, tag) {
+				continue
+			}
+		} else if !verifyRunMarkerMAC("fcp", id, tag) {
 			continue
 		}
 		if len(expectedIDs) > 0 {

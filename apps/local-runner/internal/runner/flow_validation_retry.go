@@ -276,10 +276,21 @@ func isFailureLine(line string) bool {
 // (from Task-169) plus a bounded failure summary and retry instruction (T-4).
 // The original FlowContextPackage is NEVER modified (T-1).
 func ComposeRetryPrompt(pkg FlowContextPackage, state FlowValidationRetryState) string {
+	return ComposeRetryPromptWithSecret(pkg, state, nil)
+}
+
+// ComposeRetryPromptWithSecret is ComposeRetryPrompt using an explicit marker
+// secret for the FCP envelope (BUG-288 R19-4 per-service mint).
+func ComposeRetryPromptWithSecret(pkg FlowContextPackage, state FlowValidationRetryState, secret []byte) string {
 	var sb strings.Builder
 	// Reuse the Task-169 Coding prompt composition with an empty instruction, then
 	// append the failure block.
-	basePrompt := ComposeFlowCodingPrompt(pkg, "")
+	var basePrompt string
+	if len(secret) > 0 {
+		basePrompt = ComposeFlowCodingPromptWithSecret(pkg, "", secret)
+	} else {
+		basePrompt = ComposeFlowCodingPrompt(pkg, "")
+	}
 	sb.WriteString(basePrompt)
 	sb.WriteString("\n---\n\n")
 	sb.WriteString(fmt.Sprintf("## Validation Failure — Retry %d/%d\n\n", state.RetryAttempt, state.MaxRetries))

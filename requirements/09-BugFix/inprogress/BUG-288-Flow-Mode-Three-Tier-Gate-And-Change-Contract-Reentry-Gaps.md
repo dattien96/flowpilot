@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Vòng 9–17 Fixed. **Vòng 18 (Codex): 3 Critical + 4 Important Fixed (2026-07-16)** — numeric idempotency prune+protect, keep settle on checkpoint fail, Supabase `session_runtime` blob, per-service mint secret, override/head fail-closed, durable persist before step/event. Status giữ `inprogress` đến Codex re-review pass sạch.
+- Vòng 9–18 Fixed. **Vòng 19 (Codex): 3 Critical + 2 Important + tests Fixed (2026-07-16)** — durable start revalidate after persist (Stop race), two-phase prepared→launched idempotency, warn/approve via `withGateEpochDurable`, markerSecret through behavior/inline/retry, clear `gate_settle_checkpoint` after third success. Status giữ `inprogress` đến Codex re-review pass sạch.
 
 ### Key Decisions
 
@@ -1185,9 +1185,20 @@ Review độc lập xác nhận Vòng 15 chưa đủ. **2 P0 + 2 P1 → Fixed.**
 | R18-6 | Imp | Head I/O discarded | `updateCanonicalHead` returns err; commit fail-closed |
 | R18-7 | Imp | Ghost step/event on durable persist fail | Persist durable session **before** markStepRunning/TurnStarted |
 
+### Vòng 19 — Codex re-review Vòng 18 (2026-07-16) — **Fixed**
+
+| ID | Sev | Finding | Fix |
+| ---- | --- | ------- | --- |
+| R19-1 | Crit | Stop mid durable pre-persist still markStepRunning/TurnStarted | Capture start token; after relock validate turnInFlight/currentTurnID/status/loop before side effects |
+| R19-2 | Crit | Crash after prep persist + before provider launch → idempotency short-circuit clears intent | Two-phase values `prep:<turnID>` → bare turnID launch-ack; only launched short-circuits; prepared reuses turnID and relaunches |
+| R19-3 | Crit | warn/approve `commitChangeContract` bypass epoch + discard I/O err | Route via `withGateEpochDurable`; false/error → block |
+| R19-4 | Imp | FCP marker mint still global on behavior/inline/retry paths | `markerSecret` through `behaviorContextRender`, inline render, `ComposeRetryPromptWithSecret`; verify with service secret |
+| R19-5 | Imp | Third settle persist success leaves `gate_settle_checkpoint` blocked marker | Clear marker + persist clean snap after third success |
+| R19-6 | Minor | R18 tests only helpers | `bug288_round19_test.go`: Stop-during-persist, prepared relaunch, epoch/contract fail-closed, marker secret, checkpoint cleanup |
+
 ## 12. Completion Notes
 
-- result: **inprogress** — Vòng 9–18 Fixed (2026-07-16). Document giữ `Status: inprogress` until clean Codex re-review.
+- result: **inprogress** — Vòng 9–19 Fixed (2026-07-16). Document giữ `Status: inprogress` until clean Codex re-review.
 - primary modules: `apps/local-runner/internal/runner/*`.
-- change-audit: `CA-328`…`CA-334` (Vòng 18).
-- verification: Vòng 18 focused tests (`bug288_round18_test.go`).
+- change-audit: `CA-328`…`CA-335` (Vòng 19).
+- verification: Vòng 18–19 focused tests (`bug288_round18_test.go`, `bug288_round19_test.go`).
