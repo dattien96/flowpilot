@@ -290,4 +290,3 @@ func (a *jiraRestSprintAdapter) resolveActiveSprintID(ctx context.Context, base 
 	}
 	return strconv.Itoa(payload.Values[0].ID), payload.Values[0].Name, nil
 }
-

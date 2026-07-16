@@ -140,7 +140,7 @@ func (a *codexAdapter) Capabilities() ProviderCapabilities {
 }
 
 func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge TurnBridge) error {
-	sandbox, approvalMode := codexYoloDerive(req.YoloMode)
+	sandbox, approvalMode := codexYoloDeriveForTurn(req.YoloMode, req.ForceShellBridge)
 
 	// Per-thread cwd is authoritative (04-06 multi-workspace): the run's cwd takes
 	// precedence over the adapter default.
@@ -604,5 +604,12 @@ func codexV2ReviewDecision(decision string) string {
 // the two layers can never drift.
 func codexYoloDerive(yolo bool) (sandbox, approvalMode string) {
 	p := resolveYoloPosture(yolo)
+	return p.CodexSandbox, p.CodexApprovalMode
+}
+
+// codexYoloDeriveForTurn is codexYoloDerive with V9-21 force-shell-bridge for
+// flow coding children under YOLO (commit denylist must still see approvals).
+func codexYoloDeriveForTurn(yolo, forceShellBridge bool) (sandbox, approvalMode string) {
+	p := resolveYoloPostureForTurn(yolo, forceShellBridge)
 	return p.CodexSandbox, p.CodexApprovalMode
 }

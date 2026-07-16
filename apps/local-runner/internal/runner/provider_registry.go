@@ -46,7 +46,12 @@ type TurnRequest struct {
 	ModelName         string
 	SelectedSkills    []SkillSelection
 	YoloMode          bool
-	ReasoningEffort   string
+	// ForceShellBridge (V9-21): flow coding child under YOLO must still surface
+	// shell approvals to the runner bridge so git-commit denylist can fire.
+	// Adapters map this to non-bypass permission modes while RunnerAutoApprove
+	// stays true for ordinary commands.
+	ForceShellBridge bool
+	ReasoningEffort  string
 	// Cwd is the run's active workspace directory (04-06). The adapter binds the
 	// provider thread to this cwd; it takes precedence over any adapter default.
 	Cwd string

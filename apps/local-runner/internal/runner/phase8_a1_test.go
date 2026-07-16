@@ -348,7 +348,7 @@ func TestStartTurnSurfacesWorkflowStateStoreErrors(t *testing.T) {
 
 func TestStartRunResolvesWorkflowLaunchToFirstWorkflowStep(t *testing.T) {
 	svc := newInteractiveService(DefaultProviderRegistry(), customCatalogStore{
-		projects: []Project{{ID: "proj-web", Name: "Acme Web App", Path: "/Users/dev/acme-web", Model: "gpt-5.4"}},
+		projects:  []Project{{ID: "proj-web", Name: "Acme Web App", Path: "/Users/dev/acme-web", Model: "gpt-5.4"}},
 		workflows: []Workflow{{ID: "wf-live", ProjectID: "proj-web", Name: "WF", Model: "gpt-5.4"}},
 		workflowSteps: map[string][]Step{
 			"wf-live": {

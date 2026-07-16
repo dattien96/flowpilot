@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Grok Review Loop"
+  short_description: "Loop Grok 4.5 medium fixes through Codex Terra review."
+  default_prompt: "Use Codex as reviewer and Grok 4.5 medium as implementer until no blocking issues remain."

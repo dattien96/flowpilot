@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Claude Review Loop"
+  short_description: "Loop Claude Sonnet fixes through Codex Terra review."
+  default_prompt: "Use Codex as reviewer and Claude Sonnet medium as implementer until no blocking issues remain."

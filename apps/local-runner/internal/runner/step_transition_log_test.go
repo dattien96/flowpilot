@@ -199,6 +199,131 @@ func TestStepTransitionReplayKeepsWaitingWhenApprovalPending(t *testing.T) {
 	}
 }
 
+// BUG-288 #22: child-scoped pending approval keeps the child's node WAITING
+// after restart (approvals keyed by child RunID, not parent).
+func TestStepTransitionReplayKeepsWaitingForChildPendingApproval(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewLocalFileSessionStore: %v", err)
+	}
+	parentID := "run-parent-child-wait"
+	childID := "run-child-coder-wait"
+	nodes := []agentpack.FlowNode{
+		{ID: "coder", Behavior: "agent.delegate", Agent: "agents/coder-agent.md"},
+		{ID: "synthesis", Behavior: "hub.inline", Agent: "agents/synthesizer.md", DependsOn: []string{"coder"}},
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_ = store.AppendStepTransition(context.Background(), parentID, stepTransitionLine{
+		RunID: parentID, NodeID: "coder", Status: string(StepStatusWaitingUserApr), TS: now,
+	})
+	// Pending gate lives on the CHILD run id — parent ListApprovalsByRun is empty.
+	_ = store.UpsertApproval(context.Background(), ProviderApprovalState{
+		ApprovalID: "appr-child-1", RunID: childID, Status: "pending",
+	})
+	_ = store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID: childID, ProjectID: "proj", ParentRunID: parentID, Label: "coder",
+		ProviderKey: ProviderKeyCodex, Status: RunStatusWaitingApproval,
+		StartedAt: now, UpdatedAt: now, RunKind: "chat",
+	})
+
+	store2, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("restart store: %v", err)
+	}
+	svc := newInteractiveService(newProviderRegistry(), newInteractiveCatalog(), store2)
+	_, apiErr := svc.reconstructRun(ProviderSessionState{
+		RunID: parentID, ProjectID: "proj", ProviderKey: ProviderKeyCodex,
+		WorkflowID: "wf-1", RunKind: "workflow", Status: RunStatusRunning,
+		StartedAt: now, UpdatedAt: now, ActiveFlowNodes: nodes, AutoOrchestrate: true,
+		LoopState: AgentLoopState{Status: "running", Mode: "explicit", Cap: 3},
+	})
+	if apiErr != nil {
+		t.Fatalf("reconstructRun: %v", apiErr)
+	}
+	if got := flowStepStatus(t, svc, parentID, "coder"); got != StepStatusWaitingUserApr {
+		t.Fatalf("coder = %q, want WAITING_USER_APPROVAL (child pending approval on disk)", got)
+	}
+	if got := flowStepStatus(t, svc, parentID, "synthesis"); got != StepStatusPending && got != StepStatusCanceled {
+		// hub was never WAITING; evidence walk leaves PENDING (or CANCELED if log touched it)
+		_ = got
+	}
+}
+
+// BUG-288 #22 live path: child permission event settles parent step to WAITING.
+func TestChildPermissionSettlesParentStepWaiting(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := svc.createRun(StartRunInput{ProjectID: "p", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := []agentpack.FlowNode{
+		{ID: "coder", Behavior: "agent.delegate", Agent: "agents/coder-agent.md"},
+		{ID: "synthesis", Behavior: "hub.inline", Agent: "agents/synthesizer.md"},
+	}
+	svc.mu.Lock()
+	svc.runs[parent.RunID].activeFlowNodes = nodes
+	svc.runs[parent.RunID].flowEngineDriven = true
+	svc.runs[child.RunID].parentRunID = parent.RunID
+	svc.runs[child.RunID].label = "coder"
+	svc.runs[child.RunID].turnInFlight = true
+	svc.mu.Unlock()
+	svc.reseedFlowStepRuntime(parent.RunID, nodes)
+	svc.setFlowStepStatus(context.Background(), parent.RunID, "coder", StepStatusRunning)
+
+	// Drive the real RequestApproval path (non-YOLO so it blocks on ask).
+	svc.mu.Lock()
+	rs := svc.runs[child.RunID]
+	svc.mu.Unlock()
+	bridge := &turnBridge{svc: svc, rs: rs, ctx: context.Background(), turnID: "t1", yolo: false}
+	// Default policy is ask-everything; fire in a goroutine so we can observe
+	// WAITING then resolve.
+	done := make(chan string, 1)
+	go func() {
+		d, _ := bridge.RequestApproval(ApprovalDetails{
+			Kind: "exec", Command: "git status -sb",
+			Decisions: []ApprovalDecisionOption{
+				{Label: "Allow", Value: "approve"},
+				{Label: "Deny", Value: "deny"},
+			},
+		})
+		done <- d
+	}()
+	// Wait until step settles WAITING.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := flowStepStatus(t, svc, parent.RunID, "coder"); got == StepStatusWaitingUserApr {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := flowStepStatus(t, svc, parent.RunID, "coder"); got != StepStatusWaitingUserApr {
+		t.Fatalf("coder step = %q, want WAITING_USER_APPROVAL after child RequestApproval", got)
+	}
+	// Resolve and confirm step returns to RUNNING.
+	svc.mu.Lock()
+	apprID := svc.runs[child.RunID].pendingApprovalID
+	svc.mu.Unlock()
+	if apprID == "" {
+		t.Fatal("expected pending approval id on child")
+	}
+	if aerr := svc.SubmitApprovalDecision(apprID, "approve"); aerr != nil {
+		t.Fatalf("SubmitApprovalDecision: %v", aerr)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RequestApproval did not unblock")
+	}
+	if got := flowStepStatus(t, svc, parent.RunID, "coder"); got != StepStatusRunning {
+		t.Fatalf("coder step after approve = %q, want RUNNING", got)
+	}
+}
+
 // Task-239 D-7: FAILED in log is never promoted to DONE when flow reaches done.
 func TestStepTransitionReplayKeepsFailedDespiteFlowDone(t *testing.T) {
 	dir := t.TempDir()

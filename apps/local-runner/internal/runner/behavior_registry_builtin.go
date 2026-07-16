@@ -85,10 +85,10 @@ func behaviorHubInline(ctx context.Context, in BehaviorInput) (BehaviorOutput, e
 // context.render node to consume.
 func behaviorContextProduce(ctx context.Context, in BehaviorInput) (BehaviorOutput, error) {
 	hints := FlowContextHints{
-		WorkflowRunID: in.WorkflowRunID,
-		PlanStepRunID: in.StepRunID,
-		UserPrompt:    in.Prompt,
-		MCPDriverRef:  in.MCPDriverRef,
+		WorkflowRunID:    in.WorkflowRunID,
+		PlanStepRunID:    in.StepRunID,
+		UserPrompt:       in.Prompt,
+		MCPDriverRef:     in.MCPDriverRef,
 		JiraIssueRef:     in.JiraIssueRef,
 		JiraSprintRef:    in.JiraSprintRef,
 		FirebaseCrashRef: in.FirebaseCrashRef,

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -54,10 +55,22 @@ func (o *AgentOrchestrator) memberAlreadyBuffered(parentRunID, cohortID, label s
 	return false
 }
 
+// stallTimer tracks one resettable stall sweep per parent (BUG-288 #19).
+// V9-23: key includes service pointer so multi-instance tests cannot collide.
+var (
+	stallTimerMu sync.Mutex
+	stallTimers  = map[string]*time.Timer{}
+)
+
+func stallTimerKey(s *InteractiveService, parentRunID string) string {
+	return fmt.Sprintf("%p:%s", s, parentRunID)
+}
+
 // maybeScheduleStallCheck arms a delayed stall sweep so silent cohort stalls
 // surface without waiting for the user to press Continue (Codex review
-// Important #2). Safe to call often; checkAndBlockStalledMembers is idempotent
-// when the loop is already blocked/done.
+// Important #2). One timer per parent (BUG-288 #19), but the deadline is the
+// earliest member stall time — not a full reset on every noisy sibling event
+// (V9-05). A streaming reviewer A must not hide a silent reviewer B forever.
 func (s *InteractiveService) maybeScheduleStallCheck(parentRunID string) {
 	if parentRunID == "" || s == nil {
 		return
@@ -76,10 +89,65 @@ func (s *InteractiveService) maybeScheduleStallCheck(parentRunID string) {
 	if !s.agentOrchestrator.hasOpenCohort(parentRunID) {
 		return
 	}
-	// +1s buffer past the policy window so age >= timeout when the timer fires.
-	time.AfterFunc(timeout+time.Second, func() {
+	// Compute remaining time until the quietest open member would stall.
+	now := time.Now().UTC()
+	var soonest time.Duration
+	found := false
+	for _, child := range s.openCohortMemberRuns(parentRunID) {
+		s.mu.Lock()
+		hasGate := child.pendingApprovalID != "" || child.pendingQuestionID != ""
+		last := child.lastProviderEventAt
+		inFlight := child.turnInFlight
+		status := child.status
+		created := child.createdAt
+		s.mu.Unlock()
+		if hasGate {
+			continue
+		}
+		if status == RunStatusCompleted || status == RunStatusFailed || status == RunStatusCancelled {
+			continue
+		}
+		var age time.Duration
+		if !last.IsZero() {
+			age = now.Sub(last)
+		} else if inFlight {
+			if t, err := time.Parse(time.RFC3339Nano, created); err == nil {
+				age = now.Sub(t)
+			} else if t, err := time.Parse(time.RFC3339, created); err == nil {
+				age = now.Sub(t)
+			} else {
+				continue
+			}
+		} else {
+			continue
+		}
+		remaining := timeout - age
+		if remaining < 0 {
+			remaining = 0
+		}
+		if !found || remaining < soonest {
+			soonest = remaining
+			found = true
+		}
+	}
+	if !found {
+		return
+	}
+	// +1s buffer so age >= timeout when the timer fires.
+	d := soonest + time.Second
+	key := stallTimerKey(s, parentRunID)
+	stallTimerMu.Lock()
+	if t, ok := stallTimers[key]; ok {
+		// Always recompute absolute earliest deadline (do not extend noisy members).
+		t.Stop()
+	}
+	stallTimers[key] = time.AfterFunc(d, func() {
+		stallTimerMu.Lock()
+		delete(stallTimers, key)
+		stallTimerMu.Unlock()
 		s.checkAndBlockStalledMembers(parentRunID)
 	})
+	stallTimerMu.Unlock()
 }
 
 // checkAndBlockStalledMembers implements Task-241 T-11(b) / I-16: if a cohort
@@ -186,6 +254,11 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 	if nodeID == "" {
 		return AgentGraphSnapshot{}, false, fmt.Errorf("member_action requires node")
 	}
+	// V9-07: reject empty/wrong node that is not the stalled ActiveNode — do not
+	// clear the block without targeting a real member.
+	if active := strings.TrimSpace(loop.ActiveNode); active != "" && nodeID != active {
+		return AgentGraphSnapshot{}, false, fmt.Errorf("member_action node %q is not the stalled active node %q", nodeID, active)
+	}
 
 	// Find the child run for this node label.
 	var child *interactiveRun
@@ -200,12 +273,36 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 			break
 		}
 	}
+	if child == nil {
+		return AgentGraphSnapshot{}, false, fmt.Errorf("member_action: no child run for node %q", nodeID)
+	}
 
 	switch act {
 	case "skip":
-		// Mark FAILED, append cohort entry, join if complete (I-11).
+		// Mark FAILED, cancel live turn, append cohort entry, join if complete (I-11 / BUG-288 #6).
 		if s.isFlowEngineDriven(parentRunID) {
 			s.setFlowStepStatus(context.Background(), parentRunID, nodeID, StepStatusFailed)
+		}
+		if child != nil {
+			s.mu.Lock()
+			cancel := child.turnCancel
+			child.turnCancel = nil
+			child.turnInFlight = false
+			child.status = RunStatusFailed
+			child.agentStatus = string(RunStatusFailed)
+			// V9-25: mark synthetic skip so late provider TurnFailed cannot re-append.
+			child.cohortSkipConsumed = true
+			// BUG-288 P1-14/P1-19: tell finishTurn's context.Canceled branch that
+			// this cancellation is a Stall Skip, not a generic Stop/interrupt, so
+			// it preserves Failed (Task-241 contract) instead of overwriting it
+			// to Cancelled when the cancel() below propagates back.
+			if cancel != nil {
+				child.stalledSkipCause = true
+			}
+			s.mu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
 		}
 		if cohortID != "" {
 			provider := ""
@@ -215,13 +312,6 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 			s.agentOrchestrator.appendCohortResult(parentRunID, cohortID, cohortEntry{
 				Label: nodeID, Provider: provider, Status: "failed", Err: "skipped by user (stalled)",
 			})
-			if child != nil {
-				s.mu.Lock()
-				child.status = RunStatusFailed
-				child.agentStatus = string(RunStatusFailed)
-				child.turnInFlight = false
-				s.mu.Unlock()
-			}
 			if s.agentOrchestrator.cohortComplete(parentRunID, cohortID) {
 				entries := s.agentOrchestrator.drainCohort(parentRunID, cohortID)
 				round := s.agentOrchestrator.loopStateFor(parentRunID).Round
@@ -254,7 +344,8 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 			}
 		}
 	case "retry":
-		// Clear stall and re-arm the member if we can reinvoke.
+		// Clear stall and re-arm the member (BUG-288 #5): cancel in-flight turn first
+		// so startTurn is not rejected with turn_in_progress.
 		s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 			st.Status = "running"
 			st.BlockReason = ""
@@ -262,16 +353,47 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 			return st
 		})
 		if child != nil {
+			prompt := fmt.Sprintf("[flow-engine] Retry: member %q was stalled; continue your work.", nodeID)
 			s.mu.Lock()
 			child.lastProviderEventAt = time.Now().UTC()
+			runID := child.id
+			stepID := child.stepID
+			if stepID == "" {
+				stepID = "chat-" + runID
+			}
+			inFlight := child.turnInFlight
+			cancel := child.turnCancel
+			if inFlight && cancel != nil {
+				// BUG-288 P1-18/P1-14: persist the restart intent durably on the
+				// parent BEFORE cancelling the in-flight child turn. Previously
+				// this intent only lived in RAM; a crash between cancel() and
+				// finishTurn actually re-starting the turn (line ~5056) silently
+				// dropped the retry with no trace and no way to recover it.
+				var parentSnap ProviderSessionState
+				var havePersist bool
+				if parent := s.runs[parentRunID]; parent != nil {
+					parent.pendingRestartRunID = runID
+					parent.pendingRestartPrompt = prompt
+					parentSnap = sessionStateOf(parent)
+					havePersist = true
+				}
+				child.turnCancel = nil
+				s.mu.Unlock()
+				if havePersist {
+					if err := s.persistProviderSession(parentSnap); err != nil {
+						log.Printf("[stall] persist restart intent parent=%q child=%q: %v (retry kept in-memory only; may be lost on crash)", parentRunID, runID, err)
+					}
+				}
+				cancel()
+				break
+			}
+			child.turnInFlight = false
 			s.mu.Unlock()
-			// Best-effort reinvoke: start a new turn on the same child run.
-			prompt := fmt.Sprintf("[flow-engine] Retry: member %q was stalled; continue your work.", nodeID)
-			go func(runID, prompt string) {
-				if _, err := s.startTurn(runID, TurnInput{StepID: "chat-" + runID, Prompt: prompt}, "", ""); err != nil {
+			go func(runID, stepID, prompt string) {
+				if _, err := s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", ""); err != nil {
 					log.Printf("[stall] retry startTurn child=%q: %v", runID, err)
 				}
-			}(child.id, prompt)
+			}(runID, stepID, prompt)
 		}
 	}
 	snap := s.agentGraphSnapshot(parentRunID)

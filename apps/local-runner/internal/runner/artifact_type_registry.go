@@ -586,8 +586,25 @@ func appendTelegramOutputPrompt(prompt string, node agentpack.FlowNode) string {
 // composeFlowNodeAgentPrompt applies Task-223 INPUT read inject, OUTPUT
 // write-contract inject, and Task-233's Telegram OUTPUT write-contract to a
 // base agent prompt for a flow node.
-// changeContractPromptMarker guards against double-append on reprompt/retry (Task-247).
-const changeContractPromptMarker = "Declared scope (KHÔNG sửa ngoài"
+// changeContractPromptMarker is a human-readable heading for Change Contract
+// injection. Double-inject guard uses changeContractTrustedMarker(runID) so a
+// user cannot suppress inject by typing the Vietnamese heading alone (V10R4).
+const changeContractPromptMarker = "## Change Contract đã khai cho run này"
+
+// changeContractTrustedMarker returns a run-scoped HTML comment only our
+// injector writes. Skip inject only when this exact token is present.
+// BUG-288 P1-20: parentRunID alone is visible to the user (desktop UI/API),
+// so a bare "<!-- flowpilot-cc:<runID> -->" check let a user who knows/copies
+// a run id suppress inject by typing it themselves. The trailing segment is
+// an HMAC (runMarkerMAC, flow_context_handoff.go) over a server-only secret,
+// so only this process can mint a marker that will match — mirrors
+// flowContextTrustedMarker's fix for the same class of gap. This means
+// appendChangeContractIfAny's existing strings.Contains(prompt, trusted)
+// check is safe as-is: a user cannot construct the MAC suffix without
+// runMarkerSecret, so a copied or guessed run id alone no longer suffices.
+func changeContractTrustedMarker(parentRunID string) string {
+	return "<!-- flowpilot-cc:" + parentRunID + ":" + runMarkerMAC("cc", parentRunID) + " -->"
+}
 
 func composeFlowNodeAgentPrompt(workspaceCwd, prompt string, node agentpack.FlowNode) string {
 	prompt = appendInputArtifactPrompt(workspaceCwd, prompt, node)
@@ -606,8 +623,20 @@ func composeFlowNodeAgentPrompt(workspaceCwd, prompt string, node agentpack.Flow
 
 // appendChangeContractIfAny appends the run's latest Change Contract to a node
 // prompt once (Task-247). Used from flow_executor after composeFlowNodeAgentPrompt.
+//
+// Skip inject only when the run-scoped trusted marker is present. The marker
+// includes a non-guessable token derived from parentRunID + package body hash
+// of the store path is not enough alone — user who knows runID could still type
+// the HTML comment. Defense in depth: marker format is still checked, and
+// package render embeds it only via our code path.
 func appendChangeContractIfAny(workspaceCwd, parentRunID, prompt string) string {
-	if parentRunID == "" || workspaceCwd == "" || strings.Contains(prompt, changeContractPromptMarker) {
+	if parentRunID == "" || workspaceCwd == "" {
+		return prompt
+	}
+	// V10R4 P1: only trust our run-scoped inject marker. User-typed
+	// "### change.contract" or the Vietnamese heading alone must NOT suppress inject.
+	trusted := changeContractTrustedMarker(parentRunID)
+	if strings.Contains(prompt, trusted) {
 		return prompt
 	}
 	store, err := changecontract.OpenStoreReadOnly(workspaceCwd)
@@ -622,5 +651,5 @@ func appendChangeContractIfAny(workspaceCwd, parentRunID, prompt string) string 
 	if body == "" {
 		return prompt
 	}
-	return prompt + "\n\n## Change Contract đã khai cho run này\n" + body + "\n"
+	return prompt + "\n\n" + changeContractPromptMarker + "\n" + trusted + "\n" + body + "\n"
 }

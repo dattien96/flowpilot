@@ -66,30 +66,97 @@ func (a *geminiAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 	}
 
 	projectID, resume, createProject := a.projectID(req, cwd)
-	args := geminiCLIArgs(cwd, projectID, normalizeGeminiModelName(req.ModelName), req.YoloMode, resume, createProject)
-	args = append(args, "--print", a.preparePrompt(req))
+	// V9-21 / V10R re-audit P0: ForceShellBridge under YOLO skips
+	// --dangerously-skip-permissions. Gemini --print has no
+	// TurnBridge.RequestApproval path, so commit deny is enforced by:
+	//  1) prompt guard (soft)
+	//  2) PATH git shim — fail closed if install fails (no prompt-only fallthrough)
+	//  3) post-turn undo of any commits that bypassed PATH (absolute git / libgit2)
+	//  4) post-turn gate as last line of defense
+	yoloSkipPerms := req.YoloMode && !req.ForceShellBridge
+	prompt := a.preparePrompt(req)
+	envOverrides := a.env
+	agentCwd := cwd
+	var headCheckpoint gitHeadCheckpoint
+	var haveCheckpoint bool
+	var wtCleanup func()
+	if req.ForceShellBridge {
+		prompt = "[FlowPilot gate] Do NOT run `git commit` or any shell form that creates a git commit. " +
+			"Commits are reserved for the audit/commit-prep step. Use other tools freely.\n\n" + prompt
+		guardDir, cleanup, gerr := installGitCommitGuard(true)
+		if gerr != nil || guardDir == "" {
+			log.Printf("[gemini-agy] git commit guard install failed (fail-closed): %v", gerr)
+			if gerr == nil {
+				gerr = errGitCommitGuardRequired
+			}
+			return fmt.Errorf("%w: %v", errGitCommitGuardRequired, gerr)
+		}
+		defer cleanup()
+		// V10R4 P0: snapshot main HEAD+refs+files; run agent in isolated sandbox.
+		cp, cperr := captureGitHeadCheckpoint(cwd)
+		if cperr != nil {
+			return fmt.Errorf("%w: cannot snapshot git HEAD before turn: %v", errGitCommitGuardRequired, cperr)
+		}
+		headCheckpoint = cp
+		haveCheckpoint = true
+		wtPath, wtClean, wterr := prepareForceShellBridgeWorktree(cwd, cp)
+		if wterr != nil {
+			return fmt.Errorf("%w: isolated worktree: %v", errGitCommitGuardRequired, wterr)
+		}
+		wtCleanup = wtClean
+		defer func() {
+			if wtCleanup != nil {
+				wtCleanup()
+			}
+		}()
+		if wtPath == "" || wtPath == cwd {
+			return fmt.Errorf("%w: isolation returned main cwd (unsafe)", errGitCommitGuardRequired)
+		}
+		agentCwd = wtPath
+		// PATH shim + FLOWPILOT_GIT_SANDBOX blocks absolute git into main.
+		envOverrides = envWithGitCommitGuard(a.env, guardDir, agentCwd)
+	}
+	args := geminiCLIArgs(agentCwd, projectID, normalizeGeminiModelName(req.ModelName), yoloSkipPerms, resume, createProject)
+	args = append(args, "--print", prompt)
 	logGeminiAgyLaunch("adapter", geminiBinaryName(), args, geminiLaunchDebug{
-		Cwd:               cwd,
+		Cwd:               agentCwd,
 		ProjectID:         projectID,
 		ProviderSessionID: req.ProviderSessionID,
 		RunID:             req.RunID,
 		Resume:            resume,
 		CreateProject:     createProject,
-		Env:               a.env,
+		Env:               envOverrides,
 	})
 
 	cmd := commandContextFn(ctx, geminiBinaryName(), args...)
-	cmd.Env = agyFilteredEnv(os.Environ(), a.env)
-	if strings.TrimSpace(cwd) != "" {
-		cmd.Dir = cwd
+	cmd.Env = agyFilteredEnv(os.Environ(), envOverrides)
+	if strings.TrimSpace(agentCwd) != "" {
+		cmd.Dir = agentCwd
 	}
 
 	stdoutText, stderrText, err := captureAgyPrint(ctx, cmd)
+	// Finalize isolation: copy dirty files to main, discard worktree commits,
+	// fail closed if main HEAD moved (never rewrite shared history).
+	if req.ForceShellBridge && haveCheckpoint {
+		finErr := finalizeForceShellBridgeWorktree(cwd, agentCwd, headCheckpoint)
+		if wtCleanup != nil {
+			wtCleanup()
+			wtCleanup = nil
+		}
+		if finErr != nil {
+			log.Printf("[gemini-agy] ForceShellBridge finalize FAILED (fail-closed) main=%q wt=%q err=%v",
+				cwd, agentCwd, finErr)
+			if err == nil {
+				return finErr
+			}
+			return fmt.Errorf("%w; also adapter error: %v", finErr, err)
+		}
+	}
 	if err != nil {
-		log.Printf("[gemini-agy] result stage=adapter status=error project_id=%q cwd=%q stdout_bytes=%d stderr=%q err=%v", projectID, cwd, len(stdoutText), limitLogText(stderrText, 1000), err)
+		log.Printf("[gemini-agy] result stage=adapter status=error project_id=%q cwd=%q stdout_bytes=%d stderr=%q err=%v", projectID, agentCwd, len(stdoutText), limitLogText(stderrText, 1000), err)
 		return geminiProcessError("print", err, stderrText)
 	}
-	log.Printf("[gemini-agy] result stage=adapter status=ok project_id=%q cwd=%q stdout_bytes=%d stderr_bytes=%d", projectID, cwd, len(stdoutText), len(stderrText))
+	log.Printf("[gemini-agy] result stage=adapter status=ok project_id=%q cwd=%q stdout_bytes=%d stderr_bytes=%d", projectID, agentCwd, len(stdoutText), len(stderrText))
 
 	a.recordSession(ctx, req, projectID, cwd)
 	finalMessage := strings.TrimSpace(stdoutText)
@@ -555,13 +622,23 @@ var agyEnvBlockPrefixes = []string{"CLAUDE_CODE_", "CLAUDE_AGENT_"}
 
 // agyFilteredEnv builds the subprocess environment for agy, stripping the
 // Claude Code env vars that cause `agy --print` to hang, then applying
-// the provided overrides on top.
+// the provided overrides on top. Override keys replace base keys (no
+// duplicate PATH etc.) so git-guard PATH prepend is the only PATH entry.
 func agyFilteredEnv(base []string, overrides map[string]string) []string {
+	overrideKeys := make(map[string]struct{}, len(overrides))
+	for k := range overrides {
+		if strings.TrimSpace(k) != "" {
+			overrideKeys[k] = struct{}{}
+		}
+	}
 	result := make([]string, 0, len(base)+len(overrides))
 	for _, entry := range base {
 		key := entry
 		if idx := strings.IndexByte(entry, '='); idx >= 0 {
 			key = entry[:idx]
+		}
+		if _, replaced := overrideKeys[key]; replaced {
+			continue
 		}
 		if agyEnvBlocklist[key] {
 			continue

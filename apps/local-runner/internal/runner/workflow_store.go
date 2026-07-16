@@ -147,10 +147,101 @@ type ProviderSessionState struct {
 	// launch (which has its own WorkflowID/launchMode restore path already).
 	ChatSubMode string
 	ChatFlowRef string
+	// PendingFlowGateSettle is durable gate-pending state (V10 P0): after
+	// restart, reconstructRun re-queues post-turn gate instead of treating
+	// the child/root as completed.
+	PendingFlowGateSettle     bool
+	PendingFlowGateFinalMsg   string
+	PendingFlowGateOccurredAt string
+	// PendingFlowGateTurnID is the provider turn id for the deferred terminal
+	// event (V10R P1). Without it, resume materializes EventTurnCompleted with
+	// empty ProviderTurnID.
+	PendingFlowGateTurnID string
+	// TurnStartGitHead / TurnStartWorktree / PendingGateChangedFiles are the
+	// turn-scoped gate snapshot. Without these, resumePendingFlowGate would
+	// re-observe against empty base and treat all historical dirt as this turn.
+	TurnStartGitHead        string
+	TurnStartWorktree       map[string]string
+	PendingGateChangedFiles []string
+	// StepID / LastTurnStepID persist the execution-step context needed to
+	// restart a rehydrated approval/question turn after restart (V10R P1).
+	StepID         string
+	LastTurnStepID string
+	// PendingGateReprompt* / PendingGateCodePaths / RepromptAttempts survive
+	// restart so a gate-reprompt remediation is not lost if startTurn fails or
+	// the process dies mid-window (V10R4 P1).
+	PendingGateRepromptPrompt string
+	PendingGateRepromptStepID string
+	PendingGateCodePaths      []string
+	RepromptAttempts          int
+	// PendingResumePrompt/StepID is a durable continuation intent after
+	// rehydrated approval/question resolve. Cleared only after startTurn
+	// accepts the turn (V10R4 P1).
+	PendingResumePrompt string
+	PendingResumeStepID string
+	// PendingResumeGen / PendingGateRepromptGen are compare-and-clear tokens so
+	// a newer intent is not wiped by a late successful startTurn for an older
+	// intent (V10R4 P1).
+	PendingResumeGen       int64
+	PendingGateRepromptGen int64
+	// Pending*DeliveredGen + AcceptedTurn are set ONLY after startTurn accepts
+	// a turn for that generation (V10R4 P0-02). Never write DeliveredGen before
+	// the provider call — that created a permanent intent-loss window.
+	PendingResumeDeliveredGen         int64
+	PendingGateRepromptDeliveredGen   int64
+	PendingResumeAcceptedTurn         string
+	PendingGateRepromptAcceptedTurn   string
+	// Durable fail budget keyed by generation (survives process restart).
+	PendingResumeFailCount       int
+	PendingResumeFailGen         int64
+	PendingGateRepromptFailCount int
+	PendingGateRepromptFailGen   int64
+	// PendingResumeApprovalID / PendingResumeDecision reconcile card resolution
+	// with continuation intent across a two-write crash (V10R4 P1).
+	PendingResumeApprovalID string
+	PendingResumeDecision   string
+	// PendingResumeQuestionChoices preserves the original multi-select answer
+	// slice for reconciliation (BUG-288 P2-01). PendingResumeDecision keeps a
+	// joined display string (used for approvals and for display/back-compat),
+	// but reconciling a crashed multi-select answer from the joined string
+	// re-split on ", " would corrupt any choice that itself contains that
+	// separator (e.g. ["a, b", "c"] -> ["a, b, c"]). This field carries the
+	// real slice so rehydrate can restore it verbatim instead of re-deriving.
+	PendingResumeQuestionChoices []string
 	// FlowStartGitHead is the workspace HEAD captured at startResolvedFlow
 	// (Task-242 tier-3). Persisted so audit aggregate diff survives restart
 	// (Codex review Important #3).
 	FlowStartGitHead string
+	// StopGeneration / ParentStopGenSeen implement the parent stop-tombstone
+	// authority (BUG-288 P1-04): StopGeneration is the root run's own durable,
+	// monotonically increasing stop counter; ParentStopGenSeen is a child run's
+	// snapshot of its parent's StopGeneration as of this child's last
+	// checkpoint. Child reconstruction and resumePendingFlowGate reject a
+	// deferred gate when the parent's current StopGeneration is newer than the
+	// child's ParentStopGenSeen — the child was checkpointed before a Stop it
+	// never itself observed, so its pending gate must not resurrect.
+	StopGeneration    int64
+	ParentStopGenSeen int64
+	// IntentBlockedKind/Reason/At durably record a durable turn intent that
+	// exhausted its permanent-failure retry budget (BUG-288 P1-09).
+	IntentBlockedKind   string
+	IntentBlockedReason string
+	IntentBlockedAt     string
+	// TransitionLogDegraded/At/Reason durably record a step-transition-log
+	// append failure (BUG-288 P2-03) so restore/replay can detect that the
+	// step timeline for this run is not fully trustworthy.
+	TransitionLogDegraded       bool
+	TransitionLogDegradedAt     string
+	TransitionLogDegradedReason string
+	// PendingRestartRunID/Prompt durably record a Stall-Retry restart intent
+	// on the PARENT run (BUG-288 P1-18/P1-14). Previously this lived only in
+	// RAM (interactiveRun.pendingRestartRunID/pendingRestartPrompt); a crash
+	// between the member_action "retry" request (which cancels the child's
+	// in-flight turn) and finishTurn actually re-starting the turn silently
+	// dropped the retry with no trace. Persisting it here mirrors the
+	// existing PendingResume*/PendingGateReprompt* durable-intent pattern.
+	PendingRestartRunID string
+	PendingRestartPrompt string
 }
 
 type ProviderApprovalState struct {

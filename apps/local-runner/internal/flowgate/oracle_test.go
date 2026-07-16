@@ -1,9 +1,12 @@
 package flowgate
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsTestFile(t *testing.T) {
@@ -154,6 +157,64 @@ func TestRunOracleEmptyTestCmd(t *testing.T) {
 	result := RunOracle("/some/dir", bl, nil, nil)
 	if result.HasRegression {
 		t.Error("empty TestCmd should produce no regression")
+	}
+}
+
+// Cancelled turn context must not look like suite_regressed / HasRegression.
+func TestRunOracleContextCanceledIsNotRegression(t *testing.T) {
+	dir := t.TempDir()
+	// Long-running suite so cancel hits while the process is still up.
+	script := filepath.Join(dir, "slow_suite.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30\necho ok\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bl := &Baseline{
+		CapturedAt:  time.Now().UTC().Format(time.RFC3339),
+		TestCmd:     script,
+		SuitePassed: true,
+		GreenTests:  []string{"TestFoo"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel shortly after start so CommandContext kills the sleep.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	result := RunOracleContext(ctx, dir, bl, nil, nil)
+	if result.HasRegression {
+		t.Fatalf("cancelled suite must not report regression; got %#v", result)
+	}
+	if result.EnvError == "" {
+		t.Fatalf("want EnvError from context cancel, got %#v", result)
+	}
+	if !isContextAbortError(result.EnvError) && !strings.Contains(strings.ToLower(result.EnvError), "cancel") {
+		t.Fatalf("EnvError should reflect cancel, got %q", result.EnvError)
+	}
+	if result.SuitePassed {
+		t.Fatal("cancelled suite is not a pass")
+	}
+}
+
+func TestTailCapWriterKeepsTailAndBoundsMemory(t *testing.T) {
+	w := &tailCapWriter{max: 64}
+	// Write more than max in several chunks — peak buf must stay <= max.
+	_, _ = w.Write([]byte(strings.Repeat("a", 100)))
+	if len(w.buf) > 64 {
+		t.Fatalf("buf len=%d after first write", len(w.buf))
+	}
+	_, _ = w.Write([]byte("error: unique-tail-marker\n"))
+	got := w.String()
+	if !strings.Contains(got, "unique-tail-marker") {
+		t.Fatalf("tail must be preserved: %q", got)
+	}
+	if !w.truncated || !strings.Contains(got, "truncated") {
+		t.Fatal("expected truncation")
+	}
+	// Short write without overflow.
+	w2 := &tailCapWriter{max: 64}
+	_, _ = w2.Write([]byte("short"))
+	if w2.String() != "short" || w2.truncated {
+		t.Fatalf("short path: %q truncated=%v", w2.String(), w2.truncated)
 	}
 }
 

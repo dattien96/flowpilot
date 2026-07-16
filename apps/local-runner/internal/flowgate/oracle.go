@@ -13,10 +13,20 @@ import (
 type OracleResult struct {
 	Regressed     []string `json:"regressed"`
 	Passed        []string `json:"passed,omitempty"`
+	Failed        []string `json:"failed,omitempty"` // named failures this run (Task-242 validate mapping)
 	Tampered      []string `json:"tampered"`
 	HasRegression bool     `json:"has_regression"`
 	HasTampering  bool     `json:"has_tampering"`
+	SuitePassed   bool     `json:"suite_passed"` // exit-code of the suite run (Task-242 D-4)
 	Message       string   `json:"message,omitempty"`
+	// Output is the suite's combined stdout+stderr (bounded by the process pipe).
+	// Validate/retry maps this into ValidationResult so compile errors and
+	// unstructured failures produce actionable failure summaries (Task-242).
+	Output string `json:"-"`
+	// EnvError is set when the suite command could not start (not found, permission,
+	// empty argv). Callers must treat this like ValidationResult.EnvError — skip
+	// retry/regression, not "suite regressed". (Task-242 validate path)
+	EnvError string `json:"env_error,omitempty"`
 	// Disabled is true when no test command is configured or resolvable, so the oracle
 	// cannot provide regression safety. The UI should surface this as a warning. (Task-156)
 	Disabled bool `json:"disabled,omitempty"`
@@ -29,12 +39,24 @@ type OracleResult struct {
 // Primary signal (Task-156): if the baseline recorded suite_passed=true and the
 // suite now exits non-zero, that is a regression. Named test diffing is an optional
 // refinement layered on structured output formats and is never the sole signal.
+//
+// Background context (legacy call sites). Prefer RunOracleContext when a turn
+// context should cancel/timeout the suite.
 func RunOracle(repoDir string, baseline *Baseline, diff []ChangedFile, overrides map[string]Override) OracleResult {
+	return RunOracleContext(context.Background(), repoDir, baseline, diff, overrides)
+}
+
+// RunOracleContext is RunOracle with an explicit context (Task-242 validate path
+// propagates the turn ctx so cancel/timeout are honored).
+func RunOracleContext(ctx context.Context, repoDir string, baseline *Baseline, diff []ChangedFile, overrides map[string]Override) OracleResult {
 	if baseline == nil {
 		return OracleResult{}
 	}
 	if baseline.TestCmd == "" {
 		return OracleResult{Disabled: true}
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	testCmd := baseline.TestCmd
@@ -42,7 +64,21 @@ func RunOracle(repoDir string, baseline *Baseline, diff []ChangedFile, overrides
 		testCmd = scoped
 		log.Printf("[gate] scoped oracle run: %s", testCmd)
 	}
-	suitePassed, nowPassed, nowFailed := executeSuite(repoDir, testCmd, baseline.TestDir)
+	suitePassed, nowPassed, nowFailed, envErr, suiteOut := executeSuite(ctx, repoDir, testCmd, baseline.TestDir)
+	if envErr != "" {
+		// Command did not start, or turn/timeout cancelled the suite — not a regression.
+		msg := "test command failed to start: " + envErr
+		if isContextAbortError(envErr) {
+			msg = "test suite cancelled: " + envErr
+		}
+		return OracleResult{
+			EnvError:    envErr,
+			Message:     msg,
+			Output:      suiteOut,
+			Disabled:    false,
+			SuitePassed: false,
+		}
+	}
 
 	var changedTestFiles []string
 	for _, f := range diff {
@@ -55,16 +91,16 @@ func RunOracle(repoDir string, baseline *Baseline, diff []ChangedFile, overrides
 	if baseline.SuitePassed && !suitePassed {
 		// Exit-code primary signal: suite was green at baseline and is red now.
 		if len(nowFailed) > 0 {
-			// Named granularity available — filter to tests that were green, not in diff, not overridden.
+			// Named granularity — filter to tests that were green, not in diff, not overridden.
 			for _, t := range nowFailed {
 				if isInBaseline(t, baseline.GreenTests) && !isTestFromChangedFile(t, changedTestFiles) && !IsOverridden(overrides, t) {
 					regressed = append(regressed, t)
 				}
 			}
-		}
-		// Coarse-mode: suite failed but no named test attributed (e.g. polyglot without
-		// structured output). Use a sentinel so the gate still fires. (Task-156)
-		if len(regressed) == 0 {
+			// V9-26: when every named failure was overridden/in-diff, leave regressed
+			// empty (do not invent suite_regressed — that is "all approved", not unknown).
+		} else {
+			// Coarse-mode: suite failed with no named tests (polyglot). Sentinel. (Task-156)
 			regressed = append(regressed, "suite_regressed")
 		}
 	} else {
@@ -79,7 +115,9 @@ func RunOracle(repoDir string, baseline *Baseline, diff []ChangedFile, overrides
 
 	var tampered []string
 	for _, f := range diff {
-		if IsTestFile(f.Path) && f.Status == "M" && !IsOverridden(overrides, filepath.Base(f.Path)) {
+		// BUG-288 #20: treat modify/delete/rename of existing tests as tamper.
+		if IsTestFile(f.Path) && (f.Status == "M" || f.Status == "D" || f.Status == "R" || f.Status == "C") &&
+			!IsOverridden(overrides, filepath.Base(f.Path)) {
 			tampered = append(tampered, f.Path)
 		}
 	}
@@ -96,27 +134,106 @@ func RunOracle(repoDir string, baseline *Baseline, diff []ChangedFile, overrides
 	return OracleResult{
 		Regressed:     regressed,
 		Passed:        nowPassed,
+		Failed:        nowFailed,
 		Tampered:      tampered,
 		HasRegression: len(regressed) > 0,
 		HasTampering:  len(tampered) > 0,
+		SuitePassed:   suitePassed,
 		Message:       msg,
+		Output:        suiteOut,
 	}
 }
 
-// executeSuite runs testCmd in repoDir/testDir and returns (suitePassed, passedTests, failedTests).
+// maxSuiteOutputBytes caps suite stdout/stderr retained on OracleResult so a
+// noisy suite cannot unbounded-allocate. Tail is kept (failures land near end).
+const maxSuiteOutputBytes = 64 * 1024
+
+// tailCapWriter is an io.Writer that retains only the last max bytes while
+// still draining the full stream (process never blocks on a full pipe).
+// Peak retained memory is O(max), not O(total suite log).
+type tailCapWriter struct {
+	max int
+	buf []byte
+	// truncated is true once we have discarded older bytes.
+	truncated bool
+}
+
+func (t *tailCapWriter) Write(p []byte) (int, error) {
+	if t.max <= 0 {
+		return len(p), nil
+	}
+	if len(p) >= t.max {
+		// Keep only the tail of this write.
+		t.buf = append(t.buf[:0], p[len(p)-t.max:]...)
+		t.truncated = true
+		return len(p), nil
+	}
+	need := len(t.buf) + len(p) - t.max
+	if need > 0 {
+		t.buf = t.buf[need:]
+		t.truncated = true
+	}
+	t.buf = append(t.buf, p...)
+	return len(p), nil
+}
+
+func (t *tailCapWriter) String() string {
+	if !t.truncated || len(t.buf) == 0 {
+		return string(t.buf)
+	}
+	const marker = "…(suite output truncated)…\n"
+	return marker + string(t.buf)
+}
+
+// executeSuite runs testCmd in repoDir/testDir and returns
+// (suitePassed, passedTests, failedTests, envError, combinedOutput).
 // suitePassed reflects the exit code (true = 0). Named test lists are best-effort for
 // structured formats (go test -v, pytest -v, npm). (Task-156)
-func executeSuite(repoDir, testCmd, testDir string) (suitePassed bool, passed []string, failed []string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+// envError is non-empty when the command cannot start (not found / permission / empty)
+// OR when the turn/timeout context cancelled the suite (not a test failure).
+// combinedOutput is capped via streaming tail writers (not post-hoc CombinedOutput).
+func executeSuite(ctx context.Context, repoDir, testCmd, testDir string) (suitePassed bool, passed []string, failed []string, envError string, combinedOutput string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	parts := strings.Fields(testCmd)
+	// BUG-288 #25: quote-aware split (not strings.Fields) for -run 'Test Foo' etc.
+	parts := shellSplit(testCmd)
+	if len(parts) == 0 {
+		return false, nil, nil, "empty_command", ""
+	}
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	cmd.Dir = filepath.Join(repoDir, filepath.FromSlash(testDir))
-	out, err := cmd.CombinedOutput()
-	suitePassed = err == nil
+	// Stream into a shared tail buffer so peak RAM is O(maxSuiteOutputBytes).
+	outCap := &tailCapWriter{max: maxSuiteOutputBytes}
+	cmd.Stdout = outCap
+	cmd.Stderr = outCap
+	err := cmd.Run()
+	combinedOutput = outCap.String()
 
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	// CommandContext kill on cancel/timeout often surfaces as *exec.ExitError
+	// (signal). Prefer ctx.Err() so cancellation is never a suite regression.
+	if cerr := ctx.Err(); cerr != nil {
+		return false, nil, nil, cerr.Error(), combinedOutput
+	}
+	if err != nil {
+		if _, ok := err.(*exec.ExitError); !ok {
+			// Not an exit-code failure — binary missing, permission, etc.
+			return false, nil, nil, err.Error(), combinedOutput
+		}
+		suitePassed = false
+	} else {
+		suitePassed = true
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(combinedOutput))
+	// Default MaxScanTokenSize is 64KiB; retained output is maxSuiteOutputBytes
+	// plus the truncation marker and can be one long line. Raise the limit so
+	// named PASS/FAIL lines after a long spam line are still parsed.
+	scanBuf := make([]byte, 0, 64*1024)
+	scanner.Buffer(scanBuf, maxSuiteOutputBytes+8*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		switch {
@@ -168,6 +285,47 @@ func executeSuite(repoDir, testCmd, testDir string) (suitePassed bool, passed []
 		}
 	}
 	return
+}
+
+func isContextAbortError(msg string) bool {
+	// Match context.Canceled / DeadlineExceeded text from ctx.Err().Error().
+	low := strings.ToLower(msg)
+	return strings.Contains(low, "context canceled") ||
+		strings.Contains(low, "context deadline exceeded")
+}
+
+// shellSplit splits a command with simple single/double quote awareness so
+// go test -run 'Test Foo' keeps the pattern as one arg (BUG-288 #25).
+// Does not run a shell: no env expansion, pipes, or &&.
+func shellSplit(cmd string) []string {
+	var out []string
+	var b strings.Builder
+	var quote rune
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		out = append(out, b.String())
+		b.Reset()
+	}
+	for _, r := range cmd {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				b.WriteRune(r)
+			}
+		case r == '"' || r == '\'':
+			quote = r
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			flush()
+		default:
+			b.WriteRune(r)
+		}
+	}
+	flush()
+	return out
 }
 
 func isInBaseline(testName string, baseline []string) bool {

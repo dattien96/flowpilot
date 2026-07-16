@@ -50,9 +50,13 @@ func TestReviewOutcomeToolOfferedOnlyOnHubSynthesisTurn(t *testing.T) {
 			n := len(offers)
 			mu.Unlock()
 			svc.mu.Lock()
-			inflight := svc.runs[parent.RunID].turnInFlight
+			rs := svc.runs[parent.RunID]
+			inflight := rs.turnInFlight
+			// V10R4 P2: production rejects new turns while post-turn gate is
+			// active — wait for full settle, not only turnInFlight=false.
+			pendingGate := rs.pendingFlowGateSettle || rs.postTurnGateCancel != nil
 			svc.mu.Unlock()
-			return n == wantOffers && !inflight
+			return n == wantOffers && !inflight && !pendingGate
 		})
 	}
 
@@ -535,7 +539,7 @@ func TestMarkFlowRunCompleteSettlesParentWaitingQuestion(t *testing.T) {
 		runID:   parent.RunID,
 		prompt:  "Select Google Drive context",
 		status:  "pending",
-		resolve: make(chan []string, 1),
+		resolve: make(chan questionResolveResult, 1),
 	}
 	svc.questions[rec.id] = rec
 	rs.pendingQuestionID = rec.id

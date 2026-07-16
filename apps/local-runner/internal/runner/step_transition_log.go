@@ -56,6 +56,7 @@ func applyStepTransitionReplay(rows []RuntimeWorkflowStep, lines []stepTransitio
 		status   string
 		provider string
 		model    string
+		ts       string
 		hasAny   bool
 	}
 	lastByNode := make(map[string]*last, len(rows))
@@ -71,13 +72,30 @@ func applyStepTransitionReplay(rows []RuntimeWorkflowStep, lines []stepTransitio
 		}
 		cur.hasAny = true
 		if st := strings.TrimSpace(line.Status); st != "" {
-			cur.status = st
+			// V9-13 / BUG-288 #21: full terminal monotonic — never resurrect
+			// DONE/FAILED/CANCELED into non-terminal or promote FAILED/CANCELED→DONE.
+			prev := RuntimeWorkflowStepStatus(cur.status)
+			next := RuntimeWorkflowStepStatus(st)
+			if isTerminalStepStatus(prev) {
+				// Terminal stays terminal; only allow same terminal overwrite of posture.
+				if next == prev {
+					cur.status = st
+				}
+				// else ignore DONE→RUNNING, FAILED→PENDING, FAILED→DONE, etc.
+			} else if (prev == StepStatusFailed || prev == StepStatusCanceled) && next == StepStatusDone {
+				// Ignore late DONE after terminal failure/cancel.
+			} else {
+				cur.status = st
+			}
 		}
 		if p := strings.TrimSpace(line.Provider); p != "" {
 			cur.provider = p
 		}
 		if m := strings.TrimSpace(line.Model); m != "" {
 			cur.model = m
+		}
+		if ts := strings.TrimSpace(line.TS); ts != "" {
+			cur.ts = ts
 		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -106,17 +124,22 @@ func applyStepTransitionReplay(rows []RuntimeWorkflowStep, lines []stepTransitio
 			}
 		}
 		row.Status = status
+		// V9-13: prefer log timestamps instead of inventing "now".
+		stamp := cur.ts
+		if stamp == "" {
+			stamp = now
+		}
 		switch status {
 		case StepStatusDone:
 			if row.StartedAt == "" {
-				row.StartedAt = now
+				row.StartedAt = stamp
 			}
-			row.FinishedAt = now
+			row.FinishedAt = stamp
 		case StepStatusFailed, StepStatusCanceled, StepStatusSkipped:
-			row.FinishedAt = now
+			row.FinishedAt = stamp
 		case StepStatusRunning, StepStatusWaitingUserApr:
 			if row.StartedAt == "" {
-				row.StartedAt = now
+				row.StartedAt = stamp
 			}
 			row.FinishedAt = ""
 		case StepStatusPending:
@@ -127,29 +150,28 @@ func applyStepTransitionReplay(rows []RuntimeWorkflowStep, lines []stepTransitio
 	return rows
 }
 
+func isTerminalStepStatus(st RuntimeWorkflowStepStatus) bool {
+	switch st {
+	case StepStatusDone, StepStatusFailed, StepStatusCanceled, StepStatusSkipped:
+		return true
+	default:
+		return false
+	}
+}
+
 // keepWaitingNodeIDsForResume returns node ids that should keep
 // WAITING_USER_APPROVAL after replay because a pending question/approval still
 // exists (BUG-271 re-derive). Approvals/questions are run-scoped; when any
-// pending gate exists we keep the hub inline node waiting. LoopState.ActiveNode
-// is also preserved when the loop is blocked.
-func keepWaitingNodeIDsForResume(st ProviderSessionState, nodes []agentpack.FlowNode, pendingApprovals []ProviderApprovalState, pendingQuestions []ProviderQuestionState) map[string]bool {
+// pending gate exists on the parent we keep the hub inline node waiting.
+// LoopState.ActiveNode is also preserved when the loop is blocked.
+//
+// extraNodeIDs carries child-label nodes that still have a pending gate on the
+// child's own run id (BUG-288 #22) — approvals are keyed by child RunID, so the
+// parent ListApprovalsByRun alone cannot discover them.
+func keepWaitingNodeIDsForResume(st ProviderSessionState, nodes []agentpack.FlowNode, pendingApprovals []ProviderApprovalState, pendingQuestions []ProviderQuestionState, extraNodeIDs ...string) map[string]bool {
 	out := make(map[string]bool)
 	hubID := hubInlineNodeID(nodes)
-	hasPending := false
-	for _, a := range pendingApprovals {
-		if strings.EqualFold(strings.TrimSpace(a.Status), "pending") {
-			hasPending = true
-			break
-		}
-	}
-	if !hasPending {
-		for _, q := range pendingQuestions {
-			if strings.EqualFold(strings.TrimSpace(q.Status), "pending") {
-				hasPending = true
-				break
-			}
-		}
-	}
+	hasPending := hasPendingGate(pendingApprovals, pendingQuestions)
 	if hasPending && hubID != "" {
 		out[hubID] = true
 	}
@@ -157,5 +179,24 @@ func keepWaitingNodeIDsForResume(st ProviderSessionState, nodes []agentpack.Flow
 		(strings.TrimSpace(st.LoopState.Status) == "blocked" || hasPending) {
 		out[active] = true
 	}
+	for _, id := range extraNodeIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			out[id] = true
+		}
+	}
 	return out
+}
+
+func hasPendingGate(pendingApprovals []ProviderApprovalState, pendingQuestions []ProviderQuestionState) bool {
+	for _, a := range pendingApprovals {
+		if strings.EqualFold(strings.TrimSpace(a.Status), "pending") {
+			return true
+		}
+	}
+	for _, q := range pendingQuestions {
+		if strings.EqualFold(strings.TrimSpace(q.Status), "pending") {
+			return true
+		}
+	}
+	return false
 }

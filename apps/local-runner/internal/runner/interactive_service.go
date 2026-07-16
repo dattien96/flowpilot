@@ -146,6 +146,16 @@ type interactiveRun struct {
 	// is buffered until all cohort members are terminal, then one consolidated note is
 	// delivered to the hub (Task-092 / CP-36 P-6).
 	flowCohortId string
+	// cohortSkipConsumed (V9-25): stall Skip already appended a synthetic failed
+	// cohort entry; ignore late provider TurnFailed so we do not double-drain.
+	cohortSkipConsumed bool
+	// stalledSkipCause (BUG-288 P1-14/P1-19) marks that this run's in-flight
+	// turn is being cancelled AS PART OF a Stall Skip decision (Task-241
+	// contract: Skip -> terminal FAILED), not a generic Stop/interrupt. Without
+	// this, finishTurn's context.Canceled branch below unconditionally
+	// overwrote the Failed status the skip handler had just set to Cancelled
+	// when the cancellation propagated back through the adapter.
+	stalledSkipCause bool
 	// label is the display name used in consolidated cohort notes; defaults to agentName.
 	label string
 	// waitForResult records the spawn's wait flag. A tool spawn with wait=true returns the
@@ -271,9 +281,13 @@ type interactiveRun struct {
 	lastEventType   ProviderEventType
 	events          []ProviderEvent
 
-	turnInFlight          bool
-	repromptAttempts      int    // CP-35 P-5: number of flow-gate reprompts issued this turn
-	turnStartGitHead      string // CP-35: git HEAD captured at turn start for committed-diff detection
+	turnInFlight     bool
+	repromptAttempts int    // CP-35 P-5: number of flow-gate reprompts issued this turn
+	turnStartGitHead string // CP-35: git HEAD captured at turn start for committed-diff detection
+	// turnStartWorktree maps dirty path → content fingerprint at turn start
+	// (Task-242). Child gate diffs against this so pre-existing coder dirt does
+	// not look like this turn's edits.
+	turnStartWorktree     map[string]string
 	lastTurnStepID        string // CP-35: stepID of the most-recently started turn, used by gate reprompts
 	currentTurnID         string
 	lastFlowControlTurnID string
@@ -292,6 +306,115 @@ type interactiveRun struct {
 	// (Task-242 tier-3). Audit uses it as the aggregate-diff base so multi-child
 	// edits are visible, not only the hub's last turnStartGitHead.
 	flowStartGitHead string
+	// pendingFlowGateSettle defers cohort join / step DONE / tryAdvance /
+	// signalChild / releaseDependentAgents until the post-turn child gate passes
+	// (Task-242 D-1/D-3/D-9). Set on EventTurnCompleted for flow-engine children;
+	// cleared after settle or gate block/reprompt.
+	pendingFlowGateSettle     bool
+	pendingFlowGateFinalMsg   string
+	pendingFlowGateOccurredAt string
+	// pendingFlowGateTurnID is the provider turn id for deferred TurnCompleted
+	// materialization after restart (V10R P1).
+	pendingFlowGateTurnID string
+	// pendingGateChangedFiles are EventFileChanged paths captured for the
+	// deferred gate so resume after restart has the same WrittenPaths (V10 residual P0).
+	pendingGateChangedFiles []string
+	// pendingGateCodePaths are paths from a prior gate-failing coding turn.
+	// A follow-up turn with empty new diff still re-checks until remediated (BUG-288 #8).
+	pendingGateCodePaths []string
+	// pendingGateRepromptPrompt/StepID defer gate-reprompt startTurn until after
+	// pendingFlowGateSettle / postTurnGateCancel / turnInFlight are cleared
+	// (V10R3 P0 — avoid 409 gate_in_progress / turn_in_progress).
+	// Durable on ProviderSessionState (V10R4 P1).
+	pendingGateRepromptPrompt string
+	pendingGateRepromptStepID string
+	// pendingResumePrompt/StepID is a durable continuation after rehydrated
+	// approval/question resolve; cleared only after startTurn succeeds (V10R4 P1).
+	pendingResumePrompt string
+	pendingResumeStepID string
+	// pendingResumeGen / pendingGateRepromptGen: compare-and-clear tokens.
+	pendingResumeGen       int64
+	pendingGateRepromptGen int64
+	// intentClaim* is an in-process lease so only one delivery can startTurn
+	// for a given durable intent generation (V10R4 P1). Not persisted — crash
+	// drops the lease so reconstruct can reclaim.
+	intentClaimKind  string
+	intentClaimGen   int64
+	intentClaimUntil time.Time
+	// Durable fail budgets keyed by generation (V10R4 P1).
+	pendingResumeFailCount       int
+	pendingResumeFailGen         int64
+	pendingGateRepromptFailCount int
+	pendingGateRepromptFailGen   int64
+	// pending*DeliveredGen + AcceptedTurn: set ONLY after startTurn accepts
+	// (V10R4 P0-02). Never treat pre-call markers as delivery proof.
+	pendingResumeDeliveredGen         int64
+	pendingGateRepromptDeliveredGen   int64
+	pendingResumeAcceptedTurn         string
+	pendingGateRepromptAcceptedTurn   string
+	// pendingResumeApprovalID/Decision reconcile card vs intent across two writes.
+	pendingResumeApprovalID string
+	pendingResumeDecision   string
+	// pendingResumeQuestionChoices preserves the original multi-select answer
+	// slice for reconciliation (BUG-288 P2-01) instead of relying on
+	// pendingResumeDecision's joined display string, which is lossy to
+	// re-split when a choice itself contains the join separator.
+	pendingResumeQuestionChoices []string
+	// intentBlockedKind/Reason/At durably record that a durable turn intent
+	// ("resume" or "reprompt") exhausted its permanent-failure retry budget
+	// (BUG-288 P1-09). Before this, the flush loop just returned silently —
+	// no durable state told the caller/UI the intent generation was inert, and
+	// there was no way to retry once the underlying condition (bad config,
+	// unavailable provider/account) was fixed. RequeueBlockedIntent clears
+	// these and re-attempts.
+	intentBlockedKind   string
+	intentBlockedReason string
+	intentBlockedAt     string
+	// transitionLogDegraded durably marks that a step-transition-log append
+	// failed (BUG-288 P2-03). Task-239's contract is "every transition is
+	// persisted; restore replays the log" — a silent log-warn-only failure
+	// breaks that invariant with no visible trace. Restore/replay logic can
+	// check this flag and escalate (treat the in-memory step timeline as
+	// untrustworthy) instead of silently treating it as authoritative.
+	transitionLogDegraded       bool
+	transitionLogDegradedAt     string
+	transitionLogDegradedReason string
+	// gateEpoch increments on Stop; deferred gate side effects revalidate before
+	// completing/reprompting (V10R4 P0 Stop vs in-flight gate race).
+	gateEpoch int64
+	// stopGeneration is the durable, monotonically increasing stop tombstone for
+	// a ROOT/parent run (BUG-288 P1-04). It is the single authority for whether
+	// a Stop happened "after" a given child checkpoint — unlike gateEpoch (only
+	// meaningful within one process lifetime) or agentOrchestrator's in-memory
+	// loop state (populated at reconstruction in arbitrary order), this field is
+	// loaded directly from the persisted parent session at process start, so
+	// the check does not depend on reconstruction ordering.
+	stopGeneration int64
+	// parentStopGenSeen is a CHILD run's snapshot of its parent's stopGeneration
+	// as of this child's last durable checkpoint (BUG-288 P1-04). Child
+	// reconstruction and resumePendingFlowGate reject/no-op when the parent's
+	// current stopGeneration is newer than this value — the child was
+	// checkpointed before (or during) a Stop that it never itself observed.
+	parentStopGenSeen int64
+	// gateClaimID is a single-flight CAS for resumePendingFlowGate / live gate apply.
+	gateClaimID string
+	// flowContextInjected is set when ComposeFlowCodingPrompt/package handoff is
+	// applied by the runner (not user text). injectFeatureHistoryPrompt skips
+	// only when this flag is true — text markers alone are forgeable (P1 envelope).
+	flowContextInjected bool
+	// changeContractInjected is set after appendChangeContractIfAny writes the
+	// run-scoped trusted marker for this turn composition.
+	changeContractInjected bool
+	// suppressAutoGateResume delays resumePendingFlowGate until cohort restore
+	// finishes (V10R4 P0 atomic cohort recovery).
+	suppressAutoGateResume bool
+	// postTurnGateCancel cancels an in-flight post-turn oracle/gate after Stop
+	// (BUG-288 #10). Distinct from turnCancel which finishTurn clears first.
+	postTurnGateCancel context.CancelFunc
+	// flowInlineCtx/Cancel covers in-process inline nodes (validate/audit) that
+	// run without a hub turn. stopAgentLoop cancels this so suites abort.
+	flowInlineCtx    context.Context
+	flowInlineCancel context.CancelFunc
 	lastTurnID       string // id of the most-recently completed turn, for the rolling chat summary
 	// flowValidationRetryState is the in-memory Testing<->Coding retry loop
 	// state for a run driving rag-harness's validate node (BUG-243 F-1),
@@ -338,12 +461,35 @@ type approvalRecord struct {
 	id       string
 	runID    string
 	details  ApprovalDetails
-	status   string // pending | resolved | expired
+	status   string // pending | resolving | resolved | expired
 	decision string
 	// policy records why an auto-decision was made (empty for human decisions):
 	// "yolo_gating_disabled" | "policy_allowlist" | "policy_denylist".
 	policy  string
 	resolve chan string
+	// rehydrated is true when this record was rebuilt after restart and no
+	// live provider turn is waiting on resolve (V10 residual P1).
+	rehydrated bool
+	// expiresAt is the durable absolute TTL deadline (RFC3339Nano), persisted
+	// at creation (BUG-288 P1-08). Submit/Answer re-check this under the lock
+	// so a restart cannot accept a decision on a card whose TTL already
+	// elapsed while no in-process timer was running to expire it.
+	expiresAt string
+	// resolving* stash the durable-write payload computed the first time this
+	// record transitions pending->resolving (BUG-288 P1-01). A retry that
+	// observes status=="resolving" (the prior attempt persisted nothing, or
+	// only partially) replays these writes instead of re-deriving RAM state a
+	// second time or short-circuiting to a false success.
+	resolvingSnapshot      *ProviderApprovalState
+	resolvingSession       *ProviderSessionState
+	resolvingStepParent    string
+	resolvingStepLabel     string
+	resolvingStepTurn      bool
+	resolvingRestartRunID  string
+	resolvingRestartStepID string
+	resolvingRestartPrompt string
+	resolvingRestartGen    int64
+	resolvingRememberCwd   string
 }
 
 type questionRecord struct {
@@ -352,16 +498,54 @@ type questionRecord struct {
 	prompt      string
 	options     []QuestionOption
 	multiSelect bool
-	status      string // pending | resolved | expired
+	status      string // pending | resolving | resolved | expired
 	choice      []string
-	resolve     chan []string
+	// resolve carries a typed result so cancellation (Stop) can be
+	// distinguished from a genuine empty multi-select submission (BUG-288
+	// P2-02). Sending a bare []string{} for interruption was indistinguishable
+	// from a real answer when select{} raced rec.resolve against ctx.Done().
+	resolve chan questionResolveResult
+	// rehydrated is true when rebuilt after restart with no live turn waiting
+	// on resolve (V10 residual P1).
+	rehydrated bool
+	// expiresAt is the durable absolute TTL deadline (RFC3339Nano), persisted
+	// at creation (BUG-288 P1-08). See approvalRecord.expiresAt.
+	expiresAt string
+	// resolving* stash the durable-write payload computed the first time this
+	// record transitions pending->resolving (BUG-288 P1-01). See
+	// approvalRecord.resolving* for the shared rationale.
+	resolvingSnapshot      *ProviderQuestionState
+	resolvingSession       *ProviderSessionState
+	resolvingRunID         string
+	resolvingStepParent    string
+	resolvingStepLabel     string
+	resolvingStepTurn      bool
+	resolvingRestartRunID  string
+	resolvingRestartStepID string
+	resolvingRestartPrompt string
+	resolvingRestartGen    int64
 }
+
+// questionResolveResult is the typed payload sent on questionRecord.resolve
+// (BUG-288 P2-02). err is non-nil only for interruption/expiry signaled
+// through the channel (e.g. errInterrupted); a genuine user submission always
+// has err == nil, even when choices is empty (free-text/"Other" answers are
+// validated for non-empty before resolve, so an empty choices+nil err should
+// not occur from AnswerQuestion, but callers must still check err first).
+type questionResolveResult struct {
+	choices []string
+	err     error
+}
+
+// errInterrupted signals that a pending question/approval wait was unblocked
+// by Stop/cancellation rather than a genuine user answer (BUG-288 P2-02).
+var errInterrupted = errors.New("interrupted")
 
 func approvalStateFromRecord(rs *interactiveRun, rec *approvalRecord, expiresAt string) ProviderApprovalState {
 	state := ProviderApprovalState{
 		ApprovalID: rec.id,
 		RunID:      rec.runID,
-		Status:     rec.status,
+		Status:     persistedGateStatus(rec.status),
 		Decision:   rec.decision,
 		Policy:     rec.policy,
 		ExpiresAt:  expiresAt,
@@ -390,10 +574,24 @@ func questionStateFromRecord(rec *questionRecord, providerTurnID, expiresAt stri
 		Prompt:         rec.prompt,
 		Options:        rec.options,
 		MultiSelect:    rec.multiSelect,
-		Status:         rec.status,
+		Status:         persistedGateStatus(rec.status),
 		Choice:         rec.choice,
 		ExpiresAt:      expiresAt,
 	}
+}
+
+// persistedGateStatus maps an approval/question record's in-memory status to
+// the value written to the durable store (BUG-288 P1-01). "resolving" is a
+// transitional, process-local state used only to detect an in-flight
+// resolution that has not yet been durably confirmed — the persisted record
+// itself must show "resolved" once its snapshot is taken, since by the time
+// this snapshot reaches disk the write IS the confirmation. Any other status
+// (pending/resolved/expired) passes through unchanged.
+func persistedGateStatus(status string) string {
+	if status == "resolving" {
+		return "resolved"
+	}
+	return status
 }
 
 // NewInteractiveService builds the Phase 2 service with the default registry
@@ -541,24 +739,56 @@ func (s *InteractiveService) resumeAgentLoop(parentRunID string) AgentGraphSnaps
 	s.emitAgentGraph(parentRunID, snap)
 	return snap
 }
-func (s *InteractiveService) stopAgentLoop(parentRunID string) AgentGraphSnapshot {
+// stopAgentLoop terminals the agent loop and durable recovery state.
+// On persistence failure it still cancels in-memory work but returns an apiErr
+// so the client does not treat Stop as durable (V10R4 P0 fail-closed).
+func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapshot, *apiErr) {
 	s.agentOrchestrator.stop(parentRunID)
 	s.mu.Lock()
+	// BUG-288 P1-04: bump the parent's durable stop tombstone BEFORE any child
+	// is stamped/checkpointed below, so every child snapshot this Stop call
+	// persists carries proof it was checkpointed at-or-after this stop. A
+	// child checkpointed before this line (e.g. one that failed to persist
+	// during this same Stop, or was never reached) keeps its older
+	// parentStopGenSeen and is correctly recognized as stale on reconstruct.
+	var newStopGen int64
 	if parent := s.runs[parentRunID]; parent != nil {
 		parent.pendingRestartRunID = ""
 		parent.pendingRestartPrompt = ""
 		parent.autoOrchestrate = false
 		parent.reinvokeInFlight = false
 		parent.pendingHubReinvoke = false
+		parent.stopGeneration++
+		newStopGen = parent.stopGeneration
+		// V10R4 P0: clear ALL root recovery intents before persist — otherwise
+		// crash after Stop reloads PendingFlowGate* and resurrects the flow.
+		clearDurableRecoveryStateLocked(parent)
 		if parent.turnInFlight && parent.turnCancel != nil {
 			parent.turnCancel()
-			// BUG-248: turnCancel() only signals cancellation — the run's own
-			// finishTurn() flips `status` to cancelled asynchronously once the turn's
-			// goroutine observes ctx.Done(), and that happens off this lock.
+		}
+		// Cancel in-process validate/audit suites (no hub turnCancel).
+		if parent.flowInlineCancel != nil {
+			parent.flowInlineCancel()
+			parent.flowInlineCancel = nil
+			parent.flowInlineCtx = nil
+		}
+		// Cancel post-turn gate/oracle if still running after finishTurn cleared turnCancel.
+		if parent.postTurnGateCancel != nil {
+			parent.postTurnGateCancel()
+			parent.postTurnGateCancel = nil
+		}
+		// V10R4 P1-03: every non-terminal root becomes Cancelled on Stop —
+		// deferred gate / waiting card / idle-running must not persist Running
+		// with LoopState=stopped.
+		if parent.status != RunStatusCompleted && parent.status != RunStatusFailed &&
+			parent.status != RunStatusCancelled {
 			parent.status = RunStatusCancelled
+			parent.agentStatus = string(RunStatusCancelled)
+			parent.turnInFlight = false
 		}
 	}
 	cancelledChildIDs := make([]string, 0)
+	persistChildIDs := make([]string, 0)
 	// Task-241 B1: cancelled cohort members must append as terminal so the
 	// barrier can join (cancelled = terminal). restart-cancel path appends via
 	// Task-239 resume rebuild, not here.
@@ -569,10 +799,28 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) AgentGraphSnapsho
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		if child := s.runs[childID]; child != nil {
 			child.pendingTurnPrompt = ""
+			// BUG-288 #18: terminalize every non-terminal child on Stop, not only
+			// those currently in-flight (waiting-dependency / pendingTurnPrompt).
 			if child.turnInFlight && child.turnCancel != nil {
 				child.turnCancel()
-				child.status = RunStatusCancelled // BUG-248: see parent.status comment above.
+			}
+			if child.postTurnGateCancel != nil {
+				child.postTurnGateCancel()
+				child.postTurnGateCancel = nil
+			}
+			// Always clear child durable recovery so restart cannot re-queue.
+			clearDurableRecoveryStateLocked(child)
+			// BUG-288 P1-04: stamp this child as checkpointed at-or-after the
+			// parent's new stop generation. reconstructRun/resumePendingFlowGate
+			// use this to reject a stale pending gate for a child whose own
+			// persist failed/crashed before reaching this generation.
+			child.parentStopGenSeen = newStopGen
+			persistChildIDs = append(persistChildIDs, childID)
+			if child.status != RunStatusCompleted && child.status != RunStatusFailed &&
+				child.status != RunStatusCancelled {
+				child.status = RunStatusCancelled
 				child.agentStatus = string(RunStatusCancelled)
+				child.turnInFlight = false
 				cancelledChildIDs = append(cancelledChildIDs, childID)
 				if child.flowCohortId != "" {
 					cancelledCohort = append(cancelledCohort, cancelledCohortMember{
@@ -583,6 +831,22 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) AgentGraphSnapsho
 					})
 				}
 			}
+		}
+	}
+	// V10R4 P1: terminalize pending approval/question cards for parent+children
+	// so restart cannot rehydrate stale actionable cards for a stopped flow.
+	gateRunIDs := append([]string{parentRunID}, persistChildIDs...)
+	cancelledApprovals, cancelledQuestions := s.cancelPendingGatesForRunsLocked(gateRunIDs)
+	// Capture parent snap under lock after all clears.
+	var parentSnap ProviderSessionState
+	if parent := s.runs[parentRunID]; parent != nil {
+		parentSnap = sessionStateOf(parent)
+		parentSnap.LoopState = s.agentOrchestrator.loopStateFor(parentRunID)
+	}
+	childSnaps := make([]ProviderSessionState, 0, len(persistChildIDs))
+	for _, childID := range persistChildIDs {
+		if child := s.runs[childID]; child != nil {
+			childSnaps = append(childSnaps, sessionStateOf(child))
 		}
 	}
 	s.mu.Unlock()
@@ -598,6 +862,32 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) AgentGraphSnapsho
 			summary.Status = RunStatusCancelled
 			summary.AgentStatus = string(RunStatusCancelled)
 			s.agentOrchestrator.upsertSummary(parentRunID, summary)
+		}
+	}
+	// V10R4 P0: durable Stop checkpoint BEFORE response — parent + children
+	// with cleared gate/intents (serialized cancellation barrier). Persist
+	// failures must surface to the client (no fail-open success).
+	var persistErr error
+	if parentSnap.RunID != "" {
+		if err := s.persistProviderSession(parentSnap); err != nil {
+			persistErr = err
+		}
+	}
+	for _, snap := range childSnaps {
+		if err := s.persistProviderSession(snap); err != nil && persistErr == nil {
+			persistErr = err
+		}
+	}
+	// Cancel pending approval/question cards so restart cannot rehydrate them
+	// as actionable for a stopped flow (V10R4 P1).
+	for _, st := range cancelledApprovals {
+		if err := s.persistApproval(st); err != nil && persistErr == nil {
+			persistErr = err
+		}
+	}
+	for _, st := range cancelledQuestions {
+		if err := s.persistQuestion(st); err != nil && persistErr == nil {
+			persistErr = err
 		}
 	}
 	// Task-241: append cancelled members to cohort buffer (orchestrator lock only —
@@ -642,8 +932,76 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) AgentGraphSnapsho
 	}
 	snap := s.agentGraphSnapshot(parentRunID)
 	s.emitAgentGraph(parentRunID, snap)
-	return snap
+	if persistErr != nil {
+		return snap, newAPIErr(http.StatusInternalServerError, "persist_failed",
+			"stop applied in-memory but durable checkpoint failed: "+persistErr.Error())
+	}
+	return snap, nil
 }
+
+// cancelPendingGatesForRunsLocked marks in-memory pending approval/question
+// records expired for the given runs and returns snapshots to persist.
+// Caller holds s.mu.
+func (s *InteractiveService) cancelPendingGatesForRunsLocked(runIDs []string) (approvals []ProviderApprovalState, questions []ProviderQuestionState) {
+	if len(runIDs) == 0 {
+		return nil, nil
+	}
+	want := make(map[string]bool, len(runIDs))
+	for _, id := range runIDs {
+		if id != "" {
+			want[id] = true
+		}
+	}
+	for id, rec := range s.approvals {
+		if rec == nil || !want[rec.runID] {
+			continue
+		}
+		if rec.status != "pending" {
+			continue
+		}
+		rec.status = "expired"
+		// Unblock any live waiter so the turn can observe cancellation.
+		select {
+		case rec.resolve <- "deny":
+		default:
+		}
+		if rs := s.runs[rec.runID]; rs != nil {
+			if rs.pendingApprovalID == id {
+				rs.pendingApprovalID = ""
+			}
+			st := approvalStateFromRecord(rs, rec, "")
+			approvals = append(approvals, st)
+		} else {
+			st := approvalStateFromRecord(nil, rec, "")
+			approvals = append(approvals, st)
+		}
+	}
+	for id, rec := range s.questions {
+		if rec == nil || !want[rec.runID] {
+			continue
+		}
+		if rec.status != "pending" {
+			continue
+		}
+		rec.status = "expired"
+		// BUG-288 P2-02: signal interruption distinctly from a real empty
+		// multi-select submission so a live AskQuestion waiter cannot observe
+		// a fabricated "success" if select{} races this against ctx.Done().
+		select {
+		case rec.resolve <- questionResolveResult{err: errInterrupted}:
+		default:
+		}
+		if rs := s.runs[rec.runID]; rs != nil {
+			if rs.pendingQuestionID == id {
+				rs.pendingQuestionID = ""
+			}
+		}
+		st := questionStateFromRecord(rec, "", "")
+		questions = append(questions, st)
+	}
+	return approvals, questions
+}
+
 func (s *InteractiveService) injectAgentFeedback(parentRunID, toRunID, message string) AgentGraphSnapshot {
 	snap := s.agentOrchestrator.queueFeedback(parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: parentRunID, ToRunID: toRunID, Kind: "user-feedback", Message: message, Queued: true, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)})
 	if len(snap.BusMessages) > 0 {
@@ -665,9 +1023,46 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 	// Validate the target run exists before mutating orchestrator state (MEDIUM finding).
 	// Task-241 I-5: at most one effective flow_control decision per provider turn —
 	// reject a second apply with the same currentTurnID (tool bridge also checks).
+	// BUG-288 #12: do not mutate loop after stopped/done (Stop race after audit guard).
 	s.mu.Lock()
 	rs, runExists := s.runs[parentRunID]
-	if runExists && rs.currentTurnID != "" {
+	if !runExists {
+		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "flow_control_missing_run", "flow control target run was not found",
+			"status", in.Status,
+		)
+		return FlowControlResult{}, fmt.Errorf("applyFlowControl: run %q not found", parentRunID)
+	}
+	// BUG-288 #26: validate status enum BEFORE stamping one-decision. An
+	// unknown status (typo) must not burn the turn's decision slot, or a later
+	// valid done/continue/escalate on the same turn is wrongly rejected.
+	status := strings.TrimSpace(in.Status)
+	switch status {
+	case "done", "continue", "escalate":
+	default:
+		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "flow_control_unknown_status", "unknown flow control status received",
+			"status", in.Status,
+		)
+		return FlowControlResult{}, fmt.Errorf("applyFlowControl: unknown status %q", in.Status)
+	}
+	// Terminal guard before stamp (BUG-288 #12 / #26).
+	loopSnap := s.agentOrchestrator.graphSnapshot(parentRunID)
+	if loopSnap.LoopState.Status == "stopped" || loopSnap.LoopState.Status == "done" {
+		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "flow_control_rejected_terminal",
+			"flow control ignored: loop already terminal",
+			"status", in.Status,
+			"loop_status", loopSnap.LoopState.Status,
+		)
+		return FlowControlResult{
+			Status:     in.Status,
+			Round:      loopSnap.LoopState.Round,
+			Cap:        effectiveCap(loopSnap.LoopState),
+			NextAction: "rejected_terminal",
+		}, nil
+	}
+	if rs.currentTurnID != "" {
 		if rs.lastFlowControlTurnID == rs.currentTurnID {
 			s.mu.Unlock()
 			s.flowDiagLog(parentRunID, "flow_control_rejected_one_decision",
@@ -677,22 +1072,18 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			)
 			return FlowControlResult{}, fmt.Errorf("flow control already submitted for this provider turn")
 		}
+		// Stamp only after status+terminal checks. Soft-defer (open cohort) undoes
+		// this below so join-then-done on the same turn still works.
 		rs.lastFlowControlTurnID = rs.currentTurnID
 	}
 	s.mu.Unlock()
-	if !runExists {
-		s.flowDiagLog(parentRunID, "flow_control_missing_run", "flow control target run was not found",
-			"status", in.Status,
-		)
-		return FlowControlResult{}, fmt.Errorf("applyFlowControl: run %q not found", parentRunID)
-	}
 	// Task-240 T-4 / BUG-179: soft-defer done/continue while a registered cohort
 	// is still incomplete. Do not mutate loop or settle steps — the hub will be
 	// reinvoked after join and can call flow_control again.
 	// Soft-defer does NOT count as a decision — clear lastFlowControlTurnID so the
 	// hub can re-apply after join on the same turn if needed. (Decision was stamped
 	// above; for incomplete-cohort we undo so join-then-done still works.)
-	if (in.Status == "done" || in.Status == "continue") && s.agentOrchestrator.hasOpenCohort(parentRunID) {
+	if (status == "done" || status == "continue") && s.agentOrchestrator.hasOpenCohort(parentRunID) {
 		s.mu.Lock()
 		if rs := s.runs[parentRunID]; rs != nil && rs.currentTurnID != "" && rs.lastFlowControlTurnID == rs.currentTurnID {
 			rs.lastFlowControlTurnID = ""
@@ -710,8 +1101,13 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			NextAction: "rejected_cohort_incomplete",
 		}, nil
 	}
-	switch in.Status {
+	switch status {
 	case "done":
+		// BUG-288 #13 / Task-240 I-2: settle step timeline BEFORE publishing
+		// loop=done so consumers never see terminal loop with steps still RUNNING.
+		if s.isFlowEngineDriven(parentRunID) {
+			s.markFlowRunComplete(context.Background(), parentRunID)
+		}
 		snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 			st.Status = "done"
 			st.OpenIssues = 0
@@ -719,20 +1115,6 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			return st
 		})
 		s.appendPendingAgentContext(parentRunID, strings.TrimSpace("Flow completed. "+in.Summary))
-		// BUG-174/BUG-242: settle the step timeline (inline hub node DONE, run
-		// DONE) BEFORE emitAgentGraph below, not after. emitAgentGraph fires the
-		// agent_graph_updated SSE event the desktop reacts to by refreshing the
-		// step-runtime snapshot (refreshWorkflowStepRuntime) — BUG-233 already
-		// established this exact ordering requirement for the "continue"/
-		// looping branch above, but the "done" branch still emitted first and
-		// settled the steps after. That let the desktop's refresh race ahead of
-		// these writes and read the still-RUNNING hub/synthesis node from the
-		// prior instant, and since setFlowStepStatus emits no event of its own,
-		// nothing corrected the stale RUNNING display until an unrelated event
-		// (e.g. a manual agent focus switch) triggered another refresh.
-		if s.isFlowEngineDriven(parentRunID) {
-			s.markFlowRunComplete(context.Background(), parentRunID)
-		}
 		s.emitAgentGraph(parentRunID, snap)
 		// BUG-StaleCancel: persist synchronously here (not go goroutine) so the
 		// completed state is guaranteed to land in the NDJSON session file before
@@ -755,11 +1137,21 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		// []ReviewIssue (set by reviewOutcomeToFlowControl) or []any (decoded from
 		// raw JSON); handle both so the board always sees the correct open count.
 		issueCount := 0
-		switch v := in.Payload["issues"].(type) {
-		case []ReviewIssue:
-			issueCount = len(v)
-		case []any:
-			issueCount = len(v)
+		if in.Payload != nil {
+			switch v := in.Payload["issues"].(type) {
+			case []ReviewIssue:
+				issueCount = len(v)
+			case []any:
+				issueCount = len(v)
+			}
+		}
+		// V9-19: peek whether this continue will hit cap BEFORE mutateLoop, so we
+		// can settle hub WAITING before publishing loop=blocked (Task-240 order).
+		pre := s.agentOrchestrator.loopStateFor(parentRunID)
+		preCap := effectiveCap(pre)
+		willHitCap := preCap > 0 && pre.Round+1 >= preCap
+		if willHitCap {
+			s.setFlowStepAwaitingUser(context.Background(), parentRunID)
 		}
 		var result FlowControlResult
 		snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
@@ -847,10 +1239,9 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 					s.setFlowStepStatus(context.Background(), parentRunID, reentryID, StepStatusRunning)
 				}
 			}
-		} else if result.NextAction == "awaiting_user" {
-			// BUG-231/BUG-233: the round cap paused the loop awaiting the user —
-			// settle the hub node to WAITING_USER_APPROVAL (synchronously, before
-			// emitAgentGraph — see BUG-233 note above) instead of leaving it RUNNING.
+		} else if result.NextAction == "awaiting_user" && !willHitCap {
+			// Cap path already settled WAITING before mutateLoop (V9-19).
+			// Non-cap awaiting_user still settles here.
 			s.setFlowStepAwaitingUser(context.Background(), parentRunID)
 		}
 		s.emitAgentGraph(parentRunID, snap)
@@ -920,9 +1311,7 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		return FlowControlResult{Status: "blocked", Round: snap.LoopState.Round, Cap: effectiveCap(snap.LoopState), NextAction: "awaiting_user"}, nil
 
 	default:
-		s.flowDiagLog(parentRunID, "flow_control_unknown_status", "unknown flow control status received",
-			"status", in.Status,
-		)
+		// Unreachable: status enum is validated before the switch (BUG-288 #26).
 		return FlowControlResult{}, fmt.Errorf("applyFlowControl: unknown status %q", in.Status)
 	}
 }
@@ -1437,6 +1826,15 @@ func (s *InteractiveService) advanceOrNotifyHub(parentRunID, completedLabel, com
 	if s.tryAdvanceFlowFromNode(parentRunID, completedLabel, finalMsg) {
 		return
 	}
+	// V9-28: if a reviewer/delegate cohort is still open, do not synthesize the
+	// hub early (double synthesis with the join-path reinvoke).
+	if s.agentOrchestrator.hasOpenCohort(parentRunID) {
+		s.flowDiagLog(parentRunID, "hub_reinvoke_skipped_open_cohort",
+			"advanceOrNotifyHub skipped hub reinvoke while cohort still open",
+			"completed_label", completedLabel,
+		)
+		return
+	}
 	note := fmt.Sprintf("[flow-engine] Coder %q completed. Result:\n%s",
 		completedAgentName, truncateDisplayField(finalMsg, 2000))
 	s.mu.Lock()
@@ -1484,7 +1882,10 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 	s.mu.Unlock()
 	if composeOK {
 		// Task-223: re-attach INPUT read + OUTPUT write-contract on continue re-entry.
+		// Task-247 / CP-50 P-4: also re-attach change.contract so continue/reprompt
+		// turns still see the declared scope (not only first entry via flow_executor).
 		prompt = composeFlowNodeAgentPrompt(cwd, prompt, composeNode)
+		prompt = appendChangeContractIfAny(cwd, parentRunID, prompt)
 	}
 	if composeOK && !reuseChild {
 		agentName := flowNodeAgentName(composeNode)
@@ -1721,7 +2122,16 @@ func (s *InteractiveService) releaseDependentAgents(parentRunID, completedRunID,
 	// Flow-graph runs route child completion through advanceOrNotifyHub. Do not
 	// also schedule this dependency-release fallback, or the hub can synthesize
 	// from a stale wait notice while the auto-spawned reviewer cohort is running.
-	if !isCohortMember && !trackedFlow {
+	// V9-28: autoOrchestrate hubs are reinvoked only from cohort join /
+	// advanceOrNotifyHub / resume — never from every non-cohort child release
+	// (that raced with the join path and double-fired synthesis).
+	s.mu.Lock()
+	autoOrch := false
+	if p := s.runs[parentRunID]; p != nil {
+		autoOrch = p.autoOrchestrate
+	}
+	s.mu.Unlock()
+	if !isCohortMember && !trackedFlow && !autoOrch {
 		go s.maybeAutoReinvokeHub(parentRunID)
 	}
 }
@@ -2036,9 +2446,47 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		FlowCohortID:        rs.flowCohortId,
 		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...),
 		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
-		ChatSubMode:         rs.chatSubMode,
-		ChatFlowRef:         rs.chatFlowRef,
-		FlowStartGitHead:    rs.flowStartGitHead,
+		ChatSubMode:               rs.chatSubMode,
+		ChatFlowRef:               rs.chatFlowRef,
+		FlowStartGitHead:          rs.flowStartGitHead,
+		PendingFlowGateSettle:     rs.pendingFlowGateSettle,
+		PendingFlowGateFinalMsg:   rs.pendingFlowGateFinalMsg,
+		PendingFlowGateOccurredAt: rs.pendingFlowGateOccurredAt,
+		PendingFlowGateTurnID:     rs.pendingFlowGateTurnID,
+		TurnStartGitHead:          rs.turnStartGitHead,
+		TurnStartWorktree:         copyStringMap(rs.turnStartWorktree),
+		PendingGateChangedFiles:   append([]string(nil), rs.pendingGateChangedFiles...),
+		StepID:                    rs.stepID,
+		LastTurnStepID:            rs.lastTurnStepID,
+		PendingGateRepromptPrompt: rs.pendingGateRepromptPrompt,
+		PendingGateRepromptStepID: rs.pendingGateRepromptStepID,
+		PendingGateCodePaths:      append([]string(nil), rs.pendingGateCodePaths...),
+		RepromptAttempts:          rs.repromptAttempts,
+		PendingResumePrompt:       rs.pendingResumePrompt,
+		PendingResumeStepID:       rs.pendingResumeStepID,
+		PendingResumeGen:                rs.pendingResumeGen,
+		PendingGateRepromptGen:          rs.pendingGateRepromptGen,
+		PendingResumeDeliveredGen:         rs.pendingResumeDeliveredGen,
+		PendingGateRepromptDeliveredGen:   rs.pendingGateRepromptDeliveredGen,
+		PendingResumeAcceptedTurn:         rs.pendingResumeAcceptedTurn,
+		PendingGateRepromptAcceptedTurn:   rs.pendingGateRepromptAcceptedTurn,
+		PendingResumeFailCount:            rs.pendingResumeFailCount,
+		PendingResumeFailGen:              rs.pendingResumeFailGen,
+		PendingGateRepromptFailCount:      rs.pendingGateRepromptFailCount,
+		PendingGateRepromptFailGen:        rs.pendingGateRepromptFailGen,
+		PendingResumeApprovalID:           rs.pendingResumeApprovalID,
+		PendingResumeDecision:             rs.pendingResumeDecision,
+		PendingResumeQuestionChoices:      append([]string(nil), rs.pendingResumeQuestionChoices...),
+		StopGeneration:                    rs.stopGeneration,
+		ParentStopGenSeen:                 rs.parentStopGenSeen,
+		IntentBlockedKind:                 rs.intentBlockedKind,
+		IntentBlockedReason:               rs.intentBlockedReason,
+		IntentBlockedAt:                   rs.intentBlockedAt,
+		TransitionLogDegraded:             rs.transitionLogDegraded,
+		TransitionLogDegradedAt:           rs.transitionLogDegradedAt,
+		TransitionLogDegradedReason:       rs.transitionLogDegradedReason,
+		PendingRestartRunID:               rs.pendingRestartRunID,
+		PendingRestartPrompt:              rs.pendingRestartPrompt,
 	}
 }
 
@@ -2066,6 +2514,476 @@ func (s *InteractiveService) persistEvent(event ProviderEvent) error {
 	return store.AppendEvent(context.Background(), event)
 }
 
+// rehydratePendingGatesLocked rebuilds in-memory approval/question records from
+// durable store so SubmitApprovalDecision/AnswerQuestion do not 404 after restart
+// (V10 P1). Records are marked rehydrated so submit can restart the turn when the
+// original provider goroutine is gone. Caller holds s.mu.
+//
+// Skips rehydrate when the loop is stopped/done so Stopped flows do not
+// surface stale actionable cards (V10R4 P1). Also reconciles two-write crash:
+// session PendingResumeApprovalID+Decision means the card was decided even if
+// the resolved card write was lost — and repairs durable card on disk (P1-02).
+//
+// V10R4 P0-01: do NOT skip merely because normalize mapped status to Cancelled
+// before cards were known; restore WaitingApproval/WaitingQuestion when durable
+// pending cards exist and the parent loop is still live.
+func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
+	if runID == "" {
+		return
+	}
+	rs := s.runs[runID]
+	if rs == nil {
+		return
+	}
+	// Truly terminal outcomes never rehydrate.
+	if rs.status == RunStatusFailed || rs.status == RunStatusCompleted {
+		return
+	}
+	// Parent or own loop stopped/done — no user action is valid (Stop path).
+	loopParent := runID
+	if rs.parentRunID != "" {
+		loopParent = rs.parentRunID
+	}
+	if st := s.agentOrchestrator.loopStateFor(loopParent).Status; st == "stopped" || st == "done" {
+		return
+	}
+	// Decision already recorded on session (crash between intent and card write).
+	decidedApproval := strings.TrimSpace(rs.pendingResumeApprovalID)
+	decidedDecision := strings.TrimSpace(rs.pendingResumeDecision)
+	// Cards to repair on disk after unlock (cannot I/O under s.mu long-term;
+	// queue and flush via deferred persist after rehydrate).
+	var repairApprovals []ProviderApprovalState
+	var repairQuestions []ProviderQuestionState
+	gotPendingApproval := false
+	gotPendingQuestion := false
+	if ahr, ok := s.workflowStore.(ApprovalHistoryReader); ok {
+		if states, err := ahr.ListApprovalsByRun(context.Background(), runID); err == nil {
+			for _, st := range states {
+				if !strings.EqualFold(strings.TrimSpace(st.Status), "pending") {
+					continue
+				}
+				if s.approvals[st.ApprovalID] != nil {
+					continue
+				}
+				// Reconcile: session already has a decision for this card — treat resolved
+				// and queue durable card repair so restart #2 cannot resurrect pending.
+				if decidedApproval != "" && st.ApprovalID == decidedApproval && decidedDecision != "" {
+					rec := &approvalRecord{
+						id:       st.ApprovalID,
+						runID:    st.RunID,
+						status:   "resolved",
+						decision: decidedDecision,
+						details: ApprovalDetails{
+							Kind:    "exec",
+							Command: st.Command,
+							Cwd:     st.Cwd,
+							Reason:  st.Reason,
+							Decisions: []ApprovalDecisionOption{
+								{Value: "approve", Label: "Approve"},
+								{Value: "deny", Label: "Deny"},
+							},
+						},
+						resolve:    make(chan string, 1),
+						rehydrated: true,
+					}
+					s.approvals[st.ApprovalID] = rec
+					repairApprovals = append(repairApprovals, approvalStateFromRecord(rs, rec, st.ExpiresAt))
+					continue
+				}
+				// BUG-288 P1-08: a TTL that already elapsed while the process was
+				// down must durably expire on rehydrate, not resurrect as a live
+				// pending card (there was never an in-process timer to catch it).
+				if approvalExpiryElapsed(st.ExpiresAt) {
+					expiredRec := &approvalRecord{
+						id:     st.ApprovalID,
+						runID:  st.RunID,
+						status: "expired",
+						details: ApprovalDetails{
+							Kind: "exec", Command: st.Command, Cwd: st.Cwd, Reason: st.Reason,
+							Decisions: []ApprovalDecisionOption{{Value: "approve", Label: "Approve"}, {Value: "deny", Label: "Deny"}},
+						},
+						resolve: make(chan string, 1),
+					}
+					s.approvals[st.ApprovalID] = expiredRec
+					repairApprovals = append(repairApprovals, approvalStateFromRecord(rs, expiredRec, st.ExpiresAt))
+					continue
+				}
+				rec := &approvalRecord{
+					id:     st.ApprovalID,
+					runID:  st.RunID,
+					status: "pending",
+					details: ApprovalDetails{
+						Kind:    "exec",
+						Command: st.Command,
+						Cwd:     st.Cwd,
+						Reason:  st.Reason,
+						Decisions: []ApprovalDecisionOption{
+							{Value: "approve", Label: "Approve"},
+							{Value: "deny", Label: "Deny"},
+						},
+					},
+					resolve:    make(chan string, 1),
+					rehydrated: true,
+					expiresAt:  st.ExpiresAt,
+				}
+				s.approvals[st.ApprovalID] = rec
+				if rs.pendingApprovalID == "" {
+					rs.pendingApprovalID = st.ApprovalID
+				}
+				gotPendingApproval = true
+				// Schedule the remaining TTL so a card that was pending-but-not-yet-
+				// expired at crash still expires durably instead of only ever being
+				// caught by a fresh in-process AskQuestion/RequestApproval timer
+				// (which does not exist for a rehydrated record).
+				scheduleApprovalExpiry(s, st.ApprovalID, st.ExpiresAt)
+			}
+		}
+	}
+	if qhr, ok := s.workflowStore.(QuestionHistoryReader); ok {
+		if states, err := qhr.ListQuestionsByRun(context.Background(), runID); err == nil {
+			for _, st := range states {
+				if !strings.EqualFold(strings.TrimSpace(st.Status), "pending") {
+					continue
+				}
+				if s.questions[st.QuestionID] != nil {
+					continue
+				}
+				// Reconcile decision recorded on session for this question id.
+				if decidedApproval != "" && st.QuestionID == decidedApproval && decidedDecision != "" {
+					// BUG-288 P2-01: prefer the durable, un-flattened choices slice
+					// over re-wrapping the joined display string, which would
+					// corrupt any choice containing the join separator.
+					choice := append([]string(nil), rs.pendingResumeQuestionChoices...)
+					if len(choice) == 0 {
+						choice = []string{decidedDecision}
+					}
+					rec := &questionRecord{
+						id:          st.QuestionID,
+						runID:       st.RunID,
+						prompt:      st.Prompt,
+						options:     st.Options,
+						multiSelect: st.MultiSelect,
+						status:      "resolved",
+						choice:      choice,
+						resolve:     make(chan questionResolveResult, 1),
+						rehydrated:  true,
+					}
+					s.questions[st.QuestionID] = rec
+					repairQuestions = append(repairQuestions, questionStateFromRecord(rec, "", st.ExpiresAt))
+					continue
+				}
+				// BUG-288 P1-08: see the mirrored approval-side comment above.
+				if approvalExpiryElapsed(st.ExpiresAt) {
+					expiredRec := &questionRecord{
+						id: st.QuestionID, runID: st.RunID, prompt: st.Prompt,
+						options: st.Options, multiSelect: st.MultiSelect,
+						status: "expired", resolve: make(chan questionResolveResult, 1),
+					}
+					s.questions[st.QuestionID] = expiredRec
+					repairQuestions = append(repairQuestions, questionStateFromRecord(expiredRec, "", st.ExpiresAt))
+					continue
+				}
+				s.questions[st.QuestionID] = &questionRecord{
+					id:          st.QuestionID,
+					runID:       st.RunID,
+					prompt:      st.Prompt,
+					options:     st.Options,
+					multiSelect: st.MultiSelect,
+					status:      "pending",
+					resolve:     make(chan questionResolveResult, 1),
+					rehydrated:  true,
+					expiresAt:   st.ExpiresAt,
+				}
+				if rs.pendingQuestionID == "" {
+					rs.pendingQuestionID = st.QuestionID
+				}
+				gotPendingQuestion = true
+				scheduleQuestionExpiry(s, st.QuestionID, st.ExpiresAt)
+			}
+		}
+	}
+	// Restore waiting status after normalize/cancel so parentHasLivePendingChildren
+	// and the UI see a live card (V10R4 P0-01).
+	if gotPendingApproval {
+		rs.status = RunStatusWaitingApproval
+		rs.agentStatus = string(RunStatusWaitingApproval)
+	} else if gotPendingQuestion {
+		rs.status = RunStatusWaitingQuestion
+		rs.agentStatus = string(RunStatusWaitingQuestion)
+	}
+	// Persist durable card repairs outside the hot path — spawn after unlock via
+	// a deferred list stored on the service is awkward under lock; repair inline
+	// after the caller unlocks by using a short unlock-free persist (store IO).
+	// Callers of rehydratePendingGatesLocked hold s.mu; schedule repairs async.
+	if len(repairApprovals) > 0 || len(repairQuestions) > 0 {
+		go s.persistGateRepairs(repairApprovals, repairQuestions)
+	}
+}
+
+// persistGateRepairs writes reconciled resolved cards so a second restart cannot
+// resurrect pending cards after session decision tombstones are cleared (P1-02).
+func (s *InteractiveService) persistGateRepairs(approvals []ProviderApprovalState, questions []ProviderQuestionState) {
+	for _, st := range approvals {
+		if err := s.persistApproval(st); err != nil {
+			log.Printf("[rehydrate] repair approval %s: %v", st.ApprovalID, err)
+		}
+	}
+	for _, st := range questions {
+		if err := s.persistQuestion(st); err != nil {
+			log.Printf("[rehydrate] repair question %s: %v", st.QuestionID, err)
+		}
+	}
+}
+
+// resumePendingFlowGate re-runs the post-turn gate after restart when durable
+// PendingFlowGateSettle was true (V10 P0). Works for flow-engine children and
+// root. On pass, materializes EventTurnCompleted (persist + broadcast) like the
+// live post-gate path so SSE/reconnect see a terminal event (V10 residual P1).
+func (s *InteractiveService) resumePendingFlowGate(runID string) {
+	s.mu.Lock()
+	rs := s.runs[runID]
+	if rs == nil || !rs.pendingFlowGateSettle {
+		s.mu.Unlock()
+		return
+	}
+	// P1-04: never resume a child gate when parent loop is already stopped/done.
+	loopParent := runID
+	if rs.parentRunID != "" {
+		loopParent = rs.parentRunID
+	}
+	if st := s.agentOrchestrator.loopStateFor(loopParent).Status; st == "stopped" || st == "done" {
+		s.mu.Unlock()
+		return
+	}
+	// BUG-288 P1-04: durable stop-tombstone check. The in-memory loop-state
+	// check above depends on agentOrchestrator having already observed Stop —
+	// which after a restart depends on reconstruction ordering (parent vs
+	// child). This check is ordering-independent: both stopGeneration and
+	// parentStopGenSeen are loaded directly from the persisted session at
+	// reconstruction, so a child whose last checkpoint predates its parent's
+	// current stop generation is rejected regardless of load order.
+	if rs.parentRunID != "" {
+		if parent := s.runs[rs.parentRunID]; parent != nil && parent.stopGeneration > rs.parentStopGenSeen {
+			s.mu.Unlock()
+			return
+		}
+	}
+	// P1-06: single-flight claim — only one resumePendingFlowGate evaluates.
+	if rs.gateClaimID != "" {
+		s.mu.Unlock()
+		return
+	}
+	msg := rs.pendingFlowGateFinalMsg
+	at := rs.pendingFlowGateOccurredAt
+	if at == "" {
+		at = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	// Prefer durable pending-gate turn id (persisted); fall back to in-memory.
+	turnID := rs.pendingFlowGateTurnID
+	if turnID == "" {
+		turnID = rs.lastTurnID
+	}
+	if turnID == "" {
+		turnID = rs.currentTurnID
+	}
+	fin := finalizeInput{
+		RunID:        rs.id,
+		TurnID:       turnID,
+		FinalMessage: msg,
+		ChangedFiles: append([]string(nil), rs.pendingGateChangedFiles...),
+	}
+	isRoot := rs.parentRunID == ""
+	epoch := rs.gateEpoch
+	claimID := s.nextID("gateclaim")
+	rs.gateClaimID = claimID
+	s.mu.Unlock()
+	gateCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.mu.Lock()
+	rs = s.runs[runID]
+	if rs == nil || rs.gateEpoch != epoch || rs.gateClaimID != claimID {
+		if rs != nil && rs.gateClaimID == claimID {
+			rs.gateClaimID = ""
+		}
+		s.mu.Unlock()
+		return
+	}
+	rs.postTurnGateCancel = cancel
+	s.mu.Unlock()
+	var blocked bool
+	if isRoot {
+		blocked = s.runFlowGateAtEpoch(gateCtx, rs, fin.TurnID, fin, epoch)
+	} else {
+		blocked = s.runChildArtifactOutputGateAtEpoch(gateCtx, rs, fin.TurnID, fin, epoch)
+	}
+	s.mu.Lock()
+	rs = s.runs[runID]
+	if rs == nil {
+		s.mu.Unlock()
+		return
+	}
+	// V10R4 P0: Stop bumped gateEpoch — discard all gate side effects.
+	if rs.gateEpoch != epoch || rs.gateClaimID != claimID {
+		if rs.gateClaimID == claimID {
+			rs.gateClaimID = ""
+		}
+		rs.postTurnGateCancel = nil
+		s.mu.Unlock()
+		return
+	}
+	rs.postTurnGateCancel = nil
+	rs.gateClaimID = ""
+	if blocked {
+		rs.pendingFlowGateSettle = false
+		rs.pendingFlowGateFinalMsg = ""
+		rs.pendingFlowGateOccurredAt = ""
+		rs.pendingFlowGateTurnID = ""
+		rs.pendingGateChangedFiles = nil
+		rs.status = RunStatusRunning
+		rs.agentStatus = string(RunStatusRunning)
+		// V10R4 P1: keep durable reprompt intent on session (do not clear before
+		// startTurn succeeds). Code paths + attempts already on rs.
+		repromptPrompt := rs.pendingGateRepromptPrompt
+		repromptStep := rs.pendingGateRepromptStepID
+		repromptGen := rs.pendingGateRepromptGen
+		repromptRun := rs.id
+		snap := sessionStateOf(rs)
+		if isRoot {
+			snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+		}
+		s.mu.Unlock()
+		_ = s.persistProviderSession(snap)
+		if repromptPrompt != "" && repromptStep != "" {
+			go s.startTurnClearingIntent(repromptRun, repromptStep, repromptPrompt, "reprompt", repromptGen)
+		} else {
+			s.notifyTurnIdle(repromptRun)
+		}
+		return
+	}
+	// Gate pass — publish Completed + materialize terminal TurnCompleted event.
+	// BUG-288 P1-05: compute the post-gate snapshot and persist it FIRST. Before
+	// this fix, rs.status flipped to Completed, the terminal event broadcast to
+	// subscribers, cohort/dependency settlement (settleFlowChildTurnCompletedLocked
+	// / releaseDependentAgents) and the finalizer all ran BEFORE the durable
+	// session write was confirmed — a persistence error was swallowed (fail-open),
+	// so a restart could re-run gate evaluation, the finalizer, or release a
+	// dependency a second time. Now: mutate RAM, persist, and only proceed to
+	// broadcast/cohort/finalizer if the persist succeeds; otherwise restore the
+	// gate to an actionable retry state and return without any downstream effect.
+	prevStatus := rs.status
+	prevAgentStatus := rs.agentStatus
+	prevPendingSettle := rs.pendingFlowGateSettle
+	prevFinalMsg := rs.pendingFlowGateFinalMsg
+	prevOccurredAt := rs.pendingFlowGateOccurredAt
+	prevTurnID := rs.pendingFlowGateTurnID
+	prevChangedFiles := rs.pendingGateChangedFiles
+	prevLastTurnID := rs.lastTurnID
+
+	rs.pendingFlowGateSettle = false
+	rs.pendingFlowGateFinalMsg = ""
+	rs.pendingFlowGateOccurredAt = ""
+	rs.pendingFlowGateTurnID = ""
+	rs.pendingGateChangedFiles = nil
+	rs.status = RunStatusCompleted
+	rs.agentStatus = string(RunStatusCompleted)
+	// Durable turn id for finalizer / summary (live path sets lastTurnID).
+	if turnID != "" {
+		rs.lastTurnID = turnID
+	}
+	parentID := rs.parentRunID
+	childID := rs.id
+	// V10R3 P1: include LoopState for root so we do not wipe durable loop on disk.
+	snap := sessionStateOf(rs)
+	if parentID == "" {
+		snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+	}
+	s.mu.Unlock()
+	if err := s.persistProviderSession(snap); err != nil {
+		// BUG-288 P1-05: persistence failed — do NOT broadcast/settle/finalize.
+		// Restore the gate to its pre-completion, actionable retry state so a
+		// later resumePendingFlowGate (or restart) re-attempts instead of the
+		// completion having silently fanned out with no durable record.
+		s.mu.Lock()
+		if rs2 := s.runs[runID]; rs2 != nil {
+			rs2.status = prevStatus
+			rs2.agentStatus = prevAgentStatus
+			rs2.pendingFlowGateSettle = prevPendingSettle
+			rs2.pendingFlowGateFinalMsg = prevFinalMsg
+			rs2.pendingFlowGateOccurredAt = prevOccurredAt
+			rs2.pendingFlowGateTurnID = prevTurnID
+			rs2.pendingGateChangedFiles = prevChangedFiles
+			rs2.lastTurnID = prevLastTurnID
+		}
+		s.mu.Unlock()
+		log.Printf("[flow-gate] persist post-gate completion run=%q turn=%q: %v (gate left actionable for retry)", runID, turnID, err)
+		return
+	}
+
+	s.mu.Lock()
+	rs = s.runs[runID]
+	if rs == nil {
+		s.mu.Unlock()
+		return
+	}
+	// BUG-288 R11 #4: gateClaimID was already released before the persist call
+	// above, so it cannot detect a concurrent Stop here — revalidate gateEpoch
+	// instead (Stop bumps it via clearDurableRecoveryStateLocked). Without this,
+	// a Stop landing during the unlocked persist call would let this resumed
+	// completion still signal/broadcast/settle/release.
+	if rs.gateEpoch != epoch {
+		s.mu.Unlock()
+		return
+	}
+	if parentID != "" {
+		if summary, ok := s.agentOrchestrator.currentSummary(parentID, childID); ok {
+			summary.Status = RunStatusCompleted
+			summary.AgentStatus = string(RunStatusCompleted)
+			s.agentOrchestrator.upsertSummary(parentID, summary)
+		}
+	}
+	s.agentOrchestrator.signalChild(childID, msg, false, "", RunStatusCompleted)
+	completedEv := ProviderEvent{
+		Type:              EventTurnCompleted,
+		FinalMessage:      msg,
+		OccurredAt:        at,
+		ProviderTurnID:    turnID,
+		WorkflowRunID:     rs.id,
+		ProviderSessionID: rs.providerSessionID,
+		ProviderKey:       rs.providerKey,
+	}
+	rs.seq++
+	completedEv.Seq = rs.seq
+	completedEv.ID = s.nextID("evt")
+	if n := len(rs.events); n > 0 && rs.events[n-1].Type == EventTurnCompleted {
+		rs.events[n-1] = completedEv
+	} else {
+		rs.events = append(rs.events, completedEv)
+	}
+	rs.lastEventType = EventTurnCompleted
+	_ = s.persistEvent(completedEv)
+	for _, ch := range rs.subs {
+		select {
+		case ch <- completedEv:
+		default:
+		}
+	}
+	if parentID != "" {
+		s.settleFlowChildTurnCompletedLocked(rs, msg, completedEv)
+	}
+	s.mu.Unlock()
+	// V10R4 P1: match live post-gate path — finalizer + idle chat summary.
+	_ = s.finalizer.Finalize(finalizeInput{
+		RunID:        childID,
+		TurnID:       turnID,
+		FinalMessage: msg,
+		ChangedFiles: append([]string(nil), fin.ChangedFiles...),
+	})
+	s.scheduleChatSummary(childID)
+	if parentID != "" {
+		go s.releaseDependentAgents(parentID, childID, msg, at)
+	}
+}
+
 // ---- errors (stable codes per 04-02 error envelope) ------------------------
 
 var (
@@ -2089,6 +3007,277 @@ func newAPIErr(status int, code, msg string) *apiErr {
 // Event emission + SSE hub
 // ============================================================================
 
+// durableResumeStepID returns a stable step id for restarting a turn after
+// rehydrate (V10R P1). Prefer persisted stepID / lastTurnStepID; fall back to
+// a deterministic label/run-scoped id rather than inventing a random one each
+// approve (which would orphan the original execution step).
+func durableResumeStepID(rs *interactiveRun) string {
+	if rs == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(rs.stepID); id != "" {
+		return id
+	}
+	if id := strings.TrimSpace(rs.lastTurnStepID); id != "" {
+		return id
+	}
+	if label := strings.TrimSpace(rs.label); label != "" {
+		return "resume-" + label
+	}
+	if rs.id != "" {
+		return "chat-" + rs.id
+	}
+	return ""
+}
+
+// markPendingFlowGateSettleLocked defers Completed until the post-turn gate
+// passes, and snapshots turn-scoped gate inputs so resume after restart uses the
+// same base SHA / worktree / written paths (V10 residual P0). Caller holds s.mu.
+func (s *InteractiveService) markPendingFlowGateSettleLocked(rs *interactiveRun, finalMsg, occurredAt string) {
+	if rs == nil {
+		return
+	}
+	rs.pendingFlowGateSettle = true
+	rs.pendingFlowGateFinalMsg = finalMsg
+	rs.pendingFlowGateOccurredAt = occurredAt
+	// Durable turn id for EventTurnCompleted after restart (V10R P1).
+	if tid := strings.TrimSpace(rs.currentTurnID); tid != "" {
+		rs.pendingFlowGateTurnID = tid
+	} else if tid := strings.TrimSpace(rs.lastTurnID); tid != "" {
+		rs.pendingFlowGateTurnID = tid
+	}
+	// Snapshot WrittenPaths already emitted; finishTurn refreshes once more
+	// after the adapter returns with the full event list.
+	var paths []string
+	seen := map[string]struct{}{}
+	for _, e := range rs.events {
+		if e.Type == EventFileChanged && e.Path != "" {
+			if _, ok := seen[e.Path]; ok {
+				continue
+			}
+			seen[e.Path] = struct{}{}
+			paths = append(paths, e.Path)
+		}
+	}
+	rs.pendingGateChangedFiles = paths
+	// Keep non-terminal status so dependenciesSatisfiedLocked stays false and
+	// resume does not normalize to Completed/Cancelled.
+	if rs.status != RunStatusRunning {
+		rs.status = RunStatusRunning
+		rs.agentStatus = string(RunStatusRunning)
+	}
+	if finalMsg != "" {
+		rs.lastMessage = truncateDisplayField(finalMsg, 100)
+	}
+	// V10R3 P1: synchronous checkpoint BEFORE release of emitLocked's lock so a
+	// crash cannot lose PendingFlowGateSettle (async write race → resume cancel).
+	snap := sessionStateOf(rs)
+	if rs.parentRunID == "" {
+		snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+	}
+	// BUG-288 P1-16: this checkpoint is what makes "gate still pending" durable
+	// across a crash. rs.status is already non-terminal (Running) regardless,
+	// so a failure here cannot fail-open into a published Completed — but it
+	// must not be silently swallowed either: log it loudly so operators can
+	// see a run whose gate-pending checkpoint may not survive a crash, instead
+	// of the previous fully-silent `_ = ...` discard.
+	if err := s.persistProviderSession(snap); err != nil {
+		log.Printf("[flow-gate] persist pendingFlowGateSettle checkpoint run=%q turn=%q: %v (gate decision not yet durable; run kept non-terminal)", rs.id, rs.pendingFlowGateTurnID, err)
+	}
+}
+
+// settleFlowChildTurnCompletedLocked advances parent flow state after a child turn
+// completes and (for flow-engine children) the post-turn gate has passed.
+// Caller holds s.mu. Task-242: must not run until runChildArtifactOutputGate allows.
+func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveRun, finalMsg string, ev ProviderEvent) {
+	if rs.flowCohortId != "" {
+		s.agentOrchestrator.appendCohortResult(rs.parentRunID, rs.flowCohortId, cohortEntry{
+			Label:        rs.label,
+			Provider:     string(rs.providerKey),
+			FinalMessage: truncateDisplayField(finalMsg, 1500),
+			Status:       "completed",
+		})
+		s.flowDiagLog(rs.parentRunID, "cohort_member_completed", "cohort member completed and buffered",
+			"child_run_id", rs.id,
+			"cohort_id", rs.flowCohortId,
+			"label", rs.label,
+			"provider", string(rs.providerKey),
+			"final_message_len", len(strings.TrimSpace(finalMsg)),
+		)
+		// BUG-234 (#1): settle THIS cohort member's own timeline node the moment
+		// it finishes, so a done reviewer reads DONE while its sibling is still
+		// RUNNING. Previously the reviewer nodes were only settled together at the
+		// barrier below, so one-done-one-running showed both as RUNNING. rs.label
+		// is the flow node id for a flow-spawned cohort member.
+		if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven && rs.label != "" {
+			// Caller holds s.mu (settleFlowChildTurnCompletedLocked).
+			s.setFlowStepStatusLocked(context.Background(), rs.parentRunID, rs.label, StepStatusDone)
+			cohortDiagLog("member self-settled DONE parent=%q run=%q label=%q", rs.parentRunID, rs.id, rs.label)
+		}
+		if s.agentOrchestrator.cohortComplete(rs.parentRunID, rs.flowCohortId) {
+			entries := s.agentOrchestrator.drainCohort(rs.parentRunID, rs.flowCohortId)
+			note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)
+			s.flowDiagLog(rs.parentRunID, "cohort_join_complete", "cohort barrier completed and note built",
+				"cohort_id", rs.flowCohortId,
+				"entry_count", len(entries),
+				"note_len", len(note),
+			)
+			cohortDiagLog("cohortNote built parent=%q cohort=%q entries=%d noteLen=%d", rs.parentRunID, rs.flowCohortId, len(entries), len(note))
+			s.appendPendingAgentContextLocked(rs.parentRunID, note)
+			if parent := s.runs[rs.parentRunID]; parent != nil {
+				// BUG-233: retain the joined note past pendingAgentContext being
+				// drained into the hub's synthesis turn, so the CA-226 fallback
+				// (hub completes without calling submit_review_outcome) can build
+				// a findings-based GateReason instead of an internal diagnostic one.
+				parent.lastCohortNote = note
+			}
+			parentRunID := rs.parentRunID
+			// BUG-174/BUG-181: the review cohort just joined — mark each reviewer
+			// node DONE and the inline hub node RUNNING (synchronously, under s.mu
+			// — see BUG-233 note below), THEN reinvoke the hub's synthesis turn in a
+			// goroutine: the synthesis turn finalizes via markFlowRunComplete
+			// (synthesis DONE), and running the step writes async here previously
+			// let that race the step writes — landing before the reviewer-DONE
+			// writes (synthesis DONE while reviewers still RUNNING) or after the
+			// synthesis-RUNNING write (synthesis stuck RUNNING after the flow is
+			// done). Sequencing the writes before the reinvoke removes both races.
+			var reviewerNodeIDs []string
+			var hubNodeID string
+			flowDriven := false
+			if parent := s.runs[parentRunID]; parent != nil && parent.flowEngineDriven {
+				flowDriven = true
+				for _, e := range entries {
+					if e.Status == "completed" && e.Label != "" {
+						reviewerNodeIDs = append(reviewerNodeIDs, e.Label)
+					}
+				}
+				hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
+			}
+			// Capture the cohort note to embed directly in the synthesis prompt.
+			// This fixes BUG-synthesis-hang: Codex agents on resumed threads do not
+			// see the joined result note when it is only in pendingAgentContext
+			// (rendered as a context block), causing the synthesizer to report
+			// "joined result note not present in visible context" and stall.
+			capturedCohortNote := note
+			// BUG-233: keep the reviewer-DONE / hub-RUNNING step writes synchronous
+			// (still under s.mu via emitLocked) instead of inside the goroutine below.
+			// workflowStore.ApplyStepTransition uses its own lock, so this is safe here
+			// and guarantees the writes land before this handler returns and any
+			// subsequent agent_graph_updated event fires — otherwise the desktop's
+			// step-runtime refresh could race ahead of these writes and render the
+			// prior round's stale "all done"/RUNNING snapshot.
+			if flowDriven {
+				for _, id := range reviewerNodeIDs {
+					// Caller holds s.mu (settleFlowChildTurnCompletedLocked).
+					s.setFlowStepStatusLocked(context.Background(), parentRunID, id, StepStatusDone)
+				}
+				// BUG-234 (#4): only drive the hub node to RUNNING and re-invoke the
+				// synthesis turn while the loop is still advancing. Once the loop has
+				// settled (blocked/awaiting-user, done, stopped), a late or stray
+				// cohort join must NOT flip the hub node back to RUNNING — that flap
+				// is what left the synthesis step spinning forever after an escalate.
+				// maybeAutoReinvokeHubWithNote is itself gated on loop status, but the
+				// hub-RUNNING write below is not, so guard it here too.
+				if hubNodeID != "" && s.loopIsAdvancing(parentRunID) {
+					s.setFlowStepStatusLocked(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
+				}
+			}
+			cohortDiagLog("scheduling hub reinvoke parent=%q flowDriven=%t loopAdvancing=%t reviewerNodeIDs=%v noteLen=%d",
+				parentRunID, flowDriven, s.loopIsAdvancing(parentRunID), reviewerNodeIDs, len(capturedCohortNote))
+			go s.maybeAutoReinvokeHubWithNote(parentRunID, capturedCohortNote)
+		}
+	} else if s.agentOrchestrator.loopMode(rs.parentRunID) == "explicit" && (isCoderRun(rs) || parentHasTrackedFlow(s, rs.parentRunID)) {
+		// In explicit mode the hub drives all transitions. When a node completes
+		// outside a cohort barrier (waitForResult=true, no flowCohortId), try to
+		// auto-spawn the flow's next node(s) from its own edge data (Task-180
+		// follow-up); dispatched async since tryAdvanceFlowFromNode/
+		// maybeAutoReinvokeHub manage their own locking and must not run while
+		// this handler still holds s.mu.
+		//
+		// BUG-NOTE-CP42 #17: gating this solely on isCoderRun(rs) meant a flow
+		// whose entry delegate node uses a non-"coder" agent/role name (any
+		// user-authored flow, not just review-loop/rag-harness) never reached
+		// tryAdvanceFlowFromNode at all — its completion fell through to the
+		// generic "Sub-agent completed" note below, which never reinvokes the
+		// hub, silently stalling the flow. parentHasTrackedFlow additionally
+		// covers any run whose parent is a flowRef-tracked hub, regardless of
+		// role name; tryAdvanceFlowFromNode's own internal checks (activeFlowEdges
+		// set, a forward edge exists from this node) still safely no-op and fall
+		// back to the same legacy note+reinvoke path for anything it doesn't
+		// recognize, so this only adds coverage, it narrows nothing.
+		parentRunID := rs.parentRunID
+		completedLabel := rs.label
+		completedAgentName := rs.agentName
+		msg := finalMsg
+		go s.advanceOrNotifyHub(parentRunID, completedLabel, completedAgentName, msg)
+	} else if rs.uiInitiated || !rs.waitForResult {
+		s.appendPendingAgentContextLocked(rs.parentRunID, fmt.Sprintf(
+			"Sub-agent %q (provider: %s) completed. Result: %s",
+			rs.agentName, rs.providerKey, truncateDisplayField(finalMsg, 2000)))
+	}
+	// Legacy keyword-mode loop: in explicit mode the hub drives all transitions via
+	// submit_review_outcome → flow_control, so this branch must stay silent. (Task-091 T-5)
+	if s.agentOrchestrator.loopMode(rs.parentRunID) != "explicit" {
+		switch {
+		case isCoderRun(rs):
+			s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "ready-for-review"))
+			go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "ready-for-review", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+		case isAgentRole(rs, "review"):
+			msg := strings.ToLower(ev.FinalMessage)
+			switch {
+			case strings.Contains(msg, "changes requested"):
+				go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "changes-requested", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+				s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "changes-requested"))
+				roundSnap := s.agentOrchestrator.advanceRound(rs.parentRunID)
+				s.emitAgentGraphLocked(rs.parentRunID, roundSnap)
+				coderID := ""
+				for _, childID := range s.agentOrchestrator.listChildren(rs.parentRunID) {
+					if child := s.runs[childID]; isCoderRun(child) {
+						coderID = childID
+						break
+					}
+				}
+				if coderID != "" {
+					reviewText := ev.FinalMessage
+					if roundSnap.LoopState.Status != "stopped" {
+						runID := ""
+						prompt := ""
+						if parent := s.runs[rs.parentRunID]; parent != nil {
+							if child := s.runs[coderID]; child != nil {
+								if !s.loopAllowsNextTurnLocked(rs.parentRunID) || child.turnInFlight {
+									parent.pendingRestartRunID = child.id
+									parent.pendingRestartPrompt = reviewText
+								} else {
+									runID = child.id
+									prompt = reviewText
+								}
+							}
+						}
+						if runID != "" && prompt != "" {
+							if child := s.runs[runID]; child != nil {
+								stepID := child.stepID
+								go func(runID, stepID, prompt string) {
+									prompt, queued := s.takeQueuedFeedbackPrompt(rs.parentRunID, runID, prompt)
+									if queued != nil {
+										s.recordAgentBus(rs.parentRunID, *queued)
+									}
+									_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
+								}(runID, stepID, prompt)
+							}
+						}
+					}
+				}
+			case strings.Contains(msg, "rejected"):
+				go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "rejected", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+				s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "rejected"))
+			default:
+				go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "approved", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
+				s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "approved"))
+			}
+		}
+	} // end if loopMode != "explicit"
+}
+
 // emitLocked stamps correlation + a monotonic per-run seq, persists, broadcasts,
 // and applies the status transition. Caller holds s.mu.
 func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) ProviderEvent {
@@ -2103,6 +3292,20 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	}
 	ev.OccurredAt = time.Now().UTC().Format(time.RFC3339Nano)
 
+	// V10 P1 / residual P0: defer raw EventTurnCompleted persist/broadcast for
+	// flow-engine children AND root until gate pass — subscribers must not treat
+	// event type alone as terminal. Still record in-memory for finalizeInput.
+	deferGateCompleted := false
+	if ev.Type == EventTurnCompleted {
+		if rs.parentRunID != "" {
+			if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven {
+				deferGateCompleted = true
+			}
+		} else if rs.flowEngineDriven {
+			// Root hub/coder turn: same defer so crash mid-gate cannot restore Completed.
+			deferGateCompleted = true
+		}
+	}
 	rs.events = append(rs.events, ev)
 	rs.lastEventType = ev.Type
 	rs.updatedAt = ev.OccurredAt
@@ -2127,20 +3330,24 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			rs.lastMessage = truncateDisplayField(ev.Error, 100)
 		}
 	}
-	_ = s.persistEvent(ev)
+	if !deferGateCompleted {
+		_ = s.persistEvent(ev)
+	}
 
 	switch ev.Type {
 	case EventPermissionRequired:
 		rs.status = RunStatusWaitingApproval
 		rs.agentStatus = string(RunStatusWaitingApproval)
+		// BUG-288 #22: flow-engine child approval must stamp the parent step
+		// WAITING_USER_APPROVAL (by node label) so resume/replay can keep it
+		// instead of collapsing RUNNING → CANCELED after restart.
+		s.settleFlowChildStepAwaitingUserLocked(rs)
 	case EventUserQuestionRequired:
 		rs.status = RunStatusWaitingQuestion
 		rs.agentStatus = string(RunStatusWaitingQuestion)
+		// BUG-288 #22: same WAITING stamp for child ask_user questions.
+		s.settleFlowChildStepAwaitingUserLocked(rs)
 	case EventTurnCompleted:
-		rs.status = RunStatusCompleted
-		rs.agentStatus = string(RunStatusCompleted)
-		// Signal any wait:true spawn_agent waiter — non-blocking (buffered channel).
-		// Must be called under s.mu so signalChild races after status is set.
 		// Fall back to the last EventMessageCompleted text when FinalMessage is empty:
 		// Codex new-protocol (turn/completed) may not carry finalMessage directly; the
 		// actual content arrives via streaming EventMessageCompleted events first.
@@ -2153,198 +3360,25 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 				}
 			}
 		}
-		s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
 		if rs.parentRunID != "" {
-			// Tell the parent's provider conversation that a child finished, so the parent
-			// agent can report its result on the next turn. UI spawns (BUG-122) and tool
-			// spawns with wait=false (BUG-126) both need this; a tool spawn with wait=true
-			// already returned the result synchronously as the tool result, so skip it.
-			// Cohort children always buffer regardless of wait mode; isolated note
-			// path only applies to UI-initiated or wait=false spawns (BUG-122/BUG-126).
-			if rs.flowCohortId != "" {
-				s.agentOrchestrator.appendCohortResult(rs.parentRunID, rs.flowCohortId, cohortEntry{
-					Label:        rs.label,
-					Provider:     string(rs.providerKey),
-					FinalMessage: truncateDisplayField(finalMsg, 1500),
-					Status:       "completed",
-				})
-				s.flowDiagLog(rs.parentRunID, "cohort_member_completed", "cohort member completed and buffered",
-					"child_run_id", rs.id,
-					"cohort_id", rs.flowCohortId,
-					"label", rs.label,
-					"provider", string(rs.providerKey),
-					"final_message_len", len(strings.TrimSpace(finalMsg)),
-				)
-				// BUG-234 (#1): settle THIS cohort member's own timeline node the moment
-				// it finishes, so a done reviewer reads DONE while its sibling is still
-				// RUNNING. Previously the reviewer nodes were only settled together at the
-				// barrier below, so one-done-one-running showed both as RUNNING. rs.label
-				// is the flow node id for a flow-spawned cohort member.
-				if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven && rs.label != "" {
-					s.setFlowStepStatus(context.Background(), rs.parentRunID, rs.label, StepStatusDone)
-					cohortDiagLog("member self-settled DONE parent=%q run=%q label=%q", rs.parentRunID, rs.id, rs.label)
-				}
-				if s.agentOrchestrator.cohortComplete(rs.parentRunID, rs.flowCohortId) {
-					entries := s.agentOrchestrator.drainCohort(rs.parentRunID, rs.flowCohortId)
-					note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)
-					s.flowDiagLog(rs.parentRunID, "cohort_join_complete", "cohort barrier completed and note built",
-						"cohort_id", rs.flowCohortId,
-						"entry_count", len(entries),
-						"note_len", len(note),
-					)
-					cohortDiagLog("cohortNote built parent=%q cohort=%q entries=%d noteLen=%d", rs.parentRunID, rs.flowCohortId, len(entries), len(note))
-					s.appendPendingAgentContextLocked(rs.parentRunID, note)
-					if parent := s.runs[rs.parentRunID]; parent != nil {
-						// BUG-233: retain the joined note past pendingAgentContext being
-						// drained into the hub's synthesis turn, so the CA-226 fallback
-						// (hub completes without calling submit_review_outcome) can build
-						// a findings-based GateReason instead of an internal diagnostic one.
-						parent.lastCohortNote = note
-					}
-					parentRunID := rs.parentRunID
-					// BUG-174/BUG-181: the review cohort just joined — mark each reviewer
-					// node DONE and the inline hub node RUNNING (synchronously, under s.mu
-					// — see BUG-233 note below), THEN reinvoke the hub's synthesis turn in a
-					// goroutine: the synthesis turn finalizes via markFlowRunComplete
-					// (synthesis DONE), and running the step writes async here previously
-					// let that race the step writes — landing before the reviewer-DONE
-					// writes (synthesis DONE while reviewers still RUNNING) or after the
-					// synthesis-RUNNING write (synthesis stuck RUNNING after the flow is
-					// done). Sequencing the writes before the reinvoke removes both races.
-					var reviewerNodeIDs []string
-					var hubNodeID string
-					flowDriven := false
-					if parent := s.runs[parentRunID]; parent != nil && parent.flowEngineDriven {
-						flowDriven = true
-						for _, e := range entries {
-							if e.Status == "completed" && e.Label != "" {
-								reviewerNodeIDs = append(reviewerNodeIDs, e.Label)
-							}
-						}
-						hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
-					}
-					// Capture the cohort note to embed directly in the synthesis prompt.
-					// This fixes BUG-synthesis-hang: Codex agents on resumed threads do not
-					// see the joined result note when it is only in pendingAgentContext
-					// (rendered as a context block), causing the synthesizer to report
-					// "joined result note not present in visible context" and stall.
-					capturedCohortNote := note
-					// BUG-233: keep the reviewer-DONE / hub-RUNNING step writes synchronous
-					// (still under s.mu via emitLocked) instead of inside the goroutine below.
-					// workflowStore.ApplyStepTransition uses its own lock, so this is safe here
-					// and guarantees the writes land before this handler returns and any
-					// subsequent agent_graph_updated event fires — otherwise the desktop's
-					// step-runtime refresh could race ahead of these writes and render the
-					// prior round's stale "all done"/RUNNING snapshot.
-					if flowDriven {
-						for _, id := range reviewerNodeIDs {
-							s.setFlowStepStatus(context.Background(), parentRunID, id, StepStatusDone)
-						}
-						// BUG-234 (#4): only drive the hub node to RUNNING and re-invoke the
-						// synthesis turn while the loop is still advancing. Once the loop has
-						// settled (blocked/awaiting-user, done, stopped), a late or stray
-						// cohort join must NOT flip the hub node back to RUNNING — that flap
-						// is what left the synthesis step spinning forever after an escalate.
-						// maybeAutoReinvokeHubWithNote is itself gated on loop status, but the
-						// hub-RUNNING write below is not, so guard it here too.
-						if hubNodeID != "" && s.loopIsAdvancing(parentRunID) {
-							s.setFlowStepStatus(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
-						}
-					}
-					cohortDiagLog("scheduling hub reinvoke parent=%q flowDriven=%t loopAdvancing=%t reviewerNodeIDs=%v noteLen=%d",
-						parentRunID, flowDriven, s.loopIsAdvancing(parentRunID), reviewerNodeIDs, len(capturedCohortNote))
-					go s.maybeAutoReinvokeHubWithNote(parentRunID, capturedCohortNote)
-				}
-			} else if s.agentOrchestrator.loopMode(rs.parentRunID) == "explicit" && (isCoderRun(rs) || parentHasTrackedFlow(s, rs.parentRunID)) {
-				// In explicit mode the hub drives all transitions. When a node completes
-				// outside a cohort barrier (waitForResult=true, no flowCohortId), try to
-				// auto-spawn the flow's next node(s) from its own edge data (Task-180
-				// follow-up); dispatched async since tryAdvanceFlowFromNode/
-				// maybeAutoReinvokeHub manage their own locking and must not run while
-				// this handler still holds s.mu.
-				//
-				// BUG-NOTE-CP42 #17: gating this solely on isCoderRun(rs) meant a flow
-				// whose entry delegate node uses a non-"coder" agent/role name (any
-				// user-authored flow, not just review-loop/rag-harness) never reached
-				// tryAdvanceFlowFromNode at all — its completion fell through to the
-				// generic "Sub-agent completed" note below, which never reinvokes the
-				// hub, silently stalling the flow. parentHasTrackedFlow additionally
-				// covers any run whose parent is a flowRef-tracked hub, regardless of
-				// role name; tryAdvanceFlowFromNode's own internal checks (activeFlowEdges
-				// set, a forward edge exists from this node) still safely no-op and fall
-				// back to the same legacy note+reinvoke path for anything it doesn't
-				// recognize, so this only adds coverage, it narrows nothing.
-				parentRunID := rs.parentRunID
-				completedLabel := rs.label
-				completedAgentName := rs.agentName
-				msg := finalMsg
-				go s.advanceOrNotifyHub(parentRunID, completedLabel, completedAgentName, msg)
-			} else if rs.uiInitiated || !rs.waitForResult {
-				s.appendPendingAgentContextLocked(rs.parentRunID, fmt.Sprintf(
-					"Sub-agent %q (provider: %s) completed. Result: %s",
-					rs.agentName, rs.providerKey, truncateDisplayField(finalMsg, 2000)))
+			// Task-242 D-1/D-3/D-9 / BUG-288 #1 / V10: do NOT publish Completed until
+			// the post-turn child gate passes. Durable flag + turn snapshot survive
+			// restart (V10 residual P0).
+			if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven {
+				s.markPendingFlowGateSettleLocked(rs, finalMsg, ev.OccurredAt)
+				break
 			}
-			// Legacy keyword-mode loop: in explicit mode the hub drives all transitions via
-			// submit_review_outcome → flow_control, so this branch must stay silent. (Task-091 T-5)
-			if s.agentOrchestrator.loopMode(rs.parentRunID) != "explicit" {
-				switch {
-				case isCoderRun(rs):
-					s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "ready-for-review"))
-					go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "ready-for-review", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
-				case isAgentRole(rs, "review"):
-					msg := strings.ToLower(ev.FinalMessage)
-					switch {
-					case strings.Contains(msg, "changes requested"):
-						go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "changes-requested", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
-						s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "changes-requested"))
-						roundSnap := s.agentOrchestrator.advanceRound(rs.parentRunID)
-						s.emitAgentGraphLocked(rs.parentRunID, roundSnap)
-						coderID := ""
-						for _, childID := range s.agentOrchestrator.listChildren(rs.parentRunID) {
-							if child := s.runs[childID]; isCoderRun(child) {
-								coderID = childID
-								break
-							}
-						}
-						if coderID != "" {
-							reviewText := ev.FinalMessage
-							if roundSnap.LoopState.Status != "stopped" {
-								runID := ""
-								prompt := ""
-								if parent := s.runs[rs.parentRunID]; parent != nil {
-									if child := s.runs[coderID]; child != nil {
-										if !s.loopAllowsNextTurnLocked(rs.parentRunID) || child.turnInFlight {
-											parent.pendingRestartRunID = child.id
-											parent.pendingRestartPrompt = reviewText
-										} else {
-											runID = child.id
-											prompt = reviewText
-										}
-									}
-								}
-								if runID != "" && prompt != "" {
-									if child := s.runs[runID]; child != nil {
-										stepID := child.stepID
-										go func(runID, stepID, prompt string) {
-											prompt, queued := s.takeQueuedFeedbackPrompt(rs.parentRunID, runID, prompt)
-											if queued != nil {
-												s.recordAgentBus(rs.parentRunID, *queued)
-											}
-											_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
-										}(runID, stepID, prompt)
-									}
-								}
-							}
-						}
-					case strings.Contains(msg, "rejected"):
-						go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "rejected", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
-						s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "rejected"))
-					default:
-						go s.recordAgentBus(rs.parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: rs.parentRunID, FromRunID: rs.id, Kind: "approved", Message: ev.FinalMessage, Queued: false, OccurredAt: ev.OccurredAt})
-						s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "approved"))
-					}
-				}
-			} // end if loopMode != "explicit"
+			rs.status = RunStatusCompleted
+			rs.agentStatus = string(RunStatusCompleted)
+			s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
+			s.settleFlowChildTurnCompletedLocked(rs, finalMsg, ev)
+		} else if rs.flowEngineDriven {
+			// Root flow-engine: same gate-before-Completed contract as children.
+			s.markPendingFlowGateSettleLocked(rs, finalMsg, ev.OccurredAt)
+		} else {
+			rs.status = RunStatusCompleted
+			rs.agentStatus = string(RunStatusCompleted)
+			s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
 		}
 	case EventTurnFailed:
 		rs.status = RunStatusFailed
@@ -2352,6 +3386,14 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		s.agentOrchestrator.signalChild(rs.id, "", true, ev.Error, RunStatusFailed)
 		if rs.parentRunID != "" {
 			if rs.flowCohortId != "" {
+				// V9-25: stall Skip already synthetic-appended; ignore late cancel fail.
+				if rs.cohortSkipConsumed {
+					break
+				}
+				// Also skip if already buffered (memberAlreadyBuffered).
+				if s.agentOrchestrator.memberAlreadyBuffered(rs.parentRunID, rs.flowCohortId, rs.label) {
+					break
+				}
 				s.agentOrchestrator.appendCohortResult(rs.parentRunID, rs.flowCohortId, cohortEntry{
 					Label:    rs.label,
 					Provider: string(rs.providerKey),
@@ -2369,7 +3411,8 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 				// failure, mirroring the completed path, so a failed reviewer reads
 				// FAILED immediately instead of RUNNING until the barrier.
 				if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven && rs.label != "" {
-					s.setFlowStepStatus(context.Background(), rs.parentRunID, rs.label, StepStatusFailed)
+					// Caller holds s.mu (emitLocked EventTurnFailed).
+					s.setFlowStepStatusLocked(context.Background(), rs.parentRunID, rs.label, StepStatusFailed)
 					cohortDiagLog("member self-settled FAILED parent=%q run=%q label=%q", rs.parentRunID, rs.id, rs.label)
 				}
 				if s.agentOrchestrator.cohortComplete(rs.parentRunID, rs.flowCohortId) {
@@ -2449,17 +3492,24 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		log.Printf("[agent-spawn] child terminal parent=%q child=%q agent=%q type=%q status=%q finalMsgLen=%d events=%d",
 			rs.parentRunID, rs.id, rs.agentName, ev.Type, rs.status, len(ev.FinalMessage), len(rs.events))
 	}
-	if rs.parentRunID != "" && ev.Type == EventTurnCompleted {
+	// Flow-engine children: releaseDependentAgents runs only after gate pass
+	// (settleFlowChildTurnCompletedLocked / post-gate branch). Immediate release
+	// would start reviewers before a coding-child reprompt can fire (Task-242 D-1/D-9).
+	if rs.parentRunID != "" && ev.Type == EventTurnCompleted && !rs.pendingFlowGateSettle {
 		go s.releaseDependentAgents(rs.parentRunID, rs.id, ev.FinalMessage, ev.OccurredAt)
 	}
 	if rs.parentRunID != "" && shouldEmitParentGraph {
+		// Still emit graph for deferred completed so UI sees Running (not terminal).
 		s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.graphSnapshot(rs.parentRunID))
 	}
 
-	for _, ch := range rs.subs {
-		select {
-		case ch <- ev:
-		default: // subscriber slow/full — it reconnects via afterSeq, no gap
+	// V10 P1: do not broadcast deferred TurnCompleted to stream subscribers.
+	if !deferGateCompleted {
+		for _, ch := range rs.subs {
+			select {
+			case ch <- ev:
+			default: // subscriber slow/full — it reconnects via afterSeq, no gap
+			}
 		}
 	}
 	return ev
@@ -2597,15 +3647,33 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 	}
 
 	s.mu.Lock()
+	expiresAt := time.Now().UTC().Add(s.approvalTTL).Format(time.RFC3339Nano)
 	rec := &approvalRecord{
-		id:      s.nextID("appr"),
-		runID:   b.rs.id,
-		details: details,
-		status:  "pending",
-		resolve: make(chan string, 1),
+		id:        s.nextID("appr"),
+		runID:     b.rs.id,
+		details:   details,
+		status:    "pending",
+		resolve:   make(chan string, 1),
+		expiresAt: expiresAt,
 	}
 	s.approvals[rec.id] = rec
 	b.rs.pendingApprovalID = rec.id
+	// Persist pending BEFORE emit/wait (BUG-288 P1-07) so a persist failure
+	// never leaves a card that is emitted/waited-on in-process but invisible
+	// on disk. ExpiresAt is now the durable absolute TTL deadline (BUG-288
+	// P1-08) instead of empty, so a restart can recompute the remaining TTL.
+	pendingSnap := approvalStateFromRecord(b.rs, rec, expiresAt)
+	s.mu.Unlock()
+	if err := s.persistApproval(pendingSnap); err != nil {
+		s.mu.Lock()
+		delete(s.approvals, rec.id)
+		if b.rs.pendingApprovalID == rec.id {
+			b.rs.pendingApprovalID = ""
+		}
+		s.mu.Unlock()
+		return "", fmt.Errorf("persist pending approval: %w", err)
+	}
+	s.mu.Lock()
 	s.emitLocked(b.rs, ProviderEvent{
 		Type:           EventPermissionRequired,
 		ProviderTurnID: b.turnID,
@@ -2637,6 +3705,7 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiSelect bool) ([]string, error) {
 	s := b.svc
 	s.mu.Lock()
+	expiresAt := time.Now().UTC().Add(s.questionTTL).Format(time.RFC3339Nano)
 	rec := &questionRecord{
 		id:          s.nextID("q"),
 		runID:       b.rs.id,
@@ -2644,10 +3713,25 @@ func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiS
 		options:     options,
 		multiSelect: multiSelect,
 		status:      "pending",
-		resolve:     make(chan []string, 1),
+		resolve:     make(chan questionResolveResult, 1),
+		expiresAt:   expiresAt,
 	}
 	s.questions[rec.id] = rec
 	b.rs.pendingQuestionID = rec.id
+	// Persist pending BEFORE emit/wait (BUG-288 P1-07); ExpiresAt is now the
+	// durable absolute TTL deadline (BUG-288 P1-08).
+	pendingSnap := questionStateFromRecord(rec, b.turnID, expiresAt)
+	s.mu.Unlock()
+	if err := s.persistQuestion(pendingSnap); err != nil {
+		s.mu.Lock()
+		delete(s.questions, rec.id)
+		if b.rs.pendingQuestionID == rec.id {
+			b.rs.pendingQuestionID = ""
+		}
+		s.mu.Unlock()
+		return nil, fmt.Errorf("persist pending question: %w", err)
+	}
+	s.mu.Lock()
 	s.emitLocked(b.rs, ProviderEvent{
 		Type:           EventUserQuestionRequired,
 		ProviderTurnID: b.turnID,
@@ -2661,8 +3745,13 @@ func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiS
 	timer := time.NewTimer(s.questionTTL)
 	defer timer.Stop()
 	select {
-	case c := <-rec.resolve:
-		return c, nil
+	case r := <-rec.resolve:
+		// BUG-288 P2-02: a typed result lets interruption win the select race
+		// against ctx.Done() without being mistaken for a real empty answer.
+		if r.err != nil {
+			return nil, r.err
+		}
+		return r.choices, nil
 	case <-timer.C:
 		s.expireQuestion(rec.id)
 		return nil, errQuestionExpired
@@ -3240,20 +4329,81 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 	return out
 }
 
+// approvalExpiryElapsed reports whether a durable ExpiresAt (RFC3339Nano) has
+// already passed. Empty/unparseable values are treated as not-yet-expired so
+// old records without a durable TTL (pre-P1-08) do not spuriously expire.
+func approvalExpiryElapsed(expiresAt string) bool {
+	if strings.TrimSpace(expiresAt) == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339Nano, expiresAt)
+	if err != nil {
+		return false
+	}
+	return time.Now().UTC().After(t)
+}
+
+// scheduleApprovalExpiry arranges for a rehydrated pending approval to expire
+// durably once its remaining TTL elapses (BUG-288 P1-08) — a rehydrated
+// record has no in-process caller blocked in a select{} with its own timer,
+// so without this it would only ever expire if a live caller happened to
+// call SubmitApprovalDecision after the deadline.
+func scheduleApprovalExpiry(s *InteractiveService, id, expiresAt string) {
+	if strings.TrimSpace(expiresAt) == "" {
+		return
+	}
+	t, err := time.Parse(time.RFC3339Nano, expiresAt)
+	if err != nil {
+		return
+	}
+	remaining := time.Until(t)
+	if remaining <= 0 {
+		remaining = time.Millisecond
+	}
+	time.AfterFunc(remaining, func() { s.expireApproval(id) })
+}
+
+// scheduleQuestionExpiry is the question-side twin of scheduleApprovalExpiry.
+func scheduleQuestionExpiry(s *InteractiveService, id, expiresAt string) {
+	if strings.TrimSpace(expiresAt) == "" {
+		return
+	}
+	t, err := time.Parse(time.RFC3339Nano, expiresAt)
+	if err != nil {
+		return
+	}
+	remaining := time.Until(t)
+	if remaining <= 0 {
+		remaining = time.Millisecond
+	}
+	time.AfterFunc(remaining, func() { s.expireQuestion(id) })
+}
+
 func (s *InteractiveService) expireApproval(id string) {
 	var snapshot *ProviderApprovalState
 	s.mu.Lock()
 	if rec := s.approvals[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
-		if rs := s.runs[rec.runID]; rs != nil && rs.pendingApprovalID == id {
+		rs := s.runs[rec.runID]
+		if rs != nil && rs.pendingApprovalID == id {
 			rs.pendingApprovalID = ""
-			state := approvalStateFromRecord(rs, rec, "")
-			snapshot = &state
 		}
+		// BUG-288 P1-07: always persist the expiry transition, not only when a
+		// live rs still points its pendingApprovalID at this card — otherwise a
+		// rehydrated/orphaned card's expiry never reaches disk.
+		state := approvalStateFromRecord(rs, rec, rec.expiresAt)
+		snapshot = &state
 	}
 	s.mu.Unlock()
 	if snapshot != nil {
-		_ = s.persistApproval(*snapshot)
+		if err := s.persistApproval(*snapshot); err != nil {
+			// BUG-288 P1-07: do not silently swallow — an un-persisted expiry
+			// means a restart could resurrect this card as pending again. Best
+			// effort within this change's scope: log loudly so it is visible in
+			// ops/monitoring rather than vanishing; a full retryable outbox is a
+			// larger change out of scope here.
+			log.Printf("[gate] persist approval expiry %s: %v (expiry left un-durable — may resurrect as pending on restart)", id, err)
+		}
 	}
 }
 
@@ -3310,12 +4460,15 @@ func (s *InteractiveService) expireQuestion(id string) {
 		if rs := s.runs[rec.runID]; rs != nil && rs.pendingQuestionID == id {
 			rs.pendingQuestionID = ""
 		}
-		state := questionStateFromRecord(rec, "", "")
+		state := questionStateFromRecord(rec, "", rec.expiresAt)
 		snapshot = &state
 	}
 	s.mu.Unlock()
 	if snapshot != nil {
-		_ = s.persistQuestion(*snapshot)
+		if err := s.persistQuestion(*snapshot); err != nil {
+			// BUG-288 P1-07: see expireApproval's mirrored comment.
+			log.Printf("[gate] persist question expiry %s: %v (expiry left un-durable — may resurrect as pending on restart)", id, err)
+		}
 	}
 }
 
@@ -3424,10 +4577,19 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// oracle always sees the current change history, not just what existed at bind time.
 	s.rebuildLedgerIfDirty(rs.workspaceCwd)
 	// Flow Mode: prepend FlowContextPackage for Coding steps before normal feature
-	// history injection. injectFeatureHistoryPrompt skips re-injection when the prompt
-	// already carries the flowContextHandoffPrefix sentinel (Task-169).
+	// history injection. Skip history when the runner itself injected the package
+	// (structural flag — not user-forgeable text markers) (Task-169 / V10R4 P1).
 	providerPrompt = s.injectFlowContextIfCoding(ctx, rs, in.StepID, in.Prompt, providerPrompt)
-	if s.shouldInjectFeatureHistory(rs.providerKey) {
+	s.mu.Lock()
+	skipHistory := rs.flowContextInjected || isHandoffPrompt(providerPrompt) ||
+		isFlowEnginePrompt(providerPrompt) || isFlowReviewHandoffPrompt(providerPrompt)
+	// Legacy text marker still honored only when paired with trusted HTML comment
+	// (keeps unit tests / non-interactive paths working).
+	if !skipHistory && isFlowContextHandoff(providerPrompt) {
+		skipHistory = true
+	}
+	s.mu.Unlock()
+	if s.shouldInjectFeatureHistory(rs.providerKey) && !skipHistory {
 		providerPrompt = injectFeatureHistoryPrompt(rs.workspaceCwd, providerPrompt, transcriptTurnsFromRun(rs))
 	}
 	// Observability for E2E: persist/log the fully-composed turn prompt (feature
@@ -3445,6 +4607,22 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// the prompt — needed to diagnose provider-side failures (e.g. a bad cwd)
 	// without guessing what was actually sent.
 	logTurnProviderParams(toolWorkspace, rs.projectID, rs.id, turnID, string(rs.providerKey), model, effort, rs.workspaceCwd, yolo)
+	// V9-21 / V10R3 P0: flow coding children need shell approval bridge for
+	// commit denylist when YOLO would otherwise auto-approve. Gemini has no
+	// RequestApproval path even when YOLO is off, so always force the bridge
+	// (PATH shim + commit undo) for Gemini coding children.
+	forceShellBridge := false
+	if rs.parentRunID != "" && s.isFlowEngineDriven(rs.parentRunID) {
+		if node, ok := flowNodeForRun(s, rs); ok {
+			if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.delegate" {
+				if !isFlowReviewerChild(rs, node, true) {
+					if yolo || rs.providerKey == ProviderKeyGemini {
+						forceShellBridge = true
+					}
+				}
+			}
+		}
+	}
 	req := TurnRequest{
 		RunID:                  rs.id,
 		StepID:                 in.StepID,
@@ -3455,19 +4633,28 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		ModelName:              model,
 		SelectedSkills:         in.SelectedSkills,
 		YoloMode:               yolo,
+		ForceShellBridge:       forceShellBridge,
 		ReasoningEffort:        effort,
 		Cwd:                    rs.workspaceCwd,
 		Scenario:               scenario,
 		Attachments:            in.Attachments,
 		OfferReviewOutcomeTool: offerReviewOutcomeTool,
 	}
-	// CP-35: snapshot HEAD and seed test baseline before the AI runs.
-	// Both must happen before sendTurnWithRetry so the gate sees pre-change state.
-	if head, headErr := captureGitHead(rs.workspaceCwd); headErr == nil {
-		s.mu.Lock()
+	// CP-35 / Task-242: snapshot HEAD + dirty worktree fingerprints before the AI
+	// runs so the post-turn gate measures only this turn's changes (not prior
+	// uncommitted coder dirt still on the tree).
+	// BUG-288 #30: always reset turnStartGitHead (empty on capture fail) so a
+	// stale prior-turn SHA is never reused.
+	head, headErr := captureGitHead(rs.workspaceCwd)
+	wtSnap := snapshotWorktreeFingerprints(rs.workspaceCwd)
+	s.mu.Lock()
+	if headErr == nil {
 		rs.turnStartGitHead = head
-		s.mu.Unlock()
+	} else {
+		rs.turnStartGitHead = ""
 	}
+	rs.turnStartWorktree = wtSnap
+	s.mu.Unlock()
 	s.ensureBaseline(rs.workspaceCwd)
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
@@ -3578,15 +4765,24 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		_ = s.syncCodexStableSessionToKnownAccounts(rs)
 	}
 	s.mu.Lock()
-	rs.turnInFlight = false
+	// V9-03: keep turnInFlight true while post-turn gate will run so startTurn
+	// cannot race a concurrent turn over a settling child/root.
+	willRunGate := completed
+	if !willRunGate {
+		rs.turnInFlight = false
+	}
 	pendingRestartRunID := ""
 	pendingRestartPrompt := ""
 	if rs.parentRunID != "" {
 		if parent := s.runs[rs.parentRunID]; parent != nil {
 			pendingRestartRunID = parent.pendingRestartRunID
 			pendingRestartPrompt = parent.pendingRestartPrompt
-			parent.pendingRestartRunID = ""
-			parent.pendingRestartPrompt = ""
+			// V9-06: keep pendingRestart when this child is the target so cancel
+			// path (completed=false) still restarts after finishTurn.
+			if pendingRestartRunID != rs.id {
+				parent.pendingRestartRunID = ""
+				parent.pendingRestartPrompt = ""
+			}
 		}
 	}
 	// Retry a hub reinvoke that was deferred because turnInFlight was true when the
@@ -3621,14 +4817,233 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// gates: that is the hub/root responsibility (BUG-152). Task-223 still
 	// evaluates the file_artifact OUTPUT write contract on the child that
 	// owns the OUTPUT binding — otherwise coder never gets r-artifact-output.
+	// Task-242 D-1/D-3/D-9: flow-engine children defer cohort join / step DONE
+	// until this gate passes (see pendingFlowGateSettle in emitLocked).
+	// BUG-288 #10: gate uses a cancelable ctx that Stop can cancel via
+	// postTurnGateCancel (turnCancel is already nil after finishTurn).
 	if completed {
-		if rs.parentRunID == "" {
-			if s.runFlowGate(ctx, rs, turnID, fin) {
-				completed = false
+		gateCtx, gateCancel := context.WithCancel(context.Background())
+		s.mu.Lock()
+		gateEpoch := rs.gateEpoch
+		rs.postTurnGateCancel = gateCancel
+		s.mu.Unlock()
+		defer func() {
+			s.mu.Lock()
+			if rs.postTurnGateCancel != nil {
+				rs.postTurnGateCancel = nil
 			}
-		} else if s.runChildArtifactOutputGate(ctx, rs, turnID, fin) {
-			completed = false
+			s.mu.Unlock()
+			gateCancel()
+		}()
+
+		gateBlocked := false
+		// V9-18: Stop during gate — cancel ctx; do not finalize as success.
+		stoppedMidGate := false
+		s.mu.Lock()
+		if rs.status == RunStatusCancelled || rs.status == RunStatusFailed || rs.gateEpoch != gateEpoch {
+			stoppedMidGate = true
 		}
+		s.mu.Unlock()
+		if gateCtx.Err() != nil {
+			stoppedMidGate = true
+		}
+		if !stoppedMidGate {
+			if rs.parentRunID == "" {
+				gateBlocked = s.runFlowGateAtEpoch(gateCtx, rs, turnID, fin, gateEpoch)
+			} else {
+				gateBlocked = s.runChildArtifactOutputGateAtEpoch(gateCtx, rs, turnID, fin, gateEpoch)
+			}
+		}
+		if gateCtx.Err() != nil {
+			stoppedMidGate = true
+		}
+		// Revalidate epoch after gate returns (Stop may have raced).
+		s.mu.Lock()
+		if rs.gateEpoch != gateEpoch {
+			stoppedMidGate = true
+		}
+		s.mu.Unlock()
+		if stoppedMidGate || gateBlocked {
+			completed = false
+			s.mu.Lock()
+			if rs.gateEpoch != gateEpoch {
+				// Stop invalidated this gate — drop settle/reprompt side effects.
+				rs.postTurnGateCancel = nil
+				rs.turnInFlight = false
+				s.mu.Unlock()
+			} else if rs.pendingFlowGateSettle {
+				// Reprompt/block/stop: keep non-terminal Running (never published Completed).
+				rs.pendingFlowGateSettle = false
+				rs.pendingFlowGateFinalMsg = ""
+				rs.pendingFlowGateOccurredAt = ""
+				rs.pendingFlowGateTurnID = ""
+				rs.pendingGateChangedFiles = nil
+				if !stoppedMidGate {
+					rs.status = RunStatusRunning
+					rs.agentStatus = string(RunStatusRunning)
+				}
+				rs.turnInFlight = false
+				rs.postTurnGateCancel = nil
+				// V10R3/R4: keep durable reprompt on session; flush after settle clear.
+				repromptPrompt := rs.pendingGateRepromptPrompt
+				repromptStep := rs.pendingGateRepromptStepID
+				repromptGen := rs.pendingGateRepromptGen
+				repromptRun := rs.id
+				// BUG-288 P1-16: sync-persist the block/reprompt checkpoint
+				// unconditionally (not only when a reprompt prompt exists) BEFORE
+				// allowing a remediation turn to start or considering the block
+				// decision committed. A persist failure must not let a new turn
+				// start nor let this be treated as durable — otherwise a crash
+				// right after loses the gate decision, or a restart replays the
+				// gate against stale (pre-block) state.
+				snapRep := sessionStateOf(rs)
+				if rs.parentRunID == "" {
+					snapRep.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+				}
+				s.mu.Unlock()
+				persistRepErr := s.persistProviderSession(snapRep)
+				if persistRepErr != nil {
+					log.Printf("[flow-gate] persist block/reprompt checkpoint run=%q turn=%q: %v (gate left actionable for retry, remediation turn NOT started)", repromptRun, turnID, persistRepErr)
+				}
+				if persistRepErr == nil {
+					if repromptPrompt != "" && repromptStep != "" && !stoppedMidGate {
+						go s.startTurnClearingIntent(repromptRun, repromptStep, repromptPrompt, "reprompt", repromptGen)
+					} else if !stoppedMidGate {
+						s.notifyTurnIdle(repromptRun)
+					}
+				}
+			} else {
+				rs.turnInFlight = false
+				rs.postTurnGateCancel = nil
+				s.mu.Unlock()
+			}
+		} else {
+			s.mu.Lock()
+			// V10R4 P0: revalidate epoch before any Completed/TurnCompleted side effect.
+			if rs.gateEpoch != gateEpoch {
+				completed = false
+				rs.turnInFlight = false
+				rs.postTurnGateCancel = nil
+				s.mu.Unlock()
+			} else if rs.pendingFlowGateSettle {
+				msg := rs.pendingFlowGateFinalMsg
+				at := rs.pendingFlowGateOccurredAt
+				parentID := rs.parentRunID
+				childID := rs.id
+				prevStatus := rs.status
+				prevAgentStatus := rs.agentStatus
+				prevPendingSettle := rs.pendingFlowGateSettle
+				prevFinalMsg := rs.pendingFlowGateFinalMsg
+				prevOccurredAt := rs.pendingFlowGateOccurredAt
+				prevTurnID := rs.pendingFlowGateTurnID
+				prevChangedFiles := rs.pendingGateChangedFiles
+				rs.pendingFlowGateSettle = false
+				rs.pendingFlowGateFinalMsg = ""
+				rs.pendingFlowGateOccurredAt = ""
+				rs.pendingFlowGateTurnID = ""
+				rs.pendingGateChangedFiles = nil
+				// Publish terminal Completed only after gate pass (BUG-288 #1 / V10).
+				rs.status = RunStatusCompleted
+				rs.agentStatus = string(RunStatusCompleted)
+				// V9-03/BUG-288 R11 #3: compute + persist the post-gate snapshot BEFORE
+				// signalChild/broadcast/settle/release (matches resumePendingFlowGate) —
+				// a persist failure must not let the completion fan out with no durable
+				// record; a restart would then re-run the gate against stale state.
+				snapPass := sessionStateOf(rs)
+				if parentID == "" {
+					snapPass.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+				}
+				s.mu.Unlock()
+				persistErr := s.persistProviderSession(snapPass)
+				s.mu.Lock()
+				if rs2 := s.runs[rs.id]; rs2 != nil {
+					rs = rs2
+				}
+				if persistErr != nil {
+					rs.status = prevStatus
+					rs.agentStatus = prevAgentStatus
+					rs.pendingFlowGateSettle = prevPendingSettle
+					rs.pendingFlowGateFinalMsg = prevFinalMsg
+					rs.pendingFlowGateOccurredAt = prevOccurredAt
+					rs.pendingFlowGateTurnID = prevTurnID
+					rs.pendingGateChangedFiles = prevChangedFiles
+					rs.turnInFlight = false
+					completed = false
+					s.mu.Unlock()
+					log.Printf("[flow-gate] persist post-gate completion run=%q turn=%q: %v (gate left actionable for retry)", childID, turnID, persistErr)
+				} else if rs.gateEpoch != gateEpoch {
+					// BUG-288 R11 #4 (live path): Stop landed during the unlocked
+					// persist call above (persistProviderSession releases s.mu).
+					// The durable Completed write already succeeded, but a Stop
+					// mid-persist must still suppress every completion fan-out —
+					// summary update, signalChild, event broadcast, settle, and
+					// release — matching resumePendingFlowGate's post-persist
+					// gateEpoch revalidation.
+					rs.turnInFlight = false
+					completed = false
+					s.mu.Unlock()
+				} else {
+					if parentID != "" {
+						if summary, ok := s.agentOrchestrator.currentSummary(parentID, childID); ok {
+							summary.Status = RunStatusCompleted
+							summary.AgentStatus = string(RunStatusCompleted)
+							s.agentOrchestrator.upsertSummary(parentID, summary)
+						}
+					}
+					s.agentOrchestrator.signalChild(childID, msg, false, "", RunStatusCompleted)
+					// Persist+broadcast deferred TurnCompleted without re-entering
+					// pendingFlowGateSettle (V10 P1).
+					completedEv := ProviderEvent{
+						Type:              EventTurnCompleted,
+						FinalMessage:      msg,
+						OccurredAt:        at,
+						ProviderTurnID:    turnID,
+						WorkflowRunID:     rs.id,
+						ProviderSessionID: rs.providerSessionID,
+						ProviderKey:       rs.providerKey,
+					}
+					rs.seq++
+					completedEv.Seq = rs.seq
+					completedEv.ID = s.nextID("evt")
+					// Replace deferred in-memory terminal (last event) if still the gate placeholder.
+					if n := len(rs.events); n > 0 && rs.events[n-1].Type == EventTurnCompleted {
+						rs.events[n-1] = completedEv
+					} else {
+						rs.events = append(rs.events, completedEv)
+					}
+					rs.lastEventType = EventTurnCompleted
+					_ = s.persistEvent(completedEv)
+					for _, ch := range rs.subs {
+						select {
+						case ch <- completedEv:
+						default:
+						}
+					}
+					s.settleFlowChildTurnCompletedLocked(rs, msg, completedEv)
+					rs.turnInFlight = false
+					s.mu.Unlock()
+					if parentID != "" {
+						go s.releaseDependentAgents(parentID, childID, msg, at)
+					}
+				}
+			} else {
+				rs.turnInFlight = false
+				s.mu.Unlock()
+			}
+		}
+	} else {
+		// Turn did not complete cleanly — drop any deferred settle so a later
+		// turn cannot join with a stale final message.
+		s.mu.Lock()
+		if rs.pendingFlowGateSettle {
+			rs.pendingFlowGateSettle = false
+			rs.pendingFlowGateFinalMsg = ""
+			rs.pendingFlowGateOccurredAt = ""
+			rs.pendingFlowGateTurnID = ""
+			rs.pendingGateChangedFiles = nil
+		}
+		rs.turnInFlight = false
+		s.mu.Unlock()
 	}
 
 	// Finalizer hook runs OUTSIDE s.mu and only on a clean completion. A finalize
@@ -3643,7 +5058,19 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		s.mu.Unlock()
 		s.scheduleChatSummary(rs.id)
 	}
-	if completed && pendingRestartRunID == rs.id && pendingRestartPrompt != "" {
+	// V10R4 P1: re-flush durable intents after turn/gate becomes idle so a
+	// conflicted delivery is not stranded until process restart.
+	s.notifyTurnIdle(rs.id)
+	// V9-06: fire pending stall-Retry restart after cancel OR clean complete.
+	if pendingRestartRunID == rs.id && pendingRestartPrompt != "" {
+		s.mu.Lock()
+		if parent := s.runs[rs.parentRunID]; parent != nil {
+			if parent.pendingRestartRunID == rs.id {
+				parent.pendingRestartRunID = ""
+				parent.pendingRestartPrompt = ""
+			}
+		}
+		s.mu.Unlock()
 		prompt, queued := s.takeQueuedFeedbackPrompt(rs.parentRunID, rs.id, pendingRestartPrompt)
 		if queued != nil {
 			s.recordAgentBus(rs.parentRunID, *queued)
@@ -3769,14 +5196,46 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 	defer s.mu.Unlock()
 	rs.turnCancel = nil
 	rs.currentTurnID = ""
+	// lastTurnID used by resumePendingFlowGate after restart.
+	if turnID != "" {
+		rs.lastTurnID = turnID
+	}
 
 	switch {
 	case err == nil:
 		if rs.lastEventType != EventTurnCompleted && rs.lastEventType != EventTurnFailed {
 			s.emitLocked(rs, ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: turnID, FinalMessage: ""})
 		}
-		return rs.status == RunStatusCompleted, s.finalizeInputLocked(rs, turnID)
+		// pendingFlowGateSettle: provider turn finished but Completed not published
+		// until gate pass (BUG-288 #1). Still treat as completed for post-turn gate.
+		fin := s.finalizeInputLocked(rs, turnID)
+		if rs.pendingFlowGateSettle {
+			// Refresh durable WrittenPaths + turn id + re-persist so resume has full snapshot.
+			// Sync (not go) — crash before async write must not drop PendingFlowGateSettle.
+			rs.pendingGateChangedFiles = append([]string(nil), fin.ChangedFiles...)
+			if turnID != "" {
+				rs.pendingFlowGateTurnID = turnID
+				rs.lastTurnID = turnID
+			}
+			snap := sessionStateOf(rs)
+			if rs.parentRunID == "" {
+				snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+			}
+			_ = s.persistProviderSession(snap)
+		}
+		return rs.status == RunStatusCompleted || rs.pendingFlowGateSettle, fin
 	case errors.Is(err, context.Canceled):
+		// BUG-288 P1-14/P1-19: a Stall Skip cancels the in-flight turn AFTER
+		// already setting this run Failed (Task-241 contract: Skip -> FAILED,
+		// never Cancelled). Preserve that terminal cause instead of falling
+		// through to the generic cancel-as-Cancelled mapping below, which
+		// would otherwise overwrite Failed with Cancelled the moment this
+		// cancellation reaches finishTurn.
+		if rs.stalledSkipCause {
+			rs.stalledSkipCause = false
+			s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "skipped by user (stalled)", Recoverable: false})
+			break
+		}
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "interrupted by user", Recoverable: true})
 		// Task-240 T-5 / BUG-248: emitLocked maps TurnFailed → Failed in the
 		// summary cache before we override the run status. Patch summary + parent
@@ -3831,6 +5290,43 @@ func (s *InteractiveService) finalizeInputLocked(rs *interactiveRun, turnID stri
 	return in
 }
 
+// clearDurableRecoveryStateLocked drops gate-pending and resume/reprompt intents
+// so Stop/cancel cannot resurrect work after restart. Caller holds s.mu.
+func clearDurableRecoveryStateLocked(rs *interactiveRun) {
+	if rs == nil {
+		return
+	}
+	rs.pendingFlowGateSettle = false
+	rs.pendingFlowGateFinalMsg = ""
+	rs.pendingFlowGateOccurredAt = ""
+	rs.pendingFlowGateTurnID = ""
+	rs.pendingGateChangedFiles = nil
+	rs.pendingGateCodePaths = nil
+	rs.pendingGateRepromptPrompt = ""
+	rs.pendingGateRepromptStepID = ""
+	rs.pendingGateRepromptGen = 0
+	rs.pendingGateRepromptDeliveredGen = 0
+	rs.pendingGateRepromptFailCount = 0
+	rs.pendingGateRepromptFailGen = 0
+	rs.pendingResumePrompt = ""
+	rs.pendingResumeStepID = ""
+	rs.pendingResumeGen = 0
+	rs.pendingResumeDeliveredGen = 0
+	rs.pendingResumeAcceptedTurn = ""
+	rs.pendingGateRepromptAcceptedTurn = ""
+	rs.pendingResumeFailCount = 0
+	rs.pendingResumeFailGen = 0
+	rs.pendingResumeApprovalID = ""
+	rs.pendingResumeDecision = ""
+	rs.pendingResumeQuestionChoices = nil
+	rs.intentClaimKind = ""
+	rs.intentClaimGen = 0
+	rs.intentClaimUntil = time.Time{}
+	rs.gateClaimID = ""
+	// Invalidate any in-flight post-turn gate so it cannot complete after Stop.
+	rs.gateEpoch++
+}
+
 // startTurn validates, enforces one-turn-per-session, applies idempotency, emits
 // turn_started, and launches the adapter. Returns the turnId.
 func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, idempotencyKey string) (string, *apiErr) {
@@ -3839,6 +5335,37 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if rs == nil {
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+	}
+	// Idempotency replay must win over every other gate below: a retry carrying
+	// the same key as an already-started turn is not a new turn request, so it
+	// must not be rejected by state that only applies to genuinely new turns.
+	if idempotencyKey != "" {
+		if tid, ok := rs.idempotency[idempotencyKey]; ok {
+			s.mu.Unlock()
+			return tid, nil
+		}
+	}
+	// V10R4 P0: reject turns while a durable approval/question card is still pending
+	// (crash between session-intent and resolved card must not start continuation).
+	if rs.pendingApprovalID != "" || rs.pendingQuestionID != "" {
+		s.mu.Unlock()
+		return "", newAPIErr(http.StatusConflict, "awaiting_user", "run has a pending approval or question; resolve it before a new turn")
+	}
+	// V10R4 P0: Stop sets loop Status=stopped — reject new turns on this run and
+	// on children whose parent flow was stopped (intent race after Stop).
+	if rs.parentRunID == "" {
+		if st := s.agentOrchestrator.loopStateFor(rs.id).Status; st == "stopped" || st == "done" {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusConflict, "flow_stopped", "flow loop is stopped; cannot start a new turn")
+		}
+	} else if st := s.agentOrchestrator.loopStateFor(rs.parentRunID).Status; st == "stopped" || st == "done" {
+		s.mu.Unlock()
+		return "", newAPIErr(http.StatusConflict, "flow_stopped", "parent flow loop is stopped; cannot start a child turn")
+	}
+	// V9-03: reject overlapping turns while post-turn gate is still settling.
+	if rs.pendingFlowGateSettle || rs.postTurnGateCancel != nil {
+		s.mu.Unlock()
+		return "", newAPIErr(http.StatusConflict, "gate_in_progress", "post-turn gate still running; wait for gate pass/block before a new turn")
 	}
 	if rs.providerAccountID != s.activeAccountForProvider(rs.providerKey) {
 		if rs.runKind != "chat" {
@@ -3854,12 +5381,6 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		if rs == nil {
 			s.mu.Unlock()
 			return "", newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
-		}
-	}
-	if idempotencyKey != "" {
-		if tid, ok := rs.idempotency[idempotencyKey]; ok {
-			s.mu.Unlock()
-			return tid, nil
 		}
 	}
 	if rs.turnInFlight {
@@ -3963,6 +5484,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		}
 	}
 	rs.turnCount++
+	rs.stepID = in.StepID         // durable for rehydrate-approve restart (V10R P1)
 	rs.lastTurnStepID = in.StepID // CP-35: remember for gate reprompts
 	rs.currentTurnID = turnID
 	// BUG-235: lastPrompt is the history list's title source (Navigator.tsx renders
@@ -4182,45 +5704,192 @@ func (s *InteractiveService) submitApprovalDecision(approvalID, decision string,
 		s.mu.Unlock()
 		return newAPIErr(http.StatusConflict, "question_expired", "approval expired")
 	}
-	valid := false
-	for _, d := range rec.details.Decisions {
-		if d.Value == decision {
-			valid = true
-			break
-		}
-	}
-	if !valid {
+	// BUG-288 P1-08: re-check the durable TTL under the lock before accepting a
+	// decision. A rehydrated card's timer is a separate goroutine (see
+	// scheduleApprovalExpiry) that may not have fired yet even though the
+	// deadline has already passed (e.g. immediately after restart).
+	if rec.status == "pending" && approvalExpiryElapsed(rec.expiresAt) {
+		rec.status = "expired"
+		state := approvalStateFromRecord(s.runs[rec.runID], rec, rec.expiresAt)
 		s.mu.Unlock()
-		return newAPIErr(http.StatusBadRequest, "invalid_decision", "decision not among offered options")
+		if err := s.persistApproval(state); err != nil {
+			log.Printf("[gate] persist approval expiry-on-submit %s: %v", approvalID, err)
+		}
+		return newAPIErr(http.StatusConflict, "question_expired", "approval expired")
 	}
-	rec.status = "resolved"
-	rec.decision = decision
-	details := rec.details
+
+	var details ApprovalDetails
 	var rememberCwd string
 	var snapshot *ProviderApprovalState
-	if rs := s.runs[rec.runID]; rs != nil {
-		if rs.pendingApprovalID == approvalID {
-			rs.pendingApprovalID = ""
-		}
-		rememberCwd = rs.workspaceCwd
-		state := approvalStateFromRecord(rs, rec, "")
-		snapshot = &state
+	var sessionSnap *ProviderSessionState
+	var resumeStepParent, resumeStepLabel string
+	var resumeStepTurn bool
+	var restartRunID, restartStepID, restartPrompt string
+	var restartGen int64
+
+	if rec.status == "resolving" {
+		// BUG-288 P1-01: a retry of an in-flight resolution. The prior attempt
+		// already mutated RAM and stashed the durable-write payload but did not
+		// confirm persistence (network/store error) — replay only the missing
+		// writes below instead of re-deriving RAM state (double gen bump,
+		// duplicate restart, etc.) or short-circuiting to a false success.
+		decision = rec.decision
+		details = rec.details
+		snapshot = rec.resolvingSnapshot
+		sessionSnap = rec.resolvingSession
+		resumeStepParent = rec.resolvingStepParent
+		resumeStepLabel = rec.resolvingStepLabel
+		resumeStepTurn = rec.resolvingStepTurn
+		restartRunID = rec.resolvingRestartRunID
+		restartStepID = rec.resolvingRestartStepID
+		restartPrompt = rec.resolvingRestartPrompt
+		restartGen = rec.resolvingRestartGen
+		rememberCwd = rec.resolvingRememberCwd
+		s.mu.Unlock()
 	} else {
-		state := approvalStateFromRecord(nil, rec, "")
-		snapshot = &state
+		valid := false
+		for _, d := range rec.details.Decisions {
+			if d.Value == decision {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			s.mu.Unlock()
+			return newAPIErr(http.StatusBadRequest, "invalid_decision", "decision not among offered options")
+		}
+		// BUG-288 P1-01: "resolving" is a transitional state — RAM reflects the
+		// decision so a concurrent read sees it, but it is NOT yet "resolved"
+		// (which short-circuits future calls to a bare nil success). Only a
+		// confirmed durable write below advances to "resolved".
+		rec.status = "resolving"
+		rec.decision = decision
+		details = rec.details
+		rehydrated := rec.rehydrated
+		if rs := s.runs[rec.runID]; rs != nil {
+			if rs.pendingApprovalID == approvalID {
+				rs.pendingApprovalID = ""
+			}
+			rememberCwd = rs.workspaceCwd
+			state := approvalStateFromRecord(rs, rec, "")
+			snapshot = &state
+			// BUG-288 #22: after child approval, return the flow step to RUNNING so
+			// the timeline does not stay WAITING while the turn continues.
+			// V10R4 P1: auto-resume provider turn ONLY when rehydrated after restart
+			// (explicit provenance). Live workflow/provider cards use resolve channel.
+			liveTurn := rs.turnInFlight && !rehydrated
+			needsResume := rehydrated
+			if rs.parentRunID != "" && rs.label != "" && (liveTurn || needsResume) {
+				// V10R P1: flowEngineDriven is restored when ActiveFlowNodes exist;
+				// also accept activeFlowNodes so step RUNNING still works if the flag
+				// lagged on an older session.
+				if parent := s.runs[rs.parentRunID]; parent != nil && (parent.flowEngineDriven || len(parent.activeFlowNodes) > 0) {
+					resumeStepParent = rs.parentRunID
+					resumeStepLabel = rs.label
+					resumeStepTurn = true
+				}
+			}
+			// After restart the provider goroutine is gone — resolve channel has no
+			// waiter. On approve, restart the turn so the flow actually continues.
+			if needsResume && decision == "approve" {
+				restartRunID = rs.id
+				restartStepID = durableResumeStepID(rs)
+				if restartStepID != "" {
+					rs.stepID = restartStepID
+				}
+				base := strings.TrimSpace(rs.lastPrompt)
+				if base == "" {
+					base = "Continue the previous task."
+				}
+				cmd := strings.TrimSpace(details.Command)
+				if cmd != "" {
+					restartPrompt = base + "\n\n[FlowPilot] The user approved the pending shell command after a runner restart: " + cmd +
+						". Continue from where you left off."
+				} else {
+					restartPrompt = base + "\n\n[FlowPilot] The user approved a pending permission after a runner restart. Continue from where you left off."
+				}
+				rs.status = RunStatusRunning
+				rs.agentStatus = string(RunStatusRunning)
+				// V10R4 P1: durable continuation intent — only cleared after startTurn OK.
+				rs.pendingResumePrompt = restartPrompt
+				rs.pendingResumeStepID = restartStepID
+				rs.pendingResumeGen++
+				restartGen = rs.pendingResumeGen
+				// Reconciliation record so a crash before card persist can resolve
+				// the pending card on rehydrate without re-asking the user.
+				rs.pendingResumeApprovalID = approvalID
+				rs.pendingResumeDecision = decision
+			} else if needsResume && decision == "deny" {
+				// Deny with no live turn: leave Running so the user can re-prompt;
+				// do not invent a Failed terminal without provider context.
+				rs.status = RunStatusRunning
+				rs.agentStatus = string(RunStatusRunning)
+				rs.pendingResumeApprovalID = approvalID
+				rs.pendingResumeDecision = decision
+			} else {
+				// Live resolve path still records decision for two-write reconcile.
+				rs.pendingResumeApprovalID = approvalID
+				rs.pendingResumeDecision = decision
+			}
+		} else {
+			state := approvalStateFromRecord(nil, rec, "")
+			snapshot = &state
+		}
+		// Capture session snap under lock when we mutated resume fields.
+		if restartRunID != "" {
+			if child := s.runs[restartRunID]; child != nil {
+				st := sessionStateOf(child)
+				sessionSnap = &st
+			}
+		} else if rs := s.runs[rec.runID]; rs != nil && strings.TrimSpace(rs.pendingResumeDecision) != "" {
+			st := sessionStateOf(rs)
+			sessionSnap = &st
+		}
+		// Stash the computed payload so a retry (status still "resolving" if we
+		// fail below) redoes only the missing durable writes.
+		rec.resolvingSnapshot = snapshot
+		rec.resolvingSession = sessionSnap
+		rec.resolvingStepParent = resumeStepParent
+		rec.resolvingStepLabel = resumeStepLabel
+		rec.resolvingStepTurn = resumeStepTurn
+		rec.resolvingRestartRunID = restartRunID
+		rec.resolvingRestartStepID = restartStepID
+		rec.resolvingRestartPrompt = restartPrompt
+		rec.resolvingRestartGen = restartGen
+		rec.resolvingRememberCwd = rememberCwd
+		s.mu.Unlock()
+	}
+
+	// V10R4 P1: persist session intent+decision BEFORE resolved card so a crash
+	// leaves recoverable state (decision on session, card may still be pending).
+	if sessionSnap != nil {
+		if err := s.persistProviderSession(*sessionSnap); err != nil {
+			return newAPIErr(http.StatusInternalServerError, "persist_failed",
+				"failed to persist resume intent: "+err.Error())
+		}
+	}
+	// Persist the resolved approval so its decision survives a full server
+	// restart (BUG-272). Order after session intent for rehydrate recovery.
+	if snapshot != nil {
+		if err := s.persistApproval(*snapshot); err != nil {
+			return newAPIErr(http.StatusInternalServerError, "persist_failed",
+				"failed to persist approval decision: "+err.Error())
+		}
+	}
+
+	// BUG-288 P1-01: durable writes above succeeded — commit resolved and drop
+	// the retry stash. Only now is it safe for a concurrent/retried call to
+	// observe "resolved" and short-circuit to success.
+	s.mu.Lock()
+	if rec.status == "resolving" {
+		rec.status = "resolved"
+		rec.resolvingSnapshot = nil
+		rec.resolvingSession = nil
 	}
 	s.mu.Unlock()
 
-	// Persist the resolved approval so its decision survives a full server
-	// restart (BUG-272, completing the persistence half its first pass missed):
-	// without this, the interactive approve path resolved the record in memory
-	// only, so reconstructRun found no resolved ProviderApprovalState and the
-	// approval card replayed as a fresh interactive prompt (flipping a settled
-	// run back to waiting_approval). Mirrors AnswerQuestion's persistQuestion
-	// call — the question path already did this, which is why questions survived
-	// a restart but approvals did not.
-	if snapshot != nil {
-		_ = s.persistApproval(*snapshot)
+	if resumeStepTurn {
+		s.setFlowStepStatus(context.Background(), resumeStepParent, resumeStepLabel, StepStatusRunning)
 	}
 
 	// Persist the "don't ask again" rule outside the lock (file IO). Only shell
@@ -4232,7 +5901,14 @@ func (s *InteractiveService) submitApprovalDecision(approvalID, decision string,
 		}
 	}
 
-	rec.resolve <- decision
+	// Non-blocking send: live turns wait on resolve; rehydrated has no waiter.
+	select {
+	case rec.resolve <- decision:
+	default:
+	}
+	if restartRunID != "" && restartPrompt != "" && restartStepID != "" {
+		go s.startTurnClearingIntent(restartRunID, restartStepID, restartPrompt, "resume", restartGen)
+	}
 	return nil
 }
 
@@ -4240,7 +5916,13 @@ func (s *InteractiveService) submitApprovalDecision(approvalID, decision string,
 // so any non-empty choice is accepted.
 func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) *apiErr {
 	var snapshot *ProviderQuestionState
+	var sessionSnap *ProviderSessionState
 	var runID string
+	var resumeStepParent, resumeStepLabel string
+	var resumeStepTurn bool
+	var restartRunID, restartStepID, restartPrompt string
+	var restartGen int64
+
 	s.mu.Lock()
 	rec := s.questions[questionID]
 	if rec == nil {
@@ -4255,33 +5937,158 @@ func (s *InteractiveService) AnswerQuestion(questionID string, choice []string) 
 		s.mu.Unlock()
 		return newAPIErr(http.StatusConflict, "question_expired", "question expired")
 	}
-	if len(choice) == 0 {
+	// BUG-288 P1-08: see submitApprovalDecision's mirrored comment.
+	if rec.status == "pending" && approvalExpiryElapsed(rec.expiresAt) {
+		rec.status = "expired"
+		state := questionStateFromRecord(rec, "", rec.expiresAt)
 		s.mu.Unlock()
-		return newAPIErr(http.StatusBadRequest, "invalid_decision", "a choice is required")
+		if err := s.persistQuestion(state); err != nil {
+			log.Printf("[gate] persist question expiry-on-answer %s: %v", questionID, err)
+		}
+		return newAPIErr(http.StatusConflict, "question_expired", "question expired")
 	}
-	rec.status = "resolved"
-	rec.choice = choice
-	runID = rec.runID
-	state := questionStateFromRecord(rec, "", "")
-	snapshot = &state
-	if rs := s.runs[rec.runID]; rs != nil && rs.pendingQuestionID == questionID {
-		rs.pendingQuestionID = ""
-		if rs.pendingApprovalID != "" {
-			rs.status = RunStatusWaitingApproval
-			rs.agentStatus = string(RunStatusWaitingApproval)
-		} else {
-			rs.status = RunStatusRunning
-			rs.agentStatus = string(RunStatusRunning)
+
+	if rec.status == "resolving" {
+		// BUG-288 P1-01: retry of an in-flight resolution — replay the missing
+		// durable writes from the stash instead of re-deriving RAM state.
+		choice = rec.choice
+		runID = rec.resolvingRunID
+		snapshot = rec.resolvingSnapshot
+		sessionSnap = rec.resolvingSession
+		resumeStepParent = rec.resolvingStepParent
+		resumeStepLabel = rec.resolvingStepLabel
+		resumeStepTurn = rec.resolvingStepTurn
+		restartRunID = rec.resolvingRestartRunID
+		restartStepID = rec.resolvingRestartStepID
+		restartPrompt = rec.resolvingRestartPrompt
+		restartGen = rec.resolvingRestartGen
+		s.mu.Unlock()
+	} else {
+		if len(choice) == 0 {
+			s.mu.Unlock()
+			return newAPIErr(http.StatusBadRequest, "invalid_decision", "a choice is required")
+		}
+		// BUG-288 P1-01: transitional state — see submitApprovalDecision.
+		rec.status = "resolving"
+		rec.choice = choice
+		rehydrated := rec.rehydrated
+		runID = rec.runID
+		state := questionStateFromRecord(rec, "", "")
+		snapshot = &state
+		if rs := s.runs[rec.runID]; rs != nil {
+			if rs.pendingQuestionID == questionID {
+				rs.pendingQuestionID = ""
+			}
+			if rs.pendingApprovalID != "" {
+				rs.status = RunStatusWaitingApproval
+				rs.agentStatus = string(RunStatusWaitingApproval)
+			} else {
+				rs.status = RunStatusRunning
+				rs.agentStatus = string(RunStatusRunning)
+				// BUG-288 #22: child question answered → step back to RUNNING.
+				// V10R4 P1: auto-resume ONLY when rehydrated after restart. Live
+				// workflow-driven AskWorkflowQuestion has turnInFlight=false but is
+				// not a dead provider turn — scheduling startTurn regressed
+				// TestWorkflowDrivenQuestion (run flipped to completed).
+				liveTurn := rs.turnInFlight && !rehydrated
+				needsResume := rehydrated
+				if rs.parentRunID != "" && rs.label != "" && (liveTurn || needsResume) {
+					if parent := s.runs[rs.parentRunID]; parent != nil && (parent.flowEngineDriven || len(parent.activeFlowNodes) > 0) {
+						resumeStepParent = rs.parentRunID
+						resumeStepLabel = rs.label
+						resumeStepTurn = true
+					}
+				}
+				// Restart turn only after restart rehydration (dead provider turn).
+				if needsResume {
+					restartRunID = rs.id
+					restartStepID = durableResumeStepID(rs)
+					if restartStepID != "" {
+						rs.stepID = restartStepID
+					}
+					base := strings.TrimSpace(rs.lastPrompt)
+					if base == "" {
+						base = "Continue the previous task."
+					}
+					answer := strings.Join(choice, ", ")
+					restartPrompt = base + "\n\n[FlowPilot] The user answered a pending question after a runner restart: " +
+						answer + ". Continue from where you left off."
+					rs.pendingResumePrompt = restartPrompt
+					rs.pendingResumeStepID = restartStepID
+					rs.pendingResumeGen++
+					restartGen = rs.pendingResumeGen
+					// Reconciliation: question id + first choice as decision token.
+					rs.pendingResumeApprovalID = questionID
+					rs.pendingResumeDecision = answer
+					// BUG-288 P2-01: keep the un-flattened slice too so a second
+					// restart reconciles the real answer, not a re-wrapped join.
+					rs.pendingResumeQuestionChoices = append([]string(nil), choice...)
+				} else {
+					rs.pendingResumeApprovalID = questionID
+					rs.pendingResumeDecision = strings.Join(choice, ", ")
+					rs.pendingResumeQuestionChoices = append([]string(nil), choice...)
+				}
+			}
+		}
+		if restartRunID != "" {
+			if child := s.runs[restartRunID]; child != nil {
+				st := sessionStateOf(child)
+				sessionSnap = &st
+			}
+		} else if rs := s.runs[rec.runID]; rs != nil && strings.TrimSpace(rs.pendingResumeDecision) != "" {
+			st := sessionStateOf(rs)
+			sessionSnap = &st
+		}
+		// Stash for retry (BUG-288 P1-01).
+		rec.resolvingRunID = runID
+		rec.resolvingSnapshot = snapshot
+		rec.resolvingSession = sessionSnap
+		rec.resolvingStepParent = resumeStepParent
+		rec.resolvingStepLabel = resumeStepLabel
+		rec.resolvingStepTurn = resumeStepTurn
+		rec.resolvingRestartRunID = restartRunID
+		rec.resolvingRestartStepID = restartStepID
+		rec.resolvingRestartPrompt = restartPrompt
+		rec.resolvingRestartGen = restartGen
+		s.mu.Unlock()
+	}
+
+	// V10R4 P1: session intent+decision before resolved question card.
+	if sessionSnap != nil {
+		if err := s.persistProviderSession(*sessionSnap); err != nil {
+			return newAPIErr(http.StatusInternalServerError, "persist_failed",
+				"failed to persist resume intent: "+err.Error())
 		}
 	}
-	s.mu.Unlock()
 	if snapshot != nil {
-		_ = s.persistQuestion(*snapshot)
+		if err := s.persistQuestion(*snapshot); err != nil {
+			return newAPIErr(http.StatusInternalServerError, "persist_failed",
+				"failed to persist question answer: "+err.Error())
+		}
+	}
+
+	// BUG-288 P1-01: durable writes confirmed — commit resolved.
+	s.mu.Lock()
+	if rec.status == "resolving" {
+		rec.status = "resolved"
+		rec.resolvingSnapshot = nil
+		rec.resolvingSession = nil
+	}
+	s.mu.Unlock()
+
+	if resumeStepTurn {
+		s.setFlowStepStatus(context.Background(), resumeStepParent, resumeStepLabel, StepStatusRunning)
 	}
 	if runID != "" {
 		s.persistParentSession(runID)
 	}
-	rec.resolve <- choice
+	select {
+	case rec.resolve <- questionResolveResult{choices: choice}:
+	default:
+	}
+	if restartRunID != "" && restartPrompt != "" && restartStepID != "" {
+		go s.startTurnClearingIntent(restartRunID, restartStepID, restartPrompt, "resume", restartGen)
+	}
 	return nil
 }
 
@@ -4299,6 +6106,7 @@ func (s *InteractiveService) AskWorkflowQuestion(ctx context.Context, runID, pro
 		s.mu.Unlock()
 		return nil, newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
 	}
+	expiresAt := time.Now().UTC().Add(s.questionTTL).Format(time.RFC3339Nano)
 	rec := &questionRecord{
 		id:          s.nextID("q"),
 		runID:       runID,
@@ -4306,24 +6114,44 @@ func (s *InteractiveService) AskWorkflowQuestion(ctx context.Context, runID, pro
 		options:     options,
 		multiSelect: multiSelect,
 		status:      "pending",
-		resolve:     make(chan []string, 1),
+		resolve:     make(chan questionResolveResult, 1),
+		expiresAt:   expiresAt,
 	}
 	s.questions[rec.id] = rec
 	rs.pendingQuestionID = rec.id
-	s.emitLocked(rs, ProviderEvent{
-		Type:        EventUserQuestionRequired,
-		QuestionID:  rec.id,
-		Prompt:      prompt,
-		Options:     options,
-		MultiSelect: multiSelect,
-	})
+	// Persist pending BEFORE emit/wait (BUG-288 P1-07); mirrors AskQuestion.
+	// ExpiresAt is now the durable absolute TTL deadline (BUG-288 P1-08).
+	pendingSnap := questionStateFromRecord(rec, "", expiresAt)
+	s.mu.Unlock()
+	if err := s.persistQuestion(pendingSnap); err != nil {
+		s.mu.Lock()
+		delete(s.questions, rec.id)
+		if rs2 := s.runs[runID]; rs2 != nil && rs2.pendingQuestionID == rec.id {
+			rs2.pendingQuestionID = ""
+		}
+		s.mu.Unlock()
+		return nil, newAPIErr(http.StatusInternalServerError, "persist_failed", "failed to persist pending question: "+err.Error())
+	}
+	s.mu.Lock()
+	if rs2 := s.runs[runID]; rs2 != nil {
+		s.emitLocked(rs2, ProviderEvent{
+			Type:        EventUserQuestionRequired,
+			QuestionID:  rec.id,
+			Prompt:      prompt,
+			Options:     options,
+			MultiSelect: multiSelect,
+		})
+	}
 	s.mu.Unlock()
 
 	timer := time.NewTimer(s.questionTTL)
 	defer timer.Stop()
 	select {
-	case c := <-rec.resolve:
-		return c, nil
+	case r := <-rec.resolve:
+		if r.err != nil {
+			return nil, newAPIErr(http.StatusConflict, "interrupted", "question interrupted")
+		}
+		return r.choices, nil
 	case <-timer.C:
 		s.expireQuestion(rec.id)
 		return nil, newAPIErr(http.StatusConflict, "question_expired", "question expired")

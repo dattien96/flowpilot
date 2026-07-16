@@ -114,6 +114,8 @@ func TestE2EReviewLoopApprovedPath(t *testing.T) {
 	if hubCalls != 1 {
 		t.Errorf("hub called %d times, want exactly 1", hubCalls)
 	}
+	// V9-24 / Task-240 D-9: flow E2E must not leave steps stuck RUNNING.
+	assertNoStepStuckRunning(t, svc, parentID)
 }
 
 // TestE2EReviewLoopApprovedPathPersistsTerminalLoopStateAfterHubTurnFinishes is
@@ -600,6 +602,8 @@ func TestE2EReviewLoopCapHitBlocked(t *testing.T) {
 	if st.Status != "blocked" {
 		t.Errorf("loop.Status = %q, want blocked", st.Status)
 	}
+	// Cap path may leave hub WAITING (not RUNNING) — no stuck RUNNING nodes.
+	assertNoStepStuckRunning(t, svc, runID)
 }
 
 // TestE2EReviewLoopEscalatePath verifies that applyFlowControl("escalate")

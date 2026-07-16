@@ -1043,4 +1043,3 @@ func TestFlowEventsLoadHandlesLargeLines(t *testing.T) {
 		t.Error("loaded event does not match persisted package")
 	}
 }
-

@@ -67,16 +67,16 @@ type dbWorkflowStepRow struct {
 }
 
 type dbStepDefinitionRow struct {
-	StepType          string                    `json:"step_type"`
-	NodeID            *string                   `json:"node_id"`
-	NodeLifecycle     *string                   `json:"node_lifecycle"`
-	BehaviorID        *string                   `json:"behavior_id"`
-	AgentRef          *string                   `json:"agent_ref"`
-	JoinMode          *string                   `json:"join_mode"`
-	Cohort            *string                   `json:"cohort"`
-	PromptTemplateRef *string                   `json:"prompt_template_ref"`
-	ContextRef        *string                   `json:"context_ref"`
-	ContextSources    []string                  `json:"context_sources"`
+	StepType          string                     `json:"step_type"`
+	NodeID            *string                    `json:"node_id"`
+	NodeLifecycle     *string                    `json:"node_lifecycle"`
+	BehaviorID        *string                    `json:"behavior_id"`
+	AgentRef          *string                    `json:"agent_ref"`
+	JoinMode          *string                    `json:"join_mode"`
+	Cohort            *string                    `json:"cohort"`
+	PromptTemplateRef *string                    `json:"prompt_template_ref"`
+	ContextRef        *string                    `json:"context_ref"`
+	ContextSources    []string                   `json:"context_sources"`
 	ArtifactBindings  []dbStepArtifactBindingRow `json:"step_artifact_bindings"`
 }
 
@@ -845,7 +845,6 @@ func edgesPayload(edges []agentpack.FlowEdge) []map[string]string {
 	}
 	return out
 }
-
 
 // contextsPayload flattens a flow's named context bindings
 // ({name: {ref: "..."}}) into the JSON shape contexts_json stores.

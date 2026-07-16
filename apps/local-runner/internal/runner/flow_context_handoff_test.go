@@ -70,7 +70,7 @@ func TestFlowCodingRetryReusesPlanPackage(t *testing.T) {
 	store.seed("run-1", planCodingSteps("step-plan", "step-coding"))
 	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
 	rs := &interactiveRun{
-		id:          "run-1",
+		id:           "run-1",
 		workspaceCwd: workspace,
 		subs:         map[int64]chan ProviderEvent{},
 	}
@@ -101,7 +101,7 @@ func TestPlanRerunReplacesFlowContextPackage(t *testing.T) {
 	store.seed("run-1", planCodingSteps("step-plan", "step-coding"))
 	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
 	rs := &interactiveRun{
-		id:          "run-1",
+		id:           "run-1",
 		workspaceCwd: workspace,
 		subs:         map[int64]chan ProviderEvent{},
 	}
@@ -194,7 +194,7 @@ func TestCodingStepLoadsPackageFromPriorPlanStep(t *testing.T) {
 	store.seed("run-1", planCodingSteps("step-plan-A", "step-coding-B"))
 	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), store)
 	rs := &interactiveRun{
-		id:          "run-1",
+		id:           "run-1",
 		workspaceCwd: workspace,
 		subs:         map[int64]chan ProviderEvent{},
 	}

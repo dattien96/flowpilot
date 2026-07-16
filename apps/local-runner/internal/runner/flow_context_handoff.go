@@ -2,30 +2,113 @@ package runner
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"flowpilot-runner/internal/agentpack"
 )
 
-// flowContextHandoffPrefix is the leading marker of every flow context package
-// prompt. injectFeatureHistoryPrompt checks for it to avoid double-injection.
+// flowContextHandoffPrefix is the human-readable leading marker of every flow
+// context package prompt. Double-inject guards MUST NOT trust this alone —
+// users can type it as a whole line. Use flowContextTrustedMarker (run-scoped
+// HTML comment) instead (V10R4 P1 PromptEnvelope).
 const flowContextHandoffPrefix = "[FlowPilot flow context package]"
 
-// isFlowContextHandoff reports whether a prompt already carries a prepended
-// FlowContextPackage, preventing double-injection by injectFeatureHistoryPrompt.
+// runMarkerSecret is a process-lifetime random value used to HMAC-bind
+// double-injection markers to the run/package id they name (BUG-288 P1-20,
+// scoped fix for the still-open P1-10 residual). It is generated once at
+// process start and is NEVER derived from user input or anything the desktop
+// client can observe, so a user cannot forge a valid marker for any run id
+// just by knowing/guessing that id (which IS visible in the UI/API) — without
+// this secret they cannot reproduce the MAC suffix the runner itself embeds.
+// A full PromptEnvelope/structured-origin rework (tracked as P1-10) is a
+// larger change; this closes the concrete forgeability gap with a minimal,
+// local addition to the existing marker format.
+var runMarkerSecret = newRunMarkerSecret()
+
+func newRunMarkerSecret() []byte {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err == nil {
+		return b
+	}
+	// crypto/rand failing is effectively unreachable on supported platforms;
+	// fall back to a time-derived value rather than an empty/zero secret.
+	sum := sha256.Sum256([]byte(time.Now().String()))
+	return sum[:]
+}
+
+// runMarkerMAC returns a short, non-forgeable tag binding kind+id to this
+// process's runMarkerSecret. kind namespaces the different marker families
+// (fcp = flow context package, cc = change contract) so a MAC computed for
+// one cannot be replayed as the other.
+func runMarkerMAC(kind, id string) string {
+	mac := hmac.New(sha256.New, runMarkerSecret)
+	mac.Write([]byte(kind))
+	mac.Write([]byte{0})
+	mac.Write([]byte(id))
+	return hex.EncodeToString(mac.Sum(nil))[:16]
+}
+
+// verifyRunMarkerMAC reports whether tag is the correct MAC for kind+id,
+// using a constant-time comparison (hmac.Equal) so this check itself does
+// not leak timing information about the secret.
+func verifyRunMarkerMAC(kind, id, tag string) bool {
+	if tag == "" {
+		return false
+	}
+	want := runMarkerMAC(kind, id)
+	return hmac.Equal([]byte(tag), []byte(want))
+}
+
+// flowContextTrustedMarker returns a run-scoped inject token only ComposeFlowCodingPrompt
+// writes. injectFeatureHistoryPrompt skips only when this token is present.
+// BUG-288 P1-20: the id alone used to be trusted, but run/package ids are
+// visible to the user (desktop UI, API responses) — a user who copied one
+// into their own prompt text could suppress injection. The trailing segment
+// is an HMAC over kind+id using a server-only secret, so only this process
+// can mint a marker that isFlowContextHandoff will accept.
+func flowContextTrustedMarker(runOrPackageID string) string {
+	id := runOrPackageID
+	if id == "" {
+		id = "anonymous"
+	}
+	return "<!-- flowpilot-fcp:" + id + ":" + runMarkerMAC("fcp", id) + " -->"
+}
+
+// isFlowContextHandoff reports whether a prompt already carries a trusted
+// FlowContextPackage envelope, preventing double-injection by
+// injectFeatureHistoryPrompt.
 //
-// Contains, not HasPrefix: a Coding step's turn-1 prompt is
-// composeAgentSpawnPrompt's [agent system prompt] + [FlowPilot sub-agent
-// identity line] wrapped AROUND the package that startInlineEntryChain (or
-// injectFlowContextIfCoding) already embedded — so the marker sits partway
-// through the string, not at position 0. A HasPrefix check missed that
-// wrapped shape entirely, so injectFeatureHistoryPrompt never detected the
-// already-present package and re-injected a second "Prior work on X" feature
-// history block ahead of it every time (confirmed live via rag-harness and
-// reproduced in TestFlowCodingPromptSpawnWrappedDoesNotDuplicateHistory).
+// V10R4 P1: only the trusted HTML-comment marker suppresses inject. The
+// human-readable flowContextHandoffPrefix alone is forgeable by user text.
+// BUG-288 P1-20: the marker's id:MAC pair is verified against this process's
+// runMarkerSecret — a line that merely LOOKS like "<!-- flowpilot-fcp:X -->"
+// (any X a user can type, including a real, guessed, or copied run id) is no
+// longer sufficient; only a MAC this process itself generated passes.
 func isFlowContextHandoff(prompt string) bool {
-	return strings.Contains(prompt, flowContextHandoffPrefix)
+	for _, line := range strings.Split(prompt, "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "<!-- flowpilot-fcp:") || !strings.HasSuffix(t, "-->") {
+			continue
+		}
+		body := strings.TrimSuffix(strings.TrimPrefix(t, "<!-- flowpilot-fcp:"), "-->")
+		body = strings.TrimSpace(body)
+		idx := strings.LastIndex(body, ":")
+		if idx < 0 {
+			continue
+		}
+		id, tag := body[:idx], body[idx+1:]
+		if id == "" || !verifyRunMarkerMAC("fcp", id, tag) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // classifyStepBehavior resolves a step's canonical behavior, preferring its
@@ -139,7 +222,13 @@ func produceFlowContextPackage(ctx context.Context, workspace string, hints Flow
 // injecting a duplicate feature block (T-5, Task-169).
 func ComposeFlowCodingPrompt(pkg FlowContextPackage, codingInstruction string) string {
 	var sb strings.Builder
-	sb.WriteString(flowContextHandoffPrefix + "\n\n")
+	sb.WriteString(flowContextHandoffPrefix + "\n")
+	// Trusted envelope marker (not user-forgeable without knowing run/package id).
+	trustID := pkg.WorkflowRunID
+	if trustID == "" {
+		trustID = pkg.PackageID
+	}
+	sb.WriteString(flowContextTrustedMarker(trustID) + "\n\n")
 	sb.WriteString(RenderFlowContextPackage(pkg))
 	sb.WriteString("\n---\n\n")
 	sb.WriteString("[Context use instructions: Use the Flow Context Package above as " +
@@ -201,7 +290,11 @@ func (s *InteractiveService) injectFlowContextIfCoding(
 	s.mu.Unlock()
 
 	if cached != nil {
-		return renderFlowContextPrompt(ctx, *cached, providerPrompt)
+		out := renderFlowContextPrompt(ctx, *cached, providerPrompt)
+		s.mu.Lock()
+		rs.flowContextInjected = true
+		s.mu.Unlock()
+		return out
 	}
 
 	// Slow path: build a fresh package.
@@ -236,7 +329,16 @@ func (s *InteractiveService) injectFlowContextIfCoding(
 	}
 	s.mu.Unlock()
 
-	return renderFlowContextPrompt(ctx, *pkg, providerPrompt)
+	out := renderFlowContextPrompt(ctx, *pkg, providerPrompt)
+	s.mu.Lock()
+	// Structural envelope flag — injectFeatureHistory must not trust user text alone.
+	if r := s.runs[rs.id]; r != nil {
+		r.flowContextInjected = true
+	} else {
+		rs.flowContextInjected = true
+	}
+	s.mu.Unlock()
+	return out
 }
 
 // maybeClearPlanContextForPlanStep clears rs.planContextPackage when stepID

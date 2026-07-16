@@ -1228,7 +1228,14 @@ func (s *InteractiveService) handleInjectAgentFeedback(w http.ResponseWriter, r 
 }
 
 func (s *InteractiveService) handleStopAgentLoop(w http.ResponseWriter, r *http.Request) {
-	writeInteractiveJSON(w, http.StatusOK, s.stopAgentLoop(r.PathValue("runId")))
+	snap, err := s.stopAgentLoop(r.PathValue("runId"))
+	if err != nil {
+		// Still return snapshot body when possible so the UI can reflect cancelled
+		// children, but surface durable-checkpoint failure (V10R4 P0).
+		writeInteractiveError(w, err)
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, snap)
 }
 
 // handleGateDecision handles POST /client/workflow-runs/{runId}/gate-decision.

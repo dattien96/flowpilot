@@ -54,3 +54,22 @@ func resolveYoloPosture(yolo bool) YoloPosture {
 		GrokPermissionMode:   "",
 	}
 }
+
+// resolveYoloPostureForTurn applies V9-21: flow-engine coding children must still
+// route shell approvals through the runner bridge under YOLO so the git-commit
+// denylist can fire. Adapters that use approval-never/bypass-permissions never
+// call RequestApproval, which made commit deny a no-op on all four providers.
+//
+// When forceBridge is true (flow coding child + YOLO): keep auto-approve on the
+// bridge for ordinary commands, but force provider permission modes that still
+// surface exec approvals so isFlowCodingCommitAttempt can deny commits first.
+func resolveYoloPostureForTurn(yolo, forceShellBridge bool) YoloPosture {
+	p := resolveYoloPosture(yolo)
+	if yolo && forceShellBridge {
+		p.CodexApprovalMode = "untrusted"
+		p.ClaudePermissionMode = "default"
+		p.GrokPermissionMode = ""
+		// RunnerAutoApprove remains true.
+	}
+	return p
+}

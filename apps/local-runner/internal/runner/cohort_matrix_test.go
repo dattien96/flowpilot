@@ -18,11 +18,11 @@ func TestCohortMatrixTwoMemberTerminalOutcomes(t *testing.T) {
 		cancelled outcome = "cancelled"
 	)
 	cases := []struct {
-		name   string
-		a, b   outcome
-		wantA  RuntimeWorkflowStepStatus
-		wantB  RuntimeWorkflowStepStatus
-		join   bool
+		name    string
+		a, b    outcome
+		wantA   RuntimeWorkflowStepStatus
+		wantB   RuntimeWorkflowStepStatus
+		join    bool
 		noteHas []string
 	}{
 		{"both-completed", completed, completed, StepStatusDone, StepStatusDone, true, []string{`"r1"`, `"r2"`}},
@@ -253,7 +253,7 @@ func TestStopAgentLoopCancelsCohortMemberAndJoins(t *testing.T) {
 	svc.setFlowStepStatus(context.Background(), parent.RunID, "reviewer_correctness", StepStatusDone)
 
 	// Stop cancels the other in-flight member → should join.
-	_ = svc.stopAgentLoop(parent.RunID)
+	_, _ = svc.stopAgentLoop(parent.RunID)
 	// After stop, cohort should have been drained (join).
 	if svc.agentOrchestrator.hasOpenCohort(parent.RunID) {
 		t.Fatal("expected cohort joined after cancel of remaining member")

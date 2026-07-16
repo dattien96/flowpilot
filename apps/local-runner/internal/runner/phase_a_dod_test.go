@@ -53,12 +53,12 @@ func TestStepTransitionReplaySettlesResolvedWaitingApproval(t *testing.T) {
 func TestFlowRestoreMatrixRunEndStates(t *testing.T) {
 	// Task-239 D-4: core end-states × hub/delegate expectations with transition log.
 	type cell struct {
-		name       string
-		loopStatus string
+		name        string
+		loopStatus  string
 		blockReason string
-		runStatus  RunStatus
-		lines      []stepTransitionLine
-		want       map[string]RuntimeWorkflowStepStatus
+		runStatus   RunStatus
+		lines       []stepTransitionLine
+		want        map[string]RuntimeWorkflowStepStatus
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	nodes := []agentpack.FlowNode{

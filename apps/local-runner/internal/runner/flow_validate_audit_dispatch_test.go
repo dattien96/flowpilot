@@ -2,8 +2,11 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -58,6 +61,139 @@ func TestLoadValidateCommandEmptyWhenNoBaseline(t *testing.T) {
 	}
 }
 
+func TestValidateResultIsCancelled(t *testing.T) {
+	if !validateResultIsCancelled(context.Background(), ValidationResult{EnvError: "context canceled"}) {
+		t.Fatal("EnvError cancel string must be detected")
+	}
+	// Oracle-owned 5m deadline must NOT be treated as user Stop (BUG-288 #11).
+	if validateResultIsCancelled(context.Background(), ValidationResult{EnvError: "context deadline exceeded"}) {
+		t.Fatal("oracle deadline must not count as user cancel")
+	}
+	if validateResultIsCancelled(context.Background(), ValidationResult{EnvError: "executable file not found"}) {
+		t.Fatal("missing binary must not count as cancel")
+	}
+	// BUG-288 R11 #1: a clean/passing result (no EnvError) must still count as
+	// cancelled when the caller's ctx was cancelled by Stop — otherwise a suite
+	// that finished right before Stop landed would advance validate -> audit/done.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if !validateResultIsCancelled(ctx, ValidationResult{}) {
+		t.Fatal("caller ctx cancelled must count as cancel even with a clean result")
+	}
+	// Ctx still open + empty EnvError: genuinely not a cancel.
+	if validateResultIsCancelled(context.Background(), ValidationResult{}) {
+		t.Fatal("open ctx + empty EnvError should not be cancel")
+	}
+}
+
+// Task-242: oracle failures must preserve suite output for SummarizeValidationFailure.
+func TestRunValidateWithOraclePreservesSuiteOutput(t *testing.T) {
+	root := t.TempDir()
+	guardDir := filepath.Join(root, ".flowpilot", "guard")
+	if err := os.MkdirAll(guardDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Script prints a failure line then exits 1 — avoids JSON shell-escape pitfalls.
+	script := filepath.Join(root, "fail_suite.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'error: compile failed'\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// BUG-288 P2-06 (Vòng 12): executeSuite runs the command directly via
+	// exec.CommandContext (no shell), so a bare script path relies on the OS
+	// following the "#!/bin/sh" shebang — which native Windows does not do.
+	// That previously made this test's suite silently fail to start on
+	// Windows (no stderr captured, only an EnvError), even though the test
+	// asserts on stderr content. Invoking the script explicitly via `bash`
+	// (git-bash, available in this dev environment) makes the command
+	// portable across Unix and native Windows without changing what the test
+	// actually asserts (suite stderr must be preserved for retry summaries).
+	testCmd, err := json.Marshal("bash " + script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := `{"captured_at":"2026-01-01T00:00:00Z","test_command":` + string(testCmd) + `,"suite_passed":true}`
+	if err := os.WriteFile(filepath.Join(guardDir, "test_baseline.json"), []byte(baseline), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := runValidateWithOracleIfPossible(context.Background(), "", root, root, "", nil)
+	if result.Passed() {
+		t.Fatal("expected failure")
+	}
+	if !strings.Contains(result.Stderr, "error: compile failed") {
+		t.Fatalf("stderr must carry suite output for retry summary, got %q", result.Stderr)
+	}
+	summary := SummarizeValidationFailure(result, 10)
+	if len(summary.FailureLines) == 0 {
+		t.Fatal("expected failure lines from suite output")
+	}
+	joined := strings.Join(summary.FailureLines, "\n")
+	if !strings.Contains(joined, "compile failed") {
+		t.Fatalf("summary lines=%q", joined)
+	}
+}
+
+// Task-242: missing/stale baseline command must become EnvError (skip retry), not regression.
+func TestRunValidateWithOracleEnvErrorNotRegression(t *testing.T) {
+	root := t.TempDir()
+	guardDir := filepath.Join(root, ".flowpilot", "guard")
+	if err := os.MkdirAll(guardDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Non-existent binary → command start failure.
+	baseline := `{"captured_at":"2026-01-01T00:00:00Z","test_command":"flowpilot-definitely-missing-binary-xyz","suite_passed":true}`
+	if err := os.WriteFile(filepath.Join(guardDir, "test_baseline.json"), []byte(baseline), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := runValidateWithOracleIfPossible(context.Background(), "flowpilot-definitely-missing-binary-xyz", root, root, "", nil)
+	if result.EnvError == "" {
+		t.Fatalf("want EnvError for missing command, got exit=%d stderr=%q", result.ExitCode, result.Stderr)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("EnvError path must use ExitCode 0 (like RunValidationCommand), got %d", result.ExitCode)
+	}
+	state := NewFlowValidationRetryState("pkg", result.Command)
+	AdvanceRetryState(&state, result, nil, "")
+	if state.Status != "skipped_env_error" {
+		t.Fatalf("status=%q want skipped_env_error", state.Status)
+	}
+}
+
+// Task-242 D-4: monorepo baseline lives under workspace-root .flowpilot while
+// workDir is nested TestDir — oracle must still load baseline (not fall back).
+func TestRunValidateWithOracleUsesWorkspaceRootBaseline(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "apps", "svc")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	guardDir := filepath.Join(root, ".flowpilot", "guard")
+	if err := os.MkdirAll(guardDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// suite_passed true + command "true" → oracle SuitePassed, not disabled.
+	baseline := `{"captured_at":"2026-01-01T00:00:00Z","test_command":"true","test_dir":"apps/svc","suite_passed":true}`
+	if err := os.WriteFile(filepath.Join(guardDir, "test_baseline.json"), []byte(baseline), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Nested workDir has no .flowpilot — old code would fall back and run command
+	// with empty baseline path; new code loads from root.
+	result := runValidateWithOracleIfPossible(context.Background(), "true", root, nested, "", nil)
+	if result.ExitCode != 0 {
+		t.Fatalf("oracle via workspace root should pass (true), got exit=%d stderr=%q", result.ExitCode, result.Stderr)
+	}
+	if result.Command == "" {
+		t.Fatal("expected command from baseline")
+	}
+	// Sanity: loadValidateCommand also points workDir at nested TestDir.
+	cmd, workDir := loadValidateCommand(root)
+	if cmd != "true" {
+		t.Fatalf("loadValidateCommand cmd=%q", cmd)
+	}
+	if workDir != nested {
+		t.Fatalf("workDir=%q want nested %q", workDir, nested)
+	}
+}
+
 // flowFixtureEdgesNodes returns rag-harness's exact context/implement/
 // validate/audit topology (minus the context node, which callers set up
 // separately since these tests start from "implement" already completed).
@@ -77,14 +213,10 @@ func flowFixtureEdgesNodes() ([]agentpack.FlowEdge, []agentpack.FlowNode) {
 	return edges, nodes
 }
 
-// TestTryAdvanceFlowFromNodeRunsValidateSkippedNoCommandForwardsToAudit
-// verifies BUG-243 F-0/F-1's "no command configured" degrade path: no
-// .flowpilot/guard/test_baseline.json in the workspace must forward straight
-// to audit (skipped_no_command, per NewFlowValidationRetryState — never a
-// fabricated default command), and F-2's audit wiring must persist a real
-// EventFlowAuditDraft (not the old stub's RawArgs echo) before settling the
-// flow done.
-func TestTryAdvanceFlowFromNodeRunsValidateSkippedNoCommandForwardsToAudit(t *testing.T) {
+// TestTryAdvanceFlowFromNodeRunsValidateSkippedNoCommandEscalates (V9-01):
+// no .flowpilot/guard/test_baseline.json must NOT advance audit→done. Escalate
+// so the human can configure a command or Continue after manual verification.
+func TestTryAdvanceFlowFromNodeRunsValidateSkippedNoCommandEscalates(t *testing.T) {
 	store := newFakeWorkflowStore()
 	svc, _ := newTestServerWith(t, DefaultProviderRegistry(), newInteractiveCatalog(), store)
 
@@ -103,33 +235,20 @@ func TestTryAdvanceFlowFromNodeRunsValidateSkippedNoCommandForwardsToAudit(t *te
 	rs.flowEngineDriven = true
 	rs.workspaceCwd = dir
 	svc.mu.Unlock()
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, Mode: "explicit"})
 
 	if !svc.tryAdvanceFlowFromNode(parent.RunID, "implement", "fixed the bug") {
-		t.Fatal("expected tryAdvanceFlowFromNode to reach validate->audit and return true")
+		t.Fatal("expected tryAdvanceFlowFromNode to escalate skipped_no_command and return true")
 	}
 
-	events := store.events[parent.RunID]
-	var draft *FlowAuditDraft
-	for _, ev := range events {
-		if ev.Type == EventFlowAuditDraft && ev.FlowAuditDraft != nil {
-			draft = ev.FlowAuditDraft
+	// Must not have finalized audit draft as done path.
+	for _, ev := range store.events[parent.RunID] {
+		if ev.Type == EventFlowAuditDraft {
+			t.Fatal("audit draft must not be built when validation is skipped_no_command (V9-01)")
 		}
 	}
-	if draft == nil {
-		t.Fatal("expected an EventFlowAuditDraft to be persisted")
-	}
-	if draft.ValidationResult != "skipped_no_command" {
-		t.Fatalf("draft.ValidationResult = %q, want skipped_no_command", draft.ValidationResult)
-	}
-	// No feature key resolved in this minimal fixture (no context package) —
-	// blocked_missing_feature_key is the CORRECT status (BuildAuditDraft's own
-	// non-write invariant), proving the real builder ran, not an echo stub.
-	if draft.Status == "" {
-		t.Fatal("expected BuildAuditDraft's real status classification, not an empty/echoed value")
-	}
-
-	if got := svc.agentOrchestrator.loopStateFor(parent.RunID).Status; got != "done" {
-		t.Fatalf("loop status = %q, want done (audit settled the flow via applyFlowControl)", got)
+	if got := svc.agentOrchestrator.loopStateFor(parent.RunID).Status; got != "blocked" {
+		t.Fatalf("loop status = %q, want blocked (escalate, not done)", got)
 	}
 }
 
@@ -147,6 +266,9 @@ func TestTryAdvanceFlowFromNodeValidatePassingCommandAdvancesToAudit(t *testing.
 	edges, nodes := flowFixtureEdgesNodes()
 
 	dir := t.TempDir()
+	// V10R4: audit tier-3 fail-closed needs a real Git repo; plain TempDir
+	// escalates instead of writing an audit draft.
+	initGitRepoForAuditFixture(t, dir)
 	writeBaseline(t, dir, "go version")
 
 	svc.mu.Lock()
@@ -415,5 +537,80 @@ func writeBaseline(t *testing.T, workspace, command string) {
 	body := `{"captured_at":"2026-01-01T00:00:00Z","test_command":"` + command + `"}`
 	if err := os.WriteFile(filepath.Join(guardDir, "test_baseline.json"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write baseline: %v", err)
+	}
+}
+
+// initGitRepoForAuditFixture makes workspace a valid Git repo so tier-3 audit
+// observation does not fail-closed (V10R4).
+func initGitRepoForAuditFixture(t *testing.T, dir string) {
+	t.Helper()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v %s", args, err, out)
+		}
+	}
+	// --initial-branch avoids "branch main already exists" when the system
+	// git default is already main (V10R4 P2 fixture audit).
+	run("git", "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("git", "add", "README")
+	run("git", "commit", "-m", "init")
+}
+
+// TestRunAuditNodeDraftNotReadyRespectsCancellation (BUG-288 R11 #2):
+// runAuditNode's non-ready-draft branch must check auditCtxCancelled before
+// escalating — a Stop landing right before this branch must not still call
+// applyFlowControl(escalate), which would leave the flow with a fresh blocked
+// state after Stop already tore it down.
+func TestRunAuditNodeDraftNotReadyRespectsCancellation(t *testing.T) {
+	store := newFakeWorkflowStore()
+	svc, _ := newTestServerWith(t, DefaultProviderRegistry(), newInteractiveCatalog(), store)
+
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	edges, nodes := flowFixtureEdgesNodes()
+	auditNode, ok := findFlowNode(nodes, "audit")
+	if !ok {
+		t.Fatal("fixture must declare an audit node")
+	}
+
+	dir := t.TempDir()
+	initGitRepoForAuditFixture(t, dir)
+
+	svc.mu.Lock()
+	rs := svc.runs[parent.RunID]
+	rs.activeFlowEdges = edges
+	rs.activeFlowNodes = nodes
+	rs.flowEngineDriven = true
+	rs.workspaceCwd = dir
+	// No flowValidationRetryState set -> ValidationResult != "passed" ->
+	// BuildAuditDraft returns blocked_validation_failed (not ready).
+	svc.mu.Unlock()
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, Mode: "explicit"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if got := svc.runAuditNode(ctx, parent.RunID, edges, nodes, auditNode, "fixed the bug"); got {
+		t.Fatal("runAuditNode must return false when the inline ctx was cancelled before the not-ready escalate")
+	}
+	for _, ev := range store.events[parent.RunID] {
+		if ev.Type == EventFlowAuditDraft {
+			t.Fatal("cancelled ctx must not still persist an audit draft")
+		}
+	}
+	if got := svc.agentOrchestrator.loopStateFor(parent.RunID).Status; got == "blocked" {
+		t.Fatal("cancelled ctx must not still escalate the loop to blocked")
 	}
 }

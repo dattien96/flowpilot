@@ -21,6 +21,11 @@ func TestExtractPromptSourcePaths(t *testing.T) {
 		{"no ext", "see apps/local-runner/foo", nil},
 		{"doc skip", "edit requirements/foo.md", nil},
 		{"empty", "hello world", nil},
+		// Task-246: trailing prose punctuation must not stick to the path.
+		{"trailing period", "Fix apps/foo.go.", []string{"apps/foo.go"}},
+		{"trailing colon", "see apps/bar.ts:", []string{"apps/bar.ts"}},
+		{"trailing bang", "touch src/x.go!", []string{"src/x.go"}},
+		{"dot-slash keep", "edit ./apps/z.go", []string{"./apps/z.go"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,6 +59,24 @@ func TestExtractPromptSourcePathsCapsAt8(t *testing.T) {
 func TestUncommittedChangedPathsNonGit(t *testing.T) {
 	if paths := uncommittedChangedPaths(t.TempDir()); paths != nil {
 		t.Fatalf("non-git want nil, got %v", paths)
+	}
+}
+
+// Task-246: any single git error (e.g. no HEAD after bare init) → full degrade to nil.
+func TestUncommittedChangedPathsFreshInitNoHEAD(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	cmd := exec.Command("git", "-C", dir, "init")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "orphan.go"), []byte("package o\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if paths := uncommittedChangedPaths(dir); paths != nil {
+		t.Fatalf("fresh init without HEAD must degrade to nil, got %v", paths)
 	}
 }
 

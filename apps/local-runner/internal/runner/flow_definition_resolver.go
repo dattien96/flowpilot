@@ -84,7 +84,7 @@ type ErrFlowDefinitionInvalid struct {
 }
 
 func (e *ErrFlowDefinitionInvalid) Error() string { return e.err.Error() }
-func (e *ErrFlowDefinitionInvalid) Unwrap() error  { return e.err }
+func (e *ErrFlowDefinitionInvalid) Unwrap() error { return e.err }
 
 // canonicalFlowRef formats the canonical "packId/flowId" flowRef.
 func canonicalFlowRef(packID, flowID string) string {

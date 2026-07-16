@@ -1,7 +1,7 @@
 package flowgate
 
 import (
-	"bufio"
+	"bytes"
 	"os/exec"
 	"strings"
 )
@@ -11,45 +11,38 @@ import (
 // correct view to use after an AI turn: the AI may have committed files, making
 // git status --porcelain return nothing even though real changes occurred.
 // If baseSHA is empty the function falls back to ObserveGitDiff (uncommitted only).
+//
+// V9-15: uses git -z / -z --name-status so paths with spaces/tabs/newlines/quotes
+// are not split by Fields.
 func ObserveGitDiffSince(repoDir, baseSHA string) ([]ChangedFile, error) {
-	uncommitted, _ := ObserveGitDiff(repoDir)
+	// V10R4 P1: never swallow observation errors as empty/clean diffs — audit
+	// and tier-1 gates must escalate when Git cannot verify work.
+	uncommitted, err := ObserveGitDiff(repoDir)
+	if err != nil {
+		return nil, err
+	}
 
 	if baseSHA == "" {
 		return uncommitted, nil
 	}
 
-	// git diff <baseSHA>..HEAD --name-status lists committed changes since baseSHA.
-	cmd := exec.Command("git", "-C", repoDir, "diff", baseSHA+"..HEAD", "--name-status")
+	// git diff -z --name-status <baseSHA>..HEAD
+	cmd := exec.Command("git", "-C", repoDir, "diff", "-z", "--name-status", baseSHA+"..HEAD")
 	out, err := cmd.Output()
 	if err != nil {
-		return uncommitted, nil
+		// Distinguish empty range (ok) from real failure. Exit 0/1 with empty
+		// output can be clean; non-nil err with no usable output is failure.
+		// git diff returns exit 0 always for valid range; exit 128 for bad SHA/repo.
+		return nil, err
 	}
 
 	byPath := make(map[string]ChangedFile)
-	// Seed with uncommitted changes first.
 	for _, f := range uncommitted {
 		byPath[f.Path] = f
 	}
-
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if len(line) < 2 {
-			continue
-		}
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
-			continue
-		}
-		statusChar := string(parts[0][0])
-		path := parts[len(parts)-1]
-		status := resolveStatus(statusChar, " ")
-		if status == "" {
-			continue
-		}
-		// Uncommitted version of the same file takes precedence.
-		if _, alreadySeen := byPath[path]; !alreadySeen {
-			byPath[path] = ChangedFile{Path: path, Status: status}
+	for _, f := range parseNameStatusZ(out) {
+		if _, alreadySeen := byPath[f.Path]; !alreadySeen {
+			byPath[f.Path] = f
 		}
 	}
 
@@ -61,27 +54,50 @@ func ObserveGitDiffSince(repoDir, baseSHA string) ([]ChangedFile, error) {
 }
 
 func ObserveGitDiff(repoDir string) ([]ChangedFile, error) {
-	// -uall expands untracked directories to individual files so paths like
-	// "change-audit/CA-002.md" are not collapsed to "change-audit/" by git.
-	cmd := exec.Command("git", "-C", repoDir, "status", "--porcelain", "-uall")
+	// -z + -uall: NUL-terminated records; expand untracked dirs to files (V9-15).
+	cmd := exec.Command("git", "-C", repoDir, "status", "--porcelain", "-z", "-uall")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
+	return parsePorcelainZ(out), nil
+}
 
+// parsePorcelainZ parses `git status --porcelain -z` output.
+// Format: XY <path>\0  or, for rename/copy, XY <path>\0<orig_path>\0.
+// BUG-288 P2-05 (Vòng 12): git-status(1) documents that the -z format
+// REVERSES the human-readable "ORIG_PATH -> PATH" field order — the first
+// NUL-delimited field is the CURRENT/destination path, and the second
+// (rename/copy only) is the ORIGINAL/source path. A previous version of this
+// parser assumed the same order as the non-z textual form (orig first) and
+// overwrote the correct destination path with the stale source path for
+// every rename/copy entry. V10: do NOT TrimSpace — leading/trailing
+// whitespace in filenames is legal.
+func parsePorcelainZ(out []byte) []ChangedFile {
 	var files []ChangedFile
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if len(line) < 4 {
+	parts := bytes.Split(out, []byte{0})
+	for i := 0; i < len(parts); i++ {
+		rec := parts[i]
+		if len(rec) < 3 {
 			continue
 		}
-		indexStatus := string(line[0])
-		workStatus := string(line[1])
-		path := strings.TrimSpace(line[3:])
-
-		// Untracked files (index='?', work='?') are treated as Added so that new
-		// CA notes created but not yet staged are still visible to the gate.
+		indexStatus := string(rec[0])
+		workStatus := string(rec[1])
+		// After "XY " (3 bytes) comes the destination/current path.
+		path := string(rec[3:])
+		if path == "" {
+			continue
+		}
+		// Rename/copy: consume the second NUL field (the original/source
+		// path) so it is not mistaken for the next record's status line —
+		// but the destination path above is already the correct "the path"
+		// for policy purposes; do not overwrite it.
+		if (indexStatus == "R" || indexStatus == "C" || workStatus == "R" || workStatus == "C") && i+1 < len(parts) {
+			i++
+		}
+		if path == "" {
+			continue
+		}
 		if indexStatus == "?" && workStatus == "?" {
 			files = append(files, ChangedFile{Path: path, Status: "A"})
 			continue
@@ -92,11 +108,56 @@ func ObserveGitDiff(repoDir string) ([]ChangedFile, error) {
 		}
 		files = append(files, ChangedFile{Path: path, Status: status})
 	}
-	return files, nil
+	return files
+}
+
+// parseNameStatusZ parses `git diff -z --name-status` output.
+// Format: STATUS\0PATH\0 or for renames Rxxx\0OLD\0NEW\0 (Path = NEW).
+// V10: preserve path bytes; no TrimSpace.
+func parseNameStatusZ(out []byte) []ChangedFile {
+	var files []ChangedFile
+	parts := bytes.Split(out, []byte{0})
+	for i := 0; i < len(parts); {
+		st := string(parts[i])
+		if st == "" {
+			i++
+			continue
+		}
+		// Status token may be "R100" etc.; first rune is the class.
+		statusChar := string(st[0])
+		i++
+		if i >= len(parts) {
+			break
+		}
+		path := string(parts[i])
+		i++
+		// Rename/copy: next field is destination; use that as Path.
+		if (statusChar == "R" || statusChar == "C") && i < len(parts) {
+			dest := string(parts[i])
+			i++
+			if dest != "" {
+				path = dest
+			}
+		}
+		if path == "" {
+			continue
+		}
+		status := resolveStatus(statusChar, " ")
+		if status == "" {
+			continue
+		}
+		files = append(files, ChangedFile{Path: path, Status: status})
+	}
+	return files
 }
 
 func resolveStatus(index, work string) string {
 	combined := index + work
+	// BUG-288 #15: staged/committed renames (R) and copies (C) are code moves —
+	// treat as Modified so Tier-1/audit do not see an empty diff.
+	if strings.ContainsAny(combined, "RC") {
+		return "M"
+	}
 	if strings.ContainsAny(combined, "AD") {
 		if index == "A" || work == "A" {
 			return "A"
@@ -147,8 +208,10 @@ func HasBugFixDoc(diff []ChangedFile) bool {
 }
 
 func IsDocOrAuditFile(path string) bool {
+	// BUG-288 #16 / F-25: .flowpilot/** is runtime metadata, not product code.
 	return strings.HasPrefix(path, "requirements/") ||
 		strings.HasPrefix(path, "change-audit/") ||
+		strings.HasPrefix(path, ".flowpilot/") ||
 		strings.HasSuffix(path, ".md")
 }
 

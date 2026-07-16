@@ -24,7 +24,10 @@ type ChangedFile struct {
 type TestOutcome struct {
 	Ran    bool     `json:"ran"`
 	Passed []string `json:"passed,omitempty"`
+	// Failed is ordinary suite failures (r-tests). V9-27: not mixed with regressions.
 	Failed []string `json:"failed,omitempty"`
+	// Regressed is true regressions vs green baseline (r-reg). Empty when none. (V9-27)
+	Regressed []string `json:"regressed,omitempty"`
 }
 
 type TurnResult struct {

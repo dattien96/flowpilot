@@ -3,10 +3,12 @@ package runner
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -233,12 +235,21 @@ func resolvePackageFeature(prompt string, catalog *featurecatalog.Catalog, warni
 // Returns collected excerpts and omission reasons for skipped files.
 func readSourceExcerpts(workspace string, paths []string) (excerpts []FlowContextExcerpt, omitted []string) {
 	cleanWS := filepath.Clean(workspace) + string(os.PathSeparator)
-	// Resolve the workspace root through symlinks once so that the per-file
-	// symlink check below compares resolved paths against the resolved root.
+	// Resolve the workspace root through symlinks ONCE, up front, so the root
+	// itself may legitimately be a symlink (e.g. /tmp on macOS). This does NOT
+	// resolve any per-file path — doing that (the pre-P1-11 approach) is what
+	// created the TOCTOU gap: EvalSymlinks validates a snapshot of the path,
+	// then the file is reopened by string path, so an intermediate directory
+	// swapped for a symlink between validation and open could escape the
+	// workspace (BUG-288 P1-11). Every per-file open below instead walks its
+	// own path component-by-component from this resolved root via
+	// openWorkspaceRegularFile, which re-validates every component against
+	// TOCTOU immediately before descending into it.
 	resolvedWS := cleanWS
 	if rws, err := filepath.EvalSymlinks(filepath.Clean(workspace)); err == nil {
 		resolvedWS = rws + string(os.PathSeparator)
 	}
+	wsRoot := strings.TrimSuffix(resolvedWS, string(os.PathSeparator))
 	total := 0
 	for _, p := range paths {
 		abs := p
@@ -250,14 +261,18 @@ func readSourceExcerpts(workspace string, paths []string) (excerpts []FlowContex
 			omitted = append(omitted, p+": outside_workspace")
 			continue
 		}
-		// Resolve symlinks so a symlink inside the workspace that points outside
-		// is caught before the file is opened (MEDIUM finding: symlink escape).
-		resolved, err := filepath.EvalSymlinks(clean)
-		if err != nil {
-			omitted = append(omitted, p+": symlink_resolve_error")
-			continue
-		}
-		if !strings.HasPrefix(resolved+string(os.PathSeparator), resolvedWS) {
+		// Lexical containment check computed against the UNRESOLVED workspace
+		// root (matching how `clean` itself was built above) so a workspace
+		// root that is itself behind a symlink (e.g. /tmp -> /private/tmp on
+		// macOS) does not spuriously reject legitimate files — the relative
+		// path is then re-anchored onto the resolved root for the actual open
+		// below. This is intentionally cheap/approximate (it does not itself
+		// resolve symlinks) — openWorkspaceRegularFile is the actual
+		// TOCTOU-safe boundary enforcement, walking every component with
+		// O_NOFOLLOW.
+		cleanWSNoSep := strings.TrimSuffix(cleanWS, string(os.PathSeparator))
+		rel, relErr := filepath.Rel(cleanWSNoSep, clean)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 			omitted = append(omitted, p+": outside_workspace")
 			continue
 		}
@@ -269,9 +284,19 @@ func readSourceExcerpts(workspace string, paths []string) (excerpts []FlowContex
 		if rem := totalExcerptBytes - total; rem < limit {
 			limit = rem
 		}
-		f, err := os.Open(clean)
+		// BUG-288 P1-11: component-walk open (openat O_NOFOLLOW on unix; best-
+		// effort top-down Lstat walk elsewhere) instead of EvalSymlinks-then-
+		// reopen-by-string-path, which only protected the final component.
+		f, err := openWorkspaceRegularFile(wsRoot, filepath.Join(wsRoot, rel))
 		if err != nil {
-			omitted = append(omitted, p+": not_found")
+			switch {
+			case errors.Is(err, errNotRegularFile):
+				omitted = append(omitted, p+": not_regular")
+			case os.IsNotExist(err):
+				omitted = append(omitted, p+": not_found")
+			default:
+				omitted = append(omitted, p+": symlink_resolve_error")
+			}
 			continue
 		}
 		buf := make([]byte, limit+1)
@@ -299,6 +324,13 @@ func readSourceExcerpts(workspace string, paths []string) (excerpts []FlowContex
 // RenderFlowContextPackage renders the package as a stable Markdown block
 // suitable for injection into Flow Mode Coding prompts (Task-169).
 // The output always contains "No vector retrieval used" for audit visibility.
+//
+// Section body order is strictly by FlowContextSection.Priority (ascending),
+// then SourceType. Legacy fields (HistoryBlock/SourceExcerpts/DiscussionBlock)
+// are synthesized as sections at their built-in priorities when Sections does
+// not already carry them — so callers that only set legacy fields still render
+// correctly, and MCP/Jira/Firebase (priority 6–9) never hard-code before
+// source.excerpt (priority 4) (CP-50 residual P1).
 func RenderFlowContextPackage(pkg FlowContextPackage) string {
 	var sb strings.Builder
 	sb.WriteString("## Flow Context Package\n\n")
@@ -313,31 +345,10 @@ func RenderFlowContextPackage(pkg FlowContextPackage) string {
 	}
 	sb.WriteString("- **No vector retrieval used**\n")
 
-	// Task-244 (SD-21 D-3): Canonical Head leads — current truth before raw history.
-	// Body already carries "## Canonical state …"; write verbatim and skip generic pass.
-	for _, s := range pkg.Sections {
-		if ContextSourceID(s.SourceType) == ContextSourceCanonicalHead && strings.TrimSpace(s.Body) != "" {
-			sb.WriteString("\n" + strings.TrimSpace(s.Body) + "\n")
-		}
+	for _, s := range sectionsForRender(pkg) {
+		renderFlowContextSection(&sb, s, pkg)
 	}
 
-	if pkg.HistoryBlock != "" {
-		sb.WriteString("\n### Change History\n\n")
-		sb.WriteString(pkg.HistoryBlock)
-		sb.WriteString("\n")
-	}
-	if pkg.DiscussionBlock != "" {
-		sb.WriteString("\n### Prior Discussion\n\n")
-		sb.WriteString(pkg.DiscussionBlock)
-		sb.WriteString("\n")
-	}
-	for _, ex := range pkg.SourceExcerpts {
-		sb.WriteString(fmt.Sprintf("\n### Source: %s\n\n```\n%s\n```\n", ex.Path, ex.Excerpt))
-		if ex.BytesCap {
-			sb.WriteString("_(excerpt truncated)_\n")
-		}
-	}
-	renderGenericSections(&sb, pkg.Sections)
 	if len(pkg.Warnings) > 0 {
 		sb.WriteString("\n### Warnings\n\n")
 		for _, w := range pkg.Warnings {
@@ -353,19 +364,153 @@ func RenderFlowContextPackage(pkg FlowContextPackage) string {
 	return sb.String()
 }
 
-// renderGenericSections renders any section whose SourceType is not one of
-// the three built-in types already rendered above by name (feature.history/
-// chat.summary/source.excerpt) — so a newly registered ContextSource (CP-44
-// P-3/P-4, e.g. a future MCP-backed or Canonical Head source) appears in the
-// prompt without RenderFlowContextPackage needing a code change per source.
-// Sections with empty Body are skipped (nothing to show); Omitted/Warnings on
-// a section are still surfaced via the caller's existing Warnings/Omitted
-// blocks (projectContextSections merges them onto the package).
+// sectionsForRender merges package Sections with legacy projection fields,
+// then sorts by Priority ascending (tie-break SourceType).
+func sectionsForRender(pkg FlowContextPackage) []FlowContextSection {
+	sections := append([]FlowContextSection(nil), pkg.Sections...)
+	has := map[ContextSourceID]bool{}
+	for _, s := range sections {
+		has[ContextSourceID(s.SourceType)] = true
+	}
+	// Synthesize legacy-only fields so tests/callers that skip Sections still
+	// participate in priority ordering.
+	if !has[ContextSourceFeatureHistory] && strings.TrimSpace(pkg.HistoryBlock) != "" {
+		sections = append(sections, FlowContextSection{
+			SourceType: string(ContextSourceFeatureHistory),
+			Priority:   2,
+			Body:       pkg.HistoryBlock,
+		})
+	}
+	if !has[ContextSourceSourceExcerpt] && len(pkg.SourceExcerpts) > 0 {
+		sections = append(sections, FlowContextSection{
+			SourceType: string(ContextSourceSourceExcerpt),
+			Priority:   4,
+			Excerpts:   pkg.SourceExcerpts,
+		})
+	}
+	if !has[ContextSourceChatSummary] && strings.TrimSpace(pkg.DiscussionBlock) != "" {
+		sections = append(sections, FlowContextSection{
+			SourceType: string(ContextSourceChatSummary),
+			Priority:   5,
+			Body:       pkg.DiscussionBlock,
+		})
+	}
+	// Fill default priorities for sections that omit Priority (older payloads).
+	for i := range sections {
+		if sections[i].Priority != 0 {
+			continue
+		}
+		switch ContextSourceID(sections[i].SourceType) {
+		case ContextSourceCanonicalHead:
+			sections[i].Priority = 1
+		case ContextSourceFeatureHistory:
+			sections[i].Priority = 2
+		case ContextSourceChangeContract:
+			sections[i].Priority = 3
+		case ContextSourceSourceExcerpt:
+			sections[i].Priority = 4
+		case ContextSourceChatSummary:
+			sections[i].Priority = 5
+		case ContextSourceMCPDriver:
+			sections[i].Priority = 6
+		case ContextSourceJiraIssue:
+			sections[i].Priority = 7
+		case ContextSourceJiraSprint:
+			sections[i].Priority = 8
+		case ContextSourceFirebaseCrashlytics:
+			sections[i].Priority = 9
+		default:
+			// Unknown sources without Priority go after built-ins.
+			sections[i].Priority = 50
+		}
+	}
+	sort.SliceStable(sections, func(i, j int) bool {
+		if sections[i].Priority != sections[j].Priority {
+			return sections[i].Priority < sections[j].Priority
+		}
+		return sections[i].SourceType < sections[j].SourceType
+	})
+	return sections
+}
+
+// renderFlowContextSection writes one section with its canonical heading style.
+func renderFlowContextSection(sb *strings.Builder, s FlowContextSection, pkg FlowContextPackage) {
+	switch ContextSourceID(s.SourceType) {
+	case ContextSourceChangeContract:
+		if strings.TrimSpace(s.Body) == "" {
+			return
+		}
+		sb.WriteString("\n### change.contract\n")
+		// Embed trusted run-scoped marker so appendChangeContractIfAny skips
+		// without trusting the user-forgeable heading alone (V10R4 P1).
+		if pkg.WorkflowRunID != "" {
+			sb.WriteString(changeContractTrustedMarker(pkg.WorkflowRunID) + "\n")
+		}
+		sb.WriteString("\n")
+		if s.SourceRef != "" {
+			sb.WriteString(fmt.Sprintf("_Source: %s_\n\n", s.SourceRef))
+		}
+		sb.WriteString(s.Body)
+		sb.WriteString("\n")
+	case ContextSourceCanonicalHead:
+		if strings.TrimSpace(s.Body) == "" {
+			return
+		}
+		// Body already carries "## Canonical state …"; write verbatim.
+		sb.WriteString("\n" + strings.TrimSpace(s.Body) + "\n")
+	case ContextSourceFeatureHistory:
+		body := s.Body
+		if body == "" {
+			body = pkg.HistoryBlock
+		}
+		if strings.TrimSpace(body) == "" {
+			return
+		}
+		sb.WriteString("\n### Change History\n\n")
+		sb.WriteString(body)
+		sb.WriteString("\n")
+	case ContextSourceSourceExcerpt:
+		excerpts := s.Excerpts
+		if len(excerpts) == 0 {
+			excerpts = pkg.SourceExcerpts
+		}
+		for _, ex := range excerpts {
+			sb.WriteString(fmt.Sprintf("\n### Source: %s\n\n```\n%s\n```\n", ex.Path, ex.Excerpt))
+			if ex.BytesCap {
+				sb.WriteString("_(excerpt truncated)_\n")
+			}
+		}
+	case ContextSourceChatSummary:
+		body := s.Body
+		if body == "" {
+			body = pkg.DiscussionBlock
+		}
+		if strings.TrimSpace(body) == "" {
+			return
+		}
+		sb.WriteString("\n### Prior Discussion\n\n")
+		sb.WriteString(body)
+		sb.WriteString("\n")
+	default:
+		if strings.TrimSpace(s.Body) == "" {
+			return
+		}
+		sb.WriteString(fmt.Sprintf("\n### %s\n\n", s.SourceType))
+		if s.SourceRef != "" {
+			sb.WriteString(fmt.Sprintf("_Source: %s_\n\n", s.SourceRef))
+		}
+		sb.WriteString(s.Body)
+		sb.WriteString("\n")
+	}
+}
+
+// renderGenericSections is retained for tests that call it directly; production
+// render goes through sectionsForRender (priority-ordered).
 func renderGenericSections(sb *strings.Builder, sections []FlowContextSection) {
 	for _, s := range sections {
 		switch ContextSourceID(s.SourceType) {
 		case ContextSourceFeatureHistory, ContextSourceChatSummary, ContextSourceSourceExcerpt, ContextSourceCanonicalHead:
-			continue // already rendered by name / head-first pass above
+			continue
 		}
 		if strings.TrimSpace(s.Body) == "" {
 			continue

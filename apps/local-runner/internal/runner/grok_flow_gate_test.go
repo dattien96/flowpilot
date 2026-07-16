@@ -230,8 +230,8 @@ func TestGrokNormalChatRBugAndRTaskUseDeclaredChangeType(t *testing.T) {
 func TestGrokMapperFileChangeReachesFinalizeChangedFiles(t *testing.T) {
 	// Mapper → EventFileChanged is what populate WrittenPaths for r-ca.
 	update := map[string]any{
-		"status": "completed",
-		"_meta":  map[string]any{"x.ai/tool": map[string]any{"name": "write", "kind": "write"}},
+		"status":   "completed",
+		"_meta":    map[string]any{"x.ai/tool": map[string]any{"name": "write", "kind": "write"}},
 		"rawInput": map[string]any{"target_file": "internal/example.go"},
 	}
 	events, ok := mapGrokToolCallUpdate(update)

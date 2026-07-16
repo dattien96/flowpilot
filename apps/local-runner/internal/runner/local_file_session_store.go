@@ -88,6 +88,43 @@ type ndjsonSessionRecord struct {
 	ChatFlowRef string `json:"chat_flow_ref,omitempty"`
 	// FlowStartGitHead persists Task-242 tier-3 audit aggregate base (Codex review Important #3).
 	FlowStartGitHead string `json:"flow_start_git_head,omitempty"`
+	// V10 P0 / V10R: durable post-turn gate pending across restart + turn snapshot.
+	PendingFlowGateSettle     bool              `json:"pending_flow_gate_settle,omitempty"`
+	PendingFlowGateFinalMsg   string            `json:"pending_flow_gate_final_msg,omitempty"`
+	PendingFlowGateOccurredAt string            `json:"pending_flow_gate_occurred_at,omitempty"`
+	PendingFlowGateTurnID     string            `json:"pending_flow_gate_turn_id,omitempty"`
+	TurnStartGitHead          string            `json:"turn_start_git_head,omitempty"`
+	TurnStartWorktree         map[string]string `json:"turn_start_worktree,omitempty"`
+	PendingGateChangedFiles   []string          `json:"pending_gate_changed_files,omitempty"`
+	StepID                    string            `json:"step_id,omitempty"`
+	LastTurnStepID            string            `json:"last_turn_step_id,omitempty"`
+	PendingGateRepromptPrompt string            `json:"pending_gate_reprompt_prompt,omitempty"`
+	PendingGateRepromptStepID string            `json:"pending_gate_reprompt_step_id,omitempty"`
+	PendingGateCodePaths      []string          `json:"pending_gate_code_paths,omitempty"`
+	RepromptAttempts          int               `json:"reprompt_attempts,omitempty"`
+	PendingResumePrompt       string            `json:"pending_resume_prompt,omitempty"`
+	PendingResumeStepID       string            `json:"pending_resume_step_id,omitempty"`
+	PendingResumeGen                int64  `json:"pending_resume_gen,omitempty"`
+	PendingGateRepromptGen          int64  `json:"pending_gate_reprompt_gen,omitempty"`
+	PendingResumeDeliveredGen         int64  `json:"pending_resume_delivered_gen,omitempty"`
+	PendingGateRepromptDeliveredGen   int64  `json:"pending_gate_reprompt_delivered_gen,omitempty"`
+	PendingResumeAcceptedTurn         string `json:"pending_resume_accepted_turn,omitempty"`
+	PendingGateRepromptAcceptedTurn   string `json:"pending_gate_reprompt_accepted_turn,omitempty"`
+	PendingResumeFailCount            int    `json:"pending_resume_fail_count,omitempty"`
+	PendingResumeFailGen              int64  `json:"pending_resume_fail_gen,omitempty"`
+	PendingGateRepromptFailCount      int    `json:"pending_gate_reprompt_fail_count,omitempty"`
+	PendingGateRepromptFailGen        int64  `json:"pending_gate_reprompt_fail_gen,omitempty"`
+	PendingResumeApprovalID           string   `json:"pending_resume_approval_id,omitempty"`
+	PendingResumeDecision             string   `json:"pending_resume_decision,omitempty"`
+	PendingResumeQuestionChoices      []string `json:"pending_resume_question_choices,omitempty"`
+	StopGeneration                    int64    `json:"stop_generation,omitempty"`
+	ParentStopGenSeen                 int64    `json:"parent_stop_gen_seen,omitempty"`
+	IntentBlockedKind                 string   `json:"intent_blocked_kind,omitempty"`
+	IntentBlockedReason               string   `json:"intent_blocked_reason,omitempty"`
+	IntentBlockedAt                   string   `json:"intent_blocked_at,omitempty"`
+	TransitionLogDegraded             bool     `json:"transition_log_degraded,omitempty"`
+	TransitionLogDegradedAt           string   `json:"transition_log_degraded_at,omitempty"`
+	TransitionLogDegradedReason       string   `json:"transition_log_degraded_reason,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -337,9 +374,45 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		FlowCohortID:        r.FlowCohortID,
 		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), r.ActiveFlowEdges...),
 		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), r.ActiveFlowNodes...),
-		ChatSubMode:         r.ChatSubMode,
-		ChatFlowRef:         r.ChatFlowRef,
-		FlowStartGitHead:    r.FlowStartGitHead,
+		ChatSubMode:               r.ChatSubMode,
+		ChatFlowRef:               r.ChatFlowRef,
+		FlowStartGitHead:          r.FlowStartGitHead,
+		PendingFlowGateSettle:     r.PendingFlowGateSettle,
+		PendingFlowGateFinalMsg:   r.PendingFlowGateFinalMsg,
+		PendingFlowGateOccurredAt: r.PendingFlowGateOccurredAt,
+		PendingFlowGateTurnID:     r.PendingFlowGateTurnID,
+		TurnStartGitHead:          r.TurnStartGitHead,
+		TurnStartWorktree:         copyStringMap(r.TurnStartWorktree),
+		PendingGateChangedFiles:   append([]string(nil), r.PendingGateChangedFiles...),
+		StepID:                    r.StepID,
+		LastTurnStepID:            r.LastTurnStepID,
+		PendingGateRepromptPrompt: r.PendingGateRepromptPrompt,
+		PendingGateRepromptStepID: r.PendingGateRepromptStepID,
+		PendingGateCodePaths:      append([]string(nil), r.PendingGateCodePaths...),
+		RepromptAttempts:          r.RepromptAttempts,
+		PendingResumePrompt:       r.PendingResumePrompt,
+		PendingResumeStepID:       r.PendingResumeStepID,
+		PendingResumeGen:                r.PendingResumeGen,
+		PendingGateRepromptGen:          r.PendingGateRepromptGen,
+		PendingResumeDeliveredGen:       r.PendingResumeDeliveredGen,
+		PendingGateRepromptDeliveredGen: r.PendingGateRepromptDeliveredGen,
+		PendingResumeAcceptedTurn:       r.PendingResumeAcceptedTurn,
+		PendingGateRepromptAcceptedTurn: r.PendingGateRepromptAcceptedTurn,
+		PendingResumeFailCount:          r.PendingResumeFailCount,
+		PendingResumeFailGen:            r.PendingResumeFailGen,
+		PendingGateRepromptFailCount:    r.PendingGateRepromptFailCount,
+		PendingGateRepromptFailGen:      r.PendingGateRepromptFailGen,
+		PendingResumeApprovalID:         r.PendingResumeApprovalID,
+		PendingResumeDecision:           r.PendingResumeDecision,
+		PendingResumeQuestionChoices:    append([]string(nil), r.PendingResumeQuestionChoices...),
+		StopGeneration:                  r.StopGeneration,
+		ParentStopGenSeen:               r.ParentStopGenSeen,
+		IntentBlockedKind:               r.IntentBlockedKind,
+		IntentBlockedReason:             r.IntentBlockedReason,
+		IntentBlockedAt:                 r.IntentBlockedAt,
+		TransitionLogDegraded:           r.TransitionLogDegraded,
+		TransitionLogDegradedAt:         r.TransitionLogDegradedAt,
+		TransitionLogDegradedReason:     r.TransitionLogDegradedReason,
 	}
 }
 
@@ -621,6 +694,7 @@ func (s *localFileSessionStore) stepTransitionsPath(runID string) (string, error
 
 // AppendStepTransition appends one step transition line (Task-239). Best-effort
 // from the caller's perspective — errors are returned so the caller can log-warn.
+// BUG-288 #27: take store mutex so concurrent append/load/delete cannot interleave.
 func (s *localFileSessionStore) AppendStepTransition(_ context.Context, runID string, line stepTransitionLine) error {
 	data, err := json.Marshal(line)
 	if err != nil {
@@ -630,6 +704,8 @@ func (s *localFileSessionStore) AppendStepTransition(_ context.Context, runID st
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	fh, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -731,9 +807,45 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		FlowCohortID:        s.FlowCohortID,
 		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), s.ActiveFlowEdges...),
 		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), s.ActiveFlowNodes...),
-		ChatSubMode:         s.ChatSubMode,
-		ChatFlowRef:         s.ChatFlowRef,
-		FlowStartGitHead:    s.FlowStartGitHead,
+		ChatSubMode:               s.ChatSubMode,
+		ChatFlowRef:               s.ChatFlowRef,
+		FlowStartGitHead:          s.FlowStartGitHead,
+		PendingFlowGateSettle:     s.PendingFlowGateSettle,
+		PendingFlowGateFinalMsg:   s.PendingFlowGateFinalMsg,
+		PendingFlowGateOccurredAt: s.PendingFlowGateOccurredAt,
+		PendingFlowGateTurnID:     s.PendingFlowGateTurnID,
+		TurnStartGitHead:          s.TurnStartGitHead,
+		TurnStartWorktree:         copyStringMap(s.TurnStartWorktree),
+		PendingGateChangedFiles:   append([]string(nil), s.PendingGateChangedFiles...),
+		StepID:                    s.StepID,
+		LastTurnStepID:            s.LastTurnStepID,
+		PendingGateRepromptPrompt: s.PendingGateRepromptPrompt,
+		PendingGateRepromptStepID: s.PendingGateRepromptStepID,
+		PendingGateCodePaths:      append([]string(nil), s.PendingGateCodePaths...),
+		RepromptAttempts:          s.RepromptAttempts,
+		PendingResumePrompt:       s.PendingResumePrompt,
+		PendingResumeStepID:       s.PendingResumeStepID,
+		PendingResumeGen:                s.PendingResumeGen,
+		PendingGateRepromptGen:          s.PendingGateRepromptGen,
+		PendingResumeDeliveredGen:       s.PendingResumeDeliveredGen,
+		PendingGateRepromptDeliveredGen: s.PendingGateRepromptDeliveredGen,
+		PendingResumeAcceptedTurn:       s.PendingResumeAcceptedTurn,
+		PendingGateRepromptAcceptedTurn: s.PendingGateRepromptAcceptedTurn,
+		PendingResumeFailCount:          s.PendingResumeFailCount,
+		PendingResumeFailGen:            s.PendingResumeFailGen,
+		PendingGateRepromptFailCount:    s.PendingGateRepromptFailCount,
+		PendingGateRepromptFailGen:      s.PendingGateRepromptFailGen,
+		PendingResumeApprovalID:         s.PendingResumeApprovalID,
+		PendingResumeDecision:           s.PendingResumeDecision,
+		PendingResumeQuestionChoices:    append([]string(nil), s.PendingResumeQuestionChoices...),
+		StopGeneration:                  s.StopGeneration,
+		ParentStopGenSeen:               s.ParentStopGenSeen,
+		IntentBlockedKind:               s.IntentBlockedKind,
+		IntentBlockedReason:             s.IntentBlockedReason,
+		IntentBlockedAt:                 s.IntentBlockedAt,
+		TransitionLogDegraded:           s.TransitionLogDegraded,
+		TransitionLogDegradedAt:         s.TransitionLogDegradedAt,
+		TransitionLogDegradedReason:     s.TransitionLogDegradedReason,
 	}
 }
 
@@ -744,4 +856,16 @@ func loopStatePtrIfSet(st AgentLoopState) *AgentLoopState {
 	}
 	cp := st
 	return &cp
+}
+
+// copyStringMap returns a shallow copy of m (nil-safe).
+func copyStringMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
