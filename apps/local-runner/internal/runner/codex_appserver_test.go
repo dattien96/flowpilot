@@ -232,6 +232,8 @@ func (b *captureBridge) Emit(ev ProviderEvent) {
 	defer b.mu.Unlock()
 	b.events = append(b.events, ev)
 }
+func (b *captureBridge) Accepted(ReceiptEvidence)  {}
+func (b *captureBridge) Terminal(TerminalEvidence) {}
 func (b *captureBridge) RequestApproval(details ApprovalDetails) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

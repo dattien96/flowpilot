@@ -266,6 +266,9 @@ type ProviderSessionState struct {
 	// MarkerProvenanceRunIDs is the recorded handoff binding for FCP marker
 	// verification (Task-252 / SD-24 §6.6). Empty set fails closed on the service path.
 	MarkerProvenanceRunIDs []string
+	// Pending*ProvenanceRunID are mint-time stamps for the durable prompt being delivered.
+	PendingRestartProvenanceRunID      string
+	PendingGateRepromptProvenanceRunID string
 }
 
 type ProviderApprovalState struct {

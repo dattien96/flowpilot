@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -189,6 +190,9 @@ type interactiveRun struct {
 	repairRequired          bool
 	repairReason            string
 	markerProvenanceRunIDs  []string
+	// Mint-time provenance for FCP marker binding (Task-252 / SD-24 §6.6).
+	pendingRestartProvenanceRunID       string
+	pendingGateRepromptProvenanceRunID  string
 	// label is the display name used in consolidated cohort notes; defaults to agentName.
 	label string
 	// waitForResult records the spawn's wait flag. A tool spawn with wait=true returns the
@@ -2626,13 +2630,15 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		PendingRestartRunID:               rs.pendingRestartRunID,
 		PendingRestartPrompt:              rs.pendingRestartPrompt,
 		PendingRestartGen:                 rs.pendingRestartGen,
-		IdempotencyKeys:                   durableIdempotencySnapshot(rs.idempotency),
+		IdempotencyKeys: durableIdempotencySnapshotWithNonTerminal(rs.idempotency, rs.nonTerminalIdemKeys()),
 		FlowContextInjected:               rs.flowContextInjected,
 		// CP-51: dispatch protocol/repair/provenance scalars only — never DispatchRecord slices.
 		DispatchProtocolVersion:           rs.dispatchProtocolVersion,
 		RepairRequired:                    rs.repairRequired,
 		RepairReason:                      rs.repairReason,
 		MarkerProvenanceRunIDs:            append([]string(nil), rs.markerProvenanceRunIDs...),
+		PendingRestartProvenanceRunID:     rs.pendingRestartProvenanceRunID,
+		PendingGateRepromptProvenanceRunID: rs.pendingGateRepromptProvenanceRunID,
 	}
 }
 
@@ -2651,82 +2657,106 @@ func sessionStateOfProtectingIdem(rs *interactiveRun, protectKey string) Provide
 	return snap
 }
 
-// durableIdempotencySnapshot keeps only durable-* keys for disk (BUG-288 R16-P0).
-// BUG-288 R18-1: prune by NUMERIC generation (suffix after last '-'), not
-// lexicographic key order (restart-100 < restart-11). Always retain every
-// protectKeys entry (e.g. the key just written for this accept) even if over
-// the cap, so an active restart/reprompt key cannot be dropped.
+// durableIdempotencySnapshot keeps durable-* keys for disk (BUG-288 R16-P0 / CP-51 Task-254).
+// Non-terminal keys are ALWAYS retained (authority: DispatchRecord / nonTerminal set).
+// Terminal history is capped per-namespace so restart-1 is never evicted by resume-*.
 func durableIdempotencySnapshot(m map[string]string, protectKeys ...string) map[string]string {
+	return durableIdempotencySnapshotWithNonTerminal(m, nil, protectKeys...)
+}
+
+// durableIdempotencySnapshotWithNonTerminal is the Task-254 retention path.
+func durableIdempotencySnapshotWithNonTerminal(m map[string]string, nonTerminal map[string]bool, protectKeys ...string) map[string]string {
 	if len(m) == 0 && len(protectKeys) == 0 {
 		return nil
 	}
 	type kv struct {
-		k   string
-		v   string
-		gen int64
+		k, v, ns string
+		gen      int64
 	}
-	var list []kv
+	out := map[string]string{}
+	perNS := map[string][]kv{}
+	protect := map[string]bool{}
+	for _, pk := range protectKeys {
+		if pk != "" && strings.HasPrefix(pk, "durable-") {
+			protect[pk] = true
+		}
+	}
 	for k, v := range m {
 		if !strings.HasPrefix(k, "durable-") || v == "" {
 			continue
 		}
-		list = append(list, kv{k: k, v: v, gen: durableIdempotencyKeyGen(k)})
-	}
-	// Ensure protected keys are present.
-	protect := map[string]bool{}
-	for _, pk := range protectKeys {
-		if pk == "" || !strings.HasPrefix(pk, "durable-") {
+		if nonTerminal[k] || protect[k] {
+			out[k] = v
 			continue
 		}
-		protect[pk] = true
-		if _, ok := m[pk]; !ok {
-			continue
-		}
-		// already in list from m
+		ns, gen := durableIdemKeyParts(k)
+		perNS[ns] = append(perNS[ns], kv{k: k, v: v, ns: ns, gen: gen})
 	}
-	if len(list) == 0 {
-		return nil
-	}
-	sort.Slice(list, func(i, j int) bool {
-		if list[i].gen != list[j].gen {
-			return list[i].gen < list[j].gen
+	// Also pin protect keys present in m but not yet written into out.
+	for pk := range protect {
+		if v, ok := m[pk]; ok && v != "" {
+			out[pk] = v
 		}
-		return list[i].k < list[j].k
-	})
-	const capN = 48
-	out := make(map[string]string, len(list))
-	// First pin protected keys.
-	for _, e := range list {
-		if protect[e.k] {
+	}
+	const capPerNS = 16
+	for _, list := range perNS {
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].gen != list[j].gen {
+				return list[i].gen > list[j].gen
+			}
+			return list[i].k < list[j].k
+		})
+		for i, e := range list {
+			if i >= capPerNS {
+				break
+			}
+			if _, ok := out[e.k]; ok {
+				continue
+			}
 			out[e.k] = e.v
 		}
 	}
-	// Then fill from highest gen downward until cap.
-	for i := len(list) - 1; i >= 0; i-- {
-		e := list[i]
-		if _, ok := out[e.k]; ok {
-			continue
-		}
-		if len(out) >= capN {
-			break
-		}
-		out[e.k] = e.v
+	if len(out) == 0 {
+		return nil
 	}
 	return out
+}
+
+// durableIdemKeyParts splits "durable-<run>-restart-12" into namespace + gen.
+func durableIdemKeyParts(k string) (namespace string, gen int64) {
+	i := strings.LastIndex(k, "-")
+	if i < 0 || i+1 >= len(k) {
+		return k, 0
+	}
+	n, err := strconv.ParseInt(k[i+1:], 10, 64)
+	if err != nil {
+		return k, 0
+	}
+	return k[:i], n
 }
 
 // durableIdempotencyKeyGen extracts a trailing integer generation from keys like
 // "durable-child-restart-12" or "durable-run-reprompt-3". Non-numeric → 0.
 func durableIdempotencyKeyGen(k string) int64 {
-	i := strings.LastIndex(k, "-")
-	if i < 0 || i+1 >= len(k) {
-		return 0
+	_, gen := durableIdemKeyParts(k)
+	return gen
+}
+
+// nonTerminalIdemKeys derives active keys from the dispatch RAM cache (Task-254).
+func (rs *interactiveRun) nonTerminalIdemKeys() map[string]bool {
+	out := map[string]bool{}
+	if rs == nil {
+		return out
 	}
-	n, err := strconv.ParseInt(k[i+1:], 10, 64)
-	if err != nil {
-		return 0
+	for _, rec := range rs.dispatch {
+		if rec == nil || rec.OuterIntentKey == "" {
+			continue
+		}
+		if !rec.State.IsTerminal() {
+			out[rec.OuterIntentKey] = true
+		}
 	}
-	return n
+	return out
 }
 
 // BUG-288 R19-2: durable idempotency is two-phase.
@@ -3926,11 +3956,35 @@ type turnBridge struct {
 
 func (b *turnBridge) Emit(ev ProviderEvent) {
 	b.svc.mu.Lock()
-	defer b.svc.mu.Unlock()
 	if ev.ProviderTurnID == "" {
 		ev.ProviderTurnID = b.turnID
 	}
 	b.svc.emitLocked(b.rs, ev)
+	b.svc.mu.Unlock()
+	// CP-51 Task-249: provider-backed terminal events drive CommitTerminalAndSettleIntent.
+	// A SendTurn error is never proof — only completed/failed/cancelled terminal events.
+	switch ev.Type {
+	case EventTurnCompleted, EventTurnFailed:
+		outcome := "completed"
+		if ev.Type == EventTurnFailed {
+			outcome = "failed"
+		}
+		// Cancelled is represented as failed+context cancel in some adapters; keep closed enum.
+		if ev.Type == EventTurnFailed && (ev.Error == "context canceled" || strings.Contains(strings.ToLower(ev.Error), "cancel")) {
+			outcome = "cancelled"
+		}
+		payload, _ := json.Marshal(map[string]string{
+			"type": string(ev.Type), "error": ev.Error, "final": ev.FinalMessage,
+		})
+		b.Terminal(TerminalEvidence{
+			ProviderKey:          string(b.rs.providerKey),
+			EvidenceKind:         string(ev.Type),
+			Outcome:              outcome,
+			PayloadCanonicalJSON: payload,
+			PayloadSHA256:        HashBytes(payload),
+			ObservedAt:           nowRFC3339Nano(),
+		})
+	}
 }
 
 func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
@@ -4924,13 +4978,16 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// (keeps unit tests / non-interactive paths working).
 	// BUG-288 R13-15 / R19-4: bind marker id to this run and verify with this
 	// service's secret only (not the global multi-secret bag).
-	if !skipHistory && isFlowContextHandoffWithSecret(s.markerSecret, providerPrompt, rs.id) {
+	if !skipHistory && isFlowContextHandoffWithSecret(s.markerSecret, providerPrompt, allowedFCPMarkerIDs(rs)...) {
 		skipHistory = true
 	}
+	allowedIDs := allowedFCPMarkerIDs(rs)
+	markerSecret := s.markerSecret
 	s.mu.Unlock()
 	if s.shouldInjectFeatureHistory(rs.providerKey) && !skipHistory {
-		// BUG-288 R20-2: per-service secret so a foreign FCP marker cannot skip history.
-		providerPrompt = injectFeatureHistoryPromptWithSecret(rs.workspaceCwd, providerPrompt, transcriptTurnsFromRun(rs), s.markerSecret)
+		// CP-51 Task-252: required MarkerVerificationContext — empty allowed set fails closed.
+		providerPrompt = injectFeatureHistoryPromptCtx(rs.workspaceCwd, providerPrompt, transcriptTurnsFromRun(rs),
+			MarkerVerificationContext{Secret: markerSecret, AllowedMarkerIDs: allowedIDs})
 	}
 	// Observability for E2E: persist/log the fully-composed turn prompt (feature
 	// history + discussion + mode prefix + user text) under the FlowPilot tool
@@ -4998,8 +5055,35 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// BUG-288 R13-14: warm-up baseline under the turn's cancellable ctx so Stop
 	// can cut the first capture short (not always Background).
 	s.ensureBaselineWithContext(ctx, rs.workspaceCwd)
+	// CP-51 Task-249: durable send_claimed → send_started linearization before
+	// the adapter's first external byte. Stop winning this CAS means zero send.
+	if !s.linearizeSendStarted(ctx, rs, turnID) {
+		s.mu.Lock()
+		rs.turnInFlight = false
+		rs.currentTurnID = ""
+		rs.turnCancel = nil
+		s.mu.Unlock()
+		s.notifyTurnIdle(rs.id)
+		return
+	}
+	if ctx.Err() != nil {
+		// Defense-in-depth only; correctness is the CAS above.
+		s.recordDispatchTransportError(ctx, rs.id, turnID, ctx.Err())
+		s.mu.Lock()
+		rs.turnInFlight = false
+		rs.currentTurnID = ""
+		rs.turnCancel = nil
+		s.mu.Unlock()
+		s.notifyTurnIdle(rs.id)
+		return
+	}
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
+	if err != nil && s.dispatchStore != nil && s.dispatchV2ActiveForRun(ctx, rs.id) {
+		// Ambiguous: may have reached the provider. Never terminalize/clear.
+		s.recordDispatchTransportError(ctx, rs.id, turnID, err)
+		s.scheduleDispatchReconcile(rs.id, turnID)
+	}
 	s.mu.Lock()
 	turnFailed := rs.status == RunStatusFailed
 	s.mu.Unlock()
@@ -5885,6 +5969,18 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if isPreparedRelaunch {
 		turnID = preparedReuseTurnID
 	}
+	// CP-51 Task-249: CreatePrepared at the prep barrier (fail-closed).
+	if s.dispatchV2ActiveForRun(context.Background(), rs.id) {
+		if !providerV2Enabled(rs.providerKey) {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusConflict, "provider_v2_disabled",
+				fmt.Sprintf("provider %s is V2-disabled pending Task-257 capability evidence", rs.providerKey))
+		}
+		if err := s.prepareDispatchV2(context.Background(), rs, in, turnID, idempotencyKey); err != nil {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusBadGateway, "dispatch_prepare_failed", err.Error())
+		}
+	}
 	rs.turnInFlight = true
 	rs.reinvokeInFlight = false // the turn the reinvoke scheduled is now in flight
 	flowStartOnly := false
@@ -6064,6 +6160,28 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 					"durable launch-ack could not be persisted; not starting provider turn: "+err2.Error())
 			}
 		}
+	}
+	// CP-51 Task-249: durable prepared → send_claimed at launch-ack (fail-closed).
+	if s.dispatchStore != nil && s.dispatchV2ActiveForRun(context.Background(), runID) {
+		s.mu.Lock()
+		rs = s.runs[runID]
+		if rs == nil {
+			s.mu.Unlock()
+			cancel()
+			return "", newAPIErr(http.StatusNotFound, "run_not_found", "run disappeared before claim")
+		}
+		if err := s.claimDispatchV2(context.Background(), rs, turnID); err != nil {
+			rs.turnInFlight = false
+			rs.currentTurnID = ""
+			rs.turnCancel = nil
+			s.mu.Unlock()
+			cancel()
+			return "", newAPIErr(http.StatusBadGateway, "dispatch_claim_failed", err.Error())
+		}
+		s.mu.Unlock()
+	}
+	if durableKey {
+		// already persisted above
 	} else {
 		// Non-durable: best-effort session persist after start (BUG-080 F-3).
 		_ = s.persistProviderSession(snap)

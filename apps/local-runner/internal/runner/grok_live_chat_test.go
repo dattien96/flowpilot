@@ -65,6 +65,8 @@ func (b *liveManualBridge) Emit(ev ProviderEvent) {
 		}
 	}
 }
+func (b *liveManualBridge) Accepted(ReceiptEvidence)  {}
+func (b *liveManualBridge) Terminal(TerminalEvidence) {}
 
 func (b *liveManualBridge) RequestApproval(d ApprovalDetails) (string, error) {
 	b.mu.Lock()
