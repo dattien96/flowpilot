@@ -2275,7 +2275,7 @@ func (s *InteractiveService) deliverPendingRestart(parentRunID string) {
 
 	// BUG-288 R18-1: zero-pad gen so numeric order matches lexical if ever sorted as string.
 	idem := fmt.Sprintf("durable-%s-restart-%020d", childID, gen)
-	_, apiErr := s.startTurn(childID, TurnInput{StepID: stepID, Prompt: prompt}, "", idem)
+	turnID, apiErr := s.startTurn(childID, TurnInput{StepID: stepID, Prompt: prompt}, "", idem)
 	if apiErr != nil {
 		log.Printf("[stall-restart] startTurn failed parent=%s child=%s gen=%d code=%s: %s",
 			parentRunID, childID, gen, apiErr.code, apiErr.msg)
@@ -2286,10 +2286,12 @@ func (s *InteractiveService) deliverPendingRestart(parentRunID string) {
 		s.mu.Unlock()
 		return
 	}
-	// Accepted: clear durable restart intent and persist parent.
+	// BUG-288 R20-1: clear restart intent only when child turn is clear-safe.
 	s.mu.Lock()
 	if p := s.runs[parentRunID]; p != nil {
-		if p.pendingRestartGen == gen && p.pendingRestartRunID == childID {
+		child := s.runs[childID]
+		if durableIntentClearOK(child, turnID) &&
+			p.pendingRestartGen == gen && p.pendingRestartRunID == childID {
 			p.pendingRestartRunID = ""
 			p.pendingRestartPrompt = ""
 			p.pendingRestartGen = 0
@@ -2725,6 +2727,49 @@ func parseDurableIdemValue(raw string) (turnID string, launched bool) {
 		return strings.TrimPrefix(raw, durableIdemPreparedPrefix), false
 	}
 	return raw, true
+}
+
+// durableIdemReplaySafe reports whether a durable idempotency hit may short-
+// circuit without re-entering the launch path (BUG-288 R20-1).
+//
+// Bare/"launched" alone is NOT enough: a crash after launch-ack but before the
+// provider actually ran would otherwise clear outer intents on a ghost accept.
+// Recovery owns incomplete keys — only short-circuit when this process still
+// holds the turn in flight, or durable evidence shows the turn finished / is
+// owned by gate settle. EventTurnStarted alone is NOT sufficient (emitted
+// before go runTurn).
+func durableIdemReplaySafe(rs *interactiveRun, turnID string, launched bool) bool {
+	if rs == nil || turnID == "" || !launched {
+		return false
+	}
+	// Live in this process: caller may safely treat as accepted (provider path
+	// already scheduled or running under turnInFlight).
+	if rs.turnInFlight && rs.currentTurnID == turnID {
+		return true
+	}
+	if rs.lastTurnID == turnID {
+		return true
+	}
+	if rs.pendingFlowGateSettle && rs.pendingFlowGateTurnID == turnID {
+		return true
+	}
+	for _, ev := range rs.events {
+		if ev.ProviderTurnID != turnID {
+			continue
+		}
+		switch ev.Type {
+		case EventTurnCompleted, EventTurnFailed:
+			return true
+		}
+	}
+	return false
+}
+
+// durableIntentClearOK is the caller-side gate for clearing outer durable
+// intents after startTurn returns (BUG-288 R20-1). Intent must not clear unless
+// recovery can observe a live or terminal turn for turnID.
+func durableIntentClearOK(rs *interactiveRun, turnID string) bool {
+	return durableIdemReplaySafe(rs, turnID, true)
 }
 
 func (s *InteractiveService) persistApproval(record ProviderApprovalState) error {
@@ -3315,40 +3360,31 @@ func (s *InteractiveService) markPendingFlowGateSettleLocked(rs *interactiveRun,
 	if rs.parentRunID == "" {
 		snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
 	}
-	// BUG-288 P1-16 / R15–R17: checkpoint must be durable. Retry; stamp blocked;
-	// third persist; if all fail mark gateCheckpointNotDurable (no gate pass).
-	// BUG-288 R19-5: if the third persist succeeds, clear the blocked marker and
-	// persist a clean snapshot — otherwise restart/RequeueBlockedIntent reports
-	// false blocked after a successful checkpoint.
+	// BUG-288 P1-16 / R15–R17 / R20-3: checkpoint must be durable. Retry twice
+	// more without stamping a transient intentBlockedKind to disk — a durable
+	// gate_settle_checkpoint marker that later "succeeds" left false blocked
+	// state when the cleanup persist failed (R19 fourth write). Only when all
+	// three settle persists fail do we set RAM blocked + gateCheckpointNotDurable
+	// (no durable false-blocked marker for a healthy path).
 	if err := s.persistProviderSession(snap); err != nil {
 		log.Printf("[flow-gate] persist pendingFlowGateSettle checkpoint run=%q turn=%q: %v (retrying once)", rs.id, rs.pendingFlowGateTurnID, err)
 		if err2 := s.persistProviderSession(snap); err2 != nil {
-			log.Printf("[flow-gate] persist pendingFlowGateSettle FAILED run=%q turn=%q: %v (stamping blocked + third persist)", rs.id, rs.pendingFlowGateTurnID, err2)
-			rs.intentBlockedKind = "gate_settle_checkpoint"
-			rs.intentBlockedReason = "pendingFlowGateSettle checkpoint not durable: " + err2.Error()
-			rs.intentBlockedAt = time.Now().UTC().Format(time.RFC3339Nano)
-			snap3 := sessionStateOf(rs)
-			if rs.parentRunID == "" {
-				snap3.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
-			}
-			if err3 := s.persistProviderSession(snap3); err3 != nil {
-				log.Printf("[flow-gate] persist gate_settle_checkpoint blocked state FAILED run=%q: %v (blocking gate pass until durable)", rs.id, err3)
+			log.Printf("[flow-gate] persist pendingFlowGateSettle FAILED run=%q turn=%q: %v (third try, no blocked marker)", rs.id, rs.pendingFlowGateTurnID, err2)
+			if err3 := s.persistProviderSession(snap); err3 != nil {
+				log.Printf("[flow-gate] persist pendingFlowGateSettle third FAILED run=%q: %v (blocking gate pass; RAM blocked only)", rs.id, err3)
+				rs.intentBlockedKind = "gate_settle_checkpoint"
+				rs.intentBlockedReason = "pendingFlowGateSettle checkpoint not durable: " + err3.Error()
+				rs.intentBlockedAt = time.Now().UTC().Format(time.RFC3339Nano)
 				rs.gateCheckpointNotDurable = true
 				return false
 			}
-			// Third persist durableized the settle + blocked stamp. Clear the
-			// transient blocked marker so recovery does not park a healthy run.
-			rs.intentBlockedKind = ""
-			rs.intentBlockedReason = ""
-			rs.intentBlockedAt = ""
-			snapClean := sessionStateOf(rs)
-			if rs.parentRunID == "" {
-				snapClean.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
-			}
-			if err4 := s.persistProviderSession(snapClean); err4 != nil {
-				log.Printf("[flow-gate] clear gate_settle_checkpoint marker after durable settle failed run=%q: %v (RAM cleared; next persist will drop marker)", rs.id, err4)
-			}
 		}
+	}
+	// Settle durable — never leave a transient blocked stamp.
+	if rs.intentBlockedKind == "gate_settle_checkpoint" {
+		rs.intentBlockedKind = ""
+		rs.intentBlockedReason = ""
+		rs.intentBlockedAt = ""
 	}
 	rs.gateCheckpointNotDurable = false
 	return true
@@ -4872,7 +4908,8 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	}
 	s.mu.Unlock()
 	if s.shouldInjectFeatureHistory(rs.providerKey) && !skipHistory {
-		providerPrompt = injectFeatureHistoryPrompt(rs.workspaceCwd, providerPrompt, transcriptTurnsFromRun(rs))
+		// BUG-288 R20-2: per-service secret so a foreign FCP marker cannot skip history.
+		providerPrompt = injectFeatureHistoryPromptWithSecret(rs.workspaceCwd, providerPrompt, transcriptTurnsFromRun(rs), s.markerSecret)
 	}
 	// Observability for E2E: persist/log the fully-composed turn prompt (feature
 	// history + discussion + mode prefix + user text) under the FlowPilot tool
@@ -5704,19 +5741,24 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// the same key as an already-started turn is not a new turn request, so it
 	// must not be rejected by state that only applies to genuinely new turns.
 	//
-	// BUG-288 R19-2: durable keys are two-phase. Only a launched (non-prep)
-	// value is a full short-circuit. prep:<turnID> means pre-persist landed but
-	// provider was never launched — recovery must re-enter the launch path with
-	// the same turnID so callers do not clear pending intent on a ghost accept.
+	// BUG-288 R19-2 / R20-1: durable keys are two-phase, and launch-ack alone is
+	// not a full short-circuit. prep:<turnID> or bare turnID without recoverable
+	// progress must re-enter the launch path with the same turnID so recovery
+	// owns incomplete dispatches (callers must not clear outer intent on a ghost).
 	var preparedReuseTurnID string
 	if idempotencyKey != "" {
 		if raw, ok := rs.idempotency[idempotencyKey]; ok {
 			tid, launched := parseDurableIdemValue(raw)
-			if tid != "" && (launched || !strings.HasPrefix(idempotencyKey, "durable-")) {
+			if tid != "" && !strings.HasPrefix(idempotencyKey, "durable-") {
 				s.mu.Unlock()
 				return tid, nil
 			}
-			if tid != "" && strings.HasPrefix(idempotencyKey, "durable-") && !launched {
+			if tid != "" && strings.HasPrefix(idempotencyKey, "durable-") {
+				if durableIdemReplaySafe(rs, tid, launched) {
+					s.mu.Unlock()
+					return tid, nil
+				}
+				// Incomplete prep or orphan launch-ack: relaunch with same turnID.
 				preparedReuseTurnID = tid
 			}
 		}
@@ -5949,9 +5991,11 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		return "", newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
 	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: in.Prompt})
-	// BUG-288 R19-2: promote prepared → launched only after TurnStarted side
-	// effects and immediately before provider launch. Recovery short-circuits
-	// only on this launched form.
+	// BUG-288 R20-1: promote prep → bare launch-ack ONLY after TurnStarted is in
+	// RAM (recovery can see EventTurnStarted for replay-safe), and only launch
+	// the provider AFTER launch-ack is durable. Fail-closed on persist: keep
+	// prep on disk, abort without go runTurn so recovery can relaunch instead of
+	// double-running after a partial launch with orphan prep.
 	if durableKey && idempotencyKey != "" {
 		if rs.idempotency == nil {
 			rs.idempotency = map[string]string{}
@@ -5968,13 +6012,31 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if isParent {
 		snap.LoopState = s.agentOrchestrator.graphSnapshot(rs.id).LoopState
 	}
-	// Durable launch-ack persist (best-effort with one retry). Failure still
-	// proceeds to provider launch — step/event already emitted — but logs loudly.
 	if durableKey {
 		if err := s.persistProviderSession(snap); err != nil {
 			log.Printf("[turn] persist durable launch-ack run=%s key=%s: %v (retrying)", runID, idempotencyKey, err)
 			if err2 := s.persistProviderSession(snap); err2 != nil {
-				log.Printf("[turn] persist durable launch-ack FAILED run=%s key=%s: %v (continuing provider launch)", runID, idempotencyKey, err2)
+				log.Printf("[turn] persist durable launch-ack FAILED run=%s key=%s: %v (aborting; not launching provider)", runID, idempotencyKey, err2)
+				s.mu.Lock()
+				if current := s.runs[runID]; current != nil {
+					// Revert to prep so recovery re-enters launch; do not leave bare
+					// without a provider, and do not leave prep while provider runs.
+					if current.idempotency == nil {
+						current.idempotency = map[string]string{}
+					}
+					current.idempotency[idempotencyKey] = durableIdemPreparedValue(turnID)
+					current.turnInFlight = false
+					current.currentTurnID = ""
+					current.turnCancel = nil
+					prepSnap := sessionStateOfProtectingIdem(current, idempotencyKey)
+					s.mu.Unlock()
+					_ = s.persistProviderSession(prepSnap) // best-effort restore prep
+				} else {
+					s.mu.Unlock()
+				}
+				cancel()
+				return "", newAPIErr(http.StatusBadGateway, "session_persist_failed",
+					"durable launch-ack could not be persisted; not starting provider turn: "+err2.Error())
 			}
 		}
 	} else {
@@ -6000,7 +6062,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			current.currentTurnID = ""
 			current.turnCancel = nil
 			current.lastTurnID = turnID
-			// Synthetic completion still counts as launch-ack for durable keys.
+			// Synthetic completion is terminal evidence for durable keys.
 			if durableKey && idempotencyKey != "" {
 				if current.idempotency == nil {
 					current.idempotency = map[string]string{}
@@ -6020,6 +6082,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// Coding step rebuilds the package from the new Plan output (T-3, Task-169).
 	s.maybeClearPlanContextForPlanStep(ctx, runID, rs, in.StepID)
 
+	// Provider launch only after durable launch-ack (or non-durable path).
 	go s.runTurn(ctx, rs, adapter, in, scenario, turnID, capturedCtx)
 	return turnID, nil
 }

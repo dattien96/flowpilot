@@ -11,6 +11,15 @@ import (
 )
 
 func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []transcriptTurn) string {
+	// Legacy package-level helper: multi-secret / active-secret verify (tests and
+	// one-shot callers). InteractiveService must use injectFeatureHistoryPromptWithSecret.
+	return injectFeatureHistoryPromptWithSecret(workspace, prompt, priorTurns, nil)
+}
+
+// injectFeatureHistoryPromptWithSecret is the service path (BUG-288 R20-2): when
+// secret is non-nil, FCP handoff markers are verified only against that service's
+// secret so a marker minted by service B cannot suppress history on service A.
+func injectFeatureHistoryPromptWithSecret(workspace string, prompt string, priorTurns []transcriptTurn, secret []byte) string {
 	// A handoff envelope already carries its (correctly source-resolved) feature
 	// block, prepended at build time. Never re-inject from the flat envelope text —
 	// it embeds gate-reprompt lines naming feature keys and would mis-resolve.
@@ -19,7 +28,13 @@ func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []tr
 	// Task-224 / BUG-277: skip full Prior work block for flow-engine synthesis
 	// and flow review handoffs — history bulk belongs to hub user turns and the
 	// first post-context.produce consumer (via package), not every late node.
-	if isHandoffPrompt(prompt) || isFlowContextHandoff(prompt) ||
+	handoff := false
+	if len(secret) > 0 {
+		handoff = isFlowContextHandoffWithSecret(secret, prompt)
+	} else {
+		handoff = isFlowContextHandoff(prompt)
+	}
+	if isHandoffPrompt(prompt) || handoff ||
 		isFlowEnginePrompt(prompt) || isFlowReviewHandoffPrompt(prompt) {
 		return prompt
 	}

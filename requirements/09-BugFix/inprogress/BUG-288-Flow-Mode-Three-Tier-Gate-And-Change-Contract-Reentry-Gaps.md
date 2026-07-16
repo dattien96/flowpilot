@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Vòng 9–18 Fixed. **Vòng 19 (Codex): 3 Critical + 2 Important + tests Fixed (2026-07-16)** — durable start revalidate after persist (Stop race), two-phase prepared→launched idempotency, warn/approve via `withGateEpochDurable`, markerSecret through behavior/inline/retry, clear `gate_settle_checkpoint` after third success. Status giữ `inprogress` đến Codex re-review pass sạch.
+- Vòng 9–19 Fixed. **Vòng 20 (Codex): 1 Critical + 2 Important + tests Fixed (2026-07-16)** — durable launch recovery-owned (`durableIdemReplaySafe` + launch-ack fail-closed), `injectFeatureHistoryPromptWithSecret`, settle checkpoint không stamp transient blocked marker. Status giữ `inprogress` đến Codex re-review pass sạch.
 
 ### Key Decisions
 
@@ -1196,9 +1196,18 @@ Review độc lập xác nhận Vòng 15 chưa đủ. **2 P0 + 2 P1 → Fixed.**
 | R19-5 | Imp | Third settle persist success leaves `gate_settle_checkpoint` blocked marker | Clear marker + persist clean snap after third success |
 | R19-6 | Minor | R18 tests only helpers | `bug288_round19_test.go`: Stop-during-persist, prepared relaunch, epoch/contract fail-closed, marker secret, checkpoint cleanup |
 
+### Vòng 20 — Codex re-review Vòng 19 (2026-07-16) — **Fixed**
+
+| ID | Sev | Finding | Fix |
+| ---- | --- | ------- | --- |
+| R20-1 | Crit | prep→launch-ack not atomic with provider; orphan bare short-circuits never-run; fail-open launch after ack fail | `durableIdemReplaySafe` (live/terminal/gate only); launch-ack persist fail-closed (no `go runTurn`); outer intent clear only via `durableIntentClearOK` |
+| R20-2 | Imp | `injectFeatureHistoryPrompt` used global handoff verify | `injectFeatureHistoryPromptWithSecret` from `runTurn` with `s.markerSecret` |
+| R20-3 | Imp | fourth cleanup of blocked marker fail-open | Never persist transient `gate_settle_checkpoint`; third settle try without blocked stamp; RAM blocked only on total fail |
+| R20-4 | Minor | Missing failure-window tests | `bug288_round20_test.go`: orphan relaunch, launch-ack fail, foreign marker inject, fail/fail/succeed settle |
+
 ## 12. Completion Notes
 
-- result: **inprogress** — Vòng 9–19 Fixed (2026-07-16). Document giữ `Status: inprogress` until clean Codex re-review.
+- result: **inprogress** — Vòng 9–20 Fixed (2026-07-16). Document giữ `Status: inprogress` until clean Codex re-review.
 - primary modules: `apps/local-runner/internal/runner/*`.
-- change-audit: `CA-328`…`CA-335` (Vòng 19).
-- verification: Vòng 18–19 focused tests (`bug288_round18_test.go`, `bug288_round19_test.go`).
+- change-audit: `CA-328`…`CA-336` (Vòng 20).
+- verification: Vòng 18–20 focused tests (`bug288_round18/19/20_test.go`).

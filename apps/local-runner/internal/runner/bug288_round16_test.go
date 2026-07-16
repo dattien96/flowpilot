@@ -79,7 +79,11 @@ func TestReconstructRestoresDurableIdempotency(t *testing.T) {
 	if rs.idempotency["durable-run-x-restart-2"] != "turn-prev" {
 		t.Fatalf("reconstruct idempotency = %#v", rs.idempotency)
 	}
-	// Register reconstructed run so startTurn can short-circuit on durable key.
+	// Terminal evidence so bare key is replay-safe after reconstruct (R20-1).
+	// Bare launch-ack alone is not enough — orphan ack must relaunch.
+	rs.lastTurnID = "turn-prev"
+	// Register reconstructed run so startTurn can short-circuit on durable key
+	// when recovery evidence (lastTurnID) matches.
 	svc.mu.Lock()
 	svc.runs[rs.id] = rs
 	svc.mu.Unlock()

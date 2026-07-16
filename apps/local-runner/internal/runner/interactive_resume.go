@@ -1521,23 +1521,29 @@ func (s *InteractiveService) startTurnClearingIntent(runID, stepID, prompt, kind
 		s.mu.Unlock()
 		return
 	}
-	// Accepted by startTurn: clear durable intent. Idempotency key prevents a
-	// second provider turn if we crash before this persist lands.
+	// BUG-288 R20-1: clear outer intent only when recovery can observe a live
+	// or terminal turn for turnID. startTurn may return a reused turnID for an
+	// incomplete durable key only after re-launch; ghost launch-ack alone must
+	// not drop pending resume/reprompt.
 	cleared := false
-	_ = turnID
-	if kind == "reprompt" &&
-		rs.pendingGateRepromptGen == gen &&
-		rs.pendingGateRepromptPrompt == prompt &&
-		rs.pendingGateRepromptStepID == stepID {
-		clearIntentFieldsLocked(rs, "reprompt")
-		cleared = true
-	}
-	if kind == "resume" &&
-		rs.pendingResumeGen == gen &&
-		rs.pendingResumePrompt == prompt &&
-		rs.pendingResumeStepID == stepID {
-		clearIntentFieldsLocked(rs, "resume")
-		cleared = true
+	if durableIntentClearOK(rs, turnID) {
+		if kind == "reprompt" &&
+			rs.pendingGateRepromptGen == gen &&
+			rs.pendingGateRepromptPrompt == prompt &&
+			rs.pendingGateRepromptStepID == stepID {
+			clearIntentFieldsLocked(rs, "reprompt")
+			cleared = true
+		}
+		if kind == "resume" &&
+			rs.pendingResumeGen == gen &&
+			rs.pendingResumePrompt == prompt &&
+			rs.pendingResumeStepID == stepID {
+			clearIntentFieldsLocked(rs, "resume")
+			cleared = true
+		}
+	} else {
+		log.Printf("[resume-intent] startTurn returned turn=%s but not clear-safe; keeping durable intent run=%s kind=%s gen=%d",
+			turnID, runID, kind, gen)
 	}
 	releaseDurableIntentClaimLocked(rs, kind, gen)
 	snap := sessionStateOf(rs)
