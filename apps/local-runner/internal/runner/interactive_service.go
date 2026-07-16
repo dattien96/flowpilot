@@ -94,6 +94,10 @@ type InteractiveService struct {
 	// runMarkerActive from another store's Init.
 	markerSecret []byte
 	markerDir    string
+
+	// dispatchStore is the dedicated durable turn-dispatch store (CP-51 / SD-24).
+	// Nil keeps V1 prep:/bare idempotency behavior until V2 is activated per run.
+	dispatchStore DispatchStore
 }
 
 type interactiveRun struct {
@@ -176,6 +180,15 @@ type interactiveRun struct {
 	// skipNextTurnIdleNotify (BUG-288 R13-05) suppresses one notifyTurnIdle at
 	// runTurn tail when block/reprompt persist failed (or already notified).
 	skipNextTurnIdleNotify bool
+	// dispatch is a RAM cache of DispatchRecord keyed by turnID (CP-51). Loaded
+	// from the dispatch store at boot; never sourced from the session snapshot.
+	dispatch map[string]*DispatchRecord
+	// dispatchProtocolVersion / repair* / markerProvenance* are session-mirror
+	// scalars only (SD-24 D-1) — never a DispatchRecord slice.
+	dispatchProtocolVersion int
+	repairRequired          bool
+	repairReason            string
+	markerProvenanceRunIDs  []string
 	// label is the display name used in consolidated cohort notes; defaults to agentName.
 	label string
 	// waitForResult records the spawn's wait flag. A tool spawn with wait=true returns the
@@ -2615,6 +2628,11 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		PendingRestartGen:                 rs.pendingRestartGen,
 		IdempotencyKeys:                   durableIdempotencySnapshot(rs.idempotency),
 		FlowContextInjected:               rs.flowContextInjected,
+		// CP-51: dispatch protocol/repair/provenance scalars only — never DispatchRecord slices.
+		DispatchProtocolVersion:           rs.dispatchProtocolVersion,
+		RepairRequired:                    rs.repairRequired,
+		RepairReason:                      rs.repairReason,
+		MarkerProvenanceRunIDs:            append([]string(nil), rs.markerProvenanceRunIDs...),
 	}
 }
 
@@ -2736,8 +2754,11 @@ func parseDurableIdemValue(raw string) (turnID string, launched bool) {
 // provider actually ran would otherwise clear outer intents on a ghost accept.
 // Recovery owns incomplete keys — only short-circuit when this process still
 // holds the turn in flight, or durable evidence shows the turn finished / is
-// owned by gate settle. EventTurnStarted alone is NOT sufficient (emitted
-// before go runTurn).
+// owned by gate settle.
+//
+// CP-51 DOD-G8 / RecoveryInferenceRule: EventTurnStarted alone is NOT
+// sufficient recovery evidence (emitted before go runTurn). Prefer
+// DispatchRecord.State when the V2 dispatch store is authoritative for the run.
 func durableIdemReplaySafe(rs *interactiveRun, turnID string, launched bool) bool {
 	if rs == nil || turnID == "" || !launched {
 		return false
@@ -5991,11 +6012,15 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		return "", newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
 	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: in.Prompt})
-	// BUG-288 R20-1: promote prep → bare launch-ack ONLY after TurnStarted is in
-	// RAM (recovery can see EventTurnStarted for replay-safe), and only launch
-	// the provider AFTER launch-ack is durable. Fail-closed on persist: keep
-	// prep on disk, abort without go runTurn so recovery can relaunch instead of
-	// double-running after a partial launch with orphan prep.
+	// BUG-288 R20-1 / CP-51 DOD-G8: promote prep → bare launch-ack ONLY after
+	// TurnStarted is in RAM, and only launch the provider AFTER launch-ack is
+	// durable. Fail-closed on persist: keep prep on disk, abort without go
+	// runTurn so recovery can relaunch instead of double-running after a partial
+	// launch with orphan prep.
+	//
+	// Recovery authority is DispatchRecord.State (see RecoveryInferenceRule),
+	// NOT EventTurnStarted — that event is emitted before go runTurn and is
+	// insufficient evidence that the provider received the turn.
 	if durableKey && idempotencyKey != "" {
 		if rs.idempotency == nil {
 			rs.idempotency = map[string]string{}

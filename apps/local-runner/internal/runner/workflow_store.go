@@ -256,6 +256,16 @@ type ProviderSessionState struct {
 	// get feature-history / FCP re-injected after process restart (MAC secret is
 	// per-process; the durable flag is the double-injection guard).
 	FlowContextInjected bool
+	// DispatchProtocolVersion is a derived mirror of the dispatch-store
+	// activation (SD-24 D-1/D-10). Authority is GetRunProtocolVersion — never
+	// this field alone. NEVER store DispatchRecord slices here (two-sources-of-truth).
+	DispatchProtocolVersion int
+	// RepairRequired / RepairReason surface SS-17 AC-3 fail-closed load failures.
+	RepairRequired bool
+	RepairReason   string
+	// MarkerProvenanceRunIDs is the recorded handoff binding for FCP marker
+	// verification (Task-252 / SD-24 §6.6). Empty set fails closed on the service path.
+	MarkerProvenanceRunIDs []string
 }
 
 type ProviderApprovalState struct {

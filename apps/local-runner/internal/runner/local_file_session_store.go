@@ -148,6 +148,14 @@ type ndjsonSessionRecord struct {
 	TransitionLogDegraded             bool     `json:"transition_log_degraded,omitempty"`
 	TransitionLogDegradedAt           string   `json:"transition_log_degraded_at,omitempty"`
 	TransitionLogDegradedReason       string   `json:"transition_log_degraded_reason,omitempty"`
+	// CP-51 / SD-24 parity: session mirror scalars only — never DispatchRecord slices.
+	ChangeType              string   `json:"change_type,omitempty"`
+	SourceDocID             string   `json:"source_doc_id,omitempty"`
+	TurnCount               int      `json:"turn_count,omitempty"`
+	DispatchProtocolVersion int      `json:"dispatch_protocol_version,omitempty"`
+	RepairRequired          bool     `json:"repair_required,omitempty"`
+	RepairReason            string   `json:"repair_reason,omitempty"`
+	MarkerProvenanceRunIDs  []string `json:"marker_provenance_run_ids,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -441,6 +449,13 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		TransitionLogDegraded:           r.TransitionLogDegraded,
 		TransitionLogDegradedAt:         r.TransitionLogDegradedAt,
 		TransitionLogDegradedReason:     r.TransitionLogDegradedReason,
+		ChangeType:                      r.ChangeType,
+		SourceDocID:                     r.SourceDocID,
+		TurnCount:                       r.TurnCount,
+		DispatchProtocolVersion:         r.DispatchProtocolVersion,
+		RepairRequired:                  r.RepairRequired,
+		RepairReason:                    r.RepairReason,
+		MarkerProvenanceRunIDs:          append([]string(nil), r.MarkerProvenanceRunIDs...),
 	}
 }
 
@@ -879,6 +894,13 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		TransitionLogDegraded:           s.TransitionLogDegraded,
 		TransitionLogDegradedAt:         s.TransitionLogDegradedAt,
 		TransitionLogDegradedReason:     s.TransitionLogDegradedReason,
+		ChangeType:                      s.ChangeType,
+		SourceDocID:                     s.SourceDocID,
+		TurnCount:                       s.TurnCount,
+		DispatchProtocolVersion:         s.DispatchProtocolVersion,
+		RepairRequired:                  s.RepairRequired,
+		RepairReason:                    s.RepairReason,
+		MarkerProvenanceRunIDs:          append([]string(nil), s.MarkerProvenanceRunIDs...),
 	}
 }
 
