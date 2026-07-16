@@ -10,9 +10,9 @@
 - Reviewers: `TBD`
 - Created: `2026-07-15`
 - Last Updated: `2026-07-15`
-- Parent Documents: [CP-50: Context Source Completion](../../07-Coding-Plan/todo/CP-50-Context-Source-Completion.md) (P-3), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (AC-9)
+- Parent Documents: [CP-50: Context Source Completion](../../07-Coding-Plan/done/CP-50-Context-Source-Completion.md) (P-3), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (AC-9)
 - Child Documents: `None`
-- Related Documents: [Task-243: Review Và Capture Các Context Artifact Source](../done/Task-243-Context-Artifact-Sources-Review-And-Capture.md) (G-3, Q-3), [Task-192: Migrate Built-in Context Sources](../done/Task-192-Migrate-Builtin-Context-Sources.md), [Task-168: Flow Mode Context Package Contract](../done/Task-168-Flow-Mode-Context-Package-Contract.md) (T-4 caps/degrade mà producer này nạp dữ liệu cho)
+- Related Documents: [Task-243: Review Và Capture Các Context Artifact Source](./Task-243-Context-Artifact-Sources-Review-And-Capture.md) (G-3, Q-3), [Task-192: Migrate Built-in Context Sources](./Task-192-Migrate-Builtin-Context-Sources.md), [Task-168: Flow Mode Context Package Contract](./Task-168-Flow-Mode-Context-Package-Contract.md) (T-4 caps/degrade mà producer này nạp dữ liệu cho)
 - Replaces: `None`
 - Tags: `source-excerpt, context-source, git-diff, prompt-paths, local-runner`
 

@@ -10,9 +10,9 @@
 - Reviewers: `TBD`
 - Created: `2026-07-15`
 - Last Updated: `2026-07-15`
-- Parent Documents: [CP-50: Context Source Completion](../../07-Coding-Plan/todo/CP-50-Context-Source-Completion.md) (P-4), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md) (§5 Contract), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (US-3, AC-9)
+- Parent Documents: [CP-50: Context Source Completion](../../07-Coding-Plan/done/CP-50-Context-Source-Completion.md) (P-4), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md) (§5 Contract), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (US-3, AC-9)
 - Child Documents: `None`
-- Related Documents: [Task-243: Review Và Capture Các Context Artifact Source](../done/Task-243-Context-Artifact-Sources-Review-And-Capture.md) (G-1 nửa change.contract, Q-4), [Task-244: Canonical Head First-Class Context Source](./Task-244-Canonical-Head-First-Class-Context-Source.md) (mẫu source để mirror — làm TRƯỚC), [Task-184: Change Contract Capture](../done/Task-184-Change-Contract-Capture.md) (store mà task này mở rộng), [Task-185: Scope-Drift Detection](./Task-185-Scope-Drift-Detection.md) (gate check dùng cùng Contract), [BUG-243](../../09-BugFix/done/BUG-243-Flow-Mode-Validate-And-Audit-Behaviors-Disconnected-From-Task-170-171.md) (đường dispatch validate/audit — điểm neo dự phòng T-3), [CP-43: Change Contract And Canonical Intent Signature](../../07-Coding-Plan/inprogress/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (§3 câu hứa mà task này hiện thực hóa)
+- Related Documents: [Task-243: Review Và Capture Các Context Artifact Source](./Task-243-Context-Artifact-Sources-Review-And-Capture.md) (G-1 nửa change.contract, Q-4), [Task-244: Canonical Head First-Class Context Source](./Task-244-Canonical-Head-First-Class-Context-Source.md) (mẫu source để mirror — làm TRƯỚC), [Task-184: Change Contract Capture](./Task-184-Change-Contract-Capture.md) (store mà task này mở rộng), [Task-185: Scope-Drift Detection](../inprogress/Task-185-Scope-Drift-Detection.md) (gate check dùng cùng Contract), [BUG-243](../../09-BugFix/done/BUG-243-Flow-Mode-Validate-And-Audit-Behaviors-Disconnected-From-Task-170-171.md) (đường dispatch validate/audit — điểm neo dự phòng T-3), [CP-43: Change Contract And Canonical Intent Signature](../../07-Coding-Plan/inprogress/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (§3 câu hứa mà task này hiện thực hóa)
 - Replaces: `None`
 - Tags: `change-contract, context-source, scope-drift, prompt-injection, flow-executor, local-runner`
 
@@ -143,4 +143,4 @@ Task-243 `G-1`/`Q-4`: CP-43 §3 hứa Contract "surfaced through the same contex
 
 - result: `done` (2026-07-15).
 - follow-ups: none.
-- upstream docs updated: none.
+- upstream docs updated: **(2026-07-16, per DOD `T-4`)** CP-43 §3 — added a note that the declared-scope Change Contract source landed via CP-50 P-4/Task-247; Task-243 §8 — added a note that `F-4` is done and referencing CP-50 P-1..P-4/Task-244..247.

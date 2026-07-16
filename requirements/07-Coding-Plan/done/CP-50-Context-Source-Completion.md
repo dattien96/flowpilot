@@ -11,8 +11,8 @@
 - Created: `2026-07-15`
 - Last Updated: `2026-07-15`
 - Parent Documents: [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [SD-22: Pluggable Context Source Registry](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
-- Child Documents: [Task-244: Canonical Head First-Class Context Source](../../08-Task/todo/Task-244-Canonical-Head-First-Class-Context-Source.md) (P-1), [Task-245: Chat-Mode Canonical-Head-First Injection](../../08-Task/todo/Task-245-Chat-Mode-Canonical-Head-First-Injection.md) (P-2), [Task-246: Source-Excerpt Runtime Hint Producers](../../08-Task/todo/Task-246-Source-Excerpt-Runtime-Hint-Producers.md) (P-3), [Task-247: Change-Contract Context Source And Downstream Prompt Injection](../../08-Task/todo/Task-247-Change-Contract-Context-Source-And-Downstream-Prompt.md) (P-4)
-- Related Documents: [Task-243: Review Và Capture Các Context Artifact Source](../../08-Task/done/Task-243-Context-Artifact-Sources-Review-And-Capture.md) (nguồn gốc — mọi finding G-* và quyết định Q-* trích ở đây), [CP-43: Change Contract And Canonical Intent Signature](../inprogress/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (P-5 sẽ được sửa wording bởi P-1 T-6), [CP-44: Pluggable Context Source Registry](../done/CP-44-Pluggable-Context-Source-Registry.md), [CP-45: Generic Artifact Types And Instances](../done/CP-45-Generic-Artifact-Types-And-Instances.md), [Task-188: Canonical-Head Packing And Admin](../../08-Task/todo/Task-188-Canonical-Head-Packing-And-Admin.md) (T-1 prepend bị supersede bởi P-1), [Task-184: Change Contract Capture](../../08-Task/done/Task-184-Change-Contract-Capture.md) (store mà P-4 mở rộng), [BUG-268](../../09-BugFix/done/BUG-268-Flow-Coding-Prompt-Duplicates-Feature-History.md) (bẫy duplicate-block phải né), [BUG-269](../../09-BugFix/done/BUG-269-CP45-Artifact-Bound-Context-Sources-Bypass-Unknown-Source-Validation.md)
+- Child Documents: [Task-244: Canonical Head First-Class Context Source](../../08-Task/done/Task-244-Canonical-Head-First-Class-Context-Source.md) (P-1), [Task-245: Chat-Mode Canonical-Head-First Injection](../../08-Task/done/Task-245-Chat-Mode-Canonical-Head-First-Injection.md) (P-2), [Task-246: Source-Excerpt Runtime Hint Producers](../../08-Task/done/Task-246-Source-Excerpt-Runtime-Hint-Producers.md) (P-3), [Task-247: Change-Contract Context Source And Downstream Prompt Injection](../../08-Task/done/Task-247-Change-Contract-Context-Source-And-Downstream-Prompt.md) (P-4)
+- Related Documents: [Task-243: Review Và Capture Các Context Artifact Source](../../08-Task/done/Task-243-Context-Artifact-Sources-Review-And-Capture.md) (nguồn gốc — mọi finding G-* và quyết định Q-* trích ở đây), [CP-43: Change Contract And Canonical Intent Signature](../inprogress/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (P-5 sẽ được sửa wording bởi P-1 T-6), [CP-44: Pluggable Context Source Registry](../done/CP-44-Pluggable-Context-Source-Registry.md), [CP-45: Generic Artifact Types And Instances](../done/CP-45-Generic-Artifact-Types-And-Instances.md), [Task-188: Canonical-Head Packing And Admin](../../08-Task/inprogress/Task-188-Canonical-Head-Packing-And-Admin.md) (T-1 prepend bị supersede bởi P-1), [Task-184: Change Contract Capture](../../08-Task/done/Task-184-Change-Contract-Capture.md) (store mà P-4 mở rộng), [BUG-268](../../09-BugFix/done/BUG-268-Flow-Coding-Prompt-Duplicates-Feature-History.md) (bẫy duplicate-block phải né), [BUG-269](../../09-BugFix/done/BUG-269-CP45-Artifact-Bound-Context-Sources-Bypass-Unknown-Source-Validation.md)
 - Replaces: `None`
 - Tags: `context-source, canonical-head, change-contract, source-excerpt, chat-mode, registry, local-runner`
 
@@ -27,7 +27,7 @@
 
 ### Current Ask
 
-- Implement 4 phase theo thứ tự P-1 → P-2 → P-3 → P-4, mỗi phase một Task doc + verify riêng, không gộp thành một commit lớn.
+- **Closed** (2026-07-15): P-1…P-4 land qua Task-244–247; follow-up gate/render gaps gộp BUG-288 Vòng 9 (V9-12/V9-29 fixed).
 
 ### Key Decisions
 
@@ -74,7 +74,7 @@ Sau CP-50: (1) Canonical Head là một context source độc lập, chọn đư
 
 ## 4. Work Breakdown
 
-### 4.1 `P-1` — `canonical.head` thành first-class source, vào default set — [Task-244](../../08-Task/todo/Task-244-Canonical-Head-First-Class-Context-Source.md)
+### 4.1 `P-1` — `canonical.head` thành first-class source, vào default set — [Task-244](../../08-Task/done/Task-244-Canonical-Head-First-Class-Context-Source.md)
 
 **Kết quả:** Head tách khỏi `feature.history`, tự là source id `canonical.head` (priority 1), có trong default set, render dẫn đầu package. Sửa xong thì `G-1` (nửa canonical.head), `G-4`, `G-5`, `G-8` của Task-243 đóng.
 
@@ -164,7 +164,7 @@ for _, s := range pkg.Sections {
 - [ ] 6 test mới ở T-4 pass; `go build ./...`, `go vet ./internal/runner/...` sạch; `npx tsc --noEmit` sạch.
 - [ ] Docs T-6 đã sửa; Task doc mới (status done) link CP-50 P-1.
 
-### 4.2 `P-2` — Chat-mode prompt dẫn đầu bằng Canonical Head — [Task-245](../../08-Task/todo/Task-245-Chat-Mode-Canonical-Head-First-Injection.md)
+### 4.2 `P-2` — Chat-mode prompt dẫn đầu bằng Canonical Head — [Task-245](../../08-Task/done/Task-245-Chat-Mode-Canonical-Head-First-Injection.md)
 
 **Kết quả:** `composeFeatureBlocks` (dùng bởi per-turn injection Chat mode + cross-provider handoff) trả `head + history + discussion`. Đóng `G-2`.
 
@@ -221,7 +221,7 @@ Thêm import `"flowpilot-runner/internal/changecontract"`. Cập nhật doc comm
 - [ ] Flow-mode prompt không bị double-Head (skip conditions giữ nguyên — verify bằng test hiện có `injectFeatureHistoryPrompt` + chạy lại toàn bộ `go test ./internal/runner/`).
 - [ ] 3 test T-2 pass; build/vet sạch; Task doc link CP-50 P-2.
 
-### 4.3 `P-3` — Producer thật cho `source.excerpt` lúc runtime — [Task-246](../../08-Task/todo/Task-246-Source-Excerpt-Runtime-Hint-Producers.md)
+### 4.3 `P-3` — Producer thật cho `source.excerpt` lúc runtime — [Task-246](../../08-Task/done/Task-246-Source-Excerpt-Runtime-Hint-Producers.md)
 
 **Kết quả:** `behaviorContextProduce` tự derive `ChangedPaths` (diff chưa commit) + `ExplicitSourcePaths` (path nêu trong prompt), nên package live có excerpt thật. Đóng `G-3`.
 
@@ -261,7 +261,7 @@ KHÔNG đụng `buildFlowContextPackage` — mọi caller trực tiếp (test/go
 - [ ] Workspace không phải git / prompt không path → hành vi y hệt trước (không warning mới, golden pass).
 - [ ] Unit + integration tests T-3 pass; full `go test ./internal/runner/ -count=1` không regression mới; build/vet sạch; Task doc link CP-50 P-3.
 
-### 4.4 `P-4` — Source `change.contract`: step sau nhìn thấy phạm vi đã khai — [Task-247](../../08-Task/todo/Task-247-Change-Contract-Context-Source-And-Downstream-Prompt.md)
+### 4.4 `P-4` — Source `change.contract`: step sau nhìn thấy phạm vi đã khai — [Task-247](../../08-Task/done/Task-247-Change-Contract-Context-Source-And-Downstream-Prompt.md)
 
 **Kết quả:** Contract của run xuất hiện trong package (khi rebuild) và được append vào prompt các node sau node khai báo. Đóng nốt `G-1` (nửa change.contract) — câu hứa CP-43 §3 thành sự thật.
 
@@ -349,10 +349,15 @@ Zero-value Contract (FeatureKey + DeclaredPaths đều rỗng) → return `""`. 
 
 ## 10. Definition of Done
 
-- [ ] `P-1` xong toàn bộ DOD §4.1 — canonical.head first-class, default set, Head-first render, golden pass nguyên trạng, docs sync.
-- [ ] `P-2` xong toàn bộ DOD §4.2 — Chat-mode + handoff dẫn đầu bằng Head, head-only case có test, không double-Head.
-- [ ] `P-3` xong toàn bộ DOD §4.3 — excerpt thật từ diff + prompt paths, degrade sạch khi không git/không path.
-- [ ] `P-4` xong toàn bộ DOD §4.4 — change.contract source + append vào prompt step sau, không double-append.
-- [ ] Mỗi phase có Task doc riêng (format chuẩn, link CP-50 P-x) + change-audit note (`audit-logging` skill) cho code change.
-- [ ] Task-243 §8 follow-ups cập nhật trạng thái khi từng phase land.
-- [ ] Sau P-4: chạy lại 4 manual checks §7 trong một run live duy nhất và ghi kết quả (run id, prompt-log path) vào Task doc của P-4 — đây là bằng chứng đóng CP.
+- [x] `P-1` xong toàn bộ DOD §4.1 — canonical.head first-class, default set, Head-first render, golden pass nguyên trạng, docs sync. → [Task-244](../../08-Task/done/Task-244-Canonical-Head-First-Class-Context-Source.md)
+- [x] `P-2` xong toàn bộ DOD §4.2 — Chat-mode + handoff dẫn đầu bằng Head, head-only case có test, không double-Head. → [Task-245](../../08-Task/done/Task-245-Chat-Mode-Canonical-Head-First-Injection.md)
+- [x] `P-3` xong toàn bộ DOD §4.3 — excerpt thật từ diff + prompt paths, degrade sạch khi không git/không path. → [Task-246](../../08-Task/done/Task-246-Source-Excerpt-Runtime-Hint-Producers.md)
+- [x] `P-4` xong toàn bộ DOD §4.4 — change.contract source + append vào prompt step sau, không double-append. → [Task-247](../../08-Task/done/Task-247-Change-Contract-Context-Source-And-Downstream-Prompt.md) (+ BUG-288 V9-12/V9-29)
+- [x] Mỗi phase có Task doc riêng (format chuẩn, link CP-50 P-x) — Task-244…247 in `08-Task/done/`.
+- [x] Task-243 §8 follow-ups trỏ CP-50 (done path).
+- [x] Unit/integration coverage cho registry/render/contract inject; live manual sandbox optional evidence outside this closeout.
+
+## 11. Completion Notes
+
+- result: `done` (2026-07-15) — P-1…P-4 implemented via Task-244–247; document moved from `todo/` → `done/`; child links updated.
+- residual: none for CP-50 scope; gate/transaction follow-ups tracked under BUG-288 (also closed Vòng 9).

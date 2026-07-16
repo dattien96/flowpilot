@@ -10,9 +10,9 @@
 - Reviewers: `TBD`
 - Created: `2026-07-15`
 - Last Updated: `2026-07-15`
-- Parent Documents: [CP-50: Context Source Completion](../../07-Coding-Plan/todo/CP-50-Context-Source-Completion.md) (P-2), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md) (D-3), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (AC-9)
+- Parent Documents: [CP-50: Context Source Completion](../../07-Coding-Plan/done/CP-50-Context-Source-Completion.md) (P-2), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md) (D-3), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (AC-9)
 - Child Documents: `None`
-- Related Documents: [Task-243: Review Và Capture Các Context Artifact Source](../done/Task-243-Context-Artifact-Sources-Review-And-Capture.md) (G-2, Q-2), [Task-244: Canonical Head First-Class Context Source](./Task-244-Canonical-Head-First-Class-Context-Source.md) (làm TRƯỚC task này), [BUG-268](../../09-BugFix/done/BUG-268-Flow-Coding-Prompt-Duplicates-Feature-History.md), [BUG-277 — xem Task-224 skip conditions]
+- Related Documents: [Task-243: Review Và Capture Các Context Artifact Source](./Task-243-Context-Artifact-Sources-Review-And-Capture.md) (G-2, Q-2), [Task-244: Canonical Head First-Class Context Source](./Task-244-Canonical-Head-First-Class-Context-Source.md) (làm TRƯỚC task này), [BUG-268](../../09-BugFix/done/BUG-268-Flow-Coding-Prompt-Duplicates-Feature-History.md), [BUG-277 — xem Task-224 skip conditions]
 - Replaces: `None`
 - Tags: `canonical-head, chat-mode, prompt-injection, handoff, local-runner`
 
