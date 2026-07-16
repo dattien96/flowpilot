@@ -110,6 +110,8 @@ create or replace function public.dispatch_create_prepared(
   p_envelope jsonb
 ) returns jsonb
 language plpgsql
+security definer
+set search_path = public
 as $$
 declare
   existing public.dispatch_records%rowtype;
@@ -163,6 +165,8 @@ create or replace function public.dispatch_cas_advance(
   p_next_state text
 ) returns jsonb
 language plpgsql
+security definer
+set search_path = public
 as $$
 declare
   rec public.dispatch_records%rowtype;
@@ -207,6 +211,8 @@ create or replace function public.dispatch_request_run_stop(
   p_reason text
 ) returns jsonb
 language plpgsql
+security definer
+set search_path = public
 as $$
 declare
   st public.dispatch_run_stop_state%rowtype;
@@ -236,9 +242,63 @@ create or replace function public.dispatch_get_run_protocol_version(p_run_id tex
 returns int
 language sql
 stable
+security definer
+set search_path = public
 as $$
   select coalesce(
     (select protocol_version from public.run_protocol_activations where run_id = p_run_id),
     0
   );
 $$;
+
+-- ---------------------------------------------------------------------------
+-- RLS: runner-owned durable state. Clients using anon/authenticated must NOT
+-- read or write these tables. The local-runner uses the service_role key, which
+-- bypasses RLS. SECURITY DEFINER RPCs above are executable only by service_role.
+-- No policies for anon/authenticated = default-deny under RLS.
+-- ---------------------------------------------------------------------------
+
+alter table public.run_protocol_activations enable row level security;
+alter table public.dispatch_run_stop_state enable row level security;
+alter table public.dispatch_records enable row level security;
+alter table public.dispatch_effects enable row level security;
+alter table public.repair_records enable row level security;
+alter table public.dispatch_intent_clears enable row level security;
+alter table public.dispatch_audit enable row level security;
+
+-- Force RLS for table owner as well (defense-in-depth for non-superuser owners).
+alter table public.run_protocol_activations force row level security;
+alter table public.dispatch_run_stop_state force row level security;
+alter table public.dispatch_records force row level security;
+alter table public.dispatch_effects force row level security;
+alter table public.repair_records force row level security;
+alter table public.dispatch_intent_clears force row level security;
+alter table public.dispatch_audit force row level security;
+
+-- Explicit grants: strip public/client roles; allow service_role only.
+revoke all on table public.run_protocol_activations from public, anon, authenticated;
+revoke all on table public.dispatch_run_stop_state from public, anon, authenticated;
+revoke all on table public.dispatch_records from public, anon, authenticated;
+revoke all on table public.dispatch_effects from public, anon, authenticated;
+revoke all on table public.repair_records from public, anon, authenticated;
+revoke all on table public.dispatch_intent_clears from public, anon, authenticated;
+revoke all on table public.dispatch_audit from public, anon, authenticated;
+
+grant all on table public.run_protocol_activations to service_role;
+grant all on table public.dispatch_run_stop_state to service_role;
+grant all on table public.dispatch_records to service_role;
+grant all on table public.dispatch_effects to service_role;
+grant all on table public.repair_records to service_role;
+grant all on table public.dispatch_intent_clears to service_role;
+grant all on table public.dispatch_audit to service_role;
+
+-- RPC execute: service_role only (not anon/authenticated PostgREST clients).
+revoke all on function public.dispatch_create_prepared(text, text, jsonb, jsonb) from public, anon, authenticated;
+revoke all on function public.dispatch_cas_advance(text, text, bigint, text, text) from public, anon, authenticated;
+revoke all on function public.dispatch_request_run_stop(text, bigint, text) from public, anon, authenticated;
+revoke all on function public.dispatch_get_run_protocol_version(text) from public, anon, authenticated;
+
+grant execute on function public.dispatch_create_prepared(text, text, jsonb, jsonb) to service_role;
+grant execute on function public.dispatch_cas_advance(text, text, bigint, text, text) to service_role;
+grant execute on function public.dispatch_request_run_stop(text, bigint, text) to service_role;
+grant execute on function public.dispatch_get_run_protocol_version(text) to service_role;
