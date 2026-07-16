@@ -29,6 +29,7 @@ type localFileSessionStore struct {
 	*fakeWorkflowStore
 	mu       sync.Mutex
 	filePath string
+	dataDir  string // BUG-288 R14-04: secret + sessions root
 }
 
 // NewLocalFileSessionStore creates a localFileSessionStore rooted at dataDir.
@@ -44,9 +45,20 @@ func NewLocalFileSessionStore(dataDir string) (*localFileSessionStore, error) {
 	s := &localFileSessionStore{
 		fakeWorkflowStore: newFakeWorkflowStore(),
 		filePath:          filepath.Join(dataDir, "sessions.ndjson"),
+		dataDir:           dataDir,
 	}
 	s.loadFromDisk()
 	return s, nil
+}
+
+// DataDir returns the store root (sessions.ndjson parent). Used to re-init the
+// durable run-marker secret when InteractiveService is wired with this store
+// (BUG-288 R14-04 — keep secret init independent of call-site ordering).
+func (s *localFileSessionStore) DataDir() string {
+	if s == nil {
+		return ""
+	}
+	return s.dataDir
 }
 
 // ndjsonSessionRecord is the on-disk JSON shape for a ProviderSessionState.

@@ -318,13 +318,14 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 			child.agentStatus = string(RunStatusFailed)
 			// V9-25: mark synthetic skip so late provider TurnFailed cannot re-append.
 			child.cohortSkipConsumed = true
-			// BUG-288 P1-14/P1-19: tell finishTurn's context.Canceled branch that
-			// this cancellation is a Stall Skip, not a generic Stop/interrupt, so
-			// it preserves Failed (Task-241 contract) instead of overwriting it
-			// to Cancelled when the cancel() below propagates back.
-			// BUG-288 R13-06: always set cause so a late cancel from gate path is
-			// also classified as skip (cancel may be nil while gate in flight).
-			child.stalledSkipCause = true
+			// BUG-288 P1-14/P1-19 + R14-01: only set stalledSkipCause when a
+			// turn-ctx cancel will reach finishTurn. Gate-in-flight skip
+			// (cancel==nil) already stamps Failed directly — setting the flag
+			// unconditionally leaked into a later Stop and misclassified it as
+			// "skipped by user (stalled)".
+			if cancel != nil {
+				child.stalledSkipCause = true
+			}
 			// BUG-288 R13-08: durable child FAILED snapshot (not only parent).
 			childSnap = sessionStateOf(child)
 			haveChildSnap = true

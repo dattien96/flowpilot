@@ -645,6 +645,13 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 	if workflowStore == nil {
 		workflowStore = newFakeWorkflowStore()
 	}
+	// BUG-288 R14-04: ensure durable run-marker secret is loaded whenever the
+	// service is wired (not only at NewLocalFileSessionStore construction). If
+	// the store is NDJSON, reuse its data dir; otherwise fall back to a
+	// process-stable default under the user config dir so pure-Supabase deploys
+	// still keep MAC continuity across restart (FlowContextInjected remains
+	// the secondary double-injection guard).
+	initRunMarkerSecretForStore(workflowStore)
 	// Reclaim Codex image-attachment temp dirs orphaned by a prior hard crash/kill
 	// (Task-052); the per-turn deferred cleanup cannot run in that case. Best-effort.
 	sweepCodexImageAttachments(time.Hour, time.Now())
@@ -5301,20 +5308,13 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 			s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "skipped by user (stalled)", Recoverable: false})
 			break
 		}
-		// BUG-288 R13-02: Stall Retry cancel must not buffer cohort "failed" or
-		// stamp the node FAILED — restart intent will re-run the member.
+		// BUG-288 R13-02 / R14-02: stall-retry cancel — one-shot
+		// stalledRetrySuppressCohort so emitLocked(EventTurnFailed) skips
+		// cohort-append + node-FAILED; keep Running for the pending restart.
 		if rs.stalledRetryCause {
 			rs.stalledRetryCause = false
-			// Suppress cohort append via cohortSkipConsumed-style flag: reuse
-			// stalledRetryCause consumed above; emitLocked checks pendingRestart
-			// on parent OR we set a one-shot suppress flag. Use cohortSkipConsumed
-			// only for skip; for retry set status Running and skip failed path.
 			rs.status = RunStatusRunning
 			rs.agentStatus = string(RunStatusRunning)
-			// Emit a non-cohort-appending interrupt: emitLocked still appends on
-			// EventTurnFailed — mark cohortSkipConsumed temporarily for this
-			// synthetic cancel only if already in a cohort, then clear after?
-			// Prefer: set a dedicated suppress flag checked in emitLocked.
 			rs.stalledRetrySuppressCohort = true
 			s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "interrupted for stall retry", Recoverable: true})
 			rs.stalledRetrySuppressCohort = false

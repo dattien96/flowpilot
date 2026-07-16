@@ -46,6 +46,26 @@ func newRunMarkerSecret() []byte {
 	return sum[:]
 }
 
+// initRunMarkerSecretForStore picks a durable secret directory from the
+// workflow store when possible (BUG-288 R14-04). LocalFileSessionStore already
+// inits on construction; this re-inits on service wire so ordering cannot skip
+// it. Non-NDJSON stores use a user-config default so pure-Supabase deploys still
+// keep MAC continuity (secondary guard: FlowContextInjected on session).
+func initRunMarkerSecretForStore(store WorkflowStore) {
+	if ls, ok := store.(*localFileSessionStore); ok {
+		if d := ls.DataDir(); d != "" {
+			InitRunMarkerSecretFromDir(d)
+			return
+		}
+	}
+	// Fallback: process-stable dir under user config (not project workspace).
+	base, err := os.UserConfigDir()
+	if err != nil || base == "" {
+		base = os.TempDir()
+	}
+	InitRunMarkerSecretFromDir(filepath.Join(base, "flowpilot", "marker"))
+}
+
 // InitRunMarkerSecretFromDir loads or creates a 32-byte secret at
 // dataDir/run_marker_secret so markers minted before restart still verify
 // after restart (BUG-288 R13-16). Safe to call multiple times; last load wins.
