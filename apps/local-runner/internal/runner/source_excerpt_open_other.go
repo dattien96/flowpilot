@@ -124,6 +124,10 @@ func openWorkspaceRegularFile(workspaceRoot, targetPath string) (*os.File, error
 	// Final consistency check: a fresh Lstat of the leaf, compared against
 	// the opened handle's own Stat via os.SameFile, catches a type swap that
 	// happened between the validation loop above and this Open call.
+	// BUG-288 R13-21: when ferr != nil we skip SameFile silently — residual
+	// race only; os.Root still prevents escape outside workspace. Intermediate
+	// in-root symlink swaps after validation can still pass SameFile (follow
+	// on Open) but cannot leave the workspace.
 	if fresh, ferr := root.Lstat(rel); ferr == nil {
 		if !os.SameFile(fresh, st) {
 			f.Close()

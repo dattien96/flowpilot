@@ -39,6 +39,8 @@ func NewLocalFileSessionStore(dataDir string) (*localFileSessionStore, error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, err
 	}
+	// BUG-288 R13-16: durable HMAC secret for flowpilot-fcp / flowpilot-cc markers.
+	InitRunMarkerSecretFromDir(dataDir)
 	s := &localFileSessionStore{
 		fakeWorkflowStore: newFakeWorkflowStore(),
 		filePath:          filepath.Join(dataDir, "sessions.ndjson"),
@@ -117,6 +119,12 @@ type ndjsonSessionRecord struct {
 	PendingResumeApprovalID           string   `json:"pending_resume_approval_id,omitempty"`
 	PendingResumeDecision             string   `json:"pending_resume_decision,omitempty"`
 	PendingResumeQuestionChoices      []string `json:"pending_resume_question_choices,omitempty"`
+	// BUG-288 R13-01: stall-Retry restart intent must survive LocalFileSessionStore
+	// (ProviderSessionState already had these; NDJSON record was missing them).
+	PendingRestartRunID               string   `json:"pending_restart_run_id,omitempty"`
+	PendingRestartPrompt              string   `json:"pending_restart_prompt,omitempty"`
+	// BUG-288 R13-16: durable flag so restart does not double-inject Flow Context.
+	FlowContextInjected               bool     `json:"flow_context_injected,omitempty"`
 	StopGeneration                    int64    `json:"stop_generation,omitempty"`
 	ParentStopGenSeen                 int64    `json:"parent_stop_gen_seen,omitempty"`
 	IntentBlockedKind                 string   `json:"intent_blocked_kind,omitempty"`
@@ -405,6 +413,9 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		PendingResumeApprovalID:         r.PendingResumeApprovalID,
 		PendingResumeDecision:           r.PendingResumeDecision,
 		PendingResumeQuestionChoices:    append([]string(nil), r.PendingResumeQuestionChoices...),
+		PendingRestartRunID:             r.PendingRestartRunID,
+		PendingRestartPrompt:            r.PendingRestartPrompt,
+		FlowContextInjected:             r.FlowContextInjected,
 		StopGeneration:                  r.StopGeneration,
 		ParentStopGenSeen:               r.ParentStopGenSeen,
 		IntentBlockedKind:               r.IntentBlockedKind,
@@ -838,6 +849,9 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		PendingResumeApprovalID:         s.PendingResumeApprovalID,
 		PendingResumeDecision:           s.PendingResumeDecision,
 		PendingResumeQuestionChoices:    append([]string(nil), s.PendingResumeQuestionChoices...),
+		PendingRestartRunID:             s.PendingRestartRunID,
+		PendingRestartPrompt:            s.PendingRestartPrompt,
+		FlowContextInjected:             s.FlowContextInjected,
 		StopGeneration:                  s.StopGeneration,
 		ParentStopGenSeen:               s.ParentStopGenSeen,
 		IntentBlockedKind:               s.IntentBlockedKind,

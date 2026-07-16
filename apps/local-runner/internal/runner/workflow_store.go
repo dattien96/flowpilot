@@ -242,6 +242,11 @@ type ProviderSessionState struct {
 	// existing PendingResume*/PendingGateReprompt* durable-intent pattern.
 	PendingRestartRunID string
 	PendingRestartPrompt string
+	// FlowContextInjected (BUG-288 R13-16) survives restart so a durable
+	// PendingRestartPrompt that already embeds a flowpilot-fcp marker does not
+	// get feature-history / FCP re-injected after process restart (MAC secret is
+	// per-process; the durable flag is the double-injection guard).
+	FlowContextInjected bool
 }
 
 type ProviderApprovalState struct {

@@ -323,10 +323,20 @@ func CaptureBaselineContext(ctx context.Context, repoDir, dotFlowpilotDir string
 		// with empty green list (same as a failed suite for capture purposes).
 		var envErr string
 		suitePassed, names, _, envErr, _ = executeSuite(ctx, repoDir, runner.Cmd, runner.Dir)
+		// BUG-288 R13-03: never write a baseline after cancellation — a red/empty
+		// baseline at the current HEAD would poison regression detection until
+		// HEAD advances with a clean tree.
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if envErr != "" {
 			suitePassed = false
 			names = nil
 		}
+	}
+	// Re-check after suite (or no-command path) before any WriteFile.
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
 	bl := &Baseline{
@@ -343,7 +353,15 @@ func CaptureBaselineContext(ctx context.Context, repoDir, dotFlowpilotDir string
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(guardDir, "test_baseline.json"), data, 0o644); err != nil {
+	// Atomic write so a crash mid-write cannot leave a truncated JSON that
+	// LoadBaseline treats as permanent fail-open (BUG-288 R13-13).
+	path := filepath.Join(guardDir, "test_baseline.json")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
 		return nil, err
 	}
 	return bl, nil

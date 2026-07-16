@@ -163,10 +163,9 @@ func uncommittedChangedPaths(workspace string) []string {
 			}
 		}
 	}
-	if err1 == nil {
-		add(diffOut)
-	}
-	if err2 == nil && len(paths) < 20 {
+	// Both git commands succeeded (early return above if either failed).
+	add(diffOut)
+	if len(paths) < 20 {
 		add(untrackedOut)
 	}
 	if time.Since(start) > time.Second {

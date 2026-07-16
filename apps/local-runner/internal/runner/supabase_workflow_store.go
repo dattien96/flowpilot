@@ -304,6 +304,10 @@ func (s *SupabaseWorkflowStore) UpsertProviderSession(ctx context.Context, sessi
 		"agent_name":          nilIfEmpty(session.AgentName),
 		"agent_role":          nilIfEmpty(session.Role),
 		"agent_status":        nilIfEmpty(session.AgentStatus),
+		// BUG-288 R13-01 / R13-16 (requires migration 20260716120000_*).
+		"pending_restart_run_id":  nilIfEmpty(session.PendingRestartRunID),
+		"pending_restart_prompt":  nilIfEmpty(session.PendingRestartPrompt),
+		"flow_context_injected":   session.FlowContextInjected,
 	})
 	if err != nil {
 		return err
@@ -364,6 +368,10 @@ type dbProviderSessionRow struct {
 	AgentName         string  `json:"agent_name"`
 	AgentRole         string  `json:"agent_role"`
 	AgentStatus       string  `json:"agent_status"`
+	// BUG-288 R13-01 / R13-16
+	PendingRestartRunID  *string `json:"pending_restart_run_id"`
+	PendingRestartPrompt *string `json:"pending_restart_prompt"`
+	FlowContextInjected  *bool   `json:"flow_context_injected"`
 	WorkflowRuns      *struct {
 		ProjectID  string `json:"project_id"`
 		WorkflowID string `json:"workflow_id"`
@@ -423,7 +431,7 @@ func (s *SupabaseWorkflowStore) ListProviderSessionsByProject(ctx context.Contex
 
 func (s *SupabaseWorkflowStore) GetProviderSession(ctx context.Context, runID string) (ProviderSessionState, bool, error) {
 	endpoint := fmt.Sprintf(
-		"%s/workflow_provider_sessions?workflow_run_id=eq.%s&select=workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,parent_run_id,agent_name,agent_role,agent_status,workflow_runs(project_id,workflow_id)&limit=1",
+		"%s/workflow_provider_sessions?workflow_run_id=eq.%s&select=workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,parent_run_id,agent_name,agent_role,agent_status,pending_restart_run_id,pending_restart_prompt,flow_context_injected,workflow_runs(project_id,workflow_id)&limit=1",
 		s.restURL, runID,
 	)
 	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
@@ -461,6 +469,15 @@ func (s *SupabaseWorkflowStore) GetProviderSession(ctx context.Context, runID st
 	}
 	if row.ProviderAccountID != nil {
 		sess.ProviderAccountID = *row.ProviderAccountID
+	}
+	if row.PendingRestartRunID != nil {
+		sess.PendingRestartRunID = *row.PendingRestartRunID
+	}
+	if row.PendingRestartPrompt != nil {
+		sess.PendingRestartPrompt = *row.PendingRestartPrompt
+	}
+	if row.FlowContextInjected != nil {
+		sess.FlowContextInjected = *row.FlowContextInjected
 	}
 	if row.WorkflowRuns != nil {
 		sess.ProjectID = row.WorkflowRuns.ProjectID

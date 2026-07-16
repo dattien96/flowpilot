@@ -140,7 +140,26 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	// first-time baseline capture short instead of always running under
 	// context.Background().
 	s.ensureBaselineReadyContext(ctx, cwd)
-	baseline, _ := flowgate.LoadBaseline(dotFP)
+	baseline, blErr := flowgate.LoadBaseline(dotFP)
+	if blErr != nil {
+		// BUG-288 R13-13: corrupt/unreadable baseline must fail-closed (not
+		// silently disable r-tests/r-reg). Missing file is (nil, nil).
+		log.Printf("[gate] LoadBaseline failed cwd=%q: %v (failing closed)", cwd, blErr)
+		msg := "gate baseline unreadable (test_baseline.json corrupt or unreadable): " + blErr.Error()
+		if s.gateEpochStillValid(runID, epoch) {
+			s.mu.Lock()
+			if rs2 := s.runs[runID]; rs2 != nil && rs2.gateEpoch == epoch {
+				s.emitLocked(rs2, ProviderEvent{
+					Type:           EventFlowGateViolation,
+					ProviderTurnID: turnID,
+					Error:          msg,
+					Status:         "block",
+				})
+			}
+			s.mu.Unlock()
+		}
+		return true
+	}
 
 	// 3. Load per-test overrides (Task-155): agreed-changed tests are not re-counted.
 	overrides, _ := flowgate.LoadOverrides(dotFP)
@@ -431,18 +450,27 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		// BUG-288 P1-17: same fail-closed contract as runFlowGateAtEpoch — an
 		// observation error must not be silently treated as "no changes",
 		// which could let Tier-1 pass with a fabricated empty diff.
+		// BUG-288 R13-04: also escalate parent so the child is not hung without
+		// an actionable hub surface (mirror Tier-1 block path).
 		log.Printf("[gate] child artifact-output gate: observe turn-scoped diff failed cwd=%q baseSHA=%q: %v (failing closed, blocking turn)", cwd, baseSHA, diffErr)
+		msg := "gate observation failed (workspace diff unreadable): " + diffErr.Error()
 		if s.gateEpochStillValid(runID, epoch) {
 			s.mu.Lock()
 			if rs2 := s.runs[runID]; rs2 != nil && rs2.gateEpoch == epoch {
 				s.emitLocked(rs2, ProviderEvent{
 					Type:           EventFlowGateViolation,
 					ProviderTurnID: turnID,
-					Error:          "gate observation failed (workspace diff unreadable): " + diffErr.Error(),
+					Error:          msg,
 					Status:         "block",
 				})
 			}
 			s.mu.Unlock()
+		}
+		if parentID != "" && s.gateEpochStillValid(runID, epoch) {
+			_, _ = s.applyFlowControl(parentID, FlowControlInput{
+				Status:  "escalate",
+				Summary: "flow gate block: " + msg,
+			})
 		}
 		return true
 	}
@@ -571,7 +599,31 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		// BUG-288 P2-04: cancellable via the caller's ctx (see runFlowGateAtEpoch).
 		s.ensureBaselineReadyContext(ctx, cwd)
 		dotFP := filepath.Join(cwd, ".flowpilot")
-		baseline, _ := flowgate.LoadBaseline(dotFP)
+		baseline, blErr := flowgate.LoadBaseline(dotFP)
+		if blErr != nil {
+			// BUG-288 R13-13: fail-closed when suite rules need baseline truth.
+			log.Printf("[gate] LoadBaseline (child) failed cwd=%q: %v (failing closed)", cwd, blErr)
+			msg := "gate baseline unreadable (test_baseline.json corrupt or unreadable): " + blErr.Error()
+			if s.gateEpochStillValid(runID, epoch) {
+				s.mu.Lock()
+				if rs2 := s.runs[runID]; rs2 != nil && rs2.gateEpoch == epoch {
+					s.emitLocked(rs2, ProviderEvent{
+						Type:           EventFlowGateViolation,
+						ProviderTurnID: turnID,
+						Error:          msg,
+						Status:         "block",
+					})
+				}
+				s.mu.Unlock()
+			}
+			if parentID != "" && s.gateEpochStillValid(runID, epoch) {
+				_, _ = s.applyFlowControl(parentID, FlowControlInput{
+					Status:  "escalate",
+					Summary: "flow gate block: " + msg,
+				})
+			}
+			return true
+		}
 		overrides, _ := flowgate.LoadOverrides(dotFP)
 		oracle := flowgate.RunOracleContext(ctx, cwd, baseline, diff, overrides)
 		// V9-27: split ordinary Failed vs true Regressed for r-tests / r-reg.
@@ -835,13 +887,14 @@ func observeTurnScopedDiff(cwd, baseSHA string, turnStartWorktree map[string]str
 	full, err := flowgate.ObserveGitDiffSince(cwd, baseSHA)
 	if err != nil {
 		if isNotAGitRepoErr(err) {
-			// Task-242 D-2: a workspace that is simply not a git repository at
-			// all (e.g. a non-code-writing reviewer/child whose cwd was never a
-			// repo) is a legitimate zero-cost no-op, not the "git is unreadable"
-			// failure this fix targets (BUG-288 P1-17). Only genuine read
-			// failures on an actual repo (corrupted repo, permission denied,
-			// git binary missing, etc.) fail closed below.
-			return nil, nil
+			// Task-242 D-2 / BUG-288 R13-10: carve-out only when the turn never
+			// observed a real repo (no base SHA and no worktree snapshot). If
+			// turn start had a HEAD/worktree, ".git disappeared mid-turn" is a
+			// real observation failure — fail closed, do not fabricate empty.
+			if strings.TrimSpace(baseSHA) == "" && len(turnStartWorktree) == 0 {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("observe git diff since %q: workspace was a git repo at turn start but is no longer readable: %w", baseSHA, err)
 		}
 		return nil, fmt.Errorf("observe git diff since %q: %w", baseSHA, err)
 	}
@@ -853,7 +906,11 @@ func observeTurnScopedDiff(cwd, baseSHA string, turnStartWorktree map[string]str
 		return full, nil
 	}
 	// Paths currently dirty (uncommitted only) for fingerprint compare.
-	currentDirty, _ := flowgate.ObserveGitDiff(cwd)
+	// BUG-288 R13-12: second observation must also fail-closed (not swallow).
+	currentDirty, err2 := flowgate.ObserveGitDiff(cwd)
+	if err2 != nil {
+		return nil, fmt.Errorf("observe current dirty worktree: %w", err2)
+	}
 	dirtyNow := make(map[string]flowgate.ChangedFile, len(currentDirty))
 	for _, f := range currentDirty {
 		dirtyNow[filepath.ToSlash(f.Path)] = f
@@ -1656,19 +1713,27 @@ var (
 )
 
 // ensureBaseline captures or refreshes the test baseline for cwd asynchronously
-// with per-cwd singleflight (Task-156 / BUG-288 #3). BUG-288 P2-04 (Vòng 12):
-// this fire-and-forget entry point has no caller-scoped context to thread
-// (it fires from startTurn before the turn's own ctx is meaningful for a
-// suite that may outlive this one turn), so it deliberately falls back to
-// ensureBaselineReady's context.Background() overload — Stop still cannot
-// cancel THIS particular warm-up path, but every gate-evaluation call site
-// (runFlowGateAtEpoch, runChildArtifactOutputGateAtEpoch, runValidateNode)
-// now uses ensureBaselineReadyContext with its own cancellable ctx instead.
+// with per-cwd singleflight (Task-156 / BUG-288 #3). BUG-288 R13-14: when the
+// turn already has a cancellable ctx, prefer ensureBaselineReadyContext so the
+// warm-up is cut short on Stop instead of always using Background.
 func (s *InteractiveService) ensureBaseline(cwd string) {
 	if cwd == "" {
 		return
 	}
 	go s.ensureBaselineReady(cwd)
+}
+
+// ensureBaselineWithContext is ensureBaseline but threads a run-scoped ctx
+// into the warm-up capture (BUG-288 R13-14).
+func (s *InteractiveService) ensureBaselineWithContext(ctx context.Context, cwd string) {
+	if cwd == "" {
+		return
+	}
+	if ctx == nil {
+		go s.ensureBaselineReady(cwd)
+		return
+	}
+	go s.ensureBaselineReadyContext(ctx, cwd)
 }
 
 // ensureBaselineReady blocks until a RefreshBaselineIfStale attempt finishes
@@ -1694,7 +1759,11 @@ func (s *InteractiveService) ensureBaselineReadyContext(ctx context.Context, cwd
 	baselineMu.Lock()
 	if ch, ok := baselineInflight[cwd]; ok {
 		baselineMu.Unlock()
-		<-ch
+		// BUG-288 R13-14: waiters must honor ctx so Stop does not block ~5m.
+		select {
+		case <-ch:
+		case <-ctx.Done():
+		}
 		return
 	}
 	ch := make(chan struct{})

@@ -7,7 +7,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"flowpilot-runner/internal/agentpack"
@@ -19,27 +23,64 @@ import (
 // HTML comment) instead (V10R4 P1 PromptEnvelope).
 const flowContextHandoffPrefix = "[FlowPilot flow context package]"
 
-// runMarkerSecret is a process-lifetime random value used to HMAC-bind
-// double-injection markers to the run/package id they name (BUG-288 P1-20,
-// scoped fix for the still-open P1-10 residual). It is generated once at
-// process start and is NEVER derived from user input or anything the desktop
-// client can observe, so a user cannot forge a valid marker for any run id
-// just by knowing/guessing that id (which IS visible in the UI/API) — without
-// this secret they cannot reproduce the MAC suffix the runner itself embeds.
-// A full PromptEnvelope/structured-origin rework (tracked as P1-10) is a
-// larger change; this closes the concrete forgeability gap with a minimal,
-// local addition to the existing marker format.
-var runMarkerSecret = newRunMarkerSecret()
+// runMarkerSecret HMAC-binds double-injection markers (BUG-288 P1-20 / R13-16).
+// Prefer a durable file under the local session store dir so MAC verifies across
+// process restart; otherwise generate once at process start.
+var (
+	runMarkerSecretMu sync.RWMutex
+	runMarkerSecret   = newRunMarkerSecret()
+)
 
 func newRunMarkerSecret() []byte {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err == nil {
 		return b
 	}
-	// crypto/rand failing is effectively unreachable on supported platforms;
-	// fall back to a time-derived value rather than an empty/zero secret.
-	sum := sha256.Sum256([]byte(time.Now().String()))
+	// BUG-288 R13-19: crypto/rand failing is effectively unreachable; never use
+	// a low-entropy time-only fallback that is brute-forceable from start time.
+	var stackSink int
+	sum := sha256.Sum256([]byte(
+		fmt.Sprintf("flowpilot-run-marker-fallback|%s|%p|%d",
+			time.Now().String(), &stackSink, time.Now().UnixNano()),
+	))
 	return sum[:]
+}
+
+// InitRunMarkerSecretFromDir loads or creates a 32-byte secret at
+// dataDir/run_marker_secret so markers minted before restart still verify
+// after restart (BUG-288 R13-16). Safe to call multiple times; last load wins.
+func InitRunMarkerSecretFromDir(dataDir string) {
+	if strings.TrimSpace(dataDir) == "" {
+		return
+	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		log.Printf("[marker] mkdir for run_marker_secret: %v", err)
+		return
+	}
+	path := filepath.Join(dataDir, "run_marker_secret")
+	if data, err := os.ReadFile(path); err == nil && len(data) >= 32 {
+		sec := make([]byte, 32)
+		copy(sec, data[:32])
+		runMarkerSecretMu.Lock()
+		runMarkerSecret = sec
+		runMarkerSecretMu.Unlock()
+		return
+	}
+	sec := newRunMarkerSecret()
+	if err := os.WriteFile(path, sec, 0o600); err != nil {
+		log.Printf("[marker] write run_marker_secret: %v (using process-local secret)", err)
+	}
+	runMarkerSecretMu.Lock()
+	runMarkerSecret = sec
+	runMarkerSecretMu.Unlock()
+}
+
+func currentRunMarkerSecret() []byte {
+	runMarkerSecretMu.RLock()
+	defer runMarkerSecretMu.RUnlock()
+	out := make([]byte, len(runMarkerSecret))
+	copy(out, runMarkerSecret)
+	return out
 }
 
 // runMarkerMAC returns a short, non-forgeable tag binding kind+id to this
@@ -47,7 +88,7 @@ func newRunMarkerSecret() []byte {
 // (fcp = flow context package, cc = change contract) so a MAC computed for
 // one cannot be replayed as the other.
 func runMarkerMAC(kind, id string) string {
-	mac := hmac.New(sha256.New, runMarkerSecret)
+	mac := hmac.New(sha256.New, currentRunMarkerSecret())
 	mac.Write([]byte(kind))
 	mac.Write([]byte{0})
 	mac.Write([]byte(id))
@@ -90,7 +131,11 @@ func flowContextTrustedMarker(runOrPackageID string) string {
 // runMarkerSecret — a line that merely LOOKS like "<!-- flowpilot-fcp:X -->"
 // (any X a user can type, including a real, guessed, or copied run id) is no
 // longer sufficient; only a MAC this process itself generated passes.
-func isFlowContextHandoff(prompt string) bool {
+//
+// BUG-288 R13-15: when expectedIDs is non-empty, the marker id must match one
+// of them (typically rs.id and plan package id) so a valid MAC from another
+// run cannot be replayed cross-run.
+func isFlowContextHandoff(prompt string, expectedIDs ...string) bool {
 	for _, line := range strings.Split(prompt, "\n") {
 		t := strings.TrimSpace(line)
 		if !strings.HasPrefix(t, "<!-- flowpilot-fcp:") || !strings.HasSuffix(t, "-->") {
@@ -105,6 +150,18 @@ func isFlowContextHandoff(prompt string) bool {
 		id, tag := body[:idx], body[idx+1:]
 		if id == "" || !verifyRunMarkerMAC("fcp", id, tag) {
 			continue
+		}
+		if len(expectedIDs) > 0 {
+			ok := false
+			for _, e := range expectedIDs {
+				if e != "" && e == id {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				continue
+			}
 		}
 		return true
 	}

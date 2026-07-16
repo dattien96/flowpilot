@@ -179,7 +179,9 @@ func (s *InteractiveService) checkAndBlockStalledMembers(parentRunID string) boo
 	for _, child := range s.openCohortMemberRuns(parentRunID) {
 		s.mu.Lock()
 		// Gate visible → wait forever (T-11(a)); do not stall.
-		hasGate := child.pendingApprovalID != "" || child.pendingQuestionID != ""
+		// BUG-288 R13-06: post-turn gate in progress is also a "gate" — not stalled.
+		hasGate := child.pendingApprovalID != "" || child.pendingQuestionID != "" ||
+			child.postTurnGateCancel != nil || child.pendingFlowGateSettle
 		last := child.lastProviderEventAt
 		label := child.label
 		status := child.status
@@ -283,9 +285,33 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 		if s.isFlowEngineDriven(parentRunID) {
 			s.setFlowStepStatus(context.Background(), parentRunID, nodeID, StepStatusFailed)
 		}
+		var childSnap ProviderSessionState
+		var haveChildSnap bool
 		if child != nil {
 			s.mu.Lock()
 			cancel := child.turnCancel
+			// BUG-288 R13-06: gate may still be running (turnCancel=nil, pending settle).
+			// Invalidate the gate epoch and clear settle so a late gate-pass cannot
+			// overwrite Failed with Completed.
+			child.gateEpoch++
+			if child.postTurnGateCancel != nil {
+				gCancel := child.postTurnGateCancel
+				child.postTurnGateCancel = nil
+				child.pendingFlowGateSettle = false
+				child.pendingFlowGateFinalMsg = ""
+				child.pendingFlowGateOccurredAt = ""
+				child.pendingFlowGateTurnID = ""
+				child.pendingGateChangedFiles = nil
+				s.mu.Unlock()
+				gCancel()
+				s.mu.Lock()
+			} else if child.pendingFlowGateSettle {
+				child.pendingFlowGateSettle = false
+				child.pendingFlowGateFinalMsg = ""
+				child.pendingFlowGateOccurredAt = ""
+				child.pendingFlowGateTurnID = ""
+				child.pendingGateChangedFiles = nil
+			}
 			child.turnCancel = nil
 			child.turnInFlight = false
 			child.status = RunStatusFailed
@@ -296,12 +322,20 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 			// this cancellation is a Stall Skip, not a generic Stop/interrupt, so
 			// it preserves Failed (Task-241 contract) instead of overwriting it
 			// to Cancelled when the cancel() below propagates back.
-			if cancel != nil {
-				child.stalledSkipCause = true
-			}
+			// BUG-288 R13-06: always set cause so a late cancel from gate path is
+			// also classified as skip (cancel may be nil while gate in flight).
+			child.stalledSkipCause = true
+			// BUG-288 R13-08: durable child FAILED snapshot (not only parent).
+			childSnap = sessionStateOf(child)
+			haveChildSnap = true
 			s.mu.Unlock()
 			if cancel != nil {
 				cancel()
+			}
+			if haveChildSnap {
+				if err := s.persistProviderSession(childSnap); err != nil {
+					log.Printf("[stall] persist skip child=%q: %v", child.id, err)
+				}
 			}
 		}
 		if cohortID != "" {
@@ -363,12 +397,11 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 			}
 			inFlight := child.turnInFlight
 			cancel := child.turnCancel
-			if inFlight && cancel != nil {
-				// BUG-288 P1-18/P1-14: persist the restart intent durably on the
-				// parent BEFORE cancelling the in-flight child turn. Previously
-				// this intent only lived in RAM; a crash between cancel() and
-				// finishTurn actually re-starting the turn (line ~5056) silently
-				// dropped the retry with no trace and no way to recover it.
+			gateBusy := child.postTurnGateCancel != nil || child.pendingFlowGateSettle
+			// BUG-288 R13-07: post-turn gate window (inFlight + cancel==nil) must
+			// park restart intent instead of force-clearing inFlight and startTurn
+			// which fails with gate_in_progress and loses the retry.
+			if (inFlight && cancel != nil) || gateBusy {
 				var parentSnap ProviderSessionState
 				var havePersist bool
 				if parent := s.runs[parentRunID]; parent != nil {
@@ -377,14 +410,21 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 					parentSnap = sessionStateOf(parent)
 					havePersist = true
 				}
-				child.turnCancel = nil
+				if cancel != nil {
+					child.stalledRetryCause = true
+					child.turnCancel = nil
+				}
+				// When only gate is busy, keep pendingFlowGateSettle; finishTurn
+				// tail will consume pendingRestart after gate settles / cancels.
 				s.mu.Unlock()
 				if havePersist {
 					if err := s.persistProviderSession(parentSnap); err != nil {
 						log.Printf("[stall] persist restart intent parent=%q child=%q: %v (retry kept in-memory only; may be lost on crash)", parentRunID, runID, err)
 					}
 				}
-				cancel()
+				if cancel != nil {
+					cancel()
+				}
 				break
 			}
 			child.turnInFlight = false
@@ -399,5 +439,8 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 	snap := s.agentGraphSnapshot(parentRunID)
 	s.emitAgentGraph(parentRunID, snap)
 	go s.persistParentSession(parentRunID)
+	// BUG-288 R13-09: one-shot stall timer is cleared on fire; re-arm so siblings
+	// that were already silent still get member_stalled after skip/retry of another.
+	s.maybeScheduleStallCheck(parentRunID)
 	return snap, true, nil
 }

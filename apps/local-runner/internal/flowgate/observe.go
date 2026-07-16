@@ -2,9 +2,16 @@ package flowgate
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"strings"
 )
+
+// gitEnv forces English git messages (BUG-288 R13-11) so isNotAGitRepoErr and
+// similar classifiers do not break when the user's LANG is non-English.
+func gitEnv() []string {
+	return append(os.Environ(), "LC_ALL=C", "LANG=C")
+}
 
 // ObserveGitDiffSince returns changed files between baseSHA and HEAD (committed
 // changes) combined with any uncommitted working-tree changes. This is the
@@ -28,6 +35,7 @@ func ObserveGitDiffSince(repoDir, baseSHA string) ([]ChangedFile, error) {
 
 	// git diff -z --name-status <baseSHA>..HEAD
 	cmd := exec.Command("git", "-C", repoDir, "diff", "-z", "--name-status", baseSHA+"..HEAD")
+	cmd.Env = gitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		// Distinguish empty range (ok) from real failure. Exit 0/1 with empty
@@ -56,6 +64,7 @@ func ObserveGitDiffSince(repoDir, baseSHA string) ([]ChangedFile, error) {
 func ObserveGitDiff(repoDir string) ([]ChangedFile, error) {
 	// -z + -uall: NUL-terminated records; expand untracked dirs to files (V9-15).
 	cmd := exec.Command("git", "-C", repoDir, "status", "--porcelain", "-z", "-uall")
+	cmd.Env = gitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -65,13 +74,11 @@ func ObserveGitDiff(repoDir string) ([]ChangedFile, error) {
 
 // parsePorcelainZ parses `git status --porcelain -z` output.
 // Format: XY <path>\0  or, for rename/copy, XY <path>\0<orig_path>\0.
-// BUG-288 P2-05 (Vòng 12): git-status(1) documents that the -z format
-// REVERSES the human-readable "ORIG_PATH -> PATH" field order — the first
-// NUL-delimited field is the CURRENT/destination path, and the second
-// (rename/copy only) is the ORIGINAL/source path. A previous version of this
-// parser assumed the same order as the non-z textual form (orig first) and
-// overwrote the correct destination path with the stale source path for
-// every rename/copy entry. V10: do NOT TrimSpace — leading/trailing
+// BUG-288 P2-05 (Vòng 12): git-status(1) documents that for -z rename/copy the
+// first NUL-delimited path field is the CURRENT/destination path and the second
+// is the ORIGINAL/source path (NOT the same order as the human-readable
+// "ORIG_PATH -> PATH" form). A previous parser assumed the non-z order and
+// overwrote destination with source. V10: do NOT TrimSpace — leading/trailing
 // whitespace in filenames is legal.
 func parsePorcelainZ(out []byte) []ChangedFile {
 	var files []ChangedFile

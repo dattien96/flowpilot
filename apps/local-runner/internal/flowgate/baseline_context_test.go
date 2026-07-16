@@ -33,11 +33,15 @@ func TestCaptureBaselineContextHonorsCancellation(t *testing.T) {
 	cancel()
 
 	bl, err := CaptureBaselineContext(ctx, dir, dotFP)
-	if err != nil {
-		t.Fatalf("CaptureBaselineContext: %v", err)
+	// BUG-288 R13-03: cancellation must abort WITHOUT writing a poisoned baseline.
+	if err == nil {
+		t.Fatal("CaptureBaselineContext with cancelled ctx must return an error (no poisoned baseline)")
 	}
-	if bl.SuitePassed {
-		t.Fatal("an already-cancelled context must not let the suite report SuitePassed=true")
+	if bl != nil {
+		t.Fatal("cancelled capture must not return a baseline value")
+	}
+	if _, statErr := os.Stat(filepath.Join(dotFP, "guard", "test_baseline.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("cancelled capture must not leave test_baseline.json on disk; stat err=%v", statErr)
 	}
 }
 

@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Vòng 9–10 + residual re-audit #2 hoàn tất. Vòng 11 (9 finding: P1-01, P1-04, P1-05, P1-07, P1-08, P1-09, P2-01, P2-02, P2-03, P1-11) đã fix (2026-07-16). Vòng 12 (7 P1 + 3 P2 code + 3 P2 doc-only) cũng đã fix (2026-07-16) — xem §11 "Vòng 12". Status vẫn giữ `inprogress` cho đến khi có một pass Codex re-review mới xác nhận sạch (chưa tự đổi thành `done` chỉ dựa trên self-test).
+- Vòng 9–12 Fixed (2026-07-16). **Vòng 13 (Grok code fix): R13-01…R13-27 Fixed (2026-07-16)** — xem §11 "Vòng 13". **Vòng 14 (Claude re-review code Grok + NEW-bug sweep): Vòng 13 vững, không P1/P2 mới; chỉ 4 residual P3 (R14-01…R14-04) OPEN** — xem §11 "Vòng 14". Status giữ `inprogress` đến khi Codex re-review pass sạch (chưa tự flip `done`).
 
 ### Key Decisions
 
@@ -942,7 +942,7 @@ Append transition phải có acknowledged sequence/outbox. Không công bố tra
 
 ---
 
-### P2-04 — Quote tokenizer làm mất path sau contraction/apostrophe
+### P2-04 Fixed — Quote tokenizer làm mất path sau contraction/apostrophe
 
 Tokenizer coi mọi `'` là mở quote, kể cả apostrophe trong `"don't inspect src/foo.go"`. Không có closing quote nên phần còn lại thành một token sai và explicit path bị mất.
 
@@ -1080,9 +1080,73 @@ Tóm lại vòng 11: 9 finding còn mở (P1-01, P1-04, P1-05, P1-07, P1-08, P1-
 
 Tóm lại vòng 12: 7 P1 + 3 P2 (code) đã fix và có test riêng; 3 P2 doc-only (CP-50 stale links, Task-247/Task-243 upstream sync, BUG-288 self-contradiction) đã fix trực tiếp trong doc (không qua code-fix agent). `TestIdempotentTurn` ordering bug (phát hiện ngoài scope lúc verify Vòng 11) đã fix trước đó.
 
+### Vòng 13 — Re-review Vòng 12 + edge-case sweep (2026-07-16) — **Fixed**
+
+Re-review 10 fix Vòng 12 + edge-case sweep (Claude). **R13-01…R13-27 Fixed (2026-07-16)**.
+
+#### Fix summary
+
+| ID | Sev | Fix (tóm tắt) |
+| ---- | --- | ------------- |
+| R13-01 | P1 | `pending_restart_*` trong NDJSON + Supabase migration; round-trip + cancel-ordering tests |
+| R13-02 | P1 | `stalledRetryCause` / `stalledRetrySuppressCohort` — không buffer cohort failed khi stall-retry cancel |
+| R13-03 | P1 | Cancel → không WriteFile baseline; atomic rename `test_baseline.json` |
+| R13-04 | P1 | Child observation error → escalate parent |
+| R13-05 | P2 | Persist-fail block/reprompt → `skipNextTurnIdleNotify` + fail-count |
+| R13-06 | P2 | Skip bump `gateEpoch`/clear settle; gate-pass refuse Completed nếu `cohortSkipConsumed` |
+| R13-07 | P2 | Retry khi gate busy → park `pendingRestart*` |
+| R13-08 | P2 | Skip persist child FAILED durable |
+| R13-09 | P2 | `maybeScheduleStallCheck` sau member action |
+| R13-10 | P2 | Non-repo carve-out chỉ khi không có baseSHA/worktree turn-start |
+| R13-11 | P2 | `LC_ALL=C` / `LANG=C` cho git observe |
+| R13-12 | P2 | Second `ObserveGitDiff` fail-closed |
+| R13-13 | P2 | Corrupt baseline fail-closed (gate block; validate EnvError) |
+| R13-14 | P2 | Warm-up baseline under turn ctx; waiter `select ctx.Done()` |
+| R13-15 | P2 | `isFlowContextHandoff(prompt, expectedIDs...)` bind run id |
+| R13-16 | P2 | Durable `run_marker_secret` file + `FlowContextInjected` session field |
+| R13-17 | P2 | `flowValidationRetryState` commit sau persist OK |
+| R13-18 | P2 | Escalate paths thống nhất `return true` + awaiting-user |
+| R13-19 | P3 | Marker secret fallback mix entropy (không time-only) |
+| R13-20 | P3 | Không tăng attempt budget khi persist fail (cùng R13-17) |
+| R13-21 | P3 | Comment residual SameFile skip (non-unix) |
+| R13-22 | P3 | `errors.Is(err, fs.ErrNotExist)` omission reason |
+| R13-23 | P3 | Tests: ordering, store round-trip, corrupt baseline, marker, junction/absolute |
+| R13-24 | P3 | Sửa comment `-z` destination-first trong `observe_test.go` |
+| R13-25 | P3 | Comment dead "Consumed" branch trong flush intents |
+| R13-26 | P3 | Dọn dead `err1/err2` branches trong `uncommittedChangedPaths` |
+| R13-27 | P3 | Doc-sync: mục P2-04 (apostrophe tokenizer) đánh dấu Fixed dưới đây |
+
+#### P2-04 (doc-sync R13-27) — **Fixed**
+
+Apostrophe tokenizer (`tokenizePromptTokens` / `atBoundary`, V10R4) đã fix trong code; mục này ghi nhận **Fixed** khi đóng Vòng 13.
+
+#### Verification Vòng 13
+
+- `bug288_round13_test.go` + related: LocalFileSessionStore restart intent, stall-retry cohort suppress, marker run-id bind, observe carve-out, secret durable reload, corrupt baseline EnvError, skip child persist, cancel-before-persist ordering.
+- `flowgate`: `TestCaptureBaselineContextHonorsCancellation` (no poisoned write), rename destination path.
+- `source_excerpt_open_other_test.go`: junction/absolute rejection paths (Windows).
+
+### Vòng 14 — Re-review code Grok (Vòng 13) + NEW-bug sweep (2026-07-16)
+
+Review lại toàn bộ 17-file diff Vòng 13 (Grok viết code) + quét regression/NEW-bug (Claude, 1 adversarial agent chuyên concurrency/lock/lifecycle + verify thủ công từng P1). **Kết luận: Vòng 13 về cơ bản vững — không P1/P2 mới.** Build/vet sạch; 12/12 test `bug288_round13_test.go` pass; flowgate+changecontract 199 pass; full runner suite 19 fail đều khớp **chính xác** baseline pre-existing (Windows path, codex resume, google-drive mcp, skills merge, grok slot, git-guard shim, engine_setup, compat) — **không regression mới**, giảm 2 fail so với Vòng 12.
+
+R13-01…R13-27 đã verify đóng đúng (trace code thật, không chỉ tin agent). Sweep phát hiện 4 residual toàn **P3**:
+
+| ID | Sev | Finding | Solution |
+| ---- | --- | ------- | -------- |
+| `R14-01` | P3 | **Flag leak do R13-06:** `child.stalledSkipCause = true` đặt **vô điều kiện** (`cohort_stall.go:327`) nhưng consumer duy nhất là `finishTurn` nhánh `context.Canceled` (`interactive_service.go:5299`). Khi `cancel == nil` (skip lúc post-turn gate đang chạy), `gCancel()` chỉ hủy ctx của gate, KHÔNG tạo turn-ctx cancel → finishTurn không chạy lại → flag kẹt `true` (RAM) trên child. Nếu child (đã Failed + `cohortSkipConsumed`) về sau restart và turn mới bị user Stop → finishTurn thấy flag leak → emit `"skipped by user (stalled)"` (`Recoverable:false`) + ép Failed thay vì Cancelled. RAM-only (clear khi restart process), reachability hẹp vì child đã terminal. | Revert về conditional `if cancel != nil { child.stalledSkipCause = true }` (flag chỉ có tác dụng khi có turn-ctx cancel tới finishTurn; case gate-in-flight đã set `status=Failed` trực tiếp nên không cần flag) — HOẶC reset `stalledSkipCause` khi child re-arm/restart. |
+| `R14-02` | P3 | **Comment lộn xộn** trong nhánh R13-02 của `finishTurn` (`interactive_service.go:5308-5317`): stream-of-consciousness, tự hỏi "then clear after?", mô tả cả cách tiếp cận đã loại bỏ (`cohortSkipConsumed`). Logic đúng nhưng comment gây nhiễu người đọc/maintainer. | Rút gọn còn 1-2 dòng: "Stall-retry cancel: set one-shot `stalledRetrySuppressCohort` để `emitLocked(EventTurnFailed)` bỏ qua cohort-append + node-FAILED; status giữ Running cho restart." |
+| `R14-03` | P3 (doc) | **Mất chi tiết Vòng 13 trong doc:** khi Grok viết §11 "Vòng 13 Fixed", bảng tóm tắt thay thế phần findings chi tiết + solution per-finding (bản Claude viết ở pass trước). Nội dung chi tiết chỉ còn trong git history của working-tree + `CA-329`. | Khôi phục phần findings chi tiết R13-01…R13-27 (hoặc link rõ tới `CA-329` + commit) để ledger giữ đủ mô tả gốc từng finding, không chỉ 1 dòng "fix summary". |
+| `R14-04` | P3 (completeness) | **R13-16 secret durable chỉ init qua NDJSON store:** `InitRunMarkerSecretFromDir` chỉ gọi từ `NewLocalFileSessionStore` (`local_file_session_store.go:43`). Deployment thuần-Supabase (không local file store) vẫn dùng secret per-process → marker MAC không verify qua restart ở môi trường đó. Che chắn: flag `FlowContextInjected` durable vẫn chặn double-injection; desktop-flowpilot dùng NDJSON nên không ảnh hưởng target hiện tại. | Init secret ở nơi độc lập store (vd khi khởi tạo `InteractiveService` với data dir) để cả path Supabase cũng có secret durable — hoặc ghi rõ giới hạn "NDJSON-only" trong comment. |
+
+**Ghi chú (không phải bug):** `emitLocked(EventTurnFailed)` khi `stalledRetrySuppressCohort` set vẫn append/persist/broadcast event với `status=Running` (`Recoverable:true`) — theo thiết kế (interrupt-for-retry). Flag set/clear đồng bộ dưới `s.mu` trong `finishTurn` nên không caller `emitLocked` khác quan sát được flag → không leak cross-turn. Chỉ là replay-inconsistency nhẹ (trailing TurnFailed + run Running), agent không tie được vào reconstruction sai.
+
+Tất cả R14-01…R14-04 là P3, có thể gộp vào một pass polish cùng lần đóng cuối; không chặn correctness của Vòng 13.
+
 ## 12. Completion Notes
 
-- result: **inprogress** — Vòng 9 + Vòng 10 + residual re-audits: V9-01…V9-30 + V10-01…V10-10 + V10R-01…V10R-05 + V10R2-01…V10R2-05 Fixed (2026-07-16 record). Vòng 11: 9 finding (P1-01, P1-04, P1-05, P1-07, P1-08, P1-09, P2-01, P2-02, P2-03, P1-11) Fixed (2026-07-16). Vòng 12: 7 P1 + 6 P2 (3 code + 3 doc-only) Fixed (2026-07-16). Document vẫn giữ `Status: inprogress` — chưa có full Codex re-review pass xác nhận "Vòng 13" sạch, nên chưa tự ý đổi lại thành `done`.
+- result: **inprogress** — Vòng 9–12 Fixed (2026-07-16). **Vòng 13: R13-01…R13-27 Fixed (2026-07-16)** — durable restart intent/marker secret, stall-retry cohort, baseline/observe fail-closed, validate RAM channel, gate lifecycle window, tests/doc. Document giữ `Status: inprogress` until clean Codex re-review (không tự flip `done`).
 - primary modules: `apps/local-runner/internal/runner/*`, `apps/local-runner/internal/flowgate/*`.
-- docs moved: `Task-238`–`Task-242`, `Task-244`–`Task-247` → `08-Task/done/`; `CP-50` → `07-Coding-Plan/done/`. CP-50's 4 stale `08-Task/todo/*` links fixed to `done`/`inprogress` (2026-07-16, Vòng 12 P2 finding). CP-43 §3 và Task-243 §8 đã bổ sung upstream reference cho CP-50 P-4/Task-247 (2026-07-16, Vòng 12 P2 finding).
-- verification: residual + gate/resume suites pass (`TestParentResumeReconstructsPendingGateChild`, `TestRootPendingGateNotCancelledByNormalize`, `TestResumeGateMaterializesTurnID`, `TestUndoForceShellBridgeCommits`, …). Vòng 11 verification: xem block "Verification đã chạy" ở trên. Vòng 12 verification: xem block "Verification Vòng 12" ở trên.
+- docs moved: `Task-238`–`Task-242`, `Task-244`–`Task-247` → `08-Task/done/`; `CP-50` → `07-Coding-Plan/done/`.
+- change-audit: `CA-328` (initial BUG-288 land), `CA-329` (Vòng 13 residual close).
+- verification: Vòng 13 focused suites pass. **Vòng 14 re-review (2026-07-16): Vòng 13 code (Grok) đã verify vững — build/vet sạch, 12 test R13 pass, 199 flowgate/changecontract pass, full runner 19 fail = baseline pre-existing (no new regression). NEW-bug sweep chỉ ra 4 residual P3 (R14-01…R14-04), không P1/P2.** Broader Codex re-review still outstanding for `done`.

@@ -8,16 +8,13 @@ import (
 )
 
 // TestObserveGitDiffRenameUsesDestinationPath is the focused regression test
-// requested by BUG-288 P2-05 (Vòng 12): `git status --porcelain -z` emits two
-// NUL-separated path fields for a staged rename/copy entry (per git-status(1)
-// Porcelain Format Version 1: "XY ORIG_PATH -> PATH", preserved in the same
-// field order for -z, just NUL-separated instead of " -> "). A parser that
-// does not specifically consume BOTH fields for R/C status codes — or that
-// picks the wrong one of the two as "the path" — could have policy checks
-// (r-ca / r-contract / scope) evaluate against the OLD (source) path instead
-// of the actual destination the AI renamed the file to. This test locks in
-// that parsePorcelainZ (via ObserveGitDiff) reports the NEW/destination path
-// for a staged rename, not the old one.
+// requested by BUG-288 P2-05 (Vòng 12). For `git status --porcelain -z`,
+// rename/copy records use two NUL-separated path fields where the FIRST is the
+// CURRENT/destination path and the SECOND is the ORIGINAL/source path (this is
+// the reverse of the human-readable "ORIG_PATH -> PATH" form — see git-status(1)
+// and BUG-288 R13-24). parsePorcelainZ (via ObserveGitDiff) must report the
+// destination path for staged renames so r-ca / r-contract / scope evaluate the
+// file the AI actually wrote to.
 func TestObserveGitDiffRenameUsesDestinationPath(t *testing.T) {
 	dir := t.TempDir()
 	run := func(args ...string) {

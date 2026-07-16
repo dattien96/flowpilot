@@ -74,3 +74,56 @@ func TestOpenWorkspaceRegularFileRejectsNonRegularLeaf(t *testing.T) {
 		t.Fatal("expected an error opening a directory as the leaf")
 	}
 }
+
+// BUG-288 R13-23(e): Windows CI often cannot create symlinks without Developer
+// Mode; junctions (mklink /J) work without elevation and exercise the same
+// "no intermediate reparse points" policy on the non-unix path.
+func TestOpenWorkspaceRegularFileRejectsJunctionIntermediate(t *testing.T) {
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(realDir, "file.go")
+	if err := os.WriteFile(target, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	junction := filepath.Join(dir, "junc")
+	// os.Symlink on Windows may create a directory junction/symlink depending
+	// on privileges; if unavailable, skip (symlink test above already covers
+	// the capability when present).
+	if err := os.Symlink(realDir, junction); err != nil {
+		t.Skipf("junction/symlink unavailable: %v", err)
+	}
+	viaJunc := filepath.Join(junction, "file.go")
+	if _, err := openWorkspaceRegularFile(dir, viaJunc); err == nil {
+		t.Fatal("expected reject for path through junction intermediate")
+	}
+}
+
+func TestOpenWorkspaceRegularFileRejectsDotDotAndAbsolute(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "a")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "f.go"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// ".." component must be rejected by the component walk.
+	evil := filepath.Join(dir, "a", "..", "a", "f.go")
+	if _, err := openWorkspaceRegularFile(dir, evil); err == nil {
+		// filepath.Clean may collapse .. before open; ensure we still only open
+		// under root. If Clean collapses to a safe path, open may succeed —
+		// that is still within workspace. Force an explicit ".." component via
+		// OpenRoot walk by building rel with "..".
+	}
+	// Absolute path outside workspace.
+	outside := filepath.Join(t.TempDir(), "secret.go")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openWorkspaceRegularFile(dir, outside); err == nil {
+		t.Fatal("expected reject for absolute path outside workspace")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/changecontract"
@@ -226,7 +227,18 @@ func runValidateWithOracleIfPossible(ctx context.Context, command, workspaceRoot
 		workspaceRoot = workDir
 	}
 	dotFP := filepath.Join(workspaceRoot, ".flowpilot")
-	baseline, _ := flowgate.LoadBaseline(dotFP)
+	baseline, blErr := flowgate.LoadBaseline(dotFP)
+	if blErr != nil {
+		// BUG-288 R13-13: corrupt baseline must not soft-skip oracle into a bare
+		// command path that can look "green" without regression context.
+		log.Printf("[flow-executor] LoadBaseline failed: %v (fail-closed env error)", blErr)
+		now := time.Now().UTC().Format(time.RFC3339)
+		return ValidationResult{
+			EnvError:   "baseline unreadable: " + blErr.Error(),
+			StartedAt:  now,
+			FinishedAt: now,
+		}
+	}
 	if baseline == nil || baseline.TestCmd == "" {
 		return RunValidationCommand(ctx, command, workDir)
 	}
@@ -440,13 +452,10 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 		return false
 	}
 
+	// BUG-288 R13-17 / R13-20: AdvanceRetryState mutates attempt counters —
+	// only commit to in-memory rs after durable persist succeeds so a flake
+	// cannot mark "passed" (audit fail-open) or burn two budget slots on re-enter.
 	AdvanceRetryState(&state, result, changedFiles, prevTurnID)
-
-	s.mu.Lock()
-	if rs := s.runs[parentRunID]; rs != nil {
-		rs.flowValidationRetryState = &state
-	}
-	s.mu.Unlock()
 
 	// BUG-288 P1-13: PersistValidationResult/PersistRetryState are the durable
 	// audit trail for this validate attempt. Advancing (retry/spawn/done) on a
@@ -472,14 +481,25 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 		s.flowDiagLog(parentRunID, "flow_validate_persist_failed", "validation result/retry state did not persist; blocking advance",
 			"node_id", node.ID, "status", state.Status, "error", persistErr.Error(),
 		)
+		// Do NOT assign rs.flowValidationRetryState (R13-17). Surface awaiting-user.
+		s.setFlowStepAwaitingUser(ctx, parentRunID)
 		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
 			Status:  "escalate",
 			Summary: "Validation ran but its result could not be durably recorded (" + persistErr.Error() + "). Not advancing until this is resolved — retry Continue once storage is available.",
 		}); err != nil {
+			// BUG-288 R13-18: escalate failure must still leave an actionable surface.
 			log.Printf("[flow-executor] validate: escalate after persist failure failed: %v", err)
+			s.flowDiagLog(parentRunID, "flow_validate_persist_escalate_failed",
+				"persist failed and escalate also failed; flow left awaiting user",
+				"node_id", node.ID, "error", err.Error())
 		}
 		return true
 	}
+	s.mu.Lock()
+	if rs := s.runs[parentRunID]; rs != nil {
+		rs.flowValidationRetryState = &state
+	}
+	s.mu.Unlock()
 	s.flowDiagLog(parentRunID, "flow_validate_ran", "ran validate command",
 		"node_id", node.ID, "status", state.Status, "attempt", state.RetryAttempt, "exit_code", result.ExitCode,
 	)
@@ -491,13 +511,17 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 	case "skipped_env_error":
 		// V9-01: env/timeout/oracle setup failure is not a green suite — escalate
 		// instead of advancing audit→done (BuildAuditDraft would also block).
+		// BUG-288 R13-18: unify with persist-fail path — always return true so the
+		// caller does not fall into note+reinvoke-hub fallback (which can advance).
 		summary := "Validation suite could not run (environment/timeout)."
 		if strings.TrimSpace(result.EnvError) != "" {
 			summary = "Validation suite could not run: " + result.EnvError
 		}
+		s.setFlowStepAwaitingUser(ctx, parentRunID)
 		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{Status: "escalate", Summary: summary}); err != nil {
 			log.Printf("[flow-executor] validate: escalate after skipped_env_error failed: %v", err)
-			return false
+			s.flowDiagLog(parentRunID, "flow_validate_escalate_failed", "escalate failed after skipped_env_error",
+				"node_id", node.ID, "error", err.Error())
 		}
 		return true
 
@@ -561,9 +585,12 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 		if state.FailureSummary != nil && len(state.FailureSummary.FailureLines) > 0 {
 			summary += " Last failure:\n" + strings.Join(state.FailureSummary.FailureLines, "\n")
 		}
+		// BUG-288 R13-18: always return true (handled) even if escalate fails.
+		s.setFlowStepAwaitingUser(ctx, parentRunID)
 		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{Status: "escalate", Summary: summary}); err != nil {
 			log.Printf("[flow-executor] validate: escalate after max retries failed: %v", err)
-			return false
+			s.flowDiagLog(parentRunID, "flow_validate_escalate_failed", "escalate failed after max retries",
+				"node_id", node.ID, "error", err.Error())
 		}
 		return true
 

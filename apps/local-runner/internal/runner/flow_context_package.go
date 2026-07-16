@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -292,7 +293,8 @@ func readSourceExcerpts(workspace string, paths []string) (excerpts []FlowContex
 			switch {
 			case errors.Is(err, errNotRegularFile):
 				omitted = append(omitted, p+": not_regular")
-			case os.IsNotExist(err):
+			// BUG-288 R13-22: wrapped *os.PathError needs errors.Is / fs.ErrNotExist.
+			case errors.Is(err, fs.ErrNotExist) || os.IsNotExist(err):
 				omitted = append(omitted, p+": not_found")
 			default:
 				omitted = append(omitted, p+": symlink_resolve_error")

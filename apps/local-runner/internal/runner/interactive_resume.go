@@ -890,6 +890,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		flowStartGitHead:          st.FlowStartGitHead,
 		pendingRestartRunID:       st.PendingRestartRunID,
 		pendingRestartPrompt:      st.PendingRestartPrompt,
+		flowContextInjected:       st.FlowContextInjected,
 	}
 	// V10R P1: re-engage flow executor when topology was restored (needed for
 	// child approval resume to stamp parent step RUNNING after restart).
@@ -1244,7 +1245,10 @@ func (s *InteractiveService) flushDurableTurnIntents(runID string) {
 		s.mu.Unlock()
 		return
 	}
-	// Consumed: startTurn accepted this gen (accepted turn id recorded).
+	// BUG-288 R13-25: "Consumed" branch below is retained for forward-compat if
+	// DeliveredGen/AcceptedTurn are ever written on accept; production today
+	// clears intents via clearIntentFieldsLocked after startTurn and relies on
+	// claimDurableIntentLocked + gen idempotency instead of marking delivered.
 	if delivered == gen && gen != 0 && strings.TrimSpace(acceptedTurn) != "" {
 		clearIntentFieldsLocked(rs, kind)
 		snap := sessionStateOf(rs)

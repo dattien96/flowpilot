@@ -156,6 +156,17 @@ type interactiveRun struct {
 	// overwrote the Failed status the skip handler had just set to Cancelled
 	// when the cancellation propagated back through the adapter.
 	stalledSkipCause bool
+	// stalledRetryCause (BUG-288 R13-02) marks that this run's in-flight turn is
+	// being cancelled as part of Stall Retry (restart intent parked on parent).
+	// finishTurn/emitLocked must not append a cohort "failed" entry or stamp the
+	// node FAILED — the real retry result will land later.
+	stalledRetryCause bool
+	// stalledRetrySuppressCohort is set only around the emitLocked call for a
+	// stall-retry cancel so EventTurnFailed does not buffer/join the cohort.
+	stalledRetrySuppressCohort bool
+	// skipNextTurnIdleNotify (BUG-288 R13-05) suppresses one notifyTurnIdle at
+	// runTurn tail when block/reprompt persist failed (or already notified).
+	skipNextTurnIdleNotify bool
 	// label is the display name used in consolidated cohort notes; defaults to agentName.
 	label string
 	// waitForResult records the spawn's wait flag. A tool spawn with wait=true returns the
@@ -2487,6 +2498,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		TransitionLogDegradedReason:       rs.transitionLogDegradedReason,
 		PendingRestartRunID:               rs.pendingRestartRunID,
 		PendingRestartPrompt:              rs.pendingRestartPrompt,
+		FlowContextInjected:               rs.flowContextInjected,
 	}
 }
 
@@ -3381,6 +3393,12 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
 		}
 	case EventTurnFailed:
+		// BUG-288 R13-02: stall-retry cancel is not a real member failure.
+		if rs.stalledRetrySuppressCohort {
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+			break
+		}
 		rs.status = RunStatusFailed
 		rs.agentStatus = string(RunStatusFailed)
 		s.agentOrchestrator.signalChild(rs.id, "", true, ev.Error, RunStatusFailed)
@@ -4585,7 +4603,8 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		isFlowEnginePrompt(providerPrompt) || isFlowReviewHandoffPrompt(providerPrompt)
 	// Legacy text marker still honored only when paired with trusted HTML comment
 	// (keeps unit tests / non-interactive paths working).
-	if !skipHistory && isFlowContextHandoff(providerPrompt) {
+	// BUG-288 R13-15: bind marker id to this run (and optional package id).
+	if !skipHistory && isFlowContextHandoff(providerPrompt, rs.id) {
 		skipHistory = true
 	}
 	s.mu.Unlock()
@@ -4655,7 +4674,9 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	}
 	rs.turnStartWorktree = wtSnap
 	s.mu.Unlock()
-	s.ensureBaseline(rs.workspaceCwd)
+	// BUG-288 R13-14: warm-up baseline under the turn's cancellable ctx so Stop
+	// can cut the first capture short (not always Background).
+	s.ensureBaselineWithContext(ctx, rs.workspaceCwd)
 	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
 	s.mu.Lock()
@@ -4902,15 +4923,39 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 				}
 				s.mu.Unlock()
 				persistRepErr := s.persistProviderSession(snapRep)
+				skipTailNotify := false
 				if persistRepErr != nil {
 					log.Printf("[flow-gate] persist block/reprompt checkpoint run=%q turn=%q: %v (gate left actionable for retry, remediation turn NOT started)", repromptRun, turnID, persistRepErr)
+					// BUG-288 R13-05: do not fall through to notifyTurnIdle, which
+					// would claim RAM intents and start the remediation turn that
+					// we just refused because the checkpoint is not durable.
+					skipTailNotify = true
+					// Back off durable flush for this generation so a later crash
+					// recovery path does not immediately re-fire a non-durable intent.
+					s.mu.Lock()
+					if r := s.runs[repromptRun]; r != nil && repromptGen != 0 {
+						r.pendingGateRepromptFailCount++
+						r.pendingGateRepromptFailGen = repromptGen
+					}
+					s.mu.Unlock()
 				}
 				if persistRepErr == nil {
 					if repromptPrompt != "" && repromptStep != "" && !stoppedMidGate {
 						go s.startTurnClearingIntent(repromptRun, repromptStep, repromptPrompt, "reprompt", repromptGen)
 					} else if !stoppedMidGate {
 						s.notifyTurnIdle(repromptRun)
+						// notify already ran for this branch — avoid double at tail.
+						skipTailNotify = true
 					}
+				}
+				// Stash skip flag on a stack variable consumed after unlock path.
+				// (gateBlockedSkipNotify is checked at the runTurn tail.)
+				if skipTailNotify {
+					s.mu.Lock()
+					if r := s.runs[repromptRun]; r != nil {
+						r.skipNextTurnIdleNotify = true
+					}
+					s.mu.Unlock()
 				}
 			} else {
 				rs.turnInFlight = false
@@ -4926,6 +4971,18 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 				rs.postTurnGateCancel = nil
 				s.mu.Unlock()
 			} else if rs.pendingFlowGateSettle {
+				// BUG-288 R13-06: Skip already terminal-failed this member — never
+				// publish Completed over Failed from a late gate-pass.
+				if rs.cohortSkipConsumed || rs.status == RunStatusFailed {
+					rs.pendingFlowGateSettle = false
+					rs.pendingFlowGateFinalMsg = ""
+					rs.pendingFlowGateOccurredAt = ""
+					rs.pendingFlowGateTurnID = ""
+					rs.pendingGateChangedFiles = nil
+					rs.turnInFlight = false
+					rs.postTurnGateCancel = nil
+					s.mu.Unlock()
+				} else {
 				msg := rs.pendingFlowGateFinalMsg
 				at := rs.pendingFlowGateOccurredAt
 				parentID := rs.parentRunID
@@ -5026,6 +5083,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 						go s.releaseDependentAgents(parentID, childID, msg, at)
 					}
 				}
+				} // end R13-06 else (non-skip gate-pass settle)
 			} else {
 				rs.turnInFlight = false
 				s.mu.Unlock()
@@ -5060,7 +5118,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	}
 	// V10R4 P1: re-flush durable intents after turn/gate becomes idle so a
 	// conflicted delivery is not stranded until process restart.
-	s.notifyTurnIdle(rs.id)
+	// BUG-288 R13-05: skip when block/reprompt checkpoint persist failed.
+	s.mu.Lock()
+	skipIdle := rs.skipNextTurnIdleNotify
+	rs.skipNextTurnIdleNotify = false
+	s.mu.Unlock()
+	if !skipIdle {
+		s.notifyTurnIdle(rs.id)
+	}
 	// V9-06: fire pending stall-Retry restart after cancel OR clean complete.
 	if pendingRestartRunID == rs.id && pendingRestartPrompt != "" {
 		s.mu.Lock()
@@ -5234,6 +5299,27 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 		if rs.stalledSkipCause {
 			rs.stalledSkipCause = false
 			s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "skipped by user (stalled)", Recoverable: false})
+			break
+		}
+		// BUG-288 R13-02: Stall Retry cancel must not buffer cohort "failed" or
+		// stamp the node FAILED — restart intent will re-run the member.
+		if rs.stalledRetryCause {
+			rs.stalledRetryCause = false
+			// Suppress cohort append via cohortSkipConsumed-style flag: reuse
+			// stalledRetryCause consumed above; emitLocked checks pendingRestart
+			// on parent OR we set a one-shot suppress flag. Use cohortSkipConsumed
+			// only for skip; for retry set status Running and skip failed path.
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+			// Emit a non-cohort-appending interrupt: emitLocked still appends on
+			// EventTurnFailed — mark cohortSkipConsumed temporarily for this
+			// synthetic cancel only if already in a cohort, then clear after?
+			// Prefer: set a dedicated suppress flag checked in emitLocked.
+			rs.stalledRetrySuppressCohort = true
+			s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "interrupted for stall retry", Recoverable: true})
+			rs.stalledRetrySuppressCohort = false
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
 			break
 		}
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "interrupted by user", Recoverable: true})
