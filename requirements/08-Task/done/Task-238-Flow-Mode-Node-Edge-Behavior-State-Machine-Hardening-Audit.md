@@ -178,6 +178,6 @@ Charter chỉ `done` khi tất cả điều kiện dưới đúng — DOD chi ti
 
 ## 8. Completion Notes
 
-- result: `pending` — đây là **charter**, chưa đổi code (2026-07-15). Đã tách 4 Task con thực thi: [Task-239](./Task-239-Flow-Restore-And-Step-Transition-Log.md), [Task-240](./Task-240-Flow-Ordering-And-Synthesis-Settle-Contract.md), [Task-241](./Task-241-Cohort-Join-Matrix-Stall-And-Confirm-Loop.md), [Task-242](./Task-242-Flow-Mode-Three-Tier-Gate.md). 3 quyết định `T-9`/`T-10`/`T-11` đã chốt với owner cùng ngày.
+- result: `done` (2026-07-15) — charter + 4 Task con đã land code/tests: [Task-239](./Task-239-Flow-Restore-And-Step-Transition-Log.md), [Task-240](./Task-240-Flow-Ordering-And-Synthesis-Settle-Contract.md), [Task-241](./Task-241-Cohort-Join-Matrix-Stall-And-Confirm-Loop.md), [Task-242](./Task-242-Flow-Mode-Three-Tier-Gate.md). Follow-up Codex re-audit gaps gộp vào [BUG-288](../../09-BugFix/done/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md) (Vòng 8–9).
 - follow-ups: thứ tự thực thi **tuần tự** Task-239 → Task-240 → Task-241 → Task-242 (240 và 241 KHÔNG song song vì cùng sửa `applyFlowControl`/cohort-join — xem §4.1). Mỗi con giải Open Question được gán (`Q-1`→241, `Q-2`→239, `Q-3`→240, `Q-4`→242). Fix phát sinh ngoài 4 con → tách `BUG-xxx` link về charter.
 - upstream docs updated: chưa — SD-20 PHẢI nhận `D-*` mới (gate 3 tầng + nới D-3 cho Flow Mode) trước/cùng lúc Task-242; CP-38 stub (SD-17 §4.1 "workflow run?") được Task-242 thay thế, đóng/redirect về charter này khi đó.
