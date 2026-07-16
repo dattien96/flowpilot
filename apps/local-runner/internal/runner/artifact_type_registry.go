@@ -603,7 +603,12 @@ const changeContractPromptMarker = "## Change Contract đã khai cho run này"
 // check is safe as-is: a user cannot construct the MAC suffix without
 // runMarkerSecret, so a copied or guessed run id alone no longer suffices.
 func changeContractTrustedMarker(parentRunID string) string {
-	return "<!-- flowpilot-cc:" + parentRunID + ":" + runMarkerMAC("cc", parentRunID) + " -->"
+	return changeContractTrustedMarkerWith(nil, parentRunID)
+}
+
+// changeContractTrustedMarkerWith mints using an explicit secret (BUG-288 R18-4).
+func changeContractTrustedMarkerWith(secret []byte, parentRunID string) string {
+	return "<!-- flowpilot-cc:" + parentRunID + ":" + runMarkerMACWith(secret, "cc", parentRunID) + " -->"
 }
 
 func composeFlowNodeAgentPrompt(workspaceCwd, prompt string, node agentpack.FlowNode) string {
@@ -630,12 +635,18 @@ func composeFlowNodeAgentPrompt(workspaceCwd, prompt string, node agentpack.Flow
 // the HTML comment. Defense in depth: marker format is still checked, and
 // package render embeds it only via our code path.
 func appendChangeContractIfAny(workspaceCwd, parentRunID, prompt string) string {
+	return appendChangeContractIfAnyWithSecret(workspaceCwd, parentRunID, prompt, nil)
+}
+
+// appendChangeContractIfAnyWithSecret is appendChangeContractIfAny using an
+// explicit marker secret for mint/detect (BUG-288 R18-4 per-service).
+func appendChangeContractIfAnyWithSecret(workspaceCwd, parentRunID, prompt string, secret []byte) string {
 	if parentRunID == "" || workspaceCwd == "" {
 		return prompt
 	}
 	// V10R4 P1: only trust our run-scoped inject marker. User-typed
 	// "### change.contract" or the Vietnamese heading alone must NOT suppress inject.
-	trusted := changeContractTrustedMarker(parentRunID)
+	trusted := changeContractTrustedMarkerWith(secret, parentRunID)
 	if strings.Contains(prompt, trusted) {
 		return prompt
 	}

@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Vòng 9–16 Fixed. **Vòng 17 (Codex): 4 P0 + 3 P1 Fixed (2026-07-16)** — Stop-before-gate epoch, durable idempotency fail-closed, Supabase `{}` + ListAll, marker activate-per-dir, settle not-durable hard-stop, contract commit fail-closed. Status giữ `inprogress` đến Codex re-review pass sạch.
+- Vòng 9–17 Fixed. **Vòng 18 (Codex): 3 Critical + 4 Important Fixed (2026-07-16)** — numeric idempotency prune+protect, keep settle on checkpoint fail, Supabase `session_runtime` blob, per-service mint secret, override/head fail-closed, durable persist before step/event. Status giữ `inprogress` đến Codex re-review pass sạch.
 
 ### Key Decisions
 
@@ -1173,9 +1173,21 @@ Review độc lập xác nhận Vòng 15 chưa đủ. **2 P0 + 2 P1 → Fixed.**
 | R17-P1-02 | P1 | Settle continues when storage down | `gateCheckpointNotDurable`; skip gate until re-persist; return false from mark |
 | R17-P1-03 | P1 | `commitChangeContract` fail-open | Return error; gate blocks on I/O fail |
 
+### Vòng 18 — Codex re-review Vòng 17 (2026-07-16) — **Fixed**
+
+| ID | Sev | Finding | Fix |
+| ---- | --- | ------- | --- |
+| R18-1 | Crit | Idempotency prune lexical; active key lost | Numeric gen sort; protect pin; zero-pad restart/reprompt keys |
+| R18-2 | Crit | Checkpoint fail path wipes settle intent | Keep settle when `gateCheckpointNotDurable`; else only clears non-durable settle |
+| R18-3 | Crit | Supabase thin session reconstruct | `session_runtime` jsonb + pack/unpack full recovery fields |
+| R18-4 | Imp | Global active mint across services | `InteractiveService.markerSecret` + `*WithSecret` mint paths |
+| R18-5 | Imp | ClearOverride fail-open | `withGateEpochDurable` false → block gate |
+| R18-6 | Imp | Head I/O discarded | `updateCanonicalHead` returns err; commit fail-closed |
+| R18-7 | Imp | Ghost step/event on durable persist fail | Persist durable session **before** markStepRunning/TurnStarted |
+
 ## 12. Completion Notes
 
-- result: **inprogress** — Vòng 9–17 Fixed (2026-07-16). Document giữ `Status: inprogress` until clean Codex re-review.
+- result: **inprogress** — Vòng 9–18 Fixed (2026-07-16). Document giữ `Status: inprogress` until clean Codex re-review.
 - primary modules: `apps/local-runner/internal/runner/*`.
-- change-audit: `CA-328`…`CA-333` (Vòng 17).
-- verification: Vòng 17 focused tests (`bug288_round17_test.go` + updated R15/R16).
+- change-audit: `CA-328`…`CA-334` (Vòng 18).
+- verification: Vòng 18 focused tests (`bug288_round18_test.go`).

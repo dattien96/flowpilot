@@ -88,6 +88,12 @@ type InteractiveService struct {
 	// callback never contends with turn handling.
 	summaryMu     sync.Mutex
 	summaryTimers map[string]*time.Timer
+
+	// markerSecret is this service's durable HMAC secret (BUG-288 R18-4). Mint
+	// paths must use withMarkerSecret so concurrent services do not share
+	// runMarkerActive from another store's Init.
+	markerSecret []byte
+	markerDir    string
 }
 
 type interactiveRun struct {
@@ -652,13 +658,8 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 	if workflowStore == nil {
 		workflowStore = newFakeWorkflowStore()
 	}
-	// BUG-288 R14-04: ensure durable run-marker secret is loaded whenever the
-	// service is wired (not only at NewLocalFileSessionStore construction). If
-	// the store is NDJSON, reuse its data dir; otherwise fall back to a
-	// process-stable default under the user config dir so pure-Supabase deploys
-	// still keep MAC continuity across restart (FlowContextInjected remains
-	// the secondary double-injection guard).
-	initRunMarkerSecretForStore(workflowStore)
+	// BUG-288 R14-04 / R18-4: load this service's durable marker secret (per data dir).
+	markerDir, markerSec := loadMarkerSecretForStore(workflowStore)
 	// Reclaim Codex image-attachment temp dirs orphaned by a prior hard crash/kill
 	// (Task-052); the per-turn deferred cleanup cannot run in that case. Best-effort.
 	sweepCodexImageAttachments(time.Hour, time.Now())
@@ -680,6 +681,8 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 		questionTTL:       10 * time.Minute,
 		maxTurnAttempts:   3,
 		summaryTimers:     map[string]*time.Timer{},
+		markerSecret:      markerSec,
+		markerDir:         markerDir,
 	}
 	// Seed the id counter above the highest persisted run id so a runner restart does NOT
 	// reuse ids (run-1, run-2, …). Reuse made a fresh chat collide with a previous run of
@@ -1925,7 +1928,7 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 		// Task-247 / CP-50 P-4: also re-attach change.contract so continue/reprompt
 		// turns still see the declared scope (not only first entry via flow_executor).
 		prompt = composeFlowNodeAgentPrompt(cwd, prompt, composeNode)
-		prompt = appendChangeContractIfAny(cwd, parentRunID, prompt)
+		prompt = appendChangeContractIfAnyWithSecret(cwd, parentRunID, prompt, s.markerSecret)
 	}
 	if composeOK && !reuseChild {
 		agentName := flowNodeAgentName(composeNode)
@@ -2270,7 +2273,8 @@ func (s *InteractiveService) deliverPendingRestart(parentRunID string) {
 	}
 	s.mu.Unlock()
 
-	idem := fmt.Sprintf("durable-%s-restart-%d", childID, gen)
+	// BUG-288 R18-1: zero-pad gen so numeric order matches lexical if ever sorted as string.
+	idem := fmt.Sprintf("durable-%s-restart-%020d", childID, gen)
 	_, apiErr := s.startTurn(childID, TurnInput{StepID: stepID, Prompt: prompt}, "", idem)
 	if apiErr != nil {
 		log.Printf("[stall-restart] startTurn failed parent=%s child=%s gen=%d code=%s: %s",
@@ -2612,34 +2616,97 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 	}
 }
 
+// sessionStateOfProtectingIdem builds a session snapshot that always retains
+// the given durable idempotency key (BUG-288 R18-1).
+func sessionStateOfProtectingIdem(rs *interactiveRun, protectKey string) ProviderSessionState {
+	snap := sessionStateOf(rs)
+	if protectKey != "" && strings.HasPrefix(protectKey, "durable-") && rs != nil && rs.idempotency != nil {
+		if v := rs.idempotency[protectKey]; v != "" {
+			if snap.IdempotencyKeys == nil {
+				snap.IdempotencyKeys = map[string]string{}
+			}
+			snap.IdempotencyKeys[protectKey] = v
+		}
+	}
+	return snap
+}
+
 // durableIdempotencySnapshot keeps only durable-* keys for disk (BUG-288 R16-P0).
-// BUG-288 R17-P0: when capping at 48, keep lexicographically last keys (gens
-// tend to increase) so active high-gen restart keys are not randomly dropped
-// by map iteration order.
-func durableIdempotencySnapshot(m map[string]string) map[string]string {
-	if len(m) == 0 {
+// BUG-288 R18-1: prune by NUMERIC generation (suffix after last '-'), not
+// lexicographic key order (restart-100 < restart-11). Always retain every
+// protectKeys entry (e.g. the key just written for this accept) even if over
+// the cap, so an active restart/reprompt key cannot be dropped.
+func durableIdempotencySnapshot(m map[string]string, protectKeys ...string) map[string]string {
+	if len(m) == 0 && len(protectKeys) == 0 {
 		return nil
 	}
-	type kv struct{ k, v string }
+	type kv struct {
+		k   string
+		v   string
+		gen int64
+	}
 	var list []kv
 	for k, v := range m {
 		if !strings.HasPrefix(k, "durable-") || v == "" {
 			continue
 		}
-		list = append(list, kv{k, v})
+		list = append(list, kv{k: k, v: v, gen: durableIdempotencyKeyGen(k)})
+	}
+	// Ensure protected keys are present.
+	protect := map[string]bool{}
+	for _, pk := range protectKeys {
+		if pk == "" || !strings.HasPrefix(pk, "durable-") {
+			continue
+		}
+		protect[pk] = true
+		if _, ok := m[pk]; !ok {
+			continue
+		}
+		// already in list from m
 	}
 	if len(list) == 0 {
 		return nil
 	}
-	sort.Slice(list, func(i, j int) bool { return list[i].k < list[j].k })
-	if len(list) > 48 {
-		list = list[len(list)-48:]
-	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].gen != list[j].gen {
+			return list[i].gen < list[j].gen
+		}
+		return list[i].k < list[j].k
+	})
+	const capN = 48
 	out := make(map[string]string, len(list))
+	// First pin protected keys.
 	for _, e := range list {
+		if protect[e.k] {
+			out[e.k] = e.v
+		}
+	}
+	// Then fill from highest gen downward until cap.
+	for i := len(list) - 1; i >= 0; i-- {
+		e := list[i]
+		if _, ok := out[e.k]; ok {
+			continue
+		}
+		if len(out) >= capN {
+			break
+		}
 		out[e.k] = e.v
 	}
 	return out
+}
+
+// durableIdempotencyKeyGen extracts a trailing integer generation from keys like
+// "durable-child-restart-12" or "durable-run-reprompt-3". Non-numeric → 0.
+func durableIdempotencyKeyGen(k string) int64 {
+	i := strings.LastIndex(k, "-")
+	if i < 0 || i+1 >= len(k) {
+		return 0
+	}
+	n, err := strconv.ParseInt(k[i+1:], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func (s *InteractiveService) persistApproval(record ProviderApprovalState) error {
@@ -5006,8 +5073,10 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// BUG-288 #10: gate uses a cancelable ctx that Stop can cancel via
 	// postTurnGateCancel (turnCancel is already nil after finishTurn).
 	if completed {
-		// BUG-288 R17-P1: if settle checkpoint was never durable, do not run
-		// gate / fan-out — retry persist; if still failing, leave non-terminal.
+		// BUG-288 R17-P1 / R18-2: if settle checkpoint was never durable, do not
+		// run gate / fan-out — retry persist; if still failing, leave
+		// non-terminal WITH settle intent intact (do not set completed=false
+		// in a way that triggers wipe — stay in this branch with skip gate).
 		s.mu.Lock()
 		checkpointBlocked := rs.pendingFlowGateSettle && rs.gateCheckpointNotDurable
 		if checkpointBlocked {
@@ -5017,10 +5086,13 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			}
 			s.mu.Unlock()
 			if err := s.persistProviderSession(snapRetry); err != nil {
-				log.Printf("[flow-gate] settle checkpoint still not durable run=%q: %v (skipping gate)", rs.id, err)
+				log.Printf("[flow-gate] settle checkpoint still not durable run=%q: %v (keeping settle intent; skipping gate)", rs.id, err)
 				s.mu.Lock()
+				// Keep pendingFlowGateSettle + gateCheckpointNotDurable for retry.
 				rs.turnInFlight = false
 				s.mu.Unlock()
+				// completed=false so we do not finalize/fan-out; else-branch must
+				// NOT wipe settle while gateCheckpointNotDurable (R18-2).
 				completed = false
 			} else {
 				s.mu.Lock()
@@ -5280,10 +5352,11 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		}
 		} // end if completed && !checkpointBlocked
 	} else {
-		// Turn did not complete cleanly — drop any deferred settle so a later
-		// turn cannot join with a stale final message.
+		// Turn did not complete cleanly. BUG-288 R18-2: if settle is waiting
+		// on durable checkpoint (gateCheckpointNotDurable), KEEP the recovery
+		// intent so storage recovery can retry gate later — do not wipe it.
 		s.mu.Lock()
-		if rs.pendingFlowGateSettle {
+		if rs.pendingFlowGateSettle && !rs.gateCheckpointNotDurable {
 			rs.pendingFlowGateSettle = false
 			rs.pendingFlowGateFinalMsg = ""
 			rs.pendingFlowGateOccurredAt = ""
@@ -5764,6 +5837,42 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		}
 		rs.idempotency[idempotencyKey] = turnID
 	}
+	// BUG-288 R18-7: for durable-* keys, persist session BEFORE markStepRunning
+	// / EventTurnStarted so a persist failure cannot leave a ghost RUNNING step
+	// and TurnStarted event with no provider turn.
+	durableKey := strings.HasPrefix(idempotencyKey, "durable-")
+	isParent := rs.parentRunID == ""
+	if durableKey {
+		snap := sessionStateOfProtectingIdem(rs, idempotencyKey)
+		s.mu.Unlock()
+		if isParent {
+			snap.LoopState = s.agentOrchestrator.graphSnapshot(rs.id).LoopState
+		}
+		if err := s.persistProviderSession(snap); err != nil {
+			log.Printf("[turn] persist durable idempotency run=%s key=%s: %v (retrying)", runID, idempotencyKey, err)
+			if err2 := s.persistProviderSession(snap); err2 != nil {
+				log.Printf("[turn] persist durable idempotency FAILED run=%s key=%s: %v (aborting before step/event)", runID, idempotencyKey, err2)
+				s.mu.Lock()
+				if current := s.runs[runID]; current != nil {
+					current.turnInFlight = false
+					current.currentTurnID = ""
+					current.turnCancel = nil
+					delete(current.idempotency, idempotencyKey)
+				}
+				s.mu.Unlock()
+				cancel()
+				return "", newAPIErr(http.StatusBadGateway, "session_persist_failed",
+					"durable turn idempotency could not be persisted; not starting provider turn: "+err2.Error())
+			}
+		}
+		s.mu.Lock()
+		rs = s.runs[runID]
+		if rs == nil {
+			s.mu.Unlock()
+			cancel()
+			return "", newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+		}
+	}
 	if err := s.markStepRunning(ctx, runID, in.StepID); err != nil {
 		rs.turnInFlight = false
 		rs.currentTurnID = ""
@@ -5776,8 +5885,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		return "", newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
 	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: in.Prompt})
-	snap := sessionStateOf(rs) // capture under lock: lastPrompt + updatedAt + durable idem keys
-	isParent := rs.parentRunID == ""
+	snap := sessionStateOfProtectingIdem(rs, idempotencyKey)
 	// Drain pendingAgentContext atomically with turnInFlight=true so that any concurrent
 	// maybeAutoReinvokeHub call sees an empty slice after this unlock and does not set
 	// pendingHubReinvoke spuriously. runTurn receives the captured slice directly.
@@ -5787,29 +5895,9 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if isParent {
 		snap.LoopState = s.agentOrchestrator.graphSnapshot(rs.id).LoopState
 	}
-	// BUG-080 F-3 / BUG-288 R16-P0 / R17-P0: durable-* idempotency must be
-	// fail-closed — if both persists fail, roll back turnInFlight and do NOT
-	// launch the provider turn (crash would otherwise replay a second turn).
-	if err := s.persistProviderSession(snap); err != nil {
-		if strings.HasPrefix(idempotencyKey, "durable-") {
-			log.Printf("[turn] persist durable idempotency run=%s key=%s: %v (retrying)", runID, idempotencyKey, err)
-			if err2 := s.persistProviderSession(snap); err2 != nil {
-				log.Printf("[turn] persist durable idempotency FAILED run=%s key=%s: %v (aborting turn)", runID, idempotencyKey, err2)
-				s.mu.Lock()
-				if current := s.runs[runID]; current != nil {
-					current.turnInFlight = false
-					current.currentTurnID = ""
-					current.turnCancel = nil
-					if idempotencyKey != "" {
-						delete(current.idempotency, idempotencyKey)
-					}
-				}
-				s.mu.Unlock()
-				cancel()
-				return "", newAPIErr(http.StatusBadGateway, "session_persist_failed",
-					"durable turn idempotency could not be persisted; not starting provider turn: "+err2.Error())
-			}
-		}
+	// Non-durable: best-effort session persist after start (BUG-080 F-3).
+	if !durableKey {
+		_ = s.persistProviderSession(snap)
 	}
 	// Persist raw user prompt for transcript replay (BUG-083 F-1): the provider
 	// session file records the composed prompt (raw + reinforcement + skill preamble),

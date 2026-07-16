@@ -46,10 +46,18 @@ func newRunMarkerSecret() []byte {
 	return sum[:]
 }
 
-// initRunMarkerSecretForStore picks a durable secret directory from the
-// workflow store when possible (BUG-288 R14-04 / R16-P1).
+// initRunMarkerSecretForStore loads the durable secret for the store's data
+// dir (BUG-288 R14-04 / R16-P1). Prefer loadMarkerSecretForStore which returns
+// the secret for InteractiveService.markerSecret (R18-4).
 func initRunMarkerSecretForStore(store WorkflowStore) {
-	dir := ""
+	_, _ = loadMarkerSecretForStore(store)
+}
+
+// loadMarkerSecretForStore returns (dataDir, secret) for a service instance
+// (BUG-288 R18-4). Secret is owned by that service for minting; package-level
+// active is still updated for tests/legacy package callers.
+func loadMarkerSecretForStore(store WorkflowStore) (dir string, secret []byte) {
+	dir = ""
 	if ls, ok := store.(*localFileSessionStore); ok {
 		dir = ls.DataDir()
 	}
@@ -60,17 +68,15 @@ func initRunMarkerSecretForStore(store WorkflowStore) {
 		}
 		dir = filepath.Join(base, "flowpilot", "marker")
 	}
-	InitRunMarkerSecretFromDir(dir)
+	return dir, InitRunMarkerSecretFromDir(dir)
 }
 
 // InitRunMarkerSecretFromDir loads or creates a 32-byte secret at
-// dataDir/run_marker_secret (BUG-288 R13-16 / R16-P1 / R17-P1).
-// Entire load/create/cache is under write lock (no check-then-write race).
-// Activates this dir's secret for mint so each service that inits mints with
-// ITS secret (not the first-loaded store's).
-func InitRunMarkerSecretFromDir(dataDir string) {
+// dataDir/run_marker_secret (BUG-288 R13-16 / R16–R18). Returns the secret for
+// that dir (nil on failure). Entire load/create/cache is under write lock.
+func InitRunMarkerSecretFromDir(dataDir string) []byte {
 	if strings.TrimSpace(dataDir) == "" {
-		return
+		return nil
 	}
 	key, err := filepath.Abs(dataDir)
 	if err != nil {
@@ -79,13 +85,14 @@ func InitRunMarkerSecretFromDir(dataDir string) {
 	runMarkerSecretsMu.Lock()
 	defer runMarkerSecretsMu.Unlock()
 	if sec, ok := runMarkerSecrets[key]; ok {
-		// Re-activate this dir's secret for mint (per-service bind).
 		runMarkerActive = sec
-		return
+		out := make([]byte, len(sec))
+		copy(out, sec)
+		return out
 	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		log.Printf("[marker] mkdir for run_marker_secret dir=%q: %v", dataDir, err)
-		return
+		return nil
 	}
 	path := filepath.Join(dataDir, "run_marker_secret")
 	var sec []byte
@@ -94,20 +101,43 @@ func InitRunMarkerSecretFromDir(dataDir string) {
 		copy(sec, data[:32])
 	} else {
 		sec = newRunMarkerSecret()
-		// Atomic write via temp+rename to avoid half-written secret.
 		tmp := path + ".tmp"
 		if werr := os.WriteFile(tmp, sec, 0o600); werr != nil {
 			log.Printf("[marker] write run_marker_secret dir=%q: %v (not caching)", dataDir, werr)
-			return
+			return nil
 		}
 		if rerr := os.Rename(tmp, path); rerr != nil {
 			_ = os.Remove(tmp)
 			log.Printf("[marker] rename run_marker_secret dir=%q: %v (not caching)", dataDir, rerr)
-			return
+			return nil
 		}
 	}
 	runMarkerSecrets[key] = sec
-	runMarkerActive = sec // mint with this service's secret (R17-P1)
+	runMarkerActive = sec
+	out := make([]byte, len(sec))
+	copy(out, sec)
+	return out
+}
+
+// runMarkerMACWith mints using an explicit secret (BUG-288 R18-4 per-service).
+func runMarkerMACWith(secret []byte, kind, id string) string {
+	if len(secret) == 0 {
+		secret = currentRunMarkerSecret()
+	}
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(kind))
+	mac.Write([]byte{0})
+	mac.Write([]byte(id))
+	return hex.EncodeToString(mac.Sum(nil))[:16]
+}
+
+// flowContextTrustedMarkerWith uses an explicit secret for mint (R18-4).
+func flowContextTrustedMarkerWith(secret []byte, runOrPackageID string) string {
+	id := runOrPackageID
+	if id == "" {
+		id = "anonymous"
+	}
+	return "<!-- flowpilot-fcp:" + id + ":" + runMarkerMACWith(secret, "fcp", id) + " -->"
 }
 
 func currentRunMarkerSecret() []byte {
@@ -289,11 +319,20 @@ func FindFlowContextPackage(events []ProviderEvent, planStepID string) (*FlowCon
 // the same function, so failure here would indicate a registry defect, not a
 // legitimate "no context" case, and must not silently drop the package.
 func renderFlowContextPrompt(ctx context.Context, pkg FlowContextPackage, prompt string) string {
+	return renderFlowContextPromptWithSecret(ctx, pkg, prompt, nil)
+}
+
+// renderFlowContextPromptWithSecret uses an explicit marker secret when
+// falling back to ComposeFlowCodingPrompt (BUG-288 R18-4).
+func renderFlowContextPromptWithSecret(ctx context.Context, pkg FlowContextPackage, prompt string, secret []byte) string {
 	out, err := DefaultBehaviorRegistry().Dispatch(ctx, string(BehaviorContextRender), BehaviorInput{
 		Prompt:  prompt,
-		Payload: map[string]any{"package": pkg},
+		Payload: map[string]any{"package": pkg, "markerSecret": secret},
 	})
 	if err != nil || len(out.NextPromptFragments) == 0 {
+		if len(secret) > 0 {
+			return ComposeFlowCodingPromptWithSecret(pkg, prompt, secret)
+		}
 		return ComposeFlowCodingPrompt(pkg, prompt)
 	}
 	return out.NextPromptFragments[0]
@@ -333,6 +372,26 @@ func ComposeFlowCodingPrompt(pkg FlowContextPackage, codingInstruction string) s
 		trustID = pkg.PackageID
 	}
 	sb.WriteString(flowContextTrustedMarker(trustID) + "\n\n")
+	sb.WriteString(RenderFlowContextPackage(pkg))
+	sb.WriteString("\n---\n\n")
+	sb.WriteString("[Context use instructions: Use the Flow Context Package above as " +
+		"the source of truth for prior work on this feature. " +
+		"Do not broaden retrieval unless explicitly instructed. " +
+		"Preserve source references when explaining changes.]\n\n")
+	sb.WriteString(codingInstruction)
+	return sb.String()
+}
+
+// ComposeFlowCodingPromptWithSecret is ComposeFlowCodingPrompt using an
+// explicit marker secret (BUG-288 R18-4 per-service mint).
+func ComposeFlowCodingPromptWithSecret(pkg FlowContextPackage, codingInstruction string, secret []byte) string {
+	var sb strings.Builder
+	sb.WriteString(flowContextHandoffPrefix + "\n")
+	trustID := pkg.WorkflowRunID
+	if trustID == "" {
+		trustID = pkg.PackageID
+	}
+	sb.WriteString(flowContextTrustedMarkerWith(secret, trustID) + "\n\n")
 	sb.WriteString(RenderFlowContextPackage(pkg))
 	sb.WriteString("\n---\n\n")
 	sb.WriteString("[Context use instructions: Use the Flow Context Package above as " +
@@ -394,7 +453,7 @@ func (s *InteractiveService) injectFlowContextIfCoding(
 	s.mu.Unlock()
 
 	if cached != nil {
-		out := renderFlowContextPrompt(ctx, *cached, providerPrompt)
+		out := renderFlowContextPromptWithSecret(ctx, *cached, providerPrompt, s.markerSecret)
 		s.mu.Lock()
 		rs.flowContextInjected = true
 		s.mu.Unlock()
@@ -433,7 +492,7 @@ func (s *InteractiveService) injectFlowContextIfCoding(
 	}
 	s.mu.Unlock()
 
-	out := renderFlowContextPrompt(ctx, *pkg, providerPrompt)
+	out := renderFlowContextPromptWithSecret(ctx, *pkg, providerPrompt, s.markerSecret)
 	s.mu.Lock()
 	// Structural envelope flag — injectFeatureHistory must not trust user text alone.
 	if r := s.runs[rs.id]; r != nil {

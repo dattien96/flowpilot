@@ -1,4 +1,4 @@
-package runner
+﻿package runner
 
 import (
 	"context"
@@ -24,7 +24,7 @@ import (
 
 // edgeTargetFrom finds the single edge matching (from, when, kind) and
 // returns its target, mirroring resolveContinueBackEdgeTarget but scoped to
-// one specific source node — needed here because validate/audit each have
+// one specific source node â€” needed here because validate/audit each have
 // exactly one edge per (when, kind) triple, unlike the flow-wide unscoped
 // lookup that function does for review-loop's single back-edge.
 func edgeTargetFrom(edges []agentpack.FlowEdge, from, when, kind string) (string, bool) {
@@ -89,7 +89,7 @@ func (s *InteractiveService) tryAdvanceFlowThroughInline(parentRunID string, edg
 // reached a terminal status (Completed/Failed/Cancelled). stopAgentLoop
 // unconditionally moves every non-terminal root to Cancelled before clearing
 // flowInlineCtx/flowInlineCancel, so a terminal status here reliably means
-// "Stop happened (or the flow already finished) — do not resurrect inline
+// "Stop happened (or the flow already finished) â€” do not resurrect inline
 // work", without needing a separate stop-generation tombstone field
 // (BUG-288 P1-12).
 func (s *InteractiveService) flowRunTerminalLocked(parentRunID string) bool {
@@ -108,7 +108,7 @@ func (s *InteractiveService) flowRunTerminalLocked(parentRunID string) bool {
 }
 
 // alreadyCancelledContext returns a context.Context whose Done() is already
-// closed and Err() is context.Canceled — used by flowInlineContext so a late
+// closed and Err() is context.Canceled â€” used by flowInlineContext so a late
 // inline-dispatch callback observes an unambiguously-cancelled context
 // instead of a fresh, uncancelled context.Background() (BUG-288 P1-12).
 func alreadyCancelledContext() context.Context {
@@ -120,7 +120,7 @@ func alreadyCancelledContext() context.Context {
 // flowInlineContext returns a cancelable context for in-process inline nodes
 // (validate/audit). stopAgentLoop cancels it so suites abort with the flow.
 // BUG-288 P1-12: once the run is terminal (stopped/done), this never mints a
-// fresh non-cancelled context — that was the bypass a late/queued inline
+// fresh non-cancelled context â€” that was the bypass a late/queued inline
 // callback could exploit to keep running validate/audit/telegram/delegate
 // work after Stop cleared flowInlineCtx/flowInlineCancel.
 func (s *InteractiveService) flowInlineContext(parentRunID string) context.Context {
@@ -145,10 +145,10 @@ func (s *InteractiveService) flowInlineContext(parentRunID string) context.Conte
 
 // loadValidateCommand resolves the validate node's shell command from
 // .flowpilot/guard/test_baseline.json's test_command field (BUG-243 Q-1's
-// own suggested resolution — the CP-35 gate/regression-guard baseline
+// own suggested resolution â€” the CP-35 gate/regression-guard baseline
 // already captures a working test command per-project; reusing it avoids
 // inventing a second config surface). Returns "" when no baseline exists or
-// it declares no command — NewFlowValidationRetryState already treats an
+// it declares no command â€” NewFlowValidationRetryState already treats an
 // empty command as "skipped_no_command", not a fabricated default (K-4).
 // The returned cwd honors Baseline.TestDir for monorepos with a nested
 // go.mod, same as the CP-35 gate itself.
@@ -170,10 +170,10 @@ func loadValidateCommand(workspaceCwd string) (command, cwd string) {
 // loadPlanContextPackage retrieves the flow's context.produce output for
 // audit/retry-prompt assembly. startInlineEntryChain stashes it on the
 // parent run's planContextPackage field when the context node completes
-// (BUG-243 F-0 addition — it previously only rendered the package into the
+// (BUG-243 F-0 addition â€” it previously only rendered the package into the
 // one prompt handoff and discarded it, leaving nothing for validate/audit to
 // read later in the same run). Falls back to scanning rs.events directly
-// (in-memory, no store round-trip — mirrors interactive_resume.go's own
+// (in-memory, no store round-trip â€” mirrors interactive_resume.go's own
 // restore-on-reconnect scan) for a run resumed after this field was reset.
 func (s *InteractiveService) loadPlanContextPackage(_ context.Context, parentRunID string) (FlowContextPackage, bool) {
 	s.mu.Lock()
@@ -219,9 +219,9 @@ func changedFilesSince(cwd, baseSHA string) ([]string, error) {
 // itself (same as the CP-35 gate).
 //
 // Mapping:
-//   - oracle.SuitePassed → ExitCode 0 (passed)
-//   - oracle.HasRegression → ExitCode 1 + REGRESSION-labeled stderr (retry path)
-//   - suite fail without regression → ExitCode 1 + new-failure label
+//   - oracle.SuitePassed â†’ ExitCode 0 (passed)
+//   - oracle.HasRegression â†’ ExitCode 1 + REGRESSION-labeled stderr (retry path)
+//   - suite fail without regression â†’ ExitCode 1 + new-failure label
 func runValidateWithOracleIfPossible(ctx context.Context, command, workspaceRoot, workDir, baseSHA string, changedFiles []string) ValidationResult {
 	if workspaceRoot == "" {
 		workspaceRoot = workDir
@@ -261,7 +261,7 @@ func runValidateWithOracleIfPossible(ctx context.Context, command, workspaceRoot
 		cmd = baseline.TestCmd
 	}
 	// Command-start failures (missing binary, permission) map to EnvError so
-	// AdvanceRetryState takes skipped_env_error — never regression retry.
+	// AdvanceRetryState takes skipped_env_error â€” never regression retry.
 	if oracle.EnvError != "" {
 		return ValidationResult{
 			Command:  cmd,
@@ -342,22 +342,22 @@ func codingChildTurnMetaLocked(s *InteractiveService, parentRunID string) (baseS
 // validateResultIsCancelled reports user/flow Stop (parent context canceled),
 // not oracle-owned deadline (BUG-288 #11) or missing-binary EnvError.
 func validateResultIsCancelled(ctx context.Context, result ValidationResult) bool {
-	// BUG-288 R11 #1: check the caller's ctx directly and unconditionally first —
+	// BUG-288 R11 #1: check the caller's ctx directly and unconditionally first â€”
 	// Stop can land between the suite finishing (a clean, non-EnvError result)
 	// and this call, which the EnvError-only heuristic below would miss and let
-	// a "passed" result advance validate → audit/done after Stop.
+	// a "passed" result advance validate â†’ audit/done after Stop.
 	if ctx != nil && ctx.Err() == context.Canceled {
 		return true
 	}
-	// Parent/flow ctx canceled by Stop — but only when the EnvError also looks
+	// Parent/flow ctx canceled by Stop â€” but only when the EnvError also looks
 	// like cancel (oracle may finish with a real result while parent later cancels).
 	err := strings.ToLower(strings.TrimSpace(result.EnvError))
 	if err == "" {
 		return false
 	}
 	// Internal oracle timeout surfaces as "context deadline exceeded" on the
-	// *suite* env error while the caller's flow ctx may still be open — treat
-	// as validation failure (caller maps EnvError≠cancel), not flow cancel.
+	// *suite* env error while the caller's flow ctx may still be open â€” treat
+	// as validation failure (caller maps EnvErrorâ‰ cancel), not flow cancel.
 	if strings.Contains(err, "context deadline exceeded") {
 		// Only treat as cancel if the *caller* ctx is also canceled with cancel (not deadline).
 		if ctx != nil && ctx.Err() == context.Canceled {
@@ -418,7 +418,7 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 				log.Printf("[flow-executor] validate: persist skipped_no_command state failed: %v", err)
 			}
 		}
-		// V9-01: no verified suite → do not advance audit→done. Escalate so the
+		// V9-01: no verified suite â†’ do not advance auditâ†’done. Escalate so the
 		// human can configure a command or continue explicitly.
 		s.flowDiagLog(parentRunID, "flow_validate_skipped_no_command", "no validate command; blocking audit/done", "node_id", node.ID)
 		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
@@ -437,14 +437,14 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 	s.ensureBaselineReadyContext(ctx, cwd)
 
 	// Task-242 D-4 / T-2: when a flowgate baseline exists, use RunOracle so we
-	// distinguish regression (baseline green → red) from ordinary new failures.
-	// No baseline → keep RunValidationCommand. Never double-run the suite.
+	// distinguish regression (baseline green â†’ red) from ordinary new failures.
+	// No baseline â†’ keep RunValidationCommand. Never double-run the suite.
 	// Observe + baseline load from workspace root (cwd), not nested TestDir workDir.
 	// Validate tolerates observation failure for retry-state paths; audit fails closed.
 	changedFiles, _ := changedFilesSince(cwd, baseSHA)
 	result := runValidateWithOracleIfPossible(ctx, command, cwd, workDir, baseSHA, changedFiles)
 
-	// Stop/cancel must not advance validate → audit/done as skipped_env_error.
+	// Stop/cancel must not advance validate â†’ audit/done as skipped_env_error.
 	if validateResultIsCancelled(ctx, result) {
 		s.flowDiagLog(parentRunID, "flow_validate_cancelled", "validate suite cancelled; not advancing",
 			"node_id", node.ID, "env_error", result.EnvError,
@@ -452,7 +452,7 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 		return false
 	}
 
-	// BUG-288 R13-17 / R13-20: AdvanceRetryState mutates attempt counters —
+	// BUG-288 R13-17 / R13-20: AdvanceRetryState mutates attempt counters â€”
 	// only commit to in-memory rs after durable persist succeeds so a flake
 	// cannot mark "passed" (audit fail-open) or burn two budget slots on re-enter.
 	AdvanceRetryState(&state, result, changedFiles, prevTurnID)
@@ -460,7 +460,7 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 	// BUG-288 P1-13: PersistValidationResult/PersistRetryState are the durable
 	// audit trail for this validate attempt. Advancing (retry/spawn/done) on a
 	// persist failure would let the flow move past this attempt with no
-	// authoritative record — a crash right after would then either replay the
+	// authoritative record â€” a crash right after would then either replay the
 	// suite (burning retry budget on a passed attempt) or lose the failure
 	// detail entirely. Fail-closed: escalate and stop instead of falling
 	// through to the status switch below.
@@ -485,7 +485,7 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 		s.setFlowStepAwaitingUser(ctx, parentRunID)
 		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
 			Status:  "escalate",
-			Summary: "Validation ran but its result could not be durably recorded (" + persistErr.Error() + "). Not advancing until this is resolved — retry Continue once storage is available.",
+			Summary: "Validation ran but its result could not be durably recorded (" + persistErr.Error() + "). Not advancing until this is resolved â€” retry Continue once storage is available.",
 		}); err != nil {
 			// BUG-288 R13-18: escalate failure must still leave an actionable surface.
 			log.Printf("[flow-executor] validate: escalate after persist failure failed: %v", err)
@@ -509,9 +509,9 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 		return s.advanceToNextInlineOrDelegate(ctx, parentRunID, edges, nodes, node.ID, "done", resultMessage)
 
 	case "skipped_env_error":
-		// V9-01: env/timeout/oracle setup failure is not a green suite — escalate
-		// instead of advancing audit→done (BuildAuditDraft would also block).
-		// BUG-288 R13-18: unify with persist-fail path — always return true so the
+		// V9-01: env/timeout/oracle setup failure is not a green suite â€” escalate
+		// instead of advancing auditâ†’done (BuildAuditDraft would also block).
+		// BUG-288 R13-18: unify with persist-fail path â€” always return true so the
 		// caller does not fall into note+reinvoke-hub fallback (which can advance).
 		summary := "Validation suite could not run (environment/timeout)."
 		if strings.TrimSpace(result.EnvError) != "" {
@@ -540,17 +540,17 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 		}
 		// Task-247 / CP-50 P-4: re-entry after validate must still see declared scope.
 		prompt = composeFlowNodeAgentPrompt(cwd, prompt, targetNode)
-		prompt = appendChangeContractIfAny(cwd, parentRunID, prompt)
+		prompt = appendChangeContractIfAnyWithSecret(cwd, parentRunID, prompt, s.markerSecret)
 		agentName := flowNodeAgentName(targetNode)
 		if agentName == "" {
 			return false
 		}
 		// V10 / V9-11: mark validate DONE only after reinvoke/spawn of the retry
-		// target succeeds — not before (spawn fail left DONE with no successor).
+		// target succeeds â€” not before (spawn fail left DONE with no successor).
 		// BUG-279: a target node declared lifecycle: reinvoke must reuse its
 		// existing child run/provider session for the retry turn, same as the
 		// forward-edge auto-advance path (flowNodeReusesChild check before
-		// reinvokeExistingFlowChild) — spawning a brand new child here silently
+		// reinvokeExistingFlowChild) â€” spawning a brand new child here silently
 		// dropped the coder's own working memory of the prior attempt every retry.
 		if flowNodeReusesChild(targetNode) && s.reinvokeExistingFlowChild(parentRunID, targetNode.ID, prompt) {
 			if s.isFlowEngineDriven(parentRunID) {
@@ -603,7 +603,7 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 // edge and dispatches whatever it finds: chains into another inline node
 // (validate -> audit, when validate passes immediately), spawns a delegate
 // node, or settles the flow via applyFlowControl for a terminal ("done" /
-// "ask_user") target — reusing the exact same finalization applyFlowControl
+// "ask_user") target â€” reusing the exact same finalization applyFlowControl
 // already performs for review-loop's synthesis node, since "an inline node
 // reached its done/escalate edge" has identical semantics regardless of
 // which node emitted it.
@@ -612,7 +612,7 @@ func (s *InteractiveService) advanceToNextInlineOrDelegate(ctx context.Context, 
 	if !ok {
 		return false
 	}
-	// V9-11: stamp source DONE only after successful terminal action / spawn —
+	// V9-11: stamp source DONE only after successful terminal action / spawn â€”
 	// not before target validation (missing target used to leave DONE with no successor).
 	markSourceDone := func() {
 		if s.isFlowEngineDriven(parentRunID) {
@@ -672,7 +672,7 @@ func (s *InteractiveService) advanceToNextInlineOrDelegate(ctx context.Context, 
 		// Task-247 / CP-50 P-4: inline-dispatch delegate must carry change.contract.
 		cwd := s.workspaceCwdFor(parentRunID)
 		prompt := composeFlowNodeAgentPrompt(cwd, resultMessage, nextNode)
-		prompt = appendChangeContractIfAny(cwd, parentRunID, prompt)
+		prompt = appendChangeContractIfAnyWithSecret(cwd, parentRunID, prompt, s.markerSecret)
 		agentDef, _ := resolvePackAgentDefinition(agentName)
 		if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
 			Agent:            agentName,
@@ -701,7 +701,7 @@ func (s *InteractiveService) advanceToNextInlineOrDelegate(ctx context.Context, 
 // BuildAuditDraft (change-ledger block + commit-message suggestion),
 // replacing the stub that only echoed RawArgs["summary"]. Persists the
 // result via PersistAuditDraft (EventFlowAuditDraft) so it is inspectable
-// before any write/commit (Task-171's own non-write invariant — this
+// before any write/commit (Task-171's own non-write invariant â€” this
 // function never writes a file or creates a commit), then settles the whole
 // flow as done via applyFlowControl.
 func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, node agentpack.FlowNode, resultMessage string) bool {
@@ -730,8 +730,8 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	s.mu.Unlock()
 
 	// BuildAuditDraft derives SourceDocID from pkg.SourceDocIDs[0] itself
-	// (flow_audit_draft.go) — no separate source needed here.
-	// V10R4 P1: observation failure must NOT look like a clean empty diff —
+	// (flow_audit_draft.go) â€” no separate source needed here.
+	// V10R4 P1: observation failure must NOT look like a clean empty diff â€”
 	// tier-3 audit is defense-in-depth and must block/escalate when unverifiable.
 	changedFiles, observeErr := changedFilesSince(workspace, baseSHA)
 	if observeErr != nil && workspace != "" {
@@ -759,7 +759,7 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	}
 
 	// Task-242 tier-3: re-evaluate doc-family rules on the aggregate flow diff
-	// before settling done. Missing required docs → escalate with remediation
+	// before settling done. Missing required docs â†’ escalate with remediation
 	// instead of finalizing (defense-in-depth; tier-1 should have caught earlier).
 	if workspace != "" && len(changedFiles) > 0 {
 		diff, diffErr := flowgate.ObserveGitDiffSince(workspace, baseSHA)
@@ -860,7 +860,7 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	// the whole validate->audit chain exists to produce. Advancing to a
 	// successor node or settling the flow "done" without this persisting
 	// would let the flow finish (or chain onward) with no durable audit
-	// artifact — fail-closed instead: escalate and stop.
+	// artifact â€” fail-closed instead: escalate and stop.
 	if store := s.persistenceStore(); store != nil {
 		if err := PersistAuditDraft(ctx, store, parentRunID, node.ID, draft); err != nil {
 			log.Printf("[flow-executor] audit: persist draft failed: %v", err)
@@ -869,7 +869,7 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 			)
 			if _, ferr := s.applyFlowControl(parentRunID, FlowControlInput{
 				Status:  "escalate",
-				Summary: "Audit draft was built but could not be durably recorded (" + err.Error() + "). Not advancing until this is resolved — retry Continue once storage is available.",
+				Summary: "Audit draft was built but could not be durably recorded (" + err.Error() + "). Not advancing until this is resolved â€” retry Continue once storage is available.",
 			}); ferr != nil {
 				log.Printf("[flow-executor] audit: escalate after persist failure failed: %v", ferr)
 			}
@@ -911,10 +911,10 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	}
 
 	// V10 / V9-11: mark audit DONE only after successor dispatch or flow-done
-	// settles successfully — not before (failed successor left DONE false).
+	// settles successfully â€” not before (failed successor left DONE false).
 	// General post-node chaining: if this audit node's forward "done" edge
 	// targets a real successor node (not the terminal "done"/"ask_user"),
-	// dispatch it instead of settling the whole flow here — this is what lets a
+	// dispatch it instead of settling the whole flow here â€” this is what lets a
 	// user append e.g. a telegram.notify node after audit. rag-harness's
 	// built-in "audit --done--> done" resolves to the terminal and falls
 	// through to the unchanged settle below.
@@ -943,7 +943,7 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	return true
 }
 
-// auditCtxCancelled is true when Stop cancelled the inline flow context —
+// auditCtxCancelled is true when Stop cancelled the inline flow context â€”
 // callers must not escalate/dispatch/done after a stop race.
 func auditCtxCancelled(ctx context.Context, parentRunID, nodeID, where string) bool {
 	if ctx == nil || ctx.Err() == nil {
@@ -956,7 +956,7 @@ func auditCtxCancelled(ctx context.Context, parentRunID, nodeID, where string) b
 // resolveTelegramMessage picks the text a telegram.notify node sends for one
 // bound target: the artifact's configured messageTemplate verbatim when set,
 // otherwise a short default summarizing the prior node's result. v1 keeps this
-// deterministic and does not substitute template variables (e.g. {{status}}) —
+// deterministic and does not substitute template variables (e.g. {{status}}) â€”
 // that is a follow-up once a real per-run status value exists to fill them.
 func resolveTelegramMessage(t telegramOutputTarget, resultMessage string) string {
 	if strings.TrimSpace(t.messageTemplate) != "" {
@@ -972,17 +972,17 @@ func resolveTelegramMessage(t telegramOutputTarget, resultMessage string) string
 // runTelegramNotifyNode implements the telegram.notify inline behavior: it
 // sends the node's bound telegram.v1 OUTPUT message(s) directly from the
 // runner (no child agent spawn, no AI turn), reusing executeTelegramLoopbackSend
-// — which resolves the connected bot credential under the runner's own HOME,
+// â€” which resolves the connected bot credential under the runner's own HOME,
 // honors the integration's auto-approve gate, and verifies a real message_id.
 // This mirrors runValidateNode/runAuditNode: a deterministic Go inline node
 // reached mid-flow that then follows its forward "done" edge. Because Go both
 // performs and verifies the send, no flow-gate write-contract (r-artifact-
-// telegram-sent) is needed for this path — that gate covers the AI-driven
+// telegram-sent) is needed for this path â€” that gate covers the AI-driven
 // agent.delegate + MCP send, not this deterministic one.
 func (s *InteractiveService) runTelegramNotifyNode(ctx context.Context, parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, node agentpack.FlowNode, resultMessage string) bool {
 	targets := requiredTelegramOutputTargets(node)
 	if len(targets) == 0 {
-		// No telegram OUTPUT binding → nothing to send. Pass through on the
+		// No telegram OUTPUT binding â†’ nothing to send. Pass through on the
 		// forward "done" edge, same as a validate node skipped for no command.
 		s.flowDiagLog(parentRunID, "flow_telegram_no_binding", "telegram.notify node has no bound OUTPUT target; passing through", "node_id", node.ID)
 		return s.advanceToNextInlineOrDelegate(ctx, parentRunID, edges, nodes, node.ID, "done", resultMessage)
@@ -1000,7 +1000,7 @@ func (s *InteractiveService) runTelegramNotifyNode(ctx context.Context, parentRu
 		if !resp.OK {
 			// autoApprove OFF surfaces MCP_TOOL_APPROVAL_REQUIRED; a real send
 			// failure surfaces its own code. Either way the message did not go
-			// out, so escalate to ask_user rather than settling the flow done —
+			// out, so escalate to ask_user rather than settling the flow done â€”
 			// mirrors validate's failed_validation_max_retries escalate.
 			summary := strings.TrimSpace(resp.Error)
 			if summary == "" {
@@ -1025,8 +1025,8 @@ func (s *InteractiveService) runTelegramNotifyNode(ctx context.Context, parentRu
 
 // composeHubNotifyPrompt (Task-235) builds the reinvoke prompt for a
 // hub.notify node: the SAME hub session that ran coder/reviewer/synthesis gets
-// one more turn to compose and send the notification itself — no child spawn,
-// no Go-only fixed text — so it can freely fill a telegram.v1 OUTPUT artifact's
+// one more turn to compose and send the notification itself â€” no child spawn,
+// no Go-only fixed text â€” so it can freely fill a telegram.v1 OUTPUT artifact's
 // Message Template (e.g. "{{status}}" placeholders) from the flow's own
 // context, which the Go-only telegram.notify path cannot do. Reuses
 // appendTelegramOutputPrompt (already softened this session to read as a plain
@@ -1037,47 +1037,47 @@ func (s *InteractiveService) runTelegramNotifyNode(ctx context.Context, parentRu
 // this is safe to call for a hub.notify node used for some other future
 // non-Telegram write-contract shape too.
 func composeHubNotifyPrompt(node agentpack.FlowNode) string {
-	prompt := fmt.Sprintf("[flow-engine] This flow has reached its %q step, which finishes as part of this same turn — no separate agent is spawned for it.", node.ID)
+	prompt := fmt.Sprintf("[flow-engine] This flow has reached its %q step, which finishes as part of this same turn â€” no separate agent is spawned for it.", node.ID)
 	prompt = appendTelegramOutputPrompt(prompt, node)
 	// BUG-286 follow-up: appendTelegramOutputPrompt shows the Message Template
-	// verbatim but never says what to DO with it — a receiving model can (and
+	// verbatim but never says what to DO with it â€” a receiving model can (and
 	// was observed to) just echo the template's own placeholder text back
 	// unfilled. This turn already has the coder/reviewer/synthesis results in
-	// its own visible context (it is the SAME hub session, not a fresh one —
+	// its own visible context (it is the SAME hub session, not a fresh one â€”
 	// that is the whole point of hub.notify over agent.delegate), so it is the
 	// only node type that CAN legitimately fill a template from what actually
 	// happened, rather than fabricating detail it never saw.
 	prompt += "\n\nIf a message template above contains placeholders (e.g. {{status}}) or generic section labels, " +
-		"replace them with the ACTUAL outcome of this run — what was worked on, what changed (or that nothing needed " +
-		"to change), and the current state (tests, verdict, anything still open) — using the real results already in " +
+		"replace them with the ACTUAL outcome of this run â€” what was worked on, what changed (or that nothing needed " +
+		"to change), and the current state (tests, verdict, anything still open) â€” using the real results already in " +
 		"this conversation. Do not send the template's placeholder text unfilled, and do not invent detail this " +
 		"conversation does not actually show."
 	// BUG-287: the ONLY flow-control tool actually exposed to this session for
 	// every flow that can reach a hub.notify node today (review-loop.yaml /
 	// context-coding-review-synthesis.yaml, both declaring
-	// tools/submit-review-outcome.yaml — the sole path into hub.notify, since
+	// tools/submit-review-outcome.yaml â€” the sole path into hub.notify, since
 	// it requires being chained after a hub.inline node) is
 	// `submit_review_outcome`, whose `status` enum is strictly
 	// `approved | changes_requested | blocked` (claude_mcp_server.go
-	// sharedReviewOutcomeSchema) — there is no literal "done" value, and the
+	// sharedReviewOutcomeSchema) â€” there is no literal "done" value, and the
 	// tool's own description explicitly says "This is the only flow-control
-	// tool — do not use flow_control directly." Instructing the model to call
+	// tool â€” do not use flow_control directly." Instructing the model to call
 	// "the flow's control tool with status=\"done\"" asked it to do something
 	// its actual tool schema cannot express; observed live, the model then
 	// re-submitted an unrelated earlier verdict (status=blocked, stale
 	// feedback text) instead, re-escalating a flow that had already sent its
 	// notification. `approved` is the one enum value that maps to `done`
 	// (statusMap in submit-review-outcome.yaml) and is named explicitly here
-	// so the model has an actual, callable instruction — with a clarifying
+	// so the model has an actual, callable instruction â€” with a clarifying
 	// note that it is a formality, not a real code-review judgment, so a
 	// notify-only turn does not feel pressured to relate it to reviewing code.
 	// Scoped fix, not fully generic: a hypothetical future flow using a
 	// DIFFERENT declared control-tool name/schema for its hub.inline node
 	// would need this resolved dynamically from that flow's own tool
-	// declaration rather than hardcoded here — out of scope until such a flow
+	// declaration rather than hardcoded here â€” out of scope until such a flow
 	// exists.
 	prompt += "\n\nOnce that is done (or if this step has nothing to send), call `submit_review_outcome` with " +
 		"status=\"approved\" to finish this step. This is a technical formality that lets the flow advance past this " +
-		"step — it does not mean you are approving or judging a code change."
+		"step â€” it does not mean you are approving or judging a code change."
 	return prompt
 }

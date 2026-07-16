@@ -1430,7 +1430,8 @@ func (s *InteractiveService) startTurnClearingIntent(runID, stepID, prompt, kind
 
 	// Deterministic key so a crash after accept + restart cannot open a second
 	// provider turn for the same intent generation.
-	idem := fmt.Sprintf("durable-%s-%s-%d", runID, kind, gen)
+	// BUG-288 R18-1: zero-pad gen for stable ordering in durable snapshots.
+	idem := fmt.Sprintf("durable-%s-%s-%020d", runID, kind, gen)
 	turnID, apiErr := s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", idem)
 	if apiErr != nil {
 		log.Printf("[resume-intent] startTurn failed run=%s kind=%s gen=%d code=%s: %s",

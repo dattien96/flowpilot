@@ -10,23 +10,27 @@ import (
 
 func TestDurableIdempotencySnapshotKeepsLastKeys(t *testing.T) {
 	m := map[string]string{}
-	for i := 0; i < 60; i++ {
-		m[fmt.Sprintf("durable-c-restart-%02d", i)] = fmt.Sprintf("turn-%d", i)
+	// Non-padded gens: numeric 100 must beat lexical trap (100 < 11 as strings).
+	for i := 1; i <= 60; i++ {
+		m[fmt.Sprintf("durable-c-restart-%d", i)] = fmt.Sprintf("turn-%d", i)
 	}
+	m["durable-c-restart-100"] = "turn-100"
 	m["client-key"] = "x"
-	snap := durableIdempotencySnapshot(m)
-	if len(snap) != 48 {
-		t.Fatalf("len=%d want 48", len(snap))
-	}
+	snap := durableIdempotencySnapshot(m, "durable-c-restart-11")
 	if _, ok := snap["client-key"]; ok {
 		t.Fatal("non-durable must drop")
 	}
-	// Highest gens (lex last) must remain.
-	if snap["durable-c-restart-59"] != "turn-59" {
-		t.Fatalf("missing high gen: %#v", snap)
+	if snap["durable-c-restart-100"] != "turn-100" {
+		t.Fatalf("numeric gen 100 must be retained: %#v", snap)
 	}
-	if _, ok := snap["durable-c-restart-00"]; ok {
-		t.Fatal("lowest gen should be pruned when over cap")
+	if snap["durable-c-restart-11"] != "turn-11" {
+		t.Fatal("protected key must always be retained")
+	}
+	if len(snap) > 49 { // 48 + protect if not already in top
+		// protect already in set — max 48
+		if len(snap) > 48 {
+			t.Fatalf("len=%d want <=48", len(snap))
+		}
 	}
 }
 
