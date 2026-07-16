@@ -97,17 +97,22 @@ func TestReconstructRestoresDurableIdempotency(t *testing.T) {
 func TestMarkerSecretPerDirIndependent(t *testing.T) {
 	d1 := t.TempDir()
 	d2 := t.TempDir()
-	// Force load d1 first as active.
 	InitRunMarkerSecretFromDir(d1)
 	mac1 := runMarkerMAC("fcp", "id-a")
 	InitRunMarkerSecretFromDir(d2)
-	// Active MAC should still match d1 mint (first successful dir).
-	if runMarkerMAC("fcp", "id-a") != mac1 {
-		t.Fatal("loading second dir must not clobber active mint secret")
-	}
-	// verify accepts active
+	mac2 := runMarkerMAC("fcp", "id-a")
+	// R17: second Init activates d2 for mint — MAC may differ from d1.
+	// Both must still verify (multi-secret verify path).
 	if !verifyRunMarkerMAC("fcp", "id-a", mac1) {
-		t.Fatal("verify must accept active secret MAC")
+		t.Fatal("verify must accept d1-minted MAC after d2 init")
+	}
+	if !verifyRunMarkerMAC("fcp", "id-a", mac2) {
+		t.Fatal("verify must accept d2-minted MAC")
+	}
+	// Re-activate d1 and mint should match mac1 again.
+	InitRunMarkerSecretFromDir(d1)
+	if runMarkerMAC("fcp", "id-a") != mac1 {
+		t.Fatal("re-activating d1 must mint with d1 secret again")
 	}
 }
 
@@ -128,11 +133,18 @@ func TestMarkPendingSettleThirdPersistIncludesBlocked(t *testing.T) {
 	svc.mu.Lock()
 	rs := svc.runs[run.RunID]
 	rs.currentTurnID = "t1"
-	svc.markPendingFlowGateSettleLocked(rs, "msg", time.Now().UTC().Format(time.RFC3339Nano))
+	ok := svc.markPendingFlowGateSettleLocked(rs, "msg", time.Now().UTC().Format(time.RFC3339Nano))
 	kind := rs.intentBlockedKind
+	notDurable := rs.gateCheckpointNotDurable
 	svc.mu.Unlock()
+	if ok {
+		t.Fatal("expected markPending to return false when all persists fail")
+	}
 	if kind != "gate_settle_checkpoint" {
 		t.Fatalf("blocked kind=%q", kind)
+	}
+	if !notDurable {
+		t.Fatal("gateCheckpointNotDurable must be set when third persist fails")
 	}
 	// At least 3 Upsert attempts: first, retry, third with blocked fields.
 	if failStore.upserts < 3 {

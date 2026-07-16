@@ -66,7 +66,8 @@ func (s *InteractiveService) gateEpochStillValidLocked(runID string, epoch int64
 // withGateEpochDurable holds s.mu across the entire durable side-effect so Stop
 // (which must take s.mu to bump gateEpoch) cannot interleave mid-write
 // (BUG-288 R16-P0). Prefer short writes only.
-func (s *InteractiveService) withGateEpochDurable(runID string, epoch int64, fn func()) bool {
+// fn may return an error (R17-P1 contract I/O) — treated as not-committed.
+func (s *InteractiveService) withGateEpochDurable(runID string, epoch int64, fn func() error) bool {
 	if s == nil || fn == nil {
 		return false
 	}
@@ -75,7 +76,10 @@ func (s *InteractiveService) withGateEpochDurable(runID string, epoch int64, fn 
 	if !s.gateEpochStillValidLocked(runID, epoch) {
 		return false
 	}
-	fn()
+	if err := fn(); err != nil {
+		log.Printf("[gate] durable side-effect failed run=%q: %v (treating as blocked)", runID, err)
+		return false
+	}
 	return s.gateEpochStillValidLocked(runID, epoch)
 }
 
@@ -193,8 +197,8 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	// BUG-288 R15-P0 / R16-P0: durable write under s.mu so Stop cannot TOCTOU
 	// between epoch check and file mutation.
 	if oracle.EnvError == "" && !oracle.HasRegression && len(oracle.Passed) > 0 {
-		s.withGateEpochDurable(runID, epoch, func() {
-			_ = flowgate.ClearOverrideIfGreen(dotFP, oracle.Passed)
+		s.withGateEpochDurable(runID, epoch, func() error {
+			return flowgate.ClearOverrideIfGreen(dotFP, oracle.Passed)
 		})
 	}
 
@@ -294,8 +298,8 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	if len(violations) == 0 {
 		// V10R4 P0-03 / BUG-288 R16-P0: durable commit under s.mu (no TOCTOU).
 		// V9-02: only persist contract + canonical head after gate allows.
-		if !s.withGateEpochDurable(runID, epoch, func() {
-			commitChangeContract(cwd, prepared)
+		if !s.withGateEpochDurable(runID, epoch, func() error {
+			return commitChangeContract(cwd, prepared)
 		}) {
 			return true
 		}
@@ -704,8 +708,8 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	if len(violations) == 0 {
 		// BUG-288 R16-P0: durable commit under s.mu (no TOCTOU with Stop).
 		if hasPreparedContract {
-			if !s.withGateEpochDurable(runID, epoch, func() {
-				commitChangeContract(cwd, prepared)
+			if !s.withGateEpochDurable(runID, epoch, func() error {
+				return commitChangeContract(cwd, prepared)
 			}) {
 				return true
 			}
@@ -806,8 +810,8 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	// warn/approve: still commit prepared contract (turn allowed).
 	// BUG-288 R16-P0: durable commit under s.mu.
 	if hasPreparedContract {
-		if !s.withGateEpochDurable(runID, epoch, func() {
-			commitChangeContract(cwd, prepared)
+		if !s.withGateEpochDurable(runID, epoch, func() error {
+			return commitChangeContract(cwd, prepared)
 		}) {
 			return true
 		}
@@ -1592,29 +1596,36 @@ func fillHeadDriftFlags(cwd string, c changecontract.Contract, hasOutOfContract 
 }
 
 // commitChangeContract persists Save (inferred) + Canonical Head only after gate allow (V9-02).
-func commitChangeContract(cwd string, p preparedChangeContract) {
+// BUG-288 R17-P1: returns error on I/O failure so the gate can fail-closed
+// (block completion) instead of allowing a turn through with no durable contract.
+func commitChangeContract(cwd string, p preparedChangeContract) error {
 	if !p.ok || cwd == "" {
-		return
+		return nil
 	}
 	store, err := changecontract.NewStore(cwd)
 	if err != nil {
 		log.Printf("[changecontract] store open failed on commit: %v", err)
-		return
+		return err
 	}
 	if !p.skipSave {
 		if err := store.Save(p.contract); err != nil {
 			log.Printf("[changecontract] save failed: %v", err)
+			return err
 		}
 	}
 	if p.contract.FeatureKey != "" {
+		// updateCanonicalHead logs I/O failures internally; treat as soft for head
+		// but Save above already fail-closed. Re-check head save path via LoadHead
+		// is not required — birth failures only log (pre-existing).
 		_, _, _ = updateCanonicalHead(cwd, p.contract, len(p.outOfScopePaths) > 0)
 	}
+	return nil
 }
 
 // captureChangeContract is the legacy all-in-one path (tests / non-gate callers).
 func captureChangeContract(ctx context.Context, cwd, runID, stepID, finalMessage string, diff []flowgate.ChangedFile, suggestedFeatureKeys []string) (declared bool, outOfScopePaths []string, highSeverity, specDrifted, codeDrifted, attachSpecPending bool) {
 	p := prepareChangeContract(ctx, cwd, runID, stepID, finalMessage, diff, suggestedFeatureKeys)
-	commitChangeContract(cwd, p)
+	_ = commitChangeContract(cwd, p)
 	return p.declared, p.outOfScopePaths, p.highSeverity, p.specDrifted, p.codeDrifted, p.attachSpecPending
 }
 

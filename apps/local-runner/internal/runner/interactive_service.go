@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -319,6 +320,10 @@ type interactiveRun struct {
 	// (Task-242 tier-3). Audit uses it as the aggregate-diff base so multi-child
 	// edits are visible, not only the hub's last turnStartGitHead.
 	flowStartGitHead string
+	// gateCheckpointNotDurable (BUG-288 R17-P1): settle is set in RAM but all
+	// persist attempts failed — must not run gate pass / completion fan-out
+	// until a durable checkpoint succeeds.
+	gateCheckpointNotDurable bool
 	// pendingFlowGateSettle defers cohort join / step DONE / tryAdvance /
 	// signalChild / releaseDependentAgents until the post-turn child gate passes
 	// (Task-242 D-1/D-3/D-9). Set on EventTurnCompleted for flow-engine children;
@@ -763,8 +768,22 @@ func (s *InteractiveService) resumeAgentLoop(parentRunID string) AgentGraphSnaps
 // On persistence failure it still cancels in-memory work but returns an apiErr
 // so the client does not treat Stop as durable (V10R4 P0 fail-closed).
 func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapshot, *apiErr) {
-	s.agentOrchestrator.stop(parentRunID)
+	// BUG-288 R17-P0: take s.mu and bump gateEpoch on parent+children BEFORE
+	// agentOrchestrator.stop, so withGateEpochDurable cannot pass epoch/loop
+	// checks then write override/contract after Stop was requested. Previously
+	// stop() flipped loop status without s.mu while gate held s.mu mid-write.
 	s.mu.Lock()
+	if parent := s.runs[parentRunID]; parent != nil {
+		parent.gateEpoch++
+	}
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		if child := s.runs[childID]; child != nil {
+			child.gateEpoch++
+		}
+	}
+	// Stop loop under s.mu so concurrent gateEpochStillValidLocked sees stopped.
+	// AgentOrchestrator only takes its own mu (no s.mu re-entry).
+	s.agentOrchestrator.stop(parentRunID)
 	// BUG-288 P1-04: bump the parent's durable stop tombstone BEFORE any child
 	// is stamped/checkpointed below, so every child snapshot this Stop call
 	// persists carries proof it was checkpointed at-or-after this stop. A
@@ -2594,23 +2613,31 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 }
 
 // durableIdempotencySnapshot keeps only durable-* keys for disk (BUG-288 R16-P0).
-// Caps at 48 entries to bound session size.
+// BUG-288 R17-P0: when capping at 48, keep lexicographically last keys (gens
+// tend to increase) so active high-gen restart keys are not randomly dropped
+// by map iteration order.
 func durableIdempotencySnapshot(m map[string]string) map[string]string {
 	if len(m) == 0 {
 		return nil
 	}
-	out := make(map[string]string)
+	type kv struct{ k, v string }
+	var list []kv
 	for k, v := range m {
 		if !strings.HasPrefix(k, "durable-") || v == "" {
 			continue
 		}
-		out[k] = v
-		if len(out) >= 48 {
-			break
-		}
+		list = append(list, kv{k, v})
 	}
-	if len(out) == 0 {
+	if len(list) == 0 {
 		return nil
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].k < list[j].k })
+	if len(list) > 48 {
+		list = list[len(list)-48:]
+	}
+	out := make(map[string]string, len(list))
+	for _, e := range list {
+		out[e.k] = e.v
 	}
 	return out
 }
@@ -3158,11 +3185,14 @@ func durableResumeStepID(rs *interactiveRun) string {
 // markPendingFlowGateSettleLocked defers Completed until the post-turn gate
 // passes, and snapshots turn-scoped gate inputs so resume after restart uses the
 // same base SHA / worktree / written paths (V10 residual P0). Caller holds s.mu.
-func (s *InteractiveService) markPendingFlowGateSettleLocked(rs *interactiveRun, finalMsg, occurredAt string) {
+// Returns false when the checkpoint could not be made durable (BUG-288 R17-P1):
+// gate pass / completion fan-out must not proceed until retry succeeds.
+func (s *InteractiveService) markPendingFlowGateSettleLocked(rs *interactiveRun, finalMsg, occurredAt string) bool {
 	if rs == nil {
-		return
+		return false
 	}
 	rs.pendingFlowGateSettle = true
+	rs.gateCheckpointNotDurable = false
 	rs.pendingFlowGateFinalMsg = finalMsg
 	rs.pendingFlowGateOccurredAt = occurredAt
 	// Durable turn id for EventTurnCompleted after restart (V10R P1).
@@ -3200,11 +3230,8 @@ func (s *InteractiveService) markPendingFlowGateSettleLocked(rs *interactiveRun,
 	if rs.parentRunID == "" {
 		snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
 	}
-	// BUG-288 P1-16 / R15-P1 / R16-P1: checkpoint must succeed before we treat
-	// settle as durable. On failure: retry once; if still failing, stamp
-	// intent-blocked THEN rebuild snap and attempt a third persist so the
-	// blocked diagnostic itself is durable (R16-P1 — previous code set blocked
-	// fields after the last snap and never wrote them).
+	// BUG-288 P1-16 / R15–R17: checkpoint must be durable. Retry; stamp blocked;
+	// third persist; if all fail mark gateCheckpointNotDurable (no gate pass).
 	if err := s.persistProviderSession(snap); err != nil {
 		log.Printf("[flow-gate] persist pendingFlowGateSettle checkpoint run=%q turn=%q: %v (retrying once)", rs.id, rs.pendingFlowGateTurnID, err)
 		if err2 := s.persistProviderSession(snap); err2 != nil {
@@ -3217,10 +3244,14 @@ func (s *InteractiveService) markPendingFlowGateSettleLocked(rs *interactiveRun,
 				snap3.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
 			}
 			if err3 := s.persistProviderSession(snap3); err3 != nil {
-				log.Printf("[flow-gate] persist gate_settle_checkpoint blocked state FAILED run=%q: %v (RAM only until storage recovers)", rs.id, err3)
+				log.Printf("[flow-gate] persist gate_settle_checkpoint blocked state FAILED run=%q: %v (blocking gate pass until durable)", rs.id, err3)
+				rs.gateCheckpointNotDurable = true
+				return false
 			}
 		}
 	}
+	rs.gateCheckpointNotDurable = false
+	return true
 }
 
 // settleFlowChildTurnCompletedLocked advances parent flow state after a child turn
@@ -3507,7 +3538,8 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			// the post-turn child gate passes. Durable flag + turn snapshot survive
 			// restart (V10 residual P0).
 			if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven {
-				s.markPendingFlowGateSettleLocked(rs, finalMsg, ev.OccurredAt)
+				// R17-P1: ignore bool — gateCheckpointNotDurable blocks pass later.
+				_ = s.markPendingFlowGateSettleLocked(rs, finalMsg, ev.OccurredAt)
 				break
 			}
 			rs.status = RunStatusCompleted
@@ -3516,7 +3548,7 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			s.settleFlowChildTurnCompletedLocked(rs, finalMsg, ev)
 		} else if rs.flowEngineDriven {
 			// Root flow-engine: same gate-before-Completed contract as children.
-			s.markPendingFlowGateSettleLocked(rs, finalMsg, ev.OccurredAt)
+			_ = s.markPendingFlowGateSettleLocked(rs, finalMsg, ev.OccurredAt)
 		} else {
 			rs.status = RunStatusCompleted
 			rs.agentStatus = string(RunStatusCompleted)
@@ -4974,6 +5006,32 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// BUG-288 #10: gate uses a cancelable ctx that Stop can cancel via
 	// postTurnGateCancel (turnCancel is already nil after finishTurn).
 	if completed {
+		// BUG-288 R17-P1: if settle checkpoint was never durable, do not run
+		// gate / fan-out — retry persist; if still failing, leave non-terminal.
+		s.mu.Lock()
+		checkpointBlocked := rs.pendingFlowGateSettle && rs.gateCheckpointNotDurable
+		if checkpointBlocked {
+			snapRetry := sessionStateOf(rs)
+			if rs.parentRunID == "" {
+				snapRetry.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+			}
+			s.mu.Unlock()
+			if err := s.persistProviderSession(snapRetry); err != nil {
+				log.Printf("[flow-gate] settle checkpoint still not durable run=%q: %v (skipping gate)", rs.id, err)
+				s.mu.Lock()
+				rs.turnInFlight = false
+				s.mu.Unlock()
+				completed = false
+			} else {
+				s.mu.Lock()
+				rs.gateCheckpointNotDurable = false
+				s.mu.Unlock()
+				checkpointBlocked = false
+			}
+		} else {
+			s.mu.Unlock()
+		}
+		if completed && !checkpointBlocked {
 		gateCtx, gateCancel := context.WithCancel(context.Background())
 		s.mu.Lock()
 		gateEpoch := rs.gateEpoch
@@ -5220,6 +5278,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 				s.mu.Unlock()
 			}
 		}
+		} // end if completed && !checkpointBlocked
 	} else {
 		// Turn did not complete cleanly — drop any deferred settle so a later
 		// turn cannot join with a stale final message.
@@ -5230,6 +5289,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			rs.pendingFlowGateOccurredAt = ""
 			rs.pendingFlowGateTurnID = ""
 			rs.pendingGateChangedFiles = nil
+			rs.gateCheckpointNotDurable = false
 		}
 		rs.turnInFlight = false
 		s.mu.Unlock()
@@ -5727,12 +5787,28 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if isParent {
 		snap.LoopState = s.agentOrchestrator.graphSnapshot(rs.id).LoopState
 	}
-	// BUG-080 F-3 / BUG-288 R16-P0: persist session (incl. durable-* idempotency).
-	// For durable keys, retry once so crash recovery can short-circuit replay.
-	if err := s.persistProviderSession(snap); err != nil && strings.HasPrefix(idempotencyKey, "durable-") {
-		log.Printf("[turn] persist durable idempotency run=%s key=%s: %v (retrying)", runID, idempotencyKey, err)
-		if err2 := s.persistProviderSession(snap); err2 != nil {
-			log.Printf("[turn] persist durable idempotency FAILED run=%s key=%s: %v", runID, idempotencyKey, err2)
+	// BUG-080 F-3 / BUG-288 R16-P0 / R17-P0: durable-* idempotency must be
+	// fail-closed — if both persists fail, roll back turnInFlight and do NOT
+	// launch the provider turn (crash would otherwise replay a second turn).
+	if err := s.persistProviderSession(snap); err != nil {
+		if strings.HasPrefix(idempotencyKey, "durable-") {
+			log.Printf("[turn] persist durable idempotency run=%s key=%s: %v (retrying)", runID, idempotencyKey, err)
+			if err2 := s.persistProviderSession(snap); err2 != nil {
+				log.Printf("[turn] persist durable idempotency FAILED run=%s key=%s: %v (aborting turn)", runID, idempotencyKey, err2)
+				s.mu.Lock()
+				if current := s.runs[runID]; current != nil {
+					current.turnInFlight = false
+					current.currentTurnID = ""
+					current.turnCancel = nil
+					if idempotencyKey != "" {
+						delete(current.idempotency, idempotencyKey)
+					}
+				}
+				s.mu.Unlock()
+				cancel()
+				return "", newAPIErr(http.StatusBadGateway, "session_persist_failed",
+					"durable turn idempotency could not be persisted; not starting provider turn: "+err2.Error())
+			}
 		}
 	}
 	// Persist raw user prompt for transcript replay (BUG-083 F-1): the provider

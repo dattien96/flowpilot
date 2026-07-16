@@ -32,6 +32,18 @@ func NewSupabaseWorkflowStore(cfg SupabaseWorkspaceConfig, apiKey string) *Supab
 	return &SupabaseWorkflowStore{restURL: base + "/rest/v1", apiKey: apiKey}
 }
 
+// idempotencyKeysOrEmpty never returns nil so jsonb NOT NULL columns get {}.
+func idempotencyKeysOrEmpty(m map[string]string) map[string]string {
+	if m == nil {
+		return map[string]string{}
+	}
+	return m
+}
+
+// providerSessionSelectRecovery is the PostgREST select list for full session
+// recovery (stall-retry, gate settle, idempotency) — BUG-288 R17-P0.
+const providerSessionSelectRecovery = "workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,parent_run_id,agent_name,agent_role,agent_status,pending_restart_run_id,pending_restart_prompt,pending_restart_gen,flow_context_injected,idempotency_keys,workflow_runs(project_id,workflow_id)"
+
 func (s *SupabaseWorkflowStore) headers(prefer string) map[string]string {
 	h := map[string]string{
 		"apikey":        s.apiKey,
@@ -304,12 +316,14 @@ func (s *SupabaseWorkflowStore) UpsertProviderSession(ctx context.Context, sessi
 		"agent_name":          nilIfEmpty(session.AgentName),
 		"agent_role":          nilIfEmpty(session.Role),
 		"agent_status":        nilIfEmpty(session.AgentStatus),
-		// BUG-288 R13-01 / R13-16 / R15-P0 / R16-P0 (migrations 20260716120000 + 20260716130000).
+		// BUG-288 R13-01 / R13-16 / R15-P0 / R16-P0 / R17-P0
+		// (migrations 20260716120000 + 20260716130000).
+		// idempotency_keys is NOT NULL jsonb — never send JSON null.
 		"pending_restart_run_id":  nilIfEmpty(session.PendingRestartRunID),
 		"pending_restart_prompt":  nilIfEmpty(session.PendingRestartPrompt),
 		"pending_restart_gen":     session.PendingRestartGen,
 		"flow_context_injected":   session.FlowContextInjected,
-		"idempotency_keys":        session.IdempotencyKeys,
+		"idempotency_keys":        idempotencyKeysOrEmpty(session.IdempotencyKeys),
 	})
 	if err != nil {
 		return err
@@ -385,10 +399,13 @@ type dbProviderSessionRow struct {
 // ListProviderSessionsByProject implements SessionHistoryReader. It queries
 // workflow_provider_sessions joined with workflow_runs (inner) to filter by
 // project_id, sorted newest-first. Satisfies the BUG-060 F-2 production gap.
+// BUG-288 R17-P0: includes recovery fields (pending restart, idempotency).
 func (s *SupabaseWorkflowStore) ListProviderSessionsByProject(ctx context.Context, projectID string) ([]ProviderSessionState, error) {
 	endpoint := fmt.Sprintf(
-		"%s/workflow_provider_sessions?select=workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,parent_run_id,agent_name,agent_role,agent_status,workflow_runs!inner(project_id,workflow_id)&workflow_runs.project_id=eq.%s&order=updated_at.desc",
-		s.restURL, projectID,
+		"%s/workflow_provider_sessions?select=%s&workflow_runs.project_id=eq.%s&order=updated_at.desc",
+		s.restURL,
+		strings.Replace(providerSessionSelectRecovery, "workflow_runs(", "workflow_runs!inner(", 1),
+		projectID,
 	)
 	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
 	if err != nil {
@@ -403,40 +420,85 @@ func (s *SupabaseWorkflowStore) ListProviderSessionsByProject(ctx context.Contex
 	}
 	out := make([]ProviderSessionState, 0, len(rows))
 	for _, r := range rows {
-		sess := ProviderSessionState{
-			RunID:            r.WorkflowRunID,
-			ProviderKey:      ProviderKey(r.ProviderKey),
-			WorkingDirectory: r.WorkingDirectory,
-			Status:           RunStatus(r.Status),
-		}
-		if r.ProviderSessionID != nil {
-			sess.ProviderSessionID = *r.ProviderSessionID
-		}
-		if r.ProviderAccountID != nil {
-			sess.ProviderAccountID = *r.ProviderAccountID
-		}
-		sess.LastPrompt = r.LastPrompt
-		sess.LastMessage = r.LastMessage
-		sess.StartedAt = r.StartedAt
-		sess.UpdatedAt = r.UpdatedAt
-		sess.RunKind = r.RunKind
-		sess.ParentRunID = r.ParentRunID
-		sess.AgentName = r.AgentName
-		sess.Role = r.AgentRole
-		sess.AgentStatus = r.AgentStatus
-		if r.WorkflowRuns != nil {
-			sess.ProjectID = r.WorkflowRuns.ProjectID
-			sess.WorkflowID = r.WorkflowRuns.WorkflowID
-		}
-		out = append(out, sess)
+		out = append(out, providerSessionFromDBRow(r))
 	}
 	return out, nil
 }
 
+// ListAllProviderSessions implements SessionIndexReader (BUG-288 R17-P0) so
+// flow restart can reconstruct parent+child sessions including stall-retry
+// intents. Without this, deliverPendingRestart cannot find children after restart.
+func (s *SupabaseWorkflowStore) ListAllProviderSessions(ctx context.Context) ([]ProviderSessionState, error) {
+	endpoint := fmt.Sprintf(
+		"%s/workflow_provider_sessions?select=%s&order=updated_at.desc",
+		s.restURL, providerSessionSelectRecovery,
+	)
+	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
+	if err != nil {
+		return nil, err
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("supabase list all provider sessions failed: status %d: %s", code, string(body))
+	}
+	var rows []dbProviderSessionRow
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("supabase list all provider sessions decode: %w", err)
+	}
+	out := make([]ProviderSessionState, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, providerSessionFromDBRow(r))
+	}
+	return out, nil
+}
+
+func providerSessionFromDBRow(r dbProviderSessionRow) ProviderSessionState {
+	sess := ProviderSessionState{
+		RunID:            r.WorkflowRunID,
+		ProviderKey:      ProviderKey(r.ProviderKey),
+		WorkingDirectory: r.WorkingDirectory,
+		Status:           RunStatus(r.Status),
+		LastPrompt:       r.LastPrompt,
+		LastMessage:      r.LastMessage,
+		StartedAt:        r.StartedAt,
+		UpdatedAt:        r.UpdatedAt,
+		RunKind:          r.RunKind,
+		ParentRunID:      r.ParentRunID,
+		AgentName:        r.AgentName,
+		Role:             r.AgentRole,
+		AgentStatus:      r.AgentStatus,
+	}
+	if r.ProviderSessionID != nil {
+		sess.ProviderSessionID = *r.ProviderSessionID
+	}
+	if r.ProviderAccountID != nil {
+		sess.ProviderAccountID = *r.ProviderAccountID
+	}
+	if r.PendingRestartRunID != nil {
+		sess.PendingRestartRunID = *r.PendingRestartRunID
+	}
+	if r.PendingRestartPrompt != nil {
+		sess.PendingRestartPrompt = *r.PendingRestartPrompt
+	}
+	if r.PendingRestartGen != nil {
+		sess.PendingRestartGen = *r.PendingRestartGen
+	}
+	if r.FlowContextInjected != nil {
+		sess.FlowContextInjected = *r.FlowContextInjected
+	}
+	if len(r.IdempotencyKeys) > 0 {
+		sess.IdempotencyKeys = copyStringMap(r.IdempotencyKeys)
+	}
+	if r.WorkflowRuns != nil {
+		sess.ProjectID = r.WorkflowRuns.ProjectID
+		sess.WorkflowID = r.WorkflowRuns.WorkflowID
+	}
+	return sess
+}
+
 func (s *SupabaseWorkflowStore) GetProviderSession(ctx context.Context, runID string) (ProviderSessionState, bool, error) {
 	endpoint := fmt.Sprintf(
-		"%s/workflow_provider_sessions?workflow_run_id=eq.%s&select=workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,parent_run_id,agent_name,agent_role,agent_status,pending_restart_run_id,pending_restart_prompt,pending_restart_gen,flow_context_injected,idempotency_keys,workflow_runs(project_id,workflow_id)&limit=1",
-		s.restURL, runID,
+		"%s/workflow_provider_sessions?workflow_run_id=eq.%s&select=%s&limit=1",
+		s.restURL, runID, providerSessionSelectRecovery,
 	)
 	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
 	if err != nil {
@@ -452,48 +514,7 @@ func (s *SupabaseWorkflowStore) GetProviderSession(ctx context.Context, runID st
 	if len(rows) == 0 {
 		return ProviderSessionState{}, false, nil
 	}
-	row := rows[0]
-	sess := ProviderSessionState{
-		RunID:            row.WorkflowRunID,
-		ProviderKey:      ProviderKey(row.ProviderKey),
-		WorkingDirectory: row.WorkingDirectory,
-		Status:           RunStatus(row.Status),
-		LastPrompt:       row.LastPrompt,
-		LastMessage:      row.LastMessage,
-		StartedAt:        row.StartedAt,
-		UpdatedAt:        row.UpdatedAt,
-		RunKind:          row.RunKind,
-		ParentRunID:      row.ParentRunID,
-		AgentName:        row.AgentName,
-		Role:             row.AgentRole,
-		AgentStatus:      row.AgentStatus,
-	}
-	if row.ProviderSessionID != nil {
-		sess.ProviderSessionID = *row.ProviderSessionID
-	}
-	if row.ProviderAccountID != nil {
-		sess.ProviderAccountID = *row.ProviderAccountID
-	}
-	if row.PendingRestartRunID != nil {
-		sess.PendingRestartRunID = *row.PendingRestartRunID
-	}
-	if row.PendingRestartPrompt != nil {
-		sess.PendingRestartPrompt = *row.PendingRestartPrompt
-	}
-	if row.PendingRestartGen != nil {
-		sess.PendingRestartGen = *row.PendingRestartGen
-	}
-	if row.FlowContextInjected != nil {
-		sess.FlowContextInjected = *row.FlowContextInjected
-	}
-	if len(row.IdempotencyKeys) > 0 {
-		sess.IdempotencyKeys = copyStringMap(row.IdempotencyKeys)
-	}
-	if row.WorkflowRuns != nil {
-		sess.ProjectID = row.WorkflowRuns.ProjectID
-		sess.WorkflowID = row.WorkflowRuns.WorkflowID
-	}
-	return sess, true, nil
+	return providerSessionFromDBRow(rows[0]), true, nil
 }
 
 func (s *SupabaseWorkflowStore) UpsertQuestion(ctx context.Context, question ProviderQuestionState) error {

@@ -81,16 +81,18 @@ func TestMemberActionRetryStampsRestartGen(t *testing.T) {
 // ---- R15-P1: second InitRunMarkerSecretFromDir must not clobber -----------
 
 func TestMarkerSecretInitOnceDoesNotClobber(t *testing.T) {
-	// Process may already have Once fired from other tests; still verify that
-	// a second directory init does not change the active MAC.
+	// R17: second Init activates that dir for mint. Both MACs must still verify.
 	d1 := t.TempDir()
 	d2 := t.TempDir()
 	InitRunMarkerSecretFromDir(d1)
 	mac1 := runMarkerMAC("fcp", "run-stable")
 	InitRunMarkerSecretFromDir(d2)
 	mac2 := runMarkerMAC("fcp", "run-stable")
-	if mac1 != mac2 {
-		t.Fatalf("second Init clobbered secret: %q vs %q", mac1, mac2)
+	if !verifyRunMarkerMAC("fcp", "run-stable", mac1) {
+		t.Fatal("verify must accept d1 MAC after d2 init")
+	}
+	if !verifyRunMarkerMAC("fcp", "run-stable", mac2) {
+		t.Fatal("verify must accept d2 MAC")
 	}
 }
 
@@ -106,9 +108,15 @@ func TestMarkPendingFlowGateSettlePersistFailureStampsBlocked(t *testing.T) {
 	svc.mu.Lock()
 	rs := svc.runs[run.RunID]
 	rs.currentTurnID = "turn-x"
-	svc.markPendingFlowGateSettleLocked(rs, "done", time.Now().UTC().Format(time.RFC3339Nano))
+	ok := svc.markPendingFlowGateSettleLocked(rs, "done", time.Now().UTC().Format(time.RFC3339Nano))
+	if ok {
+		t.Fatal("expected false when all persists fail")
+	}
 	if !rs.pendingFlowGateSettle {
 		t.Fatal("RAM settle must remain true so Completed is not fan-out")
+	}
+	if !rs.gateCheckpointNotDurable {
+		t.Fatal("gateCheckpointNotDurable must be set")
 	}
 	if rs.intentBlockedKind != "gate_settle_checkpoint" {
 		t.Fatalf("intentBlockedKind=%q, want gate_settle_checkpoint", rs.intentBlockedKind)

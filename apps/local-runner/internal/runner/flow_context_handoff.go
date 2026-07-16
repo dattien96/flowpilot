@@ -64,8 +64,10 @@ func initRunMarkerSecretForStore(store WorkflowStore) {
 }
 
 // InitRunMarkerSecretFromDir loads or creates a 32-byte secret at
-// dataDir/run_marker_secret (BUG-288 R13-16 / R16-P1). Per-directory map;
-// failed write does not poison other dirs.
+// dataDir/run_marker_secret (BUG-288 R13-16 / R16-P1 / R17-P1).
+// Entire load/create/cache is under write lock (no check-then-write race).
+// Activates this dir's secret for mint so each service that inits mints with
+// ITS secret (not the first-loaded store's).
 func InitRunMarkerSecretFromDir(dataDir string) {
 	if strings.TrimSpace(dataDir) == "" {
 		return
@@ -74,13 +76,13 @@ func InitRunMarkerSecretFromDir(dataDir string) {
 	if err != nil {
 		key = dataDir
 	}
-	runMarkerSecretsMu.RLock()
-	if _, ok := runMarkerSecrets[key]; ok {
-		runMarkerSecretsMu.RUnlock()
+	runMarkerSecretsMu.Lock()
+	defer runMarkerSecretsMu.Unlock()
+	if sec, ok := runMarkerSecrets[key]; ok {
+		// Re-activate this dir's secret for mint (per-service bind).
+		runMarkerActive = sec
 		return
 	}
-	runMarkerSecretsMu.RUnlock()
-
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		log.Printf("[marker] mkdir for run_marker_secret dir=%q: %v", dataDir, err)
 		return
@@ -92,21 +94,20 @@ func InitRunMarkerSecretFromDir(dataDir string) {
 		copy(sec, data[:32])
 	} else {
 		sec = newRunMarkerSecret()
-		if werr := os.WriteFile(path, sec, 0o600); werr != nil {
+		// Atomic write via temp+rename to avoid half-written secret.
+		tmp := path + ".tmp"
+		if werr := os.WriteFile(tmp, sec, 0o600); werr != nil {
 			log.Printf("[marker] write run_marker_secret dir=%q: %v (not caching)", dataDir, werr)
 			return
 		}
-	}
-	runMarkerSecretsMu.Lock()
-	if _, ok := runMarkerSecrets[key]; !ok {
-		runMarkerSecrets[key] = sec
-		// First successfully loaded durable dir becomes the MAC default so
-		// mint/verify for that service stays consistent after init.
-		if len(runMarkerSecrets) == 1 {
-			runMarkerActive = sec
+		if rerr := os.Rename(tmp, path); rerr != nil {
+			_ = os.Remove(tmp)
+			log.Printf("[marker] rename run_marker_secret dir=%q: %v (not caching)", dataDir, rerr)
+			return
 		}
 	}
-	runMarkerSecretsMu.Unlock()
+	runMarkerSecrets[key] = sec
+	runMarkerActive = sec // mint with this service's secret (R17-P1)
 }
 
 func currentRunMarkerSecret() []byte {
@@ -117,7 +118,8 @@ func currentRunMarkerSecret() []byte {
 	return out
 }
 
-// runMarkerMAC returns a short, non-forgeable tag binding kind+id.
+// runMarkerMAC returns a short, non-forgeable tag binding kind+id using the
+// currently active (last-Init'd) directory secret.
 func runMarkerMAC(kind, id string) string {
 	mac := hmac.New(sha256.New, currentRunMarkerSecret())
 	mac.Write([]byte(kind))

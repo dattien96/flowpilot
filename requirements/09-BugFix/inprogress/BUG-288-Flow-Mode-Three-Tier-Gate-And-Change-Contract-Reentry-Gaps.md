@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Vòng 9–15 Fixed. **Vòng 16 (Codex re-review V15): R16-P0-01/02 + R16-P1-01/02 Fixed (2026-07-16)** — durable idempotency keys + Supabase gen, gate durable under s.mu, per-dir marker secrets, settle blocked third-persist. Status giữ `inprogress` đến Codex re-review pass sạch.
+- Vòng 9–16 Fixed. **Vòng 17 (Codex): 4 P0 + 3 P1 Fixed (2026-07-16)** — Stop-before-gate epoch, durable idempotency fail-closed, Supabase `{}` + ListAll, marker activate-per-dir, settle not-durable hard-stop, contract commit fail-closed. Status giữ `inprogress` đến Codex re-review pass sạch.
 
 ### Key Decisions
 
@@ -1161,9 +1161,21 @@ Review độc lập xác nhận Vòng 15 chưa đủ. **2 P0 + 2 P1 → Fixed.**
 | R16-P1-01 | P1 | `sync.Once` clobber multi-store + I/O fail consume Once | Per-`dataDir` secret map; fail I/O không cache; verify accepts any loaded dir secret |
 | R16-P1-02 | P1 | `gate_settle_checkpoint` set sau snap, không persist blocked | Stamp blocked → rebuild snap → third persist |
 
+### Vòng 17 — Codex re-review Vòng 16 (2026-07-16) — **Fixed**
+
+| ID | Sev | Finding | Fix |
+| ---- | --- | ------- | --- |
+| R17-P0-01 | P0 | `stop()` flip loop before `s.mu`; gate writes after Stop | `stopAgentLoop`: lock + bump gateEpoch parent/children + `orchestrator.stop` under `s.mu` first |
+| R17-P0-02 | P0 | Durable idempotency persist fail vẫn launch turn; cap 48 prune random | Fail-closed: abort turn if durable persist fails 2x; snapshot sort keep last 48 keys |
+| R17-P0-03 | P0 | Supabase `idempotency_keys` NOT NULL + JSON null | `idempotencyKeysOrEmpty` always `{}` |
+| R17-P0-04 | P0 | Supabase no `ListAllProviderSessions` / thin list | Implement `SessionIndexReader` + recovery field select on list/get |
+| R17-P1-01 | P1 | Mint uses first global secret; init race | Init under write lock; activate dir secret on each Init; multi-secret verify |
+| R17-P1-02 | P1 | Settle continues when storage down | `gateCheckpointNotDurable`; skip gate until re-persist; return false from mark |
+| R17-P1-03 | P1 | `commitChangeContract` fail-open | Return error; gate blocks on I/O fail |
+
 ## 12. Completion Notes
 
-- result: **inprogress** — Vòng 9–16 Fixed (2026-07-16). Document giữ `Status: inprogress` until clean Codex re-review.
-- primary modules: `apps/local-runner/internal/runner/*`, `apps/local-runner/internal/flowgate/*`.
-- change-audit: `CA-328`…`CA-332` (Vòng 16).
-- verification: Vòng 16 focused tests (`bug288_round16_test.go`).
+- result: **inprogress** — Vòng 9–17 Fixed (2026-07-16). Document giữ `Status: inprogress` until clean Codex re-review.
+- primary modules: `apps/local-runner/internal/runner/*`.
+- change-audit: `CA-328`…`CA-333` (Vòng 17).
+- verification: Vòng 17 focused tests (`bug288_round17_test.go` + updated R15/R16).
