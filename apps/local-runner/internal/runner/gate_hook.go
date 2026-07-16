@@ -1,14 +1,19 @@
-package runner
+﻿package runner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/changecontract"
@@ -27,6 +32,57 @@ type gateBlockInfo struct {
 	stepID         string
 }
 
+// gateEpochStillValid reports whether Stop has not invalidated the gate claim
+// (epoch match) and the parent loop is not stopped/done (V10R4 P0-03 / P1-04).
+func (s *InteractiveService) gateEpochStillValid(runID string, epoch int64) bool {
+	if s == nil || runID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gateEpochStillValidLocked(runID, epoch)
+}
+
+// gateEpochStillValidLocked is the under-lock core of gateEpochStillValid.
+// Caller holds s.mu.
+func (s *InteractiveService) gateEpochStillValidLocked(runID string, epoch int64) bool {
+	rs := s.runs[runID]
+	if rs == nil || rs.gateEpoch != epoch {
+		return false
+	}
+	if rs.status == RunStatusCancelled || rs.status == RunStatusFailed {
+		return false
+	}
+	loopParent := runID
+	if rs.parentRunID != "" {
+		loopParent = rs.parentRunID
+	}
+	if st := s.agentOrchestrator.loopStateFor(loopParent).Status; st == "stopped" || st == "done" {
+		return false
+	}
+	return true
+}
+
+// withGateEpochDurable holds s.mu across the entire durable side-effect so Stop
+// (which must take s.mu to bump gateEpoch) cannot interleave mid-write
+// (BUG-288 R16-P0). Prefer short writes only.
+// fn may return an error (R17-P1 contract I/O) â€” treated as not-committed.
+func (s *InteractiveService) withGateEpochDurable(runID string, epoch int64, fn func() error) bool {
+	if s == nil || fn == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.gateEpochStillValidLocked(runID, epoch) {
+		return false
+	}
+	if err := fn(); err != nil {
+		log.Printf("[gate] durable side-effect failed run=%q: %v (treating as blocked)", runID, err)
+		return false
+	}
+	return s.gateEpochStillValidLocked(runID, epoch)
+}
+
 // runFlowGate is the post-turn enforcement hook (CP-35 P-4/P-5). It is called
 // after turnInFlight=false and before finalizer.Finalize on a clean completion.
 //
@@ -39,50 +95,133 @@ type gateBlockInfo struct {
 func (s *InteractiveService) runFlowGate(
 	ctx context.Context, rs *interactiveRun, turnID string, fin finalizeInput,
 ) (block bool) {
+	return s.runFlowGateAtEpoch(ctx, rs, turnID, fin, -1)
+}
+
+// runFlowGateAtEpoch is runFlowGate with a Stop-cancellation epoch. When epoch>=0,
+// side effects (contract commit, emit, reprompt, escalate) are skipped if Stop
+// bumped gateEpoch mid-evaluation (V10R4 P0-03).
+func (s *InteractiveService) runFlowGateAtEpoch(
+	ctx context.Context, rs *interactiveRun, turnID string, fin finalizeInput, epoch int64,
+) (block bool) {
 	cwd := rs.workspaceCwd
 	if cwd == "" {
 		return false
 	}
+	runID := rs.id
 	dotFP := filepath.Join(cwd, ".flowpilot")
 
-	// 1. Observe git diff — include commits made during the turn (CP-35).
+	// 1. Observe git diff â€” turn-scoped (V9-09): commits since turnStartGitHead +
+	// dirty paths new/changed vs turnStartWorktree (not pre-existing dirt).
 	s.mu.Lock()
 	baseSHA := rs.turnStartGitHead
+	startWT := rs.turnStartWorktree
+	if epoch < 0 {
+		epoch = rs.gateEpoch
+	}
 	s.mu.Unlock()
-	diff, _ := flowgate.ObserveGitDiffSince(cwd, baseSHA)
+	if !s.gateEpochStillValid(runID, epoch) {
+		return true // treat as blocked so outer path does not complete the turn
+	}
+	diff, diffErr := observeTurnScopedDiff(cwd, baseSHA, startWT)
+	if diffErr != nil {
+		// BUG-288 P1-17: an observation error is NOT "no changes" â€” evaluating
+		// tier-1/tier-3 rules against a fabricated empty diff could let a real
+		// change silently pass the gate. Fail closed: block instead of
+		// evaluating, and surface it the same way other gate blocks are
+		// surfaced so the user/desktop sees why.
+		log.Printf("[gate] observe turn-scoped diff failed cwd=%q baseSHA=%q: %v (failing closed, blocking turn)", cwd, baseSHA, diffErr)
+		if s.gateEpochStillValid(runID, epoch) {
+			s.mu.Lock()
+			if rs2 := s.runs[runID]; rs2 != nil && rs2.gateEpoch == epoch {
+				s.emitLocked(rs2, ProviderEvent{
+					Type:           EventFlowGateViolation,
+					ProviderTurnID: turnID,
+					Error:          "gate observation failed (workspace diff unreadable): " + diffErr.Error(),
+					Status:         "block",
+				})
+			}
+			s.mu.Unlock()
+		}
+		return true
+	}
 	log.Printf("[gate] cwd=%q baseSHA=%q diffLen=%d diff=%+v", cwd, baseSHA, len(diff), diff)
 	changedPaths := changedPathsFromDiff(diff)
 	commitSubjects := collectCommitSubjectsSince(cwd, baseSHA)
 	knownFeatureKeys := loadKnownFeatureKeys(cwd)
 	suggestedFeatureKeys := suggestFeatureKeys(dotFP, changedPaths, strings.Join(commitSubjects, "\n"))
 
-	// 1b. Task-184 (CP-43 P-1): capture this turn's Change Contract, declared
-	// (parsed from the AI's own final message) or inferred from the diff when
-	// absent. Task-185 (P-2): compute scope drift against it. Task-186 (P-3):
-	// update the feature's Canonical Head. All non-fatal — a capture/scope/
-	// head failure never blocks the turn (AC-9).
-	contractDeclared, scopeOutOfScopePaths, scopeHighSeverity, headSpecDrifted, headCodeDrifted, headAttachSpecPending :=
-		captureChangeContract(ctx, cwd, rs.id, rs.stepID, fin.FinalMessage, diff, suggestedFeatureKeys)
+	// 1b. Task-184/185: prepare Change Contract + scope for evaluation WITHOUT
+	// saving/head update (V9-02/V9-04). Commit only after gate allows.
+	prepared := prepareChangeContract(ctx, cwd, rs.id, rs.stepID, fin.FinalMessage, diff, suggestedFeatureKeys)
+	contractDeclared := prepared.declared
+	scopeOutOfScopePaths := prepared.outOfScopePaths
+	scopeHighSeverity := prepared.highSeverity
+	headSpecDrifted := prepared.specDrifted
+	headCodeDrifted := prepared.codeDrifted
+	headAttachSpecPending := prepared.attachSpecPending
 
-	// 2. Load test baseline — non-fatal.
-	baseline, _ := flowgate.LoadBaseline(dotFP)
+	// 2. Load test baseline â€” await singleflight so we do not race empty baseline (BUG-288 #3).
+	// BUG-288 P2-04: thread this call's own cancellable ctx so Stop can cut a
+	// first-time baseline capture short instead of always running under
+	// context.Background().
+	s.ensureBaselineReadyContext(ctx, cwd)
+	baseline, blErr := flowgate.LoadBaseline(dotFP)
+	if blErr != nil {
+		// BUG-288 R13-13: corrupt/unreadable baseline must fail-closed (not
+		// silently disable r-tests/r-reg). Missing file is (nil, nil).
+		log.Printf("[gate] LoadBaseline failed cwd=%q: %v (failing closed)", cwd, blErr)
+		msg := "gate baseline unreadable (test_baseline.json corrupt or unreadable): " + blErr.Error()
+		if s.gateEpochStillValid(runID, epoch) {
+			s.mu.Lock()
+			if rs2 := s.runs[runID]; rs2 != nil && rs2.gateEpoch == epoch {
+				s.emitLocked(rs2, ProviderEvent{
+					Type:           EventFlowGateViolation,
+					ProviderTurnID: turnID,
+					Error:          msg,
+					Status:         "block",
+				})
+			}
+			s.mu.Unlock()
+		}
+		return true
+	}
 
 	// 3. Load per-test overrides (Task-155): agreed-changed tests are not re-counted.
 	overrides, _ := flowgate.LoadOverrides(dotFP)
 
-	// 4. Run regression oracle with override awareness.
-	oracle := flowgate.RunOracle(cwd, baseline, diff, overrides)
+	// 4. Run regression oracle with turn context so cancel aborts the suite.
+	oracle := flowgate.RunOracleContext(ctx, cwd, baseline, diff, overrides)
 
 	// 5. Clear overrides for tests that are now green (sticky-until-green, DOD-07).
-	// oracle.Passed is populated by RunOracle from the same suite run — no second execution needed.
-	if !oracle.HasRegression && len(oracle.Passed) > 0 {
-		_ = flowgate.ClearOverrideIfGreen(dotFP, oracle.Passed)
+	// BUG-288 R15-P0 / R16-P0: durable write under s.mu so Stop cannot TOCTOU
+	// between epoch check and file mutation.
+	// BUG-288 R18-5: ClearOverrideIfGreen failure must fail-closed (block gate),
+	// not continue with stale accepted-test overrides still on disk.
+	if oracle.EnvError == "" && !oracle.HasRegression && len(oracle.Passed) > 0 {
+		if !s.withGateEpochDurable(runID, epoch, func() error {
+			return flowgate.ClearOverrideIfGreen(dotFP, oracle.Passed)
+		}) {
+			return true
+		}
 	}
 
 	// 6. Build TurnResult for the evaluator.
-	var failedTests []string
-	if oracle.HasRegression {
-		failedTests = oracle.Regressed
+	// V9-10/V9-27: ordinary Failed vs true Regressed (separate fields).
+	// suite_failed only when baseline was green and suite is now red without
+	// named regressed tests â€” not when baseline itself is already red.
+	var failedTests, regressedTests []string
+	if oracle.EnvError == "" {
+		if oracle.HasRegression {
+			regressedTests = append(regressedTests, oracle.Regressed...)
+		}
+		if !oracle.SuitePassed && !oracle.HasRegression {
+			if len(oracle.Failed) > 0 {
+				failedTests = append(failedTests, oracle.Failed...)
+			} else if baseline != nil && baseline.SuitePassed {
+				failedTests = []string{"suite_failed"}
+			}
+		}
 	}
 	// Task-223: resolve required file_artifact OUTPUT paths for this flow node
 	// (child label == node id on the parent hub topology).
@@ -99,8 +238,9 @@ func (s *InteractiveService) runFlowGate(
 		SuggestedFeatureKeys: suggestedFeatureKeys,
 		WrittenPaths:         fin.ChangedFiles, // files actually written by AI tool calls this turn
 		Tests: flowgate.TestOutcome{
-			Ran:    baseline != nil,
-			Failed: failedTests,
+			Ran:       baseline != nil && oracle.EnvError == "",
+			Failed:    failedTests,
+			Regressed: regressedTests,
 		},
 		ChangeType:                  rs.changeType,
 		WorkspaceCwd:                cwd,
@@ -160,10 +300,17 @@ func (s *InteractiveService) runFlowGate(
 	}
 
 	if len(violations) == 0 {
+		// V10R4 P0-03 / BUG-288 R16-P0: durable commit under s.mu (no TOCTOU).
+		// V9-02: only persist contract + canonical head after gate allows.
+		if !s.withGateEpochDurable(runID, epoch, func() error {
+			return commitChangeContract(cwd, prepared)
+		}) {
+			return true
+		}
 		return false
 	}
 
-	// 10. Enforce — read gate_mode from .flowpilot/settings/gate-config.json; default warn.
+	// 10. Enforce â€” read gate_mode from .flowpilot/settings/gate-config.json; default warn.
 	result := flowgate.Enforce(violations, loadGateMode(dotFP))
 
 	// 11. Extract r-reg options for the decision card (Task-155).
@@ -178,7 +325,16 @@ func (s *InteractiveService) runFlowGate(
 	}
 
 	// 12. Emit the violation event so the desktop can surface it inline.
+	// V10R4 P0-03: apply phase under epoch claim â€” no emit/mutate after Stop.
+	if !s.gateEpochStillValid(runID, epoch) {
+		return true
+	}
 	s.mu.Lock()
+	if s.runs[runID] == nil || s.runs[runID].gateEpoch != epoch {
+		s.mu.Unlock()
+		return true
+	}
+	rs = s.runs[runID]
 	if result.Action == "block" && len(gateOptions) > 0 {
 		rs.pendingGateBlock = &gateBlockInfo{
 			regressedTests: gateRegressedTests,
@@ -200,30 +356,82 @@ func (s *InteractiveService) runFlowGate(
 		return true
 
 	case "reprompt":
+		if !s.gateEpochStillValid(runID, epoch) {
+			return true
+		}
 		s.mu.Lock()
+		rs = s.runs[runID]
+		if rs == nil || rs.gateEpoch != epoch {
+			s.mu.Unlock()
+			return true
+		}
 		attempts := rs.repromptAttempts
 		rs.repromptAttempts++
 		stepID := rs.lastTurnStepID
+		ws := rs.workspaceCwd
 		s.mu.Unlock()
 		log.Printf("[gate] reprompt attempt=%d stepID=%q", attempts, stepID)
 		if attempts < maxFlowGateReprompts {
-			go func(runID, stepID, prompt string) {
-				_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
-			}(rs.id, stepID, flowgate.RepromptPrompt(result))
+			// Root/chat gate captures contract under rs.id â€” re-append so retry
+			// turns still see declared scope (mirror child-gate Task-247 inject).
+			prompt := flowgate.RepromptPrompt(result)
+			prompt = appendChangeContractIfAnyWithSecret(ws, runID, prompt, s.markerSecret)
+			// V10R3 P0: queue reprompt; do NOT startTurn here â€” pendingFlowGateSettle
+			// / postTurnGateCancel / turnInFlight are still set until the caller
+			// cleans up, so a concurrent startTurn would 409 and be dropped.
+			s.mu.Lock()
+			if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
+				r.pendingGateRepromptPrompt = prompt
+				r.pendingGateRepromptStepID = stepID
+				r.pendingGateRepromptGen++
+			}
+			s.mu.Unlock()
+			return true
+		}
+		// V9-17: root max reprompts â€” escalate to durable awaiting-user like child path.
+		if !s.gateEpochStillValid(runID, epoch) {
+			return true
+		}
+		if _, err := s.applyFlowControl(runID, FlowControlInput{
+			Status:  "escalate",
+			Summary: "Gate reprompt exhausted: " + result.Message,
+		}); err != nil {
+			log.Printf("[gate] root escalate after max reprompts failed: %v", err)
 		}
 		return true
 	}
 
-	// "warn" or "approve": log only, let the turn complete normally.
+	// "warn" or "approve": log only, let the turn complete normally — still commit
+	// contract/head because the turn is allowed.
+	// BUG-288 R19-3: must use withGateEpochDurable (epoch + fail-closed I/O),
+	// same as the zero-violation allow path — direct commitChangeContract discarded
+	// errors and raced Stop before contract/head write.
+	if !s.withGateEpochDurable(runID, epoch, func() error {
+		return commitChangeContract(cwd, prepared)
+	}) {
+		return true
+	}
 	return false
 }
 
 // runChildArtifactOutputGate enforces Task-223 file_artifact OUTPUT write
-// contracts on spawned flow children only (not the full CA/test rule set).
+// contracts on spawned flow children and Task-242 tier-1 doc/scope rules when
+// the child is a genuine code-writing agent.delegate (not a reviewer) that
+// wrote non-doc files this turn. Reviewers share agent.delegate + the coder's
+// dirty worktree and must stay zero-cost for doc/scope/contract (BUG-152).
 // Returns true when the turn should be blocked/reprompted.
 func (s *InteractiveService) runChildArtifactOutputGate(
-	_ context.Context, rs *interactiveRun, turnID string, fin finalizeInput,
+	ctx context.Context, rs *interactiveRun, turnID string, fin finalizeInput,
 ) (block bool) {
+	return s.runChildArtifactOutputGateAtEpoch(ctx, rs, turnID, fin, -1)
+}
+
+func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
+	ctx context.Context, rs *interactiveRun, turnID string, fin finalizeInput, epoch int64,
+) (block bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if rs == nil {
 		return false
 	}
@@ -231,48 +439,319 @@ func (s *InteractiveService) runChildArtifactOutputGate(
 	if cwd == "" {
 		return false
 	}
+	runID := rs.id
 	required := requiredFileArtifactOutputsForRun(s, rs)
 	structured := requiredStructuredFileArtifactOutputsForRun(s, rs)
 	telegramSends := requiredTelegramSendsForRun(s, rs)
-	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 {
-		return false
-	}
-	tr := flowgate.TurnResult{
-		RunID:                                 rs.id,
-		StepID:                                rs.stepID,
-		FinalMessage:                          fin.FinalMessage,
-		WrittenPaths:                          fin.ChangedFiles,
-		WorkspaceCwd:                          cwd,
-		RequiredFileArtifactOutputs:           required,
-		RequiredStructuredFileArtifactOutputs: structured,
-		RequiredTelegramSends:                 telegramSends,
-	}
+
 	// Prefer defaults merged with any on-disk rules so r-artifact-output is
 	// present even when an old flow-rules.json predates Task-223.
 	rules := flowgate.MergeDefaultRules(nil)
 	if loaded, err := flowgate.LoadRules(filepath.Join(cwd, ".flowpilot", "settings")); err == nil {
 		rules = flowgate.MergeDefaultRules(loaded)
 	}
-	// Only evaluate the artifact-output family on children (BUG-152 / Task-225).
+
+	// Artifact family (Task-223+) â€” always considered when bindings exist.
 	var only []flowgate.Rule
 	for _, r := range rules {
 		if !r.Enabled {
 			continue
 		}
-		switch r.ID {
-		case "r-artifact-output", "r-artifact-output-structure", "r-artifact-telegram-sent":
+		if flowgate.IsArtifactRule(r.ID) {
 			only = append(only, r)
 		}
 	}
+
+	// Task-242 tier-1: doc/scope on genuine code-writing children only.
+	s.mu.Lock()
+	baseSHA := rs.turnStartGitHead
+	startWT := rs.turnStartWorktree
+	parentID := rs.parentRunID
+	changeType := rs.changeType
+	if epoch < 0 {
+		epoch = rs.gateEpoch
+	}
+	s.mu.Unlock()
+	if !s.gateEpochStillValid(runID, epoch) {
+		return true
+	}
+	// Re-lock briefly was replaced by unlock above â€” re-acquire fields already copied.
+	s.mu.Lock()
+	// (parentID/changeType/base already set)
+	if parentID != "" {
+		if parent := s.runs[parentID]; parent != nil && parent.changeType != "" {
+			changeType = parent.changeType
+		}
+	}
+	s.mu.Unlock()
+	// Per-turn diff: commits since turnStartGitHead + worktree paths that are
+	// new/changed relative to turnStartWorktree (not pre-existing coder dirt).
+	diff, diffErr := observeTurnScopedDiff(cwd, baseSHA, startWT)
+	if diffErr != nil {
+		// BUG-288 P1-17: same fail-closed contract as runFlowGateAtEpoch â€” an
+		// observation error must not be silently treated as "no changes",
+		// which could let Tier-1 pass with a fabricated empty diff.
+		// BUG-288 R13-04: also escalate parent so the child is not hung without
+		// an actionable hub surface (mirror Tier-1 block path).
+		log.Printf("[gate] child artifact-output gate: observe turn-scoped diff failed cwd=%q baseSHA=%q: %v (failing closed, blocking turn)", cwd, baseSHA, diffErr)
+		msg := "gate observation failed (workspace diff unreadable): " + diffErr.Error()
+		if s.gateEpochStillValid(runID, epoch) {
+			s.mu.Lock()
+			if rs2 := s.runs[runID]; rs2 != nil && rs2.gateEpoch == epoch {
+				s.emitLocked(rs2, ProviderEvent{
+					Type:           EventFlowGateViolation,
+					ProviderTurnID: turnID,
+					Error:          msg,
+					Status:         "block",
+				})
+			}
+			s.mu.Unlock()
+		}
+		if parentID != "" && s.gateEpochStillValid(runID, epoch) {
+			_, _ = s.applyFlowControl(parentID, FlowControlInput{
+				Status:  "escalate",
+				Summary: "flow gate block: " + msg,
+			})
+		}
+		return true
+	}
+	node, nodeOK := flowNodeForRun(s, rs)
+	isDelegate := false
+	if nodeOK {
+		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.delegate" {
+			isDelegate = true
+		}
+	}
+	// Reviewers (explicit role/agent) are excluded. Tier-1 activates on
+	// non-empty per-turn code-diff OR WrittenPaths (EventFileChanged).
+	// BUG-288 #8: pendingGateCodePaths forces re-check after a prior gate fail.
+	s.mu.Lock()
+	pendingPaths := append([]string(nil), rs.pendingGateCodePaths...)
+	s.mu.Unlock()
+	isCodingChild := isDelegate && isFlowCodeWritingChild(rs, node, nodeOK, fin.ChangedFiles, diff)
+	if isDelegate && len(pendingPaths) > 0 {
+		isCodingChild = true
+	}
+
+	// Task-242 tier-1: prepare Change Contract on coding children so r-contract
+	// sees ContractDeclared/scope. Persist only after gate allows (V9-02).
+	var (
+		contractDeclared      bool
+		scopeOutOfScopePaths  []string
+		scopeHighSeverity     bool
+		headSpecDrifted       bool
+		headCodeDrifted       bool
+		headAttachSpecPending bool
+		prepared              preparedChangeContract
+		hasPreparedContract   bool
+	)
+	if isCodingChild {
+		for _, r := range rules {
+			if !r.Enabled {
+				continue
+			}
+			if flowgate.IsDocScopeRule(r.ID) {
+				only = append(only, r)
+			}
+		}
+		// Task-242 tier-2b: flows without command.validate also run test rules
+		// on the coding child (review-loop). Flows with validate leave tests to
+		// that node (rag-harness).
+		if parentID != "" && !parentFlowHasValidateNode(s, parentID) {
+			for _, r := range rules {
+				if !r.Enabled {
+					continue
+				}
+				for _, id := range flowgate.TestRuleIDs() {
+					if r.ID == id {
+						only = append(only, r)
+					}
+				}
+			}
+		}
+		changedPaths := changedPathsFromDiff(diff)
+		dotFP := filepath.Join(cwd, ".flowpilot")
+		suggested := suggestFeatureKeys(dotFP, changedPaths, fin.FinalMessage)
+		// Key contract under parent flow run id so appendChangeContractIfAny /
+		// change.contract Fetch (parentRunID) can see the coder's declaration.
+		contractRunID := rs.id
+		if parentID != "" {
+			contractRunID = parentID
+		}
+		stepForContract := strings.TrimSpace(rs.label)
+		if stepForContract == "" {
+			stepForContract = rs.stepID
+		}
+		prepared = prepareChangeContract(ctx, cwd, contractRunID, stepForContract, fin.FinalMessage, diff, suggested)
+		hasPreparedContract = true
+		contractDeclared = prepared.declared
+		scopeOutOfScopePaths = prepared.outOfScopePaths
+		scopeHighSeverity = prepared.highSeverity
+		headSpecDrifted = prepared.specDrifted
+		headCodeDrifted = prepared.codeDrifted
+		headAttachSpecPending = prepared.attachSpecPending
+	}
+
 	if len(only) == 0 {
 		return false
 	}
+	// Artifact-only path with no bindings and no coding/doc rules selected â†’ no-op.
+	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 && !isCodingChild {
+		return false
+	}
+	if len(required) == 0 && len(structured) == 0 && len(telegramSends) == 0 && len(diff) == 0 && !isCodingChild {
+		return false
+	}
+
+	written := fin.ChangedFiles
+	if len(written) == 0 && len(pendingPaths) > 0 {
+		// Re-check prior coding paths until remediation (BUG-288 #8).
+		written = pendingPaths
+	}
+	tr := flowgate.TurnResult{
+		RunID:                                 rs.id,
+		StepID:                                rs.stepID,
+		FinalMessage:                          fin.FinalMessage,
+		WrittenPaths:                          written,
+		WorkspaceCwd:                          cwd,
+		GitDiff:                               diff,
+		ChangedPaths:                          changedPathsFromDiff(diff),
+		ChangeType:                            changeType,
+		RequiredFileArtifactOutputs:           required,
+		RequiredStructuredFileArtifactOutputs: structured,
+		RequiredTelegramSends:                 telegramSends,
+		ContractDeclared:                      contractDeclared,
+		ScopeOutOfScopePaths:                  scopeOutOfScopePaths,
+		ScopeHighSeverity:                     scopeHighSeverity,
+		HeadSpecDrifted:                       headSpecDrifted,
+		HeadCodeDrifted:                       headCodeDrifted,
+		HeadAttachSpecPending:                 headAttachSpecPending,
+	}
+	// Optional oracle for tier-2b when test rules are in `only`.
+	needsOracle := false
+	for _, r := range only {
+		for _, id := range flowgate.TestRuleIDs() {
+			if r.ID == id {
+				needsOracle = true
+			}
+		}
+	}
+	if needsOracle {
+		// BUG-288 P2-04: cancellable via the caller's ctx (see runFlowGateAtEpoch).
+		s.ensureBaselineReadyContext(ctx, cwd)
+		dotFP := filepath.Join(cwd, ".flowpilot")
+		baseline, blErr := flowgate.LoadBaseline(dotFP)
+		if blErr != nil {
+			// BUG-288 R13-13: fail-closed when suite rules need baseline truth.
+			log.Printf("[gate] LoadBaseline (child) failed cwd=%q: %v (failing closed)", cwd, blErr)
+			msg := "gate baseline unreadable (test_baseline.json corrupt or unreadable): " + blErr.Error()
+			if s.gateEpochStillValid(runID, epoch) {
+				s.mu.Lock()
+				if rs2 := s.runs[runID]; rs2 != nil && rs2.gateEpoch == epoch {
+					s.emitLocked(rs2, ProviderEvent{
+						Type:           EventFlowGateViolation,
+						ProviderTurnID: turnID,
+						Error:          msg,
+						Status:         "block",
+					})
+				}
+				s.mu.Unlock()
+			}
+			if parentID != "" && s.gateEpochStillValid(runID, epoch) {
+				_, _ = s.applyFlowControl(parentID, FlowControlInput{
+					Status:  "escalate",
+					Summary: "flow gate block: " + msg,
+				})
+			}
+			return true
+		}
+		overrides, _ := flowgate.LoadOverrides(dotFP)
+		oracle := flowgate.RunOracleContext(ctx, cwd, baseline, diff, overrides)
+		// V9-27: split ordinary Failed vs true Regressed for r-tests / r-reg.
+		var failedTests, regressedTests []string
+		if oracle.EnvError == "" {
+			if oracle.HasRegression {
+				regressedTests = append(regressedTests, oracle.Regressed...)
+			}
+			if !oracle.SuitePassed && !oracle.HasRegression {
+				if len(oracle.Failed) > 0 {
+					failedTests = append(failedTests, oracle.Failed...)
+				} else if baseline != nil && baseline.SuitePassed {
+					failedTests = []string{"suite_failed"}
+				}
+			}
+		}
+		tr.Tests = flowgate.TestOutcome{
+			Ran:       baseline != nil && oracle.EnvError == "",
+			Failed:    failedTests,
+			Regressed: regressedTests,
+		}
+	}
+
+	// V10 P0: Gemini (and any adapter without RequestApproval) may still create
+	// commits under YOLO. Detect new commits since turn base and block coding
+	// children â€” commit is reserved for audit/commit-prep (Task-242 D-7).
+	if isCodingChild && len(collectCommitSubjectsSince(cwd, baseSHA)) > 0 {
+		if !s.gateEpochStillValid(runID, epoch) {
+			return true
+		}
+		msg := "flow coding step created a git commit; commits are reserved for the audit/commit-prep step"
+		s.mu.Lock()
+		if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
+			s.emitLocked(r, ProviderEvent{
+				Type:           EventFlowGateViolation,
+				ProviderTurnID: turnID,
+				Error:          msg,
+				Status:         "block",
+			})
+		}
+		s.mu.Unlock()
+		if parentID != "" && s.gateEpochStillValid(runID, epoch) {
+			_, _ = s.applyFlowControl(parentID, FlowControlInput{
+				Status:  "escalate",
+				Summary: "flow gate block: " + msg,
+			})
+		}
+		return true
+	}
+
 	violations := flowgate.Evaluate(tr, only)
 	if len(violations) == 0 {
+		// BUG-288 R16-P0: durable commit under s.mu (no TOCTOU with Stop).
+		if hasPreparedContract {
+			if !s.withGateEpochDurable(runID, epoch, func() error {
+				return commitChangeContract(cwd, prepared)
+			}) {
+				return true
+			}
+		} else if !s.gateEpochStillValid(runID, epoch) {
+			return true
+		}
+		s.mu.Lock()
+		if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
+			r.pendingGateCodePaths = nil
+		}
+		s.mu.Unlock()
 		return false
 	}
 	result := flowgate.Enforce(violations, loadGateMode(filepath.Join(cwd, ".flowpilot")))
+	if !s.gateEpochStillValid(runID, epoch) {
+		return true
+	}
+	// Remember code paths so empty-diff retry still re-checks (BUG-288 #8).
+	pathsToHold := tr.WrittenPaths
+	if len(pathsToHold) == 0 {
+		pathsToHold = changedPathsFromDiff(diff)
+	}
 	s.mu.Lock()
+	rs = s.runs[runID]
+	if rs == nil || rs.gateEpoch != epoch {
+		s.mu.Unlock()
+		return true
+	}
+	if len(pathsToHold) > 0 {
+		rs.pendingGateCodePaths = append([]string(nil), pathsToHold...)
+	}
 	s.emitLocked(rs, ProviderEvent{
 		Type:           EventFlowGateViolation,
 		ProviderTurnID: turnID,
@@ -282,24 +761,272 @@ func (s *InteractiveService) runChildArtifactOutputGate(
 	s.mu.Unlock()
 	switch result.Action {
 	case "block":
+		// Tier-2b always-block and tier-1 block â†’ parent escalate (actionable),
+		// not an unanswerable child hang (Task-242 T-9 / BUG-288 #9).
+		if parentID != "" && s.gateEpochStillValid(runID, epoch) {
+			_, _ = s.applyFlowControl(parentID, FlowControlInput{
+				Status:  "escalate",
+				Summary: "flow gate block on coding step: " + result.Message,
+			})
+		}
 		return true
 	case "reprompt":
+		if !s.gateEpochStillValid(runID, epoch) {
+			return true
+		}
 		s.mu.Lock()
+		rs = s.runs[runID]
+		if rs == nil || rs.gateEpoch != epoch {
+			s.mu.Unlock()
+			return true
+		}
 		attempts := rs.repromptAttempts
 		rs.repromptAttempts++
 		stepID := rs.lastTurnStepID
 		runID := rs.id
+		parentRunID := rs.parentRunID
+		ws := rs.workspaceCwd
 		s.mu.Unlock()
-		log.Printf("[gate] child artifact-output reprompt attempt=%d run=%q stepID=%q missing=%v",
-			attempts, runID, stepID, required)
+		log.Printf("[gate] child gate reprompt attempt=%d run=%q stepID=%q",
+			attempts, runID, stepID)
 		if attempts < maxFlowGateReprompts {
-			go func(runID, stepID, prompt string) {
-				_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
-			}(runID, stepID, flowgate.RepromptPrompt(result))
+			// Re-attach node OUTPUT contracts + parent-run Change Contract so the
+			// retry still sees declared scope (Task-247 / CP-50 P-4).
+			prompt := flowgate.RepromptPrompt(result)
+			if nodeOK {
+				prompt = composeFlowNodeAgentPrompt(ws, prompt, node)
+			}
+			if parentRunID != "" {
+				prompt = appendChangeContractIfAnyWithSecret(ws, parentRunID, prompt, s.markerSecret)
+			}
+			// V10R3 P0: queue reprompt until settle/cancel/turnInFlight clear.
+			s.mu.Lock()
+			if r := s.runs[runID]; r != nil {
+				r.pendingGateRepromptPrompt = prompt
+				r.pendingGateRepromptStepID = stepID
+				r.pendingGateRepromptGen++
+			}
+			s.mu.Unlock()
+			return true
+		}
+		// BUG-288 #9: exhausted reprompt budget â€” escalate to human, do not wedge.
+		if parentRunID != "" {
+			_, _ = s.applyFlowControl(parentRunID, FlowControlInput{
+				Status:  "escalate",
+				Summary: "flow gate: max reprompts exceeded on coding step: " + result.Message,
+			})
 		}
 		return true
 	}
+	// warn/approve: still commit prepared contract (turn allowed).
+	// BUG-288 R16-P0: durable commit under s.mu.
+	if hasPreparedContract {
+		if !s.withGateEpochDurable(runID, epoch, func() error {
+			return commitChangeContract(cwd, prepared)
+		}) {
+			return true
+		}
+	}
 	return false
+}
+
+// isFlowCodeWritingChild reports whether a flow child should run tier-1 doc/scope
+// rules and Change Contract capture (Task-242). Reviewers also use agent.delegate
+// and share the coder's uncommitted diff â€” they must not capture/overwrite the
+// parent-run contract or be reprompted for lacking a declaration.
+//
+// Activation (Task-242 / BUG-288 #14/#24):
+//   - Reviewer with empty/non-code turn-diff: zero-cost (exclude).
+//   - Reviewer who actually changes code this turn: still gate.
+//   - Primary signal: non-empty per-turn git code-diff.
+//   - WrittenPaths only when git observation yielded no code-diff (provider wrote
+//     but net dirty snapshot empty / git failed) â€” avoids write-then-revert false +.
+func isFlowCodeWritingChild(rs *interactiveRun, node agentpack.FlowNode, nodeOK bool, writtenPaths []string, diff []flowgate.ChangedFile) bool {
+	if rs == nil {
+		return false
+	}
+	hasDiff := flowgate.HasCodeChanges(diff)
+	hasWrites := flowgate.HasCodeChangesInList(writtenPaths)
+	if isFlowReviewerChild(rs, node, nodeOK) {
+		// Zero-cost only when this turn did not mutate code.
+		// V9-22: prefer git code-diff; WrittenPaths alone is weaker (write-revert).
+		return hasDiff || (hasWrites && len(diff) == 0)
+	}
+	if hasDiff {
+		return true
+	}
+	// V9-22: WrittenPaths fallback only when git observation produced no code
+	// delta (parser empty / error), not when AI wrote then reverted to zero net.
+	return hasWrites && len(diff) == 0
+}
+
+// isFlowReviewerChild detects genuine review agents via explicit pack/spawn
+// role or agent catalog name â€” NOT substring matching on labels like
+// "review_and_fix" (those remain code-writing and must run tier-1).
+func isFlowReviewerChild(rs *interactiveRun, node agentpack.FlowNode, nodeOK bool) bool {
+	if rs == nil {
+		return false
+	}
+	// Exact role from agent definition / spawn (pack: role: reviewer).
+	switch strings.ToLower(strings.TrimSpace(rs.role)) {
+	case "reviewer", "review":
+		return true
+	}
+	// Exact agent catalog name (agents/reviewer.md â†’ "reviewer").
+	if strings.EqualFold(strings.TrimSpace(rs.agentName), "reviewer") {
+		return true
+	}
+	if nodeOK {
+		if strings.EqualFold(flowNodeAgentName(node), "reviewer") {
+			return true
+		}
+	}
+	return false
+}
+
+// snapshotWorktreeFingerprints records dirty path â†’ content fingerprint at turn
+// start so the gate can attribute only this turn's worktree mutations.
+func snapshotWorktreeFingerprints(cwd string) map[string]string {
+	if strings.TrimSpace(cwd) == "" {
+		return nil
+	}
+	files, err := flowgate.ObserveGitDiff(cwd)
+	if err != nil || len(files) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(files))
+	for _, f := range files {
+		// V10R3 P1: do not TrimSpace â€” whitespace is significant in git -z paths
+		// (V10-07); trimming remaps " foo.go " â†’ "foo.go" and breaks attribution.
+		p := filepath.ToSlash(f.Path)
+		if p == "" {
+			continue
+		}
+		out[p] = worktreeFileFingerprint(cwd, p)
+	}
+	return out
+}
+
+// isNotAGitRepoErr reports whether err is git's specific "not a git
+// repository" failure (exit 128, stderr containing that phrase) rather than
+// some other observation failure. cmd.Output() populates *exec.ExitError.Stderr
+// when the command's own Stderr was left nil, which is the case for every
+// git invocation in this package (BUG-288 P1-17 â€” see observeTurnScopedDiff).
+func isNotAGitRepoErr(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(exitErr.Stderr)), "not a git repository")
+}
+
+// observeTurnScopedDiff returns commits since baseSHA plus uncommitted paths
+// that are new or whose content fingerprint changed since turnStartWorktree.
+// BUG-288 P1-17: the returned error MUST be checked by the caller and treated
+// as fail-closed (block/escalate) â€” it means the workspace genuinely could
+// not be read (e.g. git failure), which is NOT the same as "no changes".
+// Returning the empty diff silently on error previously let Tier-1 gate
+// evaluation see an empty diff and pass even though the real diff was
+// unknown, masking real changes.
+func observeTurnScopedDiff(cwd, baseSHA string, turnStartWorktree map[string]string) ([]flowgate.ChangedFile, error) {
+	if strings.TrimSpace(cwd) == "" {
+		return nil, nil
+	}
+	// Full view (committed since base + current dirty), then filter uncommitted
+	// that were already dirty with the same content at turn start.
+	full, err := flowgate.ObserveGitDiffSince(cwd, baseSHA)
+	if err != nil {
+		if isNotAGitRepoErr(err) {
+			// Task-242 D-2 / BUG-288 R13-10: carve-out only when the turn never
+			// observed a real repo (no base SHA and no worktree snapshot). If
+			// turn start had a HEAD/worktree, ".git disappeared mid-turn" is a
+			// real observation failure â€” fail closed, do not fabricate empty.
+			if strings.TrimSpace(baseSHA) == "" && len(turnStartWorktree) == 0 {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("observe git diff since %q: workspace was a git repo at turn start but is no longer readable: %w", baseSHA, err)
+		}
+		return nil, fmt.Errorf("observe git diff since %q: %w", baseSHA, err)
+	}
+	if len(full) == 0 {
+		return full, nil
+	}
+	if len(turnStartWorktree) == 0 {
+		// No snapshot (legacy / empty) â€” fall back to full view.
+		return full, nil
+	}
+	// Paths currently dirty (uncommitted only) for fingerprint compare.
+	// BUG-288 R13-12: second observation must also fail-closed (not swallow).
+	currentDirty, err2 := flowgate.ObserveGitDiff(cwd)
+	if err2 != nil {
+		return nil, fmt.Errorf("observe current dirty worktree: %w", err2)
+	}
+	dirtyNow := make(map[string]flowgate.ChangedFile, len(currentDirty))
+	for _, f := range currentDirty {
+		dirtyNow[filepath.ToSlash(f.Path)] = f
+	}
+	var out []flowgate.ChangedFile
+	seen := map[string]bool{}
+	for _, f := range full {
+		p := filepath.ToSlash(f.Path)
+		if p == "" || seen[p] {
+			continue
+		}
+		if cur, isDirty := dirtyNow[p]; isDirty {
+			// Uncommitted: only include if new or content changed this turn.
+			prev, wasDirty := turnStartWorktree[p]
+			fp := worktreeFileFingerprint(cwd, p)
+			if wasDirty && prev == fp {
+				// Pre-existing dirt unchanged â€” not this turn's edit.
+				_ = cur
+				continue
+			}
+		}
+		// Committed-since-base (not in dirtyNow) or dirty that changed â†’ keep.
+		seen[p] = true
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+func worktreeFileFingerprint(cwd, relPath string) string {
+	full := filepath.Join(cwd, filepath.FromSlash(relPath))
+	// Do not follow symlinks outside a normal open (O_NOFOLLOW best-effort via Lstat).
+	fi, err := os.Lstat(full)
+	if err != nil {
+		return "missing:" + relPath
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		target, _ := os.Readlink(full)
+		sum := sha256.Sum256([]byte("symlink:" + target))
+		return hex.EncodeToString(sum[:16])
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		return "missing:" + relPath
+	}
+	defer f.Close()
+	h := sha256.New()
+	// V9-14: stream entire file (bounded memory via io.Copy buffer). A 1MiB
+	// prefix-only hash missed tail edits that kept the same size.
+	_, _ = io.Copy(h, f)
+	fmt.Fprintf(h, "|size=%d|mode=%v", fi.Size(), fi.Mode())
+	return hex.EncodeToString(h.Sum(nil)[:16])
+}
+
+func appendUniqueStrings(dst []string, add ...string) []string {
+	seen := make(map[string]bool, len(dst)+len(add))
+	for _, s := range dst {
+		seen[s] = true
+	}
+	for _, s := range add {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		dst = append(dst, s)
+	}
+	return dst
 }
 
 // requiredFileArtifactOutputsForRun looks up the active flow node for this run
@@ -339,6 +1066,181 @@ func requiredStructuredFileArtifactOutputsForRun(s *InteractiveService, rs *inte
 		return nil
 	}
 	return requiredStructuredFileArtifactOutputs(node)
+}
+
+// isFlowCodingCommitAttempt reports whether this approval is a git commit from
+// a flow-engine coding child (Task-242 T-4). Token-aware â€” does not match
+// substrings like "git commitment".
+func isFlowCodingCommitAttempt(s *InteractiveService, rs *interactiveRun, details ApprovalDetails) bool {
+	if s == nil || rs == nil {
+		return false
+	}
+	if details.Kind != "exec" && details.Kind != "" {
+		// Only shell/exec approvals; empty Kind treated as possible shell on some providers.
+	}
+	if !looksLikeGitCommitCommand(details.Command) {
+		return false
+	}
+	if strings.TrimSpace(rs.parentRunID) == "" {
+		return false
+	}
+	if !s.isFlowEngineDriven(rs.parentRunID) {
+		return false
+	}
+	node, ok := flowNodeForRun(s, rs)
+	if !ok {
+		return false
+	}
+	canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior)
+	return ok && canonical == "agent.delegate"
+}
+
+// shellFields splits a command line with simple quote awareness so paths that
+// contain spaces stay one token (Codex review Important: git -C "C:\repo with spaces").
+// Supports "double" and 'single' quotes; quote characters are stripped.
+func shellFields(cmd string) []string {
+	var out []string
+	var b strings.Builder
+	var quote rune // 0 | '"' | '\''
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		out = append(out, b.String())
+		b.Reset()
+	}
+	for _, r := range cmd {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				b.WriteRune(r)
+			}
+		case r == '"' || r == '\'':
+			quote = r
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			flush()
+		default:
+			b.WriteRune(r)
+		}
+	}
+	flush()
+	return out
+}
+
+// looksLikeGitCommitCommand detects git-commit invocations including forms that
+// insert global options before the verb (Codex review Important #1) and common
+// shell wrappers (BUG-288 #7):
+//
+//	git commit -m x
+//	git -C . commit -m x
+//	sh -c 'git commit -m x'
+//	bash -lc "git commit -m x"
+//	/usr/bin/git --git-dir=... commit
+func looksLikeGitCommitCommand(cmd string) bool {
+	// Strip outer shell wrappers so nested git commit is still denied.
+	for {
+		fields := shellFields(cmd)
+		if len(fields) < 2 {
+			break
+		}
+		base := fields[0]
+		if j := strings.LastIndexAny(base, `/\`); j >= 0 {
+			base = base[j+1:]
+		}
+		// sh/bash -c/-lc 'payload'
+		if base == "sh" || base == "bash" || base == "zsh" || base == "dash" {
+			// find -c / -lc and take following payload as new cmd
+			for i := 1; i < len(fields)-1; i++ {
+				if fields[i] == "-c" || fields[i] == "-lc" {
+					cmd = fields[i+1]
+					goto reparse
+				}
+			}
+		}
+		break
+	reparse:
+		continue
+	}
+	fields := shellFields(cmd)
+	// Also scan raw command for "git commit" after common wrappers when nested
+	// parsing failed (e.g. env VAR=x git commit).
+	if looksLikeGitCommitFields(fields) {
+		return true
+	}
+	// Fallback: unwrap any token that embeds "git commit" after a shell -c payload
+	// already expanded by shellFields.
+	low := strings.ToLower(cmd)
+	if strings.Contains(low, "git commit") || strings.Contains(low, "git.exe commit") {
+		// Avoid "git commitment" false positive: require commit as its own token.
+		return looksLikeGitCommitFields(shellFields(strings.ReplaceAll(strings.ReplaceAll(cmd, "&&", " "), ";", " ")))
+	}
+	return false
+}
+
+func looksLikeGitCommitFields(fields []string) bool {
+	for i := 0; i < len(fields); i++ {
+		tok := fields[i]
+		base := tok
+		if j := strings.LastIndexAny(tok, `/\`); j >= 0 {
+			base = tok[j+1:]
+		}
+		if base != "git" && base != "git.exe" {
+			continue
+		}
+		// Walk remaining args: skip global options that take a value, then
+		// the first non-option token is the git verb.
+		for j := i + 1; j < len(fields); j++ {
+			arg := fields[j]
+			if arg == "" {
+				continue
+			}
+			if arg == "commit" {
+				return true
+			}
+			// Global options that consume the next token as a value.
+			switch arg {
+			case "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env",
+				"--super-prefix", "--list-cmds":
+				j++ // skip value (already one shell field even with spaces)
+				continue
+			}
+			if strings.HasPrefix(arg, "-c") && strings.Contains(arg, "=") {
+				continue
+			}
+			if strings.HasPrefix(arg, "--git-dir=") || strings.HasPrefix(arg, "--work-tree=") ||
+				strings.HasPrefix(arg, "--namespace=") || strings.HasPrefix(arg, "--config-env=") {
+				continue
+			}
+			if strings.HasPrefix(arg, "-") {
+				continue
+			}
+			// First non-option token: the git subcommand.
+			return arg == "commit"
+		}
+	}
+	return false
+}
+
+// parentFlowHasValidateNode reports whether the parent flow topology includes a
+// command.validate node (Task-242 tier-2 ownership).
+func parentFlowHasValidateNode(s *InteractiveService, parentRunID string) bool {
+	if s == nil || parentRunID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	parent := s.runs[parentRunID]
+	if parent == nil {
+		return false
+	}
+	for _, n := range parent.activeFlowNodes {
+		if canonical, ok := agentpack.NormalizeBehaviorID(n.Behavior); ok && canonical == "command.validate" {
+			return true
+		}
+	}
+	return false
 }
 
 // flowNodeForRun resolves the active flow node for a child (or hub) run.
@@ -391,14 +1293,14 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 	case "keep-test-fix-code":
 		tests := describeTests(info)
 		prompt = fmt.Sprintf(
-			"The flow gate detected a regression in %s. The user chose: keep test + requirement → fix the code.\n\n"+
+			"The flow gate detected a regression in %s. The user chose: keep test + requirement â†’ fix the code.\n\n"+
 				"Fix the code in the source files so that %s passes again without modifying any pre-existing test file. "+
-				"The test is the source of truth — do not edit, delete, or weaken it.",
+				"The test is the source of truth â€” do not edit, delete, or weaken it.",
 			tests, tests)
 	case "suggest-requirement-change":
 		prompt = buildSuggestRequirementPrompt(info, cwd)
 		// Mark the upcoming turn as a proposal turn so runFlowGate does not
-		// re-block on r-reg/r-tests — the AI is proposing, not fixing code yet.
+		// re-block on r-reg/r-tests â€” the AI is proposing, not fixing code yet.
 		s.mu.Lock()
 		if rs2 := s.runs[runID]; rs2 != nil {
 			rs2.proposalTurnPending = true
@@ -450,8 +1352,8 @@ func (s *InteractiveService) RecordGateAgreement(runID string, testNames []strin
 		"The user has explicitly agreed to the proposed requirement change. Override recorded for: %s.\n\n"+
 			"Now perform both steps in order:\n"+
 			"1. Update the governing requirement in `requirements/05-System-Specs/` to match the agreed behavior "+
-			"(create the file if none exists — `SS-<N>-<short-title>.md`). "+
-			"User intent is authoritative — follow it even if the requirement seems unusual, but flag any concern briefly.\n"+
+			"(create the file if none exists â€” `SS-<N>-<short-title>.md`). "+
+			"User intent is authoritative â€” follow it even if the requirement seems unusual, but flag any concern briefly.\n"+
 			"2. After the spec update is committed, align the test so it matches the approved requirement.",
 		tests)
 
@@ -489,14 +1391,14 @@ func buildSuggestRequirementPrompt(info *gateBlockInfo, cwd string) string {
 				"Open the governing requirement file at `%s` and PROPOSE (do not edit yet) what change "+
 				"to that requirement would justify the failing test behavior. Present your proposal clearly "+
 				"for user review. Do not modify the spec or the test until the user explicitly agrees.\n\n"+
-				"The requirement in `requirements/05-System-Specs/` is the source of truth — user intent "+
+				"The requirement in `requirements/05-System-Specs/` is the source of truth â€” user intent "+
 				"is authoritative. If the user wants this behavior even if it seems incorrect, follow it "+
 				"and only flag a concern. Once the user agrees, call the gate-agreement endpoint or indicate "+
 				"agreement in your reply so the override can be recorded.",
 			tests, specPath)
 	}
 
-	// Empty-spec path (T-6): no governing spec in 05-System-Specs — degrade to suggest-or-input.
+	// Empty-spec path (T-6): no governing spec in 05-System-Specs â€” degrade to suggest-or-input.
 	return fmt.Sprintf(
 		"The flow gate detected a regression in %s. The user chose: suggest requirement changes.\n\n"+
 			"No governing requirement file was found in `requirements/05-System-Specs/`. "+
@@ -538,8 +1440,10 @@ func changedPathsFromDiff(diff []flowgate.ChangedFile) []string {
 	}
 	out := make([]string, 0, len(diff))
 	for _, file := range diff {
-		if strings.TrimSpace(file.Path) != "" {
-			out = append(out, filepath.ToSlash(strings.TrimSpace(file.Path)))
+		// V10R3 P1: preserve path bytes (no TrimSpace) so gate scope matches
+		// the -z parser and worktree snapshot keys.
+		if file.Path != "" {
+			out = append(out, filepath.ToSlash(file.Path))
 		}
 	}
 	sort.Strings(out)
@@ -598,25 +1502,54 @@ func suggestFeatureKeys(dotFP string, changedPaths []string, message string) []s
 	return keys
 }
 
-// captureChangeContract persists this turn's Change Contract (Task-184,
-// CP-43 P-1) — declared if the AI's final message contains a
-// `[Change Contract]` block (T-2), otherwise inferred from the observed diff
-// (T-4) — computes scope drift against it (Task-185, P-2), and updates the
-// feature's Canonical Head (Task-186, P-3). Entirely best-effort: every
-// failure is logged and degrades toward "nothing to report" so a
-// changecontract/scope/head problem can never block a turn (SS-14 AC-9).
-func captureChangeContract(ctx context.Context, cwd, runID, stepID, finalMessage string, diff []flowgate.ChangedFile, suggestedFeatureKeys []string) (declared bool, outOfScopePaths []string, highSeverity, specDrifted, codeDrifted, attachSpecPending bool) {
+// preparedChangeContract holds contract/scope evaluation before durable side
+// effects. commitChangeContract performs Save + Head update only after gate allow
+// (V9-02). skipSave preserves an existing declared contract against hub overwrite (V9-04).
+type preparedChangeContract struct {
+	ok                bool
+	cwd               string
+	contract          changecontract.Contract
+	declared          bool
+	skipSave          bool
+	outOfScopePaths   []string
+	highSeverity      bool
+	specDrifted       bool
+	codeDrifted       bool
+	attachSpecPending bool
+}
+
+// prepareChangeContract builds contract + scope flags WITHOUT Save/Head update.
+func prepareChangeContract(ctx context.Context, cwd, runID, stepID, finalMessage string, diff []flowgate.ChangedFile, suggestedFeatureKeys []string) preparedChangeContract {
+	out := preparedChangeContract{cwd: cwd}
 	if cwd == "" {
-		return false, nil, false, false, false, false
+		return out
 	}
 	store, err := changecontract.NewStore(cwd)
 	if err != nil {
 		log.Printf("[changecontract] store open failed: %v", err)
-		return false, nil, false, false, false, false
+		return out
 	}
 	featureKey := ""
 	if len(suggestedFeatureKeys) > 0 {
 		featureKey = suggestedFeatureKeys[0]
+	}
+
+	// V9-04: do not let inferred hub/root contracts overwrite a declared coder contract.
+	if existing, ok := store.GetLatestForRun(runID); ok && existing.Confidence == changecontract.ConfidenceDeclared {
+		if _, declaredNow := changecontract.ParseDeclaration(finalMessage); !declaredNow {
+			out.ok = true
+			out.contract = existing
+			out.declared = true
+			out.skipSave = true
+			out.outOfScopePaths, _ = changecontract.ScopeDiff(existing, diff, nil)
+			if len(out.outOfScopePaths) > 0 {
+				hasGitNexus := tooling.CheckTool("gitnexus", cwd).Status == "ok"
+				sp := structure.New(cwd, hasGitNexus)
+				out.highSeverity = changecontract.HighSeverity(ctx, sp, out.outOfScopePaths)
+			}
+			fillHeadDriftFlags(cwd, existing, len(out.outOfScopePaths) > 0, &out)
+			return out
+		}
 	}
 
 	c, declared := changecontract.ParseDeclaration(finalMessage)
@@ -629,54 +1562,112 @@ func captureChangeContract(ctx context.Context, cwd, runID, stepID, finalMessage
 	}
 	c.RunID = runID
 	c.StepID = stepID
-
-	if err := store.Save(c); err != nil {
-		log.Printf("[changecontract] save failed: %v", err)
-	}
-
-	// Task-185: scope diff needs no structure.Provider (nil is safe — see
-	// changecontract.ScopeDiff); only construct one, at the cost of a
-	// gitnexus probe, if there is actually something out-of-scope to weigh.
-	outOfScopePaths, _ = changecontract.ScopeDiff(c, diff, nil)
-	if len(outOfScopePaths) > 0 {
+	out.ok = true
+	out.contract = c
+	out.declared = declared
+	out.outOfScopePaths, _ = changecontract.ScopeDiff(c, diff, nil)
+	if len(out.outOfScopePaths) > 0 {
 		hasGitNexus := tooling.CheckTool("gitnexus", cwd).Status == "ok"
 		sp := structure.New(cwd, hasGitNexus)
-		highSeverity = changecontract.HighSeverity(ctx, sp, outOfScopePaths)
+		out.highSeverity = changecontract.HighSeverity(ctx, sp, out.outOfScopePaths)
 	}
-
-	if c.FeatureKey != "" {
-		specDrifted, codeDrifted, attachSpecPending = updateCanonicalHead(cwd, c, len(outOfScopePaths) > 0)
+	// Declared contracts may be saved immediately so reprompt/re-entry inject
+	// still sees them (V9-02 blocks only Head + inferred save until allow).
+	if declared {
+		if err := store.Save(c); err != nil {
+			log.Printf("[changecontract] save declared failed: %v", err)
+		}
+		out.skipSave = true // already saved; commit only updates Head
 	}
+	// V10 P0: compute Head drift flags for Evaluate WITHOUT updating Head.
+	// updateCanonicalHead (which mutates Head) still runs only in commitChangeContract.
+	fillHeadDriftFlags(cwd, out.contract, len(out.outOfScopePaths) > 0, &out)
+	return out
+}
 
-	return declared, outOfScopePaths, highSeverity, specDrifted, codeDrifted, attachSpecPending
+// fillHeadDriftFlags sets spec/code/attach flags from the on-disk Head for gate
+// evaluation (V10). Does not SaveHead â€” that remains post-allow only.
+func fillHeadDriftFlags(cwd string, c changecontract.Contract, hasOutOfContract bool, out *preparedChangeContract) {
+	if out == nil || strings.TrimSpace(c.FeatureKey) == "" {
+		return
+	}
+	head, found, err := changecontract.LoadHead(cwd, c.FeatureKey)
+	if err != nil || !found {
+		return
+	}
+	dotFP := filepath.Join(cwd, ".flowpilot")
+	catalog, _ := featurecatalog.LoadCatalog(dotFP)
+	if head.SpecConfidence == changecontract.SpecConfidenceSpecLess && catalog != nil {
+		if feat, ok := catalog.Get(c.FeatureKey); ok && len(feat.DocRefs) > 0 {
+			out.attachSpecPending = true
+		}
+	}
+	out.specDrifted = changecontract.SpecDrifted(cwd, head)
+	out.codeDrifted = changecontract.CodeDrifted(hasOutOfContract, out.specDrifted)
+}
+
+// commitChangeContract persists Save (inferred) + Canonical Head only after gate allow (V9-02).
+// BUG-288 R17-P1: returns error on I/O failure so the gate can fail-closed
+// (block completion) instead of allowing a turn through with no durable contract.
+func commitChangeContract(cwd string, p preparedChangeContract) error {
+	if !p.ok || cwd == "" {
+		return nil
+	}
+	store, err := changecontract.NewStore(cwd)
+	if err != nil {
+		log.Printf("[changecontract] store open failed on commit: %v", err)
+		return err
+	}
+	if !p.skipSave {
+		if err := store.Save(p.contract); err != nil {
+			log.Printf("[changecontract] save failed: %v", err)
+			return err
+		}
+	}
+	if p.contract.FeatureKey != "" {
+		// BUG-288 R18-6: head I/O must fail-closed with contract durability.
+		if _, _, _, err := updateCanonicalHead(cwd, p.contract, len(p.outOfScopePaths) > 0); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// captureChangeContract is the legacy all-in-one path (tests / non-gate callers).
+func captureChangeContract(ctx context.Context, cwd, runID, stepID, finalMessage string, diff []flowgate.ChangedFile, suggestedFeatureKeys []string) (declared bool, outOfScopePaths []string, highSeverity, specDrifted, codeDrifted, attachSpecPending bool) {
+	p := prepareChangeContract(ctx, cwd, runID, stepID, finalMessage, diff, suggestedFeatureKeys)
+	_ = commitChangeContract(cwd, p)
+	return p.declared, p.outOfScopePaths, p.highSeverity, p.specDrifted, p.codeDrifted, p.attachSpecPending
 }
 
 // updateCanonicalHead loads (or backfills/mints) c.FeatureKey's Canonical
-// Head (Task-186), checks it for spec/code drift, and — only when neither
-// drifted — folds this in-contract turn into the Head. A drifted turn is
+// Head (Task-186), checks it for spec/code drift, and â€” only when neither
+// drifted â€” folds this in-contract turn into the Head. A drifted turn is
 // surfaced via the caller's TurnResult flags for a human to reconcile
 // (BR-2); the Head itself is left untouched until that happens, so a
 // drifted state is never silently overwritten.
-func updateCanonicalHead(cwd string, c changecontract.Contract, hasOutOfContractChange bool) (specDrifted, codeDrifted, attachSpecPending bool) {
+// BUG-288 R18-6: returns err on I/O failure so commitChangeContract can fail-closed.
+func updateCanonicalHead(cwd string, c changecontract.Contract, hasOutOfContractChange bool) (specDrifted, codeDrifted, attachSpecPending bool, err error) {
 	dotFP := filepath.Join(cwd, ".flowpilot")
 	catalog, _ := featurecatalog.LoadCatalog(dotFP)
 
 	head, found, err := changecontract.LoadHead(cwd, c.FeatureKey)
 	if err != nil {
 		log.Printf("[changecontract] head load failed for %q: %v", c.FeatureKey, err)
-		return false, false, false
+		return false, false, false, err
 	}
 	if !found {
 		ledger, _ := changeledger.New(dotFP)
 		head = changecontract.BuildHead(cwd, c.FeatureKey, ledger, catalog, &c)
 		if err := changecontract.SaveHead(cwd, head); err != nil {
 			log.Printf("[changecontract] head save (birth/backfill) failed for %q: %v", c.FeatureKey, err)
+			return false, false, false, err
 		}
-		return false, false, false // a just-minted Head cannot itself be drifted
+		return false, false, false, nil // a just-minted Head cannot itself be drifted
 	}
 
 	// r-attach-spec: a spec_less Head whose feature has since gained a
-	// governing doc in the catalog. Never auto-applied — surfaced for human
+	// governing doc in the catalog. Never auto-applied â€” surfaced for human
 	// confirmation; RebaselineWithSpec runs only once that is given.
 	if head.SpecConfidence == changecontract.SpecConfidenceSpecLess && catalog != nil {
 		if feat, ok := catalog.Get(c.FeatureKey); ok && len(feat.DocRefs) > 0 {
@@ -695,9 +1686,10 @@ func updateCanonicalHead(cwd string, c changecontract.Contract, hasOutOfContract
 		}
 		if err := changecontract.SaveHead(cwd, updated); err != nil {
 			log.Printf("[changecontract] head save (update) failed for %q: %v", c.FeatureKey, err)
+			return specDrifted, codeDrifted, attachSpecPending, err
 		}
 	}
-	return specDrifted, codeDrifted, attachSpecPending
+	return specDrifted, codeDrifted, attachSpecPending, nil
 }
 
 // foldCanonicalHeadDecisions folds negative knowledge (rejected chat_summary
@@ -726,13 +1718,13 @@ func foldCanonicalHeadDecisions(dotFP, featureKey string) ([]changecontract.Deci
 
 // detectRetirePending reports whether any spec-backed Canonical Head exists for
 // a feature key that is no longer among the workspace's known feature keys
-// (change-audit/FEATURE-KEYS.md) — a signal the feature was renamed/merged/
+// (change-audit/FEATURE-KEYS.md) â€” a signal the feature was renamed/merged/
 // removed there but its Head has not yet been migrated (Task-187 r-retire).
 // This is a deliberately conservative nudge, not auto-retire: it only flags
 // spec_backed, not-yet-retired Heads (a born-spec_less Head may carry an
 // inferred key that was never registered, so exempting them avoids false
 // positives). The actual retire is always an explicit human action via
-// handleRetireCanonicalHead (BR-2 — never automatic).
+// handleRetireCanonicalHead (BR-2 â€” never automatic).
 func detectRetirePending(cwd string, knownFeatureKeys []string) bool {
 	matches, _ := filepath.Glob(filepath.Join(cwd, ".flowpilot", "canonical", "*.json"))
 	if len(matches) == 0 {
@@ -774,17 +1766,77 @@ func captureGitHead(repoDir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// ensureBaseline captures or refreshes the test baseline for cwd asynchronously.
-// It compares the stored HEAD SHA against the current HEAD and only re-captures
-// when something changed, making the per-chat cadence cheap. (Task-156)
+// baselineSF coordinates per-workspace baseline init (BUG-288 #3).
+var (
+	baselineMu       sync.Mutex
+	baselineInflight = map[string]chan struct{}{}
+)
+
+// ensureBaseline captures or refreshes the test baseline for cwd asynchronously
+// with per-cwd singleflight (Task-156 / BUG-288 #3). BUG-288 R13-14: when the
+// turn already has a cancellable ctx, prefer ensureBaselineReadyContext so the
+// warm-up is cut short on Stop instead of always using Background.
 func (s *InteractiveService) ensureBaseline(cwd string) {
 	if cwd == "" {
 		return
 	}
-	dotFP := filepath.Join(cwd, ".flowpilot")
-	go func() {
-		if _, err := flowgate.RefreshBaselineIfStale(cwd, dotFP); err != nil {
-			log.Printf("[gate] ensureBaseline refresh error: %v", err)
+	go s.ensureBaselineReady(cwd)
+}
+
+// ensureBaselineWithContext is ensureBaseline but threads a run-scoped ctx
+// into the warm-up capture (BUG-288 R13-14).
+func (s *InteractiveService) ensureBaselineWithContext(ctx context.Context, cwd string) {
+	if cwd == "" {
+		return
+	}
+	if ctx == nil {
+		go s.ensureBaselineReady(cwd)
+		return
+	}
+	go s.ensureBaselineReadyContext(ctx, cwd)
+}
+
+// ensureBaselineReady blocks until a RefreshBaselineIfStale attempt finishes
+// for cwd, using context.Background() (no cancellation).
+func (s *InteractiveService) ensureBaselineReady(cwd string) {
+	s.ensureBaselineReadyContext(context.Background(), cwd)
+}
+
+// ensureBaselineReadyContext is ensureBaselineReady with an explicit context
+// (BUG-288 P2-04, VÃ²ng 12): the first baseline capture runs the project's
+// full test suite (can take up to ~5 minutes); previously this always used
+// context.Background() regardless of caller, so Stop could not cut it short
+// the way Stop already cancels other in-flight suite runs (flowInlineContext,
+// postTurnGateCancel). Callers that already hold a run/loop-scoped cancellable
+// ctx should call this instead of the context.Background() wrapper above.
+func (s *InteractiveService) ensureBaselineReadyContext(ctx context.Context, cwd string) {
+	if cwd == "" {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	baselineMu.Lock()
+	if ch, ok := baselineInflight[cwd]; ok {
+		baselineMu.Unlock()
+		// BUG-288 R13-14: waiters must honor ctx so Stop does not block ~5m.
+		select {
+		case <-ch:
+		case <-ctx.Done():
 		}
-	}()
+		return
+	}
+	ch := make(chan struct{})
+	baselineInflight[cwd] = ch
+	baselineMu.Unlock()
+
+	dotFP := filepath.Join(cwd, ".flowpilot")
+	if _, err := flowgate.RefreshBaselineIfStaleContext(ctx, cwd, dotFP); err != nil {
+		log.Printf("[gate] ensureBaseline refresh error: %v", err)
+	}
+
+	baselineMu.Lock()
+	delete(baselineInflight, cwd)
+	close(ch)
+	baselineMu.Unlock()
 }

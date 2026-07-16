@@ -85,10 +85,10 @@ func behaviorHubInline(ctx context.Context, in BehaviorInput) (BehaviorOutput, e
 // context.render node to consume.
 func behaviorContextProduce(ctx context.Context, in BehaviorInput) (BehaviorOutput, error) {
 	hints := FlowContextHints{
-		WorkflowRunID: in.WorkflowRunID,
-		PlanStepRunID: in.StepRunID,
-		UserPrompt:    in.Prompt,
-		MCPDriverRef:  in.MCPDriverRef,
+		WorkflowRunID:    in.WorkflowRunID,
+		PlanStepRunID:    in.StepRunID,
+		UserPrompt:       in.Prompt,
+		MCPDriverRef:     in.MCPDriverRef,
 		JiraIssueRef:     in.JiraIssueRef,
 		JiraSprintRef:    in.JiraSprintRef,
 		FirebaseCrashRef: in.FirebaseCrashRef,
@@ -97,6 +97,13 @@ func behaviorContextProduce(ctx context.Context, in BehaviorInput) (BehaviorOutp
 		if sourceDocID, ok := in.Payload["sourceDocId"].(string); ok {
 			hints.SourceDocID = sourceDocID
 		}
+	}
+	// Task-246 (CP-50 P-3): derive excerpt hints deterministically at Plan-time —
+	// paths named in the prompt + the workspace's uncommitted diff. Both degrade
+	// to nil so fixture/behavior tests and the golden path are unaffected.
+	if in.WorkspaceCwd != "" {
+		hints.ExplicitSourcePaths = extractPromptSourcePaths(in.Prompt)
+		hints.ChangedPaths = uncommittedChangedPaths(in.WorkspaceCwd)
 	}
 	pkg, err := BuildFlowContextPackageWithSources(ctx, in.WorkspaceCwd, hints, in.ContextSourceIDs)
 	if err != nil {
@@ -116,12 +123,23 @@ func behaviorContextProduce(ctx context.Context, in BehaviorInput) (BehaviorOutp
 // behaviorContextRender wraps ComposeFlowCodingPrompt so a delegate node can
 // consume a previously produced context artifact through a declared input
 // binding instead of an implicit "Coding step" assumption.
+// BUG-288 R19-4: when Payload["markerSecret"] is present, mint the FCP marker
+// with that per-service secret (not the global last-Init active secret).
 func behaviorContextRender(_ context.Context, in BehaviorInput) (BehaviorOutput, error) {
 	pkg, ok := in.Payload["package"].(FlowContextPackage)
 	if !ok {
 		return BehaviorOutput{}, fmt.Errorf("context.render: node %q missing bound context package", in.NodeID)
 	}
-	rendered := ComposeFlowCodingPrompt(pkg, in.Prompt)
+	var secret []byte
+	if sec, ok := in.Payload["markerSecret"].([]byte); ok && len(sec) > 0 {
+		secret = sec
+	}
+	var rendered string
+	if len(secret) > 0 {
+		rendered = ComposeFlowCodingPromptWithSecret(pkg, in.Prompt, secret)
+	} else {
+		rendered = ComposeFlowCodingPrompt(pkg, in.Prompt)
+	}
 	return BehaviorOutput{
 		Status:              "done",
 		NextPromptFragments: []string{rendered},

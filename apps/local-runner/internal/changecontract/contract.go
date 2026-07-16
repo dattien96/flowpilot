@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -43,6 +44,9 @@ type Store struct {
 	mu       sync.Mutex
 	filePath string
 	byKey    map[string]Contract
+	// latestByRun tracks append-order last-wins per runID for GetLatestForRun
+	// (Task-247 / Codex review: do not pick by DeclaredAt alone).
+	latestByRun map[string]Contract
 }
 
 // NewStore creates a Store rooted at <workspace>/.flowpilot/contracts/. The
@@ -54,8 +58,9 @@ func NewStore(workspace string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{
-		filePath: filepath.Join(dir, "contracts.ndjson"),
-		byKey:    make(map[string]Contract),
+		filePath:    filepath.Join(dir, "contracts.ndjson"),
+		byKey:       make(map[string]Contract),
+		latestByRun: make(map[string]Contract),
 	}
 	s.loadFromDisk()
 	return s, nil
@@ -79,7 +84,10 @@ func (s *Store) loadFromDisk() {
 		if err := json.Unmarshal(line, &c); err != nil {
 			continue // tolerate a corrupt/partial line, never fail the load
 		}
-		s.byKey[c.key()] = c // last-wins
+		s.byKey[c.key()] = c // last-wins by (run,step)
+		if rid := strings.TrimSpace(c.RunID); rid != "" {
+			s.latestByRun[rid] = c // append-order last-wins per run
+		}
 	}
 }
 
@@ -107,6 +115,9 @@ func (s *Store) Save(c Contract) error {
 		return err
 	}
 	s.byKey[c.key()] = c
+	if rid := strings.TrimSpace(c.RunID); rid != "" {
+		s.latestByRun[rid] = c
+	}
 	return nil
 }
 
@@ -116,4 +127,76 @@ func (s *Store) Get(runID, stepID string) (Contract, bool) {
 	defer s.mu.Unlock()
 	c, ok := s.byKey[(Contract{RunID: runID, StepID: stepID}).key()]
 	return c, ok
+}
+
+// OpenStoreReadOnly loads an existing contracts.ndjson without creating the
+// contracts directory (Task-247). Missing file → empty store, no error.
+func OpenStoreReadOnly(workspace string) (*Store, error) {
+	path := filepath.Join(workspace, ".flowpilot", "contracts", "contracts.ndjson")
+	s := &Store{
+		filePath:    path,
+		byKey:       make(map[string]Contract),
+		latestByRun: make(map[string]Contract),
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return s, nil
+		}
+		return nil, err
+	}
+	s.loadFromDisk()
+	return s, nil
+}
+
+// GetLatestForRun returns the append-order last-wins Contract for runID
+// across any step (Task-247 v1). Independent of DeclaredAt so a later append
+// with an older/equal timestamp still wins.
+func (s *Store) GetLatestForRun(runID string) (Contract, bool) {
+	if s == nil || runID == "" {
+		return Contract{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.latestByRun[runID]
+	return c, ok
+}
+
+// RenderContractBlock renders c as a headerless prompt body (Task-247;
+// CP-50 P-4: callers own the heading). Zero-value → "".
+func RenderContractBlock(c Contract) string {
+	if strings.TrimSpace(c.FeatureKey) == "" && len(c.DeclaredPaths) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if fk := strings.TrimSpace(c.FeatureKey); fk != "" {
+		b.WriteString("Feature: ")
+		b.WriteString(fk)
+		b.WriteByte('\n')
+	}
+	if intent := strings.TrimSpace(c.Intent); intent != "" {
+		b.WriteString("Intent: ")
+		b.WriteString(intent)
+		b.WriteByte('\n')
+	}
+	b.WriteString("Declared scope (KHÔNG sửa ngoài các path này):\n")
+	if len(c.DeclaredPaths) == 0 {
+		b.WriteString("- (none declared)\n")
+	} else {
+		for _, p := range c.DeclaredPaths {
+			b.WriteString("- ")
+			b.WriteString(p)
+			b.WriteByte('\n')
+		}
+	}
+	conf := strings.TrimSpace(c.Confidence)
+	if conf == "" {
+		conf = ConfidenceDeclared
+	}
+	b.WriteString("Confidence: ")
+	b.WriteString(conf)
+	if conf == ConfidenceInferred {
+		b.WriteString(" (suy ra từ diff, chưa được AI xác nhận)")
+	}
+	b.WriteByte('\n')
+	return strings.TrimSpace(b.String())
 }

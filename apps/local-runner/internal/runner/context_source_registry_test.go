@@ -15,9 +15,9 @@ type fakeContextSource struct {
 	err           error
 }
 
-func (f *fakeContextSource) ID() string           { return f.id }
-func (f *fakeContextSource) Priority() int        { return f.priority }
-func (f *fakeContextSource) Deterministic() bool  { return f.deterministic }
+func (f *fakeContextSource) ID() string          { return f.id }
+func (f *fakeContextSource) Priority() int       { return f.priority }
+func (f *fakeContextSource) Deterministic() bool { return f.deterministic }
 func (f *fakeContextSource) Fetch(_ context.Context, _ FlowContextHints) (FlowContextSection, error) {
 	if f.err != nil {
 		return FlowContextSection{}, f.err

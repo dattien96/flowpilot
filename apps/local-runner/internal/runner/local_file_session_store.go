@@ -29,6 +29,7 @@ type localFileSessionStore struct {
 	*fakeWorkflowStore
 	mu       sync.Mutex
 	filePath string
+	dataDir  string // BUG-288 R14-04: secret + sessions root
 }
 
 // NewLocalFileSessionStore creates a localFileSessionStore rooted at dataDir.
@@ -39,12 +40,25 @@ func NewLocalFileSessionStore(dataDir string) (*localFileSessionStore, error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, err
 	}
+	// BUG-288 R13-16: durable HMAC secret for flowpilot-fcp / flowpilot-cc markers.
+	InitRunMarkerSecretFromDir(dataDir)
 	s := &localFileSessionStore{
 		fakeWorkflowStore: newFakeWorkflowStore(),
 		filePath:          filepath.Join(dataDir, "sessions.ndjson"),
+		dataDir:           dataDir,
 	}
 	s.loadFromDisk()
 	return s, nil
+}
+
+// DataDir returns the store root (sessions.ndjson parent). Used to re-init the
+// durable run-marker secret when InteractiveService is wired with this store
+// (BUG-288 R14-04 — keep secret init independent of call-site ordering).
+func (s *localFileSessionStore) DataDir() string {
+	if s == nil {
+		return ""
+	}
+	return s.dataDir
 }
 
 // ndjsonSessionRecord is the on-disk JSON shape for a ProviderSessionState.
@@ -86,6 +100,54 @@ type ndjsonSessionRecord struct {
 	// selection a run was started with (BUG-263); see ProviderSessionState.
 	ChatSubMode string `json:"chat_sub_mode,omitempty"`
 	ChatFlowRef string `json:"chat_flow_ref,omitempty"`
+	// FlowStartGitHead persists Task-242 tier-3 audit aggregate base (Codex review Important #3).
+	FlowStartGitHead string `json:"flow_start_git_head,omitempty"`
+	// V10 P0 / V10R: durable post-turn gate pending across restart + turn snapshot.
+	PendingFlowGateSettle     bool              `json:"pending_flow_gate_settle,omitempty"`
+	PendingFlowGateFinalMsg   string            `json:"pending_flow_gate_final_msg,omitempty"`
+	PendingFlowGateOccurredAt string            `json:"pending_flow_gate_occurred_at,omitempty"`
+	PendingFlowGateTurnID     string            `json:"pending_flow_gate_turn_id,omitempty"`
+	TurnStartGitHead          string            `json:"turn_start_git_head,omitempty"`
+	TurnStartWorktree         map[string]string `json:"turn_start_worktree,omitempty"`
+	PendingGateChangedFiles   []string          `json:"pending_gate_changed_files,omitempty"`
+	StepID                    string            `json:"step_id,omitempty"`
+	LastTurnStepID            string            `json:"last_turn_step_id,omitempty"`
+	PendingGateRepromptPrompt string            `json:"pending_gate_reprompt_prompt,omitempty"`
+	PendingGateRepromptStepID string            `json:"pending_gate_reprompt_step_id,omitempty"`
+	PendingGateCodePaths      []string          `json:"pending_gate_code_paths,omitempty"`
+	RepromptAttempts          int               `json:"reprompt_attempts,omitempty"`
+	PendingResumePrompt       string            `json:"pending_resume_prompt,omitempty"`
+	PendingResumeStepID       string            `json:"pending_resume_step_id,omitempty"`
+	PendingResumeGen                int64  `json:"pending_resume_gen,omitempty"`
+	PendingGateRepromptGen          int64  `json:"pending_gate_reprompt_gen,omitempty"`
+	PendingResumeDeliveredGen         int64  `json:"pending_resume_delivered_gen,omitempty"`
+	PendingGateRepromptDeliveredGen   int64  `json:"pending_gate_reprompt_delivered_gen,omitempty"`
+	PendingResumeAcceptedTurn         string `json:"pending_resume_accepted_turn,omitempty"`
+	PendingGateRepromptAcceptedTurn   string `json:"pending_gate_reprompt_accepted_turn,omitempty"`
+	PendingResumeFailCount            int    `json:"pending_resume_fail_count,omitempty"`
+	PendingResumeFailGen              int64  `json:"pending_resume_fail_gen,omitempty"`
+	PendingGateRepromptFailCount      int    `json:"pending_gate_reprompt_fail_count,omitempty"`
+	PendingGateRepromptFailGen        int64  `json:"pending_gate_reprompt_fail_gen,omitempty"`
+	PendingResumeApprovalID           string   `json:"pending_resume_approval_id,omitempty"`
+	PendingResumeDecision             string   `json:"pending_resume_decision,omitempty"`
+	PendingResumeQuestionChoices      []string `json:"pending_resume_question_choices,omitempty"`
+	// BUG-288 R13-01: stall-Retry restart intent must survive LocalFileSessionStore
+	// (ProviderSessionState already had these; NDJSON record was missing them).
+	PendingRestartRunID               string   `json:"pending_restart_run_id,omitempty"`
+	PendingRestartPrompt              string   `json:"pending_restart_prompt,omitempty"`
+	PendingRestartGen                 int64    `json:"pending_restart_gen,omitempty"`
+	// BUG-288 R16-P0: durable startTurn idempotency keys (durable-* prefix).
+	IdempotencyKeys                   map[string]string `json:"idempotency_keys,omitempty"`
+	// BUG-288 R13-16: durable flag so restart does not double-inject Flow Context.
+	FlowContextInjected               bool     `json:"flow_context_injected,omitempty"`
+	StopGeneration                    int64    `json:"stop_generation,omitempty"`
+	ParentStopGenSeen                 int64    `json:"parent_stop_gen_seen,omitempty"`
+	IntentBlockedKind                 string   `json:"intent_blocked_kind,omitempty"`
+	IntentBlockedReason               string   `json:"intent_blocked_reason,omitempty"`
+	IntentBlockedAt                   string   `json:"intent_blocked_at,omitempty"`
+	TransitionLogDegraded             bool     `json:"transition_log_degraded,omitempty"`
+	TransitionLogDegradedAt           string   `json:"transition_log_degraded_at,omitempty"`
+	TransitionLogDegradedReason       string   `json:"transition_log_degraded_reason,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -335,8 +397,50 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		FlowCohortID:        r.FlowCohortID,
 		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), r.ActiveFlowEdges...),
 		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), r.ActiveFlowNodes...),
-		ChatSubMode:         r.ChatSubMode,
-		ChatFlowRef:         r.ChatFlowRef,
+		ChatSubMode:               r.ChatSubMode,
+		ChatFlowRef:               r.ChatFlowRef,
+		FlowStartGitHead:          r.FlowStartGitHead,
+		PendingFlowGateSettle:     r.PendingFlowGateSettle,
+		PendingFlowGateFinalMsg:   r.PendingFlowGateFinalMsg,
+		PendingFlowGateOccurredAt: r.PendingFlowGateOccurredAt,
+		PendingFlowGateTurnID:     r.PendingFlowGateTurnID,
+		TurnStartGitHead:          r.TurnStartGitHead,
+		TurnStartWorktree:         copyStringMap(r.TurnStartWorktree),
+		PendingGateChangedFiles:   append([]string(nil), r.PendingGateChangedFiles...),
+		StepID:                    r.StepID,
+		LastTurnStepID:            r.LastTurnStepID,
+		PendingGateRepromptPrompt: r.PendingGateRepromptPrompt,
+		PendingGateRepromptStepID: r.PendingGateRepromptStepID,
+		PendingGateCodePaths:      append([]string(nil), r.PendingGateCodePaths...),
+		RepromptAttempts:          r.RepromptAttempts,
+		PendingResumePrompt:       r.PendingResumePrompt,
+		PendingResumeStepID:       r.PendingResumeStepID,
+		PendingResumeGen:                r.PendingResumeGen,
+		PendingGateRepromptGen:          r.PendingGateRepromptGen,
+		PendingResumeDeliveredGen:       r.PendingResumeDeliveredGen,
+		PendingGateRepromptDeliveredGen: r.PendingGateRepromptDeliveredGen,
+		PendingResumeAcceptedTurn:       r.PendingResumeAcceptedTurn,
+		PendingGateRepromptAcceptedTurn: r.PendingGateRepromptAcceptedTurn,
+		PendingResumeFailCount:          r.PendingResumeFailCount,
+		PendingResumeFailGen:            r.PendingResumeFailGen,
+		PendingGateRepromptFailCount:    r.PendingGateRepromptFailCount,
+		PendingGateRepromptFailGen:      r.PendingGateRepromptFailGen,
+		PendingResumeApprovalID:         r.PendingResumeApprovalID,
+		PendingResumeDecision:           r.PendingResumeDecision,
+		PendingResumeQuestionChoices:    append([]string(nil), r.PendingResumeQuestionChoices...),
+		PendingRestartRunID:             r.PendingRestartRunID,
+		PendingRestartPrompt:            r.PendingRestartPrompt,
+		PendingRestartGen:               r.PendingRestartGen,
+		IdempotencyKeys:                 copyStringMap(r.IdempotencyKeys),
+		FlowContextInjected:             r.FlowContextInjected,
+		StopGeneration:                  r.StopGeneration,
+		ParentStopGenSeen:               r.ParentStopGenSeen,
+		IntentBlockedKind:               r.IntentBlockedKind,
+		IntentBlockedReason:             r.IntentBlockedReason,
+		IntentBlockedAt:                 r.IntentBlockedAt,
+		TransitionLogDegraded:           r.TransitionLogDegraded,
+		TransitionLogDegradedAt:         r.TransitionLogDegradedAt,
+		TransitionLogDegradedReason:     r.TransitionLogDegradedReason,
 	}
 }
 
@@ -603,6 +707,101 @@ func (s *localFileSessionStore) DeleteFlowEvents(_ context.Context, runID string
 	return err
 }
 
+// stepTransitionsPath returns the path of the per-run step-transition sidecar
+// (Task-239 / T-10). Same traversal guard as flowEventsPath.
+//
+// Q-2 (Drive sync): local-only, same posture as flow-events — mid-flow cross-PC
+// resume is not a required use case; both sidecars live under the same dataDir
+// and are not listed in Drive chat-session sync manifests today.
+func (s *localFileSessionStore) stepTransitionsPath(runID string) (string, error) {
+	if runID == "" || filepath.Base(runID) != runID || strings.ContainsAny(runID, "/\\") {
+		return "", fmt.Errorf("invalid run ID %q: must not contain path separators", runID)
+	}
+	return filepath.Join(filepath.Dir(s.filePath), runID+"-step-transitions.ndjson"), nil
+}
+
+// AppendStepTransition appends one step transition line (Task-239). Best-effort
+// from the caller's perspective — errors are returned so the caller can log-warn.
+// BUG-288 #27: take store mutex so concurrent append/load/delete cannot interleave.
+func (s *localFileSessionStore) AppendStepTransition(_ context.Context, runID string, line stepTransitionLine) error {
+	data, err := json.Marshal(line)
+	if err != nil {
+		return err
+	}
+	path, err := s.stepTransitionsPath(runID)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fh, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	_, err = fh.Write(append(data, '\n'))
+	return err
+}
+
+// LoadStepTransitions reads all step-transition lines for a run. Returns nil, nil
+// when the sidecar does not exist. Malformed lines are skipped (same posture as
+// LoadFlowEvents) so a single corrupt line cannot block resume.
+func (s *localFileSessionStore) LoadStepTransitions(_ context.Context, runID string) ([]stepTransitionLine, error) {
+	path, err := s.stepTransitionsPath(runID)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	var lines []stepTransitionLine
+	br := bufio.NewReaderSize(f, 1<<20)
+	lineNum := 0
+	for {
+		raw, readErr := br.ReadBytes('\n')
+		if len(raw) > 0 {
+			lineNum++
+			for len(raw) > 0 && (raw[len(raw)-1] == '\n' || raw[len(raw)-1] == '\r') {
+				raw = raw[:len(raw)-1]
+			}
+			if len(raw) > 0 {
+				var line stepTransitionLine
+				if jsonErr := json.Unmarshal(raw, &line); jsonErr == nil && strings.TrimSpace(line.NodeID) != "" {
+					lines = append(lines, line)
+				} else if jsonErr != nil {
+					log.Printf("LoadStepTransitions: runID=%s line=%d: malformed JSON: %v", runID, lineNum, jsonErr)
+				}
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return nil, readErr
+		}
+	}
+	return lines, nil
+}
+
+// DeleteStepTransitions removes the per-run step-transition sidecar (Task-239 B5).
+// No-op when the file does not exist.
+func (s *localFileSessionStore) DeleteStepTransitions(_ context.Context, runID string) error {
+	path, err := s.stepTransitionsPath(runID)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 	return ndjsonSessionRecord{
 		RunID:               s.RunID,
@@ -636,8 +835,50 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		FlowCohortID:        s.FlowCohortID,
 		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), s.ActiveFlowEdges...),
 		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), s.ActiveFlowNodes...),
-		ChatSubMode:         s.ChatSubMode,
-		ChatFlowRef:         s.ChatFlowRef,
+		ChatSubMode:               s.ChatSubMode,
+		ChatFlowRef:               s.ChatFlowRef,
+		FlowStartGitHead:          s.FlowStartGitHead,
+		PendingFlowGateSettle:     s.PendingFlowGateSettle,
+		PendingFlowGateFinalMsg:   s.PendingFlowGateFinalMsg,
+		PendingFlowGateOccurredAt: s.PendingFlowGateOccurredAt,
+		PendingFlowGateTurnID:     s.PendingFlowGateTurnID,
+		TurnStartGitHead:          s.TurnStartGitHead,
+		TurnStartWorktree:         copyStringMap(s.TurnStartWorktree),
+		PendingGateChangedFiles:   append([]string(nil), s.PendingGateChangedFiles...),
+		StepID:                    s.StepID,
+		LastTurnStepID:            s.LastTurnStepID,
+		PendingGateRepromptPrompt: s.PendingGateRepromptPrompt,
+		PendingGateRepromptStepID: s.PendingGateRepromptStepID,
+		PendingGateCodePaths:      append([]string(nil), s.PendingGateCodePaths...),
+		RepromptAttempts:          s.RepromptAttempts,
+		PendingResumePrompt:       s.PendingResumePrompt,
+		PendingResumeStepID:       s.PendingResumeStepID,
+		PendingResumeGen:                s.PendingResumeGen,
+		PendingGateRepromptGen:          s.PendingGateRepromptGen,
+		PendingResumeDeliveredGen:       s.PendingResumeDeliveredGen,
+		PendingGateRepromptDeliveredGen: s.PendingGateRepromptDeliveredGen,
+		PendingResumeAcceptedTurn:       s.PendingResumeAcceptedTurn,
+		PendingGateRepromptAcceptedTurn: s.PendingGateRepromptAcceptedTurn,
+		PendingResumeFailCount:          s.PendingResumeFailCount,
+		PendingResumeFailGen:            s.PendingResumeFailGen,
+		PendingGateRepromptFailCount:    s.PendingGateRepromptFailCount,
+		PendingGateRepromptFailGen:      s.PendingGateRepromptFailGen,
+		PendingResumeApprovalID:         s.PendingResumeApprovalID,
+		PendingResumeDecision:           s.PendingResumeDecision,
+		PendingResumeQuestionChoices:    append([]string(nil), s.PendingResumeQuestionChoices...),
+		PendingRestartRunID:             s.PendingRestartRunID,
+		PendingRestartPrompt:            s.PendingRestartPrompt,
+		PendingRestartGen:               s.PendingRestartGen,
+		IdempotencyKeys:                 copyStringMap(s.IdempotencyKeys),
+		FlowContextInjected:             s.FlowContextInjected,
+		StopGeneration:                  s.StopGeneration,
+		ParentStopGenSeen:               s.ParentStopGenSeen,
+		IntentBlockedKind:               s.IntentBlockedKind,
+		IntentBlockedReason:             s.IntentBlockedReason,
+		IntentBlockedAt:                 s.IntentBlockedAt,
+		TransitionLogDegraded:           s.TransitionLogDegraded,
+		TransitionLogDegradedAt:         s.TransitionLogDegradedAt,
+		TransitionLogDegradedReason:     s.TransitionLogDegradedReason,
 	}
 }
 
@@ -648,4 +889,16 @@ func loopStatePtrIfSet(st AgentLoopState) *AgentLoopState {
 	}
 	cp := st
 	return &cp
+}
+
+// copyStringMap returns a shallow copy of m (nil-safe).
+func copyStringMap(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }

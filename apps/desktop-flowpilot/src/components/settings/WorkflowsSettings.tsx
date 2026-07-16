@@ -66,7 +66,9 @@ type PickerModal =
 // mcp.driver: the run asks for the issue key / sprint at runtime when
 // enabled, instead of forcing a settings edit for every run.
 const contextSourceOptions: { id: string; label: string }[] = [
+  { id: "canonical.head", label: "Canonical Head" },
   { id: "feature.history", label: "Feature History" },
+  { id: "change.contract", label: "Change Contract" },
   { id: "chat.summary", label: "Chat Summary" },
   { id: "source.excerpt", label: "Source Excerpt" },
   { id: "mcp.driver", label: "MCP Driver (Google Drive)" },

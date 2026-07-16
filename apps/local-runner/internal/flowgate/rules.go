@@ -24,7 +24,10 @@ type ChangedFile struct {
 type TestOutcome struct {
 	Ran    bool     `json:"ran"`
 	Passed []string `json:"passed,omitempty"`
+	// Failed is ordinary suite failures (r-tests). V9-27: not mixed with regressions.
 	Failed []string `json:"failed,omitempty"`
+	// Regressed is true regressions vs green baseline (r-reg). Empty when none. (V9-27)
+	Regressed []string `json:"regressed,omitempty"`
 }
 
 type TurnResult struct {
@@ -114,6 +117,43 @@ type Violation struct {
 	// RegressedTests is the list of specifically-identified regressed test names.
 	// Populated only for regression_test_broke violations.
 	RegressedTests []string `json:"regressed_tests,omitempty"`
+}
+
+// DocScopeRuleIDs are Task-242 tier-1 rules evaluated on flow-mode coding
+// children when the turn produced a non-empty git diff (cheap pure checks).
+func DocScopeRuleIDs() []string {
+	return []string{"r-ca", "r-fk", "r-bug", "r-task", "r-contract", "r-scope"}
+}
+
+// TestRuleIDs are Task-242 tier-2 rules (expensive suite / oracle). Owned by
+// command.validate when present; otherwise fall back to the coding child turn.
+func TestRuleIDs() []string {
+	return []string{"r-tests", "r-reg"}
+}
+
+// ArtifactRuleIDs are the child-only write-contract family (Task-223/225/233).
+func ArtifactRuleIDs() []string {
+	return []string{"r-artifact-output", "r-artifact-output-structure", "r-artifact-telegram-sent"}
+}
+
+// IsDocScopeRule reports whether id is in the tier-1 doc/scope family.
+func IsDocScopeRule(id string) bool {
+	for _, x := range DocScopeRuleIDs() {
+		if x == id {
+			return true
+		}
+	}
+	return false
+}
+
+// IsArtifactRule reports whether id is in the child artifact family.
+func IsArtifactRule(id string) bool {
+	for _, x := range ArtifactRuleIDs() {
+		if x == id {
+			return true
+		}
+	}
+	return false
 }
 
 func DefaultRules() []Rule {

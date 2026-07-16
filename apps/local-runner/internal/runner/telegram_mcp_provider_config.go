@@ -185,7 +185,9 @@ func telegramProxyMcpCommand(workspace string) (string, []string) {
 }
 
 // telegramProxyMcpArgs is the stdio argv after the launcher prefix:
-//   telegram-mcp --workspace <abs>
+//
+//	telegram-mcp --workspace <abs>
+//
 // Workspace is required so the proxy can find .flowpilot/mcp-backend-state.json
 // and resolve the keyring secretKey when Grok/Codex spawn from a foreign cwd.
 func telegramProxyMcpArgs(workspace string) []string {

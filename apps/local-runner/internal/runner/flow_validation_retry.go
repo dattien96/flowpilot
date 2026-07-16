@@ -33,7 +33,7 @@ type ValidationResult struct {
 }
 
 func (r ValidationResult) Passed() bool     { return r.ExitCode == 0 && r.EnvError == "" }
-func (r ValidationResult) IsEnvError() bool  { return r.EnvError != "" }
+func (r ValidationResult) IsEnvError() bool { return r.EnvError != "" }
 
 // ValidationResultMeta is the event-safe subset of ValidationResult.
 // It records metadata and exit code only; raw logs are omitted (T-2).
@@ -154,7 +154,18 @@ func RunValidationCommand(ctx context.Context, command, cwd string) ValidationRe
 			EnvError:   "empty_command",
 		}
 	}
-	args := strings.Fields(command)
+	// V9-16: same quote-aware split as flowgate.shellSplit (avoid Fields divergence).
+	// V10 P2: empty after split (e.g. quotes-only) must not panic on args[0].
+	args := shellFields(command)
+	if len(args) == 0 {
+		return ValidationResult{
+			Command:    command,
+			WorkDir:    cwd,
+			StartedAt:  started,
+			FinishedAt: time.Now().UTC().Format(time.RFC3339),
+			EnvError:   "empty_command",
+		}
+	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -265,10 +276,21 @@ func isFailureLine(line string) bool {
 // (from Task-169) plus a bounded failure summary and retry instruction (T-4).
 // The original FlowContextPackage is NEVER modified (T-1).
 func ComposeRetryPrompt(pkg FlowContextPackage, state FlowValidationRetryState) string {
+	return ComposeRetryPromptWithSecret(pkg, state, nil)
+}
+
+// ComposeRetryPromptWithSecret is ComposeRetryPrompt using an explicit marker
+// secret for the FCP envelope (BUG-288 R19-4 per-service mint).
+func ComposeRetryPromptWithSecret(pkg FlowContextPackage, state FlowValidationRetryState, secret []byte) string {
 	var sb strings.Builder
 	// Reuse the Task-169 Coding prompt composition with an empty instruction, then
 	// append the failure block.
-	basePrompt := ComposeFlowCodingPrompt(pkg, "")
+	var basePrompt string
+	if len(secret) > 0 {
+		basePrompt = ComposeFlowCodingPromptWithSecret(pkg, "", secret)
+	} else {
+		basePrompt = ComposeFlowCodingPrompt(pkg, "")
+	}
 	sb.WriteString(basePrompt)
 	sb.WriteString("\n---\n\n")
 	sb.WriteString(fmt.Sprintf("## Validation Failure — Retry %d/%d\n\n", state.RetryAttempt, state.MaxRetries))

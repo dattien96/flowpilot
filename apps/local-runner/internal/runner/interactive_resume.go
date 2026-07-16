@@ -65,6 +65,13 @@ func (s *InteractiveService) deleteChatSession(runID string) *apiErr {
 		}
 	}
 
+	// --- remove per-run step-transition sidecar (Task-239 B5) ---
+	if tlog, ok := s.workflowStore.(StepTransitionLogStore); ok {
+		for _, id := range deleteOrder {
+			_ = tlog.DeleteStepTransitions(context.Background(), id)
+		}
+	}
+
 	return nil
 }
 
@@ -394,8 +401,22 @@ func promptOnlyTranscriptEvents(rawPrompts []string) []ProviderEvent {
 	return out
 }
 
-func normalizeResumedFlowRun(rs *interactiveRun, st ProviderSessionState) {
+func normalizeResumedFlowRun(s *InteractiveService, rs *interactiveRun, st ProviderSessionState) {
 	if rs == nil || len(rs.activeFlowNodes) == 0 {
+		return
+	}
+	// V10R P0: root mid-gate must stay Running so resumePendingFlowGate can
+	// finish; do not race-cancel after reconstruct schedules the gate.
+	if st.PendingFlowGateSettle || rs.pendingFlowGateSettle {
+		return
+	}
+	// V10R3 P0: children with pending gate/approval/question already reconstructed
+	// — keep parent non-terminal so the flow can continue.
+	if s != nil && s.parentHasLivePendingChildren(rs.id) {
+		if rs.status == RunStatusCancelled || rs.status == RunStatusCompleted {
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+		}
 		return
 	}
 	if !resumedFlowRunIncomplete(st) {
@@ -408,6 +429,36 @@ func normalizeResumedFlowRun(rs *interactiveRun, st ProviderSessionState) {
 	rs.status = RunStatusCancelled
 	rs.agentStatus = string(RunStatusCancelled)
 	rs.autoOrchestrate = false
+}
+
+// parentHasLivePendingChildren reports whether parentRunID has an in-memory
+// child still waiting on gate settle or a pending approval/question card.
+func (s *InteractiveService) parentHasLivePendingChildren(parentRunID string) bool {
+	if s == nil || parentRunID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, child := range s.runs {
+		if child == nil || child.parentRunID != parentRunID {
+			continue
+		}
+		if child.pendingFlowGateSettle {
+			return true
+		}
+		if child.status == RunStatusWaitingApproval || child.status == RunStatusWaitingQuestion {
+			return true
+		}
+		if child.pendingApprovalID != "" || child.pendingQuestionID != "" {
+			return true
+		}
+		// Durable continuation still to flush (V10R4).
+		if strings.TrimSpace(child.pendingResumePrompt) != "" ||
+			strings.TrimSpace(child.pendingGateRepromptPrompt) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func resumedFlowRunIncomplete(st ProviderSessionState) bool {
@@ -452,6 +503,60 @@ func flowHubHadJoinedReviewNote(st ProviderSessionState) bool {
 		}
 	}
 	return false
+}
+
+// childPendingGateNodeIDs returns parent flow node ids whose matching child
+// sessions still have a pending approval or question on disk (BUG-288 #22).
+// Approvals/questions are keyed by the child's RunID, so parent-scoped list
+// APIs never surface them — resume must walk child sessions explicitly.
+func (s *InteractiveService) childPendingGateNodeIDs(rs *interactiveRun) []string {
+	if rs == nil || len(rs.activeFlowNodes) == 0 {
+		return nil
+	}
+	indexReader, ok := s.workflowStore.(SessionIndexReader)
+	if !ok {
+		return nil
+	}
+	sessions, err := indexReader.ListAllProviderSessions(context.Background())
+	if err != nil || len(sessions) == 0 {
+		return nil
+	}
+	ahr, hasAHR := s.workflowStore.(ApprovalHistoryReader)
+	qhr, hasQHR := s.workflowStore.(QuestionHistoryReader)
+	if !hasAHR && !hasQHR {
+		return nil
+	}
+	out := make([]string, 0)
+	seen := make(map[string]bool)
+	legacyCohortNodeByRun := s.inferredFlowNodeByLegacyCohort(rs, sessions)
+	for _, session := range sessions {
+		if session.ParentRunID != rs.id || strings.TrimSpace(session.RunID) == "" {
+			continue
+		}
+		nodeID := matchFlowNodeForSession(rs.activeFlowNodes, session)
+		if nodeID == "" {
+			nodeID = legacyCohortNodeByRun[session.RunID]
+		}
+		if nodeID == "" || seen[nodeID] {
+			continue
+		}
+		pending := false
+		if hasAHR {
+			if states, err := ahr.ListApprovalsByRun(context.Background(), session.RunID); err == nil && hasPendingGate(states, nil) {
+				pending = true
+			}
+		}
+		if !pending && hasQHR {
+			if states, err := qhr.ListQuestionsByRun(context.Background(), session.RunID); err == nil && hasPendingGate(nil, states) {
+				pending = true
+			}
+		}
+		if pending {
+			seen[nodeID] = true
+			out = append(out, nodeID)
+		}
+	}
+	return out
 }
 
 func matchFlowNodeForSession(nodes []agentpack.FlowNode, session ProviderSessionState) string {
@@ -640,14 +745,25 @@ func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st Provider
 }
 
 // normalizeResumedStatus maps an in-flight status read back from disk to a
-// terminal one. A run that was running / starting / waiting for approval or a
-// question cannot still be in flight after the owning process exited (server
-// restart): the turn goroutine and any pending approval/question records are
-// gone. Reading it back verbatim would leave the UI showing a spinner or a
-// resolved-but-unanswerable prompt forever, so we surface it as cancelled.
+// terminal one. A run that was running / starting cannot still be in flight
+// after the owning process exited (server restart): the turn goroutine is gone.
+//
+// V10R4 P0-01: WaitingApproval / WaitingQuestion are preserved — durable cards
+// rehydrate after restart, so canceling them would drop the user decision surface
+// and cascade parent cancellation.
+//
+// Task-239 / BUG-251 follow-up: agent-status values "spawned" and
+// "waiting_dependency" are also in-flight (cast through RunStatus when used as
+// AgentStatus) and must normalize to cancelled so listAgentRunSummaries disk
+// fallback does not leave a permanent spinner.
 func normalizeResumedStatus(status RunStatus) RunStatus {
 	switch status {
-	case RunStatusRunning, RunStatusStarting, RunStatusWaitingApproval, RunStatusWaitingQuestion:
+	case RunStatusRunning, RunStatusStarting:
+		return RunStatusCancelled
+	case RunStatusWaitingApproval, RunStatusWaitingQuestion:
+		// Keep — rehydratePendingGatesLocked restores the actionable card.
+		return status
+	case RunStatus("spawned"), RunStatus("waiting_dependency"):
 		return RunStatusCancelled
 	default:
 		return status
@@ -658,10 +774,31 @@ func normalizeResumedFlowStatus(st ProviderSessionState) RunStatus {
 	if len(st.ActiveFlowNodes) > 0 && strings.TrimSpace(st.LoopState.Status) == "done" {
 		return RunStatusCompleted
 	}
+	// V10 P0: gate-pending child must stay Running so resume re-evaluates gate
+	// instead of normalizing to cancelled.
+	if st.PendingFlowGateSettle {
+		return RunStatusRunning
+	}
+	// Durable continuation intents keep the run non-terminal across restart.
+	if strings.TrimSpace(st.PendingResumePrompt) != "" ||
+		strings.TrimSpace(st.PendingGateRepromptPrompt) != "" {
+		return RunStatusRunning
+	}
 	return normalizeResumedStatus(st.Status)
 }
 
 func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interactiveRun, *apiErr) {
+	return s.reconstructRunInternal(st, false)
+}
+
+// reconstructRunDeferred loads a child without auto-scheduling pending gates /
+// durable intents so the parent can finish cohortExpected + sibling buffers
+// first (V10R4 P0 atomic cohort recovery).
+func (s *InteractiveService) reconstructRunDeferred(st ProviderSessionState) (*interactiveRun, *apiErr) {
+	return s.reconstructRunInternal(st, true)
+}
+
+func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, deferGate bool) (*interactiveRun, *apiErr) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	// Preserve the persisted updatedAt — merely opening/viewing a chat must not bump its
 	// timestamp. The in-memory rs.updatedAt is what the history list reports, so seeding it
@@ -703,15 +840,82 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		sourceDocID:            st.SourceDocID,
 		turnCount:              st.TurnCount,
 		subs:                   map[int64]chan ProviderEvent{},
-		idempotency:            map[string]string{},
-		resumedFromDisk:        true,
-		pendingAgentContext:    append([]string(nil), st.PendingAgentContext...),
-		autoOrchestrate:        st.AutoOrchestrate,
-		flowCohortId:           st.FlowCohortID,
-		activeFlowEdges:        append([]agentpack.FlowEdge(nil), st.ActiveFlowEdges...),
-		activeFlowNodes:        append([]agentpack.FlowNode(nil), st.ActiveFlowNodes...),
-		chatSubMode:            st.ChatSubMode,
-		chatFlowRef:            st.ChatFlowRef,
+		// BUG-288 R16-P0: restore durable idempotency keys (not empty map).
+		idempotency:            copyStringMap(st.IdempotencyKeys),
+		resumedFromDisk:           true,
+		pendingAgentContext:       append([]string(nil), st.PendingAgentContext...),
+		pendingFlowGateSettle:     st.PendingFlowGateSettle,
+		pendingFlowGateFinalMsg:   st.PendingFlowGateFinalMsg,
+		pendingFlowGateOccurredAt: st.PendingFlowGateOccurredAt,
+		pendingFlowGateTurnID:     st.PendingFlowGateTurnID,
+		turnStartGitHead:          st.TurnStartGitHead,
+		turnStartWorktree:         copyStringMap(st.TurnStartWorktree),
+		pendingGateChangedFiles:   append([]string(nil), st.PendingGateChangedFiles...),
+		stepID:                    st.StepID,
+		lastTurnStepID:            st.LastTurnStepID,
+		lastTurnID:                st.PendingFlowGateTurnID, // seed for gate materialize
+		pendingGateRepromptPrompt: st.PendingGateRepromptPrompt,
+		pendingGateRepromptStepID: st.PendingGateRepromptStepID,
+		pendingGateCodePaths:      append([]string(nil), st.PendingGateCodePaths...),
+		repromptAttempts:          st.RepromptAttempts,
+		pendingResumePrompt:             st.PendingResumePrompt,
+		pendingResumeStepID:             st.PendingResumeStepID,
+		pendingResumeGen:                st.PendingResumeGen,
+		pendingGateRepromptGen:          st.PendingGateRepromptGen,
+		pendingResumeDeliveredGen:       st.PendingResumeDeliveredGen,
+		pendingGateRepromptDeliveredGen: st.PendingGateRepromptDeliveredGen,
+		pendingResumeAcceptedTurn:       st.PendingResumeAcceptedTurn,
+		pendingGateRepromptAcceptedTurn: st.PendingGateRepromptAcceptedTurn,
+		pendingResumeFailCount:          st.PendingResumeFailCount,
+		pendingResumeFailGen:            st.PendingResumeFailGen,
+		pendingGateRepromptFailCount:    st.PendingGateRepromptFailCount,
+		pendingGateRepromptFailGen:      st.PendingGateRepromptFailGen,
+		pendingResumeApprovalID:         st.PendingResumeApprovalID,
+		pendingResumeDecision:           st.PendingResumeDecision,
+		pendingResumeQuestionChoices:    append([]string(nil), st.PendingResumeQuestionChoices...),
+		stopGeneration:                 st.StopGeneration,
+		parentStopGenSeen:              st.ParentStopGenSeen,
+		intentBlockedKind:              st.IntentBlockedKind,
+		intentBlockedReason:            st.IntentBlockedReason,
+		intentBlockedAt:                st.IntentBlockedAt,
+		transitionLogDegraded:          st.TransitionLogDegraded,
+		transitionLogDegradedAt:        st.TransitionLogDegradedAt,
+		transitionLogDegradedReason:    st.TransitionLogDegradedReason,
+		suppressAutoGateResume:          deferGate,
+		autoOrchestrate:           st.AutoOrchestrate,
+		flowCohortId:              st.FlowCohortID,
+		activeFlowEdges:           append([]agentpack.FlowEdge(nil), st.ActiveFlowEdges...),
+		activeFlowNodes:           append([]agentpack.FlowNode(nil), st.ActiveFlowNodes...),
+		chatSubMode:               st.ChatSubMode,
+		chatFlowRef:               st.ChatFlowRef,
+		flowStartGitHead:          st.FlowStartGitHead,
+		pendingRestartRunID:       st.PendingRestartRunID,
+		pendingRestartPrompt:      st.PendingRestartPrompt,
+		pendingRestartGen:         st.PendingRestartGen,
+		flowContextInjected:       st.FlowContextInjected,
+	}
+	if rs.idempotency == nil {
+		rs.idempotency = map[string]string{}
+	}
+	// V10R P1: re-engage flow executor when topology was restored (needed for
+	// child approval resume to stamp parent step RUNNING after restart).
+	if len(rs.activeFlowNodes) > 0 {
+		rs.flowEngineDriven = true
+	}
+	// V10R4 P1: migrate legacy durable intents that have prompt/step but gen=0
+	// (pre-generation sessions). Without this claim rejects forever.
+	migratedIntent := false
+	if strings.TrimSpace(rs.pendingResumePrompt) != "" &&
+		strings.TrimSpace(rs.pendingResumeStepID) != "" &&
+		rs.pendingResumeGen == 0 {
+		rs.pendingResumeGen = 1
+		migratedIntent = true
+	}
+	if strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" &&
+		strings.TrimSpace(rs.pendingGateRepromptStepID) != "" &&
+		rs.pendingGateRepromptGen == 0 {
+		rs.pendingGateRepromptGen = 1
+		migratedIntent = true
 	}
 	// Restore CP-41 flow events from the sidecar so FindFlowContextPackage,
 	// FindAuditDraft etc. work after a process restart. rs is not yet visible to
@@ -839,7 +1043,18 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 
 	s.mu.Lock()
 	s.runs[rs.id] = rs
+	// V10 P1: rehydrate pending approval/question records so submit is not 404.
+	s.rehydratePendingGatesLocked(rs.id)
 	s.mu.Unlock()
+	// Persist migrated generation tokens before flush so crash mid-resume still
+	// has reclaimable gen>0 intents.
+	if migratedIntent {
+		snap := sessionStateOf(rs)
+		if rs.parentRunID == "" {
+			snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+		}
+		_ = s.persistProviderSession(snap)
+	}
 	// BUG-232: reseedFlowStepRuntimeForResume (via flowStepRowsFromNodes ->
 	// resolveFlowNodeProviderModel) acquires s.mu itself to read the run's
 	// baseline posture — it must run AFTER s.mu.Unlock() above, never while
@@ -870,17 +1085,772 @@ func (s *InteractiveService) reconstructRun(st ProviderSessionState) (*interacti
 		// from the persisted flow nodes plus any child/session evidence we still
 		// have on disk, so completed nodes remain DONE and in-flight nodes settle
 		// to CANCELED after a restart rather than reverting to a misleading all-
-		// PENDING/all-DONE display. flowEngineDriven is intentionally left as-is —
-		// this only restores the display; it does not re-engage the executor.
-		s.seedFlowStepRuntimeRows(rs.id, s.resumedFlowStepRows(rs, st))
+		// PENDING/all-DONE display.
+		//
+		// V10R P1: flowEngineDriven is restored above when ActiveFlowNodes exist
+		// so approval/question resume can stamp parent steps RUNNING.
+		//
+		// Task-239 / T-10 / I-17: when a step-transition log exists, merge it
+		// on top of the evidence-walk (last-wins per node that has log lines;
+		// nodes never logged keep evidence-walk — legacy no-label merge rule).
+		// LoadStepTransitions is I/O and must run outside s.mu (already unlocked).
+		rows := s.resumedFlowStepRows(rs, st)
+		var pendingApprovals []ProviderApprovalState
+		var pendingQuestions []ProviderQuestionState
+		if ahr, ok := s.workflowStore.(ApprovalHistoryReader); ok {
+			if states, err := ahr.ListApprovalsByRun(context.Background(), st.RunID); err == nil {
+				pendingApprovals = states
+			}
+		}
+		if qhr, ok := s.workflowStore.(QuestionHistoryReader); ok {
+			if states, err := qhr.ListQuestionsByRun(context.Background(), st.RunID); err == nil {
+				pendingQuestions = states
+			}
+		}
+		// BUG-288 #22 / V9-08: child gates under child RunID.
+		childWaiting := s.childPendingGateNodeIDs(rs)
+		keepWaiting := keepWaitingNodeIDsForResume(st, rs.activeFlowNodes, pendingApprovals, pendingQuestions, childWaiting...)
+		if tlog, ok := s.workflowStore.(StepTransitionLogStore); ok {
+			if lines, loadErr := tlog.LoadStepTransitions(context.Background(), rs.id); loadErr != nil {
+				log.Printf("reconstructRun: LoadStepTransitions runID=%s: %v (falling back to evidence-walk)", rs.id, loadErr)
+			} else if len(lines) > 0 {
+				rows = applyStepTransitionReplay(rows, lines, keepWaiting)
+				// Hub precedence when flow genuinely completed (mirrors evidence-walk):
+				// hub PENDING → DONE. I-3: never promote FAILED/CANCELED.
+				if normalizeResumedFlowStatus(st) == RunStatusCompleted {
+					if hubID := hubInlineNodeID(rs.activeFlowNodes); hubID != "" {
+						for i := range rows {
+							if rows[i].ID == hubID && rows[i].Status == StepStatusPending {
+								rows[i].Status = StepStatusDone
+								nowTS := time.Now().UTC().Format(time.RFC3339Nano)
+								rows[i].StartedAt = nowTS
+								rows[i].FinishedAt = nowTS
+							}
+						}
+					}
+				}
+			}
+		}
+		// V9-08: even without transition log, overlay child pending WAITING labels.
+		for _, id := range childWaiting {
+			for i := range rows {
+				if rows[i].ID == id {
+					rows[i].Status = StepStatusWaitingUserApr
+				}
+			}
+		}
+		s.seedFlowStepRuntimeRows(rs.id, rows)
 	}
 	// Restore flow-engine loop state so a restarted or Drive-synced run resumes
 	// at the correct round/cap/mode (Task-085 T-4).
 	if st.LoopState.Mode != "" || st.LoopState.Cap > 0 || st.LoopState.Round > 0 {
 		s.agentOrchestrator.setLoop(rs.id, st.LoopState)
 	}
-	normalizeResumedFlowRun(rs, st)
+	// V10R3 P0: reconstruct pending/cohort children BEFORE normalize so parent
+	// is not Cancelled while children still need approval/gate/barrier.
+	if rs.parentRunID == "" && len(rs.activeFlowNodes) > 0 {
+		s.reconstructPendingChildSessions(rs.id)
+	}
+	// V10R P0: normalize AFTER child reconstruct; skip cancel when children pending.
+	normalizeResumedFlowRun(s, rs, st)
+	// V10 P0 / V10R4: schedule post-turn gate only after normalize, and only when
+	// not suppressed for atomic cohort restore (parent path flushes later).
+	if rs.pendingFlowGateSettle && !rs.suppressAutoGateResume {
+		go s.resumePendingFlowGate(rs.id)
+	}
+	// V10R4 P1: durable gate-reprompt / approval-resume intents after restart.
+	if !rs.suppressAutoGateResume {
+		s.flushDurableTurnIntents(rs.id)
+	}
 	return rs, nil
+}
+
+// RequeueBlockedIntent is the recovery hook for BUG-288 P1-09: a durable
+// resume/reprompt intent that exhausted durableIntentMaxPermanentFails sits
+// in an inert, durably-recorded "blocked" state (intentBlockedKind/Reason/At)
+// rather than silently vanishing. This clears that state and the per-kind
+// fail budget (WITHOUT discarding the underlying prompt/stepID/gen — the
+// intent itself is preserved so the retry targets the same continuation) and
+// re-invokes flushDurableTurnIntents so a fixed provider/account/config is
+// actually retried instead of the run remaining inert forever.
+func (s *InteractiveService) RequeueBlockedIntent(runID string) *apiErr {
+	s.mu.Lock()
+	rs := s.runs[runID]
+	if rs == nil {
+		s.mu.Unlock()
+		return newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+	}
+	if rs.intentBlockedKind == "" {
+		s.mu.Unlock()
+		return newAPIErr(http.StatusConflict, "not_blocked", "no blocked durable intent to requeue")
+	}
+	kind := rs.intentBlockedKind
+	rs.intentBlockedKind = ""
+	rs.intentBlockedReason = ""
+	rs.intentBlockedAt = ""
+	switch kind {
+	case "reprompt":
+		rs.pendingGateRepromptFailCount = 0
+		rs.pendingGateRepromptFailGen = 0
+	case "resume":
+		rs.pendingResumeFailCount = 0
+		rs.pendingResumeFailGen = 0
+	}
+	snap := sessionStateOf(rs)
+	s.mu.Unlock()
+	if err := s.persistProviderSession(snap); err != nil {
+		return newAPIErr(http.StatusInternalServerError, "persist_failed", "failed to persist intent requeue: "+err.Error())
+	}
+	go s.flushDurableTurnIntents(runID)
+	return nil
+}
+
+// flushDurableTurnIntents schedules startTurn for durable reprompt/resume
+// intents after reconstruct (or after cohort restore / turn settle). Only one
+// in-flight delivery owns a generation via claimDurableIntentLocked (V10R4).
+//
+// V10R4 P0-02: DeliveredGen is set ONLY after startTurn accepts a turn (not
+// before the call). Pre-call markers caused permanent intent loss on crash
+// between persist and startTurn. Duplicate prevention uses:
+//   - in-process claim lease
+//   - deterministic idempotency key "durable-{kind}-{gen}" on startTurn
+//   - after accept: mark DeliveredGen + clear intent in one persist
+func (s *InteractiveService) flushDurableTurnIntents(runID string) {
+	s.mu.Lock()
+	rs := s.runs[runID]
+	if rs == nil {
+		s.mu.Unlock()
+		return
+	}
+	// Never flush continuation while a durable card is still pending unless we
+	// already recorded a decision for that card (reconcile two-write crash).
+	if (rs.pendingApprovalID != "" || rs.pendingQuestionID != "") &&
+		strings.TrimSpace(rs.pendingResumeDecision) == "" {
+		s.mu.Unlock()
+		return
+	}
+	// Prefer gate reprompt over generic resume (more specific remediation).
+	prompt := strings.TrimSpace(rs.pendingGateRepromptPrompt)
+	stepID := strings.TrimSpace(rs.pendingGateRepromptStepID)
+	gen := rs.pendingGateRepromptGen
+	delivered := rs.pendingGateRepromptDeliveredGen
+	acceptedTurn := rs.pendingGateRepromptAcceptedTurn
+	failCount, failGen := rs.pendingGateRepromptFailCount, rs.pendingGateRepromptFailGen
+	kind := "reprompt"
+	if prompt == "" {
+		prompt = strings.TrimSpace(rs.pendingResumePrompt)
+		stepID = strings.TrimSpace(rs.pendingResumeStepID)
+		gen = rs.pendingResumeGen
+		delivered = rs.pendingResumeDeliveredGen
+		acceptedTurn = rs.pendingResumeAcceptedTurn
+		failCount, failGen = rs.pendingResumeFailCount, rs.pendingResumeFailGen
+		kind = "resume"
+	}
+	// BUG-288 R15-P0: also flush durable stall-retry on this run (parent).
+	if rs.pendingRestartRunID != "" && rs.pendingRestartPrompt != "" {
+		parentID := rs.id
+		s.mu.Unlock()
+		go s.deliverPendingRestart(parentID)
+		return
+	}
+	if prompt == "" || stepID == "" {
+		s.mu.Unlock()
+		return
+	}
+	// BUG-288 R13-25: "Consumed" branch below is retained for forward-compat if
+	// DeliveredGen/AcceptedTurn are ever written on accept; production today
+	// clears intents via clearIntentFieldsLocked after startTurn and relies on
+	// claimDurableIntentLocked + gen idempotency instead of marking delivered.
+	if delivered == gen && gen != 0 && strings.TrimSpace(acceptedTurn) != "" {
+		clearIntentFieldsLocked(rs, kind)
+		snap := sessionStateOf(rs)
+		s.mu.Unlock()
+		_ = s.persistProviderSession(snap)
+		return
+	}
+	// Permanent failure budget for THIS generation only — park with next-attempt
+	// is still a gap (P1-09); at least surface blocked state via fail count.
+	if failGen == gen && failCount >= durableIntentMaxPermanentFails {
+		s.mu.Unlock()
+		return
+	}
+	if !s.claimDurableIntentLocked(rs, kind, prompt, stepID, gen) {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	// Do NOT persist DeliveredGen before startTurn (P0-02).
+	go s.startTurnClearingIntent(runID, stepID, prompt, kind, gen)
+}
+
+// clearIntentFieldsLocked clears one kind of durable intent (caller holds s.mu).
+func clearIntentFieldsLocked(rs *interactiveRun, kind string) {
+	if rs == nil {
+		return
+	}
+	switch kind {
+	case "reprompt":
+		rs.pendingGateRepromptPrompt = ""
+		rs.pendingGateRepromptStepID = ""
+		rs.pendingGateRepromptGen = 0
+		rs.pendingGateRepromptDeliveredGen = 0
+		rs.pendingGateRepromptAcceptedTurn = ""
+		rs.pendingGateRepromptFailCount = 0
+		rs.pendingGateRepromptFailGen = 0
+	case "resume":
+		rs.pendingResumePrompt = ""
+		rs.pendingResumeStepID = ""
+		rs.pendingResumeGen = 0
+		rs.pendingResumeDeliveredGen = 0
+		rs.pendingResumeAcceptedTurn = ""
+		rs.pendingResumeFailCount = 0
+		rs.pendingResumeFailGen = 0
+		rs.pendingResumeApprovalID = ""
+		rs.pendingResumeDecision = ""
+	}
+}
+
+// claimDurableIntentLocked atomically leases a durable intent generation before
+// startTurn so duplicate flush/retry cannot create two turns. Stale leases
+// (older than durableIntentLease) are reclaimable after crash-equivalent hang.
+// Caller holds s.mu.
+func (s *InteractiveService) claimDurableIntentLocked(rs *interactiveRun, kind, prompt, stepID string, gen int64) bool {
+	if rs == nil {
+		return false
+	}
+	// gen==0 only after migration failure; reject empty intents.
+	if gen == 0 {
+		return false
+	}
+	now := time.Now()
+	// Verify intent still matches.
+	switch kind {
+	case "reprompt":
+		if rs.pendingGateRepromptGen != gen ||
+			rs.pendingGateRepromptPrompt != prompt ||
+			rs.pendingGateRepromptStepID != stepID {
+			return false
+		}
+	case "resume":
+		if rs.pendingResumeGen != gen ||
+			rs.pendingResumePrompt != prompt ||
+			rs.pendingResumeStepID != stepID {
+			return false
+		}
+	case "restart":
+		// stepID carries the child run id for stall-retry (BUG-288 R15-P0).
+		if rs.pendingRestartGen != gen ||
+			rs.pendingRestartPrompt != prompt ||
+			rs.pendingRestartRunID != stepID {
+			return false
+		}
+	default:
+		return false
+	}
+	// Another delivery already owns this gen?
+	if rs.intentClaimGen == gen && rs.intentClaimKind == kind {
+		if now.Before(rs.intentClaimUntil) {
+			return false
+		}
+		// Stale lease — reclaim.
+	}
+	// Different gen claim in flight for this kind: wait for settle-driven flush.
+	if rs.intentClaimGen != 0 && rs.intentClaimKind == kind && rs.intentClaimGen != gen {
+		if now.Before(rs.intentClaimUntil) {
+			return false
+		}
+	}
+	rs.intentClaimKind = kind
+	rs.intentClaimGen = gen
+	rs.intentClaimUntil = now.Add(durableIntentLease)
+	return true
+}
+
+const durableIntentLease = 30 * time.Minute
+
+// durableIntentMaxPermanentFails stops auto-retry spam for permanent startTurn
+// errors (account/provider/config). Transient conflicts do not count.
+const durableIntentMaxPermanentFails = 5
+
+// isPermanentStartTurnError classifies API errors that should not busy-retry
+// every idle notify (V10R4 P1).
+func isPermanentStartTurnError(e *apiErr) bool {
+	if e == nil {
+		return false
+	}
+	switch e.code {
+	case "turn_in_progress", "gate_in_progress", "awaiting_user":
+		return false
+	case "flow_stopped":
+		// Stop is permanent until user resumes the loop.
+		return true
+	case "provider_account_changed", "provider_unavailable", "account_not_signed_in",
+		"account_unavailable", "run_not_found", "invalid_request", "session_unavailable":
+		return true
+	default:
+		// Unknown codes: treat as permanent after classification caution —
+		// prefer not to spin forever.
+		return true
+	}
+}
+
+// releaseDurableIntentClaimLocked drops an in-process lease without clearing
+// the durable intent (failed start / conflict). Caller holds s.mu.
+func releaseDurableIntentClaimLocked(rs *interactiveRun, kind string, gen int64) {
+	if rs == nil {
+		return
+	}
+	if rs.intentClaimKind == kind && rs.intentClaimGen == gen {
+		rs.intentClaimKind = ""
+		rs.intentClaimGen = 0
+		rs.intentClaimUntil = time.Time{}
+	}
+}
+
+// startTurnClearingIntent claims the generation (if not already leased) then
+// startTurn with a deterministic idempotency key. On success records
+// DeliveredGen + AcceptedTurn and clears the intent. Never marks delivered
+// before the provider call (V10R4 P0-02).
+func (s *InteractiveService) startTurnClearingIntent(runID, stepID, prompt, kind string, gen int64) {
+	s.mu.Lock()
+	rs := s.runs[runID]
+	if rs == nil {
+		s.mu.Unlock()
+		return
+	}
+	// Direct callers (approval/question) may not have claimed yet.
+	owned := rs.intentClaimKind == kind && rs.intentClaimGen == gen && time.Now().Before(rs.intentClaimUntil)
+	if !owned {
+		if !s.claimDurableIntentLocked(rs, kind, prompt, stepID, gen) {
+			s.mu.Unlock()
+			return
+		}
+	}
+	s.mu.Unlock()
+
+	// Deterministic key so a crash after accept + restart cannot open a second
+	// provider turn for the same intent generation.
+	// BUG-288 R18-1: zero-pad gen for stable ordering in durable snapshots.
+	idem := fmt.Sprintf("durable-%s-%s-%020d", runID, kind, gen)
+	turnID, apiErr := s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", idem)
+	if apiErr != nil {
+		log.Printf("[resume-intent] startTurn failed run=%s kind=%s gen=%d code=%s: %s",
+			runID, kind, gen, apiErr.code, apiErr.msg)
+		s.mu.Lock()
+		if r := s.runs[runID]; r != nil {
+			releaseDurableIntentClaimLocked(r, kind, gen)
+			if isPermanentStartTurnError(apiErr) {
+				// Durable per-generation fail budget.
+				if kind == "reprompt" {
+					if r.pendingGateRepromptFailGen != gen {
+						r.pendingGateRepromptFailGen = gen
+						r.pendingGateRepromptFailCount = 0
+					}
+					r.pendingGateRepromptFailCount++
+					if r.pendingGateRepromptFailCount >= durableIntentMaxPermanentFails {
+						log.Printf("[resume-intent] permanent fail budget exhausted run=%s kind=%s gen=%d",
+							runID, kind, gen)
+						// BUG-288 P1-09: durably record the exhausted/blocked state
+						// instead of just returning — RequeueBlockedIntent is the
+						// recovery hook once the underlying condition is fixed.
+						r.intentBlockedKind = kind
+						r.intentBlockedReason = apiErr.msg
+						r.intentBlockedAt = time.Now().UTC().Format(time.RFC3339Nano)
+						failSnap := sessionStateOf(r)
+						s.mu.Unlock()
+						_ = s.persistProviderSession(failSnap)
+						return
+					}
+					failN := r.pendingGateRepromptFailCount
+					failSnap := sessionStateOf(r)
+					s.mu.Unlock()
+					_ = s.persistProviderSession(failSnap)
+					delay := time.Duration(failN*failN) * time.Second
+					if delay > 30*time.Second {
+						delay = 30 * time.Second
+					}
+					go func() {
+						time.Sleep(delay)
+						s.notifyTurnIdle(runID)
+					}()
+					return
+				}
+				if r.pendingResumeFailGen != gen {
+					r.pendingResumeFailGen = gen
+					r.pendingResumeFailCount = 0
+				}
+				r.pendingResumeFailCount++
+				if r.pendingResumeFailCount >= durableIntentMaxPermanentFails {
+					log.Printf("[resume-intent] permanent fail budget exhausted run=%s kind=%s gen=%d",
+						runID, kind, gen)
+					// BUG-288 P1-09: see the mirrored "reprompt" comment above.
+					r.intentBlockedKind = kind
+					r.intentBlockedReason = apiErr.msg
+					r.intentBlockedAt = time.Now().UTC().Format(time.RFC3339Nano)
+					failSnap := sessionStateOf(r)
+					s.mu.Unlock()
+					_ = s.persistProviderSession(failSnap)
+					return
+				}
+				failN := r.pendingResumeFailCount
+				failSnap := sessionStateOf(r)
+				s.mu.Unlock()
+				_ = s.persistProviderSession(failSnap)
+				delay := time.Duration(failN*failN) * time.Second
+				if delay > 30*time.Second {
+					delay = 30 * time.Second
+				}
+				go func() {
+					time.Sleep(delay)
+					s.notifyTurnIdle(runID)
+				}()
+				return
+			}
+			// Transient: release claim; re-arm on idle.
+			transSnap := sessionStateOf(r)
+			s.mu.Unlock()
+			_ = s.persistProviderSession(transSnap)
+			return
+		}
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Lock()
+	rs = s.runs[runID]
+	if rs == nil {
+		s.mu.Unlock()
+		return
+	}
+	// BUG-288 R20-1: clear outer intent only when recovery can observe a live
+	// or terminal turn for turnID. startTurn may return a reused turnID for an
+	// incomplete durable key only after re-launch; ghost launch-ack alone must
+	// not drop pending resume/reprompt.
+	cleared := false
+	if durableIntentClearOK(rs, turnID) {
+		if kind == "reprompt" &&
+			rs.pendingGateRepromptGen == gen &&
+			rs.pendingGateRepromptPrompt == prompt &&
+			rs.pendingGateRepromptStepID == stepID {
+			clearIntentFieldsLocked(rs, "reprompt")
+			cleared = true
+		}
+		if kind == "resume" &&
+			rs.pendingResumeGen == gen &&
+			rs.pendingResumePrompt == prompt &&
+			rs.pendingResumeStepID == stepID {
+			clearIntentFieldsLocked(rs, "resume")
+			cleared = true
+		}
+	} else {
+		log.Printf("[resume-intent] startTurn returned turn=%s but not clear-safe; keeping durable intent run=%s kind=%s gen=%d",
+			turnID, runID, kind, gen)
+	}
+	releaseDurableIntentClaimLocked(rs, kind, gen)
+	snap := sessionStateOf(rs)
+	if rs.parentRunID == "" {
+		snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+	}
+	s.mu.Unlock()
+	if cleared {
+		if err := s.persistProviderSession(snap); err != nil {
+			log.Printf("[resume-intent] persist after accept failed run=%s: %v", runID, err)
+		}
+	}
+}
+
+// notifyTurnIdle re-flushes durable intents after a turn or gate becomes idle
+// so conflicted deliveries are not stranded for process restart (V10R4 P1).
+func (s *InteractiveService) notifyTurnIdle(runID string) {
+	if strings.TrimSpace(runID) == "" {
+		return
+	}
+	s.mu.Lock()
+	rs := s.runs[runID]
+	if rs == nil {
+		s.mu.Unlock()
+		return
+	}
+	// Only when no turn/gate is active.
+	busy := rs.turnInFlight || rs.pendingFlowGateSettle || rs.postTurnGateCancel != nil
+	hasIntent := strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" ||
+		strings.TrimSpace(rs.pendingResumePrompt) != ""
+	s.mu.Unlock()
+	if busy || !hasIntent {
+		return
+	}
+	go s.flushDurableTurnIntents(runID)
+}
+
+// reconstructPendingChildSessions loads child sessions under parentRunID that
+// still need live reconstruction after parent resume: pending post-turn gate,
+// pending approval/question cards, and full reviewer cohorts (V10R / V10R3 P0).
+// Idempotent — skips children already in s.runs.
+func (s *InteractiveService) reconstructPendingChildSessions(parentRunID string) {
+	if strings.TrimSpace(parentRunID) == "" {
+		return
+	}
+	indexReader, ok := s.workflowStore.(SessionIndexReader)
+	if !ok {
+		return
+	}
+	sessions, err := indexReader.ListAllProviderSessions(context.Background())
+	if err != nil || len(sessions) == 0 {
+		return
+	}
+	ahr, hasAHR := s.workflowStore.(ApprovalHistoryReader)
+	qhr, hasQHR := s.workflowStore.(QuestionHistoryReader)
+
+	children := make([]ProviderSessionState, 0)
+	for _, session := range sessions {
+		if session.ParentRunID != parentRunID || strings.TrimSpace(session.RunID) == "" {
+			continue
+		}
+		children = append(children, session)
+	}
+	if len(children) == 0 {
+		return
+	}
+
+	// Cohort recovery: decide liveness from PERSISTED pre-normalization state.
+	// normalizeResumedFlowStatus maps Running→Cancelled; if we consult only the
+	// normalized status, a crash mid-review leaves incomplete cohorts forever
+	// (completed siblings never loaded, expected too small) — V10R4 P0.
+	cohortNeed := map[string]bool{}
+	for _, session := range children {
+		cid := strings.TrimSpace(session.FlowCohortID)
+		if cid == "" {
+			continue
+		}
+		if sessionIsCohortLivePersisted(session) {
+			cohortNeed[cid] = true
+			continue
+		}
+		if hasAHR {
+			if states, aerr := ahr.ListApprovalsByRun(context.Background(), session.RunID); aerr == nil {
+				for _, a := range states {
+					if strings.EqualFold(strings.TrimSpace(a.Status), "pending") {
+						cohortNeed[cid] = true
+						break
+					}
+				}
+			}
+		}
+		if hasQHR {
+			if states, qerr := qhr.ListQuestionsByRun(context.Background(), session.RunID); qerr == nil {
+				for _, q := range states {
+					if strings.EqualFold(strings.TrimSpace(q.Status), "pending") {
+						cohortNeed[cid] = true
+						break
+					}
+				}
+			}
+		}
+	}
+
+	needSession := func(session ProviderSessionState) bool {
+		if session.PendingFlowGateSettle {
+			return true
+		}
+		if cid := strings.TrimSpace(session.FlowCohortID); cid != "" && cohortNeed[cid] {
+			return true
+		}
+		if hasAHR {
+			if states, aerr := ahr.ListApprovalsByRun(context.Background(), session.RunID); aerr == nil {
+				for _, a := range states {
+					if strings.EqualFold(strings.TrimSpace(a.Status), "pending") {
+						return true
+					}
+				}
+			}
+		}
+		if hasQHR {
+			if states, qerr := qhr.ListQuestionsByRun(context.Background(), session.RunID); qerr == nil {
+				for _, q := range states {
+					if strings.EqualFold(strings.TrimSpace(q.Status), "pending") {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+
+	// Also recover durable continuation intents (approval resume / gate reprompt).
+	needSessionWithIntent := func(session ProviderSessionState) bool {
+		if needSession(session) {
+			return true
+		}
+		return strings.TrimSpace(session.PendingResumePrompt) != "" ||
+			strings.TrimSpace(session.PendingGateRepromptPrompt) != ""
+	}
+
+	// Group cohorts for expected-count restore after all members are loaded.
+	// V10R4 P0: suppress gate resume on children until preRegister+buffer complete.
+	cohortMembers := map[string][]ProviderSessionState{}
+	loadedIDs := make([]string, 0)
+	for _, session := range children {
+		if !needSessionWithIntent(session) {
+			continue
+		}
+		s.mu.Lock()
+		already := s.runs[session.RunID] != nil
+		s.mu.Unlock()
+		if !already {
+			// Mark suppress before reconstruct schedules anything — set via
+			// reconstructing with a flag after insert by patching immediately.
+			// reconstructRun will schedule gate unless suppressAutoGateResume is set
+			// on the run before the schedule line. We inject it by pre-registering
+			// a placeholder? Cleaner: pass through a package-level? No.
+			// Use reconstructRun then cancel any premature schedule by setting
+			// suppress before the go resumes — racey.
+			// Better: set suppress on session via temporary field during reconstruct.
+			// Implement: reconstructDeferredGate(session).
+			if _, apiErr := s.reconstructRunDeferred(session); apiErr != nil {
+				log.Printf("reconstructPendingChildSessions: child %s: %v", session.RunID, apiErr)
+				continue
+			}
+		} else {
+			s.mu.Lock()
+			if child := s.runs[session.RunID]; child != nil {
+				child.suppressAutoGateResume = true
+			}
+			s.mu.Unlock()
+		}
+		loadedIDs = append(loadedIDs, session.RunID)
+		// Re-register parent→child edge for graph/release paths.
+		s.agentOrchestrator.registerChild(parentRunID, session.RunID)
+		if cid := strings.TrimSpace(session.FlowCohortID); cid != "" {
+			cohortMembers[cid] = append(cohortMembers[cid], session)
+		}
+	}
+
+	// Rebuild cohortExpected + buffer completed/cancelled sibling results so the
+	// barrier can complete when remaining members finish their pending gate.
+	for cid, members := range cohortMembers {
+		if len(members) == 0 {
+			continue
+		}
+		s.agentOrchestrator.preRegisterCohort(parentRunID, cid, len(members))
+		for _, session := range members {
+			s.mu.Lock()
+			child := s.runs[session.RunID]
+			s.mu.Unlock()
+			if child == nil {
+				continue
+			}
+			// Still mid-gate, waiting user, or durable continuation — settle
+			// will append the only authoritative result later (V10R4 P0:
+			// never buffer resumable children as failed).
+			if child.pendingFlowGateSettle ||
+				child.status == RunStatusWaitingApproval ||
+				child.status == RunStatusWaitingQuestion ||
+				strings.TrimSpace(child.pendingResumePrompt) != "" ||
+				strings.TrimSpace(child.pendingGateRepromptPrompt) != "" ||
+				strings.TrimSpace(session.PendingResumePrompt) != "" ||
+				strings.TrimSpace(session.PendingGateRepromptPrompt) != "" {
+				continue
+			}
+			status := "completed"
+			finalMsg := session.LastMessage
+			switch child.status {
+			case RunStatusFailed:
+				status = "failed"
+			case RunStatusCancelled:
+				// Distinguish stop/restart cancel from failure (Task-241 matrix).
+				status = "cancelled"
+			case RunStatusCompleted:
+				status = "completed"
+			default:
+				// In-flight at kill with no durable intent → failed so barrier
+				// is not stuck forever.
+				status = "failed"
+			}
+			s.agentOrchestrator.appendCohortResult(parentRunID, cid, cohortEntry{
+				Label:        firstNonEmptyResumeValue(child.label, session.Label, session.AgentName),
+				Provider:     string(child.providerKey),
+				FinalMessage: truncateDisplayField(finalMsg, 1500),
+				Status:       status,
+			})
+		}
+		// V10R4 P0: if recovery itself completed the cohort (all members
+		// terminal, no pending gate/intent), drain + reinvoke hub now — there
+		// will be no further child event to trigger synthesis.
+		if s.agentOrchestrator.cohortComplete(parentRunID, cid) {
+			s.joinRecoveredCohort(parentRunID, cid)
+		}
+	}
+
+	// Atomic flush: only now allow pending gates / durable intents to run.
+	for _, id := range loadedIDs {
+		s.mu.Lock()
+		if child := s.runs[id]; child != nil {
+			child.suppressAutoGateResume = false
+			pendingGate := child.pendingFlowGateSettle
+			s.mu.Unlock()
+			if pendingGate {
+				go s.resumePendingFlowGate(id)
+			}
+			s.flushDurableTurnIntents(id)
+		} else {
+			s.mu.Unlock()
+		}
+	}
+}
+
+// sessionIsCohortLivePersisted reports whether a disk session indicates the
+// member was still live at crash (before Running→Cancelled normalization).
+func sessionIsCohortLivePersisted(session ProviderSessionState) bool {
+	if session.PendingFlowGateSettle {
+		return true
+	}
+	if strings.TrimSpace(session.PendingResumePrompt) != "" ||
+		strings.TrimSpace(session.PendingGateRepromptPrompt) != "" {
+		return true
+	}
+	switch session.Status {
+	case RunStatusRunning, RunStatusStarting, RunStatusWaitingApproval, RunStatusWaitingQuestion:
+		return true
+	case RunStatus("spawned"), RunStatus("waiting_dependency"):
+		return true
+	default:
+		return false
+	}
+}
+
+// joinRecoveredCohort drains a cohort that became complete during parent resume
+// reconstruction and reinvokes the hub with the joined note (V10R4 P0).
+func (s *InteractiveService) joinRecoveredCohort(parentRunID, cohortID string) {
+	entries := s.agentOrchestrator.drainCohort(parentRunID, cohortID)
+	if len(entries) == 0 {
+		return
+	}
+	round := s.agentOrchestrator.loopStateFor(parentRunID).Round
+	note := buildCohortNote(parentRunID, cohortID, entries, round)
+	s.appendPendingAgentContext(parentRunID, note)
+	s.mu.Lock()
+	if parent := s.runs[parentRunID]; parent != nil {
+		parent.lastCohortNote = note
+	}
+	s.mu.Unlock()
+	if s.isFlowEngineDriven(parentRunID) {
+		for _, e := range entries {
+			if e.Label == "" {
+				continue
+			}
+			switch e.Status {
+			case "completed":
+				s.setFlowStepStatus(context.Background(), parentRunID, e.Label, StepStatusDone)
+			case "failed":
+				s.setFlowStepStatus(context.Background(), parentRunID, e.Label, StepStatusFailed)
+			case "cancelled":
+				s.setFlowStepStatus(context.Background(), parentRunID, e.Label, StepStatusCanceled)
+			}
+		}
+		if hubID := hubInlineNodeID(s.activeFlowNodesFor(parentRunID)); hubID != "" && s.loopIsAdvancing(parentRunID) {
+			s.setFlowStepStatus(context.Background(), parentRunID, hubID, StepStatusRunning)
+		}
+	}
+	go s.maybeAutoReinvokeHubWithNote(parentRunID, note)
 }
 
 func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) []ProviderEvent {

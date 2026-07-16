@@ -319,8 +319,9 @@ interface AppState {
   stopAgentLoop(): Promise<void>;
   submitReviewOutcome(outcome: "approved" | "changes_requested", issues?: import("@/types/contract").ReviewIssue[]): Promise<void>;
   extendCap(): Promise<void>;
-  /** BUG-231's unified "Continue" action for a blocked/awaiting-user loop. */
-  continueFlow(feedback: string): Promise<void>;
+  /** BUG-231's unified "Continue" action for a blocked/awaiting-user loop.
+   * Task-241: optional memberAction for blockReason=member_stalled (retry|skip). */
+  continueFlow(feedback: string, memberAction?: { action: "retry" | "skip"; node?: string }): Promise<void>;
   listAgents(cwd?: string): Promise<AgentDefinition[]>;
   focusAgentRun(runId: string): Promise<void>;
   backToMainRun(): void;
@@ -588,7 +589,7 @@ export const useStore = create<AppState>((set, get) => ({
   async stopAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.stopAgentLoop) { set(applyAgentGraphSnapshot(await client.stopAgentLoop(parentRunId))); /* Bug 3 fix: also interrupt to forcefully terminate the in-flight provider turn */ if (client.interrupt) { try { await client.interrupt(parentRunId); } catch { /* best-effort: interrupt may 404 if no turn is in flight */ } } } },
   async submitReviewOutcome(outcome, issues) { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.submitReviewOutcome) set(applyAgentGraphSnapshot(await client.submitReviewOutcome(parentRunId, { outcome, issues }))); },
   async extendCap() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.extendCap) set(applyAgentGraphSnapshot(await client.extendCap(parentRunId))); },
-  async continueFlow(feedback) {
+  async continueFlow(feedback, memberAction) {
     const { client, mainRunId, runId, activeAgentRunId } = get();
     const parentRunId = mainRunId ?? runId;
     if (!parentRunId || !client.continueFlow) return;
@@ -598,7 +599,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (activeAgentRunId && activeAgentRunId !== parentRunId) {
       get().backToMainRun();
     }
-    set(applyAgentGraphSnapshot(await client.continueFlow(parentRunId, feedback)));
+    set(applyAgentGraphSnapshot(await client.continueFlow(parentRunId, feedback, memberAction)));
   },
 
   async listAgents(cwd) {

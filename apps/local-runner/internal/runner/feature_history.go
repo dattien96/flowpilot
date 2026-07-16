@@ -4,12 +4,22 @@ import (
 	"path/filepath"
 	"strings"
 
+	"flowpilot-runner/internal/changecontract"
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
 	"flowpilot-runner/internal/flowgate"
 )
 
 func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []transcriptTurn) string {
+	// Legacy package-level helper: multi-secret / active-secret verify (tests and
+	// one-shot callers). InteractiveService must use injectFeatureHistoryPromptWithSecret.
+	return injectFeatureHistoryPromptWithSecret(workspace, prompt, priorTurns, nil)
+}
+
+// injectFeatureHistoryPromptWithSecret is the service path (BUG-288 R20-2): when
+// secret is non-nil, FCP handoff markers are verified only against that service's
+// secret so a marker minted by service B cannot suppress history on service A.
+func injectFeatureHistoryPromptWithSecret(workspace string, prompt string, priorTurns []transcriptTurn, secret []byte) string {
 	// A handoff envelope already carries its (correctly source-resolved) feature
 	// block, prepended at build time. Never re-inject from the flat envelope text —
 	// it embeds gate-reprompt lines naming feature keys and would mis-resolve.
@@ -18,7 +28,13 @@ func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []tr
 	// Task-224 / BUG-277: skip full Prior work block for flow-engine synthesis
 	// and flow review handoffs — history bulk belongs to hub user turns and the
 	// first post-context.produce consumer (via package), not every late node.
-	if isHandoffPrompt(prompt) || isFlowContextHandoff(prompt) ||
+	handoff := false
+	if len(secret) > 0 {
+		handoff = isFlowContextHandoffWithSecret(secret, prompt)
+	} else {
+		handoff = isFlowContextHandoff(prompt)
+	}
+	if isHandoffPrompt(prompt) || handoff ||
 		isFlowEnginePrompt(prompt) || isFlowReviewHandoffPrompt(prompt) {
 		return prompt
 	}
@@ -47,26 +63,33 @@ func isFlowReviewHandoffPrompt(prompt string) bool {
 	return strings.Contains(p, "[flow-engine] Review this result from node")
 }
 
-// composeFeatureBlocks returns the prior-work (+ prior-discussion) blocks for a
-// known feature key, or "" when there is no committed history. Shared by per-turn
-// injection and the cross-provider handoff (which resolves its feature from the
-// clean source transcript rather than the envelope text).
+// composeFeatureBlocks returns Canonical Head + prior-work (+ prior-discussion)
+// for a known feature key, or "" when the feature has neither a Head nor
+// history/discussion. Shared by per-turn injection and cross-provider handoff.
+// Task-245: head-only inject when history is empty is intentional.
 func composeFeatureBlocks(dotFlowpilotDir string, featureKey string) string {
-	ledger, err := changeledger.New(dotFlowpilotDir)
-	if err != nil {
-		return ""
+	var parts []string
+	workspace := dotFlowpilotDir
+	if filepath.Base(dotFlowpilotDir) == ".flowpilot" {
+		workspace = filepath.Dir(dotFlowpilotDir)
 	}
-	history := featurecatalog.HistorySlot(featureKey, ledger)
-	if strings.TrimSpace(history) == "" {
-		return ""
-	}
-	combined := history
-	if summaryLedger, err := changeledger.NewChatSummaryLedger(dotFlowpilotDir); err == nil {
-		if discussion := featurecatalog.ChatSummarySlot(featureKey, summaryLedger); strings.TrimSpace(discussion) != "" {
-			combined += "\n\n" + discussion
+	if head, found, err := changecontract.LoadHead(workspace, featureKey); err == nil && found {
+		if block := strings.TrimSpace(changecontract.RenderHeadBlock(head)); block != "" {
+			parts = append(parts, block)
 		}
 	}
-	return combined
+	ledger, err := changeledger.New(dotFlowpilotDir)
+	if err == nil {
+		if history := strings.TrimSpace(featurecatalog.HistorySlot(featureKey, ledger)); history != "" {
+			parts = append(parts, history)
+		}
+	}
+	if summaryLedger, err := changeledger.NewChatSummaryLedger(dotFlowpilotDir); err == nil {
+		if discussion := strings.TrimSpace(featurecatalog.ChatSummarySlot(featureKey, summaryLedger)); discussion != "" {
+			parts = append(parts, discussion)
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // resolveInjectionFeature decides which feature's history to inject for the

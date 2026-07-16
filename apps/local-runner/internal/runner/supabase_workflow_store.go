@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // Phase 5 (04-05): the live Supabase-backed WorkflowStore. The runner reads/writes
@@ -30,6 +32,164 @@ type SupabaseWorkflowStore struct {
 func NewSupabaseWorkflowStore(cfg SupabaseWorkspaceConfig, apiKey string) *SupabaseWorkflowStore {
 	base := strings.TrimRight(strings.TrimSpace(cfg.APIURL), "/")
 	return &SupabaseWorkflowStore{restURL: base + "/rest/v1", apiKey: apiKey}
+}
+
+// idempotencyKeysOrEmpty never returns nil so jsonb NOT NULL columns get {}.
+func idempotencyKeysOrEmpty(m map[string]string) map[string]string {
+	if m == nil {
+		return map[string]string{}
+	}
+	return m
+}
+
+// providerSessionSelectRecovery is the PostgREST select list for full session
+// recovery (stall-retry, gate settle, idempotency, runtime blob) — BUG-288 R17/R18.
+const providerSessionSelectRecovery = "workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,parent_run_id,agent_name,agent_role,agent_status,pending_restart_run_id,pending_restart_prompt,pending_restart_gen,flow_context_injected,idempotency_keys,session_runtime,workflow_runs(project_id,workflow_id)"
+
+// sessionRuntimeBlob holds flow-recovery fields that are not first-class
+// Supabase columns (BUG-288 R18-3). Packed into session_runtime jsonb.
+type sessionRuntimeBlob struct {
+	Label                       string                 `json:"label,omitempty"`
+	DependsOn                   []string               `json:"depends_on,omitempty"`
+	ModelName                   string                 `json:"model_name,omitempty"`
+	ChangeType                  string                 `json:"change_type,omitempty"`
+	SourceDocID                 string                 `json:"source_doc_id,omitempty"`
+	TurnCount                   int                    `json:"turn_count,omitempty"`
+	PendingAgentContext         []string               `json:"pending_agent_context,omitempty"`
+	LoopState                   AgentLoopState         `json:"loop_state,omitempty"`
+	AutoOrchestrate             bool                   `json:"auto_orchestrate,omitempty"`
+	FlowCohortID                string                 `json:"flow_cohort_id,omitempty"`
+	ActiveFlowEdges             []agentpack.FlowEdge   `json:"active_flow_edges,omitempty"`
+	ActiveFlowNodes             []agentpack.FlowNode   `json:"active_flow_nodes,omitempty"`
+	ChatSubMode                 string                 `json:"chat_sub_mode,omitempty"`
+	ChatFlowRef                 string                 `json:"chat_flow_ref,omitempty"`
+	PendingFlowGateSettle       bool                   `json:"pending_flow_gate_settle,omitempty"`
+	PendingFlowGateFinalMsg     string                 `json:"pending_flow_gate_final_msg,omitempty"`
+	PendingFlowGateOccurredAt   string                 `json:"pending_flow_gate_occurred_at,omitempty"`
+	PendingFlowGateTurnID       string                 `json:"pending_flow_gate_turn_id,omitempty"`
+	TurnStartGitHead            string                 `json:"turn_start_git_head,omitempty"`
+	TurnStartWorktree           map[string]string      `json:"turn_start_worktree,omitempty"`
+	PendingGateChangedFiles     []string               `json:"pending_gate_changed_files,omitempty"`
+	StepID                      string                 `json:"step_id,omitempty"`
+	LastTurnStepID              string                 `json:"last_turn_step_id,omitempty"`
+	PendingGateRepromptPrompt   string                 `json:"pending_gate_reprompt_prompt,omitempty"`
+	PendingGateRepromptStepID   string                 `json:"pending_gate_reprompt_step_id,omitempty"`
+	PendingGateCodePaths        []string               `json:"pending_gate_code_paths,omitempty"`
+	RepromptAttempts            int                    `json:"reprompt_attempts,omitempty"`
+	PendingResumePrompt         string                 `json:"pending_resume_prompt,omitempty"`
+	PendingResumeStepID         string                 `json:"pending_resume_step_id,omitempty"`
+	PendingResumeGen            int64                  `json:"pending_resume_gen,omitempty"`
+	PendingGateRepromptGen      int64                  `json:"pending_gate_reprompt_gen,omitempty"`
+	PendingResumeDeliveredGen   int64                  `json:"pending_resume_delivered_gen,omitempty"`
+	PendingGateRepromptDeliveredGen int64              `json:"pending_gate_reprompt_delivered_gen,omitempty"`
+	PendingResumeAcceptedTurn   string                 `json:"pending_resume_accepted_turn,omitempty"`
+	PendingGateRepromptAcceptedTurn string             `json:"pending_gate_reprompt_accepted_turn,omitempty"`
+	PendingResumeFailCount      int                    `json:"pending_resume_fail_count,omitempty"`
+	PendingResumeFailGen        int64                  `json:"pending_resume_fail_gen,omitempty"`
+	PendingGateRepromptFailCount int                   `json:"pending_gate_reprompt_fail_count,omitempty"`
+	PendingGateRepromptFailGen  int64                  `json:"pending_gate_reprompt_fail_gen,omitempty"`
+	PendingResumeApprovalID     string                 `json:"pending_resume_approval_id,omitempty"`
+	PendingResumeDecision       string                 `json:"pending_resume_decision,omitempty"`
+	PendingResumeQuestionChoices []string              `json:"pending_resume_question_choices,omitempty"`
+	FlowStartGitHead            string                 `json:"flow_start_git_head,omitempty"`
+	StopGeneration              int64                  `json:"stop_generation,omitempty"`
+	ParentStopGenSeen           int64                  `json:"parent_stop_gen_seen,omitempty"`
+	IntentBlockedKind           string                 `json:"intent_blocked_kind,omitempty"`
+	IntentBlockedReason         string                 `json:"intent_blocked_reason,omitempty"`
+	IntentBlockedAt             string                 `json:"intent_blocked_at,omitempty"`
+	TransitionLogDegraded       bool                   `json:"transition_log_degraded,omitempty"`
+	TransitionLogDegradedAt     string                 `json:"transition_log_degraded_at,omitempty"`
+	TransitionLogDegradedReason string                 `json:"transition_log_degraded_reason,omitempty"`
+}
+
+func sessionRuntimeFromState(s ProviderSessionState) sessionRuntimeBlob {
+	return sessionRuntimeBlob{
+		Label: s.Label, DependsOn: s.DependsOn, ModelName: s.ModelName,
+		ChangeType: s.ChangeType, SourceDocID: s.SourceDocID, TurnCount: s.TurnCount,
+		PendingAgentContext: s.PendingAgentContext, LoopState: s.LoopState,
+		AutoOrchestrate: s.AutoOrchestrate, FlowCohortID: s.FlowCohortID,
+		ActiveFlowEdges: s.ActiveFlowEdges, ActiveFlowNodes: s.ActiveFlowNodes,
+		ChatSubMode: s.ChatSubMode, ChatFlowRef: s.ChatFlowRef,
+		PendingFlowGateSettle: s.PendingFlowGateSettle, PendingFlowGateFinalMsg: s.PendingFlowGateFinalMsg,
+		PendingFlowGateOccurredAt: s.PendingFlowGateOccurredAt, PendingFlowGateTurnID: s.PendingFlowGateTurnID,
+		TurnStartGitHead: s.TurnStartGitHead, TurnStartWorktree: s.TurnStartWorktree,
+		PendingGateChangedFiles: s.PendingGateChangedFiles, StepID: s.StepID, LastTurnStepID: s.LastTurnStepID,
+		PendingGateRepromptPrompt: s.PendingGateRepromptPrompt, PendingGateRepromptStepID: s.PendingGateRepromptStepID,
+		PendingGateCodePaths: s.PendingGateCodePaths, RepromptAttempts: s.RepromptAttempts,
+		PendingResumePrompt: s.PendingResumePrompt, PendingResumeStepID: s.PendingResumeStepID,
+		PendingResumeGen: s.PendingResumeGen, PendingGateRepromptGen: s.PendingGateRepromptGen,
+		PendingResumeDeliveredGen: s.PendingResumeDeliveredGen, PendingGateRepromptDeliveredGen: s.PendingGateRepromptDeliveredGen,
+		PendingResumeAcceptedTurn: s.PendingResumeAcceptedTurn, PendingGateRepromptAcceptedTurn: s.PendingGateRepromptAcceptedTurn,
+		PendingResumeFailCount: s.PendingResumeFailCount, PendingResumeFailGen: s.PendingResumeFailGen,
+		PendingGateRepromptFailCount: s.PendingGateRepromptFailCount, PendingGateRepromptFailGen: s.PendingGateRepromptFailGen,
+		PendingResumeApprovalID: s.PendingResumeApprovalID, PendingResumeDecision: s.PendingResumeDecision,
+		PendingResumeQuestionChoices: s.PendingResumeQuestionChoices, FlowStartGitHead: s.FlowStartGitHead,
+		StopGeneration: s.StopGeneration, ParentStopGenSeen: s.ParentStopGenSeen,
+		IntentBlockedKind: s.IntentBlockedKind, IntentBlockedReason: s.IntentBlockedReason, IntentBlockedAt: s.IntentBlockedAt,
+		TransitionLogDegraded: s.TransitionLogDegraded, TransitionLogDegradedAt: s.TransitionLogDegradedAt,
+		TransitionLogDegradedReason: s.TransitionLogDegradedReason,
+	}
+}
+
+func applySessionRuntime(sess *ProviderSessionState, raw json.RawMessage) {
+	if sess == nil || len(raw) == 0 || string(raw) == "null" || string(raw) == "{}" {
+		return
+	}
+	var b sessionRuntimeBlob
+	if err := json.Unmarshal(raw, &b); err != nil {
+		return
+	}
+	sess.Label = b.Label
+	sess.DependsOn = b.DependsOn
+	sess.ModelName = b.ModelName
+	sess.ChangeType = b.ChangeType
+	sess.SourceDocID = b.SourceDocID
+	sess.TurnCount = b.TurnCount
+	sess.PendingAgentContext = b.PendingAgentContext
+	sess.LoopState = b.LoopState
+	sess.AutoOrchestrate = b.AutoOrchestrate
+	sess.FlowCohortID = b.FlowCohortID
+	sess.ActiveFlowEdges = b.ActiveFlowEdges
+	sess.ActiveFlowNodes = b.ActiveFlowNodes
+	sess.ChatSubMode = b.ChatSubMode
+	sess.ChatFlowRef = b.ChatFlowRef
+	sess.PendingFlowGateSettle = b.PendingFlowGateSettle
+	sess.PendingFlowGateFinalMsg = b.PendingFlowGateFinalMsg
+	sess.PendingFlowGateOccurredAt = b.PendingFlowGateOccurredAt
+	sess.PendingFlowGateTurnID = b.PendingFlowGateTurnID
+	sess.TurnStartGitHead = b.TurnStartGitHead
+	sess.TurnStartWorktree = b.TurnStartWorktree
+	sess.PendingGateChangedFiles = b.PendingGateChangedFiles
+	sess.StepID = b.StepID
+	sess.LastTurnStepID = b.LastTurnStepID
+	sess.PendingGateRepromptPrompt = b.PendingGateRepromptPrompt
+	sess.PendingGateRepromptStepID = b.PendingGateRepromptStepID
+	sess.PendingGateCodePaths = b.PendingGateCodePaths
+	sess.RepromptAttempts = b.RepromptAttempts
+	sess.PendingResumePrompt = b.PendingResumePrompt
+	sess.PendingResumeStepID = b.PendingResumeStepID
+	sess.PendingResumeGen = b.PendingResumeGen
+	sess.PendingGateRepromptGen = b.PendingGateRepromptGen
+	sess.PendingResumeDeliveredGen = b.PendingResumeDeliveredGen
+	sess.PendingGateRepromptDeliveredGen = b.PendingGateRepromptDeliveredGen
+	sess.PendingResumeAcceptedTurn = b.PendingResumeAcceptedTurn
+	sess.PendingGateRepromptAcceptedTurn = b.PendingGateRepromptAcceptedTurn
+	sess.PendingResumeFailCount = b.PendingResumeFailCount
+	sess.PendingResumeFailGen = b.PendingResumeFailGen
+	sess.PendingGateRepromptFailCount = b.PendingGateRepromptFailCount
+	sess.PendingGateRepromptFailGen = b.PendingGateRepromptFailGen
+	sess.PendingResumeApprovalID = b.PendingResumeApprovalID
+	sess.PendingResumeDecision = b.PendingResumeDecision
+	sess.PendingResumeQuestionChoices = b.PendingResumeQuestionChoices
+	sess.FlowStartGitHead = b.FlowStartGitHead
+	sess.StopGeneration = b.StopGeneration
+	sess.ParentStopGenSeen = b.ParentStopGenSeen
+	sess.IntentBlockedKind = b.IntentBlockedKind
+	sess.IntentBlockedReason = b.IntentBlockedReason
+	sess.IntentBlockedAt = b.IntentBlockedAt
+	sess.TransitionLogDegraded = b.TransitionLogDegraded
+	sess.TransitionLogDegradedAt = b.TransitionLogDegradedAt
+	sess.TransitionLogDegradedReason = b.TransitionLogDegradedReason
 }
 
 func (s *SupabaseWorkflowStore) headers(prefer string) map[string]string {
@@ -286,6 +446,9 @@ func (s *SupabaseWorkflowStore) AppendEvent(ctx context.Context, event ProviderE
 
 func (s *SupabaseWorkflowStore) UpsertProviderSession(ctx context.Context, session ProviderSessionState) error {
 	endpoint := s.restURL + "/workflow_provider_sessions"
+	// BUG-288 R18-3: pack flow-recovery fields into session_runtime jsonb so
+	// reconstruct after restart has gate/cohort/topology/reprompt intents.
+	runtimeBlob, _ := json.Marshal(sessionRuntimeFromState(session))
 	payload, err := json.Marshal(map[string]any{
 		"workflow_run_id":     session.RunID,
 		"project_id":          nilIfEmpty(session.ProjectID),
@@ -304,6 +467,13 @@ func (s *SupabaseWorkflowStore) UpsertProviderSession(ctx context.Context, sessi
 		"agent_name":          nilIfEmpty(session.AgentName),
 		"agent_role":          nilIfEmpty(session.Role),
 		"agent_status":        nilIfEmpty(session.AgentStatus),
+		// BUG-288 R13–R18 recovery columns.
+		"pending_restart_run_id":  nilIfEmpty(session.PendingRestartRunID),
+		"pending_restart_prompt":  nilIfEmpty(session.PendingRestartPrompt),
+		"pending_restart_gen":     session.PendingRestartGen,
+		"flow_context_injected":   session.FlowContextInjected,
+		"idempotency_keys":        idempotencyKeysOrEmpty(session.IdempotencyKeys),
+		"session_runtime":         json.RawMessage(runtimeBlob),
 	})
 	if err != nil {
 		return err
@@ -364,6 +534,13 @@ type dbProviderSessionRow struct {
 	AgentName         string  `json:"agent_name"`
 	AgentRole         string  `json:"agent_role"`
 	AgentStatus       string  `json:"agent_status"`
+	// BUG-288 R13-01 / R13-16 / R16-P0
+	PendingRestartRunID  *string           `json:"pending_restart_run_id"`
+	PendingRestartPrompt *string           `json:"pending_restart_prompt"`
+	PendingRestartGen    *int64            `json:"pending_restart_gen"`
+	FlowContextInjected  *bool             `json:"flow_context_injected"`
+	IdempotencyKeys      map[string]string `json:"idempotency_keys"`
+	SessionRuntime       json.RawMessage   `json:"session_runtime"`
 	WorkflowRuns      *struct {
 		ProjectID  string `json:"project_id"`
 		WorkflowID string `json:"workflow_id"`
@@ -373,10 +550,13 @@ type dbProviderSessionRow struct {
 // ListProviderSessionsByProject implements SessionHistoryReader. It queries
 // workflow_provider_sessions joined with workflow_runs (inner) to filter by
 // project_id, sorted newest-first. Satisfies the BUG-060 F-2 production gap.
+// BUG-288 R17-P0: includes recovery fields (pending restart, idempotency).
 func (s *SupabaseWorkflowStore) ListProviderSessionsByProject(ctx context.Context, projectID string) ([]ProviderSessionState, error) {
 	endpoint := fmt.Sprintf(
-		"%s/workflow_provider_sessions?select=workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,parent_run_id,agent_name,agent_role,agent_status,workflow_runs!inner(project_id,workflow_id)&workflow_runs.project_id=eq.%s&order=updated_at.desc",
-		s.restURL, projectID,
+		"%s/workflow_provider_sessions?select=%s&workflow_runs.project_id=eq.%s&order=updated_at.desc",
+		s.restURL,
+		strings.Replace(providerSessionSelectRecovery, "workflow_runs(", "workflow_runs!inner(", 1),
+		projectID,
 	)
 	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
 	if err != nil {
@@ -391,40 +571,86 @@ func (s *SupabaseWorkflowStore) ListProviderSessionsByProject(ctx context.Contex
 	}
 	out := make([]ProviderSessionState, 0, len(rows))
 	for _, r := range rows {
-		sess := ProviderSessionState{
-			RunID:            r.WorkflowRunID,
-			ProviderKey:      ProviderKey(r.ProviderKey),
-			WorkingDirectory: r.WorkingDirectory,
-			Status:           RunStatus(r.Status),
-		}
-		if r.ProviderSessionID != nil {
-			sess.ProviderSessionID = *r.ProviderSessionID
-		}
-		if r.ProviderAccountID != nil {
-			sess.ProviderAccountID = *r.ProviderAccountID
-		}
-		sess.LastPrompt = r.LastPrompt
-		sess.LastMessage = r.LastMessage
-		sess.StartedAt = r.StartedAt
-		sess.UpdatedAt = r.UpdatedAt
-		sess.RunKind = r.RunKind
-		sess.ParentRunID = r.ParentRunID
-		sess.AgentName = r.AgentName
-		sess.Role = r.AgentRole
-		sess.AgentStatus = r.AgentStatus
-		if r.WorkflowRuns != nil {
-			sess.ProjectID = r.WorkflowRuns.ProjectID
-			sess.WorkflowID = r.WorkflowRuns.WorkflowID
-		}
-		out = append(out, sess)
+		out = append(out, providerSessionFromDBRow(r))
 	}
 	return out, nil
 }
 
+// ListAllProviderSessions implements SessionIndexReader (BUG-288 R17-P0) so
+// flow restart can reconstruct parent+child sessions including stall-retry
+// intents. Without this, deliverPendingRestart cannot find children after restart.
+func (s *SupabaseWorkflowStore) ListAllProviderSessions(ctx context.Context) ([]ProviderSessionState, error) {
+	endpoint := fmt.Sprintf(
+		"%s/workflow_provider_sessions?select=%s&order=updated_at.desc",
+		s.restURL, providerSessionSelectRecovery,
+	)
+	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
+	if err != nil {
+		return nil, err
+	}
+	if code < 200 || code >= 300 {
+		return nil, fmt.Errorf("supabase list all provider sessions failed: status %d: %s", code, string(body))
+	}
+	var rows []dbProviderSessionRow
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("supabase list all provider sessions decode: %w", err)
+	}
+	out := make([]ProviderSessionState, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, providerSessionFromDBRow(r))
+	}
+	return out, nil
+}
+
+func providerSessionFromDBRow(r dbProviderSessionRow) ProviderSessionState {
+	sess := ProviderSessionState{
+		RunID:            r.WorkflowRunID,
+		ProviderKey:      ProviderKey(r.ProviderKey),
+		WorkingDirectory: r.WorkingDirectory,
+		Status:           RunStatus(r.Status),
+		LastPrompt:       r.LastPrompt,
+		LastMessage:      r.LastMessage,
+		StartedAt:        r.StartedAt,
+		UpdatedAt:        r.UpdatedAt,
+		RunKind:          r.RunKind,
+		ParentRunID:      r.ParentRunID,
+		AgentName:        r.AgentName,
+		Role:             r.AgentRole,
+		AgentStatus:      r.AgentStatus,
+	}
+	if r.ProviderSessionID != nil {
+		sess.ProviderSessionID = *r.ProviderSessionID
+	}
+	if r.ProviderAccountID != nil {
+		sess.ProviderAccountID = *r.ProviderAccountID
+	}
+	if r.PendingRestartRunID != nil {
+		sess.PendingRestartRunID = *r.PendingRestartRunID
+	}
+	if r.PendingRestartPrompt != nil {
+		sess.PendingRestartPrompt = *r.PendingRestartPrompt
+	}
+	if r.PendingRestartGen != nil {
+		sess.PendingRestartGen = *r.PendingRestartGen
+	}
+	if r.FlowContextInjected != nil {
+		sess.FlowContextInjected = *r.FlowContextInjected
+	}
+	if len(r.IdempotencyKeys) > 0 {
+		sess.IdempotencyKeys = copyStringMap(r.IdempotencyKeys)
+	}
+	if r.WorkflowRuns != nil {
+		sess.ProjectID = r.WorkflowRuns.ProjectID
+		sess.WorkflowID = r.WorkflowRuns.WorkflowID
+	}
+	applySessionRuntime(&sess, r.SessionRuntime)
+	return sess
+}
+
 func (s *SupabaseWorkflowStore) GetProviderSession(ctx context.Context, runID string) (ProviderSessionState, bool, error) {
 	endpoint := fmt.Sprintf(
-		"%s/workflow_provider_sessions?workflow_run_id=eq.%s&select=workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,parent_run_id,agent_name,agent_role,agent_status,workflow_runs(project_id,workflow_id)&limit=1",
-		s.restURL, runID,
+		"%s/workflow_provider_sessions?workflow_run_id=eq.%s&select=%s&limit=1",
+		s.restURL, runID, providerSessionSelectRecovery,
 	)
 	code, body, err := httpRequestFn(ctx, http.MethodGet, endpoint, s.headers(""), nil)
 	if err != nil {
@@ -440,33 +666,7 @@ func (s *SupabaseWorkflowStore) GetProviderSession(ctx context.Context, runID st
 	if len(rows) == 0 {
 		return ProviderSessionState{}, false, nil
 	}
-	row := rows[0]
-	sess := ProviderSessionState{
-		RunID:            row.WorkflowRunID,
-		ProviderKey:      ProviderKey(row.ProviderKey),
-		WorkingDirectory: row.WorkingDirectory,
-		Status:           RunStatus(row.Status),
-		LastPrompt:       row.LastPrompt,
-		LastMessage:      row.LastMessage,
-		StartedAt:        row.StartedAt,
-		UpdatedAt:        row.UpdatedAt,
-		RunKind:          row.RunKind,
-		ParentRunID:      row.ParentRunID,
-		AgentName:        row.AgentName,
-		Role:             row.AgentRole,
-		AgentStatus:      row.AgentStatus,
-	}
-	if row.ProviderSessionID != nil {
-		sess.ProviderSessionID = *row.ProviderSessionID
-	}
-	if row.ProviderAccountID != nil {
-		sess.ProviderAccountID = *row.ProviderAccountID
-	}
-	if row.WorkflowRuns != nil {
-		sess.ProjectID = row.WorkflowRuns.ProjectID
-		sess.WorkflowID = row.WorkflowRuns.WorkflowID
-	}
-	return sess, true, nil
+	return providerSessionFromDBRow(rows[0]), true, nil
 }
 
 func (s *SupabaseWorkflowStore) UpsertQuestion(ctx context.Context, question ProviderQuestionState) error {

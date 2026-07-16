@@ -90,17 +90,24 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 		}
 
 	case "tests_failed":
+		// Ordinary suite failures only (V9-27) — not regression names.
 		if tr.Tests.Ran && len(tr.Tests.Failed) > 0 {
 			return &Violation{Rule: rule, Detail: "Tests failed: " + strings.Join(tr.Tests.Failed, ", ")}
 		}
 
 	case "regression_test_broke":
-		if tr.Tests.Ran && len(tr.Tests.Failed) > 0 {
+		// Prefer dedicated Regressed list; fall back to Failed for legacy callers
+		// that only populate Failed with regression names.
+		names := tr.Tests.Regressed
+		if len(names) == 0 {
+			names = tr.Tests.Failed
+		}
+		if tr.Tests.Ran && len(names) > 0 {
 			return &Violation{
 				Rule:           rule,
-				Detail:         "Tests failed: " + strings.Join(tr.Tests.Failed, ", "),
+				Detail:         "Tests failed: " + strings.Join(names, ", "),
 				Options:        []string{"keep-test-fix-code", "suggest-requirement-change", "custom"},
-				RegressedTests: tr.Tests.Failed,
+				RegressedTests: names,
 			}
 		}
 

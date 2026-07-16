@@ -50,9 +50,13 @@ func TestReviewOutcomeToolOfferedOnlyOnHubSynthesisTurn(t *testing.T) {
 			n := len(offers)
 			mu.Unlock()
 			svc.mu.Lock()
-			inflight := svc.runs[parent.RunID].turnInFlight
+			rs := svc.runs[parent.RunID]
+			inflight := rs.turnInFlight
+			// V10R4 P2: production rejects new turns while post-turn gate is
+			// active — wait for full settle, not only turnInFlight=false.
+			pendingGate := rs.pendingFlowGateSettle || rs.postTurnGateCancel != nil
 			svc.mu.Unlock()
-			return n == wantOffers && !inflight
+			return n == wantOffers && !inflight && !pendingGate
 		})
 	}
 
@@ -251,6 +255,33 @@ func TestFlowEngineDrivenRunSkipsBulkProgress(t *testing.T) {
 		steps, _ := svc.workflowStore.LoadRunSteps(context.Background(), parent.RunID)
 		if s2, _ := stepByID(steps, "s2"); s2.Status != StepStatusPending {
 			t.Fatalf("s2 = %q, want still PENDING (bulk Progress must be skipped for flow-engine-driven runs)", s2.Status)
+		}
+	})
+
+	// Task-241 D-10 / BUG-259: flow-engine-driven + failed turn must also skip bulk Progress.
+	t.Run("flow_engine_driven_failed_turn_skips", func(t *testing.T) {
+		reg := newProviderRegistry()
+		reg.register(ProviderRegistration{
+			Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+			Capabilities: ProviderCapabilities{Streaming: true},
+			newAdapter: func() ProviderRuntimeAdapter {
+				return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+					b.Emit(ProviderEvent{Type: EventTurnFailed, Error: "provider failed"})
+					return nil
+				})
+			},
+		})
+		svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
+		parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+		if err != nil {
+			t.Fatalf("createRun: %v", err)
+		}
+		seedTwoPendingSteps(svc, parent.RunID)
+		svc.markFlowEngineDriven(parent.RunID)
+		startAndWaitTurn(t, svc, parent.RunID)
+		steps, _ := svc.workflowStore.LoadRunSteps(context.Background(), parent.RunID)
+		if s2, _ := stepByID(steps, "s2"); s2.Status == StepStatusDone {
+			t.Fatalf("s2 must not bulk-complete on failed flow-engine turn, got DONE")
 		}
 	})
 
@@ -508,7 +539,7 @@ func TestMarkFlowRunCompleteSettlesParentWaitingQuestion(t *testing.T) {
 		runID:   parent.RunID,
 		prompt:  "Select Google Drive context",
 		status:  "pending",
-		resolve: make(chan []string, 1),
+		resolve: make(chan questionResolveResult, 1),
 	}
 	svc.questions[rec.id] = rec
 	rs.pendingQuestionID = rec.id

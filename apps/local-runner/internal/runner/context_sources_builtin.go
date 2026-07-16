@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
-	"flowpilot-runner/internal/changecontract"
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
 )
@@ -23,10 +22,13 @@ const (
 )
 
 // defaultContextSourceIDs is the enabled set a flow uses when it declares no
-// explicit `contexts.sources` binding (Task-194 default). This exactly
-// reproduces CP-41's pre-CP-44 behavior.
+// explicit `contexts.sources` binding (Task-194 default). The original three
+// CP-41 ids remain; canonical.head was added by Task-244 / CP-50 P-1 (owner
+// Q-1) — empty Body when no Head exists so golden fixtures stay unchanged.
 var defaultContextSourceIDs = []string{
+	string(ContextSourceCanonicalHead),
 	string(ContextSourceFeatureHistory),
+	string(ContextSourceChangeContract),
 	string(ContextSourceChatSummary),
 	string(ContextSourceSourceExcerpt),
 }
@@ -139,6 +141,7 @@ func resolveEnabledContextSourceIDs(def agentpack.FlowDefinition, node agentpack
 // can validate/enable it via `contexts.<name>.sources`, Task-194) but is not
 // part of defaultContextSourceIDs — it only runs when a flow opts in.
 func registerBuiltinContextSources(r *ContextSourceRegistry) {
+	mustRegisterContextSource(r, &canonicalHeadSource{priority: 1}) // Task-244: before feature.history
 	mustRegisterContextSource(r, &featureHistorySource{priority: 2})
 	mustRegisterContextSource(r, &chatSummarySource{priority: 5})
 	mustRegisterContextSource(r, &sourceExcerptSource{priority: 4})
@@ -146,6 +149,7 @@ func registerBuiltinContextSources(r *ContextSourceRegistry) {
 	mustRegisterContextSource(r, &jiraIssueSource{priority: 7})
 	mustRegisterContextSource(r, &jiraSprintSource{priority: 8})
 	mustRegisterContextSource(r, &firebaseCrashlyticsSource{priority: 9})
+	mustRegisterContextSource(r, &changeContractSource{priority: 3}) // Task-247: after head, near history
 }
 
 // mustRegisterContextSource panics on a registration conflict among the
@@ -183,21 +187,8 @@ func (s *featureHistorySource) Fetch(_ context.Context, hints FlowContextHints) 
 		history = strings.TrimSpace(featurecatalog.HistorySlot(hints.FeatureKey, ledger))
 	}
 
-	// Task-188 (CP-43 P-5, SD-21 D-3): the Canonical Head is mandatory and
-	// leads the section — the AI reads current truth + rejected dead-ends
-	// before any raw ordered history. A missing/unreadable Head degrades to
-	// "no Head block", never an error (AC-9); this never removes the
-	// underlying history body, only prepends to it.
-	if head, found, err := changecontract.LoadHead(hints.Workspace, hints.FeatureKey); err == nil && found {
-		if block := changecontract.RenderHeadBlock(head); block != "" {
-			if history != "" {
-				history = block + "\n" + history
-			} else {
-				history = block
-			}
-		}
-	}
-
+	// Task-244: Head is a separate source (canonical.head, priority 1) — no
+	// longer prepended here. Warning semantics for empty history restored (G-4).
 	section.Body = history
 	if history == "" {
 		// Preserves the original warning text/condition exactly: fires whenever

@@ -33,7 +33,7 @@ type cohortEntry struct {
 	Label        string
 	Provider     string
 	FinalMessage string
-	Status       string // "completed" | "failed"
+	Status       string // "completed" | "failed" | "cancelled" (Task-241)
 	Err          string
 }
 
@@ -90,10 +90,21 @@ func (o *AgentOrchestrator) preRegisterCohort(parentRunID, cohortID string, coun
 func cohortKey(parentRunID, cohortID string) string { return parentRunID + "/" + cohortID }
 
 // appendCohortResult adds one member's result to the cohort buffer.
+// Task-241: idempotent by Label — a second append for the same label is a no-op
+// so stop + turn-failed cannot double-count the same member toward the barrier.
 func (o *AgentOrchestrator) appendCohortResult(parentRunID, cohortID string, e cohortEntry) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	k := cohortKey(parentRunID, cohortID)
+	if label := strings.TrimSpace(e.Label); label != "" {
+		for _, existing := range o.cohort[k] {
+			if strings.TrimSpace(existing.Label) == label {
+				cohortDiagLog("appendCohortResult skip-duplicate parent=%q cohort=%q label=%q",
+					parentRunID, cohortID, label)
+				return
+			}
+		}
+	}
 	o.cohort[k] = append(o.cohort[k], e)
 	cohortDiagLog("appendCohortResult parent=%q cohort=%q label=%q status=%q bufferLen=%d expected=%d",
 		parentRunID, cohortID, e.Label, e.Status, len(o.cohort[k]), o.cohortExpected[k])
@@ -110,6 +121,25 @@ func (o *AgentOrchestrator) cohortComplete(parentRunID, cohortID string) bool {
 	cohortDiagLog("cohortComplete check parent=%q cohort=%q bufferLen=%d expected=%d result=%t",
 		parentRunID, cohortID, len(o.cohort[k]), exp, complete)
 	return complete
+}
+
+// hasOpenCohort reports whether parentRunID has any cohort whose expected count
+// is > 0 and whose buffered results are still short of expected (Task-240 B4 /
+// BUG-179 guard; also used by Task-241 stall sweep). Incomplete cohorts must
+// not be finalized via applyFlowControl("done"/"continue") until they join.
+func (o *AgentOrchestrator) hasOpenCohort(parentRunID string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	prefix := parentRunID + "/"
+	for k, exp := range o.cohortExpected {
+		if exp <= 0 || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if len(o.cohort[k]) < exp {
+			return true
+		}
+	}
+	return false
 }
 
 // drainCohort removes the cohort buffer and expected-count entry, returning the

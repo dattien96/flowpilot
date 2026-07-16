@@ -1,4 +1,4 @@
-package runner
+﻿package runner
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"log"
 	"path"
 	"strings"
+	"time"
 
 	"flowpilot-runner/internal/agentpack"
 )
@@ -15,7 +16,7 @@ import (
 // running flow instead of a validated-but-inert request field. It resolves
 // flowRef (already validated by handleStartTurn against
 // BuiltinOrchestrationOptions before this is ever called) and spawns the
-// flow's entry node(s) as children of parentRunID through spawnChildRun —
+// flow's entry node(s) as children of parentRunID through spawnChildRun â€”
 // the exact same path an AI-driven spawn_agent tool call with
 // autoOrchestrate=true already uses. No cohort/join/cap/transition logic is
 // duplicated here: once the entry node is spawned with AutoOrchestrate=true,
@@ -54,7 +55,7 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 	// Previously this never happened: effectiveCap()/the hardcoded
 	// defaultExtendBy=2 in extendCap/resumeFlowWithFeedback meant EVERY flow
 	// ran with cap=3, extendBy=2 regardless of what workflows.policy_cap/
-	// policy_extend_by said in Supabase — a built-in with cap=3 in its own
+	// policy_extend_by said in Supabase â€” a built-in with cap=3 in its own
 	// YAML happened to match that hardcoded fallback, which is exactly what
 	// masked the gap. A custom/cloned flow's own configured cap now actually
 	// takes effect. Falls back to the same 3/2 defaults when a flow declares
@@ -67,6 +68,20 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 	if extendBy <= 0 {
 		extendBy = 2
 	}
+	// Task-241 T-6: stall timeout from pack policy; default 10 minutes when 0.
+	stallTimeout := 10 * time.Minute
+	if record.Definition.Policy.StallTimeoutSec > 0 {
+		stallTimeout = time.Duration(record.Definition.Policy.StallTimeoutSec) * time.Second
+	}
+	s.mu.Lock()
+	if rs := s.runs[parentRunID]; rs != nil {
+		rs.stallTimeout = stallTimeout
+		// Task-242 tier-3: capture workspace HEAD once for aggregate audit diff.
+		if head, err := captureGitHead(rs.workspaceCwd); err == nil {
+			rs.flowStartGitHead = head
+		}
+	}
+	s.mu.Unlock()
 	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		st.Cap = cap
 		st.RoundCap = cap
@@ -96,7 +111,7 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 	// Set BEFORE spawning any child, not after: spawnChildRun starts the
 	// child's own first turn in its own goroutine as soon as it returns, and
 	// a fast-completing turn (a test/fake adapter, or in principle a very
-	// fast real one) could otherwise race ahead of this assignment — its
+	// fast real one) could otherwise race ahead of this assignment â€” its
 	// completion handler would then see no tracked flow data and silently
 	// fall back to the legacy note+reinvoke-hub path instead of auto-spawning
 	// the next node deterministically.
@@ -137,6 +152,7 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 		)
 		agentDef, _ := resolvePackAgentDefinition(agentName)
 		entryPrompt := composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), userPrompt, node)
+		entryPrompt = appendChangeContractIfAnyWithSecret(s.workspaceCwdFor(parentRunID), parentRunID, entryPrompt, s.markerSecret)
 		if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
 			Agent:             agentName,
 			Prompt:            entryPrompt,
@@ -176,7 +192,7 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 // resolveWorkflowFlowRef bridges a Flow-Mode workflow-picker launch to the flow
 // executor (BUG-174). A workflow-picker run carries a workflowID but no flowRef
 // (the desktop only sends flowRef for the chat "bug" sub-mode), so its selected
-// workflow — even a built-in flow mirrored into the workflows table — never
+// workflow â€” even a built-in flow mirrored into the workflows table â€” never
 // engaged the executor and the hub did all the work inline. This resolves the
 // run's workflowID against the flow definition store (GetByRef accepts the
 // mirror row's UUID and normalizes it back to the canonical packId/flowId
@@ -186,7 +202,7 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 //
 // Returns ("", false) for a non-first turn, a run with no workflowID, no
 // definition store, a resolution failure, or a plain workflow with no
-// agent.delegate entry node (and no inline entry chain) — every one a safe bail
+// agent.delegate entry node (and no inline entry chain) â€” every one a safe bail
 // that leaves the run on its existing behavior rather than forcing an executor
 // it has nothing to run.
 func (s *InteractiveService) resolveWorkflowFlowRef(ctx context.Context, runID string) (string, bool) {
@@ -217,7 +233,7 @@ func (s *InteractiveService) resolveWorkflowFlowRef(ctx context.Context, runID s
 	if err != nil {
 		// BUG-270: a workflowID that resolves to an actual flow definition
 		// which then fails validation is a genuine data problem, not "this
-		// isn't a flow" — record it so handleStartTurn can surface it to the
+		// isn't a flow" â€” record it so handleStartTurn can surface it to the
 		// user instead of silently falling through to a normal chat turn.
 		var invalidErr *ErrFlowDefinitionInvalid
 		if errors.As(err, &invalidErr) {
@@ -242,12 +258,12 @@ func (s *InteractiveService) resolveWorkflowFlowRef(ctx context.Context, runID s
 		log.Printf("[flow-ref-resolve] run %q: workflowID %q resolved but FlowRef is empty", runID, workflowID)
 		return "", false
 	}
-	log.Printf("[flow-ref-resolve] run %q: workflowID %q resolved to flowRef %q — flow-engine-driven path will run", runID, workflowID, record.FlowRef)
+	log.Printf("[flow-ref-resolve] run %q: workflowID %q resolved to flowRef %q â€” flow-engine-driven path will run", runID, workflowID, record.FlowRef)
 	return record.FlowRef, true
 }
 
 // takePendingFlowRefInvalidErr reads and clears the validation error (if any)
-// resolveWorkflowFlowRef stashed on runID (BUG-270) — a one-shot read so a
+// resolveWorkflowFlowRef stashed on runID (BUG-270) â€” a one-shot read so a
 // stale error from an earlier turn is never re-surfaced for a later one.
 func (s *InteractiveService) takePendingFlowRefInvalidErr(runID string) error {
 	s.mu.Lock()
@@ -267,13 +283,13 @@ func (s *InteractiveService) takePendingFlowRefInvalidErr(runID string) error {
 // to startTurn.
 //
 // BUG-261: validateChatOrchestrationSelection only checks that flowRef is a
-// known option for the sub-mode (BuiltinOrchestrationOptions) — it never
+// known option for the sub-mode (BuiltinOrchestrationOptions) â€” it never
 // confirms the underlying stored definition is still valid. Unlike the
 // sibling Flow-Mode workflow-picker path (resolveWorkflowFlowRef, above),
 // which already resolves synchronously before deciding to attach a flowRef,
 // the explicit chat path used to hand its raw flowRef straight to startTurn,
 // which unconditionally suppresses the hub's own turn (flowStartOnly=true)
-// the moment flowRef is non-empty — before startResolvedFlow's own async
+// the moment flowRef is non-empty â€” before startResolvedFlow's own async
 // resolve even runs. A corrupted/invalid stored definition (e.g. a
 // BUG-249-style manually-tampered built-in mirror row) then failed
 // resolution inside that goroutine with nothing to fall back to: the hub's
@@ -296,8 +312,8 @@ func (s *InteractiveService) explicitFlowRefResolves(ctx context.Context, flowRe
 // flow at all: it would resolve successfully and then spawn nothing, with
 // only a log line to show for it (BUG-NOTE-CP42 #9).
 //
-// Runs the single inline entry node synchronously in-process — matching
-// BehaviorScopeInline's contract of "no provider call" — then follows its
+// Runs the single inline entry node synchronously in-process â€” matching
+// BehaviorScopeInline's contract of "no provider call" â€” then follows its
 // forward "done" edge to the first agent.delegate node and spawns that node,
 // carrying forward the inline node's output (a FlowContextPackage, for
 // context.produce) rendered into the delegate's prompt exactly as the
@@ -391,9 +407,10 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 
 	prompt := userPrompt
 	if pkg, ok := out.Payload["package"].(FlowContextPackage); ok {
-		prompt = renderFlowContextPrompt(ctx, pkg, userPrompt)
+		// BUG-288 R19-4: per-service marker secret for inline FCP render.
+		prompt = renderFlowContextPromptWithSecret(ctx, pkg, userPrompt, s.markerSecret)
 		// BUG-243 F-0: stash the package on the run so a mid-flow node reached
-		// later (rag-harness's validate/audit) can read it back — previously
+		// later (rag-harness's validate/audit) can read it back â€” previously
 		// it was only ever used for this one prompt render, then discarded.
 		s.mu.Lock()
 		if rs := s.runs[parentRunID]; rs != nil {
@@ -414,6 +431,7 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 	// Task-202/223: INPUT file artifacts (read) + OUTPUT file write contract
 	// for the delegate target. context_artifact stays on the package path above.
 	prompt = composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), prompt, *delegateTarget)
+	prompt = appendChangeContractIfAnyWithSecret(s.workspaceCwdFor(parentRunID), parentRunID, prompt, s.markerSecret)
 
 	// Same ordering rationale as the delegate-entry path above: track the
 	// flow's topology before spawning, not after, so a fast-completing child
@@ -686,7 +704,7 @@ func appendGoogleDriveTargetPrompt(prompt, target string) string {
 // appendJiraIssueTargetPrompt mirrors appendGoogleDriveTargetPrompt for the
 // jira.issue runtime target (Task-229, CP-05-06 P-4): a bounded note telling
 // the AI which single issue it may read via the jira MCP server, not a dump
-// of the issue's content — the live AI turn fetches it itself with real MCP
+// of the issue's content â€” the live AI turn fetches it itself with real MCP
 // tools, same division of labor as mcp.driver.
 func appendJiraIssueTargetPrompt(prompt, issueKey string) string {
 	issueKey = strings.TrimSpace(issueKey)
@@ -720,7 +738,7 @@ func appendJiraSprintTargetPrompt(prompt, sprintTarget string) string {
 
 // appendFirebaseCrashTargetPrompt mirrors appendJiraIssueTargetPrompt for the
 // firebase.crashlytics runtime target (Task-231, CP-05-04 P-4): a bounded
-// note, not crash content — the AI reads the crash itself via the firebase
+// note, not crash content â€” the AI reads the crash itself via the firebase
 // MCP server's Crashlytics tools.
 func appendFirebaseCrashTargetPrompt(prompt, crashRef string) string {
 	crashRef = strings.TrimSpace(crashRef)
@@ -736,7 +754,7 @@ func appendFirebaseCrashTargetPrompt(prompt, crashRef string) string {
 
 // nodeHasIncomingForwardEdge reports whether any FORWARD edge targets
 // nodeID. A back edge (e.g. review-loop's synthesis->coder "continue" loop)
-// does NOT disqualify a node as an entry — only an incoming forward edge
+// does NOT disqualify a node as an entry â€” only an incoming forward edge
 // means "something else must complete before this node starts." Mirrors the
 // exact edge-aware entry-detection rule
 // WorkflowsSettings.tsx's validateFlowGraph already documents and applies
@@ -782,15 +800,15 @@ func forwardEdgeSources(edges []agentpack.FlowEdge, nodeID string) []string {
 	return out
 }
 
-// entryNodesNoDeps returns a flow's entry nodes — regardless of behavior, in
-// declared order — those with no incoming dependency, from EITHER the node's
+// entryNodesNoDeps returns a flow's entry nodes â€” regardless of behavior, in
+// declared order â€” those with no incoming dependency, from EITHER the node's
 // own static dependsOn list OR a forward edge targeting it.
 //
 // BUG (found while diagnosing a live rag-harness test session, 2026-07-09):
 // this used to check only node.DependsOn. rag-harness.yaml's "implement" node
 // declares its dependency on "context" purely via the edges list
 // (`{from: context, to: implement, when: done, kind: forward}`), not a
-// dependsOn field — so entryDelegateNodes (below) wrongly classified
+// dependsOn field â€” so entryDelegateNodes (below) wrongly classified
 // "implement" itself as a zero-dependency entry node, and startResolvedFlow
 // spawned the coder directly, skipping context.produce (and
 // startInlineEntryChain's step-status wiring) entirely. Confirmed via
@@ -798,7 +816,7 @@ func forwardEdgeSources(edges []agentpack.FlowEdge, nodeID string) []string {
 // immediately followed by flow_start_entry_spawn_attempt{node_id:"implement"}
 // with no flow_start_inline_entry in between. Any flow whose entry
 // dependency is edge-only (not dependsOn-only), not just rag-harness, has
-// this exposure — including CP-45's context-coding-review-synthesis.yaml.
+// this exposure â€” including CP-45's context-coding-review-synthesis.yaml.
 // Unlike entryDelegateNodes this does not filter by behavior, so it also
 // matches an inline-behavior entry node (see startInlineEntryChain).
 func entryNodesNoDeps(def agentpack.FlowDefinition) []agentpack.FlowNode {
@@ -846,7 +864,7 @@ func resolveContinueBackEdgeTarget(edges []agentpack.FlowEdge) (string, bool) {
 
 // forwardReachableNodeIDs (BUG-286) returns every node id reachable from
 // startID by following only FORWARD edges (a back edge, e.g. synthesis's own
-// re-entry edge, must not be walked here — that would make the loop's re-entry
+// re-entry edge, must not be walked here â€” that would make the loop's re-entry
 // point "reachable from itself" and defeat the purpose of this scoping).
 // startID itself is never included, so callers can freely re-mark it RUNNING
 // while resetting only what actually needs to re-run. Terminal pseudo-nodes
@@ -855,9 +873,9 @@ func resolveContinueBackEdgeTarget(edges []agentpack.FlowEdge) (string, bool) {
 // Used by the "continue" (new review round) reset in applyFlowControl: only
 // nodes forward-reachable from the back-edge's re-entry target (e.g. "coder")
 // should reset to PENDING for the new round. A node that is NOT
-// forward-reachable from there — e.g. rag-harness/context-coding-review-
+// forward-reachable from there â€” e.g. rag-harness/context-coding-review-
 // synthesis's own "context" entry node, which sits BEFORE the loop and only
-// ever runs once (lifecycle: once) — must keep its prior DONE status instead
+// ever runs once (lifecycle: once) â€” must keep its prior DONE status instead
 // of being wrongly reset to PENDING and then never revisited.
 func forwardReachableNodeIDs(edges []agentpack.FlowEdge, startID string) map[string]bool {
 	reachable := make(map[string]bool)
@@ -886,7 +904,7 @@ func forwardReachableNodeIDs(edges []agentpack.FlowEdge, startID string) map[str
 // notifyHubFlowStarted tells the hub (parent run) an agent has already been
 // spawned to do the actual work, so the hub's own reasoning doesn't
 // redundantly try to also write the code itself. Delivered through the same
-// pending-context mechanism the "coder completed" notes use — visible the
+// pending-context mechanism the "coder completed" notes use â€” visible the
 // next time the hub's context is assembled, not necessarily before its
 // current in-flight turn. A perfectly race-free "before this exact turn"
 // guarantee would need deeper synchronization with startTurn's own provider
@@ -913,14 +931,14 @@ func (s *InteractiveService) notifyHubFlowStarted(parentRunID string) {
 // exercised an AI deciding to spawn the cohort (they all spawn it manually to
 // test the Go-side join/cap logic in isolation). This closes that gap for
 // the one transition that needs it: review-loop.yaml's "synthesis" node has
-// `run: inline` — it is the hub's own reinvoke turn, not a spawned child, and
+// `run: inline` â€” it is the hub's own reinvoke turn, not a spawned child, and
 // that transition was already correctly Go-orchestrated via the existing
-// cohort-join → maybeAutoReinvokeHub path. Only the coder → reviewer-cohort
+// cohort-join â†’ maybeAutoReinvokeHub path. Only the coder â†’ reviewer-cohort
 // step needed a real fix.
 //
 // Returns false (a no-op) when the run has no tracked flow, the node has no
 // outgoing forward ("done") edges, or any edge target isn't a spawnable
-// agent.delegate node (e.g. a hub.inline node) — callers fall back to the
+// agent.delegate node (e.g. a hub.inline node) â€” callers fall back to the
 // existing note+reinvoke-hub behavior in that case, so a flow shape this
 // function doesn't understand degrades to the pre-existing AI-driven
 // behavior rather than silently doing nothing.
@@ -928,7 +946,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 	// BUG-234: do not auto-advance once the loop has legitimately settled
 	// (blocked/awaiting-user, done, stopped, paused). A child completion that
 	// lands after the loop blocked would otherwise re-spawn the next nodes and,
-	// via the cohort join, flip the hub node back to RUNNING — a runaway that
+	// via the cohort join, flip the hub node back to RUNNING â€” a runaway that
 	// never lets the settled state stick (the synthesis-step-spins-forever hang).
 	if !s.loopIsAdvancing(parentRunID) {
 		s.flowDiagLog(parentRunID, "flow_advance_skipped_loop_blocked", "skipping auto-advance because loop is not advancing",
@@ -965,7 +983,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 
 	// BUG-243 F-0: a single forward-done target whose behavior is a
 	// registered INLINE-scope behavior (validate/audit, not a spawnable
-	// agent.delegate) previously fell straight through to the bail below —
+	// agent.delegate) previously fell straight through to the bail below â€”
 	// the executor had no path to dispatch an inline node reached mid-flow
 	// (only the flow's own entry node, via startInlineEntryChain, was ever
 	// dispatched in-process). Handling it here, before the delegate-only
@@ -1006,12 +1024,12 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 
 	cohortID := fmt.Sprintf("flow-auto-%s-round-%d", completedNodeID, round)
 	// BUG-NOTE-CP42 #13: this prompt used to tell the spawned reviewer to
-	// "report your findings via the flow's declared control tool" — i.e. call
+	// "report your findings via the flow's declared control tool" â€” i.e. call
 	// submit_review_outcome/flow_control itself. turnBridge.SubmitFlowControl
 	// routes a child's flow_control call straight to its parent's
 	// applyFlowControl, with no cohort-join gate at all, so a reviewer that
 	// literally followed that instruction could advance/complete/block the
-	// whole flow round before the other cohort member(s) even finished —
+	// whole flow round before the other cohort member(s) even finished â€”
 	// bypassing the join barrier maybeAutoReinvokeHub depends on. Every other
 	// reviewer-spawn path in this codebase (see the manually-spawned E2E
 	// tests) just asks the reviewer to review and report findings as its own
@@ -1033,7 +1051,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		// (e.g. a concurrent hub synthesis turn escalates while this advance
 		// goroutine is resolving targets / building the prompt). Without this
 		// re-check, a completion that entered while "running" would still spawn the
-		// next round's reviewers into an already-settled loop — the runaway that
+		// next round's reviewers into an already-settled loop â€” the runaway that
 		// kept the synthesis step flapping RUNNING after an escalate.
 		if !s.loopIsAdvancing(parentRunID) {
 			s.flowDiagLog(parentRunID, "flow_advance_aborted_mid_spawn", "stopped auto-advance because loop settled during spawn sequence",
@@ -1051,12 +1069,13 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 			)
 			continue
 		}
-		// Task-224 / BUG-277: deliverable-centric review — when the target has
+		// Task-224 / BUG-277: deliverable-centric review â€” when the target has
 		// file_artifact INPUT paths, omit the full coder final message body
 		// (path+tools is enough). Otherwise keep a truncated handoff body.
 		baseReviewPrompt := buildFlowReviewHandoffPrompt(completedNodeID, resultMessage, node)
 		// Task-223: each target node gets its own INPUT path inject + OUTPUT write contract.
 		prompt := composeFlowNodeAgentPrompt(cwd, baseReviewPrompt, node)
+		prompt = appendChangeContractIfAnyWithSecret(cwd, parentRunID, prompt, s.markerSecret)
 		if flowNodeReusesChild(node) {
 			if reused := s.reinvokeExistingFlowChild(parentRunID, node.ID, prompt); reused {
 				spawnedAny = true
@@ -1128,7 +1147,7 @@ func buildFlowReviewHandoffPrompt(completedNodeID, resultMessage string, node ag
 	if nodeHasFileArtifactInput(node) {
 		return fmt.Sprintf(
 			"[flow-engine] Review this result from node %q and report your findings (approve or request changes, with specifics) as your final message.\n\n"+
-				"The upstream deliverable is in the bound file artifact path(s) listed below — open them with your tools. "+
+				"The upstream deliverable is in the bound file artifact path(s) listed below â€” open them with your tools. "+
 				"Coder final message body is omitted on purpose (path-first handoff).",
 			completedNodeID,
 		)
@@ -1140,7 +1159,7 @@ func buildFlowReviewHandoffPrompt(completedNodeID, resultMessage string, node ag
 }
 
 // forwardDoneTargets returns the (deduplicated) targets of fromNodeID's
-// forward edges gated on "done" — the condition a normal successful turn
+// forward edges gated on "done" â€” the condition a normal successful turn
 // completion represents.
 func forwardDoneTargets(edges []agentpack.FlowEdge, fromNodeID string) []string {
 	var out []string
@@ -1195,25 +1214,25 @@ func (s *InteractiveService) reinvokeExistingFlowChild(parentRunID, nodeID, prom
 // reinvokeMatchingFlowChild is the single implementation behind every
 // "reactivate an existing child run for another turn" path: find the first
 // non-terminal-turn child of parentRunID satisfying match, transition it back
-// to running, and notify the desktop. BUG-242: this used to be duplicated —
+// to running, and notify the desktop. BUG-242: this used to be duplicated â€”
 // reinvokeExistingFlowChild (the forward-edge reuse-lifecycle path) had the
 // BUG-Rnd2 fixes below, but maybeReinvokeCoderForContinue's back-edge
 // "continue" reinvoke (the actual path a review-loop round-2+ coder re-entry
-// takes) had its own older, un-fixed copy — so the coder reappearing for round
+// takes) had its own older, un-fixed copy â€” so the coder reappearing for round
 // 2 stayed stuck in the desktop's "Recently closed" section with no new
 // main-chat card, while a forward-spawned reviewer behaved correctly.
 //
 //   - BUG-Rnd2 (Bug B): increments activationSeq so the desktop's monotonic
 //     terminal-status guard (mergeAgentRunsById) recognizes a genuine
-//     completed→running transition instead of discarding it as a stale
-//     snapshot — without this the run never leaves "completed" client-side and
+//     completedâ†’running transition instead of discarding it as a stale
+//     snapshot â€” without this the run never leaves "completed" client-side and
 //     is miscategorized as closed regardless of what the backend just did.
 //   - BUG-Rnd2 (Bug C): emits EventAgentSpawnedByUser so the parent thread
 //     renders a new agent card for this turn, matching the spawnChildRun path
 //     (idempotent by event id, so replay never duplicates the row).
 //
 // Returns true if a matching child was found (whether or not a new turn was
-// actually scheduled — a match with a turn already in flight still counts as
+// actually scheduled â€” a match with a turn already in flight still counts as
 // "handled": its own completion will drive the next step).
 func (s *InteractiveService) reinvokeMatchingFlowChild(parentRunID, prompt string, match func(*interactiveRun) bool) bool {
 	if strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(prompt) == "" || match == nil {
@@ -1272,13 +1291,13 @@ func (s *InteractiveService) reinvokeMatchingFlowChild(parentRunID, prompt strin
 
 // entryDelegateNodes returns a flow's entry nodes: agent.delegate-behavior
 // nodes with no incoming dependency (neither a declared dependsOn NOR an
-// incoming forward edge — see nodeHasIncomingForwardEdge), in declared
+// incoming forward edge â€” see nodeHasIncomingForwardEdge), in declared
 // order. These are the nodes a flow run starts from; every other node is
 // reached through edges once its dependencies complete.
 //
 // The edge check is required, not optional: a flow whose entry dependency is
 // expressed purely via `edges:` (rag-harness's "context -> implement", CP-45's
-// "context -> coder" — no dependsOn field on the delegate node itself) would
+// "context -> coder" â€” no dependsOn field on the delegate node itself) would
 // otherwise have its true entry node (an inline behavior like
 // context.produce) silently bypassed in favor of the first delegate node,
 // which this function would wrongly also call an "entry." See
@@ -1331,7 +1350,7 @@ func agentNameFromRef(agentRef string) string {
 // resolved model instead of always inheriting it (BUG-228). After BUG-236,
 // built-in mirror sync can create one node-specific step_definitions row per
 // flow node, so prefer an exact node_id match. Fall back to the older
-// purpose-named role row "flow-agent-delegate-<role>" — the same rows the
+// purpose-named role row "flow-agent-delegate-<role>" â€” the same rows the
 // manual workflow builder exposes as "Flow: Coder" / "Flow: Reviewer"
 // (BUG-161/CA-230). This preserves existing reviewer/coder model settings
 // while allowing the new node-specific definition model to take over.
@@ -1341,7 +1360,7 @@ func agentNameFromRef(agentRef string) string {
 // its pre-existing inherit-from-parent behavior unchanged. An inline
 // (hub.inline / run: inline) node never reaches this: it executes as the
 // parent run's own turn and never calls spawnChildRun, so it always uses the
-// flow's already-resolved model — no lookup needed.
+// flow's already-resolved model â€” no lookup needed.
 func (s *InteractiveService) resolveFlowNodeModel(ctx context.Context, node agentpack.FlowNode) string {
 	if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical != "agent.delegate" {
 		return ""
@@ -1357,12 +1376,12 @@ func (s *InteractiveService) resolveFlowNodeModel(ctx context.Context, node agen
 //
 // BUG-241: the node_id match MUST ignore the generic dispatch-category seed
 // rows ("flow-agent-delegate", "flow-agent-delegate-coder", "flow-hub-inline",
-// …). Those rows are supposed to carry no node identity (FLOW=workflow,
+// â€¦). Those rows are supposed to carry no node identity (FLOW=workflow,
 // NODE=step per BUG-236), but an early BUG-236 draft migration copied node_id
 // onto them (e.g. flow-agent-delegate-reviewer.node_id="reviewer_correctness")
 // and the BUG-239 repair never cleared it. Because ListSteps orders by
-// name.asc, those "Flow: …"-named generic rows sort BEFORE the real per-node
-// "<pack>: …" rows and were being returned first — so two graph nodes that
+// name.asc, those "Flow: â€¦"-named generic rows sort BEFORE the real per-node
+// "<pack>: â€¦" rows and were being returned first â€” so two graph nodes that
 // share an agent file (reviewer_correctness / reviewer_security) resolved to
 // DIFFERENT rows (one aliased onto the single contaminated generic row, the
 // other fell through to its own per-node row), and the run's own entry model
@@ -1374,7 +1393,7 @@ func (s *InteractiveService) resolveFlowNodeModel(ctx context.Context, node agen
 // non-alphanumeric rune (including "-") with "_", so a real per-node step_type
 // can never begin with the literal "flow-" that the hand-seeded generic
 // dispatch rows use. The role fallback below still matches those generic rows
-// deliberately, by exact step_type — that path is unaffected.
+// deliberately, by exact step_type â€” that path is unaffected.
 func (s *InteractiveService) resolveConfiguredModelForAgent(ctx context.Context, nodeID, agentName string) string {
 	if agentName == "" {
 		return ""
@@ -1410,7 +1429,7 @@ func (s *InteractiveService) resolveConfiguredModelForAgent(ctx context.Context,
 
 // isGenericFlowDispatchStepType reports whether stepType is one of the
 // hand-seeded generic flow dispatch categories ("flow-agent-delegate",
-// "flow-hub-inline", "flow-agent-delegate-coder", …). These are FK
+// "flow-hub-inline", "flow-agent-delegate-coder", â€¦). These are FK
 // placeholders, not real node definitions, and must never win a node_id match
 // (BUG-241). Real per-node mirror step_types never begin with the literal
 // "flow-" prefix because sanitizeStepType rewrites "-" to "_".
@@ -1421,7 +1440,7 @@ func isGenericFlowDispatchStepType(stepType string) bool {
 // resolveFlowNodeProviderModel resolves node's OWN actually-effective
 // provider/model: its role's step_definitions row when one resolves, else the
 // run's own baseline (the same fallback spawnChildRun applies once the node
-// is actually spawned) — so callers get the node's true eventual posture
+// is actually spawned) â€” so callers get the node's true eventual posture
 // whether or not it has been spawned yet.
 func (s *InteractiveService) resolveFlowNodeProviderModel(ctx context.Context, parentRunID string, node agentpack.FlowNode) (provider, model string) {
 	model = s.resolveFlowNodeModel(ctx, node)
@@ -1462,7 +1481,7 @@ func (s *InteractiveService) stampFlowNodePosture(ctx context.Context, parentRun
 //
 // BUG-NOTE-CP42 #23: a flow node's `agent: agents/coder.md` reference reduces
 // to the bare name "coder" via flowNodeAgentName, then spawnChildRun resolved
-// that name through the general-purpose catalog — which prefers a
+// that name through the general-purpose catalog â€” which prefers a
 // project-local .claude/agents/coder.md or .codex/agents/coder.md over the
 // pack's own bundled agent of the same name. Any repo happening to define its
 // own "coder"/"reviewer" agent for an unrelated purpose would silently swap
@@ -1472,7 +1491,7 @@ func (s *InteractiveService) stampFlowNodePosture(ctx context.Context, parentRun
 // pack-declared node's agent identity is never subject to catalog shadowing.
 //
 // Returns (nil, false) if the pack can't be loaded or has no agent by that
-// name — callers fall back to the normal catalog-based resolution in that
+// name â€” callers fall back to the normal catalog-based resolution in that
 // case (the same safe-bail convention this file uses elsewhere), so a
 // resolution failure here degrades to the pre-existing behavior rather than
 // blocking the spawn outright.

@@ -144,7 +144,7 @@ export interface AgentLoopState {
   mode?: string;          // "keyword" | "explicit"
   activeNode?: string;
   extendCount?: number;
-  /** Why status=="blocked" (BUG-231): "cap" (round cap reached) | "escalate" (flow's control tool escalated). */
+  /** Why status=="blocked" (BUG-231): "cap" | "escalate" | "member_stalled" (Task-241). */
   blockReason?: string;
 }
 
@@ -723,7 +723,11 @@ export interface RunnerClient {
    * the round cap, and re-invokes the hub's synthesis turn so the hub itself
    * re-decides the route. Calls POST .../agent-loop/continue.
    */
-  continueFlow?(parentRunId: string, feedback: string): Promise<AgentGraphSnapshot>;
+  continueFlow?(
+    parentRunId: string,
+    feedback: string,
+    memberAction?: { action: "retry" | "skip"; node?: string },
+  ): Promise<AgentGraphSnapshot>;
   connectProviderAccount(providerKey: ProviderKey): Promise<void>;
   activateProviderAccount(accountId: string): Promise<void>;
   /**

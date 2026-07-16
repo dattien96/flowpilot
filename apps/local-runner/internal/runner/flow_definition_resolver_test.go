@@ -497,8 +497,8 @@ func TestMirrorHasMissingLifecycles(t *testing.T) {
 	t.Run("reviewer lifecycle missing (NULL migration)", func(t *testing.T) {
 		stored := []agentpack.FlowNode{
 			{ID: "coder", Lifecycle: "reinvoke"},
-			{ID: "reviewer_correctness", Lifecycle: ""},   // NULL from old migration
-			{ID: "reviewer_security", Lifecycle: ""},     // NULL from old migration
+			{ID: "reviewer_correctness", Lifecycle: ""}, // NULL from old migration
+			{ID: "reviewer_security", Lifecycle: ""},    // NULL from old migration
 			{ID: "synthesis", Lifecycle: ""},
 		}
 		if !mirrorHasMissingLifecycles(stored, canonical) {

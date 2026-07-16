@@ -47,10 +47,10 @@ func TestClaudeAskUserEndToEnd(t *testing.T) {
 	defer cancel()
 
 	req := TurnRequest{
-		RunID:    "e2e-run",
-		StepID:   "s1",
-		Prompt:   "Call the ask_user tool now to ask me whether to use Python or Go. You MUST call the tool, do not ask in plain text.",
-		YoloMode: true, // bypassPermissions: no approval gate, ask_user via MCP
+		RunID:     "e2e-run",
+		StepID:    "s1",
+		Prompt:    "Call the ask_user tool now to ask me whether to use Python or Go. You MUST call the tool, do not ask in plain text.",
+		YoloMode:  true, // bypassPermissions: no approval gate, ask_user via MCP
 		ModelName: "haiku",
 	}
 

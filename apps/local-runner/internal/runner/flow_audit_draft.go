@@ -19,11 +19,11 @@ const featureKeyRegistryFile = "change-audit/FEATURE-KEYS.md"
 // and no commits are created without explicit user/workflow confirmation (T-1).
 type FlowAuditDraft struct {
 	// Traceability
-	WorkflowRunID    string `json:"workflowRunId"`
-	PlanStepID       string `json:"planStepId"`
-	CodingStepID     string `json:"codingStepId"`
-	TestingStepID    string `json:"testingStepId"`
-	AuditStepID      string `json:"auditStepId"`
+	WorkflowRunID     string `json:"workflowRunId"`
+	PlanStepID        string `json:"planStepId"`
+	CodingStepID      string `json:"codingStepId"`
+	TestingStepID     string `json:"testingStepId"`
+	AuditStepID       string `json:"auditStepId"`
 	OriginalPackageID string `json:"originalPackageId"`
 
 	// Content

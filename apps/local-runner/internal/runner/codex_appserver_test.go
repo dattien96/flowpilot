@@ -216,12 +216,12 @@ type captureBridge struct {
 	approveWith      string
 	approveErr       error
 	// ask_user (dynamic tool) capture; zero values preserve the original nil/nil behavior.
-	askAnswer   []string
-	askErr      error
-	askPrompt   string
-	askOptions  []QuestionOption
-	askMulti    bool
-	askCallSeen bool
+	askAnswer        []string
+	askErr           error
+	askPrompt        string
+	askOptions       []QuestionOption
+	askMulti         bool
+	askCallSeen      bool
 	spawnSeen        bool
 	spawnInput       SpawnAgentInput
 	flowControlInput *FlowControlInput

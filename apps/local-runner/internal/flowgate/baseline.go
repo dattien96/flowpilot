@@ -1,6 +1,7 @@
 package flowgate
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -64,14 +65,52 @@ func captureGitState(repoDir string) (headSHA string, dirty bool) {
 
 // RefreshBaselineIfStale loads the stored baseline and returns it unchanged when
 // HEAD and working-tree state match. When they differ (or the baseline is missing
-// or pre-Task-156 with no HeadSHA), it re-captures a fresh baseline. (Task-156)
+// or pre-Task-156 with no HeadSHA), it may re-capture a fresh baseline. (Task-156)
+//
+// V9-30 / V10 P2:
+//   - Never recapture while dirty (coding mid-flight would replace green with red).
+//   - Never recapture over a green baseline just because HEAD advanced (broken
+//     commits would erase regression detection).
+//   - DO recapture when HEAD advanced, tree is clean, AND the stored baseline
+//     was already red (SuitePassed=false) or missing HeadSHA — so legitimate
+//     green tests after a prior red baseline can become the new truth.
+//   - Always capture when no usable baseline exists.
 func RefreshBaselineIfStale(repoDir, dotFP string) (*Baseline, error) {
+	return RefreshBaselineIfStaleContext(context.Background(), repoDir, dotFP)
+}
+
+// RefreshBaselineIfStaleContext is RefreshBaselineIfStale with an explicit
+// context (BUG-288 P2-04, Vòng 12). The first baseline capture can run the
+// project's full test suite (up to CaptureBaseline's ~5 minute timeout);
+// previously that suite always ran under context.Background(), so Stop could
+// not cut it short. Callers with a run/loop-scoped cancellable context
+// (mirroring flowInlineContext/postTurnGateCancel elsewhere in this codebase)
+// should use this entry point so Stop propagates into the suite run.
+func RefreshBaselineIfStaleContext(ctx context.Context, repoDir, dotFP string) (*Baseline, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	bl, _ := LoadBaseline(dotFP)
 	headSHA, dirty := captureGitState(repoDir)
 	if bl != nil && bl.HeadSHA != "" && bl.HeadSHA == headSHA && bl.Dirty == dirty {
 		return bl, nil // still fresh
 	}
-	return CaptureBaseline(repoDir, dotFP)
+	if bl != nil && bl.HeadSHA != "" {
+		if dirty {
+			// Mid-edit — keep prior truth.
+			return bl, nil
+		}
+		// Clean tree, HEAD moved.
+		if bl.SuitePassed {
+			// Green baseline is frozen against accidental broken commits (V9-30).
+			return bl, nil
+		}
+		// Prior baseline was red (or stale red) — allow recapture of a new clean HEAD
+		// so production can pick up fixed green suites (V10 P2).
+		return CaptureBaselineContext(ctx, repoDir, dotFP)
+	}
+	// No usable baseline yet — capture.
+	return CaptureBaselineContext(ctx, repoDir, dotFP)
 }
 
 // TestRunner is a detected test command plus the directory it runs in, relative to
@@ -81,12 +120,12 @@ type TestRunner struct {
 	Dir string
 }
 
-var reTestGo    = regexp.MustCompile(`_test\.go$`)
-var reTestJS    = regexp.MustCompile(`\.test\.[jt]sx?$|\.spec\.[jt]sx?$`)
-var reTestPy    = regexp.MustCompile(`(^|/)test_.*\.py$`)
-var reTestDart  = regexp.MustCompile(`_test\.dart$`)
-var reTestKt    = regexp.MustCompile(`Test\.kt$`)
-var reTestJava  = regexp.MustCompile(`Tests?\.java$`)
+var reTestGo = regexp.MustCompile(`_test\.go$`)
+var reTestJS = regexp.MustCompile(`\.test\.[jt]sx?$|\.spec\.[jt]sx?$`)
+var reTestPy = regexp.MustCompile(`(^|/)test_.*\.py$`)
+var reTestDart = regexp.MustCompile(`_test\.dart$`)
+var reTestKt = regexp.MustCompile(`Test\.kt$`)
+var reTestJava = regexp.MustCompile(`Tests?\.java$`)
 var reTestSwift = regexp.MustCompile(`Tests?\.swift$`)
 
 func IsTestFile(path string) bool {
@@ -232,17 +271,35 @@ func detectNestedRunner(repoDir string) TestRunner {
 // Lower = higher priority; ties break on shallowest path in detectNestedRunner. (Task-159)
 func runnerRank(cmd string) int {
 	switch {
-	case strings.HasPrefix(cmd, "go test"):     return 0
-	case strings.HasPrefix(cmd, "pytest"):      return 1
-	case strings.HasPrefix(cmd, "flutter"):     return 2
+	case strings.HasPrefix(cmd, "go test"):
+		return 0
+	case strings.HasPrefix(cmd, "pytest"):
+		return 1
+	case strings.HasPrefix(cmd, "flutter"):
+		return 2
 	case strings.HasPrefix(cmd, "./gradlew"),
-		strings.HasPrefix(cmd, "gradlew.bat"):  return 3
-	case strings.HasPrefix(cmd, "mvn"):         return 4
-	default:                                    return 5 // npm / npx
+		strings.HasPrefix(cmd, "gradlew.bat"):
+		return 3
+	case strings.HasPrefix(cmd, "mvn"):
+		return 4
+	default:
+		return 5 // npm / npx
 	}
 }
 
 func CaptureBaseline(repoDir, dotFlowpilotDir string) (*Baseline, error) {
+	return CaptureBaselineContext(context.Background(), repoDir, dotFlowpilotDir)
+}
+
+// CaptureBaselineContext is CaptureBaseline with an explicit context
+// (BUG-288 P2-04, Vòng 12): Stop previously could not cut short the first
+// baseline capture's suite run because it always used context.Background()
+// regardless of caller. Threading the caller's cancellable context here lets
+// Stop cancel it the same way runFlowGate's suite runs already are.
+func CaptureBaselineContext(ctx context.Context, repoDir, dotFlowpilotDir string) (*Baseline, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Explicit config takes precedence over auto-detection (Task-156 T-2).
 	cfg := LoadTestConfig(dotFlowpilotDir)
 	runner := TestRunner{}
@@ -262,7 +319,24 @@ func CaptureBaseline(repoDir, dotFlowpilotDir string) (*Baseline, error) {
 	var names []string
 	suitePassed := false
 	if runner.Cmd != "" {
-		suitePassed, names, _ = executeSuite(repoDir, runner.Cmd, runner.Dir)
+		// Capture baseline green tests; env/start failures leave SuitePassed=false
+		// with empty green list (same as a failed suite for capture purposes).
+		var envErr string
+		suitePassed, names, _, envErr, _ = executeSuite(ctx, repoDir, runner.Cmd, runner.Dir)
+		// BUG-288 R13-03: never write a baseline after cancellation — a red/empty
+		// baseline at the current HEAD would poison regression detection until
+		// HEAD advances with a clean tree.
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if envErr != "" {
+			suitePassed = false
+			names = nil
+		}
+	}
+	// Re-check after suite (or no-command path) before any WriteFile.
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
 	bl := &Baseline{
@@ -279,7 +353,15 @@ func CaptureBaseline(repoDir, dotFlowpilotDir string) (*Baseline, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(guardDir, "test_baseline.json"), data, 0o644); err != nil {
+	// Atomic write so a crash mid-write cannot leave a truncated JSON that
+	// LoadBaseline treats as permanent fail-open (BUG-288 R13-13).
+	path := filepath.Join(guardDir, "test_baseline.json")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
 		return nil, err
 	}
 	return bl, nil
@@ -300,4 +382,3 @@ func LoadBaseline(dotFlowpilotDir string) (*Baseline, error) {
 	}
 	return &bl, nil
 }
-

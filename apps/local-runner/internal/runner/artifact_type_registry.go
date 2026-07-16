@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/changecontract"
 	"flowpilot-runner/internal/flowgate"
 )
 
@@ -585,9 +586,81 @@ func appendTelegramOutputPrompt(prompt string, node agentpack.FlowNode) string {
 // composeFlowNodeAgentPrompt applies Task-223 INPUT read inject, OUTPUT
 // write-contract inject, and Task-233's Telegram OUTPUT write-contract to a
 // base agent prompt for a flow node.
+// changeContractPromptMarker is a human-readable heading for Change Contract
+// injection. Double-inject guard uses changeContractTrustedMarker(runID) so a
+// user cannot suppress inject by typing the Vietnamese heading alone (V10R4).
+const changeContractPromptMarker = "## Change Contract đã khai cho run này"
+
+// changeContractTrustedMarker returns a run-scoped HTML comment only our
+// injector writes. Skip inject only when this exact token is present.
+// BUG-288 P1-20: parentRunID alone is visible to the user (desktop UI/API),
+// so a bare "<!-- flowpilot-cc:<runID> -->" check let a user who knows/copies
+// a run id suppress inject by typing it themselves. The trailing segment is
+// an HMAC (runMarkerMAC, flow_context_handoff.go) over a server-only secret,
+// so only this process can mint a marker that will match — mirrors
+// flowContextTrustedMarker's fix for the same class of gap. This means
+// appendChangeContractIfAny's existing strings.Contains(prompt, trusted)
+// check is safe as-is: a user cannot construct the MAC suffix without
+// runMarkerSecret, so a copied or guessed run id alone no longer suffices.
+func changeContractTrustedMarker(parentRunID string) string {
+	return changeContractTrustedMarkerWith(nil, parentRunID)
+}
+
+// changeContractTrustedMarkerWith mints using an explicit secret (BUG-288 R18-4).
+func changeContractTrustedMarkerWith(secret []byte, parentRunID string) string {
+	return "<!-- flowpilot-cc:" + parentRunID + ":" + runMarkerMACWith(secret, "cc", parentRunID) + " -->"
+}
+
 func composeFlowNodeAgentPrompt(workspaceCwd, prompt string, node agentpack.FlowNode) string {
 	prompt = appendInputArtifactPrompt(workspaceCwd, prompt, node)
 	prompt = appendRequiredOutputArtifactPrompt(prompt, node)
 	prompt = appendTelegramOutputPrompt(prompt, node)
+	// Task-247: inject latest Change Contract for the run when available.
+	// parent/run id is not on node; callers pass it via workspace-side store lookup
+	// using optional WorkflowRunID on a package-level helper when available.
+	// Neo here only when prompt already carries a run marker or we can resolve store
+	// by workspace alone is insufficient — inject when prompt does not yet contain
+	// the contract marker and a package-global pending run is not required.
+	// Actual run-scoped inject is applied by appendChangeContractIfAny from
+	// flow_executor with the real parentRunID.
 	return prompt
+}
+
+// appendChangeContractIfAny appends the run's latest Change Contract to a node
+// prompt once (Task-247). Used from flow_executor after composeFlowNodeAgentPrompt.
+//
+// Skip inject only when the run-scoped trusted marker is present. The marker
+// includes a non-guessable token derived from parentRunID + package body hash
+// of the store path is not enough alone — user who knows runID could still type
+// the HTML comment. Defense in depth: marker format is still checked, and
+// package render embeds it only via our code path.
+func appendChangeContractIfAny(workspaceCwd, parentRunID, prompt string) string {
+	return appendChangeContractIfAnyWithSecret(workspaceCwd, parentRunID, prompt, nil)
+}
+
+// appendChangeContractIfAnyWithSecret is appendChangeContractIfAny using an
+// explicit marker secret for mint/detect (BUG-288 R18-4 per-service).
+func appendChangeContractIfAnyWithSecret(workspaceCwd, parentRunID, prompt string, secret []byte) string {
+	if parentRunID == "" || workspaceCwd == "" {
+		return prompt
+	}
+	// V10R4 P1: only trust our run-scoped inject marker. User-typed
+	// "### change.contract" or the Vietnamese heading alone must NOT suppress inject.
+	trusted := changeContractTrustedMarkerWith(secret, parentRunID)
+	if strings.Contains(prompt, trusted) {
+		return prompt
+	}
+	store, err := changecontract.OpenStoreReadOnly(workspaceCwd)
+	if err != nil || store == nil {
+		return prompt
+	}
+	c, ok := store.GetLatestForRun(parentRunID)
+	if !ok {
+		return prompt
+	}
+	body := changecontract.RenderContractBlock(c)
+	if body == "" {
+		return prompt
+	}
+	return prompt + "\n\n" + changeContractPromptMarker + "\n" + trusted + "\n" + body + "\n"
 }

@@ -199,7 +199,9 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 	a.mu.Lock()
 	a.bridges[sessionID] = bridge
 	a.allowReviewOutcome[sessionID] = req.OfferReviewOutcomeTool
-	a.yoloModes[sessionID] = req.YoloMode
+	// V9-21: ForceShellBridge keeps YOLO auto-approve for ordinary tools but
+	// still routes shell approvals through RequestApproval (commit denylist).
+	a.yoloModes[sessionID] = req.YoloMode && !req.ForceShellBridge
 	a.mu.Unlock()
 	defer func() {
 		a.mu.Lock()

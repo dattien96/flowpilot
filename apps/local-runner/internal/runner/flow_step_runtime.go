@@ -2,7 +2,9 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"flowpilot-runner/internal/agentpack"
@@ -24,10 +26,17 @@ import (
 // doesn't implement the seeder simply keeps its catalog-seeded steps.
 
 // isFlowEngineDriven reports whether runID's step timeline is owned by the flow
-// executor rather than the legacy bulk planner.
+// executor rather than the legacy bulk planner. Takes s.mu — do not call while
+// already holding the lock; use flowEngineDrivenUnlocked instead.
 func (s *InteractiveService) isFlowEngineDriven(runID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.flowEngineDrivenUnlocked(runID)
+}
+
+// flowEngineDrivenUnlocked reads flowEngineDriven without taking s.mu.
+// Caller MUST already hold s.mu.
+func (s *InteractiveService) flowEngineDrivenUnlocked(runID string) bool {
 	rs := s.runs[runID]
 	return rs != nil && rs.flowEngineDriven
 }
@@ -149,7 +158,21 @@ func (s *InteractiveService) flowStepRowsFromNodes(ctx context.Context, parentRu
 // status, stamping timestamps the way PlanWorkflowProgress does. Best-effort:
 // an unknown node id no-ops (the fake store patches zero rows), and any error
 // is logged rather than propagated.
+//
+// Call when s.mu is NOT held. From emitLocked / settleFlowChildTurnCompletedLocked
+// (already under s.mu), use setFlowStepStatusLocked.
 func (s *InteractiveService) setFlowStepStatus(ctx context.Context, parentRunID, nodeID string, status RuntimeWorkflowStepStatus) {
+	s.setFlowStepStatusCore(ctx, parentRunID, nodeID, status, false /* muHeld */)
+}
+
+// setFlowStepStatusLocked is the same as setFlowStepStatus but for call sites
+// that already hold s.mu (emitLocked settle path). Avoids re-locking for the
+// flowEngineDriven check in the transition log.
+func (s *InteractiveService) setFlowStepStatusLocked(ctx context.Context, parentRunID, nodeID string, status RuntimeWorkflowStepStatus) {
+	s.setFlowStepStatusCore(ctx, parentRunID, nodeID, status, true /* muHeld */)
+}
+
+func (s *InteractiveService) setFlowStepStatusCore(ctx context.Context, parentRunID, nodeID string, status RuntimeWorkflowStepStatus, muHeld bool) {
 	if nodeID == "" {
 		return
 	}
@@ -179,7 +202,11 @@ func (s *InteractiveService) setFlowStepStatus(ctx context.Context, parentRunID,
 			"status", string(status),
 			"error", err.Error(),
 		)
+		return
 	}
+	// Task-239 / T-10: append best-effort transition log for flow-engine runs so
+	// resume can replay settled status (I-17). Never blocks orchestration (T-5).
+	s.appendStepTransitionLog(parentRunID, nodeID, string(status), "", "", muHeld)
 }
 
 // setFlowStepAwaitingUser transitions the flow's hub inline node (the
@@ -196,6 +223,21 @@ func (s *InteractiveService) setFlowStepAwaitingUser(ctx context.Context, parent
 	if hubID := hubInlineNodeID(s.activeFlowNodesFor(parentRunID)); hubID != "" {
 		s.setFlowStepStatus(ctx, parentRunID, hubID, StepStatusWaitingUserApr)
 	}
+}
+
+// settleFlowChildStepAwaitingUserLocked stamps the parent flow step for a
+// labeled child to WAITING_USER_APPROVAL when that child surfaces a permission
+// or question gate (BUG-288 #22). Caller must hold s.mu (emitLocked path).
+// No-op for root turns, unlabeled children, or non-flow-engine parents.
+func (s *InteractiveService) settleFlowChildStepAwaitingUserLocked(rs *interactiveRun) {
+	if rs == nil || rs.parentRunID == "" || strings.TrimSpace(rs.label) == "" {
+		return
+	}
+	parent := s.runs[rs.parentRunID]
+	if parent == nil || !parent.flowEngineDriven {
+		return
+	}
+	s.setFlowStepStatusLocked(context.Background(), rs.parentRunID, rs.label, StepStatusWaitingUserApr)
 }
 
 // setFlowStepPosture stamps nodeID's OWN actually-resolved provider/model
@@ -227,6 +269,110 @@ func (s *InteractiveService) setFlowStepPosture(ctx context.Context, parentRunID
 			"model", model,
 			"error", err.Error(),
 		)
+		return
+	}
+	// Task-239: posture-only line (empty Status) so provider/model survive restart.
+	// setFlowStepPosture is only called outside s.mu (spawn/reinvoke paths).
+	s.appendStepTransitionLog(parentRunID, nodeID, "", provider, model, false /* muHeld */)
+}
+
+// appendStepTransitionLog writes one transition/posture line when the store
+// implements StepTransitionLogStore and the run is flow-engine-driven (Task-239).
+// Errors are log-warn only — step writes must never break orchestration.
+//
+// muHeld must be true when the caller already holds s.mu (emitLocked settle path);
+// false otherwise. Do NOT use TryLock to guess ownership — that races when
+// another goroutine holds the mutex.
+func (s *InteractiveService) appendStepTransitionLog(parentRunID, nodeID, status, provider, model string, muHeld bool) {
+	if parentRunID == "" || nodeID == "" {
+		return
+	}
+	var driven bool
+	if muHeld {
+		driven = s.flowEngineDrivenUnlocked(parentRunID)
+	} else {
+		driven = s.isFlowEngineDriven(parentRunID)
+	}
+	if !driven {
+		return
+	}
+	tlog, ok := s.workflowStore.(StepTransitionLogStore)
+	if !ok {
+		return
+	}
+	line := stepTransitionLine{
+		RunID:    parentRunID,
+		NodeID:   nodeID,
+		Status:   status,
+		Provider: provider,
+		Model:    model,
+		TS:       time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := tlog.AppendStepTransition(context.Background(), parentRunID, line); err != nil {
+		log.Printf("[flow-step] append transition log run=%q node=%q status=%q: %v", parentRunID, nodeID, status, err)
+		// BUG-288 P2-03: Task-239's contract is "every transition is persisted;
+		// restore replays the log". A log-warn-only failure silently breaks
+		// that invariant. Surfacing this as a hard error from ApplyStepTransition
+		// (rejecting/reverting the transition) would ripple through ~20+
+		// call sites that treat setFlowStepStatus/setFlowStepPosture as
+		// fire-and-forget — too large a blast radius for this fix. Instead,
+		// durably record an explicit "degraded" marker on the run so
+		// restart/replay logic can detect the step timeline is not fully
+		// trustworthy and escalate, instead of silently treating in-memory
+		// state as authoritative.
+		s.markTransitionLogDegraded(parentRunID, nodeID, status, err, muHeld)
+	}
+}
+
+// markTransitionLogDegraded durably records that a step-transition-log append
+// failed for parentRunID (BUG-288 P2-03). muHeld mirrors appendStepTransitionLog's
+// caller-lock convention: when true the caller already holds s.mu, so this
+// only mutates the in-memory flag here and defers the durable persist to a
+// short-lived goroutine (re-acquiring the lock itself) rather than doing I/O
+// while a caller-owned lock is held.
+func (s *InteractiveService) markTransitionLogDegraded(parentRunID, nodeID, status string, appendErr error, muHeld bool) {
+	reason := fmt.Sprintf("append node=%q status=%q: %v", nodeID, status, appendErr)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if muHeld {
+		if rs := s.runs[parentRunID]; rs != nil {
+			rs.transitionLogDegraded = true
+			rs.transitionLogDegradedAt = now
+			rs.transitionLogDegradedReason = reason
+		}
+		go s.persistTransitionLogDegradedMarker(parentRunID)
+		return
+	}
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil {
+		s.mu.Unlock()
+		return
+	}
+	rs.transitionLogDegraded = true
+	rs.transitionLogDegradedAt = now
+	rs.transitionLogDegradedReason = reason
+	snap := sessionStateOf(rs)
+	s.mu.Unlock()
+	if err := s.persistProviderSession(snap); err != nil {
+		log.Printf("[flow-step] persist transition-log-degraded marker run=%q: %v", parentRunID, err)
+	}
+}
+
+// persistTransitionLogDegradedMarker re-reads the current snapshot and
+// persists it — used when markTransitionLogDegraded is invoked from a
+// muHeld=true call site (the RAM mutation already happened synchronously
+// under the caller's lock; only the durable write is deferred).
+func (s *InteractiveService) persistTransitionLogDegradedMarker(parentRunID string) {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil {
+		s.mu.Unlock()
+		return
+	}
+	snap := sessionStateOf(rs)
+	s.mu.Unlock()
+	if err := s.persistProviderSession(snap); err != nil {
+		log.Printf("[flow-step] persist transition-log-degraded marker run=%q: %v", parentRunID, err)
 	}
 }
 
