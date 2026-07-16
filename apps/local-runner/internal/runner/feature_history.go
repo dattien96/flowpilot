@@ -12,13 +12,34 @@ import (
 
 func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []transcriptTurn) string {
 	// Legacy package-level helper: multi-secret / active-secret verify (tests and
-	// one-shot callers). InteractiveService must use injectFeatureHistoryPromptWithSecret.
+	// one-shot callers). InteractiveService must use injectFeatureHistoryPromptCtx.
 	return injectFeatureHistoryPromptWithSecret(workspace, prompt, priorTurns, nil)
 }
 
-// injectFeatureHistoryPromptWithSecret is the service path (BUG-288 R20-2): when
-// secret is non-nil, FCP handoff markers are verified only against that service's
-// secret so a marker minted by service B cannot suppress history on service A.
+// MarkerVerificationContext is REQUIRED on the service path (SD-24 §6.6 / Task-252).
+// Empty AllowedMarkerIDs fails closed (no suppression → history injected).
+type MarkerVerificationContext struct {
+	Secret           []byte
+	AllowedMarkerIDs []string
+}
+
+// injectFeatureHistoryPromptCtx is the service-path helper (CP-51 Task-252).
+// Both Secret and non-empty AllowedMarkerIDs are required to suppress history.
+func injectFeatureHistoryPromptCtx(workspace, prompt string, priorTurns []transcriptTurn, mv MarkerVerificationContext) string {
+	handoff := false
+	if len(mv.Secret) > 0 && len(mv.AllowedMarkerIDs) > 0 {
+		handoff = isFlowContextHandoffWithSecret(mv.Secret, prompt, mv.AllowedMarkerIDs...)
+	}
+	// empty allowed set ⇒ fail closed (no handoff suppression)
+	if isHandoffPrompt(prompt) || handoff ||
+		isFlowEnginePrompt(prompt) || isFlowReviewHandoffPrompt(prompt) {
+		return prompt
+	}
+	return injectFeatureHistoryBody(workspace, prompt, priorTurns)
+}
+
+// injectFeatureHistoryPromptWithSecret is kept for package tests / one-shot callers.
+// The InteractiveService path must use injectFeatureHistoryPromptCtx.
 func injectFeatureHistoryPromptWithSecret(workspace string, prompt string, priorTurns []transcriptTurn, secret []byte) string {
 	// A handoff envelope already carries its (correctly source-resolved) feature
 	// block, prepended at build time. Never re-inject from the flat envelope text —
@@ -30,6 +51,7 @@ func injectFeatureHistoryPromptWithSecret(workspace string, prompt string, prior
 	// first post-context.produce consumer (via package), not every late node.
 	handoff := false
 	if len(secret) > 0 {
+		// Legacy: secret only — tests may omit IDs. Service path never uses this.
 		handoff = isFlowContextHandoffWithSecret(secret, prompt)
 	} else {
 		handoff = isFlowContextHandoff(prompt)
@@ -38,6 +60,10 @@ func injectFeatureHistoryPromptWithSecret(workspace string, prompt string, prior
 		isFlowEnginePrompt(prompt) || isFlowReviewHandoffPrompt(prompt) {
 		return prompt
 	}
+	return injectFeatureHistoryBody(workspace, prompt, priorTurns)
+}
+
+func injectFeatureHistoryBody(workspace, prompt string, priorTurns []transcriptTurn) string {
 	dotFlowpilotDir := filepath.Join(workspace, ".flowpilot")
 	catalog, err := featurecatalog.LoadCatalog(dotFlowpilotDir)
 	if err != nil {
