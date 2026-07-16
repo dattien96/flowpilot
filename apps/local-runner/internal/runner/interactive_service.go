@@ -2588,8 +2588,31 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		PendingRestartRunID:               rs.pendingRestartRunID,
 		PendingRestartPrompt:              rs.pendingRestartPrompt,
 		PendingRestartGen:                 rs.pendingRestartGen,
+		IdempotencyKeys:                   durableIdempotencySnapshot(rs.idempotency),
 		FlowContextInjected:               rs.flowContextInjected,
 	}
+}
+
+// durableIdempotencySnapshot keeps only durable-* keys for disk (BUG-288 R16-P0).
+// Caps at 48 entries to bound session size.
+func durableIdempotencySnapshot(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string)
+	for k, v := range m {
+		if !strings.HasPrefix(k, "durable-") || v == "" {
+			continue
+		}
+		out[k] = v
+		if len(out) >= 48 {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (s *InteractiveService) persistApproval(record ProviderApprovalState) error {
@@ -3177,17 +3200,25 @@ func (s *InteractiveService) markPendingFlowGateSettleLocked(rs *interactiveRun,
 	if rs.parentRunID == "" {
 		snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
 	}
-	// BUG-288 P1-16 / R15-P1: checkpoint must succeed before we treat settle as
-	// durable. On failure: retry once; if still failing, leave RAM settle true
-	// (blocks Completed fan-out) but stamp intent-blocked so operators see it
-	// and resume paths re-persist before publishing.
+	// BUG-288 P1-16 / R15-P1 / R16-P1: checkpoint must succeed before we treat
+	// settle as durable. On failure: retry once; if still failing, stamp
+	// intent-blocked THEN rebuild snap and attempt a third persist so the
+	// blocked diagnostic itself is durable (R16-P1 — previous code set blocked
+	// fields after the last snap and never wrote them).
 	if err := s.persistProviderSession(snap); err != nil {
 		log.Printf("[flow-gate] persist pendingFlowGateSettle checkpoint run=%q turn=%q: %v (retrying once)", rs.id, rs.pendingFlowGateTurnID, err)
 		if err2 := s.persistProviderSession(snap); err2 != nil {
-			log.Printf("[flow-gate] persist pendingFlowGateSettle FAILED run=%q turn=%q: %v (settle kept in RAM only — gate pass will re-persist before fan-out; crash before that loses durable gate state)", rs.id, rs.pendingFlowGateTurnID, err2)
+			log.Printf("[flow-gate] persist pendingFlowGateSettle FAILED run=%q turn=%q: %v (stamping blocked + third persist)", rs.id, rs.pendingFlowGateTurnID, err2)
 			rs.intentBlockedKind = "gate_settle_checkpoint"
 			rs.intentBlockedReason = "pendingFlowGateSettle checkpoint not durable: " + err2.Error()
 			rs.intentBlockedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			snap3 := sessionStateOf(rs)
+			if rs.parentRunID == "" {
+				snap3.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+			}
+			if err3 := s.persistProviderSession(snap3); err3 != nil {
+				log.Printf("[flow-gate] persist gate_settle_checkpoint blocked state FAILED run=%q: %v (RAM only until storage recovers)", rs.id, err3)
+			}
 		}
 	}
 }
@@ -5668,6 +5699,9 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	ctx, cancel := context.WithCancel(context.Background())
 	rs.turnCancel = cancel
 	if idempotencyKey != "" {
+		if rs.idempotency == nil {
+			rs.idempotency = map[string]string{}
+		}
 		rs.idempotency[idempotencyKey] = turnID
 	}
 	if err := s.markStepRunning(ctx, runID, in.StepID); err != nil {
@@ -5682,7 +5716,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		return "", newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
 	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: in.Prompt})
-	snap := sessionStateOf(rs) // capture under lock: lastPrompt + updatedAt now set
+	snap := sessionStateOf(rs) // capture under lock: lastPrompt + updatedAt + durable idem keys
 	isParent := rs.parentRunID == ""
 	// Drain pendingAgentContext atomically with turnInFlight=true so that any concurrent
 	// maybeAutoReinvokeHub call sees an empty slice after this unlock and does not set
@@ -5693,7 +5727,14 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	if isParent {
 		snap.LoopState = s.agentOrchestrator.graphSnapshot(rs.id).LoopState
 	}
-	_ = s.persistProviderSession(snap) // BUG-080 F-3: persist outside lock, best-effort
+	// BUG-080 F-3 / BUG-288 R16-P0: persist session (incl. durable-* idempotency).
+	// For durable keys, retry once so crash recovery can short-circuit replay.
+	if err := s.persistProviderSession(snap); err != nil && strings.HasPrefix(idempotencyKey, "durable-") {
+		log.Printf("[turn] persist durable idempotency run=%s key=%s: %v (retrying)", runID, idempotencyKey, err)
+		if err2 := s.persistProviderSession(snap); err2 != nil {
+			log.Printf("[turn] persist durable idempotency FAILED run=%s key=%s: %v", runID, idempotencyKey, err2)
+		}
+	}
 	// Persist raw user prompt for transcript replay (BUG-083 F-1): the provider
 	// session file records the composed prompt (raw + reinforcement + skill preamble),
 	// so we keep the raw input separately and prefer it on resume.

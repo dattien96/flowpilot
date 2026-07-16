@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Vòng 9–14 Fixed. **Vòng 15 (Codex): R15-P0-01/02 + R15-P1-01/02 Fixed (2026-07-16)** — durable stall-retry delivery, gate epoch recheck before side effects, marker secret once, settle checkpoint fail-closed. Status giữ `inprogress` đến Codex re-review pass sạch.
+- Vòng 9–15 Fixed. **Vòng 16 (Codex re-review V15): R16-P0-01/02 + R16-P1-01/02 Fixed (2026-07-16)** — durable idempotency keys + Supabase gen, gate durable under s.mu, per-dir marker secrets, settle blocked third-persist. Status giữ `inprogress` đến Codex re-review pass sạch.
 
 ### Key Decisions
 
@@ -1150,9 +1150,20 @@ Review lại diff Vòng 13 (Grok) + NEW-bug sweep (Claude). **Kết luận: khô
 | R15-P1-01 | P1 | Global marker secret bị service/workspace khác reload clobber | `sync.Once` trong `InitRunMarkerSecretFromDir` — first init wins |
 | R15-P1-02 | P1 | `PendingFlowGateSettle` persist best-effort | Retry once; on fail stamp `intentBlockedKind=gate_settle_checkpoint`, keep RAM settle (no Completed fan-out) |
 
+### Vòng 16 — Codex re-review Vòng 15 + edge-case sweep (2026-07-16) — **Fixed**
+
+Review độc lập xác nhận Vòng 15 chưa đủ. **2 P0 + 2 P1 → Fixed.**
+
+| ID | Sev | Finding | Fix |
+| ---- | --- | ------- | --- |
+| R16-P0-01 | P0 | Idempotency chỉ RAM; reconstruct map rỗng → crash sau accept replay turn mới; Supabase thiếu `PendingRestartGen` | Persist `IdempotencyKeys` (durable-*) trên session NDJSON + reconstruct; retry persist durable keys; Supabase `pending_restart_gen` + `idempotency_keys` migration |
+| R16-P0-02 | P0 | Gate epoch recheck pre/post vẫn TOCTOU (Stop giữa check và ghi file) | `withGateEpochDurable`: giữ `s.mu` suốt durable write (`ClearOverrideIfGreen` / `commitChangeContract`) — Stop không xen mid-write |
+| R16-P1-01 | P1 | `sync.Once` clobber multi-store + I/O fail consume Once | Per-`dataDir` secret map; fail I/O không cache; verify accepts any loaded dir secret |
+| R16-P1-02 | P1 | `gate_settle_checkpoint` set sau snap, không persist blocked | Stamp blocked → rebuild snap → third persist |
+
 ## 12. Completion Notes
 
-- result: **inprogress** — Vòng 9–15 Fixed (2026-07-16). Document giữ `Status: inprogress` until clean Codex re-review.
+- result: **inprogress** — Vòng 9–16 Fixed (2026-07-16). Document giữ `Status: inprogress` until clean Codex re-review.
 - primary modules: `apps/local-runner/internal/runner/*`, `apps/local-runner/internal/flowgate/*`.
-- change-audit: `CA-328`…`CA-331` (Vòng 15).
-- verification: Vòng 15 focused tests pass (`bug288_round15_test.go` + restart gen round-trip).
+- change-audit: `CA-328`…`CA-332` (Vòng 16).
+- verification: Vòng 16 focused tests (`bug288_round16_test.go`).

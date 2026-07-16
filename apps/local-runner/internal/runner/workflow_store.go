@@ -246,6 +246,11 @@ type ProviderSessionState struct {
 	// (BUG-288 R15-P0): claim + idempotency key "durable-{child}-restart-{gen}"
 	// so crash between clear and startTurn cannot duplicate or drop the retry.
 	PendingRestartGen int64
+	// IdempotencyKeys persists startTurn Idempotency-Key → turnID for keys that
+	// must survive process restart (BUG-288 R16-P0). Reconstruct loads this into
+	// interactiveRun.idempotency so durable-restart/reprompt/resume keys still
+	// short-circuit after crash (RAM map alone was insufficient).
+	IdempotencyKeys map[string]string
 	// FlowContextInjected (BUG-288 R13-16) survives restart so a durable
 	// PendingRestartPrompt that already embeds a flowpilot-fcp marker does not
 	// get feature-history / FCP re-injected after process restart (MAC secret is

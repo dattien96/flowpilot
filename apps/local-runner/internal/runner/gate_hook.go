@@ -40,6 +40,12 @@ func (s *InteractiveService) gateEpochStillValid(runID string, epoch int64) bool
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.gateEpochStillValidLocked(runID, epoch)
+}
+
+// gateEpochStillValidLocked is the under-lock core of gateEpochStillValid.
+// Caller holds s.mu.
+func (s *InteractiveService) gateEpochStillValidLocked(runID string, epoch int64) bool {
 	rs := s.runs[runID]
 	if rs == nil || rs.gateEpoch != epoch {
 		return false
@@ -55,6 +61,22 @@ func (s *InteractiveService) gateEpochStillValid(runID string, epoch int64) bool
 		return false
 	}
 	return true
+}
+
+// withGateEpochDurable holds s.mu across the entire durable side-effect so Stop
+// (which must take s.mu to bump gateEpoch) cannot interleave mid-write
+// (BUG-288 R16-P0). Prefer short writes only.
+func (s *InteractiveService) withGateEpochDurable(runID string, epoch int64, fn func()) bool {
+	if s == nil || fn == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.gateEpochStillValidLocked(runID, epoch) {
+		return false
+	}
+	fn()
+	return s.gateEpochStillValidLocked(runID, epoch)
 }
 
 // runFlowGate is the post-turn enforcement hook (CP-35 P-4/P-5). It is called
@@ -168,12 +190,12 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	oracle := flowgate.RunOracleContext(ctx, cwd, baseline, diff, overrides)
 
 	// 5. Clear overrides for tests that are now green (sticky-until-green, DOD-07).
-	// BUG-288 R15-P0: revalidate epoch before any durable mutation (Stop can
-	// land between oracle finish and this write).
+	// BUG-288 R15-P0 / R16-P0: durable write under s.mu so Stop cannot TOCTOU
+	// between epoch check and file mutation.
 	if oracle.EnvError == "" && !oracle.HasRegression && len(oracle.Passed) > 0 {
-		if s.gateEpochStillValid(runID, epoch) {
+		s.withGateEpochDurable(runID, epoch, func() {
 			_ = flowgate.ClearOverrideIfGreen(dotFP, oracle.Passed)
-		}
+		})
 	}
 
 	// 6. Build TurnResult for the evaluator.
@@ -270,15 +292,11 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	}
 
 	if len(violations) == 0 {
-		// V10R4 P0-03 / BUG-288 R15-P0: revalidate epoch immediately before
-		// durable side effects; recheck after commit so a Stop mid-write still
-		// treats the gate as blocked for outer completion fan-out.
-		if !s.gateEpochStillValid(runID, epoch) {
-			return true
-		}
+		// V10R4 P0-03 / BUG-288 R16-P0: durable commit under s.mu (no TOCTOU).
 		// V9-02: only persist contract + canonical head after gate allows.
-		commitChangeContract(cwd, prepared)
-		if !s.gateEpochStillValid(runID, epoch) {
+		if !s.withGateEpochDurable(runID, epoch, func() {
+			commitChangeContract(cwd, prepared)
+		}) {
 			return true
 		}
 		return false
@@ -684,14 +702,14 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 
 	violations := flowgate.Evaluate(tr, only)
 	if len(violations) == 0 {
-		// BUG-288 R15-P0: epoch check immediately before durable writes.
-		if !s.gateEpochStillValid(runID, epoch) {
-			return true
-		}
+		// BUG-288 R16-P0: durable commit under s.mu (no TOCTOU with Stop).
 		if hasPreparedContract {
-			commitChangeContract(cwd, prepared)
-		}
-		if !s.gateEpochStillValid(runID, epoch) {
+			if !s.withGateEpochDurable(runID, epoch, func() {
+				commitChangeContract(cwd, prepared)
+			}) {
+				return true
+			}
+		} else if !s.gateEpochStillValid(runID, epoch) {
 			return true
 		}
 		s.mu.Lock()
@@ -786,13 +804,11 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		return true
 	}
 	// warn/approve: still commit prepared contract (turn allowed).
-	// BUG-288 R15-P0: epoch must still hold before durable contract write.
+	// BUG-288 R16-P0: durable commit under s.mu.
 	if hasPreparedContract {
-		if !s.gateEpochStillValid(runID, epoch) {
-			return true
-		}
-		commitChangeContract(cwd, prepared)
-		if !s.gateEpochStillValid(runID, epoch) {
+		if !s.withGateEpochDurable(runID, epoch, func() {
+			commitChangeContract(cwd, prepared)
+		}) {
 			return true
 		}
 	}

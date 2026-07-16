@@ -23,16 +23,13 @@ import (
 // HTML comment) instead (V10R4 P1 PromptEnvelope).
 const flowContextHandoffPrefix = "[FlowPilot flow context package]"
 
-// runMarkerSecret HMAC-binds double-injection markers (BUG-288 P1-20 / R13-16).
-// Prefer a durable file under the local session store dir so MAC verifies across
-// process restart; otherwise generate once at process start.
-// BUG-288 R15-P1: process-wide secret is initialized at most once (sync.Once) so
-// a second InteractiveService/workspace cannot clobber markers already minted
-// for an in-process service that is still running.
+// runMarker secrets HMAC-bind double-injection markers (BUG-288 P1-20 / R13-16).
+// BUG-288 R16-P1: secrets are keyed by absolute dataDir (multi-store safe).
+// A failed I/O init for one dir does not block later inits (no sync.Once trap).
 var (
-	runMarkerSecretMu   sync.RWMutex
-	runMarkerSecret     = newRunMarkerSecret()
-	runMarkerSecretOnce sync.Once
+	runMarkerSecretsMu sync.RWMutex
+	runMarkerSecrets   = map[string][]byte{} // abs(dataDir) → secret
+	runMarkerActive    = newRunMarkerSecret() // default used by runMarkerMAC
 )
 
 func newRunMarkerSecret() []byte {
@@ -40,8 +37,7 @@ func newRunMarkerSecret() []byte {
 	if _, err := rand.Read(b); err == nil {
 		return b
 	}
-	// BUG-288 R13-19: crypto/rand failing is effectively unreachable; never use
-	// a low-entropy time-only fallback that is brute-forceable from start time.
+	// BUG-288 R13-19: never use low-entropy time-only fallback.
 	var stackSink int
 	sum := sha256.Sum256([]byte(
 		fmt.Sprintf("flowpilot-run-marker-fallback|%s|%p|%d",
@@ -51,8 +47,7 @@ func newRunMarkerSecret() []byte {
 }
 
 // initRunMarkerSecretForStore picks a durable secret directory from the
-// workflow store when possible (BUG-288 R14-04 / R15-P1). First successful
-// init in the process wins; later services do not reload a different secret.
+// workflow store when possible (BUG-288 R14-04 / R16-P1).
 func initRunMarkerSecretForStore(store WorkflowStore) {
 	dir := ""
 	if ls, ok := store.(*localFileSessionStore); ok {
@@ -69,49 +64,60 @@ func initRunMarkerSecretForStore(store WorkflowStore) {
 }
 
 // InitRunMarkerSecretFromDir loads or creates a 32-byte secret at
-// dataDir/run_marker_secret so markers mint before restart still verify after
-// restart (BUG-288 R13-16). BUG-288 R15-P1: only the first call in the process
-// installs the secret; subsequent calls are no-ops (avoids multi-service clobber).
+// dataDir/run_marker_secret (BUG-288 R13-16 / R16-P1). Per-directory map;
+// failed write does not poison other dirs.
 func InitRunMarkerSecretFromDir(dataDir string) {
 	if strings.TrimSpace(dataDir) == "" {
 		return
 	}
-	runMarkerSecretOnce.Do(func() {
-		if err := os.MkdirAll(dataDir, 0o755); err != nil {
-			log.Printf("[marker] mkdir for run_marker_secret: %v", err)
+	key, err := filepath.Abs(dataDir)
+	if err != nil {
+		key = dataDir
+	}
+	runMarkerSecretsMu.RLock()
+	if _, ok := runMarkerSecrets[key]; ok {
+		runMarkerSecretsMu.RUnlock()
+		return
+	}
+	runMarkerSecretsMu.RUnlock()
+
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		log.Printf("[marker] mkdir for run_marker_secret dir=%q: %v", dataDir, err)
+		return
+	}
+	path := filepath.Join(dataDir, "run_marker_secret")
+	var sec []byte
+	if data, rerr := os.ReadFile(path); rerr == nil && len(data) >= 32 {
+		sec = make([]byte, 32)
+		copy(sec, data[:32])
+	} else {
+		sec = newRunMarkerSecret()
+		if werr := os.WriteFile(path, sec, 0o600); werr != nil {
+			log.Printf("[marker] write run_marker_secret dir=%q: %v (not caching)", dataDir, werr)
 			return
 		}
-		path := filepath.Join(dataDir, "run_marker_secret")
-		if data, err := os.ReadFile(path); err == nil && len(data) >= 32 {
-			sec := make([]byte, 32)
-			copy(sec, data[:32])
-			runMarkerSecretMu.Lock()
-			runMarkerSecret = sec
-			runMarkerSecretMu.Unlock()
-			return
+	}
+	runMarkerSecretsMu.Lock()
+	if _, ok := runMarkerSecrets[key]; !ok {
+		runMarkerSecrets[key] = sec
+		// First successfully loaded durable dir becomes the MAC default so
+		// mint/verify for that service stays consistent after init.
+		if len(runMarkerSecrets) == 1 {
+			runMarkerActive = sec
 		}
-		sec := newRunMarkerSecret()
-		if err := os.WriteFile(path, sec, 0o600); err != nil {
-			log.Printf("[marker] write run_marker_secret: %v (using process-local secret)", err)
-		}
-		runMarkerSecretMu.Lock()
-		runMarkerSecret = sec
-		runMarkerSecretMu.Unlock()
-	})
+	}
+	runMarkerSecretsMu.Unlock()
 }
 
 func currentRunMarkerSecret() []byte {
-	runMarkerSecretMu.RLock()
-	defer runMarkerSecretMu.RUnlock()
-	out := make([]byte, len(runMarkerSecret))
-	copy(out, runMarkerSecret)
+	runMarkerSecretsMu.RLock()
+	defer runMarkerSecretsMu.RUnlock()
+	out := make([]byte, len(runMarkerActive))
+	copy(out, runMarkerActive)
 	return out
 }
 
-// runMarkerMAC returns a short, non-forgeable tag binding kind+id to this
-// process's runMarkerSecret. kind namespaces the different marker families
-// (fcp = flow context package, cc = change contract) so a MAC computed for
-// one cannot be replayed as the other.
+// runMarkerMAC returns a short, non-forgeable tag binding kind+id.
 func runMarkerMAC(kind, id string) string {
 	mac := hmac.New(sha256.New, currentRunMarkerSecret())
 	mac.Write([]byte(kind))
@@ -120,15 +126,29 @@ func runMarkerMAC(kind, id string) string {
 	return hex.EncodeToString(mac.Sum(nil))[:16]
 }
 
-// verifyRunMarkerMAC reports whether tag is the correct MAC for kind+id,
-// using a constant-time comparison (hmac.Equal) so this check itself does
-// not leak timing information about the secret.
+// verifyRunMarkerMAC reports whether tag is the correct MAC for kind+id.
+// Accepts the active secret or any loaded per-dir secret (multi-store in-process).
 func verifyRunMarkerMAC(kind, id, tag string) bool {
 	if tag == "" {
 		return false
 	}
 	want := runMarkerMAC(kind, id)
-	return hmac.Equal([]byte(tag), []byte(want))
+	if hmac.Equal([]byte(tag), []byte(want)) {
+		return true
+	}
+	runMarkerSecretsMu.RLock()
+	defer runMarkerSecretsMu.RUnlock()
+	for _, sec := range runMarkerSecrets {
+		m := hmac.New(sha256.New, sec)
+		m.Write([]byte(kind))
+		m.Write([]byte{0})
+		m.Write([]byte(id))
+		w := hex.EncodeToString(m.Sum(nil))[:16]
+		if hmac.Equal([]byte(tag), []byte(w)) {
+			return true
+		}
+	}
+	return false
 }
 
 // flowContextTrustedMarker returns a run-scoped inject token only ComposeFlowCodingPrompt

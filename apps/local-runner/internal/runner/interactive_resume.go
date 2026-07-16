@@ -840,7 +840,8 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		sourceDocID:            st.SourceDocID,
 		turnCount:              st.TurnCount,
 		subs:                   map[int64]chan ProviderEvent{},
-		idempotency:            map[string]string{},
+		// BUG-288 R16-P0: restore durable idempotency keys (not empty map).
+		idempotency:            copyStringMap(st.IdempotencyKeys),
 		resumedFromDisk:           true,
 		pendingAgentContext:       append([]string(nil), st.PendingAgentContext...),
 		pendingFlowGateSettle:     st.PendingFlowGateSettle,
@@ -892,6 +893,9 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		pendingRestartPrompt:      st.PendingRestartPrompt,
 		pendingRestartGen:         st.PendingRestartGen,
 		flowContextInjected:       st.FlowContextInjected,
+	}
+	if rs.idempotency == nil {
+		rs.idempotency = map[string]string{}
 	}
 	// V10R P1: re-engage flow executor when topology was restored (needed for
 	// child approval resume to stamp parent step RUNNING after restart).

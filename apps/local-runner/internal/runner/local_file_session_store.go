@@ -136,6 +136,8 @@ type ndjsonSessionRecord struct {
 	PendingRestartRunID               string   `json:"pending_restart_run_id,omitempty"`
 	PendingRestartPrompt              string   `json:"pending_restart_prompt,omitempty"`
 	PendingRestartGen                 int64    `json:"pending_restart_gen,omitempty"`
+	// BUG-288 R16-P0: durable startTurn idempotency keys (durable-* prefix).
+	IdempotencyKeys                   map[string]string `json:"idempotency_keys,omitempty"`
 	// BUG-288 R13-16: durable flag so restart does not double-inject Flow Context.
 	FlowContextInjected               bool     `json:"flow_context_injected,omitempty"`
 	StopGeneration                    int64    `json:"stop_generation,omitempty"`
@@ -429,6 +431,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		PendingRestartRunID:             r.PendingRestartRunID,
 		PendingRestartPrompt:            r.PendingRestartPrompt,
 		PendingRestartGen:               r.PendingRestartGen,
+		IdempotencyKeys:                 copyStringMap(r.IdempotencyKeys),
 		FlowContextInjected:             r.FlowContextInjected,
 		StopGeneration:                  r.StopGeneration,
 		ParentStopGenSeen:               r.ParentStopGenSeen,
@@ -866,6 +869,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		PendingRestartRunID:             s.PendingRestartRunID,
 		PendingRestartPrompt:            s.PendingRestartPrompt,
 		PendingRestartGen:               s.PendingRestartGen,
+		IdempotencyKeys:                 copyStringMap(s.IdempotencyKeys),
 		FlowContextInjected:             s.FlowContextInjected,
 		StopGeneration:                  s.StopGeneration,
 		ParentStopGenSeen:               s.ParentStopGenSeen,
