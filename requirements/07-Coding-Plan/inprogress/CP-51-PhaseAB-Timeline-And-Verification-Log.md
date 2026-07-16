@@ -182,43 +182,115 @@ go test ./internal/runner/ -count=1 -timeout 15m -run 'TestCodexE2E|TestClaudeE2
 
 Ghi ☐ khi pass. Chạy với desktop + `flowpilot serve`, project git thật.
 
+**Preconditions (mọi scenario):**
+
+| Item | Default / note |
+|------|----------------|
+| V2 dispatch | **default ON** (kill-switch: `FLOWPILOT_DISPATCH_V2=0`) |
+| Project | Git repo open in desktop; note `project_id` (UUID under `.flowpilot/chats/`) |
+| Evidence roots | `.flowpilot/chats/<project_id>/dispatch.ndjson`, `run-<id>-turns.ndjson`, runner stdout |
+| Grok account | Home có auth (`~/.grok` hoặc account-home override); YOLO theo project setting |
+
+**Cách ghi evidence (copy vào §5 notes):**
+
+1. `run_id` / `turn_id` / wall-clock start→end  
+2. Tail `dispatch.ndjson` cho turn đó (states + revision)  
+3. 3–5 dòng server log quan trọng (`[turn-params]`, `[grok-acp]`, `[dispatch]` nếu có)  
+4. Screenshot UI nếu attention card / gate card
+
 ### 3.1 Phase A — Flow graph
 
-| # | Scenario | Expect | ☐ |
-|---|----------|--------|---|
-| A1 | Chat Mode bug sub-mode → pick **Review Loop** | Agents board spawn coder → reviewers cohort | |
-| A2 | Coder complete, both reviewers complete | Cohort join → hub synthesis turn (không hang RUNNING mãi) | |
-| A3 | YOLO off: child needs approval | Card surface; Stop/Skip/Retry stall policy nếu stall | |
-| A4 | Stop mid-flow from hub | Loop stopped; steps không stuck RUNNING giả | |
-| A5 | Restart server mid-flow (local) | Timeline/step restore hợp lý (239); không cancel synthesis DONE giả | |
-| A6 | Coding child + code change | Tier-1 doc/scope gate / reprompt về đúng child (242); không gate sau Completed mù | |
-| A7 | Flow có validate node (rag-harness nếu dùng) | Retry lifecycle reinvoke implement (279 class) | |
+| # | Scenario | Steps | Expect | Evidence | ☐ |
+|---|----------|-------|--------|----------|---|
+| A1 | Review Loop spawn | Chat Mode → bug sub-mode → pick **Review Loop** → start | Agents board: hub + coder + reviewer slots; không chỉ 1 agent mồ côi | UI agents + timeline steps | |
+| A2 | Cohort join → synthesis | Để coder + cả 2 reviewers complete | Cohort join; hub **synthesis** turn chạy; không hang `RUNNING` mãi | Timeline: join then hub step advance | |
+| A3 | YOLO off approval | Project YOLO=off; child tool/permission | Approval / gate card surface; stall policy Stop/Skip/Retry nếu stall | Card + log gate | |
+| A4 | Stop mid-flow | Hub running; bấm Stop | Loop stopped; steps không stuck `RUNNING` giả; children cancel/settle | Timeline terminal; no ghost RUNNING | |
+| A5 | Restart mid-flow | Kill serve mid-flow; restart; reopen project | Timeline/step restore (239); không fake-cancel synthesis `DONE` | Before/after step states | |
+| A6 | Tier-1 code gate | Coding child edit code ngoài/scope doc | Tier-1 doc/scope gate / reprompt **về đúng child**; không gate sau Completed mù | Gate card on child run | |
+| A7 | Validate retry (optional) | Flow có validate node (rag-harness…) | Retry lifecycle reinvoke implement (279-class) | Step retry count | |
+| A8 | Parent stop gen | Stop parent khi child còn in-flight | Child không re-enter với gen cũ; stop generation advances | Log stop gen + child cancel | |
+| A9 | Inline skip terminal | Flow edge skip/terminal | Không advance sai node; synthesis settle một lần | Timeline one decision/turn | |
+| A10 | Second turn same flow | Sau A2, user message thêm trên hub | Không re-resolve workflow→flowRef mù (chỉ turn 0); timeline append đúng | Log `[flow-ref-resolve] bailing, turnCount=` | |
 
 ### 3.2 Phase B — Context / change contract
 
-| # | Scenario | Expect | ☐ |
-|---|----------|--------|---|
-| B1 | Coding child declares scope / change contract | Downstream re-entry (Continue/retry) có contract inject | |
-| B2 | Reviewer turn | Không overwrite contract của coder (dirty tree) | |
-| B3 | Context package / head | Feature history không double-inject sai (FCP / handoff) | |
+| # | Scenario | Steps | Expect | Evidence | ☐ |
+|---|----------|-------|--------|----------|---|
+| B1 | Contract inject | Coding child declare scope/contract; Continue/retry | Downstream re-entry có contract inject | Prompt/log excerpt có contract | |
+| B2 | Reviewer dirty tree | Reviewer turn sau coder edits | Không overwrite contract của coder | Contract owner still coder | |
+| B3 | No double FCP | Flow context + feature history head | Không double-inject feature history | Rendered package / head once | |
+| B4 | Source excerpt | Context sources enabled | Excerpt/bindings appear; missing source fails closed hoặc skip theo config | Context package sections | |
+| B5 | Gate × contract | YOLO off + contract change mid-flow | Gate tier đúng; contract không mất sau approve | Card + re-entry prompt | |
 
 ### 3.3 CP-51 — Durable turn (+ Task-258 Drive)
 
-| # | Scenario | Expect | ☐ |
-|---|----------|--------|---|
-| C1 | `FLOWPILOT_DISPATCH_V2=1`, one chat turn | File `.flowpilot/chats/<project_id>/dispatch.ndjson` có dòng prepared→… | |
-| C2 | Kill runner sau turn started, trước complete | Restart: record send_started hoặc uncertain; không silent loss | |
-| C3 | Stop ngay trước send | `stopped_before_send` / terminal_cancelled; không double prompt provider | |
-| C4 | Uncertain surface | Desktop **Dispatch attention** card; abandon/mark works | |
-| C5 | Chat sync project to Drive + restore on 2nd machine | Session + **dispatch** log restored under same project_id | |
-| C6 | Claude/Gemini default | V2 start rejected / disabled trừ allow-list env | |
+| # | Scenario | Steps | Expect | Evidence | ☐ |
+|---|----------|-------|--------|----------|---|
+| C1 | Happy path simple chat | Grok project, message ngắn (vd. `hello grok`) | `dispatch.ndjson`: `prepared` → `send_claimed` → `send_started` → `terminal_completed`; `run-*-turns.ndjson` có prompt + `grok_session` | State sequence + outcome `completed` | |
+| C2 | Crash after send | Kill runner sau `send_started`, trước complete; restart | Record còn `send_started` hoặc recovery → `uncertain`/`settle`; **không** silent loss turn | Pre/post dispatch rows | |
+| C3 | Stop before send | Stop ngay sau prepared / trước provider accept | `stopped_before_send` / `terminal_cancelled`; **không** double `session/prompt` | State + single prompt in turns log | |
+| C4 | Stop during stream | Stop khi model đang stream | Terminal cancelled/stopped; UI idle; không orphan `turnInFlight` | UI + terminal evidence | |
+| C5 | Uncertain surface | Force uncertain (crash mid-send) | Desktop **Dispatch attention** card; abandon / mark-complete operator actions | Card + CAS row | |
+| C6 | Drive sync round-trip | Sync project chats → Drive; machine B restore same `project_id` | Session + **dispatch** log restore; no empty overwrite of newer local | Both machines files | |
+| C7 | Provider allow-list | Claude/Gemini default; optional `FLOWPILOT_DISPATCH_V2_PROVIDERS=` | V2 start rejected / stay V1 unless allow-list | Log start path | |
+| C8 | Kill-switch | `FLOWPILOT_DISPATCH_V2=0`, new run | New turns pure V1; existing V2 rows still readable | Log kill-switch line | |
+| C9 | Concurrent two runs | Two projects / two runs parallel Grok | Separate dispatch files/rows; no cross project_id | Two `dispatch.ndjson` | |
+| C10 | Second turn session reuse | After C1, second message same run | Reuses provider session when possible; new turn_id; new prepared→terminal; **faster** than cold start (no full cold MCP if process warm) | Turns log `grok_session` + wall time | |
+| C11 | Envelope / hash | Inspect prepared envelope | `envelope_hash` stable; `prompt_sha256` matches prompt bytes; model/yolo recorded | Prepared row fields | |
+| C12 | Recovery attach epoch | After recovery path | `recovery_attach_epoch` increments when attach/settle; no double terminal | Revision sequence | |
 
 ### 3.4 Cross-cut smoke
 
 | # | Scenario | Expect | ☐ |
 |---|----------|--------|---|
-| X1 | Full review-loop happy path + V2 on | Flow complete + dispatch terminal rows | |
+| X1 | Full review-loop happy path + V2 on | Flow complete + dispatch terminal rows per AI turn | |
 | X2 | `go test` §2.2 + §2.4 + §2.5 green | No new red in those patterns | |
+| X3 | Simple chat latency sanity | First Grok turn cold: expect **~15–40s** wall (session/new + MCP + model). Not a CP-51 bug if dispatch already terminal_completed | |
+| X4 | Log noise sanity | Server may dump full `[grok-acp]` frames (initialize/session/new/tools). User prompt 10 bytes ≠ log size. See §3.5 | |
+
+### 3.5 Worked example — run-1510 (`hello grok`) — 2026-07-17
+
+**User prompt:** `hello grok` (10 bytes). **Run:** `run-1510` / **turn:** `turn-1512`. **Project:** `db51ec26-1a0f-4b92-8ceb-b03dc8e9b363`. **cwd:** `…/BE/gate-sandbox`. **Provider:** Grok 4.5, YOLO=true, reasoning=medium.
+
+#### Timeline (wall clock from server log)
+
+| t | Event | Ý nghĩa |
+|---|--------|---------|
+| 05:43:22 | `[flow-ref-resolve] … bailing, no workflowID set on this run` | **Chat Mode thuần**, không Flow Mode — **bình thường**, không lỗi |
+| 05:43:22 | `[grok-acp] send initialize` | Spawn/handshake process Grok ACP |
+| 05:43:23 | `initialize` result + MCP servers_updated (drive/jira/telegram) | Agent process up; large capability payload |
+| 05:43:23 | `[prompt] … bytes=10` + `[turn-params] provider=grok model=grok-4.5 yolo=true` | User text thật sự chỉ 10 bytes |
+| 05:43:23 | V2 dispatch: prepared → send_claimed → send_started (~ms) | **CP-51 path OK** — overhead gần như 0 so với Grok |
+| 05:43:23–25 | `session/new` + announcements + settings + **huge** available_commands (skills local+user) | Session cold start; log dài vì dump full JSON |
+| 05:43:25 | `_x.ai/mcp/init_progress` total=4 | MCP init (permission MCP + jira + telegram + …) |
+| 05:43:25–50 | Model work | `apiDurationMs≈19907` (~20s); `inputTokens≈13296` (system/skills/cwd context, **không** phải 10-byte user) |
+| 05:43:50 | `turn_completed` / `session/prompt` result / notification | Done; output ~121 tokens |
+
+**Dispatch evidence (local file, verified):**
+
+```text
+seq1 prepared  → seq2 send_claimed → seq3 send_started → seq4 terminal_completed
+outcome=completed  recovery_attach_epoch=1 on terminal
+turns: prompt "hello grok" + grok_session 019f6d19-5417-7fb3-8421-2fb5a8dfdc76
+```
+
+#### Vì sao log “quá nhiều” và “lâu” dù chat simple?
+
+| Nguyên nhân | Có phải bug CP-51? | Ghi chú |
+|-------------|-------------------|---------|
+| Runner log **mọi frame ACP** qua `logGrokFrameDebug` (full JSON sau redact) | Không | `initialize`, `session/new`, `available_commands_update` (hàng chục skills) = kilobytes/log line |
+| **Cold session**: process + `initialize` + `session/new` + MCP | Không | First turn on new session; second turn thường rẻ hơn |
+| **MCP list** (jira HTTP, telegram stdio, permission MCP, …) | Không (config) | `mcp/init_progress total=4` — chờ connect làm trễ wall clock |
+| **Skills / repo context** nạp vào prompt | Không | ~13k input tokens dù user chỉ “hello grok” |
+| Model API ~20s | Không | `apiDurationMs: 19907` — latency Grok cloud + reasoning medium |
+| Streaming thought/message chunks | Không | UI/log có thể spam chunk; server log truncated middle là expected |
+| `flow-ref-resolve` bail | Không | Expected cho plain chat (no workflowID) |
+| Dispatch V2 4 states | Không | ~27ms prepare→send_started; terminal sau model | |
+
+**Kết luận operator:** run-1510 **thành công** (V2 terminal_completed + UI notification). Cảm giác “chậm + log dài” = **Grok ACP cold path + verbose frame logging + MCP/skills**, không phải dispatch SM hang.
+
+**Gợi ý cải thiện log (product, OOS CP-51):** truncate `available_commands` / settings frames; log summary thay vì full JSON; debug flag cho raw ACP; warm process pool; optional skip MCP cho chat-only projects.
 
 ---
 
@@ -245,16 +317,35 @@ go test ./internal/runner/ -count=1 -timeout 5m \
 
 Ghi kết quả vào §5.
 
+### 4.1 Live evidence commands (sau mỗi desktop scenario)
+
+```bash
+# project_id from desktop / sessions
+PROJECT=db51ec26-1a0f-4b92-8ceb-b03dc8e9b363
+RUN=run-1510
+
+# Dispatch state machine for latest turns
+tail -n 20 .flowpilot/chats/$PROJECT/dispatch.ndjson | jq -c '{seq,state:.record.state,turn:.record.turn_id,outcome:.record.outcome}'
+
+# Turn log (prompt + provider session)
+cat .flowpilot/chats/${RUN}-turns.ndjson
+
+# Grep runner log (if redirected)
+# rg 'run-1510|turn-1512|grok-acp|flow-ref-resolve|dispatch' serve.log
+```
+
 ---
 
 ## 5. Run log (điền khi verify)
 
-| Date | Who | Command block | Result | Notes |
-|------|-----|---------------|--------|-------|
+| Date | Who | Command / scenario | Result | Notes |
+|------|-----|--------------------|--------|-------|
+| 2026-07-17 | tiendat | Live **C1** run-1510 `hello grok` | ☑ pass (V2 terminal_completed) | See §3.5; wall ~28s cold Grok; log verbose ACP expected |
 | | | §4 one-shot | ☐ pass / ☐ fail | |
-| | | Live A1–A7 | ☐ | |
-| | | Live B1–B3 | ☐ | |
-| | | Live C1–C6 | ☐ | |
+| | | Live A1–A10 | ☐ | |
+| | | Live B1–B5 | ☐ | |
+| | | Live C2–C12 | ☐ | |
+| | | Live X1–X4 | ☐ | |
 
 ---
 
@@ -263,7 +354,9 @@ Ghi kết quả vào §5.
 - CP-51 **full barrier matrix B0…B8e + model suite** chưa đủ (Task-255 phase 2).
 - Live provider e2e (Codex/Claude/Grok) phụ thuộc account/env.
 - BUG-288 formal status vẫn `inprogress` đến re-review sạch + CP-51 closure.
-- Desktop DispatchAttentionCard cần runner V2 + store wired (`FLOWPILOT_DISPATCH_V2=1`).
+- Desktop DispatchAttentionCard cần runner V2 + store (V2 default-on; kill-switch `=0`).
+- **Log volume:** full ACP frame dump làm first-turn log “nặng” — không phải failure signal (xem §3.5).
+- Cold Grok first turn 15–40s với MCP+skills là baseline hiện tại, không dùng làm failure cho C1 nếu dispatch terminal + reply OK.
 
 ---
 
