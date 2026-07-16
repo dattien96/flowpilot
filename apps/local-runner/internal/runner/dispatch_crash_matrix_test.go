@@ -169,28 +169,37 @@ func TestCrashMatrix_StopWinsLinearization_ZeroSend(t *testing.T) {
 	}
 }
 
-func TestCrashMatrix_RealPostgresOptional(t *testing.T) {
-	dsn := os.Getenv("FLOWPILOT_TEST_SUPABASE_DSN")
-	if dsn == "" {
-		t.Skip("set FLOWPILOT_TEST_SUPABASE_DSN for real-PG contract run")
-	}
-	store, err := NewSupabaseDispatchStoreFromDSN(dsn)
+func TestCrashMatrix_MultiProjectShardAndExportImport(t *testing.T) {
+	root := t.TempDir()
+	store, err := OpenDispatchStoreForServe(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	hub := store.(*multiProjectDispatchStore)
 	ctx := context.Background()
-	// Smoke: CreatePrepared + GetRunProtocolVersion.
-	rec := testPrepared("pg-run", "pg-turn")
-	env := testEnvelope("pg-run", "pg-turn")
+	rec := testPrepared("r1", "t1")
+	rec.ProjectID = "proj-a"
+	env := testEnvelope("r1", "t1")
 	if err := store.CreatePrepared(ctx, rec, env); err != nil {
 		t.Fatal(err)
 	}
-	ver, err := store.GetRunProtocolVersion(ctx, "pg-run")
+	raw, err := hub.ExportProjectLog("proj-a")
+	if err != nil || len(raw) == 0 {
+		t.Fatalf("export: len=%d err=%v", len(raw), err)
+	}
+	// Import into a fresh hub root (simulate other machine).
+	root2 := t.TempDir()
+	store2, err := OpenDispatchStoreForServe(root2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ver < 0 {
-		t.Fatalf("bad version %d", ver)
+	hub2 := store2.(*multiProjectDispatchStore)
+	if err := hub2.ImportProjectLog("proj-a", raw); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := store2.Get(ctx, "r1", "t1")
+	if err != nil || got.State != DispatchPrepared {
+		t.Fatalf("import restore: %+v err=%v", got, err)
 	}
 }
 

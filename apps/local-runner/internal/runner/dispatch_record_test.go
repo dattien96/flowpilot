@@ -37,6 +37,7 @@ func testPrepared(runID, turnID string) DispatchRecord {
 		ProtocolVersion:  DispatchProtocolV2,
 		TurnID:           turnID,
 		RunID:            runID,
+		ProjectID:        "proj-test",
 		IntentOwnerRunID: runID,
 		State:            DispatchPrepared,
 		EnvelopeHash:     env.EnvelopeHash,
@@ -174,8 +175,17 @@ func TestDispatchStore_ContractSuite(t *testing.T) {
 		defer store.Close()
 		runStoreContract(t, store, "local")
 	})
-	t.Run("supabase-fake", func(t *testing.T) {
-		runStoreContract(t, NewSupabaseDispatchStore(), "sb")
+	t.Run("multi-project-local", func(t *testing.T) {
+		root := t.TempDir()
+		store, err := OpenDispatchStoreForServe(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runStoreContract(t, store, "mp")
+		// Shard path exists for project on record.
+		if _, err := os.Stat(DispatchLogPath(root, "proj-test")); err != nil {
+			t.Fatalf("expected per-project log: %v", err)
+		}
 	})
 }
 
@@ -388,7 +398,7 @@ func TestRetryAsNew_SupersededIntentRejected(t *testing.T) {
 
 func TestRecordEffectDone_UniqueKeyIdempotent(t *testing.T) {
 	ctx := context.Background()
-	for _, store := range []DispatchStore{NewMemoryDispatchStore(), NewSupabaseDispatchStore()} {
+	for _, store := range []DispatchStore{NewMemoryDispatchStore()} {
 		_, err := store.RecordEffectDone(ctx, "r1", "t1", "cohort:c1:child", []byte(`{"a":1}`), "h1")
 		if err != nil {
 			t.Fatal(err)

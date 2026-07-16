@@ -108,6 +108,9 @@ type DispatchRecord struct {
 	ProtocolVersion         int               `json:"protocol_version"`
 	TurnID                  string            `json:"turn_id"`
 	RunID                   string            `json:"run_id"`
+	// ProjectID scopes the per-project dispatch.ndjson shard
+	// (.flowpilot/chats/<project_id>/dispatch.ndjson) and Drive sync.
+	ProjectID               string            `json:"project_id,omitempty"`
 	IntentOwnerRunID        string            `json:"intent_owner_run_id,omitempty"`
 	State                   DispatchState     `json:"state"`
 	StopOutcome             string            `json:"stop_outcome,omitempty"`

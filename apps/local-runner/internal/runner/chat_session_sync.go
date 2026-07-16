@@ -595,6 +595,12 @@ func (s *InteractiveService) syncChatRunToDrive(ctx context.Context, runID strin
 		return ChatSessionSyncResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
 
+	// CP-51: upload per-project dispatch.ndjson alongside chat sessions so another
+	// machine can restore durable turn state (best-effort — session sync still wins).
+	if dispErr := s.syncDispatchLogToDrive(ctx, projectID, accessToken, rootFolderID); dispErr != nil {
+		log.Printf("[chat-sync] dispatch upload failed project=%s: %v", projectID, dispErr)
+	}
+
 	if syncErr := s.updateLocalSessionSyncStatus(ctx, runID, func(state *ProviderSessionState) {
 		state.SourceMachineID = manifest.SourceMachineID
 		state.SourceRunID = manifest.SourceRunID
@@ -788,6 +794,10 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 	rootFolderID, accessToken, driveErr := s.ensureChatSessionDriveRoot(projectID)
 	if driveErr != nil {
 		return ChatSessionRestoreResult{}, driveErr
+	}
+	// CP-51: restore dispatch log before session/run resume so recovery sees durable states.
+	if dispErr := s.restoreDispatchLogFromDrive(ctx, projectID, accessToken, rootFolderID); dispErr != nil {
+		log.Printf("[chat-sync] dispatch restore failed project=%s: %v", projectID, dispErr)
 	}
 	indexFile, err := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, "chat-sessions/_index/sessions.ndjson")
 	if err != nil {

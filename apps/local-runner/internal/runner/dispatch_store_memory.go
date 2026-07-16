@@ -59,6 +59,11 @@ func newMemoryDispatchStore() *memoryDispatchStore {
 	}
 }
 
+// NewMemoryDispatchStore is the public in-memory backend (tests + fallback).
+func NewMemoryDispatchStore() DispatchStore {
+	return newMemoryDispatchStore()
+}
+
 func (s *memoryDispatchStore) clock() time.Time {
 	if s.now != nil {
 		return s.now().UTC()

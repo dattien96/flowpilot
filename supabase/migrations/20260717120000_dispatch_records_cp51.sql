@@ -1,5 +1,9 @@
--- CP-51 / SD-24: durable turn dispatch tables + transactional RPCs (core subset).
--- Full parity with local DispatchStore; runner client calls these via PostgREST rpc/.
+-- CP-51 / SD-24: durable turn dispatch tables + transactional RPCs (optional/legacy).
+-- Product path is local per-project NDJSON + Google Drive sync:
+--   .flowpilot/chats/<project_id>/dispatch.ndjson
+--   Drive: chat-sessions/dispatch/dispatch.ndjson
+-- These tables remain available if a deployment wants cloud-DB authority later;
+-- the local-runner no longer opens a Supabase dispatch store by default.
 
 -- Non-prunable run protocol activation (V2 authority).
 create table if not exists public.run_protocol_activations (
