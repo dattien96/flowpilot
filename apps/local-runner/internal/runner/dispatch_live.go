@@ -10,12 +10,23 @@ import (
 	"sync"
 )
 
-// DispatchV2EnvEnabled reports whether FLOWPILOT_DISPATCH_V2 requests the V2 path
-// for new runs. Once a run has V2 activation, automated dispatch always uses the
-// store even if the flag is later flipped off (SD-24 §9 — never reinterpret V2 under V1).
+// DispatchV2EnvEnabled reports whether new runs use the durable V2 dispatch path.
+// Default is ON (CP-51 product path). Opt out only with an explicit kill switch:
+// FLOWPILOT_DISPATCH_V2=0|false|no|off. Once a run has V2 activation, the store
+// remains authority even if the kill switch is set (SD-24 §9 — never reinterpret
+// V2 records under V1 semantics; flag-off only blocks new V1-style accept of V2 runs).
 func DispatchV2EnvEnabled() bool {
 	v := strings.TrimSpace(os.Getenv("FLOWPILOT_DISPATCH_V2"))
-	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+	if v == "" {
+		return true // default V2
+	}
+	switch strings.ToLower(v) {
+	case "0", "false", "no", "off", "disable", "disabled":
+		return false
+	default:
+		// "1", "true", "yes", or any other value → V2 on
+		return true
+	}
 }
 
 // dispatchV2EnvEnabled is the unexported alias used inside the package.

@@ -128,16 +128,16 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				sessionStore,
 			)
 			// CP-51: per-project local dispatch logs under chats/<project_id>/dispatch.ndjson.
-			// Drive chat-sync uploads/downloads that shard (not Supabase tables).
-			// Controlled by FLOWPILOT_DISPATCH_V2; once a run is activated V2, store is authority.
+			// Drive chat-sync uploads/downloads that shard. V2 is default; kill switch
+			// FLOWPILOT_DISPATCH_V2=0 restores pure V1 for runs that are not yet V2-activated.
 			if ds, err := runner.OpenDispatchStoreForServe(storeDir); err != nil {
-				log.Printf("[runner] dispatch store open failed: %v (V2 dispatch disabled until fixed)", err)
+				log.Printf("[runner] dispatch store open failed: %v (durable dispatch unavailable)", err)
 			} else if ds != nil {
 				interactive.SetDispatchStore(ds)
 				if runner.DispatchV2EnvEnabled() {
-					log.Printf("[runner] FLOWPILOT_DISPATCH_V2 enabled; per-project dispatch under %s/<project_id>/", storeDir)
+					log.Printf("[runner] dispatch V2 default on; per-project logs under %s/<project_id>/", storeDir)
 				} else {
-					log.Printf("[runner] dispatch store ready (activate with FLOWPILOT_DISPATCH_V2=1); root=%s", storeDir)
+					log.Printf("[runner] dispatch V2 kill-switch (FLOWPILOT_DISPATCH_V2=0); store still loaded for existing V2 runs; root=%s", storeDir)
 				}
 			}
 			interactive.AttachRunner(instance)

@@ -318,3 +318,22 @@ func TestCapabilityEvidence_ClaudeGeminiAllowListOptIn(t *testing.T) {
 	}
 	// Still no Accepted seam — opt-in is three-outcome only until evidence wires receipt.
 }
+
+func TestDispatchV2DefaultOn(t *testing.T) {
+	t.Setenv("FLOWPILOT_DISPATCH_V2", "")
+	if !DispatchV2EnvEnabled() {
+		t.Fatal("empty env must default V2 on")
+	}
+	t.Setenv("FLOWPILOT_DISPATCH_V2", "0")
+	if DispatchV2EnvEnabled() {
+		t.Fatal("0 must kill-switch V2 off")
+	}
+	t.Setenv("FLOWPILOT_DISPATCH_V2", "false")
+	if DispatchV2EnvEnabled() {
+		t.Fatal("false must kill-switch V2 off")
+	}
+	t.Setenv("FLOWPILOT_DISPATCH_V2", "1")
+	if !DispatchV2EnvEnabled() {
+		t.Fatal("1 must keep V2 on")
+	}
+}
