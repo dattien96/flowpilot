@@ -135,6 +135,7 @@ type ndjsonSessionRecord struct {
 	// (ProviderSessionState already had these; NDJSON record was missing them).
 	PendingRestartRunID               string   `json:"pending_restart_run_id,omitempty"`
 	PendingRestartPrompt              string   `json:"pending_restart_prompt,omitempty"`
+	PendingRestartGen                 int64    `json:"pending_restart_gen,omitempty"`
 	// BUG-288 R13-16: durable flag so restart does not double-inject Flow Context.
 	FlowContextInjected               bool     `json:"flow_context_injected,omitempty"`
 	StopGeneration                    int64    `json:"stop_generation,omitempty"`
@@ -427,6 +428,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		PendingResumeQuestionChoices:    append([]string(nil), r.PendingResumeQuestionChoices...),
 		PendingRestartRunID:             r.PendingRestartRunID,
 		PendingRestartPrompt:            r.PendingRestartPrompt,
+		PendingRestartGen:               r.PendingRestartGen,
 		FlowContextInjected:             r.FlowContextInjected,
 		StopGeneration:                  r.StopGeneration,
 		ParentStopGenSeen:               r.ParentStopGenSeen,
@@ -863,6 +865,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		PendingResumeQuestionChoices:    append([]string(nil), s.PendingResumeQuestionChoices...),
 		PendingRestartRunID:             s.PendingRestartRunID,
 		PendingRestartPrompt:            s.PendingRestartPrompt,
+		PendingRestartGen:               s.PendingRestartGen,
 		FlowContextInjected:             s.FlowContextInjected,
 		StopGeneration:                  s.StopGeneration,
 		ParentStopGenSeen:               s.ParentStopGenSeen,

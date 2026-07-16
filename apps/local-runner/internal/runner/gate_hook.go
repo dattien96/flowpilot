@@ -168,9 +168,12 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	oracle := flowgate.RunOracleContext(ctx, cwd, baseline, diff, overrides)
 
 	// 5. Clear overrides for tests that are now green (sticky-until-green, DOD-07).
-	// oracle.Passed is populated by RunOracle from the same suite run — no second execution needed.
+	// BUG-288 R15-P0: revalidate epoch before any durable mutation (Stop can
+	// land between oracle finish and this write).
 	if oracle.EnvError == "" && !oracle.HasRegression && len(oracle.Passed) > 0 {
-		_ = flowgate.ClearOverrideIfGreen(dotFP, oracle.Passed)
+		if s.gateEpochStillValid(runID, epoch) {
+			_ = flowgate.ClearOverrideIfGreen(dotFP, oracle.Passed)
+		}
 	}
 
 	// 6. Build TurnResult for the evaluator.
@@ -267,12 +270,17 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	}
 
 	if len(violations) == 0 {
-		// V10R4 P0-03: revalidate epoch before any durable side effect.
+		// V10R4 P0-03 / BUG-288 R15-P0: revalidate epoch immediately before
+		// durable side effects; recheck after commit so a Stop mid-write still
+		// treats the gate as blocked for outer completion fan-out.
 		if !s.gateEpochStillValid(runID, epoch) {
 			return true
 		}
 		// V9-02: only persist contract + canonical head after gate allows.
 		commitChangeContract(cwd, prepared)
+		if !s.gateEpochStillValid(runID, epoch) {
+			return true
+		}
 		return false
 	}
 
@@ -676,11 +684,15 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 
 	violations := flowgate.Evaluate(tr, only)
 	if len(violations) == 0 {
+		// BUG-288 R15-P0: epoch check immediately before durable writes.
 		if !s.gateEpochStillValid(runID, epoch) {
 			return true
 		}
 		if hasPreparedContract {
 			commitChangeContract(cwd, prepared)
+		}
+		if !s.gateEpochStillValid(runID, epoch) {
+			return true
 		}
 		s.mu.Lock()
 		if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
@@ -774,8 +786,15 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		return true
 	}
 	// warn/approve: still commit prepared contract (turn allowed).
+	// BUG-288 R15-P0: epoch must still hold before durable contract write.
 	if hasPreparedContract {
+		if !s.gateEpochStillValid(runID, epoch) {
+			return true
+		}
 		commitChangeContract(cwd, prepared)
+		if !s.gateEpochStillValid(runID, epoch) {
+			return true
+		}
 	}
 	return false
 }

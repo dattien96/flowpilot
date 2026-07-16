@@ -26,9 +26,13 @@ const flowContextHandoffPrefix = "[FlowPilot flow context package]"
 // runMarkerSecret HMAC-binds double-injection markers (BUG-288 P1-20 / R13-16).
 // Prefer a durable file under the local session store dir so MAC verifies across
 // process restart; otherwise generate once at process start.
+// BUG-288 R15-P1: process-wide secret is initialized at most once (sync.Once) so
+// a second InteractiveService/workspace cannot clobber markers already minted
+// for an in-process service that is still running.
 var (
-	runMarkerSecretMu sync.RWMutex
-	runMarkerSecret   = newRunMarkerSecret()
+	runMarkerSecretMu   sync.RWMutex
+	runMarkerSecret     = newRunMarkerSecret()
+	runMarkerSecretOnce sync.Once
 )
 
 func newRunMarkerSecret() []byte {
@@ -47,52 +51,53 @@ func newRunMarkerSecret() []byte {
 }
 
 // initRunMarkerSecretForStore picks a durable secret directory from the
-// workflow store when possible (BUG-288 R14-04). LocalFileSessionStore already
-// inits on construction; this re-inits on service wire so ordering cannot skip
-// it. Non-NDJSON stores use a user-config default so pure-Supabase deploys still
-// keep MAC continuity (secondary guard: FlowContextInjected on session).
+// workflow store when possible (BUG-288 R14-04 / R15-P1). First successful
+// init in the process wins; later services do not reload a different secret.
 func initRunMarkerSecretForStore(store WorkflowStore) {
+	dir := ""
 	if ls, ok := store.(*localFileSessionStore); ok {
-		if d := ls.DataDir(); d != "" {
-			InitRunMarkerSecretFromDir(d)
-			return
+		dir = ls.DataDir()
+	}
+	if dir == "" {
+		base, err := os.UserConfigDir()
+		if err != nil || base == "" {
+			base = os.TempDir()
 		}
+		dir = filepath.Join(base, "flowpilot", "marker")
 	}
-	// Fallback: process-stable dir under user config (not project workspace).
-	base, err := os.UserConfigDir()
-	if err != nil || base == "" {
-		base = os.TempDir()
-	}
-	InitRunMarkerSecretFromDir(filepath.Join(base, "flowpilot", "marker"))
+	InitRunMarkerSecretFromDir(dir)
 }
 
 // InitRunMarkerSecretFromDir loads or creates a 32-byte secret at
-// dataDir/run_marker_secret so markers minted before restart still verify
-// after restart (BUG-288 R13-16). Safe to call multiple times; last load wins.
+// dataDir/run_marker_secret so markers mint before restart still verify after
+// restart (BUG-288 R13-16). BUG-288 R15-P1: only the first call in the process
+// installs the secret; subsequent calls are no-ops (avoids multi-service clobber).
 func InitRunMarkerSecretFromDir(dataDir string) {
 	if strings.TrimSpace(dataDir) == "" {
 		return
 	}
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		log.Printf("[marker] mkdir for run_marker_secret: %v", err)
-		return
-	}
-	path := filepath.Join(dataDir, "run_marker_secret")
-	if data, err := os.ReadFile(path); err == nil && len(data) >= 32 {
-		sec := make([]byte, 32)
-		copy(sec, data[:32])
+	runMarkerSecretOnce.Do(func() {
+		if err := os.MkdirAll(dataDir, 0o755); err != nil {
+			log.Printf("[marker] mkdir for run_marker_secret: %v", err)
+			return
+		}
+		path := filepath.Join(dataDir, "run_marker_secret")
+		if data, err := os.ReadFile(path); err == nil && len(data) >= 32 {
+			sec := make([]byte, 32)
+			copy(sec, data[:32])
+			runMarkerSecretMu.Lock()
+			runMarkerSecret = sec
+			runMarkerSecretMu.Unlock()
+			return
+		}
+		sec := newRunMarkerSecret()
+		if err := os.WriteFile(path, sec, 0o600); err != nil {
+			log.Printf("[marker] write run_marker_secret: %v (using process-local secret)", err)
+		}
 		runMarkerSecretMu.Lock()
 		runMarkerSecret = sec
 		runMarkerSecretMu.Unlock()
-		return
-	}
-	sec := newRunMarkerSecret()
-	if err := os.WriteFile(path, sec, 0o600); err != nil {
-		log.Printf("[marker] write run_marker_secret: %v (using process-local secret)", err)
-	}
-	runMarkerSecretMu.Lock()
-	runMarkerSecret = sec
-	runMarkerSecretMu.Unlock()
+	})
 }
 
 func currentRunMarkerSecret() []byte {

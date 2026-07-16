@@ -28,6 +28,7 @@ func TestLocalFileSessionStoreRoundTripsPendingRestartIntent(t *testing.T) {
 		UpdatedAt:            time.Now().UTC().Format(time.RFC3339Nano),
 		PendingRestartRunID:  "child-9",
 		PendingRestartPrompt: "[flow-engine] Retry: member stalled",
+		PendingRestartGen:    3,
 		FlowContextInjected:  true,
 	}
 	if err := store.UpsertProviderSession(context.Background(), sess); err != nil {
@@ -46,6 +47,9 @@ func TestLocalFileSessionStoreRoundTripsPendingRestartIntent(t *testing.T) {
 	}
 	if got.PendingRestartPrompt == "" {
 		t.Fatal("PendingRestartPrompt must round-trip")
+	}
+	if got.PendingRestartGen != 3 {
+		t.Fatalf("PendingRestartGen = %d, want 3", got.PendingRestartGen)
 	}
 	if !got.FlowContextInjected {
 		t.Fatal("FlowContextInjected must round-trip")

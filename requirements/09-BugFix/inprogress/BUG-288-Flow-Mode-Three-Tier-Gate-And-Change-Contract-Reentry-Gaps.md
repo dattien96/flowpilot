@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Vòng 9–12 Fixed (2026-07-16). **Vòng 13: R13-01…R13-27 Fixed**. **Vòng 14: R14-01…R14-04 Fixed (2026-07-16)** — xem §11. Status giữ `inprogress` đến khi Codex re-review pass sạch.
+- Vòng 9–14 Fixed. **Vòng 15 (Codex): R15-P0-01/02 + R15-P1-01/02 Fixed (2026-07-16)** — durable stall-retry delivery, gate epoch recheck before side effects, marker secret once, settle checkpoint fail-closed. Status giữ `inprogress` đến Codex re-review pass sạch.
 
 ### Key Decisions
 
@@ -1141,9 +1141,18 @@ Review lại diff Vòng 13 (Grok) + NEW-bug sweep (Claude). **Kết luận: khô
 
 **Ghi chú (không phải bug):** `emitLocked(EventTurnFailed)` + `stalledRetrySuppressCohort` → trailing TurnFailed với status Running là by design (interrupt-for-retry).
 
+### Vòng 15 — Codex findings after Vòng 14 (2026-07-16) — **Fixed**
+
+| ID | Sev | Finding | Fix |
+| ---- | --- | ------- | --- |
+| R15-P0-01 | P0 | Stall-retry: `PendingRestart*` persist nhưng recovery/live clear RAM rồi `startTurn` không idempotency → kẹt hoặc turn trùng | `PendingRestartGen` + `deliverPendingRestart` (claim + `durable-{child}-restart-{gen}`); flush qua `flushDurableTurnIntents` / tail runTurn / `resumePendingLoopWork` |
+| R15-P0-02 | P0 | Gate epoch check-then-act: Stop xen giữa check và `ClearOverrideIfGreen` / `commitChangeContract` | Recheck epoch ngay trước (và sau) mọi durable mutation ở root + child gate |
+| R15-P1-01 | P1 | Global marker secret bị service/workspace khác reload clobber | `sync.Once` trong `InitRunMarkerSecretFromDir` — first init wins |
+| R15-P1-02 | P1 | `PendingFlowGateSettle` persist best-effort | Retry once; on fail stamp `intentBlockedKind=gate_settle_checkpoint`, keep RAM settle (no Completed fan-out) |
+
 ## 12. Completion Notes
 
-- result: **inprogress** — Vòng 9–13 Fixed. **Vòng 14: R14-01…R14-04 Fixed (2026-07-16)** (skip flag leak, comment polish, doc pointer to CA-329, marker secret init on service wire). Document giữ `Status: inprogress` until clean Codex re-review.
+- result: **inprogress** — Vòng 9–15 Fixed (2026-07-16). Document giữ `Status: inprogress` until clean Codex re-review.
 - primary modules: `apps/local-runner/internal/runner/*`, `apps/local-runner/internal/flowgate/*`.
-- change-audit: `CA-328`, `CA-329` (Vòng 13), `CA-330` (Vòng 14 polish).
-- verification: Vòng 13 suites pass; Vòng 14 re-review found no P1/P2; R14 P3 closed.
+- change-audit: `CA-328`…`CA-331` (Vòng 15).
+- verification: Vòng 15 focused tests pass (`bug288_round15_test.go` + restart gen round-trip).

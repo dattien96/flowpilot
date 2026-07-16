@@ -890,6 +890,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		flowStartGitHead:          st.FlowStartGitHead,
 		pendingRestartRunID:       st.PendingRestartRunID,
 		pendingRestartPrompt:      st.PendingRestartPrompt,
+		pendingRestartGen:         st.PendingRestartGen,
 		flowContextInjected:       st.FlowContextInjected,
 	}
 	// V10R P1: re-engage flow executor when topology was restored (needed for
@@ -1241,6 +1242,13 @@ func (s *InteractiveService) flushDurableTurnIntents(runID string) {
 		failCount, failGen = rs.pendingResumeFailCount, rs.pendingResumeFailGen
 		kind = "resume"
 	}
+	// BUG-288 R15-P0: also flush durable stall-retry on this run (parent).
+	if rs.pendingRestartRunID != "" && rs.pendingRestartPrompt != "" {
+		parentID := rs.id
+		s.mu.Unlock()
+		go s.deliverPendingRestart(parentID)
+		return
+	}
 	if prompt == "" || stepID == "" {
 		s.mu.Unlock()
 		return
@@ -1323,6 +1331,13 @@ func (s *InteractiveService) claimDurableIntentLocked(rs *interactiveRun, kind, 
 		if rs.pendingResumeGen != gen ||
 			rs.pendingResumePrompt != prompt ||
 			rs.pendingResumeStepID != stepID {
+			return false
+		}
+	case "restart":
+		// stepID carries the child run id for stall-retry (BUG-288 R15-P0).
+		if rs.pendingRestartGen != gen ||
+			rs.pendingRestartPrompt != prompt ||
+			rs.pendingRestartRunID != stepID {
 			return false
 		}
 	default:

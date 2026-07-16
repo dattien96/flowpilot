@@ -358,6 +358,10 @@ func (a *alwaysFailingUpsertStore) AppendEvent(ctx context.Context, event Provid
 	return errAlwaysFail
 }
 
+func (a *alwaysFailingUpsertStore) UpsertProviderSession(ctx context.Context, session ProviderSessionState) error {
+	return errAlwaysFail
+}
+
 var errAlwaysFail = errUpsertAlwaysFails{}
 
 type errUpsertAlwaysFails struct{}

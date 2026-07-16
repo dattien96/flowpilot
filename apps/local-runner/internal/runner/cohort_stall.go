@@ -408,6 +408,12 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 				if parent := s.runs[parentRunID]; parent != nil {
 					parent.pendingRestartRunID = runID
 					parent.pendingRestartPrompt = prompt
+					// BUG-288 R15-P0: generation for durable claim + idempotency.
+					if parent.pendingRestartGen <= 0 {
+						parent.pendingRestartGen = 1
+					} else {
+						parent.pendingRestartGen++
+					}
 					parentSnap = sessionStateOf(parent)
 					havePersist = true
 				}

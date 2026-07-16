@@ -138,6 +138,8 @@ type interactiveRun struct {
 	pendingTurnPrompt    string
 	pendingRestartRunID  string
 	pendingRestartPrompt string
+	// pendingRestartGen (BUG-288 R15-P0) durable delivery generation for stall-retry.
+	pendingRestartGen int64
 	// uiInitiated marks a child run spawned from the desktop UI (not the AI spawn_agent
 	// tool). UI spawns are invisible to the parent's provider conversation, so the parent
 	// must be told about them out-of-band; tool spawns are already in provider history. (BUG-122)
@@ -773,6 +775,7 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 	if parent := s.runs[parentRunID]; parent != nil {
 		parent.pendingRestartRunID = ""
 		parent.pendingRestartPrompt = ""
+		parent.pendingRestartGen = 0
 		parent.autoOrchestrate = false
 		parent.reinvokeInFlight = false
 		parent.pendingHubReinvoke = false
@@ -2160,35 +2163,36 @@ func (s *InteractiveService) resumePendingLoopWork(parentRunID string) {
 		stepID string
 		prompt string
 	}
+	// BUG-288 R15-P0: stall-retry is durable + claimed; do not clear RAM then
+	// fire startTurn without idempotency.
+	s.mu.Lock()
+	hasRestart := false
+	if parent := s.runs[parentRunID]; parent != nil &&
+		parent.pendingRestartRunID != "" && parent.pendingRestartPrompt != "" {
+		hasRestart = true
+	}
+	allows := s.loopAllowsNextTurnLocked(parentRunID)
+	s.mu.Unlock()
+	if allows && hasRestart {
+		go s.deliverPendingRestart(parentRunID)
+		return
+	}
+
 	var next *pendingTurn
 	s.mu.Lock()
 	if !s.loopAllowsNextTurnLocked(parentRunID) {
 		s.mu.Unlock()
 		return
 	}
-	if parent := s.runs[parentRunID]; parent != nil && parent.pendingRestartRunID != "" && parent.pendingRestartPrompt != "" {
-		for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
-			child := s.runs[childID]
-			if child == nil || child.id != parent.pendingRestartRunID || child.turnInFlight {
-				continue
-			}
-			next = &pendingTurn{runID: child.id, stepID: child.stepID, prompt: parent.pendingRestartPrompt}
-			parent.pendingRestartRunID = ""
-			parent.pendingRestartPrompt = ""
-			break
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		child := s.runs[childID]
+		if child == nil || child.pendingTurnPrompt == "" || child.turnInFlight || !s.dependenciesSatisfiedLocked(child) {
+			continue
 		}
-	}
-	if next == nil {
-		for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
-			child := s.runs[childID]
-			if child == nil || child.pendingTurnPrompt == "" || child.turnInFlight || !s.dependenciesSatisfiedLocked(child) {
-				continue
-			}
-			next = &pendingTurn{runID: child.id, stepID: child.stepID, prompt: child.pendingTurnPrompt}
-			child.pendingTurnPrompt = ""
-			child.agentStatus = string(RunStatusRunning)
-			break
-		}
+		next = &pendingTurn{runID: child.id, stepID: child.stepID, prompt: child.pendingTurnPrompt}
+		child.pendingTurnPrompt = ""
+		child.agentStatus = string(RunStatusRunning)
+		break
 	}
 	s.mu.Unlock()
 	if next != nil {
@@ -2198,6 +2202,84 @@ func (s *InteractiveService) resumePendingLoopWork(parentRunID string) {
 		}
 		s.scheduleChildTurn(next.runID, next.stepID, prompt)
 	}
+}
+
+// deliverPendingRestart delivers a durable stall-retry intent on the parent
+// (BUG-288 R15-P0). Clears durable fields only AFTER startTurn accepts, with a
+// deterministic idempotency key so crash/replay cannot open a second provider
+// turn or leave the intent permanently stuck.
+func (s *InteractiveService) deliverPendingRestart(parentRunID string) {
+	s.mu.Lock()
+	parent := s.runs[parentRunID]
+	if parent == nil {
+		s.mu.Unlock()
+		return
+	}
+	childID := strings.TrimSpace(parent.pendingRestartRunID)
+	prompt := parent.pendingRestartPrompt
+	gen := parent.pendingRestartGen
+	if childID == "" || strings.TrimSpace(prompt) == "" {
+		s.mu.Unlock()
+		return
+	}
+	if gen == 0 {
+		// Legacy sessions without gen: assign once and persist so recovery can claim.
+		gen = 1
+		parent.pendingRestartGen = gen
+		snap := sessionStateOf(parent)
+		s.mu.Unlock()
+		_ = s.persistProviderSession(snap)
+		s.mu.Lock()
+		parent = s.runs[parentRunID]
+		if parent == nil {
+			s.mu.Unlock()
+			return
+		}
+	}
+	child := s.runs[childID]
+	if child == nil || child.turnInFlight {
+		s.mu.Unlock()
+		return
+	}
+	if !s.claimDurableIntentLocked(parent, "restart", prompt, childID, gen) {
+		s.mu.Unlock()
+		return
+	}
+	stepID := child.stepID
+	if stepID == "" {
+		stepID = "chat-" + childID
+	}
+	s.mu.Unlock()
+
+	idem := fmt.Sprintf("durable-%s-restart-%d", childID, gen)
+	_, apiErr := s.startTurn(childID, TurnInput{StepID: stepID, Prompt: prompt}, "", idem)
+	if apiErr != nil {
+		log.Printf("[stall-restart] startTurn failed parent=%s child=%s gen=%d code=%s: %s",
+			parentRunID, childID, gen, apiErr.code, apiErr.msg)
+		s.mu.Lock()
+		if p := s.runs[parentRunID]; p != nil {
+			releaseDurableIntentClaimLocked(p, "restart", gen)
+		}
+		s.mu.Unlock()
+		return
+	}
+	// Accepted: clear durable restart intent and persist parent.
+	s.mu.Lock()
+	if p := s.runs[parentRunID]; p != nil {
+		if p.pendingRestartGen == gen && p.pendingRestartRunID == childID {
+			p.pendingRestartRunID = ""
+			p.pendingRestartPrompt = ""
+			p.pendingRestartGen = 0
+		}
+		releaseDurableIntentClaimLocked(p, "restart", gen)
+		snap := sessionStateOf(p)
+		s.mu.Unlock()
+		if err := s.persistProviderSession(snap); err != nil {
+			log.Printf("[stall-restart] persist clear after accept parent=%s: %v", parentRunID, err)
+		}
+		return
+	}
+	s.mu.Unlock()
 }
 
 func (s *InteractiveService) emitAgentGraph(parentRunID string, snap AgentGraphSnapshot) {
@@ -2505,6 +2587,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		TransitionLogDegradedReason:       rs.transitionLogDegradedReason,
 		PendingRestartRunID:               rs.pendingRestartRunID,
 		PendingRestartPrompt:              rs.pendingRestartPrompt,
+		PendingRestartGen:                 rs.pendingRestartGen,
 		FlowContextInjected:               rs.flowContextInjected,
 	}
 }
@@ -3094,14 +3177,18 @@ func (s *InteractiveService) markPendingFlowGateSettleLocked(rs *interactiveRun,
 	if rs.parentRunID == "" {
 		snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
 	}
-	// BUG-288 P1-16: this checkpoint is what makes "gate still pending" durable
-	// across a crash. rs.status is already non-terminal (Running) regardless,
-	// so a failure here cannot fail-open into a published Completed — but it
-	// must not be silently swallowed either: log it loudly so operators can
-	// see a run whose gate-pending checkpoint may not survive a crash, instead
-	// of the previous fully-silent `_ = ...` discard.
+	// BUG-288 P1-16 / R15-P1: checkpoint must succeed before we treat settle as
+	// durable. On failure: retry once; if still failing, leave RAM settle true
+	// (blocks Completed fan-out) but stamp intent-blocked so operators see it
+	// and resume paths re-persist before publishing.
 	if err := s.persistProviderSession(snap); err != nil {
-		log.Printf("[flow-gate] persist pendingFlowGateSettle checkpoint run=%q turn=%q: %v (gate decision not yet durable; run kept non-terminal)", rs.id, rs.pendingFlowGateTurnID, err)
+		log.Printf("[flow-gate] persist pendingFlowGateSettle checkpoint run=%q turn=%q: %v (retrying once)", rs.id, rs.pendingFlowGateTurnID, err)
+		if err2 := s.persistProviderSession(snap); err2 != nil {
+			log.Printf("[flow-gate] persist pendingFlowGateSettle FAILED run=%q turn=%q: %v (settle kept in RAM only — gate pass will re-persist before fan-out; crash before that loses durable gate state)", rs.id, rs.pendingFlowGateTurnID, err2)
+			rs.intentBlockedKind = "gate_settle_checkpoint"
+			rs.intentBlockedReason = "pendingFlowGateSettle checkpoint not durable: " + err2.Error()
+			rs.intentBlockedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		}
 	}
 }
 
@@ -3266,6 +3353,11 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 								if !s.loopAllowsNextTurnLocked(rs.parentRunID) || child.turnInFlight {
 									parent.pendingRestartRunID = child.id
 									parent.pendingRestartPrompt = reviewText
+									if parent.pendingRestartGen <= 0 {
+										parent.pendingRestartGen = 1
+									} else {
+										parent.pendingRestartGen++
+									}
 								} else {
 									runID = child.id
 									prompt = reviewText
@@ -4810,6 +4902,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			if pendingRestartRunID != rs.id {
 				parent.pendingRestartRunID = ""
 				parent.pendingRestartPrompt = ""
+				parent.pendingRestartGen = 0
 			}
 		}
 	}
@@ -5133,23 +5226,10 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if !skipIdle {
 		s.notifyTurnIdle(rs.id)
 	}
-	// V9-06: fire pending stall-Retry restart after cancel OR clean complete.
-	if pendingRestartRunID == rs.id && pendingRestartPrompt != "" {
-		s.mu.Lock()
-		if parent := s.runs[rs.parentRunID]; parent != nil {
-			if parent.pendingRestartRunID == rs.id {
-				parent.pendingRestartRunID = ""
-				parent.pendingRestartPrompt = ""
-			}
-		}
-		s.mu.Unlock()
-		prompt, queued := s.takeQueuedFeedbackPrompt(rs.parentRunID, rs.id, pendingRestartPrompt)
-		if queued != nil {
-			s.recordAgentBus(rs.parentRunID, *queued)
-		}
-		go func(runID, stepID, prompt string) {
-			_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
-		}(rs.id, rs.stepID, prompt)
+	// V9-06 / BUG-288 R15-P0: deliver durable stall-retry via claim + idempotency
+	// (do not clear PendingRestart* before startTurn accepts).
+	if pendingRestartRunID == rs.id && pendingRestartPrompt != "" && rs.parentRunID != "" {
+		go s.deliverPendingRestart(rs.parentRunID)
 	}
 }
 
