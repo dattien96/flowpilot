@@ -10,13 +10,16 @@ import (
 	"sync"
 )
 
-// FLOWPILOT_DISPATCH_V2 enables the durable dispatch path per run.
-// Once a run has V2 activation, automated dispatch always uses the store even if
-// the flag is later flipped off (SD-24 §9 — never reinterpret V2 under V1).
-func dispatchV2EnvEnabled() bool {
+// DispatchV2EnvEnabled reports whether FLOWPILOT_DISPATCH_V2 requests the V2 path
+// for new runs. Once a run has V2 activation, automated dispatch always uses the
+// store even if the flag is later flipped off (SD-24 §9 — never reinterpret V2 under V1).
+func DispatchV2EnvEnabled() bool {
 	v := strings.TrimSpace(os.Getenv("FLOWPILOT_DISPATCH_V2"))
 	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
 }
+
+// dispatchV2EnvEnabled is the unexported alias used inside the package.
+func dispatchV2EnvEnabled() bool { return DispatchV2EnvEnabled() }
 
 // dispatchV2ActiveForRun reports whether this run should use the V2 path.
 func (s *InteractiveService) dispatchV2ActiveForRun(ctx context.Context, runID string) bool {
@@ -30,16 +33,33 @@ func (s *InteractiveService) dispatchV2ActiveForRun(ctx context.Context, runID s
 }
 
 // providerV2Enabled reports whether a provider may enter V2 automated dispatch.
-// Codex/Grok: three-outcome only (no Accepted seam). Claude/Gemini: disabled until Task-257.
+// Codex/Grok/fake: three-outcome only (no Accepted seam) by default.
+// Claude/Gemini: disabled until Task-257 evidence, unless explicitly allow-listed
+// via FLOWPILOT_DISPATCH_V2_PROVIDERS=claude,gemini (still no Accepted seam until evidence wires it).
 func providerV2Enabled(key ProviderKey) bool {
-	switch strings.ToLower(string(key)) {
+	k := strings.ToLower(string(key))
+	switch k {
 	case "codex", "grok", "fake", "":
 		return true
 	case "claude", "gemini":
-		return false
+		return providerV2AllowListed(k)
 	default:
 		return true
 	}
+}
+
+// providerV2AllowListed parses FLOWPILOT_DISPATCH_V2_PROVIDERS (comma-separated).
+func providerV2AllowListed(key string) bool {
+	raw := strings.TrimSpace(os.Getenv("FLOWPILOT_DISPATCH_V2_PROVIDERS"))
+	if raw == "" {
+		return false
+	}
+	for _, p := range strings.Split(raw, ",") {
+		if strings.EqualFold(strings.TrimSpace(p), key) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildDispatchEnvelope constructs the immutable redispatch payload at prepare.

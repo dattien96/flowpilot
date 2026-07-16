@@ -47,12 +47,12 @@ func (s *InteractiveService) RegisterDispatchOperatorRoutes(mux *http.ServeMux) 
 	if s == nil || mux == nil {
 		return
 	}
-	mux.HandleFunc("/client/dispatch/attention", s.handleDispatchAttention)
-	mux.HandleFunc("/client/dispatch/resolve", s.handleDispatchResolve)
-	mux.HandleFunc("/client/dispatch/retry-as-new", s.handleDispatchRetryAsNew)
-	mux.HandleFunc("/client/dispatch/repair/begin", s.handleDispatchRepairBegin)
-	mux.HandleFunc("/client/dispatch/repair/commit", s.handleDispatchRepairCommit)
-	mux.HandleFunc("/client/dispatch/audit", s.handleDispatchAudit)
+	mux.HandleFunc("GET /client/dispatch/attention", s.handleDispatchAttention)
+	mux.HandleFunc("POST /client/dispatch/resolve", s.handleDispatchResolve)
+	mux.HandleFunc("POST /client/dispatch/retry-as-new", s.handleDispatchRetryAsNew)
+	mux.HandleFunc("POST /client/dispatch/repair/begin", s.handleDispatchRepairBegin)
+	mux.HandleFunc("POST /client/dispatch/repair/commit", s.handleDispatchRepairCommit)
+	mux.HandleFunc("GET /client/dispatch/audit", s.handleDispatchAudit)
 }
 
 func (s *InteractiveService) handleDispatchAttention(w http.ResponseWriter, r *http.Request) {
@@ -61,7 +61,7 @@ func (s *InteractiveService) handleDispatchAttention(w http.ResponseWriter, r *h
 		return
 	}
 	if s.dispatchStore == nil {
-		writeJSON(w, http.StatusOK, dispatchAttentionResponse{Items: nil})
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
 		return
 	}
 	items, err := s.dispatchStore.ListAttention(r.Context())
@@ -69,7 +69,16 @@ func (s *InteractiveService) handleDispatchAttention(w http.ResponseWriter, r *h
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	writeJSON(w, http.StatusOK, dispatchAttentionResponse{Items: items})
+	// Serialize with both snake_case and camelCase-friendly fields for desktop.
+	out := make([]map[string]any, 0, len(items))
+	for _, it := range items {
+		out = append(out, map[string]any{
+			"kind": it.Kind, "run_id": it.RunID, "runId": it.RunID,
+			"turn_id": it.TurnID, "turnId": it.TurnID,
+			"reason": it.Reason, "updated_at": it.UpdatedAt, "updatedAt": it.UpdatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
 func (s *InteractiveService) handleDispatchResolve(w http.ResponseWriter, r *http.Request) {

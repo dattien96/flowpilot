@@ -258,6 +258,43 @@ export class HttpWsRunnerClient implements RunnerClient {
   interrupt(runId: string): Promise<void> {
     return this.postJSON<void>(`/client/workflow-runs/${encodeURIComponent(runId)}/interrupt`);
   }
+  async listDispatchAttention(): Promise<import("@/types/contract").DispatchAttentionItem[]> {
+    const body = await this.getJSON<{ items?: Array<Record<string, string>> }>("/client/dispatch/attention");
+    return (body.items ?? []).map((it) => ({
+      kind: it.kind ?? "",
+      runId: it.run_id ?? it.runId ?? "",
+      turnId: it.turn_id ?? it.turnId,
+      reason: it.reason,
+      updatedAt: it.updated_at ?? it.updatedAt,
+    }));
+  }
+  resolveDispatchUncertain(input: {
+    runId: string;
+    turnId: string;
+    expectedRev: number;
+    resolutionId: string;
+    action: import("@/types/contract").DispatchResolveAction;
+    detail?: string;
+  }): Promise<{ revision: number }> {
+    return this.postJSON("/client/dispatch/resolve", input);
+  }
+  beginDispatchRepair(input: {
+    runId: string;
+    expectedRepairRev: number;
+    resolutionId: string;
+    action: "retry_load" | "abandon";
+  }): Promise<{ attemptRev: number; raw?: string }> {
+    return this.postJSON("/client/dispatch/repair/begin", input);
+  }
+  commitDispatchRepair(input: {
+    runId: string;
+    attemptRev: number;
+    resolutionId: string;
+    outcome: "resolved_retry_load" | "failed_still_open" | "resolved_abandon";
+    detail?: string;
+  }): Promise<{ revision: number }> {
+    return this.postJSON("/client/dispatch/repair/commit", input);
+  }
   submitGateDecision(runId: string, option: string, customText?: string): Promise<void> {
     return this.postJSON<void>(
       `/client/workflow-runs/${encodeURIComponent(runId)}/gate-decision`,

@@ -644,6 +644,22 @@ export interface QuestionOption {
   value?: string;
 }
 
+// ---- CP-51 / SS-17 dispatch operator surface --------------------------------
+
+export interface DispatchAttentionItem {
+  kind: "uncertain" | "repair_required" | string;
+  runId: string;
+  turnId?: string;
+  reason?: string;
+  updatedAt?: string;
+}
+
+export type DispatchResolveAction =
+  | "mark_completed"
+  | "mark_failed"
+  | "confirm_cancelled"
+  | "abandon";
+
 // ---- The contract ----------------------------------------------------------
 
 export interface RunnerClient {
@@ -728,6 +744,36 @@ export interface RunnerClient {
     feedback: string,
     memberAction?: { action: "retry" | "skip"; node?: string },
   ): Promise<AgentGraphSnapshot>;
+  /**
+   * SS-17 / CP-51 Task-256: list dispatch attention items (uncertain + repair_required).
+   * Optional so mock/older runners degrade gracefully.
+   */
+  listDispatchAttention?(): Promise<DispatchAttentionItem[]>;
+  /**
+   * Resolve an uncertain dispatch record (atomic store op).
+   * expectedRev should come from a prior Get; when unknown, pass 0 and let the runner reject stale.
+   */
+  resolveDispatchUncertain?(input: {
+    runId: string;
+    turnId: string;
+    expectedRev: number;
+    resolutionId: string;
+    action: DispatchResolveAction;
+    detail?: string;
+  }): Promise<{ revision: number }>;
+  beginDispatchRepair?(input: {
+    runId: string;
+    expectedRepairRev: number;
+    resolutionId: string;
+    action: "retry_load" | "abandon";
+  }): Promise<{ attemptRev: number; raw?: string }>;
+  commitDispatchRepair?(input: {
+    runId: string;
+    attemptRev: number;
+    resolutionId: string;
+    outcome: "resolved_retry_load" | "failed_still_open" | "resolved_abandon";
+    detail?: string;
+  }): Promise<{ revision: number }>;
   connectProviderAccount(providerKey: ProviderKey): Promise<void>;
   activateProviderAccount(accountId: string): Promise<void>;
   /**

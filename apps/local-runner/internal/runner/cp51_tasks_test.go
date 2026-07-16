@@ -305,7 +305,16 @@ func TestCapabilityEvidence_CodexGrokNoAcceptedSeam(t *testing.T) {
 	if !providerV2Enabled(ProviderKey("codex")) || !providerV2Enabled(ProviderKey("grok")) {
 		t.Fatal("codex/grok should be V2 three-outcome enabled")
 	}
+	t.Setenv("FLOWPILOT_DISPATCH_V2_PROVIDERS", "")
 	if providerV2Enabled(ProviderKey("claude")) || providerV2Enabled(ProviderKey("gemini")) {
-		t.Fatal("claude/gemini deferred")
+		t.Fatal("claude/gemini deferred by default")
 	}
+}
+
+func TestCapabilityEvidence_ClaudeGeminiAllowListOptIn(t *testing.T) {
+	t.Setenv("FLOWPILOT_DISPATCH_V2_PROVIDERS", "claude,gemini")
+	if !providerV2Enabled(ProviderKey("claude")) || !providerV2Enabled(ProviderKey("gemini")) {
+		t.Fatal("allow-list should enable experimental V2 for claude/gemini")
+	}
+	// Still no Accepted seam — opt-in is three-outcome only until evidence wires receipt.
 }

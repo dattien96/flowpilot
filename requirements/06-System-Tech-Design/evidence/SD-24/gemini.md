@@ -1,19 +1,30 @@
-# SD-24 Capability Evidence — Gemini CLI (deferred)
+# SD-24 Capability Evidence — Gemini CLI
 
-- Provider: Google Gemini CLI (one-shot)
-- Status: **DEFERRED** (CP-51 `CE-CL/GEM`, Task-257)
-- Date: 2026-07-16
+- Provider: Google Gemini CLI (one-shot / headless)
+- Date: 2026-07-17
+- Status: **DEFERRED for live multi-turn probe; enable-blocked by default**
 
-## Scope
+## Scoped decision (CP-51 Task-257)
 
-Gemini is **V2-disabled** until a live Task-257 probe records acceptance receipt, reconcile, and attach outcomes. No production adapter may call `TurnBridge.Accepted` for Gemini under this status.
+Until a full live acceptance/reconcile/attach probe is recorded, Gemini remains:
 
-## Interim rule
+- **V2 automated dispatch disabled by default** (`providerV2Enabled("gemini") == false`)
+- Opt-in experimental only via `FLOWPILOT_DISPATCH_V2_PROVIDERS=gemini` (still **no** `TurnBridge.Accepted` call site)
 
-- `providerV2Enabled("gemini") == false`
-- Automated V2 dispatch rejects Gemini with `provider_v2_disabled`
-- Process start / first output is **not** a receipt (SD-24 §6.3)
+## Matrix cells (current)
 
-## Follow-up
+| Capability | Outcome |
+|------------|---------|
+| Session | process start (not a receipt) |
+| Prompt send | one-shot process |
+| Acceptance receipt | **none before first output** / deferred → no `Accepted` seam |
+| Query after kill | **none** documented → `uncertain` if needed |
+| Attach | **none** |
 
-Run the Task-257 live probe harness and replace this deferred note with the recorded matrix cells before enabling Gemini on V2.
+## Explicit negative rule
+
+Process start and first stdout line are **not** receipts. Do not call `TurnBridge.Accepted` without Task-257 evidence naming a stable ReceiptID distinct from completion.
+
+## Enable path
+
+Same as Claude: live probe → evidence file → product approve → default enable or permanent three-outcome allow-list.
