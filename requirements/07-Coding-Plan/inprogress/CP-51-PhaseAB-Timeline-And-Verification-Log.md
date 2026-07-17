@@ -236,6 +236,7 @@ Ghi ☐ khi pass. Chạy với desktop + `flowpilot serve`, project git thật.
 | C14 | Inspect never leaks raw payload | Force an uncertain/open-repair record with a real provider payload; call **Inspect** in UI | Response/UI shows canonical **hash** for receipt/terminal evidence and repair metadata only — never the raw provider payload or raw quarantine blob | Network response body (`receiptEvidence`/`terminalEvidence`/`openRepair` fields) | |
 | C15 | Retry-as-new superseded guidance | On an uncertain record, click **Retry-as-new** twice (second click after first already advanced state/revision) | Second call returns 409 `dispatch_retry_superseded`; UI surfaces abandon guidance instead of silently failing or double-sending | UI message + HTTP 409 in network log | |
 | C16 | Boot recovery auto-redispatch (no user action) | Kill runner process while a turn sits in `prepared`/`send_claimed` (before `send_started`); restart runner binary (not just reopen desktop window); do **not** touch the run in UI | `ScanDispatchRecoveryOnBoot` finds the record via `ListRecoverable`, reconstructs the run, and redispatches automatically — record advances past `send_claimed` without any user click | Server boot log (`ensureLiveAndRedispatch`) + dispatch.ndjson state advancing unattended | |
+| C17 | Crash after send, no provider proof → uncertain (not dangling) | Kill runner **after** `send_started`/`provider_accepted` (model may genuinely be mid-response); restart runner binary | Boot scan claims the record and transitions it to `uncertain` (never left at `send_started` forever, never silently marked `terminal_completed` without proof); Dispatch attention card surfaces it for operator Inspect/Retry-as-new/Retry-load | dispatch.ndjson shows explicit `state=uncertain` row + `recovery_uncertain` audit entry; attention card in UI | |
 
 ### 3.4 Cross-cut smoke
 
@@ -342,7 +343,7 @@ cat .flowpilot/chats/${RUN}-turns.ndjson
 | | | Live A1–A10 | ☐ | |
 | | | Live B1–B5 | ☐ | |
 | | | Live C2–C12 | ☐ | |
-| | | Live C13–C16 (new, post CA-340..349) | ☐ | |
+| | | Live C13–C17 (new, post CA-340..349) | ☐ | |
 | | | Live X1–X4 | ☐ | |
 
 ---
@@ -355,7 +356,8 @@ cat .flowpilot/chats/${RUN}-turns.ndjson
 - Desktop DispatchAttentionCard cần runner V2 + store (V2 default-on; kill-switch `=0`).
 - **Log volume:** full ACP frame dump làm first-turn log “nặng” — không phải failure signal (xem §3.5).
 - Cold Grok first turn 15–40s với MCP+skills là baseline hiện tại, không dùng làm failure cho C1 nếu dispatch terminal + reply OK.
-- **C13–C16 chưa chạy live** (chỉ có unit test tương ứng: `TestFCPMarkerCrossServiceReplayRejected`-family cho C13, `TestDispatchInspect_RedactsCanonicalReceiptEvidence` cho C14, `TestRetryAsNewHandler_SupersededSurfacesAbandonGuidance` cho C15, chưa có unit test riêng cho boot-auto-redispatch không cần user action ở C16 — `reconcileOne`/`ScanAllRecoverable` test check redispatch được gọi, nhưng chưa có test end-to-end "process thật restart, không ai bấm gì" ở mức desktop).
+- **C13–C17 chưa chạy live** (chỉ có unit test tương ứng: `TestFCPMarkerCrossServiceReplayRejected`-family cho C13, `TestDispatchInspect_RedactsCanonicalReceiptEvidence` cho C14, `TestRetryAsNewHandler_SupersededSurfacesAbandonGuidance` cho C15, chưa có unit test riêng cho boot-auto-redispatch không cần user action ở C16 — `reconcileOne`/`ScanAllRecoverable` test check redispatch được gọi, nhưng chưa có test end-to-end "process thật restart, không ai bấm gì" ở mức desktop; C17 có unit test hard-assert `TestScanAllRecoverable_EnumeratesEveryNonTerminalState_NotJustUncertain` xác nhận CAS đúng, nhưng chưa verify qua UI attention card thật).
+- **Task-250 T-4 (provider reconcile/cancel-on-required) chính thức waived 2026-07-17**: mọi adapter hiện có (Codex/Grok/Claude) đều không có API query-by-id/cancel-by-id (Task-257 evidence), nên recovery không thể hỏi lại provider — nó fallback về `uncertain` một cách an toàn (atomic CAS, không mất, không trùng, luôn surface cho operator). Re-open chỉ khi có adapter mới hỗ trợ capability này.
 
 ---
 
