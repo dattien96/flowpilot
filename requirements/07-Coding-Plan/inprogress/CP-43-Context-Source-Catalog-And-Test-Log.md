@@ -57,9 +57,9 @@ Nguồn sự thật code: [context_sources_builtin.go](../../../apps/local-runne
 
 ### 1.3 Planned (1) — sẽ vào Default sau Task-259
 
-| Prio (đề xuất) | Source ID | Task | Collect **cái gì** | Nguồn |
+| Prio | Source ID | Task | Collect **cái gì** | Nguồn |
 |---|---|---|---|---|
-| 3.5 (sau `change.contract`, trước `source.excerpt`) | `source.dependence` | [Task-259](../../08-Task/todo/Task-259-Source-Dependence-Context-Source.md) (CP-43 P-6) | Blast-radius: symbol/file nào bị ảnh hưởng nếu sửa các target đã khai trong `change.contract` | GitNexus impact (`structure.Provider.Dependents`) |
+| **3** (= `change.contract`; sắp sau nó & trước `source.excerpt` nhờ SourceType tiebreak, không renumber — Task-259 T-2) | `source.dependence` | [Task-259](../../08-Task/todo/Task-259-Source-Dependence-Context-Source.md) (CP-43 P-6) | Blast-radius: symbol/file nào bị ảnh hưởng nếu sửa các **target code cụ thể** đã khai trong `change.contract` (symbol trước; loại dir-bucket/glob/doc) | GitNexus impact (`structure.Provider.Dependents`), **v1 GitNexus-only** |
 
 ---
 
@@ -77,7 +77,7 @@ Nguồn sự thật code: [context_sources_builtin.go](../../../apps/local-runne
 | `mcp.driver` | External (nội dung do hệ thống ngoài như Google Drive tạo) | **Code** lái MCP call qua adapter (timeout+cap) | **External, code-driven** |
 | `jira.issue` / `jira.sprint` | External (Jira) | **Code** lái adapter (HTTP qua credential) | **External, code-driven** |
 | `firebase.crashlytics` | External (Firebase Crashlytics) | **Code** lái MCP client tới `firebase-tools` | **External, code-driven** |
-| `source.dependence` (mới) | **Tool/Code** (GitNexus knowledge graph — impact/dependents; **không AI**) | **Code** (`structure.Provider.Dependents` chạy `npx gitnexus impact --json`, fallback file-level khi GitNexus vắng) | **Thuần tool/code**; *input* là `change.contract` đã khai |
+| `source.dependence` (mới) | **Tool/Code** (GitNexus knowledge graph — impact/dependents; **không AI**) | **Code** (`structure.Provider.Dependents` chạy `npx gitnexus impact --json`; **v1 GitNexus-only** — GitNexus vắng → render note "chưa index", KHÔNG chạy fallback walk vì fallback provider uncancellable + O(repo)/target, xem Task-259 T-5) | **Thuần tool/code**; *input* là **target code cụ thể** trích từ `change.contract` (symbol trước; dir-bucket/glob/doc bị loại — Task-259 T-3) |
 
 **Chốt cho câu hỏi "AI hay code của ta collect":**
 - **Không source nào gọi AI lúc collect.** Collect = code deterministic (đúng bất biến "no vector").
@@ -93,16 +93,16 @@ Nguồn sự thật code: [context_sources_builtin.go](../../../apps/local-runne
 | Trường | Giá trị |
 |---|---|
 | Source ID | `source.dependence` |
-| Priority | `3.5` thực thi = đăng ký **sau** `change.contract` (3), **trước** `source.excerpt` (4) — vì nó tiêu thụ contract |
+| Priority | **`3`** (bằng `change.contract`); xếp sau `change.contract` & trước `source.excerpt` nhờ tiebreak SourceType của stable-sort — **không renumber** các source khác (Task-259 T-2) |
 | Nhóm | **Default** (owner muốn vào default set, giống canonical.head/change.contract) |
-| Deterministic | `true` (tool/graph, không AI) |
-| Collect **cái gì** | Với mỗi `declared_path`/`declared_symbol` trong contract của run → `DependentsSummary{Count, Nearest, Flows, Complete}` |
-| Collect **bằng cách nào** | `structure.New(cwd, hasGitNexus).Dependents(ctx, target)` → `npx gitnexus impact <target> --json`; **fallback file-level** (import-dependents + git co-changed) khi GitNexus vắng |
+| Deterministic | `true` (tool/graph, không AI; output **sorted** để reproducible) |
+| Collect **cái gì** | Với mỗi **target code cụ thể** trích từ contract của run (symbol trước; loại dir-bucket/glob/doc — T-3) → `DependentsSummary{Count, Nearest, Flows, Complete}` |
+| Collect **bằng cách nào** | `structure.New(cwd, hasGitNexus).Dependents(bctx, target)` → `npx gitnexus impact <target> --json`, dưới **một** `context.WithTimeout` chia sẻ (~25s) cho toàn Fetch (T-4). `hasGitNexus` đọc từ cache `tooling.json` — **no subprocess** (T-8). **v1: GitNexus-only** — không chạy fallback (T-5) |
 | **AI hay code** | **Code của ta** gọi **GitNexus tool** — không AI |
-| Input phụ thuộc | `change.contract` (nếu run chưa có contract → section rỗng, degrade-mềm AC-9) |
-| Store / nguồn | Không đọc file store riêng; đầu vào là contract (`.flowpilot/contracts/contracts.ndjson`) + GitNexus index |
-| Degrade | GitNexus stale/vắng → fallback provider; contract rỗng → section rỗng; mọi lỗi → warning-free empty (không chặn turn) |
-| Bound | Cap số target (vd. ≤ 20, khớp `change.contract`/excerpt cap) + cap dependents/target để tránh prompt bloat |
+| Input phụ thuộc | `change.contract` (`GetLatestForRun`); run chưa có contract, hoặc contract **inferred** (chỉ dir-bucket) → section zero-value, degrade-mềm AC-9 |
+| Store / nguồn | Không đọc file store riêng; đầu vào là contract (`.flowpilot/contracts/contracts.ndjson`) + `tooling.json` cache + GitNexus index |
+| Degrade | GitNexus vắng → note "chưa index" (không walk); contract rỗng/inferred/target rỗng → section zero-value (**Warnings nil, Omitted nil** — golden-safe); mọi lỗi/target → skip, không chặn turn |
+| Bound | Cap ≤ **10** target (mỗi target 1 npx) + cap ≤ **15** dependents/target + shared wall-clock budget ~25s |
 
 Chi tiết implementation, T-* và DOD nằm trong [Task-259](../../08-Task/todo/Task-259-Source-Dependence-Context-Source.md). File này chỉ giữ vai trò catalog + test.
 
@@ -135,7 +135,7 @@ go test ./internal/runner/ -count=1 -timeout 5m \
 | `firebase.crashlytics` (**cũ**, non-default) | Crash-signal excerpt; bounded, degrade sạch nếu adapter lỗi | `context_source_firebase_test.go` | `TestFirebaseCrashlyticsSourceProducesBoundedSectionWithSourceRef`, `TestFirebaseCrashlyticsSourceDegradesOnAdapterError`, `TestFirebaseCrashlyticsSourceRegisteredAndNotDefault` | `go test ./internal/runner/ -run 'TestFirebaseCrashlyticsSource' -count=1` |
 | Registry / precedence (**cũ**, CP-44) | Duplicate-ID reject, unknown-ID degrade/fail, priority ordering, step-vs-flow override | `context_source_registry_test.go`, `context_source_step_precedence_test.go`, `context_source_flow_binding_test.go` | `TestContextSourceCollectStableOrderByPriorityThenID`, `TestContextSourceCollectDegradesOnSourceError`, `TestUnknownSourceIDFailsFlowLoad`, `TestResolveEnabledContextSourceIDsStepOverridesFlow`, `TestResolveEnabledContextSourceIDsOldCP44FlowUnaffectedByArtifactValidation` | `go test ./internal/runner/ -run 'TestContextSourceRegistry\|TestContextSourceCollect\|TestResolveEnabledContextSourceIDs\|TestUnknownSourceIDFailsFlowLoad\|TestValidateFlowContextSources\|TestValidateFlowArtifactBindings' -count=1` |
 | Golden / render-stability | Output không đổi trên fixture cũ; sections không double-render | `context_source_migration_golden_test.go`, `flow_context_package_test.go` | `TestBuildFlowContextPackageOutputUnchangedAfterRegistryRefactor`, `TestRenderFlowContextPackageStableSections`, `TestFlowContextPackageCarriesRunAndStepIDs`, `TestFlowContextPackagePersistsAgainstPlanStep`, `TestFlowContextPackageLookupSurvivesRunnerRestart`, `TestFlowContextPackageDoesNotCreateParallelSessionState` | `go test ./internal/runner/ -run 'TestBuildFlowContextPackageOutputUnchanged\|TestRenderFlowContextPackageStableSections\|TestFlowContextPackageCarriesRunAndStepIDs\|TestFlowContextPackagePersistsAgainstPlanStep\|TestFlowContextPackageLookupSurvivesRunnerRestart\|TestFlowContextPackageDoesNotCreateParallelSessionState' -count=1` |
-| `source.dependence` (**MỚI**, Task-259) | Priority 3.5; blast-radius từ contract targets qua GitNexus; default set | `context_source_dependence_test.go` (**sẽ tạo ở Task-259**) | *(planned)* `TestDependenceSourceFromContractTargets`, `TestDependenceSourceNoContractDegrades`, `TestDependenceSourceGitNexusUnavailableFallsBackFileLevel`, `TestDependenceSourceBoundsTargetsAndDependents`, `TestDependenceInDefaultSetAndRegistered`, `TestRenderFlowContextPackageDependenceAfterContract` | `go test ./internal/runner/ -run 'TestDependenceSource\|TestDependenceInDefaultSet\|TestRenderFlowContextPackageDependence' -count=1` |
+| `source.dependence` (**MỚI**, Task-259) | Priority 3 (tiebreak sau change.contract); blast-radius từ contract targets qua GitNexus; default set | `context_source_dependence_test.go` (**sẽ tạo ở Task-259**) | *(planned — Task-259 §6.2)* `TestDependenceSourceFromContractTargets`, `TestDependenceSourceNoContractDegrades`, `TestDependenceSourceInferredDirBucketYieldsEmpty`, `TestDependenceSourceDropsGlobDocAndFlagTargets`, `TestDependenceSourceGitNexusUnavailableRendersNote`, `TestDependenceSourceBoundsTargetsAndDependents`, `TestDependenceSourceDeterministicOutput`, `TestDependenceSourceIncompleteNote`, `TestDependenceInDefaultSetAndRegistered`, `TestRenderFlowContextPackageDependenceAfterContract` | `go test ./internal/runner/ -run 'TestDependenceSource\|TestDependenceInDefaultSet\|TestRenderFlowContextPackageDependence' -count=1` |
 
 **One-shot Phase B bundle (mọi source cũ + mới):**
 
@@ -180,7 +180,7 @@ Ghi ☐ khi pass. Chạy với desktop + `flowpilot serve`, project git thật.
 | B9 | Source-excerpt runtime thật (**cũ** source / producer **mới** P-3) | Workspace có file sửa dở (uncommitted diff) + prompt nêu 1 path tường minh | Package có `### Source: <path>` cho cả file diff lẫn path nêu trong prompt; workspace không git hoặc prompt không path → behavior y hệt trước | Context package sections | |
 | B10 | Jira/MCP/Firebase optional sources (**cũ**, non-default) | Flow instance khai tường minh `sources: ["jira.issue"]` (hoặc mcp.driver/firebase.crashlytics) | Section chỉ xuất hiện khi khai tường minh; không tự vào default; degrade rỗng khi adapter lỗi/timeout, không chặn turn | Context package + no-crash on adapter failure | |
 | B11 | Registry/precedence không vỡ bởi turn dispatch mới (CP-51 cross-cut) | Flow cũ (pre-CP-45, không khai `sources`) chạy dưới V2 dispatch | Vẫn dùng default set đúng thứ tự priority; step-level override vẫn thắng flow-level | Package sections order | |
-| B12 | **source.dependence** blast-radius (**MỚI**, Task-259) | Feature primary (GitNexus indexed) + turn Coding khai `change.contract` với path/symbol thật → step validate/audit sau | Prompt step sau có block dependence: "sửa `<target>` ảnh hưởng `<dependents>` + flows `<...>`"; run chưa có contract → không block; GitNexus stale → fallback file-level, không lỗi | Prompt-log block dependence + `npx gitnexus status` | |
+| B12 | **source.dependence** blast-radius (**MỚI**, Task-259) | Feature primary (GitNexus indexed) + turn Coding khai `change.contract` **declared** với **file/symbol code thật** (không dir-bucket) → step validate/audit sau. **Verify trước:** `npx gitnexus impact <file.go> --json` trả schema `{dependents/nearest/flows}` dùng được (E-schema/Q-4) | Prompt step sau có block `### source.dependence`: "Sửa `<target>` ảnh hưởng `<dependents>` + flows `<...>`"; run chưa có contract / contract inferred (dir-bucket) → không có block (rỗng có chủ đích); GitNexus vắng/stale → **note "chưa index", không lỗi** (v1 không fallback). Nếu impact chỉ nhận symbol không nhận file-path → dừng + follow-up | Prompt-log block dependence + output `npx gitnexus impact <file> --json` + `npx gitnexus status` | |
 
 ---
 
