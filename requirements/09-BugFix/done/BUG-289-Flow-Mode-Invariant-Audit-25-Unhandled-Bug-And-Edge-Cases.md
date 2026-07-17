@@ -28,8 +28,8 @@
 ### Current Ask
 
 - **Done (2026-07-17):** point fixes for hang/correctness findings (`F-0`..`F-6`, `F-8`..`F-12`, and **A2** half of `F-7`) landed; package build + focused `TestBug289_*` green.
-- **Residual risk (not "safe 100%") — A3 / F-7 settle half:** an earlier boot wiring created `SettleDriver{Store only}` without `EvaluateGate`, so `planNext` default-allowed every terminal+`settle_pending` and could silently finalize without `resumePendingFlowGate`. **2026-07-17 review fix:** fail-closed — boot only **inventories** unfinalized settles; `planNext` **refuses** nil `EvaluateGate`; `ListAttention` surfaces `settle_pending`. Real gate re-eval + convergent effects + retry worker remain **Task-251 T-1..T-4** (task stays `in_progress`).
-- Optional follow-up: remaining §8 acceptance cases on Unix CI; Task-255 settle sub-barriers / model suite / `-race` CI are separate and still open.
+- **A3 residual closed via Task-251 (same day):** production `EvaluateGate` + boot/live `scheduleSettleDrive` + `RetrySettleWithBackoff` land under Task-251; nil-hook still refused; no run state still fail-closed. See [Task-251](../../08-Task/done/Task-251-Gate-Checkpoint-Durability-And-Retry-Worker.md).
+- Task-255 closed same pass (B8a–e, model suite, CI race).
 
 ### Key Decisions
 

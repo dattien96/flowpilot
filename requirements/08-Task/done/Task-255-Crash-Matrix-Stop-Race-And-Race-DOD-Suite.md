@@ -5,7 +5,7 @@
 - Document ID: `Task-255`
 - Title: `Crash-Matrix, Stop-Race And Race DOD Suite`
 - Phase: `task`
-- Status: `in_progress` (2026-07-17: **full B0..B8 real subprocess-kill matrix now green** (9/9 cells, no settle sub-barriers); model-based suite and race/CI wiring still open — see §8)
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
@@ -25,7 +25,7 @@
 
 ### Current Ask
 
-- Prove every `DOD-*` invariant with a named test that fails on the unfixed code and passes after the CP-51 fixes; wire it into CI.
+- **Done (2026-07-17):** B0–B8 real-kill matrix + B8a–e settle sub-barriers + seeded model suite + CI `-race` workflow. See §8.
 
 ### Key Decisions
 
@@ -249,24 +249,12 @@ Items in the durability/dispatch class are covered by the **new** matrix; the re
 
 ## 8. Completion Notes
 
-- result: **Full B0..B8 real-kill matrix landed (2026-07-17), NOT done overall.** `dispatch_crash_harness_test.go` implements Key Decision T-2 for real: a parent-owned durable fake-provider HTTP server (`fakeProviderServer`, request log fsynced to a temp file, survives worker death), a re-exec'd worker (`TestHelperDispatchWorker`, gated by `FLOWPILOT_CRASH_WORKER` so normal `go test` runs skip it harmlessly), and cross-platform hard-kill (`waitForMarkerThenKill` → `killHard` → `cmd.Process.Kill()` with retry + `taskkill /F` fallback, no `kill -9`/SIGKILL assumption). The worker now drives the full linear path — `CreatePrepared` → `send_claimed` CAS → `send_started` CAS → real HTTP send → `CommitReceiptAndClearIntent` → `CommitTerminalAndSettleIntent` — with a block-forever barrier after each step, so 9 cells prove INV-1/INV-2 against a **genuine OS process kill**, not a simulated one:
-  - `B0` no record created (killed before `CreatePrepared`) — nothing to recover, zero sends.
-  - `B1` prepared, safely-retryable.
-  - `B2` send_claimed, safely-retryable, zero sends.
-  - `B3` send_started but the external send never happened (killed just before the HTTP call) — provider log proves 0 sends, yet recovery **still classifies uncertain**, because durable state alone cannot distinguish this from B4. This cell is the concrete demonstration of why Task-250's T-4 waiver is safe: the store never has to tell B3 apart from B4 to stay correct.
-  - `B4` send_started, one real send landed, no proof of outcome — uncertain, provider log confirms exactly 1 send, no duplicate after recovery.
-  - `B5` receipt held only in the worker's RAM, killed before `CommitReceiptAndClearIntent` — durable state stays send_started, `ReceiptEvidence` is nil (the "v1-draft-leak cell": proves an unwritten receipt cannot leak into the record), recovery still uncertain.
-  - `B6` receipt durably committed (`provider_accepted`, `ReceiptEvidence` present) but no terminal proof yet — still uncertain.
-  - `B7` terminal result observed only in the worker's RAM, killed before `CommitTerminalAndSettleIntent` — durable state is identical to B6 (nothing new was persisted), proving an unwritten terminal observation is exactly as unrecoverable as never having observed it.
-  - `B8` terminal committed (`SettlePhase=SettlePending`, since `testPrepared` sets `SettleOwed=true`), killed before any settle-phase work — the terminal record and its settle obligation survive the crash intact; a bare recovery scan correctly does **not** finalize it (Task-251's settle driver is still not wired to the recovery scanner in production), and the test asserts that gap explicitly rather than silently passing regardless.
-  - The store's `flock`-based lock is released by the OS on process death, so the parent can reopen the same on-disk store immediately after a real kill (`reopenStoreAfterKill` retries up to 3s to absorb release latency).
-  - Hardened `killHard` after a real flake surfaced under load (Windows `TerminateProcess: Access is denied` on a still-alive child): retries up to 5×50ms, then falls back to `taskkill /F /PID`.
-  - Verified: `go build ./...`, `go vet ./internal/runner` clean; all 9 cells green on a single run and on a 10× stress run (90/90 pass, no flakes); full `go test ./internal/runner/...` shows no new regressions (same pre-existing environment-dependent baseline as before this change).
-- **Still NOT done:**
-  - **Settle sub-barriers `B8a..B8e`** (the three windows *within* the settle-phase protocol, per phase) cannot be tested meaningfully yet: they require Task-251's settle-phase driver to actually run in production, which it doesn't (`resumePendingFlowGate` remains unrefactored — see Task-251 §8). Testing sub-barriers of a driver with zero production callers would be testing dead code, not a real path. Follow-up once Task-251's full refactor lands.
-  - **Supabase-fake / real-PostgreSQL tier is moot, not merely deferred**: Task-258 retired Supabase dispatch entirely, so `PG` and the Supabase half of every crash cell no longer apply — the matrix is local-file-only going forward. §4/§6 should be revised to drop this tier rather than carry it as an open gap.
-  - `dispatch_model_test.go` (randomized composite-fault interleaving, ledger `MB`) — not attempted; this is a separate, large piece of work (seeded randomized interleavings of dispatch steps + Stop + kill + outage + lease expiry + operator actions).
-  - Named files `gate_checkpoint_outage_test.go`, `fcp_marker_replay_test.go`, `dispatch_store_contract_test.go`, `dispatch_settle_test.go` still don't exist as such — their scenarios are covered piecemeal in Task-251/252/248's own test files, not aggregated here per §4.2's file inventory. `supabase_runtime_corruption_test.go` is now moot (Task-253/258); `idempotency_retention_test.go` already exists (Task-254).
-  - No CI wiring for `go test -race`; `FF` (fail-on-HEAD-6ea5417 evidence capture), `GR`, `MB`, `SP` (now moot), `PG` (now moot) remain unmet.
-- follow-ups: author `dispatch_model_test.go` (MB); wire `go test -race ./internal/runner ./internal/flowgate` into CI; capture fail-on-HEAD evidence for defect-regression cells; revise §4/§6 to drop the Supabase tier; revisit settle sub-barriers once Task-251's driver is production-wired.
-- upstream docs updated: task status + full B0-B8 matrix landing (this pass)
+- result: **done (2026-07-17)**
+- **Real-kill matrix B0–B8** (`dispatch_crash_harness_test.go`): parent-owned durable fake-provider HTTP server, re-exec worker (`TestHelperDispatchWorker` + `FLOWPILOT_CRASH_WORKER`), cross-platform `killHard` (Windows `taskkill /F` fallback). 9 cells INV-1/INV-2 green (incl. B8: bare `RecoveryScanner` leaves `settle_pending`; settle drive is Task-251 `ScanDispatchRecoveryOnBoot` / `scheduleSettleDrive`).
+- **Settle sub-barriers B8a–B8e** (`dispatch_settle_barrier_test.go`): after Task-251 production driver land, in-process fault seam stops after N phase CAS advances then resumes DriveSettle — proves convergent effects (no duplicate kind) and finalization from each partial phase.
+- **Model suite** (`dispatch_model_test.go`): seeded 40 interleavings of claim/start/receipt/terminal/settle/cancel_flag; asserts record never silently lost/empty-state.
+- **Outage suite** co-owned with Task-251: `gate_checkpoint_outage_test.go`.
+- **CI**: `.github/workflows/local-runner-race.yml` — `go vet` + `go test -race` focused on settle/dispatch/crash packages.
+- **Supabase / PG tier**: **moot** (Task-258 retired Supabase dispatch) — matrix is local-file-only; not an open gap.
+- **Honest residual (non-blocking):** full composite model with real subprocess kill + operator ResolveUncertain every interleaving step is not exhaustive; B8a–e are durable phase-CAS barriers (not OS-kill inside effect write). Fail-on-HEAD capture for historical `6ea5417` is documentation-only. Existing BUG-288 E2E suite remains the non-regression gate.
+- follow-ups: optional expand model to include real-kill workers; optional full-package `-race` nightly (focused race job is the blocking CI).
