@@ -5,14 +5,14 @@
 - Document ID: `Task-251`
 - Title: `Gate Checkpoint Durability And Retry Worker`
 - Phase: `task`
-- Status: `in_progress` (2026-07-17: 2 contained fixes landed (event keyed-upsert, persist-error observability); full T-1 driver refactor + T-3 retry-worker wiring **handed off to [BUG-289](../../09-BugFix/todo/BUG-289-Flow-Mode-Invariant-Audit-25-Unhandled-Bug-And-Edge-Cases.md) `F-7`** — do not duplicate that work here; this task closes only once BUG-289 `F-7` lands with tests, see §8)
+- Status: `in_progress` (2026-07-17: 2 contained fixes landed; BUG-289 `F-7` only fixed A2 + A3 **fail-closed inventory** — does **not** close T-1..T-4; this task stays open, see §8)
 - Owner: `FlowPilot`
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
 - Last Updated: `2026-07-17`
 - Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md), [SS-17: Dispatch Uncertainty And Repair Operator Contract](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
 - Child Documents: `None`
-- Related Documents: [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [BUG-289](../../09-BugFix/todo/BUG-289-Flow-Mode-Invariant-Audit-25-Unhandled-Bug-And-Edge-Cases.md) (`A3`/`F-7` — owns the remaining T-1/T-3 work below; 2026-07-17 decision: do it once there, not twice)
+- Related Documents: [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [BUG-289](../../09-BugFix/done/BUG-289-Flow-Mode-Invariant-Audit-25-Unhandled-Bug-And-Edge-Cases.md) (`A3`/`F-7` residual — fail-closed only; T-1..T-4 still owned here)
 - Replaces: `None`
 - Tags: `agent-flow-engine, flow-gate, crash-recovery, retry-backoff`
 
@@ -169,11 +169,18 @@ func TestReleaseManifest_ParentStopFencePreventsChildSend(t *testing.T) { /* PS:
   - **Persist-error swallow removed:** `_ = s.persistEvent(completedEv)` now logs the error instead of silently discarding it. (Not the full retry-worker fix — T-3 remains not built — but strictly better than before: the failure is now observable.)
   - Both fixes verified against the FULL BUG-288/gate/settle/V9/V10 regression suite — zero regressions — and are surgical (a few lines each), not part of the architectural swap, so they carry materially lower risk than T-1.
 - **Still NOT done (genuinely large, deferred as a dedicated future session, not silently dropped):**
-  - T-1: `resumePendingFlowGate` not refactored into the phase driver; `SettleDriver` remains unwired (0 production callers).
-  - T-2 (remainder): cohort entry is still the RAM/label-dedup `appendCohortResult`, not a durable `RecordEffectDone` projection; dependents-release is not the durable revisioned manifest with `ParentStopFence`; finalizer is not a keyed-overwrite durable effect.
-  - T-3: no retry worker (`scheduleSettleRetry` exists on the stub driver only, unwired).
+  - T-1: `resumePendingFlowGate` not refactored into the phase driver; `SettleDriver.DriveSettle` has **no safe production caller** (boot inventory only; nil `EvaluateGate` is hard-refused). Two paths remain: live gate vs. stub phase machine.
+  - T-2 (remainder): cohort entry is still the RAM/label-dedup `appendCohortResult`, not a durable `RecordEffectDone` projection; dependents-release is not the durable revisioned manifest with `ParentStopFence`; finalizer is not a keyed-overwrite durable effect; `planNext` still emits placeholder `{"ok":true}` payloads after gate_eval.
+  - T-3: no retry worker (`RetrySettleWithBackoff` / `scheduleSettleRetry` — 0 production callers).
   - T-4: the legacy `gateCheckpointNotDurable` + three-persist dance is fully intact — NOT deleted (deleting it before T-1/T-3 land would remove the only durability mechanism currently protecting this path).
-  - Tests: `gate_checkpoint_outage_test.go` still absent; 1/11 named skeletons (the pre-existing happy path) + the 1 new regression test above (differently named). Acceptance 0/6 for the full V-1..V-6 (V-6 build/vet pass; the rest require the undone driver).
-- **2026-07-17 ownership decision — T-1/T-3 handed off to BUG-289, not duplicated here:** BUG-289's own re-audit of the whole Flow Mode engine independently found the exact same gap and gave it a concrete user-visible consequence this task's notes didn't fully spell out — `A3`: because `SettleDriver`/`CASAdvanceSettle` has no production caller, every turn's `SettlePending` obligation never resolves, so `HasNonTerminal` never goes false, permanently blocking the 90-day session prune and leaking `dispatch.ndjson` growth forever. BUG-289 `F-7` proposes wiring `SettleDriver` a production caller (boot scanner / post-terminal) as part of its own fix batch (alongside `A2`, the CP-51 Task-250-adjacent "Stop-then-crash record only gets `log.Printf`'d, never a real recovery action" gap, which has the same permanent-non-terminal / never-pruned consequence). Rather than doing the same T-1/T-3 refactor twice under two different documents, it is now owned and delivered **once**, under BUG-289 `F-7`. This task stays `in_progress` — it does **not** close until BUG-289 `F-7` lands with its own tests (a real production caller for `SettleDriver`, verified to unblock `HasNonTerminal`/prune); at that point both this task and BUG-289's `A3`/`F-7` close together, referencing the same commit.
-- follow-ups: none owned directly by this task anymore for T-1/T-3 — track via [BUG-289](../../09-BugFix/todo/BUG-289-Flow-Mode-Invariant-Audit-25-Unhandled-Bug-And-Edge-Cases.md) `F-7`/`A3`. Until that lands, the legacy checkpoint mechanism (T-4) must stay in place.
-- upstream docs updated: task status (this audit + the two 2026-07-17 contained fixes + the 2026-07-17 BUG-289 hand-off decision).
+  - Tests: `gate_checkpoint_outage_test.go` still absent; residual fail-closed tests live under BUG-289 (`TestBug289_A3_*`, `TestSettleDriver_NilEvaluateGateRefusesDefaultAllow`) — they prove we do **not** wrong-finalize, not that settle completes. Acceptance 0/6 for full V-1..V-6.
+- **2026-07-17 BUG-289 F-7 outcome (revised residual review) — does NOT close this task:**
+  - **What BUG-289 actually delivered for settle:** (1) `A2` — `ListAttention`/`OpenRepair` for cancel_required stranded sends; (2) `A3` residual **fail-closed** — an unsafe boot `DriveSettle` with nil `EvaluateGate` (default-allow / silent wrong finalize) was **reverted** to inventory-only + `ListAttention` kind `settle_pending` + `planNext` refuse nil hook. Tests: `TestBug289_A3_BootInventoryDoesNotAutoFinalizeSettle`, `TestSettleDriver_NilEvaluateGateRefusesDefaultAllow`.
+  - **What is still NOT done (full Task-251 scope — stays open):**
+    - **T-1:** `resumePendingFlowGate` still not refactored into the phase driver; two paths remain (live gate real vs. stub `planNext`); no production `EvaluateGate` wired to real gate re-eval.
+    - **T-2:** `planNext` still uses placeholder payloads (`{"ok":true}`) — not durable cohort/release/finalizer projections.
+    - **T-3:** `RetrySettleWithBackoff` still **0 production callers**.
+    - **T-4:** legacy 3-persist / `gateCheckpointNotDurable` dance still intact (must stay until T-1/T-3 land).
+  - **Prune symptom:** `HasNonTerminal` still true for unfinalized settle_owed — intentional fail-closed until real settle lands; do **not** "fix" prune by auto-passing gates.
+- follow-ups: T-1..T-4 remain **this task's** ownership. BUG-289 is closed for hang/point fixes + A2 + A3 fail-closed; it is **not** a substitute for Task-251 completion. Task-255 (crash matrix settle sub-barriers / model suite / `-race` CI) is also still open and independent.
+- upstream docs updated: this §8 residual note + BUG-289 done-doc residual risk.
