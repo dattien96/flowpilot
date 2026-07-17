@@ -10,7 +10,7 @@
 - Reviewers: `Codex review`
 - Created: `2026-07-17`
 - Last Updated: `2026-07-17`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md)
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md)
 - Child Documents: `None`
 - Related Documents: [Task-248](./Task-248-Durable-Dispatch-Record-And-State-Machine-Core.md) (store API), [Task-253](./Task-253-Supabase-Runtime-Versioned-And-Fail-Closed.md) (session_runtime fail-closed — still local/Supabase session blob, not dispatch authority), chat session Drive sync (`chat_session_sync.go`)
 - Replaces: Supabase-as-default-authority for CP-51 dispatch tables/RPC client path (local NDJSON + Drive becomes product path)
