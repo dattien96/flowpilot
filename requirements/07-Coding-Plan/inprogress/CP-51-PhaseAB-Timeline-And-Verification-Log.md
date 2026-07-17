@@ -100,14 +100,13 @@ go test ./internal/runner/ ./internal/flowgate/ ./internal/agentpack/ -count=1 -
   -run 'TestResumePendingFlowGate|TestReconstruct|TestRehydrate|TestApplyFlowControl|TestFlowInline|TestTryAdvanceFlow|TestCohort|TestStopAgentLoopCancelsCohort|TestChildGate|TestRunTurnGate|TestGate|TestBuiltinOrchestration|TestReviewLoopFlowConfig|TestValidateChatOrchestration|TestFinishTurnStall|TestMemberAction'
 ```
 
-### 2.3 Phase B — CP-50 / context + change contract
+### 2.3 Phase B — CP-50 / context + change contract → **MOVED**
 
-```bash
-go test ./internal/runner/ -count=1 -timeout 5m \
-  -run 'TestContext|TestChangeContract|TestRenderFlowContext|TestContract|TestSourceExcerpt|TestArtifactBinding|TestResolveEnabledContext'
-```
-
-Related files (search): `context_source_*_test.go`, `context_source_change_contract_test.go`, `context_package_sections_test.go`, `gate_tier_test.go` (contract/gate interplay).
+> **Đã tách sang file catalog riêng:** [CP-43-Context-Source-Catalog-And-Test-Log.md](./CP-43-Context-Source-Catalog-And-Test-Log.md) §4 (per-source automated test inventory), §5 (GitNexus impact-analysis gap), §6 (live E2E B1–B12).
+>
+> Lý do: Phase B = context sources — bản chất thuộc CP-43/CP-44/CP-50 (registry + canonical.head/change.contract/source.excerpt), không thuộc CP-51 (durable turn dispatch). File catalog cũng là nơi test **tách biệt từng source** (cũ + mới + `source.dependence` sắp tới). File CP-51 companion này giờ chỉ giữ Phase A (flow-graph) + CP-51 (turn dispatch).
+>
+> Smoke nhanh khi cần một dòng: `go test ./internal/runner/ -run 'TestContext|TestChangeContract|TestCanonicalHead|TestSourceExcerpt|TestRenderFlowContext' -count=1 -timeout 5m` — chi tiết & per-source ở file catalog.
 
 ### 2.4 BUG-288 regression rounds (flow **và** early turn patches)
 
@@ -213,15 +212,9 @@ Ghi ☐ khi pass. Chạy với desktop + `flowpilot serve`, project git thật.
 | A9 | Inline skip terminal | Flow edge skip/terminal | Không advance sai node; synthesis settle một lần | Timeline one decision/turn | |
 | A10 | Second turn same flow | Sau A2, user message thêm trên hub | Không re-resolve workflow→flowRef mù (chỉ turn 0); timeline append đúng | Log `[flow-ref-resolve] bailing, turnCount=` | |
 
-### 3.2 Phase B — Context / change contract
+### 3.2 Phase B — Context / change contract → **MOVED**
 
-| # | Scenario | Steps | Expect | Evidence | ☐ |
-|---|----------|-------|--------|----------|---|
-| B1 | Contract inject | Coding child declare scope/contract; Continue/retry | Downstream re-entry có contract inject | Prompt/log excerpt có contract | |
-| B2 | Reviewer dirty tree | Reviewer turn sau coder edits | Không overwrite contract của coder | Contract owner still coder | |
-| B3 | No double FCP | Flow context + feature history head | Không double-inject feature history | Rendered package / head once | |
-| B4 | Source excerpt | Context sources enabled | Excerpt/bindings appear; missing source fails closed hoặc skip theo config | Context package sections | |
-| B5 | Gate × contract | YOLO off + contract change mid-flow | Gate tier đúng; contract không mất sau approve | Card + re-entry prompt | |
+> Live desktop checklist context (B1–B12, gồm cả `source.dependence` mới) đã chuyển sang [CP-43-Context-Source-Catalog-And-Test-Log.md](./CP-43-Context-Source-Catalog-And-Test-Log.md) §6. Chạy chung session desktop với Phase A/§3.3 nếu muốn verify full — chỉ khác file ghi checklist.
 
 ### 3.3 CP-51 — Durable turn (+ Task-258 Drive)
 
