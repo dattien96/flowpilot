@@ -9,8 +9,8 @@
 - Owner: `FlowPilot`
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
-- Last Updated: `2026-07-16`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md) (§6.6)
+- Last Updated: `2026-07-17`
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md) (§6.6)
 - Child Documents: `None`
 - Related Documents: [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md)
 - Replaces: `None`
@@ -153,6 +153,9 @@ func TestFCPMarker_ForeignSecret_NeverSuppresses(t *testing.T)          { /* R20
 
 ## 8. Completion Notes
 
-- result: **done — MarkerVerificationContext required; empty allowed set fails closed; mint-time provenance fields.**
-- follow-ups: remaining live crash-matrix phase-2 / real-PG optional
-- upstream docs updated: evidence + task status
+- result: **done (2026-07-17)** — `MarkerVerificationContext{Secret,AllowedMarkerIDs}` required; empty allowed-set fails closed; inner helper id-bound. DOD-I4 closed. Durable provenance (T-3/T-4), found dead in the 2026-07-17 audit, is now genuinely wired end-to-end:
+  - **Mint-time stamping:** new `SpawnAgentInput.FCPMarkerProvenanceRunID` field; `spawnChildRun` (`interactive_service.go`) stamps it onto the new child's `markerProvenanceRunIDs` under the same lock as run creation. Wired at both real call sites that embed a `flowpilot-fcp` marker via `ComposeFlowCodingPrompt`/`renderFlowContextPromptWithSecret`: the flow-executor inline-entry handoff spawn (`flow_executor.go`) and the validate-retry re-spawn (`flow_validate_audit_dispatch.go`), both passing `pkg.WorkflowRunID` (else `pkg.PackageID`) — the exact same trustID `ComposeFlowCodingPrompt` mints against.
+  - **Persistence fixed on both backends:** `local_file_session_store.go` gained the two `Pending*ProvenanceRunID` fields (round-trip in both directions); `supabase_workflow_store.go`'s `sessionRuntimeBlob` gained `MarkerProvenanceRunIDs` and the **encoder** (`sessionRuntimeFromState`) now actually populates all three provenance fields — previously declared+decoded but never written, so the round-trip was silently dead on Supabase.
+  - **[Second gap found and fixed while testing] Reconstruction never restored these fields:** even with persistence fixed, `reconstructRunInternal` (`interactive_resume.go`) never copied `markerProvenanceRunIDs`/`pendingRestartProvenanceRunID`/`pendingGateRepromptProvenanceRunID` from the loaded `ProviderSessionState` onto the new run — so every restart silently lost the recorded binding regardless of storage. Fixed in the same struct literal as the other `Pending*` restores.
+  - Tests: `fcp_marker_replay_test.go` (new, 7 tests: own-run suppress, same-service-foreign-run does-not-suppress, sibling-without-provenance does-not-suppress, recorded-provenance suppresses, foreign-secret never suppresses, end-to-end spawn-stamps-provenance, and a REAL disk round-trip + reconstruct proving the binding survives a restart) plus 2 pre-existing in `cp51_tasks_test.go`. All V-1..V-5 pass. Known remaining gap (documented, non-blocking): the `reinvokeExistingFlowChild` validate-retry path (existing-run reprompt, not a fresh spawn) is not wired — the two spawn-based handoff paths that are the actual Task-224/BUG-277 scenario are covered.
+- upstream docs updated: task status; moved to `done/` (2026-07-17).

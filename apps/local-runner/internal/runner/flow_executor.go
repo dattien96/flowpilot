@@ -1,4 +1,4 @@
-﻿package runner
+package runner
 
 import (
 	"context"
@@ -406,9 +406,18 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 	}
 
 	prompt := userPrompt
+	var fcpProvenanceRunID string
 	if pkg, ok := out.Payload["package"].(FlowContextPackage); ok {
 		// BUG-288 R19-4: per-service marker secret for inline FCP render.
 		prompt = renderFlowContextPromptWithSecret(ctx, pkg, userPrompt, s.markerSecret)
+		// CP-51 Task-252: this is the SAME trustID selection ComposeFlowCodingPrompt
+		// uses to mint the "flowpilot-fcp" marker embedded in prompt above — record
+		// it so the spawned child can verify against its recorded provenance rather
+		// than trusting parentRunID by topology alone.
+		fcpProvenanceRunID = pkg.WorkflowRunID
+		if fcpProvenanceRunID == "" {
+			fcpProvenanceRunID = pkg.PackageID
+		}
 		// BUG-243 F-0: stash the package on the run so a mid-flow node reached
 		// later (rag-harness's validate/audit) can read it back â€” previously
 		// it was only ever used for this one prompt render, then discarded.
@@ -453,13 +462,14 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 
 	agentDef, _ := resolvePackAgentDefinition(agentName)
 	if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
-		Agent:            agentName,
-		Prompt:           prompt,
-		Wait:             false,
-		Label:            delegateTarget.ID,
-		AutoOrchestrate:  true,
-		AgentDefOverride: agentDef,
-		Model:            s.resolveFlowNodeModel(ctx, *delegateTarget),
+		Agent:                    agentName,
+		Prompt:                   prompt,
+		Wait:                     false,
+		Label:                    delegateTarget.ID,
+		AutoOrchestrate:          true,
+		AgentDefOverride:         agentDef,
+		Model:                    s.resolveFlowNodeModel(ctx, *delegateTarget),
+		FCPMarkerProvenanceRunID: fcpProvenanceRunID,
 	}); err != nil {
 		log.Printf("[flow-executor] spawn inline-chain delegate node %q (agent %q) for flow %q on run %q failed: %v",
 			delegateTarget.ID, agentName, flowRef, parentRunID, err)

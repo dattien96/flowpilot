@@ -103,51 +103,51 @@ type ndjsonSessionRecord struct {
 	// FlowStartGitHead persists Task-242 tier-3 audit aggregate base (Codex review Important #3).
 	FlowStartGitHead string `json:"flow_start_git_head,omitempty"`
 	// V10 P0 / V10R: durable post-turn gate pending across restart + turn snapshot.
-	PendingFlowGateSettle     bool              `json:"pending_flow_gate_settle,omitempty"`
-	PendingFlowGateFinalMsg   string            `json:"pending_flow_gate_final_msg,omitempty"`
-	PendingFlowGateOccurredAt string            `json:"pending_flow_gate_occurred_at,omitempty"`
-	PendingFlowGateTurnID     string            `json:"pending_flow_gate_turn_id,omitempty"`
-	TurnStartGitHead          string            `json:"turn_start_git_head,omitempty"`
-	TurnStartWorktree         map[string]string `json:"turn_start_worktree,omitempty"`
-	PendingGateChangedFiles   []string          `json:"pending_gate_changed_files,omitempty"`
-	StepID                    string            `json:"step_id,omitempty"`
-	LastTurnStepID            string            `json:"last_turn_step_id,omitempty"`
-	PendingGateRepromptPrompt string            `json:"pending_gate_reprompt_prompt,omitempty"`
-	PendingGateRepromptStepID string            `json:"pending_gate_reprompt_step_id,omitempty"`
-	PendingGateCodePaths      []string          `json:"pending_gate_code_paths,omitempty"`
-	RepromptAttempts          int               `json:"reprompt_attempts,omitempty"`
-	PendingResumePrompt       string            `json:"pending_resume_prompt,omitempty"`
-	PendingResumeStepID       string            `json:"pending_resume_step_id,omitempty"`
-	PendingResumeGen                int64  `json:"pending_resume_gen,omitempty"`
-	PendingGateRepromptGen          int64  `json:"pending_gate_reprompt_gen,omitempty"`
-	PendingResumeDeliveredGen         int64  `json:"pending_resume_delivered_gen,omitempty"`
-	PendingGateRepromptDeliveredGen   int64  `json:"pending_gate_reprompt_delivered_gen,omitempty"`
-	PendingResumeAcceptedTurn         string `json:"pending_resume_accepted_turn,omitempty"`
-	PendingGateRepromptAcceptedTurn   string `json:"pending_gate_reprompt_accepted_turn,omitempty"`
-	PendingResumeFailCount            int    `json:"pending_resume_fail_count,omitempty"`
-	PendingResumeFailGen              int64  `json:"pending_resume_fail_gen,omitempty"`
-	PendingGateRepromptFailCount      int    `json:"pending_gate_reprompt_fail_count,omitempty"`
-	PendingGateRepromptFailGen        int64  `json:"pending_gate_reprompt_fail_gen,omitempty"`
-	PendingResumeApprovalID           string   `json:"pending_resume_approval_id,omitempty"`
-	PendingResumeDecision             string   `json:"pending_resume_decision,omitempty"`
-	PendingResumeQuestionChoices      []string `json:"pending_resume_question_choices,omitempty"`
+	PendingFlowGateSettle           bool              `json:"pending_flow_gate_settle,omitempty"`
+	PendingFlowGateFinalMsg         string            `json:"pending_flow_gate_final_msg,omitempty"`
+	PendingFlowGateOccurredAt       string            `json:"pending_flow_gate_occurred_at,omitempty"`
+	PendingFlowGateTurnID           string            `json:"pending_flow_gate_turn_id,omitempty"`
+	TurnStartGitHead                string            `json:"turn_start_git_head,omitempty"`
+	TurnStartWorktree               map[string]string `json:"turn_start_worktree,omitempty"`
+	PendingGateChangedFiles         []string          `json:"pending_gate_changed_files,omitempty"`
+	StepID                          string            `json:"step_id,omitempty"`
+	LastTurnStepID                  string            `json:"last_turn_step_id,omitempty"`
+	PendingGateRepromptPrompt       string            `json:"pending_gate_reprompt_prompt,omitempty"`
+	PendingGateRepromptStepID       string            `json:"pending_gate_reprompt_step_id,omitempty"`
+	PendingGateCodePaths            []string          `json:"pending_gate_code_paths,omitempty"`
+	RepromptAttempts                int               `json:"reprompt_attempts,omitempty"`
+	PendingResumePrompt             string            `json:"pending_resume_prompt,omitempty"`
+	PendingResumeStepID             string            `json:"pending_resume_step_id,omitempty"`
+	PendingResumeGen                int64             `json:"pending_resume_gen,omitempty"`
+	PendingGateRepromptGen          int64             `json:"pending_gate_reprompt_gen,omitempty"`
+	PendingResumeDeliveredGen       int64             `json:"pending_resume_delivered_gen,omitempty"`
+	PendingGateRepromptDeliveredGen int64             `json:"pending_gate_reprompt_delivered_gen,omitempty"`
+	PendingResumeAcceptedTurn       string            `json:"pending_resume_accepted_turn,omitempty"`
+	PendingGateRepromptAcceptedTurn string            `json:"pending_gate_reprompt_accepted_turn,omitempty"`
+	PendingResumeFailCount          int               `json:"pending_resume_fail_count,omitempty"`
+	PendingResumeFailGen            int64             `json:"pending_resume_fail_gen,omitempty"`
+	PendingGateRepromptFailCount    int               `json:"pending_gate_reprompt_fail_count,omitempty"`
+	PendingGateRepromptFailGen      int64             `json:"pending_gate_reprompt_fail_gen,omitempty"`
+	PendingResumeApprovalID         string            `json:"pending_resume_approval_id,omitempty"`
+	PendingResumeDecision           string            `json:"pending_resume_decision,omitempty"`
+	PendingResumeQuestionChoices    []string          `json:"pending_resume_question_choices,omitempty"`
 	// BUG-288 R13-01: stall-Retry restart intent must survive LocalFileSessionStore
 	// (ProviderSessionState already had these; NDJSON record was missing them).
-	PendingRestartRunID               string   `json:"pending_restart_run_id,omitempty"`
-	PendingRestartPrompt              string   `json:"pending_restart_prompt,omitempty"`
-	PendingRestartGen                 int64    `json:"pending_restart_gen,omitempty"`
+	PendingRestartRunID  string `json:"pending_restart_run_id,omitempty"`
+	PendingRestartPrompt string `json:"pending_restart_prompt,omitempty"`
+	PendingRestartGen    int64  `json:"pending_restart_gen,omitempty"`
 	// BUG-288 R16-P0: durable startTurn idempotency keys (durable-* prefix).
-	IdempotencyKeys                   map[string]string `json:"idempotency_keys,omitempty"`
+	IdempotencyKeys map[string]string `json:"idempotency_keys,omitempty"`
 	// BUG-288 R13-16: durable flag so restart does not double-inject Flow Context.
-	FlowContextInjected               bool     `json:"flow_context_injected,omitempty"`
-	StopGeneration                    int64    `json:"stop_generation,omitempty"`
-	ParentStopGenSeen                 int64    `json:"parent_stop_gen_seen,omitempty"`
-	IntentBlockedKind                 string   `json:"intent_blocked_kind,omitempty"`
-	IntentBlockedReason               string   `json:"intent_blocked_reason,omitempty"`
-	IntentBlockedAt                   string   `json:"intent_blocked_at,omitempty"`
-	TransitionLogDegraded             bool     `json:"transition_log_degraded,omitempty"`
-	TransitionLogDegradedAt           string   `json:"transition_log_degraded_at,omitempty"`
-	TransitionLogDegradedReason       string   `json:"transition_log_degraded_reason,omitempty"`
+	FlowContextInjected         bool   `json:"flow_context_injected,omitempty"`
+	StopGeneration              int64  `json:"stop_generation,omitempty"`
+	ParentStopGenSeen           int64  `json:"parent_stop_gen_seen,omitempty"`
+	IntentBlockedKind           string `json:"intent_blocked_kind,omitempty"`
+	IntentBlockedReason         string `json:"intent_blocked_reason,omitempty"`
+	IntentBlockedAt             string `json:"intent_blocked_at,omitempty"`
+	TransitionLogDegraded       bool   `json:"transition_log_degraded,omitempty"`
+	TransitionLogDegradedAt     string `json:"transition_log_degraded_at,omitempty"`
+	TransitionLogDegradedReason string `json:"transition_log_degraded_reason,omitempty"`
 	// CP-51 / SD-24 parity: session mirror scalars only — never DispatchRecord slices.
 	ChangeType              string   `json:"change_type,omitempty"`
 	SourceDocID             string   `json:"source_doc_id,omitempty"`
@@ -156,6 +156,12 @@ type ndjsonSessionRecord struct {
 	RepairRequired          bool     `json:"repair_required,omitempty"`
 	RepairReason            string   `json:"repair_reason,omitempty"`
 	MarkerProvenanceRunIDs  []string `json:"marker_provenance_run_ids,omitempty"`
+	// CP-51 Task-252 (Codex-suggested fix, 2026-07-17): these were declared on
+	// ProviderSessionState and stamped at mint, but never round-tripped through
+	// the local file store record — so a restart lost the recorded handoff
+	// binding even though the durable field existed.
+	PendingRestartProvenanceRunID      string `json:"pending_restart_provenance_run_id,omitempty"`
+	PendingGateRepromptProvenanceRunID string `json:"pending_gate_reprompt_provenance_run_id,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -374,88 +380,90 @@ func (s *localFileSessionStore) ListAllProviderSessions(ctx context.Context) ([]
 
 func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 	return ProviderSessionState{
-		RunID:               r.RunID,
-		ProjectID:           r.ProjectID,
-		WorkflowID:          r.WorkflowID,
-		ProviderKey:         ProviderKey(r.ProviderKey),
-		ProviderSessionID:   r.ProviderSessionID,
-		ProviderAccountID:   r.ProviderAccountID,
-		WorkingDirectory:    r.WorkingDirectory,
-		Status:              RunStatus(r.Status),
-		LastPrompt:          r.LastPrompt,
-		LastMessage:         r.LastMessage,
-		StartedAt:           r.StartedAt,
-		UpdatedAt:           r.UpdatedAt,
-		RunKind:             r.RunKind,
-		SourceMachineID:     r.SourceMachineID,
-		SourceRunID:         r.SourceRunID,
-		RestoredFrom:        r.RestoredFrom,
-		SyncStatus:          r.SyncStatus,
-		SyncUpdatedAt:       r.SyncUpdatedAt,
-		ParentRunID:         r.ParentRunID,
-		AgentName:           r.AgentName,
-		Label:               r.Label,
-		Role:                r.Role,
-		DependsOn:           append([]string(nil), r.DependsOn...),
-		AgentStatus:         r.AgentStatus,
-		ModelName:           r.ModelName,
-		PendingAgentContext: append([]string(nil), r.PendingAgentContext...),
-		LoopState:           loopStateFromPtr(r.LoopState),
-		AutoOrchestrate:     r.AutoOrchestrate,
-		FlowCohortID:        r.FlowCohortID,
-		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), r.ActiveFlowEdges...),
-		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), r.ActiveFlowNodes...),
-		ChatSubMode:               r.ChatSubMode,
-		ChatFlowRef:               r.ChatFlowRef,
-		FlowStartGitHead:          r.FlowStartGitHead,
-		PendingFlowGateSettle:     r.PendingFlowGateSettle,
-		PendingFlowGateFinalMsg:   r.PendingFlowGateFinalMsg,
-		PendingFlowGateOccurredAt: r.PendingFlowGateOccurredAt,
-		PendingFlowGateTurnID:     r.PendingFlowGateTurnID,
-		TurnStartGitHead:          r.TurnStartGitHead,
-		TurnStartWorktree:         copyStringMap(r.TurnStartWorktree),
-		PendingGateChangedFiles:   append([]string(nil), r.PendingGateChangedFiles...),
-		StepID:                    r.StepID,
-		LastTurnStepID:            r.LastTurnStepID,
-		PendingGateRepromptPrompt: r.PendingGateRepromptPrompt,
-		PendingGateRepromptStepID: r.PendingGateRepromptStepID,
-		PendingGateCodePaths:      append([]string(nil), r.PendingGateCodePaths...),
-		RepromptAttempts:          r.RepromptAttempts,
-		PendingResumePrompt:       r.PendingResumePrompt,
-		PendingResumeStepID:       r.PendingResumeStepID,
-		PendingResumeGen:                r.PendingResumeGen,
-		PendingGateRepromptGen:          r.PendingGateRepromptGen,
-		PendingResumeDeliveredGen:       r.PendingResumeDeliveredGen,
-		PendingGateRepromptDeliveredGen: r.PendingGateRepromptDeliveredGen,
-		PendingResumeAcceptedTurn:       r.PendingResumeAcceptedTurn,
-		PendingGateRepromptAcceptedTurn: r.PendingGateRepromptAcceptedTurn,
-		PendingResumeFailCount:          r.PendingResumeFailCount,
-		PendingResumeFailGen:            r.PendingResumeFailGen,
-		PendingGateRepromptFailCount:    r.PendingGateRepromptFailCount,
-		PendingGateRepromptFailGen:      r.PendingGateRepromptFailGen,
-		PendingResumeApprovalID:         r.PendingResumeApprovalID,
-		PendingResumeDecision:           r.PendingResumeDecision,
-		PendingResumeQuestionChoices:    append([]string(nil), r.PendingResumeQuestionChoices...),
-		PendingRestartRunID:             r.PendingRestartRunID,
-		PendingRestartPrompt:            r.PendingRestartPrompt,
-		PendingRestartGen:               r.PendingRestartGen,
-		IdempotencyKeys:                 copyStringMap(r.IdempotencyKeys),
-		FlowContextInjected:             r.FlowContextInjected,
-		StopGeneration:                  r.StopGeneration,
-		ParentStopGenSeen:               r.ParentStopGenSeen,
-		IntentBlockedKind:               r.IntentBlockedKind,
-		IntentBlockedReason:             r.IntentBlockedReason,
-		IntentBlockedAt:                 r.IntentBlockedAt,
-		TransitionLogDegraded:           r.TransitionLogDegraded,
-		TransitionLogDegradedAt:         r.TransitionLogDegradedAt,
-		TransitionLogDegradedReason:     r.TransitionLogDegradedReason,
-		ChangeType:                      r.ChangeType,
-		SourceDocID:                     r.SourceDocID,
-		TurnCount:                       r.TurnCount,
-		DispatchProtocolVersion:         r.DispatchProtocolVersion,
-		RepairRequired:                  r.RepairRequired,
-		RepairReason:                    r.RepairReason,
-		MarkerProvenanceRunIDs:          append([]string(nil), r.MarkerProvenanceRunIDs...),
+		RunID:                              r.RunID,
+		ProjectID:                          r.ProjectID,
+		WorkflowID:                         r.WorkflowID,
+		ProviderKey:                        ProviderKey(r.ProviderKey),
+		ProviderSessionID:                  r.ProviderSessionID,
+		ProviderAccountID:                  r.ProviderAccountID,
+		WorkingDirectory:                   r.WorkingDirectory,
+		Status:                             RunStatus(r.Status),
+		LastPrompt:                         r.LastPrompt,
+		LastMessage:                        r.LastMessage,
+		StartedAt:                          r.StartedAt,
+		UpdatedAt:                          r.UpdatedAt,
+		RunKind:                            r.RunKind,
+		SourceMachineID:                    r.SourceMachineID,
+		SourceRunID:                        r.SourceRunID,
+		RestoredFrom:                       r.RestoredFrom,
+		SyncStatus:                         r.SyncStatus,
+		SyncUpdatedAt:                      r.SyncUpdatedAt,
+		ParentRunID:                        r.ParentRunID,
+		AgentName:                          r.AgentName,
+		Label:                              r.Label,
+		Role:                               r.Role,
+		DependsOn:                          append([]string(nil), r.DependsOn...),
+		AgentStatus:                        r.AgentStatus,
+		ModelName:                          r.ModelName,
+		PendingAgentContext:                append([]string(nil), r.PendingAgentContext...),
+		LoopState:                          loopStateFromPtr(r.LoopState),
+		AutoOrchestrate:                    r.AutoOrchestrate,
+		FlowCohortID:                       r.FlowCohortID,
+		ActiveFlowEdges:                    append([]agentpack.FlowEdge(nil), r.ActiveFlowEdges...),
+		ActiveFlowNodes:                    append([]agentpack.FlowNode(nil), r.ActiveFlowNodes...),
+		ChatSubMode:                        r.ChatSubMode,
+		ChatFlowRef:                        r.ChatFlowRef,
+		FlowStartGitHead:                   r.FlowStartGitHead,
+		PendingFlowGateSettle:              r.PendingFlowGateSettle,
+		PendingFlowGateFinalMsg:            r.PendingFlowGateFinalMsg,
+		PendingFlowGateOccurredAt:          r.PendingFlowGateOccurredAt,
+		PendingFlowGateTurnID:              r.PendingFlowGateTurnID,
+		TurnStartGitHead:                   r.TurnStartGitHead,
+		TurnStartWorktree:                  copyStringMap(r.TurnStartWorktree),
+		PendingGateChangedFiles:            append([]string(nil), r.PendingGateChangedFiles...),
+		StepID:                             r.StepID,
+		LastTurnStepID:                     r.LastTurnStepID,
+		PendingGateRepromptPrompt:          r.PendingGateRepromptPrompt,
+		PendingGateRepromptStepID:          r.PendingGateRepromptStepID,
+		PendingGateCodePaths:               append([]string(nil), r.PendingGateCodePaths...),
+		RepromptAttempts:                   r.RepromptAttempts,
+		PendingResumePrompt:                r.PendingResumePrompt,
+		PendingResumeStepID:                r.PendingResumeStepID,
+		PendingResumeGen:                   r.PendingResumeGen,
+		PendingGateRepromptGen:             r.PendingGateRepromptGen,
+		PendingResumeDeliveredGen:          r.PendingResumeDeliveredGen,
+		PendingGateRepromptDeliveredGen:    r.PendingGateRepromptDeliveredGen,
+		PendingResumeAcceptedTurn:          r.PendingResumeAcceptedTurn,
+		PendingGateRepromptAcceptedTurn:    r.PendingGateRepromptAcceptedTurn,
+		PendingResumeFailCount:             r.PendingResumeFailCount,
+		PendingResumeFailGen:               r.PendingResumeFailGen,
+		PendingGateRepromptFailCount:       r.PendingGateRepromptFailCount,
+		PendingGateRepromptFailGen:         r.PendingGateRepromptFailGen,
+		PendingResumeApprovalID:            r.PendingResumeApprovalID,
+		PendingResumeDecision:              r.PendingResumeDecision,
+		PendingResumeQuestionChoices:       append([]string(nil), r.PendingResumeQuestionChoices...),
+		PendingRestartRunID:                r.PendingRestartRunID,
+		PendingRestartPrompt:               r.PendingRestartPrompt,
+		PendingRestartGen:                  r.PendingRestartGen,
+		IdempotencyKeys:                    copyStringMap(r.IdempotencyKeys),
+		FlowContextInjected:                r.FlowContextInjected,
+		StopGeneration:                     r.StopGeneration,
+		ParentStopGenSeen:                  r.ParentStopGenSeen,
+		IntentBlockedKind:                  r.IntentBlockedKind,
+		IntentBlockedReason:                r.IntentBlockedReason,
+		IntentBlockedAt:                    r.IntentBlockedAt,
+		TransitionLogDegraded:              r.TransitionLogDegraded,
+		TransitionLogDegradedAt:            r.TransitionLogDegradedAt,
+		TransitionLogDegradedReason:        r.TransitionLogDegradedReason,
+		ChangeType:                         r.ChangeType,
+		SourceDocID:                        r.SourceDocID,
+		TurnCount:                          r.TurnCount,
+		DispatchProtocolVersion:            r.DispatchProtocolVersion,
+		RepairRequired:                     r.RepairRequired,
+		RepairReason:                       r.RepairReason,
+		MarkerProvenanceRunIDs:             append([]string(nil), r.MarkerProvenanceRunIDs...),
+		PendingRestartProvenanceRunID:      r.PendingRestartProvenanceRunID,
+		PendingGateRepromptProvenanceRunID: r.PendingGateRepromptProvenanceRunID,
 	}
 }
 
@@ -819,88 +827,90 @@ func (s *localFileSessionStore) DeleteStepTransitions(_ context.Context, runID s
 
 func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 	return ndjsonSessionRecord{
-		RunID:               s.RunID,
-		ProjectID:           s.ProjectID,
-		WorkflowID:          s.WorkflowID,
-		ProviderKey:         string(s.ProviderKey),
-		ProviderSessionID:   s.ProviderSessionID,
-		ProviderAccountID:   s.ProviderAccountID,
-		WorkingDirectory:    s.WorkingDirectory,
-		Status:              string(s.Status),
-		LastPrompt:          s.LastPrompt,
-		LastMessage:         s.LastMessage,
-		StartedAt:           s.StartedAt,
-		UpdatedAt:           s.UpdatedAt,
-		RunKind:             s.RunKind,
-		SourceMachineID:     s.SourceMachineID,
-		SourceRunID:         s.SourceRunID,
-		RestoredFrom:        s.RestoredFrom,
-		SyncStatus:          s.SyncStatus,
-		SyncUpdatedAt:       s.SyncUpdatedAt,
-		ParentRunID:         s.ParentRunID,
-		AgentName:           s.AgentName,
-		Label:               s.Label,
-		Role:                s.Role,
-		DependsOn:           append([]string(nil), s.DependsOn...),
-		AgentStatus:         s.AgentStatus,
-		ModelName:           s.ModelName,
-		PendingAgentContext: append([]string(nil), s.PendingAgentContext...),
-		LoopState:           loopStatePtrIfSet(s.LoopState),
-		AutoOrchestrate:     s.AutoOrchestrate,
-		FlowCohortID:        s.FlowCohortID,
-		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), s.ActiveFlowEdges...),
-		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), s.ActiveFlowNodes...),
-		ChatSubMode:               s.ChatSubMode,
-		ChatFlowRef:               s.ChatFlowRef,
-		FlowStartGitHead:          s.FlowStartGitHead,
-		PendingFlowGateSettle:     s.PendingFlowGateSettle,
-		PendingFlowGateFinalMsg:   s.PendingFlowGateFinalMsg,
-		PendingFlowGateOccurredAt: s.PendingFlowGateOccurredAt,
-		PendingFlowGateTurnID:     s.PendingFlowGateTurnID,
-		TurnStartGitHead:          s.TurnStartGitHead,
-		TurnStartWorktree:         copyStringMap(s.TurnStartWorktree),
-		PendingGateChangedFiles:   append([]string(nil), s.PendingGateChangedFiles...),
-		StepID:                    s.StepID,
-		LastTurnStepID:            s.LastTurnStepID,
-		PendingGateRepromptPrompt: s.PendingGateRepromptPrompt,
-		PendingGateRepromptStepID: s.PendingGateRepromptStepID,
-		PendingGateCodePaths:      append([]string(nil), s.PendingGateCodePaths...),
-		RepromptAttempts:          s.RepromptAttempts,
-		PendingResumePrompt:       s.PendingResumePrompt,
-		PendingResumeStepID:       s.PendingResumeStepID,
-		PendingResumeGen:                s.PendingResumeGen,
-		PendingGateRepromptGen:          s.PendingGateRepromptGen,
-		PendingResumeDeliveredGen:       s.PendingResumeDeliveredGen,
-		PendingGateRepromptDeliveredGen: s.PendingGateRepromptDeliveredGen,
-		PendingResumeAcceptedTurn:       s.PendingResumeAcceptedTurn,
-		PendingGateRepromptAcceptedTurn: s.PendingGateRepromptAcceptedTurn,
-		PendingResumeFailCount:          s.PendingResumeFailCount,
-		PendingResumeFailGen:            s.PendingResumeFailGen,
-		PendingGateRepromptFailCount:    s.PendingGateRepromptFailCount,
-		PendingGateRepromptFailGen:      s.PendingGateRepromptFailGen,
-		PendingResumeApprovalID:         s.PendingResumeApprovalID,
-		PendingResumeDecision:           s.PendingResumeDecision,
-		PendingResumeQuestionChoices:    append([]string(nil), s.PendingResumeQuestionChoices...),
-		PendingRestartRunID:             s.PendingRestartRunID,
-		PendingRestartPrompt:            s.PendingRestartPrompt,
-		PendingRestartGen:               s.PendingRestartGen,
-		IdempotencyKeys:                 copyStringMap(s.IdempotencyKeys),
-		FlowContextInjected:             s.FlowContextInjected,
-		StopGeneration:                  s.StopGeneration,
-		ParentStopGenSeen:               s.ParentStopGenSeen,
-		IntentBlockedKind:               s.IntentBlockedKind,
-		IntentBlockedReason:             s.IntentBlockedReason,
-		IntentBlockedAt:                 s.IntentBlockedAt,
-		TransitionLogDegraded:           s.TransitionLogDegraded,
-		TransitionLogDegradedAt:         s.TransitionLogDegradedAt,
-		TransitionLogDegradedReason:     s.TransitionLogDegradedReason,
-		ChangeType:                      s.ChangeType,
-		SourceDocID:                     s.SourceDocID,
-		TurnCount:                       s.TurnCount,
-		DispatchProtocolVersion:         s.DispatchProtocolVersion,
-		RepairRequired:                  s.RepairRequired,
-		RepairReason:                    s.RepairReason,
-		MarkerProvenanceRunIDs:          append([]string(nil), s.MarkerProvenanceRunIDs...),
+		RunID:                              s.RunID,
+		ProjectID:                          s.ProjectID,
+		WorkflowID:                         s.WorkflowID,
+		ProviderKey:                        string(s.ProviderKey),
+		ProviderSessionID:                  s.ProviderSessionID,
+		ProviderAccountID:                  s.ProviderAccountID,
+		WorkingDirectory:                   s.WorkingDirectory,
+		Status:                             string(s.Status),
+		LastPrompt:                         s.LastPrompt,
+		LastMessage:                        s.LastMessage,
+		StartedAt:                          s.StartedAt,
+		UpdatedAt:                          s.UpdatedAt,
+		RunKind:                            s.RunKind,
+		SourceMachineID:                    s.SourceMachineID,
+		SourceRunID:                        s.SourceRunID,
+		RestoredFrom:                       s.RestoredFrom,
+		SyncStatus:                         s.SyncStatus,
+		SyncUpdatedAt:                      s.SyncUpdatedAt,
+		ParentRunID:                        s.ParentRunID,
+		AgentName:                          s.AgentName,
+		Label:                              s.Label,
+		Role:                               s.Role,
+		DependsOn:                          append([]string(nil), s.DependsOn...),
+		AgentStatus:                        s.AgentStatus,
+		ModelName:                          s.ModelName,
+		PendingAgentContext:                append([]string(nil), s.PendingAgentContext...),
+		LoopState:                          loopStatePtrIfSet(s.LoopState),
+		AutoOrchestrate:                    s.AutoOrchestrate,
+		FlowCohortID:                       s.FlowCohortID,
+		ActiveFlowEdges:                    append([]agentpack.FlowEdge(nil), s.ActiveFlowEdges...),
+		ActiveFlowNodes:                    append([]agentpack.FlowNode(nil), s.ActiveFlowNodes...),
+		ChatSubMode:                        s.ChatSubMode,
+		ChatFlowRef:                        s.ChatFlowRef,
+		FlowStartGitHead:                   s.FlowStartGitHead,
+		PendingFlowGateSettle:              s.PendingFlowGateSettle,
+		PendingFlowGateFinalMsg:            s.PendingFlowGateFinalMsg,
+		PendingFlowGateOccurredAt:          s.PendingFlowGateOccurredAt,
+		PendingFlowGateTurnID:              s.PendingFlowGateTurnID,
+		TurnStartGitHead:                   s.TurnStartGitHead,
+		TurnStartWorktree:                  copyStringMap(s.TurnStartWorktree),
+		PendingGateChangedFiles:            append([]string(nil), s.PendingGateChangedFiles...),
+		StepID:                             s.StepID,
+		LastTurnStepID:                     s.LastTurnStepID,
+		PendingGateRepromptPrompt:          s.PendingGateRepromptPrompt,
+		PendingGateRepromptStepID:          s.PendingGateRepromptStepID,
+		PendingGateCodePaths:               append([]string(nil), s.PendingGateCodePaths...),
+		RepromptAttempts:                   s.RepromptAttempts,
+		PendingResumePrompt:                s.PendingResumePrompt,
+		PendingResumeStepID:                s.PendingResumeStepID,
+		PendingResumeGen:                   s.PendingResumeGen,
+		PendingGateRepromptGen:             s.PendingGateRepromptGen,
+		PendingResumeDeliveredGen:          s.PendingResumeDeliveredGen,
+		PendingGateRepromptDeliveredGen:    s.PendingGateRepromptDeliveredGen,
+		PendingResumeAcceptedTurn:          s.PendingResumeAcceptedTurn,
+		PendingGateRepromptAcceptedTurn:    s.PendingGateRepromptAcceptedTurn,
+		PendingResumeFailCount:             s.PendingResumeFailCount,
+		PendingResumeFailGen:               s.PendingResumeFailGen,
+		PendingGateRepromptFailCount:       s.PendingGateRepromptFailCount,
+		PendingGateRepromptFailGen:         s.PendingGateRepromptFailGen,
+		PendingResumeApprovalID:            s.PendingResumeApprovalID,
+		PendingResumeDecision:              s.PendingResumeDecision,
+		PendingResumeQuestionChoices:       append([]string(nil), s.PendingResumeQuestionChoices...),
+		PendingRestartRunID:                s.PendingRestartRunID,
+		PendingRestartPrompt:               s.PendingRestartPrompt,
+		PendingRestartGen:                  s.PendingRestartGen,
+		IdempotencyKeys:                    copyStringMap(s.IdempotencyKeys),
+		FlowContextInjected:                s.FlowContextInjected,
+		StopGeneration:                     s.StopGeneration,
+		ParentStopGenSeen:                  s.ParentStopGenSeen,
+		IntentBlockedKind:                  s.IntentBlockedKind,
+		IntentBlockedReason:                s.IntentBlockedReason,
+		IntentBlockedAt:                    s.IntentBlockedAt,
+		TransitionLogDegraded:              s.TransitionLogDegraded,
+		TransitionLogDegradedAt:            s.TransitionLogDegradedAt,
+		TransitionLogDegradedReason:        s.TransitionLogDegradedReason,
+		ChangeType:                         s.ChangeType,
+		SourceDocID:                        s.SourceDocID,
+		TurnCount:                          s.TurnCount,
+		DispatchProtocolVersion:            s.DispatchProtocolVersion,
+		RepairRequired:                     s.RepairRequired,
+		RepairReason:                       s.RepairReason,
+		MarkerProvenanceRunIDs:             append([]string(nil), s.MarkerProvenanceRunIDs...),
+		PendingRestartProvenanceRunID:      s.PendingRestartProvenanceRunID,
+		PendingGateRepromptProvenanceRunID: s.PendingGateRepromptProvenanceRunID,
 	}
 }
 

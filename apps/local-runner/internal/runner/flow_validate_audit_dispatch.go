@@ -1,4 +1,4 @@
-﻿package runner
+package runner
 
 import (
 	"context"
@@ -535,9 +535,16 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 			return false
 		}
 		prompt := resultMessage
+		var fcpProvenanceRunID string
 		if hasPkg {
 			// BUG-288 R19-4: per-service marker secret on validation retry compose.
 			prompt = ComposeRetryPromptWithSecret(pkg, state, s.markerSecret)
+			// CP-51 Task-252: same trustID selection ComposeFlowCodingPrompt(WithSecret)
+			// uses to mint the embedded "flowpilot-fcp" marker.
+			fcpProvenanceRunID = pkg.WorkflowRunID
+			if fcpProvenanceRunID == "" {
+				fcpProvenanceRunID = pkg.PackageID
+			}
 		}
 		// Task-247 / CP-50 P-4: re-entry after validate must still see declared scope.
 		prompt = composeFlowNodeAgentPrompt(cwd, prompt, targetNode)
@@ -563,13 +570,14 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 		}
 		agentDef, _ := resolvePackAgentDefinition(agentName)
 		if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
-			Agent:            agentName,
-			Prompt:           prompt,
-			Wait:             false,
-			Label:            targetNode.ID,
-			AutoOrchestrate:  true,
-			AgentDefOverride: agentDef,
-			Model:            s.resolveFlowNodeModel(ctx, targetNode),
+			Agent:                    agentName,
+			Prompt:                   prompt,
+			Wait:                     false,
+			Label:                    targetNode.ID,
+			AutoOrchestrate:          true,
+			AgentDefOverride:         agentDef,
+			Model:                    s.resolveFlowNodeModel(ctx, targetNode),
+			FCPMarkerProvenanceRunID: fcpProvenanceRunID,
 		}); err != nil {
 			log.Printf("[flow-executor] validate: retry spawn of %q failed: %v", targetNode.ID, err)
 			return false

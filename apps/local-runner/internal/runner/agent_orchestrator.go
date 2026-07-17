@@ -253,6 +253,16 @@ type SpawnAgentInput struct {
 	// even when a fast child turn would otherwise race ahead and drain pending
 	// context before the caller can append the notice.
 	ParentContextNote string `json:"-"`
+	// FCPMarkerProvenanceRunID records the run ID whose "flowpilot-fcp" trusted
+	// marker is embedded in Prompt (CP-51 Task-252 / SD-24 §6.6). When Prompt was
+	// composed via ComposeFlowCodingPrompt(pkg, ...), this is pkg.WorkflowRunID —
+	// the flow context package's owning run, NOT necessarily the new child's own
+	// id. spawnChildRun stamps it onto the child's markerProvenanceRunIDs so its
+	// first turn's feature-history suppression check (isFlowContextHandoffWithSecret)
+	// can trust this specific, recorded handoff binding instead of inferring trust
+	// from parentRunID topology alone (DOD-I4 — a sibling/unrelated source must
+	// never be trusted by topology). Internal-only, like ParentContextNote above.
+	FCPMarkerProvenanceRunID string `json:"-"`
 	// Model gives this spawn its own model, taking priority over both the
 	// agent definition's model and the parent run's inherited model (BUG-228).
 	// Set by the flow executor for an agent.delegate node whose role has its

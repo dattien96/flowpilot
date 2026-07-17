@@ -191,8 +191,8 @@ type interactiveRun struct {
 	repairReason            string
 	markerProvenanceRunIDs  []string
 	// Mint-time provenance for FCP marker binding (Task-252 / SD-24 §6.6).
-	pendingRestartProvenanceRunID       string
-	pendingGateRepromptProvenanceRunID  string
+	pendingRestartProvenanceRunID      string
+	pendingGateRepromptProvenanceRunID string
 	// label is the display name used in consolidated cohort notes; defaults to agentName.
 	label string
 	// waitForResult records the spawn's wait flag. A tool spawn with wait=true returns the
@@ -389,10 +389,10 @@ type interactiveRun struct {
 	pendingGateRepromptFailGen   int64
 	// pending*DeliveredGen + AcceptedTurn: set ONLY after startTurn accepts
 	// (V10R4 P0-02). Never treat pre-call markers as delivery proof.
-	pendingResumeDeliveredGen         int64
-	pendingGateRepromptDeliveredGen   int64
-	pendingResumeAcceptedTurn         string
-	pendingGateRepromptAcceptedTurn   string
+	pendingResumeDeliveredGen       int64
+	pendingGateRepromptDeliveredGen int64
+	pendingResumeAcceptedTurn       string
+	pendingGateRepromptAcceptedTurn string
 	// pendingResumeApprovalID/Decision reconcile card vs intent across two writes.
 	pendingResumeApprovalID string
 	pendingResumeDecision   string
@@ -2593,89 +2593,89 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		providerSessionID = rs.realProviderSessionID
 	}
 	return ProviderSessionState{
-		RunID:               rs.id,
-		ProjectID:           rs.projectID,
-		WorkflowID:          rs.workflowID,
-		ProviderSessionID:   providerSessionID,
-		ProviderKey:         rs.providerKey,
-		ProviderAccountID:   rs.providerAccountID,
-		WorkingDirectory:    rs.workspaceCwd,
-		Status:              rs.status,
-		LastPrompt:          rs.lastPrompt,
-		LastMessage:         rs.lastMessage,
-		StartedAt:           rs.createdAt,
-		UpdatedAt:           rs.updatedAt,
-		RunKind:             rs.runKind,
-		SourceMachineID:     rs.sourceMachineID,
-		SourceRunID:         rs.sourceRunID,
-		RestoredFrom:        rs.restoredFrom,
-		SyncStatus:          rs.syncStatus,
-		SyncUpdatedAt:       rs.syncUpdatedAt,
-		ParentRunID:         rs.parentRunID,
-		AgentName:           rs.agentName,
-		Label:               rs.label,
-		Role:                rs.role,
-		DependsOn:           append([]string(nil), rs.dependsOn...),
-		AgentStatus:         rs.agentStatus,
-		ModelName:           rs.modelName,
-		ChangeType:          rs.changeType,
-		SourceDocID:         rs.sourceDocID,
-		TurnCount:           rs.turnCount,
-		PendingAgentContext: append([]string(nil), rs.pendingAgentContext...),
-		AutoOrchestrate:     rs.autoOrchestrate,
-		FlowCohortID:        rs.flowCohortId,
-		ActiveFlowEdges:     append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...),
-		ActiveFlowNodes:     append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
-		ChatSubMode:               rs.chatSubMode,
-		ChatFlowRef:               rs.chatFlowRef,
-		FlowStartGitHead:          rs.flowStartGitHead,
-		PendingFlowGateSettle:     rs.pendingFlowGateSettle,
-		PendingFlowGateFinalMsg:   rs.pendingFlowGateFinalMsg,
-		PendingFlowGateOccurredAt: rs.pendingFlowGateOccurredAt,
-		PendingFlowGateTurnID:     rs.pendingFlowGateTurnID,
-		TurnStartGitHead:          rs.turnStartGitHead,
-		TurnStartWorktree:         copyStringMap(rs.turnStartWorktree),
-		PendingGateChangedFiles:   append([]string(nil), rs.pendingGateChangedFiles...),
-		StepID:                    rs.stepID,
-		LastTurnStepID:            rs.lastTurnStepID,
-		PendingGateRepromptPrompt: rs.pendingGateRepromptPrompt,
-		PendingGateRepromptStepID: rs.pendingGateRepromptStepID,
-		PendingGateCodePaths:      append([]string(nil), rs.pendingGateCodePaths...),
-		RepromptAttempts:          rs.repromptAttempts,
-		PendingResumePrompt:       rs.pendingResumePrompt,
-		PendingResumeStepID:       rs.pendingResumeStepID,
+		RunID:                           rs.id,
+		ProjectID:                       rs.projectID,
+		WorkflowID:                      rs.workflowID,
+		ProviderSessionID:               providerSessionID,
+		ProviderKey:                     rs.providerKey,
+		ProviderAccountID:               rs.providerAccountID,
+		WorkingDirectory:                rs.workspaceCwd,
+		Status:                          rs.status,
+		LastPrompt:                      rs.lastPrompt,
+		LastMessage:                     rs.lastMessage,
+		StartedAt:                       rs.createdAt,
+		UpdatedAt:                       rs.updatedAt,
+		RunKind:                         rs.runKind,
+		SourceMachineID:                 rs.sourceMachineID,
+		SourceRunID:                     rs.sourceRunID,
+		RestoredFrom:                    rs.restoredFrom,
+		SyncStatus:                      rs.syncStatus,
+		SyncUpdatedAt:                   rs.syncUpdatedAt,
+		ParentRunID:                     rs.parentRunID,
+		AgentName:                       rs.agentName,
+		Label:                           rs.label,
+		Role:                            rs.role,
+		DependsOn:                       append([]string(nil), rs.dependsOn...),
+		AgentStatus:                     rs.agentStatus,
+		ModelName:                       rs.modelName,
+		ChangeType:                      rs.changeType,
+		SourceDocID:                     rs.sourceDocID,
+		TurnCount:                       rs.turnCount,
+		PendingAgentContext:             append([]string(nil), rs.pendingAgentContext...),
+		AutoOrchestrate:                 rs.autoOrchestrate,
+		FlowCohortID:                    rs.flowCohortId,
+		ActiveFlowEdges:                 append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...),
+		ActiveFlowNodes:                 append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
+		ChatSubMode:                     rs.chatSubMode,
+		ChatFlowRef:                     rs.chatFlowRef,
+		FlowStartGitHead:                rs.flowStartGitHead,
+		PendingFlowGateSettle:           rs.pendingFlowGateSettle,
+		PendingFlowGateFinalMsg:         rs.pendingFlowGateFinalMsg,
+		PendingFlowGateOccurredAt:       rs.pendingFlowGateOccurredAt,
+		PendingFlowGateTurnID:           rs.pendingFlowGateTurnID,
+		TurnStartGitHead:                rs.turnStartGitHead,
+		TurnStartWorktree:               copyStringMap(rs.turnStartWorktree),
+		PendingGateChangedFiles:         append([]string(nil), rs.pendingGateChangedFiles...),
+		StepID:                          rs.stepID,
+		LastTurnStepID:                  rs.lastTurnStepID,
+		PendingGateRepromptPrompt:       rs.pendingGateRepromptPrompt,
+		PendingGateRepromptStepID:       rs.pendingGateRepromptStepID,
+		PendingGateCodePaths:            append([]string(nil), rs.pendingGateCodePaths...),
+		RepromptAttempts:                rs.repromptAttempts,
+		PendingResumePrompt:             rs.pendingResumePrompt,
+		PendingResumeStepID:             rs.pendingResumeStepID,
 		PendingResumeGen:                rs.pendingResumeGen,
 		PendingGateRepromptGen:          rs.pendingGateRepromptGen,
-		PendingResumeDeliveredGen:         rs.pendingResumeDeliveredGen,
-		PendingGateRepromptDeliveredGen:   rs.pendingGateRepromptDeliveredGen,
-		PendingResumeAcceptedTurn:         rs.pendingResumeAcceptedTurn,
-		PendingGateRepromptAcceptedTurn:   rs.pendingGateRepromptAcceptedTurn,
-		PendingResumeFailCount:            rs.pendingResumeFailCount,
-		PendingResumeFailGen:              rs.pendingResumeFailGen,
-		PendingGateRepromptFailCount:      rs.pendingGateRepromptFailCount,
-		PendingGateRepromptFailGen:        rs.pendingGateRepromptFailGen,
-		PendingResumeApprovalID:           rs.pendingResumeApprovalID,
-		PendingResumeDecision:             rs.pendingResumeDecision,
-		PendingResumeQuestionChoices:      append([]string(nil), rs.pendingResumeQuestionChoices...),
-		StopGeneration:                    rs.stopGeneration,
-		ParentStopGenSeen:                 rs.parentStopGenSeen,
-		IntentBlockedKind:                 rs.intentBlockedKind,
-		IntentBlockedReason:               rs.intentBlockedReason,
-		IntentBlockedAt:                   rs.intentBlockedAt,
-		TransitionLogDegraded:             rs.transitionLogDegraded,
-		TransitionLogDegradedAt:           rs.transitionLogDegradedAt,
-		TransitionLogDegradedReason:       rs.transitionLogDegradedReason,
-		PendingRestartRunID:               rs.pendingRestartRunID,
-		PendingRestartPrompt:              rs.pendingRestartPrompt,
-		PendingRestartGen:                 rs.pendingRestartGen,
-		IdempotencyKeys: durableIdempotencySnapshotWithNonTerminal(rs.idempotency, rs.nonTerminalIdemKeys()),
-		FlowContextInjected:               rs.flowContextInjected,
+		PendingResumeDeliveredGen:       rs.pendingResumeDeliveredGen,
+		PendingGateRepromptDeliveredGen: rs.pendingGateRepromptDeliveredGen,
+		PendingResumeAcceptedTurn:       rs.pendingResumeAcceptedTurn,
+		PendingGateRepromptAcceptedTurn: rs.pendingGateRepromptAcceptedTurn,
+		PendingResumeFailCount:          rs.pendingResumeFailCount,
+		PendingResumeFailGen:            rs.pendingResumeFailGen,
+		PendingGateRepromptFailCount:    rs.pendingGateRepromptFailCount,
+		PendingGateRepromptFailGen:      rs.pendingGateRepromptFailGen,
+		PendingResumeApprovalID:         rs.pendingResumeApprovalID,
+		PendingResumeDecision:           rs.pendingResumeDecision,
+		PendingResumeQuestionChoices:    append([]string(nil), rs.pendingResumeQuestionChoices...),
+		StopGeneration:                  rs.stopGeneration,
+		ParentStopGenSeen:               rs.parentStopGenSeen,
+		IntentBlockedKind:               rs.intentBlockedKind,
+		IntentBlockedReason:             rs.intentBlockedReason,
+		IntentBlockedAt:                 rs.intentBlockedAt,
+		TransitionLogDegraded:           rs.transitionLogDegraded,
+		TransitionLogDegradedAt:         rs.transitionLogDegradedAt,
+		TransitionLogDegradedReason:     rs.transitionLogDegradedReason,
+		PendingRestartRunID:             rs.pendingRestartRunID,
+		PendingRestartPrompt:            rs.pendingRestartPrompt,
+		PendingRestartGen:               rs.pendingRestartGen,
+		IdempotencyKeys:                 durableIdempotencySnapshotWithNonTerminal(rs.idempotency, rs.nonTerminalIdemKeys()),
+		FlowContextInjected:             rs.flowContextInjected,
 		// CP-51: dispatch protocol/repair/provenance scalars only — never DispatchRecord slices.
-		DispatchProtocolVersion:           rs.dispatchProtocolVersion,
-		RepairRequired:                    rs.repairRequired,
-		RepairReason:                      rs.repairReason,
-		MarkerProvenanceRunIDs:            append([]string(nil), rs.markerProvenanceRunIDs...),
-		PendingRestartProvenanceRunID:     rs.pendingRestartProvenanceRunID,
+		DispatchProtocolVersion:            rs.dispatchProtocolVersion,
+		RepairRequired:                     rs.repairRequired,
+		RepairReason:                       rs.repairReason,
+		MarkerProvenanceRunIDs:             append([]string(nil), rs.markerProvenanceRunIDs...),
+		PendingRestartProvenanceRunID:      rs.pendingRestartProvenanceRunID,
 		PendingGateRepromptProvenanceRunID: rs.pendingGateRepromptProvenanceRunID,
 	}
 }
@@ -4520,6 +4520,17 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		rs.uiInitiated = in.UIInitiated
 		rs.waitForResult = in.Wait
 		rs.flowCohortId = in.FlowCohortID
+		// CP-51 Task-252: stamp the mint-time provenance for the trusted FCP marker
+		// embedded in this child's first prompt (Prompt was composed with
+		// ComposeFlowCodingPrompt(pkg, ...) by the caller, embedding pkg.WorkflowRunID
+		// — typically the flow/hub run, not this new child's own id). Recorded here,
+		// under the same lock as run creation, so the child's own first-turn
+		// feature-history check (isFlowContextHandoffWithSecret) can trust this
+		// specific recorded binding instead of inferring trust from parentRunID
+		// topology alone (DOD-I4).
+		if in.FCPMarkerProvenanceRunID != "" && in.FCPMarkerProvenanceRunID != rs.id {
+			rs.markerProvenanceRunIDs = append(rs.markerProvenanceRunIDs, in.FCPMarkerProvenanceRunID)
+		}
 		if rs.flowCohortId != "" {
 			if in.CohortSize > 0 {
 				s.agentOrchestrator.preRegisterCohort(parentRunID, rs.flowCohortId, in.CohortSize)
