@@ -406,6 +406,15 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 		}
 		state = NewFlowValidationRetryState(planPackageID, command)
 	}
+	// BUG-289 M4/F-8: if we previously escalated skipped_no_command but a
+	// command is now configured, rebuild state so validate can actually run.
+	if state.Status == "skipped_no_command" && strings.TrimSpace(command) != "" {
+		planPackageID := state.OriginalPlanPackageID
+		if planPackageID == "" && hasPkg {
+			planPackageID = pkg.PackageID
+		}
+		state = NewFlowValidationRetryState(planPackageID, command)
+	}
 
 	if state.Status == "skipped_no_command" {
 		s.mu.Lock()
@@ -421,6 +430,7 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 		// V9-01: no verified suite â†’ do not advance auditâ†’done. Escalate so the
 		// human can configure a command or continue explicitly.
 		s.flowDiagLog(parentRunID, "flow_validate_skipped_no_command", "no validate command; blocking audit/done", "node_id", node.ID)
+		s.stampLastEscalatedInlineNode(parentRunID, node.ID)
 		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
 			Status:  "escalate",
 			Summary: "Validation skipped: no test command configured in baseline. Configure .flowpilot/guard/test_baseline.json or Continue after manual verification.",
@@ -596,6 +606,7 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 		}
 		// BUG-288 R13-18: always return true (handled) even if escalate fails.
 		s.setFlowStepAwaitingUser(ctx, parentRunID)
+		s.stampLastEscalatedInlineNode(parentRunID, node.ID)
 		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{Status: "escalate", Summary: summary}); err != nil {
 			log.Printf("[flow-executor] validate: escalate after max retries failed: %v", err)
 			s.flowDiagLog(parentRunID, "flow_validate_escalate_failed", "escalate failed after max retries",
@@ -608,6 +619,25 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 	}
 }
 
+// stampLastEscalatedInlineNode records the node for hub-less Continue (BUG-289 A5).
+func (s *InteractiveService) stampLastEscalatedInlineNode(parentRunID, nodeID string) {
+	if strings.TrimSpace(nodeID) == "" {
+		return
+	}
+	s.mu.Lock()
+	if rs := s.runs[parentRunID]; rs != nil {
+		rs.lastEscalatedInlineNodeID = nodeID
+	}
+	s.mu.Unlock()
+}
+
+// maxInlineAdvanceDepth caps synchronous inline chains (BUG-289 L2/F-9).
+// A mis-authored forward-done cycle among validate/audit nodes used to recurse
+// until stack overflow; we escalate instead.
+const maxInlineAdvanceDepth = 16
+
+type inlineAdvanceDepthKey struct{}
+
 // advanceToNextInlineOrDelegate follows the (fromNodeID, when, "forward")
 // edge and dispatches whatever it finds: chains into another inline node
 // (validate -> audit, when validate passes immediately), spawns a delegate
@@ -617,6 +647,25 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 // reached its done/escalate edge" has identical semantics regardless of
 // which node emitted it.
 func (s *InteractiveService) advanceToNextInlineOrDelegate(ctx context.Context, parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, fromNodeID, when, resultMessage string) bool {
+	depth := 0
+	if v := ctx.Value(inlineAdvanceDepthKey{}); v != nil {
+		if d, ok := v.(int); ok {
+			depth = d
+		}
+	}
+	if depth >= maxInlineAdvanceDepth {
+		s.flowDiagLog(parentRunID, "flow_inline_cycle_cap", "inline advance depth cap hit; escalating",
+			"from_node_id", fromNodeID, "depth", depth)
+		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
+			Status:  "escalate",
+			Summary: fmt.Sprintf("Inline flow cycle or excessive chain detected at node %q (depth %d). Check forward-done edges among validate/audit nodes.", fromNodeID, depth),
+		}); err != nil {
+			log.Printf("[flow-executor] escalate after inline cycle cap failed: %v", err)
+		}
+		return true
+	}
+	ctx = context.WithValue(ctx, inlineAdvanceDepthKey{}, depth+1)
+
 	targetID, ok := edgeTargetFrom(edges, fromNodeID, when, "forward")
 	if !ok {
 		return false
