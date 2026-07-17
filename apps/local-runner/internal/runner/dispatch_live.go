@@ -214,23 +214,25 @@ func (s *InteractiveService) claimDispatchV2(ctx context.Context, rs *interactiv
 }
 
 // linearizeSendStarted is the Stop/send linearization point (SD-24 §7.2).
-// Returns false if the caller must not send (Stop won or concurrent advance).
-func (s *InteractiveService) linearizeSendStarted(ctx context.Context, rs *interactiveRun, turnID string) bool {
+// Returns (ok, storeErr). ok=false means the caller must not send.
+// storeErr=true means a NON-Stop store/CAS error (BUG-289 A1/F-6) — the turn
+// must be terminalized rather than silently abandoned mid-RUNNING.
+func (s *InteractiveService) linearizeSendStarted(ctx context.Context, rs *interactiveRun, turnID string) (ok bool, storeErr bool) {
 	if s == nil || s.dispatchStore == nil || !s.dispatchV2ActiveForRun(ctx, rs.id) {
-		return true // V1 path: no durable fence
+		return true, false // V1 path: no durable fence
 	}
 	rec := rs.dispatchByTurn(turnID)
 	if rec == nil {
 		got, rev, err := s.dispatchStore.Get(ctx, rs.id, turnID)
 		if err != nil {
 			log.Printf("[dispatch] linearize get failed run=%s turn=%s: %v", rs.id, turnID, err)
-			return false
+			return false, true
 		}
 		rec = &got
 		rec.Revision = rev
 	}
 	if rec.State == DispatchSendStarted || rec.State == DispatchProviderAccepted || rec.State.IsTerminal() {
-		return rec.State == DispatchSendStarted || rec.State == DispatchProviderAccepted
+		return rec.State == DispatchSendStarted || rec.State == DispatchProviderAccepted, false
 	}
 	rev, err := s.dispatchStore.CASAdvance(ctx, rs.id, turnID, rec.Revision, DispatchSendClaimed, DispatchSendStarted, nil)
 	if err == nil {
@@ -240,36 +242,38 @@ func (s *InteractiveService) linearizeSendStarted(ctx context.Context, rs *inter
 			cp := *rec
 			rs.dispatch[turnID] = &cp
 		}
-		return true
+		return true, false
 	}
 	var ownStop ErrRunStopFence
 	if errors.As(err, &ownStop) {
 		s.commitPreSendCancel(ctx, rs.id, turnID, ownStop.CurrentGeneration, PreSendStopSelf)
-		return false
+		return false, false
 	}
 	var parentFence ErrParentStopFence
 	if errors.As(err, &parentFence) {
 		s.commitPreSendCancel(ctx, rs.id, turnID, parentFence.CurrentGeneration, PreSendStopParentFence)
-		return false
+		return false, false
 	}
 	// Reload and branch — never assume Stop won.
 	cur, curRev, gerr := s.dispatchStore.Get(ctx, rs.id, turnID)
 	if gerr != nil {
-		return false
+		return false, true
 	}
 	switch {
 	case cur.State == DispatchSendClaimed && cur.CancelRequested:
 		s.commitPreSendCancel(ctx, rs.id, turnID, cur.StopGeneration, PreSendStopSelf)
-		return false
+		return false, false
 	case cur.State == DispatchSendStarted || cur.State == DispatchProviderAccepted:
 		if rs.dispatch != nil {
 			cp := cur
 			cp.Revision = curRev
 			rs.dispatch[turnID] = &cp
 		}
-		return true
+		return true, false
 	default:
-		return false
+		// Unexpected state after CAS failure — treat as store/correctness error.
+		log.Printf("[dispatch] linearize unexpected state run=%s turn=%s state=%s", rs.id, turnID, cur.State)
+		return false, true
 	}
 }
 
@@ -520,6 +524,32 @@ func (s *InteractiveService) ScanDispatchRecoveryOnBoot(ctx context.Context) {
 	}
 	if err := sc.ScanAllRecoverable(ctx); err != nil {
 		log.Printf("[dispatch-recovery] boot scan failed: %v", err)
+	}
+	// BUG-289 A3/F-7: SettleDriver has a production caller — drive settle for
+	// every terminal record still owed settle so HasNonTerminal/prune unblocks.
+	s.drivePendingSettlesOnBoot(ctx)
+}
+
+// drivePendingSettlesOnBoot walks ListRecoverable (includes terminal+SettleOwed
+// not yet finalized) and runs SettleDriver.DriveSettle once per turn
+// (Task-251 T-1/T-3 via BUG-289 A3/F-7).
+func (s *InteractiveService) drivePendingSettlesOnBoot(ctx context.Context) {
+	if s == nil || s.dispatchStore == nil {
+		return
+	}
+	list, err := s.dispatchStore.ListRecoverable(ctx, "")
+	if err != nil {
+		log.Printf("[dispatch-settle] boot list recoverable: %v", err)
+		return
+	}
+	driver := &SettleDriver{Store: s.dispatchStore}
+	for _, rec := range list {
+		if !rec.State.IsTerminal() || !rec.SettleOwed || rec.SettlePhase.IsSettleFinal() {
+			continue
+		}
+		if err := driver.DriveSettle(ctx, rec.RunID, rec.TurnID); err != nil {
+			log.Printf("[dispatch-settle] boot DriveSettle run=%s turn=%s: %v", rec.RunID, rec.TurnID, err)
+		}
 	}
 }
 
