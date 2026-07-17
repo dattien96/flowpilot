@@ -175,6 +175,7 @@ func TestCrashMatrix_MultiProjectShardAndExportImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	hub := store.(*multiProjectDispatchStore)
+	defer hub.Close()
 	ctx := context.Background()
 	rec := testPrepared("r1", "t1")
 	rec.ProjectID = "proj-a"
@@ -193,6 +194,7 @@ func TestCrashMatrix_MultiProjectShardAndExportImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	hub2 := store2.(*multiProjectDispatchStore)
+	defer hub2.Close()
 	if err := hub2.ImportProjectLog("proj-a", raw); err != nil {
 		t.Fatal(err)
 	}

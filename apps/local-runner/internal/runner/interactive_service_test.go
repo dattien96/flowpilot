@@ -2959,10 +2959,29 @@ func TestStopAgentLoopCancelsParentTurn(t *testing.T) {
 
 	_, _ = svc.stopAgentLoop(parentHandle.RunID)
 
-	select {
-	case <-parentCanceled:
-	case <-time.After(2 * time.Second):
-		t.Fatal("stopAgentLoop did not cancel the parent turn")
+	// CP-51 Task-249 (INV-3): a Stop that wins the pre-send linearization means the
+	// turn is NEVER sent — runTurn returns before calling the adapter (durable
+	// send-fence when V2, or the ctx.Err() pre-send guard when V1). So the adapter
+	// observing ctx.Done() is only ONE of two correct outcomes; the other is a
+	// fenced pre-send turn that the adapter never runs at all. Assert the real
+	// intent — "the parent turn is stopped" — which holds for both paths: either
+	// the adapter saw cancellation, or the run settled cancelled / not-in-flight.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case <-parentCanceled:
+			return // adapter ran and observed cancellation
+		case <-time.After(20 * time.Millisecond):
+			svc.mu.Lock()
+			rs := svc.runs[parentHandle.RunID]
+			stopped := rs != nil && !rs.turnInFlight && rs.status == RunStatusCancelled
+			svc.mu.Unlock()
+			if stopped {
+				return // turn fenced pre-send; run settled cancelled
+			}
+		case <-deadline:
+			t.Fatal("stopAgentLoop did not stop the parent turn (neither cancelled adapter nor settled cancelled)")
+		}
 	}
 }
 

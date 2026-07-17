@@ -784,10 +784,40 @@ func (s *InteractiveService) resumeAgentLoop(parentRunID string) AgentGraphSnaps
 	s.emitAgentGraph(parentRunID, snap)
 	return snap
 }
+
 // stopAgentLoop terminals the agent loop and durable recovery state.
 // On persistence failure it still cancels in-memory work but returns an apiErr
 // so the client does not treat Stop as durable (V10R4 P0 fail-closed).
 func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapshot, *apiErr) {
+	// CP-51 Task-249 (P1): advance durable RunStopState BEFORE any RAM cancel so
+	// a concurrent send's `send_claimed → send_started` CAS is fenced in revision
+	// order (INV-3). This is the live-Stop linearization point; requestRunStopV2
+	// is a no-op for runs without V2 dispatch records. Parent stop also fences
+	// every child via its ParentStopFence (checkParentFenceLocked); we additionally
+	// stop each child so in-flight child records are cancel-requested directly.
+	//
+	// Fail-closed (Codex review 2026-07-17): requestRunStopV2 now reports a
+	// durable-store failure instead of silently swallowing it. RAM cancel still
+	// proceeds below (defense-in-depth — it cancels any turn this process has
+	// in flight right now, store or no store), but if the durable fence itself
+	// could not be written, this handler must not return unqualified success:
+	// a concurrent send elsewhere could still pass the CAS with no fence ever
+	// recorded. dispatchStopFenceErr is checked again at the end alongside the
+	// existing persistErr check.
+	var dispatchStopFenceErr error
+	if s.dispatchStore != nil {
+		stopCtx := context.Background()
+		if err := s.requestRunStopV2(stopCtx, parentRunID); err != nil {
+			dispatchStopFenceErr = err
+			log.Printf("[dispatch] durable Stop fence failed run=%s: %v", parentRunID, err)
+		}
+		for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+			if err := s.requestRunStopV2(stopCtx, childID); err != nil && dispatchStopFenceErr == nil {
+				dispatchStopFenceErr = err
+				log.Printf("[dispatch] durable Stop fence failed run=%s (child of %s): %v", childID, parentRunID, err)
+			}
+		}
+	}
 	// BUG-288 R17-P0: take s.mu and bump gateEpoch on parent+children BEFORE
 	// agentOrchestrator.stop, so withGateEpochDurable cannot pass epoch/loop
 	// checks then write override/contract after Stop was requested. Previously
@@ -995,6 +1025,14 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 	if persistErr != nil {
 		return snap, newAPIErr(http.StatusInternalServerError, "persist_failed",
 			"stop applied in-memory but durable checkpoint failed: "+persistErr.Error())
+	}
+	if dispatchStopFenceErr != nil {
+		// CP-51 Task-249 fail-closed (Codex review 2026-07-17): RAM cancel above
+		// already ran, but the durable send-fence (INV-3) was not persisted, so a
+		// concurrent send elsewhere could still pass its CAS unfenced. Report
+		// failure — do not let the client believe Stop is durably guaranteed.
+		return snap, newAPIErr(http.StatusInternalServerError, "dispatch_stop_fence_failed",
+			"stop applied in-memory but the durable stop fence could not be persisted: "+dispatchStopFenceErr.Error())
 	}
 	return snap, nil
 }
@@ -2760,8 +2798,10 @@ func (rs *interactiveRun) nonTerminalIdemKeys() map[string]bool {
 }
 
 // BUG-288 R19-2: durable idempotency is two-phase.
-//   prep:<turnID>  — pre-persist succeeded; provider not launched yet
-//   <turnID>       — launch-ack; full idempotency replay is valid
+//
+//	prep:<turnID>  — pre-persist succeeded; provider not launched yet
+//	<turnID>       — launch-ack; full idempotency replay is valid
+//
 // Bare (non-prefixed) values are treated as launched for backward compatibility
 // with sessions written before R19.
 const durableIdemPreparedPrefix = "prep:"
@@ -5280,252 +5320,252 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			s.mu.Unlock()
 		}
 		if completed && !checkpointBlocked {
-		gateCtx, gateCancel := context.WithCancel(context.Background())
-		s.mu.Lock()
-		gateEpoch := rs.gateEpoch
-		rs.postTurnGateCancel = gateCancel
-		s.mu.Unlock()
-		defer func() {
+			gateCtx, gateCancel := context.WithCancel(context.Background())
 			s.mu.Lock()
-			if rs.postTurnGateCancel != nil {
-				rs.postTurnGateCancel = nil
+			gateEpoch := rs.gateEpoch
+			rs.postTurnGateCancel = gateCancel
+			s.mu.Unlock()
+			defer func() {
+				s.mu.Lock()
+				if rs.postTurnGateCancel != nil {
+					rs.postTurnGateCancel = nil
+				}
+				s.mu.Unlock()
+				gateCancel()
+			}()
+
+			gateBlocked := false
+			// V9-18: Stop during gate — cancel ctx; do not finalize as success.
+			stoppedMidGate := false
+			s.mu.Lock()
+			if rs.status == RunStatusCancelled || rs.status == RunStatusFailed || rs.gateEpoch != gateEpoch {
+				stoppedMidGate = true
 			}
 			s.mu.Unlock()
-			gateCancel()
-		}()
-
-		gateBlocked := false
-		// V9-18: Stop during gate — cancel ctx; do not finalize as success.
-		stoppedMidGate := false
-		s.mu.Lock()
-		if rs.status == RunStatusCancelled || rs.status == RunStatusFailed || rs.gateEpoch != gateEpoch {
-			stoppedMidGate = true
-		}
-		s.mu.Unlock()
-		if gateCtx.Err() != nil {
-			stoppedMidGate = true
-		}
-		if !stoppedMidGate {
-			if rs.parentRunID == "" {
-				gateBlocked = s.runFlowGateAtEpoch(gateCtx, rs, turnID, fin, gateEpoch)
-			} else {
-				gateBlocked = s.runChildArtifactOutputGateAtEpoch(gateCtx, rs, turnID, fin, gateEpoch)
+			if gateCtx.Err() != nil {
+				stoppedMidGate = true
 			}
-		}
-		if gateCtx.Err() != nil {
-			stoppedMidGate = true
-		}
-		// Revalidate epoch after gate returns (Stop may have raced).
-		s.mu.Lock()
-		if rs.gateEpoch != gateEpoch {
-			stoppedMidGate = true
-		}
-		s.mu.Unlock()
-		if stoppedMidGate || gateBlocked {
-			completed = false
-			s.mu.Lock()
-			if rs.gateEpoch != gateEpoch {
-				// Stop invalidated this gate — drop settle/reprompt side effects.
-				rs.postTurnGateCancel = nil
-				rs.turnInFlight = false
-				s.mu.Unlock()
-			} else if rs.pendingFlowGateSettle {
-				// Reprompt/block/stop: keep non-terminal Running (never published Completed).
-				rs.pendingFlowGateSettle = false
-				rs.pendingFlowGateFinalMsg = ""
-				rs.pendingFlowGateOccurredAt = ""
-				rs.pendingFlowGateTurnID = ""
-				rs.pendingGateChangedFiles = nil
-				if !stoppedMidGate {
-					rs.status = RunStatusRunning
-					rs.agentStatus = string(RunStatusRunning)
-				}
-				rs.turnInFlight = false
-				rs.postTurnGateCancel = nil
-				// V10R3/R4: keep durable reprompt on session; flush after settle clear.
-				repromptPrompt := rs.pendingGateRepromptPrompt
-				repromptStep := rs.pendingGateRepromptStepID
-				repromptGen := rs.pendingGateRepromptGen
-				repromptRun := rs.id
-				// BUG-288 P1-16: sync-persist the block/reprompt checkpoint
-				// unconditionally (not only when a reprompt prompt exists) BEFORE
-				// allowing a remediation turn to start or considering the block
-				// decision committed. A persist failure must not let a new turn
-				// start nor let this be treated as durable — otherwise a crash
-				// right after loses the gate decision, or a restart replays the
-				// gate against stale (pre-block) state.
-				snapRep := sessionStateOf(rs)
+			if !stoppedMidGate {
 				if rs.parentRunID == "" {
-					snapRep.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+					gateBlocked = s.runFlowGateAtEpoch(gateCtx, rs, turnID, fin, gateEpoch)
+				} else {
+					gateBlocked = s.runChildArtifactOutputGateAtEpoch(gateCtx, rs, turnID, fin, gateEpoch)
 				}
-				s.mu.Unlock()
-				persistRepErr := s.persistProviderSession(snapRep)
-				skipTailNotify := false
-				if persistRepErr != nil {
-					log.Printf("[flow-gate] persist block/reprompt checkpoint run=%q turn=%q: %v (gate left actionable for retry, remediation turn NOT started)", repromptRun, turnID, persistRepErr)
-					// BUG-288 R13-05: do not fall through to notifyTurnIdle, which
-					// would claim RAM intents and start the remediation turn that
-					// we just refused because the checkpoint is not durable.
-					skipTailNotify = true
-					// Back off durable flush for this generation so a later crash
-					// recovery path does not immediately re-fire a non-durable intent.
-					s.mu.Lock()
-					if r := s.runs[repromptRun]; r != nil && repromptGen != 0 {
-						r.pendingGateRepromptFailCount++
-						r.pendingGateRepromptFailGen = repromptGen
-					}
-					s.mu.Unlock()
-				}
-				if persistRepErr == nil {
-					if repromptPrompt != "" && repromptStep != "" && !stoppedMidGate {
-						go s.startTurnClearingIntent(repromptRun, repromptStep, repromptPrompt, "reprompt", repromptGen)
-					} else if !stoppedMidGate {
-						s.notifyTurnIdle(repromptRun)
-						// notify already ran for this branch — avoid double at tail.
-						skipTailNotify = true
-					}
-				}
-				// Stash skip flag on a stack variable consumed after unlock path.
-				// (gateBlockedSkipNotify is checked at the runTurn tail.)
-				if skipTailNotify {
-					s.mu.Lock()
-					if r := s.runs[repromptRun]; r != nil {
-						r.skipNextTurnIdleNotify = true
-					}
-					s.mu.Unlock()
-				}
-			} else {
-				rs.turnInFlight = false
-				rs.postTurnGateCancel = nil
-				s.mu.Unlock()
 			}
-		} else {
+			if gateCtx.Err() != nil {
+				stoppedMidGate = true
+			}
+			// Revalidate epoch after gate returns (Stop may have raced).
 			s.mu.Lock()
-			// V10R4 P0: revalidate epoch before any Completed/TurnCompleted side effect.
 			if rs.gateEpoch != gateEpoch {
+				stoppedMidGate = true
+			}
+			s.mu.Unlock()
+			if stoppedMidGate || gateBlocked {
 				completed = false
-				rs.turnInFlight = false
-				rs.postTurnGateCancel = nil
-				s.mu.Unlock()
-			} else if rs.pendingFlowGateSettle {
-				// BUG-288 R13-06: Skip already terminal-failed this member — never
-				// publish Completed over Failed from a late gate-pass.
-				if rs.cohortSkipConsumed || rs.status == RunStatusFailed {
+				s.mu.Lock()
+				if rs.gateEpoch != gateEpoch {
+					// Stop invalidated this gate — drop settle/reprompt side effects.
+					rs.postTurnGateCancel = nil
+					rs.turnInFlight = false
+					s.mu.Unlock()
+				} else if rs.pendingFlowGateSettle {
+					// Reprompt/block/stop: keep non-terminal Running (never published Completed).
 					rs.pendingFlowGateSettle = false
 					rs.pendingFlowGateFinalMsg = ""
 					rs.pendingFlowGateOccurredAt = ""
 					rs.pendingFlowGateTurnID = ""
 					rs.pendingGateChangedFiles = nil
+					if !stoppedMidGate {
+						rs.status = RunStatusRunning
+						rs.agentStatus = string(RunStatusRunning)
+					}
+					rs.turnInFlight = false
+					rs.postTurnGateCancel = nil
+					// V10R3/R4: keep durable reprompt on session; flush after settle clear.
+					repromptPrompt := rs.pendingGateRepromptPrompt
+					repromptStep := rs.pendingGateRepromptStepID
+					repromptGen := rs.pendingGateRepromptGen
+					repromptRun := rs.id
+					// BUG-288 P1-16: sync-persist the block/reprompt checkpoint
+					// unconditionally (not only when a reprompt prompt exists) BEFORE
+					// allowing a remediation turn to start or considering the block
+					// decision committed. A persist failure must not let a new turn
+					// start nor let this be treated as durable — otherwise a crash
+					// right after loses the gate decision, or a restart replays the
+					// gate against stale (pre-block) state.
+					snapRep := sessionStateOf(rs)
+					if rs.parentRunID == "" {
+						snapRep.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+					}
+					s.mu.Unlock()
+					persistRepErr := s.persistProviderSession(snapRep)
+					skipTailNotify := false
+					if persistRepErr != nil {
+						log.Printf("[flow-gate] persist block/reprompt checkpoint run=%q turn=%q: %v (gate left actionable for retry, remediation turn NOT started)", repromptRun, turnID, persistRepErr)
+						// BUG-288 R13-05: do not fall through to notifyTurnIdle, which
+						// would claim RAM intents and start the remediation turn that
+						// we just refused because the checkpoint is not durable.
+						skipTailNotify = true
+						// Back off durable flush for this generation so a later crash
+						// recovery path does not immediately re-fire a non-durable intent.
+						s.mu.Lock()
+						if r := s.runs[repromptRun]; r != nil && repromptGen != 0 {
+							r.pendingGateRepromptFailCount++
+							r.pendingGateRepromptFailGen = repromptGen
+						}
+						s.mu.Unlock()
+					}
+					if persistRepErr == nil {
+						if repromptPrompt != "" && repromptStep != "" && !stoppedMidGate {
+							go s.startTurnClearingIntent(repromptRun, repromptStep, repromptPrompt, "reprompt", repromptGen)
+						} else if !stoppedMidGate {
+							s.notifyTurnIdle(repromptRun)
+							// notify already ran for this branch — avoid double at tail.
+							skipTailNotify = true
+						}
+					}
+					// Stash skip flag on a stack variable consumed after unlock path.
+					// (gateBlockedSkipNotify is checked at the runTurn tail.)
+					if skipTailNotify {
+						s.mu.Lock()
+						if r := s.runs[repromptRun]; r != nil {
+							r.skipNextTurnIdleNotify = true
+						}
+						s.mu.Unlock()
+					}
+				} else {
 					rs.turnInFlight = false
 					rs.postTurnGateCancel = nil
 					s.mu.Unlock()
-				} else {
-				msg := rs.pendingFlowGateFinalMsg
-				at := rs.pendingFlowGateOccurredAt
-				parentID := rs.parentRunID
-				childID := rs.id
-				prevStatus := rs.status
-				prevAgentStatus := rs.agentStatus
-				prevPendingSettle := rs.pendingFlowGateSettle
-				prevFinalMsg := rs.pendingFlowGateFinalMsg
-				prevOccurredAt := rs.pendingFlowGateOccurredAt
-				prevTurnID := rs.pendingFlowGateTurnID
-				prevChangedFiles := rs.pendingGateChangedFiles
-				rs.pendingFlowGateSettle = false
-				rs.pendingFlowGateFinalMsg = ""
-				rs.pendingFlowGateOccurredAt = ""
-				rs.pendingFlowGateTurnID = ""
-				rs.pendingGateChangedFiles = nil
-				// Publish terminal Completed only after gate pass (BUG-288 #1 / V10).
-				rs.status = RunStatusCompleted
-				rs.agentStatus = string(RunStatusCompleted)
-				// V9-03/BUG-288 R11 #3: compute + persist the post-gate snapshot BEFORE
-				// signalChild/broadcast/settle/release (matches resumePendingFlowGate) —
-				// a persist failure must not let the completion fan out with no durable
-				// record; a restart would then re-run the gate against stale state.
-				snapPass := sessionStateOf(rs)
-				if parentID == "" {
-					snapPass.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
 				}
-				s.mu.Unlock()
-				persistErr := s.persistProviderSession(snapPass)
-				s.mu.Lock()
-				if rs2 := s.runs[rs.id]; rs2 != nil {
-					rs = rs2
-				}
-				if persistErr != nil {
-					rs.status = prevStatus
-					rs.agentStatus = prevAgentStatus
-					rs.pendingFlowGateSettle = prevPendingSettle
-					rs.pendingFlowGateFinalMsg = prevFinalMsg
-					rs.pendingFlowGateOccurredAt = prevOccurredAt
-					rs.pendingFlowGateTurnID = prevTurnID
-					rs.pendingGateChangedFiles = prevChangedFiles
-					rs.turnInFlight = false
-					completed = false
-					s.mu.Unlock()
-					log.Printf("[flow-gate] persist post-gate completion run=%q turn=%q: %v (gate left actionable for retry)", childID, turnID, persistErr)
-				} else if rs.gateEpoch != gateEpoch {
-					// BUG-288 R11 #4 (live path): Stop landed during the unlocked
-					// persist call above (persistProviderSession releases s.mu).
-					// The durable Completed write already succeeded, but a Stop
-					// mid-persist must still suppress every completion fan-out —
-					// summary update, signalChild, event broadcast, settle, and
-					// release — matching resumePendingFlowGate's post-persist
-					// gateEpoch revalidation.
-					rs.turnInFlight = false
-					completed = false
-					s.mu.Unlock()
-				} else {
-					if parentID != "" {
-						if summary, ok := s.agentOrchestrator.currentSummary(parentID, childID); ok {
-							summary.Status = RunStatusCompleted
-							summary.AgentStatus = string(RunStatusCompleted)
-							s.agentOrchestrator.upsertSummary(parentID, summary)
-						}
-					}
-					s.agentOrchestrator.signalChild(childID, msg, false, "", RunStatusCompleted)
-					// Persist+broadcast deferred TurnCompleted without re-entering
-					// pendingFlowGateSettle (V10 P1).
-					completedEv := ProviderEvent{
-						Type:              EventTurnCompleted,
-						FinalMessage:      msg,
-						OccurredAt:        at,
-						ProviderTurnID:    turnID,
-						WorkflowRunID:     rs.id,
-						ProviderSessionID: rs.providerSessionID,
-						ProviderKey:       rs.providerKey,
-					}
-					rs.seq++
-					completedEv.Seq = rs.seq
-					completedEv.ID = s.nextID("evt")
-					// Replace deferred in-memory terminal (last event) if still the gate placeholder.
-					if n := len(rs.events); n > 0 && rs.events[n-1].Type == EventTurnCompleted {
-						rs.events[n-1] = completedEv
-					} else {
-						rs.events = append(rs.events, completedEv)
-					}
-					rs.lastEventType = EventTurnCompleted
-					_ = s.persistEvent(completedEv)
-					for _, ch := range rs.subs {
-						select {
-						case ch <- completedEv:
-						default:
-						}
-					}
-					s.settleFlowChildTurnCompletedLocked(rs, msg, completedEv)
-					rs.turnInFlight = false
-					s.mu.Unlock()
-					if parentID != "" {
-						go s.releaseDependentAgents(parentID, childID, msg, at)
-					}
-				}
-				} // end R13-06 else (non-skip gate-pass settle)
 			} else {
-				rs.turnInFlight = false
-				s.mu.Unlock()
+				s.mu.Lock()
+				// V10R4 P0: revalidate epoch before any Completed/TurnCompleted side effect.
+				if rs.gateEpoch != gateEpoch {
+					completed = false
+					rs.turnInFlight = false
+					rs.postTurnGateCancel = nil
+					s.mu.Unlock()
+				} else if rs.pendingFlowGateSettle {
+					// BUG-288 R13-06: Skip already terminal-failed this member — never
+					// publish Completed over Failed from a late gate-pass.
+					if rs.cohortSkipConsumed || rs.status == RunStatusFailed {
+						rs.pendingFlowGateSettle = false
+						rs.pendingFlowGateFinalMsg = ""
+						rs.pendingFlowGateOccurredAt = ""
+						rs.pendingFlowGateTurnID = ""
+						rs.pendingGateChangedFiles = nil
+						rs.turnInFlight = false
+						rs.postTurnGateCancel = nil
+						s.mu.Unlock()
+					} else {
+						msg := rs.pendingFlowGateFinalMsg
+						at := rs.pendingFlowGateOccurredAt
+						parentID := rs.parentRunID
+						childID := rs.id
+						prevStatus := rs.status
+						prevAgentStatus := rs.agentStatus
+						prevPendingSettle := rs.pendingFlowGateSettle
+						prevFinalMsg := rs.pendingFlowGateFinalMsg
+						prevOccurredAt := rs.pendingFlowGateOccurredAt
+						prevTurnID := rs.pendingFlowGateTurnID
+						prevChangedFiles := rs.pendingGateChangedFiles
+						rs.pendingFlowGateSettle = false
+						rs.pendingFlowGateFinalMsg = ""
+						rs.pendingFlowGateOccurredAt = ""
+						rs.pendingFlowGateTurnID = ""
+						rs.pendingGateChangedFiles = nil
+						// Publish terminal Completed only after gate pass (BUG-288 #1 / V10).
+						rs.status = RunStatusCompleted
+						rs.agentStatus = string(RunStatusCompleted)
+						// V9-03/BUG-288 R11 #3: compute + persist the post-gate snapshot BEFORE
+						// signalChild/broadcast/settle/release (matches resumePendingFlowGate) —
+						// a persist failure must not let the completion fan out with no durable
+						// record; a restart would then re-run the gate against stale state.
+						snapPass := sessionStateOf(rs)
+						if parentID == "" {
+							snapPass.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+						}
+						s.mu.Unlock()
+						persistErr := s.persistProviderSession(snapPass)
+						s.mu.Lock()
+						if rs2 := s.runs[rs.id]; rs2 != nil {
+							rs = rs2
+						}
+						if persistErr != nil {
+							rs.status = prevStatus
+							rs.agentStatus = prevAgentStatus
+							rs.pendingFlowGateSettle = prevPendingSettle
+							rs.pendingFlowGateFinalMsg = prevFinalMsg
+							rs.pendingFlowGateOccurredAt = prevOccurredAt
+							rs.pendingFlowGateTurnID = prevTurnID
+							rs.pendingGateChangedFiles = prevChangedFiles
+							rs.turnInFlight = false
+							completed = false
+							s.mu.Unlock()
+							log.Printf("[flow-gate] persist post-gate completion run=%q turn=%q: %v (gate left actionable for retry)", childID, turnID, persistErr)
+						} else if rs.gateEpoch != gateEpoch {
+							// BUG-288 R11 #4 (live path): Stop landed during the unlocked
+							// persist call above (persistProviderSession releases s.mu).
+							// The durable Completed write already succeeded, but a Stop
+							// mid-persist must still suppress every completion fan-out —
+							// summary update, signalChild, event broadcast, settle, and
+							// release — matching resumePendingFlowGate's post-persist
+							// gateEpoch revalidation.
+							rs.turnInFlight = false
+							completed = false
+							s.mu.Unlock()
+						} else {
+							if parentID != "" {
+								if summary, ok := s.agentOrchestrator.currentSummary(parentID, childID); ok {
+									summary.Status = RunStatusCompleted
+									summary.AgentStatus = string(RunStatusCompleted)
+									s.agentOrchestrator.upsertSummary(parentID, summary)
+								}
+							}
+							s.agentOrchestrator.signalChild(childID, msg, false, "", RunStatusCompleted)
+							// Persist+broadcast deferred TurnCompleted without re-entering
+							// pendingFlowGateSettle (V10 P1).
+							completedEv := ProviderEvent{
+								Type:              EventTurnCompleted,
+								FinalMessage:      msg,
+								OccurredAt:        at,
+								ProviderTurnID:    turnID,
+								WorkflowRunID:     rs.id,
+								ProviderSessionID: rs.providerSessionID,
+								ProviderKey:       rs.providerKey,
+							}
+							rs.seq++
+							completedEv.Seq = rs.seq
+							completedEv.ID = s.nextID("evt")
+							// Replace deferred in-memory terminal (last event) if still the gate placeholder.
+							if n := len(rs.events); n > 0 && rs.events[n-1].Type == EventTurnCompleted {
+								rs.events[n-1] = completedEv
+							} else {
+								rs.events = append(rs.events, completedEv)
+							}
+							rs.lastEventType = EventTurnCompleted
+							_ = s.persistEvent(completedEv)
+							for _, ch := range rs.subs {
+								select {
+								case ch <- completedEv:
+								default:
+								}
+							}
+							s.settleFlowChildTurnCompletedLocked(rs, msg, completedEv)
+							rs.turnInFlight = false
+							s.mu.Unlock()
+							if parentID != "" {
+								go s.releaseDependentAgents(parentID, childID, msg, at)
+							}
+						}
+					} // end R13-06 else (non-skip gate-pass settle)
+				} else {
+					rs.turnInFlight = false
+					s.mu.Unlock()
+				}
 			}
-		}
 		} // end if completed && !checkpointBlocked
 	} else {
 		// Turn did not complete cleanly. BUG-288 R18-2: if settle is waiting

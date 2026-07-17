@@ -181,6 +181,7 @@ func TestDispatchStore_ContractSuite(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer store.(*multiProjectDispatchStore).Close()
 		runStoreContract(t, store, "mp")
 		// Shard path exists for project on record.
 		if _, err := os.Stat(DispatchLogPath(root, "proj-test")); err != nil {
@@ -425,7 +426,7 @@ func TestReleaseManifest_AtomicChildCreateAndState(t *testing.T) {
 	}
 	intent := DurableIntent{
 		ChildTurnID: "ct1", ChildRunID: "child", IntentKey: "durable-child-1",
-		EnvelopeHash: env.EnvelopeHash,
+		EnvelopeHash:    env.EnvelopeHash,
 		ParentStopFence: ParentStopFence{ParentRunID: "parent", ExpectedStopGeneration: 0},
 	}
 	h, _ := ComputeIntentHash(&intent)

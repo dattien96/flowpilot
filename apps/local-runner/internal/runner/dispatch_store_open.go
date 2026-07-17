@@ -105,6 +105,29 @@ func (m *multiProjectDispatchStore) openProjectLocked(projectID string) (*localD
 	return st, nil
 }
 
+// Close releases every open project's process lock (Codex review 2026-07-17:
+// multiProjectDispatchStore held per-project localDispatchStore instances with
+// their own flock'd lockFile but had no Close of its own, so a caller closing
+// the hub never released the underlying file locks — on Windows this left
+// dispatch.lock held open and t.TempDir()'s cleanup failed with "used by
+// another process" (misdiagnosed in the 2026-07-17 audit as "flock never
+// closed" rather than "hub never closes its children").
+func (m *multiProjectDispatchStore) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var firstErr error
+	for id, st := range m.byProject {
+		if st == nil {
+			continue
+		}
+		if err := st.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		delete(m.byProject, id)
+	}
+	return firstErr
+}
+
 func (m *multiProjectDispatchStore) forProject(projectID string) (*localDispatchStore, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
