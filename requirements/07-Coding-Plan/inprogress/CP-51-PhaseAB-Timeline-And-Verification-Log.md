@@ -201,7 +201,7 @@ Ghi ☐ khi pass. Chạy với desktop + `flowpilot serve`, project git thật.
 
 | # | Scenario | Steps | Expect | Evidence | ☐ |
 |---|----------|-------|--------|----------|---|
-| A1 | Review Loop spawn | Chat Mode → bug sub-mode → pick **Review Loop** → start | Agents board: hub + coder + reviewer slots; không chỉ 1 agent mồ côi | UI agents + timeline steps | |
+| A1 | Review Loop spawn | Chat Mode → bug sub-mode → pick **Review Loop** → start | Agents board: hub + coder + reviewer slots; không chỉ 1 agent mồ côi | UI agents + timeline steps | ☑ **partial** (see §3.8) |
 | A2 | Cohort join → synthesis | Để coder + cả 2 reviewers complete | Cohort join; hub **synthesis** turn chạy; không hang `RUNNING` mãi | Timeline: join then hub step advance | |
 | A3 | YOLO off approval | Project YOLO=off; child tool/permission | Approval / gate card surface; stall policy Stop/Skip/Retry nếu stall | Card + log gate | |
 | A4 | Stop mid-flow | Hub running; bấm Stop | Loop stopped; steps không stuck `RUNNING` giả; children cancel/settle | Timeline terminal; no ghost RUNNING | |
@@ -359,6 +359,100 @@ D:\working\gate-sandbox\Screenshot 2026-07-17 152139.png
 5. Mid-flight: Stop trên **main** → loop `stopped`, children cancelled, modal gone.  
 6. Continue sau escalate (non-option block) không log `hub_reinvoke_start_failed` vì stale settle.
 
+### 3.7 Live **A1** — run-1618 (entry fail → hub hang) — 2026-07-17 — **FAIL → fixed CA-355**
+
+**Setup:** same project `db51ec26-…`, cwd `…/BE/gate-sandbox`. Chat → bug → **Review Loop**. Prompt: `fix bug 1 + 1 != 2`. Hub `run-1618` (Grok), coder `run-1623` (Claude haiku) **without** a connected Claude account on this machine.
+
+#### Timeline
+
+| t (UTC) | Event | Ý nghĩa |
+|---------|--------|---------|
+| 14:22:30.56 | hub `turn-1620` prepared → send_claimed | V2 claim OK |
+| 14:22:30.58 | hub `pending_flow_gate_settle=true` | **flowStartOnly** synthetic `EventTurnCompleted` stamped gate settle (no real gate) |
+| 14:22:31.17 | spawn coder `run-1623` Wait=false | Entry node OK (A1 partial) |
+| 14:22:31.21–26 | child prepared→send_claimed→send_started + `transport_error` | `no connected local account found for provider "claude"` |
+| 14:22:31.26 | sessions: coder **failed**; hub **running** + fail note in `pending_agent_context` | Child dead; hub never reinvoked |
+| (stuck) | step `coder` stayed **RUNNING**; dispatch hub `send_claimed`, child `send_started` non-terminal | Hang |
+
+#### Root cause (CA-355)
+
+1. flowStartOnly left hub `pendingFlowGateSettle` → later hub `startTurn` would 409 `gate_in_progress`.
+2. Non-cohort `EventTurnFailed` only appended a note — no step FAILED, no hub reinvoke.
+3. `finishTurn` emitLocked failed without CP-51 `Terminal` (child dispatch orphan).
+
+#### Fix
+
+- Clear synthetic settle on flowStartOnly + terminalize synthetic turn.
+- Non-cohort flow child fail → step FAILED, clear hub settle, `maybeAutoReinvokeHubWithNote`.
+- `finishTurn` → `commitFinishTurnDispatchTerminal`.
+
+#### Retest
+
+1. Rebuild/restart serve.
+2. Review Loop with **no** Claude account → expect coder **failed**, hub reinvokes / reports error (not perpetual main active).
+3. Connect Claude → happy path A1 again.
+
+Evidence: `run-1618-*.ndjson`, feature log, dispatch seq 5–10; CA-355.
+
+### 3.8 Live **A1** rollup — 2026-07-17 — **DONE PARTIAL** (code fixes landed; residual DOD open)
+
+**Status for checklist §3.1 A1:** ☑ **partial** — spawn + hang/gate/stop/model/escalate clusters fixed and unit-covered; **not full pass** until residual **hub does not write while coder/agent children run** is engineered (see DOD below) and happy-path retest with connected providers.
+
+#### Code changes tested / fixed under A1 (change-audit)
+
+| CA | Title (short) | Symptom fixed | Tests (additive) |
+|----|---------------|---------------|------------------|
+| **CA-354** | Dual gate UI + Continue hang + Stop hub weak | run-10389 dual card; `hub_reinvoke_start_failed`; Stop main weak | (prior commit on branch) |
+| **CA-355** (gate modal) | keep-test-fix-code modal loop | run-11262 re-open r-reg modal every turn without write | `gate_fix_code_loop_test.go` (**new file**) |
+| **CA-355** (run-1618) | Entry fail → hub hang | coder no-account fail; hub forever active; step stuck RUNNING | `run1618_entry_fail_hub_hang_test.go` (**new file**) |
+| **CA-356** | Hang residuals H-A / H-B / H-C | preflight startTurn fail; all-entry spawn fail; F-0 stale settle forever-busy | same + suite in CA-356 |
+| **CA-357** | Awaiting-user freeze | run-1675 hub keeps tool turns while “Needs your decision” open | `run1675_awaiting_user_freeze_test.go` (**new file**) |
+| **CA-358** | Flow-scoped step model lookup | Review Loop coder wrongly got Context Coding’s claude-haiku | `TestResolveFlowNodeModelScopesByFlowRef` (**new test** in `flow_executor_test.go`) |
+| **CA-359** | escalate then `rejected` clobber | run-2047 form lost → fake hub_stalled | `run2047_escalate_reject_clobber_test.go` (**new file**) |
+| **CA-360** | Skip prose escalate w/ open cohort | run-5296 stale BUG-226 cancel new reviewers | `run5296_skip_prose_escalate_test.go` (**new file**) |
+
+Related live runs used as evidence (not exhaustive): `run-10389`, `run-1618`, `run-11262`, `run-1675`, `run-2047`, `run-5296`, `run-9437` (hub+coder concurrent write race — residual).
+
+#### additive-tests-only audit (this A1 fix set)
+
+| Check | Result |
+|-------|--------|
+| New regression tests only in **new files** | ☑ `gate_fix_code_loop_test.go`, `run1618_*`, `run1675_*`, `run2047_*`, `run5296_*` |
+| New `Test*` in existing file | ☑ only `TestResolveFlowNodeModelScopesByFlowRef` (CA-358) — **added**, no assertion rewrite of older cases |
+| Pre-existing test assertion / skip / rename edits | ☑ **none** |
+| Pre-existing call-site compile fix | ☑ only 4 lines: `resolveFlowNodeModel(ctx, node)` → `resolveFlowNodeModel(ctx, "", node)` after API gained `parentRunID` (no expected-value changes) |
+| Soft skill pack | ☑ `skillpack/.../additive-tests-only/SKILL.md` added; hard gate rule deferred → [Task-260](../../08-Task/todo/Task-260-R-Additive-Tests-Gate-Rule.md) |
+
+#### Residual — **DOD later: hub must wait writers (not graph wait)**
+
+**Problem (confirmed live, e.g. run-9437):** after synthesis `continue`, flow correctly **reinvokes coder** (`delegate` fires immediately). Independently, **gate reprompt on hub** can start a hub write turn (e.g. create `BUG-908`) **while coder R1 is still RUNNING** (e.g. editing `CA-916` / `BUG-278`). Soft prompt `flow-start-wait.md` is not a hard lock. Topology can still complete; workspace exclusivity is wrong.
+
+**Not the same as UI “Wait for result”** (`SpawnAgentInput.wait` / `waitForResult`, BUG-133): that blocks parent for a **tool/UI spawn**. Residual is **hub session park during flow children**, not `dependsOn` and not “graph waits for agent before advance”.
+
+**Design constraint (do not break):**
+
+| Keep | Do **not** do |
+|------|----------------|
+| `run: delegate` nodes fire immediately when edge activates | Serialize graph so reviewers cannot fan-out |
+| `run: inline` waits for hub `flow_control` | Rely only on soft “don’t duplicate work” text |
+| `dependsOn` / cohort join as written | Confuse with UI wait toggle |
+
+**Definition of Done (implement later — new task when scheduled):**
+
+1. **Hub posture `parked`:** while any flow child of the parent is `RUNNING` / `waiting_*` (or while active writer cohort open), **do not** `startTurn` a hub write/tool turn (gate reprompt, user-driven implement, gate artifact cure on hub).
+2. **Gate routing after `continue`:** if `flow_control(continue)` already advanced a delegate coder, **do not** re-enter hub for missing docs on that same transfer; queue gate for next legitimate hub **inline** turn **or** reprompt the **coder** child (prefer writer ownership).
+3. **Optional ordering:** evaluate hub-turn gate **before** committing `continue`/`done` edge walk when the violation is hub-owned; never apply continue then immediately gate-reprompt hub concurrent with child.
+4. **Evidence:** feature log must show no hub `turn_started` with write tools overlapping child `RUNNING`; unit tests for park + gate suppress; live retest Review Loop (run class 9437) with concurrent gate missing-doc scenario.
+5. **Out of scope for that DOD:** changing Review Loop YAML topology; promoting UI wait as the fix; Task-260 `r-additive-tests` (orthogonal test-suite hard rule).
+
+**Suggested future task title:** `Hub park while flow children write / no gate re-enter hub after continue` (agent-flow-engine). Not opened as Task-NNN in this commit — tracked here as A1 residual DOD only.
+
+#### What “partial done” means for operators
+
+- Safe to rebuild and retest A1 hang/gate/stop/model paths covered by CA-354…360.
+- Do **not** tick A1 full pass until residual DOD above is implemented **or** explicitly waived after a clean live retest proving no hub+coder concurrent writes under gate pressure.
+- Full Review Loop green still needs YOLO/write + correct models + residual park.
+
 ---
 
 ## 4. Copy-paste “one shot” for CI-ish local verify
@@ -408,9 +502,14 @@ cat .flowpilot/chats/${RUN}-turns.ndjson
 | Date | Who | Command / scenario | Result | Notes |
 |------|-----|--------------------|--------|-------|
 | 2026-07-17 | tiendat | Live **C1** run-1510 `hello grok` | ☑ pass (V2 terminal_completed) | See §3.5; wall ~28s cold Grok; log verbose ACP expected |
-| 2026-07-17 | tiendat+grok | Live **A1** run-10389 Review Loop (`fix bug 1+1 != 2`) | ☒ **partial / blocked** | See **§3.6**; hub+coder spawn OK; dual gate UI ×2; Continue hang; Stop hub weak. Fixes landed same day (CA-354). |
+| 2026-07-17 | tiendat+grok | Live **A1** run-10389 Review Loop (`fix bug 1+1 != 2`) | ☒ **partial / blocked** → code fixed | See **§3.6**; dual gate + Continue hang + Stop hub → **CA-354**. |
+| 2026-07-17 | tiendat+grok | Live **A1** run-1618 Review Loop + fake Claude (no account) | ☒ **hub hang** → code fixed | See **§3.7**; **CA-355** entry fail reinvoke + flowStartOnly settle + finishTurn Terminal. |
+| 2026-07-17 | grok | Hang residuals **H-A/H-B/H-C** unit | ☑ pass | **CA-356**. |
+| 2026-07-17 | grok | A1 cluster CA-355(gate)…CA-360 + additive-tests audit | ☑ **DONE PARTIAL** | See **§3.8**; CAs listed; residual hub-park DOD open (run-9437 class). |
+| 2026-07-17 | grok | Live concurrent hub write vs coder (run-9437) | ☒ residual open | Gate hub BUG-908 while coder R1 wrote CA-916/BUG-278; topology OK. DOD in §3.8. |
 | | | §4 one-shot | ☐ pass / ☐ fail | |
-| | | Live A2–A10 | ☐ | A1 retest after rebuild before marking pass |
+| | | Live A1 full pass retest | ☐ | After residual DOD or explicit waiver |
+| | | Live A2–A10 | ☐ | After A1 partial retest |
 | | | Live B1–B5 | ☐ | |
 | | | Live C2–C12 | ☐ | |
 | | | Live C13–C17 (new, post CA-340..349) | ☐ | |
@@ -428,7 +527,10 @@ cat .flowpilot/chats/${RUN}-turns.ndjson
 - Cold Grok first turn 15–40s với MCP+skills là baseline hiện tại, không dùng làm failure cho C1 nếu dispatch terminal + reply OK.
 - **C13–C17 chưa chạy live** (chỉ có unit test tương ứng: `TestFCPMarkerCrossServiceReplayRejected`-family cho C13, `TestDispatchInspect_RedactsCanonicalReceiptEvidence` cho C14, `TestRetryAsNewHandler_SupersededSurfacesAbandonGuidance` cho C15, chưa có unit test riêng cho boot-auto-redispatch không cần user action ở C16 — `reconcileOne`/`ScanAllRecoverable` test check redispatch được gọi, nhưng chưa có test end-to-end "process thật restart, không ai bấm gì" ở mức desktop; C17 có unit test hard-assert `TestScanAllRecoverable_EnumeratesEveryNonTerminalState_NotJustUncertain` xác nhận CAS đúng, nhưng chưa verify qua UI attention card thật).
 - **Task-250 T-4 (provider reconcile/cancel-on-required) chính thức waived 2026-07-17**: mọi adapter hiện có (Codex/Grok/Claude) đều không có API query-by-id/cancel-by-id (Task-257 evidence), nên recovery không thể hỏi lại provider — nó fallback về `uncertain` một cách an toàn (atomic CAS, không mất, không trùng, luôn surface cho operator). Re-open chỉ khi có adapter mới hỗ trợ capability này.
-- **A1 live residual (run-10389, 2026-07-17):** dual gate UI + hub reinvoke `gate_in_progress` + Stop hub weak — mitigated in CA-354; **retest required** before ☐ A1. YOLO/write permission for `calc.go` still needed for happy-path green TestAdd. Non-option multi-rule blocks (audit+contract without r-reg) still escalate to hub only (single card) — intentional.
+- **A1 live residual (run-10389, 2026-07-17):** dual gate UI + hub reinvoke `gate_in_progress` + Stop hub weak — mitigated in CA-354; hang/model/escalate cluster CA-355…360 landed — see **§3.8 DONE PARTIAL**.
+- **A1 residual DOD (open):** hub must not write while flow children run / no gate re-enter hub after `continue` concurrent with coder (run-9437). Design: hub park, not graph wait. Full DoD bullets in **§3.8**. Blocks ticking A1 full pass.
+- YOLO/write permission for `calc.go` still needed for happy-path green TestAdd. Non-option multi-rule blocks (audit+contract without r-reg) still escalate to hub only (single card) — intentional.
+- **Task-260** (todo): hard gate `r-additive-tests` — orthogonal to hub-park; soft skill already in pack.
 
 ---
 
