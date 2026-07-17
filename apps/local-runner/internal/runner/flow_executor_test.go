@@ -515,6 +515,68 @@ func TestCoderCompletionAutoSpawnsReviewerCohortWithOwnModel(t *testing.T) {
 	}
 }
 
+// TestResolveFlowNodeModelScopesByFlowRef is CA-358: two built-in flows both
+// mirror node_id="coder" with different models. Chat Review Loop must use the
+// review-loop row (grok), not the alphabetically-first Context Coding row
+// (claude-haiku).
+func TestResolveFlowNodeModelScopesByFlowRef(t *testing.T) {
+	catalog := newInteractiveCatalog()
+	catalog.steps["wf-feature"] = append(catalog.steps["wf-feature"],
+		Step{
+			ID:       "flowpilot_core_flow_pack_context_coding_review_synthesis_coder",
+			Name:     "Context Coding Review Synthesis: Coder",
+			NodeID:   "coder",
+			AgentRef: "agents/coder.md",
+			Model:    "claude-haiku",
+		},
+		Step{
+			ID:       "flowpilot_core_flow_pack_review_loop_coder",
+			Name:     "Review Loop: Coder",
+			NodeID:   "coder",
+			AgentRef: "agents/coder.md",
+			Model:    "grok-composer-2.5-fast",
+		},
+	)
+	svc := newInteractiveService(DefaultProviderRegistry(), catalog, newFakeWorkflowStore())
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	parentID := parent.RunID
+	svc.mu.Lock()
+	svc.runs[parentID].chatFlowRef = "flowpilot-core-flow-pack/review-loop"
+	svc.mu.Unlock()
+
+	got := svc.resolveFlowNodeModel(context.Background(), parentID, agentpack.FlowNode{
+		ID: "coder", Behavior: "agent.delegate", Agent: "agents/coder.md",
+	})
+	if got != "grok-composer-2.5-fast" {
+		t.Fatalf("review-loop coder model = %q, want grok-composer-2.5-fast (not cross-flow claude-haiku)", got)
+	}
+
+	// Context-coding flowRef must pick the other coder row.
+	svc.mu.Lock()
+	svc.runs[parentID].chatFlowRef = "flowpilot-core-flow-pack/context-coding-review-synthesis"
+	svc.mu.Unlock()
+	got = svc.resolveFlowNodeModel(context.Background(), parentID, agentpack.FlowNode{
+		ID: "coder", Behavior: "agent.delegate", Agent: "agents/coder.md",
+	})
+	if got != "claude-haiku" {
+		t.Fatalf("context-coding coder model = %q, want claude-haiku", got)
+	}
+
+	// Without flowRef, multiple node_id hits must NOT first-match alphabetically.
+	svc.mu.Lock()
+	svc.runs[parentID].chatFlowRef = ""
+	svc.mu.Unlock()
+	got = svc.resolveFlowNodeModel(context.Background(), parentID, agentpack.FlowNode{
+		ID: "coder", Behavior: "agent.delegate", Agent: "agents/coder.md",
+	})
+	if got == "claude-haiku" {
+		t.Fatalf("ambiguous node_id=coder must not first-match claude-haiku, got %q", got)
+	}
+}
+
 func TestResolveFlowNodeModelPrefersNodeSpecificStepDefinition(t *testing.T) {
 	catalog := newInteractiveCatalog()
 	catalog.steps["wf-feature"] = append(catalog.steps["wf-feature"],
@@ -534,7 +596,7 @@ func TestResolveFlowNodeModelPrefersNodeSpecificStepDefinition(t *testing.T) {
 	)
 	svc := newInteractiveService(DefaultProviderRegistry(), catalog, newFakeWorkflowStore())
 
-	got := svc.resolveFlowNodeModel(context.Background(), agentpack.FlowNode{
+	got := svc.resolveFlowNodeModel(context.Background(), "", agentpack.FlowNode{
 		ID:       "reviewer_correctness",
 		Behavior: "agent.delegate",
 		Agent:    "agents/reviewer.md",
@@ -584,12 +646,12 @@ func TestResolveFlowNodeModelIgnoresContaminatedGenericDispatchRow(t *testing.T)
 	)
 	svc := newInteractiveService(DefaultProviderRegistry(), catalog, newFakeWorkflowStore())
 
-	if got := svc.resolveFlowNodeModel(context.Background(), agentpack.FlowNode{
+	if got := svc.resolveFlowNodeModel(context.Background(), "", agentpack.FlowNode{
 		ID: "reviewer_correctness", Behavior: "agent.delegate", Agent: "agents/reviewer.md",
 	}); got != "gpt-5.4" {
 		t.Fatalf("reviewer_correctness resolved = %q, want its own per-node gpt-5.4 (not the contaminated generic row's claude-sonnet)", got)
 	}
-	if got := svc.resolveFlowNodeModel(context.Background(), agentpack.FlowNode{
+	if got := svc.resolveFlowNodeModel(context.Background(), "", agentpack.FlowNode{
 		ID: "reviewer_security", Behavior: "agent.delegate", Agent: "agents/reviewer.md",
 	}); got != "claude-haiku" {
 		t.Fatalf("reviewer_security resolved = %q, want its own per-node claude-haiku", got)
@@ -610,7 +672,7 @@ func TestResolveFlowNodeModelIgnoresHubInlineAgentRef(t *testing.T) {
 	)
 	svc := newInteractiveService(DefaultProviderRegistry(), catalog, newFakeWorkflowStore())
 
-	got := svc.resolveFlowNodeModel(context.Background(), agentpack.FlowNode{
+	got := svc.resolveFlowNodeModel(context.Background(), "", agentpack.FlowNode{
 		ID:       "synthesis",
 		Behavior: "hub.inline",
 		Agent:    "agents/synthesizer.md",

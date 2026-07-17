@@ -1249,6 +1249,16 @@ func (s *InteractiveService) flushDurableTurnIntents(runID string) {
 		s.mu.Unlock()
 		return
 	}
+	// run-1675: while the flow is blocked for a human form, do not flush
+	// gate-reprompt / resume intents (startTurn would also reject; skip early).
+	loopID := runID
+	if rs.parentRunID != "" {
+		loopID = rs.parentRunID
+	}
+	if st := s.agentOrchestrator.loopStateFor(loopID).Status; st == "blocked" || st == "stopped" || st == "done" {
+		s.mu.Unlock()
+		return
+	}
 	// Never flush continuation while a durable card is still pending unless we
 	// already recorded a decision for that card (reconcile two-write crash).
 	if (rs.pendingApprovalID != "" || rs.pendingQuestionID != "") &&

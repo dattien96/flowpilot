@@ -656,7 +656,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		// row (e.g. "Flow: Coder" / flow-agent-delegate-coder) instead of
 		// skipping straight past it to the Flow/Project tiers.
 		if resolvedModel == "" {
-			resolvedModel = s.resolveConfiguredModelForAgent(context.Background(), steps[0].NodeID, agentNameFromRef(steps[0].AgentRef))
+			resolvedModel = s.resolveConfiguredModelForAgent(context.Background(), steps[0].NodeID, agentNameFromRef(steps[0].AgentRef), "")
 		}
 		// BUG-183: Flow Mode has two distinct default sources. A normal workflow/flow
 		// execution inherits YOLO from the workflow definition itself, while a direct

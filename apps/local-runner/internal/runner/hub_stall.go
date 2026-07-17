@@ -102,9 +102,15 @@ func (s *InteractiveService) checkAndBlockStalledHub(runID string) bool {
 	// an undrained pending slot after startTurn reject is exactly the hang
 	// F-0 must detect — treating it as busy re-armed the watchdog forever
 	// while nothing drained or escalated.
+	//
+	// H-C / run-1618: pendingFlowGateSettle WITHOUT a live postTurnGateCancel
+	// is also NOT busy. flowStartOnly and other stale stamps left settle=true
+	// with no gate running; counting settle alone as busy made F-0 re-arm
+	// forever and never surface hub_stalled. A real post-turn gate always
+	// arms postTurnGateCancel for the evaluate window.
 	busy := rs.turnInFlight || rs.reinvokeInFlight ||
 		rs.pendingApprovalID != "" || rs.pendingQuestionID != "" ||
-		rs.pendingFlowGateSettle || rs.postTurnGateCancel != nil ||
+		rs.postTurnGateCancel != nil ||
 		strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" ||
 		strings.TrimSpace(rs.pendingResumePrompt) != ""
 	last := rs.hubLastProgressAt
@@ -113,7 +119,11 @@ func (s *InteractiveService) checkAndBlockStalledHub(runID string) bool {
 
 	loop := s.agentOrchestrator.loopStateFor(runID)
 	switch loop.Status {
-	case "blocked", "done", "stopped", "paused":
+	case "blocked", "done", "stopped", "paused",
+		// run-2047: rejected/approved are keyword-era terminal signals — never
+		// overwrite with hub_stalled (and blocked must not be clobbered by child
+		// cancel → rejected; see agent_orchestrator.transition).
+		"rejected", "approved":
 		return false
 	}
 
@@ -162,6 +172,8 @@ func (s *InteractiveService) checkAndBlockStalledHub(runID string) bool {
 		st.GateReason = reason
 		return st
 	})
+	// Same freeze as escalate: no auto-reprompt/reinvoke behind the stall card.
+	s.parkFlowForAwaitingUser(runID)
 	s.emitAgentGraph(runID, snap)
 	go s.persistParentSession(runID)
 	s.flowDiagLog(runID, "hub_stalled", "hub/root stalled; blocked with actionable card",

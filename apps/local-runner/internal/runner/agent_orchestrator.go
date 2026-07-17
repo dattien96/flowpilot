@@ -515,8 +515,18 @@ func (o *AgentOrchestrator) transition(parentRunID, kind string) AgentGraphSnaps
 			st.Status = "approved"
 			st.GateReason = "approved"
 		case "rejected":
-			st.Status = "rejected"
-			st.GateReason = "rejected"
+			// run-2047: parkFlowForAwaitingUser cancels in-flight reviewers after
+			// escalate already set Status=blocked. Child EventTurnFailed used to
+			// clobber blocked → rejected, so the Continue form lost escalate
+			// context and F-0 hub_stalled could fire 2m later (rejected is not
+			// treated as parked). Never overwrite an awaiting-user / terminal loop.
+			switch st.Status {
+			case "blocked", "stopped", "done", "paused":
+				// keep status + gateReason (escalate/cap/stall card)
+			default:
+				st.Status = "rejected"
+				st.GateReason = "rejected"
+			}
 		case "handoff":
 			if !paused {
 				st.Status = "running"

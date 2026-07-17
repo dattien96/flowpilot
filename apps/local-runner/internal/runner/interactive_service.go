@@ -483,6 +483,11 @@ type interactiveRun struct {
 	// pendingGateBlock holds r-reg details for the decision handler (Task-155).
 	// Cleared when the user submits a decision via handleGateDecision.
 	pendingGateBlock *gateBlockInfo
+	// gateFixCodeActive is set when the user chooses keep-test-fix-code.
+	// While active, further r-reg hits auto-reprompt (no decision modal) until
+	// maxGateFixCodeAutoReprompts or the suite goes green (run-11262 loop).
+	gateFixCodeActive   bool
+	gateFixCodeAttempts int
 	// proposalTurnPending is set true when the user picks opt-2 (suggest requirement change).
 	// The next turn is a proposal-only turn where the AI proposes but does not fix code yet;
 	// runFlowGate must not re-block on r-reg/r-tests during that turn.
@@ -1353,6 +1358,10 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			// Non-cap awaiting_user still settles here.
 			s.setFlowStepAwaitingUser(context.Background(), parentRunID)
 		}
+		if result.NextAction == "awaiting_user" {
+			// Same freeze as escalate: no hub/child work while Continue form is up.
+			s.parkFlowForAwaitingUser(parentRunID)
+		}
 		s.emitAgentGraph(parentRunID, snap)
 		go s.persistParentSession(parentRunID)
 		s.flowDiagLog(parentRunID, "flow_control_continue", "flow continue applied",
@@ -1409,6 +1418,10 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			st.GateReason = gateReason
 			return st
 		})
+		// run-1675: form "Needs your decision" must freeze the flow — cancel
+		// hub/child turns and drop gate-reprompt / hub-reinvoke intents so main
+		// cannot keep coding behind the card.
+		s.parkFlowForAwaitingUser(parentRunID)
 		s.emitAgentGraph(parentRunID, snap)
 		go s.persistParentSession(parentRunID)
 		s.flowDiagLog(parentRunID, "flow_control_escalate", "flow escalated to awaiting user",
@@ -1535,13 +1548,7 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		// entry turn (or a prior incomplete settle) while the real gate lives on
 		// the child. User Continue after escalate must not hit startTurn's
 		// gate_in_progress reject ("post-turn gate still running").
-		if rs.pendingFlowGateSettle && rs.postTurnGateCancel == nil {
-			rs.pendingFlowGateSettle = false
-			rs.pendingFlowGateFinalMsg = ""
-			rs.pendingFlowGateOccurredAt = ""
-			rs.pendingFlowGateTurnID = ""
-			rs.pendingGateChangedFiles = nil
-		}
+		s.clearStaleHubPendingGateSettleLocked(rs)
 	}
 	s.mu.Unlock()
 
@@ -1646,6 +1653,35 @@ func (s *InteractiveService) lastCohortNoteFor(runID string) string {
 	return ""
 }
 
+// hubShouldSkipProseEscalate reports whether BUG-226's "no submit_review_outcome
+// → escalate" fallback must not run: an open reviewer cohort or any live child
+// turn means the loop is still advancing after continue/spawn — free prose from
+// a gate/hub turn must not freeze the flow and cancel those children (run-5296).
+func (s *InteractiveService) hubShouldSkipProseEscalate(parentRunID string) bool {
+	if parentRunID == "" || s == nil {
+		return false
+	}
+	if s.agentOrchestrator.hasOpenCohort(parentRunID) {
+		return true
+	}
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		s.mu.Lock()
+		child := s.runs[childID]
+		if child == nil {
+			s.mu.Unlock()
+			continue
+		}
+		inFlight := child.turnInFlight || child.status == RunStatusRunning ||
+			child.status == RunStatusWaitingApproval || child.status == RunStatusWaitingQuestion ||
+			child.pendingFlowGateSettle || child.postTurnGateCancel != nil
+		s.mu.Unlock()
+		if inFlight {
+			return true
+		}
+	}
+	return false
+}
+
 // summarizeCohortNoteForUser extracts the per-reviewer findings lines from a
 // buildCohortNote-shaped note, dropping the engine-internal header ("[flow-engine
 // joined result note]", "Flow round N — ...") and the hub-only instructions after
@@ -1670,6 +1706,273 @@ func summarizeCohortNoteForUser(note string) string {
 		return ""
 	}
 	return truncateDisplayField(strings.Join(findings, "\n"), 800)
+}
+
+// parkFlowForAwaitingUser freezes hub + children when a human decision surface
+// is up (escalate / cap / hub_stalled Continue form — run-1675).
+//
+// Invariant: while loop.Status == "blocked", no new turns and no in-flight
+// provider work. Clears auto-continuation intents (gate reprompt, hub reinvoke,
+// resume) that would otherwise startTurn behind the form, and cancels live
+// turnCancel so tool calls stop.
+func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string) {
+	if strings.TrimSpace(parentRunID) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if parent := s.runs[parentRunID]; parent != nil {
+		parent.reinvokeInFlight = false
+		parent.pendingHubReinvoke = false
+		parent.pendingHubReinvokePrompt = ""
+		parent.pendingGateRepromptPrompt = ""
+		parent.pendingGateRepromptStepID = ""
+		parent.pendingGateRepromptGen = 0
+		parent.pendingGateRepromptDeliveredGen = 0
+		parent.pendingGateRepromptAcceptedTurn = ""
+		parent.pendingResumePrompt = ""
+		parent.pendingResumeStepID = ""
+		parent.pendingResumeGen = 0
+		parent.pendingResumeDeliveredGen = 0
+		parent.pendingResumeAcceptedTurn = ""
+		// Drop settle so finishTurn/gate cannot re-queue a reprompt after cancel.
+		parent.pendingFlowGateSettle = false
+		parent.pendingFlowGateFinalMsg = ""
+		parent.pendingFlowGateOccurredAt = ""
+		parent.pendingFlowGateTurnID = ""
+		parent.pendingGateChangedFiles = nil
+		if parent.turnInFlight && parent.turnCancel != nil {
+			parent.turnCancel()
+		}
+		if parent.postTurnGateCancel != nil {
+			parent.postTurnGateCancel()
+			parent.postTurnGateCancel = nil
+		}
+		if parent.flowInlineCancel != nil {
+			parent.flowInlineCancel()
+			parent.flowInlineCancel = nil
+			parent.flowInlineCtx = nil
+		}
+	}
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		child := s.runs[childID]
+		if child == nil {
+			continue
+		}
+		child.pendingTurnPrompt = ""
+		child.pendingGateRepromptPrompt = ""
+		child.pendingGateRepromptStepID = ""
+		child.pendingGateRepromptGen = 0
+		child.pendingResumePrompt = ""
+		child.pendingResumeStepID = ""
+		child.pendingResumeGen = 0
+		child.pendingFlowGateSettle = false
+		child.pendingFlowGateFinalMsg = ""
+		child.pendingFlowGateOccurredAt = ""
+		child.pendingFlowGateTurnID = ""
+		child.pendingGateChangedFiles = nil
+		if child.turnInFlight && child.turnCancel != nil {
+			child.turnCancel()
+		}
+		if child.postTurnGateCancel != nil {
+			child.postTurnGateCancel()
+			child.postTurnGateCancel = nil
+		}
+	}
+	s.flowDiagLog(parentRunID, "flow_parked_awaiting_user",
+		"flow frozen for human decision form; cancelled in-flight turns and dropped auto-intents")
+}
+
+// clearStaleHubPendingGateSettleLocked drops hub pendingFlowGateSettle when no
+// live post-turn gate is running. Used after flowStartOnly synthetic complete,
+// child fail reinvoke (CA-355 / H-A), and entry spawn failure (H-B).
+// Caller holds s.mu.
+func (s *InteractiveService) clearStaleHubPendingGateSettleLocked(parent *interactiveRun) {
+	if parent == nil {
+		return
+	}
+	if parent.pendingFlowGateSettle && parent.postTurnGateCancel == nil {
+		parent.pendingFlowGateSettle = false
+		parent.pendingFlowGateFinalMsg = ""
+		parent.pendingFlowGateOccurredAt = ""
+		parent.pendingFlowGateTurnID = ""
+		parent.pendingGateChangedFiles = nil
+	}
+}
+
+// notifyHubOfFlowChildFailureLocked settles a flow-engine non-cohort child
+// failure onto the hub: step FAILED, clear stale hub settle, append fail note,
+// schedule hub reinvoke when the explicit loop is still advancing.
+// Caller holds s.mu. child.parentRunID must be set.
+//
+// Covers EventTurnFailed (CA-355/run-1618) and pre-adapter startTurn fail (H-A).
+func (s *InteractiveService) notifyHubOfFlowChildFailureLocked(child *interactiveRun, errMsg string) {
+	if child == nil || child.parentRunID == "" {
+		return
+	}
+	parent := s.runs[child.parentRunID]
+	if parent == nil || !parent.flowEngineDriven {
+		return
+	}
+	failNote := fmt.Sprintf(
+		"Sub-agent %q (provider: %s) failed: %s",
+		child.agentName, child.providerKey, truncateDisplayField(errMsg, 500))
+	if child.label != "" {
+		s.setFlowStepStatusLocked(context.Background(), child.parentRunID, child.label, StepStatusFailed)
+	}
+	s.clearStaleHubPendingGateSettleLocked(parent)
+	s.appendPendingAgentContextLocked(child.parentRunID, failNote)
+	if s.agentOrchestrator.loopMode(child.parentRunID) != "explicit" || !s.loopIsAdvancing(child.parentRunID) {
+		return
+	}
+	hubNodeID := parent.activeHubNodeID
+	if hubNodeID == "" {
+		hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
+	}
+	if hubNodeID != "" {
+		s.setFlowStepStatusLocked(context.Background(), child.parentRunID, hubNodeID, StepStatusRunning)
+	}
+	parentRunID := child.parentRunID
+	capturedFailNote := failNote
+	s.flowDiagLog(parentRunID, "entry_or_delegate_failed_reinvoke_hub",
+		"non-cohort flow child failed; reinvoking hub with failure note",
+		"child_run_id", child.id,
+		"label", child.label,
+		"error", truncateDisplayField(errMsg, 500),
+	)
+	go s.maybeAutoReinvokeHubWithNote(parentRunID, capturedFailNote)
+}
+
+// handleChildStartTurnFailure is the spawnChildRun async startTurn error path:
+// pre-adapter failure never emits EventTurnFailed, so cohort join / non-cohort
+// hub reinvoke must be driven here (BUG-289 H2/F-2 + H-A residual).
+func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID, errMsg string) {
+	s.agentOrchestrator.signalChild(childRunID, "", true, errMsg, RunStatusFailed)
+	s.mu.Lock()
+	child := s.runs[childRunID]
+	cohortID := ""
+	label := ""
+	provider := ""
+	if child != nil {
+		cohortID = child.flowCohortId
+		label = child.label
+		provider = string(child.providerKey)
+		child.status = RunStatusFailed
+		child.agentStatus = string(RunStatusFailed)
+		if child.parentRunID != "" && child.flowCohortId != "" && label != "" {
+			if parent := s.runs[child.parentRunID]; parent != nil && parent.flowEngineDriven {
+				s.setFlowStepStatusLocked(context.Background(), child.parentRunID, label, StepStatusFailed)
+			}
+		}
+	}
+	if cohortID != "" {
+		s.mu.Unlock()
+		// BUG-289 H2/F-2: pre-flight failure never hit appendCohortResult
+		// (only turn-completed/failed handlers do). Stall sweep skips
+		// members with last.IsZero() && !inFlight, so the barrier hung
+		// forever. Buffer FAILED and re-check cohortComplete.
+		s.agentOrchestrator.appendCohortResult(parentRunID, cohortID, cohortEntry{
+			Label:    label,
+			Provider: provider,
+			Status:   "failed",
+			Err:      errMsg,
+		})
+		if s.agentOrchestrator.cohortComplete(parentRunID, cohortID) {
+			entries := s.agentOrchestrator.drainCohort(parentRunID, cohortID)
+			note := buildCohortNote(parentRunID, cohortID, entries, s.agentOrchestrator.graphSnapshot(parentRunID).LoopState.Round)
+			s.appendPendingAgentContext(parentRunID, note)
+			s.mu.Lock()
+			if parent := s.runs[parentRunID]; parent != nil {
+				parent.lastCohortNote = note
+				hubNodeID := parent.activeHubNodeID
+				if hubNodeID == "" {
+					hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
+				}
+				if hubNodeID != "" && s.loopIsAdvancing(parentRunID) {
+					s.setFlowStepStatusLocked(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
+				}
+			}
+			s.mu.Unlock()
+			go s.maybeAutoReinvokeHubWithNote(parentRunID, note)
+		} else {
+			s.maybeScheduleStallCheck(parentRunID)
+		}
+		return
+	}
+	// Non-cohort pre-flight fail (H-A).
+	if child != nil {
+		if parent := s.runs[parentRunID]; parent != nil && parent.flowEngineDriven {
+			s.notifyHubOfFlowChildFailureLocked(child, errMsg)
+		} else if child.uiInitiated || !child.waitForResult {
+			s.appendPendingAgentContextLocked(parentRunID, fmt.Sprintf(
+				"Sub-agent %q (provider: %s) failed: %s",
+				child.agentName, child.providerKey, truncateDisplayField(errMsg, 500)))
+		}
+		s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
+			RunID:         child.id,
+			AgentName:     child.agentName,
+			Label:         child.label,
+			Role:          child.role,
+			Status:        RunStatusFailed,
+			ParentRunID:   parentRunID,
+			CreatedAt:     child.createdAt,
+			DependsOn:     append([]string(nil), child.dependsOn...),
+			AgentStatus:   string(RunStatusFailed),
+			ProviderKey:   string(child.providerKey),
+			ModelName:     child.modelName,
+			WaitForResult: child.waitForResult,
+			ActivationSeq: child.activationSeq,
+		})
+		s.emitAgentGraphLocked(parentRunID, s.agentOrchestrator.transition(parentRunID, "rejected"))
+	}
+	s.mu.Unlock()
+}
+
+// notifyHubOfFlowEntrySpawnFailure is H-B: every flow entry spawn failed before
+// a child run existed — hub would otherwise stay "active" with zero agents.
+// Clears stale settle and reinvokes hub with the failure note (best-effort).
+func (s *InteractiveService) notifyHubOfFlowEntrySpawnFailure(parentRunID, flowRef string, failedLabels []string, errMsg string) {
+	if parentRunID == "" {
+		return
+	}
+	labels := strings.Join(failedLabels, ", ")
+	if labels == "" {
+		labels = "(none)"
+	}
+	note := fmt.Sprintf(
+		"[flow-engine] Failed to start flow entry node(s) for %q [%s]: %s",
+		flowRef, labels, truncateDisplayField(errMsg, 500))
+	s.mu.Lock()
+	parent := s.runs[parentRunID]
+	if parent == nil {
+		s.mu.Unlock()
+		return
+	}
+	// Entry steps may already be FAILED from the spawn loop; still clear settle.
+	s.clearStaleHubPendingGateSettleLocked(parent)
+	s.appendPendingAgentContextLocked(parentRunID, note)
+	shouldReinvoke := parent.autoOrchestrate && parent.flowEngineDriven &&
+		s.agentOrchestrator.loopMode(parentRunID) == "explicit" && s.loopIsAdvancing(parentRunID)
+	if shouldReinvoke {
+		hubNodeID := parent.activeHubNodeID
+		if hubNodeID == "" {
+			hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
+		}
+		if hubNodeID != "" {
+			s.setFlowStepStatusLocked(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
+		}
+	}
+	s.mu.Unlock()
+	s.flowDiagLog(parentRunID, "flow_start_all_entries_failed",
+		"all flow entry spawns failed; reinvoking hub with failure note",
+		"flow_ref", flowRef,
+		"failed_labels", labels,
+		"error", truncateDisplayField(errMsg, 500),
+		"will_reinvoke", shouldReinvoke,
+	)
+	if shouldReinvoke {
+		go s.maybeAutoReinvokeHubWithNote(parentRunID, note)
+	}
 }
 
 // autoReinvokePromptText returns the minimal hub re-prompt used by maybeAutoReinvokeHub.
@@ -2058,7 +2361,7 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 			Label:            composeNode.ID,
 			AutoOrchestrate:  true,
 			AgentDefOverride: agentDef,
-			Model:            s.resolveFlowNodeModel(context.Background(), composeNode),
+			Model:            s.resolveFlowNodeModel(context.Background(), parentRunID, composeNode),
 		}); err != nil {
 			log.Printf("[flow-executor] continue: spawn node %q (agent %q) failed: %v", composeNode.ID, agentName, err)
 			return
@@ -3979,10 +4282,15 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					capturedCohortNote := note // embed note directly in synthesis prompt (BUG-synthesis-hang)
 					go s.maybeAutoReinvokeHubWithNote(parentRunID, capturedCohortNote)
 				}
-			} else if rs.uiInitiated || !rs.waitForResult {
-				s.appendPendingAgentContextLocked(rs.parentRunID, fmt.Sprintf(
-					"Sub-agent %q (provider: %s) failed: %s",
-					rs.agentName, rs.providerKey, truncateDisplayField(ev.Error, 500)))
+			} else {
+				// Non-cohort child failure (run-1618 / CA-355 + H-A residual).
+				if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven {
+					s.notifyHubOfFlowChildFailureLocked(rs, ev.Error)
+				} else if rs.uiInitiated || !rs.waitForResult {
+					s.appendPendingAgentContextLocked(rs.parentRunID, fmt.Sprintf(
+						"Sub-agent %q (provider: %s) failed: %s",
+						rs.agentName, rs.providerKey, truncateDisplayField(ev.Error, 500)))
+				}
 			}
 			s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "rejected"))
 		}
@@ -4797,59 +5105,9 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 				Prompt: firstPrompt,
 			}, "", "")
 			if turnErr != nil {
-				// startTurn failed before the adapter ran — signal the waiter explicitly.
-				s.agentOrchestrator.signalChild(handle.RunID, "", true, turnErr.msg, RunStatusFailed)
-				// BUG-289 H2/F-2: pre-flight failure never hit appendCohortResult
-				// (only turn-completed/failed handlers do). Stall sweep skips
-				// members with last.IsZero() && !inFlight, so the barrier hung
-				// forever. Buffer FAILED and re-check cohortComplete like
-				// EventTurnFailed (:3831-3851).
-				s.mu.Lock()
-				child := s.runs[handle.RunID]
-				cohortID := ""
-				label := ""
-				provider := ""
-				if child != nil {
-					cohortID = child.flowCohortId
-					label = child.label
-					provider = string(child.providerKey)
-					if child.parentRunID != "" && child.flowCohortId != "" && label != "" {
-						if parent := s.runs[child.parentRunID]; parent != nil && parent.flowEngineDriven {
-							s.setFlowStepStatusLocked(context.Background(), child.parentRunID, label, StepStatusFailed)
-						}
-					}
-				}
-				parentRunID := parentRunID
-				s.mu.Unlock()
-				if cohortID != "" {
-					s.agentOrchestrator.appendCohortResult(parentRunID, cohortID, cohortEntry{
-						Label:    label,
-						Provider: provider,
-						Status:   "failed",
-						Err:      turnErr.msg,
-					})
-					if s.agentOrchestrator.cohortComplete(parentRunID, cohortID) {
-						entries := s.agentOrchestrator.drainCohort(parentRunID, cohortID)
-						note := buildCohortNote(parentRunID, cohortID, entries, s.agentOrchestrator.graphSnapshot(parentRunID).LoopState.Round)
-						s.appendPendingAgentContext(parentRunID, note)
-						s.mu.Lock()
-						if parent := s.runs[parentRunID]; parent != nil {
-							parent.lastCohortNote = note
-							// L4: stamp hub RUNNING on failed-member join (mirror completed-join).
-							hubNodeID := parent.activeHubNodeID
-							if hubNodeID == "" {
-								hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
-							}
-							if hubNodeID != "" && s.loopIsAdvancing(parentRunID) {
-								s.setFlowStepStatusLocked(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
-							}
-						}
-						s.mu.Unlock()
-						go s.maybeAutoReinvokeHubWithNote(parentRunID, note)
-					} else {
-						s.maybeScheduleStallCheck(parentRunID)
-					}
-				}
+				// startTurn failed before the adapter ran — signal waiter + settle
+				// flow/cohort (H-A non-cohort + BUG-289 H2/F-2 cohort).
+				s.handleChildStartTurnFailure(handle.RunID, parentRunID, turnErr.msg)
 			}
 		}()
 	}
@@ -5409,23 +5667,31 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// BUG-226: the hub synthesis turn must finish by calling submit_review_outcome.
 	// A prose-only answer leaves the flow engine without a terminal transition, so
 	// conservatively escalate and settle the inline hub step instead of leaving it RUNNING.
+	//
+	// run-5296 / run-2047: do NOT fire this fallback when a coding/review round is
+	// still in flight. After submit_review_outcome(continue), a separate hub turn
+	// (gate reprompt / BugFix doc) can complete without the review tool; escalating
+	// then parkFlowForAwaitingUser cancels the brand-new reviewer cohort and shows
+	// a form with the STALE round-0 lastCohortNote ("Reviewers reported: …").
 	if completed && offerReviewOutcomeTool && rs.parentRunID == "" && rs.flowEngineDriven && !s.flowControlSubmittedForTurn(rs.id, turnID) {
-		log.Printf("[flow-step] hub synthesis turn %q completed without submit_review_outcome, escalating", turnID)
-		// BUG-233: the awaiting-user card renders this Summary verbatim as
-		// GateReason, so prefer a concise summary of what the reviewers actually
-		// found over the hub's raw prose or an internal diagnostic sentence.
-		summary := "Hub synthesis turn completed without calling submit_review_outcome. Final message: " + fin.FinalMessage
-		if findings := summarizeCohortNoteForUser(s.lastCohortNoteFor(rs.id)); findings != "" {
-			summary = "Reviewers reported:\n" + findings
+		if s.hubShouldSkipProseEscalate(rs.id) {
+			log.Printf("[flow-step] hub turn %q completed without submit_review_outcome, but children/cohort still active — skip BUG-226 escalate", turnID)
+		} else {
+			log.Printf("[flow-step] hub synthesis turn %q completed without submit_review_outcome, escalating", turnID)
+			// BUG-233: the awaiting-user card renders this Summary verbatim as
+			// GateReason, so prefer a concise summary of what the reviewers actually
+			// found over the hub's raw prose or an internal diagnostic sentence.
+			summary := "Hub synthesis turn completed without calling submit_review_outcome. Final message: " + fin.FinalMessage
+			if findings := summarizeCohortNoteForUser(s.lastCohortNoteFor(rs.id)); findings != "" {
+				summary = "Reviewers reported:\n" + findings
+			}
+			_, _ = s.applyFlowControl(rs.id, FlowControlInput{
+				Status:  "escalate",
+				Summary: summary,
+			})
+			// BUG-231/BUG-233: applyFlowControl's "escalate" case above already settles
+			// the hub node to WAITING_USER_APPROVAL — do not override it to FAILED here.
 		}
-		_, _ = s.applyFlowControl(rs.id, FlowControlInput{
-			Status:  "escalate",
-			Summary: summary,
-		})
-		// BUG-231/BUG-233: applyFlowControl's "escalate" case above already settles
-		// the hub node to WAITING_USER_APPROVAL — do not override it to FAILED here.
-		// FAILED reads as a terminal error, not the intended non-terminal
-		// awaiting-user pause this fallback triggers.
 	}
 
 	// Persist settled state (status, lastMessage, updatedAt) for history survival
@@ -5567,6 +5833,25 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			}
 		} else {
 			s.mu.Unlock()
+		}
+		// If the loop is already blocked for a human form, do not run post-turn
+		// gate / reprompt — park already dropped settle intents (run-1675).
+		if completed {
+			loopID := rs.id
+			if rs.parentRunID != "" {
+				loopID = rs.parentRunID
+			}
+			if st := s.agentOrchestrator.loopStateFor(loopID).Status; st == "blocked" {
+				s.mu.Lock()
+				rs.pendingFlowGateSettle = false
+				rs.pendingFlowGateFinalMsg = ""
+				rs.pendingFlowGateOccurredAt = ""
+				rs.pendingFlowGateTurnID = ""
+				rs.pendingGateChangedFiles = nil
+				rs.turnInFlight = false
+				s.mu.Unlock()
+				completed = false
+			}
 		}
 		if completed && !checkpointBlocked {
 			gateCtx, gateCancel := context.WithCancel(context.Background())
@@ -5974,13 +6259,20 @@ func isProviderUsageLimitError(err error) bool {
 // the finalize input gathered from the run's events.
 func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err error) (bool, finalizeInput) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	rs.turnCancel = nil
 	rs.currentTurnID = ""
 	// lastTurnID used by resumePendingFlowGate after restart.
 	if turnID != "" {
 		rs.lastTurnID = turnID
 	}
+
+	// CP-51: finishTurn emits terminal events via emitLocked, which does NOT
+	// go through turnBridge.Emit — so CommitTerminalAndSettleIntent never ran
+	// for adapter-return failures (run-1618: child stuck at send_started +
+	// transport_error effect, UI Failed, dispatch non-terminal). Capture
+	// outcome outside the lock and terminalize after unlock.
+	var dispatchOutcome string
+	var dispatchErrMsg string
 
 	switch {
 	case err == nil:
@@ -6004,7 +6296,17 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 			}
 			_ = s.persistProviderSession(snap)
 		}
-		return rs.status == RunStatusCompleted || rs.pendingFlowGateSettle, fin
+		// If adapter already Terminal'd via bridge.Emit, Terminal is a no-op
+		// (state already terminal). If not, complete the durable record.
+		if !rs.pendingFlowGateSettle {
+			dispatchOutcome = "completed"
+		}
+		completed := rs.status == RunStatusCompleted || rs.pendingFlowGateSettle
+		s.mu.Unlock()
+		if dispatchOutcome != "" {
+			s.commitFinishTurnDispatchTerminal(rs, turnID, dispatchOutcome, "")
+		}
+		return completed, fin
 	case errors.Is(err, context.Canceled):
 		// BUG-288 P1-14/P1-19: a Stall Skip cancels the in-flight turn AFTER
 		// already setting this run Failed (Task-241 contract: Skip -> FAILED,
@@ -6015,6 +6317,8 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 		if rs.stalledSkipCause {
 			rs.stalledSkipCause = false
 			s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "skipped by user (stalled)", Recoverable: false})
+			dispatchOutcome = "failed"
+			dispatchErrMsg = "skipped by user (stalled)"
 			break
 		}
 		// BUG-288 R13-02 / R14-02: stall-retry cancel — one-shot
@@ -6029,6 +6333,8 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 			rs.stalledRetrySuppressCohort = false
 			rs.status = RunStatusRunning
 			rs.agentStatus = string(RunStatusRunning)
+			// Not a durable terminal — retry will continue the same logical turn
+			// intent on a new startTurn. Leave dispatch for recovery if needed.
 			break
 		}
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "interrupted by user", Recoverable: true})
@@ -6046,8 +6352,12 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 			}
 			s.emitAgentGraphLocked(parentID, s.agentOrchestrator.graphSnapshot(parentID))
 		}
+		dispatchOutcome = "cancelled"
+		dispatchErrMsg = "interrupted by user"
 	case errors.Is(err, errApprovalExpired) || errors.Is(err, errQuestionExpired):
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: err.Error(), Recoverable: true})
+		dispatchOutcome = "failed"
+		dispatchErrMsg = err.Error()
 	default:
 		// This EventTurnFailed only ever reached the UI's event stream, never
 		// runner.log — diagnosing a failed turn required reproducing it live.
@@ -6055,8 +6365,47 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 		// model/reasoning/cwd/yolo) makes the failure reason findable after the fact.
 		log.Printf("[turn-failed] run=%s turn=%s provider=%s error=%q", rs.id, turnID, rs.providerKey, err.Error())
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: err.Error(), Recoverable: false})
+		dispatchOutcome = "failed"
+		dispatchErrMsg = err.Error()
+	}
+	s.mu.Unlock()
+	if dispatchOutcome != "" {
+		s.commitFinishTurnDispatchTerminal(rs, turnID, dispatchOutcome, dispatchErrMsg)
 	}
 	return false, finalizeInput{}
+}
+
+// commitFinishTurnDispatchTerminal records CP-51 terminal evidence for turns
+// whose terminal event was emitted by finishTurn (emitLocked) rather than
+// turnBridge.Emit. Idempotent when the record is already terminal.
+func (s *InteractiveService) commitFinishTurnDispatchTerminal(rs *interactiveRun, turnID, outcome, errMsg string) {
+	if s == nil || rs == nil || turnID == "" || s.dispatchStore == nil {
+		return
+	}
+	if !s.dispatchV2ActiveForRun(context.Background(), rs.id) {
+		return
+	}
+	bridge := &turnBridge{svc: s, rs: rs, ctx: context.Background(), turnID: turnID}
+	payload, _ := json.Marshal(map[string]string{
+		"type": string(EventTurnFailed), "error": errMsg, "final": "", "source": "finishTurn",
+	})
+	if outcome == "completed" {
+		payload, _ = json.Marshal(map[string]string{
+			"type": string(EventTurnCompleted), "error": "", "final": "", "source": "finishTurn",
+		})
+	}
+	evKind := string(EventTurnFailed)
+	if outcome == "completed" {
+		evKind = string(EventTurnCompleted)
+	}
+	bridge.Terminal(TerminalEvidence{
+		ProviderKey:          string(rs.providerKey),
+		EvidenceKind:         evKind,
+		Outcome:              outcome,
+		PayloadCanonicalJSON: payload,
+		PayloadSHA256:        HashBytes(payload),
+		ObservedAt:           nowRFC3339Nano(),
+	})
 }
 
 // finalizeInputLocked gathers the post-turn context (final message + changed files)
@@ -6103,6 +6452,8 @@ func clearDurableRecoveryStateLocked(rs *interactiveRun) {
 	rs.pendingGateRepromptDeliveredGen = 0
 	rs.pendingGateRepromptFailCount = 0
 	rs.pendingGateRepromptFailGen = 0
+	rs.gateFixCodeActive = false
+	rs.gateFixCodeAttempts = 0
 	rs.pendingResumePrompt = ""
 	rs.pendingResumeStepID = ""
 	rs.pendingResumeGen = 0
@@ -6165,14 +6516,27 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	}
 	// V10R4 P0: Stop sets loop Status=stopped — reject new turns on this run and
 	// on children whose parent flow was stopped (intent race after Stop).
+	//
+	// run-1675: also reject Status=blocked (escalate / cap / hub_stalled form).
+	// resumeFlowWithFeedback flips blocked→running BEFORE scheduling the next
+	// hub turn, so Continue still works. Gate reprompt / hub reinvoke must not
+	// start while the human decision card is open.
 	if rs.parentRunID == "" {
 		if st := s.agentOrchestrator.loopStateFor(rs.id).Status; st == "stopped" || st == "done" {
 			s.mu.Unlock()
 			return "", newAPIErr(http.StatusConflict, "flow_stopped", "flow loop is stopped; cannot start a new turn")
+		} else if st == "blocked" {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusConflict, "flow_awaiting_user",
+				"flow is waiting for your decision (Continue/Stop); resolve the form before a new turn")
 		}
 	} else if st := s.agentOrchestrator.loopStateFor(rs.parentRunID).Status; st == "stopped" || st == "done" {
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusConflict, "flow_stopped", "parent flow loop is stopped; cannot start a child turn")
+	} else if st == "blocked" {
+		s.mu.Unlock()
+		return "", newAPIErr(http.StatusConflict, "flow_awaiting_user",
+			"parent flow is waiting for your decision; resolve the form before a child turn")
 	}
 	// V9-03: reject overlapping turns while post-turn gate is still settling.
 	if rs.pendingFlowGateSettle || rs.postTurnGateCancel != nil {
@@ -6490,6 +6854,7 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	}
 	if flowStartOnly {
 		var snap ProviderSessionState
+		var terminalRS *interactiveRun
 		s.mu.Lock()
 		if current := s.runs[runID]; current != nil {
 			// Flow-start handoff suppresses the hub's provider turn, but the desktop
@@ -6497,6 +6862,11 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			// event so the client can settle the synthetic turn and begin the separate
 			// orchestration stream that carries later hub/agent updates.
 			s.emitLocked(current, ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: turnID, FinalMessage: ""})
+			// run-1618 / A1: emitLocked on a flowEngineDriven root marks
+			// pendingFlowGateSettle for a real post-turn gate. The synthetic
+			// handoff has no provider work and no gate — leave it set and the
+			// hub is stuck gate_in_progress forever (child fail cannot reinvoke).
+			s.clearStaleHubPendingGateSettleLocked(current)
 			current.turnInFlight = false
 			current.currentTurnID = ""
 			current.turnCancel = nil
@@ -6509,10 +6879,30 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 				current.idempotency[idempotencyKey] = turnID
 			}
 			snap = sessionStateOf(current)
+			terminalRS = current
 		}
 		s.mu.Unlock()
 		if snap.RunID != "" {
 			_ = s.persistProviderSession(snap)
+		}
+		// CP-51: claim left the record at send_claimed; no provider bytes are
+		// sent on this path, so linearize+Terminal as a clean synthetic complete
+		// so recovery does not redispath a dangling flow-start claim.
+		if terminalRS != nil && s.dispatchStore != nil && s.dispatchV2ActiveForRun(context.Background(), runID) {
+			if ok, _ := s.linearizeSendStarted(context.Background(), terminalRS, turnID); ok {
+				bridge := &turnBridge{svc: s, rs: terminalRS, ctx: context.Background(), turnID: turnID}
+				payload, _ := json.Marshal(map[string]string{
+					"type": string(EventTurnCompleted), "final": "", "synthetic": "flow_start_only",
+				})
+				bridge.Terminal(TerminalEvidence{
+					ProviderKey:          string(terminalRS.providerKey),
+					EvidenceKind:         string(EventTurnCompleted),
+					Outcome:              "completed",
+					PayloadCanonicalJSON: payload,
+					PayloadSHA256:        HashBytes(payload),
+					ObservedAt:           nowRFC3339Nano(),
+				})
+			}
 		}
 		cancel()
 		return turnID, nil
