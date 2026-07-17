@@ -5,7 +5,7 @@
 - Document ID: `Task-178`
 - Title: `RAG Harness Pack And Chat Baseline`
 - Phase: `task`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `FlowPilot`
 - Created: `2026-07-01`
@@ -130,7 +130,8 @@ CP-41 currently has hardcoded helpers like `isPlanStepType` and `isCodingStepTyp
 
 ## 8. Completion Notes
 
-- result: partially implemented
+- result: **partially implemented — NOT done (2026-07-17 re-audit).**
 - notes: `injectFlowContextIfCoding`'s build/render steps now dispatch through the `context.produce`/`context.render` behaviors (`DefaultBehaviorRegistry`) instead of calling `BuildFlowContextPackage`/`ComposeFlowCodingPrompt` directly; all existing caching, event-emission, and warning behavior is unchanged and covered by existing tests. `isPlanStepType`/`isCodingStepType` remain as the single, explicitly-documented legacy `StepType`-string shim (they already normalize through `agentpack.NormalizeBehaviorID`) because `RuntimeWorkflowStep` has no `behaviorId` field yet — making the step classification itself (not just dispatch) data-driven is a larger data-model change deferred to `Task-180`/future work. Chat Mode `subMode` request fields and the Flow Mode built-in `rag-harness` selection flow (T-6/T-7) are UI/contract work not attempted here — see Task-177 status for the same UI dependency.
-- follow-ups: `Task-180`
+- blocking for done: T-6/T-7 UI/contract; data-driven step classification (or explicit waiver + Task-180 ownership).
+- follow-ups: `Task-180`, Task-177 UI dependency.
 - upstream docs updated: [CP-42](../../../07-Coding-Plan/todo/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) progress notes and [CA-151](../../../change-audit/CA-151-rag-harness-behavior-dispatch-rewire.md)

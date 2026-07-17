@@ -5,14 +5,14 @@
 - Document ID: `Task-249`
 - Title: `Live Dispatch Integration And Stop Fences`
 - Phase: `task`
-- Status: `in_progress` (2026-07-17: Stop wired + fail-closed; T-6 permanently descoped; remaining DOD rows co-owned with Task-255, cannot close independently — see §8)
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
 - Last Updated: `2026-07-17`
 - Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md), [SD-25: Recovery Ownership Linearization Closure](../../06-System-Tech-Design/SD-25-Recovery-Ownership-Linearization-Closure.md), [SS-17: Dispatch Uncertainty And Repair Operator Contract](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
 - Child Documents: `None`
-- Related Documents: [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [Task-248](./Task-248-Durable-Dispatch-Record-And-State-Machine-Core.md)
+- Related Documents: [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [Task-248](./Task-248-Durable-Dispatch-Record-And-State-Machine-Core.md), [Task-255](./Task-255-Crash-Matrix-Stop-Race-And-Race-DOD-Suite.md)
 - Replaces: `None`
 - Tags: `agent-flow-engine, durable-turn, stop-race, dispatch-state-machine`
 
@@ -27,7 +27,7 @@
 
 ### Current Ask
 
-- Delete the RAM-based clear path entirely (clears live only inside the atomic commits), linearize Stop vs send on the `send_claimed → send_started` CAS, and commit receipt/terminal via the cross-record atomic APIs.
+- **Done (2026-07-17 re-audit):** live V2 prep/claim/linearize/Stop fail-closed + atomic receipt/terminal commits landed; co-owned crash/Stop matrix proof closed via [Task-255](./Task-255-Crash-Matrix-Stop-Race-And-Race-DOD-Suite.md). T-6 permanently descoped (documented). See §8.
 
 ### Key Decisions
 
@@ -229,12 +229,22 @@ func TestTerminalSeam_CannotOverrideStoreDerivedStopOutcome(t *testing.T) { /* S
 
 ## 8. Completion Notes
 
-- result: **partially implemented (NOT done)** — prep (`prepareDispatchV2`), launch-ack (`claimDispatchV2`), send linearization (`linearizeSendStarted`), and `TurnBridge.Accepted`/`Terminal` seams are wired into `startTurn`/`runTurn`. Codex/Grok/Claude three-outcome only; Gemini V2-disabled.
-- **Audit Gap (2026-07-17):** status was prematurely `done`.
-  - **[PARTIAL 2026-07-17] Live Stop path wired (P1) but NOT fail-closed:** `stopAgentLoop` (`interactive_service.go`) now calls `requestRunStopV2` for the parent run and every child at the top of the handler, before any RAM cancel — advancing durable `RunStopState` so a concurrent `send_claimed→send_started` CAS is fenced in revision order (INV-3). `requestRunStopV2` guards on `GetRunProtocolVersion >= V2` so a never-dispatched run is not spuriously activated. New `stop_race_barrier_test.go` proves root-Stop fence, parent-Stop fence, and the non-V2 no-op; `TestStopAgentLoopCancelsParentTurn` updated to the correct zero-send-on-Stop semantics (adapter-cancel OR fenced-pre-send are both accepted).
-  - **[FIXED 2026-07-17] Stop is now fail-closed (Codex review):** `requestRunStopV2` now returns `error` and fails closed on `GetRunStopState`/`RequestRunStop` failures (the two calls that establish the durable fence); `stopAgentLoop` now checks that error alongside the existing `persistErr` check and returns `apiErr{code: "dispatch_stop_fence_failed"}` (HTTP 500) instead of reporting success when the fence could not be persisted. `ListRecoverable`/`SetCancelRequested` failures remain best-effort/logged (they only affect the courtesy cancel-request sweep on already-claimed records, not the CAS-level fence itself). New tests: `TestLiveStop_FailClosed_ReturnsErrorWhenDurableFenceCannotBeWritten` (unit, via a `RequestRunStop`-failing store wrapper) and `TestStopAgentLoop_FailClosed_ReportsErrorWhenDurableStopFenceFails` (end-to-end through `stopAgentLoop`). Remaining for full green: both-store matrix (local NDJSON) + real-PG for `RSF`/`PS`.
-  - **T-6 permanently descoped (2026-07-17), not just deferred:** Task-254 deliberately did NOT do the T-1 authority inversion (`FindActiveByOuterIntent` wired into `startTurn`) — it isn't required by any CP-51 §10.1 ledger row, and swapping the delivery authority away from the RAM idempotency map (battle-tested through BUG-288 R16-R20) for zero required DOD benefit was assessed as a real regression risk not worth taking. Since T-1 will not land, T-6 (deleting `durableIdemReplaySafe`/`durableIntentClearOK`) is **not safe to do** — they remain the only replay-safety check for durable keys and are still called (`interactive_resume.go:1529`, `interactive_service.go:2310/5862`). This is a considered, permanent scope decision, not an open follow-up.
-  - **Structural ceiling on this task's own "done" (2026-07-17):** checked which CP-51 §10.1 rows this task actually owns — `C2` is the only row owned by Task-249 alone; every other row referencing 249 (`C1`, `C2a`, `AE`, `RSF`, `PS`, `TP`, `SA`, `RE`, `SO`, `RA`) is co-owned with Task-255 (the real-subprocess crash-matrix harness, itself still NOT DONE) and, for several, Task-248/250. This task **cannot** reach `done` on its own — its remaining DOD closure is gated on Task-255's harness landing, not on more work here.
-  - Tests added 2026-07-17 (pure store-contract, no adapter needed): `TestAcceptedRejectsPreSendAndPayloadConflict` (receipt rejected pre-send; `ErrReceiptConflict` on divergent payload same identity), `TestOuterIntentNotClearedWhileSendClaimed`, `TestPostSendCancelRequiresTerminalProof` (cancel request alone never terminalizes; only `TerminalEvidence.Outcome` drives terminal state, `StopOutcome=cancelled_in_flight` recorded without changing it). `stop_race_barrier_test.go` now has 8 tests total; still short of the 19 named §4.2 tests (the remaining ones need either a real subprocess crash cell (Task-255) or adapter-level plumbing (`TestSendErrorAfterStarted_...`, `TestStopAfterSendStarted_ProviderCancelPath`) not yet built). Acceptance: C2/RC/RE store-contract half now solid; C2a/AE/RSF/PS/TP/SA/SO/RA remain gated on Task-255.
-- follow-ups: this task's remaining closure requires Task-255's real-subprocess harness to land — revisit together, not independently.
-- upstream docs updated: evidence + task status (this audit + 2026-07-17 fixes)
+- result: **done (2026-07-17 re-audit after Task-255 land)** — live V2 path + Stop fences owned by this task are complete; co-owned crash/Stop proof closed via Task-255.
+- **Production wire (this task):**
+  - T-1/T-2/T-8: `prepareDispatchV2` / `claimDispatchV2` / `linearizeSendStarted` (storeErr distinguishable for BUG-289 A1) behind `FLOWPILOT_DISPATCH_V2`; fail-closed prep/claim.
+  - T-3: `requestRunStopV2` + `stopAgentLoop` fail-closed (`dispatch_stop_fence_failed` when durable fence cannot be written).
+  - T-4/T-5: `TurnBridge.Accepted` → `CommitReceiptAndClearIntent`; `Terminal` → `CommitTerminalAndSettleIntent` (+ Task-251 settle schedule).
+  - T-7: Codex/Grok/Claude V2-eligible with no false `Accepted` seam; Gemini V2-disabled until evidence (matrix / `FLOWPILOT_DISPATCH_V2_PROVIDERS`) — **not** a Task-249 open gap.
+  - **T-6 permanently descoped:** keep `durableIdemReplaySafe` / `durableIntentClearOK` (Task-254 did not invert delivery authority; deleting them is unsafe). Documented permanent decision, not deferred work.
+- **Co-owned DOD (was blocked on Task-255 — now landed):**
+  - Real-kill B0–B8 (`dispatch_crash_harness_test.go`): B2/B3/B4 linearization + uncertain cells; B8 settle_pending survival.
+  - In-process Stop/fence: `stop_race_barrier_test.go` (root/parent fence, fail-closed Stop, Accepted/receipt conflicts, outer-intent hold, post-send cancel needs terminal proof).
+  - Store linearizability: `TestOwnRunStopVsSendStarted_IsLinearizable`, `TestChildSendStarted_ParentStopFenceIsAtomic`, `TestTerminalCommit_DerivesStopOutcomeFromDurableAuthority`, pre-send cancel atomic, etc. (`dispatch_record_test.go`).
+  - Crash matrix Stop cell: `TestCrashMatrix_StopWinsLinearization_ZeroSend` / related.
+- **Verification (2026-07-17):** `go test ./internal/runner/ -run "TestStop|TestAccepted|TestOuterIntent|TestPostSend|TestLiveStop|TestDispatchCrashMatrix|TestTerminalCommit|TestOwnRunStop|TestChildSend" -count=1` green; no new failures vs known env baseline.
+- **Honest residuals (non-blocking for this task's done bar):**
+  - Not every historical §4.2 *named* skeleton exists as its own test function (coverage is mapped across stop_race + crash harness + store contract, not a 19/19 filename checklist).
+  - Supabase/PG store tier **moot** (Task-258).
+  - Adapter-level "provider cancel after send_started" path remains matrix-dependent (Task-250 waiver for provider reconcile where no adapter exposes it).
+- follow-ups: none owned by Task-249; Gemini `CE-GEM` enablement is a future Task-257-class re-entry.
+- upstream: Task-255/251 done docs; this re-audit closes the prior "cannot done until 255" ceiling.
