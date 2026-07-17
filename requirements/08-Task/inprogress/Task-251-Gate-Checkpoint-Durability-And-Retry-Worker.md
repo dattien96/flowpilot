@@ -5,14 +5,14 @@
 - Document ID: `Task-251`
 - Title: `Gate Checkpoint Durability And Retry Worker`
 - Phase: `task`
-- Status: `in_progress` (2026-07-17: 2 contained fixes landed (event keyed-upsert, persist-error observability); full T-1 driver refactor deliberately deferred — too large/risky for one pass, see §8)
+- Status: `in_progress` (2026-07-17: 2 contained fixes landed (event keyed-upsert, persist-error observability); full T-1 driver refactor + T-3 retry-worker wiring **handed off to [BUG-289](../../09-BugFix/todo/BUG-289-Flow-Mode-Invariant-Audit-25-Unhandled-Bug-And-Edge-Cases.md) `F-7`** — do not duplicate that work here; this task closes only once BUG-289 `F-7` lands with tests, see §8)
 - Owner: `FlowPilot`
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
 - Last Updated: `2026-07-17`
 - Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md), [SS-17: Dispatch Uncertainty And Repair Operator Contract](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
 - Child Documents: `None`
-- Related Documents: [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md)
+- Related Documents: [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [BUG-289](../../09-BugFix/todo/BUG-289-Flow-Mode-Invariant-Audit-25-Unhandled-Bug-And-Edge-Cases.md) (`A3`/`F-7` — owns the remaining T-1/T-3 work below; 2026-07-17 decision: do it once there, not twice)
 - Replaces: `None`
 - Tags: `agent-flow-engine, flow-gate, crash-recovery, retry-backoff`
 
@@ -174,5 +174,6 @@ func TestReleaseManifest_ParentStopFencePreventsChildSend(t *testing.T) { /* PS:
   - T-3: no retry worker (`scheduleSettleRetry` exists on the stub driver only, unwired).
   - T-4: the legacy `gateCheckpointNotDurable` + three-persist dance is fully intact — NOT deleted (deleting it before T-1/T-3 land would remove the only durability mechanism currently protecting this path).
   - Tests: `gate_checkpoint_outage_test.go` still absent; 1/11 named skeletons (the pre-existing happy path) + the 1 new regression test above (differently named). Acceptance 0/6 for the full V-1..V-6 (V-6 build/vet pass; the rest require the undone driver).
-- follow-ups: a dedicated future task/session should refactor `resumePendingFlowGate` into the phase driver, cross-referencing every cited BUG-288 round before changing behavior; until then, the legacy checkpoint mechanism must stay in place.
-- upstream docs updated: task status (this audit + the two 2026-07-17 contained fixes).
+- **2026-07-17 ownership decision — T-1/T-3 handed off to BUG-289, not duplicated here:** BUG-289's own re-audit of the whole Flow Mode engine independently found the exact same gap and gave it a concrete user-visible consequence this task's notes didn't fully spell out — `A3`: because `SettleDriver`/`CASAdvanceSettle` has no production caller, every turn's `SettlePending` obligation never resolves, so `HasNonTerminal` never goes false, permanently blocking the 90-day session prune and leaking `dispatch.ndjson` growth forever. BUG-289 `F-7` proposes wiring `SettleDriver` a production caller (boot scanner / post-terminal) as part of its own fix batch (alongside `A2`, the CP-51 Task-250-adjacent "Stop-then-crash record only gets `log.Printf`'d, never a real recovery action" gap, which has the same permanent-non-terminal / never-pruned consequence). Rather than doing the same T-1/T-3 refactor twice under two different documents, it is now owned and delivered **once**, under BUG-289 `F-7`. This task stays `in_progress` — it does **not** close until BUG-289 `F-7` lands with its own tests (a real production caller for `SettleDriver`, verified to unblock `HasNonTerminal`/prune); at that point both this task and BUG-289's `A3`/`F-7` close together, referencing the same commit.
+- follow-ups: none owned directly by this task anymore for T-1/T-3 — track via [BUG-289](../../09-BugFix/todo/BUG-289-Flow-Mode-Invariant-Audit-25-Unhandled-Bug-And-Edge-Cases.md) `F-7`/`A3`. Until that lands, the legacy checkpoint mechanism (T-4) must stay in place.
+- upstream docs updated: task status (this audit + the two 2026-07-17 contained fixes + the 2026-07-17 BUG-289 hand-off decision).
