@@ -1,0 +1,36 @@
+# Task-255: race + unit gate for local-runner (CP-51 DoD).
+name: local-runner-race
+
+on:
+  push:
+    paths:
+      - "apps/local-runner/**"
+      - ".github/workflows/local-runner-race.yml"
+  pull_request:
+    paths:
+      - "apps/local-runner/**"
+      - ".github/workflows/local-runner-race.yml"
+  workflow_dispatch: {}
+
+jobs:
+  race:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/local-runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache-dependency-path: apps/local-runner/go.sum
+      - name: go vet
+        run: go vet ./internal/runner/ ./internal/flowgate/ ./internal/changecontract/
+      - name: go test -race (dispatch/settle focused)
+        run: >
+          go test -race -count=1 -timeout 15m
+          ./internal/runner/
+          -run "TestSettle|TestDispatchModel|TestBug289_A3|TestSettleDriver|TestSettleSubBarriers|TestDispatchCrashMatrix|TestResumePendingFlowGate"
+      - name: go test package (no -race full, avoid long e2e)
+        run: go test -count=1 -timeout 20m ./internal/runner/ -run "TestSettle|TestDispatch|TestBug289|TestCP51|TestTerminal"
+        continue-on-error: false
