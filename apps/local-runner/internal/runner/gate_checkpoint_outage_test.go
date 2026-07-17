@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -139,6 +140,145 @@ func TestSettle_ScheduleDrive_WithCompletedRunFinalizes(t *testing.T) {
 	}
 	got, _, _ := store.Get(ctx, "r-live", "t-live")
 	t.Fatalf("expected finalized, got %s", got.SettlePhase)
+}
+
+// Task-251 review gap #6: concurrent scheduleSettleDrive (boot + post-gate +
+// post-terminal fan-in) must not duplicate effects or leave a non-final phase
+// when the live run is already Completed. Single-flight + convergent
+// RecordEffectDone are the safety mechanisms under test.
+func TestSettle_ConcurrentScheduleSettleDrive_NoDuplicateEffects(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryDispatchStore()
+	rec := testPrepared("r-race", "t-race")
+	rec.SettleOwed = true
+	_ = store.CreatePrepared(ctx, rec, testEnvelope("r-race", "t-race"))
+	rev := int64(1)
+	rev, _ = store.CASAdvance(ctx, "r-race", "t-race", rev, DispatchPrepared, DispatchSendClaimed, nil)
+	rev, _ = store.CASAdvance(ctx, "r-race", "t-race", rev, DispatchSendClaimed, DispatchSendStarted, nil)
+	proof := TerminalEvidence{ProviderKey: "f", EvidenceKind: "x", Outcome: "completed", PayloadSHA256: "h"}
+	if _, err := store.CommitTerminalAndSettleIntent(ctx, "r-race", "t-race", rev, proof, "r-race", rec.OuterIntentKey, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), newFakeWorkflowStore())
+	svc.dispatchStore = store
+	svc.mu.Lock()
+	svc.runs["r-race"] = &interactiveRun{
+		id:     "r-race",
+		status: RunStatusCompleted,
+		subs:   map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Unlock()
+
+	const n = 32
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			// Fan-in the same three production entry points.
+			svc.scheduleSettleDrive("r-race", "t-race")
+			svc.maybeScheduleSettleAfterTerminal("r-race", "t-race")
+			svc.scheduleSettleAfterGatePass("r-race", "t-race")
+		}()
+	}
+	wg.Wait()
+
+	// Workers are async — wait for finalization (or timeout).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _, _ := store.Get(ctx, "r-race", "t-race")
+		if got.SettlePhase == SettleFinalized {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Second wave after first may have finished: still must stay finalized.
+	for i := 0; i < 8; i++ {
+		svc.scheduleSettleDrive("r-race", "t-race")
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	got, _, err := store.Get(ctx, "r-race", "t-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SettlePhase != SettleFinalized {
+		t.Fatalf("after concurrent schedule phase=%s want finalized", got.SettlePhase)
+	}
+	effects, err := store.ListEffects(ctx, "r-race", "t-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]int{}
+	for _, e := range effects {
+		kinds[e.EffectKind]++
+		if kinds[e.EffectKind] > 1 {
+			t.Fatalf("duplicate effect kind %s after concurrent schedule (count=%d)", e.EffectKind, kinds[e.EffectKind])
+		}
+	}
+	for _, want := range []string{"gate_eval", "completion_event", "graph_signal", "dependents_release", "finalizer"} {
+		if kinds[want] != 1 {
+			t.Fatalf("effect %s count=%d want 1; kinds=%v", want, kinds[want], kinds)
+		}
+	}
+}
+
+// Concurrent boot drive + scheduleSettleDrive while run is Completed: same
+// invariants as the single-path schedule test (Claude review #6 companion).
+func TestSettle_ConcurrentBootDriveAndSchedule_NoDuplicate(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryDispatchStore()
+	rec := testPrepared("r-boot", "t-boot")
+	rec.SettleOwed = true
+	_ = store.CreatePrepared(ctx, rec, testEnvelope("r-boot", "t-boot"))
+	rev := int64(1)
+	rev, _ = store.CASAdvance(ctx, "r-boot", "t-boot", rev, DispatchPrepared, DispatchSendClaimed, nil)
+	rev, _ = store.CASAdvance(ctx, "r-boot", "t-boot", rev, DispatchSendClaimed, DispatchSendStarted, nil)
+	proof := TerminalEvidence{ProviderKey: "f", EvidenceKind: "x", Outcome: "completed", PayloadSHA256: "h"}
+	if _, err := store.CommitTerminalAndSettleIntent(ctx, "r-boot", "t-boot", rev, proof, "r-boot", rec.OuterIntentKey, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), newFakeWorkflowStore())
+	svc.dispatchStore = store
+	svc.mu.Lock()
+	svc.runs["r-boot"] = &interactiveRun{
+		id:     "r-boot",
+		status: RunStatusCompleted,
+		subs:   map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Unlock()
+
+	var wg sync.WaitGroup
+	wg.Add(4)
+	for i := 0; i < 4; i++ {
+		go func() {
+			defer wg.Done()
+			svc.drivePendingSettlesOnBoot(ctx)
+			svc.scheduleSettleDrive("r-boot", "t-boot")
+		}()
+	}
+	wg.Wait()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _, _ := store.Get(ctx, "r-boot", "t-boot")
+		if got.SettlePhase == SettleFinalized {
+			effects, _ := store.ListEffects(ctx, "r-boot", "t-boot")
+			kinds := map[string]int{}
+			for _, e := range effects {
+				kinds[e.EffectKind]++
+				if kinds[e.EffectKind] > 1 {
+					t.Fatalf("duplicate effect %s", e.EffectKind)
+				}
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	got, _, _ := store.Get(ctx, "r-boot", "t-boot")
+	t.Fatalf("expected finalized after concurrent boot/schedule, got %s", got.SettlePhase)
 }
 
 // Task-251: effects are structured (not bare {"ok":true}) and replay-convergent.
