@@ -5,12 +5,12 @@
 - Document ID: `Task-255`
 - Title: `Crash-Matrix, Stop-Race And Race DOD Suite`
 - Phase: `task`
-- Status: `done`
+- Status: `in_progress` (audit 2026-07-17: real subprocess crash harness absent; 10/12 named suites missing — see §8 Audit Gap)
 - Owner: `FlowPilot`
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
-- Last Updated: `2026-07-16`
-- Parent Documents: [CP-51](../../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md) (§11), [SD-25 Recovery Ownership Closure](../../06-System-Tech-Design/SD-25-Recovery-Ownership-Linearization-Closure.md) (§5, §11), [SS-17](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
+- Last Updated: `2026-07-17`
+- Parent Documents: [CP-51](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md) (§11), [SD-25 Recovery Ownership Closure](../../06-System-Tech-Design/SD-25-Recovery-Ownership-Linearization-Closure.md) (§5, §11), [SS-17](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
 - Child Documents: `None`
 - Related Documents: [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [Task-248](./Task-248-Durable-Dispatch-Record-And-State-Machine-Core.md), [Task-249](./Task-249-Live-Dispatch-Integration-And-Stop-Fences.md), [Task-250](./Task-250-Recovery-Scanner-And-Provider-Reconciliation.md)
 - Replaces: `None`
@@ -249,6 +249,10 @@ Items in the durability/dispatch class are covered by the **new** matrix; the re
 
 ## 8. Completion Notes
 
-- result: **done — foundation crash-matrix cells as unit suite (stop fence, torn tail, recovery, settle).**
-- follow-ups: remaining live crash-matrix phase-2 / real-PG optional
-- upstream docs updated: evidence + task status
+- result: **foundation unit cells only (NOT done)** — light unit cells live in `cp51_tasks_test.go`; `dispatch_crash_matrix_test.go` (6 tests) + `dispatch_record_test.go` (30) exist.
+- **Audit Gap (2026-07-17):** status was prematurely `done`. This task OWNS the CP-51 finish line, so its incompleteness blocks the whole CP.
+  - **Real subprocess crash harness does NOT exist:** no `dispatch_test_harness.go`, no `TestHelperDispatchWorker`/`-test.run` re-exec, no parent-owned fake-provider HTTP log. Crash cells use `store.Close()`+reopen in-process — the **explicitly-rejected** same-process rebuild (Key Decision T-2 / DOD `SP`).
+  - **8/12 named suites absent** (updated 2026-07-17 — `stop_race_barrier_test.go` and `dispatch_recovery_test.go` now exist, from the Codex-suggested Task-249/250 fixes): `dispatch_model_test.go` (MB), `gate_checkpoint_outage_test.go`, `fcp_marker_replay_test.go`, `supabase_runtime_corruption_test.go`, `idempotency_retention_test.go`, `dispatch_store_contract_test.go`, `dispatch_settle_test.go` + shared subprocess harness. Present: `dispatch_crash_matrix_test.go`, `dispatch_record_test.go`, `stop_race_barrier_test.go`, `dispatch_recovery_test.go`. Still 1/25 named skeletons present by exact name (the new tests above cover real scenarios but weren't named per the original skeleton list).
+  - No CI wiring for `go test -race`; `FF` (fail-on-HEAD-6ea5417 evidence), `GR`, `MB`, `SP`, `PG` all unmet. Acceptance 0/6.
+- follow-ups: build the real subprocess-kill harness + fake provider; author the missing named suites; wire the §10.3 verdict command into CI; capture fail-on-HEAD evidence.
+- upstream docs updated: task status (this audit)
