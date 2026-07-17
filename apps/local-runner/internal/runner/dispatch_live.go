@@ -44,15 +44,17 @@ func (s *InteractiveService) dispatchV2ActiveForRun(ctx context.Context, runID s
 }
 
 // providerV2Enabled reports whether a provider may enter V2 automated dispatch.
-// Codex/Grok/fake: three-outcome only (no Accepted seam) by default.
-// Claude/Gemini: disabled until Task-257 evidence, unless explicitly allow-listed
-// via FLOWPILOT_DISPATCH_V2_PROVIDERS=claude,gemini (still no Accepted seam until evidence wires it).
+// Codex/Grok/Claude/fake: three-outcome only (no Accepted seam) by default — all
+// three have recorded Task-257 evidence of unprovable-as-a-receipt ⇒ uncertain
+// (see evidence/SD-24/{codex,grok,claude}.md).
+// Gemini: disabled until its own Task-257 evidence, unless explicitly allow-listed
+// via FLOWPILOT_DISPATCH_V2_PROVIDERS=gemini (still no Accepted seam until evidence wires it).
 func providerV2Enabled(key ProviderKey) bool {
 	k := strings.ToLower(string(key))
 	switch k {
-	case "codex", "grok", "fake", "":
+	case "codex", "grok", "claude", "fake", "":
 		return true
-	case "claude", "gemini":
+	case "gemini":
 		return providerV2AllowListed(k)
 	default:
 		return true
@@ -331,8 +333,8 @@ func (rs *interactiveRun) dispatchByTurn(turnID string) *DispatchRecord {
 // ---- TurnBridge receipt / terminal seams (SD-24 §6.3a) ----
 
 // Accepted is the sole caller of CommitReceiptAndClearIntent. No current
-// Codex/Grok adapter calls this (Task-257 unprovable); future providers only
-// after evidence-backed Task-257 rows.
+// Codex/Grok/Claude adapter calls this (Task-257 unprovable); future providers
+// only after evidence-backed Task-257 rows.
 func (b *turnBridge) Accepted(receipt ReceiptEvidence) {
 	if b == nil || b.svc == nil || b.svc.dispatchStore == nil {
 		return
