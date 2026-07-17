@@ -9,8 +9,8 @@
 - Owner: `FlowPilot`
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
-- Last Updated: `2026-07-16`
-- Parent Documents: [CP-51](../../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md), [SD-25 Recovery Ownership Closure](../../06-System-Tech-Design/SD-25-Recovery-Ownership-Linearization-Closure.md), [SS-17](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
+- Last Updated: `2026-07-17`
+- Parent Documents: [CP-51](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md), [SD-25 Recovery Ownership Closure](../../06-System-Tech-Design/SD-25-Recovery-Ownership-Linearization-Closure.md), [SS-17](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
 - Child Documents: `None`
 - Related Documents: [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md)
 - Replaces: `None`
@@ -362,22 +362,22 @@ func TestResolveUncertain_ActionSettlementTableAtomic(t *testing.T) { /* complet
 
 ## 5. Touched Areas
 
-- files: `apps/local-runner/internal/runner/dispatch_record.go` + `dispatch_store.go` + `dispatch_store_local.go` + `dispatch_store_supabase.go` (new), `workflow_store.go` (marker/repair/provenance scalars only), `local_file_session_store.go` (parity fields + intent-clear filter + prune guard), `interactive_service.go` (RAM cache + comment fix), `supabase_workflow_store.go` (marker column + intent-clear filter; blob versioning in Task-253).
+- files: `apps/local-runner/internal/runner/dispatch_record.go` + `dispatch_store.go` + `dispatch_store_memory.go` + `dispatch_store_local.go` + `dispatch_store_open.go` (multi-project local hub — Task-258 pivot; NOT `dispatch_store_supabase.go`, which was never built and should not be), `workflow_store.go` (marker/repair/provenance scalars only), `local_file_session_store.go` (parity fields + intent-clear filter + prune guard), `interactive_service.go` (RAM cache + comment fix).
 - modules: `internal/runner` persistence.
 - routes: none.
-- tables (SD-24 §6.5 — the full relational migration, plan-review #5 #9): **`dispatch_records`** (including durable attach epoch/owner/expiry), **`dispatch_run_stop_state`** (non-prunable run-level `generation/stopped/revision`, created with activation; sole parent-fence authority), **`dispatch_effects`** (UNIQUE run/turn/effect_kind, payload + payload hash; includes attached event identity and release-manifest state + revision for `pending→created|suppressed`), **`repair_records`** (incl. `quarantine_blob`+`quarantine_hash`), **`run_protocol_activations`** (non-prunable) + all RPCs incl. `session_upsert_guarded`, `dispatch_request_run_stop`, `dispatch_enter_recovery_attach`, `dispatch_record_recovery_attached_effect`, `dispatch_commit_attached_terminal_settle`, `dispatch_create_release_manifest_item`, `dispatch_commit_release_manifest_item`, `dispatch_suppress_release_manifest_item`; `session_runtime` gains only the display-mirror column. Local: `dispatch.ndjson` (activation + run-stop-state lines non-prunable) + `dispatch.lock`. **No dispatch JSON inside session records on either backend.**
+- tables (backend scope corrected 2026-07-17 — Task-258 dropped the Supabase `dispatch_*` tables/RPCs listed in the original plan-review #5 #9 draft; see the DROP migration `20260717140000_drop_cp51_dispatch_supabase_tables.sql`). The **actual** durable authority is the per-project local commit log: `.flowpilot/chats/<project_id>/dispatch.ndjson` (activation + run-stop-state lines non-prunable) + `dispatch.lock`, synced portably via Google Drive chat-sync (Task-258). `session_runtime`/`sessionRuntimeBlob` (Task-253) is a separate session-blob concern, not dispatch authority. **No dispatch JSON inside session records.**
 
 ## 6. Acceptance Check
 
 - `V-1` `dispatch_record_test.go`: the full (from,to) transition matrix — legal edges accepted, **every** other edge rejected; `CancelRequested` invariants (blocks `send_started`; forces cancel path) enforced; settle-phase transitions likewise exhaustive.
-- `V-2` Round-trip test: a record at each state + settle phase survives **dispatch-store** persist → restart → `Get`/`ListRecoverable` on both backends; and (`SB`) `ProviderSessionState` JSON contains **no** dispatch records (grep + runtime assert).
-- `V-3` Terminal-outcome durability: a `terminal` commit-log line is observable after restart via the dispatch store (previously lost per `DOD-C1`); shared local/Supabase contract tests prove the same terminal transaction derives `StopOutcome=cancelled_in_flight` from record cancel/own Stop/parent fence or empty when none is effective; read-side APIs return deterministic order + honor pagination.
+- `V-2` Round-trip test: a record at each state + settle phase survives **dispatch-store** persist → restart → `Get`/`ListRecoverable` on **memory + local NDJSON** (backend scope corrected 2026-07-17 — Task-258 dropped Supabase for dispatch; no `dispatch_store_supabase.go` exists nor should one); and (`SB`) `ProviderSessionState` JSON contains **no** dispatch records (grep + runtime assert).
+- `V-3` Terminal-outcome durability: a `terminal` commit-log line is observable after restart via the dispatch store (previously lost per `DOD-C1`); shared memory/local contract tests prove the same terminal transaction derives `StopOutcome=cancelled_in_flight` from record cancel/own Stop/parent fence or empty when none is effective; read-side APIs return deterministic order + honor pagination.
 - `V-4` Legacy migration test: `prep:`, bare-with-terminal, and bare-without-terminal fixtures map to `prepared`/**`terminal_completed`**/`uncertain` respectively (the ONE rule — SD-24 §5.6).
 - `V-4b` Operational: startup lock rejects a second process; compaction crash-rules honored (leftover temp discarded); missing log on a V2-marker run ⇒ `repair_required`.
 - `V-5` `DOD-G8`: a grep/test asserts there is exactly one documented recovery-inference rule for `EventTurnStarted` and code honors it.
-- `V-6` Parity (`PAR`): full-field `ProviderSessionState` round-trip passes identically on local and Supabase (incl. the three previously-missing local fields); prune guard verified (a run with a non-terminal record survives the retention pass).
+- `V-6` Parity (`PAR`): full-field `ProviderSessionState` round-trip passes on the **local NDJSON session store** (backend scope corrected 2026-07-17 — no live Supabase session/dispatch backend to parity-test against; `SupabaseWorkflowStore` has zero production constructors, confirmed Task-253) incl. the three previously-missing local fields; prune guard verified (a run with a non-terminal record survives the retention pass).
 - `V-7` Cross-record atomicity: `CommitReceiptAndClearIntent` with `intentOwnerRunID != runID` (parent restart) clears the parent's intent and the child's transition in one commit — crash between them is impossible by construction (single log line / single RPC transaction), asserted via the store contract suite.
-- `V-7b` SD-25 attached-stream contract: shared local/Supabase RPC/real-PG tests prove `EnterRecoveryAttach` occurs before physical attach, output is visible only from `RecordRecoveryAttachedEffect`, attached terminal forwarding is one `CommitAttachedTerminalAndSettleIntent` transaction, and revoked-token results mutate nothing. Every sent exit and all live/recovered/pre-send/operator/retry terminal paths revoke the epoch.
+- `V-7b` SD-25 attached-stream contract: shared memory/local tests prove `EnterRecoveryAttach` occurs before physical attach, output is visible only from `RecordRecoveryAttachedEffect`, attached terminal forwarding is one `CommitAttachedTerminalAndSettleIntent` transaction, and revoked-token results mutate nothing. Every sent exit and all live/recovered/pre-send/operator/retry terminal paths revoke the epoch. (Supabase RPC/real-PG variant descoped with V-2/V-6 above.)
 - `V-8` `go build`, `go vet`, `go test ./internal/runner` clean.
 
 ## 7. Out of Scope
@@ -388,9 +388,11 @@ func TestResolveUncertain_ActionSettlementTableAtomic(t *testing.T) { /* complet
 
 ## 8. Completion Notes
 
-- result: **done** — landed `DispatchRecord` 8-state machine + settle phases, full `DispatchStore` API (memory/local NDJSON/supabase-fake), legacy `prep:`/bare migration, session-mirror scalars only (no dispatch slice), `EventTurnStarted` recovery contract fix (DOD-G8), and contract/unit suite green under `go test ./internal/runner -run TestDispatch…`.
-- follow-ups: Task-249 live path wiring; Task-253 co-phase Supabase runtime version/quarantine; Task-255 crash-matrix harness.
-- upstream docs updated: CP-51 implementation in progress; DoD ledger rows owned by this task exercised via unit suite (SW/TA/V2A/RS/SB foundation).
+- result: **done (2026-07-17)** — `DispatchRecord` 8-state machine + settle phases, full `DispatchStore` API (memory + local NDJSON), legacy `prep:`/bare migration, session-mirror scalars only (no dispatch slice), `EventTurnStarted` recovery contract fix (DOD-G8), and contract/unit suite green.
+- **Backend scope reconciled (2026-07-17):** §5 Touched Areas and §6 Acceptance (V-2/V-6/V-7b) rewritten from "both backends / Supabase / real-PG" to memory + local NDJSON — Task-258 confirmed Supabase was dropped for dispatch (and Task-253 confirmed `SupabaseWorkflowStore` has zero production constructors for sessions either). `dispatch_store_supabase.go` correctly does not exist and should not be built.
+- **Missing test closed:** `TestRecoveryCommitGuards_LeaseAndStopAreAtomic` (`dispatch_record_test.go`) proves `CASRecoveryAdvance` enforces the recovery lease (exact `ClaimOwner` + unexpired store-clock TTL via a deterministic fake clock) AND own/parent Stop authority in the SAME locked transaction: wrong owner, expired lease, and an effective Stop (with a otherwise-valid fresh lease) each independently block the advance with zero state change.
+- `TestSessionUpsertGuarded_InterleavedClearCannotResurrect` (the other originally-missing test) confirmed moot — it targeted a Supabase RPC (`session_upsert_guarded`) that was dropped with the rest of Supabase dispatch; not rebuilt.
+- upstream docs updated: task status; moved to `done/` (2026-07-17).
 - DoD checklist:
   - [x] V-1 exhaustive transition + CancelRequested
   - [x] V-2 round-trip + session carries no dispatch records

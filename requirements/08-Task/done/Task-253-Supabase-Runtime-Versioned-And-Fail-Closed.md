@@ -9,8 +9,8 @@
 - Owner: `FlowPilot`
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
-- Last Updated: `2026-07-16`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md) (§6.5), [SS-17: Dispatch Uncertainty And Repair Operator Contract](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md) (AC-3/AC-4)
+- Last Updated: `2026-07-17`
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md) (§6.5), [SS-17: Dispatch Uncertainty And Repair Operator Contract](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md) (AC-3/AC-4)
 - Child Documents: `None`
 - Related Documents: [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md)
 - Replaces: `None`
@@ -209,6 +209,10 @@ func TestSessionRuntime_RoundTripV1_PreservesTopologyGateIntents(t *testing.T) {
 
 ## 8. Completion Notes
 
-- result: **done — session_runtime schema_version + fail-closed OpenRepair quarantine path.**
-- follow-ups: remaining live crash-matrix phase-2 / real-PG optional
-- upstream docs updated: evidence + task status
+- result: **done (2026-07-17)** — `sessionRuntimeSchemaVersion`/`supportedRuntimeVersions`, `applySessionRuntimeV2` fail-closed layers (decode → version → `validatePresence` → `validateSemantics`, no partial mutation on any failure), `RepairRequired`/`RepairReason`, and store repair ops (`OpenRepair`/`BeginRepairResolution`/`CommitRepairResolution`) exist and are unit-tested (`TestApplySessionRuntime_CorruptBlob_RepairRequired`, `_VersionUnknown_Repair`, `_MissingBlobOnV2Run_Repair`, `_MissingBlobOnV0Run_OK`, `_LegacyV0Intact_Restores`, `TestOpenRepair_CreateIfAbsent_OneCommit`).
+- **2026-07-17 scope correction (user):** the earlier audit flagged "`providerSessionFromDBRow` not wired to a real dispatch store" as a gap. It's real as a code fact but **has zero production impact and is not worth pursuing further**: `SupabaseWorkflowStore` has **no production constructor call anywhere** in this codebase (confirmed by repo-wide grep) — CP-51/Task-258 pivoted BOTH dispatch AND session storage to local NDJSON + Drive sync; Supabase is not the active backend for either. Wiring `providerSessionFromDBRow` to a real `DispatchStore` would harden a path nothing currently exercises. Added a minimal, harmless `SupabaseWorkflowStore.SetDispatchStore` scaffold (mirrors `InteractiveService.SetDispatchStore`) for forward-compatibility if Supabase session storage is ever reactivated, but did NOT thread it through the 3 `providerSessionFromDBRow` call sites — that would be speculative work against a dead path.
+- The active backend (`localFileSessionStore`, NDJSON) has a structurally different, already-adequate corruption story: it has no nested "runtime blob" to version at all (fields are flat NDJSON columns), and a malformed line is skipped on load (degrades that one run to "not found" rather than needing a repair-marker abstraction) — consistent with the local dispatch store's own torn-tail handling (Task-248). This is not a gap for THIS task, which is explicitly scoped to the Supabase jsonb-blob versioning concern (§7 Out of Scope already excludes local-store internals).
+- Also fixed in passing (CA-345): `sessionRuntimeBlob`'s encoder now writes `MarkerProvenanceRunIDs`/`Pending*ProvenanceRunID` (was previously declared+decoded but never encoded — Task-252's finding, fixed there).
+- Typed `ErrRuntimePresence`/`ErrRuntimeSemantic` (vs. the current plain `fmt.Errorf`) not added — nothing consumes the type distinction (`applySessionRuntimeV2` treats both identically via `markRuntimeRepair`), so it would be a cosmetic-only change.
+- Acceptance: V-1..V-4 pass (existing unit tests exercise the exact corrupt/version-mismatch/missing-blob/legacy-v0 matrix). V-5 (`go build`/`go vet`/`go test ./internal/runner` clean) verified this pass.
+- upstream docs updated: task status; moved to `done/` (2026-07-17).

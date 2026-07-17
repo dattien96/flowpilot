@@ -833,3 +833,81 @@ func TestDispatchMutation_GuardFlipsTurnSuiteRed(t *testing.T) {
 		t.Fatal("backward edge must fail")
 	}
 }
+
+// TestRecoveryCommitGuards_LeaseAndStopAreAtomic closes the last named §4.2
+// gap for Task-248: CASRecoveryAdvance enforces BOTH the recovery lease
+// (exact ClaimOwner + unexpired store-clock TTL) AND own/parent Stop
+// authority inside the SAME locked transaction as the state mutation — a
+// wrong owner, an expired lease, or an effective Stop each independently
+// block the advance with zero state change, and none of these checks can be
+// bypassed by holding only a subset of the others.
+func TestRecoveryCommitGuards_LeaseAndStopAreAtomic(t *testing.T) {
+	ctx := context.Background()
+	storeIface := NewMemoryDispatchStore()
+	store := storeIface.(*memoryDispatchStore)
+	// Deterministic fake clock so lease expiry is exact, not racy.
+	now := time.Now().UTC()
+	store.now = func() time.Time { return now }
+
+	rec := testPrepared("r1", "t1")
+	env := testEnvelope("r1", "t1")
+	if err := store.CreatePrepared(ctx, rec, env); err != nil {
+		t.Fatal(err)
+	}
+	rev, err := store.CASAdvance(ctx, "r1", "t1", 1, DispatchPrepared, DispatchSendClaimed, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Claim a 30s recovery lease as "scanner-A".
+	rev, err = store.ClaimRecovery(ctx, "r1", "t1", rev, "scanner-A", 30*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimRecovery: %v", err)
+	}
+
+	// (1) WRONG OWNER: valid unexpired lease, but held by a different scanner —
+	// must be rejected, state unchanged.
+	if _, err := store.CASRecoveryAdvance(ctx, "r1", "t1", rev, "scanner-B", DispatchSendClaimed, DispatchSendStarted, nil); err == nil {
+		t.Fatal("CASRecoveryAdvance must reject a mismatched lease owner")
+	}
+	got, _, _ := store.Get(ctx, "r1", "t1")
+	if got.State != DispatchSendClaimed {
+		t.Fatalf("state must be unchanged after wrong-owner rejection, got %s", got.State)
+	}
+
+	// (2) EXPIRED LEASE: correct owner, but the store clock has moved past the
+	// lease TTL — must be rejected even though the owner string matches.
+	now = now.Add(31 * time.Second)
+	if _, err := store.CASRecoveryAdvance(ctx, "r1", "t1", rev, "scanner-A", DispatchSendClaimed, DispatchSendStarted, nil); err == nil {
+		t.Fatal("CASRecoveryAdvance must reject an expired lease even with the correct owner")
+	}
+	got, _, _ = store.Get(ctx, "r1", "t1")
+	if got.State != DispatchSendClaimed {
+		t.Fatalf("state must be unchanged after expired-lease rejection, got %s", got.State)
+	}
+
+	// (3) VALID LEASE + EFFECTIVE STOP: re-claim a fresh lease (valid owner,
+	// unexpired), but a Stop has been requested on this run — the send_started
+	// transition must still be fenced in the SAME transaction, proving the lease
+	// check does not shadow the Stop check.
+	rev, err = store.ClaimRecovery(ctx, "r1", "t1", rev, "scanner-A", 30*time.Second)
+	if err != nil {
+		t.Fatalf("re-ClaimRecovery: %v", err)
+	}
+	st, err := store.GetRunStopState(ctx, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RequestRunStop(ctx, "r1", st.Revision, StopReasonUser); err != nil {
+		t.Fatalf("RequestRunStop: %v", err)
+	}
+	_, err = store.CASRecoveryAdvance(ctx, "r1", "t1", rev, "scanner-A", DispatchSendClaimed, DispatchSendStarted, nil)
+	var fence ErrRunStopFence
+	if !errors.As(err, &fence) {
+		t.Fatalf("valid lease must not bypass an effective Stop — want ErrRunStopFence, got %v", err)
+	}
+	got, _, _ = store.Get(ctx, "r1", "t1")
+	if got.State != DispatchSendClaimed {
+		t.Fatalf("state must be unchanged after Stop-fenced recovery advance, got %s", got.State)
+	}
+}

@@ -9,8 +9,8 @@
 - Owner: `FlowPilot`
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
-- Last Updated: `2026-07-16`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md) (§6.5)
+- Last Updated: `2026-07-17`
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md) (§6.5)
 - Child Documents: `None`
 - Related Documents: [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [Task-248](./Task-248-Durable-Dispatch-Record-And-State-Machine-Core.md)
 - Replaces: `None`
@@ -148,6 +148,7 @@ func TestSnapshot_RetainedKeysReloadAndShortCircuit(t *testing.T)     {}
 
 ## 8. Completion Notes
 
-- result: **done — non-terminal keys always retained; per-namespace terminal cap.**
-- follow-ups: remaining live crash-matrix phase-2 / real-PG optional
-- upstream docs updated: evidence + task status
+- result: **done** — non-terminal keys always retained, per-namespace terminal cap (`capPerNS=16`), active keys pinned in **every** snapshot including the post-turn path (`sessionStateOf` → `durableIdempotencySnapshotWithNonTerminal(rs.idempotency, rs.nonTerminalIdemKeys())`, confirmed by reading the call site, not just claimed). T-2/T-3/T-4 genuinely implemented and now fully tested (`idempotency_retention_test.go`, 2026-07-17): `TestSnapshot_PostTurnAlsoPinsActiveKey` (proves the post-turn path, not just accept-time, via the real `sessionStateOf`) and `TestSnapshot_RetainedKeysReloadAndShortCircuit` (real disk round-trip via `NewLocalFileSessionStore`, reconstruct, then `startTurn` short-circuits to the same prior turnID using durable — not RAM-only — recovery evidence). All 4 named §4.2 tests now exist (2 were already in `cp51_tasks_test.go`). V-1..V-5 all pass.
+- **T-1 authority inversion — descoped, not a DOD blocker:** `FindActiveByOuterIntent` is defined on all stores (Task-248) but has no caller in `startTurn`; the existing RAM idempotency-map short-circuit (battle-tested through BUG-288 R16-R20) remains the delivery mechanism. Verified this is **not** gated by any CP-51 §10.1 ledger row owned by this task (`I6`, `Rr4` are both retention/pruning-survival only) nor by this task's own §6 Acceptance Check (V-1..V-5, all retention/pinning). Replacing the idempotency-map authority with `FindActiveByOuterIntent` would be a real architecture change with meaningful regression risk against zero required DOD benefit — deliberately left as a documented, non-blocking follow-up rather than done unsafely to close a checkbox that isn't actually required.
+- follow-ups: if a future CP wants the full T-1 authority inversion, it needs its own dedicated task with its own regression-safety plan against BUG-288 R16-R20 — not bundled into this one.
+- upstream docs updated: task status; moved to `done/` (2026-07-17).
