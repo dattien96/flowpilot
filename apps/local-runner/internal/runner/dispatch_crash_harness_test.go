@@ -611,12 +611,10 @@ func TestDispatchCrashMatrix_RealKill_B8_TerminalCommittedSettlePending_Survives
 	if res.before.SettlePhase != SettlePending {
 		t.Fatalf("B8: testPrepared sets SettleOwed=true, so a real terminal commit must leave SettlePhase=pending, got %s", res.before.SettlePhase)
 	}
-	// Known gap, not a Task-255 defect: Task-251's settle-phase driver is not
-	// wired to the recovery scanner in production yet, so reconcileOne
-	// intentionally no-ops on a terminal record (see dispatch_recovery.go).
-	// This assertion documents that gap explicitly rather than silently
-	// passing regardless of what the scan did.
+	// Bare RecoveryScanner (reconcileOne) does not run SettleDriver — that is
+	// ScanDispatchRecoveryOnBoot / scheduleSettleDrive (Task-251). This cell
+	// asserts the scanner itself leaves settle_pending intact.
 	if res.afterScan.SettlePhase != SettlePending {
-		t.Fatalf("B8: a bare recovery scan must not itself finalize settle (that is the still-unwired Task-251 driver's job) — got phase=%s", res.afterScan.SettlePhase)
+		t.Fatalf("B8: bare RecoveryScanner must not itself finalize settle — got phase=%s", res.afterScan.SettlePhase)
 	}
 }

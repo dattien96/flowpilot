@@ -3325,12 +3325,15 @@ func (s *InteractiveService) resumePendingFlowGate(runID string) {
 		repromptStep := rs.pendingGateRepromptStepID
 		repromptGen := rs.pendingGateRepromptGen
 		repromptRun := rs.id
+		blockTurnID := turnID
 		snap := sessionStateOf(rs)
 		if isRoot {
 			snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
 		}
 		s.mu.Unlock()
 		_ = s.persistProviderSession(snap)
+		// Task-251 T-2b: durable settle disposition for gate block/reprompt.
+		s.scheduleSettleAfterGateBlock(repromptRun, blockTurnID)
 		if repromptPrompt != "" && repromptStep != "" {
 			go s.startTurnClearingIntent(repromptRun, repromptStep, repromptPrompt, "reprompt", repromptGen)
 		} else {
@@ -3471,6 +3474,8 @@ func (s *InteractiveService) resumePendingFlowGate(runID string) {
 	if parentID != "" {
 		go s.releaseDependentAgents(parentID, childID, msg, at)
 	}
+	// Task-251 T-1: after gate pass + completion durable, drive settle phases.
+	s.scheduleSettleAfterGatePass(childID, turnID)
 }
 
 // ---- errors (stable codes per 04-02 error envelope) ------------------------

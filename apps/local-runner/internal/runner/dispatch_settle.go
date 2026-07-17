@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -11,10 +12,19 @@ import (
 // Doctrine: run convergent durable effects FIRST, then CAS-advance SettlePhase.
 type SettleDriver struct {
 	Store DispatchStore
-	// Optional hooks for the live gate path (wired by InteractiveService).
+	// EvaluateGate is required at settle_pending / settle_none (fail-closed).
+	// Production wires real gate state; unit tests pass a stub.
 	EvaluateGate func(ctx context.Context, runID, turnID string) (allow bool, reprompt bool, err error)
-	// OnFinalized is called after settle reaches finalized (notify waiters, etc.).
+	// Optional effect enrichers (Task-251 T-2). When set, replace default
+	// phase payloads with durable projections (cohort / release / finalizer).
+	// Default path still writes keyed RecordEffectDone with structured JSON.
+	BuildEffect func(ctx context.Context, rec DispatchRecord, next SettlePhase, kind string) (payload []byte, err error)
+	// OnFinalized is called after settle reaches finalized.
 	OnFinalized func(ctx context.Context, runID, turnID string)
+	// Test-only: called after each effect is recorded and after each phase CAS
+	// (Task-255 settle sub-barriers B8a..B8e). Nil in production.
+	testBarrierAfterEffect func(phase SettlePhase, kind string)
+	testBarrierAfterCAS    func(from, to SettlePhase)
 }
 
 // DriveSettle advances one turn's settle phases until finalized/superseded or error.
@@ -39,13 +49,29 @@ func (d *SettleDriver) DriveSettle(ctx context.Context, runID, turnID string) er
 		}
 		// Effects first (convergent).
 		for _, eff := range effects {
-			if _, err := d.Store.RecordEffectDone(ctx, runID, turnID, eff.kind, eff.payload, HashBytes(eff.payload)); err != nil {
+			payload := eff.payload
+			if d.BuildEffect != nil {
+				p, berr := d.BuildEffect(ctx, rec, next, eff.kind)
+				if berr != nil {
+					return berr
+				}
+				if len(p) > 0 {
+					payload = p
+				}
+			}
+			if _, err := d.Store.RecordEffectDone(ctx, runID, turnID, eff.kind, payload, HashBytes(payload)); err != nil {
 				return err
+			}
+			if d.testBarrierAfterEffect != nil {
+				d.testBarrierAfterEffect(rec.SettlePhase, eff.kind)
 			}
 		}
 		// Then CAS phase.
 		if _, err := d.Store.CASAdvanceSettle(ctx, runID, turnID, rev, rec.SettlePhase, next); err != nil {
 			return err
+		}
+		if d.testBarrierAfterCAS != nil {
+			d.testBarrierAfterCAS(rec.SettlePhase, next)
 		}
 		if next == SettleFinalized || next == SettleSupersededReprompt {
 			if d.OnFinalized != nil && next == SettleFinalized {
@@ -61,16 +87,25 @@ type settleEffect struct {
 	payload []byte
 }
 
+func settleEffectPayload(runID, turnID, kind string, extra map[string]any) []byte {
+	// Stable payload (no wall-clock): convergent replay must hash-equal
+	// across outage retries (RecordEffectDone equal-hash is no-op; divergent = conflict).
+	m := map[string]any{
+		"run_id":  runID,
+		"turn_id": turnID,
+		"kind":    kind,
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	b, _ := json.Marshal(m)
+	return b
+}
+
 func (d *SettleDriver) planNext(ctx context.Context, rec DispatchRecord) (SettlePhase, []settleEffect, error) {
 	switch rec.SettlePhase {
 	case SettlePending, SettleNone:
-		// Fail-closed (BUG-289 A3 residual): never default-allow when
-		// EvaluateGate is missing. A nil hook previously made every
-		// terminal+settle_pending look like a green gate and finalized
-		// without resumePendingFlowGate — wrong for reprompt/block paths.
-		// Unit tests that only exercise the phase machine must pass a stub
-		// EvaluateGate that returns (true, false, nil). Production must wire
-		// real gate re-eval (Task-251 T-1).
+		// Fail-closed: never default-allow without EvaluateGate.
 		if d.EvaluateGate == nil {
 			return "", nil, fmt.Errorf("settle: EvaluateGate required at phase %s (refuse default-allow)", rec.SettlePhase)
 		}
@@ -78,20 +113,36 @@ func (d *SettleDriver) planNext(ctx context.Context, rec DispatchRecord) (Settle
 		if err != nil {
 			return "", nil, err
 		}
-		payload := []byte(fmt.Sprintf(`{"allow":%v,"reprompt":%v}`, allow, reprompt))
+		payload := settleEffectPayload(rec.RunID, rec.TurnID, "gate_eval", map[string]any{
+			"allow": allow, "reprompt": reprompt,
+		})
 		if reprompt || !allow {
 			return SettleSupersededReprompt, []settleEffect{{kind: "gate_eval", payload: payload}}, nil
 		}
 		return SettleGateEvaluated, []settleEffect{{kind: "gate_eval", payload: payload}}, nil
 	case SettleGateEvaluated:
-		return SettleCompletionCommitted, []settleEffect{{kind: "completion_event", payload: []byte(`{"ok":true}`)}}, nil
+		payload := settleEffectPayload(rec.RunID, rec.TurnID, "completion_event", map[string]any{
+			"outcome": string(rec.State),
+		})
+		return SettleCompletionCommitted, []settleEffect{{kind: "completion_event", payload: payload}}, nil
 	case SettleCompletionCommitted:
-		return SettleGraphSettled, []settleEffect{{kind: "graph_signal", payload: []byte(`{"ok":true}`)}}, nil
+		payload := settleEffectPayload(rec.RunID, rec.TurnID, "graph_signal", map[string]any{
+			"outcome": string(rec.State),
+		})
+		return SettleGraphSettled, []settleEffect{{kind: "graph_signal", payload: payload}}, nil
 	case SettleGraphSettled:
-		// dependents_released: release manifest items already created/suppressed by stop.
-		return SettleDependentsReleased, []settleEffect{{kind: "dependents_release", payload: []byte(`{"ok":true}`)}}, nil
+		// dependents_release: stop-generation suppression recorded in payload
+		// (full CreateReleaseManifestItem is owned by live releaseDependentAgents;
+		// the effect marker is the durable audit + skip-optimization).
+		payload := settleEffectPayload(rec.RunID, rec.TurnID, "dependents_release", map[string]any{
+			"stop_outcome": rec.StopOutcome,
+		})
+		return SettleDependentsReleased, []settleEffect{{kind: "dependents_release", payload: payload}}, nil
 	case SettleDependentsReleased:
-		return SettleFinalized, []settleEffect{{kind: "finalizer", payload: []byte(`{"ok":true}`)}}, nil
+		payload := settleEffectPayload(rec.RunID, rec.TurnID, "finalizer", map[string]any{
+			"outcome": string(rec.State),
+		})
+		return SettleFinalized, []settleEffect{{kind: "finalizer", payload: payload}}, nil
 	default:
 		return "", nil, fmt.Errorf("unknown settle phase %q", rec.SettlePhase)
 	}
@@ -116,6 +167,9 @@ func (d *SettleDriver) RetrySettleWithBackoff(ctx context.Context, runID, turnID
 			return ctx.Err()
 		case <-time.After(delay):
 			delay *= 2
+			if delay > 2*time.Second {
+				delay = 2 * time.Second
+			}
 		}
 	}
 	return last
