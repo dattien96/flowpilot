@@ -491,3 +491,58 @@ func (s *InteractiveService) reconcileDispatchTurn(ctx context.Context, runID, t
 	// Leave recovery scanner (Task-250) to classify; this is a wake marker only.
 	_, _, _ = s.dispatchStore.Get(ctx, runID, turnID)
 }
+
+// ScanDispatchRecoveryOnBoot runs the CP-51 recovery scanner over every
+// non-terminal dispatch record at server startup (Task-250 T-6 wiring).
+// Best-effort, mirrors the existing ScanPersistedChatsForSummaries boot-pass
+// pattern (chat_summary.go) — call as `go interactive.ScanDispatchRecoveryOnBoot(ctx)`
+// right after SetDispatchStore in the server bootstrap.
+//
+// Scope (Codex review 2026-07-17): this closes the boot-wiring + enumeration
+// gaps — every non-terminal record across every run is now visited
+// (ScanAllRecoverable no longer misses prepared/send_claimed/send_started), and
+// prepared/send_claimed records with no pending cancel trigger a real
+// reconstruct+redispatch via ensureLiveAndRedispatch/flushDurableTurnIntents
+// instead of only being labeled "safely-retryable" with no action taken. What
+// remains out of scope (still tracked as NOT DONE in Task-250): live provider
+// reconciliation for send_started/provider_accepted — no adapter exposes a
+// query-by-operation-id, so those records correctly fall through to
+// CommitRecoveryUnknownOrRequireCancel (uncertain/cancel-required), matching
+// the Task-257 evidenced guarantee class for every enabled provider.
+func (s *InteractiveService) ScanDispatchRecoveryOnBoot(ctx context.Context) {
+	if s == nil || s.dispatchStore == nil {
+		return
+	}
+	sc := &RecoveryScanner{
+		Store:                   s.dispatchStore,
+		Owner:                   "boot-recovery-scanner",
+		EnsureLiveAndRedispatch: s.ensureLiveAndRedispatch,
+	}
+	if err := sc.ScanAllRecoverable(ctx); err != nil {
+		log.Printf("[dispatch-recovery] boot scan failed: %v", err)
+	}
+}
+
+// ensureLiveAndRedispatch reconstructs runID into RAM if it is not already
+// live, then flushes its durable turn intent — the existing mechanism
+// (flushDurableTurnIntents / startTurnClearingIntent) that redrives startTurn
+// with the run's own durable idempotency key. startTurn's own duplicate-key
+// handling (durableIdemReplaySafe / preparedReuseTurnID) is what actually
+// re-enters the launch path with the SAME TurnID once envelope/state agree —
+// this function's job is only to get the run into RAM and call that channel.
+func (s *InteractiveService) ensureLiveAndRedispatch(ctx context.Context, runID string) {
+	_ = ctx
+	if s == nil || runID == "" {
+		return
+	}
+	s.mu.Lock()
+	_, live := s.runs[runID]
+	s.mu.Unlock()
+	if !live {
+		if _, apiErr := s.loadPersistedRun(runID); apiErr != nil {
+			log.Printf("[dispatch-recovery] reconstruct run=%s: %v", runID, apiErr)
+			return
+		}
+	}
+	s.flushDurableTurnIntents(runID)
+}

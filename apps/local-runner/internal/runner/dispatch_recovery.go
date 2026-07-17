@@ -8,9 +8,21 @@ import (
 
 // RecoveryScanner reconciles non-terminal DispatchRecords under a lease (SD-24 §6.4 / Task-250).
 type RecoveryScanner struct {
-	Store  DispatchStore
-	Owner  string
-	Lease  time.Duration
+	Store DispatchStore
+	Owner string
+	Lease time.Duration
+
+	// EnsureLiveAndRedispatch, if set, is called for a run whose record was
+	// classified safely-retryable (prepared/send_claimed, no cancel pending) —
+	// SD-24's "the live path will redispatch with same TurnID+envelope" clause.
+	// It must reconstruct the run into RAM if it is not already live, then kick
+	// the existing durable-intent relaunch channel (flushDurableTurnIntents),
+	// which redrives startTurn with the record's own idempotency key — startTurn
+	// itself hash-verifies the envelope and reuses the same TurnID. Nil-safe: if
+	// unset, records are still correctly classified but no redispatch action is
+	// taken (Codex review 2026-07-17: previously this branch classified only,
+	// via a comment promising "live path will redispatch" with nothing wired).
+	EnsureLiveAndRedispatch func(ctx context.Context, runID string)
 }
 
 // ScanRun claims and classifies every recoverable record for runID.
@@ -60,6 +72,9 @@ func (sc *RecoveryScanner) reconcileOne(ctx context.Context, rec DispatchRecord)
 				cur.IntentOwnerRunID, cur.OuterIntentKey, cur.OuterIntentGen, cur.StopGeneration, PreSendStopSelf)
 			return err
 		}
+		if sc.EnsureLiveAndRedispatch != nil {
+			sc.EnsureLiveAndRedispatch(ctx, cur.RunID)
+		}
 		return nil
 	case DispatchSendStarted, DispatchProviderAccepted:
 		// No provider reconcile proof for Codex/Grok ⇒ uncertain or cancel-required.
@@ -81,22 +96,31 @@ func (sc *RecoveryScanner) reconcileOne(ctx context.Context, rec DispatchRecord)
 	}
 }
 
-// ScanAllRecoverable walks attention items for uncertain/repair (boot recovery).
+// ScanAllRecoverable walks every non-terminal record across every run (boot
+// recovery). Fixed 2026-07-17 (Codex review): this previously enumerated via
+// ListAttention, which only surfaces records already classified DispatchUncertain
+// — so prepared/send_claimed/send_started/provider_accepted records (i.e.
+// exactly the states a crash leaves most runs in) were invisible to boot
+// recovery regardless of whether anything called this method. ListRecoverable
+// with an empty runID returns every non-terminal record across every run/project
+// on both the memory and local (multi-project) stores.
 func (sc *RecoveryScanner) ScanAllRecoverable(ctx context.Context) error {
 	if sc == nil || sc.Store == nil {
 		return nil
 	}
-	items, err := sc.Store.ListAttention(ctx)
+	list, err := sc.Store.ListRecoverable(ctx, "")
 	if err != nil {
 		return err
 	}
 	seen := map[string]bool{}
-	for _, it := range items {
-		if it.Kind != "uncertain" || it.RunID == "" || seen[it.RunID] {
+	for _, rec := range list {
+		if rec.RunID == "" || seen[rec.RunID] {
 			continue
 		}
-		seen[it.RunID] = true
-		_ = sc.ScanRun(ctx, it.RunID)
+		seen[rec.RunID] = true
+		if err := sc.ScanRun(ctx, rec.RunID); err != nil {
+			log.Printf("[dispatch-recovery] boot scan run=%s: %v", rec.RunID, err)
+		}
 	}
 	return nil
 }

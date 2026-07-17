@@ -5,12 +5,12 @@
 - Document ID: `Task-250`
 - Title: `Recovery Scanner And Provider Reconciliation`
 - Phase: `task`
-- Status: `done`
+- Status: `in_progress` (audit 2026-07-17: boot enumeration + redispatch fixed; provider reconcile/attach engine (T-4) still absent — see §8 Audit Gap)
 - Owner: `FlowPilot`
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
-- Last Updated: `2026-07-16`
-- Parent Documents: [CP-51](../../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md), [SD-25 Recovery Ownership Closure](../../06-System-Tech-Design/SD-25-Recovery-Ownership-Linearization-Closure.md), [SS-17](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
+- Last Updated: `2026-07-17`
+- Parent Documents: [CP-51](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md), [SD-25 Recovery Ownership Closure](../../06-System-Tech-Design/SD-25-Recovery-Ownership-Linearization-Closure.md), [SS-17](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
 - Child Documents: `None`
 - Related Documents: [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [Task-248](./Task-248-Durable-Dispatch-Record-And-State-Machine-Core.md), [Task-249](./Task-249-Live-Dispatch-Integration-And-Stop-Fences.md)
 - Replaces: `None`
@@ -300,6 +300,12 @@ func TestOperator_ResolveUncertain_SettlementActionsAtomic(t *testing.T) { /* OR
 
 ## 8. Completion Notes
 
-- result: **done — lease-based RecoveryScanner with safely-retryable vs uncertain classification.**
-- follow-ups: remaining live crash-matrix phase-2 / real-PG optional
-- upstream docs updated: evidence + task status
+- result: **boot enumeration + redispatch fixed (2026-07-17); provider reconciliation (T-4) still NOT done.** `RecoveryScanner.ScanRun` (claim + fresh `Get` re-read) now drives real action for prepared/send_claimed via `EnsureLiveAndRedispatch`; boot enumeration and wiring both fixed per Codex review.
+- **[FIXED 2026-07-17 — Codex gap #1] Boot enumerator now finds everything:** `ScanAllRecoverable` (`dispatch_recovery.go`) now calls `Store.ListRecoverable(ctx, "")` (empty runID = every non-terminal record across every run/project on both memory and multi-project-local stores — this method already existed, just wasn't used here) instead of `ListAttention` (uncertain-only). Test: `TestScanAllRecoverable_EnumeratesEveryNonTerminalState_NotJustUncertain` proves prepared/send_claimed/send_started are all visited.
+- **[FIXED 2026-07-17 — Codex gap #2] prepared/send_claimed now really redispatches:** `RecoveryScanner.EnsureLiveAndRedispatch` (new nil-safe hook field) is called from `reconcileOne` when a prepared/send_claimed record has no pending cancel. `InteractiveService.ensureLiveAndRedispatch` (`dispatch_live.go`) reconstructs the run into RAM via the existing `loadPersistedRun` path if it is not already live, then calls the existing `flushDurableTurnIntents` — which redrives `startTurn` with the record's own durable idempotency key (`startTurn`'s own `durableIdemReplaySafe`/`preparedReuseTurnID` logic hash-verifies the envelope and reuses the same TurnID). This reuses the existing, already-correct relaunch channel rather than inventing new provider-launch plumbing. Tests: `TestRecoveryScanner_PreparedSafelyRetryable_TriggersRedispatch`, `TestRecoveryScanner_CancelRequestedSkipsRedispatch_PreSendCancelsInstead`, and the end-to-end `TestScanDispatchRecoveryOnBoot_ReconstructsAndRedispatches` (a run with NO live RAM state, simulating a real process restart, gets reconstructed and its durable intent flushed by the boot scan).
+- **[FIXED 2026-07-17 — T-6 wiring] Boot caller now exists:** `InteractiveService.ScanDispatchRecoveryOnBoot(ctx)` (`dispatch_live.go`) is called via `go interactive.ScanDispatchRecoveryOnBoot(ctx)` in `cli/root.go`, right after `SetDispatchStore`, mirroring the existing `ScanPersistedChatsForSummaries` best-effort boot-pass pattern.
+- **Still NOT done — Provider reconciliation (T-4) absent:** no `ReconcilableAdapter`/`Reconcile` hook; `send_started`/`provider_accepted` still goes straight to `CommitRecoveryUnknownOrRequireCancel` and never queries the provider (this is the CORRECT behavior per the Task-257 evidenced guarantee class — Codex/Grok/Claude have no query-by-operation-id — but the attach/reconcile machinery the store exposes for a future evidence-backed provider is still uncalled).
+- **Still NOT done — Effective-Stop authority partial:** only `PreSendStopSelf`; no parent-fence / `effectiveStopRequested` helper (doesn't exist).
+- Tests: `dispatch_recovery_test.go` now exists (4 new tests, above) plus the 2 pre-existing `TestRecoveryScanner_*` tests in `cp51_tasks_test.go`; still short of the 32 named §4.2 tests (attach-token, operator retry-as-new interplay, TP/SA proof pass-through remain unwritten). Acceptance: boot-enumeration + redispatch items now pass; provider-reconcile/attach items remain 0.
+- follow-ups: implement provider reconcile + attach engine (T-4) for any future evidence-backed provider; add `effectiveStopRequested`; extend `dispatch_recovery_test.go` toward the full §4.2 list.
+- upstream docs updated: task status (this audit + Codex-suggested fixes)

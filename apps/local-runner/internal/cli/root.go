@@ -139,6 +139,9 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				} else {
 					log.Printf("[runner] dispatch V2 kill-switch (FLOWPILOT_DISPATCH_V2=0); store still loaded for existing V2 runs; root=%s", storeDir)
 				}
+				// Task-250 T-6: reconcile every non-terminal dispatch record left by a
+				// prior crash — best-effort, mirrors ScanPersistedChatsForSummaries below.
+				go interactive.ScanDispatchRecoveryOnBoot(ctx)
 			}
 			interactive.AttachRunner(instance)
 			// flowDefStore backs both built-in mirror sync and startResolvedFlow's
