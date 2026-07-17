@@ -525,15 +525,19 @@ func (s *InteractiveService) ScanDispatchRecoveryOnBoot(ctx context.Context) {
 	if err := sc.ScanAllRecoverable(ctx); err != nil {
 		log.Printf("[dispatch-recovery] boot scan failed: %v", err)
 	}
-	// BUG-289 A3/F-7: SettleDriver has a production caller — drive settle for
-	// every terminal record still owed settle so HasNonTerminal/prune unblocks.
-	s.drivePendingSettlesOnBoot(ctx)
+	// BUG-289 A3 residual (2026-07-17 review): do NOT auto-DriveSettle here.
+	// SettleDriver without EvaluateGate defaults planNext allow=true and would
+	// silently finalize gate-owed turns without resumePendingFlowGate (wrong
+	// for reprompt/block). Real settle is Task-251 T-1/T-2/T-3. Boot only
+	// inventories unfinalized settle obligations (ListAttention surfaces them).
+	s.inventoryPendingSettlesOnBoot(ctx)
 }
 
-// drivePendingSettlesOnBoot walks ListRecoverable (includes terminal+SettleOwed
-// not yet finalized) and runs SettleDriver.DriveSettle once per turn
-// (Task-251 T-1/T-3 via BUG-289 A3/F-7).
-func (s *InteractiveService) drivePendingSettlesOnBoot(ctx context.Context) {
+// inventoryPendingSettlesOnBoot fail-closes on unfinalized settle_owed terminals:
+// log + leave phase unchanged. Never calls DriveSettle without a real
+// EvaluateGate (Task-251 T-1). Matches Task-255 B8: bare recovery must not
+// itself finalize settle.
+func (s *InteractiveService) inventoryPendingSettlesOnBoot(ctx context.Context) {
 	if s == nil || s.dispatchStore == nil {
 		return
 	}
@@ -542,14 +546,17 @@ func (s *InteractiveService) drivePendingSettlesOnBoot(ctx context.Context) {
 		log.Printf("[dispatch-settle] boot list recoverable: %v", err)
 		return
 	}
-	driver := &SettleDriver{Store: s.dispatchStore}
+	n := 0
 	for _, rec := range list {
 		if !rec.State.IsTerminal() || !rec.SettleOwed || rec.SettlePhase.IsSettleFinal() {
 			continue
 		}
-		if err := driver.DriveSettle(ctx, rec.RunID, rec.TurnID); err != nil {
-			log.Printf("[dispatch-settle] boot DriveSettle run=%s turn=%s: %v", rec.RunID, rec.TurnID, err)
-		}
+		n++
+		log.Printf("[dispatch-settle] boot leave unfinalized settle (Task-251 EvaluateGate not wired): run=%s turn=%s phase=%s",
+			rec.RunID, rec.TurnID, rec.SettlePhase)
+	}
+	if n > 0 {
+		log.Printf("[dispatch-settle] boot inventory: %d terminal+settle_owed still unfinalized (not auto-advanced)", n)
 	}
 }
 

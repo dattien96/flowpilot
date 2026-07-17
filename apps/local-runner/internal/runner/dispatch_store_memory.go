@@ -1329,6 +1329,15 @@ func (s *memoryDispatchStore) ListAttention(ctx context.Context) ([]AttentionIte
 				Reason: "stop-then-crash: provider cancel required",
 			})
 		}
+		// BUG-289 A3 residual: terminal + settle_owed unfinalized stays visible
+		// until Task-251 wires real EvaluateGate + settle driver (do not
+		// silently finalize on boot).
+		if r.State.IsTerminal() && r.SettleOwed && !r.SettlePhase.IsSettleFinal() {
+			out = append(out, AttentionItem{
+				Kind: "settle_pending", RunID: r.RunID, TurnID: r.TurnID, UpdatedAt: r.UpdatedAt,
+				Reason: "terminal settle_owed unfinalized; Task-251 EvaluateGate not wired",
+			})
+		}
 	}
 	for _, rep := range s.repairs {
 		if rep.State == "open" {

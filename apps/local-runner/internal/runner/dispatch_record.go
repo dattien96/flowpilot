@@ -287,7 +287,7 @@ type EffectDone struct {
 
 // AttentionItem surfaces uncertain dispatches and open repairs (SS-17).
 type AttentionItem struct {
-	Kind       string `json:"kind"` // uncertain|repair_required
+	Kind       string `json:"kind"` // uncertain|repair_required|cancel_required|settle_pending
 	RunID      string `json:"run_id"`
 	TurnID     string `json:"turn_id,omitempty"`
 	Reason     string `json:"reason,omitempty"`

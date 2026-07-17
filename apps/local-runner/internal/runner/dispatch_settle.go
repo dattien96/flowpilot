@@ -64,14 +64,19 @@ type settleEffect struct {
 func (d *SettleDriver) planNext(ctx context.Context, rec DispatchRecord) (SettlePhase, []settleEffect, error) {
 	switch rec.SettlePhase {
 	case SettlePending, SettleNone:
-		// gate_evaluated
-		allow, reprompt := true, false
-		if d.EvaluateGate != nil {
-			var err error
-			allow, reprompt, err = d.EvaluateGate(ctx, rec.RunID, rec.TurnID)
-			if err != nil {
-				return "", nil, err
-			}
+		// Fail-closed (BUG-289 A3 residual): never default-allow when
+		// EvaluateGate is missing. A nil hook previously made every
+		// terminal+settle_pending look like a green gate and finalized
+		// without resumePendingFlowGate — wrong for reprompt/block paths.
+		// Unit tests that only exercise the phase machine must pass a stub
+		// EvaluateGate that returns (true, false, nil). Production must wire
+		// real gate re-eval (Task-251 T-1).
+		if d.EvaluateGate == nil {
+			return "", nil, fmt.Errorf("settle: EvaluateGate required at phase %s (refuse default-allow)", rec.SettlePhase)
+		}
+		allow, reprompt, err := d.EvaluateGate(ctx, rec.RunID, rec.TurnID)
+		if err != nil {
+			return "", nil, err
 		}
 		payload := []byte(fmt.Sprintf(`{"allow":%v,"reprompt":%v}`, allow, reprompt))
 		if reprompt || !allow {

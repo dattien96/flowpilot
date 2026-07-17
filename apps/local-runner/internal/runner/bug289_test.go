@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -258,5 +259,96 @@ func TestBug289_M1_RepromptAttemptsResetFieldSemantics(t *testing.T) {
 	rs.repromptAttempts = 0
 	if rs.repromptAttempts != 0 {
 		t.Fatal("expected zero")
+	}
+}
+
+// BUG-289 A3 residual: boot inventory must NOT DriveSettle without EvaluateGate.
+// A prior wiring created SettleDriver{Store only} → planNext default-allowed and
+// silently finalized gate-owed turns. Fail-closed: phase stays settle_pending;
+// ListAttention surfaces settle_pending.
+func TestBug289_A3_BootInventoryDoesNotAutoFinalizeSettle(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryDispatchStore()
+	rec := testPrepared("run-a3", "turn-a3")
+	rec.SettleOwed = true
+	if err := store.CreatePrepared(ctx, rec, testEnvelope("run-a3", "turn-a3")); err != nil {
+		t.Fatal(err)
+	}
+	rev := int64(1)
+	var err error
+	rev, err = store.CASAdvance(ctx, "run-a3", "turn-a3", rev, DispatchPrepared, DispatchSendClaimed, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err = store.CASAdvance(ctx, "run-a3", "turn-a3", rev, DispatchSendClaimed, DispatchSendStarted, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof := TerminalEvidence{ProviderKey: "f", EvidenceKind: "x", Outcome: "completed", PayloadSHA256: "h"}
+	if _, err := store.CommitTerminalAndSettleIntent(ctx, "run-a3", "turn-a3", rev, proof, "run-a3", rec.OuterIntentKey, 1); err != nil {
+		t.Fatal(err)
+	}
+	before, _, err := store.Get(ctx, "run-a3", "turn-a3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.SettlePhase != SettlePending {
+		t.Fatalf("precondition: want settle_pending, got %s", before.SettlePhase)
+	}
+
+	svc := bug289Service(t)
+	svc.dispatchStore = store
+	svc.ScanDispatchRecoveryOnBoot(ctx)
+
+	after, _, err := store.Get(ctx, "run-a3", "turn-a3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.SettlePhase != SettlePending {
+		t.Fatalf("boot must not auto-finalize settle (EvaluateGate unwired); phase=%s", after.SettlePhase)
+	}
+
+	attn, err := store.ListAttention(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, a := range attn {
+		if a.Kind == "settle_pending" && a.RunID == "run-a3" && a.TurnID == "turn-a3" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("ListAttention must surface settle_pending for unfinalized terminal settle; got %+v", attn)
+	}
+}
+
+// BUG-289 A3 residual: EvaluateGate reprompt must not be overridden by default-allow.
+func TestBug289_A3_EvaluateGateRepromptSupersedes(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryDispatchStore()
+	rec := testPrepared("run-rp", "turn-rp")
+	rec.SettleOwed = true
+	_ = store.CreatePrepared(ctx, rec, testEnvelope("run-rp", "turn-rp"))
+	rev := int64(1)
+	rev, _ = store.CASAdvance(ctx, "run-rp", "turn-rp", rev, DispatchPrepared, DispatchSendClaimed, nil)
+	rev, _ = store.CASAdvance(ctx, "run-rp", "turn-rp", rev, DispatchSendClaimed, DispatchSendStarted, nil)
+	proof := TerminalEvidence{ProviderKey: "f", EvidenceKind: "x", Outcome: "completed", PayloadSHA256: "h"}
+	if _, err := store.CommitTerminalAndSettleIntent(ctx, "run-rp", "turn-rp", rev, proof, "run-rp", rec.OuterIntentKey, 1); err != nil {
+		t.Fatal(err)
+	}
+	d := &SettleDriver{
+		Store: store,
+		EvaluateGate: func(context.Context, string, string) (bool, bool, error) {
+			return false, true, nil // block + reprompt
+		},
+	}
+	if err := d.DriveSettle(ctx, "run-rp", "turn-rp"); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := store.Get(ctx, "run-rp", "turn-rp")
+	if got.SettlePhase != SettleSupersededReprompt {
+		t.Fatalf("want settle_superseded_reprompt, got %s", got.SettlePhase)
 	}
 }
