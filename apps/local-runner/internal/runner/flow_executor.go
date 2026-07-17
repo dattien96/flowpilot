@@ -1004,6 +1004,11 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		if target, ok := findFlowNode(nodes, targetIDs[0]); ok {
 			if canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior); ok && canonical != "agent.delegate" {
 				if spec, err := DefaultBehaviorRegistry().Resolve(canonical); err == nil && spec.Scope == BehaviorScopeInline {
+					// BUG-289 L5/F-10: mark the delegate source DONE before the
+					// early return (the multi-target path does this at :1052-1053).
+					if s.isFlowEngineDriven(parentRunID) {
+						s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
+					}
 					return s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, target, resultMessage)
 				}
 			}

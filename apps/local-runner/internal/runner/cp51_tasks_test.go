@@ -240,13 +240,45 @@ func TestSettleDriver_PhasesAdvanceToFinalized(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &SettleDriver{Store: store}
+	// EvaluateGate required (BUG-289 A3 residual fail-closed): nil hook must
+	// not default-allow. Stub allow for phase-machine unit coverage only.
+	d := &SettleDriver{
+		Store: store,
+		EvaluateGate: func(context.Context, string, string) (bool, bool, error) {
+			return true, false, nil
+		},
+	}
 	if err := d.DriveSettle(ctx, "r1", "t1"); err != nil {
 		t.Fatal(err)
 	}
 	got, _, _ := store.Get(ctx, "r1", "t1")
 	if got.SettlePhase != SettleFinalized {
 		t.Fatalf("settle phase=%s", got.SettlePhase)
+	}
+}
+
+// TestSettleDriver_NilEvaluateGateRefusesDefaultAllow: SettlePending must not
+// silently finalize when EvaluateGate is missing (BUG-289 A3 residual).
+func TestSettleDriver_NilEvaluateGateRefusesDefaultAllow(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryDispatchStore()
+	rec := testPrepared("r1", "t-nil-gate")
+	rec.SettleOwed = true
+	_ = store.CreatePrepared(ctx, rec, testEnvelope("r1", "t-nil-gate"))
+	rev := int64(1)
+	rev, _ = store.CASAdvance(ctx, "r1", "t-nil-gate", rev, DispatchPrepared, DispatchSendClaimed, nil)
+	rev, _ = store.CASAdvance(ctx, "r1", "t-nil-gate", rev, DispatchSendClaimed, DispatchSendStarted, nil)
+	proof := TerminalEvidence{ProviderKey: "f", EvidenceKind: "x", Outcome: "completed", PayloadSHA256: "h"}
+	if _, err := store.CommitTerminalAndSettleIntent(ctx, "r1", "t-nil-gate", rev, proof, "r1", rec.OuterIntentKey, 1); err != nil {
+		t.Fatal(err)
+	}
+	d := &SettleDriver{Store: store} // no EvaluateGate
+	if err := d.DriveSettle(ctx, "r1", "t-nil-gate"); err == nil {
+		t.Fatal("expected error when EvaluateGate is nil at settle_pending")
+	}
+	got, _, _ := store.Get(ctx, "r1", "t-nil-gate")
+	if got.SettlePhase != SettlePending {
+		t.Fatalf("phase must stay settle_pending, got %s", got.SettlePhase)
 	}
 }
 

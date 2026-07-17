@@ -5,7 +5,7 @@
 - Document ID: `Task-174`
 - Title: `AgentPack Install And Agent Catalog Loading`
 - Phase: `task`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `FlowPilot`
 - Created: `2026-07-01`
@@ -115,6 +115,6 @@ The current built-in agent behavior is too coupled to Go code. Chat Mode can sup
 
 ## 8. Completion Notes
 
-- result: partially implemented — corrected 2026-07-06 (previously read "implemented" without qualification). Confirmed: coder/reviewer/synthesizer (+tester) load from pack markdown, project/provider-home overrides still take precedence, tests pass (`TestAgentCatalogReturnsBuiltinsWhenEmpty`, `TestSynthesizerBuiltinIsDiscoverable`, `TestAgentCatalogProjectLocalOverridesBuiltin`, `TestSynthesizerIsOverridableByProjectLocalFile`, `TestAgentCatalogProjectLocalOverridesProviderHome`, `TestListAgentsOverHTTP`), `go build ./...` clean. Two confirmed gaps: (1) `AgentDefinition` never gets pack-provenance metadata (`source=builtin-pack`/`packId`/`packVersion`/`editable=false` per T-5) — pack-sourced and legacy-Go-sourced built-ins are indistinguishable (`Source` is `"flowpilot"` either way); (2) when pack loading fails, the fallback to the old hardcoded Go agent list is silent — no warning is logged, and no test exercises that failure path.
-- follow-ups: `Task-177`, `Task-180`, plus the two gaps above (pack-provenance metadata on `AgentDefinition`; logged warning + test for the pack-load-failure fallback).
+- result: **partially implemented — NOT done (2026-07-17 re-audit).** Confirmed: coder/reviewer/synthesizer (+tester) load from pack markdown, project/provider-home overrides still take precedence, tests pass (`TestAgentCatalogReturnsBuiltinsWhenEmpty`, `TestSynthesizerBuiltinIsDiscoverable`, `TestAgentCatalogProjectLocalOverridesBuiltin`, `TestSynthesizerIsOverridableByProjectLocalFile`, `TestAgentCatalogProjectLocalOverridesProviderHome`, `TestListAgentsOverHTTP`), `go build ./...` clean. Two confirmed gaps blocking done: (1) `AgentDefinition` never gets pack-provenance metadata (`source=builtin-pack`/`packId`/`packVersion`/`editable=false` per T-5) — pack-sourced and legacy-Go-sourced built-ins are indistinguishable (`Source` is `"flowpilot"` either way); (2) when pack loading fails, the fallback to the old hardcoded Go agent list is silent — no warning is logged, and no test exercises that failure path.
+- follow-ups: close T-5 provenance + pack-load-failure warn/test; then re-evaluate done. Related: `Task-177`, `Task-180`.
 - upstream docs updated: [CP-42](../../../07-Coding-Plan/todo/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md) progress notes and [CA-147](../../../change-audit/CA-147-agent-flow-pack-and-generic-node-behavior-refactor.md)

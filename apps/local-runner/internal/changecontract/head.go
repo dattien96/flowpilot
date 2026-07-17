@@ -69,6 +69,10 @@ func headFilePath(workspace, featureKey string) string {
 
 // LoadHead reads the stored Head for featureKey. ok=false (no error) when no
 // Head file exists yet — callers should then mint one via BuildHead.
+//
+// BUG-289 H3/F-3: corrupt JSON (torn SaveHead, Drive-sync conflict) returns
+// ok=false with nil error so callers can rebuild rather than hard-fail the
+// whole gate into a silent permanent block. Non-corrupt IO errors still fail.
 func LoadHead(workspace, featureKey string) (CanonicalHead, bool, error) {
 	data, err := os.ReadFile(headFilePath(workspace, featureKey))
 	if err != nil {
@@ -79,7 +83,9 @@ func LoadHead(workspace, featureKey string) (CanonicalHead, bool, error) {
 	}
 	var h CanonicalHead
 	if err := json.Unmarshal(data, &h); err != nil {
-		return CanonicalHead{}, false, err
+		// Corrupt / partial file — treat as missing so updateCanonicalHead can
+		// rebuild from the new contract rather than fail-closed forever.
+		return CanonicalHead{}, false, nil
 	}
 	return h, true, nil
 }
@@ -87,6 +93,9 @@ func LoadHead(workspace, featureKey string) (CanonicalHead, bool, error) {
 // SaveHead persists h to <workspace>/.flowpilot/canonical/<feature_key>.json,
 // creating the directory if needed. One file per feature — Drive-synced via
 // contextsync (Task-188), unlike Contract's local-only contracts.ndjson.
+//
+// BUG-289 H3/F-3: write via temp + Rename for crash atomicity (mirror
+// flow_context_handoff.go run_marker_secret path).
 func SaveHead(workspace string, h CanonicalHead) error {
 	path := headFilePath(workspace, h.FeatureKey)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -96,5 +105,13 @@ func SaveHead(workspace string, h CanonicalHead) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }

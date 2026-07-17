@@ -808,6 +808,16 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	if updatedAt == "" {
 		updatedAt = now
 	}
+	// BUG-289 A7/F-10: normalize agentStatus with the same rules as status so a
+	// reconstructed child does not surface a permanent stale "running"/"spawned"
+	// badge after resume (BUG-251 class on the live-reconstruct path).
+	normalizedStatus := normalizeResumedFlowStatus(st)
+	agentStatus := strings.TrimSpace(st.AgentStatus)
+	if agentStatus == "" || agentStatus == string(RunStatusRunning) || agentStatus == "spawned" ||
+		agentStatus == string(RunStatusWaitingApproval) || agentStatus == string(RunStatusWaitingQuestion) {
+		// Align non-terminal / in-flight labels with normalized run status.
+		agentStatus = string(normalizedStatus)
+	}
 	rs := &interactiveRun{
 		id:                     st.RunID,
 		projectID:              st.ProjectID,
@@ -817,7 +827,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		label:                  st.Label,
 		role:                   st.Role,
 		dependsOn:              append([]string(nil), st.DependsOn...),
-		agentStatus:            st.AgentStatus,
+		agentStatus:            agentStatus,
 		modelName:              st.ModelName,
 		providerKey:            st.ProviderKey,
 		providerSessionID:      st.ProviderSessionID,
@@ -826,7 +836,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		providerAccountID:      st.ProviderAccountID,
 		workspaceCwd:           st.WorkingDirectory,
 		runKind:                st.RunKind,
-		status:                 normalizeResumedFlowStatus(st),
+		status:                 normalizedStatus,
 		createdAt:              st.StartedAt,
 		updatedAt:              updatedAt,
 		lastPrompt:             st.LastPrompt,
@@ -945,6 +955,15 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 				if rs.events[i].Type == EventFlowContextPackage && rs.events[i].FlowContextPackage != nil {
 					pkg := *rs.events[i].FlowContextPackage
 					rs.planContextPackage = &pkg
+					break
+				}
+			}
+			// BUG-289 A4/F-8: restore flowValidationRetryState so max-retry cap
+			// survives restart (previously always nil → RetryAttempt reset to 0).
+			for i := len(rs.events) - 1; i >= 0; i-- {
+				if rs.events[i].Type == EventFlowValidationRetry && rs.events[i].FlowValidationRetryState != nil {
+					st := *rs.events[i].FlowValidationRetryState
+					rs.flowValidationRetryState = &st
 					break
 				}
 			}
@@ -1568,6 +1587,11 @@ func (s *InteractiveService) startTurnClearingIntent(runID, stepID, prompt, kind
 
 // notifyTurnIdle re-flushes durable intents after a turn or gate becomes idle
 // so conflicted deliveries are not stranded for process restart (V10R4 P1).
+//
+// BUG-289 H5/F-5: also drains pendingHubReinvoke after the post-turn gate
+// releases turnInFlight. runTurn's pre-gate drain can re-defer during the gate
+// window; without this second drain the notify reinvoke is stranded while the
+// loop stays "running".
 func (s *InteractiveService) notifyTurnIdle(runID string) {
 	if strings.TrimSpace(runID) == "" {
 		return
@@ -1582,11 +1606,32 @@ func (s *InteractiveService) notifyTurnIdle(runID string) {
 	busy := rs.turnInFlight || rs.pendingFlowGateSettle || rs.postTurnGateCancel != nil
 	hasIntent := strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" ||
 		strings.TrimSpace(rs.pendingResumePrompt) != ""
+	// Hub reinvoke drain (mirror runTurn :5280-5301) when idle.
+	pendingHubReinvoke := !busy && rs.parentRunID == "" && rs.pendingHubReinvoke
+	pendingHubReinvokePrompt := ""
+	if pendingHubReinvoke {
+		rs.pendingHubReinvoke = false
+		pendingHubReinvokePrompt = rs.pendingHubReinvokePrompt
+		rs.pendingHubReinvokePrompt = ""
+		touchHubProgressLocked(rs)
+	}
 	s.mu.Unlock()
+
+	if pendingHubReinvoke {
+		if pendingHubReinvokePrompt != "" {
+			go s.maybeAutoReinvokeHubWithPrompt(runID, pendingHubReinvokePrompt)
+		} else {
+			go s.maybeAutoReinvokeHub(runID)
+		}
+	}
 	if busy || !hasIntent {
+		if !busy {
+			s.maybeScheduleHubStallCheck(runID)
+		}
 		return
 	}
 	go s.flushDurableTurnIntents(runID)
+	s.maybeScheduleHubStallCheck(runID)
 }
 
 // reconstructPendingChildSessions loads child sessions under parentRunID that

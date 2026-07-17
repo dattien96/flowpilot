@@ -258,7 +258,7 @@ func (s *localDispatchStore) Compact(ctx context.Context, terminalTTL time.Durat
 			return err
 		}
 	}
-	// clears, effects, repairs
+	// clears, effects, releases, repairs, resolutions (BUG-289 L1/F-11)
 	for ck := range s.clears {
 		ll := dispatchLogLine{
 			Kind: "clear", Seq: s.seq, At: s.clockStr(),
@@ -270,6 +270,41 @@ func (s *localDispatchStore) Compact(ctx context.Context, terminalTTL time.Durat
 			return err
 		}
 	}
+	for _, eff := range s.effects {
+		if eff == nil {
+			continue
+		}
+		ll := dispatchLogLine{Kind: "effect", Seq: s.seq, At: s.clockStr(), Effect: eff}
+		raw, _ := json.Marshal(ll)
+		if _, err := f.Write(append(raw, '\n')); err != nil {
+			_ = f.Close()
+			return err
+		}
+	}
+	for _, rel := range s.releases {
+		if rel == nil {
+			continue
+		}
+		ll := dispatchLogLine{Kind: "release", Seq: s.seq, At: s.clockStr(), Release: rel}
+		raw, _ := json.Marshal(ll)
+		if _, err := f.Write(append(raw, '\n')); err != nil {
+			_ = f.Close()
+			return err
+		}
+	}
+	for _, rep := range s.repairs {
+		if rep == nil {
+			continue
+		}
+		ll := dispatchLogLine{Kind: "repair", Seq: s.seq, At: s.clockStr(), Repair: rep}
+		raw, _ := json.Marshal(ll)
+		if _, err := f.Write(append(raw, '\n')); err != nil {
+			_ = f.Close()
+			return err
+		}
+	}
+	// resolutions are co-committed with record lines; no separate Kind today.
+	// Effects/releases/repairs above close the Compact gap for L1.
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
 		return err

@@ -210,6 +210,8 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	// V9-10/V9-27: ordinary Failed vs true Regressed (separate fields).
 	// suite_failed only when baseline was green and suite is now red without
 	// named regressed tests â€” not when baseline itself is already red.
+	// BUG-289 M6/F-12: filter Failed by IsOverridden (same as regressed path)
+	// so human-agreed test overrides do not keep blocking via r-tests.
 	var failedTests, regressedTests []string
 	if oracle.EnvError == "" {
 		if oracle.HasRegression {
@@ -217,8 +219,13 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		}
 		if !oracle.SuitePassed && !oracle.HasRegression {
 			if len(oracle.Failed) > 0 {
-				failedTests = append(failedTests, oracle.Failed...)
+				for _, t := range oracle.Failed {
+					if !flowgate.IsOverridden(overrides, t) {
+						failedTests = append(failedTests, t)
+					}
+				}
 			} else if baseline != nil && baseline.SuitePassed {
+				// Coarse-mode suite_failed cannot be per-test overridden.
 				failedTests = []string{"suite_failed"}
 			}
 		}
@@ -305,6 +312,27 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		if !s.withGateEpochDurable(runID, epoch, func() error {
 			return commitChangeContract(cwd, prepared)
 		}) {
+			// BUG-289 H3/F-3: do not silent-block — emit + escalate like sibling
+			// fail-closed sites (diff observe / baseline).
+			msg := "gate change-contract/head commit failed (canonical head unreadable or unwritable); blocked fail-closed"
+			if s.gateEpochStillValid(runID, epoch) {
+				s.mu.Lock()
+				if rs2 := s.runs[runID]; rs2 != nil && rs2.gateEpoch == epoch {
+					s.emitLocked(rs2, ProviderEvent{
+						Type:           EventFlowGateViolation,
+						ProviderTurnID: turnID,
+						Error:          msg,
+						Status:         "block",
+					})
+				}
+				s.mu.Unlock()
+				if _, err := s.applyFlowControl(runID, FlowControlInput{
+					Status:  "escalate",
+					Summary: "flow gate block: " + msg,
+				}); err != nil {
+					log.Printf("[gate] escalate after commitChangeContract failure: %v", err)
+				}
+			}
 			return true
 		}
 		return false
@@ -675,7 +703,12 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			}
 			if !oracle.SuitePassed && !oracle.HasRegression {
 				if len(oracle.Failed) > 0 {
-					failedTests = append(failedTests, oracle.Failed...)
+					// BUG-289 M6/F-12: honor IsOverridden on child failedTests path.
+					for _, t := range oracle.Failed {
+						if !flowgate.IsOverridden(overrides, t) {
+							failedTests = append(failedTests, t)
+						}
+					}
 				} else if baseline != nil && baseline.SuitePassed {
 					failedTests = []string{"suite_failed"}
 				}
@@ -722,6 +755,26 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			if !s.withGateEpochDurable(runID, epoch, func() error {
 				return commitChangeContract(cwd, prepared)
 			}) {
+				// BUG-289 H3/F-3: child path — emit + parent escalate (not silent).
+				msg := "gate change-contract/head commit failed (canonical head unreadable or unwritable); blocked fail-closed"
+				if s.gateEpochStillValid(runID, epoch) {
+					s.mu.Lock()
+					if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
+						s.emitLocked(r, ProviderEvent{
+							Type:           EventFlowGateViolation,
+							ProviderTurnID: turnID,
+							Error:          msg,
+							Status:         "block",
+						})
+					}
+					s.mu.Unlock()
+					if parentID != "" {
+						_, _ = s.applyFlowControl(parentID, FlowControlInput{
+							Status:  "escalate",
+							Summary: "flow gate block on coding step: " + msg,
+						})
+					}
+				}
 				return true
 			}
 		} else if !s.gateEpochStillValid(runID, epoch) {
@@ -743,6 +796,16 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	if len(pathsToHold) == 0 {
 		pathsToHold = changedPathsFromDiff(diff)
 	}
+	// Extract r-reg options for child decision card (BUG-289 L3/F-12).
+	var gateOptions []string
+	var gateRegressedTests []string
+	for _, v := range violations {
+		if v.Rule.ID == "r-reg" && len(v.Options) > 0 {
+			gateOptions = v.Options
+			gateRegressedTests = v.RegressedTests
+			break
+		}
+	}
 	s.mu.Lock()
 	rs = s.runs[runID]
 	if rs == nil || rs.gateEpoch != epoch {
@@ -752,11 +815,21 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	if len(pathsToHold) > 0 {
 		rs.pendingGateCodePaths = append([]string(nil), pathsToHold...)
 	}
+	// BUG-289 L3/F-12: populate pendingGateBlock/GateOptions on child regression
+	// escalate so the user gets the same keep-test card as the root path.
+	if result.Action == "block" && len(gateOptions) > 0 {
+		rs.pendingGateBlock = &gateBlockInfo{
+			regressedTests: gateRegressedTests,
+			stepID:         rs.lastTurnStepID,
+		}
+	}
 	s.emitLocked(rs, ProviderEvent{
-		Type:           EventFlowGateViolation,
-		ProviderTurnID: turnID,
-		Error:          result.Message,
-		Status:         result.Action,
+		Type:               EventFlowGateViolation,
+		ProviderTurnID:     turnID,
+		Error:              result.Message,
+		Status:             result.Action,
+		GateOptions:        gateOptions,
+		GateRegressedTests: gateRegressedTests,
 	})
 	s.mu.Unlock()
 	switch result.Action {

@@ -92,18 +92,20 @@ func TestScanAllRecoverable_EnumeratesEveryNonTerminalState_NotJustUncertain(t *
 	}
 
 	// r-started (send_started/provider_accepted) has no provider reconcile proof
-	// (Task-257 evidenced guarantee class), so it falls through to
-	// CommitRecoveryUnknownOrRequireCancel — never redispatched, never silently
-	// dropped either. Confirm it was actually visited (not skipped like before).
+	// (Task-257 evidenced guarantee class), so it must fall through to
+	// CommitRecoveryUnknownOrRequireCancel and land on DispatchUncertain — never
+	// redispatched, never silently left at send_started (that would be a
+	// lost-forever ambiguous turn no operator ever sees), never silently
+	// terminalized (that would risk a false completion with no proof).
 	got, _, err := store.Get(ctx, "r-started", "t1")
 	if err != nil {
 		t.Fatalf("Get r-started: %v", err)
 	}
-	if got.State == DispatchSendStarted && !got.State.IsTerminal() {
-		// Still non-terminal is expected (uncertain/cancel-required, not
-		// terminalized) — the key assertion is that ScanRun actually claimed and
-		// processed it, not that it changed to a specific state.
-		t.Logf("r-started state after scan: %s (expected non-terminal, reconcile pending real proof)", got.State)
+	if got.State != DispatchUncertain {
+		t.Fatalf("r-started: want state=%s after no-adapter recovery fallback, got=%s (must not be left dangling at send_started, and must not be silently terminalized)", DispatchUncertain, got.State)
+	}
+	if got.Revision <= 1 {
+		t.Fatalf("r-started: want revision bumped by the uncertain CAS, got revision=%d", got.Revision)
 	}
 }
 
@@ -225,5 +227,56 @@ func TestScanDispatchRecoveryOnBoot_ReconstructsAndRedispatches(t *testing.T) {
 	svc.mu.Unlock()
 	if !live {
 		t.Fatal("ScanDispatchRecoveryOnBoot did not reconstruct the crashed run into RAM")
+	}
+}
+
+// TestRecovery_UncertainHoldsIntent_NeverClearsNeverRedispatches proves CP-51
+// ledger row Rr3: once a sent-but-unprovable turn is classified uncertain, its
+// outer intent is never cleared (an operator must resolve it — SS-17) and it
+// is never redispatched, including across a second, idempotent scan pass.
+func TestRecovery_UncertainHoldsIntent_NeverClearsNeverRedispatches(t *testing.T) {
+	store := NewMemoryDispatchStore()
+	ctx := context.Background()
+
+	rec := testPrepared("r-sent", "t1")
+	env := testEnvelope("r-sent", "t1")
+	if err := store.CreatePrepared(ctx, rec, env); err != nil {
+		t.Fatalf("CreatePrepared: %v", err)
+	}
+	rev, err := store.CASAdvance(ctx, "r-sent", "t1", 1, DispatchPrepared, DispatchSendClaimed, nil)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := store.CASAdvance(ctx, "r-sent", "t1", rev, DispatchSendClaimed, DispatchSendStarted, nil); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	var redispatched []string
+	sc := &RecoveryScanner{
+		Store: store,
+		Owner: "test-scanner",
+		EnsureLiveAndRedispatch: func(_ context.Context, runID string) {
+			redispatched = append(redispatched, runID)
+		},
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := sc.ScanRun(ctx, "r-sent"); err != nil {
+			t.Fatalf("ScanRun pass %d: %v", i, err)
+		}
+		if len(redispatched) != 0 {
+			t.Fatalf("pass %d: uncertain-bound record must never be redispatched, got %v", i, redispatched)
+		}
+		got, _, err := store.Get(ctx, "r-sent", "t1")
+		if err != nil {
+			t.Fatalf("Get pass %d: %v", i, err)
+		}
+		if got.State != DispatchUncertain {
+			t.Fatalf("pass %d: want state=%s, got=%s", i, DispatchUncertain, got.State)
+		}
+		if got.IntentOwnerRunID != rec.IntentOwnerRunID || got.OuterIntentKey != rec.OuterIntentKey || got.OuterIntentGen != rec.OuterIntentGen {
+			t.Fatalf("pass %d: outer intent must survive uncertain classification untouched, got owner=%q key=%q gen=%d",
+				i, got.IntentOwnerRunID, got.OuterIntentKey, got.OuterIntentGen)
+		}
 	}
 }

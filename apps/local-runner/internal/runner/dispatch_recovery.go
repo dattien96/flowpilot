@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 )
@@ -83,8 +84,12 @@ func (sc *RecoveryScanner) reconcileOne(ctx context.Context, rec DispatchRecord)
 			return err
 		}
 		if decision == RecoveryCancelRequired {
-			// Provider cancel would go here; without attach capability, pre-send is not legal.
-			// Hold for operator via re-attempt after cancel.
+			// BUG-289 A2/F-7: durable marker so ListAttention / operators see
+			// stop-then-crash stranded sends (not only log.Printf each boot).
+			reason := fmt.Sprintf("cancel_required: send_started/provider_accepted after stop (turn=%s)", cur.TurnID)
+			if _, oerr := sc.Store.OpenRepair(ctx, cur.RunID, reason, nil, ""); oerr != nil {
+				log.Printf("[dispatch-recovery] open repair for cancel_required run=%s turn=%s: %v", cur.RunID, cur.TurnID, oerr)
+			}
 			log.Printf("[dispatch-recovery] cancel required run=%s turn=%s", cur.RunID, cur.TurnID)
 		}
 		return nil

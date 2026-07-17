@@ -141,11 +141,11 @@ func (m *multiProjectDispatchStore) forRun(runID string) (*localDispatchStore, e
 		return m.openProjectLocked(pid)
 	}
 	for pid, st := range m.byProject {
-		for _, r := range st.records {
-			if r != nil && r.RunID == runID {
-				m.runProject[runID] = pid
-				return st, nil
-			}
+		// BUG-289 M3/F-11: scan st.records under the embedded store mutex —
+		// m.mu alone does not protect concurrent CAS writers on st.records.
+		if st.findRunLocked(runID) {
+			m.runProject[runID] = pid
+			return st, nil
 		}
 	}
 	entries, _ := os.ReadDir(m.root)
@@ -157,14 +157,28 @@ func (m *multiProjectDispatchStore) forRun(runID string) (*localDispatchStore, e
 		if err != nil {
 			continue
 		}
-		for _, r := range st.records {
-			if r != nil && r.RunID == runID {
-				m.runProject[runID] = sanitizeProjectID(e.Name())
-				return st, nil
-			}
+		if st.findRunLocked(runID) {
+			m.runProject[runID] = sanitizeProjectID(e.Name())
+			return st, nil
 		}
 	}
 	return nil, fmt.Errorf("%w: no project shard for run %s", ErrNotFound, runID)
+}
+
+// findRunLocked reports whether any record belongs to runID.
+// Takes the store's own mu (caller may hold multiProjectDispatchStore.mu).
+func (s *localDispatchStore) findRunLocked(runID string) bool {
+	if s == nil || s.memoryDispatchStore == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.records {
+		if r != nil && r.RunID == runID {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *multiProjectDispatchStore) bindRun(projectID, runID string) {

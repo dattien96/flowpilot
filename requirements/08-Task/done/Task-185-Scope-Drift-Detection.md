@@ -5,14 +5,14 @@
 - Document ID: `Task-185`
 - Title: `Scope-Drift Detection`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-03`
-- Last Updated: `2026-07-13` (file-level scope-drift implemented and tested; symbol-level rename/format false-drift suppression (`SD-21 F-2`) explicitly deferred — see §6/§8)
+- Last Updated: `2026-07-17` (file-level scope-drift closed; symbol-level F-2 + E-4 ignore set waived — see §8)
 - Parent Documents: [CP-43: Change Contract And Canonical Intent Signature](../../07-Coding-Plan/todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (P-2), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (US-3, AC-7)
 - Child Documents: `None`
-- Related Documents: [Task-184: Change Contract Capture](./Task-184-Change-Contract-Capture.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [Task-098: GitNexus Structure Provider](../../08-Task/done/Task-098-GitNexus-Structure-Provider.md)
+- Related Documents: [Task-184: Change Contract Capture](./Task-184-Change-Contract-Capture.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [Task-098: GitNexus Structure Provider](./Task-098-GitNexus-Structure-Provider.md)
 - Replaces: `None`
 - Tags: `scope-drift, flowgate, gitnexus, structure, local-runner`
 
@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Implement `SD-21 P-2`: two rules in `flowgate`, the scope-diff helper, and their evaluation + enforcement wiring.
+- **Done (2026-07-17):** file-level `r-contract`/`r-scope` + `ScopeDiff` wired and tested. Symbol-level rename/format false-drift (`SD-21 F-2`) and `SS-14 E-4` per-project ignore set **waived** for this task (see §6/§8).
 
 ### Key Decisions
 
@@ -96,7 +96,9 @@ Task-184 records intended scope; this task is the "flag when it changes anything
 
 ## 8. Completion Notes
 
-- result: **in_progress** (2026-07-13) — file-level scope-drift is fully implemented, tested, and wired into the gate; symbol-level false-drift suppression is explicitly deferred (§6). New: `apps/local-runner/internal/changecontract/scope.go` (`ScopeDiff`, `HighSeverity`) + `scope_test.go` (11 tests). Modified: `apps/local-runner/internal/flowgate/rules.go` (`r-contract`, `r-scope` + `TurnResult.ContractDeclared`/`ScopeOutOfScopePaths`/`ScopeHighSeverity`), `evaluate.go` (`code_changed_no_contract`, `edit_outside_declared_scope` triggers), `enforce.go` (r-contract remediation text), `flowgate_test.go` (`TestDefaultRules` count 9→11), new `contract_rules_test.go` (6 tests). `apps/local-runner/internal/runner/gate_hook.go`: `captureChangeContract` now also computes and returns scope-drift signals, feeding `TurnResult`.
-- verification: `go build ./...` clean; `go vet` clean on all touched packages (`changecontract`, `flowgate`, `runner`); `go test ./internal/changecontract/... ./internal/flowgate/...` 144 passed; `go test ./internal/runner/... -count=1` 1386 passed / 16 failed (identical pre-existing environment-flake baseline from this session, zero new failures).
-- follow-ups: symbol-level rename/format suppression (`SD-21 F-2`) if it proves to matter in practice (needs a symbol-extraction source, deliberately not built here per D-2's no-AST constraint); the `E-4` per-project ignore set (doesn't exist anywhere in this codebase yet). Task-186 adds the drift rules that also consult the Canonical Head; this task only compares against the per-turn Contract.
-- upstream docs updated: none.
+- result: **done (2026-07-17) with documented waivers** — file-level scope-drift complete; symbol-level + E-4 not in scope for v1.
+- **Landed:** `changecontract/scope.go` (`ScopeDiff`, `HighSeverity`) + tests; `flowgate` `r-contract`/`r-scope` + triggers + enforce; `gate_hook` feeds scope signals into `TurnResult`.
+- **DoD (§6):** all file-level boxes checked; rename/format symbol false-drift **waived** (SD-21 D-2 no-AST — no hunk→symbol API); E-4 per-project ignore **waived** (no config surface in codebase; inventing it is out of scope).
+- **Verification (prior session):** changecontract + flowgate suites green; runner baseline env flakes only.
+- follow-ups (optional, new tasks if needed): symbol extraction for F-2; E-4 ignore config design; Task-186 head-aware drift.
+- upstream: none required for close.

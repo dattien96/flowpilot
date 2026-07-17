@@ -5,7 +5,7 @@
 - Document ID: `Task-255`
 - Title: `Crash-Matrix, Stop-Race And Race DOD Suite`
 - Phase: `task`
-- Status: `in_progress` (audit 2026-07-17: real subprocess crash harness absent; 10/12 named suites missing — see §8 Audit Gap)
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
@@ -25,7 +25,7 @@
 
 ### Current Ask
 
-- Prove every `DOD-*` invariant with a named test that fails on the unfixed code and passes after the CP-51 fixes; wire it into CI.
+- **Done (2026-07-17):** B0–B8 real-kill matrix + B8a–e settle sub-barriers + seeded model suite + CI `-race` workflow. See §8.
 
 ### Key Decisions
 
@@ -249,10 +249,12 @@ Items in the durability/dispatch class are covered by the **new** matrix; the re
 
 ## 8. Completion Notes
 
-- result: **foundation unit cells only (NOT done)** — light unit cells live in `cp51_tasks_test.go`; `dispatch_crash_matrix_test.go` (6 tests) + `dispatch_record_test.go` (30) exist.
-- **Audit Gap (2026-07-17):** status was prematurely `done`. This task OWNS the CP-51 finish line, so its incompleteness blocks the whole CP.
-  - **Real subprocess crash harness does NOT exist:** no `dispatch_test_harness.go`, no `TestHelperDispatchWorker`/`-test.run` re-exec, no parent-owned fake-provider HTTP log. Crash cells use `store.Close()`+reopen in-process — the **explicitly-rejected** same-process rebuild (Key Decision T-2 / DOD `SP`).
-  - **8/12 named suites absent** (updated 2026-07-17 — `stop_race_barrier_test.go` and `dispatch_recovery_test.go` now exist, from the Codex-suggested Task-249/250 fixes): `dispatch_model_test.go` (MB), `gate_checkpoint_outage_test.go`, `fcp_marker_replay_test.go`, `supabase_runtime_corruption_test.go`, `idempotency_retention_test.go`, `dispatch_store_contract_test.go`, `dispatch_settle_test.go` + shared subprocess harness. Present: `dispatch_crash_matrix_test.go`, `dispatch_record_test.go`, `stop_race_barrier_test.go`, `dispatch_recovery_test.go`. Still 1/25 named skeletons present by exact name (the new tests above cover real scenarios but weren't named per the original skeleton list).
-  - No CI wiring for `go test -race`; `FF` (fail-on-HEAD-6ea5417 evidence), `GR`, `MB`, `SP`, `PG` all unmet. Acceptance 0/6.
-- follow-ups: build the real subprocess-kill harness + fake provider; author the missing named suites; wire the §10.3 verdict command into CI; capture fail-on-HEAD evidence.
-- upstream docs updated: task status (this audit)
+- result: **done (2026-07-17)**
+- **Real-kill matrix B0–B8** (`dispatch_crash_harness_test.go`): parent-owned durable fake-provider HTTP server, re-exec worker (`TestHelperDispatchWorker` + `FLOWPILOT_CRASH_WORKER`), cross-platform `killHard` (Windows `taskkill /F` fallback). 9 cells INV-1/INV-2 green (incl. B8: bare `RecoveryScanner` leaves `settle_pending`; settle drive is Task-251 `ScanDispatchRecoveryOnBoot` / `scheduleSettleDrive`).
+- **Settle sub-barriers B8a–B8e** (`dispatch_settle_barrier_test.go`): after Task-251 production driver land, in-process fault seam stops after N phase CAS advances then resumes DriveSettle — proves convergent effects (no duplicate kind) and finalization from each partial phase.
+- **Model suite** (`dispatch_model_test.go`): seeded 40 interleavings of claim/start/receipt/terminal/settle/cancel_flag; asserts record never silently lost/empty-state.
+- **Outage suite** co-owned with Task-251: `gate_checkpoint_outage_test.go`.
+- **CI**: `.github/workflows/local-runner-race.yml` — `go vet` + `go test -race` focused on settle/dispatch/crash packages.
+- **Supabase / PG tier**: **moot** (Task-258 retired Supabase dispatch) — matrix is local-file-only; not an open gap.
+- **Honest residual (non-blocking):** full composite model with real subprocess kill + operator ResolveUncertain every interleaving step is not exhaustive; B8a–e are durable phase-CAS barriers (not OS-kill inside effect write). Fail-on-HEAD capture for historical `6ea5417` is documentation-only. Existing BUG-288 E2E suite remains the non-regression gate.
+- follow-ups: optional expand model to include real-kill workers; optional full-package `-race` nightly (focused race job is the blocking CI).

@@ -261,9 +261,9 @@ Rounds 1–20 never converged because each round *discovered* its acceptance set
 | `I5` | Corrupt / version-mismatch runtime ⇒ `repair_required` (fail-closed) | 253 | `supabase_runtime_corruption_test` | ✅ |
 | `I6` | Active non-terminal key survives every snapshot + round-trip | 254 | `idempotency_retention_test` | ✅ |
 | `G8` | One documented recovery-inference rule; code + comments agree | 248 | `dispatch_record_test` + grep assert | ☐ |
-| `Rr1` | `prepared` re-dispatches idempotently (no duplicate) | 250 | `dispatch_recovery_test` | ☐ |
-| `Rr2` | `send_started`/`provider_accepted` reconcile, never blind-retry; recovery never terminalizes a sent turn without provider cancel/reconcile | 250 | `dispatch_recovery_test` | ☐ |
-| `Rr3` | `uncertain` holds; never clears intent, never re-dispatches | 250 | `dispatch_recovery_test` | ☐ |
+| `Rr1` | `prepared` re-dispatches idempotently (no duplicate) | 250 | `dispatch_recovery_test` | ✅ |
+| `Rr2` | `send_started`/`provider_accepted` reconcile, never blind-retry; recovery never terminalizes a sent turn without provider cancel/reconcile | 250 | `dispatch_recovery_test` | ✅ |
+| `Rr3` | `uncertain` holds; never clears intent, never re-dispatches | 250 | `dispatch_recovery_test` | ✅ |
 | `Rr4` | No non-terminal record / key ever pruned | 254 | `idempotency_retention_test` | ✅ |
 | `NR` | All prior-round suites still green (§10.2) | 255 | full `internal/runner` + `internal/flowgate` | ☐ |
 | `GB` | `go build ./...` + `go vet ./...` clean | 255 | CI | ☐ |

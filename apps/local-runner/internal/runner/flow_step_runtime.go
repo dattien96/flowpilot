@@ -484,9 +484,22 @@ func (s *InteractiveService) reconcileChildRunsOnFlowDone(parentRunID string) {
 	if !changed {
 		return
 	}
+	// BUG-289 M5/F-10: apply loop 1's status filter to loop 2 — never promote
+	// a Failed child panel summary to Completed (inverse of BUG-257).
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		summary, ok := s.agentOrchestrator.currentSummary(parentRunID, childID)
 		if !ok || summary.Status == RunStatusCompleted {
+			continue
+		}
+		if summary.Status == RunStatusFailed || summary.Status == RunStatusCancelled {
+			continue
+		}
+		// Also skip when the live run is already terminal-failed.
+		s.mu.Lock()
+		child := s.runs[childID]
+		failedLive := child != nil && (child.status == RunStatusFailed || child.status == RunStatusCancelled)
+		s.mu.Unlock()
+		if failedLive {
 			continue
 		}
 		summary.Status = RunStatusCompleted
