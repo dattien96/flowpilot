@@ -423,6 +423,42 @@ func TestResumeFlowWithFeedbackRetriesPendingHubNotifyPromptInsteadOfGeneric(t *
 	}
 }
 
+// TestResumeFlowWithFeedbackClearsStaleHubPendingGateSettle is the CP-51 A1
+// (run-10389) regression: hub could keep pendingFlowGateSettle from the entry
+// turn while the real gate lived on the child. Continue then failed startTurn
+// with gate_in_progress ("post-turn gate still running").
+func TestResumeFlowWithFeedbackClearsStaleHubPendingGateSettle(t *testing.T) {
+	svc, runID := newFlowTestRun(t)
+	svc.mu.Lock()
+	rs := svc.runs[runID]
+	rs.autoOrchestrate = true
+	rs.pendingFlowGateSettle = true
+	rs.pendingFlowGateTurnID = "turn-stale-entry"
+	rs.pendingFlowGateFinalMsg = "stale"
+	rs.postTurnGateCancel = nil
+	svc.mu.Unlock()
+	svc.agentOrchestrator.mutateLoop(runID, func(st AgentLoopState) AgentLoopState {
+		st.Status = "blocked"
+		st.BlockReason = "escalate"
+		return st
+	})
+
+	if _, err := svc.resumeFlowWithFeedback(runID, "retry please"); err != nil {
+		t.Fatalf("resumeFlowWithFeedback: %v", err)
+	}
+
+	svc.mu.Lock()
+	still := svc.runs[runID].pendingFlowGateSettle
+	tid := svc.runs[runID].pendingFlowGateTurnID
+	svc.mu.Unlock()
+	if still {
+		t.Fatal("stale hub pendingFlowGateSettle must be cleared on Continue when no live postTurnGateCancel")
+	}
+	if tid != "" {
+		t.Fatalf("pendingFlowGateTurnID = %q, want cleared", tid)
+	}
+}
+
 // TestComposeHubNotifyPromptInstructsFillingTemplateFromRealResults is the
 // BUG-286 (Fix B) regression: the write-contract used to show the Message
 // Template verbatim with no instruction on what to DO with it, so a receiving

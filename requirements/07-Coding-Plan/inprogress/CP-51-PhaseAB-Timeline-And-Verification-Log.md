@@ -290,6 +290,75 @@ turns: prompt "hello grok" + grok_session 019f6d19-5417-7fb3-8421-2fb5a8dfdc76
 
 **Gợi ý cải thiện log (product, OOS CP-51):** truncate `available_commands` / settings frames; log summary thay vì full JSON; debug flag cho raw ACP; warm process pool; optional skip MCP cho chat-only projects.
 
+### 3.6 Live **A1** — run-10389 (Review Loop) — 2026-07-17 — **PARTIAL / FAIL**
+
+**Setup:** project `db51ec26-…` / cwd `D:\working\gate-sandbox`. Chat Mode → bug → **Review Loop**. Prompt: `fix bug 1+1 != 2`. Hub `run-10389` (Grok), coder child `run-10394` (Claude Haiku). Screenshot: `D:\working\gate-sandbox\Screenshot 2026-07-17 152139.png`.
+
+#### Timeline (feature log + step-transitions + dispatch)
+
+| t (local +07) | Event | Ý nghĩa |
+|---------------|--------|---------|
+| 15:19:24 | `flow_start_resolved` review-loop 4 nodes / 7 edges | Resolve OK |
+| 15:19:24 | spawn `coder` → `run-10394` | Entry node OK (A1 partial) |
+| 15:19:25 | coder V2 `turn-10399` prepared→…→`terminal_completed` | CP-51 child turn OK |
+| 15:19:49 | `flow_control_escalate` → synthesis `WAITING_USER_APPROVAL` | Gate block on coding step |
+| 15:20:12 | Continue → `hub_reinvoke_start_failed` | `post-turn gate still running` |
+| 15:20:58 | coder `turn-10437` (after “Fix the code”) terminal | Gate decision path ran |
+| 15:21:27 | coder `pending_flow_gate_settle=true`; xin write `calc.go` | Permission + settle window |
+| 15:21:28 | escalate **#2** (+ “no progress since last continue”) | Dual UI lần 2 |
+| 15:22:30 | Continue lại → same `hub_reinvoke_start_failed` | Hang dead-end |
+
+**Gate reason (bundled):** no change-audit · no bugfix doc · inferred Change Contract · `Tests failed: TestAdd`. Sandbox still intentional: `Add` returns `a + b - 156`.
+
+#### A1 checklist score
+
+| Expect A1 | Result |
+|-----------|--------|
+| Review Loop start | ☑ |
+| Hub + coder child (not orphan only) | ☑ |
+| Reviewer slots / spawn | ☐ (chưa tới `coder.done` — graph đúng nhưng board chưa full) |
+| Flow healthy after spawn | ☒ dual UI + reinvoke fail + hang |
+
+→ **Không tick ☐ A1** cho đến retest sau fix.
+
+#### Ba lỗi operator quan sát + root cause
+
+1. **Dual gate UI ×2** — `FlowAwaitingUserCard` (“Needs your decision”) + `GateBlockModal` (“Regression gate — tests broke”) cùng lúc.  
+   Backend: child coding gate vừa set `pendingGateBlock`/options **vừa** `applyFlowControl(escalate)` lên hub. Desktop render cả hai.  
+   **Fix (CA-354):** nếu child đã có r-reg `gateOptions` → **không** escalate hub; chỉ decision card. Desktop: ẩn FlowAwaitingUserCard khi `gateBlock` mở.
+
+2. **Hang coder / Continue vô dụng** — log:  
+   `hub_reinvoke_start_failed … "post-turn gate still running; wait for gate pass/block before a new turn"`  
+   `startTurn` reject khi `pendingFlowGateSettle \|\| postTurnGateCancel` (hub còn stale settle từ entry turn trong khi gate thật ở child).  
+   **Fix (CA-354):** `resumeFlowWithFeedback` clear hub stale `pendingFlowGateSettle` khi `postTurnGateCancel==nil` trước reinvoke.
+
+3. **Stop main (hub) không “ăn”, Stop child được**  
+   - Composer Stop chỉ khi `status∈{running,waiting_*}` — **thiếu `blocked`**.  
+   - `stop()` chỉ gọi `stopAgentLoop` khi `hasActiveParentAgentLoop`; miss → chỉ `interrupt(hub)` (hub không có turn).  
+   - `handleStopAgentLoop` discard snapshot khi durable fence fail → UI không flip cancelled.  
+   - `gateBlock` modal không clear khi Stop.  
+   **Fix (CA-354):** ChatInput include `blocked`; broaden stop() + interrupt all children; error body includes `snapshot`; clear `gateBlock` on stop; client `RunnerApiError.snapshot`.
+
+#### Evidence paths
+
+```text
+.flowpilot/logs/features/agent-flow-engine/run-10389.ndjson
+.flowpilot/chats/run-10389-step-transitions.ndjson
+.flowpilot/chats/run-10389-turns.ndjson          # hub prompt only
+.flowpilot/chats/run-10394-turns.ndjson          # coder prompts
+.flowpilot/chats/db51ec26-…/dispatch.ndjson     # V2 child terminals OK
+D:\working\gate-sandbox\Screenshot 2026-07-17 152139.png
+```
+
+#### Retest A1 (sau rebuild desktop + local-runner)
+
+1. Rebuild/restart serve + desktop.  
+2. New run Review Loop; prompt có thể giữ `fix bug 1+1 != 2` **hoặc** spawn-only prompt.  
+3. Expect: **một** gate surface khi TestAdd breaks (regression modal), không chồng “Needs your decision”.  
+4. Submit “Fix the code” → grant write → green path hoặc single escalate without dual.  
+5. Mid-flight: Stop trên **main** → loop `stopped`, children cancelled, modal gone.  
+6. Continue sau escalate (non-option block) không log `hub_reinvoke_start_failed` vì stale settle.
+
 ---
 
 ## 4. Copy-paste “one shot” for CI-ish local verify
@@ -339,8 +408,9 @@ cat .flowpilot/chats/${RUN}-turns.ndjson
 | Date | Who | Command / scenario | Result | Notes |
 |------|-----|--------------------|--------|-------|
 | 2026-07-17 | tiendat | Live **C1** run-1510 `hello grok` | ☑ pass (V2 terminal_completed) | See §3.5; wall ~28s cold Grok; log verbose ACP expected |
+| 2026-07-17 | tiendat+grok | Live **A1** run-10389 Review Loop (`fix bug 1+1 != 2`) | ☒ **partial / blocked** | See **§3.6**; hub+coder spawn OK; dual gate UI ×2; Continue hang; Stop hub weak. Fixes landed same day (CA-354). |
 | | | §4 one-shot | ☐ pass / ☐ fail | |
-| | | Live A1–A10 | ☐ | |
+| | | Live A2–A10 | ☐ | A1 retest after rebuild before marking pass |
 | | | Live B1–B5 | ☐ | |
 | | | Live C2–C12 | ☐ | |
 | | | Live C13–C17 (new, post CA-340..349) | ☐ | |
@@ -358,6 +428,7 @@ cat .flowpilot/chats/${RUN}-turns.ndjson
 - Cold Grok first turn 15–40s với MCP+skills là baseline hiện tại, không dùng làm failure cho C1 nếu dispatch terminal + reply OK.
 - **C13–C17 chưa chạy live** (chỉ có unit test tương ứng: `TestFCPMarkerCrossServiceReplayRejected`-family cho C13, `TestDispatchInspect_RedactsCanonicalReceiptEvidence` cho C14, `TestRetryAsNewHandler_SupersededSurfacesAbandonGuidance` cho C15, chưa có unit test riêng cho boot-auto-redispatch không cần user action ở C16 — `reconcileOne`/`ScanAllRecoverable` test check redispatch được gọi, nhưng chưa có test end-to-end "process thật restart, không ai bấm gì" ở mức desktop; C17 có unit test hard-assert `TestScanAllRecoverable_EnumeratesEveryNonTerminalState_NotJustUncertain` xác nhận CAS đúng, nhưng chưa verify qua UI attention card thật).
 - **Task-250 T-4 (provider reconcile/cancel-on-required) chính thức waived 2026-07-17**: mọi adapter hiện có (Codex/Grok/Claude) đều không có API query-by-id/cancel-by-id (Task-257 evidence), nên recovery không thể hỏi lại provider — nó fallback về `uncertain` một cách an toàn (atomic CAS, không mất, không trùng, luôn surface cho operator). Re-open chỉ khi có adapter mới hỗ trợ capability này.
+- **A1 live residual (run-10389, 2026-07-17):** dual gate UI + hub reinvoke `gate_in_progress` + Stop hub weak — mitigated in CA-354; **retest required** before ☐ A1. YOLO/write permission for `calc.go` still needed for happy-path green TestAdd. Non-option multi-rule blocks (audit+contract without r-reg) still escalate to hub only (single card) — intentional.
 
 ---
 

@@ -20,12 +20,16 @@ import { useStore } from "@/state/store";
 // the generic Continue form (I-16).
 export function FlowAwaitingUserCard(): React.ReactElement | null {
   const loopState = useStore((s) => s.agentGraphSnapshot?.loopState);
+  const gateBlock = useStore((s) => s.gateBlock);
   const continueFlow = useStore((s) => s.continueFlow);
   const stop = useStore((s) => s.stop);
   const [feedback, setFeedback] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   if (!loopState || loopState.status !== "blocked") return null;
+  // CP-51 A1 dual-UI: when a regression/gate decision modal is open, hide this
+  // escalate card so operators are not offered Continue+Stop behind a second modal.
+  if (gateBlock) return null;
 
   const stalled = loopState.blockReason === "member_stalled";
   const reasonLabel =

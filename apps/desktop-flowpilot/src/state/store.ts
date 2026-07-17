@@ -1289,45 +1289,83 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   async stop() {
-    const { client, runId, mainRunId, activeAgentRunId } = get();
+    const { client, runId, mainRunId, activeAgentRunId, agentRuns, agentGraphSnapshot } = get();
     if (!runId) return;
     const parentRunId = mainRunId ?? runId;
     const childFocused = Boolean(activeAgentRunId && parentRunId && activeAgentRunId !== parentRunId);
+    // Always dismiss regression/gate modal on Stop so main hang does not leave an
+    // orphaned overlay after the loop is cancelled (CP-51 A1).
+    set({ gateBlock: undefined });
     // BUG-247: stop() must always cascade to the parent run and every running child in a
     // single press, whether it was triggered from the main chat or a focused child's
     // read-only view — Task-088's original child-only routing left the parent (and its
     // loop) running until the user switched back and pressed Stop a second time.
-    if (parentRunId && client.stopAgentLoop && hasActiveParentAgentLoop(get(), parentRunId)) {
-      const snapshot = await client.stopAgentLoop(parentRunId);
-      set((s) => ({
-        ...applyAgentGraphSnapshot(snapshot),
-        status: deriveOrchestrationRunStatus(s.status, snapshot),
-        timeline: s.timeline.filter((it) => it.kind !== "thinking"),
-      }));
-      await client.interrupt(parentRunId);
-      if (childFocused) {
+    //
+    // CP-51 A1: also stop the parent loop when we have any orchestration snapshot or
+    // agent children even if hasActiveParentAgentLoop is false (stale snapshot /
+    // parentRunId mismatch) — otherwise main Stop only interrupts the hub (no turn)
+    // while the child keeps running and UI looks stuck.
+    const shouldStopLoop =
+      Boolean(parentRunId && client.stopAgentLoop) &&
+      (hasActiveParentAgentLoop(get(), parentRunId) ||
+        get().chatMode === "workflow_step_auto" ||
+        Boolean(agentGraphSnapshot?.loopState?.status) ||
+        agentRuns.some((r) => r.parentRunId === parentRunId || r.runId === parentRunId));
+    if (shouldStopLoop && parentRunId && client.stopAgentLoop) {
+      try {
+        const snapshot = await client.stopAgentLoop(parentRunId);
+        set((s) => ({
+          ...applyAgentGraphSnapshot(snapshot),
+          status: deriveOrchestrationRunStatus(s.status, snapshot),
+          timeline: s.timeline.filter((it) => it.kind !== "thinking"),
+          gateBlock: undefined,
+        }));
+      } catch (err) {
+        // Durable fence/persist may 5xx after RAM cancel (V10R4). Prefer any
+        // snapshot embedded in the error body; otherwise still interrupt hard.
+        // eslint-disable-next-line no-console
+        console.error("[FlowPilot] stopAgentLoop failed (still interrupting):", err);
+        const embedded = extractStopSnapshot(err);
+        if (embedded) {
+          set((s) => ({
+            ...applyAgentGraphSnapshot(embedded),
+            status: deriveOrchestrationRunStatus(s.status, embedded),
+            timeline: s.timeline.filter((it) => it.kind !== "thinking"),
+            gateBlock: undefined,
+          }));
+        } else {
+          set((s) => ({
+            status: "cancelled",
+            gateBlock: undefined,
+            timeline: s.timeline.filter((it) => it.kind !== "thinking"),
+            agentGraphSnapshot: s.agentGraphSnapshot
+              ? {
+                  ...s.agentGraphSnapshot,
+                  loopState: { ...s.agentGraphSnapshot.loopState, status: "stopped", gateReason: "stopped" },
+                }
+              : s.agentGraphSnapshot,
+          }));
+        }
+      }
+      try {
+        await client.interrupt(parentRunId);
+      } catch {
+        /* best-effort */
+      }
+      const childIds = new Set<string>();
+      if (childFocused && runId !== parentRunId) childIds.add(runId);
+      for (const r of get().agentRuns) {
+        if (r.runId && r.runId !== parentRunId) childIds.add(r.runId);
+      }
+      for (const childId of childIds) {
         try {
-          await client.interrupt(runId);
+          await client.interrupt(childId);
         } catch {
-          /* best-effort: the loop stop above may have already cancelled the child's turn */
+          /* best-effort: loop stop may already have cancelled the child */
         }
       }
       void get().refreshAgentRuns();
       void get().refreshWorkflowStepRuntime();
-      return;
-    }
-    if (get().chatMode === "workflow_step_auto" && parentRunId) {
-      if (client.stopAgentLoop) {
-        set(applyAgentGraphSnapshot(await client.stopAgentLoop(parentRunId)));
-      }
-      await client.interrupt(parentRunId);
-      if (childFocused) {
-        try {
-          await client.interrupt(runId);
-        } catch {
-          /* best-effort: the loop stop above may have already cancelled the child's turn */
-        }
-      }
       return;
     }
     await client.interrupt(runId);
@@ -2259,6 +2297,17 @@ function hasActiveParentAgentLoop(state: AppState, parentRunId: string): boolean
   if (!snapshot || snapshot.parentRunId !== parentRunId) return false;
   const status = snapshot.loopState.status;
   return Boolean(status) && status !== "done" && status !== "stopped";
+}
+
+/** Pull AgentGraphSnapshot from stopAgentLoop partial-failure body (CP-51 A1). */
+function extractStopSnapshot(err: unknown): AgentGraphSnapshot | undefined {
+  if (err instanceof RunnerApiError && err.snapshot && typeof err.snapshot === "object") {
+    const snap = err.snapshot as AgentGraphSnapshot;
+    if (snap.loopState && typeof snap.loopState.status === "string") {
+      return snap;
+    }
+  }
+  return undefined;
 }
 
 function settleTerminalReplayVisuals(

@@ -1233,8 +1233,20 @@ func (s *InteractiveService) handleInjectAgentFeedback(w http.ResponseWriter, r 
 func (s *InteractiveService) handleStopAgentLoop(w http.ResponseWriter, r *http.Request) {
 	snap, err := s.stopAgentLoop(r.PathValue("runId"))
 	if err != nil {
-		// Still return snapshot body when possible so the UI can reflect cancelled
-		// children, but surface durable-checkpoint failure (V10R4 P0).
+		// V10R4 P0 fail-closed on durable fence/persist, but still return the
+		// in-memory graph snapshot so the desktop can flip loop status to
+		// stopped / children cancelled (CP-51 A1: Stop on hub looked like a
+		// no-op when only the error body was returned and the UI kept "running").
+		if snap.ParentRunID != "" || len(snap.Runs) > 0 || snap.LoopState.Status != "" {
+			writeInteractiveJSON(w, err.status, map[string]any{
+				"error": map[string]any{
+					"code":    err.code,
+					"message": err.msg,
+				},
+				"snapshot": snap,
+			})
+			return
+		}
 		writeInteractiveError(w, err)
 		return
 	}

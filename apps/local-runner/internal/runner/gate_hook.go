@@ -834,9 +834,16 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	s.mu.Unlock()
 	switch result.Action {
 	case "block":
-		// Tier-2b always-block and tier-1 block â†’ parent escalate (actionable),
+		// Tier-2b always-block and tier-1 block → parent escalate (actionable),
 		// not an unanswerable child hang (Task-242 T-9 / BUG-288 #9).
-		if parentID != "" && s.gateEpochStillValid(runID, epoch) {
+		//
+		// Exception (CP-51 A1 live / dual-UI): when the child already has a
+		// regression decision card (r-reg options), do NOT also escalate the
+		// hub. Dual surfaces (GateBlockModal + FlowAwaitingUserCard) caused
+		// operators to Continue the hub while the child gate was still open,
+		// then hang on "post-turn gate still running". Child SubmitGateDecision
+		// owns remediation; the next post-turn gate re-checks remaining rules.
+		if parentID != "" && s.gateEpochStillValid(runID, epoch) && len(gateOptions) == 0 {
 			_, _ = s.applyFlowControl(parentID, FlowControlInput{
 				Status:  "escalate",
 				Summary: "flow gate block on coding step: " + result.Message,

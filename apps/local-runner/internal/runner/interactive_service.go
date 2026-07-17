@@ -1531,6 +1531,17 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	activeHubNodeID := ""
 	if rs := s.runs[parentRunID]; rs != nil {
 		activeHubNodeID = rs.activeHubNodeID
+		// CP-51 A1 live: hub can retain a stale pendingFlowGateSettle from the
+		// entry turn (or a prior incomplete settle) while the real gate lives on
+		// the child. User Continue after escalate must not hit startTurn's
+		// gate_in_progress reject ("post-turn gate still running").
+		if rs.pendingFlowGateSettle && rs.postTurnGateCancel == nil {
+			rs.pendingFlowGateSettle = false
+			rs.pendingFlowGateFinalMsg = ""
+			rs.pendingFlowGateOccurredAt = ""
+			rs.pendingFlowGateTurnID = ""
+			rs.pendingGateChangedFiles = nil
+		}
 	}
 	s.mu.Unlock()
 
