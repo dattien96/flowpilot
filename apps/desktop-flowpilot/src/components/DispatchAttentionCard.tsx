@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import type { DispatchAttentionItem, DispatchResolveAction } from "@/types/contract";
+import type { DispatchAttentionItem, DispatchInspectResult, DispatchResolveAction } from "@/types/contract";
 import { useStore } from "@/state/store";
 
 /**
  * SS-17 / CP-51 Task-256 operator surface: shows uncertain dispatch + repair_required
- * items from GET /client/dispatch/attention and offers resolve / abandon actions.
+ * items for the active run and offers resolve / retry-as-new / retry-load / abandon
+ * actions, backed by the per-run REST surface (never a root /dispatch namespace).
  * Mirrors FlowAwaitingUserCard placement (above composer).
  */
 export function DispatchAttentionCard(): React.ReactElement | null {
@@ -13,19 +14,17 @@ export function DispatchAttentionCard(): React.ReactElement | null {
   const [items, setItems] = useState<DispatchAttentionItem[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [inspected, setInspected] = useState<Record<string, DispatchInspectResult>>({});
+  const [confirmRetry, setConfirmRetry] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    if (!client?.listDispatchAttention) {
+    if (!client?.listDispatchAttention || !runId) {
       setItems([]);
       return;
     }
     try {
-      const list = await client.listDispatchAttention();
-      // Prefer items for the active run; still show global attention if none.
-      const filtered = runId
-        ? list.filter((i) => i.runId === runId || !i.runId)
-        : list;
-      setItems(filtered.length > 0 ? filtered : list.slice(0, 5));
+      const list = await client.listDispatchAttention(runId);
+      setItems(list);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -42,16 +41,32 @@ export function DispatchAttentionCard(): React.ReactElement | null {
     return null;
   }
 
+  const itemKey = (item: DispatchAttentionItem) => `${item.runId}:${item.turnId ?? ""}`;
+
+  const inspect = async (item: DispatchAttentionItem) => {
+    if (!client.inspectDispatch || !item.turnId) return;
+    const key = itemKey(item);
+    setBusy(`${key}/inspect`);
+    setError(null);
+    try {
+      const result = await client.inspectDispatch(item.runId, item.turnId);
+      setInspected((prev) => ({ ...prev, [key]: result }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const resolve = async (item: DispatchAttentionItem, action: DispatchResolveAction) => {
     if (!client.resolveDispatchUncertain || !item.turnId) return;
-    const key = `${item.runId}/${item.turnId}/${action}`;
+    const key = `${itemKey(item)}/${action}`;
     setBusy(key);
     setError(null);
     try {
-      await client.resolveDispatchUncertain({
-        runId: item.runId,
-        turnId: item.turnId,
-        expectedRev: 0, // store may reject stale; operator can refresh
+      const info = inspected[itemKey(item)];
+      await client.resolveDispatchUncertain(item.runId, item.turnId, {
+        expectedRev: info?.revision ?? 0, // store rejects stale; operator can Inspect first to refresh
         resolutionId: `ui-${Date.now()}-${action}`,
         action,
         detail: "desktop operator",
@@ -64,24 +79,45 @@ export function DispatchAttentionCard(): React.ReactElement | null {
     }
   };
 
-  const abandonRepair = async (item: DispatchAttentionItem) => {
-    if (!client.beginDispatchRepair || !client.commitDispatchRepair) return;
-    const key = `${item.runId}/repair`;
+  const retryAsNew = async (item: DispatchAttentionItem) => {
+    if (!client.retryDispatchAsNew || !client.inspectDispatch || !item.turnId) return;
+    const key = itemKey(item);
+    // T-5 cancel-bias (SS-17 BR-3): if the record is cancel-requested, retry-as-new
+    // requires an explicit extra confirm — the card's default action is confirm_cancelled.
+    const info = inspected[key] ?? (await client.inspectDispatch(item.runId, item.turnId).catch(() => undefined));
+    if (info?.cancelRequested && confirmRetry !== key) {
+      setConfirmRetry(key);
+      return;
+    }
+    setConfirmRetry(null);
+    setBusy(`${key}/retry-as-new`);
+    setError(null);
+    try {
+      await client.retryDispatchAsNew(item.runId, item.turnId, {
+        expectedRev: info?.revision ?? 0,
+        resolutionId: `ui-${Date.now()}-retry`,
+        expectedIntentGen: info?.outerIntentGen ?? 0,
+        expectedEnvelopeHash: info?.envelopeHash ?? "",
+      });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const resolveRepair = async (item: DispatchAttentionItem, action: "retry_load" | "abandon") => {
+    if (!client.resolveDispatchRepair) return;
+    const key = `${itemKey(item)}/repair-${action}`;
     setBusy(key);
     setError(null);
     try {
-      const begin = await client.beginDispatchRepair({
-        runId: item.runId,
-        expectedRepairRev: 1,
+      const info = inspected[itemKey(item)];
+      await client.resolveDispatchRepair(item.runId, {
+        expectedRepairRev: info?.openRepair?.repairRevision ?? 1,
         resolutionId: `ui-repair-${Date.now()}`,
-        action: "abandon",
-      });
-      await client.commitDispatchRepair({
-        runId: item.runId,
-        attemptRev: begin.attemptRev,
-        resolutionId: `ui-repair-${Date.now()}`,
-        outcome: "resolved_abandon",
-        detail: "desktop operator abandon",
+        action,
       });
       await refresh();
     } catch (e) {
@@ -104,17 +140,41 @@ export function DispatchAttentionCard(): React.ReactElement | null {
       {error && <p className="error-text">{error}</p>}
       <ul className="dispatch-attention-list">
         {items.map((item) => {
-          const id = `${item.kind}:${item.runId}:${item.turnId ?? ""}`;
+          const key = itemKey(item);
+          const info = inspected[key];
+          const cancelBiased = info?.cancelRequested === true;
           return (
-            <li key={id} className="dispatch-attention-item">
+            <li key={key} className="dispatch-attention-item">
               <div className="meta">
                 <strong>{item.kind}</strong> · run {item.runId}
                 {item.turnId ? ` · turn ${item.turnId}` : ""}
               </div>
               {item.reason && <div className="card-reason">{item.reason}</div>}
+              {info && (
+                <pre className="dispatch-inspect-detail">
+                  {JSON.stringify(
+                    { state: info.state, settlePhase: info.settlePhase, cancelRequested: info.cancelRequested },
+                    null,
+                    2,
+                  )}
+                </pre>
+              )}
               <div className="card-actions">
+                <button type="button" disabled={busy !== null} onClick={() => void inspect(item)}>
+                  Inspect
+                </button>
                 {item.kind === "uncertain" && item.turnId && (
                   <>
+                    <button
+                      type="button"
+                      // T-5 cancel-bias: the record is cancel-requested, so this is
+                      // the recommended default action.
+                      className={cancelBiased ? "primary" : undefined}
+                      disabled={busy !== null}
+                      onClick={() => void resolve(item, "confirm_cancelled")}
+                    >
+                      Confirm cancelled
+                    </button>
                     <button
                       type="button"
                       disabled={busy !== null}
@@ -132,9 +192,9 @@ export function DispatchAttentionCard(): React.ReactElement | null {
                     <button
                       type="button"
                       disabled={busy !== null}
-                      onClick={() => void resolve(item, "confirm_cancelled")}
+                      onClick={() => void retryAsNew(item)}
                     >
-                      Confirm cancelled
+                      {confirmRetry === key ? "Confirm retry as new?" : "Retry as new"}
                     </button>
                     <button
                       type="button"
@@ -147,14 +207,23 @@ export function DispatchAttentionCard(): React.ReactElement | null {
                   </>
                 )}
                 {item.kind === "repair_required" && (
-                  <button
-                    type="button"
-                    className="danger"
-                    disabled={busy !== null}
-                    onClick={() => void abandonRepair(item)}
-                  >
-                    Abandon repair
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      disabled={busy !== null}
+                      onClick={() => void resolveRepair(item, "retry_load")}
+                    >
+                      Retry load
+                    </button>
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={busy !== null}
+                      onClick={() => void resolveRepair(item, "abandon")}
+                    >
+                      Abandon repair
+                    </button>
+                  </>
                 )}
               </div>
             </li>

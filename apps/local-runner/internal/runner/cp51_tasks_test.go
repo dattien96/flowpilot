@@ -56,9 +56,11 @@ func TestSessionIDIsNotAReceipt(t *testing.T) {
 	_ = rev
 }
 
-func TestProviderV2ClaudeGeminiDisabled(t *testing.T) {
-	if providerV2Enabled(ProviderKey("claude")) {
-		t.Fatal("claude must be V2-disabled")
+func TestProviderV2GeminiDisabled_ClaudeEnabled(t *testing.T) {
+	// Claude's Task-257 probe recorded the same negative (unprovable ⇒ uncertain)
+	// outcome as Codex/Grok, so it joins the default-enabled three-outcome bucket.
+	if !providerV2Enabled(ProviderKey("claude")) {
+		t.Fatal("claude must be V2-enabled (three-outcome, no Accepted seam) per Task-257 evidence")
 	}
 	if providerV2Enabled(ProviderKey("gemini")) {
 		t.Fatal("gemini must be V2-disabled")
@@ -275,46 +277,78 @@ func TestOperatorAttentionAndResolve(t *testing.T) {
 	mux := http.NewServeMux()
 	svc.RegisterDispatchOperatorRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/client/dispatch/attention", nil)
+	// Per-run path (Task-256 namespace fix, 2026-07-17) — never a root /dispatch.
+	req := httptest.NewRequest(http.MethodGet, "/client/workflow-runs/r1/dispatch-attention", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	if rr.Code != 200 {
 		t.Fatalf("attention status %d", rr.Code)
 	}
-	body := resolveUncertainRequest{
-		RunID: "r1", TurnID: "t1", ExpectedRev: rev, ResolutionID: "res-1", Action: "abandon",
+	var attn dispatchAttentionResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &attn); err != nil {
+		t.Fatalf("decode attention: %v", err)
 	}
+	if len(attn.Items) != 1 || attn.Items[0].RunID != "r1" {
+		t.Fatalf("attention items = %+v", attn.Items)
+	}
+
+	body := resolveUncertainRequest{ExpectedRev: rev, ResolutionID: "res-1", Action: "abandon"}
 	raw, _ := json.Marshal(body)
-	req = httptest.NewRequest(http.MethodPost, "/client/dispatch/resolve", strings.NewReader(string(raw)))
+	req = httptest.NewRequest(http.MethodPost, "/client/workflow-runs/r1/dispatches/t1/resolve", strings.NewReader(string(raw)))
 	rr = httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	if rr.Code != 200 {
 		t.Fatalf("resolve status %d body=%s", rr.Code, rr.Body.String())
 	}
+	var disposition map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &disposition); err != nil {
+		t.Fatalf("decode disposition: %v", err)
+	}
+	if disposition["state"] != string(DispatchTerminalCancelled) {
+		t.Fatalf("resolve response must surface the committed state, got %+v", disposition)
+	}
 	got, _, _ := store.Get(ctx, "r1", "t1")
 	if got.State != DispatchTerminalCancelled {
 		t.Fatalf("state=%s", got.State)
+	}
+
+	// Inspect endpoint (new, 2026-07-17): full record readable per-turn.
+	req = httptest.NewRequest(http.MethodGet, "/client/workflow-runs/r1/dispatches/t1", nil)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("inspect status %d body=%s", rr.Code, rr.Body.String())
+	}
+	var inspected map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &inspected); err != nil {
+		t.Fatalf("decode inspect: %v", err)
+	}
+	if inspected["state"] != string(DispatchTerminalCancelled) || inspected["turnId"] != "t1" {
+		t.Fatalf("inspect response = %+v", inspected)
 	}
 }
 
 // ---- Task-257 ----
 
-func TestCapabilityEvidence_CodexGrokNoAcceptedSeam(t *testing.T) {
-	// Documented negative result: no adapter may call Accepted for codex/grok.
+func TestCapabilityEvidence_CodexGrokClaudeNoAcceptedSeam(t *testing.T) {
+	// Documented negative result: no adapter may call Accepted for codex/grok/claude.
 	// Guard: provider enable allows them; Accepted remains unused in adapters.
 	if !providerV2Enabled(ProviderKey("codex")) || !providerV2Enabled(ProviderKey("grok")) {
 		t.Fatal("codex/grok should be V2 three-outcome enabled")
 	}
 	t.Setenv("FLOWPILOT_DISPATCH_V2_PROVIDERS", "")
-	if providerV2Enabled(ProviderKey("claude")) || providerV2Enabled(ProviderKey("gemini")) {
-		t.Fatal("claude/gemini deferred by default")
+	if !providerV2Enabled(ProviderKey("claude")) {
+		t.Fatal("claude should be V2 three-outcome enabled by default per Task-257 evidence")
+	}
+	if providerV2Enabled(ProviderKey("gemini")) {
+		t.Fatal("gemini deferred by default")
 	}
 }
 
-func TestCapabilityEvidence_ClaudeGeminiAllowListOptIn(t *testing.T) {
-	t.Setenv("FLOWPILOT_DISPATCH_V2_PROVIDERS", "claude,gemini")
-	if !providerV2Enabled(ProviderKey("claude")) || !providerV2Enabled(ProviderKey("gemini")) {
-		t.Fatal("allow-list should enable experimental V2 for claude/gemini")
+func TestCapabilityEvidence_GeminiAllowListOptIn(t *testing.T) {
+	t.Setenv("FLOWPILOT_DISPATCH_V2_PROVIDERS", "gemini")
+	if !providerV2Enabled(ProviderKey("gemini")) {
+		t.Fatal("allow-list should enable experimental V2 for gemini")
 	}
 	// Still no Accepted seam — opt-in is three-outcome only until evidence wires receipt.
 }

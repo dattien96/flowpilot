@@ -9,8 +9,8 @@
 - Owner: `FlowPilot`
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
-- Last Updated: `2026-07-16`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md) (§6.7), [SD-25: Recovery Ownership Linearization Closure](../../06-System-Tech-Design/SD-25-Recovery-Ownership-Linearization-Closure.md), [SS-17: Dispatch Uncertainty And Repair Operator Contract](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
+- Last Updated: `2026-07-17`
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md) (§6.7), [SD-25: Recovery Ownership Linearization Closure](../../06-System-Tech-Design/SD-25-Recovery-Ownership-Linearization-Closure.md), [SS-17: Dispatch Uncertainty And Repair Operator Contract](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
 - Child Documents: `None`
 - Related Documents: [Task-250](./Task-250-Recovery-Scanner-And-Provider-Reconciliation.md), [Task-253](./Task-253-Supabase-Runtime-Versioned-And-Fail-Closed.md)
 - Replaces: `None`
@@ -131,6 +131,14 @@ func TestDispatchInspect_RedactsCanonicalReceiptEvidence(t *testing.T) { /* RE: 
 
 ## 8. Completion Notes
 
-- result: **done — /client/dispatch/* attention/resolve/retry/repair/audit endpoints.**
-- follow-ups: remaining live crash-matrix phase-2 / real-PG optional
-- upstream docs updated: evidence + task status
+- result: **done (2026-07-17)** — rewired the whole surface per §4.1:
+  - **Namespace fixed:** `dispatch_operator.go` now mounts strictly per-run paths (`GET .../workflow-runs/{runId}/dispatch-attention`, `GET .../dispatches/{turnId}`, `GET .../dispatches/{turnId}/audit`, `POST .../dispatches/{turnId}/resolve`, `POST .../dispatches/{turnId}/retry-as-new`, `POST .../workflow-runs/{runId}/repair-resolution`) — the forbidden root `/client/dispatch/*` namespace is gone.
+  - **Inspect endpoint added:** returns state/revision/settlePhase/stopOutcome/envelope/intent fields plus receipt/terminal evidence — **canonical hash only**, never the raw `PayloadCanonicalJSON` (RE), plus open-repair metadata (never the raw quarantine blob).
+  - **Repair consolidated to one endpoint:** `handleDispatchRepairResolution` runs the real two-phase flow server-side (`BeginRepairResolution` → for `retry_load`, load the run's persisted session via `SessionHistoryReader` and re-validate with `applySessionRuntimeV2` against the quarantined raw, then persist the recovered session → `CommitRepairResolution`); `abandon` skips the loader. No more client-driven begin/commit split.
+  - **Settlement disposition surfaced:** resolve/retry-as-new re-`Get` the record after the store mutation and return `{state, settlePhase, stopOutcome}` in the same response (OR ledger row) — no follow-up call needed.
+  - **Supersede guidance:** `RetryAsNew` returning `ErrSuperseded` now maps to a distinct `dispatch_retry_superseded` code/message telling the operator to abandon instead of retrying again (RS).
+  - **T-2 "durable attention events" reassessed, not built as new event-sourcing:** attention is derived directly from the durable `DispatchRecord`/`RepairRecord` state via `ListAttention` — since that's a live durable-store read (not a RAM cache), it inherently survives a restart and clears the instant the record resolves, without needing a separate persisted event log. Proven by `TestDispatchAttention_RebuildsAfterRestart` (fresh `InteractiveService` instance, same store, identical attention set; clears after resolution). Building `EventDispatchAttentionRequired`/`Cleared` would only add push-notification latency, not correctness — descoped as unnecessary for V-4's actual intent.
+  - **Desktop card completed:** `DispatchAttentionCard.tsx` gained Inspect (all items), Retry-as-new (uncertain, using inspect's revision/intentGen/envelopeHash), Retry-load (repair), and cancel-bias (T-5 — `confirm_cancelled` is visually primary and retry-as-new requires an extra confirm click when the inspected record is `cancelRequested`). `HttpWsRunnerClient.ts` + `contract.ts` gained typed `inspectDispatch`/`getDispatchAudit`/`retryDispatchAsNew`/`resolveDispatchRepair`; `resolveDispatchUncertain` takes `(runId, turnId, input)` matching the new per-run paths.
+  - Tests: 8 new Go HTTP tests (`dispatch_operator_test.go`) covering all 5 named §4.2 skeletons plus superseded-retry and retry-load-restores-session; `npx tsc --noEmit` clean on the desktop package.
+  - **Known gap, honestly not closed:** no automated desktop **component** test (Vitest/RTL) for the card — verified only via TypeScript compilation, not a rendered-DOM test. UI smoke (V-5) is therefore partial: cancel-bias/action-wiring is code-reviewed and type-checked, not behaviorally test-covered.
+- upstream docs updated: task status; moved to `done/` (2026-07-17), with the V-5 UI-test gap called out above rather than silently claimed complete.

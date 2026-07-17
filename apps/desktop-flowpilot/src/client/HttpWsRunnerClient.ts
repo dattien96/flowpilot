@@ -258,8 +258,11 @@ export class HttpWsRunnerClient implements RunnerClient {
   interrupt(runId: string): Promise<void> {
     return this.postJSON<void>(`/client/workflow-runs/${encodeURIComponent(runId)}/interrupt`);
   }
-  async listDispatchAttention(): Promise<import("@/types/contract").DispatchAttentionItem[]> {
-    const body = await this.getJSON<{ items?: Array<Record<string, string>> }>("/client/dispatch/attention");
+  // SS-17 / CP-51 Task-256 — per-run REST paths (never a root /dispatch namespace).
+  async listDispatchAttention(runId: string): Promise<import("@/types/contract").DispatchAttentionItem[]> {
+    const body = await this.getJSON<{ items?: Array<Record<string, string>> }>(
+      `/client/workflow-runs/${encodeURIComponent(runId)}/dispatch-attention`,
+    );
     return (body.items ?? []).map((it) => ({
       kind: it.kind ?? "",
       runId: it.run_id ?? it.runId ?? "",
@@ -268,32 +271,46 @@ export class HttpWsRunnerClient implements RunnerClient {
       updatedAt: it.updated_at ?? it.updatedAt,
     }));
   }
-  resolveDispatchUncertain(input: {
-    runId: string;
-    turnId: string;
-    expectedRev: number;
-    resolutionId: string;
-    action: import("@/types/contract").DispatchResolveAction;
-    detail?: string;
-  }): Promise<{ revision: number }> {
-    return this.postJSON("/client/dispatch/resolve", input);
+  inspectDispatch(runId: string, turnId: string): Promise<import("@/types/contract").DispatchInspectResult> {
+    return this.getJSON(
+      `/client/workflow-runs/${encodeURIComponent(runId)}/dispatches/${encodeURIComponent(turnId)}`,
+    );
   }
-  beginDispatchRepair(input: {
-    runId: string;
-    expectedRepairRev: number;
-    resolutionId: string;
-    action: "retry_load" | "abandon";
-  }): Promise<{ attemptRev: number; raw?: string }> {
-    return this.postJSON("/client/dispatch/repair/begin", input);
+  getDispatchAudit(runId: string, turnId: string): Promise<{ entries: unknown[] }> {
+    return this.getJSON(
+      `/client/workflow-runs/${encodeURIComponent(runId)}/dispatches/${encodeURIComponent(turnId)}/audit`,
+    );
   }
-  commitDispatchRepair(input: {
-    runId: string;
-    attemptRev: number;
-    resolutionId: string;
-    outcome: "resolved_retry_load" | "failed_still_open" | "resolved_abandon";
-    detail?: string;
-  }): Promise<{ revision: number }> {
-    return this.postJSON("/client/dispatch/repair/commit", input);
+  resolveDispatchUncertain(
+    runId: string,
+    turnId: string,
+    input: {
+      expectedRev: number;
+      resolutionId: string;
+      action: import("@/types/contract").DispatchResolveAction;
+      detail?: string;
+    },
+  ): Promise<import("@/types/contract").DispatchSettlementDisposition> {
+    return this.postJSON(
+      `/client/workflow-runs/${encodeURIComponent(runId)}/dispatches/${encodeURIComponent(turnId)}/resolve`,
+      input,
+    );
+  }
+  retryDispatchAsNew(
+    runId: string,
+    turnId: string,
+    input: { expectedRev: number; resolutionId: string; newTurnId?: string; expectedIntentGen: number; expectedEnvelopeHash: string },
+  ): Promise<import("@/types/contract").DispatchSettlementDisposition & { newTurnId: string }> {
+    return this.postJSON(
+      `/client/workflow-runs/${encodeURIComponent(runId)}/dispatches/${encodeURIComponent(turnId)}/retry-as-new`,
+      input,
+    );
+  }
+  resolveDispatchRepair(
+    runId: string,
+    input: { expectedRepairRev: number; resolutionId: string; action: "retry_load" | "abandon" },
+  ): Promise<{ revision: number; outcome: "resolved_retry_load" | "failed_still_open" | "resolved_abandon"; detail: string }> {
+    return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/repair-resolution`, input);
   }
   submitGateDecision(runId: string, option: string, customText?: string): Promise<void> {
     return this.postJSON<void>(
