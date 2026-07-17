@@ -127,6 +127,22 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				runner.CatalogStoreFor(instance),
 				sessionStore,
 			)
+			// CP-51: per-project local dispatch logs under chats/<project_id>/dispatch.ndjson.
+			// Drive chat-sync uploads/downloads that shard. V2 is default; kill switch
+			// FLOWPILOT_DISPATCH_V2=0 restores pure V1 for runs that are not yet V2-activated.
+			if ds, err := runner.OpenDispatchStoreForServe(storeDir); err != nil {
+				log.Printf("[runner] dispatch store open failed: %v (durable dispatch unavailable)", err)
+			} else if ds != nil {
+				interactive.SetDispatchStore(ds)
+				if runner.DispatchV2EnvEnabled() {
+					log.Printf("[runner] dispatch V2 default on; per-project logs under %s/<project_id>/", storeDir)
+				} else {
+					log.Printf("[runner] dispatch V2 kill-switch (FLOWPILOT_DISPATCH_V2=0); store still loaded for existing V2 runs; root=%s", storeDir)
+				}
+				// Task-250 T-6: reconcile every non-terminal dispatch record left by a
+				// prior crash — best-effort, mirrors ScanPersistedChatsForSummaries below.
+				go interactive.ScanDispatchRecoveryOnBoot(ctx)
+			}
 			interactive.AttachRunner(instance)
 			// flowDefStore backs both built-in mirror sync and startResolvedFlow's
 			// flowRef resolution (CP-42/Task-175/177), mirrored into the existing

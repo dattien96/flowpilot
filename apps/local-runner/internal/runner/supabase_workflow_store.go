@@ -25,6 +25,21 @@ import (
 type SupabaseWorkflowStore struct {
 	restURL string // "{apiUrl}/rest/v1"
 	apiKey  string
+	// dispatchStore, when set, lets session-runtime decode (applySessionRuntimeV2)
+	// consult the V2 activation authority so a missing/corrupt blob on a V2 run
+	// fails closed into OpenRepair instead of silently treating it as legacy v0
+	// (CP-51 Task-253). Nil-safe: unset behaves exactly as before (v0-only decode).
+	dispatchStore DispatchStore
+}
+
+// SetDispatchStore wires the durable dispatch store this session store consults
+// for the V2-run missing-blob guard (Task-253). Call once at bootstrap, same
+// pattern as InteractiveService.SetDispatchStore.
+func (s *SupabaseWorkflowStore) SetDispatchStore(store DispatchStore) {
+	if s == nil {
+		return
+	}
+	s.dispatchStore = store
 }
 
 // NewSupabaseWorkflowStore builds the store from the workspace config + the resolved
@@ -48,63 +63,76 @@ const providerSessionSelectRecovery = "workflow_run_id,provider_key,provider_ses
 
 // sessionRuntimeBlob holds flow-recovery fields that are not first-class
 // Supabase columns (BUG-288 R18-3). Packed into session_runtime jsonb.
+// CP-51 Task-253: SchemaVersion + fail-closed decode (never zero-value resume).
+const sessionRuntimeSchemaVersion = 1
+
+var supportedRuntimeVersions = map[int]bool{0: true, 1: true}
+
 type sessionRuntimeBlob struct {
-	Label                       string                 `json:"label,omitempty"`
-	DependsOn                   []string               `json:"depends_on,omitempty"`
-	ModelName                   string                 `json:"model_name,omitempty"`
-	ChangeType                  string                 `json:"change_type,omitempty"`
-	SourceDocID                 string                 `json:"source_doc_id,omitempty"`
-	TurnCount                   int                    `json:"turn_count,omitempty"`
-	PendingAgentContext         []string               `json:"pending_agent_context,omitempty"`
-	LoopState                   AgentLoopState         `json:"loop_state,omitempty"`
-	AutoOrchestrate             bool                   `json:"auto_orchestrate,omitempty"`
-	FlowCohortID                string                 `json:"flow_cohort_id,omitempty"`
-	ActiveFlowEdges             []agentpack.FlowEdge   `json:"active_flow_edges,omitempty"`
-	ActiveFlowNodes             []agentpack.FlowNode   `json:"active_flow_nodes,omitempty"`
-	ChatSubMode                 string                 `json:"chat_sub_mode,omitempty"`
-	ChatFlowRef                 string                 `json:"chat_flow_ref,omitempty"`
-	PendingFlowGateSettle       bool                   `json:"pending_flow_gate_settle,omitempty"`
-	PendingFlowGateFinalMsg     string                 `json:"pending_flow_gate_final_msg,omitempty"`
-	PendingFlowGateOccurredAt   string                 `json:"pending_flow_gate_occurred_at,omitempty"`
-	PendingFlowGateTurnID       string                 `json:"pending_flow_gate_turn_id,omitempty"`
-	TurnStartGitHead            string                 `json:"turn_start_git_head,omitempty"`
-	TurnStartWorktree           map[string]string      `json:"turn_start_worktree,omitempty"`
-	PendingGateChangedFiles     []string               `json:"pending_gate_changed_files,omitempty"`
-	StepID                      string                 `json:"step_id,omitempty"`
-	LastTurnStepID              string                 `json:"last_turn_step_id,omitempty"`
-	PendingGateRepromptPrompt   string                 `json:"pending_gate_reprompt_prompt,omitempty"`
-	PendingGateRepromptStepID   string                 `json:"pending_gate_reprompt_step_id,omitempty"`
-	PendingGateCodePaths        []string               `json:"pending_gate_code_paths,omitempty"`
-	RepromptAttempts            int                    `json:"reprompt_attempts,omitempty"`
-	PendingResumePrompt         string                 `json:"pending_resume_prompt,omitempty"`
-	PendingResumeStepID         string                 `json:"pending_resume_step_id,omitempty"`
-	PendingResumeGen            int64                  `json:"pending_resume_gen,omitempty"`
-	PendingGateRepromptGen      int64                  `json:"pending_gate_reprompt_gen,omitempty"`
-	PendingResumeDeliveredGen   int64                  `json:"pending_resume_delivered_gen,omitempty"`
-	PendingGateRepromptDeliveredGen int64              `json:"pending_gate_reprompt_delivered_gen,omitempty"`
-	PendingResumeAcceptedTurn   string                 `json:"pending_resume_accepted_turn,omitempty"`
-	PendingGateRepromptAcceptedTurn string             `json:"pending_gate_reprompt_accepted_turn,omitempty"`
-	PendingResumeFailCount      int                    `json:"pending_resume_fail_count,omitempty"`
-	PendingResumeFailGen        int64                  `json:"pending_resume_fail_gen,omitempty"`
-	PendingGateRepromptFailCount int                   `json:"pending_gate_reprompt_fail_count,omitempty"`
-	PendingGateRepromptFailGen  int64                  `json:"pending_gate_reprompt_fail_gen,omitempty"`
-	PendingResumeApprovalID     string                 `json:"pending_resume_approval_id,omitempty"`
-	PendingResumeDecision       string                 `json:"pending_resume_decision,omitempty"`
-	PendingResumeQuestionChoices []string              `json:"pending_resume_question_choices,omitempty"`
-	FlowStartGitHead            string                 `json:"flow_start_git_head,omitempty"`
-	StopGeneration              int64                  `json:"stop_generation,omitempty"`
-	ParentStopGenSeen           int64                  `json:"parent_stop_gen_seen,omitempty"`
-	IntentBlockedKind           string                 `json:"intent_blocked_kind,omitempty"`
-	IntentBlockedReason         string                 `json:"intent_blocked_reason,omitempty"`
-	IntentBlockedAt             string                 `json:"intent_blocked_at,omitempty"`
-	TransitionLogDegraded       bool                   `json:"transition_log_degraded,omitempty"`
-	TransitionLogDegradedAt     string                 `json:"transition_log_degraded_at,omitempty"`
-	TransitionLogDegradedReason string                 `json:"transition_log_degraded_reason,omitempty"`
+	SchemaVersion                      int                  `json:"schema_version"`
+	Label                              string               `json:"label,omitempty"`
+	DependsOn                          []string             `json:"depends_on,omitempty"`
+	ModelName                          string               `json:"model_name,omitempty"`
+	ChangeType                         string               `json:"change_type,omitempty"`
+	SourceDocID                        string               `json:"source_doc_id,omitempty"`
+	TurnCount                          int                  `json:"turn_count,omitempty"`
+	PendingAgentContext                []string             `json:"pending_agent_context,omitempty"`
+	LoopState                          AgentLoopState       `json:"loop_state,omitempty"`
+	AutoOrchestrate                    bool                 `json:"auto_orchestrate,omitempty"`
+	FlowCohortID                       string               `json:"flow_cohort_id,omitempty"`
+	ActiveFlowEdges                    []agentpack.FlowEdge `json:"active_flow_edges,omitempty"`
+	ActiveFlowNodes                    []agentpack.FlowNode `json:"active_flow_nodes,omitempty"`
+	ChatSubMode                        string               `json:"chat_sub_mode,omitempty"`
+	ChatFlowRef                        string               `json:"chat_flow_ref,omitempty"`
+	PendingFlowGateSettle              bool                 `json:"pending_flow_gate_settle,omitempty"`
+	PendingFlowGateFinalMsg            string               `json:"pending_flow_gate_final_msg,omitempty"`
+	PendingFlowGateOccurredAt          string               `json:"pending_flow_gate_occurred_at,omitempty"`
+	PendingFlowGateTurnID              string               `json:"pending_flow_gate_turn_id,omitempty"`
+	TurnStartGitHead                   string               `json:"turn_start_git_head,omitempty"`
+	TurnStartWorktree                  map[string]string    `json:"turn_start_worktree,omitempty"`
+	PendingGateChangedFiles            []string             `json:"pending_gate_changed_files,omitempty"`
+	StepID                             string               `json:"step_id,omitempty"`
+	LastTurnStepID                     string               `json:"last_turn_step_id,omitempty"`
+	PendingGateRepromptPrompt          string               `json:"pending_gate_reprompt_prompt,omitempty"`
+	PendingGateRepromptStepID          string               `json:"pending_gate_reprompt_step_id,omitempty"`
+	PendingGateCodePaths               []string             `json:"pending_gate_code_paths,omitempty"`
+	RepromptAttempts                   int                  `json:"reprompt_attempts,omitempty"`
+	PendingResumePrompt                string               `json:"pending_resume_prompt,omitempty"`
+	PendingResumeStepID                string               `json:"pending_resume_step_id,omitempty"`
+	PendingResumeGen                   int64                `json:"pending_resume_gen,omitempty"`
+	PendingGateRepromptGen             int64                `json:"pending_gate_reprompt_gen,omitempty"`
+	PendingResumeDeliveredGen          int64                `json:"pending_resume_delivered_gen,omitempty"`
+	PendingGateRepromptDeliveredGen    int64                `json:"pending_gate_reprompt_delivered_gen,omitempty"`
+	PendingResumeAcceptedTurn          string               `json:"pending_resume_accepted_turn,omitempty"`
+	PendingGateRepromptAcceptedTurn    string               `json:"pending_gate_reprompt_accepted_turn,omitempty"`
+	PendingResumeFailCount             int                  `json:"pending_resume_fail_count,omitempty"`
+	PendingResumeFailGen               int64                `json:"pending_resume_fail_gen,omitempty"`
+	PendingGateRepromptFailCount       int                  `json:"pending_gate_reprompt_fail_count,omitempty"`
+	PendingGateRepromptFailGen         int64                `json:"pending_gate_reprompt_fail_gen,omitempty"`
+	PendingResumeApprovalID            string               `json:"pending_resume_approval_id,omitempty"`
+	PendingResumeDecision              string               `json:"pending_resume_decision,omitempty"`
+	PendingResumeQuestionChoices       []string             `json:"pending_resume_question_choices,omitempty"`
+	FlowStartGitHead                   string               `json:"flow_start_git_head,omitempty"`
+	StopGeneration                     int64                `json:"stop_generation,omitempty"`
+	ParentStopGenSeen                  int64                `json:"parent_stop_gen_seen,omitempty"`
+	IntentBlockedKind                  string               `json:"intent_blocked_kind,omitempty"`
+	IntentBlockedReason                string               `json:"intent_blocked_reason,omitempty"`
+	IntentBlockedAt                    string               `json:"intent_blocked_at,omitempty"`
+	TransitionLogDegraded              bool                 `json:"transition_log_degraded,omitempty"`
+	TransitionLogDegradedAt            string               `json:"transition_log_degraded_at,omitempty"`
+	TransitionLogDegradedReason        string               `json:"transition_log_degraded_reason,omitempty"`
+	DispatchProtocolVersion            int                  `json:"dispatch_protocol_version,omitempty"`
+	RepairRequired                     bool                 `json:"repair_required,omitempty"`
+	RepairReason                       string               `json:"repair_reason,omitempty"`
+	PendingRestartProvenanceRunID      string               `json:"pending_restart_provenance_run_id,omitempty"`
+	PendingGateRepromptProvenanceRunID string               `json:"pending_gate_reprompt_provenance_run_id,omitempty"`
+	MarkerProvenanceRunIDs             []string             `json:"marker_provenance_run_ids,omitempty"`
 }
 
 func sessionRuntimeFromState(s ProviderSessionState) sessionRuntimeBlob {
 	return sessionRuntimeBlob{
-		Label: s.Label, DependsOn: s.DependsOn, ModelName: s.ModelName,
+		SchemaVersion: sessionRuntimeSchemaVersion,
+		Label:         s.Label, DependsOn: s.DependsOn, ModelName: s.ModelName,
 		ChangeType: s.ChangeType, SourceDocID: s.SourceDocID, TurnCount: s.TurnCount,
 		PendingAgentContext: s.PendingAgentContext, LoopState: s.LoopState,
 		AutoOrchestrate: s.AutoOrchestrate, FlowCohortID: s.FlowCohortID,
@@ -128,17 +156,98 @@ func sessionRuntimeFromState(s ProviderSessionState) sessionRuntimeBlob {
 		IntentBlockedKind: s.IntentBlockedKind, IntentBlockedReason: s.IntentBlockedReason, IntentBlockedAt: s.IntentBlockedAt,
 		TransitionLogDegraded: s.TransitionLogDegraded, TransitionLogDegradedAt: s.TransitionLogDegradedAt,
 		TransitionLogDegradedReason: s.TransitionLogDegradedReason,
+		// CP-51 Task-252 (Codex-suggested fix, 2026-07-17): these three fields were
+		// declared on the blob and decoded back on read, but never populated here on
+		// write — so the durable provenance round-trip was dead on Supabase (local
+		// file store already carried them through correctly).
+		PendingRestartProvenanceRunID:      s.PendingRestartProvenanceRunID,
+		PendingGateRepromptProvenanceRunID: s.PendingGateRepromptProvenanceRunID,
+		MarkerProvenanceRunIDs:             s.MarkerProvenanceRunIDs,
 	}
 }
 
+// applySessionRuntime is the legacy signature used by existing callers/tests.
+// Prefer applySessionRuntimeV2 when a DispatchStore is available (Task-253).
 func applySessionRuntime(sess *ProviderSessionState, raw json.RawMessage) {
-	if sess == nil || len(raw) == 0 || string(raw) == "null" || string(raw) == "{}" {
-		return
+	_ = applySessionRuntimeV2(context.Background(), nil, sess, raw)
+}
+
+// applySessionRuntimeV2 fails closed into repair_required (DOD-I5 / SS-17 AC-3).
+// Never leaves a V2 run with zero-value recovery fields after a corrupt decode.
+func applySessionRuntimeV2(ctx context.Context, dispatch DispatchStore, sess *ProviderSessionState, raw json.RawMessage) error {
+	if sess == nil {
+		return nil
+	}
+	if len(raw) == 0 || string(raw) == "null" || string(raw) == "{}" {
+		if dispatch != nil {
+			ver, verr := dispatch.GetRunProtocolVersion(ctx, sess.RunID)
+			if verr != nil {
+				return fmt.Errorf("cannot determine run protocol version: %w", verr)
+			}
+			if ver >= DispatchProtocolV2 {
+				return markRuntimeRepair(ctx, dispatch, sess, raw, "runtime blob missing on a V2 run")
+			}
+		}
+		return nil // genuine legacy v0
 	}
 	var b sessionRuntimeBlob
 	if err := json.Unmarshal(raw, &b); err != nil {
-		return
+		return markRuntimeRepair(ctx, dispatch, sess, raw, "decode failed: "+err.Error())
 	}
+	if !supportedRuntimeVersions[b.SchemaVersion] {
+		return markRuntimeRepair(ctx, dispatch, sess, raw, fmt.Sprintf("unsupported schema_version %d", b.SchemaVersion))
+	}
+	if err := b.validatePresence(); err != nil {
+		return markRuntimeRepair(ctx, dispatch, sess, raw, "missing required fields: "+err.Error())
+	}
+	if err := b.validateSemantics(); err != nil {
+		return markRuntimeRepair(ctx, dispatch, sess, raw, "semantic validation: "+err.Error())
+	}
+	// Apply only after full validation (no partial mutation).
+	applySessionRuntimeBlob(sess, b)
+	return nil
+}
+
+func markRuntimeRepair(ctx context.Context, dispatch DispatchStore, sess *ProviderSessionState, raw json.RawMessage, reason string) error {
+	if dispatch != nil && sess != nil {
+		_, _ = dispatch.OpenRepair(ctx, sess.RunID, reason, []byte(raw), HashBytes([]byte(raw)))
+	}
+	if sess != nil {
+		sess.RepairRequired = true
+		sess.RepairReason = reason
+	}
+	return fmt.Errorf("session runtime repair_required: %s", reason)
+}
+
+func (b sessionRuntimeBlob) validatePresence() error {
+	if b.PendingFlowGateSettle && strings.TrimSpace(b.PendingFlowGateTurnID) == "" {
+		return fmt.Errorf("PendingFlowGateSettle requires turn id")
+	}
+	if strings.TrimSpace(b.PendingResumePrompt) != "" && b.PendingResumeGen == 0 {
+		return fmt.Errorf("PendingResumePrompt requires generation")
+	}
+	if strings.TrimSpace(b.PendingGateRepromptPrompt) != "" && b.PendingGateRepromptGen == 0 {
+		return fmt.Errorf("PendingGateRepromptPrompt requires generation")
+	}
+	return nil
+}
+
+func (b sessionRuntimeBlob) validateSemantics() error {
+	active := 0
+	if strings.TrimSpace(b.PendingResumePrompt) != "" {
+		active++
+	}
+	if strings.TrimSpace(b.PendingGateRepromptPrompt) != "" {
+		active++
+	}
+	// Restart lives on parent session fields outside this blob in some paths; skip count.
+	if active > 1 {
+		return fmt.Errorf("more than one pending intent active")
+	}
+	return nil
+}
+
+func applySessionRuntimeBlob(sess *ProviderSessionState, b sessionRuntimeBlob) {
 	sess.Label = b.Label
 	sess.DependsOn = b.DependsOn
 	sess.ModelName = b.ModelName
@@ -190,6 +299,14 @@ func applySessionRuntime(sess *ProviderSessionState, raw json.RawMessage) {
 	sess.TransitionLogDegraded = b.TransitionLogDegraded
 	sess.TransitionLogDegradedAt = b.TransitionLogDegradedAt
 	sess.TransitionLogDegradedReason = b.TransitionLogDegradedReason
+	if b.DispatchProtocolVersion > 0 {
+		sess.DispatchProtocolVersion = b.DispatchProtocolVersion
+	}
+	sess.RepairRequired = b.RepairRequired
+	sess.RepairReason = b.RepairReason
+	sess.PendingRestartProvenanceRunID = b.PendingRestartProvenanceRunID
+	sess.PendingGateRepromptProvenanceRunID = b.PendingGateRepromptProvenanceRunID
+	sess.MarkerProvenanceRunIDs = append([]string(nil), b.MarkerProvenanceRunIDs...)
 }
 
 func (s *SupabaseWorkflowStore) headers(prefer string) map[string]string {
@@ -468,12 +585,12 @@ func (s *SupabaseWorkflowStore) UpsertProviderSession(ctx context.Context, sessi
 		"agent_role":          nilIfEmpty(session.Role),
 		"agent_status":        nilIfEmpty(session.AgentStatus),
 		// BUG-288 R13–R18 recovery columns.
-		"pending_restart_run_id":  nilIfEmpty(session.PendingRestartRunID),
-		"pending_restart_prompt":  nilIfEmpty(session.PendingRestartPrompt),
-		"pending_restart_gen":     session.PendingRestartGen,
-		"flow_context_injected":   session.FlowContextInjected,
-		"idempotency_keys":        idempotencyKeysOrEmpty(session.IdempotencyKeys),
-		"session_runtime":         json.RawMessage(runtimeBlob),
+		"pending_restart_run_id": nilIfEmpty(session.PendingRestartRunID),
+		"pending_restart_prompt": nilIfEmpty(session.PendingRestartPrompt),
+		"pending_restart_gen":    session.PendingRestartGen,
+		"flow_context_injected":  session.FlowContextInjected,
+		"idempotency_keys":       idempotencyKeysOrEmpty(session.IdempotencyKeys),
+		"session_runtime":        json.RawMessage(runtimeBlob),
 	})
 	if err != nil {
 		return err
@@ -541,7 +658,7 @@ type dbProviderSessionRow struct {
 	FlowContextInjected  *bool             `json:"flow_context_injected"`
 	IdempotencyKeys      map[string]string `json:"idempotency_keys"`
 	SessionRuntime       json.RawMessage   `json:"session_runtime"`
-	WorkflowRuns      *struct {
+	WorkflowRuns         *struct {
 		ProjectID  string `json:"project_id"`
 		WorkflowID string `json:"workflow_id"`
 	} `json:"workflow_runs"`

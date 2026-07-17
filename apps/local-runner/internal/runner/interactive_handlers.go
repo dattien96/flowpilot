@@ -74,6 +74,9 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-decision", s.handleGateDecision)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-agreement", s.handleGateAgreement)
 
+	// CP-51 Task-256: SS-17 operator resolution surface (attention / resolve / repair / audit).
+	s.RegisterDispatchOperatorRoutes(mux)
+
 	// admin
 	mux.HandleFunc("GET /admin/providers", s.handleAdminProviders)
 	mux.HandleFunc("GET /admin/workflow-runs/{runId}/provider-sessions", s.handleAdminSessions)

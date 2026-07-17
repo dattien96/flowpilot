@@ -11,6 +11,7 @@ import { AgentsPanel } from "@/components/AgentsPanel";
 import { FlowTimelineSidebar } from "@/components/FlowTimelineSidebar";
 import { OrchestrationBoard } from "@/components/OrchestrationBoard";
 import { FlowAwaitingUserCard } from "@/components/FlowAwaitingUserCard";
+import { DispatchAttentionCard } from "@/components/DispatchAttentionCard";
 import { useStore, accountLabel, providerLabel, type ChatStartMode } from "@/state/store";
 
 function WorkflowControlPanel(): React.ReactElement | null {
@@ -750,6 +751,7 @@ export function ChatWorkspace({
         ) : (
           <>
             <Timeline />
+            <DispatchAttentionCard />
             <FlowAwaitingUserCard />
             <ChatInput />
           </>

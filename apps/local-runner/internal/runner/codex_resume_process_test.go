@@ -16,6 +16,8 @@ type captureResumeBridge struct {
 }
 
 func (b *captureResumeBridge) Emit(ev ProviderEvent)                           { b.events = append(b.events, ev) }
+func (b *captureResumeBridge) Accepted(ReceiptEvidence)                        {}
+func (b *captureResumeBridge) Terminal(TerminalEvidence)                       {}
 func (b *captureResumeBridge) RequestApproval(ApprovalDetails) (string, error) { return "", nil }
 func (b *captureResumeBridge) AskQuestion(string, []QuestionOption, bool) ([]string, error) {
 	return nil, nil

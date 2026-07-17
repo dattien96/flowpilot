@@ -644,6 +644,42 @@ export interface QuestionOption {
   value?: string;
 }
 
+// ---- CP-51 / SS-17 dispatch operator surface --------------------------------
+
+export interface DispatchAttentionItem {
+  kind: "uncertain" | "repair_required" | string;
+  runId: string;
+  turnId?: string;
+  reason?: string;
+  updatedAt?: string;
+}
+
+export type DispatchResolveAction =
+  | "mark_completed"
+  | "mark_failed"
+  | "confirm_cancelled"
+  | "abandon";
+
+export interface DispatchSettlementDisposition {
+  state: string;
+  settlePhase: string;
+  stopOutcome?: string;
+}
+
+export interface DispatchInspectResult extends DispatchSettlementDisposition {
+  runId: string;
+  turnId: string;
+  revision: number;
+  cancelRequested: boolean;
+  envelopeHash: string;
+  outerIntentKey: string;
+  outerIntentGen: number;
+  intentOwnerRunID: string;
+  receiptEvidence?: { providerKey: string; receiptId: string; evidenceKind: string; payloadSHA256: string };
+  terminalEvidence?: { providerKey: string; evidenceKind: string; outcome: string; payloadSHA256: string };
+  openRepair?: { repairRevision: number; reason: string; quarantineHash: string; state: string; createdAt?: string };
+}
+
 // ---- The contract ----------------------------------------------------------
 
 export interface RunnerClient {
@@ -728,6 +764,51 @@ export interface RunnerClient {
     feedback: string,
     memberAction?: { action: "retry" | "skip"; node?: string },
   ): Promise<AgentGraphSnapshot>;
+  /**
+   * SS-17 / CP-51 Task-256: list dispatch attention items (uncertain + repair_required)
+   * for ONE run — the runner's endpoint is per-run (GET .../workflow-runs/{runId}/
+   * dispatch-attention), never a global root listing. Optional so mock/older
+   * runners degrade gracefully.
+   */
+  listDispatchAttention?(runId: string): Promise<DispatchAttentionItem[]>;
+  /**
+   * Inspect one turn's full dispatch record (states/revision/envelope summary/
+   * receipt-evidence canonical hash/open-repair metadata) — never a raw
+   * secret-bearing payload.
+   */
+  inspectDispatch?(runId: string, turnId: string): Promise<DispatchInspectResult>;
+  /** Audit trail for one turn (who/what/when, embedded in the store commits). */
+  getDispatchAudit?(runId: string, turnId: string): Promise<{ entries: unknown[] }>;
+  /**
+   * Resolve an uncertain dispatch record (atomic store op). Response carries the
+   * ALREADY-COMMITTED settlement disposition — never call a second endpoint to
+   * learn it. expectedRev should come from a prior inspect; when unknown, pass 0
+   * and let the runner reject stale.
+   */
+  resolveDispatchUncertain?(
+    runId: string,
+    turnId: string,
+    input: { expectedRev: number; resolutionId: string; action: DispatchResolveAction; detail?: string },
+  ): Promise<DispatchSettlementDisposition>;
+  /**
+   * Retry-as-new over a superseded/held record. A 409 with a "superseded"
+   * signal means the run got a newer prompt since this record was held (SS-17
+   * §8) — the card must offer abandon instead of retrying again.
+   */
+  retryDispatchAsNew?(
+    runId: string,
+    turnId: string,
+    input: { expectedRev: number; resolutionId: string; newTurnId?: string; expectedIntentGen: number; expectedEnvelopeHash: string },
+  ): Promise<DispatchSettlementDisposition & { newTurnId: string }>;
+  /**
+   * The single defined two-phase repair-resolution flow (SD-24 §6.7) — one
+   * call, not a client-driven begin/commit split. `retry_load` re-validates the
+   * quarantined raw against the run's persisted session server-side.
+   */
+  resolveDispatchRepair?(
+    runId: string,
+    input: { expectedRepairRev: number; resolutionId: string; action: "retry_load" | "abandon" },
+  ): Promise<{ revision: number; outcome: "resolved_retry_load" | "failed_still_open" | "resolved_abandon"; detail: string }>;
   connectProviderAccount(providerKey: ProviderKey): Promise<void>;
   activateProviderAccount(accountId: string): Promise<void>;
   /**

@@ -36,6 +36,8 @@ func (b *fakeGrokBridge) Emit(ev ProviderEvent) {
 	defer b.mu.Unlock()
 	b.events = append(b.events, ev)
 }
+func (b *fakeGrokBridge) Accepted(ReceiptEvidence)  {}
+func (b *fakeGrokBridge) Terminal(TerminalEvidence) {}
 func (b *fakeGrokBridge) RequestApproval(d ApprovalDetails) (string, error) {
 	b.mu.Lock()
 	b.approvalCalls = append(b.approvalCalls, d)

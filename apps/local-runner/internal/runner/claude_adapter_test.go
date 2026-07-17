@@ -32,6 +32,8 @@ func (b *fakeClaudeBridge) Emit(ev ProviderEvent) {
 	defer b.mu.Unlock()
 	b.events = append(b.events, ev)
 }
+func (b *fakeClaudeBridge) Accepted(ReceiptEvidence)  {}
+func (b *fakeClaudeBridge) Terminal(TerminalEvidence) {}
 
 func (b *fakeClaudeBridge) RequestApproval(d ApprovalDetails) (string, error) {
 	b.mu.Lock()

@@ -24,6 +24,12 @@ func (e *UnsupportedProviderRuntimeError) Error() string {
 // pending record expires, or the turn context is cancelled (interrupt).
 type TurnBridge interface {
 	Emit(ev ProviderEvent)
+	// Accepted commits a provider acceptance receipt (SD-24 §6.3a / CP-51 Task-249).
+	// Only evidence-backed adapters may call this; Codex/Grok have no call site.
+	Accepted(receipt ReceiptEvidence)
+	// Terminal commits provider-backed terminal proof; sole automatic post-send
+	// terminal seam. A SendTurn error is never proof.
+	Terminal(proof TerminalEvidence)
 	RequestApproval(details ApprovalDetails) (decision string, err error)
 	AskQuestion(prompt string, options []QuestionOption, multiSelect bool) (choice []string, err error)
 	// SpawnAgent creates a child agent run from the current turn. If in.Wait==true it
