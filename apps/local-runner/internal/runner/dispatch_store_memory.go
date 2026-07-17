@@ -541,16 +541,43 @@ func (s *memoryDispatchStore) commitTerminal(ctx context.Context, runID, turnID 
 	if err := r.canTransition(next); err != nil {
 		return r.Revision, err
 	}
-	// StopOutcome from durable authority (not caller).
+	// BUG-289 M2/F-11: commitLine (fsync) BEFORE mutating RAM / clearing intent.
+	// On fsync failure RAM must stay non-terminal so restart does not double-run
+	// or false-complete (store header claims disk-before-RAM).
 	stopOut := s.deriveStopOutcomeLocked(r)
 	te := proof
+	// Build the would-be next record without mutating live r yet.
+	cp := s.cloneRec(r)
+	cp.TerminalEvidence = &te
+	cp.State = next
+	cp.Outcome = outcome
+	if stopOut != "" {
+		cp.StopOutcome = stopOut
+	}
+	if cp.SettleOwed {
+		cp.SettlePhase = SettlePending
+	} else {
+		cp.SettlePhase = SettleNone
+	}
+	cp.ClaimOwner = ""
+	cp.ClaimExpiresAt = ""
+	// Mirror revokeAttachLocked on the disk snapshot.
+	cp.RecoveryAttachEpoch = r.RecoveryAttachEpoch + 1
+	cp.RecoveryAttachOwner = ""
+	cp.RecoveryAttachExpiresAt = ""
+	cp.Revision = r.Revision + 1
+	cp.UpdatedAt = s.clockStr()
+	clear := &intentClearPayload{OwnerRunID: intentOwnerRunID, Key: intentKey, Gen: intentGen}
+	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: cp.UpdatedAt, Record: &cp, IntentClear: clear}); err != nil {
+		return r.Revision, err
+	}
+	// Disk durable — now mutate RAM to match.
 	r.TerminalEvidence = &te
 	r.State = next
 	r.Outcome = outcome
 	if stopOut != "" {
 		r.StopOutcome = stopOut
 	}
-	// SettlePhase from immutable SettleOwed only.
 	if r.SettleOwed {
 		r.SettlePhase = SettlePending
 	} else {
@@ -559,15 +586,10 @@ func (s *memoryDispatchStore) commitTerminal(ctx context.Context, runID, turnID 
 	s.revokeAttachLocked(r)
 	r.ClaimOwner = ""
 	r.ClaimExpiresAt = ""
-	r.Revision++
-	r.UpdatedAt = s.clockStr()
+	r.Revision = cp.Revision
+	r.UpdatedAt = cp.UpdatedAt
 	s.clearIntentLocked(intentOwnerRunID, intentKey, intentGen)
 	s.appendAuditLocked(runID, turnID, "commit_terminal", string(next)+":"+outcome, "system")
-	cp := s.cloneRec(r)
-	clear := &intentClearPayload{OwnerRunID: intentOwnerRunID, Key: intentKey, Gen: intentGen}
-	if err := s.commitLine(dispatchLogLine{Kind: "record", Seq: s.seq, At: r.UpdatedAt, Record: &cp, IntentClear: clear}); err != nil {
-		return r.Revision, err
-	}
 	return r.Revision, nil
 }
 
@@ -1297,6 +1319,14 @@ func (s *memoryDispatchStore) ListAttention(ctx context.Context) ([]AttentionIte
 		if r.State == DispatchUncertain {
 			out = append(out, AttentionItem{
 				Kind: "uncertain", RunID: r.RunID, TurnID: r.TurnID, UpdatedAt: r.UpdatedAt,
+			})
+		}
+		// BUG-289 A2/F-7: surface Stop-then-crash stranded send_started /
+		// provider_accepted with CancelRequested so operators/prune paths see them.
+		if r.CancelRequested && (r.State == DispatchSendStarted || r.State == DispatchProviderAccepted) {
+			out = append(out, AttentionItem{
+				Kind: "cancel_required", RunID: r.RunID, TurnID: r.TurnID, UpdatedAt: r.UpdatedAt,
+				Reason: "stop-then-crash: provider cancel required",
 			})
 		}
 	}
