@@ -38,22 +38,62 @@ import (
 //   - Two real matrix cells (B2, B4) proving INV-1 (three-outcome, no silent
 //     loss) and INV-2 (no duplicate send) hold across a genuine process death.
 //
-// Remaining follow-up (NOT done here — see Task-255 §8): the full B0..B8e +
-// settle-sub-barrier matrix, the Supabase tier (moot — Task-258 retired
-// Supabase dispatch), go test -race wiring, and the randomized model-based
-// suite (dispatch_model_test.go).
+// Remaining follow-up (NOT done here — see Task-255 §8): settle sub-barriers
+// B8a..B8e (need Task-251's settle driver wired to production first — it
+// isn't), the Supabase tier (moot — Task-258 retired Supabase dispatch),
+// go test -race wiring, and the randomized model-based suite
+// (dispatch_model_test.go).
 
 type crashBarrier string
 
 const (
+	// barrierPreCreatePrepared: killed before CreatePrepared ever runs — no
+	// record exists at all. Nothing to recover; the retry decision lives
+	// above the dispatch store (out of this store-level matrix's scope).
+	barrierPreCreatePrepared crashBarrier = "B0"
+	// barrierAfterPrepared: killed after CreatePrepared, before the
+	// send_claimed CAS. Safely-retryable (Rr1).
+	barrierAfterPrepared crashBarrier = "B1"
 	// barrierAfterSendClaimed: killed after the send_claimed CAS, before the
 	// send_started CAS — nothing was ever sent. Safely-retryable (Rr1).
 	barrierAfterSendClaimed crashBarrier = "B2"
+	// barrierPreExternalSend: killed after the send_started CAS but BEFORE
+	// the external send actually happens. From the store's perspective this
+	// looks identical to barrierAfterSendStarted (state=send_started) — which
+	// is exactly the point: recovery cannot tell "CAS landed, external call
+	// never happened" apart from "CAS landed, external call happened and we
+	// don't know the result", so it must treat both as uncertain (never
+	// silently assume zero-sends just because the recorded state alone can't
+	// prove it either way).
+	barrierPreExternalSend crashBarrier = "B3"
 	// barrierAfterSendStarted: killed after a real send reached the provider,
 	// before any receipt/terminal commit — the classic "did it get there?"
 	// ambiguous cell. No adapter reconcile capability (Task-250 T-4 waiver) =>
 	// must become uncertain, never re-terminalized, never re-sent (Rr2/Rr3).
 	barrierAfterSendStarted crashBarrier = "B4"
+	// barrierReceiptInRAMPreCommit: the worker holds a (simulated) receipt in
+	// RAM but crashes before CommitReceiptAndClearIntent durably records it —
+	// the "v1-draft leak cell": proves an in-RAM-only receipt is fully lost on
+	// crash, not partially applied.
+	barrierReceiptInRAMPreCommit crashBarrier = "B5"
+	// barrierAfterReceiptCommit: killed after the receipt is durably
+	// committed (state -> provider_accepted) but before any terminal is
+	// observed.
+	barrierAfterReceiptCommit crashBarrier = "B6"
+	// barrierTerminalObservedPreCommit: the worker has (simulated) observed
+	// the provider's final result in RAM but crashes before
+	// CommitTerminalAndSettleIntent durably records it — proves an
+	// in-RAM-only terminal observation is exactly as unrecoverable as never
+	// having observed it at all (recovery still has zero durable proof).
+	barrierTerminalObservedPreCommit crashBarrier = "B7"
+	// barrierAfterTerminalCommitSettlePending: killed after the terminal
+	// commit durably lands (SettlePhase=SettlePending, since testPrepared
+	// sets SettleOwed=true) but before any settle-phase driver work. Proves
+	// the terminal record + its settle-pending obligation survive a crash
+	// intact; the settle driver itself isn't wired to the recovery scanner in
+	// production yet (Task-251), which this cell also makes visible rather
+	// than papering over.
+	barrierAfterTerminalCommitSettlePending crashBarrier = "B8"
 )
 
 // fakeProviderServer is the parent-owned durable request log (Task-255 Step 2).
@@ -215,6 +255,18 @@ func TestHelperDispatchWorker(t *testing.T) {
 	barrier := crashBarrier(os.Getenv("FLOWPILOT_CRASH_BARRIER"))
 	markerPath := os.Getenv("FLOWPILOT_CRASH_MARKER")
 
+	blockForever := func() {
+		if err := os.WriteFile(markerPath, []byte("ok"), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "worker: write marker:", err)
+			os.Exit(5)
+		}
+		select {} // wait to be hard-killed — never returns, no deferred cleanup runs
+	}
+
+	if barrier == barrierPreCreatePrepared {
+		blockForever()
+	}
+
 	store, err := NewLocalDispatchStore(storeDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "worker: open store:", err)
@@ -227,18 +279,15 @@ func TestHelperDispatchWorker(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "worker: CreatePrepared:", err)
 		os.Exit(3)
 	}
+
+	if barrier == barrierAfterPrepared {
+		blockForever()
+	}
+
 	rev, err := store.CASAdvance(ctx, runID, turnID, 1, DispatchPrepared, DispatchSendClaimed, nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "worker: CAS->send_claimed:", err)
 		os.Exit(4)
-	}
-
-	blockForever := func() {
-		if err := os.WriteFile(markerPath, []byte("ok"), 0o644); err != nil {
-			fmt.Fprintln(os.Stderr, "worker: write marker:", err)
-			os.Exit(5)
-		}
-		select {} // wait to be hard-killed — never returns, no deferred cleanup runs
 	}
 
 	if barrier == barrierAfterSendClaimed {
@@ -249,6 +298,10 @@ func TestHelperDispatchWorker(t *testing.T) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "worker: CAS->send_started:", err)
 		os.Exit(6)
+	}
+
+	if barrier == barrierPreExternalSend {
+		blockForever()
 	}
 
 	// Real external send: a genuine HTTP call to the parent-owned fake
@@ -266,9 +319,52 @@ func TestHelperDispatchWorker(t *testing.T) {
 		blockForever()
 	}
 
-	// Not reached by either matrix cell in this phase; a future barrier past
-	// B4 would continue to CommitReceiptAndClearIntent /
-	// CommitTerminalAndSettleIntent here.
+	// Simulate receiving the provider's acceptance receipt into RAM only —
+	// nothing durable yet.
+	receipt := ReceiptEvidence{
+		ProviderKey:   "fake",
+		ReceiptID:     "receipt-" + turnID,
+		EvidenceKind:  "fake-receipt",
+		PayloadSHA256: HashBytes([]byte("receipt-" + turnID)),
+	}
+
+	if barrier == barrierReceiptInRAMPreCommit {
+		blockForever()
+	}
+
+	rev, err = store.CommitReceiptAndClearIntent(ctx, runID, turnID, rev, receipt, rec.IntentOwnerRunID, rec.OuterIntentKey, rec.OuterIntentGen)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "worker: commit receipt:", err)
+		os.Exit(8)
+	}
+
+	if barrier == barrierAfterReceiptCommit {
+		blockForever()
+	}
+
+	// Simulate observing the provider's final result in RAM only — nothing
+	// durable yet.
+	proof := TerminalEvidence{
+		ProviderKey:   "fake",
+		EvidenceKind:  "fake-terminal",
+		Outcome:       "completed",
+		PayloadSHA256: HashBytes([]byte("terminal-" + turnID)),
+	}
+
+	if barrier == barrierTerminalObservedPreCommit {
+		blockForever()
+	}
+
+	if _, err := store.CommitTerminalAndSettleIntent(ctx, runID, turnID, rev, proof, rec.IntentOwnerRunID, rec.OuterIntentKey, rec.OuterIntentGen); err != nil {
+		fmt.Fprintln(os.Stderr, "worker: commit terminal:", err)
+		os.Exit(9)
+	}
+
+	if barrier == barrierAfterTerminalCommitSettlePending {
+		blockForever()
+	}
+
+	// Full happy path reached with no barrier requested — clean exit.
 	os.Exit(0)
 }
 
@@ -347,5 +443,180 @@ func TestDispatchCrashMatrix_RealKill_B4_SendStartedNoProofBecomesUncertain(t *t
 	}
 	if n := provider.sendsFor(turnID); n != 1 {
 		t.Fatalf("INV-2: recovery must never re-send after a genuine post-send crash, got %d sends", n)
+	}
+}
+
+// crashCellResult captures the durable+provider-log state immediately after
+// a real kill, and again after a recovery scan, for the remaining B0/B1/B3/
+// B5/B6/B7/B8 cells (B2/B4 above stay as their own explicit tests — already
+// committed and verified; new cells share this helper to avoid repeating the
+// spawn/kill/reopen/scan boilerplate seven more times).
+type crashCellResult struct {
+	before         DispatchRecord
+	beforeErr      error
+	sendsBefore    int
+	afterScan      DispatchRecord
+	afterScanErr   error
+	sendsAfterScan int
+}
+
+func runCrashCell(t *testing.T, b crashBarrier) crashCellResult {
+	t.Helper()
+	storeDir := t.TempDir()
+	provider := newFakeProviderServer(t)
+	runID, turnID := "r-real-"+string(b), "t-real-"+string(b)
+
+	cmd, marker := spawnCrashWorker(t, storeDir, provider.url(), runID, turnID, b)
+	waitForMarkerThenKill(t, cmd, marker)
+
+	store := reopenStoreAfterKill(t, storeDir)
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+
+	before, _, beforeErr := store.Get(ctx, runID, turnID)
+	sendsBefore := provider.sendsFor(turnID)
+
+	sc := &RecoveryScanner{Store: store, Owner: "crash-matrix", Lease: time.Minute}
+	if err := sc.ScanRun(ctx, runID); err != nil {
+		t.Fatalf("ScanRun: %v", err)
+	}
+
+	afterScan, _, afterScanErr := store.Get(ctx, runID, turnID)
+	sendsAfterScan := provider.sendsFor(turnID)
+
+	return crashCellResult{
+		before: before, beforeErr: beforeErr, sendsBefore: sendsBefore,
+		afterScan: afterScan, afterScanErr: afterScanErr, sendsAfterScan: sendsAfterScan,
+	}
+}
+
+func TestDispatchCrashMatrix_RealKill_B0_NoRecordEverCreated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real subprocess")
+	}
+	res := runCrashCell(t, barrierPreCreatePrepared)
+	if res.beforeErr == nil {
+		t.Fatalf("B0: no record should exist — CreatePrepared never ran before the kill, got %+v", res.before)
+	}
+	if res.sendsBefore != 0 {
+		t.Fatalf("B0: no send should ever happen before a record even exists, got %d", res.sendsBefore)
+	}
+}
+
+func TestDispatchCrashMatrix_RealKill_B1_PreparedSafelyRetryable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real subprocess")
+	}
+	res := runCrashCell(t, barrierAfterPrepared)
+	if res.beforeErr != nil {
+		t.Fatalf("B1: Get after real kill: %v", res.beforeErr)
+	}
+	if res.before.State != DispatchPrepared {
+		t.Fatalf("B1: want prepared after real kill, got %s", res.before.State)
+	}
+	if res.afterScan.State != DispatchPrepared {
+		t.Fatalf("B1: recovery must leave a real kill at prepared safely-retryable, got %s", res.afterScan.State)
+	}
+	if res.sendsAfterScan != 0 {
+		t.Fatalf("B1: INV-2: a bare scan (no EnsureLiveAndRedispatch wired) must not itself send, got %d", res.sendsAfterScan)
+	}
+}
+
+func TestDispatchCrashMatrix_RealKill_B3_SendStartedBeforeExternalSend_StillUncertain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real subprocess")
+	}
+	res := runCrashCell(t, barrierPreExternalSend)
+	if res.before.State != DispatchSendStarted {
+		t.Fatalf("B3: want send_started after real kill, got %s", res.before.State)
+	}
+	if res.sendsBefore != 0 {
+		t.Fatalf("B3: the external send never happened before this kill, provider log must show 0, got %d", res.sendsBefore)
+	}
+	if res.afterScan.State != DispatchUncertain {
+		t.Fatalf("B3: recovery cannot distinguish an un-sent send_started (B3) from a sent one (B4) from durable state alone — it must classify uncertain either way, got %s", res.afterScan.State)
+	}
+}
+
+func TestDispatchCrashMatrix_RealKill_B5_ReceiptInRAMOnly_NeverPartiallyApplied(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real subprocess")
+	}
+	res := runCrashCell(t, barrierReceiptInRAMPreCommit)
+	if res.before.State != DispatchSendStarted {
+		t.Fatalf("B5: receipt commit never landed before this kill, state must still be send_started, got %s", res.before.State)
+	}
+	if res.before.ReceiptEvidence != nil {
+		t.Fatalf("B5: an in-RAM-only receipt must never leak into the durable record — the v1-draft-leak cell")
+	}
+	if res.sendsBefore != 1 {
+		t.Fatalf("B5: exactly one real send must have reached the provider before this kill, got %d", res.sendsBefore)
+	}
+	if res.afterScan.State != DispatchUncertain {
+		t.Fatalf("B5: no durable receipt proof after a real crash must classify uncertain, got %s", res.afterScan.State)
+	}
+	if res.sendsAfterScan != 1 {
+		t.Fatalf("B5: INV-2: recovery must never re-send, got %d", res.sendsAfterScan)
+	}
+}
+
+func TestDispatchCrashMatrix_RealKill_B6_ProviderAcceptedNoTerminalProof_StillUncertain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real subprocess")
+	}
+	res := runCrashCell(t, barrierAfterReceiptCommit)
+	if res.before.State != DispatchProviderAccepted {
+		t.Fatalf("B6: receipt commit landed before this kill, want provider_accepted, got %s", res.before.State)
+	}
+	if res.before.ReceiptEvidence == nil {
+		t.Fatalf("B6: a committed receipt must be durable — ReceiptEvidence is nil")
+	}
+	if res.afterScan.State != DispatchUncertain {
+		t.Fatalf("B6: provider_accepted with no terminal proof after a real crash must classify uncertain, got %s", res.afterScan.State)
+	}
+	if res.sendsAfterScan != 1 {
+		t.Fatalf("B6: INV-2: recovery must never re-send, got %d", res.sendsAfterScan)
+	}
+}
+
+func TestDispatchCrashMatrix_RealKill_B7_TerminalObservedInRAMOnly_StillUncertain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real subprocess")
+	}
+	res := runCrashCell(t, barrierTerminalObservedPreCommit)
+	// Nothing new was persisted between B6 and B7 — the "observation" lived
+	// only in the worker's RAM, so the durable state is identical to B6.
+	// This is the point: even though the model had genuinely finished and
+	// the worker "knew" the result, if it never committed, recovery has zero
+	// durable proof and must fall back exactly as if nothing was observed.
+	if res.before.State != DispatchProviderAccepted {
+		t.Fatalf("B7: terminal commit never landed before this kill, durable state must equal B6 (provider_accepted), got %s", res.before.State)
+	}
+	if res.afterScan.State != DispatchUncertain {
+		t.Fatalf("B7: an in-RAM-only terminal observation must not affect recovery's classification — want uncertain, got %s", res.afterScan.State)
+	}
+	if res.sendsAfterScan != 1 {
+		t.Fatalf("B7: INV-2: recovery must never re-send, got %d", res.sendsAfterScan)
+	}
+}
+
+func TestDispatchCrashMatrix_RealKill_B8_TerminalCommittedSettlePending_SurvivesIntact(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a real subprocess")
+	}
+	res := runCrashCell(t, barrierAfterTerminalCommitSettlePending)
+	if !res.before.State.IsTerminal() {
+		t.Fatalf("B8: terminal commit landed before this kill, want a terminal state, got %s", res.before.State)
+	}
+	if res.before.SettlePhase != SettlePending {
+		t.Fatalf("B8: testPrepared sets SettleOwed=true, so a real terminal commit must leave SettlePhase=pending, got %s", res.before.SettlePhase)
+	}
+	// Known gap, not a Task-255 defect: Task-251's settle-phase driver is not
+	// wired to the recovery scanner in production yet, so reconcileOne
+	// intentionally no-ops on a terminal record (see dispatch_recovery.go).
+	// This assertion documents that gap explicitly rather than silently
+	// passing regardless of what the scan did.
+	if res.afterScan.SettlePhase != SettlePending {
+		t.Fatalf("B8: a bare recovery scan must not itself finalize settle (that is the still-unwired Task-251 driver's job) — got phase=%s", res.afterScan.SettlePhase)
 	}
 }
