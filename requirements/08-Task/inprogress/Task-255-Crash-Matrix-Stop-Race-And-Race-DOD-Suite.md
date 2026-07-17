@@ -5,7 +5,7 @@
 - Document ID: `Task-255`
 - Title: `Crash-Matrix, Stop-Race And Race DOD Suite`
 - Phase: `task`
-- Status: `in_progress` (audit 2026-07-17: real subprocess crash harness absent; 10/12 named suites missing — see §8 Audit Gap)
+- Status: `in_progress` (2026-07-17: **real subprocess-kill harness now exists** — Phase 1 skeleton with 2 live matrix cells (B2, B4); full B0..B8e + settle-barrier matrix, model-based suite, and race/CI wiring still open — see §8)
 - Owner: `FlowPilot`
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
@@ -249,10 +249,15 @@ Items in the durability/dispatch class are covered by the **new** matrix; the re
 
 ## 8. Completion Notes
 
-- result: **foundation unit cells only (NOT done)** — light unit cells live in `cp51_tasks_test.go`; `dispatch_crash_matrix_test.go` (6 tests) + `dispatch_record_test.go` (30) exist.
-- **Audit Gap (2026-07-17):** status was prematurely `done`. This task OWNS the CP-51 finish line, so its incompleteness blocks the whole CP.
-  - **Real subprocess crash harness does NOT exist:** no `dispatch_test_harness.go`, no `TestHelperDispatchWorker`/`-test.run` re-exec, no parent-owned fake-provider HTTP log. Crash cells use `store.Close()`+reopen in-process — the **explicitly-rejected** same-process rebuild (Key Decision T-2 / DOD `SP`).
-  - **8/12 named suites absent** (updated 2026-07-17 — `stop_race_barrier_test.go` and `dispatch_recovery_test.go` now exist, from the Codex-suggested Task-249/250 fixes): `dispatch_model_test.go` (MB), `gate_checkpoint_outage_test.go`, `fcp_marker_replay_test.go`, `supabase_runtime_corruption_test.go`, `idempotency_retention_test.go`, `dispatch_store_contract_test.go`, `dispatch_settle_test.go` + shared subprocess harness. Present: `dispatch_crash_matrix_test.go`, `dispatch_record_test.go`, `stop_race_barrier_test.go`, `dispatch_recovery_test.go`. Still 1/25 named skeletons present by exact name (the new tests above cover real scenarios but weren't named per the original skeleton list).
-  - No CI wiring for `go test -race`; `FF` (fail-on-HEAD-6ea5417 evidence), `GR`, `MB`, `SP`, `PG` all unmet. Acceptance 0/6.
-- follow-ups: build the real subprocess-kill harness + fake provider; author the missing named suites; wire the §10.3 verdict command into CI; capture fail-on-HEAD evidence.
-- upstream docs updated: task status (this audit)
+- result: **Phase 1 harness skeleton landed (2026-07-17), NOT done overall.** `dispatch_crash_harness_test.go` (new) implements Key Decision T-2 for real: a parent-owned durable fake-provider HTTP server (`fakeProviderServer`, request log fsynced to a temp file, survives worker death), a re-exec'd worker (`TestHelperDispatchWorker`, gated by `FLOWPILOT_CRASH_WORKER` so normal `go test` runs skip it harmlessly), and cross-platform hard-kill (`waitForMarkerThenKill` → `cmd.Process.Kill()`, no `kill -9`/SIGKILL assumption). Two live matrix cells prove the mechanism end-to-end against a **genuine OS process kill**, not a simulated one:
+  - `TestDispatchCrashMatrix_RealKill_B2_SendClaimedSafelyRetryable` — worker killed after the `send_claimed` CAS, before `send_started`; asserts the parent-owned provider log shows **zero** sends (nothing was ever sent) and recovery leaves it safely-retryable.
+  - `TestDispatchCrashMatrix_RealKill_B4_SendStartedNoProofBecomesUncertain` — worker killed after a real HTTP POST reached the fake provider, before any receipt/terminal commit; asserts the provider log shows **exactly one** send (ground truth independent of the killed worker's own memory) and recovery classifies `uncertain`, never re-sends, never fabricates a terminal.
+  - The store's `flock`-based lock (already used by `localDispatchStore`) is released by the OS on process death, so the parent can reopen the same on-disk store immediately after a real kill — `reopenStoreAfterKill` retries briefly (up to 3s) to absorb any OS-level release latency.
+  - `go build ./...`, `go vet ./internal/runner` clean; both new tests pass; full `go test ./internal/runner/...` shows no new regressions (same pre-existing environment-dependent baseline as before this change).
+- **Still NOT done — the bulk of the matrix.** This is 2 of the ~20+ named barrier×fault×backend cells the task requires:
+  - Only `B2` and `B4` are wired as real subprocess-kill cells. `B0`, `B1`, `B3`, `B5`, `B6`, `B7`, `B8` and the settle sub-barriers `B8a..B8e` are not — the worker's linear driver would need to grow a branch (and a `CommitReceiptAndClearIntent`/`CommitTerminalAndSettleIntent` call) per additional barrier.
+  - Supabase-fake / real-PostgreSQL tier is **moot, not merely deferred**: Task-258 retired Supabase dispatch entirely, so `PG` and the Supabase half of every crash cell no longer apply — the matrix is local-file-only going forward. (This narrows scope; it should be reflected in a future revision of §4/§6 rather than carried as an open gap.)
+  - `dispatch_model_test.go` (randomized composite-fault interleaving, ledger `MB`), `gate_checkpoint_outage_test.go`, `fcp_marker_replay_test.go`, `supabase_runtime_corruption_test.go` (now moot per Task-253/258), `idempotency_retention_test.go` (already exists — Task-254), `dispatch_store_contract_test.go`, `dispatch_settle_test.go` — still absent as named files (some scenarios are covered piecemeal in other tasks' test files, but not aggregated here per §4.2's file inventory).
+  - No CI wiring for `go test -race`; `FF` (fail-on-HEAD-6ea5417 evidence capture), `GR`, `MB`, `SP` (now moot), `PG` (now moot) remain unmet.
+- follow-ups: extend the worker driver to cover B0/B1/B3/B5/B6/B7/B8 + settle sub-barriers using the same real-kill pattern; author the remaining named suites; wire `go test -race ./internal/runner ./internal/flowgate` into CI; capture fail-on-HEAD evidence for defect-regression cells; revise §4/§6 to drop the Supabase tier now that Task-258 retired it.
+- upstream docs updated: task status + harness landing (this pass)
