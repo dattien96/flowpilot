@@ -147,7 +147,7 @@ go test ./internal/runner/ -count=1 -timeout 10m \
 ```bash
 # Core dispatch contract + crash foundation + CP51 tasks
 go test ./internal/runner/ -count=1 -timeout 5m \
-  -run 'TestDispatch|TestCrashMatrix|TestStopCAS|TestSessionIDIsNotAReceipt|TestProviderV2|TestFCPMarker|TestApplySessionRuntime|TestSnapshot_|TestRecoveryScanner|TestSettleDriver|TestOperatorAttention|TestCapabilityEvidence|TestLocalStore_Disk|TestCreatePrepared|TestActivation|TestRetryAsNew|TestRecordEffect|TestReleaseManifest|TestOpenRepair|TestEventTurnStarted|TestPreSend|TestReceipt|TestTerminalCommit|TestOwnRunStop|TestChildSendStarted|TestResolveUncertain|TestRecoveryAttach|TestEverySent|TestRunStopState|TestLocalLog_Startup'
+  -run 'TestDispatch|TestCrashMatrix|TestStopCAS|TestSessionIDIsNotAReceipt|TestProviderV2|TestFCPMarker|TestApplySessionRuntime|TestSnapshot_|TestRecoveryScanner|TestSettleDriver|TestOperatorAttention|TestCapabilityEvidence|TestLocalStore_Disk|TestCreatePrepared|TestActivation|TestRetryAsNew|TestRecordEffect|TestReleaseManifest|TestOpenRepair|TestEventTurnStarted|TestPreSend|TestReceipt|TestTerminalCommit|TestOwnRunStop|TestChildSendStarted|TestResolveUncertain|TestRecoveryAttach|TestEverySent|TestRunStopState|TestLocalLog_Startup|TestDispatchInspect|TestRepairResolutionHandler|TestRecoveryCommitGuards|TestDispatchAttentionHandlers|TestDispatchAttention_RebuildsAfterRestart|TestResumePendingFlowGate_CompletionEventKeyedByTurnID'
 
 # Race (subset — longer)
 go test -race ./internal/runner/ -count=1 -timeout 5m \
@@ -224,14 +224,18 @@ Ghi ☐ khi pass. Chạy với desktop + `flowpilot serve`, project git thật.
 | C2 | Crash after send | Kill runner sau `send_started`, trước complete; restart | Record còn `send_started` hoặc recovery → `uncertain`/`settle`; **không** silent loss turn | Pre/post dispatch rows | |
 | C3 | Stop before send | Stop ngay sau prepared / trước provider accept | `stopped_before_send` / `terminal_cancelled`; **không** double `session/prompt` | State + single prompt in turns log | |
 | C4 | Stop during stream | Stop khi model đang stream | Terminal cancelled/stopped; UI idle; không orphan `turnInFlight` | UI + terminal evidence | |
-| C5 | Uncertain surface | Force uncertain (crash mid-send) | Desktop **Dispatch attention** card; abandon / mark-complete operator actions | Card + CAS row | |
+| C5 | Uncertain surface | Force uncertain (crash mid-send) | Desktop **Dispatch attention** card; **Inspect** (state/revision/settlePhase, redacted evidence) → **Retry-as-new** or **Retry-load** (repair) actions available, cancel-biased UI | Card + CAS row | |
 | C6 | Drive sync round-trip | Sync project chats → Drive; machine B restore same `project_id` | Session + **dispatch** log restore; no empty overwrite of newer local | Both machines files | |
-| C7 | Provider allow-list | Claude/Gemini default; optional `FLOWPILOT_DISPATCH_V2_PROVIDERS=` | V2 start rejected / stay V1 unless allow-list | Log start path | |
+| C7 | Provider allow-list (Gemini only) | Gemini opt-in only, via `FLOWPILOT_DISPATCH_V2_PROVIDERS=gemini`; Claude/Codex/Grok are **default ON** (no allow-list needed) | Without allow-list: Gemini stays V1, Claude/Codex/Grok run V2. With allow-list: Gemini also V2 | Log start path (`providerV2Enabled` decision) | |
 | C8 | Kill-switch | `FLOWPILOT_DISPATCH_V2=0`, new run | New turns pure V1; existing V2 rows still readable | Log kill-switch line | |
 | C9 | Concurrent two runs | Two projects / two runs parallel Grok | Separate dispatch files/rows; no cross project_id | Two `dispatch.ndjson` | |
 | C10 | Second turn session reuse | After C1, second message same run | Reuses provider session when possible; new turn_id; new prepared→terminal; **faster** than cold start (no full cold MCP if process warm) | Turns log `grok_session` + wall time | |
 | C11 | Envelope / hash | Inspect prepared envelope | `envelope_hash` stable; `prompt_sha256` matches prompt bytes; model/yolo recorded | Prepared row fields | |
 | C12 | Recovery attach epoch | After recovery path | `recovery_attach_epoch` increments when attach/settle; no double terminal | Revision sequence | |
+| C13 | FCP marker cross-run replay reject | Capture a `flowpilot-fcp:<id>:<mac>` marker minted for run A's flow-coding handoff; replay same marker into a spawn for a different run B | Provenance check rejects marker (run A's `FCPMarkerProvenanceRunID` ≠ run B); child spawn does **not** trust the injected FCP context as authentic | Reject log line + child prompt shows marker rejected, not silently trusted | |
+| C14 | Inspect never leaks raw payload | Force an uncertain/open-repair record with a real provider payload; call **Inspect** in UI | Response/UI shows canonical **hash** for receipt/terminal evidence and repair metadata only — never the raw provider payload or raw quarantine blob | Network response body (`receiptEvidence`/`terminalEvidence`/`openRepair` fields) | |
+| C15 | Retry-as-new superseded guidance | On an uncertain record, click **Retry-as-new** twice (second click after first already advanced state/revision) | Second call returns 409 `dispatch_retry_superseded`; UI surfaces abandon guidance instead of silently failing or double-sending | UI message + HTTP 409 in network log | |
+| C16 | Boot recovery auto-redispatch (no user action) | Kill runner process while a turn sits in `prepared`/`send_claimed` (before `send_started`); restart runner binary (not just reopen desktop window); do **not** touch the run in UI | `ScanDispatchRecoveryOnBoot` finds the record via `ListRecoverable`, reconstructs the run, and redispatches automatically — record advances past `send_claimed` without any user click | Server boot log (`ensureLiveAndRedispatch`) + dispatch.ndjson state advancing unattended | |
 
 ### 3.4 Cross-cut smoke
 
@@ -338,6 +342,7 @@ cat .flowpilot/chats/${RUN}-turns.ndjson
 | | | Live A1–A10 | ☐ | |
 | | | Live B1–B5 | ☐ | |
 | | | Live C2–C12 | ☐ | |
+| | | Live C13–C16 (new, post CA-340..349) | ☐ | |
 | | | Live X1–X4 | ☐ | |
 
 ---
@@ -350,6 +355,7 @@ cat .flowpilot/chats/${RUN}-turns.ndjson
 - Desktop DispatchAttentionCard cần runner V2 + store (V2 default-on; kill-switch `=0`).
 - **Log volume:** full ACP frame dump làm first-turn log “nặng” — không phải failure signal (xem §3.5).
 - Cold Grok first turn 15–40s với MCP+skills là baseline hiện tại, không dùng làm failure cho C1 nếu dispatch terminal + reply OK.
+- **C13–C16 chưa chạy live** (chỉ có unit test tương ứng: `TestFCPMarkerCrossServiceReplayRejected`-family cho C13, `TestDispatchInspect_RedactsCanonicalReceiptEvidence` cho C14, `TestRetryAsNewHandler_SupersededSurfacesAbandonGuidance` cho C15, chưa có unit test riêng cho boot-auto-redispatch không cần user action ở C16 — `reconcileOne`/`ScanAllRecoverable` test check redispatch được gọi, nhưng chưa có test end-to-end "process thật restart, không ai bấm gì" ở mức desktop).
 
 ---
 
