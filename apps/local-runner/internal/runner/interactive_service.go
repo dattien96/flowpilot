@@ -333,9 +333,20 @@ type interactiveRun struct {
 	// new cohort results appends a "no progress" GateReason suffix.
 	lastEscalateReason    string
 	lastEscalateCohortLen int
+	// lastEscalatedInlineNodeID (BUG-289 A5/F-9) remembers which inline
+	// validate/audit node escalated in a hub-less flow so Continue re-enters
+	// that node instead of reinvoking a nonexistent hub.
+	lastEscalatedInlineNodeID string
 	// lastProviderEventAt is stamped on every emitLocked for stall detection
 	// (Task-241 T-11). Zero means no event yet (member just spawned).
 	lastProviderEventAt time.Time
+	// hubLastProgressAt is stamped when the hub/root makes progress (turn,
+	// gate, reinvoke arm) for BUG-289 F-0 hub_stalled watchdog (I-16 hub).
+	hubLastProgressAt time.Time
+	// hubReinvokeStartFailCount counts consecutive startTurn rejects from a
+	// scheduled hub reinvoke (BUG-289 H1 review). Caps active notifyTurnIdle
+	// retries so a permanent reject cannot tight-loop.
+	hubReinvokeStartFailCount int
 	// stallTimeout is the parent-run stall window (Task-241). Default 10m when
 	// flow policy leaves StallTimeoutSec at 0.
 	stallTimeout time.Duration
@@ -1544,6 +1555,33 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		return snap, nil
 	}
 
+	// BUG-289 A5/F-9: hub-less flows (rag-harness) escalate from inline
+	// validate/audit with no hub.inline — Continue must re-enter that node,
+	// not reinvoke a nonexistent hub.
+	s.mu.Lock()
+	escalatedNodeID := ""
+	var edges []agentpack.FlowEdge
+	var nodes []agentpack.FlowNode
+	if rs := s.runs[parentRunID]; rs != nil {
+		escalatedNodeID = strings.TrimSpace(rs.lastEscalatedInlineNodeID)
+		if escalatedNodeID != "" {
+			edges = rs.activeFlowEdges
+			nodes = rs.activeFlowNodes
+			rs.lastEscalatedInlineNodeID = ""
+		}
+	}
+	hubInline := hubInlineNodeID(nodes)
+	if hubInline == "" && escalatedNodeID == "" {
+		// Still no hub and no remembered node — fall through to generic reinvoke.
+	}
+	s.mu.Unlock()
+	if escalatedNodeID != "" && hubInline == "" {
+		if node, ok := findFlowNode(nodes, escalatedNodeID); ok {
+			go s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, node, feedback)
+			return snap, nil
+		}
+	}
+
 	resumeNote := ""
 	if feedback != "" {
 		resumeNote = "[flow-engine] The flow was paused awaiting your input. User guidance:\n" + feedback +
@@ -1704,6 +1742,7 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 	}
 	stepID := s.nextID("step")
 	parent.reinvokeInFlight = true
+	touchHubProgressLocked(parent)
 	// BUG-275: join handler already put cohortNote in pendingAgentContext, and
 	// we embed the same note in the scheduled prompt. Remove one exact copy so
 	// startTurn's composeAgentContextBlock does not also wrap it under
@@ -1729,6 +1768,7 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 		prompt = cohortNote + "\n\n---\n\n" + prompt
 	}
 	s.scheduleChildTurn(parentRunID, stepID, prompt)
+	s.maybeScheduleHubStallCheck(parentRunID)
 }
 
 // maybeAutoReinvokeHubWithPrompt (Task-235) is maybeAutoReinvokeHubWithNote's
@@ -1757,9 +1797,16 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithPrompt(parentRunID, prompt 
 	s.mu.Lock()
 	parent := s.runs[parentRunID]
 	if parent == nil || !parent.autoOrchestrate || parent.reinvokeInFlight || parent.turnInFlight {
-		if parent != nil && parent.autoOrchestrate && parent.turnInFlight && !parent.reinvokeInFlight {
-			parent.pendingHubReinvoke = true
-			parent.pendingHubReinvokePrompt = prompt
+		// BUG-289 M7/F-1: also re-arm when reinvokeInFlight && !turnInFlight
+		// (scheduled-but-not-started window). The old predicate only covered
+		// turnInFlight && !reinvokeInFlight, so a notify prompt arriving in
+		// that window was dropped while the notify step still swept DONE.
+		if parent != nil && parent.autoOrchestrate {
+			if (parent.turnInFlight && !parent.reinvokeInFlight) ||
+				(parent.reinvokeInFlight && !parent.turnInFlight) {
+				parent.pendingHubReinvoke = true
+				parent.pendingHubReinvokePrompt = prompt
+			}
 		}
 		s.mu.Unlock()
 		s.flowDiagLog(parentRunID, "hub_notify_reinvoke_deferred", "hub.notify reinvoke was deferred or skipped by current state",
@@ -1802,9 +1849,11 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithPrompt(parentRunID, prompt 
 	}
 	stepID := s.nextID("step")
 	parent.reinvokeInFlight = true
+	touchHubProgressLocked(parent)
 	s.mu.Unlock()
 	s.flowDiagLog(parentRunID, "hub_notify_reinvoke_scheduled", "hub.notify reinvoke scheduled", "step_id", stepID)
 	s.scheduleChildTurn(parentRunID, stepID, prompt)
+	s.maybeScheduleHubStallCheck(parentRunID)
 }
 
 func pendingAgentContextContains(notes []string, note string) bool {
@@ -2128,7 +2177,44 @@ func (s *InteractiveService) scheduleChildTurn(runID, stepID, prompt string) {
 		return
 	}
 	go func(runID, stepID, prompt string) {
-		_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
+		// BUG-289 H1/F-1: do not discard startTurn errors — reinvokeInFlight
+		// was set true by the scheduler and is only cleared on success
+		// (startTurn) or Stop. A reject left the flag true forever, blocking
+		// every later reinvoke and the pendingHubReinvoke re-arm path.
+		//
+		// Claude review: only re-arming pendingHubReinvoke without notifyTurnIdle
+		// renames the stuck flag — hub_stalled treats pending as "busy" so F-0
+		// never escalates and nothing ever drains/retries. Active-drain like H4.
+		_, err := s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
+		if err != nil {
+			shouldDrain := false
+			s.mu.Lock()
+			if rs := s.runs[runID]; rs != nil && rs.reinvokeInFlight {
+				rs.reinvokeInFlight = false
+				rs.pendingHubReinvoke = true
+				// Preserve a custom notify prompt (or the scheduled prompt) so
+				// the next drain retries the same work (also covers M7 window).
+				if strings.TrimSpace(prompt) != "" && strings.TrimSpace(rs.pendingHubReinvokePrompt) == "" {
+					rs.pendingHubReinvokePrompt = prompt
+				}
+				rs.hubReinvokeStartFailCount++
+				// Cap active retries so permanent startTurn failures cannot
+				// tight-loop scheduleChildTurn → notifyTurnIdle → reinvoke.
+				// Remaining pending is visible to F-0 once not counted as busy.
+				shouldDrain = rs.hubReinvokeStartFailCount <= 3
+				touchHubProgressLocked(rs)
+			}
+			s.mu.Unlock()
+			s.flowDiagLog(runID, "hub_reinvoke_start_failed", "scheduled hub reinvoke startTurn failed; cleared reinvokeInFlight and re-armed pending",
+				"error", err.Error(),
+				"will_drain", shouldDrain,
+			)
+			if shouldDrain {
+				// Only live drain path for pendingHubReinvoke when idle (H5/F-5).
+				s.notifyTurnIdle(runID)
+			}
+			s.maybeScheduleHubStallCheck(runID)
+		}
 	}(runID, stepID, prompt)
 }
 
@@ -2979,6 +3065,16 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 					}
 					s.approvals[st.ApprovalID] = expiredRec
 					repairApprovals = append(repairApprovals, approvalStateFromRecord(rs, expiredRec, st.ExpiresAt))
+					// BUG-289 H4/F-4: rehydrate already-expired must not leave
+					// rs.status stuck at WaitingApproval with no live card.
+					if rs.status == RunStatusWaitingApproval && rs.pendingApprovalID == st.ApprovalID {
+						rs.pendingApprovalID = ""
+						rs.status = RunStatusRunning
+						rs.agentStatus = string(RunStatusRunning)
+						touchHubProgressLocked(rs)
+					} else if rs.pendingApprovalID == st.ApprovalID {
+						rs.pendingApprovalID = ""
+					}
 					continue
 				}
 				rec := &approvalRecord{
@@ -3054,6 +3150,15 @@ func (s *InteractiveService) rehydratePendingGatesLocked(runID string) {
 					}
 					s.questions[st.QuestionID] = expiredRec
 					repairQuestions = append(repairQuestions, questionStateFromRecord(expiredRec, "", st.ExpiresAt))
+					// BUG-289 H4/F-4: rehydrate already-expired question.
+					if rs.status == RunStatusWaitingQuestion && rs.pendingQuestionID == st.QuestionID {
+						rs.pendingQuestionID = ""
+						rs.status = RunStatusRunning
+						rs.agentStatus = string(RunStatusRunning)
+						touchHubProgressLocked(rs)
+					} else if rs.pendingQuestionID == st.QuestionID {
+						rs.pendingQuestionID = ""
+					}
 					continue
 				}
 				s.questions[st.QuestionID] = &questionRecord{
@@ -3844,6 +3949,15 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					s.appendPendingAgentContextLocked(rs.parentRunID, note)
 					if parent := s.runs[rs.parentRunID]; parent != nil {
 						parent.lastCohortNote = note // BUG-233: retained for the CA-226 fallback GateReason
+						// BUG-289 L4/F-10: stamp hub RUNNING on failed-member join
+						// (completed-join already does this at :3587-3589).
+						hubNodeID := parent.activeHubNodeID
+						if hubNodeID == "" {
+							hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
+						}
+						if hubNodeID != "" && s.loopIsAdvancing(rs.parentRunID) {
+							s.setFlowStepStatusLocked(context.Background(), rs.parentRunID, hubNodeID, StepStatusRunning)
+						}
 					}
 					parentRunID := rs.parentRunID
 					capturedCohortNote := note // embed note directly in synthesis prompt (BUG-synthesis-hang)
@@ -4303,6 +4417,13 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 			// flow_control("done") and this function runs again, resolved against
 			// the new activeHubNodeID dispatchHubNotifyNode just set.
 			s.dispatchHubNotifyNode(targetRunID, targetNode)
+			// BUG-289 A6/F-9: stamp the one-decision guard so a second same-turn
+			// flow_control cannot bypass I-5 and settle past hub.notify early.
+			s.mu.Lock()
+			if rs := s.runs[targetRunID]; rs != nil && rs.currentTurnID != "" {
+				rs.lastFlowControlTurnID = rs.currentTurnID
+			}
+			s.mu.Unlock()
 			st := s.agentOrchestrator.loopStateFor(targetRunID)
 			// BUG-284 follow-up: report Status:"done" (not "continue") — the
 			// caller's own review verdict WAS accepted; "continue" reads to the
@@ -4662,6 +4783,57 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 			if turnErr != nil {
 				// startTurn failed before the adapter ran — signal the waiter explicitly.
 				s.agentOrchestrator.signalChild(handle.RunID, "", true, turnErr.msg, RunStatusFailed)
+				// BUG-289 H2/F-2: pre-flight failure never hit appendCohortResult
+				// (only turn-completed/failed handlers do). Stall sweep skips
+				// members with last.IsZero() && !inFlight, so the barrier hung
+				// forever. Buffer FAILED and re-check cohortComplete like
+				// EventTurnFailed (:3831-3851).
+				s.mu.Lock()
+				child := s.runs[handle.RunID]
+				cohortID := ""
+				label := ""
+				provider := ""
+				if child != nil {
+					cohortID = child.flowCohortId
+					label = child.label
+					provider = string(child.providerKey)
+					if child.parentRunID != "" && child.flowCohortId != "" && label != "" {
+						if parent := s.runs[child.parentRunID]; parent != nil && parent.flowEngineDriven {
+							s.setFlowStepStatusLocked(context.Background(), child.parentRunID, label, StepStatusFailed)
+						}
+					}
+				}
+				parentRunID := parentRunID
+				s.mu.Unlock()
+				if cohortID != "" {
+					s.agentOrchestrator.appendCohortResult(parentRunID, cohortID, cohortEntry{
+						Label:    label,
+						Provider: provider,
+						Status:   "failed",
+						Err:      turnErr.msg,
+					})
+					if s.agentOrchestrator.cohortComplete(parentRunID, cohortID) {
+						entries := s.agentOrchestrator.drainCohort(parentRunID, cohortID)
+						note := buildCohortNote(parentRunID, cohortID, entries, s.agentOrchestrator.graphSnapshot(parentRunID).LoopState.Round)
+						s.appendPendingAgentContext(parentRunID, note)
+						s.mu.Lock()
+						if parent := s.runs[parentRunID]; parent != nil {
+							parent.lastCohortNote = note
+							// L4: stamp hub RUNNING on failed-member join (mirror completed-join).
+							hubNodeID := parent.activeHubNodeID
+							if hubNodeID == "" {
+								hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
+							}
+							if hubNodeID != "" && s.loopIsAdvancing(parentRunID) {
+								s.setFlowStepStatusLocked(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
+							}
+						}
+						s.mu.Unlock()
+						go s.maybeAutoReinvokeHubWithNote(parentRunID, note)
+					} else {
+						s.maybeScheduleStallCheck(parentRunID)
+					}
+				}
 			}
 		}()
 	}
@@ -4834,12 +5006,22 @@ func scheduleQuestionExpiry(s *InteractiveService, id, expiresAt string) {
 
 func (s *InteractiveService) expireApproval(id string) {
 	var snapshot *ProviderApprovalState
+	var settleRunID string
 	s.mu.Lock()
 	if rec := s.approvals[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
 		rs := s.runs[rec.runID]
 		if rs != nil && rs.pendingApprovalID == id {
 			rs.pendingApprovalID = ""
+			// BUG-289 H4/F-4: flip off WAITING so the run is not 409-locked forever
+			// after TTL (live path relied on blocked RequestApproval receiving
+			// errApprovalExpired — that goroutine is gone after restart).
+			if rs.status == RunStatusWaitingApproval {
+				rs.status = RunStatusRunning
+				rs.agentStatus = string(RunStatusRunning)
+				settleRunID = rs.id
+				touchHubProgressLocked(rs)
+			}
 		}
 		// BUG-288 P1-07: always persist the expiry transition, not only when a
 		// live rs still points its pendingApprovalID at this card — otherwise a
@@ -4857,6 +5039,10 @@ func (s *InteractiveService) expireApproval(id string) {
 			// larger change out of scope here.
 			log.Printf("[gate] persist approval expiry %s: %v (expiry left un-durable — may resurrect as pending on restart)", id, err)
 		}
+	}
+	if settleRunID != "" {
+		s.notifyTurnIdle(settleRunID)
+		s.maybeScheduleHubStallCheck(settleRunID)
 	}
 }
 
@@ -4907,11 +5093,19 @@ func (s *InteractiveService) approvalRunID(id string) string {
 
 func (s *InteractiveService) expireQuestion(id string) {
 	var snapshot *ProviderQuestionState
+	var settleRunID string
 	s.mu.Lock()
 	if rec := s.questions[id]; rec != nil && rec.status == "pending" {
 		rec.status = "expired"
 		if rs := s.runs[rec.runID]; rs != nil && rs.pendingQuestionID == id {
 			rs.pendingQuestionID = ""
+			// BUG-289 H4/F-4: flip off WAITING (mirror expireApproval).
+			if rs.status == RunStatusWaitingQuestion {
+				rs.status = RunStatusRunning
+				rs.agentStatus = string(RunStatusRunning)
+				settleRunID = rs.id
+				touchHubProgressLocked(rs)
+			}
 		}
 		state := questionStateFromRecord(rec, "", rec.expiresAt)
 		snapshot = &state
@@ -4922,6 +5116,10 @@ func (s *InteractiveService) expireQuestion(id string) {
 			// BUG-288 P1-07: see expireApproval's mirrored comment.
 			log.Printf("[gate] persist question expiry %s: %v (expiry left un-durable — may resurrect as pending on restart)", id, err)
 		}
+	}
+	if settleRunID != "" {
+		s.notifyTurnIdle(settleRunID)
+		s.maybeScheduleHubStallCheck(settleRunID)
 	}
 }
 
@@ -5119,11 +5317,24 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	s.ensureBaselineWithContext(ctx, rs.workspaceCwd)
 	// CP-51 Task-249: durable send_claimed → send_started linearization before
 	// the adapter's first external byte. Stop winning this CAS means zero send.
-	if !s.linearizeSendStarted(ctx, rs, turnID) {
+	// BUG-289 A1/F-6: non-Stop store errors must emit a terminal turn event and
+	// settle the RUNNING step — not only clear turnInFlight and return.
+	if ok, storeErr := s.linearizeSendStarted(ctx, rs, turnID); !ok {
 		s.mu.Lock()
 		rs.turnInFlight = false
 		rs.currentTurnID = ""
 		rs.turnCancel = nil
+		if storeErr {
+			// Fail the turn so UI/step state is not left RUNNING forever.
+			s.emitLocked(rs, ProviderEvent{
+				Type:           EventTurnFailed,
+				ProviderTurnID: turnID,
+				Error:          "dispatch linearize failed (store/CAS error before send)",
+				Status:         string(RunStatusFailed),
+			})
+			rs.status = RunStatusFailed
+			rs.agentStatus = string(RunStatusFailed)
+		}
 		s.mu.Unlock()
 		s.notifyTurnIdle(rs.id)
 		return
@@ -6045,6 +6256,8 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	}
 	rs.turnInFlight = true
 	rs.reinvokeInFlight = false // the turn the reinvoke scheduled is now in flight
+	// Successful launch resets H1 consecutive-fail counter.
+	rs.hubReinvokeStartFailCount = 0
 	flowStartOnly := false
 	// A new turn resets the idle-summary window to zero (a pending summary timer
 	// is cancelled here and re-armed when this turn completes).
@@ -6089,6 +6302,11 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		}
 		rs.turnCount++
 	}
+	// BUG-289 M1/F-8: repromptAttempts is a per-turn cap (maxFlowGateReprompts=2),
+	// not a lifetime budget. Reset at every new turn start so resume/reinvoke
+	// does not inherit a prior turn's exhausted counter.
+	rs.repromptAttempts = 0
+	touchHubProgressLocked(rs)
 	rs.stepID = in.StepID         // durable for rehydrate-approve restart (V10R P1)
 	rs.lastTurnStepID = in.StepID // CP-35: remember for gate reprompts
 	rs.currentTurnID = turnID
