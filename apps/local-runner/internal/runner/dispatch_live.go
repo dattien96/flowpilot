@@ -292,13 +292,32 @@ func (s *InteractiveService) commitPreSendCancel(ctx context.Context, runID, tur
 }
 
 // requestRunStopV2 advances durable RunStopState then cancels active records.
-func (s *InteractiveService) requestRunStopV2(ctx context.Context, runID string) {
-	if s == nil || s.dispatchStore == nil {
-		return
+// It is a no-op (nil error) for runs without V2 activation (no dispatch
+// records) so a live Stop of a never-dispatched run does not spuriously
+// create activation state.
+//
+// Fail-closed (Codex review 2026-07-17): the durable RunStopState write is the
+// actual INV-3 fence — a concurrent send's send_claimed→send_started CAS only
+// sees Stop if this commit landed. Previously this function returned void and
+// swallowed every store error, so a durable-store failure let the live Stop
+// API still report success via RAM cancel alone, with no fence ever persisted.
+// It now returns an error for any failure on the two calls that establish the
+// fence (GetRunStopState, RequestRunStop); the caller must treat that as Stop
+// NOT durably guaranteed and must not report unqualified success. The
+// best-effort cancel-request sweep (ListRecoverable/SetCancelRequested) is a
+// courtesy for already-claimed records — the CAS-level fence in
+// linearizeSendStarted is what actually blocks a send, so a failure there is
+// logged, not fatal.
+func (s *InteractiveService) requestRunStopV2(ctx context.Context, runID string) error {
+	if s == nil || s.dispatchStore == nil || runID == "" {
+		return nil
+	}
+	if ver, err := s.dispatchStore.GetRunProtocolVersion(ctx, runID); err != nil || ver < DispatchProtocolV2 {
+		return nil
 	}
 	st, err := s.dispatchStore.GetRunStopState(ctx, runID)
 	if err != nil {
-		return
+		return fmt.Errorf("requestRunStopV2: GetRunStopState run=%s: %w", runID, err)
 	}
 	exp := st.Revision
 	if exp == 0 {
@@ -307,20 +326,29 @@ func (s *InteractiveService) requestRunStopV2(ctx context.Context, runID string)
 	newSt, err := s.dispatchStore.RequestRunStop(ctx, runID, exp, StopReasonUser)
 	if err != nil {
 		// stale: reload once
-		st, _ = s.dispatchStore.GetRunStopState(ctx, runID)
+		st, err = s.dispatchStore.GetRunStopState(ctx, runID)
+		if err != nil {
+			return fmt.Errorf("requestRunStopV2: GetRunStopState (retry) run=%s: %w", runID, err)
+		}
 		newSt, err = s.dispatchStore.RequestRunStop(ctx, runID, st.Revision, StopReasonUser)
 		if err != nil {
-			log.Printf("[dispatch] RequestRunStop failed run=%s: %v", runID, err)
-			return
+			return fmt.Errorf("requestRunStopV2: RequestRunStop run=%s: %w", runID, err)
 		}
 	}
-	list, _ := s.dispatchStore.ListRecoverable(ctx, runID)
+	list, err := s.dispatchStore.ListRecoverable(ctx, runID)
+	if err != nil {
+		log.Printf("[dispatch] ListRecoverable failed after durable stop run=%s: %v (fence still durable; cancel-request sweep skipped)", runID, err)
+		return nil
+	}
 	for _, r := range list {
 		if r.State.IsTerminal() {
 			continue
 		}
-		_, _ = s.dispatchStore.SetCancelRequested(ctx, runID, r.TurnID, r.Revision, newSt.Generation)
+		if _, err := s.dispatchStore.SetCancelRequested(ctx, runID, r.TurnID, r.Revision, newSt.Generation); err != nil {
+			log.Printf("[dispatch] SetCancelRequested failed run=%s turn=%s: %v (fence still durable)", runID, r.TurnID, err)
+		}
 	}
+	return nil
 }
 
 func (rs *interactiveRun) dispatchByTurn(turnID string) *DispatchRecord {
