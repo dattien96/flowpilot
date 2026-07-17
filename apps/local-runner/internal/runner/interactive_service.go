@@ -3327,13 +3327,24 @@ func (s *InteractiveService) resumePendingFlowGate(runID string) {
 	rs.seq++
 	completedEv.Seq = rs.seq
 	completedEv.ID = s.nextID("evt")
-	if n := len(rs.events); n > 0 && rs.events[n-1].Type == EventTurnCompleted {
+	// CP-51 Task-251 (T-2, ledger EL): keyed by (turnID, type), not type alone —
+	// the prior check only compared rs.events[n-1].Type == EventTurnCompleted, so
+	// a replay for a DIFFERENT turnID whose last event happened to also be
+	// EventTurnCompleted would silently overwrite that other turn's completion
+	// event instead of appending its own. Keying on ProviderTurnID makes this an
+	// idempotent upsert for THIS turn's completion specifically.
+	if n := len(rs.events); n > 0 && rs.events[n-1].Type == EventTurnCompleted && rs.events[n-1].ProviderTurnID == turnID {
 		rs.events[n-1] = completedEv
 	} else {
 		rs.events = append(rs.events, completedEv)
 	}
 	rs.lastEventType = EventTurnCompleted
-	_ = s.persistEvent(completedEv)
+	if err := s.persistEvent(completedEv); err != nil {
+		// Not fail-closed here (T-3's retry worker is the real fix — out of
+		// scope for this pass, see Task-251 §8): at minimum this must be
+		// observable, never silently discarded.
+		log.Printf("[flow-gate] persist post-gate completion event run=%q turn=%q: %v", runID, turnID, err)
+	}
 	for _, ch := range rs.subs {
 		select {
 		case ch <- completedEv:

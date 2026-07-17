@@ -250,6 +250,68 @@ func TestSettleDriver_PhasesAdvanceToFinalized(t *testing.T) {
 	}
 }
 
+// TestResumePendingFlowGate_CompletionEventKeyedByTurnID closes the "type-only
+// replace" bug found in the 2026-07-17 audit (ledger EL): the prior check only
+// compared the last event's Type == EventTurnCompleted, so a DIFFERENT turn's
+// completion event ending up last (e.g. a fast-completing sibling gate) would
+// silently overwrite it instead of appending its own — losing history. Now
+// keyed by (Type, ProviderTurnID): same turnID replays as an idempotent
+// upsert; a different turnID always appends.
+func TestResumePendingFlowGate_CompletionEventKeyedByTurnID(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	svc.mu.Lock()
+	svc.runs[parent.RunID].flowEngineDriven = true
+	svc.runs[parent.RunID].activeFlowNodes = reviewLoopTestNodes()
+	crs := svc.runs[child.RunID]
+	crs.parentRunID = parent.RunID
+	crs.label = "coder"
+	crs.workspaceCwd = dir
+	// Seed a PRIOR turn's completion event as the last event in the log — the
+	// exact condition that triggered the type-only-replace bug.
+	crs.events = []ProviderEvent{{
+		Type: EventTurnCompleted, ProviderTurnID: "turn-prior", FinalMessage: "prior turn done", Seq: 1,
+	}}
+	crs.pendingFlowGateSettle = true
+	crs.pendingFlowGateFinalMsg = "after restart"
+	crs.pendingFlowGateOccurredAt = time.Now().UTC().Format(time.RFC3339Nano)
+	crs.lastTurnID = "turn-resume-1"
+	crs.status = RunStatusRunning
+	svc.mu.Unlock()
+
+	svc.resumePendingFlowGate(child.RunID)
+
+	svc.mu.Lock()
+	crs = svc.runs[child.RunID]
+	var priorSeen, newSeen bool
+	for _, ev := range crs.events {
+		if ev.Type != EventTurnCompleted {
+			continue
+		}
+		if ev.ProviderTurnID == "turn-prior" {
+			priorSeen = true
+		}
+		if ev.FinalMessage == "after restart" {
+			newSeen = true
+		}
+	}
+	svc.mu.Unlock()
+	if !priorSeen {
+		t.Fatal("the prior turn's completion event was overwritten — type-only-replace bug regressed")
+	}
+	if !newSeen {
+		t.Fatal("the new turn's completion event was never appended")
+	}
+}
+
 // ---- Task-255 (skeleton matrix cells) ----
 
 func TestCrashMatrix_PreSendStopZeroBytes(t *testing.T) {

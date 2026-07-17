@@ -5,12 +5,12 @@
 - Document ID: `Task-251`
 - Title: `Gate Checkpoint Durability And Retry Worker`
 - Phase: `task`
-- Status: `done`
+- Status: `in_progress` (2026-07-17: 2 contained fixes landed (event keyed-upsert, persist-error observability); full T-1 driver refactor deliberately deferred — too large/risky for one pass, see §8)
 - Owner: `FlowPilot`
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
-- Last Updated: `2026-07-16`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md), [SS-17: Dispatch Uncertainty And Repair Operator Contract](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
+- Last Updated: `2026-07-17`
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md), [SS-17: Dispatch Uncertainty And Repair Operator Contract](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
 - Child Documents: `None`
 - Related Documents: [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md)
 - Replaces: `None`
@@ -162,6 +162,17 @@ func TestReleaseManifest_ParentStopFencePreventsChildSend(t *testing.T) { /* PS:
 
 ## 8. Completion Notes
 
-- result: **done — SettleDriver effects-first then CAS phase advance with backoff helper.**
-- follow-ups: remaining live crash-matrix phase-2 / real-PG optional
-- upstream docs updated: evidence + task status
+- result: **stub + two contained fixes (still NOT done)** — `SettleDriver.DriveSettle` + `planNext` + `CASAdvanceSettle` + `RetrySettleWithBackoff` remain a standalone, unwired unit in `dispatch_settle.go`.
+- **2026-07-17 — deliberate decision NOT to attempt the full T-1 driver refactor in this pass.** `resumePendingFlowGate` is ~350 lines carrying the accumulated fixes of ~10 separate BUG-288 rounds (P1-04, P1-05, P1-06, P1-16, R11 #4, R15–R17, R19, R20-3, …), each guarding a specific crash/Stop/race window. Rewiring it into a phase-driver with 7 real convergent effects (keyed event upsert, durable cohort projection, release-manifest with parent-stop-fence, keyed finalizer) while preserving every one of those guards is a genuine multi-day task requiring line-by-line cross-reference against each historical round. Attempting it in this pass — under session time pressure — would risk silently reopening a bug that took 20 rounds to close, which is a worse outcome than an honest "not done." This is the same class of judgment call as Task-254's T-1 descope, but here the underlying task (T-1/T-2/T-3/T-4) genuinely IS still required by CP-51 (unlike Task-254's T-1) — it is deferred, not waived.
+- **What WAS fixed (real, contained, tested, verified against the actual current code — not the stub):**
+  - **The "type-only replace" bug (ledger `EL`), fixed for real:** the completion-event upsert at the actual current line (`interactive_service.go`, inside `resumePendingFlowGate`'s gate-pass branch) compared only `rs.events[n-1].Type == EventTurnCompleted`, so a DIFFERENT turn's completion event ending up last (e.g. a fast-completing sibling) would be silently overwritten instead of appended. Now keyed by `(Type, ProviderTurnID)`. New regression test `TestResumePendingFlowGate_CompletionEventKeyedByTurnID` seeds a prior turn's completion as the last event and proves both survive.
+  - **Persist-error swallow removed:** `_ = s.persistEvent(completedEv)` now logs the error instead of silently discarding it. (Not the full retry-worker fix — T-3 remains not built — but strictly better than before: the failure is now observable.)
+  - Both fixes verified against the FULL BUG-288/gate/settle/V9/V10 regression suite — zero regressions — and are surgical (a few lines each), not part of the architectural swap, so they carry materially lower risk than T-1.
+- **Still NOT done (genuinely large, deferred as a dedicated future session, not silently dropped):**
+  - T-1: `resumePendingFlowGate` not refactored into the phase driver; `SettleDriver` remains unwired (0 production callers).
+  - T-2 (remainder): cohort entry is still the RAM/label-dedup `appendCohortResult`, not a durable `RecordEffectDone` projection; dependents-release is not the durable revisioned manifest with `ParentStopFence`; finalizer is not a keyed-overwrite durable effect.
+  - T-3: no retry worker (`scheduleSettleRetry` exists on the stub driver only, unwired).
+  - T-4: the legacy `gateCheckpointNotDurable` + three-persist dance is fully intact — NOT deleted (deleting it before T-1/T-3 land would remove the only durability mechanism currently protecting this path).
+  - Tests: `gate_checkpoint_outage_test.go` still absent; 1/11 named skeletons (the pre-existing happy path) + the 1 new regression test above (differently named). Acceptance 0/6 for the full V-1..V-6 (V-6 build/vet pass; the rest require the undone driver).
+- follow-ups: a dedicated future task/session should refactor `resumePendingFlowGate` into the phase driver, cross-referencing every cited BUG-288 round before changing behavior; until then, the legacy checkpoint mechanism must stay in place.
+- upstream docs updated: task status (this audit + the two 2026-07-17 contained fixes).
