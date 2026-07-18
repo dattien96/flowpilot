@@ -1,17 +1,27 @@
 :root {
-  --bg: #0e1117;
-  --bg-2: #161b22;
-  --bg-3: #1c2230;
-  --border: #2a3242;
-  --text: #d7dde6;
-  --text-dim: #8b95a5;
+  /* Chat canvas — closer to Codex desktop dark (near-black, low chroma) */
+  --bg: #0d0d0d;
+  --bg-2: #161616;
+  --bg-3: #1e1e1e;
+  --border: #2a2a2a;
+  --text: #ececec;
+  --text-dim: #9b9b9b;
+  --text-2: rgba(255, 255, 255, 0.55);
+  /* User prompt bubble (Codex-style elevated dark, not blue card) */
+  --prompt-bg: #2a2a2a;
+  --prompt-border: #3a3a3a;
+  /* Centered chat reading column — width ×1.5 vs prior 720/420 */
+  --chat-content-max: min(1080px, 92vw);
+  --chat-prompt-max: min(630px, 88vw);
   --accent: #4c8dff;
   --accent-2: #2f6bdb;
   --warn: #f0b429;
   --ask: #b07cff;
   --ok: #3fb950;
   --err: #f85149;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-ui: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, sans-serif;
+  --font-chat: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, sans-serif;
   --codex-brand: #e0e0e0;
   --claude-brand: #e17554;
   --gemini-brand: #7c6ff0;
@@ -36,8 +46,11 @@ body,
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-ui);
   font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 button,
@@ -284,6 +297,19 @@ input {
   min-width: 0;
   flex: 1;
   position: relative;
+  background: var(--bg);
+  /* Fill remaining viewport under app chrome; children scroll inside */
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+/* Center attention / gate cards with the chat column */
+.workspace-main > .dispatch-attention-card,
+.workspace-main > .flow-awaiting-user-card {
+  width: min(100% - 32px, var(--chat-content-max));
+  max-width: var(--chat-content-max);
+  margin-inline: auto;
+  box-sizing: border-box;
 }
 /* Mode stroke: ::after draws the border; mask fades it from solid at the
    bottom line + lower-30% of the sides to fully transparent above. */
@@ -491,6 +517,9 @@ input {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
 }
 
 .status-shell,
@@ -2551,14 +2580,28 @@ input {
   background: #1d2738;
 }
 
-/* timeline */
+/* timeline — centered chat column; fills remaining viewport height */
 .timeline {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
   overflow: auto;
-  padding: 12px;
+  padding: 24px 16px 32px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  align-items: center;
+  gap: 16px;
+  background: var(--bg);
+  font-family: var(--font-chat);
+  font-size: 14px;
+  line-height: 1.55;
+  letter-spacing: -0.01em;
+}
+/* Constrain every row to the reading column; keep full-width of that column */
+.timeline > * {
+  box-sizing: border-box;
+  width: min(100%, var(--chat-content-max));
+  max-width: var(--chat-content-max);
 }
 .timeline-agent-focused {
   box-shadow: inset 0 0 0 1px rgba(76, 141, 255, 0.14);
@@ -2623,36 +2666,45 @@ input {
   margin: auto;
 }
 
+/* Message bubbles — assistant type size matches prompt (14px) */
 .bubble {
   position: relative;
-  max-width: 80%;
-  padding: 8px 38px 8px 11px;
-  border-radius: 8px;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
+  max-width: 100%;
+  padding: 10px 14px;
+  border-radius: 18px;
+  background: transparent;
+  border: 1px solid transparent;
   white-space: pre-wrap;
-  line-height: 1.5;
+  line-height: 1.55;
+  font-family: var(--font-chat);
+  font-size: 14px;
+  color: var(--text);
 }
 .copyable-bubble {
-  min-width: 120px;
+  min-width: 0;
 }
 .bubble-copy {
   position: absolute;
-  top: 5px;
-  right: 5px;
-  width: 22px;
-  height: 22px;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
   font-size: 13px;
   line-height: 1;
-  opacity: 0.72;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.copyable-bubble:hover .bubble-copy,
+.copyable-bubble:focus-within .bubble-copy {
+  opacity: 0.85;
 }
 .bubble-copy:hover,
 .bubble-copy:focus-visible {
@@ -2662,36 +2714,50 @@ input {
   opacity: 1;
 }
 .bubble.streaming {
-  border-color: var(--accent-2);
+  border-color: transparent;
 }
+.bubble.streaming .caret {
+  color: var(--text-dim);
+}
+/* User prompt — compact dark chip, right side of reading column */
 .bubble.prompt {
   align-self: flex-end;
-  max-width: 72%;
-  background: #20324d;
-  border-color: rgba(76, 141, 255, 0.45);
+  max-width: min(var(--chat-prompt-max), 100%);
+  padding: 8px 14px;
+  padding-right: 36px; /* room for copy */
+  background: var(--prompt-bg);
+  border: 1px solid var(--prompt-border);
+  border-radius: 16px;
+  color: #f3f3f3;
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: -0.005em;
+  box-shadow: none;
 }
 .prompt-stack {
-  align-self: flex-end;
+  /* full column width so flex-end pins bubble to the right edge of the measure */
+  width: min(100%, var(--chat-content-max)) !important;
+  max-width: var(--chat-content-max) !important;
+  align-self: stretch;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 4px;
-  max-width: 72%;
+  gap: 6px;
 }
 .prompt-stack .bubble.prompt {
-  max-width: 100%;
+  max-width: min(var(--chat-prompt-max), 100%);
 }
 .prompt-skills-summary {
   appearance: none;
-  width: min(100%, 520px);
-  min-height: 28px;
+  width: min(100%, var(--chat-prompt-max));
+  min-height: 26px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 8px;
-  border: 1px solid rgba(76, 141, 255, 0.36);
-  border-radius: 8px;
-  background: rgba(76, 141, 255, 0.08);
+  padding: 4px 9px;
+  border: 1px solid var(--prompt-border);
+  border-radius: 11px;
+  background: var(--bg-2);
   color: var(--text);
   font-size: 11px;
   line-height: 1.35;
@@ -2700,20 +2766,20 @@ input {
   text-align: left;
 }
 .prompt-skills-summary:hover {
-  border-color: rgba(76, 141, 255, 0.72);
-  background: rgba(76, 141, 255, 0.12);
+  border-color: #4a4a4a;
+  background: var(--bg-3);
 }
 .prompt-skills-summary-open {
-  border-radius: 8px 8px 0 0;
+  border-radius: 12px 12px 0 0;
 }
 .prompt-skills-caret {
   flex: 0 0 10px;
-  color: var(--accent);
+  color: var(--text-dim);
   font-size: 10px;
   line-height: 1;
 }
 .prompt-skills-title {
-  color: var(--text);
+  color: var(--text-dim);
   white-space: nowrap;
 }
 .prompt-skills-preview {
@@ -2721,18 +2787,18 @@ input {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--accent);
+  color: var(--text);
   font-family: var(--mono);
 }
 .prompt-skills-body {
-  width: min(100%, 520px);
+  width: min(100%, var(--chat-prompt-max));
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
   padding: 6px 8px;
-  border: 1px solid rgba(76, 141, 255, 0.36);
+  border: 1px solid var(--prompt-border);
   border-top: 0;
-  border-radius: 0 0 8px 8px;
+  border-radius: 0 0 11px 11px;
   background: var(--bg-2);
   box-sizing: border-box;
 }
@@ -2740,13 +2806,13 @@ input {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: rgba(76, 141, 255, 0.08);
-  border: 1px solid var(--accent);
+  background: var(--bg-3);
+  border: 1px solid var(--prompt-border);
   border-radius: 999px;
   padding: 2px 8px 2px 10px;
   font-size: 11px;
   font-family: var(--mono);
-  color: var(--text);
+  color: var(--text-dim);
 }
 .prompt-skill-name {
   flex: 1 1 auto;
@@ -3091,17 +3157,23 @@ input {
 }
 
 .system-line {
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text-dim);
-  padding-left: 2px;
+  padding: 2px 4px;
+  font-family: var(--font-chat);
+  line-height: 1.45;
 }
 .system-line.thinking {
   align-self: flex-end;
-  max-width: 72%;
-  margin-top: -6px;
+  width: auto !important;
+  max-width: min(var(--chat-prompt-max), 100%) !important;
+  margin-top: -4px;
+  margin-left: auto;
   color: var(--text-dim);
   font-style: italic;
-  opacity: 0.9;
+  opacity: 0.75;
+  font-size: 12px;
+  text-align: right;
 }
 .system-line.error {
   color: var(--err);
@@ -3528,14 +3600,21 @@ input {
   color: transparent;
 }
 
-/* chat input */
+/* chat input — same canvas + centered to match reading column */
 .chat-input {
   border-top: 1px solid var(--border);
-  padding: 10px 12px;
-  background: var(--bg-2);
+  padding: 12px 16px 16px;
+  background: var(--bg);
   position: relative;
   display: grid;
   gap: 10px;
+  justify-items: center;
+  flex: 0 0 auto;
+}
+.chat-input > * {
+  box-sizing: border-box;
+  width: min(100%, var(--chat-content-max));
+  max-width: var(--chat-content-max);
 }
 .chat-input-locked > :not(.chat-input-guard) {
   filter: blur(7px);
@@ -6192,68 +6271,93 @@ body.is-resizing-sidebar {
   margin-top: 2px;
 }
 
-/* --- Markdown renderer (assistant bubble) -------------------------------- */
+/* --- Markdown renderer (assistant — same 14px as prompt, no card chrome) - */
 .bubble.assistant {
+  align-self: stretch;
+  width: 100%;
+  max-width: 100%;
   white-space: normal;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 2px 36px 2px 2px; /* right pad for hover copy */
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+  letter-spacing: -0.01em;
+}
+.bubble.assistant.final,
+.bubble.assistant.streaming {
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 .md-body {
   white-space: normal;
-  line-height: 1.6;
+  font-size: 14px;
+  line-height: 1.55;
+  font-family: var(--font-chat);
+  color: var(--text);
 }
 .md-body > *:first-child { margin-top: 0; }
 .md-body > *:last-child { margin-bottom: 0; }
 
 .md-h {
   font-weight: 600;
-  margin: 12px 0 4px;
-  line-height: 1.3;
+  margin: 12px 0 5px;
+  line-height: 1.35;
+  letter-spacing: -0.015em;
+  color: #f5f5f5;
 }
-.md-h1 { font-size: 1.35em; }
-.md-h2 { font-size: 1.18em; }
-.md-h3 { font-size: 1.05em; }
+.md-h1 { font-size: 1.15em; }
+.md-h2 { font-size: 1.08em; }
+.md-h3 { font-size: 1.02em; }
 .md-h4, .md-h5, .md-h6 { font-size: 1em; }
 
 .md-hr {
   border: none;
   border-top: 1px solid var(--border);
-  margin: 10px 0;
+  margin: 14px 0;
 }
 
 .md-p {
-  margin: 4px 0;
+  margin: 0.45em 0;
   white-space: pre-wrap;
 }
 
 .md-ul {
-  margin: 4px 0 4px 18px;
+  margin: 6px 0 6px 1.25em;
   padding: 0;
   list-style: disc;
 }
 .md-ul li {
-  margin: 2px 0;
-  line-height: 1.5;
+  margin: 0.22em 0;
+  line-height: 1.55;
+  padding-left: 0.15em;
 }
 
 .md-icode {
-  background: var(--bg-3);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px 5px;
+  background: #1a1a1a;
+  border: 1px solid #2e2e2e;
+  border-radius: 5px;
+  padding: 1px 6px;
   font-family: var(--mono);
-  font-size: 0.87em;
+  font-size: 0.86em;
+  color: #e8e8e8;
 }
 
 .md-pre {
-  background: var(--bg-3);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
+  background: #141414;
+  border: 1px solid #2a2a2a;
+  border-radius: 10px;
+  padding: 12px 14px;
   overflow-x: auto;
-  margin: 8px 0;
+  margin: 10px 0;
   white-space: pre;
   font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #e4e4e4;
 }
 .md-pre code {
   background: none;
