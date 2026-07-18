@@ -3354,7 +3354,7 @@ input {
 
 /* grouped ask cards (concurrent approvals/questions folded into one collapsible block) */
 .card-group {
-  max-width: 560px;
+  max-width: min(100%, var(--chat-content-max, 1080px));
 }
 .card-group-head {
   display: flex;
@@ -3379,6 +3379,7 @@ input {
   flex: 0 0 12px;
   color: var(--text-dim);
   line-height: 1;
+  font-size: 10px;
 }
 .card-group-bulk-actions {
   display: flex;
@@ -3393,6 +3394,61 @@ input {
 }
 .card-group-body .card {
   max-width: none;
+}
+
+/* Approval group chip — soft, Codex-quiet (not loud yellow outline) */
+.approval-group {
+  align-self: flex-start;
+}
+.approval-group-summary {
+  gap: 7px;
+  padding: 5px 12px 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-dim);
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.approval-group-summary:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+.approval-group-summary .card-group-caret {
+  color: inherit;
+  opacity: 0.7;
+}
+.approval-group-label {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+/* Pending: soft amber wash, no neon border */
+.approval-group-pending .approval-group-summary {
+  background: rgba(240, 180, 41, 0.08);
+  border-color: rgba(240, 180, 41, 0.2);
+  color: #c9a84a;
+}
+.approval-group-pending .approval-group-summary:hover {
+  background: rgba(240, 180, 41, 0.12);
+  border-color: rgba(240, 180, 41, 0.28);
+  color: #dbb85a;
+}
+/* Resolved: mute to neutral gray — done state should not shout */
+.approval-group-resolved .approval-group-summary {
+  background: rgba(255, 255, 255, 0.035);
+  border-color: rgba(255, 255, 255, 0.07);
+  color: var(--text-dim);
+}
+.approval-group-resolved .approval-group-summary:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #c4c4c4;
+}
+.approval-group-resolved .approval-group-label.is-resolved {
+  font-weight: 400;
 }
 
 /* options */

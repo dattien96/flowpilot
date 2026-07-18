@@ -415,19 +415,20 @@ function ApprovalGroup({ items }: { items: ApprovalItem[] }): React.ReactElement
     }
   };
 
+  const resolved = unresolved.length === 0;
   return (
-    <div className="card-group approval-group">
+    <div className={`card-group approval-group ${resolved ? "approval-group-resolved" : "approval-group-pending"}`}>
       <div className="card-group-head">
         <button
           type="button"
-          className={`card-group-summary ${open ? "card-group-summary-open" : ""}`}
+          className={`card-group-summary approval-group-summary ${open ? "card-group-summary-open" : ""}`}
           aria-expanded={open}
           aria-label={label}
           title={label}
           onClick={() => setOpen((value) => !value)}
         >
-          <span className="card-group-caret">{open ? "▾" : "▸"}</span>
-          <span className="badge badge-warn">{label}</span>
+          <span className="card-group-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+          <span className={`approval-group-label ${resolved ? "is-resolved" : "is-pending"}`}>{label}</span>
         </button>
         {unresolved.length > 0 && (
           <div className="card-group-bulk-actions">
