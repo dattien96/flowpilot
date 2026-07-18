@@ -385,7 +385,7 @@ func promptOnlyTranscriptEvents(rawPrompts []string) []ProviderEvent {
 	out := make([]ProviderEvent, 0, len(rawPrompts)*2)
 	for i, prompt := range rawPrompts {
 		prompt = strings.TrimSpace(prompt)
-		if prompt == "" {
+		if prompt == "" || isSystemPrompt(prompt) {
 			continue
 		}
 		out = append(out, ProviderEvent{
@@ -1930,6 +1930,7 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 		agentName   string
 		lastMessage string
 		startedAt   string
+		updatedAt   string
 	}
 	children := make([]childSession, 0)
 	seen := make(map[string]struct{})
@@ -1946,6 +1947,7 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 			agentName:   firstNonEmptyResumeValue(session.AgentName, session.Role, "agent"),
 			lastMessage: strings.TrimSpace(session.LastMessage),
 			startedAt:   session.StartedAt,
+			updatedAt:   session.UpdatedAt,
 		})
 	}
 	sort.Slice(children, func(i, j int) bool {
@@ -1960,6 +1962,7 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 			Type:       EventAgentSpawnedByUser,
 			AgentName:  child.agentName,
 			ChildRunID: child.runID,
+			OccurredAt: child.startedAt,
 		})
 		if child.lastMessage != "" {
 			out = append(out, ProviderEvent{
@@ -1967,6 +1970,7 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 				AgentName:    child.agentName,
 				ChildRunID:   child.runID,
 				FinalMessage: child.lastMessage,
+				OccurredAt:   firstNonEmptyResumeValue(child.updatedAt, child.startedAt),
 			})
 		}
 	}
@@ -2424,7 +2428,7 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 			for _, e := range entries {
 				switch e.Kind {
 				case turnLogKindPrompt:
-					if e.Prompt != "" {
+					if e.Prompt != "" && !isSystemPrompt(e.Prompt) {
 						rawPrompts = append(rawPrompts, e.Prompt)
 					}
 				case turnLogKindCodexSession:
@@ -2497,6 +2501,9 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	if len(rawPrompts) > 0 {
 		promptIdx := 0
 		for i := range historical {
+			if historical[i].Type == EventTurnStarted && isSystemPrompt(historical[i].Prompt) {
+				continue
+			}
 			if historical[i].Type == EventTurnStarted && historical[i].Prompt != "" && promptIdx < len(rawPrompts) {
 				historical[i].Prompt = rawPrompts[promptIdx]
 				promptIdx++
@@ -2504,7 +2511,37 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 		}
 	}
 
+	historical = userFacingTranscriptEvents(historical)
 	s.appendTranscriptReplayEvents(rs, historical)
+}
+
+func userFacingTranscriptEvents(historical []ProviderEvent) []ProviderEvent {
+	if len(historical) == 0 {
+		return nil
+	}
+	out := historical[:0]
+	for _, e := range historical {
+		if isInternalTranscriptEvent(e) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func isInternalTranscriptEvent(event ProviderEvent) bool {
+	if event.Type == EventTurnStarted {
+		return isSystemPrompt(event.Prompt)
+	}
+	if event.Type == EventToolCompleted {
+		return strings.EqualFold(strings.TrimSpace(event.ToolName), "spawn_agent")
+	}
+	if event.Type != EventMessageCompleted {
+		return false
+	}
+	text := strings.TrimSpace(event.Text)
+	return strings.HasPrefix(text, "Spawned agent **") ||
+		(strings.HasPrefix(text, "**[") && strings.Contains(text, "]**"))
 }
 
 func (s *InteractiveService) appendTranscriptReplayEvents(rs *interactiveRun, historical []ProviderEvent) {
@@ -2527,7 +2564,9 @@ func (s *InteractiveService) appendTranscriptReplayEvents(rs *interactiveRun, hi
 		historical[i].WorkflowStepRunID = stepID
 		historical[i].ProviderSessionID = sessionID
 		historical[i].ProviderKey = rs.providerKey
-		historical[i].OccurredAt = rs.createdAt
+		if strings.TrimSpace(historical[i].OccurredAt) == "" {
+			historical[i].OccurredAt = rs.createdAt
+		}
 		rs.events = append(rs.events, historical[i])
 	}
 	// Append a synthetic turn_completed to close any trailing "Thinking..." row.
@@ -2544,7 +2583,7 @@ func (s *InteractiveService) appendTranscriptReplayEvents(rs *interactiveRun, hi
 			WorkflowStepRunID: stepID,
 			ProviderSessionID: sessionID,
 			ProviderKey:       rs.providerKey,
-			OccurredAt:        rs.createdAt,
+			OccurredAt:        firstNonEmptyResumeValue(rs.updatedAt, rs.createdAt),
 		})
 	}
 }
@@ -2561,23 +2600,148 @@ func (s *InteractiveService) appendResumedParentAnnotations(rs *interactiveRun) 
 	stepID := "chat-" + rs.id
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := range annotations {
-		rs.seq++
-		annotations[i].Seq = rs.seq
-		annotations[i].ID = s.nextID("transcript")
-		annotations[i].WorkflowRunID = rs.id
-		annotations[i].WorkflowStepRunID = stepID
-		annotations[i].ProviderSessionID = sessionID
-		annotations[i].ProviderKey = rs.providerKey
-		annotations[i].OccurredAt = rs.createdAt
-		rs.events = append(rs.events, annotations[i])
+	seen := make(map[string]struct{})
+	for _, event := range rs.events {
+		if event.Type == EventAgentSpawnedByUser || event.Type == EventAgentResultInjected {
+			seen[string(event.Type)+":"+event.ChildRunID] = struct{}{}
+		}
 	}
+	spawns := make([]ProviderEvent, 0, len(annotations))
+	results := make([]ProviderEvent, 0, len(annotations))
+	for _, annotation := range annotations {
+		switch annotation.Type {
+		case EventAgentSpawnedByUser:
+			spawns = append(spawns, annotation)
+		case EventAgentResultInjected:
+			results = append(results, annotation)
+		}
+	}
+	annotationIndex := 0
+	for i := range rs.events {
+		if rs.events[i].Type != EventToolStarted || !strings.EqualFold(strings.TrimSpace(rs.events[i].ToolName), "spawn_agent") {
+			continue
+		}
+		for annotationIndex < len(spawns) {
+			annotation := spawns[annotationIndex]
+			annotationIndex++
+			key := string(annotation.Type) + ":" + annotation.ChildRunID
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			// The provider transcript keeps this tool call in its original
+			// position. Reuse that position for the durable child card instead
+			// of appending every restored child after the final synthesis turn.
+			annotation.ID = rs.events[i].ID
+			annotation.Seq = rs.events[i].Seq
+			annotation.WorkflowRunID = rs.events[i].WorkflowRunID
+			annotation.WorkflowStepRunID = rs.events[i].WorkflowStepRunID
+			annotation.ProviderSessionID = rs.events[i].ProviderSessionID
+			annotation.ProviderKey = rs.events[i].ProviderKey
+			annotation.OccurredAt = rs.events[i].OccurredAt
+			rs.events[i] = annotation
+			seen[key] = struct{}{}
+			break
+		}
+	}
+	// Flow-engine nodes are spawned directly by the runner, so a provider
+	// transcript has no spawn_agent tool row to use as an anchor. Restore those
+	// durable child cards immediately before the root synthesis message instead
+	// of appending them after the completed flow transcript.
+	s.insertUnanchoredFlowAgentSpawnsLocked(rs, spawns[annotationIndex:], sessionID, stepID, seen)
+	for _, annotation := range results {
+		key := string(annotation.Type) + ":" + annotation.ChildRunID
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		rs.seq++
+		annotation.Seq = rs.seq
+		annotation.ID = s.nextID("transcript")
+		annotation.WorkflowRunID = rs.id
+		annotation.WorkflowStepRunID = stepID
+		annotation.ProviderSessionID = sessionID
+		annotation.ProviderKey = rs.providerKey
+		if strings.TrimSpace(annotation.OccurredAt) == "" {
+			annotation.OccurredAt = rs.createdAt
+		}
+		rs.events = append(rs.events, annotation)
+		seen[key] = struct{}{}
+	}
+	if rs.flowEngineDriven {
+		s.resequenceResumedTimelineLocked(rs)
+		return
+	}
+	s.reorderResumedTimelineLocked(rs)
+}
+
+func (s *InteractiveService) insertUnanchoredFlowAgentSpawnsLocked(rs *interactiveRun, spawns []ProviderEvent, sessionID, stepID string, seen map[string]struct{}) {
+	if !rs.flowEngineDriven || len(spawns) == 0 {
+		return
+	}
+	inserted := make([]ProviderEvent, 0, len(spawns))
+	for _, annotation := range spawns {
+		key := string(annotation.Type) + ":" + annotation.ChildRunID
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		annotation.ID = s.nextID("transcript")
+		annotation.WorkflowRunID = rs.id
+		annotation.WorkflowStepRunID = stepID
+		annotation.ProviderSessionID = sessionID
+		annotation.ProviderKey = rs.providerKey
+		if strings.TrimSpace(annotation.OccurredAt) == "" {
+			annotation.OccurredAt = rs.createdAt
+		}
+		inserted = append(inserted, annotation)
+		seen[key] = struct{}{}
+	}
+	if len(inserted) == 0 {
+		return
+	}
+	insertAt := len(rs.events)
+	for i, event := range rs.events {
+		if event.Type == EventMessageCompleted && strings.TrimSpace(event.Text) != "" {
+			insertAt = i
+			break
+		}
+	}
+	reordered := make([]ProviderEvent, 0, len(rs.events)+len(inserted))
+	reordered = append(reordered, rs.events[:insertAt]...)
+	reordered = append(reordered, inserted...)
+	reordered = append(reordered, rs.events[insertAt:]...)
+	rs.events = reordered
+}
+
+func (s *InteractiveService) reorderResumedTimelineLocked(rs *interactiveRun) {
+	if len(rs.events) < 2 || !allEventsHaveOccurredAt(rs.events) {
+		return
+	}
+	sort.SliceStable(rs.events, func(i, j int) bool {
+		return rs.events[i].OccurredAt < rs.events[j].OccurredAt
+	})
+	s.resequenceResumedTimelineLocked(rs)
+}
+
+func (s *InteractiveService) resequenceResumedTimelineLocked(rs *interactiveRun) {
+	for i := range rs.events {
+		rs.events[i].Seq = int64(i + 1)
+	}
+	rs.seq = int64(len(rs.events))
+}
+
+func allEventsHaveOccurredAt(events []ProviderEvent) bool {
+	for _, event := range events {
+		if strings.TrimSpace(event.OccurredAt) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // reorderSidecarPrefixToEnd moves the CP-41/question sidecar events that
 // reconstructRun had to seed into rs.events before any real transcript was
 // loaded (rs.sidecarPrefixCount, see reconstructRun) to the end of the
-// timeline, after everything seedTranscriptFromDisk just appended.
+// timeline, after everything seedTranscriptFromDisk just appended. When every
+// restored event has a durable timestamp, it instead restores exact chronology.
 //
 // reconstructRun runs before seedTranscriptFromDisk (they are two separate
 // calls the caller makes back to back — resumeRun, loadHandoffSourceRun), so
@@ -2603,6 +2767,10 @@ func (s *InteractiveService) appendResumedParentAnnotations(rs *interactiveRun) 
 func (s *InteractiveService) reorderSidecarPrefixToEnd(rs *interactiveRun) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if allEventsHaveOccurredAt(rs.events) {
+		s.reorderResumedTimelineLocked(rs)
+		return
+	}
 	n := int(rs.sidecarPrefixCount)
 	rs.sidecarPrefixCount = 0
 	if n <= 0 || n >= len(rs.events) {
@@ -2634,10 +2802,14 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	}
 
 	var sessionIDs []string
+	var rawPrompts []string
 	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
 		if entries, _ := logger.ReadTurnLog(context.Background(), rs.id); len(entries) > 0 {
 			seen := map[string]bool{}
 			for _, e := range entries {
+				if e.Kind == turnLogKindPrompt && strings.TrimSpace(e.Prompt) != "" && !isSystemPrompt(e.Prompt) {
+					rawPrompts = append(rawPrompts, e.Prompt)
+				}
 				if e.Kind == turnLogKindGrokSession && e.SessionID != "" && !seen[e.SessionID] {
 					seen[e.SessionID] = true
 					sessionIDs = append(sessionIDs, e.SessionID)
@@ -2658,6 +2830,8 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	for _, sid := range sessionIDs {
 		historical = append(historical, loadGrokTranscriptEvents(grokChatHistoryPath(home, rs.workspaceCwd, sid))...)
 	}
+	historical = prependMissingPromptOnlyEvents(rawPrompts, historical)
+	historical = userFacingTranscriptEvents(historical)
 	if len(historical) == 0 {
 		return
 	}
@@ -2671,6 +2845,37 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 		}
 	}
 	s.appendTranscriptReplayEvents(rs, historical)
+}
+
+func prependMissingPromptOnlyEvents(rawPrompts []string, historical []ProviderEvent) []ProviderEvent {
+	if len(rawPrompts) == 0 {
+		return historical
+	}
+	seen := map[string]bool{}
+	for _, e := range historical {
+		if e.Type == EventTurnStarted {
+			if p := strings.TrimSpace(e.Prompt); p != "" {
+				seen[p] = true
+			}
+		}
+	}
+	missing := make([]string, 0, len(rawPrompts))
+	for _, p := range rawPrompts {
+		p = strings.TrimSpace(p)
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		missing = append(missing, p)
+	}
+	prefix := promptOnlyTranscriptEvents(missing)
+	if len(prefix) == 0 {
+		return historical
+	}
+	out := make([]ProviderEvent, 0, len(prefix)+len(historical))
+	out = append(out, prefix...)
+	out = append(out, historical...)
+	return out
 }
 
 func (s *InteractiveService) seedGeminiTranscriptFromState(rs *interactiveRun) {
@@ -2727,7 +2932,7 @@ func (s *InteractiveService) geminiTranscriptTurns(rs *interactiveRun) []transcr
 				}
 				turnID := strings.TrimSpace(entry.TurnID)
 				prompt := strings.TrimSpace(entry.Prompt)
-				if turnID != "" && prompt != "" {
+				if turnID != "" && prompt != "" && !isSystemPrompt(prompt) {
 					promptByTurnID[turnID] = prompt
 				}
 			}
@@ -2737,6 +2942,9 @@ func (s *InteractiveService) geminiTranscriptTurns(rs *interactiveRun) []transcr
 					turnID := strings.TrimSpace(entry.TurnID)
 					prompt := strings.TrimSpace(entry.Prompt)
 					assistant := strings.TrimSpace(entry.Assistant)
+					if isSystemPrompt(prompt) {
+						prompt = ""
+					}
 					if prompt == "" && turnID != "" {
 						prompt = promptByTurnID[turnID]
 					}
@@ -2781,7 +2989,7 @@ func (s *InteractiveService) geminiTranscriptTurns(rs *interactiveRun) []transcr
 				case turnLogKindPrompt:
 					turnID := strings.TrimSpace(entry.TurnID)
 					prompt := strings.TrimSpace(entry.Prompt)
-					if prompt == "" {
+					if prompt == "" || isSystemPrompt(prompt) {
 						continue
 					}
 					if turnID != "" {

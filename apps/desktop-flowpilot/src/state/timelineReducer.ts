@@ -38,6 +38,7 @@ export type TimelineItem =
   | { kind: "file"; id: string; path: string; changeType?: string }
   | { kind: "approval"; id: string; approvalId: string; details: ApprovalDetails; decision?: string }
   | { kind: "question"; id: string; questionId: string; prompt: string; options: QuestionOption[]; multiSelect?: boolean; answer?: string | string[] }
+  | { kind: "agent"; id: string; agentName: string; childRunId: string; finalMessage?: string }
   | { kind: "system"; id: string; text: string; tone: "info" | "error" | "warn" };
 
 export interface PendingApproval {
@@ -355,18 +356,23 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
       return finalize(timeline, { recoverable: e.recoverable });
 
     case "agent_spawned_by_user":
-      // Idempotent — replay from seq 0 must not duplicate the row. (BUG-121)
-      if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
-        timeline.push({ kind: "system", id: e.id, text: `Spawned agent **${e.agentName}**`, tone: "info" });
+      // Agent lifecycle belongs in an agent card, not a prose transcript row.
+      if (!timeline.some((it) => it.kind === "agent" && it.childRunId === e.childRunId)) {
+        timeline.push({ kind: "agent", id: e.id, agentName: e.agentName, childRunId: e.childRunId });
       }
       // Only keep an existing thinking row — never create a new one for annotation events.
       shouldKeepThinking = thinkingItem !== undefined;
       break;
 
     case "agent_result_injected":
-      // Idempotent — replay from seq 0 must not duplicate the row. (BUG-121)
-      if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
-        timeline.push({ kind: "system", id: e.id, text: `**[${e.agentName}]** ${e.finalMessage}`, tone: "info" });
+      {
+        const index = timeline.findIndex((it) => it.kind === "agent" && it.childRunId === e.childRunId);
+        if (index >= 0) {
+          const agent = timeline[index] as Extract<TimelineItem, { kind: "agent" }>;
+          timeline[index] = { ...agent, finalMessage: e.finalMessage };
+        } else {
+          timeline.push({ kind: "agent", id: e.id, agentName: e.agentName, childRunId: e.childRunId, finalMessage: e.finalMessage });
+        }
       }
       shouldKeepThinking = thinkingItem !== undefined;
       break;

@@ -6696,9 +6696,10 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// autoReinvokePromptText), the coder re-entry, and the Continue-resume note — is
 	// prefixed "[flow-engine]" and used to overwrite it unconditionally, so a flow
 	// run's history entry ended up titled by whichever internal prompt ran last
-	// instead of the user's original request. Skip the overwrite for these internal
-	// prompts (unless lastPrompt is still empty, so a run always has SOME title).
-	if p := strings.TrimSpace(in.Prompt); !strings.HasPrefix(p, "[flow-engine]") || rs.lastPrompt == "" {
+	// instead of the user's original request. Skip the overwrite for all system
+	// prompts (flow-engine joined notes, gate reprompts, handoffs; unless
+	// lastPrompt is still empty, so a run always has SOME title).
+	if p := strings.TrimSpace(in.Prompt); !isSystemPrompt(p) || rs.lastPrompt == "" {
 		rs.lastPrompt = truncateDisplayField(in.Prompt, 100)
 	}
 	rs.updatedAt = time.Now().UTC().Format(time.RFC3339Nano)

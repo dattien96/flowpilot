@@ -31,6 +31,31 @@ func touchHubProgressLocked(rs *interactiveRun) {
 	rs.hubLastProgressAt = time.Now().UTC()
 }
 
+// hasActiveFlowChild reports whether a child/sub-agent is still doing or
+// awaiting work for this parent. The hub watchdog must not convert that state
+// into hub_stalled; child/member stall handling owns those cases.
+func (s *InteractiveService) hasActiveFlowChild(parentRunID string) bool {
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		s.mu.Lock()
+		child := s.runs[childID]
+		active := child != nil && (child.turnInFlight ||
+			child.pendingTurnPrompt != "" ||
+			child.pendingApprovalID != "" ||
+			child.pendingQuestionID != "" ||
+			child.postTurnGateCancel != nil ||
+			child.pendingFlowGateSettle ||
+			child.status == RunStatusStarting ||
+			child.status == RunStatusRunning ||
+			child.status == RunStatusWaitingApproval ||
+			child.status == RunStatusWaitingQuestion)
+		s.mu.Unlock()
+		if active {
+			return true
+		}
+	}
+	return false
+}
+
 // maybeScheduleHubStallCheck arms a delayed hub watchdog (BUG-289 F-0 / I-16 hub).
 // Asserts: loop running/WAITING ⇒ turn in flight OR gate/approval surfaced OR
 // reinvoke pending OR actionable park. On violation for T, block with hub_stalled.
@@ -141,6 +166,10 @@ func (s *InteractiveService) checkAndBlockStalledHub(runID string) bool {
 		// Status says waiting but no card — stalled (H4 class).
 	} else if busy {
 		// Still progressing — re-arm for later.
+		s.maybeScheduleHubStallCheck(runID)
+		return false
+	}
+	if s.hasActiveFlowChild(runID) {
 		s.maybeScheduleHubStallCheck(runID)
 		return false
 	}

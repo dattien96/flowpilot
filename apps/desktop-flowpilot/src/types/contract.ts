@@ -580,7 +580,7 @@ export type ProviderEventDTO =
   | (ProviderEventBaseDTO & { type: "agent_graph_updated"; agentGraphSnapshot: AgentGraphSnapshot })
   | (ProviderEventBaseDTO & { type: "agent_bus_message"; agentBusMessage: AgentBusMessage })
   | (ProviderEventBaseDTO & { type: "agent_spawned_by_user"; agentName: string; childRunId: string })
-  | (ProviderEventBaseDTO & { type: "agent_result_injected"; agentName: string; finalMessage: string })
+  | (ProviderEventBaseDTO & { type: "agent_result_injected"; agentName: string; childRunId: string; finalMessage: string })
   | (ProviderEventBaseDTO & {
       type: "flow_gate_violation";
       error: string;

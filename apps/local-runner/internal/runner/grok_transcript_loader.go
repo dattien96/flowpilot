@@ -60,22 +60,31 @@ func loadGrokTranscriptEvents(filePath string) []ProviderEvent {
 		switch raw["type"] {
 		case "user":
 			if prompt := grokUserQueryText(raw); prompt != "" {
-				out = append(out, ProviderEvent{Type: EventTurnStarted, Prompt: prompt})
+				out = append(out, ProviderEvent{Type: EventTurnStarted, Prompt: prompt, OccurredAt: transcriptOccurredAt(raw)})
 			}
 		case "assistant":
 			if text, _ := raw["content"].(string); strings.TrimSpace(text) != "" {
-				out = append(out, ProviderEvent{Type: EventMessageCompleted, Text: text})
+				out = append(out, ProviderEvent{Type: EventMessageCompleted, Text: text, OccurredAt: transcriptOccurredAt(raw)})
 			}
 			for _, tc := range grokAssistantToolCalls(raw) {
-				out = append(out, ProviderEvent{Type: EventToolStarted, ToolName: tc.name, Input: tc.input})
+				out = append(out, ProviderEvent{Type: EventToolStarted, ToolName: tc.name, Input: tc.input, OccurredAt: transcriptOccurredAt(raw)})
 			}
 		case "tool_result":
 			name, _ := raw["tool_name"].(string) // usually absent; tool name comes from the call
 			content := grokToolResultContent(raw)
-			out = append(out, ProviderEvent{Type: EventToolCompleted, ToolName: name, Output: content, Status: "success"})
+			out = append(out, ProviderEvent{Type: EventToolCompleted, ToolName: name, Output: content, Status: "success", OccurredAt: transcriptOccurredAt(raw)})
 		}
 	}
 	return out
+}
+
+func transcriptOccurredAt(raw map[string]any) string {
+	for _, key := range []string{"timestamp", "createdAt", "created_at", "occurredAt", "occurred_at"} {
+		if value, _ := raw[key].(string); strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 type grokToolCall struct {

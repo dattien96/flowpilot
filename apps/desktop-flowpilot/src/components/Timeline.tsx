@@ -503,6 +503,30 @@ function FileRow({ it }: { it: Extract<TimelineItem, { kind: "file" }> }): React
   );
 }
 
+function AgentTimelineCard({ it }: { it: Extract<TimelineItem, { kind: "agent" }> }): React.ReactElement {
+  const agentRuns = useStore((s) => s.agentRuns);
+  const focusAgentRun = useStore((s) => s.focusAgentRun);
+  const run = agentRuns.find((candidate) => candidate.runId === it.childRunId);
+  const status = run?.status ?? (it.finalMessage ? "completed" : "running");
+  const lowerName = it.agentName.toLowerCase();
+  const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";
+  const provider = providerLabel(run?.providerKey ?? "");
+
+  return (
+    <div className={`abanner ${roleClass} agent-timeline-card`}>
+      <span className={`pulse ${status === "completed" ? "done" : ""}`} />
+      <span>
+        <b>{run?.label ?? it.agentName}</b> · {provider} · {status}
+        {run?.modelName && <span style={{ color: "var(--text-dim)" }}> · {run.modelName}</span>}
+        {it.finalMessage && <span className="agent-timeline-result"> — completed</span>}
+      </span>
+      <button type="button" className="abanner-open-btn" onClick={() => void focusAgentRun(it.childRunId)}>
+        Open ↗
+      </button>
+    </div>
+  );
+}
+
 function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
   switch (it.kind) {
     case "assistant":
@@ -554,6 +578,8 @@ function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
       return <QuestionGroup items={it.items} />;
     case "file":
       return <FileRow it={it} />;
+    case "agent":
+      return <AgentTimelineCard it={it} />;
     case "approval":
       return <ApprovalCard approvalId={it.approvalId} details={it.details} decision={it.decision} />;
     case "question":

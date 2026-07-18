@@ -5311,6 +5311,12 @@ body.is-resizing-sidebar {
 .abanner-open-btn:hover {
   border-color: var(--accent);
 }
+.agent-timeline-card .pulse.done {
+  display: none;
+}
+.agent-timeline-result {
+  color: var(--text-dim);
+}
 
 .crumb {
   display: flex;

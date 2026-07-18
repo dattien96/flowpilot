@@ -36,11 +36,16 @@ func loadClaudeTranscriptEvents(filePath string) []ProviderEvent {
 					Type:           EventTurnStarted,
 					Prompt:         text,
 					ProviderTurnID: fmt.Sprintf("replay-prompt-%d", promptN),
+					OccurredAt:     transcriptOccurredAt(raw),
 				})
 			}
 		}
 		sub, _ := raw["subtype"].(string)
-		out = append(out, mapClaudeLine(claudeLine{Type: t, Subtype: sub, Raw: raw})...)
+		mapped := mapClaudeLine(claudeLine{Type: t, Subtype: sub, Raw: raw})
+		for i := range mapped {
+			mapped[i].OccurredAt = transcriptOccurredAt(raw)
+		}
+		out = append(out, mapped...)
 	}
 	return out
 }
@@ -65,7 +70,11 @@ func loadCodexTranscriptEvents(filePath string) []ProviderEvent {
 		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
 			continue
 		}
-		out = append(out, mapCodexRolloutLine(raw)...)
+		mapped := mapCodexRolloutLine(raw)
+		for i := range mapped {
+			mapped[i].OccurredAt = transcriptOccurredAt(raw)
+		}
+		out = append(out, mapped...)
 	}
 	// Stamp unique ProviderTurnIDs on replayed prompt turn_started events so the
 	// desktop derives distinct bubble ids ("prompt-${e.providerTurnId}") per turn.

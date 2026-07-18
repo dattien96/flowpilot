@@ -211,6 +211,11 @@ func isFlowEnginePrompt(prompt string) bool {
 		strings.Contains(p, "submit_review_outcome") && strings.Contains(p, "[flow-engine]") {
 		return true
 	}
+	// spawnChildRun composes the child role prompt and delegated work into one
+	// provider turn. It is internal orchestration input, never a user message.
+	if strings.Contains(p, "[FlowPilot sub-agent — ") || strings.Contains(p, "[FlowPilot sub-agent - ") {
+		return true
+	}
 	return false
 }
 
