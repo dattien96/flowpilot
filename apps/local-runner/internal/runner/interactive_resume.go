@@ -2421,7 +2421,9 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	defer s.appendResumedParentAnnotations(rs)
 
 	// Load turn log: raw prompts (F-1) and Codex per-turn session ids (F-3).
-	var rawPrompts []string
+	// Keep each durable turn id with its raw text so normal-chat sidecars can be
+	// restored beside the replayed prompt after a server restart.
+	var rawPrompts []turnLogLine
 	var codexSessionIDs []string
 	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
 		if entries, _ := logger.ReadTurnLog(context.Background(), rs.id); len(entries) > 0 {
@@ -2429,7 +2431,7 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 				switch e.Kind {
 				case turnLogKindPrompt:
 					if e.Prompt != "" && !isSystemPrompt(e.Prompt) {
-						rawPrompts = append(rawPrompts, e.Prompt)
+						rawPrompts = append(rawPrompts, e)
 					}
 				case turnLogKindCodexSession:
 					if e.SessionID != "" {
@@ -2445,7 +2447,7 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 		home, ok = defaultProviderSessionHome(rs.providerKey)
 	}
 	if !ok {
-		historical := promptOnlyTranscriptEvents(rawPrompts)
+		historical := promptOnlyTurnLogEvents(rawPrompts)
 		if len(historical) == 0 {
 			return
 		}
@@ -2489,27 +2491,16 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 		historical = append(historical, loader(fp)...)
 	}
 	if len(historical) == 0 {
-		historical = promptOnlyTranscriptEvents(rawPrompts)
+		historical = promptOnlyTurnLogEvents(rawPrompts)
 		if len(historical) == 0 {
 			return
 		}
 	}
 
-	// Override each replayed prompt with the stored raw input (F-1, BUG-083).
-	// rawPrompts[i] maps to the (i+1)th turn_started event that carries a prompt,
-	// which is exactly the order startTurn appended them to the turn log.
-	if len(rawPrompts) > 0 {
-		promptIdx := 0
-		for i := range historical {
-			if historical[i].Type == EventTurnStarted && isSystemPrompt(historical[i].Prompt) {
-				continue
-			}
-			if historical[i].Type == EventTurnStarted && historical[i].Prompt != "" && promptIdx < len(rawPrompts) {
-				historical[i].Prompt = rawPrompts[promptIdx]
-				promptIdx++
-			}
-		}
-	}
+	// Replay raw user intent and its durable turn id for every provider. This
+	// lets the shared sidecar reorderer insert restored approvals/questions
+	// directly after their originating prompt instead of at the bottom.
+	historical = overlayRawTurnPrompts(historical, rawPrompts)
 
 	historical = userFacingTranscriptEvents(historical)
 	s.appendTranscriptReplayEvents(rs, historical)
@@ -2767,6 +2758,14 @@ func allEventsHaveOccurredAt(events []ProviderEvent) bool {
 func (s *InteractiveService) reorderSidecarPrefixToEnd(rs *interactiveRun) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Provider transcript frames do not always carry their original timestamp
+	// (Grok is one such provider). For a normal chat, the durable gate event's
+	// ProviderTurnID is a stronger ordering key than a fallback timestamp: put
+	// it back directly after the prompt for that same turn. This keeps resolved
+	// approval/question cards in their original conversation turn on restart.
+	if rs.runKind == "chat" && s.anchorChatSidecarPrefixByTurnLocked(rs) {
+		return
+	}
 	if allEventsHaveOccurredAt(rs.events) {
 		s.reorderResumedTimelineLocked(rs)
 		return
@@ -2786,12 +2785,70 @@ func (s *InteractiveService) reorderSidecarPrefixToEnd(rs *interactiveRun) {
 	rs.seq = int64(len(reordered))
 }
 
+// anchorChatSidecarPrefixByTurnLocked restores durable approval/question events
+// that reconstructRun loaded before the provider transcript. A transcript is
+// replayed in provider order, but the sidecar carries the authoritative turn
+// id. Keep unmatched sidecar events at the end as a conservative fallback.
+func (s *InteractiveService) anchorChatSidecarPrefixByTurnLocked(rs *interactiveRun) bool {
+	n := int(rs.sidecarPrefixCount)
+	if n <= 0 || n >= len(rs.events) {
+		return false
+	}
+
+	sidecars := rs.events[:n]
+	transcript := rs.events[n:]
+	byTurn := make(map[string][]ProviderEvent)
+	var unmatched []ProviderEvent
+	for _, event := range sidecars {
+		turnID := strings.TrimSpace(event.ProviderTurnID)
+		if turnID == "" {
+			unmatched = append(unmatched, event)
+			continue
+		}
+		byTurn[turnID] = append(byTurn[turnID], event)
+	}
+	if len(byTurn) == 0 {
+		return false
+	}
+
+	reordered := make([]ProviderEvent, 0, len(rs.events))
+	anchored := 0
+	usedTurnIDs := make(map[string]bool)
+	for _, event := range transcript {
+		reordered = append(reordered, event)
+		if event.Type != EventTurnStarted {
+			continue
+		}
+		turnID := strings.TrimSpace(event.ProviderTurnID)
+		if turnID == "" || len(byTurn[turnID]) == 0 {
+			continue
+		}
+		reordered = append(reordered, byTurn[turnID]...)
+		anchored += len(byTurn[turnID])
+		usedTurnIDs[turnID] = true
+		delete(byTurn, turnID)
+	}
+	for _, event := range sidecars {
+		turnID := strings.TrimSpace(event.ProviderTurnID)
+		if turnID != "" && !usedTurnIDs[turnID] {
+			unmatched = append(unmatched, event)
+		}
+	}
+	reordered = append(reordered, unmatched...)
+	if anchored == 0 {
+		return false
+	}
+	rs.events = reordered
+	rs.sidecarPrefixCount = 0
+	s.resequenceResumedTimelineLocked(rs)
+	return true
+}
+
 // seedGrokTranscriptFromDisk replays a resumed Grok chat's history from its
 // per-session chat_history.jsonl files (BUG-GrokReplay-Restart / Task-212 T-6).
-// Grok writes one session dir per FlowPilot turn (see grok_transcript_loader.go),
-// so this concatenates them in order — precise per-turn ids from the run's turn
-// log when present, else a best-effort mtime-ordered discovery of every Grok
-// session for the workspace (covers runs created before per-turn capture).
+// Grok can reuse one session for several turns or rotate sessions; this replays
+// every recorded session file in order. For legacy runs without recorded ids it
+// falls back to mtime-ordered workspace discovery.
 func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 	if !ok {
@@ -2802,13 +2859,13 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	}
 
 	var sessionIDs []string
-	var rawPrompts []string
+	var rawPrompts []turnLogLine
 	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
 		if entries, _ := logger.ReadTurnLog(context.Background(), rs.id); len(entries) > 0 {
 			seen := map[string]bool{}
 			for _, e := range entries {
 				if e.Kind == turnLogKindPrompt && strings.TrimSpace(e.Prompt) != "" && !isSystemPrompt(e.Prompt) {
-					rawPrompts = append(rawPrompts, e.Prompt)
+					rawPrompts = append(rawPrompts, e)
 				}
 				if e.Kind == turnLogKindGrokSession && e.SessionID != "" && !seen[e.SessionID] {
 					seen[e.SessionID] = true
@@ -2830,7 +2887,13 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	for _, sid := range sessionIDs {
 		historical = append(historical, loadGrokTranscriptEvents(grokChatHistoryPath(home, rs.workspaceCwd, sid))...)
 	}
-	historical = prependMissingPromptOnlyEvents(rawPrompts, historical)
+	// Grok stores the provider-composed prompt in <user_query>, including our
+	// MCP/ask-user reinforcement. The durable turn log is the user-facing
+	// authority; overlay it before filtering or checking for missing prompts.
+	// This also supplies ProviderTurnID to all events in the turn, which lets
+	// restart replay anchor durable approval/question cards at the right spot.
+	historical = overlayRawGrokTurnPrompts(historical, rawPrompts)
+	historical = prependMissingPromptOnlyEvents(turnLogPromptTexts(rawPrompts), historical)
 	historical = userFacingTranscriptEvents(historical)
 	if len(historical) == 0 {
 		return
@@ -2841,10 +2904,77 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	for i := range historical {
 		if historical[i].Type == EventTurnStarted && historical[i].Prompt != "" {
 			promptN++
-			historical[i].ProviderTurnID = fmt.Sprintf("replay-prompt-%d", promptN)
+			if strings.TrimSpace(historical[i].ProviderTurnID) == "" {
+				historical[i].ProviderTurnID = fmt.Sprintf("replay-prompt-%d", promptN)
+			}
 		}
 	}
 	s.appendTranscriptReplayEvents(rs, historical)
+}
+
+func overlayRawGrokTurnPrompts(historical []ProviderEvent, rawPrompts []turnLogLine) []ProviderEvent {
+	return overlayRawTurnPrompts(historical, rawPrompts)
+}
+
+// overlayRawTurnPrompts maps replayed provider prompts back to the durable raw
+// user input recorded at startTurn. Provider transcript formats differ, but all
+// providers share the same prompt order and must retain the same turn identity
+// for restart-sidecar placement.
+func overlayRawTurnPrompts(historical []ProviderEvent, rawPrompts []turnLogLine) []ProviderEvent {
+	promptIndex := 0
+	activeTurnID := ""
+	for i := range historical {
+		event := &historical[i]
+		if event.Type == EventTurnStarted && strings.TrimSpace(event.Prompt) != "" {
+			if isSystemPrompt(event.Prompt) {
+				activeTurnID = ""
+			} else if promptIndex < len(rawPrompts) {
+				raw := rawPrompts[promptIndex]
+				promptIndex++
+				event.Prompt = raw.Prompt
+				if turnID := strings.TrimSpace(raw.TurnID); turnID != "" {
+					event.ProviderTurnID = turnID
+				}
+				activeTurnID = event.ProviderTurnID
+			}
+		}
+		if activeTurnID != "" && strings.TrimSpace(event.ProviderTurnID) == "" {
+			event.ProviderTurnID = activeTurnID
+		}
+	}
+	return historical
+}
+
+// promptOnlyTurnLogEvents is the transcript-free resume fallback. Preserve a
+// durable turn id when present; older runs without one retain the historical
+// replay-prompt-N identity.
+func promptOnlyTurnLogEvents(rawPrompts []turnLogLine) []ProviderEvent {
+	out := make([]ProviderEvent, 0, len(rawPrompts)*2)
+	for i, raw := range rawPrompts {
+		prompt := strings.TrimSpace(raw.Prompt)
+		if prompt == "" || isSystemPrompt(prompt) {
+			continue
+		}
+		turnID := strings.TrimSpace(raw.TurnID)
+		if turnID == "" {
+			turnID = fmt.Sprintf("replay-prompt-%d", i+1)
+		}
+		out = append(out,
+			ProviderEvent{Type: EventTurnStarted, Prompt: prompt, ProviderTurnID: turnID},
+			ProviderEvent{Type: EventTurnCompleted, ProviderTurnID: turnID},
+		)
+	}
+	return out
+}
+
+func turnLogPromptTexts(entries []turnLogLine) []string {
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if prompt := strings.TrimSpace(entry.Prompt); prompt != "" {
+			out = append(out, prompt)
+		}
+	}
+	return out
 }
 
 func prependMissingPromptOnlyEvents(rawPrompts []string, historical []ProviderEvent) []ProviderEvent {

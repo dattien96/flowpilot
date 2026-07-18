@@ -8,7 +8,7 @@
 - Status: `inprogress` (automation suites runnable; live desktop E2E checklist for human)
 - Owner: `FlowPilot`
 - Created: `2026-07-17`
-- Last Updated: `2026-07-17`
+- Last Updated: `2026-07-19`
 - Parent Documents: [CP-51](./CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [Task-238](../../08-Task/done/Task-238-Flow-Mode-Node-Edge-Behavior-State-Machine-Hardening-Audit.md), [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md)
 - Child Documents: none
 - Related: Task-239…242 (Phase A), CP-50 / Task-244…247 (Phase B), Task-248…258 (CP-51 + Drive dispatch)
@@ -202,8 +202,8 @@ Ghi ☐ khi pass. Chạy với desktop + `flowpilot serve`, project git thật.
 | # | Scenario | Steps | Expect | Evidence | ☐ |
 |---|----------|-------|--------|----------|---|
 | A1 | Review Loop spawn | Chat Mode → bug sub-mode → pick **Review Loop** → start | Agents board: hub + coder + reviewer slots; không chỉ 1 agent mồ côi | UI agents + timeline steps | ☑ **partial** (see §3.8) |
-| A2 | Cohort join → synthesis | Để coder + cả 2 reviewers complete | Cohort join; hub **synthesis** turn chạy; không hang `RUNNING` mãi | Timeline: join then hub step advance | |
-| A3 | YOLO off approval | Project YOLO=off; child tool/permission | Approval / gate card surface; stall policy Stop/Skip/Retry nếu stall | Card + log gate | |
+| A2 | Cohort join → synthesis | Để coder + cả 2 reviewers complete | Cohort join; hub **synthesis** turn chạy; không hang `RUNNING` mãi | ☑ run-1264: coder + 2 reviewers done, synthesis submitted `approved`, terminal `done`; replay spawns restored before synthesis | ☑ |
+| A3 | YOLO off approval | Project YOLO=off; child tool/permission | Approval / gate card surface; stall policy Stop/Skip/Retry nếu stall | ☑ expanded normal-chat restart: run-2334 / CA-363 parity for Grok, Codex, Claude; flow-mode evidence still required | ☐ primary / ☑ expanded |
 | A4 | Stop mid-flow | Hub running; bấm Stop | Loop stopped; steps không stuck `RUNNING` giả; children cancel/settle | Timeline terminal; no ghost RUNNING | |
 | A5 | Restart mid-flow | Kill serve mid-flow; restart; reopen project | Timeline/step restore (239); không fake-cancel synthesis `DONE` | Before/after step states | |
 | A6 | Tier-1 code gate | Coding child edit code ngoài/scope doc | Tier-1 doc/scope gate / reprompt **về đúng child**; không gate sau Completed mù | Gate card on child run | |
@@ -211,6 +211,76 @@ Ghi ☐ khi pass. Chạy với desktop + `flowpilot serve`, project git thật.
 | A8 | Parent stop gen | Stop parent khi child còn in-flight | Child không re-enter với gen cũ; stop generation advances | Log stop gen + child cancel | |
 | A9 | Inline skip terminal | Flow edge skip/terminal | Không advance sai node; synthesis settle một lần | Timeline one decision/turn | |
 | A10 | Second turn same flow | Sau A2, user message thêm trên hub | Không re-resolve workflow→flowRef mù (chỉ turn 0); timeline append đúng | Log `[flow-ref-resolve] bailing, turnCount=` | |
+
+#### A3 operator guide — YOLO off approval
+
+**A3 primary (flow mode):**
+
+1. Start desktop + runner on the target project; set project YOLO **off**.
+2. Use **Workflow** mode with `grok-flow` / Review Loop. Use a prompt that causes the coder child to need a tool, write, or gate decision, for example `fix bug 1+1 != 2`.
+3. Keep the run open until a child tool/permission/gate point appears.
+4. Expect: approval/gate card surfaces in the UI while the flow remains coherent; no silent YOLO execution; no fake terminal state; if the run stalls, the operator policy surface offers Stop/Skip/Retry-style recovery instead of hanging forever.
+5. Evidence to capture: screenshot of the approval/gate card, run id, child run id, relevant feature log lines, and dispatch/turn rows around the approval.
+
+**CP-51 bonus smoke (normal chat restart):**
+
+1. Switch to normal **Chat** mode, set YOLO **off**, and send a simple prompt that would normally need a tool or permission.
+2. Quit/restart the desktop app and runner, reopen the same project/session, and verify the UI still reflects YOLO **off**.
+3. Send the next normal chat prompt.
+4. Expect: the new turn still respects YOLO off and surfaces approval instead of silently running tools; prior chat/run state restores without losing the setting.
+5. Evidence to capture: before/after restart screenshots, run id/session id, and dispatch/turn rows for the post-restart prompt.
+
+> **Expanded normal-chat restart check: ☑ done (2026-07-19).** CA-363 regression coverage verifies Grok, Codex, and Claude restore raw user prompts and place durable approval/question cards beside their owning turn even without provider timestamps. This does **not** tick A3's **flow-mode primary** approval acceptance, which remains open.
+
+#### A4–A10 operator guide — remaining Phase A flow checks
+
+**A4 Stop mid-flow**
+
+1. Start a Review Loop run and wait until the hub or at least one child is visibly active.
+2. Press **Stop** on the main run, not only on a child card.
+3. Expect: parent loop becomes terminal stopped/cancelled; active children stop or settle; step rail has no ghost `RUNNING`; composer returns to idle.
+4. Evidence: before/after screenshots, run id, child ids, `run-<id>-step-transitions.ndjson`, and feature log lines around stop generation/cancel.
+
+**A5 Restart mid-flow**
+
+1. Start a Review Loop run and wait until a child or synthesis step is in-flight.
+2. Kill/restart the runner process, then reopen/reload the desktop project.
+3. Expect: timeline and step rail restore from durable state; running/waiting/terminal states match the last durable rows; synthesis is not fake-cancelled or fake-done.
+4. Evidence: screenshot before kill, screenshot after reload, `run-<id>-step-transitions.ndjson`, root/child `run-*-turns.ndjson`, and server boot recovery logs.
+
+**A6 Tier-1 code gate**
+
+1. Run Review Loop on a repo state where coder can edit production code but omit or violate the expected change contract / audit / tests.
+2. Let the coder complete or reach the post-turn gate.
+3. Expect: Tier-1 gate surfaces on the **child/coder ownership path**; any reprompt goes to the correct child; the hub must not blindly gate after the child is already completed.
+4. Evidence: gate card screenshot, child run id, gate reason, feature log rows for gate routing, and child dispatch/turn rows.
+
+**A7 Validate retry (optional)**
+
+1. Use a flow that has a validate node, such as a rag-harness-style validation node when available.
+2. Force one validation failure, then allow the retry path to run.
+3. Expect: retry lifecycle increments the step retry count; reinvoke targets the expected node; cap/terminal behavior remains bounded.
+4. Evidence: step transition rows showing retry count, validation failure row, reinvoke row, and final terminal state.
+
+**A8 Parent stop generation**
+
+1. Start a Review Loop run, wait until a child is still in-flight, then stop the parent.
+2. If possible, attempt a stale child completion/reentry after parent stop.
+3. Expect: stop generation advances; stale child results cannot re-enter the parent with the old generation; UI remains terminal instead of reviving the loop.
+4. Evidence: feature log lines for stop generation, child cancel/interrupted rows, and absence of later accepted old-generation reinvoke.
+
+**A9 Inline skip terminal**
+
+1. Use or configure a flow edge that can skip/terminal from an inline hub decision.
+2. Trigger the skip/terminal branch once.
+3. Expect: edge walk advances only to the intended terminal/skip target; synthesis/settle happens once; no duplicate decision card or second terminal row.
+4. Evidence: step transitions around the inline decision, flow-control output, and final terminal row count.
+
+**A10 Second turn same flow**
+
+1. After an A2-style flow completes, send one more user message in the same run/session.
+2. Expect: workflow reference is not blindly re-resolved as a new turn-0 flow; timeline appends the new turn cleanly; prior flow steps stay terminal.
+3. Evidence: log line like `[flow-ref-resolve] bailing, turnCount=...`, timeline screenshot, and turn rows showing only the new user turn appended.
 
 ### 3.2 Phase B — Context / change contract → **MOVED**
 
@@ -237,6 +307,123 @@ Ghi ☐ khi pass. Chạy với desktop + `flowpilot serve`, project git thật.
 | C15 | Retry-as-new superseded guidance | On an uncertain record, click **Retry-as-new** twice (second click after first already advanced state/revision) | Second call returns 409 `dispatch_retry_superseded`; UI surfaces abandon guidance instead of silently failing or double-sending | UI message + HTTP 409 in network log | |
 | C16 | Boot recovery auto-redispatch (no user action) | Kill runner process while a turn sits in `prepared`/`send_claimed` (before `send_started`); restart runner binary (not just reopen desktop window); do **not** touch the run in UI | `ScanDispatchRecoveryOnBoot` finds the record via `ListRecoverable`, reconstructs the run, and redispatches automatically — record advances past `send_claimed` without any user click | Server boot log (`ensureLiveAndRedispatch`) + dispatch.ndjson state advancing unattended | |
 | C17 | Crash after send, no provider proof → uncertain (not dangling) | Kill runner **after** `send_started`/`provider_accepted` (model may genuinely be mid-response); restart runner binary | Boot scan claims the record and transitions it to `uncertain` (never left at `send_started` forever, never silently marked `terminal_completed` without proof); Dispatch attention card surfaces it for operator Inspect/Retry-as-new/Retry-load | dispatch.ndjson shows explicit `state=uncertain` row + `recovery_uncertain` audit entry; attention card in UI | |
+
+#### C2–C17 operator guide — durable dispatch checks
+
+**C2 Crash after send**
+
+1. Start a normal chat turn and watch `dispatch.ndjson` until `send_started` appears.
+2. Kill the runner before a terminal row is written.
+3. Restart runner and reopen the run.
+4. Expect: record is recovered to `uncertain`/settle or another explicit recovery state; no silent turn loss and no fake success without provider proof.
+5. Evidence: pre-kill row, post-restart rows, recovery log, and any attention card.
+
+**C3 Stop before send**
+
+1. Start a normal chat turn and stop it immediately, ideally while row is `prepared` or `send_claimed`.
+2. Expect: terminal becomes `stopped_before_send` or `terminal_cancelled`; provider session/prompt is not duplicated.
+3. Evidence: dispatch row sequence and `run-<id>-turns.ndjson` showing a single user prompt.
+
+**C4 Stop during stream**
+
+1. Start a longer normal chat prompt so model output streams.
+2. Press **Stop** while streaming.
+3. Expect: terminal cancelled/stopped, UI idle, no orphan `turnInFlight`, and no later ghost completion.
+4. Evidence: UI screenshot after stop, dispatch terminal row, turn log, and server stop/interrupt log.
+
+**C5 Uncertain surface**
+
+1. Force or reuse an uncertain dispatch record, usually via C2/C17.
+2. Reopen the desktop run.
+3. Click **Inspect** on the Dispatch attention card.
+4. Expect: card shows state/revision/settle phase and redacted evidence; Retry-as-new / Retry-load / cancel-biased actions are available.
+5. Evidence: attention card screenshot, Inspect network response, and CAS revision rows.
+
+**C6 Drive sync round-trip**
+
+1. On machine A, sync project chats/runs to Drive.
+2. On machine B or a clean local state, restore the same `project_id`.
+3. Reopen the restored project and run history.
+4. Expect: sessions plus dispatch logs restore; newer local data is not overwritten by older empty remote data.
+5. Evidence: Drive sync logs, restored `.flowpilot/chats` files, and before/after project id.
+
+**C7 Provider allow-list**
+
+1. Run one turn without `FLOWPILOT_DISPATCH_V2_PROVIDERS=gemini`.
+2. Run one Gemini turn with `FLOWPILOT_DISPATCH_V2_PROVIDERS=gemini`.
+3. Expect: Claude/Codex/Grok use V2 by default; Gemini uses V1 unless explicitly allow-listed, then uses V2.
+4. Evidence: provider start-path logs and dispatch presence/absence for each provider.
+
+**C8 Kill-switch**
+
+1. Start runner with `FLOWPILOT_DISPATCH_V2=0`.
+2. Create a new normal chat run.
+3. Expect: new turns use pure V1; old V2 rows remain readable when reopening prior runs.
+4. Evidence: kill-switch log line, absence of new V2 dispatch rows, and successful old-run restore.
+
+**C9 Concurrent two runs**
+
+1. Start two projects or two runs in parallel, preferably both Grok.
+2. Send a turn in each without waiting for the other to finish.
+3. Expect: each run writes separate dispatch/turn rows; no cross-project session, prompt, or terminal pollution.
+4. Evidence: two run ids, two dispatch files/row groups, and screenshots of both runs.
+
+**C10 Second turn session reuse**
+
+1. Complete C1 or any successful normal chat run.
+2. Send a second message in the same run.
+3. Expect: provider session is reused when possible; new turn id and new dispatch sequence are written; second turn should avoid the full cold-start cost when process is warm.
+4. Evidence: `grok_session`/provider session ids in turn logs, wall-clock comparison, and second turn dispatch rows.
+
+**C11 Envelope / hash**
+
+1. Inspect a `prepared` dispatch row before terminal.
+2. Recompute or compare stored hashes where tooling is available.
+3. Expect: `envelope_hash` is stable, `prompt_sha256` matches prompt bytes, and model/yolo metadata is recorded.
+4. Evidence: prepared row fields and any hash verification command output.
+
+**C12 Recovery attach epoch**
+
+1. Run a recovery scenario such as C2, C16, or C17.
+2. Inspect dispatch row revisions before and after recovery attaches.
+3. Expect: `recovery_attach_epoch` increments on attach/settle and only one terminal row wins.
+4. Evidence: revision sequence, attach epoch fields, and terminal row count.
+
+**C13 FCP marker cross-run replay reject**
+
+1. Capture a `flowpilot-fcp:<id>:<mac>` marker minted for run A.
+2. Inject/replay that marker into a child spawn or handoff under different run B.
+3. Expect: provenance rejects the marker because the recorded run id does not match; child prompt must not trust the foreign FCP as authentic.
+4. Evidence: reject log, child prompt/context excerpt, and run A/run B ids.
+
+**C14 Inspect never leaks raw payload**
+
+1. Force an uncertain/open-repair record with a real provider receipt or terminal payload.
+2. Open Dispatch attention and click **Inspect**.
+3. Expect: UI/network response shows hashes and repair metadata only; raw provider payload and raw quarantine blob are absent.
+4. Evidence: Inspect response body and screenshot, with secrets/payloads confirmed absent.
+
+**C15 Retry-as-new superseded guidance**
+
+1. Open an uncertain record.
+2. Click **Retry-as-new** once and wait for revision/state to advance.
+3. Click **Retry-as-new** again on the stale card/request.
+4. Expect: second request returns 409 `dispatch_retry_superseded`; UI gives abandon/superseded guidance, not a duplicate send.
+5. Evidence: network 409, UI message, and dispatch revision rows.
+
+**C16 Boot recovery auto-redispatch**
+
+1. Start a turn and kill runner while state is `prepared` or `send_claimed`, before `send_started`.
+2. Restart the runner binary only; do not click anything in desktop.
+3. Expect: boot scan finds recoverable rows and redispatches automatically; state advances unattended past `send_claimed`.
+4. Evidence: server boot log with `ensureLiveAndRedispatch`/recoverable scan and dispatch rows advancing after restart.
+
+**C17 Crash after send, no provider proof**
+
+1. Kill runner after `send_started` or provider accepted, while the model may still be working.
+2. Restart runner.
+3. Expect: boot recovery claims the row and marks it `uncertain`; it must not dangle forever at `send_started` and must not mark `terminal_completed` without proof.
+4. Evidence: `state=uncertain`, `recovery_uncertain` audit/log entry, and Dispatch attention card with Inspect/Retry actions.
 
 ### 3.4 Cross-cut smoke
 
@@ -507,9 +694,11 @@ cat .flowpilot/chats/${RUN}-turns.ndjson
 | 2026-07-17 | grok | Hang residuals **H-A/H-B/H-C** unit | ☑ pass | **CA-356**. |
 | 2026-07-17 | grok | A1 cluster CA-355(gate)…CA-360 + additive-tests audit | ☑ **DONE PARTIAL** | See **§3.8**; CAs listed; residual hub-park DOD open (run-9437 class). |
 | 2026-07-17 | grok | Live concurrent hub write vs coder (run-9437) | ☒ residual open | Gate hub BUG-908 while coder R1 wrote CA-916/BUG-278; topology OK. DOD in §3.8. |
+| 2026-07-18 | tiendat+codex | Live **A2** run-1264 Review Loop (`fix bug 1+1 != 2`) | ☑ pass | Coder + `grok-review` + `my-reviewer` completed; synthesis submitted `approved` and flow terminal `done`. Replay regression fixed in CA-362: child spawn cards restore at durable times before synthesis, not appended at bottom. `run-333` remains cancelled/replay evidence, not A2 happy path. |
+| 2026-07-19 | tiendat+codex | CP-51 **A3 expanded** normal-chat YOLO-off restart run-2334 | ☑ pass | CA-363 restores raw prompts and anchors approval/question cards by durable `ProviderTurnID`; new timestamp-free regression fixtures pass for Grok, Codex, and Claude. A3 flow-mode primary acceptance remains open. |
 | | | §4 one-shot | ☐ pass / ☐ fail | |
 | | | Live A1 full pass retest | ☐ | After residual DOD or explicit waiver |
-| | | Live A2–A10 | ☐ | After A1 partial retest |
+| | | Live A3–A10 | ☐ | Continue after A2 pass |
 | | | Live B1–B5 | ☐ | |
 | | | Live C2–C12 | ☐ | |
 | | | Live C13–C17 (new, post CA-340..349) | ☐ | |

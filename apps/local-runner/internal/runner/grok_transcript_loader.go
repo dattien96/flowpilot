@@ -31,12 +31,11 @@ import (
 //	assistant   — content:"<text>" plus tool_calls:[{id,name,arguments}]
 //	tool_result — {tool_call_id, content}
 //
-// Because FlowPilot only ever stored a synthetic "thread-<n>" session id for a
-// Grok run (the real ACP session id is never fed back for session/load — see
-// grok_adapter.go ensureSession), every FlowPilot turn spins a fresh Grok
-// session, i.e. one session dir per turn. seedTranscriptFromDisk therefore
-// concatenates them in chronological order, exactly like the Codex per-turn
-// rollout replay (BUG-083 F-3).
+// A Grok ACP session can be reused across several FlowPilot turns or rotated
+// into a new session by the provider. The turn log records each observed real
+// session id, and seedTranscriptFromDisk replays those JSONL files in recorded
+// order. A reused session already contains its full conversation; a rotated
+// session adds the next segment (BUG-083 F-3).
 
 // loadGrokTranscriptEvents parses a single Grok chat_history.jsonl into
 // ProviderEvents. Correlation fields (RunID, Seq, etc.) are stamped by the

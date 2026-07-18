@@ -5719,10 +5719,9 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		snap.LoopState = s.agentOrchestrator.graphSnapshot(rs.id).LoopState
 	}
 	_ = s.persistProviderSession(snap)
-	// Log the new per-turn provider session id so seedTranscriptFromDisk can
-	// load every per-turn transcript file on resume: Codex rollout files
-	// (BUG-083 F-3) and Grok per-turn session dirs (BUG-GrokReplay-Restart)
-	// both use one file per turn with a distinct id.
+	// Log each newly observed provider session id so seedTranscriptFromDisk can
+	// replay every transcript segment on resume. Codex normally rotates rollout
+	// files per turn; Grok may either reuse its ACP session or rotate it.
 	if newTurnSessionID != "" {
 		if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
 			kind := turnLogKindCodexSession
