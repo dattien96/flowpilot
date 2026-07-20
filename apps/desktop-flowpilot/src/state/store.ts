@@ -2380,6 +2380,16 @@ async function consumeOrchestrationStream(
       // _historyReplaying turns false — re-popping the block modal on every chat open.
       // (CP-35 BUG-138)
       if (e.seq <= (get()._runReplaySeq[runId] ?? afterSeq)) continue;
+      // BUG-297: this stream stays bound to MAIN (runId) for the whole session, even
+      // while the user has focused a DIFFERENT run's transcript (s.timeline is one
+      // shared field, not partitioned per run). Applying unconditionally bled MAIN's
+      // own live events (e.g. a sibling agent_spawned_by_user for a reviewer child)
+      // straight into whatever child transcript happened to be on screen. Only apply
+      // to the shared timeline when MAIN is actually the currently displayed run —
+      // backToMainRun already replays everything from its pre-focus snapshot on
+      // return (store.ts, afterSeq: restore.lastEventSeq), so skipping here while a
+      // child is focused loses nothing: the event is still fully caught up on return.
+      if (get().runId !== runId) continue;
       set((s) => applyEvent(s, e));
     }
   }
