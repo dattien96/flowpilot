@@ -45,6 +45,17 @@ const (
 // --strict-mcp-config loads ONLY FlowPilot's MCP config (ignores the user's ambient
 // servers). resumeID MUST be a real Claude session_id (never the synthetic id; finding 1).
 // Skills ride the prompt (promptPrep), not args.
+//
+// BUG-296: --permission-prompt-tool must be attached whenever ClaudePermissionMode is
+// actually gated (anything but "bypassPermissions") — NOT gated on posture.RunnerAutoApprove.
+// Before V9-21 (resolveYoloPostureForTurn), the two were always in lockstep (default+false,
+// bypassPermissions+true), so keying off RunnerAutoApprove was an equivalent, harmless
+// proxy. V9-21 introduced a THIRD combination for flow coding children under YOLO
+// (default + RunnerAutoApprove=true, to keep the git-commit denylist reachable) that broke
+// that equivalence: gating on RunnerAutoApprove there omitted the flag entirely, so a
+// headless (no-TTY) Claude process launched gated with no way to route its permission
+// prompt anywhere — it failed every gated tool call closed on its own side, before
+// FlowPilot's approval bridge (which would have auto-approved) ever saw a request.
 func claudeArgs(posture YoloPosture, resumeID, mcpConfig, modelName, reasoningEffort string, _ []SkillSelection) []string {
 	args := []string{
 		"-p",
@@ -73,7 +84,7 @@ func claudeArgs(posture YoloPosture, resumeID, mcpConfig, modelName, reasoningEf
 	}
 	if strings.TrimSpace(mcpConfig) != "" {
 		args = append(args, "--mcp-config", mcpConfig)
-		if !posture.RunnerAutoApprove {
+		if posture.ClaudePermissionMode != "bypassPermissions" {
 			args = append(args, "--permission-prompt-tool", claudeApproveToolName)
 		}
 	}
