@@ -533,13 +533,27 @@ func nowRFC3339Nano() string {
 }
 
 // requiresGateSettlement is the prepare-time settle decision (immutable SettleOwed).
-// Flow Mode with a non-empty step typically owes settlement; chat mode does not.
+//
+// BUG-298: "chat" must be included. A chat-mode run using the built-in Review Loop
+// orchestration is flagged flowEngineDriven=true (interactive_service.go) and goes
+// through the exact same markPendingFlowGateSettleLocked/pendingFlowGateSettle gate
+// as a flow/workflow run — but runMode stays "chat" (rs.runKind), so omitting it
+// here left the dispatch ledger's SettleOwed permanently false for every chat-mode
+// turn. That silently starved the live settle-drive scheduler
+// (maybeScheduleSettleAfterTerminal) of the trigger it needs to re-run
+// resumePendingFlowGate after a hub turn (e.g. submit_review_outcome) completes,
+// so the run stuck at status=running forever — only a server restart's boot-time
+// recovery (drivePendingSettlesOnBoot, which reads pendingFlowGateSettle directly
+// and bypasses SettleOwed) ever resolved it. A plain (non-flow-engine-driven) chat
+// run never arms pendingFlowGateSettle in the first place, so SettleOwed=true is
+// harmless for it — the settle-drive finds status already Completed and allows
+// through as normal bookkeeping.
 func requiresGateSettlement(runMode, stepID string) bool {
 	if strings.TrimSpace(stepID) == "" {
 		return false
 	}
 	m := strings.ToLower(strings.TrimSpace(runMode))
-	return m == "flow" || m == "workflow" || m == ""
+	return m == "flow" || m == "workflow" || m == "chat" || m == ""
 }
 
 // allDispatchStates returns every defined state for exhaustive tests.
