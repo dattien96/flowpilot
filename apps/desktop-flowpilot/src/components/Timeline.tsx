@@ -237,6 +237,17 @@ export function shouldShowAgentTimelineHeader(activeAgentRunId: string | undefin
 }
 
 /**
+ * Whether the "back to main agent" crumb should show the green pulsing "live
+ * child run" badge. Mirrors AgentsPanel's own active/closed split (status !==
+ * completed/failed/cancelled) so the crumb never disagrees with the sidebar's
+ * own static "done" card for the same run — before this, the crumb pulsed
+ * green forever regardless of the focused child's actual status.
+ */
+export function isFocusedChildLive(focusedRun: AgentRunSummary | undefined): boolean {
+  return !focusedRun || (focusedRun.status !== "completed" && focusedRun.status !== "failed" && focusedRun.status !== "cancelled");
+}
+
+/**
  * A child with a persisted lifecycle card is already represented in the visible
  * timeline. Keep the live banner for children whose card is paged out, but do
  * not render the same live child twice in the current view.
@@ -672,7 +683,21 @@ export function Timeline(): React.ReactElement {
             <b>main</b> <span style={{ opacity: 0.5 }}>›</span> <span className="here">{agentRuns.find(r => r.runId === activeAgentRunId)?.agentName ?? activeAgentRunId}</span>
           </span>
           <span className="crumb-path" style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "6px" }}>
-            <span className="pulse" /> live child run
+            {(() => {
+              const focusedRun = agentRuns.find((r) => r.runId === activeAgentRunId);
+              if (isFocusedChildLive(focusedRun)) {
+                return (
+                  <>
+                    <span className="pulse" /> live child run
+                  </>
+                );
+              }
+              return (
+                <>
+                  <span className={`sd ${focusedRun!.status === "failed" ? "fail" : "closed"}`} /> {focusedRun!.status}
+                </>
+              );
+            })()}
           </span>
         </div>
       ) : null}
