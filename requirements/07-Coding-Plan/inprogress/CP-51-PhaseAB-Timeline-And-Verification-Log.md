@@ -8,7 +8,7 @@
 - Status: `inprogress` (automation suites runnable; live desktop E2E checklist for human)
 - Owner: `FlowPilot`
 - Created: `2026-07-17`
-- Last Updated: `2026-07-19`
+- Last Updated: `2026-07-20`
 - Parent Documents: [CP-51](./CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [Task-238](../../08-Task/done/Task-238-Flow-Mode-Node-Edge-Behavior-State-Machine-Hardening-Audit.md), [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md)
 - Child Documents: none
 - Related: Task-239…242 (Phase A), CP-50 / Task-244…247 (Phase B), Task-248…258 (CP-51 + Drive dispatch)
@@ -202,9 +202,9 @@ Ghi ☐ khi pass. Chạy với desktop + `flowpilot serve`, project git thật.
 | # | Scenario | Steps | Expect | Evidence | ☐ |
 |---|----------|-------|--------|----------|---|
 | A1 | Review Loop spawn | Chat Mode → bug sub-mode → pick **Review Loop** → start | Agents board: hub + coder + reviewer slots; không chỉ 1 agent mồ côi | UI agents + timeline steps | ☑ **partial** (see §3.8) |
-| A2 | Cohort join → synthesis | Để coder + cả 2 reviewers complete | Cohort join; hub **synthesis** turn chạy; không hang `RUNNING` mãi | ☑ run-1264: coder + 2 reviewers done, synthesis submitted `approved`, terminal `done`; replay spawns restored before synthesis | ☑ |
-| A3 | YOLO off approval | Project YOLO=off; child tool/permission | Approval / gate card surface; stall policy Stop/Skip/Retry nếu stall | ☑ expanded normal-chat restart: run-2334 / CA-363 parity for Grok, Codex, Claude; flow-mode evidence still required | ☐ primary / ☑ expanded |
-| A4 | Stop mid-flow | Hub running; bấm Stop | Loop stopped; steps không stuck `RUNNING` giả; children cancel/settle | Timeline terminal; no ghost RUNNING | |
+| A2 | Cohort join → synthesis | Để coder + cả 2 reviewers complete | Cohort join; hub **synthesis** turn chạy; không hang `RUNNING` mãi | ☑ `TestRun1264*`: coder + 2 reviewers done, synthesis submitted `approved`, terminal `done`; replay spawns restored before synthesis | ☑ done (2026-07-20) |
+| A3 | YOLO off approval | Project YOLO=off; child tool/permission | Approval / gate card surface; stall policy Stop/Skip/Retry nếu stall | ☑ `TestRun2383*` + `TestChildGate*` / `TestGateSettle*`; expanded normal-chat restart `run-2334` / CA-363 parity for Grok, Codex, Claude. Flow Mode's YOLO-on lock is recorded in CA-378. | ☑ done (2026-07-20) |
+| A4 | Stop mid-flow | Hub running; bấm Stop | Loop stopped; steps không stuck `RUNNING` giả; children cancel/settle | ☑ `TestStopAgentLoopCancelsCohortMemberAndJoins`, `TestStopAgentLoopCancelsParentTurn`, and `TestInterruptParentCancelsRunningChildAgents`: terminal settle with no ghost running | ☑ done (2026-07-20) |
 | A5 | Restart mid-flow | Kill serve mid-flow; restart; reopen project | Timeline/step restore (239); không fake-cancel synthesis `DONE` | Before/after step states | |
 | A6 | Tier-1 code gate | Coding child edit code ngoài/scope doc | Tier-1 doc/scope gate / reprompt **về đúng child**; không gate sau Completed mù | Gate card on child run | |
 | A7 | Validate retry (optional) | Flow có validate node (rag-harness…) | Retry lifecycle reinvoke implement (279-class) | Step retry count | |

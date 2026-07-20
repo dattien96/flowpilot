@@ -357,7 +357,13 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
 
     case "agent_spawned_by_user":
       // Agent lifecycle belongs in an agent card, not a prose transcript row.
-      if (!timeline.some((it) => it.kind === "agent" && it.childRunId === e.childRunId)) {
+      // Idempotent by *event id*, not childRunId: lifecycle:reinvoke reuses the
+      // same child run across Review Loop rounds and re-emits spawn with a new
+      // event id (BUG-Rnd2). Dedupe-by-childRunId / "open card" heuristics both
+      // fail on live wait:false flow children, which historically never received
+      // agent_result_injected until settle (run-9034) — so the round-2 coder card
+      // never appeared on the main chat timeline.
+      if (!timeline.some((it) => it.kind === "agent" && it.id === e.id)) {
         timeline.push({ kind: "agent", id: e.id, agentName: e.agentName, childRunId: e.childRunId });
       }
       // Only keep an existing thinking row — never create a new one for annotation events.
@@ -366,7 +372,25 @@ export function applyTimelineEvent(s: TimelineState, e: ProviderEventDTO): Parti
 
     case "agent_result_injected":
       {
-        const index = timeline.findIndex((it) => it.kind === "agent" && it.childRunId === e.childRunId);
+        // Prefer the latest open activation for this child (reinvoke rounds);
+        // fall back to the latest card of any status so resume dumps still bind.
+        let index = -1;
+        for (let i = timeline.length - 1; i >= 0; i--) {
+          const it = timeline[i];
+          if (it.kind === "agent" && it.childRunId === e.childRunId && !it.finalMessage) {
+            index = i;
+            break;
+          }
+        }
+        if (index < 0) {
+          for (let i = timeline.length - 1; i >= 0; i--) {
+            const it = timeline[i];
+            if (it.kind === "agent" && it.childRunId === e.childRunId) {
+              index = i;
+              break;
+            }
+          }
+        }
         if (index >= 0) {
           const agent = timeline[index] as Extract<TimelineItem, { kind: "agent" }>;
           timeline[index] = { ...agent, finalMessage: e.finalMessage };

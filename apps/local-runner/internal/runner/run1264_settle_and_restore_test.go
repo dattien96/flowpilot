@@ -292,8 +292,11 @@ func TestRun1264RestoreOrdersDurableAgentLifecycleAndAvoidsDuplicateSpawn(t *tes
 	if rs.events[1].Type != EventAgentSpawnedByUser || rs.events[1].ChildRunID != childRunID {
 		t.Fatalf("spawn event = %+v, want one durable coder spawn before synthesis", rs.events[1])
 	}
+	// Non-flow path time-sorts: synthesis (14:00:03) lands before the result
+	// (14:00:04). The invariant is one spawn + one result for the child, not
+	// a global result dump after an unrelated batch of spawns.
 	if rs.events[2].Text != "Both reviewers approved" {
-		t.Fatalf("synthesis event = %+v, want it after coder spawn", rs.events[2])
+		t.Fatalf("synthesis event = %+v, want wall-clock order after spawn", rs.events[2])
 	}
 	if rs.events[3].Type != EventAgentResultInjected || rs.events[3].ChildRunID != childRunID {
 		t.Fatalf("result event = %+v, want completed coder card update", rs.events[3])
@@ -399,23 +402,29 @@ func TestRun1264RestorePlacesUnanchoredFlowSpawnsBeforeSynthesis(t *testing.T) {
 
 	svc.appendResumedParentAnnotations(rs)
 
+	// run-5695 fix: each result sits next to its spawn (spawn→result)×N then
+	// synthesis — not spawn×N, synthesis, result×N.
 	if got, want := len(rs.events), 8; got != want {
 		t.Fatalf("restored events = %d, want %d: %+v", got, want, rs.events)
 	}
-	for i, want := range []string{"coder", "reviewer", "reviewer-agent"} {
-		event := rs.events[i+1]
-		if event.Type != EventAgentSpawnedByUser || event.AgentName != want {
-			t.Fatalf("event %d = %+v, want flow card for %q before synthesis", i+1, event, want)
+	wantAgents := []string{"coder", "reviewer", "reviewer-agent"}
+	for i, want := range wantAgents {
+		spawnIdx := 1 + i*2
+		resultIdx := spawnIdx + 1
+		spawn := rs.events[spawnIdx]
+		result := rs.events[resultIdx]
+		if spawn.Type != EventAgentSpawnedByUser || spawn.AgentName != want {
+			t.Fatalf("event %d = %+v, want spawn for %q", spawnIdx, spawn, want)
+		}
+		if result.Type != EventAgentResultInjected || result.AgentName != want {
+			t.Fatalf("event %d = %+v, want result for %q immediately after spawn", resultIdx, result, want)
+		}
+		if result.ChildRunID != spawn.ChildRunID {
+			t.Fatalf("result child %s != spawn child %s for %q", result.ChildRunID, spawn.ChildRunID, want)
 		}
 	}
-	if got := rs.events[4]; got.Type != EventMessageCompleted || got.Text != "Both reviewers approved" {
-		t.Fatalf("synthesis event = %+v, want it after all restored agent cards", got)
-	}
-	for i, want := range []string{"coder", "reviewer", "reviewer-agent"} {
-		event := rs.events[i+5]
-		if event.Type != EventAgentResultInjected || event.AgentName != want {
-			t.Fatalf("event %d = %+v, want result update for existing %q card", i+5, event, want)
-		}
+	if got := rs.events[7]; got.Type != EventMessageCompleted || got.Text != "Both reviewers approved" {
+		t.Fatalf("synthesis event = %+v, want it after all spawn→result pairs", got)
 	}
 	for i, event := range rs.events {
 		if event.Seq != int64(i+1) {

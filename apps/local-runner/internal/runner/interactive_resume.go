@@ -771,8 +771,21 @@ func normalizeResumedStatus(status RunStatus) RunStatus {
 }
 
 func normalizeResumedFlowStatus(st ProviderSessionState) RunStatus {
-	if len(st.ActiveFlowNodes) > 0 && strings.TrimSpace(st.LoopState.Status) == "done" {
+	// Loop status is authoritative for flow hubs. Do not require ActiveFlowNodes:
+	// a completed run may still have empty/stale node lists while LoopState is
+	// "done" (run-15827/18200/20332 history showed Running spinner for every
+	// non-selected completed chat because Status stayed "running").
+	switch strings.TrimSpace(st.LoopState.Status) {
+	case "done":
 		return RunStatusCompleted
+	case "stopped":
+		return RunStatusCancelled
+	case "blocked":
+		// Awaiting user (escalate/cap) — not a live turn spinner.
+		if st.Status == RunStatusFailed || st.Status == RunStatusCancelled {
+			return st.Status
+		}
+		return RunStatus("blocked")
 	}
 	// V10 P0: gate-pending child must stay Running so resume re-evaluates gate
 	// instead of normalizing to cancelled.
@@ -1993,6 +2006,7 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 		startedAt   string
 		updatedAt   string
 		completed   bool
+		activations int // lifecycle:reinvoke may run several turns on one run id
 	}
 	children := make([]childSession, 0)
 	seen := make(map[string]struct{})
@@ -2005,8 +2019,11 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 		}
 		seen[session.RunID] = struct{}{}
 		children = append(children, childSession{
-			runID:       session.RunID,
-			agentName:   firstNonEmptyResumeValue(session.AgentName, session.Role, "agent"),
+			runID: session.RunID,
+			// Prefer flow node label (grok-coder / my-reviewer) so main-chat cards
+			// match live (AgentTimelineCard uses label). AgentName alone is the
+			// role slug "coder" / "reviewer" — wrong after restart (run-12613).
+			agentName:   firstNonEmptyResumeValue(session.Label, session.AgentName, session.Role, "agent"),
 			lastMessage: strings.TrimSpace(session.LastMessage),
 			startedAt:   session.StartedAt,
 			updatedAt:   session.UpdatedAt,
@@ -2017,7 +2034,8 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 			// RunStatusCompleted). A child killed mid-turn persists a non-empty
 			// LastMessage but status "running" (normalized to cancelled on resume);
 			// annotating it produced a card reading "cancelled … — completed".
-			completed: session.Status == RunStatusCompleted,
+			completed:   session.Status == RunStatusCompleted,
+			activations: resumeChildActivationCount(s.workflowStore, session),
 		})
 	}
 	sort.Slice(children, func(i, j int) bool {
@@ -2026,25 +2044,184 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 		}
 		return children[i].startedAt < children[j].startedAt
 	})
-	out := make([]ProviderEvent, 0, len(children)*2)
+	// Peer start times (one per child run) — used to park reinvoke activations in
+	// the wall-clock gap between Review Loop rounds (after R0 reviewers, before R1).
+	peerStarts := make([]string, 0, len(children))
 	for _, child := range children {
-		out = append(out, ProviderEvent{
-			Type:       EventAgentSpawnedByUser,
-			AgentName:  child.agentName,
-			ChildRunID: child.runID,
-			OccurredAt: child.startedAt,
-		})
-		if child.completed && child.lastMessage != "" {
+		if strings.TrimSpace(child.startedAt) != "" {
+			peerStarts = append(peerStarts, child.startedAt)
+		}
+	}
+	sort.Strings(peerStarts)
+
+	out := make([]ProviderEvent, 0, len(children)*4)
+	for _, child := range children {
+		activations := child.activations
+		if activations < 1 {
+			activations = 1
+		}
+		times := resumeActivationTimestamps(child.startedAt, child.updatedAt, activations, peerStarts, child.startedAt)
+		for i := 0; i < activations; i++ {
+			// Distinct event ids so the desktop can keep one main-chat card per
+			// activation (dedupe is by event id). ChildRunID stays the same so
+			// Agents tab still shows a single run item / Open focuses the same child.
+			spawnID := fmt.Sprintf("resume-spawn-%s-%d", child.runID, i)
+			spawnAt, resultAt := times[i][0], times[i][1]
 			out = append(out, ProviderEvent{
+				ID:         spawnID,
+				Type:       EventAgentSpawnedByUser,
+				AgentName:  child.agentName,
+				ChildRunID: child.runID,
+				OccurredAt: spawnAt,
+			})
+			if !child.completed {
+				continue
+			}
+			// Only the latest activation has a durable lastMessage. Earlier
+			// activations still get a result so the card closes as completed;
+			// empty FinalMessage still flips finalMessage on the client when we
+			// pass a non-empty placeholder — use a minimal marker for prior turns.
+			finalMsg := child.lastMessage
+			if i < activations-1 {
+				finalMsg = firstNonEmptyResumeValue(finalMsg, "completed")
+				// Prefer not to paste the *final* turn's prose onto earlier cards.
+				if child.lastMessage != "" {
+					finalMsg = "completed"
+				}
+			}
+			if finalMsg == "" {
+				continue
+			}
+			out = append(out, ProviderEvent{
+				ID:           fmt.Sprintf("resume-result-%s-%d", child.runID, i),
 				Type:         EventAgentResultInjected,
 				AgentName:    child.agentName,
 				ChildRunID:   child.runID,
-				FinalMessage: child.lastMessage,
-				OccurredAt:   firstNonEmptyResumeValue(child.updatedAt, child.startedAt),
+				FinalMessage: finalMsg,
+				OccurredAt:   resultAt,
 			})
 		}
 	}
 	return out
+}
+
+// resumeChildActivationCount is how many main-chat agent cards a restored child
+// should produce. lifecycle:reinvoke (Review Loop coder) keeps one run id across
+// rounds — TurnCount / turn-log prompts > 1 means round-2+ must get another card.
+func resumeChildActivationCount(store WorkflowStore, session ProviderSessionState) int {
+	n := session.TurnCount
+	if logger, ok := store.(TurnLogStore); ok {
+		if entries, err := logger.ReadTurnLog(context.Background(), session.RunID); err == nil {
+			prompts := 0
+			for _, e := range entries {
+				if e.Kind == turnLogKindPrompt && strings.TrimSpace(e.Prompt) != "" {
+					prompts++
+				}
+			}
+			if prompts > n {
+				n = prompts
+			}
+		}
+	}
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// resumeActivationTimestamps returns [spawnAt, resultAt] per activation so
+// multi-turn reinvoke cards land in the correct Review Loop round cluster.
+// When peer children show a large startedAt gap (R0 reviewers → R1 reviewers),
+// activation 1+ is parked in that gap (run-9034: second coder before R1 reviews).
+func resumeActivationTimestamps(startedAt, updatedAt string, activations int, peerStarts []string, selfStarted string) [][2]string {
+	if activations < 1 {
+		activations = 1
+	}
+	end := firstNonEmptyResumeValue(updatedAt, startedAt)
+	start := firstNonEmptyResumeValue(startedAt, end)
+	out := make([][2]string, activations)
+	if activations == 1 {
+		out[0] = [2]string{start, end}
+		return out
+	}
+	// Prefer the largest gap between other children's start times (round boundary).
+	gapStart, gapEnd, hasGap := largestPeerStartGap(peerStarts, selfStarted, 45*time.Second)
+	if hasGap && activations == 2 {
+		// act0: original start → just before the peer gap (end of round 0)
+		// act1: near the *end* of the gap (right before R1 peers) so cluster
+		// gap detection (>45s after R0 reviewer results) still splits rounds.
+		reinvokeSpawn := gapEnd
+		if t0, ok0 := parseResumeTime(gapStart); ok0 {
+			if t1, ok1 := parseResumeTime(gapEnd); ok1 {
+				// 90% into the gap — after hub synthesis, before next reviewers.
+				reinvoke := t0.Add(t1.Sub(t0) * 9 / 10)
+				reinvokeSpawn = reinvoke.UTC().Format(time.RFC3339Nano)
+			}
+		}
+		out[0] = [2]string{start, firstNonEmptyResumeValue(gapStart, end)}
+		out[1] = [2]string{reinvokeSpawn, end}
+		return out
+	}
+	// Fallback: even split across [startedAt, updatedAt].
+	t0, ok0 := parseResumeTime(start)
+	t1, ok1 := parseResumeTime(end)
+	if !ok0 || !ok1 || !t1.After(t0) {
+		for i := 0; i < activations; i++ {
+			out[i] = [2]string{start, end}
+		}
+		return out
+	}
+	span := t1.Sub(t0)
+	for i := 0; i < activations; i++ {
+		spawnT := t0.Add(time.Duration(int64(span) * int64(i) / int64(activations)))
+		resultT := t0.Add(time.Duration(int64(span) * int64(i+1) / int64(activations)))
+		out[i] = [2]string{spawnT.UTC().Format(time.RFC3339Nano), resultT.UTC().Format(time.RFC3339Nano)}
+	}
+	return out
+}
+
+// largestPeerStartGap finds the largest wall-clock gap between consecutive peer
+// start times (excluding selfStarted). Used to locate the Review Loop continue
+// boundary for reinvoke card placement.
+func largestPeerStartGap(peerStarts []string, selfStarted string, minGap time.Duration) (gapStart, gapEnd string, ok bool) {
+	filtered := make([]time.Time, 0, len(peerStarts))
+	for _, raw := range peerStarts {
+		if strings.TrimSpace(raw) == "" || raw == selfStarted {
+			continue
+		}
+		if t, parsed := parseResumeTime(raw); parsed {
+			filtered = append(filtered, t)
+		}
+	}
+	if len(filtered) < 2 {
+		return "", "", false
+	}
+	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Before(filtered[j]) })
+	// unique
+	uniq := filtered[:1]
+	for i := 1; i < len(filtered); i++ {
+		if !filtered[i].Equal(uniq[len(uniq)-1]) {
+			uniq = append(uniq, filtered[i])
+		}
+	}
+	if len(uniq) < 2 {
+		return "", "", false
+	}
+	best := time.Duration(0)
+	var bestI int
+	for i := 0; i < len(uniq)-1; i++ {
+		d := uniq[i+1].Sub(uniq[i])
+		if d > best {
+			best = d
+			bestI = i
+		}
+	}
+	if best < minGap {
+		return "", "", false
+	}
+	return uniq[bestI].UTC().Format(time.RFC3339Nano),
+		uniq[bestI+1].UTC().Format(time.RFC3339Nano),
+		true
 }
 
 func firstNonEmptyResumeValue(values ...string) string {
@@ -2495,8 +2672,10 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	// restored beside the replayed prompt after a server restart.
 	var rawPrompts []turnLogLine
 	var codexSessionIDs []string
+	var allEntries []turnLogLine
 	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
 		if entries, _ := logger.ReadTurnLog(context.Background(), rs.id); len(entries) > 0 {
+			allEntries = entries
 			for _, e := range entries {
 				switch e.Kind {
 				case turnLogKindPrompt:
@@ -2517,7 +2696,7 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 		home, ok = defaultProviderSessionHome(rs.providerKey)
 	}
 	if !ok {
-		historical := promptOnlyTurnLogEvents(rawPrompts)
+		historical := mergeTurnLogAssistantsIntoTranscript(promptOnlyTurnLogEvents(rawPrompts), allEntries)
 		if len(historical) == 0 {
 			return
 		}
@@ -2571,6 +2750,10 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	// lets the shared sidecar reorderer insert restored approvals/questions
 	// directly after their originating prompt instead of at the bottom.
 	historical = overlayRawTurnPrompts(historical, rawPrompts)
+	// Provider files remain the primary transcript source. The durable turn log
+	// only fills an omitted assistant frame (for example a rotated segment), so
+	// history reopen has the same user-visible content as the live transcript.
+	historical = mergeTurnLogAssistantsIntoTranscript(historical, allEntries)
 
 	historical = userFacingTranscriptEvents(historical)
 	s.appendTranscriptReplayEvents(rs, historical)
@@ -2683,19 +2866,48 @@ func (s *InteractiveService) appendResumedParentAnnotations(rs *interactiveRun) 
 	stepID := "chat-" + rs.id
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Dedupe by event id when present so lifecycle:reinvoke can restore multiple
+	// cards for the same childRunId (run-9034 second coder card). Fall back to
+	// type:childRunId for legacy single-activation rows without ids.
 	seen := make(map[string]struct{})
+	existingSpawnsByChild := make(map[string]int)
+	existingResultsByChild := make(map[string]int)
 	for _, event := range rs.events {
-		if event.Type == EventAgentSpawnedByUser || event.Type == EventAgentResultInjected {
-			seen[string(event.Type)+":"+event.ChildRunID] = struct{}{}
+		switch event.Type {
+		case EventAgentSpawnedByUser:
+			seen[resumeAnnotationDedupeKey(event)] = struct{}{}
+			existingSpawnsByChild[event.ChildRunID]++
+		case EventAgentResultInjected:
+			seen[resumeAnnotationDedupeKey(event)] = struct{}{}
+			existingResultsByChild[event.ChildRunID]++
 		}
 	}
 	spawns := make([]ProviderEvent, 0, len(annotations))
 	results := make([]ProviderEvent, 0, len(annotations))
+	spawnSlotByChild := make(map[string]int)
+	resultSlotByChild := make(map[string]int)
 	for _, annotation := range annotations {
 		switch annotation.Type {
 		case EventAgentSpawnedByUser:
+			slot := spawnSlotByChild[annotation.ChildRunID]
+			spawnSlotByChild[annotation.ChildRunID] = slot + 1
+			// Skip activations already present from a live stream / prior seed.
+			if slot < existingSpawnsByChild[annotation.ChildRunID] {
+				continue
+			}
+			if _, exists := seen[resumeAnnotationDedupeKey(annotation)]; exists {
+				continue
+			}
 			spawns = append(spawns, annotation)
 		case EventAgentResultInjected:
+			slot := resultSlotByChild[annotation.ChildRunID]
+			resultSlotByChild[annotation.ChildRunID] = slot + 1
+			if slot < existingResultsByChild[annotation.ChildRunID] {
+				continue
+			}
+			if _, exists := seen[resumeAnnotationDedupeKey(annotation)]; exists {
+				continue
+			}
 			results = append(results, annotation)
 		}
 	}
@@ -2707,7 +2919,7 @@ func (s *InteractiveService) appendResumedParentAnnotations(rs *interactiveRun) 
 		for annotationIndex < len(spawns) {
 			annotation := spawns[annotationIndex]
 			annotationIndex++
-			key := string(annotation.Type) + ":" + annotation.ChildRunID
+			key := resumeAnnotationDedupeKey(annotation)
 			if _, exists := seen[key]; exists {
 				continue
 			}
@@ -2723,75 +2935,350 @@ func (s *InteractiveService) appendResumedParentAnnotations(rs *interactiveRun) 
 			annotation.OccurredAt = rs.events[i].OccurredAt
 			rs.events[i] = annotation
 			seen[key] = struct{}{}
+			seen[resumeAnnotationDedupeKey(annotation)] = struct{}{}
 			break
 		}
 	}
-	// Flow-engine nodes are spawned directly by the runner, so a provider
-	// transcript has no spawn_agent tool row to use as an anchor. Restore those
-	// durable child cards immediately before the root synthesis message instead
-	// of appending them after the completed flow transcript.
-	s.insertUnanchoredFlowAgentSpawnsLocked(rs, spawns[annotationIndex:], sessionID, stepID, seen)
-	for _, annotation := range results {
-		key := string(annotation.Type) + ":" + annotation.ChildRunID
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		rs.seq++
-		annotation.Seq = rs.seq
-		annotation.ID = s.nextID("transcript")
-		annotation.WorkflowRunID = rs.id
-		annotation.WorkflowStepRunID = stepID
-		annotation.ProviderSessionID = sessionID
-		annotation.ProviderKey = rs.providerKey
-		if strings.TrimSpace(annotation.OccurredAt) == "" {
-			annotation.OccurredAt = rs.createdAt
-		}
-		rs.events = append(rs.events, annotation)
-		seen[key] = struct{}{}
-	}
+	// Flow-engine nodes are spawned by the runner (no spawn_agent tool anchor).
+	// Multi-round Review Loop must NOT dump every child before the first hub
+	// synthesis message (run-9034: coder+review×4 then one response). Place each
+	// startedAt cluster before the matching hub message_completed so restore
+	// reads: coder → reviewers R0 → response → reviewers R1 → response.
+	// Non-flow runs still need orphan results bound after already-anchored spawns.
+	s.insertUnanchoredFlowAgentLifecycleLocked(rs, spawns[annotationIndex:], results, sessionID, stepID, seen)
 	if rs.flowEngineDriven {
-		s.resequenceResumedTimelineLocked(rs)
+		// Prefer durable timestamps when every frame has one so multi-round
+		// children interleave past hub synthesis turns; otherwise keep the
+		// cluster-before-message insertion order and only renumber Seq.
+		if allEventsHaveOccurredAt(rs.events) {
+			s.reorderResumedTimelineLocked(rs)
+		} else {
+			s.resequenceResumedTimelineLocked(rs)
+		}
+		// Annotation events keep Thinking... on the desktop (shouldKeepThinking).
+		// After a terminal flow resume the last frames are agent cards — append a
+		// synthetic turn_completed so the client clears the spinner (run-20332).
+		s.ensureTerminalTurnCompletedAfterResumeLocked(rs)
 		return
 	}
 	s.reorderResumedTimelineLocked(rs)
+	s.ensureTerminalTurnCompletedAfterResumeLocked(rs)
 }
 
-func (s *InteractiveService) insertUnanchoredFlowAgentSpawnsLocked(rs *interactiveRun, spawns []ProviderEvent, sessionID, stepID string, seen map[string]struct{}) {
-	if !rs.flowEngineDriven || len(spawns) == 0 {
+// ensureTerminalTurnCompletedAfterResumeLocked appends turn_completed when the
+// resumed run is terminal and the event stream does not already end with a
+// terminal turn frame (so desktop does not leave a perpetual "Thinking...").
+func (s *InteractiveService) ensureTerminalTurnCompletedAfterResumeLocked(rs *interactiveRun) {
+	if rs == nil || len(rs.events) == 0 {
 		return
 	}
-	inserted := make([]ProviderEvent, 0, len(spawns))
-	for _, annotation := range spawns {
-		key := string(annotation.Type) + ":" + annotation.ChildRunID
+	terminal := rs.status == RunStatusCompleted || rs.status == RunStatusFailed || rs.status == RunStatusCancelled
+	if !terminal && rs.flowEngineDriven {
+		// Loop may be done while status is still running (same class as history list).
+		if s.agentOrchestrator.loopStateFor(rs.id).Status == "done" {
+			terminal = true
+			rs.status = RunStatusCompleted
+			rs.agentStatus = string(RunStatusCompleted)
+		}
+	}
+	if !terminal {
+		return
+	}
+	last := rs.events[len(rs.events)-1]
+	if last.Type == EventTurnCompleted || last.Type == EventTurnFailed {
+		return
+	}
+	rs.seq++
+	rs.events = append(rs.events, ProviderEvent{
+		Seq:               rs.seq,
+		Type:              EventTurnCompleted,
+		ID:                s.nextID("transcript"),
+		WorkflowRunID:     rs.id,
+		WorkflowStepRunID: "chat-" + rs.id,
+		ProviderSessionID: s.resumeSessionID(rs),
+		ProviderKey:       rs.providerKey,
+		OccurredAt:        firstNonEmptyResumeValue(rs.updatedAt, rs.createdAt),
+	})
+}
+
+// flowAgentLifecyclePair is one restored child card: spawn plus optional result.
+type flowAgentLifecyclePair struct {
+	spawn  ProviderEvent
+	result ProviderEvent
+	hasRes bool
+	at     string // sort key (spawn OccurredAt)
+}
+
+func resumeAnnotationDedupeKey(ev ProviderEvent) string {
+	if id := strings.TrimSpace(ev.ID); id != "" {
+		return string(ev.Type) + ":id:" + id
+	}
+	return string(ev.Type) + ":" + ev.ChildRunID
+}
+
+// insertUnanchoredFlowAgentLifecycleLocked restores flow-engine child cards that
+// have no spawn_agent tool row. Children are clustered by startedAt gaps (a new
+// Review Loop round after hub synthesis) and each cluster is inserted immediately
+// before the corresponding hub message_completed. Within a cluster, concurrent
+// reviewers keep spawn→spawn→result→result wall-clock order when timestamps
+// differ; otherwise spawn→result per child.
+//
+// Always binds orphan results (spawn already present) after their spawn — including
+// non-flow-engine parents. Caller holds s.mu.
+func (s *InteractiveService) insertUnanchoredFlowAgentLifecycleLocked(rs *interactiveRun, spawns, results []ProviderEvent, sessionID, stepID string, seen map[string]struct{}) {
+	if rs == nil {
+		return
+	}
+	// Results keyed in order per child so reinvoke activation N binds to spawn N.
+	resultsByChild := make(map[string][]ProviderEvent)
+	for _, annotation := range results {
+		key := resumeAnnotationDedupeKey(annotation)
 		if _, exists := seen[key]; exists {
 			continue
 		}
-		annotation.ID = s.nextID("transcript")
-		annotation.WorkflowRunID = rs.id
-		annotation.WorkflowStepRunID = stepID
-		annotation.ProviderSessionID = sessionID
-		annotation.ProviderKey = rs.providerKey
-		if strings.TrimSpace(annotation.OccurredAt) == "" {
-			annotation.OccurredAt = rs.createdAt
-		}
-		inserted = append(inserted, annotation)
-		seen[key] = struct{}{}
+		resultsByChild[annotation.ChildRunID] = append(resultsByChild[annotation.ChildRunID], annotation)
 	}
-	if len(inserted) == 0 {
+	pairs := make([]flowAgentLifecyclePair, 0, len(spawns))
+	if rs.flowEngineDriven {
+		for _, annotation := range spawns {
+			key := resumeAnnotationDedupeKey(annotation)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			if strings.TrimSpace(annotation.ID) == "" {
+				annotation.ID = s.nextID("transcript")
+			}
+			annotation.WorkflowRunID = rs.id
+			annotation.WorkflowStepRunID = stepID
+			annotation.ProviderSessionID = sessionID
+			annotation.ProviderKey = rs.providerKey
+			if strings.TrimSpace(annotation.OccurredAt) == "" {
+				annotation.OccurredAt = rs.createdAt
+			}
+			pair := flowAgentLifecyclePair{spawn: annotation, at: annotation.OccurredAt}
+			if queue := resultsByChild[annotation.ChildRunID]; len(queue) > 0 {
+				result := queue[0]
+				resultsByChild[annotation.ChildRunID] = queue[1:]
+				if strings.TrimSpace(result.ID) == "" {
+					result.ID = s.nextID("transcript")
+				}
+				result.WorkflowRunID = rs.id
+				result.WorkflowStepRunID = stepID
+				result.ProviderSessionID = sessionID
+				result.ProviderKey = rs.providerKey
+				if strings.TrimSpace(result.OccurredAt) == "" {
+					result.OccurredAt = annotation.OccurredAt
+				}
+				pair.result = result
+				pair.hasRes = true
+				seen[resumeAnnotationDedupeKey(result)] = struct{}{}
+			}
+			pairs = append(pairs, pair)
+			seen[key] = struct{}{}
+		}
+	}
+	// Orphan results (spawn already anchored / non-flow) still bind after their spawn.
+	for childID, queue := range resultsByChild {
+		for _, result := range queue {
+			key := resumeAnnotationDedupeKey(result)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			if strings.TrimSpace(result.ID) == "" {
+				result.ID = s.nextID("transcript")
+			}
+			result.WorkflowRunID = rs.id
+			result.WorkflowStepRunID = stepID
+			result.ProviderSessionID = sessionID
+			result.ProviderKey = rs.providerKey
+			if strings.TrimSpace(result.OccurredAt) == "" {
+				result.OccurredAt = rs.createdAt
+			}
+			insertAt := -1
+			for i, event := range rs.events {
+				if event.Type == EventAgentSpawnedByUser && event.ChildRunID == childID {
+					insertAt = i + 1
+				}
+			}
+			if insertAt < 0 {
+				rs.events = append(rs.events, result)
+			} else {
+				reordered := make([]ProviderEvent, 0, len(rs.events)+1)
+				reordered = append(reordered, rs.events[:insertAt]...)
+				reordered = append(reordered, result)
+				reordered = append(reordered, rs.events[insertAt:]...)
+				rs.events = reordered
+			}
+			seen[key] = struct{}{}
+		}
+	}
+	if !rs.flowEngineDriven || len(pairs) == 0 {
 		return
 	}
-	insertAt := len(rs.events)
+	sort.SliceStable(pairs, func(i, j int) bool {
+		if pairs[i].at == pairs[j].at {
+			return pairs[i].spawn.ChildRunID < pairs[j].spawn.ChildRunID
+		}
+		return pairs[i].at < pairs[j].at
+	})
+	clusters := clusterFlowAgentPairsByStartGap(pairs, 45*time.Second)
+
+	msgIdxs := make([]int, 0, 4)
 	for i, event := range rs.events {
 		if event.Type == EventMessageCompleted && strings.TrimSpace(event.Text) != "" {
-			insertAt = i
-			break
+			msgIdxs = append(msgIdxs, i)
 		}
 	}
-	reordered := make([]ProviderEvent, 0, len(rs.events)+len(inserted))
-	reordered = append(reordered, rs.events[:insertAt]...)
-	reordered = append(reordered, inserted...)
-	reordered = append(reordered, rs.events[insertAt:]...)
-	rs.events = reordered
+	// Map cluster → insertion index in current rs.events (before that index).
+	// cluster i goes before message i when available; leftover clusters after the
+	// last message (run-9034: R0 before synth0, R1 after synth0 when only one
+	// message was loaded, or before synth1 when both synthesis turns restored).
+	type placement struct {
+		beforeIdx int // insert before this index; len(events) means append
+		cluster   []flowAgentLifecyclePair
+	}
+	placements := make([]placement, 0, len(clusters))
+	switch {
+	case len(msgIdxs) == 0:
+		// No hub prose restored — append agent clusters at the end.
+		for _, cluster := range clusters {
+			placements = append(placements, placement{beforeIdx: len(rs.events), cluster: cluster})
+		}
+	case len(msgIdxs) == 1:
+		// Only one synthesis frame (common when Grok resume loses intermediate
+		// hub turns). Put *all* agent clusters before it so the final response
+		// still appears after code-review round 2, not stranded mid-timeline
+		// between R0 and R1 (run-9034 screenshot).
+		for _, cluster := range clusters {
+			placements = append(placements, placement{beforeIdx: msgIdxs[0], cluster: cluster})
+		}
+	default:
+		// Multi-message: cluster i before message i; leftover clusters before
+		// the *last* message so trailing reviews still precede final synthesis.
+		lastMsg := msgIdxs[len(msgIdxs)-1]
+		for i, cluster := range clusters {
+			beforeIdx := lastMsg
+			if i < len(msgIdxs) {
+				beforeIdx = msgIdxs[i]
+			}
+			placements = append(placements, placement{beforeIdx: beforeIdx, cluster: cluster})
+		}
+	}
+	// Apply from the end so earlier indices stay valid.
+	sort.SliceStable(placements, func(i, j int) bool {
+		return placements[i].beforeIdx > placements[j].beforeIdx
+	})
+	for _, p := range placements {
+		block := flattenFlowAgentCluster(p.cluster)
+		if len(block) == 0 {
+			continue
+		}
+		at := p.beforeIdx
+		if at < 0 {
+			at = 0
+		}
+		if at > len(rs.events) {
+			at = len(rs.events)
+		}
+		reordered := make([]ProviderEvent, 0, len(rs.events)+len(block))
+		reordered = append(reordered, rs.events[:at]...)
+		reordered = append(reordered, block...)
+		reordered = append(reordered, rs.events[at:]...)
+		rs.events = reordered
+	}
+}
+
+// clusterFlowAgentPairsByStartGap groups restored children into Review Loop
+// rounds: a gap larger than maxGap between consecutive startedAt values starts
+// a new cluster (hub synthesis + continue sits in that gap).
+//
+// The gap is measured from the previous pair's *latest* known time (result
+// OccurredAt when present, else spawn) so a long-running coder that starts a
+// round does not form its own cluster separate from the reviewers it unblocks
+// a minute later.
+func clusterFlowAgentPairsByStartGap(pairs []flowAgentLifecyclePair, maxGap time.Duration) [][]flowAgentLifecyclePair {
+	if len(pairs) == 0 {
+		return nil
+	}
+	clusters := [][]flowAgentLifecyclePair{{pairs[0]}}
+	prevEdge, prevOK := pairTimelineEdge(pairs[0])
+	for i := 1; i < len(pairs); i++ {
+		at, ok := parseResumeTime(pairs[i].at)
+		newCluster := false
+		if prevOK && ok && at.Sub(prevEdge) > maxGap {
+			newCluster = true
+		}
+		if newCluster {
+			clusters = append(clusters, []flowAgentLifecyclePair{pairs[i]})
+		} else {
+			clusters[len(clusters)-1] = append(clusters[len(clusters)-1], pairs[i])
+		}
+		if edge, edgeOK := pairTimelineEdge(pairs[i]); edgeOK {
+			prevEdge, prevOK = edge, true
+		}
+	}
+	return clusters
+}
+
+func pairTimelineEdge(p flowAgentLifecyclePair) (time.Time, bool) {
+	if p.hasRes {
+		if t, ok := parseResumeTime(p.result.OccurredAt); ok {
+			return t, true
+		}
+	}
+	return parseResumeTime(p.at)
+}
+
+func parseResumeTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
+}
+
+// flattenFlowAgentCluster expands a startedAt cluster into timeline events.
+// Concurrent reviewers (near-identical start) emit spawn×N then result×N to
+// match live wall-clock; serial children keep spawn→result pairs.
+func flattenFlowAgentCluster(cluster []flowAgentLifecyclePair) []ProviderEvent {
+	if len(cluster) == 0 {
+		return nil
+	}
+	concurrent := len(cluster) > 1
+	if concurrent {
+		first, okFirst := parseResumeTime(cluster[0].at)
+		for i := 1; i < len(cluster) && concurrent; i++ {
+			at, ok := parseResumeTime(cluster[i].at)
+			if !okFirst || !ok || at.Sub(first) > 5*time.Second {
+				concurrent = false
+			}
+		}
+	}
+	out := make([]ProviderEvent, 0, len(cluster)*2)
+	if concurrent {
+		for _, p := range cluster {
+			out = append(out, p.spawn)
+		}
+		for _, p := range cluster {
+			if p.hasRes {
+				out = append(out, p.result)
+			}
+		}
+		return out
+	}
+	for _, p := range cluster {
+		out = append(out, p.spawn)
+		if p.hasRes {
+			out = append(out, p.result)
+		}
+	}
+	return out
 }
 
 func (s *InteractiveService) reorderResumedTimelineLocked(rs *interactiveRun) {
@@ -2938,9 +3425,11 @@ func (s *InteractiveService) anchorChatSidecarPrefixByTurnLocked(rs *interactive
 
 // seedGrokTranscriptFromDisk replays a resumed Grok chat's history from its
 // per-session chat_history.jsonl files (BUG-GrokReplay-Restart / Task-212 T-6).
-// Grok can reuse one session for several turns or rotate sessions; this replays
-// every recorded session file in order. For legacy runs without recorded ids it
-// falls back to mtime-ordered workspace discovery.
+//
+// The provider transcript remains the primary source for both normal chat and
+// flow hubs. Durable transcript_turn rows merely fill missing response frames;
+// they never replace provider history, otherwise older multi-turn hubs reopen
+// with an empty main transcript (run-20332).
 func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 	if !ok {
@@ -2952,8 +3441,10 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 
 	var sessionIDs []string
 	var rawPrompts []turnLogLine
+	var allEntries []turnLogLine
 	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
 		if entries, _ := logger.ReadTurnLog(context.Background(), rs.id); len(entries) > 0 {
+			allEntries = entries
 			seen := map[string]bool{}
 			for _, e := range entries {
 				if e.Kind == turnLogKindPrompt && strings.TrimSpace(e.Prompt) != "" && !isSystemPrompt(e.Prompt) {
@@ -2966,12 +3457,15 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 			}
 		}
 	}
-	// Fallback for runs with no per-turn ids logged (created before the capture
-	// landed): replay every Grok session dir for this workspace, oldest-first.
 	if len(sessionIDs) == 0 {
 		sessionIDs = discoverGrokSessionDirs(home, rs.workspaceCwd)
 	}
 	if len(sessionIDs) == 0 {
+		historical := mergeTurnLogAssistantsIntoTranscript(promptOnlyTurnLogEvents(rawPrompts), allEntries)
+		historical = userFacingTranscriptEvents(historical)
+		if len(historical) > 0 {
+			s.appendTranscriptReplayEvents(rs, stampReplayPromptIDs(historical))
+		}
 		return
 	}
 
@@ -2979,19 +3473,22 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	for _, sid := range sessionIDs {
 		historical = append(historical, loadGrokTranscriptEvents(grokChatHistoryPath(home, rs.workspaceCwd, sid))...)
 	}
-	// Grok stores the provider-composed prompt in <user_query>, including our
-	// MCP/ask-user reinforcement. The durable turn log is the user-facing
-	// authority; overlay it before filtering or checking for missing prompts.
-	// This also supplies ProviderTurnID to all events in the turn, which lets
-	// restart replay anchor durable approval/question cards at the right spot.
 	historical = overlayRawGrokTurnPrompts(historical, rawPrompts)
 	historical = prependMissingPromptOnlyEvents(turnLogPromptTexts(rawPrompts), historical)
+	if len(allEntries) > 0 {
+		historical = mergeTurnLogAssistantsIntoTranscript(historical, allEntries)
+	}
 	historical = userFacingTranscriptEvents(historical)
 	if len(historical) == 0 {
 		return
 	}
-	// Distinct replay turn ids so the desktop derives unique prompt bubble ids
-	// ("prompt-${providerTurnId}") across concatenated per-turn session files.
+	s.appendTranscriptReplayEvents(rs, stampReplayPromptIDs(historical))
+}
+
+// seedGrokFlowHubFromTurnLog rebuilds hub main-chat prose from the durable turn
+// log only (authoritative, per-run). Agent cards are added later by
+// appendResumedParentAnnotations — same composition as live (cards + hub text).
+func stampReplayPromptIDs(historical []ProviderEvent) []ProviderEvent {
 	var promptN int
 	for i := range historical {
 		if historical[i].Type == EventTurnStarted && historical[i].Prompt != "" {
@@ -3001,7 +3498,97 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 			}
 		}
 	}
-	s.appendTranscriptReplayEvents(rs, historical)
+	return historical
+}
+
+// mergeTurnLogAssistantsIntoTranscript fills provider-history gaps from the
+// durable turn log. A transcript_turn is keyed by TurnID, not response text:
+// equal responses may occur in separate turns, and a missing early response
+// must stay before the next turn instead of being appended at the transcript tail.
+func mergeTurnLogAssistantsIntoTranscript(historical []ProviderEvent, entries []turnLogLine) []ProviderEvent {
+	out := append([]ProviderEvent(nil), historical...)
+	for entryIndex, e := range entries {
+		var text string
+		switch e.Kind {
+		case turnLogKindAssistant, turnLogKindTranscriptTurn:
+			text = strings.TrimSpace(e.Assistant)
+		default:
+			continue
+		}
+		if text == "" {
+			continue
+		}
+		turnID := strings.TrimSpace(e.TurnID)
+		if turnID != "" && transcriptHasAssistantForTurn(out, turnID) {
+			continue
+		}
+		// Legacy assistant rows may lack a durable id. Preserve their old
+		// text-based dedupe, because they have no safe causal insertion point.
+		if turnID == "" && transcriptHasAssistantText(out, text) {
+			continue
+		}
+		fallback := ProviderEvent{Type: EventMessageCompleted, Text: text, ProviderTurnID: turnID}
+		if insertAt := transcriptAssistantInsertIndex(out, entries, entryIndex, turnID); insertAt >= 0 {
+			out = append(out, ProviderEvent{})
+			copy(out[insertAt+1:], out[insertAt:])
+			out[insertAt] = fallback
+			continue
+		}
+		out = append(out, fallback)
+	}
+	return out
+}
+
+func transcriptHasAssistantForTurn(events []ProviderEvent, turnID string) bool {
+	for _, event := range events {
+		if event.Type == EventMessageCompleted && strings.TrimSpace(event.ProviderTurnID) == turnID {
+			return true
+		}
+	}
+	return false
+}
+
+func transcriptHasAssistantText(events []ProviderEvent, text string) bool {
+	for _, event := range events {
+		if event.Type == EventMessageCompleted && strings.TrimSpace(event.Text) == text {
+			return true
+		}
+	}
+	return false
+}
+
+// transcriptAssistantInsertIndex returns the causal slot for a missing durable
+// response: after its own turn's current frames, or after the nearest earlier
+// durable turn already represented in the provider history. A -1 means no
+// durable position is known and the caller uses a conservative tail fallback.
+func transcriptAssistantInsertIndex(events []ProviderEvent, entries []turnLogLine, entryIndex int, turnID string) int {
+	if turnID != "" {
+		lastOwn := -1
+		for i, event := range events {
+			if strings.TrimSpace(event.ProviderTurnID) == turnID {
+				lastOwn = i
+			}
+		}
+		if lastOwn >= 0 {
+			return lastOwn + 1
+		}
+	}
+	for i := entryIndex - 1; i >= 0; i-- {
+		previousTurnID := strings.TrimSpace(entries[i].TurnID)
+		if previousTurnID == "" {
+			continue
+		}
+		lastPrevious := -1
+		for eventIndex, event := range events {
+			if strings.TrimSpace(event.ProviderTurnID) == previousTurnID {
+				lastPrevious = eventIndex
+			}
+		}
+		if lastPrevious >= 0 {
+			return lastPrevious + 1
+		}
+	}
+	return -1
 }
 
 func overlayRawGrokTurnPrompts(historical []ProviderEvent, rawPrompts []turnLogLine) []ProviderEvent {

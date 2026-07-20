@@ -541,7 +541,12 @@ function AgentTimelineCard({ it }: { it: Extract<TimelineItem, { kind: "agent" }
   const agentRuns = useStore((s) => s.agentRuns);
   const focusAgentRun = useStore((s) => s.focusAgentRun);
   const run = agentRuns.find((candidate) => candidate.runId === it.childRunId);
-  const status = run?.status ?? (it.finalMessage ? "completed" : "running");
+  // Prefer finalMessage for *this activation's* card: reinvoke reuses childRunId so
+  // agentRuns.status flips back to running on round 2, but the round-1 card must
+  // stay "completed" (run-9034 multi-activation cards share one run summary).
+  const status = it.finalMessage
+    ? "completed"
+    : (run?.status ?? "running");
   const lowerName = it.agentName.toLowerCase();
   const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";
   const provider = providerLabel(run?.providerKey ?? "");

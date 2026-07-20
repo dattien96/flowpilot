@@ -2827,6 +2827,29 @@ func (s *InteractiveService) emitOnParentRun(parentRunID string, ev ProviderEven
 	}
 }
 
+// emitParentAgentResultLocked writes agent_result_injected onto the parent run so
+// the desktop can close the open agent card (finalMessage) for this child. Caller
+// MUST hold s.mu. No-op when parent is missing or the message is empty.
+func (s *InteractiveService) emitParentAgentResultLocked(child *interactiveRun, finalMsg string) {
+	if child == nil || strings.TrimSpace(child.parentRunID) == "" {
+		return
+	}
+	msg := strings.TrimSpace(finalMsg)
+	if msg == "" {
+		return
+	}
+	parent := s.runs[child.parentRunID]
+	if parent == nil {
+		return
+	}
+	_ = s.emitLocked(parent, ProviderEvent{
+		Type:         EventAgentResultInjected,
+		AgentName:    child.agentName,
+		ChildRunID:   child.id,
+		FinalMessage: msg,
+	})
+}
+
 // maxPendingAgentNotes caps the parent's UI-spawn context buffer so a user who spawns
 // many children without chatting cannot grow the next prompt without bound (BUG-122).
 const maxPendingAgentNotes = 50
@@ -3950,6 +3973,13 @@ func (s *InteractiveService) markPendingFlowGateSettleLocked(rs *interactiveRun,
 // completes and (for flow-engine children) the post-turn gate has passed.
 // Caller holds s.mu. Task-242: must not run until runChildArtifactOutputGate allows.
 func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveRun, finalMsg string, ev ProviderEvent) {
+	// Close the parent's agent card for this child. Flow auto-spawn uses wait:false,
+	// so the Wait=true path in spawnAgent never emits agent_result_injected — without
+	// this the live main-chat card stays open forever and reinvoke of the same
+	// childRunId (Review Loop coder round 2+) is suppressed or stuck at the top
+	// (run-9034 / run-5695). Caller holds s.mu — use emitLocked on the parent, never
+	// emitOnParentRun (which re-locks).
+	s.emitParentAgentResultLocked(rs, finalMsg)
 	if rs.flowCohortId != "" {
 		s.agentOrchestrator.appendCohortResult(rs.parentRunID, rs.flowCohortId, cohortEntry{
 			Label:        rs.label,
@@ -5162,10 +5192,15 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 			if completion.status == RunStatusCompleted {
 				result.FinalMessage = completion.finalMessage
 				// Persist the child's result as an annotation on the parent run (BUG-121).
+				// ChildRunID is required so the desktop binds the result to the correct
+				// card (and the correct reinvoke activation). Flow wait:false children
+				// are covered by emitParentAgentResultLocked in settle; this Wait=true
+				// path still needs ChildRunID for UI-spawned sequential spawns.
 				if result.FinalMessage != "" {
 					s.emitOnParentRun(parentRunID, ProviderEvent{
 						Type:         EventAgentResultInjected,
 						AgentName:    childSnap.AgentName,
+						ChildRunID:   handle.RunID,
 						FinalMessage: result.FinalMessage,
 					})
 				}
@@ -5736,9 +5771,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// across restarts (BUG-080 F-3). Take a snapshot under lock; persist outside.
 	s.mu.Lock()
 	newTurnSessionID := s.refreshResumeHandleLocked(rs, adapter)
-	geminiTurn := transcriptTurn{}
-	if rs.providerKey == ProviderKeyGemini && completed {
-		geminiTurn = transcriptTurnForProviderTurnLocked(rs, turnID)
+	// Persist prompt/assistant pairs for providers whose on-disk transcript is
+	// incomplete or rotated per-turn. Gemini always needed this; Grok flow hubs
+	// also do — synthesis turns use system prompts (filtered on resume) and a
+	// single grok_session id may only reload the latest segment, so without a
+	// turn-log assistant the main chat loses res-after-review-round-N (run-9034).
+	durableTurn := transcriptTurn{}
+	if completed && (rs.providerKey == ProviderKeyGemini || rs.providerKey == ProviderKeyGrok) {
+		durableTurn = transcriptTurnForProviderTurnLocked(rs, turnID)
 	}
 	snap := sessionStateOf(rs)
 	isParent := rs.parentRunID == ""
@@ -5769,13 +5809,13 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{Kind: kind, SessionID: newTurnSessionID})
 		}
 	}
-	if strings.TrimSpace(geminiTurn.User) != "" || strings.TrimSpace(geminiTurn.Assistant) != "" {
+	if strings.TrimSpace(durableTurn.User) != "" || strings.TrimSpace(durableTurn.Assistant) != "" {
 		if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
 			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{
 				Kind:      turnLogKindTranscriptTurn,
 				TurnID:    turnID,
-				Prompt:    geminiTurn.User,
-				Assistant: geminiTurn.Assistant,
+				Prompt:    durableTurn.User,
+				Assistant: durableTurn.Assistant,
 			})
 		}
 	}

@@ -961,7 +961,11 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 			ProjectID:   rs.projectID,
 			WorkflowID:  rs.workflowID,
 			ProviderKey: rs.providerKey,
-			Status:      rs.status,
+			// Prefer flow loop status over raw rs.status: after markFlowRunComplete
+			// the loop is "done" while the hub provider run can still sit at
+			// "running" until the last SSE settles — history then shows a spinner
+			// for every completed flow that is not the active chat (image-8).
+			Status:      s.historyStatusForLiveRun(rs),
 			StartedAt:   rs.createdAt,
 			UpdatedAt:   rs.updatedAt,
 			LastPrompt:  rs.lastPrompt,
@@ -1027,6 +1031,29 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
 	return out
+}
+
+// historyStatusForLiveRun maps an in-memory run to the status the history list
+// should show. Flow hubs keep rs.status=running through the final synthesis
+// stream while LoopState is already "done" — list inactive chats must not spin.
+func (s *InteractiveService) historyStatusForLiveRun(rs *interactiveRun) RunStatus {
+	if rs == nil {
+		return RunStatusIdle
+	}
+	if rs.flowEngineDriven && strings.TrimSpace(rs.parentRunID) == "" {
+		switch s.agentOrchestrator.loopStateFor(rs.id).Status {
+		case "done":
+			return RunStatusCompleted
+		case "stopped":
+			return RunStatusCancelled
+		case "blocked":
+			if rs.status == RunStatusFailed || rs.status == RunStatusCancelled {
+				return rs.status
+			}
+			return RunStatus("blocked")
+		}
+	}
+	return rs.status
 }
 
 func isAgentHistoryRun(parentRunID, agentName, role, agentStatus, lastPrompt string) bool {

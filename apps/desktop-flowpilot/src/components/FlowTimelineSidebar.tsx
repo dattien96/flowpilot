@@ -7,7 +7,9 @@ import { activeWorkflowStep, isFlowModeRun, useStore } from "@/state/store";
 // live) so it can sit between the chat column and the existing right sidebar and
 // only take up space while a flow is actually running. Collapsed shows just the
 // icon rail; expanded adds a progress summary header plus full step detail
-// (name/status/provider/model/agent/yolo — BUG-155).
+// (name/status/provider/model/agent — BUG-155). YOLO is not shown: Flow/Workflow
+// launches always run YOLO=true (WorkflowsSettings lock); a stale meta.yoloMode=false
+// was rendering "YOLO OFF" which is wrong and noise.
 export function FlowTimelineSidebar(): React.ReactElement | null {
   const chatMode = useStore((s) => s.chatMode);
   const mainRunId = useStore((s) => s.mainRunId ?? s.runId);
@@ -80,12 +82,6 @@ export function FlowTimelineSidebar(): React.ReactElement | null {
                 <span className={`pill-prov prov-${meta.provider}`}>{meta.provider.toUpperCase()}</span>
               )}
               {meta.model && <span className="ac-model">{meta.model}</span>}
-              {/* BUG-159: yolo is a run-wide toggle, not a per-step config, so it's
-                  surfaced once here — always visible (on or off), not only when on,
-                  so the user can tell the flow's yolo posture at a glance. */}
-              <span className={`wsr-retry-badge ${meta.yoloMode ? "yolo-on" : "yolo-off"}`}>
-                YOLO {meta.yoloMode ? "ON" : "OFF"}
-              </span>
             </span>
           </div>
         )}

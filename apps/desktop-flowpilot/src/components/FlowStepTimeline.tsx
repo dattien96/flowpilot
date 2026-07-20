@@ -134,12 +134,11 @@ export function FlowStepTimeline({
                   {step.rejectionNote || STATE_LABEL[step.status]}
                   {step.retryCount > 0 && <span className="wsr-retry-badge">Retry {step.retryCount}</span>}
                 </div>
-                {(provider || model || step.agentRef || step.yoloMode) && (
+                {(provider || model || step.agentRef) && (
                   <div className="fti-meta">
                     {provider && <span className={`pill-prov prov-${provider}`}>{provider.toUpperCase()}</span>}
                     {model && <span className="ac-model">{model}</span>}
                     {step.agentRef && <span title={step.agentRef}>agent: {agentRefLabel(step.agentRef)}</span>}
-                    {step.yoloMode && <span>yolo</span>}
                   </div>
                 )}
               </div>
