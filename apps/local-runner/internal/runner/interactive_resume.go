@@ -1992,6 +1992,7 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 		lastMessage string
 		startedAt   string
 		updatedAt   string
+		completed   bool
 	}
 	children := make([]childSession, 0)
 	seen := make(map[string]struct{})
@@ -2009,6 +2010,14 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 			lastMessage: strings.TrimSpace(session.LastMessage),
 			startedAt:   session.StartedAt,
 			updatedAt:   session.UpdatedAt,
+			// BUG-294: only a genuinely completed child gets the result annotation
+			// (which renders the "— completed" suffix on the parent's agent card).
+			// This mirrors the LIVE emit condition exactly (interactive_service.go:
+			// EventAgentResultInjected fires only for completion.status ==
+			// RunStatusCompleted). A child killed mid-turn persists a non-empty
+			// LastMessage but status "running" (normalized to cancelled on resume);
+			// annotating it produced a card reading "cancelled … — completed".
+			completed: session.Status == RunStatusCompleted,
 		})
 	}
 	sort.Slice(children, func(i, j int) bool {
@@ -2025,7 +2034,7 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 			ChildRunID: child.runID,
 			OccurredAt: child.startedAt,
 		})
-		if child.lastMessage != "" {
+		if child.completed && child.lastMessage != "" {
 			out = append(out, ProviderEvent{
 				Type:         EventAgentResultInjected,
 				AgentName:    child.agentName,
