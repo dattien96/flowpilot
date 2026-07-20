@@ -133,7 +133,16 @@ function deriveStepPromptBase(input: { stepType: string; name: string; descripti
   return `Execute the ${title} step.\n\n${summary}`;
 }
 
-function createEmptyStepDraft(modelId: string): StepDefinition {
+// Flow/Workflow launches (single-step and multi-step alike) always run YOLO=true — the
+// gate/approval/reinvoke machinery a workflow's own hub/cohort orchestration depends on is
+// not robust against a paused approval card mid-flow (a stalled/failed child, a missed
+// approval render while another child is focused, the hub's own stall-timeout firing while
+// a sibling is still legitimately working). YOLO=false is only supported in Normal Chat,
+// which has no hub/cohort/gate layer to race against. Every yoloMode default and mapper
+// below is pinned to true; the corresponding settings checkboxes are shown checked+disabled
+// (see renderStepDefinitionForm / the workflow create+edit forms) rather than removed, so the
+// UI still explains why the option is unavailable here.
+export function createEmptyStepDraft(modelId: string): StepDefinition {
   return {
     stepType: "",
     name: "",
@@ -146,7 +155,7 @@ function createEmptyStepDraft(modelId: string): StepDefinition {
     subagent: null,
     model: null,
     reasoningEffort: DEFAULT_REASONING,
-    yoloMode: false,
+    yoloMode: true,
     agentType: "standard",
     nodeId: null,
     behaviorId: null,
@@ -163,7 +172,7 @@ function createEmptyStepDraft(modelId: string): StepDefinition {
   };
 }
 
-function mapWorkflowToDraft(workflow: Workflow | null): WorkflowDraft | null {
+export function mapWorkflowToDraft(workflow: Workflow | null): WorkflowDraft | null {
   if (!workflow) return null;
   return {
     id: workflow.id,
@@ -173,7 +182,11 @@ function mapWorkflowToDraft(workflow: Workflow | null): WorkflowDraft | null {
     isTemplate: workflow.isTemplate,
     modelOverride: workflow.modelOverride ?? "",
     reasoningEffortOverride: workflow.reasoningEffortOverride ?? DEFAULT_REASONING,
-    yoloMode: workflow.yoloMode,
+    // Force true regardless of what is persisted — see the comment above createEmptyStepDraft.
+    // A legacy workflow saved with yoloMode=false is normalized the moment it is loaded into
+    // the edit draft, so simply opening it (even without touching the checkbox) corrects it
+    // on next save.
+    yoloMode: true,
     policyCap: workflow.policyCap,
     policyOnCap: workflow.policyOnCap,
     policyExtendBy: workflow.policyExtendBy,
@@ -182,7 +195,7 @@ function mapWorkflowToDraft(workflow: Workflow | null): WorkflowDraft | null {
   };
 }
 
-function createEmptyWorkflowDraft(projects: Project[], modelId: string): WorkflowDraft {
+export function createEmptyWorkflowDraft(projects: Project[], modelId: string): WorkflowDraft {
   return {
     projectId: projects[0]?.id ?? null,
     name: "New Workflow",
@@ -190,7 +203,7 @@ function createEmptyWorkflowDraft(projects: Project[], modelId: string): Workflo
     isTemplate: false,
     modelOverride: "",
     reasoningEffortOverride: DEFAULT_REASONING,
-    yoloMode: false,
+    yoloMode: true,
     policyCap: null,
     policyOnCap: null,
     policyExtendBy: null,
@@ -934,7 +947,8 @@ export function WorkflowsSettings(): React.ReactElement {
   const selectStepDefinition = (stepType: string, definitions: StepDefinition[] = stepDefinitions) => {
     setSelectedStepType(stepType);
     const nextSelectedStep = definitions.find((item) => item.stepType === stepType) ?? null;
-    const nextStepDraft = nextSelectedStep ? { ...nextSelectedStep } : null;
+    // Force true regardless of what is persisted — see the comment above createEmptyStepDraft.
+    const nextStepDraft = nextSelectedStep ? { ...nextSelectedStep, yoloMode: true } : null;
     setStepDraft(nextStepDraft);
     setStepInitialSnapshot(normalizeStepSnapshot(nextStepDraft));
   };
@@ -2370,13 +2384,9 @@ export function WorkflowsSettings(): React.ReactElement {
             </div>
           );
         })}
-        <label className="settings-checkbox settings-field-full">
-          <input
-            checked={draft.yoloMode}
-            onChange={(event) => onChange({ ...draft, yoloMode: event.target.checked })}
-            type="checkbox"
-          />
-          <span>YOLO for single-step runs</span>
+        <label className="settings-checkbox settings-field-full" title="Flow/Workflow launches always run YOLO — the gate/approval machinery here is not robust against a paused approval mid-flow. Use Normal Chat for gated (YOLO=off) runs.">
+          <input checked disabled type="checkbox" />
+          <span>YOLO for single-step runs (always on for Flow mode)</span>
         </label>
       </div>
     );
@@ -2776,18 +2786,9 @@ export function WorkflowsSettings(): React.ReactElement {
                     ))}
                   </select>
                 </label>
-                <label className="settings-checkbox settings-field-full">
-                  <input
-                    checked={createWorkflowDraft.yoloMode}
-                    onChange={(event) =>
-                      setCreateWorkflowDraft((current) => ({
-                        ...current,
-                        yoloMode: event.target.checked,
-                      }))
-                    }
-                    type="checkbox"
-                  />
-                  <span>YOLO mode</span>
+                <label className="settings-checkbox settings-field-full" title="Flow/Workflow launches always run YOLO — the gate/approval machinery here is not robust against a paused approval mid-flow. Use Normal Chat for gated (YOLO=off) runs.">
+                  <input checked disabled type="checkbox" />
+                  <span>YOLO mode (always on for Flow mode)</span>
                 </label>
                 <label className="settings-field">
                   <span>Cap (max rounds before blocking)</span>
@@ -3104,17 +3105,9 @@ export function WorkflowsSettings(): React.ReactElement {
                           ))}
                         </select>
                       </label>
-                      <label className="settings-checkbox settings-field-full">
-                        <input
-                          checked={workflowDraft.yoloMode}
-                          onChange={(event) =>
-                            setWorkflowDraft((current) =>
-                              current ? { ...current, yoloMode: event.target.checked } : current,
-                            )
-                          }
-                          type="checkbox"
-                        />
-                        <span>YOLO mode</span>
+                      <label className="settings-checkbox settings-field-full" title="Flow/Workflow launches always run YOLO — the gate/approval machinery here is not robust against a paused approval mid-flow. Use Normal Chat for gated (YOLO=off) runs.">
+                        <input checked disabled type="checkbox" />
+                        <span>YOLO mode (always on for Flow mode)</span>
                       </label>
                       <label className="settings-field">
                         <span>Cap (max rounds before blocking)</span>
