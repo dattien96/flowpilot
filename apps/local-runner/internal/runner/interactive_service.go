@@ -5476,8 +5476,16 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// Prefer the durable real provider handle when present (Codex rollouts and
 	// Grok ACP session ids). Synthetic thread-* remains only until the first
 	// successful turn promotes a real id (Task-210 Option B for Grok).
+	//
+	// BUG-295 F-3: EXCLUDE Claude from this promotion. Claude's adapter treats
+	// req.ProviderSessionID as the SYNTHETIC pool KEY (claude_adapter.go), mapping it
+	// internally to the real id; feeding it the real id makes that lookup miss and drops
+	// --resume, silently rotating the session (regression from b288982, which broadened a
+	// Codex-only override to all providers). Keeping the synthetic key here restores the
+	// pool-mapped resume path for Claude live turns. (After a restart the field is already
+	// the real id — that case is handled defensively by F-1 in claude_adapter.go.)
 	providerSessionID := rs.providerSessionID
-	if rs.realProviderSessionID != "" {
+	if rs.realProviderSessionID != "" && rs.providerKey != ProviderKeyClaude {
 		providerSessionID = rs.realProviderSessionID
 	}
 	// Fold any pending UI-spawn context into the provider prompt (NOT the displayed prompt,

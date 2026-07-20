@@ -5,11 +5,11 @@
 - Document ID: `BUG-295`
 - Title: `Claude provider session silently rotates mid-run; persisted session id sticks to the FIRST segment, losing later turns on restart replay`
 - Phase: `bugfix`
-- Status: `draft`
+- Status: `fixed`
 - Owner: `agent-flow-engine`
 - Reviewers: `TBD`
 - Created: `2026-07-20`
-- Last Updated: `2026-07-20` (deep-investigation pass 2)
+- Last Updated: `2026-07-20` (fix applied: F-3 service-gate + F-1 adapter safety net)
 - Parent Documents: `CP-51-PhaseAB-Timeline-And-Verification-Log`
 - Child Documents: `-`
 - Related Documents: `BUG-294-Resumed-Agent-Card-Shows-Completed-Suffix-On-Cancelled-Child` (same run-12255/run-12260 repro; found together, independent root causes), `BUG-083` (the Codex analogue of this class, already fixed there as F-3)
@@ -103,28 +103,45 @@ During a review-loop remediation cycle, a coder child run (run-12260) went throu
   - Turn 3 happened to work "correctly" (both turns 2 and 3 landed in the SAME `19647932` file) only because turn 2's `SendTurn` also called `a.pool.setRealSession(req.ProviderSessionID, sid)` (`claude_adapter.go:197`) using `af68de79` as the key — establishing a NEW, self-consistent mapping `af68de79 → 19647932` that turn 3's lookup (again keyed by the stuck `af68de79`) could hit. This is coincidental self-healing of the LIVE conversation, not a fix — the PERSISTED/replay-visible session id is still wrong, because `refreshResumeHandleLocked`'s primary lookup path (keyed by the never-changing `rs.providerSessionID`) still overwrote `rs.realProviderSessionID` back to `af68de79` after every turn, matching what was actually persisted.
 - evidence: file contents and `sessionId` fields quoted above; `interactive_service.go:3013-3017,7106-7119`; `claude_adapter.go:93-97,177-201`; `interactive_resume.go:2436-2441`; absence of any Claude-path `rs.providerSessionID =` reassignment (grepped, confirmed only Codex/Grok reassign it).
 
-## 7. Fix Strategy (not yet applied)
+## 7. Fix Strategy (APPLIED — F-3 + F-1 combined)
 
-Preferred: `F-1` (prevent the rotation). Not yet implemented — pending user go-ahead and cross-account regression review.
+> Naming note: the live decision thread referred to the service-gate below as "F-2" and to the adapter fallback as "F-1". To avoid colliding with THIS document's original F-2 (the multi-file-replay option, NOT taken), the service-gate is labelled **F-3** here. Applied = **F-3 (service-gate) + F-1 (adapter safety net)**.
 
-- `F-1` (prevent the rotation) — in `claudeAdapter.SendTurn`, when the pool lookup misses AND `req.ProviderSessionID` is ALREADY a real Claude session id (a UUID, not a synthetic `thread-*`), use it directly as the `--resume` target. Concretely, after `resumeID := a.pool.realSession(req.ProviderSessionID)` (`claude_adapter.go:95`): `if resumeID == "" && !strings.HasPrefix(req.ProviderSessionID, "thread-") { resumeID = req.ProviderSessionID }`. This makes turn 2 `--resume af68de79` (continuing turn 1's session, which Claude appends to the SAME `af68de79.jsonl`), so no rotation happens, the persisted psid stays correct, and restart replay loads the one file with the full history. ~3 lines, no schema change. It also fixes the LIVE context loss (turn 2 no longer starts blind). Blast-radius check required against cross-account/cross-restart resume tests (BUG-272, Task-210, run-536 class) — those relocate the session file across account homes but still resume by the real id, which this change is compatible with. additive-tests-only: the existing `TestClaudeAdapterResumeUsesRealSessionID` must stay unchanged; add a NEW test that passes the real id as `req.ProviderSessionID` on turn 2 (replicating `runTurn`'s promotion) and asserts turn 2 still emits `--resume <realId>` and does NOT rotate.
-- `F-2` (tolerate the rotation, mirror BUG-083 F-3) — track every distinct real Claude session id a run passes through in the turn log (a new `turnLogKindClaudeSession` entry, analogous to `turnLogKindCodexSession`), and have `seedTranscriptFromDisk`'s Claude branch load ALL of them in recorded order (like the existing Codex branch already does), rather than assuming a single file holds the whole conversation. This does not fix the underlying live rotation (or the "sticks to the wrong file" persistence issue) but does stop the data loss on replay.
-- A combined `F-1 + F-2` is likely the most robust outcome: stop the unnecessary rotation where possible, AND make replay resilient to any rotation that still legitimately occurs (e.g. a genuine cross-account/cross-restart resume that intentionally starts a new session).
+### Regression root, confirmed
+The rotation was a **regression** introduced by commit `b288982` (2026-07-14, "[BugFix][chat-history][domain] Grok cross-account session relocate CA-312"). That commit broadened a **Codex-only** override in `runTurn` — `if rs.providerKey == ProviderKeyCodex && rs.realProviderSessionID != ""` → `if rs.realProviderSessionID != ""` — to feed the real id to ALL providers so Grok could `session/load`. Codex/Grok/Gemini adapters consume `req.ProviderSessionID` as a real id directly (or tolerate it); **Claude is the only adapter that treats it as the synthetic pool KEY**, so the broadened predicate swept Claude in as collateral. Claude was never mentioned in b288982's intent/tests. Verified: only `claude_adapter.go` maps through `pool.realSession` with no real-id fallback.
 
-Before implementing either: trace `claudeSessionPool.realSession`/`setRealSession` fully (all call sites, not just the ones found in this pass) and the cross-account/cross-restart resume tests already covering this pool, to avoid reintroducing a regression those tests were written to prevent.
+### Why two fixes were needed (the after-restart finding)
+There are two distinct code paths that hand Claude a session id, and they carry DIFFERENT values:
+- **Live follow-up turn** (same process): `rs.providerSessionID` is still the synthetic `thread-*`; the real id lives only in `rs.realProviderSessionID`. The regression promoted the real id over the synthetic → adapter pool-miss → rotation. **F-3 fixes this.**
+- **After a restart**: reconstruct seeds BOTH `rs.providerSessionID` AND `rs.realProviderSessionID` from the persisted (REAL) id (`interactive_resume.go:833-834`); the synthetic `thread-*` is never persisted and is gone. So the FIRST new turn after a restart hands the adapter a real id into a FRESH, empty pool → pool-miss → rotation, even with F-3 (which only keeps the synthetic when one exists). **F-1 fixes this.**
+
+### F-3 (service-gate — the precise regression inverse) — `interactive_service.go` `runTurn`
+Exclude Claude from the real-id promotion: `if rs.realProviderSessionID != "" && rs.providerKey != ProviderKeyClaude`. Claude live turns keep passing the synthetic pool key, restoring the pre-regression pool-mapped resume. Codex/Grok/Gemini are untouched — the b288982 Grok cross-account fix (both halves: promote via `LastGrokSessionID` in `refreshResumeHandleLocked`, consume in `runTurn`) survives intact because a Grok run's `providerKey != ProviderKeyClaude`. 1 line.
+
+### F-1 (adapter safety net) — `claudeAdapter.SendTurn` (`claude_adapter.go`)
+After `resumeID := a.pool.realSession(req.ProviderSessionID)`: `if resumeID == "" && !strings.HasPrefix(req.ProviderSessionID, "thread-") { resumeID = req.ProviderSessionID }`. When the pool misses AND the handle is already a real id (a UUID, not synthetic `thread-*`), resume it directly. Covers the after-restart empty-pool case and any other path that reaches the adapter with a real id. ~3 lines, no schema change. Compatible with cross-account/cross-restart resume (those resume by the real id, which this uses directly).
+
+### Not taken
+- Original **F-2** (multi-file replay: track every Claude session id in the turn log and load all of them, mirroring BUG-083 F-3) — unnecessary once rotation is prevented at the source; would only mask, not fix, the rotation. Kept documented as a fallback if a genuinely intentional Claude rotation ever needs to be tolerated.
 
 ## 8. Validation
 
-- Not yet performed — no fix applied per this document. Root cause was confirmed by direct inspection of the two real Claude session JSONL files and the persisted `sessions.ndjson` record; no code was changed to reach this conclusion.
+- New additive tests (`bug295_claude_session_rotation_test.go`), all pass:
+  - `TestBug295RunTurnClaudeKeepsSyntheticSessionID` — F-3 regression guard: a Claude follow-up turn (synthetic + promoted real id both set) hands the adapter the SYNTHETIC id, not the real id.
+  - `TestBug295RunTurnCodexPromotesRealSessionID` / `TestBug295RunTurnGrokPromotesRealSessionID` — F-3 non-regression: Codex and Grok still receive the REAL id (the b288982 Grok cross-account fix must survive).
+  - `TestBug295ClaudeAdapterResumesRealIDWhenPoolMisses` — F-1: a pool-miss on a real id (post-restart empty pool) emits `--resume <realId>` instead of rotating.
+  - `TestBug295ClaudeAdapterDoesNotResumeSyntheticOnFirstTurn` — F-1 guard: a synthetic `thread-*` id on a pool-miss (genuine first turn) is NEVER resumed.
+- `go test ./internal/runner -run TestBug295 -count=1`: 5 passed.
+- Regression battery `go test ./internal/runner -run 'TestBug295|TestClaudeAdapterResumeUsesRealSessionID|TestClaudeAdapter|TestRun2334RestartReplayKeepsAssistantResponsesForEveryProvider|TestChatModeSelectedControlsReachProviderTurnRequest|TestLiveChatInjectsFeatureHistoryForSupportedProviders' -count=1`: 20 passed. The pre-existing `TestClaudeAdapterResumeUsesRealSessionID` (synthetic id for both turns) stays green unmodified.
+- Broader suite residual failures (Codex-CLI resume, Grok home slot, skills merge) reproduce identically on a stashed baseline (my two edits removed) — pre-existing/environmental (no Codex CLI binary; machine home paths), none in the Claude-adapter/resume/annotation area.
+- `-race` not run: this machine lacks gcc/CGO — flag for `-race` re-verification on a CGO-capable machine before considering the concurrency dimension fully validated.
+- GitNexus impact analysis unavailable (`%1 is not a valid Win32 application`); performed localized tracing instead — enumerated the two `realProviderSessionID` consume/persist sites (`runTurn:5479`, `sessionStateOf:3013`), confirmed b288982 broadened only `runTurn`, and confirmed reconstruct seeds the real id (`interactive_resume.go:833-834`).
 
 ## 9. Regression Guard
 
-- tests: none yet. A future fix must add new dedicated tests covering at minimum:
-  - a multi-turn Claude run where turn 2 resumes turn 1's real session correctly (no spurious rotation) — regression guard for F-1.
-  - a multi-turn Claude run whose session DOES legitimately rotate (e.g. cross-account resume) still replays ALL turns after restart, in order — regression guard for F-2.
-  - existing cross-account/cross-restart Claude resume tests must continue to pass unmodified (additive-tests-only).
-- alerts: consider a runtime warning/log line when `SendTurn`'s `resumeID` comes back empty for a run whose `resumeSessionID` was non-empty (i.e., an unexpected rotation is about to happen) — would have made this bug visible in logs immediately instead of requiring manual JSONL forensics.
-- audit checks: a CA note is required once a fix lands (feature_key `agent-flow-engine`).
+- tests: the five additive tests above pin both fixes and both non-regression paths (Codex + Grok). Existing cross-account/cross-restart Claude resume tests pass unmodified (additive-tests-only honored).
+- alerts: consider a runtime warning/log line when `SendTurn`'s `resumeID` comes back empty for a run whose `resumeSessionID` was non-empty (an unexpected rotation is about to happen) — would have surfaced this in logs immediately instead of requiring manual JSONL forensics. Not implemented in this fix (out of scope; noted as a future observability improvement).
+- audit checks: CA note `CA-373` (feature_key `agent-flow-engine`) accompanies this fix.
 
 ## 10. Follow-Up Document Updates
 
