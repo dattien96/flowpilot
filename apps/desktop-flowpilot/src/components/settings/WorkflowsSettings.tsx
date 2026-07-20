@@ -24,6 +24,9 @@ import {
 } from "@/components/settings/fileArtifactConfig";
 import { createRunnerClient } from "@/client/createRunnerClient";
 import type { AgentDefinition } from "@/types/contract";
+import { stepDefinitionListSubtitle, stepDefinitionRequiresModel } from "@/components/settings/stepModelVisibility";
+
+export { stepDefinitionRequiresModel };
 
 type Tab = "workflows" | "steps" | "artifacts";
 type ViewMode = "list" | "create";
@@ -296,18 +299,6 @@ function stepDefinitionAgentRefIssue(
     return `Behavior "${behaviorId}" requires an Agent ref — set one before saving this step.`;
   }
   return null;
-}
-
-// A step's Model/Reasoning effort only matter for a real provider turn: an
-// agent.delegate node (spawns a child) or a step with NO behaviorId at all
-// (a plain, pre-flow catalog step — still a normal agent turn). Every other
-// (inline/control) behavior is Go-deterministic and never consumes them —
-// resolveFlowNodeModel (flow_executor.go) returns "" for any non-delegate
-// node already — so the authoring UI must not force a choice here, and the
-// fields are hidden entirely for those behaviors.
-function stepDefinitionRequiresModel(behaviorId: string | null | undefined): boolean {
-  if (!behaviorId) return true;
-  return FLOW_BEHAVIOR_OPTIONS.find((option) => option.id === behaviorId)?.requiresAgent ?? false;
 }
 
 // CP-45/SD-23 Task-200 D-7 (simplified v1 type-compat rule): a
@@ -3309,9 +3300,7 @@ export function WorkflowsSettings(): React.ReactElement {
                       ) : null}
                       <div>
                         <strong>{step.name}</strong>
-                        <span>
-                          {step.stepType} / {step.model}
-                        </span>
+                        <span>{stepDefinitionListSubtitle(step)}</span>
                       </div>
                     </button>
                   );
