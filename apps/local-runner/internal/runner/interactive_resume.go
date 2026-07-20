@@ -866,6 +866,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		lastTurnID:                      st.PendingFlowGateTurnID, // seed for gate materialize
 		pendingGateRepromptPrompt:       st.PendingGateRepromptPrompt,
 		pendingGateRepromptStepID:       st.PendingGateRepromptStepID,
+		hubContinueDelegatedTurnID:      st.HubContinueDelegatedTurnID,
 		pendingGateCodePaths:            append([]string(nil), st.PendingGateCodePaths...),
 		repromptAttempts:                st.RepromptAttempts,
 		pendingResumePrompt:             st.PendingResumePrompt,
@@ -1266,6 +1267,27 @@ func (s *InteractiveService) flushDurableTurnIntents(runID string) {
 		s.mu.Unlock()
 		return
 	}
+	// CP-51 A1: suppress only a same-turn hub gate reprompt (turn identity from
+	// the deferred gate turn / last turn — never use the marker as the turn
+	// hint, or every later reprompt would be wrongly suppressed).
+	if rs.parentRunID == "" && rs.hubContinueDelegatedTurnID != "" &&
+		strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" {
+		gateTurn := rs.pendingFlowGateTurnID
+		if gateTurn == "" {
+			gateTurn = rs.lastTurnID
+		}
+		if gateTurn != "" && clearHubGateRepromptIfContinueDelegatedLocked(rs, gateTurn) {
+			snap := sessionStateOf(rs)
+			snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+			s.mu.Unlock()
+			_ = s.persistProviderSession(snap)
+			s.flowDiagLog(runID, "hub_gate_reprompt_suppressed_after_continue",
+				"idle flush dropped durable hub gate reprompt after continue-delegate",
+				"turn_id", gateTurn,
+			)
+			return
+		}
+	}
 	// Prefer gate reprompt over generic resume (more specific remediation).
 	prompt := strings.TrimSpace(rs.pendingGateRepromptPrompt)
 	stepID := strings.TrimSpace(rs.pendingGateRepromptStepID)
@@ -1282,6 +1304,32 @@ func (s *InteractiveService) flushDurableTurnIntents(runID string) {
 		acceptedTurn = rs.pendingResumeAcceptedTurn
 		failCount, failGen = rs.pendingResumeFailCount, rs.pendingResumeFailGen
 		kind = "resume"
+	}
+	// CP-51 A1: hub park — do not start a hub gate reprompt while children run.
+	// Drop s.mu before shouldParkHubWriteTurn (it re-locks for the child scan).
+	if kind == "reprompt" && rs.parentRunID == "" {
+		parkRunID := rs.id
+		s.mu.Unlock()
+		if s.shouldParkHubWriteTurn(parkRunID) {
+			return
+		}
+		s.mu.Lock()
+		rs = s.runs[runID]
+		if rs == nil {
+			s.mu.Unlock()
+			return
+		}
+		// Re-sample after unlock window (intent may have been cleared).
+		prompt = strings.TrimSpace(rs.pendingGateRepromptPrompt)
+		stepID = strings.TrimSpace(rs.pendingGateRepromptStepID)
+		gen = rs.pendingGateRepromptGen
+		delivered = rs.pendingGateRepromptDeliveredGen
+		acceptedTurn = rs.pendingGateRepromptAcceptedTurn
+		failCount, failGen = rs.pendingGateRepromptFailCount, rs.pendingGateRepromptFailGen
+		if prompt == "" || stepID == "" {
+			s.mu.Unlock()
+			return
+		}
 	}
 	// BUG-288 R15-P0: also flush durable stall-retry on this run (parent).
 	if rs.pendingRestartRunID != "" && rs.pendingRestartPrompt != "" {
@@ -1416,7 +1464,9 @@ func isPermanentStartTurnError(e *apiErr) bool {
 		return false
 	}
 	switch e.code {
-	case "turn_in_progress", "gate_in_progress", "awaiting_user":
+	case "turn_in_progress", "gate_in_progress", "awaiting_user",
+		// CP-51 A1: hub park while children write is temporary — flush again when idle.
+		"hub_parked", "flow_awaiting_user":
 		return false
 	case "flow_stopped":
 		// Stop is permanent until user resumes the loop.
@@ -1637,6 +1687,17 @@ func (s *InteractiveService) notifyTurnIdle(runID string) {
 	if busy || !hasIntent {
 		if !busy {
 			s.maybeScheduleHubStallCheck(runID)
+		}
+		// CP-51 A1: when a child becomes idle, try the parent hub's parked
+		// gate-reprompt / resume intents (they were deferred while children ran).
+		s.mu.Lock()
+		parentID := ""
+		if r := s.runs[runID]; r != nil {
+			parentID = r.parentRunID
+		}
+		s.mu.Unlock()
+		if parentID != "" && !s.hasActiveFlowChild(parentID) {
+			go s.flushDurableTurnIntents(parentID)
 		}
 		return
 	}
@@ -2518,6 +2579,28 @@ func userFacingTranscriptEvents(historical []ProviderEvent) []ProviderEvent {
 		out = append(out, e)
 	}
 	return out
+}
+
+// liveTurnStartedDisplayPrompt returns the prompt to render on a LIVE
+// turn_started bubble. Internal flow-engine orchestration prompts — the joined
+// result note, gate reprompts, and cross-provider handoff envelopes — are hidden
+// from the human transcript on REPLAY (userFacingTranscriptEvents ->
+// isInternalTranscriptEvent below, keyed on isSystemPrompt). Historically the
+// live emit streamed the full prompt regardless, so such a bubble appeared live
+// yet vanished after a restart/reopen ("lost message", BUG-293 / CP-51 A1). This
+// keeps the two paths symmetric by returning "" for those prompts so the desktop
+// renders no user bubble (timelineReducer only pushes a prompt when e.prompt is
+// truthy). The provider still receives the full prompt: callers pass in.Prompt to
+// runTurn and the turn log unchanged — only this DISPLAY copy is redacted.
+//
+// The predicate is deliberately isSystemPrompt (not a joined-note special case)
+// so live and replay classify every internal prompt identically and can never
+// drift apart again.
+func liveTurnStartedDisplayPrompt(prompt string) string {
+	if isSystemPrompt(prompt) {
+		return ""
+	}
+	return prompt
 }
 
 func isInternalTranscriptEvent(event ProviderEvent) bool {

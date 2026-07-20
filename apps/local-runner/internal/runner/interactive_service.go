@@ -380,6 +380,11 @@ type interactiveRun struct {
 	// Durable on ProviderSessionState (V10R4 P1).
 	pendingGateRepromptPrompt string
 	pendingGateRepromptStepID string
+	// hubContinueDelegatedTurnID is the provider turn that applied
+	// flow_control continue and already advanced a delegate writer (CP-51 A1
+	// residual / run-9437). Same-turn hub gate reprompts are suppressed so the
+	// hub does not open a concurrent write turn.
+	hubContinueDelegatedTurnID string
 	// pendingResumePrompt/StepID is a durable continuation after rehydrated
 	// approval/question resolve; cleared only after startTurn succeeds (V10R4 P1).
 	pendingResumePrompt string
@@ -1371,6 +1376,10 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			"open_issues", result.OpenIssues,
 		)
 		if result.NextAction == "looping" {
+			// CP-51 A1 residual: durably mark this turn as continue-delegated and
+			// clear any hub gate-reprompt intent so restart cannot revive a
+			// concurrent hub write while the reinvoked coder is RUNNING.
+			s.stampHubContinueDelegatedDurable(parentRunID)
 			// Re-enter the coder so the back-edge in ReviewLoopFlowConfig fires
 			// (CRITICAL finding: continue returned "looping" but never restarted the coder).
 			go s.maybeReinvokeCoderForContinue(parentRunID, buildCoderReentryPrompt(in))
@@ -2502,6 +2511,7 @@ func (s *InteractiveService) scheduleChildTurn(runID, stepID, prompt string) {
 		_, err := s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
 		if err != nil {
 			shouldDrain := false
+			transientBusy := false
 			s.mu.Lock()
 			if rs := s.runs[runID]; rs != nil && rs.reinvokeInFlight {
 				rs.reinvokeInFlight = false
@@ -2516,16 +2526,29 @@ func (s *InteractiveService) scheduleChildTurn(runID, stepID, prompt string) {
 				// tight-loop scheduleChildTurn → notifyTurnIdle → reinvoke.
 				// Remaining pending is visible to F-0 once not counted as busy.
 				shouldDrain = rs.hubReinvokeStartFailCount <= 3
+				// turn_in_progress / gate_in_progress / hub_parked: notifyTurnIdle
+				// is a no-op while busy, so schedule a short deferred drain once
+				// the gate/turn window can clear (BUG-284 stranded reinvoke).
+				if err.code == "turn_in_progress" || err.code == "gate_in_progress" || err.code == "hub_parked" {
+					transientBusy = true
+				}
 				touchHubProgressLocked(rs)
 			}
 			s.mu.Unlock()
 			s.flowDiagLog(runID, "hub_reinvoke_start_failed", "scheduled hub reinvoke startTurn failed; cleared reinvokeInFlight and re-armed pending",
 				"error", err.Error(),
 				"will_drain", shouldDrain,
+				"transient_busy", transientBusy,
 			)
 			if shouldDrain {
 				// Only live drain path for pendingHubReinvoke when idle (H5/F-5).
 				s.notifyTurnIdle(runID)
+				if transientBusy {
+					go func(id string) {
+						time.Sleep(25 * time.Millisecond)
+						s.notifyTurnIdle(id)
+					}(runID)
+				}
 			}
 			s.maybeScheduleHubStallCheck(runID)
 		}
@@ -3040,6 +3063,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		LastTurnStepID:                  rs.lastTurnStepID,
 		PendingGateRepromptPrompt:       rs.pendingGateRepromptPrompt,
 		PendingGateRepromptStepID:       rs.pendingGateRepromptStepID,
+		HubContinueDelegatedTurnID:      rs.hubContinueDelegatedTurnID,
 		PendingGateCodePaths:            append([]string(nil), rs.pendingGateCodePaths...),
 		RepromptAttempts:                rs.repromptAttempts,
 		PendingResumePrompt:             rs.pendingResumePrompt,
@@ -3649,7 +3673,13 @@ func (s *InteractiveService) resumePendingFlowGate(runID string) {
 		// Task-251 T-2b: durable settle disposition for gate block/reprompt.
 		s.scheduleSettleAfterGateBlock(repromptRun, blockTurnID)
 		if repromptPrompt != "" && repromptStep != "" {
-			go s.startTurnClearingIntent(repromptRun, repromptStep, repromptPrompt, "reprompt", repromptGen)
+			if isRoot {
+				// CP-51 A1: park/suppress hub gate remediations that would race
+				// a continue-delegated coder (or other active flow children).
+				s.scheduleRootGateRepromptOrPark(repromptRun, repromptStep, repromptPrompt, blockTurnID, repromptGen)
+			} else {
+				go s.startTurnClearingIntent(repromptRun, repromptStep, repromptPrompt, "reprompt", repromptGen)
+			}
 		} else {
 			s.notifyTurnIdle(repromptRun)
 		}
@@ -5769,7 +5799,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// Retry a hub reinvoke that was deferred because turnInFlight was true when the
 	// coder completion fired. This prevents the review loop from stalling when the
 	// coder finishes before the hub's current turn has cleared.
-	pendingHubReinvoke := rs.parentRunID == "" && rs.pendingHubReinvoke
+	//
+	// BUG-284 / CP-51 A1: when a post-turn gate will keep turnInFlight (and may
+	// arm pendingFlowGateSettle), do NOT drain pendingHubReinvoke here. An early
+	// scheduleChildTurn races gate and often gets turn_in_progress /
+	// gate_in_progress; the fail path re-arms after runTurn's final
+	// notifyTurnIdle already ran, stranding hub.notify forever. Leave the
+	// pending flag for notifyTurnIdle after the gate settles (H5/F-5).
+	pendingHubReinvoke := rs.parentRunID == "" && rs.pendingHubReinvoke && !willRunGate
 	// BUG-284: a hub.notify dispatch stashes its FULL prompt in
 	// pendingHubReinvokePrompt (see maybeAutoReinvokeHubWithPrompt) because a
 	// hub.notify "done" is observed from INSIDE the very turn that is
@@ -5951,7 +5988,19 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 					}
 					if persistRepErr == nil {
 						if repromptPrompt != "" && repromptStep != "" && !stoppedMidGate {
-							go s.startTurnClearingIntent(repromptRun, repromptStep, repromptPrompt, "reprompt", repromptGen)
+							// CP-51 A1: root hub gate remediations must not race
+							// active flow children after continue-delegate.
+							s.mu.Lock()
+							isRootReprompt := false
+							if r := s.runs[repromptRun]; r != nil {
+								isRootReprompt = r.parentRunID == ""
+							}
+							s.mu.Unlock()
+							if isRootReprompt {
+								s.scheduleRootGateRepromptOrPark(repromptRun, repromptStep, repromptPrompt, turnID, repromptGen)
+							} else {
+								go s.startTurnClearingIntent(repromptRun, repromptStep, repromptPrompt, "reprompt", repromptGen)
+							}
 						} else if !stoppedMidGate {
 							s.notifyTurnIdle(repromptRun)
 							// notify already ran for this branch — avoid double at tail.
@@ -6088,7 +6137,11 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 							}
 							s.settleFlowChildTurnCompletedLocked(rs, msg, completedEv)
 							rs.turnInFlight = false
+							rs.postTurnGateCancel = nil
 							s.mu.Unlock()
+							// Match the restart path: once the live post-turn gate has
+							// passed and completion is durable, settle the dispatch ledger.
+							s.scheduleSettleAfterGatePass(childID, turnID)
 							if parentID != "" {
 								go s.releaseDependentAgents(parentID, childID, msg, at)
 							}
@@ -6096,7 +6149,20 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 					} // end R13-06 else (non-skip gate-pass settle)
 				} else {
 					rs.turnInFlight = false
+					// BUG-284 CP-51 A1: without nilling postTurnGateCancel here, it
+					// stays non-nil until the deferred cleanup (above) runs at
+					// function return — but the tail's notifyTurnIdle call fires
+					// BEFORE that defer, sees postTurnGateCancel != nil as "busy",
+					// and skips draining pendingHubReinvoke/pendingHubReinvokePrompt.
+					// A deferred hub.notify reinvoke armed mid-turn (turnInFlight was
+					// true when SubmitFlowControl fired) then never gets a second
+					// drain opportunity and is stranded forever.
+					rs.postTurnGateCancel = nil
 					s.mu.Unlock()
+					// A root synthesis turn has no deferred child settle, but its
+					// dispatch record still becomes terminal only after this gate
+					// passes. Drive the same durable settlement as child turns.
+					s.scheduleSettleAfterGatePass(rs.id, turnID)
 				}
 			}
 		} // end if completed && !checkpointBlocked
@@ -6513,6 +6579,11 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusConflict, "awaiting_user", "run has a pending approval or question; resolve it before a new turn")
 	}
+	// CP-51 A1 residual (run-9437): flow hub must not start a write/tool/gate
+	// turn while any flow child is still RUNNING/waiting. Unlock before the
+	// child scan — hasActiveFlowChild takes per-child locks.
+	parkHub := rs.parentRunID == "" && rs.flowEngineDriven
+	parkRunID := rs.id
 	// V10R4 P0: Stop sets loop Status=stopped — reject new turns on this run and
 	// on children whose parent flow was stopped (intent race after Stop).
 	//
@@ -6536,6 +6607,23 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusConflict, "flow_awaiting_user",
 			"parent flow is waiting for your decision; resolve the form before a child turn")
+	}
+	// CP-51 A1 residual: park hub write turns while flow children are active.
+	// Must drop s.mu before shouldParkHubWriteTurn (it re-locks for the scan).
+	// System/orchestration reinvokes (hub.notify, synthesis join) must still
+	// run when no writer child is active — park is child-scoped only.
+	if parkHub {
+		s.mu.Unlock()
+		if s.shouldParkHubWriteTurn(parkRunID) {
+			return "", newAPIErr(http.StatusConflict, "hub_parked",
+				"hub is parked while flow children are running or waiting; retry after children settle")
+		}
+		s.mu.Lock()
+		rs = s.runs[runID]
+		if rs == nil {
+			s.mu.Unlock()
+			return "", newAPIErr(http.StatusNotFound, "run_not_found", "workflow run not found")
+		}
 	}
 	// V9-03: reject overlapping turns while post-turn gate is still settling.
 	if rs.pendingFlowGateSettle || rs.postTurnGateCancel != nil {
@@ -6688,6 +6776,11 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	touchHubProgressLocked(rs)
 	rs.stepID = in.StepID         // durable for rehydrate-approve restart (V10R P1)
 	rs.lastTurnStepID = in.StepID // CP-35: remember for gate reprompts
+	// CP-51 A1: a new hub turn (N+1) consumes any prior continue-delegate marker
+	// so only the original continue transfer suppresses a gate reprompt.
+	if rs.parentRunID == "" {
+		clearHubContinueDelegatedMarkerLocked(rs, turnID)
+	}
 	rs.currentTurnID = turnID
 	// BUG-235: lastPrompt is the history list's title source (Navigator.tsx renders
 	// runTitle(item.lastPrompt || item.lastMessage)). Every internal flow-engine-
@@ -6767,7 +6860,10 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		cancel()
 		return "", newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
-	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: in.Prompt})
+	// BUG-293: redact the DISPLAY prompt for internal flow-engine/system prompts
+	// so the live bubble matches replay (which hides them). Provider still gets the
+	// full in.Prompt via runTurn and the turn log below.
+	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: liveTurnStartedDisplayPrompt(in.Prompt)})
 	// BUG-288 R20-1 / CP-51 DOD-G8: promote prep → bare launch-ack ONLY after
 	// TurnStarted is in RAM, and only launch the provider AFTER launch-ack is
 	// durable. Fail-closed on persist: keep prep on disk, abort without go

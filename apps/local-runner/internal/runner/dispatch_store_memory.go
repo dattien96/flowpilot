@@ -1329,13 +1329,13 @@ func (s *memoryDispatchStore) ListAttention(ctx context.Context) ([]AttentionIte
 				Reason: "stop-then-crash: provider cancel required",
 			})
 		}
-		// BUG-289 A3 residual: terminal + settle_owed unfinalized stays visible
-		// until Task-251 wires real EvaluateGate + settle driver (do not
-		// silently finalize on boot).
+		// Terminal bookkeeping remains visible until the durable settle driver
+		// records its final disposition. This is operational state, not a new
+		// human decision.
 		if r.State.IsTerminal() && r.SettleOwed && !r.SettlePhase.IsSettleFinal() {
 			out = append(out, AttentionItem{
 				Kind: "settle_pending", RunID: r.RunID, TurnID: r.TurnID, UpdatedAt: r.UpdatedAt,
-				Reason: "terminal settle_owed unfinalized; Task-251 EvaluateGate not wired",
+				Reason: "terminal bookkeeping is awaiting durable settlement",
 			})
 		}
 	}
@@ -1451,7 +1451,7 @@ type intentClearPayload struct {
 }
 
 type dispatchActivation struct {
+
 	RunID           string `json:"run_id"`
 	ProtocolVersion int    `json:"protocol_version"`
 }
-
