@@ -1,7 +1,7 @@
 ---
 name: additive-tests-only
 description: When fixing bugs or implementing tasks, only add new tests. Never edit pre-existing tests without stopping to ask the user first — green old tests are the regression guard.
-version: 1
+version: 6
 ---
 
 # additive-tests-only
