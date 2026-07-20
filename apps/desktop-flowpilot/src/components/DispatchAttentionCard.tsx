@@ -41,6 +41,8 @@ export function DispatchAttentionCard(): React.ReactElement | null {
     return null;
   }
 
+  const onlyPendingSettles = items.every((item) => item.kind === "settle_pending");
+
   const itemKey = (item: DispatchAttentionItem) => `${item.runId}:${item.turnId ?? ""}`;
 
   const inspect = async (item: DispatchAttentionItem) => {
@@ -134,8 +136,9 @@ export function DispatchAttentionCard(): React.ReactElement | null {
         <span className="meta">{items.length} item(s)</span>
       </div>
       <p className="card-reason">
-        Uncertain turns or repair-required runs need an operator decision (SS-17). Automated
-        dispatch stays blocked until resolved.
+        {onlyPendingSettles
+          ? "A terminal turn is finishing durable bookkeeping automatically. The task result is already recorded; details show settlement progress."
+          : "Uncertain turns or repair-required runs need an operator decision (SS-17). Automated dispatch stays blocked until resolved."}
       </p>
       {error && <p className="error-text">{error}</p>}
       <ul className="dispatch-attention-list">
@@ -161,7 +164,7 @@ export function DispatchAttentionCard(): React.ReactElement | null {
               )}
               <div className="card-actions">
                 <button type="button" disabled={busy !== null} onClick={() => void inspect(item)}>
-                  Inspect
+                  {item.kind === "settle_pending" ? "View details" : "Inspect"}
                 </button>
                 {item.kind === "uncertain" && item.turnId && (
                   <>

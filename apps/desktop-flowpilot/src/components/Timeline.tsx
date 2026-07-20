@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { providerLabel, useStore, type TimelineItem } from "@/state/store";
+import type { AgentRunSummary } from "@/types/contract";
 
 // ---------------------------------------------------------------------------
 // Lightweight Markdown renderer — no external dependency
@@ -233,6 +234,27 @@ import { buildTimelineGroups, type ApprovalItem, type QuestionItem, type Timelin
 
 export function shouldShowAgentTimelineHeader(activeAgentRunId: string | undefined, mainRunId: string | undefined, agentRunCount: number): boolean {
   return Boolean(activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId) || agentRunCount > 0;
+}
+
+/**
+ * A child with a persisted lifecycle card is already represented in the visible
+ * timeline. Keep the live banner for children whose card is paged out, but do
+ * not render the same live child twice in the current view.
+ */
+export function liveAgentRunsWithoutVisibleCard(
+  agentRuns: AgentRunSummary[],
+  visibleTimeline: TimelineItem[],
+): AgentRunSummary[] {
+  const representedRunIDs = new Set(
+    visibleTimeline
+      .filter((item): item is Extract<TimelineItem, { kind: "agent" }> => item.kind === "agent")
+      .map((item) => item.childRunId),
+  );
+  return agentRuns.filter(
+    (run) =>
+      (run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question") &&
+      !representedRunIDs.has(run.runId),
+  );
 }
 
 function previewValue(value: unknown): string | undefined {
@@ -625,9 +647,7 @@ export function Timeline(): React.ReactElement {
   const hiddenPromptCount = Math.max(totalPromptCount - visiblePromptCount, 0);
   const visibleTimeline = sliceTimelineFromPrompt(timeline, visiblePromptCount);
   const timelineGroups = buildTimelineGroups(visibleTimeline);
-  const runningAgentCount = agentRuns.filter(
-    (run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question",
-  ).length;
+  const liveAgentRuns = liveAgentRunsWithoutVisibleCard(agentRuns, visibleTimeline);
   const showAgentHeader = shouldShowAgentTimelineHeader(activeAgentRunId, mainRunId, agentRuns.length);
 
   useEffect(() => {
@@ -675,8 +695,7 @@ export function Timeline(): React.ReactElement {
       ))}
 
       {(!activeAgentRunId || activeAgentRunId === mainRunId) &&
-        agentRuns
-          .filter((run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question")
+        liveAgentRuns
           .map((run) => {
             const lowerName = run.agentName.toLowerCase();
             const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";

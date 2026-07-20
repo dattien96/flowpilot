@@ -91,6 +91,46 @@ function applyAgentGraphSnapshot(snapshot: AgentGraphSnapshot): Partial<AppState
   };
 }
 
+/**
+ * Stop is terminal from the user's perspective even if its durable checkpoint
+ * reply fails after the runner has already applied the RAM cancellation. Keep
+ * cached parent/child views consistent with that contract so child focus cannot
+ * restore a stale running snapshot when the user returns to main.
+ */
+function reconcileStoppedRunSnapshots(
+  snapshots: Record<string, RunSnapshot>,
+  parentRunID: string,
+  graph?: AgentGraphSnapshot,
+): Record<string, RunSnapshot> {
+  const reportedStatusByID = new Map(graph?.runs.map((run) => [run.runId, run.status]) ?? []);
+  return Object.fromEntries(
+    Object.entries(snapshots).map(([snapshotRunID, saved]) => {
+      const reportedStatus = reportedStatusByID.get(snapshotRunID);
+      const status =
+        snapshotRunID === parentRunID
+          ? "cancelled"
+          : reportedStatus && isTerminalRunStatus(reportedStatus)
+            ? reportedStatus
+            : isTerminalRunStatus(saved.status)
+              ? saved.status
+              : "cancelled";
+      if (status === saved.status) return [snapshotRunID, saved];
+      return [
+        snapshotRunID,
+        {
+          ...saved,
+          status,
+          timeline: saved.timeline.filter((item) => item.kind !== "thinking"),
+          pendingApprovals: [],
+          pendingQuestions: [],
+          recoverable: false,
+          _streamingAssistantId: undefined,
+        },
+      ];
+    }),
+  );
+}
+
 function pickDefaultModel(provider: ProviderKey | undefined, models: SupportedModel[]): string | undefined {
   if (!provider) return undefined;
   const enabled = models.filter((m) => m.providerKey === provider && m.isEnabled);
@@ -1314,12 +1354,16 @@ export const useStore = create<AppState>((set, get) => ({
     if (shouldStopLoop && parentRunId && client.stopAgentLoop) {
       try {
         const snapshot = await client.stopAgentLoop(parentRunId);
-        set((s) => ({
-          ...applyAgentGraphSnapshot(snapshot),
-          status: deriveOrchestrationRunStatus(s.status, snapshot),
-          timeline: s.timeline.filter((it) => it.kind !== "thinking"),
-          gateBlock: undefined,
-        }));
+        set((s) => {
+          const status = deriveOrchestrationRunStatus(s.status, snapshot);
+          return {
+            ...applyAgentGraphSnapshot(snapshot),
+            status,
+            timeline: s.timeline.filter((it) => it.kind !== "thinking"),
+            gateBlock: undefined,
+            _runSnapshots: reconcileStoppedRunSnapshots(s._runSnapshots, parentRunId, snapshot),
+          };
+        });
       } catch (err) {
         // Durable fence/persist may 5xx after RAM cancel (V10R4). Prefer any
         // snapshot embedded in the error body; otherwise still interrupt hard.
@@ -1332,6 +1376,7 @@ export const useStore = create<AppState>((set, get) => ({
             status: deriveOrchestrationRunStatus(s.status, embedded),
             timeline: s.timeline.filter((it) => it.kind !== "thinking"),
             gateBlock: undefined,
+            _runSnapshots: reconcileStoppedRunSnapshots(s._runSnapshots, parentRunId, embedded),
           }));
         } else {
           set((s) => ({
@@ -1344,6 +1389,7 @@ export const useStore = create<AppState>((set, get) => ({
                   loopState: { ...s.agentGraphSnapshot.loopState, status: "stopped", gateReason: "stopped" },
                 }
               : s.agentGraphSnapshot,
+            _runSnapshots: reconcileStoppedRunSnapshots(s._runSnapshots, parentRunId),
           }));
         }
       }
@@ -2098,18 +2144,110 @@ async function consumeHistoryReplayStream(
 ): Promise<void> {
   const mySeq = get()._streamRunSeq;
   const isStale = () => !shouldApplyRunEvent(get().runId, runId) || get()._streamRunSeq !== mySeq;
+  const persistedEvents: ProviderEventDTO[] = [];
+  const replayBoundary = lastEventSeq && lastEventSeq > 0 ? lastEventSeq : undefined;
+  let replayingPersistedEvents = replayBoundary !== undefined;
+
+  const flushPersistedEvents = () => {
+    if (persistedEvents.length === 0 || isStale()) return;
+    applyHistoryReplayEvents(runId, persistedEvents, set);
+    persistedEvents.length = 0;
+    settleTerminalReplayVisuals(runId, resumedStatus, set);
+  };
+
   for await (const e of stream) {
     if (isStale()) return;
     if (!isEventForRun(e, runId)) continue;
+    if (replayingPersistedEvents) {
+      persistedEvents.push(e);
+      if (e.seq < replayBoundary!) continue;
+      flushPersistedEvents();
+      replayingPersistedEvents = false;
+      if (shouldStopHistoryReplay(resumedStatus, e, lastEventSeq)) break;
+      continue;
+    }
     if (e.type !== "agent_graph_updated" && e.type !== "agent_bus_message") {
       set((s) => applyEvent(s, e));
       settleTerminalReplayVisuals(runId, resumedStatus, set);
     }
     if (shouldStopHistoryReplay(resumedStatus, e, lastEventSeq)) break;
   }
+  flushPersistedEvents();
   if (!isStale()) {
     settleHistoryReplayPendingState(runId, resumedStatus, set);
   }
+}
+
+/**
+ * Persisted events can be appended after recovery even when their observed time
+ * belongs in an earlier turn. Replay uses that durable time, then the stream
+ * sequence as a stable tie-breaker, so cards stay in their original turn.
+ */
+export function orderHistoryReplayEvents(events: ProviderEventDTO[]): ProviderEventDTO[] {
+  const entries = events.map((event, index) => ({
+    event,
+    index,
+    observedAt: Date.parse(event.occurredAt),
+    replayAt: Date.parse(event.occurredAt),
+  }));
+  let latestAgentSpawnAt = Number.NaN;
+
+  // A replay stream's sequence is causal. Some legacy transcript frames have
+  // run-created timestamps rather than their original observed time (run-1264),
+  // so never let an event persisted after an agent spawn render ahead of it.
+  for (const entry of [...entries].sort((left, right) => {
+    if (left.event.seq !== right.event.seq) return left.event.seq - right.event.seq;
+    return left.index - right.index;
+  })) {
+    if (entry.event.type === "agent_spawned_by_user" && Number.isFinite(entry.observedAt)) {
+      latestAgentSpawnAt = entry.observedAt;
+    }
+    if (
+      Number.isFinite(latestAgentSpawnAt) &&
+      Number.isFinite(entry.observedAt) &&
+      entry.event.type !== "agent_spawned_by_user" &&
+      entry.observedAt < latestAgentSpawnAt
+    ) {
+      entry.replayAt = latestAgentSpawnAt;
+    }
+  }
+
+  return entries
+    .sort((left, right) => {
+      const leftHasTime = Number.isFinite(left.replayAt);
+      const rightHasTime = Number.isFinite(right.replayAt);
+      if (leftHasTime && rightHasTime && left.replayAt !== right.replayAt) {
+        return left.replayAt - right.replayAt;
+      }
+      if (leftHasTime !== rightHasTime) return leftHasTime ? -1 : 1;
+      if (left.event.seq !== right.event.seq) return left.event.seq - right.event.seq;
+      return left.index - right.index;
+    })
+    .map(({ event }) => event);
+}
+
+function applyHistoryReplayEvents(
+  runId: string,
+  events: ProviderEventDTO[],
+  set: (fn: (s: AppState) => Partial<AppState>) => void,
+): void {
+  const orderedEvents = orderHistoryReplayEvents(events);
+  const highestSeq = events.reduce((highest, event) => Math.max(highest, event.seq), 0);
+  set((state) => {
+    if (state.runId !== runId) return {};
+    let next = state;
+    for (const event of orderedEvents) {
+      if (event.type === "agent_graph_updated" || event.type === "agent_bus_message") continue;
+      next = { ...next, ...applyEvent(next, event) };
+    }
+    return {
+      ...next,
+      _runReplaySeq: {
+        ...next._runReplaySeq,
+        [runId]: highestSeq,
+      },
+    };
+  });
 }
 
 function shouldStopHistoryReplay(resumedStatus: RunStatus, e: ProviderEventDTO, lastEventSeq?: number): boolean {
@@ -2320,7 +2458,7 @@ function settleTerminalReplayVisuals(
     if (s.runId !== runId) return {};
     return {
       status: replayStatus,
-      timeline: s.timeline.filter((it) => it.kind !== "thinking"),
+      timeline: settleCompletedFlowTimeline(s.timeline),
     };
   });
 }
@@ -2441,12 +2579,16 @@ function applyOrchestrationEvent(s: AppState, e: ProviderEventDTO): Partial<AppS
   const nextReplaySeq = { ...s._runReplaySeq, [e.workflowRunId]: e.seq };
   if (e.type === "agent_graph_updated") {
     const nextStatus = deriveOrchestrationRunStatus(s.status, e.agentGraphSnapshot);
+    const flowDone = e.agentGraphSnapshot.loopState.status === "done" && nextStatus === "completed";
     return {
       // Merge (not replace) so disk-persisted closed children stay visible (BUG-132).
       agentRuns: mergeAgentRunsById(s.agentRuns, e.agentGraphSnapshot.runs),
       agentGraphSnapshot: e.agentGraphSnapshot,
       agentBusMessages: e.agentGraphSnapshot.busMessages,
       status: nextStatus,
+      // A terminal flow graph is authoritative even when a provider never emits
+      // the trailing tool_completed/turn_completed event after flow control.
+      timeline: flowDone ? settleCompletedFlowTimeline(s.timeline) : s.timeline,
       _runReplaySeq: nextReplaySeq,
     };
   }
@@ -2475,6 +2617,11 @@ export function deriveOrchestrationRunStatus(current: RunStatus, snapshot: Agent
   if (snapshot.loopState.status === "stopped") {
     return "cancelled";
   }
+  // Like a stopped loop, a done loop is authoritative over an older child
+  // snapshot or a provider stream that remains open after submit_review_outcome.
+  if (snapshot.loopState.status === "done") {
+    return current === "failed" || current === "cancelled" ? current : "completed";
+  }
   const childStatuses = snapshot.runs.map((run) => run.status);
   if (childStatuses.some((status) => status === "waiting_approval")) {
     return "waiting_approval";
@@ -2501,11 +2648,21 @@ export function deriveOrchestrationRunStatus(current: RunStatus, snapshot: Agent
       return "blocked";
     case "stopped":
       return "cancelled";
-    case "done":
-      return current === "failed" || current === "cancelled" ? current : "completed";
     default:
       return current;
   }
+}
+
+/** Closes UI-only residue when durable flow control has already reached done. */
+export function settleCompletedFlowTimeline(timeline: TimelineItem[]): TimelineItem[] {
+  return timeline
+    .filter((item) => item.kind !== "thinking")
+    .map((item) => {
+      if (item.kind === "tool" && item.status === "running") {
+        return { ...item, status: "success" };
+      }
+      return item;
+    });
 }
 
 function runErrorMessage(err: unknown): string {
