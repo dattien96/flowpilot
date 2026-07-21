@@ -3178,6 +3178,9 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		MarkerProvenanceRunIDs:             append([]string(nil), rs.markerProvenanceRunIDs...),
 		PendingRestartProvenanceRunID:      rs.pendingRestartProvenanceRunID,
 		PendingGateRepromptProvenanceRunID: rs.pendingGateRepromptProvenanceRunID,
+		// BUG-299 residual: round-trip YOLO so chat restart keeps the toggle and
+		// flow rehydrate has a durable value to force against when missing.
+		Yolo: rs.yolo,
 	}
 }
 
@@ -5583,6 +5586,11 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if in.YoloMode != nil {
 		yolo = *in.YoloMode
 	}
+	// BUG-299 residual (run-35329): Flow/Workflow (and flow-engine-driven runs)
+	// always YOLO=true — desktop workflow follow-ups omit yoloMode, and a
+	// rehydrated session used to leave rs.yolo=false. Chat mode without force
+	// keeps the UI toggle value above.
+	yolo = resolveEffectiveYolo(yolo, rs.runKind, rs.workflowID, rs.flowEngineDriven)
 	// Prefer the durable real provider handle when present (Codex rollouts and
 	// Grok ACP session ids). Synthetic thread-* remains only until the first
 	// successful turn promotes a real id (Task-210 Option B for Grok).
@@ -5636,7 +5644,9 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// toggle is sticky, so an explicit YoloMode this turn must update rs.yolo; otherwise a
 	// child spawned during this turn (spawnChildRun reads parentRun.yolo) would inherit the
 	// stale run-level default instead of the posture the user actually has enabled.
-	if in.YoloMode != nil {
+	// Also stick Flow-forced true so later follow-ups / children see the product lock
+	// even when the turn request omitted yoloMode.
+	if in.YoloMode != nil || shouldForceFlowYolo(rs.runKind, rs.workflowID, rs.flowEngineDriven) {
 		rs.yolo = yolo
 	}
 	// Persist the per-turn model/reasoning-effort as the run's current default,
@@ -6970,6 +6980,10 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" {
 				flowStartOnly = true
 				rs.flowEngineDriven = true
+				// BUG-299 residual: chat-mode Review Loop (and any explicit flowRef)
+				// still uses hub/cohort/gate machinery — lock YOLO=true before the
+				// async entry spawn so children inherit the product posture.
+				rs.yolo = true
 				rs.chatSubMode = strings.TrimSpace(in.SubMode)
 				rs.chatFlowRef = flowRef
 				go s.startResolvedFlow(context.Background(), runID, flowRef, in.Prompt)

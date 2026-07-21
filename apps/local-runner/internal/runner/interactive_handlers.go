@@ -784,6 +784,11 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		}}
 	}
 
+	// BUG-299 residual (run-35329): Flow/Workflow always YOLO=true at create time
+	// regardless of a stale catalog row (pre-CA-378 default false) or a missing
+	// start-request field. Desktop workflow launches omit yoloMode entirely.
+	// Normal chat keeps resolvedYolo from the request/toggle.
+	resolvedYolo = resolveEffectiveYolo(resolvedYolo, runKind, in.WorkflowID, false)
 	rs := &interactiveRun{
 		id:                runID,
 		projectID:         in.ProjectID,
@@ -818,6 +823,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		StartedAt:         now,
 		UpdatedAt:         now,
 		RunKind:           runKind,
+		Yolo:              resolvedYolo,
 	}); err != nil {
 		delete(s.runs, runID)
 		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())

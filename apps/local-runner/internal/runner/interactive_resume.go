@@ -935,6 +935,8 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		markerProvenanceRunIDs:             append([]string(nil), st.MarkerProvenanceRunIDs...),
 		pendingRestartProvenanceRunID:      st.PendingRestartProvenanceRunID,
 		pendingGateRepromptProvenanceRunID: st.PendingGateRepromptProvenanceRunID,
+		// BUG-299 residual: restore durable YOLO when present; flow force applied below.
+		yolo: st.Yolo,
 	}
 	if rs.idempotency == nil {
 		rs.idempotency = map[string]string{}
@@ -944,6 +946,10 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	if len(rs.activeFlowNodes) > 0 {
 		rs.flowEngineDriven = true
 	}
+	// BUG-299 residual (run-35329): sessionStateOf historically omitted yolo, so
+	// rehydrate always left rs.yolo=false. Force Flow/Workflow/flow-engine runs
+	// back to true independent of the stored zero value; chat keeps st.Yolo.
+	rs.yolo = resolveEffectiveYolo(rs.yolo, rs.runKind, rs.workflowID, rs.flowEngineDriven)
 	// V10R4 P1: migrate legacy durable intents that have prompt/step but gen=0
 	// (pre-generation sessions). Without this claim rejects forever.
 	migratedIntent := false
