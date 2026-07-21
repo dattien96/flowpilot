@@ -5751,26 +5751,35 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// BUG-288 R13-14: warm-up baseline under the turn's cancellable ctx so Stop
 	// can cut the first capture short (not always Background).
 	s.ensureBaselineWithContext(ctx, rs.workspaceCwd)
+	// BUG-308 residual run-33289: release hub stop fence before linearize so a
+	// post-Stop plain-chat follow-up is not immediately terminal_cancelled.
+	// Generation stays elevated (children remain fenced). Provider-agnostic.
+	if rs.turnStartedAfterLoopDone {
+		s.releaseHubStopFenceForFollowUp(ctx, rs.id)
+	}
 	// CP-51 Task-249: durable send_claimed → send_started linearization before
 	// the adapter's first external byte. Stop winning this CAS means zero send.
 	// BUG-289 A1/F-6: non-Stop store errors must emit a terminal turn event and
 	// settle the RUNNING step — not only clear turnInFlight and return.
+	// run-33289: stop-fence cancels (storeErr=false) also left the UI without a
+	// terminal event after TurnStarted — emit TurnFailed so Thinking settles.
 	if ok, storeErr := s.linearizeSendStarted(ctx, rs, turnID); !ok {
 		s.mu.Lock()
 		rs.turnInFlight = false
 		rs.currentTurnID = ""
 		rs.turnCancel = nil
+		errMsg := "turn cancelled before send (run stop fence)"
 		if storeErr {
-			// Fail the turn so UI/step state is not left RUNNING forever.
-			s.emitLocked(rs, ProviderEvent{
-				Type:           EventTurnFailed,
-				ProviderTurnID: turnID,
-				Error:          "dispatch linearize failed (store/CAS error before send)",
-				Status:         string(RunStatusFailed),
-			})
+			errMsg = "dispatch linearize failed (store/CAS error before send)"
 			rs.status = RunStatusFailed
 			rs.agentStatus = string(RunStatusFailed)
 		}
+		s.emitLocked(rs, ProviderEvent{
+			Type:           EventTurnFailed,
+			ProviderTurnID: turnID,
+			Error:          errMsg,
+			Status:         string(RunStatusFailed),
+		})
 		s.mu.Unlock()
 		s.notifyTurnIdle(rs.id)
 		return
@@ -6780,6 +6789,20 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		// BUG-305: remember a follow-up admitted onto an already-sealed loop so
 		// emitLocked/runTurn treat it as plain chat (no post-turn flow gate).
 		rs.turnStartedAfterLoopDone = st == "done" || st == "stopped"
+		// BUG-308 residual run-33289 (Grok Review Loop, also provider-agnostic):
+		// Stop leaves (1) rs.status=cancelled and (2) durable dispatch
+		// run_stop.stopped=true. Admission alone is not enough — startTurn then
+		// claim succeeds but linearizeSendStarted hits ErrRunStopFence, commits
+		// terminal_cancelled, and returns WITHOUT EventTurnFailed/Completed so
+		// the desktop hangs on Thinking after the optimistic prompt. Revive the
+		// run for this plain-chat turn and release the hub's own stop flag
+		// (generation kept so children stamped under the Stop stay fenced).
+		if rs.turnStartedAfterLoopDone {
+			if rs.status == RunStatusCancelled {
+				rs.status = RunStatusRunning
+				rs.agentStatus = string(RunStatusRunning)
+			}
+		}
 		if st == "blocked" {
 			s.mu.Unlock()
 			return "", newAPIErr(http.StatusConflict, "flow_awaiting_user",
@@ -7247,7 +7270,7 @@ func (s *InteractiveService) abortDurableStartIfStaleLocked(
 		cancel()
 		return true, newAPIErr(http.StatusConflict, "turn_aborted", "durable start aborted: turn no longer in flight after persist")
 	}
-	if rs.status == RunStatusCancelled {
+	if rs.status == RunStatusCancelled && !rs.turnStartedAfterLoopDone {
 		rs.turnInFlight = false
 		rs.currentTurnID = ""
 		rs.turnCancel = nil
@@ -7259,11 +7282,13 @@ func (s *InteractiveService) abortDurableStartIfStaleLocked(
 		return true, newAPIErr(http.StatusConflict, "flow_stopped", "run was cancelled during durable start persist")
 	}
 	// Loop / parent loop stopped (Stop bumps loop under s.mu before persist of cancel).
+	// BUG-308 residual: a plain-chat follow-up admitted onto stopped/done sets
+	// turnStartedAfterLoopDone — do not abort that intentional turn.
 	loopID := runID
 	if !isParent && parentRunID != "" {
 		loopID = parentRunID
 	}
-	if st := s.agentOrchestrator.loopStateFor(loopID).Status; st == "stopped" || st == "done" {
+	if st := s.agentOrchestrator.loopStateFor(loopID).Status; (st == "stopped" || st == "done") && !rs.turnStartedAfterLoopDone {
 		rs.turnInFlight = false
 		rs.currentTurnID = ""
 		rs.turnCancel = nil

@@ -449,6 +449,34 @@ func (s *memoryDispatchStore) RequestRunStop(ctx context.Context, runID string, 
 	return cp, nil
 }
 
+// ReleaseRunStopFence clears the hub's own Stopped flag so a post-Stop plain-chat
+// follow-up can linearize send_started (run-33289). Generation is preserved so
+// children that captured ExpectedStopGeneration under the prior fence remain
+// blocked. Idempotent when already !Stopped.
+func (s *memoryDispatchStore) ReleaseRunStopFence(ctx context.Context, runID string, expectedRunStopRev int64) (RunStopState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = ctx
+	st := s.runStop[runID]
+	if st == nil {
+		return RunStopState{RunID: runID}, nil
+	}
+	if st.Revision != expectedRunStopRev {
+		return *st, ErrStaleDispatch
+	}
+	if !st.Stopped {
+		return *st, nil
+	}
+	st.Stopped = false
+	st.Revision++
+	s.appendAuditLocked(runID, "", "release_run_stop_fence", "stopped=false", "system")
+	cp := *st
+	if err := s.commitLine(dispatchLogLine{Kind: "run_stop", Seq: s.seq, At: s.clockStr(), RunStop: &cp}); err != nil {
+		return cp, err
+	}
+	return cp, nil
+}
+
 func (s *memoryDispatchStore) CommitReceiptAndClearIntent(ctx context.Context, runID, turnID string, expectedRev int64,
 	receipt ReceiptEvidence, intentOwnerRunID, intentKey string, intentGen int64) (int64, error) {
 	s.mu.Lock()
