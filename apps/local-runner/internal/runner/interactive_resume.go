@@ -3496,11 +3496,18 @@ func (s *InteractiveService) reorderSidecarPrefixToEnd(rs *interactiveRun) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Provider transcript frames do not always carry their original timestamp
-	// (Grok is one such provider). For a normal chat, the durable gate event's
-	// ProviderTurnID is a stronger ordering key than a fallback timestamp: put
-	// it back directly after the prompt for that same turn. This keeps resolved
-	// approval/question cards in their original conversation turn on restart.
-	if rs.runKind == "chat" && s.anchorChatSidecarPrefixByTurnLocked(rs) {
+	// (Grok is one such provider). The durable gate event's ProviderTurnID is a
+	// stronger ordering key than a fallback timestamp: put it back directly after
+	// the prompt for that same turn. This keeps resolved approval/question cards
+	// in their original conversation turn on restart.
+	//
+	// BUG residual run-35329: this used to gate on runKind=="chat" only. Workflow
+	// / flow-engine hubs (post-done follow-up on a Review Loop, etc.) also restore
+	// permission_required from the flow-events sidecar and then seed transcript —
+	// without turn-anchoring those cards were always moved to the absolute end of
+	// the timeline after every later follow-up, even when ProviderTurnID matched.
+	// Anchor for every run kind; fall through when no turn ids match.
+	if s.anchorSidecarPrefixByTurnLocked(rs) {
 		return
 	}
 	if allEventsHaveOccurredAt(rs.events) {
@@ -3522,11 +3529,14 @@ func (s *InteractiveService) reorderSidecarPrefixToEnd(rs *interactiveRun) {
 	rs.seq = int64(len(reordered))
 }
 
-// anchorChatSidecarPrefixByTurnLocked restores durable approval/question events
+// anchorSidecarPrefixByTurnLocked restores durable approval/question events
 // that reconstructRun loaded before the provider transcript. A transcript is
 // replayed in provider order, but the sidecar carries the authoritative turn
 // id. Keep unmatched sidecar events at the end as a conservative fallback.
-func (s *InteractiveService) anchorChatSidecarPrefixByTurnLocked(rs *interactiveRun) bool {
+//
+// Formerly chat-only (anchorChatSidecarPrefixByTurnLocked); renamed when the
+// workflow/flow path was included (run-35329 residual).
+func (s *InteractiveService) anchorSidecarPrefixByTurnLocked(rs *interactiveRun) bool {
 	n := int(rs.sidecarPrefixCount)
 	if n <= 0 || n >= len(rs.events) {
 		return false
