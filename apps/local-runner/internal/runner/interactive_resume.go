@@ -1382,6 +1382,14 @@ func (s *InteractiveService) flushDurableTurnIntents(runID string) {
 }
 
 // clearIntentFieldsLocked clears one kind of durable intent (caller holds s.mu).
+//
+// run-23820 / durable multi-reprompt: do NOT zero pending*Gen. Gen is a
+// per-run high-water mark for durable idempotency keys
+// (`durable-<run>-reprompt-<gen>`). Resetting it to 0 made the next queue
+// reuse gen=1, so startTurn short-circuited as a replay of the completed first
+// reprompt turn, cleared the new intent, and stranded the child (hub never
+// advanced). Prompt/step empty means "no intent"; gen stays so the next
+// gate_hook `pendingGateRepromptGen++` yields a fresh key.
 func clearIntentFieldsLocked(rs *interactiveRun, kind string) {
 	if rs == nil {
 		return
@@ -1390,7 +1398,7 @@ func clearIntentFieldsLocked(rs *interactiveRun, kind string) {
 	case "reprompt":
 		rs.pendingGateRepromptPrompt = ""
 		rs.pendingGateRepromptStepID = ""
-		rs.pendingGateRepromptGen = 0
+		// Keep pendingGateRepromptGen as high-water (do not set 0).
 		rs.pendingGateRepromptDeliveredGen = 0
 		rs.pendingGateRepromptAcceptedTurn = ""
 		rs.pendingGateRepromptFailCount = 0
@@ -1398,7 +1406,7 @@ func clearIntentFieldsLocked(rs *interactiveRun, kind string) {
 	case "resume":
 		rs.pendingResumePrompt = ""
 		rs.pendingResumeStepID = ""
-		rs.pendingResumeGen = 0
+		// Keep pendingResumeGen as high-water (do not set 0).
 		rs.pendingResumeDeliveredGen = 0
 		rs.pendingResumeAcceptedTurn = ""
 		rs.pendingResumeFailCount = 0
