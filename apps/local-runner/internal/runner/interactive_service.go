@@ -6035,6 +6035,15 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 						s.mu.Unlock()
 					}
 					if persistRepErr == nil {
+						// Task-251 T-2b: durable settle disposition for gate block/reprompt.
+						// resumePendingFlowGate already does this on the boot/resume path
+						// (line ~3697 above); this live post-turn-gate block never had the
+						// matching call, so every LIVE gate-block/reprompt turn left its
+						// dispatch record's SettlePhase stuck at settle_pending forever —
+						// maybeScheduleSettleAfterTerminal had already bailed out earlier
+						// (pendingFlowGateSettle was armed) expecting this exact gate
+						// resolution to drive the deferred settle, which it never did.
+						s.scheduleSettleAfterGateBlock(repromptRun, turnID)
 						if repromptPrompt != "" && repromptStep != "" && !stoppedMidGate {
 							// CP-51 A1: root hub gate remediations must not race
 							// active flow children after continue-delegate.
