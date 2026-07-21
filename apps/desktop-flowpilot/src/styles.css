@@ -6583,3 +6583,26 @@ body.is-resizing-sidebar {
 .dispatch-attention-item button.danger {
   color: var(--danger, #b91c1c);
 }
+.dispatch-attention-collapse-toggle {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.dispatch-attention-collapse-toggle:hover .badge-warn {
+  background: var(--bg-3);
+}
+.dispatch-attention-caret {
+  color: var(--text-dim);
+  font-size: 11px;
+  width: 0.9em;
+  display: inline-block;
+  text-align: center;
+}
