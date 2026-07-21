@@ -5623,8 +5623,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// fallback below, which is gated on this same flag), or a normal
 	// follow-up answer gets misread as an abandoned review decision and
 	// escalates a stale "Needs your decision" card.
-	loopAlreadyDoneAtTurnStart := s.agentOrchestrator.loopStateFor(rs.id).Status == "done"
-	offerReviewOutcomeTool := rs.autoOrchestrate && rs.parentRunID == "" && rs.turnCount > 1 && !loopAlreadyDoneAtTurnStart
+	// BUG-308: "stopped" joins "done" here — a follow-up admitted onto a
+	// terminal-sealed loop is a plain chat turn, never the hub's own
+	// review-decision turn, so it must not offer submit_review_outcome or trip
+	// BUG-226's escalate fallback (which would reopen a stale "Needs your
+	// decision" card on the very next plain-prose message after a Stop).
+	stAtTurnStart := s.agentOrchestrator.loopStateFor(rs.id).Status
+	loopAlreadySealedAtTurnStart := stAtTurnStart == "done" || stAtTurnStart == "stopped"
+	offerReviewOutcomeTool := rs.autoOrchestrate && rs.parentRunID == "" && rs.turnCount > 1 && !loopAlreadySealedAtTurnStart
 	providerPrompt = prependModePrefix(providerPrompt, rs.turnCount, rs.changeType, rs.sourceDocID)
 	// Persist the per-turn YOLO posture as the run's current default (BUG-129). The UI
 	// toggle is sticky, so an explicit YoloMode this turn must update rs.yolo; otherwise a
@@ -6048,15 +6054,16 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			}
 			if !stoppedMidGate {
 				if rs.parentRunID == "" {
-					// BUG-305: a follow-up admitted onto an already-"done" loop is plain
-					// chat, not flow work. Skip the flow gate EVALUATION but keep the
-					// pass-path bookkeeping below (turnInFlight clear, settle, finalizer).
-					// The gate would force-block a "done" loop anyway — runFlowGateAtEpoch's
-					// gateEpochStillValid check returns false for "done" and returns block —
-					// which would set completed=false and suppress the live TurnCompleted that
-					// emitLocked already published as plain chat. There is no active flow
-					// decision left to protect, so treat it as a pass.
-					if loopAlreadyDoneAtTurnStart {
+					// BUG-305/BUG-308: a follow-up admitted onto an already-sealed loop
+					// ("done" or a Stop-ped loop) is plain chat, not flow work. Skip the
+					// flow gate EVALUATION but keep the pass-path bookkeeping below
+					// (turnInFlight clear, settle, finalizer). The gate would force-block
+					// such a loop anyway — runFlowGateAtEpoch's gateEpochStillValid check
+					// returns false for both "done" and "stopped" and returns block —
+					// which would set completed=false and suppress the live TurnCompleted
+					// that emitLocked already published as plain chat. There is no active
+					// flow decision left to protect, so treat it as a pass.
+					if loopAlreadySealedAtTurnStart {
 						gateBlocked = false
 					} else {
 						gateBlocked = s.runFlowGateAtEpoch(gateCtx, rs, turnID, fin, gateEpoch)
@@ -6743,8 +6750,9 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// resumeFlowWithFeedback flips blocked→running BEFORE scheduling the next
 	// hub turn, so Continue still works. Gate reprompt / hub reinvoke must not
 	// start while the human decision card is open.
-	// BUG-305: reset the per-turn flag every turn; set below only for a root run
-	// whose loop is already "done" at admission (a plain follow-up chat turn).
+	// BUG-305/BUG-308: reset the per-turn flag every turn; set below for a root
+	// run whose loop is already terminal-sealed ("done" or "stopped") at
+	// admission (a plain follow-up chat turn).
 	rs.turnStartedAfterLoopDone = false
 	if rs.parentRunID == "" {
 		st := s.agentOrchestrator.loopStateFor(rs.id).Status
@@ -6753,16 +6761,26 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		// sealed forever. The desktop's composer (ChatInput) is the same for
 		// every run regardless of Chat vs Workflow mode, with no distinct
 		// "closed" affordance either way, so both must stay usable for a
-		// follow-up turn once their flow completes; only a genuinely
-		// Stop-ped loop must still seal a run (V10R4 P0 intent-race concern
-		// below is about Stop, not about a successfully finished flow).
-		// BUG-305: remember a follow-up admitted onto an already-"done" loop so
+		// follow-up turn once their flow completes.
+		//
+		// BUG-308: a genuinely Stop-ped loop is now treated the same as "done"
+		// for a NEW user follow-up — the composer is identical and a user
+		// naturally keeps typing after Stop; sealing it with 409 (and silently
+		// dropping the optimistic prompt on restart) was the run-19845 bug.
+		// This deliberately reverses BUG-302's V-1 scope (which kept "stopped"
+		// sealed). Safe: stopAgentLoop already cancelled children + cleared
+		// durable approval/question/resume intents under s.mu before this
+		// admission can run (s.mu serializes them), the dispatch stop-fence
+		// still fences any stale child send, BUG-307 stops a stranded cohort
+		// note from poisoning this turn, and the intent-race guard (BUG-289
+		// R19-1) is a separate durable-persist-abort path that never depended
+		// on this loop-status seal. "blocked" still seals — it is a live
+		// Continue/Stop decision the user must resolve first.
+		//
+		// BUG-305: remember a follow-up admitted onto an already-sealed loop so
 		// emitLocked/runTurn treat it as plain chat (no post-turn flow gate).
-		rs.turnStartedAfterLoopDone = st == "done"
-		if st == "stopped" {
-			s.mu.Unlock()
-			return "", newAPIErr(http.StatusConflict, "flow_stopped", "flow loop is stopped; cannot start a new turn")
-		} else if st == "blocked" {
+		rs.turnStartedAfterLoopDone = st == "done" || st == "stopped"
+		if st == "blocked" {
 			s.mu.Unlock()
 			return "", newAPIErr(http.StatusConflict, "flow_awaiting_user",
 				"flow is waiting for your decision (Continue/Stop); resolve the form before a new turn")

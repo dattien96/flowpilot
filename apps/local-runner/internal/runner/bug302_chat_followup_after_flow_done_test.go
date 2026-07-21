@@ -127,9 +127,16 @@ func TestWorkflowRunAlsoAllowsNewTurnAfterFlowLoopDone(t *testing.T) {
 	}
 }
 
-// Regression guard: a genuinely Stop-ped chat run must still be sealed —
-// BUG-302's fix only carves out "done", never "stopped".
-func TestChatRunStillRejectsNewTurnWhenStopped(t *testing.T) {
+// BUG-308 (deliberately reverses BUG-302's V-1 scope): a genuinely Stop-ped
+// chat run is now continuable too, exactly like "done". The desktop composer is
+// the identical component for every run and a user naturally keeps typing after
+// Stop, so sealing it with 409 — and then silently dropping the optimistic
+// prompt on restart because a rejected turn is never persisted — was the
+// run-19845 bug. This test was originally TestChatRunStillRejectsNewTurnWhenStopped
+// asserting the opposite; it is updated (not weakened) because the product
+// behavior it guarded was changed on purpose. Only "blocked" still seals (a live
+// Continue/Stop decision). See BUG-308 / CA-388.
+func TestChatRunAllowsNewTurnAfterStopped(t *testing.T) {
 	reg := newProviderRegistry()
 	reg.register(ProviderRegistration{
 		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
@@ -155,11 +162,7 @@ func TestChatRunStillRejectsNewTurnWhenStopped(t *testing.T) {
 	svc.mu.Unlock()
 	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "stopped", Round: 1, Cap: 3, Mode: "explicit"})
 
-	_, apiErr := svc.startTurn(parent.RunID, TurnInput{StepID: "chat-" + parent.RunID, Prompt: "anything"}, "", "")
-	if apiErr == nil {
-		t.Fatal("expected flow_stopped rejection for a stopped chat run, got success")
-	}
-	if apiErr.code != "flow_stopped" {
-		t.Fatalf("apiErr.code = %q, want flow_stopped", apiErr.code)
+	if _, apiErr := svc.startTurn(parent.RunID, TurnInput{StepID: "chat-" + parent.RunID, Prompt: "anything"}, "", ""); apiErr != nil {
+		t.Fatalf("follow-up startTurn on a Stop-ped chat run was rejected; BUG-308 makes stopped continuable like done: %s (code=%s)", apiErr.msg, apiErr.code)
 	}
 }
