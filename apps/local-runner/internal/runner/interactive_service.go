@@ -5541,7 +5541,15 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// reinvokes the hub (turn ≥ 2) after the cohort join, so turnCount > 1 is the
 	// genuine synthesis turn. (A cohort reviewer is additionally blocked in
 	// SubmitFlowControl by flowCohortId, BUG-176.)
-	offerReviewOutcomeTool := rs.autoOrchestrate && rs.parentRunID == "" && rs.turnCount > 1
+	// BUG-302: once the loop already reached "done" before this turn even
+	// started, this turn is a plain chat follow-up, not the hub's own
+	// review-decision turn — do not offer/require submit_review_outcome for
+	// it (this also scopes BUG-226's "completed without calling it" escalate
+	// fallback below, which is gated on this same flag), or a normal
+	// follow-up answer gets misread as an abandoned review decision and
+	// escalates a stale "Needs your decision" card.
+	loopAlreadyDoneAtTurnStart := s.agentOrchestrator.loopStateFor(rs.id).Status == "done"
+	offerReviewOutcomeTool := rs.autoOrchestrate && rs.parentRunID == "" && rs.turnCount > 1 && !loopAlreadyDoneAtTurnStart
 	providerPrompt = prependModePrefix(providerPrompt, rs.turnCount, rs.changeType, rs.sourceDocID)
 	// Persist the per-turn YOLO posture as the run's current default (BUG-129). The UI
 	// toggle is sticky, so an explicit YoloMode this turn must update rs.yolo; otherwise a
@@ -6649,7 +6657,16 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// hub turn, so Continue still works. Gate reprompt / hub reinvoke must not
 	// start while the human decision card is open.
 	if rs.parentRunID == "" {
-		if st := s.agentOrchestrator.loopStateFor(rs.id).Status; st == "stopped" || st == "done" {
+		st := s.agentOrchestrator.loopStateFor(rs.id).Status
+		// BUG-302: "done" means the flow's own decision loop finished (CP-36
+		// "loop ends, no further spawns") — it does not mean the run itself is
+		// sealed forever. The desktop's composer (ChatInput) is the same for
+		// every run regardless of Chat vs Workflow mode, with no distinct
+		// "closed" affordance either way, so both must stay usable for a
+		// follow-up turn once their flow completes; only a genuinely
+		// Stop-ped loop must still seal a run (V10R4 P0 intent-race concern
+		// below is about Stop, not about a successfully finished flow).
+		if st == "stopped" {
 			s.mu.Unlock()
 			return "", newAPIErr(http.StatusConflict, "flow_stopped", "flow loop is stopped; cannot start a new turn")
 		} else if st == "blocked" {
