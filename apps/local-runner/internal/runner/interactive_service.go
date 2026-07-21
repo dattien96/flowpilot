@@ -1025,7 +1025,14 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 			entries := s.agentOrchestrator.drainCohort(m.parentRunID, m.cohortID)
 			round := s.agentOrchestrator.loopStateFor(m.parentRunID).Round
 			note := buildCohortNote(m.parentRunID, m.cohortID, entries, round)
-			s.appendPendingAgentContext(m.parentRunID, note)
+			// BUG-307: this Stop request just cancelled every member above, so the
+			// cohort can complete ITS join right here with the loop already
+			// "stopped" (agentOrchestrator.stop ran earlier in this same handler).
+			// No reinvoke will ever drain the note in that case — see
+			// loopSealedForReinvoke.
+			if !s.loopSealedForReinvoke(m.parentRunID) {
+				s.appendPendingAgentContext(m.parentRunID, note)
+			}
 			s.mu.Lock()
 			if parent := s.runs[m.parentRunID]; parent != nil {
 				parent.lastCohortNote = note
@@ -1900,7 +1907,11 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 		if s.agentOrchestrator.cohortComplete(parentRunID, cohortID) {
 			entries := s.agentOrchestrator.drainCohort(parentRunID, cohortID)
 			note := buildCohortNote(parentRunID, cohortID, entries, s.agentOrchestrator.graphSnapshot(parentRunID).LoopState.Round)
-			s.appendPendingAgentContext(parentRunID, note)
+			// BUG-307: a pre-flight child failure can complete the cohort after
+			// the loop already sealed (stopped/done) — see loopSealedForReinvoke.
+			if !s.loopSealedForReinvoke(parentRunID) {
+				s.appendPendingAgentContext(parentRunID, note)
+			}
 			s.mu.Lock()
 			if parent := s.runs[parentRunID]; parent != nil {
 				parent.lastCohortNote = note
@@ -2031,12 +2042,15 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 	s.mu.Lock()
 	parent := s.runs[parentRunID]
 	if parent == nil || !parent.autoOrchestrate || parent.reinvokeInFlight || parent.turnInFlight {
-		if parent != nil && parent.autoOrchestrate && strings.TrimSpace(cohortNote) != "" {
+		if parent != nil && parent.autoOrchestrate && strings.TrimSpace(cohortNote) != "" &&
+			!s.loopSealedForReinvoke(parentRunID) {
 			// A note-bearing cohort join can race with a previously scheduled empty
 			// hub reinvoke. Do not drop the joined note just because the single-flight
 			// guard is closed; the scheduled/current turn will either drain it, or a
 			// deferred reinvoke below will consume it on the next turn.
 			// BUG-275: join path often already appended this note — avoid a second copy.
+			// BUG-307: unless the loop already sealed (stopped/done) — then no
+			// legitimate turn will ever drain it; see loopSealedForReinvoke.
 			if !pendingAgentContextContains(parent.pendingAgentContext, cohortNote) {
 				s.appendPendingAgentContextLocked(parentRunID, cohortNote)
 			}
@@ -2479,6 +2493,26 @@ func (s *InteractiveService) loopIsAdvancing(parentRunID string) bool {
 		return false
 	default:
 		return true
+	}
+}
+
+// loopSealedForReinvoke reports whether parentRunID's loop has permanently
+// ended: "stopped" (explicit user Stop) or "done" (the flow's own decision
+// loop finished, BUG-302). Unlike loopIsAdvancing, "blocked"/"paused" are NOT
+// sealed here — those are temporary holds a later Continue/Resume legitimately
+// drains, whereas a stopped/done loop will never schedule another hub reinvoke
+// to consume a queued cohort-synthesis note (BUG-307: a cohort that finishes
+// joining after the loop already sealed left its "call the flow's control
+// tool" note stranded in pendingAgentContext — composeAgentContextBlock then
+// silently prepended it to the next ordinary chat turn on the run, sending an
+// instruction with no live flow left to satisfy it and stalling the hub
+// watchdog waiting for progress that could never come).
+func (s *InteractiveService) loopSealedForReinvoke(parentRunID string) bool {
+	switch s.agentOrchestrator.loopStateFor(parentRunID).Status {
+	case "stopped", "done":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -4033,7 +4067,15 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 				"note_len", len(note),
 			)
 			cohortDiagLog("cohortNote built parent=%q cohort=%q entries=%d noteLen=%d", rs.parentRunID, rs.flowCohortId, len(entries), len(note))
-			s.appendPendingAgentContextLocked(rs.parentRunID, note)
+			// BUG-307: a cohort can finish joining after the parent loop already
+			// sealed (Stop, or the flow's own "done") — no legitimate reinvoke will
+			// ever drain this note then, so it would sit in pendingAgentContext,
+			// persist to disk, and get silently prepended (BUG-122's
+			// composeAgentContextBlock) to the next turn on this run, including an
+			// ordinary chat follow-up typed after a restart (run-19500 live repro).
+			if !s.loopSealedForReinvoke(rs.parentRunID) {
+				s.appendPendingAgentContextLocked(rs.parentRunID, note)
+			}
 			if parent := s.runs[rs.parentRunID]; parent != nil {
 				// BUG-233: retain the joined note past pendingAgentContext being
 				// drained into the hub's synthesis turn, so the CA-226 fallback
@@ -4353,7 +4395,12 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 						"entry_count", len(entries),
 						"note_len", len(note),
 					)
-					s.appendPendingAgentContextLocked(rs.parentRunID, note)
+					// BUG-307: same sealed-loop guard as the completed-join path
+					// above — a failed cohort member can complete the join after
+					// the loop already stopped/done.
+					if !s.loopSealedForReinvoke(rs.parentRunID) {
+						s.appendPendingAgentContextLocked(rs.parentRunID, note)
+					}
 					if parent := s.runs[rs.parentRunID]; parent != nil {
 						parent.lastCohortNote = note // BUG-233: retained for the CA-226 fallback GateReason
 						// BUG-289 L4/F-10: stamp hub RUNNING on failed-member join
@@ -7005,6 +7052,32 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// pendingHubReinvoke spuriously. runTurn receives the captured slice directly.
 	capturedCtx := rs.pendingAgentContext
 	rs.pendingAgentContext = nil
+	// BUG-307 (extended): a follow-up admitted onto an already-sealed loop
+	// ("done" or Stop-ped — rs.turnStartedAfterLoopDone) is plain chat, not a
+	// flow turn. Any flow-engine ORCHESTRATION note still queued here — the
+	// entry-spawn "wait for its result; you will be reinvoked automatically once
+	// this step of the flow completes" note (spawnChildRun's ParentContextNote),
+	// or a cohort-join "…call the flow's control tool" note — is an instruction
+	// for a hub flow turn that will never run again on a sealed loop. If it rides
+	// into this user turn (composeAgentContextBlock wraps it) the model sits
+	// waiting for a reinvoke that never comes and the hub stalls (live repro
+	// run-21028). Guarding the append sites alone is insufficient: the entry-spawn
+	// note is appended at flow START (loop still running) and only goes stale when
+	// the Stop lands, so it can only be dropped here at the consumption point. A
+	// legitimate synthesis reinvoke runs only while the loop is still advancing
+	// (turnStartedAfterLoopDone=false there), so its note is never stripped.
+	// Informational notes (UI-spawn, "sub-agent completed") are not flow-engine
+	// prompts and are preserved.
+	if rs.turnStartedAfterLoopDone && len(capturedCtx) > 0 {
+		kept := make([]string, 0, len(capturedCtx))
+		for _, note := range capturedCtx {
+			if isFlowEnginePrompt(note) {
+				continue
+			}
+			kept = append(kept, note)
+		}
+		capturedCtx = kept
+	}
 	s.mu.Unlock()
 	if isParent {
 		snap.LoopState = s.agentOrchestrator.graphSnapshot(rs.id).LoopState
