@@ -137,7 +137,14 @@ export class HttpWsRunnerClient implements RunnerClient {
     const data = text ? JSON.parse(text) : undefined;
     if (!resp.ok) {
       const err = (data && data.error) || {};
-      throw new RunnerApiError(resp.status, err.code ?? "http_error", err.message ?? resp.statusText);
+      // stopAgentLoop may attach graph snapshot after RAM cancel even when durable
+      // fence/persist fails (CP-51 A1) — surface it on the error for UI settle.
+      throw new RunnerApiError(
+        resp.status,
+        err.code ?? "http_error",
+        err.message ?? resp.statusText,
+        data?.snapshot,
+      );
     }
     return data as T;
   }
@@ -445,6 +452,8 @@ export class RunnerApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    /** Optional body field (e.g. stopAgentLoop snapshot after partial durable failure). */
+    readonly snapshot?: unknown,
   ) {
     super(message);
     this.name = "RunnerApiError";

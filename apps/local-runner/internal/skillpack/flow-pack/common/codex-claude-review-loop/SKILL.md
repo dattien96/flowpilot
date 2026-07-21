@@ -1,6 +1,7 @@
 ---
 name: codex-claude-review-loop
 description: Run a Codex-orchestrated implementation loop where Claude Sonnet medium writes or fixes code, Codex 5.6 Terra reviews the result, and Claude is called again for every confirmed issue until Codex reports no blocking issues. Use when a task, bug fix, or review cycle should be implemented by Claude and gated by Codex review.
+version: 6
 ---
 
 # Codex Claude Review Loop

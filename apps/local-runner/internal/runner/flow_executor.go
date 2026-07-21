@@ -135,6 +135,14 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 		waitNotice = "[flow-engine] An agent has already been spawned to work on this request. " +
 			"Do not duplicate that work yourself. Wait for its result."
 	}
+	// H-B: track entry spawn outcomes so an all-fail start does not leave the
+	// hub "active" with zero children (run-1618 class, but before any child run).
+	var (
+		entrySpawned   int
+		failedLabels   []string
+		lastSpawnErr   string
+		skippedNoAgent int
+	)
 	for _, node := range entryNodes {
 		agentName := flowNodeAgentName(node)
 		if agentName == "" {
@@ -143,6 +151,11 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 				"flow_ref", flowRef,
 				"node_id", node.ID,
 			)
+			skippedNoAgent++
+			failedLabels = append(failedLabels, node.ID)
+			if s.isFlowEngineDriven(parentRunID) {
+				s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusFailed)
+			}
 			continue
 		}
 		s.flowDiagLog(parentRunID, "flow_start_entry_spawn_attempt", "spawning flow entry node",
@@ -161,7 +174,7 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 			AutoOrchestrate:   true,
 			AgentDefOverride:  agentDef,
 			ParentContextNote: waitNotice,
-			Model:             s.resolveFlowNodeModel(ctx, node),
+			Model:             s.resolveFlowNodeModel(ctx, parentRunID, node),
 		}); err != nil {
 			log.Printf("[flow-executor] spawn entry node %q (agent %q) for flow %q on run %q failed: %v",
 				node.ID, agentName, flowRef, parentRunID, err)
@@ -171,8 +184,14 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 				"agent_name", agentName,
 				"error", err.Error(),
 			)
+			failedLabels = append(failedLabels, node.ID)
+			lastSpawnErr = err.Error()
+			if s.isFlowEngineDriven(parentRunID) {
+				s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusFailed)
+			}
 			continue
 		}
+		entrySpawned++
 		s.flowDiagLog(parentRunID, "flow_start_notified_hub", "hub notified that flow work started",
 			"flow_ref", flowRef,
 			"node_id", node.ID,
@@ -186,6 +205,16 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 			s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusRunning)
 			s.stampFlowNodePosture(ctx, parentRunID, node)
 		}
+	}
+	if entrySpawned == 0 && len(entryNodes) > 0 {
+		if lastSpawnErr == "" {
+			if skippedNoAgent > 0 {
+				lastSpawnErr = "entry node(s) had no resolvable agent"
+			} else {
+				lastSpawnErr = "entry spawn produced no child"
+			}
+		}
+		s.notifyHubOfFlowEntrySpawnFailure(parentRunID, flowRef, failedLabels, lastSpawnErr)
 	}
 }
 
@@ -468,7 +497,7 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 		Label:                    delegateTarget.ID,
 		AutoOrchestrate:          true,
 		AgentDefOverride:         agentDef,
-		Model:                    s.resolveFlowNodeModel(ctx, *delegateTarget),
+		Model:                    s.resolveFlowNodeModel(ctx, parentRunID, *delegateTarget),
 		FCPMarkerProvenanceRunID: fcpProvenanceRunID,
 	}); err != nil {
 		log.Printf("[flow-executor] spawn inline-chain delegate node %q (agent %q) for flow %q on run %q failed: %v",
@@ -1123,7 +1152,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 			CohortSize:       len(targetNodes),
 			AutoOrchestrate:  i == 0,
 			AgentDefOverride: agentDef,
-			Model:            s.resolveFlowNodeModel(context.Background(), node),
+			Model:            s.resolveFlowNodeModel(context.Background(), parentRunID, node),
 		}); err != nil {
 			log.Printf("[flow-executor] auto-advance: spawn node %q (agent %q) failed: %v", node.ID, agentName, err)
 			s.flowDiagLog(parentRunID, "flow_advance_spawn_failed", "auto-advanced target node spawn failed",
@@ -1363,53 +1392,84 @@ func agentNameFromRef(agentRef string) string {
 // resolveFlowNodeModel resolves an agent.delegate flow node's OWN configured
 // model, so it can run on a different model/provider than the flow's own
 // resolved model instead of always inheriting it (BUG-228). After BUG-236,
-// built-in mirror sync can create one node-specific step_definitions row per
-// flow node, so prefer an exact node_id match. Fall back to the older
-// purpose-named role row "flow-agent-delegate-<role>" â€” the same rows the
-// manual workflow builder exposes as "Flow: Coder" / "Flow: Reviewer"
-// (BUG-161/CA-230). This preserves existing reviewer/coder model settings
-// while allowing the new node-specific definition model to take over.
+// built-in mirror sync creates one node-specific step_definitions row per
+// flow node. Lookup is scoped by the parent run's chatFlowRef when set so
+// Chat Mode Review Loop does not pick another flow's row that shares
+// node_id="coder" (Context Coding Coder=claude-haiku vs Review Loop
+// Coder=grok-composer-2.5-fast — CA-358).
 //
-// Returns "" when the role has no such row or it has no model configured, so
-// callers pass an empty SpawnAgentInput.Model and spawnChildRun falls back to
-// its pre-existing inherit-from-parent behavior unchanged. An inline
-// (hub.inline / run: inline) node never reaches this: it executes as the
-// parent run's own turn and never calls spawnChildRun, so it always uses the
-// flow's already-resolved model â€” no lookup needed.
-func (s *InteractiveService) resolveFlowNodeModel(ctx context.Context, node agentpack.FlowNode) string {
+// Returns "" when no scoped/role row has a model, so callers pass empty
+// SpawnAgentInput.Model and spawnChildRun falls back to inherit-from-parent.
+// hub.inline never reaches this path.
+func (s *InteractiveService) resolveFlowNodeModel(ctx context.Context, parentRunID string, node agentpack.FlowNode) string {
 	if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical != "agent.delegate" {
 		return ""
 	}
-	return s.resolveConfiguredModelForAgent(ctx, node.ID, flowNodeAgentName(node))
+	return s.resolveConfiguredModelForAgent(ctx, node.ID, flowNodeAgentName(node), s.flowRefForRun(parentRunID))
 }
 
-// resolveConfiguredModelForAgent is the shared two-tier lookup behind
-// resolveFlowNodeModel: prefer the node's OWN per-node step_definitions row
-// (matched by node_id), else fall back to the purpose-named role row
-// "flow-agent-delegate-<agent>" (the same row WorkflowsSettings.tsx's manual
-// builder writes to). Also used by createRun's entry-step model resolution.
+// flowRefForRun returns the active built-in/chat flowRef for model scoping.
+func (s *InteractiveService) flowRefForRun(runID string) string {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rs := s.runs[runID]; rs != nil {
+		return strings.TrimSpace(rs.chatFlowRef)
+	}
+	return ""
+}
+
+// flowRefToMirrorStepPrefix maps "packId/flowId" to the sanitizeStepType prefix
+// used by flowNodeStepType (without the trailing _nodeId).
+// e.g. flowpilot-core-flow-pack/review-loop → flowpilot_core_flow_pack_review_loop
+func flowRefToMirrorStepPrefix(flowRef string) string {
+	flowRef = strings.TrimSpace(flowRef)
+	if flowRef == "" {
+		return ""
+	}
+	flowKey := flowRef
+	if packID, flowID, ok := strings.Cut(flowRef, "/"); ok {
+		flowKey = packID + "__" + flowID
+	}
+	return sanitizeStepType(flowKey)
+}
+
+// stepTypeBelongsToFlowMirror reports whether stepType is a per-node mirror row
+// for the given flow prefix + node id.
+func stepTypeBelongsToFlowMirror(stepType, flowPrefix, nodeID string) bool {
+	st := strings.ToLower(strings.TrimSpace(stepType))
+	pref := strings.ToLower(strings.TrimSpace(flowPrefix))
+	if st == "" || pref == "" {
+		return false
+	}
+	nodeKey := sanitizeStepType(nodeID)
+	if nodeKey == "" {
+		return st == pref || strings.HasPrefix(st, pref+"_") || strings.Contains(st, "_"+pref+"_")
+	}
+	want := pref + "_" + nodeKey
+	if st == want || strings.HasSuffix(st, "_"+want) {
+		return true
+	}
+	// UUID-prefixed or alternate separators: must contain flow+node token.
+	if strings.Contains(st, want) || strings.Contains(st, pref+"__"+nodeKey) {
+		return true
+	}
+	return false
+}
+
+// resolveConfiguredModelForAgent looks up step_definitions.model for a flow
+// node / agent role.
 //
-// BUG-241: the node_id match MUST ignore the generic dispatch-category seed
-// rows ("flow-agent-delegate", "flow-agent-delegate-coder", "flow-hub-inline",
-// â€¦). Those rows are supposed to carry no node identity (FLOW=workflow,
-// NODE=step per BUG-236), but an early BUG-236 draft migration copied node_id
-// onto them (e.g. flow-agent-delegate-reviewer.node_id="reviewer_correctness")
-// and the BUG-239 repair never cleared it. Because ListSteps orders by
-// name.asc, those "Flow: â€¦"-named generic rows sort BEFORE the real per-node
-// "<pack>: â€¦" rows and were being returned first â€” so two graph nodes that
-// share an agent file (reviewer_correctness / reviewer_security) resolved to
-// DIFFERENT rows (one aliased onto the single contaminated generic row, the
-// other fell through to its own per-node row), and the run's own entry model
-// (main) disagreed with the coder child for the same node. Skipping generic
-// rows here makes every path resolve the same authoritative per-node row.
+// Order (CA-358 / cross-flow node_id collision):
+//  1. flowRef-scoped per-node mirror (node_id + step_type belongs to this flow)
+//  2. Unambiguous unscoped node_id match (exactly one non-generic row)
+//  3. Role row "flow-agent-delegate-<agent>"
 //
-// The prefix test is safe: per-node mirror step_types come from
-// flowNodeStepType -> sanitizeStepType, which lowercases and replaces every
-// non-alphanumeric rune (including "-") with "_", so a real per-node step_type
-// can never begin with the literal "flow-" that the hand-seeded generic
-// dispatch rows use. The role fallback below still matches those generic rows
-// deliberately, by exact step_type â€” that path is unaffected.
-func (s *InteractiveService) resolveConfiguredModelForAgent(ctx context.Context, nodeID, agentName string) string {
+// BUG-241: skip generic flow-agent-delegate* in node_id matching.
+// Never first-match among MULTIPLE node_id hits (Review Loop vs Context Coding).
+func (s *InteractiveService) resolveConfiguredModelForAgent(ctx context.Context, nodeID, agentName, flowRef string) string {
 	if agentName == "" {
 		return ""
 	}
@@ -1423,16 +1483,47 @@ func (s *InteractiveService) resolveConfiguredModelForAgent(ctx context.Context,
 	if err != nil {
 		return ""
 	}
-	if strings.TrimSpace(nodeID) != "" {
+	nodeID = strings.TrimSpace(nodeID)
+	flowPrefix := flowRefToMirrorStepPrefix(flowRef)
+
+	// Pass 1: flow-scoped node_id match.
+	if flowPrefix != "" && nodeID != "" {
 		for _, step := range steps {
 			if isGenericFlowDispatchStepType(step.ID) {
 				continue
 			}
-			if strings.EqualFold(strings.TrimSpace(step.NodeID), strings.TrimSpace(nodeID)) && strings.TrimSpace(step.Model) != "" {
+			if !strings.EqualFold(strings.TrimSpace(step.NodeID), nodeID) {
+				continue
+			}
+			if strings.TrimSpace(step.Model) == "" {
+				continue
+			}
+			if stepTypeBelongsToFlowMirror(step.ID, flowPrefix, nodeID) {
 				return strings.TrimSpace(step.Model)
 			}
 		}
 	}
+
+	// Pass 2: unscoped node_id — only if unique among non-generic rows.
+	if nodeID != "" {
+		var hits []string
+		for _, step := range steps {
+			if isGenericFlowDispatchStepType(step.ID) {
+				continue
+			}
+			if !strings.EqualFold(strings.TrimSpace(step.NodeID), nodeID) {
+				continue
+			}
+			if m := strings.TrimSpace(step.Model); m != "" {
+				hits = append(hits, m)
+			}
+		}
+		if len(hits) == 1 {
+			return hits[0]
+		}
+	}
+
+	// Pass 3: purpose-named role row.
 	stepType := "flow-agent-delegate-" + strings.ToLower(agentName)
 	for _, step := range steps {
 		if strings.EqualFold(step.ID, stepType) {
@@ -1458,7 +1549,7 @@ func isGenericFlowDispatchStepType(stepType string) bool {
 // is actually spawned) â€” so callers get the node's true eventual posture
 // whether or not it has been spawned yet.
 func (s *InteractiveService) resolveFlowNodeProviderModel(ctx context.Context, parentRunID string, node agentpack.FlowNode) (provider, model string) {
-	model = s.resolveFlowNodeModel(ctx, node)
+	model = s.resolveFlowNodeModel(ctx, parentRunID, node)
 	if model != "" {
 		if pk, ok := providerKeyFromModel(model); ok {
 			provider = string(pk)

@@ -12,6 +12,7 @@ import { FlowTimelineSidebar } from "@/components/FlowTimelineSidebar";
 import { OrchestrationBoard } from "@/components/OrchestrationBoard";
 import { FlowAwaitingUserCard } from "@/components/FlowAwaitingUserCard";
 import { DispatchAttentionCard } from "@/components/DispatchAttentionCard";
+import { gateBlockSecondaryAction } from "@/components/gateBlockActions";
 import { useStore, accountLabel, providerLabel, type ChatStartMode } from "@/state/store";
 
 function WorkflowControlPanel(): React.ReactElement | null {
@@ -448,6 +449,7 @@ function GateBlockModal(): React.ReactElement | null {
   const gateBlock = useStore((s) => s.gateBlock);
   const dismissGateBlock = useStore((s) => s.dismissGateBlock);
   const submitGateDecision = useStore((s) => s.submitGateDecision);
+  const stop = useStore((s) => s.stop);
   const [selected, setSelected] = useState<string | null>(null);
   const [customText, setCustomText] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -462,6 +464,7 @@ function GateBlockModal(): React.ReactElement | null {
     // Custom text overrides radio selection; one of them must be present to submit.
     const effectiveOption = customText.trim() ? "custom" : selected;
     const canSubmit = Boolean(effectiveOption);
+    const secondaryAction = gateBlockSecondaryAction(gateBlock.options);
 
     const handleSubmit = async () => {
       if (submitting || !canSubmit || !effectiveOption) return;
@@ -537,8 +540,13 @@ function GateBlockModal(): React.ReactElement | null {
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && canSubmit) { e.preventDefault(); void handleSubmit(); } }}
           />
           <div className="account-switch-actions">
-            <button type="button" className="btn btn-ghost" disabled={submitting} onClick={dismissGateBlock}>
-              Dismiss
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={submitting}
+              onClick={secondaryAction === "stop-flow" ? () => void stop() : dismissGateBlock}
+            >
+              {secondaryAction === "stop-flow" ? "Stop flow" : "Dismiss"}
             </button>
             <button
               type="button"

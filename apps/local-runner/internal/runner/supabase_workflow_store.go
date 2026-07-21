@@ -95,6 +95,7 @@ type sessionRuntimeBlob struct {
 	LastTurnStepID                     string               `json:"last_turn_step_id,omitempty"`
 	PendingGateRepromptPrompt          string               `json:"pending_gate_reprompt_prompt,omitempty"`
 	PendingGateRepromptStepID          string               `json:"pending_gate_reprompt_step_id,omitempty"`
+	HubContinueDelegatedTurnID         string               `json:"hub_continue_delegated_turn_id,omitempty"`
 	PendingGateCodePaths               []string             `json:"pending_gate_code_paths,omitempty"`
 	RepromptAttempts                   int                  `json:"reprompt_attempts,omitempty"`
 	PendingResumePrompt                string               `json:"pending_resume_prompt,omitempty"`
@@ -143,7 +144,8 @@ func sessionRuntimeFromState(s ProviderSessionState) sessionRuntimeBlob {
 		TurnStartGitHead: s.TurnStartGitHead, TurnStartWorktree: s.TurnStartWorktree,
 		PendingGateChangedFiles: s.PendingGateChangedFiles, StepID: s.StepID, LastTurnStepID: s.LastTurnStepID,
 		PendingGateRepromptPrompt: s.PendingGateRepromptPrompt, PendingGateRepromptStepID: s.PendingGateRepromptStepID,
-		PendingGateCodePaths: s.PendingGateCodePaths, RepromptAttempts: s.RepromptAttempts,
+		HubContinueDelegatedTurnID: s.HubContinueDelegatedTurnID,
+		PendingGateCodePaths:       s.PendingGateCodePaths, RepromptAttempts: s.RepromptAttempts,
 		PendingResumePrompt: s.PendingResumePrompt, PendingResumeStepID: s.PendingResumeStepID,
 		PendingResumeGen: s.PendingResumeGen, PendingGateRepromptGen: s.PendingGateRepromptGen,
 		PendingResumeDeliveredGen: s.PendingResumeDeliveredGen, PendingGateRepromptDeliveredGen: s.PendingGateRepromptDeliveredGen,
@@ -273,6 +275,7 @@ func applySessionRuntimeBlob(sess *ProviderSessionState, b sessionRuntimeBlob) {
 	sess.LastTurnStepID = b.LastTurnStepID
 	sess.PendingGateRepromptPrompt = b.PendingGateRepromptPrompt
 	sess.PendingGateRepromptStepID = b.PendingGateRepromptStepID
+	sess.HubContinueDelegatedTurnID = b.HubContinueDelegatedTurnID
 	sess.PendingGateCodePaths = b.PendingGateCodePaths
 	sess.RepromptAttempts = b.RepromptAttempts
 	sess.PendingResumePrompt = b.PendingResumePrompt

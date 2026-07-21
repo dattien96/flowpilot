@@ -14,6 +14,11 @@ var commonSkills = []string{
 	"audit-logging",
 	"phase-doc",
 	"context-discipline",
+	"additive-tests-only",
+	"kill-review",
+	"codex-claude-review-loop",
+	"codex-grok-review-loop",
+	"cross-provider-parity",
 }
 
 func TestInstall_CommonOnlyForNonePlatform(t *testing.T) {

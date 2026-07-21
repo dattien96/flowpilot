@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -93,6 +94,17 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 	// Resume ONLY with the real Claude session id captured on a prior turn — never the
 	// synthetic FlowPilot run session id (review finding 1). Empty on the first turn.
 	resumeID := a.pool.realSession(req.ProviderSessionID)
+	// BUG-295 F-1 (safety net): the pool is keyed by the SYNTHETIC per-run id and is
+	// process-local, so the lookup above misses whenever req.ProviderSessionID is
+	// ALREADY a real Claude session id with no live mapping — i.e. after a restart, where
+	// reconstruct seeds providerSessionID from the persisted (real) id and the fresh pool
+	// is empty (interactive_resume.go:833-834). Without this, --resume would be dropped and
+	// Claude would silently rotate to a brand-new session, losing turn history on the next
+	// replay. A real Claude session id is a UUID; the synthetic FlowPilot id is "thread-*".
+	// So when the pool misses and the handle is not synthetic, resume it directly.
+	if resumeID == "" && !strings.HasPrefix(req.ProviderSessionID, "thread-") {
+		resumeID = req.ProviderSessionID
+	}
 
 	// Stand up the per-turn MCP config so claude can reach FlowPilot's approve + ask_user
 	// tools. Done for ALL YOLO states — not only YOLO=false — so that ask_user works in

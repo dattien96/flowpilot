@@ -172,8 +172,13 @@ type ProviderSessionState struct {
 	// the process dies mid-window (V10R4 P1).
 	PendingGateRepromptPrompt string
 	PendingGateRepromptStepID string
-	PendingGateCodePaths      []string
-	RepromptAttempts          int
+	// HubContinueDelegatedTurnID is the provider turn that applied
+	// flow_control continue and already advanced a delegate writer (CP-51 A1 /
+	// run-9437). Durable so restart cannot revive a same-turn hub gate reprompt
+	// while the writer path is still active.
+	HubContinueDelegatedTurnID string
+	PendingGateCodePaths       []string
+	RepromptAttempts           int
 	// PendingResumePrompt/StepID is a durable continuation intent after
 	// rehydrated approval/question resolve. Cleared only after startTurn
 	// accepts the turn (V10R4 P1).

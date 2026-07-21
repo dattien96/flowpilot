@@ -5,7 +5,7 @@ description: |
   một inventory finding, luật stop rõ. Protocol (recovery/lease/attach/cancel/crash) bắt buộc
   matrix state×event đóng trước khi vá race. Dùng khi user gọi kill-review, KR, closed-claim,
   audit plan/impl không vòng vô hạn, hoặc tránh loop “vá finding → review → finding kế”.
-version: 2
+version: 6
 ---
 
 # kill-review

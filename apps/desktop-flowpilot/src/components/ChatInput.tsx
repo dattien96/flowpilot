@@ -572,7 +572,14 @@ export function ChatInput(): React.ReactElement {
     }
   }, [activeConnectedProviders, installedProviders, isChatMode, readyProviders, runId, selectProvider, selectedProvider]);
 
-  const blocked = status === "running" || status === "waiting_approval" || status === "waiting_question";
+  // Include "blocked" (flow awaiting user / escalate) so Stop stays available on
+  // the main composer — previously only RunStatus / FlowAwaitingUserCard had Stop
+  // while status=blocked, and dual gate UI made main Stop hard to reach (CP-51 A1).
+  const blocked =
+    status === "running" ||
+    status === "waiting_approval" ||
+    status === "waiting_question" ||
+    status === "blocked";
   // The manual "Gen summary" control is available only for an existing chat that
   // is idle/completed (never mid-turn) — mirrors the runner's busy guard.
   const canGenerateSummary = isChatMode && !!runId && timeline.length > 0 && !blocked && !summaryGenerating;

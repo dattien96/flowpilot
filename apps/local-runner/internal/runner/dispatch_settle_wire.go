@@ -75,14 +75,15 @@ func (s *InteractiveService) evaluateSettleGate(ctx context.Context, runID, turn
 		}
 	}
 	if rs != nil {
-		if rs.pendingFlowGateSettle {
+		loopDone := s.flowLoopDone(runID)
+		if rs.pendingFlowGateSettle && !loopDone {
 			go s.resumePendingFlowGate(runID)
 			return false, false, fmt.Errorf("settle: gate still pending run=%s turn=%s (resume scheduled)", runID, turnID)
 		}
 		if strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" {
 			return false, true, nil
 		}
-		if rs.status == RunStatusCompleted {
+		if rs.status == RunStatusCompleted || loopDone {
 			return true, false, nil
 		}
 		// Live run, gate not pending, not completed: allow bookkeeping after
@@ -156,11 +157,18 @@ func (s *InteractiveService) maybeScheduleSettleAfterTerminal(runID, turnID stri
 	rs := s.runs[runID]
 	pendingGate := rs != nil && rs.pendingFlowGateSettle
 	s.mu.Unlock()
-	if pendingGate {
+	if pendingGate && !s.flowLoopDone(runID) {
 		// Gate path owns the next step; do not auto-allow.
 		return
 	}
 	s.scheduleSettleDrive(runID, turnID)
+}
+
+func (s *InteractiveService) flowLoopDone(runID string) bool {
+	if s == nil || s.agentOrchestrator == nil {
+		return false
+	}
+	return strings.TrimSpace(s.agentOrchestrator.loopStateFor(runID).Status) == "done"
 }
 
 // scheduleSettleAfterGatePass is called when resumePendingFlowGate (or live

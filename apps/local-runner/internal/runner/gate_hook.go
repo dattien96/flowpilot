@@ -26,6 +26,12 @@ import (
 
 const maxFlowGateReprompts = 2
 
+// maxGateFixCodeAutoReprompts caps silent re-attempts after the user already
+// chose keep-test-fix-code. Without this, a model that only narrates the fix
+// (or asks for write permission in chat without writing) re-fires the full
+// regression decision modal every turn (CP-51 live run-11262).
+const maxGateFixCodeAutoReprompts = 2
+
 // gateBlockInfo carries r-reg details for the decision handler (Task-155).
 type gateBlockInfo struct {
 	regressedTests []string
@@ -783,6 +789,8 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		s.mu.Lock()
 		if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
 			r.pendingGateCodePaths = nil
+			r.gateFixCodeActive = false
+			r.gateFixCodeAttempts = 0
 		}
 		s.mu.Unlock()
 		return false
@@ -815,28 +823,55 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	if len(pathsToHold) > 0 {
 		rs.pendingGateCodePaths = append([]string(nil), pathsToHold...)
 	}
+	// CP-51 run-11262: user already chose keep-test-fix-code — do not re-open
+	// the decision modal; auto-reprompt with a write-hard prompt a few times.
+	autoFixPrompt := ""
+	autoFixStep := ""
+	emitOptions := gateOptions
+	if result.Action == "block" && len(gateOptions) > 0 {
+		emitOptions, autoFixPrompt, autoFixStep = applyGateFixCodeAutoRepromptLocked(rs, runID, gateOptions, gateRegressedTests)
+	}
 	// BUG-289 L3/F-12: populate pendingGateBlock/GateOptions on child regression
 	// escalate so the user gets the same keep-test card as the root path.
-	if result.Action == "block" && len(gateOptions) > 0 {
+	if result.Action == "block" && len(emitOptions) > 0 {
 		rs.pendingGateBlock = &gateBlockInfo{
 			regressedTests: gateRegressedTests,
 			stepID:         rs.lastTurnStepID,
 		}
 	}
+	// Auto fix-code path: emit as reprompt (not block) so desktop does not open
+	// GateBlockModal / "Got it" overlay while we silently re-drive the coder.
+	emitStatus := result.Action
+	if autoFixPrompt != "" {
+		emitStatus = "reprompt"
+	}
 	s.emitLocked(rs, ProviderEvent{
 		Type:               EventFlowGateViolation,
 		ProviderTurnID:     turnID,
 		Error:              result.Message,
-		Status:             result.Action,
-		GateOptions:        gateOptions,
+		Status:             emitStatus,
+		GateOptions:        emitOptions,
 		GateRegressedTests: gateRegressedTests,
 	})
+	if autoFixPrompt != "" {
+		rs.pendingGateRepromptPrompt = autoFixPrompt
+		rs.pendingGateRepromptStepID = autoFixStep
+		rs.pendingGateRepromptGen++
+	}
 	s.mu.Unlock()
 	switch result.Action {
 	case "block":
-		// Tier-2b always-block and tier-1 block â†’ parent escalate (actionable),
+		// Tier-2b always-block and tier-1 block → parent escalate (actionable),
 		// not an unanswerable child hang (Task-242 T-9 / BUG-288 #9).
-		if parentID != "" && s.gateEpochStillValid(runID, epoch) {
+		//
+		// Exception (CP-51 A1 live / dual-UI): when the child already has a
+		// regression decision card (r-reg options), do NOT also escalate the
+		// hub. Dual surfaces (GateBlockModal + FlowAwaitingUserCard) caused
+		// operators to Continue the hub while the child gate was still open,
+		// then hang on "post-turn gate still running". Child SubmitGateDecision
+		// owns remediation; the next post-turn gate re-checks remaining rules.
+		// Auto fix-code reprompt also suppresses hub escalate.
+		if parentID != "" && s.gateEpochStillValid(runID, epoch) && len(emitOptions) == 0 && autoFixPrompt == "" {
 			_, _ = s.applyFlowControl(parentID, FlowControlInput{
 				Status:  "escalate",
 				Summary: "flow gate block on coding step: " + result.Message,
@@ -1365,18 +1400,24 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 	switch option {
 	case "keep-test-fix-code":
 		tests := describeTests(info)
-		prompt = fmt.Sprintf(
-			"The flow gate detected a regression in %s. The user chose: keep test + requirement â†’ fix the code.\n\n"+
-				"Fix the code in the source files so that %s passes again without modifying any pre-existing test file. "+
-				"The test is the source of truth â€” do not edit, delete, or weaken it.",
-			tests, tests)
+		prompt = keepTestFixCodePrompt(tests, 0)
+		s.mu.Lock()
+		if rs2 := s.runs[runID]; rs2 != nil {
+			// Arm silent auto-reprompt path so the decision modal is not re-shown
+			// every turn when the model fails to write (CP-51 run-11262).
+			rs2.gateFixCodeActive = true
+			rs2.gateFixCodeAttempts = 0
+		}
+		s.mu.Unlock()
 	case "suggest-requirement-change":
 		prompt = buildSuggestRequirementPrompt(info, cwd)
 		// Mark the upcoming turn as a proposal turn so runFlowGate does not
-		// re-block on r-reg/r-tests â€” the AI is proposing, not fixing code yet.
+		// re-block on r-reg/r-tests — the AI is proposing, not fixing code yet.
 		s.mu.Lock()
 		if rs2 := s.runs[runID]; rs2 != nil {
 			rs2.proposalTurnPending = true
+			rs2.gateFixCodeActive = false
+			rs2.gateFixCodeAttempts = 0
 		}
 		s.mu.Unlock()
 	case "custom":
@@ -1384,6 +1425,12 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 			return newAPIErr(400, "invalid_request", "customText is required for option 'custom'")
 		}
 		prompt = customText
+		s.mu.Lock()
+		if rs2 := s.runs[runID]; rs2 != nil {
+			rs2.gateFixCodeActive = false
+			rs2.gateFixCodeAttempts = 0
+		}
+		s.mu.Unlock()
 	default:
 		return newAPIErr(400, "invalid_option", "option must be: keep-test-fix-code | suggest-requirement-change | custom")
 	}
@@ -1394,6 +1441,53 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 		_, _ = s.startTurn(runID, TurnInput{StepID: stepID, Prompt: prompt}, "", "")
 	}()
 	return nil
+}
+
+// keepTestFixCodePrompt builds the remediation prompt after the user chooses
+// keep-test-fix-code. attempt>0 adds a hard "you must write" nudge used by
+// the silent auto-reprompt path when the previous turn produced no fix.
+func keepTestFixCodePrompt(tests string, attempt int) string {
+	base := fmt.Sprintf(
+		"The flow gate detected a regression in %s. The user chose: keep test + requirement → fix the code.\n\n"+
+			"You MUST apply the fix by calling the write/edit tool on the production source file(s) so that %s passes.\n"+
+			"Do not end the turn only describing the fix or only asking for write permission in chat text.\n"+
+			"If a write tool requires approval, request that tool permission and wait — do not claim the fix is done until the file on disk has changed.\n"+
+			"Do not modify, delete, or weaken any pre-existing test file. The test is the source of truth.",
+		tests, tests)
+	if attempt > 0 {
+		base += fmt.Sprintf(
+			"\n\n[retry %d] Previous remediation turn did not clear the regression (suite still red, or no source write was recorded). "+
+				"Open the failing production source now and apply the write tool immediately.",
+			attempt)
+	}
+	return base
+}
+
+// applyGateFixCodeAutoRepromptLocked decides whether an r-reg block should
+// suppress the decision modal and queue a silent fix-code reprompt.
+// Caller holds s.mu. Returns (emitOptions, autoPrompt, autoStep).
+func applyGateFixCodeAutoRepromptLocked(rs *interactiveRun, runID string, gateOptions, gateRegressedTests []string) (emitOptions []string, autoPrompt, autoStep string) {
+	emitOptions = gateOptions
+	if rs == nil || len(gateOptions) == 0 || !rs.gateFixCodeActive {
+		return emitOptions, "", ""
+	}
+	if rs.gateFixCodeAttempts < maxGateFixCodeAutoReprompts {
+		rs.gateFixCodeAttempts++
+		attempt := rs.gateFixCodeAttempts
+		tests := strings.Join(gateRegressedTests, ", ")
+		if tests == "" {
+			tests = "the regressed tests"
+		}
+		autoPrompt = keepTestFixCodePrompt(tests, attempt)
+		autoStep = rs.lastTurnStepID
+		emitOptions = nil
+		log.Printf("[gate] auto fix-code reprompt attempt=%d run=%q (suppress decision modal)", attempt, runID)
+		return emitOptions, autoPrompt, autoStep
+	}
+	rs.gateFixCodeActive = false
+	rs.gateFixCodeAttempts = 0
+	log.Printf("[gate] fix-code auto budget exhausted run=%q; re-showing decision card", runID)
+	return emitOptions, "", ""
 }
 
 // RecordGateAgreement records that the user agreed to the AI's opt-2 requirement

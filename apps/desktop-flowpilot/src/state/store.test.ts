@@ -1142,6 +1142,88 @@ test("workflow handoff turn settles and orchestration stream keeps the run activ
   assert(systemTexts.some((text) => text.includes("Spawned agent **reviewer**")));
 });
 
+// BUG-297: consumeOrchestrationStream stays bound to MAIN for the whole session (it is
+// never cancelled while a child is focused), but s.timeline is a single shared field —
+// whichever run's content is currently displayed. Before the fix, the stream's else
+// branch applied MAIN's own live events (e.g. a sibling agent_spawned_by_user for a
+// reviewer child) unconditionally, bleeding them into whatever child transcript
+// happened to be on screen. The fix only applies when MAIN is the currently displayed
+// run (get().runId === runId) — backToMainRun already replays everything from its
+// pre-focus snapshot on return, so nothing is lost by skipping while focused away.
+test("orchestration stream does not bleed a sibling agent_spawned_by_user into a focused child's timeline", async () => {
+  const orchestrationGate = deferred<void>();
+
+  seedStore(
+    makeClient({
+      startRun: async () => ({
+        runId: "main-run",
+        providerSessionId: "session-1",
+        providerKey: "codex",
+        status: "running",
+        stepId: "wf-1",
+      }),
+      sendTurn: async function* (): AsyncIterable<ProviderEventDTO> {
+        yield { ...BASE_EVENT, workflowRunId: "main-run", seq: 1, type: "turn_started", providerTurnId: "turn-1", prompt: "hello" };
+        yield { ...BASE_EVENT, workflowRunId: "main-run", seq: 2, type: "agent_spawned_by_user", agentName: "coder", childRunId: "child-coder" };
+        yield { ...BASE_EVENT, workflowRunId: "main-run", seq: 3, type: "turn_completed", providerTurnId: "turn-1", finalMessage: "" };
+      },
+      // The orchestration stream (bound to main-run for the whole session). It only
+      // delivers its sibling-spawn event once the test resolves orchestrationGate,
+      // i.e. AFTER the test has focused the child below.
+      streamRun: async function* (): AsyncIterable<ProviderEventDTO> {
+        await orchestrationGate.promise;
+        yield { ...BASE_EVENT, id: "evt-reviewer", workflowRunId: "main-run", seq: 4, type: "agent_spawned_by_user", agentName: "reviewer", childRunId: "child-reviewer" };
+      },
+    }),
+    [],
+  );
+  useStore.setState({
+    chatMode: "workflow_step_auto",
+    launchMode: "workflow",
+    selectedWorkflowId: "wf-1",
+    selectedStepId: undefined,
+    runId: undefined,
+    mainRunId: undefined,
+    activeStepId: undefined,
+    status: "idle",
+    timeline: [],
+  });
+
+  await useStore.getState().sendPrompt("hello");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // Main's own turn is done; it correctly shows its own coder spawn card.
+  assert(
+    useStore.getState().timeline.some((it) => it.kind === "agent" && it.childRunId === "child-coder"),
+    "main's own turn must still show its own coder spawn card",
+  );
+
+  // Simulate focusAgentRun's effect: the user navigates into the coder child's own
+  // transcript. s.timeline is overwritten with the child's own content — nothing about
+  // reviewer_correctness/reviewer_security (siblings of coder, children of main).
+  useStore.setState({
+    runId: "child-coder",
+    activeAgentRunId: "child-coder",
+    timeline: [{ kind: "assistant", id: "coder-a", text: "coder's own output", finalized: true }],
+  });
+
+  // Now main spawns a SIBLING (reviewer) via the still-running orchestration stream,
+  // while the user is still looking at coder's transcript.
+  orchestrationGate.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const displayed = useStore.getState().timeline;
+  assert.equal(
+    displayed.some((it) => it.kind === "agent" && it.childRunId === "child-reviewer"),
+    false,
+    "BUG-297: a sibling spawned by main must not appear inside the focused child's own displayed transcript",
+  );
+  assert.deepEqual(
+    displayed,
+    [{ kind: "assistant", id: "coder-a", text: "coder's own output", finalized: true }],
+    "the focused child's displayed timeline must be untouched by main's own live event",
+  );
+});
+
 test("orchestration graph update refreshes stale agent run statuses without switching focus", async () => {
   const orchestrationGate = deferred<void>();
   const completedRuns: AgentRunSummary[] = [

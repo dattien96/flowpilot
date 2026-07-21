@@ -114,7 +114,9 @@ type ndjsonSessionRecord struct {
 	LastTurnStepID                  string            `json:"last_turn_step_id,omitempty"`
 	PendingGateRepromptPrompt       string            `json:"pending_gate_reprompt_prompt,omitempty"`
 	PendingGateRepromptStepID       string            `json:"pending_gate_reprompt_step_id,omitempty"`
-	PendingGateCodePaths            []string          `json:"pending_gate_code_paths,omitempty"`
+	// CP-51 A1 residual: durable continue-delegate marker (see ProviderSessionState).
+	HubContinueDelegatedTurnID string   `json:"hub_continue_delegated_turn_id,omitempty"`
+	PendingGateCodePaths       []string `json:"pending_gate_code_paths,omitempty"`
 	RepromptAttempts                int               `json:"reprompt_attempts,omitempty"`
 	PendingResumePrompt             string            `json:"pending_resume_prompt,omitempty"`
 	PendingResumeStepID             string            `json:"pending_resume_step_id,omitempty"`
@@ -425,6 +427,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		LastTurnStepID:                     r.LastTurnStepID,
 		PendingGateRepromptPrompt:          r.PendingGateRepromptPrompt,
 		PendingGateRepromptStepID:          r.PendingGateRepromptStepID,
+		HubContinueDelegatedTurnID:         r.HubContinueDelegatedTurnID,
 		PendingGateCodePaths:               append([]string(nil), r.PendingGateCodePaths...),
 		RepromptAttempts:                   r.RepromptAttempts,
 		PendingResumePrompt:                r.PendingResumePrompt,
@@ -872,6 +875,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		LastTurnStepID:                     s.LastTurnStepID,
 		PendingGateRepromptPrompt:          s.PendingGateRepromptPrompt,
 		PendingGateRepromptStepID:          s.PendingGateRepromptStepID,
+		HubContinueDelegatedTurnID:         s.HubContinueDelegatedTurnID,
 		PendingGateCodePaths:               append([]string(nil), s.PendingGateCodePaths...),
 		RepromptAttempts:                   s.RepromptAttempts,
 		PendingResumePrompt:                s.PendingResumePrompt,

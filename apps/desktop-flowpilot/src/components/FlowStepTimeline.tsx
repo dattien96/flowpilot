@@ -57,6 +57,18 @@ function agentRefLabel(agentRef: string): string {
   return dot > 0 ? base.slice(0, dot) : base;
 }
 
+/**
+ * BUG-290: only an agent.delegate node ever spawns a provider turn
+ * (BehaviorScopeInline, flow_executor.go) — every other behavior (e.g.
+ * context.produce) has no model of its own, so the step-timeline must not
+ * show the run's inherited model as if it belonged to that step. A step with
+ * no behaviorId predates node_id (BUG-155) and is itself an agent.delegate
+ * node, so it still shows its model.
+ */
+export function flowStepShowsModel(behaviorId: string | undefined): boolean {
+  return !behaviorId || behaviorId === "agent.delegate";
+}
+
 function stepName(step: WorkflowStepRuntimeDTO): string {
   // nodeId is the flow-graph node id ("coder", "reviewer_correctness"); stepType
   // for a CP-42 flow-engine node is a shared generic dispatch category
@@ -93,7 +105,7 @@ export function FlowStepTimeline({
         const isLast = index === steps.length - 1;
         const lineState = state === "done" ? "done" : state === "running" ? "running" : "idle";
         const provider = step.provider || runProvider;
-        const model = step.model || runModel;
+        const model = flowStepShowsModel(step.behaviorId) ? step.model || runModel : undefined;
 
         return (
           <li
@@ -122,12 +134,11 @@ export function FlowStepTimeline({
                   {step.rejectionNote || STATE_LABEL[step.status]}
                   {step.retryCount > 0 && <span className="wsr-retry-badge">Retry {step.retryCount}</span>}
                 </div>
-                {(provider || model || step.agentRef || step.yoloMode) && (
+                {(provider || model || step.agentRef) && (
                   <div className="fti-meta">
                     {provider && <span className={`pill-prov prov-${provider}`}>{provider.toUpperCase()}</span>}
                     {model && <span className="ac-model">{model}</span>}
                     {step.agentRef && <span title={step.agentRef}>agent: {agentRefLabel(step.agentRef)}</span>}
-                    {step.yoloMode && <span>yolo</span>}
                   </div>
                 )}
               </div>

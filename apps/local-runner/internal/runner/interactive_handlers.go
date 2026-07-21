@@ -656,7 +656,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		// row (e.g. "Flow: Coder" / flow-agent-delegate-coder) instead of
 		// skipping straight past it to the Flow/Project tiers.
 		if resolvedModel == "" {
-			resolvedModel = s.resolveConfiguredModelForAgent(context.Background(), steps[0].NodeID, agentNameFromRef(steps[0].AgentRef))
+			resolvedModel = s.resolveConfiguredModelForAgent(context.Background(), steps[0].NodeID, agentNameFromRef(steps[0].AgentRef), "")
 		}
 		// BUG-183: Flow Mode has two distinct default sources. A normal workflow/flow
 		// execution inherits YOLO from the workflow definition itself, while a direct
@@ -961,7 +961,11 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 			ProjectID:   rs.projectID,
 			WorkflowID:  rs.workflowID,
 			ProviderKey: rs.providerKey,
-			Status:      rs.status,
+			// Prefer flow loop status over raw rs.status: after markFlowRunComplete
+			// the loop is "done" while the hub provider run can still sit at
+			// "running" until the last SSE settles — history then shows a spinner
+			// for every completed flow that is not the active chat (image-8).
+			Status:      s.historyStatusForLiveRun(rs),
 			StartedAt:   rs.createdAt,
 			UpdatedAt:   rs.updatedAt,
 			LastPrompt:  rs.lastPrompt,
@@ -1027,6 +1031,29 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
 	return out
+}
+
+// historyStatusForLiveRun maps an in-memory run to the status the history list
+// should show. Flow hubs keep rs.status=running through the final synthesis
+// stream while LoopState is already "done" — list inactive chats must not spin.
+func (s *InteractiveService) historyStatusForLiveRun(rs *interactiveRun) RunStatus {
+	if rs == nil {
+		return RunStatusIdle
+	}
+	if rs.flowEngineDriven && strings.TrimSpace(rs.parentRunID) == "" {
+		switch s.agentOrchestrator.loopStateFor(rs.id).Status {
+		case "done":
+			return RunStatusCompleted
+		case "stopped":
+			return RunStatusCancelled
+		case "blocked":
+			if rs.status == RunStatusFailed || rs.status == RunStatusCancelled {
+				return rs.status
+			}
+			return RunStatus("blocked")
+		}
+	}
+	return rs.status
 }
 
 func isAgentHistoryRun(parentRunID, agentName, role, agentStatus, lastPrompt string) bool {
@@ -1233,8 +1260,20 @@ func (s *InteractiveService) handleInjectAgentFeedback(w http.ResponseWriter, r 
 func (s *InteractiveService) handleStopAgentLoop(w http.ResponseWriter, r *http.Request) {
 	snap, err := s.stopAgentLoop(r.PathValue("runId"))
 	if err != nil {
-		// Still return snapshot body when possible so the UI can reflect cancelled
-		// children, but surface durable-checkpoint failure (V10R4 P0).
+		// V10R4 P0 fail-closed on durable fence/persist, but still return the
+		// in-memory graph snapshot so the desktop can flip loop status to
+		// stopped / children cancelled (CP-51 A1: Stop on hub looked like a
+		// no-op when only the error body was returned and the UI kept "running").
+		if snap.ParentRunID != "" || len(snap.Runs) > 0 || snap.LoopState.Status != "" {
+			writeInteractiveJSON(w, err.status, map[string]any{
+				"error": map[string]any{
+					"code":    err.code,
+					"message": err.msg,
+				},
+				"snapshot": snap,
+			})
+			return
+		}
 		writeInteractiveError(w, err)
 		return
 	}

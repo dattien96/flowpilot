@@ -31,12 +31,11 @@ import (
 //	assistant   — content:"<text>" plus tool_calls:[{id,name,arguments}]
 //	tool_result — {tool_call_id, content}
 //
-// Because FlowPilot only ever stored a synthetic "thread-<n>" session id for a
-// Grok run (the real ACP session id is never fed back for session/load — see
-// grok_adapter.go ensureSession), every FlowPilot turn spins a fresh Grok
-// session, i.e. one session dir per turn. seedTranscriptFromDisk therefore
-// concatenates them in chronological order, exactly like the Codex per-turn
-// rollout replay (BUG-083 F-3).
+// A Grok ACP session can be reused across several FlowPilot turns or rotated
+// into a new session by the provider. The turn log records each observed real
+// session id, and seedTranscriptFromDisk replays those JSONL files in recorded
+// order. A reused session already contains its full conversation; a rotated
+// session adds the next segment (BUG-083 F-3).
 
 // loadGrokTranscriptEvents parses a single Grok chat_history.jsonl into
 // ProviderEvents. Correlation fields (RunID, Seq, etc.) are stamped by the
@@ -60,22 +59,31 @@ func loadGrokTranscriptEvents(filePath string) []ProviderEvent {
 		switch raw["type"] {
 		case "user":
 			if prompt := grokUserQueryText(raw); prompt != "" {
-				out = append(out, ProviderEvent{Type: EventTurnStarted, Prompt: prompt})
+				out = append(out, ProviderEvent{Type: EventTurnStarted, Prompt: prompt, OccurredAt: transcriptOccurredAt(raw)})
 			}
 		case "assistant":
 			if text, _ := raw["content"].(string); strings.TrimSpace(text) != "" {
-				out = append(out, ProviderEvent{Type: EventMessageCompleted, Text: text})
+				out = append(out, ProviderEvent{Type: EventMessageCompleted, Text: text, OccurredAt: transcriptOccurredAt(raw)})
 			}
 			for _, tc := range grokAssistantToolCalls(raw) {
-				out = append(out, ProviderEvent{Type: EventToolStarted, ToolName: tc.name, Input: tc.input})
+				out = append(out, ProviderEvent{Type: EventToolStarted, ToolName: tc.name, Input: tc.input, OccurredAt: transcriptOccurredAt(raw)})
 			}
 		case "tool_result":
 			name, _ := raw["tool_name"].(string) // usually absent; tool name comes from the call
 			content := grokToolResultContent(raw)
-			out = append(out, ProviderEvent{Type: EventToolCompleted, ToolName: name, Output: content, Status: "success"})
+			out = append(out, ProviderEvent{Type: EventToolCompleted, ToolName: name, Output: content, Status: "success", OccurredAt: transcriptOccurredAt(raw)})
 		}
 	}
 	return out
+}
+
+func transcriptOccurredAt(raw map[string]any) string {
+	for _, key := range []string{"timestamp", "createdAt", "created_at", "occurredAt", "occurred_at"} {
+		if value, _ := raw[key].(string); strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 type grokToolCall struct {

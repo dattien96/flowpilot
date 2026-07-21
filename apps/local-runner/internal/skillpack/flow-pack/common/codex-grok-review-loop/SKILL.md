@@ -1,6 +1,7 @@
 ---
 name: codex-grok-review-loop
 description: Run a Codex-orchestrated implementation loop where Grok 4.5 medium writes or fixes code, Codex 5.6 Terra reviews the result, and Grok is called again for every confirmed issue until Codex reports no blocking issues. Use when a task, bug fix, or review cycle should be implemented by Grok and gated by Codex review.
+version: 6
 ---
 
 # Codex Grok Review Loop

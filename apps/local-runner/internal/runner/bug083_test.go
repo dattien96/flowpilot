@@ -340,8 +340,8 @@ func TestSeedTranscriptFallsBackToTurnLogForSyntheticCodexFlowHub(t *testing.T) 
 			prompts = append(prompts, e.Prompt)
 		}
 	}
-	if !reflect.DeepEqual(prompts, []string{"fix bug 1+1 != 2", "[flow-engine] Agent results ready."}) {
-		t.Fatalf("prompt-only fallback replay = %#v, want turn-log prompts in order", prompts)
+	if !reflect.DeepEqual(prompts, []string{"fix bug 1+1 != 2"}) {
+		t.Fatalf("prompt-only fallback replay = %#v, want user-facing turn-log prompts only", prompts)
 	}
 }
 

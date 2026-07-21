@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { providerLabel, useStore, type TimelineItem } from "@/state/store";
+import type { AgentRunSummary } from "@/types/contract";
 
 // ---------------------------------------------------------------------------
 // Lightweight Markdown renderer — no external dependency
@@ -235,6 +236,38 @@ export function shouldShowAgentTimelineHeader(activeAgentRunId: string | undefin
   return Boolean(activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId) || agentRunCount > 0;
 }
 
+/**
+ * Whether the "back to main agent" crumb should show the green pulsing "live
+ * child run" badge. Mirrors AgentsPanel's own active/closed split (status !==
+ * completed/failed/cancelled) so the crumb never disagrees with the sidebar's
+ * own static "done" card for the same run — before this, the crumb pulsed
+ * green forever regardless of the focused child's actual status.
+ */
+export function isFocusedChildLive(focusedRun: AgentRunSummary | undefined): boolean {
+  return !focusedRun || (focusedRun.status !== "completed" && focusedRun.status !== "failed" && focusedRun.status !== "cancelled");
+}
+
+/**
+ * A child with a persisted lifecycle card is already represented in the visible
+ * timeline. Keep the live banner for children whose card is paged out, but do
+ * not render the same live child twice in the current view.
+ */
+export function liveAgentRunsWithoutVisibleCard(
+  agentRuns: AgentRunSummary[],
+  visibleTimeline: TimelineItem[],
+): AgentRunSummary[] {
+  const representedRunIDs = new Set(
+    visibleTimeline
+      .filter((item): item is Extract<TimelineItem, { kind: "agent" }> => item.kind === "agent")
+      .map((item) => item.childRunId),
+  );
+  return agentRuns.filter(
+    (run) =>
+      (run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question") &&
+      !representedRunIDs.has(run.runId),
+  );
+}
+
 function previewValue(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value === "string") return value;
@@ -415,19 +448,20 @@ function ApprovalGroup({ items }: { items: ApprovalItem[] }): React.ReactElement
     }
   };
 
+  const resolved = unresolved.length === 0;
   return (
-    <div className="card-group approval-group">
+    <div className={`card-group approval-group ${resolved ? "approval-group-resolved" : "approval-group-pending"}`}>
       <div className="card-group-head">
         <button
           type="button"
-          className={`card-group-summary ${open ? "card-group-summary-open" : ""}`}
+          className={`card-group-summary approval-group-summary ${open ? "card-group-summary-open" : ""}`}
           aria-expanded={open}
           aria-label={label}
           title={label}
           onClick={() => setOpen((value) => !value)}
         >
-          <span className="card-group-caret">{open ? "▾" : "▸"}</span>
-          <span className="badge badge-warn">{label}</span>
+          <span className="card-group-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+          <span className={`approval-group-label ${resolved ? "is-resolved" : "is-pending"}`}>{label}</span>
         </button>
         {unresolved.length > 0 && (
           <div className="card-group-bulk-actions">
@@ -503,6 +537,35 @@ function FileRow({ it }: { it: Extract<TimelineItem, { kind: "file" }> }): React
   );
 }
 
+function AgentTimelineCard({ it }: { it: Extract<TimelineItem, { kind: "agent" }> }): React.ReactElement {
+  const agentRuns = useStore((s) => s.agentRuns);
+  const focusAgentRun = useStore((s) => s.focusAgentRun);
+  const run = agentRuns.find((candidate) => candidate.runId === it.childRunId);
+  // Prefer finalMessage for *this activation's* card: reinvoke reuses childRunId so
+  // agentRuns.status flips back to running on round 2, but the round-1 card must
+  // stay "completed" (run-9034 multi-activation cards share one run summary).
+  const status = it.finalMessage
+    ? "completed"
+    : (run?.status ?? "running");
+  const lowerName = it.agentName.toLowerCase();
+  const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";
+  const provider = providerLabel(run?.providerKey ?? "");
+
+  return (
+    <div className={`abanner ${roleClass} agent-timeline-card`}>
+      <span className={`pulse ${status === "completed" ? "done" : ""}`} />
+      <span>
+        <b>{run?.label ?? it.agentName}</b> · {provider} · {status}
+        {run?.modelName && <span style={{ color: "var(--text-dim)" }}> · {run.modelName}</span>}
+        {it.finalMessage && <span className="agent-timeline-result"> — completed</span>}
+      </span>
+      <button type="button" className="abanner-open-btn" onClick={() => void focusAgentRun(it.childRunId)}>
+        Open ↗
+      </button>
+    </div>
+  );
+}
+
 function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
   switch (it.kind) {
     case "assistant":
@@ -554,6 +617,8 @@ function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
       return <QuestionGroup items={it.items} />;
     case "file":
       return <FileRow it={it} />;
+    case "agent":
+      return <AgentTimelineCard it={it} />;
     case "approval":
       return <ApprovalCard approvalId={it.approvalId} details={it.details} decision={it.decision} />;
     case "question":
@@ -598,9 +663,7 @@ export function Timeline(): React.ReactElement {
   const hiddenPromptCount = Math.max(totalPromptCount - visiblePromptCount, 0);
   const visibleTimeline = sliceTimelineFromPrompt(timeline, visiblePromptCount);
   const timelineGroups = buildTimelineGroups(visibleTimeline);
-  const runningAgentCount = agentRuns.filter(
-    (run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question",
-  ).length;
+  const liveAgentRuns = liveAgentRunsWithoutVisibleCard(agentRuns, visibleTimeline);
   const showAgentHeader = shouldShowAgentTimelineHeader(activeAgentRunId, mainRunId, agentRuns.length);
 
   useEffect(() => {
@@ -625,7 +688,21 @@ export function Timeline(): React.ReactElement {
             <b>main</b> <span style={{ opacity: 0.5 }}>›</span> <span className="here">{agentRuns.find(r => r.runId === activeAgentRunId)?.agentName ?? activeAgentRunId}</span>
           </span>
           <span className="crumb-path" style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "6px" }}>
-            <span className="pulse" /> live child run
+            {(() => {
+              const focusedRun = agentRuns.find((r) => r.runId === activeAgentRunId);
+              if (isFocusedChildLive(focusedRun)) {
+                return (
+                  <>
+                    <span className="pulse" /> live child run
+                  </>
+                );
+              }
+              return (
+                <>
+                  <span className={`sd ${focusedRun!.status === "failed" ? "fail" : "closed"}`} /> {focusedRun!.status}
+                </>
+              );
+            })()}
           </span>
         </div>
       ) : null}
@@ -648,8 +725,7 @@ export function Timeline(): React.ReactElement {
       ))}
 
       {(!activeAgentRunId || activeAgentRunId === mainRunId) &&
-        agentRuns
-          .filter((run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question")
+        liveAgentRuns
           .map((run) => {
             const lowerName = run.agentName.toLowerCase();
             const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";
