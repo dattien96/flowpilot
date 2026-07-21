@@ -3620,17 +3620,73 @@ func overlayRawGrokTurnPrompts(historical []ProviderEvent, rawPrompts []turnLogL
 	return overlayRawTurnPrompts(historical, rawPrompts)
 }
 
+// stripAgentContextBlock removes composeAgentContextBlock's "[FlowPilot system
+// note — sub-agents …]" prefix (BUG-122) when present and returns the trailing
+// genuine prompt plus whether the prefix was found. The prefix is context folded
+// onto a REAL user turn (its user text follows the note), so on reconstruction it
+// must not be mistaken for a pure orchestration prompt (BUG-306). Uses the shared
+// agentContextBlock* constants so it cannot drift from the wrapper text.
+func stripAgentContextBlock(prompt string) (remainder string, wrapped bool) {
+	p := strings.TrimSpace(prompt)
+	// isFlowEnginePrompt accepts both the em-dash and hyphen spellings; mirror that.
+	if !strings.HasPrefix(p, agentContextBlockOpen) &&
+		!strings.HasPrefix(p, "[FlowPilot system note - sub-agents") {
+		return prompt, false
+	}
+	idx := strings.Index(p, agentContextBlockClose)
+	if idx < 0 {
+		return prompt, false
+	}
+	return strings.TrimSpace(p[idx+len(agentContextBlockClose):]), true
+}
+
+// isOverlayableUserTurn reports whether a historical turn_started slot is a genuine
+// user turn that overlayRawTurnPrompts should replace with the raw turn-log prompt.
+// A bare non-system prompt qualifies. A prompt carrying the agent-context note
+// prefix also qualifies ONLY when the text after the note is itself a genuine user
+// prompt — never when it wraps a join note / gate reprompt (BUG-300, run1264 keep
+// those internal). isSystemPrompt itself is deliberately left unchanged so every
+// transcript-hiding invariant elsewhere is preserved.
+func isOverlayableUserTurn(prompt string) bool {
+	if !isSystemPrompt(prompt) {
+		return true
+	}
+	if rest, wrapped := stripAgentContextBlock(prompt); wrapped {
+		return rest != "" && !isSystemPrompt(rest)
+	}
+	return false
+}
+
 // overlayRawTurnPrompts maps replayed provider prompts back to the durable raw
 // user input recorded at startTurn. Provider transcript formats differ, but all
 // providers share the same prompt order and must retain the same turn identity
 // for restart-sidecar placement.
 func overlayRawTurnPrompts(historical []ProviderEvent, rawPrompts []turnLogLine) []ProviderEvent {
+	// BUG-306: rawPrompts is the complete ordered list of user prompts, but the
+	// historical user-turn slots are only a SUFFIX of it — a flow hub's turn-1 is
+	// suppressed (it spawns children without ever calling the provider, BUG-300), so
+	// the leading prompt(s) have no slot. Aligning front-to-back therefore lands the
+	// first raw prompt on the wrong slot. Count the overlay-able slots and start at
+	// the matching offset so the last N raw prompts map to the N slots; the leading
+	// suppressed prompt(s) fall through to prependMissingPromptOnlyEvents. When every
+	// prompt has a slot (all normal chats, non-suppressed flows) the offset is 0 and
+	// this is identical to the previous positional behavior.
+	overlayable := 0
+	for i := range historical {
+		e := &historical[i]
+		if e.Type == EventTurnStarted && strings.TrimSpace(e.Prompt) != "" && isOverlayableUserTurn(e.Prompt) {
+			overlayable++
+		}
+	}
 	promptIndex := 0
+	if len(rawPrompts) > overlayable {
+		promptIndex = len(rawPrompts) - overlayable
+	}
 	activeTurnID := ""
 	for i := range historical {
 		event := &historical[i]
 		if event.Type == EventTurnStarted && strings.TrimSpace(event.Prompt) != "" {
-			if isSystemPrompt(event.Prompt) {
+			if !isOverlayableUserTurn(event.Prompt) {
 				activeTurnID = ""
 			} else if promptIndex < len(rawPrompts) {
 				raw := rawPrompts[promptIndex]

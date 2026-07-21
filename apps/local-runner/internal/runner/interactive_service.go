@@ -2865,17 +2865,26 @@ func (s *InteractiveService) emitParentAgentResultLocked(child *interactiveRun, 
 // many children without chatting cannot grow the next prompt without bound (BUG-122).
 const maxPendingAgentNotes = 50
 
+// agentContextBlockOpen / agentContextBlockClose delimit composeAgentContextBlock's
+// system-note prefix. They are shared with the reconstruction path
+// (stripAgentContextBlock, BUG-306) so the strip logic cannot drift from the
+// wrapper text and silently reintroduce the transcript-ordering bug. Keep the
+// exact bytes (em dash) identical to what providers persist in their session files.
+const agentContextBlockOpen = "[FlowPilot system note — sub-agents started in this session via the UI (not by you):"
+const agentContextBlockClose = "Use this when the user asks which sub-agents were started, their providers/models, or their results.]"
+
 // composeAgentContextBlock renders the parent's pending UI-spawn notes as a single
 // system-note prefix folded into the next provider turn's prompt (BUG-122).
 func composeAgentContextBlock(notes []string) string {
 	var b strings.Builder
-	b.WriteString("[FlowPilot system note — sub-agents started in this session via the UI (not by you):\n")
+	b.WriteString(agentContextBlockOpen)
+	b.WriteString("\n")
 	for _, n := range notes {
 		b.WriteString("- ")
 		b.WriteString(n)
 		b.WriteString("\n")
 	}
-	b.WriteString("Use this when the user asks which sub-agents were started, their providers/models, or their results.]")
+	b.WriteString(agentContextBlockClose)
 	return b.String()
 }
 
