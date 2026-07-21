@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -129,12 +130,17 @@ func TestNonCohortEntryFailSettlesStepAndClearsHubGateSettle(t *testing.T) {
 // the child run exists (spawnChildRun async path) — never hits EventTurnFailed
 // emitLocked. handleChildStartTurnFailure must settle step FAILED and reinvoke hub.
 func TestNonCohortPreflightStartTurnFailReinvokesHub(t *testing.T) {
+	var promptMu sync.Mutex
+	var capturedPrompt string
 	reg := newProviderRegistry()
 	reg.register(ProviderRegistration{
 		Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
-			return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				promptMu.Lock()
+				capturedPrompt = req.Prompt
+				promptMu.Unlock()
 				b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "hub recovery"})
 				return nil
 			})
@@ -189,7 +195,6 @@ func TestNonCohortPreflightStartTurnFailReinvokesHub(t *testing.T) {
 	}
 	svc.mu.Lock()
 	settle := svc.runs[parentID].pendingFlowGateSettle
-	notes := append([]string(nil), svc.runs[parentID].pendingAgentContext...)
 	childStatus := svc.runs[child.RunID].status
 	svc.mu.Unlock()
 	if settle {
@@ -198,18 +203,26 @@ func TestNonCohortPreflightStartTurnFailReinvokesHub(t *testing.T) {
 	if childStatus != RunStatusFailed {
 		t.Fatalf("child status = %v, want failed", childStatus)
 	}
-	if !strings.Contains(strings.Join(notes, "\n"), "failed") {
-		t.Fatalf("expected failure note in pendingAgentContext, got %#v", notes)
-	}
 
+	// BUG-303: the failure note reaches the hub's reinvoked turn by being
+	// embedded directly in its prompt (maybeAutoReinvokeHubWithNote), and is
+	// deliberately REMOVED from pendingAgentContext once embedded (BUG-275,
+	// anti-duplication). Reading pendingAgentContext synchronously right here
+	// raced that removal against this goroutine's own read — whichever the
+	// scheduler ran first — so it was flaky regardless of whether the note was
+	// actually delivered (it always was, either way). Assert on the prompt the
+	// fake adapter actually received instead: that has no such race, since it
+	// only becomes non-empty once the reinvoke has genuinely reached the
+	// provider.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		svc.mu.Lock()
-		armed := svc.runs[parentID].reinvokeInFlight || svc.runs[parentID].pendingHubReinvoke ||
-			svc.runs[parentID].turnInFlight || svc.runs[parentID].hubReinvokeStartFailCount > 0 ||
-			svc.runs[parentID].turnCount > 0
-		svc.mu.Unlock()
-		if armed {
+		promptMu.Lock()
+		prompt := capturedPrompt
+		promptMu.Unlock()
+		if prompt != "" {
+			if !strings.Contains(prompt, "failed") {
+				t.Fatalf("expected failure note in reinvoked hub prompt, got %q", prompt)
+			}
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
