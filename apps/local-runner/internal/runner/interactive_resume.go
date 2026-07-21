@@ -2750,6 +2750,15 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	// lets the shared sidecar reorderer insert restored approvals/questions
 	// directly after their originating prompt instead of at the bottom.
 	historical = overlayRawTurnPrompts(historical, rawPrompts)
+	// A flow-hub's turn 1 can spawn its entry child directly without the hub
+	// itself ever making a real provider call (its first genuine turn in the
+	// session file is the post-join synthesis turn, which overlayRawTurnPrompts
+	// correctly leaves system-flagged and unconsumed). That leaves rawPrompts[0]
+	// with no historical turn_started slot to overlay onto, so it must be
+	// restored as its own synthetic prompt-only turn instead of silently
+	// dropping the run's original user message on restart. Mirrors the same
+	// safety net already used by seedGrokTranscriptFromDisk.
+	historical = prependMissingPromptOnlyEvents(turnLogPromptTexts(rawPrompts), historical)
 	// Provider files remain the primary transcript source. The durable turn log
 	// only fills an omitted assistant frame (for example a rotated segment), so
 	// history reopen has the same user-visible content as the live transcript.
