@@ -2068,6 +2068,15 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 		if activations < 1 {
 			activations = 1
 		}
+		// Review Loop reinvoke can leave turn_count higher than real rounds
+		// (coder churn). Cap multi-activation cards to *other* children's start
+		// waves so we never emit four coder cards for three reviewer waves
+		// (run-24377 Image 2: two coders consecutive).
+		if activations > 1 {
+			if waves := peerStartWaveTimes(peerStarts, child.startedAt, 45*time.Second); len(waves) > 0 && activations > len(waves) {
+				activations = len(waves)
+			}
+		}
 		times := resumeActivationTimestamps(child.startedAt, child.updatedAt, activations, peerStarts, child.startedAt)
 		for i := 0; i < activations; i++ {
 			// Distinct event ids so the desktop can keep one main-chat card per
@@ -2139,8 +2148,8 @@ func resumeChildActivationCount(store WorkflowStore, session ProviderSessionStat
 
 // resumeActivationTimestamps returns [spawnAt, resultAt] per activation so
 // multi-turn reinvoke cards land in the correct Review Loop round cluster.
-// When peer children show a large startedAt gap (R0 reviewers → R1 reviewers),
-// activation 1+ is parked in that gap (run-9034: second coder before R1 reviews).
+// When peer children form start-time waves (R0 / R1 / R2 reviewers), each
+// activation is parked just before the matching wave (run-9034 / run-24377).
 func resumeActivationTimestamps(startedAt, updatedAt string, activations int, peerStarts []string, selfStarted string) [][2]string {
 	if activations < 1 {
 		activations = 1
@@ -2152,25 +2161,38 @@ func resumeActivationTimestamps(startedAt, updatedAt string, activations int, pe
 		out[0] = [2]string{start, end}
 		return out
 	}
-	// Prefer the largest gap between other children's start times (round boundary).
-	gapStart, gapEnd, hasGap := largestPeerStartGap(peerStarts, selfStarted, 45*time.Second)
-	if hasGap && activations == 2 {
-		// act0: original start → just before the peer gap (end of round 0)
-		// act1: near the *end* of the gap (right before R1 peers) so cluster
-		// gap detection (>45s after R0 reviewer results) still splits rounds.
-		reinvokeSpawn := gapEnd
-		if t0, ok0 := parseResumeTime(gapStart); ok0 {
-			if t1, ok1 := parseResumeTime(gapEnd); ok1 {
-				// 90% into the gap — after hub synthesis, before next reviewers.
-				reinvoke := t0.Add(t1.Sub(t0) * 9 / 10)
-				reinvokeSpawn = reinvoke.UTC().Format(time.RFC3339Nano)
+	waves := peerStartWaveTimes(peerStarts, selfStarted, 45*time.Second)
+	if len(waves) >= 1 {
+		// act0: original start → first peer wave (end of round 0 work).
+		// act i>0: 90% into the gap between wave i-1 and wave i so gap-cluster
+		// placement still splits rounds after prior reviewers finish.
+		tEnd, endOK := parseResumeTime(end)
+		for i := 0; i < activations; i++ {
+			if i == 0 {
+				resultAt := end
+				if len(waves) > 0 {
+					resultAt = waves[0].UTC().Format(time.RFC3339Nano)
+				}
+				out[i] = [2]string{start, resultAt}
+				continue
 			}
+			if i < len(waves) {
+				prev := waves[i-1]
+				cur := waves[i]
+				reinvoke := prev.Add(cur.Sub(prev) * 9 / 10)
+				resultAt := cur.UTC().Format(time.RFC3339Nano)
+				if i == activations-1 && endOK && tEnd.After(cur) {
+					resultAt = end
+				}
+				out[i] = [2]string{reinvoke.UTC().Format(time.RFC3339Nano), resultAt}
+				continue
+			}
+			// More activations than waves — park remaining at end.
+			out[i] = [2]string{end, end}
 		}
-		out[0] = [2]string{start, firstNonEmptyResumeValue(gapStart, end)}
-		out[1] = [2]string{reinvokeSpawn, end}
 		return out
 	}
-	// Fallback: even split across [startedAt, updatedAt].
+	// Fallback: even split across [startedAt, updatedAt] when peers give no waves.
 	t0, ok0 := parseResumeTime(start)
 	t1, ok1 := parseResumeTime(end)
 	if !ok0 || !ok1 || !t1.After(t0) {
@@ -2186,6 +2208,33 @@ func resumeActivationTimestamps(startedAt, updatedAt string, activations int, pe
 		out[i] = [2]string{spawnT.UTC().Format(time.RFC3339Nano), resultT.UTC().Format(time.RFC3339Nano)}
 	}
 	return out
+}
+
+// peerStartWaveTimes groups other children's startedAt into Review Loop waves
+// (starts within maxGap of each other share a wave). Self is excluded.
+func peerStartWaveTimes(peerStarts []string, selfStarted string, maxGap time.Duration) []time.Time {
+	filtered := make([]time.Time, 0, len(peerStarts))
+	for _, raw := range peerStarts {
+		if strings.TrimSpace(raw) == "" || raw == selfStarted {
+			continue
+		}
+		if t, ok := parseResumeTime(raw); ok {
+			filtered = append(filtered, t)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Before(filtered[j]) })
+	waves := []time.Time{filtered[0]}
+	lastWaveStart := filtered[0]
+	for i := 1; i < len(filtered); i++ {
+		if filtered[i].Sub(lastWaveStart) > maxGap {
+			waves = append(waves, filtered[i])
+			lastWaveStart = filtered[i]
+		}
+	}
+	return waves
 }
 
 // largestPeerStartGap finds the largest wall-clock gap between consecutive peer
@@ -2698,6 +2747,13 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 			}
 		}
 	}
+	// run-24377 class: shared provider session with children can pollute hub
+	// reopen. Prefer durable turn-log prose when the hub has assistant frames.
+	// Cross-provider Case 1 — same gate as seedGrokTranscriptFromDisk.
+	if s.preferFlowHubTurnLogTranscript(rs, allEntries) {
+		s.seedFlowHubTranscriptFromTurnLog(rs, allEntries)
+		return
+	}
 
 	home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 	if !ok && (strings.TrimSpace(rs.providerAccountID) == "" || rs.providerAccountID == "default") {
@@ -2828,6 +2884,16 @@ func isInternalTranscriptEvent(event ProviderEvent) bool {
 }
 
 func (s *InteractiveService) appendTranscriptReplayEvents(rs *interactiveRun, historical []ProviderEvent) {
+	s.appendTranscriptReplayEventsOpt(rs, historical, true)
+}
+
+// appendTranscriptReplayEventsOpt appends reconstructed transcript frames.
+// defaultTime=true stamps empty OccurredAt with rs.createdAt (legacy provider
+// history seeds). defaultTime=false leaves empty times so flow-hub turn-log
+// seeds rely on insertUnanchoredFlowAgentLifecycle clustering instead of
+// reorderResumedTimelineLocked dumping every child after a shared createdAt
+// (run-24377 bottom agent dump).
+func (s *InteractiveService) appendTranscriptReplayEventsOpt(rs *interactiveRun, historical []ProviderEvent, defaultTime bool) {
 	if rs == nil || len(historical) == 0 {
 		return
 	}
@@ -2847,7 +2913,7 @@ func (s *InteractiveService) appendTranscriptReplayEvents(rs *interactiveRun, hi
 		historical[i].WorkflowStepRunID = stepID
 		historical[i].ProviderSessionID = sessionID
 		historical[i].ProviderKey = rs.providerKey
-		if strings.TrimSpace(historical[i].OccurredAt) == "" {
+		if defaultTime && strings.TrimSpace(historical[i].OccurredAt) == "" {
 			historical[i].OccurredAt = rs.createdAt
 		}
 		rs.events = append(rs.events, historical[i])
@@ -2970,6 +3036,15 @@ func (s *InteractiveService) appendResumedParentAnnotations(rs *interactiveRun) 
 		if allEventsHaveOccurredAt(rs.events) {
 			s.reorderResumedTimelineLocked(rs)
 		} else {
+			// Mixed timestamps: hub turn-log prose often has empty OccurredAt
+			// (seedFlowHubTranscriptFromTurnLog) while agent cards carry child
+			// wall-clock starts. The desktop orderHistoryReplayEvents sorts
+			// timed events BEFORE untimed ones, which dumps every agent card
+			// above the original "fix bug …" prompt (run-24377 live). Strip
+			// partial stamps so Seq order from cluster placement is preserved.
+			for i := range rs.events {
+				rs.events[i].OccurredAt = ""
+			}
 			s.resequenceResumedTimelineLocked(rs)
 		}
 		// Annotation events keep Thinking... on the desktop (shouldKeepThinking).
@@ -3138,18 +3213,58 @@ func (s *InteractiveService) insertUnanchoredFlowAgentLifecycleLocked(rs *intera
 		}
 		return pairs[i].at < pairs[j].at
 	})
-	clusters := clusterFlowAgentPairsByStartGap(pairs, 45*time.Second)
 
-	msgIdxs := make([]int, 0, 4)
+	// run-24377: identify first user prompt and the *first post-flow follow-up*
+	// (second user-facing turn_started). Synthesis anchors are only hub
+	// message_completed frames before that follow-up — never the follow-up
+	// answer ("ok") or later chat. Using lastUserPromptIdx was wrong when the
+	// user sent a second follow-up ("turn cũ…"): "ok" became a fake anchor and
+	// R2 reviewers landed between "done rồi hả" and "ok" (Image 1).
+	firstUserPromptIdx, firstPostFlowFollowUpIdx := -1, -1
+	userPromptCount := 0
 	for i, event := range rs.events {
-		if event.Type == EventMessageCompleted && strings.TrimSpace(event.Text) != "" {
-			msgIdxs = append(msgIdxs, i)
+		if event.Type == EventTurnStarted && strings.TrimSpace(event.Prompt) != "" && !isSystemPrompt(event.Prompt) {
+			userPromptCount++
+			if firstUserPromptIdx < 0 {
+				firstUserPromptIdx = i
+			} else if firstPostFlowFollowUpIdx < 0 {
+				firstPostFlowFollowUpIdx = i
+			}
 		}
 	}
+	msgIdxs := make([]int, 0, 4)
+	for i, event := range rs.events {
+		if event.Type != EventMessageCompleted || strings.TrimSpace(event.Text) == "" {
+			continue
+		}
+		// Only pre-follow-up hub messages are synthesis anchors for agent rounds.
+		if firstPostFlowFollowUpIdx >= 0 && i >= firstPostFlowFollowUpIdx {
+			continue
+		}
+		msgIdxs = append(msgIdxs, i)
+	}
+
+	clusters := clusterFlowAgentPairsByStartGap(pairs, 45*time.Second)
+	// Do NOT even-partition when under-segmented: that split created consecutive
+	// same-child coder cards in one synthesis slot (run-24377 Image 2). Prefer
+	// gap clusters from wave-aware activation timestamps; leftover clusters map
+	// to the last synthesis message.
+
+	// Clamp inserts: never above the original prompt; never at/after the first
+	// post-flow follow-up (agents must not sit between "done rồi hả" and "ok").
+	clampPlacement := func(beforeIdx int) int {
+		if firstUserPromptIdx >= 0 && beforeIdx <= firstUserPromptIdx {
+			beforeIdx = firstUserPromptIdx + 1
+		}
+		if firstPostFlowFollowUpIdx >= 0 && beforeIdx >= firstPostFlowFollowUpIdx {
+			beforeIdx = firstPostFlowFollowUpIdx
+		}
+		return beforeIdx
+	}
 	// Map cluster → insertion index in current rs.events (before that index).
-	// cluster i goes before message i when available; leftover clusters after the
-	// last message (run-9034: R0 before synth0, R1 after synth0 when only one
-	// message was loaded, or before synth1 when both synthesis turns restored).
+	// cluster i goes before message i when available; leftover clusters before
+	// the last synthesis (run-9034: R0 before synth0, R1 before synth1 when both
+	// restored; never after follow-up).
 	type placement struct {
 		beforeIdx int // insert before this index; len(events) means append
 		cluster   []flowAgentLifecyclePair
@@ -3157,9 +3272,13 @@ func (s *InteractiveService) insertUnanchoredFlowAgentLifecycleLocked(rs *intera
 	placements := make([]placement, 0, len(clusters))
 	switch {
 	case len(msgIdxs) == 0:
-		// No hub prose restored — append agent clusters at the end.
+		// No hub prose restored — append agent clusters at the end (still after
+		// the first user prompt and before any follow-up when present).
 		for _, cluster := range clusters {
-			placements = append(placements, placement{beforeIdx: len(rs.events), cluster: cluster})
+			placements = append(placements, placement{
+				beforeIdx: clampPlacement(len(rs.events)),
+				cluster:   cluster,
+			})
 		}
 	case len(msgIdxs) == 1:
 		// Only one synthesis frame (common when Grok resume loses intermediate
@@ -3167,18 +3286,24 @@ func (s *InteractiveService) insertUnanchoredFlowAgentLifecycleLocked(rs *intera
 		// still appears after code-review round 2, not stranded mid-timeline
 		// between R0 and R1 (run-9034 screenshot).
 		for _, cluster := range clusters {
-			placements = append(placements, placement{beforeIdx: msgIdxs[0], cluster: cluster})
+			placements = append(placements, placement{
+				beforeIdx: clampPlacement(msgIdxs[0]),
+				cluster:   cluster,
+			})
 		}
 	default:
-		// Multi-message: cluster i before message i; leftover clusters before
-		// the *last* message so trailing reviews still precede final synthesis.
+		// Multi-message: cluster i before synthesis message i; leftover clusters
+		// before the *last* synthesis so trailing reviews still precede it.
 		lastMsg := msgIdxs[len(msgIdxs)-1]
 		for i, cluster := range clusters {
 			beforeIdx := lastMsg
 			if i < len(msgIdxs) {
 				beforeIdx = msgIdxs[i]
 			}
-			placements = append(placements, placement{beforeIdx: beforeIdx, cluster: cluster})
+			placements = append(placements, placement{
+				beforeIdx: clampPlacement(beforeIdx),
+				cluster:   cluster,
+			})
 		}
 	}
 	// Apply from the end so earlier indices stay valid.
@@ -3443,10 +3568,13 @@ func (s *InteractiveService) anchorChatSidecarPrefixByTurnLocked(rs *interactive
 // seedGrokTranscriptFromDisk replays a resumed Grok chat's history from its
 // per-session chat_history.jsonl files (BUG-GrokReplay-Restart / Task-212 T-6).
 //
-// The provider transcript remains the primary source for both normal chat and
-// flow hubs. Durable transcript_turn rows merely fill missing response frames;
-// they never replace provider history, otherwise older multi-turn hubs reopen
-// with an empty main transcript (run-20332).
+// Flow hubs (parent, flowEngineDriven) with durable transcript_turn assistants
+// rebuild prose from the per-run turn log instead of the provider session file.
+// Grok can bind the hub and a flow child to the SAME ACP session id (run-24377:
+// hub run-24377 and coder run-24382 both used 019f8526-…); loading that file
+// for the hub replays child turns into main chat and scrambles order after
+// restart. When the turn log has no hub assistants yet, fall through to the
+// provider-history path (run-12613 / run-20332).
 func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 	if !ok {
@@ -3473,6 +3601,10 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 				}
 			}
 		}
+	}
+	if s.preferFlowHubTurnLogTranscript(rs, allEntries) {
+		s.seedFlowHubTranscriptFromTurnLog(rs, allEntries)
+		return
 	}
 	if len(sessionIDs) == 0 {
 		sessionIDs = discoverGrokSessionDirs(home, rs.workspaceCwd)
@@ -3502,9 +3634,82 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	s.appendTranscriptReplayEvents(rs, stampReplayPromptIDs(historical))
 }
 
-// seedGrokFlowHubFromTurnLog rebuilds hub main-chat prose from the durable turn
-// log only (authoritative, per-run). Agent cards are added later by
-// appendResumedParentAnnotations — same composition as live (cards + hub text).
+// preferFlowHubTurnLogTranscript is true when this is a flow hub with durable
+// per-run assistant frames — safe to rebuild without the (possibly shared)
+// provider session file. Provider-agnostic: no providerKey branch.
+func (s *InteractiveService) preferFlowHubTurnLogTranscript(rs *interactiveRun, entries []turnLogLine) bool {
+	if rs == nil || strings.TrimSpace(rs.parentRunID) != "" || !rs.flowEngineDriven {
+		return false
+	}
+	return turnLogHasAssistantFrames(entries)
+}
+
+func turnLogHasAssistantFrames(entries []turnLogLine) bool {
+	for _, e := range entries {
+		switch e.Kind {
+		case turnLogKindAssistant, turnLogKindTranscriptTurn:
+			if strings.TrimSpace(e.Assistant) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// seedFlowHubTranscriptFromTurnLog rebuilds hub main-chat prose from the durable
+// turn log only (authoritative, per-run). Join/orchestration prompts are skipped
+// (isSystemPrompt); their transcript_turn assistants still surface as hub
+// synthesis bubbles. Agent cards are added later by appendResumedParentAnnotations.
+// Shared by Grok and Claude resume paths (cross-provider-parity Case 1).
+func (s *InteractiveService) seedFlowHubTranscriptFromTurnLog(rs *interactiveRun, entries []turnLogLine) {
+	if rs == nil || len(entries) == 0 {
+		return
+	}
+	historical := buildFlowHubTranscriptEventsFromTurnLog(entries)
+	historical = userFacingTranscriptEvents(historical)
+	if len(historical) == 0 {
+		return
+	}
+	// Leave OccurredAt empty: agent cards use cluster-before-message placement
+	// (run-9034/run-24377). Stamping everything with createdAt makes time-sort
+	// reorder dump all children after hub prose.
+	s.appendTranscriptReplayEventsOpt(rs, stampReplayPromptIDs(historical), false)
+}
+
+// buildFlowHubTranscriptEventsFromTurnLog walks the hub turn log in order and
+// emits user-facing turn_started for non-system prompts plus message_completed
+// for every durable assistant frame (including synthesis after a system join
+// prompt that itself never becomes a bubble).
+func buildFlowHubTranscriptEventsFromTurnLog(entries []turnLogLine) []ProviderEvent {
+	out := make([]ProviderEvent, 0, len(entries)*2)
+	for _, e := range entries {
+		turnID := strings.TrimSpace(e.TurnID)
+		switch e.Kind {
+		case turnLogKindPrompt:
+			prompt := strings.TrimSpace(e.Prompt)
+			if prompt == "" || isSystemPrompt(prompt) {
+				continue
+			}
+			out = append(out, ProviderEvent{
+				Type:           EventTurnStarted,
+				Prompt:         prompt,
+				ProviderTurnID: turnID,
+			})
+		case turnLogKindAssistant, turnLogKindTranscriptTurn:
+			text := strings.TrimSpace(e.Assistant)
+			if text == "" {
+				continue
+			}
+			out = append(out, ProviderEvent{
+				Type:           EventMessageCompleted,
+				Text:           text,
+				ProviderTurnID: turnID,
+			})
+		}
+	}
+	return out
+}
+
 func stampReplayPromptIDs(historical []ProviderEvent) []ProviderEvent {
 	var promptN int
 	for i := range historical {

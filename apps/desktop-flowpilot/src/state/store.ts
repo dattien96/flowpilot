@@ -2212,14 +2212,25 @@ export function orderHistoryReplayEvents(events: ProviderEventDTO[]): ProviderEv
     }
   }
 
+  // run-24377: hub turn-log prose is often untimed while agent cards carry
+  // child wall-clock starts. Preferring timed events over untimed ones dumps
+  // every agent card above the original user prompt on history reopen.
+  // When any frame lacks a finite time, preserve server Seq (causal order).
+  const anyUntimed = entries.some((entry) => !Number.isFinite(entry.replayAt));
+  if (anyUntimed) {
+    return entries
+      .sort((left, right) => {
+        if (left.event.seq !== right.event.seq) return left.event.seq - right.event.seq;
+        return left.index - right.index;
+      })
+      .map(({ event }) => event);
+  }
+
   return entries
     .sort((left, right) => {
-      const leftHasTime = Number.isFinite(left.replayAt);
-      const rightHasTime = Number.isFinite(right.replayAt);
-      if (leftHasTime && rightHasTime && left.replayAt !== right.replayAt) {
+      if (left.replayAt !== right.replayAt) {
         return left.replayAt - right.replayAt;
       }
-      if (leftHasTime !== rightHasTime) return leftHasTime ? -1 : 1;
       if (left.event.seq !== right.event.seq) return left.event.seq - right.event.seq;
       return left.index - right.index;
     })
