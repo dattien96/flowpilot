@@ -246,6 +246,17 @@ type interactiveRun struct {
 	// exact existing behavior. When true, startTurn skips the bulk Progress call
 	// and the executor owns every step transition for this run.
 	flowEngineDriven bool
+	// turnStartedAfterLoopDone marks that THIS turn was admitted while the flow
+	// loop had ALREADY reached "done" (BUG-305). Such a turn is a plain chat
+	// follow-up (admitted by BUG-302), not flow work: emitLocked must not defer
+	// its TurnCompleted behind the post-turn flow gate, and runTurn must skip
+	// that gate. Otherwise the gate force-blocks a "done" loop (gateEpochStillValid
+	// returns false for "done"), the real TurnCompleted is never broadcast to live
+	// subscribers, and the desktop's turn stream hangs forever (thinking row / Stop
+	// button / history spinner stuck until the chat is reopened). Captured at
+	// startTurn admission — NOT at emit time — because the hub's own synthesis turn
+	// transitions running->done DURING its own turn and must still be gated.
+	turnStartedAfterLoopDone bool
 	// pendingFlowRefInvalidErr is set by resolveWorkflowFlowRef (BUG-270) when
 	// a run's selected workflowID resolved to an actual flow definition that
 	// then failed validation (agentpack.ValidateFlowDefinition,
@@ -4191,7 +4202,11 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	// flow-engine children AND root until gate pass — subscribers must not treat
 	// event type alone as terminal. Still record in-memory for finalizeInput.
 	deferGateCompleted := false
-	if ev.Type == EventTurnCompleted {
+	// BUG-305: a follow-up turn admitted onto an already-"done" loop is plain chat,
+	// not flow work — never defer it behind the post-turn gate (which force-blocks a
+	// "done" loop and would strand the live TurnCompleted, hanging the desktop's
+	// turn stream). Only defer while the flow loop is still active.
+	if ev.Type == EventTurnCompleted && !rs.turnStartedAfterLoopDone {
 		if rs.parentRunID != "" {
 			if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven {
 				deferGateCompleted = true
@@ -4268,10 +4283,14 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			rs.agentStatus = string(RunStatusCompleted)
 			s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
 			s.settleFlowChildTurnCompletedLocked(rs, finalMsg, ev)
-		} else if rs.flowEngineDriven {
+		} else if rs.flowEngineDriven && !rs.turnStartedAfterLoopDone {
 			// Root flow-engine: same gate-before-Completed contract as children.
 			_ = s.markPendingFlowGateSettleLocked(rs, finalMsg, ev.OccurredAt)
 		} else {
+			// BUG-305: a plain follow-up on an already-"done" loop (rs.turnStartedAfterLoopDone)
+			// falls through here and completes like normal chat — publish Completed and let
+			// this event broadcast live (deferGateCompleted was likewise skipped above), so the
+			// desktop's turn stream ends instead of hanging on a never-broadcast completion.
 			rs.status = RunStatusCompleted
 			rs.agentStatus = string(RunStatusCompleted)
 			s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
@@ -5973,7 +5992,19 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			}
 			if !stoppedMidGate {
 				if rs.parentRunID == "" {
-					gateBlocked = s.runFlowGateAtEpoch(gateCtx, rs, turnID, fin, gateEpoch)
+					// BUG-305: a follow-up admitted onto an already-"done" loop is plain
+					// chat, not flow work. Skip the flow gate EVALUATION but keep the
+					// pass-path bookkeeping below (turnInFlight clear, settle, finalizer).
+					// The gate would force-block a "done" loop anyway — runFlowGateAtEpoch's
+					// gateEpochStillValid check returns false for "done" and returns block —
+					// which would set completed=false and suppress the live TurnCompleted that
+					// emitLocked already published as plain chat. There is no active flow
+					// decision left to protect, so treat it as a pass.
+					if loopAlreadyDoneAtTurnStart {
+						gateBlocked = false
+					} else {
+						gateBlocked = s.runFlowGateAtEpoch(gateCtx, rs, turnID, fin, gateEpoch)
+					}
 				} else {
 					gateBlocked = s.runChildArtifactOutputGateAtEpoch(gateCtx, rs, turnID, fin, gateEpoch)
 				}
@@ -6656,6 +6687,9 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// resumeFlowWithFeedback flips blocked→running BEFORE scheduling the next
 	// hub turn, so Continue still works. Gate reprompt / hub reinvoke must not
 	// start while the human decision card is open.
+	// BUG-305: reset the per-turn flag every turn; set below only for a root run
+	// whose loop is already "done" at admission (a plain follow-up chat turn).
+	rs.turnStartedAfterLoopDone = false
 	if rs.parentRunID == "" {
 		st := s.agentOrchestrator.loopStateFor(rs.id).Status
 		// BUG-302: "done" means the flow's own decision loop finished (CP-36
@@ -6666,6 +6700,9 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 		// follow-up turn once their flow completes; only a genuinely
 		// Stop-ped loop must still seal a run (V10R4 P0 intent-race concern
 		// below is about Stop, not about a successfully finished flow).
+		// BUG-305: remember a follow-up admitted onto an already-"done" loop so
+		// emitLocked/runTurn treat it as plain chat (no post-turn flow gate).
+		rs.turnStartedAfterLoopDone = st == "done"
 		if st == "stopped" {
 			s.mu.Unlock()
 			return "", newAPIErr(http.StatusConflict, "flow_stopped", "flow loop is stopped; cannot start a new turn")
