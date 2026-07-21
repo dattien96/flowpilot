@@ -186,6 +186,20 @@ func HasChangeAuditNote(diff []ChangedFile) bool {
 	return false
 }
 
+// HasChangeAuditNoteInPaths reports a change-audit CA note among tool-written
+// or held path strings (no git status). Used when a gate re-check carries
+// pendingGateCodePaths as WrittenPaths with an empty GitDiff (BUG-288 #8 /
+// run-23820 remediation turns): the CA from the prior coding turn must still
+// satisfy r-ca.
+func HasChangeAuditNoteInPaths(paths []string) bool {
+	for _, p := range paths {
+		if strings.Contains(p, "change-audit/CA-") {
+			return true
+		}
+	}
+	return false
+}
+
 func HasTaskDoc(diff []ChangedFile) bool {
 	for _, f := range diff {
 		if strings.Contains(f.Path, "FORMAT-REFERENCE-") {
@@ -208,6 +222,20 @@ func HasBugFixDoc(diff []ChangedFile) bool {
 			continue
 		}
 		if strings.Contains(f.Path, "requirements/09-BugFix") || strings.Contains(f.Path, "BUG-") {
+			return true
+		}
+	}
+	return false
+}
+
+// HasBugFixDocInPaths mirrors HasBugFixDoc for path lists (pending re-check /
+// WrittenPaths) without a git status. FORMAT-REFERENCE templates are excluded.
+func HasBugFixDocInPaths(paths []string) bool {
+	for _, p := range paths {
+		if strings.Contains(p, "FORMAT-REFERENCE-") {
+			continue
+		}
+		if strings.Contains(p, "requirements/09-BugFix") || strings.Contains(p, "BUG-") {
 			return true
 		}
 	}

@@ -784,6 +784,11 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		}}
 	}
 
+	// BUG-299 residual (run-35329): Flow/Workflow always YOLO=true at create time
+	// regardless of a stale catalog row (pre-CA-378 default false) or a missing
+	// start-request field. Desktop workflow launches omit yoloMode entirely.
+	// Normal chat keeps resolvedYolo from the request/toggle.
+	resolvedYolo = resolveEffectiveYolo(resolvedYolo, runKind, in.WorkflowID, false)
 	rs := &interactiveRun{
 		id:                runID,
 		projectID:         in.ProjectID,
@@ -818,6 +823,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		StartedAt:         now,
 		UpdatedAt:         now,
 		RunKind:           runKind,
+		Yolo:              resolvedYolo,
 	}); err != nil {
 		delete(s.runs, runID)
 		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
@@ -1045,7 +1051,17 @@ func (s *InteractiveService) historyStatusForLiveRun(rs *interactiveRun) RunStat
 		case "done":
 			return RunStatusCompleted
 		case "stopped":
-			return RunStatusCancelled
+			// BUG-308 residual (run-33289 UI): Stop ends the FLOW loop, not the
+			// CHAT. After a plain-chat follow-up rs.status is completed (or
+			// running mid-turn). Prefer that over blanket Cancelled so history
+			// does not stay "Cancelled" forever after the user keeps chatting.
+			switch rs.status {
+			case RunStatusCompleted, RunStatusFailed, RunStatusRunning,
+				RunStatusWaitingApproval, RunStatusWaitingQuestion:
+				return rs.status
+			default:
+				return RunStatusCancelled
+			}
 		case "blocked":
 			if rs.status == RunStatusFailed || rs.status == RunStatusCancelled {
 				return rs.status

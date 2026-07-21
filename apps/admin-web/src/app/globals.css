@@ -51,6 +51,12 @@
   box-sizing: border-box;
 }
 
+/* Slightly denser type scale: rem-based Tailwind text-* steps down ~2px from the
+   browser default 16px root (matches desktop FlowPilot density pass). */
+html {
+  font-size: 12px;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);

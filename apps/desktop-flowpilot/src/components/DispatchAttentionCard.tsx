@@ -16,6 +16,10 @@ export function DispatchAttentionCard(): React.ReactElement | null {
   const [error, setError] = useState<string | null>(null);
   const [inspected, setInspected] = useState<Record<string, DispatchInspectResult>>({});
   const [confirmRetry, setConfirmRetry] = useState<string | null>(null);
+  // Nothing in this card is dismissible (settle_pending in particular clears itself once
+  // the durable settle finishes, per refresh() above) — but it can still crowd the
+  // composer while an operator waits, so let them collapse it out of the way manually.
+  const [collapsed, setCollapsed] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!client?.listDispatchAttention || !runId) {
@@ -132,15 +136,27 @@ export function DispatchAttentionCard(): React.ReactElement | null {
   return (
     <div className="card question dispatch-attention-card" role="status" aria-live="polite">
       <div className="card-head">
-        <span className="badge badge-warn">Dispatch attention</span>
-        <span className="meta">{items.length} item(s)</span>
+        <button
+          type="button"
+          className="dispatch-attention-collapse-toggle"
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? "Expand dispatch attention" : "Collapse dispatch attention"}
+          title={collapsed ? "Expand" : "Collapse"}
+          onClick={() => setCollapsed((value) => !value)}
+        >
+          <span className="dispatch-attention-caret" aria-hidden="true">{collapsed ? "▸" : "▾"}</span>
+          <span className="badge badge-warn">Dispatch attention</span>
+          <span className="meta">{items.length} item(s)</span>
+        </button>
       </div>
+      {error && <p className="error-text">{error}</p>}
+      {collapsed ? null : (
+      <>
       <p className="card-reason">
         {onlyPendingSettles
           ? "A terminal turn is finishing durable bookkeeping automatically. The task result is already recorded; details show settlement progress."
           : "Uncertain turns or repair-required runs need an operator decision (SS-17). Automated dispatch stays blocked until resolved."}
       </p>
-      {error && <p className="error-text">{error}</p>}
       <ul className="dispatch-attention-list">
         {items.map((item) => {
           const key = itemKey(item);
@@ -233,6 +249,8 @@ export function DispatchAttentionCard(): React.ReactElement | null {
           );
         })}
       </ul>
+      </>
+      )}
     </div>
   );
 }

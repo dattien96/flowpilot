@@ -164,6 +164,8 @@ type ndjsonSessionRecord struct {
 	// binding even though the durable field existed.
 	PendingRestartProvenanceRunID      string `json:"pending_restart_provenance_run_id,omitempty"`
 	PendingGateRepromptProvenanceRunID string `json:"pending_gate_reprompt_provenance_run_id,omitempty"`
+	// BUG-299 residual: durable YOLO posture (additive on legacy rows).
+	Yolo bool `json:"yolo,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -467,6 +469,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		MarkerProvenanceRunIDs:             append([]string(nil), r.MarkerProvenanceRunIDs...),
 		PendingRestartProvenanceRunID:      r.PendingRestartProvenanceRunID,
 		PendingGateRepromptProvenanceRunID: r.PendingGateRepromptProvenanceRunID,
+		Yolo:                               r.Yolo,
 	}
 }
 
@@ -915,6 +918,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		MarkerProvenanceRunIDs:             append([]string(nil), s.MarkerProvenanceRunIDs...),
 		PendingRestartProvenanceRunID:      s.PendingRestartProvenanceRunID,
 		PendingGateRepromptProvenanceRunID: s.PendingGateRepromptProvenanceRunID,
+		Yolo:                               s.Yolo,
 	}
 }
 

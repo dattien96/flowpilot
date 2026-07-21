@@ -28,6 +28,10 @@ type DispatchStore interface {
 
 	GetRunStopState(ctx context.Context, runID string) (RunStopState, error)
 	RequestRunStop(ctx context.Context, runID string, expectedRunStopRev int64, reason StopReason) (RunStopState, error)
+	// ReleaseRunStopFence clears Stopped so a hub may send again after user Stop
+	// (BUG-308 residual run-33289: plain-chat follow-up). Generation is kept so
+	// children stamped under the old fence stay invalid. expectedRunStopRev is CAS.
+	ReleaseRunStopFence(ctx context.Context, runID string, expectedRunStopRev int64) (RunStopState, error)
 
 	// Cross-record atomic commits: dispatch transition + INTENT OWNER's intent clear + audit.
 	CommitReceiptAndClearIntent(ctx context.Context, runID, turnID string, expectedRev int64,

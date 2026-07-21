@@ -312,6 +312,33 @@ func (s *InteractiveService) commitPreSendCancel(ctx context.Context, runID, tur
 // courtesy for already-claimed records — the CAS-level fence in
 // linearizeSendStarted is what actually blocks a send, so a failure there is
 // logged, not fatal.
+// releaseHubStopFenceForFollowUp clears durable run_stop.Stopped so a hub plain-chat
+// turn admitted after user Stop (BUG-308) can pass send_started linearization.
+// Generation is not reset — children that saw the Stop fence stay invalid.
+// No-op when dispatch V2 is inactive or the fence is already clear.
+func (s *InteractiveService) releaseHubStopFenceForFollowUp(ctx context.Context, runID string) {
+	if s == nil || s.dispatchStore == nil || runID == "" {
+		return
+	}
+	if ver, err := s.dispatchStore.GetRunProtocolVersion(ctx, runID); err != nil || ver < DispatchProtocolV2 {
+		return
+	}
+	st, err := s.dispatchStore.GetRunStopState(ctx, runID)
+	if err != nil || !st.Stopped {
+		return
+	}
+	if _, err := s.dispatchStore.ReleaseRunStopFence(ctx, runID, st.Revision); err != nil {
+		// stale: one retry
+		st2, err2 := s.dispatchStore.GetRunStopState(ctx, runID)
+		if err2 != nil || !st2.Stopped {
+			return
+		}
+		if _, err3 := s.dispatchStore.ReleaseRunStopFence(ctx, runID, st2.Revision); err3 != nil {
+			log.Printf("[dispatch] ReleaseRunStopFence failed run=%s: %v (follow-up may hit stop fence)", runID, err3)
+		}
+	}
+}
+
 func (s *InteractiveService) requestRunStopV2(ctx context.Context, runID string) error {
 	if s == nil || s.dispatchStore == nil || runID == "" {
 		return nil

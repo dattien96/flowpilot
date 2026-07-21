@@ -246,6 +246,17 @@ type interactiveRun struct {
 	// exact existing behavior. When true, startTurn skips the bulk Progress call
 	// and the executor owns every step transition for this run.
 	flowEngineDriven bool
+	// turnStartedAfterLoopDone marks that THIS turn was admitted while the flow
+	// loop had ALREADY reached "done" (BUG-305). Such a turn is a plain chat
+	// follow-up (admitted by BUG-302), not flow work: emitLocked must not defer
+	// its TurnCompleted behind the post-turn flow gate, and runTurn must skip
+	// that gate. Otherwise the gate force-blocks a "done" loop (gateEpochStillValid
+	// returns false for "done"), the real TurnCompleted is never broadcast to live
+	// subscribers, and the desktop's turn stream hangs forever (thinking row / Stop
+	// button / history spinner stuck until the chat is reopened). Captured at
+	// startTurn admission — NOT at emit time — because the hub's own synthesis turn
+	// transitions running->done DURING its own turn and must still be gated.
+	turnStartedAfterLoopDone bool
 	// pendingFlowRefInvalidErr is set by resolveWorkflowFlowRef (BUG-270) when
 	// a run's selected workflowID resolved to an actual flow definition that
 	// then failed validation (agentpack.ValidateFlowDefinition,
@@ -1014,7 +1025,14 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 			entries := s.agentOrchestrator.drainCohort(m.parentRunID, m.cohortID)
 			round := s.agentOrchestrator.loopStateFor(m.parentRunID).Round
 			note := buildCohortNote(m.parentRunID, m.cohortID, entries, round)
-			s.appendPendingAgentContext(m.parentRunID, note)
+			// BUG-307: this Stop request just cancelled every member above, so the
+			// cohort can complete ITS join right here with the loop already
+			// "stopped" (agentOrchestrator.stop ran earlier in this same handler).
+			// No reinvoke will ever drain the note in that case — see
+			// loopSealedForReinvoke.
+			if !s.loopSealedForReinvoke(m.parentRunID) {
+				s.appendPendingAgentContext(m.parentRunID, note)
+			}
 			s.mu.Lock()
 			if parent := s.runs[m.parentRunID]; parent != nil {
 				parent.lastCohortNote = note
@@ -1889,7 +1907,11 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 		if s.agentOrchestrator.cohortComplete(parentRunID, cohortID) {
 			entries := s.agentOrchestrator.drainCohort(parentRunID, cohortID)
 			note := buildCohortNote(parentRunID, cohortID, entries, s.agentOrchestrator.graphSnapshot(parentRunID).LoopState.Round)
-			s.appendPendingAgentContext(parentRunID, note)
+			// BUG-307: a pre-flight child failure can complete the cohort after
+			// the loop already sealed (stopped/done) — see loopSealedForReinvoke.
+			if !s.loopSealedForReinvoke(parentRunID) {
+				s.appendPendingAgentContext(parentRunID, note)
+			}
 			s.mu.Lock()
 			if parent := s.runs[parentRunID]; parent != nil {
 				parent.lastCohortNote = note
@@ -2020,12 +2042,15 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 	s.mu.Lock()
 	parent := s.runs[parentRunID]
 	if parent == nil || !parent.autoOrchestrate || parent.reinvokeInFlight || parent.turnInFlight {
-		if parent != nil && parent.autoOrchestrate && strings.TrimSpace(cohortNote) != "" {
+		if parent != nil && parent.autoOrchestrate && strings.TrimSpace(cohortNote) != "" &&
+			!s.loopSealedForReinvoke(parentRunID) {
 			// A note-bearing cohort join can race with a previously scheduled empty
 			// hub reinvoke. Do not drop the joined note just because the single-flight
 			// guard is closed; the scheduled/current turn will either drain it, or a
 			// deferred reinvoke below will consume it on the next turn.
 			// BUG-275: join path often already appended this note — avoid a second copy.
+			// BUG-307: unless the loop already sealed (stopped/done) — then no
+			// legitimate turn will ever drain it; see loopSealedForReinvoke.
 			if !pendingAgentContextContains(parent.pendingAgentContext, cohortNote) {
 				s.appendPendingAgentContextLocked(parentRunID, cohortNote)
 			}
@@ -2471,6 +2496,26 @@ func (s *InteractiveService) loopIsAdvancing(parentRunID string) bool {
 	}
 }
 
+// loopSealedForReinvoke reports whether parentRunID's loop has permanently
+// ended: "stopped" (explicit user Stop) or "done" (the flow's own decision
+// loop finished, BUG-302). Unlike loopIsAdvancing, "blocked"/"paused" are NOT
+// sealed here — those are temporary holds a later Continue/Resume legitimately
+// drains, whereas a stopped/done loop will never schedule another hub reinvoke
+// to consume a queued cohort-synthesis note (BUG-307: a cohort that finishes
+// joining after the loop already sealed left its "call the flow's control
+// tool" note stranded in pendingAgentContext — composeAgentContextBlock then
+// silently prepended it to the next ordinary chat turn on the run, sending an
+// instruction with no live flow left to satisfy it and stalling the hub
+// watchdog waiting for progress that could never come).
+func (s *InteractiveService) loopSealedForReinvoke(parentRunID string) bool {
+	switch s.agentOrchestrator.loopStateFor(parentRunID).Status {
+	case "stopped", "done":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *InteractiveService) queueChildTurnLocked(rs *interactiveRun, prompt, status string) {
 	if rs == nil {
 		return
@@ -2854,17 +2899,26 @@ func (s *InteractiveService) emitParentAgentResultLocked(child *interactiveRun, 
 // many children without chatting cannot grow the next prompt without bound (BUG-122).
 const maxPendingAgentNotes = 50
 
+// agentContextBlockOpen / agentContextBlockClose delimit composeAgentContextBlock's
+// system-note prefix. They are shared with the reconstruction path
+// (stripAgentContextBlock, BUG-306) so the strip logic cannot drift from the
+// wrapper text and silently reintroduce the transcript-ordering bug. Keep the
+// exact bytes (em dash) identical to what providers persist in their session files.
+const agentContextBlockOpen = "[FlowPilot system note — sub-agents started in this session via the UI (not by you):"
+const agentContextBlockClose = "Use this when the user asks which sub-agents were started, their providers/models, or their results.]"
+
 // composeAgentContextBlock renders the parent's pending UI-spawn notes as a single
 // system-note prefix folded into the next provider turn's prompt (BUG-122).
 func composeAgentContextBlock(notes []string) string {
 	var b strings.Builder
-	b.WriteString("[FlowPilot system note — sub-agents started in this session via the UI (not by you):\n")
+	b.WriteString(agentContextBlockOpen)
+	b.WriteString("\n")
 	for _, n := range notes {
 		b.WriteString("- ")
 		b.WriteString(n)
 		b.WriteString("\n")
 	}
-	b.WriteString("Use this when the user asks which sub-agents were started, their providers/models, or their results.]")
+	b.WriteString(agentContextBlockClose)
 	return b.String()
 }
 
@@ -3124,6 +3178,9 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		MarkerProvenanceRunIDs:             append([]string(nil), rs.markerProvenanceRunIDs...),
 		PendingRestartProvenanceRunID:      rs.pendingRestartProvenanceRunID,
 		PendingGateRepromptProvenanceRunID: rs.pendingGateRepromptProvenanceRunID,
+		// BUG-299 residual: round-trip YOLO so chat restart keeps the toggle and
+		// flow rehydrate has a durable value to force against when missing.
+		Yolo: rs.yolo,
 	}
 }
 
@@ -4013,7 +4070,15 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 				"note_len", len(note),
 			)
 			cohortDiagLog("cohortNote built parent=%q cohort=%q entries=%d noteLen=%d", rs.parentRunID, rs.flowCohortId, len(entries), len(note))
-			s.appendPendingAgentContextLocked(rs.parentRunID, note)
+			// BUG-307: a cohort can finish joining after the parent loop already
+			// sealed (Stop, or the flow's own "done") — no legitimate reinvoke will
+			// ever drain this note then, so it would sit in pendingAgentContext,
+			// persist to disk, and get silently prepended (BUG-122's
+			// composeAgentContextBlock) to the next turn on this run, including an
+			// ordinary chat follow-up typed after a restart (run-19500 live repro).
+			if !s.loopSealedForReinvoke(rs.parentRunID) {
+				s.appendPendingAgentContextLocked(rs.parentRunID, note)
+			}
 			if parent := s.runs[rs.parentRunID]; parent != nil {
 				// BUG-233: retain the joined note past pendingAgentContext being
 				// drained into the hub's synthesis turn, so the CA-226 fallback
@@ -4191,7 +4256,11 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 	// flow-engine children AND root until gate pass — subscribers must not treat
 	// event type alone as terminal. Still record in-memory for finalizeInput.
 	deferGateCompleted := false
-	if ev.Type == EventTurnCompleted {
+	// BUG-305: a follow-up turn admitted onto an already-"done" loop is plain chat,
+	// not flow work — never defer it behind the post-turn gate (which force-blocks a
+	// "done" loop and would strand the live TurnCompleted, hanging the desktop's
+	// turn stream). Only defer while the flow loop is still active.
+	if ev.Type == EventTurnCompleted && !rs.turnStartedAfterLoopDone {
 		if rs.parentRunID != "" {
 			if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven {
 				deferGateCompleted = true
@@ -4268,10 +4337,14 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			rs.agentStatus = string(RunStatusCompleted)
 			s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
 			s.settleFlowChildTurnCompletedLocked(rs, finalMsg, ev)
-		} else if rs.flowEngineDriven {
+		} else if rs.flowEngineDriven && !rs.turnStartedAfterLoopDone {
 			// Root flow-engine: same gate-before-Completed contract as children.
 			_ = s.markPendingFlowGateSettleLocked(rs, finalMsg, ev.OccurredAt)
 		} else {
+			// BUG-305: a plain follow-up on an already-"done" loop (rs.turnStartedAfterLoopDone)
+			// falls through here and completes like normal chat — publish Completed and let
+			// this event broadcast live (deferGateCompleted was likewise skipped above), so the
+			// desktop's turn stream ends instead of hanging on a never-broadcast completion.
 			rs.status = RunStatusCompleted
 			rs.agentStatus = string(RunStatusCompleted)
 			s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
@@ -4325,7 +4398,12 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 						"entry_count", len(entries),
 						"note_len", len(note),
 					)
-					s.appendPendingAgentContextLocked(rs.parentRunID, note)
+					// BUG-307: same sealed-loop guard as the completed-join path
+					// above — a failed cohort member can complete the join after
+					// the loop already stopped/done.
+					if !s.loopSealedForReinvoke(rs.parentRunID) {
+						s.appendPendingAgentContextLocked(rs.parentRunID, note)
+					}
 					if parent := s.runs[rs.parentRunID]; parent != nil {
 						parent.lastCohortNote = note // BUG-233: retained for the CA-226 fallback GateReason
 						// BUG-289 L4/F-10: stamp hub RUNNING on failed-member join
@@ -5508,6 +5586,11 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if in.YoloMode != nil {
 		yolo = *in.YoloMode
 	}
+	// BUG-299 residual (run-35329): Flow/Workflow (and flow-engine-driven runs)
+	// always YOLO=true — desktop workflow follow-ups omit yoloMode, and a
+	// rehydrated session used to leave rs.yolo=false. Chat mode without force
+	// keeps the UI toggle value above.
+	yolo = resolveEffectiveYolo(yolo, rs.runKind, rs.workflowID, rs.flowEngineDriven)
 	// Prefer the durable real provider handle when present (Codex rollouts and
 	// Grok ACP session ids). Synthetic thread-* remains only until the first
 	// successful turn promotes a real id (Task-210 Option B for Grok).
@@ -5541,13 +5624,29 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// reinvokes the hub (turn ≥ 2) after the cohort join, so turnCount > 1 is the
 	// genuine synthesis turn. (A cohort reviewer is additionally blocked in
 	// SubmitFlowControl by flowCohortId, BUG-176.)
-	offerReviewOutcomeTool := rs.autoOrchestrate && rs.parentRunID == "" && rs.turnCount > 1
+	// BUG-302: once the loop already reached "done" before this turn even
+	// started, this turn is a plain chat follow-up, not the hub's own
+	// review-decision turn — do not offer/require submit_review_outcome for
+	// it (this also scopes BUG-226's "completed without calling it" escalate
+	// fallback below, which is gated on this same flag), or a normal
+	// follow-up answer gets misread as an abandoned review decision and
+	// escalates a stale "Needs your decision" card.
+	// BUG-308: "stopped" joins "done" here — a follow-up admitted onto a
+	// terminal-sealed loop is a plain chat turn, never the hub's own
+	// review-decision turn, so it must not offer submit_review_outcome or trip
+	// BUG-226's escalate fallback (which would reopen a stale "Needs your
+	// decision" card on the very next plain-prose message after a Stop).
+	stAtTurnStart := s.agentOrchestrator.loopStateFor(rs.id).Status
+	loopAlreadySealedAtTurnStart := stAtTurnStart == "done" || stAtTurnStart == "stopped"
+	offerReviewOutcomeTool := rs.autoOrchestrate && rs.parentRunID == "" && rs.turnCount > 1 && !loopAlreadySealedAtTurnStart
 	providerPrompt = prependModePrefix(providerPrompt, rs.turnCount, rs.changeType, rs.sourceDocID)
 	// Persist the per-turn YOLO posture as the run's current default (BUG-129). The UI
 	// toggle is sticky, so an explicit YoloMode this turn must update rs.yolo; otherwise a
 	// child spawned during this turn (spawnChildRun reads parentRun.yolo) would inherit the
 	// stale run-level default instead of the posture the user actually has enabled.
-	if in.YoloMode != nil {
+	// Also stick Flow-forced true so later follow-ups / children see the product lock
+	// even when the turn request omitted yoloMode.
+	if in.YoloMode != nil || shouldForceFlowYolo(rs.runKind, rs.workflowID, rs.flowEngineDriven) {
 		rs.yolo = yolo
 	}
 	// Persist the per-turn model/reasoning-effort as the run's current default,
@@ -5662,26 +5761,35 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// BUG-288 R13-14: warm-up baseline under the turn's cancellable ctx so Stop
 	// can cut the first capture short (not always Background).
 	s.ensureBaselineWithContext(ctx, rs.workspaceCwd)
+	// BUG-308 residual run-33289: release hub stop fence before linearize so a
+	// post-Stop plain-chat follow-up is not immediately terminal_cancelled.
+	// Generation stays elevated (children remain fenced). Provider-agnostic.
+	if rs.turnStartedAfterLoopDone {
+		s.releaseHubStopFenceForFollowUp(ctx, rs.id)
+	}
 	// CP-51 Task-249: durable send_claimed → send_started linearization before
 	// the adapter's first external byte. Stop winning this CAS means zero send.
 	// BUG-289 A1/F-6: non-Stop store errors must emit a terminal turn event and
 	// settle the RUNNING step — not only clear turnInFlight and return.
+	// run-33289: stop-fence cancels (storeErr=false) also left the UI without a
+	// terminal event after TurnStarted — emit TurnFailed so Thinking settles.
 	if ok, storeErr := s.linearizeSendStarted(ctx, rs, turnID); !ok {
 		s.mu.Lock()
 		rs.turnInFlight = false
 		rs.currentTurnID = ""
 		rs.turnCancel = nil
+		errMsg := "turn cancelled before send (run stop fence)"
 		if storeErr {
-			// Fail the turn so UI/step state is not left RUNNING forever.
-			s.emitLocked(rs, ProviderEvent{
-				Type:           EventTurnFailed,
-				ProviderTurnID: turnID,
-				Error:          "dispatch linearize failed (store/CAS error before send)",
-				Status:         string(RunStatusFailed),
-			})
+			errMsg = "dispatch linearize failed (store/CAS error before send)"
 			rs.status = RunStatusFailed
 			rs.agentStatus = string(RunStatusFailed)
 		}
+		s.emitLocked(rs, ProviderEvent{
+			Type:           EventTurnFailed,
+			ProviderTurnID: turnID,
+			Error:          errMsg,
+			Status:         string(RunStatusFailed),
+		})
 		s.mu.Unlock()
 		s.notifyTurnIdle(rs.id)
 		return
@@ -5965,7 +6073,20 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			}
 			if !stoppedMidGate {
 				if rs.parentRunID == "" {
-					gateBlocked = s.runFlowGateAtEpoch(gateCtx, rs, turnID, fin, gateEpoch)
+					// BUG-305/BUG-308: a follow-up admitted onto an already-sealed loop
+					// ("done" or a Stop-ped loop) is plain chat, not flow work. Skip the
+					// flow gate EVALUATION but keep the pass-path bookkeeping below
+					// (turnInFlight clear, settle, finalizer). The gate would force-block
+					// such a loop anyway — runFlowGateAtEpoch's gateEpochStillValid check
+					// returns false for both "done" and "stopped" and returns block —
+					// which would set completed=false and suppress the live TurnCompleted
+					// that emitLocked already published as plain chat. There is no active
+					// flow decision left to protect, so treat it as a pass.
+					if loopAlreadySealedAtTurnStart {
+						gateBlocked = false
+					} else {
+						gateBlocked = s.runFlowGateAtEpoch(gateCtx, rs, turnID, fin, gateEpoch)
+					}
 				} else {
 					gateBlocked = s.runChildArtifactOutputGateAtEpoch(gateCtx, rs, turnID, fin, gateEpoch)
 				}
@@ -6648,11 +6769,51 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// resumeFlowWithFeedback flips blocked→running BEFORE scheduling the next
 	// hub turn, so Continue still works. Gate reprompt / hub reinvoke must not
 	// start while the human decision card is open.
+	// BUG-305/BUG-308: reset the per-turn flag every turn; set below for a root
+	// run whose loop is already terminal-sealed ("done" or "stopped") at
+	// admission (a plain follow-up chat turn).
+	rs.turnStartedAfterLoopDone = false
 	if rs.parentRunID == "" {
-		if st := s.agentOrchestrator.loopStateFor(rs.id).Status; st == "stopped" || st == "done" {
-			s.mu.Unlock()
-			return "", newAPIErr(http.StatusConflict, "flow_stopped", "flow loop is stopped; cannot start a new turn")
-		} else if st == "blocked" {
+		st := s.agentOrchestrator.loopStateFor(rs.id).Status
+		// BUG-302: "done" means the flow's own decision loop finished (CP-36
+		// "loop ends, no further spawns") — it does not mean the run itself is
+		// sealed forever. The desktop's composer (ChatInput) is the same for
+		// every run regardless of Chat vs Workflow mode, with no distinct
+		// "closed" affordance either way, so both must stay usable for a
+		// follow-up turn once their flow completes.
+		//
+		// BUG-308: a genuinely Stop-ped loop is now treated the same as "done"
+		// for a NEW user follow-up — the composer is identical and a user
+		// naturally keeps typing after Stop; sealing it with 409 (and silently
+		// dropping the optimistic prompt on restart) was the run-19845 bug.
+		// This deliberately reverses BUG-302's V-1 scope (which kept "stopped"
+		// sealed). Safe: stopAgentLoop already cancelled children + cleared
+		// durable approval/question/resume intents under s.mu before this
+		// admission can run (s.mu serializes them), the dispatch stop-fence
+		// still fences any stale child send, BUG-307 stops a stranded cohort
+		// note from poisoning this turn, and the intent-race guard (BUG-289
+		// R19-1) is a separate durable-persist-abort path that never depended
+		// on this loop-status seal. "blocked" still seals — it is a live
+		// Continue/Stop decision the user must resolve first.
+		//
+		// BUG-305: remember a follow-up admitted onto an already-sealed loop so
+		// emitLocked/runTurn treat it as plain chat (no post-turn flow gate).
+		rs.turnStartedAfterLoopDone = st == "done" || st == "stopped"
+		// BUG-308 residual run-33289 (Grok Review Loop, also provider-agnostic):
+		// Stop leaves (1) rs.status=cancelled and (2) durable dispatch
+		// run_stop.stopped=true. Admission alone is not enough — startTurn then
+		// claim succeeds but linearizeSendStarted hits ErrRunStopFence, commits
+		// terminal_cancelled, and returns WITHOUT EventTurnFailed/Completed so
+		// the desktop hangs on Thinking after the optimistic prompt. Revive the
+		// run for this plain-chat turn and release the hub's own stop flag
+		// (generation kept so children stamped under the Stop stay fenced).
+		if rs.turnStartedAfterLoopDone {
+			if rs.status == RunStatusCancelled {
+				rs.status = RunStatusRunning
+				rs.agentStatus = string(RunStatusRunning)
+			}
+		}
+		if st == "blocked" {
 			s.mu.Unlock()
 			return "", newAPIErr(http.StatusConflict, "flow_awaiting_user",
 				"flow is waiting for your decision (Continue/Stop); resolve the form before a new turn")
@@ -6819,6 +6980,10 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" {
 				flowStartOnly = true
 				rs.flowEngineDriven = true
+				// BUG-299 residual: chat-mode Review Loop (and any explicit flowRef)
+				// still uses hub/cohort/gate machinery — lock YOLO=true before the
+				// async entry spawn so children inherit the product posture.
+				rs.yolo = true
 				rs.chatSubMode = strings.TrimSpace(in.SubMode)
 				rs.chatFlowRef = flowRef
 				go s.startResolvedFlow(context.Background(), runID, flowRef, in.Prompt)
@@ -6942,6 +7107,32 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// pendingHubReinvoke spuriously. runTurn receives the captured slice directly.
 	capturedCtx := rs.pendingAgentContext
 	rs.pendingAgentContext = nil
+	// BUG-307 (extended): a follow-up admitted onto an already-sealed loop
+	// ("done" or Stop-ped — rs.turnStartedAfterLoopDone) is plain chat, not a
+	// flow turn. Any flow-engine ORCHESTRATION note still queued here — the
+	// entry-spawn "wait for its result; you will be reinvoked automatically once
+	// this step of the flow completes" note (spawnChildRun's ParentContextNote),
+	// or a cohort-join "…call the flow's control tool" note — is an instruction
+	// for a hub flow turn that will never run again on a sealed loop. If it rides
+	// into this user turn (composeAgentContextBlock wraps it) the model sits
+	// waiting for a reinvoke that never comes and the hub stalls (live repro
+	// run-21028). Guarding the append sites alone is insufficient: the entry-spawn
+	// note is appended at flow START (loop still running) and only goes stale when
+	// the Stop lands, so it can only be dropped here at the consumption point. A
+	// legitimate synthesis reinvoke runs only while the loop is still advancing
+	// (turnStartedAfterLoopDone=false there), so its note is never stripped.
+	// Informational notes (UI-spawn, "sub-agent completed") are not flow-engine
+	// prompts and are preserved.
+	if rs.turnStartedAfterLoopDone && len(capturedCtx) > 0 {
+		kept := make([]string, 0, len(capturedCtx))
+		for _, note := range capturedCtx {
+			if isFlowEnginePrompt(note) {
+				continue
+			}
+			kept = append(kept, note)
+		}
+		capturedCtx = kept
+	}
 	s.mu.Unlock()
 	if isParent {
 		snap.LoopState = s.agentOrchestrator.graphSnapshot(rs.id).LoopState
@@ -7093,7 +7284,7 @@ func (s *InteractiveService) abortDurableStartIfStaleLocked(
 		cancel()
 		return true, newAPIErr(http.StatusConflict, "turn_aborted", "durable start aborted: turn no longer in flight after persist")
 	}
-	if rs.status == RunStatusCancelled {
+	if rs.status == RunStatusCancelled && !rs.turnStartedAfterLoopDone {
 		rs.turnInFlight = false
 		rs.currentTurnID = ""
 		rs.turnCancel = nil
@@ -7105,11 +7296,13 @@ func (s *InteractiveService) abortDurableStartIfStaleLocked(
 		return true, newAPIErr(http.StatusConflict, "flow_stopped", "run was cancelled during durable start persist")
 	}
 	// Loop / parent loop stopped (Stop bumps loop under s.mu before persist of cancel).
+	// BUG-308 residual: a plain-chat follow-up admitted onto stopped/done sets
+	// turnStartedAfterLoopDone — do not abort that intentional turn.
 	loopID := runID
 	if !isParent && parentRunID != "" {
 		loopID = parentRunID
 	}
-	if st := s.agentOrchestrator.loopStateFor(loopID).Status; st == "stopped" || st == "done" {
+	if st := s.agentOrchestrator.loopStateFor(loopID).Status; (st == "stopped" || st == "done") && !rs.turnStartedAfterLoopDone {
 		rs.turnInFlight = false
 		rs.currentTurnID = ""
 		rs.turnCancel = nil

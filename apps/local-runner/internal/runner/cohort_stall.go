@@ -351,7 +351,14 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 				entries := s.agentOrchestrator.drainCohort(parentRunID, cohortID)
 				round := s.agentOrchestrator.loopStateFor(parentRunID).Round
 				note := buildCohortNote(parentRunID, cohortID, entries, round)
-				s.appendPendingAgentContext(parentRunID, note)
+				// BUG-307: a stall-timeout skip can complete the cohort while the
+				// loop is already stopped/done (e.g. a racing Stop landed just
+				// before this watchdog fired) — see loopSealedForReinvoke. Checked
+				// before the forced Status="running" below so it reflects the
+				// pre-clear state.
+				if !s.loopSealedForReinvoke(parentRunID) {
+					s.appendPendingAgentContext(parentRunID, note)
+				}
 				s.mu.Lock()
 				if parent := s.runs[parentRunID]; parent != nil {
 					parent.lastCohortNote = note

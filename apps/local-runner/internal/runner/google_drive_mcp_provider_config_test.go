@@ -1410,9 +1410,10 @@ func TestResolveGoogleDriveMcpProviderStatuses_AllNotStarted(t *testing.T) {
 		t.Fatalf("resolveGoogleDriveMcpProviderStatuses failed: %v", err)
 	}
 
-	// Should have 3 providers
-	if len(statuses) != 3 {
-		t.Errorf("Expected 3 providers, got %d", len(statuses))
+	// Should have 4 providers (codex, gemini, claude, grok — Grok added as the
+	// 4th supported provider after this test was originally written).
+	if len(statuses) != 4 {
+		t.Errorf("Expected 4 providers, got %d", len(statuses))
 	}
 
 	// All should be not_started because no provider accounts/configs exist

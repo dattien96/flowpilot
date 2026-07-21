@@ -85,14 +85,46 @@ func hasPermissionRequired(evs []ProviderEvent) bool {
 	return false
 }
 
+// startChatRunYoloOff starts a normal_chat run with YOLO=false so policy
+// allow/deny lists are reachable. BUG-299 residual forces YOLO=true on every
+// workflow launch, so T-39 policy-card tests must not use startRun (workflow).
+func startChatRunYoloOff(t *testing.T, base string) (runID, stepID string) {
+	t.Helper()
+	status, body := doJSON(t, "POST", base+"/client/workflow-runs", StartRunInput{
+		ProjectID: "proj-web", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+		Model: "gpt-5.4", YoloMode: false, Cwd: t.TempDir(),
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start chat run status=%d body=%s", status, body)
+	}
+	var h RunHandle
+	if err := json.Unmarshal(body, &h); err != nil {
+		t.Fatalf("decode handle: %v", err)
+	}
+	if h.RunID == "" || h.StepID == "" {
+		t.Fatalf("empty chat handle: %+v", h)
+	}
+	return h.RunID, h.StepID
+}
+
+func sendChatTurnScenario(t *testing.T, base, runID, stepID, scenario string) {
+	t.Helper()
+	status, body := doJSON(t, "POST", base+"/client/workflow-runs/"+runID+"/turns",
+		map[string]any{"stepId": stepID, "prompt": "hi", "scenario": scenario, "yoloMode": false}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("send chat turn status=%d body=%s", status, body)
+	}
+}
+
 // T-39: a denylisted command auto-denies without showing a card; the auto-decision
 // is replied to the adapter (deny path runs) and recorded for audit.
+// BUG-299 residual: policy paths only apply under chat YOLO=off (workflow is forced on).
 func TestPolicyAutoDenyNoCard(t *testing.T) {
 	svc, srv := newTestServer(t)
 	svc.policy = NewApprovalPolicyEngine(nil, []string{"rm -rf"})
 
-	runID := startRun(t, srv.URL)
-	sendTurn(t, srv.URL, runID, "approval-required", nil)
+	runID, stepID := startChatRunYoloOff(t, srv.URL)
+	sendChatTurnScenario(t, srv.URL, runID, stepID, "approval-required")
 	evs := waitTerminal(t, srv.URL, runID)
 
 	if hasPermissionRequired(evs) {
@@ -108,12 +140,13 @@ func TestPolicyAutoDenyNoCard(t *testing.T) {
 }
 
 // T-39: an allowlisted command auto-approves without a card; approve path runs.
+// BUG-299 residual: allowlist only applies under chat YOLO=off (workflow is forced on).
 func TestPolicyAutoApproveNoCard(t *testing.T) {
 	svc, srv := newTestServer(t)
 	svc.policy = NewApprovalPolicyEngine([]string{"npm run migrate"}, nil)
 
-	runID := startRun(t, srv.URL)
-	sendTurn(t, srv.URL, runID, "approval-required", nil)
+	runID, stepID := startChatRunYoloOff(t, srv.URL)
+	sendChatTurnScenario(t, srv.URL, runID, stepID, "approval-required")
 	evs := waitTerminal(t, srv.URL, runID)
 
 	if hasPermissionRequired(evs) {

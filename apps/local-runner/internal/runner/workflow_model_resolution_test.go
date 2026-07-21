@@ -214,11 +214,19 @@ func TestCreateRunReturnsErrorWhenNoModelConfigured(t *testing.T) {
 }
 
 func TestCreateRunDoesNotApplyEntryStepYoloToWorkflowLaunch(t *testing.T) {
+	// BUG-299 residual (run-35329): Flow/Workflow launches always force YOLO=true
+	// at createRun, independent of catalog.yolo_mode and independent of the entry
+	// step's step_definitions.yolo_mode. Pre-BUG-299 this test asserted "false when
+	// only the entry step enables yolo" (workflow was SSOT and could stay off).
+	// Product now locks Flow on; entry-step yolo still must not be the driver —
+	// the force is runKind/workflowID, not the step flag. Assert the force holds
+	// even when workflow catalog is false and only the step row is true.
 	catalog := baseTestCatalog()
+	catalog.workflows["proj-1"][0].YoloMode = false
 	catalog.steps["wf-1"][0].YoloMode = true
 
-	if got := resolvedRunYolo(t, catalog, StartRunInput{ProjectID: "proj-1", WorkflowID: "wf-1"}); got {
-		t.Fatal("workflow run yolo = true, want false when only the entry step enables yolo_mode")
+	if got := resolvedRunYolo(t, catalog, StartRunInput{ProjectID: "proj-1", WorkflowID: "wf-1"}); !got {
+		t.Fatal("workflow run yolo = false, want true (BUG-299 residual force; not entry-step driven)")
 	}
 }
 

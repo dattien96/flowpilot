@@ -327,6 +327,18 @@ func (m *multiProjectDispatchStore) RequestRunStop(ctx context.Context, runID st
 	return st.RequestRunStop(ctx, runID, expectedRunStopRev, reason)
 }
 
+func (m *multiProjectDispatchStore) ReleaseRunStopFence(ctx context.Context, runID string, expectedRunStopRev int64) (RunStopState, error) {
+	st, err := m.forRun(runID)
+	if err != nil {
+		// No shard yet: nothing to release.
+		if err == ErrNotFound || strings.Contains(err.Error(), "no project shard") {
+			return RunStopState{RunID: runID}, nil
+		}
+		return RunStopState{}, err
+	}
+	return st.ReleaseRunStopFence(ctx, runID, expectedRunStopRev)
+}
+
 func (m *multiProjectDispatchStore) CommitReceiptAndClearIntent(ctx context.Context, runID, turnID string, expectedRev int64,
 	receipt ReceiptEvidence, intentOwnerRunID, intentKey string, intentGen int64) (int64, error) {
 	st, err := m.forRun(runID)

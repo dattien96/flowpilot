@@ -128,6 +128,8 @@ type sessionRuntimeBlob struct {
 	PendingRestartProvenanceRunID      string               `json:"pending_restart_provenance_run_id,omitempty"`
 	PendingGateRepromptProvenanceRunID string               `json:"pending_gate_reprompt_provenance_run_id,omitempty"`
 	MarkerProvenanceRunIDs             []string             `json:"marker_provenance_run_ids,omitempty"`
+	// BUG-299 residual: optional YOLO posture (additive; missing on legacy blobs).
+	Yolo bool `json:"yolo,omitempty"`
 }
 
 func sessionRuntimeFromState(s ProviderSessionState) sessionRuntimeBlob {
@@ -165,6 +167,7 @@ func sessionRuntimeFromState(s ProviderSessionState) sessionRuntimeBlob {
 		PendingRestartProvenanceRunID:      s.PendingRestartProvenanceRunID,
 		PendingGateRepromptProvenanceRunID: s.PendingGateRepromptProvenanceRunID,
 		MarkerProvenanceRunIDs:             s.MarkerProvenanceRunIDs,
+		Yolo:                               s.Yolo,
 	}
 }
 
@@ -310,6 +313,7 @@ func applySessionRuntimeBlob(sess *ProviderSessionState, b sessionRuntimeBlob) {
 	sess.PendingRestartProvenanceRunID = b.PendingRestartProvenanceRunID
 	sess.PendingGateRepromptProvenanceRunID = b.PendingGateRepromptProvenanceRunID
 	sess.MarkerProvenanceRunIDs = append([]string(nil), b.MarkerProvenanceRunIDs...)
+	sess.Yolo = b.Yolo
 }
 
 func (s *SupabaseWorkflowStore) headers(prefer string) map[string]string {

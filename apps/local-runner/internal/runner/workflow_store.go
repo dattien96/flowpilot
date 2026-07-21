@@ -274,6 +274,11 @@ type ProviderSessionState struct {
 	// Pending*ProvenanceRunID are mint-time stamps for the durable prompt being delivered.
 	PendingRestartProvenanceRunID      string
 	PendingGateRepromptProvenanceRunID string
+	// Yolo persists the run's current YOLO posture so chat-mode rehydrate keeps
+	// the sticky toggle (BUG-299 residual / run-35329). Zero-value false is
+	// ambiguous with "field missing" on legacy rows — resolveEffectiveYolo still
+	// forces true for Flow/Workflow regardless of this field.
+	Yolo bool
 }
 
 type ProviderApprovalState struct {

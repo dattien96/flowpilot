@@ -30,7 +30,11 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 		// Use WrittenPaths (files the AI tool-called) not GitDiff: the git working tree may
 		// contain pre-existing dirty files or runner-internal state (e.g. test_baseline.json)
 		// that are not changes the AI made and must not trigger a change-audit requirement.
-		if HasCodeChangesInList(tr.WrittenPaths) && !HasChangeAuditNote(tr.GitDiff) {
+		// run-23820: pendingGateCodePaths re-check may set WrittenPaths with an empty
+		// GitDiff — still honor a CA path held from the prior coding turn.
+		if HasCodeChangesInList(tr.WrittenPaths) &&
+			!HasChangeAuditNote(tr.GitDiff) &&
+			!HasChangeAuditNoteInPaths(tr.WrittenPaths) {
 			return &Violation{Rule: rule, Detail: "code changed but no change-audit note found"}
 		}
 
@@ -57,7 +61,7 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 			isBugFix = strings.Contains(msgLower, "fixed bug") ||
 				strings.Contains(msgLower, "bug fix")
 		}
-		if isBugFix && !HasBugFixDoc(tr.GitDiff) {
+		if isBugFix && !HasBugFixDoc(tr.GitDiff) && !HasBugFixDocInPaths(tr.WrittenPaths) {
 			if tr.ChangeType == "bugfix" {
 				return &Violation{
 					Rule:        rule,

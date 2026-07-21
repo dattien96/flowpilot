@@ -1,5 +1,7 @@
 package runner
 
+import "strings"
+
 // Phase 4 (04-04): YOLO as the single source of truth.
 //
 // One per-run/step YOLO boolean configures BOTH layers at once — the Codex thread
@@ -13,6 +15,11 @@ package runner
 //
 // Input flows in via PromptExecutionRequest.YoloMode (types.go) / session-start
 // ApprovalMode+AllowWrite; it is resolved per run/step and carried on the turn.
+//
+// Product lock (BUG-299 residual / run-35329): Flow/Workflow (and any flow-engine
+// driven run) always runs YOLO=true. Normal Chat keeps the UI toggle. Session
+// rehydrate must not re-open YOLO=off for those runs just because the durable
+// row lacked a yolo field or still stored false from a pre-CA-378 default.
 
 // YoloPosture is the resolved configuration for one turn. CodexSandbox and
 // CodexApprovalMode are applied to the Codex thread/turn params; RunnerAutoApprove
@@ -72,4 +79,32 @@ func resolveYoloPostureForTurn(yolo, forceShellBridge bool) YoloPosture {
 		// RunnerAutoApprove remains true.
 	}
 	return p
+}
+
+// shouldForceFlowYolo reports whether product policy requires YOLO=true for this
+// run (BUG-299 residual). Normal Chat (runKind=="chat", no workflow, not
+// flow-engine-driven) keeps the user's toggle and is never forced here.
+//
+// Force when any of:
+//   - flowEngineDriven (chat bug-submode Review Loop, workflow-picker flow, etc.)
+//   - non-empty workflowID (workflow launch + flow children that inherit it)
+//   - runKind is workflow / empty (createRun stamps "workflow"; legacy hubs used "")
+func shouldForceFlowYolo(runKind, workflowID string, flowEngineDriven bool) bool {
+	if flowEngineDriven {
+		return true
+	}
+	if strings.TrimSpace(workflowID) != "" {
+		return true
+	}
+	rk := strings.TrimSpace(runKind)
+	return rk == "" || rk == "workflow"
+}
+
+// resolveEffectiveYolo applies the Flow force on top of a base (request / session /
+// catalog) value. Chat mode without force keeps base unchanged.
+func resolveEffectiveYolo(base bool, runKind, workflowID string, flowEngineDriven bool) bool {
+	if shouldForceFlowYolo(runKind, workflowID, flowEngineDriven) {
+		return true
+	}
+	return base
 }
