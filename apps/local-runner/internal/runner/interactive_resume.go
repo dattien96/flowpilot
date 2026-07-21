@@ -779,7 +779,17 @@ func normalizeResumedFlowStatus(st ProviderSessionState) RunStatus {
 	case "done":
 		return RunStatusCompleted
 	case "stopped":
-		return RunStatusCancelled
+		// BUG-308 residual: Stop seals the flow loop only. A hub that later
+		// completed a plain-chat follow-up persists status=completed while
+		// LoopState stays stopped — history/reopen must show Completed, not
+		// Cancelled (run-33289 screenshot after "vậy là done fix chưa").
+		switch st.Status {
+		case RunStatusCompleted, RunStatusFailed, RunStatusRunning,
+			RunStatusWaitingApproval, RunStatusWaitingQuestion:
+			return st.Status
+		default:
+			return RunStatusCancelled
+		}
 	case "blocked":
 		// Awaiting user (escalate/cap) — not a live turn spinner.
 		if st.Status == RunStatusFailed || st.Status == RunStatusCancelled {

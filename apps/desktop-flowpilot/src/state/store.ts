@@ -1355,10 +1355,13 @@ export const useStore = create<AppState>((set, get) => ({
       try {
         const snapshot = await client.stopAgentLoop(parentRunId);
         set((s) => {
-          const status = deriveOrchestrationRunStatus(s.status, snapshot);
+          // Force cancelled at the Stop press (BUG-248). Do not use
+          // deriveOrchestrationRunStatus alone: after BUG-308 it preserves
+          // running/completed for post-Stop chat, which would leave the header
+          // on Running when the user just hit Stop while a turn was active.
           return {
             ...applyAgentGraphSnapshot(snapshot),
-            status,
+            status: "cancelled",
             timeline: s.timeline.filter((it) => it.kind !== "thinking"),
             gateBlock: undefined,
             _runSnapshots: reconcileStoppedRunSnapshots(s._runSnapshots, parentRunId, snapshot),
@@ -1373,7 +1376,7 @@ export const useStore = create<AppState>((set, get) => ({
         if (embedded) {
           set((s) => ({
             ...applyAgentGraphSnapshot(embedded),
-            status: deriveOrchestrationRunStatus(s.status, embedded),
+            status: "cancelled",
             timeline: s.timeline.filter((it) => it.kind !== "thinking"),
             gateBlock: undefined,
             _runSnapshots: reconcileStoppedRunSnapshots(s._runSnapshots, parentRunId, embedded),
@@ -2626,16 +2629,25 @@ function applyOrchestrationEvent(s: AppState, e: ProviderEventDTO): Partial<AppS
 }
 
 export function deriveOrchestrationRunStatus(current: RunStatus, snapshot: AgentGraphSnapshot): RunStatus {
-  // BUG-248: a "stopped" loop is a definitive, user-initiated full halt — stopAgentLoop
-  // already called turnCancel() on the parent and every running child before this
-  // snapshot was taken. Each child's own `status` field only flips to terminal
-  // asynchronously once its turn handler observes ctx.Done() (interactive_service.go
-  // finishTurn), and cancelling a child's turn never re-emits an agent_graph_updated
-  // event for the parent — so a snapshot fetched in that window can report a child as
-  // still "running" forever, with no later event ever correcting it. Treat "stopped"
-  // as authoritative over any such stale/racy child status, or the main run reads as
-  // permanently stuck "running" and even a second Stop press has nothing left to do.
+  // BUG-248: a "stopped" loop is a definitive, user-initiated full halt of the
+  // FLOW — stopAgentLoop already cancelled children. Stale child snapshots can
+  // still report "running", so we must not derive "running" from children when
+  // the loop is stopped.
+  //
+  // BUG-308 residual (run-33289 UI): Stop ends the flow, not the chat. A plain
+  // follow-up turn_started/turn_completed updates `current` to running/completed
+  // while loopState stays "stopped". Do NOT force "cancelled" over those chat
+  // statuses or the header/history stick on Cancelled after a successful reply.
+  // stop() itself still forces cancelled at the Stop press (see stop handler).
   if (snapshot.loopState.status === "stopped") {
+    // Preserve a successful/failed plain-chat follow-up (turn_completed already
+    // set completed). Still force cancelled for running/waiting so BUG-248 holds:
+    // right after Stop, current is often still "running" while children look
+    // live — that must read Cancelled until a later turn event advances it.
+    // stop() also forces cancelled at the Stop press.
+    if (current === "completed" || current === "failed") {
+      return current;
+    }
     return "cancelled";
   }
   // Like a stopped loop, a done loop is authoritative over an older child

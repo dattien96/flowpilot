@@ -2943,6 +2943,17 @@ test("deriveOrchestrationRunStatus: a stopped loop wins even if a child's status
   assert.equal(deriveOrchestrationRunStatus("running", snap), "cancelled");
 });
 
+// BUG-308 residual: Stop leaves loopState="stopped" forever, but a plain-chat
+// follow-up sets status to completed via turn_completed. Orchestration snapshots
+// must not force Cancelled over that completed status (header/history stuck).
+test("deriveOrchestrationRunStatus: stopped loop preserves completed/failed post-Stop chat (BUG-308 residual)", () => {
+  assert.equal(deriveOrchestrationRunStatus("completed", loopSnapshot("stopped")), "completed");
+  assert.equal(deriveOrchestrationRunStatus("failed", loopSnapshot("stopped")), "failed");
+  // Still cancelled when no successful follow-up has advanced status:
+  assert.equal(deriveOrchestrationRunStatus("cancelled", loopSnapshot("stopped")), "cancelled");
+  assert.equal(deriveOrchestrationRunStatus("idle", loopSnapshot("stopped")), "cancelled");
+});
+
 test("continueFlow calls client.continueFlow with the trimmed feedback and applies the returned snapshot", async () => {
   const seen: { parentRunId?: string; feedback?: string } = {};
   seedStore(

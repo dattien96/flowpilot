@@ -1045,7 +1045,17 @@ func (s *InteractiveService) historyStatusForLiveRun(rs *interactiveRun) RunStat
 		case "done":
 			return RunStatusCompleted
 		case "stopped":
-			return RunStatusCancelled
+			// BUG-308 residual (run-33289 UI): Stop ends the FLOW loop, not the
+			// CHAT. After a plain-chat follow-up rs.status is completed (or
+			// running mid-turn). Prefer that over blanket Cancelled so history
+			// does not stay "Cancelled" forever after the user keeps chatting.
+			switch rs.status {
+			case RunStatusCompleted, RunStatusFailed, RunStatusRunning,
+				RunStatusWaitingApproval, RunStatusWaitingQuestion:
+				return rs.status
+			default:
+				return RunStatusCancelled
+			}
 		case "blocked":
 			if rs.status == RunStatusFailed || rs.status == RunStatusCancelled {
 				return rs.status
