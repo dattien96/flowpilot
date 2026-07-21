@@ -3531,9 +3531,20 @@ func mergeTurnLogAssistantsIntoTranscript(historical []ProviderEvent, entries []
 		if turnID != "" && transcriptHasAssistantForTurn(out, turnID) {
 			continue
 		}
-		// Legacy assistant rows may lack a durable id. Preserve their old
-		// text-based dedupe, because they have no safe causal insertion point.
-		if turnID == "" && transcriptHasAssistantText(out, text) {
+		// BUG-303: the ID-based check above only matches a historical event that
+		// itself carries a ProviderTurnID. A historical event loaded from the raw
+		// provider transcript can lack one entirely (older format, or a synthesis
+		// turn that was never stamped) even when THIS turn-log entry has a durable
+		// TurnID — in that mixed case the ID check above always misses, and this
+		// entry's real duplicate went undetected because the old text fallback
+		// below only ran when e.TurnID itself was empty, not when the candidate
+		// historical event was untagged. Match by text against an UNTAGGED
+		// historical event specifically (never one already carrying a DIFFERENT
+		// turn id — that is a distinct, real event whose text coincidentally
+		// matches, not this entry's duplicate; see
+		// TestRun20332TurnLogFallbackPreservesDuplicateResponseOrderForEveryProvider,
+		// which two separate turns both say "Acknowledged.").
+		if transcriptHasUntaggedAssistantText(out, text) {
 			continue
 		}
 		fallback := ProviderEvent{Type: EventMessageCompleted, Text: text, ProviderTurnID: turnID}
@@ -3557,9 +3568,14 @@ func transcriptHasAssistantForTurn(events []ProviderEvent, turnID string) bool {
 	return false
 }
 
-func transcriptHasAssistantText(events []ProviderEvent, text string) bool {
+// transcriptHasUntaggedAssistantText reports whether an UNTAGGED (no
+// ProviderTurnID of its own) EventMessageCompleted with this exact text
+// already exists. Deliberately excludes an event already carrying a
+// DIFFERENT turn id: that is a distinct, real event whose text happens to
+// coincide, not this entry's duplicate (BUG-303).
+func transcriptHasUntaggedAssistantText(events []ProviderEvent, text string) bool {
 	for _, event := range events {
-		if event.Type == EventMessageCompleted && strings.TrimSpace(event.Text) == text {
+		if event.Type == EventMessageCompleted && strings.TrimSpace(event.ProviderTurnID) == "" && strings.TrimSpace(event.Text) == text {
 			return true
 		}
 	}
