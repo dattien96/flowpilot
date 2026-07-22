@@ -280,3 +280,90 @@ func TestRecovery_UncertainHoldsIntent_NeverClearsNeverRedispatches(t *testing.T
 		}
 	}
 }
+
+// TestRecoveryScanner_StaleSnapshotNeverActs_FreshReadDrivesCorrectDecision
+// (ledger row LR) proves reconcileOne's re-`Get` after ClaimRecovery is not
+// decorative: ClaimRecovery itself CAS-rejects a stale-revision snapshot (so a
+// stale reconcile attempt has zero effect, never wrongly redispatching), and
+// a fresh snapshot of the SAME record correctly reflects a CancelRequested
+// that landed after the stale snapshot was taken -- driving the pre-send
+// cancel path instead of an incorrect redispatch.
+func TestRecoveryScanner_StaleSnapshotNeverActs_FreshReadDrivesCorrectDecision(t *testing.T) {
+	store := NewMemoryDispatchStore()
+	ctx := context.Background()
+	rec := testPrepared("r1", "t1")
+	env := testEnvelope("r1", "t1")
+	if err := store.CreatePrepared(ctx, rec, env); err != nil {
+		t.Fatalf("CreatePrepared: %v", err)
+	}
+	rev, err := store.CASAdvance(ctx, "r1", "t1", 1, DispatchPrepared, DispatchSendClaimed, nil)
+	if err != nil {
+		t.Fatalf("CASAdvance: %v", err)
+	}
+
+	// Snapshot exactly what an earlier ListRecoverable call would have seen --
+	// send_claimed, no cancel pending yet.
+	staleSnapshot, _, err := store.Get(ctx, "r1", "t1")
+	if err != nil {
+		t.Fatalf("Get (stale snapshot): %v", err)
+	}
+
+	// Now the real record moves on: a cancel request lands (bumps revision),
+	// making staleSnapshot's revision genuinely stale.
+	if _, err := store.SetCancelRequested(ctx, "r1", "t1", rev, 1); err != nil {
+		t.Fatalf("SetCancelRequested: %v", err)
+	}
+
+	var redispatched []string
+	sc := &RecoveryScanner{
+		Store: store,
+		Owner: "test-scanner",
+		// reconcileOne is called directly here (bypassing ScanRun, which is
+		// where the production default gets applied) so the zero-value lease
+		// must be set explicitly -- a zero-TTL claim expires immediately.
+		Lease: 30 * time.Second,
+		EnsureLiveAndRedispatch: func(_ context.Context, runID string) {
+			redispatched = append(redispatched, runID)
+		},
+	}
+
+	// Reconcile using the STALE snapshot: ClaimRecovery must CAS-reject it
+	// (revision mismatch), so reconcileOne no-ops -- never redispatching on
+	// data that no longer reflects reality.
+	if err := sc.reconcileOne(ctx, staleSnapshot); err != nil {
+		t.Fatalf("reconcileOne(stale): %v", err)
+	}
+	if len(redispatched) != 0 {
+		t.Fatalf("LR: stale snapshot must never trigger redispatch, got %v", redispatched)
+	}
+	afterStale, _, err := store.Get(ctx, "r1", "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterStale.State != DispatchSendClaimed {
+		t.Fatalf("LR: a rejected stale reconcile must not change state, got %s", afterStale.State)
+	}
+
+	// Reconcile again using a FRESH snapshot: must see CancelRequested=true and
+	// take the pre-send cancel path, never redispatch.
+	freshSnapshot, _, err := store.Get(ctx, "r1", "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !freshSnapshot.CancelRequested {
+		t.Fatal("test setup: fresh snapshot should show CancelRequested=true")
+	}
+	if err := sc.reconcileOne(ctx, freshSnapshot); err != nil {
+		t.Fatalf("reconcileOne(fresh): %v", err)
+	}
+	if len(redispatched) != 0 {
+		t.Fatalf("LR: a cancel-pending record must never redispatch, got %v", redispatched)
+	}
+	final, _, err := store.Get(ctx, "r1", "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.State != DispatchTerminalCancelled {
+		t.Fatalf("LR: fresh read of a cancel-pending record must drive pre-send cancel, got state=%s", final.State)
+	}
+}
