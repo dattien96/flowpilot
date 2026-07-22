@@ -398,14 +398,24 @@ func (s *InteractiveService) resolveChatSessionTranscript(session ProviderSessio
 	if !found {
 		return ChatSessionFile{}, nil, sessionID, false, nil
 	}
-	body, err := os.ReadFile(sessionPath)
+	// BUG-310: Grok's LocateSessionFile intentionally returns the session
+	// DIRECTORY (it stores chat_history.jsonl plus sidecar files there), unlike
+	// Codex/Claude which return a single rollout/transcript file directly.
+	// os.ReadFile on that directory path fails (ERROR_INVALID_FUNCTION /
+	// "Incorrect function" on Windows, EISDIR elsewhere) -- read the actual
+	// transcript file inside it instead.
+	readPath := sessionPath
+	if session.ProviderKey == ProviderKeyGrok {
+		readPath = filepath.Join(sessionPath, "chat_history.jsonl")
+	}
+	body, err := os.ReadFile(readPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return ChatSessionFile{}, nil, sessionID, false, nil
 		}
 		return ChatSessionFile{}, nil, sessionID, false, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
-	relativePath, err := filepath.Rel(accountHome, sessionPath)
+	relativePath, err := filepath.Rel(accountHome, readPath)
 	if err != nil {
 		return ChatSessionFile{}, nil, sessionID, false, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
