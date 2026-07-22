@@ -1393,7 +1393,24 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		}
 		if result.NextAction == "awaiting_user" {
 			// Same freeze as escalate: no hub/child work while Continue form is up.
-			s.parkFlowForAwaitingUser(parentRunID)
+			// run-45103: when continue hits cap on the same hub turn that just
+			// submitted flow_control, do not cancel that parent turn — let it
+			// drain cleanly so desktop is not stuck on Thinking.../cancelled.
+			// Children and auto-intents still freeze. Escalate/hub_stall keep
+			// default cancel-all behavior (preserve only on willHitCap).
+			preserveTurnID := ""
+			if willHitCap {
+				s.mu.Lock()
+				if rs := s.runs[parentRunID]; rs != nil &&
+					rs.currentTurnID != "" &&
+					rs.lastFlowControlTurnID == rs.currentTurnID {
+					preserveTurnID = rs.currentTurnID
+				}
+				s.mu.Unlock()
+			}
+			s.parkFlowForAwaitingUser(parentRunID, parkFlowForAwaitingUserOptions{
+				preserveParentTurnID: preserveTurnID,
+			})
 		}
 		s.emitAgentGraph(parentRunID, snap)
 		go s.persistParentSession(parentRunID)
@@ -1745,16 +1762,30 @@ func summarizeCohortNoteForUser(note string) string {
 	return truncateDisplayField(strings.Join(findings, "\n"), 800)
 }
 
+// parkFlowForAwaitingUserOptions tunes freeze behavior for one park call.
+// Zero value preserves historical run-1675 semantics (cancel every in-flight turn).
+type parkFlowForAwaitingUserOptions struct {
+	// preserveParentTurnID, when equal to the hub's currentTurnID, skips cancelling
+	// that parent turn so a same-turn flow_control decision can drain cleanly
+	// (run-45103: continue-at-cap must not self-cancel the submitting synthesis turn).
+	// Children and auto-intents are still frozen.
+	preserveParentTurnID string
+}
+
 // parkFlowForAwaitingUser freezes hub + children when a human decision surface
 // is up (escalate / cap / hub_stalled Continue form — run-1675).
 //
 // Invariant: while loop.Status == "blocked", no new turns and no in-flight
 // provider work. Clears auto-continuation intents (gate reprompt, hub reinvoke,
 // resume) that would otherwise startTurn behind the form, and cancels live
-// turnCancel so tool calls stop.
-func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string) {
+// turnCancel so tool calls stop — except the optional preserveParentTurnID turn.
+func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ...parkFlowForAwaitingUserOptions) {
 	if strings.TrimSpace(parentRunID) == "" {
 		return
+	}
+	var opt parkFlowForAwaitingUserOptions
+	if len(opts) > 0 {
+		opt = opts[0]
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1778,7 +1809,10 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string) {
 		parent.pendingFlowGateOccurredAt = ""
 		parent.pendingFlowGateTurnID = ""
 		parent.pendingGateChangedFiles = nil
-		if parent.turnInFlight && parent.turnCancel != nil {
+		preserveParent := opt.preserveParentTurnID != "" &&
+			parent.currentTurnID != "" &&
+			parent.currentTurnID == opt.preserveParentTurnID
+		if parent.turnInFlight && parent.turnCancel != nil && !preserveParent {
 			parent.turnCancel()
 		}
 		if parent.postTurnGateCancel != nil {
