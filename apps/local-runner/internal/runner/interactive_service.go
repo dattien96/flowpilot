@@ -1851,6 +1851,9 @@ func (s *InteractiveService) notifyHubOfFlowChildFailureLocked(child *interactiv
 	if parent == nil || !parent.flowEngineDriven {
 		return
 	}
+	// run-43831: failed child is still flow progress (cohort join / hub reinvoke may
+	// follow). Stamp before any async reinvoke so F-0 does not treat the handoff gap as root idleness.
+	s.touchParentHubProgressFromChildLocked(child)
 	failNote := fmt.Sprintf(
 		"Sub-agent %q (provider: %s) failed: %s",
 		child.agentName, child.providerKey, truncateDisplayField(errMsg, 500))
@@ -1896,6 +1899,10 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 		provider = string(child.providerKey)
 		child.status = RunStatusFailed
 		child.agentStatus = string(RunStatusFailed)
+		// run-43831: stamp hub progress under s.mu before unlock / cohort join /
+		// async reinvoke so pre-adapter start failures do not leave a stale
+		// hubLastProgressAt gap (Codex review of residual F-0).
+		s.touchParentHubProgressFromChildLocked(child)
 		if child.parentRunID != "" && child.flowCohortId != "" && label != "" {
 			if parent := s.runs[child.parentRunID]; parent != nil && parent.flowEngineDriven {
 				s.setFlowStepStatusLocked(context.Background(), child.parentRunID, label, StepStatusFailed)
@@ -4047,6 +4054,10 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 	// (run-9034 / run-5695). Caller holds s.mu — use emitLocked on the parent, never
 	// emitOnParentRun (which re-locks).
 	s.emitParentAgentResultLocked(rs, finalMsg)
+	// run-43831: stamp hub progress BEFORE dispatching advance/reinvoke goroutines so
+	// a pending F-0 watchdog cannot observe stale hubLastProgressAt in the gap between
+	// this child going non-active and the next child becoming active.
+	s.touchParentHubProgressFromChildLocked(rs)
 	if rs.flowCohortId != "" {
 		s.agentOrchestrator.appendCohortResult(rs.parentRunID, rs.flowCohortId, cohortEntry{
 			Label:        rs.label,
@@ -4385,6 +4396,8 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					Status:   "failed",
 					Err:      truncateDisplayField(ev.Error, 500),
 				})
+				// run-43831: cohort member terminal failure is still parent flow progress.
+				s.touchParentHubProgressFromChildLocked(rs)
 				s.flowDiagLog(rs.parentRunID, "cohort_member_failed", "cohort member failed and buffered",
 					"child_run_id", rs.id,
 					"cohort_id", rs.flowCohortId,

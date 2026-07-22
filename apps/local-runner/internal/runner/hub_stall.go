@@ -32,6 +32,26 @@ func touchHubProgressLocked(rs *interactiveRun) {
 	rs.hubLastProgressAt = time.Now().UTC()
 }
 
+// touchParentHubProgressFromChildLocked stamps the flow hub's last progress when
+// a child terminal event is accepted. Caller holds s.mu.
+//
+// run-43831 residual (after CA-361): hubLastProgressAt is only stamped on hub-side
+// work. While a child runs longer than defaultHubStallTimeout, hasActiveFlowChild
+// correctly re-arms F-0. The moment the child becomes terminal DONE there is a gap
+// before the next spawn is active; age is already >2m so checkAndBlockStalledHub
+// falsely parks the flow mid auto-advance. Refreshing on accepted child terminal
+// progress closes that gap without treating pendingHubReinvoke or stale settle as busy.
+func (s *InteractiveService) touchParentHubProgressFromChildLocked(child *interactiveRun) {
+	if s == nil || child == nil || child.parentRunID == "" {
+		return
+	}
+	parent := s.runs[child.parentRunID]
+	if parent == nil || parent.parentRunID != "" || !parent.flowEngineDriven {
+		return
+	}
+	touchHubProgressLocked(parent)
+}
+
 // hasActiveFlowChild reports whether a child/sub-agent is still doing or
 // awaiting work for this parent. The hub watchdog must not convert that state
 // into hub_stalled; child/member stall handling owns those cases.
