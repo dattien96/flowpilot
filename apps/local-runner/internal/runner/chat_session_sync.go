@@ -471,6 +471,197 @@ func (s *InteractiveService) ensureChatSessionDriveRoot(projectID string) (strin
 	return rootFolderID, accessToken, nil
 }
 
+// chatSessionIndexLock returns the per-project mutex that serializes Drive
+// sessions.ndjson read-merge-write for chat sync and remote-list reconcile.
+func (s *InteractiveService) chatSessionIndexLock(projectID string) *sync.Mutex {
+	key := strings.TrimSpace(projectID)
+	if key == "" {
+		key = "_"
+	}
+	s.chatSessionIndexMu.Lock()
+	defer s.chatSessionIndexMu.Unlock()
+	if s.chatSessionIndexLocks == nil {
+		s.chatSessionIndexLocks = map[string]*sync.Mutex{}
+	}
+	if s.chatSessionIndexLocks[key] == nil {
+		s.chatSessionIndexLocks[key] = &sync.Mutex{}
+	}
+	return s.chatSessionIndexLocks[key]
+}
+
+// mergeAndUpsertChatSessionDriveIndexLocked merges records into the project's
+// Drive sessions.ndjson. Caller must hold chatSessionIndexLock(projectID).
+func (s *InteractiveService) mergeAndUpsertChatSessionDriveIndexLocked(
+	ctx context.Context,
+	accessToken, rootFolderID string,
+	records []chatSessionDriveIndexRecord,
+) ([]byte, *apiErr) {
+	indexFolderID, err := ensureGoogleDriveFolderPath(accessToken, rootFolderID, []string{"chat-sessions", "_index"})
+	if err != nil {
+		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
+	var existingIndex []byte
+	if existing, findErr := findGoogleDriveFile(accessToken, indexFolderID, "sessions.ndjson"); findErr == nil && strings.TrimSpace(existing.ID) != "" {
+		existingIndex, _ = downloadGoogleDriveFileByID(ctx, accessToken, existing.ID)
+	}
+	merged := existingIndex
+	for i := range records {
+		merged = mergeChatSessionDriveIndex(merged, records[i])
+	}
+	if bytes.Equal(merged, existingIndex) {
+		return merged, nil
+	}
+	if _, err := upsertGoogleDriveFile(accessToken, indexFolderID, "sessions.ndjson", merged, "application/x-ndjson", nil); err != nil {
+		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
+	return merged, nil
+}
+
+// discoverChatSessionDriveManifestRecords walks chat-sessions/runs/<machine>/<run>/manifest.json
+// and builds index records. This repairs an under-written sessions.ndjson when
+// blobs were uploaded but index rows were lost (last-write-wins race).
+func discoverChatSessionDriveManifestRecords(ctx context.Context, accessToken, rootFolderID string) ([]chatSessionDriveIndexRecord, error) {
+	runsFolder, err := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, "chat-sessions/runs")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	machineFolders, err := listGoogleDriveFolderChildren(accessToken, runsFolder.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	type found struct {
+		record chatSessionDriveIndexRecord
+		ok     bool
+	}
+	// Collect run folders first so we can fan out manifest downloads.
+	type runFolder struct {
+		machineName string
+		runName     string
+		folderID    string
+	}
+	var runFolders []runFolder
+	for _, machine := range machineFolders {
+		if machine.MimeType != googleDriveFolderMimeType {
+			continue
+		}
+		machineName := strings.TrimSpace(machine.Name)
+		if machineName == "" {
+			continue
+		}
+		children, listErr := listGoogleDriveFolderChildren(accessToken, machine.ID)
+		if listErr != nil {
+			return nil, listErr
+		}
+		for _, child := range children {
+			if child.MimeType != googleDriveFolderMimeType {
+				continue
+			}
+			runName := strings.TrimSpace(child.Name)
+			if runName == "" {
+				continue
+			}
+			runFolders = append(runFolders, runFolder{machineName: machineName, runName: runName, folderID: child.ID})
+		}
+	}
+
+	foundRecords := make([]found, len(runFolders))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, remoteChatSessionsManifestScanConcurrency)
+	for i, rf := range runFolders {
+		wg.Add(1)
+		go func(i int, rf runFolder) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			manifestFile, findErr := findGoogleDriveFile(accessToken, rf.folderID, "manifest.json")
+			if findErr != nil {
+				return
+			}
+			manifestBytes, downloadErr := downloadGoogleDriveFileByID(ctx, accessToken, manifestFile.ID)
+			if downloadErr != nil {
+				return
+			}
+			var manifest ChatSessionSyncManifest
+			if json.Unmarshal(manifestBytes, &manifest) != nil {
+				return
+			}
+			if strings.TrimSpace(manifest.SourceMachineID) == "" {
+				manifest.SourceMachineID = rf.machineName
+			}
+			if strings.TrimSpace(manifest.SourceRunID) == "" {
+				manifest.SourceRunID = rf.runName
+			}
+			if strings.TrimSpace(manifest.SourceMachineID) == "" || strings.TrimSpace(manifest.SourceRunID) == "" {
+				return
+			}
+			foundRecords[i] = found{record: manifestToDriveIndexRecord(manifest), ok: true}
+		}(i, rf)
+	}
+	wg.Wait()
+
+	out := make([]chatSessionDriveIndexRecord, 0, len(foundRecords))
+	for _, f := range foundRecords {
+		if f.ok {
+			out = append(out, f.record)
+		}
+	}
+	return out, nil
+}
+
+// loadChatSessionDriveIndexRecords downloads sessions.ndjson, merges any run
+// manifests missing from the index, and rewrites the index when repair is needed.
+func (s *InteractiveService) loadChatSessionDriveIndexRecords(
+	ctx context.Context,
+	projectID, accessToken, rootFolderID string,
+) ([]chatSessionDriveIndexRecord, *apiErr) {
+	discovered, discoverErr := discoverChatSessionDriveManifestRecords(ctx, accessToken, rootFolderID)
+	if discoverErr != nil {
+		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", discoverErr.Error())
+	}
+
+	lock := s.chatSessionIndexLock(projectID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// No run manifests: read index only (do not create empty Drive folders).
+	if len(discovered) == 0 {
+		indexFile, err := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, "chat-sessions/_index/sessions.ndjson")
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return []chatSessionDriveIndexRecord{}, nil
+			}
+			return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+		}
+		raw, err := downloadGoogleDriveFileByID(ctx, accessToken, indexFile.ID)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return []chatSessionDriveIndexRecord{}, nil
+			}
+			return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+		}
+		records := parseChatSessionDriveIndex(raw)
+		log.Printf("[chat-sync] remote index project=%s index_rows=%d discovered_manifests=0", projectID, len(records))
+		return records, nil
+	}
+
+	merged, apiErr := s.mergeAndUpsertChatSessionDriveIndexLocked(ctx, accessToken, rootFolderID, discovered)
+	if apiErr != nil {
+		return nil, apiErr
+	}
+	records := parseChatSessionDriveIndex(merged)
+	log.Printf(
+		"[chat-sync] remote index project=%s index_rows=%d discovered_manifests=%d",
+		projectID,
+		len(records),
+		len(discovered),
+	)
+	return records, nil
+}
+
 func (s *InteractiveService) updateLocalSessionSyncStatus(ctx context.Context, runID string, apply func(*ProviderSessionState)) *apiErr {
 	reader, ok := s.workflowStore.(SessionHistoryReader)
 	if !ok {
@@ -598,20 +789,18 @@ func (s *InteractiveService) syncChatRunToDrive(ctx context.Context, runID strin
 		syncedChildRunIDs = append(syncedChildRunIDs, childRunID)
 	}
 
-	indexFolderID, err := ensureGoogleDriveFolderPath(accessToken, rootFolderID, []string{"chat-sessions", "_index"})
-	if err != nil {
-		return ChatSessionSyncResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
-	}
-	var existingIndex []byte
-	if existing, findErr := findGoogleDriveFile(accessToken, indexFolderID, "sessions.ndjson"); findErr == nil && strings.TrimSpace(existing.ID) != "" {
-		existingIndex, _ = downloadGoogleDriveFileByID(ctx, accessToken, existing.ID)
-	}
-	merged := existingIndex
+	indexRecords := make([]chatSessionDriveIndexRecord, 0, len(manifests))
 	for i := range manifests {
-		merged = mergeChatSessionDriveIndex(merged, manifestToDriveIndexRecord(manifests[i]))
+		indexRecords = append(indexRecords, manifestToDriveIndexRecord(manifests[i]))
 	}
-	if _, err := upsertGoogleDriveFile(accessToken, indexFolderID, "sessions.ndjson", merged, "application/x-ndjson", nil); err != nil {
-		return ChatSessionSyncResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	// Serialize index read-merge-write so concurrent syncs cannot last-write-wins
+	// and drop sibling parent rows (REMOTE CHATS under-list after multi-run sync).
+	indexLock := s.chatSessionIndexLock(projectID)
+	indexLock.Lock()
+	_, indexErr := s.mergeAndUpsertChatSessionDriveIndexLocked(ctx, accessToken, rootFolderID, indexRecords)
+	indexLock.Unlock()
+	if indexErr != nil {
+		return ChatSessionSyncResult{}, indexErr
 	}
 
 	// CP-51: upload per-project dispatch.ndjson alongside chat sessions so another
@@ -654,21 +843,13 @@ func (s *InteractiveService) listRemoteChatSessions(ctx context.Context, project
 	if driveErr != nil {
 		return nil, driveErr
 	}
-	indexFile, err := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, "chat-sessions/_index/sessions.ndjson")
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []RemoteChatSessionSummary{}, nil
-		}
-		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	// Load index and repair from run manifests when blobs exist but index rows
+	// were lost (concurrent sync last-write-wins). Missing index with no runs
+	// still yields an empty remote list.
+	records, loadErr := s.loadChatSessionDriveIndexRecords(ctx, projectID, accessToken, rootFolderID)
+	if loadErr != nil {
+		return nil, loadErr
 	}
-	raw, err := downloadGoogleDriveFileByID(ctx, accessToken, indexFile.ID)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []RemoteChatSessionSummary{}, nil
-		}
-		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
-	}
-	records := parseChatSessionDriveIndex(raw)
 	childKeys := make(map[string]struct{})
 	for _, record := range records {
 		if strings.TrimSpace(record.ParentRunID) != "" {

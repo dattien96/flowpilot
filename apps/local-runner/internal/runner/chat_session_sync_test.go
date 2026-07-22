@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ type fakeChatDriveFile struct {
 }
 
 type fakeChatDriveAPI struct {
+	mu          sync.Mutex
 	nextID      int
 	files       map[string]fakeChatDriveFile
 	uploadOrder []string
@@ -59,30 +61,34 @@ func newFakeChatDriveAPI(rootFolderID string) *fakeChatDriveAPI {
 }
 
 func (api *fakeChatDriveAPI) handle(_ context.Context, method, endpoint string, headers map[string]string, body []byte) (int, []byte, error) {
+	api.mu.Lock()
+	defer api.mu.Unlock()
 	switch {
 	case endpoint == "https://oauth2.googleapis.com/token":
 		return 200, []byte(`{"access_token":"drive-access-token"}`), nil
 	case method == http.MethodGet && strings.HasPrefix(endpoint, "https://www.googleapis.com/drive/v3/files/") && strings.Contains(endpoint, "?alt=media"):
-		return api.handleDownload(endpoint)
+		return api.handleDownloadLocked(endpoint)
 	case method == http.MethodGet && strings.HasPrefix(endpoint, "https://www.googleapis.com/drive/v3/files?"):
-		return api.handleList(endpoint)
+		return api.handleListLocked(endpoint)
 	case strings.HasPrefix(endpoint, "https://www.googleapis.com/upload/drive/v3/files"):
-		return api.handleUpload(method, endpoint, headers, body)
+		return api.handleUploadLocked(method, endpoint, headers, body)
 	default:
 		return 500, []byte(`{"error":"unexpected endpoint"}`), nil
 	}
 }
 
-func (api *fakeChatDriveAPI) handleDownload(endpoint string) (int, []byte, error) {
+func (api *fakeChatDriveAPI) handleDownloadLocked(endpoint string) (int, []byte, error) {
 	id := pathBaseWithoutQuery(endpoint)
 	file, ok := api.files[id]
 	if !ok {
 		return 404, []byte(`{"error":"missing"}`), nil
 	}
-	return 200, file.Content, nil
+	// Copy content so concurrent readers are not affected by later upserts.
+	out := append([]byte(nil), file.Content...)
+	return 200, out, nil
 }
 
-func (api *fakeChatDriveAPI) handleList(endpoint string) (int, []byte, error) {
+func (api *fakeChatDriveAPI) handleListLocked(endpoint string) (int, []byte, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
 		return 500, nil, err
@@ -128,7 +134,7 @@ func (api *fakeChatDriveAPI) fileListPayload(files []fakeChatDriveFile) ([]byte,
 	return json.Marshal(map[string]any{"files": items})
 }
 
-func (api *fakeChatDriveAPI) handleUpload(method, endpoint string, headers map[string]string, body []byte) (int, []byte, error) {
+func (api *fakeChatDriveAPI) handleUploadLocked(method, endpoint string, headers map[string]string, body []byte) (int, []byte, error) {
 	if api.failUpload {
 		return 500, []byte(`{"error":"upload failed"}`), nil
 	}
@@ -1651,5 +1657,232 @@ func TestSyncChatRunWithStaleAccountIDBeforeOpening(t *testing.T) {
 	}
 	if session.ProviderAccountID != "acct-current" {
 		t.Fatalf("repaired ProviderAccountID = %q, want acct-current", session.ProviderAccountID)
+	}
+}
+
+// plantDriveRunManifest inserts a run folder + manifest.json under the chat
+// sync root without going through syncChatRunToDrive (orphaned blob case).
+func plantDriveRunManifest(t *testing.T, api *fakeChatDriveAPI, rootID string, manifest ChatSessionSyncManifest) {
+	t.Helper()
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	ensure := func(parentID, name string) string {
+		for _, f := range api.files {
+			if f.ParentID == parentID && f.Name == name {
+				return f.ID
+			}
+		}
+		api.nextID++
+		id := "plant-" + strconv.Itoa(api.nextID)
+		api.files[id] = fakeChatDriveFile{
+			ID:       id,
+			Name:     name,
+			ParentID: parentID,
+			MimeType: googleDriveFolderMimeType,
+		}
+		return id
+	}
+	chatSessions := ensure(rootID, "chat-sessions")
+	runs := ensure(chatSessions, "runs")
+	machine := ensure(runs, safeChatSessionSegment(manifest.SourceMachineID))
+	runFolder := ensure(machine, safeChatSessionSegment(manifest.SourceRunID))
+	body, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal plant manifest: %v", err)
+	}
+	api.nextID++
+	mid := "plant-manifest-" + strconv.Itoa(api.nextID)
+	api.files[mid] = fakeChatDriveFile{
+		ID:       mid,
+		Name:     "manifest.json",
+		ParentID: runFolder,
+		MimeType: "application/json",
+		Content:  body,
+	}
+}
+
+func TestSyncChatRunToDriveConcurrentIndexMergesPreserveAllParentRows(t *testing.T) {
+	svc, _, store, api, workspace, accountHome := newChatSyncService(t)
+	const n = 8
+	for i := 0; i < n; i++ {
+		seedLocalChatRun(t, store, accountHome, workspace, "run-concurrent-"+strconv.Itoa(i), []byte("body-"+strconv.Itoa(i)))
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan *apiErr, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, apiErr := svc.syncChatRunToDrive(context.Background(), "run-concurrent-"+strconv.Itoa(i), ChatSessionSyncRequest{}); apiErr != nil {
+				errs <- apiErr
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for apiErr := range errs {
+		t.Fatalf("syncChatRunToDrive concurrent failed: %s %s", apiErr.code, apiErr.msg)
+	}
+
+	api.mu.Lock()
+	var index []byte
+	for _, file := range api.files {
+		if file.Name == "sessions.ndjson" {
+			index = append([]byte(nil), file.Content...)
+			break
+		}
+	}
+	api.mu.Unlock()
+	if len(index) == 0 {
+		t.Fatal("expected sessions.ndjson after concurrent syncs")
+	}
+	records := parseChatSessionDriveIndex(index)
+	if len(records) != n {
+		t.Fatalf("index rows = %d, want %d (last-write-wins race?)", len(records), n)
+	}
+	seen := map[string]bool{}
+	for _, r := range records {
+		seen[r.SourceRunID] = true
+	}
+	for i := 0; i < n; i++ {
+		id := "run-concurrent-" + strconv.Itoa(i)
+		if !seen[id] {
+			t.Fatalf("missing %s in index after concurrent sync", id)
+		}
+	}
+}
+
+func TestListRemoteChatSessionsRepairsIndexFromOrphanedRunManifests(t *testing.T) {
+	svc, _, _, api, _, _ := newChatSyncService(t)
+	// Index intentionally empty / missing; blobs exist under runs/ (Windows-style under-list).
+	plantDriveRunManifest(t, api, "drive-root", ChatSessionSyncManifest{
+		SchemaVersion:   1,
+		SourceMachineID: "mch_c3ab_orphan",
+		SourceRunID:     "run-orphan-1",
+		ProjectID:       "project-1",
+		ProviderKey:     ProviderKeyGrok,
+		RunKind:         "chat",
+		Status:          "completed",
+		LastPrompt:      "turn trước fix gì vậy",
+		SyncedAt:        "2026-07-22T07:16:54Z",
+		UpdatedAt:       "2026-07-22T07:16:54Z",
+	})
+	plantDriveRunManifest(t, api, "drive-root", ChatSessionSyncManifest{
+		SchemaVersion:   1,
+		SourceMachineID: "mch_c3ab_orphan",
+		SourceRunID:     "run-orphan-2",
+		ProjectID:       "project-1",
+		ProviderKey:     ProviderKeyCodex,
+		RunKind:         "chat",
+		Status:          "completed",
+		LastPrompt:      "second orphaned chat",
+		SyncedAt:        "2026-07-22T08:00:00Z",
+		UpdatedAt:       "2026-07-22T08:00:00Z",
+	})
+
+	summaries, apiErr := svc.listRemoteChatSessions(context.Background(), "project-1")
+	if apiErr != nil {
+		t.Fatalf("listRemoteChatSessions: %v", apiErr)
+	}
+	if len(summaries) != 2 {
+		t.Fatalf("expected 2 repaired remote rows, got %#v", summaries)
+	}
+	ids := map[string]bool{}
+	for _, s := range summaries {
+		ids[s.SourceRunID] = true
+	}
+	if !ids["run-orphan-1"] || !ids["run-orphan-2"] {
+		t.Fatalf("repaired summaries missing orphans: %#v", summaries)
+	}
+
+	// Repair must write sessions.ndjson so subsequent list is index-backed.
+	api.mu.Lock()
+	var index []byte
+	for _, file := range api.files {
+		if file.Name == "sessions.ndjson" {
+			index = append([]byte(nil), file.Content...)
+			break
+		}
+	}
+	api.mu.Unlock()
+	if len(parseChatSessionDriveIndex(index)) != 2 {
+		t.Fatalf("expected repaired index with 2 rows, got %q", string(index))
+	}
+}
+
+func TestListRemoteChatSessionsHidesChildrenButKeepsSiblingParentsAfterRepair(t *testing.T) {
+	svc, _, _, api, _, _ := newChatSyncService(t)
+	plantDriveRunManifest(t, api, "drive-root", ChatSessionSyncManifest{
+		SchemaVersion:   1,
+		SourceMachineID: "mch_win",
+		SourceRunID:     "run-parent-a",
+		ProjectID:       "project-1",
+		ProviderKey:     ProviderKeyGrok,
+		RunKind:         "chat",
+		LastPrompt:      "parent a",
+		SyncedAt:        "2026-07-22T01:00:00Z",
+		UpdatedAt:       "2026-07-22T01:00:00Z",
+		ChildAgents:     []AgentRunSummary{{RunID: "run-child-a1", AgentName: "coder"}},
+	})
+	plantDriveRunManifest(t, api, "drive-root", ChatSessionSyncManifest{
+		SchemaVersion:   1,
+		SourceMachineID: "mch_win",
+		SourceRunID:     "run-child-a1",
+		ProjectID:       "project-1",
+		ProviderKey:     ProviderKeyGrok,
+		RunKind:         "chat",
+		ParentRunID:     "run-parent-a",
+		LastPrompt:      "child a1",
+		SyncedAt:        "2026-07-22T01:01:00Z",
+		UpdatedAt:       "2026-07-22T01:01:00Z",
+	})
+	plantDriveRunManifest(t, api, "drive-root", ChatSessionSyncManifest{
+		SchemaVersion:   1,
+		SourceMachineID: "mch_win",
+		SourceRunID:     "run-parent-b",
+		ProjectID:       "project-1",
+		ProviderKey:     ProviderKeyCodex,
+		RunKind:         "chat",
+		LastPrompt:      "parent b",
+		SyncedAt:        "2026-07-22T02:00:00Z",
+		UpdatedAt:       "2026-07-22T02:00:00Z",
+	})
+
+	summaries, apiErr := svc.listRemoteChatSessions(context.Background(), "project-1")
+	if apiErr != nil {
+		t.Fatalf("listRemoteChatSessions: %v", apiErr)
+	}
+	if len(summaries) != 2 {
+		t.Fatalf("want 2 top-level parents, got %#v", summaries)
+	}
+	for _, s := range summaries {
+		if s.SourceRunID == "run-child-a1" {
+			t.Fatalf("child must stay hidden from REMOTE CHATS: %#v", summaries)
+		}
+	}
+	ids := map[string]bool{}
+	for _, s := range summaries {
+		ids[s.SourceRunID] = true
+	}
+	if !ids["run-parent-a"] || !ids["run-parent-b"] {
+		t.Fatalf("sibling parents missing: %#v", summaries)
+	}
+}
+
+func TestListRemoteChatSessionsReturnsAllTopLevelRowsAfterMultiRunSync(t *testing.T) {
+	svc, _, store, _, workspace, accountHome := newChatSyncService(t)
+	for _, id := range []string{"run-multi-1", "run-multi-2", "run-multi-3"} {
+		seedLocalChatRun(t, store, accountHome, workspace, id, []byte("body-"+id))
+		if _, apiErr := svc.syncChatRunToDrive(context.Background(), id, ChatSessionSyncRequest{}); apiErr != nil {
+			t.Fatalf("sync %s: %v", id, apiErr)
+		}
+	}
+	summaries, apiErr := svc.listRemoteChatSessions(context.Background(), "project-1")
+	if apiErr != nil {
+		t.Fatalf("listRemoteChatSessions: %v", apiErr)
+	}
+	if len(summaries) != 3 {
+		t.Fatalf("expected 3 top-level remote rows after sequential multi-run sync, got %#v", summaries)
 	}
 }

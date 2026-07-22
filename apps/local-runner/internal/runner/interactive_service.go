@@ -74,6 +74,12 @@ type InteractiveService struct {
 	dispatchLogSyncMu   sync.Mutex
 	dispatchLogSyncHash map[string]string
 
+	// chatSessionIndexMu guards chatSessionIndexLocks. Each project gets its own
+	// mutex covering Drive sessions.ndjson read-merge-write so concurrent
+	// syncChatRunToDrive / list reconcile cannot last-write-wins the index.
+	chatSessionIndexMu    sync.Mutex
+	chatSessionIndexLocks map[string]*sync.Mutex
+
 	idCounter atomic.Int64
 
 	// activeAccountID is the currently active provider account. resume/turns
@@ -741,7 +747,8 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 		summaryTimers:       map[string]*time.Timer{},
 		markerSecret:        markerSec,
 		markerDir:           markerDir,
-		dispatchLogSyncHash: map[string]string{},
+		dispatchLogSyncHash:   map[string]string{},
+		chatSessionIndexLocks: map[string]*sync.Mutex{},
 	}
 	// Seed the id counter above the highest persisted run id so a runner restart does NOT
 	// reuse ids (run-1, run-2, …). Reuse made a fresh chat collide with a previous run of
