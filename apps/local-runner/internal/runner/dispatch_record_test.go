@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -909,5 +912,147 @@ func TestRecoveryCommitGuards_LeaseAndStopAreAtomic(t *testing.T) {
 	got, _, _ = store.Get(ctx, "r1", "t1")
 	if got.State != DispatchSendClaimed {
 		t.Fatalf("state must be unchanged after Stop-fenced recovery advance, got %s", got.State)
+	}
+}
+
+// TestTerminalCommit_OutcomeFidelityMatrix (ledger row TP) proves the two
+// facts the existing single-case test (TestTerminalCommit_DerivesStopOutcomeFromDurableAuthority)
+// does not exercise across the full combination: (1) terminal State/Outcome
+// come ONLY from the validated TerminalEvidence.Outcome (completed/failed/
+// cancelled), never from whether a Stop was requested, and (2) StopOutcome
+// comes ONLY from durable Stop authority, never from the proof outcome --
+// including the explicit "completed-before-cancel" case, where a turn that
+// finished with a valid completed proof still carries cancelled_in_flight if
+// Stop had already been requested.
+func TestTerminalCommit_OutcomeFidelityMatrix(t *testing.T) {
+	cases := []struct {
+		name            string
+		outcome         string
+		wantState       DispatchState
+		stopped         bool
+		wantStopOutcome string
+	}{
+		{"completed_no_stop", "completed", DispatchTerminalCompleted, false, ""},
+		{"failed_no_stop", "failed", DispatchTerminalFailed, false, ""},
+		{"cancelled_no_stop", "cancelled", DispatchTerminalCancelled, false, ""},
+		{"completed_before_cancel", "completed", DispatchTerminalCompleted, true, StopOutcomeCancelledInFlight},
+		{"failed_with_stop", "failed", DispatchTerminalFailed, true, StopOutcomeCancelledInFlight},
+		{"cancelled_with_stop", "cancelled", DispatchTerminalCancelled, true, StopOutcomeCancelledInFlight},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewMemoryDispatchStore()
+			runID, turnID := "r-"+tc.name, "t-"+tc.name
+			rec := testPrepared(runID, turnID)
+			env := testEnvelope(runID, turnID)
+			if err := store.CreatePrepared(ctx, rec, env); err != nil {
+				t.Fatal(err)
+			}
+			rev, err := store.CASAdvance(ctx, runID, turnID, 1, DispatchPrepared, DispatchSendClaimed, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rev, err = store.CASAdvance(ctx, runID, turnID, rev, DispatchSendClaimed, DispatchSendStarted, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.stopped {
+				st, err := store.GetRunStopState(ctx, runID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.RequestRunStop(ctx, runID, st.Revision, StopReasonUser); err != nil {
+					t.Fatal(err)
+				}
+			}
+			proof := TerminalEvidence{ProviderKey: "f", EvidenceKind: "x", Outcome: tc.outcome, PayloadSHA256: "h"}
+			if _, err := store.CommitTerminalAndSettleIntent(ctx, runID, turnID, rev, proof, runID, rec.OuterIntentKey, 1); err != nil {
+				t.Fatalf("CommitTerminalAndSettleIntent: %v", err)
+			}
+			got, _, err := store.Get(ctx, runID, turnID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State != tc.wantState {
+				t.Errorf("TP: State = %s, want %s (proof.Outcome=%q must drive state regardless of stopped=%v)", got.State, tc.wantState, tc.outcome, tc.stopped)
+			}
+			if got.Outcome != tc.outcome {
+				t.Errorf("TP: Outcome = %q, want %q", got.Outcome, tc.outcome)
+			}
+			if got.StopOutcome != tc.wantStopOutcome {
+				t.Errorf("TP: StopOutcome = %q, want %q (must come only from Stop authority, never from proof.Outcome)", got.StopOutcome, tc.wantStopOutcome)
+			}
+		})
+	}
+}
+
+// TestIntentClear_NoTOCTOUResurrectionUnderConcurrentAccess (ledger row TO)
+// proves the store's single-writer serialization (every mutation and every
+// IsIntentCleared read takes s.mu) gives clear-set enforcement atomicity: a
+// concurrent reader hammering IsIntentCleared while a receipt commit clears
+// the intent can never observe cleared=true and then cleared=false again --
+// once cleared, an intent can never appear resurrected regardless of
+// interleaving.
+func TestIntentClear_NoTOCTOUResurrectionUnderConcurrentAccess(t *testing.T) {
+	ctx := context.Background()
+	for iter := 0; iter < 20; iter++ {
+		store := NewMemoryDispatchStore()
+		runID, turnID := "r-toctou", "t-toctou"
+		rec := testPrepared(runID, turnID)
+		env := testEnvelope(runID, turnID)
+		if err := store.CreatePrepared(ctx, rec, env); err != nil {
+			t.Fatal(err)
+		}
+		rev, err := store.CASAdvance(ctx, runID, turnID, 1, DispatchPrepared, DispatchSendClaimed, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rev, err = store.CASAdvance(ctx, runID, turnID, rev, DispatchSendClaimed, DispatchSendStarted, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var everSawCleared atomic.Bool
+		var resurrected atomic.Bool
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := 0; i < 2000; i++ {
+				cleared, err := store.IsIntentCleared(ctx, runID, rec.OuterIntentKey, 1)
+				if err != nil {
+					continue
+				}
+				if cleared {
+					everSawCleared.Store(true)
+				} else if everSawCleared.Load() {
+					resurrected.Store(true)
+				}
+			}
+		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			rcpt := ReceiptEvidence{ProviderKey: "fake", ReceiptID: fmt.Sprintf("rid-%d", iter), EvidenceKind: "ack", PayloadSHA256: "p"}
+			if _, err := store.CommitReceiptAndClearIntent(ctx, runID, turnID, rev, rcpt, runID, rec.OuterIntentKey, 1); err != nil {
+				t.Errorf("CommitReceiptAndClearIntent: %v", err)
+			}
+		}()
+
+		close(start)
+		wg.Wait()
+
+		if resurrected.Load() {
+			t.Fatalf("TO: iter %d: observed IsIntentCleared flip from true back to false -- resurrection under concurrent access", iter)
+		}
+		if !everSawCleared.Load() {
+			t.Fatalf("TO: iter %d: reader never observed cleared=true even after writer completed", iter)
+		}
 	}
 }

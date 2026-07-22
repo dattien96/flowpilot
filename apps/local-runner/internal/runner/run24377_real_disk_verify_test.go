@@ -11,106 +11,143 @@ import (
 	"flowpilot-runner/internal/agentpack"
 )
 
-// Cold reconstruct using REAL on-disk turn log + sessions for run-24377.
+// Cold reconstruct using REAL on-disk turn log + sessions for run-24377 when
+// present (the original author's machine); otherwise falls back to the exact
+// same captured incident data embedded as literals in the sibling
+// run24377_live_fixture_resume_order_test.go, so this test always executes
+// instead of silently no-op'ing via t.Skip on every other machine/CI (found
+// during the 2026-07-22 CP-51 Phase A coverage audit).
 // No desktop. Fails if timeline order is wrong.
 func TestRun24377RealDiskStoreResumeOrder(t *testing.T) {
 	repo := "/Users/tiendat/Desktop/flowpilot/flowpilot"
 	chats := filepath.Join(repo, ".flowpilot", "chats")
 	turnsPath := filepath.Join(chats, "run-24377-turns.ndjson")
 	sessPath := filepath.Join(chats, "sessions.ndjson")
-	if _, err := os.Stat(turnsPath); err != nil {
-		t.Skip("run-24377 turns missing")
-	}
 
-	// Parse real turn log
-	var entries []turnLogLine
-	raw, err := os.ReadFile(turnsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var o map[string]any
-		if json.Unmarshal([]byte(line), &o) != nil {
-			continue
-		}
-		kind, _ := o["kind"].(string)
-		tl := turnLogLine{Kind: turnLogKind(kind)}
-		if tid, ok := o["turn_id"].(string); ok {
-			tl.TurnID = tid
-		}
-		if p, ok := o["prompt"].(string); ok {
-			tl.Prompt = p
-		}
-		if a, ok := o["assistant"].(string); ok {
-			tl.Assistant = a
-		}
-		if sid, ok := o["session_id"].(string); ok {
-			tl.SessionID = sid
-		}
-		// map kinds
-		switch kind {
-		case "prompt":
-			tl.Kind = turnLogKindPrompt
-		case "transcript_turn":
-			tl.Kind = turnLogKindTranscriptTurn
-		case "grok_session":
-			tl.Kind = turnLogKindGrokSession
-		default:
-			continue
-		}
-		entries = append(entries, tl)
-	}
-	if !turnLogHasAssistantFrames(entries) {
-		t.Fatal("expected assistants in real turn log")
-	}
-
-	// Parse real child sessions (last write wins)
 	type childSnap struct {
 		runID, label, start, upd, msg, parent string
 		turns                                 int
 		status                                string
 	}
+	var entries []turnLogLine
 	children := map[string]childSnap{}
 	hubNodes := 0
-	sessRaw, _ := os.ReadFile(sessPath)
-	for _, line := range strings.Split(string(sessRaw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+
+	if _, statErr := os.Stat(turnsPath); statErr == nil {
+		// Original author's machine: verify against the actual live capture.
+		raw, err := os.ReadFile(turnsPath)
+		if err != nil {
+			t.Fatal(err)
 		}
-		var o map[string]any
-		if json.Unmarshal([]byte(line), &o) != nil {
-			continue
-		}
-		rid, _ := o["run_id"].(string)
-		parent, _ := o["parent_run_id"].(string)
-		if rid == "run-24377" {
-			if nodes, ok := o["active_flow_nodes"].([]any); ok {
-				hubNodes = len(nodes)
+		for _, line := range strings.Split(string(raw), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
 			}
-			continue
+			var o map[string]any
+			if json.Unmarshal([]byte(line), &o) != nil {
+				continue
+			}
+			kind, _ := o["kind"].(string)
+			tl := turnLogLine{Kind: turnLogKind(kind)}
+			if tid, ok := o["turn_id"].(string); ok {
+				tl.TurnID = tid
+			}
+			if p, ok := o["prompt"].(string); ok {
+				tl.Prompt = p
+			}
+			if a, ok := o["assistant"].(string); ok {
+				tl.Assistant = a
+			}
+			if sid, ok := o["session_id"].(string); ok {
+				tl.SessionID = sid
+			}
+			// map kinds
+			switch kind {
+			case "prompt":
+				tl.Kind = turnLogKindPrompt
+			case "transcript_turn":
+				tl.Kind = turnLogKindTranscriptTurn
+			case "grok_session":
+				tl.Kind = turnLogKindGrokSession
+			default:
+				continue
+			}
+			entries = append(entries, tl)
 		}
-		if parent != "run-24377" {
-			continue
+
+		// Parse real child sessions (last write wins)
+		sessRaw, _ := os.ReadFile(sessPath)
+		for _, line := range strings.Split(string(sessRaw), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			var o map[string]any
+			if json.Unmarshal([]byte(line), &o) != nil {
+				continue
+			}
+			rid, _ := o["run_id"].(string)
+			parent, _ := o["parent_run_id"].(string)
+			if rid == "run-24377" {
+				if nodes, ok := o["active_flow_nodes"].([]any); ok {
+					hubNodes = len(nodes)
+				}
+				continue
+			}
+			if parent != "run-24377" {
+				continue
+			}
+			label, _ := o["label"].(string)
+			if label == "" {
+				label, _ = o["agent_name"].(string)
+			}
+			st, _ := o["status"].(string)
+			start, _ := o["started_at"].(string)
+			upd, _ := o["updated_at"].(string)
+			msg, _ := o["last_message"].(string)
+			turns := 0
+			switch v := o["turn_count"].(type) {
+			case float64:
+				turns = int(v)
+			}
+			children[rid] = childSnap{runID: rid, label: label, start: start, upd: upd, msg: msg, parent: parent, turns: turns, status: st}
 		}
-		label, _ := o["label"].(string)
-		if label == "" {
-			label, _ = o["agent_name"].(string)
+	} else {
+		// Portable fallback (every other machine / CI): the exact run-24377
+		// capture, transcribed as literals — same underlying incident data
+		// run24377_live_fixture_resume_order_test.go already embeds.
+		entries = []turnLogLine{
+			{Kind: turnLogKindPrompt, TurnID: "turn-24379", Prompt: "fix bug 1 + 1 != 2"},
+			{Kind: turnLogKindPrompt, TurnID: "turn-27217", Prompt: "[flow-engine joined result note]\nFlow round 0 — 2 results joined."},
+			{Kind: turnLogKindGrokSession, SessionID: "019f8526-c53f-7e23-ba74-3045301e1e94"},
+			{Kind: turnLogKindTranscriptTurn, TurnID: "turn-27217", Assistant: "I'll consolidate both reviewers' findings. Round 0: changes requested."},
+			{Kind: turnLogKindPrompt, TurnID: "turn-29824", Prompt: "[flow-engine joined result note]\nFlow round 1 — 2 results joined."},
+			{Kind: turnLogKindTranscriptTurn, TurnID: "turn-29824", Assistant: "Both reviewers agree: request changes. Round 1."},
+			{Kind: turnLogKindPrompt, TurnID: "turn-31413", Prompt: "[flow-engine joined result note]\nFlow round 2 — 2 results joined."},
+			{Kind: turnLogKindTranscriptTurn, TurnID: "turn-31413", Assistant: "## Consolidated review outcome\n**Submitted:** approved. Round 2."},
+			{Kind: turnLogKindPrompt, TurnID: "turn-31488", Prompt: "done rồi hả, trả lời ok or not."},
+			{Kind: turnLogKindTranscriptTurn, TurnID: "turn-31488", Assistant: "**ok** — flow done; correctness + security both approved."},
 		}
-		st, _ := o["status"].(string)
-		start, _ := o["started_at"].(string)
-		upd, _ := o["updated_at"].(string)
-		msg, _ := o["last_message"].(string)
-		turns := 0
-		switch v := o["turn_count"].(type) {
-		case float64:
-			turns = int(v)
+		for _, c := range []struct {
+			id, label, start, upd, msg string
+			turns                      int
+		}{
+			{"run-24382", "coder", "2026-07-21T14:48:57.806588Z", "2026-07-21T14:56:01.672285Z", "coder done", 4},
+			{"run-25068", "reviewer_correctness", "2026-07-21T14:50:25.712638Z", "2026-07-21T14:51:57.719109Z", "r0a", 1},
+			{"run-25076", "reviewer_security", "2026-07-21T14:50:26.064062Z", "2026-07-21T14:51:58.366492Z", "r0b", 1},
+			{"run-27697", "reviewer_correctness", "2026-07-21T14:53:03.019575Z", "2026-07-21T14:54:19.849105Z", "r1a", 1},
+			{"run-27705", "reviewer_security", "2026-07-21T14:53:03.356182Z", "2026-07-21T14:54:51.618506Z", "r1b", 1},
+			{"run-30114", "reviewer_correctness", "2026-07-21T14:56:01.977075Z", "2026-07-21T14:56:51.178926Z", "r2a", 1},
+			{"run-30122", "reviewer_security", "2026-07-21T14:56:02.340286Z", "2026-07-21T14:56:52.71325Z", "r2b", 1},
+		} {
+			children[c.id] = childSnap{runID: c.id, label: c.label, start: c.start, upd: c.upd, msg: c.msg, parent: "run-24377", turns: c.turns, status: "completed"}
 		}
-		children[rid] = childSnap{runID: rid, label: label, start: start, upd: upd, msg: msg, parent: parent, turns: turns, status: st}
+		hubNodes = 4 // coder, reviewer_correctness, reviewer_security, synthesis
+	}
+
+	if !turnLogHasAssistantFrames(entries) {
+		t.Fatal("expected assistants in real turn log")
 	}
 	if len(children) == 0 {
 		t.Fatal("no children for run-24377 in sessions.ndjson")

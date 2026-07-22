@@ -65,6 +65,15 @@ type InteractiveService struct {
 	approvals map[string]*approvalRecord
 	questions map[string]*questionRecord
 
+	// dispatchLogSyncMu guards dispatchLogSyncHash, kept separate from the main
+	// s.mu since a Drive upload is slow network I/O unrelated to run-state locking.
+	// dispatchLogSyncHash caches the sha256 of the last successfully-uploaded
+	// per-project dispatch.ndjson so a chat-sync batch (which calls the per-run
+	// sync handler once per run, each of which re-exports+re-uploads the whole
+	// project-wide dispatch log) uploads it once instead of once per run.
+	dispatchLogSyncMu   sync.Mutex
+	dispatchLogSyncHash map[string]string
+
 	idCounter atomic.Int64
 
 	// activeAccountID is the currently active provider account. resume/turns
@@ -713,25 +722,26 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 	// (Task-052); the per-turn deferred cleanup cannot run in that case. Best-effort.
 	sweepCodexImageAttachments(time.Hour, time.Now())
 	svc := &InteractiveService{
-		catalog:           catalog,
-		skillsCatalog:     newInteractiveCatalog(),
-		agentCatalog:      newAgentCatalog(),
-		agentOrchestrator: newAgentOrchestrator(),
-		registry:          registry,
-		policy:            DefaultApprovalPolicyEngine(),
-		finalizer:         newFinalizer(),
-		workflowStore:     workflowStore,
-		orchestrator:      NewWorkflowOrchestrator(workflowStore),
-		runs:              map[string]*interactiveRun{},
-		approvals:         map[string]*approvalRecord{},
-		questions:         map[string]*questionRecord{},
-		activeAccountID:   "default",
-		approvalTTL:       10 * time.Minute,
-		questionTTL:       10 * time.Minute,
-		maxTurnAttempts:   3,
-		summaryTimers:     map[string]*time.Timer{},
-		markerSecret:      markerSec,
-		markerDir:         markerDir,
+		catalog:             catalog,
+		skillsCatalog:       newInteractiveCatalog(),
+		agentCatalog:        newAgentCatalog(),
+		agentOrchestrator:   newAgentOrchestrator(),
+		registry:            registry,
+		policy:              DefaultApprovalPolicyEngine(),
+		finalizer:           newFinalizer(),
+		workflowStore:       workflowStore,
+		orchestrator:        NewWorkflowOrchestrator(workflowStore),
+		runs:                map[string]*interactiveRun{},
+		approvals:           map[string]*approvalRecord{},
+		questions:           map[string]*questionRecord{},
+		activeAccountID:     "default",
+		approvalTTL:         10 * time.Minute,
+		questionTTL:         10 * time.Minute,
+		maxTurnAttempts:     3,
+		summaryTimers:       map[string]*time.Timer{},
+		markerSecret:        markerSec,
+		markerDir:           markerDir,
+		dispatchLogSyncHash: map[string]string{},
 	}
 	// Seed the id counter above the highest persisted run id so a runner restart does NOT
 	// reuse ids (run-1, run-2, …). Reuse made a fresh chat collide with a previous run of

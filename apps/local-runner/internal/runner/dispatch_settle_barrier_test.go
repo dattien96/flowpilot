@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -94,6 +95,93 @@ func TestSettleSubBarriers_B8aToB8e_PartialThenResume(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSettle_StopMidSettle_BookkeepingCompletes_ReleaseSuppressed (ledger row
+// SDa) is distinct from TestSettleSubBarriers_B8aToB8e_PartialThenResume
+// above: that test only simulates a CRASH (context.Canceled from a fault
+// store). This one simulates a real user Stop landing before terminal commit,
+// and proves settle bookkeeping still runs to completion -- the
+// dependents_release effect durably records the stop-generation suppression
+// (via StopOutcome, per planNext's SettleGraphSettled case), and exactly one
+// finalizer effect runs, ending SettlePhase=finalized.
+func TestSettle_StopMidSettle_BookkeepingCompletes_ReleaseSuppressed(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryDispatchStore()
+	rec := testPrepared("r-stop-settle", "t-stop-settle")
+	rec.SettleOwed = true
+	if err := store.CreatePrepared(ctx, rec, testEnvelope("r-stop-settle", "t-stop-settle")); err != nil {
+		t.Fatal(err)
+	}
+	rev := int64(1)
+	rev, err := store.CASAdvance(ctx, "r-stop-settle", "t-stop-settle", rev, DispatchPrepared, DispatchSendClaimed, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err = store.CASAdvance(ctx, "r-stop-settle", "t-stop-settle", rev, DispatchSendClaimed, DispatchSendStarted, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopState, err := store.GetRunStopState(ctx, "r-stop-settle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RequestRunStop(ctx, "r-stop-settle", stopState.Revision, StopReasonUser); err != nil {
+		t.Fatal(err)
+	}
+	proof := TerminalEvidence{ProviderKey: "f", EvidenceKind: "x", Outcome: "completed", PayloadSHA256: "h"}
+	if _, err := store.CommitTerminalAndSettleIntent(ctx, "r-stop-settle", "t-stop-settle", rev, proof, "r-stop-settle", rec.OuterIntentKey, 1); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := store.Get(ctx, "r-stop-settle", "t-stop-settle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.StopOutcome != StopOutcomeCancelledInFlight {
+		t.Fatalf("setup: want cancelled_in_flight before settle, got %q", got.StopOutcome)
+	}
+
+	driver := &SettleDriver{
+		Store: store,
+		EvaluateGate: func(context.Context, string, string) (bool, bool, error) {
+			return true, false, nil
+		},
+	}
+	if err := driver.DriveSettle(ctx, "r-stop-settle", "t-stop-settle"); err != nil {
+		t.Fatalf("DriveSettle after Stop: %v", err)
+	}
+
+	got, _, err = store.Get(ctx, "r-stop-settle", "t-stop-settle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SettlePhase != SettleFinalized {
+		t.Fatalf("SDa: bookkeeping must still complete after Stop, phase=%s", got.SettlePhase)
+	}
+
+	effects, err := store.ListEffects(ctx, "r-stop-settle", "t-stop-settle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalizerCount := 0
+	var releasePayload []byte
+	for _, e := range effects {
+		if e.EffectKind == "finalizer" {
+			finalizerCount++
+		}
+		if e.EffectKind == "dependents_release" {
+			releasePayload = e.Payload
+		}
+	}
+	if finalizerCount != 1 {
+		t.Fatalf("SDa: want exactly one finalizer effect after a Stop-terminated turn, got %d", finalizerCount)
+	}
+	if releasePayload == nil {
+		t.Fatal("SDa: dependents_release effect missing")
+	}
+	if !strings.Contains(string(releasePayload), StopOutcomeCancelledInFlight) {
+		t.Fatalf("SDa: dependents_release payload must durably record the stop-generation suppression, got %s", releasePayload)
 	}
 }
 

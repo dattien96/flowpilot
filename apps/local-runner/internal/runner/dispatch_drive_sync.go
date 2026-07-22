@@ -18,6 +18,13 @@ const driveDispatchRelativePath = "chat-sessions/dispatch/dispatch.ndjson"
 // syncDispatchLogToDrive uploads the local per-project dispatch.ndjson to Drive.
 // Best-effort: missing local log is a no-op; failures are logged and returned as apiErr
 // only when the caller wants fail-closed (we use best-effort from chat sync).
+//
+// Content-hash gated (task_d80cf120): the caller is the per-RUN chat-sync handler
+// (syncChatRunToDrive), invoked once per run by a batch sync — a 17-run batch
+// otherwise re-exports and re-uploads the entire (multi-MB, project-wide, not
+// per-run) dispatch log 17 times even though its content is identical across
+// every one of those calls. Skip the actual Drive round-trip when the exported
+// bytes match the last successful upload for this project.
 func (s *InteractiveService) syncDispatchLogToDrive(ctx context.Context, projectID, accessToken, rootFolderID string) error {
 	_ = ctx
 	projectID = strings.TrimSpace(projectID)
@@ -35,6 +42,13 @@ func (s *InteractiveService) syncDispatchLogToDrive(ctx context.Context, project
 	if len(raw) == 0 {
 		return nil
 	}
+	hash := HashBytes(raw)
+	s.dispatchLogSyncMu.Lock()
+	unchanged := s.dispatchLogSyncHash[projectID] == hash
+	s.dispatchLogSyncMu.Unlock()
+	if unchanged {
+		return nil
+	}
 	dirID, err := ensureGoogleDriveFolderPath(accessToken, rootFolderID, []string{"chat-sessions", "dispatch"})
 	if err != nil {
 		return err
@@ -42,6 +56,9 @@ func (s *InteractiveService) syncDispatchLogToDrive(ctx context.Context, project
 	if _, err := upsertGoogleDriveFile(accessToken, dirID, "dispatch.ndjson", raw, "application/x-ndjson", nil); err != nil {
 		return err
 	}
+	s.dispatchLogSyncMu.Lock()
+	s.dispatchLogSyncHash[projectID] = hash
+	s.dispatchLogSyncMu.Unlock()
 	log.Printf("[chat-sync] dispatch log uploaded project=%s bytes=%d", projectID, len(raw))
 	return nil
 }

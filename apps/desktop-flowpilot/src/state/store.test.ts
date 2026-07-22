@@ -1304,6 +1304,47 @@ test("orchestration graph update refreshes stale agent run statuses without swit
   assert.equal(useStore.getState().agentRuns[0]?.agentStatus, "completed");
 });
 
+test("sendPrompt retries a transient turn_in_progress instead of dropping the message", async () => {
+  // Flow-completion race: the loop is marked "done" (which unblocks the composer via
+  // deriveOrchestrationRunStatus) from inside the hub's final turn, while that turn's
+  // provider stream is still open — so the runner still holds turnInFlight and rejects
+  // the first POST /turns with 409 turn_in_progress. The follow-up must be retried and
+  // delivered, not dropped with a raw error bubble.
+  let calls = 0;
+  seedStore(
+    makeClient({
+      sendTurn: (): AsyncIterable<ProviderEventDTO> => {
+        calls += 1;
+        if (calls === 1) {
+          // Rejected before any turn is minted (pre-mint guard), so a retry is safe.
+          return (async function* (): AsyncIterable<ProviderEventDTO> {
+            throw new RunnerApiError(409, "turn_in_progress", "a turn is already in flight for this session");
+          })();
+        }
+        return (async function* (): AsyncIterable<ProviderEventDTO> {
+          yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 1, type: "turn_started", providerTurnId: "turn-1", prompt: "done rồi hả" };
+          yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 2, type: "turn_completed", providerTurnId: "turn-1", finalMessage: "yes" };
+        })();
+      },
+    }),
+    [],
+  );
+
+  await useStore.getState().sendPrompt("done rồi hả");
+
+  const state = useStore.getState();
+  assert.equal(calls, 2, "sendTurn should be retried after a transient turn_in_progress");
+  assert.equal(state.status, "completed", "the retried turn completes instead of failing");
+  assert.ok(
+    !state.timeline.some((it) => it.kind === "system" && it.tone === "error"),
+    "no raw 409 error bubble is surfaced",
+  );
+  assert.ok(
+    state.timeline.some((it) => it.kind === "prompt" && it.text === "done rồi hả"),
+    "the user's message is preserved, not dropped",
+  );
+});
+
 test("refreshAgentRuns loads child summaries for the active main run", async () => {
   const agentRuns: AgentRunSummary[] = [
     {
