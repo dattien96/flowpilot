@@ -955,6 +955,23 @@ type runHistoryItem struct {
 }
 
 func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryItem {
+	// BUG-309: Drive-sync fields (SyncStatus/SourceMachineID/SourceRunID) are
+	// written straight to the persisted store by updateLocalSessionSyncStatus,
+	// asynchronously, well after a run's own lifecycle ends -- interactiveRun
+	// (s.runs) never carries them. Without this lookup, any run still resident
+	// in memory (i.e. every run from the current process's lifetime) always
+	// reported syncStatus="" below regardless of how many times it was
+	// actually synced to Drive, making the desktop's unsynced-count badge and
+	// "Sync all" button perpetually re-target already-synced chats.
+	persistedSyncByRunID := map[string]ProviderSessionState{}
+	if reader, ok := s.workflowStore.(SessionHistoryReader); ok {
+		if sessions, err := reader.ListProviderSessionsByProject(context.Background(), projectID); err == nil {
+			for _, sess := range sessions {
+				persistedSyncByRunID[sess.RunID] = sess
+			}
+		}
+	}
+
 	s.mu.Lock()
 	seen := map[string]bool{}
 	out := make([]runHistoryItem, 0, len(s.runs))
@@ -962,7 +979,7 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 		if rs.projectID != projectID || isLiveAgentHistoryRun(rs.parentRunID, rs.lastPrompt) {
 			continue
 		}
-		out = append(out, runHistoryItem{
+		item := runHistoryItem{
 			RunID:       rs.id,
 			ProjectID:   rs.projectID,
 			WorkflowID:  rs.workflowID,
@@ -983,7 +1000,13 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 			AgentStatus: rs.agentStatus,
 			SubMode:     rs.chatSubMode,
 			FlowRef:     rs.chatFlowRef,
-		})
+		}
+		if sess, ok := persistedSyncByRunID[rs.id]; ok {
+			item.SourceMachineID = sess.SourceMachineID
+			item.SourceRunID = sess.SourceRunID
+			item.SyncStatus = sess.SyncStatus
+		}
+		out = append(out, item)
 		seen[rs.id] = true
 	}
 	s.mu.Unlock()
