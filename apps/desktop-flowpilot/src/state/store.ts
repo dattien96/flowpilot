@@ -1237,7 +1237,40 @@ export const useStore = create<AppState>((set, get) => ({
       cancelOrchestrationStream();
       cancelAgentFocusStream();
 
-      await consumeStream(runId, client.sendTurn(turnInput), set, get);
+      // A follow-up sent the instant a flow *looks* done can race the hub's own
+      // final turn: the loop is marked "done" (which unblocks the composer via
+      // deriveOrchestrationRunStatus) from INSIDE that turn, while the turn's
+      // provider stream is still open — so the runner still holds turnInFlight and
+      // rejects POST /turns with 409 turn_in_progress. gate_in_progress (post-turn
+      // gate settling) and hub_parked (children still active) are the sibling
+      // transient windows. All three are rejected BEFORE a turn is minted, so
+      // re-POSTing is side-effect-free and can never duplicate a turn. Retry briefly
+      // until the turn clears instead of dropping the user's message with a raw
+      // error and forcing a re-type (the pre-fix symptom on flow completion).
+      const TRANSIENT_SEND_CODES = new Set(["turn_in_progress", "gate_in_progress", "hub_parked"]);
+      const TRANSIENT_SEND_MAX_RETRIES = 6;
+      const TRANSIENT_SEND_RETRY_MS = 700;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await consumeStream(runId, client.sendTurn(turnInput), set, get);
+          break;
+        } catch (err) {
+          const transient = err instanceof RunnerApiError && TRANSIENT_SEND_CODES.has(err.code ?? "");
+          // Give up (fall to the catch below) if it is a real error, we have waited
+          // long enough, or the user switched runs out from under this send.
+          if (!transient || attempt >= TRANSIENT_SEND_MAX_RETRIES || !shouldApplyRunEvent(get().runId, runId)) {
+            throw err;
+          }
+          // Keep the optimistic prompt + thinking bubbles; just reflect the wait.
+          set((s) => ({
+            status: "running",
+            timeline: s.timeline.map((it) =>
+              it.kind === "thinking" ? { ...it, text: "Waiting for the current step to finish…" } : it,
+            ),
+          }));
+          await new Promise((r) => setTimeout(r, TRANSIENT_SEND_RETRY_MS));
+        }
+      }
       const orchestrationRunId = get().mainRunId ?? runId;
       if (orchestrationRunId) {
         startOrchestrationStream(orchestrationRunId, client, set, get);
