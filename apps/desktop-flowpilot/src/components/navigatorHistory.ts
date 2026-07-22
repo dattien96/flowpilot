@@ -26,7 +26,11 @@ export function isSyncableRun(item: RunHistoryItem, remoteChatSessions?: RemoteC
   const runKind = item.runKind ?? "";
   const isSyncableKind = runKind === "chat" || runKind === "" || runKind === "workflow";
   if (!isSyncableKind || isAgentHistoryItem(item) || item.unavailableReason) return false;
-  if (item.syncStatus === "synced") return false;
+  // "unsyncable" (BUG-311) is a permanent fact set by the backend when a chat
+  // run has no resumable session file on this machine (e.g. cancelled before
+  // the provider ever wrote one) -- it can never later succeed, unlike
+  // "failed", which is retried on the next sync attempt.
+  if (item.syncStatus === "synced" || item.syncStatus === "unsyncable") return false;
   if (remoteChatSessions && item.sourceMachineId && item.sourceRunId) {
     const alreadySynced = remoteChatSessions.some(
       (remote) => remote.sourceMachineId === item.sourceMachineId && remote.sourceRunId === item.sourceRunId,

@@ -84,6 +84,13 @@ test("isSyncableRun rejects a child agent run even though children carry runKind
   assert.equal(isSyncableRun(makeItem({ runKind: "chat", parentRunId: "run-hub" })), false);
 });
 
+test("isSyncableRun permanently excludes an unsyncable run (BUG-311)", () => {
+  // "unsyncable" is a permanent backend fact (no resumable session file will
+  // ever exist for this run, e.g. cancelled before the provider wrote one) --
+  // unlike "failed", which is expected to be retried on the next sync attempt.
+  assert.equal(isSyncableRun(makeItem({ runKind: "chat", syncStatus: "unsyncable" })), false);
+});
+
 test("isSyncableRun reconciles a stale local syncStatus against the confirmed remote index", () => {
   // A local syncStatus flag can go stale (e.g. a background history poll wins a
   // race against a just-set "synced" flag and overwrites it with the pre-sync

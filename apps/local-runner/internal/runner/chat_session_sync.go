@@ -315,6 +315,15 @@ func (s *InteractiveService) BuildChatSessionSyncManifest(ctx context.Context, r
 		return ChatSessionSyncManifest{}, nil, transcriptErr
 	}
 	if !hasTranscript && session.RunKind == "chat" {
+		// BUG-311: a turn that was cancelled/interrupted before the provider
+		// ever wrote a resumable session file will NEVER later gain one --
+		// this is a permanent fact about this specific run, not a transient
+		// failure. Persist it so the Navigator's unsynced-count stops
+		// perpetually re-counting and silently re-attempting a sync that can
+		// never succeed on this machine.
+		_ = s.updateLocalSessionSyncStatus(ctx, runID, func(st *ProviderSessionState) {
+			st.SyncStatus = "unsyncable"
+		})
 		return ChatSessionSyncManifest{}, nil, newAPIErr(http.StatusConflict, "session_unavailable", "session data not found on this machine")
 	}
 	storeDir := s.chatSessionStoreDir()
