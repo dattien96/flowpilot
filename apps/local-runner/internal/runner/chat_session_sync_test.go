@@ -207,6 +207,22 @@ func newChatSyncService(t *testing.T) (*InteractiveService, *Runner, *localFileS
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// BUG-312: without these overrides, saveProviderAccountState (called below,
+	// and again internally by ListProviderAccounts/resolveAccountHome on every
+	// sync/restore) writes straight through to the REAL machine-wide
+	// provider-accounts.json instead of a sandboxed path -- confirmed live,
+	// this clobbered a real pre-existing account entry's id on the developer's
+	// own machine. Overriding only HOME is not enough on Windows:
+	// getPossibleHomeDirs() (used by ListProviderAccounts' auto-discovery) also
+	// reads USERPROFILE and APPDATA directly, so without these too, discovery
+	// still finds and re-registers whatever real provider accounts happen to
+	// exist on the host. Every other test that registers provider accounts
+	// (provider_accounts_test.go, grok_process_test.go, grok_registry_test.go,
+	// cross_account_resume_test.go, bug083_test.go) already isolates all of
+	// these the same way.
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("FLOWPILOT_PROVIDER_ACCOUNTS_CONFIG_PATH", filepath.Join(home, "provider-accounts.json"))
 	t.Setenv("GOOGLE_DRIVE_CLIENT_ID", "client-id")
 	t.Setenv("GOOGLE_DRIVE_CLIENT_SECRET", "client-secret")
 	t.Setenv("GOOGLE_DRIVE_REDIRECT_URI", "http://localhost/callback")
@@ -1554,6 +1570,22 @@ func TestListRemoteChatSessionsHandlerReturnsSummaries(t *testing.T) {
 func TestSyncChatRunWithStaleAccountIDBeforeOpening(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// BUG-312: without these overrides, saveProviderAccountState (called below,
+	// and again internally by ListProviderAccounts/resolveAccountHome on every
+	// sync/restore) writes straight through to the REAL machine-wide
+	// provider-accounts.json instead of a sandboxed path -- confirmed live,
+	// this clobbered a real pre-existing account entry's id on the developer's
+	// own machine. Overriding only HOME is not enough on Windows:
+	// getPossibleHomeDirs() (used by ListProviderAccounts' auto-discovery) also
+	// reads USERPROFILE and APPDATA directly, so without these too, discovery
+	// still finds and re-registers whatever real provider accounts happen to
+	// exist on the host. Every other test that registers provider accounts
+	// (provider_accounts_test.go, grok_process_test.go, grok_registry_test.go,
+	// cross_account_resume_test.go, bug083_test.go) already isolates all of
+	// these the same way.
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("FLOWPILOT_PROVIDER_ACCOUNTS_CONFIG_PATH", filepath.Join(home, "provider-accounts.json"))
 	t.Setenv("GOOGLE_DRIVE_CLIENT_ID", "client-id")
 	t.Setenv("GOOGLE_DRIVE_CLIENT_SECRET", "client-secret")
 	t.Setenv("GOOGLE_DRIVE_REDIRECT_URI", "http://localhost/callback")
@@ -1884,5 +1916,103 @@ func TestListRemoteChatSessionsReturnsAllTopLevelRowsAfterMultiRunSync(t *testin
 	}
 	if len(summaries) != 3 {
 		t.Fatalf("expected 3 top-level remote rows after sequential multi-run sync, got %#v", summaries)
+	}
+}
+
+// TestRestoreChatRunFromDriveGrokRecomputesPathForDifferentCwd is the
+// end-to-end regression proof for BUG-312: restoreTargetPath previously had no
+// case for ProviderKeyGrok at all, so every Grok restore failed with
+// sync_integrity_failed ("remote provider session file path is invalid") --
+// confirmed live against the running dev server before this fix. This test
+// syncs a Grok chat from one cwd (Mac-shaped, matching this project's real
+// Codex machine) and restores it under a DIFFERENT cwd (a fresh temp dir,
+// standing in for "a different machine"), then verifies the restored session
+// is actually discoverable via LocateSessionFile under the NEW cwd -- not just
+// that restore returned no error.
+func TestRestoreChatRunFromDriveGrokRecomputesPathForDifferentCwd(t *testing.T) {
+	svc, instance, store, _, _, accountHome := newChatSyncService(t)
+	grokHome := filepath.Join(filepath.Dir(accountHome), "grok-home")
+	if err := instance.saveProviderAccountState(providerAccountState{
+		Accounts: []ProviderAccount{{
+			ID:          "acct-grok-sync",
+			ProviderKey: "grok",
+			DisplayName: "Grok Account 1",
+			HomePath:    grokHome,
+			SlotIndex:   1,
+			IsActive:    true,
+			AuthStatus:  "connected",
+			CreatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		}},
+	}); err != nil {
+		t.Fatalf("saveProviderAccountState (grok): %v", err)
+	}
+	// ListProviderAccounts' sync pass re-validates every registered account's
+	// AuthStatus against its home's auth.json on every call (accountAuthPaths /
+	// hasValidProviderAuthFile) -- without a plausible one here, it silently
+	// downgrades this account to "failed", which then makes ResolveProviderAccount
+	// skip it and fall back to whatever the last-active OTHER provider's account
+	// ID was, resolving the wrong target home entirely at restore time.
+	if err := os.MkdirAll(grokHome, 0o755); err != nil {
+		t.Fatalf("MkdirAll grokHome: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(grokHome, "auth.json"), []byte(`{"issuer::user-grok-sync":{"refresh_token":"rt","email":"grok-sync@example.com"}}`), 0o644); err != nil {
+		t.Fatalf("write grok auth.json: %v", err)
+	}
+
+	const sourceCwd = "/Users/tiendat/Desktop/BE/gate-sandbox"
+	const sessionID = "019f8722-c5fc-7f11-8d9e-4154bf38d338"
+	const transcript = `{"type":"assistant","content":"hello from grok"}` + "\n"
+	writeGrokSessionTree(t, grokHome, sourceCwd, sessionID, map[string]string{"chat_history.jsonl": transcript})
+
+	state := ProviderSessionState{
+		RunID:             "run-grok-restore",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyGrok,
+		ProviderSessionID: sessionID,
+		ProviderAccountID: "acct-grok-sync",
+		WorkingDirectory:  sourceCwd,
+		Status:            RunStatusCompleted,
+		LastPrompt:        "hi",
+		LastMessage:       "hello from grok",
+		StartedAt:         "2026-07-22T10:00:00Z",
+		UpdatedAt:         "2026-07-22T10:05:00Z",
+		RunKind:           "chat",
+	}
+	if err := store.UpsertProviderSession(context.Background(), state); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	result, apiErr := svc.syncChatRunToDrive(context.Background(), "run-grok-restore", ChatSessionSyncRequest{})
+	if apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+
+	targetCwd := filepath.Join(t.TempDir(), "restored-on-a-different-machine")
+	if err := os.MkdirAll(targetCwd, 0o755); err != nil {
+		t.Fatalf("MkdirAll target cwd: %v", err)
+	}
+	restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+		ProjectID:       "project-1",
+		SourceMachineID: result.SourceMachineID,
+		SourceRunID:     result.SourceRunID,
+		Cwd:             targetCwd,
+	})
+	if apiErr != nil {
+		t.Fatalf("BUG-312: restoreChatRunFromDrive() failed for Grok: %#v", apiErr)
+	}
+	if restored.RunID == "" {
+		t.Fatal("expected a non-empty restored run id")
+	}
+
+	foundPath, found := LocateSessionFile(ProviderKeyGrok, grokHome, sessionID, targetCwd)
+	if !found {
+		t.Fatal("restored Grok session is not discoverable via LocateSessionFile under the new cwd")
+	}
+	body, err := os.ReadFile(filepath.Join(foundPath, "chat_history.jsonl"))
+	if err != nil {
+		t.Fatalf("read restored transcript: %v", err)
+	}
+	if string(body) != transcript {
+		t.Fatalf("restored transcript = %q, want %q", body, transcript)
 	}
 }
