@@ -61,11 +61,12 @@ Green old tests (unchanged) are the primary signal that the change did not regre
 
 Full-package green is optional; **zero unsolicited edits to the legacy suite** is mandatory.
 
-## Relationship to oracle-rule
+## Relationship to oracle-rule and safe-fix-contract
 
 | Skill | Focus |
 |-------|--------|
 | **oracle-rule** | Failing test → fix **code**, not the assertion (unless user agrees test is wrong) |
 | **additive-tests-only** | New work → **add** tests only; do not modify the legacy suite without asking |
+| **safe-fix-contract** | Operator umbrella: stop on old-test fail + three providers + matrix coverage + CA history |
 
-Both apply together on every bugfix and coding task.
+Both apply together on every bug fix and coding task. Prefer loading **safe-fix-contract** first when the operator restates the full delivery rules.
