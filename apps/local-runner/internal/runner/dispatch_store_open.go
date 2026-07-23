@@ -128,6 +128,33 @@ func (m *multiProjectDispatchStore) Close() error {
 	return firstErr
 }
 
+// MaxPersistedIDSuffix aggregates every open project shard's ceiling so the
+// InteractiveService can seed its id counter past all durable dispatch ids when the
+// store is wired (BUG-317). newMultiProjectDispatchStore already loads every shard's
+// records into RAM at construction, so this reflects orphan records left behind by
+// chats that were deleted from history without purging their dispatch.ndjson.
+func (m *multiProjectDispatchStore) MaxPersistedIDSuffix(ctx context.Context) (int64, error) {
+	m.mu.Lock()
+	stores := make([]*localDispatchStore, 0, len(m.byProject))
+	for _, st := range m.byProject {
+		if st != nil {
+			stores = append(stores, st)
+		}
+	}
+	m.mu.Unlock()
+	var max int64
+	for _, st := range stores {
+		n, err := st.MaxPersistedIDSuffix(ctx)
+		if err != nil {
+			return 0, err
+		}
+		if n > max {
+			max = n
+		}
+	}
+	return max, nil
+}
+
 func (m *multiProjectDispatchStore) forProject(projectID string) (*localDispatchStore, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

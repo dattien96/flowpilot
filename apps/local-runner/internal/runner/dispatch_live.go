@@ -142,11 +142,52 @@ func (s *InteractiveService) ensureDispatchStore() DispatchStore {
 	return s.dispatchStore
 }
 
+// dispatchIDCeiling is implemented by durable dispatch stores that can report the
+// largest numeric id suffix among their persisted records, so SetDispatchStore can
+// seed the id counter past them (BUG-317). Optional: both the in-memory test backend
+// and the production multi-project store satisfy it; a store that does not is skipped.
+type dispatchIDCeiling interface {
+	MaxPersistedIDSuffix(ctx context.Context) (int64, error)
+}
+
 // SetDispatchStore wires the durable dispatch store (production + tests).
 func (s *InteractiveService) SetDispatchStore(store DispatchStore) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.dispatchStore = store
+	s.mu.Unlock()
+	// BUG-317: the constructor's seedIDCounter runs BEFORE the dispatch store is
+	// wired and only sees the session index. Persisted dispatch records are a second
+	// source of ids handed out before a restart — a chat deleted from history leaves
+	// its dispatch records behind — so without this seed the id counter can re-mint a
+	// run/turn id a surviving record still owns, and CreatePrepared then rejects it
+	// (ErrAlreadyExists -> dispatch_prepare_failed) on the next flow start.
+	if store != nil {
+		s.seedIDCounterFromDispatchStore(store)
+	}
+}
+
+// seedIDCounterFromDispatchStore lifts the id counter above every persisted dispatch
+// id (BUG-317). Best-effort: a store without a ceiling, or a read error, or an empty
+// store leaves the counter unchanged. Complements BUG-117's session-index seed.
+func (s *InteractiveService) seedIDCounterFromDispatchStore(store DispatchStore) {
+	ceil, ok := store.(dispatchIDCeiling)
+	if !ok {
+		return
+	}
+	max, err := ceil.MaxPersistedIDSuffix(context.Background())
+	if err != nil || max <= 0 {
+		return
+	}
+	for {
+		cur := s.idCounter.Load()
+		if cur >= max {
+			return
+		}
+		if s.idCounter.CompareAndSwap(cur, max) {
+			log.Printf("[runner] id counter seeded to %d from durable dispatch records (BUG-317)", max)
+			return
+		}
+	}
 }
 
 // prepareDispatchV2 creates the durable prepared record at the prep barrier.
