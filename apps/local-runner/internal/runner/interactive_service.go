@@ -7041,7 +7041,18 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			// skipped. Both the workflowID-resolved and explicit chat flowRef
 			// paths set in.FlowRef before calling startTurn, so flagging it here
 			// once covers both.
-			if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" {
+			// BUG-315: only a genuinely new chat's first turn starts the flow. A
+			// Drive-restored run is a continuation whose flow already ran on the
+			// source machine; it keeps its chatFlowRef/workflowID, so without the
+			// restoredFrom guard a plain follow-up (explicit flowRef, or one
+			// re-resolved from workflowID) would re-spawn the entire flow instead of
+			// reaching the hub. The primary fix carries TurnCount through the manifest
+			// so a restored run has turnCount>0 and never enters this turnCount==0
+			// block at all; this guard additionally heals chats synced by a pre-fix
+			// manifest, which still restore with turnCount==0. flowEngineDriven is
+			// already restored by reconstructRun (via ActiveFlowNodes), so skipping
+			// here does not demote a restored hub to a plain chat.
+			if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" && strings.TrimSpace(rs.restoredFrom) == "" {
 				flowStartOnly = true
 				rs.flowEngineDriven = true
 				// BUG-299 residual: chat-mode Review Loop (and any explicit flowRef)

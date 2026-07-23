@@ -248,6 +248,17 @@ func (s *InteractiveService) resolveWorkflowFlowRef(ctx context.Context, runID s
 		log.Printf("[flow-ref-resolve] run %q: bailing, turnCount=%d (only the first turn resolves workflowId->flowRef)", runID, turnCount)
 		return "", false
 	}
+	// BUG-315: a Drive-restored run keeps its workflowID, so on the first
+	// post-restore turn (turnCount==0 when the manifest predates the TurnCount
+	// carry) this would otherwise re-resolve the flowRef and let startTurn
+	// re-spawn the whole flow. A restored run is a continuation, never a genuine
+	// first-turn flow start -- bail so its follow-up reaches the hub instead.
+	if strings.TrimSpace(rs.restoredFrom) != "" {
+		restoredFrom := rs.restoredFrom
+		s.mu.Unlock()
+		log.Printf("[flow-ref-resolve] run %q: bailing, restored run (restoredFrom=%q) never re-starts its flow on a follow-up", runID, restoredFrom)
+		return "", false
+	}
 	if strings.TrimSpace(rs.workflowID) == "" {
 		s.mu.Unlock()
 		log.Printf("[flow-ref-resolve] run %q: bailing, no workflowID set on this run", runID)

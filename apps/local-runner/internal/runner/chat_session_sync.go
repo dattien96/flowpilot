@@ -75,6 +75,17 @@ type ChatSessionSyncManifest struct {
 	// selection (BUG-263) so a restored run keeps its Bug/Review-Loop intent.
 	ChatSubMode string `json:"chatSubMode,omitempty"`
 	ChatFlowRef string `json:"chatFlowRef,omitempty"`
+	// TurnCount carries the hub's completed-turn count (BUG-315). The flow's
+	// entry nodes are started only on a run's genuine first turn, gated on
+	// turnCount==0 (startTurn) and re-resolved from workflowID only then
+	// (resolveWorkflowFlowRef). The manifest carried every other flow-runtime
+	// field but not this one, so a Drive-restored hub came back with turnCount=0
+	// and its next plain follow-up re-spawned the entire flow (coder + reviewers
+	// + synthesis) instead of reaching the hub. Restoring the real count keeps a
+	// restored chat's continuation a plain hub turn -- and also fixes the other
+	// turnCount-gated behaviors a restored run silently mis-ran (review-outcome
+	// tool offering, mode-prefix). omitempty: absent == 0 == pre-fix behavior.
+	TurnCount int `json:"turnCount,omitempty"`
 	// TurnLog carries the run's durable turn-log sidecar verbatim (BUG-313):
 	// raw user prompts, per-turn provider session-id chains, and durable
 	// transcript_turn/assistant frames. Restore rewrites the local sidecar so a
@@ -376,6 +387,7 @@ func (s *InteractiveService) BuildChatSessionSyncManifest(ctx context.Context, r
 		PendingAgentContext: append([]string(nil), session.PendingAgentContext...),
 		ChatSubMode:         session.ChatSubMode,
 		ChatFlowRef:         session.ChatFlowRef,
+		TurnCount:           session.TurnCount, // BUG-315
 	}
 	if children := s.listAgentRunSummaries(runID); len(children) > 0 {
 		manifest.ChildAgents = children
@@ -1174,6 +1186,7 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 		PendingAgentContext: append([]string(nil), manifest.PendingAgentContext...),
 		ChatSubMode:         manifest.ChatSubMode,
 		ChatFlowRef:         manifest.ChatFlowRef,
+		TurnCount:           manifest.TurnCount, // BUG-315
 	}
 	if localAhead {
 		// The local rollout file is ahead of the restored snapshot, so the older
