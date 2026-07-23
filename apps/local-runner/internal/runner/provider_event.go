@@ -167,6 +167,15 @@ type ProviderEvent struct {
 	// agent_spawned_by_user / agent_result_injected (BUG-121)
 	AgentName  string `json:"agentName,omitempty"`
 	ChildRunID string `json:"childRunId,omitempty"`
+	// ResumeDurable / ResumeCohort / ResumeLogOrd are resume-only metadata
+	// (json:"-" — never serialized to clients). When ResumeDurable is true,
+	// flow restore places agent cards by durable step-transition append order
+	// and synthesis RUNNING boundaries instead of wall-clock wave parking
+	// (CA-412 / Terra redesign). ResumeCohort is the count of synthesis
+	// RUNNING lines that precede this activation in the parent step log.
+	ResumeDurable bool `json:"-"`
+	ResumeCohort  int  `json:"-"`
+	ResumeLogOrd  int  `json:"-"`
 	// flow_context_package (Task-168)
 	FlowContextPackage *FlowContextPackage `json:"flowContextPackage,omitempty"`
 	// flow_validation_result (Task-170): bounded metadata for a Testing step command run.

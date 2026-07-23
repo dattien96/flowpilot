@@ -2081,57 +2081,104 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 	// How many distinct child runs claim each label. A reinvoke-lifecycle node
 	// (Claude review-loop's my-coder / my-reviewer-claude) keeps ONE run id
 	// across every round, so its label is claimed by exactly one entry here —
-	// safe to expand from the step-transition log below. A spawn-lifecycle node
-	// (Codex's reviewer_correctness, fresh run id each round) has its label
-	// claimed by several entries; expanding any one of them from the log would
-	// attribute every round's RUNNING/DONE pairs to that single child, so those
-	// stay on the legacy heuristic path where each child already gets its own
-	// correct single activation.
+	// safe to expand every log activation onto that child. A spawn-lifecycle
+	// node (Codex reviewer_correctness, fresh run id each round) has several
+	// claimants; each child is paired with one log activation in startedAt order.
 	labelCounts := make(map[string]int, len(children))
 	for _, child := range children {
 		labelCounts[child.agentName]++
 	}
-	var transitionsByNode map[string][]stepTransitionLine
+
+	// Durable authority (Terra / CA-412 redesign): parent step-transition log
+	// append order + synthesis RUNNING boundaries. Wall-clock is not used to
+	// assign rounds when this log is present.
+	var stepActsByNode map[string][]stepNodeActivation
+	var spawnActCursor map[string]int
 	if store, ok := s.workflowStore.(StepTransitionLogStore); ok {
 		if lines, err := store.LoadStepTransitions(context.Background(), parentRunID); err == nil && len(lines) > 0 {
-			transitionsByNode = make(map[string][]stepTransitionLine, len(lines))
-			for _, line := range lines {
-				nodeID := strings.TrimSpace(line.NodeID)
-				if nodeID == "" {
-					continue
-				}
-				transitionsByNode[nodeID] = append(transitionsByNode[nodeID], line)
+			allActs := stepActivationsFromOrderedLog(lines)
+			stepActsByNode = make(map[string][]stepNodeActivation, len(allActs))
+			for _, act := range allActs {
+				stepActsByNode[act.nodeID] = append(stepActsByNode[act.nodeID], act)
 			}
+			spawnActCursor = make(map[string]int, len(stepActsByNode))
 		}
 	}
 
 	out := make([]ProviderEvent, 0, len(children)*4)
 	for _, child := range children {
-		var times [][2]string
-		if labelCounts[child.agentName] == 1 {
-			times = stepNodeActivationTimes(transitionsByNode[child.agentName], child.agentName, child.updatedAt)
-		}
-		activations := len(times)
-		if activations == 0 {
-			activations = child.activations
-			if activations < 1 {
-				activations = 1
-			}
-			// Review Loop reinvoke can leave turn_count higher than real rounds
-			// (coder churn). Cap multi-activation cards to *other* children's start
-			// waves so we never emit four coder cards for three reviewer waves
-			// (run-24377 Image 2: two coders consecutive).
-			if activations > 1 {
-				if waves := peerStartWaveTimes(peerStarts, child.startedAt, 45*time.Second); len(waves) > 0 && activations > len(waves) {
-					activations = len(waves)
+		var acts []stepNodeActivation
+		if stepActsByNode != nil {
+			nodeActs := stepActsByNode[child.agentName]
+			if labelCounts[child.agentName] == 1 {
+				// Reinvoke: one run owns every activation of this label.
+				acts = nodeActs
+			} else if len(nodeActs) > 0 {
+				// Spawn-lifecycle: one child run ↔ one log activation (by start order).
+				idx := spawnActCursor[child.agentName]
+				if idx < len(nodeActs) {
+					acts = []stepNodeActivation{nodeActs[idx]}
+					spawnActCursor[child.agentName] = idx + 1
 				}
 			}
-			times = resumeActivationTimestamps(child.startedAt, child.updatedAt, activations, peerStarts, child.startedAt)
 		}
+
+		if len(acts) > 0 {
+			for i, act := range acts {
+				spawnAt := firstNonEmptyResumeValue(act.runningAt, child.startedAt)
+				resultAt := firstNonEmptyResumeValue(act.doneAt, child.updatedAt, spawnAt)
+				spawnID := fmt.Sprintf("resume-spawn-%s-%d", child.runID, i)
+				out = append(out, ProviderEvent{
+					ID:            spawnID,
+					Type:          EventAgentSpawnedByUser,
+					AgentName:     child.agentName,
+					ChildRunID:    child.runID,
+					OccurredAt:    spawnAt,
+					ResumeDurable: true,
+					ResumeCohort:  act.cohort,
+					ResumeLogOrd:  act.ord,
+				})
+				if !child.completed {
+					continue
+				}
+				finalMsg := child.lastMessage
+				if i < len(acts)-1 {
+					finalMsg = firstNonEmptyResumeValue(finalMsg, "completed")
+					if child.lastMessage != "" {
+						finalMsg = "completed"
+					}
+				}
+				if finalMsg == "" {
+					continue
+				}
+				out = append(out, ProviderEvent{
+					ID:            fmt.Sprintf("resume-result-%s-%d", child.runID, i),
+					Type:          EventAgentResultInjected,
+					AgentName:     child.agentName,
+					ChildRunID:    child.runID,
+					FinalMessage:  finalMsg,
+					OccurredAt:    resultAt,
+					ResumeDurable: true,
+					ResumeCohort:  act.cohort,
+					ResumeLogOrd:  act.ord,
+				})
+			}
+			continue
+		}
+
+		// Legacy fallback: no step-transition sidecar (older fixtures / unit tests).
+		// Keep pre-CA-412 wave parking so no-sidecar resume-order tests stay green.
+		activations := child.activations
+		if activations < 1 {
+			activations = 1
+		}
+		if activations > 1 {
+			if waves := peerStartWaveTimes(peerStarts, child.startedAt, 45*time.Second); len(waves) > 0 && activations > len(waves) {
+				activations = len(waves)
+			}
+		}
+		times := resumeActivationTimestamps(child.startedAt, child.updatedAt, activations, peerStarts, child.startedAt)
 		for i := 0; i < activations; i++ {
-			// Distinct event ids so the desktop can keep one main-chat card per
-			// activation (dedupe is by event id). ChildRunID stays the same so
-			// Agents tab still shows a single run item / Open focuses the same child.
 			spawnID := fmt.Sprintf("resume-spawn-%s-%d", child.runID, i)
 			spawnAt, resultAt := times[i][0], times[i][1]
 			out = append(out, ProviderEvent{
@@ -2144,14 +2191,9 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 			if !child.completed {
 				continue
 			}
-			// Only the latest activation has a durable lastMessage. Earlier
-			// activations still get a result so the card closes as completed;
-			// empty FinalMessage still flips finalMessage on the client when we
-			// pass a non-empty placeholder — use a minimal marker for prior turns.
 			finalMsg := child.lastMessage
 			if i < activations-1 {
 				finalMsg = firstNonEmptyResumeValue(finalMsg, "completed")
-				// Prefer not to paste the *final* turn's prose onto earlier cards.
 				if child.lastMessage != "" {
 					finalMsg = "completed"
 				}
@@ -2196,46 +2238,92 @@ func resumeChildActivationCount(store WorkflowStore, session ProviderSessionStat
 	return n
 }
 
-// stepNodeActivation is one RUNNING→terminal window for a single flow node,
+// stepNodeActivation is one RUNNING→terminal window for a flow agent node,
 // read from the durable step-transition sidecar (Task-239).
 type stepNodeActivation struct {
+	nodeID    string
 	runningAt string
 	doneAt    string
+	// cohort is the count of synthesis-node RUNNING transitions that precede
+	// this activation in the parent step-transition log (append order). It is
+	// the durable round boundary — not wall-clock spacing (Terra REWORK_DESIGN).
+	cohort int
+	// ord is the global append order among agent activations in the same log.
+	ord int
 }
 
-// stepNodeActivationsFromLog walks a hub's step-transition lines in order and
-// pairs each RUNNING transition for nodeID with the next terminal transition
-// (DONE/FAILED/CANCELED) for that node. This is ground truth for how many
-// times a reinvoke-lifecycle node actually ran — unlike turn-log prompt
-// counting (resumeChildActivationCount), it is not inflated by a mid-round
-// gate reprompt landing as an extra prompt line (a Claude review-loop coder
-// with a single-reviewer flow: 3 turn-log prompts across only 2 real
-// activations, the middle one being the gate's "missing change-audit note"
-// reprompt within round 1).
-func stepNodeActivationsFromLog(lines []stepTransitionLine, nodeID string) []stepNodeActivation {
-	var out []stepNodeActivation
-	var open *stepNodeActivation
+// isSynthesisStepNode reports whether nodeID is a hub synthesis step (boundary
+// between Review Loop rounds). Matches "synthesis", "grok-synthesis", etc.
+func isSynthesisStepNode(nodeID string) bool {
+	n := strings.ToLower(strings.TrimSpace(nodeID))
+	if n == "" {
+		return false
+	}
+	return n == "synthesis" || strings.Contains(n, "synthesis")
+}
+
+// stepActivationsFromOrderedLog walks the full parent step-transition sidecar
+// in append order and returns every agent-node RUNNING→terminal activation with
+// durable cohort/ord. Synthesis RUNNING lines advance the cohort counter; they
+// are not themselves agent cards. PENDING/provider posture lines are ignored.
+func stepActivationsFromOrderedLog(lines []stepTransitionLine) []stepNodeActivation {
+	out := make([]stepNodeActivation, 0, len(lines)/2)
+	openIdx := make(map[string]int) // nodeID → index in out of open RUNNING
+	synthSeen := 0
+	ord := 0
 	for _, line := range lines {
-		if strings.TrimSpace(line.NodeID) != nodeID {
+		nodeID := strings.TrimSpace(line.NodeID)
+		if nodeID == "" {
 			continue
 		}
-		switch RuntimeWorkflowStepStatus(strings.TrimSpace(line.Status)) {
+		st := RuntimeWorkflowStepStatus(strings.TrimSpace(line.Status))
+		if isSynthesisStepNode(nodeID) {
+			if st == StepStatusRunning {
+				synthSeen++
+			}
+			continue
+		}
+		switch st {
 		case StepStatusRunning:
-			out = append(out, stepNodeActivation{runningAt: line.TS})
-			open = &out[len(out)-1]
+			out = append(out, stepNodeActivation{
+				nodeID:    nodeID,
+				runningAt: line.TS,
+				cohort:    synthSeen,
+				ord:       ord,
+			})
+			openIdx[nodeID] = len(out) - 1
+			ord++
 		case StepStatusDone, StepStatusFailed, StepStatusCanceled:
-			if open != nil && open.doneAt == "" {
-				open.doneAt = line.TS
+			if idx, ok := openIdx[nodeID]; ok {
+				if out[idx].doneAt == "" {
+					out[idx].doneAt = line.TS
+				}
+				delete(openIdx, nodeID)
 			}
 		}
 	}
 	return out
 }
 
-// stepNodeActivationTimes converts logged activations into the [spawnAt,
-// resultAt] pairs resumedParentAgentAnnotations needs, one per real
-// activation. fallbackEnd covers a RUNNING transition logged without a
-// matching terminal line (process killed mid-turn).
+// stepNodeActivationsFromLog filters stepActivationsFromOrderedLog to one node.
+// Kept for call sites / tests that still reason per-node.
+func stepNodeActivationsFromLog(lines []stepTransitionLine, nodeID string) []stepNodeActivation {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil
+	}
+	all := stepActivationsFromOrderedLog(lines)
+	out := make([]stepNodeActivation, 0, len(all))
+	for _, act := range all {
+		if act.nodeID == nodeID {
+			out = append(out, act)
+		}
+	}
+	return out
+}
+
+// stepNodeActivationTimes converts logged activations into [spawnAt, resultAt]
+// pairs. fallbackEnd covers a RUNNING without a matching terminal line.
 func stepNodeActivationTimes(lines []stepTransitionLine, nodeID, fallbackEnd string) [][2]string {
 	acts := stepNodeActivationsFromLog(lines, nodeID)
 	if len(acts) == 0 {
@@ -2252,10 +2340,9 @@ func stepNodeActivationTimes(lines []stepTransitionLine, nodeID, fallbackEnd str
 	return out
 }
 
-// resumeActivationTimestamps returns [spawnAt, resultAt] per activation so
-// multi-turn reinvoke cards land in the correct Review Loop round cluster.
-// When peer children form start-time waves (R0 / R1 / R2 reviewers), each
-// activation is parked just before the matching wave (run-9034 / run-24377).
+// resumeActivationTimestamps is the LEGACY no-sidecar fallback only. Prefer
+// stepActivationsFromOrderedLog cohorts when the step-transition log exists.
+// Synthetic wave parking must not be the durable order authority (Terra).
 func resumeActivationTimestamps(startedAt, updatedAt string, activations int, peerStarts []string, selfStarted string) [][2]string {
 	if activations < 1 {
 		activations = 1
@@ -2270,8 +2357,7 @@ func resumeActivationTimestamps(startedAt, updatedAt string, activations int, pe
 	waves := peerStartWaveTimes(peerStarts, selfStarted, 45*time.Second)
 	if len(waves) >= 1 {
 		// act0: original start → first peer wave (end of round 0 work).
-		// act i>0: 90% into the gap between wave i-1 and wave i so gap-cluster
-		// placement still splits rounds after prior reviewers finish.
+		// act i>0: just before peer wave i (this round's reviewers).
 		tEnd, endOK := parseResumeTime(end)
 		for i := 0; i < activations; i++ {
 			if i == 0 {
@@ -2285,7 +2371,11 @@ func resumeActivationTimestamps(startedAt, updatedAt string, activations int, pe
 			if i < len(waves) {
 				prev := waves[i-1]
 				cur := waves[i]
-				reinvoke := prev.Add(cur.Sub(prev) * 9 / 10)
+				reinvoke := cur.Add(-time.Millisecond)
+				if !reinvoke.After(prev) {
+					// Degenerate / overlapping waves — keep a mid-gap fallback.
+					reinvoke = prev.Add(cur.Sub(prev) * 9 / 10)
+				}
 				resultAt := cur.UTC().Format(time.RFC3339Nano)
 				if i == activations-1 && endOK && tEnd.After(cur) {
 					resultAt = end
@@ -3201,10 +3291,13 @@ func (s *InteractiveService) ensureTerminalTurnCompletedAfterResumeLocked(rs *in
 
 // flowAgentLifecyclePair is one restored child card: spawn plus optional result.
 type flowAgentLifecyclePair struct {
-	spawn  ProviderEvent
-	result ProviderEvent
-	hasRes bool
-	at     string // sort key (spawn OccurredAt)
+	spawn   ProviderEvent
+	result  ProviderEvent
+	hasRes  bool
+	at      string // legacy sort key (spawn OccurredAt) when !durable
+	durable bool
+	cohort  int
+	ord     int
 }
 
 func resumeAnnotationDedupeKey(ev ProviderEvent) string {
@@ -3215,11 +3308,10 @@ func resumeAnnotationDedupeKey(ev ProviderEvent) string {
 }
 
 // insertUnanchoredFlowAgentLifecycleLocked restores flow-engine child cards that
-// have no spawn_agent tool row. Children are clustered by startedAt gaps (a new
-// Review Loop round after hub synthesis) and each cluster is inserted immediately
-// before the corresponding hub message_completed. Within a cluster, concurrent
-// reviewers keep spawn→spawn→result→result wall-clock order when timestamps
-// differ; otherwise spawn→result per child.
+// have no spawn_agent tool row. Prefer durable step-log cohorts (ResumeDurable):
+// each synthesis-bound cohort is inserted immediately before the matching hub
+// message_completed. Without durable metadata (no step-transition sidecar),
+// falls back to startedAt gap clustering for legacy fixtures.
 //
 // Always binds orphan results (spawn already present) after their spawn — including
 // non-flow-engine parents. Caller holds s.mu.
@@ -3253,7 +3345,13 @@ func (s *InteractiveService) insertUnanchoredFlowAgentLifecycleLocked(rs *intera
 			if strings.TrimSpace(annotation.OccurredAt) == "" {
 				annotation.OccurredAt = rs.createdAt
 			}
-			pair := flowAgentLifecyclePair{spawn: annotation, at: annotation.OccurredAt}
+			pair := flowAgentLifecyclePair{
+				spawn:   annotation,
+				at:      annotation.OccurredAt,
+				durable: annotation.ResumeDurable,
+				cohort:  annotation.ResumeCohort,
+				ord:     annotation.ResumeLogOrd,
+			}
 			if queue := resultsByChild[annotation.ChildRunID]; len(queue) > 0 {
 				result := queue[0]
 				resultsByChild[annotation.ChildRunID] = queue[1:]
@@ -3267,6 +3365,11 @@ func (s *InteractiveService) insertUnanchoredFlowAgentLifecycleLocked(rs *intera
 				if strings.TrimSpace(result.OccurredAt) == "" {
 					result.OccurredAt = annotation.OccurredAt
 				}
+				// Keep durable markers on the result so resequence paths that
+				// inspect results stay consistent with the spawn.
+				result.ResumeDurable = annotation.ResumeDurable
+				result.ResumeCohort = annotation.ResumeCohort
+				result.ResumeLogOrd = annotation.ResumeLogOrd
 				pair.result = result
 				pair.hasRes = true
 				seen[resumeAnnotationDedupeKey(result)] = struct{}{}
@@ -3313,13 +3416,6 @@ func (s *InteractiveService) insertUnanchoredFlowAgentLifecycleLocked(rs *intera
 	if !rs.flowEngineDriven || len(pairs) == 0 {
 		return
 	}
-	sort.SliceStable(pairs, func(i, j int) bool {
-		if pairs[i].at == pairs[j].at {
-			return pairs[i].spawn.ChildRunID < pairs[j].spawn.ChildRunID
-		}
-		return pairs[i].at < pairs[j].at
-	})
-
 	// run-24377: identify first user prompt and the *first post-flow follow-up*
 	// (second user-facing turn_started). Synthesis anchors are only hub
 	// message_completed frames before that follow-up — never the follow-up
@@ -3350,11 +3446,34 @@ func (s *InteractiveService) insertUnanchoredFlowAgentLifecycleLocked(rs *intera
 		msgIdxs = append(msgIdxs, i)
 	}
 
-	clusters := clusterFlowAgentPairsByStartGap(pairs, 45*time.Second)
-	// Do NOT even-partition when under-segmented: that split created consecutive
-	// same-child coder cards in one synthesis slot (run-24377 Image 2). Prefer
-	// gap clusters from wave-aware activation timestamps; leftover clusters map
-	// to the last synthesis message.
+	// Prefer durable step-log cohorts even when only a subset of pairs have
+	// ResumeDurable (partial sidecar / unmatched spawn child). Never drop
+	// durable cohorts into the 45s wall-clock path just because one pair is
+	// legacy — that reintroduces synthetic-time round assignment.
+	durablePairs := make([]flowAgentLifecyclePair, 0, len(pairs))
+	legacyPairs := make([]flowAgentLifecyclePair, 0, len(pairs))
+	for _, p := range pairs {
+		if p.durable {
+			durablePairs = append(durablePairs, p)
+		} else {
+			legacyPairs = append(legacyPairs, p)
+		}
+	}
+	var clusters [][]flowAgentLifecyclePair
+	if len(durablePairs) > 0 {
+		clusters = append(clusters, clusterFlowAgentPairsByDurableCohort(durablePairs)...)
+	}
+	if len(legacyPairs) > 0 {
+		sort.SliceStable(legacyPairs, func(i, j int) bool {
+			if legacyPairs[i].at == legacyPairs[j].at {
+				return legacyPairs[i].spawn.ChildRunID < legacyPairs[j].spawn.ChildRunID
+			}
+			return legacyPairs[i].at < legacyPairs[j].at
+		})
+		// Legacy-only or leftover pairs: gap-cluster (documented degraded path).
+		clusters = append(clusters, clusterFlowAgentPairsByStartGap(legacyPairs, 45*time.Second)...)
+	}
+	// Do NOT even-partition when under-segmented (run-24377 Image 2).
 
 	// Clamp inserts: never above the original prompt; never at/after the first
 	// post-flow follow-up (agents must not sit between "done rồi hả" and "ok").
@@ -3374,16 +3493,18 @@ func (s *InteractiveService) insertUnanchoredFlowAgentLifecycleLocked(rs *intera
 	type placement struct {
 		beforeIdx int // insert before this index; len(events) means append
 		cluster   []flowAgentLifecyclePair
+		order     int // original cluster index (R0, R1, …)
 	}
 	placements := make([]placement, 0, len(clusters))
 	switch {
 	case len(msgIdxs) == 0:
 		// No hub prose restored — append agent clusters at the end (still after
 		// the first user prompt and before any follow-up when present).
-		for _, cluster := range clusters {
+		for i, cluster := range clusters {
 			placements = append(placements, placement{
 				beforeIdx: clampPlacement(len(rs.events)),
 				cluster:   cluster,
+				order:     i,
 			})
 		}
 	case len(msgIdxs) == 1:
@@ -3391,10 +3512,11 @@ func (s *InteractiveService) insertUnanchoredFlowAgentLifecycleLocked(rs *intera
 		// hub turns). Put *all* agent clusters before it so the final response
 		// still appears after code-review round 2, not stranded mid-timeline
 		// between R0 and R1 (run-9034 screenshot).
-		for _, cluster := range clusters {
+		for i, cluster := range clusters {
 			placements = append(placements, placement{
 				beforeIdx: clampPlacement(msgIdxs[0]),
 				cluster:   cluster,
+				order:     i,
 			})
 		}
 	default:
@@ -3409,12 +3531,19 @@ func (s *InteractiveService) insertUnanchoredFlowAgentLifecycleLocked(rs *intera
 			placements = append(placements, placement{
 				beforeIdx: clampPlacement(beforeIdx),
 				cluster:   cluster,
+				order:     i,
 			})
 		}
 	}
-	// Apply from the end so earlier indices stay valid.
+	// Apply from the end so earlier indices stay valid. When several clusters
+	// share the same beforeIdx (single synthesis / no hub prose), insert later
+	// rounds first so earlier rounds remain first after successive inserts
+	// (run-52518 single-synth: R0 then R1 before final message, not reversed).
 	sort.SliceStable(placements, func(i, j int) bool {
-		return placements[i].beforeIdx > placements[j].beforeIdx
+		if placements[i].beforeIdx != placements[j].beforeIdx {
+			return placements[i].beforeIdx > placements[j].beforeIdx
+		}
+		return placements[i].order > placements[j].order
 	})
 	for _, p := range placements {
 		block := flattenFlowAgentCluster(p.cluster)
@@ -3436,9 +3565,40 @@ func (s *InteractiveService) insertUnanchoredFlowAgentLifecycleLocked(rs *intera
 	}
 }
 
-// clusterFlowAgentPairsByStartGap groups restored children into Review Loop
-// rounds: a gap larger than maxGap between consecutive startedAt values starts
-// a new cluster (hub synthesis + continue sits in that gap).
+// clusterFlowAgentPairsByDurableCohort groups pairs by ResumeCohort (synthesis
+// RUNNING count preceding the activation in the step-transition log). Within a
+// cohort, order by ResumeLogOrd then ChildRunID — append order, not wall-clock.
+func clusterFlowAgentPairsByDurableCohort(pairs []flowAgentLifecyclePair) [][]flowAgentLifecyclePair {
+	if len(pairs) == 0 {
+		return nil
+	}
+	sorted := append([]flowAgentLifecyclePair(nil), pairs...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].cohort != sorted[j].cohort {
+			return sorted[i].cohort < sorted[j].cohort
+		}
+		if sorted[i].ord != sorted[j].ord {
+			return sorted[i].ord < sorted[j].ord
+		}
+		return sorted[i].spawn.ChildRunID < sorted[j].spawn.ChildRunID
+	})
+	clusters := [][]flowAgentLifecyclePair{{sorted[0]}}
+	for i := 1; i < len(sorted); i++ {
+		if sorted[i].cohort != sorted[i-1].cohort {
+			clusters = append(clusters, []flowAgentLifecyclePair{sorted[i]})
+			continue
+		}
+		clusters[len(clusters)-1] = append(clusters[len(clusters)-1], sorted[i])
+	}
+	return clusters
+}
+
+// clusterFlowAgentPairsByStartGap is the LEGACY no-sidecar clusterer. Prefer
+// clusterFlowAgentPairsByDurableCohort when step-transition cohorts exist.
+//
+// Groups restored children into Review Loop rounds: a gap larger than maxGap
+// between consecutive startedAt values starts a new cluster (hub synthesis +
+// continue sits in that gap).
 //
 // The gap is measured from the previous pair's *latest* known time (result
 // OccurredAt when present, else spawn) so a long-running coder that starts a
