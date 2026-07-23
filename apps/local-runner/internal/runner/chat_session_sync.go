@@ -75,6 +75,15 @@ type ChatSessionSyncManifest struct {
 	// selection (BUG-263) so a restored run keeps its Bug/Review-Loop intent.
 	ChatSubMode string `json:"chatSubMode,omitempty"`
 	ChatFlowRef string `json:"chatFlowRef,omitempty"`
+	// TurnLog carries the run's durable turn-log sidecar verbatim (BUG-313):
+	// raw user prompts, per-turn provider session-id chains, and durable
+	// transcript_turn/assistant frames. Restore rewrites the local sidecar so a
+	// restored run rebuilds its timeline exactly like a same-machine restart --
+	// seedTranscriptFromDisk / seedGrokTranscriptFromDisk / the flow-hub
+	// turn-log path all read this sidecar for prompts, hub prose, and
+	// agent-card clustering. Provider-agnostic; omitempty keeps old manifests
+	// valid (absent log == pre-fix behavior).
+	TurnLog []turnLogLine `json:"turnLog,omitempty"`
 }
 
 // isSyncableRunKind reports whether a run's runKind can sync to / restore from
@@ -370,6 +379,18 @@ func (s *InteractiveService) BuildChatSessionSyncManifest(ctx context.Context, r
 	}
 	if children := s.listAgentRunSummaries(runID); len(children) > 0 {
 		manifest.ChildAgents = children
+	}
+	// BUG-313: carry the durable turn log with the manifest. Without it a
+	// restored run has no raw prompts (flow hubs have no other prompt source --
+	// CP-42 suppresses the hub's own provider turn), no durable hub
+	// prose/transcript frames, and no per-turn session-id chain -- the exact
+	// inputs the post-restart timeline reconstruction reads from the local
+	// <runID>-turns.ndjson sidecar. Children get theirs automatically: the
+	// child sync loop builds each child's manifest through this same function.
+	if logger, ok := s.workflowStore.(TurnLogStore); ok {
+		if entries, logErr := logger.ReadTurnLog(ctx, runID); logErr == nil && len(entries) > 0 {
+			manifest.TurnLog = entries
+		}
 	}
 	return manifest, body, nil
 }
@@ -1229,6 +1250,23 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 				childSession.ModelName = remapped[i].ModelName
 			}); metadataErr != nil {
 				return ChatSessionRestoreResult{}, metadataErr
+			}
+		}
+	}
+	// BUG-313: rebuild the per-run turn-log sidecar from the manifest so the
+	// restored run reopens with the same timeline a same-machine restart would
+	// build (raw prompts, flow-hub prose, agent-card clustering, per-turn
+	// session-id chains). Skipped when the local sidecar already has entries --
+	// on the original machine the local log IS the source of truth, and a
+	// repeated restore must not append a second copy of every line.
+	if len(manifest.TurnLog) > 0 {
+		if logger, ok := s.workflowStore.(TurnLogStore); ok {
+			if existing, readErr := logger.ReadTurnLog(ctx, localRunID); readErr == nil && len(existing) == 0 {
+				for _, line := range manifest.TurnLog {
+					if appendErr := logger.AppendTurnLog(ctx, localRunID, line); appendErr != nil {
+						return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", appendErr.Error())
+					}
+				}
 			}
 		}
 	}

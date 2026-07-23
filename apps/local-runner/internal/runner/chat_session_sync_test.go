@@ -2016,3 +2016,216 @@ func TestRestoreChatRunFromDriveGrokRecomputesPathForDifferentCwd(t *testing.T) 
 		t.Fatalf("restored transcript = %q, want %q", body, transcript)
 	}
 }
+
+// --- BUG-313: the sync manifest must carry the run's durable turn log, and
+// restore must rebuild the local <runID>-turns.ndjson sidecar from it. The
+// entire post-restart timeline reconstruction (seedTranscriptFromDisk /
+// seedGrokTranscriptFromDisk / preferFlowHubTurnLogTranscript) is driven by
+// that sidecar: raw user prompts (F-1), flow-hub prose (transcript_turn /
+// assistant frames), per-turn provider session-id chains, and the empty-
+// OccurredAt clustering that keeps agent cards beside their turns. Restoring
+// a run without it reproduced the live defect: prompts gone, hub text wrong
+// (cwd-wide session-dir fallback mixing other runs), agent cards dumped at
+// the bottom. Live-confirmed on run-24345 (Gate-sandbox, 2026-07-23).
+
+func bug313TurnLogEntries(prompt string) []turnLogLine {
+	return []turnLogLine{
+		{Kind: turnLogKindPrompt, TurnID: "turn-1", Prompt: prompt},
+		{Kind: turnLogKindTranscriptTurn, TurnID: "turn-1", Prompt: prompt, Assistant: "hub synthesis answer"},
+		{Kind: turnLogKindAssistant, TurnID: "turn-2", Assistant: "follow-up durable frame"},
+	}
+}
+
+func appendBug313TurnLog(t *testing.T, store *localFileSessionStore, runID string, entries []turnLogLine) {
+	t.Helper()
+	for _, line := range entries {
+		if err := store.AppendTurnLog(context.Background(), runID, line); err != nil {
+			t.Fatalf("AppendTurnLog: %v", err)
+		}
+	}
+}
+
+func mustTurnLogJSON(t *testing.T, entries []turnLogLine) string {
+	t.Helper()
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatalf("marshal turn log: %v", err)
+	}
+	return string(raw)
+}
+
+// TestSyncChatRunToDriveManifestCarriesTurnLog asserts the uploaded
+// manifest.json embeds the run's turn log verbatim. Deliberately inspects the
+// raw JSON (not the Go struct) so this test compiles and FAILS on the pre-fix
+// baseline, where the field does not exist.
+func TestSyncChatRunToDriveManifestCarriesTurnLog(t *testing.T) {
+	svc, _, store, api, workspace, accountHome := newChatSyncService(t)
+	seedLocalChatRun(t, store, accountHome, workspace, "run-turnlog-sync", []byte("codex-session"))
+	entries := bug313TurnLogEntries("what did the last turn fix?")
+	appendBug313TurnLog(t, store, "run-turnlog-sync", entries)
+
+	if _, apiErr := svc.syncChatRunToDrive(context.Background(), "run-turnlog-sync", ChatSessionSyncRequest{}); apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+	manifestID := remoteManifestFileID(api)
+	if manifestID == "" {
+		t.Fatal("expected manifest upload")
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(api.files[manifestID].Content, &manifest); err != nil {
+		t.Fatalf("manifest json invalid: %v", err)
+	}
+	rawLog, ok := manifest["turnLog"].([]any)
+	if !ok || len(rawLog) != len(entries) {
+		t.Fatalf("BUG-313: manifest turnLog = %#v, want %d entries", manifest["turnLog"], len(entries))
+	}
+	first, _ := rawLog[0].(map[string]any)
+	if first["kind"] != string(turnLogKindPrompt) || first["prompt"] != entries[0].Prompt {
+		t.Fatalf("BUG-313: first turnLog entry = %#v, want raw prompt %q", first, entries[0].Prompt)
+	}
+}
+
+// TestRestoreChatRunFromDriveRebuildsTurnLogSidecarAllProviders proves the
+// sync->restore round trip rebuilds the turn-log sidecar identically for
+// Codex, Claude, AND Grok (cross-provider parity rule) using the flow-hub
+// shape (runKind=workflow, synthetic thread-* session, no provider file) --
+// the exact class the live defect was reported on, and a shape whose timeline
+// is rebuilt from the turn log ALONE.
+func TestRestoreChatRunFromDriveRebuildsTurnLogSidecarAllProviders(t *testing.T) {
+	svc, instance, store, _, workspace, accountHome := newChatSyncService(t)
+
+	claudeHome := filepath.Join(filepath.Dir(accountHome), "claude-home")
+	if err := os.MkdirAll(filepath.Join(claudeHome, ".claude"), 0o755); err != nil {
+		t.Fatalf("MkdirAll claude home: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeHome, ".claude", ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"tok"}}`), 0o644); err != nil {
+		t.Fatalf("write claude credentials: %v", err)
+	}
+	grokHome := filepath.Join(filepath.Dir(accountHome), "grok-home")
+	if err := os.MkdirAll(grokHome, 0o755); err != nil {
+		t.Fatalf("MkdirAll grok home: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(grokHome, "auth.json"), []byte(`{"issuer::user":{"refresh_token":"rt","email":"g@example.com"}}`), 0o644); err != nil {
+		t.Fatalf("write grok auth: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := instance.saveProviderAccountState(providerAccountState{Accounts: []ProviderAccount{
+		{ID: "acct-sync", ProviderKey: "codex", DisplayName: "Account 1", HomePath: accountHome, SlotIndex: 1, IsActive: true, AuthStatus: "connected", CreatedAt: now},
+		{ID: "acct-claude", ProviderKey: "claude", DisplayName: "Claude 1", HomePath: claudeHome, SlotIndex: 1, IsActive: true, AuthStatus: "connected", CreatedAt: now},
+		{ID: "acct-grok", ProviderKey: "grok", DisplayName: "Grok 1", HomePath: grokHome, SlotIndex: 1, IsActive: true, AuthStatus: "connected", CreatedAt: now},
+	}}); err != nil {
+		t.Fatalf("saveProviderAccountState: %v", err)
+	}
+
+	cases := []struct {
+		provider  ProviderKey
+		accountID string
+		runID     string
+	}{
+		{ProviderKeyCodex, "acct-sync", "run-hub-codex"},
+		{ProviderKeyClaude, "acct-claude", "run-hub-claude"},
+		{ProviderKeyGrok, "acct-grok", "run-hub-grok"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			state := ProviderSessionState{
+				RunID:             tc.runID,
+				ProjectID:         "project-1",
+				WorkflowID:        "wf-" + tc.runID,
+				ProviderKey:       tc.provider,
+				ProviderSessionID: "thread-1",
+				ProviderAccountID: tc.accountID,
+				WorkingDirectory:  workspace,
+				Status:            RunStatusCompleted,
+				LastPrompt:        "fix bug 1+1 != 2",
+				LastMessage:       "hub synthesis answer",
+				StartedAt:         "2026-07-22T10:00:00Z",
+				UpdatedAt:         "2026-07-22T10:05:00Z",
+				RunKind:           "workflow",
+			}
+			if err := store.UpsertProviderSession(context.Background(), state); err != nil {
+				t.Fatalf("UpsertProviderSession: %v", err)
+			}
+			entries := bug313TurnLogEntries("fix bug 1+1 != 2")
+			appendBug313TurnLog(t, store, tc.runID, entries)
+
+			result, apiErr := svc.syncChatRunToDrive(context.Background(), tc.runID, ChatSessionSyncRequest{})
+			if apiErr != nil {
+				t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+			}
+			// Simulate the restoring machine: no local sidecar for this run.
+			if err := store.DeleteTurnLog(context.Background(), tc.runID); err != nil {
+				t.Fatalf("DeleteTurnLog: %v", err)
+			}
+			restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+				ProjectID:       "project-1",
+				SourceMachineID: result.SourceMachineID,
+				SourceRunID:     result.SourceRunID,
+				Cwd:             workspace,
+			})
+			if apiErr != nil {
+				t.Fatalf("restoreChatRunFromDrive() failed: %#v", apiErr)
+			}
+			got, err := store.ReadTurnLog(context.Background(), restored.RunID)
+			if err != nil {
+				t.Fatalf("ReadTurnLog: %v", err)
+			}
+			if mustTurnLogJSON(t, got) != mustTurnLogJSON(t, entries) {
+				t.Fatalf("BUG-313 (%s): restored turn log = %s, want %s", tc.provider, mustTurnLogJSON(t, got), mustTurnLogJSON(t, entries))
+			}
+		})
+	}
+}
+
+// TestRestoreChatRunFromDriveDoesNotDuplicateTurnLogSidecar guards the
+// idempotency rule: restoring onto a machine that still has the run's original
+// sidecar must not append a second copy of every line, and a re-restore after
+// the sidecar is wiped rebuilds it exactly once.
+func TestRestoreChatRunFromDriveDoesNotDuplicateTurnLogSidecar(t *testing.T) {
+	svc, _, store, _, workspace, accountHome := newChatSyncService(t)
+	seedLocalChatRun(t, store, accountHome, workspace, "run-turnlog-nodup", []byte("codex-session"))
+	entries := bug313TurnLogEntries("original raw prompt")
+	appendBug313TurnLog(t, store, "run-turnlog-nodup", entries)
+
+	result, apiErr := svc.syncChatRunToDrive(context.Background(), "run-turnlog-nodup", ChatSessionSyncRequest{})
+	if apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+	// Restore while the original sidecar is still present -- must not duplicate.
+	restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+		ProjectID:       "project-1",
+		SourceMachineID: result.SourceMachineID,
+		SourceRunID:     result.SourceRunID,
+		Cwd:             workspace,
+	})
+	if apiErr != nil {
+		t.Fatalf("restoreChatRunFromDrive() failed: %#v", apiErr)
+	}
+	got, err := store.ReadTurnLog(context.Background(), restored.RunID)
+	if err != nil {
+		t.Fatalf("ReadTurnLog: %v", err)
+	}
+	if len(got) != len(entries) {
+		t.Fatalf("restore duplicated the existing sidecar: %d entries, want %d", len(got), len(entries))
+	}
+	// Wipe and restore again -- rebuilds exactly once.
+	if err := store.DeleteTurnLog(context.Background(), restored.RunID); err != nil {
+		t.Fatalf("DeleteTurnLog: %v", err)
+	}
+	restored2, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+		ProjectID:       "project-1",
+		SourceMachineID: result.SourceMachineID,
+		SourceRunID:     result.SourceRunID,
+		Cwd:             workspace,
+	})
+	if apiErr != nil {
+		t.Fatalf("second restoreChatRunFromDrive() failed: %#v", apiErr)
+	}
+	got2, err := store.ReadTurnLog(context.Background(), restored2.RunID)
+	if err != nil {
+		t.Fatalf("ReadTurnLog after rebuild: %v", err)
+	}
+	if mustTurnLogJSON(t, got2) != mustTurnLogJSON(t, entries) {
+		t.Fatalf("rebuilt turn log = %s, want %s", mustTurnLogJSON(t, got2), mustTurnLogJSON(t, entries))
+	}
+}
