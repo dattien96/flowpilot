@@ -176,6 +176,14 @@ type FlowDefinition struct {
 	Contexts    map[string]FlowContextBinding
 	Nodes       []FlowNode
 	Edges       []FlowEdge
+	// AcceptanceNodes is the flow-defined acceptance boundary (CP-55 P-1,
+	// root YAML key `acceptance_nodes`): the declared non-writer node ids
+	// that must appear on every forward path from an agent.code writer to
+	// the terminal "done" state. Optional and empty for every pre-CP-55
+	// flow, since none declare an agent.code node yet; a flow that does
+	// declare one must set this to at least one valid id (see
+	// ValidateFlowSafetyTopology).
+	AcceptanceNodes []string
 }
 
 // ToolFace describes a declared tool face.
@@ -236,6 +244,13 @@ var behaviorAliases = map[string]string{
 	"flow.control":                          "flow.control",
 	"flow.control_tool":                     "flow.control",
 	"user.confirm":                          "user.confirm",
+	// CP-55 P-1 (Task-263): explicit writer/freeze behavior ids. Self-mapping
+	// only — no pre-existing alias is touched or retargeted, and nothing
+	// else may alias onto these ids: agent.code writer status is a
+	// graph-topology invariant (see ValidateFlowSafetyTopology), not an
+	// interchangeable synonym like "coding"/"code".
+	"agent.code":      "agent.code",
+	"contract.freeze": "contract.freeze",
 }
 
 // NormalizeBehaviorID maps known aliases onto canonical behavior IDs.
@@ -622,12 +637,13 @@ func manifestFromMap(m map[string]any) (Manifest, error) {
 
 func flowFromMap(m map[string]any) (FlowDefinition, error) {
 	def := FlowDefinition{
-		ID:          stringField(m, "id"),
-		Version:     stringField(m, "version"),
-		Description: stringField(m, "description"),
-		Mode:        stringField(m, "mode"),
-		Tools:       stringSliceField(m, "tools"),
-		Contexts:    make(map[string]FlowContextBinding),
+		ID:              stringField(m, "id"),
+		Version:         stringField(m, "version"),
+		Description:     stringField(m, "description"),
+		Mode:            stringField(m, "mode"),
+		Tools:           stringSliceField(m, "tools"),
+		Contexts:        make(map[string]FlowContextBinding),
+		AcceptanceNodes: stringSliceField(m, "acceptance_nodes"),
 	}
 	if builtin, ok := mapField(m, "builtin"); ok {
 		def.Builtin = BuiltinMeta{
@@ -853,6 +869,14 @@ func ValidateFlowDefinition(def FlowDefinition) error {
 			}
 			backEdgeSources[edge.When] = edge.From
 		}
+	}
+	// CP-55 P-1: wired at the same definition-resolution boundary as the
+	// checks above so it runs everywhere ValidateFlowDefinition already
+	// does (LoadFlowFS and both FlowDefinitionResolver paths). A flow with
+	// no agent.code node always passes, so this is additive for every
+	// pre-CP-55 flow (see ValidateFlowSafetyTopology's own doc comment).
+	if err := ValidateFlowSafetyTopology(def); err != nil {
+		return err
 	}
 	return nil
 }

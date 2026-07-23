@@ -64,12 +64,24 @@ func TestLoadBuiltinReviewLoopFlow(t *testing.T) {
 	if review.Builtin.ChatUI.Placement != "sub_mode_option" {
 		t.Fatalf("chatUI placement = %q", review.Builtin.ChatUI.Placement)
 	}
-	if got := review.Nodes[0].Behavior; got != "agent.delegate" {
-		t.Fatalf("coder behavior = %q, want agent.delegate", got)
-	}
+	behaviors := map[string]string{}
 	lifecycles := map[string]string{}
 	for _, node := range review.Nodes {
+		behaviors[node.ID] = node.Behavior
 		lifecycles[node.ID] = node.Lifecycle
+	}
+	// CP-55 P-8: coder is now the frozen writer (agent.code), governed by a
+	// preflight_contract_plan/preflight_contract_freeze pair prepended ahead
+	// of it — looked up by ID (not positional index) since that prefix
+	// shifts every other node's index.
+	if got := behaviors["coder"]; got != "agent.code" {
+		t.Fatalf("coder behavior = %q, want agent.code", got)
+	}
+	if got := behaviors["preflight_contract_plan"]; got != "agent.delegate" {
+		t.Fatalf("preflight_contract_plan behavior = %q, want agent.delegate", got)
+	}
+	if got := behaviors["preflight_contract_freeze"]; got != "contract.freeze" {
+		t.Fatalf("preflight_contract_freeze behavior = %q, want contract.freeze", got)
 	}
 	if lifecycles["coder"] != "reinvoke" {
 		t.Fatalf("coder lifecycle = %q, want reinvoke", lifecycles["coder"])
@@ -77,8 +89,11 @@ func TestLoadBuiltinReviewLoopFlow(t *testing.T) {
 	if lifecycles["reviewer_correctness"] != "spawn" || lifecycles["reviewer_security"] != "spawn" {
 		t.Fatalf("reviewer lifecycles = correctness:%q security:%q, want spawn/spawn", lifecycles["reviewer_correctness"], lifecycles["reviewer_security"])
 	}
-	if got := review.Nodes[3].Behavior; got != "hub.inline" {
+	if got := behaviors["synthesis"]; got != "hub.inline" {
 		t.Fatalf("synthesis behavior = %q, want hub.inline", got)
+	}
+	if len(review.AcceptanceNodes) == 0 {
+		t.Fatal("expected review-loop to declare acceptance_nodes now that coder is agent.code")
 	}
 }
 
@@ -105,11 +120,29 @@ func TestLoadBuiltinRAGHarnessFlow(t *testing.T) {
 	if len(rag.Contexts) == 0 || rag.Contexts["main_context"].Ref != "contexts/flow-context-package.yaml" {
 		t.Fatalf("main_context ref not parsed: %+v", rag.Contexts)
 	}
-	if len(rag.Nodes) != 4 {
-		t.Fatalf("expected 4 nodes, got %d", len(rag.Nodes))
+	// CP-55 P-8: 4 original nodes plus preflight_contract_plan/
+	// preflight_contract_freeze prepended ahead of context.
+	if len(rag.Nodes) != 6 {
+		t.Fatalf("expected 6 nodes, got %d", len(rag.Nodes))
 	}
-	if !strings.EqualFold(rag.Nodes[0].Behavior, "context.produce") {
-		t.Fatalf("first node behavior = %q, want context.produce", rag.Nodes[0].Behavior)
+	behaviors := map[string]string{}
+	for _, node := range rag.Nodes {
+		behaviors[node.ID] = node.Behavior
+	}
+	if !strings.EqualFold(behaviors["context"], "context.produce") {
+		t.Fatalf("context node behavior = %q, want context.produce", behaviors["context"])
+	}
+	if !strings.EqualFold(behaviors["implement"], "agent.code") {
+		t.Fatalf("implement behavior = %q, want agent.code", behaviors["implement"])
+	}
+	if !strings.EqualFold(behaviors["preflight_contract_plan"], "agent.delegate") {
+		t.Fatalf("preflight_contract_plan behavior = %q, want agent.delegate", behaviors["preflight_contract_plan"])
+	}
+	if !strings.EqualFold(behaviors["preflight_contract_freeze"], "contract.freeze") {
+		t.Fatalf("preflight_contract_freeze behavior = %q, want contract.freeze", behaviors["preflight_contract_freeze"])
+	}
+	if len(rag.AcceptanceNodes) == 0 {
+		t.Fatal("expected rag-harness to declare acceptance_nodes now that implement is agent.code")
 	}
 }
 

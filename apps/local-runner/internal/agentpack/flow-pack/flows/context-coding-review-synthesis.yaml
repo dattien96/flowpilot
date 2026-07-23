@@ -3,10 +3,12 @@
 # context_artifact output is the same instance bound as input to
 # coder/reviewer_correctness/reviewer_security/synthesis (seeded by
 # EnsureBuiltinArtifactBindingsWithStore). Node/edge shape otherwise mirrors
-# review-loop.yaml exactly (same cohort/join/back-edge contract) with
-# rag-harness's inline context entry node prepended (startInlineEntryChain's
-# one supported inline-entry shape: exactly one no-dependency inline node with
-# a single forward hop to one agent.delegate node).
+# review-loop.yaml exactly (same cohort/join/back-edge contract).
+#
+# CP-55 P-8: preflight_contract_plan (agent.delegate, entryDelegateNodes'
+# normal entry-node path) now precedes the inline context node, so this flow
+# no longer relies on startInlineEntryChain's inline-entry fallback at all --
+# it starts exactly like any flow with a normal agent.delegate entry.
 id: context-coding-review-synthesis
 version: 1
 description: Flow Mode Context-to-Coding-to-Review-to-Synthesis template with typed artifact binding.
@@ -27,13 +29,27 @@ policy:
 contexts:
   main_context:
     ref: contexts/flow-context-package.yaml
+    # CP-55 P-8 added change.contract/canonical.head (spec 3.15).
     sources:
+      - change.contract
+      - canonical.head
       - feature.history
       - chat.summary
       - source.excerpt
 tools:
   - tools/submit-review-outcome.yaml
+acceptance_nodes:
+  - synthesis
 nodes:
+  - id: preflight_contract_plan
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/contract-planner.md
+  - id: preflight_contract_freeze
+    run: inline
+    lifecycle: once
+    behavior: contract.freeze
   - id: context
     run: inline
     lifecycle: once
@@ -41,7 +57,7 @@ nodes:
   - id: coder
     run: delegate
     lifecycle: reinvoke
-    behavior: agent.delegate
+    behavior: agent.code
     agent: agents/coder.md
     join: all
   - id: reviewer_correctness
@@ -69,6 +85,14 @@ nodes:
     agent: agents/synthesizer.md
     join: all
 edges:
+  - from: preflight_contract_plan
+    to: preflight_contract_freeze
+    when: done
+    kind: forward
+  - from: preflight_contract_freeze
+    to: context
+    when: done
+    kind: forward
   - from: context
     to: coder
     when: done
