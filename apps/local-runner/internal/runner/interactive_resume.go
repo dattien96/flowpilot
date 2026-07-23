@@ -2078,22 +2078,56 @@ func (s *InteractiveService) resumedParentAgentAnnotations(parentRunID string) [
 	}
 	sort.Strings(peerStarts)
 
-	out := make([]ProviderEvent, 0, len(children)*4)
+	// How many distinct child runs claim each label. A reinvoke-lifecycle node
+	// (Claude review-loop's my-coder / my-reviewer-claude) keeps ONE run id
+	// across every round, so its label is claimed by exactly one entry here —
+	// safe to expand from the step-transition log below. A spawn-lifecycle node
+	// (Codex's reviewer_correctness, fresh run id each round) has its label
+	// claimed by several entries; expanding any one of them from the log would
+	// attribute every round's RUNNING/DONE pairs to that single child, so those
+	// stay on the legacy heuristic path where each child already gets its own
+	// correct single activation.
+	labelCounts := make(map[string]int, len(children))
 	for _, child := range children {
-		activations := child.activations
-		if activations < 1 {
-			activations = 1
-		}
-		// Review Loop reinvoke can leave turn_count higher than real rounds
-		// (coder churn). Cap multi-activation cards to *other* children's start
-		// waves so we never emit four coder cards for three reviewer waves
-		// (run-24377 Image 2: two coders consecutive).
-		if activations > 1 {
-			if waves := peerStartWaveTimes(peerStarts, child.startedAt, 45*time.Second); len(waves) > 0 && activations > len(waves) {
-				activations = len(waves)
+		labelCounts[child.agentName]++
+	}
+	var transitionsByNode map[string][]stepTransitionLine
+	if store, ok := s.workflowStore.(StepTransitionLogStore); ok {
+		if lines, err := store.LoadStepTransitions(context.Background(), parentRunID); err == nil && len(lines) > 0 {
+			transitionsByNode = make(map[string][]stepTransitionLine, len(lines))
+			for _, line := range lines {
+				nodeID := strings.TrimSpace(line.NodeID)
+				if nodeID == "" {
+					continue
+				}
+				transitionsByNode[nodeID] = append(transitionsByNode[nodeID], line)
 			}
 		}
-		times := resumeActivationTimestamps(child.startedAt, child.updatedAt, activations, peerStarts, child.startedAt)
+	}
+
+	out := make([]ProviderEvent, 0, len(children)*4)
+	for _, child := range children {
+		var times [][2]string
+		if labelCounts[child.agentName] == 1 {
+			times = stepNodeActivationTimes(transitionsByNode[child.agentName], child.agentName, child.updatedAt)
+		}
+		activations := len(times)
+		if activations == 0 {
+			activations = child.activations
+			if activations < 1 {
+				activations = 1
+			}
+			// Review Loop reinvoke can leave turn_count higher than real rounds
+			// (coder churn). Cap multi-activation cards to *other* children's start
+			// waves so we never emit four coder cards for three reviewer waves
+			// (run-24377 Image 2: two coders consecutive).
+			if activations > 1 {
+				if waves := peerStartWaveTimes(peerStarts, child.startedAt, 45*time.Second); len(waves) > 0 && activations > len(waves) {
+					activations = len(waves)
+				}
+			}
+			times = resumeActivationTimestamps(child.startedAt, child.updatedAt, activations, peerStarts, child.startedAt)
+		}
 		for i := 0; i < activations; i++ {
 			// Distinct event ids so the desktop can keep one main-chat card per
 			// activation (dedupe is by event id). ChildRunID stays the same so
@@ -2160,6 +2194,62 @@ func resumeChildActivationCount(store WorkflowStore, session ProviderSessionStat
 		return 1
 	}
 	return n
+}
+
+// stepNodeActivation is one RUNNING→terminal window for a single flow node,
+// read from the durable step-transition sidecar (Task-239).
+type stepNodeActivation struct {
+	runningAt string
+	doneAt    string
+}
+
+// stepNodeActivationsFromLog walks a hub's step-transition lines in order and
+// pairs each RUNNING transition for nodeID with the next terminal transition
+// (DONE/FAILED/CANCELED) for that node. This is ground truth for how many
+// times a reinvoke-lifecycle node actually ran — unlike turn-log prompt
+// counting (resumeChildActivationCount), it is not inflated by a mid-round
+// gate reprompt landing as an extra prompt line (a Claude review-loop coder
+// with a single-reviewer flow: 3 turn-log prompts across only 2 real
+// activations, the middle one being the gate's "missing change-audit note"
+// reprompt within round 1).
+func stepNodeActivationsFromLog(lines []stepTransitionLine, nodeID string) []stepNodeActivation {
+	var out []stepNodeActivation
+	var open *stepNodeActivation
+	for _, line := range lines {
+		if strings.TrimSpace(line.NodeID) != nodeID {
+			continue
+		}
+		switch RuntimeWorkflowStepStatus(strings.TrimSpace(line.Status)) {
+		case StepStatusRunning:
+			out = append(out, stepNodeActivation{runningAt: line.TS})
+			open = &out[len(out)-1]
+		case StepStatusDone, StepStatusFailed, StepStatusCanceled:
+			if open != nil && open.doneAt == "" {
+				open.doneAt = line.TS
+			}
+		}
+	}
+	return out
+}
+
+// stepNodeActivationTimes converts logged activations into the [spawnAt,
+// resultAt] pairs resumedParentAgentAnnotations needs, one per real
+// activation. fallbackEnd covers a RUNNING transition logged without a
+// matching terminal line (process killed mid-turn).
+func stepNodeActivationTimes(lines []stepTransitionLine, nodeID, fallbackEnd string) [][2]string {
+	acts := stepNodeActivationsFromLog(lines, nodeID)
+	if len(acts) == 0 {
+		return nil
+	}
+	out := make([][2]string, len(acts))
+	for i, act := range acts {
+		done := act.doneAt
+		if done == "" {
+			done = firstNonEmptyResumeValue(fallbackEnd, act.runningAt)
+		}
+		out[i] = [2]string{act.runningAt, done}
+	}
+	return out
 }
 
 // resumeActivationTimestamps returns [spawnAt, resultAt] per activation so
