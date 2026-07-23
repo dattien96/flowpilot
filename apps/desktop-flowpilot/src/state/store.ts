@@ -1474,6 +1474,9 @@ export const useStore = create<AppState>((set, get) => ({
       Boolean(parentRunId && client.stopAgentLoop) &&
       (hasActiveParentAgentLoop(get(), parentRunId) ||
         get().chatMode === "workflow_step_auto" ||
+        // run-63960: freeform 409 maps to blocked before graph refresh lands —
+        // Stop must still seal the parked loop (Continue/Stop surface).
+        get().status === "blocked" ||
         Boolean(agentGraphSnapshot?.loopState?.status) ||
         agentRuns.some((r) => r.parentRunId === parentRunId || r.runId === parentRunId));
     if (shouldStopLoop && parentRunId && client.stopAgentLoop) {
@@ -1484,12 +1487,15 @@ export const useStore = create<AppState>((set, get) => ({
           // deriveOrchestrationRunStatus alone: after BUG-308 it preserves
           // running/completed for post-Stop chat, which would leave the header
           // on Running when the user just hit Stop while a turn was active.
+          // Bump _agentGraphLoadSeq so a late blocked HTTP graph refresh
+          // (run-63960 open/history seed) cannot restore Continue/Stop over Stop.
           return {
             ...applyAgentGraphSnapshot(snapshot),
             status: "cancelled",
             timeline: s.timeline.filter((it) => it.kind !== "thinking"),
             gateBlock: undefined,
             _runSnapshots: reconcileStoppedRunSnapshots(s._runSnapshots, parentRunId, snapshot),
+            _agentGraphLoadSeq: s._agentGraphLoadSeq + 1,
           };
         });
       } catch (err) {
@@ -1505,6 +1511,7 @@ export const useStore = create<AppState>((set, get) => ({
             timeline: s.timeline.filter((it) => it.kind !== "thinking"),
             gateBlock: undefined,
             _runSnapshots: reconcileStoppedRunSnapshots(s._runSnapshots, parentRunId, embedded),
+            _agentGraphLoadSeq: s._agentGraphLoadSeq + 1,
           }));
         } else {
           set((s) => ({
@@ -1518,6 +1525,7 @@ export const useStore = create<AppState>((set, get) => ({
                 }
               : s.agentGraphSnapshot,
             _runSnapshots: reconcileStoppedRunSnapshots(s._runSnapshots, parentRunId),
+            _agentGraphLoadSeq: s._agentGraphLoadSeq + 1,
           }));
         }
       }
