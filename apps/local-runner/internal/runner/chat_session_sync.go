@@ -95,6 +95,23 @@ type ChatSessionSyncManifest struct {
 	// agent-card clustering. Provider-agnostic; omitempty keeps old manifests
 	// valid (absent log == pre-fix behavior).
 	TurnLog []turnLogLine `json:"turnLog,omitempty"`
+	// ProviderFiles carries every OTHER regular file in a Grok ACP session
+	// directory besides ProviderFile (chat_history.jsonl) -- BUG-316: Grok's own
+	// session/load call reads the whole directory (events.jsonl, updates.jsonl,
+	// prompt_context.json, system_prompt.txt, summary.json, signals.json,
+	// resources_state.json, rewind_points.jsonl, announcement_state.json), so
+	// restoring only chat_history.jsonl leaves it unable to find its own state --
+	// the NEXT turn after a restore fails FS_NOT_FOUND ("Path not found."),
+	// confirmed live even with the correct account/cwd. Always empty for
+	// Codex/Claude (single-file resume, no directory-wide provider state).
+	ProviderFiles []ChatSessionFile `json:"providerFiles,omitempty"`
+	// grokSidecarBodies carries the actual bytes for ProviderFiles, keyed by
+	// RelativePath. Deliberately unexported: encoding/json silently skips
+	// unexported fields, so this never reaches manifest.json -- it only exists
+	// to carry bytes from BuildChatSessionSyncManifest to
+	// uploadChatSessionRunFiles without widening either function's public
+	// signature (both have pre-existing test call sites on the current arity).
+	grokSidecarBodies map[string][]byte
 }
 
 // isSyncableRunKind reports whether a run's runKind can sync to / restore from
@@ -404,6 +421,17 @@ func (s *InteractiveService) BuildChatSessionSyncManifest(ctx context.Context, r
 			manifest.TurnLog = entries
 		}
 	}
+	// BUG-316: Grok's session/load needs the whole session directory, not just
+	// chat_history.jsonl -- carry every other regular file alongside it so a
+	// restored chat's next turn can actually resume instead of FS_NOT_FOUND.
+	// Best-effort: a read error here degrades to "sync without sidecars" (old
+	// behavior) rather than failing the sync outright.
+	if session.ProviderKey == ProviderKeyGrok && isGrokRealSessionID(sessionID) {
+		if sidecarFiles, sidecarBodies, sidecarErr := resolveGrokSessionSidecarFiles(accountHome, session.WorkingDirectory, sessionID); sidecarErr == nil {
+			manifest.ProviderFiles = sidecarFiles
+			manifest.grokSidecarBodies = sidecarBodies
+		}
+	}
 	return manifest, body, nil
 }
 
@@ -470,6 +498,62 @@ func (s *InteractiveService) resolveChatSessionTranscript(session ProviderSessio
 		SizeBytes:    int64(len(body)),
 		SHA256:       hashBytesSHA256(body),
 	}, body, sessionID, true, nil
+}
+
+// resolveGrokSessionSidecarFiles lists every regular file in a Grok ACP
+// session directory besides chat_history.jsonl (already carried by
+// resolveChatSessionTranscript, above) and *.lock markers (zero-byte runtime
+// locks Grok recreates itself -- carrying a stale one risks the restored
+// machine seeing an already-held lock). BUG-316: Grok's session/load reads the
+// WHOLE directory (events.jsonl, updates.jsonl, prompt_context.json,
+// system_prompt.txt, summary.json, signals.json, resources_state.json,
+// rewind_points.jsonl, announcement_state.json) to resume -- a restored
+// directory missing these fails FS_NOT_FOUND ("Path not found.") on the very
+// next turn after restore, confirmed live even with the correct account/cwd
+// and a byte-correct chat_history.jsonl. Returns (nil, nil, nil) when the
+// session directory itself doesn't exist (nothing to carry, not an error).
+func resolveGrokSessionSidecarFiles(accountHome, cwd, sessionID string) ([]ChatSessionFile, map[string][]byte, error) {
+	dir := grokSessionDirPath(accountHome, cwd, sessionID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	var files []ChatSessionFile
+	bodies := make(map[string][]byte)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == "chat_history.jsonl" || strings.HasSuffix(name, ".lock") {
+			continue
+		}
+		fullPath := filepath.Join(dir, name)
+		body, readErr := os.ReadFile(fullPath)
+		if readErr != nil {
+			// Best-effort: a sidecar mid-write by a live Grok process should not
+			// fail the whole sync -- it just won't be as complete this round.
+			continue
+		}
+		relativePath, relErr := filepath.Rel(accountHome, fullPath)
+		if relErr != nil {
+			continue
+		}
+		relativePath = filepath.ToSlash(relativePath)
+		if strings.HasPrefix(relativePath, "../") || relativePath == ".." {
+			continue
+		}
+		files = append(files, ChatSessionFile{
+			RelativePath: relativePath,
+			SizeBytes:    int64(len(body)),
+			SHA256:       hashBytesSHA256(body),
+		})
+		bodies[relativePath] = body
+	}
+	return files, bodies, nil
 }
 
 func (s *InteractiveService) ensureChatSessionDriveRoot(projectID string) (string, string, *apiErr) {
@@ -759,6 +843,31 @@ func (s *InteractiveService) uploadChatSessionRunFiles(accessToken, rootFolderID
 			return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 		}
 		manifest.ProviderFile.DriveObjectID = uploadedFile.ID
+
+		// BUG-316: upload every sidecar file (events.jsonl, updates.jsonl,
+		// system_prompt.txt, ...) into the same per-run provider folder so a
+		// restore can rebuild the whole Grok session directory, not just
+		// chat_history.jsonl. Only ever non-empty for Grok (see
+		// resolveGrokSessionSidecarFiles).
+		for i := range manifest.ProviderFiles {
+			sidecarBytes, ok := manifest.grokSidecarBodies[manifest.ProviderFiles[i].RelativePath]
+			if !ok {
+				continue
+			}
+			sidecarFileName := filepath.Base(manifest.ProviderFiles[i].RelativePath)
+			uploadedSidecar, sidecarErr := upsertGoogleDriveFile(
+				accessToken,
+				runFolderID,
+				sidecarFileName,
+				sidecarBytes,
+				"application/octet-stream",
+				googleDriveAppProperties(map[string]string{"relativePath": manifest.ProviderFiles[i].RelativePath}),
+			)
+			if sidecarErr != nil {
+				return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", sidecarErr.Error())
+			}
+			manifest.ProviderFiles[i].DriveObjectID = uploadedSidecar.ID
+		}
 	}
 
 	manifestDirID, err := ensureGoogleDriveFolderPath(accessToken, rootFolderID, []string{
@@ -1145,6 +1254,51 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 			return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", readErr.Error())
 		} else if _, err := RestoreSessionFile(manifest.ProviderKey, targetHome, manifest.ProviderFile.RelativePath, manifest.ProviderSessionID, cwd, providerBytes); err != nil {
 			return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+		}
+
+		// BUG-316: restore every sidecar file into the SAME directory as the
+		// primary file above -- Grok's own session/load call reads the whole
+		// directory, not just chat_history.jsonl (see
+		// resolveGrokSessionSidecarFiles). Mirrors the primary file's own
+		// strictness (hard-fail on missing/integrity-mismatch/conflicting-local)
+		// rather than best-effort: a silently-skipped sidecar reproduces this
+		// exact bug on the very next turn. Reuses targetPath's own directory
+		// rather than restoreTargetPath's per-provider prefix validation
+		// (already applied once, above, for the primary file) since every
+		// sidecar lives alongside it by construction. Always empty for
+		// Codex/Claude manifests, so this loop is a no-op for them.
+		sidecarDir := filepath.Dir(targetPath)
+		for _, sidecarFile := range manifest.ProviderFiles {
+			sidecarObjectID := strings.TrimSpace(sidecarFile.DriveObjectID)
+			if sidecarObjectID == "" {
+				file, findErr := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, chatSessionProviderLogicalPath(manifest.SourceMachineID, manifest.SourceRunID, manifest.ProviderKey, sidecarFile.RelativePath))
+				if findErr != nil {
+					return ChatSessionRestoreResult{}, newAPIErr(http.StatusNotFound, "sync_remote_not_found", "remote Grok session sidecar file was not found")
+				}
+				sidecarObjectID = file.ID
+			}
+			sidecarBytes, dlErr := downloadGoogleDriveFileByID(ctx, accessToken, sidecarObjectID)
+			if dlErr != nil {
+				return ChatSessionRestoreResult{}, newAPIErr(http.StatusNotFound, "sync_remote_not_found", "remote Grok session sidecar file was not found")
+			}
+			if int64(len(sidecarBytes)) != sidecarFile.SizeBytes || hashBytesSHA256(sidecarBytes) != sidecarFile.SHA256 {
+				return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "sync_integrity_failed", "remote Grok session sidecar file failed integrity validation")
+			}
+			sidecarTargetPath := filepath.Join(sidecarDir, filepath.Base(sidecarFile.RelativePath))
+			if existing, readErr := os.ReadFile(sidecarTargetPath); readErr == nil {
+				if hashBytesSHA256(existing) != sidecarFile.SHA256 {
+					return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "session_file_conflict", "a different local Grok session sidecar file already exists for this chat")
+				}
+			} else if !errors.Is(readErr, os.ErrNotExist) {
+				return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", readErr.Error())
+			} else {
+				if err := os.MkdirAll(sidecarDir, 0o755); err != nil {
+					return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+				}
+				if err := os.WriteFile(sidecarTargetPath, sidecarBytes, 0o644); err != nil {
+					return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+				}
+			}
 		}
 	}
 
