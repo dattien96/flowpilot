@@ -2871,8 +2871,37 @@ func (s *InteractiveService) ensureProviderResumeHandle(rs *interactiveRun, acco
 	if id := s.resumeSessionID(rs); id != "" && !strings.HasPrefix(id, "thread-") {
 		return true
 	}
+	// Prefer a run-owned codex_session from the durable turn log before any
+	// workspace-wide discovery (run-75035: discovery can return the hub's newest
+	// rollout when children share cwd).
+	if logger, ok := s.workflowStore.(TurnLogStore); ok {
+		if entries, err := logger.ReadTurnLog(context.Background(), rs.id); err == nil {
+			var latestOwn string
+			for _, entry := range entries {
+				if entry.Kind != turnLogKindCodexSession || !isCodexRealSessionID(entry.SessionID) {
+					continue
+				}
+				if s.isForeignProviderSessionID(rs, entry.SessionID) {
+					continue
+				}
+				latestOwn = entry.SessionID
+			}
+			if latestOwn != "" {
+				rs.realProviderSessionID = latestOwn
+				if rs.resumedFromDisk {
+					rs.providerSessionID = latestOwn
+				}
+				return true
+			}
+		}
+	}
+	// Children never promote workspace-newest discovery — that is how hub
+	// freeform transcripts were rebound onto coder after restart.
+	if strings.TrimSpace(rs.parentRunID) != "" {
+		return false
+	}
 	id, ok := DiscoverCodexRolloutSessionID(accountHome, rs.workspaceCwd)
-	if !ok {
+	if !ok || s.isForeignProviderSessionID(rs, id) {
 		return false
 	}
 	rs.realProviderSessionID = id
@@ -3010,11 +3039,17 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 
 	// Collect the session file path(s) to load.
 	sessionID := s.resumeSessionID(rs) // used for event correlation below
+	// run-75035 defense in depth: never load parent/sibling provider sessions
+	// that leaked into this run's turn log (or into resumeSessionID).
+	if isCodexRealSessionID(sessionID) && s.isForeignProviderSessionID(rs, sessionID) {
+		sessionID = ""
+	}
+	codexSessionIDs = s.filterOwnedProviderSessionIDs(rs, codexSessionIDs)
 	var filePaths []string
 	if rs.providerKey == ProviderKeyCodex {
 		// Load every per-turn rollout file in recorded order (F-3, BUG-083).
 		seen := map[string]bool{}
-		if sessionID != "" {
+		if sessionID != "" && isCodexRealSessionID(sessionID) {
 			if path, found := LocateSessionFile(rs.providerKey, home, sessionID, rs.workspaceCwd); found {
 				filePaths = append(filePaths, path)
 			}
@@ -3926,8 +3961,17 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 		s.seedFlowHubTranscriptFromTurnLog(rs, allEntries)
 		return
 	}
+	// run-75035 parity: drop parent/sibling session ids that leaked into the
+	// child turn log (write path already hardened for Grok; filter still
+	// protects historical pollution).
+	sessionIDs = s.filterOwnedProviderSessionIDs(rs, sessionIDs)
 	if len(sessionIDs) == 0 {
-		sessionIDs = discoverGrokSessionDirs(home, rs.workspaceCwd)
+		// Never fall back to workspace-wide discovery for child runs — that is
+		// the shared-cwd theft class (run-536 / run-75035).
+		if strings.TrimSpace(rs.parentRunID) == "" {
+			sessionIDs = discoverGrokSessionDirs(home, rs.workspaceCwd)
+			sessionIDs = s.filterOwnedProviderSessionIDs(rs, sessionIDs)
+		}
 	}
 	if len(sessionIDs) == 0 {
 		historical := mergeTurnLogAssistantsIntoTranscript(promptOnlyTurnLogEvents(rawPrompts), allEntries)

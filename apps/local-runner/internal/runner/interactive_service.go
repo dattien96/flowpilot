@@ -7482,11 +7482,37 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 			rs.realProviderSessionID = real
 		}
 	case ProviderKeyCodex:
+		// run-75035 / Grok run-536 class: prefer the id THIS turn opened via
+		// thread/start|resume. Workspace-wide newest-cwd discovery is not run
+		// ownership — hub+children share working_directory, so the newest
+		// rollout often belongs to another run and was previously logged into
+		// the child's turn log (seed then imported hub freeform into coder).
+		if reporter, ok := adapter.(interface{ LastCodexSessionID() string }); ok {
+			if id := strings.TrimSpace(reporter.LastCodexSessionID()); isCodexRealSessionID(id) {
+				if rs.realProviderSessionID == "" {
+					rs.realProviderSessionID = id
+				}
+				if id != rs.lastCodexTurnSessionID {
+					rs.lastCodexTurnSessionID = id
+					return id
+				}
+				return ""
+			}
+			// Adapter present but reported nothing for this turn: do not invent
+			// a foreign cwd rollout (mirror Grok no-steal discipline).
+			return ""
+		}
+		// Compatibility path for callers with no reporting adapter (legacy
+		// multi-rollout unit tests pass adapter=nil). Still refuse ids already
+		// owned by parent/sibling/other runs in the session store.
 		home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 		if !ok {
 			return ""
 		}
 		if rolloutID, found := DiscoverCodexRolloutSessionID(home, rs.workspaceCwd); found {
+			if s.isForeignProviderSessionID(rs, rolloutID) {
+				return ""
+			}
 			if rs.realProviderSessionID == "" {
 				rs.realProviderSessionID = rolloutID
 			}
@@ -7522,6 +7548,155 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 		return ""
 	}
 	return ""
+}
+
+// isCodexRealSessionID is true for durable Codex rollout/thread ids (not the
+// synthetic thread-<n> placeholders used before a real app-server session exists).
+func isCodexRealSessionID(id string) bool {
+	id = strings.TrimSpace(id)
+	return id != "" && !strings.HasPrefix(id, "thread-")
+}
+
+// isForeignProviderSessionID reports whether sessionID is already owned by a
+// different run that is related to rs (same project/cwd, parent, or sibling).
+// Used to refuse workspace-newest discovery theft and to filter polluted turn
+// logs on seed (run-75035).
+func (s *InteractiveService) isForeignProviderSessionID(rs *interactiveRun, sessionID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if rs == nil || !isCodexRealSessionID(sessionID) {
+		return false
+	}
+	// Own durable handles always count as non-foreign.
+	if sessionID == strings.TrimSpace(rs.realProviderSessionID) || sessionID == strings.TrimSpace(rs.providerSessionID) {
+		return false
+	}
+	if sessionID == strings.TrimSpace(rs.lastCodexTurnSessionID) {
+		return false
+	}
+	foreign := s.foreignProviderSessionIDs(rs)
+	_, ok := foreign[sessionID]
+	return ok
+}
+
+// foreignProviderSessionIDs returns provider session ids owned by other related
+// runs (parent, siblings under the same parent, or other sessions sharing
+// project+cwd). Empty when the store cannot list sessions.
+func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[string]struct{} {
+	out := map[string]struct{}{}
+	if s == nil || rs == nil || s.workflowStore == nil {
+		return out
+	}
+	indexReader, ok := s.workflowStore.(SessionIndexReader)
+	if !ok {
+		return out
+	}
+	sessions, err := indexReader.ListAllProviderSessions(context.Background())
+	if err != nil || len(sessions) == 0 {
+		return out
+	}
+	ownParent := strings.TrimSpace(rs.parentRunID)
+	ownProject := strings.TrimSpace(rs.projectID)
+	ownCwd := strings.TrimSpace(rs.workspaceCwd)
+	for _, st := range sessions {
+		otherRun := strings.TrimSpace(st.RunID)
+		if otherRun == "" || otherRun == rs.id {
+			continue
+		}
+		otherParent := strings.TrimSpace(st.ParentRunID)
+		related := false
+		if ownParent != "" && (otherRun == ownParent || otherParent == ownParent) {
+			related = true
+		}
+		if otherParent != "" && otherParent == rs.id {
+			related = true // our child
+		}
+		if ownProject != "" && st.ProjectID == ownProject && ownCwd != "" && st.WorkingDirectory == ownCwd {
+			related = true
+		}
+		if !related {
+			continue
+		}
+		if sid := strings.TrimSpace(st.ProviderSessionID); isCodexRealSessionID(sid) {
+			// Do not treat our own id as foreign if listed under another row erroneously.
+			if sid == strings.TrimSpace(rs.realProviderSessionID) || sid == strings.TrimSpace(rs.providerSessionID) {
+				continue
+			}
+			out[sid] = struct{}{}
+		}
+	}
+	// Parent/sibling turn-log codex_session / grok_session entries are also foreign
+	// ownership signals (covers polluted historical logs where sessions.ndjson last
+	// row still shows the child's own id).
+	if logger, ok := s.workflowStore.(TurnLogStore); ok {
+		candidateRuns := make([]string, 0, 8)
+		if ownParent != "" {
+			candidateRuns = append(candidateRuns, ownParent)
+		}
+		for _, st := range sessions {
+			otherRun := strings.TrimSpace(st.RunID)
+			if otherRun == "" || otherRun == rs.id {
+				continue
+			}
+			otherParent := strings.TrimSpace(st.ParentRunID)
+			if ownParent != "" && (otherRun == ownParent || otherParent == ownParent) {
+				candidateRuns = append(candidateRuns, otherRun)
+			}
+		}
+		seenRun := map[string]bool{}
+		for _, runID := range candidateRuns {
+			if seenRun[runID] {
+				continue
+			}
+			seenRun[runID] = true
+			entries, rerr := logger.ReadTurnLog(context.Background(), runID)
+			if rerr != nil {
+				continue
+			}
+			for _, e := range entries {
+				if e.Kind != turnLogKindCodexSession && e.Kind != turnLogKindGrokSession {
+					continue
+				}
+				if sid := strings.TrimSpace(e.SessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) {
+					if sid == strings.TrimSpace(rs.realProviderSessionID) || sid == strings.TrimSpace(rs.providerSessionID) {
+						continue
+					}
+					out[sid] = struct{}{}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// filterOwnedProviderSessionIDs drops session ids known to belong to related
+// foreign runs, preserving this run's own ids and unknown (not-yet-catalogued)
+// rotation ids. Order is preserved.
+func (s *InteractiveService) filterOwnedProviderSessionIDs(rs *interactiveRun, ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	foreign := s.foreignProviderSessionIDs(rs)
+	if len(foreign) == 0 {
+		return ids
+	}
+	out := make([]string, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if _, isForeign := foreign[id]; isForeign {
+			// Never drop our own durable handles even if also listed elsewhere.
+			if id == strings.TrimSpace(rs.realProviderSessionID) || id == strings.TrimSpace(rs.providerSessionID) {
+				out = append(out, id)
+			}
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
 }
 
 // SubmitApprovalDecision is idempotent + first-write-wins.

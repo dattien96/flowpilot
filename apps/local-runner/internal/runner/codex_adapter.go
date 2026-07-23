@@ -36,6 +36,11 @@ type codexAdapter struct {
 	// handleDynamicToolCall re-checks this before acting on a call, as
 	// defense in depth against a model invoking a tool it was never shown.
 	allowReviewOutcome map[string]bool
+	// lastSessionID is the real Codex thread/rollout id from the most recent
+	// successful thread/start or thread/resume on this adapter. Used by
+	// refreshResumeHandleLocked so multi-run same-cwd flows do not steal the
+	// newest workspace rollout (run-75035 / Grok run-536 class).
+	lastSessionID string
 }
 
 func newCodexAdapter(dispatcher *codexDispatcher, cwd string) *codexAdapter {
@@ -184,6 +189,9 @@ func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tur
 	if threadID == "" {
 		return fmt.Errorf("codex thread/start returned no threadId")
 	}
+	a.mu.Lock()
+	a.lastSessionID = threadID
+	a.mu.Unlock()
 
 	notif, err := a.dispatcher.registerThread(threadID)
 	if err != nil {
@@ -269,6 +277,16 @@ func (a *codexAdapter) codexTurnID(threadID string) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.codexTurns[threadID]
+}
+
+// LastCodexSessionID returns the real Codex thread/rollout id from the most
+// recent successful thread/start or thread/resume (empty if none). Used by
+// refreshResumeHandleLocked for durable multi-rollout replay without
+// workspace-wide newest-cwd theft across concurrent runs.
+func (a *codexAdapter) LastCodexSessionID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastSessionID
 }
 
 // handleInbound routes a server→client request (the third dispatcher category).
