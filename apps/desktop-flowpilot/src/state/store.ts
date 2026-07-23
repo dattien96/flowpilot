@@ -92,6 +92,56 @@ function applyAgentGraphSnapshot(snapshot: AgentGraphSnapshot): Partial<AppState
 }
 
 /**
+ * Fire-and-forget HTTP agent-graph refresh with stale-response guard
+ * (same pattern as refreshAgentRuns / BUG-130). Used when loop is blocked
+ * after restart so FlowAwaitingUserCard gets loopState without inventing an
+ * SSE seq that can race later control actions (Continue/Stop).
+ */
+function requestAgentGraphRefresh(
+  parentRunId: string,
+  get: () => AppState,
+  set: (partial: Partial<AppState> | ((s: AppState) => Partial<AppState>)) => void,
+  opts?: { settleBlockedTimeline?: boolean; preferBlockedStatus?: boolean },
+): void {
+  const client = get().client;
+  if (!client.refreshAgentGraph) return;
+  const loadSeq = get()._agentGraphLoadSeq + 1;
+  set({ _agentGraphLoadSeq: loadSeq });
+  void client
+    .refreshAgentGraph(parentRunId)
+    .then((snap) => {
+      if (get()._agentGraphLoadSeq !== loadSeq) return;
+      if (!shouldApplyRunEvent(get().mainRunId ?? get().runId, parentRunId)) return;
+      set((s) => {
+        // Do not regress a post-Continue/Stop graph with a late blocked HTTP snap.
+        const currentLoop = s.agentGraphSnapshot?.loopState?.status;
+        if (
+          currentLoop &&
+          currentLoop !== "blocked" &&
+          snap.loopState?.status === "blocked"
+        ) {
+          return {};
+        }
+        const nextStatus = deriveOrchestrationRunStatus(s.status, snap);
+        const settle =
+          opts?.settleBlockedTimeline &&
+          (snap.loopState?.status === "blocked" ||
+            (snap.loopState?.status === "done" && nextStatus === "completed"));
+        return {
+          agentRuns: mergeAgentRunsById(s.agentRuns, snap.runs),
+          agentGraphSnapshot: snap,
+          agentBusMessages: snap.busMessages,
+          ...(opts?.preferBlockedStatus && nextStatus === "blocked" ? { status: nextStatus } : {}),
+          ...(settle ? { timeline: settleCompletedFlowTimeline(s.timeline) } : {}),
+        };
+      });
+    })
+    .catch(() => {
+      /* best-effort */
+    });
+}
+
+/**
  * Stop is terminal from the user's perspective even if its durable checkpoint
  * reply fails after the runner has already applied the RAM cancellation. Keep
  * cached parent/child views consistent with that contract so child focus cannot
@@ -298,6 +348,8 @@ interface AppState {
   // stale-response guard for refreshAgentRuns; a fire-and-forget fetch must not
   // overwrite a newer SSE-delivered agent list and flicker the count (BUG-130)
   _agentRunsLoadSeq: number;
+  // stale-response guard for fire-and-forget refreshAgentGraph (run-63960)
+  _agentGraphLoadSeq: number;
   // stale-response guard for refreshWorkflowStepRuntime, same shape as _agentRunsLoadSeq
   _workflowStepRuntimeLoadSeq: number;
   _runSnapshots: Record<string, RunSnapshot>;
@@ -443,6 +495,7 @@ export const useStore = create<AppState>((set, get) => ({
   _historyLoadSeq: 0,
   _remoteHistoryLoadSeq: 0,
   _agentRunsLoadSeq: 0,
+  _agentGraphLoadSeq: 0,
   _workflowStepRuntimeLoadSeq: 0,
   _runSnapshots: {},
   _runReplaySeq: {},
@@ -621,14 +674,19 @@ export const useStore = create<AppState>((set, get) => ({
     const { client, mainRunId, runId } = get();
     const parentRunId = mainRunId ?? runId;
     if (!parentRunId || !client.refreshAgentGraph) return;
-    set(applyAgentGraphSnapshot(await client.refreshAgentGraph(parentRunId)));
+    const loadSeq = get()._agentGraphLoadSeq + 1;
+    set({ _agentGraphLoadSeq: loadSeq });
+    const snap = await client.refreshAgentGraph(parentRunId);
+    if (get()._agentGraphLoadSeq !== loadSeq) return;
+    if (!shouldApplyRunEvent(get().mainRunId ?? get().runId, parentRunId)) return;
+    set(applyAgentGraphSnapshot(snap));
   },
-  async pauseAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.pauseAgentLoop) set(applyAgentGraphSnapshot(await client.pauseAgentLoop(parentRunId))); },
-  async resumeAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.resumeAgentLoop) set(applyAgentGraphSnapshot(await client.resumeAgentLoop(parentRunId))); },
-  async injectAgentFeedback(toRunId, message) { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.injectAgentFeedback) set(applyAgentGraphSnapshot(await client.injectAgentFeedback(parentRunId, toRunId, message))); },
-  async stopAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.stopAgentLoop) { set(applyAgentGraphSnapshot(await client.stopAgentLoop(parentRunId))); /* Bug 3 fix: also interrupt to forcefully terminate the in-flight provider turn */ if (client.interrupt) { try { await client.interrupt(parentRunId); } catch { /* best-effort: interrupt may 404 if no turn is in flight */ } } } },
-  async submitReviewOutcome(outcome, issues) { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.submitReviewOutcome) set(applyAgentGraphSnapshot(await client.submitReviewOutcome(parentRunId, { outcome, issues }))); },
-  async extendCap() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.extendCap) set(applyAgentGraphSnapshot(await client.extendCap(parentRunId))); },
+  async pauseAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.pauseAgentLoop) set({ ...applyAgentGraphSnapshot(await client.pauseAgentLoop(parentRunId)), _agentGraphLoadSeq: get()._agentGraphLoadSeq + 1 }); },
+  async resumeAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.resumeAgentLoop) set({ ...applyAgentGraphSnapshot(await client.resumeAgentLoop(parentRunId)), _agentGraphLoadSeq: get()._agentGraphLoadSeq + 1 }); },
+  async injectAgentFeedback(toRunId, message) { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.injectAgentFeedback) set({ ...applyAgentGraphSnapshot(await client.injectAgentFeedback(parentRunId, toRunId, message)), _agentGraphLoadSeq: get()._agentGraphLoadSeq + 1 }); },
+  async stopAgentLoop() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.stopAgentLoop) { set({ ...applyAgentGraphSnapshot(await client.stopAgentLoop(parentRunId)), _agentGraphLoadSeq: get()._agentGraphLoadSeq + 1 }); /* Bug 3 fix: also interrupt to forcefully terminate the in-flight provider turn */ if (client.interrupt) { try { await client.interrupt(parentRunId); } catch { /* best-effort: interrupt may 404 if no turn is in flight */ } } } },
+  async submitReviewOutcome(outcome, issues) { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.submitReviewOutcome) set({ ...applyAgentGraphSnapshot(await client.submitReviewOutcome(parentRunId, { outcome, issues })), _agentGraphLoadSeq: get()._agentGraphLoadSeq + 1 }); },
+  async extendCap() { const { client, mainRunId, runId } = get(); const parentRunId = mainRunId ?? runId; if (parentRunId && client.extendCap) set({ ...applyAgentGraphSnapshot(await client.extendCap(parentRunId)), _agentGraphLoadSeq: get()._agentGraphLoadSeq + 1 }); },
   async continueFlow(feedback, memberAction) {
     const { client, mainRunId, runId, activeAgentRunId } = get();
     const parentRunId = mainRunId ?? runId;
@@ -639,7 +697,11 @@ export const useStore = create<AppState>((set, get) => ({
     if (activeAgentRunId && activeAgentRunId !== parentRunId) {
       get().backToMainRun();
     }
-    set(applyAgentGraphSnapshot(await client.continueFlow(parentRunId, feedback, memberAction)));
+    // Bump graph load seq so a late blocked HTTP refresh cannot restore the card.
+    set({
+      ...applyAgentGraphSnapshot(await client.continueFlow(parentRunId, feedback, memberAction)),
+      _agentGraphLoadSeq: get()._agentGraphLoadSeq + 1,
+    });
   },
 
   async listAgents(cwd) {
@@ -1283,6 +1345,36 @@ export const useStore = create<AppState>((set, get) => ({
       if (runId && !shouldApplyRunEvent(get().runId, runId)) {
         return;
       }
+      // run-63960: flow_awaiting_user means the engine is parked for Continue/Stop —
+      // never map that to Failed (which hides FlowAwaitingUserCard and removes Stop).
+      // Restrict message fallback to HTTP 409 so non-conflict errors cannot fake blocked.
+      const awaitingUser =
+        err instanceof RunnerApiError &&
+        (err.code === "flow_awaiting_user" ||
+          (err.status === 409 && /flow_awaiting_user|waiting for your decision/i.test(err.message)));
+      if (awaitingUser) {
+        const parentId = get().mainRunId ?? get().runId;
+        set((s) => ({
+          status: "blocked",
+          recoverable: false,
+          timeline: [
+            ...s.timeline.filter((it) => it.kind !== "thinking"),
+            {
+              kind: "system",
+              id: `await-user-${s.timeline.length}`,
+              text: runErrorMessage(err),
+              tone: "warn",
+            },
+          ],
+        }));
+        if (parentId) {
+          requestAgentGraphRefresh(parentId, get, set, {
+            settleBlockedTimeline: true,
+            preferBlockedStatus: true,
+          });
+        }
+        return;
+      }
       set((s) => ({
         status: "failed",
         // Only offer Reconnect if a run was actually created; a failed startRun has none.
@@ -1809,6 +1901,10 @@ export const useStore = create<AppState>((set, get) => ({
     cancelHistoryReplayStream();
     cancelOrchestrationStream();
     cancelAgentFocusStream();
+    // run-63960: seed agent graph ASAP so FlowAwaitingUserCard can render
+    // Continue/Stop when loop is blocked after restart — do not wait only on SSE.
+    // Stale-response guarded; does not invent SSE seq (race with Continue/Stop).
+    requestAgentGraphRefresh(handle.runId, get, set, { settleBlockedTimeline: true });
     const historyReplayController = new AbortController();
     activeHistoryReplayController = historyReplayController;
     console.info("[FlowPilot][history-open] stream replay start", { runId: handle.runId });
@@ -2636,17 +2732,25 @@ function applyOrchestrationEvent(s: AppState, e: ProviderEventDTO): Partial<AppS
   const nextReplaySeq = { ...s._runReplaySeq, [e.workflowRunId]: e.seq };
   if (e.type === "agent_graph_updated") {
     const nextStatus = deriveOrchestrationRunStatus(s.status, e.agentGraphSnapshot);
-    const flowDone = e.agentGraphSnapshot.loopState.status === "done" && nextStatus === "completed";
+    const loopStatus = e.agentGraphSnapshot.loopState.status;
+    // Terminal/control-flow graph is authoritative even when a provider never
+    // emits trailing tool_completed/turn_completed after flow control:
+    // - done → completed (existing)
+    // - blocked (cap/escalate awaiting user, run-63960) → clear stale Thinking
+    //   residue. Status derivation stays separate (BUG-231 suite: running child
+    //   can still derive "running"; timeline residue must not linger either way).
+    const settleTimelineResidue =
+      (loopStatus === "done" && nextStatus === "completed") || loopStatus === "blocked";
     return {
       // Merge (not replace) so disk-persisted closed children stay visible (BUG-132).
       agentRuns: mergeAgentRunsById(s.agentRuns, e.agentGraphSnapshot.runs),
       agentGraphSnapshot: e.agentGraphSnapshot,
       agentBusMessages: e.agentGraphSnapshot.busMessages,
       status: nextStatus,
-      // A terminal flow graph is authoritative even when a provider never emits
-      // the trailing tool_completed/turn_completed event after flow control.
-      timeline: flowDone ? settleCompletedFlowTimeline(s.timeline) : s.timeline,
+      timeline: settleTimelineResidue ? settleCompletedFlowTimeline(s.timeline) : s.timeline,
       _runReplaySeq: nextReplaySeq,
+      // Invalidate in-flight HTTP graph refreshes so they cannot overwrite SSE.
+      _agentGraphLoadSeq: s._agentGraphLoadSeq + 1,
     };
   }
   if (e.type === "agent_bus_message") {

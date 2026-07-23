@@ -3700,13 +3700,30 @@ func (s *InteractiveService) resumePendingFlowGate(runID string) {
 		s.mu.Unlock()
 		return
 	}
-	// P1-04: never resume a child gate when parent loop is already stopped/done.
+	// P1-04: never resume a child gate when parent loop is already
+	// stopped/done/blocked. Blocked = awaiting user (cap/escalate): boot used
+	// to re-eval the post-turn gate, arm a gate reprompt, hit startTurn →
+	// flow_awaiting_user 409, wipe UX into Failed with no Continue/Stop card.
+	// Terminal statuses also clear stale settle so every restart does not
+	// re-schedule the same gate (safe-fix residual vs stopped/done only).
 	loopParent := runID
 	if rs.parentRunID != "" {
 		loopParent = rs.parentRunID
 	}
-	if st := s.agentOrchestrator.loopStateFor(loopParent).Status; st == "stopped" || st == "done" {
+	if st := s.agentOrchestrator.loopStateFor(loopParent).Status; st == "stopped" || st == "done" || st == "blocked" {
+		// Drop settle/reprompt under lock; preserve reprompt gen high-water.
+		hadStale := clearStaleFlowGateIntentsLocked(rs)
+		var snap ProviderSessionState
+		if hadStale {
+			snap = sessionStateOf(rs)
+			if rs.parentRunID == "" {
+				snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+			}
+		}
 		s.mu.Unlock()
+		if hadStale {
+			_ = s.persistProviderSession(snap)
+		}
 		return
 	}
 	// BUG-288 P1-04: durable stop-tombstone check. The in-memory loop-state

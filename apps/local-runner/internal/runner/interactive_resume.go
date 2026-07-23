@@ -1200,8 +1200,28 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	}
 	// Restore flow-engine loop state so a restarted or Drive-synced run resumes
 	// at the correct round/cap/mode (Task-085 T-4).
-	if st.LoopState.Mode != "" || st.LoopState.Cap > 0 || st.LoopState.Round > 0 {
+	if st.LoopState.Mode != "" || st.LoopState.Cap > 0 || st.LoopState.Round > 0 || strings.TrimSpace(st.LoopState.Status) != "" {
 		s.agentOrchestrator.setLoop(rs.id, st.LoopState)
+	}
+	// run-63960: if durable loop is already blocked awaiting user, drop stale
+	// post-turn gate settle / gate-reprompt so boot does not re-run gate →
+	// startTurn → flow_awaiting_user 409 (desktop Failed, no Continue/Stop).
+	// Persist the clear so a later restart does not re-arm from disk.
+	// Keep pendingGateRepromptGen high-water (run-23820 / clearIntentFieldsLocked).
+	if strings.TrimSpace(st.LoopState.Status) == "blocked" {
+		s.mu.Lock()
+		hadStaleAutoIntent := clearStaleFlowGateIntentsLocked(rs)
+		var snap ProviderSessionState
+		if hadStaleAutoIntent {
+			snap = sessionStateOf(rs)
+			if rs.parentRunID == "" {
+				snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+			}
+		}
+		s.mu.Unlock()
+		if hadStaleAutoIntent {
+			_ = s.persistProviderSession(snap)
+		}
 	}
 	// V10R3 P0: reconstruct pending/cohort children BEFORE normalize so parent
 	// is not Cancelled while children still need approval/gate/barrier.
@@ -1212,6 +1232,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	normalizeResumedFlowRun(s, rs, st)
 	// V10 P0 / V10R4: schedule post-turn gate only after normalize, and only when
 	// not suppressed for atomic cohort restore (parent path flushes later).
+	// Skipped when loop is blocked (settle already cleared above).
 	if rs.pendingFlowGateSettle && !rs.suppressAutoGateResume {
 		go s.resumePendingFlowGate(rs.id)
 	}
@@ -1395,6 +1416,29 @@ func (s *InteractiveService) flushDurableTurnIntents(runID string) {
 	s.mu.Unlock()
 	// Do NOT persist DeliveredGen before startTurn (P0-02).
 	go s.startTurnClearingIntent(runID, stepID, prompt, kind, gen)
+}
+
+// clearStaleFlowGateIntentsLocked drops post-turn gate settle + gate-reprompt
+// payload when the loop is terminal/blocked and must not auto-reprompt.
+// Caller holds s.mu. Preserves pendingGateRepromptGen high-water (run-23820).
+// Returns true when any field was non-empty (caller should persist).
+func clearStaleFlowGateIntentsLocked(rs *interactiveRun) bool {
+	if rs == nil {
+		return false
+	}
+	had := rs.pendingFlowGateSettle ||
+		strings.TrimSpace(rs.pendingFlowGateFinalMsg) != "" ||
+		strings.TrimSpace(rs.pendingFlowGateTurnID) != "" ||
+		strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" ||
+		strings.TrimSpace(rs.pendingGateRepromptStepID) != "" ||
+		len(rs.pendingGateChangedFiles) > 0
+	rs.pendingFlowGateSettle = false
+	rs.pendingFlowGateFinalMsg = ""
+	rs.pendingFlowGateOccurredAt = ""
+	rs.pendingFlowGateTurnID = ""
+	rs.pendingGateChangedFiles = nil
+	clearIntentFieldsLocked(rs, "reprompt")
+	return had
 }
 
 // clearIntentFieldsLocked clears one kind of durable intent (caller holds s.mu).
