@@ -90,10 +90,23 @@ separately; do not edit the old test under safe-fix-contract R1.
 
 ## Residual risk
 
-- Live re-test required: restart runner+desktop, open run-63960 → expect
-  blocked + Continue/Stop (not Failed). Freeform chat should warn, not fail.
-- Continue/Stop after restart still relies on existing `continueFlow` /
-  `stop` APIs (covered by engine park tests + desktop Continue race test).
+- Live re-test still recommended on real desktop (unit/integration cannot
+  replace Electron+SSE timing).
+- **Not covered (explicit):** Playwright/full UI e2e; Drive-restore of blocked
+  run; multi-child graph layout after restart; `store.history-replay-order`
+  pre-existing red (waiver).
+
+## Operator-path tests added (anti half-coverage)
+
+After first review, suite was extended so we do not only assert "no auto
+reprompt":
+
+- `TestRun63960BlockedRestartContinueAndStopStillWork` — cap + escalate:
+  graph blocked, freeform 409, **Continue works** after reconstruct
+- `TestRun63960BlockedRestartStopWorks` — **Stop seals** after reconstruct
+- `TestRun63960CapParkPersistThenRestartStaysBlocked` — clean park → disk →
+  reconstruct stays blocked
+- Desktop: stop after 409; continueFlow unparks after 409
 
 # ---8<--- flowpilot:change-ledger
 feature_key: agent-flow-engine

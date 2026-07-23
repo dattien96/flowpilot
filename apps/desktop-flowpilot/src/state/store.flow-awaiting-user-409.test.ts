@@ -365,3 +365,66 @@ test("late blocked HTTP graph refresh does not overwrite post-Continue graph", a
   assert.equal(state.agentGraphSnapshot?.loopState.status, "running");
   assert.notEqual(state.agentGraphSnapshot?.loopState.status, "blocked");
 });
+
+test("after flow_awaiting_user, stop remains available and seals loop", async () => {
+  seedBlockedRun(
+    makeClient({
+      sendTurn: () =>
+        (async function* (): AsyncIterable<ProviderEventDTO> {
+          throw new RunnerApiError(
+            409,
+            "flow_awaiting_user",
+            "flow is waiting for your decision (Continue/Stop); resolve the form before a new turn",
+          );
+        })(),
+      refreshAgentGraph: async () => blockedGraph("run-63960", "codex"),
+      stopAgentLoop: async () => ({
+        parentRunId: "run-63960",
+        runs: [],
+        edges: [],
+        busMessages: [],
+        loopState: { status: "stopped", round: 3, roundCap: 3, gateReason: "stopped" },
+      }),
+    }),
+  );
+
+  await useStore.getState().sendPrompt("ok");
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(useStore.getState().status, "blocked");
+  assert.equal(useStore.getState().agentGraphSnapshot?.loopState.status, "blocked");
+
+  await useStore.getState().stop();
+  const after = useStore.getState();
+  assert.equal(after.status, "cancelled");
+  assert.equal(after.agentGraphSnapshot?.loopState.status, "stopped");
+  assert.ok(!after.timeline.some((it) => it.kind === "thinking"));
+});
+
+test("after flow_awaiting_user, continueFlow unparks to running", async () => {
+  seedBlockedRun(
+    makeClient({
+      sendTurn: () =>
+        (async function* (): AsyncIterable<ProviderEventDTO> {
+          throw new RunnerApiError(
+            409,
+            "flow_awaiting_user",
+            "flow is waiting for your decision (Continue/Stop); resolve the form before a new turn",
+          );
+        })(),
+      refreshAgentGraph: async () => blockedGraph("run-63960", "codex"),
+      continueFlow: async () => ({
+        parentRunId: "run-63960",
+        runs: [],
+        edges: [],
+        busMessages: [],
+        loopState: { status: "running", round: 4, roundCap: 5 },
+      }),
+    }),
+  );
+
+  await useStore.getState().sendPrompt("ok");
+  await new Promise((r) => setTimeout(r, 30));
+  await useStore.getState().continueFlow("extend");
+  const after = useStore.getState();
+  assert.equal(after.agentGraphSnapshot?.loopState.status, "running");
+});

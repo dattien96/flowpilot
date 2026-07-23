@@ -372,3 +372,217 @@ func TestRun63960ResumePendingFlowGateNoOpWhenBlocked(t *testing.T) {
 		t.Fatalf("loop.Status = %q, want blocked", loop.Status)
 	}
 }
+
+// Operator path after blocked restart: graph API still shows blocked (card data),
+// freeform startTurn stays flow_awaiting_user, Continue and Stop both work.
+// Closes the "half-tested" gap where we only asserted no-auto-reprompt.
+func TestRun63960BlockedRestartContinueAndStopStillWork(t *testing.T) {
+	for _, blockReason := range []string{"cap", "escalate"} {
+		blockReason := blockReason
+		t.Run(blockReason, func(t *testing.T) {
+			root := t.TempDir()
+			cwd := filepath.Join(root, "workspace")
+			if err := os.MkdirAll(cwd, 0o755); err != nil {
+				t.Fatalf("MkdirAll: %v", err)
+			}
+			dir := filepath.Join(root, ".flowpilot", "chats")
+			store, err := NewLocalFileSessionStore(dir)
+			if err != nil {
+				t.Fatalf("store: %v", err)
+			}
+			const hubID = "run-63960-ops"
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			loop := AgentLoopState{
+				Status: "blocked", BlockReason: blockReason, Cap: 3, Round: 3, RoundCap: 3,
+				Mode: "explicit", OpenIssues: 1, ActiveNode: "synthesis",
+				GateReason: "needs human",
+			}
+			if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+				RunID: hubID, ProjectID: "proj", ProviderKey: ProviderKeyCodex,
+				ProviderSessionID: "sess", WorkingDirectory: cwd,
+				Status: RunStatusRunning, RunKind: "chat", AutoOrchestrate: true,
+				ActiveFlowNodes: []agentpack.FlowNode{{ID: "coder"}, {ID: "synthesis"}},
+				PendingFlowGateSettle: true, PendingFlowGateFinalMsg: "stale",
+				PendingGateRepromptPrompt: "stale", PendingGateRepromptStepID: "synthesis",
+				PendingGateRepromptGen: 4,
+				StartedAt: now, UpdatedAt: now, LoopState: loop,
+			}); err != nil {
+				t.Fatalf("upsert: %v", err)
+			}
+
+			store2, err := NewLocalFileSessionStore(dir)
+			if err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			reg := newProviderRegistry()
+			reg.register(ProviderRegistration{
+				Key: ProviderKeyCodex, Status: ProviderStatusAvailable,
+				Capabilities: ProviderCapabilities{Streaming: true},
+				newAdapter: func() ProviderRuntimeAdapter {
+					return fakeAdapterFunc(func(_ context.Context, _ TurnRequest, b TurnBridge) error {
+						b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "continued"})
+						return nil
+					})
+				},
+			})
+			svc := newInteractiveService(reg, newInteractiveCatalog(), store2)
+			st, ok, getErr := store2.GetProviderSession(context.Background(), hubID)
+			if getErr != nil || !ok {
+				t.Fatalf("get: ok=%v err=%v", ok, getErr)
+			}
+			if _, apiErr := svc.reconstructRun(st); apiErr != nil {
+				t.Fatalf("reconstruct: %s", apiErr.msg)
+			}
+
+			// Card data: agent graph must expose blocked loop for FlowAwaitingUserCard.
+			snap := svc.agentGraphSnapshot(hubID)
+			if snap.LoopState.Status != "blocked" || snap.LoopState.BlockReason != blockReason {
+				t.Fatalf("graph loop = %+v, want blocked/%s", snap.LoopState, blockReason)
+			}
+
+			// Freeform chat still rejected (maps to 409 on API).
+			if _, turnErr := svc.startTurn(hubID, TurnInput{StepID: "chat", Prompt: "ok?"}, "", ""); turnErr == nil || turnErr.code != "flow_awaiting_user" {
+				t.Fatalf("startTurn: %v, want flow_awaiting_user", turnErr)
+			}
+
+			// Continue must unpark (cap auto-extends; escalate stays same cap).
+			afterCont, contErr := svc.resumeFlowWithFeedback(hubID, "please continue")
+			if contErr != nil {
+				t.Fatalf("resumeFlowWithFeedback: %v", contErr)
+			}
+			if afterCont.LoopState.Status != "running" {
+				t.Fatalf("after Continue status = %q, want running", afterCont.LoopState.Status)
+			}
+			if afterCont.LoopState.BlockReason != "" {
+				t.Fatalf("after Continue blockReason = %q, want empty", afterCont.LoopState.BlockReason)
+			}
+		})
+	}
+}
+
+// Stop after blocked restart must seal the loop (operator "no place to stop" regression).
+func TestRun63960BlockedRestartStopWorks(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	dir := filepath.Join(root, ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	const hubID = "run-63960-stop"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := store.UpsertProviderSession(context.Background(), ProviderSessionState{
+		RunID: hubID, ProjectID: "proj", ProviderKey: ProviderKeyCodex,
+		ProviderSessionID: "sess", WorkingDirectory: cwd,
+		Status: RunStatusRunning, RunKind: "chat", AutoOrchestrate: true,
+		ActiveFlowNodes: []agentpack.FlowNode{{ID: "synthesis"}},
+		PendingFlowGateSettle: true,
+		StartedAt:             now, UpdatedAt: now,
+		LoopState: AgentLoopState{Status: "blocked", BlockReason: "cap", Cap: 3, Round: 3, RoundCap: 3, Mode: "explicit"},
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	store2, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	svc := newInteractiveService(newProviderRegistry(), newInteractiveCatalog(), store2)
+	st, ok, getErr := store2.GetProviderSession(context.Background(), hubID)
+	if getErr != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, getErr)
+	}
+	if _, apiErr := svc.reconstructRun(st); apiErr != nil {
+		t.Fatalf("reconstruct: %s", apiErr.msg)
+	}
+
+	snap, apiErr := svc.stopAgentLoop(hubID)
+	if apiErr != nil {
+		t.Fatalf("stopAgentLoop: %s", apiErr.msg)
+	}
+	if snap.LoopState.Status != "stopped" {
+		t.Fatalf("after Stop loop = %q, want stopped", snap.LoopState.Status)
+	}
+	// Must not re-arm gate after stop.
+	svc.resumePendingFlowGate(hubID)
+	svc.mu.Lock()
+	if svc.runs[hubID].pendingFlowGateSettle {
+		svc.mu.Unlock()
+		t.Fatal("settle must stay clear after stop")
+	}
+	svc.mu.Unlock()
+}
+
+// Clean park path (no crash-window settle): applyFlowControl cap park → persist →
+// reconstruct still restores blocked and does not auto-turn.
+func TestRun63960CapParkPersistThenRestartStaysBlocked(t *testing.T) {
+	svc, runID := newFlowEngineTestRun(t)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{
+		Status: "running", Cap: 3, Round: 2, RoundCap: 3, Mode: "explicit",
+	})
+	svc.mu.Lock()
+	rs := svc.runs[runID]
+	rs.currentTurnID = "turn-cap-park"
+	rs.turnInFlight = true
+	svc.mu.Unlock()
+
+	result, err := svc.applyFlowControl(runID, FlowControlInput{
+		Status:  "continue",
+		Summary: "still open",
+		Payload: map[string]any{"issues": []any{map[string]any{"title": "x"}}},
+	})
+	if err != nil {
+		t.Fatalf("applyFlowControl: %v", err)
+	}
+	if result.Status != "blocked" {
+		t.Fatalf("result = %+v, want blocked", result)
+	}
+	// Capture durable shape after park.
+	svc.mu.Lock()
+	live := svc.runs[runID]
+	st := sessionStateOf(live)
+	st.LoopState = svc.agentOrchestrator.loopStateFor(runID)
+	// Simulates what disk should look like after a clean park persist.
+	if live.pendingFlowGateSettle {
+		svc.mu.Unlock()
+		t.Fatal("clean park must clear pendingFlowGateSettle in RAM")
+	}
+	svc.mu.Unlock()
+
+	// New process reconstruct from that snapshot.
+	svc2 := NewInteractiveService()
+	// Need a writable store for reconstruct path that may persist.
+	root := t.TempDir()
+	dir := filepath.Join(root, ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	st.WorkingDirectory = root
+	if st.ProviderKey == "" {
+		st.ProviderKey = ProviderKeyCodex
+	}
+	if st.ProjectID == "" {
+		st.ProjectID = "proj"
+	}
+	if err := store.UpsertProviderSession(context.Background(), st); err != nil {
+		t.Fatalf("upsert park snap: %v", err)
+	}
+	svc2 = newInteractiveService(newProviderRegistry(), newInteractiveCatalog(), store)
+	loaded, ok, getErr := store.GetProviderSession(context.Background(), st.RunID)
+	if getErr != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, getErr)
+	}
+	if _, apiErr := svc2.reconstructRun(loaded); apiErr != nil {
+		t.Fatalf("reconstruct after clean park: %s", apiErr.msg)
+	}
+	loop := svc2.agentOrchestrator.loopStateFor(st.RunID)
+	if loop.Status != "blocked" || loop.BlockReason != "cap" {
+		t.Fatalf("after clean-park restart loop=%+v, want blocked/cap", loop)
+	}
+	if _, turnErr := svc2.startTurn(st.RunID, TurnInput{StepID: "chat", Prompt: "hi"}, "", ""); turnErr == nil || turnErr.code != "flow_awaiting_user" {
+		t.Fatalf("startTurn after clean park restart: %v", turnErr)
+	}
+}
