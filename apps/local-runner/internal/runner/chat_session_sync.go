@@ -1442,6 +1442,36 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 				if strings.TrimSpace(local.UpdatedAt) != "" {
 					session.UpdatedAt = local.UpdatedAt
 				}
+				// BUG-322 (CP-51 C6): fields added after BUG-091 that also track live
+				// flow progress, not just conversation metadata -- a stale remote
+				// manifest must not regress these either, or a re-restore of an
+				// already-locally-progressed chat can resurrect BUG-315's own
+				// symptom (flow re-runs from scratch) by rolling turnCount/loop
+				// state back down. Only fields that mutate over a run's lifetime are
+				// preserved; static per-run identity (ProjectID, AgentName, ModelName,
+				// DependsOn, ChatFlowRef, ...) is left as the manifest's, since it does
+				// not change after the run starts and should already agree.
+				if local.TurnCount > session.TurnCount {
+					session.TurnCount = local.TurnCount
+				}
+				if local.LoopState.Round > session.LoopState.Round {
+					session.LoopState = local.LoopState
+				}
+				if strings.TrimSpace(local.AgentStatus) != "" {
+					session.AgentStatus = local.AgentStatus
+				}
+				if len(local.ActiveFlowNodes) > 0 {
+					session.ActiveFlowNodes = append([]agentpack.FlowNode(nil), local.ActiveFlowNodes...)
+				}
+				if len(local.ActiveFlowEdges) > 0 {
+					session.ActiveFlowEdges = append([]agentpack.FlowEdge(nil), local.ActiveFlowEdges...)
+				}
+				if len(local.PendingAgentContext) > 0 {
+					session.PendingAgentContext = append([]string(nil), local.PendingAgentContext...)
+				}
+				if strings.TrimSpace(local.FlowCohortID) != "" {
+					session.FlowCohortID = local.FlowCohortID
+				}
 			}
 		}
 	}
