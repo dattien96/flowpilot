@@ -280,7 +280,7 @@ input {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  overflow: auto;
+  overflow: hidden;
   min-height: 0;
 }
 .sidebar-left {
@@ -1586,6 +1586,9 @@ input {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 .workflow-rail {
   display: grid;
@@ -2530,6 +2533,7 @@ input {
 .sidebar-bottom {
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
 }
 
 /* system controls */
