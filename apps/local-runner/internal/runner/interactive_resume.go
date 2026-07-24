@@ -461,6 +461,29 @@ func (s *InteractiveService) parentHasLivePendingChildren(parentRunID string) bo
 	return false
 }
 
+// resumedFlowStepsComplete reports whether the FLOW ITSELF reached a genuine
+// terminal completion, for the purpose of defaulting an evidence-less
+// step-timeline row (an inline hub node, or -- BUG-320 -- a child whose only
+// evidence is a tombstone) to DONE. This is deliberately NOT the same
+// question normalizeResumedFlowStatus answers: that function intentionally
+// reports "Completed" for a STOPPED loop that later got a plain-chat
+// follow-up, so the run's own history badge reads correctly (BUG-308,
+// run-33289 "vậy là done fix chưa"). But the flow's STEPS did not all
+// genuinely finish just because the chat kept going after Stop -- a coder
+// that ran and a reviewer stopped mid-turn is not "every node done" (the
+// live repro run-55348/run-55467: hub turn completed normally, but the
+// reviewer was interrupted and synthesis never started). Used by BOTH the
+// evidence-walk default below AND the transition-log replay's hub-promotion
+// check so a Drive-restored run (no local sidecar) and a same-machine
+// restart (sidecar present) agree on whether a stopped flow's un-evidenced
+// steps are DONE or PENDING.
+func resumedFlowStepsComplete(st ProviderSessionState) bool {
+	if strings.TrimSpace(st.LoopState.Status) == "stopped" {
+		return false
+	}
+	return !resumedFlowRunIncomplete(st) && strings.TrimSpace(st.LoopState.Status) != "blocked"
+}
+
 func resumedFlowRunIncomplete(st ProviderSessionState) bool {
 	if terminalFlowLoopStatus(st.LoopState.Status) {
 		return false
@@ -671,7 +694,7 @@ func (s *InteractiveService) resumedFlowStepRows(rs *interactiveRun, st Provider
 	// DEFAULT for a node with no session evidence at all (e.g. an inline hub
 	// node, or a legacy run with no persisted children) — per-child evidence,
 	// including FAILED, set below always wins over that default.
-	flowComplete := !resumedFlowRunIncomplete(st) && strings.TrimSpace(st.LoopState.Status) != "blocked"
+	flowComplete := resumedFlowStepsComplete(st)
 	rows := s.flowStepRowsFromNodes(context.Background(), rs.id, rs.activeFlowNodes, StepStatusPending, "")
 	byID := make(map[string]*RuntimeWorkflowStep, len(rows))
 	for i := range rows {
@@ -1173,8 +1196,18 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 			} else if len(lines) > 0 {
 				rows = applyStepTransitionReplay(rows, lines, keepWaiting)
 				// Hub precedence when flow genuinely completed (mirrors evidence-walk):
-				// hub PENDING → DONE. I-3: never promote FAILED/CANCELED.
-				if normalizeResumedFlowStatus(st) == RunStatusCompleted {
+				// hub PENDING → DONE. I-3: never promote FAILED/CANCELED. BUG-320: use
+				// the SAME stopped-aware predicate as the evidence-walk default above
+				// (resumedFlowStepsComplete), not normalizeResumedFlowStatus -- that
+				// function intentionally reports "Completed" for a stopped loop with a
+				// later plain-chat follow-up (BUG-308's own history-badge contract),
+				// which is a different question from "did the flow's own steps really
+				// finish". Without this, a same-machine restart (transition log
+				// present) promoted a stopped flow's pending hub to DONE while a
+				// Drive-restored copy of the exact same run (no local sidecar) left it
+				// PENDING via the evidence-walk default -- two displays disagreeing
+				// about the same underlying fact.
+				if resumedFlowStepsComplete(st) {
 					if hubID := hubInlineNodeID(rs.activeFlowNodes); hubID != "" {
 						for i := range rows {
 							if rows[i].ID == hubID && rows[i].Status == StepStatusPending {
