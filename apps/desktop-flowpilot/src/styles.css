@@ -2037,6 +2037,28 @@ input {
   color: var(--warn);
   border-color: var(--warn);
 }
+.project-history-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 6px;
+}
+.project-history-refresh:hover {
+  color: var(--accent);
+  background: rgba(76, 141, 255, 0.08);
+}
+.project-history-refresh:disabled {
+  cursor: default;
+  opacity: 0.8;
+  color: var(--text-dim);
+  background: transparent;
+}
+
 /* ── Selection mode ── */
 .project-history-group-head--selecting .project-history-group-toggle {
   cursor: default;

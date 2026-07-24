@@ -61,6 +61,22 @@ function RestoreGlyph(): React.ReactElement {
   );
 }
 
+// Circular-arrow glyph for manual refresh buttons.
+function RefreshGlyph(): React.ReactElement {
+  return (
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+      <path
+        d="M2.5 6a3.5 3.5 0 0 1 6-2.475M9.5 6a3.5 3.5 0 0 1-6 2.475"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+      <polyline points="8.4,2.9 8.6,4.9 6.6,5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+      <polyline points="3.6,9.1 3.4,7.1 5.4,7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function HistoryStatusIcon({ status, isNew }: { status: RunHistoryItem["status"]; isNew?: boolean }): React.ReactElement | null {
   if (isNew) {
     return (
@@ -451,6 +467,21 @@ export function Navigator(): React.ReactElement {
           </div>
           <div className="project-rail-head-actions">
             {historyLoading && <span className="project-rail-state">Loading</span>}
+            {selectedProjectId && (
+              <button
+                type="button"
+                className="project-history-refresh"
+                onClick={() => {
+                  void loadRunHistory();
+                  void loadRemoteChatSessions();
+                }}
+                disabled={historyLoading}
+                title="Refresh history"
+                aria-label="Refresh history"
+              >
+                {historyLoading ? <span className="history-status-spinner" aria-hidden="true" /> : <RefreshGlyph />}
+              </button>
+            )}
             {selectionModeProjectId === selectedProjectId ? (
               <button
                 type="button"
