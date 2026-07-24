@@ -1420,6 +1420,16 @@ func agentNameFromRef(agentRef string) string {
 	if agent == "" {
 		return ""
 	}
+	// Normalize Windows backslash separators to "/" before the POSIX path
+	// package parses the ref. A node's agent ref can be an absolute path from a
+	// provider CLI config (e.g. C:\Users\me\.codex\agents\coder-agent.toml), and
+	// path.Base/path.Ext only understand "/", so on such a ref they would leave
+	// the whole directory in place and return the full path minus only the
+	// extension instead of the basename (BUG-321). This is an unconditional
+	// string replace, not path/filepath, so the derivation is identical on
+	// Windows and Linux/CI regardless of the host OS separator; it is a no-op for
+	// the "/"-based and bare-name refs every built-in flow pack already uses.
+	agent = strings.ReplaceAll(agent, "\\", "/")
 	base := path.Base(agent)
 	return strings.TrimSuffix(base, path.Ext(base))
 }
