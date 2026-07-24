@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-23`
 - Last Updated: `2026-07-23`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](../../08-Task/done/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md)
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](../../08-Task/done/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md)
 - Child Documents: `none`
 - Related Documents: [BUG-310: Grok Drive Sync Always Fails Reading Session Directory As File](../done/BUG-310-Grok-Drive-Sync-Always-Fails-Reading-Session-Directory-As-File.md) (fixed the sync-UP side same day; its own §10 Follow-Up explicitly named this restore-side gap as separate and unaddressed), [CA-312](../../change-audit/CA-312-grok-cross-account-session-relocate.md) (added Grok to `relocationTargetPath` for local cross-account relocation only, never to `restoreTargetPath` for Drive restore), [CA-404](../../change-audit/CA-404-remote-chats-index-repair.md) (fixed REMOTE CHATS under-listing the same day — made Grok chats visible/attempt-restorable for the first time, which is why this pre-existing gap was only just reached), [CA-406](../../change-audit/CA-406-grok-drive-restore-missing-provider-case.md)
 - Replaces: `none`
@@ -57,7 +57,7 @@ REMOTE CHATS lists Grok chats correctly (as of BUG-310 + CA-404, same day), but 
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md) / [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — closes the last open half of the C6 "Drive sync round-trip" scenario (sync-up was already closed same day via BUG-310/CA-397/CA-404; this closes Grok's slice of the restore-down side).
+- impacted coding plan: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md) / [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — closes the last open half of the C6 "Drive sync round-trip" scenario (sync-up was already closed same day via BUG-310/CA-397/CA-404; this closes Grok's slice of the restore-down side).
 - impacted tech design: [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](../../08-Task/done/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md) (its own §7 Out of Scope / follow-ups line explicitly deferred "Drive restore packaging for Grok session directories" to CA-312 — this bug is that deferred work).
 - impacted system spec: `none known`
 

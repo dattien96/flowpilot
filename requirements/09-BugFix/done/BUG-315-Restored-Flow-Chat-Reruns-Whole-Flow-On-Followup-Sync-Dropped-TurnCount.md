@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-23`
 - Last Updated: `2026-07-23`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md)
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md)
 - Child Documents: `none`
 - Related Documents: [BUG-313: Restored Chat Timeline Broken — Sync Never Carried The Turn Log](../done/BUG-313-Restored-Chat-Timeline-Broken-Sync-Never-Carried-Turn-Log.md) (same manifest, same class: sync dropped a field the restored run needs to behave like a same-machine resume), [BUG-314: Single-Reviewer Reinvoke Round-2 Agent Cards Lost On Restart](../done/BUG-314-Single-Reviewer-Reinvoke-Round2-Agent-Cards-Lost-On-Restart.md) (found in the same restore-parity investigation), [Task-190: Chat Drive Sync](../../08-Task/done/Task-190-Cross-Machine-Chat-Session-Drive-Sync.md) (the manifest this bug extends)
 - Replaces: `none`

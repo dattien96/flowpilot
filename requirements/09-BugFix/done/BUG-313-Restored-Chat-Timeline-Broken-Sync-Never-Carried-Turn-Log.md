@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-23`
 - Last Updated: `2026-07-23`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md)
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md)
 - Child Documents: `none`
 - Related Documents: [BUG-312: Grok Drive Restore Rejects Every Session](../done/BUG-312-Grok-Drive-Restore-Rejects-Every-Session-Missing-Provider-Case.md) (unblocked Grok restore the same day; the first successfully-restored Grok chat is what exposed this bug), [BUG-083](../done/BUG-083-Resume-Replays-Composed-Prompt-And-Drops-Later-Codex-Turns.md) (introduced the turn-log sidecar this bug teaches sync/restore to carry), [BUG-306](../done/BUG-306-Post-Flow-Followup-Transcript-Misordered-On-Restart.md) (transcript_turn ordering the sidecar preserves), [CA-407](../../change-audit/CA-407-sync-manifest-carries-turn-log.md)
 - Replaces: `none`

@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-23`
 - Last Updated: `2026-07-23`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md)
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md)
 - Child Documents: `none`
 - Related Documents: [BUG-294: Resumed Agent Card Shows "— completed" Suffix On A Cancelled Child](../done/BUG-294-Resumed-Agent-Card-Shows-Completed-Suffix-On-Cancelled-Child.md) (same `resumedParentAgentAnnotations` reconstruction path), [BUG-313: Restored Chat Timeline Broken — Sync Never Carried The Turn Log](../done/BUG-313-Restored-Chat-Timeline-Broken-Sync-Never-Carried-Turn-Log.md) (found while cross-checking the same "reconstruct timeline after restart" contract for Drive restore; this bug is the same-machine-restart half, not the Drive-sync half)
 - Replaces: `none`

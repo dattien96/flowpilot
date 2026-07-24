@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-24`
 - Last Updated: `2026-07-24`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md)
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md)
 - Child Documents: `none`
 - Related Documents: [BUG-314: Single-Reviewer Reinvoke Round2 Agent Cards Lost On Restart](../done/BUG-314-Single-Reviewer-Reinvoke-Round2-Agent-Cards-Lost-On-Restart.md) (same reinvoke-lifecycle-single-reviewer surface — BUG-314 fixed the restored-card COUNT; this fixes the LIVE round-2 synthesis-reinvoke hang), [CA-417](../../change-audit/CA-417-reinvoke-cohort-rejoin-and-watchdog-arm-on-settle.md)
 - Replaces: `none`

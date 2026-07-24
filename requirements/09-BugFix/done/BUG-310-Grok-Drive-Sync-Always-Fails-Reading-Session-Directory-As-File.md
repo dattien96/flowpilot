@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-22`
 - Last Updated: `2026-07-22`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](../../08-Task/done/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md)
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](../../08-Task/done/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md)
 - Child Documents: `none`
 - Related Documents: [BUG-309: Project History Under-Reports Sync Status For In-Memory Runs](../done/BUG-309-Project-History-Under-Reports-Sync-Status-For-In-Memory-Runs.md) (found investigating the same live symptom, different root cause), [BUG-311: Session Unavailable Sync Never Persists Terminal Status](../done/BUG-311-Session-Unavailable-Sync-Never-Persists-Terminal-Status.md) (found and fixed alongside this bug), [CA-399](../../change-audit/CA-399-grok-drive-sync-directory-read.md)
 - Replaces: `none`
@@ -55,7 +55,7 @@ Clicking "Sync" (per-chat or "Sync all") on any chat run whose provider is Grok 
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md) (discovered during CP-51 C6 Drive-sync live verification, same session as BUG-309)
+- impacted coding plan: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md) (discovered during CP-51 C6 Drive-sync live verification, same session as BUG-309)
 - impacted tech design: [Task-210: Grok Account Model — Detect, Connect, Switch, Quota](../../08-Task/done/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md) (Option B directory-per-session design this bug's fix must respect; its own follow-ups already note "Drive restore packaging for Grok session directories" as out of scope, consistent with this bug's own Follow-Up section)
 - impacted system spec: `none known`
 

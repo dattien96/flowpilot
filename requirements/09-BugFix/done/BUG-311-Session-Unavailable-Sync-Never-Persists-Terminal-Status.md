@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-22`
 - Last Updated: `2026-07-22`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-12: Refactor Workflow With Session](../../06-System-Tech-Design/SD-12-Refactor-Workflow-With_Session.md)
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-12: Refactor Workflow With Session](../../06-System-Tech-Design/SD-12-Refactor-Workflow-With_Session.md)
 - Child Documents: `none`
 - Related Documents: [BUG-309: Project History Under-Reports Sync Status For In-Memory Runs](../done/BUG-309-Project-History-Under-Reports-Sync-Status-For-In-Memory-Runs.md), [BUG-310: Grok Drive Sync Always Fails Reading Session Directory As File](../done/BUG-310-Grok-Drive-Sync-Always-Fails-Reading-Session-Directory-As-File.md) (found and fixed alongside this bug, same live investigation), [BUG-088: Desktop History Sync Actions Missing In-Progress Indicator](../done/BUG-088-Desktop-History-Sync-Actions-Missing-In-Progress-Indicator.md) (established the local `syncStatus`/`unavailableReason` failure-display convention this bug extends), [CA-400](../../change-audit/CA-400-session-unavailable-persists-unsyncable.md)
 - Replaces: `none`
@@ -56,7 +56,7 @@ Any chat run that was cancelled early enough that its provider never wrote a res
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md) (discovered during the same CP-51 C6 live-verification session as BUG-309/BUG-310)
+- impacted coding plan: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md) (discovered during the same CP-51 C6 live-verification session as BUG-309/BUG-310)
 - impacted tech design: [SD-12: Refactor Workflow With Session](../../06-System-Tech-Design/SD-12-Refactor-Workflow-With_Session.md)
 - impacted system spec: `none known`
 

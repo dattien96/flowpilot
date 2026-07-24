@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-16`
 - Parent Documents: [SP-04 Safe Gate](./SP-04-safe-gate.md)
 - Child Documents: skill `kill-review` (portable, **tự chứa** — không phụ thuộc file này khi share sang project khác): [`.agents/skills/kill-review/SKILL.md`](../../.agents/skills/kill-review/SKILL.md) ≡ [`apps/local-runner/internal/skillpack/flow-pack/common/kill-review/SKILL.md`](../../apps/local-runner/internal/skillpack/flow-pack/common/kill-review/SKILL.md) (cùng version; sửa một nơi thì copy sang nơi kia)
-- Related Documents: [SS-15 Agent Review Loop Until Clean](../05-System-Specs/SS-15-Agent-Review-Loop-Until-Clean.md), [SS-13 AI-Followable Document Contract](../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [CP-51 Durable Turn Dispatch §10](../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [BUG-288](../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [KR-001 CP-43](../reviews/KR-001-cp43-change-contract-plan.md)
+- Related Documents: [SS-15 Agent Review Loop Until Clean](../05-System-Specs/SS-15-Agent-Review-Loop-Until-Clean.md), [SS-13 AI-Followable Document Contract](../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [CP-51 Durable Turn Dispatch §10](../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [BUG-288](../09-BugFix/done/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [KR-001 CP-43](../reviews/KR-001-cp43-change-contract-plan.md)
 - Replaces: `None`
 - Tags: `review, kill-review, closed-claim, dod, termination, anti-loop, process, matrix, protocol`
 - Feature Keys: `agent-flow-engine`

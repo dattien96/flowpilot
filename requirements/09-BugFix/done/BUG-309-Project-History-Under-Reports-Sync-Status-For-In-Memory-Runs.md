@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-22`
 - Last Updated: `2026-07-22`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-12: Refactor Workflow With Session](../../06-System-Tech-Design/SD-12-Refactor-Workflow-With_Session.md), [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md)
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-12: Refactor Workflow With Session](../../06-System-Tech-Design/SD-12-Refactor-Workflow-With_Session.md), [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md)
 - Child Documents: `none`
 - Related Documents: [BUG-060: Desktop Run History Empties After Switching Runs](../done/BUG-060-Desktop-Run-History-Empties-After-Switching-Runs.md) (introduced the in-memory / persisted-augment split in `projectRunHistory` this bug patches), [BUG-088: Desktop History Sync Actions Missing In-Progress Indicator](../done/BUG-088-Desktop-History-Sync-Actions-Missing-In-Progress-Indicator.md) (adjacent `syncStatus` UI surface, not touched by this fix), [Task-258: Per-Project Dispatch Log And Drive Sync](../../08-Task/done/Task-258-Per-Project-Dispatch-Log-And-Drive-Sync.md), [CA-397: Drive Sync Dispatch Log Redundant Reupload](../../change-audit/CA-397-drive-sync-dispatch-log-redundant-reupload.md) (adjacent Drive-sync perf bug found the same day, different root cause), [CA-398](../../change-audit/CA-398-project-history-in-memory-sync-status.md)
 - Replaces: `none`
@@ -56,7 +56,7 @@ On the desktop app, the Navigator's per-project "Sync all" chip shows a count of
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md) (discovered during CP-51's C6 Drive-sync live verification)
+- impacted coding plan: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md) (discovered during CP-51's C6 Drive-sync live verification)
 - impacted tech design: [SD-12: Refactor Workflow With Session](../../06-System-Tech-Design/SD-12-Refactor-Workflow-With_Session.md)
 - impacted system spec: [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md)
 
