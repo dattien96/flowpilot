@@ -97,8 +97,9 @@ this bug.
 
 ## Known limits (documented, out of scope)
 
-- The live end-to-end re-verification is pending a runner rebuild/restart (the fix
-  loads at build/boot; the running binary predates it).
+- None remaining. Live end-to-end re-verification is done: user rebuilt/restarted
+  via `just dev` and ran a live `flow-claude` review-loop chat to completion (hub
+  synthesized, no hang).
 
 # ---8<--- flowpilot:change-ledger
 feature_key: agent-flow-engine

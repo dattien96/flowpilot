@@ -186,10 +186,10 @@ lifecycle reviewer in a cohort trips it.
   known Windows-teardown / concurrency flakes. No changed-area test regressed.
 - Real `provider-accounts.json` verified unchanged (8 accounts, correct grok
   flags) after the sweeps.
-- Live end-to-end: PENDING — the fix loads at runner build/boot (flow-engine
-  reinvoke path); the running binary predates it. To verify: rebuild + restart
-  (`just dev`), run a flow-claude review-loop to "changes requested" so it loops
-  past round 1, and confirm the hub synthesizes round 2 (no hang).
+- Live end-to-end: CONFIRMED (2026-07-24). User rebuilt/restarted via `just dev`
+  and ran a live `flow-claude` review-loop chat through to completion — the hub
+  synthesized and the chat reached done with no hang. Reported: "test ok rồi,
+  chat có thể complete."
 
 ## 8. Regression Guard
 
