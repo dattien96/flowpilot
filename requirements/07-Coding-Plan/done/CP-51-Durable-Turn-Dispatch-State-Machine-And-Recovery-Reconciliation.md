@@ -5,15 +5,15 @@
 - Document ID: `CP-51`
 - Title: `Durable Turn Dispatch State Machine And Recovery Reconciliation`
 - Phase: `coding_plan`
-- Status: `approved`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Codex review (multi-round)`
 - Created: `2026-07-16`
-- Last Updated: `2026-07-16`
+- Last Updated: `2026-07-24`
 - Parent Documents: [SD-24 Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md), [SD-25 Recovery Ownership Linearization Closure](../../06-System-Tech-Design/SD-25-Recovery-Ownership-Linearization-Closure.md), [SS-17 Dispatch Uncertainty And Repair Operator Contract](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md), SD-20 Flow Gate Rule Semantics (three-tier / Flow Mode), SD-21 Change Contract, [SS-14 Code Context & Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
 - Child Documents: `Task-248, Task-249, Task-250, Task-251, Task-252, Task-253, Task-254, Task-255, Task-256, Task-257 (P-0 spike), Task-258 (per-project local dispatch + Drive sync; retires Supabase dispatch tables as default)`
-- Related verification log: [CP-51-PhaseAB-Timeline-And-Verification-Log](./CP-51-PhaseAB-Timeline-And-Verification-Log.md) (Phase A/B + BUG-288 + CP-51 timeline + `go test` / live E2E checklist)
-- Related Documents: [BUG-288: Flow-Mode Three-Tier Gate + Change Contract Re-entry Gaps](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [Task-242: Flow-Mode Three-Tier Gate](../../08-Task/done/Task-242-Flow-Mode-Three-Tier-Gate.md), [Task-239: Flow Restore And Step Transition Log](../../08-Task/done/Task-239-Flow-Restore-And-Step-Transition-Log.md), [Task-067: Post-Restart Run Resume](../../08-Task/done/Task-067-Desktop-Post-Restart-Run-Resume-Via-Provider-Session-Id.md)
+- Related verification log: [CP-51-PhaseAB-Timeline-And-Verification-Log](../inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md) (Phase A/B + BUG-288 + CP-51 timeline + `go test` / live E2E checklist)
+- Related Documents: [BUG-288: Flow-Mode Three-Tier Gate + Change Contract Re-entry Gaps](../../09-BugFix/done/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [Task-242: Flow-Mode Three-Tier Gate](../../08-Task/done/Task-242-Flow-Mode-Three-Tier-Gate.md), [Task-239: Flow Restore And Step Transition Log](../../08-Task/done/Task-239-Flow-Restore-And-Step-Transition-Log.md), [Task-067: Post-Restart Run Resume](../../08-Task/done/Task-067-Desktop-Post-Restart-Run-Resume-Via-Provider-Session-Id.md)
 - Replaces: `None`
 - Tags: `agent-flow-engine, durable-turn, dispatch-state-machine, crash-recovery, stop-race, idempotency, supabase, codex-review, bug-288`
 - Feature Keys: `agent-flow-engine`
@@ -83,7 +83,7 @@ Replace the ad-hoc turn-dispatch coordination (RAM `turnInFlight` + `prep:<turnI
 - SD-20 Flow Gate Rule Semantics (three-tier gate lifecycle, Flow Mode post-turn gate).
 - SD-21 Change Contract (re-entry prompt injection interaction with dispatch).
 - [SS-14 Code Context & Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md).
-- [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md) — originating multi-round review; this CP closes its Round-20 residuals.
+- [BUG-288](../../09-BugFix/done/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md) — originating multi-round review; this CP closes its Round-20 residuals.
 
 ## 3. Implementation Strategy
 
@@ -235,6 +235,8 @@ No Task may add a recovery concurrency rule outside this mapping. SD-25 §5 is t
 ## 10. Definition of Done — The Single Finish Line
 
 > **This section is the one artifact to look at to decide "done or not."** BUG-288 / CP-51 is DONE ⟺ every row in the §10.1 ledger is ✅ and the §10.3 verdict command is green. Nothing here is judged "done by inspection." If a requirement is not a green row below, it is not done; when every row is green, the work is complete and the Codex review loop for this class ends.
+>
+> **Closed 2026-07-24.** 54/56 §10.1 rows ✅; the remaining 2 (`GR` — no C toolchain on this dev machine for `go test -race`; `CE-GEM` — Gemini is an intentional V2-dispatch non-goal) are operator-waived, not silently skipped — see the row annotations and §10.1.1. Moved from `inprogress/` to `done/` on this basis; live E2E follow-up (the companion [CP-51-PhaseAB-Timeline-And-Verification-Log](../inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md)) tracks its own remaining optional items separately and does not reopen this closure.
 
 ### 10.0 Why the review loop terminates (no Round 21/22)
 
