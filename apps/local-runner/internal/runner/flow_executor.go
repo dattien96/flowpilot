@@ -1132,7 +1132,9 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		prompt := composeFlowNodeAgentPrompt(cwd, baseReviewPrompt, node)
 		prompt = appendChangeContractIfAnyWithSecret(cwd, parentRunID, prompt, s.markerSecret)
 		if flowNodeReusesChild(node) {
-			if reused := s.reinvokeExistingFlowChild(parentRunID, node.ID, prompt); reused {
+			// BUG-318: pass THIS round's cohort id + size so a reinvoke-lifecycle
+			// cohort member re-joins a live cohort (see reinvokeExistingFlowChild).
+			if reused := s.reinvokeExistingFlowChild(parentRunID, node.ID, prompt, cohortID, len(targetNodes)); reused {
 				spawnedAny = true
 				s.flowDiagLog(parentRunID, "flow_advance_reinvoked_existing", "reinvoked existing target node child",
 					"completed_node_id", completedNodeID,
@@ -1257,12 +1259,34 @@ func flowNodeReusesChild(node agentpack.FlowNode) bool {
 	return flowNodeLifecycle(node) == "reinvoke"
 }
 
-func (s *InteractiveService) reinvokeExistingFlowChild(parentRunID, nodeID, prompt string) bool {
+func (s *InteractiveService) reinvokeExistingFlowChild(parentRunID, nodeID, prompt, cohortID string, cohortSize int) bool {
 	if strings.TrimSpace(nodeID) == "" {
 		return false
 	}
+	// BUG-318: a reinvoke-lifecycle cohort member (e.g. a single reviewer reused
+	// across review-loop rounds) must RE-JOIN this round's cohort. Round 0 spawned
+	// it into "flow-auto-<src>-round-0" and cohort-join drained that key (deleting
+	// its cohortExpected entry) on completion. reinvokeMatchingFlowChild never
+	// touches flowCohortId, so without this the reused child keeps the drained
+	// round-0 cohort id: its next completion appends to a dead cohort
+	// (cohortExpected==0), cohortComplete stays false, and the hub synthesis
+	// reinvoke (maybeAutoReinvokeHubWithNote) is never scheduled -> the flow hangs.
+	// Register THIS round's cohort and re-tag the reused child so its completion
+	// joins a live barrier, mirroring the spawn path (spawnChildRun's FlowCohortID +
+	// preRegisterCohort). A back-edge coder continue passes cohortID="" (no cohort).
+	if strings.TrimSpace(cohortID) != "" {
+		s.agentOrchestrator.preRegisterCohort(parentRunID, cohortID, cohortSize)
+	}
 	return s.reinvokeMatchingFlowChild(parentRunID, prompt, func(child *interactiveRun) bool {
-		return child.label == nodeID
+		if child.label != nodeID {
+			return false
+		}
+		if strings.TrimSpace(cohortID) != "" {
+			// Caller (reinvokeMatchingFlowChild) holds s.mu while invoking this
+			// predicate, so mutating the matched child here is lock-safe.
+			child.flowCohortId = cohortID
+		}
+		return true
 	})
 }
 

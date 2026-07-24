@@ -4116,6 +4116,19 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 	// a pending F-0 watchdog cannot observe stale hubLastProgressAt in the gap between
 	// this child going non-active and the next child becoming active.
 	s.touchParentHubProgressFromChildLocked(rs)
+	// BUG-318 P2 (watchdog hardening): arm the hub stall watchdog on EVERY flow
+	// child settle, independent of whether this completion goes on to schedule a
+	// hub reinvoke. Every other maybeScheduleHubStallCheck call site is coupled to
+	// a reinvoke/notify actually being scheduled, so when a bug drops the reinvoke
+	// (e.g. a reviewer completing into a dead/incomplete cohort) the watchdog was
+	// never armed for that window either — the safety net shared the exact blind
+	// spot it exists to catch. checkAndBlockStalledHub re-arms itself while a child
+	// is active or the hub is busy and only blocks after a real timeout of no
+	// progress, so this never false-trips a live flow. Dispatched via a goroutine:
+	// this runs under s.mu and maybeScheduleHubStallCheck acquires s.mu.
+	if rs.parentRunID != "" {
+		go s.maybeScheduleHubStallCheck(rs.parentRunID)
+	}
 	if rs.flowCohortId != "" {
 		s.agentOrchestrator.appendCohortResult(rs.parentRunID, rs.flowCohortId, cohortEntry{
 			Label:        rs.label,
