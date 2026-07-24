@@ -1212,7 +1212,7 @@ Codex re-review sau Vòng 20 (HEAD `6ea5417`) FAIL với **2 Critical + 4 Import
 **Quyết định:** không mở Round 21 vá tiếp theo từng issue. Fix theo batch cấu trúc:
 
 - Tech design: [SD-24 Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md)
-- Coding plan: [CP-51](../../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md) + Task-248…255 (mỗi task có code guide + test skeleton).
+- Coding plan: [CP-51](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md) + Task-248…255 (mỗi task có code guide + test skeleton).
 
 **Termination criterion (đích duy nhất, hết vòng lặp):** BUG-288 → `done` ⟺ **[CP-51 §10 Acceptance Ledger](../../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md)** xanh toàn bộ (crash-matrix đóng + non-regression + `go test -race`). Vì matrix là không gian **đóng** (state × barrier × fault × backend), một finding chỉ hợp lệ khi nằm **ngoài** matrix → thêm đúng 1 dòng rồi re-run verdict, **không** mở round ad-hoc.
 
@@ -1243,6 +1243,7 @@ Out of scope của CP-51 (không chặn done, non-dispatch): Q-1 (Task-240 hub-t
 
 - result: **inprogress** — Vòng 9–20 Fixed (2026-07-16). Post-Round-20 Codex re-review FAIL → closed **structurally** via SD-24/CP-51 (see §11 "Vòng 20+"), not further ad-hoc rounds.
 - termination: BUG-288 → `done` ⟺ CP-51 §10 Acceptance Ledger fully green (closed crash-matrix + non-regression + `go test -race`). No Round 21/22 — a finding is admissible only if outside the closed matrix (then add one row + re-run).
+- **Ledger status (2026-07-24):** 54/56 rows ✅ (audited against real test coverage — see CP-51 §10.1.1). The remaining 2 rows, `GR` (`go test -race` — this dev machine has no C toolchain for CGO) and `CE-GEM` (Gemini capability evidence — Gemini is an intentional non-goal for V2 dispatch, not a pending task), are **operator-waived** as of this date rather than left as open blockers — see CP-51 §10.1 row annotations. With that exception recorded explicitly, the §10 ledger is considered closed for this termination clause; BUG-288's own move to `done` (and CP-51's own move out of `inprogress`) is a separate, not-yet-taken step pending the companion [CP-51-PhaseAB-Timeline-And-Verification-Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md)'s remaining live-E2E items (X1/X3, A10 residual re-open) being closed or similarly waived.
 - primary modules: `apps/local-runner/internal/runner/*`.
 - change-audit: `CA-328`…`CA-336` (Vòng 20).
 - verification: Vòng 18–20 focused tests (`bug288_round18/19/20_test.go`).
