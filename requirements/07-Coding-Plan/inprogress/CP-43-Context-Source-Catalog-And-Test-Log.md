@@ -20,7 +20,7 @@
 Đây là file **metadata/catalog** đi kèm CP-43 gốc (cùng mô hình 2-file như CP-51 có `CP-51` + `CP-51-PhaseAB-Timeline-And-Verification-Log`). Mục tiêu:
 
 1. **Liệt kê canonical toàn bộ context source** đang có trong runner — mỗi loại: implemented ở CP/Task nào, collect **cái gì**, collect **bằng cách nào**, và quan trọng nhất: **AI hay code của ta collect** (§1–§2).
-2. **Test context tách biệt tại đây** — battery Phase B (per-source automated tests + live E2E checklist) được **move từ [CP-51 companion §2.3/§3.2](./CP-51-PhaseAB-Timeline-And-Verification-Log.md)** sang, để test từng source độc lập (§4–§6).
+2. **Test context tách biệt tại đây** — battery Phase B (per-source automated tests + live E2E checklist) được **move từ [CP-51 companion §2.3/§3.2](../done/CP-51-PhaseAB-Timeline-And-Verification-Log.md)** sang, để test từng source độc lập (§4–§6).
 3. Ghi nhận **source mới `source.dependence`** (Task-259) theo đúng format các source cũ + thêm test cho nó (§3, §4.2 hàng mới, §6 B12).
 
 > **Ranh giới với CP-51 companion:** CP-51 companion giờ chỉ giữ Phase A (flow-graph) + CP-51 (durable turn dispatch). Mọi thứ **context/Phase B** ở đây.
@@ -193,4 +193,4 @@ Ghi ☐ khi pass. Chạy với desktop + `flowpilot serve`, project git thật.
 | [CP-45](../done/CP-45-Generic-Artifact-Types-And-Instances.md) | Artifact instances chọn source |
 | [CP-50](../done/CP-50-Context-Source-Completion.md) | canonical.head / change.contract / source.excerpt producer |
 | [Task-259](../../08-Task/todo/Task-259-Source-Dependence-Context-Source.md) | source.dependence (mới) |
-| [CP-51 companion](./CP-51-PhaseAB-Timeline-And-Verification-Log.md) | Phase A + CP-51 turn dispatch (Phase B đã move sang đây) |
+| [CP-51 companion](../done/CP-51-PhaseAB-Timeline-And-Verification-Log.md) | Phase A + CP-51 turn dispatch (Phase B đã move sang đây) |

@@ -8,7 +8,7 @@ Live desktop A1 on gate-sandbox (`run-10389` hub + `run-10394` coder) showed:
 2. Continue after escalate failed with `hub_reinvoke_start_failed: post-turn gate still running`.
 3. Stop on main/hub felt like a no-op; Stop on focused child worked better.
 
-Evidence and checklist: `requirements/07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md` §3.6 + §5.
+Evidence and checklist: `requirements/07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md` §3.6 + §5.
 
 ## Changes
 

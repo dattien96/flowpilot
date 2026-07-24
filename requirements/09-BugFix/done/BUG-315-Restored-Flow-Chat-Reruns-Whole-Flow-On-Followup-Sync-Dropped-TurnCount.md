@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-23`
 - Last Updated: `2026-07-23`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md)
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md)
 - Child Documents: `none`
 - Related Documents: [BUG-313: Restored Chat Timeline Broken — Sync Never Carried The Turn Log](../done/BUG-313-Restored-Chat-Timeline-Broken-Sync-Never-Carried-Turn-Log.md) (same manifest, same class: sync dropped a field the restored run needs to behave like a same-machine resume), [BUG-314: Single-Reviewer Reinvoke Round-2 Agent Cards Lost On Restart](../done/BUG-314-Single-Reviewer-Reinvoke-Round2-Agent-Cards-Lost-On-Restart.md) (found in the same restore-parity investigation), [Task-190: Chat Drive Sync](../../08-Task/done/Task-190-Cross-Machine-Chat-Session-Drive-Sync.md) (the manifest this bug extends)
 - Replaces: `none`
@@ -58,7 +58,7 @@ Restoring a flow-engine (Review Loop / Bug sub-mode) chat from Drive and then se
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — the restore-side quality of C6 (Drive sync round-trip); the follow-up-after-restore behavior sits directly on the path C6 exercises.
+- impacted coding plan: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — the restore-side quality of C6 (Drive sync round-trip); the follow-up-after-restore behavior sits directly on the path C6 exercises.
 - impacted tech design: `none directly` — extends Task-190's chat-sync manifest with one more parity field.
 - impacted system spec: `none known`.
 
@@ -111,7 +111,7 @@ Restoring a flow-engine (Review Loop / Bug sub-mode) chat from Drive and then se
 
 ## 10. Follow-Up Document Updates
 
-- upstream docs updated: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — C6 restore-side note + the §6 gaps list updated in the same pass (C6 restore marked succeeded, BUG-315 recorded as the follow-up it uncovered).
+- upstream docs updated: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — C6 restore-side note + the §6 gaps list updated in the same pass (C6 restore marked succeeded, BUG-315 recorded as the follow-up it uncovered).
 - notes left unchanged on purpose: chats synced by a pre-fix manifest still restore with `turnCount==0`, but the `restoredFrom` guard prevents the re-trigger for them too (they simply have the less-precise count until re-synced). The already-restored 3 hubs are now past their first post-restore turn (`turnCount>=1`), so they no longer re-trigger regardless.
 
 # ---8<--- flowpilot:change-ledger

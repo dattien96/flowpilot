@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-23`
 - Last Updated: `2026-07-23`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md)
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md)
 - Child Documents: `none`
 - Related Documents: [BUG-312: Grok Drive Restore Rejects Every Session](../done/BUG-312-Grok-Drive-Restore-Rejects-Every-Session-Missing-Provider-Case.md) (unblocked Grok restore the same day; the first successfully-restored Grok chat is what exposed this bug), [BUG-083](../done/BUG-083-Resume-Replays-Composed-Prompt-And-Drops-Later-Codex-Turns.md) (introduced the turn-log sidecar this bug teaches sync/restore to carry), [BUG-306](../done/BUG-306-Post-Flow-Followup-Transcript-Misordered-On-Restart.md) (transcript_turn ordering the sidecar preserves), [CA-407](../../change-audit/CA-407-sync-manifest-carries-turn-log.md)
 - Replaces: `none`
@@ -58,7 +58,7 @@ The first Grok chat successfully restored from Drive (a flow-hub run) opened wit
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — this closes the "restored content parity" half of C6's restore side (the anti-overwrite property was never the issue; content parity was).
+- impacted coding plan: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — this closes the "restored content parity" half of C6's restore side (the anti-overwrite property was never the issue; content parity was).
 - impacted tech design: `none directly` — extends the BUG-083 turn-log design across machines rather than changing it.
 - impacted system spec: `none known`
 
@@ -113,5 +113,5 @@ The first Grok chat successfully restored from Drive (a flow-hub run) opened wit
 
 ## 10. Follow-Up Document Updates
 
-- upstream docs updated: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md) §6 — C6 restore-side note updated in the same pass.
+- upstream docs updated: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md) §6 — C6 restore-side note updated in the same pass.
 - notes left unchanged on purpose: (a) chats synced pre-fix restore without prompts until re-synced from a machine holding the original sidecar — runs whose source store was deleted (e.g. run-24345's) are not healable; (b) per-turn provider files beyond the latest remain unsynced (V-5 trade-off); (c) each restore call re-downloads the full per-project dispatch.ndjson (~3.4MB, observed once per restore in the live log) — the restore-side mirror of CA-397's upload-side fix, worth its own follow-up.

@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-23`
 - Last Updated: `2026-07-23`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md)
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md)
 - Child Documents: `none`
 - Related Documents: [BUG-310: Grok Drive Sync Always Fails Reading Session Directory As File](../done/BUG-310-Grok-Drive-Sync-Always-Fails-Reading-Session-Directory-As-File.md) (first found that Grok's session path is a directory, not a file — fixed the READ side; this bug is the same fact biting the SYNC/RESTORE completeness side), [BUG-312: Grok Drive Restore Rejects Every Session](../done/BUG-312-Grok-Drive-Restore-Rejects-Every-Session-Missing-Provider-Case.md) (fixed the PATH the file restores to; this bug fixes WHICH files restore), [BUG-313: Restored Chat Timeline Broken](../done/BUG-313-Restored-Chat-Timeline-Broken-Sync-Never-Carried-Turn-Log.md) (same class: sync silently dropped a field the restored run needs to behave like a same-machine resume), [CA-410](../../change-audit/CA-410-sync-carries-full-grok-session-directory.md)
 - Replaces: `none`
@@ -59,7 +59,7 @@ A Grok chat restored from Google Drive opens and displays its history correctly,
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — the C6 Drive-restore-down property; this is the second live defect found on that path today (after BUG-315), and the reason C6's Grok coverage specifically was not yet fully closed.
+- impacted coding plan: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — the C6 Drive-restore-down property; this is the second live defect found on that path today (after BUG-315), and the reason C6's Grok coverage specifically was not yet fully closed.
 - impacted tech design: `none directly` — extends the same-machine-resume parity contract BUG-310/BUG-312/BUG-313 already established for other Grok/manifest gaps.
 - impacted system spec: `none known`.
 
@@ -111,7 +111,7 @@ A Grok chat restored from Google Drive opens and displays its history correctly,
 
 ## 9. Follow-Up Document Updates
 
-- upstream docs updated: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — C6 restore-side note updated in the same pass.
+- upstream docs updated: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — C6 restore-side note updated in the same pass.
 - notes left unchanged on purpose: chats synced by a pre-fix manifest still restore with only `chat_history.jsonl` until re-synced from a machine that still holds the full session directory (mirrors BUG-313's identical caveat for the turn log).
 
 # ---8<--- flowpilot:change-ledger

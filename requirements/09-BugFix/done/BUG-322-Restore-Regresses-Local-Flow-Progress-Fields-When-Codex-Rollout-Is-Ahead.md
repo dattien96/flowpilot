@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-24`
 - Parent Documents: `none`
 - Child Documents: `none`
-- Related Documents: [BUG-091](./BUG-091-Drive-Restore-Rejects-Same-Session-Prefix-Extension-As-Conflict.md) (introduced the `localAhead` preservation branch this bug widens), [BUG-315](../done/BUG-315-Restored-Flow-Chat-Reruns-Whole-Flow-On-Followup-Sync-Dropped-TurnCount.md) (added `TurnCount` to the restore manifest without folding it into BUG-091's preservation branch -- the exact regression risk this bug closes), [CP-51-PhaseAB-Timeline-And-Verification-Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md) C6 ("no empty-overwrite of newer local"), [CA-421](../../change-audit/CA-421-restore-preserves-flow-progress-fields-when-local-ahead.md)
+- Related Documents: [BUG-091](./BUG-091-Drive-Restore-Rejects-Same-Session-Prefix-Extension-As-Conflict.md) (introduced the `localAhead` preservation branch this bug widens), [BUG-315](../done/BUG-315-Restored-Flow-Chat-Reruns-Whole-Flow-On-Followup-Sync-Dropped-TurnCount.md) (added `TurnCount` to the restore manifest without folding it into BUG-091's preservation branch -- the exact regression risk this bug closes), [CP-51-PhaseAB-Timeline-And-Verification-Log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md) C6 ("no empty-overwrite of newer local"), [CA-421](../../change-audit/CA-421-restore-preserves-flow-progress-fields-when-local-ahead.md)
 - Replaces: `none`
 - Tags: `agent-flow-engine, google-drive, chat-session-sync, restore, conflict, cross-pc, cp-51-c6`
 

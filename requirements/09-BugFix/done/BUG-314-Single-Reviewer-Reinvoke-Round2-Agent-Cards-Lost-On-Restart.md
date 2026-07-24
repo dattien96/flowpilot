@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-07-23`
 - Last Updated: `2026-07-23`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md)
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine And Recovery Reconciliation](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md)
 - Child Documents: `none`
 - Related Documents: [BUG-294: Resumed Agent Card Shows "— completed" Suffix On A Cancelled Child](../done/BUG-294-Resumed-Agent-Card-Shows-Completed-Suffix-On-Cancelled-Child.md) (same `resumedParentAgentAnnotations` reconstruction path), [BUG-313: Restored Chat Timeline Broken — Sync Never Carried The Turn Log](../done/BUG-313-Restored-Chat-Timeline-Broken-Sync-Never-Carried-Turn-Log.md) (found while cross-checking the same "reconstruct timeline after restart" contract for Drive restore; this bug is the same-machine-restart half, not the Drive-sync half)
 - Replaces: `none`
@@ -57,7 +57,7 @@ A Review Loop chat using exactly one reviewer agent (no parallel reviewer cohort
 
 ## 2. Parent Links
 
-- impacted coding plan: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — same "reconstruct the timeline after a restart" contract BUG-313 documents for Drive restore; this is the same-machine-restart half of that contract.
+- impacted coding plan: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — same "reconstruct the timeline after a restart" contract BUG-313 documents for Drive restore; this is the same-machine-restart half of that contract.
 - impacted tech design: `none directly` — extends the Task-239 step-transition sidecar's use (previously only for `applyStepTransitionReplay`'s workflow-step-runtime replay) to the agent-card reconstruction path.
 - impacted system spec: `none known`
 
@@ -108,7 +108,7 @@ A Review Loop chat using exactly one reviewer agent (no parallel reviewer cohort
 
 ## 9. Follow-Up Document Updates
 
-- upstream docs updated: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — new dated update appended alongside the existing BUG-312/BUG-313 notes.
+- upstream docs updated: [CP-51 Phase A/B Timeline And Verification Log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md) — new dated update appended alongside the existing BUG-312/BUG-313 notes.
 - notes left unchanged on purpose: whether the Drive-sync manifest should also carry the step-transition sidecar for cross-machine activation-timing parity (mirroring BUG-313's turn-log fix) is a natural follow-up, not required — Drive restore already falls back correctly to the pre-existing heuristic when the sidecar is absent, same as any other pre-Task-239 run.
 
 # ---8<--- flowpilot:change-ledger
