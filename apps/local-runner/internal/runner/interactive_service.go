@@ -5449,6 +5449,12 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 				out = append(out, AgentRunSummary{
 					RunID:       session.RunID,
 					AgentName:   session.AgentName,
+					// BUG-320: preserve the persisted Label so matchFlowNodeForSession
+					// (interactive_resume.go) can match this child back to its exact
+					// flow node by id -- falling back to AgentName/Role risks an
+					// ambiguous match when two nodes share the same agent (e.g. two
+					// reviewer nodes in one flow).
+					Label:       session.Label,
 					Role:        session.Role,
 					Status:      normalizeResumedStatus(session.Status),
 					ParentRunID: session.ParentRunID,

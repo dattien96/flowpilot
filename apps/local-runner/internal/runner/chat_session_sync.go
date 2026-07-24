@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1093,7 +1094,14 @@ func (s *InteractiveService) resolveRestoredRunID(ctx context.Context, sourceMac
 				if existing.SourceMachineID == sourceMachineID && existing.SourceRunID == sourceRunID {
 					return existing.RunID
 				}
-				return "sync-" + shortMachineID(sourceMachineID) + "-" + sourceRunID
+				// BUG-320: the store only supports single-ID lookups here (no
+				// ListAllProviderSessions), so collision-check each derived
+				// candidate one at a time instead of returning the first one
+				// unchecked.
+				return firstFreeRestoredRunID(sourceMachineID, sourceRunID, func(candidate string) bool {
+					_, found, _ := reader.GetProviderSession(ctx, candidate)
+					return found
+				})
 			}
 		}
 		return sourceRunID
@@ -1102,23 +1110,97 @@ func (s *InteractiveService) resolveRestoredRunID(ctx context.Context, sourceMac
 	if err != nil {
 		return sourceRunID
 	}
-	runIDTaken := false
+	takenIDs := make(map[string]struct{}, len(sessions))
 	for _, session := range sessions {
 		if session.SourceMachineID == sourceMachineID && session.SourceRunID == sourceRunID && strings.TrimSpace(session.RunID) != "" {
 			return session.RunID
 		}
-		if session.RunID == sourceRunID {
-			runIDTaken = true
+		if id := strings.TrimSpace(session.RunID); id != "" {
+			takenIDs[id] = struct{}{}
 		}
 	}
-	if !runIDTaken {
+	if _, taken := takenIDs[sourceRunID]; !taken {
 		return sourceRunID
 	}
-	return "sync-" + shortMachineID(sourceMachineID) + "-" + sourceRunID
+	// BUG-320: resolveRestoredRunID previously returned the first derived
+	// "sync-<machine>-<id>" candidate unchecked. If that candidate was ALSO
+	// already taken (e.g. two source machines whose 8-char shortMachineID
+	// prefixes collide, or a repeat restore racing a fresh local run that
+	// happens to reuse the same derived id), UpsertProviderSession has no
+	// create-only guard -- it would silently overwrite the unrelated
+	// existing record. Loop with an incrementing suffix until a genuinely
+	// free id is found.
+	return firstFreeRestoredRunID(sourceMachineID, sourceRunID, func(candidate string) bool {
+		_, taken := takenIDs[candidate]
+		return taken
+	})
+}
+
+// firstFreeRestoredRunID returns the first "sync-<machine>-<sourceRunID>"
+// candidate that isTaken reports as free, appending an incrementing numeric
+// suffix on repeated collisions (see BUG-320 note at the call sites above).
+func firstFreeRestoredRunID(sourceMachineID, sourceRunID string, isTaken func(candidate string) bool) string {
+	base := "sync-" + shortMachineID(sourceMachineID) + "-" + sourceRunID
+	if !isTaken(base) {
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := base + "-" + strconv.Itoa(i)
+		if !isTaken(candidate) {
+			return candidate
+		}
+	}
 }
 
 func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req ChatSessionRestoreRequest) (ChatSessionRestoreResult, *apiErr) {
 	return s.restoreChatRunTreeFromDrive(ctx, req, make(map[string]struct{}))
+}
+
+// chatSessionRemoteRunKnown reports whether a run has ANY remote trace on
+// Drive for this project -- either an index row or (CA-404: index rows can be
+// lost to a concurrent-sync last-write-wins race while the manifest blob
+// itself survives) a manifest blob still present at its expected path.
+// BUG-319/BUG-320: used only to tell a CHILD that was CONFIRMED never synced
+// at all (no trace anywhere -- safe to tombstone instead of hard-failing the
+// restore) apart from a child that WAS synced but is now broken in some other
+// way (missing provider file, integrity mismatch, ...), which must still
+// hard-fail the whole restore. BUG-320: a transient Drive lookup failure
+// (network blip, API error) is NOT the same fact as "confirmed absent" --
+// treating it as "never synced" would silently tombstone a child that may
+// still have real data, the exact thing the CA-404 guard exists to prevent.
+// Only a manifest-path lookup that resolves to os.ErrNotExist counts as
+// confirmed-absent; any other error is returned so the caller hard-fails.
+func chatSessionRemoteRunKnown(accessToken, rootFolderID string, indexRecords []chatSessionDriveIndexRecord, machineID, runID string) (bool, error) {
+	for _, record := range indexRecords {
+		if record.SourceMachineID == machineID && record.SourceRunID == runID {
+			return true, nil
+		}
+	}
+	_, err := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, chatSessionManifestPath(machineID, runID))
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
+// terminalizeTombstoneStatus normalizes a never-synced child's last-known
+// status (captured in the parent's manifest.ChildAgents at sync time) into a
+// tombstone-safe terminal state. normalizeResumedStatus deliberately keeps
+// waiting_approval/waiting_question so a real restart can rehydrate the
+// actionable gate card (rehydratePendingGatesLocked) -- but a BUG-320
+// tombstone has no synced approval/question record to rehydrate from, so any
+// non-terminal status here must collapse to Cancelled instead of leaving a
+// permanently "waiting" card nothing will ever resolve.
+func terminalizeTombstoneStatus(status RunStatus) RunStatus {
+	switch normalizeResumedStatus(status) {
+	case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+		return normalizeResumedStatus(status)
+	default:
+		return RunStatusCancelled
+	}
 }
 
 func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, req ChatSessionRestoreRequest, restoring map[string]struct{}) (ChatSessionRestoreResult, *apiErr) {
@@ -1149,8 +1231,9 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 	if err != nil {
 		return ChatSessionRestoreResult{}, newAPIErr(http.StatusNotFound, "sync_remote_not_found", "remote chat session was not found")
 	}
+	indexRecords := parseChatSessionDriveIndex(indexBytes)
 	var match *chatSessionDriveIndexRecord
-	for _, record := range parseChatSessionDriveIndex(indexBytes) {
+	for _, record := range indexRecords {
 		if record.SourceMachineID == req.SourceMachineID && record.SourceRunID == req.SourceRunID {
 			rec := record
 			match = &rec
@@ -1366,22 +1449,90 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 	// relationship metadata. Loading summaries alone made the panel look correct only
 	// until restart and left child chats unopened on the restored machine. (BUG-123)
 	var remapped []AgentRunSummary
+	// BUG-320: staged tombstones for children confirmed never-synced, keyed by
+	// their (already collision-resolved) local RunID. Persisted once, AFTER
+	// every child in this parent's ChildAgents list has been validated/restored
+	// and DependsOn remapping has finished, immediately before the parent
+	// itself -- never inside the loop. Persisting eagerly would (a) leave an
+	// orphan tombstone on disk if a LATER sibling child hard-fails and this
+	// whole restore call returns an error, and (b) get double-upserted by the
+	// metadata-patch pass below, which patches already-restored real children
+	// in place rather than writing a fresh record.
+	tombstones := map[string]*ProviderSessionState{}
 	if len(manifest.ChildAgents) > 0 {
-		remapped = make([]AgentRunSummary, len(manifest.ChildAgents))
 		runIDMap := map[string]string{manifest.SourceRunID: localRunID}
-		for i, child := range manifest.ChildAgents {
-			remapped[i] = child
+		for _, child := range manifest.ChildAgents {
+			entry := child
 			// A synced child's status is a live snapshot from the source machine;
 			// once restored elsewhere nothing is actually running it, so an
 			// in-flight status must be normalized the same way the disk-fallback
 			// branch of listAgentRunSummaries already does (BUG-251 parity —
 			// Task-190) — otherwise a reviewer synced mid-turn shows a
 			// permanently stale "running" badge on the restored machine.
-			remapped[i].Status = normalizeResumedStatus(child.Status)
-			remapped[i].AgentStatus = string(normalizeResumedStatus(RunStatus(child.AgentStatus)))
-			remapped[i].DependsOn = append([]string(nil), child.DependsOn...)
+			entry.Status = normalizeResumedStatus(child.Status)
+			entry.AgentStatus = string(normalizeResumedStatus(RunStatus(child.AgentStatus)))
+			entry.DependsOn = append([]string(nil), child.DependsOn...)
 			childRunID := strings.TrimSpace(child.RunID)
 			if childRunID == "" {
+				continue
+			}
+			// BUG-319/BUG-320: a child whose own turn was interrupted before it
+			// ever wrote a real transcript is never uploaded during sync-up
+			// (syncChatRunToDrive's own best-effort "skip child" branch, above) --
+			// it has no index row and no manifest blob anywhere on Drive. That's
+			// not a data problem with the REST of this tree (the hub and every
+			// other child may be fully restorable), so this child gets a
+			// metadata-only TOMBSTONE record instead of a real transcript restore
+			// -- rather than failing the whole request (mirrors sync-up's own
+			// per-child leniency) or vanishing from the tree with no trace at all
+			// (BUG-320: resumedFlowStepRows' evidence-walk needs SOME persisted
+			// session for this child to mark its flow step FAILED/CANCELED
+			// instead of defaulting every evidence-less node to DONE). A child
+			// that WAS synced (has an index row, or per CA-404 at least a
+			// surviving manifest blob) but fails to restore for any OTHER reason
+			// (missing provider file, integrity mismatch, ...) still hard-fails
+			// below, unchanged -- restoring it must never silently drop real data
+			// just because it's now broken.
+			known, knownErr := chatSessionRemoteRunKnown(accessToken, rootFolderID, indexRecords, manifest.SourceMachineID, childRunID)
+			if knownErr != nil {
+				// BUG-320: a transient Drive lookup failure (network blip, API
+				// error) is not the same fact as "confirmed absent". Treating it
+				// as never-synced could tombstone a child that still has real,
+				// recoverable data -- exactly what the CA-404 guard exists to
+				// prevent. Hard-fail instead of guessing.
+				return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", knownErr.Error())
+			}
+			if !known {
+				log.Printf("[chat-sync] tombstone child restore (never synced) run_id=%q parent=%q", childRunID, manifest.SourceRunID)
+				tombstoneID := s.resolveRestoredRunID(ctx, manifest.SourceMachineID, childRunID)
+				now := time.Now().UTC().Format(time.RFC3339Nano)
+				tombstones[tombstoneID] = &ProviderSessionState{
+					RunID:           tombstoneID,
+					ProjectID:       projectID,
+					ProviderKey:     ProviderKey(child.ProviderKey),
+					RunKind:         "chat",
+					Status:          terminalizeTombstoneStatus(child.Status),
+					AgentStatus:     string(terminalizeTombstoneStatus(RunStatus(child.AgentStatus))),
+					AgentName:       child.AgentName,
+					Role:            child.Role,
+					Label:           child.Label,
+					ModelName:       child.ModelName,
+					StartedAt:       child.CreatedAt,
+					UpdatedAt:       now,
+					SourceMachineID: manifest.SourceMachineID,
+					SourceRunID:     childRunID,
+					RestoredFrom:    "google_drive",
+					// BUG-311 semantics: a transcript-less tombstone can never be
+					// synced FROM this machine either -- it has no real session
+					// data here any more than it did on the source.
+					SyncStatus:    "unsyncable",
+					SyncUpdatedAt: now,
+				}
+				runIDMap[childRunID] = tombstoneID
+				entry.RunID = tombstoneID
+				entry.Status = terminalizeTombstoneStatus(child.Status)
+				entry.AgentStatus = string(terminalizeTombstoneStatus(RunStatus(child.AgentStatus)))
+				remapped = append(remapped, entry)
 				continue
 			}
 			childResult, childErr := s.restoreChatRunTreeFromDrive(ctx, ChatSessionRestoreRequest{
@@ -1395,7 +1546,8 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 				return ChatSessionRestoreResult{}, childErr
 			}
 			runIDMap[childRunID] = childResult.RunID
-			remapped[i].RunID = childResult.RunID
+			entry.RunID = childResult.RunID
+			remapped = append(remapped, entry)
 		}
 		for i := range remapped {
 			remapped[i].ParentRunID = localRunID
@@ -1404,19 +1556,34 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 					remapped[i].DependsOn[j] = localDependency
 				}
 			}
-			childLocalRunID := runIDMap[manifest.ChildAgents[i].RunID]
-			if childLocalRunID == "" {
+			if tombstone, isTombstone := tombstones[remapped[i].RunID]; isTombstone {
+				// Tombstones are staged, fully-built records (not yet persisted) --
+				// fold in the final parent id + remapped dependencies directly
+				// rather than patching a real persisted record via
+				// updateLocalSessionSyncStatus.
+				tombstone.ParentRunID = localRunID
+				tombstone.DependsOn = append([]string(nil), remapped[i].DependsOn...)
 				continue
 			}
-			if metadataErr := s.updateLocalSessionSyncStatus(ctx, childLocalRunID, func(childSession *ProviderSessionState) {
+			if metadataErr := s.updateLocalSessionSyncStatus(ctx, remapped[i].RunID, func(childSession *ProviderSessionState) {
 				childSession.ParentRunID = localRunID
 				childSession.AgentName = remapped[i].AgentName
 				childSession.Role = remapped[i].Role
+				childSession.Label = remapped[i].Label
 				childSession.DependsOn = append([]string(nil), remapped[i].DependsOn...)
 				childSession.AgentStatus = remapped[i].AgentStatus
 				childSession.ModelName = remapped[i].ModelName
 			}); metadataErr != nil {
 				return ChatSessionRestoreResult{}, metadataErr
+			}
+		}
+		// BUG-320: persist every staged tombstone now that every child has been
+		// validated/restored (so a hard-failing sibling never leaves one behind)
+		// and DependsOn has its final remapped values -- still strictly before
+		// the parent's own persist below.
+		for _, tombstone := range tombstones {
+			if err := s.persistProviderSession(*tombstone); err != nil {
+				return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 			}
 		}
 	}
