@@ -78,6 +78,54 @@ func startRun(t *testing.T, base string) string {
 	return h.RunID
 }
 
+// startNormalChatRun starts a run tagged RunKind="chat" (ChatMode="normal_chat",
+// no WorkflowID) instead of startRun's WorkflowID:"wf-feature" placeholder.
+// BUG-299 (2026-07-22) added shouldForceFlowYolo, which forces YOLO=true for
+// any run with a non-empty WorkflowID (or RunKind ""/"workflow") -- exactly
+// what startRun's placeholder now trips, even though it never meant to
+// represent a real workflow launch. Tests that specifically need YOLO to stay
+// off (approval-gated tool calls) must start a genuine chat-mode run instead.
+func startNormalChatRun(t *testing.T, base string) string {
+	t.Helper()
+	// A real chat-mode run kicks off the same async gate-observation path a
+	// live turn does. That can still hold a file handle inside the workspace
+	// dir by the time this test function returns, and Go's t.TempDir() fails
+	// the test outright if its own cleanup can't remove the directory (a
+	// Windows-only symptom -- open handles block deletion there, unlike
+	// Unix). Manage the dir manually with a tolerant, retrying cleanup
+	// instead: this is a test-hygiene concern, not a correctness one.
+	cwd, err := os.MkdirTemp("", "startNormalChatRun")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		var rmErr error
+		for i := 0; i < 5; i++ {
+			if rmErr = os.RemoveAll(cwd); rmErr == nil {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Logf("startNormalChatRun: best-effort cleanup of %s failed after retries: %v", cwd, rmErr)
+	})
+	status, body := doJSON(t, "POST", base+"/client/workflow-runs", StartRunInput{
+		ProjectID: "proj-web",
+		ChatMode:  "normal_chat",
+		Cwd:       cwd,
+	}, nil)
+	if status != http.StatusOK {
+		t.Fatalf("start chat run status=%d body=%s", status, body)
+	}
+	var h RunHandle
+	if err := json.Unmarshal(body, &h); err != nil {
+		t.Fatalf("decode handle: %v", err)
+	}
+	if h.RunID == "" || h.ProviderSessionID == "" {
+		t.Fatalf("empty handle: %+v", h)
+	}
+	return h.RunID
+}
+
 func startProjectRun(t *testing.T, base, projectID, workflowID string) string {
 	t.Helper()
 	status, body := doJSON(t, "POST", base+"/client/workflow-runs", StartRunInput{ProjectID: projectID, WorkflowID: workflowID, StepID: "step-plan"}, nil)
@@ -4576,7 +4624,11 @@ func TestApprovalDenyThenApprove(t *testing.T) {
 	_, srv := newTestServer(t)
 
 	// deny
-	runID := startRun(t, srv.URL)
+	// BUG-299 (2026-07-22) forces YOLO=true for any non-empty WorkflowID;
+	// startRun's "wf-feature" placeholder now trips that, which would
+	// auto-approve every tool call and never surface the pending approval
+	// this test depends on -- use a genuine chat-mode run instead.
+	runID := startNormalChatRun(t, srv.URL)
 	sendTurn(t, srv.URL, runID, "approval-required", nil)
 	var approvalID string
 	waitFor(t, func() bool {
@@ -4606,7 +4658,7 @@ func TestApprovalDenyThenApprove(t *testing.T) {
 	}
 
 	// approve (fresh run)
-	runID2 := startRun(t, srv.URL)
+	runID2 := startNormalChatRun(t, srv.URL)
 	sendTurn(t, srv.URL, runID2, "approval-required", nil)
 	var approvalID2 string
 	waitFor(t, func() bool {
@@ -4764,7 +4816,9 @@ func TestIdempotentTurn(t *testing.T) {
 
 func TestApprovalExpiry(t *testing.T) {
 	_, srv := newTestServer(t) // TTL = 50ms
-	runID := startRun(t, srv.URL)
+	// See TestApprovalDenyThenApprove: startRun's WorkflowID placeholder now
+	// trips BUG-299's force-YOLO, which would skip the approval entirely.
+	runID := startNormalChatRun(t, srv.URL)
 	sendTurn(t, srv.URL, runID, "approval-required", nil)
 	evs := waitTerminal(t, srv.URL, runID)
 	last := evs[len(evs)-1]

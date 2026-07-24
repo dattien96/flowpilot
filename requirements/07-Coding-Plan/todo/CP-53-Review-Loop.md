@@ -10,7 +10,7 @@
 - Reviewers: `<chờ phân công>`
 - Created: `2026-07-22`
 - Last Updated: `2026-07-22`
-- Parent Documents: [CP-35 (nguồn gốc flow gate, P-4/P-5)](../), [CP-51 (durable turn dispatch)](../inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md), [CP-50 / CP-43 (context sources)](../)
+- Parent Documents: [CP-35 (nguồn gốc flow gate, P-4/P-5)](../), [CP-51 (durable turn dispatch)](../done/CP-51-PhaseAB-Timeline-And-Verification-Log.md), [CP-50 / CP-43 (context sources)](../)
 - Child Documents: `<Task docs sẽ tạo sau khi duyệt>`
 - Related Documents: `Task-155 (r-reg decision card), Task-156 (baseline), Task-223/225/242/247 (artifact + tier gates), BUG-288, BUG-289, SD-21 (change contract)`
 - Replaces: `<không>`
@@ -67,7 +67,7 @@ Giảm tỉ lệ flow-coding để lọt bug (đặc biệt là regression của
 
 ## 2. Input Documents
 
-- [CP-51 — Durable Turn Dispatch & Recovery](../inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md) (vòng đời turn mà gate móc vào).
+- [CP-51 — Durable Turn Dispatch & Recovery](../done/CP-51-PhaseAB-Timeline-And-Verification-Log.md) (vòng đời turn mà gate móc vào).
 - CP-35 (nguồn gốc flow gate P-4/P-5), CP-50 / CP-43 (context sources nuôi coding agent).
 - SD-21 (change contract, được `changecontract/infer.go` tham chiếu).
 - Tham khảo ngoài: bài "Loops" của Kopadze (xem §3.1). Chỉ dùng framing/thuật ngữ.

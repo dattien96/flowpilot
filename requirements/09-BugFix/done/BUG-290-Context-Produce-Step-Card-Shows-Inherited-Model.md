@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-20`
 - Parent Documents: [Task-183](../../08-Task/done/Task-183-User-Owned-Model-Provider-Resolution-Across-Chat-And-Flow.md), [BUG-227](./BUG-227-Flow-Mode-Main-Card-Shows-Pre-Run-Catalog-Model-Instead-Of-Resolved-Model.md)
 - Child Documents: `none`
-- Related Documents: [CP-51](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CA-225](../../../change-audit/CA-225-user-owned-model-resolution.md), [CA-368](../../../change-audit/CA-368-context-produce-step-model-visibility.md)
+- Related Documents: [CP-51](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CA-225](../../../change-audit/CA-225-user-owned-model-resolution.md), [CA-368](../../../change-audit/CA-368-context-produce-step-model-visibility.md)
 - Replaces: `none`
 - Tags: `agent-flow-engine, desktop, flow-step-timeline, workflow-settings, context-produce, display-bug`
 

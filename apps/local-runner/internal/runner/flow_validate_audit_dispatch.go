@@ -570,7 +570,10 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 		// forward-edge auto-advance path (flowNodeReusesChild check before
 		// reinvokeExistingFlowChild) â€” spawning a brand new child here silently
 		// dropped the coder's own working memory of the prior attempt every retry.
-		if flowNodeReusesChild(targetNode) && s.reinvokeExistingFlowChild(parentRunID, targetNode.ID, prompt) {
+		// BUG-318: the validate/audit retry target is a single-node retry (its
+		// spawn fallback below carries no FlowCohortID), so pass cohortID="" — no
+		// cohort re-registration, unchanged BUG-279 reuse behavior.
+		if flowNodeReusesChild(targetNode) && s.reinvokeExistingFlowChild(parentRunID, targetNode.ID, prompt, "", 0) {
 			if s.isFlowEngineDriven(parentRunID) {
 				s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusDone)
 				s.setFlowStepStatus(ctx, parentRunID, targetNode.ID, StepStatusRunning)

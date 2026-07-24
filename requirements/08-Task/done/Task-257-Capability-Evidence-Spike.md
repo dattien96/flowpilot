@@ -10,7 +10,7 @@
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
 - Last Updated: `2026-07-16`
-- Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md) (P-0), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md) (§6.3)
+- Parent Documents: [CP-51: Durable Turn Dispatch State Machine](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md) (P-0), [SD-24: Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md) (§6.3)
 - Child Documents: `None`
 - Related Documents: [Task-249](./Task-249-Live-Dispatch-Integration-And-Stop-Fences.md) (consumer of the evidence)
 - Replaces: `None`

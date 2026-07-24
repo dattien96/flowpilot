@@ -280,7 +280,7 @@ input {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  overflow: auto;
+  overflow: hidden;
   min-height: 0;
 }
 .sidebar-left {
@@ -1586,6 +1586,9 @@ input {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 .workflow-rail {
   display: grid;
@@ -2037,6 +2040,28 @@ input {
   color: var(--warn);
   border-color: var(--warn);
 }
+.project-history-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 6px;
+}
+.project-history-refresh:hover {
+  color: var(--accent);
+  background: rgba(76, 141, 255, 0.08);
+}
+.project-history-refresh:disabled {
+  cursor: default;
+  opacity: 0.8;
+  color: var(--text-dim);
+  background: transparent;
+}
+
 /* ── Selection mode ── */
 .project-history-group-head--selecting .project-history-group-toggle {
   cursor: default;
@@ -2508,6 +2533,7 @@ input {
 .sidebar-bottom {
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
 }
 
 /* system controls */

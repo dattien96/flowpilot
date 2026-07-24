@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-16`
 - Parent Documents: [SS-16 Agent Flow Engine](./SS-16-Agent-Flow-Engine.md), [SS-11 Workflow With Session](./SS-11-Workflow-With_Session.md)
 - Child Documents: [SD-24 Durable Turn Dispatch](../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md)
-- Related Documents: [BUG-288](../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [CP-51](../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md)
+- Related Documents: [BUG-288](../09-BugFix/done/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [CP-51](../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md)
 - Replaces: `None`
 - Tags: `agent-flow-engine, durable-turn, uncertain, repair-required, operator`
 - Feature Keys: `agent-flow-engine`

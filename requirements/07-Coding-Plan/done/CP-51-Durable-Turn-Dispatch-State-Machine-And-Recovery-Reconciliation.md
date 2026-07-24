@@ -5,15 +5,15 @@
 - Document ID: `CP-51`
 - Title: `Durable Turn Dispatch State Machine And Recovery Reconciliation`
 - Phase: `coding_plan`
-- Status: `approved`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Codex review (multi-round)`
 - Created: `2026-07-16`
-- Last Updated: `2026-07-16`
+- Last Updated: `2026-07-24`
 - Parent Documents: [SD-24 Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md), [SD-25 Recovery Ownership Linearization Closure](../../06-System-Tech-Design/SD-25-Recovery-Ownership-Linearization-Closure.md), [SS-17 Dispatch Uncertainty And Repair Operator Contract](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md), SD-20 Flow Gate Rule Semantics (three-tier / Flow Mode), SD-21 Change Contract, [SS-14 Code Context & Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
 - Child Documents: `Task-248, Task-249, Task-250, Task-251, Task-252, Task-253, Task-254, Task-255, Task-256, Task-257 (P-0 spike), Task-258 (per-project local dispatch + Drive sync; retires Supabase dispatch tables as default)`
 - Related verification log: [CP-51-PhaseAB-Timeline-And-Verification-Log](./CP-51-PhaseAB-Timeline-And-Verification-Log.md) (Phase A/B + BUG-288 + CP-51 timeline + `go test` / live E2E checklist)
-- Related Documents: [BUG-288: Flow-Mode Three-Tier Gate + Change Contract Re-entry Gaps](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [Task-242: Flow-Mode Three-Tier Gate](../../08-Task/done/Task-242-Flow-Mode-Three-Tier-Gate.md), [Task-239: Flow Restore And Step Transition Log](../../08-Task/done/Task-239-Flow-Restore-And-Step-Transition-Log.md), [Task-067: Post-Restart Run Resume](../../08-Task/done/Task-067-Desktop-Post-Restart-Run-Resume-Via-Provider-Session-Id.md)
+- Related Documents: [BUG-288: Flow-Mode Three-Tier Gate + Change Contract Re-entry Gaps](../../09-BugFix/done/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [Task-242: Flow-Mode Three-Tier Gate](../../08-Task/done/Task-242-Flow-Mode-Three-Tier-Gate.md), [Task-239: Flow Restore And Step Transition Log](../../08-Task/done/Task-239-Flow-Restore-And-Step-Transition-Log.md), [Task-067: Post-Restart Run Resume](../../08-Task/done/Task-067-Desktop-Post-Restart-Run-Resume-Via-Provider-Session-Id.md)
 - Replaces: `None`
 - Tags: `agent-flow-engine, durable-turn, dispatch-state-machine, crash-recovery, stop-race, idempotency, supabase, codex-review, bug-288`
 - Feature Keys: `agent-flow-engine`
@@ -83,7 +83,7 @@ Replace the ad-hoc turn-dispatch coordination (RAM `turnInFlight` + `prep:<turnI
 - SD-20 Flow Gate Rule Semantics (three-tier gate lifecycle, Flow Mode post-turn gate).
 - SD-21 Change Contract (re-entry prompt injection interaction with dispatch).
 - [SS-14 Code Context & Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md).
-- [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md) — originating multi-round review; this CP closes its Round-20 residuals.
+- [BUG-288](../../09-BugFix/done/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md) — originating multi-round review; this CP closes its Round-20 residuals.
 
 ## 3. Implementation Strategy
 
@@ -235,6 +235,8 @@ No Task may add a recovery concurrency rule outside this mapping. SD-25 §5 is t
 ## 10. Definition of Done — The Single Finish Line
 
 > **This section is the one artifact to look at to decide "done or not."** BUG-288 / CP-51 is DONE ⟺ every row in the §10.1 ledger is ✅ and the §10.3 verdict command is green. Nothing here is judged "done by inspection." If a requirement is not a green row below, it is not done; when every row is green, the work is complete and the Codex review loop for this class ends.
+>
+> **Closed 2026-07-24.** 54/56 §10.1 rows ✅; the remaining 2 (`GR` — no C toolchain on this dev machine for `go test -race`; `CE-GEM` — Gemini is an intentional V2-dispatch non-goal) are operator-waived, not silently skipped — see the row annotations and §10.1.1. Moved from `inprogress/` to `done/` on this basis, alongside the companion [CP-51-PhaseAB-Timeline-And-Verification-Log](./CP-51-PhaseAB-Timeline-And-Verification-Log.md) (its own live E2E checklist reached the same closed state the same day).
 
 ### 10.0 Why the review loop terminates (no Round 21/22)
 
@@ -267,7 +269,7 @@ Rounds 1–20 never converged because each round *discovered* its acceptance set
 | `Rr4` | No non-terminal record / key ever pruned | 254 | `idempotency_retention_test` | ✅ |
 | `NR` | All prior-round suites still green (§10.2) | 255 | full `internal/runner` + `internal/flowgate` | ✅ |
 | `GB` | `go build ./...` + `go vet ./...` clean | 255 | CI | ✅ |
-| `GR` | `go test -race ./internal/runner` clean (incl. matrix) | 255 | CI | ☐ |
+| `GR` | `go test -race ./internal/runner` clean (incl. matrix) | 255 | CI | ☑ waived (2026-07-24, operator decision — see §10.1.1) |
 | `FF` | Every **defect-regression** test fails on HEAD `6ea5417`, passes after fix (foundation tests exempt — see `MU`) | 255 | PR evidence | ✅ (via `MU` substitution — see §10.1.1; not literally replayable against `6ea5417`) |
 | `MU` | State-machine **mutation checks**: flipping any transition guard / CAS predicate turns the suite red (foundation-test substitute for fail-on-HEAD) | 248/255 | `dispatch_record_test` mutation cases | ✅ |
 | `CC` | Two concurrent recovery scanners: exactly one wins the lease; zero double-dispatch | 250/255 | `dispatch_recovery_test` + matrix | ✅ |
@@ -292,7 +294,7 @@ Rounds 1–20 never converged because each round *discovered* its acceptance set
 | `RR` | **Repair resolution is transactional & implementable**: two-phase `BeginRepairResolution` → out-of-store validate → `CommitRepairResolution` (a store tx cannot run the Go loader); CAS on `RepairRevision`, idempotent by `resolutionID`, audited; crash between phases expires via attempt TTL; open repair blocks snapshot writers | 248/253/256 | repair-contract tests | ✅ |
 | `CE-CG` | **Capability evidence attached — Codex/Grok scoped rollout**: both SD-24 rows have recorded negative evidence (`unprovable ⇒ uncertain`), no `Accepted`/attach seam, and no *(verify live)* cell | **257** | [Codex evidence](../../06-System-Tech-Design/evidence/SD-24/codex.md) + [Grok evidence](../../06-System-Tech-Design/evidence/SD-24/grok.md) + matrix cells | ✅ |
 | `CE-CL` | **Capability evidence attached — Claude scoped rollout**: live kill-mid-turn probe recorded negative acceptance/attach evidence (`unprovable ⇒ uncertain`) plus an evidenced (non-authoritative) reconcile artifact; no `Accepted`/attach seam, no *(verify live)* cell | **257** | [Claude evidence](../../06-System-Tech-Design/evidence/SD-24/claude.md) + matrix cell | ✅ |
-| `CE-GEM` | **Capability evidence deferred — Gemini**: its Task-257 outcome remains unrecorded; Gemini is V2-disabled, not silently assumed safe | **257** | deferred matrix cell + provider-enable guard test | ☐ |
+| `CE-GEM` | **Capability evidence deferred — Gemini**: its Task-257 outcome remains unrecorded; Gemini is V2-disabled, not silently assumed safe | **257** | deferred matrix cell + provider-enable guard test | ☑ waived (2026-07-24, operator decision — see §10.1.1) |
 | `RC` | Receipt boundary is explicit: only a future Task-257-evidenced adapter predicate may call `TurnBridge.Accepted`; Codex/Grok/Claude session creation/stdin-write/headless output never does, and Gemini is V2-disabled | 249/255/257 | negative adapter seam + provider-enable guard tests + evidence links | ✅ |
 | `RE` | **Receipt integrity**: stored receipt evidence is canonical JSON + SHA-256 + identity; equal replay is idempotent and same identity with divergent payload is `ErrReceiptConflict` on both backends | 248/249/255/256 | receipt contract + adapter seam tests | ✅ |
 | `RSF` | **Root Stop fence**: every `send_claimed→send_started` CAS first locks/checks its own non-prunable `RunStopState`, so `RequestRunStop` racing root send returns `ErrRunStopFence` and atomically pre-send-cancels/clears/audits with zero bytes — no dependency on a later per-record cancel loop | 248/249/250/255 | root-stop/send interleaving matrix on both stores | ✅ |
@@ -363,11 +365,11 @@ Rounds 1–20 never converged because each round *discovered* its acceptance set
 
 - `NR` — the specific named Round-9/10/16/18/20 guard tests that exist (`V9Matrix*`, etc.) pass, but a **full** `go test ./internal/runner/...` run surfaced **18 failures outside CP-51/dispatch scope entirely** (Codex/Gemini adapter CLI invocation, skills-merge precedence, approval expiry, git-commit-guard) — none overlap `NR`'s named list or any other §10.1 row, so they don't block this ledger, but they are a real, separate gap worth its own investigation (possibly environment-dependent: missing real provider CLI installs on this machine).
 
-**Confirmed genuine gaps — no evidence found, not just unverified:**
+**Confirmed genuine gaps — no evidence found, not just unverified — both formally waived 2026-07-24 (operator decision, does not block CP-51/BUG-288 closure):**
 
 - ~~`PG` — no env-gated real-PostgreSQL/Supabase dispatch test found~~ **Correction (operator, same day): wrong call.** Task-258 (2026-07-17, already a child doc of this CP) retired Supabase as the dispatch backend entirely — "Runner no longer opens a Supabase dispatch client," tables dropped via migration, local NDJSON + Google Drive sync is the one product path. `TestDispatchStore_ContractSuite`'s actual subtests are `local`/`memory`/`multi` — no Supabase variant exists in code, confirming the retirement. `PG` (and the "both stores"/"real PostgreSQL" language in `PAR` and the §10.4 barrier rows) describes a two-backend architecture this CP itself abandoned before implementation finished; it is satisfied by that product decision, not an open test gap. Flipped to ✅ below on that basis, not because a Supabase run happened.
-- `CE-GEM` — explicitly out of scope: Gemini is not supported for V2 dispatch (operator confirmed 2026-07-22); Task-257's Gemini evidence spike is not planned. Left `☐` — this is an intentional non-goal, not a pending task.
-- `GR` — cannot run here at all (no C toolchain for `-race`/CGO); unknown, not failing. Needs a CI run or a machine with `gcc`.
+- `CE-GEM` — explicitly out of scope: Gemini is not supported for V2 dispatch (operator confirmed 2026-07-22); Task-257's Gemini evidence spike is not planned. **Waived 2026-07-24** (operator decision, this session) — an intentional non-goal, formally accepted as never going green rather than left an ambiguous `☐`.
+- `GR` — cannot run here at all (no C toolchain for `-race`/CGO); unknown, not failing. Needs a CI run or a machine with `gcc`. **Waived 2026-07-24** (operator decision, this session): the local, non-`-race` suite (`go test ./internal/runner ./internal/flowgate`, repeatedly green across this session's BUG-319/320/321/322 sweeps) and `go vet` stand in as the closure evidence for this environment; re-run `-race` on a machine with a C toolchain if one becomes available, but its absence no longer blocks CP-51/BUG-288 closure.
 - `FF` (every defect test shown failing on HEAD `6ea5417` before the fix) — a process attestation, not something replayable from current HEAD; the test names strongly suggest TDD against named defects, but "PR evidence" itself wasn't located.
 
 ### 10.2 Non-regression coverage (prior-round fixes in refactored code — must stay green)

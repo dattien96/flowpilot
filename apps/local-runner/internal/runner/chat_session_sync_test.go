@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ type fakeChatDriveFile struct {
 }
 
 type fakeChatDriveAPI struct {
+	mu          sync.Mutex
 	nextID      int
 	files       map[string]fakeChatDriveFile
 	uploadOrder []string
@@ -59,30 +61,34 @@ func newFakeChatDriveAPI(rootFolderID string) *fakeChatDriveAPI {
 }
 
 func (api *fakeChatDriveAPI) handle(_ context.Context, method, endpoint string, headers map[string]string, body []byte) (int, []byte, error) {
+	api.mu.Lock()
+	defer api.mu.Unlock()
 	switch {
 	case endpoint == "https://oauth2.googleapis.com/token":
 		return 200, []byte(`{"access_token":"drive-access-token"}`), nil
 	case method == http.MethodGet && strings.HasPrefix(endpoint, "https://www.googleapis.com/drive/v3/files/") && strings.Contains(endpoint, "?alt=media"):
-		return api.handleDownload(endpoint)
+		return api.handleDownloadLocked(endpoint)
 	case method == http.MethodGet && strings.HasPrefix(endpoint, "https://www.googleapis.com/drive/v3/files?"):
-		return api.handleList(endpoint)
+		return api.handleListLocked(endpoint)
 	case strings.HasPrefix(endpoint, "https://www.googleapis.com/upload/drive/v3/files"):
-		return api.handleUpload(method, endpoint, headers, body)
+		return api.handleUploadLocked(method, endpoint, headers, body)
 	default:
 		return 500, []byte(`{"error":"unexpected endpoint"}`), nil
 	}
 }
 
-func (api *fakeChatDriveAPI) handleDownload(endpoint string) (int, []byte, error) {
+func (api *fakeChatDriveAPI) handleDownloadLocked(endpoint string) (int, []byte, error) {
 	id := pathBaseWithoutQuery(endpoint)
 	file, ok := api.files[id]
 	if !ok {
 		return 404, []byte(`{"error":"missing"}`), nil
 	}
-	return 200, file.Content, nil
+	// Copy content so concurrent readers are not affected by later upserts.
+	out := append([]byte(nil), file.Content...)
+	return 200, out, nil
 }
 
-func (api *fakeChatDriveAPI) handleList(endpoint string) (int, []byte, error) {
+func (api *fakeChatDriveAPI) handleListLocked(endpoint string) (int, []byte, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
 		return 500, nil, err
@@ -128,7 +134,7 @@ func (api *fakeChatDriveAPI) fileListPayload(files []fakeChatDriveFile) ([]byte,
 	return json.Marshal(map[string]any{"files": items})
 }
 
-func (api *fakeChatDriveAPI) handleUpload(method, endpoint string, headers map[string]string, body []byte) (int, []byte, error) {
+func (api *fakeChatDriveAPI) handleUploadLocked(method, endpoint string, headers map[string]string, body []byte) (int, []byte, error) {
 	if api.failUpload {
 		return 500, []byte(`{"error":"upload failed"}`), nil
 	}
@@ -201,6 +207,22 @@ func newChatSyncService(t *testing.T) (*InteractiveService, *Runner, *localFileS
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// BUG-312: without these overrides, saveProviderAccountState (called below,
+	// and again internally by ListProviderAccounts/resolveAccountHome on every
+	// sync/restore) writes straight through to the REAL machine-wide
+	// provider-accounts.json instead of a sandboxed path -- confirmed live,
+	// this clobbered a real pre-existing account entry's id on the developer's
+	// own machine. Overriding only HOME is not enough on Windows:
+	// getPossibleHomeDirs() (used by ListProviderAccounts' auto-discovery) also
+	// reads USERPROFILE and APPDATA directly, so without these too, discovery
+	// still finds and re-registers whatever real provider accounts happen to
+	// exist on the host. Every other test that registers provider accounts
+	// (provider_accounts_test.go, grok_process_test.go, grok_registry_test.go,
+	// cross_account_resume_test.go, bug083_test.go) already isolates all of
+	// these the same way.
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("FLOWPILOT_PROVIDER_ACCOUNTS_CONFIG_PATH", filepath.Join(home, "provider-accounts.json"))
 	t.Setenv("GOOGLE_DRIVE_CLIENT_ID", "client-id")
 	t.Setenv("GOOGLE_DRIVE_CLIENT_SECRET", "client-secret")
 	t.Setenv("GOOGLE_DRIVE_REDIRECT_URI", "http://localhost/callback")
@@ -1548,6 +1570,22 @@ func TestListRemoteChatSessionsHandlerReturnsSummaries(t *testing.T) {
 func TestSyncChatRunWithStaleAccountIDBeforeOpening(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// BUG-312: without these overrides, saveProviderAccountState (called below,
+	// and again internally by ListProviderAccounts/resolveAccountHome on every
+	// sync/restore) writes straight through to the REAL machine-wide
+	// provider-accounts.json instead of a sandboxed path -- confirmed live,
+	// this clobbered a real pre-existing account entry's id on the developer's
+	// own machine. Overriding only HOME is not enough on Windows:
+	// getPossibleHomeDirs() (used by ListProviderAccounts' auto-discovery) also
+	// reads USERPROFILE and APPDATA directly, so without these too, discovery
+	// still finds and re-registers whatever real provider accounts happen to
+	// exist on the host. Every other test that registers provider accounts
+	// (provider_accounts_test.go, grok_process_test.go, grok_registry_test.go,
+	// cross_account_resume_test.go, bug083_test.go) already isolates all of
+	// these the same way.
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("FLOWPILOT_PROVIDER_ACCOUNTS_CONFIG_PATH", filepath.Join(home, "provider-accounts.json"))
 	t.Setenv("GOOGLE_DRIVE_CLIENT_ID", "client-id")
 	t.Setenv("GOOGLE_DRIVE_CLIENT_SECRET", "client-secret")
 	t.Setenv("GOOGLE_DRIVE_REDIRECT_URI", "http://localhost/callback")
@@ -1651,5 +1689,543 @@ func TestSyncChatRunWithStaleAccountIDBeforeOpening(t *testing.T) {
 	}
 	if session.ProviderAccountID != "acct-current" {
 		t.Fatalf("repaired ProviderAccountID = %q, want acct-current", session.ProviderAccountID)
+	}
+}
+
+// plantDriveRunManifest inserts a run folder + manifest.json under the chat
+// sync root without going through syncChatRunToDrive (orphaned blob case).
+func plantDriveRunManifest(t *testing.T, api *fakeChatDriveAPI, rootID string, manifest ChatSessionSyncManifest) {
+	t.Helper()
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	ensure := func(parentID, name string) string {
+		for _, f := range api.files {
+			if f.ParentID == parentID && f.Name == name {
+				return f.ID
+			}
+		}
+		api.nextID++
+		id := "plant-" + strconv.Itoa(api.nextID)
+		api.files[id] = fakeChatDriveFile{
+			ID:       id,
+			Name:     name,
+			ParentID: parentID,
+			MimeType: googleDriveFolderMimeType,
+		}
+		return id
+	}
+	chatSessions := ensure(rootID, "chat-sessions")
+	runs := ensure(chatSessions, "runs")
+	machine := ensure(runs, safeChatSessionSegment(manifest.SourceMachineID))
+	runFolder := ensure(machine, safeChatSessionSegment(manifest.SourceRunID))
+	body, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal plant manifest: %v", err)
+	}
+	api.nextID++
+	mid := "plant-manifest-" + strconv.Itoa(api.nextID)
+	api.files[mid] = fakeChatDriveFile{
+		ID:       mid,
+		Name:     "manifest.json",
+		ParentID: runFolder,
+		MimeType: "application/json",
+		Content:  body,
+	}
+}
+
+func TestSyncChatRunToDriveConcurrentIndexMergesPreserveAllParentRows(t *testing.T) {
+	svc, _, store, api, workspace, accountHome := newChatSyncService(t)
+	const n = 8
+	for i := 0; i < n; i++ {
+		seedLocalChatRun(t, store, accountHome, workspace, "run-concurrent-"+strconv.Itoa(i), []byte("body-"+strconv.Itoa(i)))
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan *apiErr, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, apiErr := svc.syncChatRunToDrive(context.Background(), "run-concurrent-"+strconv.Itoa(i), ChatSessionSyncRequest{}); apiErr != nil {
+				errs <- apiErr
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for apiErr := range errs {
+		t.Fatalf("syncChatRunToDrive concurrent failed: %s %s", apiErr.code, apiErr.msg)
+	}
+
+	api.mu.Lock()
+	var index []byte
+	for _, file := range api.files {
+		if file.Name == "sessions.ndjson" {
+			index = append([]byte(nil), file.Content...)
+			break
+		}
+	}
+	api.mu.Unlock()
+	if len(index) == 0 {
+		t.Fatal("expected sessions.ndjson after concurrent syncs")
+	}
+	records := parseChatSessionDriveIndex(index)
+	if len(records) != n {
+		t.Fatalf("index rows = %d, want %d (last-write-wins race?)", len(records), n)
+	}
+	seen := map[string]bool{}
+	for _, r := range records {
+		seen[r.SourceRunID] = true
+	}
+	for i := 0; i < n; i++ {
+		id := "run-concurrent-" + strconv.Itoa(i)
+		if !seen[id] {
+			t.Fatalf("missing %s in index after concurrent sync", id)
+		}
+	}
+}
+
+func TestListRemoteChatSessionsRepairsIndexFromOrphanedRunManifests(t *testing.T) {
+	svc, _, _, api, _, _ := newChatSyncService(t)
+	// Index intentionally empty / missing; blobs exist under runs/ (Windows-style under-list).
+	plantDriveRunManifest(t, api, "drive-root", ChatSessionSyncManifest{
+		SchemaVersion:   1,
+		SourceMachineID: "mch_c3ab_orphan",
+		SourceRunID:     "run-orphan-1",
+		ProjectID:       "project-1",
+		ProviderKey:     ProviderKeyGrok,
+		RunKind:         "chat",
+		Status:          "completed",
+		LastPrompt:      "turn trước fix gì vậy",
+		SyncedAt:        "2026-07-22T07:16:54Z",
+		UpdatedAt:       "2026-07-22T07:16:54Z",
+	})
+	plantDriveRunManifest(t, api, "drive-root", ChatSessionSyncManifest{
+		SchemaVersion:   1,
+		SourceMachineID: "mch_c3ab_orphan",
+		SourceRunID:     "run-orphan-2",
+		ProjectID:       "project-1",
+		ProviderKey:     ProviderKeyCodex,
+		RunKind:         "chat",
+		Status:          "completed",
+		LastPrompt:      "second orphaned chat",
+		SyncedAt:        "2026-07-22T08:00:00Z",
+		UpdatedAt:       "2026-07-22T08:00:00Z",
+	})
+
+	summaries, apiErr := svc.listRemoteChatSessions(context.Background(), "project-1")
+	if apiErr != nil {
+		t.Fatalf("listRemoteChatSessions: %v", apiErr)
+	}
+	if len(summaries) != 2 {
+		t.Fatalf("expected 2 repaired remote rows, got %#v", summaries)
+	}
+	ids := map[string]bool{}
+	for _, s := range summaries {
+		ids[s.SourceRunID] = true
+	}
+	if !ids["run-orphan-1"] || !ids["run-orphan-2"] {
+		t.Fatalf("repaired summaries missing orphans: %#v", summaries)
+	}
+
+	// Repair must write sessions.ndjson so subsequent list is index-backed.
+	api.mu.Lock()
+	var index []byte
+	for _, file := range api.files {
+		if file.Name == "sessions.ndjson" {
+			index = append([]byte(nil), file.Content...)
+			break
+		}
+	}
+	api.mu.Unlock()
+	if len(parseChatSessionDriveIndex(index)) != 2 {
+		t.Fatalf("expected repaired index with 2 rows, got %q", string(index))
+	}
+}
+
+func TestListRemoteChatSessionsHidesChildrenButKeepsSiblingParentsAfterRepair(t *testing.T) {
+	svc, _, _, api, _, _ := newChatSyncService(t)
+	plantDriveRunManifest(t, api, "drive-root", ChatSessionSyncManifest{
+		SchemaVersion:   1,
+		SourceMachineID: "mch_win",
+		SourceRunID:     "run-parent-a",
+		ProjectID:       "project-1",
+		ProviderKey:     ProviderKeyGrok,
+		RunKind:         "chat",
+		LastPrompt:      "parent a",
+		SyncedAt:        "2026-07-22T01:00:00Z",
+		UpdatedAt:       "2026-07-22T01:00:00Z",
+		ChildAgents:     []AgentRunSummary{{RunID: "run-child-a1", AgentName: "coder"}},
+	})
+	plantDriveRunManifest(t, api, "drive-root", ChatSessionSyncManifest{
+		SchemaVersion:   1,
+		SourceMachineID: "mch_win",
+		SourceRunID:     "run-child-a1",
+		ProjectID:       "project-1",
+		ProviderKey:     ProviderKeyGrok,
+		RunKind:         "chat",
+		ParentRunID:     "run-parent-a",
+		LastPrompt:      "child a1",
+		SyncedAt:        "2026-07-22T01:01:00Z",
+		UpdatedAt:       "2026-07-22T01:01:00Z",
+	})
+	plantDriveRunManifest(t, api, "drive-root", ChatSessionSyncManifest{
+		SchemaVersion:   1,
+		SourceMachineID: "mch_win",
+		SourceRunID:     "run-parent-b",
+		ProjectID:       "project-1",
+		ProviderKey:     ProviderKeyCodex,
+		RunKind:         "chat",
+		LastPrompt:      "parent b",
+		SyncedAt:        "2026-07-22T02:00:00Z",
+		UpdatedAt:       "2026-07-22T02:00:00Z",
+	})
+
+	summaries, apiErr := svc.listRemoteChatSessions(context.Background(), "project-1")
+	if apiErr != nil {
+		t.Fatalf("listRemoteChatSessions: %v", apiErr)
+	}
+	if len(summaries) != 2 {
+		t.Fatalf("want 2 top-level parents, got %#v", summaries)
+	}
+	for _, s := range summaries {
+		if s.SourceRunID == "run-child-a1" {
+			t.Fatalf("child must stay hidden from REMOTE CHATS: %#v", summaries)
+		}
+	}
+	ids := map[string]bool{}
+	for _, s := range summaries {
+		ids[s.SourceRunID] = true
+	}
+	if !ids["run-parent-a"] || !ids["run-parent-b"] {
+		t.Fatalf("sibling parents missing: %#v", summaries)
+	}
+}
+
+func TestListRemoteChatSessionsReturnsAllTopLevelRowsAfterMultiRunSync(t *testing.T) {
+	svc, _, store, _, workspace, accountHome := newChatSyncService(t)
+	for _, id := range []string{"run-multi-1", "run-multi-2", "run-multi-3"} {
+		seedLocalChatRun(t, store, accountHome, workspace, id, []byte("body-"+id))
+		if _, apiErr := svc.syncChatRunToDrive(context.Background(), id, ChatSessionSyncRequest{}); apiErr != nil {
+			t.Fatalf("sync %s: %v", id, apiErr)
+		}
+	}
+	summaries, apiErr := svc.listRemoteChatSessions(context.Background(), "project-1")
+	if apiErr != nil {
+		t.Fatalf("listRemoteChatSessions: %v", apiErr)
+	}
+	if len(summaries) != 3 {
+		t.Fatalf("expected 3 top-level remote rows after sequential multi-run sync, got %#v", summaries)
+	}
+}
+
+// TestRestoreChatRunFromDriveGrokRecomputesPathForDifferentCwd is the
+// end-to-end regression proof for BUG-312: restoreTargetPath previously had no
+// case for ProviderKeyGrok at all, so every Grok restore failed with
+// sync_integrity_failed ("remote provider session file path is invalid") --
+// confirmed live against the running dev server before this fix. This test
+// syncs a Grok chat from one cwd (Mac-shaped, matching this project's real
+// Codex machine) and restores it under a DIFFERENT cwd (a fresh temp dir,
+// standing in for "a different machine"), then verifies the restored session
+// is actually discoverable via LocateSessionFile under the NEW cwd -- not just
+// that restore returned no error.
+func TestRestoreChatRunFromDriveGrokRecomputesPathForDifferentCwd(t *testing.T) {
+	svc, instance, store, _, _, accountHome := newChatSyncService(t)
+	grokHome := filepath.Join(filepath.Dir(accountHome), "grok-home")
+	if err := instance.saveProviderAccountState(providerAccountState{
+		Accounts: []ProviderAccount{{
+			ID:          "acct-grok-sync",
+			ProviderKey: "grok",
+			DisplayName: "Grok Account 1",
+			HomePath:    grokHome,
+			SlotIndex:   1,
+			IsActive:    true,
+			AuthStatus:  "connected",
+			CreatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		}},
+	}); err != nil {
+		t.Fatalf("saveProviderAccountState (grok): %v", err)
+	}
+	// ListProviderAccounts' sync pass re-validates every registered account's
+	// AuthStatus against its home's auth.json on every call (accountAuthPaths /
+	// hasValidProviderAuthFile) -- without a plausible one here, it silently
+	// downgrades this account to "failed", which then makes ResolveProviderAccount
+	// skip it and fall back to whatever the last-active OTHER provider's account
+	// ID was, resolving the wrong target home entirely at restore time.
+	if err := os.MkdirAll(grokHome, 0o755); err != nil {
+		t.Fatalf("MkdirAll grokHome: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(grokHome, "auth.json"), []byte(`{"issuer::user-grok-sync":{"refresh_token":"rt","email":"grok-sync@example.com"}}`), 0o644); err != nil {
+		t.Fatalf("write grok auth.json: %v", err)
+	}
+
+	const sourceCwd = "/Users/tiendat/Desktop/BE/gate-sandbox"
+	const sessionID = "019f8722-c5fc-7f11-8d9e-4154bf38d338"
+	const transcript = `{"type":"assistant","content":"hello from grok"}` + "\n"
+	writeGrokSessionTree(t, grokHome, sourceCwd, sessionID, map[string]string{"chat_history.jsonl": transcript})
+
+	state := ProviderSessionState{
+		RunID:             "run-grok-restore",
+		ProjectID:         "project-1",
+		ProviderKey:       ProviderKeyGrok,
+		ProviderSessionID: sessionID,
+		ProviderAccountID: "acct-grok-sync",
+		WorkingDirectory:  sourceCwd,
+		Status:            RunStatusCompleted,
+		LastPrompt:        "hi",
+		LastMessage:       "hello from grok",
+		StartedAt:         "2026-07-22T10:00:00Z",
+		UpdatedAt:         "2026-07-22T10:05:00Z",
+		RunKind:           "chat",
+	}
+	if err := store.UpsertProviderSession(context.Background(), state); err != nil {
+		t.Fatalf("UpsertProviderSession: %v", err)
+	}
+
+	result, apiErr := svc.syncChatRunToDrive(context.Background(), "run-grok-restore", ChatSessionSyncRequest{})
+	if apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+
+	targetCwd := filepath.Join(t.TempDir(), "restored-on-a-different-machine")
+	if err := os.MkdirAll(targetCwd, 0o755); err != nil {
+		t.Fatalf("MkdirAll target cwd: %v", err)
+	}
+	restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+		ProjectID:       "project-1",
+		SourceMachineID: result.SourceMachineID,
+		SourceRunID:     result.SourceRunID,
+		Cwd:             targetCwd,
+	})
+	if apiErr != nil {
+		t.Fatalf("BUG-312: restoreChatRunFromDrive() failed for Grok: %#v", apiErr)
+	}
+	if restored.RunID == "" {
+		t.Fatal("expected a non-empty restored run id")
+	}
+
+	foundPath, found := LocateSessionFile(ProviderKeyGrok, grokHome, sessionID, targetCwd)
+	if !found {
+		t.Fatal("restored Grok session is not discoverable via LocateSessionFile under the new cwd")
+	}
+	body, err := os.ReadFile(filepath.Join(foundPath, "chat_history.jsonl"))
+	if err != nil {
+		t.Fatalf("read restored transcript: %v", err)
+	}
+	if string(body) != transcript {
+		t.Fatalf("restored transcript = %q, want %q", body, transcript)
+	}
+}
+
+// --- BUG-313: the sync manifest must carry the run's durable turn log, and
+// restore must rebuild the local <runID>-turns.ndjson sidecar from it. The
+// entire post-restart timeline reconstruction (seedTranscriptFromDisk /
+// seedGrokTranscriptFromDisk / preferFlowHubTurnLogTranscript) is driven by
+// that sidecar: raw user prompts (F-1), flow-hub prose (transcript_turn /
+// assistant frames), per-turn provider session-id chains, and the empty-
+// OccurredAt clustering that keeps agent cards beside their turns. Restoring
+// a run without it reproduced the live defect: prompts gone, hub text wrong
+// (cwd-wide session-dir fallback mixing other runs), agent cards dumped at
+// the bottom. Live-confirmed on run-24345 (Gate-sandbox, 2026-07-23).
+
+func bug313TurnLogEntries(prompt string) []turnLogLine {
+	return []turnLogLine{
+		{Kind: turnLogKindPrompt, TurnID: "turn-1", Prompt: prompt},
+		{Kind: turnLogKindTranscriptTurn, TurnID: "turn-1", Prompt: prompt, Assistant: "hub synthesis answer"},
+		{Kind: turnLogKindAssistant, TurnID: "turn-2", Assistant: "follow-up durable frame"},
+	}
+}
+
+func appendBug313TurnLog(t *testing.T, store *localFileSessionStore, runID string, entries []turnLogLine) {
+	t.Helper()
+	for _, line := range entries {
+		if err := store.AppendTurnLog(context.Background(), runID, line); err != nil {
+			t.Fatalf("AppendTurnLog: %v", err)
+		}
+	}
+}
+
+func mustTurnLogJSON(t *testing.T, entries []turnLogLine) string {
+	t.Helper()
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatalf("marshal turn log: %v", err)
+	}
+	return string(raw)
+}
+
+// TestSyncChatRunToDriveManifestCarriesTurnLog asserts the uploaded
+// manifest.json embeds the run's turn log verbatim. Deliberately inspects the
+// raw JSON (not the Go struct) so this test compiles and FAILS on the pre-fix
+// baseline, where the field does not exist.
+func TestSyncChatRunToDriveManifestCarriesTurnLog(t *testing.T) {
+	svc, _, store, api, workspace, accountHome := newChatSyncService(t)
+	seedLocalChatRun(t, store, accountHome, workspace, "run-turnlog-sync", []byte("codex-session"))
+	entries := bug313TurnLogEntries("what did the last turn fix?")
+	appendBug313TurnLog(t, store, "run-turnlog-sync", entries)
+
+	if _, apiErr := svc.syncChatRunToDrive(context.Background(), "run-turnlog-sync", ChatSessionSyncRequest{}); apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+	manifestID := remoteManifestFileID(api)
+	if manifestID == "" {
+		t.Fatal("expected manifest upload")
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(api.files[manifestID].Content, &manifest); err != nil {
+		t.Fatalf("manifest json invalid: %v", err)
+	}
+	rawLog, ok := manifest["turnLog"].([]any)
+	if !ok || len(rawLog) != len(entries) {
+		t.Fatalf("BUG-313: manifest turnLog = %#v, want %d entries", manifest["turnLog"], len(entries))
+	}
+	first, _ := rawLog[0].(map[string]any)
+	if first["kind"] != string(turnLogKindPrompt) || first["prompt"] != entries[0].Prompt {
+		t.Fatalf("BUG-313: first turnLog entry = %#v, want raw prompt %q", first, entries[0].Prompt)
+	}
+}
+
+// TestRestoreChatRunFromDriveRebuildsTurnLogSidecarAllProviders proves the
+// sync->restore round trip rebuilds the turn-log sidecar identically for
+// Codex, Claude, AND Grok (cross-provider parity rule) using the flow-hub
+// shape (runKind=workflow, synthetic thread-* session, no provider file) --
+// the exact class the live defect was reported on, and a shape whose timeline
+// is rebuilt from the turn log ALONE.
+func TestRestoreChatRunFromDriveRebuildsTurnLogSidecarAllProviders(t *testing.T) {
+	svc, instance, store, _, workspace, accountHome := newChatSyncService(t)
+
+	claudeHome := filepath.Join(filepath.Dir(accountHome), "claude-home")
+	if err := os.MkdirAll(filepath.Join(claudeHome, ".claude"), 0o755); err != nil {
+		t.Fatalf("MkdirAll claude home: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeHome, ".claude", ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"tok"}}`), 0o644); err != nil {
+		t.Fatalf("write claude credentials: %v", err)
+	}
+	grokHome := filepath.Join(filepath.Dir(accountHome), "grok-home")
+	if err := os.MkdirAll(grokHome, 0o755); err != nil {
+		t.Fatalf("MkdirAll grok home: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(grokHome, "auth.json"), []byte(`{"issuer::user":{"refresh_token":"rt","email":"g@example.com"}}`), 0o644); err != nil {
+		t.Fatalf("write grok auth: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := instance.saveProviderAccountState(providerAccountState{Accounts: []ProviderAccount{
+		{ID: "acct-sync", ProviderKey: "codex", DisplayName: "Account 1", HomePath: accountHome, SlotIndex: 1, IsActive: true, AuthStatus: "connected", CreatedAt: now},
+		{ID: "acct-claude", ProviderKey: "claude", DisplayName: "Claude 1", HomePath: claudeHome, SlotIndex: 1, IsActive: true, AuthStatus: "connected", CreatedAt: now},
+		{ID: "acct-grok", ProviderKey: "grok", DisplayName: "Grok 1", HomePath: grokHome, SlotIndex: 1, IsActive: true, AuthStatus: "connected", CreatedAt: now},
+	}}); err != nil {
+		t.Fatalf("saveProviderAccountState: %v", err)
+	}
+
+	cases := []struct {
+		provider  ProviderKey
+		accountID string
+		runID     string
+	}{
+		{ProviderKeyCodex, "acct-sync", "run-hub-codex"},
+		{ProviderKeyClaude, "acct-claude", "run-hub-claude"},
+		{ProviderKeyGrok, "acct-grok", "run-hub-grok"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			state := ProviderSessionState{
+				RunID:             tc.runID,
+				ProjectID:         "project-1",
+				WorkflowID:        "wf-" + tc.runID,
+				ProviderKey:       tc.provider,
+				ProviderSessionID: "thread-1",
+				ProviderAccountID: tc.accountID,
+				WorkingDirectory:  workspace,
+				Status:            RunStatusCompleted,
+				LastPrompt:        "fix bug 1+1 != 2",
+				LastMessage:       "hub synthesis answer",
+				StartedAt:         "2026-07-22T10:00:00Z",
+				UpdatedAt:         "2026-07-22T10:05:00Z",
+				RunKind:           "workflow",
+			}
+			if err := store.UpsertProviderSession(context.Background(), state); err != nil {
+				t.Fatalf("UpsertProviderSession: %v", err)
+			}
+			entries := bug313TurnLogEntries("fix bug 1+1 != 2")
+			appendBug313TurnLog(t, store, tc.runID, entries)
+
+			result, apiErr := svc.syncChatRunToDrive(context.Background(), tc.runID, ChatSessionSyncRequest{})
+			if apiErr != nil {
+				t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+			}
+			// Simulate the restoring machine: no local sidecar for this run.
+			if err := store.DeleteTurnLog(context.Background(), tc.runID); err != nil {
+				t.Fatalf("DeleteTurnLog: %v", err)
+			}
+			restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+				ProjectID:       "project-1",
+				SourceMachineID: result.SourceMachineID,
+				SourceRunID:     result.SourceRunID,
+				Cwd:             workspace,
+			})
+			if apiErr != nil {
+				t.Fatalf("restoreChatRunFromDrive() failed: %#v", apiErr)
+			}
+			got, err := store.ReadTurnLog(context.Background(), restored.RunID)
+			if err != nil {
+				t.Fatalf("ReadTurnLog: %v", err)
+			}
+			if mustTurnLogJSON(t, got) != mustTurnLogJSON(t, entries) {
+				t.Fatalf("BUG-313 (%s): restored turn log = %s, want %s", tc.provider, mustTurnLogJSON(t, got), mustTurnLogJSON(t, entries))
+			}
+		})
+	}
+}
+
+// TestRestoreChatRunFromDriveDoesNotDuplicateTurnLogSidecar guards the
+// idempotency rule: restoring onto a machine that still has the run's original
+// sidecar must not append a second copy of every line, and a re-restore after
+// the sidecar is wiped rebuilds it exactly once.
+func TestRestoreChatRunFromDriveDoesNotDuplicateTurnLogSidecar(t *testing.T) {
+	svc, _, store, _, workspace, accountHome := newChatSyncService(t)
+	seedLocalChatRun(t, store, accountHome, workspace, "run-turnlog-nodup", []byte("codex-session"))
+	entries := bug313TurnLogEntries("original raw prompt")
+	appendBug313TurnLog(t, store, "run-turnlog-nodup", entries)
+
+	result, apiErr := svc.syncChatRunToDrive(context.Background(), "run-turnlog-nodup", ChatSessionSyncRequest{})
+	if apiErr != nil {
+		t.Fatalf("syncChatRunToDrive() failed: %v", apiErr)
+	}
+	// Restore while the original sidecar is still present -- must not duplicate.
+	restored, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+		ProjectID:       "project-1",
+		SourceMachineID: result.SourceMachineID,
+		SourceRunID:     result.SourceRunID,
+		Cwd:             workspace,
+	})
+	if apiErr != nil {
+		t.Fatalf("restoreChatRunFromDrive() failed: %#v", apiErr)
+	}
+	got, err := store.ReadTurnLog(context.Background(), restored.RunID)
+	if err != nil {
+		t.Fatalf("ReadTurnLog: %v", err)
+	}
+	if len(got) != len(entries) {
+		t.Fatalf("restore duplicated the existing sidecar: %d entries, want %d", len(got), len(entries))
+	}
+	// Wipe and restore again -- rebuilds exactly once.
+	if err := store.DeleteTurnLog(context.Background(), restored.RunID); err != nil {
+		t.Fatalf("DeleteTurnLog: %v", err)
+	}
+	restored2, apiErr := svc.restoreChatRunFromDrive(context.Background(), ChatSessionRestoreRequest{
+		ProjectID:       "project-1",
+		SourceMachineID: result.SourceMachineID,
+		SourceRunID:     result.SourceRunID,
+		Cwd:             workspace,
+	})
+	if apiErr != nil {
+		t.Fatalf("second restoreChatRunFromDrive() failed: %#v", apiErr)
+	}
+	got2, err := store.ReadTurnLog(context.Background(), restored2.RunID)
+	if err != nil {
+		t.Fatalf("ReadTurnLog after rebuild: %v", err)
+	}
+	if mustTurnLogJSON(t, got2) != mustTurnLogJSON(t, entries) {
+		t.Fatalf("rebuilt turn log = %s, want %s", mustTurnLogJSON(t, got2), mustTurnLogJSON(t, entries))
 	}
 }

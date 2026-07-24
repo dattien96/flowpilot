@@ -19,6 +19,7 @@ var commonSkills = []string{
 	"codex-claude-review-loop",
 	"codex-grok-review-loop",
 	"cross-provider-parity",
+	"safe-fix-contract",
 }
 
 func TestInstall_CommonOnlyForNonePlatform(t *testing.T) {

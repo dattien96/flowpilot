@@ -74,6 +74,12 @@ type InteractiveService struct {
 	dispatchLogSyncMu   sync.Mutex
 	dispatchLogSyncHash map[string]string
 
+	// chatSessionIndexMu guards chatSessionIndexLocks. Each project gets its own
+	// mutex covering Drive sessions.ndjson read-merge-write so concurrent
+	// syncChatRunToDrive / list reconcile cannot last-write-wins the index.
+	chatSessionIndexMu    sync.Mutex
+	chatSessionIndexLocks map[string]*sync.Mutex
+
 	idCounter atomic.Int64
 
 	// activeAccountID is the currently active provider account. resume/turns
@@ -741,7 +747,8 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 		summaryTimers:       map[string]*time.Timer{},
 		markerSecret:        markerSec,
 		markerDir:           markerDir,
-		dispatchLogSyncHash: map[string]string{},
+		dispatchLogSyncHash:   map[string]string{},
+		chatSessionIndexLocks: map[string]*sync.Mutex{},
 	}
 	// Seed the id counter above the highest persisted run id so a runner restart does NOT
 	// reuse ids (run-1, run-2, …). Reuse made a fresh chat collide with a previous run of
@@ -1393,7 +1400,24 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		}
 		if result.NextAction == "awaiting_user" {
 			// Same freeze as escalate: no hub/child work while Continue form is up.
-			s.parkFlowForAwaitingUser(parentRunID)
+			// run-45103: when continue hits cap on the same hub turn that just
+			// submitted flow_control, do not cancel that parent turn — let it
+			// drain cleanly so desktop is not stuck on Thinking.../cancelled.
+			// Children and auto-intents still freeze. Escalate/hub_stall keep
+			// default cancel-all behavior (preserve only on willHitCap).
+			preserveTurnID := ""
+			if willHitCap {
+				s.mu.Lock()
+				if rs := s.runs[parentRunID]; rs != nil &&
+					rs.currentTurnID != "" &&
+					rs.lastFlowControlTurnID == rs.currentTurnID {
+					preserveTurnID = rs.currentTurnID
+				}
+				s.mu.Unlock()
+			}
+			s.parkFlowForAwaitingUser(parentRunID, parkFlowForAwaitingUserOptions{
+				preserveParentTurnID: preserveTurnID,
+			})
 		}
 		s.emitAgentGraph(parentRunID, snap)
 		go s.persistParentSession(parentRunID)
@@ -1745,16 +1769,30 @@ func summarizeCohortNoteForUser(note string) string {
 	return truncateDisplayField(strings.Join(findings, "\n"), 800)
 }
 
+// parkFlowForAwaitingUserOptions tunes freeze behavior for one park call.
+// Zero value preserves historical run-1675 semantics (cancel every in-flight turn).
+type parkFlowForAwaitingUserOptions struct {
+	// preserveParentTurnID, when equal to the hub's currentTurnID, skips cancelling
+	// that parent turn so a same-turn flow_control decision can drain cleanly
+	// (run-45103: continue-at-cap must not self-cancel the submitting synthesis turn).
+	// Children and auto-intents are still frozen.
+	preserveParentTurnID string
+}
+
 // parkFlowForAwaitingUser freezes hub + children when a human decision surface
 // is up (escalate / cap / hub_stalled Continue form — run-1675).
 //
 // Invariant: while loop.Status == "blocked", no new turns and no in-flight
 // provider work. Clears auto-continuation intents (gate reprompt, hub reinvoke,
 // resume) that would otherwise startTurn behind the form, and cancels live
-// turnCancel so tool calls stop.
-func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string) {
+// turnCancel so tool calls stop — except the optional preserveParentTurnID turn.
+func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ...parkFlowForAwaitingUserOptions) {
 	if strings.TrimSpace(parentRunID) == "" {
 		return
+	}
+	var opt parkFlowForAwaitingUserOptions
+	if len(opts) > 0 {
+		opt = opts[0]
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1778,7 +1816,10 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string) {
 		parent.pendingFlowGateOccurredAt = ""
 		parent.pendingFlowGateTurnID = ""
 		parent.pendingGateChangedFiles = nil
-		if parent.turnInFlight && parent.turnCancel != nil {
+		preserveParent := opt.preserveParentTurnID != "" &&
+			parent.currentTurnID != "" &&
+			parent.currentTurnID == opt.preserveParentTurnID
+		if parent.turnInFlight && parent.turnCancel != nil && !preserveParent {
 			parent.turnCancel()
 		}
 		if parent.postTurnGateCancel != nil {
@@ -1851,6 +1892,9 @@ func (s *InteractiveService) notifyHubOfFlowChildFailureLocked(child *interactiv
 	if parent == nil || !parent.flowEngineDriven {
 		return
 	}
+	// run-43831: failed child is still flow progress (cohort join / hub reinvoke may
+	// follow). Stamp before any async reinvoke so F-0 does not treat the handoff gap as root idleness.
+	s.touchParentHubProgressFromChildLocked(child)
 	failNote := fmt.Sprintf(
 		"Sub-agent %q (provider: %s) failed: %s",
 		child.agentName, child.providerKey, truncateDisplayField(errMsg, 500))
@@ -1896,6 +1940,10 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 		provider = string(child.providerKey)
 		child.status = RunStatusFailed
 		child.agentStatus = string(RunStatusFailed)
+		// run-43831: stamp hub progress under s.mu before unlock / cohort join /
+		// async reinvoke so pre-adapter start failures do not leave a stale
+		// hubLastProgressAt gap (Codex review of residual F-0).
+		s.touchParentHubProgressFromChildLocked(child)
 		if child.parentRunID != "" && child.flowCohortId != "" && label != "" {
 			if parent := s.runs[child.parentRunID]; parent != nil && parent.flowEngineDriven {
 				s.setFlowStepStatusLocked(context.Background(), child.parentRunID, label, StepStatusFailed)
@@ -3652,13 +3700,30 @@ func (s *InteractiveService) resumePendingFlowGate(runID string) {
 		s.mu.Unlock()
 		return
 	}
-	// P1-04: never resume a child gate when parent loop is already stopped/done.
+	// P1-04: never resume a child gate when parent loop is already
+	// stopped/done/blocked. Blocked = awaiting user (cap/escalate): boot used
+	// to re-eval the post-turn gate, arm a gate reprompt, hit startTurn →
+	// flow_awaiting_user 409, wipe UX into Failed with no Continue/Stop card.
+	// Terminal statuses also clear stale settle so every restart does not
+	// re-schedule the same gate (safe-fix residual vs stopped/done only).
 	loopParent := runID
 	if rs.parentRunID != "" {
 		loopParent = rs.parentRunID
 	}
-	if st := s.agentOrchestrator.loopStateFor(loopParent).Status; st == "stopped" || st == "done" {
+	if st := s.agentOrchestrator.loopStateFor(loopParent).Status; st == "stopped" || st == "done" || st == "blocked" {
+		// Drop settle/reprompt under lock; preserve reprompt gen high-water.
+		hadStale := clearStaleFlowGateIntentsLocked(rs)
+		var snap ProviderSessionState
+		if hadStale {
+			snap = sessionStateOf(rs)
+			if rs.parentRunID == "" {
+				snap.LoopState = s.agentOrchestrator.loopStateFor(rs.id)
+			}
+		}
 		s.mu.Unlock()
+		if hadStale {
+			_ = s.persistProviderSession(snap)
+		}
 		return
 	}
 	// BUG-288 P1-04: durable stop-tombstone check. The in-memory loop-state
@@ -4047,6 +4112,23 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 	// (run-9034 / run-5695). Caller holds s.mu — use emitLocked on the parent, never
 	// emitOnParentRun (which re-locks).
 	s.emitParentAgentResultLocked(rs, finalMsg)
+	// run-43831: stamp hub progress BEFORE dispatching advance/reinvoke goroutines so
+	// a pending F-0 watchdog cannot observe stale hubLastProgressAt in the gap between
+	// this child going non-active and the next child becoming active.
+	s.touchParentHubProgressFromChildLocked(rs)
+	// BUG-318 P2 (watchdog hardening): arm the hub stall watchdog on EVERY flow
+	// child settle, independent of whether this completion goes on to schedule a
+	// hub reinvoke. Every other maybeScheduleHubStallCheck call site is coupled to
+	// a reinvoke/notify actually being scheduled, so when a bug drops the reinvoke
+	// (e.g. a reviewer completing into a dead/incomplete cohort) the watchdog was
+	// never armed for that window either — the safety net shared the exact blind
+	// spot it exists to catch. checkAndBlockStalledHub re-arms itself while a child
+	// is active or the hub is busy and only blocks after a real timeout of no
+	// progress, so this never false-trips a live flow. Dispatched via a goroutine:
+	// this runs under s.mu and maybeScheduleHubStallCheck acquires s.mu.
+	if rs.parentRunID != "" {
+		go s.maybeScheduleHubStallCheck(rs.parentRunID)
+	}
 	if rs.flowCohortId != "" {
 		s.agentOrchestrator.appendCohortResult(rs.parentRunID, rs.flowCohortId, cohortEntry{
 			Label:        rs.label,
@@ -4385,6 +4467,8 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					Status:   "failed",
 					Err:      truncateDisplayField(ev.Error, 500),
 				})
+				// run-43831: cohort member terminal failure is still parent flow progress.
+				s.touchParentHubProgressFromChildLocked(rs)
 				s.flowDiagLog(rs.parentRunID, "cohort_member_failed", "cohort member failed and buffered",
 					"child_run_id", rs.id,
 					"cohort_id", rs.flowCohortId,
@@ -5365,6 +5449,12 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 				out = append(out, AgentRunSummary{
 					RunID:       session.RunID,
 					AgentName:   session.AgentName,
+					// BUG-320: preserve the persisted Label so matchFlowNodeForSession
+					// (interactive_resume.go) can match this child back to its exact
+					// flow node by id -- falling back to AgentName/Role risks an
+					// ambiguous match when two nodes share the same agent (e.g. two
+					// reviewer nodes in one flow).
+					Label:       session.Label,
 					Role:        session.Role,
 					Status:      normalizeResumedStatus(session.Status),
 					ParentRunID: session.ParentRunID,
@@ -6987,7 +7077,18 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 			// skipped. Both the workflowID-resolved and explicit chat flowRef
 			// paths set in.FlowRef before calling startTurn, so flagging it here
 			// once covers both.
-			if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" {
+			// BUG-315: only a genuinely new chat's first turn starts the flow. A
+			// Drive-restored run is a continuation whose flow already ran on the
+			// source machine; it keeps its chatFlowRef/workflowID, so without the
+			// restoredFrom guard a plain follow-up (explicit flowRef, or one
+			// re-resolved from workflowID) would re-spawn the entire flow instead of
+			// reaching the hub. The primary fix carries TurnCount through the manifest
+			// so a restored run has turnCount>0 and never enters this turnCount==0
+			// block at all; this guard additionally heals chats synced by a pre-fix
+			// manifest, which still restore with turnCount==0. flowEngineDriven is
+			// already restored by reconstructRun (via ActiveFlowNodes), so skipping
+			// here does not demote a restored hub to a plain chat.
+			if flowRef := strings.TrimSpace(in.FlowRef); flowRef != "" && strings.TrimSpace(rs.restoredFrom) == "" {
 				flowStartOnly = true
 				rs.flowEngineDriven = true
 				// BUG-299 residual: chat-mode Review Loop (and any explicit flowRef)
@@ -7400,11 +7501,37 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 			rs.realProviderSessionID = real
 		}
 	case ProviderKeyCodex:
+		// run-75035 / Grok run-536 class: prefer the id THIS turn opened via
+		// thread/start|resume. Workspace-wide newest-cwd discovery is not run
+		// ownership — hub+children share working_directory, so the newest
+		// rollout often belongs to another run and was previously logged into
+		// the child's turn log (seed then imported hub freeform into coder).
+		if reporter, ok := adapter.(interface{ LastCodexSessionID() string }); ok {
+			if id := strings.TrimSpace(reporter.LastCodexSessionID()); isCodexRealSessionID(id) {
+				if rs.realProviderSessionID == "" {
+					rs.realProviderSessionID = id
+				}
+				if id != rs.lastCodexTurnSessionID {
+					rs.lastCodexTurnSessionID = id
+					return id
+				}
+				return ""
+			}
+			// Adapter present but reported nothing for this turn: do not invent
+			// a foreign cwd rollout (mirror Grok no-steal discipline).
+			return ""
+		}
+		// Compatibility path for callers with no reporting adapter (legacy
+		// multi-rollout unit tests pass adapter=nil). Still refuse ids already
+		// owned by parent/sibling/other runs in the session store.
 		home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 		if !ok {
 			return ""
 		}
 		if rolloutID, found := DiscoverCodexRolloutSessionID(home, rs.workspaceCwd); found {
+			if s.isForeignProviderSessionID(rs, rolloutID) {
+				return ""
+			}
 			if rs.realProviderSessionID == "" {
 				rs.realProviderSessionID = rolloutID
 			}
@@ -7440,6 +7567,155 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 		return ""
 	}
 	return ""
+}
+
+// isCodexRealSessionID is true for durable Codex rollout/thread ids (not the
+// synthetic thread-<n> placeholders used before a real app-server session exists).
+func isCodexRealSessionID(id string) bool {
+	id = strings.TrimSpace(id)
+	return id != "" && !strings.HasPrefix(id, "thread-")
+}
+
+// isForeignProviderSessionID reports whether sessionID is already owned by a
+// different run that is related to rs (same project/cwd, parent, or sibling).
+// Used to refuse workspace-newest discovery theft and to filter polluted turn
+// logs on seed (run-75035).
+func (s *InteractiveService) isForeignProviderSessionID(rs *interactiveRun, sessionID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if rs == nil || !isCodexRealSessionID(sessionID) {
+		return false
+	}
+	// Own durable handles always count as non-foreign.
+	if sessionID == strings.TrimSpace(rs.realProviderSessionID) || sessionID == strings.TrimSpace(rs.providerSessionID) {
+		return false
+	}
+	if sessionID == strings.TrimSpace(rs.lastCodexTurnSessionID) {
+		return false
+	}
+	foreign := s.foreignProviderSessionIDs(rs)
+	_, ok := foreign[sessionID]
+	return ok
+}
+
+// foreignProviderSessionIDs returns provider session ids owned by other related
+// runs (parent, siblings under the same parent, or other sessions sharing
+// project+cwd). Empty when the store cannot list sessions.
+func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[string]struct{} {
+	out := map[string]struct{}{}
+	if s == nil || rs == nil || s.workflowStore == nil {
+		return out
+	}
+	indexReader, ok := s.workflowStore.(SessionIndexReader)
+	if !ok {
+		return out
+	}
+	sessions, err := indexReader.ListAllProviderSessions(context.Background())
+	if err != nil || len(sessions) == 0 {
+		return out
+	}
+	ownParent := strings.TrimSpace(rs.parentRunID)
+	ownProject := strings.TrimSpace(rs.projectID)
+	ownCwd := strings.TrimSpace(rs.workspaceCwd)
+	for _, st := range sessions {
+		otherRun := strings.TrimSpace(st.RunID)
+		if otherRun == "" || otherRun == rs.id {
+			continue
+		}
+		otherParent := strings.TrimSpace(st.ParentRunID)
+		related := false
+		if ownParent != "" && (otherRun == ownParent || otherParent == ownParent) {
+			related = true
+		}
+		if otherParent != "" && otherParent == rs.id {
+			related = true // our child
+		}
+		if ownProject != "" && st.ProjectID == ownProject && ownCwd != "" && st.WorkingDirectory == ownCwd {
+			related = true
+		}
+		if !related {
+			continue
+		}
+		if sid := strings.TrimSpace(st.ProviderSessionID); isCodexRealSessionID(sid) {
+			// Do not treat our own id as foreign if listed under another row erroneously.
+			if sid == strings.TrimSpace(rs.realProviderSessionID) || sid == strings.TrimSpace(rs.providerSessionID) {
+				continue
+			}
+			out[sid] = struct{}{}
+		}
+	}
+	// Parent/sibling turn-log codex_session / grok_session entries are also foreign
+	// ownership signals (covers polluted historical logs where sessions.ndjson last
+	// row still shows the child's own id).
+	if logger, ok := s.workflowStore.(TurnLogStore); ok {
+		candidateRuns := make([]string, 0, 8)
+		if ownParent != "" {
+			candidateRuns = append(candidateRuns, ownParent)
+		}
+		for _, st := range sessions {
+			otherRun := strings.TrimSpace(st.RunID)
+			if otherRun == "" || otherRun == rs.id {
+				continue
+			}
+			otherParent := strings.TrimSpace(st.ParentRunID)
+			if ownParent != "" && (otherRun == ownParent || otherParent == ownParent) {
+				candidateRuns = append(candidateRuns, otherRun)
+			}
+		}
+		seenRun := map[string]bool{}
+		for _, runID := range candidateRuns {
+			if seenRun[runID] {
+				continue
+			}
+			seenRun[runID] = true
+			entries, rerr := logger.ReadTurnLog(context.Background(), runID)
+			if rerr != nil {
+				continue
+			}
+			for _, e := range entries {
+				if e.Kind != turnLogKindCodexSession && e.Kind != turnLogKindGrokSession {
+					continue
+				}
+				if sid := strings.TrimSpace(e.SessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) {
+					if sid == strings.TrimSpace(rs.realProviderSessionID) || sid == strings.TrimSpace(rs.providerSessionID) {
+						continue
+					}
+					out[sid] = struct{}{}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// filterOwnedProviderSessionIDs drops session ids known to belong to related
+// foreign runs, preserving this run's own ids and unknown (not-yet-catalogued)
+// rotation ids. Order is preserved.
+func (s *InteractiveService) filterOwnedProviderSessionIDs(rs *interactiveRun, ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	foreign := s.foreignProviderSessionIDs(rs)
+	if len(foreign) == 0 {
+		return ids
+	}
+	out := make([]string, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if _, isForeign := foreign[id]; isForeign {
+			// Never drop our own durable handles even if also listed elsewhere.
+			if id == strings.TrimSpace(rs.realProviderSessionID) || id == strings.TrimSpace(rs.providerSessionID) {
+				out = append(out, id)
+			}
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
 }
 
 // SubmitApprovalDecision is idempotent + first-write-wins.

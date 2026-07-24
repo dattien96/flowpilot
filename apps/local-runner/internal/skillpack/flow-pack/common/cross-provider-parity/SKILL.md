@@ -71,5 +71,7 @@ Before writing or testing anything, determine which case you're in:
 | **oracle-rule** | Failing test → fix **code**, not the assertion |
 | **additive-tests-only** | New work → **add** tests only; do not modify the legacy suite without asking |
 | **cross-provider-parity** | Provider-touching work → prove or test **Claude + Codex + Grok**, never just the one reported |
+| **safe-fix-contract** | Operator umbrella wrapping this skill with old-test stop + matrix coverage + CA history |
 
-All three apply together on any bugfix or coding task that touches provider-specific code.
+All three apply together on any bug fix or coding task that touches provider-specific code.
+Prefer loading **safe-fix-contract** when the operator restates the full delivery rules.

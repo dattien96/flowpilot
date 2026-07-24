@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-16`
 - Parent Documents: [SS-17](../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md), [SD-24](./SD-24-Durable-Turn-Dispatch.md)
 - Child Documents: [CP-51](../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), Tasks 248, 250, 255
-- Related Documents: [BUG-288](../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [summary](../../summary.md)
+- Related Documents: [BUG-288](../09-BugFix/done/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [summary](../../summary.md)
 - Replaces: `None` — closes recovery protocol details that SD-24 deliberately delegated
 - Tags: `dispatch, recovery, lease, stop, attach, linearization, flow-agent-engineer`
 

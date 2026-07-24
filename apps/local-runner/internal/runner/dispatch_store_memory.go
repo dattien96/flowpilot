@@ -64,6 +64,40 @@ func NewMemoryDispatchStore() DispatchStore {
 	return newMemoryDispatchStore()
 }
 
+// MaxPersistedIDSuffix returns the largest trailing integer among every run id and
+// turn id this store retains a record for, plus the non-prunable per-run activation
+// and stop-state ids. The InteractiveService seeds its id counter past this when the
+// dispatch store is wired (BUG-317) so a run/turn id a surviving dispatch record
+// still owns is never re-minted: deleting a chat from history drops its
+// session-index entry but leaves its dispatch records, and BUG-117's
+// session-index-only seed would otherwise re-hand-out the id, colliding on
+// CreatePrepared (ErrAlreadyExists -> dispatch_prepare_failed on the next flow turn).
+func (s *memoryDispatchStore) MaxPersistedIDSuffix(ctx context.Context) (int64, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var max int64
+	consider := func(id string) {
+		if n := numericIDSuffix(id); n > max {
+			max = n
+		}
+	}
+	for _, rec := range s.records {
+		if rec == nil {
+			continue
+		}
+		consider(rec.RunID)
+		consider(rec.TurnID)
+	}
+	for runID := range s.runStop {
+		consider(runID)
+	}
+	for runID := range s.activation {
+		consider(runID)
+	}
+	return max, nil
+}
+
 func (s *memoryDispatchStore) clock() time.Time {
 	if s.now != nil {
 		return s.now().UTC()

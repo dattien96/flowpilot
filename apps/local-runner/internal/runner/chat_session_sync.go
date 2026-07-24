@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +76,43 @@ type ChatSessionSyncManifest struct {
 	// selection (BUG-263) so a restored run keeps its Bug/Review-Loop intent.
 	ChatSubMode string `json:"chatSubMode,omitempty"`
 	ChatFlowRef string `json:"chatFlowRef,omitempty"`
+	// TurnCount carries the hub's completed-turn count (BUG-315). The flow's
+	// entry nodes are started only on a run's genuine first turn, gated on
+	// turnCount==0 (startTurn) and re-resolved from workflowID only then
+	// (resolveWorkflowFlowRef). The manifest carried every other flow-runtime
+	// field but not this one, so a Drive-restored hub came back with turnCount=0
+	// and its next plain follow-up re-spawned the entire flow (coder + reviewers
+	// + synthesis) instead of reaching the hub. Restoring the real count keeps a
+	// restored chat's continuation a plain hub turn -- and also fixes the other
+	// turnCount-gated behaviors a restored run silently mis-ran (review-outcome
+	// tool offering, mode-prefix). omitempty: absent == 0 == pre-fix behavior.
+	TurnCount int `json:"turnCount,omitempty"`
+	// TurnLog carries the run's durable turn-log sidecar verbatim (BUG-313):
+	// raw user prompts, per-turn provider session-id chains, and durable
+	// transcript_turn/assistant frames. Restore rewrites the local sidecar so a
+	// restored run rebuilds its timeline exactly like a same-machine restart --
+	// seedTranscriptFromDisk / seedGrokTranscriptFromDisk / the flow-hub
+	// turn-log path all read this sidecar for prompts, hub prose, and
+	// agent-card clustering. Provider-agnostic; omitempty keeps old manifests
+	// valid (absent log == pre-fix behavior).
+	TurnLog []turnLogLine `json:"turnLog,omitempty"`
+	// ProviderFiles carries every OTHER regular file in a Grok ACP session
+	// directory besides ProviderFile (chat_history.jsonl) -- BUG-316: Grok's own
+	// session/load call reads the whole directory (events.jsonl, updates.jsonl,
+	// prompt_context.json, system_prompt.txt, summary.json, signals.json,
+	// resources_state.json, rewind_points.jsonl, announcement_state.json), so
+	// restoring only chat_history.jsonl leaves it unable to find its own state --
+	// the NEXT turn after a restore fails FS_NOT_FOUND ("Path not found."),
+	// confirmed live even with the correct account/cwd. Always empty for
+	// Codex/Claude (single-file resume, no directory-wide provider state).
+	ProviderFiles []ChatSessionFile `json:"providerFiles,omitempty"`
+	// grokSidecarBodies carries the actual bytes for ProviderFiles, keyed by
+	// RelativePath. Deliberately unexported: encoding/json silently skips
+	// unexported fields, so this never reaches manifest.json -- it only exists
+	// to carry bytes from BuildChatSessionSyncManifest to
+	// uploadChatSessionRunFiles without widening either function's public
+	// signature (both have pre-existing test call sites on the current arity).
+	grokSidecarBodies map[string][]byte
 }
 
 // isSyncableRunKind reports whether a run's runKind can sync to / restore from
@@ -367,9 +405,33 @@ func (s *InteractiveService) BuildChatSessionSyncManifest(ctx context.Context, r
 		PendingAgentContext: append([]string(nil), session.PendingAgentContext...),
 		ChatSubMode:         session.ChatSubMode,
 		ChatFlowRef:         session.ChatFlowRef,
+		TurnCount:           session.TurnCount, // BUG-315
 	}
 	if children := s.listAgentRunSummaries(runID); len(children) > 0 {
 		manifest.ChildAgents = children
+	}
+	// BUG-313: carry the durable turn log with the manifest. Without it a
+	// restored run has no raw prompts (flow hubs have no other prompt source --
+	// CP-42 suppresses the hub's own provider turn), no durable hub
+	// prose/transcript frames, and no per-turn session-id chain -- the exact
+	// inputs the post-restart timeline reconstruction reads from the local
+	// <runID>-turns.ndjson sidecar. Children get theirs automatically: the
+	// child sync loop builds each child's manifest through this same function.
+	if logger, ok := s.workflowStore.(TurnLogStore); ok {
+		if entries, logErr := logger.ReadTurnLog(ctx, runID); logErr == nil && len(entries) > 0 {
+			manifest.TurnLog = entries
+		}
+	}
+	// BUG-316: Grok's session/load needs the whole session directory, not just
+	// chat_history.jsonl -- carry every other regular file alongside it so a
+	// restored chat's next turn can actually resume instead of FS_NOT_FOUND.
+	// Best-effort: a read error here degrades to "sync without sidecars" (old
+	// behavior) rather than failing the sync outright.
+	if session.ProviderKey == ProviderKeyGrok && isGrokRealSessionID(sessionID) {
+		if sidecarFiles, sidecarBodies, sidecarErr := resolveGrokSessionSidecarFiles(accountHome, session.WorkingDirectory, sessionID); sidecarErr == nil {
+			manifest.ProviderFiles = sidecarFiles
+			manifest.grokSidecarBodies = sidecarBodies
+		}
 	}
 	return manifest, body, nil
 }
@@ -439,6 +501,62 @@ func (s *InteractiveService) resolveChatSessionTranscript(session ProviderSessio
 	}, body, sessionID, true, nil
 }
 
+// resolveGrokSessionSidecarFiles lists every regular file in a Grok ACP
+// session directory besides chat_history.jsonl (already carried by
+// resolveChatSessionTranscript, above) and *.lock markers (zero-byte runtime
+// locks Grok recreates itself -- carrying a stale one risks the restored
+// machine seeing an already-held lock). BUG-316: Grok's session/load reads the
+// WHOLE directory (events.jsonl, updates.jsonl, prompt_context.json,
+// system_prompt.txt, summary.json, signals.json, resources_state.json,
+// rewind_points.jsonl, announcement_state.json) to resume -- a restored
+// directory missing these fails FS_NOT_FOUND ("Path not found.") on the very
+// next turn after restore, confirmed live even with the correct account/cwd
+// and a byte-correct chat_history.jsonl. Returns (nil, nil, nil) when the
+// session directory itself doesn't exist (nothing to carry, not an error).
+func resolveGrokSessionSidecarFiles(accountHome, cwd, sessionID string) ([]ChatSessionFile, map[string][]byte, error) {
+	dir := grokSessionDirPath(accountHome, cwd, sessionID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	var files []ChatSessionFile
+	bodies := make(map[string][]byte)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == "chat_history.jsonl" || strings.HasSuffix(name, ".lock") {
+			continue
+		}
+		fullPath := filepath.Join(dir, name)
+		body, readErr := os.ReadFile(fullPath)
+		if readErr != nil {
+			// Best-effort: a sidecar mid-write by a live Grok process should not
+			// fail the whole sync -- it just won't be as complete this round.
+			continue
+		}
+		relativePath, relErr := filepath.Rel(accountHome, fullPath)
+		if relErr != nil {
+			continue
+		}
+		relativePath = filepath.ToSlash(relativePath)
+		if strings.HasPrefix(relativePath, "../") || relativePath == ".." {
+			continue
+		}
+		files = append(files, ChatSessionFile{
+			RelativePath: relativePath,
+			SizeBytes:    int64(len(body)),
+			SHA256:       hashBytesSHA256(body),
+		})
+		bodies[relativePath] = body
+	}
+	return files, bodies, nil
+}
+
 func (s *InteractiveService) ensureChatSessionDriveRoot(projectID string) (string, string, *apiErr) {
 	if s.runner == nil {
 		return "", "", newAPIErr(http.StatusConflict, "google_drive_not_connected", "google drive is not connected for this project")
@@ -469,6 +587,197 @@ func (s *InteractiveService) ensureChatSessionDriveRoot(projectID string) (strin
 		return "", "", newAPIErr(http.StatusConflict, "google_drive_not_connected", err.Error())
 	}
 	return rootFolderID, accessToken, nil
+}
+
+// chatSessionIndexLock returns the per-project mutex that serializes Drive
+// sessions.ndjson read-merge-write for chat sync and remote-list reconcile.
+func (s *InteractiveService) chatSessionIndexLock(projectID string) *sync.Mutex {
+	key := strings.TrimSpace(projectID)
+	if key == "" {
+		key = "_"
+	}
+	s.chatSessionIndexMu.Lock()
+	defer s.chatSessionIndexMu.Unlock()
+	if s.chatSessionIndexLocks == nil {
+		s.chatSessionIndexLocks = map[string]*sync.Mutex{}
+	}
+	if s.chatSessionIndexLocks[key] == nil {
+		s.chatSessionIndexLocks[key] = &sync.Mutex{}
+	}
+	return s.chatSessionIndexLocks[key]
+}
+
+// mergeAndUpsertChatSessionDriveIndexLocked merges records into the project's
+// Drive sessions.ndjson. Caller must hold chatSessionIndexLock(projectID).
+func (s *InteractiveService) mergeAndUpsertChatSessionDriveIndexLocked(
+	ctx context.Context,
+	accessToken, rootFolderID string,
+	records []chatSessionDriveIndexRecord,
+) ([]byte, *apiErr) {
+	indexFolderID, err := ensureGoogleDriveFolderPath(accessToken, rootFolderID, []string{"chat-sessions", "_index"})
+	if err != nil {
+		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
+	var existingIndex []byte
+	if existing, findErr := findGoogleDriveFile(accessToken, indexFolderID, "sessions.ndjson"); findErr == nil && strings.TrimSpace(existing.ID) != "" {
+		existingIndex, _ = downloadGoogleDriveFileByID(ctx, accessToken, existing.ID)
+	}
+	merged := existingIndex
+	for i := range records {
+		merged = mergeChatSessionDriveIndex(merged, records[i])
+	}
+	if bytes.Equal(merged, existingIndex) {
+		return merged, nil
+	}
+	if _, err := upsertGoogleDriveFile(accessToken, indexFolderID, "sessions.ndjson", merged, "application/x-ndjson", nil); err != nil {
+		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
+	return merged, nil
+}
+
+// discoverChatSessionDriveManifestRecords walks chat-sessions/runs/<machine>/<run>/manifest.json
+// and builds index records. This repairs an under-written sessions.ndjson when
+// blobs were uploaded but index rows were lost (last-write-wins race).
+func discoverChatSessionDriveManifestRecords(ctx context.Context, accessToken, rootFolderID string) ([]chatSessionDriveIndexRecord, error) {
+	runsFolder, err := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, "chat-sessions/runs")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	machineFolders, err := listGoogleDriveFolderChildren(accessToken, runsFolder.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	type found struct {
+		record chatSessionDriveIndexRecord
+		ok     bool
+	}
+	// Collect run folders first so we can fan out manifest downloads.
+	type runFolder struct {
+		machineName string
+		runName     string
+		folderID    string
+	}
+	var runFolders []runFolder
+	for _, machine := range machineFolders {
+		if machine.MimeType != googleDriveFolderMimeType {
+			continue
+		}
+		machineName := strings.TrimSpace(machine.Name)
+		if machineName == "" {
+			continue
+		}
+		children, listErr := listGoogleDriveFolderChildren(accessToken, machine.ID)
+		if listErr != nil {
+			return nil, listErr
+		}
+		for _, child := range children {
+			if child.MimeType != googleDriveFolderMimeType {
+				continue
+			}
+			runName := strings.TrimSpace(child.Name)
+			if runName == "" {
+				continue
+			}
+			runFolders = append(runFolders, runFolder{machineName: machineName, runName: runName, folderID: child.ID})
+		}
+	}
+
+	foundRecords := make([]found, len(runFolders))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, remoteChatSessionsManifestScanConcurrency)
+	for i, rf := range runFolders {
+		wg.Add(1)
+		go func(i int, rf runFolder) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			manifestFile, findErr := findGoogleDriveFile(accessToken, rf.folderID, "manifest.json")
+			if findErr != nil {
+				return
+			}
+			manifestBytes, downloadErr := downloadGoogleDriveFileByID(ctx, accessToken, manifestFile.ID)
+			if downloadErr != nil {
+				return
+			}
+			var manifest ChatSessionSyncManifest
+			if json.Unmarshal(manifestBytes, &manifest) != nil {
+				return
+			}
+			if strings.TrimSpace(manifest.SourceMachineID) == "" {
+				manifest.SourceMachineID = rf.machineName
+			}
+			if strings.TrimSpace(manifest.SourceRunID) == "" {
+				manifest.SourceRunID = rf.runName
+			}
+			if strings.TrimSpace(manifest.SourceMachineID) == "" || strings.TrimSpace(manifest.SourceRunID) == "" {
+				return
+			}
+			foundRecords[i] = found{record: manifestToDriveIndexRecord(manifest), ok: true}
+		}(i, rf)
+	}
+	wg.Wait()
+
+	out := make([]chatSessionDriveIndexRecord, 0, len(foundRecords))
+	for _, f := range foundRecords {
+		if f.ok {
+			out = append(out, f.record)
+		}
+	}
+	return out, nil
+}
+
+// loadChatSessionDriveIndexRecords downloads sessions.ndjson, merges any run
+// manifests missing from the index, and rewrites the index when repair is needed.
+func (s *InteractiveService) loadChatSessionDriveIndexRecords(
+	ctx context.Context,
+	projectID, accessToken, rootFolderID string,
+) ([]chatSessionDriveIndexRecord, *apiErr) {
+	discovered, discoverErr := discoverChatSessionDriveManifestRecords(ctx, accessToken, rootFolderID)
+	if discoverErr != nil {
+		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", discoverErr.Error())
+	}
+
+	lock := s.chatSessionIndexLock(projectID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// No run manifests: read index only (do not create empty Drive folders).
+	if len(discovered) == 0 {
+		indexFile, err := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, "chat-sessions/_index/sessions.ndjson")
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return []chatSessionDriveIndexRecord{}, nil
+			}
+			return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+		}
+		raw, err := downloadGoogleDriveFileByID(ctx, accessToken, indexFile.ID)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return []chatSessionDriveIndexRecord{}, nil
+			}
+			return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+		}
+		records := parseChatSessionDriveIndex(raw)
+		log.Printf("[chat-sync] remote index project=%s index_rows=%d discovered_manifests=0", projectID, len(records))
+		return records, nil
+	}
+
+	merged, apiErr := s.mergeAndUpsertChatSessionDriveIndexLocked(ctx, accessToken, rootFolderID, discovered)
+	if apiErr != nil {
+		return nil, apiErr
+	}
+	records := parseChatSessionDriveIndex(merged)
+	log.Printf(
+		"[chat-sync] remote index project=%s index_rows=%d discovered_manifests=%d",
+		projectID,
+		len(records),
+		len(discovered),
+	)
+	return records, nil
 }
 
 func (s *InteractiveService) updateLocalSessionSyncStatus(ctx context.Context, runID string, apply func(*ProviderSessionState)) *apiErr {
@@ -535,6 +844,31 @@ func (s *InteractiveService) uploadChatSessionRunFiles(accessToken, rootFolderID
 			return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 		}
 		manifest.ProviderFile.DriveObjectID = uploadedFile.ID
+
+		// BUG-316: upload every sidecar file (events.jsonl, updates.jsonl,
+		// system_prompt.txt, ...) into the same per-run provider folder so a
+		// restore can rebuild the whole Grok session directory, not just
+		// chat_history.jsonl. Only ever non-empty for Grok (see
+		// resolveGrokSessionSidecarFiles).
+		for i := range manifest.ProviderFiles {
+			sidecarBytes, ok := manifest.grokSidecarBodies[manifest.ProviderFiles[i].RelativePath]
+			if !ok {
+				continue
+			}
+			sidecarFileName := filepath.Base(manifest.ProviderFiles[i].RelativePath)
+			uploadedSidecar, sidecarErr := upsertGoogleDriveFile(
+				accessToken,
+				runFolderID,
+				sidecarFileName,
+				sidecarBytes,
+				"application/octet-stream",
+				googleDriveAppProperties(map[string]string{"relativePath": manifest.ProviderFiles[i].RelativePath}),
+			)
+			if sidecarErr != nil {
+				return newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", sidecarErr.Error())
+			}
+			manifest.ProviderFiles[i].DriveObjectID = uploadedSidecar.ID
+		}
 	}
 
 	manifestDirID, err := ensureGoogleDriveFolderPath(accessToken, rootFolderID, []string{
@@ -598,20 +932,18 @@ func (s *InteractiveService) syncChatRunToDrive(ctx context.Context, runID strin
 		syncedChildRunIDs = append(syncedChildRunIDs, childRunID)
 	}
 
-	indexFolderID, err := ensureGoogleDriveFolderPath(accessToken, rootFolderID, []string{"chat-sessions", "_index"})
-	if err != nil {
-		return ChatSessionSyncResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
-	}
-	var existingIndex []byte
-	if existing, findErr := findGoogleDriveFile(accessToken, indexFolderID, "sessions.ndjson"); findErr == nil && strings.TrimSpace(existing.ID) != "" {
-		existingIndex, _ = downloadGoogleDriveFileByID(ctx, accessToken, existing.ID)
-	}
-	merged := existingIndex
+	indexRecords := make([]chatSessionDriveIndexRecord, 0, len(manifests))
 	for i := range manifests {
-		merged = mergeChatSessionDriveIndex(merged, manifestToDriveIndexRecord(manifests[i]))
+		indexRecords = append(indexRecords, manifestToDriveIndexRecord(manifests[i]))
 	}
-	if _, err := upsertGoogleDriveFile(accessToken, indexFolderID, "sessions.ndjson", merged, "application/x-ndjson", nil); err != nil {
-		return ChatSessionSyncResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	// Serialize index read-merge-write so concurrent syncs cannot last-write-wins
+	// and drop sibling parent rows (REMOTE CHATS under-list after multi-run sync).
+	indexLock := s.chatSessionIndexLock(projectID)
+	indexLock.Lock()
+	_, indexErr := s.mergeAndUpsertChatSessionDriveIndexLocked(ctx, accessToken, rootFolderID, indexRecords)
+	indexLock.Unlock()
+	if indexErr != nil {
+		return ChatSessionSyncResult{}, indexErr
 	}
 
 	// CP-51: upload per-project dispatch.ndjson alongside chat sessions so another
@@ -654,21 +986,13 @@ func (s *InteractiveService) listRemoteChatSessions(ctx context.Context, project
 	if driveErr != nil {
 		return nil, driveErr
 	}
-	indexFile, err := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, "chat-sessions/_index/sessions.ndjson")
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []RemoteChatSessionSummary{}, nil
-		}
-		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	// Load index and repair from run manifests when blobs exist but index rows
+	// were lost (concurrent sync last-write-wins). Missing index with no runs
+	// still yields an empty remote list.
+	records, loadErr := s.loadChatSessionDriveIndexRecords(ctx, projectID, accessToken, rootFolderID)
+	if loadErr != nil {
+		return nil, loadErr
 	}
-	raw, err := downloadGoogleDriveFileByID(ctx, accessToken, indexFile.ID)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []RemoteChatSessionSummary{}, nil
-		}
-		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
-	}
-	records := parseChatSessionDriveIndex(raw)
 	childKeys := make(map[string]struct{})
 	for _, record := range records {
 		if strings.TrimSpace(record.ParentRunID) != "" {
@@ -770,7 +1094,14 @@ func (s *InteractiveService) resolveRestoredRunID(ctx context.Context, sourceMac
 				if existing.SourceMachineID == sourceMachineID && existing.SourceRunID == sourceRunID {
 					return existing.RunID
 				}
-				return "sync-" + shortMachineID(sourceMachineID) + "-" + sourceRunID
+				// BUG-320: the store only supports single-ID lookups here (no
+				// ListAllProviderSessions), so collision-check each derived
+				// candidate one at a time instead of returning the first one
+				// unchecked.
+				return firstFreeRestoredRunID(sourceMachineID, sourceRunID, func(candidate string) bool {
+					_, found, _ := reader.GetProviderSession(ctx, candidate)
+					return found
+				})
 			}
 		}
 		return sourceRunID
@@ -779,23 +1110,97 @@ func (s *InteractiveService) resolveRestoredRunID(ctx context.Context, sourceMac
 	if err != nil {
 		return sourceRunID
 	}
-	runIDTaken := false
+	takenIDs := make(map[string]struct{}, len(sessions))
 	for _, session := range sessions {
 		if session.SourceMachineID == sourceMachineID && session.SourceRunID == sourceRunID && strings.TrimSpace(session.RunID) != "" {
 			return session.RunID
 		}
-		if session.RunID == sourceRunID {
-			runIDTaken = true
+		if id := strings.TrimSpace(session.RunID); id != "" {
+			takenIDs[id] = struct{}{}
 		}
 	}
-	if !runIDTaken {
+	if _, taken := takenIDs[sourceRunID]; !taken {
 		return sourceRunID
 	}
-	return "sync-" + shortMachineID(sourceMachineID) + "-" + sourceRunID
+	// BUG-320: resolveRestoredRunID previously returned the first derived
+	// "sync-<machine>-<id>" candidate unchecked. If that candidate was ALSO
+	// already taken (e.g. two source machines whose 8-char shortMachineID
+	// prefixes collide, or a repeat restore racing a fresh local run that
+	// happens to reuse the same derived id), UpsertProviderSession has no
+	// create-only guard -- it would silently overwrite the unrelated
+	// existing record. Loop with an incrementing suffix until a genuinely
+	// free id is found.
+	return firstFreeRestoredRunID(sourceMachineID, sourceRunID, func(candidate string) bool {
+		_, taken := takenIDs[candidate]
+		return taken
+	})
+}
+
+// firstFreeRestoredRunID returns the first "sync-<machine>-<sourceRunID>"
+// candidate that isTaken reports as free, appending an incrementing numeric
+// suffix on repeated collisions (see BUG-320 note at the call sites above).
+func firstFreeRestoredRunID(sourceMachineID, sourceRunID string, isTaken func(candidate string) bool) string {
+	base := "sync-" + shortMachineID(sourceMachineID) + "-" + sourceRunID
+	if !isTaken(base) {
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := base + "-" + strconv.Itoa(i)
+		if !isTaken(candidate) {
+			return candidate
+		}
+	}
 }
 
 func (s *InteractiveService) restoreChatRunFromDrive(ctx context.Context, req ChatSessionRestoreRequest) (ChatSessionRestoreResult, *apiErr) {
 	return s.restoreChatRunTreeFromDrive(ctx, req, make(map[string]struct{}))
+}
+
+// chatSessionRemoteRunKnown reports whether a run has ANY remote trace on
+// Drive for this project -- either an index row or (CA-404: index rows can be
+// lost to a concurrent-sync last-write-wins race while the manifest blob
+// itself survives) a manifest blob still present at its expected path.
+// BUG-319/BUG-320: used only to tell a CHILD that was CONFIRMED never synced
+// at all (no trace anywhere -- safe to tombstone instead of hard-failing the
+// restore) apart from a child that WAS synced but is now broken in some other
+// way (missing provider file, integrity mismatch, ...), which must still
+// hard-fail the whole restore. BUG-320: a transient Drive lookup failure
+// (network blip, API error) is NOT the same fact as "confirmed absent" --
+// treating it as "never synced" would silently tombstone a child that may
+// still have real data, the exact thing the CA-404 guard exists to prevent.
+// Only a manifest-path lookup that resolves to os.ErrNotExist counts as
+// confirmed-absent; any other error is returned so the caller hard-fails.
+func chatSessionRemoteRunKnown(accessToken, rootFolderID string, indexRecords []chatSessionDriveIndexRecord, machineID, runID string) (bool, error) {
+	for _, record := range indexRecords {
+		if record.SourceMachineID == machineID && record.SourceRunID == runID {
+			return true, nil
+		}
+	}
+	_, err := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, chatSessionManifestPath(machineID, runID))
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
+// terminalizeTombstoneStatus normalizes a never-synced child's last-known
+// status (captured in the parent's manifest.ChildAgents at sync time) into a
+// tombstone-safe terminal state. normalizeResumedStatus deliberately keeps
+// waiting_approval/waiting_question so a real restart can rehydrate the
+// actionable gate card (rehydratePendingGatesLocked) -- but a BUG-320
+// tombstone has no synced approval/question record to rehydrate from, so any
+// non-terminal status here must collapse to Cancelled instead of leaving a
+// permanently "waiting" card nothing will ever resolve.
+func terminalizeTombstoneStatus(status RunStatus) RunStatus {
+	switch normalizeResumedStatus(status) {
+	case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+		return normalizeResumedStatus(status)
+	default:
+		return RunStatusCancelled
+	}
 }
 
 func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, req ChatSessionRestoreRequest, restoring map[string]struct{}) (ChatSessionRestoreResult, *apiErr) {
@@ -826,8 +1231,9 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 	if err != nil {
 		return ChatSessionRestoreResult{}, newAPIErr(http.StatusNotFound, "sync_remote_not_found", "remote chat session was not found")
 	}
+	indexRecords := parseChatSessionDriveIndex(indexBytes)
 	var match *chatSessionDriveIndexRecord
-	for _, record := range parseChatSessionDriveIndex(indexBytes) {
+	for _, record := range indexRecords {
 		if record.SourceMachineID == req.SourceMachineID && record.SourceRunID == req.SourceRunID {
 			rec := record
 			match = &rec
@@ -932,6 +1338,51 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 		} else if _, err := RestoreSessionFile(manifest.ProviderKey, targetHome, manifest.ProviderFile.RelativePath, manifest.ProviderSessionID, cwd, providerBytes); err != nil {
 			return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 		}
+
+		// BUG-316: restore every sidecar file into the SAME directory as the
+		// primary file above -- Grok's own session/load call reads the whole
+		// directory, not just chat_history.jsonl (see
+		// resolveGrokSessionSidecarFiles). Mirrors the primary file's own
+		// strictness (hard-fail on missing/integrity-mismatch/conflicting-local)
+		// rather than best-effort: a silently-skipped sidecar reproduces this
+		// exact bug on the very next turn. Reuses targetPath's own directory
+		// rather than restoreTargetPath's per-provider prefix validation
+		// (already applied once, above, for the primary file) since every
+		// sidecar lives alongside it by construction. Always empty for
+		// Codex/Claude manifests, so this loop is a no-op for them.
+		sidecarDir := filepath.Dir(targetPath)
+		for _, sidecarFile := range manifest.ProviderFiles {
+			sidecarObjectID := strings.TrimSpace(sidecarFile.DriveObjectID)
+			if sidecarObjectID == "" {
+				file, findErr := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, chatSessionProviderLogicalPath(manifest.SourceMachineID, manifest.SourceRunID, manifest.ProviderKey, sidecarFile.RelativePath))
+				if findErr != nil {
+					return ChatSessionRestoreResult{}, newAPIErr(http.StatusNotFound, "sync_remote_not_found", "remote Grok session sidecar file was not found")
+				}
+				sidecarObjectID = file.ID
+			}
+			sidecarBytes, dlErr := downloadGoogleDriveFileByID(ctx, accessToken, sidecarObjectID)
+			if dlErr != nil {
+				return ChatSessionRestoreResult{}, newAPIErr(http.StatusNotFound, "sync_remote_not_found", "remote Grok session sidecar file was not found")
+			}
+			if int64(len(sidecarBytes)) != sidecarFile.SizeBytes || hashBytesSHA256(sidecarBytes) != sidecarFile.SHA256 {
+				return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "sync_integrity_failed", "remote Grok session sidecar file failed integrity validation")
+			}
+			sidecarTargetPath := filepath.Join(sidecarDir, filepath.Base(sidecarFile.RelativePath))
+			if existing, readErr := os.ReadFile(sidecarTargetPath); readErr == nil {
+				if hashBytesSHA256(existing) != sidecarFile.SHA256 {
+					return ChatSessionRestoreResult{}, newAPIErr(http.StatusConflict, "session_file_conflict", "a different local Grok session sidecar file already exists for this chat")
+				}
+			} else if !errors.Is(readErr, os.ErrNotExist) {
+				return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", readErr.Error())
+			} else {
+				if err := os.MkdirAll(sidecarDir, 0o755); err != nil {
+					return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+				}
+				if err := os.WriteFile(sidecarTargetPath, sidecarBytes, 0o644); err != nil {
+					return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+				}
+			}
+		}
 	}
 
 	localRunID := s.resolveRestoredRunID(ctx, manifest.SourceMachineID, manifest.SourceRunID)
@@ -972,6 +1423,7 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 		PendingAgentContext: append([]string(nil), manifest.PendingAgentContext...),
 		ChatSubMode:         manifest.ChatSubMode,
 		ChatFlowRef:         manifest.ChatFlowRef,
+		TurnCount:           manifest.TurnCount, // BUG-315
 	}
 	if localAhead {
 		// The local rollout file is ahead of the restored snapshot, so the older
@@ -990,6 +1442,36 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 				if strings.TrimSpace(local.UpdatedAt) != "" {
 					session.UpdatedAt = local.UpdatedAt
 				}
+				// BUG-322 (CP-51 C6): fields added after BUG-091 that also track live
+				// flow progress, not just conversation metadata -- a stale remote
+				// manifest must not regress these either, or a re-restore of an
+				// already-locally-progressed chat can resurrect BUG-315's own
+				// symptom (flow re-runs from scratch) by rolling turnCount/loop
+				// state back down. Only fields that mutate over a run's lifetime are
+				// preserved; static per-run identity (ProjectID, AgentName, ModelName,
+				// DependsOn, ChatFlowRef, ...) is left as the manifest's, since it does
+				// not change after the run starts and should already agree.
+				if local.TurnCount > session.TurnCount {
+					session.TurnCount = local.TurnCount
+				}
+				if local.LoopState.Round > session.LoopState.Round {
+					session.LoopState = local.LoopState
+				}
+				if strings.TrimSpace(local.AgentStatus) != "" {
+					session.AgentStatus = local.AgentStatus
+				}
+				if len(local.ActiveFlowNodes) > 0 {
+					session.ActiveFlowNodes = append([]agentpack.FlowNode(nil), local.ActiveFlowNodes...)
+				}
+				if len(local.ActiveFlowEdges) > 0 {
+					session.ActiveFlowEdges = append([]agentpack.FlowEdge(nil), local.ActiveFlowEdges...)
+				}
+				if len(local.PendingAgentContext) > 0 {
+					session.PendingAgentContext = append([]string(nil), local.PendingAgentContext...)
+				}
+				if strings.TrimSpace(local.FlowCohortID) != "" {
+					session.FlowCohortID = local.FlowCohortID
+				}
 			}
 		}
 	}
@@ -997,22 +1479,90 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 	// relationship metadata. Loading summaries alone made the panel look correct only
 	// until restart and left child chats unopened on the restored machine. (BUG-123)
 	var remapped []AgentRunSummary
+	// BUG-320: staged tombstones for children confirmed never-synced, keyed by
+	// their (already collision-resolved) local RunID. Persisted once, AFTER
+	// every child in this parent's ChildAgents list has been validated/restored
+	// and DependsOn remapping has finished, immediately before the parent
+	// itself -- never inside the loop. Persisting eagerly would (a) leave an
+	// orphan tombstone on disk if a LATER sibling child hard-fails and this
+	// whole restore call returns an error, and (b) get double-upserted by the
+	// metadata-patch pass below, which patches already-restored real children
+	// in place rather than writing a fresh record.
+	tombstones := map[string]*ProviderSessionState{}
 	if len(manifest.ChildAgents) > 0 {
-		remapped = make([]AgentRunSummary, len(manifest.ChildAgents))
 		runIDMap := map[string]string{manifest.SourceRunID: localRunID}
-		for i, child := range manifest.ChildAgents {
-			remapped[i] = child
+		for _, child := range manifest.ChildAgents {
+			entry := child
 			// A synced child's status is a live snapshot from the source machine;
 			// once restored elsewhere nothing is actually running it, so an
 			// in-flight status must be normalized the same way the disk-fallback
 			// branch of listAgentRunSummaries already does (BUG-251 parity —
 			// Task-190) — otherwise a reviewer synced mid-turn shows a
 			// permanently stale "running" badge on the restored machine.
-			remapped[i].Status = normalizeResumedStatus(child.Status)
-			remapped[i].AgentStatus = string(normalizeResumedStatus(RunStatus(child.AgentStatus)))
-			remapped[i].DependsOn = append([]string(nil), child.DependsOn...)
+			entry.Status = normalizeResumedStatus(child.Status)
+			entry.AgentStatus = string(normalizeResumedStatus(RunStatus(child.AgentStatus)))
+			entry.DependsOn = append([]string(nil), child.DependsOn...)
 			childRunID := strings.TrimSpace(child.RunID)
 			if childRunID == "" {
+				continue
+			}
+			// BUG-319/BUG-320: a child whose own turn was interrupted before it
+			// ever wrote a real transcript is never uploaded during sync-up
+			// (syncChatRunToDrive's own best-effort "skip child" branch, above) --
+			// it has no index row and no manifest blob anywhere on Drive. That's
+			// not a data problem with the REST of this tree (the hub and every
+			// other child may be fully restorable), so this child gets a
+			// metadata-only TOMBSTONE record instead of a real transcript restore
+			// -- rather than failing the whole request (mirrors sync-up's own
+			// per-child leniency) or vanishing from the tree with no trace at all
+			// (BUG-320: resumedFlowStepRows' evidence-walk needs SOME persisted
+			// session for this child to mark its flow step FAILED/CANCELED
+			// instead of defaulting every evidence-less node to DONE). A child
+			// that WAS synced (has an index row, or per CA-404 at least a
+			// surviving manifest blob) but fails to restore for any OTHER reason
+			// (missing provider file, integrity mismatch, ...) still hard-fails
+			// below, unchanged -- restoring it must never silently drop real data
+			// just because it's now broken.
+			known, knownErr := chatSessionRemoteRunKnown(accessToken, rootFolderID, indexRecords, manifest.SourceMachineID, childRunID)
+			if knownErr != nil {
+				// BUG-320: a transient Drive lookup failure (network blip, API
+				// error) is not the same fact as "confirmed absent". Treating it
+				// as never-synced could tombstone a child that still has real,
+				// recoverable data -- exactly what the CA-404 guard exists to
+				// prevent. Hard-fail instead of guessing.
+				return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", knownErr.Error())
+			}
+			if !known {
+				log.Printf("[chat-sync] tombstone child restore (never synced) run_id=%q parent=%q", childRunID, manifest.SourceRunID)
+				tombstoneID := s.resolveRestoredRunID(ctx, manifest.SourceMachineID, childRunID)
+				now := time.Now().UTC().Format(time.RFC3339Nano)
+				tombstones[tombstoneID] = &ProviderSessionState{
+					RunID:           tombstoneID,
+					ProjectID:       projectID,
+					ProviderKey:     ProviderKey(child.ProviderKey),
+					RunKind:         "chat",
+					Status:          terminalizeTombstoneStatus(child.Status),
+					AgentStatus:     string(terminalizeTombstoneStatus(RunStatus(child.AgentStatus))),
+					AgentName:       child.AgentName,
+					Role:            child.Role,
+					Label:           child.Label,
+					ModelName:       child.ModelName,
+					StartedAt:       child.CreatedAt,
+					UpdatedAt:       now,
+					SourceMachineID: manifest.SourceMachineID,
+					SourceRunID:     childRunID,
+					RestoredFrom:    "google_drive",
+					// BUG-311 semantics: a transcript-less tombstone can never be
+					// synced FROM this machine either -- it has no real session
+					// data here any more than it did on the source.
+					SyncStatus:    "unsyncable",
+					SyncUpdatedAt: now,
+				}
+				runIDMap[childRunID] = tombstoneID
+				entry.RunID = tombstoneID
+				entry.Status = terminalizeTombstoneStatus(child.Status)
+				entry.AgentStatus = string(terminalizeTombstoneStatus(RunStatus(child.AgentStatus)))
+				remapped = append(remapped, entry)
 				continue
 			}
 			childResult, childErr := s.restoreChatRunTreeFromDrive(ctx, ChatSessionRestoreRequest{
@@ -1026,7 +1576,8 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 				return ChatSessionRestoreResult{}, childErr
 			}
 			runIDMap[childRunID] = childResult.RunID
-			remapped[i].RunID = childResult.RunID
+			entry.RunID = childResult.RunID
+			remapped = append(remapped, entry)
 		}
 		for i := range remapped {
 			remapped[i].ParentRunID = localRunID
@@ -1035,19 +1586,51 @@ func (s *InteractiveService) restoreChatRunTreeFromDrive(ctx context.Context, re
 					remapped[i].DependsOn[j] = localDependency
 				}
 			}
-			childLocalRunID := runIDMap[manifest.ChildAgents[i].RunID]
-			if childLocalRunID == "" {
+			if tombstone, isTombstone := tombstones[remapped[i].RunID]; isTombstone {
+				// Tombstones are staged, fully-built records (not yet persisted) --
+				// fold in the final parent id + remapped dependencies directly
+				// rather than patching a real persisted record via
+				// updateLocalSessionSyncStatus.
+				tombstone.ParentRunID = localRunID
+				tombstone.DependsOn = append([]string(nil), remapped[i].DependsOn...)
 				continue
 			}
-			if metadataErr := s.updateLocalSessionSyncStatus(ctx, childLocalRunID, func(childSession *ProviderSessionState) {
+			if metadataErr := s.updateLocalSessionSyncStatus(ctx, remapped[i].RunID, func(childSession *ProviderSessionState) {
 				childSession.ParentRunID = localRunID
 				childSession.AgentName = remapped[i].AgentName
 				childSession.Role = remapped[i].Role
+				childSession.Label = remapped[i].Label
 				childSession.DependsOn = append([]string(nil), remapped[i].DependsOn...)
 				childSession.AgentStatus = remapped[i].AgentStatus
 				childSession.ModelName = remapped[i].ModelName
 			}); metadataErr != nil {
 				return ChatSessionRestoreResult{}, metadataErr
+			}
+		}
+		// BUG-320: persist every staged tombstone now that every child has been
+		// validated/restored (so a hard-failing sibling never leaves one behind)
+		// and DependsOn has its final remapped values -- still strictly before
+		// the parent's own persist below.
+		for _, tombstone := range tombstones {
+			if err := s.persistProviderSession(*tombstone); err != nil {
+				return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+			}
+		}
+	}
+	// BUG-313: rebuild the per-run turn-log sidecar from the manifest so the
+	// restored run reopens with the same timeline a same-machine restart would
+	// build (raw prompts, flow-hub prose, agent-card clustering, per-turn
+	// session-id chains). Skipped when the local sidecar already has entries --
+	// on the original machine the local log IS the source of truth, and a
+	// repeated restore must not append a second copy of every line.
+	if len(manifest.TurnLog) > 0 {
+		if logger, ok := s.workflowStore.(TurnLogStore); ok {
+			if existing, readErr := logger.ReadTurnLog(ctx, localRunID); readErr == nil && len(existing) == 0 {
+				for _, line := range manifest.TurnLog {
+					if appendErr := logger.AppendTurnLog(ctx, localRunID, line); appendErr != nil {
+						return ChatSessionRestoreResult{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", appendErr.Error())
+					}
+				}
 			}
 		}
 	}

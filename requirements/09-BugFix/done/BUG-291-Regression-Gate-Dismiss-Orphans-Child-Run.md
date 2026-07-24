@@ -12,7 +12,7 @@
 - Last Updated: `2026-07-20`
 - Parent Documents: [Task-155](../../08-Task/done/Task-155-update-r-reg.md), [Task-242](../../08-Task/done/Task-242-Flow-Mode-Three-Tier-Gate.md), [SD-20](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [SS-14](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
 - Child Documents: `none`
-- Related Documents: [CP-51](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [BUG-288](../inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [BUG-289](./BUG-289-Flow-Mode-Invariant-Audit-25-Unhandled-Bug-And-Edge-Cases.md), [CA-367](../../../change-audit/CA-367-run9437-hub-park-active-child.md), [CA-369](../../../change-audit/CA-369-regression-gate-dismiss-terminal-action.md)
+- Related Documents: [CP-51](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [BUG-288](../done/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [BUG-289](./BUG-289-Flow-Mode-Invariant-Audit-25-Unhandled-Bug-And-Edge-Cases.md), [CA-367](../../../change-audit/CA-367-run9437-hub-park-active-child.md), [CA-369](../../../change-audit/CA-369-regression-gate-dismiss-terminal-action.md)
 - Replaces: `none`
 - Tags: `agent-flow-engine, flow-gate, regression, child-run, ui, a1`
 

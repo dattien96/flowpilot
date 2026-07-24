@@ -10,7 +10,7 @@
 - Reviewers: `Codex`
 - Created: `2026-07-20`
 - Last Updated: `2026-07-20`
-- Parent Documents: [CP-51 Phase A/B log](../../07-Coding-Plan/inprogress/CP-51-PhaseAB-Timeline-And-Verification-Log.md), [CP-51 durable dispatch](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-20](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [SS-14](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
+- Parent Documents: [CP-51 Phase A/B log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md), [CP-51 durable dispatch](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-20](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [SS-14](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
 - Child Documents: `none`
 - Related Documents: [BUG-291](./BUG-291-Regression-Gate-Dismiss-Orphans-Child-Run.md), [CA-369](../../../change-audit/CA-369-regression-gate-dismiss-terminal-action.md), [CA-370](../../../change-audit/CA-370-stop-flow-snapshot-reconciliation.md)
 - Replaces: `none`

@@ -819,3 +819,94 @@ func (a *keyedFakeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge
 
 // LastGrokSessionID mirrors grokAdapter for refreshResumeHandleLocked tests.
 func (a *keyedFakeAdapter) LastGrokSessionID() string { return a.lastGrokSessionID }
+
+// BUG-312: restoreTargetPath had no case for ProviderKeyGrok at all -- every
+// Grok restore fell into the switch's default branch and failed with
+// "unsupported provider session relocation". TestRestoreTargetPathRejectsTraversal
+// (cross_account_resume_test.go) already covers the Codex/Claude shape; these
+// cover the new Grok case, including the cross-machine cwd-encoding concern
+// that makes a naive "just reuse the embedded path" fix wrong (see the
+// round-trip test below for the decisive proof).
+func TestRestoreTargetPathGrokAcceptsWellFormedPathAndRejectsBadInput(t *testing.T) {
+	home := t.TempDir()
+	const sourceCwd = "/Users/tiendat/Desktop/BE/gate-sandbox"
+	const targetCwd = `D:\working\gate-sandbox`
+	const sessionID = "019f8722-c5fc-7f11-8d9e-4154bf38d338"
+	relPath := "sessions/" + grokSessionsCwdDirName(sourceCwd) + "/" + sessionID + "/chat_history.jsonl"
+
+	dst, err := restoreTargetPath(ProviderKeyGrok, home, relPath, sessionID, targetCwd)
+	if err != nil {
+		t.Fatalf("restoreTargetPath: unexpected error: %v", err)
+	}
+	want := filepath.Join(grokSessionDirPath(home, targetCwd, sessionID), "chat_history.jsonl")
+	if dst != want {
+		t.Fatalf("restoreTargetPath = %q, want %q (recomputed from the target cwd, not the source-embedded segment)", dst, want)
+	}
+
+	reject := []struct {
+		name    string
+		relPath string
+		session string
+		cwd     string
+	}{
+		{"synthetic thread placeholder session id", relPath, "thread-7", targetCwd},
+		{"missing cwd", relPath, sessionID, ""},
+		{"wrong file suffix (sidecar, not chat_history.jsonl)", "sessions/" + grokSessionsCwdDirName(sourceCwd) + "/" + sessionID + "/sidecar.json", sessionID, targetCwd},
+		{"session id path traversal", relPath, "../../etc", targetCwd},
+	}
+	for _, tc := range reject {
+		if _, err := restoreTargetPath(ProviderKeyGrok, home, tc.relPath, tc.session, tc.cwd); err == nil {
+			t.Errorf("%s: expected error, got nil", tc.name)
+		}
+	}
+}
+
+// TestRestoreSessionFileGrokRoundTripsAcrossDifferentCwdEncoding is the
+// decisive regression proof for BUG-312: a Grok chat synced from one machine
+// (Mac-shaped cwd) must be restorable under a different machine/cwd
+// (Windows-shaped) and be findable again afterward via LocateSessionFile --
+// not merely "RestoreSessionFile returned no error". A naive fix that reused
+// the source's embedded percent-encoded cwd segment verbatim would still
+// "succeed" here but write into a directory LocateSessionFile could never
+// look up again under the target's own cwd (grokSessionsCwdDirName encodes
+// per-cwd, and the two cwds below encode to different segments).
+func TestRestoreSessionFileGrokRoundTripsAcrossDifferentCwdEncoding(t *testing.T) {
+	sourceHome := t.TempDir()
+	targetHome := t.TempDir()
+	const sourceCwd = "/Users/tiendat/Desktop/BE/gate-sandbox"
+	const targetCwd = `D:\working\gate-sandbox`
+	const sessionID = "019f8722-c5fc-7f11-8d9e-4154bf38d338"
+	const transcript = `{"type":"assistant","content":"hello from grok"}` + "\n"
+
+	writeGrokSessionTree(t, sourceHome, sourceCwd, sessionID, map[string]string{"chat_history.jsonl": transcript})
+	sourcePath := filepath.Join(grokSessionDirPath(sourceHome, sourceCwd, sessionID), "chat_history.jsonl")
+	relativePath, err := filepath.Rel(sourceHome, sourcePath)
+	if err != nil {
+		t.Fatalf("filepath.Rel: %v", err)
+	}
+	relativePath = filepath.ToSlash(relativePath)
+
+	dstPath, err := RestoreSessionFile(ProviderKeyGrok, targetHome, relativePath, sessionID, targetCwd, []byte(transcript))
+	if err != nil {
+		t.Fatalf("RestoreSessionFile: unexpected error: %v", err)
+	}
+
+	foundPath, found := LocateSessionFile(ProviderKeyGrok, targetHome, sessionID, targetCwd)
+	if !found {
+		t.Fatalf("LocateSessionFile could not find the restored session under the target's own cwd (dst=%s)", dstPath)
+	}
+	body, err := os.ReadFile(filepath.Join(foundPath, "chat_history.jsonl"))
+	if err != nil {
+		t.Fatalf("read restored transcript: %v", err)
+	}
+	if string(body) != transcript {
+		t.Fatalf("restored transcript = %q, want %q", body, transcript)
+	}
+
+	// The destination must NOT be the source's verbatim cwd-encoded directory --
+	// that would be the pre-fix-shaped bug (right bytes, wrong/unfindable folder).
+	wrongDir := grokSessionDirPath(targetHome, sourceCwd, sessionID)
+	if filepath.Clean(filepath.Dir(dstPath)) == filepath.Clean(wrongDir) {
+		t.Fatalf("restored into the SOURCE's cwd-encoded directory (%s) instead of recomputing from the target cwd", wrongDir)
+	}
+}

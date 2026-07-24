@@ -615,6 +615,30 @@ func restoreTargetPath(providerKey ProviderKey, targetHome, relativePath, sessio
 		if clean != ".claude" && !strings.HasPrefix(clean, ".claude/") {
 			return "", errors.New("invalid claude restore path")
 		}
+	case ProviderKeyGrok:
+		// BUG-312: Grok's synced provider file is always
+		// sessions/<cwd-encoding>/<session-id>/chat_history.jsonl
+		// (resolveChatSessionTranscript), but the cwd-encoding segment is
+		// percent-encoded from the SOURCE machine's own cwd
+		// (grokSessionsCwdDirName) -- reusing it verbatim on a different
+		// machine/cwd would write into a directory name LocateSessionFile can
+		// never look up again there. Recompute the destination directory from
+		// this machine's own cwd instead, mirroring relocationTargetPath's
+		// Grok case (same fix shape as RelocateSessionFile).
+		if !strings.HasSuffix(clean, "/chat_history.jsonl") && clean != "chat_history.jsonl" {
+			return "", errors.New("invalid grok restore path")
+		}
+		if !isGrokRealSessionID(sessionID) {
+			return "", errors.New("grok restore requires a real ACP session id")
+		}
+		if strings.TrimSpace(cwd) == "" {
+			return "", errors.New("grok restore requires cwd")
+		}
+		dst := filepath.Join(grokSessionDirPath(targetHome, cwd, sessionID), "chat_history.jsonl")
+		if !pathUnderRoot(targetHome, dst) {
+			return "", errors.New("grok restore target escapes account home")
+		}
+		return dst, nil
 	default:
 		return "", errors.New("unsupported provider session relocation")
 	}

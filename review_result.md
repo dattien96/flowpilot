@@ -87,3 +87,14 @@ OK
 No Critical, Important, or Minor findings. The resume gate (`interactive_resume.go`: `if child.completed && child.lastMessage != ""`, `completed` from `session.Status == RunStatusCompleted`) exactly mirrors the LIVE emit condition (`interactive_service.go:5155-5172`: `EventAgentResultInjected` fires only for `completion.status == RunStatusCompleted` with non-empty FinalMessage; a failed child returns early and never emits). `ListAllProviderSessions` returns the raw persisted `RunStatus`, so a mid-turn-killed child correctly reads "running" here (the Running→Cancelled normalization applies to the reconstructed run, not this lookup). No regression: every completion path persists `status=completed` before the annotation emit, so genuinely-completed children (incl. cohort members) keep "— completed". `resumedParentAgentAnnotations` is the ONLY replay source of a child result annotation (desktop `timelineReducer.ts` sets `finalMessage` solely from `agent_result_injected`; `Timeline.tsx:544` renders "— completed" purely from it), so cutting it at the source fully removes the false suffix while the card's independent `status` segment shows the true "cancelled". additive-tests-only respected: only `bug294_resumed_agent_card_completed_suffix_test.go` added; no existing test modified.
 
 Focused validation: `go test ./internal/runner -run "TestBug294" -count=1` → 3 passed; restore/annotation/replay battery (`TestBug294|TestRun1264Restore|TestRun1264Settle|TestRun2334RestartReplayKeepsAssistantResponsesForEveryProvider`) → 12 passed. `-race` unavailable (no gcc/CGO). GitNexus unavailable; localized inspection confirmed both `EventAgentResultInjected` emit sites now agree.
+
+## run-63960 blocked restart — Codex review pass 1 (2026-07-23)
+Reviewer: gpt-5.6-terra high
+Result: Not OK — 7 findings (critical gen reset, graph race, unlocked persist, 409 false-positive, stopped/done clear, R3 gaps, CA incomplete)
+Grok addressed findings; re-review scheduled as pass 2.
+
+## run-63960 blocked restart — Codex review pass 2 (2026-07-23)
+Reviewer: gpt-5.6-terra high
+Result: OK — no remaining blocking issues
+Validated: gen high-water, locked persist, stale HTTP guard, 409 restriction, terminal settle clear, provider matrix, CA-414
+Waiver: store.history-replay-order pre-existing red (not this diff)

@@ -10,9 +10,9 @@
 - Reviewers: `Codex review`
 - Created: `2026-07-16`
 - Last Updated: `2026-07-17`
-- Parent Documents: [CP-51](../../07-Coding-Plan/inprogress/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md) (§11), [SD-25 Recovery Ownership Closure](../../06-System-Tech-Design/SD-25-Recovery-Ownership-Linearization-Closure.md) (§5, §11), [SS-17](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
+- Parent Documents: [CP-51](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [SD-24](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md) (§11), [SD-25 Recovery Ownership Closure](../../06-System-Tech-Design/SD-25-Recovery-Ownership-Linearization-Closure.md) (§5, §11), [SS-17](../../05-System-Specs/SS-17-Dispatch-Uncertainty-And-Repair-Operator-Contract.md)
 - Child Documents: `None`
-- Related Documents: [BUG-288](../../09-BugFix/inprogress/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [Task-248](./Task-248-Durable-Dispatch-Record-And-State-Machine-Core.md), [Task-249](./Task-249-Live-Dispatch-Integration-And-Stop-Fences.md), [Task-250](./Task-250-Recovery-Scanner-And-Provider-Reconciliation.md)
+- Related Documents: [BUG-288](../../09-BugFix/done/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md), [Task-248](./Task-248-Durable-Dispatch-Record-And-State-Machine-Core.md), [Task-249](./Task-249-Live-Dispatch-Integration-And-Stop-Fences.md), [Task-250](./Task-250-Recovery-Scanner-And-Provider-Reconciliation.md)
 - Replaces: `None`
 - Tags: `agent-flow-engine, testing, crash-matrix, race, definition-of-done`
 

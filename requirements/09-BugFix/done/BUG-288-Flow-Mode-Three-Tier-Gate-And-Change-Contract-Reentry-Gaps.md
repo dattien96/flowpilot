@@ -5,11 +5,11 @@
 - Document ID: `BUG-288`
 - Title: `Flow-Mode Three-Tier Gate Lifecycle And Change Contract Re-entry Gaps`
 - Phase: `bugfix`
-- Status: `inprogress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Codex review (multi-round)`
 - Created: `2026-07-15`
-- Last Updated: `2026-07-16`
+- Last Updated: `2026-07-24`
 - Parent Documents: [Task-242: Flow-Mode Three-Tier Gate](../../08-Task/done/Task-242-Flow-Mode-Three-Tier-Gate.md), [CP-50: Context Source Completion](../../07-Coding-Plan/done/CP-50-Context-Source-Completion.md), [Task-247: Change Contract Context Source](../../08-Task/done/Task-247-Change-Contract-Context-Source-And-Downstream-Prompt.md), [Task-246: Source Excerpt Runtime Producers](../../08-Task/done/Task-246-Source-Excerpt-Runtime-Hint-Producers.md)
 - Child Documents: `None`
 - Related Documents: [Task-184: Change Contract Capture](../../08-Task/done/Task-184-Change-Contract-Capture.md), [Task-185: Scope-Drift Detection](../../08-Task/inprogress/Task-185-Scope-Drift-Detection.md), [BUG-152](./BUG-152-Flow-Gate-Fires-On-Child-Agent-Turns-Mid-Loop.md), [BUG-279](./BUG-279-Flow-Mode-Validate-Retry-Ignores-Implement-Node-Reinvoke-Lifecycle.md), SD-20 Flow Gate Rule Semantics
@@ -1212,7 +1212,7 @@ Codex re-review sau Vòng 20 (HEAD `6ea5417`) FAIL với **2 Critical + 4 Import
 **Quyết định:** không mở Round 21 vá tiếp theo từng issue. Fix theo batch cấu trúc:
 
 - Tech design: [SD-24 Durable Turn Dispatch](../../06-System-Tech-Design/SD-24-Durable-Turn-Dispatch.md)
-- Coding plan: [CP-51](../../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md) + Task-248…255 (mỗi task có code guide + test skeleton).
+- Coding plan: [CP-51](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md) + Task-248…255 (mỗi task có code guide + test skeleton).
 
 **Termination criterion (đích duy nhất, hết vòng lặp):** BUG-288 → `done` ⟺ **[CP-51 §10 Acceptance Ledger](../../07-Coding-Plan/todo/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md)** xanh toàn bộ (crash-matrix đóng + non-regression + `go test -race`). Vì matrix là không gian **đóng** (state × barrier × fault × backend), một finding chỉ hợp lệ khi nằm **ngoài** matrix → thêm đúng 1 dòng rồi re-run verdict, **không** mở round ad-hoc.
 
@@ -1241,8 +1241,10 @@ Out of scope của CP-51 (không chặn done, non-dispatch): Q-1 (Task-240 hub-t
 
 ## 12. Completion Notes
 
-- result: **inprogress** — Vòng 9–20 Fixed (2026-07-16). Post-Round-20 Codex re-review FAIL → closed **structurally** via SD-24/CP-51 (see §11 "Vòng 20+"), not further ad-hoc rounds.
+- result: **done** (2026-07-24) — Vòng 9–20 Fixed (2026-07-16). Post-Round-20 Codex re-review FAIL → closed **structurally** via SD-24/CP-51 (see §11 "Vòng 20+"), not further ad-hoc rounds.
 - termination: BUG-288 → `done` ⟺ CP-51 §10 Acceptance Ledger fully green (closed crash-matrix + non-regression + `go test -race`). No Round 21/22 — a finding is admissible only if outside the closed matrix (then add one row + re-run).
+- **Ledger status (2026-07-24):** 54/56 rows ✅ (audited against real test coverage — see CP-51 §10.1.1). The remaining 2 rows, `GR` (`go test -race` — this dev machine has no C toolchain for CGO) and `CE-GEM` (Gemini capability evidence — Gemini is an intentional non-goal for V2 dispatch, not a pending task), are **operator-waived** as of this date rather than left as open blockers — see CP-51 §10.1 row annotations.
+- **Closed 2026-07-24:** with that exception recorded explicitly, this doc, [CP-51](../../07-Coding-Plan/done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), and the companion [CP-51-PhaseAB-Timeline-And-Verification-Log](../../07-Coding-Plan/done/CP-51-PhaseAB-Timeline-And-Verification-Log.md) all moved from `inprogress/` to `done/` on operator confirmation — its own remaining rows (A7's live click-through, X3/X4 sanity notes, B1-B12 owned by CP-43) are optional or out of its own scope, not open blockers.
 - primary modules: `apps/local-runner/internal/runner/*`.
 - change-audit: `CA-328`…`CA-336` (Vòng 20).
 - verification: Vòng 18–20 focused tests (`bug288_round18/19/20_test.go`).
