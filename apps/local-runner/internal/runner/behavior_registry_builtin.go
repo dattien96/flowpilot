@@ -40,6 +40,13 @@ func NewDefaultBehaviorRegistry() *BehaviorRegistry {
 	mustRegister(r, BehaviorSpec{ID: BehaviorHubNotify, Scope: BehaviorScopeInline, Handler: behaviorHubNotify})
 	mustRegister(r, BehaviorSpec{ID: BehaviorFlowControl, Scope: BehaviorScopeControl, Handler: behaviorFlowControl})
 	mustRegister(r, BehaviorSpec{ID: BehaviorUserConfirm, Scope: BehaviorScopeControl, Handler: behaviorUserConfirm})
+	// CP-55 P-1: agent.code reuses behaviorAgentDelegate verbatim (same
+	// handler, same scope) so its provider payload is byte-identical to
+	// agent.delegate — only the topology/gate treatment differs, and that
+	// lives outside this handler. contract.freeze gets a fail-closed
+	// placeholder; the real validation+persistence handler is CP-55 P-3.
+	mustRegister(r, BehaviorSpec{ID: BehaviorAgentCode, Scope: BehaviorScopeDelegate, Handler: behaviorAgentDelegate})
+	mustRegister(r, BehaviorSpec{ID: BehaviorContractFreeze, Scope: BehaviorScopeInline, Handler: behaviorContractFreezeNotImplemented})
 	return r
 }
 
@@ -287,4 +294,18 @@ func behaviorUserConfirm(_ context.Context, in BehaviorInput) (BehaviorOutput, e
 		return BehaviorOutput{Status: "continue", Summary: "awaiting user confirmation"}, nil
 	}
 	return BehaviorOutput{Status: "done", Summary: "user confirmed"}, nil
+}
+
+// behaviorContractFreezeNotImplemented is the CP-55 P-1 fail-closed
+// placeholder for contract.freeze: the real validation+persistence handler
+// (parse planner draft, validate, bind run/step/baseline, persist durably)
+// belongs to P-3. Registering this placeholder now still lets
+// NewDefaultBehaviorRegistry resolve the canonical id — so
+// IsCodeWritingBehavior/topology validation have a real, registered handler
+// to point at — while guaranteeing any P-1-era dispatch errors out instead
+// of silently returning success or mutating state. No built-in flow node
+// references contract.freeze yet, so this path is not reachable at runtime
+// until a later CP-55 slice wires a real node to it.
+func behaviorContractFreezeNotImplemented(_ context.Context, in BehaviorInput) (BehaviorOutput, error) {
+	return BehaviorOutput{}, fmt.Errorf("contract.freeze: not implemented yet (CP-55 P-3), node %q cannot be dispatched", in.NodeID)
 }

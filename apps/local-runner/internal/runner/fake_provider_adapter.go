@@ -3,12 +3,42 @@ package runner
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
 // fakeAdapterDelay is the inter-event pause the fake adapter uses to simulate
 // streaming. Tests set it to 0 for speed.
 var fakeAdapterDelay = 8 * time.Millisecond
+
+// preflightContractPlanTurnMarker is the exact "| role: <role> |" tag
+// composeAgentIdentityLine embeds in every child turn's prompt (Name/Role/
+// Definition parts always joined by " | ", so Role's own segment is always
+// bordered by a pipe on each side). CP-55 P-8 migrated all three built-in
+// flows to run a read-only preflight-contract planner (agents/contract-
+// planner.md, role "contract-planner") ahead of the coder, so this fake
+// adapter — DefaultProviderRegistry's real fallback for demo/no-credentials
+// mode, not just test scaffolding — must recognize that turn and answer with
+// a syntactically valid preflight JSON draft. Without this, every migrated
+// built-in flow's freeze step fails to parse "Done. The change is
+// implemented..." as JSON and the flow never reaches the coder, in both
+// tests and real demo runs.
+//
+// CORRECTION (CP-55 P-8 Claude-agent review, Important Finding 2): matching
+// this as a bare, unanchored substring ("role: contract-planner") would also
+// match any custom agent whose own role happens to start with that text
+// (e.g. a user-cloned flow's agent with role "contract-planner-v2") — such
+// an agent would silently get this hardcoded generic draft instead of its
+// intended turn output, with no error surfaced. Anchoring on the pipe
+// delimiters composeAgentIdentityLine always emits around each part closes
+// that false-positive.
+const preflightContractPlanTurnMarker = "| role: contract-planner |"
+
+// fakePreflightContractDraft is a generic, always-structurally-valid preflight
+// draft. This fake adapter has no real understanding of whatever codebase
+// it's pointed at, so it can't name real files — a placeholder concrete path
+// is the best it can offer without becoming a second code-intelligence engine.
+const fakePreflightContractDraft = `{"feature_key":"demo","intent":"demo change","declared_paths":["src/app.go"]}`
 
 // fakeProviderAdapter is the Phase 2 test backbone: it emits scripted
 // ProviderEvents mirroring the Phase 1 desktop mock scenarios (04-01), exercising
@@ -32,6 +62,11 @@ func (a *fakeProviderAdapter) Capabilities() ProviderCapabilities {
 }
 
 func (a *fakeProviderAdapter) SendTurn(ctx context.Context, req TurnRequest, b TurnBridge) error {
+	if strings.Contains(req.Prompt, preflightContractPlanTurnMarker) {
+		b.Emit(ProviderEvent{Type: EventMessageCompleted, Text: fakePreflightContractDraft})
+		b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: fakePreflightContractDraft})
+		return nil
+	}
 	scenario := req.Scenario
 	if scenario == "" {
 		scenario = "normal"

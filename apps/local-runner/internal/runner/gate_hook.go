@@ -1,4 +1,4 @@
-﻿package runner
+package runner
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/changecontract"
@@ -315,8 +316,11 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	if len(violations) == 0 {
 		// V10R4 P0-03 / BUG-288 R16-P0: durable commit under s.mu (no TOCTOU).
 		// V9-02: only persist contract + canonical head after gate allows.
+		// CP-55 P-5: this is the root gate (Normal chat or a Flow's own hub
+		// run, never a spawned coder child) — always immediate-write, never
+		// staged; a Flow's coder children route through the child gate below.
 		if !s.withGateEpochDurable(runID, epoch, func() error {
-			return commitChangeContract(cwd, prepared)
+			return commitChangeContract(cwd, prepared, canonicalPendingRoute{}, s.markerSecret)
 		}) {
 			// BUG-289 H3/F-3: do not silent-block — emit + escalate like sibling
 			// fail-closed sites (diff observe / baseline).
@@ -440,8 +444,9 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	// BUG-288 R19-3: must use withGateEpochDurable (epoch + fail-closed I/O),
 	// same as the zero-violation allow path — direct commitChangeContract discarded
 	// errors and raced Stop before contract/head write.
+	// CP-55 P-5: root gate (Normal chat / Flow hub) — always immediate-write.
 	if !s.withGateEpochDurable(runID, epoch, func() error {
-		return commitChangeContract(cwd, prepared)
+		return commitChangeContract(cwd, prepared, canonicalPendingRoute{}, s.markerSecret)
 	}) {
 		return true
 	}
@@ -626,7 +631,232 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		headAttachSpecPending = prepared.attachSpecPending
 	}
 
-	if len(only) == 0 {
+	// CP-55 P-4: a Flow's agent.code writer is governed by its own frozen
+	// preflight contract (Task-264/265), not the legacy declared/inferred
+	// Contract path above — that block only ever activates for isDelegate
+	// (agent.delegate) children, so an agent.code node never reaches
+	// prepareChangeContract/commitChangeContract at all; a post-turn
+	// declaration or inference from this node's own final message therefore
+	// cannot satisfy Flow preflight (spec's explicit requirement). This is a
+	// hardcoded Flow guarantee evaluated unconditionally, like the git-commit
+	// check further below, rather than through the configurable flowgate
+	// rules engine: Normal chat's r-scope is deliberately lenient (downgrades
+	// a configured block to warn unless HighSeverity — flowgate/rules.go),
+	// but a Flow's frozen scope must not inherit that leniency.
+	isCodeWriterNode := false
+	if nodeOK {
+		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.code" {
+			isCodeWriterNode = true
+		}
+	}
+	// coderStepID identifies the step a frozen contract would be bound to.
+	// Prefer rs.label (the flow-node id, matching how runContractFreezeNode
+	// binds CoderStepID) with rs.stepID as a fallback, mirroring the same
+	// fallback the legacy contract-prep block above uses.
+	coderStepID := strings.TrimSpace(rs.label)
+	if coderStepID == "" {
+		coderStepID = rs.stepID
+	}
+	// Fixed after Claude-agent review (2026-07-31, CA-427 Finding 3): gating
+	// enforcement on nodeOK/isCodeWriterNode ALONE meant a runner restart,
+	// topology reload, or any other reason flowNodeForRun fails to resolve
+	// the live node would silently skip frozen-scope enforcement entirely —
+	// the exact "silently let an unbound write through" failure this check
+	// exists to prevent. A frozen contract's mere existence, bound to this
+	// exact (parentID, coderStepID), is itself durable proof this step is
+	// governed — so it is also consulted directly, independent of whether
+	// today's in-memory topology happens to resolve. A step that was NEVER
+	// frozen (every existing agent.delegate flow, which never calls
+	// runContractFreezeNode) still correctly skips enforcement: frozenOK
+	// stays false and boundByFrozenContract stays false for it.
+	var rec changecontract.FrozenContractRecord
+	var frozenOK bool
+	if parentID != "" && coderStepID != "" {
+		if frozenStore, err := changecontract.NewFrozenStore(cwd); err == nil {
+			rec, frozenOK, _ = frozenStore.GetFrozenForStep(parentID, coderStepID)
+		}
+	}
+	if (isCodeWriterNode || frozenOK) && parentID != "" && coderStepID != "" {
+		if !frozenOK {
+			if !s.gateEpochStillValid(runID, epoch) {
+				return true
+			}
+			msg := "no frozen contract found for this coding step; a Flow writer requires a contract frozen before it runs"
+			s.mu.Lock()
+			if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
+				s.emitLocked(r, ProviderEvent{
+					Type:           EventFlowGateViolation,
+					ProviderTurnID: turnID,
+					Error:          msg,
+					Status:         "block",
+				})
+			}
+			s.mu.Unlock()
+			if s.gateEpochStillValid(runID, epoch) {
+				_, _ = s.applyFlowControl(parentID, FlowControlInput{
+					Status:  "escalate",
+					Summary: "flow gate block: " + msg,
+				})
+			}
+			return true
+		}
+		// Compare against a diff taken from the frozen contract's OWN baseline
+		// SHA (not this turn's turnStartGitHead, which — while normally the
+		// same commit — is a distinct value the frozen record does not carry
+		// an assumption about matching).
+		frozenDiff, frozenDiffErr := flowgate.ObserveGitDiffSince(cwd, rec.BaseSHA)
+		if frozenDiffErr != nil {
+			// Fixed after Claude-agent review (CA-427 Finding 1): this
+			// previously degraded to fin.ChangedFiles (AI-tool-call-reported,
+			// frequently empty) on an observation error, which let an
+			// unverified turn pass with zero drift detected — failing OPEN on
+			// exactly the ground truth this check exists to establish. Fail
+			// CLOSED instead, matching this same function's own earlier
+			// turn-scoped-diff-failure block (lines ~524-551).
+			if !s.gateEpochStillValid(runID, epoch) {
+				return true
+			}
+			msg := "gate observation failed against the frozen contract's baseline (workspace diff unreadable): " + frozenDiffErr.Error()
+			s.mu.Lock()
+			if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
+				s.emitLocked(r, ProviderEvent{
+					Type:           EventFlowGateViolation,
+					ProviderTurnID: turnID,
+					Error:          msg,
+					Status:         "block",
+				})
+			}
+			s.mu.Unlock()
+			if s.gateEpochStillValid(runID, epoch) {
+				_, _ = s.applyFlowControl(parentID, FlowControlInput{
+					Status:  "escalate",
+					Summary: "flow gate block: " + msg,
+				})
+			}
+			return true
+		}
+		writtenAgainstFrozen := changedPathsFromDiff(frozenDiff)
+		// Fixed after Claude-agent review (CA-427 Finding 2): the freeze
+		// itself just wrote .flowpilot/contracts/*.ndjson into this same
+		// workspace (Task-264's FrozenStore) — that bookkeeping artifact is
+		// not something the coder wrote and must never itself trip drift.
+		// The original fix used flowgate.IsDocOrAuditFile, which exempts the
+		// ENTIRE .flowpilot/** tree and every *.md file — review correctly
+		// flagged this as a real security hole: a writer could silently
+		// rewrite .flowpilot/settings/flow-rules.json (disabling the very
+		// gate judging it) or forge .flowpilot/contracts/frozen_contracts.ndjson
+		// directly, with zero drift ever detected. Exclude ONLY the frozen
+		// store's own two known bookkeeping files instead — everything else,
+		// including the rest of .flowpilot/** and every doc file, remains
+		// fully subject to scope enforcement.
+		//
+		// CP-55 P-8 finding: PendingCanonicalStore's own two files need the
+		// identical exemption — a frozen writer's first gate pass stages a
+		// pending Canonical Head update (P-5), and without this, that very
+		// write showed up as drift on the SAME writer's next gate pass (any
+		// validation-retry or review-loop retry), self-blocking every
+		// migrated Flow the moment it looped more than once. This exemption
+		// did not exist in P-4/P-5 because no coder had gone through more
+		// than one gate pass against a frozen contract until P-8's migrated
+		// flows made that a live path.
+		codeOnlyWritten := writtenAgainstFrozen[:0:0]
+		for _, p := range writtenAgainstFrozen {
+			if changecontract.IsFrozenStoreBookkeepingPath(p) || changecontract.IsPendingCanonicalStoreBookkeepingPath(p) {
+				continue
+			}
+			codeOnlyWritten = append(codeOnlyWritten, p)
+		}
+		drift := changecontract.FrozenContractScopeDrift(rec, codeOnlyWritten)
+		if len(drift) > 0 {
+			if !s.gateEpochStillValid(runID, epoch) {
+				return true
+			}
+			msg := "flow scope drift: wrote outside the frozen contract's declared paths: " + strings.Join(drift, ", ")
+			s.mu.Lock()
+			if r := s.runs[runID]; r != nil && r.gateEpoch == epoch {
+				s.emitLocked(r, ProviderEvent{
+					Type:           EventFlowGateViolation,
+					ProviderTurnID: turnID,
+					Error:          msg,
+					Status:         "block",
+				})
+			}
+			s.mu.Unlock()
+			if s.gateEpochStillValid(runID, epoch) {
+				_, _ = s.applyFlowControl(parentID, FlowControlInput{
+					Status:  "escalate",
+					Summary: "flow gate block: " + msg,
+				})
+			}
+			return true
+		}
+		// Within declared scope — this node does not go through the legacy
+		// isCodingChild path at all (isDelegate is false for agent.code, so
+		// that block above never ran for it either); fall through to the
+		// artifact-output/telegram rule evaluation below exactly as any other
+		// node would.
+		//
+		// CP-55 P-8: prepare this frozen writer's OWN Canonical Head effect
+		// here, sourced from its FrozenContractRecord (rec) rather than from
+		// prepareChangeContract's legacy declared/inferred parser. Without
+		// this, a frozen agent.code writer's gate pass reached the artifact-
+		// output check below with hasPreparedContract still false (only ever
+		// set true inside the isCodingChild block above, which agent.code can
+		// never enter) and commitChangeContract was never called at all for
+		// it — no immediate write AND no P-5 staged write, i.e. this node's
+		// Canonical Head effect silently did nothing, a gap found during
+		// CP-55 P-8's own research. The legacy changecontract.Store is
+		// deliberately NOT written here (skipSave: true) — a frozen writer's
+		// record of truth is the FrozenContractRecord FrozenStore already
+		// holds durably (Task-264/265), not the legacy Store/Contract this
+		// synthetic value only exists to drive commitChangeContract's shared
+		// Canonical Head plumbing (immediate write or P-5 staging, decided by
+		// canonicalRoute below exactly as it is for an agent.delegate coder).
+		hasPreparedContract = true
+		// Also marks this gate pass as a coding child for every downstream
+		// check keyed on isCodingChild (the artifact-output-only early
+		// returns just below, the git-commit-during-coding-step check
+		// further down, and canonicalRoute's own staging decision) — it was
+		// only ever false for agent.code up to this point because the
+		// isCodingChild-prep block above this whole frozen-writer branch
+		// runs BEFORE this code and reads the OLD value; setting it now does
+		// not retroactively re-run that earlier, agent.delegate-specific
+		// block (doc-scope/test rules stay correctly un-added to `only` for
+		// a frozen writer, since scope enforcement for it is the hardcoded
+		// frozen-contract check above, not the configurable flowgate rules
+		// engine — matching this file's own established P-4 design decision
+		// to keep the two mechanisms separate).
+		isCodingChild = true
+		prepared = preparedChangeContract{
+			ok:  true,
+			cwd: cwd,
+			contract: changecontract.Contract{
+				RunID:         parentID,
+				StepID:        coderStepID,
+				FeatureKey:    rec.FeatureKey,
+				Intent:        rec.Intent,
+				DeclaredPaths: rec.DeclaredPaths,
+				Confidence:    changecontract.ConfidenceDeclared,
+			},
+			declared: true,
+			skipSave: true,
+		}
+	}
+
+	// CORRECTION (CP-55 P-8 Claude-agent review, Important Finding 4): this
+	// check originally had no `!isCodingChild` guard, unlike the two similar
+	// no-op checks right below it — for a frozen agent.code writer, `only` is
+	// populated ONLY by the unconditional artifact-rule scan above (the
+	// doc-scope/test-rule block is deliberately never entered for it; see the
+	// comment on `isCodingChild = true` above). If a workspace ever disables
+	// every artifact rule (r-artifact-output/-structure/-telegram-sent — a
+	// plausible cleanup for a flow with no artifact bindings, like
+	// review-loop), `only` becomes empty and this would have discarded the
+	// frozen writer's own prepared Canonical Head effect silently — exactly
+	// the "this node's Canonical Head effect does nothing" bug this phase's
+	// own fix (above) exists to close, just conditionally on rule
+	// configuration this check had no defensive coupling to.
+	if len(only) == 0 && !isCodingChild {
 		return false
 	}
 	// Artifact-only path with no bindings and no coding/doc rules selected â†’ no-op.
@@ -754,12 +984,26 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		return true
 	}
 
+	// CP-55 P-5: a genuine Flow-engine-driven coding child stages its
+	// Canonical Head effect instead of writing it immediately — the real
+	// Head file is only ever touched at Flow terminal acceptance
+	// (finalizePendingCanonicalHeadsForRun, applyFlowControl's "done" case).
+	// A coding child outside a Flow-engine-driven run (isCodingChild can be
+	// true even without flowEngineDriven, e.g. an ad hoc spawn_agent target)
+	// keeps today's immediate-write behavior. CP-55 P-8: a frozen agent.code
+	// writer now also sets isCodingChild=true (above, once its own frozen
+	// scope is confirmed clean) so it gets the identical staging decision.
+	canonicalRoute := canonicalPendingRoute{}
+	if isCodingChild && s.isFlowEngineDriven(parentID) {
+		canonicalRoute = canonicalPendingRoute{ParentRunID: parentID, CoderStepID: coderStepID}
+	}
+
 	violations := flowgate.Evaluate(tr, only)
 	if len(violations) == 0 {
 		// BUG-288 R16-P0: durable commit under s.mu (no TOCTOU with Stop).
 		if hasPreparedContract {
 			if !s.withGateEpochDurable(runID, epoch, func() error {
-				return commitChangeContract(cwd, prepared)
+				return commitChangeContract(cwd, prepared, canonicalRoute, s.markerSecret)
 			}) {
 				// BUG-289 H3/F-3: child path — emit + parent escalate (not silent).
 				msg := "gate change-contract/head commit failed (canonical head unreadable or unwritable); blocked fail-closed"
@@ -930,7 +1174,7 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	// BUG-288 R16-P0: durable commit under s.mu.
 	if hasPreparedContract {
 		if !s.withGateEpochDurable(runID, epoch, func() error {
-			return commitChangeContract(cwd, prepared)
+			return commitChangeContract(cwd, prepared, canonicalRoute, s.markerSecret)
 		}) {
 			return true
 		}
@@ -1776,7 +2020,17 @@ func fillHeadDriftFlags(cwd string, c changecontract.Contract, hasOutOfContract 
 // commitChangeContract persists Save (inferred) + Canonical Head only after gate allow (V9-02).
 // BUG-288 R17-P1: returns error on I/O failure so the gate can fail-closed
 // (block completion) instead of allowing a turn through with no durable contract.
-func commitChangeContract(cwd string, p preparedChangeContract) error {
+//
+// route.ParentRunID non-empty (CP-55 P-5) means this commit is a Flow coder
+// child's gate pass: the Change Contract itself still saves immediately
+// (the legacy Contract/Store is unaffected by P-5 — only Canonical Head
+// timing changes), but the Canonical Head update is staged to
+// PendingCanonicalStore instead of written to the real Head file, which is
+// only ever touched at genuine Flow terminal acceptance
+// (finalizePendingCanonicalHeadsForRun). An empty route (root gate, Normal
+// chat, legacy captureChangeContract) keeps the original immediate-write
+// behavior unchanged.
+func commitChangeContract(cwd string, p preparedChangeContract, route canonicalPendingRoute, secret []byte) error {
 	if !p.ok || cwd == "" {
 		return nil
 	}
@@ -1792,49 +2046,62 @@ func commitChangeContract(cwd string, p preparedChangeContract) error {
 		}
 	}
 	if p.contract.FeatureKey != "" {
-		// BUG-288 R18-6: head I/O must fail-closed with contract durability.
-		if _, _, _, err := updateCanonicalHead(cwd, p.contract, len(p.outOfScopePaths) > 0); err != nil {
-			return err
+		if route.ParentRunID != "" {
+			if err := stagePendingCanonicalHead(cwd, route.ParentRunID, route.CoderStepID, p.contract, len(p.outOfScopePaths) > 0, secret); err != nil {
+				return err
+			}
+		} else {
+			// BUG-288 R18-6: head I/O must fail-closed with contract durability.
+			if _, _, _, err := updateCanonicalHead(cwd, p.contract, len(p.outOfScopePaths) > 0); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
+// canonicalPendingRoute tells commitChangeContract whether the Canonical
+// Head effect of this commit must be staged pending Flow terminal acceptance
+// (CP-55 P-5) instead of written immediately. A zero value (empty
+// ParentRunID) means "write immediately" — root gate, Normal chat, and the
+// legacy captureChangeContract path all pass this zero value, preserving
+// their exact pre-P-5 behavior.
+type canonicalPendingRoute struct {
+	ParentRunID string
+	CoderStepID string
+}
+
 // captureChangeContract is the legacy all-in-one path (tests / non-gate callers).
 func captureChangeContract(ctx context.Context, cwd, runID, stepID, finalMessage string, diff []flowgate.ChangedFile, suggestedFeatureKeys []string) (declared bool, outOfScopePaths []string, highSeverity, specDrifted, codeDrifted, attachSpecPending bool) {
 	p := prepareChangeContract(ctx, cwd, runID, stepID, finalMessage, diff, suggestedFeatureKeys)
-	_ = commitChangeContract(cwd, p)
+	_ = commitChangeContract(cwd, p, canonicalPendingRoute{}, nil)
 	return p.declared, p.outOfScopePaths, p.highSeverity, p.specDrifted, p.codeDrifted, p.attachSpecPending
 }
 
-// updateCanonicalHead loads (or backfills/mints) c.FeatureKey's Canonical
-// Head (Task-186), checks it for spec/code drift, and â€” only when neither
-// drifted â€” folds this in-contract turn into the Head. A drifted turn is
-// surfaced via the caller's TurnResult flags for a human to reconcile
-// (BR-2); the Head itself is left untouched until that happens, so a
-// drifted state is never silently overwritten.
-// BUG-288 R18-6: returns err on I/O failure so commitChangeContract can fail-closed.
-func updateCanonicalHead(cwd string, c changecontract.Contract, hasOutOfContractChange bool) (specDrifted, codeDrifted, attachSpecPending bool, err error) {
+// computeCanonicalHeadUpdate loads (or mints) c.FeatureKey's Canonical Head
+// and, when neither spec- nor code-drifted, computes the value an in-contract
+// turn would fold into it — WITHOUT writing anything. isNew=true means no
+// Head existed yet (a fresh mint, not an update to fold). Pure computation,
+// shared by updateCanonicalHead (immediate write — Normal chat / root) and
+// stagePendingCanonicalHead (CP-55 P-5 — a Flow coder child stages this same
+// value instead of writing it, so it is only ever durably written at genuine
+// Flow terminal acceptance).
+func computeCanonicalHeadUpdate(cwd string, c changecontract.Contract, hasOutOfContractChange bool) (updated changecontract.CanonicalHead, specDrifted, codeDrifted, attachSpecPending, isNew bool, err error) {
 	dotFP := filepath.Join(cwd, ".flowpilot")
 	catalog, _ := featurecatalog.LoadCatalog(dotFP)
 
 	head, found, err := changecontract.LoadHead(cwd, c.FeatureKey)
 	if err != nil {
-		log.Printf("[changecontract] head load failed for %q: %v", c.FeatureKey, err)
-		return false, false, false, err
+		return changecontract.CanonicalHead{}, false, false, false, false, err
 	}
 	if !found {
 		ledger, _ := changeledger.New(dotFP)
 		head = changecontract.BuildHead(cwd, c.FeatureKey, ledger, catalog, &c)
-		if err := changecontract.SaveHead(cwd, head); err != nil {
-			log.Printf("[changecontract] head save (birth/backfill) failed for %q: %v", c.FeatureKey, err)
-			return false, false, false, err
-		}
-		return false, false, false, nil // a just-minted Head cannot itself be drifted
+		return head, false, false, false, true, nil // a just-minted Head cannot itself be drifted
 	}
 
 	// r-attach-spec: a spec_less Head whose feature has since gained a
-	// governing doc in the catalog. Never auto-applied â€” surfaced for human
+	// governing doc in the catalog. Never auto-applied — surfaced for human
 	// confirmation; RebaselineWithSpec runs only once that is given.
 	if head.SpecConfidence == changecontract.SpecConfidenceSpecLess && catalog != nil {
 		if feat, ok := catalog.Get(c.FeatureKey); ok && len(feat.DocRefs) > 0 {
@@ -1845,18 +2112,172 @@ func updateCanonicalHead(cwd string, c changecontract.Contract, hasOutOfContract
 	specDrifted = changecontract.SpecDrifted(cwd, head)
 	codeDrifted = changecontract.CodeDrifted(hasOutOfContractChange, specDrifted)
 
-	if !specDrifted && !codeDrifted && !attachSpecPending {
-		updated := changecontract.UpdateHead(head, c)
-		if decisions, ok := foldCanonicalHeadDecisions(dotFP, c.FeatureKey); ok {
-			updated.Decisions = decisions
-			updated.IntentSignature = changecontract.ComputeSignature(updated)
-		}
+	if specDrifted || codeDrifted || attachSpecPending {
+		return changecontract.CanonicalHead{}, specDrifted, codeDrifted, attachSpecPending, false, nil
+	}
+
+	updated = changecontract.UpdateHead(head, c)
+	if decisions, ok := foldCanonicalHeadDecisions(dotFP, c.FeatureKey); ok {
+		updated.Decisions = decisions
+		updated.IntentSignature = changecontract.ComputeSignature(updated)
+	}
+	return updated, false, false, false, false, nil
+}
+
+// updateCanonicalHead is computeCanonicalHeadUpdate plus the immediate write
+// — unchanged behavior/return semantics from before CP-55 P-5's refactor,
+// used by root/Normal-chat gate passes and the legacy captureChangeContract
+// path, none of which stage a pending update.
+// BUG-288 R18-6: returns err on I/O failure so commitChangeContract can fail-closed.
+func updateCanonicalHead(cwd string, c changecontract.Contract, hasOutOfContractChange bool) (specDrifted, codeDrifted, attachSpecPending bool, err error) {
+	updated, specDrifted, codeDrifted, attachSpecPending, isNew, err := computeCanonicalHeadUpdate(cwd, c, hasOutOfContractChange)
+	if err != nil {
+		log.Printf("[changecontract] head load failed for %q: %v", c.FeatureKey, err)
+		return false, false, false, err
+	}
+	if isNew {
 		if err := changecontract.SaveHead(cwd, updated); err != nil {
-			log.Printf("[changecontract] head save (update) failed for %q: %v", c.FeatureKey, err)
-			return specDrifted, codeDrifted, attachSpecPending, err
+			log.Printf("[changecontract] head save (birth/backfill) failed for %q: %v", c.FeatureKey, err)
+			return false, false, false, err
 		}
+		return false, false, false, nil
+	}
+	if specDrifted || codeDrifted || attachSpecPending {
+		return specDrifted, codeDrifted, attachSpecPending, nil
+	}
+	if err := changecontract.SaveHead(cwd, updated); err != nil {
+		log.Printf("[changecontract] head save (update) failed for %q: %v", c.FeatureKey, err)
+		return specDrifted, codeDrifted, attachSpecPending, err
 	}
 	return specDrifted, codeDrifted, attachSpecPending, nil
+}
+
+// stagePendingCanonicalHead is computeCanonicalHeadUpdate plus a stage
+// (CP-55 P-5): a Flow coder child's gate pass computes the same would-be
+// Canonical Head update as the immediate-write path, but persists it to
+// PendingCanonicalStore instead of .flowpilot/canonical/<feature_key>.json —
+// the real file is only ever touched by finalizePendingCanonicalHeadsForRun,
+// at genuine Flow terminal acceptance. A drifted/attach-pending turn stages
+// nothing (mirrors updateCanonicalHead: surfaced via TurnResult for a human,
+// never silently written).
+func stagePendingCanonicalHead(cwd, runID, coderStepID string, c changecontract.Contract, hasOutOfContractChange bool, secret []byte) error {
+	if c.FeatureKey == "" {
+		return nil
+	}
+	updated, specDrifted, codeDrifted, attachSpecPending, _, err := computeCanonicalHeadUpdate(cwd, c, hasOutOfContractChange)
+	if err != nil {
+		log.Printf("[changecontract] pending head compute failed for %q: %v", c.FeatureKey, err)
+		return err
+	}
+	if specDrifted || codeDrifted || attachSpecPending {
+		return nil
+	}
+	store, err := changecontract.NewPendingCanonicalStoreWithSecret(cwd, secret)
+	if err != nil {
+		return err
+	}
+	return store.Stage(changecontract.PendingCanonicalRecord{
+		RunID:       runID,
+		FeatureKey:  c.FeatureKey,
+		CoderStepID: coderStepID,
+		Head:        updated,
+	})
+}
+
+// finalizePendingCanonicalHeadsForRun durably writes every still-pending
+// Canonical Head update staged for parentRunID (across every feature key a
+// coder child staged one for during this Flow) and marks each finalized.
+// Called only at genuine Flow terminal acceptance (applyFlowControl's "done"
+// case), BEFORE the loop status flips to done — per CP-55 P-5's own
+// requirement, a failure here must abort the "done" transition entirely, not
+// silently continue with an un-finalized Canonical Head. Idempotent: a
+// record already marked finalized is skipped (ListPendingForRunFresh only
+// returns still-active entries), so retrying after a crash mid-finalize is
+// safe and does not re-write/re-mark anything already done.
+//
+// Two-phase across the whole set (CP-55 P-5 review finding C-2): every
+// feature's Head is staged to a tmp file FIRST; only once every stage in the
+// batch has succeeded do any of them get committed (renamed into place) and
+// marked finalized. Without this, a multi-feature Flow whose Nth feature
+// failed to write would already have permanently mutated the real Head files
+// of features 1..N-1 even though the "done" transition as a whole — and
+// therefore this Flow's terminal acceptance of ALL of them — was refused.
+func finalizePendingCanonicalHeadsForRun(cwd, parentRunID string, secret []byte) error {
+	store, err := changecontract.NewPendingCanonicalStoreWithSecret(cwd, secret)
+	if err != nil {
+		return fmt.Errorf("open pending canonical store for run %q: %w", parentRunID, err)
+	}
+	// CP-55 P-5 review finding I-1: reload fresh under one lock hold
+	// immediately before listing, so a Stage from a different in-process
+	// PendingCanonicalStore instance (e.g. a coder gate pass whose gate
+	// epoch was still valid the instant this Flow reached "done") that
+	// landed after some earlier NewPendingCanonicalStore snapshot is not
+	// silently invisible to this decision.
+	pending, err := store.ListPendingForRunFresh(parentRunID)
+	if err != nil {
+		return fmt.Errorf("list pending canonical records for run %q: %w", parentRunID, err)
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	type stagedWrite struct {
+		rec                changecontract.PendingCanonicalRecord
+		tmpPath, finalPath string
+	}
+	staged := make([]stagedWrite, 0, len(pending))
+	for _, rec := range pending {
+		tmp, final, err := changecontract.StageHeadWrite(cwd, rec.Head)
+		if err != nil {
+			for _, sw := range staged {
+				changecontract.DiscardHeadWrite(sw.tmpPath)
+			}
+			return fmt.Errorf("stage canonical head for feature %q (run %q): %w", rec.FeatureKey, parentRunID, err)
+		}
+		staged = append(staged, stagedWrite{rec: rec, tmpPath: tmp, finalPath: final})
+	}
+
+	for _, sw := range staged {
+		if err := changecontract.CommitHeadWrite(sw.tmpPath, sw.finalPath); err != nil {
+			return fmt.Errorf("commit canonical head for feature %q (run %q): %w", sw.rec.FeatureKey, parentRunID, err)
+		}
+		if err := store.AppendStatus(sw.rec.RunID, sw.rec.FeatureKey, changecontract.PendingCanonicalStatusFinalized, "flow terminal acceptance", time.Now().UTC()); err != nil {
+			return fmt.Errorf("mark canonical head finalized for feature %q (run %q): %w", sw.rec.FeatureKey, parentRunID, err)
+		}
+	}
+	return nil
+}
+
+// abandonPendingCanonicalHeadsForRun marks every still-pending Canonical Head
+// update staged for parentRunID as abandoned — the real Head file is never
+// touched. Called on any non-"done" terminal Flow outcome (Stop/Cancel,
+// failure) so a run that never reached genuine acceptance leaves no trace on
+// the real Canonical Head. Best-effort: logs and continues past a store-open
+// failure rather than blocking the (already-terminal) transition that calls
+// it — there is no "block done" symmetry to preserve on the abandon path,
+// unlike finalize.
+func abandonPendingCanonicalHeadsForRun(cwd, parentRunID, reason string, secret []byte) {
+	if strings.TrimSpace(cwd) == "" || strings.TrimSpace(parentRunID) == "" {
+		return
+	}
+	store, err := changecontract.NewPendingCanonicalStoreWithSecret(cwd, secret)
+	if err != nil {
+		log.Printf("[changecontract] abandon pending canonical heads: open store failed for run %q: %v", parentRunID, err)
+		return
+	}
+	// I-1 applies symmetrically here: a coder's Stage racing this abandon
+	// must not be left permanently "pending" forever with no run left alive
+	// to ever finalize or abandon it.
+	pending, err := store.ListPendingForRunFresh(parentRunID)
+	if err != nil {
+		log.Printf("[changecontract] abandon pending canonical heads: list failed for run %q: %v", parentRunID, err)
+		return
+	}
+	for _, rec := range pending {
+		if err := store.AppendStatus(rec.RunID, rec.FeatureKey, changecontract.PendingCanonicalStatusAbandoned, reason, time.Now().UTC()); err != nil {
+			log.Printf("[changecontract] abandon pending canonical head: mark abandoned failed for run %q feature %q: %v", parentRunID, rec.FeatureKey, err)
+		}
+	}
 }
 
 // foldCanonicalHeadDecisions folds negative knowledge (rejected chat_summary

@@ -2,10 +2,15 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"flowpilot-runner/internal/agentpack"
@@ -43,9 +48,11 @@ func edgeTargetFrom(edges []agentpack.FlowEdge, from, when, kind string) (string
 // (validate/audit) in-process via the behavior registry, mirroring
 // startInlineEntryChain's shape but for a node reached mid-flow instead of
 // at flow entry. Returns false for any inline behavior other than
-// command.validate/artifact.audit_draft (context.produce/context.render
-// have their own dedicated dispatch paths and are never reached this way in
-// either built-in flow) so an unrecognized shape falls back to the
+// command.validate/artifact.audit_draft/telegram.notify/hub.notify/
+// contract.freeze (context.produce/context.render still have no dedicated
+// entry here on their own — CP-55 P-3's contract.freeze case is the one path
+// that dispatches context.produce, as an intermediate hop in its own bounded
+// chain, not through this switch) so an unrecognized shape falls back to the
 // pre-existing note+reinvoke-hub behavior unchanged.
 func (s *InteractiveService) tryAdvanceFlowThroughInline(parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, node agentpack.FlowNode, resultMessage string) bool {
 	canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior)
@@ -80,6 +87,10 @@ func (s *InteractiveService) tryAdvanceFlowThroughInline(parentRunID string, edg
 	case "hub.notify":
 		s.dispatchHubNotifyNode(parentRunID, node)
 		return true
+	case "contract.freeze":
+		// CP-55 P-3: freeze the read-only planner's proposal, then advance the
+		// bounded freeze -> [context.produce ...] -> writer chain.
+		return s.runContractFreezeNode(ctx, parentRunID, edges, nodes, node, resultMessage)
 	default:
 		return false
 	}
@@ -1141,4 +1152,428 @@ func composeHubNotifyPrompt(node agentpack.FlowNode) string {
 		"status=\"approved\" to finish this step. This is a technical formality that lets the flow advance past this " +
 		"step â€” it does not mean you are approving or judging a code change."
 	return prompt
+}
+
+// flowInlineChainHopLimit bounds the number of edge traversals
+// resolveFreezeWriterTarget will follow from a contract.freeze node before
+// giving up. Each loop iteration consumes exactly one edge, including the
+// final edge that lands on the writer — so a chain of N intermediate
+// context.produce hops before the writer requires N+1 iterations, meaning
+// this limit admits at most flowInlineChainHopLimit-1 intermediate hops (5,
+// at the current value of 6), not flowInlineChainHopLimit itself. A
+// pathological or cyclic graph must fail closed instead of looping forever;
+// no built-in flow needs more than a couple of hops here, so this is
+// deliberately generous rather than tight (CP-55 P-3).
+const flowInlineChainHopLimit = 6
+
+// resolveFreezeWriterTarget walks forward from a contract.freeze node through
+// zero or more intermediate "context.produce" hops — the only intermediate
+// shape this chain knows how to actually execute (advanceFlowThroughFreezeChain
+// dispatches it for real; see CA-426 C-3) — to the first forward target whose
+// behavior is agent.code: the writer this contract binds to. Bounded by
+// hopLimit hops and a visited-node-id set, so a cycle or a chain longer than
+// the limit fails closed (ok=false) rather than looping forever.
+//
+// Any other shape also fails closed rather than being silently accepted:
+// more than one forward-done edge at any point, a node id that doesn't
+// resolve, an intermediate behavior other than context.produce (a safety
+// node like command.validate/artifact.audit_draft must never be silently
+// skipped — see CA-426 C-3), or a terminal target that isn't agent.code
+// (binding a contract to, say, a plain agent.delegate reviewer step would be
+// wrong — CA-426 M-5). Pure graph-structure logic — no dispatch, no I/O — so
+// it is directly unit-testable against hand-built fixtures.
+func resolveFreezeWriterTarget(edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, fromNodeID string, hopLimit int) (writer agentpack.FlowNode, path []agentpack.FlowNode, ok bool) {
+	visited := map[string]bool{fromNodeID: true}
+	current := fromNodeID
+	for hop := 0; hop < hopLimit; hop++ {
+		targets := forwardDoneTargets(edges, current)
+		if len(targets) != 1 {
+			return agentpack.FlowNode{}, nil, false
+		}
+		targetID := targets[0]
+		if visited[targetID] {
+			return agentpack.FlowNode{}, nil, false // cycle
+		}
+		visited[targetID] = true
+		target, found := findFlowNode(nodes, targetID)
+		if !found {
+			return agentpack.FlowNode{}, nil, false
+		}
+		canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior)
+		if !ok {
+			return agentpack.FlowNode{}, nil, false
+		}
+		switch canonical {
+		case "context.produce":
+			path = append(path, target)
+			current = target.ID
+			continue
+		case "agent.code":
+			return target, path, true
+		default:
+			return agentpack.FlowNode{}, nil, false
+		}
+	}
+	return agentpack.FlowNode{}, nil, false // hop limit exceeded
+}
+
+// worktreeMutatedSincePaths returns the paths in current that are either
+// absent from baseline or present with a different content hash — i.e.
+// genuinely mutated since baseline, not merely "still dirty from before."
+// A plain "is anything in current dirty" check cannot make this distinction
+// (CA-426 C-1): a workspace with pre-existing uncommitted work at flow start
+// would otherwise always read as "the planner mutated something."
+func worktreeMutatedSincePaths(baseline, current map[string]string) []string {
+	var mutated []string
+	for p, hash := range current {
+		if baseline[p] != hash {
+			mutated = append(mutated, p)
+		}
+	}
+	sort.Strings(mutated)
+	return mutated
+}
+
+// runContractFreezeNodeLocks path-keys an in-process mutex per
+// (parentRunID, freezeNodeID) so two concurrent deliveries of the SAME
+// freeze-node completion (e.g. an async resume redelivery racing the
+// synchronous completion path) serialize entirely, instead of each opening
+// its own FrozenStore instance and racing on "does this already exist" —
+// FrozenStore's own path-keyed mutex only serializes the physical NDJSON
+// append, not this runner-level check-then-decide sequence (CA-426 I-1).
+var (
+	runContractFreezeNodeLocksMu sync.Mutex
+	runContractFreezeNodeLocks   = map[string]*sync.Mutex{}
+)
+
+func runContractFreezeNodeLockFor(key string) *sync.Mutex {
+	runContractFreezeNodeLocksMu.Lock()
+	defer runContractFreezeNodeLocksMu.Unlock()
+	if mu, ok := runContractFreezeNodeLocks[key]; ok {
+		return mu
+	}
+	mu := &sync.Mutex{}
+	runContractFreezeNodeLocks[key] = mu
+	return mu
+}
+
+// baselineWorktreeFingerprint returns a deterministic content fingerprint for
+// every currently-dirty path in workspace (CP-55 P-2's
+// FrozenContractRecord.BaselineWorktree): a Flow can freeze a contract against
+// an uncommitted tree, so BaseSHA alone cannot distinguish two freezes that
+// share the same HEAD but different working-tree state. Best-effort — an
+// unreadable file yields an empty-string fingerprint entry rather than
+// failing the whole freeze; a workspace with nothing dirty yields nil.
+func baselineWorktreeFingerprint(workspace string) map[string]string {
+	paths := uncommittedChangedPaths(workspace)
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(paths))
+	for _, p := range paths {
+		data, err := os.ReadFile(filepath.Join(workspace, filepath.FromSlash(p)))
+		if err != nil {
+			out[p] = ""
+			continue
+		}
+		sum := sha256.Sum256(data)
+		out[p] = hex.EncodeToString(sum[:])
+	}
+	return out
+}
+
+// runContractFreezeNode is CP-55 P-3's contract.freeze dispatch: it enforces
+// that the read-only planner produced no project mutations, strictly parses
+// and validates its proposal, resolves the writer this contract will bind to,
+// freezes the contract durably (reload-verified before advancing — spec step
+// 7), and then advances the bounded freeze -> [context.produce hops] ->
+// writer chain. Any failure (invalid draft, planner mutation, unresolvable
+// writer, storage error) escalates via applyFlowControl and returns true
+// (handled — the legacy note+reinvoke-hub fallback must never see an unbound
+// writer dispatch for this behavior).
+//
+// Fixed after Claude-agent review (2026-07-31, see CA-426 C-1/C-3/I-1/I-2/I-4):
+// the planner-mutation check now diffs against the flow-start worktree
+// fingerprint instead of treating any dirty file as the planner's doing; the
+// loop-advancing status is re-checked (BUG-234 class); duplicate-delivery
+// resolution is serialized in-process per (run, freeze-node); and the
+// mint-vs-reuse version number is derived from the store instead of
+// hardcoded, so a future superseded/abandoned version cannot permanently
+// collide with a fresh one.
+func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, node agentpack.FlowNode, plannerResult string) bool {
+	if s.flowRunTerminalLocked(parentRunID) {
+		return true
+	}
+	if !s.loopIsAdvancing(parentRunID) {
+		s.flowDiagLog(parentRunID, "flow_contract_freeze_skipped_loop_blocked", "skipping freeze because loop is not advancing", "node_id", node.ID)
+		return false
+	}
+
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	var workspace, baseSHA string
+	var startFingerprint map[string]string
+	if rs != nil {
+		workspace = rs.workspaceCwd
+		baseSHA = rs.flowStartGitHead
+		startFingerprint = rs.flowStartWorktreeFingerprint
+	}
+	s.mu.Unlock()
+
+	escalate := func(reason string) bool {
+		s.flowDiagLog(parentRunID, "flow_contract_freeze_blocked", reason, "node_id", node.ID)
+		if s.isFlowEngineDriven(parentRunID) {
+			s.setFlowStepAwaitingUser(ctx, parentRunID)
+		}
+		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
+			Status:  "escalate",
+			Summary: "Contract freeze blocked: " + reason,
+		}); err != nil {
+			log.Printf("[flow-executor] contract.freeze escalate failed: %v", err)
+		}
+		return true
+	}
+
+	// Enforce the planner produced no project mutations (it is read-only by
+	// contract). Diffing against a plain "is the tree dirty" check would fire
+	// on any pre-existing uncommitted work the user already had when the flow
+	// started — instead, diff a fresh fingerprint against the one captured
+	// once at flow start (rs.flowStartWorktreeFingerprint, before the planner
+	// — the flow's entry node — ever ran): a path new or changed-hash
+	// relative to that baseline is the planner's own mutation; a path dirty
+	// in both with the same hash is pre-existing and not the planner's doing.
+	if workspace != "" {
+		currentFingerprint := baselineWorktreeFingerprint(workspace)
+		if mutated := worktreeMutatedSincePaths(startFingerprint, currentFingerprint); len(mutated) > 0 {
+			return escalate(fmt.Sprintf("planner changed %d file(s) (%s); the contract planner must be read-only", len(mutated), strings.Join(mutated, ", ")))
+		}
+	}
+
+	draft, err := changecontract.ParsePreflightDraft(plannerResult)
+	if err != nil {
+		return escalate("invalid planner proposal: " + err.Error())
+	}
+	// CP-55 P-3 deliberately does not allowlist feature_key against the
+	// catalog here (knownFeatureKeys=nil skips that check in
+	// ValidatePreflightDraft) — the planner's feature_key is trusted for now;
+	// catalog-backed validation can be added later without an API change.
+	draft, err = changecontract.ValidatePreflightDraft(draft, nil)
+	if err != nil {
+		return escalate("invalid planner proposal: " + err.Error())
+	}
+
+	writerNode, path, ok := resolveFreezeWriterTarget(edges, nodes, node.ID, flowInlineChainHopLimit)
+	if !ok {
+		return escalate("no reachable agent.code writer target for this contract.freeze node")
+	}
+
+	// Serialize concurrent deliveries of THIS SAME freeze-node completion
+	// (e.g. an async resume redelivery racing the synchronous completion
+	// path) — held only across the check-then-freeze-then-save decision
+	// below, not across the chain-advance/spawn that follows.
+	lock := runContractFreezeNodeLockFor(parentRunID + "\x00" + node.ID)
+	lock.Lock()
+
+	store, err := changecontract.NewFrozenStore(workspace)
+	if err != nil {
+		lock.Unlock()
+		return escalate("cannot open frozen contract store: " + err.Error())
+	}
+
+	// Duplicate delivery / recovery: a prior process may already have frozen
+	// this exact (runID, coderStepID) — reuse it rather than minting a second
+	// version (the version bump/Supersedes chain is reserved for genuine
+	// amendments, CP-55 P-4).
+	if existing, ok, _ := store.GetFrozenForStep(parentRunID, writerNode.ID); ok {
+		lock.Unlock()
+		s.flowDiagLog(parentRunID, "flow_contract_freeze_reused", "reusing already-frozen contract for this step",
+			"node_id", node.ID, "coder_node_id", writerNode.ID, "contract_id", existing.ContractID, "version", existing.Version,
+		)
+		if s.isFlowEngineDriven(parentRunID) {
+			s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusDone)
+		}
+		return s.advanceFlowThroughFreezeChain(ctx, parentRunID, node, writerNode, existing, path)
+	}
+
+	// Derive the next version from what's actually on disk (not hardcoded 1):
+	// once P-4/P-5 land amendment/abandon transitions, GetFrozenForStep can
+	// report "no active version" even though prior (superseded/abandoned)
+	// versions exist — recomputing version=1 in that case would collide with
+	// an old version's ContractID (ComputeContractID does not include
+	// DeclaredAt) and SaveFrozen would permanently reject it as a payload
+	// mismatch.
+	versions, _ := store.ListVersionsForStep(parentRunID, writerNode.ID)
+	version := len(versions) + 1
+
+	baseline := baselineWorktreeFingerprint(workspace)
+	rec, err := changecontract.FreezeContract(workspace, parentRunID, node.ID, writerNode.ID, draft, baseSHA, baseline, "", version, time.Now().UTC())
+	if err != nil {
+		lock.Unlock()
+		return escalate("could not normalize declared scope: " + err.Error())
+	}
+	if err := store.SaveFrozen(rec); err != nil {
+		lock.Unlock()
+		return escalate("could not persist frozen contract: " + err.Error())
+	}
+	lock.Unlock()
+
+	// Reload-verify durability before advancing (spec step 7): open a fresh
+	// store instance and confirm the record survives, rather than trusting
+	// the in-memory instance that just wrote it.
+	reloaded, err := changecontract.NewFrozenStore(workspace)
+	if err != nil {
+		return escalate("could not reload frozen contract store: " + err.Error())
+	}
+	if _, ok, _ := reloaded.GetFrozenForStep(parentRunID, writerNode.ID); !ok {
+		return escalate("frozen contract did not survive reload")
+	}
+
+	if s.isFlowEngineDriven(parentRunID) {
+		s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusDone)
+	}
+	s.flowDiagLog(parentRunID, "flow_contract_frozen", "froze preflight contract before writer dispatch",
+		"node_id", node.ID, "coder_node_id", writerNode.ID, "contract_id", rec.ContractID, "version", rec.Version,
+	)
+
+	return s.advanceFlowThroughFreezeChain(ctx, parentRunID, node, writerNode, rec, path)
+}
+
+// advanceFlowThroughFreezeChain dispatches each intermediate context.produce
+// hop in path (every entry is guaranteed to be context.produce by
+// resolveFreezeWriterTarget — no other inline behavior is ever admitted into
+// path), then spawns writerNode as a child agent run bound to rec. Any
+// inline-hop failure, or a spawn failure, escalates and stops before/without
+// the writer ever running (CP-55 P-3's own "no writer dispatch after
+// freeze/chain failure" invariant — fixed after Claude-agent review, CA-426
+// C-2: the spawn-failure path previously returned false/unescalated, which
+// could leak an unbound-writer situation to the legacy hub fallback).
+//
+// CORRECTION (CP-55 P-8, found while fixing test fallout from the built-in
+// flow migration): when path is empty — review-loop's own freeze -> coder
+// edge is direct, with no intermediate context.produce node — this used to
+// mean NO FlowContextPackage was ever built for the writer at all, and the
+// writer's prompt was just rec.Intent wrapped in its system prompt: the
+// source-excerpt/feature-history machinery P-6/P-7 built had no path to the
+// coder's actual prompt. A package is now always built (from the last
+// path hop's package if one exists, else freshly for the writer's own
+// declared context sources) and rendered into the writer's prompt via the
+// same context.render behavior startInlineEntryChain already uses — path
+// having zero context.produce hops is no longer a silent "skip context
+// entirely" case.
+func (s *InteractiveService) advanceFlowThroughFreezeChain(ctx context.Context, parentRunID string, freezeNode, writerNode agentpack.FlowNode, rec changecontract.FrozenContractRecord, path []agentpack.FlowNode) bool {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	var workspace string
+	if rs != nil {
+		workspace = rs.workspaceCwd
+	}
+	s.mu.Unlock()
+
+	escalate := func(nodeID, reason string) bool {
+		s.flowDiagLog(parentRunID, "flow_contract_freeze_chain_failed", reason, "node_id", nodeID)
+		if s.isFlowEngineDriven(parentRunID) {
+			s.setFlowStepAwaitingUser(ctx, parentRunID)
+		}
+		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
+			Status:  "escalate",
+			Summary: "Contract-freeze chain blocked: " + reason,
+		}); err != nil {
+			log.Printf("[flow-executor] contract-freeze-chain escalate failed: %v", err)
+		}
+		return true
+	}
+
+	var pkg *FlowContextPackage
+	buildAndStorePackage := func(nodeID string, sourceIDs []string) error {
+		hints := FlowContextHints{
+			WorkflowRunID:      parentRunID,
+			PlanStepRunID:      nodeID,
+			UserPrompt:         rec.Intent,
+			SourceDocID:        rec.SourceDocID,
+			ResolvedFeatureKey: rec.FeatureKey,
+		}
+		if workspace != "" {
+			hints.ExplicitSourcePaths = rec.DeclaredPaths
+			hints.ChangedPaths = uncommittedChangedPaths(workspace)
+		}
+		built, err := BuildFlowContextPackageWithSources(ctx, workspace, hints, sourceIDs)
+		if err != nil {
+			return err
+		}
+		// Always store/emit this contract-scoped package, even when an
+		// earlier plan-stage package already exists — it is the authoritative
+		// one for this frozen contract (seeded with rec.DeclaredPaths), not a
+		// fallback to skip if something else got there first.
+		pkg = &built
+		s.mu.Lock()
+		if rs != nil {
+			rs.planContextPackage = pkg
+			s.emitLocked(rs, ProviderEvent{
+				Type:               EventFlowContextPackage,
+				WorkflowRunID:      parentRunID,
+				WorkflowStepRunID:  nodeID,
+				FlowContextPackage: pkg,
+			})
+		}
+		s.mu.Unlock()
+		return nil
+	}
+
+	for _, mid := range path {
+		if err := buildAndStorePackage(mid.ID, mid.ContextSources); err != nil {
+			return escalate(mid.ID, "context production failed: "+err.Error())
+		}
+		if s.isFlowEngineDriven(parentRunID) {
+			s.setFlowStepStatus(ctx, parentRunID, mid.ID, StepStatusDone)
+		}
+	}
+
+	// CP-55 P-8 fix: a flow whose freeze node edges directly to its writer
+	// (review-loop's own shape — no intermediate context.produce hop in path
+	// at all) must still give the writer a rendered FlowContextPackage, not
+	// just rec.Intent's bare sentence. Build one scoped to the writer's own
+	// declared context sources when the loop above never ran.
+	if pkg == nil {
+		if err := buildAndStorePackage(writerNode.ID, writerNode.ContextSources); err != nil {
+			return escalate(writerNode.ID, "context production failed: "+err.Error())
+		}
+	}
+
+	// Re-check right before spawning: the chain above can take real time
+	// (context production runs the full source registry) — a Stop or a loop
+	// settle landing during it must not still result in a spawn.
+	if s.flowRunTerminalLocked(parentRunID) || !s.loopIsAdvancing(parentRunID) {
+		s.flowDiagLog(parentRunID, "flow_contract_freeze_chain_aborted", "run settled during chain advance; not spawning writer", "node_id", writerNode.ID)
+		return true
+	}
+
+	agentName := flowNodeAgentName(writerNode)
+	if agentName == "" {
+		return escalate(writerNode.ID, "writer node has no resolvable agent")
+	}
+
+	writerPrompt := rec.Intent
+	if pkg != nil {
+		writerPrompt = renderFlowContextPromptWithSecret(ctx, *pkg, rec.Intent, s.markerSecret)
+	}
+	prompt := composeFlowNodeAgentPrompt(workspace, writerPrompt, writerNode)
+	prompt = appendChangeContractIfAnyWithSecret(workspace, parentRunID, prompt, s.markerSecret)
+	agentDef, _ := resolvePackAgentDefinition(agentName)
+	if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
+		Agent:            agentName,
+		Prompt:           prompt,
+		Wait:             false,
+		Label:            writerNode.ID,
+		AgentDefOverride: agentDef,
+	}); err != nil {
+		log.Printf("[flow-executor] contract-freeze-chain: spawn writer node %q (agent %q) failed: %v", writerNode.ID, agentName, err)
+		return escalate(writerNode.ID, "failed to spawn writer: "+err.Error())
+	}
+	if s.isFlowEngineDriven(parentRunID) {
+		s.setFlowStepStatus(ctx, parentRunID, writerNode.ID, StepStatusRunning)
+	}
+	s.flowDiagLog(parentRunID, "flow_contract_freeze_writer_spawned", "spawned frozen-contract writer",
+		"node_id", writerNode.ID, "agent_name", agentName, "contract_id", rec.ContractID,
+	)
+	return true
 }
