@@ -5,7 +5,7 @@
 - Document ID: `Task-259`
 - Title: `source.dependence Context Source (GitNexus Blast-Radius From Change Contract)`
 - Phase: `task`
-- Status: `draft`
+- Status: `blocked` (2026-07-27 — chặn bởi [BUG-323](../../09-BugFix/todo/BUG-323-GitNexus-Structure-Provider-Always-Returns-Empty.md): `structure.gitNexusProvider.Dependents` luôn trả rỗng (sai flag `--json`, thiếu `--repo`, sai schema JSON), **và** CLI chỉ nhận symbol chứ không nhận file-path — khiến T-3 tier-1 (`DeclaredSymbols` không bao giờ được populate) lẫn tier-2 (file path) đều bất khả thi ⇒ v1 sẽ trả rỗng 100%. Đúng điều kiện dừng đã ghi sẵn ở CP-43-CATALOG §6 B12. Không mở lại cho tới khi BUG-323 đóng + chốt `Q-2` (nguồn symbol).)
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-17`
