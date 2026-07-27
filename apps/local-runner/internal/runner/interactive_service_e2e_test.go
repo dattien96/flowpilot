@@ -147,6 +147,9 @@ func TestE2EReviewLoopApprovedPathPersistsTerminalLoopStateAfterHubTurnFinishes(
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if autoAnswerPreflightContractPlanTurn(req, b) {
+					return nil
+				}
 				if strings.Contains(req.Prompt, "Agent results ready") {
 					if _, err := b.SubmitFlowControl(FlowControlInput{Status: "done", Summary: "all reviewers approved"}); err != nil {
 						return err
@@ -215,6 +218,9 @@ func TestE2EReviewLoopMultiRoundChangesThenApprovedCompletes(t *testing.T) {
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if autoAnswerPreflightContractPlanTurn(req, b) {
+					return nil
+				}
 				// The hub synthesis turn is the only one whose prompt carries the
 				// auto-reinvoke text ("Agent results ready"); coder/reviewer turns do not.
 				if strings.Contains(req.Prompt, "Agent results ready") {
@@ -288,6 +294,9 @@ func TestE2EReviewLoopMultiRoundSlowSynthesisStillCompletes(t *testing.T) {
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if autoAnswerPreflightContractPlanTurn(req, b) {
+					return nil
+				}
 				if strings.Contains(req.Prompt, "Agent results ready") {
 					synthMu.Lock()
 					synthCalls++
@@ -359,6 +368,9 @@ func TestE2EReviewLoopBlockedByProseOnlyRoundStopsAdvancing(t *testing.T) {
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if autoAnswerPreflightContractPlanTurn(req, b) {
+					return nil
+				}
 				if strings.Contains(req.Prompt, "Agent results ready") {
 					mu.Lock()
 					synthCalls++

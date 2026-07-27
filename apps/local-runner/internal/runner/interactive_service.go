@@ -380,6 +380,16 @@ type interactiveRun struct {
 	// (Task-242 tier-3). Audit uses it as the aggregate-diff base so multi-child
 	// edits are visible, not only the hub's last turnStartGitHead.
 	flowStartGitHead string
+	// flowStartWorktreeFingerprint is the dirty-file content fingerprint
+	// captured once at startResolvedFlow, alongside flowStartGitHead (CP-55
+	// P-3). changedFilesSince(workspace, flowStartGitHead) reports every
+	// currently-uncommitted path regardless of baseSHA — it cannot by itself
+	// distinguish "the planner just touched this" from "this was already
+	// dirty before the flow started." runContractFreezeNode diffs a fresh
+	// fingerprint against this baseline (new path, or same path with a
+	// different hash, is a real mutation; same path/same hash is pre-existing
+	// dirt) instead of treating any nonempty diff as the planner's doing.
+	flowStartWorktreeFingerprint map[string]string
 	// gateCheckpointNotDurable (BUG-288 R17-P1): settle is set in RAM but all
 	// persist attempts failed — must not run gate pass / completion fan-out
 	// until a durable checkpoint succeeds.
@@ -728,25 +738,25 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 	// (Task-052); the per-turn deferred cleanup cannot run in that case. Best-effort.
 	sweepCodexImageAttachments(time.Hour, time.Now())
 	svc := &InteractiveService{
-		catalog:             catalog,
-		skillsCatalog:       newInteractiveCatalog(),
-		agentCatalog:        newAgentCatalog(),
-		agentOrchestrator:   newAgentOrchestrator(),
-		registry:            registry,
-		policy:              DefaultApprovalPolicyEngine(),
-		finalizer:           newFinalizer(),
-		workflowStore:       workflowStore,
-		orchestrator:        NewWorkflowOrchestrator(workflowStore),
-		runs:                map[string]*interactiveRun{},
-		approvals:           map[string]*approvalRecord{},
-		questions:           map[string]*questionRecord{},
-		activeAccountID:     "default",
-		approvalTTL:         10 * time.Minute,
-		questionTTL:         10 * time.Minute,
-		maxTurnAttempts:     3,
-		summaryTimers:       map[string]*time.Timer{},
-		markerSecret:        markerSec,
-		markerDir:           markerDir,
+		catalog:               catalog,
+		skillsCatalog:         newInteractiveCatalog(),
+		agentCatalog:          newAgentCatalog(),
+		agentOrchestrator:     newAgentOrchestrator(),
+		registry:              registry,
+		policy:                DefaultApprovalPolicyEngine(),
+		finalizer:             newFinalizer(),
+		workflowStore:         workflowStore,
+		orchestrator:          NewWorkflowOrchestrator(workflowStore),
+		runs:                  map[string]*interactiveRun{},
+		approvals:             map[string]*approvalRecord{},
+		questions:             map[string]*questionRecord{},
+		activeAccountID:       "default",
+		approvalTTL:           10 * time.Minute,
+		questionTTL:           10 * time.Minute,
+		maxTurnAttempts:       3,
+		summaryTimers:         map[string]*time.Timer{},
+		markerSecret:          markerSec,
+		markerDir:             markerDir,
 		dispatchLogSyncHash:   map[string]string{},
 		chatSessionIndexLocks: map[string]*sync.Mutex{},
 	}
@@ -890,7 +900,9 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 	// during this same Stop, or was never reached) keeps its older
 	// parentStopGenSeen and is correctly recognized as stale on reconstruct.
 	var newStopGen int64
+	var cwdForAbandonedCanonical string
 	if parent := s.runs[parentRunID]; parent != nil {
+		cwdForAbandonedCanonical = parent.workspaceCwd
 		parent.pendingRestartRunID = ""
 		parent.pendingRestartPrompt = ""
 		parent.pendingRestartGen = 0
@@ -989,6 +1001,21 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 		}
 	}
 	s.mu.Unlock()
+	// CP-55 P-5: this Flow (if any) never reached genuine terminal acceptance
+	// — abandon any Canonical Head updates its coder children staged, so
+	// nothing pending is left resolvable as "the latest version" after a
+	// Stop/Cancel. The real Canonical Head file is never touched here.
+	// Review finding I-3: a staging record is keyed by the coder's
+	// *immediate* parent run — for a sub-hub coding child that parent is the
+	// sub-hub, not this Stop's own parentRunID, so also abandon for every
+	// direct child collected above (persistChildIDs) or a nested coder's
+	// pending record would never be resolved by this Stop.
+	if strings.TrimSpace(cwdForAbandonedCanonical) != "" {
+		abandonPendingCanonicalHeadsForRun(cwdForAbandonedCanonical, parentRunID, "flow stopped", s.markerSecret)
+		for _, childID := range persistChildIDs {
+			abandonPendingCanonicalHeadsForRun(cwdForAbandonedCanonical, childID, "flow stopped", s.markerSecret)
+		}
+	}
 	// BUG-248: the snapshot below is built from AgentOrchestrator's own summary cache
 	// (upsertSummary), not from interactiveRun.status directly — the two are only kept
 	// in sync by emitLocked reacting to turn-progress events, which for a cancelled
@@ -1230,6 +1257,11 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 		// this below so join-then-done on the same turn still works.
 		rs.lastFlowControlTurnID = rs.currentTurnID
 	}
+	// CP-55 P-5 review finding I-2: capture workspaceCwd while s.mu is still
+	// held — rs is a shared *interactiveRun read again below (the "done"
+	// case) after this unlock, and workspaceCwd is a mutable field a
+	// concurrent resume/reconstruct can write.
+	flowControlWorkspaceCwd := rs.workspaceCwd
 	s.mu.Unlock()
 	// Task-240 T-4 / BUG-179: soft-defer done/continue while a registered cohort
 	// is still incomplete. Do not mutate loop or settle steps — the hub will be
@@ -1257,6 +1289,54 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 	}
 	switch status {
 	case "done":
+		// CP-55 P-5: finalize any Canonical Head updates staged by this Flow's
+		// coder children BEFORE settling the step timeline / publishing
+		// loop=done — a Flow's Canonical Head mutation is a terminal
+		// acceptance effect, not a coder-turn effect (spec §8.2: "do not fall
+		// back from failed terminal Canonical finalization to publishing
+		// done"). A finalization failure aborts this whole "done" transition;
+		// the loop status is never touched and the caller sees the error.
+		if s.isFlowEngineDriven(parentRunID) {
+			cwd := strings.TrimSpace(flowControlWorkspaceCwd)
+			if cwd != "" {
+				if err := finalizePendingCanonicalHeadsForRun(cwd, parentRunID, s.markerSecret); err != nil {
+					s.flowDiagLog(parentRunID, "flow_done_canonical_finalize_failed", "canonical head finalization failed; not publishing done",
+						"error", err.Error(),
+					)
+					// CP-55 P-5 review finding C-3: a finalize failure must not
+					// silently burn this turn's one-decision slot with no path
+					// forward for the hub to retry, and must not leave the loop
+					// stuck "running" with no operator-actionable surface — the
+					// same recurring hang failure mode this codebase has
+					// regressed on before (BUG-288 #9 / Task-242 T-9). Unstamp
+					// so a retried flow_control on this same turn is not
+					// wrongly rejected as a duplicate, then escalate exactly
+					// like every other fail-closed gate site (mirrors
+					// gate_hook.go's own commit-failure handling) so the
+					// operator sees an awaiting-user card instead of a wedge.
+					s.mu.Lock()
+					if r := s.runs[parentRunID]; r != nil && r.currentTurnID != "" && r.lastFlowControlTurnID == r.currentTurnID {
+						r.lastFlowControlTurnID = ""
+					}
+					s.mu.Unlock()
+					if _, escErr := s.applyFlowControl(parentRunID, FlowControlInput{
+						Status:  "escalate",
+						Summary: "flow done blocked: canonical head finalization failed: " + err.Error(),
+					}); escErr != nil {
+						log.Printf("[flow-control] escalate after canonical finalize failure: %v", escErr)
+					}
+					return FlowControlResult{}, fmt.Errorf("applyFlowControl: canonical head finalization failed, not publishing done: %w", err)
+				}
+			}
+			// Re-check terminal status after the (potentially slow) finalize
+			// I/O: a concurrent Stop must still win over a stale done attempt
+			// racing it — finalize itself is idempotent/safe to have already
+			// run, but this run must not go on to publish done afterward.
+			if snap := s.agentOrchestrator.graphSnapshot(parentRunID); snap.LoopState.Status == "stopped" {
+				s.flowDiagLog(parentRunID, "flow_done_rejected_stale", "loop went terminal (stopped) during canonical head finalization; not publishing done")
+				return FlowControlResult{Status: in.Status, Round: snap.LoopState.Round, Cap: effectiveCap(snap.LoopState), NextAction: "rejected_terminal"}, nil
+			}
+		}
 		// BUG-288 #13 / Task-240 I-2: settle step timeline BEFORE publishing
 		// loop=done so consumers never see terminal loop with steps still RUNNING.
 		if s.isFlowEngineDriven(parentRunID) {
@@ -4451,6 +4531,28 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		rs.status = RunStatusFailed
 		rs.agentStatus = string(RunStatusFailed)
 		s.agentOrchestrator.signalChild(rs.id, "", true, ev.Error, RunStatusFailed)
+		// CP-55 P-5: this run IS the Flow root/hub failing (a child's own
+		// failure is handled by the cohort/notify branch below and does not
+		// itself terminate the parent Flow) — the Flow never reached genuine
+		// terminal acceptance, so abandon any Canonical Head updates its
+		// coder children staged. Async + best-effort (abandonPendingCanonicalHeadsForRun
+		// already only logs on error) so file I/O never runs while s.mu is held.
+		if rs.parentRunID == "" && rs.flowEngineDriven {
+			if cwd := strings.TrimSpace(rs.workspaceCwd); cwd != "" {
+				failedRunID := rs.id
+				// Review finding I-3: also abandon for every direct child — a
+				// sub-hub coding child stages under its own (sub-hub) parent
+				// run ID, not this root's, so a root-only abandon would leave
+				// that nested pending record dangling forever.
+				childIDs := s.agentOrchestrator.listChildren(failedRunID)
+				go func() {
+					abandonPendingCanonicalHeadsForRun(cwd, failedRunID, "flow failed", s.markerSecret)
+					for _, childID := range childIDs {
+						abandonPendingCanonicalHeadsForRun(cwd, childID, "flow failed", s.markerSecret)
+					}
+				}()
+			}
+		}
 		if rs.parentRunID != "" {
 			if rs.flowCohortId != "" {
 				// V9-25: stall Skip already synthetic-appended; ignore late cancel fail.
@@ -5447,8 +5549,8 @@ func (s *InteractiveService) listAgentRunSummaries(parentRunID string) []AgentRu
 				// permanently stale "running" badge in the Agents panel with no way
 				// to ever tell it apart from one that's genuinely still executing.
 				out = append(out, AgentRunSummary{
-					RunID:       session.RunID,
-					AgentName:   session.AgentName,
+					RunID:     session.RunID,
+					AgentName: session.AgentName,
 					// BUG-320: preserve the persisted Label so matchFlowNodeForSession
 					// (interactive_resume.go) can match this child back to its exact
 					// flow node by id -- falling back to AgentName/Role risks an

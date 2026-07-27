@@ -350,6 +350,20 @@ func TestFlowCodingPromptSpawnWrappedDoesNotDuplicateHistory(t *testing.T) {
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				// Cannot use the shared autoAnswerPreflightContractPlanTurn
+				// helper here: its fixed "calc-core"/"fix rounding" draft
+				// would resolve the coder's context to a DIFFERENT feature
+				// than the one this fixture seeds ledger history under
+				// (fcpFixture / "agent-flow-engine"), and — since
+				// buildFlowContextPackage now sources the coder's own
+				// UserPrompt from the frozen contract's Intent, not the
+				// original prompt (CP-55 P-8) — would also strip the
+				// "agent-flow-engine" marker this test greps for out of the
+				// coder's turn-1 prompt entirely.
+				if strings.Contains(req.Prompt, preflightContractPlanTurnMarker) {
+					b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: `{"feature_key":"agent-flow-engine","intent":"agent-flow-engine: fix the thing","declared_paths":["src/app.go"]}`})
+					return nil
+				}
 				if strings.Contains(req.Prompt, "agent-flow-engine") {
 					captured = req.Prompt
 					close(captureDone)

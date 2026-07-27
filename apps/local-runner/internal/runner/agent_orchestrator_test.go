@@ -1170,11 +1170,16 @@ func TestReviewOutcomeIssuesRideInPayload(t *testing.T) {
 
 func TestReviewLoopFlowConfigValid(t *testing.T) {
 	nodes, edges, policy := ReviewLoopFlowConfig()
-	if len(nodes) != 4 {
-		t.Errorf("nodes = %d, want 4", len(nodes))
+	// CP-55 P-8: review-loop.yaml gained preflight_contract_plan and
+	// preflight_contract_freeze ahead of coder (now agent.code), so the
+	// real pack-backed config (reviewLoopFlowConfigFromPack, which this
+	// function prefers whenever the pack loads) is now 6 nodes / 9 edges,
+	// not the original 4/7.
+	if len(nodes) != 6 {
+		t.Errorf("nodes = %d, want 6", len(nodes))
 	}
-	if len(edges) != 7 {
-		t.Errorf("edges = %d, want 7", len(edges))
+	if len(edges) != 9 {
+		t.Errorf("edges = %d, want 9", len(edges))
 	}
 	if policy.Cap != 3 || policy.OnCap != "escalate" {
 		t.Errorf("policy = %+v, want Cap=3 OnCap=escalate", policy)

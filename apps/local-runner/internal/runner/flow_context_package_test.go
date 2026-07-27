@@ -80,6 +80,51 @@ func TestBuildFlowContextPackageVerifiedFeatureIncludesHistory(t *testing.T) {
 	}
 }
 
+// TestBuildFlowContextPackageResolvedFeatureKeyVerifiedOnlyWhenInCatalog is
+// the CP-55 P-8 Claude-agent review Important Finding 3 regression test:
+// hints.ResolvedFeatureKey (CP-55 P-8, bypassing NL resolution for a frozen
+// contract's own trusted feature_key) used to be marked ConfidenceVerified
+// unconditionally, with no cross-check against the feature catalog — a
+// planner LLM hallucinating or mis-selecting a feature_key that happens to
+// collide with a real, but wrong, existing feature would silently and
+// confidently route feature.history to the wrong feature's history. This
+// proves the fix: a ResolvedFeatureKey matching a real catalog entry stays
+// Verified (unchanged behavior); one that does NOT match any catalog entry
+// downgrades to ConfidenceLow instead (which — since feature.history's own
+// gate requires exactly ConfidenceVerified — means history for the WRONG
+// feature is never shown, closing the silent-mismatch gap).
+func TestBuildFlowContextPackageResolvedFeatureKeyVerifiedOnlyWhenInCatalog(t *testing.T) {
+	workspace, _ := fcpFixture(t) // seeds a catalog entry for "agent-flow-engine" only
+
+	known := fcpHints(workspace)
+	known.UserPrompt = ""
+	known.ResolvedFeatureKey = "agent-flow-engine"
+	pkg, err := BuildFlowContextPackage(workspace, known)
+	if err != nil {
+		t.Fatalf("BuildFlowContextPackage (known key): %v", err)
+	}
+	if pkg.FeatureConfidence != ConfidenceVerified {
+		t.Errorf("known catalog key: FeatureConfidence = %q, want verified", pkg.FeatureConfidence)
+	}
+
+	unknown := fcpHints(workspace)
+	unknown.UserPrompt = ""
+	unknown.ResolvedFeatureKey = "totally-unrelated-feature-not-in-catalog"
+	pkg2, err := BuildFlowContextPackage(workspace, unknown)
+	if err != nil {
+		t.Fatalf("BuildFlowContextPackage (unknown key): %v", err)
+	}
+	if pkg2.FeatureConfidence != ConfidenceLow {
+		t.Errorf("unknown catalog key: FeatureConfidence = %q, want low", pkg2.FeatureConfidence)
+	}
+	if pkg2.FeatureKey != "totally-unrelated-feature-not-in-catalog" {
+		t.Errorf("FeatureKey = %q, want the caller-supplied value preserved even at low confidence", pkg2.FeatureKey)
+	}
+	if strings.Contains(pkg2.HistoryBlock, "FlowNode") {
+		t.Errorf("an unverified feature key must not surface another feature's history: %q", pkg2.HistoryBlock)
+	}
+}
+
 // TestBuildFlowContextPackageIncludesChatSummaryWhenPresent verifies that a
 // chat-summary ledger entry appears in DiscussionBlock.
 func TestBuildFlowContextPackageIncludesChatSummaryWhenPresent(t *testing.T) {

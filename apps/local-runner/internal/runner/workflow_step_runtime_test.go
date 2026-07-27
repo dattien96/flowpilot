@@ -128,6 +128,9 @@ func TestWorkflowStepsRuntimeReflectsPerNodeModelOverride(t *testing.T) {
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if autoAnswerPreflightContractPlanTurn(req, b) {
+					return nil
+				}
 				finalMsg := "ok"
 				if strings.Contains(req.Prompt, "fix the crash") {
 					finalMsg = "Fixed the null pointer at handler.go:42."
