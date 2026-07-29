@@ -132,7 +132,7 @@ func TestBuildRetrievalLocusUsesDeclaredContractPaths(t *testing.T) {
 	ws := newLocusRepo(t)
 	saveContract(t, ws, "run-1", []string{"src/calc.go", "src/calc_test.go"})
 
-	locus := buildRetrievalLocus(ws, "run-1", "")
+	locus := buildRetrievalLocus(ws, "run-1", "", nil)
 
 	want := []string{"src/calc.go", "src/calc_test.go"}
 	if !reflect.DeepEqual(locus.Paths, want) {
@@ -151,7 +151,7 @@ func TestBuildRetrievalLocusDropsInferredDirectoryBuckets(t *testing.T) {
 	// The shape InferFromDiff writes for an undeclared turn.
 	saveContract(t, ws, "run-1", []string{"apps", "internal", "go.mod"})
 
-	locus := buildRetrievalLocus(ws, "run-1", "")
+	locus := buildRetrievalLocus(ws, "run-1", "", nil)
 
 	if !reflect.DeepEqual(locus.Paths, []string{"go.mod"}) {
 		t.Fatalf("only the concrete file should survive, got %v", locus.Paths)
@@ -168,7 +168,7 @@ func TestBuildRetrievalLocusDropsGlobsDocsAndFlags(t *testing.T) {
 		"src/keep.go",
 	})
 
-	locus := buildRetrievalLocus(ws, "run-1", "")
+	locus := buildRetrievalLocus(ws, "run-1", "", nil)
 
 	if !reflect.DeepEqual(locus.Paths, []string{"src/keep.go"}) {
 		t.Fatalf("expected only src/keep.go, got %v", locus.Paths)
@@ -182,7 +182,7 @@ func TestBuildRetrievalLocusMergesDiffAndPromptPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	locus := buildRetrievalLocus(ws, "", "please look at src/from_prompt.go too")
+	locus := buildRetrievalLocus(ws, "", "please look at src/from_prompt.go too", nil)
 
 	if !locusHasPath(locus.Paths, "seed.go") {
 		t.Errorf("uncommitted diff path missing: %v", locus.Paths)
@@ -200,7 +200,50 @@ func TestBuildRetrievalLocusDedupesAcrossSources(t *testing.T) {
 	}
 
 	// seed.go is named by the contract, by the diff, and by the prompt.
-	locus := buildRetrievalLocus(ws, "run-1", "fix seed.go now")
+	locus := buildRetrievalLocus(ws, "run-1", "fix seed.go now", nil)
+
+	count := 0
+	for _, p := range locus.Paths {
+		if p == "seed.go" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("seed.go should appear exactly once, got %d in %v", count, locus.Paths)
+	}
+}
+
+// TestBuildRetrievalLocusUsesExplicitPathsForFreshlyFrozenContract is the
+// regression test for CP-55 P-8's research finding: a Flow's FIRST coder
+// context build for a freshly frozen contract has no legacy Store record
+// (agent.code never calls prepareChangeContract), no uncommitted diff yet
+// (the coder hasn't run), and a UserPrompt that is the frozen intent
+// sentence, not necessarily a path — every other source in this function
+// would find nothing, silently degrading feature-history ranking to recency
+// alone at exactly the moment CP-55 P-8 needs it not to. explicitPaths (the
+// caller's already-resolved FrozenContractRecord.DeclaredPaths, passed as
+// hints.ExplicitSourcePaths in production) closes that gap.
+func TestBuildRetrievalLocusUsesExplicitPathsForFreshlyFrozenContract(t *testing.T) {
+	ws := newLocusRepo(t)
+	// No contract store, no uncommitted diff beyond the seed commit, no path
+	// in the prompt — every OTHER source is empty.
+	locus := buildRetrievalLocus(ws, "", "fix rounding in the calculator", []string{"src/calc.go", "src/calc_test.go"})
+
+	want := []string{"src/calc.go", "src/calc_test.go"}
+	if !reflect.DeepEqual(locus.Paths, want) {
+		t.Fatalf("Paths = %v, want %v", locus.Paths, want)
+	}
+	if locus.IsEmpty() {
+		t.Fatal("a locus with explicit paths must not be empty")
+	}
+}
+
+func TestBuildRetrievalLocusDedupesExplicitPathsAgainstOtherSources(t *testing.T) {
+	ws := newLocusRepo(t)
+	saveContract(t, ws, "run-1", []string{"seed.go"})
+
+	// seed.go is named by BOTH the explicit paths and the legacy contract.
+	locus := buildRetrievalLocus(ws, "run-1", "", []string{"seed.go"})
 
 	count := 0
 	for _, p := range locus.Paths {
@@ -217,8 +260,8 @@ func TestBuildRetrievalLocusIsSortedAndDeterministic(t *testing.T) {
 	ws := newLocusRepo(t)
 	saveContract(t, ws, "run-1", []string{"z/z.go", "a/a.go", "m/m.go"})
 
-	first := buildRetrievalLocus(ws, "run-1", "")
-	second := buildRetrievalLocus(ws, "run-1", "")
+	first := buildRetrievalLocus(ws, "run-1", "", nil)
+	second := buildRetrievalLocus(ws, "run-1", "", nil)
 
 	if !reflect.DeepEqual(first.Paths, second.Paths) {
 		t.Fatalf("two runs disagreed: %v vs %v", first.Paths, second.Paths)
@@ -234,7 +277,7 @@ func TestBuildRetrievalLocusEmptyRunIDSkipsContract(t *testing.T) {
 	saveContract(t, ws, "run-1", []string{"src/should_not_appear.go"})
 
 	// Chat-mode per-turn injection has no workflow run id (CP-54 Q-1).
-	locus := buildRetrievalLocus(ws, "", "")
+	locus := buildRetrievalLocus(ws, "", "", nil)
 
 	if locusHasPath(locus.Paths, "src/should_not_appear.go") {
 		t.Fatalf("contract must be skipped without a run id, got %v", locus.Paths)
@@ -242,7 +285,7 @@ func TestBuildRetrievalLocusEmptyRunIDSkipsContract(t *testing.T) {
 }
 
 func TestBuildRetrievalLocusEmptyWhenNothingToAnchorOn(t *testing.T) {
-	locus := buildRetrievalLocus(t.TempDir(), "run-1", "")
+	locus := buildRetrievalLocus(t.TempDir(), "run-1", "", nil)
 
 	if !locus.IsEmpty() {
 		t.Fatalf("no contract, no git, no prompt must yield an empty locus, got %v", locus.Paths)
@@ -251,7 +294,7 @@ func TestBuildRetrievalLocusEmptyWhenNothingToAnchorOn(t *testing.T) {
 
 func TestBuildRetrievalLocusNonFatalOutsideGitRepo(t *testing.T) {
 	// Not a git repo: the prompt is still a usable anchor and nothing panics.
-	locus := buildRetrievalLocus(t.TempDir(), "", "check src/only.go")
+	locus := buildRetrievalLocus(t.TempDir(), "", "check src/only.go", nil)
 
 	if !reflect.DeepEqual(locus.Paths, []string{"src/only.go"}) {
 		t.Fatalf("Paths = %v, want [src/only.go]", locus.Paths)
@@ -259,8 +302,30 @@ func TestBuildRetrievalLocusNonFatalOutsideGitRepo(t *testing.T) {
 }
 
 func TestBuildRetrievalLocusBlankWorkspaceIsSafe(t *testing.T) {
-	if locus := buildRetrievalLocus("", "run-1", ""); !locus.IsEmpty() {
+	if locus := buildRetrievalLocus("", "run-1", "", nil); !locus.IsEmpty() {
 		t.Fatalf("blank workspace must yield an empty locus, got %v", locus.Paths)
+	}
+}
+
+// --- CP-55 P-2: shared path normalization ------------------------------------
+
+func TestRetrievalLocusUsesSharedPathNormalization(t *testing.T) {
+	// isConcreteCodeTarget must agree with changecontract.IsConcreteCodeTarget
+	// on every case that predicate is defined for — it is now a thin wrapper
+	// around it, not a second copy of the same rule.
+	cases := []string{
+		"apps/local-runner/internal/runner/foo.go",
+		"apps", "internal", "",
+		"internal/*.go",
+		"requirements/08-Task/todo/Task-262-Shared-Retrieval-Locus-Builder.md",
+		"--repo=evil.go",
+	}
+	for _, p := range cases {
+		got := isConcreteCodeTarget(p)
+		want := changecontract.IsConcreteCodeTarget(p)
+		if got != want {
+			t.Errorf("isConcreteCodeTarget(%q) = %v, changecontract.IsConcreteCodeTarget(%q) = %v — must agree", p, got, p, want)
+		}
 	}
 }
 

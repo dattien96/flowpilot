@@ -20,11 +20,8 @@ type RetrievalLocus struct {
 	// the dilution this is meant to remove.
 	Paths []string
 
-	// Symbols is the symbol-level anchor. It is empty in practice today:
-	// nothing populates Contract.DeclaredSymbols — the declaration parser reads
-	// only feature/intent/files, and inference records paths only — so this
-	// stays nil until BUG-323 Q-2 settles where symbols would come from. Kept
-	// so the scorer and Task-259 can grow into it without a type change.
+	// Symbols are populated from contract DeclaredSymbols plus basename-derived
+	// targets from concrete locus paths (GitNexusImpactTargets / Task-259).
 	Symbols []string
 
 	// RunID lets chat-summary ranking prefer entries from the same run, which
