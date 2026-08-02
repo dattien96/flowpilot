@@ -5,11 +5,11 @@
 - Document ID: `BUG-323`
 - Title: `gitNexusProvider.Dependents chạy "npx gitnexus impact <target> --json" — nhưng CLI thật không có flag --json, bắt buộc --repo khi máy index nhiều repo, trả schema JSON khác hoàn toàn, và chỉ resolve symbol chứ không nhận file path; bốn lỗi xếp chồng khiến MỌI truy vấn blast-radius trả rỗng trong im lặng`
 - Phase: `bugfix`
-- Status: `todo`
+- Status: `done` (2026-08-11 — F-1/F-2/F-3/F-5 implemented; see [CA-433](../../../change-audit/CA-433-gitnexus-structure-provider-dependents-fix.md))
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-27`
-- Last Updated: `2026-07-27`
+- Last Updated: `2026-08-11`
 - Feature Keys: `context-regression-engine`
 - Parent Documents: [CP-35: Context And Regression Engine Rollout](../../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md) (§4.3 — nơi module `structure` ra đời)
 - Child Documents: `none`
@@ -168,9 +168,9 @@ Trớ trêu: [CP-43-CATALOG §5](../../07-Coding-Plan/inprogress/CP-43-Context-S
 
 ## 6. Definition of Done
 
-- [ ] `Dependents` trả blast-radius thật cho một symbol có thật (verify bằng cùng lệnh §1 L-4).
-- [ ] Truy vấn hỏng (target không tồn tại / CLI lỗi / GitNexus vắng) **phân biệt được** với "0 dependents"; không bao giờ chặn turn.
-- [ ] Test cũ `structure` xanh **nguyên trạng, không sửa dòng nào**.
-- [ ] Test mới additive phủ `F-5`.
-- [ ] `HighSeverity` của Task-185 được đánh giá lại: hoặc hoạt động thật, hoặc ghi waiver mới thay cho waiver CA-353 đã lỗi thời.
-- [ ] CA note ghi lại, tham chiếu BUG này.
+- [x] `Dependents` trả blast-radius thật cho một symbol có thật (verify bằng cùng lệnh §1 L-4). Smoke: `TestGitNexusDependentsSmokeScopeDiff`, manual `ScopeDiff --repo flowpilot` → `impactedCount: 4`.
+- [x] Truy vấn hỏng (target không tồn tại / CLI lỗi / GitNexus vắng) **phân biệt được** với "0 dependents"; không bao giờ chặn turn. Missing target → `Dependents` error; `HighSeverity` skips errors non-fatally (unchanged).
+- [x] Test cũ `structure` xanh **nguyên trạng, không sửa dòng nào**.
+- [x] Test mới additive phủ `F-5` (`gitnexus_bug323_test.go`).
+- [ ] `HighSeverity` của Task-185 được đánh giá lại: **partial — provider fixed for symbols; `HighSeverity` still passes file paths (L-4), so `r-scope` block on file-only drift remains unwired until BUG-323 Q-2 / symbol input follow-up.** Waiver update tracked in CA-433, not CA-353 restore.
+- [x] CA note ghi lại, tham chiếu BUG này ([CA-433](../../../change-audit/CA-433-gitnexus-structure-provider-dependents-fix.md)).
