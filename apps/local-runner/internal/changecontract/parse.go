@@ -11,15 +11,16 @@ import (
 var declarationMarker = regexp.MustCompile(`(?i)^\s*\[change contract\]\s*$`)
 
 var (
-	featureLineRe = regexp.MustCompile(`(?i)^\s*feature\s*:\s*(.+?)\s*$`)
-	intentLineRe  = regexp.MustCompile(`(?i)^\s*intent\s*:\s*(.+?)\s*$`)
-	filesLineRe   = regexp.MustCompile(`(?i)^\s*files\s*:\s*(.+?)\s*$`)
+	featureLineRe  = regexp.MustCompile(`(?i)^\s*feature\s*:\s*(.+?)\s*$`)
+	intentLineRe   = regexp.MustCompile(`(?i)^\s*intent\s*:\s*(.+?)\s*$`)
+	filesLineRe    = regexp.MustCompile(`(?i)^\s*files\s*:\s*(.+?)\s*$`)
+	symbolsLineRe  = regexp.MustCompile(`(?i)^\s*symbols\s*:\s*(.+?)\s*$`)
 )
 
 // ParseDeclaration extracts a Change Contract declaration block from text
 // (an assistant turn's message). The block is a `[Change Contract]` marker
 // line (optionally inside a ```change-contract fenced block) followed by
-// `feature:`/`intent:`/`files:` lines in any order; the block ends at the
+// `feature:`/`intent:`/`files:`/`symbols:` lines in any order; the block ends at the
 // first blank line, closing code fence, or end of text.
 //
 // Returns ok=false (not an error) when no marker is present. A present block
@@ -55,6 +56,10 @@ func ParseDeclaration(text string) (Contract, bool) {
 		}
 		if m := filesLineRe.FindStringSubmatch(line); m != nil {
 			c.DeclaredPaths = splitAndTrim(m[1])
+			continue
+		}
+		if m := symbolsLineRe.FindStringSubmatch(line); m != nil {
+			c.DeclaredSymbols = splitAndTrim(m[1])
 			continue
 		}
 		// Unrecognized line inside the block (e.g. a stray fence opener) —
