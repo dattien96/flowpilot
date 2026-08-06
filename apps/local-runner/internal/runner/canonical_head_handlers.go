@@ -3,11 +3,15 @@ package runner
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"flowpilot-runner/internal/changecontract"
 	"flowpilot-runner/internal/changeledger"
 	"flowpilot-runner/internal/featurecatalog"
+	"flowpilot-runner/internal/flowgate"
 )
 
 // toCanonicalHeadResponse maps a loaded/updated CanonicalHead to the wire shape.
@@ -82,6 +86,15 @@ type contractResponse struct {
 	DeclaredSymbols []string `json:"declared_symbols"`
 	Confidence      string   `json:"confidence"`
 	Found           bool     `json:"found"`
+	// ScopeDiff fields (Task-188 T-5): live git diff vs declared scope.
+	TouchedPaths    []string `json:"touched_paths,omitempty"`
+	InScopePaths    []string `json:"in_scope_paths,omitempty"`
+	OutOfScopePaths []string `json:"out_of_scope_paths,omitempty"`
+	ScopeDiffNote   string   `json:"scope_diff_note,omitempty"`
+}
+
+type featureListResponse struct {
+	FeatureKeys []string `json:"feature_keys"`
 }
 
 // handleGetStepContract handles
@@ -108,7 +121,7 @@ func (s *InteractiveService) handleGetStepContract(w http.ResponseWriter, r *htt
 		return
 	}
 	c, found := store.Get(runID, stepID)
-	writeInteractiveJSON(w, http.StatusOK, contractResponse{
+	resp := contractResponse{
 		RunID:           runID,
 		StepID:          stepID,
 		FeatureKey:      c.FeatureKey,
@@ -117,7 +130,101 @@ func (s *InteractiveService) handleGetStepContract(w http.ResponseWriter, r *htt
 		DeclaredSymbols: c.DeclaredSymbols,
 		Confidence:      c.Confidence,
 		Found:           found,
-	})
+	}
+	if found && len(c.DeclaredPaths) > 0 {
+		if diff, err := flowgate.ObserveGitDiff(rs.workspaceCwd); err == nil {
+			touched, inScope, outScope := computeContractScopeView(c, diff)
+			resp.TouchedPaths = touched
+			resp.InScopePaths = inScope
+			resp.OutOfScopePaths = outScope
+			resp.ScopeDiffNote = "Computed from current git diff in the run workspace (live snapshot)."
+		} else {
+			resp.ScopeDiffNote = "Git diff unavailable: " + err.Error()
+		}
+	}
+	writeInteractiveJSON(w, http.StatusOK, resp)
+}
+
+func computeContractScopeView(c changecontract.Contract, diff []flowgate.ChangedFile) (touched, inScope, outOfScope []string) {
+	outOfScope, _ = changecontract.ScopeDiff(c, diff, nil)
+	outSet := make(map[string]struct{}, len(outOfScope))
+	for _, p := range outOfScope {
+		outSet[p] = struct{}{}
+	}
+	seen := make(map[string]struct{})
+	for _, f := range diff {
+		p := strings.TrimSpace(f.Path)
+		if p == "" || flowgate.IsDocOrAuditFile(p) {
+			continue
+		}
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		touched = append(touched, p)
+		if _, oos := outSet[p]; oos {
+			continue
+		}
+		inScope = append(inScope, p)
+	}
+	sort.Strings(touched)
+	sort.Strings(inScope)
+	sort.Strings(outOfScope)
+	return touched, inScope, outOfScope
+}
+
+// handleListProjectFeatures handles
+// GET /client/projects/{projectId}/features?workingDirectory=...
+func (s *InteractiveService) handleListProjectFeatures(w http.ResponseWriter, r *http.Request) {
+	workingDirectory, apiErr := s.resolveEngineWorkingDirectory(r.URL.Query().Get("workingDirectory"))
+	if apiErr != nil {
+		writeInteractiveError(w, apiErr)
+		return
+	}
+	keys, err := listFeatureKeysForWorkspace(workingDirectory)
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusInternalServerError, "feature_list_failed", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, featureListResponse{FeatureKeys: keys})
+}
+
+func listFeatureKeysForWorkspace(workspace string) ([]string, error) {
+	seen := make(map[string]struct{})
+	add := func(k string) {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			return
+		}
+		seen[k] = struct{}{}
+	}
+	dotFP := filepath.Join(workspace, ".flowpilot")
+	if catalog, err := featurecatalog.LoadCatalog(dotFP); err == nil {
+		for _, f := range catalog.All() {
+			add(f.Key)
+		}
+	}
+	if ledger, err := changeledger.New(dotFP); err == nil {
+		for _, k := range ledger.ListFeatures() {
+			add(k)
+		}
+	}
+	canonicalDir := filepath.Join(dotFP, "canonical")
+	entries, err := os.ReadDir(canonicalDir)
+	if err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue
+			}
+			add(strings.TrimSuffix(e.Name(), ".json"))
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 type rebaselineCanonicalHeadRequest struct {
