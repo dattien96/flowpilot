@@ -5,12 +5,12 @@
 - Document ID: `Task-188`
 - Title: `Canonical-Head Packing And Admin Visibility`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `done` (2026-08-11 — code complete per [CA-435](../../change-audit/CA-435-cp43-p5-pack-budget-and-admin-scope-diff.md); manual B19/B20 = tick in [CP-43-Test-Steps](../../07-Coding-Plan/inprogress/CP-43-Test-Steps.md))
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-03`
-- Last Updated: `2026-07-13`
-- Parent Documents: [CP-43: Change Contract And Canonical Intent Signature](../../07-Coding-Plan/todo/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (P-5), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (AC-3, AC-8, AC-15)
+- Last Updated: `2026-08-11`
+- Parent Documents: [CP-43: Change Contract And Canonical Intent Signature](../../07-Coding-Plan/inprogress/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (P-5), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (AC-3, AC-8, AC-15)
 - Child Documents: `None`
 - Related Documents: [Task-186: Canonical Head And Intent Signature](./Task-186-Canonical-Head-And-Intent-Signature.md), [Task-187: Superseding Decision Records And Retire](./Task-187-Superseding-Decision-Records-And-Retire.md), [Task-097: Feature Catalog And Resolver](../../08-Task/done/Task-097-Feature-Catalog-And-Resolver.md), [Task-103: Engine Local Store And Drive Sync](../../08-Task/done/Task-103-Engine-Local-Store-And-Drive-Sync.md)
 - Replaces: `None`
@@ -96,7 +96,7 @@ Task-186/187 produce the Head + decisions, but they only help if the AI reads th
 
 ## 8. Completion Notes
 
-- result: **partially implemented — NOT done (2026-07-17 re-audit).** Head-first packing (T-1/T-3) and contextsync (T-4) are fully done and tested. The desktop panel (T-5) is a minimal, honest MVP (manual lookup, not a full feature browser or diff view) inside `apps/desktop-flowpilot`'s existing Projects settings — after an initial (reverted) detour into `apps/admin-web`, which is not the active UI. Packer budget/drop-logging (T-2) and live Claude/Codex manual verification are not done. Kept at `in_progress`.
-- blocking for done: T-2 budget/drop-log; T-5 beyond MVP (or waiver); live Claude/Codex Head-first verification (or documented waiver).
-- follow-ups: budget-aware packer integration so raw history can be dropped/summarized under pressure with a logged reason; a `list features for project` endpoint + panel dropdown (replacing the manual feature-key text input); expose `changecontract.ScopeDiff` over HTTP so the panel can render a true in/out-of-scope diff instead of just declared paths; live manual E2E confirming both Claude and Codex prompts lead with the Head block; Task-187's follow-ups (retire-intent detection, r-attach-spec/r-retire approval-confirmation wiring) remain open across all three tasks.
+- result: **done (code, 2026-08-11).** T-1/T-3/T-4 done earlier; T-2 budget-drop on render path ([CA-435](../../change-audit/CA-435-cp43-p5-pack-budget-and-admin-scope-diff.md)); T-5 ScopeDiff API + feature list + panel scope view. Head via `canonical.head` source (Task-244), not prepend in `feature.history`.
+- blocking for done: none (code). Manual B19/B20 tracked in CP-43-Test-Steps only.
+- follow-ups: full CP-10 token packer (v1 uses char budget); live Claude/Codex prompt verify when operator runs B19/B20.
 - upstream docs updated: none
