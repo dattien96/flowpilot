@@ -329,6 +329,16 @@ type interactiveRun struct {
 	// without calling submit_review_outcome (CA-226), instead of an internal
 	// diagnostic sentence. Overwritten on each new cohort join.
 	lastCohortNote string
+	// activeFlowAcceptanceNodes mirrors the resolved flow's acceptance_nodes
+	// (CP-55 / CP-53 P-2). When it includes "synthesis", hub approved→done
+	// requires reviewer machine verdicts recorded via submit_review_outcome.
+	activeFlowAcceptanceNodes []string
+	// pendingReviewVerdictByLabel buffers reviewer submit_review_outcome calls
+	// until the cohort member's turn completes and appendCohortResult runs.
+	pendingReviewVerdictByLabel map[string]string
+	// lastReviewCohortVerdicts is a snapshot taken at the most recent review
+	// cohort join (label → approved|changes_requested|blocked).
+	lastReviewCohortVerdicts map[string]string
 
 	status          RunStatus
 	createdAt       string
@@ -1289,6 +1299,36 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 	}
 	switch status {
 	case "done":
+		// CP-53 P-2 / Task-274: on flows with synthesis acceptance, hub
+		// approved→done requires machine reviewer verdicts — not a self-grade.
+		if in.viaReviewOutcome && in.reviewOutcomeStatus == "approved" {
+			s.mu.Lock()
+			requireVerdict := false
+			if rs := s.runs[parentRunID]; rs != nil && flowRequiresSynthesisMachineVerdict(rs) {
+				requireVerdict = true
+			}
+			s.mu.Unlock()
+			if requireVerdict {
+				if err := s.synthesisDoneVerdictError(parentRunID); err != nil {
+					s.flowDiagLog(parentRunID, "flow_control_rejected_missing_review_verdict",
+						"synthesis done blocked: reviewer machine verdict missing or not approved",
+						"error", err.Error(),
+					)
+					s.mu.Lock()
+					if r := s.runs[parentRunID]; r != nil && r.currentTurnID != "" && r.lastFlowControlTurnID == r.currentTurnID {
+						r.lastFlowControlTurnID = ""
+					}
+					s.mu.Unlock()
+					if _, escErr := s.applyFlowControl(parentRunID, FlowControlInput{
+						Status:  "escalate",
+						Summary: err.Error(),
+					}); escErr != nil {
+						log.Printf("[flow-control] escalate after missing review verdict: %v", escErr)
+					}
+					return FlowControlResult{}, err
+				}
+			}
+		}
 		// CP-55 P-5: finalize any Canonical Head updates staged by this Flow's
 		// coder children BEFORE settling the step timeline / publishing
 		// loop=done — a Flow's Canonical Head mutation is a terminal
@@ -4210,11 +4250,17 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 		go s.maybeScheduleHubStallCheck(rs.parentRunID)
 	}
 	if rs.flowCohortId != "" {
+		machineVerdict := ""
+		if parent := s.runs[rs.parentRunID]; parent != nil && parent.pendingReviewVerdictByLabel != nil {
+			machineVerdict = parent.pendingReviewVerdictByLabel[rs.label]
+			delete(parent.pendingReviewVerdictByLabel, rs.label)
+		}
 		s.agentOrchestrator.appendCohortResult(rs.parentRunID, rs.flowCohortId, cohortEntry{
-			Label:        rs.label,
-			Provider:     string(rs.providerKey),
-			FinalMessage: truncateDisplayField(finalMsg, 1500),
-			Status:       "completed",
+			Label:          rs.label,
+			Provider:       string(rs.providerKey),
+			FinalMessage:   truncateDisplayField(finalMsg, 1500),
+			Status:         "completed",
+			MachineVerdict: machineVerdict,
 		})
 		s.flowDiagLog(rs.parentRunID, "cohort_member_completed", "cohort member completed and buffered",
 			"child_run_id", rs.id,
@@ -4235,6 +4281,7 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 		}
 		if s.agentOrchestrator.cohortComplete(rs.parentRunID, rs.flowCohortId) {
 			entries := s.agentOrchestrator.drainCohort(rs.parentRunID, rs.flowCohortId)
+			s.snapshotReviewCohortVerdicts(rs.parentRunID, entries)
 			note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)
 			s.flowDiagLog(rs.parentRunID, "cohort_join_complete", "cohort barrier completed and note built",
 				"cohort_id", rs.flowCohortId,
@@ -4999,6 +5046,32 @@ func (b *turnBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
 // "") and the hub itself are unaffected.
 func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, error) {
 	if b.rs.flowCohortId != "" {
+		targetParentID := b.rs.parentRunID
+		if targetParentID == "" {
+			return FlowControlResult{}, fmt.Errorf(
+				"this is a cohort review step, not the hub: do not call the flow control tool here. " +
+					"Report your findings (approve or request changes, with specifics) in your final message; " +
+					"the hub will synthesize the full cohort and finalize the flow after every reviewer has finished")
+		}
+		b.svc.mu.Lock()
+		parent := b.svc.runs[targetParentID]
+		requireVerdict := parent != nil && flowRequiresSynthesisMachineVerdict(parent)
+		b.svc.mu.Unlock()
+		if requireVerdict {
+			if !in.viaReviewOutcome {
+				return FlowControlResult{}, fmt.Errorf(
+					"reviewer cohort member: call submit_review_outcome with status=approved|changes_requested|blocked to record a machine verdict")
+			}
+			label := strings.TrimSpace(b.rs.label)
+			if label == "" {
+				label = strings.TrimSpace(b.rs.agentName)
+			}
+			b.svc.recordReviewCohortMemberVerdict(targetParentID, label, in.reviewOutcomeStatus)
+			return FlowControlResult{
+				Status:     in.reviewOutcomeStatus,
+				NextAction: "review_verdict_recorded",
+			}, nil
+		}
 		return FlowControlResult{}, fmt.Errorf(
 			"this is a cohort review step, not the hub: do not call the flow control tool here. " +
 				"Report your findings (approve or request changes, with specifics) in your final message; " +
@@ -5841,6 +5914,13 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	stAtTurnStart := s.agentOrchestrator.loopStateFor(rs.id).Status
 	loopAlreadySealedAtTurnStart := stAtTurnStart == "done" || stAtTurnStart == "stopped"
 	offerReviewOutcomeTool := rs.autoOrchestrate && rs.parentRunID == "" && rs.turnCount > 1 && !loopAlreadySealedAtTurnStart
+	// CP-53 P-2: reviewer cohort members on synthesis-acceptance flows record
+	// machine verdicts via submit_review_outcome (record-only — no flow advance).
+	if !offerReviewOutcomeTool && rs.flowCohortId != "" && rs.parentRunID != "" {
+		if parent := s.runs[rs.parentRunID]; parent != nil && flowRequiresSynthesisMachineVerdict(parent) {
+			offerReviewOutcomeTool = true
+		}
+	}
 	providerPrompt = prependModePrefix(providerPrompt, rs.turnCount, rs.changeType, rs.sourceDocID)
 	// Persist the per-turn YOLO posture as the run's current default (BUG-129). The UI
 	// toggle is sticky, so an explicit YoloMode this turn must update rs.yolo; otherwise a

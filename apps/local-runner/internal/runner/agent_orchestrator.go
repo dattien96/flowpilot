@@ -35,6 +35,9 @@ type cohortEntry struct {
 	FinalMessage string
 	Status       string // "completed" | "failed" | "cancelled" (Task-241)
 	Err          string
+	// MachineVerdict is the domain status from submit_review_outcome when the
+	// reviewer recorded a machine-checkable verdict (CP-53 P-2 / Task-274).
+	MachineVerdict string
 }
 
 type agentCompletion struct {
@@ -572,6 +575,10 @@ type FlowControlInput struct {
 	Status  string         `json:"status"` // "continue" | "done" | "escalate"
 	Summary string         `json:"summary,omitempty"`
 	Payload map[string]any `json:"payload,omitempty"`
+	// viaReviewOutcome marks inputs mapped from submit_review_outcome (not raw
+	// flow_control status). Used by CP-53 P-2 to gate synthesis→done.
+	viaReviewOutcome      bool
+	reviewOutcomeStatus   string // approved|changes_requested|blocked before statusMap
 }
 
 // FlowControlResult is the engine's reply after processing a FlowControlInput.
@@ -822,9 +829,11 @@ func reviewOutcomeToFlowControl(in ReviewOutcomeInput) (FlowControlInput, error)
 		"feedback": in.Feedback,
 	}
 	return FlowControlInput{
-		Status:  generic,
-		Summary: in.Feedback,
-		Payload: payload,
+		Status:              generic,
+		Summary:             in.Feedback,
+		Payload:             payload,
+		viaReviewOutcome:    true,
+		reviewOutcomeStatus: in.Status,
 	}, nil
 }
 

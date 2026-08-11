@@ -123,6 +123,7 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 	if rs := s.runs[parentRunID]; rs != nil {
 		rs.activeFlowEdges = record.Definition.Edges
 		rs.activeFlowNodes = record.Definition.Nodes
+		rs.activeFlowAcceptanceNodes = append([]string(nil), record.Definition.AcceptanceNodes...)
 	}
 	s.mu.Unlock()
 

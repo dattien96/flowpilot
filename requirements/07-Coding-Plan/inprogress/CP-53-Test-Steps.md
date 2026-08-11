@@ -115,12 +115,12 @@ go test ./internal/runner/ -count=1 -run 'TestCP53ReviewDoneVerdict|TestReviewLo
 
 | Step | Pass khi | Tick |
 |------|----------|------|
-| 2.1 | No verdict → cannot transition to done | [ ] |
-| 2.2 | FAIL verdict → cannot done | [ ] |
-| 2.3 | PASS verdict → done allowed | [ ] |
-| 2.4 | `continue` path still works | [ ] |
-| 2.5 | **Matrix** Claude + Codex + Grok (fake adapters) all green | [ ] |
-| 2.6 | Normal chat without review-loop unaffected | [ ] |
+| 2.1 | No verdict → cannot transition to done | [x] |
+| 2.2 | FAIL verdict → cannot done | [x] |
+| 2.3 | PASS verdict → done allowed | [x] |
+| 2.4 | `continue` path still works | [x] |
+| 2.5 | **Matrix** Claude + Codex + Grok (fake adapters) all green | [x] |
+| 2.6 | Normal chat without review-loop unaffected | [x] |
 
 ### Manual
 
