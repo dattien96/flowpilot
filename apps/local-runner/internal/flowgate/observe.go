@@ -271,3 +271,17 @@ func HasCodeChangesInList(paths []string) bool {
 	}
 	return false
 }
+
+// HasNewTestFileAdded reports whether diff adds a new test file (CP-53 P-5 / Task-277).
+// Editing an existing test file does not count — only status "A" on test paths.
+func HasNewTestFileAdded(diff []ChangedFile) bool {
+	for _, f := range diff {
+		if f.Status != "A" {
+			continue
+		}
+		if IsTestFile(f.Path) {
+			return true
+		}
+	}
+	return false
+}

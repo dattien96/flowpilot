@@ -204,6 +204,12 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 		if tr.HeadRetirePending {
 			return &Violation{Rule: rule, Detail: "a rename/merge/deprecate was detected for this feature — confirm the target(s) before retiring its Canonical Head"}
 		}
+
+	case "production_change_no_new_test":
+		// CP-53 P-5 / Task-277: production paths changed without a newly added test file.
+		if HasCodeChanges(tr.GitDiff) && !HasNewTestFileAdded(tr.GitDiff) {
+			return &Violation{Rule: rule, Detail: "production code changed without a newly added test file in this turn"}
+		}
 	}
 	return nil
 }

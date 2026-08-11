@@ -157,6 +157,10 @@ func remediationFor(v Violation) string {
 			"Update each listed existing file in place and add the missing markdown section headings " +
 			"(ATX headings such as `## SectionName` — level and casing may vary). " +
 			"Do not invent new paths; edit the bound artifact path(s) only."
+	case "production_change_no_new_test":
+		return "• Missing new test coverage. You changed production code but did not ADD a new test file in this turn. " +
+			"Create a NEW `*_test.go` / `*.test.ts` file with a failing-or-asserting case derived from the acceptance criteria. " +
+			"Do NOT edit or delete existing tests to make the gate pass (oracle-rule / additive-tests-only)."
 	default:
 		return "• " + v.Detail
 	}
