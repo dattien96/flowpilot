@@ -213,6 +213,11 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		}
 	}
 
+	// CP-53 P-1: gate_blind when baseline missing / env error / red-at-capture.
+	if s.gateBlindBlocksTurn(runID, turnID, epoch, rs, dotFP, baseline, oracle, diff) {
+		return true
+	}
+
 	// 6. Build TurnResult for the evaluator.
 	// V9-10/V9-27: ordinary Failed vs true Regressed (separate fields).
 	// suite_failed only when baseline was green and suite is now red without
@@ -935,6 +940,15 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		}
 		overrides, _ := flowgate.LoadOverrides(dotFP)
 		oracle := flowgate.RunOracleContext(ctx, cwd, baseline, diff, overrides)
+		if s.gateBlindBlocksTurn(runID, turnID, epoch, rs, dotFP, baseline, oracle, diff) {
+			if parentID != "" && s.gateEpochStillValid(runID, epoch) {
+				_, _ = s.applyFlowControl(parentID, FlowControlInput{
+					Status:  "escalate",
+					Summary: "flow gate block: gate_blind",
+				})
+			}
+			return true
+		}
 		// V9-27: split ordinary Failed vs true Regressed for r-tests / r-reg.
 		var failedTests, regressedTests []string
 		if oracle.EnvError == "" {
