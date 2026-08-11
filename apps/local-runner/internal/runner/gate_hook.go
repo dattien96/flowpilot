@@ -349,7 +349,9 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	}
 
 	// 10. Enforce â€” read gate_mode from .flowpilot/settings/gate-config.json; default warn.
-	result := flowgate.Enforce(violations, loadGateMode(dotFP))
+	gateMode := loadGateMode(dotFP)
+	result := flowgate.Enforce(violations, gateMode)
+	s.recordGateEnforceMetric(dotFP, rs, turnID, gateMode, result)
 
 	// 11. Extract r-reg options for the decision card (Task-155).
 	var gateOptions []string
@@ -436,6 +438,7 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		}); err != nil {
 			log.Printf("[gate] root escalate after max reprompts failed: %v", err)
 		}
+		s.recordGateEscalateMetric(dotFP, rs, turnID, gateMode, "reprompt_exhausted")
 		return true
 	}
 
@@ -450,6 +453,7 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	}) {
 		return true
 	}
+	s.recordGateAcceptedMetric(dotFP, rs, turnID, gateMode)
 	return false
 }
 
@@ -1754,6 +1758,7 @@ func (s *InteractiveService) RecordGateAgreement(runID string, testNames []strin
 		}
 		_ = flowgate.SaveOverride(dotFP, flowgate.Override{TestName: name, HumanConfirm: true})
 	}
+	s.recordGateOverrideMetric(dotFP, rs, testNames)
 
 	tests := strings.Join(testNames, ", ")
 	if tests == "" {
