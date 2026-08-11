@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# gate-check — dogfood wrapper (CP-53 P-3). Linux/Git Bash primary.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT/apps/local-runner"
+exec go run ./cmd/gate-check/ "$@"

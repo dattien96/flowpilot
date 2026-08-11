@@ -150,7 +150,7 @@ go test ./internal/runner/ -count=1 -run 'TestCP53ReviewDoneVerdict|TestReviewLo
 |------|----------|------|
 | 3.1 | Clean tree → gate-check exit 0 (Go) | [ ] |
 | 3.2 | Intentional Go regression fixture → non-zero | [ ] |
-| 3.3 | TS baseline missing → Go path still evaluates (D-6) | [ ] |
+| 3.3 | TS baseline missing → Go path still evaluates (D-6) | [x] |
 
 ### Manual
 
