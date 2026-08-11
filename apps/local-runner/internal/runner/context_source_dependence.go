@@ -60,7 +60,7 @@ func (s *dependenceSource) Fetch(ctx context.Context, hints FlowContextHints) (F
 	provider := s.provider(hints.Workspace, hasGitNexus)
 	if !provider.Available() {
 		section.SourceRef = "gitnexus:impact"
-		section.Body = "_Blast-radius unavailable: GitNexus chưa index project này (chạy `npx gitnexus analyze` để bật)._"
+		section.Body = "GitNexus not indexed. Run: npx gitnexus analyze"
 		return section, nil
 	}
 
@@ -108,7 +108,7 @@ func renderDependenceBody(ctx context.Context, provider structure.Provider, targ
 			continue
 		}
 		any = true
-		fmt.Fprintf(&b, "- Sửa `%s` ảnh hưởng %d dependent:\n", t, summary.Count)
+		fmt.Fprintf(&b, "- `%s` → %d:\n", t, summary.Count)
 		for _, d := range nearest {
 			fmt.Fprintf(&b, "  - %s\n", d)
 		}
@@ -124,9 +124,9 @@ func renderDependenceBody(ctx context.Context, provider structure.Provider, targ
 	if !any {
 		return ""
 	}
-	out := "Blast-radius của declared scope (deterministic, từ GitNexus impact — không AI):\n\n" + b.String()
+	out := "## Dependence\n\n" + b.String()
 	if incomplete {
-		out += "\n_Note: một số caller dùng dynamic dispatch; danh sách có thể chưa đủ (Complete=false)._"
+		out += "\n_Note: partial caller list (dynamic dispatch)._"
 	}
 	return strings.TrimSpace(out)
 }

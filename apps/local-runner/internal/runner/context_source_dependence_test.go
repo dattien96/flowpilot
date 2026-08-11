@@ -160,7 +160,7 @@ func TestDependenceSourceGitNexusUnavailableRendersNote(t *testing.T) {
 	fake := &fakeDependenceProvider{available: false}
 	src := newDependenceSourceWithFake(fake)
 	sec, _ := src.Fetch(context.Background(), FlowContextHints{Workspace: dir, WorkflowRunID: "run-1"})
-	if !strings.Contains(strings.ToLower(sec.Body), "unavailable") {
+	if !strings.Contains(strings.ToLower(sec.Body), "not indexed") {
 		t.Fatalf("body = %q", sec.Body)
 	}
 	if len(fake.calls) != 0 {
@@ -240,7 +240,7 @@ func TestDependenceSourceIncompleteNote(t *testing.T) {
 	}
 	src := newDependenceSourceWithFake(fake)
 	sec, _ := src.Fetch(context.Background(), FlowContextHints{Workspace: dir, WorkflowRunID: "run-1"})
-	if !strings.Contains(sec.Body, "Complete=false") {
+	if !strings.Contains(sec.Body, "partial caller") {
 		t.Fatalf("body = %q", sec.Body)
 	}
 }

@@ -54,8 +54,9 @@ func TestRegisterCustomSourceAppearsInPackageAndRender(t *testing.T) {
 	if !strings.Contains(rendered, "custom body content unique-marker-xyz") {
 		t.Errorf("render missing custom section body, got:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "_Source: custom-ref-123_") {
-		t.Errorf("render missing custom section source ref, got:\n%s", rendered)
+	// SourceRef stays on the section struct for audit; render omits inline _Source lines.
+	if strings.Contains(rendered, "_Source:") {
+		t.Errorf("render should not emit inline _Source refs, got:\n%s", rendered)
 	}
 }
 
@@ -101,8 +102,8 @@ func TestRenderFlowContextPackageStillHasNoVectorLine(t *testing.T) {
 		t.Fatalf("BuildFlowContextPackage: %v", err)
 	}
 	rendered := RenderFlowContextPackage(pkg)
-	if !strings.Contains(rendered, "No vector retrieval used") {
-		t.Error("rendered package must still contain 'No vector retrieval used'")
+	if !strings.Contains(rendered, "## Context") {
+		t.Error("rendered package must contain context header")
 	}
 }
 

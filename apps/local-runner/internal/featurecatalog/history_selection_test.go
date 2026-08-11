@@ -159,7 +159,7 @@ func TestHistorySlotRankedPreservesLegacyBytesOnFallback(t *testing.T) {
 	}
 
 	// CP-55 P-7 review finding M-3: also cover the fallback sub-case where
-	// the legacy renderer emits its own "older entries omitted" line
+	// the legacy renderer emits its own "older omitted" line
 	// (requires > recentHistoryEntryCount=15 entries), not just a small
 	// fixture with nothing to cap.
 	manyEntries := makeSelectionEntries(25)
@@ -169,7 +169,7 @@ func TestHistorySlotRankedPreservesLegacyBytesOnFallback(t *testing.T) {
 	if rankedMany != legacyMany {
 		t.Fatalf("fallback output must be byte-identical to HistorySlot when the legacy cap-omission line applies:\nranked=%q\nlegacy=%q", rankedMany, legacyMany)
 	}
-	if !strings.Contains(legacyMany, "older entries omitted") {
+	if !strings.Contains(legacyMany, "older omitted") {
 		t.Fatal("test fixture sanity check: expected the legacy cap-omission line to actually appear with 25 entries")
 	}
 }
@@ -187,7 +187,7 @@ func TestHistorySlotRankedShowsCurrentTruthMarkerInRankedMode(t *testing.T) {
 	locus := RetrievalLocus{Paths: []string{"src/file000.go", "src/file001.go", "src/file002.go"}}
 
 	out := HistorySlotRanked("calc-core", stub, locus, config)
-	if !strings.Contains(out, "← current truth") {
+	if !strings.Contains(out, "← truth") {
 		t.Fatalf("expected the ranked output to render the current-truth marker for the backfilled newest entry, got %q", out)
 	}
 }
@@ -293,7 +293,7 @@ func TestHistorySlotRankedReportsRankedCandidateCount(t *testing.T) {
 	locus := RetrievalLocus{Paths: paths}
 
 	out := HistorySlotRanked("calc-core", stub, locus, config)
-	if !strings.Contains(out, "3 of 20 candidates shown") {
+	if !strings.Contains(out, "(ranked, 3/20") {
 		t.Fatalf("expected the ranked output to report the selected/candidate counts, got %q", out)
 	}
 }

@@ -232,12 +232,12 @@ func TestRenderSectionsByPriorityMCPAfterExcerpt(t *testing.T) {
 	}
 	// History/discussion via legacy fields only — must still order correctly.
 	rendered := RenderFlowContextPackage(pkg)
-	hi := strings.Index(rendered, "### Change History")
+	hi := strings.Index(rendered, "history line")
 	ci := strings.Index(rendered, "### change.contract")
 	ei := strings.Index(rendered, "### Source: spec.md")
 	mi := strings.Index(rendered, "### mcp.driver")
 	ji := strings.Index(rendered, "### jira.issue")
-	di := strings.Index(rendered, "### Prior Discussion")
+	di := strings.Index(rendered, "discussion line")
 	if hi < 0 || ci < 0 || ei < 0 || mi < 0 || ji < 0 || di < 0 {
 		t.Fatalf("missing sections:\n%s", rendered)
 	}

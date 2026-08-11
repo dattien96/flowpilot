@@ -24,9 +24,9 @@ func TestBuildFlowContextPackageOutputUnchangedAfterRegistryRefactor(t *testing.
 			t.Fatalf("BuildFlowContextPackage: %v", err)
 		}
 
-		wantHistory := "## Prior work on \"agent-flow-engine\" (oldest → newest — build on the NEWEST, do not undo it)\n" +
+		wantHistory := "## History \"agent-flow-engine\" (newest = truth)\n" +
 			"- [abc1 2026-06] add FlowNode/FlowEdge types Task-089\n" +
-			"- [abc2 2026-06] add applyFlowControl state machine Task-090   ← current truth"
+			"- [abc2 2026-06] add applyFlowControl state machine Task-090   ← truth"
 		if pkg.HistoryBlock != wantHistory {
 			t.Errorf("HistoryBlock mismatch:\ngot:  %q\nwant: %q", pkg.HistoryBlock, wantHistory)
 		}
@@ -40,12 +40,10 @@ func TestBuildFlowContextPackageOutputUnchangedAfterRegistryRefactor(t *testing.
 			t.Errorf("Warnings = %v, want none for a verified feature with history present", pkg.Warnings)
 		}
 
-		wantRender := "## Flow Context Package\n\n" +
-			"- **Package ID**: " + pkg.PackageID + "\n" +
-			"- **Feature**: agent-flow-engine (confidence: verified)\n" +
-			"- **Source doc**: Task-168\n" +
-			"- **No vector retrieval used**\n\n" +
-			"### Change History\n\n" +
+		wantRender := "## Context\n" +
+			"- feature: agent-flow-engine\n" +
+			"- docs: Task-168\n" +
+			"\n" +
 			wantHistory + "\n"
 		if got := RenderFlowContextPackage(pkg); got != wantRender {
 			t.Errorf("render mismatch:\ngot:  %q\nwant: %q", got, wantRender)
@@ -70,19 +68,18 @@ func TestBuildFlowContextPackageOutputUnchangedAfterRegistryRefactor(t *testing.
 			t.Fatalf("BuildFlowContextPackage: %v", err)
 		}
 
-		wantDiscussion := "## Prior discussion on \"agent-flow-engine\" (oldest → newest — keep the newest summary in mind)\n" +
-			"- [] discussed bounded cap semantics   ← current discussion"
+		wantDiscussion := "## Discussion \"agent-flow-engine\" (newest last)\n" +
+			"- [] discussed bounded cap semantics   ← latest"
 		if pkg.DiscussionBlock != wantDiscussion {
 			t.Errorf("DiscussionBlock mismatch:\ngot:  %q\nwant: %q", pkg.DiscussionBlock, wantDiscussion)
 		}
 
 		rendered := RenderFlowContextPackage(pkg)
-		if !strings.Contains(rendered, "### Prior Discussion\n\n"+wantDiscussion+"\n") {
-			t.Errorf("render missing expected Prior Discussion block, got:\n%s", rendered)
+		if !strings.Contains(rendered, wantDiscussion+"\n") {
+			t.Errorf("render missing expected discussion block, got:\n%s", rendered)
 		}
-		// Discussion must render after History, matching the original packing order.
-		if idx1, idx2 := strings.Index(rendered, "### Change History"), strings.Index(rendered, "### Prior Discussion"); idx1 == -1 || idx2 == -1 || idx1 > idx2 {
-			t.Errorf("expected Change History before Prior Discussion, got:\n%s", rendered)
+		if idx1, idx2 := strings.Index(rendered, "## History"), strings.Index(rendered, "## Discussion"); idx1 == -1 || idx2 == -1 || idx1 > idx2 {
+			t.Errorf("expected History before Discussion, got:\n%s", rendered)
 		}
 	})
 

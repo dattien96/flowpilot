@@ -216,7 +216,7 @@ func TestFlowContextPackageStillHasNoVectorDependencyWithMcpSource(t *testing.T)
 		t.Fatalf("BuildFlowContextPackageWithSources: %v", err)
 	}
 	rendered := RenderFlowContextPackage(pkg)
-	if !strings.Contains(rendered, "No vector retrieval used") {
-		t.Error("rendered package must still contain 'No vector retrieval used' with mcp.driver enabled")
+	if !strings.Contains(rendered, "## Context") {
+		t.Error("rendered package must contain context header with mcp.driver enabled")
 	}
 }

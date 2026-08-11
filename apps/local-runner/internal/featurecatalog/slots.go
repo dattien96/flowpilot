@@ -55,7 +55,7 @@ func renderHistoryEntryLine(e changeledger.Entry, isCurrentTruth, withExcerpt bo
 	}
 	marker := ""
 	if isCurrentTruth {
-		marker = "   ← current truth"
+		marker = "   ← truth"
 	}
 	sb.WriteString(fmt.Sprintf("- [%s %s] %s%s\n", id, date, e.Summary, marker))
 	if withExcerpt && e.CAExcerpt != "" {
@@ -93,13 +93,13 @@ func HistorySlot(featureKey string, ledger historyLedger) string {
 // guaranteed by the historyLedger interface itself).
 func renderHistorySlotChronological(featureKey string, entries []changeledger.Entry) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("## Prior work on %q (oldest → newest — build on the NEWEST, do not undo it)\n", featureKey))
+	sb.WriteString(fmt.Sprintf("## History %q (newest = truth)\n", featureKey))
 	// Cap to the most recent N entries so a long-lived feature can't flood the
 	// prompt; note how many older entries were dropped (newest is kept as truth).
 	start := 0
 	if len(entries) > recentHistoryEntryCount {
 		start = len(entries) - recentHistoryEntryCount
-		sb.WriteString(fmt.Sprintf("- (… %d older entries omitted; showing the most recent %d …)\n", start, recentHistoryEntryCount))
+		sb.WriteString(fmt.Sprintf("- (%d older omitted)\n", start))
 	}
 	for i := start; i < len(entries); i++ {
 		e := entries[i]
@@ -139,7 +139,7 @@ func HistorySlotRanked(featureKey string, ledger historyLedger, locus RetrievalL
 	newestHash := entries[len(entries)-1].CommitHash
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf(
-		"## Prior work on %q (ranked by relevance to the current change, NOT chronological — %d of %d candidates shown; build on the entry marked ← current truth, do not undo it)\n",
+		"## History %q (ranked, %d/%d; ← truth)\n",
 		featureKey, len(sel.Entries), sel.CandidateCount,
 	))
 	for i, e := range sel.Entries {

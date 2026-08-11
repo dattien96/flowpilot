@@ -7,7 +7,7 @@ import (
 
 func TestApplyFlowContextPackBudgetDropsHistoryKeepsHead(t *testing.T) {
 	hugeHistory := strings.Repeat("x", flowContextRenderBudgetBytes)
-	headBody := "## Canonical state of \"calc-core\"\n\nBehavior: guard zero divisor\n"
+	headBody := "## Canonical \"calc-core\" [current] sig=abc\n\nBehavior: guard zero divisor\n"
 	pkg := FlowContextPackage{
 		PackageID:     "pkg-1",
 		WorkflowRunID: "run-1",
@@ -25,7 +25,7 @@ func TestApplyFlowContextPackBudgetDropsHistoryKeepsHead(t *testing.T) {
 	if strings.Contains(rendered, strings.Repeat("x", 1024)) {
 		t.Fatal("feature.history body should be dropped under budget")
 	}
-	if !strings.Contains(rendered, "feature.history omitted under context budget") {
+	if !strings.Contains(rendered, "omitted feature.history under budget") {
 		t.Fatalf("expected budget warning in render, got:\n%s", rendered)
 	}
 }
@@ -60,7 +60,7 @@ func TestRenderFlowContextPackageHeadBeforeHistoryAfterBudget(t *testing.T) {
 		t.Fatal("missing head after budget")
 	}
 	headIdx := strings.Index(out, "HEAD-MARKER")
-	histIdx := strings.Index(out, "### Change History")
+	histIdx := strings.Index(out, "## History")
 	if histIdx >= 0 && headIdx > histIdx {
 		t.Fatal("head must render before history when history present")
 	}

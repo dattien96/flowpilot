@@ -17,7 +17,7 @@ func ChatSummarySlot(featureKey string, ledger interface {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("## Prior discussion on %q (oldest → newest — keep the newest summary in mind)\n", featureKey))
+	sb.WriteString(fmt.Sprintf("## Discussion %q (newest last)\n", featureKey))
 	start := 0
 	if len(entries) > recentChatSummaryCount {
 		start = len(entries) - recentChatSummaryCount
@@ -26,7 +26,7 @@ func ChatSummarySlot(featureKey string, ledger interface {
 		entry := entries[i]
 		marker := ""
 		if i == len(entries)-1 {
-			marker = "   ← current discussion"
+			marker = "   ← latest"
 		}
 		date := entry.CreatedAt
 		if len(date) > 7 {

@@ -403,10 +403,7 @@ func ComposeFlowCodingPrompt(pkg FlowContextPackage, codingInstruction string) s
 	sb.WriteString(flowContextTrustedMarker(trustID) + "\n\n")
 	sb.WriteString(RenderFlowContextPackage(pkg))
 	sb.WriteString("\n---\n\n")
-	sb.WriteString("[Context use instructions: Use the Flow Context Package above as " +
-		"the source of truth for prior work on this feature. " +
-		"Do not broaden retrieval unless explicitly instructed. " +
-		"Preserve source references when explaining changes.]\n\n")
+	sb.WriteString("[Context: use sections above as feature truth. Stay in scope.]\n\n")
 	sb.WriteString(codingInstruction)
 	return sb.String()
 }
@@ -423,10 +420,7 @@ func ComposeFlowCodingPromptWithSecret(pkg FlowContextPackage, codingInstruction
 	sb.WriteString(flowContextTrustedMarkerWith(secret, trustID) + "\n\n")
 	sb.WriteString(RenderFlowContextPackage(pkg))
 	sb.WriteString("\n---\n\n")
-	sb.WriteString("[Context use instructions: Use the Flow Context Package above as " +
-		"the source of truth for prior work on this feature. " +
-		"Do not broaden retrieval unless explicitly instructed. " +
-		"Preserve source references when explaining changes.]\n\n")
+	sb.WriteString("[Context: use sections above as feature truth. Stay in scope.]\n\n")
 	sb.WriteString(codingInstruction)
 	return sb.String()
 }

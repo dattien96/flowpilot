@@ -40,7 +40,7 @@ func applyFlowContextPackBudget(pkg *FlowContextPackage) {
 		if !dropContextSourceBody(pkg, id) {
 			continue
 		}
-		msg := "context source " + string(id) + " omitted under context budget (Canonical Head retained — Task-188 T-2)"
+		msg := "omitted " + string(id) + " under budget (head retained)"
 		pkg.Warnings = append(pkg.Warnings, msg)
 		log.Printf("[context-pack] dropped %s under budget package=%s run=%s", id, pkg.PackageID, pkg.WorkflowRunID)
 	}

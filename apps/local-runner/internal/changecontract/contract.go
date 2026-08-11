@@ -178,7 +178,7 @@ func RenderContractBlock(c Contract) string {
 		b.WriteString(intent)
 		b.WriteByte('\n')
 	}
-	b.WriteString("Declared scope (KHÔNG sửa ngoài các path này):\n")
+	b.WriteString("Scope (do not edit outside):\n")
 	if len(c.DeclaredPaths) == 0 {
 		b.WriteString("- (none declared)\n")
 	} else {
@@ -195,7 +195,7 @@ func RenderContractBlock(c Contract) string {
 	b.WriteString("Confidence: ")
 	b.WriteString(conf)
 	if conf == ConfidenceInferred {
-		b.WriteString(" (suy ra từ diff, chưa được AI xác nhận)")
+		b.WriteString(" (inferred from diff)")
 	}
 	b.WriteByte('\n')
 	return strings.TrimSpace(b.String())

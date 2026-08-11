@@ -722,8 +722,8 @@ func TestE2EPlanCodingFlowContextHandoff(t *testing.T) {
 		t.Fatal("adapter was not called within 3 s")
 	}
 
-	if !strings.Contains(capturedPrompt, "## Flow Context Package") {
-		t.Errorf("coding prompt missing '## Flow Context Package'; prompt[:300] = %.300q", capturedPrompt)
+	if !strings.Contains(capturedPrompt, "## Context") {
+		t.Errorf("coding prompt missing '## Context'; prompt[:300] = %.300q", capturedPrompt)
 	}
 	if !strings.Contains(capturedPrompt, "implement per the plan") {
 		t.Error("original instruction must appear after the package block")

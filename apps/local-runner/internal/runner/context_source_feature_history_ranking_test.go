@@ -55,7 +55,7 @@ func TestFeatureHistorySourceBuildsLocusFromFrozenContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if !strings.Contains(section.Body, "ranked by relevance") {
+	if !strings.Contains(section.Body, "ranked,") {
 		t.Fatalf("expected ranked output once the contract locus is built, got %q", section.Body)
 	}
 	if !strings.Contains(section.Body, "entry 5") {
@@ -113,7 +113,7 @@ func TestFeatureHistoryRanksWhenChangeContractRenderingIsDisabled(t *testing.T) 
 	if len(sections) != 1 {
 		t.Fatalf("expected exactly one section, got %d", len(sections))
 	}
-	if !strings.Contains(sections[0].Body, "ranked by relevance") {
+	if !strings.Contains(sections[0].Body, "ranked,") {
 		t.Fatalf("expected ranking to still activate with change.contract's own rendering disabled, got %q", sections[0].Body)
 	}
 	if !strings.Contains(sections[0].Body, "entry 15") {
@@ -200,7 +200,7 @@ func TestChatSummaryRemainsRecencyBased(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if strings.Contains(section.Body, "ranked by relevance") {
+	if strings.Contains(section.Body, "ranked,") {
 		t.Fatalf("chat.summary must remain recency-based and must never rank, got %q", section.Body)
 	}
 	if !strings.Contains(section.Body, "discussion 0") || !strings.Contains(section.Body, "discussion 2") {

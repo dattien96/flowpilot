@@ -13,7 +13,7 @@ func statusChip(h CanonicalHead) string {
 		chip = HeadStatusCurrent
 	}
 	if h.SpecConfidence == SpecConfidenceSpecLess {
-		return chip + " (spec-less — low confidence)"
+		return chip + " spec-less"
 	}
 	return chip
 }
@@ -39,14 +39,14 @@ func RenderHeadBlock(h CanonicalHead) string {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("## Canonical state of %q (status: %s, signature: %s)\n", h.FeatureKey, statusChip(h), shortSignature(h.IntentSignature)))
+	sb.WriteString(fmt.Sprintf("## Canonical %q [%s] sig=%s\n", h.FeatureKey, statusChip(h), shortSignature(h.IntentSignature)))
 	if behavior := strings.TrimSpace(h.BehaviorStatement); behavior != "" {
 		sb.WriteString(behavior + "\n")
 	}
 
 	rejected := rejectedDecisions(h.Decisions)
 	if len(rejected) > 0 {
-		sb.WriteString("\nDo NOT re-attempt these — already tried and rejected:\n")
+		sb.WriteString("\nRejected:\n")
 		for _, d := range rejected {
 			line := "- " + d.Tried
 			if d.Reason != "" && d.Reason != d.Tried {

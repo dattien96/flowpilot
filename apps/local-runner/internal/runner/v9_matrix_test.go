@@ -95,18 +95,18 @@ func TestV9MatrixContractRenderOrderAndNoDoubleInject(t *testing.T) {
 		Sections: []FlowContextSection{
 			{SourceType: string(ContextSourceMCPDriver), Priority: 6, Body: "mcp body"},
 			{SourceType: string(ContextSourceChangeContract), Body: "scope: apps/foo.go"},
-			{SourceType: string(ContextSourceCanonicalHead), Body: "## Canonical state\nhead body"},
+			{SourceType: string(ContextSourceCanonicalHead), Body: "## Canonical\nhead body"},
 		},
 		SourceExcerpts:  []FlowContextExcerpt{{Path: "spec.md", Excerpt: "excerpt body"}},
 		HistoryBlock:    "history line",
 		DiscussionBlock: "prior chat summary",
 	}
 	rendered := RenderFlowContextPackage(pkg)
-	head := strings.Index(rendered, "## Canonical state")
-	hi := strings.Index(rendered, "### Change History")
+	head := strings.Index(rendered, "## Canonical")
+	hi := strings.Index(rendered, "history line")
 	ci := strings.Index(rendered, "### change.contract")
 	ei := strings.Index(rendered, "### Source: spec.md")
-	di := strings.Index(rendered, "### Prior Discussion")
+	di := strings.Index(rendered, "prior chat summary")
 	mi := strings.Index(rendered, "### mcp.driver")
 	if head < 0 || hi < 0 || ci < 0 || ei < 0 || di < 0 || mi < 0 {
 		t.Fatalf("missing sections in render:\n%s", rendered)

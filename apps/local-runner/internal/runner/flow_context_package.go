@@ -377,7 +377,6 @@ func readSourceExcerpts(workspace string, paths []string) (excerpts []FlowContex
 
 // RenderFlowContextPackage renders the package as a stable Markdown block
 // suitable for injection into Flow Mode Coding prompts (Task-169).
-// The output always contains "No vector retrieval used" for audit visibility.
 //
 // Section body order is strictly by FlowContextSection.Priority (ascending),
 // then SourceType. Legacy fields (HistoryBlock/SourceExcerpts/DiscussionBlock)
@@ -388,17 +387,15 @@ func readSourceExcerpts(workspace string, paths []string) (excerpts []FlowContex
 func RenderFlowContextPackage(pkg FlowContextPackage) string {
 	applyFlowContextPackBudget(&pkg)
 	var sb strings.Builder
-	sb.WriteString("## Flow Context Package\n\n")
-	sb.WriteString(fmt.Sprintf("- **Package ID**: %s\n", pkg.PackageID))
+	sb.WriteString("## Context\n")
 	featureLabel := pkg.FeatureKey
 	if featureLabel == "" {
 		featureLabel = "unresolved"
 	}
-	sb.WriteString(fmt.Sprintf("- **Feature**: %s (confidence: %s)\n", featureLabel, pkg.FeatureConfidence))
+	sb.WriteString(fmt.Sprintf("- feature: %s\n", featureLabel))
 	if len(pkg.SourceDocIDs) > 0 {
-		sb.WriteString(fmt.Sprintf("- **Source doc**: %s\n", strings.Join(pkg.SourceDocIDs, ", ")))
+		sb.WriteString(fmt.Sprintf("- docs: %s\n", strings.Join(pkg.SourceDocIDs, ", ")))
 	}
-	sb.WriteString("- **No vector retrieval used**\n")
 
 	for _, s := range sectionsForRender(pkg) {
 		renderFlowContextSection(&sb, s, pkg)
@@ -504,16 +501,13 @@ func renderFlowContextSection(sb *strings.Builder, s FlowContextSection, pkg Flo
 			sb.WriteString(changeContractTrustedMarker(pkg.WorkflowRunID) + "\n")
 		}
 		sb.WriteString("\n")
-		if s.SourceRef != "" {
-			sb.WriteString(fmt.Sprintf("_Source: %s_\n\n", s.SourceRef))
-		}
 		sb.WriteString(s.Body)
 		sb.WriteString("\n")
 	case ContextSourceCanonicalHead:
 		if strings.TrimSpace(s.Body) == "" {
 			return
 		}
-		// Body already carries "## Canonical state …"; write verbatim.
+		// Body already carries "## Canonical …"; write verbatim.
 		sb.WriteString("\n" + strings.TrimSpace(s.Body) + "\n")
 	case ContextSourceFeatureHistory:
 		body := s.Body
@@ -523,8 +517,8 @@ func renderFlowContextSection(sb *strings.Builder, s FlowContextSection, pkg Flo
 		if strings.TrimSpace(body) == "" {
 			return
 		}
-		sb.WriteString("\n### Change History\n\n")
-		sb.WriteString(body)
+		sb.WriteString("\n")
+		sb.WriteString(strings.TrimSpace(body))
 		sb.WriteString("\n")
 	case ContextSourceSourceExcerpt:
 		excerpts := s.Excerpts
@@ -545,17 +539,14 @@ func renderFlowContextSection(sb *strings.Builder, s FlowContextSection, pkg Flo
 		if strings.TrimSpace(body) == "" {
 			return
 		}
-		sb.WriteString("\n### Prior Discussion\n\n")
-		sb.WriteString(body)
+		sb.WriteString("\n")
+		sb.WriteString(strings.TrimSpace(body))
 		sb.WriteString("\n")
 	default:
 		if strings.TrimSpace(s.Body) == "" {
 			return
 		}
 		sb.WriteString(fmt.Sprintf("\n### %s\n\n", s.SourceType))
-		if s.SourceRef != "" {
-			sb.WriteString(fmt.Sprintf("_Source: %s_\n\n", s.SourceRef))
-		}
 		sb.WriteString(s.Body)
 		sb.WriteString("\n")
 	}
@@ -573,9 +564,6 @@ func renderGenericSections(sb *strings.Builder, sections []FlowContextSection) {
 			continue
 		}
 		sb.WriteString(fmt.Sprintf("\n### %s\n\n", s.SourceType))
-		if s.SourceRef != "" {
-			sb.WriteString(fmt.Sprintf("_Source: %s_\n\n", s.SourceRef))
-		}
 		sb.WriteString(s.Body)
 		sb.WriteString("\n")
 	}

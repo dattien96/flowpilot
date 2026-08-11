@@ -137,7 +137,7 @@ func TestFirstCoderContextRanksFeatureHistoryByCurrentLocus(t *testing.T) {
 	if pkg == nil {
 		t.Fatal("expected a context package to have been built")
 	}
-	if !strings.Contains(pkg.HistoryBlock, "ranked by relevance") {
+	if !strings.Contains(pkg.HistoryBlock, "ranked,") {
 		t.Fatalf("expected feature-history ranking to activate for the writer's first context package, got HistoryBlock=%q", pkg.HistoryBlock)
 	}
 	if !strings.Contains(pkg.HistoryBlock, "the calc.go entry ranking must surface") {
