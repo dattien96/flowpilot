@@ -5,10 +5,10 @@
 - Document ID: `CP-43-CATALOG`
 - Title: `Context Source Catalog And Separated Context Test Log`
 - Phase: `coding_plan` companion / catalog + verification log (not a new CP number)
-- Status: `inprogress` (catalog canonical; test battery runnable; source.dependence planned via Task-259)
+- Status: `inprogress` (catalog canonical; **full E2E battery §6 = cổng đóng CP-43**; source.dependence planned via Task-259)
 - Owner: `FlowPilot`
 - Created: `2026-07-17`
-- Last Updated: `2026-07-17`
+- Last Updated: `2026-07-27` (thêm full E2E §6.1 + rows B13–B23 phủ P-1→P-6; ghi chú status CP-43 re-audit: P-1→P-4 done, P-5 in_progress, P-6 draft)
 - Parent Documents: [CP-43](./CP-43-Change-Contract-And-Canonical-Intent-Signature.md)
 - Child Documents: none
 - Related: [CP-44: Pluggable Context Source Registry](../done/CP-44-Pluggable-Context-Source-Registry.md), [CP-45: Generic Artifact Types And Instances](../done/CP-45-Generic-Artifact-Types-And-Instances.md), [CP-50: Context Source Completion](../done/CP-50-Context-Source-Completion.md), [SD-21](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [SD-22](../../06-System-Tech-Design/SD-22-Pluggable-Context-Source-Registry.md), [Task-259: source.dependence Context Source](../../08-Task/todo/Task-259-Source-Dependence-Context-Source.md)
@@ -161,11 +161,13 @@ go test ./internal/runner/ -count=1 -timeout 8m \
 | `composeFlowNodeAgentPrompt` (`artifact_type_registry.go`) | **🔴 HIGH** | `maybeReinvokeCoderForContinue` (`interactive_service.go`), `runChildArtifactOutputGateAtEpoch` (`gate_hook.go`) | 7 / **3 processes** | Điểm P-4 append `change.contract` vào prompt step sau. Ảnh hưởng **3 execution flow**: `runFlowGateAtEpoch`, `handleSubmitFlowControl`, `runChildArtifactOutputGateAtEpoch` (2 module: Runner + Flowgate). **Cảnh báo cho Task-259:** nếu về sau muốn `source.dependence` cũng *append thẳng vào prompt* (kiểu P-4) thì đường đó là HIGH — phải cực cẩn thận. Kế hoạch Task-259 hiện tại **né** đường này (chỉ đi qua context package/generic render = LOW), nên thiết kế đang đúng. |
 | `source.dependence` `Fetch` (Task-259, chưa tồn tại) | n/a | — | — | Sẽ đo lại sau khi land; dự kiến LOW vì chỉ cắm vào `Collect`/generic render (đã LOW ở trên). |
 
+> ⛔ **Cập nhật 2026-07-27 — hợp đồng CLI đã drift, xem [BUG-323](../../09-BugFix/todo/BUG-323-GitNexus-Structure-Provider-Always-Returns-Empty.md).** Các lệnh ghi ở §5 này là lệnh **người chạy tay** và **đúng** (`--repo flowpilot`, không `--json`). Nhưng production code [gitnexus.go:25](../../../apps/local-runner/internal/structure/gitnexus.go) chạy `impact <target> --json` — flag **không tồn tại** ⇒ mọi truy vấn `Dependents` thất bại và bị nuốt lỗi thành summary rỗng. Thêm nữa CLI **chỉ resolve symbol, từ chối file path**. Hệ quả: B14 không thể pass, Task-259 chuyển `blocked`.
+
 **Kết luận cho Task-259:** đường thêm source mới (`Collect` → `buildFlowContextPackage` → generic `RenderFlowContextPackage`) toàn **LOW** — an toàn. Chỉ **2 điểm phải nhớ**: (1) KHÔNG đưa `source.dependence` vào skip-list của renderer (giữ generic pass); (2) KHÔNG mở rộng sang append-prompt kiểu P-4 (`composeFlowNodeAgentPrompt` = HIGH). Riêng `behaviorContextProduce` là ngoại lệ báo-thiếu do dynamic dispatch — nếu Task-259 cần sửa nó (để wire provider), phải trace registry tay, không tin impact=0.
 
 ## 6. Live desktop E2E checklist — context (moved từ CP-51 §3.2)
 
-Ghi ☐ khi pass. Chạy với desktop + `flowpilot serve`, project git thật.
+Ghi ☐ khi pass. Chạy với desktop + `flowpilot serve`, project git thật. **Battery này phủ trọn P-1→P-6 của CP-43** (contract, scope-drift, canonical head + intent-signature, churn-collapse, packing/UI/sync, dependence) và là **cổng đóng CP-43** (§6.1). Ký hiệu ⚠️blocker = mục đang chặn Task-188 chuyển `done`. Test cơ chế tự động P-2 (scope-drift) / P-4 (superseding) sống ở package `internal/flowgate` & `internal/changecontract` — phải xanh cùng battery §4.
 
 | # | Scenario | Steps | Expect | Evidence | ☐ |
 |---|----------|-------|--------|----------|---|
@@ -181,6 +183,34 @@ Ghi ☐ khi pass. Chạy với desktop + `flowpilot serve`, project git thật.
 | B10 | Jira/MCP/Firebase optional sources (**cũ**, non-default) | Flow instance khai tường minh `sources: ["jira.issue"]` (hoặc mcp.driver/firebase.crashlytics) | Section chỉ xuất hiện khi khai tường minh; không tự vào default; degrade rỗng khi adapter lỗi/timeout, không chặn turn | Context package + no-crash on adapter failure | |
 | B11 | Registry/precedence không vỡ bởi turn dispatch mới (CP-51 cross-cut) | Flow cũ (pre-CP-45, không khai `sources`) chạy dưới V2 dispatch | Vẫn dùng default set đúng thứ tự priority; step-level override vẫn thắng flow-level | Package sections order | |
 | B12 | **source.dependence** blast-radius (**MỚI**, Task-259) | Feature primary (GitNexus indexed) + turn Coding khai `change.contract` **declared** với **file/symbol code thật** (không dir-bucket) → step validate/audit sau. **Verify trước:** `npx gitnexus impact <file.go> --json` trả schema `{dependents/nearest/flows}` dùng được (E-schema/Q-4) | Prompt step sau có block `### source.dependence`: "Sửa `<target>` ảnh hưởng `<dependents>` + flows `<...>`"; run chưa có contract / contract inferred (dir-bucket) → không có block (rỗng có chủ đích); GitNexus vắng/stale → **note "chưa index", không lỗi** (v1 không fallback). Nếu impact chỉ nhận symbol không nhận file-path → dừng + follow-up | Prompt-log block dependence + output `npx gitnexus impact <file> --json` + `npx gitnexus status` | |
+| B13 | Scope-drift warn (file-level, **P-2**) | Coder khai contract (`declared_paths`) rồi sửa **một file ngoài** declared_paths | `r-scope` phát **warn** liệt kê path ngoài scope; turn KHÔNG bị chặn (warn v1); tự loại `requirements/`/`change-audit/`/`*.md` | SSE violation + offending paths | |
+| B14 | Scope-drift block (symbol-level, GitNexus, **P-2**) ⛔ **chặn bởi [BUG-323](../../09-BugFix/todo/BUG-323-GitNexus-Structure-Provider-Always-Returns-Empty.md)** | Như B13 nhưng edit ngoài-scope chạm symbol có dependents (`structure.Available()`), `gate_mode=enforce` | Violation **high-severity** + **block** (không phải warn) nhờ symbol-truth. **Hiện KHÔNG thể pass**: `Dependents` luôn rỗng ⇒ `HighSeverity` luôn false ⇒ `r-scope` luôn warn | Card block + severity=high + symbol/dependents | |
+| B15 | r-contract reprompt + inferred fallback (**P-1/P-2**) | Turn code **không** khai contract | `r-contract` reprompt **1 lần**; vẫn không khai → contract `Confidence=inferred` từ diff đầu, KHÔNG chặn | Reprompt log + entry inferred trong `contracts.ndjson` | |
+| B16 | Intent-signature spec-drift (**P-3**) | Feature có Head + `intent_signature`; sửa **governing doc** của feature | Head status lật `spec_drifted`; signature tính lại; chip đổi | `canonical/<key>.json` status + chip | |
+| B17 | Churn collapse A→B→C→A không replay (**P-4**) | Feature qua vòng đổi-rồi-hoàn nhiều commit | Prompt gói chỉ **canonical hiện hành + rejected records**, KHÔNG replay churn dương | Prompt-log không churn lặp + decisions list | |
+| B18 | Negative knowledge surfaced (**P-4**) | Feature có ≥1 alternative bị bỏ kèm lý do | List "do NOT re-attempt" trong Head block + panel | Head decisions + panel | |
+| B19 | Head-first CẢ Claude & Codex — live (**P-5** ⚠️blocker) | Feature verified có Head; chạy turn Coding trên **Claude** rồi **Codex** | Cả hai prompt: `## Canonical state` **trước** `### Change History`; không lặp | Prompt-log 2 provider | |
+| B20 | Budget drop raw history có log (**P-5** ⚠️blocker T-2) | Ép token pressure (history dài) | Raw history **drop/summarize**, Head giữ; có **log dòng lý do drop** | Packer log + package thiếu churn thô | |
+| B21 | Canonical Head panel desktop (**P-5** ⚠️blocker T-5) | Mở panel "Canonical Head" trong `ProjectsSettings` (desktop-flowpilot), nhập feature/run/step | behavior + signature-status chip + rejected-decisions + **in/out-of-scope diff thật** (cần expose `changecontract.ScopeDiff` qua HTTP; MVP hiện chỉ show declared paths) | Screenshot panel | |
+| B22 | Canonical head Drive-sync (**P-5**) | Feature có Head; chạy contextsync `context-engine/` | `canonical/*.json` trong manifest; `contracts.ndjson` **không bao giờ** sync | Manifest listing | |
+| B23 | dependence bounded + deterministic + filter (**P-6**, mở rộng B12) | Contract declared trộn glob/doc/dir-bucket + >10 file thật | Chỉ query target **code cụ thể** (glob/doc/dir-bucket bị loại); cap ≤10 target & ≤15 dependents; 2 run output **giống hệt** (sorted); tôn trọng budget ~25s | 2-run diff rỗng + timing + block chỉ ref target cụ thể | |
+
+### 6.1 Full-loop integrated E2E (cổng đóng CP-43)
+
+Một phiên thật chạy suốt **P-1→P-6** trên cùng một feature, chứng minh các cơ chế **ăn khớp** chứ không chỉ đúng rời rạc. Ghi ☐ khi cả chuỗi pass.
+
+| Bước | Hành động | Kỳ vọng (row liên quan) |
+|---|---|---|
+| 1 | Coder khai `change.contract` (feature/intent/declared_paths) → sửa **trong** scope | Contract lưu; không drift (B1) |
+| 2 | Sửa thêm **một** file **ngoài** scope | `r-scope` warn (B13); step sau có `### change.contract` |
+| 3 | Feature resolve → viết Canonical Head + `intent_signature` | `canonical/<key>.json`; chip `current` (B6/B16) |
+| 4 | Turn sau hoàn nguyên một hướng cũ + ghi rejected record | Head collapse (B17); "do NOT re-attempt" thêm mục (B18) |
+| 5 | Turn Coding kế trên Claude **và** Codex | Prompt dẫn đầu Head, không replay churn (B19) |
+| 6 | Mở panel desktop cho feature/run/step | behavior + chip + decisions + scope-diff (B21) |
+| 7 | Step validate/audit với contract declared **file thật** | `### source.dependence` blast-radius qua GitNexus (B12/B23) |
+| 8 | contextsync chạy | `canonical/*.json` vào manifest; `contracts.ndjson` local (B22) |
+
+**Cổng đóng CP-43 → `done`:** chỉ khi (a) battery §4 xanh toàn bộ, (b) B1–B23 tick, (c) chuỗi §6.1 pass, (d) blocker Task-188 (B19/B20/B21) đã đóng **hoặc** có waiver ghi rõ lý do + hạn.
 
 ---
 

@@ -80,6 +80,10 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 		if head, err := captureGitHead(rs.workspaceCwd); err == nil {
 			rs.flowStartGitHead = head
 		}
+		// CP-55 P-3: capture the pre-existing dirty-file fingerprint once, so
+		// runContractFreezeNode can later tell "already dirty before this flow
+		// started" apart from "the planner just touched this."
+		rs.flowStartWorktreeFingerprint = baselineWorktreeFingerprint(rs.workspaceCwd)
 	}
 	s.mu.Unlock()
 	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
@@ -119,6 +123,7 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 	if rs := s.runs[parentRunID]; rs != nil {
 		rs.activeFlowEdges = record.Definition.Edges
 		rs.activeFlowNodes = record.Definition.Nodes
+		rs.activeFlowAcceptanceNodes = append([]string(nil), record.Definition.AcceptanceNodes...)
 	}
 	s.mu.Unlock()
 

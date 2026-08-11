@@ -5,14 +5,14 @@
 - Document ID: `CP-53`
 - Title: `Review Loop — Bịt các lỗ rò của Verifier Gate trong Flow-Coding`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `reviewing`
 - Owner: `FlowPilot`
 - Reviewers: `<chờ phân công>`
 - Created: `2026-07-22`
-- Last Updated: `2026-07-22`
+- Last Updated: `2026-08-11`
 - Parent Documents: [CP-35 (nguồn gốc flow gate, P-4/P-5)](../), [CP-51 (durable turn dispatch)](../done/CP-51-PhaseAB-Timeline-And-Verification-Log.md), [CP-50 / CP-43 (context sources)](../)
-- Child Documents: `<Task docs sẽ tạo sau khi duyệt>`
-- Related Documents: `Task-155 (r-reg decision card), Task-156 (baseline), Task-223/225/242/247 (artifact + tier gates), BUG-288, BUG-289, SD-21 (change contract)`
+- Child Documents: [Task-272](../../08-Task/todo/Task-272-CP53-Gate-Observability-Metrics.md) (P-6), [Task-273](../../08-Task/todo/Task-273-CP53-Gate-Blind-Baseline-Fail-Closed.md) (P-1), [Task-274](../../08-Task/todo/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) (P-2), [Task-275](../../08-Task/todo/Task-275-CP53-Dogfood-Gate-Check-Hooks.md) (P-3), [Task-276](../../08-Task/todo/Task-276-CP53-Waiver-Ledger-With-Expiry.md) (P-4), [Task-277](../../08-Task/todo/Task-277-CP53-R-Newtest-Reprompt-Rule.md) (P-5), [CP-53-Test-Steps](./CP-53-Test-Steps.md)
+- Related Documents: `Task-155 (r-reg decision card), Task-156 (baseline), Task-223/225/242/247 (artifact + tier gates), BUG-288, BUG-289, SD-21 (change contract)`, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md), [CP-43-52-53-54-note](./CP-43-52-53-54-note.md)
 - Replaces: `<không>`
 - Tags: `flow-gate, review-loop, verifier, regression, flowgate, quality`
 
@@ -29,7 +29,8 @@
 
 ### Current Ask
 
-- Giao các thay đổi khiến flow-coding loop **fail closed**: một regression hoặc một trạng thái "done" không kiểm chứng được phải **dừng turn**, không bao giờ được im lặng cho qua — và làm cho chính repo FlowPilot bị gate bởi đúng cái oracle mà nó ship cho user.
+- **Plan-cut đang review (2026-08-11):** duyệt Task-272…277 + [CP-53-Test-Steps](./CP-53-Test-Steps.md) trước khi code. Sau approve: implement theo thứ tự P-6→P-1→P-2→P-3→P-4→P-5, tuân `safe-fix-contract` (additive tests only; stop on old fail; Claude+Codex+Grok khi đụng provider/shared flow).
+- Outcome cuối: flow-coding loop **fail closed** — regression hoặc "done" không kiểm chứng được phải **dừng turn**; repo FlowPilot tự dogfood oracle.
 
 ### Key Decisions
 
@@ -131,12 +132,51 @@ Map solution ↔ lỗ rò:
 
 ## 5. Work Breakdown
 
-- `P-1` **Baseline fail-closed (S-1).** Thêm phân loại `gate_blind` cho baseline thiếu / `EnvError` / red-at-capture; surface thành event block ở mode `enforce`; thêm baseline health + freshness check + `flaky-quarantine.json`. Files: `flowgate/{baseline,oracle}.go`, `runner/gate_hook.go`.
+### 5.1 Phase → Task map (execution order)
+
+| Order | Phase | Task | Hole | `feature_key` | Provider class (safe-fix R2) |
+|------:|-------|------|------|---------------|--------------------------------|
+| 1 | **P-6** Observability spike | [Task-272](../../08-Task/todo/Task-272-CP53-Gate-Observability-Metrics.md) | Q-A | `context-regression-engine` | Agnostic (Go emit/log only) |
+| 2 | **P-1** Baseline fail-closed / `gate_blind` | [Task-273](../../08-Task/todo/Task-273-CP53-Gate-Blind-Baseline-Fail-Closed.md) | H-1, H-2 | `context-regression-engine` | Agnostic (post-turn `gate_hook`, all modes) |
+| 3 | **P-2** Done requires machine verdict | [Task-274](../../08-Task/todo/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) | H-3 | `agent-flow-engine` | Shared flow runtime — **matrix Claude+Codex+Grok** (fake adapters OK) |
+| 4 | **P-3** Dogfood `gate-check` + hooks | [Task-275](../../08-Task/todo/Task-275-CP53-Dogfood-Gate-Check-Hooks.md) | H-5 | `context-regression-engine` | Agnostic (scripts/hooks; Linux primary; Windows path noted) |
+| 5 | **P-4** Waiver ledger + expiry | [Task-276](../../08-Task/todo/Task-276-CP53-Waiver-Ledger-With-Expiry.md) | H-4 | `context-regression-engine` | Agnostic (override path shared) |
+| 6 | **P-5** `r-newtest` reprompt | [Task-277](../../08-Task/todo/Task-277-CP53-R-Newtest-Reprompt-Rule.md) | H-3 (coverage) | `context-regression-engine` | Agnostic (`flowgate` rule) |
+
+### 5.2 Phase detail (unchanged intent)
+
+- `P-1` **Baseline fail-closed (S-1).** Thêm phân loại `gate_blind` cho baseline thiếu / `EnvError` / red-at-capture; surface thành event block ở mode `enforce`; thêm baseline health + freshness check + `flaky-quarantine.json`. Files: `flowgate/{baseline,oracle}.go`, `runner/gate_hook.go`. **Không** nới BUG-288 corrupt-baseline fail-closed.
 - `P-2` **Done gate bằng verdict (S-2).** Yêu cầu `submit-review-outcome` PASS trước `synthesis→done`; thêm cấu hình bất đối xứng model/effort của reviewer. Files: `flow-pack/flows/review-loop.yaml`, agent synthesizer, `runner/flow_*`.
 - `P-3` **Dogfood gate (S-3).** `scripts/gate-check` (go + ts, hai baseline tách biệt theo `D-6`), `.git/hooks/pre-commit`, `Stop` hook trong `.claude/settings.json`, script bootstrap baseline.
 - `P-4` **Waiver ledger (S-4).** Waiver override được lưu bền kèm lý do + hạn; re-arm khi hết hạn; surface các waiver đang mở.
-- `P-5` **Rule test mới (S-5).** Rule reprompt `r-newtest` + defaults; prompt remediation test suy từ AC.
-- `P-6` **Spike observability (Q-A).** Phát metric gate: block rate, reprompt/escalate rate, override rate, và **cost-per-accepted-change**. Trả lời được lỗ nào rò nhiều nhất.
+- `P-5` **Rule test mới (S-5).** Rule reprompt `r-newtest` + defaults; prompt remediation test suy từ AC. **Chỉ yêu cầu ADD test mới** — không bao giờ yêu cầu edit/delete test cũ (oracle-rule / additive-tests-only).
+- `P-6` **Spike observability (Q-A).** Phát metric gate: block rate, reprompt/escalate rate, override rate, và **cost-per-accepted-change**. Trả lời được lỗ nào rò nhiều nhất. Minimal spike — không UI dashboard full.
+
+### 5.3 Safe-fix-contract (mandatory for every Task)
+
+Companion: [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md).
+
+| Rule | CP-53 enforcement |
+|------|-------------------|
+| **R1** Old suite green / untouched | Chỉ **ADD** `*_test.go` mới (`cp53_*`, `task27x_*`). Old test fail → **STOP**, report, không sửa assertion. Exception chỉ khi operator viết rõ allow. |
+| **R2** Claude + Codex + Grok | P-1/P-3/P-4/P-5/P-6: chứng minh **provider-agnostic** (gate/scripts Go-owned). **P-2 bắt buộc** parameterized/fake-adapter matrix cả 3 provider. |
+| **R3** Matrix coverage | Mỗi Task: happy path + near-miss + degraded (missing baseline / no verdict / expired waiver / env error). Không ship 1 happy-path unit. |
+| **History** | Trước code: đọc CA gần nhất cho `context-regression-engine` / `agent-flow-engine` (BUG-288/289 fail-closed). **Will not undo:** corrupt-baseline block, `r-reg`/`r-tests` always-block, sticky-until-green override clear. |
+| **Audit** | Mỗi Task done → 1 `CA-*` + commit `[Feature|BugFix|…][feature_key]`. |
+
+### 5.4 Plan-review findings (2026-08-11)
+
+| # | Finding | Resolution in Task cut |
+|---|---------|------------------------|
+| F-1 | `LoadBaseline` missing = `(nil,nil)` vs corrupt = error — H-1 chỉ thiếu, không đụng BUG-288 | Task-273: `gate_blind` **chỉ** missing / EnvError / red-at-capture; corrupt path unchanged |
+| F-2 | `submit-review-outcome` đã có trong `review-loop.yaml` — thiếu enforce done | Task-274: hub/synthesizer gate, không rewrite tool schema trừ khi cần |
+| F-3 | Dogfood trên Windows thiếu `sh` (adapter tests) | Task-275: Linux/CI primary; Windows = documented degrade / Git Bash; không claim full Windows dogfood |
+| F-4 | `r-newtest` dễ xung đột oracle-rule | Task-277: chỉ detect **thiếu file test mới** trong turn diff; remediation = ADD test, never edit old |
+| F-5 | P-6 full dashboard scope creep | Task-272: log/metric emit + local inspect; no desktop UI |
+| F-6 | Cry-wolf (R-1) nếu `gate_blind` block mọi workspace mới | Task-273: first-turn auto-capture path vẫn được; blind chỉ khi capture skip/fail **và** code diff có production paths |
+| F-7 | Task-277 draft từng viết "new/changed *_test.go" — mâu thuẫn oracle-rule | **Fixed 2nd review:** only **newly added** test files satisfy `r-newtest`; editing old tests never counts |
+| F-8 | P-6 land trước ≠ chờ telemetry tuần mới làm P-1 | P-6 = instrument spike same sprint; P-1 proceeds immediately after 272 ships — Q-A refines later, does not block H-1 |
+| F-9 | Task-276 có thể đụng desktop decision-card | Split in impl: Go ledger+re-arm mandatory; desktop reason UI additive TS tests if accept path is UI-owned — still no old-test edits |
 
 ## 6. Touched Areas
 
@@ -172,10 +212,28 @@ Map solution ↔ lỗ rò:
 
 ## 11. Definition of Done
 
-- Baseline thiếu / `EnvError` / red-at-capture tạo ra một block `gate_blind` nhìn thấy được ở mode `enforce` (chứng minh bằng test + kiểm thủ công xóa baseline) — không có green im lặng.
-- `review-loop` không thể tới `done` nếu chưa có một verdict PASS của reviewer kiểm bằng máy được.
-- `scripts/gate-check` từ chối một commit làm regression một test repo trước đó đang xanh, qua cả git pre-commit hook lẫn Claude `Stop` hook.
-- Override test đã accept được ghi vào waiver ledger kèm lý do + hạn và re-arm khi hết hạn.
-- Một Task đổi code mà không có test mới bị reprompt (`r-newtest`).
-- Metric gate (block/reprompt/escalate/override rate + cost-per-accepted-change) được phát và xem lại được.
-- Mọi test mới đều additive; không sửa test có sẵn nếu chưa được duyệt (`additive-tests-only`).
+### 11.1 Product DoD (all must be true)
+
+- [ ] **P-6 / Task-272:** Metric gate (block / reprompt / escalate / override rate + cost-per-accepted-change) emit và inspect được local (log hoặc `.flowpilot/` artifact).
+- [ ] **P-1 / Task-273:** Baseline thiếu / `EnvError` / red-at-capture → block `gate_blind` nhìn thấy ở mode `enforce` (test + manual xóa baseline) — **không** green im lặng. Corrupt baseline vẫn fail-closed như BUG-288.
+- [ ] **P-2 / Task-274:** `review-loop` không tới `done` nếu chưa có verdict PASS kiểm bằng máy (`submit-review-outcome`). Matrix Claude+Codex+Grok xanh.
+- [ ] **P-3 / Task-275:** `scripts/gate-check` từ chối commit regression test xanh trước đó, qua git pre-commit **và** Claude `Stop` hook (Linux/CI chứng minh; Windows documented).
+- [ ] **P-4 / Task-276:** Override accept → waiver ledger (lý do + hạn); hết hạn → re-arm `r-reg`.
+- [ ] **P-5 / Task-277:** Task đổi production code không có test mới → reprompt `r-newtest` (chỉ yêu cầu ADD test).
+- [ ] Verification guide [CP-53-Test-Steps](./CP-53-Test-Steps.md) tick được (automated + manual) cho mọi phase.
+- [ ] Mỗi Task có `CA-*` + không undo BUG-288/289 always-block contracts.
+
+### 11.2 Safe-fix DoD (per Task, all required)
+
+- [ ] Pre-existing tests **untouched** và **green** trên phạm vi liên quan (Linux/CI khi đụng spawn).
+- [ ] New tests cover reported repro **và** matrix near-miss / degraded (R3).
+- [ ] Provider class ghi trong CA: agnostic evidence **hoặc** Claude+Codex+Grok matrix (R2).
+- [ ] Prior CA claims for feature không bị undo.
+- [ ] Change-audit entry written với `feature_key` đúng registry.
+
+### 11.3 Explicit non-goals (out of CP-53)
+
+- Không rewrite CP-43/54/55 context packing.
+- Không full desktop metrics dashboard.
+- Không symbol-level test attribution mới.
+- Không bắt buộc Windows native dogfood parity với Linux trong v1.

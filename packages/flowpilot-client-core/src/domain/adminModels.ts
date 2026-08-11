@@ -153,6 +153,20 @@ export interface Workflow {
    * path (which only starts the entry node today) — preserved for the
    * planned FlowEdge-driven generic executor. */
   edges: WorkflowFlowEdge[];
+  /**
+   * CP-55 P-1 (Task-263/CA-424): the flow's declared acceptance-boundary
+   * node ids (`agentpack.FlowDefinition.AcceptanceNodes`, root YAML key
+   * `acceptance_nodes`, column `workflows.acceptance_nodes_json`). Optional
+   * so a caller that constructs a `Workflow` without it (e.g. an older
+   * fixture) still type-checks — every pre-CP-55 row has none declared.
+   * Read-only/display-only in this Settings UI: no built-in flow declares an
+   * `agent.code` writer yet (P-1 migrates none), so there is nothing to
+   * author here today; a selector/editor is deferred to whichever slice
+   * first lets a user author their own `agent.code` node (CP-55 P-8
+   * prerequisite). It must still round-trip through save/clone so a later
+   * migrated or cloned flow's safety boundary is never silently dropped.
+   */
+  acceptanceNodes?: string[];
 }
 
 /** One edge in a Workflow's flow graph (CP-42/Task-175). */

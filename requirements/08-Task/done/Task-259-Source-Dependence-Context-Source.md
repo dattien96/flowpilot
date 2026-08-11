@@ -5,7 +5,7 @@
 - Document ID: `Task-259`
 - Title: `source.dependence Context Source (GitNexus Blast-Radius From Change Contract)`
 - Phase: `task`
-- Status: `draft`
+- Status: `done` (2026-08-11 — unblocked by [BUG-323](../../09-BugFix/done/BUG-323-GitNexus-Structure-Provider-Always-Returns-Empty.md) + [CA-434](../../change-audit/CA-434-symbol-input-and-source-dependence-task259.md): `symbols:` parser, `GitNexusImpactTargets`, `source.dependence` registered in default set.)
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-17`

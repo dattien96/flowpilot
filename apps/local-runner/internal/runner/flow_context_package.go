@@ -49,6 +49,22 @@ type FlowContextHints struct {
 	ChangedPaths        []string // from stack trace / diff
 	ExplicitSourcePaths []string // user-provided or catalog-glob
 
+	// ResolvedFeatureKey lets a caller that already knows the feature key with
+	// certainty skip step 1's NL-based resolution entirely (CP-55 P-8): a
+	// Flow's first coder context build, right after a contract has just been
+	// frozen, knows its FrozenContractRecord.FeatureKey directly — re-deriving
+	// it via fuzzy matching against UserPrompt (which for this call is only
+	// the frozen contract's one-sentence Intent, not necessarily anything the
+	// feature catalog resolves confidently) would be strictly less reliable
+	// than the value already in hand, and — critically — a low/unresolved
+	// confidence from that fuzzy match would make every feature-scoped
+	// ContextSource (feature.history, chat.summary) skip entirely (their own
+	// `hints.FeatureConfidence != ConfidenceVerified` guard), silently
+	// degrading feature-history ranking back to nothing on exactly the turn
+	// P-8's own guarantee needs it to work. Empty (the default for every
+	// other caller) preserves the existing NL-resolution behavior unchanged.
+	ResolvedFeatureKey string
+
 	// Workspace, FeatureKey, and FeatureConfidence are populated internally by
 	// BuildFlowContextPackage (feature resolution runs as a pre-processing step,
 	// not a ContextSource — CP-44 P-2/Task-192 T-1) before Collect is called, so
@@ -165,13 +181,49 @@ func buildFlowContextPackage(ctx context.Context, workspace string, hints FlowCo
 	// Step 1: resolve feature key via the existing deterministic resolver —
 	// no vector search, no model call. This stays inline (not a ContextSource)
 	// because every other source needs the resolved key/confidence as input.
-	dotFP := filepath.Join(workspace, ".flowpilot")
-	catalog, err := featurecatalog.LoadCatalog(dotFP)
-	if err != nil {
-		pkg.FeatureConfidence = ConfidenceUnresolved
-		pkg.Warnings = append(pkg.Warnings, "feature catalog unavailable: "+err.Error())
+	// CP-55 P-8: a caller-supplied ResolvedFeatureKey skips the fuzzy NL
+	// resolution below entirely — see its own doc comment on FlowContextHints.
+	//
+	// CORRECTION (CP-55 P-8 Claude-agent review, Important Finding 3):
+	// ResolvedFeatureKey used to be marked ConfidenceVerified unconditionally,
+	// with no cross-check against the feature catalog — runContractFreezeNode
+	// deliberately does not allowlist the planner's own feature_key either
+	// ("trusted for now"), so a planner LLM that hallucinated or mis-selected
+	// a feature_key colliding with a real, but wrong, existing feature would
+	// silently and confidently route feature.history/chat.summary to the
+	// wrong feature, with no warning anywhere in the pipeline. Rejecting an
+	// unrecognized key outright would also break two legitimate cases: a
+	// planner naming a genuinely NEW feature not in the catalog yet, and a
+	// project with no catalog built at all yet (a normal early-project state,
+	// not a validation signal against this specific key) — so this only
+	// downgrades confidence to ConfidenceLow when the catalog loads
+	// successfully AND positively lacks this key; a catalog load failure
+	// (missing/unbuilt) keeps the caller-supplied value trusted exactly as
+	// before, since there is no actual signal against it in that case. A
+	// brand-new feature has no history to rank anyway, so nothing is lost by
+	// downgrading it; an existing-but-wrong collision at least no longer
+	// masquerades as independently verified.
+	if strings.TrimSpace(hints.ResolvedFeatureKey) != "" {
+		key := strings.TrimSpace(hints.ResolvedFeatureKey)
+		pkg.FeatureKey = key
+		pkg.FeatureConfidence = ConfidenceVerified
+		dotFP := filepath.Join(workspace, ".flowpilot")
+		if catalog, err := featurecatalog.LoadCatalog(dotFP); err == nil {
+			if _, ok := catalog.Get(key); !ok {
+				pkg.FeatureConfidence = ConfidenceLow
+				pkg.Warnings = append(pkg.Warnings, fmt.Sprintf(
+					"resolved feature key %q is not a known catalog entry — treating as low-confidence (new feature or unverified planner value)", key))
+			}
+		}
 	} else {
-		pkg.FeatureKey, pkg.FeatureConfidence = resolvePackageFeature(hints.UserPrompt, catalog, &pkg.Warnings)
+		dotFP := filepath.Join(workspace, ".flowpilot")
+		catalog, err := featurecatalog.LoadCatalog(dotFP)
+		if err != nil {
+			pkg.FeatureConfidence = ConfidenceUnresolved
+			pkg.Warnings = append(pkg.Warnings, "feature catalog unavailable: "+err.Error())
+		} else {
+			pkg.FeatureKey, pkg.FeatureConfidence = resolvePackageFeature(hints.UserPrompt, catalog, &pkg.Warnings)
+		}
 	}
 
 	// Step 2: collect the enabled context sources (CP-44 P-2/P-4).
@@ -325,7 +377,6 @@ func readSourceExcerpts(workspace string, paths []string) (excerpts []FlowContex
 
 // RenderFlowContextPackage renders the package as a stable Markdown block
 // suitable for injection into Flow Mode Coding prompts (Task-169).
-// The output always contains "No vector retrieval used" for audit visibility.
 //
 // Section body order is strictly by FlowContextSection.Priority (ascending),
 // then SourceType. Legacy fields (HistoryBlock/SourceExcerpts/DiscussionBlock)
@@ -334,18 +385,17 @@ func readSourceExcerpts(workspace string, paths []string) (excerpts []FlowContex
 // correctly, and MCP/Jira/Firebase (priority 6–9) never hard-code before
 // source.excerpt (priority 4) (CP-50 residual P1).
 func RenderFlowContextPackage(pkg FlowContextPackage) string {
+	applyFlowContextPackBudget(&pkg)
 	var sb strings.Builder
-	sb.WriteString("## Flow Context Package\n\n")
-	sb.WriteString(fmt.Sprintf("- **Package ID**: %s\n", pkg.PackageID))
+	sb.WriteString("## Context\n")
 	featureLabel := pkg.FeatureKey
 	if featureLabel == "" {
 		featureLabel = "unresolved"
 	}
-	sb.WriteString(fmt.Sprintf("- **Feature**: %s (confidence: %s)\n", featureLabel, pkg.FeatureConfidence))
+	sb.WriteString(fmt.Sprintf("- feature: %s\n", featureLabel))
 	if len(pkg.SourceDocIDs) > 0 {
-		sb.WriteString(fmt.Sprintf("- **Source doc**: %s\n", strings.Join(pkg.SourceDocIDs, ", ")))
+		sb.WriteString(fmt.Sprintf("- docs: %s\n", strings.Join(pkg.SourceDocIDs, ", ")))
 	}
-	sb.WriteString("- **No vector retrieval used**\n")
 
 	for _, s := range sectionsForRender(pkg) {
 		renderFlowContextSection(&sb, s, pkg)
@@ -409,6 +459,8 @@ func sectionsForRender(pkg FlowContextPackage) []FlowContextSection {
 			sections[i].Priority = 2
 		case ContextSourceChangeContract:
 			sections[i].Priority = 3
+		case ContextSourceDependence:
+			sections[i].Priority = 3
 		case ContextSourceSourceExcerpt:
 			sections[i].Priority = 4
 		case ContextSourceChatSummary:
@@ -449,16 +501,13 @@ func renderFlowContextSection(sb *strings.Builder, s FlowContextSection, pkg Flo
 			sb.WriteString(changeContractTrustedMarker(pkg.WorkflowRunID) + "\n")
 		}
 		sb.WriteString("\n")
-		if s.SourceRef != "" {
-			sb.WriteString(fmt.Sprintf("_Source: %s_\n\n", s.SourceRef))
-		}
 		sb.WriteString(s.Body)
 		sb.WriteString("\n")
 	case ContextSourceCanonicalHead:
 		if strings.TrimSpace(s.Body) == "" {
 			return
 		}
-		// Body already carries "## Canonical state …"; write verbatim.
+		// Body already carries "## Canonical …"; write verbatim.
 		sb.WriteString("\n" + strings.TrimSpace(s.Body) + "\n")
 	case ContextSourceFeatureHistory:
 		body := s.Body
@@ -468,8 +517,8 @@ func renderFlowContextSection(sb *strings.Builder, s FlowContextSection, pkg Flo
 		if strings.TrimSpace(body) == "" {
 			return
 		}
-		sb.WriteString("\n### Change History\n\n")
-		sb.WriteString(body)
+		sb.WriteString("\n")
+		sb.WriteString(strings.TrimSpace(body))
 		sb.WriteString("\n")
 	case ContextSourceSourceExcerpt:
 		excerpts := s.Excerpts
@@ -490,17 +539,14 @@ func renderFlowContextSection(sb *strings.Builder, s FlowContextSection, pkg Flo
 		if strings.TrimSpace(body) == "" {
 			return
 		}
-		sb.WriteString("\n### Prior Discussion\n\n")
-		sb.WriteString(body)
+		sb.WriteString("\n")
+		sb.WriteString(strings.TrimSpace(body))
 		sb.WriteString("\n")
 	default:
 		if strings.TrimSpace(s.Body) == "" {
 			return
 		}
 		sb.WriteString(fmt.Sprintf("\n### %s\n\n", s.SourceType))
-		if s.SourceRef != "" {
-			sb.WriteString(fmt.Sprintf("_Source: %s_\n\n", s.SourceRef))
-		}
 		sb.WriteString(s.Body)
 		sb.WriteString("\n")
 	}
@@ -518,9 +564,6 @@ func renderGenericSections(sb *strings.Builder, sections []FlowContextSection) {
 			continue
 		}
 		sb.WriteString(fmt.Sprintf("\n### %s\n\n", s.SourceType))
-		if s.SourceRef != "" {
-			sb.WriteString(fmt.Sprintf("_Source: %s_\n\n", s.SourceRef))
-		}
 		sb.WriteString(s.Body)
 		sb.WriteString("\n")
 	}

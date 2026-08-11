@@ -98,3 +98,92 @@ Reviewer: gpt-5.6-terra high
 Result: OK — no remaining blocking issues
 Validated: gen high-water, locked persist, stale HTTP guard, 409 restriction, terminal settle clear, provider matrix, CA-414
 Waiver: store.history-replay-order pre-existing red (not this diff)
+
+# Review Results
+
+## Pass 1 — Codex 5.6 Terra — CP-55 P-1
+
+**Request summary:** Implement CP-55 P-1 explicit Flow writer semantics and safety-topology foundation with additive tests, Task-263, and CA-424. Normal chat must remain unrestricted.
+
+**Result:** NOT OK
+
+1. **Critical:** `flow_safety_topology.go:140` returns `true` when the target is absent or unreachable. It can accept a writer/freeze forward-cycle disconnected from every entry. Require declared IDs and entry reachability; add absent-ID, unreachable-cycle, no-entry-cycle, and multiple-entry tests.
+2. **Critical:** Task-263 is phase-format noncompliant. Its Parent Documents metadata omits linked SD-21/SS-14, and required `## 8. Completion Notes` was replaced by `## 8. Cross-Provider Note`.
+3. **Important:** The acceptance check only rejects direct `writer -> done`. A non-acceptance intermediate node passes, so the claim that every terminal path crosses acceptance is false. Model a declared acceptance boundary and traverse paths, or narrow the P-1 claim strictly to a non-direct-done foundation check.
+4. **Important:** Verification claims conflict. Task-263 calls the full runner suite green while CA-424 records failures; the current environment produces broader prerequisite failures. Record only reproducible focused/package/build evidence and correct the new-test count.
+5. **Important:** Task-263 links a nonexistent CA-328 filename. Use `CA-328-bug288-flow-mode-three-tier-gate-and-change-contract-reentry.md`.
+6. **Important:** CP-55 metadata uses invalid phase/status values for its reference format.
+7. **Medium:** CA-424's change-ledger fence omits the SS-13 `entries:` records and uses unsupported `change_type`/`summary` fields.
+
+**Confirmed positives:** no pre-existing test file is modified; focused registry tests pass; the full `internal/agentpack` suite passes; Normal chat behavior was not changed; `contract.freeze` placeholder fails closed.
+
+## Pass 2 — Codex 5.6 Terra — CP-55 P-1 Review Fix
+
+**Request summary:** Re-review the fail-closed dominance and explicit `acceptance_nodes` fixes from pass 1.
+
+**Result:** NOT OK
+
+1. **Important:** writer paths with no reachable terminal `done` still pass vacuously. Require at least one reachable `done` per writer and add no-successor plus accepted-cycle-without-done rejection tests.
+2. **Important:** `AcceptanceNodes` is parsed from embedded YAML but is not persisted/restored by the Supabase-backed user-flow store. Add durable storage/migration, read/write/clone/mirror coverage, or the P-8 migration will fail after reload.
+3. **Minor:** no test exercises actual root-YAML `acceptance_nodes` parsing.
+4. **Minor:** blank/duplicate acceptance IDs are not explicitly rejected.
+5. **Minor:** CA-424's targeted-runner test count is internally inconsistent and conflicts with the current reproducible focused command.
+
+**Confirmed fixed:** declared-node/entry reachability now makes dominance fail closed; stateful `(node, crossedAcceptance)` traversal catches mixed branches and terminates on cycles; Task-263 now has compliant metadata, upstream links, and `Completion Notes`; Normal chat remains unchanged; no pre-existing test file is modified.
+
+## Pass 3 — Codex — CP-55 P-1 Persistence Review
+
+**Request summary:** Re-review the P-1 topology and durable `acceptance_nodes` implementation after the pass-2 fixes.
+
+**Result:** NOT OK
+
+1. **Important:** The actual TypeScript Settings clone path drops `acceptance_nodes_json`. The Go store is correct, but `adminModels.ts` has no `acceptanceNodes`; `mapWorkflow`, `saveWorkflow`, and `cloneWorkflow` in `supabaseAdminRepository.ts` omit the field; the Settings draft/save path cannot carry it. A cloned migrated built-in therefore receives the database default `[]` and loses its safety boundary.
+2. **Important:** Task-263 is stale after pass 2. It omits the Supabase store, migration, new tests, and table scope; retains old verification counts; and describes only the pass-1 production files.
+3. **Minor:** No focused test reads `20260730121000_add_workflow_acceptance_nodes.sql` and asserts the table, column, `jsonb NOT NULL`, and default `[]` contract.
+4. **Minor:** CA-424 overstates direct clone/update/mirror proof. The new acceptance-bearing test calls a conversion helper, while the existing clone/update tests use empty lists.
+5. **Minor:** A topology comment claims every forward path reaches `done`, while the implementation intentionally requires only at least one reachable `done` and checks every reached `done` path crosses acceptance.
+
+**Verified green:** agentpack 57 tests; focused AcceptanceNodes runner 6 tests; existing Supabase/mirror/clone/migration selection 50 tests; `go build ./...`; reached-done, blank/duplicate ID, YAML parsing, and Go store round-trip behavior.
+
+## Pass 4 — Codex — CP-55 P-1 Final Persistence Review
+
+**Request summary:** Re-review the complete P-1 implementation after the TypeScript Settings persistence, migration-test, and documentation fixes.
+
+**Result:** NOT OK
+
+1. **Minor:** `flow_safety_topology.go` uses the same diagnostic for both “no reachable terminal `done`” and “a reachable `done` path bypasses acceptance.” The former diagnostic falsely says such a path exists. Distinguish the cases or use one truthful combined message.
+2. **Minor:** CA-424 says `CloneBuiltin`, `UpdateUserFlow`, and `SyncBuiltins` acceptance-bearing preservation are “proven directly,” but the cited test directly executes only `builtinRecordFromFlow`. Narrow the claim to direct helper coverage plus code-path inspection, or add direct acceptance-bearing tests.
+3. **Minor:** Stale wording remains: CP-55 says the roster grew after two review-fix passes although there are three; Task-263 and CA-424 refer to “four touched/new production files” without qualifying that as the original pass-1 scope.
+
+**Verified green:** TypeScript repository and draft round-trip tests 7+3; existing TypeScript regression tests 5+8+5+4; Go AcceptanceNodes tests 7; agentpack tests 57; Go build/vet clean; focused migration SQL test green; no tracked pre-existing Go or TypeScript test modified.
+
+
+## Pass 5 — Codex — CP-55 P-1 Review Ledger Integrity and Final-Tree Count Audit
+
+**Request summary:** Re-review the CP-55 P-1 implementation after the pass-4 diagnostic-message, claim-narrowing, and stale-wording fixes, including the integrity of this review_result.md ledger and the Task-263 final-tree verification counts.
+
+**Result:** NOT OK
+
+1. **Important:** review_result.md overwrote 80 historical lines instead of appending; fixed by restoring the full HEAD ledger and appending CP-55 passes.
+2. **Minor:** Task-263 final-tree verification count said 57 but the fresh agentpack suite is 60.
+
+**Confirmed fixed:** all Pass-4 findings were otherwise fixed. Pass 6 remains outstanding; this is not a clean final review.
+
+## Pass 6 — Codex — CP-55 P-1 Finalization Review
+
+**Request summary:** Verify the append-only ledger repair, the corrected final-tree test count, all prior P-1 findings, and final repository hygiene.
+
+**Result:** NOT OK
+
+1. **Minor:** CP-55, Task-263, and CA-424 still described Pass 5 as outstanding even though Pass 5 existed and both findings were fixed.
+2. **Minor:** Twelve untracked `.rr_*.tmp` ledger-repair artifacts remained at the repository root.
+
+**Verified clean otherwise:** `review_result.md` preserves the exact HEAD prefix and is append-only; CP-55 Passes 1–5 occur once and in order; Task-263 records 60; agentpack, runner persistence, Go build/vet, TypeScript repository/Settings selections, and `git diff --check` pass; no tracked pre-existing test changed; the user's CP-54 diff and untracked CP-43-52-53-54 note are preserved. Pass 7 remains outstanding; this is not a clean final review.
+
+## Pass 7 — Codex — CP-55 P-1 Final Clean Gate
+
+**Result:** OK
+
+No Critical, Important, Medium, or Minor findings.
+
+Verified: `review_result.md` remains exact append-only history; current CP-55/Task-263/CA-424 status is truthful; all twelve repair artifacts are gone; Task-263 records 60; agentpack and runner persistence tests, Go build/vet, TypeScript repository/Settings selections, and `git diff --check` pass; no tracked pre-existing test changed; the user's CP-54 diff and untracked CP-43-52-53-54 note are preserved.

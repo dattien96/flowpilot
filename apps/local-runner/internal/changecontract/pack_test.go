@@ -28,7 +28,7 @@ func TestRenderHeadBlockIncludesBehaviorAndSignatureAndStatus(t *testing.T) {
 	if !strings.Contains(block, "abcdef012345") {
 		t.Errorf("expected block to include a truncated signature, got %q", block)
 	}
-	if strings.Contains(block, "Do NOT re-attempt") {
+	if strings.Contains(block, "Rejected:") {
 		t.Errorf("expected no rejected-decisions section when there are no Decisions, got %q", block)
 	}
 }
@@ -51,8 +51,8 @@ func TestRenderHeadBlockListsRejectedAndRevertedDecisions(t *testing.T) {
 		},
 	}
 	block := RenderHeadBlock(h)
-	if !strings.Contains(block, "Do NOT re-attempt") {
-		t.Fatalf("expected a 'do not re-attempt' section, got %q", block)
+	if !strings.Contains(block, "Rejected:") {
+		t.Fatalf("expected a rejected-decisions section, got %q", block)
 	}
 	if !strings.Contains(block, "lookup table") || !strings.Contains(block, "recursive approach") {
 		t.Fatalf("expected both rejected and reverted approaches listed, got %q", block)

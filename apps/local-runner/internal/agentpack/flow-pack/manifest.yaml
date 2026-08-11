@@ -7,6 +7,7 @@ agents:
   - agents/reviewer.md
   - agents/tester.md
   - agents/synthesizer.md
+  - agents/contract-planner.md
 flows:
   - path: flows/review-loop.yaml
     visibility: builtin

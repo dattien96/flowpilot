@@ -31,7 +31,7 @@ func TestChangeContractSourceFetchAndDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(sec.Body, "a.go") || !strings.Contains(sec.Body, "Declared scope") {
+	if !strings.Contains(sec.Body, "a.go") || !strings.Contains(sec.Body, "Scope (do not edit outside)") {
 		t.Fatalf("body: %q", sec.Body)
 	}
 	if sec.SourceRef == "" {
@@ -111,7 +111,7 @@ func TestComposeFeatureBlocksHeadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := composeFeatureBlocks(dot, "feat-a")
-	if !strings.Contains(got, "Canonical state") {
+	if !strings.Contains(got, "## Canonical") {
 		t.Fatalf("want head-only: %q", got)
 	}
 }
@@ -157,7 +157,7 @@ func TestComposeFeatureBlocksHeadBeforeHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := composeFeatureBlocks(dot, "feat-b")
-	headIdx := strings.Index(got, "Canonical state")
+	headIdx := strings.Index(got, "## Canonical")
 	if headIdx < 0 {
 		t.Fatalf("want head in compose: %q", got)
 	}
@@ -180,7 +180,7 @@ func TestRenderFlowContextPackageHeadFirst(t *testing.T) {
 		Sections: []FlowContextSection{
 			{
 				SourceType: string(ContextSourceCanonicalHead),
-				Body:       "## Canonical state of feature `f`\n\nhead-body-here\n",
+				Body:       "## Canonical \"f\" [current] sig=abc\n\nhead-body-here\n",
 			},
 		},
 	}

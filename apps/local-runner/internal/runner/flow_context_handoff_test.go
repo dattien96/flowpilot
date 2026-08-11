@@ -30,7 +30,7 @@ func TestFlowCodingPromptIncludesPlanContextPackage(t *testing.T) {
 	if !isFlowContextHandoff(out) {
 		t.Errorf("expected flowContextHandoffPrefix in output, got: %.200s", out)
 	}
-	if !strings.Contains(out, "## Flow Context Package") {
+	if !strings.Contains(out, "## Context") {
 		t.Error("rendered package section missing from Coding prompt")
 	}
 	if !strings.Contains(out, "implement the plan") {
@@ -56,9 +56,9 @@ func TestFlowCodingPromptIncludesPackageOnce(t *testing.T) {
 	if count != 1 {
 		t.Errorf("flowContextHandoffPrefix appears %d times, want 1", count)
 	}
-	count2 := strings.Count(injected, "## Flow Context Package")
+	count2 := strings.Count(injected, "## Context")
 	if count2 != 1 {
-		t.Errorf("## Flow Context Package appears %d times, want 1", count2)
+		t.Errorf("## Context appears %d times, want 1", count2)
 	}
 }
 
@@ -86,9 +86,10 @@ func TestFlowCodingRetryReusesPlanPackage(t *testing.T) {
 	if rs.planContextPackage.PackageID != firstID {
 		t.Error("retry must reuse same package ID, not rebuild")
 	}
-	// Both outputs should carry the same package ID.
-	if !strings.Contains(out1, firstID) || !strings.Contains(out2, firstID) {
-		t.Error("both outputs must reference the same package ID")
+	// Both outputs should carry the same trusted envelope marker (run ID, not package ID in render).
+	marker := flowContextTrustedMarker("run-1")
+	if !strings.Contains(out1, marker) || !strings.Contains(out2, marker) {
+		t.Error("both outputs must include the same flow context trust marker")
 	}
 }
 
@@ -139,7 +140,7 @@ func TestFlowContextPackageAppearsInPromptLog(t *testing.T) {
 	if !strings.Contains(composed, flowContextHandoffPrefix) {
 		t.Error("flow context prefix must be present in composed prompt before logging")
 	}
-	if !strings.Contains(composed, "No vector retrieval used") {
+	if !strings.Contains(composed, "## Context") {
 		t.Error("audit line must be present in composed prompt")
 	}
 }
@@ -350,6 +351,20 @@ func TestFlowCodingPromptSpawnWrappedDoesNotDuplicateHistory(t *testing.T) {
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				// Cannot use the shared autoAnswerPreflightContractPlanTurn
+				// helper here: its fixed "calc-core"/"fix rounding" draft
+				// would resolve the coder's context to a DIFFERENT feature
+				// than the one this fixture seeds ledger history under
+				// (fcpFixture / "agent-flow-engine"), and — since
+				// buildFlowContextPackage now sources the coder's own
+				// UserPrompt from the frozen contract's Intent, not the
+				// original prompt (CP-55 P-8) — would also strip the
+				// "agent-flow-engine" marker this test greps for out of the
+				// coder's turn-1 prompt entirely.
+				if strings.Contains(req.Prompt, preflightContractPlanTurnMarker) {
+					b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: `{"feature_key":"agent-flow-engine","intent":"agent-flow-engine: fix the thing","declared_paths":["src/app.go"]}`})
+					return nil
+				}
 				if strings.Contains(req.Prompt, "agent-flow-engine") {
 					captured = req.Prompt
 					close(captureDone)
@@ -377,13 +392,13 @@ func TestFlowCodingPromptSpawnWrappedDoesNotDuplicateHistory(t *testing.T) {
 		t.Fatal("coder child turn did not fire within 3s")
 	}
 
-	if got := strings.Count(captured, "Prior work on"); got != 1 {
-		t.Errorf(`"Prior work on" appears %d times in the coder's turn-1 prompt, want 1 (duplicated feature history): %s`, got, captured)
+	if got := strings.Count(captured, "## History"); got != 1 {
+		t.Errorf(`"## History" appears %d times in the coder's turn-1 prompt, want 1 (duplicated feature history): %s`, got, captured)
 	}
 	if got := strings.Count(captured, flowContextHandoffPrefix); got != 1 {
 		t.Errorf("%q appears %d times, want 1: %s", flowContextHandoffPrefix, got, captured)
 	}
-	if !strings.Contains(captured, "## Flow Context Package") {
-		t.Error("coder's turn-1 prompt missing the rendered Flow Context Package")
+	if !strings.Contains(captured, "## Context") {
+		t.Error("coder's turn-1 prompt missing the rendered context package")
 	}
 }

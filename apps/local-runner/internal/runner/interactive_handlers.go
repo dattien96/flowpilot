@@ -35,6 +35,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/projects/{projectId}/engine/approval-allowlist/remove", s.handleRemoveApprovalAllowRule)
 	// Task-188 (CP-43 P-5): Canonical Head panel read endpoints.
 	mux.HandleFunc("GET /client/projects/{projectId}/features/{featureKey}/canonical-head", s.handleGetCanonicalHead)
+	mux.HandleFunc("GET /client/projects/{projectId}/features", s.handleListProjectFeatures)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/steps/{stepId}/contract", s.handleGetStepContract)
 	// Task-186 r-attach-spec / Task-187 r-retire: human-confirmed Head lifecycle actions.
 	mux.HandleFunc("POST /client/projects/{projectId}/features/{featureKey}/canonical-head/rebaseline", s.handleRebaselineCanonicalHead)
@@ -1346,12 +1347,13 @@ func (s *InteractiveService) handleGateAgreement(w http.ResponseWriter, r *http.
 	runID := r.PathValue("runId")
 	var body struct {
 		TestNames []string `json:"testNames"`
+		Reason    string   `json:"reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeInteractiveError(w, newAPIErr(400, "invalid_body", "invalid JSON body"))
 		return
 	}
-	if e := s.RecordGateAgreement(runID, body.TestNames); e != nil {
+	if e := s.RecordGateAgreement(runID, body.TestNames, body.Reason); e != nil {
 		writeInteractiveError(w, e)
 		return
 	}

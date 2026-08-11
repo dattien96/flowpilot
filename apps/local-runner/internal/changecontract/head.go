@@ -97,21 +97,49 @@ func LoadHead(workspace, featureKey string) (CanonicalHead, bool, error) {
 // BUG-289 H3/F-3: write via temp + Rename for crash atomicity (mirror
 // flow_context_handoff.go run_marker_secret path).
 func SaveHead(workspace string, h CanonicalHead) error {
-	path := headFilePath(workspace, h.FeatureKey)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(h, "", "  ")
+	tmp, final, err := StageHeadWrite(workspace, h)
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
+	return CommitHeadWrite(tmp, final)
+}
+
+// StageHeadWrite marshals h and writes it to a temp file beside its target
+// Head path, without making it visible at finalPath yet — the first half of
+// a two-phase commit across multiple features' Heads, so one feature's write
+// failure (disk full, permission denied) can never leave a sibling feature's
+// real Head file already mutated (CP-55 P-5 review finding C-2: finalizing a
+// Flow's several staged Heads one at a time, writing each as it goes, let an
+// earlier feature's Head become permanently live even though the Flow's
+// "done" transition as a whole was refused because a later feature failed).
+// Call CommitHeadWrite once every Head in the batch has staged successfully,
+// or DiscardHeadWrite to abandon this one tmp file without committing it.
+func StageHeadWrite(workspace string, h CanonicalHead) (tmpPath, finalPath string, err error) {
+	finalPath = headFilePath(workspace, h.FeatureKey)
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
+		return "", "", err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	data, err := json.MarshalIndent(h, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	tmpPath = finalPath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return "", "", err
+	}
+	return tmpPath, finalPath, nil
+}
+
+// CommitHeadWrite makes a StageHeadWrite'd tmp file visible at finalPath.
+func CommitHeadWrite(tmpPath, finalPath string) error {
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		_ = os.Remove(tmpPath)
 		return err
 	}
 	return nil
+}
+
+// DiscardHeadWrite removes a StageHeadWrite'd tmp file without committing it.
+func DiscardHeadWrite(tmpPath string) {
+	_ = os.Remove(tmpPath)
 }

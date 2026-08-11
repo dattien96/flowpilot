@@ -27,6 +27,12 @@ type Entry struct {
 	CommittedAt string `json:"committed_at"` // RFC3339
 	OrderIndex  int    `json:"order_index"`  // ascending by commit time; newest = max
 	Confidence  string `json:"confidence"`   // "high" | "low"
+	// ChangedPaths lists the repo-relative, forward-slash paths this commit
+	// touched, sorted (CP-54 P-1 / Task-261). It is what lets retrieval rank
+	// history by code-locus overlap instead of by feature_key alone. Nil on
+	// entries written before this field existed — readers treat nil as "no
+	// locus signal" and fall back to recency.
+	ChangedPaths []string `json:"changed_paths,omitempty"`
 }
 
 // Ledger is a persistent, mutex-guarded NDJSON store for feature change entries.
@@ -155,11 +161,18 @@ func Build(repoDir, dotFlowpilotDir string) error {
 
 	raw, err := ParseRepo(repoDir, dotFlowpilotDir)
 	if err != nil || len(raw) == 0 {
+		// No new commits still leaves entries written before CP-54 P-1 without
+		// ChangedPaths, and those are the bulk of the history (Task-261 T-D).
+		l.backfillChangedPaths(repoDir)
 		return err
 	}
 
 	enriched := EnrichAll(raw, repoDir)
-	return l.Upsert(enriched)
+	if err := l.Upsert(enriched); err != nil {
+		return err
+	}
+	l.backfillChangedPaths(repoDir)
+	return nil
 }
 
 // CursorPath returns the path of the incremental cursor file used by ParseRepo.

@@ -19,16 +19,29 @@ policy:
 contexts:
   main_context:
     ref: contexts/flow-context-package.yaml
-    # CP-44 P-4/Task-194: explicit enabled-source declaration. Lists the same
-    # 3 built-in sources the runner defaults to when a flow declares none, so
-    # this is documentation-as-config, not a behavior change. Add a source id
-    # here (once registered in the runner) to extend this flow's context
-    # harness without touching Go code.
+    # CP-44 P-4/Task-194: explicit enabled-source declaration. CP-55 P-8 added
+    # change.contract/canonical.head so this flow's default context package
+    # exposes the frozen preflight contract and Canonical Head sections
+    # (spec 3.15) alongside the 3 sources the runner already defaulted to.
     sources:
+      - change.contract
+      - canonical.head
       - feature.history
       - chat.summary
       - source.excerpt
+acceptance_nodes:
+  - validate
+  - audit
 nodes:
+  - id: preflight_contract_plan
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/contract-planner.md
+  - id: preflight_contract_freeze
+    run: inline
+    lifecycle: once
+    behavior: contract.freeze
   - id: context
     run: inline
     lifecycle: once
@@ -36,7 +49,7 @@ nodes:
   - id: implement
     run: delegate
     lifecycle: reinvoke
-    behavior: agent.delegate
+    behavior: agent.code
     agent: agents/coder.md
     promptTemplate: prompts/flow-context-handoff.md
   - id: validate
@@ -48,6 +61,14 @@ nodes:
     lifecycle: once
     behavior: artifact.audit_draft
 edges:
+  - from: preflight_contract_plan
+    to: preflight_contract_freeze
+    when: done
+    kind: forward
+  - from: preflight_contract_freeze
+    to: context
+    when: done
+    kind: forward
   - from: context
     to: implement
     when: done

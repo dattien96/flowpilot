@@ -303,19 +303,19 @@ func TestHistorySlot_CurrentTruthMarker(t *testing.T) {
 	if result == "" {
 		t.Fatal("expected non-empty HistorySlot output")
 	}
-	if !strings.Contains(result, "← current truth") {
-		t.Errorf("expected '← current truth' marker in output:\n%s", result)
+	if !strings.Contains(result, "← truth") {
+		t.Errorf("expected '← truth' marker in output:\n%s", result)
 	}
 
 	lines := strings.Split(strings.TrimSpace(result), "\n")
 	lastLine := lines[len(lines)-1]
-	if !strings.Contains(lastLine, "← current truth") {
-		t.Errorf("'← current truth' marker should be on the last entry line, got:\n%s", lastLine)
+	if !strings.Contains(lastLine, "← truth") {
+		t.Errorf("'← truth' marker should be on the last entry line, got:\n%s", lastLine)
 	}
 
 	firstEntryLine := lines[1]
-	if strings.Contains(firstEntryLine, "← current truth") {
-		t.Error("'← current truth' marker should NOT appear on first entry")
+	if strings.Contains(firstEntryLine, "← truth") {
+		t.Error("'← truth' marker should NOT appear on first entry")
 	}
 }
 
@@ -340,7 +340,7 @@ func TestHistorySlot_UsesCommitHashWhenNoDocID(t *testing.T) {
 
 // A feature with many commits must inject a bounded block: only the most recent
 // recentHistoryEntryCount entries render, prefixed with an omission marker, and
-// the newest is still tagged "← current truth".
+// the newest is still tagged "← truth".
 func TestHistorySlot_CapsLongHistory(t *testing.T) {
 	var entries []changeledger.Entry
 	for i := 0; i < 100; i++ {
@@ -363,10 +363,10 @@ func TestHistorySlot_CapsLongHistory(t *testing.T) {
 	if entryLines != recentHistoryEntryCount {
 		t.Fatalf("rendered %d entry lines, want %d (capped)", entryLines, recentHistoryEntryCount)
 	}
-	if !strings.Contains(result, "older entries omitted") {
+	if !strings.Contains(result, "older omitted") {
 		t.Errorf("expected omission marker for the dropped entries:\n%s", result)
 	}
-	if !strings.Contains(result, "← current truth") {
+	if !strings.Contains(result, "← truth") {
 		t.Error("newest entry should still carry the current-truth marker")
 	}
 }

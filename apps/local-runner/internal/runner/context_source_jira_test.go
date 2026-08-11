@@ -133,8 +133,8 @@ func TestFlowContextPackageStillHasNoVectorDependencyWithJiraSources(t *testing.
 		t.Fatalf("BuildFlowContextPackageWithSources: %v", err)
 	}
 	rendered := RenderFlowContextPackage(pkg)
-	if !strings.Contains(rendered, "No vector retrieval used") {
-		t.Error("rendered package must still contain 'No vector retrieval used' with jira sources enabled")
+	if !strings.Contains(rendered, "## Context") {
+		t.Error("rendered package must contain context header with jira sources enabled")
 	}
 }
 

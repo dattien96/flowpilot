@@ -72,6 +72,7 @@ const contextSourceOptions: { id: string; label: string }[] = [
   { id: "canonical.head", label: "Canonical Head" },
   { id: "feature.history", label: "Feature History" },
   { id: "change.contract", label: "Change Contract" },
+  { id: "source.dependence", label: "Source Dependence (impact)" },
   { id: "chat.summary", label: "Chat Summary" },
   { id: "source.excerpt", label: "Source Excerpt" },
   { id: "mcp.driver", label: "MCP Driver (Google Drive)" },
@@ -108,6 +109,13 @@ type WorkflowDraft = {
   policyExtendBy: number | null;
   policyExtendMax: number | null;
   edges: Workflow["edges"];
+  // CP-55 P-1 (Task-263/CA-424 pass 3): read-only/display-only in this
+  // Settings UI (see the Workflow.acceptanceNodes doc comment in
+  // adminModels.ts for why authoring is deferred) — carried through the
+  // same "always sent back on save" contract as edges/policy* above
+  // (BUG-NOTE-CP42 #14) so a save can never silently erase a declared
+  // acceptance boundary just because there is no editor for it yet.
+  acceptanceNodes: string[];
 };
 
 const DEFAULT_MODEL = "gpt-5.4";
@@ -192,6 +200,7 @@ export function mapWorkflowToDraft(workflow: Workflow | null): WorkflowDraft | n
     policyExtendBy: workflow.policyExtendBy,
     policyExtendMax: workflow.policyExtendMax,
     edges: workflow.edges,
+    acceptanceNodes: workflow.acceptanceNodes ?? [],
   };
 }
 
@@ -209,6 +218,7 @@ export function createEmptyWorkflowDraft(projects: Project[], modelId: string): 
     policyExtendBy: null,
     policyExtendMax: null,
     edges: [],
+    acceptanceNodes: [],
   };
 }
 
@@ -246,6 +256,10 @@ function normalizeWorkflowSnapshot(draft: WorkflowDraft | null, steps: WorkflowS
     policyExtendBy: draft.policyExtendBy ?? null,
     policyExtendMax: draft.policyExtendMax ?? null,
     edges: normalizeWorkflowEdgesSnapshot(draft.edges),
+    // Read-only in this UI (no editor mutates it), included for the same
+    // reason edges/policy* are: a dirty-fingerprint that silently ignored a
+    // real field of the draft would be quietly wrong if that ever changed.
+    acceptanceNodes: [...draft.acceptanceNodes].sort(),
     steps: steps.map((step, index) => ({
       stepType: step.stepType,
       orderIndex: index,
@@ -1361,6 +1375,12 @@ export function WorkflowsSettings(): React.ReactElement {
         policyExtendBy: workflowDraft.policyExtendBy,
         policyExtendMax: workflowDraft.policyExtendMax,
         edges: workflowDraft.edges,
+        // CP-55 P-1 (Task-263/CA-424 pass 3): no editor writes this today —
+        // sent back unchanged, same as edges/policy* above, so a plain save
+        // (e.g. a rename) can't silently erase a declared acceptance
+        // boundary the way an omitted field would (saveWorkflow's repository
+        // always overwrites every column it's given).
+        acceptanceNodes: workflowDraft.acceptanceNodes,
         steps: workflowSteps.map((step, orderIndex) => ({ ...step, orderIndex })),
       });
       // BUG-282: the workflow's edges are the only home for flow topology, and
@@ -1405,6 +1425,12 @@ export function WorkflowsSettings(): React.ReactElement {
         policyExtendBy: createWorkflowDraft.policyExtendBy,
         policyExtendMax: createWorkflowDraft.policyExtendMax,
         edges: createWorkflowDraft.edges,
+        // See the equivalent comment in saveWorkflow above — a brand-new
+        // workflow simply has none declared yet (createEmptyWorkflowDraft
+        // defaults to []), so this sends the same empty set the DB default
+        // already produces; it exists for symmetry with saveWorkflow, not
+        // because create needs different behavior.
+        acceptanceNodes: createWorkflowDraft.acceptanceNodes,
         steps: createWorkflowSteps.map((step, orderIndex) => ({ ...step, orderIndex })),
       });
       // BUG-282: flow topology lives only on the workflow's edges (persisted
@@ -2974,6 +3000,17 @@ export function WorkflowsSettings(): React.ReactElement {
                             {selectedWorkflow.packVersion ? ` v${selectedWorkflow.packVersion}` : ""} · Selectable
                             in: {selectedWorkflow.selectableIn.length > 0 ? selectedWorkflow.selectableIn.join(", ") : "none"}
                             {selectedWorkflow.chatBaseline ? " (chat baseline, always on)" : ""}
+                          </p>
+                        ) : null}
+                        {/* CP-55 P-1 (Task-263/CA-424): display-only — no flow declares an
+                            agent.code writer yet (P-1 migrates none), so there is nothing to
+                            author here today; an editor is deferred to whichever slice first
+                            lets a user author their own agent.code node. Shown for both
+                            built-in and cloned/user workflows so preservation through
+                            save/clone is visible, not just internally correct. */}
+                        {workflowDraft.acceptanceNodes.length > 0 ? (
+                          <p className="project-muted-copy settings-list-item-meta">
+                            Acceptance nodes (read-only in this UI): {workflowDraft.acceptanceNodes.join(", ")}
                           </p>
                         ) : null}
                       </div>

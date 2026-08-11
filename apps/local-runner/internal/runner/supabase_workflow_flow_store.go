@@ -106,27 +106,31 @@ type dbFlowContextRow struct {
 }
 
 type dbWorkflowRow struct {
-	ID               string                      `json:"id"`
-	Name             string                      `json:"name"`
-	Description      string                      `json:"description"`
-	IsBuiltin        bool                        `json:"is_builtin"`
-	Editable         bool                        `json:"editable"`
-	Cloneable        bool                        `json:"cloneable"`
-	ClonedFrom       *string                     `json:"cloned_from"`
-	PackID           *string                     `json:"pack_id"`
-	PackVersion      *string                     `json:"pack_version"`
-	PackFlowID       *string                     `json:"pack_flow_id"`
-	PackHash         *string                     `json:"pack_hash"`
-	SelectableInJSON []string                    `json:"selectable_in_json"`
-	ChatBaseline     bool                        `json:"chat_baseline"`
-	ChatSubModesJSON []string                    `json:"chat_sub_modes_json"`
-	PolicyCap        *int                        `json:"policy_cap"`
-	PolicyOnCap      *string                     `json:"policy_on_cap"`
-	PolicyExtendBy   *int                        `json:"policy_extend_by"`
-	PolicyExtendMax  *int                        `json:"policy_extend_max"`
-	EdgesJSON        []dbFlowEdgeRow             `json:"edges_json"`
-	ContextsJSON     map[string]dbFlowContextRow `json:"contexts_json"`
-	WorkflowSteps    []dbWorkflowStepRow         `json:"workflow_steps"`
+	ID               string   `json:"id"`
+	Name             string   `json:"name"`
+	Description      string   `json:"description"`
+	IsBuiltin        bool     `json:"is_builtin"`
+	Editable         bool     `json:"editable"`
+	Cloneable        bool     `json:"cloneable"`
+	ClonedFrom       *string  `json:"cloned_from"`
+	PackID           *string  `json:"pack_id"`
+	PackVersion      *string  `json:"pack_version"`
+	PackFlowID       *string  `json:"pack_flow_id"`
+	PackHash         *string  `json:"pack_hash"`
+	SelectableInJSON []string `json:"selectable_in_json"`
+	ChatBaseline     bool     `json:"chat_baseline"`
+	ChatSubModesJSON []string `json:"chat_sub_modes_json"`
+	// AcceptanceNodesJSON persists agentpack.FlowDefinition.AcceptanceNodes
+	// (CP-55 P-1, Task-263) — see
+	// 20260730121000_add_workflow_acceptance_nodes.sql.
+	AcceptanceNodesJSON []string                    `json:"acceptance_nodes_json"`
+	PolicyCap           *int                        `json:"policy_cap"`
+	PolicyOnCap         *string                     `json:"policy_on_cap"`
+	PolicyExtendBy      *int                        `json:"policy_extend_by"`
+	PolicyExtendMax     *int                        `json:"policy_extend_max"`
+	EdgesJSON           []dbFlowEdgeRow             `json:"edges_json"`
+	ContextsJSON        map[string]dbFlowContextRow `json:"contexts_json"`
+	WorkflowSteps       []dbWorkflowStepRow         `json:"workflow_steps"`
 }
 
 const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,join_mode,cohort,prompt_template_ref,context_ref,context_sources,step_artifact_bindings(id,direction,slot_name,required,position,artifact_instance_id,artifact_instances(artifact_type_id,config_json,status))))"
@@ -181,8 +185,9 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 		defID = *row.PackFlowID
 	}
 	def := agentpack.FlowDefinition{
-		ID:          defID,
-		Description: row.Description,
+		ID:              defID,
+		Description:     row.Description,
+		AcceptanceNodes: row.AcceptanceNodesJSON,
 	}
 	if row.PolicyCap != nil {
 		def.Policy.Cap = *row.PolicyCap
@@ -498,20 +503,21 @@ func (s *SupabaseWorkflowFlowStore) ListAll(ctx context.Context) ([]FlowDefiniti
 // UUID, returned as the persisted record's FlowRef.
 func (s *SupabaseWorkflowFlowStore) Upsert(ctx context.Context, record FlowDefinitionRecord) (FlowDefinitionRecord, error) {
 	payload := map[string]any{
-		"name":                nameForRecord(record),
-		"description":         record.Definition.Description,
-		"editable":            record.Editable,
-		"cloneable":           record.Cloneable,
-		"cloned_from":         nilIfEmpty(record.ClonedFrom),
-		"selectable_in_json":  nonNilStrings(record.SelectableIn),
-		"chat_baseline":       record.ChatBaseline,
-		"chat_sub_modes_json": nonNilStrings(record.ChatSubModes),
-		"policy_cap":          record.Definition.Policy.Cap,
-		"policy_on_cap":       nilIfEmpty(record.Definition.Policy.OnCap),
-		"policy_extend_by":    record.Definition.Policy.ExtendBy,
-		"policy_extend_max":   record.Definition.Policy.ExtendMax,
-		"edges_json":          edgesPayload(record.Definition.Edges),
-		"contexts_json":       contextsPayload(record.Definition.Contexts),
+		"name":                  nameForRecord(record),
+		"description":           record.Definition.Description,
+		"editable":              record.Editable,
+		"cloneable":             record.Cloneable,
+		"cloned_from":           nilIfEmpty(record.ClonedFrom),
+		"selectable_in_json":    nonNilStrings(record.SelectableIn),
+		"chat_baseline":         record.ChatBaseline,
+		"chat_sub_modes_json":   nonNilStrings(record.ChatSubModes),
+		"acceptance_nodes_json": nonNilStrings(record.Definition.AcceptanceNodes),
+		"policy_cap":            record.Definition.Policy.Cap,
+		"policy_on_cap":         nilIfEmpty(record.Definition.Policy.OnCap),
+		"policy_extend_by":      record.Definition.Policy.ExtendBy,
+		"policy_extend_max":     record.Definition.Policy.ExtendMax,
+		"edges_json":            edgesPayload(record.Definition.Edges),
+		"contexts_json":         contextsPayload(record.Definition.Contexts),
 	}
 
 	var endpoint string

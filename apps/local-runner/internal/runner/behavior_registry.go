@@ -25,7 +25,24 @@ const (
 	BehaviorHubNotify           BehaviorID = "hub.notify"
 	BehaviorFlowControl         BehaviorID = "flow.control"
 	BehaviorUserConfirm         BehaviorID = "user.confirm"
+	// BehaviorAgentCode and BehaviorContractFreeze are the CP-55 P-1 explicit
+	// writer/freeze ids. agent.code marks a Flow node as a project-mutation
+	// boundary instead of relying on prompt/node-name heuristics;
+	// contract.freeze marks the Go-owned validation+persistence step that
+	// must dominate it (see agentpack.ValidateFlowSafetyTopology). No
+	// built-in flow YAML selects either id yet — that migration is a later
+	// CP-55 slice (P-8), not P-1.
+	BehaviorAgentCode      BehaviorID = "agent.code"
+	BehaviorContractFreeze BehaviorID = "contract.freeze"
 )
+
+// IsCodeWritingBehavior reports whether id is the CP-55 explicit
+// project-mutation marker. Flow topology validation and future gate/Canonical
+// wiring use this instead of a prompt/node-name heuristic so a writer node
+// can never be misclassified as safe.
+func IsCodeWritingBehavior(id BehaviorID) bool {
+	return id == BehaviorAgentCode
+}
 
 // BehaviorScope classifies how a behavior is allowed to act. Pack data never
 // supplies the implementation, only which scope/ID a node uses (CP-42 T-2).

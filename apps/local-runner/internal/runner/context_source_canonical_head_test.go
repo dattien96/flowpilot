@@ -28,7 +28,7 @@ func TestFeatureHistorySourceNoLongerPrependsHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if strings.Contains(section.Body, "Canonical state") {
+	if strings.Contains(section.Body, "## Canonical") {
 		t.Fatalf("feature.history must not prepend Head, got %q", section.Body)
 	}
 	if len(section.Warnings) != 1 || !strings.Contains(section.Warnings[0], "no change history found") {
@@ -72,7 +72,7 @@ func TestCanonicalHeadSourceFetchesHeadBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(section.Body, "Canonical state of") {
+	if !strings.Contains(section.Body, "## Canonical") {
 		t.Fatalf("body: %q", section.Body)
 	}
 	if !strings.Contains(section.Body, "lookup table") {

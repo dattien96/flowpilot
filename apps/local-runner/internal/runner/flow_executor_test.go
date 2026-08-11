@@ -16,6 +16,27 @@ import (
 	"flowpilot-runner/internal/agentpack"
 )
 
+// autoAnswerPreflightContractPlanTurn is a shared fake-adapter helper for
+// review-loop/rag-harness/context-coding-review-synthesis integration tests
+// that drive a full startResolvedFlow: CP-55 P-8 migrated all three built-in
+// flows to run a "preflight_contract_plan" (agent: contract-planner) entry
+// node ahead of the coder, so the very first turn these fake adapters see is
+// no longer the coder's own turn — it is the planner's, and it must respond
+// with a valid preflight JSON draft (parsed by runContractFreezeNode) or the
+// freeze fails and the coder is never spawned at all. Every child's identity
+// line (composeAgentIdentityLine) embeds "role: <role>", giving a stable,
+// content-based way to recognize the planner's turn specifically (its own
+// TurnRequest.StepID is not the flow node id — see spawnChildRun). Returns
+// true (and emits) only for the planner's turn, so callers keep their own
+// existing coder/reviewer branching for everything else.
+func autoAnswerPreflightContractPlanTurn(req TurnRequest, b TurnBridge) bool {
+	if !strings.Contains(req.Prompt, preflightContractPlanTurnMarker) {
+		return false
+	}
+	b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: validPlannerDraft})
+	return true
+}
+
 func TestEntryDelegateNodesReturnsOnlyNoDependencyDelegateNodes(t *testing.T) {
 	def := agentpack.FlowDefinition{
 		Nodes: []agentpack.FlowNode{
@@ -380,6 +401,9 @@ func TestCoderCompletionAutoSpawnsReviewerCohort(t *testing.T) {
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if autoAnswerPreflightContractPlanTurn(req, b) {
+					return nil
+				}
 				finalMsg := "ok"
 				if strings.Contains(req.Prompt, "fix the crash") {
 					// This is the coder's own first turn — simulate it finishing
@@ -410,7 +434,7 @@ func TestCoderCompletionAutoSpawnsReviewerCohort(t *testing.T) {
 		defer svc.mu.Unlock()
 		reviewerLabels = nil
 		for _, run := range svc.runs {
-			if run.parentRunID == parent.RunID && run.label != "coder" {
+			if run.parentRunID == parent.RunID && run.label != "coder" && run.label != "preflight_contract_plan" {
 				reviewerLabels = append(reviewerLabels, run.label)
 			}
 		}
@@ -428,7 +452,7 @@ func TestCoderCompletionAutoSpawnsReviewerCohort(t *testing.T) {
 	svc.mu.Lock()
 	cohortIDs := map[string]struct{}{}
 	for _, run := range svc.runs {
-		if run.parentRunID == parent.RunID && run.label != "coder" {
+		if run.parentRunID == parent.RunID && run.label != "coder" && run.label != "preflight_contract_plan" {
 			cohortIDs[run.flowCohortId] = struct{}{}
 		}
 	}
@@ -458,6 +482,9 @@ func TestCoderCompletionAutoSpawnsReviewerCohortWithOwnModel(t *testing.T) {
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if autoAnswerPreflightContractPlanTurn(req, b) {
+					return nil
+				}
 				finalMsg := "ok"
 				if strings.Contains(req.Prompt, "fix the crash") {
 					finalMsg = "Fixed the null pointer at handler.go:42."
@@ -489,7 +516,7 @@ func TestCoderCompletionAutoSpawnsReviewerCohortWithOwnModel(t *testing.T) {
 		defer svc.mu.Unlock()
 		count := 0
 		for _, run := range svc.runs {
-			if run.parentRunID == parent.RunID && run.label != "coder" {
+			if run.parentRunID == parent.RunID && run.label != "coder" && run.label != "preflight_contract_plan" {
 				count++
 			}
 		}
@@ -703,6 +730,9 @@ func TestCoderCompletionAutoSpawnedReviewerPromptDoesNotInstructFlowControlCall(
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if autoAnswerPreflightContractPlanTurn(req, b) {
+					return nil
+				}
 				if strings.Contains(req.Prompt, "Review this result from node") {
 					mu.Lock()
 					reviewerPrompt = req.Prompt
@@ -754,6 +784,9 @@ func TestCoderCompletionAutoAdvanceDoesNotScheduleEmptyHubReinvoke(t *testing.T)
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(ctx context.Context, req TurnRequest, b TurnBridge) error {
+				if autoAnswerPreflightContractPlanTurn(req, b) {
+					return nil
+				}
 				switch {
 				case strings.Contains(req.Prompt, "Review this result from node"):
 					mu.Lock()
@@ -814,6 +847,9 @@ func TestFlowEngineSynthesisPromptIncludesJoinedReviewerNote(t *testing.T) {
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if autoAnswerPreflightContractPlanTurn(req, b) {
+					return nil
+				}
 				switch {
 				case strings.Contains(req.Prompt, "[flow-engine] Agent results ready") &&
 					strings.Contains(req.Prompt, "[flow-engine joined result note]"):
@@ -967,9 +1003,10 @@ func TestFlowNodeAgentNameDerivesFromFilePath(t *testing.T) {
 
 // TestStartResolvedFlowSpawnsOnlyTheEntryNode is the integration-level proof
 // that a resolved flowRef actually spawns something: review-loop's entry
-// node ("coder") should be spawned as a child, while the downstream
-// reviewer/synthesis nodes (reached only via edges/dependsOn, not spawned
-// directly) must not be.
+// node is now the CP-55 P-8 preflight-contract-plan node ("contract-planner",
+// an agent.delegate), prepended ahead of "coder" so a frozen contract exists
+// before the writer ever runs. The downstream coder/reviewer/synthesis nodes
+// (reached only via edges/dependsOn, not spawned directly) must not be.
 func TestStartResolvedFlowSpawnsOnlyTheEntryNode(t *testing.T) {
 	svc, _ := newTestServer(t)
 
@@ -986,22 +1023,22 @@ func TestStartResolvedFlowSpawnsOnlyTheEntryNode(t *testing.T) {
 
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
-	var coderChildren, otherChildren int
+	var entryChildren, otherChildren int
 	for _, run := range svc.runs {
 		if run.parentRunID != parent.RunID {
 			continue
 		}
-		if run.role == "coder" || run.agentName == "coder" {
-			coderChildren++
+		if run.role == "contract-planner" || run.agentName == "contract-planner" {
+			entryChildren++
 		} else {
 			otherChildren++
 		}
 	}
-	if coderChildren != 1 {
-		t.Fatalf("coder children = %d, want 1 (svc.runs snapshot: %d total children)", coderChildren, coderChildren+otherChildren)
+	if entryChildren != 1 {
+		t.Fatalf("entry (contract-planner) children = %d, want 1 (svc.runs snapshot: %d total children)", entryChildren, entryChildren+otherChildren)
 	}
 	if otherChildren != 0 {
-		t.Fatalf("expected no non-coder children spawned directly, got %d", otherChildren)
+		t.Fatalf("expected no non-entry children spawned directly, got %d", otherChildren)
 	}
 
 	// The spawn must have set explicit mode + autoOrchestrate, mirroring what
@@ -1340,6 +1377,9 @@ func TestContinueReinvokeUsesEdgeResolvedTargetForFlowStartedRun(t *testing.T) {
 		Capabilities: ProviderCapabilities{Streaming: true},
 		newAdapter: func() ProviderRuntimeAdapter {
 			return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+				if autoAnswerPreflightContractPlanTurn(req, b) {
+					return nil
+				}
 				if strings.Contains(req.Prompt, "the fix wasn't complete") {
 					reentryPrompts <- req.Prompt
 				}
@@ -1367,6 +1407,14 @@ func TestContinueReinvokeUsesEdgeResolvedTargetForFlowStartedRun(t *testing.T) {
 	if edgeCount == 0 {
 		t.Fatal("expected activeFlowEdges to be set after startResolvedFlow")
 	}
+
+	// CP-55 P-8: the entry node is now "preflight_contract_plan"; "continue"
+	// must target "coder" (the edge-resolved node this test is actually
+	// about), so wait for the preflight-plan -> freeze chain to advance and
+	// spawn the coder before applying the control input.
+	waitLoop(t, "coder child spawned after preflight_contract_plan freezes", 3*time.Second, func() bool {
+		return countChildrenWithLabel(svc, parent.RunID, "coder") == 1
+	})
 
 	if _, err := svc.applyFlowControl(parent.RunID, FlowControlInput{
 		Status:  "continue",
@@ -1542,6 +1590,24 @@ func TestStartResolvedFlowChildInheritsWorkflowYoloDefault(t *testing.T) {
 // alone would find nothing to spawn and the flow would silently do nothing.
 // This proves startResolvedFlow now runs that inline node synchronously and
 // spawns the next agent.delegate node ("implement") it forward-edges to.
+// TestStartResolvedFlowStartsInlineEntryFlow originally proved
+// startInlineEntryChain (the fallback for a flow with NO agent.delegate entry
+// node) runs rag-harness's leading context.produce node before ever spawning
+// "implement". CP-55 P-8 migrated rag-harness to prepend an agent.delegate
+// preflight-contract-plan entry node ahead of context, so entryDelegateNodes
+// now finds a real entry and startResolvedFlow never reaches
+// startInlineEntryChain for this flow at all — the entry spawn is
+// "preflight_contract_plan", not "implement", and reaching "implement" now
+// requires the planner's turn to complete and freeze before context.produce
+// (still inline, still setting planContextPackage — see
+// flow_executor.go's advanceInlineChain-style completion handling) runs and
+// the chain continues. This test now drives that full chain end to end
+// (newTestServer's default fake adapter auto-answers the planner's turn with
+// a valid preflight JSON draft per CP-55 P-8's fake_provider_adapter.go fix)
+// and keeps its original assertions once "implement" actually spawns:
+// activeFlowEdges tracked, and — the original regression's own point —
+// planContextPackage set, proving context.produce still ran rather than
+// being bypassed.
 func TestStartResolvedFlowStartsInlineEntryFlow(t *testing.T) {
 	svc, _ := newTestServer(t)
 
@@ -1556,33 +1622,15 @@ func TestStartResolvedFlowStartsInlineEntryFlow(t *testing.T) {
 
 	svc.startResolvedFlow(context.Background(), parent.RunID, "flowpilot-core-flow-pack/rag-harness", "add retrieval for the docs feature")
 
+	waitLoop(t, "implement child spawned after preflight_contract_plan -> preflight_contract_freeze -> context.produce", 3*time.Second, func() bool {
+		return countChildrenWithLabel(svc, parent.RunID, "implement") == 1
+	})
+
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
-	var implementChildren, otherChildren int
-	for _, run := range svc.runs {
-		if run.parentRunID != parent.RunID {
-			continue
-		}
-		if run.label == "implement" {
-			implementChildren++
-		} else {
-			otherChildren++
-		}
-	}
-	if implementChildren != 1 {
-		t.Fatalf("implement children = %d, want 1 (other children: %d)", implementChildren, otherChildren)
-	}
 	if len(svc.runs[parent.RunID].activeFlowEdges) == 0 {
 		t.Fatal("expected activeFlowEdges to be tracked after an inline-entry flow start")
 	}
-	// BUG (found 2026-07-09 live-testing rag-harness): the assertions above
-	// (a lone "implement" child + non-empty activeFlowEdges) are satisfied
-	// EQUALLY by the correct path (context.produce runs, then implement is
-	// spawned) and by the bug (entryDelegateNodes wrongly treats "implement"
-	// itself as the entry, skipping context.produce entirely) — this test
-	// passed even while that bug was live. planContextPackage is only ever
-	// set by startInlineEntryChain after a successful context.produce
-	// dispatch, so asserting it here closes that exact blind spot.
 	if svc.runs[parent.RunID].planContextPackage == nil {
 		t.Fatal("expected planContextPackage to be set — context.produce must run before implement is spawned, not be bypassed by it")
 	}
@@ -1620,6 +1668,13 @@ func TestStartResolvedFlowSpawnsPackAgentEvenWhenProjectShadowsItsName(t *testin
 	svc.mu.Unlock()
 
 	svc.startResolvedFlow(context.Background(), parent.RunID, "flowpilot-core-flow-pack/review-loop", "fix the null pointer bug")
+
+	// CP-55 P-8: review-loop's entry is now "preflight_contract_plan"; "coder"
+	// only spawns after that node's turn completes and freezes, both
+	// asynchronous — wait for it instead of checking synchronously.
+	waitLoop(t, "coder child spawned after preflight_contract_plan freezes", 3*time.Second, func() bool {
+		return countChildrenWithLabel(svc, parent.RunID, "coder") == 1
+	})
 
 	svc.mu.Lock()
 	defer svc.mu.Unlock()

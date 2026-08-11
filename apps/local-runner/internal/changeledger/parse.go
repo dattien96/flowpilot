@@ -62,6 +62,11 @@ func ParseRepo(repoDir, dotFlowpilotDir string) ([]Entry, error) {
 		entries[i].OrderIndex = i
 	}
 
+	// CP-54 P-1: record which files each commit touched, so retrieval can score
+	// history by code-locus overlap without shelling out to git at query time.
+	// One extra `git log` for the whole range, not one per commit (Task-261 T-1).
+	attachChangedPaths(entries, changedPathsByCommit(repoDir, cursor))
+
 	// Persist cursor = hash of the newest commit.
 	newest := entries[len(entries)-1].CommitHash
 	_ = writeCursor(cursorFile, newest)

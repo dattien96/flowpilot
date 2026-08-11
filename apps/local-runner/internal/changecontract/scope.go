@@ -81,12 +81,14 @@ func HighSeverity(ctx context.Context, sp structure.Provider, outPaths []string)
 		return false
 	}
 	for _, p := range outPaths {
-		summary, err := sp.Dependents(ctx, p)
-		if err != nil {
-			continue
-		}
-		if summary.Count > 0 {
-			return true
+		for _, target := range GitNexusQueryTargetsForPath(p) {
+			summary, err := sp.Dependents(ctx, target)
+			if err != nil {
+				continue
+			}
+			if summary.Count > 0 {
+				return true
+			}
 		}
 	}
 	return false

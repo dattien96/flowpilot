@@ -15,10 +15,35 @@ type Override struct {
 	TestName     string `json:"test_name"`
 	AgreedAt     string `json:"agreed_at"`
 	HumanConfirm bool   `json:"human_confirm"`
+	// CP-53 P-4 / Task-276: time-bounded waiver debt.
+	Reason    string `json:"reason,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
+	Actor     string `json:"actor,omitempty"`
 }
 
 // LoadOverrides reads the per-project override store. Missing file → empty map (non-fatal).
+// Expired waivers are pruned on load (CP-53 P-4 re-arm).
 func LoadOverrides(dotFP string) (map[string]Override, error) {
+	overrides, err := readOverridesFile(dotFP)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	changed := false
+	for name, o := range overrides {
+		if overrideExpired(o, now) {
+			delete(overrides, name)
+			changed = true
+		}
+	}
+	if changed {
+		_ = writeOverrides(dotFP, overrides)
+	}
+	return overrides, nil
+}
+
+func readOverridesFile(dotFP string) (map[string]Override, error) {
 	data, err := os.ReadFile(filepath.Join(dotFP, "guard", "test_overrides.json"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -35,15 +60,9 @@ func LoadOverrides(dotFP string) (map[string]Override, error) {
 
 // SaveOverride records an agreed test override. Called only on explicit user agreement
 // inside the opt-2 propose→agree sub-flow. Never called for opt-1 or opt-3. (Task-155)
+// Prefer SaveOverrideWithReason for CP-53 waiver ledger entries with expiry.
 func SaveOverride(dotFP string, o Override) error {
-	overrides, err := LoadOverrides(dotFP)
-	if err != nil {
-		overrides = map[string]Override{}
-	}
-	o.AgreedAt = time.Now().UTC().Format(time.RFC3339)
-	o.HumanConfirm = true
-	overrides[o.TestName] = o
-	return writeOverrides(dotFP, overrides)
+	return SaveOverrideWithReason(dotFP, o, "legacy override (no reason recorded)", "", "", DefaultWaiverTTL)
 }
 
 // ClearOverride removes the override for a specific test (used in tests or manual reset).
@@ -89,7 +108,10 @@ func IsOverridden(overrides map[string]Override, testName string) bool {
 		return false
 	}
 	_, ok := overrides[testName]
-	return ok
+	if !ok {
+		return false
+	}
+	return !overrideExpired(overrides[testName], time.Now().UTC())
 }
 
 func writeOverrides(dotFP string, overrides map[string]Override) error {

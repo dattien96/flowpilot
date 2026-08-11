@@ -1018,7 +1018,7 @@ func TestInjectFeatureHistoryFallsBackToPriorTurnFeature(t *testing.T) {
 
 	prior := []transcriptTurn{{User: "chat-ui", Assistant: "worked on the chat-ui input"}}
 	withPrior := injectFeatureHistoryPrompt(workspace, "continue", prior)
-	if !strings.Contains(withPrior, `## Prior work on "chat-ui"`) {
+	if !strings.Contains(withPrior, `## History "chat-ui"`) {
 		t.Fatalf("expected chat-ui history injected via fallback, got: %q", withPrior)
 	}
 
@@ -1067,7 +1067,7 @@ func TestInjectFeatureHistoryDropsContextOnUnrelatedPrompt(t *testing.T) {
 	if out != "write a haiku about the sea" {
 		t.Fatalf("expected no injection for unrelated substantive prompt, got: %q", out)
 	}
-	if strings.Contains(out, "Prior work on") {
+	if strings.Contains(out, "## History") {
 		t.Fatalf("unrelated prompt should not inherit prior feature context: %q", out)
 	}
 }
@@ -1124,7 +1124,7 @@ func TestInjectFeatureHistorySkipsFlowReviewAndEnginePrompts(t *testing.T) {
 		t.Fatalf("flow-engine prompt must skip history inject, got %q", got)
 	}
 	pkg := "[FlowPilot sub-agent — agent: coder]\n\n[FlowPilot flow context package]\n" +
-		flowContextTrustedMarker("run-1") + "\n\n## Flow Context Package\n"
+		flowContextTrustedMarker("run-1") + "\n\n## Context\n"
 	if got := injectFeatureHistoryPrompt(dir, pkg, nil); got != pkg {
 		t.Fatalf("package prompt must skip history inject, got %q", got)
 	}

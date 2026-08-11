@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# FlowPilot dogfood gate — runs before every commit (CP-53 P-3).
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+exec "$ROOT/scripts/gate-check" "$@"

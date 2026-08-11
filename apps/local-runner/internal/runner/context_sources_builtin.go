@@ -29,6 +29,7 @@ var defaultContextSourceIDs = []string{
 	string(ContextSourceCanonicalHead),
 	string(ContextSourceFeatureHistory),
 	string(ContextSourceChangeContract),
+	string(ContextSourceDependence),
 	string(ContextSourceChatSummary),
 	string(ContextSourceSourceExcerpt),
 }
@@ -150,6 +151,7 @@ func registerBuiltinContextSources(r *ContextSourceRegistry) {
 	mustRegisterContextSource(r, &jiraSprintSource{priority: 8})
 	mustRegisterContextSource(r, &firebaseCrashlyticsSource{priority: 9})
 	mustRegisterContextSource(r, &changeContractSource{priority: 3}) // Task-247: after head, near history
+	mustRegisterContextSource(r, &dependenceSource{priority: 3})     // Task-259: after change.contract
 }
 
 // mustRegisterContextSource panics on a registration conflict among the
@@ -184,7 +186,17 @@ func (s *featureHistorySource) Fetch(_ context.Context, hints FlowContextHints) 
 	ledger, err := changeledger.New(dotFP)
 	var history string
 	if err == nil {
-		history = strings.TrimSpace(featurecatalog.HistorySlot(hints.FeatureKey, ledger))
+		// CP-55 P-7: rank by code-locus overlap instead of recency alone once
+		// there are enough candidates to make ranking worthwhile
+		// (SelectHistoryEntries' own activation threshold decides that) —
+		// falls back to HistorySlot's exact existing output otherwise.
+		// buildRetrievalLocus reads the Contract store directly off disk
+		// (changecontract.OpenStoreReadOnly), independent of whether
+		// change.contract's own rendered section is enabled for this node —
+		// disabling that source's *rendering* must not blind this source's
+		// locus-building (SS-14 §3.15).
+		locus := buildRetrievalLocus(hints.Workspace, hints.WorkflowRunID, hints.UserPrompt, hints.ExplicitSourcePaths)
+		history = strings.TrimSpace(featurecatalog.HistorySlotRanked(hints.FeatureKey, ledger, locus, featurecatalog.DefaultHistoryRankingConfig()))
 	}
 
 	// Task-244: Head is a separate source (canonical.head, priority 1) — no

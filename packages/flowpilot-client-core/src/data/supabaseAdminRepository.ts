@@ -182,6 +182,11 @@ function mapWorkflow(row: Row): Workflow {
           }),
         )
       : [],
+    // CP-55 P-1 (Task-263/CA-424 pass 3): read acceptance_nodes_json so this
+    // direct-to-Supabase path (used by the desktop Settings UI) no longer
+    // silently drops a flow's declared acceptance boundary the way it did
+    // before this field existed on the Workflow model at all.
+    acceptanceNodes: Array.isArray(row.acceptance_nodes_json) ? row.acceptance_nodes_json.map(String) : [],
   };
 }
 
@@ -612,6 +617,14 @@ export class SupabaseAdminRepository implements
       policy_extend_by: workflow.policyExtendBy ?? null,
       policy_extend_max: workflow.policyExtendMax ?? null,
       edges_json: workflow.edges ?? [],
+      // CP-55 P-1 (Task-263/CA-424 pass 3): sent unconditionally, matching
+      // edges_json/policy_* above — this repository always overwrites every
+      // column it lists on save, so the caller (WorkflowsSettings'
+      // WorkflowDraft, via mapWorkflowToDraft) is the one responsible for
+      // always carrying the previously-loaded value forward. A save must
+      // never silently erase a declared acceptance boundary just because
+      // this field has no editor yet.
+      acceptance_nodes_json: workflow.acceptanceNodes ?? [],
       updated_at: now(),
     };
     const { data, error } = await this.supabase.from("workflows").upsert(payload).select("*").single();
@@ -701,6 +714,13 @@ export class SupabaseAdminRepository implements
       policy_extend_by: source.policyExtendBy,
       policy_extend_max: source.policyExtendMax,
       edges_json: source.edges,
+      // CP-55 P-1 (Task-263/CA-424 pass 3): a plain INSERT with this column
+      // omitted falls back to the migration's `default '[]'::jsonb`,
+      // regardless of what the source workflow actually declared — the
+      // "loses the mandatory safety boundary" bug this pass fixes. Cloning
+      // must deep-copy the declared acceptance boundary exactly like it
+      // already deep-copies edges_json.
+      acceptance_nodes_json: source.acceptanceNodes ?? [],
       updated_at: now(),
     };
     const { data: cloned, error: cloneError } = await this.supabase

@@ -104,6 +104,10 @@ interface StepContractResult {
   declared_symbols: string[];
   confidence: string;
   found: boolean;
+  touched_paths?: string[];
+  in_scope_paths?: string[];
+  out_of_scope_paths?: string[];
+  scope_diff_note?: string;
 }
 
 interface ProjectsSettingsProps {
@@ -239,6 +243,7 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
   const [headActionBusy, setHeadActionBusy] = useState(false);
   const [retireAction, setRetireAction] = useState<"renamed" | "merged" | "deprecated">("renamed");
   const [retireTargets, setRetireTargets] = useState("");
+  const [projectFeatureKeys, setProjectFeatureKeys] = useState<string[]>([]);
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -366,8 +371,29 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
     }
   };
 
-  // Task-188 (CP-43 P-5): admin Canonical Head lookup — a manual feature-key
-  // form, not a feature browser (the runner has no "list features" endpoint).
+  // Task-188 (CP-43 P-5): admin Canonical Head lookup — feature keys from catalog,
+  // ledger, and on-disk canonical heads (runner list endpoint).
+  const loadProjectFeatureKeys = async () => {
+    if (!selectedProject?.directoryPath) {
+      setProjectFeatureKeys([]);
+      return;
+    }
+    try {
+      const params = new URLSearchParams({ workingDirectory: selectedProject.directoryPath });
+      const response = await runnerFetch(
+        `/client/projects/${encodeURIComponent(selectedProject.id)}/features?${params.toString()}`,
+      );
+      if (!response.ok) {
+        setProjectFeatureKeys([]);
+        return;
+      }
+      const body = (await response.json()) as { feature_keys?: string[] };
+      setProjectFeatureKeys(body.feature_keys ?? []);
+    } catch {
+      setProjectFeatureKeys([]);
+    }
+  };
+
   const loadCanonicalHead = async () => {
     if (!selectedProject?.directoryPath || !canonicalHeadFeatureKey.trim()) {
       return;
@@ -487,6 +513,10 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
     }
     void loadChatSyncStatus(selectedProjectId);
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    void loadProjectFeatureKeys();
+  }, [selectedProject?.id, selectedProject?.directoryPath]);
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -997,10 +1027,16 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
                       <strong>Feature</strong>
                       <div className="settings-inline-row">
                         <input
+                          list="project-feature-keys"
                           onChange={(event) => setCanonicalHeadFeatureKey(event.target.value)}
                           placeholder="feature_key, e.g. calc-core"
                           value={canonicalHeadFeatureKey}
                         />
+                        <datalist id="project-feature-keys">
+                          {projectFeatureKeys.map((key) => (
+                            <option key={key} value={key} />
+                          ))}
+                        </datalist>
                         <button className="secondary-btn" disabled={canonicalHeadLoading || !canonicalHeadFeatureKey.trim() || !selectedProject?.directoryPath} onClick={() => void loadCanonicalHead()} type="button">
                           {canonicalHeadLoading ? "Loading..." : "Look up"}
                         </button>
@@ -1070,6 +1106,18 @@ export function ProjectsSettings({ onNavigateSection }: ProjectsSettingsProps): 
                             <div className="project-inline-row"><span>Intent</span><span>{stepContractResult.intent || "(none declared)"}</span></div>
                             {stepContractResult.declared_paths.length > 0 ? (
                               <div className="project-inline-row"><span>Declared paths</span><span>{stepContractResult.declared_paths.join(", ")}</span></div>
+                            ) : null}
+                            {stepContractResult.scope_diff_note ? (
+                              <div className="project-inline-row"><span>Scope diff</span><span>{stepContractResult.scope_diff_note}</span></div>
+                            ) : null}
+                            {stepContractResult.in_scope_paths && stepContractResult.in_scope_paths.length > 0 ? (
+                              <div className="project-inline-row"><span>In scope (touched)</span><span>{stepContractResult.in_scope_paths.join(", ")}</span></div>
+                            ) : null}
+                            {stepContractResult.out_of_scope_paths && stepContractResult.out_of_scope_paths.length > 0 ? (
+                              <div className="project-inline-row"><span>Out of scope</span><span className="settings-feedback error">{stepContractResult.out_of_scope_paths.join(", ")}</span></div>
+                            ) : null}
+                            {stepContractResult.touched_paths && stepContractResult.touched_paths.length > 0 && !stepContractResult.in_scope_paths?.length && !stepContractResult.out_of_scope_paths?.length ? (
+                              <div className="project-inline-row"><span>Touched</span><span>{stepContractResult.touched_paths.join(", ")}</span></div>
                             ) : null}
                           </>
                         ) : (

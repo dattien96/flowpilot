@@ -197,6 +197,8 @@ func DefaultRules() []Rule {
 		// Requires human confirmation of the target(s) before RetireHead runs —
 		// never automatic (BR-2).
 		{ID: "r-retire", Scope: "step", Trigger: "feature_rename_merge_or_deprecate", RequiredOutput: "confirm_targets_then_retire", Action: "approve", Enabled: true},
+		// CP-53 P-5 / Task-277: production code change without a newly added test file.
+		{ID: "r-newtest", Scope: "step", Trigger: "production_change_no_new_test", RequiredOutput: "new_additive_test_file", Action: "reprompt", Enabled: true},
 	}
 }
 

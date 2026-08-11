@@ -24,11 +24,22 @@ policy:
   extendMax: 2
 tools:
   - tools/submit-review-outcome.yaml
+acceptance_nodes:
+  - synthesis
 nodes:
+  - id: preflight_contract_plan
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/contract-planner.md
+  - id: preflight_contract_freeze
+    run: inline
+    lifecycle: once
+    behavior: contract.freeze
   - id: coder
     run: delegate
     lifecycle: reinvoke
-    behavior: agent.delegate
+    behavior: agent.code
     agent: agents/coder.md
     join: all
   - id: reviewer_correctness
@@ -56,6 +67,14 @@ nodes:
     agent: agents/synthesizer.md
     join: all
 edges:
+  - from: preflight_contract_plan
+    to: preflight_contract_freeze
+    when: done
+    kind: forward
+  - from: preflight_contract_freeze
+    to: coder
+    when: done
+    kind: forward
   - from: coder
     to: reviewer_correctness
     when: done
