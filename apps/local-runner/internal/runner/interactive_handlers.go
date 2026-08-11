@@ -1347,12 +1347,13 @@ func (s *InteractiveService) handleGateAgreement(w http.ResponseWriter, r *http.
 	runID := r.PathValue("runId")
 	var body struct {
 		TestNames []string `json:"testNames"`
+		Reason    string   `json:"reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeInteractiveError(w, newAPIErr(400, "invalid_body", "invalid JSON body"))
 		return
 	}
-	if e := s.RecordGateAgreement(runID, body.TestNames); e != nil {
+	if e := s.RecordGateAgreement(runID, body.TestNames, body.Reason); e != nil {
 		writeInteractiveError(w, e)
 		return
 	}

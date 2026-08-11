@@ -1754,7 +1754,7 @@ func applyGateFixCodeAutoRepromptLocked(rs *interactiveRun, runID string, gateOp
 
 // RecordGateAgreement records that the user agreed to the AI's opt-2 requirement
 // proposal and writes the per-test override. Called from handleGateAgreement. (Task-155)
-func (s *InteractiveService) RecordGateAgreement(runID string, testNames []string) *apiErr {
+func (s *InteractiveService) RecordGateAgreement(runID string, testNames []string, reason string) *apiErr {
 	s.mu.Lock()
 	rs := s.runs[runID]
 	if rs == nil {
@@ -1765,12 +1765,18 @@ func (s *InteractiveService) RecordGateAgreement(runID string, testNames []strin
 	stepID := rs.lastTurnStepID
 	s.mu.Unlock()
 
+	if strings.TrimSpace(reason) == "" {
+		return newAPIErr(400, "reason_required", "waiver reason is required when accepting a test override")
+	}
+
 	// Write human-confirmed override for each agreed test name.
 	for _, name := range testNames {
 		if name == "" {
 			continue
 		}
-		_ = flowgate.SaveOverride(dotFP, flowgate.Override{TestName: name, HumanConfirm: true})
+		if err := flowgate.SaveOverrideWithReason(dotFP, flowgate.Override{TestName: name, HumanConfirm: true}, reason, runID, "operator", flowgate.DefaultWaiverTTL); err != nil {
+			return newAPIErr(422, "waiver_save_failed", err.Error())
+		}
 	}
 	s.recordGateOverrideMetric(dotFP, rs, testNames)
 

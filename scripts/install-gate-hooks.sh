@@ -12,5 +12,5 @@ fi
 cp "$HOOK_SRC" "$HOOK_DST"
 chmod +x "$HOOK_DST"
 echo "Installed pre-commit hook → .git/hooks/pre-commit"
-echo "Claude Stop hook: see .claude/settings.json (repo-tracked)"
+echo "Claude Stop hook: merge scripts/claude-stop-hook.settings.json.example into your local .claude/settings.json"
 echo "Uninstall: rm .git/hooks/pre-commit"
