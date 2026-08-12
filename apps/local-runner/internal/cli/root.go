@@ -50,6 +50,7 @@ func NewRootCommand() *cobra.Command {
 	rootCmd.AddCommand(newTelegramMcpCommand(cfg))
 	rootCmd.AddCommand(newSkillsCommand(cfg))
 	rootCmd.AddCommand(newFlowsCommand(cfg))
+	rootCmd.AddCommand(newChatCommand(cfg))
 
 	return rootCmd
 }
