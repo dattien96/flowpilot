@@ -295,7 +295,7 @@ func TestA0_15_ListProviders_ParsesList(t *testing.T) {
 			return
 		}
 		json.NewEncoder(w).Encode([]map[string]any{
-			{"key": "codex", "label": "OpenAI Codex", "models": []map[string]any{
+			{"key": "codex", "label": "OpenAI Codex", "installed": true, "models": []map[string]any{
 				{"id": "o4-mini", "display_name": "o4-mini", "available": true, "supported_reasoning_efforts": []string{"high", "medium", "low"}},
 			}},
 		})
@@ -305,11 +305,34 @@ func TestA0_15_ListProviders_ParsesList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListProviders: %v", err)
 	}
-	if len(ps) != 1 || ps[0].Key != "codex" {
+	if len(ps) != 1 || ps[0].Key != "codex" || !ps[0].Installed {
 		t.Errorf("unexpected providers: %+v", ps)
 	}
 	if len(ps[0].Models) != 1 || ps[0].Models[0].ModelID() != "o4-mini" {
 		t.Errorf("unexpected models: %+v", ps[0].Models)
+	}
+}
+
+func TestInstallProvider_PostsProviderName(t *testing.T) {
+	var gotName string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/providers/install" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotName = body["providerName"]
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"providers": []map[string]any{{"key": "gemini", "installed": true}},
+		})
+	}))
+	defer srv.Close()
+	ps, err := client.New(srv.URL).InstallProvider(context.Background(), "gemini")
+	if err != nil {
+		t.Fatalf("InstallProvider: %v", err)
+	}
+	if gotName != "gemini" || len(ps) != 1 || ps[0].Key != "gemini" {
+		t.Fatalf("gotName=%q providers=%+v", gotName, ps)
 	}
 }
 

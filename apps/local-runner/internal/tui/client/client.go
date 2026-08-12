@@ -83,12 +83,18 @@ func (m ProviderModel) ModelID() string {
 	return strings.TrimSpace(m.Name)
 }
 
-// Provider mirrors GET /providers list entry.
+// Provider mirrors GET /providers list entry (Desktop localProviders / ChatInput readiness).
 type Provider struct {
-	Key    string          `json:"key"`
-	Name   string          `json:"name,omitempty"`
-	Label  string          `json:"label,omitempty"`
-	Models []ProviderModel `json:"models,omitempty"`
+	Key             string          `json:"key"`
+	Name            string          `json:"name,omitempty"`
+	Label           string          `json:"label,omitempty"`
+	Installed       bool            `json:"installed"`
+	InstallStatus   string          `json:"install_status,omitempty"`
+	AuthStatus      string          `json:"auth_status,omitempty"`
+	DetectedVersion string          `json:"detected_version,omitempty"`
+	Version         string          `json:"version,omitempty"`
+	InstallHint     string          `json:"installHint,omitempty"`
+	Models          []ProviderModel `json:"models,omitempty"`
 }
 
 // ProviderSkill mirrors a skill available for a given provider.
@@ -364,6 +370,27 @@ func (c *Client) ListProviders(ctx context.Context) ([]Provider, error) {
 	var ps []Provider
 	err := c.getJSON(ctx, "/providers", &ps)
 	return ps, err
+}
+
+// ConnectProviderAccount calls POST /provider-accounts/connect (Desktop Settings parity).
+// Opens the provider login terminal/browser flow on the runner host.
+func (c *Client) ConnectProviderAccount(ctx context.Context, providerKey string) error {
+	return c.postJSON(ctx, "/provider-accounts/connect", map[string]any{
+		"providerKey": strings.TrimSpace(providerKey),
+	}, nil)
+}
+
+// InstallProvider calls POST /providers/install (Desktop Settings installLocalProvider parity).
+// Runner runs the provider CLI installer (codex/claude/gemini/grok); Desktop UI only
+// exposes the Install button for Gemini today, but the API is generic.
+func (c *Client) InstallProvider(ctx context.Context, providerName string) ([]Provider, error) {
+	var inv struct {
+		Providers []Provider `json:"providers"`
+	}
+	err := c.postJSON(ctx, "/providers/install", map[string]any{
+		"providerName": strings.TrimSpace(providerName),
+	}, &inv)
+	return inv.Providers, err
 }
 
 // ListSkills fetches GET /client/skills filtered by optional providerKey and cwd.
