@@ -175,6 +175,24 @@ type RunHandle struct {
 	LastEventSeq      int64  `json:"lastEventSeq,omitempty"`
 }
 
+// RunHistoryItem mirrors GET /client/projects/{id}/workflow-runs (desktop listRunHistory).
+type RunHistoryItem struct {
+	RunID       string `json:"runId"`
+	ProjectID   string `json:"projectId"`
+	WorkflowID  string `json:"workflowId,omitempty"`
+	ProviderKey string `json:"providerKey"`
+	Status      string `json:"status"`
+	StartedAt   string `json:"startedAt"`
+	UpdatedAt   string `json:"updatedAt"`
+	LastPrompt  string `json:"lastPrompt,omitempty"`
+	LastMessage string `json:"lastMessage,omitempty"`
+	RunKind     string `json:"runKind,omitempty"`
+	ParentRunID string `json:"parentRunId,omitempty"`
+	AgentName   string `json:"agentName,omitempty"`
+	SubMode     string `json:"subMode,omitempty"`
+	FlowRef     string `json:"flowRef,omitempty"`
+}
+
 // RunSnapshot mirrors GET /client/workflow-runs/{runId}.
 type RunSnapshot struct {
 	RunID           string        `json:"runId"`
@@ -407,6 +425,13 @@ func (c *Client) GetRun(ctx context.Context, runID string) (RunSnapshot, error) 
 	var s RunSnapshot
 	err := c.getJSON(ctx, "/client/workflow-runs/"+runID, &s)
 	return s, err
+}
+
+// ListRunHistory fetches GET /client/projects/{projectId}/workflow-runs.
+func (c *Client) ListRunHistory(ctx context.Context, projectID string) ([]RunHistoryItem, error) {
+	var items []RunHistoryItem
+	err := c.getJSON(ctx, "/client/projects/"+neturl.PathEscape(projectID)+"/workflow-runs", &items)
+	return items, err
 }
 
 // SubmitApproval sends POST /client/approvals/{approvalId}.
