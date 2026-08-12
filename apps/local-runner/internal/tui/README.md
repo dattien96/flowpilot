@@ -73,7 +73,10 @@ Root persistent flags (`--workspace`, `--host`, `--port`) are inherited and not 
 | `/history` | List/open chats — type `/history ` then ↑↓ · Tab · Enter (alias: `/chats`) |
 | `/open` | Same picker as `/history` — type `/open ` then ↑↓ · Tab · Enter |
 | `/resume` | Same picker as `/history` — type `/resume ` then ↑↓ · Tab · Enter |
-| `/provider` | Pick provider — type `/provider ` then ↑↓ · Tab · Enter |
+| `/settings` | Sync TUI Supabase session → Desktop paths, then ensure Desktop is running |
+| `/provider` | List/pick providers with Desktop readiness (`installed` + active connected account) |
+| `/provider connect` | Connect account (Desktop Settings parity) — blocked if CLI not installed |
+| `/provider install` | Install provider CLI via `POST /providers/install` (runner supports all; Desktop UI Install is Gemini-only) |
 | `/model` | Pick model — type `/model ` then ↑↓ · Tab · Enter |
 | `/reasoning` | Pick effort — type `/reasoning ` then ↑↓ · Tab · Enter |
 | `/approve` | Approve pending approval |

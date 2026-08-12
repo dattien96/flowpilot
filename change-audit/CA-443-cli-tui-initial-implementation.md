@@ -179,6 +179,34 @@ Codex adapter (`fake_provider_adapter.go`). Fix:
 - Typing `/provider ` filters the loaded provider catalog; ↑↓ · Tab · Enter selects
   (same UX as `/model` / `/flow`).
 
+## Follow-up (2026-08-12) — `/settings` bridges to Desktop
+
+- `/settings` checks `FLOWPILOT_DESKTOP_PORT` (default 5173); reuses if TCP is open,
+  otherwise spawns `npm run dev` in `apps/desktop-flowpilot` with `VITE_RUNNER_URL`.
+- No deep-link into the Settings page — TUI prints a short “continue in Desktop” blurb.
+
+## Follow-up (2026-08-12) — Auth sync + `/provider connect`
+
+1. Root cause of Desktop Login after TUI `/login`: session was written only to
+   `%APPDATA%/FlowPilot/…` while Electron `userData` is `desktop-flowpilot`.
+   `PersistDesktopAuthSession` now writes **all** candidate paths; `/settings`
+   calls `SyncDesktopAuthSession` before ensuring Desktop.
+2. `/provider connect|config [key]` → `POST /provider-accounts/connect` (same as
+   Desktop Settings “Connect New Account”); picker via `/provider connect `.
+
+## Follow-up (2026-08-12) — Provider readiness + install parity
+
+Desktop ChatInput disables a provider unless CLI `installed` **and** an active
+`authStatus=connected` account exists. Settings shows install status for all
+providers; Install button is Gemini-only in UI, but `POST /providers/install`
+supports codex/claude/gemini/grok.
+
+TUI copy:
+- `/provider` list + picker detail show readiness (`ready` / `not installed` /
+  `no active|connected account`)
+- `/provider install [key]` → `POST /providers/install`
+- Connect refused when provider not installed (same as Desktop)
+
 ## Follow-up (2026-08-12) — Fix catalog `/flow` arm (Task-283 contract)
 
 Bug: TUI always set `subMode=bug` and sent catalog UUID as `flowRef` on turns →
