@@ -140,6 +140,45 @@ ok  flowpilot-runner/internal/cli           0.856s  (1 new + existing)
 2. `/chats` lists `GET /client/projects/{id}/workflow-runs`; `/open <n|runId>` resumes
    and replays transcript (Desktop history switch parity). `/resume` uses the same open path.
 
+## Follow-up (2026-08-12) — `/history` picker (flow parity)
+
+- Primary slash is `/history` (`/chats` kept as alias).
+- Typing `/history <query>` filters cached run history; ↑↓ · Tab · Enter open like `/flow`.
+- Silent prefetch while typing; bare `/history` still dumps the numbered list.
+
+## Follow-up (2026-08-12) — open/resume picker + loader + 409 UX
+
+1. `/open` and `/resume` share the same live chat picker as `/history` (three entry points).
+2. `session_unavailable` 409 on open is a **runner** resume check (provider session missing
+   on this machine) — same `POST …/resume` path Desktop uses; TUI now labels it clearly.
+3. Session-loading banner replaced with animated ASCII FlowPilot wordmark + progress bar.
+
+## Follow-up (2026-08-12) — Live provider for TUI chat (no silent fake Codex)
+
+Root cause of scripted “Sure — let me work through this step…” replies: TUI-spawned
+runners omitted `FLOWPILOT_CODEX_APPSERVER`, so `ProviderRegistryFor` kept the fake
+Codex adapter (`fake_provider_adapter.go`). Fix:
+
+- `runnerboot` + `just chat-dev` default `FLOWPILOT_CODEX_APPSERVER=1` (supervisor parity)
+- Refuse chat start with no provider; start banner shows `provider · model`
+- Runner/turn errors continue to surface in the transcript as-is
+
+## Follow-up (2026-08-12) — Statusline: YOLO + project/branch
+
+- Line 1 always shows `YOLO:ON` / `YOLO:OFF` (chat toggle) or `YOLO:ON(auto)` in flow/step
+- `/yolo` only toggles in chat mode; flow arms force effective YOLO on for start/turn/approvals
+- Line 2 shows target project name/path + git branch (`git -C <project> rev-parse`)
+
+## Follow-up (2026-08-12) — `/model` + `/reasoning` live pickers
+
+- Typing `/model ` or `/reasoning ` opens ↑↓ · Tab · Enter pickers (flow/history parity).
+- Enter on a non-actionable placeholder still runs a fully typed arg line.
+
+## Follow-up (2026-08-12) — `/provider` live picker
+
+- Typing `/provider ` filters the loaded provider catalog; ↑↓ · Tab · Enter selects
+  (same UX as `/model` / `/flow`).
+
 ## Follow-up (2026-08-12) — Fix catalog `/flow` arm (Task-283 contract)
 
 Bug: TUI always set `subMode=bug` and sent catalog UUID as `flowRef` on turns →

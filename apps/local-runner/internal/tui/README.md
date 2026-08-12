@@ -70,9 +70,12 @@ Root persistent flags (`--workspace`, `--host`, `--port`) are inherited and not 
 | `/chat` | Switch to chat mode |
 | `/status` | Show current connection status |
 | `/login` | Sign in to Supabase (email/password); writes Desktop session file when possible |
-| `/chats` | List recent project chats (Desktop history); then `/open <n>` |
-| `/open <n\|runId>` | Switch to an existing chat (resume + replay transcript) |
-| `/resume <run-id>` | Same as `/open <runId>` |
+| `/history` | List/open chats — type `/history ` then ↑↓ · Tab · Enter (alias: `/chats`) |
+| `/open` | Same picker as `/history` — type `/open ` then ↑↓ · Tab · Enter |
+| `/resume` | Same picker as `/history` — type `/resume ` then ↑↓ · Tab · Enter |
+| `/provider` | Pick provider — type `/provider ` then ↑↓ · Tab · Enter |
+| `/model` | Pick model — type `/model ` then ↑↓ · Tab · Enter |
+| `/reasoning` | Pick effort — type `/reasoning ` then ↑↓ · Tab · Enter |
 | `/approve` | Approve pending approval |
 | `/deny` | Deny pending approval |
 
@@ -87,9 +90,13 @@ On `flowpilot chat`, the TUI:
 
 1. Resolves the runner URL from `--runner-url` OR `http://<host>:<port>` (root flags).
 2. Calls `GET /health`. If `status=online` and `cwd` matches workspace → reuses the runner.
-3. Otherwise spawns `<exe> runner serve --workspace <root> --host 127.0.0.1 --port <port>` detached.
+3. Otherwise spawns `<exe> runner serve --workspace <root> --host 127.0.0.1 --port <port>` detached
+   with `FLOWPILOT_CODEX_APPSERVER=1` by default (live Codex; same as `just dev`).
 4. Polls `/health` until online (20s timeout).
 5. Logs runner output to `<workspace>/.flowpilot/cli-runner.log`.
+
+If an old runner is reused without that env, Codex may still answer with the scripted
+demo adapter — kill the process on the port and restart `just chat-dev`.
 
 ## Grok YOLO
 
