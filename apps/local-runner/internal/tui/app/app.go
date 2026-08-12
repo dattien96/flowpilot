@@ -164,6 +164,38 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addMessage("system", "Ready — type a prompt or / for commands.", "")
 		return m, nil
 
+	case ChatListMsg:
+		if msg.Err != "" {
+			m.addMessage("system", "Chat list failed: "+msg.Err, "error")
+			return m, nil
+		}
+		m.chatList = msg.Items
+		m.addMessage("system", formatChatList(msg.Items), "")
+		return m, nil
+
+	case ChatOpenedMsg:
+		if msg.Err != "" {
+			m.addMessage("system", "Open chat failed: "+msg.Err, "error")
+			m.connStatus = ConnError
+			return m, nil
+		}
+		handle := msg.Handle
+		m.runHandle = &handle
+		m.stepID = handle.StepID
+		m.pendingPrompt = ""
+		m.firstTurnPending = false
+		m.gate = nil
+		m.approval = nil
+		m.question = nil
+		m.messages = nil
+		if len(msg.Messages) > 0 {
+			m.messages = append([]ChatMessage(nil), msg.Messages...)
+		}
+		m.connStatus = ConnIdle
+		m.statusMsg = fmt.Sprintf("opened %s", shortID(handle.RunID))
+		m.addMessage("system", fmt.Sprintf("Opened chat %s — continue typing or /chats to switch.", handle.RunID), "")
+		return m, nil
+
 	case LoginResultMsg:
 		m.authPhase = AuthNone
 		m.authEmail = ""
@@ -278,7 +310,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case TurnDoneMsg:
 		m.connStatus = ConnIdle
 		m.statusMsg = "done"
-		if msg.FinalMsg != "" {
+		if msg.FinalMsg != "" && !(isStepCompleteStub(msg.FinalMsg) && m.hasAssistantContent()) {
 			m.ensureAssistantMessage(msg.FinalMsg)
 		}
 		if m.cfg.Print {
@@ -296,7 +328,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.modelContextWin = *msg.Usage.ModelContextWindow
 			}
 		}
-		if msg.FinalMsg != "" {
+		if msg.FinalMsg != "" && !(isStepCompleteStub(msg.FinalMsg) && m.hasAssistantContent()) {
 			m.ensureAssistantMessage(msg.FinalMsg)
 		}
 		if m.cfg.Print {
@@ -334,12 +366,14 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		m.appendAssistantDelta(ev.Text)
 
 	case "turn_completed":
-		if ev.FinalMessage != "" {
+		// Prefer already-streamed assistant text; ignore step-complete stubs.
+		if ev.FinalMessage != "" && !m.hasAssistantContent() && !isStepCompleteStub(ev.FinalMessage) {
 			m.ensureAssistantMessage(ev.FinalMessage)
 		}
 		m.connStatus = ConnIdle
 		m.statusMsg = "done"
-		return m, func() tea.Msg { return TurnDoneMsg{FinalMsg: ev.FinalMessage} }
+		final := chooseAssistantFinal(m.lastAssistantText(), ev.FinalMessage)
+		return m, func() tea.Msg { return TurnDoneMsg{FinalMsg: final} }
 
 	case "turn_failed":
 		m.connStatus = ConnError
@@ -999,9 +1033,35 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 
 	case "/resume":
 		if len(args) > 0 {
-			return m, m.cmdResume(args[0])
+			return m, m.cmdOpenChat(args[0])
 		}
-		m.addMessage("system", "Usage: /resume <run-id>", "")
+		m.addMessage("system", "Usage: /resume <run-id> — or /chats then /open <n>", "")
+
+	case "/chats", "/history":
+		if len(args) > 0 {
+			runID, err := resolveChatOpenTarget(args, m.chatList)
+			if err != nil {
+				m.addMessage("system", err.Error()+" — run /chats first", "error")
+				break
+			}
+			m.addMessage("system", fmt.Sprintf("Opening chat %s…", runID), "")
+			m.connStatus = ConnConnecting
+			m.statusMsg = "opening chat…"
+			return m, m.cmdOpenChat(runID)
+		}
+		m.addMessage("system", "Loading chat history…", "")
+		return m, m.cmdListChats()
+
+	case "/open":
+		runID, err := resolveChatOpenTarget(args, m.chatList)
+		if err != nil {
+			m.addMessage("system", err.Error(), "error")
+			break
+		}
+		m.addMessage("system", fmt.Sprintf("Opening chat %s…", runID), "")
+		m.connStatus = ConnConnecting
+		m.statusMsg = "opening chat…"
+		return m, m.cmdOpenChat(runID)
 
 	case "/approve":
 		if m.approval != nil {
@@ -1375,6 +1435,9 @@ func (m *AppModel) appendAssistantDelta(text string) {
 }
 
 func (m *AppModel) ensureAssistantMessage(text string) {
+	if isStepCompleteStub(text) && m.hasAssistantContent() {
+		return
+	}
 	if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == "assistant" {
 		if m.messages[len(m.messages)-1].Content == "" {
 			m.messages[len(m.messages)-1].Content = text
@@ -1382,6 +1445,19 @@ func (m *AppModel) ensureAssistantMessage(text string) {
 	} else if text != "" {
 		m.addMessage("assistant", text, "")
 	}
+}
+
+func (m *AppModel) hasAssistantContent() bool {
+	return strings.TrimSpace(m.lastAssistantText()) != ""
+}
+
+func (m *AppModel) lastAssistantText() string {
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].Role == "assistant" {
+			return m.messages[i].Content
+		}
+	}
+	return ""
 }
 
 func buildGateMessage(opts []string, regressed []string) string {
@@ -1759,10 +1835,7 @@ func (m *AppModel) cmdSendTurn(prompt string) tea.Cmd {
 		if err := <-errCh; err != nil {
 			return ErrMsg{Err: fmt.Errorf("send turn: %w", err)}
 		}
-		out := completed
-		if out == "" {
-			out = finalMsg.String()
-		}
+		out := chooseAssistantFinal(finalMsg.String(), completed)
 		return turnFinishedMsg{FinalMsg: out, Usage: usage}
 	}
 }

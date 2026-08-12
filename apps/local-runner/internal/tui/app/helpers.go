@@ -63,6 +63,36 @@ func (m *AppModel) canSend() bool {
 	return false
 }
 
+// isStepCompleteStub detects synthetic finalMessage stubs from the demo/fake
+// adapter (and similar step-complete closers). Desktop keeps the streamed
+// deltas as the transcript and does not replace them with this text.
+func isStepCompleteStub(s string) bool {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	if lower == "" {
+		return false
+	}
+	if lower == "turn completed" || strings.TrimSuffix(lower, ".") == "turn completed" {
+		return true
+	}
+	return strings.Contains(lower, "the change is implemented") &&
+		strings.Contains(lower, "step is complete")
+}
+
+// chooseAssistantFinal prefers streamed message_delta text over turn_completed
+// finalMessage (desktop timeline parity).
+func chooseAssistantFinal(deltas, finalMessage string) string {
+	d := strings.TrimSpace(deltas)
+	f := strings.TrimSpace(finalMessage)
+	if d != "" {
+		return d
+	}
+	if f != "" && !isStepCompleteStub(f) {
+		return f
+	}
+	// Stub-only replies still surface something rather than a blank bubble.
+	return f
+}
+
 func formatUsageLine(lastTokens, contextWindow, lastTurn int64) string {
 	if contextWindow <= 0 {
 		return fmt.Sprintf("last:%dk", lastTurn/1000)
