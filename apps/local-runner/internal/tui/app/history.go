@@ -1,0 +1,200 @@
+package app
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"flowpilot-runner/internal/tui/client"
+)
+
+// ChatListMsg carries /chats listing results.
+type ChatListMsg struct {
+	Items []client.RunHistoryItem
+	Err   string
+}
+
+// ChatOpenedMsg carries a resumed chat with replayed transcript.
+type ChatOpenedMsg struct {
+	Handle   client.RunHandle
+	Messages []ChatMessage
+	Err      string
+}
+
+// filterParentHistory keeps top-level runs (no parent) for the switcher list.
+func filterParentHistory(items []client.RunHistoryItem) []client.RunHistoryItem {
+	out := make([]client.RunHistoryItem, 0, len(items))
+	for _, it := range items {
+		if strings.TrimSpace(it.ParentRunID) != "" {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+func formatChatList(items []client.RunHistoryItem) string {
+	var sb strings.Builder
+	sb.WriteString("Recent chats (Desktop history parity):\n")
+	if len(items) == 0 {
+		sb.WriteString("  (none for this project)\n")
+		sb.WriteString("Usage: /chats · /open <n|runId> · /resume <runId>")
+		return sb.String()
+	}
+	limit := 20
+	if len(items) < limit {
+		limit = len(items)
+	}
+	for i := 0; i < limit; i++ {
+		it := items[i]
+		title := strings.TrimSpace(it.LastPrompt)
+		if title == "" {
+			title = strings.TrimSpace(it.LastMessage)
+		}
+		if title == "" {
+			title = "(no prompt)"
+		}
+		title = collapseWS(title)
+		if len([]rune(title)) > 56 {
+			r := []rune(title)
+			title = string(r[:53]) + "…"
+		}
+		kind := it.RunKind
+		if kind == "" {
+			if it.WorkflowID != "" {
+				kind = "workflow"
+			} else {
+				kind = "chat"
+			}
+		}
+		sb.WriteString(fmt.Sprintf("  %2d  %s  [%s] %s · %s\n", i+1, shortID(it.RunID), kind, it.Status, title))
+		sb.WriteString(fmt.Sprintf("      id %s  %s\n", it.RunID, it.ProviderKey))
+	}
+	if len(items) > limit {
+		sb.WriteString(fmt.Sprintf("  … %d more\n", len(items)-limit))
+	}
+	sb.WriteString("Open: /open <n>  or  /open <runId>  or  /resume <runId>")
+	return sb.String()
+}
+
+func collapseWS(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// resolveChatOpenTarget maps /open args to a run id using the last /chats list.
+func resolveChatOpenTarget(args []string, listed []client.RunHistoryItem) (string, error) {
+	if len(args) == 0 {
+		return "", fmt.Errorf("usage: /open <n|runId> — run /chats first to see indexes")
+	}
+	token := strings.TrimSpace(args[0])
+	if n, err := strconv.Atoi(token); err == nil {
+		if n < 1 || n > len(listed) {
+			return "", fmt.Errorf("chat index %d out of range (1-%d) — run /chats", n, len(listed))
+		}
+		return listed[n-1].RunID, nil
+	}
+	return token, nil
+}
+
+func replayHistoryMessages(evs []client.ProviderEvent) []ChatMessage {
+	var out []ChatMessage
+	for _, ev := range evs {
+		switch ev.Type {
+		case "turn_started":
+			if p := strings.TrimSpace(ev.Prompt); p != "" {
+				out = append(out, ChatMessage{Role: "user", Content: p})
+			}
+		case "message_delta":
+			if ev.Text == "" {
+				continue
+			}
+			if len(out) > 0 && out[len(out)-1].Role == "assistant" {
+				out[len(out)-1].Content += ev.Text
+			} else {
+				out = append(out, ChatMessage{Role: "assistant", Content: ev.Text})
+			}
+		case "message_completed":
+			if isStepCompleteStub(ev.Text) {
+				continue
+			}
+			if ev.Text == "" {
+				continue
+			}
+			if len(out) > 0 && out[len(out)-1].Role == "assistant" {
+				if strings.TrimSpace(out[len(out)-1].Content) == "" {
+					out[len(out)-1].Content = ev.Text
+				}
+			} else {
+				out = append(out, ChatMessage{Role: "assistant", Content: ev.Text})
+			}
+		case "turn_completed":
+			if isStepCompleteStub(ev.FinalMessage) {
+				continue
+			}
+			if strings.TrimSpace(ev.FinalMessage) == "" {
+				continue
+			}
+			// Only fill empty assistant bubble; never replace streamed text with stub.
+			if len(out) == 0 || out[len(out)-1].Role != "assistant" {
+				out = append(out, ChatMessage{Role: "assistant", Content: ev.FinalMessage})
+			} else if strings.TrimSpace(out[len(out)-1].Content) == "" {
+				out[len(out)-1].Content = ev.FinalMessage
+			}
+		}
+	}
+	return out
+}
+
+func (m *AppModel) cmdListChats() tea.Cmd {
+	runnerURL := m.runnerURL
+	projectID := ""
+	if m.project != nil {
+		projectID = m.project.ID
+	}
+	return func() tea.Msg {
+		if projectID == "" {
+			return ChatListMsg{Err: "project_id required — wait for session load or set --project"}
+		}
+		cl := client.New(runnerURL)
+		items, err := cl.ListRunHistory(context.Background(), projectID)
+		if err != nil {
+			return ChatListMsg{Err: err.Error()}
+		}
+		return ChatListMsg{Items: filterParentHistory(items)}
+	}
+}
+
+func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
+	runnerURL := m.runnerURL
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		handle, err := cl.ResumeRun(ctx, runID)
+		if err != nil {
+			return ChatOpenedMsg{Err: err.Error()}
+		}
+		// Replay from seq 0 through lastEventSeq (Task-287 T-5), then interactive.
+		until := handle.LastEventSeq
+		var collected []client.ProviderEvent
+		if until > 0 {
+			for ev := range cl.StreamRun(ctx, runID, 0) {
+				collected = append(collected, ev)
+				if ev.Seq >= until {
+					cancel()
+					break
+				}
+				if len(collected) >= 8000 {
+					cancel()
+					break
+				}
+			}
+		}
+		msgs := replayHistoryMessages(collected)
+		return ChatOpenedMsg{Handle: handle, Messages: msgs}
+	}
+}

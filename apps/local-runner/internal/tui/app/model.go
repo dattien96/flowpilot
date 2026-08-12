@@ -184,6 +184,7 @@ type AppModel struct {
 	reasoningEffort string
 	flowBuiltins    []client.BuiltinFlowOption
 	flowWorkflows   []client.Workflow
+	chatList        []client.RunHistoryItem // last /chats result for /open <n>
 
 	// Pending gate/approval/question state
 	gate     *GateState
@@ -269,6 +270,8 @@ var knownSlashCommands = []slashCommand{
 	{"/new", "Start a new conversation"},
 	{"/step", "Select workflow step"},
 	{"/resume", "Resume previous session by run ID"},
+	{"/chats", "List recent chats for this project (Desktop history)"},
+	{"/open", "Open a chat by list index or run id (/chats first)"},
 	{"/approve", "Approve a pending approval"},
 	{"/deny", "Deny a pending approval"},
 	{"/headless", "Print next response to stdout only"},
