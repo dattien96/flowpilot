@@ -187,6 +187,13 @@ type AppModel struct {
 	flowWorkflows   []client.Workflow
 	chatList        []client.RunHistoryItem // last /history result for picker + /open <n>
 	sessionPanel    sessionInfoPanel        // collapsible top-right session/status overlay
+	flowSteps       []client.WorkflowStepRuntime
+	flowStepsActive string // node name currently RUNNING
+	turnStream      *turnStreamState
+	orchStream      *orchStreamState // Desktop orchestration SSE after turn
+	lastEventSeq    int64
+	stepsPollTicks  int    // cursor ticks while flow is live
+	lastTurnError   string // last turn_failed error (fallback FAIL reason in chat)
 
 	// Pending gate/approval/question state
 	gate     *GateState
@@ -271,7 +278,7 @@ var knownSlashCommands = []slashCommand{
 	{"/flow", "Start or list flows"},
 	{"/chat", "Switch to chat mode"},
 	{"/skill", "Toggle a skill for the next turn"},
-	{"/image", "Attach an image to the next turn (codex/claude only)"},
+	{"/image", "Attach/list/open images — Alt+V or /image paste, /image <path>, /image open <n>"},
 	{"/provider", "Switch / connect / install — /provider  then ↑↓ Tab Enter"},
 	{"/model", "Switch model — type /model  then ↑↓ Tab Enter"},
 	{"/reasoning", "Set effort — type /reasoning  then ↑↓ Tab Enter"},

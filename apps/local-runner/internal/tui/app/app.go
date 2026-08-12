@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
+	"flowpilot-runner/internal/tui/prefs"
 )
 
 // ---- Styles -----------------------------------------------------------------
@@ -51,20 +53,39 @@ var (
 	styleSuggest     = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
 	styleSuggestSel  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)).Underline(true)
 	styleLoading     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorWarn)).Background(lipgloss.Color(colorBg3))
+	// Active workflow step (Desktop timeline “current” accent).
+	styleStepRunning = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorWarn)).Background(lipgloss.Color(colorBg3))
+	styleStepDone    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOK))
+	styleStepFailed  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorErr))
 )
 
 // ---- New / Init -------------------------------------------------------------
 
 // New creates a new AppModel from ChatConfig and the runner URL.
 func New(cfg config.ChatConfig, runnerURL string) *AppModel {
+	provider := cfg.Provider
+	model := cfg.Model
+	reasoning := cfg.ReasoningEffort
+	// Restore last TUI selection when flags omit provider/model.
+	if saved, _, err := prefs.Load(); err == nil {
+		if provider == "" {
+			provider = saved.Provider
+		}
+		if model == "" {
+			model = saved.Model
+		}
+		if reasoning == "" {
+			reasoning = saved.ReasoningEffort
+		}
+	}
 	m := &AppModel{
 		cfg:             cfg,
 		runnerURL:       runnerURL,
 		client:          client.New(runnerURL),
 		yolo:            cfg.Yolo,
-		provider:        cfg.Provider,
-		model:           cfg.Model,
-		reasoningEffort: cfg.ReasoningEffort,
+		provider:        provider,
+		model:           model,
+		reasoningEffort: reasoning,
 		projectPath:     cfg.ProjectPath,
 		connStatus:      ConnConnecting,
 		statusMsg:       "connecting...",
@@ -100,7 +121,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sessionLoading {
 			m.loadingFrame = (m.loadingFrame + 1) % 64
 		}
-		return m, tickCursor()
+		cmds := []tea.Cmd{tickCursor()}
+		// While a flow turn/orchestration is live, poll steps-runtime so long
+		// silent steps (e.g. grok-context / context.produce) stay visible.
+		if m.shouldPollStepsRuntime() {
+			m.stepsPollTicks++
+			if m.stepsPollTicks%3 == 0 { // ~1.6s
+				cmds = append(cmds, m.cmdRefreshStepsRuntime())
+			}
+		} else {
+			m.stepsPollTicks = 0
+		}
+		return m, tea.Batch(cmds...)
 
 	case ErrMsg:
 		m.err = msg.Err
@@ -358,13 +390,129 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.connStatus = ConnRunning
 		m.statusMsg = fmt.Sprintf("run %s • %s", shortID(handle.RunID), handle.ProviderKey)
+		m.addMessage("system", fmt.Sprintf("Run %s started — streaming events…", shortID(handle.RunID)), "")
 		prompt := m.pendingPrompt
 		m.pendingPrompt = ""
-		if prompt != "" {
-			return m, m.cmdSendTurn(prompt)
+		var cmds []tea.Cmd
+		if m.launch.IsCatalogWorkflow() || m.mode == ModeFlow || m.mode == ModeStep {
+			cmds = append(cmds, m.cmdRefreshStepsRuntime())
 		}
-		if m.cfg.Print {
-			return m, m.cmdStreamHeadless(handle.RunID, handle.LastEventSeq)
+		if prompt != "" {
+			cmds = append(cmds, m.cmdSendTurn(prompt))
+		} else if m.cfg.Print {
+			cmds = append(cmds, m.cmdStreamHeadless(handle.RunID, handle.LastEventSeq))
+		}
+		return m, tea.Batch(cmds...)
+
+	case turnStreamOpenedMsg:
+		m.turnStream = &turnStreamState{evCh: msg.EvCh, errCh: msg.ErrCh}
+		m.connStatus = ConnRunning
+		m.statusMsg = "streaming…"
+		return m, m.cmdPollTurnStream()
+
+	case turnStreamEventMsg:
+		if msg.Ev.Seq > m.lastEventSeq {
+			m.lastEventSeq = msg.Ev.Seq
+		}
+		m2, cmd := m.handleEvent(msg.Ev)
+		am := m2.(*AppModel)
+		return am, tea.Batch(cmd, am.cmdPollTurnStream())
+
+	case turnStreamClosedMsg:
+		m.turnStream = nil
+		if msg.Err != nil {
+			m.connStatus = ConnError
+			m.statusMsg = "turn failed"
+			m.addMessage("system", "Send turn failed: "+msg.Err.Error(), "error")
+			return m, nil
+		}
+		if m.connStatus == ConnRunning {
+			m.connStatus = ConnIdle
+			m.statusMsg = "done"
+		}
+		cmds := []tea.Cmd{m.cmdRefreshStepsRuntime()}
+		// Desktop startOrchestrationStream: keep listening after the turn so
+		// hub/child step transitions (and late gate/approval events) surface.
+		if m.shouldPollStepsRuntime() && m.orchStream == nil {
+			cmds = append(cmds, m.cmdStartOrchestrationStream())
+		}
+		return m, tea.Batch(cmds...)
+
+	case orchStreamOpenedMsg:
+		m.stopOrchestrationStream()
+		m.orchStream = &orchStreamState{evCh: msg.EvCh, cancel: msg.Cancel}
+		return m, m.cmdPollOrchStream()
+
+	case orchStreamEventMsg:
+		if m.orchStream == nil {
+			return m, nil
+		}
+		if msg.Ev.Seq > m.lastEventSeq {
+			m.lastEventSeq = msg.Ev.Seq
+		}
+		m2, cmd := m.handleEvent(msg.Ev)
+		am := m2.(*AppModel)
+		return am, tea.Batch(cmd, am.cmdPollOrchStream())
+
+	case orchStreamClosedMsg:
+		m.stopOrchestrationStream()
+		return m, m.cmdRefreshStepsRuntime()
+
+	case StepsRuntimeMsg:
+		if m.runHandle == nil || msg.RunID != m.runHandle.RunID {
+			return m, nil
+		}
+		if msg.Err != "" {
+			// Soft failure — catalog may not have steps yet.
+			return m, nil
+		}
+		prevSteps := append([]client.WorkflowStepRuntime(nil), m.flowSteps...)
+		prevActive := m.flowStepsActive
+		m.flowSteps = msg.Steps
+		m.flowStepsActive = activeStepName(msg.Steps)
+		m.refreshSessionPanel()
+		if m.flowStepsActive != "" && (m.connStatus == ConnRunning || m.connStatus == ConnWaiting) {
+			m.statusMsg = "step: " + m.flowStepsActive
+		}
+		// Chat: only the current step line (full list lives in the top-right panel).
+		for _, line := range formatStepChatNotices(prevSteps, msg.Steps, prevActive, m.flowStepsActive, m.lastTurnError) {
+			m.addMessage("system", line, "steps")
+		}
+		return m, nil
+
+	case ClipboardPasteMsg:
+		if msg.Err != "" && msg.Attachment == nil && msg.Text == "" {
+			m.addMessage("system", msg.Err, "error")
+			return m, nil
+		}
+		if msg.Attachment != nil {
+			m.pendingAttach = append(m.pendingAttach, *msg.Attachment)
+			m.addMessage("system", fmt.Sprintf(
+				"Attached image: %s (%d pending) — /image to list, /image open %d to view",
+				msg.Attachment.OriginalName, len(m.pendingAttach), len(m.pendingAttach),
+			), "")
+			return m, nil
+		}
+		if msg.Text != "" {
+			m.inputValue += msg.Text
+			return m, nil
+		}
+		if msg.Err != "" {
+			m.addMessage("system", msg.Err, "error")
+		}
+		return m, nil
+
+	case AttachmentOpenMsg:
+		if msg.Err != "" && msg.Path == "" {
+			m.addMessage("system", "Open image failed: "+msg.Err, "error")
+			return m, nil
+		}
+		if msg.Path != "" {
+			line := "Opened image: " + msg.Path
+			if msg.Err != "" {
+				line += " (viewer: " + msg.Err + ")"
+			}
+			m.addMessage("system", line, "")
 		}
 		return m, nil
 
@@ -465,6 +613,9 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 	case "turn_failed":
 		m.connStatus = ConnError
 		m.statusMsg = "turn failed: " + ev.Error
+		if strings.TrimSpace(ev.Error) != "" {
+			m.lastTurnError = strings.TrimSpace(ev.Error)
+		}
 		m.addMessage("system", "Turn failed: "+ev.Error, "error")
 		if m.cfg.Print {
 			return m, func() tea.Msg { return TurnFailedMsg{Reason: ev.Error} }
@@ -472,6 +623,10 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 
 	case "turn_started":
 		m.connStatus = ConnRunning
+		m.statusMsg = "turn running…"
+		if m.launch.IsCatalogWorkflow() || m.mode == ModeFlow || m.mode == ModeStep {
+			return m, m.cmdRefreshStepsRuntime()
+		}
 
 	case "tool_started":
 		if ev.ToolName != "" {
@@ -547,6 +702,8 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		if m.agentsFocus {
 			m.addMessage("system", fmt.Sprintf("[agents] %d agents active", len(m.agentRuns)), "")
 		}
+		// Desktop refreshes the step timeline on agent_graph_updated.
+		return m, m.cmdRefreshStepsRuntime()
 	}
 
 	return m, nil
@@ -577,6 +734,14 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
 		return m, nil
+
+	case tea.KeyCtrlV:
+		if m.authPhase != AuthNone {
+			return m, nil
+		}
+		// Prefer image clipboard; falls back to text. On Windows Terminal, Ctrl+V
+		// is often stolen for text-only paste — use /image paste or Alt+V then.
+		return m, m.cmdClipboardPaste()
 
 	case tea.KeyEscape:
 		if m.authPhase != AuthNone {
@@ -685,6 +850,13 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputValue += string(msg.Runes)
 		m.suggIdx = 0
 		return m, m.cmdMaybePrefetchPickers()
+	}
+	// Alt+V / ctrl+shift+v: image paste when the terminal steals Ctrl+V.
+	if m.authPhase == AuthNone {
+		switch msg.String() {
+		case "alt+v", "ctrl+shift+v":
+			return m, m.cmdClipboardPaste()
+		}
 	}
 	return m, nil
 }
@@ -939,6 +1111,67 @@ func (m *AppModel) handleGateInput(input string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// dispatchImageCommand handles /image [paste|open|clear|list|<path>].
+// Reserved subcommands must never fall through to os.ReadFile (that produced
+// "read paste: open paste: invalid argument" when paste was treated as a path).
+func (m *AppModel) dispatchImageCommand(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 {
+		m.addMessage("system", formatPendingAttachments(m.pendingAttach)+
+			"\nTip: Alt+V or /image paste (Windows Terminal often steals Ctrl+V). Images: codex/claude only (grok Vision=false).", "")
+		return m, nil
+	}
+	sub := strings.ToLower(strings.TrimSpace(args[0]))
+	switch sub {
+	case "list", "ls":
+		m.addMessage("system", formatPendingAttachments(m.pendingAttach), "")
+		return m, nil
+	case "paste", "clip", "clipboard":
+		return m, m.cmdClipboardPaste()
+	case "clear":
+		m.pendingAttach = nil
+		m.addMessage("system", "Cleared pending images.", "")
+		return m, nil
+	case "open", "view", "show":
+		idx := 1
+		if len(args) > 1 {
+			if n, err := strconv.Atoi(strings.TrimSpace(args[1])); err == nil {
+				idx = n
+			} else {
+				m.addMessage("system", "Usage: /image open <n>  (n = 1-based index from /image list)", "error")
+				return m, nil
+			}
+		}
+		return m, m.cmdOpenPendingAttachment(idx)
+	}
+
+	path := strings.TrimSpace(strings.Join(args, " "))
+	if path == "" {
+		return m, nil
+	}
+	// Belt-and-suspenders: never open reserved words as files.
+	switch strings.ToLower(path) {
+	case "paste", "clip", "clipboard", "list", "ls", "clear", "open", "view", "show":
+		return m, m.cmdClipboardPaste()
+	}
+	if !client.SupportsImages(m.provider) {
+		m.addMessage("system", client.ImagesUnsupportedReason(m.provider), "error")
+		return m, nil
+	}
+	if len(m.pendingAttach) >= 6 {
+		m.addMessage("system", "Maximum 6 images per turn.", "error")
+		return m, nil
+	}
+	attachments, err := client.ValidateAttachments([]string{path}, m.provider)
+	if err != nil {
+		m.addMessage("system", err.Error(), "error")
+		return m, nil
+	}
+	m.pendingAttach = append(m.pendingAttach, attachments...)
+	m.addMessage("system", fmt.Sprintf("Attached image: %s (%d pending) — /image open %d to view",
+		filepath.Base(path), len(m.pendingAttach), len(m.pendingAttach)), "")
+	return m, nil
+}
+
 // handleSlashCommand dispatches slash commands.
 func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	parts := strings.Fields(input)
@@ -1069,24 +1302,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 
 	case "/image":
-		if len(args) == 0 {
-			m.addMessage("system", "Usage: /image <path> — attach image to next turn (codex/claude only).", "")
-		} else {
-			path := strings.Join(args, " ")
-			if !client.SupportsImages(m.provider) {
-				m.addMessage("system", fmt.Sprintf("Provider %q does not support images (codex/claude only).", m.provider), "error")
-			} else if len(m.pendingAttach) >= 6 {
-				m.addMessage("system", "Maximum 6 images per turn.", "error")
-			} else {
-				attachments, err := client.ValidateAttachments([]string{path}, m.provider)
-				if err != nil {
-					m.addMessage("system", err.Error(), "error")
-				} else {
-					m.pendingAttach = append(m.pendingAttach, attachments...)
-					m.addMessage("system", fmt.Sprintf("Attached image: %s (%d pending)", filepath.Base(path), len(m.pendingAttach)), "")
-				}
-			}
-		}
+		return m.dispatchImageCommand(args)
 
 	case "/provider":
 		if len(args) > 0 {
@@ -1181,7 +1397,8 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					m.provider = args[0]
 				}
 				m.bindActiveAccountForProvider()
-				msg := fmt.Sprintf("Provider set to: %s · model: %s", m.provider, orDash(m.model))
+				persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+				msg := fmt.Sprintf("Provider set to: %s · model: %s (saved for next TUI /new)", m.provider, orDash(m.model))
 				if acc := m.activeProviderAccountLabel(); acc != "" {
 					msg += " · account: " + acc
 				}
@@ -1235,7 +1452,8 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.model = want
 			}
 			m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
-			m.addMessage("system", fmt.Sprintf("Model set to: %s", m.model), "")
+			persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+			m.addMessage("system", fmt.Sprintf("Model set to: %s (saved for next TUI /new)", m.model), "")
 			m.refreshSessionPanel()
 		}
 
@@ -1251,13 +1469,16 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			switch effort {
 			case "high", "medium", "low", "":
 				m.reasoningEffort = effort
-				m.addMessage("system", fmt.Sprintf("Reasoning effort set to: %s", effort), "")
+				persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+				m.addMessage("system", fmt.Sprintf("Reasoning effort set to: %s (saved)", effort), "")
 			default:
 				m.addMessage("system", "Reasoning effort must be high, medium, or low.", "error")
 			}
 		}
 
 	case "/new":
+		m.stopOrchestrationStream()
+		m.turnStream = nil
 		m.runHandle = nil
 		m.stepID = ""
 		m.pendingPrompt = ""
@@ -1269,9 +1490,19 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.gate = nil
 		m.approval = nil
 		m.question = nil
-		// Keep armed flow so /new can restart the same target; clear with /chat.
+		m.flowSteps = nil
+		m.flowStepsActive = ""
+		m.lastEventSeq = 0
+		m.lastTurnError = ""
+		m.lastTokens = nil
+		// Keep provider/model/reasoning + armed flow (clear flow with /chat).
 		m.firstTurnPending = m.launch.IsBuiltin()
-		m.addMessage("system", "New conversation started.", "")
+		persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+		m.refreshSessionPanel()
+		m.addMessage("system", fmt.Sprintf(
+			"New conversation started — provider %s · model %s (latest selection kept).",
+			orDash(m.provider), orDash(m.model),
+		), "")
 
 	case "/step":
 		if len(args) == 0 {
@@ -1562,6 +1793,8 @@ func (m *AppModel) renderMessages() []string {
 				style = styleError
 			case "gate":
 				style = styleGate
+			case "steps":
+				style = styleSystem
 			default:
 				style = styleSystem
 			}
@@ -1590,14 +1823,18 @@ func (m *AppModel) renderMessages() []string {
 		}
 		wrapped := wrapText(msg.Content, contentWidth)
 		for i, line := range wrapped {
+			lineStyle := style
+			if msg.FormatHint == "steps" {
+				lineStyle = styleForStepBannerLine(line)
+			}
 			var rendered string
 			if i == 0 && prefix != "" {
-				rendered = prefixStyle.Render(prefix) + style.Render(line)
+				rendered = prefixStyle.Render(prefix) + lineStyle.Render(line)
 			} else if prefix != "" {
 				pad := strings.Repeat(" ", len([]rune(prefix)))
-				rendered = pad + style.Render(line)
+				rendered = pad + lineStyle.Render(line)
 			} else {
-				rendered = style.Render(line)
+				rendered = lineStyle.Render(line)
 			}
 			if rightAlign {
 				rendered = rightAlignPlain(rendered, width)
@@ -1606,6 +1843,22 @@ func (m *AppModel) renderMessages() []string {
 		}
 	}
 	return lines
+}
+
+func styleForStepBannerLine(line string) lipgloss.Style {
+	u := strings.ToUpper(line)
+	switch {
+	case strings.Contains(u, "[RUNNING]") || strings.Contains(u, "[WAITING_USER_APPROVAL]") || strings.HasPrefix(strings.TrimSpace(line), ">"):
+		return styleStepRunning
+	case strings.Contains(u, "[DONE]"):
+		return styleStepDone
+	case strings.Contains(u, "[FAILED]"):
+		return styleStepFailed
+	case strings.HasPrefix(strings.TrimSpace(line), "IN PROGRESS:"):
+		return styleStepRunning
+	default:
+		return styleSystem
+	}
 }
 
 func (m *AppModel) renderStatusLine() string {
@@ -1658,6 +1911,11 @@ func (m *AppModel) renderStatusLine() string {
 		if agentName != "" {
 			parts = append(parts, fmt.Sprintf("@%s", agentName))
 		}
+	}
+
+	// Live flow step (highlight name when RUNNING).
+	if name := strings.TrimSpace(m.flowStepsActive); name != "" {
+		parts = append(parts, styleStepRunning.Render("▶ "+name))
 	}
 
 	// Context window remaining + last turn (desktop ChatInput parity).
@@ -1737,7 +1995,11 @@ func (m *AppModel) renderInputLine() string {
 	left := styleInputStroke.Render("┃")
 	mid := styleInputStroke.Render("│")
 	label := stylePromptFocus.Render(strings.TrimSpace(prefix))
-	return left + " " + label + " " + mid + styleInputFocus.Render(" "+body+caret)
+	attach := ""
+	if n := len(m.pendingAttach); n > 0 {
+		attach = stylePromptFocus.Render(fmt.Sprintf("[%d img] ", n))
+	}
+	return left + " " + label + " " + mid + " " + attach + styleInputFocus.Render(body+caret)
 }
 
 // ---- Helpers ----------------------------------------------------------------
@@ -1921,12 +2183,21 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 	flagProvider := m.cfg.Provider
 	flagModel := m.cfg.Model
 	projectPath := m.cfg.ProjectPath
-	// Prefer in-memory values already set on the model (from New).
+	// Prefer in-memory values already set on the model (from New / prefs).
 	if flagProvider == "" {
 		flagProvider = m.provider
 	}
 	if flagModel == "" {
 		flagModel = m.model
+	}
+	// Disk prefs win over "first active account" when flags/memory are empty.
+	if saved, _, err := prefs.Load(); err == nil {
+		if flagProvider == "" {
+			flagProvider = saved.Provider
+		}
+		if flagModel == "" {
+			flagModel = saved.Model
+		}
 	}
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
@@ -2079,100 +2350,8 @@ func (m *AppModel) cmdResume(runID string) tea.Cmd {
 	}
 }
 
-func (m *AppModel) cmdSendTurn(prompt string) tea.Cmd {
-	if m.runHandle == nil {
-		return nil
-	}
-	runID := m.runHandle.RunID
-	stepID := m.stepID
-	if stepID == "" {
-		stepID = m.runHandle.StepID
-	}
-	runnerURL := m.runnerURL
-	yolo := m.effectiveYolo()
-	model := m.model
-	reasoningEffort := m.reasoningEffort
-	skills := m.selectedSkills
-	attachments := m.pendingAttach
-	// Snapshot + consume first-turn builtin extras before the async cmd runs.
-	var (
-		turnSubMode    string
-		turnFlowRef    string
-		turnChangeType string
-	)
-	if m.firstTurnPending {
-		if sub, fr, ct, _, ok := m.launch.FirstTurnExtras(); ok {
-			turnSubMode = sub
-			turnFlowRef = fr
-			turnChangeType = ct
-		}
-		m.firstTurnPending = false
-	}
-	catalogWorkflow := m.launch.IsCatalogWorkflow()
-	// Catalog workflow / plain chat: never send flowRef/subMode on the turn.
-
-	// Clear pending attachments (consumed by this turn).
-	m.pendingAttach = nil
-
-	return func() tea.Msg {
-		cl := client.New(runnerURL)
-		ctx := context.Background()
-
-		turnIn := client.TurnInput{
-			RunID:           runID,
-			StepID:          stepID,
-			Prompt:          prompt,
-			ReasoningEffort: reasoningEffort,
-			SelectedSkills:  skills,
-			Attachments:     attachments,
-			SubMode:         turnSubMode,
-			FlowRef:         turnFlowRef,
-			ChangeType:      turnChangeType,
-		}
-
-		// Per-turn model/YOLO overrides match Desktop normal_chat only (BUG-063).
-		if !catalogWorkflow {
-			yoloCopy := yolo
-			turnIn.YoloMode = &yoloCopy
-			modelCopy := model
-			turnIn.Model = &modelCopy
-		} else {
-			turnIn.ReasoningEffort = ""
-		}
-
-		evCh, errCh := cl.SendTurn(ctx, turnIn)
-
-		var finalMsg strings.Builder
-		var completed string
-		var usage *client.TokenUsageSnapshot
-		for ev := range evCh {
-			switch ev.Type {
-			case "message_delta":
-				finalMsg.WriteString(ev.Text)
-			case "token_usage_updated":
-				if ev.TokenUsage != nil {
-					usage = ev.TokenUsage
-				}
-			case "turn_completed":
-				if ev.FinalMessage != "" {
-					completed = ev.FinalMessage
-				}
-				if ev.TokenUsage != nil {
-					usage = ev.TokenUsage
-				}
-			case "turn_failed":
-				return TurnFailedMsg{Reason: ev.Error}
-			}
-		}
-		if err := <-errCh; err != nil {
-			return ErrMsg{Err: fmt.Errorf("send turn: %w", err)}
-		}
-		out := chooseAssistantFinal(finalMsg.String(), completed)
-		return turnFinishedMsg{FinalMsg: out, Usage: usage}
-	}
-}
-
-// turnFinishedMsg is an internal completion message that also carries usage.
+// turnFinishedMsg is an internal completion message that also carries usage
+// (kept for tests / print-mode paths; interactive turns use live turnStream* msgs).
 type turnFinishedMsg struct {
 	FinalMsg string
 	Usage    *client.TokenUsageSnapshot

@@ -194,6 +194,15 @@ Codex adapter (`fake_provider_adapter.go`). Fix:
 2. `/provider connect|config [key]` → `POST /provider-accounts/connect` (same as
    Desktop Settings “Connect New Account”); picker via `/provider connect `.
 
+## Follow-up (2026-08-12) — Live workflow stream + clipboard images
+
+1. Turns stream SSE live (Desktop `consumeStream` parity) so catalog flows like
+   grok-flow no longer look hung on “Starting workflow run…”.
+2. `GET …/steps-runtime` drives a step list + “In progress” banner (and session
+   panel), refreshed on run start / `turn_started` / `agent_graph_updated`.
+3. Ctrl+V reads clipboard PNG via `golang.design/x/clipboard`; pending chips +
+   `/image open <n>` preview (codex/claude only — same as Desktop vision gate).
+
 ## Follow-up (2026-08-12) — Desktop chat color parity
 
 TUI lipgloss palette now mirrors Desktop `styles.css` `:root`
@@ -257,9 +266,39 @@ shows a `SIGN IN REQUIRED` banner + statusline `SIGN-IN`, and supports `/login`:
 
 Additive tests: `client/auth_test.go`, `app/chat_ux_test.go` login/banner cases.
 
+## Follow-up (2026-08-12) — Running-step highlight, clipboard paste, grok-context liveness
+
+1. **Running step highlight** — session panel + steps banner + statusline use warn/accent
+   color for `RUNNING` / `WAITING_USER_APPROVAL` rows (`styleStepRunning`).
+2. **Clipboard images on Windows** — Ctrl+V often stolen by Windows Terminal; support
+   `Alt+V`, `/image paste`, native `FmtImage`, plus PowerShell `GetImage` and
+   Explorer file-drop (CF_HDROP) fallbacks. Codex/claude only (same as Desktop).
+3. **grok-context “hang” UX** — while a catalog/flow run is live, poll
+   `steps-runtime` on the cursor tick; forward `agent_graph_updated` during
+   `SendTurn`; after turn closes, start Desktop-parity orchestration SSE so
+   hub/child step transitions keep updating. Statusline shows `▶ <active-step>`.
+
+Additive tests: `app/steps_highlight_test.go`.
+
+## Follow-up (2026-08-12) — Image paste path bug + chat shows current step only
+
+- `/image paste` must not fall through to `os.ReadFile("paste")` (`read paste: open paste: invalid argument`); reserved subcommands dispatch first.
+- Grok image gate clarified: runner `Vision=false` (ACP `promptCapabilities.image=false`), same as Desktop.
+- Chat transcript announces only the current step line (`> … [RUNNING]` / `x … [FAILED]`); full step list stays in the top-right session panel.
+
+Additive tests: `app/step_chat_notice_test.go`.
+
+## Follow-up (2026-08-12) — Persist latest provider + FAILED reason in chat
+
+- Persist last `/provider` `/model` `/reasoning` to `tui-session.json` (FlowPilot userData);
+  new TUI process and `/new` restore that selection instead of resetting to first active/codex.
+- Chat `[FAILED]` step lines include `reason:` from `rejectionNote`, else last `turn_failed` error.
+
+Additive tests: `prefs/prefs_test.go`, `app/provider_prefs_test.go`.
+
 # ---8<--- flowpilot:change-ledger
 feature_key: cli-tui
 source_doc_id: CP-56
-change_type: feature
-summary: TUI Supabase /login + SIGN-IN banner when Desktop session missing
+change_type: bugfix
+summary: Persist latest TUI provider/model; show FAILED step reason in chat
 # --->8---

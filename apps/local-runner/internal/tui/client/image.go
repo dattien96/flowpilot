@@ -37,12 +37,30 @@ const (
 )
 
 // SupportsImages reports whether providerKey accepts image attachments.
+// Mirrors Desktop VISION_PROVIDERS / runner ProviderCapabilities.Vision:
+// Grok is excluded because grok ACP initialize reported
+// promptCapabilities.image=false (live-verified; CP-46/Task-211).
 func SupportsImages(providerKey string) bool {
 	switch strings.ToLower(providerKey) {
 	case "codex", "claude":
 		return true
 	}
 	return false
+}
+
+// ImagesUnsupportedReason explains a SupportsImages=false result for UX copy.
+func ImagesUnsupportedReason(providerKey string) string {
+	key := strings.ToLower(strings.TrimSpace(providerKey))
+	if key == "" {
+		key = "current provider"
+	}
+	if SupportsImages(key) {
+		return ""
+	}
+	if key == "grok" {
+		return "provider grok has Vision=false in the runner (Grok ACP promptCapabilities.image=false) — same gate as Desktop; only codex/claude accept images today"
+	}
+	return fmt.Sprintf("provider %q does not support image attachments (codex/claude only)", key)
 }
 
 // NormalizeImage decodes imgData, scales it down if any edge exceeds 1568 px,
@@ -115,7 +133,7 @@ func NormalizeImage(imgData []byte, fileName string) (*PromptAttachment, error) 
 // images, too many files are given, or any image fails normalization.
 func ValidateAttachments(paths []string, providerKey string) ([]PromptAttachment, error) {
 	if !SupportsImages(providerKey) {
-		return nil, fmt.Errorf("provider %q does not support image attachments (codex/claude only)", providerKey)
+		return nil, fmt.Errorf("%s", ImagesUnsupportedReason(providerKey))
 	}
 	if len(paths) > maxAttachments {
 		return nil, fmt.Errorf("too many images: %d provided, maximum is %d", len(paths), maxAttachments)

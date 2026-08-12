@@ -6,7 +6,17 @@ import (
 	"strings"
 
 	"flowpilot-runner/internal/tui/client"
+	"flowpilot-runner/internal/tui/prefs"
 )
+
+// persistTUISessionPrefs writes latest provider/model so new TUI / /new keep them.
+func persistTUISessionPrefs(provider, model, reasoning string) {
+	_, _ = prefs.Save(prefs.Session{
+		Provider:        strings.TrimSpace(provider),
+		Model:           strings.TrimSpace(model),
+		ReasoningEffort: strings.TrimSpace(reasoning),
+	})
+}
 
 // parsedGate is a lightweight gate descriptor for tests and handlers.
 type parsedGate struct {

@@ -49,6 +49,55 @@ func (p sessionInfoPanel) lines() []string {
 	return out
 }
 
+func (m *AppModel) flowStepsPanelLines() []string {
+	if len(m.flowSteps) == 0 {
+		return nil
+	}
+	var out []string
+	out = append(out, fmt.Sprintf("Steps %d:", len(m.flowSteps)))
+	limit := len(m.flowSteps)
+	if limit > 8 {
+		limit = 8
+	}
+	for i := 0; i < limit; i++ {
+		s := m.flowSteps[i]
+		name := strings.TrimSpace(s.NodeID)
+		if name == "" {
+			name = strings.TrimSpace(s.StepType)
+		}
+		if name == "" {
+			name = shortID(s.StepID)
+		}
+		st := strings.ToUpper(strings.TrimSpace(s.Status))
+		prefix := " "
+		lineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+		switch st {
+		case "RUNNING", "WAITING_USER_APPROVAL":
+			prefix = ">"
+			lineStyle = styleStepRunning
+		case "DONE":
+			prefix = "+"
+			lineStyle = styleStepDone
+		case "FAILED":
+			prefix = "x"
+			lineStyle = styleStepFailed
+		}
+		out = append(out, lineStyle.Render(fmt.Sprintf("%s%d.%s %s", prefix, i+1, st, name)))
+		if st == "FAILED" {
+			if note := strings.TrimSpace(s.RejectionNote); note != "" {
+				out = append(out, lineStyle.Render("  "+note))
+			}
+		}
+	}
+	if len(m.flowSteps) > limit {
+		out = append(out, fmt.Sprintf("… +%d more", len(m.flowSteps)-limit))
+	}
+	if m.flowStepsActive != "" {
+		out = append(out, styleStepRunning.Render("Now: "+m.flowStepsActive))
+	}
+	return out
+}
+
 // bindActiveAccountForProvider sets account + accountLabel from the active
 // connected account for the current provider only (never a stale other-provider
 // account left over after /provider switch).
@@ -186,6 +235,7 @@ func (m *AppModel) renderSessionPanelOverlay() []string {
 	}
 
 	body := m.sessionPanel.lines()
+	body = append(body, m.flowStepsPanelLines()...)
 	if len(body) == 0 {
 		return nil
 	}
@@ -203,11 +253,9 @@ func (m *AppModel) renderSessionPanelOverlay() []string {
 	}
 	framed = append(framed, top)
 	for _, line := range body {
-		runes := []rune(line)
-		if len(runes) > maxInner-2 {
-			line = string(runes[:maxInner-5]) + "..."
-		}
-		pad := maxInner - 2 - len([]rune(line))
+		// Width must ignore ANSI from step highlight styles.
+		line = lipgloss.NewStyle().MaxWidth(maxInner - 2).Render(line)
+		pad := maxInner - 2 - lipgloss.Width(line)
 		if pad < 0 {
 			pad = 0
 		}

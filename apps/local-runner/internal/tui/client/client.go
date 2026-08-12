@@ -541,8 +541,10 @@ func (c *Client) SendTurn(ctx context.Context, input TurnInput) (<-chan Provider
 			if ev.Seq > c.lastSeq[input.RunID] {
 				c.lastSeq[input.RunID] = ev.Seq
 			}
-			// filter to this turn only (pass-through events with no turnId)
-			if ev.ProviderTurnID != "" && ev.ProviderTurnID != turnID {
+			// Filter to this turn only. Always pass agent_graph_updated (and
+			// empty-turnId events) so flow step transitions during a long
+			// context.produce / hub turn still reach the TUI.
+			if ev.Type != "agent_graph_updated" && ev.ProviderTurnID != "" && ev.ProviderTurnID != turnID {
 				continue
 			}
 			evCh <- ev
