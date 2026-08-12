@@ -107,7 +107,10 @@ Examples:
 			}
 
 			if bootResult.Launched {
-				fmt.Fprintf(os.Stderr, "Runner started at %s\n", bootResult.RunnerURL)
+				fmt.Fprintf(os.Stderr, "Runner started at %s (live Codex enabled)\n", bootResult.RunnerURL)
+			} else if bootResult.Reused {
+				fmt.Fprintf(os.Stderr, "Reusing runner at %s\n", bootResult.RunnerURL)
+				fmt.Fprintf(os.Stderr, "If Codex replies look scripted, kill that runner and restart chat (needs FLOWPILOT_CODEX_APPSERVER=1).\n")
 			}
 
 			// Launch the TUI (or headless mode when --print is set).

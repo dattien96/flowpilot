@@ -29,6 +29,10 @@ const (
 	pollTimeout     = 20 * time.Second
 	logDir          = ".flowpilot"
 	logFile         = "cli-runner.log"
+	// Live Codex for TUI-spawned runners (parity with scripts/supervisor.js / just dev).
+	// Without this, ProviderRegistryFor keeps the fake Codex adapter and chat returns
+	// scripted "Sure — let me work through this step…" deltas.
+	codexAppServerEnv = "FLOWPILOT_CODEX_APPSERVER"
 )
 
 // Config holds the inputs to EnsureRunner.
@@ -133,6 +137,20 @@ func looksLikeFlowPilotRoot(dir string) bool {
 	return err1 == nil || err2 == nil
 }
 
+// ApplyLiveRunnerDefaults mirrors scripts/supervisor.js: default
+// FLOWPILOT_CODEX_APPSERVER=1 so Codex uses the real app-server, unless the
+// caller already set the variable (including explicit disable via 0/false).
+func ApplyLiveRunnerDefaults(env []string) []string {
+	out := append([]string(nil), env...)
+	prefix := codexAppServerEnv + "="
+	for _, e := range out {
+		if strings.HasPrefix(e, prefix) {
+			return out
+		}
+	}
+	return append(out, prefix+"1")
+}
+
 func spawnRunner(cfg Config) error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -167,6 +185,7 @@ func spawnRunner(cfg Config) error {
 	cmd := exec.Command(exe, args...)
 	cmd.Stdout = logF
 	cmd.Stderr = logF
+	cmd.Env = ApplyLiveRunnerDefaults(os.Environ())
 	// Detach from parent process group so the runner outlives the TUI.
 	setSysProcAttr(cmd)
 

@@ -16,6 +16,24 @@ import (
 
 // ---- A5: EnsureRunner -------------------------------------------------------
 
+func TestApplyLiveRunnerDefaults_DefaultsCodexAppServer(t *testing.T) {
+	got := runnerboot.ApplyLiveRunnerDefaults([]string{"PATH=/bin", "HOME=/tmp"})
+	found := false
+	for _, e := range got {
+		if e == "FLOWPILOT_CODEX_APPSERVER=1" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected default FLOWPILOT_CODEX_APPSERVER=1, got %v", got)
+	}
+	kept := runnerboot.ApplyLiveRunnerDefaults([]string{"FLOWPILOT_CODEX_APPSERVER=0"})
+	if len(kept) != 1 || kept[0] != "FLOWPILOT_CODEX_APPSERVER=0" {
+		t.Fatalf("explicit value should be preserved, got %v", kept)
+	}
+}
+
 func TestA5_1_EnsureRunner_ReusesHealthyRunner(t *testing.T) {
 	srv := newHealthSrv("online", "1.0.0", "/workspace")
 	defer srv.Close()

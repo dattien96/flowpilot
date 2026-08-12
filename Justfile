@@ -145,11 +145,11 @@ runner-flows:
 #   just chat-dev D:/working/gate-sandbox --yolo
 chat-dev project *args:
     @echo "Starting FlowPilot TUI (project={{project}}, port {{LOCAL_RUNNER_PORT}})..."
-    @cd "{{LOCAL_RUNNER_PATH}}" && FLOWPILOT_CHAT_REQUIRE_PROJECT=1 go run ./cmd/flowpilot chat --port "{{LOCAL_RUNNER_PORT}}" --project '{{project}}' {{args}}
+    @cd "{{LOCAL_RUNNER_PATH}}" && FLOWPILOT_CHAT_REQUIRE_PROJECT=1 FLOWPILOT_CODEX_APPSERVER=1 go run ./cmd/flowpilot chat --port "{{LOCAL_RUNNER_PORT}}" --project '{{project}}' {{args}}
 
 # Headless one-shot: just chat-print "hello" D:/working/gate-sandbox
 chat-print prompt project *args:
-    @cd "{{LOCAL_RUNNER_PATH}}" && FLOWPILOT_CHAT_REQUIRE_PROJECT=1 go run ./cmd/flowpilot chat --port "{{LOCAL_RUNNER_PORT}}" --project '{{project}}' --print '{{prompt}}' {{args}}
+    @cd "{{LOCAL_RUNNER_PATH}}" && FLOWPILOT_CHAT_REQUIRE_PROJECT=1 FLOWPILOT_CODEX_APPSERVER=1 go run ./cmd/flowpilot chat --port "{{LOCAL_RUNNER_PORT}}" --project '{{project}}' --print '{{prompt}}' {{args}}
 
 # Run automated TUI + cli tests
 chat-test:
