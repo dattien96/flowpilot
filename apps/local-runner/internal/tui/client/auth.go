@@ -110,7 +110,10 @@ func LoadDesktopAuthSession() (*DesktopAuthSession, string, error) {
 }
 
 // PersistDesktopAuthSession writes tokens so Desktop can restore on next launch.
-// Best-effort: returns the path written, or an error if no candidate directory worked.
+// Writes to every candidate Electron userData path (FlowPilot + desktop-flowpilot)
+// because Electron uses package.json "name" (desktop-flowpilot) while older TUI
+// writes only returned after the first success under FlowPilot — leaving Electron
+// on the Login screen. Returns the first path written successfully.
 func PersistDesktopAuthSession(session DesktopAuthSession) (string, error) {
 	paths := DesktopAuthSessionPaths()
 	if len(paths) == 0 {
@@ -120,7 +123,11 @@ func PersistDesktopAuthSession(session DesktopAuthSession) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var lastErr error
+	var (
+		firstOK string
+		wrote   int
+		lastErr error
+	)
 	for _, dest := range paths {
 		dir := filepath.Dir(dest)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -137,10 +144,33 @@ func PersistDesktopAuthSession(session DesktopAuthSession) (string, error) {
 			lastErr = err
 			continue
 		}
+		wrote++
+		if firstOK == "" {
+			firstOK = dest
+		}
+	}
+	if wrote == 0 {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("unable to persist desktop auth session")
+		}
+		return "", lastErr
+	}
+	return firstOK, nil
+}
+
+// SyncDesktopAuthSession copies an existing session file onto every candidate
+// path (idempotent). Used before /settings so a TUI login is visible to Electron.
+func SyncDesktopAuthSession() (string, error) {
+	session, src, err := LoadDesktopAuthSession()
+	if err != nil {
+		return "", err
+	}
+	dest, err := PersistDesktopAuthSession(*session)
+	if err != nil {
+		return "", err
+	}
+	if dest != "" {
 		return dest, nil
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("unable to persist desktop auth session")
-	}
-	return "", lastErr
+	return src, nil
 }
