@@ -50,6 +50,7 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 		provider:        cfg.Provider,
 		model:           cfg.Model,
 		reasoningEffort: cfg.ReasoningEffort,
+		projectPath:     cfg.ProjectPath,
 		connStatus:      ConnConnecting,
 		statusMsg:       "connecting...",
 		width:           80,
@@ -82,7 +83,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case cursorTickMsg:
 		m.cursorOn = !m.cursorOn
 		if m.sessionLoading {
-			m.loadingFrame = (m.loadingFrame + 1) % 4
+			m.loadingFrame = (m.loadingFrame + 1) % 64
 		}
 		return m, tickCursor()
 
@@ -105,7 +106,6 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cfg.ProjectPath != "" {
 			m.addMessage("system", fmt.Sprintf("Project: %s", m.cfg.ProjectPath), "")
 		}
-		m.addMessage("system", "Loading session, project, providers…", "")
 		cmds := []tea.Cmd{m.cmdLoadSessionDefaults(), m.cmdPrefetchFlows()}
 		if m.cfg.ResumeRunID != "" {
 			cmds = append(cmds, m.cmdResume(m.cfg.ResumeRunID))
@@ -159,12 +159,30 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.applyAuthNotice(msg.CatalogErr)
 		m.sessionLoading = false
+		m.sessionDefaultsLoaded = true
 		m.connStatus = ConnIdle
 		m.statusMsg = "ready"
 		m.addMessage("system", "Ready — type a prompt or / for commands.", "")
+		cmds := []tea.Cmd{m.cmdRefreshProjectContext()}
+		if m.project != nil && len(m.chatList) == 0 {
+			cmds = append(cmds, m.cmdPrefetchChats())
+		}
+		return m, tea.Batch(cmds...)
+
+	case ProjectContextMsg:
+		if msg.Path != "" {
+			m.projectPath = msg.Path
+		}
+		m.projectBranch = msg.Branch
 		return m, nil
 
 	case ChatListMsg:
+		if msg.Silent {
+			if msg.Err == "" {
+				m.chatList = msg.Items
+			}
+			return m, nil
+		}
 		if msg.Err != "" {
 			m.addMessage("system", "Chat list failed: "+msg.Err, "error")
 			return m, nil
@@ -175,8 +193,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ChatOpenedMsg:
 		if msg.Err != "" {
-			m.addMessage("system", "Open chat failed: "+msg.Err, "error")
+			m.addMessage("system", msg.Err, "error")
 			m.connStatus = ConnError
+			m.statusMsg = "open failed"
 			return m, nil
 		}
 		handle := msg.Handle
@@ -193,7 +212,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.connStatus = ConnIdle
 		m.statusMsg = fmt.Sprintf("opened %s", shortID(handle.RunID))
-		m.addMessage("system", fmt.Sprintf("Opened chat %s — continue typing or /chats to switch.", handle.RunID), "")
+		m.addMessage("system", fmt.Sprintf("Opened chat %s — continue typing or /history|/open|/resume to switch.", handle.RunID), "")
 		return m, nil
 
 	case LoginResultMsg:
@@ -402,7 +421,7 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 			}
 			m.connStatus = ConnWaiting
 			m.statusMsg = "approval required"
-			if m.yolo {
+			if m.effectiveYolo() {
 				return m, m.cmdAutoApprove(ev.ApprovalID, ev.WorkflowRunID)
 			}
 			m.addMessage("system", fmt.Sprintf("[APPROVAL] %s — type /approve or /deny", ev.ApprovalID), "approval")
@@ -503,7 +522,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if items := m.collectSuggestions(); len(items) > 0 {
 			m.applySuggestion(items)
-			return m, m.cmdMaybePrefetchFlows()
+			return m, m.cmdMaybePrefetchPickers()
 		}
 		// Cycle through agent runs when agents focus is active.
 		if m.agentsFocus && len(m.agentRuns) > 0 {
@@ -544,7 +563,16 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.suggIdx = 0
 					return m.processInput(cmd)
 				}
-				// Placeholder row (loading / no match) — keep typing.
+				// Placeholder (loading / no match): if the user already typed an
+				// arg (e.g. /model custom-id), run the typed line instead of trapping Enter.
+				if typed := strings.TrimSpace(m.inputValue); len(strings.Fields(typed)) >= 2 {
+					if m.sendBlocked() && !strings.HasPrefix(typed, "/") {
+						return m, nil
+					}
+					m.inputValue = ""
+					m.suggIdx = 0
+					return m.processInput(typed)
+				}
 				return m, nil
 			}
 		}
@@ -570,12 +598,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.inputValue = string(runes[:len(runes)-1])
 			m.suggIdx = 0
 		}
-		return m, m.cmdMaybePrefetchFlows()
+		return m, m.cmdMaybePrefetchPickers()
 
 	case tea.KeyRunes:
 		m.inputValue += string(msg.Runes)
 		m.suggIdx = 0
-		return m, m.cmdMaybePrefetchFlows()
+		return m, m.cmdMaybePrefetchPickers()
 	}
 	return m, nil
 }
@@ -595,6 +623,40 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 		}
 		return []suggestItem{{value: "", detail: "(no matching flows)", kind: "flow"}}
 	}
+	if chats := filterHistorySuggestions(m.inputValue, m.chatList); len(chats) > 0 {
+		return chats
+	}
+	if cmd, _, ok := parseChatOpenArgPrefix(m.inputValue); ok {
+		if len(m.chatList) == 0 {
+			return []suggestItem{{value: "", detail: "loading chats…", kind: "history", slash: cmd}}
+		}
+		return []suggestItem{{value: "", detail: "(no matching chats)", kind: "history", slash: cmd}}
+	}
+	if providerSugg := filterProviderSuggestions(m.inputValue, m.providers, m.provider); len(providerSugg) > 0 {
+		return providerSugg
+	}
+	if ok, _ := parseSlashArgPrefix(m.inputValue, "/provider"); ok {
+		if len(m.providers) == 0 {
+			return []suggestItem{{value: "", detail: "loading providers…", kind: "provider"}}
+		}
+		return []suggestItem{{value: "", detail: "(no matching providers)", kind: "provider"}}
+	}
+	models := modelsForProvider(m.providers, m.provider)
+	if modelSugg := filterModelSuggestions(m.inputValue, models, m.model); len(modelSugg) > 0 {
+		return modelSugg
+	}
+	if ok, _ := parseSlashArgPrefix(m.inputValue, "/model"); ok {
+		if len(models) == 0 {
+			return []suggestItem{{value: "", detail: "no models — set /provider first", kind: "model"}}
+		}
+		return []suggestItem{{value: "", detail: "(no matching models)", kind: "model"}}
+	}
+	if reasonSugg := filterReasoningSuggestions(m.inputValue, m.reasoningEffort); len(reasonSugg) > 0 {
+		return reasonSugg
+	}
+	if ok, _ := parseSlashArgPrefix(m.inputValue, "/reasoning"); ok {
+		return []suggestItem{{value: "", detail: "(no matching effort)", kind: "reasoning"}}
+	}
 	cmds := filterSlashSuggestions(m.inputValue)
 	out := make([]suggestItem, 0, len(cmds))
 	for _, sc := range cmds {
@@ -611,7 +673,7 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 	it := items[idx]
 	if cmd := suggestionAcceptValue(it); cmd == "" {
 		return
-	} else if it.kind == "flow" {
+	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" {
 		m.inputValue = cmd
 	} else {
 		// Tab fills the command token and leaves a trailing space for args.
@@ -628,6 +690,30 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/flow " + it.value
+	case "history":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		slash := it.slash
+		if slash == "" {
+			slash = "/history"
+		}
+		return slash + " " + it.value
+	case "model":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/model " + it.value
+	case "reasoning":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/reasoning " + it.value
+	case "provider":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/provider " + it.value
 	case "cmd":
 		return strings.TrimSpace(it.value)
 	default:
@@ -707,6 +793,12 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// After session defaults load, refuse empty provider (avoids silent fake Codex).
+	if m.sessionDefaultsLoaded && strings.TrimSpace(m.provider) == "" {
+		m.addMessage("system", "No provider selected — use /provider <key> (then /model).", "error")
+		return m, nil
+	}
+
 	m.addMessage("user", input, "")
 	m.connStatus = ConnRunning
 	m.statusMsg = "sending..."
@@ -714,11 +806,11 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	// First message: start run, then send turn (desktop sendPrompt parity).
 	if m.runHandle == nil {
 		m.pendingPrompt = input
-		startMsg := "Starting chat run…"
+		startMsg := fmt.Sprintf("Starting chat run (%s · %s)…", m.provider, orDash(m.model))
 		if m.launch.IsCatalogWorkflow() {
-			startMsg = fmt.Sprintf("Starting workflow run (%s)…", m.launch.StatusLabel())
+			startMsg = fmt.Sprintf("Starting workflow run (%s · %s · %s)…", m.launch.StatusLabel(), m.provider, orDash(m.model))
 		} else if m.launch.IsBuiltin() {
-			startMsg = fmt.Sprintf("Starting chat run with %s…", m.launch.StatusLabel())
+			startMsg = fmt.Sprintf("Starting chat run with %s (%s · %s)…", m.launch.StatusLabel(), m.provider, orDash(m.model))
 		}
 		m.addMessage("system", startMsg, "")
 		return m, m.cmdStartRun()
@@ -766,14 +858,17 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg { return QuitMsg{} }
 
 	case "/yolo":
+		if m.mode != ModeChat || m.launch.IsArmed() {
+			m.addMessage("system", "YOLO is auto-on in flow mode. Switch to /chat to toggle.", "")
+			break
+		}
 		m.yolo = !m.yolo
 		state := "OFF"
 		if m.yolo {
 			state = "ON"
 		}
 		m.addMessage("system", fmt.Sprintf("YOLO mode: %s", state), "")
-		// Grok: call server-side posture endpoint BEFORE flipping local state
-		// (local flip already done above; posture call syncs server).
+		// Grok: sync server-side posture after the local toggle.
 		if strings.ToLower(m.provider) == "grok" {
 			return m, m.cmdGrokYoloPosture(m.yolo)
 		}
@@ -905,7 +1000,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					}
 					sb.WriteString(fmt.Sprintf("  %s %s  (%d models)\n", mark, p.Key, len(p.Models)))
 				}
-				sb.WriteString("Usage: /provider <key>")
+				sb.WriteString("Pick: type /provider  then ↑↓ · Tab · Enter")
 			}
 			m.addMessage("system", sb.String(), "")
 		} else if m.runHandle != nil {
@@ -955,7 +1050,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					}
 					sb.WriteString(fmt.Sprintf("  %s %s\n", mark, id))
 				}
-				sb.WriteString("Usage: /model <id>")
+				sb.WriteString("Pick: type /model  then ↑↓ · Tab · Enter")
 			}
 			m.addMessage("system", sb.String(), "")
 		} else {
@@ -983,7 +1078,11 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 
 	case "/reasoning":
 		if len(args) == 0 {
-			m.addMessage("system", fmt.Sprintf("Current reasoning effort: %s", m.reasoningEffort), "")
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("Current reasoning effort: %s\n", orDash(m.reasoningEffort)))
+			sb.WriteString("Options: high · medium · low\n")
+			sb.WriteString("Pick: type /reasoning  then ↑↓ · Tab · Enter")
+			m.addMessage("system", sb.String(), "")
 		} else {
 			effort := strings.ToLower(args[0])
 			switch effort {
@@ -1025,23 +1124,17 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		} else if m.authNeedLogin {
 			auth = "SIGN-IN REQUIRED — /login"
 		}
-		m.addMessage("system", fmt.Sprintf("Status: %s | Mode: %s | YOLO: %v | Provider: %s | Model: %s | Auth: %s",
-			m.connStatus, m.mode, m.yolo, m.provider, m.model, auth), "")
+		m.addMessage("system", fmt.Sprintf("Status: %s | Mode: %s | %s | Provider: %s | Model: %s | Auth: %s",
+			m.connStatus, m.mode, m.yoloStatusLabel(), m.provider, m.model, auth), "")
 
 	case "/login":
 		return m.beginLogin(args)
 
-	case "/resume":
-		if len(args) > 0 {
-			return m, m.cmdOpenChat(args[0])
-		}
-		m.addMessage("system", "Usage: /resume <run-id> — or /chats then /open <n>", "")
-
-	case "/chats", "/history":
+	case "/history", "/chats", "/open", "/resume":
 		if len(args) > 0 {
 			runID, err := resolveChatOpenTarget(args, m.chatList)
 			if err != nil {
-				m.addMessage("system", err.Error()+" — run /chats first", "error")
+				m.addMessage("system", err.Error()+" — type /history  (or /open / /resume ) for the picker", "error")
 				break
 			}
 			m.addMessage("system", fmt.Sprintf("Opening chat %s…", runID), "")
@@ -1051,17 +1144,6 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		m.addMessage("system", "Loading chat history…", "")
 		return m, m.cmdListChats()
-
-	case "/open":
-		runID, err := resolveChatOpenTarget(args, m.chatList)
-		if err != nil {
-			m.addMessage("system", err.Error(), "error")
-			break
-		}
-		m.addMessage("system", fmt.Sprintf("Opening chat %s…", runID), "")
-		m.connStatus = ConnConnecting
-		m.statusMsg = "opening chat…"
-		return m, m.cmdOpenChat(runID)
 
 	case "/approve":
 		if m.approval != nil {
@@ -1109,12 +1191,13 @@ func (m *AppModel) View() string {
 	}
 	bannerLines := 0
 	if m.sessionLoading {
-		bannerLines = 1
+		bannerLines = loadingBannerHeight
 	} else if m.authNeedLogin && m.authPhase == AuthNone {
 		bannerLines = 1
 	}
 
-	messagesHeight := m.height - 3 - suggLines - bannerLines
+	// 2 status lines + 1 input row.
+	messagesHeight := m.height - 4 - suggLines - bannerLines
 	if messagesHeight < 1 {
 		messagesHeight = 1
 	}
@@ -1133,8 +1216,10 @@ func (m *AppModel) View() string {
 	}
 
 	if m.sessionLoading {
-		sb.WriteString(styleLoading.Render(m.loadingBannerText()))
-		sb.WriteString("\n")
+		for _, line := range strings.Split(m.loadingBannerText(), "\n") {
+			sb.WriteString(styleLoading.Render(line))
+			sb.WriteString("\n")
+		}
 	} else if m.authNeedLogin && m.authPhase == AuthNone {
 		banner := "SIGN IN REQUIRED — Desktop is signed out. Type /login (or /login you@email.com)"
 		if !m.asciiMode {
@@ -1155,9 +1240,7 @@ func (m *AppModel) View() string {
 }
 
 func (m *AppModel) loadingBannerText() string {
-	frames := []string{"|", "/", "-", "\\"}
-	spin := frames[m.loadingFrame%len(frames)]
-	return fmt.Sprintf(" %s Loading session / project / providers — chat disabled ", spin)
+	return renderFlowpilotLoader(m.loadingFrame, m.asciiMode)
 }
 
 func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
@@ -1166,8 +1249,19 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 		limit = len(sugg)
 	}
 	kind := "commands"
-	if len(sugg) > 0 && sugg[0].kind == "flow" {
-		kind = "flows"
+	if len(sugg) > 0 {
+		switch sugg[0].kind {
+		case "flow":
+			kind = "flows"
+		case "history":
+			kind = "chats"
+		case "model":
+			kind = "models"
+		case "reasoning":
+			kind = "reasoning"
+		case "provider":
+			kind = "providers"
+		}
 	}
 	sel := 0
 	if len(sugg) > 0 {
@@ -1320,9 +1414,8 @@ func (m *AppModel) renderStatusLine() string {
 	}
 	parts = append(parts, providerDisplay)
 
-	if m.yolo {
-		parts = append(parts, "YOLO")
-	}
+	// Always show YOLO; flow/step arms force ON (chat toggle only).
+	parts = append(parts, m.yoloStatusLabel())
 
 	// Account rate-limit remaining (desktop parity).
 	if lim := formatAccountLimits(m.account); lim != "" {
@@ -1376,7 +1469,9 @@ func (m *AppModel) renderStatusLine() string {
 	}
 	parts = append(parts, statusStyle.Render(statusStr))
 
-	return styleStatus.Render(strings.Join(parts, sep))
+	line1 := styleStatus.Render(strings.Join(parts, sep))
+	line2 := styleStatus.Render(m.projectStatusLabel())
+	return line1 + "\n" + line2
 }
 
 func (m *AppModel) renderInputLine() string {
@@ -1688,10 +1783,14 @@ func (m *AppModel) cmdMaybePrefetchFlows() tea.Cmd {
 	return m.cmdPrefetchFlows()
 }
 
+func (m *AppModel) cmdMaybePrefetchPickers() tea.Cmd {
+	return tea.Batch(m.cmdMaybePrefetchFlows(), m.cmdMaybePrefetchHistory())
+}
+
 func (m *AppModel) cmdStartRun() tea.Cmd {
 	cfg := m.cfg
 	runnerURL := m.runnerURL
-	yolo := m.yolo
+	yolo := m.effectiveYolo()
 	provider := m.provider
 	model := m.model
 	reasoning := m.reasoningEffort
@@ -1726,6 +1825,9 @@ func (m *AppModel) cmdStartRun() tea.Cmd {
 				return ErrMsg{Err: fmt.Errorf("%s", formatMissingProjectHelp(cwd, projects))}
 			}
 		}
+		if strings.TrimSpace(provider) == "" {
+			return ErrMsg{Err: fmt.Errorf("provider required — set /provider before chatting")}
+		}
 		input := launch.ToStartRunInput(projectID, provider, model, reasoning, cwd, yolo)
 		handle, err := cl.StartRun(ctx, input)
 		if err != nil {
@@ -1757,7 +1859,7 @@ func (m *AppModel) cmdSendTurn(prompt string) tea.Cmd {
 		stepID = m.runHandle.StepID
 	}
 	runnerURL := m.runnerURL
-	yolo := m.yolo
+	yolo := m.effectiveYolo()
 	model := m.model
 	reasoningEffort := m.reasoningEffort
 	skills := m.selectedSkills

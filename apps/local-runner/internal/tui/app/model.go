@@ -184,7 +184,7 @@ type AppModel struct {
 	reasoningEffort string
 	flowBuiltins    []client.BuiltinFlowOption
 	flowWorkflows   []client.Workflow
-	chatList        []client.RunHistoryItem // last /chats result for /open <n>
+	chatList        []client.RunHistoryItem // last /history result for picker + /open <n>
 
 	// Pending gate/approval/question state
 	gate     *GateState
@@ -194,6 +194,8 @@ type AppModel struct {
 	// Navigation
 	project         *client.Project
 	projects        []client.Project
+	projectPath     string // resolved target path for statusline
+	projectBranch   string // git branch at projectPath
 	provider        string
 	model           string
 	accountLabel    string // from provider-accounts display_label
@@ -218,7 +220,9 @@ type AppModel struct {
 
 	// sessionLoading locks chat while provider/project catalogs load after connect.
 	sessionLoading bool
-	loadingFrame   int
+	// sessionDefaultsLoaded is set after the first SessionDefaultsMsg (real chat gate).
+	sessionDefaultsLoaded bool
+	loadingFrame          int
 
 	// Terminal dimensions
 	width  int
@@ -234,11 +238,12 @@ type AppModel struct {
 	err            error
 }
 
-// suggestItem is one row in the live slash / flow picker.
+// suggestItem is one row in the live slash / flow / history / model picker.
 type suggestItem struct {
-	value  string // command name ("/flow") or flowRef / workflow id
+	value  string // command name, flowRef/workflow id, chat run id, model, or effort
 	detail string
-	kind   string // "cmd" | "flow"
+	kind   string // "cmd" | "flow" | "history" | "model" | "reasoning" | "provider"
+	slash  string // for history: "/history" | "/open" | "/resume"
 }
 
 // viewportState tracks scrolling state.
@@ -257,21 +262,21 @@ var knownSlashCommands = []slashCommand{
 	{"/clear", "Clear conversation history"},
 	{"/exit", "Exit the TUI"},
 	{"/quit", "Exit the TUI"},
-	{"/yolo", "Toggle YOLO mode (auto-approve all)"},
+	{"/yolo", "Toggle YOLO in chat mode (flow mode is auto-on)"},
 	{"/agents", "Focus on the agent graph"},
 	{"/agent", "Focus a specific agent by name"},
 	{"/flow", "Start or list flows"},
 	{"/chat", "Switch to chat mode"},
 	{"/skill", "Toggle a skill for the next turn"},
 	{"/image", "Attach an image to the next turn (codex/claude only)"},
-	{"/provider", "Switch provider for next run"},
-	{"/model", "Switch model for next turn"},
-	{"/reasoning", "Set reasoning effort (high/medium/low)"},
+	{"/provider", "Switch provider — type /provider  then ↑↓ Tab Enter"},
+	{"/model", "Switch model — type /model  then ↑↓ Tab Enter"},
+	{"/reasoning", "Set effort — type /reasoning  then ↑↓ Tab Enter"},
 	{"/new", "Start a new conversation"},
 	{"/step", "Select workflow step"},
-	{"/resume", "Resume previous session by run ID"},
-	{"/chats", "List recent chats for this project (Desktop history)"},
-	{"/open", "Open a chat by list index or run id (/chats first)"},
+	{"/resume", "Open chat — type /resume  then ↑↓ Tab Enter"},
+	{"/history", "List/open chats — type /history  then ↑↓ Tab Enter"},
+	{"/open", "Open chat — type /open  then ↑↓ Tab Enter"},
 	{"/approve", "Approve a pending approval"},
 	{"/deny", "Deny a pending approval"},
 	{"/headless", "Print next response to stdout only"},

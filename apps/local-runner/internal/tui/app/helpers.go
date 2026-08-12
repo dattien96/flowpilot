@@ -362,20 +362,181 @@ func filterSlashSuggestions(input string) []slashCommand {
 	return out
 }
 
-// parseFlowArgPrefix reports whether input is `/flow <query…>` (space after /flow).
-func parseFlowArgPrefix(input string) (ok bool, query string) {
+// parseSlashArgPrefix reports whether input is `<cmd> <query…>` (space after cmd).
+func parseSlashArgPrefix(input, cmd string) (ok bool, query string) {
 	s := strings.TrimLeft(input, " \t")
-	if len(s) < 5 || !strings.EqualFold(s[:5], "/flow") {
+	prefix := strings.TrimSpace(cmd)
+	if prefix == "" || len(s) < len(prefix) || !strings.EqualFold(s[:len(prefix)], prefix) {
 		return false, ""
 	}
-	rest := s[5:]
+	rest := s[len(prefix):]
 	if rest == "" {
 		return false, ""
 	}
 	if rest[0] != ' ' && rest[0] != '\t' {
-		return false, "" // e.g. /flower
+		return false, "" // e.g. /flower vs /flow
 	}
 	return true, strings.TrimSpace(rest)
+}
+
+// parseFlowArgPrefix reports whether input is `/flow <query…>` (space after /flow).
+func parseFlowArgPrefix(input string) (ok bool, query string) {
+	return parseSlashArgPrefix(input, "/flow")
+}
+
+// chatOpenSlashCommands are the three ways to open an existing chat.
+var chatOpenSlashCommands = []string{"/history", "/open", "/resume"}
+
+// parseChatOpenArgPrefix reports `/history|open|resume <query…>` (space after cmd).
+func parseChatOpenArgPrefix(input string) (cmd string, query string, ok bool) {
+	s := strings.TrimLeft(input, " \t")
+	for _, prefix := range chatOpenSlashCommands {
+		if len(s) < len(prefix) || !strings.EqualFold(s[:len(prefix)], prefix) {
+			continue
+		}
+		rest := s[len(prefix):]
+		if rest == "" {
+			return "", "", false
+		}
+		if rest[0] != ' ' && rest[0] != '\t' {
+			return "", "", false
+		}
+		return prefix, strings.TrimSpace(rest), true
+	}
+	return "", "", false
+}
+
+// parseHistoryArgPrefix is kept for call sites that only care about /history.
+func parseHistoryArgPrefix(input string) (ok bool, query string) {
+	cmd, query, ok := parseChatOpenArgPrefix(input)
+	if !ok || !strings.EqualFold(cmd, "/history") {
+		return false, ""
+	}
+	return true, query
+}
+
+var reasoningEffortOptions = []string{"high", "medium", "low"}
+
+// filterProviderSuggestions returns providers matching the query after `/provider `.
+func filterProviderSuggestions(input string, providers []client.Provider, current string) []suggestItem {
+	ok, query := parseSlashArgPrefix(input, "/provider")
+	if !ok {
+		return nil
+	}
+	q := strings.ToLower(query)
+	out := make([]suggestItem, 0, len(providers))
+	for _, p := range providers {
+		key := strings.TrimSpace(p.Key)
+		if key == "" {
+			continue
+		}
+		label := strings.TrimSpace(p.Label)
+		if label == "" {
+			label = strings.TrimSpace(p.Name)
+		}
+		hay := strings.ToLower(key + " " + label)
+		if q != "" && !strings.Contains(hay, q) {
+			continue
+		}
+		detail := fmt.Sprintf("%d models", len(p.Models))
+		if label != "" && !strings.EqualFold(label, key) {
+			detail = label + " · " + detail
+		}
+		if strings.EqualFold(key, current) {
+			detail = "current · " + detail
+		}
+		out = append(out, suggestItem{value: key, detail: detail, kind: "provider"})
+	}
+	return out
+}
+
+// filterModelSuggestions returns models matching the query after `/model `.
+func filterModelSuggestions(input string, models []string, current string) []suggestItem {
+	ok, query := parseSlashArgPrefix(input, "/model")
+	if !ok {
+		return nil
+	}
+	q := strings.ToLower(query)
+	out := make([]suggestItem, 0, len(models))
+	for _, id := range models {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if q != "" && !strings.Contains(strings.ToLower(id), q) {
+			continue
+		}
+		detail := "model"
+		if strings.EqualFold(id, current) {
+			detail = "current"
+		}
+		out = append(out, suggestItem{value: id, detail: detail, kind: "model"})
+	}
+	return out
+}
+
+// filterReasoningSuggestions returns effort levels matching `/reasoning `.
+func filterReasoningSuggestions(input string, current string) []suggestItem {
+	ok, query := parseSlashArgPrefix(input, "/reasoning")
+	if !ok {
+		return nil
+	}
+	q := strings.ToLower(query)
+	out := make([]suggestItem, 0, len(reasoningEffortOptions))
+	for _, effort := range reasoningEffortOptions {
+		if q != "" && !strings.HasPrefix(effort, q) && !strings.Contains(effort, q) {
+			continue
+		}
+		detail := "effort"
+		if strings.EqualFold(effort, current) {
+			detail = "current"
+		}
+		out = append(out, suggestItem{value: effort, detail: detail, kind: "reasoning"})
+	}
+	return out
+}
+
+// filterHistorySuggestions returns chats matching the query after /history|/open|/resume .
+func filterHistorySuggestions(input string, items []client.RunHistoryItem) []suggestItem {
+	cmd, query, ok := parseChatOpenArgPrefix(input)
+	if !ok {
+		return nil
+	}
+	q := strings.ToLower(query)
+	out := make([]suggestItem, 0, len(items))
+	for i, it := range items {
+		id := strings.TrimSpace(it.RunID)
+		if id == "" {
+			continue
+		}
+		title := strings.TrimSpace(it.LastPrompt)
+		if title == "" {
+			title = strings.TrimSpace(it.LastMessage)
+		}
+		if title == "" {
+			title = "(no prompt)"
+		}
+		hay := strings.ToLower(id + " " + title + " " + it.Status + " " + it.ProviderKey + " " + it.RunKind)
+		if q != "" && !strings.Contains(hay, q) && !strings.Contains(strings.ToLower(shortID(id)), q) {
+			continue
+		}
+		kind := it.RunKind
+		if kind == "" {
+			if it.WorkflowID != "" {
+				kind = "workflow"
+			} else {
+				kind = "chat"
+			}
+		}
+		title = collapseWS(title)
+		if len([]rune(title)) > 42 {
+			r := []rune(title)
+			title = string(r[:39]) + "…"
+		}
+		detail := fmt.Sprintf("#%d · %s · %s · %s", i+1, kind, it.Status, title)
+		out = append(out, suggestItem{value: id, detail: detail, kind: "history", slash: cmd})
+	}
+	return out
 }
 
 // filterFlowSuggestions returns flow refs matching the query after `/flow `.

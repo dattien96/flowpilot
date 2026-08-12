@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -12,10 +13,11 @@ import (
 	"flowpilot-runner/internal/tui/client"
 )
 
-// ChatListMsg carries /chats listing results.
+// ChatListMsg carries /history listing results.
 type ChatListMsg struct {
-	Items []client.RunHistoryItem
-	Err   string
+	Items  []client.RunHistoryItem
+	Err    string
+	Silent bool // cache only — used while typing `/history `
 }
 
 // ChatOpenedMsg carries a resumed chat with replayed transcript.
@@ -42,7 +44,7 @@ func formatChatList(items []client.RunHistoryItem) string {
 	sb.WriteString("Recent chats (Desktop history parity):\n")
 	if len(items) == 0 {
 		sb.WriteString("  (none for this project)\n")
-		sb.WriteString("Usage: /chats · /open <n|runId> · /resume <runId>")
+		sb.WriteString("Usage: /history|/open|/resume  (then ↑↓ Tab Enter)")
 		return sb.String()
 	}
 	limit := 20
@@ -77,7 +79,7 @@ func formatChatList(items []client.RunHistoryItem) string {
 	if len(items) > limit {
 		sb.WriteString(fmt.Sprintf("  … %d more\n", len(items)-limit))
 	}
-	sb.WriteString("Open: /open <n>  or  /open <runId>  or  /resume <runId>")
+	sb.WriteString("Pick: /history|/open|/resume  then ↑↓ · Tab · Enter")
 	return sb.String()
 }
 
@@ -85,19 +87,39 @@ func collapseWS(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// resolveChatOpenTarget maps /open args to a run id using the last /chats list.
+// resolveChatOpenTarget maps /history|/open|/resume args to a run id using the last list.
 func resolveChatOpenTarget(args []string, listed []client.RunHistoryItem) (string, error) {
 	if len(args) == 0 {
-		return "", fmt.Errorf("usage: /open <n|runId> — run /chats first to see indexes")
+		return "", fmt.Errorf("usage: /history|/open|/resume <n|runId> — type the command + space for the picker")
 	}
 	token := strings.TrimSpace(args[0])
 	if n, err := strconv.Atoi(token); err == nil {
 		if n < 1 || n > len(listed) {
-			return "", fmt.Errorf("chat index %d out of range (1-%d) — run /chats", n, len(listed))
+			return "", fmt.Errorf("chat index %d out of range (1-%d) — type /history  for the picker", n, len(listed))
 		}
 		return listed[n-1].RunID, nil
 	}
 	return token, nil
+}
+
+// formatOpenChatErr explains runner resume failures (Desktop openHistoryRun parity).
+func formatOpenChatErr(err error) string {
+	var api *client.APIError
+	if errors.As(err, &api) {
+		switch api.Code {
+		case "session_unavailable":
+			return "Open failed (runner session_unavailable): " + api.Message +
+				"\nThis is a runner/session issue — not a TUI bug. Provider session files for this run are missing on this machine (or the wrong account is active). Same limit as Desktop history open."
+		case "account_not_signed_in":
+			return "Open failed (runner account_not_signed_in): " + api.Message +
+				"\nSign in to the provider account that owns this chat, then retry."
+		case "account_unavailable":
+			return "Open failed (runner account_unavailable): " + api.Message
+		default:
+			return fmt.Sprintf("Open failed (runner %s): %s", api.Code, api.Message)
+		}
+	}
+	return "Open chat failed: " + err.Error()
 }
 
 func replayHistoryMessages(evs []client.ProviderEvent) []ChatMessage {
@@ -150,6 +172,14 @@ func replayHistoryMessages(evs []client.ProviderEvent) []ChatMessage {
 }
 
 func (m *AppModel) cmdListChats() tea.Cmd {
+	return m.cmdFetchChats(false)
+}
+
+func (m *AppModel) cmdPrefetchChats() tea.Cmd {
+	return m.cmdFetchChats(true)
+}
+
+func (m *AppModel) cmdFetchChats(silent bool) tea.Cmd {
 	runnerURL := m.runnerURL
 	projectID := ""
 	if m.project != nil {
@@ -157,15 +187,34 @@ func (m *AppModel) cmdListChats() tea.Cmd {
 	}
 	return func() tea.Msg {
 		if projectID == "" {
-			return ChatListMsg{Err: "project_id required — wait for session load or set --project"}
+			return ChatListMsg{Err: "project_id required — wait for session load or set --project", Silent: silent}
 		}
 		cl := client.New(runnerURL)
 		items, err := cl.ListRunHistory(context.Background(), projectID)
 		if err != nil {
-			return ChatListMsg{Err: err.Error()}
+			return ChatListMsg{Err: err.Error(), Silent: silent}
 		}
-		return ChatListMsg{Items: filterParentHistory(items)}
+		return ChatListMsg{Items: filterParentHistory(items), Silent: silent}
 	}
+}
+
+func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
+	trimmed := strings.TrimSpace(m.inputValue)
+	_, _, argOK := parseChatOpenArgPrefix(m.inputValue)
+	bare := false
+	for _, cmd := range chatOpenSlashCommands {
+		if strings.EqualFold(trimmed, cmd) {
+			bare = true
+			break
+		}
+	}
+	if !argOK && !bare {
+		return nil
+	}
+	if len(m.chatList) > 0 {
+		return nil
+	}
+	return m.cmdPrefetchChats()
 }
 
 func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
@@ -176,7 +225,7 @@ func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
 		defer cancel()
 		handle, err := cl.ResumeRun(ctx, runID)
 		if err != nil {
-			return ChatOpenedMsg{Err: err.Error()}
+			return ChatOpenedMsg{Err: formatOpenChatErr(err)}
 		}
 		// Replay from seq 0 through lastEventSeq (Task-287 T-5), then interactive.
 		until := handle.LastEventSeq

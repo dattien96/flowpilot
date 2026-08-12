@@ -319,6 +319,23 @@ func TestErrMsg_ClearsPendingStartAndSurfacesError(t *testing.T) {
 	}
 }
 
+func TestProcessInput_RequiresProviderAfterSessionDefaults(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
+	m.provider = ""
+	m.sessionDefaultsLoaded = true
+	m2, cmd := m.processInput("hello")
+	am := m2.(*AppModel)
+	if cmd != nil {
+		t.Fatal("should not start run without provider")
+	}
+	if am.runHandle != nil || am.pendingPrompt != "" {
+		t.Fatal("should not arm a run without provider")
+	}
+	if !strings.Contains(am.View(), "No provider selected") {
+		t.Fatalf("expected provider error:\n%s", am.View())
+	}
+}
+
 func TestEnter_IgnoredWhileTurnInProgress_KeepsDraft(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
 	m.connStatus = ConnRunning
@@ -347,8 +364,8 @@ func TestSessionLoading_DisablesChatUntilDefaults(t *testing.T) {
 		t.Fatal("expected sessionLoading after ConnectedMsg")
 	}
 	view := am.View()
-	if !strings.Contains(view, "Loading session") && !strings.Contains(view, "loading") {
-		t.Fatalf("missing loading UI:\n%s", view)
+	if !strings.Contains(view, "FlowPilot") && !strings.Contains(view, "loading session") {
+		t.Fatalf("missing FlowPilot loading UI:\n%s", view)
 	}
 	// Plain chat typing blocked; slash still allowed.
 	am.inputValue = ""
