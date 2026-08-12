@@ -186,6 +186,7 @@ type AppModel struct {
 	flowBuiltins    []client.BuiltinFlowOption
 	flowWorkflows   []client.Workflow
 	chatList        []client.RunHistoryItem // last /history result for picker + /open <n>
+	sessionPanel    sessionInfoPanel        // collapsible top-right session/status overlay
 
 	// Pending gate/approval/question state
 	gate     *GateState
@@ -283,6 +284,7 @@ var knownSlashCommands = []slashCommand{
 	{"/deny", "Deny a pending approval"},
 	{"/headless", "Print next response to stdout only"},
 	{"/status", "Show current connection status"},
+	{"/info", "Toggle session info panel (top-right; also F2)"},
 	{"/login", "Sign in to Supabase (email/password) — Desktop session parity"},
 	{"/settings", "Open Desktop app for Settings (start if not running)"},
 }

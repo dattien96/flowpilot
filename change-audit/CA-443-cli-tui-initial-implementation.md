@@ -194,6 +194,21 @@ Codex adapter (`fake_provider_adapter.go`). Fix:
 2. `/provider connect|config [key]` → `POST /provider-accounts/connect` (same as
    Desktop Settings “Connect New Account”); picker via `/provider connect `.
 
+## Follow-up (2026-08-12) — Statusline account bind + input stroke
+
+- Statusline account label is rebound to the **active account of the current
+  provider** after `/provider` (no stale Codex label while on Grok).
+- Chat input uses a stroke frame (`┃ label │`) instead of full-row background.
+- `session_unavailable` open errors include active provider account + Desktop
+  activate hint (still a runner/session limit, same as Desktop).
+
+## Follow-up (2026-08-12) — Chat layout / session panel / history scroll
+
+1. Statusline shows **active provider-account** label (not Supabase email); `SIGN-IN` kept when needed.
+2. User chat bubbles render **right-aligned**; assistant stays left.
+3. Bootstrap Connected/Project/Session lines move to a collapsible **top-right panel** (`F2` or `/info`).
+4. Suggestion pickers (esp. `/history`) use a **scrolling window** so older rows stay selectable.
+
 ## Follow-up (2026-08-12) — Provider readiness + install parity
 
 Desktop ChatInput disables a provider unless CLI `installed` **and** an active

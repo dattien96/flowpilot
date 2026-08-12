@@ -68,9 +68,10 @@ Root persistent flags (`--workspace`, `--host`, `--port`) are inherited and not 
 | `/agents` | Toggle agents focus panel |
 | `/flow` | List/arm a flow — type `/flow ` then filter; ↑↓ + Tab to pick |
 | `/chat` | Switch to chat mode |
-| `/status` | Show current connection status |
+| `/status` | Show connection + session panel details |
+| `/info` | Toggle top-right session panel (also **F2**) — runner/project/provider account |
 | `/login` | Sign in to Supabase (email/password); writes Desktop session file when possible |
-| `/history` | List/open chats — type `/history ` then ↑↓ · Tab · Enter (alias: `/chats`) |
+| `/history` | List/open chats — type `/history ` then ↑↓ · Tab · Enter (alias: `/chats`; picker scrolls all) |
 | `/open` | Same picker as `/history` — type `/open ` then ↑↓ · Tab · Enter |
 | `/resume` | Same picker as `/history` — type `/resume ` then ↑↓ · Tab · Enter |
 | `/settings` | Sync TUI Supabase session → Desktop paths, then ensure Desktop is running |

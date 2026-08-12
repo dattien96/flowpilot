@@ -47,6 +47,7 @@ func formatChatList(items []client.RunHistoryItem) string {
 		sb.WriteString("Usage: /history|/open|/resume  (then ↑↓ Tab Enter)")
 		return sb.String()
 	}
+	// Dump stays short; the live picker (command + space) scrolls through ALL items.
 	limit := 20
 	if len(items) < limit {
 		limit = len(items)
@@ -77,9 +78,9 @@ func formatChatList(items []client.RunHistoryItem) string {
 		sb.WriteString(fmt.Sprintf("      id %s  %s\n", it.RunID, it.ProviderKey))
 	}
 	if len(items) > limit {
-		sb.WriteString(fmt.Sprintf("  … %d more\n", len(items)-limit))
+		sb.WriteString(fmt.Sprintf("  … %d more in dump — type /history  and ↑↓ to reach every chat (%d total)\n", len(items)-limit, len(items)))
 	}
-	sb.WriteString("Pick: /history|/open|/resume  then ↑↓ · Tab · Enter")
+	sb.WriteString("Pick: /history|/open|/resume  then ↑↓ · Tab · Enter (picker scrolls past this dump)")
 	return sb.String()
 }
 
@@ -104,12 +105,25 @@ func resolveChatOpenTarget(args []string, listed []client.RunHistoryItem) (strin
 
 // formatOpenChatErr explains runner resume failures (Desktop openHistoryRun parity).
 func formatOpenChatErr(err error) string {
+	return formatOpenChatErrDetailed(err, "", "")
+}
+
+func formatOpenChatErrDetailed(err error, chatProvider, activeAccountLabel string) string {
 	var api *client.APIError
 	if errors.As(err, &api) {
 		switch api.Code {
 		case "session_unavailable":
-			return "Open failed (runner session_unavailable): " + api.Message +
-				"\nThis is a runner/session issue — not a TUI bug. Provider session files for this run are missing on this machine (or the wrong account is active). Same limit as Desktop history open."
+			var sb strings.Builder
+			sb.WriteString("Open failed (runner session_unavailable): " + api.Message)
+			sb.WriteString("\nThis is a runner/session issue — not a TUI bug. Provider session files for this run are missing on this machine (or the wrong account is active). Same limit as Desktop history open.")
+			if chatProvider != "" {
+				sb.WriteString("\nChat provider: " + chatProvider)
+			}
+			if activeAccountLabel != "" {
+				sb.WriteString(fmt.Sprintf("\nActive %s account now: %s", orDash(chatProvider), activeAccountLabel))
+			}
+			sb.WriteString("\nNew chats can still work on the current account. Try Desktop → Settings → AI Providers → activate the account that owned this chat, then reopen — or open it on the machine where it was created.")
+			return sb.String()
 		case "account_not_signed_in":
 			return "Open failed (runner account_not_signed_in): " + api.Message +
 				"\nSign in to the provider account that owns this chat, then retry."
@@ -219,13 +233,31 @@ func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
 
 func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
 	runnerURL := m.runnerURL
+	chatProvider := ""
+	for _, it := range m.chatList {
+		if it.RunID == runID {
+			chatProvider = it.ProviderKey
+			break
+		}
+	}
+	activeLabel := ""
+	if chatProvider != "" {
+		for _, a := range m.providerAccounts {
+			if strings.EqualFold(a.ProviderKey, chatProvider) && a.IsActive {
+				activeLabel = strings.TrimSpace(a.DisplayLabel)
+				break
+			}
+		}
+	} else {
+		activeLabel = m.activeProviderAccountLabel()
+	}
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		handle, err := cl.ResumeRun(ctx, runID)
 		if err != nil {
-			return ChatOpenedMsg{Err: formatOpenChatErr(err)}
+			return ChatOpenedMsg{Err: formatOpenChatErrDetailed(err, chatProvider, activeLabel)}
 		}
 		// Replay from seq 0 through lastEventSeq (Task-287 T-5), then interactive.
 		until := handle.LastEventSeq

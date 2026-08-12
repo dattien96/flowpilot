@@ -30,12 +30,14 @@ var (
 	styleStatusOK  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("46"))  // bright green
 	styleStatusErr = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
 	stylePrompt       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("51"))
-	stylePromptFocus  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("25"))
-	styleInputFocus   = lipgloss.NewStyle().Foreground(lipgloss.Color("231")).Background(lipgloss.Color("25"))
-	styleCursor       = lipgloss.NewStyle().Bold(true).Reverse(true).Foreground(lipgloss.Color("231"))
-	styleSuggest      = lipgloss.NewStyle().Foreground(lipgloss.Color("123"))
-	styleSuggestSel   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("25"))
-	styleLoading      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("226")).Background(lipgloss.Color("236"))
+	// Input uses a stroke/frame (no full-row background highlight — hard to read).
+	stylePromptFocus = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("51"))
+	styleInputFocus  = lipgloss.NewStyle().Foreground(lipgloss.Color("231"))
+	styleInputStroke = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	styleCursor      = lipgloss.NewStyle().Bold(true).Reverse(true).Foreground(lipgloss.Color("231"))
+	styleSuggest     = lipgloss.NewStyle().Foreground(lipgloss.Color("123"))
+	styleSuggestSel  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Underline(true)
+	styleLoading     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("226")).Background(lipgloss.Color("236"))
 )
 
 // ---- New / Init -------------------------------------------------------------
@@ -102,10 +104,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connStatus = ConnIdle
 		m.statusMsg = "connected"
 		m.sessionLoading = true
-		m.addMessage("system", fmt.Sprintf("Connected to runner at %s", msg.RunnerURL), "")
-		if m.cfg.ProjectPath != "" {
-			m.addMessage("system", fmt.Sprintf("Project: %s", m.cfg.ProjectPath), "")
-		}
+		m.sessionPanel.RunnerURL = msg.RunnerURL
+		m.sessionPanel.ProjectPath = m.cfg.ProjectPath
+		m.sessionPanel.Collapsed = false
 		cmds := []tea.Cmd{m.cmdLoadSessionDefaults(), m.cmdPrefetchFlows()}
 		if m.cfg.ResumeRunID != "" {
 			cmds = append(cmds, m.cmdResume(m.cfg.ResumeRunID))
@@ -134,30 +135,19 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Project != nil {
 			m.project = msg.Project
 		}
-		if msg.Account != nil {
+		if msg.Account != nil && (m.provider == "" || strings.EqualFold(msg.Account.ProviderKey, m.provider)) {
 			m.account = msg.Account
+			if m.accountLabel == "" {
+				m.accountLabel = msg.Account.DisplayLabel
+			}
 		}
+		m.bindActiveAccountForProvider()
 		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
-		display := m.provider
-		if m.model != "" {
-			display = fmt.Sprintf("%s · %s", m.provider, m.model)
-		} else if m.provider != "" {
-			display = fmt.Sprintf("%s · (default model)", m.provider)
-		}
-		if m.accountLabel != "" {
-			display = fmt.Sprintf("%s (%s)", display, m.accountLabel)
-		}
-		if display != "" {
-			m.addMessage("system", fmt.Sprintf("Session: %s — type / for commands, /provider /model to change", display), "")
-		} else {
-			m.addMessage("system", "Session: provider not set — type /provider to pick one.", "")
-		}
+		m.refreshSessionPanel()
 		if msg.CatalogErr != "" {
 			m.addMessage("system", "Project catalog unavailable: "+msg.CatalogErr+"\nChat needs Supabase catalog (same as Desktop). Fix .env / runner, then restart.", "error")
 		}
-		if m.project != nil {
-			m.addMessage("system", fmt.Sprintf("Project: %s (%s)", m.project.Name, m.project.ID), "")
-		} else if m.cfg.ProjectPath != "" {
+		if m.project == nil && m.cfg.ProjectPath != "" {
 			m.addMessage("system", formatMissingProjectHelp(m.cfg.ProjectPath, m.projects), "error")
 		}
 		m.applyAuthNotice(msg.CatalogErr)
@@ -165,7 +155,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionDefaultsLoaded = true
 		m.connStatus = ConnIdle
 		m.statusMsg = "ready"
-		m.addMessage("system", "Ready — type a prompt or / for commands.", "")
+		m.addMessage("system", "Ready — type / for commands · F2 or /info toggles session panel.", "")
 		cmds := []tea.Cmd{m.cmdRefreshProjectContext()}
 		if m.project != nil && len(m.chatList) == 0 {
 			cmds = append(cmds, m.cmdPrefetchChats())
@@ -177,6 +167,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.projectPath = msg.Path
 		}
 		m.projectBranch = msg.Branch
+		m.refreshSessionPanel()
 		return m, nil
 
 	case DesktopEnsureMsg:
@@ -268,6 +259,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.messages = nil
 		if len(msg.Messages) > 0 {
 			m.messages = append([]ChatMessage(nil), msg.Messages...)
+		}
+		if pk := strings.TrimSpace(handle.ProviderKey); pk != "" {
+			m.provider = pk
+			m.bindActiveAccountForProvider()
+			m.refreshSessionPanel()
 		}
 		m.connStatus = ConnIdle
 		m.statusMsg = fmt.Sprintf("opened %s", shortID(handle.RunID))
@@ -561,6 +557,13 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			_ = m.client.Interrupt(context.Background(), m.runHandle.RunID)
 		}
 		return m, func() tea.Msg { return QuitMsg{} }
+
+	case tea.KeyF2:
+		if m.authPhase != AuthNone {
+			return m, nil
+		}
+		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
+		return m, nil
 
 	case tea.KeyEscape:
 		if m.authPhase != AuthNone {
@@ -1147,7 +1150,6 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			for i := range m.providers {
 				if strings.EqualFold(m.providers[i].Key, want) {
 					m.provider = m.providers[i].Key
-					m.accountLabel = ""
 					models := modelsForProvider(m.providers, m.provider)
 					if len(models) > 0 {
 						m.model = models[0]
@@ -1164,15 +1166,19 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			} else {
 				if !found {
 					m.provider = args[0]
-					m.accountLabel = ""
 				}
+				m.bindActiveAccountForProvider()
 				msg := fmt.Sprintf("Provider set to: %s · model: %s", m.provider, orDash(m.model))
+				if acc := m.activeProviderAccountLabel(); acc != "" {
+					msg += " · account: " + acc
+				}
 				if selected != nil {
 					if code, status := providerReadiness(*selected, m.providerAccounts); code != "ready" {
 						msg += "\nNot ready (" + status + ") — Desktop disables this provider chip until ready."
 					}
 				}
 				m.addMessage("system", msg, "")
+				m.refreshSessionPanel()
 			}
 		}
 
@@ -1217,6 +1223,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			}
 			m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 			m.addMessage("system", fmt.Sprintf("Model set to: %s", m.model), "")
+			m.refreshSessionPanel()
 		}
 
 	case "/reasoning":
@@ -1267,8 +1274,25 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		} else if m.authNeedLogin {
 			auth = "SIGN-IN REQUIRED — /login"
 		}
-		m.addMessage("system", fmt.Sprintf("Status: %s | Mode: %s | %s | Provider: %s | Model: %s | Auth: %s",
-			m.connStatus, m.mode, m.yoloStatusLabel(), m.provider, m.model, auth), "")
+		m.refreshSessionPanel()
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Status: %s | Mode: %s | %s | Provider: %s | Model: %s | Auth: %s\n",
+			m.connStatus, m.mode, m.yoloStatusLabel(), m.provider, m.model, auth))
+		sb.WriteString("Active provider account: " + orDash(m.activeProviderAccountLabel()) + "\n")
+		for _, line := range m.sessionPanel.lines() {
+			sb.WriteString(line + "\n")
+		}
+		sb.WriteString("(F2 or /info toggles the top-right session panel)")
+		m.addMessage("system", strings.TrimRight(sb.String(), "\n"), "")
+
+	case "/info":
+		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
+		m.refreshSessionPanel()
+		state := "expanded"
+		if m.sessionPanel.Collapsed {
+			state = "collapsed"
+		}
+		m.addMessage("system", "Session panel "+state+" (F2 or /info to toggle).", "")
 
 	case "/login":
 		return m.beginLogin(args)
@@ -1338,7 +1362,7 @@ func (m *AppModel) View() string {
 	}
 	suggLines := 0
 	if len(sugg) > 0 {
-		limit := 8
+		limit := suggestionVisibleLimit(sugg)
 		if len(sugg) < limit {
 			limit = len(sugg)
 		}
@@ -1350,11 +1374,18 @@ func (m *AppModel) View() string {
 	} else if m.authNeedLogin && m.authPhase == AuthNone {
 		bannerLines = 1
 	}
+	panelLines := m.renderSessionPanelOverlay()
+	panelH := len(panelLines)
 
 	// 2 status lines + 1 input row.
-	messagesHeight := m.height - 4 - suggLines - bannerLines
+	messagesHeight := m.height - 4 - suggLines - bannerLines - panelH
 	if messagesHeight < 1 {
 		messagesHeight = 1
+	}
+
+	for _, l := range panelLines {
+		sb.WriteString(l)
+		sb.WriteString("\n")
 	}
 
 	lines := m.renderMessages()
@@ -1398,11 +1429,15 @@ func (m *AppModel) loadingBannerText() string {
 	return renderFlowpilotLoader(m.loadingFrame, m.asciiMode)
 }
 
-func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
-	limit := 8
-	if len(sugg) < limit {
-		limit = len(sugg)
+func suggestionVisibleLimit(sugg []suggestItem) int {
+	if len(sugg) > 0 && sugg[0].kind == "history" {
+		return 12
 	}
+	return 8
+}
+
+func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
+	limit := suggestionVisibleLimit(sugg)
 	kind := "commands"
 	if len(sugg) > 0 {
 		switch sugg[0].kind {
@@ -1414,7 +1449,7 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 			kind = "models"
 		case "reasoning":
 			kind = "reasoning"
-		case "provider", "provider-connect", "provider-action":
+		case "provider", "provider-connect", "provider-action", "provider-install":
 			kind = "providers"
 		}
 	}
@@ -1422,9 +1457,10 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 	if len(sugg) > 0 {
 		sel = m.suggIdx % len(sugg)
 	}
+	start, end := suggestionWindow(len(sugg), sel, limit)
 	var sb strings.Builder
 	sb.WriteString(styleSuggest.Render(kind + ":"))
-	for i := 0; i < limit; i++ {
+	for i := start; i < end; i++ {
 		sb.WriteString("\n")
 		label := sugg[i].value
 		if label == "" {
@@ -1441,11 +1477,12 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 			sb.WriteString(styleSuggest.Render(line))
 		}
 	}
-	if len(sugg) > limit {
-		sb.WriteString("\n")
-		sb.WriteString(styleSuggest.Render(fmt.Sprintf("  … %d more (↑↓ · Tab fill · Enter run)", len(sugg)-limit)))
+	above := start
+	below := len(sugg) - end
+	sb.WriteString("\n")
+	if above > 0 || below > 0 {
+		sb.WriteString(styleSuggest.Render(fmt.Sprintf("  … %d above · %d below (↑↓ scrolls · Tab · Enter)  [%d/%d]", above, below, sel+1, len(sugg))))
 	} else {
-		sb.WriteString("\n")
 		sb.WriteString(styleSuggest.Render("  (↑↓ · Tab fill · Enter run)"))
 	}
 	return sb.String()
@@ -1494,10 +1531,12 @@ func (m *AppModel) renderMessages() []string {
 	for _, msg := range m.messages {
 		prefix := ""
 		style := styleSystem
+		rightAlign := false
 		switch msg.Role {
 		case "user":
 			prefix = "You: "
 			style = styleUser
+			rightAlign = true
 		case "assistant":
 			style = styleAssistant
 		case "tool":
@@ -1514,7 +1553,19 @@ func (m *AppModel) renderMessages() []string {
 		}
 		// Wrap plain text first (ANSI from lipgloss must not be mid-wrapped).
 		contentWidth := width
-		if prefix != "" {
+		if rightAlign {
+			// User bubbles sit on the right (~70% width) to contrast AI on the left.
+			contentWidth = width * 7 / 10
+			if contentWidth < 16 {
+				contentWidth = width
+			}
+			if prefix != "" {
+				contentWidth -= len([]rune(prefix))
+				if contentWidth < 8 {
+					contentWidth = width - len([]rune(prefix))
+				}
+			}
+		} else if prefix != "" {
 			contentWidth = width - len([]rune(prefix))
 			if contentWidth < 8 {
 				contentWidth = width
@@ -1523,14 +1574,19 @@ func (m *AppModel) renderMessages() []string {
 		}
 		wrapped := wrapText(msg.Content, contentWidth)
 		for i, line := range wrapped {
+			var rendered string
 			if i == 0 && prefix != "" {
-				lines = append(lines, style.Render(prefix)+style.Render(line))
+				rendered = style.Render(prefix) + style.Render(line)
 			} else if prefix != "" {
 				pad := strings.Repeat(" ", len([]rune(prefix)))
-				lines = append(lines, pad+style.Render(line))
+				rendered = pad + style.Render(line)
 			} else {
-				lines = append(lines, style.Render(line))
+				rendered = style.Render(line)
 			}
+			if rightAlign {
+				rendered = rightAlignPlain(rendered, width)
+			}
+			lines = append(lines, rendered)
 		}
 	}
 	return lines
@@ -1556,7 +1612,7 @@ func (m *AppModel) renderStatusLine() string {
 		}
 	}
 
-	// Provider · model (account label when available).
+	// Provider · model (active provider-account label — not Supabase email).
 	providerDisplay := m.provider
 	if providerDisplay == "" {
 		providerDisplay = "default"
@@ -1564,8 +1620,8 @@ func (m *AppModel) renderStatusLine() string {
 	if m.model != "" {
 		providerDisplay = fmt.Sprintf("%s · %s", providerDisplay, m.model)
 	}
-	if m.accountLabel != "" {
-		providerDisplay = fmt.Sprintf("%s (%s)", providerDisplay, m.accountLabel)
+	if acc := m.activeProviderAccountLabel(); acc != "" {
+		providerDisplay = fmt.Sprintf("%s (%s)", providerDisplay, acc)
 	}
 	parts = append(parts, providerDisplay)
 
@@ -1593,9 +1649,8 @@ func (m *AppModel) renderStatusLine() string {
 		parts = append(parts, ctxLine)
 	}
 
-	if m.signedInEmail != "" {
-		parts = append(parts, styleStatusOK.Render(m.signedInEmail))
-	} else if m.authNeedLogin {
+	// Supabase identity stays out of the statusline; only warn when signed out.
+	if m.authNeedLogin {
 		parts = append(parts, styleStatusErr.Render("SIGN-IN"))
 	}
 
@@ -1662,8 +1717,11 @@ func (m *AppModel) renderInputLine() string {
 			caret = styleCursor.Render("▌")
 		}
 	}
-	// Focus strip: labeled prompt + text + blinking caret so the active input is obvious.
-	return stylePromptFocus.Render(prefix) + styleInputFocus.Render(" "+body+caret)
+	// Stroke frame (┃ label │ text) — no full-width background wash.
+	left := styleInputStroke.Render("┃")
+	mid := styleInputStroke.Render("│")
+	label := stylePromptFocus.Render(strings.TrimSpace(prefix))
+	return left + " " + label + " " + mid + styleInputFocus.Render(" "+body+caret)
 }
 
 // ---- Helpers ----------------------------------------------------------------
