@@ -417,14 +417,129 @@ func parseHistoryArgPrefix(input string) (ok bool, query string) {
 
 var reasoningEffortOptions = []string{"high", "medium", "low"}
 
-// filterProviderSuggestions returns providers matching the query after `/provider `.
-func filterProviderSuggestions(input string, providers []client.Provider, current string) []suggestItem {
-	ok, query := parseSlashArgPrefix(input, "/provider")
+// parseProviderPicker reports `/provider <query>` or `/provider connect|config|install <query>`.
+func parseProviderPicker(input string) (mode, filter string, ok bool) {
+	okPrefix, query := parseSlashArgPrefix(input, "/provider")
+	if !okPrefix {
+		return "", "", false
+	}
+	parts := strings.Fields(query)
+	if len(parts) == 0 {
+		return "select", "", true
+	}
+	switch strings.ToLower(parts[0]) {
+	case "connect", "config":
+		if len(parts) > 1 {
+			return "connect", strings.Join(parts[1:], " "), true
+		}
+		return "connect", "", true
+	case "install":
+		if len(parts) > 1 {
+			return "install", strings.Join(parts[1:], " "), true
+		}
+		return "install", "", true
+	default:
+		return "select", query, true
+	}
+}
+
+// providerReadiness mirrors Desktop ChatInput: ready only when CLI installed AND an
+// active connected account exists for that provider key.
+func providerReadiness(p client.Provider, accounts []client.ProviderAccountSummary) (code, detail string) {
+	if !p.Installed {
+		hint := "not installed"
+		if strings.TrimSpace(p.InstallHint) != "" {
+			hint = "not installed — /provider install " + strings.TrimSpace(p.Key)
+		}
+		return "not_installed", hint
+	}
+	var activeLabel string
+	hasActiveConnected := false
+	connectedCount := 0
+	for _, a := range accounts {
+		if !strings.EqualFold(a.ProviderKey, p.Key) {
+			continue
+		}
+		if strings.EqualFold(a.AuthStatus, "connected") {
+			connectedCount++
+			if a.IsActive {
+				hasActiveConnected = true
+				activeLabel = strings.TrimSpace(a.DisplayLabel)
+			}
+		}
+	}
+	if !hasActiveConnected {
+		if connectedCount > 0 {
+			return "no_active_account", "installed · no active account — /provider connect " + strings.TrimSpace(p.Key)
+		}
+		return "no_active_account", "installed · no connected account — /provider connect " + strings.TrimSpace(p.Key)
+	}
+	if activeLabel != "" {
+		return "ready", "ready · " + activeLabel
+	}
+	return "ready", "ready"
+}
+
+func providerSuggestionDetail(p client.Provider, accounts []client.ProviderAccountSummary, current, mode string) string {
+	_, status := providerReadiness(p, accounts)
+	label := strings.TrimSpace(p.Label)
+	if label == "" {
+		label = strings.TrimSpace(p.Name)
+	}
+	parts := make([]string, 0, 5)
+	if strings.EqualFold(p.Key, current) {
+		parts = append(parts, "current")
+	}
+	if label != "" && !strings.EqualFold(label, p.Key) {
+		parts = append(parts, label)
+	}
+	switch mode {
+	case "connect":
+		parts = append(parts, "connect account")
+	case "install":
+		parts = append(parts, "install CLI")
+	}
+	parts = append(parts, status)
+	if mode == "select" {
+		ver := strings.TrimSpace(p.DetectedVersion)
+		if ver == "" {
+			ver = strings.TrimSpace(p.Version)
+		}
+		if ver != "" {
+			parts = append(parts, ver)
+		}
+		parts = append(parts, fmt.Sprintf("%d models", len(p.Models)))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// filterProviderSuggestions returns providers matching `/provider ` / connect / install.
+// In select mode, action rows are listed first so they are always discoverable.
+func filterProviderSuggestions(input string, providers []client.Provider, accounts []client.ProviderAccountSummary, current string) []suggestItem {
+	mode, query, ok := parseProviderPicker(input)
 	if !ok {
 		return nil
 	}
 	q := strings.ToLower(query)
-	out := make([]suggestItem, 0, len(providers))
+	out := make([]suggestItem, 0, len(providers)+3)
+	if mode == "select" {
+		for _, act := range []struct{ value, detail string }{
+			{"connect", "Connect new account (Desktop Settings parity)"},
+			{"install", "Install provider CLI (runner /providers/install)"},
+			{"config", "Alias for connect"},
+		} {
+			if q == "" || strings.HasPrefix(act.value, q) || strings.Contains(act.value, q) {
+				out = append(out, suggestItem{value: act.value, detail: act.detail, kind: "provider-action"})
+			}
+		}
+	}
+	kind := "provider"
+	switch mode {
+	case "connect":
+		kind = "provider-connect"
+	case "install":
+		kind = "provider-install"
+	}
 	for _, p := range providers {
 		key := strings.TrimSpace(p.Key)
 		if key == "" {
@@ -438,14 +553,11 @@ func filterProviderSuggestions(input string, providers []client.Provider, curren
 		if q != "" && !strings.Contains(hay, q) {
 			continue
 		}
-		detail := fmt.Sprintf("%d models", len(p.Models))
-		if label != "" && !strings.EqualFold(label, key) {
-			detail = label + " · " + detail
-		}
-		if strings.EqualFold(key, current) {
-			detail = "current · " + detail
-		}
-		out = append(out, suggestItem{value: key, detail: detail, kind: "provider"})
+		out = append(out, suggestItem{
+			value:  key,
+			detail: providerSuggestionDetail(p, accounts, current, mode),
+			kind:   kind,
+		})
 	}
 	return out
 }
