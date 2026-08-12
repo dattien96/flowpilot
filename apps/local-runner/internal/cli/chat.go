@@ -9,6 +9,7 @@ import (
 
 	tuiapp "flowpilot-runner/internal/tui/app"
 	tuicfg "flowpilot-runner/internal/tui/config"
+	"flowpilot-runner/internal/tui/desktopboot"
 	"flowpilot-runner/internal/tui/runnerboot"
 )
 
@@ -83,6 +84,8 @@ Examples:
 				RunnerWorkspace: workspace,
 				RunnerHost:      cfg.host,
 				RunnerPort:      cfg.port,
+				DesktopHost:     "127.0.0.1",
+				DesktopPort:     desktopboot.DefaultPort(),
 				ProjectPath:     resolvedProject,
 				Provider:        provider,
 				Model:           model,

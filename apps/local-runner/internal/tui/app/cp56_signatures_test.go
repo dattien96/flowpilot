@@ -56,7 +56,7 @@ func TestDocs_CommandAndSlashSurfaceMatchesRegisteredCommands(t *testing.T) {
 	required := []string{
 		"/help", "/clear", "/exit", "/yolo", "/agents", "/flow", "/chat",
 		"/skill", "/image", "/provider", "/model", "/reasoning", "/new",
-		"/step", "/status", "/resume", "/approve", "/deny",
+		"/step", "/status", "/resume", "/approve", "/deny", "/settings",
 	}
 	for _, cmd := range required {
 		if !names[cmd] {

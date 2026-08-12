@@ -125,6 +125,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg.Providers) > 0 {
 			m.providers = msg.Providers
 		}
+		if msg.ProviderAccounts != nil {
+			m.providerAccounts = msg.ProviderAccounts
+		}
 		if len(msg.Projects) > 0 {
 			m.projects = msg.Projects
 		}
@@ -175,6 +178,62 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.projectBranch = msg.Branch
 		return m, nil
+
+	case DesktopEnsureMsg:
+		var authLine string
+		if msg.AuthSync != "" {
+			authLine = "\nAuth session synced for Desktop: " + msg.AuthSync
+		} else if msg.AuthErr != "" {
+			authLine = "\nAuth sync skipped: " + msg.AuthErr + " (Desktop may show Login — run /login in TUI first)"
+		}
+		if msg.Err != "" {
+			m.addMessage("system", "Desktop ensure failed: "+msg.Err+"\n"+settingsBridgeBlurb(msg.URL)+authLine, "error")
+			return m, nil
+		}
+		if msg.Reused {
+			m.addMessage("system", "Desktop already running.\n"+settingsBridgeBlurb(msg.URL)+authLine, "")
+		} else if msg.Launched {
+			m.addMessage("system", "Starting Desktop app (detached)…\n"+settingsBridgeBlurb(msg.URL)+"\nLog: <workspace>/.flowpilot/cli-desktop.log"+authLine, "")
+		} else {
+			m.addMessage("system", settingsBridgeBlurb(msg.URL)+authLine, "")
+		}
+		return m, nil
+
+	case ProviderConnectMsg:
+		if msg.Err != "" {
+			m.addMessage("system", fmt.Sprintf("Provider connect failed (%s): %s", msg.ProviderKey, msg.Err), "error")
+			return m, nil
+		}
+		m.addMessage("system", fmt.Sprintf(
+			"Provider %s: login terminal/browser requested. Finish auth there, then /provider or /status to refresh.",
+			msg.ProviderKey,
+		), "")
+		return m, m.cmdLoadSessionDefaults()
+
+	case ProviderInstallMsg:
+		if len(msg.Providers) > 0 {
+			m.providers = msg.Providers
+		}
+		if msg.Err != "" {
+			m.addMessage("system", fmt.Sprintf("Provider install failed (%s): %s", msg.ProviderKey, msg.Err), "error")
+			return m, nil
+		}
+		status := "install finished"
+		if p := findProvider(m.providers, msg.ProviderKey); p != nil {
+			if p.Installed {
+				status = "installed"
+				if ver := strings.TrimSpace(p.DetectedVersion); ver != "" {
+					status = "installed · " + ver
+				}
+			} else {
+				status = "not installed yet — check installer output / PATH, then /provider"
+			}
+		}
+		m.addMessage("system", fmt.Sprintf(
+			"Provider %s: %s. Next: /provider connect %s (same as Desktop after Install).",
+			msg.ProviderKey, status, msg.ProviderKey,
+		), "")
+		return m, m.cmdLoadSessionDefaults()
 
 	case ChatListMsg:
 		if msg.Silent {
@@ -555,6 +614,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if items := m.collectSuggestions(); len(items) > 0 {
 				it := items[m.suggIdx%len(items)]
 				if cmd := suggestionAcceptValue(it); cmd != "" {
+					// Action rows (e.g. /provider → connect) only expand the next picker.
+					if it.kind == "provider-action" {
+						m.inputValue = cmd
+						m.suggIdx = 0
+						return m, m.cmdMaybePrefetchPickers()
+					}
 					// Slash picks are allowed even while a turn is in progress.
 					if m.sendBlocked() && !strings.HasPrefix(cmd, "/") {
 						return m, nil
@@ -632,14 +697,21 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 		}
 		return []suggestItem{{value: "", detail: "(no matching chats)", kind: "history", slash: cmd}}
 	}
-	if providerSugg := filterProviderSuggestions(m.inputValue, m.providers, m.provider); len(providerSugg) > 0 {
+	if providerSugg := filterProviderSuggestions(m.inputValue, m.providers, m.providerAccounts, m.provider); len(providerSugg) > 0 {
 		return providerSugg
 	}
-	if ok, _ := parseSlashArgPrefix(m.inputValue, "/provider"); ok {
-		if len(m.providers) == 0 {
-			return []suggestItem{{value: "", detail: "loading providers…", kind: "provider"}}
+	if mode, _, ok := parseProviderPicker(m.inputValue); ok {
+		kind := "provider"
+		switch mode {
+		case "connect":
+			kind = "provider-connect"
+		case "install":
+			kind = "provider-install"
 		}
-		return []suggestItem{{value: "", detail: "(no matching providers)", kind: "provider"}}
+		if len(m.providers) == 0 {
+			return []suggestItem{{value: "", detail: "loading providers…", kind: kind}}
+		}
+		return []suggestItem{{value: "", detail: "(no matching providers)", kind: kind}}
 	}
 	models := modelsForProvider(m.providers, m.provider)
 	if modelSugg := filterModelSuggestions(m.inputValue, models, m.model); len(modelSugg) > 0 {
@@ -673,7 +745,7 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 	it := items[idx]
 	if cmd := suggestionAcceptValue(it); cmd == "" {
 		return
-	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" {
+	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" {
 		m.inputValue = cmd
 	} else {
 		// Tab fills the command token and leaves a trailing space for args.
@@ -714,6 +786,22 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/provider " + it.value
+	case "provider-action":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		// Trailing space opens the connect-mode provider picker.
+		return "/provider " + strings.TrimSpace(it.value) + " "
+	case "provider-connect":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/provider connect " + it.value
+	case "provider-install":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/provider install " + it.value
 	case "cmd":
 		return strings.TrimSpace(it.value)
 	default:
@@ -985,6 +1073,46 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 
 	case "/provider":
+		if len(args) > 0 {
+			switch strings.ToLower(args[0]) {
+			case "connect", "config":
+				key := strings.TrimSpace(m.provider)
+				if len(args) > 1 {
+					key = strings.TrimSpace(args[1])
+				}
+				if key == "" {
+					m.addMessage("system", "Usage: /provider connect <key> — or type /provider connect  then ↑↓ Tab Enter\n(Desktop Settings → Connect New Account parity)", "")
+					break
+				}
+				if p := findProvider(m.providers, key); p != nil && !p.Installed {
+					m.addMessage("system", fmt.Sprintf(
+						"Provider %s is not installed. Run /provider install %s first (Desktop disables Connect until installed).",
+						key, key,
+					), "error")
+					break
+				}
+				m.addMessage("system", fmt.Sprintf(
+					"Connecting provider %s… Complete login in the opened terminal/browser (same as Desktop Settings).",
+					key,
+				), "")
+				return m, m.cmdConnectProvider(key)
+			case "install":
+				key := strings.TrimSpace(m.provider)
+				if len(args) > 1 {
+					key = strings.TrimSpace(args[1])
+				}
+				if key == "" {
+					m.addMessage("system", "Usage: /provider install <key> — or type /provider install  then ↑↓ Tab Enter\n(Runner POST /providers/install; Desktop Settings Install button is Gemini-only in UI, API supports all)", "")
+					break
+				}
+				if p := findProvider(m.providers, key); p != nil && p.Installed {
+					m.addMessage("system", fmt.Sprintf("Provider %s is already installed.", key), "")
+					break
+				}
+				m.addMessage("system", fmt.Sprintf("Installing provider CLI %s… (may take a minute)", key), "")
+				return m, m.cmdInstallProvider(key)
+			}
+		}
 		if len(args) == 0 {
 			var sb strings.Builder
 			sb.WriteString(fmt.Sprintf("Current provider: %s\n", orDash(m.provider)))
@@ -992,15 +1120,22 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			if len(m.providers) == 0 {
 				sb.WriteString("No provider catalog loaded yet. Wait for connect, or restart chat.")
 			} else {
-				sb.WriteString("Available providers:\n")
+				sb.WriteString("Providers (Desktop ChatInput readiness: installed + active connected account):\n")
 				for _, p := range m.providers {
 					mark := " "
 					if strings.EqualFold(p.Key, m.provider) {
 						mark = "*"
 					}
-					sb.WriteString(fmt.Sprintf("  %s %s  (%d models)\n", mark, p.Key, len(p.Models)))
+					code, status := providerReadiness(p, m.providerAccounts)
+					readyMark := " "
+					if code == "ready" {
+						readyMark = "+"
+					} else {
+						readyMark = "-"
+					}
+					sb.WriteString(fmt.Sprintf("  %s%s %s  %s\n", mark, readyMark, p.Key, status))
 				}
-				sb.WriteString("Pick: type /provider  then ↑↓ · Tab · Enter")
+				sb.WriteString("Pick: /provider  · Connect: /provider connect  · Install: /provider install  (↑↓ Tab Enter)")
 			}
 			m.addMessage("system", sb.String(), "")
 		} else if m.runHandle != nil {
@@ -1008,9 +1143,10 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		} else {
 			want := strings.ToLower(args[0])
 			found := false
-			for _, p := range m.providers {
-				if strings.EqualFold(p.Key, want) {
-					m.provider = p.Key
+			var selected *client.Provider
+			for i := range m.providers {
+				if strings.EqualFold(m.providers[i].Key, want) {
+					m.provider = m.providers[i].Key
 					m.accountLabel = ""
 					models := modelsForProvider(m.providers, m.provider)
 					if len(models) > 0 {
@@ -1018,6 +1154,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					} else {
 						m.model = ""
 					}
+					selected = &m.providers[i]
 					found = true
 					break
 				}
@@ -1029,7 +1166,13 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					m.provider = args[0]
 					m.accountLabel = ""
 				}
-				m.addMessage("system", fmt.Sprintf("Provider set to: %s · model: %s", m.provider, orDash(m.model)), "")
+				msg := fmt.Sprintf("Provider set to: %s · model: %s", m.provider, orDash(m.model))
+				if selected != nil {
+					if code, status := providerReadiness(*selected, m.providerAccounts); code != "ready" {
+						msg += "\nNot ready (" + status + ") — Desktop disables this provider chip until ready."
+					}
+				}
+				m.addMessage("system", msg, "")
 			}
 		}
 
@@ -1129,6 +1272,18 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 
 	case "/login":
 		return m.beginLogin(args)
+
+	case "/settings", "/setting":
+		host := strings.TrimSpace(m.cfg.DesktopHost)
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		port := m.cfg.DesktopPort
+		if port <= 0 {
+			port = 5173
+		}
+		m.addMessage("system", settingsBridgeBlurb(fmt.Sprintf("http://%s:%d", host, port)), "")
+		return m, m.cmdEnsureDesktop()
 
 	case "/history", "/chats", "/open", "/resume":
 		if len(args) > 0 {
@@ -1259,7 +1414,7 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 			kind = "models"
 		case "reasoning":
 			kind = "reasoning"
-		case "provider":
+		case "provider", "provider-connect", "provider-action":
 			kind = "providers"
 		}
 	}
@@ -1737,14 +1892,15 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 			}
 		}
 		return SessionDefaultsMsg{
-			Provider:     provider,
-			Model:        model,
-			AccountLabel: label,
-			Providers:    providers,
-			Projects:     projects,
-			Project:      project,
-			Account:      account,
-			CatalogErr:   catalogErr,
+			Provider:         provider,
+			Model:            model,
+			AccountLabel:     label,
+			Providers:        providers,
+			ProviderAccounts: accounts,
+			Projects:         projects,
+			Project:          project,
+			Account:          account,
+			CatalogErr:       catalogErr,
 		}
 	}
 }

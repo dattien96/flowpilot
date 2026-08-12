@@ -122,14 +122,15 @@ type ConnectedMsg struct{ RunnerURL string }
 
 // SessionDefaultsMsg carries active provider/model discovered after connect.
 type SessionDefaultsMsg struct {
-	Provider     string
-	Model        string
-	AccountLabel string
-	Providers    []client.Provider
-	Projects     []client.Project
-	Project      *client.Project
-	Account      *client.ProviderAccountSummary
-	CatalogErr   string
+	Provider         string
+	Model            string
+	AccountLabel     string
+	Providers        []client.Provider
+	ProviderAccounts []client.ProviderAccountSummary
+	Projects         []client.Project
+	Project          *client.Project
+	Account          *client.ProviderAccountSummary
+	CatalogErr       string
 }
 
 // FlowListMsg carries /flow list results.
@@ -198,10 +199,11 @@ type AppModel struct {
 	projectBranch   string // git branch at projectPath
 	provider        string
 	model           string
-	accountLabel    string // from provider-accounts display_label
-	account         *client.ProviderAccountSummary
-	providers       []client.Provider
-	modelContextWin int64
+	accountLabel     string // from provider-accounts display_label
+	account          *client.ProviderAccountSummary
+	providers        []client.Provider
+	providerAccounts []client.ProviderAccountSummary // for ChatInput-parity readiness
+	modelContextWin  int64
 	lastTokens      *client.TokenUsageSnapshot
 	agentRuns       []client.AgentRunSummary
 	focusedAgentIdx int
@@ -242,7 +244,7 @@ type AppModel struct {
 type suggestItem struct {
 	value  string // command name, flowRef/workflow id, chat run id, model, or effort
 	detail string
-	kind   string // "cmd" | "flow" | "history" | "model" | "reasoning" | "provider"
+	kind   string // "cmd" | "flow" | "history" | "model" | "reasoning" | "provider" | "provider-connect"
 	slash  string // for history: "/history" | "/open" | "/resume"
 }
 
@@ -269,7 +271,7 @@ var knownSlashCommands = []slashCommand{
 	{"/chat", "Switch to chat mode"},
 	{"/skill", "Toggle a skill for the next turn"},
 	{"/image", "Attach an image to the next turn (codex/claude only)"},
-	{"/provider", "Switch provider — type /provider  then ↑↓ Tab Enter"},
+	{"/provider", "Switch / connect / install — /provider  then ↑↓ Tab Enter"},
 	{"/model", "Switch model — type /model  then ↑↓ Tab Enter"},
 	{"/reasoning", "Set effort — type /reasoning  then ↑↓ Tab Enter"},
 	{"/new", "Start a new conversation"},
@@ -282,4 +284,5 @@ var knownSlashCommands = []slashCommand{
 	{"/headless", "Print next response to stdout only"},
 	{"/status", "Show current connection status"},
 	{"/login", "Sign in to Supabase (email/password) — Desktop session parity"},
+	{"/settings", "Open Desktop app for Settings (start if not running)"},
 }

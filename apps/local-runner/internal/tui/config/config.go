@@ -20,6 +20,11 @@ type ChatConfig struct {
 	// RunnerPort is the port the runner listens on (from root --port).
 	RunnerPort int
 
+	// DesktopHost/DesktopPort are where the Desktop Vite app listens
+	// (FLOWPILOT_DESKTOP_PORT, default 5173). Used by /settings.
+	DesktopHost string
+	DesktopPort int
+
 	// ProjectPath is the selected project path (--project flag).
 	// This is the StartRunInput.cwd — separate from RunnerWorkspace.
 	ProjectPath string
