@@ -133,6 +133,13 @@ ok  flowpilot-runner/internal/cli           0.856s  (1 new + existing)
 - `/image` slash command attaches files but the `cmdAttachImage` currently validates only (returns nil after validate); state update for pending attachments needs a follow-up message dispatch pattern for TUI mode. Headless mode uses `TurnInput.Attachments` directly which is complete.
 - Full agent graph TUI panel (visual graph layout) is a future enhancement; current implementation shows agent name in statusline and cycles with Tab.
 
+## Follow-up (2026-08-12) — Chat finalMessage stub + /chats switcher
+
+1. Prefer streamed `message_delta` over synthetic `finalMessage` stubs such as
+   `Done. The change is implemented and the step is complete.` (fake/demo adapter).
+2. `/chats` lists `GET /client/projects/{id}/workflow-runs`; `/open <n|runId>` resumes
+   and replays transcript (Desktop history switch parity). `/resume` uses the same open path.
+
 ## Follow-up (2026-08-12) — Fix catalog `/flow` arm (Task-283 contract)
 
 Bug: TUI always set `subMode=bug` and sent catalog UUID as `flowRef` on turns →

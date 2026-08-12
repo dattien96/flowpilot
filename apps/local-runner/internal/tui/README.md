@@ -70,7 +70,9 @@ Root persistent flags (`--workspace`, `--host`, `--port`) are inherited and not 
 | `/chat` | Switch to chat mode |
 | `/status` | Show current connection status |
 | `/login` | Sign in to Supabase (email/password); writes Desktop session file when possible |
-| `/resume <run-id>` | Resume a run |
+| `/chats` | List recent project chats (Desktop history); then `/open <n>` |
+| `/open <n\|runId>` | Switch to an existing chat (resume + replay transcript) |
+| `/resume <run-id>` | Same as `/open <runId>` |
 | `/approve` | Approve pending approval |
 | `/deny` | Deny pending approval |
 
