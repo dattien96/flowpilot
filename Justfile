@@ -132,8 +132,29 @@ runner-flows:
     @cd {{LOCAL_RUNNER_PATH}} && go run ./cmd/flowpilot flows list
 
 # ============================================================================
-# DOCKER
+# TUI (terminal chat client — CP-56)
 # ============================================================================
+
+# Start interactive TUI against a target project.
+# just always runs from the FlowPilot checkout — project path is REQUIRED (positional).
+# Single-quoted --project keeps Windows backslashes intact under Git Bash.
+#
+#   just chat-dev D:/working/gate-sandbox
+#   just chat-dev D:\working\gate-sandbox
+#   just chat-dev /Users/me/gate-sandbox
+#   just chat-dev D:/working/gate-sandbox --yolo
+chat-dev project *args:
+    @echo "Starting FlowPilot TUI (project={{project}}, port {{LOCAL_RUNNER_PORT}})..."
+    @cd "{{LOCAL_RUNNER_PATH}}" && FLOWPILOT_CHAT_REQUIRE_PROJECT=1 FLOWPILOT_CODEX_APPSERVER=1 go run ./cmd/flowpilot chat --port "{{LOCAL_RUNNER_PORT}}" --project '{{project}}' {{args}}
+
+# Headless one-shot: just chat-print "hello" D:/working/gate-sandbox
+chat-print prompt project *args:
+    @cd "{{LOCAL_RUNNER_PATH}}" && FLOWPILOT_CHAT_REQUIRE_PROJECT=1 FLOWPILOT_CODEX_APPSERVER=1 go run ./cmd/flowpilot chat --port "{{LOCAL_RUNNER_PORT}}" --project '{{project}}' --print '{{prompt}}' {{args}}
+
+# Run automated TUI + cli tests
+chat-test:
+    @cd {{LOCAL_RUNNER_PATH}} && go test ./internal/tui/... ./internal/cli/... -count=1
+
 
 # Build and run the admin web + local runner with Docker Compose
 docker-up:

@@ -1,0 +1,47 @@
+# CP-56: CI gate for the `flowpilot chat` TUI client.
+# Runs go vet + tests for internal/tui/** and internal/cli/ on both
+# windows-latest and ubuntu-latest (cross-platform terminal client).
+name: cli-tui
+
+on:
+  push:
+    paths:
+      - "apps/local-runner/internal/tui/**"
+      - "apps/local-runner/internal/cli/**"
+      - ".github/workflows/cli-tui.yml"
+  pull_request:
+    paths:
+      - "apps/local-runner/internal/tui/**"
+      - "apps/local-runner/internal/cli/**"
+      - ".github/workflows/cli-tui.yml"
+  workflow_dispatch: {}
+
+jobs:
+  tui-tests:
+    name: TUI tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: apps/local-runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: apps/local-runner/go.sum
+
+      - name: go vet (tui + cli)
+        run: go vet ./internal/tui/... ./internal/cli/...
+
+      - name: go build (full module)
+        run: go build ./...
+
+      - name: go test internal/tui
+        run: go test -count=1 -timeout 120s ./internal/tui/...
+
+      - name: go test internal/cli
+        run: go test -count=1 -timeout 60s ./internal/cli/...
