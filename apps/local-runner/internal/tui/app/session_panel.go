@@ -173,8 +173,9 @@ func (m *AppModel) renderSessionPanelOverlay() []string {
 	if width < 20 {
 		width = 80
 	}
-	boxStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("159")).Background(lipgloss.Color("236"))
-	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	// Match Desktop --text-dim / --accent / --bg-3 (styles.css :root).
+	boxStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim)).BorderForeground(lipgloss.Color(colorAccent))
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
 
 	if m.sessionPanel.Collapsed {
 		chip := "[info] F2 or /info"

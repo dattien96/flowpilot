@@ -11,6 +11,33 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
+func TestDesktopChatColorTokens_MatchStylesCSS(t *testing.T) {
+	// Keep TUI palette aligned with apps/desktop-flowpilot/src/styles.css :root.
+	want := map[string]string{
+		"text":    "#ececec",
+		"textDim": "#9b9b9b",
+		"accent":  "#4c8dff",
+		"warn":    "#f0b429",
+		"ask":     "#b07cff",
+		"ok":      "#3fb950",
+		"err":     "#f85149",
+	}
+	got := map[string]string{
+		"text":    colorText,
+		"textDim": colorTextDim,
+		"accent":  colorAccent,
+		"warn":    colorWarn,
+		"ask":     colorAsk,
+		"ok":      colorOK,
+		"err":     colorErr,
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s=%q want %q", k, got[k], v)
+		}
+	}
+}
+
 func TestStatusline_ShowsProviderAccountNotSupabaseEmail(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
 	m.provider = "codex"

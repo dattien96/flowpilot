@@ -17,27 +17,40 @@ import (
 )
 
 // ---- Styles -----------------------------------------------------------------
+// Color tokens mirror apps/desktop-flowpilot/src/styles.css :root (Codex-like dark chat).
+
+const (
+	colorText       = "#ececec" // --text
+	colorTextDim    = "#9b9b9b" // --text-dim
+	colorPromptText = "#f3f3f3" // .bubble.prompt
+	colorAccent     = "#4c8dff" // --accent
+	colorWarn       = "#f0b429" // --warn
+	colorAsk        = "#b07cff" // --ask (gate / questions)
+	colorOK         = "#3fb950" // --ok
+	colorErr        = "#f85149" // --err
+	colorBg3        = "#1e1e1e" // --bg-3
+)
 
 var (
-	// Bright colors — avoid faint/grey so chat stays readable on dark/light terminals.
-	styleUser      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("51"))  // bright cyan
-	styleAssistant = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")) // bright white
-	styleSystem    = lipgloss.NewStyle().Foreground(lipgloss.Color("159"))            // light cyan
-	styleTool      = lipgloss.NewStyle().Foreground(lipgloss.Color("221"))            // light yellow
-	styleError     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196")) // bright red
-	styleGate      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("213")) // pink
-	styleStatus    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))            // near-white
-	styleStatusOK  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("46"))  // bright green
-	styleStatusErr = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
-	stylePrompt       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("51"))
-	// Input uses a stroke/frame (no full-row background highlight — hard to read).
-	stylePromptFocus = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("51"))
-	styleInputFocus  = lipgloss.NewStyle().Foreground(lipgloss.Color("231"))
-	styleInputStroke = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
-	styleCursor      = lipgloss.NewStyle().Bold(true).Reverse(true).Foreground(lipgloss.Color("231"))
-	styleSuggest     = lipgloss.NewStyle().Foreground(lipgloss.Color("123"))
-	styleSuggestSel  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Underline(true)
-	styleLoading     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("226")).Background(lipgloss.Color("236"))
+	styleUserLabel = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
+	styleUser      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorPromptText))
+	styleAssistant = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
+	styleSystem    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+	styleTool      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn))
+	styleError     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
+	styleGate      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAsk))
+	styleStatus    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+	styleStatusOK  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))
+	styleStatusErr = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
+	stylePrompt    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
+	// Input stroke frame (Desktop accent / prompt-border — no neon wash).
+	stylePromptFocus = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
+	styleInputFocus  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
+	styleInputStroke = lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent))
+	styleCursor      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorBg3)).Background(lipgloss.Color(colorAccent))
+	styleSuggest     = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+	styleSuggestSel  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)).Underline(true)
+	styleLoading     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorWarn)).Background(lipgloss.Color(colorBg3))
 )
 
 // ---- New / Init -------------------------------------------------------------
@@ -1530,11 +1543,13 @@ func (m *AppModel) renderMessages() []string {
 	var lines []string
 	for _, msg := range m.messages {
 		prefix := ""
+		prefixStyle := styleSystem
 		style := styleSystem
 		rightAlign := false
 		switch msg.Role {
 		case "user":
 			prefix = "You: "
+			prefixStyle = styleUserLabel
 			style = styleUser
 			rightAlign = true
 		case "assistant":
@@ -1550,6 +1565,7 @@ func (m *AppModel) renderMessages() []string {
 			default:
 				style = styleSystem
 			}
+			prefixStyle = style
 		}
 		// Wrap plain text first (ANSI from lipgloss must not be mid-wrapped).
 		contentWidth := width
@@ -1576,7 +1592,7 @@ func (m *AppModel) renderMessages() []string {
 		for i, line := range wrapped {
 			var rendered string
 			if i == 0 && prefix != "" {
-				rendered = style.Render(prefix) + style.Render(line)
+				rendered = prefixStyle.Render(prefix) + style.Render(line)
 			} else if prefix != "" {
 				pad := strings.Repeat(" ", len([]rune(prefix)))
 				rendered = pad + style.Render(line)

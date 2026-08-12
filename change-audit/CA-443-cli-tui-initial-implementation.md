@@ -194,6 +194,12 @@ Codex adapter (`fake_provider_adapter.go`). Fix:
 2. `/provider connect|config [key]` → `POST /provider-accounts/connect` (same as
    Desktop Settings “Connect New Account”); picker via `/provider connect `.
 
+## Follow-up (2026-08-12) — Desktop chat color parity
+
+TUI lipgloss palette now mirrors Desktop `styles.css` `:root`
+(`#ececec` text, `#9b9b9b` dim, `#4c8dff` accent, warn/ask/ok/err) instead of
+bright ANSI cyan/pink washes that were hard to read.
+
 ## Follow-up (2026-08-12) — Statusline account bind + input stroke
 
 - Statusline account label is rebound to the **active account of the current
