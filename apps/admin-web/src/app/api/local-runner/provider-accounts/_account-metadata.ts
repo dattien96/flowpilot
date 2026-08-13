@@ -762,6 +762,12 @@ type GrokBillingConfig = {
   weeklyLimit?: GrokBillingValue | null;
   used?: GrokBillingValue | null;
   billingPeriodEnd?: string | null;
+  creditUsagePercent?: number | null;
+  currentPeriod?: {
+    type?: string | null;
+    start?: string | null;
+    end?: string | null;
+  } | null;
 };
 
 type GrokBillingResponse = {
@@ -786,6 +792,18 @@ export function grokQuotaFromBilling(
   const config = billing?.config;
   if (!config) {
     return null;
+  }
+
+  const periodType = String(config.currentPeriod?.type ?? "").trim();
+  if (periodType) {
+    const usedPct =
+      typeof config.creditUsagePercent === "number" ? config.creditUsagePercent : 0;
+    const monthly = periodType.toUpperCase().includes("MONTHLY");
+    return {
+      label: monthly ? "Monthly limit" : "Weekly limit",
+      remainingPercent: Math.max(0, Math.min(100, Math.trunc(100 - usedPct))),
+      resetAt: parseResetTime(config.currentPeriod?.end ?? config.billingPeriodEnd ?? null),
+    };
   }
 
   let limit = config.monthlyLimit;
@@ -818,7 +836,7 @@ async function loadGrokQuota(bearerToken: string | null | undefined) {
   }
 
   try {
-    const response = await fetch(`${GROK_CLI_CHAT_PROXY_BASE_URL}/billing`, {
+    const response = await fetch(`${GROK_CLI_CHAT_PROXY_BASE_URL}/billing?format=credits`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -826,10 +844,25 @@ async function loadGrokQuota(bearerToken: string | null | undefined) {
       },
       cache: "no-store",
     });
-    if (!response.ok) {
+    if (response.ok) {
+      const billing = (await response.json()) as GrokBillingResponse;
+      const creditsLine = grokQuotaFromBilling(billing);
+      if (creditsLine) {
+        return creditsLine;
+      }
+    }
+    const fallback = await fetch(`${GROK_CLI_CHAT_PROXY_BASE_URL}/billing`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    });
+    if (!fallback.ok) {
       return null;
     }
-    const billing = (await response.json()) as GrokBillingResponse;
+    const billing = (await fallback.json()) as GrokBillingResponse;
     return grokQuotaFromBilling(billing);
   } catch {
     return null;
@@ -870,6 +903,7 @@ async function grokMetadata(homePath: string): Promise<AccountMetadata> {
     const accountName = `${entry.first_name ?? ""} ${entry.last_name ?? ""}`.trim();
     const usageSummary = entry.team_id ? `Team ${entry.team_id}` : "Personal";
     const quotaLine = await loadGrokQuota(entry.key);
+    const weekly = quotaLine?.label.toLowerCase().includes("weekly") ?? false;
 
     return {
       ...base,
@@ -878,6 +912,8 @@ async function grokMetadata(homePath: string): Promise<AccountMetadata> {
       usageSummary,
       usageSource: quotaLine ? "provider_api" : "unavailable",
       usageDetailLines: quotaLine ? [quotaLine] : [],
+      remaining7dPercent: weekly ? quotaLine?.remainingPercent ?? null : null,
+      remaining7dResetAt: weekly ? quotaLine?.resetAt ?? null : null,
     };
   } catch {
     return base;
