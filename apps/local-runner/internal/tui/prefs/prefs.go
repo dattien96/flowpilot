@@ -18,6 +18,9 @@ type Session struct {
 
 // Paths returns candidate prefs file locations (FlowPilot + desktop-flowpilot userData).
 func Paths() []string {
+	if envPath := strings.TrimSpace(os.Getenv("FLOWPILOT_TUI_SESSION_FILE")); envPath != "" {
+		return []string{envPath}
+	}
 	var out []string
 	switch runtime.GOOS {
 	case "windows":
