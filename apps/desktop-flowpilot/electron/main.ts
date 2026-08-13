@@ -243,6 +243,40 @@ ipcMain.handle("http:request", async (_event, payload: BridgeHttpRequest) => {
 
 void app.whenReady().then(createWindow);
 
+const defaultRunnerURL = "http://127.0.0.1:4317";
+let runnerShutdownStarted = false;
+
+function localRunnerURL(): string {
+  const fromEnv = process.env.VITE_RUNNER_URL?.trim();
+  return fromEnv && fromEnv.length > 0 ? fromEnv.replace(/\/$/, "") : defaultRunnerURL;
+}
+
+async function shutdownLocalRunner(): Promise<void> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 2000);
+  try {
+    await fetch(`${localRunnerURL()}/system/shutdown`, {
+      method: "POST",
+      signal: ac.signal,
+    });
+  } catch {
+    // Runner already gone or never started.
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+app.on("before-quit", (event) => {
+  if (runnerShutdownStarted) {
+    return;
+  }
+  runnerShutdownStarted = true;
+  event.preventDefault();
+  void shutdownLocalRunner().finally(() => {
+    app.quit();
+  });
+});
+
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });

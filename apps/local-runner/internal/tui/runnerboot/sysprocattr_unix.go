@@ -4,9 +4,10 @@ package runnerboot
 
 import (
 	"os/exec"
-	"syscall"
 )
 
 func setSysProcAttr(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Intentionally not Setsid-detached. SIGHUP on terminal close must reach
+	// the spawned runner (CA-474).
+	_ = cmd
 }

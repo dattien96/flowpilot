@@ -34,8 +34,8 @@ func killRunnerByURL(runnerURL string) error {
 		return err
 	}
 
-	// SIGTERM the process group first (runnerboot Setsid), then the listen PID.
-	// Killing only the listen PID orphans grok agent / MCP children.
+	// SIGTERM the listen PID. Process-group kill (-pid) is best-effort: TUI
+	// no longer Setsid-detaches the runner, so -pid may not be a group leader.
 	_ = syscall.Kill(-pid, syscall.SIGTERM)
 	_ = syscall.Kill(pid, syscall.SIGTERM)
 	return nil

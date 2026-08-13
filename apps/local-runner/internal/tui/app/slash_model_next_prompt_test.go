@@ -23,11 +23,11 @@ func TestSlashModel_SaysNextPromptUsesModel(t *testing.T) {
 		t.Fatalf("should say next prompt, not /new-only: %q", got)
 	}
 	if strings.Contains(got, "Grok starts a new provider session") {
-		t.Fatalf("Claude must not get the Grok ACP note: %q", got)
+		t.Fatalf("Claude must not get a Grok ACP note: %q", got)
 	}
 }
 
-func TestSlashModel_GrokNotesNewProviderSession(t *testing.T) {
+func TestSlashModel_GrokKeepsSameCopyAsOtherProviders(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "grok", Model: "grok-a"}, "http://127.0.0.1:4317")
 	m.providers = []client.Provider{{
 		Key:    "grok",
@@ -38,7 +38,10 @@ func TestSlashModel_GrokNotesNewProviderSession(t *testing.T) {
 	if !strings.Contains(got, "Model set to: grok-b") {
 		t.Fatalf("missing set prefix: %q", got)
 	}
-	if !strings.Contains(got, "Grok starts a new provider session") {
-		t.Fatalf("Grok /model must warn ACP has no in-session switch: %q", got)
+	if !strings.Contains(got, "next prompt uses this model") {
+		t.Fatalf("Grok /model should match other providers: %q", got)
+	}
+	if strings.Contains(got, "Grok starts a new provider session") {
+		t.Fatalf("must not claim a new ACP session (that drops Grok history): %q", got)
 	}
 }

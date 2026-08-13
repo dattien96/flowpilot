@@ -11,8 +11,9 @@ type ChatConfig struct {
 	RunnerURL string
 	// NoStartRunner disables the auto-start heuristic (--no-start-runner).
 	NoStartRunner bool
-	// OwnsRunner is true when this TUI process spawned the runner. Exit must
-	// only shut down a runner we launched — never a reused Desktop/shared one.
+	// OwnsRunner is true when this TUI process spawned the runner (stderr
+	// "Runner started"). Exit still shuts the runner down even when this is
+	// false (reused listener on --port); leftover processes were leaking.
 	OwnsRunner bool
 
 	// RunnerWorkspace is the resolved runner workspace root.

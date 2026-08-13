@@ -733,7 +733,16 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 
 	case "turn_completed":
 		// Prefer already-streamed assistant text; ignore step-complete stubs.
-		if ev.FinalMessage != "" && !m.hasAssistantContent() && !isStepCompleteStub(ev.FinalMessage) {
+		// run-92955: a prior turn's assistant text made hasAssistantContent()
+		// true, so thinking… on a follow-up was never replaced when tools
+		// arrived after the placeholder. Always fill/remove thinking first.
+		if m.thinkingIndex() >= 0 {
+			fill := strings.TrimSpace(ev.FinalMessage)
+			if fill == "" || isStepCompleteStub(fill) {
+				fill = strings.TrimSpace(m.lastAssistantText())
+			}
+			m.ensureAssistantMessage(fill)
+		} else if ev.FinalMessage != "" && !m.hasAssistantContent() && !isStepCompleteStub(ev.FinalMessage) {
 			m.ensureAssistantMessage(ev.FinalMessage)
 		}
 		if m.shouldPollStepsRuntime() && (m.orchStream != nil || m.flowHasActiveAgents()) {
@@ -1761,11 +1770,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			}
 			m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 			persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
-			if strings.EqualFold(m.provider, "grok") {
-				m.addMessage("system", fmt.Sprintf("Model set to: %s (next prompt uses this model; Grok starts a new provider session)", m.model), "")
-			} else {
-				m.addMessage("system", fmt.Sprintf("Model set to: %s (next prompt uses this model)", m.model), "")
-			}
+			m.addMessage("system", fmt.Sprintf("Model set to: %s (next prompt uses this model)", m.model), "")
 			m.refreshSessionPanel()
 		}
 
@@ -2484,26 +2489,32 @@ func (m *AppModel) addMessage(role, content, hint string) {
 }
 
 func (m *AppModel) appendAssistantDelta(text string) {
+	if idx := m.thinkingIndex(); idx >= 0 {
+		m.replaceThinkingAt(idx, text)
+		return
+	}
 	if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == "assistant" {
-		last := &m.messages[len(m.messages)-1]
-		if last.FormatHint == "thinking" {
-			last.Content = text
-			last.FormatHint = ""
-			return
-		}
-		last.Content += text
+		m.messages[len(m.messages)-1].Content += text
 		return
 	}
 	m.addMessage("assistant", text, "")
 }
 
 func (m *AppModel) ensureAssistantMessage(text string) {
-	if isStepCompleteStub(text) && m.hasAssistantContent() {
+	if isStepCompleteStub(text) && m.hasAssistantContent() && m.thinkingIndex() < 0 {
+		return
+	}
+	if idx := m.thinkingIndex(); idx >= 0 {
+		if strings.TrimSpace(text) == "" {
+			m.messages = append(m.messages[:idx], m.messages[idx+1:]...)
+			return
+		}
+		m.replaceThinkingAt(idx, text)
 		return
 	}
 	if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == "assistant" {
 		last := &m.messages[len(m.messages)-1]
-		if last.FormatHint == "thinking" || last.Content == "" {
+		if last.Content == "" {
 			last.Content = text
 			last.FormatHint = ""
 		}
@@ -2512,13 +2523,25 @@ func (m *AppModel) ensureAssistantMessage(text string) {
 	}
 }
 
-func (m *AppModel) clearThinkingPlaceholder() {
-	if len(m.messages) == 0 {
-		return
+func (m *AppModel) thinkingIndex() int {
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].Role == "assistant" && m.messages[i].FormatHint == "thinking" {
+			return i
+		}
 	}
-	last := m.messages[len(m.messages)-1]
-	if last.Role == "assistant" && last.FormatHint == "thinking" {
-		m.messages = m.messages[:len(m.messages)-1]
+	return -1
+}
+
+func (m *AppModel) replaceThinkingAt(idx int, text string) {
+	msg := m.messages[idx]
+	msg.Content = text
+	msg.FormatHint = ""
+	m.messages = append(append(m.messages[:idx], m.messages[idx+1:]...), msg)
+}
+
+func (m *AppModel) clearThinkingPlaceholder() {
+	if idx := m.thinkingIndex(); idx >= 0 {
+		m.messages = append(m.messages[:idx], m.messages[idx+1:]...)
 	}
 }
 
@@ -2646,11 +2669,9 @@ func (m *AppModel) cmdConnect() tea.Cmd {
 
 func (m *AppModel) cmdShutdownAndQuit() tea.Cmd {
 	runnerURL := m.runnerURL
-	ownsRunner := m.cfg.OwnsRunner
 	return func() tea.Msg {
-		if !ownsRunner {
-			return QuitMsg{}
-		}
+		// Always stop the local runner on TUI exit, including a reused process
+		// (CA-445 skip-kill leaked runners across just chat-dev sessions).
 		cl := client.New(runnerURL)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
