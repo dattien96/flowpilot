@@ -3,6 +3,7 @@ package client_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -76,5 +77,23 @@ func TestListSkills_UsesProviderSkillsEndpoint(t *testing.T) {
 	}
 	if len(skills) != 1 || skills[0].Name != "coding" {
 		t.Fatalf("skills=%+v", skills)
+	}
+}
+
+func TestIsRetryableAPIError_ConflictAndCodes(t *testing.T) {
+	if !client.IsRetryableAPIError(&client.APIError{Status: 409, Code: "gate_in_progress", Message: "busy"}) {
+		t.Fatal("409 gate_in_progress should retry")
+	}
+	if !client.IsRetryableAPIError(&client.APIError{Status: 409, Code: "other", Message: "post-turn gate still running"}) {
+		t.Fatal("HTTP 409 should retry even if code is unfamiliar")
+	}
+	if client.IsRetryableAPIError(&client.APIError{Status: 400, Code: "bad_request", Message: "nope"}) {
+		t.Fatal("400 must not retry")
+	}
+	if client.IsRetryableAPIError(errors.New("dial tcp 127.0.0.1:4090: connection refused")) {
+		t.Fatal("port 4090 must not match as HTTP 409")
+	}
+	if client.RetryableCode("409") {
+		t.Fatal("RetryableCode must not treat HTTP status 409 as an error code")
 	}
 }

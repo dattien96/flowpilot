@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -301,16 +302,36 @@ func (e *APIError) Error() string {
 
 // RetryableCode returns true when the error code should trigger a retry.
 func RetryableCode(code string) bool {
-	switch code {
+	switch strings.ToLower(strings.TrimSpace(code)) {
 	case "turn_in_progress", "gate_in_progress", "hub_parked":
 		return true
 	}
 	return false
 }
 
+// IsRetryableAPIError checks if an error represents a temporary 409 gate/turn lock.
+func IsRetryableAPIError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.Status == http.StatusConflict {
+			return true
+		}
+		if RetryableCode(apiErr.Code) {
+			return true
+		}
+		msg := strings.ToLower(apiErr.Message)
+		return strings.Contains(msg, "gate_in_progress") || strings.Contains(msg, "turn_in_progress")
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "gate_in_progress") || strings.Contains(s, "turn_in_progress")
+}
+
 const (
-	maxTurnRetries = 6
-	turnRetryDelay = 700 * time.Millisecond
+	maxTurnRetries = 15
+	turnRetryDelay = 800 * time.Millisecond
 	// rpcTimeout bounds non-SSE runner calls so the TUI cannot hang forever on start/post.
 	rpcTimeout = 60 * time.Second
 )
@@ -548,7 +569,7 @@ func (c *Client) SendTurn(ctx context.Context, input TurnInput) (<-chan Provider
 			err := c.postJSON(postCtx, "/client/workflow-runs/"+input.RunID+"/turns", input, &resp)
 			cancelPost()
 			if err != nil {
-				if apiErr, ok := err.(*APIError); ok && RetryableCode(apiErr.Code) && attempt < maxTurnRetries {
+				if IsRetryableAPIError(err) && attempt < maxTurnRetries {
 					continue
 				}
 				errCh <- err
