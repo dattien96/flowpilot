@@ -75,11 +75,31 @@ async function loadPersistedAuthSession(): Promise<PersistedAuthSession | null> 
 
 async function savePersistedAuthSession(payload: PersistedAuthSession): Promise<void> {
   const dest = authSessionFilePath();
-  const tmp = dest + ".tmp";
+  const tmp = `${dest}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
   await mkdir(path.dirname(dest), { recursive: true });
   await writeFile(tmp, JSON.stringify(payload), "utf8");
   // Atomic rename so a mid-write kill never leaves a truncated file.
-  await rename(tmp, dest);
+  try {
+    await rename(tmp, dest);
+  } catch (err) {
+    const code =
+      typeof err === "object" && err !== null && "code" in err
+        ? (err as { code?: string }).code
+        : undefined;
+    // Windows rename cannot overwrite an existing dest (EPERM/EEXIST).
+    if (code === "EEXIST" || code === "EPERM") {
+      await rm(dest, { force: true }).catch(() => {});
+      try {
+        await rename(tmp, dest);
+        return;
+      } catch (retryErr) {
+        await rm(tmp, { force: true }).catch(() => {});
+        throw retryErr;
+      }
+    }
+    await rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 async function clearPersistedAuthSession(): Promise<void> {
