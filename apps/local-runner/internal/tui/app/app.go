@@ -158,11 +158,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ApprovalResolvedMsg:
-		if m.approval != nil && (msg.ID == "" || m.approval.ID == msg.ID) {
+		shown := m.approval != nil && (msg.ID == "" || m.approval.ID == msg.ID)
+		if shown {
 			m.approval = nil
 		}
 		m.connStatus = ConnRunning
 		m.statusMsg = "approved"
+		if !shown {
+			return m, nil
+		}
 		label := "Approved."
 		if strings.EqualFold(msg.Decision, "deny") {
 			label = "Denied."
@@ -267,6 +271,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{m.cmdRefreshProjectContext(), m.cmdLoadSkills(false)}
 		if firstLoad && m.project != nil && len(m.chatList) == 0 {
 			cmds = append(cmds, m.cmdPrefetchChats())
+		}
+		// Task-291 / CP-56 D-15: --yolo on Grok must hit the same posture
+		// endpoint as /yolo and Desktop. Do not rewrite startTurn.
+		if firstLoad {
+			if c := m.startupGrokYoloPostureCmd(); c != nil {
+				cmds = append(cmds, c)
+			}
 		}
 		return m, tea.Batch(cmds...)
 
@@ -810,16 +821,20 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 
 	case "permission_required":
 		if ev.ApprovalID != "" {
+			if m.effectiveYolo() {
+				// Runner should auto-approve under YOLO; if a card still arrives,
+				// resolve it without showing the gate (Task-291).
+				m.connStatus = ConnRunning
+				m.statusMsg = "auto-approved"
+				return m, m.cmdAutoApprove(ev.ApprovalID, ev.WorkflowRunID)
+			}
 			m.approval = &ApprovalState{
 				ID:    ev.ApprovalID,
 				RunID: ev.WorkflowRunID,
 			}
 			m.connStatus = ConnWaiting
 			m.statusMsg = "approval required"
-			if m.effectiveYolo() {
-				return m, m.cmdAutoApprove(ev.ApprovalID, ev.WorkflowRunID)
-			}
-			m.addMessage("system", fmt.Sprintf("[APPROVAL] %s — click Approve or Deny", ev.ApprovalID), "approval")
+			m.addMessage("system", formatApprovalWaitingLine(ev.ApprovalID, m.asciiMode), "approval")
 		}
 
 	case "user_question_required":
@@ -2327,6 +2342,19 @@ func isChatBubble(msg ChatMessage) bool {
 	return msg.Role == "assistant" && msg.FormatHint == ""
 }
 
+// formatApprovalWaitingLine is the transcript line for a live gate. Approve/Deny
+// live in the input bar; this copy must not say "click" so the response row
+// is not mistaken for the control.
+func formatApprovalWaitingLine(approvalID string, ascii bool) string {
+	wait := "⏳ "
+	suffix := "Waiting user…"
+	if ascii {
+		wait = "... "
+		suffix = "Waiting user..."
+	}
+	return wait + fmt.Sprintf("[APPROVAL] %s %s", approvalID, suffix)
+}
+
 func renderApprovalText(line string) string {
 	stripped := stripANSI(line)
 	var b strings.Builder
@@ -3103,6 +3131,16 @@ func (m *AppModel) cmdGrokYoloPosture(yolo bool) tea.Cmd {
 		}
 		return nil
 	}
+}
+
+// startupGrokYoloPostureCmd applies the existing Grok YOLO endpoint when the
+// TUI started with --yolo (local flag only). /yolo already calls
+// cmdGrokYoloPosture; chat turns still send yoloMode (Task-291).
+func (m *AppModel) startupGrokYoloPostureCmd() tea.Cmd {
+	if m == nil || !m.yolo || !strings.EqualFold(m.provider, "grok") {
+		return nil
+	}
+	return m.cmdGrokYoloPosture(true)
 }
 
 // ---- Run (entrypoint) -------------------------------------------------------

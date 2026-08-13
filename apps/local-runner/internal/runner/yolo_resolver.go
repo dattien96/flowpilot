@@ -108,3 +108,16 @@ func resolveEffectiveYolo(base bool, runKind, workflowID string, flowEngineDrive
 	}
 	return base
 }
+
+// resolveTurnYolo is the per-turn YOLO boolean: explicit TurnInput.YoloMode
+// overrides the run default, then Flow/Workflow force (BUG-299) applies.
+func resolveTurnYolo(rs *interactiveRun, in TurnInput) bool {
+	if rs == nil {
+		return false
+	}
+	yolo := rs.yolo
+	if in.YoloMode != nil {
+		yolo = *in.YoloMode
+	}
+	return resolveEffectiveYolo(yolo, rs.runKind, rs.workflowID, rs.flowEngineDriven)
+}

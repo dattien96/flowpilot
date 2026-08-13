@@ -252,11 +252,11 @@ Define machine-checkable signatures, live acceptance steps, and evidence require
 
 | ID | Signature | Package | Status |
 |---|---|---|---|
-| A2.10 | `TestChatYoloOn_OrdinaryWriteDoesNotPrompt_Claude` | `internal/runner` or `internal/tui/app` | ☐ |
-| A2.11 | `TestChatYoloOn_OrdinaryWriteDoesNotPrompt_Codex` | `internal/runner` or `internal/tui/app` | ☐ |
-| A2.12 | `TestChatYoloOn_OrdinaryWriteDoesNotPrompt_Grok` | `internal/runner` or `internal/tui/app` | ☐ |
-| A2.13 | `TestChatYoloOff_OrdinaryWriteStillGates` | `internal/runner` | ☐ |
-| A2.14 | `TestChatYoloOn_AskUserStillPrompts` | `internal/runner` | ☐ |
+| A2.10 | `TestChatYoloOn_OrdinaryWriteDoesNotPrompt_Claude` | `internal/runner` | ☑ |
+| A2.11 | `TestChatYoloOn_OrdinaryWriteDoesNotPrompt_Codex` | `internal/runner` | ☑ |
+| A2.12 | `TestChatYoloOn_OrdinaryWriteDoesNotPrompt_Grok` | `internal/runner` | ☑ |
+| A2.13 | `TestChatYoloOff_OrdinaryWriteStillGates` | `internal/runner` | ☑ |
+| A2.14 | `TestChatYoloOn_AskUserStillPrompts` | `internal/runner` | ☑ |
 
 ### P-9 — Boundary
 

@@ -5883,15 +5883,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// turn, Grok respawn-per-turn). A nil pointer means "not supplied" and keeps the
 	// run-level default.
 	model, effort := resolveTurnModelAndEffort(rs, in)
-	yolo := rs.yolo
-	if in.YoloMode != nil {
-		yolo = *in.YoloMode
-	}
-	// BUG-299 residual (run-35329): Flow/Workflow (and flow-engine-driven runs)
-	// always YOLO=true — desktop workflow follow-ups omit yoloMode, and a
-	// rehydrated session used to leave rs.yolo=false. Chat mode without force
-	// keeps the UI toggle value above.
-	yolo = resolveEffectiveYolo(yolo, rs.runKind, rs.workflowID, rs.flowEngineDriven)
+	yolo := resolveTurnYolo(rs, in)
 	// Fold any pending UI-spawn context into the provider prompt (NOT the displayed prompt,
 	// which was already emitted via turn_started with in.Prompt). This is how the parent
 	// agent learns about children started from the UI. Cleared once consumed; the cleared
