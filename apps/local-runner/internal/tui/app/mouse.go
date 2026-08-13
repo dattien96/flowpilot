@@ -94,6 +94,7 @@ func (m *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if msg.Shift && isLeftMouse(msg) {
+		m.mouseDrag = mouseDrag{}
 		switch msg.Action {
 		case tea.MouseActionPress:
 			m.mouseSel = mouseSelect{armed: true, x0: msg.X, y0: msg.Y, x1: msg.X, y1: msg.Y}
@@ -105,16 +106,50 @@ func (m *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if isLeftMouseClick(msg) && !msg.Shift {
+	if isLeftMouse(msg) && !msg.Shift {
+		return m.handlePlainLeftMouse(msg)
+	}
+	return m, nil
+}
+
+func (m *AppModel) handlePlainLeftMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	pulse := pulseMouseTracking()
+	switch msg.Action {
+	case tea.MouseActionMotion:
+		if !m.mouseDrag.down {
+			return m, nil
+		}
+		if msg.X != m.mouseDrag.x0 || msg.Y != m.mouseDrag.y0 {
+			m.mouseDrag.moved = true
+			m.mouseSel = mouseSelect{
+				armed: true,
+				x0:    m.mouseDrag.x0, y0: m.mouseDrag.y0,
+				x1: msg.X, y1: msg.Y,
+			}
+		}
+		return m, nil
+	case tea.MouseActionRelease:
+		dragged := m.mouseDrag.moved
+		m.mouseDrag = mouseDrag{}
+		if dragged {
+			return m, nil
+		}
+		// Click-release with no motion: same as before (clear leftover highlight).
 		m.mouseSel = mouseSelect{}
-		pulse := pulseMouseTracking()
+		return m, pulse
+	default:
+		// Press, or Windows Type=MouseLeft with zero Action.
+		m.mouseDrag = mouseDrag{}
+		if msg.Action == tea.MouseActionPress && m.clickTargetAt(msg.X, msg.Y) == "" {
+			m.mouseDrag = mouseDrag{down: true, x0: msg.X, y0: msg.Y}
+		}
+		m.mouseSel = mouseSelect{}
 		if msg.Action == tea.MouseActionRelease {
 			return m, pulse
 		}
 		m2, cmd := m.dispatchMouseClick(msg.X, msg.Y)
 		return m2, tea.Batch(pulse, cmd)
 	}
-	return m, nil
 }
 
 func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {

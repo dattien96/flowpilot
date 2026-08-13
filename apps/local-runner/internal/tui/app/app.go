@@ -90,6 +90,7 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 		cfg:             cfg,
 		runnerURL:       runnerURL,
 		client:          client.New(runnerURL),
+		inputCursor:     -1,
 		yolo:            cfg.Yolo,
 		provider:        provider,
 		model:           model,
@@ -656,7 +657,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Text != "" {
-			m.inputValue += msg.Text
+			m.insertInputAtCursor(msg.Text)
 			return m, nil
 		}
 		if msg.Err != "" {
@@ -1086,19 +1087,32 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.processInput(input)
 
+	case tea.KeyLeft:
+		m.moveInputCursor(-1)
+		return m, nil
+
+	case tea.KeyRight:
+		m.moveInputCursor(1)
+		return m, nil
+
+	case tea.KeyHome, tea.KeyCtrlA:
+		m.inputCursor = 0
+		return m, nil
+
+	case tea.KeyEnd, tea.KeyCtrlE:
+		m.inputCursor = -1
+		return m, nil
+
 	case tea.KeyBackspace:
-		if len(m.inputValue) > 0 {
-			runes := []rune(m.inputValue)
-			m.inputValue = string(runes[:len(runes)-1])
-			m.suggIdx = 0
-		}
+		m.deleteInputBeforeCursor()
+		m.suggIdx = 0
 		return m, m.cmdMaybePrefetchPickers()
 
 	case tea.KeySpace, tea.KeyRunes:
 		if msg.Type == tea.KeySpace {
-			m.inputValue += " "
+			m.insertInputAtCursor(" ")
 		} else {
-			m.inputValue += string(msg.Runes)
+			m.insertInputAtCursor(string(msg.Runes))
 		}
 		m.suggIdx = 0
 		return m, m.cmdMaybePrefetchPickers()
@@ -2530,20 +2544,44 @@ func (m *AppModel) renderInputLine() string {
 	if m.question != nil {
 		inner = append(inner, renderQuestionBar(left, mid, m.question, innerW))
 	}
+	caretAt := m.inputCaretIndex()
+	off := 0
 	for i, bl := range bodyLines {
 		runes := []rune(bl)
-		if len(runes) > availWidth {
-			bl = string(runes[len(runes)-availWidth:])
+		lineStart, lineEnd := off, off+len(runes)
+		onLine := caretAt >= lineStart && (caretAt < lineEnd || (caretAt == lineEnd && i == len(bodyLines)-1))
+		caretCol := caretAt - lineStart
+		if !onLine {
+			caretCol = -1
 		}
-		lineCaret := ""
-		if i == len(bodyLines)-1 {
-			lineCaret = caret
+		shown := runes
+		if len(runes) > availWidth {
+			col := caretCol
+			if col < 0 {
+				col = len(runes)
+			}
+			var vis int
+			shown, vis = windowRunesAround(runes, col, availWidth)
+			if caretCol >= 0 {
+				caretCol = vis
+			}
+		}
+		var styled string
+		if onLine {
+			if caretCol < 0 || caretCol > len(shown) {
+				caretCol = len(shown)
+			}
+			styled = styleInputFocus.Render(string(shown[:caretCol])) + caret +
+				styleInputFocus.Render(string(shown[caretCol:]))
+		} else {
+			styled = styleInputFocus.Render(string(shown))
 		}
 		if i == 0 {
-			inner = append(inner, attach+styleInputFocus.Render(bl+lineCaret))
+			inner = append(inner, attach+styled)
 		} else {
-			inner = append(inner, styleInputFocus.Render(bl+lineCaret))
+			inner = append(inner, styled)
 		}
+		off = lineEnd + 1
 	}
 	footer := strings.TrimSpace(m.model)
 	return frameInput(inner, w, label, footer, m.asciiMode)

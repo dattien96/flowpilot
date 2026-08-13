@@ -198,8 +198,10 @@ type AppModel struct {
 	historyChunkInFlight      bool
 
 	inputValue  string
+	inputCursor int // rune index; <0 means caret sticks to the end
 	viewport    viewportState
 	mouseSel    mouseSelect
+	mouseDrag   mouseDrag
 	rowCache    []chatRow
 	rowCacheSig uint64
 	runHandle   *client.RunHandle
@@ -296,11 +298,20 @@ type viewportState struct {
 	offset int // lines scrolled from bottom
 }
 
-// mouseSelect is Shift+drag transcript highlight (click outside clears it).
+// mouseSelect is drag transcript highlight (Shift optional). A click with no
+// motion still clears it so Approve/copy chips stay distinct from select.
 type mouseSelect struct {
 	armed  bool
 	x0, y0 int
 	x1, y1 int
+}
+
+// mouseDrag tracks a button-down gesture so motion can start a selection
+// without treating the initial press as an armed highlight (legacy click tests).
+type mouseDrag struct {
+	down   bool
+	moved  bool
+	x0, y0 int
 }
 
 func (s mouseSelect) empty() bool {
