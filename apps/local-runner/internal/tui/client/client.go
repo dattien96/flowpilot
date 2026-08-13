@@ -366,6 +366,20 @@ func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
 	return ps, err
 }
 
+// ShutdownStack sends POST /system/shutdown to terminate the local runner process.
+func (c *Client) ShutdownStack(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/system/shutdown", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // ListWorkflows fetches GET /client/workflows (all; caller filters by projectId).
 func (c *Client) ListWorkflows(ctx context.Context) ([]Workflow, error) {
 	var ws []Workflow

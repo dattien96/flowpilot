@@ -110,6 +110,7 @@ Examples:
 			}
 
 			if bootResult.Launched {
+				chatCfg.OwnsRunner = true
 				fmt.Fprintf(os.Stderr, "Runner started at %s (live Codex enabled)\n", bootResult.RunnerURL)
 			} else if bootResult.Reused {
 				fmt.Fprintf(os.Stderr, "Reusing runner at %s\n", bootResult.RunnerURL)

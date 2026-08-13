@@ -11,6 +11,9 @@ type ChatConfig struct {
 	RunnerURL string
 	// NoStartRunner disables the auto-start heuristic (--no-start-runner).
 	NoStartRunner bool
+	// OwnsRunner is true when this TUI process spawned the runner. Exit must
+	// only shut down a runner we launched — never a reused Desktop/shared one.
+	OwnsRunner bool
 
 	// RunnerWorkspace is the resolved runner workspace root.
 	// Resolution order: --workspace flag → FLOWPILOT_WORKSPACE env → walk up.
