@@ -12,7 +12,13 @@ import (
 	"github.com/yuin/goldmark/text"
 )
 
-func renderMarkdownFresh(src string, width int, ascii bool) (out []mdLine) {
+const mdUnwrapMaxDepth = 3
+
+func renderMarkdownFresh(src string, width int, ascii bool) []mdLine {
+	return renderMarkdownAtDepth(src, width, ascii, 0)
+}
+
+func renderMarkdownAtDepth(src string, width int, ascii bool, depth int) (out []mdLine) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			out = textsToMD(wrapText(src, width))
@@ -21,7 +27,7 @@ func renderMarkdownFresh(src string, width int, ascii bool) (out []mdLine) {
 	md := goldmark.New(goldmark.WithExtensions(extension.GFM))
 	reader := text.NewReader([]byte(src))
 	doc := md.Parser().Parse(reader)
-	w := &mdWriter{src: []byte(src), width: width, ascii: ascii, copyAt: map[int]string{}}
+	w := &mdWriter{src: []byte(src), width: width, ascii: ascii, depth: depth, copyAt: map[int]string{}}
 	_ = ast.Walk(doc, w.walk)
 	w.flushPara()
 	if len(w.lines) == 0 {
@@ -39,6 +45,7 @@ type mdWriter struct {
 	src     []byte
 	width   int
 	ascii   bool
+	depth   int
 	lines   []string
 	copyAt  map[int]string
 	buf     strings.Builder
@@ -179,11 +186,17 @@ func (w *mdWriter) walkCode(n ast.Node, entering bool) (ast.WalkStatus, error) {
 	if fc, ok := n.(*ast.FencedCodeBlock); ok {
 		lang = strings.TrimSpace(string(fc.Language(w.src)))
 	}
+	raw := w.blockText(n)
+	if strings.TrimSpace(raw) == "" {
+		return ast.WalkSkipChildren, nil
+	}
+	if w.shouldUnwrapMarkdownFence(lang, raw) {
+		return w.appendUnwrappedMarkdown(raw)
+	}
 	title := lang
 	if title == "" {
 		title = "code"
 	}
-	raw := w.blockText(n)
 	body := boundFenceBody(raw)
 	boxed := renderCodeFenceBox(strings.Split(body, "\n"), title, w.width, w.ascii)
 	if w.copyAt == nil {
@@ -195,6 +208,83 @@ func (w *mdWriter) walkCode(n ast.Node, entering bool) (ast.WalkStatus, error) {
 	w.lines = append(w.lines, boxed...)
 	w.blank()
 	return ast.WalkSkipChildren, nil
+}
+
+func (w *mdWriter) shouldUnwrapMarkdownFence(lang, raw string) bool {
+	if w.depth >= mdUnwrapMaxDepth {
+		return false
+	}
+	if isMarkdownFenceLang(lang) {
+		return true
+	}
+	return looksLikeMarkdownDoc(raw)
+}
+
+func (w *mdWriter) appendUnwrappedMarkdown(raw string) (ast.WalkStatus, error) {
+	inner := renderMarkdownAtDepth(raw, w.width, w.ascii, w.depth+1)
+	if w.copyAt == nil {
+		w.copyAt = map[int]string{}
+	}
+	for _, ml := range inner {
+		if ml.CopyCode != "" {
+			w.copyAt[len(w.lines)] = ml.CopyCode
+		}
+		w.lines = append(w.lines, ml.Text)
+	}
+	w.blank()
+	return ast.WalkSkipChildren, nil
+}
+
+func isMarkdownFenceLang(lang string) bool {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	lang = strings.TrimPrefix(lang, "language-")
+	switch lang {
+	case "markdown", "md", "gfm", "mdown", "mkd", "markdown+gfm":
+		return true
+	}
+	return strings.HasPrefix(lang, "markdown")
+}
+
+func looksLikeMarkdownDoc(s string) bool {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	if strings.Contains(s, "```") {
+		return true
+	}
+	if looksLikeGFMTable(s) {
+		return true
+	}
+	hits := 0
+	if strings.Count(s, "**") >= 2 {
+		hits++
+	}
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(t, "# ") || strings.HasPrefix(t, "## ") || strings.HasPrefix(t, "### "):
+			hits++
+		case strings.HasPrefix(t, "> "):
+			hits++
+		case strings.HasPrefix(t, "- [") || strings.HasPrefix(t, "* ["):
+			hits++
+		}
+	}
+	return hits >= 2
+}
+
+func looksLikeGFMTable(s string) bool {
+	pipes, seps := 0, 0
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "|") || !strings.Contains(t[1:], "|") {
+			continue
+		}
+		pipes++
+		core := strings.Trim(t, "|")
+		if strings.Contains(core, "---") || strings.Contains(core, ":--") || strings.Contains(core, "--:") {
+			seps++
+		}
+	}
+	return pipes >= 2 && seps >= 1
 }
 
 func renderCodeFenceBox(body []string, title string, width int, ascii bool) []string {
