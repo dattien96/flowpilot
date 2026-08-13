@@ -60,9 +60,19 @@ type ProviderAccountSummary struct {
 	HomePath           string  `json:"home_path"`
 	IsActive           bool    `json:"is_active"`
 	AuthStatus         string  `json:"auth_status"`
-	UsageSummary       *string `json:"usage_summary"`
-	Remaining5hPercent *int    `json:"remaining_5h_percent"`
-	Remaining7dPercent *int    `json:"remaining_7d_percent"`
+	UsageSummary       *string                    `json:"usage_summary"`
+	Remaining5hPercent *int                       `json:"remaining_5h_percent"`
+	Remaining7dPercent *int                       `json:"remaining_7d_percent"`
+	Remaining5hResetAt *string                    `json:"remaining_5h_reset_at"`
+	Remaining7dResetAt *string                    `json:"remaining_7d_reset_at"`
+	UsageDetailLines   []ProviderAccountUsageLine `json:"usage_detail_lines,omitempty"`
+}
+
+// ProviderAccountUsageLine is one quota meter from GET /client/provider-accounts.
+type ProviderAccountUsageLine struct {
+	Label            string `json:"label"`
+	RemainingPercent int    `json:"remaining_percent"`
+	ResetAt          string `json:"reset_at,omitempty"`
 }
 
 // ProviderModel mirrors runner.ProviderModel from GET /providers.
