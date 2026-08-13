@@ -1,6 +1,14 @@
 package app
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"flowpilot-runner/internal/tui/client"
+)
 
 // Task-290 / Desktop Timeline parity: window long chats by user-prompt groups.
 
@@ -117,7 +125,11 @@ func (m *AppModel) hiddenPromptCountBeforeWindow() int {
 	return countUserPrompts(m.messages[:start])
 }
 
-func (m *AppModel) loadEarlierPrompts() {
+func (m *AppModel) hasMoreHistoryOnServer() bool {
+	return m.historyLoadedAfterSeq > 0
+}
+
+func (m *AppModel) loadEarlierPrompts() tea.Cmd {
 	total := countUserPrompts(m.messages)
 	m.visiblePromptCount = expandVisiblePromptCount(m.visiblePromptCount, total, chatPromptPageSize)
 	m.rowCache = nil
@@ -130,13 +142,39 @@ func (m *AppModel) loadEarlierPrompts() {
 		maxOff = 0
 	}
 	m.viewport.offset = maxOff
+
+	if m.windowStartIndex() > 0 || !m.hasMoreHistoryOnServer() {
+		return nil
+	}
+	return m.cmdFetchOlderHistory()
 }
 
-func loadEarlierPromptLabel(hidden int) string {
-	if hidden < 1 {
-		return ""
+func (m *AppModel) cmdFetchOlderHistory() tea.Cmd {
+	if m.runHandle == nil || m.historyLoadedAfterSeq <= 0 {
+		return nil
 	}
-	return fmtLoadEarlierLabel(hidden)
+	runID := m.runHandle.RunID
+	floor := m.historyLoadedAfterSeq
+	newAfter := chatReplayChunkBefore(floor)
+	runnerURL := m.runnerURL
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		collected := collectReplayEvents(cl, ctx, runID, newAfter, floor, chatReplayMaxEvents)
+		msgs := replayHistoryMessages(trimEventsFromTurnStart(collected))
+		return HistoryChunkMsg{Messages: msgs, NewLoadedAfterSeq: newAfter}
+	}
+}
+
+func loadEarlierPromptLabel(hidden int, moreOnServer bool) string {
+	if hidden > 0 {
+		return fmtLoadEarlierLabel(hidden)
+	}
+	if moreOnServer {
+		return "↑ Load earlier prompts (more)"
+	}
+	return ""
 }
 
 func fmtLoadEarlierLabel(hidden int) string {

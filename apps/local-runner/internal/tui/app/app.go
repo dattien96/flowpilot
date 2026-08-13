@@ -394,6 +394,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.question = nil
 		m.messages = nil
 		m.visiblePromptCount = 0
+		m.historyLoadedAfterSeq = msg.HistoryLoadedAfterSeq
 		m.viewport.offset = 0
 		if len(msg.Messages) > 0 {
 			m.messages = append([]ChatMessage(nil), msg.Messages...)
@@ -407,6 +408,21 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connStatus = ConnIdle
 		m.statusMsg = fmt.Sprintf("opened %s", shortID(handle.RunID))
 		m.addMessage("system", fmt.Sprintf("Opened chat %s — continue typing or /history|/open|/resume to switch.", handle.RunID), "")
+		return m, nil
+
+	case HistoryChunkMsg:
+		if msg.Err != "" {
+			m.addMessage("system", msg.Err, "error")
+			return m, nil
+		}
+		m.historyLoadedAfterSeq = msg.NewLoadedAfterSeq
+		if len(msg.Messages) > 0 {
+			m.messages = prependReplayMessages(msg.Messages, m.messages)
+			m.syncVisiblePromptCount()
+			m.visiblePromptCount = expandVisiblePromptCount(m.visiblePromptCount, countUserPrompts(m.messages), chatPromptPageSize)
+		}
+		m.rowCache = nil
+		m.rowCacheSig = 0
 		return m, nil
 
 	case LoginResultMsg:
@@ -1803,6 +1819,8 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.pendingPrompt = ""
 		m.messages = nil
 		m.visiblePromptCount = 0
+		m.historyLoadedAfterSeq = 0
+		m.mainHistoryLoadedAfterSeq = 0
 		m.viewport.offset = 0
 		m.connStatus = ConnIdle
 		m.statusMsg = "ready"
@@ -2148,6 +2166,7 @@ func (m *AppModel) chatRowsSig() uint64 {
 		_, _ = h.Write([]byte{1})
 	}
 	_, _ = h.Write([]byte(strconv.Itoa(m.visiblePromptCount)))
+	_, _ = h.Write([]byte(strconv.FormatInt(m.historyLoadedAfterSeq, 10)))
 	return h.Sum64()
 }
 
@@ -2161,8 +2180,8 @@ func (m *AppModel) buildChatRows() []chatRow {
 		}
 	}
 	var rows []chatRow
-	if hidden := m.hiddenPromptCountBeforeWindow(); hidden > 0 {
-		label := loadEarlierPromptLabel(hidden)
+	if hidden := m.hiddenPromptCountBeforeWindow(); hidden > 0 || m.hasMoreHistoryOnServer() {
+		label := loadEarlierPromptLabel(hidden, m.hasMoreHistoryOnServer() && hidden == 0)
 		rows = append(rows, chatRow{
 			Text:        styleLink.Render(label),
 			LoadEarlier: true,

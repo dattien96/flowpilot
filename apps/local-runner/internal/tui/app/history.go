@@ -22,9 +22,17 @@ type ChatListMsg struct {
 
 // ChatOpenedMsg carries a resumed chat with replayed transcript.
 type ChatOpenedMsg struct {
-	Handle   client.RunHandle
-	Messages []ChatMessage
-	Err      string
+	Handle                client.RunHandle
+	Messages              []ChatMessage
+	HistoryLoadedAfterSeq int64 // events with seq <= this are not yet loaded; 0 = full history
+	Err                   string
+}
+
+// HistoryChunkMsg carries an older SSE chunk prepended on Load earlier (Task-290 Q-1).
+type HistoryChunkMsg struct {
+	Messages          []ChatMessage
+	NewLoadedAfterSeq int64
+	Err               string
 }
 
 // filterParentHistory keeps top-level runs (no parent) for the switcher list.
@@ -263,23 +271,18 @@ func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
 		if err != nil {
 			return ChatOpenedMsg{Err: formatOpenChatErrDetailed(err, chatProvider, activeLabel)}
 		}
-		// Replay from seq 0 through lastEventSeq (Task-287 T-5), then interactive.
+		// Tail replay through lastEventSeq (Task-290 Q-1); older chunks on Load earlier.
 		until := handle.LastEventSeq
+		after := chatReplayTailAfterSeq(until)
 		var collected []client.ProviderEvent
 		if until > 0 {
-			for ev := range cl.StreamRun(ctx, runID, 0) {
-				collected = append(collected, ev)
-				if ev.Seq >= until {
-					cancel()
-					break
-				}
-				if len(collected) >= 8000 {
-					cancel()
-					break
-				}
-			}
+			collected = collectReplayEvents(cl, ctx, runID, after, until, chatReplayMaxEvents)
 		}
-		msgs := replayHistoryMessages(collected)
-		return ChatOpenedMsg{Handle: handle, Messages: msgs}
+		msgs := replayHistoryMessages(trimEventsFromTurnStart(collected))
+		return ChatOpenedMsg{
+			Handle:                handle,
+			Messages:              msgs,
+			HistoryLoadedAfterSeq: after,
+		}
 	}
 }

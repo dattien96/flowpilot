@@ -165,7 +165,7 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 			return m, m.cmdCopyMessage(idx)
 		}
 	case target == "load-earlier":
-		m.loadEarlierPrompts()
+		return m, m.loadEarlierPrompts()
 	}
 	return m, nil
 }
