@@ -2,9 +2,11 @@ package app
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/prefs"
@@ -258,10 +260,24 @@ func formatAccountLimits(acc *client.ProviderAccountSummary) string {
 	}
 	var parts []string
 	if acc.Remaining5hPercent != nil {
-		parts = append(parts, fmt.Sprintf("5h:%d%%", *acc.Remaining5hPercent))
+		parts = append(parts, formatQuotaChip("5h", *acc.Remaining5hPercent, acc.Remaining5hResetAt))
 	}
 	if acc.Remaining7dPercent != nil {
-		parts = append(parts, fmt.Sprintf("7d:%d%%", *acc.Remaining7dPercent))
+		parts = append(parts, formatQuotaChip("7d", *acc.Remaining7dPercent, acc.Remaining7dResetAt))
+	}
+	if len(parts) == 0 {
+		for _, line := range acc.UsageDetailLines {
+			label := strings.TrimSpace(line.Label)
+			if label == "" {
+				continue
+			}
+			reset := strings.TrimSpace(line.ResetAt)
+			var resetPtr *string
+			if reset != "" {
+				resetPtr = &reset
+			}
+			parts = append(parts, formatQuotaChip(label, line.RemainingPercent, resetPtr))
+		}
 	}
 	if len(parts) == 0 && acc.UsageSummary != nil && strings.TrimSpace(*acc.UsageSummary) != "" {
 		return strings.TrimSpace(*acc.UsageSummary)
@@ -269,8 +285,44 @@ func formatAccountLimits(acc *client.ProviderAccountSummary) string {
 	return strings.Join(parts, " ")
 }
 
+func formatQuotaChip(label string, pct int, resetAt *string) string {
+	chip := fmt.Sprintf("%s:%d%%", label, pct)
+	if resetAt == nil {
+		return chip
+	}
+	if when := formatQuotaResetAt(*resetAt); when != "" {
+		return chip + " · resets " + when
+	}
+	return chip
+}
+
+func formatQuotaResetAt(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		parsed, err = time.Parse(time.RFC3339Nano, raw)
+	}
+	if err != nil {
+		return ""
+	}
+	return parsed.Local().Format("Jan 2, 15:04")
+}
+
+func formatHistoryChangedAt(it client.RunHistoryItem) string {
+	if when := formatQuotaResetAt(it.UpdatedAt); when != "" {
+		return when
+	}
+	return formatQuotaResetAt(it.StartedAt)
+}
+
 func formatContextLimits(usage *client.TokenUsageSnapshot, fallbackWindow int64) string {
 	if usage == nil {
+		if fallbackWindow > 0 {
+			return fmt.Sprintf("ctx %s window", formatTokenCount(fallbackWindow))
+		}
 		return ""
 	}
 	var window int64
@@ -286,6 +338,9 @@ func formatContextLimits(usage *client.TokenUsageSnapshot, fallbackWindow int64)
 		used = usage.Last.TotalTokens
 	}
 	if window <= 0 && (usage.Last == nil || usage.Last.TotalTokens <= 0) {
+		if usage.Total != nil && usage.Total.TotalTokens > 0 {
+			return fmt.Sprintf("total %s", formatTokenCount(usage.Total.TotalTokens))
+		}
 		return ""
 	}
 	if window > 0 {
@@ -293,10 +348,28 @@ func formatContextLimits(usage *client.TokenUsageSnapshot, fallbackWindow int64)
 		if left < 0 {
 			left = 0
 		}
-		return fmt.Sprintf("ctx %s/%s (%s left)", formatTokenCount(used), formatTokenCount(window), formatTokenCount(left))
+		remainPct := contextRemainingPercent(used, window)
+		line := fmt.Sprintf("ctx %d%% remain · %s/%s (%s left)", remainPct, formatTokenCount(used), formatTokenCount(window), formatTokenCount(left))
+		if inTok := contextInputTokens(usage); inTok > 0 {
+			line += fmt.Sprintf(" in:%s", formatTokenCount(inTok))
+		}
+		if usage.Last != nil && usage.Last.OutputTokens > 0 {
+			line += fmt.Sprintf(" out:%s", formatTokenCount(usage.Last.OutputTokens))
+		}
+		if usage.Last != nil && usage.Last.TotalTokens > 0 {
+			line += fmt.Sprintf(" · last %s", formatTokenCount(usage.Last.TotalTokens))
+		}
+		return line
 	}
 	if usage.Last != nil {
-		return fmt.Sprintf("last %s", formatTokenCount(usage.Last.TotalTokens))
+		line := fmt.Sprintf("last %s", formatTokenCount(usage.Last.TotalTokens))
+		if inTok := contextInputTokens(usage); inTok > 0 {
+			line += fmt.Sprintf(" in:%s", formatTokenCount(inTok))
+		}
+		if usage.Last.OutputTokens > 0 {
+			line += fmt.Sprintf(" out:%s", formatTokenCount(usage.Last.OutputTokens))
+		}
+		return line
 	}
 	return ""
 }
@@ -306,6 +379,30 @@ func formatTokenCount(n int64) string {
 		return fmt.Sprintf("%.1fk", float64(n)/1000)
 	}
 	return fmt.Sprintf("%d", n)
+}
+
+func contextRemainingPercent(used, window int64) int {
+	if window <= 0 {
+		return 0
+	}
+	left := window - used
+	if left < 0 {
+		left = 0
+	}
+	return int(math.Round(float64(left) * 100 / float64(window)))
+}
+
+func contextInputTokens(usage *client.TokenUsageSnapshot) int64 {
+	if usage == nil {
+		return 0
+	}
+	if usage.Last != nil && usage.Last.InputTokens > 0 {
+		return usage.Last.InputTokens
+	}
+	if usage.Total != nil {
+		return usage.Total.InputTokens
+	}
+	return 0
 }
 
 func contextWindowForModel(providers []client.Provider, providerKey, modelID string) int64 {
@@ -716,7 +813,11 @@ func filterHistorySuggestions(input string, items []client.RunHistoryItem) []sug
 			r := []rune(title)
 			title = string(r[:39]) + "…"
 		}
-		detail := fmt.Sprintf("#%d · %s · %s · %s", i+1, kind, it.Status, title)
+		when := formatHistoryChangedAt(it)
+		if when == "" {
+			when = "—"
+		}
+		detail := fmt.Sprintf("#%d · %s · %s · %s · %s", i+1, kind, it.Status, when, title)
 		out = append(out, suggestItem{value: id, detail: detail, kind: "history", slash: cmd})
 	}
 	return out

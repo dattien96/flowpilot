@@ -194,6 +194,9 @@ func (m *AppModel) sessionDisplayLine() string {
 	if acc := m.activeProviderAccountLabel(); acc != "" {
 		display = fmt.Sprintf("%s (%s)", display, acc)
 	}
+	if lim := formatAccountLimits(m.account); lim != "" {
+		display = fmt.Sprintf("%s · %s", display, lim)
+	}
 	return display
 }
 
