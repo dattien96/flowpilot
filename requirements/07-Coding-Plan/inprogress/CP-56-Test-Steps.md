@@ -9,9 +9,9 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-12`
-- Last Updated: `2026-08-13` (added Task-289 P-8b markdown signatures)
+- Last Updated: `2026-08-13` (added Task-290 P-8c + Task-291 YOLO write signatures)
 - Parent Documents: [CP-56: Terminal TUI Chat And Flow Client](./CP-56-Terminal-TUI-Chat-And-Flow-Client.md)
-- Child Documents: Task-278 … Task-289 (see CP-56 §11)
+- Child Documents: Task-278 … Task-291 (see CP-56 §11)
 - Related Documents: [04-02 Runner Contracts](../../10-Refactor/New-System/04-02-Phase2-Runner-Contracts-And-APIs.md)
 - Replaces: `None`
 - Tags: `cli-tui, testing, verification`
@@ -23,7 +23,7 @@
 
 ### Summary
 
-- Machine-checkable test signatures and manual acceptance steps for CP-56 phases P-0–P-9 plus P-8b.
+- Machine-checkable test signatures and manual acceptance steps for CP-56 phases P-0–P-9 plus P-8b/P-8c and P-2 residual Task-291.
 - Prefer fake HTTP servers for unit/integration; live runner only for manual DOD rows.
 - Additive tests only; runner/desktop suites must stay green without edits.
 
@@ -233,6 +233,25 @@ Define machine-checkable signatures, live acceptance steps, and evidence require
 | A8.13 | `TestChatRows_ScrollDoesNotIncrementMarkdownParseCount` | `internal/tui/app` | ☑ |
 | A8.14 | `TestCopyChip_StillCopiesRawMarkdownSource` | `internal/tui/app` | ☑ |
 | A8.15 | `TestRenderMarkdown_HugeFenceIsBounded` | `internal/tui/app` | ☑ |
+
+### P-8c — Long-chat load-earlier windowing (Task-290)
+
+| ID | Signature | Package | Status |
+|---|---|---|---|
+| A8.16 | `TestChatWindow_ShowsNewestSixPromptGroups` | `internal/tui/app` | ☐ |
+| A8.17 | `TestChatWindow_LoadEarlierRevealsPreviousPage` | `internal/tui/app` | ☐ |
+| A8.18 | `TestChatWindow_PendingGateStaysVisible` | `internal/tui/app` | ☐ |
+| A8.19 | `TestChatWindow_NewResetsWindow` | `internal/tui/app` | ☐ |
+
+### P-2 residual — Chat YOLO=on ordinary write (Task-291)
+
+| ID | Signature | Package | Status |
+|---|---|---|---|
+| A2.10 | `TestChatYoloOn_OrdinaryWriteDoesNotPrompt_Claude` | `internal/runner` or `internal/tui/app` | ☐ |
+| A2.11 | `TestChatYoloOn_OrdinaryWriteDoesNotPrompt_Codex` | `internal/runner` or `internal/tui/app` | ☐ |
+| A2.12 | `TestChatYoloOn_OrdinaryWriteDoesNotPrompt_Grok` | `internal/runner` or `internal/tui/app` | ☐ |
+| A2.13 | `TestChatYoloOff_OrdinaryWriteStillGates` | `internal/runner` | ☐ |
+| A2.14 | `TestChatYoloOn_AskUserStillPrompts` | `internal/runner` | ☐ |
 
 ### P-9 — Boundary
 
