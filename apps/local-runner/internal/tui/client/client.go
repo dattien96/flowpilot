@@ -56,6 +56,7 @@ type ProviderAccountSummary struct {
 	ID                 string  `json:"id"`
 	ProviderKey        string  `json:"provider_key"`
 	DisplayLabel       string  `json:"display_label"`
+	HomePath           string  `json:"home_path"`
 	IsActive           bool    `json:"is_active"`
 	AuthStatus         string  `json:"auth_status"`
 	UsageSummary       *string `json:"usage_summary"`
@@ -363,6 +364,30 @@ func (c *Client) ListProviderAccounts(ctx context.Context) ([]ProviderAccountSum
 	var accounts []ProviderAccountSummary
 	err := c.getJSON(ctx, "/client/provider-accounts", &accounts)
 	return accounts, err
+}
+
+// ActivateProviderAccount calls POST /provider-accounts/activate to switch the active account for a provider.
+func (c *Client) ActivateProviderAccount(ctx context.Context, accountID string) (*ProviderAccountSummary, error) {
+	var wrap struct {
+		Account struct {
+			ProviderAccountSummary
+			DisplayName string `json:"display_name"`
+		} `json:"account"`
+	}
+	err := c.postJSON(ctx, "/provider-accounts/activate", map[string]any{
+		"accountId": strings.TrimSpace(accountID),
+	}, &wrap)
+	if err != nil {
+		return nil, err
+	}
+	acc := wrap.Account.ProviderAccountSummary
+	if strings.TrimSpace(acc.DisplayLabel) == "" {
+		acc.DisplayLabel = strings.TrimSpace(wrap.Account.DisplayName)
+	}
+	if strings.TrimSpace(acc.ID) == "" {
+		return nil, fmt.Errorf("activate returned empty account")
+	}
+	return &acc, nil
 }
 
 // ListProviders fetches GET /providers — returns all detected providers with their models.
