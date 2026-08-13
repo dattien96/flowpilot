@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -53,6 +54,9 @@ var (
 	styleSuggest     = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
 	styleSuggestSel  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)).Underline(true)
 	styleLoading     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorWarn)).Background(lipgloss.Color(colorBg3))
+	styleLink        = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color(colorAccent))
+	styleSelect      = lipgloss.NewStyle().Reverse(true)
+	styleThinking    = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color(colorTextDim))
 	// Active workflow step (Desktop timeline “current” accent).
 	styleStepRunning = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorWarn)).Background(lipgloss.Color(colorBg3))
 	styleStepDone    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOK))
@@ -93,7 +97,7 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 		connStatus:      ConnConnecting,
 		statusMsg:       "connecting...",
 		width:           80,
-		height:          32, // room for /help list + status/input without clipping top commands
+		height:          36, // room for /help + rounded input frame + chat/status pad
 		asciiMode:       isLegacyConsole(),
 	}
 	return m
@@ -150,6 +154,44 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			strings.Contains(errText, "dispatch_prepare_failed") {
 			m.runHandle = nil
 		}
+		return m, nil
+
+	case ApprovalResolvedMsg:
+		if m.approval != nil && (msg.ID == "" || m.approval.ID == msg.ID) {
+			m.approval = nil
+		}
+		m.connStatus = ConnRunning
+		m.statusMsg = "approved"
+		label := "Approved."
+		if strings.EqualFold(msg.Decision, "deny") {
+			label = "Denied."
+		}
+		m.addMessage("system", label, "")
+		return m, nil
+
+	case QuestionResolvedMsg:
+		if m.question != nil && (msg.ID == "" || m.question.ID == msg.ID) {
+			m.question = nil
+		}
+		m.connStatus = ConnRunning
+		m.statusMsg = "answered"
+		m.addMessage("system", "Answered: "+msg.Choice, "question")
+		return m, nil
+
+	case StoppedMsg:
+		m.clearThinkingPlaceholder()
+		m.pendingPrompt = ""
+		m.connStatus = ConnIdle
+		m.statusMsg = "stopped"
+		m.addMessage("system", "Stopped.", "")
+		return m, nil
+
+	case CopiedMsg:
+		if msg.Err != "" {
+			m.addMessage("system", "Copy failed: "+msg.Err, "error")
+			return m, nil
+		}
+		m.addMessage("system", "Copied "+msg.Kind+".", "")
 		return m, nil
 
 	case ConnectedMsg:
@@ -347,6 +389,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.approval = nil
 		m.question = nil
 		m.messages = nil
+		m.viewport.offset = 0
 		if len(msg.Messages) > 0 {
 			m.messages = append([]ChatMessage(nil), msg.Messages...)
 		}
@@ -703,7 +746,7 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 			if m.effectiveYolo() {
 				return m, m.cmdAutoApprove(ev.ApprovalID, ev.WorkflowRunID)
 			}
-			m.addMessage("system", fmt.Sprintf("[APPROVAL] %s — type /approve or /deny", ev.ApprovalID), "approval")
+			m.addMessage("system", fmt.Sprintf("[APPROVAL] %s — click Approve or Deny", ev.ApprovalID), "approval")
 		}
 
 	case "user_question_required":
@@ -720,14 +763,7 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 			}
 			m.connStatus = ConnWaiting
 			m.statusMsg = "question"
-			m.addMessage("system", fmt.Sprintf("[QUESTION] %s", ev.Prompt), "question")
-			if len(opts) > 0 {
-				var sb strings.Builder
-				for i, o := range opts {
-					sb.WriteString(fmt.Sprintf("  %d) %s\n", i+1, o["label"]))
-				}
-				m.addMessage("system", sb.String(), "")
-			}
+			m.addMessage("system", formatQuestionMessage(ev.Prompt, opts), "question")
 		}
 
 	case "flow_gate_violation":
@@ -770,7 +806,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Slash commands (starting with '/') stay available so /help /clear /login work.
 	if m.sessionLoading && !m.allowsKeyWhileLoading(msg) {
 		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEscape:
+		case tea.KeyCtrlC:
 			m.quitting = true
 			return m, m.cmdShutdownAndQuit()
 		default:
@@ -778,10 +814,15 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if m.authPhase == AuthNone && (isPromptNewlineKey(msg) || isModifiedEnterNewline(msg)) {
+		m.inputValue += "\n"
+		return m, nil
+	}
+
 	switch msg.Type {
 	case tea.KeyCtrlC:
-		if m.runHandle != nil {
-			_ = m.client.Interrupt(context.Background(), m.runHandle.RunID)
+		if m.turnIsActive() {
+			return m, m.cmdStopTurn()
 		}
 		m.quitting = true
 		return m, m.cmdShutdownAndQuit()
@@ -819,11 +860,19 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.addMessage("system", "Login cancelled.", "")
 			return m, nil
 		}
-		if m.runHandle != nil {
-			_ = m.client.Interrupt(context.Background(), m.runHandle.RunID)
+		if !m.mouseSel.empty() {
+			m.mouseSel = mouseSelect{}
+			m.statusMsg = "selection cleared"
+			return m, nil
 		}
-		m.quitting = true
-		return m, m.cmdShutdownAndQuit()
+		if m.inputValue != "" {
+			m.inputValue = ""
+			m.suggIdx = 0
+			m.statusMsg = "prompt cleared"
+			return m, nil
+		}
+		m.statusMsg = "Ctrl-C or /exit to quit"
+		return m, nil
 
 	case tea.KeyTab:
 		if m.authPhase != AuthNone {
@@ -853,6 +902,8 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.suggIdx = (m.suggIdx - 1 + n) % n
 				return m, nil
 			}
+			m.scrollTranscript(1)
+			return m, nil
 		}
 
 	case tea.KeyDown:
@@ -861,6 +912,20 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.suggIdx = (m.suggIdx + 1) % n
 				return m, nil
 			}
+			m.scrollTranscript(-1)
+			return m, nil
+		}
+
+	case tea.KeyPgUp:
+		if m.authPhase == AuthNone {
+			m.scrollTranscript(m.pageScrollAmount())
+			return m, nil
+		}
+
+	case tea.KeyPgDown:
+		if m.authPhase == AuthNone {
+			m.scrollTranscript(-m.pageScrollAmount())
+			return m, nil
 		}
 
 	case tea.KeyEnter:
@@ -909,8 +974,10 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// In-progress turn: keep the draft next question; Enter does nothing.
 		if m.sendBlocked() && !strings.HasPrefix(input, "/") && m.authPhase == AuthNone {
-			m.statusMsg = "in progress — Enter disabled (keep typing)"
-			return m, nil
+			if m.approval == nil || !isApprovalDecisionInput(input) {
+				m.statusMsg = "in progress — Enter disabled (keep typing)"
+				return m, nil
+			}
 		}
 		m.inputValue = ""
 		// Bare "/" with no suggestion rows left → help.
@@ -1118,16 +1185,35 @@ func (m *AppModel) allowsKeyWhileLoading(msg tea.KeyMsg) bool {
 }
 
 // sendBlocked is true while a start/turn is in flight (chat Enter must not send).
-// Gate/approval/question answers remain allowed.
+// Gate/question answers remain allowed. Pending approval blocks chat turns
+// (those 409) — use /approve, /deny, or the clickable chips.
 func (m *AppModel) sendBlocked() bool {
-	if m.gate != nil || m.question != nil || m.approval != nil {
+	if m.gate != nil || m.question != nil {
 		return false
+	}
+	if m.approval != nil {
+		return true
 	}
 	if m.pendingPrompt != "" {
 		return true
 	}
 	switch m.connStatus {
 	case ConnRunning, ConnWaiting:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *AppModel) turnIsActive() bool {
+	if m.pendingPrompt != "" {
+		return true
+	}
+	if m.runHandle == nil {
+		return false
+	}
+	switch m.connStatus {
+	case ConnRunning, ConnWaiting, ConnConnecting:
 		return true
 	default:
 		return false
@@ -1164,6 +1250,18 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 		return m.handleSlashCommand(input)
 	}
 
+	if m.approval != nil {
+		if isApprovalDecisionInput(input) {
+			return m.submitPendingApproval(approvalDecisionOf(input))
+		}
+		m.addMessage("system", "Pending approval — click Approve or Deny (or type them).", "approval")
+		return m, nil
+	}
+
+	if m.question != nil {
+		return m.submitQuestionAnswer(input)
+	}
+
 	// Gate blocked loop: if gate is active, input is treated as a gate decision.
 	if m.gate != nil {
 		return m.handleGateInput(input)
@@ -1185,9 +1283,11 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	m.viewport.offset = 0
 	m.addMessage("user", input, "")
+	m.addMessage("assistant", "thinking…", "thinking")
 	m.connStatus = ConnRunning
-	m.statusMsg = "sending..."
+	m.statusMsg = "thinking…"
 
 	// First message: start run, then send turn (desktop sendPrompt parity).
 	if m.runHandle == nil {
@@ -1300,6 +1400,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 
 	case "/clear":
 		m.messages = nil
+		m.viewport.offset = 0
 		m.addMessage("system", "Conversation cleared.", "")
 
 	case "/exit", "/quit":
@@ -1592,7 +1693,11 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			}
 			m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 			persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
-			m.addMessage("system", fmt.Sprintf("Model set to: %s (saved for next TUI /new)", m.model), "")
+			if strings.EqualFold(m.provider, "grok") {
+				m.addMessage("system", fmt.Sprintf("Model set to: %s (next prompt uses this model; Grok starts a new provider session)", m.model), "")
+			} else {
+				m.addMessage("system", fmt.Sprintf("Model set to: %s (next prompt uses this model)", m.model), "")
+			}
 			m.refreshSessionPanel()
 		}
 
@@ -1622,6 +1727,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.stepID = ""
 		m.pendingPrompt = ""
 		m.messages = nil
+		m.viewport.offset = 0
 		m.connStatus = ConnIdle
 		m.statusMsg = "ready"
 		m.selectedSkills = nil
@@ -1709,19 +1815,35 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 
 	case "/approve":
 		if m.approval != nil {
-			id := m.approval.ID
-			m.approval = nil
-			return m, m.cmdApprove(id, "approve")
+			return m.submitPendingApproval("approve")
+		}
+		if m.question != nil {
+			return m.submitQuestionAnswer("approve")
 		}
 		m.addMessage("system", "No pending approval.", "")
 
 	case "/deny":
 		if m.approval != nil {
-			id := m.approval.ID
-			m.approval = nil
-			return m, m.cmdApprove(id, "deny")
+			return m.submitPendingApproval("deny")
+		}
+		if m.question != nil {
+			return m.submitQuestionAnswer("deny")
 		}
 		m.addMessage("system", "No pending approval.", "")
+
+	case "/stop":
+		if !m.turnIsActive() {
+			m.addMessage("system", "Nothing to stop.", "")
+			break
+		}
+		return m, m.cmdStopTurn()
+
+	case "/copy":
+		kind := "answer"
+		if len(args) > 0 {
+			kind = strings.ToLower(args[0])
+		}
+		return m, m.cmdCopyKind(kind)
 
 	default:
 		m.addMessage("system", fmt.Sprintf("Unknown command: %s. Type /help for list.", cmd), "error")
@@ -1746,8 +1868,10 @@ func (m *AppModel) View() string {
 	}
 
 	lines := m.renderMessages()
-	if len(lines) > c.messagesHeight {
-		lines = lines[len(lines)-c.messagesHeight:]
+	m.clampViewport(len(lines), c.messagesHeight)
+	lines = sliceViewport(lines, c.messagesHeight, m.viewport.offset)
+	if !m.mouseSel.empty() {
+		lines = applyMouseSelection(lines, m.mouseSel, c.panelH)
 	}
 	for _, l := range lines {
 		sb.WriteString(l)
@@ -1771,6 +1895,17 @@ func (m *AppModel) View() string {
 		sb.WriteString(styleError.Render(banner))
 		sb.WriteString("\n")
 	}
+	sb.WriteString("\n")
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	if m.asciiMode {
+		sb.WriteString(strings.Repeat("-", w))
+	} else {
+		sb.WriteString(strings.Repeat("─", w))
+	}
+	sb.WriteString("\n")
 	sb.WriteString(c.statusBlock)
 	sb.WriteString("\n")
 	if len(c.sugg) > 0 {
@@ -1891,31 +2026,79 @@ func formatMissingProjectHelp(path string, projects []client.Project) string {
 }
 
 func (m *AppModel) renderMessages() []string {
+	rows := m.chatRows()
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.Text
+	}
+	return out
+}
+
+type chatRow struct {
+	Text   string
+	MsgIdx int
+	Copy   bool
+}
+
+func (m *AppModel) chatRows() []chatRow {
+	sig := m.chatRowsSig()
+	if m.rowCache != nil && m.rowCacheSig == sig {
+		return m.rowCache
+	}
+	rows := m.buildChatRows()
+	if rows == nil {
+		rows = []chatRow{}
+	}
+	m.rowCache = rows
+	m.rowCacheSig = sig
+	return rows
+}
+
+func (m *AppModel) chatRowsSig() uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(strconv.Itoa(m.width)))
+	if m.asciiMode {
+		_, _ = h.Write([]byte{1})
+	}
+	for _, msg := range m.messages {
+		_, _ = h.Write([]byte(msg.Role))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(msg.Content))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(msg.FormatHint))
+		_, _ = h.Write([]byte{1})
+	}
+	return h.Sum64()
+}
+
+func (m *AppModel) buildChatRows() []chatRow {
 	width := m.width
 	if width < 20 {
 		width = 80
 	}
-	var lines []string
-	for _, msg := range m.messages {
+	var rows []chatRow
+	for mi, msg := range m.messages {
 		prefix := ""
 		prefixStyle := styleSystem
 		style := styleSystem
 		rightAlign := false
 		switch msg.Role {
 		case "user":
-			prefix = "You: "
 			prefixStyle = styleUserLabel
 			style = styleUser
 			rightAlign = true
 		case "assistant":
 			style = styleAssistant
+			if msg.FormatHint == "thinking" {
+				style = styleThinking
+			}
 		case "tool":
 			style = styleTool
 		case "system":
 			switch msg.FormatHint {
 			case "error":
 				style = styleError
-			case "gate":
+			case "gate", "approval":
 				style = styleGate
 			case "steps":
 				style = styleSystem
@@ -1924,10 +2107,8 @@ func (m *AppModel) renderMessages() []string {
 			}
 			prefixStyle = style
 		}
-		// Wrap plain text first (ANSI from lipgloss must not be mid-wrapped).
 		contentWidth := width
 		if rightAlign {
-			// User bubbles sit on the right (~70% width) to contrast AI on the left.
 			contentWidth = width * 7 / 10
 			if contentWidth < 16 {
 				contentWidth = width
@@ -1945,28 +2126,138 @@ func (m *AppModel) renderMessages() []string {
 				prefix = ""
 			}
 		}
+		showCopy := (msg.Role == "user" || msg.Role == "assistant") && msg.FormatHint != "thinking" && strings.TrimSpace(msg.Content) != ""
+		boxed := msg.Role == "user" || (msg.Role == "assistant" && msg.FormatHint == "")
+		if showCopy && boxed {
+			contentWidth -= len([]rune(copyChip))
+			if contentWidth < 8 {
+				contentWidth = 8
+			}
+		}
+		if boxed {
+			contentWidth -= 4
+			if contentWidth < 8 {
+				contentWidth = 8
+			}
+		}
 		wrapped := wrapText(msg.Content, contentWidth)
+		wrapped = trimEmptyEdges(wrapped)
+		var msgRows []chatRow
 		for i, line := range wrapped {
 			lineStyle := style
 			if msg.FormatHint == "steps" {
 				lineStyle = styleForStepBannerLine(line)
 			}
 			var rendered string
-			if i == 0 && prefix != "" {
-				rendered = prefixStyle.Render(prefix) + lineStyle.Render(line)
+			if msg.FormatHint == "approval" {
+				rendered = renderApprovalText(line)
+			} else if msg.FormatHint == "question" {
+				rendered = renderQuestionText(line)
+			} else if i == 0 && prefix != "" {
+				rendered = prefixStyle.Render(prefix) + lineStyle.Render(stripANSI(line))
 			} else if prefix != "" {
 				pad := strings.Repeat(" ", len([]rune(prefix)))
-				rendered = pad + lineStyle.Render(line)
+				rendered = pad + lineStyle.Render(stripANSI(line))
 			} else {
-				rendered = lineStyle.Render(line)
+				rendered = lineStyle.Render(stripANSI(line))
 			}
-			if rightAlign {
+			copyOn := showCopy && boxed && i == len(wrapped)-1
+			if rightAlign && !boxed {
 				rendered = rightAlignPlain(rendered, width)
 			}
-			lines = append(lines, rendered)
+			msgRows = append(msgRows, chatRow{Text: rendered, MsgIdx: mi, Copy: copyOn})
+		}
+		if boxed {
+			msgRows = strokeChatRows(msgRows, width, msg.Role == "user", m.asciiMode)
+		} else if showCopy {
+			msgRows = append(msgRows, chatRow{Text: styleLink.Render(copyChip), MsgIdx: mi, Copy: true})
+		}
+		if mi > 0 {
+			rows = append(rows, chatRow{}, chatRow{})
+		}
+		rows = append(rows, msgRows...)
+	}
+	return rows
+}
+
+func renderApprovalText(line string) string {
+	stripped := stripANSI(line)
+	var b strings.Builder
+	rest := stripped
+	for {
+		next, token := nextHighlightToken(rest, []string{"/approve", "/deny", "Approve", "Deny"})
+		if next < 0 {
+			b.WriteString(styleGate.Render(rest))
+			return b.String()
+		}
+		b.WriteString(styleGate.Render(rest[:next]))
+		b.WriteString(styleLink.Render(token))
+		rest = rest[next+len(token):]
+	}
+}
+
+func renderQuestionText(line string) string {
+	stripped := stripANSI(line)
+	var b strings.Builder
+	rest := stripped
+	tokens := []string{"/approve", "/deny", "Approve", "Deny"}
+	for i := 1; i <= 9; i++ {
+		tokens = append(tokens, strconv.Itoa(i)+")")
+	}
+	for {
+		next, token := nextHighlightToken(rest, tokens)
+		if next < 0 {
+			b.WriteString(styleGate.Render(rest))
+			return b.String()
+		}
+		b.WriteString(styleGate.Render(rest[:next]))
+		b.WriteString(styleLink.Render(token))
+		rest = rest[next+len(token):]
+	}
+}
+
+func nextHighlightToken(s string, tokens []string) (int, string) {
+	best, tok := -1, ""
+	for _, t := range tokens {
+		i := strings.Index(s, t)
+		if i < 0 {
+			continue
+		}
+		if best < 0 || i < best || (i == best && len(t) > len(tok)) {
+			best, tok = i, t
 		}
 	}
-	return lines
+	return best, tok
+}
+
+func renderQuestionBar(left, mid string, q *QuestionState, width int) string {
+	var b strings.Builder
+	b.WriteString(left)
+	b.WriteString(" ")
+	b.WriteString(styleGate.Render("question"))
+	b.WriteString(" ")
+	b.WriteString(mid)
+	b.WriteString(" ")
+	for i, o := range q.Options {
+		if i > 0 {
+			b.WriteString("  ")
+		}
+		b.WriteString(styleLink.Render(strconv.Itoa(i+1) + ")"))
+		b.WriteString(" ")
+		b.WriteString(styleLink.Render(questionOptionLabel(o)))
+	}
+	if len(q.Options) == 0 {
+		b.WriteString(styleSystem.Render("type an answer"))
+	} else {
+		b.WriteString("  ")
+		b.WriteString(styleSystem.Render("click or type"))
+	}
+	line := b.String()
+	plain := stripANSI(line)
+	if width > 1 && len([]rune(plain)) > width {
+		return styleGate.Render(fitStatusWidth(plain, width))
+	}
+	return line
 }
 
 func styleForStepBannerLine(line string) lipgloss.Style {
@@ -1997,6 +2288,15 @@ func (m *AppModel) renderStatusLine() string {
 	}
 
 	var parts []string
+
+	// Remaining quota first so width truncation cannot drop it (Desktop
+	// accounts panel always shows the meter; TUI used to hide 7d: behind YOLO).
+	if lim := formatAccountLimits(m.account); lim != "" {
+		parts = append(parts, lim)
+	}
+	if m.turnIsActive() {
+		parts = append(parts, styleError.Render("[stop]"))
+	}
 
 	// Input already labels chat mode ("chat" / "next"). Only show [flow]/[step].
 	if m.mode != ModeChat {
@@ -2038,11 +2338,6 @@ func (m *AppModel) renderStatusLine() string {
 	// Always show YOLO; flow/step arms force ON (chat toggle only).
 	parts = append(parts, m.yoloStatusLabel())
 
-	// Account rate-limit remaining (desktop parity).
-	if lim := formatAccountLimits(m.account); lim != "" {
-		parts = append(parts, lim)
-	}
-
 	// Focused agent indicator.
 	if m.agentsFocus && len(m.agentRuns) > 0 {
 		var agentName string
@@ -2059,10 +2354,8 @@ func (m *AppModel) renderStatusLine() string {
 		parts = append(parts, styleStepRunning.Render("▶ "+name))
 	}
 
-	// Context window remaining + last turn (desktop ChatInput parity).
-	if ctxLine := formatContextLimits(m.lastTokens, m.modelContextWin); ctxLine != "" {
-		parts = append(parts, ctxLine)
-	}
+	// Token/context usage is a dedicated row (Desktop ChatInput). Putting it
+	// on line 1 lets the width trim drop it behind YOLO/provider.
 
 	// Supabase identity stays out of the statusline; only warn when signed out.
 	if m.authNeedLogin {
@@ -2115,33 +2408,35 @@ func (m *AppModel) renderStatusLine() string {
 		names := attachedSkillNames(m.selectedSkills)
 		extra = formatAttachedSkillsExpanded(names, w)
 	}
-	line2Str := m.projectStatusLabel()
-	if len([]rune(line2Str)) > w {
-		r := []rune(line2Str)
-		if w > 1 {
-			line2Str = string(r[:w-1]) + "…"
-		} else {
-			line2Str = string(r[:w])
-		}
-	}
+	line2Str := fitStatusWidth(m.projectStatusLabel(), w)
 	line2 := styleStatus.Render(line2Str)
 	var b strings.Builder
 	b.WriteString(line1)
 	for _, line := range extra {
-		if len([]rune(line)) > w {
-			r := []rune(line)
-			if w > 1 {
-				line = string(r[:w-1]) + "…"
-			} else {
-				line = string(r[:w])
-			}
-		}
 		b.WriteString("\n")
-		b.WriteString(styleStatus.Render(line))
+		b.WriteString(styleStatus.Render(fitStatusWidth(line, w)))
 	}
 	b.WriteString("\n")
 	b.WriteString(line2)
+	if usage := formatContextLimits(m.lastTokens, m.modelContextWin); usage != "" {
+		b.WriteString("\n")
+		b.WriteString(styleStatus.Render(fitStatusWidth(usage, w)))
+	}
 	return b.String()
+}
+
+func fitStatusWidth(s string, w int) string {
+	if w <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= w {
+		return s
+	}
+	if w > 1 {
+		return string(r[:w-1]) + "…"
+	}
+	return string(r[:w])
 }
 
 func (m *AppModel) renderInputLine() string {
@@ -2185,24 +2480,51 @@ func (m *AppModel) renderInputLine() string {
 			caret = styleCursor.Render("▌")
 		}
 	}
-	// Stroke frame (┃ label │ text) — no full-width background wash.
 	left := styleInputStroke.Render("┃")
 	mid := styleInputStroke.Render("│")
-	label := stylePromptFocus.Render(strings.TrimSpace(prefix))
-	attach := ""
+	label := strings.TrimSpace(prefix)
+	attach := styleLink.Render("[+img] ")
 	if n := len(m.pendingAttach); n > 0 {
 		attach = stylePromptFocus.Render(fmt.Sprintf("[%d img] ", n))
 	}
-	fixedWidth := len([]rune(prefix)) + len([]rune(attach)) + 6
+	fixedWidth := len([]rune(prefix)) + lipgloss.Width(stripANSI(attach)) + 8
 	availWidth := w - fixedWidth
 	if availWidth < 5 {
 		availWidth = 5
 	}
-	bodyRunes := []rune(body)
-	if len(bodyRunes) > availWidth {
-		body = string(bodyRunes[len(bodyRunes)-availWidth:])
+
+	bodyLines := strings.Split(body, "\n")
+	const maxVis = 6
+	if len(bodyLines) > maxVis {
+		bodyLines = bodyLines[len(bodyLines)-maxVis:]
 	}
-	return left + " " + label + " " + mid + " " + attach + styleInputFocus.Render(body+caret)
+
+	var inner []string
+	if m.approval != nil {
+		inner = append(inner, styleGate.Render("approval")+"  "+
+			styleLink.Render("Approve")+"  "+styleLink.Render("Deny")+"  "+
+			styleSystem.Render("click or type"))
+	}
+	if m.question != nil {
+		inner = append(inner, renderQuestionBar(left, mid, m.question, w-4))
+	}
+	for i, bl := range bodyLines {
+		runes := []rune(bl)
+		if len(runes) > availWidth {
+			bl = string(runes[len(runes)-availWidth:])
+		}
+		lineCaret := ""
+		if i == len(bodyLines)-1 {
+			lineCaret = caret
+		}
+		if i == 0 {
+			inner = append(inner, attach+styleInputFocus.Render(bl+lineCaret))
+		} else {
+			inner = append(inner, styleInputFocus.Render(bl+lineCaret))
+		}
+	}
+	footer := strings.TrimSpace(m.model)
+	return frameInput(inner, w, label, footer, m.asciiMode)
 }
 
 // ---- Helpers ----------------------------------------------------------------
@@ -2217,10 +2539,16 @@ func (m *AppModel) addMessage(role, content, hint string) {
 
 func (m *AppModel) appendAssistantDelta(text string) {
 	if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == "assistant" {
-		m.messages[len(m.messages)-1].Content += text
-	} else {
-		m.addMessage("assistant", text, "")
+		last := &m.messages[len(m.messages)-1]
+		if last.FormatHint == "thinking" {
+			last.Content = text
+			last.FormatHint = ""
+			return
+		}
+		last.Content += text
+		return
 	}
+	m.addMessage("assistant", text, "")
 }
 
 func (m *AppModel) ensureAssistantMessage(text string) {
@@ -2228,11 +2556,23 @@ func (m *AppModel) ensureAssistantMessage(text string) {
 		return
 	}
 	if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == "assistant" {
-		if m.messages[len(m.messages)-1].Content == "" {
-			m.messages[len(m.messages)-1].Content = text
+		last := &m.messages[len(m.messages)-1]
+		if last.FormatHint == "thinking" || last.Content == "" {
+			last.Content = text
+			last.FormatHint = ""
 		}
 	} else if text != "" {
 		m.addMessage("assistant", text, "")
+	}
+}
+
+func (m *AppModel) clearThinkingPlaceholder() {
+	if len(m.messages) == 0 {
+		return
+	}
+	last := m.messages[len(m.messages)-1]
+	if last.Role == "assistant" && last.FormatHint == "thinking" {
+		m.messages = m.messages[:len(m.messages)-1]
 	}
 }
 
@@ -2242,7 +2582,7 @@ func (m *AppModel) hasAssistantContent() bool {
 
 func (m *AppModel) lastAssistantText() string {
 	for i := len(m.messages) - 1; i >= 0; i-- {
-		if m.messages[i].Role == "assistant" {
+		if m.messages[i].Role == "assistant" && m.messages[i].FormatHint != "thinking" {
 			return m.messages[i].Content
 		}
 	}
@@ -2628,24 +2968,85 @@ func (m *AppModel) cmdStreamHeadless(runID string, afterSeq int64) tea.Cmd {
 }
 
 func (m *AppModel) cmdAutoApprove(approvalID, runID string) tea.Cmd {
-	runnerURL := m.runnerURL
-	return func() tea.Msg {
-		cl := client.New(runnerURL)
-		if err := cl.SubmitApproval(context.Background(), approvalID, "approve", false); err != nil {
-			return ErrMsg{Err: err}
-		}
-		return nil
+	return m.cmdApprove(approvalID, "approve")
+}
+
+func (m *AppModel) submitPendingApproval(decision string) (tea.Model, tea.Cmd) {
+	if m.approval == nil {
+		m.addMessage("system", "No pending approval.", "")
+		return m, nil
 	}
+	return m, m.cmdApprove(m.approval.ID, decision)
 }
 
 func (m *AppModel) cmdApprove(approvalID, decision string) tea.Cmd {
 	runnerURL := m.runnerURL
+	id := approvalID
+	dec := decision
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
-		if err := cl.SubmitApproval(context.Background(), approvalID, decision, false); err != nil {
+		if err := cl.SubmitApproval(context.Background(), id, dec, false); err != nil {
 			return ErrMsg{Err: err}
 		}
-		return nil
+		return ApprovalResolvedMsg{ID: id, Decision: dec}
+	}
+}
+
+func (m *AppModel) cmdStopTurn() tea.Cmd {
+	if m.runHandle == nil {
+		return func() tea.Msg { return StoppedMsg{} }
+	}
+	runnerURL := m.runnerURL
+	runID := m.runHandle.RunID
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		if err := cl.Interrupt(context.Background(), runID); err != nil {
+			return ErrMsg{Err: err}
+		}
+		return StoppedMsg{}
+	}
+}
+
+func (m *AppModel) cmdCopyKind(kind string) tea.Cmd {
+	idx := -1
+	wantUser := kind == "prompt" || kind == "user"
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		msg := m.messages[i]
+		if msg.FormatHint == "thinking" {
+			continue
+		}
+		if wantUser && msg.Role == "user" {
+			idx = i
+			break
+		}
+		if !wantUser && msg.Role == "assistant" {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return func() tea.Msg { return CopiedMsg{Kind: kind, Err: "nothing to copy"} }
+	}
+	return m.cmdCopyMessage(idx)
+}
+
+func (m *AppModel) cmdCopyMessage(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(m.messages) {
+		return func() tea.Msg { return CopiedMsg{Err: "nothing to copy"} }
+	}
+	text := m.messages[idx].Content
+	kind := m.messages[idx].Role
+	if kind == "assistant" {
+		kind = "answer"
+	}
+	if kind == "user" {
+		kind = "prompt"
+	}
+	return func() tea.Msg {
+		if err := writeClipboardText(text); err != nil {
+			return CopiedMsg{Kind: kind, Err: err.Error()}
+		}
+		return CopiedMsg{Kind: kind}
 	}
 }
 

@@ -74,7 +74,11 @@ func formatChatList(items []client.RunHistoryItem) string {
 				kind = "chat"
 			}
 		}
-		sb.WriteString(fmt.Sprintf("  %2d  %s  [%s] %s · %s\n", i+1, shortID(it.RunID), kind, it.Status, title))
+		when := formatHistoryChangedAt(it)
+		if when == "" {
+			when = "—"
+		}
+		sb.WriteString(fmt.Sprintf("  %2d  %s  [%s] %s  %s · %s\n", i+1, shortID(it.RunID), kind, it.Status, when, title))
 		sb.WriteString(fmt.Sprintf("      id %s  %s\n", it.RunID, it.ProviderKey))
 	}
 	if len(items) > limit {

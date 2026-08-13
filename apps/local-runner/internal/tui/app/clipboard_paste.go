@@ -65,6 +65,16 @@ func (m *AppModel) cmdClipboardPaste() tea.Cmd {
 			return ClipboardPasteMsg{Attachment: att}
 		}
 		text := readClipboardText()
+		if path := imagePathFromClipboardText(text); path != "" {
+			atts, err := client.ValidateAttachments([]string{path}, provider)
+			if err != nil {
+				return ClipboardPasteMsg{Err: err.Error()}
+			}
+			if len(atts) == 0 {
+				return ClipboardPasteMsg{Err: "could not attach image path from clipboard"}
+			}
+			return ClipboardPasteMsg{Attachment: &atts[0]}
+		}
 		if strings.TrimSpace(text) != "" {
 			msg := ClipboardPasteMsg{Text: text, NoImage: true}
 			if imgErr != "" {
@@ -230,6 +240,45 @@ func openPath(path string) error {
 	default:
 		return exec.Command("xdg-open", path).Start()
 	}
+}
+
+func writeClipboardText(s string) error {
+	if initClipboard() {
+		clipboard.Write(clipboard.FmtText, []byte(s))
+		return nil
+	}
+	if runtime.GOOS == "windows" {
+		return writeWindowsClipboardTextPS(s)
+	}
+	return fmt.Errorf("clipboard unavailable")
+}
+
+func writeWindowsClipboardTextPS(s string) error {
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", "Set-Clipboard -Value $input")
+	cmd.Stdin = strings.NewReader(s)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("Set-Clipboard: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func imagePathFromClipboardText(text string) string {
+	p := strings.TrimSpace(text)
+	p = strings.Trim(p, `"'`)
+	if p == "" {
+		return ""
+	}
+	if strings.ContainsAny(p, "\r\n") {
+		return ""
+	}
+	ext := strings.ToLower(filepath.Ext(p))
+	if ext != ".png" && ext != ".jpg" && ext != ".jpeg" {
+		return ""
+	}
+	if _, err := os.Stat(p); err != nil {
+		return ""
+	}
+	return p
 }
 
 func formatPendingAttachments(atts []client.PromptAttachment) string {
