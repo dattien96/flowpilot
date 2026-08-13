@@ -42,6 +42,12 @@ func mapGrokSessionUpdate(params map[string]any) ([]ProviderEvent, bool) {
 	if update == nil {
 		return nil, false
 	}
+	// session/load replays the prior turn with isReplay=true (run-92955). Those
+	// frames must not become live tool_started / message_delta or the TUI
+	// thinking placeholder is stranded behind replayed tools.
+	if grokSessionUpdateIsReplay(params, update) {
+		return nil, false
+	}
 	kind, _ := update["sessionUpdate"].(string)
 	switch kind {
 	case "agent_message_chunk":
@@ -112,6 +118,33 @@ func mapGrokToolCallUpdate(update map[string]any) ([]ProviderEvent, bool) {
 		}
 	}
 	return events, true
+}
+
+func grokSessionUpdateIsReplay(params, update map[string]any) bool {
+	if grokTruthyReplay(params["isReplay"]) {
+		return true
+	}
+	if meta, ok := params["_meta"].(map[string]any); ok && grokTruthyReplay(meta["isReplay"]) {
+		return true
+	}
+	if grokTruthyReplay(update["isReplay"]) {
+		return true
+	}
+	if meta, ok := update["_meta"].(map[string]any); ok && grokTruthyReplay(meta["isReplay"]) {
+		return true
+	}
+	return false
+}
+
+func grokTruthyReplay(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		return strings.EqualFold(strings.TrimSpace(t), "true")
+	default:
+		return false
+	}
 }
 
 func grokIsFileMutationKind(kind string) bool {

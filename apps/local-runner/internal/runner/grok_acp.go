@@ -63,6 +63,39 @@ func grokACPSessionLoadParams(sessionID, cwd string, mcpServers []interface{}) m
 	}
 }
 
+// grokACPSessionSetModelParams builds the `session/set_model` request params.
+// Live-verified against Grok CLI 1.0.3 (2026-08-13): same sessionId, history
+// kept, next session/prompt uses modelId. Do not put model on session/new
+// (CA-445: cwd + mcpServers only).
+func grokACPSessionSetModelParams(sessionID, modelID string) map[string]interface{} {
+	return map[string]interface{}{
+		"sessionId": strings.TrimSpace(sessionID),
+		"modelId":   strings.TrimSpace(modelID),
+	}
+}
+
+// grokACPSetModelResultErr reads a non-OK ACP model switch from
+// result._meta.model.Err. An Ok payload is ignored (the turn continues).
+func grokACPSetModelResultErr(result map[string]interface{}) string {
+	if result == nil {
+		return ""
+	}
+	meta, _ := result["_meta"].(map[string]interface{})
+	if meta == nil {
+		return ""
+	}
+	model, _ := meta["model"].(map[string]interface{})
+	if model == nil {
+		return ""
+	}
+	if errVal, ok := model["Err"]; ok && errVal != nil {
+		if s, ok := errVal.(string); ok {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
 // grokACPPromptParams builds the `session/prompt` request params. Grok's prompt
 // content blocks use the same {type:"text",text} shape ACP/Gemini already use;
 // image blocks are intentionally not built here — Vision stays false until

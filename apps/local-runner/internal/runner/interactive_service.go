@@ -5850,6 +5850,32 @@ func resolveTurnModelAndEffort(rs *interactiveRun, in TurnInput) (model, effort 
 	return model, effort
 }
 
+// turnResumeProviderSessionID is the id put on TurnRequest for this turn.
+// Claude keeps the synthetic pool key (BUG-295). Grok/Codex prefer the durable
+// real id. Grok also falls back to lastGrokTurnSessionID when the synthetic
+// thread-* is still on providerSessionID and real is empty — a model-change
+// respawn (run-92955) must session/load that ACP id, not session/new.
+func turnResumeProviderSessionID(rs *interactiveRun) string {
+	if rs == nil {
+		return ""
+	}
+	id := rs.providerSessionID
+	if rs.realProviderSessionID != "" && rs.providerKey != ProviderKeyClaude {
+		id = rs.realProviderSessionID
+	}
+	if rs.providerKey != ProviderKeyGrok {
+		return id
+	}
+	trimmed := strings.TrimSpace(id)
+	if trimmed != "" && !strings.HasPrefix(trimmed, "thread-") {
+		return id
+	}
+	if alt := strings.TrimSpace(rs.lastGrokTurnSessionID); isGrokRealSessionID(alt) {
+		return alt
+	}
+	return id
+}
+
 func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, adapter ProviderRuntimeAdapter, in TurnInput, scenario, turnID string, capturedCtx []string) {
 	// Turn-level model/reasoning/YOLO override the run-level defaults when supplied
 	// (BUG-063). Chat mode resends these every turn so they can change between prompts;
@@ -5866,27 +5892,17 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// rehydrated session used to leave rs.yolo=false. Chat mode without force
 	// keeps the UI toggle value above.
 	yolo = resolveEffectiveYolo(yolo, rs.runKind, rs.workflowID, rs.flowEngineDriven)
-	// Prefer the durable real provider handle when present (Codex rollouts and
-	// Grok ACP session ids). Synthetic thread-* remains only until the first
-	// successful turn promotes a real id (Task-210 Option B for Grok).
-	//
-	// BUG-295 F-3: EXCLUDE Claude from this promotion. Claude's adapter treats
-	// req.ProviderSessionID as the SYNTHETIC pool KEY (claude_adapter.go), mapping it
-	// internally to the real id; feeding it the real id makes that lookup miss and drops
-	// --resume, silently rotating the session (regression from b288982, which broadened a
-	// Codex-only override to all providers). Keeping the synthetic key here restores the
-	// pool-mapped resume path for Claude live turns. (After a restart the field is already
-	// the real id — that case is handled defensively by F-1 in claude_adapter.go.)
-	providerSessionID := rs.providerSessionID
-	if rs.realProviderSessionID != "" && rs.providerKey != ProviderKeyClaude {
-		providerSessionID = rs.realProviderSessionID
-	}
 	// Fold any pending UI-spawn context into the provider prompt (NOT the displayed prompt,
 	// which was already emitted via turn_started with in.Prompt). This is how the parent
 	// agent learns about children started from the UI. Cleared once consumed; the cleared
 	// state is persisted by the post-turn sessionStateOf snapshot below. (BUG-122)
 	providerPrompt := in.Prompt
+	var providerSessionID string
 	s.mu.Lock()
+	// Prefer the durable real provider handle when present (Codex rollouts and
+	// Grok ACP session ids). Read under lock with lastGrokTurnSessionID fallback
+	// (run-92955). Claude keeps the synthetic pool key (BUG-295).
+	providerSessionID = turnResumeProviderSessionID(rs)
 	// BUG-179: only offer the flow control tool (submit_review_outcome) on the
 	// hub's post-join synthesis turn, never its first turn or a child's turn.
 	// spawnChildRun sets the hub's autoOrchestrate=true as soon as the entry coder
@@ -7736,6 +7752,14 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 		if reporter, ok := adapter.(interface{ LastGrokSessionID() string }); ok {
 			if id := strings.TrimSpace(reporter.LastGrokSessionID()); isGrokRealSessionID(id) {
 				rs.realProviderSessionID = id
+				// Promote the in-memory placeholder so paths that still read
+				// rs.providerSessionID (dispatch envelope, some persist helpers)
+				// pass the ACP id on the next model/effort/YOLO respawn.
+				// Claude must keep the synthetic pool key (BUG-295); Grok's
+				// thread-* is only a first-turn placeholder.
+				if !isGrokRealSessionID(rs.providerSessionID) {
+					rs.providerSessionID = id
+				}
 				if id != rs.lastGrokTurnSessionID {
 					rs.lastGrokTurnSessionID = id
 					return id

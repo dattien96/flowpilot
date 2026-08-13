@@ -51,6 +51,9 @@ type grokAdapter struct {
 	// without scanning the whole workspace (stealing another chat's session dir
 	// was the run-536 regression).
 	lastSessionID string
+	// runSessions is the runner-wide runID → ACP session map (shared across
+	// grokProcessKey respawns). Nil in unit tests that construct a bare adapter.
+	runSessions *grokRunSessionIndex
 	// allowReviewOutcome tracks, per sessionId, whether this turn actually
 	// advertised submit_review_outcome (BUG-NOTE-CP42 #24 defense in depth,
 	// mirrors codexAdapter.allowReviewOutcome).
@@ -78,6 +81,78 @@ func newGrokAdapter(dispatcher *grokDispatcher, cwd string) *grokAdapter {
 }
 
 func (a *grokAdapter) Key() ProviderKey { return ProviderKeyGrok }
+
+// grokRunSessionIndex is the runner-scoped Grok ACP resume map. grokProcessKey
+// includes model/reasoningEffort/alwaysApprove, so /model, /reasoning, and a
+// YOLO flip each spawn a *new* grokAdapter with empty lastSessionID. The map
+// is keyed by FlowPilot run id (not cwd) so a respawned process session/loads
+// this chat's ACP id instead of session/new (run-93161). Different runs do
+// not steal (CA-312 / run-536).
+type grokRunSessionIndex struct {
+	mu    sync.Mutex
+	byRun map[string]string
+}
+
+func (x *grokRunSessionIndex) remember(runID, sessionID string) {
+	if x == nil {
+		return
+	}
+	runID = strings.TrimSpace(runID)
+	sessionID = strings.TrimSpace(sessionID)
+	if runID == "" || !isGrokRealSessionID(sessionID) {
+		return
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.byRun == nil {
+		x.byRun = make(map[string]string)
+	}
+	x.byRun[runID] = sessionID
+}
+
+func (x *grokRunSessionIndex) lookup(runID string) string {
+	if x == nil {
+		return ""
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return ""
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return strings.TrimSpace(x.byRun[runID])
+}
+
+func (a *grokAdapter) rememberRunSession(runID, sessionID string) {
+	if a == nil {
+		return
+	}
+	a.runSessions.remember(runID, sessionID)
+}
+
+func (a *grokAdapter) lookupRunSession(runID string) string {
+	if a == nil {
+		return ""
+	}
+	return a.runSessions.lookup(runID)
+}
+
+// grokEnsureResumeID is the ACP id ensureSession will load. Prefer a real
+// TurnRequest handle; if the caller still has thread-* / empty (dispatch
+// envelopes always log the synthetic pool key), use the runner-wide map for
+// this RunID so a model/effort/YOLO respawn keeps history.
+func grokEnsureResumeID(req TurnRequest, lookup func(runID string) string) string {
+	id := strings.TrimSpace(req.ProviderSessionID)
+	if isGrokRealSessionID(id) {
+		return id
+	}
+	if lookup != nil {
+		if cached := strings.TrimSpace(lookup(req.RunID)); isGrokRealSessionID(cached) {
+			return cached
+		}
+	}
+	return id
+}
 
 // grokAskUserReinforcement steers the model onto FlowPilot's MCP `ask_user` tool
 // (Task-209 / GR-06). Same "act first, ask only when blocked" bias as Codex's
@@ -180,6 +255,10 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 	if err != nil {
 		return err
 	}
+	// BUG-324: honor turn-level ModelName on the live ACP session. Grok CLI
+	// 1.0.3+ implements session/set_model (same sessionId, history kept). Empty
+	// ModelName is a no-op so existing SendTurn tests never hit this RPC.
+	a.applyGrokSessionModel(ctx, sessionID, req.ModelName)
 
 	// MCP-ready-before-prompt gate (Task-209 T-7, BUG-114 class): Grok connects
 	// mcpServers asynchronously (live-verified: `_x.ai/mcp/init_progress`), so
@@ -265,9 +344,11 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 }
 
 // ensureSession creates a fresh ACP session (`session/new`) or resumes one
-// (`session/load`) when req.ProviderSessionID is a real (non-empty,
-// non-synthetic) ACP session id. A resume attempt with an id this adapter has
-// no record of is still passed through to session/load as-is (Grok, not
+// (`session/load`) when the resume id is a real (non-empty, non-synthetic)
+// ACP session id. Resume id is req.ProviderSessionID when that is real;
+// otherwise the runner-wide runID map (shared across grokProcessKey respawns
+// for /model, /reasoning, and YOLO). A resume attempt with an id this adapter
+// has no record of is still passed through to session/load as-is (Grok, not
 // FlowPilot, is the source of truth for whether that id is resumable).
 //
 // The "thread-" prefix check below guards against FlowPilot's own synthetic
@@ -281,11 +362,11 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 // starting a new one. Do not remove this guard on the assumption the caller
 // handles it.
 func (a *grokAdapter) ensureSession(ctx context.Context, req TurnRequest, cwd string, mcpServers []interface{}) (string, error) {
-	resumeID := strings.TrimSpace(req.ProviderSessionID)
+	resumeID := grokEnsureResumeID(req, a.lookupRunSession)
 	method := "session/new"
 	var result map[string]any
 	var err error
-	if resumeID != "" && !strings.HasPrefix(resumeID, "thread-") {
+	if isGrokRealSessionID(resumeID) {
 		method = "session/load"
 		result, err = a.dispatcher.call(ctx, method, grokACPSessionLoadParams(resumeID, cwd, mcpServers))
 	} else {
@@ -301,8 +382,29 @@ func (a *grokAdapter) ensureSession(ctx context.Context, req TurnRequest, cwd st
 	a.mu.Lock()
 	a.lastSessionID = sessionID
 	a.mu.Unlock()
+	a.rememberRunSession(req.RunID, sessionID)
 	a.recordSession(ctx, req, sessionID)
 	return sessionID, nil
+}
+
+// applyGrokSessionModel asks Grok ACP to switch the live session's model
+// (session/set_model). Degrades on RPC errors so Grok < 1.0.3 still completes
+// the turn (launch-time --model from grokProcessKey remains the process-level
+// fallback). Do not fail the turn: a missing method must not drop chat.
+func (a *grokAdapter) applyGrokSessionModel(ctx context.Context, sessionID, modelID string) {
+	modelID = strings.TrimSpace(modelID)
+	sessionID = strings.TrimSpace(sessionID)
+	if modelID == "" || sessionID == "" {
+		return
+	}
+	result, err := a.dispatcher.call(ctx, "session/set_model", grokACPSessionSetModelParams(sessionID, modelID))
+	if err != nil {
+		log.Printf("grok session/set_model failed (continuing turn with launch-time --model): %v", err)
+		return
+	}
+	if msg := grokACPSetModelResultErr(result); msg != "" {
+		log.Printf("grok session/set_model returned Err %s (continuing turn)", msg)
+	}
 }
 
 // LastGrokSessionID returns the real ACP session id from the most recent
@@ -343,6 +445,7 @@ func (a *grokAdapter) emitTerminal(ctx context.Context, req TurnRequest, bridge 
 		a.mu.Lock()
 		a.lastSessionID = adopted
 		a.mu.Unlock()
+		a.rememberRunSession(req.RunID, adopted)
 		a.recordSession(ctx, req, adopted)
 	}
 

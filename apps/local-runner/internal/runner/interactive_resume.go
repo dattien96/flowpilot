@@ -879,6 +879,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		providerSessionID:      st.ProviderSessionID,
 		realProviderSessionID:  st.ProviderSessionID,
 		lastCodexTurnSessionID: st.ProviderSessionID,
+		lastGrokTurnSessionID:  st.ProviderSessionID,
 		providerAccountID:      st.ProviderAccountID,
 		workspaceCwd:           st.WorkingDirectory,
 		runKind:                st.RunKind,

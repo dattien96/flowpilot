@@ -442,23 +442,24 @@ func (r *Runner) closeAllGrokProcessesLocked() {
 // concurrently-spawned child turn on the same account but different launch flags no
 // longer kill each other's process.
 //
-// model/reasoningEffort are launch-time-only flags on `grok agent` (verified
-// via `grok agent --help`: `-m/--model <MODEL>`, `--reasoning-effort <EFFORT>`
-// are options on the `agent` subcommand, not `stdio`) — Grok's ACP protocol
-// has no session-level way to switch model mid-process (confirmed: no
-// `session/set_model`-shaped method appears anywhere in the live-captured
-// testdata/grok_acp/live_probe_raw.txt, and `session/new`/`session/prompt`
-// carry no model field at all). So unlike Codex (thread/start's `model` param)
-// and Claude (spawned fresh per turn with `--model`), the only way FlowPilot
-// can make Grok honor a turn-level model/reasoning-effort change is to
-// respawn the whole process with the new flags.
+// model/reasoningEffort stay in grokProcessKey because they are also
+// `grok agent` launch-time flags (`-m/--model`, `--reasoning-effort`) and
+// existing tests require a respawn when they change. Grok CLI 1.0.3+ also
+// supports ACP `session/set_model` (live-verified 2026-08-13: same sessionId,
+// history kept). The adapter calls that RPC after session/new or session/load
+// so a process respawned with the new --model still applies the turn's model
+// to the loaded session. Do not put model on session/new (CA-445: cwd +
+// mcpServers only). The 0.2.93 fixture in testdata/grok_acp/ predates this
+// method; missing-method errors must not fail the turn.
 //
 // alwaysApprove (Task-218) mirrors the same launch-time-only constraint: it is
 // the caller's current desired YOLO posture (Runner.grokDesiredAlwaysApprove),
 // applied as --always-approve when true. It is also compared in the reuse
 // check below so a YOLO flip forces a respawn exactly like a model/effort
 // change does — Grok's ACP protocol has no session-level way to change this
-// mid-process either.
+// mid-process either. History still follows the ACP session id: the new
+// process must session/load this run's id (Runner.grokRunSessions), then
+// session/set_model when ModelName is set. Do not session/new (run-93161).
 func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, extraEnv map[string]string, model, reasoningEffort string, alwaysApprove bool) (*grokProcessHandle, error) {
 	r.grokProcessMu.Lock()
 	defer r.grokProcessMu.Unlock()
@@ -558,6 +559,10 @@ func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, ex
 	adapter := newGrokAdapter(dispatcher, cwd)
 	adapter.grokHome = strings.TrimSpace(extraEnv["GROK_HOME"])
 	adapter.initResult = initResult
+	if r.grokRunSessions == nil {
+		r.grokRunSessions = &grokRunSessionIndex{byRun: make(map[string]string)}
+	}
+	adapter.runSessions = r.grokRunSessions
 
 	h := &grokProcessHandle{scopeKey: scopeKey, model: model, reasoningEffort: reasoningEffort, alwaysApprove: alwaysApprove, dispatcher: dispatcher, adapter: adapter, initResult: initResult, kill: kill}
 	r.grokProcesses[key] = h
