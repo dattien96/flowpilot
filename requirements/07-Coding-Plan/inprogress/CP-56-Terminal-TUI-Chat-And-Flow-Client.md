@@ -11,7 +11,7 @@
 - Created: `2026-08-12`
 - Last Updated: `2026-08-13` (Task-290 P-8c load-earlier + Task-291 YOLO write-gate captured; plan intent unchanged)
 - Parent Documents: [SD-02: Architecture](../../06-System-Tech-Design/SD-02-Architecture.md), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [03 - Solution And System Design](../../10-Refactor/New-System/03-Solution-And-System-Design.md), [04-01 Phase1 Desktop Mock MVP](../../10-Refactor/New-System/04-01-Phase1-Desktop-Mock-MVP.md), [04-02 Runner Contracts And APIs](../../10-Refactor/New-System/04-02-Phase2-Runner-Contracts-And-APIs.md)
-- Child Documents: [Task-278](../../08-Task/todo/Task-278-TUI-Go-Client-Ensure-Runner-And-Chat-Entry.md) (P-0), [Task-279](../../08-Task/todo/Task-279-Bubble-Tea-Chat-Stream-Shell.md) (P-1), [Task-280](../../08-Task/todo/Task-280-TUI-Session-Controls-Provider-Model-Reasoning-Yolo.md) (P-2), [Task-281](../../08-Task/todo/Task-281-TUI-Slash-Skill-Attachments.md) (P-3), [Task-282](../../08-Task/todo/Task-282-TUI-Image-Attach-Via-Existing-Turn-API.md) (P-3b), [Task-283](../../08-Task/todo/Task-283-TUI-Flow-And-Step-Slash-Launch.md) (P-4), [Task-284](../../08-Task/todo/Task-284-TUI-Statusline-Account-And-Token-Usage.md) (P-5), [Task-285](../../08-Task/todo/Task-285-TUI-Sub-Agent-Status-And-Focus-Switch.md) (P-6), [Task-286](../../08-Task/todo/Task-286-TUI-Approval-And-Question-Gates.md) (P-7), [Task-287](../../08-Task/todo/Task-287-TUI-Resume-Headless-And-Session-Reset.md) (P-8), [Task-289](../../08-Task/done/Task-289-TUI-Codex-Style-Assistant-Markdown.md) (P-8b), [Task-290](../../08-Task/todo/Task-290-TUI-Long-Chat-Load-Earlier-Windowing.md) (P-8c), [Task-291](../../08-Task/todo/Task-291-Chat-Yolo-On-Must-Not-Prompt-Ordinary-File-Write.md) (P-2 residual), [Task-288](../../08-Task/todo/Task-288-TUI-Docs-Boundary-And-Rollout-Evidence.md) (P-9)
+- Child Documents: [Task-278](../../08-Task/todo/Task-278-TUI-Go-Client-Ensure-Runner-And-Chat-Entry.md) (P-0), [Task-279](../../08-Task/todo/Task-279-Bubble-Tea-Chat-Stream-Shell.md) (P-1), [Task-280](../../08-Task/todo/Task-280-TUI-Session-Controls-Provider-Model-Reasoning-Yolo.md) (P-2), [Task-281](../../08-Task/todo/Task-281-TUI-Slash-Skill-Attachments.md) (P-3), [Task-282](../../08-Task/todo/Task-282-TUI-Image-Attach-Via-Existing-Turn-API.md) (P-3b), [Task-283](../../08-Task/todo/Task-283-TUI-Flow-And-Step-Slash-Launch.md) (P-4), [Task-284](../../08-Task/todo/Task-284-TUI-Statusline-Account-And-Token-Usage.md) (P-5), [Task-285](../../08-Task/todo/Task-285-TUI-Sub-Agent-Status-And-Focus-Switch.md) (P-6), [Task-286](../../08-Task/todo/Task-286-TUI-Approval-And-Question-Gates.md) (P-7), [Task-287](../../08-Task/todo/Task-287-TUI-Resume-Headless-And-Session-Reset.md) (P-8), [Task-289](../../08-Task/done/Task-289-TUI-Codex-Style-Assistant-Markdown.md) (P-8b), [Task-290](../../08-Task/done/Task-290-TUI-Long-Chat-Load-Earlier-Windowing.md) (P-8c), [Task-291](../../08-Task/todo/Task-291-Chat-Yolo-On-Must-Not-Prompt-Ordinary-File-Write.md) (P-2 residual), [Task-288](../../08-Task/todo/Task-288-TUI-Docs-Boundary-And-Rollout-Evidence.md) (P-9)
 - Related Documents: [CP-36 Agent Review Loop](../done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [CP-42 Flow Pack](../done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md), [CP-51 Durable Turn Dispatch](../done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-56-Test-Steps](./CP-56-Test-Steps.md), [Product Vision](../../01-Vision/Product-vision.md)
 - Replaces: `None`
 - Tags: `cli-tui, chat-ui, agent-flow-engine, terminal, bubbletea, thin-client`
@@ -30,7 +30,7 @@
 
 ### Current Ask
 
-- **Approved.** Implement Tasks 278→288 in order, starting at Task-278. [Task-289](../../08-Task/done/Task-289-TUI-Codex-Style-Assistant-Markdown.md) is P-8b polish (Codex-style markdown). [Task-290](../../08-Task/todo/Task-290-TUI-Long-Chat-Load-Earlier-Windowing.md) is P-8c long-chat windowing. [Task-291](../../08-Task/todo/Task-291-Chat-Yolo-On-Must-Not-Prompt-Ordinary-File-Write.md) is a P-2 residual: chat YOLO=on must not prompt ordinary file writes. They do not block Task-287 or Task-288. Update [CP-56-Test-Steps](./CP-56-Test-Steps.md) evidence as each Task lands.
+- **Approved.** Implement Tasks 278→288 in order, starting at Task-278. [Task-289](../../08-Task/done/Task-289-TUI-Codex-Style-Assistant-Markdown.md) is P-8b polish (Codex-style markdown). [Task-290](../../08-Task/done/Task-290-TUI-Long-Chat-Load-Earlier-Windowing.md) is P-8c long-chat windowing. [Task-291](../../08-Task/todo/Task-291-Chat-Yolo-On-Must-Not-Prompt-Ordinary-File-Write.md) is a P-2 residual: chat YOLO=on must not prompt ordinary file writes. They do not block Task-287 or Task-288. Update [CP-56-Test-Steps](./CP-56-Test-Steps.md) evidence as each Task lands.
 
 ### Key Decisions
 
@@ -712,7 +712,7 @@ func TestBlockedLoop_ContinueAndStopUseExistingEndpoints(t *testing.T)
 - `--resume <runId>` — cold open + replay stream from seq 0
 - `-p/--print <prompt>` — non-TTY one-shot (no Bubble Tea); print final message + exit code. If an approval/question/flow gate appears, interrupt and exit non-zero with guidance instead of hanging.
 - Optional styled assistant markdown: [Task-289](../../08-Task/done/Task-289-TUI-Codex-Style-Assistant-Markdown.md) (P-8b). Codex-style goldmark → Lip Gloss lines with per-message cache. Charm Glamour + `bubbles/viewport` is out (CA-463).
-- Long-chat windowing: [Task-290](../../08-Task/todo/Task-290-TUI-Long-Chat-Load-Earlier-Windowing.md) (P-8c). Desktop Timeline parity — newest 6 prompt groups first, Load earlier for the rest. Render-side only.
+- Long-chat windowing: [Task-290](../../08-Task/done/Task-290-TUI-Long-Chat-Load-Earlier-Windowing.md) (P-8c). Desktop Timeline parity — newest 6 prompt groups first, Load earlier for the rest. Render-side only.
 
 **Code signatures**
 
@@ -739,7 +739,7 @@ func TestNewCommand_ClearsRunID(t *testing.T)
 
 **Goal:** Long TUI chats do not paint from turn 1. Match Desktop Timeline: last 6 user-prompt groups visible, `↑ Load earlier prompts (N)` pages older groups.
 
-See [Task-290](../../08-Task/todo/Task-290-TUI-Long-Chat-Load-Earlier-Windowing.md). Does not change Task-287 seq-0 replay contract in this slice.
+See [Task-290](../../08-Task/done/Task-290-TUI-Long-Chat-Load-Earlier-Windowing.md). Does not change Task-287 seq-0 replay contract in this slice.
 
 **Tests**
 
