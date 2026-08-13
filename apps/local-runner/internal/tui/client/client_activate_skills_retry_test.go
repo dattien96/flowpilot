@@ -58,3 +58,23 @@ func TestListProviderAccounts_ParsesHomePath(t *testing.T) {
 		t.Fatalf("HomePath not parsed: %+v", accs)
 	}
 }
+
+func TestListSkills_UsesProviderSkillsEndpoint(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		json.NewEncoder(w).Encode([]map[string]string{{"name": "coding", "source": "provider"}})
+	}))
+	defer srv.Close()
+
+	skills, err := client.New(srv.URL).ListSkills(context.Background(), "grok", "/ws")
+	if err != nil {
+		t.Fatalf("ListSkills: %v", err)
+	}
+	if gotPath != "/client/provider-skills" {
+		t.Fatalf("path=%q want /client/provider-skills", gotPath)
+	}
+	if len(skills) != 1 || skills[0].Name != "coding" {
+		t.Fatalf("skills=%+v", skills)
+	}
+}

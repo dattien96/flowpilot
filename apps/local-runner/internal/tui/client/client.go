@@ -418,9 +418,9 @@ func (c *Client) InstallProvider(ctx context.Context, providerName string) ([]Pr
 	return inv.Providers, err
 }
 
-// ListSkills fetches GET /client/skills filtered by optional providerKey and cwd.
+// ListSkills fetches GET /client/provider-skills filtered by optional providerKey and cwd.
 func (c *Client) ListSkills(ctx context.Context, providerKey, cwd string) ([]ProviderSkill, error) {
-	endpoint := "/client/skills"
+	endpoint := "/client/provider-skills"
 	params := make([]string, 0, 2)
 	if providerKey != "" {
 		params = append(params, "provider="+neturl.QueryEscape(providerKey))
