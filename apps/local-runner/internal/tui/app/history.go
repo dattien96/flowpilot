@@ -30,6 +30,7 @@ type ChatOpenedMsg struct {
 
 // HistoryChunkMsg carries an older SSE chunk prepended on Load earlier (Task-290 Q-1).
 type HistoryChunkMsg struct {
+	RunID             string
 	Messages          []ChatMessage
 	NewLoadedAfterSeq int64
 	Err               string
@@ -276,13 +277,14 @@ func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
 		after := chatReplayTailAfterSeq(until)
 		var collected []client.ProviderEvent
 		if until > 0 {
-			collected = collectReplayEvents(cl, ctx, runID, after, until, chatReplayMaxEvents)
+			collected = collectReplayEvents(ctx, cl, runID, after, until, chatReplayMaxEvents)
 		}
-		msgs := replayHistoryMessages(trimEventsFromTurnStart(collected))
+		trimmed := trimEventsFromTurnStart(collected)
+		msgs := replayHistoryMessages(trimmed)
 		return ChatOpenedMsg{
 			Handle:                handle,
 			Messages:              msgs,
-			HistoryLoadedAfterSeq: after,
+			HistoryLoadedAfterSeq: historyCursorAfterReplay(after, collected, trimmed),
 		}
 	}
 }

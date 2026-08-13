@@ -185,7 +185,7 @@ func TestCollectReplayEvents_StopsAtUntilSeq(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cl := client.New(srv.URL)
-	got := collectReplayEvents(cl, ctx, "run-1", 0, 3, 100)
+	got := collectReplayEvents(ctx, cl, "run-1", 0, 3, 100)
 	if len(got) != 3 || got[2].Seq != 3 {
 		t.Fatalf("collected=%+v", got)
 	}
@@ -204,5 +204,121 @@ func TestChatWindow_ShowsLoadMoreWhenTailOnly(t *testing.T) {
 	}
 	if !strings.Contains(stripANSI(rows[0].Text), "Load earlier prompts (more)") {
 		t.Fatalf("label=%q", stripANSI(rows[0].Text))
+	}
+}
+
+func TestHistoryCursorAfterReplay_RewindsToDroppedPrefix(t *testing.T) {
+	collected := []client.ProviderEvent{
+		{Seq: 601, Type: "message_delta", Text: "orphan"},
+		{Seq: 620, Type: "turn_started", Prompt: "next"},
+	}
+	trimmed := trimEventsFromTurnStart(collected)
+	got := historyCursorAfterReplay(600, collected, trimmed)
+	if got != 619 {
+		t.Fatalf("cursor=%d want 619 so next chunk re-fetches seq 601-619", got)
+	}
+}
+
+func TestCmdOpenChat_ReturnsWhenLastEventSeqReachedOnLiveStream(t *testing.T) {
+	const lastSeq int64 = 3
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/resume"):
+			json.NewEncoder(w).Encode(client.RunHandle{RunID: "run-live", LastEventSeq: lastSeq})
+		case strings.Contains(r.URL.Path, "/events/stream"):
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+			for _, ev := range []client.ProviderEvent{
+				{Seq: 1, Type: "turn_started", Prompt: "p1"},
+				{Seq: 2, Type: "message_delta", Text: "a1"},
+				{Seq: 3, Type: "turn_completed", FinalMessage: "a1"},
+			} {
+				data, _ := json.Marshal(ev)
+				fmt.Fprintf(w, "data: %s\n\n", data)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			<-r.Context().Done()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	m := New(config.ChatConfig{}, srv.URL)
+	done := make(chan any, 1)
+	go func() { done <- m.cmdOpenChat("run-live")() }()
+	select {
+	case msg := <-done:
+		opened, ok := msg.(ChatOpenedMsg)
+		if !ok {
+			t.Fatalf("msg type %T", msg)
+		}
+		if opened.Err != "" {
+			t.Fatalf("err=%q", opened.Err)
+		}
+		if len(opened.Messages) < 1 || opened.Messages[0].Content != "p1" {
+			t.Fatalf("messages=%+v", opened.Messages)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cmdOpenChat hung waiting on idle SSE after lastEventSeq")
+	}
+}
+
+func TestLoadEarlier_SecondClickDoesNotFetchWhileInFlight(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
+	m.width, m.height = 100, 30
+	m.runHandle = &client.RunHandle{RunID: "run-chunk"}
+	m.messages = makePromptHistory(6)
+	m.historyLoadedAfterSeq = 600
+	m.visiblePromptCount = 6
+
+	cmd1 := m.loadEarlierPrompts()
+	if cmd1 == nil {
+		t.Fatal("first click should fetch")
+	}
+	if !m.historyChunkInFlight {
+		t.Fatal("expected in-flight after first click")
+	}
+	cmd2 := m.loadEarlierPrompts()
+	if cmd2 != nil {
+		t.Fatal("second click must not start another fetch")
+	}
+}
+
+func TestHistoryChunkMsg_IgnoresWrongRun(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
+	m.runHandle = &client.RunHandle{RunID: "run-b"}
+	m.messages = makePromptHistory(6)
+	m.historyLoadedAfterSeq = 600
+
+	m2, _ := m.Update(HistoryChunkMsg{
+		RunID:             "run-a",
+		Messages:          []ChatMessage{{Role: "user", Content: "from-a"}},
+		NewLoadedAfterSeq: 200,
+	})
+	am := m2.(*AppModel)
+	if am.historyLoadedAfterSeq != 600 {
+		t.Fatalf("cursor moved=%d", am.historyLoadedAfterSeq)
+	}
+	if strings.Contains(am.messages[0].Content, "from-a") {
+		t.Fatalf("wrong-run chunk prepended: %+v", am.messages[0])
+	}
+}
+
+func TestHistoryChunkMsg_DropsDuplicateCursor(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
+	m.runHandle = &client.RunHandle{RunID: "run-dup"}
+	m.messages = makePromptHistory(6)
+	m.historyLoadedAfterSeq = 200
+
+	older := []ChatMessage{{Role: "user", Content: "dup-prompt"}}
+	m2, _ := m.Update(HistoryChunkMsg{
+		RunID: "run-dup", Messages: older, NewLoadedAfterSeq: 200,
+	})
+	am := m2.(*AppModel)
+	if strings.Contains(am.messages[0].Content, "dup-prompt") {
+		t.Fatal("stale duplicate chunk must not prepend")
 	}
 }

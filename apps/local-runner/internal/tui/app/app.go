@@ -395,6 +395,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.messages = nil
 		m.visiblePromptCount = 0
 		m.historyLoadedAfterSeq = msg.HistoryLoadedAfterSeq
+		m.historyChunkInFlight = false
+		m.lastEventSeq = handle.LastEventSeq
 		m.viewport.offset = 0
 		if len(msg.Messages) > 0 {
 			m.messages = append([]ChatMessage(nil), msg.Messages...)
@@ -411,8 +413,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case HistoryChunkMsg:
+		m.historyChunkInFlight = false
 		if msg.Err != "" {
 			m.addMessage("system", msg.Err, "error")
+			return m, nil
+		}
+		if m.runHandle == nil || m.runHandle.RunID != msg.RunID {
+			return m, nil
+		}
+		if m.historyLoadedAfterSeq > 0 && msg.NewLoadedAfterSeq >= m.historyLoadedAfterSeq {
 			return m, nil
 		}
 		m.historyLoadedAfterSeq = msg.NewLoadedAfterSeq
@@ -1821,6 +1830,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.visiblePromptCount = 0
 		m.historyLoadedAfterSeq = 0
 		m.mainHistoryLoadedAfterSeq = 0
+		m.historyChunkInFlight = false
 		m.viewport.offset = 0
 		m.connStatus = ConnIdle
 		m.statusMsg = "ready"

@@ -645,7 +645,11 @@ func (c *Client) StreamRun(ctx context.Context, runID string, afterSeq int64) <-
 			if ev.Seq > c.lastSeq[runID] {
 				c.lastSeq[runID] = ev.Seq
 			}
-			ch <- ev
+			select {
+			case ch <- ev:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 	return ch

@@ -113,5 +113,5 @@ Operator: long chats must not load/render from the beginning; use Desktop-style 
 
 - result: Render-side prompt-group windowing plus tail SSE replay and chunked Load earlier fetch.
 - follow-ups: Tune `chatReplayTailEventBudget` if operators report missing turns at open.
-- upstream docs updated: CP-56-Test-Steps A8.16–A8.19 marked done; CA-475.
-- verification: `go test ./internal/tui/app/ -run 'TestChatWindow_|TestSliceMessagesFromPrompt|TestChatRows_'` green.
+- upstream docs updated: CP-56-Test-Steps A8.16–A8.22 marked done; CA-475.
+- verification: `go test ./internal/tui/app/ -run 'TestChatWindow_|TestSliceMessagesFromPrompt|TestChatRows_|TestChatReplay|TestCmdOpenChat|TestLoadEarlier|TestHistoryChunk|TestHistoryCursor|TestCollectReplay'` green.

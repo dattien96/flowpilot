@@ -192,10 +192,10 @@ type AppModel struct {
 	statusMsg  string
 	messages   []ChatMessage
 	// visiblePromptCount is how many newest user-prompt groups to render (Task-290).
-	visiblePromptCount int
-	// historyLoadedAfterSeq: events with seq <= this are not in memory; 0 = loaded from start.
-	historyLoadedAfterSeq int64
+	visiblePromptCount        int
+	historyLoadedAfterSeq     int64 // events with seq <= this are not in memory; 0 = loaded from start
 	mainHistoryLoadedAfterSeq int64 // preserved while viewing child transcript
+	historyChunkInFlight      bool
 
 	inputValue  string
 	viewport    viewportState

@@ -143,27 +143,36 @@ func (m *AppModel) loadEarlierPrompts() tea.Cmd {
 	}
 	m.viewport.offset = maxOff
 
-	if m.windowStartIndex() > 0 || !m.hasMoreHistoryOnServer() {
+	if m.windowStartIndex() > 0 || !m.hasMoreHistoryOnServer() || m.historyChunkInFlight {
 		return nil
 	}
 	return m.cmdFetchOlderHistory()
 }
 
 func (m *AppModel) cmdFetchOlderHistory() tea.Cmd {
-	if m.runHandle == nil || m.historyLoadedAfterSeq <= 0 {
+	if m.runHandle == nil || m.historyLoadedAfterSeq <= 0 || m.historyChunkInFlight {
 		return nil
 	}
 	runID := m.runHandle.RunID
 	floor := m.historyLoadedAfterSeq
 	newAfter := chatReplayChunkBefore(floor)
 	runnerURL := m.runnerURL
+	m.historyChunkInFlight = true
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		collected := collectReplayEvents(cl, ctx, runID, newAfter, floor, chatReplayMaxEvents)
-		msgs := replayHistoryMessages(trimEventsFromTurnStart(collected))
-		return HistoryChunkMsg{Messages: msgs, NewLoadedAfterSeq: newAfter}
+		collected := collectReplayEvents(ctx, cl, runID, newAfter, floor, chatReplayMaxEvents)
+		if len(collected) == 0 {
+			return HistoryChunkMsg{RunID: runID, Err: "could not load earlier history"}
+		}
+		trimmed := trimEventsFromTurnStart(collected)
+		msgs := replayHistoryMessages(trimmed)
+		return HistoryChunkMsg{
+			RunID:             runID,
+			Messages:          msgs,
+			NewLoadedAfterSeq: historyCursorAfterReplay(newAfter, collected, trimmed),
+		}
 	}
 }
 

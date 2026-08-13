@@ -245,6 +245,8 @@ Define machine-checkable signatures, live acceptance steps, and evidence require
 | A8.20 | `TestChatReplayTailAfterSeq` | `internal/tui/app` | ☑ |
 | A8.21 | `TestCmdOpenChat_UsesTailAfterSeq` | `internal/tui/app` | ☑ |
 | A8.22 | `TestLoadEarlier_FetchesOlderChunkWhenMemoryExhausted` | `internal/tui/app` | ☑ |
+| A8.23 | `TestCmdOpenChat_ReturnsWhenLastEventSeqReachedOnLiveStream` | `internal/tui/app` | ☑ |
+| A8.24 | `TestLoadEarlier_SecondClickDoesNotFetchWhileInFlight` | `internal/tui/app` | ☑ |
 
 ### P-2 residual — Chat YOLO=on ordinary write (Task-291)
 
