@@ -80,6 +80,7 @@ Root persistent flags (`--workspace`, `--host`, `--port`) are inherited and not 
 | `/provider install` | Install provider CLI via `POST /providers/install` (runner supports all; Desktop UI Install is Gemini-only) |
 | `/image` | List/attach images — **Alt+V** / `/image paste` (Ctrl+V often stolen by Windows Terminal); `/image open <n>` preview (codex/claude only) |
 | `/model` | Pick model — type `/model ` then ↑↓ · Tab · Enter |
+| `/skill` | List/toggle skills (Desktop `/s` picker) — `/skill` shows catalog; type `/skill ` then ↑↓ Tab Enter |
 | `/reasoning` | Pick effort — type `/reasoning ` then ↑↓ · Tab · Enter |
 | `/approve` | Approve pending approval |
 | `/deny` | Deny pending approval |

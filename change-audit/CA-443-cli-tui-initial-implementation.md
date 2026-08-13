@@ -296,9 +296,17 @@ Additive tests: `app/step_chat_notice_test.go`.
 
 Additive tests: `prefs/prefs_test.go`, `app/provider_prefs_test.go`.
 
+## Follow-up (2026-08-12) — `/skill` catalog list like Desktop
+
+- `/skill` / `/s` dumps the provider skill catalog (selected first, Account/Project source,
+  description) via `GET /client/skills`, matching Desktop ChatInput skill picker.
+- Live picker while typing `/skill <query>`; toggle resolves path/source from catalog.
+
+Additive tests: `app/skill_list_test.go`.
+
 # ---8<--- flowpilot:change-ledger
 feature_key: cli-tui
 source_doc_id: CP-56
-change_type: bugfix
-summary: Persist latest TUI provider/model; show FAILED step reason in chat
+change_type: feature
+summary: TUI /skill lists Desktop-parity skill catalog with picker
 # --->8---

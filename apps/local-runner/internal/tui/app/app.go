@@ -78,6 +78,9 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 			reasoning = saved.ReasoningEffort
 		}
 	}
+	if reasoning == "" {
+		reasoning = "medium"
+	}
 	m := &AppModel{
 		cfg:             cfg,
 		runnerURL:       runnerURL,
@@ -142,6 +145,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = "error"
 		errText := msg.Err.Error()
 		m.addMessage("system", "Error: "+errText, "error")
+		if strings.Contains(errText, "connection refused") || strings.Contains(errText, "dial tcp") ||
+			strings.Contains(errText, "connection reset") || strings.Contains(errText, "i/o timeout") ||
+			strings.Contains(errText, "dispatch_prepare_failed") {
+			m.runHandle = nil
+		}
 		return m, nil
 
 	case ConnectedMsg:
@@ -159,10 +167,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case SessionDefaultsMsg:
-		if msg.Provider != "" {
+		firstLoad := !m.sessionDefaultsLoaded
+		if m.provider == "" && msg.Provider != "" {
 			m.provider = msg.Provider
 		}
-		if msg.Model != "" {
+		if m.model == "" && msg.Model != "" {
 			m.model = msg.Model
 		}
 		if msg.AccountLabel != "" {
@@ -182,12 +191,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.Account != nil && (m.provider == "" || strings.EqualFold(msg.Account.ProviderKey, m.provider)) {
 			m.account = msg.Account
-			if m.accountLabel == "" {
-				m.accountLabel = msg.Account.DisplayLabel
+			if label := strings.TrimSpace(msg.Account.DisplayLabel); label != "" {
+				m.accountLabel = label
 			}
+		}
+		if m.reasoningEffort == "" {
+			m.reasoningEffort = "medium"
 		}
 		m.bindActiveAccountForProvider()
 		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
+		if firstLoad {
+			persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+		}
 		m.refreshSessionPanel()
 		if msg.CatalogErr != "" {
 			m.addMessage("system", "Project catalog unavailable: "+msg.CatalogErr+"\nChat needs Supabase catalog (same as Desktop). Fix .env / runner, then restart.", "error")
@@ -200,12 +215,27 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionDefaultsLoaded = true
 		m.connStatus = ConnIdle
 		m.statusMsg = "ready"
-		m.addMessage("system", "Ready — type / for commands · F2 or /info toggles session panel.", "")
-		cmds := []tea.Cmd{m.cmdRefreshProjectContext()}
-		if m.project != nil && len(m.chatList) == 0 {
+		if firstLoad {
+			m.addMessage("system", "Ready — type / for commands · F2/click session panel · F3/click skills chip.", "")
+		}
+		cmds := []tea.Cmd{m.cmdRefreshProjectContext(), m.cmdLoadSkills(false)}
+		if firstLoad && m.project != nil && len(m.chatList) == 0 {
 			cmds = append(cmds, m.cmdPrefetchChats())
 		}
 		return m, tea.Batch(cmds...)
+
+	case SkillsListMsg:
+		if msg.Err != "" {
+			if msg.Show {
+				m.addMessage("system", "Skills list failed: "+msg.Err, "error")
+			}
+			return m, nil
+		}
+		m.skillsCatalog = msg.Skills
+		if msg.Show {
+			m.addMessage("system", formatSkillsCatalog(m.skillsCatalog, m.selectedSkills, m.provider), "")
+		}
+		return m, nil
 
 	case ProjectContextMsg:
 		if msg.Path != "" {
@@ -270,6 +300,21 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msg.ProviderKey, status, msg.ProviderKey,
 		), "")
 		return m, m.cmdLoadSessionDefaults()
+
+	case ActivatedAccountMsg:
+		if msg.Err != nil {
+			m.addMessage("system", fmt.Sprintf("Failed to activate account: %v", msg.Err), "error")
+			return m, nil
+		}
+		if msg.Account != nil {
+			m.bindActiveAccountForProvider()
+			m.addMessage("system", fmt.Sprintf(
+				"Activated account %q (%s) for provider %s.",
+				msg.Account.DisplayLabel, msg.Account.ID, msg.Account.ProviderKey,
+			), "")
+			m.refreshSessionPanel()
+			return m, m.cmdLoadSessionDefaults()
+		}
 
 	case ChatListMsg:
 		if msg.Silent {
@@ -408,6 +453,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turnStream = &turnStreamState{evCh: msg.EvCh, errCh: msg.ErrCh}
 		m.connStatus = ConnRunning
 		m.statusMsg = "streaming…"
+		if strings.EqualFold(strings.TrimSpace(m.reasoningEffort), "high") {
+			m.statusMsg = "thinking…"
+		}
 		return m, m.cmdPollTurnStream()
 
 	case turnStreamEventMsg:
@@ -424,6 +472,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.connStatus = ConnError
 			m.statusMsg = "turn failed"
 			m.addMessage("system", "Send turn failed: "+msg.Err.Error(), "error")
+			m.runHandle = nil
 			return m, nil
 		}
 		if m.connStatus == ConnRunning {
@@ -576,6 +625,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connStatus = ConnError
 		m.statusMsg = "turn failed: " + msg.Reason
 		m.addMessage("system", "Turn failed: "+msg.Reason, "error")
+		m.runHandle = nil
 		if m.cfg.Print {
 			return m, tea.Quit
 		}
@@ -587,6 +637,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	}
 
 	return m, nil
@@ -596,6 +649,9 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 	switch ev.Type {
 	case "message_delta":
 		m.appendAssistantDelta(ev.Text)
+		if m.connStatus == ConnRunning {
+			m.statusMsg = "streaming…"
+		}
 
 	case "message_completed":
 		m.appendAssistantDelta(ev.Text)
@@ -715,7 +771,8 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.sessionLoading && !m.allowsKeyWhileLoading(msg) {
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEscape:
-			return m, func() tea.Msg { return QuitMsg{} }
+			m.quitting = true
+			return m, m.cmdShutdownAndQuit()
 		default:
 			return m, nil
 		}
@@ -726,13 +783,24 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.runHandle != nil {
 			_ = m.client.Interrupt(context.Background(), m.runHandle.RunID)
 		}
-		return m, func() tea.Msg { return QuitMsg{} }
+		m.quitting = true
+		return m, m.cmdShutdownAndQuit()
 
 	case tea.KeyF2:
 		if m.authPhase != AuthNone {
 			return m, nil
 		}
 		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
+		return m, nil
+
+	case tea.KeyF3:
+		if m.authPhase != AuthNone {
+			return m, nil
+		}
+		if len(attachedSkillNames(m.selectedSkills)) == 0 {
+			return m, nil
+		}
+		m.statusSkillsExpanded = !m.statusSkillsExpanded
 		return m, nil
 
 	case tea.KeyCtrlV:
@@ -754,13 +822,20 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.runHandle != nil {
 			_ = m.client.Interrupt(context.Background(), m.runHandle.RunID)
 		}
-		return m, func() tea.Msg { return QuitMsg{} }
+		m.quitting = true
+		return m, m.cmdShutdownAndQuit()
 
 	case tea.KeyTab:
 		if m.authPhase != AuthNone {
 			return m, nil
 		}
 		if items := m.collectSuggestions(); len(items) > 0 {
+			it := items[m.suggIdx%len(items)]
+			if it.kind == "skill" && strings.TrimSpace(it.value) != "" {
+				m.toggleSkillByNameQuiet(it.value)
+				m.retargetSkillSuggestion(it.value)
+				return m, nil
+			}
 			m.applySuggestion(items)
 			return m, m.cmdMaybePrefetchPickers()
 		}
@@ -790,10 +865,16 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyEnter:
 		// When a suggestion list is open, Enter accepts the highlighted row
-		// (same target as Tab) and runs it — no need for Tab-then-Enter.
+		// (same target as Tab) and runs it — except skills: Tab ticks, Enter applies.
 		if m.authPhase == AuthNone {
 			if items := m.collectSuggestions(); len(items) > 0 {
 				it := items[m.suggIdx%len(items)]
+				if it.kind == "skill" {
+					// Tab ticks; Enter applies (closes picker, keeps the tick set).
+					m.inputValue = ""
+					m.suggIdx = 0
+					return m, nil
+				}
 				if cmd := suggestionAcceptValue(it); cmd != "" {
 					// Action rows (e.g. /provider → connect) only expand the next picker.
 					if it.kind == "provider-action" {
@@ -846,8 +927,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.cmdMaybePrefetchPickers()
 
-	case tea.KeyRunes:
-		m.inputValue += string(msg.Runes)
+	case tea.KeySpace, tea.KeyRunes:
+		if msg.Type == tea.KeySpace {
+			m.inputValue += " "
+		} else {
+			m.inputValue += string(msg.Runes)
+		}
 		m.suggIdx = 0
 		return m, m.cmdMaybePrefetchPickers()
 	}
@@ -917,6 +1002,21 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if ok, _ := parseSlashArgPrefix(m.inputValue, "/reasoning"); ok {
 		return []suggestItem{{value: "", detail: "(no matching effort)", kind: "reasoning"}}
 	}
+	if skillSugg := filterSkillSuggestions(m.inputValue, m.skillsCatalog, m.selectedSkills); len(skillSugg) > 0 {
+		return skillSugg
+	}
+	if ok, _ := parseSlashArgPrefix(m.inputValue, "/skill"); ok {
+		if len(m.skillsCatalog) == 0 && len(m.selectedSkills) == 0 {
+			return []suggestItem{{value: "", detail: "loading skills…", kind: "skill"}}
+		}
+		return []suggestItem{{value: "", detail: "(no matching skills)", kind: "skill"}}
+	}
+	if ok, _ := parseSlashArgPrefix(m.inputValue, "/s"); ok {
+		if len(m.skillsCatalog) == 0 && len(m.selectedSkills) == 0 {
+			return []suggestItem{{value: "", detail: "loading skills…", kind: "skill"}}
+		}
+		return []suggestItem{{value: "", detail: "(no matching skills)", kind: "skill"}}
+	}
 	cmds := filterSlashSuggestions(m.inputValue)
 	out := make([]suggestItem, 0, len(cmds))
 	for _, sc := range cmds {
@@ -933,7 +1033,7 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 	it := items[idx]
 	if cmd := suggestionAcceptValue(it); cmd == "" {
 		return
-	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" {
+	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" {
 		m.inputValue = cmd
 	} else {
 		// Tab fills the command token and leaves a trailing space for args.
@@ -969,6 +1069,11 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/reasoning " + it.value
+	case "skill":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/skill " + it.value
 	case "provider":
 		if strings.TrimSpace(it.value) == "" {
 			return ""
@@ -990,6 +1095,11 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/provider install " + it.value
+	case "provider-account":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/provider account " + it.value
 	case "cmd":
 		return strings.TrimSpace(it.value)
 	default:
@@ -1176,6 +1286,7 @@ func (m *AppModel) dispatchImageCommand(args []string) (tea.Model, tea.Cmd) {
 func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	parts := strings.Fields(input)
 	cmd := strings.ToLower(parts[0])
+	cmd = "/" + strings.TrimLeft(cmd, "/")
 	args := parts[1:]
 
 	switch cmd {
@@ -1192,7 +1303,8 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.addMessage("system", "Conversation cleared.", "")
 
 	case "/exit", "/quit":
-		return m, func() tea.Msg { return QuitMsg{} }
+		m.quitting = true
+		return m, m.cmdShutdownAndQuit()
 
 	case "/yolo":
 		if m.mode != ModeChat || m.launch.IsArmed() {
@@ -1272,34 +1384,20 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.firstTurnPending = false
 		m.addMessage("system", "Switched to chat mode.", "")
 
-	case "/skill":
-		if len(args) == 0 {
-			if len(m.selectedSkills) == 0 {
-				m.addMessage("system", "No skills selected. Use /skill <name> to toggle.", "")
-			} else {
-				names := make([]string, len(m.selectedSkills))
-				for i, s := range m.selectedSkills {
-					names[i] = s.Name
-				}
-				m.addMessage("system", fmt.Sprintf("Active skills: %s", strings.Join(names, ", ")), "")
-			}
-		} else {
-			name := strings.Join(args, " ")
-			// Toggle: remove if present, add if absent.
-			found := false
-			for i, s := range m.selectedSkills {
-				if strings.EqualFold(s.Name, name) {
-					m.selectedSkills = append(m.selectedSkills[:i], m.selectedSkills[i+1:]...)
-					m.addMessage("system", fmt.Sprintf("Skill removed: %s", name), "")
-					found = true
-					break
-				}
-			}
-			if !found {
-				m.selectedSkills = append(m.selectedSkills, client.SkillSelection{Name: name, Source: "user"})
-				m.addMessage("system", fmt.Sprintf("Skill added: %s", name), "")
-			}
+	case "/skill", "/s":
+		if len(args) == 0 || (len(args) == 1 && (strings.EqualFold(args[0], "list") || strings.EqualFold(args[0], "ls"))) {
+			// Desktop ChatInput skill picker dump — selected first, then catalog.
+			m.addMessage("system", formatSkillsCatalog(m.skillsCatalog, m.selectedSkills, m.provider), "")
+			showAfter := len(m.skillsCatalog) == 0
+			return m, m.cmdLoadSkills(showAfter)
 		}
+		name := strings.Join(args, " ")
+		if strings.EqualFold(name, "clear") {
+			m.selectedSkills = nil
+			m.addMessage("system", "Cleared selected skills.", "")
+			break
+		}
+		m.toggleSkillByName(name)
 
 	case "/image":
 		return m.dispatchImageCommand(args)
@@ -1343,16 +1441,39 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				}
 				m.addMessage("system", fmt.Sprintf("Installing provider CLI %s… (may take a minute)", key), "")
 				return m, m.cmdInstallProvider(key)
+			case "account", "switch", "activate", "acc":
+				if len(args) < 2 {
+					var sb strings.Builder
+					sb.WriteString("Usage: /provider account <account-id>\n")
+					sb.WriteString("Configured provider accounts:\n")
+					for _, acc := range m.providerAccounts {
+						activeMark := " "
+						if acc.IsActive {
+							activeMark = "*"
+						}
+						pathLabel := formatAccountPathLabel(acc.HomePath)
+						pathStr := ""
+						if pathLabel != "" {
+							pathStr = fmt.Sprintf(" · path: %s", pathLabel)
+						}
+						sb.WriteString(fmt.Sprintf("  %s [%s] %s (%s)%s · id: %s\n", activeMark, acc.ProviderKey, acc.DisplayLabel, acc.AuthStatus, pathStr, acc.ID))
+					}
+					m.addMessage("system", sb.String(), "")
+					break
+				}
+				accountID := strings.TrimSpace(args[1])
+				m.addMessage("system", fmt.Sprintf("Switching active account to %s…", accountID), "")
+				return m, m.cmdActivateAccount(accountID)
 			}
 		}
-		if len(args) == 0 {
+		if len(args) == 0 || (len(args) == 1 && strings.EqualFold(args[0], "list")) {
 			var sb strings.Builder
 			sb.WriteString(fmt.Sprintf("Current provider: %s\n", orDash(m.provider)))
 			sb.WriteString(fmt.Sprintf("Current model:    %s\n", orDash(m.model)))
 			if len(m.providers) == 0 {
 				sb.WriteString("No provider catalog loaded yet. Wait for connect, or restart chat.")
 			} else {
-				sb.WriteString("Providers (Desktop ChatInput readiness: installed + active connected account):\n")
+				sb.WriteString("Providers & Accounts (Desktop Settings parity):\n")
 				for _, p := range m.providers {
 					mark := " "
 					if strings.EqualFold(p.Key, m.provider) {
@@ -1366,8 +1487,24 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 						readyMark = "-"
 					}
 					sb.WriteString(fmt.Sprintf("  %s%s %s  %s\n", mark, readyMark, p.Key, status))
+					for _, acc := range m.providerAccounts {
+						if strings.EqualFold(acc.ProviderKey, p.Key) {
+							accMark := " "
+							activeLabel := ""
+							if acc.IsActive {
+								accMark = "*"
+								activeLabel = " [ACTIVE]"
+							}
+							pathLabel := formatAccountPathLabel(acc.HomePath)
+							pathStr := ""
+							if pathLabel != "" {
+								pathStr = fmt.Sprintf(" · path: %s", pathLabel)
+							}
+							sb.WriteString(fmt.Sprintf("      %s Account: %s (%s)%s · id: %s%s\n", accMark, acc.DisplayLabel, acc.AuthStatus, pathStr, acc.ID, activeLabel))
+						}
+					}
 				}
-				sb.WriteString("Pick: /provider  · Connect: /provider connect  · Install: /provider install  (↑↓ Tab Enter)")
+				sb.WriteString("Pick provider: /provider <key>  · Switch account: /provider account <account-id>  · Connect: /provider connect  · Install: /provider install")
 			}
 			m.addMessage("system", sb.String(), "")
 		} else if m.runHandle != nil {
@@ -1398,6 +1535,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				}
 				m.bindActiveAccountForProvider()
 				persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+				m.skillsCatalog = nil // Desktop reloads skills when provider changes.
 				msg := fmt.Sprintf("Provider set to: %s · model: %s (saved for next TUI /new)", m.provider, orDash(m.model))
 				if acc := m.activeProviderAccountLabel(); acc != "" {
 					msg += " · account: " + acc
@@ -1409,6 +1547,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				}
 				m.addMessage("system", msg, "")
 				m.refreshSessionPanel()
+				return m, m.cmdLoadSkills(false)
 			}
 		}
 
@@ -1526,7 +1665,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		for _, line := range m.sessionPanel.lines() {
 			sb.WriteString(line + "\n")
 		}
-		sb.WriteString("(F2 or /info toggles the top-right session panel)")
+		sb.WriteString("(F2 or click session panel · F3 or click skills:N chip · /info also toggles the panel)")
 		m.addMessage("system", strings.TrimRight(sb.String(), "\n"), "")
 
 	case "/info":
@@ -1598,50 +1737,24 @@ func (m *AppModel) View() string {
 		return ""
 	}
 
+	c := m.tuiChrome()
 	var sb strings.Builder
 
-	var sugg []suggestItem
-	if m.authPhase == AuthNone && (!m.sessionLoading || strings.HasPrefix(m.inputValue, "/")) {
-		sugg = m.collectSuggestions()
-	}
-	suggLines := 0
-	if len(sugg) > 0 {
-		limit := suggestionVisibleLimit(sugg)
-		if len(sugg) < limit {
-			limit = len(sugg)
-		}
-		suggLines = limit + 2 // header + hint
-	}
-	bannerLines := 0
-	if m.sessionLoading {
-		bannerLines = loadingBannerHeight
-	} else if m.authNeedLogin && m.authPhase == AuthNone {
-		bannerLines = 1
-	}
-	panelLines := m.renderSessionPanelOverlay()
-	panelH := len(panelLines)
-
-	// 2 status lines + 1 input row.
-	messagesHeight := m.height - 4 - suggLines - bannerLines - panelH
-	if messagesHeight < 1 {
-		messagesHeight = 1
-	}
-
-	for _, l := range panelLines {
+	for _, l := range c.panelLines {
 		sb.WriteString(l)
 		sb.WriteString("\n")
 	}
 
 	lines := m.renderMessages()
-	if len(lines) > messagesHeight {
-		lines = lines[len(lines)-messagesHeight:]
+	if len(lines) > c.messagesHeight {
+		lines = lines[len(lines)-c.messagesHeight:]
 	}
 	for _, l := range lines {
 		sb.WriteString(l)
 		sb.WriteString("\n")
 	}
 
-	for i := len(lines); i < messagesHeight; i++ {
+	for i := len(lines); i < c.messagesHeight; i++ {
 		sb.WriteString("\n")
 	}
 
@@ -1658,10 +1771,10 @@ func (m *AppModel) View() string {
 		sb.WriteString(styleError.Render(banner))
 		sb.WriteString("\n")
 	}
-	sb.WriteString(m.renderStatusLine())
+	sb.WriteString(c.statusBlock)
 	sb.WriteString("\n")
-	if len(sugg) > 0 {
-		sb.WriteString(m.renderSuggestions(sugg))
+	if len(c.sugg) > 0 {
+		sb.WriteString(m.renderSuggestions(c.sugg))
 		sb.WriteString("\n")
 	}
 	sb.WriteString(m.renderInputLine())
@@ -1674,7 +1787,7 @@ func (m *AppModel) loadingBannerText() string {
 }
 
 func suggestionVisibleLimit(sugg []suggestItem) int {
-	if len(sugg) > 0 && sugg[0].kind == "history" {
+	if len(sugg) > 0 && (sugg[0].kind == "history" || sugg[0].kind == "skill") {
 		return 12
 	}
 	return 8
@@ -1695,6 +1808,8 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 			kind = "reasoning"
 		case "provider", "provider-connect", "provider-action", "provider-install":
 			kind = "providers"
+		case "skill":
+			kind = "skills"
 		}
 	}
 	sel := 0
@@ -1704,6 +1819,9 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 	start, end := suggestionWindow(len(sugg), sel, limit)
 	var sb strings.Builder
 	sb.WriteString(styleSuggest.Render(kind + ":"))
+	if kind == "skills" {
+		sb.WriteString(styleSuggest.Render("  Tab tick · Enter apply"))
+	}
 	for i := start; i < end; i++ {
 		sb.WriteString("\n")
 		label := sugg[i].value
@@ -1724,7 +1842,13 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 	above := start
 	below := len(sugg) - end
 	sb.WriteString("\n")
-	if above > 0 || below > 0 {
+	if kind == "skills" {
+		hint := "  Tab tick to select · Enter apply"
+		if above > 0 || below > 0 {
+			hint = fmt.Sprintf("  Tab tick to select · Enter apply  · %d above · %d below [%d/%d]", above, below, sel+1, len(sugg))
+		}
+		sb.WriteString(styleSuggest.Render(hint))
+	} else if above > 0 || below > 0 {
 		sb.WriteString(styleSuggest.Render(fmt.Sprintf("  … %d above · %d below (↑↓ scrolls · Tab · Enter)  [%d/%d]", above, below, sel+1, len(sugg))))
 	} else {
 		sb.WriteString(styleSuggest.Render("  (↑↓ · Tab fill · Enter run)"))
@@ -1867,32 +1991,49 @@ func (m *AppModel) renderStatusLine() string {
 		sep = " | "
 	}
 
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+
 	var parts []string
 
-	parts = append(parts, fmt.Sprintf("[%s]", m.mode))
+	// Input already labels chat mode ("chat" / "next"). Only show [flow]/[step].
+	if m.mode != ModeChat {
+		parts = append(parts, fmt.Sprintf("[%s]", m.mode))
+	}
 	if m.mode == ModeFlow || m.mode == ModeStep {
 		if label := m.launch.StatusLabel(); label != "" {
-			// Keep statusline compact for long UUID/refs.
-			if len([]rune(label)) > 28 {
+			if len([]rune(label)) > 20 {
 				r := []rune(label)
-				label = string(r[:25]) + "…"
+				label = string(r[:17]) + "…"
 			}
 			parts = append(parts, label)
 		}
 	}
 
-	// Provider · model (active provider-account label — not Supabase email).
+	// Provider · model · reasoning: effort (active provider-account label — not Supabase email).
 	providerDisplay := m.provider
 	if providerDisplay == "" {
 		providerDisplay = "default"
 	}
+	reasoning := m.reasoningEffort
+	if reasoning == "" {
+		reasoning = "medium"
+	}
 	if m.model != "" {
-		providerDisplay = fmt.Sprintf("%s · %s", providerDisplay, m.model)
+		providerDisplay = fmt.Sprintf("%s · %s · reasoning: %s", providerDisplay, m.model, reasoning)
+	} else {
+		providerDisplay = fmt.Sprintf("%s · reasoning: %s", providerDisplay, reasoning)
 	}
 	if acc := m.activeProviderAccountLabel(); acc != "" {
 		providerDisplay = fmt.Sprintf("%s (%s)", providerDisplay, acc)
 	}
 	parts = append(parts, providerDisplay)
+
+	if sk := formatAttachedSkillsChip(len(attachedSkillNames(m.selectedSkills)), m.statusSkillsExpanded, m.asciiMode); sk != "" {
+		parts = append(parts, sk)
+	}
 
 	// Always show YOLO; flow/step arms force ON (chat toggle only).
 	parts = append(parts, m.yoloStatusLabel())
@@ -1942,7 +2083,6 @@ func (m *AppModel) renderStatusLine() string {
 
 	statusStr := m.connStatus.String()
 	if m.sessionLoading {
-		// Keep "connected" visible for status parity; append loading marker.
 		if m.statusMsg != "" {
 			statusStr = m.statusMsg + " · loading…"
 		} else {
@@ -1953,16 +2093,70 @@ func (m *AppModel) renderStatusLine() string {
 	}
 	parts = append(parts, statusStyle.Render(statusStr))
 
-	line1 := styleStatus.Render(strings.Join(parts, sep))
-	line2 := styleStatus.Render(m.projectStatusLabel())
-	return line1 + "\n" + line2
+	rawLine1 := strings.Join(parts, sep)
+	if len([]rune(rawLine1)) > w {
+		for len(parts) > 3 && len([]rune(strings.Join(parts, sep))) > w {
+			parts = append(parts[:len(parts)-2], parts[len(parts)-1])
+		}
+		rawLine1 = strings.Join(parts, sep)
+		if len([]rune(rawLine1)) > w {
+			r := []rune(rawLine1)
+			if w > 1 {
+				rawLine1 = string(r[:w-1]) + "…"
+			} else {
+				rawLine1 = string(r[:w])
+			}
+		}
+	}
+
+	line1 := styleStatus.Render(rawLine1)
+	var extra []string
+	if m.statusSkillsExpanded {
+		names := attachedSkillNames(m.selectedSkills)
+		extra = formatAttachedSkillsExpanded(names, w)
+	}
+	line2Str := m.projectStatusLabel()
+	if len([]rune(line2Str)) > w {
+		r := []rune(line2Str)
+		if w > 1 {
+			line2Str = string(r[:w-1]) + "…"
+		} else {
+			line2Str = string(r[:w])
+		}
+	}
+	line2 := styleStatus.Render(line2Str)
+	var b strings.Builder
+	b.WriteString(line1)
+	for _, line := range extra {
+		if len([]rune(line)) > w {
+			r := []rune(line)
+			if w > 1 {
+				line = string(r[:w-1]) + "…"
+			} else {
+				line = string(r[:w])
+			}
+		}
+		b.WriteString("\n")
+		b.WriteString(styleStatus.Render(line))
+	}
+	b.WriteString("\n")
+	b.WriteString(line2)
+	return b.String()
 }
 
 func (m *AppModel) renderInputLine() string {
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
 	if m.sessionLoading && !strings.HasPrefix(m.inputValue, "/") {
 		frames := []string{"|", "/", "-", "\\"}
 		spin := frames[m.loadingFrame%len(frames)]
-		return styleLoading.Render(fmt.Sprintf(" %s please wait… (chat disabled) ", spin))
+		msg := fmt.Sprintf(" %s please wait… (chat disabled) ", spin)
+		if len([]rune(msg)) > w {
+			msg = string([]rune(msg)[:w])
+		}
+		return styleLoading.Render(msg)
 	}
 	var prefix, body string
 	switch m.authPhase {
@@ -1998,6 +2192,15 @@ func (m *AppModel) renderInputLine() string {
 	attach := ""
 	if n := len(m.pendingAttach); n > 0 {
 		attach = stylePromptFocus.Render(fmt.Sprintf("[%d img] ", n))
+	}
+	fixedWidth := len([]rune(prefix)) + len([]rune(attach)) + 6
+	availWidth := w - fixedWidth
+	if availWidth < 5 {
+		availWidth = 5
+	}
+	bodyRunes := []rune(body)
+	if len(bodyRunes) > availWidth {
+		body = string(bodyRunes[len(bodyRunes)-availWidth:])
 	}
 	return left + " " + label + " " + mid + " " + attach + styleInputFocus.Render(body+caret)
 }
@@ -2058,6 +2261,16 @@ func buildGateMessage(opts []string, regressed []string) string {
 }
 
 func shortID(id string) string {
+	for _, p := range []string{"run-", "turn-", "step-", "wf-"} {
+		if !strings.HasPrefix(id, p) {
+			continue
+		}
+		rest := id[len(p):]
+		if len(rest) <= 10 {
+			return id
+		}
+		return p + rest[:6] + "…"
+	}
 	if len(id) > 8 {
 		return id[:8]
 	}
@@ -2108,6 +2321,10 @@ func (m *AppModel) applyAuthNotice(catalogErr string) {
 }
 
 func (m *AppModel) beginLogin(args []string) (tea.Model, tea.Cmd) {
+	if len(args) == 0 && m.signedInEmail != "" && !m.authNeedLogin {
+		m.addMessage("system", fmt.Sprintf("Signed in as %s (use /login [email] [password] to switch accounts).", m.signedInEmail), "")
+		return m, nil
+	}
 	switch len(args) {
 	case 0:
 		m.authPhase = AuthEmail
@@ -2138,6 +2355,22 @@ func (m *AppModel) beginLogin(args []string) (tea.Model, tea.Cmd) {
 func (m *AppModel) cmdConnect() tea.Cmd {
 	return func() tea.Msg {
 		return ConnectedMsg{RunnerURL: m.runnerURL}
+	}
+}
+
+func (m *AppModel) cmdShutdownAndQuit() tea.Cmd {
+	runnerURL := m.runnerURL
+	ownsRunner := m.cfg.OwnsRunner
+	return func() tea.Msg {
+		if !ownsRunner {
+			return QuitMsg{}
+		}
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = cl.ShutdownStack(ctx)
+		_ = killRunnerByURL(runnerURL)
+		return QuitMsg{}
 	}
 }
 
@@ -2285,7 +2518,7 @@ func (m *AppModel) cmdMaybePrefetchFlows() tea.Cmd {
 }
 
 func (m *AppModel) cmdMaybePrefetchPickers() tea.Cmd {
-	return tea.Batch(m.cmdMaybePrefetchFlows(), m.cmdMaybePrefetchHistory())
+	return tea.Batch(m.cmdMaybePrefetchFlows(), m.cmdMaybePrefetchHistory(), m.cmdMaybePrefetchSkills())
 }
 
 func (m *AppModel) cmdStartRun() tea.Cmd {
@@ -2449,7 +2682,7 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 		return runHeadless(m, cfg.Prompt)
 	}
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
 }

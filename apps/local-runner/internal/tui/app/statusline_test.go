@@ -1,12 +1,28 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
 )
+
+func TestMain(m *testing.M) {
+	tmpDir, err := os.MkdirTemp("", "flowpilot-tui-test-*")
+	if err == nil {
+		os.Setenv("FLOWPILOT_TUI_SESSION_FILE", filepath.Join(tmpDir, "tui-session.json"))
+	}
+	code := m.Run()
+	if tmpDir != "" {
+		os.RemoveAll(tmpDir)
+	}
+	os.Exit(code)
+}
 
 func TestStatusLine_AlwaysShowsYoloAndProjectRow(t *testing.T) {
 	m := New(config.ChatConfig{ProjectPath: `C:\working\gate-sandbox`}, "http://127.0.0.1:4317")
@@ -52,5 +68,39 @@ func TestYoloToggle_BlockedInFlowMode(t *testing.T) {
 	}
 	if !strings.Contains(am.View(), "auto-on in flow mode") {
 		t.Fatalf("expected blocked message:\n%s", am.View())
+	}
+}
+
+func TestStatusLine_ShowsReasoningEffortAndDefaultsToMedium(t *testing.T) {
+	m := New(config.ChatConfig{Provider: "grok", Model: "grok-4.5"}, "http://127.0.0.1:4317")
+	m.reasoningEffort = "medium"
+	line := m.renderStatusLine()
+	if !strings.Contains(line, "reasoning: medium") {
+		t.Fatalf("statusline missing 'reasoning: medium': %q", line)
+	}
+}
+
+func TestWindowSizeMsg_ResponsiveLayout(t *testing.T) {
+	m := New(config.ChatConfig{Provider: "grok", Model: "grok-4.5"}, "http://127.0.0.1:4317")
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 15})
+	am := m2.(*AppModel)
+	if am.width != 40 || am.height != 15 {
+		t.Fatalf("expected width 40, height 15, got w=%d h=%d", am.width, am.height)
+	}
+	view := am.View()
+	lines := strings.Split(view, "\n")
+	for i, l := range lines {
+		if len([]rune(l)) > 40 {
+			t.Fatalf("line %d exceeds terminal width 40 (len=%d): %q", i, len([]rune(l)), l)
+		}
+	}
+}
+
+func TestShortID_PreservesFullRunID(t *testing.T) {
+	if got := shortID("run-105935"); got != "run-105935" {
+		t.Fatalf("shortID(run-105935) = %q, want run-105935", got)
+	}
+	if got := shortID("392355a6-5573-44f1-9aa5-4313502a5816"); got != "392355a6" {
+		t.Fatalf("shortID(uuid) = %q, want 392355a6", got)
 	}
 }

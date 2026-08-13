@@ -82,15 +82,18 @@ func TestFilterProviderSuggestions_FiltersAsYouType(t *testing.T) {
 		{ProviderKey: "codex", AuthStatus: "connected", IsActive: true, DisplayLabel: "codex-1"},
 	}
 	all := filterProviderSuggestions("/provider ", providers, accounts, "codex")
-	// connect + install + config actions + 3 providers
-	if len(all) != 6 {
-		t.Fatalf("expected 6 (3 actions + 3 providers), got %d: %+v", len(all), all)
+	// account + connect + install + config actions + 3 providers
+	if len(all) != 7 {
+		t.Fatalf("expected 7 (4 actions + 3 providers), got %d: %+v", len(all), all)
 	}
-	if all[0].value != "connect" || all[0].kind != "provider-action" {
-		t.Fatalf("first row should be connect action, got %+v", all[0])
+	if all[0].value != "account" || all[0].kind != "provider-action" {
+		t.Fatalf("first row should be account action, got %+v", all[0])
 	}
-	if all[1].value != "install" {
-		t.Fatalf("second row should be install action, got %+v", all[1])
+	if all[1].value != "connect" || all[1].kind != "provider-action" {
+		t.Fatalf("second row should be connect action, got %+v", all[1])
+	}
+	if all[2].value != "install" {
+		t.Fatalf("third row should be install action, got %+v", all[2])
 	}
 	filtered := filterProviderSuggestions("/provider cl", providers, accounts, "codex")
 	// "claude" provider + no connect/config/install (doesn't match "cl")
@@ -98,7 +101,14 @@ func TestFilterProviderSuggestions_FiltersAsYouType(t *testing.T) {
 		t.Fatalf("filtered=%+v", filtered)
 	}
 	connOnly := filterProviderSuggestions("/provider co", providers, accounts, "codex")
-	if len(connOnly) < 1 || connOnly[0].value != "connect" {
+	foundConnect := false
+	for _, it := range connOnly {
+		if it.value == "connect" {
+			foundConnect = true
+			break
+		}
+	}
+	if !foundConnect {
 		t.Fatalf("expected connect action for /provider co, got %+v", connOnly)
 	}
 	if filterProviderSuggestions("/provider", providers, accounts, "codex") != nil {
@@ -113,7 +123,7 @@ func TestEnter_ProviderConnectActionOpensConnectPicker(t *testing.T) {
 		{Key: "claude"},
 	}
 	m.inputValue = "/provider "
-	m.suggIdx = 0 // connect action
+	m.suggIdx = 1 // connect action (index 1 after account action)
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	am := m2.(*AppModel)
 	if am.inputValue != "/provider connect " {
@@ -228,5 +238,19 @@ func TestModelTabCompletesSelection(t *testing.T) {
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyTab})
 	if got := m2.(*AppModel).inputValue; got != "/model o3" {
 		t.Fatalf("inputValue=%q", got)
+	}
+}
+
+func TestFilterProviderSuggestions_AccountMode(t *testing.T) {
+	accounts := []client.ProviderAccountSummary{
+		{ID: "acc-1", ProviderKey: "grok", DisplayLabel: "Default", IsActive: true},
+		{ID: "acc-2", ProviderKey: "grok", DisplayLabel: "Account 2", IsActive: false},
+	}
+	got := filterProviderSuggestions("/provider account ", nil, accounts, "grok")
+	if len(got) != 2 || got[0].kind != "provider-account" {
+		t.Fatalf("got=%+v", got)
+	}
+	if suggestionAcceptValue(got[0]) != "/provider account acc-1" {
+		t.Fatalf("accept=%q", suggestionAcceptValue(got[0]))
 	}
 }

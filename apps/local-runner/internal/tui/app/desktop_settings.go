@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -95,6 +96,23 @@ func (m *AppModel) cmdInstallProvider(providerKey string) tea.Cmd {
 			return ProviderInstallMsg{ProviderKey: key, Providers: providers, Err: err.Error()}
 		}
 		return ProviderInstallMsg{ProviderKey: key, Providers: providers}
+	}
+}
+
+type ActivatedAccountMsg struct {
+	Account *client.ProviderAccountSummary
+	Err     error
+}
+
+func (m *AppModel) cmdActivateAccount(accountID string) tea.Cmd {
+	runnerURL := m.runnerURL
+	id := strings.TrimSpace(accountID)
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		acc, err := cl.ActivateProviderAccount(ctx, id)
+		return ActivatedAccountMsg{Account: acc, Err: err}
 	}
 }
 

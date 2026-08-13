@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -205,27 +206,43 @@ func normalizePathKey(p string) string {
 	return strings.ToLower(strings.TrimRight(p, "/"))
 }
 
-// matchProjectByPath finds a catalog project whose Path equals target.
-// Falls back to unique basename match when absolute paths differ (bindings).
+// matchProjectByPath finds a catalog project matching target path.
+// Resolution order (TUI side only):
+// 1. Exact normalised path match (projects[i].Path == target)
+// 2. Folder basename match (filepath.Base(projects[i].Path) == target folder name)
+// 3. Project Name match (projects[i].Name == target folder name, e.g. "Gate-sandbox")
 func matchProjectByPath(projects []client.Project, target string) *client.Project {
 	want := normalizePathKey(target)
 	if want == "" {
 		return nil
 	}
+	// Pass 1: exact normalised path match.
 	for i := range projects {
 		if normalizePathKey(projects[i].Path) == want {
 			return &projects[i]
 		}
 	}
-	// Unique basename fallback (e.g. catalog path differs but folder name matches).
 	base := strings.ToLower(filepath.Base(strings.ReplaceAll(target, `\`, `/`)))
 	if base == "" || base == "." || base == "/" {
 		return nil
 	}
+	// Pass 2: unique folder basename match.
 	var hits []*client.Project
 	for i := range projects {
 		gotBase := strings.ToLower(filepath.Base(strings.ReplaceAll(projects[i].Path, `\`, `/`)))
 		if gotBase == base {
+			hits = append(hits, &projects[i])
+		}
+	}
+	if len(hits) == 1 {
+		return hits[0]
+	}
+	// Pass 3: unique project name match (e.g. project named "Gate-sandbox" or "Gate Sandbox").
+	cleanBase := strings.ReplaceAll(strings.ReplaceAll(base, "-", ""), "_", "")
+	hits = nil
+	for i := range projects {
+		nameClean := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(projects[i].Name, "-", ""), "_", ""), " ", ""))
+		if nameClean == cleanBase {
 			hits = append(hits, &projects[i])
 		}
 	}
@@ -427,7 +444,7 @@ func parseHistoryArgPrefix(input string) (ok bool, query string) {
 
 var reasoningEffortOptions = []string{"high", "medium", "low"}
 
-// parseProviderPicker reports `/provider <query>` or `/provider connect|config|install <query>`.
+// parseProviderPicker reports `/provider <query>` or `/provider connect|config|install|account|switch|activate <query>`.
 func parseProviderPicker(input string) (mode, filter string, ok bool) {
 	okPrefix, query := parseSlashArgPrefix(input, "/provider")
 	if !okPrefix {
@@ -448,6 +465,11 @@ func parseProviderPicker(input string) (mode, filter string, ok bool) {
 			return "install", strings.Join(parts[1:], " "), true
 		}
 		return "install", "", true
+	case "account", "switch", "activate", "acc":
+		if len(parts) > 1 {
+			return "account", strings.Join(parts[1:], " "), true
+		}
+		return "account", "", true
 	default:
 		return "select", query, true
 	}
@@ -457,37 +479,41 @@ func parseProviderPicker(input string) (mode, filter string, ok bool) {
 // active connected account exists for that provider key.
 func providerReadiness(p client.Provider, accounts []client.ProviderAccountSummary) (code, detail string) {
 	if !p.Installed {
-		hint := "not installed"
-		if strings.TrimSpace(p.InstallHint) != "" {
-			hint = "not installed — /provider install " + strings.TrimSpace(p.Key)
-		}
-		return "not_installed", hint
+		return "not_installed", "not installed — /provider install " + strings.TrimSpace(p.Key)
 	}
-	var activeLabel string
-	hasActiveConnected := false
+	hasAccount := false
+	activeLabel := ""
 	connectedCount := 0
 	for _, a := range accounts {
 		if !strings.EqualFold(a.ProviderKey, p.Key) {
 			continue
 		}
-		if strings.EqualFold(a.AuthStatus, "connected") {
+		hasAccount = true
+		if accountAuthOK(a) {
 			connectedCount++
 			if a.IsActive {
-				hasActiveConnected = true
 				activeLabel = strings.TrimSpace(a.DisplayLabel)
 			}
 		}
 	}
-	if !hasActiveConnected {
-		if connectedCount > 0 {
-			return "no_active_account", "installed · no active account — /provider connect " + strings.TrimSpace(p.Key)
-		}
+	if !hasAccount {
+		return "no_account", "installed · no account — /provider connect " + strings.TrimSpace(p.Key)
+	}
+	if activeLabel == "" {
+		return "no_active_account", "installed · no active account — /provider connect " + strings.TrimSpace(p.Key)
+	}
+	if connectedCount == 0 {
 		return "no_active_account", "installed · no connected account — /provider connect " + strings.TrimSpace(p.Key)
 	}
 	if activeLabel != "" {
 		return "ready", "ready · " + activeLabel
 	}
 	return "ready", "ready"
+}
+
+func accountAuthOK(a client.ProviderAccountSummary) bool {
+	s := strings.ToLower(strings.TrimSpace(a.AuthStatus))
+	return s == "" || s == "connected" || s == "authenticated"
 }
 
 func providerSuggestionDetail(p client.Provider, accounts []client.ProviderAccountSummary, current, mode string) string {
@@ -523,7 +549,18 @@ func providerSuggestionDetail(p client.Provider, accounts []client.ProviderAccou
 	return strings.Join(parts, " · ")
 }
 
-// filterProviderSuggestions returns providers matching `/provider ` / connect / install.
+func formatAccountPathLabel(homePath string) string {
+	path := strings.TrimSpace(homePath)
+	if path == "" {
+		return ""
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" && strings.HasPrefix(path, home) {
+		return "~" + path[len(home):]
+	}
+	return filepath.Base(path)
+}
+
+// filterProviderSuggestions returns providers matching `/provider ` / connect / install / account.
 // In select mode, action rows are listed first so they are always discoverable.
 func filterProviderSuggestions(input string, providers []client.Provider, accounts []client.ProviderAccountSummary, current string) []suggestItem {
 	mode, query, ok := parseProviderPicker(input)
@@ -531,9 +568,10 @@ func filterProviderSuggestions(input string, providers []client.Provider, accoun
 		return nil
 	}
 	q := strings.ToLower(query)
-	out := make([]suggestItem, 0, len(providers)+3)
+	out := make([]suggestItem, 0, len(providers)+len(accounts)+4)
 	if mode == "select" {
 		for _, act := range []struct{ value, detail string }{
+			{"account", "Switch active provider account (/provider account <id>)"},
 			{"connect", "Connect new account (Desktop Settings parity)"},
 			{"install", "Install provider CLI (runner /providers/install)"},
 			{"config", "Alias for connect"},
@@ -549,6 +587,29 @@ func filterProviderSuggestions(input string, providers []client.Provider, accoun
 		kind = "provider-connect"
 	case "install":
 		kind = "provider-install"
+	case "account":
+		kind = "provider-account"
+		for _, acc := range accounts {
+			pathLabel := formatAccountPathLabel(acc.HomePath)
+			hay := strings.ToLower(acc.ID + " " + acc.DisplayLabel + " " + acc.ProviderKey + " " + acc.HomePath + " " + pathLabel)
+			if q != "" && !strings.Contains(hay, q) {
+				continue
+			}
+			activeTag := ""
+			if acc.IsActive {
+				activeTag = " (active)"
+			}
+			pathStr := ""
+			if pathLabel != "" {
+				pathStr = fmt.Sprintf(" (%s)", pathLabel)
+			}
+			out = append(out, suggestItem{
+				value:  acc.ID,
+				detail: fmt.Sprintf("[%s] %s%s%s · %s", acc.ProviderKey, acc.DisplayLabel, pathStr, activeTag, acc.AuthStatus),
+				kind:   "provider-account",
+			})
+		}
+		return out
 	}
 	for _, p := range providers {
 		key := strings.TrimSpace(p.Key)

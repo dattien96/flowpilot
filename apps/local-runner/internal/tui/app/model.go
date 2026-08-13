@@ -179,6 +179,7 @@ type AppModel struct {
 	yolo            bool
 	agentsFocus     bool
 	selectedSkills  []client.SkillSelection
+	skillsCatalog   []client.ProviderSkill // Desktop ChatInput skills list
 	pendingAttach   []client.PromptAttachment
 	launch          LaunchArm
 	firstTurnPending bool // consume builtin FirstTurnExtras once
@@ -227,6 +228,7 @@ type AppModel struct {
 	// Input focus / slash suggestion selection
 	cursorOn bool
 	suggIdx  int
+	statusSkillsExpanded bool // F3: expand attached skill names under the status chip
 
 	// sessionLoading locks chat while provider/project catalogs load after connect.
 	sessionLoading bool
@@ -252,7 +254,7 @@ type AppModel struct {
 type suggestItem struct {
 	value  string // command name, flowRef/workflow id, chat run id, model, or effort
 	detail string
-	kind   string // "cmd" | "flow" | "history" | "model" | "reasoning" | "provider" | "provider-connect"
+	kind   string // "cmd" | "flow" | "history" | "model" | "reasoning" | "provider" | "provider-connect" | "skill"
 	slash  string // for history: "/history" | "/open" | "/resume"
 }
 
@@ -277,7 +279,7 @@ var knownSlashCommands = []slashCommand{
 	{"/agent", "Focus a specific agent by name"},
 	{"/flow", "Start or list flows"},
 	{"/chat", "Switch to chat mode"},
-	{"/skill", "Toggle a skill for the next turn"},
+	{"/skill", "Skills picker — /skill  then ↑↓ Tab tick · Enter apply · F3 status"},
 	{"/image", "Attach/list/open images — Alt+V or /image paste, /image <path>, /image open <n>"},
 	{"/provider", "Switch / connect / install — /provider  then ↑↓ Tab Enter"},
 	{"/model", "Switch model — type /model  then ↑↓ Tab Enter"},
