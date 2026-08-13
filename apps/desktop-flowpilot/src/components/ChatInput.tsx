@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { useStore } from "@/state/store";
-import type { ProviderKey, TokenUsageSnapshot } from "@/types/contract";
+import type { ProviderAccountSummary, ProviderKey, TokenUsageSnapshot } from "@/types/contract";
 import type { SupportedModel } from "@flowpilot/client-core";
+import { contextRemainingPercent, formatAccountRemainingLabel } from "@/lib/usageSummary";
 import {
   ACCEPT_ATTR,
   MAX_ATTACHMENTS,
@@ -156,22 +157,31 @@ function usageSummaryLine(
   provider: ProviderKey | undefined,
   usage: TokenUsageSnapshot | undefined,
   fallbackContextWindow?: number | null,
+  account?: ProviderAccountSummary,
 ): ReactNode | null {
   if (!provider) return null;
-  if (!usage) return null;
 
-  const last = usage.last;
-  const total = usage.total;
-  const windowSize = usage.modelContextWindow ?? fallbackContextWindow ?? null;
+  const last = usage?.last;
+  const total = usage?.total;
+  const windowSize = usage?.modelContextWindow ?? fallbackContextWindow ?? null;
   const contextUsed = total?.totalTokens ?? last?.totalTokens ?? null;
   const parts: ReactNode[] = [];
 
+  const credit = formatAccountRemainingLabel(account);
+  if (credit) {
+    parts.push(<span key="credits">{credit}</span>);
+  }
+
   if (windowSize && contextUsed !== null) {
     const remaining = Math.max(windowSize - contextUsed, 0);
+    const remainPct = contextRemainingPercent(contextUsed, windowSize);
     parts.push(
       <span key="context">
         Context {usageNumber(contextUsed)} / {usageNumber(windowSize)} used
       </span>,
+    );
+    parts.push(
+      <span key="remain-pct">{remainPct}% remain</span>,
     );
     parts.push(
       <span key="remaining">
@@ -588,9 +598,13 @@ export function ChatInput(): React.ReactElement {
   const hasBlockingChild = agentRuns.some(
     (r) => r.waitForResult && (r.status === "running" || r.status === "waiting_approval" || r.status === "waiting_question"),
   );
+  const activeAccount = useMemo(
+    () => providerAccounts.find((account) => account.providerKey === selectedProvider && account.isActive),
+    [providerAccounts, selectedProvider],
+  );
   const usageLine = useMemo(
-    () => usageSummaryLine(selectedProvider, displayedTokenUsage, selectedModelInfo?.contextWindowTokens),
-    [displayedTokenUsage, selectedModelInfo, selectedProvider],
+    () => usageSummaryLine(selectedProvider, displayedTokenUsage, selectedModelInfo?.contextWindowTokens, activeAccount),
+    [activeAccount, displayedTokenUsage, selectedModelInfo, selectedProvider],
   );
 
   const canSend = isChatMode
