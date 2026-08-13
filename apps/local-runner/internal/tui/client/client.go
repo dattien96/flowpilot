@@ -54,12 +54,12 @@ type Step struct {
 
 // ProviderAccountSummary mirrors /client/provider-accounts (snake_case JSON).
 type ProviderAccountSummary struct {
-	ID                 string  `json:"id"`
-	ProviderKey        string  `json:"provider_key"`
-	DisplayLabel       string  `json:"display_label"`
-	HomePath           string  `json:"home_path"`
-	IsActive           bool    `json:"is_active"`
-	AuthStatus         string  `json:"auth_status"`
+	ID                 string                     `json:"id"`
+	ProviderKey        string                     `json:"provider_key"`
+	DisplayLabel       string                     `json:"display_label"`
+	HomePath           string                     `json:"home_path"`
+	IsActive           bool                       `json:"is_active"`
+	AuthStatus         string                     `json:"auth_status"`
 	UsageSummary       *string                    `json:"usage_summary"`
 	Remaining5hPercent *int                       `json:"remaining_5h_percent"`
 	Remaining7dPercent *int                       `json:"remaining_7d_percent"`
@@ -531,29 +531,32 @@ func (c *Client) ListRunHistory(ctx context.Context, projectID string) ([]RunHis
 	return items, err
 }
 
-// SubmitApproval sends POST /client/approvals/{approvalId}.
+// SubmitApproval sends POST /client/approvals/{approvalId}/decision (Desktop parity).
 func (c *Client) SubmitApproval(ctx context.Context, approvalID, decision string, forever bool) error {
-	return c.postJSON(ctx, "/client/approvals/"+approvalID, map[string]any{
+	return c.postJSON(ctx, "/client/approvals/"+neturl.PathEscape(approvalID)+"/decision", map[string]any{
 		"decision": decision,
+		"remember": forever,
 		"forever":  forever,
 	}, nil)
 }
 
-// AnswerQuestion sends POST /client/questions/{questionId}.
+// AnswerQuestion sends POST /client/questions/{questionId}/answer (Desktop parity).
 func (c *Client) AnswerQuestion(ctx context.Context, questionID, answer string) error {
-	return c.postJSON(ctx, "/client/questions/"+questionID, map[string]any{
+	return c.postJSON(ctx, "/client/questions/"+neturl.PathEscape(questionID)+"/answer", map[string]any{
+		"choice": answer,
 		"answer": answer,
 	}, nil)
 }
 
 // Interrupt sends POST /client/workflow-runs/{runId}/interrupt.
 func (c *Client) Interrupt(ctx context.Context, runID string) error {
-	return c.postJSON(ctx, "/client/workflow-runs/"+runID+"/interrupt", nil, nil)
+	return c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/interrupt", nil, nil)
 }
 
-// SubmitGateDecision sends POST /client/workflow-runs/{runId}/gate.
+// SubmitGateDecision sends POST /client/workflow-runs/{runId}/gate-decision (Desktop parity).
 func (c *Client) SubmitGateDecision(ctx context.Context, runID, decision string) error {
-	return c.postJSON(ctx, "/client/workflow-runs/"+runID+"/gate", map[string]any{
+	return c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/gate-decision", map[string]any{
+		"option":   decision,
 		"decision": decision,
 	}, nil)
 }
