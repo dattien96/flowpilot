@@ -129,18 +129,24 @@ func TestRenderMessages_AssistantMarkdownBox(t *testing.T) {
 		{Role: "assistant", Content: "# hello left"},
 	}
 	joined := stripANSI(strings.Join(m.renderMessages(), "\n"))
-	if !strings.Contains(joined, "markdown") {
-		t.Fatalf("expected a markdown-labeled box:\n%s", joined)
+	if strings.Contains(joined, "markdown") {
+		t.Fatalf("assistant reply must not use a markdown-labeled box:\n%s", joined)
 	}
-	if !strings.Contains(joined, "# hello left") {
-		t.Fatalf("expected raw markdown:\n%s", joined)
+	if !strings.Contains(joined, "hello left") {
+		t.Fatalf("expected heading text:\n%s", joined)
+	}
+	if strings.Contains(joined, "# hello left") {
+		t.Fatalf("heading hash should be stripped:\n%s", joined)
 	}
 }
 
 func TestRenderMarkdown_ShowsRawSource(t *testing.T) {
 	src := "# Title\n\nUse `code` and **bold**.\n\n```go\nfn()\n```\n"
-	joined := strings.Join(renderMarkdown(src, 80), "\n")
-	if !strings.Contains(joined, "# Title") || !strings.Contains(joined, "**bold**") || !strings.Contains(joined, "```go") {
-		t.Fatalf("MVP should show raw markdown:\n%s", joined)
+	joined := stripANSI(strings.Join(renderMarkdown(src, 80), "\n"))
+	if strings.Contains(joined, "# Title") || strings.Contains(joined, "**bold**") || strings.Contains(joined, "```go") {
+		t.Fatalf("raw markers leaked:\n%s", joined)
+	}
+	if !strings.Contains(joined, "Title") || !strings.Contains(joined, "bold") || !strings.Contains(joined, "fn()") {
+		t.Fatalf("missing styled markdown:\n%s", joined)
 	}
 }

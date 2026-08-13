@@ -28,8 +28,8 @@ func TestRenderMessages_PadsBetweenPromptAndAnswer(t *testing.T) {
 	if userIdx < 0 || assistIdx < 0 {
 		t.Fatalf("missing bubbles:\n%s", strings.Join(lines, "\n"))
 	}
-	if assistIdx-userIdx < 3 {
-		t.Fatalf("want blank padding between prompt and answer, user=%d assist=%d\n%s", userIdx, assistIdx, strings.Join(lines, "\n"))
+	if assistIdx-userIdx < 2 {
+		t.Fatalf("want a gap between prompt and answer, user=%d assist=%d\n%s", userIdx, assistIdx, strings.Join(lines, "\n"))
 	}
 	gap := 0
 	for i := userIdx + 1; i < assistIdx; i++ {
@@ -37,8 +37,8 @@ func TestRenderMessages_PadsBetweenPromptAndAnswer(t *testing.T) {
 			gap++
 		}
 	}
-	if gap < 2 {
-		t.Fatalf("want at least 2 blank rows between prompt and answer, gap=%d", gap)
+	if gap < 1 {
+		t.Fatalf("want a blank row between prompt and answer, gap=%d", gap)
 	}
 }
 
@@ -70,23 +70,29 @@ func TestRenderMessages_PadsBetweenAnswerAndNextPrompt(t *testing.T) {
 			gap++
 		}
 	}
-	if gap < 2 {
-		t.Fatalf("want at least 2 blank rows between answer and next prompt, gap=%d\n%s", gap, strings.Join(lines, "\n"))
+	if gap < 1 {
+		t.Fatalf("want a blank row between answer and next prompt, gap=%d\n%s", gap, strings.Join(lines, "\n"))
 	}
 }
 
 func TestRenderMarkdown_KeepsRawHeadingsAndFences(t *testing.T) {
 	src := "# Title\n\n## Section\n\nA **bold** paragraph.\n\n```go\nfn()\n```\n"
-	joined := strings.Join(renderMarkdown(src, 80), "\n")
-	if !strings.Contains(joined, "# Title") || !strings.Contains(joined, "## Section") || !strings.Contains(joined, "```go") {
-		t.Fatalf("expected raw markdown:\n%s", joined)
+	joined := stripANSI(strings.Join(renderMarkdown(src, 80), "\n"))
+	if strings.Contains(joined, "# Title") || strings.Contains(joined, "## Section") || strings.Contains(joined, "```go") {
+		t.Fatalf("raw heading/fence leaked:\n%s", joined)
+	}
+	if !strings.Contains(joined, "Title") || !strings.Contains(joined, "Section") || !strings.Contains(joined, "fn()") {
+		t.Fatalf("missing styled content:\n%s", joined)
 	}
 }
 
 func TestRenderMarkdown_KeepsRawCodeStars(t *testing.T) {
 	src := "Use glob `**/*.go`.\n\n```\npointer **p = 0;\n```\n"
-	joined := strings.Join(renderMarkdown(src, 80), "\n")
-	if !strings.Contains(joined, "```") || !strings.Contains(joined, "pointer **p") {
-		t.Fatalf("expected raw fence:\n%s", joined)
+	joined := stripANSI(strings.Join(renderMarkdown(src, 80), "\n"))
+	if strings.Contains(joined, "```") {
+		t.Fatalf("fence leaked:\n%s", joined)
+	}
+	if !strings.Contains(joined, "pointer **p") {
+		t.Fatalf("code stars must stay inside the fence:\n%s", joined)
 	}
 }

@@ -90,12 +90,20 @@ func TestRenderMessages_UserAlignedRight(t *testing.T) {
 	if len(lines) < 2 {
 		t.Fatalf("lines=%v", lines)
 	}
-	user := lines[0]
-	if !strings.Contains(user, "You:") || !strings.HasPrefix(user, " ") {
+	user, assist := "", ""
+	for _, line := range lines {
+		plain := stripANSI(line)
+		if strings.Contains(plain, "hello right") {
+			user = line
+		}
+		if strings.Contains(plain, "hello left") {
+			assist = line
+		}
+	}
+	if user == "" || !strings.HasPrefix(user, " ") {
 		t.Fatalf("user line should be right-padded: %q", user)
 	}
-	assist := lines[1]
-	if strings.HasPrefix(assist, " ") {
+	if assist == "" || strings.HasPrefix(assist, " ") {
 		t.Fatalf("assistant should stay left: %q", assist)
 	}
 }

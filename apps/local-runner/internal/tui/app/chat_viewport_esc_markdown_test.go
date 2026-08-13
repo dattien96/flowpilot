@@ -13,19 +13,25 @@ import (
 
 func TestRenderMarkdown_ShowsRawSourceMVP(t *testing.T) {
 	src := "# Heading\n\nUse `code` and **bold** and *italic*.\n\n- item one\n\n```\nfn()\n```\n\nSee [docs](https://example.com)."
-	joined := strings.Join(renderMarkdown(src, 40), "\n")
-	for _, want := range []string{"# Heading", "**bold**", "```", "`code`", "[docs](", "- item one"} {
+	joined := stripANSI(strings.Join(renderMarkdown(src, 40), "\n"))
+	for _, want := range []string{"Heading", "bold", "item one", "fn()", "docs"} {
 		if !strings.Contains(joined, want) {
-			t.Fatalf("raw markdown missing %q:\n%s", want, joined)
+			t.Fatalf("styled markdown missing %q:\n%s", want, joined)
 		}
+	}
+	if strings.Contains(joined, "# Heading") || strings.Contains(joined, "**bold**") {
+		t.Fatalf("raw markers leaked:\n%s", joined)
 	}
 }
 
 func TestRenderMarkdown_WrapKeepsMarkers(t *testing.T) {
-	src := "**" + strings.Repeat("word ", 20) + "**"
-	joined := strings.Join(renderMarkdown(src, 16), "\n")
-	if !strings.Contains(joined, "**") || !strings.Contains(joined, "word") {
-		t.Fatalf("expected wrapped raw markdown:\n%s", joined)
+	src := "**" + strings.TrimSpace(strings.Repeat("word ", 20)) + "**"
+	joined := stripANSI(strings.Join(renderMarkdown(src, 16), "\n"))
+	if strings.Contains(joined, "**") {
+		t.Fatalf("wrapped bold still shows markers:\n%s", joined)
+	}
+	if !strings.Contains(joined, "word") {
+		t.Fatalf("expected wrapped text:\n%s", joined)
 	}
 }
 
@@ -179,12 +185,15 @@ func TestPromptNewlineKey_LiteralNewlineRune(t *testing.T) {
 
 func TestRenderMarkdown_DesktopRawBlocks(t *testing.T) {
 	src := "## Section\n\nA **bold** paragraph.\n\n1. first\n2. second\n\n| Col | Val |\n| --- | --- |\n| a | b |\n\n---\n\n> quoted\n"
-	joined := strings.Join(renderMarkdown(src, 60), "\n")
-	if !strings.Contains(joined, "## Section") || !strings.Contains(joined, "**bold**") || !strings.Contains(joined, "> quoted") {
-		t.Fatalf("expected raw markdown:\n%s", joined)
+	joined := stripANSI(strings.Join(renderMarkdown(src, 60), "\n"))
+	if strings.Contains(joined, "## Section") || strings.Contains(joined, "**bold**") {
+		t.Fatalf("raw markdown leaked:\n%s", joined)
 	}
-	if !strings.Contains(joined, "| Col | Val |") {
-		t.Fatalf("expected raw table:\n%s", joined)
+	if !strings.Contains(joined, "Section") || !strings.Contains(joined, "first") || !strings.Contains(joined, "quoted") {
+		t.Fatalf("missing styled text:\n%s", joined)
+	}
+	if !strings.Contains(joined, "Col") || !strings.Contains(joined, "a") {
+		t.Fatalf("missing table cells:\n%s", joined)
 	}
 }
 
@@ -193,24 +202,25 @@ func TestRenderMessages_AssistantShowsRawMarkdownBox(t *testing.T) {
 	m.width = 80
 	m.addMessage("assistant", "# Title\n\nUse **bold** and `code`.\n\n```\nfn()\n```", "")
 	joined := stripANSI(strings.Join(m.renderMessages(), "\n"))
-	if !strings.Contains(joined, "markdown") {
-		t.Fatalf("expected markdown box label:\n%s", joined)
+	if strings.Contains(joined, "markdown") {
+		t.Fatalf("assistant reply must not use a markdown-labeled box:\n%s", joined)
 	}
-	if !strings.Contains(joined, "**bold**") || !strings.Contains(joined, "```") || !strings.Contains(joined, "# Title") {
-		t.Fatalf("expected raw markdown in the box:\n%s", joined)
+	if !strings.Contains(joined, "Title") || !strings.Contains(joined, "bold") || !strings.Contains(joined, "fn()") {
+		t.Fatalf("expected styled markdown:\n%s", joined)
 	}
-	for _, titled := range []string{"┌ code", "+ code", "┌ go", "+ go", "┌ coding", "+ coding"} {
-		if strings.Contains(joined, titled) {
-			t.Fatalf("fenced code must stay inside the markdown box, not a separate %q box:\n%s", titled, joined)
-		}
+	if strings.Contains(joined, "**bold**") || strings.Contains(joined, "# Title") {
+		t.Fatalf("raw markers leaked:\n%s", joined)
 	}
 }
 
 func TestRenderMarkdown_CodeFenceStaysRaw(t *testing.T) {
 	src := "Intro\n\n```go\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n```\n"
-	joined := strings.Join(renderMarkdown(src, 40), "\n")
-	if !strings.Contains(joined, "```go") || !strings.Contains(joined, "func main()") {
-		t.Fatalf("expected raw fence:\n%s", joined)
+	joined := stripANSI(strings.Join(renderMarkdown(src, 40), "\n"))
+	if strings.Contains(joined, "```") {
+		t.Fatalf("fence ticks leaked:\n%s", joined)
+	}
+	if !strings.Contains(joined, "func main()") {
+		t.Fatalf("expected fence body:\n%s", joined)
 	}
 }
 

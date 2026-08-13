@@ -32,6 +32,7 @@ const (
 	colorOK         = "#3fb950" // --ok
 	colorErr        = "#f85149" // --err
 	colorBg3        = "#1e1e1e" // --bg-3
+	colorCodeBg     = "#252526" // fenced-code panel (lifted vs terminal / --bg-3)
 )
 
 var (
@@ -2035,9 +2036,11 @@ func (m *AppModel) renderMessages() []string {
 }
 
 type chatRow struct {
-	Text   string
-	MsgIdx int
-	Copy   bool
+	Text     string
+	MsgIdx   int
+	Copy     bool
+	CopyText string
+	FenceIdx int
 }
 
 func (m *AppModel) chatRows() []chatRow {
@@ -2127,7 +2130,7 @@ func (m *AppModel) buildChatRows() []chatRow {
 			}
 		}
 		showCopy := (msg.Role == "user" || msg.Role == "assistant") && msg.FormatHint != "thinking" && strings.TrimSpace(msg.Content) != ""
-		boxed := msg.Role == "user" || (msg.Role == "assistant" && msg.FormatHint == "")
+		boxed := msg.Role == "user"
 		if showCopy && boxed {
 			contentWidth -= len([]rune(copyChip))
 			if contentWidth < 8 {
@@ -2140,10 +2143,14 @@ func (m *AppModel) buildChatRows() []chatRow {
 				contentWidth = 8
 			}
 		}
-		wrapped := wrapText(msg.Content, contentWidth)
-		wrapped = trimEmptyEdges(wrapped)
+		mdLines := textsToMD(trimEmptyEdges(wrapText(msg.Content, contentWidth)))
+		if msg.Role == "assistant" && msg.FormatHint == "" {
+			mdLines = renderMarkdownRows(msg.Content, contentWidth, m.asciiMode)
+		}
 		var msgRows []chatRow
-		for i, line := range wrapped {
+		fenceN := 0
+		for i, ml := range mdLines {
+			line := ml.Text
 			lineStyle := style
 			if msg.FormatHint == "steps" {
 				lineStyle = styleForStepBannerLine(line)
@@ -2158,26 +2165,47 @@ func (m *AppModel) buildChatRows() []chatRow {
 			} else if prefix != "" {
 				pad := strings.Repeat(" ", len([]rune(prefix)))
 				rendered = pad + lineStyle.Render(stripANSI(line))
+			} else if msg.Role == "assistant" && msg.FormatHint == "" {
+				rendered = line
 			} else {
 				rendered = lineStyle.Render(stripANSI(line))
 			}
-			copyOn := showCopy && boxed && i == len(wrapped)-1
+			copyFence := ml.CopyCode != ""
+			copyOn := showCopy && i == len(mdLines)-1
+			if copyOn && !boxed && !copyFence {
+				rendered = rendered + styleLink.Render(copyChip)
+			}
 			if rightAlign && !boxed {
 				rendered = rightAlignPlain(rendered, width)
 			}
-			msgRows = append(msgRows, chatRow{Text: rendered, MsgIdx: mi, Copy: copyOn})
+			row := chatRow{Text: rendered, MsgIdx: mi, Copy: copyOn || copyFence}
+			if copyFence {
+				row.CopyText = ml.CopyCode
+				row.FenceIdx = fenceN
+				fenceN++
+			}
+			msgRows = append(msgRows, row)
 		}
 		if boxed {
-			msgRows = strokeChatRows(msgRows, width, msg.Role == "user", m.asciiMode)
-		} else if showCopy {
-			msgRows = append(msgRows, chatRow{Text: styleLink.Render(copyChip), MsgIdx: mi, Copy: true})
+			msgRows = strokeChatRows(msgRows, width, true, m.asciiMode)
 		}
-		if mi > 0 {
-			rows = append(rows, chatRow{}, chatRow{})
+		if mi > 0 && chatGapBefore(m.messages[mi-1], msg) {
+			rows = append(rows, chatRow{})
 		}
 		rows = append(rows, msgRows...)
 	}
 	return rows
+}
+
+func chatGapBefore(prev, cur ChatMessage) bool {
+	return isChatBubble(prev) && isChatBubble(cur)
+}
+
+func isChatBubble(msg ChatMessage) bool {
+	if msg.Role == "user" {
+		return true
+	}
+	return msg.Role == "assistant" && msg.FormatHint == ""
 }
 
 func renderApprovalText(line string) string {
@@ -3042,6 +3070,19 @@ func (m *AppModel) cmdCopyMessage(idx int) tea.Cmd {
 	if kind == "user" {
 		kind = "prompt"
 	}
+	return m.cmdCopyText(text, kind)
+}
+
+func (m *AppModel) cmdCopyFence(msgIdx, fenceIdx int) tea.Cmd {
+	for _, r := range m.chatRows() {
+		if r.MsgIdx == msgIdx && r.CopyText != "" && r.FenceIdx == fenceIdx {
+			return m.cmdCopyText(r.CopyText, "code")
+		}
+	}
+	return func() tea.Msg { return CopiedMsg{Kind: "code", Err: "nothing to copy"} }
+}
+
+func (m *AppModel) cmdCopyText(text, kind string) tea.Cmd {
 	return func() tea.Msg {
 		if err := writeClipboardText(text); err != nil {
 			return CopiedMsg{Kind: kind, Err: err.Error()}

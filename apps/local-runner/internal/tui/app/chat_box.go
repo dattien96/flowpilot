@@ -44,10 +44,14 @@ func strokeLine(inner string, boxW int, ascii bool) string {
 		innerW = 4
 		boxW = innerW + 2
 	}
-	return v + padVisual(inner, innerW) + v
+	return v + padVisualANSI(inner, innerW) + v
 }
 
 func strokeTop(title string, boxW int, ascii bool) string {
+	return strokeTopChip(title, "", boxW, ascii)
+}
+
+func strokeTopChip(title, chip string, boxW int, ascii bool) string {
 	tl, tr, _, _, h, _ := boxGlyphs(ascii)
 	innerW := boxW - 2
 	if innerW < 4 {
@@ -57,16 +61,28 @@ func strokeTop(title string, boxW int, ascii bool) string {
 	if title != "" {
 		title = " " + title + " "
 	}
-	tRunes := []rune(title)
-	if len(tRunes) > innerW {
-		title = string(tRunes[:innerW])
-		tRunes = []rune(title)
+	tw := lipgloss.Width(title)
+	cw := lipgloss.Width(chip)
+	if tw+cw > innerW {
+		room := innerW - cw
+		if room < 0 {
+			chip = truncateVisual(chip, innerW)
+			cw = lipgloss.Width(chip)
+			room = innerW - cw
+		}
+		if room < 0 {
+			room = 0
+		}
+		if tw > room {
+			title = truncateVisual(title, room)
+			tw = lipgloss.Width(title)
+		}
 	}
-	fill := innerW - len(tRunes)
+	fill := innerW - tw - cw
 	if fill < 0 {
 		fill = 0
 	}
-	return tl + title + strings.Repeat(h, fill) + tr
+	return tl + title + strings.Repeat(h, fill) + chip + tr
 }
 
 func strokeBottom(boxW int, ascii bool) string {
@@ -149,34 +165,17 @@ func strokeChatRows(inner []chatRow, width int, user, ascii bool) []chatRow {
 	if len(inner) == 0 || width < 10 {
 		return inner
 	}
-	boxW := width
-	if user {
-		boxW = width * 7 / 10
-		if boxW < 16 {
-			boxW = width
-		}
-		if boxW > width {
-			boxW = width
-		}
-	}
+	title := "You"
+	boxW := hugBoxWidth(inner, title, width, user)
 	out := make([]chatRow, 0, len(inner)+2)
 	idx := inner[0].MsgIdx
-	// User one-line keeps side bars only (right-align contract). Assistant always
-	// gets a "markdown" title frame so raw MD is visually a labeled box.
-	frame := !user || len(inner) > 1
-	if frame {
-		title := "markdown"
-		if user {
-			title = "You"
-		}
-		top := strokeTop(title, boxW, ascii)
-		if user {
-			top = rightAlignPlain(top, width)
-		}
-		out = append(out, chatRow{Text: top, MsgIdx: idx})
+	top := strokeTop(title, boxW, ascii)
+	if user {
+		top = rightAlignPlain(top, width)
 	}
+	out = append(out, chatRow{Text: top, MsgIdx: idx})
 	for i, r := range inner {
-		text := " " + stripANSI(r.Text)
+		text := " " + r.Text
 		copyOn := r.Copy && i == len(inner)-1
 		innerW := boxW - 2
 		if innerW < 4 {
@@ -184,27 +183,60 @@ func strokeChatRows(inner []chatRow, width int, user, ascii bool) []chatRow {
 		}
 		if copyOn {
 			chip := stripANSI(copyChip)
-			room := innerW - len([]rune(chip))
+			room := innerW - lipgloss.Width(chip)
 			if room < 4 {
 				room = 4
 			}
-			text = padVisual(text, room) + chip
+			text = padVisualANSI(text, room) + chip
 		}
 		line := strokeLine(text, boxW, ascii)
-		if user && len(inner) == 1 {
-			line = "You:" + line
-		}
 		if user {
 			line = rightAlignPlain(line, width)
 		}
 		out = append(out, chatRow{Text: line, MsgIdx: r.MsgIdx, Copy: copyOn})
 	}
-	if frame {
-		bot := strokeBottom(boxW, ascii)
-		if user {
-			bot = rightAlignPlain(bot, width)
-		}
-		out = append(out, chatRow{Text: bot, MsgIdx: inner[len(inner)-1].MsgIdx})
+	bot := strokeBottom(boxW, ascii)
+	if user {
+		bot = rightAlignPlain(bot, width)
 	}
+	out = append(out, chatRow{Text: bot, MsgIdx: inner[len(inner)-1].MsgIdx})
 	return out
+}
+
+func hugBoxWidth(inner []chatRow, title string, maxW int, user bool) int {
+	innerW := 4
+	for _, r := range inner {
+		w := lipgloss.Width(r.Text) + 1
+		if r.Copy {
+			w += lipgloss.Width(copyChip)
+		}
+		if w > innerW {
+			innerW = w
+		}
+	}
+	tlen := len([]rune(" " + strings.TrimSpace(title) + " "))
+	if tlen > innerW {
+		innerW = tlen
+	}
+	boxW := innerW + 2
+	capW := maxW
+	if user {
+		capW = maxW * 7 / 10
+		if capW < 16 {
+			capW = maxW
+		}
+	}
+	if boxW > capW {
+		boxW = capW
+	}
+	if boxW > maxW {
+		boxW = maxW
+	}
+	if boxW < 10 {
+		boxW = 10
+		if boxW > maxW {
+			boxW = maxW
+		}
+	}
+	return boxW
 }

@@ -7,6 +7,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/pelletier/go-toml/v2 v2.3.1
 	github.com/spf13/cobra v1.10.2
+	github.com/yuin/goldmark v1.7.8
 	github.com/zalando/go-keyring v0.2.8
 	golang.design/x/clipboard v0.8.0
 	golang.org/x/image v0.45.0

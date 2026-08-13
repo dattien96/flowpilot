@@ -152,6 +152,11 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		if err == nil && m.question != nil && idx >= 0 && idx < len(m.question.Options) {
 			return m.submitQuestionAnswer(questionOptionToken(m.question.Options[idx]))
 		}
+	case strings.HasPrefix(target, "copyfence:"):
+		msgIdx, fenceIdx, ok := parseCopyFenceTarget(target)
+		if ok {
+			return m, m.cmdCopyFence(msgIdx, fenceIdx)
+		}
 	case strings.HasPrefix(target, "copy:"):
 		idx, err := strconv.Atoi(strings.TrimPrefix(target, "copy:"))
 		if err == nil {
@@ -338,10 +343,31 @@ func hitCopyChrome(m *AppModel, c tuiChrome, x, y int) string {
 		return ""
 	}
 	stripped := stripANSI(rows[rel].Text)
-	if hitToken(stripped, "[copy]", x) {
-		return "copy:" + strconv.Itoa(rows[rel].MsgIdx)
+	if !hitToken(stripped, "[copy]", x) {
+		return ""
 	}
-	return ""
+	if rows[rel].CopyText != "" {
+		return "copyfence:" + strconv.Itoa(rows[rel].MsgIdx) + ":" + strconv.Itoa(rows[rel].FenceIdx)
+	}
+	return "copy:" + strconv.Itoa(rows[rel].MsgIdx)
+}
+
+func parseCopyFenceTarget(target string) (msgIdx, fenceIdx int, ok bool) {
+	rest := strings.TrimPrefix(target, "copyfence:")
+	parts := strings.Split(rest, ":")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	var err error
+	msgIdx, err = strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	fenceIdx, err = strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	return msgIdx, fenceIdx, true
 }
 
 func applyMouseSelection(lines []string, sel mouseSelect, yOff int) []string {

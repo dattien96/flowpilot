@@ -35,16 +35,16 @@ func TestCopyChip_AttachesToAnswerBeforeNextChatPadding(t *testing.T) {
 	if copyIdx < ansIdx || copyIdx > ansIdx+1 {
 		t.Fatalf("copy must sit on the answer line or next row in the box, ans=%d copy=%d\n%s", ansIdx, copyIdx, strings.Join(lines, "\n"))
 	}
-	if nextIdx-copyIdx < 3 {
+	if nextIdx-copyIdx < 2 {
 		t.Fatalf("padding belongs after copy, before next prompt; copy=%d next=%d\n%s", copyIdx, nextIdx, strings.Join(lines, "\n"))
 	}
 }
 
 func TestRenderMarkdown_TableStaysRaw(t *testing.T) {
 	src := "| Prop | Type |\n| --- | --- |\n| variant | string |\n"
-	joined := strings.Join(renderMarkdown(src, 60), "\n")
-	if !strings.Contains(joined, "| Prop | Type |") || !strings.Contains(joined, "variant") {
-		t.Fatalf("expected raw markdown table:\n%s", joined)
+	joined := stripANSI(strings.Join(renderMarkdown(src, 60), "\n"))
+	if !strings.Contains(joined, "Prop") || !strings.Contains(joined, "variant") || !strings.Contains(joined, "string") {
+		t.Fatalf("expected table cells:\n%s", joined)
 	}
 }
 

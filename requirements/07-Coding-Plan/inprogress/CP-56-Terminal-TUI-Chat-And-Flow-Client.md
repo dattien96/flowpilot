@@ -9,9 +9,9 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-12`
-- Last Updated: `2026-08-12` (approved after audit correction)
+- Last Updated: `2026-08-13` (Task-289 P-8b markdown polish captured; plan intent unchanged)
 - Parent Documents: [SD-02: Architecture](../../06-System-Tech-Design/SD-02-Architecture.md), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [03 - Solution And System Design](../../10-Refactor/New-System/03-Solution-And-System-Design.md), [04-01 Phase1 Desktop Mock MVP](../../10-Refactor/New-System/04-01-Phase1-Desktop-Mock-MVP.md), [04-02 Runner Contracts And APIs](../../10-Refactor/New-System/04-02-Phase2-Runner-Contracts-And-APIs.md)
-- Child Documents: [Task-278](../../08-Task/todo/Task-278-TUI-Go-Client-Ensure-Runner-And-Chat-Entry.md) (P-0), [Task-279](../../08-Task/todo/Task-279-Bubble-Tea-Chat-Stream-Shell.md) (P-1), [Task-280](../../08-Task/todo/Task-280-TUI-Session-Controls-Provider-Model-Reasoning-Yolo.md) (P-2), [Task-281](../../08-Task/todo/Task-281-TUI-Slash-Skill-Attachments.md) (P-3), [Task-282](../../08-Task/todo/Task-282-TUI-Image-Attach-Via-Existing-Turn-API.md) (P-3b), [Task-283](../../08-Task/todo/Task-283-TUI-Flow-And-Step-Slash-Launch.md) (P-4), [Task-284](../../08-Task/todo/Task-284-TUI-Statusline-Account-And-Token-Usage.md) (P-5), [Task-285](../../08-Task/todo/Task-285-TUI-Sub-Agent-Status-And-Focus-Switch.md) (P-6), [Task-286](../../08-Task/todo/Task-286-TUI-Approval-And-Question-Gates.md) (P-7), [Task-287](../../08-Task/todo/Task-287-TUI-Resume-Headless-And-Session-Reset.md) (P-8), [Task-288](../../08-Task/todo/Task-288-TUI-Docs-Boundary-And-Rollout-Evidence.md) (P-9)
+- Child Documents: [Task-278](../../08-Task/todo/Task-278-TUI-Go-Client-Ensure-Runner-And-Chat-Entry.md) (P-0), [Task-279](../../08-Task/todo/Task-279-Bubble-Tea-Chat-Stream-Shell.md) (P-1), [Task-280](../../08-Task/todo/Task-280-TUI-Session-Controls-Provider-Model-Reasoning-Yolo.md) (P-2), [Task-281](../../08-Task/todo/Task-281-TUI-Slash-Skill-Attachments.md) (P-3), [Task-282](../../08-Task/todo/Task-282-TUI-Image-Attach-Via-Existing-Turn-API.md) (P-3b), [Task-283](../../08-Task/todo/Task-283-TUI-Flow-And-Step-Slash-Launch.md) (P-4), [Task-284](../../08-Task/todo/Task-284-TUI-Statusline-Account-And-Token-Usage.md) (P-5), [Task-285](../../08-Task/todo/Task-285-TUI-Sub-Agent-Status-And-Focus-Switch.md) (P-6), [Task-286](../../08-Task/todo/Task-286-TUI-Approval-And-Question-Gates.md) (P-7), [Task-287](../../08-Task/todo/Task-287-TUI-Resume-Headless-And-Session-Reset.md) (P-8), [Task-289](../../08-Task/done/Task-289-TUI-Codex-Style-Assistant-Markdown.md) (P-8b), [Task-288](../../08-Task/todo/Task-288-TUI-Docs-Boundary-And-Rollout-Evidence.md) (P-9)
 - Related Documents: [CP-36 Agent Review Loop](../done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [CP-42 Flow Pack](../done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md), [CP-51 Durable Turn Dispatch](../done/CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md), [CP-56-Test-Steps](./CP-56-Test-Steps.md), [Product Vision](../../01-Vision/Product-vision.md)
 - Replaces: `None`
 - Tags: `cli-tui, chat-ui, agent-flow-engine, terminal, bubbletea, thin-client`
@@ -30,7 +30,7 @@
 
 ### Current Ask
 
-- **Approved.** Implement Tasks 278→288 in order, starting at Task-278. Update [CP-56-Test-Steps](./CP-56-Test-Steps.md) evidence as each Task lands.
+- **Approved.** Implement Tasks 278→288 in order, starting at Task-278. [Task-289](../../08-Task/done/Task-289-TUI-Codex-Style-Assistant-Markdown.md) is P-8b polish (Codex-style markdown); it does not block Task-287 or Task-288. Update [CP-56-Test-Steps](./CP-56-Test-Steps.md) evidence as each Task lands.
 
 ### Key Decisions
 
@@ -152,7 +152,7 @@ Each phase ends with green tests listed in [CP-56-Test-Steps](./CP-56-Test-Steps
 - Desktop Settings parity (MCP, Drive, Supabase, workflow builder, account connect UI).
 - Embedding React/Ink.
 - Changing provider adapters or flow executor.
-- Full markdown/diff studio (v1: plain + light glamour optional in P-8 polish).
+- Full markdown/diff studio (syntax highlighter, mermaid, `bubbles/viewport` rewrite). Styled assistant markdown is [Task-289](../../08-Task/done/Task-289-TUI-Codex-Style-Assistant-Markdown.md) (Codex-style goldmark walk + cache), not Charm Glamour.
 - Rich ANSI inline image preview (optional polish; filenames + count are enough for DOD).
 - Clipboard multi-OS paste matrix beyond “path / file drop / `/image`” unless cheap on Windows.
 - Replacing desktop as the primary coding UI.
@@ -710,7 +710,7 @@ func TestBlockedLoop_ContinueAndStopUseExistingEndpoints(t *testing.T)
 - `/new` — clear session, new run on next prompt
 - `--resume <runId>` — cold open + replay stream from seq 0
 - `-p/--print <prompt>` — non-TTY one-shot (no Bubble Tea); print final message + exit code. If an approval/question/flow gate appears, interrupt and exit non-zero with guidance instead of hanging.
-- Optional: glamour for assistant markdown (soft dependency)
+- Optional styled assistant markdown: [Task-289](../../08-Task/done/Task-289-TUI-Codex-Style-Assistant-Markdown.md) (P-8b). Codex-style goldmark → Lip Gloss lines with per-message cache. Charm Glamour + `bubbles/viewport` is out (CA-463).
 
 **Code signatures**
 
@@ -862,6 +862,7 @@ Failure cases to assert:
 | P-6 | [Task-285](../../08-Task/todo/Task-285-TUI-Sub-Agent-Status-And-Focus-Switch.md) |
 | P-7 | [Task-286](../../08-Task/todo/Task-286-TUI-Approval-And-Question-Gates.md) |
 | P-8 | [Task-287](../../08-Task/todo/Task-287-TUI-Resume-Headless-And-Session-Reset.md) |
+| P-8b | [Task-289](../../08-Task/done/Task-289-TUI-Codex-Style-Assistant-Markdown.md) |
 | P-9 | [Task-288](../../08-Task/todo/Task-288-TUI-Docs-Boundary-And-Rollout-Evidence.md) |
 
 ---
