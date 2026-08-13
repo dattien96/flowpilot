@@ -109,6 +109,7 @@ func (m *AppModel) cmdFocusAgent(runID string) tea.Cmd {
 	m.stopFocusStream()
 	m.focusRunID = runID
 	m.messages = nil
+	m.visiblePromptCount = 0
 	m.viewport.offset = 0
 	name := m.agentNameForRun(runID)
 	m.addMessage("system", fmt.Sprintf("Child transcript: %s — /agent main or Tab to return", name), "")
@@ -139,6 +140,8 @@ func (m *AppModel) restoreMainTranscript() {
 	m.stopFocusStream()
 	if m.viewingChild() && m.mainTranscript != nil {
 		m.messages = append([]ChatMessage(nil), m.mainTranscript...)
+		m.visiblePromptCount = 0
+		m.syncVisiblePromptCount()
 	}
 	m.focusRunID = ""
 	m.mainTranscript = nil

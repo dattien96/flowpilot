@@ -393,9 +393,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.approval = nil
 		m.question = nil
 		m.messages = nil
+		m.visiblePromptCount = 0
 		m.viewport.offset = 0
 		if len(msg.Messages) > 0 {
 			m.messages = append([]ChatMessage(nil), msg.Messages...)
+			m.syncVisiblePromptCount()
 		}
 		if pk := strings.TrimSpace(handle.ProviderKey); pk != "" {
 			m.provider = pk
@@ -1800,6 +1802,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.stepID = ""
 		m.pendingPrompt = ""
 		m.messages = nil
+		m.visiblePromptCount = 0
 		m.viewport.offset = 0
 		m.connStatus = ConnIdle
 		m.statusMsg = "ready"
@@ -2108,11 +2111,12 @@ func (m *AppModel) renderMessages() []string {
 }
 
 type chatRow struct {
-	Text     string
-	MsgIdx   int
-	Copy     bool
-	CopyText string
-	FenceIdx int
+	Text        string
+	MsgIdx      int
+	Copy        bool
+	CopyText    string
+	FenceIdx    int
+	LoadEarlier bool
 }
 
 func (m *AppModel) chatRows() []chatRow {
@@ -2143,12 +2147,13 @@ func (m *AppModel) chatRowsSig() uint64 {
 		_, _ = h.Write([]byte(msg.FormatHint))
 		_, _ = h.Write([]byte{1})
 	}
+	_, _ = h.Write([]byte(strconv.Itoa(m.visiblePromptCount)))
 	return h.Sum64()
 }
 
 func (m *AppModel) buildChatRows() []chatRow {
 	width := safeTermWidth(m.width)
-	if width < 8 {
+	if width < 1 {
 		if m.width > 0 {
 			width = m.width
 		} else {
@@ -2156,7 +2161,16 @@ func (m *AppModel) buildChatRows() []chatRow {
 		}
 	}
 	var rows []chatRow
-	for mi, msg := range m.messages {
+	if hidden := m.hiddenPromptCountBeforeWindow(); hidden > 0 {
+		label := loadEarlierPromptLabel(hidden)
+		rows = append(rows, chatRow{
+			Text:        styleLink.Render(label),
+			LoadEarlier: true,
+		})
+	}
+	start := m.windowStartIndex()
+	for mi := start; mi < len(m.messages); mi++ {
+		msg := m.messages[mi]
 		prefix := ""
 		prefixStyle := styleSystem
 		style := styleSystem
@@ -2486,6 +2500,9 @@ func (m *AppModel) addMessage(role, content, hint string) {
 		Content:    content,
 		FormatHint: hint,
 	})
+	if role == "user" {
+		m.syncVisiblePromptCount()
+	}
 }
 
 func (m *AppModel) appendAssistantDelta(text string) {

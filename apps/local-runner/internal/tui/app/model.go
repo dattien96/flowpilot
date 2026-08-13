@@ -191,6 +191,8 @@ type AppModel struct {
 	connStatus ConnStatus
 	statusMsg  string
 	messages   []ChatMessage
+	// visiblePromptCount is how many newest user-prompt groups to render (Task-290).
+	visiblePromptCount int
 
 	inputValue  string
 	viewport    viewportState

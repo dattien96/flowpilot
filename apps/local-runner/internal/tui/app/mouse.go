@@ -164,6 +164,8 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		if err == nil {
 			return m, m.cmdCopyMessage(idx)
 		}
+	case target == "load-earlier":
+		m.loadEarlierPrompts()
 	}
 	return m, nil
 }
@@ -193,6 +195,9 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 	}
 	if hitAttachChrome(c, x, y) {
 		return "attach"
+	}
+	if t := hitLoadEarlierChrome(m, c, x, y); t != "" {
+		return t
 	}
 	if t := hitCopyChrome(m, c, x, y); t != "" {
 		return t
@@ -349,6 +354,22 @@ func hitAttachChrome(c tuiChrome, x, y int) bool {
 		return true
 	}
 	return strings.Contains(stripped, " img]") && hitToken(stripped, "[", x)
+}
+
+func hitLoadEarlierChrome(m *AppModel, c tuiChrome, x, y int) string {
+	rows := sliceChatRows(m.chatRows(), c.messagesHeight, m.viewport.offset)
+	rel := y - c.panelH
+	if rel < 0 || rel >= len(rows) {
+		return ""
+	}
+	if !rows[rel].LoadEarlier {
+		return ""
+	}
+	stripped := stripANSI(rows[rel].Text)
+	if strings.Contains(stripped, "Load earlier prompts") {
+		return "load-earlier"
+	}
+	return ""
 }
 
 func hitCopyChrome(m *AppModel, c tuiChrome, x, y int) string {

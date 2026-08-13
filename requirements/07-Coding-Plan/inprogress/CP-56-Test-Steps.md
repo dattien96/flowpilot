@@ -238,10 +238,10 @@ Define machine-checkable signatures, live acceptance steps, and evidence require
 
 | ID | Signature | Package | Status |
 |---|---|---|---|
-| A8.16 | `TestChatWindow_ShowsNewestSixPromptGroups` | `internal/tui/app` | ☐ |
-| A8.17 | `TestChatWindow_LoadEarlierRevealsPreviousPage` | `internal/tui/app` | ☐ |
-| A8.18 | `TestChatWindow_PendingGateStaysVisible` | `internal/tui/app` | ☐ |
-| A8.19 | `TestChatWindow_NewResetsWindow` | `internal/tui/app` | ☐ |
+| A8.16 | `TestChatWindow_ShowsNewestSixPromptGroups` | `internal/tui/app` | ☑ |
+| A8.17 | `TestChatWindow_LoadEarlierRevealsPreviousPage` | `internal/tui/app` | ☑ |
+| A8.18 | `TestChatWindow_PendingGateStaysVisible` | `internal/tui/app` | ☑ |
+| A8.19 | `TestChatWindow_NewResetsWindow` | `internal/tui/app` | ☑ |
 
 ### P-2 residual — Chat YOLO=on ordinary write (Task-291)
 

@@ -882,7 +882,7 @@ Failure cases to assert:
 | P-7 | [Task-286](../../08-Task/todo/Task-286-TUI-Approval-And-Question-Gates.md) |
 | P-8 | [Task-287](../../08-Task/todo/Task-287-TUI-Resume-Headless-And-Session-Reset.md) |
 | P-8b | [Task-289](../../08-Task/done/Task-289-TUI-Codex-Style-Assistant-Markdown.md) |
-| P-8c | [Task-290](../../08-Task/todo/Task-290-TUI-Long-Chat-Load-Earlier-Windowing.md) |
+| P-8c | [Task-290](../../08-Task/done/Task-290-TUI-Long-Chat-Load-Earlier-Windowing.md) |
 | P-2 residual | [Task-291](../../08-Task/todo/Task-291-Chat-Yolo-On-Must-Not-Prompt-Ordinary-File-Write.md) |
 | P-9 | [Task-288](../../08-Task/todo/Task-288-TUI-Docs-Boundary-And-Rollout-Evidence.md) |
 
