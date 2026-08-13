@@ -15,8 +15,8 @@ func TestStatusLine_OmitsChatModeChip(t *testing.T) {
 	m.mode = ModeChat
 	m.asciiMode = true
 	line := m.renderStatusLine()
-	if strings.Contains(line, "[chat]") {
-		t.Fatalf("chat mode must not duplicate input 'chat' label: %q", line)
+	if !strings.Contains(line, "[chat]") {
+		t.Fatalf("chat mode should label [chat]: %q", line)
 	}
 	m.mode = ModeFlow
 	m.launch = LaunchArm{FlowRef: "pack/review-loop", Label: "review-loop"}

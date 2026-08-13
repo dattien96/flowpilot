@@ -258,7 +258,13 @@ func TestStatusLine_PutsContextUsageOnOwnRow(t *testing.T) {
 	if len(lines) < 3 {
 		t.Fatalf("want usage on its own row, got %d lines:\n%s", len(lines), got)
 	}
-	usage := lines[len(lines)-1]
+	usage := ""
+	for _, line := range lines {
+		if strings.Contains(line, "ctx") {
+			usage = line
+			break
+		}
+	}
 	if !strings.Contains(usage, "ctx") || !strings.Contains(usage, "128.0k") || !strings.Contains(usage, "left") {
 		t.Fatalf("usage row missing window context: %q", usage)
 	}

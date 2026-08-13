@@ -553,6 +553,12 @@ func (c *Client) Interrupt(ctx context.Context, runID string) error {
 	return c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/interrupt", nil, nil)
 }
 
+// StopAgentLoop sends POST /client/workflow-runs/{runId}/agent-loop/stop
+// (Desktop Stop: seal the hub and cancel every child).
+func (c *Client) StopAgentLoop(ctx context.Context, runID string) error {
+	return c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/agent-loop/stop", nil, nil)
+}
+
 // SubmitGateDecision sends POST /client/workflow-runs/{runId}/gate-decision (Desktop parity).
 func (c *Client) SubmitGateDecision(ctx context.Context, runID, decision string) error {
 	return c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/gate-decision", map[string]any{
@@ -675,6 +681,43 @@ func (c *Client) StreamWithReconnect(ctx context.Context, runID string, afterSeq
 					return
 				}
 				if ev.Type == "turn_completed" || ev.Type == "run_completed" {
+					return
+				}
+			}
+			if ctx.Err() != nil {
+				return
+			}
+		}
+	}()
+	return ch
+}
+
+// StreamLive attaches to a run SSE and stays open across turn_completed so
+// flow orchestration (child graph / late gates) keeps arriving. Caller cancels ctx.
+func (c *Client) StreamLive(ctx context.Context, runID string, afterSeq int64) <-chan ProviderEvent {
+	ch := make(chan ProviderEvent, 32)
+	go func() {
+		defer close(ch)
+		const maxRetries = 5
+		backoff := 500 * time.Millisecond
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			if attempt > 0 {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(backoff):
+					if backoff < 8*time.Second {
+						backoff *= 2
+					}
+				}
+			}
+			for ev := range c.openStream(ctx, runID, afterSeq) {
+				if ev.Seq > afterSeq {
+					afterSeq = ev.Seq
+				}
+				select {
+				case ch <- ev:
+				case <-ctx.Done():
 					return
 				}
 			}

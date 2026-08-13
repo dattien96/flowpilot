@@ -127,6 +127,8 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.statusSkillsExpanded = !m.statusSkillsExpanded
+	case target == "status-details":
+		m.statusDetailsCollapsed = !m.statusDetailsCollapsed
 	case target == "stop":
 		if m.turnIsActive() {
 			return m, m.cmdStopTurn()
@@ -180,6 +182,9 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 	if hitStopChrome(c, x, y) {
 		return "stop"
 	}
+	if hitStatusDetailsChrome(c, x, y) {
+		return "status-details"
+	}
 	if t := hitApprovalChrome(c, x, y); t != "" {
 		return t
 	}
@@ -224,28 +229,41 @@ func hitSkillsChrome(c tuiChrome, x, y int) bool {
 	if rel < 0 || rel >= len(lines) {
 		return false
 	}
-	stripped := stripANSI(lines[0])
+	stripped := stripANSI(lines[rel])
+	if strings.HasPrefix(stripped, "  ") && rel > 0 {
+		return true
+	}
 	i := strings.Index(stripped, "skills:")
 	if i < 0 {
 		return false
 	}
-	if rel == 0 {
-		start := lipgloss.Width(stripped[:i])
-		rest := stripped[i:]
-		endRel := len([]rune(rest))
-		for _, sep := range []string{" │ ", " | "} {
-			if j := strings.Index(rest, sep); j >= 0 {
-				n := len([]rune(rest[:j]))
-				if n < endRel {
-					endRel = n
-				}
+	start := lipgloss.Width(stripped[:i])
+	rest := stripped[i:]
+	endRel := lipgloss.Width(rest)
+	for _, sep := range []string{" │ ", " | "} {
+		if j := strings.Index(rest, sep); j >= 0 {
+			n := lipgloss.Width(rest[:j])
+			if n < endRel {
+				endRel = n
 			}
 		}
-		end := start + endRel
-		return x >= start && x < end
 	}
-	// Expanded name rows sit between line1 and the project row (last line).
-	return rel > 0 && rel < len(lines)-1
+	end := start + endRel
+	return x >= start && x < end
+}
+
+func hitStatusDetailsChrome(c tuiChrome, x, y int) bool {
+	if y != c.statusY {
+		return false
+	}
+	if hitStopChrome(c, x, y) {
+		return false
+	}
+	lines := strings.Split(c.statusBlock, "\n")
+	if len(lines) == 0 {
+		return false
+	}
+	return lipgloss.Width(stripANSI(lines[0])) > 0
 }
 
 func hitToken(stripped string, token string, x int) bool {

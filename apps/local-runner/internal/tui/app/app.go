@@ -98,7 +98,7 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 		connStatus:      ConnConnecting,
 		statusMsg:       "connecting...",
 		width:           80,
-		height:          36, // room for /help + rounded input frame + chat/status pad
+		height:          42, // room for /help + rounded input + 6-row status bar
 		asciiMode:       isLegacyConsole(),
 	}
 	return m
@@ -182,6 +182,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StoppedMsg:
 		m.clearThinkingPlaceholder()
 		m.pendingPrompt = ""
+		m.stopOrchestrationStream()
+		m.stopFocusStream()
+		m.restoreMainTranscript()
 		m.connStatus = ConnIdle
 		m.statusMsg = "stopped"
 		m.addMessage("system", "Stopped.", "")
@@ -543,9 +546,37 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Ev.Seq > m.lastEventSeq {
 			m.lastEventSeq = msg.Ev.Seq
 		}
+		if m.viewingChild() {
+			switch msg.Ev.Type {
+			case "message_delta", "message_completed", "turn_completed", "turn_failed", "tool_started":
+				return m, m.cmdPollOrchStream()
+			}
+		}
 		m2, cmd := m.handleEvent(msg.Ev)
 		am := m2.(*AppModel)
 		return am, tea.Batch(cmd, am.cmdPollOrchStream())
+
+	case focusStreamOpenedMsg:
+		if msg.RunID != m.focusRunID {
+			if msg.Cancel != nil {
+				msg.Cancel()
+			}
+			return m, nil
+		}
+		m.stopFocusStream()
+		m.focusStream = &orchStreamState{evCh: msg.EvCh, cancel: msg.Cancel}
+		return m, m.cmdPollFocusStream()
+
+	case focusStreamEventMsg:
+		if m.focusStream == nil {
+			return m, nil
+		}
+		m.handleFocusEvent(msg.Ev)
+		return m, m.cmdPollFocusStream()
+
+	case focusStreamClosedMsg:
+		m.stopFocusStream()
+		return m, nil
 
 	case orchStreamClosedMsg:
 		m.stopOrchestrationStream()
@@ -705,6 +736,11 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		if ev.FinalMessage != "" && !m.hasAssistantContent() && !isStepCompleteStub(ev.FinalMessage) {
 			m.ensureAssistantMessage(ev.FinalMessage)
 		}
+		if m.shouldPollStepsRuntime() && (m.orchStream != nil || m.flowHasActiveAgents()) {
+			m.connStatus = ConnWaiting
+			m.statusMsg = "flow running…"
+			return m, m.cmdRefreshStepsRuntime()
+		}
 		m.connStatus = ConnIdle
 		m.statusMsg = "done"
 		final := chooseAssistantFinal(m.lastAssistantText(), ev.FinalMessage)
@@ -845,6 +881,13 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusSkillsExpanded = !m.statusSkillsExpanded
 		return m, nil
 
+	case tea.KeyF4:
+		if m.authPhase != AuthNone {
+			return m, nil
+		}
+		m.statusDetailsCollapsed = !m.statusDetailsCollapsed
+		return m, nil
+
 	case tea.KeyCtrlV:
 		if m.authPhase != AuthNone {
 			return m, nil
@@ -889,11 +932,16 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.applySuggestion(items)
 			return m, m.cmdMaybePrefetchPickers()
 		}
-		// Cycle through agent runs when agents focus is active.
-		if m.agentsFocus && len(m.agentRuns) > 0 {
-			m.focusedAgentIdx = (m.focusedAgentIdx + 1) % len(m.agentRuns)
-			agent := m.agentRuns[m.focusedAgentIdx]
-			m.addMessage("system", fmt.Sprintf("Focused agent: %s (%s)", agent.AgentName, agent.Status), "")
+		if len(m.agentRuns) > 0 {
+			runs := orderAgentsMainFirst(m.agentRuns)
+			m.focusedAgentIdx = (m.focusedAgentIdx + 1) % len(runs)
+			agent := runs[m.focusedAgentIdx]
+			name := agent.AgentName
+			if name == "" {
+				name = agent.RunID
+			}
+			m.addMessage("system", fmt.Sprintf("Viewing agent: %s (%s)", name, agent.Status), "")
+			return m, m.cmdFocusAgent(agent.RunID)
 		}
 		return m, nil
 
@@ -1210,6 +1258,9 @@ func (m *AppModel) turnIsActive() bool {
 	if m.pendingPrompt != "" {
 		return true
 	}
+	if m.orchStream != nil || m.flowHasActiveAgents() {
+		return true
+	}
 	if m.runHandle == nil {
 		return false
 	}
@@ -1269,7 +1320,7 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	}
 
 	if !m.canSend() {
-		m.addMessage("system", "Send is disabled while focused on a child agent. Focus main to send.", "error")
+		m.addMessage("system", "Child transcript is read-only. Return to main (/agent main).", "error")
 		return m, nil
 	}
 
@@ -1431,22 +1482,38 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			state = "ON"
 		}
 		m.addMessage("system", fmt.Sprintf("Agents focus: %s", state), "")
+		if !m.agentsFocus {
+			m.restoreMainTranscript()
+			break
+		}
+		runs := orderAgentsMainFirst(m.agentRuns)
+		if len(runs) == 0 {
+			m.addMessage("system", "No agents yet. Tab / /agent once children spawn.", "")
+			break
+		}
+		var b strings.Builder
+		b.WriteString("Agents (Tab cycles, /agent <name> opens transcript):\n")
+		for _, r := range runs {
+			cur := ""
+			if r.RunID == m.focusRunID || (m.focusRunID == "" && (strings.EqualFold(r.Role, "main") || r.RunID == m.mainRunID())) {
+				cur = " *"
+			}
+			b.WriteString(fmt.Sprintf("  %s  %s  %s%s\n", r.AgentName, r.Status, r.RunID, cur))
+		}
+		m.addMessage("system", strings.TrimRight(b.String(), "\n"), "")
 
 	case "/agent":
-		if len(args) == 0 {
-			m.addMessage("system", "Usage: /agent <name>", "")
-		} else {
-			name := strings.Join(args, " ")
-			for i, a := range m.agentRuns {
-				if strings.EqualFold(a.AgentName, name) {
-					m.focusedAgentIdx = i
-					m.agentsFocus = true
-					m.addMessage("system", fmt.Sprintf("Focused agent: %s", a.AgentName), "")
-					return m, nil
-				}
-			}
-			m.addMessage("system", fmt.Sprintf("Agent %q not found.", name), "error")
+		target := "main"
+		if len(args) > 0 {
+			target = strings.Join(args, " ")
 		}
+		runID, name, ok := m.resolveAgentFocusTarget(target)
+		if !ok {
+			m.addMessage("system", fmt.Sprintf("Agent %q not found. Try /agents.", target), "error")
+			break
+		}
+		m.addMessage("system", fmt.Sprintf("Viewing agent: %s", name), "")
+		return m, m.cmdFocusAgent(runID)
 
 	case "/flow":
 		if len(args) == 0 || args[0] == "list" {
@@ -1772,7 +1839,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		for _, line := range m.sessionPanel.lines() {
 			sb.WriteString(line + "\n")
 		}
-		sb.WriteString("(F2 or click session panel · F3 or click skills:N chip · /info also toggles the panel)")
+		sb.WriteString("(F2 or click session panel · F4 or click status row to fold details · F3 or click skills:N chip · /info also toggles the panel)")
 		m.addMessage("system", strings.TrimRight(sb.String(), "\n"), "")
 
 	case "/info":
@@ -2075,9 +2142,13 @@ func (m *AppModel) chatRowsSig() uint64 {
 }
 
 func (m *AppModel) buildChatRows() []chatRow {
-	width := m.width
-	if width < 20 {
-		width = 80
+	width := safeTermWidth(m.width)
+	if width < 8 {
+		if m.width > 0 {
+			width = m.width
+		} else {
+			width = 80
+		}
 	}
 	var rows []chatRow
 	for mi, msg := range m.messages {
@@ -2304,167 +2375,8 @@ func styleForStepBannerLine(line string) lipgloss.Style {
 	}
 }
 
-func (m *AppModel) renderStatusLine() string {
-	sep := " │ "
-	if m.asciiMode {
-		sep = " | "
-	}
-
-	w := m.width
-	if w <= 0 {
-		w = 80
-	}
-
-	var parts []string
-
-	// Remaining quota first so width truncation cannot drop it (Desktop
-	// accounts panel always shows the meter; TUI used to hide 7d: behind YOLO).
-	if lim := formatAccountLimits(m.account); lim != "" {
-		parts = append(parts, lim)
-	}
-	if m.turnIsActive() {
-		parts = append(parts, styleError.Render("[stop]"))
-	}
-
-	// Input already labels chat mode ("chat" / "next"). Only show [flow]/[step].
-	if m.mode != ModeChat {
-		parts = append(parts, fmt.Sprintf("[%s]", m.mode))
-	}
-	if m.mode == ModeFlow || m.mode == ModeStep {
-		if label := m.launch.StatusLabel(); label != "" {
-			if len([]rune(label)) > 20 {
-				r := []rune(label)
-				label = string(r[:17]) + "…"
-			}
-			parts = append(parts, label)
-		}
-	}
-
-	// Provider · model · reasoning: effort (active provider-account label — not Supabase email).
-	providerDisplay := m.provider
-	if providerDisplay == "" {
-		providerDisplay = "default"
-	}
-	reasoning := m.reasoningEffort
-	if reasoning == "" {
-		reasoning = "medium"
-	}
-	if m.model != "" {
-		providerDisplay = fmt.Sprintf("%s · %s · reasoning: %s", providerDisplay, m.model, reasoning)
-	} else {
-		providerDisplay = fmt.Sprintf("%s · reasoning: %s", providerDisplay, reasoning)
-	}
-	if acc := m.activeProviderAccountLabel(); acc != "" {
-		providerDisplay = fmt.Sprintf("%s (%s)", providerDisplay, acc)
-	}
-	parts = append(parts, providerDisplay)
-
-	if sk := formatAttachedSkillsChip(len(attachedSkillNames(m.selectedSkills)), m.statusSkillsExpanded, m.asciiMode); sk != "" {
-		parts = append(parts, sk)
-	}
-
-	// Always show YOLO; flow/step arms force ON (chat toggle only).
-	parts = append(parts, m.yoloStatusLabel())
-
-	// Focused agent indicator.
-	if m.agentsFocus && len(m.agentRuns) > 0 {
-		var agentName string
-		if m.focusedAgentIdx < len(m.agentRuns) {
-			agentName = m.agentRuns[m.focusedAgentIdx].AgentName
-		}
-		if agentName != "" {
-			parts = append(parts, fmt.Sprintf("@%s", agentName))
-		}
-	}
-
-	// Live flow step (highlight name when RUNNING).
-	if name := strings.TrimSpace(m.flowStepsActive); name != "" {
-		parts = append(parts, styleStepRunning.Render("▶ "+name))
-	}
-
-	// Token/context usage is a dedicated row (Desktop ChatInput). Putting it
-	// on line 1 lets the width trim drop it behind YOLO/provider.
-
-	// Supabase identity stays out of the statusline; only warn when signed out.
-	if m.authNeedLogin {
-		parts = append(parts, styleStatusErr.Render("SIGN-IN"))
-	}
-
-	// Connection status.
-	statusStyle := styleStatus
-	switch m.connStatus {
-	case ConnRunning, ConnConnecting:
-		statusStyle = styleStatusOK
-	case ConnError:
-		statusStyle = styleStatusErr
-	}
-	if m.sessionLoading {
-		statusStyle = styleStatusOK
-	}
-
-	statusStr := m.connStatus.String()
-	if m.sessionLoading {
-		if m.statusMsg != "" {
-			statusStr = m.statusMsg + " · loading…"
-		} else {
-			statusStr = "loading…"
-		}
-	} else if m.statusMsg != "" {
-		statusStr = m.statusMsg
-	}
-	parts = append(parts, statusStyle.Render(statusStr))
-
-	rawLine1 := strings.Join(parts, sep)
-	if len([]rune(rawLine1)) > w {
-		for len(parts) > 3 && len([]rune(strings.Join(parts, sep))) > w {
-			parts = append(parts[:len(parts)-2], parts[len(parts)-1])
-		}
-		rawLine1 = strings.Join(parts, sep)
-		if len([]rune(rawLine1)) > w {
-			r := []rune(rawLine1)
-			if w > 1 {
-				rawLine1 = string(r[:w-1]) + "…"
-			} else {
-				rawLine1 = string(r[:w])
-			}
-		}
-	}
-
-	line1 := styleStatus.Render(rawLine1)
-	var extra []string
-	if m.statusSkillsExpanded {
-		names := attachedSkillNames(m.selectedSkills)
-		extra = formatAttachedSkillsExpanded(names, w)
-	}
-	line2Str := fitStatusWidth(m.projectStatusLabel(), w)
-	line2 := styleStatus.Render(line2Str)
-	var b strings.Builder
-	b.WriteString(line1)
-	for _, line := range extra {
-		b.WriteString("\n")
-		b.WriteString(styleStatus.Render(fitStatusWidth(line, w)))
-	}
-	b.WriteString("\n")
-	b.WriteString(line2)
-	if usage := formatContextLimits(m.lastTokens, m.modelContextWin); usage != "" {
-		b.WriteString("\n")
-		b.WriteString(styleStatus.Render(fitStatusWidth(usage, w)))
-	}
-	return b.String()
-}
-
 func fitStatusWidth(s string, w int) string {
-	if w <= 0 {
-		return s
-	}
-	r := []rune(s)
-	if len(r) <= w {
-		return s
-	}
-	if w > 1 {
-		return string(r[:w-1]) + "…"
-	}
-	return string(r[:w])
+	return truncateVisual(s, w)
 }
 
 func (m *AppModel) renderInputLine() string {
@@ -2472,14 +2384,12 @@ func (m *AppModel) renderInputLine() string {
 	if w <= 0 {
 		w = 80
 	}
+	w = safeTermWidth(w)
 	if m.sessionLoading && !strings.HasPrefix(m.inputValue, "/") {
 		frames := []string{"|", "/", "-", "\\"}
 		spin := frames[m.loadingFrame%len(frames)]
 		msg := fmt.Sprintf(" %s please wait… (chat disabled) ", spin)
-		if len([]rune(msg)) > w {
-			msg = string([]rune(msg)[:w])
-		}
-		return styleLoading.Render(msg)
+		return styleLoading.Render(truncateVisual(msg, w))
 	}
 	var prefix, body string
 	switch m.authPhase {
@@ -2515,10 +2425,18 @@ func (m *AppModel) renderInputLine() string {
 	if n := len(m.pendingAttach); n > 0 {
 		attach = stylePromptFocus.Render(fmt.Sprintf("[%d img] ", n))
 	}
-	fixedWidth := len([]rune(prefix)) + lipgloss.Width(stripANSI(attach)) + 8
-	availWidth := w - fixedWidth
-	if availWidth < 5 {
-		availWidth = 5
+	innerW := w - 2
+	if innerW < 1 {
+		innerW = 1
+	}
+	// Drop the attach chip before it forces the box past the terminal width.
+	if lipgloss.Width(stripANSI(attach))+8 > innerW {
+		attach = ""
+	}
+	fixedWidth := 1 + lipgloss.Width(stripANSI(attach)) + 1 // leading space + caret
+	availWidth := innerW - fixedWidth
+	if availWidth < 1 {
+		availWidth = 1
 	}
 
 	bodyLines := strings.Split(body, "\n")
@@ -2534,7 +2452,7 @@ func (m *AppModel) renderInputLine() string {
 			styleSystem.Render("click or type"))
 	}
 	if m.question != nil {
-		inner = append(inner, renderQuestionBar(left, mid, m.question, w-4))
+		inner = append(inner, renderQuestionBar(left, mid, m.question, innerW))
 	}
 	for i, bl := range bodyLines {
 		runes := []rune(bl)
@@ -3024,12 +2942,19 @@ func (m *AppModel) cmdStopTurn() tea.Cmd {
 	if m.runHandle == nil {
 		return func() tea.Msg { return StoppedMsg{} }
 	}
+	m.stopFocusStream()
+	m.restoreMainTranscript()
 	runnerURL := m.runnerURL
-	runID := m.runHandle.RunID
+	parentID := m.runHandle.RunID
+	childIDs := m.childRunIDs()
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
-		if err := cl.Interrupt(context.Background(), runID); err != nil {
-			return ErrMsg{Err: err}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = cl.StopAgentLoop(ctx, parentID)
+		_ = cl.Interrupt(ctx, parentID)
+		for _, id := range childIDs {
+			_ = cl.Interrupt(ctx, id)
 		}
 		return StoppedMsg{}
 	}

@@ -216,6 +216,9 @@ type AppModel struct {
 	flowStepsActive  string // node name currently RUNNING
 	turnStream       *turnStreamState
 	orchStream       *orchStreamState // Desktop orchestration SSE after turn
+	focusStream      *orchStreamState // child transcript while /agent focused
+	focusRunID       string           // empty = main run viewport
+	mainTranscript   []ChatMessage    // cached while viewing a child
 	lastEventSeq     int64
 	stepsPollTicks   int    // cursor ticks while flow is live
 	lastTurnError    string // last turn_failed error (fallback FAIL reason in chat)
@@ -250,9 +253,10 @@ type AppModel struct {
 	signedInEmail string
 
 	// Input focus / slash suggestion selection
-	cursorOn             bool
-	suggIdx              int
-	statusSkillsExpanded bool // F3: expand attached skill names under the status chip
+	cursorOn               bool
+	suggIdx                int
+	statusSkillsExpanded   bool // F3: expand attached skill names under the status chip
+	statusDetailsCollapsed bool // F4 / click line 0: hide mode–project rows; status row stays
 
 	// sessionLoading locks chat while provider/project catalogs load after connect.
 	sessionLoading bool
@@ -338,8 +342,9 @@ var knownSlashCommands = []slashCommand{
 	{"/exit", "Exit the TUI"},
 	{"/quit", "Exit the TUI"},
 	{"/yolo", "Toggle YOLO in chat mode (flow mode is auto-on)"},
-	{"/agents", "Focus on the agent graph"},
-	{"/agent", "Focus a specific agent by name"},
+	{"/agents", "List/cycle sub-agents (Tab while focused)"},
+	{"/agent", "View a sub-agent transcript — /agent main|<name>"},
+	{"/stop", "Stop the in-flight turn (flow: main + all children)"},
 	{"/flow", "Start or list flows"},
 	{"/chat", "Switch to chat mode"},
 	{"/skill", "Skills picker — /skill  then ↑↓ Tab tick · Enter apply · F3 status"},

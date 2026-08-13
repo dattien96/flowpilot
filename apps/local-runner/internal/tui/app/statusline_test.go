@@ -35,11 +35,13 @@ func TestStatusLine_AlwaysShowsYoloAndProjectRow(t *testing.T) {
 	if len(lines) < 2 {
 		t.Fatalf("want 2 status lines, got %q", got)
 	}
-	if !strings.Contains(lines[0], "YOLO:OFF") {
-		t.Fatalf("line1 missing YOLO:OFF: %q", lines[0])
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "YOLO:OFF") {
+		t.Fatalf("status missing YOLO:OFF: %q", got)
 	}
-	if !strings.Contains(lines[1], "gate-sandbox") || !strings.Contains(lines[1], "main") {
-		t.Fatalf("line2 missing project/branch: %q", lines[1])
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, "gate-sandbox") || !strings.Contains(last, "main") {
+		t.Fatalf("project row missing project/branch: %q", last)
 	}
 }
 

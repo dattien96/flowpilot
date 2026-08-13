@@ -63,6 +63,9 @@ func (m *AppModel) clearPendingTurnPayload() {
 }
 
 func (m *AppModel) canSend() bool {
+	if m.viewingChild() {
+		return false
+	}
 	if !m.agentsFocus || len(m.agentRuns) == 0 {
 		return true
 	}

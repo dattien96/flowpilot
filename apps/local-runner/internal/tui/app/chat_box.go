@@ -17,15 +17,43 @@ func truncateVisual(s string, width int) string {
 	if width < 1 {
 		return ""
 	}
-	plain := stripANSI(s)
-	r := []rune(plain)
-	if len(r) <= width {
+	if lipgloss.Width(s) <= width {
 		return s
 	}
+	plain := stripANSI(s)
 	if width == 1 {
-		return string(r[:1])
+		for _, ch := range plain {
+			if lipgloss.Width(string(ch)) <= 1 {
+				return string(ch)
+			}
+			break
+		}
+		return "…"
 	}
-	return string(r[:width-1]) + "…"
+	target := width - lipgloss.Width("…")
+	if target < 1 {
+		return "…"
+	}
+	var b strings.Builder
+	n := 0
+	for _, ch := range plain {
+		cw := lipgloss.Width(string(ch))
+		if n+cw > target {
+			break
+		}
+		b.WriteRune(ch)
+		n += cw
+	}
+	return b.String() + "…"
+}
+
+// safeTermWidth leaves the last column empty so Windows Terminal does not
+// wrap a full-width row (right-border `|` falling onto the next line).
+func safeTermWidth(w int) int {
+	if w <= 1 {
+		return w
+	}
+	return w - 1
 }
 
 func padVisual(s string, width int) string {
@@ -40,9 +68,8 @@ func padVisual(s string, width int) string {
 func strokeLine(inner string, boxW int, ascii bool) string {
 	_, _, _, _, _, v := boxGlyphs(ascii)
 	innerW := boxW - 2
-	if innerW < 4 {
-		innerW = 4
-		boxW = innerW + 2
+	if innerW < 1 {
+		innerW = 1
 	}
 	return v + padVisualANSI(inner, innerW) + v
 }
@@ -113,14 +140,17 @@ func padVisualANSI(s string, width int) string {
 }
 
 func frameInput(lines []string, width int, title, footer string, ascii bool) string {
-	if width < 10 {
-		width = 10
+	if width < 1 {
+		width = 1
 	}
 	if len(lines) == 0 {
 		lines = []string{""}
 	}
 	tl, tr, bl, br, h, v := roundGlyphs(ascii)
 	innerW := width - 2
+	if innerW < 1 {
+		innerW = 1
+	}
 	title = strings.TrimSpace(title)
 	if title != "" {
 		title = " " + title + " "
@@ -135,10 +165,13 @@ func frameInput(lines []string, width int, title, footer string, ascii bool) str
 		fill = 0
 	}
 	var b strings.Builder
-	b.WriteString(tl + title + strings.Repeat(h, fill) + tr)
+	write := func(s string) {
+		b.WriteString(truncateVisual(s, width))
+	}
+	write(tl + title + strings.Repeat(h, fill) + tr)
 	for _, line := range lines {
 		b.WriteByte('\n')
-		b.WriteString(v + padVisualANSI(" "+line, innerW) + v)
+		write(v + padVisualANSI(" "+line, innerW) + v)
 	}
 	foot := strings.TrimSpace(footer)
 	if foot != "" {
@@ -153,11 +186,11 @@ func frameInput(lines []string, width int, title, footer string, ascii bool) str
 			lead = 0
 		}
 		b.WriteByte('\n')
-		b.WriteString(bl + strings.Repeat(h, lead) + foot + br)
+		write(bl + strings.Repeat(h, lead) + foot + br)
 		return b.String()
 	}
 	b.WriteByte('\n')
-	b.WriteString(bl + strings.Repeat(h, innerW) + br)
+	write(bl + strings.Repeat(h, innerW) + br)
 	return b.String()
 }
 

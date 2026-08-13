@@ -87,7 +87,7 @@ func (m *AppModel) cmdStartOrchestrationStream() tea.Cmd {
 	cl := m.client
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
-		ch := cl.StreamWithReconnect(ctx, runID, after)
+		ch := cl.StreamLive(ctx, runID, after)
 		return orchStreamOpenedMsg{EvCh: ch, Cancel: cancel}
 	}
 }
