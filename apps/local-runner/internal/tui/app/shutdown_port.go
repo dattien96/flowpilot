@@ -1,6 +1,9 @@
 package app
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // tcpLocalAddrHasPort reports whether a netstat local-address field (IPv4 or
 // IPv6) is bound to exactly wantPort. Suffix matching (" :4317") is wrong
@@ -23,4 +26,10 @@ func tcpLocalAddrHasPort(localAddr, wantPort string) bool {
 		return false
 	}
 	return addr[idx+1:] == port
+}
+
+// taskkillTreeArgs is the Windows taskkill argv that kills the listen PID and
+// every child (grok agent, MCP). `/F` alone orphans children — `/T` is required.
+func taskkillTreeArgs(pid int) []string {
+	return []string{"/PID", strconv.Itoa(pid), "/T", "/F"}
 }

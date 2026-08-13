@@ -32,9 +32,9 @@ func killRunnerByURL(runnerURL string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	return exec.CommandContext(ctx, "taskkill", "/PID", strconv.Itoa(pid), "/F").Run()
+	return exec.CommandContext(ctx, "taskkill", taskkillTreeArgs(pid)...).Run()
 }
 
 // findPIDOnPort uses netstat to find the PID listening on the given TCP port on Windows.

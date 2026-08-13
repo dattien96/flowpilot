@@ -34,7 +34,9 @@ func killRunnerByURL(runnerURL string) error {
 		return err
 	}
 
-	// Graceful SIGTERM
+	// SIGTERM the process group first (runnerboot Setsid), then the listen PID.
+	// Killing only the listen PID orphans grok agent / MCP children.
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
 	_ = syscall.Kill(pid, syscall.SIGTERM)
 	return nil
 }
