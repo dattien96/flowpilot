@@ -12,13 +12,121 @@ import (
 	"flowpilot-runner/internal/tui/prefs"
 )
 
-// persistTUISessionPrefs writes latest provider/model so new TUI / /new keep them.
-func persistTUISessionPrefs(provider, model, reasoning string) {
-	_, _ = prefs.Save(prefs.Session{
+// persistTUISessionPrefs writes latest provider/model/yolo/mode/flow so new TUI sessions keep them.
+// yolo is the chat-mode toggle only (flow uses auto-on via effectiveYolo; we still
+// persist the underlying chat preference so /chat after restart keeps it).
+func persistTUISessionPrefs(provider, model, reasoning string, yolo bool, mode Mode, launch LaunchArm) {
+	yoloCopy := yolo
+	s := prefs.Session{
 		Provider:        strings.TrimSpace(provider),
 		Model:           strings.TrimSpace(model),
 		ReasoningEffort: strings.TrimSpace(reasoning),
-	})
+		Yolo:            &yoloCopy,
+		Mode:            mode.String(),
+	}
+	if mode == ModeFlow || mode == ModeStep {
+		s.FlowRef = strings.TrimSpace(launch.FlowRef)
+		s.WorkflowID = strings.TrimSpace(launch.WorkflowID)
+		s.FlowLabel = strings.TrimSpace(launch.Label)
+	}
+	_, _ = prefs.Save(s)
+}
+
+func (m *AppModel) persistSessionPrefs() {
+	// Always store m.yolo (chat preference), never effectiveYolo() auto-on.
+	persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort, m.yolo, m.mode, m.launch)
+}
+
+// applySavedModeAndFlow restores Mode + LaunchArm from disk prefs (best-effort).
+// Catalog fields are refined when flow lists arrive via refineLaunchFromCatalog.
+func applySavedModeAndFlow(m *AppModel, saved prefs.Session) {
+	mode := strings.ToLower(strings.TrimSpace(saved.Mode))
+	switch mode {
+	case "flow":
+		m.mode = ModeFlow
+	case "step":
+		m.mode = ModeStep
+	case "chat", "":
+		m.mode = ModeChat
+		m.launch = LaunchArm{}
+		m.firstTurnPending = false
+		return
+	default:
+		return
+	}
+	flowRef := strings.TrimSpace(saved.FlowRef)
+	workflowID := strings.TrimSpace(saved.WorkflowID)
+	label := strings.TrimSpace(saved.FlowLabel)
+	if flowRef == "" && workflowID == "" && label == "" {
+		m.launch = LaunchArm{Mode: m.mode}
+		m.firstTurnPending = false
+		return
+	}
+	arm := LaunchArm{
+		Mode:       m.mode,
+		FlowRef:    flowRef,
+		WorkflowID: workflowID,
+		Label:      label,
+	}
+	if arm.IsBuiltin() {
+		arm.SubMode = "bug"
+		arm.ChangeType = "bugfix"
+		m.firstTurnPending = true
+	} else {
+		m.firstTurnPending = false
+	}
+	if arm.Label == "" {
+		if arm.FlowRef != "" {
+			arm.Label = arm.FlowRef
+		} else {
+			arm.Label = arm.WorkflowID
+		}
+	}
+	m.launch = arm
+}
+
+// refineLaunchFromCatalog re-resolves a prefs-restored arm against live builtins/workflows.
+func (m *AppModel) refineLaunchFromCatalog() {
+	if m.mode != ModeFlow && m.mode != ModeStep {
+		return
+	}
+	if !m.launch.IsArmed() && strings.TrimSpace(m.launch.Label) == "" {
+		return
+	}
+	// Do not re-arm over an active run's chrome.
+	if m.runHandle != nil {
+		if n := m.resolveFlowDisplayName(m.launch.WorkflowID, m.launch.FlowRef); n != "" {
+			m.launch.Label = n
+		}
+		return
+	}
+	projectID := ""
+	if m.project != nil {
+		projectID = m.project.ID
+	}
+	queries := []string{
+		strings.TrimSpace(m.launch.WorkflowID),
+		strings.TrimSpace(m.launch.FlowRef),
+		strings.TrimSpace(m.launch.Label),
+	}
+	for _, q := range queries {
+		if q == "" {
+			continue
+		}
+		arm, err := resolveFlowLaunch(m.flowBuiltins, m.flowWorkflows, projectID, q)
+		if err != nil {
+			continue
+		}
+		if m.mode == ModeStep {
+			arm.Mode = ModeStep
+		}
+		m.launch = arm
+		m.firstTurnPending = arm.IsBuiltin()
+		return
+	}
+	if n := m.resolveFlowDisplayName(m.launch.WorkflowID, m.launch.FlowRef); n != "" {
+		m.launch.Label = n
+	}
 }
 
 // parsedGate is a lightweight gate descriptor for tests and handlers.

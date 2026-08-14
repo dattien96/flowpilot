@@ -80,8 +80,12 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 	provider := cfg.Provider
 	model := cfg.Model
 	reasoning := cfg.ReasoningEffort
-	// Restore last TUI selection when flags omit provider/model.
+	// Restore last TUI selection when flags omit provider/model; restore mode/flow/yolo.
+	var savedPrefs prefs.Session
+	var haveSaved bool
 	if saved, _, err := prefs.Load(); err == nil {
+		haveSaved = true
+		savedPrefs = saved
 		if provider == "" {
 			provider = saved.Provider
 		}
@@ -95,12 +99,20 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 	if reasoning == "" {
 		reasoning = "medium"
 	}
+	yolo := cfg.Yolo
+	// TestMain sets FLOWPILOT_TUI_SKIP_MODE_RESTORE so shared session-file
+	// pollution from /flow or /yolo tests cannot force mode/yolo on every New().
+	skipSessionUX := strings.TrimSpace(os.Getenv("FLOWPILOT_TUI_SKIP_MODE_RESTORE")) != ""
+	// --yolo flag wins; otherwise restore chat-mode YOLO preference from disk.
+	if !cfg.Yolo && haveSaved && !skipSessionUX && savedPrefs.Yolo != nil {
+		yolo = *savedPrefs.Yolo
+	}
 	m := &AppModel{
 		cfg:             cfg,
 		runnerURL:       runnerURL,
 		client:          client.New(runnerURL),
 		inputCursor:     -1,
-		yolo:            cfg.Yolo,
+		yolo:            yolo,
 		provider:        provider,
 		model:           model,
 		reasoningEffort: reasoning,
@@ -110,6 +122,9 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 		width:           80,
 		height:          42, // room for /help + rounded input + 6-row status bar
 		asciiMode:       isLegacyConsole(),
+	}
+	if haveSaved && !skipSessionUX {
+		applySavedModeAndFlow(m, savedPrefs)
 	}
 	return m
 }
@@ -271,7 +286,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.bindActiveAccountForProvider()
 		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 		if firstLoad {
-			persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+			m.persistSessionPrefs()
 		}
 		m.refreshSessionPanel()
 		if msg.CatalogErr != "" {
@@ -547,12 +562,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case FlowListMsg:
 		m.flowBuiltins = msg.Builtins
 		m.flowWorkflows = msg.Workflows
-		// After silent catalog load on /open, upgrade launch label from UUID → name.
-		if msg.Silent && (m.mode == ModeFlow || m.mode == ModeStep) {
-			if n := m.resolveFlowDisplayName(m.launch.WorkflowID, m.launch.FlowRef); n != "" {
-				m.launch.Label = n
-			}
-			return m, nil
+		// After catalog load: re-resolve prefs-restored arm + upgrade UUID labels.
+		if m.mode == ModeFlow || m.mode == ModeStep {
+			m.refineLaunchFromCatalog()
 		}
 		if msg.Silent {
 			return m, nil
@@ -1823,6 +1835,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.yolo = !m.yolo
+		m.persistSessionPrefs()
 		state := "OFF"
 		if m.yolo {
 			state = "ON"
@@ -1903,6 +1916,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.launch = arm
 		m.mode = ModeFlow
 		m.firstTurnPending = arm.IsBuiltin()
+		m.persistSessionPrefs()
 		if arm.IsBuiltin() {
 			m.addMessage("system", fmt.Sprintf(
 				"Flow armed: %s (builtin · %s). Send a prompt to start.",
@@ -1919,6 +1933,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.mode = ModeChat
 		m.launch = LaunchArm{}
 		m.firstTurnPending = false
+		m.persistSessionPrefs()
 		m.addMessage("system", "Switched to chat mode.", "")
 
 	case "/skill", "/s":
@@ -2071,7 +2086,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					m.provider = args[0]
 				}
 				m.bindActiveAccountForProvider()
-				persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+				m.persistSessionPrefs()
 				m.skillsCatalog = nil // Desktop reloads skills when provider changes.
 				msg := fmt.Sprintf("Provider set to: %s · model: %s (saved for next TUI /new)", m.provider, orDash(m.model))
 				if acc := m.activeProviderAccountLabel(); acc != "" {
@@ -2128,7 +2143,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.model = want
 			}
 			m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
-			persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+			m.persistSessionPrefs()
 			m.addMessage("system", fmt.Sprintf("Model set to: %s (next prompt uses this model)", m.model), "")
 			m.refreshSessionPanel()
 		}
@@ -2145,7 +2160,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			switch effort {
 			case "high", "medium", "low", "":
 				m.reasoningEffort = effort
-				persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+				m.persistSessionPrefs()
 				m.addMessage("system", fmt.Sprintf("Reasoning effort set to: %s (saved)", effort), "")
 			default:
 				m.addMessage("system", "Reasoning effort must be high, medium, or low.", "error")
@@ -2178,7 +2193,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.lastTokens = nil
 		// Keep provider/model/reasoning + armed flow (clear flow with /chat).
 		m.firstTurnPending = m.launch.IsBuiltin()
-		persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+		m.persistSessionPrefs()
 		m.refreshSessionPanel()
 		m.addMessage("system", fmt.Sprintf(
 			"New conversation started — provider %s · model %s (latest selection kept).",

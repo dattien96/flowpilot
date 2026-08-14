@@ -17,6 +17,10 @@ func TestMain(m *testing.M) {
 	if err == nil {
 		os.Setenv("FLOWPILOT_TUI_SESSION_FILE", filepath.Join(tmpDir, "tui-session.json"))
 	}
+	// Package tests share one session file; /flow persistence must not make every
+	// subsequent New() enter ModeFlow (blocks /yolo, changes chrome). Mode/flow
+	// restore is exercised in tui_mode_flow_prefs_test with an isolated file.
+	os.Setenv("FLOWPILOT_TUI_SKIP_MODE_RESTORE", "1")
 	code := m.Run()
 	if tmpDir != "" {
 		os.RemoveAll(tmpDir)
