@@ -267,6 +267,16 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		}
 	case target == "load-earlier":
 		return m, m.loadEarlierPrompts()
+	case target == "agent-back":
+		m.addMessage("system", "Viewing agent: main", "")
+		return m, m.cmdFocusAgent(m.mainRunID())
+	case strings.HasPrefix(target, "agent-open:"):
+		runID := strings.TrimPrefix(target, "agent-open:")
+		if runID != "" {
+			name := m.agentNameForRun(runID)
+			m.addMessage("system", fmt.Sprintf("Viewing agent: %s", name), "")
+			return m, m.cmdFocusAgent(runID)
+		}
 	}
 	return m, nil
 }
@@ -276,6 +286,9 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 		return ""
 	}
 	c := m.tuiChrome()
+	if t := m.hitSessionAgentChrome(c, x, y); t != "" {
+		return t
+	}
 	if hitSessionPanel(c, x, y) {
 		return "session"
 	}
@@ -285,6 +298,7 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 	if hitStopChrome(c, x, y) {
 		return "stop"
 	}
+	// Agent open/back is only on F2 session/steps panel (hitSessionAgentChrome above).
 	if hitStatusDetailsChrome(c, x, y) {
 		return "status-details"
 	}
@@ -310,6 +324,44 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 	}
 	if t := hitCopyChrome(m, c, x, y); t != "" {
 		return t
+	}
+	return ""
+}
+
+func (m *AppModel) hitSessionAgentChrome(c tuiChrome, x, y int) string {
+	if c.panelH == 0 || y < 0 || y >= c.panelH || y >= len(c.panelLines) {
+		return ""
+	}
+	stripped := stripANSI(c.panelLines[y])
+	if hitToken(stripped, "[back]", x) && m.viewingChild() {
+		return "agent-back"
+	}
+	if hitToken(stripped, "[open]", x) {
+		if runID := m.openRunIDFromPanelLine(stripped); runID != "" {
+			return "agent-open:" + runID
+		}
+	}
+	return ""
+}
+
+func (m *AppModel) openRunIDFromPanelLine(stripped string) string {
+	if !strings.Contains(stripped, "[open]") {
+		return ""
+	}
+	limit := len(m.flowSteps)
+	if limit > 8 {
+		limit = 8
+	}
+	for i := 0; i < limit; i++ {
+		s := m.flowSteps[i]
+		child, ok := m.childRunForStep(s)
+		if !ok {
+			continue
+		}
+		name := stepDisplayName(s)
+		if name != "" && strings.Contains(stripped, name) {
+			return child.RunID
+		}
 	}
 	return ""
 }
