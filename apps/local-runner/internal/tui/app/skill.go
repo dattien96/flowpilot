@@ -60,7 +60,7 @@ func formatSkillsCatalog(catalog []client.ProviderSkill, selected []client.Skill
 		sb.WriteString(" · provider " + p)
 	}
 	sb.WriteString("\n")
-	sb.WriteString("Tab tick to select · Enter apply\n")
+	sb.WriteString("Tab tick to select · multi-pick · Enter apply closes picker\n")
 
 	seen := make(map[string]bool, len(catalog)+len(selected))
 	// Selected-first (Desktop pickerSortSelection parity).
@@ -216,6 +216,9 @@ func (m *AppModel) toggleSkillByName(name string) {
 }
 
 // toggleSkillByNameQuiet ticks/unticks without dumping a chat line (picker Tab).
+// Tab inserts/removes "[skill-name]" in the draft but keeps /skill open so the
+// operator can multi-select. Enter (or Esc clear) closes the picker.
+// Chip + SelectedSkills still drive injectSelectedSkills.
 func (m *AppModel) toggleSkillByNameQuiet(name string) (added bool, selName, source string) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -224,6 +227,8 @@ func (m *AppModel) toggleSkillByNameQuiet(name string) (added bool, selName, sou
 	for i, s := range m.selectedSkills {
 		if strings.EqualFold(s.Name, name) {
 			m.selectedSkills = append(m.selectedSkills[:i], m.selectedSkills[i+1:]...)
+			m.inputValue = removeSkillPromptToken(m.inputValue, s.Name)
+			m.inputCursor = -1
 			return false, s.Name, s.Source
 		}
 	}
@@ -237,7 +242,144 @@ func (m *AppModel) toggleSkillByNameQuiet(name string) (added bool, selName, sou
 		}
 	}
 	m.selectedSkills = append(m.selectedSkills, sel)
+	m.inputValue = insertSkillPromptToken(m.inputValue, m.inputCaretIndex(), sel.Name)
+	m.inputCursor = -1
 	return true, sel.Name, sel.Source
+}
+
+// skillPromptToken is the in-prompt mention form: [skill-name].
+func skillPromptToken(name string) string {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return ""
+	}
+	return "[" + n + "]"
+}
+
+// styleInputBodyWithSkillTokens accents attached skill mentions like [coding]
+// inside the chat input. Plain text stays styleInputFocus; tokens use styleStatusHi.
+// selected names only — random [brackets] in the draft are not highlighted.
+func styleInputBodyWithSkillTokens(plain string, selected []client.SkillSelection) string {
+	if plain == "" {
+		return ""
+	}
+	tokens := make([]string, 0, len(selected))
+	seen := make(map[string]bool, len(selected))
+	for _, n := range attachedSkillNames(selected) {
+		tok := skillPromptToken(n)
+		if tok == "" || seen[tok] {
+			continue
+		}
+		seen[tok] = true
+		tokens = append(tokens, tok)
+	}
+	if len(tokens) == 0 {
+		return styleInputFocus.Render(plain)
+	}
+	// Longer tokens first so [safe-fix-contract] wins over a shorter prefix if any.
+	for i := 0; i < len(tokens); i++ {
+		for j := i + 1; j < len(tokens); j++ {
+			if len(tokens[j]) > len(tokens[i]) {
+				tokens[i], tokens[j] = tokens[j], tokens[i]
+			}
+		}
+	}
+	var b strings.Builder
+	i := 0
+	for i < len(plain) {
+		matched := ""
+		for _, tok := range tokens {
+			if strings.HasPrefix(plain[i:], tok) {
+				matched = tok
+				break
+			}
+		}
+		if matched != "" {
+			b.WriteString(styleStatusHi.Render(matched))
+			i += len(matched)
+			continue
+		}
+		next := len(plain)
+		for _, tok := range tokens {
+			if j := strings.Index(plain[i:], tok); j >= 0 && i+j < next {
+				next = i + j
+			}
+		}
+		if next > i {
+			b.WriteString(styleInputFocus.Render(plain[i:next]))
+			i = next
+			continue
+		}
+		b.WriteString(styleInputFocus.Render(plain[i:]))
+		break
+	}
+	return b.String()
+}
+
+func containsSkillPromptToken(input, token string) bool {
+	if token == "" {
+		return false
+	}
+	return strings.Contains(input, token)
+}
+
+// insertSkillPromptToken places "[name]" before the active /skill fragment and
+// keeps the slash so multi-Tab pick stays open: "abc /skill " → "abc [name] /skill ".
+// Bare "/skill " → "[name] /skill " (chip + mention, picker still open).
+func insertSkillPromptToken(input string, caret int, name string) string {
+	token := skillPromptToken(name)
+	if token == "" || containsSkillPromptToken(input, token) {
+		return input
+	}
+	_, start, ok := activeSlashLine(input, caret)
+	if !ok {
+		return input
+	}
+	runes := []rune(input)
+	before := strings.TrimRight(string(runes[:start]), " \t")
+	slash := string(runes[start:])
+	// Normalize slash to bare command + space so the skill list stays open
+	// even if the user had typed "/skill foo" as a filter query.
+	slash = normalizeSkillSlashKeepOpen(slash)
+	if before == "" {
+		return token + " " + slash
+	}
+	return before + " " + token + " " + slash
+}
+
+// normalizeSkillSlashKeepOpen returns "/skill " or "/s " so filter stays on the
+// skill picker after a Tab tick (drops any typed query after the command).
+func normalizeSkillSlashKeepOpen(slash string) string {
+	s := strings.TrimLeft(slash, " \t")
+	lower := strings.ToLower(s)
+	switch {
+	case strings.HasPrefix(lower, "/skill"):
+		return "/skill "
+	case strings.HasPrefix(lower, "/s") && (len(lower) == 2 || lower[2] == ' ' || lower[2] == '\t'):
+		return "/s "
+	default:
+		if s == "" {
+			return "/skill "
+		}
+		// Keep original if it still looks like a skill slash line.
+		return s
+	}
+}
+
+// removeSkillPromptToken drops "[name]" mentions and collapses extra spaces.
+func removeSkillPromptToken(input, name string) string {
+	token := skillPromptToken(name)
+	if token == "" || !containsSkillPromptToken(input, token) {
+		return input
+	}
+	out := strings.ReplaceAll(input, " "+token+" ", " ")
+	out = strings.ReplaceAll(out, " "+token, "")
+	out = strings.ReplaceAll(out, token+" ", "")
+	out = strings.ReplaceAll(out, token, "")
+	for strings.Contains(out, "  ") {
+		out = strings.ReplaceAll(out, "  ", " ")
+	}
+	return out
 }
 
 func attachedSkillNames(selected []client.SkillSelection) []string {

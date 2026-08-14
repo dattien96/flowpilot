@@ -44,6 +44,7 @@ var (
 	styleError     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
 	styleGate      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAsk))
 	styleStatus    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+	styleStatusHi  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // model, reason value, YOLO value, 7d, skills
 	styleStatusOK  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))
 	styleStatusErr = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
 	stylePrompt    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
@@ -1062,15 +1063,23 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if items := m.collectSuggestions(); len(items) > 0 {
 				it := items[m.suggIdx%len(items)]
 				if it.kind == "skill" {
-					// Tab ticks; Enter applies (closes picker, keeps the tick set).
-					m.clearInputValue()
+					// Tab ticks; Enter applies (closes picker, keeps ticks on the
+					// status chip). Strip only /skill… so draft prompt is preserved
+					// (Desktop pickSkill keeps pre-slash text; runner injects via SelectedSkills).
+					m.inputValue = stripActiveSlashCommand(m.inputValue, m.inputCaretIndex())
+					m.inputCursor = -1
+					m.suggIdx = 0
+					if n := len(attachedSkillNames(m.selectedSkills)); n > 0 {
+						m.statusMsg = fmt.Sprintf("skills:%d attached — prompt kept", n)
+					} else {
+						m.statusMsg = "skill picker closed"
+					}
 					return m, nil
 				}
 				if cmd := suggestionAcceptValue(it); cmd != "" {
 					// Action rows only expand the next picker (provider connect, /image open|rm).
 					if it.kind == "provider-action" || it.kind == "image-sub-next" {
-						m.inputValue = cmd
-						m.inputCursor = -1
+						m.setInputPreservingDraftPrefix(cmd)
 						m.suggIdx = 0
 						return m, m.cmdMaybePrefetchPickers()
 					}
@@ -1261,12 +1270,20 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 	if cmd := suggestionAcceptValue(it); cmd == "" {
 		return
 	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" {
-		m.inputValue = cmd
+		// Nested pickers: only replace the active /… fragment (keep pre-slash draft).
+		m.setInputPreservingDraftPrefix(cmd)
 	} else {
 		// Tab fills the command token and leaves a trailing space for args.
-		m.inputValue = it.value + " "
+		// Mid-draft "abc /sk" → "abc /skill " (do not wipe the draft).
+		m.setInputPreservingDraftPrefix(it.value + " ")
 	}
 	m.suggIdx = (idx + 1) % len(items)
+}
+
+// setInputPreservingDraftPrefix writes a slash line over the active / token only.
+func (m *AppModel) setInputPreservingDraftPrefix(slashLine string) {
+	m.inputValue = replaceActiveSlashWith(m.inputValue, m.inputCaretIndex(), slashLine)
+	m.inputCursor = -1
 }
 
 // suggestionAcceptValue returns the slash line to run for Enter (or empty if not actionable).
@@ -2670,14 +2687,19 @@ func (m *AppModel) renderInputLine() string {
 			}
 		}
 		var styled string
+		// Highlight attached skill mentions [name] in the draft (chip + inject still separate).
+		hiSel := m.selectedSkills
+		if m.authPhase != AuthNone {
+			hiSel = nil // never style password/email
+		}
 		if onLine {
 			if caretCol < 0 || caretCol > len(shown) {
 				caretCol = len(shown)
 			}
-			styled = styleInputFocus.Render(string(shown[:caretCol])) + caret +
-				styleInputFocus.Render(string(shown[caretCol:]))
+			styled = styleInputBodyWithSkillTokens(string(shown[:caretCol]), hiSel) + caret +
+				styleInputBodyWithSkillTokens(string(shown[caretCol:]), hiSel)
 		} else {
-			styled = styleInputFocus.Render(string(shown))
+			styled = styleInputBodyWithSkillTokens(string(shown), hiSel)
 		}
 		if i == 0 {
 			inner = append(inner, attach+styled)

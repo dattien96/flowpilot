@@ -87,11 +87,11 @@ func TestSkillPicker_TabTicksEnterApplies(t *testing.T) {
 	if len(am.selectedSkills) != 1 || am.selectedSkills[0].Name != "coding" {
 		t.Fatalf("Tab should tick highlighted skill, got %+v", am.selectedSkills)
 	}
-	if strings.TrimSpace(am.inputValue) != "/skill" {
+	if strings.TrimSpace(am.inputValue) != "[coding] /skill" {
 		t.Fatalf("Tab must keep picker open, input=%q", am.inputValue)
 	}
 
-	// Move to review and tick it too.
+	// Multi-pick second skill without closing.
 	am.suggIdx = 0
 	items := am.collectSuggestions()
 	for i, it := range items {
@@ -105,10 +105,13 @@ func TestSkillPicker_TabTicksEnterApplies(t *testing.T) {
 	if len(am.selectedSkills) != 2 {
 		t.Fatalf("second Tab should add review, got %+v", am.selectedSkills)
 	}
+	if am.inputValue != "[coding] [review] /skill " {
+		t.Fatalf("multi-pick input: %q", am.inputValue)
+	}
 
 	m4, _ := am.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	am = m4.(*AppModel)
-	if am.inputValue != "" {
+	if am.inputValue != "[coding] [review] " {
 		t.Fatalf("Enter should close picker, input=%q", am.inputValue)
 	}
 	if len(am.selectedSkills) != 2 {

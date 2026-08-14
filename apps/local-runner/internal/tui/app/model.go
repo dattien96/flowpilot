@@ -366,7 +366,7 @@ var knownSlashCommands = []slashCommand{
 	{"/stop", "Stop the in-flight turn (flow: main + all children)"},
 	{"/flow", "Start or list flows"},
 	{"/chat", "Switch to chat mode"},
-	{"/skill", "Skills picker — /skill  then ↑↓ Tab tick · Enter apply · F3 status"},
+	{"/skill", "Skills — Tab multi-pick [name]+chip · Enter closes picker · F3"},
 	{"/image", "Images — Tab open/paste; pick index to view; [N img] panel [open]/[x]"},
 	{"/provider", "Switch / connect / install — /provider  then ↑↓ Tab Enter"},
 	{"/model", "Switch model — type /model  then ↑↓ Tab Enter"},
