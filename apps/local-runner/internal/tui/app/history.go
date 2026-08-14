@@ -26,7 +26,98 @@ type ChatOpenedMsg struct {
 	Messages              []ChatMessage
 	HistoryLoadedAfterSeq int64 // events with seq <= this are not yet loaded; 0 = full history
 	Snapshot              client.RunSnapshot
-	Err                   string
+	// HistoryMeta is the list row for this run when known (kind/workflow/flowRef).
+	HistoryMeta client.RunHistoryItem
+	Err         string
+}
+
+// applyOpenedRunFlowChrome restores ModeFlow/launch + clears stale steps when
+// opening a workflow/catalog flow run (CA-502). Chat opens stay ModeChat.
+func (m *AppModel) applyOpenedRunFlowChrome(handle client.RunHandle, meta client.RunHistoryItem) {
+	runKind := strings.TrimSpace(handle.RunKind)
+	if runKind == "" {
+		runKind = strings.TrimSpace(meta.RunKind)
+	}
+	workflowID := strings.TrimSpace(handle.WorkflowID)
+	if workflowID == "" {
+		workflowID = strings.TrimSpace(meta.WorkflowID)
+	}
+	flowRef := strings.TrimSpace(handle.FlowRef)
+	if flowRef == "" {
+		flowRef = strings.TrimSpace(meta.FlowRef)
+	}
+	isFlow := strings.EqualFold(runKind, "workflow") || workflowID != "" || flowRef != ""
+	if !isFlow {
+		m.mode = ModeChat
+		m.launch = LaunchArm{}
+		m.flowSteps = nil
+		m.flowStepsActive = ""
+		m.agentRuns = nil
+		m.focusedAgentIdx = 0
+		return
+	}
+	m.mode = ModeFlow
+	label := m.resolveFlowDisplayName(workflowID, flowRef)
+	if label == "" {
+		label = "flow"
+	}
+	m.launch = LaunchArm{
+		Mode:       ModeFlow,
+		WorkflowID: workflowID,
+		FlowRef:    flowRef,
+		Label:      label,
+	}
+	// Steps / agents refilled after open (cmdRefreshStepsRuntime + cmdHydrateAgentRuns).
+	m.flowSteps = nil
+	m.flowStepsActive = ""
+	m.agentRuns = nil
+	m.focusedAgentIdx = 0
+}
+
+// resolveFlowDisplayName prefers catalog/builtin human names over raw UUIDs.
+func (m *AppModel) resolveFlowDisplayName(workflowID, flowRef string) string {
+	wid := strings.TrimSpace(workflowID)
+	ref := strings.TrimSpace(flowRef)
+	for _, wf := range m.flowWorkflows {
+		if (wid != "" && wf.ID == wid) || (ref != "" && wf.ID == ref) {
+			if n := strings.TrimSpace(wf.Name); n != "" {
+				return n
+			}
+		}
+	}
+	for _, b := range m.flowBuiltins {
+		if ref != "" && strings.EqualFold(strings.TrimSpace(b.FlowRef), ref) {
+			if n := strings.TrimSpace(b.Label); n != "" {
+				return n
+			}
+		}
+	}
+	// Prefer non-UUID-looking tokens for status (never show bare 8-char id alone).
+	if ref != "" && !looksLikeUUID(ref) {
+		return ref
+	}
+	if wid != "" && !looksLikeUUID(wid) {
+		return wid
+	}
+	return ""
+}
+
+func looksLikeUUID(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) < 32 {
+		return false
+	}
+	hyphen := 0
+	for _, r := range s {
+		if r == '-' {
+			hyphen++
+			continue
+		}
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return hyphen >= 4 || len(s) >= 32
 }
 
 // runSnapshotMsg is GET /client/workflow-runs/{id} used to hydrate a live
@@ -267,9 +358,11 @@ func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
 func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
 	runnerURL := m.runnerURL
 	chatProvider := ""
+	var historyMeta client.RunHistoryItem
 	for _, it := range m.chatList {
 		if it.RunID == runID {
 			chatProvider = it.ProviderKey
+			historyMeta = it
 			break
 		}
 	}
@@ -309,6 +402,7 @@ func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
 			Messages:              msgs,
 			HistoryLoadedAfterSeq: historyCursorAfterReplay(after, collected, trimmed),
 			Snapshot:              snap,
+			HistoryMeta:           historyMeta,
 		}
 	}
 }

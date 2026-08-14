@@ -157,6 +157,7 @@ type TokenUsageSnapshot struct {
 type AgentRunSummary struct {
 	RunID       string `json:"runId"`
 	AgentName   string `json:"agentName"`
+	Label       string `json:"label,omitempty"` // flow node id e.g. my-reviewer
 	Status      string `json:"status"`
 	Role        string `json:"role,omitempty"`
 	ProviderKey string `json:"providerKey,omitempty"`
@@ -191,6 +192,10 @@ type RunHandle struct {
 	Status            string `json:"status"`
 	StepID            string `json:"stepId,omitempty"`
 	LastEventSeq      int64  `json:"lastEventSeq,omitempty"`
+	// RunKind / WorkflowID / FlowRef restore flow chrome after /open (CA-502).
+	RunKind    string `json:"runKind,omitempty"`
+	WorkflowID string `json:"workflowId,omitempty"`
+	FlowRef    string `json:"flowRef,omitempty"`
 }
 
 // RunHistoryItem mirrors GET /client/projects/{id}/workflow-runs (desktop listRunHistory).
@@ -489,6 +494,13 @@ func (c *Client) ListAgents(ctx context.Context, cwd string) ([]AgentRunSummary,
 	}
 	var agents []AgentRunSummary
 	err := c.getJSON(ctx, endpoint, &agents)
+	return agents, err
+}
+
+// ListAgentRuns fetches GET /client/workflow-runs/{runId}/agents (children of a parent run).
+func (c *Client) ListAgentRuns(ctx context.Context, parentRunID string) ([]AgentRunSummary, error) {
+	var agents []AgentRunSummary
+	err := c.getJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(parentRunID)+"/agents", &agents)
 	return agents, err
 }
 
