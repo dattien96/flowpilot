@@ -886,7 +886,15 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 		}
 	}
 	s.seedTranscriptFromDisk(rs)
-	handle := RunHandle{RunID: rs.id, ProviderSessionID: s.resumeSessionID(rs), ProviderKey: rs.providerKey, Status: rs.status}
+	handle := RunHandle{
+		RunID:             rs.id,
+		ProviderSessionID: s.resumeSessionID(rs),
+		ProviderKey:       rs.providerKey,
+		Status:            rs.status,
+		RunKind:           rs.runKind,
+		WorkflowID:        rs.workflowID,
+		FlowRef:           rs.chatFlowRef,
+	}
 	// Surface the synthetic chat step so the desktop can continue a resumed normal_chat
 	// run; its turns need a stepId and the chat step id is deterministic (T-7). Workflow
 	// runs resume as before (the desktop drives the step via the navigator selection).

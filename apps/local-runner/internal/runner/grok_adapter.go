@@ -87,10 +87,11 @@ func (a *grokAdapter) Key() ProviderKey { return ProviderKeyGrok }
 // YOLO flip each spawn a *new* grokAdapter with empty lastSessionID. The map
 // is keyed by FlowPilot run id (not cwd) so a respawned process session/loads
 // this chat's ACP id instead of session/new (run-93161). Different runs do
-// not steal (CA-312 / run-536).
+// not steal (CA-312 / run-536 / CA-502).
 type grokRunSessionIndex struct {
-	mu    sync.Mutex
-	byRun map[string]string
+	mu        sync.Mutex
+	byRun     map[string]string // runID → sessionID
+	bySession map[string]string // sessionID → runID (reverse; refuse sibling steal)
 }
 
 func (x *grokRunSessionIndex) remember(runID, sessionID string) {
@@ -107,7 +108,19 @@ func (x *grokRunSessionIndex) remember(runID, sessionID string) {
 	if x.byRun == nil {
 		x.byRun = make(map[string]string)
 	}
+	if x.bySession == nil {
+		x.bySession = make(map[string]string)
+	}
+	// Refuse binding a session already owned by a different run (sibling
+	// reviewers sharing one ACP id — run-98153).
+	if owner := strings.TrimSpace(x.bySession[sessionID]); owner != "" && owner != runID {
+		return
+	}
+	if prev := strings.TrimSpace(x.byRun[runID]); prev != "" && prev != sessionID {
+		delete(x.bySession, prev)
+	}
 	x.byRun[runID] = sessionID
+	x.bySession[sessionID] = runID
 }
 
 func (x *grokRunSessionIndex) lookup(runID string) string {
@@ -121,6 +134,20 @@ func (x *grokRunSessionIndex) lookup(runID string) string {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	return strings.TrimSpace(x.byRun[runID])
+}
+
+// ownerOf returns the run id that currently owns sessionID, or "".
+func (x *grokRunSessionIndex) ownerOf(sessionID string) string {
+	if x == nil {
+		return ""
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return strings.TrimSpace(x.bySession[sessionID])
 }
 
 func (a *grokAdapter) rememberRunSession(runID, sessionID string) {
@@ -426,6 +453,15 @@ func (a *grokAdapter) drainGrokNotifications(
 // handles it.
 func (a *grokAdapter) ensureSession(ctx context.Context, req TurnRequest, cwd string, mcpServers []interface{}) (string, error) {
 	resumeID := grokEnsureResumeID(req, a.lookupRunSession)
+	// Never session/load an ACP id already owned by another FlowPilot run
+	// (hub/sibling steal → shared chat_history.jsonl — run-98153).
+	if isGrokRealSessionID(resumeID) && a.runSessions != nil {
+		if owner := a.runSessions.ownerOf(resumeID); owner != "" && owner != strings.TrimSpace(req.RunID) {
+			log.Printf("grok ensureSession: refusing session/load of %s owned by run %s (this run %s); forcing session/new",
+				resumeID, owner, req.RunID)
+			resumeID = ""
+		}
+	}
 	method := "session/new"
 	var result map[string]any
 	var err error

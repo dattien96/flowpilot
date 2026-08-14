@@ -281,6 +281,11 @@ type RunHandle struct {
 	// replays the run from seq 0 and uses this as the stop cursor so a multi-turn run
 	// is replayed in full (not truncated at the first turn_completed). 0 when unknown.
 	LastEventSeq int64 `json:"lastEventSeq,omitempty"`
+	// RunKind / WorkflowID / FlowRef restore TUI/Desktop open chrome (flow mode,
+	// steps poll). Omitted on plain chat. Additive — old clients ignore.
+	RunKind    string `json:"runKind,omitempty"`
+	WorkflowID string `json:"workflowId,omitempty"`
+	FlowRef    string `json:"flowRef,omitempty"`
 }
 
 type StartRunInput struct {
