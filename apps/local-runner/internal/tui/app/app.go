@@ -910,6 +910,17 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.Type {
 	case tea.KeyCtrlC:
+		// Drag-select highlight: copy instead of quit (in-app selection replaces
+		// native terminal select while mouse tracking is on).
+		if !m.mouseSel.empty() {
+			text := m.selectionPlainText()
+			m.mouseSel = mouseSelect{}
+			if strings.TrimSpace(text) == "" {
+				m.statusMsg = "nothing to copy"
+				return m, nil
+			}
+			return m, m.cmdCopyText(text, "selection")
+		}
 		if m.turnIsActive() {
 			return m, m.cmdStopTurn()
 		}

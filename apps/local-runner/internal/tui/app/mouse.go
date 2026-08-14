@@ -139,6 +139,12 @@ func (m *AppModel) handlePlainLeftMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, pulse
 	default:
 		// Press, or Windows Type=MouseLeft with zero Action.
+		// Click in the prompt body places the caret (Win + macOS cell motion).
+		if m.tryPlaceInputCursor(msg.X, msg.Y) {
+			m.mouseDrag = mouseDrag{}
+			m.mouseSel = mouseSelect{}
+			return m, pulse
+		}
 		m.mouseDrag = mouseDrag{}
 		if msg.Action == tea.MouseActionPress && m.clickTargetAt(msg.X, msg.Y) == "" {
 			m.mouseDrag = mouseDrag{down: true, x0: msg.X, y0: msg.Y}
@@ -150,6 +156,31 @@ func (m *AppModel) handlePlainLeftMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m2, cmd := m.dispatchMouseClick(msg.X, msg.Y)
 		return m2, tea.Batch(pulse, cmd)
 	}
+}
+
+// selectionPlainText returns the visible transcript lines under the current
+// drag highlight (same y range applyMouseSelection paints), ANSI-stripped.
+func (m *AppModel) selectionPlainText() string {
+	if m.mouseSel.empty() {
+		return ""
+	}
+	c := m.tuiChrome()
+	lines := m.renderMessages()
+	m.clampViewport(len(lines), c.messagesHeight)
+	vis := sliceViewport(lines, c.messagesHeight, m.viewport.offset)
+	y0, y1 := m.mouseSel.y0, m.mouseSel.y1
+	if y0 > y1 {
+		y0, y1 = y1, y0
+	}
+	var parts []string
+	for i, line := range vis {
+		y := c.panelH + i
+		if y < y0 || y > y1 {
+			continue
+		}
+		parts = append(parts, stripANSI(line))
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
