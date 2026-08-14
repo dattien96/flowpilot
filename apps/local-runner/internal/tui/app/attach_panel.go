@@ -135,8 +135,8 @@ func (m *AppModel) renderAttachPanel(width int) string {
 		width = 20
 	}
 	var sb strings.Builder
-	// Do not put the token "[x]" in the title — hit testing keys on that string.
-	title := fmt.Sprintf(" pending images (%d/6) · click X to remove · Esc close · Alt+V paste ", len(m.pendingAttach))
+	// Avoid raw "[x]" / "[open]" in the title — those tokens are hit-tested on rows.
+	title := fmt.Sprintf(" pending images (%d/6) · open or X · Esc close · Alt+V paste ", len(m.pendingAttach))
 	if m.asciiMode {
 		sb.WriteString(styleSystem.Render("+" + strings.Repeat("-", width-2) + "+"))
 		sb.WriteByte('\n')
@@ -159,8 +159,9 @@ func (m *AppModel) renderAttachPanel(width int) string {
 		}
 		meta := fmt.Sprintf("%s  %dx%d  %s", a.MimeType, a.Width, a.Height, humanBytes(a.SizeBytes))
 		row := fmt.Sprintf(" %d. %s  %s  ", i+1, name, meta)
-		// Trailing [x] is the remove hit target (mouse).
-		bodyW := width - 2 - lipgloss.Width("[x] ")
+		// Trailing [open] [x] — open preview / remove (two ways to open: panel + /image open picker).
+		actions := "[open] [x] "
+		bodyW := width - 2 - lipgloss.Width(actions)
 		if bodyW < 8 {
 			bodyW = 8
 		}
@@ -175,6 +176,8 @@ func (m *AppModel) renderAttachPanel(width int) string {
 			sb.WriteString(styleSystem.Render("│"))
 		}
 		sb.WriteString(styleInputFocus.Render(line + strings.Repeat(" ", pad)))
+		sb.WriteString(styleLink.Render("[open]"))
+		sb.WriteString(" ")
 		sb.WriteString(styleLink.Render("[x]"))
 		sb.WriteString(" ")
 		if m.asciiMode {
@@ -202,43 +205,50 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1fMB", float64(n)/(1024*1024))
 }
 
-// hitAttachPanelRemove returns 1-based pending index when (x,y) lands on a
-// data row. The whole row is the remove target (not only the tiny "[x]" cells)
-// so mouse hits are reliable in a terminal.
-// Panel rows: 0=top border, 1=title, 2..=image rows (index 1-based = rel-1).
-func hitAttachPanelRemove(c tuiChrome, x, y int) int {
+// hitAttachPanelAction returns ("open"|"rm", 1-based index) for a data-row click.
+// [open] / name body → open preview; [x] → remove. Title/border → ("", 0).
+func hitAttachPanelAction(c tuiChrome, x, y int) (action string, idx int) {
 	if c.attachPanelH <= 0 || y < c.attachPanelY || y >= c.attachPanelY+c.attachPanelH {
-		return 0
+		return "", 0
 	}
 	lines := strings.Split(c.attachPanelBlock, "\n")
 	rel := y - c.attachPanelY
 	if rel < 2 || rel >= len(lines) {
-		return 0
+		return "", 0
 	}
-	// Bottom border is last line — ignore.
 	if rel == len(lines)-1 {
-		return 0
+		return "", 0
 	}
-	idx := rel - 1 // rel=2 → image #1
+	idx = rel - 1 // rel=2 → image #1
 	if idx < 1 {
-		return 0
+		return "", 0
 	}
 	stripped := stripANSI(lines[rel])
-	// Skip empty / pure-border rows.
 	if strings.TrimSpace(strings.Trim(stripped, "|│╭╮╰╯-+─")) == "" {
-		return 0
+		return "", 0
 	}
-	// Entire content row (inside frame) counts — left border through [x].
-	// Require at least past the left frame so random left-margin clicks miss.
 	if x < 1 {
-		return 0
+		return "", 0
 	}
-	// Prefer explicit [x] hit with padding; otherwise any x on the row body.
+	// Prefer explicit action chips (padded for easy hits).
 	if hitTokenPadded(stripped, "[x]", x, 2) {
-		return idx
+		return "rm", idx
 	}
+	if hitTokenPadded(stripped, "[open]", x, 2) {
+		return "open", idx
+	}
+	// Rest of the row body → open preview (name/meta click).
 	vis := lipgloss.Width(stripped)
 	if x >= 1 && x < vis {
+		return "open", idx
+	}
+	return "", 0
+}
+
+// hitAttachPanelRemove kept for tests — remove chip only.
+func hitAttachPanelRemove(c tuiChrome, x, y int) int {
+	action, idx := hitAttachPanelAction(c, x, y)
+	if action == "rm" {
 		return idx
 	}
 	return 0

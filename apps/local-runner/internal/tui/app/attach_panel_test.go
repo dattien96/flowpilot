@@ -50,7 +50,7 @@ func TestAttachPanel_OpenAndRemoveByClick(t *testing.T) {
 	if c.attachPanelH < 3 {
 		t.Fatalf("attach panel height=%d block=%q", c.attachPanelH, c.attachPanelBlock)
 	}
-	// Find first [x] row and verify hit testing before dispatch.
+	// Find first [x] (remove) — not [open].
 	lines := strings.Split(c.attachPanelBlock, "\n")
 	var y, x int
 	found := false
@@ -58,12 +58,11 @@ func TestAttachPanel_OpenAndRemoveByClick(t *testing.T) {
 		plain := stripANSI(line)
 		if j := strings.Index(plain, "[x]"); j >= 0 {
 			y = c.attachPanelY + i
-			// hitToken uses visual columns; for ASCII Index == visual start.
 			x = lipgloss.Width(plain[:j])
 			found = true
-			idx := hitAttachPanelRemove(c, x, y)
-			if idx != 1 {
-				t.Fatalf("hitAttachPanelRemove=%d want 1 (y=%d x=%d line=%q panelY=%d)", idx, y, x, plain, c.attachPanelY)
+			action, idx := hitAttachPanelAction(c, x, y)
+			if action != "rm" || idx != 1 {
+				t.Fatalf("hitAttachPanelAction=%s/%d want rm/1 (y=%d x=%d line=%q)", action, idx, y, x, plain)
 			}
 			break
 		}
@@ -167,7 +166,7 @@ func TestHitAttachChipToken_FullChipNotOnlyBracket(t *testing.T) {
 	}
 }
 
-func TestHitAttachPanelRemove_WholeRow(t *testing.T) {
+func TestHitAttachPanel_OpenAndRemoveChips(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "codex"}, "http://127.0.0.1:9")
 	m.width, m.height = 80, 30
 	m.sessionLoading = false
@@ -175,11 +174,33 @@ func TestHitAttachPanelRemove_WholeRow(t *testing.T) {
 	m.appendPendingAttachment(samplePendingAtt("w1", "w.png"))
 	m.openAttachPanel()
 	c := m.tuiChrome()
-	// First data row is attachPanelY+2
 	y := c.attachPanelY + 2
-	// Click near left content (not only [x])
-	if idx := hitAttachPanelRemove(c, 5, y); idx != 1 {
-		t.Fatalf("whole-row hit idx=%d want 1 (y=%d block=\n%s)", idx, y, c.attachPanelBlock)
+	lines := strings.Split(c.attachPanelBlock, "\n")
+	if y-c.attachPanelY >= len(lines) {
+		t.Fatal("no data row")
+	}
+	plain := stripANSI(lines[y-c.attachPanelY])
+	// Body / name → open
+	if action, idx := hitAttachPanelAction(c, 5, y); action != "open" || idx != 1 {
+		t.Fatalf("body hit=%s/%d want open/1 line=%q", action, idx, plain)
+	}
+	// [open] chip
+	if j := strings.Index(plain, "[open]"); j >= 0 {
+		x := lipgloss.Width(plain[:j]) + 2
+		if action, idx := hitAttachPanelAction(c, x, y); action != "open" || idx != 1 {
+			t.Fatalf("[open] hit=%s/%d", action, idx)
+		}
+	} else {
+		t.Fatalf("missing [open] in %q", plain)
+	}
+	// [x] chip
+	if j := strings.Index(plain, "[x]"); j >= 0 {
+		x := lipgloss.Width(plain[:j])
+		if action, idx := hitAttachPanelAction(c, x, y); action != "rm" || idx != 1 {
+			t.Fatalf("[x] hit=%s/%d", action, idx)
+		}
+	} else {
+		t.Fatalf("missing [x] in %q", plain)
 	}
 }
 

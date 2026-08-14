@@ -244,6 +244,12 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case strings.HasPrefix(target, "attach-open:"):
+		idx, err := strconv.Atoi(strings.TrimPrefix(target, "attach-open:"))
+		if err == nil {
+			return m, m.cmdOpenPendingAttachment(idx)
+		}
+		return m, nil
 	case strings.HasPrefix(target, "qopt:"):
 		idx, err := strconv.Atoi(strings.TrimPrefix(target, "qopt:"))
 		if err == nil && m.question != nil && idx >= 0 && idx < len(m.question.Options) {
@@ -288,8 +294,13 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 	if t := hitQuestionChrome(m, c, x, y); t != "" {
 		return t
 	}
-	if idx := hitAttachPanelRemove(c, x, y); idx > 0 {
-		return fmt.Sprintf("attach-rm:%d", idx)
+	if action, idx := hitAttachPanelAction(c, x, y); idx > 0 {
+		switch action {
+		case "rm":
+			return fmt.Sprintf("attach-rm:%d", idx)
+		case "open":
+			return fmt.Sprintf("attach-open:%d", idx)
+		}
 	}
 	if hitAttachChrome(c, x, y) {
 		return "attach"

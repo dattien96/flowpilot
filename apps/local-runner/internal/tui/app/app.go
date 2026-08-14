@@ -1067,8 +1067,8 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if cmd := suggestionAcceptValue(it); cmd != "" {
-					// Action rows (e.g. /provider → connect) only expand the next picker.
-					if it.kind == "provider-action" {
+					// Action rows only expand the next picker (provider connect, /image open|rm).
+					if it.kind == "provider-action" || it.kind == "image-sub-next" {
 						m.inputValue = cmd
 						m.inputCursor = -1
 						m.suggIdx = 0
@@ -1237,6 +1237,12 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 		}
 		return []suggestItem{{value: "", detail: "(no matching skills)", kind: "skill"}}
 	}
+	if imgSugg := filterImageSuggestions(m.inputValue, m.pendingAttach); len(imgSugg) > 0 {
+		return imgSugg
+	}
+	if _, _, ok := parseImagePicker(m.inputValue); ok {
+		return []suggestItem{{value: "", detail: "(no matching /image option)", kind: "image-sub"}}
+	}
 	cmds := filterSlashSuggestions(m.inputValue)
 	out := make([]suggestItem, 0, len(cmds))
 	for _, sc := range cmds {
@@ -1253,7 +1259,7 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 	it := items[idx]
 	if cmd := suggestionAcceptValue(it); cmd == "" {
 		return
-	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" {
+	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" {
 		m.inputValue = cmd
 	} else {
 		// Tab fills the command token and leaves a trailing space for args.
@@ -1320,6 +1326,28 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/provider account " + it.value
+	case "image-sub":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		// paste/list/clear run as full commands on Enter.
+		return "/image " + strings.TrimSpace(it.value)
+	case "image-sub-next":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		// open/rm need a trailing space so the index picker appears (like provider connect).
+		return "/image " + strings.TrimSpace(it.value) + " "
+	case "image-open":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/image open " + strings.TrimSpace(it.value)
+	case "image-rm":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/image rm " + strings.TrimSpace(it.value)
 	case "cmd":
 		return strings.TrimSpace(it.value)
 	default:
