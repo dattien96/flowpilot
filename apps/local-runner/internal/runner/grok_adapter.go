@@ -192,8 +192,10 @@ const grokToolReinforcements = grokAskUserReinforcement + grokSpawnAgentReinforc
 // session/request_permission decision policy below). Mcp lands in Task-209;
 // SkillSelection lands in Task-214 (promptPrep already calls
 // injectSelectedSkills unconditionally, so unlike Mcp it needs no
-// instance-wiring check). Vision stays false (initialize reported
-// promptCapabilities.image=false, live-verified).
+// instance-wiring check). Vision stays false for ACP multimodal blocks
+// (initialize reported promptCapabilities.image=false, live-verified). Image
+// attachments still flow via path fallback: write under .tmp/images and append
+// paths to the text prompt (CA-483) — UI gates use SupportsImages, not this flag.
 func (a *grokAdapter) Capabilities() ProviderCapabilities {
 	return ProviderCapabilities{
 		Streaming:      true,
@@ -206,6 +208,9 @@ func (a *grokAdapter) Capabilities() ProviderCapabilities {
 		// runner-hosted MCP server (Task-209) — a bare newGrokAdapter() (tests,
 		// or a not-yet-registered instance) truthfully reports false (CP-46 P-11).
 		Mcp: a.mcpServer != nil,
+		// Vision remains false: no ACP image content blocks. Path fallback does
+		// not flip this flag (old TestGrokAdapterCapabilitiesMatchProvenSet).
+		Vision: false,
 	}
 }
 
@@ -290,7 +295,24 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 		a.mu.Unlock()
 	}()
 
+	// Path fallback for images: Grok ACP has no image blocks; write files under
+	// <cwd>/.tmp/images/<turn>/ and list absolute paths in the prompt text so the
+	// model can open them with tools (CA-483). Cleanup after the turn returns —
+	// same lifecycle as Codex writeCodexImageAttachments (defer after pump ends).
+	imagePaths, cleanupImages, imgErr := writeGrokImagePathFallback(cwd, req.ProviderTurnID, req.Attachments)
+	if imgErr != nil {
+		return imgErr
+	}
+	defer cleanupImages()
+
 	prompt := a.preparePrompt(req)
+	if len(imagePaths) > 0 {
+		names := make([]string, len(req.Attachments))
+		for i, att := range req.Attachments {
+			names[i] = att.OriginalName
+		}
+		prompt = appendGrokImagePathsToPrompt(prompt, imagePaths, names)
+	}
 	promptParams := grokACPPromptParams(sessionID, prompt)
 
 	type promptOutcome struct {

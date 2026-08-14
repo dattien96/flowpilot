@@ -37,12 +37,13 @@ const (
 )
 
 // SupportsImages reports whether providerKey accepts image attachments.
-// Mirrors Desktop VISION_PROVIDERS / runner ProviderCapabilities.Vision:
-// Grok is excluded because grok ACP initialize reported
-// promptCapabilities.image=false (live-verified; CP-46/Task-211).
+// Mirrors Desktop VISION_PROVIDERS:
+//   - codex / claude: native multimodal (Task-052)
+//   - grok: path fallback — runner writes .tmp/images and injects paths into
+//     the text prompt (CA-483); ACP promptCapabilities.image stays false
 func SupportsImages(providerKey string) bool {
 	switch strings.ToLower(providerKey) {
-	case "codex", "claude":
+	case "codex", "claude", "grok":
 		return true
 	}
 	return false
@@ -57,10 +58,7 @@ func ImagesUnsupportedReason(providerKey string) string {
 	if SupportsImages(key) {
 		return ""
 	}
-	if key == "grok" {
-		return "provider grok has Vision=false in the runner (Grok ACP promptCapabilities.image=false) — same gate as Desktop; only codex/claude accept images today"
-	}
-	return fmt.Sprintf("provider %q does not support image attachments (codex/claude only)", key)
+	return fmt.Sprintf("provider %q does not support image attachments (codex/claude/grok only)", key)
 }
 
 // NormalizeImage decodes imgData, scales it down if any edge exceeds 1568 px,

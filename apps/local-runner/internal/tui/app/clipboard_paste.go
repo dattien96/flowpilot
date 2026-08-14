@@ -43,6 +43,14 @@ type AttachmentOpenMsg struct {
 }
 
 func (m *AppModel) cmdClipboardPaste() tea.Cmd {
+	return m.cmdClipboardPasteWithFallback("")
+}
+
+// cmdClipboardPasteWithFallback reads the system clipboard (image preferred,
+// then image path, then text). When the clipboard has neither image nor text,
+// fallbackText from bracketed paste (Windows Terminal Ctrl+V) is inserted so
+// text paste still works if the native clipboard read fails.
+func (m *AppModel) cmdClipboardPasteWithFallback(fallbackText string) tea.Cmd {
 	provider := m.provider
 	pending := len(m.pendingAttach)
 	return func() tea.Msg {
@@ -75,12 +83,25 @@ func (m *AppModel) cmdClipboardPaste() tea.Cmd {
 			}
 			return ClipboardPasteMsg{Attachment: &atts[0]}
 		}
+		if path := imagePathFromClipboardText(fallbackText); path != "" {
+			atts, err := client.ValidateAttachments([]string{path}, provider)
+			if err != nil {
+				return ClipboardPasteMsg{Err: err.Error()}
+			}
+			if len(atts) == 0 {
+				return ClipboardPasteMsg{Err: "could not attach image path from paste"}
+			}
+			return ClipboardPasteMsg{Attachment: &atts[0]}
+		}
 		if strings.TrimSpace(text) != "" {
 			msg := ClipboardPasteMsg{Text: text, NoImage: true}
 			if imgErr != "" {
 				msg.Err = imgErr
 			}
 			return msg
+		}
+		if strings.TrimSpace(fallbackText) != "" {
+			return ClipboardPasteMsg{Text: fallbackText, NoImage: true}
 		}
 		err := "clipboard has no image (and no text) — copy an image or image file, then Alt+V or /image paste"
 		if imgErr != "" {

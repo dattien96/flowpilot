@@ -747,6 +747,9 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 	// Reclaim Codex image-attachment temp dirs orphaned by a prior hard crash/kill
 	// (Task-052); the per-turn deferred cleanup cannot run in that case. Best-effort.
 	sweepCodexImageAttachments(time.Hour, time.Now())
+	// Grok path-fallback images under .tmp/images (CA-483); cwd unknown at boot
+	// so this only sweeps the no-cwd temp root (project-local dirs age out later).
+	sweepGrokImagePathFallback("", time.Hour, time.Now())
 	svc := &InteractiveService{
 		catalog:               catalog,
 		skillsCatalog:         newInteractiveCatalog(),

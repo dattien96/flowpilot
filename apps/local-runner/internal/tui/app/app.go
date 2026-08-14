@@ -1120,6 +1120,21 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.cmdMaybePrefetchPickers()
 
 	case tea.KeySpace, tea.KeyRunes:
+		// Bubble Tea delivers Alt+letter as KeyRunes+Alt (String() == "alt+v").
+		// Handle image-paste chords before inserting the bare rune — otherwise
+		// Alt+V becomes a literal "v" and never reaches the chord handler below.
+		if m.authPhase == AuthNone && msg.Type == tea.KeyRunes {
+			switch msg.String() {
+			case "alt+v", "ctrl+shift+v":
+				return m, m.cmdClipboardPaste()
+			}
+			// Windows Terminal often steals Ctrl+V and injects bracketed paste
+			// (KeyRunes+Paste). Prefer clipboard image/path, then text; fall
+			// back to the bracketed-paste runes when the clipboard is empty.
+			if msg.Paste {
+				return m, m.cmdClipboardPasteWithFallback(string(msg.Runes))
+			}
+		}
 		if msg.Type == tea.KeySpace {
 			m.insertInputAtCursor(" ")
 		} else {
@@ -1128,7 +1143,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.suggIdx = 0
 		return m, m.cmdMaybePrefetchPickers()
 	}
-	// Alt+V / ctrl+shift+v: image paste when the terminal steals Ctrl+V.
+	// Alt+V / ctrl+shift+v when not delivered as KeyRunes (some terminals).
 	if m.authPhase == AuthNone {
 		switch msg.String() {
 		case "alt+v", "ctrl+shift+v":
@@ -1455,7 +1470,7 @@ func (m *AppModel) handleGateInput(input string) (tea.Model, tea.Cmd) {
 func (m *AppModel) dispatchImageCommand(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		m.addMessage("system", formatPendingAttachments(m.pendingAttach)+
-			"\nTip: Alt+V or /image paste (Windows Terminal often steals Ctrl+V). Images: codex/claude only (grok Vision=false).", "")
+			"\nTip: Alt+V or /image paste (Windows Terminal often steals Ctrl+V). Images: codex/claude (native) + grok (path fallback → .tmp/images).", "")
 		return m, nil
 	}
 	sub := strings.ToLower(strings.TrimSpace(args[0]))

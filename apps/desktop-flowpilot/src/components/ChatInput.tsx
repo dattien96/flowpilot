@@ -73,12 +73,12 @@ const PROVIDER_CARDS: { value: ProviderKey; label: string; icon: React.ReactElem
   { value: "grok", label: "Grok", icon: <GrokIcon /> },
 ];
 
-// Providers whose runner adapters advertise the Vision capability (Task-052). Mirrors
-// ProviderCapabilities.Vision in the Go runner; a follow-up should source this from the
-// provider registration the renderer loads instead of hardcoding it here.
-// Grok is deliberately excluded (CP-46/Task-211 T-3): initialize's
-// promptCapabilities.image was live-verified false for grok-4.5.
-const VISION_PROVIDERS = new Set<ProviderKey>(["codex", "claude"]);
+// Providers that accept chat image attachments (Task-052 / CA-483).
+// codex + claude: native multimodal. grok: runner path-fallback writes
+// <cwd>/.tmp/images and injects absolute paths into the text prompt (ACP
+// promptCapabilities.image remains false; Capabilities.Vision stays false).
+// A follow-up should source this from the runner capability surface.
+const VISION_PROVIDERS = new Set<ProviderKey>(["codex", "claude", "grok"]);
 
 // Fallback reasoning-effort options (Task-215): used only when the selected
 // model has no detected `supportedReasoningEfforts` in the catalog (a
