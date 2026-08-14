@@ -141,6 +141,48 @@ func TestEscClosesAttachPanel(t *testing.T) {
 	}
 }
 
+func TestHitAttachChipToken_FullChipNotOnlyBracket(t *testing.T) {
+	// Old bug: only "[" was clickable (1 cell). Whole "[2 img]" must hit.
+	line := "┃ [2 img] hello world"
+	// Visual start of chip after "┃ "
+	chip := "[2 img]"
+	i := strings.Index(line, chip)
+	if i < 0 {
+		t.Fatal("chip missing")
+	}
+	start := lipgloss.Width(line[:i])
+	// Click middle of "2 img"
+	mid := start + 3
+	if !hitAttachChipToken(line, mid) {
+		t.Fatalf("mid-chip x=%d should hit on %q", mid, line)
+	}
+	// Click on last char of chip
+	end := start + lipgloss.Width(chip) - 1
+	if !hitAttachChipToken(line, end) {
+		t.Fatalf("end-chip x=%d should hit", end)
+	}
+	// Far into prompt body should miss
+	if hitAttachChipToken(line, start+lipgloss.Width(chip)+5) {
+		t.Fatal("prompt body should not open attach panel")
+	}
+}
+
+func TestHitAttachPanelRemove_WholeRow(t *testing.T) {
+	m := New(config.ChatConfig{Provider: "codex"}, "http://127.0.0.1:9")
+	m.width, m.height = 80, 30
+	m.sessionLoading = false
+	m.asciiMode = true
+	m.appendPendingAttachment(samplePendingAtt("w1", "w.png"))
+	m.openAttachPanel()
+	c := m.tuiChrome()
+	// First data row is attachPanelY+2
+	y := c.attachPanelY + 2
+	// Click near left content (not only [x])
+	if idx := hitAttachPanelRemove(c, 5, y); idx != 1 {
+		t.Fatalf("whole-row hit idx=%d want 1 (y=%d block=\n%s)", idx, y, c.attachPanelBlock)
+	}
+}
+
 func TestClearPending_CleansTempDirFiles(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "codex"}, "http://127.0.0.1:9")
 	m.appendPendingAttachment(samplePendingAtt("c1", "c.png"))

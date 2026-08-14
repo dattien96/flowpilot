@@ -202,7 +202,9 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1fMB", float64(n)/(1024*1024))
 }
 
-// hitAttachPanelRemove returns 1-based pending index when (x,y) lands on a row's [x].
+// hitAttachPanelRemove returns 1-based pending index when (x,y) lands on a
+// data row. The whole row is the remove target (not only the tiny "[x]" cells)
+// so mouse hits are reliable in a terminal.
 // Panel rows: 0=top border, 1=title, 2..=image rows (index 1-based = rel-1).
 func hitAttachPanelRemove(c tuiChrome, x, y int) int {
 	if c.attachPanelH <= 0 || y < c.attachPanelY || y >= c.attachPanelY+c.attachPanelH {
@@ -222,8 +224,22 @@ func hitAttachPanelRemove(c tuiChrome, x, y int) int {
 		return 0
 	}
 	stripped := stripANSI(lines[rel])
-	if !hitToken(stripped, "[x]", x) {
+	// Skip empty / pure-border rows.
+	if strings.TrimSpace(strings.Trim(stripped, "|│╭╮╰╯-+─")) == "" {
 		return 0
 	}
-	return idx
+	// Entire content row (inside frame) counts — left border through [x].
+	// Require at least past the left frame so random left-margin clicks miss.
+	if x < 1 {
+		return 0
+	}
+	// Prefer explicit [x] hit with padding; otherwise any x on the row body.
+	if hitTokenPadded(stripped, "[x]", x, 2) {
+		return idx
+	}
+	vis := lipgloss.Width(stripped)
+	if x >= 1 && x < vis {
+		return idx
+	}
+	return 0
 }

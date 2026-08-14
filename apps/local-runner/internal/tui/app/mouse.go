@@ -448,11 +448,63 @@ func hitAttachChrome(c tuiChrome, x, y int) bool {
 		return false
 	}
 	stripped := stripANSI(lines[rel])
-	// Pending chip is "[N img]"; legacy empty-state "[+img]" no longer rendered.
-	if hitToken(stripped, "[+img]", x) {
+	// Full chip "[N img]" / legacy "[+img]" — not only the leading "[" (was a 1-cell hit).
+	return hitAttachChipToken(stripped, x)
+}
+
+// hitAttachChipToken is true when x lands on (or within 1 col of) the pending
+// image chip substring, e.g. "[2 img] " or "[+img]".
+func hitAttachChipToken(stripped string, x int) bool {
+	if hitTokenPadded(stripped, "[+img]", x, 1) {
 		return true
 	}
-	return strings.Contains(stripped, " img]") && hitToken(stripped, "[", x)
+	// Find "[<digits> img]" — chip is always ASCII.
+	start := strings.Index(stripped, "[")
+	for start >= 0 {
+		rest := stripped[start:]
+		endRel := strings.Index(rest, " img]")
+		if endRel < 0 {
+			break
+		}
+		// Verify digits between [ and " img]"
+		mid := rest[1:endRel]
+		okDigits := len(mid) > 0
+		for _, r := range mid {
+			if r < '0' || r > '9' {
+				okDigits = false
+				break
+			}
+		}
+		if okDigits {
+			token := rest[:endRel+len(" img]")]
+			if hitTokenPadded(stripped, token, x, 1) {
+				return true
+			}
+		}
+		next := strings.Index(stripped[start+1:], "[")
+		if next < 0 {
+			break
+		}
+		start = start + 1 + next
+	}
+	return false
+}
+
+// hitTokenPadded is hitToken with ±pad visual columns for easier mouse hits.
+func hitTokenPadded(stripped, token string, x, pad int) bool {
+	i := strings.Index(stripped, token)
+	if i < 0 {
+		return false
+	}
+	if pad < 0 {
+		pad = 0
+	}
+	start := lipgloss.Width(stripped[:i]) - pad
+	if start < 0 {
+		start = 0
+	}
+	end := lipgloss.Width(stripped[:i]) + lipgloss.Width(token) + pad
+	return x >= start && x < end
 }
 
 func hitLoadEarlierChrome(m *AppModel, c tuiChrome, x, y int) string {
