@@ -63,8 +63,11 @@ func TestCmdFocusAgent_DisablesSendAndRestoresMain(t *testing.T) {
 	if !strings.Contains(joined, "Child transcript is read-only") {
 		t.Fatalf("missing read-only send block:\n%s", joined)
 	}
-	if !strings.Contains(strings.Join(m.renderMessages(), "\n"), "Child transcript") {
-		t.Fatal("missing child chrome")
+	// No "Viewing agent:" / "Child transcript:" system spam — focus is silent.
+	for _, msg := range m.messages {
+		if strings.Contains(msg.Content, "Viewing agent:") || strings.HasPrefix(msg.Content, "Child transcript:") {
+			t.Fatalf("must not inject viewing banner: %q", msg.Content)
+		}
 	}
 	m.restoreMainTranscript()
 	if m.viewingChild() {

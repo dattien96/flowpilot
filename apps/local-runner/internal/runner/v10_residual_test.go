@@ -250,8 +250,13 @@ func TestRenderSectionsByPriorityMCPAfterExcerpt(t *testing.T) {
 
 // V10 residual P0: git commit guard blocks commit, allows status.
 func TestGitCommitGuardBlocksCommit(t *testing.T) {
+	skipIfNoUnixShell(t)
 	dir, cleanup, err := installGitCommitGuard(true)
 	if err != nil {
+		// Windows cannot mark shell shims executable the same way as Unix.
+		if strings.Contains(err.Error(), "not executable") {
+			t.Skipf("git commit guard shim not executable on this OS: %v", err)
+		}
 		t.Fatalf("installGitCommitGuard: %v", err)
 	}
 	defer cleanup()

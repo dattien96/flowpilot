@@ -1078,6 +1078,7 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 		if s.isFlowEngineDriven(m.parentRunID) && m.label != "" {
 			s.setFlowStepStatus(context.Background(), m.parentRunID, m.label, StepStatusCanceled)
 		}
+		s.ensureCohortExpected(m.parentRunID, m.cohortID)
 		if s.agentOrchestrator.cohortComplete(m.parentRunID, m.cohortID) {
 			entries := s.agentOrchestrator.drainCohort(m.parentRunID, m.cohortID)
 			round := s.agentOrchestrator.loopStateFor(m.parentRunID).Round
@@ -1837,6 +1838,43 @@ func (s *InteractiveService) lastCohortNoteFor(runID string) string {
 	return ""
 }
 
+// ensureCohortExpectedLocked restores cohortExpected from live sibling runs
+// when RAM lost the count (run-98153: 2/2 buffered, join never fired).
+// Caller holds s.mu.
+func (s *InteractiveService) ensureCohortExpectedLocked(parentRunID, cohortID string) {
+	parentRunID = strings.TrimSpace(parentRunID)
+	cohortID = strings.TrimSpace(cohortID)
+	if parentRunID == "" || cohortID == "" {
+		return
+	}
+	known := 0
+	for _, r := range s.runs {
+		if r == nil {
+			continue
+		}
+		if r.parentRunID == parentRunID && strings.TrimSpace(r.flowCohortId) == cohortID {
+			known++
+		}
+	}
+	if known == 0 {
+		return
+	}
+	before := s.agentOrchestrator.cohortExpectedCount(parentRunID, cohortID)
+	s.agentOrchestrator.inferCohortExpectedIfMissing(parentRunID, cohortID, known)
+	if before == 0 {
+		s.flowDiagLog(parentRunID, "cohort_expected_inferred", "restored cohort expected from live siblings",
+			"cohort_id", cohortID,
+			"known_members", known,
+		)
+	}
+}
+
+func (s *InteractiveService) ensureCohortExpected(parentRunID, cohortID string) {
+	s.mu.Lock()
+	s.ensureCohortExpectedLocked(parentRunID, cohortID)
+	s.mu.Unlock()
+}
+
 // hubShouldSkipProseEscalate reports whether BUG-226's "no submit_review_outcome
 // → escalate" fallback must not run: an open reviewer cohort or any live child
 // turn means the loop is still advancing after continue/spawn — free prose from
@@ -2085,6 +2123,7 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 			Status:   "failed",
 			Err:      errMsg,
 		})
+		s.ensureCohortExpected(parentRunID, cohortID)
 		if s.agentOrchestrator.cohortComplete(parentRunID, cohortID) {
 			entries := s.agentOrchestrator.drainCohort(parentRunID, cohortID)
 			note := buildCohortNote(parentRunID, cohortID, entries, s.agentOrchestrator.graphSnapshot(parentRunID).LoopState.Round)
@@ -4282,9 +4321,12 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 			s.setFlowStepStatusLocked(context.Background(), rs.parentRunID, rs.label, StepStatusDone)
 			cohortDiagLog("member self-settled DONE parent=%q run=%q label=%q", rs.parentRunID, rs.id, rs.label)
 		}
+		// run-98153 / run-91842: both reviewers buffered but join never fired
+		// because cohortExpected was 0 in RAM. Heal from live siblings.
+		s.ensureCohortExpectedLocked(rs.parentRunID, rs.flowCohortId)
 		if s.agentOrchestrator.cohortComplete(rs.parentRunID, rs.flowCohortId) {
 			entries := s.agentOrchestrator.drainCohort(rs.parentRunID, rs.flowCohortId)
-			s.snapshotReviewCohortVerdicts(rs.parentRunID, entries)
+			s.snapshotReviewCohortVerdictsLocked(rs.parentRunID, entries)
 			note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)
 			s.flowDiagLog(rs.parentRunID, "cohort_join_complete", "cohort barrier completed and note built",
 				"cohort_id", rs.flowCohortId,
@@ -4636,6 +4678,7 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					s.setFlowStepStatusLocked(context.Background(), rs.parentRunID, rs.label, StepStatusFailed)
 					cohortDiagLog("member self-settled FAILED parent=%q run=%q label=%q", rs.parentRunID, rs.id, rs.label)
 				}
+				s.ensureCohortExpectedLocked(rs.parentRunID, rs.flowCohortId)
 				if s.agentOrchestrator.cohortComplete(rs.parentRunID, rs.flowCohortId) {
 					entries := s.agentOrchestrator.drainCohort(rs.parentRunID, rs.flowCohortId)
 					note := buildCohortNote(rs.parentRunID, rs.flowCohortId, entries, s.agentOrchestrator.graphSnapshot(rs.parentRunID).LoopState.Round)
@@ -7744,8 +7787,13 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 		// Only promote an id the adapter actually opened this turn via
 		// session/new or session/load (LastGrokSessionID). That is the durable
 		// handle for same-account session/load and cross-account relocate.
+		// CA-502: also refuse ids already owned by parent/sibling (shared
+		// chat_history.jsonl — run-98153 dual reviewers).
 		if reporter, ok := adapter.(interface{ LastGrokSessionID() string }); ok {
 			if id := strings.TrimSpace(reporter.LastGrokSessionID()); isGrokRealSessionID(id) {
+				if s.isForeignProviderSessionID(rs, id) {
+					return ""
+				}
 				rs.realProviderSessionID = id
 				// Promote the in-memory placeholder so paths that still read
 				// rs.providerSessionID (dispatch envelope, some persist helpers)
@@ -7780,17 +7828,18 @@ func isCodexRealSessionID(id string) bool {
 // isForeignProviderSessionID reports whether sessionID is already owned by a
 // different run that is related to rs (same project/cwd, parent, or sibling).
 // Used to refuse workspace-newest discovery theft and to filter polluted turn
-// logs on seed (run-75035).
+// logs on seed (run-75035). Grok ACP ids use the same non-thread-* durable
+// shape as Codex rollouts for ownership checks (CA-502 / run-98153).
 func (s *InteractiveService) isForeignProviderSessionID(rs *interactiveRun, sessionID string) bool {
 	sessionID = strings.TrimSpace(sessionID)
-	if rs == nil || !isCodexRealSessionID(sessionID) {
+	if rs == nil || sessionID == "" || strings.HasPrefix(sessionID, "thread-") {
 		return false
 	}
 	// Own durable handles always count as non-foreign.
 	if sessionID == strings.TrimSpace(rs.realProviderSessionID) || sessionID == strings.TrimSpace(rs.providerSessionID) {
 		return false
 	}
-	if sessionID == strings.TrimSpace(rs.lastCodexTurnSessionID) {
+	if sessionID == strings.TrimSpace(rs.lastCodexTurnSessionID) || sessionID == strings.TrimSpace(rs.lastGrokTurnSessionID) {
 		return false
 	}
 	foreign := s.foreignProviderSessionIDs(rs)
@@ -7800,23 +7849,23 @@ func (s *InteractiveService) isForeignProviderSessionID(rs *interactiveRun, sess
 
 // foreignProviderSessionIDs returns provider session ids owned by other related
 // runs (parent, siblings under the same parent, or other sessions sharing
-// project+cwd). Empty when the store cannot list sessions.
+// project+cwd). Includes live in-memory related runs even when the store is empty.
 func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[string]struct{} {
 	out := map[string]struct{}{}
-	if s == nil || rs == nil || s.workflowStore == nil {
-		return out
-	}
-	indexReader, ok := s.workflowStore.(SessionIndexReader)
-	if !ok {
-		return out
-	}
-	sessions, err := indexReader.ListAllProviderSessions(context.Background())
-	if err != nil || len(sessions) == 0 {
+	if s == nil || rs == nil {
 		return out
 	}
 	ownParent := strings.TrimSpace(rs.parentRunID)
 	ownProject := strings.TrimSpace(rs.projectID)
 	ownCwd := strings.TrimSpace(rs.workspaceCwd)
+	var sessions []ProviderSessionState
+	if s.workflowStore != nil {
+		if indexReader, ok := s.workflowStore.(SessionIndexReader); ok {
+			if listed, err := indexReader.ListAllProviderSessions(context.Background()); err == nil {
+				sessions = listed
+			}
+		}
+	}
 	for _, st := range sessions {
 		otherRun := strings.TrimSpace(st.RunID)
 		if otherRun == "" || otherRun == rs.id {
@@ -7836,8 +7885,39 @@ func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[s
 		if !related {
 			continue
 		}
-		if sid := strings.TrimSpace(st.ProviderSessionID); isCodexRealSessionID(sid) {
+		if sid := strings.TrimSpace(st.ProviderSessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) {
 			// Do not treat our own id as foreign if listed under another row erroneously.
+			if sid == strings.TrimSpace(rs.realProviderSessionID) || sid == strings.TrimSpace(rs.providerSessionID) {
+				continue
+			}
+			out[sid] = struct{}{}
+		}
+	}
+	// Live in-memory related runs (siblings may not be durable yet — CA-502).
+	// Caller may already hold s.mu (refreshResumeHandleLocked); do not re-lock.
+	for _, other := range s.runs {
+		if other == nil || other.id == rs.id {
+			continue
+		}
+		otherParent := strings.TrimSpace(other.parentRunID)
+		related := false
+		if ownParent != "" && (other.id == ownParent || otherParent == ownParent) {
+			related = true
+		}
+		if otherParent != "" && otherParent == rs.id {
+			related = true
+		}
+		if ownProject != "" && other.projectID == ownProject && ownCwd != "" && other.workspaceCwd == ownCwd {
+			related = true
+		}
+		if !related {
+			continue
+		}
+		for _, sid := range []string{other.realProviderSessionID, other.providerSessionID, other.lastGrokTurnSessionID, other.lastCodexTurnSessionID} {
+			sid = strings.TrimSpace(sid)
+			if sid == "" || strings.HasPrefix(sid, "thread-") {
+				continue
+			}
 			if sid == strings.TrimSpace(rs.realProviderSessionID) || sid == strings.TrimSpace(rs.providerSessionID) {
 				continue
 			}

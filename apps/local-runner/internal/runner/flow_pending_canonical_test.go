@@ -37,6 +37,9 @@ func appendPendingCanonicalRawLine(t *testing.T, path, line string) {
 // mechanism is about.
 func relaxGateRulesForPendingCanonicalTests(t *testing.T, dir string) {
 	t.Helper()
+	// warn mode: focus these fixtures on contract/canonical head, not CP-53
+	// gate_blind enforce (temp repos often have red/missing oracle baselines).
+	p4WriteFile(t, dir, ".flowpilot/settings/gate-config.json", `{"gate_mode":"warn"}`)
 	p4WriteFile(t, dir, ".flowpilot/settings/flow-rules.json", `[
 		{"id":"r-contract","scope":"step","trigger":"code_changed_no_contract","required_output":"declared_change_contract","action":"warn","enabled":true},
 		{"id":"r-ca","scope":"step","trigger":"code_changed","required_output":"change_audit_note","action":"warn","enabled":false},

@@ -54,6 +54,7 @@ func (m *AppModel) flowStepsPanelLines() []string {
 		return nil
 	}
 	var out []string
+	// Sub-agent [open]/[back] on the step row only (no duplicate Viewing header).
 	out = append(out, fmt.Sprintf("Steps %d:", len(m.flowSteps)))
 	limit := len(m.flowSteps)
 	if limit > 8 {
@@ -82,7 +83,18 @@ func (m *AppModel) flowStepsPanelLines() []string {
 			prefix = "x"
 			lineStyle = styleStepFailed
 		}
-		out = append(out, lineStyle.Render(fmt.Sprintf("%s%d.%s %s", prefix, i+1, st, name)))
+		line := fmt.Sprintf("%s%d.%s %s", prefix, i+1, st, name)
+		action := ""
+		if child, ok := m.childRunForStep(s); ok {
+			if m.viewingChild() && child.RunID == m.focusRunID {
+				// Emphasize focused child step; action chip uses a different color.
+				lineStyle = styleStatusHi
+				action = "  " + styleStepAgentAction.Render("[back]")
+			} else {
+				action = "  " + styleStepAgentAction.Render("[open]")
+			}
+		}
+		out = append(out, lineStyle.Render(line)+action)
 		if st == "FAILED" {
 			if note := strings.TrimSpace(s.RejectionNote); note != "" {
 				out = append(out, lineStyle.Render("  "+note))

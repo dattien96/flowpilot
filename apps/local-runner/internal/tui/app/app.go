@@ -33,6 +33,9 @@ const (
 	colorErr        = "#f85149" // --err
 	colorBg3        = "#1e1e1e" // --bg-3
 	colorCodeBg     = "#252526" // fenced-code panel (lifted vs terminal / --bg-3)
+	// Status-line exclusive values (not reused for model/YOLO/skills/open-back).
+	colorStatusAgent = "#2dd4bf" // teal — agent:<name> value
+	colorStatusFlow  = "#f472b6" // pink — flow name / active step value
 )
 
 var (
@@ -47,6 +50,9 @@ var (
 	styleStatusHi  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // model, reason value, YOLO value, 7d, skills
 	styleStatusOK  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))
 	styleStatusErr = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
+	// agent:NAME and flow-name values — dedicated hues, not styleStatusHi/accent.
+	styleStatusAgent = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusAgent))
+	styleStatusFlow  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusFlow))
 	stylePrompt    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
 	// Input stroke frame (Desktop accent / prompt-border — no neon wash).
 	stylePromptFocus = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
@@ -63,6 +69,8 @@ var (
 	styleStepRunning = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorWarn)).Background(lipgloss.Color(colorBg3))
 	styleStepDone    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOK))
 	styleStepFailed  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorErr))
+	// F2 step [open]/[back] — distinct from step highlight (accent) and running (warn).
+	styleStepAgentAction = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color(colorAsk))
 )
 
 // ---- New / Init -------------------------------------------------------------
@@ -201,7 +209,17 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addMessage("system", "Copy failed: "+msg.Err, "error")
 			return m, nil
 		}
-		m.addMessage("system", "Copied "+msg.Kind+".", "")
+		// Transient toast — do not pollute the chat timeline (CA-511).
+		kind := strings.TrimSpace(msg.Kind)
+		if kind == "" {
+			kind = "selection"
+		}
+		return m, m.showFlashToast("Copied " + kind + ".")
+
+	case toastClearMsg:
+		if msg.ID == m.flashToastID {
+			m.flashToast = ""
+		}
 		return m, nil
 
 	case ConnectedMsg:
@@ -397,7 +415,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "open failed"
 			return m, nil
 		}
+		m.stopOrchestrationStream()
 		handle := msg.Handle
+		// Prefer server snapshot / history row status so terminal opens do not
+		// arm [stop] via flow orch listener (empty resume status looked "live").
+		if st := strings.TrimSpace(msg.Snapshot.Status); st != "" {
+			handle.Status = st
+		} else if st := strings.TrimSpace(msg.HistoryMeta.Status); st != "" && strings.TrimSpace(handle.Status) == "" {
+			handle.Status = st
+		}
 		m.runHandle = &handle
 		m.stepID = handle.StepID
 		m.pendingPrompt = ""
@@ -420,10 +446,60 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.bindActiveAccountForProvider()
 			m.refreshSessionPanel()
 		}
+		// Restore flow chrome from resume handle (and history list as fallback).
+		m.applyOpenedRunFlowChrome(handle, msg.HistoryMeta)
 		m.connStatus = ConnIdle
 		m.statusMsg = fmt.Sprintf("opened %s", shortID(handle.RunID))
-		m.addMessage("system", fmt.Sprintf("Opened chat %s — continue typing or /history|/open|/resume to switch.", handle.RunID), "")
+		kind := "chat"
+		if m.mode == ModeFlow || m.mode == ModeStep || m.launch.IsCatalogWorkflow() {
+			kind = "flow"
+		}
+		openLabel := handle.RunID
+		if kind == "flow" {
+			if n := m.launch.StatusLabel(); n != "" && n != "flow" {
+				openLabel = n + " · " + handle.RunID
+			}
+		}
+		m.addMessage("system", fmt.Sprintf("Opened %s %s — continue typing or /history|/open|/resume to switch.", kind, openLabel), "")
+		hydrate := m.applyPendingFromSnapshot(msg.Snapshot)
+		var cmds []tea.Cmd
+		if hydrate != nil {
+			cmds = append(cmds, hydrate)
+		}
+		if m.runHandle != nil && m.orchStream == nil {
+			cmds = append(cmds, m.cmdStartOrchestrationStream())
+		}
+		if m.shouldPollStepsRuntime() {
+			cmds = append(cmds, m.cmdRefreshStepsRuntime())
+		}
+		// Hydrate sub-agents so /agent Tab and step [open] work after /open.
+		if kind == "flow" && m.runHandle != nil {
+			cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
+		}
+		// Catalog may still be loading — refresh flow list so status label can use name.
+		if kind == "flow" && len(m.flowWorkflows) == 0 && len(m.flowBuiltins) == 0 {
+			cmds = append(cmds, m.cmdPrefetchFlows())
+		}
+		return m, tea.Batch(cmds...)
+
+	case agentRunsHydratedMsg:
+		if msg.Err != "" {
+			return m, nil
+		}
+		if m.runHandle == nil || m.runHandle.RunID != msg.ParentRunID {
+			return m, nil
+		}
+		m.agentRuns = msg.Runs
+		if m.focusedAgentIdx >= len(m.agentRuns) {
+			m.focusedAgentIdx = 0
+		}
 		return m, nil
+
+	case runSnapshotMsg:
+		if msg.Err != "" {
+			return m, nil
+		}
+		return m, m.applyPendingFromSnapshot(msg.Snap)
 
 	case HistoryChunkMsg:
 		m.historyChunkInFlight = false
@@ -471,6 +547,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case FlowListMsg:
 		m.flowBuiltins = msg.Builtins
 		m.flowWorkflows = msg.Workflows
+		// After silent catalog load on /open, upgrade launch label from UUID → name.
+		if msg.Silent && (m.mode == ModeFlow || m.mode == ModeStep) {
+			if n := m.resolveFlowDisplayName(m.launch.WorkflowID, m.launch.FlowRef); n != "" {
+				m.launch.Label = n
+			}
+			return m, nil
+		}
 		if msg.Silent {
 			return m, nil
 		}
@@ -540,7 +623,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turnStream = &turnStreamState{evCh: msg.EvCh, errCh: msg.ErrCh}
 		m.connStatus = ConnRunning
 		m.statusMsg = "streaming…"
-		if strings.EqualFold(strings.TrimSpace(m.reasoningEffort), "high") {
+		if m.isFlowChrome() {
+			if m.flowStepsActive != "" {
+				m.statusMsg = "step: " + m.flowStepsActive
+			} else {
+				m.statusMsg = "flow running…"
+			}
+		} else if strings.EqualFold(strings.TrimSpace(m.reasoningEffort), "high") {
 			m.statusMsg = "thinking…"
 		}
 		return m, m.cmdPollTurnStream()
@@ -578,11 +667,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		cmds := []tea.Cmd{m.cmdRefreshStepsRuntime()}
-		// Desktop startOrchestrationStream: keep listening after the turn so
-		// hub/child step transitions (and late gate/approval events) surface.
-		if m.shouldPollStepsRuntime() && m.orchStream == nil {
+		// Desktop startOrchestrationStream: keep listening after the user turn
+		// so late gate/approval events (run-97624 chat-mode reprompt) surface.
+		// Do not reuse shouldPollStepsRuntime — that predicate is flow/step UI only.
+		if m.runHandle != nil && m.orchStream == nil {
 			cmds = append(cmds, m.cmdStartOrchestrationStream())
 		}
+		cmds = append(cmds, m.cmdHydratePendingFromSnapshot())
 		return m, tea.Batch(cmds...)
 
 	case orchStreamOpenedMsg:
@@ -614,9 +705,27 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if msg.Err != "" {
+			m.addMessage("system", "Open child transcript failed: "+msg.Err, "error")
+			return m, nil
+		}
 		m.stopFocusStream()
-		m.focusStream = &orchStreamState{evCh: msg.EvCh, cancel: msg.Cancel}
-		return m, m.cmdPollFocusStream()
+		// Keep the system banner; append seeded history after it.
+		if len(msg.Messages) > 0 {
+			m.messages = append(m.messages, msg.Messages...)
+			m.syncVisiblePromptCount()
+			m.viewport.offset = 0
+		} else {
+			m.addMessage("system", "(no transcript events for this agent yet)", "")
+		}
+		if msg.EvCh != nil {
+			m.focusStream = &orchStreamState{evCh: msg.EvCh, cancel: msg.Cancel}
+			return m, m.cmdPollFocusStream()
+		}
+		if msg.Cancel != nil {
+			msg.Cancel()
+		}
+		return m, nil
 
 	case focusStreamEventMsg:
 		if m.focusStream == nil {
@@ -649,9 +758,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.flowStepsActive != "" && (m.connStatus == ConnRunning || m.connStatus == ConnWaiting) {
 			m.statusMsg = "step: " + m.flowStepsActive
 		}
-		// Chat: only the current step line (full list lives in the top-right panel).
-		for _, line := range formatStepChatNotices(prevSteps, msg.Steps, prevActive, m.flowStepsActive, m.lastTurnError) {
-			m.addMessage("system", line, "steps")
+		// Step progress lines only on main hub view — never while reading a child
+		// transcript (would interleave flow banners into sub-agent chat).
+		if !m.viewingChild() {
+			for _, line := range formatStepChatNotices(prevSteps, msg.Steps, prevActive, m.flowStepsActive, m.lastTurnError) {
+				m.addMessage("system", line, "steps")
+			}
 		}
 		return m, nil
 
@@ -819,7 +931,15 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 
 	case "turn_started":
 		m.connStatus = ConnRunning
-		m.statusMsg = "turn running…"
+		if m.isFlowChrome() {
+			if m.flowStepsActive != "" {
+				m.statusMsg = "step: " + m.flowStepsActive
+			} else {
+				m.statusMsg = "flow running…"
+			}
+		} else {
+			m.statusMsg = "turn running…"
+		}
 		if m.launch.IsCatalogWorkflow() || m.mode == ModeFlow || m.mode == ModeStep {
 			return m, m.cmdRefreshStepsRuntime()
 		}
@@ -1015,11 +1135,6 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			runs := orderAgentsMainFirst(m.agentRuns)
 			m.focusedAgentIdx = (m.focusedAgentIdx + 1) % len(runs)
 			agent := runs[m.focusedAgentIdx]
-			name := agent.AgentName
-			if name == "" {
-				name = agent.RunID
-			}
-			m.addMessage("system", fmt.Sprintf("Viewing agent: %s (%s)", name, agent.Status), "")
 			return m, m.cmdFocusAgent(agent.RunID)
 		}
 		return m, nil
@@ -1247,6 +1362,18 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 		}
 		return []suggestItem{{value: "", detail: "(no matching skills)", kind: "skill"}}
 	}
+	if agentSugg := filterAgentSuggestions(in, m.agentRuns); len(agentSugg) > 0 {
+		return agentSugg
+	}
+	// `/agent ` or `/agents ` (space after cmd): show empty picker row.
+	// Bare `/agents` keeps slash-cmd list so Enter still toggles Agents focus.
+	if _, ok, argSlot := parseAgentPicker(in); ok && argSlot {
+		detail := "(no agents yet — wait for children, or /open a flow with sub-agents)"
+		if m.runHandle != nil && (m.mode == ModeFlow || m.mode == ModeStep) {
+			detail = "(no child agents on this run yet)"
+		}
+		return []suggestItem{{value: "", detail: detail, kind: "agent"}}
+	}
 	if imgSugg := filterImageSuggestions(in, m.pendingAttach); len(imgSugg) > 0 {
 		return imgSugg
 	}
@@ -1269,7 +1396,7 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 	it := items[idx]
 	if cmd := suggestionAcceptValue(it); cmd == "" {
 		return
-	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" {
+	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" {
 		// Nested pickers: only replace the active /… fragment (keep pre-slash draft).
 		m.setInputPreservingDraftPrefix(cmd)
 	} else {
@@ -1318,6 +1445,11 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/skill " + it.value
+	case "agent":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/agent " + it.value
 	case "provider":
 		if strings.TrimSpace(it.value) == "" {
 			return ""
@@ -1407,12 +1539,32 @@ func (m *AppModel) sendBlocked() bool {
 	}
 }
 
+// runStatusIsTerminal is true when the run is finished and [stop] must not arm
+// solely because an orch SSE listener is attached (e.g. /open of completed flow).
+func runStatusIsTerminal(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "complete", "done", "failed", "error",
+		"cancelled", "canceled", "stopped", "aborted":
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *AppModel) turnIsActive() bool {
 	if m.pendingPrompt != "" {
 		return true
 	}
-	if m.orchStream != nil || m.flowHasActiveAgents() {
+	if m.flowHasActiveAgents() {
 		return true
+	}
+	// Flow/step orch SSE can mean live work — but after /open we also attach orch
+	// as a late-event listener on finished runs (same idea as plain-chat run-97624).
+	// Do not arm [stop] when the handle is known-terminal and no agent is active.
+	if m.shouldPollStepsRuntime() && m.orchStream != nil {
+		if m.runHandle == nil || !runStatusIsTerminal(m.runHandle.Status) {
+			return true
+		}
 	}
 	if m.runHandle == nil {
 		return false
@@ -1490,9 +1642,17 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 
 	m.viewport.offset = 0
 	m.addMessage("user", input, "")
-	m.addMessage("assistant", "thinking…", "thinking")
+	// Flow mode: no thinking…/running… placeholders in the chat transcript —
+	// step progress lives in F2 / status; sub-agent views stay clean.
+	if !m.isFlowChrome() {
+		m.addMessage("assistant", "thinking…", "thinking")
+		m.statusMsg = "thinking…"
+	} else if m.flowStepsActive != "" {
+		m.statusMsg = "step: " + m.flowStepsActive
+	} else {
+		m.statusMsg = "flow running…"
+	}
 	m.connStatus = ConnRunning
-	m.statusMsg = "thinking…"
 
 	// First message: start run, then send turn (desktop sendPrompt parity).
 	if m.runHandle == nil {
@@ -1507,6 +1667,25 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 		return m, m.cmdStartRun()
 	}
 	return m, m.cmdSendTurn(input)
+}
+
+// isFlowChrome is true for catalog/step/flow runs where chat should not show
+// thinking placeholders (progress is on F2 steps + status).
+func (m *AppModel) isFlowChrome() bool {
+	if m == nil {
+		return false
+	}
+	return m.mode == ModeFlow || m.mode == ModeStep || m.launch.IsCatalogWorkflow()
+}
+
+// showFlashToast sets a 1s status-area toast (not a chat timeline message).
+func (m *AppModel) showFlashToast(text string) tea.Cmd {
+	m.flashToastID++
+	id := m.flashToastID
+	m.flashToast = strings.TrimSpace(text)
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		return toastClearMsg{ID: id}
+	})
 }
 
 // handleGateInput interprets user input when a flow_gate_violation is pending.
@@ -1655,6 +1834,16 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 
 	case "/agents":
+		if len(args) > 0 {
+			target := strings.Join(args, " ")
+			runID, name, ok := m.resolveAgentFocusTarget(target)
+			if !ok {
+				m.addMessage("system", fmt.Sprintf("Agent %q not found. Try /agents.", target), "error")
+				break
+			}
+			_ = name
+			return m, m.cmdFocusAgent(runID)
+		}
 		m.agentsFocus = !m.agentsFocus
 		state := "OFF"
 		if m.agentsFocus {
@@ -1671,7 +1860,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			break
 		}
 		var b strings.Builder
-		b.WriteString("Agents (Tab cycles, /agent <name> opens transcript):\n")
+		b.WriteString("Agents (Tab cycles, /agent <name> or step [open] opens transcript):\n")
 		for _, r := range runs {
 			cur := ""
 			if r.RunID == m.focusRunID || (m.focusRunID == "" && (strings.EqualFold(r.Role, "main") || r.RunID == m.mainRunID())) {
@@ -1691,7 +1880,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			m.addMessage("system", fmt.Sprintf("Agent %q not found. Try /agents.", target), "error")
 			break
 		}
-		m.addMessage("system", fmt.Sprintf("Viewing agent: %s", name), "")
+		_ = name
 		return m, m.cmdFocusAgent(runID)
 
 	case "/flow":
@@ -2153,6 +2342,7 @@ func (m *AppModel) View() string {
 		sb.WriteString(strings.Repeat("─", w))
 	}
 	sb.WriteString("\n")
+	// flashToast is rendered on the project/git status row (see status_bar.go).
 	sb.WriteString(c.statusBlock)
 	sb.WriteString("\n")
 	if len(c.sugg) > 0 {

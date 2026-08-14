@@ -22,6 +22,10 @@ func (m *AppModel) renderStatusLine() string {
 
 	line0 := m.renderStatusLine0(sep, w)
 	if m.statusDetailsCollapsed {
+		// Project line is folded — keep toast visible on the compact status row.
+		if t := strings.TrimSpace(m.flashToast); t != "" {
+			line0 = fitStatusWidth(line0+styleStatus.Render(sep)+styleStatusOK.Render(t), w)
+		}
 		return line0
 	}
 
@@ -41,8 +45,19 @@ func (m *AppModel) renderStatusLine() string {
 	if usage := formatContextLimits(m.lastTokens, m.modelContextWin); usage != "" {
 		lines = append(lines, styleStatus.Render(fitStatusWidth(usage, w)))
 	}
-	lines = append(lines, styleStatus.Render(fitStatusWidth(m.projectStatusLabel(), w)))
+	// Project · path · branch — toast shares this row (not a separate chat line).
+	lines = append(lines, m.renderProjectStatusLine(sep, w))
 	return strings.Join(lines, "\n")
+}
+
+// renderProjectStatusLine is the bottom status row (project / path / git branch).
+// Copy toasts append on the same line so they do not push layout or pollute chat.
+func (m *AppModel) renderProjectStatusLine(sep string, w int) string {
+	body := styleStatus.Render(m.projectStatusLabel())
+	if t := strings.TrimSpace(m.flashToast); t != "" {
+		body = body + styleStatus.Render(sep) + styleStatusOK.Render(t)
+	}
+	return fitStatusWidth(body, w)
 }
 
 func (m *AppModel) statusFoldChip() string {
@@ -75,11 +90,6 @@ func (m *AppModel) statusReadyLabel() string {
 }
 
 func (m *AppModel) renderStatusLine0(sep string, w int) string {
-	var parts []string
-	parts = append(parts, m.statusFoldChip())
-	if m.turnIsActive() {
-		parts = append(parts, styleError.Render("[stop]"))
-	}
 	statusStyle := styleStatus
 	switch m.connStatus {
 	case ConnRunning, ConnConnecting:
@@ -90,23 +100,30 @@ func (m *AppModel) renderStatusLine0(sep string, w int) string {
 	if m.sessionLoading {
 		statusStyle = styleStatusOK
 	}
+	// Pre-style segments so agent:<name> highlight survives. Open/back is on F2 panel.
+	sepStyled := styleStatus.Render(sep)
+	var parts []string
+	parts = append(parts, styleStatus.Render(m.statusFoldChip()))
+	if m.turnIsActive() {
+		parts = append(parts, styleError.Render("[stop]"))
+	}
 	parts = append(parts, statusStyle.Render(m.statusReadyLabel()))
 	if m.authNeedLogin {
 		parts = append(parts, styleStatusErr.Render("SIGN-IN"))
 	}
-	if chip := m.formatAgentsChip(m.asciiMode); chip != "" {
-		parts = append(parts, chip)
+	if view := m.formatAgentViewStatus(); view != "" {
+		parts = append(parts, view)
 	}
-	raw := strings.Join(parts, sep)
+	raw := strings.Join(parts, sepStyled)
 	if lipgloss.Width(raw) > w {
 		raw = truncateVisual(raw, w)
 	}
-	return styleStatus.Render(raw)
+	return raw
 }
 
 func (m *AppModel) renderStatusModeLine(w int) string {
 	mode := m.mode.String()
-	chip := fmt.Sprintf("[%s]", mode)
+	chip := styleStatus.Render(fmt.Sprintf("[%s]", mode))
 	label := ""
 	if m.mode == ModeFlow || m.mode == ModeStep {
 		if s := m.launch.StatusLabel(); s != "" {
@@ -118,22 +135,20 @@ func (m *AppModel) renderStatusModeLine(w int) string {
 		}
 	}
 	step := strings.TrimSpace(m.flowStepsActive)
+	// Mode chip stays dim; flow name + active step use styleStatusFlow (pink),
+	// not accent/styleStatusHi used by model/reasoning/YOLO.
 	var body string
 	switch {
 	case label != "" && step != "":
-		body = chip + " " + label + "  ▶ " + step
+		body = chip + " " + styleStatusFlow.Render(label) + styleStatus.Render("  ▶ ") + styleStatusFlow.Render(step)
 	case label != "":
-		body = chip + " " + label
+		body = chip + " " + styleStatusFlow.Render(label)
 	case step != "":
-		body = chip + "  ▶ " + step
+		body = chip + styleStatus.Render("  ▶ ") + styleStatusFlow.Render(step)
 	default:
 		body = chip
 	}
-	body = fitStatusWidth(body, w)
-	if m.mode == ModeFlow || m.mode == ModeStep {
-		return stylePromptFocus.Render(body)
-	}
-	return styleStatus.Render(body)
+	return fitStatusWidth(body, w)
 }
 
 func (m *AppModel) renderStatusModelLine(sep string) string {

@@ -1522,8 +1522,10 @@ func TestParseGoogleDriveProxyMcpInvocation_AcceptsGoRunFallback(t *testing.T) {
 	if !ok {
 		t.Fatal("expected go run proxy invocation to parse")
 	}
-	if workspace != "/tmp/workspace" {
-		t.Fatalf("unexpected workspace: %q", workspace)
+	// filepath.Clean is OS-native (/tmp/workspace → \tmp\workspace on Windows).
+	wantWS := filepath.Clean("/tmp/workspace")
+	if workspace != wantWS {
+		t.Fatalf("unexpected workspace: %q want %q", workspace, wantWS)
 	}
 	if accountHomePath != "/tmp/account" {
 		t.Fatalf("unexpected account home: %q", accountHomePath)

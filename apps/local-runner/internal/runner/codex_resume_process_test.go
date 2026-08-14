@@ -4,12 +4,36 @@ import (
 	"context"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// mockCodexResumeCmd returns a successful no-op process after writing the
+// codex -o last-message file. Avoids fragile Git-Bash argv scripts on Windows
+// (empty -o → script exit 1).
+func mockCodexResumeCmd(ctx context.Context, args []string, stdoutBody string) *exec.Cmd {
+	outPath := ""
+	for i, a := range args {
+		if a == "-o" && i+1 < len(args) {
+			outPath = args[i+1]
+			break
+		}
+	}
+	body := stdoutBody
+	if body == "" {
+		body = "done"
+	}
+	if outPath != "" {
+		_ = os.WriteFile(outPath, []byte(body+"\n"), 0o644)
+	}
+	if runtime.GOOS == "windows" {
+		return exec.CommandContext(ctx, "cmd", "/c", "exit", "0")
+	}
+	return exec.CommandContext(ctx, "true")
+}
 
 type captureResumeBridge struct {
 	events []ProviderEvent
@@ -83,9 +107,7 @@ func TestCodexResumeCommandUsesYoloDerivedSandboxAndApproval(t *testing.T) {
 			originalCmd := commandContextFn
 			commandContextFn = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
 				gotArgs = append([]string{}, args...)
-				script := `out=""; prev=""; for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done; [ -n "$out" ] && printf "done\n" > "$out"`
-				cmdArgs := append([]string{"-c", script, "sh"}, args...)
-				return exec.CommandContext(ctx, "sh", cmdArgs...)
+				return mockCodexResumeCmd(ctx, args, "done")
 			}
 			defer func() { commandContextFn = originalCmd }()
 
@@ -117,9 +139,7 @@ func TestCodexResumeStdoutMapsFinalAssistantMessage(t *testing.T) {
 	home := t.TempDir()
 	originalCmd := commandContextFn
 	commandContextFn = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
-		script := `out=""; prev=""; for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done; printf "assistant final text\n"; [ -n "$out" ] && printf "assistant final text\n" > "$out"`
-		cmdArgs := append([]string{"-c", script, "sh"}, args...)
-		return exec.CommandContext(ctx, "sh", cmdArgs...)
+		return mockCodexResumeCmd(ctx, args, "assistant final text")
 	}
 	defer func() { commandContextFn = originalCmd }()
 
@@ -176,13 +196,12 @@ func TestCodexResumeCommandFailureEmitsNoAssistantCompletedEvent(t *testing.T) {
 func TestCodexResumeCommandUsesActiveAccountHomeAndCwd(t *testing.T) {
 	workspace := t.TempDir()
 	home := t.TempDir()
-	envCapture := filepath.Join(t.TempDir(), "env.txt")
-	cwdCapture := filepath.Join(t.TempDir(), "cwd.txt")
 	originalCmd := commandContextFn
+	var liveCmd *exec.Cmd
 	commandContextFn = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
-		script := `printf "%s" "$CODEX_HOME" > ` + testShellQuote(envCapture) + `; pwd > ` + testShellQuote(cwdCapture) + `; out=""; prev=""; for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done; [ -n "$out" ] && printf "done\n" > "$out"`
-		cmdArgs := append([]string{"-c", script, "sh"}, args...)
-		return exec.CommandContext(ctx, "sh", cmdArgs...)
+		// Adapter sets Dir/Env on the returned Cmd before Run.
+		liveCmd = mockCodexResumeCmd(ctx, args, "done")
+		return liveCmd
 	}
 	defer func() { commandContextFn = originalCmd }()
 
@@ -195,23 +214,22 @@ func TestCodexResumeCommandUsesActiveAccountHomeAndCwd(t *testing.T) {
 	}, &captureResumeBridge{}); err != nil {
 		t.Fatalf("SendTurn: %v", err)
 	}
-	rawHome, _ := os.ReadFile(envCapture)
-	if strings.TrimSpace(string(rawHome)) != home {
-		t.Fatalf("CODEX_HOME = %q, want %q", strings.TrimSpace(string(rawHome)), home)
+	if liveCmd == nil {
+		t.Fatal("commandContextFn not invoked")
 	}
-	rawCwd, _ := os.ReadFile(cwdCapture)
-	gotCwd := strings.TrimSpace(string(rawCwd))
-	wantCwd, err := filepath.EvalSymlinks(workspace)
-	if err != nil {
-		t.Fatalf("EvalSymlinks(workspace): %v", err)
+	foundHome := false
+	for _, e := range liveCmd.Env {
+		if e == "CODEX_HOME="+home {
+			foundHome = true
+			break
+		}
 	}
-	if gotCwd != wantCwd {
-		t.Fatalf("cwd = %q, want %q", gotCwd, wantCwd)
+	if !foundHome {
+		t.Fatalf("CODEX_HOME not set to %q in env: %v", home, liveCmd.Env)
 	}
-}
-
-func testShellQuote(v string) string {
-	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
+	if liveCmd.Dir != workspace {
+		t.Fatalf("cwd = %q, want %q", liveCmd.Dir, workspace)
+	}
 }
 
 func TestCodexRestoredRunUsesCLIResumePathDirectly(t *testing.T) {
@@ -221,9 +239,7 @@ func TestCodexRestoredRunUsesCLIResumePathDirectly(t *testing.T) {
 	var gotArgs []string
 	commandContextFn = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
 		gotArgs = append([]string{}, args...)
-		script := `out=""; prev=""; for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done; [ -n "$out" ] && printf "done\n" > "$out"`
-		cmdArgs := append([]string{"-c", script, "sh"}, args...)
-		return exec.CommandContext(ctx, "sh", cmdArgs...)
+		return mockCodexResumeCmd(ctx, args, "done")
 	}
 	defer func() { commandContextFn = originalCmd }()
 	adapter := newCodexResumeAdapter(home, nil)

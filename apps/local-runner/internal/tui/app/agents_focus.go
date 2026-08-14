@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -11,9 +12,12 @@ import (
 )
 
 type focusStreamOpenedMsg struct {
-	RunID  string
-	EvCh   <-chan client.ProviderEvent
-	Cancel context.CancelFunc
+	RunID    string
+	Messages []ChatMessage // history after ResumeRun seed (empty if live-only)
+	AfterSeq int64         // stream live events after this seq
+	EvCh     <-chan client.ProviderEvent
+	Cancel   context.CancelFunc
+	Err      string
 }
 
 type focusStreamEventMsg struct {
@@ -55,45 +59,23 @@ func (m *AppModel) stopFocusStream() {
 	m.focusStream = nil
 }
 
-func (m *AppModel) formatAgentsChip(ascii bool) string {
-	runs := orderAgentsMainFirst(m.agentRuns)
-	if len(runs) == 0 {
+// formatAgentViewStatus is a compact status-line label: agent:main or agent:grok-coder.
+// Prefix is dim; the name uses styleStatusAgent (teal), not model/YOLO accent.
+// Open/back live on the F2 steps panel.
+func (m *AppModel) formatAgentViewStatus() string {
+	name := ""
+	switch {
+	case m.viewingChild():
+		name = m.agentNameForRun(m.focusRunID)
+		if name == "" {
+			name = shortID(m.focusRunID)
+		}
+	case m.mode == ModeFlow || m.mode == ModeStep || len(m.agentRuns) > 0:
+		name = "main"
+	default:
 		return ""
 	}
-	sep := " "
-	var b strings.Builder
-	b.WriteString("agents:")
-	focus := strings.TrimSpace(m.focusRunID)
-	mainID := m.mainRunID()
-	for i, r := range runs {
-		name := strings.TrimSpace(r.AgentName)
-		if name == "" {
-			name = shortID(r.RunID)
-		}
-		mark := "○"
-		if ascii {
-			mark = "o"
-		}
-		st := strings.ToLower(strings.TrimSpace(r.Status))
-		if st == "running" || st == "spawned" || strings.Contains(st, "waiting") {
-			mark = "●"
-			if ascii {
-				mark = "*"
-			}
-		}
-		star := ""
-		if focus == r.RunID || (focus == "" && r.RunID == mainID && i == 0) {
-			star = "*"
-		}
-		if focus == "" && i == 0 && (strings.EqualFold(r.Role, "main") || strings.EqualFold(r.AgentName, "main")) {
-			star = "*"
-		}
-		b.WriteString(sep)
-		b.WriteString(name)
-		b.WriteString(star)
-		b.WriteString(mark)
-	}
-	return b.String()
+	return styleStatus.Render("agent:") + styleStatusAgent.Render(name)
 }
 
 func (m *AppModel) cmdFocusAgent(runID string) tea.Cmd {
@@ -109,27 +91,53 @@ func (m *AppModel) cmdFocusAgent(runID string) tea.Cmd {
 	}
 	m.stopFocusStream()
 	m.focusRunID = runID
+	// Keep focusedAgentIdx in sync for Tab cycle.
+	for i, r := range orderAgentsMainFirst(m.agentRuns) {
+		if r.RunID == runID {
+			m.focusedAgentIdx = i
+			break
+		}
+	}
+	// Expand F2 panel so step [open]/[back] controls are visible.
+	// No "Viewing agent:" chat spam — status agent:name + F2 highlight suffice.
+	m.sessionPanel.Collapsed = false
 	m.messages = nil
 	m.visiblePromptCount = 0
 	m.historyLoadedAfterSeq = 0
 	m.viewport.offset = 0
-	name := m.agentNameForRun(runID)
-	m.addMessage("system", fmt.Sprintf("Child transcript: %s — /agent main or Tab to return", name), "")
-	cl := m.client
+	runnerURL := m.runnerURL
 	return func() tea.Msg {
+		// Resume seeds durable transcript (turn log / Grok JSONL) into the
+		// runner event buffer — StreamLive alone on a cold child returns empty
+		// (run-98158 grok-coder after parent /open).
+		cl := client.New(runnerURL)
 		ctx, cancel := context.WithCancel(context.Background())
-		ch := cl.StreamLive(ctx, runID, 0)
-		return focusStreamOpenedMsg{RunID: runID, EvCh: ch, Cancel: cancel}
+		resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer resumeCancel()
+		handle, err := cl.ResumeRun(resumeCtx, runID)
+		if err != nil {
+			cancel()
+			return focusStreamOpenedMsg{RunID: runID, Err: err.Error(), Cancel: cancel}
+		}
+		until := handle.LastEventSeq
+		var collected []client.ProviderEvent
+		if until > 0 {
+			collected = collectReplayEvents(resumeCtx, cl, runID, 0, until, chatReplayMaxEvents)
+		}
+		trimmed := trimEventsFromTurnStart(collected)
+		msgs := replayChildHistoryMessages(trimmed)
+		ch := cl.StreamLive(ctx, runID, until)
+		return focusStreamOpenedMsg{
+			RunID: runID, Messages: msgs, AfterSeq: until,
+			EvCh: ch, Cancel: cancel,
+		}
 	}
 }
 
 func (m *AppModel) agentNameForRun(runID string) string {
 	for _, r := range m.agentRuns {
 		if r.RunID == runID {
-			if n := strings.TrimSpace(r.AgentName); n != "" {
-				return n
-			}
-			return shortID(r.RunID)
+			return agentDisplayName(r)
 		}
 	}
 	if runID == "" {
@@ -167,6 +175,10 @@ func (m *AppModel) cmdPollFocusStream() tea.Cmd {
 
 func (m *AppModel) handleFocusEvent(ev client.ProviderEvent) {
 	switch ev.Type {
+	case "turn_started":
+		if p := childFacingUserPrompt(ev.Prompt); p != "" {
+			m.addMessage("user", p, "")
+		}
 	case "message_delta", "message_completed":
 		m.appendAssistantDelta(ev.Text)
 	case "turn_completed":
@@ -184,6 +196,94 @@ func (m *AppModel) handleFocusEvent(ev client.ProviderEvent) {
 	}
 }
 
+// replayChildHistoryMessages rebuilds a child agent transcript for /agent focus.
+// Spawn-composed prompts are reduced to the human task; system frames are skipped.
+func replayChildHistoryMessages(evs []client.ProviderEvent) []ChatMessage {
+	var out []ChatMessage
+	for _, ev := range evs {
+		switch ev.Type {
+		case "turn_started":
+			if p := childFacingUserPrompt(ev.Prompt); p != "" {
+				out = append(out, ChatMessage{Role: "user", Content: p})
+			}
+		case "message_delta":
+			if ev.Text == "" {
+				continue
+			}
+			if len(out) > 0 && out[len(out)-1].Role == "assistant" {
+				out[len(out)-1].Content += ev.Text
+			} else {
+				out = append(out, ChatMessage{Role: "assistant", Content: ev.Text})
+			}
+		case "message_completed":
+			out = applyReplayAssistantText(out, ev.Text)
+		case "turn_completed":
+			out = applyReplayAssistantText(out, ev.FinalMessage)
+		case "tool_started":
+			if ev.ToolName != "" {
+				out = append(out, ChatMessage{Role: "tool", Content: "→ " + ev.ToolName, FormatHint: "tool"})
+			}
+		}
+	}
+	return out
+}
+
+// childFacingUserPrompt returns a short user-facing task from a child spawn
+// prompt, or "" when the frame is pure orchestration / system.
+func childFacingUserPrompt(prompt string) string {
+	p := strings.TrimSpace(prompt)
+	if p == "" {
+		return ""
+	}
+	// Full agent composition: keep the trailing human task after identity/context.
+	if strings.Contains(p, "[FlowPilot sub-agent") ||
+		strings.Contains(p, "You are the implementation agent") ||
+		strings.Contains(p, "You are the review agent") ||
+		strings.Contains(p, "[flow-engine]") {
+		// Prefer text after the last FCP / context marker.
+		for _, sep := range []string{
+			"[Context: use sections above as feature truth. Stay in scope.]\n\n",
+			"[Context: use sections above as feature truth. Stay in scope.]\n",
+			"]\n\n",
+		} {
+			if i := strings.LastIndex(p, sep); i >= 0 {
+				rest := strings.TrimSpace(p[i+len(sep):])
+				// Drop write-contract appendices for display.
+				if j := strings.Index(rest, "\n\n## Required file outputs"); j >= 0 {
+					rest = strings.TrimSpace(rest[:j])
+				}
+				if rest != "" && len([]rune(rest)) < 2000 {
+					return rest
+				}
+			}
+		}
+		// Fallback: last non-empty short paragraph.
+		parts := strings.Split(p, "\n")
+		for i := len(parts) - 1; i >= 0; i-- {
+			line := strings.TrimSpace(parts[i])
+			if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") ||
+				strings.HasPrefix(line, "Before you finish") || strings.HasPrefix(line, "For `") {
+				continue
+			}
+			if len([]rune(line)) > 8 && len([]rune(line)) < 400 {
+				return line
+			}
+		}
+		return ""
+	}
+	return p
+}
+
+func agentDisplayName(r client.AgentRunSummary) string {
+	if n := strings.TrimSpace(r.Label); n != "" {
+		return n
+	}
+	if n := strings.TrimSpace(r.AgentName); n != "" {
+		return n
+	}
+	return shortID(r.RunID)
+}
+
 func (m *AppModel) resolveAgentFocusTarget(raw string) (runID, name string, ok bool) {
 	want := strings.TrimSpace(raw)
 	if want == "" || strings.EqualFold(want, "main") {
@@ -191,11 +291,51 @@ func (m *AppModel) resolveAgentFocusTarget(raw string) (runID, name string, ok b
 	}
 	runs := orderAgentsMainFirst(m.agentRuns)
 	for _, r := range runs {
-		if strings.EqualFold(r.RunID, want) || strings.EqualFold(r.AgentName, want) {
-			return r.RunID, r.AgentName, true
+		if strings.EqualFold(r.RunID, want) ||
+			strings.EqualFold(r.AgentName, want) ||
+			strings.EqualFold(r.Label, want) {
+			return r.RunID, agentDisplayName(r), true
 		}
 	}
 	return "", "", false
+}
+
+// agentRunsHydratedMsg is GET …/workflow-runs/{id}/agents after /open.
+type agentRunsHydratedMsg struct {
+	ParentRunID string
+	Runs        []client.AgentRunSummary
+	Err         string
+}
+
+func (m *AppModel) cmdHydrateAgentRuns(parentRunID string) tea.Cmd {
+	parentRunID = strings.TrimSpace(parentRunID)
+	if parentRunID == "" {
+		return nil
+	}
+	runnerURL := m.runnerURL
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		runs, err := cl.ListAgentRuns(ctx, parentRunID)
+		if err != nil {
+			return agentRunsHydratedMsg{ParentRunID: parentRunID, Err: err.Error()}
+		}
+		// Ensure main is present for Tab cycle / picker.
+		hasMain := false
+		for _, r := range runs {
+			if strings.EqualFold(r.Role, "main") || strings.EqualFold(r.AgentName, "main") || r.RunID == parentRunID {
+				hasMain = true
+				break
+			}
+		}
+		if !hasMain {
+			runs = append([]client.AgentRunSummary{{
+				RunID: parentRunID, AgentName: "main", Label: "main", Role: "main", Status: "completed",
+			}}, runs...)
+		}
+		return agentRunsHydratedMsg{ParentRunID: parentRunID, Runs: runs}
+	}
 }
 
 func (m *AppModel) cycleFocusedAgent() (runID, name string, ok bool) {
@@ -225,6 +365,91 @@ func (m *AppModel) childRunIDs() []string {
 		if r.RunID != "" && r.RunID != mainID {
 			out = append(out, r.RunID)
 		}
+	}
+	return out
+}
+
+func isMainAgentRun(r client.AgentRunSummary) bool {
+	return strings.EqualFold(r.Role, "main") || strings.EqualFold(r.AgentName, "main")
+}
+
+// childRunForStep maps a flow step to a spawned child agent (never main).
+func (m *AppModel) childRunForStep(s client.WorkflowStepRuntime) (client.AgentRunSummary, bool) {
+	keys := []string{
+		strings.TrimSpace(s.AgentRef),
+		strings.TrimSpace(s.NodeID),
+		strings.TrimSpace(s.StepType),
+	}
+	mainID := m.mainRunID()
+	for _, r := range m.agentRuns {
+		if r.RunID == "" || r.RunID == mainID || isMainAgentRun(r) {
+			continue
+		}
+		for _, k := range keys {
+			if k == "" {
+				continue
+			}
+			if strings.EqualFold(r.RunID, k) ||
+				strings.EqualFold(r.AgentName, k) ||
+				strings.EqualFold(r.Label, k) {
+				return r, true
+			}
+		}
+	}
+	return client.AgentRunSummary{}, false
+}
+
+func parseAgentPicker(input string) (query string, ok bool, argSlot bool) {
+	s := strings.TrimLeft(input, " \t")
+	for _, cmd := range []string{"/agents", "/agent"} {
+		if len(s) < len(cmd) || !strings.EqualFold(s[:len(cmd)], cmd) {
+			continue
+		}
+		rest := s[len(cmd):]
+		if rest == "" {
+			return "", true, false
+		}
+		if rest[0] != ' ' && rest[0] != '\t' {
+			continue
+		}
+		return strings.TrimSpace(rest), true, true
+	}
+	return "", false, false
+}
+
+func filterAgentSuggestions(input string, runs []client.AgentRunSummary) []suggestItem {
+	query, ok, _ := parseAgentPicker(input)
+	if !ok {
+		return nil
+	}
+	ordered := orderAgentsMainFirst(runs)
+	q := strings.ToLower(strings.TrimSpace(query))
+	var out []suggestItem
+	for _, r := range ordered {
+		name := agentDisplayName(r)
+		label := strings.TrimSpace(r.Label)
+		agent := strings.TrimSpace(r.AgentName)
+		if q != "" &&
+			!strings.Contains(strings.ToLower(name), q) &&
+			!strings.Contains(strings.ToLower(label), q) &&
+			!strings.Contains(strings.ToLower(agent), q) &&
+			!strings.Contains(strings.ToLower(r.RunID), q) {
+			continue
+		}
+		detail := strings.TrimSpace(r.Status)
+		if agent != "" && !strings.EqualFold(agent, name) {
+			if detail != "" {
+				detail += " · "
+			}
+			detail += agent
+		}
+		if r.RunID != "" {
+			if detail != "" {
+				detail += " · "
+			}
+			detail += shortID(r.RunID)
+		}
+		out = append(out, suggestItem{value: name, detail: detail, kind: "agent"})
 	}
 	return out
 }

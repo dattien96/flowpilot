@@ -126,6 +126,29 @@ func (o *AgentOrchestrator) cohortComplete(parentRunID, cohortID string) bool {
 	return complete
 }
 
+// inferCohortExpectedIfMissing restores RAM expected when it was lost (restart,
+// dead key after drain, or spawn never stamped). No-op when expected is already
+// set — must not shrink a pre-declared CohortSize.
+func (o *AgentOrchestrator) inferCohortExpectedIfMissing(parentRunID, cohortID string, knownMembers int) {
+	if knownMembers <= 0 {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	k := cohortKey(parentRunID, cohortID)
+	if o.cohortExpected[k] == 0 {
+		o.cohortExpected[k] = knownMembers
+		cohortDiagLog("inferCohortExpectedIfMissing SET parent=%q cohort=%q expected=%d",
+			parentRunID, cohortID, knownMembers)
+	}
+}
+
+func (o *AgentOrchestrator) cohortExpectedCount(parentRunID, cohortID string) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.cohortExpected[cohortKey(parentRunID, cohortID)]
+}
+
 // hasOpenCohort reports whether parentRunID has any cohort whose expected count
 // is > 0 and whose buffered results are still short of expected (Task-240 B4 /
 // BUG-179 guard; also used by Task-241 stall sweep). Incomplete cohorts must

@@ -25,7 +25,106 @@ type ChatOpenedMsg struct {
 	Handle                client.RunHandle
 	Messages              []ChatMessage
 	HistoryLoadedAfterSeq int64 // events with seq <= this are not yet loaded; 0 = full history
-	Err                   string
+	Snapshot              client.RunSnapshot
+	// HistoryMeta is the list row for this run when known (kind/workflow/flowRef).
+	HistoryMeta client.RunHistoryItem
+	Err         string
+}
+
+// applyOpenedRunFlowChrome restores ModeFlow/launch + clears stale steps when
+// opening a workflow/catalog flow run (CA-502). Chat opens stay ModeChat.
+func (m *AppModel) applyOpenedRunFlowChrome(handle client.RunHandle, meta client.RunHistoryItem) {
+	runKind := strings.TrimSpace(handle.RunKind)
+	if runKind == "" {
+		runKind = strings.TrimSpace(meta.RunKind)
+	}
+	workflowID := strings.TrimSpace(handle.WorkflowID)
+	if workflowID == "" {
+		workflowID = strings.TrimSpace(meta.WorkflowID)
+	}
+	flowRef := strings.TrimSpace(handle.FlowRef)
+	if flowRef == "" {
+		flowRef = strings.TrimSpace(meta.FlowRef)
+	}
+	isFlow := strings.EqualFold(runKind, "workflow") || workflowID != "" || flowRef != ""
+	if !isFlow {
+		m.mode = ModeChat
+		m.launch = LaunchArm{}
+		m.flowSteps = nil
+		m.flowStepsActive = ""
+		m.agentRuns = nil
+		m.focusedAgentIdx = 0
+		return
+	}
+	m.mode = ModeFlow
+	label := m.resolveFlowDisplayName(workflowID, flowRef)
+	if label == "" {
+		label = "flow"
+	}
+	m.launch = LaunchArm{
+		Mode:       ModeFlow,
+		WorkflowID: workflowID,
+		FlowRef:    flowRef,
+		Label:      label,
+	}
+	// Steps / agents refilled after open (cmdRefreshStepsRuntime + cmdHydrateAgentRuns).
+	m.flowSteps = nil
+	m.flowStepsActive = ""
+	m.agentRuns = nil
+	m.focusedAgentIdx = 0
+}
+
+// resolveFlowDisplayName prefers catalog/builtin human names over raw UUIDs.
+func (m *AppModel) resolveFlowDisplayName(workflowID, flowRef string) string {
+	wid := strings.TrimSpace(workflowID)
+	ref := strings.TrimSpace(flowRef)
+	for _, wf := range m.flowWorkflows {
+		if (wid != "" && wf.ID == wid) || (ref != "" && wf.ID == ref) {
+			if n := strings.TrimSpace(wf.Name); n != "" {
+				return n
+			}
+		}
+	}
+	for _, b := range m.flowBuiltins {
+		if ref != "" && strings.EqualFold(strings.TrimSpace(b.FlowRef), ref) {
+			if n := strings.TrimSpace(b.Label); n != "" {
+				return n
+			}
+		}
+	}
+	// Prefer non-UUID-looking tokens for status (never show bare 8-char id alone).
+	if ref != "" && !looksLikeUUID(ref) {
+		return ref
+	}
+	if wid != "" && !looksLikeUUID(wid) {
+		return wid
+	}
+	return ""
+}
+
+func looksLikeUUID(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) < 32 {
+		return false
+	}
+	hyphen := 0
+	for _, r := range s {
+		if r == '-' {
+			hyphen++
+			continue
+		}
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return hyphen >= 4 || len(s) >= 32
+}
+
+// runSnapshotMsg is GET /client/workflow-runs/{id} used to hydrate a live
+// pending approval/question after the user turn stream closes (run-97624).
+type runSnapshotMsg struct {
+	Snap client.RunSnapshot
+	Err  string
 }
 
 // HistoryChunkMsg carries an older SSE chunk prepended on Load earlier (Task-290 Q-1).
@@ -167,35 +266,46 @@ func replayHistoryMessages(evs []client.ProviderEvent) []ChatMessage {
 				out = append(out, ChatMessage{Role: "assistant", Content: ev.Text})
 			}
 		case "message_completed":
-			if isStepCompleteStub(ev.Text) {
-				continue
-			}
-			if ev.Text == "" {
-				continue
-			}
-			if len(out) > 0 && out[len(out)-1].Role == "assistant" {
-				if strings.TrimSpace(out[len(out)-1].Content) == "" {
-					out[len(out)-1].Content = ev.Text
-				}
-			} else {
-				out = append(out, ChatMessage{Role: "assistant", Content: ev.Text})
-			}
+			out = applyReplayAssistantText(out, ev.Text)
 		case "turn_completed":
-			if isStepCompleteStub(ev.FinalMessage) {
-				continue
-			}
-			if strings.TrimSpace(ev.FinalMessage) == "" {
-				continue
-			}
-			// Only fill empty assistant bubble; never replace streamed text with stub.
-			if len(out) == 0 || out[len(out)-1].Role != "assistant" {
-				out = append(out, ChatMessage{Role: "assistant", Content: ev.FinalMessage})
-			} else if strings.TrimSpace(out[len(out)-1].Content) == "" {
-				out[len(out)-1].Content = ev.FinalMessage
-			}
+			out = applyReplayAssistantText(out, ev.FinalMessage)
 		}
 	}
 	return out
+}
+
+// applyReplayAssistantText merges a later assistant frame into the last bubble.
+// Grok (and Claude/Codex JSONL seed) emit one message_completed before a tool
+// and another after — run-97624 dropped "Đã tạo file…" on /open because the
+// second completed was ignored once the first bubble was non-empty. Never
+// replace richer text with a step-complete stub (CA-475 / chooseAssistantFinal).
+func applyReplayAssistantText(out []ChatMessage, next string) []ChatMessage {
+	if isStepCompleteStub(next) || strings.TrimSpace(next) == "" {
+		return out
+	}
+	if len(out) == 0 || out[len(out)-1].Role != "assistant" {
+		return append(out, ChatMessage{Role: "assistant", Content: next})
+	}
+	out[len(out)-1].Content = mergeReplayAssistant(out[len(out)-1].Content, next)
+	return out
+}
+
+func mergeReplayAssistant(cur, next string) string {
+	c := strings.TrimSpace(cur)
+	n := strings.TrimSpace(next)
+	if n == "" || isStepCompleteStub(n) {
+		return cur
+	}
+	if c == "" {
+		return next
+	}
+	if strings.Contains(c, n) {
+		return cur
+	}
+	if strings.Contains(n, c) {
+		return next
+	}
+	return strings.TrimRight(cur, "\n") + "\n" + next
 }
 
 func (m *AppModel) cmdListChats() tea.Cmd {
@@ -248,9 +358,11 @@ func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
 func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
 	runnerURL := m.runnerURL
 	chatProvider := ""
+	var historyMeta client.RunHistoryItem
 	for _, it := range m.chatList {
 		if it.RunID == runID {
 			chatProvider = it.ProviderKey
+			historyMeta = it
 			break
 		}
 	}
@@ -282,10 +394,91 @@ func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
 		}
 		trimmed := trimEventsFromTurnStart(collected)
 		msgs := replayHistoryMessages(trimmed)
+		// Server snapshot is ground truth for a still-pending gate (CA-089 twin:
+		// do not infer live Approve from replayed permission_required events).
+		snap, _ := cl.GetRun(ctx, runID)
 		return ChatOpenedMsg{
 			Handle:                handle,
 			Messages:              msgs,
 			HistoryLoadedAfterSeq: historyCursorAfterReplay(after, collected, trimmed),
+			Snapshot:              snap,
+			HistoryMeta:           historyMeta,
 		}
+	}
+}
+
+func snapshotStatusWaiting(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "waiting_approval", "waiting_question":
+		return true
+	default:
+		return false
+	}
+}
+
+// applyPendingFromSnapshot mounts a live approval/question only when the
+// runner still reports waiting_* plus a pending card. Completed runs with
+// historical permission_required events stay read-only (CA-089).
+func (m *AppModel) applyPendingFromSnapshot(snap client.RunSnapshot) tea.Cmd {
+	if !snapshotStatusWaiting(snap.Status) {
+		return nil
+	}
+	runID := strings.TrimSpace(snap.RunID)
+	if runID == "" && m.runHandle != nil {
+		runID = m.runHandle.RunID
+	}
+	if snap.PendingApproval != nil && strings.TrimSpace(snap.PendingApproval.ID) != "" {
+		id := strings.TrimSpace(snap.PendingApproval.ID)
+		if m.effectiveYolo() {
+			m.connStatus = ConnRunning
+			m.statusMsg = "auto-approved"
+			return m.cmdAutoApprove(id, runID)
+		}
+		if m.approval != nil && m.approval.ID == id {
+			m.connStatus = ConnWaiting
+			m.statusMsg = "approval required"
+			return nil
+		}
+		m.approval = &ApprovalState{ID: id, RunID: runID, Details: snap.PendingApproval.Details}
+		m.connStatus = ConnWaiting
+		m.statusMsg = "approval required"
+		m.addMessage("system", formatApprovalWaitingLine(id, m.asciiMode), "approval")
+		return nil
+	}
+	if snap.PendingQuestion != nil && strings.TrimSpace(snap.PendingQuestion.ID) != "" {
+		id := strings.TrimSpace(snap.PendingQuestion.ID)
+		if m.question != nil && m.question.ID == id {
+			m.connStatus = ConnWaiting
+			m.statusMsg = "question"
+			return nil
+		}
+		m.question = &QuestionState{
+			ID:      id,
+			Prompt:  snap.PendingQuestion.Prompt,
+			Options: snap.PendingQuestion.Options,
+			RunID:   runID,
+		}
+		m.connStatus = ConnWaiting
+		m.statusMsg = "question"
+		m.addMessage("system", formatQuestionMessage(snap.PendingQuestion.Prompt, snap.PendingQuestion.Options), "question")
+	}
+	return nil
+}
+
+func (m *AppModel) cmdHydratePendingFromSnapshot() tea.Cmd {
+	if m.runHandle == nil {
+		return nil
+	}
+	runID := m.runHandle.RunID
+	runnerURL := m.runnerURL
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		snap, err := cl.GetRun(ctx, runID)
+		if err != nil {
+			return runSnapshotMsg{Err: err.Error()}
+		}
+		return runSnapshotMsg{Snap: snap}
 	}
 }

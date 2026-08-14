@@ -719,11 +719,18 @@ func TestLocateAndRelocateGrokRejectPathTraversalIDs(t *testing.T) {
 }
 
 func TestStartTurnGrokSameAccountFollowUpUsesPromotedRealID(t *testing.T) {
-	store, err := NewLocalFileSessionStore(t.TempDir())
+	// Prefer MkdirTemp + best-effort cleanup: on Windows, t.TempDir() can fail the
+	// test after assertions pass when session-store files stay briefly locked
+	// (TempDir RemoveAll: directory not empty).
+	root, err := os.MkdirTemp("", "grok-same-account-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	store, err := NewLocalFileSessionStore(filepath.Join(root, ".flowpilot", "chats"))
 	if err != nil {
 		t.Fatalf("NewLocalFileSessionStore: %v", err)
 	}
-	root := t.TempDir()
 	home := filepath.Join(root, "acct-a")
 	cwd := filepath.Join(root, "workspace")
 	if err := os.MkdirAll(home, 0o755); err != nil {

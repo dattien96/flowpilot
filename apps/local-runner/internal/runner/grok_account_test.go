@@ -38,6 +38,12 @@ func TestManagedProviderHomePrefixBaseRegression(t *testing.T) {
 }
 
 func TestNextAccountHomePathGrokUsesGrokHomePrefix(t *testing.T) {
+	// Isolate from machine-local ~/.grokHomeN slots.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
 	path, slot, err := NextAccountHomePath("grok", nil)
 	if err != nil {
 		t.Fatalf("NextAccountHomePath: %v", err)

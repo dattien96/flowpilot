@@ -176,6 +176,11 @@ type CopiedMsg struct {
 	Err  string
 }
 
+// toastClearMsg dismisses a transient flash toast when its generation still matches.
+type toastClearMsg struct {
+	ID int64
+}
+
 // TokenUsageMsg carries updated token usage for the statusline.
 type TokenUsageMsg struct{ Usage *client.TokenUsageSnapshot }
 
@@ -190,6 +195,9 @@ type AppModel struct {
 	mode       Mode
 	connStatus ConnStatus
 	statusMsg  string
+	// flashToast is a short-lived status overlay (e.g. "Copied answer.") — not chat.
+	flashToast   string
+	flashToastID int64
 	messages   []ChatMessage
 	// visiblePromptCount is how many newest user-prompt groups to render (Task-290).
 	visiblePromptCount        int

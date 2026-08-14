@@ -2,19 +2,42 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func writeCompatProbeBinary(t *testing.T, dir, name, script string) string {
 	t.Helper()
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write compat probe binary: %v", err)
+	// Unix: shebang script on PATH is enough.
+	scriptPath := filepath.Join(dir, name+".sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write compat probe script: %v", err)
 	}
-	return path
+	if runtime.GOOS != "windows" {
+		// Prefer bare name without extension for LookPath.
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatalf("write compat probe binary: %v", err)
+		}
+		return path
+	}
+	// Windows: LookPath finds *.cmd; wrap the sh script so probe content is real.
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skipf("compat probe needs sh on PATH: %v", err)
+	}
+	cmdPath := filepath.Join(dir, name+".cmd")
+	// %* forwards all args; quote script path for spaces.
+	body := fmt.Sprintf("@echo off\r\n\"%s\" \"%s\" %%*\r\n", sh, scriptPath)
+	if err := os.WriteFile(cmdPath, []byte(body), 0o755); err != nil {
+		t.Fatalf("write compat probe cmd: %v", err)
+	}
+	return cmdPath
 }
 
 func findCompatItem(items []CompatItem, name string) CompatItem {
