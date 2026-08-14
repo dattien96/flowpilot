@@ -209,7 +209,17 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addMessage("system", "Copy failed: "+msg.Err, "error")
 			return m, nil
 		}
-		m.addMessage("system", "Copied "+msg.Kind+".", "")
+		// Transient toast — do not pollute the chat timeline (CA-511).
+		kind := strings.TrimSpace(msg.Kind)
+		if kind == "" {
+			kind = "selection"
+		}
+		return m, m.showFlashToast("Copied " + kind + ".")
+
+	case toastClearMsg:
+		if msg.ID == m.flashToastID {
+			m.flashToast = ""
+		}
 		return m, nil
 
 	case ConnectedMsg:
@@ -613,7 +623,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turnStream = &turnStreamState{evCh: msg.EvCh, errCh: msg.ErrCh}
 		m.connStatus = ConnRunning
 		m.statusMsg = "streaming…"
-		if strings.EqualFold(strings.TrimSpace(m.reasoningEffort), "high") {
+		if m.isFlowChrome() {
+			if m.flowStepsActive != "" {
+				m.statusMsg = "step: " + m.flowStepsActive
+			} else {
+				m.statusMsg = "flow running…"
+			}
+		} else if strings.EqualFold(strings.TrimSpace(m.reasoningEffort), "high") {
 			m.statusMsg = "thinking…"
 		}
 		return m, m.cmdPollTurnStream()
@@ -742,9 +758,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.flowStepsActive != "" && (m.connStatus == ConnRunning || m.connStatus == ConnWaiting) {
 			m.statusMsg = "step: " + m.flowStepsActive
 		}
-		// Chat: only the current step line (full list lives in the top-right panel).
-		for _, line := range formatStepChatNotices(prevSteps, msg.Steps, prevActive, m.flowStepsActive, m.lastTurnError) {
-			m.addMessage("system", line, "steps")
+		// Step progress lines only on main hub view — never while reading a child
+		// transcript (would interleave flow banners into sub-agent chat).
+		if !m.viewingChild() {
+			for _, line := range formatStepChatNotices(prevSteps, msg.Steps, prevActive, m.flowStepsActive, m.lastTurnError) {
+				m.addMessage("system", line, "steps")
+			}
 		}
 		return m, nil
 
@@ -912,7 +931,15 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 
 	case "turn_started":
 		m.connStatus = ConnRunning
-		m.statusMsg = "turn running…"
+		if m.isFlowChrome() {
+			if m.flowStepsActive != "" {
+				m.statusMsg = "step: " + m.flowStepsActive
+			} else {
+				m.statusMsg = "flow running…"
+			}
+		} else {
+			m.statusMsg = "turn running…"
+		}
 		if m.launch.IsCatalogWorkflow() || m.mode == ModeFlow || m.mode == ModeStep {
 			return m, m.cmdRefreshStepsRuntime()
 		}
@@ -1108,11 +1135,6 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			runs := orderAgentsMainFirst(m.agentRuns)
 			m.focusedAgentIdx = (m.focusedAgentIdx + 1) % len(runs)
 			agent := runs[m.focusedAgentIdx]
-			name := agent.AgentName
-			if name == "" {
-				name = agent.RunID
-			}
-			m.addMessage("system", fmt.Sprintf("Viewing agent: %s (%s)", name, agent.Status), "")
 			return m, m.cmdFocusAgent(agent.RunID)
 		}
 		return m, nil
@@ -1620,9 +1642,17 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 
 	m.viewport.offset = 0
 	m.addMessage("user", input, "")
-	m.addMessage("assistant", "thinking…", "thinking")
+	// Flow mode: no thinking…/running… placeholders in the chat transcript —
+	// step progress lives in F2 / status; sub-agent views stay clean.
+	if !m.isFlowChrome() {
+		m.addMessage("assistant", "thinking…", "thinking")
+		m.statusMsg = "thinking…"
+	} else if m.flowStepsActive != "" {
+		m.statusMsg = "step: " + m.flowStepsActive
+	} else {
+		m.statusMsg = "flow running…"
+	}
 	m.connStatus = ConnRunning
-	m.statusMsg = "thinking…"
 
 	// First message: start run, then send turn (desktop sendPrompt parity).
 	if m.runHandle == nil {
@@ -1637,6 +1667,25 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 		return m, m.cmdStartRun()
 	}
 	return m, m.cmdSendTurn(input)
+}
+
+// isFlowChrome is true for catalog/step/flow runs where chat should not show
+// thinking placeholders (progress is on F2 steps + status).
+func (m *AppModel) isFlowChrome() bool {
+	if m == nil {
+		return false
+	}
+	return m.mode == ModeFlow || m.mode == ModeStep || m.launch.IsCatalogWorkflow()
+}
+
+// showFlashToast sets a 1s status-area toast (not a chat timeline message).
+func (m *AppModel) showFlashToast(text string) tea.Cmd {
+	m.flashToastID++
+	id := m.flashToastID
+	m.flashToast = strings.TrimSpace(text)
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		return toastClearMsg{ID: id}
+	})
 }
 
 // handleGateInput interprets user input when a flow_gate_violation is pending.
@@ -1792,7 +1841,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.addMessage("system", fmt.Sprintf("Agent %q not found. Try /agents.", target), "error")
 				break
 			}
-			m.addMessage("system", fmt.Sprintf("Viewing agent: %s", name), "")
+			_ = name
 			return m, m.cmdFocusAgent(runID)
 		}
 		m.agentsFocus = !m.agentsFocus
@@ -1831,7 +1880,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			m.addMessage("system", fmt.Sprintf("Agent %q not found. Try /agents.", target), "error")
 			break
 		}
-		m.addMessage("system", fmt.Sprintf("Viewing agent: %s", name), "")
+		_ = name
 		return m, m.cmdFocusAgent(runID)
 
 	case "/flow":
@@ -2293,6 +2342,7 @@ func (m *AppModel) View() string {
 		sb.WriteString(strings.Repeat("─", w))
 	}
 	sb.WriteString("\n")
+	// flashToast is rendered on the project/git status row (see status_bar.go).
 	sb.WriteString(c.statusBlock)
 	sb.WriteString("\n")
 	if len(c.sugg) > 0 {
