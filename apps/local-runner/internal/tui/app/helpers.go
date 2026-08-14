@@ -513,6 +513,39 @@ func (m *AppModel) slashSuggestLine() string {
 	return m.inputValue
 }
 
+// stripActiveSlashCommand removes the active word-boundary slash token (from
+// '/' through end of input) so closing /skill keeps draft text typed before it.
+// "abc [coding] /skill " → "abc [coding] " (trailing space so "def" → "abc [coding] def").
+// Bare "/skill " → "".
+func stripActiveSlashCommand(input string, caret int) string {
+	_, start, ok := activeSlashLine(input, caret)
+	if !ok {
+		return input
+	}
+	runes := []rune(input)
+	if start <= 0 {
+		return ""
+	}
+	before := strings.TrimRight(string(runes[:start]), " \t")
+	if before == "" {
+		return ""
+	}
+	return before + " "
+}
+
+// replaceActiveSlashWith keeps text before the active word-boundary '/' and
+// writes replacement as the slash command portion. Used by Tab completion so
+// "abc /sk" → "abc /skill " instead of wiping the draft.
+// No active slash → replacement alone (bare "/pro" Tab).
+func replaceActiveSlashWith(input string, caret int, replacement string) string {
+	_, start, ok := activeSlashLine(input, caret)
+	if !ok {
+		return replacement
+	}
+	runes := []rune(input)
+	return string(runes[:start]) + replacement
+}
+
 // filterSlashSuggestions returns slash commands matching the current input prefix.
 func filterSlashSuggestions(input string) []slashCommand {
 	in := strings.ToLower(strings.TrimSpace(input))

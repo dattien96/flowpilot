@@ -74,8 +74,9 @@ func TestSlashAfterDraft_TabReplacesWithCommand(t *testing.T) {
 	m.inputValue = "draft /pro"
 	m.inputCursor = -1
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyTab})
-	if got := m2.(*AppModel).inputValue; got != "/provider " {
-		t.Fatalf("inputValue=%q want /provider ", got)
+	// Tab completes only the / fragment — draft prefix must stay (CA-491).
+	if got := m2.(*AppModel).inputValue; got != "draft /provider " {
+		t.Fatalf("inputValue=%q want draft /provider ", got)
 	}
 }
 
