@@ -45,6 +45,24 @@ func (m *AppModel) moveInputCursor(delta int) {
 	m.inputCursor = cur
 }
 
+// setInputCaret places the caret at abs (rune index). abs < 0 or abs >= len → sticky end.
+func (m *AppModel) setInputCaret(abs int) {
+	n := len([]rune(m.inputValue))
+	if abs < 0 || abs >= n {
+		m.inputCursor = -1
+		return
+	}
+	m.inputCursor = abs
+}
+
+// clearInputValue empties the prompt and resets the caret to sticky-end so the
+// next keystroke appends (Esc clear / Enter send must not leave a mid-string index).
+func (m *AppModel) clearInputValue() {
+	m.inputValue = ""
+	m.inputCursor = -1
+	m.suggIdx = 0
+}
+
 func (m *AppModel) insertInputAtCursor(s string) {
 	if s == "" {
 		return
@@ -57,7 +75,10 @@ func (m *AppModel) insertInputAtCursor(s string) {
 	out = append(out, extra...)
 	out = append(out, runes[cur:]...)
 	m.inputValue = string(out)
-	m.moveInputCursor(len(extra))
+	// Do not call moveInputCursor(len): with sticky-end (inputCursor==-1),
+	// inputCaretIndex() already reflects the *new* length after assignment,
+	// so +len would overshoot or leave a stale mid-index after backspace.
+	m.setInputCaret(cur + len(extra))
 }
 
 func (m *AppModel) deleteInputBeforeCursor() {
@@ -66,10 +87,18 @@ func (m *AppModel) deleteInputBeforeCursor() {
 	if cur == 0 || len(runes) == 0 {
 		return
 	}
-	out := append([]rune{}, runes[:cur-1]...)
-	out = append(out, runes[cur:]...)
+	// Sticky-end backspace must stay sticky. Using moveInputCursor(-1) after
+	// shortening the string treated caret as (newLen) then -1 → before the
+	// last remaining rune ("ab|" BS → "|a" instead of "a|"), so retyping
+	// produced reversed order (e.g. abc → bca).
+	wasStickyEnd := m.inputCursor < 0
+	out := append(append([]rune{}, runes[:cur-1]...), runes[cur:]...)
 	m.inputValue = string(out)
-	m.moveInputCursor(-1)
+	if wasStickyEnd || len(out) == 0 {
+		m.inputCursor = -1
+		return
+	}
+	m.setInputCaret(cur - 1)
 }
 
 // windowRunesAround keeps caret visible when a single input line is wider

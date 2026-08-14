@@ -974,7 +974,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.authPhase != AuthNone {
 			m.authPhase = AuthNone
 			m.authEmail = ""
-			m.inputValue = ""
+			m.clearInputValue()
 			m.addMessage("system", "Login cancelled.", "")
 			return m, nil
 		}
@@ -984,8 +984,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.inputValue != "" {
-			m.inputValue = ""
-			m.suggIdx = 0
+			m.clearInputValue()
 			m.statusMsg = "prompt cleared"
 			return m, nil
 		}
@@ -1059,14 +1058,14 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				it := items[m.suggIdx%len(items)]
 				if it.kind == "skill" {
 					// Tab ticks; Enter applies (closes picker, keeps the tick set).
-					m.inputValue = ""
-					m.suggIdx = 0
+					m.clearInputValue()
 					return m, nil
 				}
 				if cmd := suggestionAcceptValue(it); cmd != "" {
 					// Action rows (e.g. /provider → connect) only expand the next picker.
 					if it.kind == "provider-action" {
 						m.inputValue = cmd
+						m.inputCursor = -1
 						m.suggIdx = 0
 						return m, m.cmdMaybePrefetchPickers()
 					}
@@ -1074,8 +1073,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					if m.sendBlocked() && !strings.HasPrefix(cmd, "/") {
 						return m, nil
 					}
-					m.inputValue = ""
-					m.suggIdx = 0
+					m.clearInputValue()
 					return m.processInput(cmd)
 				}
 				// Placeholder (loading / no match): if the user already typed an
@@ -1084,8 +1082,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					if m.sendBlocked() && !strings.HasPrefix(typed, "/") {
 						return m, nil
 					}
-					m.inputValue = ""
-					m.suggIdx = 0
+					m.clearInputValue()
 					return m.processInput(typed)
 				}
 				return m, nil
@@ -1102,7 +1099,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		m.inputValue = ""
+		m.clearInputValue()
 		// Bare "/" with no suggestion rows left → help.
 		if input == "/" {
 			return m.handleSlashCommand("/help")
