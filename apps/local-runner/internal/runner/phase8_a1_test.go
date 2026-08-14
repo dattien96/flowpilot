@@ -121,7 +121,10 @@ func TestSkillsServedLocallyWithInjectedStore(t *testing.T) {
 func TestSkillsMergeClaudeProjectAndProviderHomeWithPrecedence(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
-	t.Setenv("USERPROFILE", "")
+	// Windows preferredUserHomeDir prefers USERPROFILE — isolate provider skills.
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
 
 	if err := os.WriteFile(filepath.Join(homeDir, ".claude.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatalf("write claude config: %v", err)
@@ -180,7 +183,9 @@ func TestSkillsMergeClaudeProjectAndProviderHomeWithPrecedence(t *testing.T) {
 func TestSkillsMergeCodexProjectAgentsAndProviderHomeWithPrecedence(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
-	t.Setenv("USERPROFILE", "")
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
 	codexHome := filepath.Join(homeDir, ".codexHome")
 
 	if err := os.MkdirAll(codexHome, 0o755); err != nil {
@@ -242,7 +247,9 @@ func TestSkillsMergeCodexProjectAgentsAndProviderHomeWithPrecedence(t *testing.T
 func TestSkillsMergeGeminiProjectAgentsAndProviderHomeWithPrecedence(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
-	t.Setenv("USERPROFILE", "")
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
 
 	if err := os.MkdirAll(filepath.Join(homeDir, ".gemini"), 0o755); err != nil {
 		t.Fatalf("mkdir gemini config dir: %v", err)

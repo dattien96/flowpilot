@@ -905,6 +905,10 @@ func TestRestoreChatRunFromDriveMissingActiveAccountAuth(t *testing.T) {
 func TestDefaultProviderSessionHomeSupportsClaudeWithoutInstallation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// Windows preferredUserHomeDir reads USERPROFILE first.
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
 
 	targetHome, ok := defaultProviderSessionHome(ProviderKeyClaude)
 	if !ok {

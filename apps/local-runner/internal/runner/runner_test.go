@@ -1111,7 +1111,12 @@ func TestStartInteractiveAuthLaunchesFromWorkspace(t *testing.T) {
 		t.Fatal("expected auth terminal to stay open")
 	}
 
-	expectedPrefix := commandWithWorkingDirectory("/usr/local/bin/agy", workspace)
+	// StartInteractiveAuth quotes the binary on Windows before wrapping cwd.
+	authBin := "/usr/local/bin/agy"
+	if runtime.GOOS == "windows" {
+		authBin = doubleQuoteForCmd(authBin)
+	}
+	expectedPrefix := commandWithWorkingDirectory(authBin, workspace)
 	if observedCommand != expectedPrefix {
 		t.Fatalf("expected workspace-scoped auth command %q, got %q", expectedPrefix, observedCommand)
 	}

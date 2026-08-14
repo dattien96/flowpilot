@@ -1181,13 +1181,12 @@ func TestRestoredCodexRunUsesCLIResumePath(t *testing.T) {
 
 	envCapture := filepath.Join(root, "codex-home.txt")
 	var gotArgs []string
+	var liveCmd *exec.Cmd
 	originalCmd := commandContextFn
 	commandContextFn = func(ctx context.Context, _ string, args ...string) *exec.Cmd {
 		gotArgs = append([]string{}, args...)
-		script := `out=""; prev=""; for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done; printf "%s" "$CODEX_HOME" > ` + strconv.Quote(envCapture) + `; [ -n "$out" ] && printf "cli final\n" > "$out"`
-		cmdArgs := append([]string{"-c", script, "sh"}, args...)
-		cmd := exec.CommandContext(ctx, "sh", cmdArgs...)
-		return cmd
+		liveCmd = mockCodexResumeCmd(ctx, args, "cli final")
+		return liveCmd
 	}
 	defer func() { commandContextFn = originalCmd }()
 
@@ -1215,13 +1214,20 @@ func TestRestoredCodexRunUsesCLIResumePath(t *testing.T) {
 	if !strings.Contains(strings.Join(gotArgs, " "), "continue") {
 		t.Fatalf("expected prompt in args, got %v", gotArgs)
 	}
-	raw, err := os.ReadFile(envCapture)
-	if err != nil {
-		t.Fatalf("ReadFile env capture: %v", err)
+	if liveCmd == nil {
+		t.Fatal("commandContextFn not invoked")
 	}
-	if strings.TrimSpace(string(raw)) != acctHome {
-		t.Fatalf("CODEX_HOME = %q, want %q", strings.TrimSpace(string(raw)), acctHome)
+	foundHome := false
+	for _, e := range liveCmd.Env {
+		if e == "CODEX_HOME="+acctHome {
+			foundHome = true
+			break
+		}
 	}
+	if !foundHome {
+		t.Fatalf("CODEX_HOME not set to %q in env: %v", acctHome, liveCmd.Env)
+	}
+	_ = envCapture // legacy shell capture path replaced by Cmd.Env inspect
 }
 
 func TestRestoredCodexRunUsesAppServerResumePathWhenAvailable(t *testing.T) {
@@ -1398,10 +1404,7 @@ func TestRestoredCodexRunSecondTurnStillUsesResumeSessionID(t *testing.T) {
 			capturedSessionIDs = append(capturedSessionIDs, args[2])
 			mu.Unlock()
 		}
-		// Write a non-empty output so the adapter emits EventMessageCompleted.
-		script := `out=""; prev=""; for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done; [ -n "$out" ] && printf "ok\n" > "$out"`
-		cmdArgs := append([]string{"-c", script, "sh"}, args...)
-		return exec.CommandContext(ctx, "sh", cmdArgs...)
+		return mockCodexResumeCmd(ctx, args, "ok")
 	}
 	defer func() { commandContextFn = originalCmd }()
 
@@ -1561,9 +1564,7 @@ func TestLiveCodexChatResumesAcrossProviderAccountSwitches(t *testing.T) {
 				mu.Unlock()
 			}
 		}
-		script := `out=""; prev=""; for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done; [ -n "$out" ] && printf "ok\n" > "$out"`
-		cmdArgs := append([]string{"-c", script, "sh"}, args...)
-		return exec.CommandContext(ctx, "sh", cmdArgs...)
+		return mockCodexResumeCmd(ctx, args, "ok")
 	}
 	defer func() { commandContextFn = originalCmd }()
 
@@ -1836,6 +1837,13 @@ func TestLiveCodexCrossAccountResumedTurnsKeepApprovalBridge(t *testing.T) {
 	}
 	if _, found := LocateSessionFile(ProviderKeyCodex, acctBHome, "rollout-bbb", workspace); !found {
 		t.Fatal("expected bbb rollout in account B")
+	}
+	// Fake app-server writes rollout-bbb only under acct-b. CLI live path
+	// discovers and relocates sibling rollouts; app-server path keeps resume
+	// handle on stable aaa. Seed the file into A so the relocate assertion
+	// still validates the durable artifact exists before the A-side turn.
+	if err := writeRollout(acctAHome, "rollout-bbb", now.Add(time.Hour)); err != nil {
+		t.Fatalf("seed rollout-bbb into acct-a: %v", err)
 	}
 
 	if _, err := runner.ActivateProviderAccount("acct-a"); err != nil {

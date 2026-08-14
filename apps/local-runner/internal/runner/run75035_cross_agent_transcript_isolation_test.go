@@ -344,6 +344,12 @@ func TestRun75035_SeedChildKeepsOwnMultipleCodexRollouts(t *testing.T) {
 
 func TestRun75035_HubResumeStillLoadsOwnCodexSession(t *testing.T) {
 	dir := t.TempDir()
+	// Isolate account resolution from other package tests that mutate HOME/USERPROFILE.
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
+	t.Setenv("CODEX_HOME", filepath.Join(dir, "codex-home"))
 	store, err := NewLocalFileSessionStore(filepath.Join(dir, ".flowpilot", "chats"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
@@ -368,6 +374,7 @@ func TestRun75035_HubResumeStillLoadsOwnCodexSession(t *testing.T) {
 	_ = store.AppendTurnLog(ctx, "run-75035", turnLogLine{Kind: turnLogKindCodexSession, SessionID: "rollout-hub"})
 
 	svc := NewInteractiveServiceWithStore(DefaultProviderRegistry(), newInteractiveCatalog(), store)
+	svc.activeAccountID = "a"
 	hub := &interactiveRun{
 		id: "run-75035", projectID: "p", providerKey: ProviderKeyCodex,
 		providerSessionID: "rollout-hub", realProviderSessionID: "rollout-hub",

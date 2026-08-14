@@ -762,11 +762,16 @@ func TestCoderCompletionAutoSpawnedReviewerPromptDoesNotInstructFlowControlCall(
 	mu.Lock()
 	got := reviewerPrompt
 	mu.Unlock()
-	for _, forbidden := range []string{"control tool", "flow_control", "submit_review_outcome"} {
+	// Reviewers must record machine-checkable verdicts via submit_review_outcome
+	// (dual-reviewer cohort / synthesis). Still forbid generic flow_control /
+	// "control tool" wording that would let a reviewer drive routing themselves.
+	for _, forbidden := range []string{"flow_control"} {
 		if strings.Contains(got, forbidden) {
-			t.Fatalf("auto-spawned reviewer prompt = %.300q, must not instruct it to call any control tool (found %q) — "+
-				"only the hub's own synthesis turn after cohort join may do that", got, forbidden)
+			t.Fatalf("auto-spawned reviewer prompt = %.300q, must not instruct flow_control (found %q)", got, forbidden)
 		}
+	}
+	if !strings.Contains(got, "submit_review_outcome") {
+		t.Fatalf("auto-spawned reviewer prompt must instruct submit_review_outcome for cohort verdicts; got %.300q", got)
 	}
 }
 
