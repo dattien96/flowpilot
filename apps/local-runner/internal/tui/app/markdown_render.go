@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/yuin/goldmark"
@@ -217,7 +218,16 @@ func (w *mdWriter) shouldUnwrapMarkdownFence(lang, raw string) bool {
 	if isMarkdownFenceLang(lang) {
 		return true
 	}
-	return looksLikeMarkdownDoc(raw)
+	if looksLikeMarkdownDoc(raw) {
+		return true
+	}
+	// Nested same-length fences (```markdown … ```bash … ```) make goldmark
+	// treat the outer closer as a new empty-lang open fence that swallows
+	// trailing chat prose. Unwrap plain prose; keep real code boxed.
+	if strings.TrimSpace(lang) == "" && looksLikePlainProseFence(raw) {
+		return true
+	}
+	return false
 }
 
 func (w *mdWriter) appendUnwrappedMarkdown(raw string) (ast.WalkStatus, error) {
@@ -269,6 +279,100 @@ func looksLikeMarkdownDoc(s string) bool {
 		}
 	}
 	return hits >= 2
+}
+
+// looksLikePlainProseFence is true for empty-lang fence bodies that read as
+// short chat prose (multi-word sentences), not single tokens or bulk dumps.
+// Orphan closers after nested ```markdown often leave one trailing sentence
+// in an empty-lang fence; real code / one-word fences stay boxed.
+func looksLikePlainProseFence(s string) bool {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if looksLikeCodeFenceBody(s) {
+		return false
+	}
+	nonEmpty := 0
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) != "" {
+			nonEmpty++
+		}
+	}
+	// Trailing orphan prose is 1–few paragraphs; multi-line dumps stay boxed.
+	if nonEmpty == 0 || nonEmpty > 6 {
+		return false
+	}
+	// Single tokens ("one", "two") stay code boxes.
+	words := strings.Fields(s)
+	if len(words) < 3 {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeCodeFenceBody(s string) bool {
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" {
+			continue
+		}
+		if looksLikeCodeLine(t) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeCodeLine(t string) bool {
+	if strings.HasPrefix(t, "#!") || strings.HasPrefix(t, "$ ") || strings.HasPrefix(t, "% ") {
+		return true
+	}
+	if strings.ContainsAny(t, "{};") {
+		return true
+	}
+	if strings.Contains(t, ":=") || strings.Contains(t, "=>") || strings.Contains(t, "->") {
+		return true
+	}
+	if strings.Contains(t, "()") || strings.Contains(t, "[]") || strings.Contains(t, "++") {
+		return true
+	}
+	if strings.Contains(t, "./") || strings.Contains(t, "../") {
+		return true
+	}
+	if strings.Contains(t, "=") && !strings.HasPrefix(t, "#") {
+		return true
+	}
+	lower := strings.ToLower(t)
+	for _, kw := range []string{
+		"package ", "import ", "from ", "func ", "def ", "class ",
+		"const ", "var ", "let ", "export ", "return ", "public ",
+		"private ", "static ", "async ", "await ", "select ", "create ",
+	} {
+		if strings.HasPrefix(lower, kw) {
+			return true
+		}
+	}
+	// name.method( or name(
+	for i := 0; i < len(t); i++ {
+		if t[i] != '(' {
+			continue
+		}
+		if i == 0 {
+			return true
+		}
+		prev := t[i-1]
+		if (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') || (prev >= '0' && prev <= '9') || prev == '_' || prev == ')' {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikeGFMTable(s string) bool {
