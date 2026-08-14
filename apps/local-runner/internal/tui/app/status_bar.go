@@ -22,6 +22,10 @@ func (m *AppModel) renderStatusLine() string {
 
 	line0 := m.renderStatusLine0(sep, w)
 	if m.statusDetailsCollapsed {
+		// Project line is folded — keep toast visible on the compact status row.
+		if t := strings.TrimSpace(m.flashToast); t != "" {
+			line0 = fitStatusWidth(line0+styleStatus.Render(sep)+styleStatusOK.Render(t), w)
+		}
 		return line0
 	}
 
@@ -41,8 +45,19 @@ func (m *AppModel) renderStatusLine() string {
 	if usage := formatContextLimits(m.lastTokens, m.modelContextWin); usage != "" {
 		lines = append(lines, styleStatus.Render(fitStatusWidth(usage, w)))
 	}
-	lines = append(lines, styleStatus.Render(fitStatusWidth(m.projectStatusLabel(), w)))
+	// Project · path · branch — toast shares this row (not a separate chat line).
+	lines = append(lines, m.renderProjectStatusLine(sep, w))
 	return strings.Join(lines, "\n")
+}
+
+// renderProjectStatusLine is the bottom status row (project / path / git branch).
+// Copy toasts append on the same line so they do not push layout or pollute chat.
+func (m *AppModel) renderProjectStatusLine(sep string, w int) string {
+	body := styleStatus.Render(m.projectStatusLabel())
+	if t := strings.TrimSpace(m.flashToast); t != "" {
+		body = body + styleStatus.Render(sep) + styleStatusOK.Render(t)
+	}
+	return fitStatusWidth(body, w)
 }
 
 func (m *AppModel) statusFoldChip() string {
