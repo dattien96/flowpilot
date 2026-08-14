@@ -159,7 +159,14 @@ func (d *grokDispatcher) dispatch(msg map[string]any) {
 		if ch != nil {
 			select {
 			case ch <- grokNotification{Method: method, Params: params}:
-			default: // bounded buffer full — consumer reconnects/recovers, never block the loop
+			default:
+				// Buffer full: block briefly rather than drop. Image turns stream
+				// hundreds of agent_message_chunk frames (run-96217: 400+); a hard
+				// drop left the TUI stuck on thinking… with only tool rows.
+				select {
+				case ch <- grokNotification{Method: method, Params: params}:
+				case <-d.done:
+				}
 			}
 		}
 	case !hasMethod && hasID:
@@ -242,6 +249,11 @@ func (d *grokDispatcher) write(msg map[string]any) error {
 	return err
 }
 
+// grokSessionNotifBuffer is large enough for long Grok turns that emit
+// hundreds of agent_thought_chunk + agent_message_chunk frames before the
+// consumer drains them (run-96217 image path-fallback: 400+ message chunks).
+const grokSessionNotifBuffer = 8192
+
 // registerSession subscribes to notifications for a session (bounded buffer).
 func (d *grokDispatcher) registerSession(sessionID string) (chan grokNotification, error) {
 	d.mu.Lock()
@@ -249,7 +261,7 @@ func (d *grokDispatcher) registerSession(sessionID string) (chan grokNotificatio
 	if d.closed {
 		return nil, d.closeErr
 	}
-	ch := make(chan grokNotification, 256)
+	ch := make(chan grokNotification, grokSessionNotifBuffer)
 	d.sessionSubs[sessionID] = ch
 	return ch, nil
 }

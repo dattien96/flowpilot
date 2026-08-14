@@ -559,11 +559,22 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "turn failed"
 			m.addMessage("system", "Send turn failed: "+msg.Err.Error(), "error")
 			m.runHandle = nil
+			m.clearThinkingPlaceholder()
 			return m, nil
 		}
 		if m.connStatus == ConnRunning {
 			m.connStatus = ConnIdle
 			m.statusMsg = "done"
+		}
+		// run-96217: stream closed after tools while thinking… still present
+		// (missed message_delta / empty FinalMessage). Never leave the placeholder.
+		if m.thinkingIndex() >= 0 {
+			if fill := strings.TrimSpace(m.lastAssistantText()); fill != "" {
+				m.ensureAssistantMessage(fill)
+			} else {
+				m.clearThinkingPlaceholder()
+				m.addMessage("system", "Turn finished but no assistant text arrived on the live stream (check runner log / /history).", "error")
+			}
 		}
 		cmds := []tea.Cmd{m.cmdRefreshStepsRuntime()}
 		// Desktop startOrchestrationStream: keep listening after the turn so

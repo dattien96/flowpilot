@@ -343,24 +343,65 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 			if outcome.err != nil {
 				return outcome.err
 			}
+			// session/prompt's RPC response can become ready while agent_message_chunk
+			// frames are still queued on notif (same wire order, separate waiter vs
+			// session sub). Drain before emitTerminal so FinalMessage + SSE deltas
+			// are not lost (run-96217: tools shown, answer never reached TUI).
+			lastText = a.drainGrokNotifications(sessionID, notif, bridge, lastText, shimmedSpawnCalls, pendingToolCalls)
 			return a.emitTerminal(ctx, req, bridge, sessionID, outcome.result, lastText)
 
 		case n, ok := <-notif:
 			if !ok {
 				return fmt.Errorf("grok agent stdio stream closed mid-turn")
 			}
-			a.tryShimGrokNativeSpawnSubagent(sessionID, bridge, n, shimmedSpawnCalls)
-			n = grokCorrelateToolNotification(pendingToolCalls, n)
-			events, mapped := mapGrokNotification(n)
-			if !mapped {
-				continue
+			lastText = a.applyGrokNotification(sessionID, n, bridge, lastText, shimmedSpawnCalls, pendingToolCalls)
+		}
+	}
+}
+
+// applyGrokNotification maps one session notification and emits client events.
+func (a *grokAdapter) applyGrokNotification(
+	sessionID string,
+	n grokNotification,
+	bridge TurnBridge,
+	lastText string,
+	shimmedSpawnCalls map[string]struct{},
+	pendingToolCalls map[string]grokPendingToolCall,
+) string {
+	a.tryShimGrokNativeSpawnSubagent(sessionID, bridge, n, shimmedSpawnCalls)
+	n = grokCorrelateToolNotification(pendingToolCalls, n)
+	events, mapped := mapGrokNotification(n)
+	if !mapped {
+		return lastText
+	}
+	for _, ev := range events {
+		if ev.Type == EventMessageDelta {
+			lastText += ev.Text
+		}
+		bridge.Emit(ev)
+	}
+	return lastText
+}
+
+// drainGrokNotifications non-blocking-drains remaining session notifications
+// after session/prompt returns (run-96217 race).
+func (a *grokAdapter) drainGrokNotifications(
+	sessionID string,
+	notif <-chan grokNotification,
+	bridge TurnBridge,
+	lastText string,
+	shimmedSpawnCalls map[string]struct{},
+	pendingToolCalls map[string]grokPendingToolCall,
+) string {
+	for {
+		select {
+		case n, ok := <-notif:
+			if !ok {
+				return lastText
 			}
-			for _, ev := range events {
-				if ev.Type == EventMessageDelta {
-					lastText += ev.Text
-				}
-				bridge.Emit(ev)
-			}
+			lastText = a.applyGrokNotification(sessionID, n, bridge, lastText, shimmedSpawnCalls, pendingToolCalls)
+		default:
+			return lastText
 		}
 	}
 }
