@@ -7,6 +7,17 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// inputAttachChipPlain is the pending-image chip in the prompt row.
+// Empty when nothing is attached so the box does not look like it has an image.
+// Click still works on "[N img]" (hitAttachChrome); attach via Alt+V / /image paste.
+func (m *AppModel) inputAttachChipPlain() string {
+	n := len(m.pendingAttach)
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("[%d img] ", n)
+}
+
 // inputCaretIndex is the rune offset where the caret sits.
 // inputCursor < 0 means "stick to end" so tests that only set inputValue
 // still append, matching the previous always-at-end behavior.
@@ -113,11 +124,8 @@ func (m *AppModel) tryPlaceInputCursor(x, y int) bool {
 	if innerW < 1 {
 		innerW = 1
 	}
-	attach := "[+img] "
-	if n := len(m.pendingAttach); n > 0 {
-		attach = fmt.Sprintf("[%d img] ", n)
-	}
-	if lipgloss.Width(attach)+8 > innerW {
+	attach := m.inputAttachChipPlain()
+	if attach != "" && lipgloss.Width(attach)+8 > innerW {
 		attach = ""
 	}
 	attachW := lipgloss.Width(attach)

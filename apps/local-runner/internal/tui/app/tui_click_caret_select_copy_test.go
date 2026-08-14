@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
 )
 
@@ -71,8 +72,8 @@ func TestClickPlacesInputCursor(t *testing.T) {
 	c := m.tuiChrome()
 
 	// First body row: top border + optional approval/question (none) → rel 1.
-	// Text starts after left border, pad space, and "[+img] ".
-	attachW := len("[+img] ")
+	// No pending images → no attach chip; text starts after left border + pad.
+	attachW := len(m.inputAttachChipPlain())
 	textStartX := 2 + attachW
 	// Click on the 3rd rune (index 2 → 'c').
 	x := textStartX + 2
@@ -101,7 +102,7 @@ func TestClickInput_WindowsMouseLeftTypePlacesCursor(t *testing.T) {
 	m.inputCursor = -1
 	_ = m.View()
 	c := m.tuiChrome()
-	attachW := len("[+img] ")
+	attachW := len(m.inputAttachChipPlain())
 	x := 2 + attachW + 1 // on 'e'
 	y := c.inputY + 1
 	m2, _ := m.handleMouse(tea.MouseMsg{
@@ -123,19 +124,21 @@ func TestClickAttachDoesNotStealForCursor(t *testing.T) {
 	m.asciiMode = true
 	m.inputValue = "abcd"
 	m.inputCursor = -1
+	// Pending attach paints "[1 img]" — empty state has no chip.
+	m.pendingAttach = []client.PromptAttachment{{
+		ID: "a1", OriginalName: "x.png", MimeType: "image/png", Data: "eA==",
+	}}
 	_ = m.View()
 	c := m.tuiChrome()
-	// x on the attach chip, not the text body.
-	if m.tryPlaceInputCursor(3, c.inputY+1) {
-		// May or may not hit attach depending on exact layout; if true, caret must not move into chip.
-		t.Logf("caret after attach-area click: %d", m.inputCaretIndex())
-	}
 	// Explicit attach hit must return false from tryPlace when chip is under x.
 	stripped := stripANSI(strings.Split(c.inputBlock, "\n")[1])
-	if i := strings.Index(stripped, "[+img]"); i >= 0 {
+	chip := "[1 img]"
+	if i := strings.Index(stripped, chip); i >= 0 {
 		if m.tryPlaceInputCursor(i, c.inputY+1) {
 			t.Fatal("attach chip click must not place caret")
 		}
+	} else {
+		t.Fatalf("expected pending chip %q in %q", chip, stripped)
 	}
 }
 

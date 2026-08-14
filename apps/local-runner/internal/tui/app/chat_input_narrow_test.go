@@ -40,20 +40,25 @@ func TestView_NarrowWidthDoesNotOverflowInputRows(t *testing.T) {
 	m.inputValue = "jj"
 	m.cursorOn = true
 	view := m.View()
-	var inputHits int
+	var frameHits int
 	for i, line := range strings.Split(view, "\n") {
 		plain := stripANSI(line)
 		vw := lipgloss.Width(line)
-		isInput := strings.Contains(plain, "[+img]") || strings.Contains(plain, "╭") || strings.Contains(plain, "╰")
+		isInput := strings.Contains(plain, "╭") || strings.Contains(plain, "╰") ||
+			strings.Contains(plain, " img]") || strings.Contains(plain, " chat ")
 		if isInput && vw >= m.width && m.width > 1 {
 			t.Errorf("input line %d visual=%d >= %d\nplain=%q", i, vw, m.width, plain)
 		}
+		if strings.Contains(plain, "╭") || strings.Contains(plain, "╰") {
+			frameHits++
+		}
+		// Empty pending attach must not paint a permanent [+img] affordance.
 		if strings.Contains(plain, "[+img]") {
-			inputHits++
+			t.Fatalf("unexpected empty-state [+img] chip:\n%s", stripANSI(view))
 		}
 	}
-	if inputHits != 1 {
-		t.Fatalf("input [+img] should render once, got %d\n%s", inputHits, stripANSI(view))
+	if frameHits < 2 {
+		t.Fatalf("expected input frame corners, got frameHits=%d\n%s", frameHits, stripANSI(view))
 	}
 }
 

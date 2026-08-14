@@ -2537,16 +2537,18 @@ func (m *AppModel) renderInputLine() string {
 	left := styleInputStroke.Render("┃")
 	mid := styleInputStroke.Render("│")
 	label := strings.TrimSpace(prefix)
-	attach := styleLink.Render("[+img] ")
-	if n := len(m.pendingAttach); n > 0 {
-		attach = stylePromptFocus.Render(fmt.Sprintf("[%d img] ", n))
+	// Only show when images are pending — bare "[+img]" looked like an attachment.
+	attachPlain := m.inputAttachChipPlain()
+	attach := ""
+	if attachPlain != "" {
+		attach = stylePromptFocus.Render(attachPlain)
 	}
 	innerW := w - 2
 	if innerW < 1 {
 		innerW = 1
 	}
 	// Drop the attach chip before it forces the box past the terminal width.
-	if lipgloss.Width(stripANSI(attach))+8 > innerW {
+	if attach != "" && lipgloss.Width(stripANSI(attach))+8 > innerW {
 		attach = ""
 	}
 	fixedWidth := 1 + lipgloss.Width(stripANSI(attach)) + 1 // leading space + caret

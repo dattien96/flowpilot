@@ -414,6 +414,7 @@ func hitAttachChrome(c tuiChrome, x, y int) bool {
 		return false
 	}
 	stripped := stripANSI(lines[rel])
+	// Pending chip is "[N img]"; legacy empty-state "[+img]" no longer rendered.
 	if hitToken(stripped, "[+img]", x) {
 		return true
 	}
