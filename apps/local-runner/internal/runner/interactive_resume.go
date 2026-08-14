@@ -3119,6 +3119,11 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 		}
 	}
 
+	// Same as Grok: filter shared-session pollution before overlay remaps slots.
+	if shouldFilterFlowHubProviderHistory(rs, allEntries) {
+		historical = filterFlowHubUnassistedProviderHistory(historical, turnLogPromptTexts(rawPrompts))
+	}
+
 	// Replay raw user intent and its durable turn id for every provider. This
 	// lets the shared sidecar reorderer insert restored approvals/questions
 	// directly after their originating prompt instead of at the bottom.
@@ -3963,7 +3968,8 @@ func (s *InteractiveService) anchorSidecarPrefixByTurnLocked(rs *interactiveRun)
 // hub run-24377 and coder run-24382 both used 019f8526-…); loading that file
 // for the hub replays child turns into main chat and scrambles order after
 // restart. When the turn log has no hub assistants yet, fall through to the
-// provider-history path (run-12613 / run-20332).
+// provider-history path (run-12613 / run-20332) but filterFlowHubUnassistedProviderHistory
+// still drops sibling/foreign frames from a shared session (run-98153).
 func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	home, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 	if !ok {
@@ -4020,6 +4026,13 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	for _, sid := range sessionIDs {
 		historical = append(historical, loadGrokTranscriptEvents(grokChatHistoryPath(home, rs.workspaceCwd, sid))...)
 	}
+	// Strip sibling/foreign frames BEFORE overlayRawTurnPrompts: overlay maps
+	// durable prompts onto the first overlayable user slot and can relabel a
+	// foreign chat as the hub prompt, then keep the following foreign assistant
+	// (run-98153). Assistant-only dumps (run-12613) stay intact.
+	if shouldFilterFlowHubProviderHistory(rs, allEntries) {
+		historical = filterFlowHubUnassistedProviderHistory(historical, turnLogPromptTexts(rawPrompts))
+	}
 	historical = overlayRawGrokTurnPrompts(historical, rawPrompts)
 	historical = prependMissingPromptOnlyEvents(turnLogPromptTexts(rawPrompts), historical)
 	if len(allEntries) > 0 {
@@ -4040,6 +4053,133 @@ func (s *InteractiveService) preferFlowHubTurnLogTranscript(rs *interactiveRun, 
 		return false
 	}
 	return turnLogHasAssistantFrames(entries)
+}
+
+// shouldFilterFlowHubProviderHistory is true when a flow hub falls through to
+// provider history because the turn log has no assistant frames yet (run-12613
+// class). Those hubs still need provider dumps for hub prose, but must not keep
+// interleaved sibling/foreign turns from a shared session file (run-98153).
+func shouldFilterFlowHubProviderHistory(rs *interactiveRun, entries []turnLogLine) bool {
+	if rs == nil || strings.TrimSpace(rs.parentRunID) != "" || !rs.flowEngineDriven {
+		return false
+	}
+	return !turnLogHasAssistantFrames(entries)
+}
+
+// filterFlowHubUnassistedProviderHistory keeps hub-owned frames when a flow hub
+// loads provider history without durable assistants:
+//   - assistant-only dumps (run-12613): keep message_completed
+//   - interleaved foreign/child turns (run-98153): keep only turn_started that
+//     match durable user prompts and the frames that follow them until the next
+//     user turn
+//   - remappable hub history (run-20332): provider user text differs from the
+//     durable turn-log prompts but the non-system user-turn count equals the
+//     durable count and *no* text match exists — keep in order so overlay can
+//     remap prompts (do not apply when extras exist; that is pollution).
+func filterFlowHubUnassistedProviderHistory(historical []ProviderEvent, allowedPrompts []string) []ProviderEvent {
+	if len(historical) == 0 {
+		return nil
+	}
+	hasUser := false
+	for _, e := range historical {
+		if e.Type == EventTurnStarted && strings.TrimSpace(e.Prompt) != "" {
+			hasUser = true
+			break
+		}
+	}
+	if !hasUser {
+		out := make([]ProviderEvent, 0, len(historical))
+		for _, e := range historical {
+			if e.Type == EventMessageCompleted && strings.TrimSpace(e.Text) != "" {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	allowed := make([]string, 0, len(allowedPrompts))
+	for _, p := range allowedPrompts {
+		if p = strings.TrimSpace(p); p != "" {
+			allowed = append(allowed, p)
+		}
+	}
+	// Count non-system user turns and whether any already match durable prompts.
+	userCount := 0
+	anyTextMatch := false
+	for _, e := range historical {
+		if e.Type != EventTurnStarted || strings.TrimSpace(e.Prompt) == "" {
+			continue
+		}
+		if isSystemPrompt(e.Prompt) {
+			continue
+		}
+		userCount++
+		if promptMatchesAllowedHub(e.Prompt, allowed) {
+			anyTextMatch = true
+		}
+	}
+	// Positional remappable only when counts align and nothing text-matches
+	// (overlay will rewrite user text). Extra foreign users → text mode only.
+	positional := !anyTextMatch && len(allowed) > 0 && userCount == len(allowed)
+
+	out := make([]ProviderEvent, 0, len(historical))
+	keep := false
+	userIdx := 0
+	for _, e := range historical {
+		switch e.Type {
+		case EventTurnStarted:
+			if isSystemPrompt(e.Prompt) {
+				keep = false
+				continue
+			}
+			if strings.TrimSpace(e.Prompt) == "" {
+				keep = false
+				continue
+			}
+			if positional {
+				if userIdx < len(allowed) {
+					keep = true
+					out = append(out, e)
+				} else {
+					keep = false
+				}
+				userIdx++
+				continue
+			}
+			if promptMatchesAllowedHub(e.Prompt, allowed) {
+				keep = true
+				out = append(out, e)
+			} else {
+				keep = false
+			}
+		default:
+			if keep {
+				out = append(out, e)
+			}
+		}
+	}
+	return out
+}
+
+func promptMatchesAllowedHub(prompt string, allowed []string) bool {
+	p := strings.TrimSpace(prompt)
+	if p == "" {
+		return false
+	}
+	if rest, wrapped := stripAgentContextBlock(p); wrapped {
+		p = strings.TrimSpace(rest)
+	}
+	if p == "" {
+		return false
+	}
+	if len(allowed) == 0 {
+		return false
+	}
+	for _, a := range allowed {
+		if p == a || strings.Contains(p, a) {
+			return true
+		}
+	}
+	return false
 }
 
 func turnLogHasAssistantFrames(entries []turnLogLine) bool {
