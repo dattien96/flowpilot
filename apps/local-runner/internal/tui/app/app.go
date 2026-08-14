@@ -33,6 +33,9 @@ const (
 	colorErr        = "#f85149" // --err
 	colorBg3        = "#1e1e1e" // --bg-3
 	colorCodeBg     = "#252526" // fenced-code panel (lifted vs terminal / --bg-3)
+	// Status-line exclusive values (not reused for model/YOLO/skills/open-back).
+	colorStatusAgent = "#2dd4bf" // teal — agent:<name> value
+	colorStatusFlow  = "#f472b6" // pink — flow name / active step value
 )
 
 var (
@@ -47,6 +50,9 @@ var (
 	styleStatusHi  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // model, reason value, YOLO value, 7d, skills
 	styleStatusOK  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))
 	styleStatusErr = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
+	// agent:NAME and flow-name values — dedicated hues, not styleStatusHi/accent.
+	styleStatusAgent = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusAgent))
+	styleStatusFlow  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusFlow))
 	stylePrompt    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
 	// Input stroke frame (Desktop accent / prompt-border — no neon wash).
 	stylePromptFocus = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
@@ -63,6 +69,8 @@ var (
 	styleStepRunning = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorWarn)).Background(lipgloss.Color(colorBg3))
 	styleStepDone    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOK))
 	styleStepFailed  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorErr))
+	// F2 step [open]/[back] — distinct from step highlight (accent) and running (warn).
+	styleStepAgentAction = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color(colorAsk))
 )
 
 // ---- New / Init -------------------------------------------------------------
@@ -399,6 +407,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.stopOrchestrationStream()
 		handle := msg.Handle
+		// Prefer server snapshot / history row status so terminal opens do not
+		// arm [stop] via flow orch listener (empty resume status looked "live").
+		if st := strings.TrimSpace(msg.Snapshot.Status); st != "" {
+			handle.Status = st
+		} else if st := strings.TrimSpace(msg.HistoryMeta.Status); st != "" && strings.TrimSpace(handle.Status) == "" {
+			handle.Status = st
+		}
 		m.runHandle = &handle
 		m.stepID = handle.StepID
 		m.pendingPrompt = ""
@@ -421,15 +436,54 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.bindActiveAccountForProvider()
 			m.refreshSessionPanel()
 		}
+		// Restore flow chrome from resume handle (and history list as fallback).
+		m.applyOpenedRunFlowChrome(handle, msg.HistoryMeta)
 		m.connStatus = ConnIdle
 		m.statusMsg = fmt.Sprintf("opened %s", shortID(handle.RunID))
-		m.addMessage("system", fmt.Sprintf("Opened chat %s — continue typing or /history|/open|/resume to switch.", handle.RunID), "")
-		hydrate := m.applyPendingFromSnapshot(msg.Snapshot)
-		var listen tea.Cmd
-		if m.runHandle != nil && m.orchStream == nil {
-			listen = m.cmdStartOrchestrationStream()
+		kind := "chat"
+		if m.mode == ModeFlow || m.mode == ModeStep || m.launch.IsCatalogWorkflow() {
+			kind = "flow"
 		}
-		return m, tea.Batch(hydrate, listen)
+		openLabel := handle.RunID
+		if kind == "flow" {
+			if n := m.launch.StatusLabel(); n != "" && n != "flow" {
+				openLabel = n + " · " + handle.RunID
+			}
+		}
+		m.addMessage("system", fmt.Sprintf("Opened %s %s — continue typing or /history|/open|/resume to switch.", kind, openLabel), "")
+		hydrate := m.applyPendingFromSnapshot(msg.Snapshot)
+		var cmds []tea.Cmd
+		if hydrate != nil {
+			cmds = append(cmds, hydrate)
+		}
+		if m.runHandle != nil && m.orchStream == nil {
+			cmds = append(cmds, m.cmdStartOrchestrationStream())
+		}
+		if m.shouldPollStepsRuntime() {
+			cmds = append(cmds, m.cmdRefreshStepsRuntime())
+		}
+		// Hydrate sub-agents so /agent Tab and step [open] work after /open.
+		if kind == "flow" && m.runHandle != nil {
+			cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
+		}
+		// Catalog may still be loading — refresh flow list so status label can use name.
+		if kind == "flow" && len(m.flowWorkflows) == 0 && len(m.flowBuiltins) == 0 {
+			cmds = append(cmds, m.cmdPrefetchFlows())
+		}
+		return m, tea.Batch(cmds...)
+
+	case agentRunsHydratedMsg:
+		if msg.Err != "" {
+			return m, nil
+		}
+		if m.runHandle == nil || m.runHandle.RunID != msg.ParentRunID {
+			return m, nil
+		}
+		m.agentRuns = msg.Runs
+		if m.focusedAgentIdx >= len(m.agentRuns) {
+			m.focusedAgentIdx = 0
+		}
+		return m, nil
 
 	case runSnapshotMsg:
 		if msg.Err != "" {
@@ -483,6 +537,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case FlowListMsg:
 		m.flowBuiltins = msg.Builtins
 		m.flowWorkflows = msg.Workflows
+		// After silent catalog load on /open, upgrade launch label from UUID → name.
+		if msg.Silent && (m.mode == ModeFlow || m.mode == ModeStep) {
+			if n := m.resolveFlowDisplayName(m.launch.WorkflowID, m.launch.FlowRef); n != "" {
+				m.launch.Label = n
+			}
+			return m, nil
+		}
 		if msg.Silent {
 			return m, nil
 		}
@@ -628,9 +689,27 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if msg.Err != "" {
+			m.addMessage("system", "Open child transcript failed: "+msg.Err, "error")
+			return m, nil
+		}
 		m.stopFocusStream()
-		m.focusStream = &orchStreamState{evCh: msg.EvCh, cancel: msg.Cancel}
-		return m, m.cmdPollFocusStream()
+		// Keep the system banner; append seeded history after it.
+		if len(msg.Messages) > 0 {
+			m.messages = append(m.messages, msg.Messages...)
+			m.syncVisiblePromptCount()
+			m.viewport.offset = 0
+		} else {
+			m.addMessage("system", "(no transcript events for this agent yet)", "")
+		}
+		if msg.EvCh != nil {
+			m.focusStream = &orchStreamState{evCh: msg.EvCh, cancel: msg.Cancel}
+			return m, m.cmdPollFocusStream()
+		}
+		if msg.Cancel != nil {
+			msg.Cancel()
+		}
+		return m, nil
 
 	case focusStreamEventMsg:
 		if m.focusStream == nil {
@@ -1261,6 +1340,18 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 		}
 		return []suggestItem{{value: "", detail: "(no matching skills)", kind: "skill"}}
 	}
+	if agentSugg := filterAgentSuggestions(in, m.agentRuns); len(agentSugg) > 0 {
+		return agentSugg
+	}
+	// `/agent ` or `/agents ` (space after cmd): show empty picker row.
+	// Bare `/agents` keeps slash-cmd list so Enter still toggles Agents focus.
+	if _, ok, argSlot := parseAgentPicker(in); ok && argSlot {
+		detail := "(no agents yet — wait for children, or /open a flow with sub-agents)"
+		if m.runHandle != nil && (m.mode == ModeFlow || m.mode == ModeStep) {
+			detail = "(no child agents on this run yet)"
+		}
+		return []suggestItem{{value: "", detail: detail, kind: "agent"}}
+	}
 	if imgSugg := filterImageSuggestions(in, m.pendingAttach); len(imgSugg) > 0 {
 		return imgSugg
 	}
@@ -1283,7 +1374,7 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 	it := items[idx]
 	if cmd := suggestionAcceptValue(it); cmd == "" {
 		return
-	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" {
+	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" {
 		// Nested pickers: only replace the active /… fragment (keep pre-slash draft).
 		m.setInputPreservingDraftPrefix(cmd)
 	} else {
@@ -1332,6 +1423,11 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/skill " + it.value
+	case "agent":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/agent " + it.value
 	case "provider":
 		if strings.TrimSpace(it.value) == "" {
 			return ""
@@ -1421,6 +1517,18 @@ func (m *AppModel) sendBlocked() bool {
 	}
 }
 
+// runStatusIsTerminal is true when the run is finished and [stop] must not arm
+// solely because an orch SSE listener is attached (e.g. /open of completed flow).
+func runStatusIsTerminal(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "complete", "done", "failed", "error",
+		"cancelled", "canceled", "stopped", "aborted":
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *AppModel) turnIsActive() bool {
 	if m.pendingPrompt != "" {
 		return true
@@ -1428,10 +1536,13 @@ func (m *AppModel) turnIsActive() bool {
 	if m.flowHasActiveAgents() {
 		return true
 	}
-	// Flow/step orch SSE is still in-flight work. Plain-chat orch SSE is only
-	// a late-gate listener (run-97624) and must not keep [stop] armed.
+	// Flow/step orch SSE can mean live work — but after /open we also attach orch
+	// as a late-event listener on finished runs (same idea as plain-chat run-97624).
+	// Do not arm [stop] when the handle is known-terminal and no agent is active.
 	if m.shouldPollStepsRuntime() && m.orchStream != nil {
-		return true
+		if m.runHandle == nil || !runStatusIsTerminal(m.runHandle.Status) {
+			return true
+		}
 	}
 	if m.runHandle == nil {
 		return false
@@ -1674,6 +1785,16 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 
 	case "/agents":
+		if len(args) > 0 {
+			target := strings.Join(args, " ")
+			runID, name, ok := m.resolveAgentFocusTarget(target)
+			if !ok {
+				m.addMessage("system", fmt.Sprintf("Agent %q not found. Try /agents.", target), "error")
+				break
+			}
+			m.addMessage("system", fmt.Sprintf("Viewing agent: %s", name), "")
+			return m, m.cmdFocusAgent(runID)
+		}
 		m.agentsFocus = !m.agentsFocus
 		state := "OFF"
 		if m.agentsFocus {
@@ -1690,7 +1811,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			break
 		}
 		var b strings.Builder
-		b.WriteString("Agents (Tab cycles, /agent <name> opens transcript):\n")
+		b.WriteString("Agents (Tab cycles, /agent <name> or step [open] opens transcript):\n")
 		for _, r := range runs {
 			cur := ""
 			if r.RunID == m.focusRunID || (m.focusRunID == "" && (strings.EqualFold(r.Role, "main") || r.RunID == m.mainRunID())) {
