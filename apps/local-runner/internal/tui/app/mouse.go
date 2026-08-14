@@ -158,8 +158,8 @@ func (m *AppModel) handlePlainLeftMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// selectionPlainText returns the visible transcript lines under the current
-// drag highlight (same y range applyMouseSelection paints), ANSI-stripped.
+// selectionPlainText returns the visible transcript text under the current
+// drag highlight (character columns, same range applyMouseSelection paints).
 func (m *AppModel) selectionPlainText() string {
 	if m.mouseSel.empty() {
 		return ""
@@ -168,17 +168,15 @@ func (m *AppModel) selectionPlainText() string {
 	lines := m.renderMessages()
 	m.clampViewport(len(lines), c.messagesHeight)
 	vis := sliceViewport(lines, c.messagesHeight, m.viewport.offset)
-	y0, y1 := m.mouseSel.y0, m.mouseSel.y1
-	if y0 > y1 {
-		y0, y1 = y1, y0
-	}
 	var parts []string
 	for i, line := range vis {
 		y := c.panelH + i
-		if y < y0 || y > y1 {
+		x0, x1, ok := m.mouseSel.colsOnLine(y)
+		if !ok {
 			continue
 		}
-		parts = append(parts, stripANSI(line))
+		seg := extractVisualColumns(stripANSI(line), x0, x1)
+		parts = append(parts, seg)
 	}
 	return strings.Join(parts, "\n")
 }
@@ -479,17 +477,112 @@ func applyMouseSelection(lines []string, sel mouseSelect, yOff int) []string {
 	if sel.empty() || len(lines) == 0 {
 		return lines
 	}
-	y0, y1 := sel.y0, sel.y1
-	if y0 > y1 {
-		y0, y1 = y1, y0
-	}
 	out := append([]string(nil), lines...)
 	for i := range out {
 		y := yOff + i
-		if y < y0 || y > y1 {
+		x0, x1, ok := sel.colsOnLine(y)
+		if !ok {
 			continue
 		}
-		out[i] = styleSelect.Render(stripANSI(out[i]))
+		out[i] = highlightVisualColumns(stripANSI(out[i]), x0, x1)
 	}
 	return out
+}
+
+// colsOnLine returns inclusive display-column bounds for absolute row y.
+// Multi-line ranges select from x0→EOL on the first row, full middle rows,
+// and BOL→x1 on the last row (standard text selection).
+func (s mouseSelect) colsOnLine(y int) (x0, x1 int, ok bool) {
+	if s.empty() {
+		return 0, 0, false
+	}
+	y0, y1 := s.y0, s.y1
+	xa, xb := s.x0, s.x1
+	if y0 > y1 || (y0 == y1 && xa > xb) {
+		y0, y1 = y1, y0
+		xa, xb = xb, xa
+	}
+	if y < y0 || y > y1 {
+		return 0, 0, false
+	}
+	const toEOL = 1 << 20
+	if y0 == y1 {
+		return xa, xb, true
+	}
+	if y == y0 {
+		return xa, toEOL, true
+	}
+	if y == y1 {
+		return 0, xb, true
+	}
+	return 0, toEOL, true
+}
+
+// highlightVisualColumns reverse-styles the inclusive cell range [x0, x1]
+// on a plain (ANSI-stripped) line. Wide runes count by lipgloss width.
+func highlightVisualColumns(plain string, x0, x1 int) string {
+	if x0 > x1 {
+		x0, x1 = x1, x0
+	}
+	if x1 < 0 {
+		return plain
+	}
+	if x0 < 0 {
+		x0 = 0
+	}
+	var b, mid strings.Builder
+	flush := func() {
+		if mid.Len() == 0 {
+			return
+		}
+		b.WriteString(styleSelect.Render(mid.String()))
+		mid.Reset()
+	}
+	col := 0
+	for _, r := range plain {
+		w := lipgloss.Width(string(r))
+		if w < 1 {
+			w = 1
+		}
+		// Rune covers cells [col, col+w). Selected if it overlaps [x0, x1].
+		sel := col <= x1 && col+w-1 >= x0
+		if sel {
+			mid.WriteRune(r)
+		} else {
+			flush()
+			b.WriteRune(r)
+		}
+		col += w
+	}
+	flush()
+	return b.String()
+}
+
+// extractVisualColumns returns the plain substring covering cells [x0, x1].
+func extractVisualColumns(plain string, x0, x1 int) string {
+	if x0 > x1 {
+		x0, x1 = x1, x0
+	}
+	if x1 < 0 {
+		return ""
+	}
+	if x0 < 0 {
+		x0 = 0
+	}
+	var b strings.Builder
+	col := 0
+	for _, r := range plain {
+		w := lipgloss.Width(string(r))
+		if w < 1 {
+			w = 1
+		}
+		if col <= x1 && col+w-1 >= x0 {
+			b.WriteRune(r)
+		}
+		col += w
+		if col > x1 {
+			break
+		}
+	}
+	return b.String()
 }

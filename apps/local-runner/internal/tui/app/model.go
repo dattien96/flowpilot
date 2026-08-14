@@ -298,8 +298,9 @@ type viewportState struct {
 	offset int // lines scrolled from bottom
 }
 
-// mouseSelect is drag transcript highlight (Shift optional). A click with no
-// motion still clears it so Approve/copy chips stay distinct from select.
+// mouseSelect is drag transcript highlight (Shift optional), cell-accurate
+// from (x0,y0) to (x1,y1). A click with no motion still clears it so
+// Approve/copy chips stay distinct from select.
 type mouseSelect struct {
 	armed  bool
 	x0, y0 int
