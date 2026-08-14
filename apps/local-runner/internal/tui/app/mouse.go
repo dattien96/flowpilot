@@ -268,13 +268,10 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 	case target == "load-earlier":
 		return m, m.loadEarlierPrompts()
 	case target == "agent-back":
-		m.addMessage("system", "Viewing agent: main", "")
 		return m, m.cmdFocusAgent(m.mainRunID())
 	case strings.HasPrefix(target, "agent-open:"):
 		runID := strings.TrimPrefix(target, "agent-open:")
 		if runID != "" {
-			name := m.agentNameForRun(runID)
-			m.addMessage("system", fmt.Sprintf("Viewing agent: %s", name), "")
 			return m, m.cmdFocusAgent(runID)
 		}
 	}

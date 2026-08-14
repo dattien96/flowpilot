@@ -99,13 +99,12 @@ func (m *AppModel) cmdFocusAgent(runID string) tea.Cmd {
 		}
 	}
 	// Expand F2 panel so step [open]/[back] controls are visible.
+	// No "Viewing agent:" chat spam — status agent:name + F2 highlight suffice.
 	m.sessionPanel.Collapsed = false
 	m.messages = nil
 	m.visiblePromptCount = 0
 	m.historyLoadedAfterSeq = 0
 	m.viewport.offset = 0
-	name := m.agentNameForRun(runID)
-	m.addMessage("system", fmt.Sprintf("Child transcript: %s — F2 [back] or /agent main", name), "")
 	runnerURL := m.runnerURL
 	return func() tea.Msg {
 		// Resume seeds durable transcript (turn log / Grok JSONL) into the
