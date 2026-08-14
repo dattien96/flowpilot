@@ -4,11 +4,10 @@ package runnerboot
 
 import (
 	"os/exec"
-	"syscall"
 )
 
 func setSysProcAttr(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
-	}
+	// Intentionally not detached. Closing the TUI terminal must take the
+	// spawned runner with it (CA-474).
+	_ = cmd
 }

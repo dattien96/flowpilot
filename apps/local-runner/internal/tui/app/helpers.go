@@ -2,11 +2,24 @@ package app
 
 import (
 	"fmt"
+	"math"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"flowpilot-runner/internal/tui/client"
+	"flowpilot-runner/internal/tui/prefs"
 )
+
+// persistTUISessionPrefs writes latest provider/model so new TUI / /new keep them.
+func persistTUISessionPrefs(provider, model, reasoning string) {
+	_, _ = prefs.Save(prefs.Session{
+		Provider:        strings.TrimSpace(provider),
+		Model:           strings.TrimSpace(model),
+		ReasoningEffort: strings.TrimSpace(reasoning),
+	})
+}
 
 // parsedGate is a lightweight gate descriptor for tests and handlers.
 type parsedGate struct {
@@ -46,10 +59,14 @@ func (m *AppModel) buildTurnInput(prompt string) client.TurnInput {
 
 func (m *AppModel) clearPendingTurnPayload() {
 	m.selectedSkills = nil
-	m.pendingAttach = nil
+	// Drop pending images + temp files (do not leave orphans under flowpilot-tui-pending).
+	_ = m.clearPendingAttachments()
 }
 
 func (m *AppModel) canSend() bool {
+	if m.viewingChild() {
+		return false
+	}
 	if !m.agentsFocus || len(m.agentRuns) == 0 {
 		return true
 	}
@@ -195,27 +212,43 @@ func normalizePathKey(p string) string {
 	return strings.ToLower(strings.TrimRight(p, "/"))
 }
 
-// matchProjectByPath finds a catalog project whose Path equals target.
-// Falls back to unique basename match when absolute paths differ (bindings).
+// matchProjectByPath finds a catalog project matching target path.
+// Resolution order (TUI side only):
+// 1. Exact normalised path match (projects[i].Path == target)
+// 2. Folder basename match (filepath.Base(projects[i].Path) == target folder name)
+// 3. Project Name match (projects[i].Name == target folder name, e.g. "Gate-sandbox")
 func matchProjectByPath(projects []client.Project, target string) *client.Project {
 	want := normalizePathKey(target)
 	if want == "" {
 		return nil
 	}
+	// Pass 1: exact normalised path match.
 	for i := range projects {
 		if normalizePathKey(projects[i].Path) == want {
 			return &projects[i]
 		}
 	}
-	// Unique basename fallback (e.g. catalog path differs but folder name matches).
 	base := strings.ToLower(filepath.Base(strings.ReplaceAll(target, `\`, `/`)))
 	if base == "" || base == "." || base == "/" {
 		return nil
 	}
+	// Pass 2: unique folder basename match.
 	var hits []*client.Project
 	for i := range projects {
 		gotBase := strings.ToLower(filepath.Base(strings.ReplaceAll(projects[i].Path, `\`, `/`)))
 		if gotBase == base {
+			hits = append(hits, &projects[i])
+		}
+	}
+	if len(hits) == 1 {
+		return hits[0]
+	}
+	// Pass 3: unique project name match (e.g. project named "Gate-sandbox" or "Gate Sandbox").
+	cleanBase := strings.ReplaceAll(strings.ReplaceAll(base, "-", ""), "_", "")
+	hits = nil
+	for i := range projects {
+		nameClean := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(projects[i].Name, "-", ""), "_", ""), " ", ""))
+		if nameClean == cleanBase {
 			hits = append(hits, &projects[i])
 		}
 	}
@@ -231,10 +264,24 @@ func formatAccountLimits(acc *client.ProviderAccountSummary) string {
 	}
 	var parts []string
 	if acc.Remaining5hPercent != nil {
-		parts = append(parts, fmt.Sprintf("5h:%d%%", *acc.Remaining5hPercent))
+		parts = append(parts, formatQuotaChip("5h", *acc.Remaining5hPercent, acc.Remaining5hResetAt))
 	}
 	if acc.Remaining7dPercent != nil {
-		parts = append(parts, fmt.Sprintf("7d:%d%%", *acc.Remaining7dPercent))
+		parts = append(parts, formatQuotaChip("7d", *acc.Remaining7dPercent, acc.Remaining7dResetAt))
+	}
+	if len(parts) == 0 {
+		for _, line := range acc.UsageDetailLines {
+			label := strings.TrimSpace(line.Label)
+			if label == "" {
+				continue
+			}
+			reset := strings.TrimSpace(line.ResetAt)
+			var resetPtr *string
+			if reset != "" {
+				resetPtr = &reset
+			}
+			parts = append(parts, formatQuotaChip(label, line.RemainingPercent, resetPtr))
+		}
 	}
 	if len(parts) == 0 && acc.UsageSummary != nil && strings.TrimSpace(*acc.UsageSummary) != "" {
 		return strings.TrimSpace(*acc.UsageSummary)
@@ -242,8 +289,44 @@ func formatAccountLimits(acc *client.ProviderAccountSummary) string {
 	return strings.Join(parts, " ")
 }
 
+func formatQuotaChip(label string, pct int, resetAt *string) string {
+	chip := fmt.Sprintf("%s:%d%%", label, pct)
+	if resetAt == nil {
+		return chip
+	}
+	if when := formatQuotaResetAt(*resetAt); when != "" {
+		return chip + " · resets " + when
+	}
+	return chip
+}
+
+func formatQuotaResetAt(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		parsed, err = time.Parse(time.RFC3339Nano, raw)
+	}
+	if err != nil {
+		return ""
+	}
+	return parsed.Local().Format("Jan 2, 15:04")
+}
+
+func formatHistoryChangedAt(it client.RunHistoryItem) string {
+	if when := formatQuotaResetAt(it.UpdatedAt); when != "" {
+		return when
+	}
+	return formatQuotaResetAt(it.StartedAt)
+}
+
 func formatContextLimits(usage *client.TokenUsageSnapshot, fallbackWindow int64) string {
 	if usage == nil {
+		if fallbackWindow > 0 {
+			return fmt.Sprintf("ctx %s window", formatTokenCount(fallbackWindow))
+		}
 		return ""
 	}
 	var window int64
@@ -259,6 +342,9 @@ func formatContextLimits(usage *client.TokenUsageSnapshot, fallbackWindow int64)
 		used = usage.Last.TotalTokens
 	}
 	if window <= 0 && (usage.Last == nil || usage.Last.TotalTokens <= 0) {
+		if usage.Total != nil && usage.Total.TotalTokens > 0 {
+			return fmt.Sprintf("total %s", formatTokenCount(usage.Total.TotalTokens))
+		}
 		return ""
 	}
 	if window > 0 {
@@ -266,10 +352,28 @@ func formatContextLimits(usage *client.TokenUsageSnapshot, fallbackWindow int64)
 		if left < 0 {
 			left = 0
 		}
-		return fmt.Sprintf("ctx %s/%s (%s left)", formatTokenCount(used), formatTokenCount(window), formatTokenCount(left))
+		remainPct := contextRemainingPercent(used, window)
+		line := fmt.Sprintf("ctx %d%% remain · %s/%s (%s left)", remainPct, formatTokenCount(used), formatTokenCount(window), formatTokenCount(left))
+		if inTok := contextInputTokens(usage); inTok > 0 {
+			line += fmt.Sprintf(" in:%s", formatTokenCount(inTok))
+		}
+		if usage.Last != nil && usage.Last.OutputTokens > 0 {
+			line += fmt.Sprintf(" out:%s", formatTokenCount(usage.Last.OutputTokens))
+		}
+		if usage.Last != nil && usage.Last.TotalTokens > 0 {
+			line += fmt.Sprintf(" · last %s", formatTokenCount(usage.Last.TotalTokens))
+		}
+		return line
 	}
 	if usage.Last != nil {
-		return fmt.Sprintf("last %s", formatTokenCount(usage.Last.TotalTokens))
+		line := fmt.Sprintf("last %s", formatTokenCount(usage.Last.TotalTokens))
+		if inTok := contextInputTokens(usage); inTok > 0 {
+			line += fmt.Sprintf(" in:%s", formatTokenCount(inTok))
+		}
+		if usage.Last.OutputTokens > 0 {
+			line += fmt.Sprintf(" out:%s", formatTokenCount(usage.Last.OutputTokens))
+		}
+		return line
 	}
 	return ""
 }
@@ -279,6 +383,30 @@ func formatTokenCount(n int64) string {
 		return fmt.Sprintf("%.1fk", float64(n)/1000)
 	}
 	return fmt.Sprintf("%d", n)
+}
+
+func contextRemainingPercent(used, window int64) int {
+	if window <= 0 {
+		return 0
+	}
+	left := window - used
+	if left < 0 {
+		left = 0
+	}
+	return int(math.Round(float64(left) * 100 / float64(window)))
+}
+
+func contextInputTokens(usage *client.TokenUsageSnapshot) int64 {
+	if usage == nil {
+		return 0
+	}
+	if usage.Last != nil && usage.Last.InputTokens > 0 {
+		return usage.Last.InputTokens
+	}
+	if usage.Total != nil {
+		return usage.Total.InputTokens
+	}
+	return 0
 }
 
 func contextWindowForModel(providers []client.Provider, providerKey, modelID string) int64 {
@@ -341,6 +469,81 @@ func wrapParagraph(para string, width int) []string {
 		}
 	}
 	return lines
+}
+
+// isSlashBoundary is a word edge that can start a slash command (Desktop findActiveSlash).
+func isSlashBoundary(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n'
+}
+
+// activeSlashLine finds the nearest word-boundary '/' at or before caret.
+// Returns the suffix from that '/' through the end of input (args included).
+// Word boundary: start of input, or previous rune is space/tab/newline.
+// Spaces after '/' are command args — do not treat them as "no slash".
+// Glued slashes (https://, path/to) are skipped so an earlier " /cmd" still wins.
+func activeSlashLine(input string, caret int) (line string, start int, ok bool) {
+	runes := []rune(input)
+	n := len(runes)
+	if caret < 0 {
+		caret = 0
+	}
+	if caret > n {
+		caret = n
+	}
+	for i := caret - 1; i >= 0; i-- {
+		if runes[i] != '/' {
+			continue
+		}
+		if i == 0 || isSlashBoundary(runes[i-1]) {
+			return string(runes[i:]), i, true
+		}
+	}
+	return "", 0, false
+}
+
+// slashSuggestLine is the command token used by pickers. A mid-draft
+// "hello /mo" yields "/mo" so the list opens without deleting the draft first.
+// Falls back to the full input so "/cmd" still matches when the caret sits
+// before the slash (Home) or tests only set inputValue.
+func (m *AppModel) slashSuggestLine() string {
+	line, _, ok := activeSlashLine(m.inputValue, m.inputCaretIndex())
+	if ok {
+		return line
+	}
+	return m.inputValue
+}
+
+// stripActiveSlashCommand removes the active word-boundary slash token (from
+// '/' through end of input) so closing /skill keeps draft text typed before it.
+// "abc [coding] /skill " → "abc [coding] " (trailing space so "def" → "abc [coding] def").
+// Bare "/skill " → "".
+func stripActiveSlashCommand(input string, caret int) string {
+	_, start, ok := activeSlashLine(input, caret)
+	if !ok {
+		return input
+	}
+	runes := []rune(input)
+	if start <= 0 {
+		return ""
+	}
+	before := strings.TrimRight(string(runes[:start]), " \t")
+	if before == "" {
+		return ""
+	}
+	return before + " "
+}
+
+// replaceActiveSlashWith keeps text before the active word-boundary '/' and
+// writes replacement as the slash command portion. Used by Tab completion so
+// "abc /sk" → "abc /skill " instead of wiping the draft.
+// No active slash → replacement alone (bare "/pro" Tab).
+func replaceActiveSlashWith(input string, caret int, replacement string) string {
+	_, start, ok := activeSlashLine(input, caret)
+	if !ok {
+		return replacement
+	}
+	runes := []rune(input)
+	return string(runes[:start]) + replacement
 }
 
 // filterSlashSuggestions returns slash commands matching the current input prefix.
@@ -417,14 +620,173 @@ func parseHistoryArgPrefix(input string) (ok bool, query string) {
 
 var reasoningEffortOptions = []string{"high", "medium", "low"}
 
-// filterProviderSuggestions returns providers matching the query after `/provider `.
-func filterProviderSuggestions(input string, providers []client.Provider, current string) []suggestItem {
-	ok, query := parseSlashArgPrefix(input, "/provider")
+// parseProviderPicker reports `/provider <query>` or `/provider connect|config|install|account|switch|activate <query>`.
+func parseProviderPicker(input string) (mode, filter string, ok bool) {
+	okPrefix, query := parseSlashArgPrefix(input, "/provider")
+	if !okPrefix {
+		return "", "", false
+	}
+	parts := strings.Fields(query)
+	if len(parts) == 0 {
+		return "select", "", true
+	}
+	switch strings.ToLower(parts[0]) {
+	case "connect", "config":
+		if len(parts) > 1 {
+			return "connect", strings.Join(parts[1:], " "), true
+		}
+		return "connect", "", true
+	case "install":
+		if len(parts) > 1 {
+			return "install", strings.Join(parts[1:], " "), true
+		}
+		return "install", "", true
+	case "account", "switch", "activate", "acc":
+		if len(parts) > 1 {
+			return "account", strings.Join(parts[1:], " "), true
+		}
+		return "account", "", true
+	default:
+		return "select", query, true
+	}
+}
+
+// providerReadiness mirrors Desktop ChatInput: ready only when CLI installed AND an
+// active connected account exists for that provider key.
+func providerReadiness(p client.Provider, accounts []client.ProviderAccountSummary) (code, detail string) {
+	if !p.Installed {
+		return "not_installed", "not installed — /provider install " + strings.TrimSpace(p.Key)
+	}
+	hasAccount := false
+	activeLabel := ""
+	connectedCount := 0
+	for _, a := range accounts {
+		if !strings.EqualFold(a.ProviderKey, p.Key) {
+			continue
+		}
+		hasAccount = true
+		if accountAuthOK(a) {
+			connectedCount++
+			if a.IsActive {
+				activeLabel = strings.TrimSpace(a.DisplayLabel)
+			}
+		}
+	}
+	if !hasAccount {
+		return "no_account", "installed · no account — /provider connect " + strings.TrimSpace(p.Key)
+	}
+	if activeLabel == "" {
+		return "no_active_account", "installed · no active account — /provider connect " + strings.TrimSpace(p.Key)
+	}
+	if connectedCount == 0 {
+		return "no_active_account", "installed · no connected account — /provider connect " + strings.TrimSpace(p.Key)
+	}
+	if activeLabel != "" {
+		return "ready", "ready · " + activeLabel
+	}
+	return "ready", "ready"
+}
+
+func accountAuthOK(a client.ProviderAccountSummary) bool {
+	s := strings.ToLower(strings.TrimSpace(a.AuthStatus))
+	return s == "" || s == "connected" || s == "authenticated"
+}
+
+func providerSuggestionDetail(p client.Provider, accounts []client.ProviderAccountSummary, current, mode string) string {
+	_, status := providerReadiness(p, accounts)
+	label := strings.TrimSpace(p.Label)
+	if label == "" {
+		label = strings.TrimSpace(p.Name)
+	}
+	parts := make([]string, 0, 5)
+	if strings.EqualFold(p.Key, current) {
+		parts = append(parts, "current")
+	}
+	if label != "" && !strings.EqualFold(label, p.Key) {
+		parts = append(parts, label)
+	}
+	switch mode {
+	case "connect":
+		parts = append(parts, "connect account")
+	case "install":
+		parts = append(parts, "install CLI")
+	}
+	parts = append(parts, status)
+	if mode == "select" {
+		ver := strings.TrimSpace(p.DetectedVersion)
+		if ver == "" {
+			ver = strings.TrimSpace(p.Version)
+		}
+		if ver != "" {
+			parts = append(parts, ver)
+		}
+		parts = append(parts, fmt.Sprintf("%d models", len(p.Models)))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func formatAccountPathLabel(homePath string) string {
+	path := strings.TrimSpace(homePath)
+	if path == "" {
+		return ""
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" && strings.HasPrefix(path, home) {
+		return "~" + path[len(home):]
+	}
+	return filepath.Base(path)
+}
+
+// filterProviderSuggestions returns providers matching `/provider ` / connect / install / account.
+// In select mode, action rows are listed first so they are always discoverable.
+func filterProviderSuggestions(input string, providers []client.Provider, accounts []client.ProviderAccountSummary, current string) []suggestItem {
+	mode, query, ok := parseProviderPicker(input)
 	if !ok {
 		return nil
 	}
 	q := strings.ToLower(query)
-	out := make([]suggestItem, 0, len(providers))
+	out := make([]suggestItem, 0, len(providers)+len(accounts)+4)
+	if mode == "select" {
+		for _, act := range []struct{ value, detail string }{
+			{"account", "Switch active provider account (/provider account <id>)"},
+			{"connect", "Connect new account (Desktop Settings parity)"},
+			{"install", "Install provider CLI (runner /providers/install)"},
+			{"config", "Alias for connect"},
+		} {
+			if q == "" || strings.HasPrefix(act.value, q) || strings.Contains(act.value, q) {
+				out = append(out, suggestItem{value: act.value, detail: act.detail, kind: "provider-action"})
+			}
+		}
+	}
+	kind := "provider"
+	switch mode {
+	case "connect":
+		kind = "provider-connect"
+	case "install":
+		kind = "provider-install"
+	case "account":
+		kind = "provider-account"
+		for _, acc := range accounts {
+			pathLabel := formatAccountPathLabel(acc.HomePath)
+			hay := strings.ToLower(acc.ID + " " + acc.DisplayLabel + " " + acc.ProviderKey + " " + acc.HomePath + " " + pathLabel)
+			if q != "" && !strings.Contains(hay, q) {
+				continue
+			}
+			activeTag := ""
+			if acc.IsActive {
+				activeTag = " (active)"
+			}
+			pathStr := ""
+			if pathLabel != "" {
+				pathStr = fmt.Sprintf(" (%s)", pathLabel)
+			}
+			out = append(out, suggestItem{
+				value:  acc.ID,
+				detail: fmt.Sprintf("[%s] %s%s%s · %s", acc.ProviderKey, acc.DisplayLabel, pathStr, activeTag, acc.AuthStatus),
+				kind:   "provider-account",
+			})
+		}
+		return out
+	}
 	for _, p := range providers {
 		key := strings.TrimSpace(p.Key)
 		if key == "" {
@@ -438,14 +800,11 @@ func filterProviderSuggestions(input string, providers []client.Provider, curren
 		if q != "" && !strings.Contains(hay, q) {
 			continue
 		}
-		detail := fmt.Sprintf("%d models", len(p.Models))
-		if label != "" && !strings.EqualFold(label, key) {
-			detail = label + " · " + detail
-		}
-		if strings.EqualFold(key, current) {
-			detail = "current · " + detail
-		}
-		out = append(out, suggestItem{value: key, detail: detail, kind: "provider"})
+		out = append(out, suggestItem{
+			value:  key,
+			detail: providerSuggestionDetail(p, accounts, current, mode),
+			kind:   kind,
+		})
 	}
 	return out
 }
@@ -533,7 +892,11 @@ func filterHistorySuggestions(input string, items []client.RunHistoryItem) []sug
 			r := []rune(title)
 			title = string(r[:39]) + "…"
 		}
-		detail := fmt.Sprintf("#%d · %s · %s · %s", i+1, kind, it.Status, title)
+		when := formatHistoryChangedAt(it)
+		if when == "" {
+			when = "—"
+		}
+		detail := fmt.Sprintf("#%d · %s · %s · %s · %s", i+1, kind, it.Status, when, title)
 		out = append(out, suggestItem{value: id, detail: detail, kind: "history", slash: cmd})
 	}
 	return out

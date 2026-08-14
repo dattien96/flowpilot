@@ -22,9 +22,18 @@ type ChatListMsg struct {
 
 // ChatOpenedMsg carries a resumed chat with replayed transcript.
 type ChatOpenedMsg struct {
-	Handle   client.RunHandle
-	Messages []ChatMessage
-	Err      string
+	Handle                client.RunHandle
+	Messages              []ChatMessage
+	HistoryLoadedAfterSeq int64 // events with seq <= this are not yet loaded; 0 = full history
+	Err                   string
+}
+
+// HistoryChunkMsg carries an older SSE chunk prepended on Load earlier (Task-290 Q-1).
+type HistoryChunkMsg struct {
+	RunID             string
+	Messages          []ChatMessage
+	NewLoadedAfterSeq int64
+	Err               string
 }
 
 // filterParentHistory keeps top-level runs (no parent) for the switcher list.
@@ -47,6 +56,7 @@ func formatChatList(items []client.RunHistoryItem) string {
 		sb.WriteString("Usage: /history|/open|/resume  (then ↑↓ Tab Enter)")
 		return sb.String()
 	}
+	// Dump stays short; the live picker (command + space) scrolls through ALL items.
 	limit := 20
 	if len(items) < limit {
 		limit = len(items)
@@ -73,13 +83,17 @@ func formatChatList(items []client.RunHistoryItem) string {
 				kind = "chat"
 			}
 		}
-		sb.WriteString(fmt.Sprintf("  %2d  %s  [%s] %s · %s\n", i+1, shortID(it.RunID), kind, it.Status, title))
+		when := formatHistoryChangedAt(it)
+		if when == "" {
+			when = "—"
+		}
+		sb.WriteString(fmt.Sprintf("  %2d  %s  [%s] %s  %s · %s\n", i+1, shortID(it.RunID), kind, it.Status, when, title))
 		sb.WriteString(fmt.Sprintf("      id %s  %s\n", it.RunID, it.ProviderKey))
 	}
 	if len(items) > limit {
-		sb.WriteString(fmt.Sprintf("  … %d more\n", len(items)-limit))
+		sb.WriteString(fmt.Sprintf("  … %d more in dump — type /history  and ↑↓ to reach every chat (%d total)\n", len(items)-limit, len(items)))
 	}
-	sb.WriteString("Pick: /history|/open|/resume  then ↑↓ · Tab · Enter")
+	sb.WriteString("Pick: /history|/open|/resume  then ↑↓ · Tab · Enter (picker scrolls past this dump)")
 	return sb.String()
 }
 
@@ -104,12 +118,25 @@ func resolveChatOpenTarget(args []string, listed []client.RunHistoryItem) (strin
 
 // formatOpenChatErr explains runner resume failures (Desktop openHistoryRun parity).
 func formatOpenChatErr(err error) string {
+	return formatOpenChatErrDetailed(err, "", "")
+}
+
+func formatOpenChatErrDetailed(err error, chatProvider, activeAccountLabel string) string {
 	var api *client.APIError
 	if errors.As(err, &api) {
 		switch api.Code {
 		case "session_unavailable":
-			return "Open failed (runner session_unavailable): " + api.Message +
-				"\nThis is a runner/session issue — not a TUI bug. Provider session files for this run are missing on this machine (or the wrong account is active). Same limit as Desktop history open."
+			var sb strings.Builder
+			sb.WriteString("Open failed (runner session_unavailable): " + api.Message)
+			sb.WriteString("\nThis is a runner/session issue — not a TUI bug. Provider session files for this run are missing on this machine (or the wrong account is active). Same limit as Desktop history open.")
+			if chatProvider != "" {
+				sb.WriteString("\nChat provider: " + chatProvider)
+			}
+			if activeAccountLabel != "" {
+				sb.WriteString(fmt.Sprintf("\nActive %s account now: %s", orDash(chatProvider), activeAccountLabel))
+			}
+			sb.WriteString("\nNew chats can still work on the current account. Try Desktop → Settings → AI Providers → activate the account that owned this chat, then reopen — or open it on the machine where it was created.")
+			return sb.String()
 		case "account_not_signed_in":
 			return "Open failed (runner account_not_signed_in): " + api.Message +
 				"\nSign in to the provider account that owns this chat, then retry."
@@ -199,8 +226,9 @@ func (m *AppModel) cmdFetchChats(silent bool) tea.Cmd {
 }
 
 func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
-	trimmed := strings.TrimSpace(m.inputValue)
-	_, _, argOK := parseChatOpenArgPrefix(m.inputValue)
+	line := m.slashSuggestLine()
+	trimmed := strings.TrimSpace(line)
+	_, _, argOK := parseChatOpenArgPrefix(line)
 	bare := false
 	for _, cmd := range chatOpenSlashCommands {
 		if strings.EqualFold(trimmed, cmd) {
@@ -219,31 +247,45 @@ func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
 
 func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
 	runnerURL := m.runnerURL
+	chatProvider := ""
+	for _, it := range m.chatList {
+		if it.RunID == runID {
+			chatProvider = it.ProviderKey
+			break
+		}
+	}
+	activeLabel := ""
+	if chatProvider != "" {
+		for _, a := range m.providerAccounts {
+			if strings.EqualFold(a.ProviderKey, chatProvider) && a.IsActive {
+				activeLabel = strings.TrimSpace(a.DisplayLabel)
+				break
+			}
+		}
+	} else {
+		activeLabel = m.activeProviderAccountLabel()
+	}
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		handle, err := cl.ResumeRun(ctx, runID)
 		if err != nil {
-			return ChatOpenedMsg{Err: formatOpenChatErr(err)}
+			return ChatOpenedMsg{Err: formatOpenChatErrDetailed(err, chatProvider, activeLabel)}
 		}
-		// Replay from seq 0 through lastEventSeq (Task-287 T-5), then interactive.
+		// Tail replay through lastEventSeq (Task-290 Q-1); older chunks on Load earlier.
 		until := handle.LastEventSeq
+		after := chatReplayTailAfterSeq(until)
 		var collected []client.ProviderEvent
 		if until > 0 {
-			for ev := range cl.StreamRun(ctx, runID, 0) {
-				collected = append(collected, ev)
-				if ev.Seq >= until {
-					cancel()
-					break
-				}
-				if len(collected) >= 8000 {
-					cancel()
-					break
-				}
-			}
+			collected = collectReplayEvents(ctx, cl, runID, after, until, chatReplayMaxEvents)
 		}
-		msgs := replayHistoryMessages(collected)
-		return ChatOpenedMsg{Handle: handle, Messages: msgs}
+		trimmed := trimEventsFromTurnStart(collected)
+		msgs := replayHistoryMessages(trimmed)
+		return ChatOpenedMsg{
+			Handle:                handle,
+			Messages:              msgs,
+			HistoryLoadedAfterSeq: historyCursorAfterReplay(after, collected, trimmed),
+		}
 	}
 }

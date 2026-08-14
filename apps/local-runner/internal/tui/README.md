@@ -68,13 +68,19 @@ Root persistent flags (`--workspace`, `--host`, `--port`) are inherited and not 
 | `/agents` | Toggle agents focus panel |
 | `/flow` | List/arm a flow — type `/flow ` then filter; ↑↓ + Tab to pick |
 | `/chat` | Switch to chat mode |
-| `/status` | Show current connection status |
+| `/status` | Show connection + session panel details |
+| `/info` | Toggle top-right session panel (also **F2**) — runner/project/provider account |
 | `/login` | Sign in to Supabase (email/password); writes Desktop session file when possible |
-| `/history` | List/open chats — type `/history ` then ↑↓ · Tab · Enter (alias: `/chats`) |
+| `/history` | List/open chats — type `/history ` then ↑↓ · Tab · Enter (alias: `/chats`; picker scrolls all) |
 | `/open` | Same picker as `/history` — type `/open ` then ↑↓ · Tab · Enter |
 | `/resume` | Same picker as `/history` — type `/resume ` then ↑↓ · Tab · Enter |
-| `/provider` | Pick provider — type `/provider ` then ↑↓ · Tab · Enter |
+| `/settings` | Sync TUI Supabase session → Desktop paths, then ensure Desktop is running |
+| `/provider` | List/pick providers with Desktop readiness (`installed` + active connected account) |
+| `/provider connect` | Connect account (Desktop Settings parity) — blocked if CLI not installed |
+| `/provider install` | Install provider CLI via `POST /providers/install` (runner supports all; Desktop UI Install is Gemini-only) |
+| `/image` | Images — type `/image ` then **↑↓ Tab Enter** (open → pick file; paste/list/clear/rm); click **`[N img]`** panel: **`[open]`** preview · **`[x]`** detach (codex/claude native; grok path-fallback) |
 | `/model` | Pick model — type `/model ` then ↑↓ · Tab · Enter |
+| `/skill` | List/toggle skills (Desktop `/s` picker) — `/skill` shows catalog; type `/skill ` then ↑↓ Tab Enter |
 | `/reasoning` | Pick effort — type `/reasoning ` then ↑↓ · Tab · Enter |
 | `/approve` | Approve pending approval |
 | `/deny` | Deny pending approval |

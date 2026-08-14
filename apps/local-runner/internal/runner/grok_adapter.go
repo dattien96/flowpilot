@@ -51,6 +51,9 @@ type grokAdapter struct {
 	// without scanning the whole workspace (stealing another chat's session dir
 	// was the run-536 regression).
 	lastSessionID string
+	// runSessions is the runner-wide runID → ACP session map (shared across
+	// grokProcessKey respawns). Nil in unit tests that construct a bare adapter.
+	runSessions *grokRunSessionIndex
 	// allowReviewOutcome tracks, per sessionId, whether this turn actually
 	// advertised submit_review_outcome (BUG-NOTE-CP42 #24 defense in depth,
 	// mirrors codexAdapter.allowReviewOutcome).
@@ -78,6 +81,78 @@ func newGrokAdapter(dispatcher *grokDispatcher, cwd string) *grokAdapter {
 }
 
 func (a *grokAdapter) Key() ProviderKey { return ProviderKeyGrok }
+
+// grokRunSessionIndex is the runner-scoped Grok ACP resume map. grokProcessKey
+// includes model/reasoningEffort/alwaysApprove, so /model, /reasoning, and a
+// YOLO flip each spawn a *new* grokAdapter with empty lastSessionID. The map
+// is keyed by FlowPilot run id (not cwd) so a respawned process session/loads
+// this chat's ACP id instead of session/new (run-93161). Different runs do
+// not steal (CA-312 / run-536).
+type grokRunSessionIndex struct {
+	mu    sync.Mutex
+	byRun map[string]string
+}
+
+func (x *grokRunSessionIndex) remember(runID, sessionID string) {
+	if x == nil {
+		return
+	}
+	runID = strings.TrimSpace(runID)
+	sessionID = strings.TrimSpace(sessionID)
+	if runID == "" || !isGrokRealSessionID(sessionID) {
+		return
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.byRun == nil {
+		x.byRun = make(map[string]string)
+	}
+	x.byRun[runID] = sessionID
+}
+
+func (x *grokRunSessionIndex) lookup(runID string) string {
+	if x == nil {
+		return ""
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return ""
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return strings.TrimSpace(x.byRun[runID])
+}
+
+func (a *grokAdapter) rememberRunSession(runID, sessionID string) {
+	if a == nil {
+		return
+	}
+	a.runSessions.remember(runID, sessionID)
+}
+
+func (a *grokAdapter) lookupRunSession(runID string) string {
+	if a == nil {
+		return ""
+	}
+	return a.runSessions.lookup(runID)
+}
+
+// grokEnsureResumeID is the ACP id ensureSession will load. Prefer a real
+// TurnRequest handle; if the caller still has thread-* / empty (dispatch
+// envelopes always log the synthetic pool key), use the runner-wide map for
+// this RunID so a model/effort/YOLO respawn keeps history.
+func grokEnsureResumeID(req TurnRequest, lookup func(runID string) string) string {
+	id := strings.TrimSpace(req.ProviderSessionID)
+	if isGrokRealSessionID(id) {
+		return id
+	}
+	if lookup != nil {
+		if cached := strings.TrimSpace(lookup(req.RunID)); isGrokRealSessionID(cached) {
+			return cached
+		}
+	}
+	return id
+}
 
 // grokAskUserReinforcement steers the model onto FlowPilot's MCP `ask_user` tool
 // (Task-209 / GR-06). Same "act first, ask only when blocked" bias as Codex's
@@ -117,8 +192,10 @@ const grokToolReinforcements = grokAskUserReinforcement + grokSpawnAgentReinforc
 // session/request_permission decision policy below). Mcp lands in Task-209;
 // SkillSelection lands in Task-214 (promptPrep already calls
 // injectSelectedSkills unconditionally, so unlike Mcp it needs no
-// instance-wiring check). Vision stays false (initialize reported
-// promptCapabilities.image=false, live-verified).
+// instance-wiring check). Vision stays false for ACP multimodal blocks
+// (initialize reported promptCapabilities.image=false, live-verified). Image
+// attachments still flow via path fallback: write under .tmp/images and append
+// paths to the text prompt (CA-483) — UI gates use SupportsImages, not this flag.
 func (a *grokAdapter) Capabilities() ProviderCapabilities {
 	return ProviderCapabilities{
 		Streaming:      true,
@@ -131,6 +208,9 @@ func (a *grokAdapter) Capabilities() ProviderCapabilities {
 		// runner-hosted MCP server (Task-209) — a bare newGrokAdapter() (tests,
 		// or a not-yet-registered instance) truthfully reports false (CP-46 P-11).
 		Mcp: a.mcpServer != nil,
+		// Vision remains false: no ACP image content blocks. Path fallback does
+		// not flip this flag (old TestGrokAdapterCapabilitiesMatchProvenSet).
+		Vision: false,
 	}
 }
 
@@ -180,6 +260,10 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 	if err != nil {
 		return err
 	}
+	// BUG-324: honor turn-level ModelName on the live ACP session. Grok CLI
+	// 1.0.3+ implements session/set_model (same sessionId, history kept). Empty
+	// ModelName is a no-op so existing SendTurn tests never hit this RPC.
+	a.applyGrokSessionModel(ctx, sessionID, req.ModelName)
 
 	// MCP-ready-before-prompt gate (Task-209 T-7, BUG-114 class): Grok connects
 	// mcpServers asynchronously (live-verified: `_x.ai/mcp/init_progress`), so
@@ -211,7 +295,24 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 		a.mu.Unlock()
 	}()
 
+	// Path fallback for images: Grok ACP has no image blocks; write files under
+	// <cwd>/.tmp/images/<turn>/ and list absolute paths in the prompt text so the
+	// model can open them with tools (CA-483). Cleanup after the turn returns —
+	// same lifecycle as Codex writeCodexImageAttachments (defer after pump ends).
+	imagePaths, cleanupImages, imgErr := writeGrokImagePathFallback(cwd, req.ProviderTurnID, req.Attachments)
+	if imgErr != nil {
+		return imgErr
+	}
+	defer cleanupImages()
+
 	prompt := a.preparePrompt(req)
+	if len(imagePaths) > 0 {
+		names := make([]string, len(req.Attachments))
+		for i, att := range req.Attachments {
+			names[i] = att.OriginalName
+		}
+		prompt = appendGrokImagePathsToPrompt(prompt, imagePaths, names)
+	}
 	promptParams := grokACPPromptParams(sessionID, prompt)
 
 	type promptOutcome struct {
@@ -242,32 +343,75 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 			if outcome.err != nil {
 				return outcome.err
 			}
+			// session/prompt's RPC response can become ready while agent_message_chunk
+			// frames are still queued on notif (same wire order, separate waiter vs
+			// session sub). Drain before emitTerminal so FinalMessage + SSE deltas
+			// are not lost (run-96217: tools shown, answer never reached TUI).
+			lastText = a.drainGrokNotifications(sessionID, notif, bridge, lastText, shimmedSpawnCalls, pendingToolCalls)
 			return a.emitTerminal(ctx, req, bridge, sessionID, outcome.result, lastText)
 
 		case n, ok := <-notif:
 			if !ok {
 				return fmt.Errorf("grok agent stdio stream closed mid-turn")
 			}
-			a.tryShimGrokNativeSpawnSubagent(sessionID, bridge, n, shimmedSpawnCalls)
-			n = grokCorrelateToolNotification(pendingToolCalls, n)
-			events, mapped := mapGrokNotification(n)
-			if !mapped {
-				continue
+			lastText = a.applyGrokNotification(sessionID, n, bridge, lastText, shimmedSpawnCalls, pendingToolCalls)
+		}
+	}
+}
+
+// applyGrokNotification maps one session notification and emits client events.
+func (a *grokAdapter) applyGrokNotification(
+	sessionID string,
+	n grokNotification,
+	bridge TurnBridge,
+	lastText string,
+	shimmedSpawnCalls map[string]struct{},
+	pendingToolCalls map[string]grokPendingToolCall,
+) string {
+	a.tryShimGrokNativeSpawnSubagent(sessionID, bridge, n, shimmedSpawnCalls)
+	n = grokCorrelateToolNotification(pendingToolCalls, n)
+	events, mapped := mapGrokNotification(n)
+	if !mapped {
+		return lastText
+	}
+	for _, ev := range events {
+		if ev.Type == EventMessageDelta {
+			lastText += ev.Text
+		}
+		bridge.Emit(ev)
+	}
+	return lastText
+}
+
+// drainGrokNotifications non-blocking-drains remaining session notifications
+// after session/prompt returns (run-96217 race).
+func (a *grokAdapter) drainGrokNotifications(
+	sessionID string,
+	notif <-chan grokNotification,
+	bridge TurnBridge,
+	lastText string,
+	shimmedSpawnCalls map[string]struct{},
+	pendingToolCalls map[string]grokPendingToolCall,
+) string {
+	for {
+		select {
+		case n, ok := <-notif:
+			if !ok {
+				return lastText
 			}
-			for _, ev := range events {
-				if ev.Type == EventMessageDelta {
-					lastText += ev.Text
-				}
-				bridge.Emit(ev)
-			}
+			lastText = a.applyGrokNotification(sessionID, n, bridge, lastText, shimmedSpawnCalls, pendingToolCalls)
+		default:
+			return lastText
 		}
 	}
 }
 
 // ensureSession creates a fresh ACP session (`session/new`) or resumes one
-// (`session/load`) when req.ProviderSessionID is a real (non-empty,
-// non-synthetic) ACP session id. A resume attempt with an id this adapter has
-// no record of is still passed through to session/load as-is (Grok, not
+// (`session/load`) when the resume id is a real (non-empty, non-synthetic)
+// ACP session id. Resume id is req.ProviderSessionID when that is real;
+// otherwise the runner-wide runID map (shared across grokProcessKey respawns
+// for /model, /reasoning, and YOLO). A resume attempt with an id this adapter
+// has no record of is still passed through to session/load as-is (Grok, not
 // FlowPilot, is the source of truth for whether that id is resumable).
 //
 // The "thread-" prefix check below guards against FlowPilot's own synthetic
@@ -281,11 +425,11 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 // starting a new one. Do not remove this guard on the assumption the caller
 // handles it.
 func (a *grokAdapter) ensureSession(ctx context.Context, req TurnRequest, cwd string, mcpServers []interface{}) (string, error) {
-	resumeID := strings.TrimSpace(req.ProviderSessionID)
+	resumeID := grokEnsureResumeID(req, a.lookupRunSession)
 	method := "session/new"
 	var result map[string]any
 	var err error
-	if resumeID != "" && !strings.HasPrefix(resumeID, "thread-") {
+	if isGrokRealSessionID(resumeID) {
 		method = "session/load"
 		result, err = a.dispatcher.call(ctx, method, grokACPSessionLoadParams(resumeID, cwd, mcpServers))
 	} else {
@@ -301,8 +445,29 @@ func (a *grokAdapter) ensureSession(ctx context.Context, req TurnRequest, cwd st
 	a.mu.Lock()
 	a.lastSessionID = sessionID
 	a.mu.Unlock()
+	a.rememberRunSession(req.RunID, sessionID)
 	a.recordSession(ctx, req, sessionID)
 	return sessionID, nil
+}
+
+// applyGrokSessionModel asks Grok ACP to switch the live session's model
+// (session/set_model). Degrades on RPC errors so Grok < 1.0.3 still completes
+// the turn (launch-time --model from grokProcessKey remains the process-level
+// fallback). Do not fail the turn: a missing method must not drop chat.
+func (a *grokAdapter) applyGrokSessionModel(ctx context.Context, sessionID, modelID string) {
+	modelID = strings.TrimSpace(modelID)
+	sessionID = strings.TrimSpace(sessionID)
+	if modelID == "" || sessionID == "" {
+		return
+	}
+	result, err := a.dispatcher.call(ctx, "session/set_model", grokACPSessionSetModelParams(sessionID, modelID))
+	if err != nil {
+		log.Printf("grok session/set_model failed (continuing turn with launch-time --model): %v", err)
+		return
+	}
+	if msg := grokACPSetModelResultErr(result); msg != "" {
+		log.Printf("grok session/set_model returned Err %s (continuing turn)", msg)
+	}
 }
 
 // LastGrokSessionID returns the real ACP session id from the most recent
@@ -343,6 +508,7 @@ func (a *grokAdapter) emitTerminal(ctx context.Context, req TurnRequest, bridge 
 		a.mu.Lock()
 		a.lastSessionID = adopted
 		a.mu.Unlock()
+		a.rememberRunSession(req.RunID, adopted)
 		a.recordSession(ctx, req, adopted)
 	}
 

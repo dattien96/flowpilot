@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { useStore } from "@/state/store";
-import type { ProviderKey, TokenUsageSnapshot } from "@/types/contract";
+import type { ProviderAccountSummary, ProviderKey, TokenUsageSnapshot } from "@/types/contract";
 import type { SupportedModel } from "@flowpilot/client-core";
+import { contextRemainingPercent, formatAccountRemainingLabel } from "@/lib/usageSummary";
 import {
   ACCEPT_ATTR,
   MAX_ATTACHMENTS,
@@ -72,12 +73,12 @@ const PROVIDER_CARDS: { value: ProviderKey; label: string; icon: React.ReactElem
   { value: "grok", label: "Grok", icon: <GrokIcon /> },
 ];
 
-// Providers whose runner adapters advertise the Vision capability (Task-052). Mirrors
-// ProviderCapabilities.Vision in the Go runner; a follow-up should source this from the
-// provider registration the renderer loads instead of hardcoding it here.
-// Grok is deliberately excluded (CP-46/Task-211 T-3): initialize's
-// promptCapabilities.image was live-verified false for grok-4.5.
-const VISION_PROVIDERS = new Set<ProviderKey>(["codex", "claude"]);
+// Providers that accept chat image attachments (Task-052 / CA-483).
+// codex + claude: native multimodal. grok: runner path-fallback writes
+// <cwd>/.tmp/images and injects absolute paths into the text prompt (ACP
+// promptCapabilities.image remains false; Capabilities.Vision stays false).
+// A follow-up should source this from the runner capability surface.
+const VISION_PROVIDERS = new Set<ProviderKey>(["codex", "claude", "grok"]);
 
 // Fallback reasoning-effort options (Task-215): used only when the selected
 // model has no detected `supportedReasoningEfforts` in the catalog (a
@@ -156,22 +157,31 @@ function usageSummaryLine(
   provider: ProviderKey | undefined,
   usage: TokenUsageSnapshot | undefined,
   fallbackContextWindow?: number | null,
+  account?: ProviderAccountSummary,
 ): ReactNode | null {
   if (!provider) return null;
-  if (!usage) return null;
 
-  const last = usage.last;
-  const total = usage.total;
-  const windowSize = usage.modelContextWindow ?? fallbackContextWindow ?? null;
+  const last = usage?.last;
+  const total = usage?.total;
+  const windowSize = usage?.modelContextWindow ?? fallbackContextWindow ?? null;
   const contextUsed = total?.totalTokens ?? last?.totalTokens ?? null;
   const parts: ReactNode[] = [];
 
+  const credit = formatAccountRemainingLabel(account);
+  if (credit) {
+    parts.push(<span key="credits">{credit}</span>);
+  }
+
   if (windowSize && contextUsed !== null) {
     const remaining = Math.max(windowSize - contextUsed, 0);
+    const remainPct = contextRemainingPercent(contextUsed, windowSize);
     parts.push(
       <span key="context">
         Context {usageNumber(contextUsed)} / {usageNumber(windowSize)} used
       </span>,
+    );
+    parts.push(
+      <span key="remain-pct">{remainPct}% remain</span>,
     );
     parts.push(
       <span key="remaining">
@@ -588,9 +598,13 @@ export function ChatInput(): React.ReactElement {
   const hasBlockingChild = agentRuns.some(
     (r) => r.waitForResult && (r.status === "running" || r.status === "waiting_approval" || r.status === "waiting_question"),
   );
+  const activeAccount = useMemo(
+    () => providerAccounts.find((account) => account.providerKey === selectedProvider && account.isActive),
+    [providerAccounts, selectedProvider],
+  );
   const usageLine = useMemo(
-    () => usageSummaryLine(selectedProvider, displayedTokenUsage, selectedModelInfo?.contextWindowTokens),
-    [displayedTokenUsage, selectedModelInfo, selectedProvider],
+    () => usageSummaryLine(selectedProvider, displayedTokenUsage, selectedModelInfo?.contextWindowTokens, activeAccount),
+    [activeAccount, displayedTokenUsage, selectedModelInfo, selectedProvider],
   );
 
   const canSend = isChatMode

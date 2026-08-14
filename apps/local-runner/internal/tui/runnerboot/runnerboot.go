@@ -186,7 +186,9 @@ func spawnRunner(cfg Config) error {
 	cmd.Stdout = logF
 	cmd.Stderr = logF
 	cmd.Env = ApplyLiveRunnerDefaults(os.Environ())
-	// Detach from parent process group so the runner outlives the TUI.
+	// Stay in the TUI process/console group so closing the terminal (not only
+	// /exit) tears the runner down. CA-445 detached this so a reused Desktop
+	// runner could outlive TUI; that leaked listeners on --port.
 	setSysProcAttr(cmd)
 
 	if err := cmd.Start(); err != nil {

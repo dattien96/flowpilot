@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -53,14 +54,25 @@ type Step struct {
 
 // ProviderAccountSummary mirrors /client/provider-accounts (snake_case JSON).
 type ProviderAccountSummary struct {
-	ID                 string  `json:"id"`
-	ProviderKey        string  `json:"provider_key"`
-	DisplayLabel       string  `json:"display_label"`
-	IsActive           bool    `json:"is_active"`
-	AuthStatus         string  `json:"auth_status"`
-	UsageSummary       *string `json:"usage_summary"`
-	Remaining5hPercent *int    `json:"remaining_5h_percent"`
-	Remaining7dPercent *int    `json:"remaining_7d_percent"`
+	ID                 string                     `json:"id"`
+	ProviderKey        string                     `json:"provider_key"`
+	DisplayLabel       string                     `json:"display_label"`
+	HomePath           string                     `json:"home_path"`
+	IsActive           bool                       `json:"is_active"`
+	AuthStatus         string                     `json:"auth_status"`
+	UsageSummary       *string                    `json:"usage_summary"`
+	Remaining5hPercent *int                       `json:"remaining_5h_percent"`
+	Remaining7dPercent *int                       `json:"remaining_7d_percent"`
+	Remaining5hResetAt *string                    `json:"remaining_5h_reset_at"`
+	Remaining7dResetAt *string                    `json:"remaining_7d_reset_at"`
+	UsageDetailLines   []ProviderAccountUsageLine `json:"usage_detail_lines,omitempty"`
+}
+
+// ProviderAccountUsageLine is one quota meter from GET /client/provider-accounts.
+type ProviderAccountUsageLine struct {
+	Label            string `json:"label"`
+	RemainingPercent int    `json:"remaining_percent"`
+	ResetAt          string `json:"reset_at,omitempty"`
 }
 
 // ProviderModel mirrors runner.ProviderModel from GET /providers.
@@ -83,12 +95,18 @@ func (m ProviderModel) ModelID() string {
 	return strings.TrimSpace(m.Name)
 }
 
-// Provider mirrors GET /providers list entry.
+// Provider mirrors GET /providers list entry (Desktop localProviders / ChatInput readiness).
 type Provider struct {
-	Key    string          `json:"key"`
-	Name   string          `json:"name,omitempty"`
-	Label  string          `json:"label,omitempty"`
-	Models []ProviderModel `json:"models,omitempty"`
+	Key             string          `json:"key"`
+	Name            string          `json:"name,omitempty"`
+	Label           string          `json:"label,omitempty"`
+	Installed       bool            `json:"installed"`
+	InstallStatus   string          `json:"install_status,omitempty"`
+	AuthStatus      string          `json:"auth_status,omitempty"`
+	DetectedVersion string          `json:"detected_version,omitempty"`
+	Version         string          `json:"version,omitempty"`
+	InstallHint     string          `json:"installHint,omitempty"`
+	Models          []ProviderModel `json:"models,omitempty"`
 }
 
 // ProviderSkill mirrors a skill available for a given provider.
@@ -294,16 +312,36 @@ func (e *APIError) Error() string {
 
 // RetryableCode returns true when the error code should trigger a retry.
 func RetryableCode(code string) bool {
-	switch code {
+	switch strings.ToLower(strings.TrimSpace(code)) {
 	case "turn_in_progress", "gate_in_progress", "hub_parked":
 		return true
 	}
 	return false
 }
 
+// IsRetryableAPIError checks if an error represents a temporary 409 gate/turn lock.
+func IsRetryableAPIError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.Status == http.StatusConflict {
+			return true
+		}
+		if RetryableCode(apiErr.Code) {
+			return true
+		}
+		msg := strings.ToLower(apiErr.Message)
+		return strings.Contains(msg, "gate_in_progress") || strings.Contains(msg, "turn_in_progress")
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "gate_in_progress") || strings.Contains(s, "turn_in_progress")
+}
+
 const (
-	maxTurnRetries = 6
-	turnRetryDelay = 700 * time.Millisecond
+	maxTurnRetries = 15
+	turnRetryDelay = 800 * time.Millisecond
 	// rpcTimeout bounds non-SSE runner calls so the TUI cannot hang forever on start/post.
 	rpcTimeout = 60 * time.Second
 )
@@ -338,6 +376,20 @@ func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
 	return ps, err
 }
 
+// ShutdownStack sends POST /system/shutdown to terminate the local runner process.
+func (c *Client) ShutdownStack(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/system/shutdown", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // ListWorkflows fetches GET /client/workflows (all; caller filters by projectId).
 func (c *Client) ListWorkflows(ctx context.Context) ([]Workflow, error) {
 	var ws []Workflow
@@ -359,6 +411,30 @@ func (c *Client) ListProviderAccounts(ctx context.Context) ([]ProviderAccountSum
 	return accounts, err
 }
 
+// ActivateProviderAccount calls POST /provider-accounts/activate to switch the active account for a provider.
+func (c *Client) ActivateProviderAccount(ctx context.Context, accountID string) (*ProviderAccountSummary, error) {
+	var wrap struct {
+		Account struct {
+			ProviderAccountSummary
+			DisplayName string `json:"display_name"`
+		} `json:"account"`
+	}
+	err := c.postJSON(ctx, "/provider-accounts/activate", map[string]any{
+		"accountId": strings.TrimSpace(accountID),
+	}, &wrap)
+	if err != nil {
+		return nil, err
+	}
+	acc := wrap.Account.ProviderAccountSummary
+	if strings.TrimSpace(acc.DisplayLabel) == "" {
+		acc.DisplayLabel = strings.TrimSpace(wrap.Account.DisplayName)
+	}
+	if strings.TrimSpace(acc.ID) == "" {
+		return nil, fmt.Errorf("activate returned empty account")
+	}
+	return &acc, nil
+}
+
 // ListProviders fetches GET /providers — returns all detected providers with their models.
 func (c *Client) ListProviders(ctx context.Context) ([]Provider, error) {
 	var ps []Provider
@@ -366,9 +442,30 @@ func (c *Client) ListProviders(ctx context.Context) ([]Provider, error) {
 	return ps, err
 }
 
-// ListSkills fetches GET /client/skills filtered by optional providerKey and cwd.
+// ConnectProviderAccount calls POST /provider-accounts/connect (Desktop Settings parity).
+// Opens the provider login terminal/browser flow on the runner host.
+func (c *Client) ConnectProviderAccount(ctx context.Context, providerKey string) error {
+	return c.postJSON(ctx, "/provider-accounts/connect", map[string]any{
+		"providerKey": strings.TrimSpace(providerKey),
+	}, nil)
+}
+
+// InstallProvider calls POST /providers/install (Desktop Settings installLocalProvider parity).
+// Runner runs the provider CLI installer (codex/claude/gemini/grok); Desktop UI only
+// exposes the Install button for Gemini today, but the API is generic.
+func (c *Client) InstallProvider(ctx context.Context, providerName string) ([]Provider, error) {
+	var inv struct {
+		Providers []Provider `json:"providers"`
+	}
+	err := c.postJSON(ctx, "/providers/install", map[string]any{
+		"providerName": strings.TrimSpace(providerName),
+	}, &inv)
+	return inv.Providers, err
+}
+
+// ListSkills fetches GET /client/provider-skills filtered by optional providerKey and cwd.
 func (c *Client) ListSkills(ctx context.Context, providerKey, cwd string) ([]ProviderSkill, error) {
-	endpoint := "/client/skills"
+	endpoint := "/client/provider-skills"
 	params := make([]string, 0, 2)
 	if providerKey != "" {
 		params = append(params, "provider="+neturl.QueryEscape(providerKey))
@@ -434,29 +531,38 @@ func (c *Client) ListRunHistory(ctx context.Context, projectID string) ([]RunHis
 	return items, err
 }
 
-// SubmitApproval sends POST /client/approvals/{approvalId}.
+// SubmitApproval sends POST /client/approvals/{approvalId}/decision (Desktop parity).
 func (c *Client) SubmitApproval(ctx context.Context, approvalID, decision string, forever bool) error {
-	return c.postJSON(ctx, "/client/approvals/"+approvalID, map[string]any{
+	return c.postJSON(ctx, "/client/approvals/"+neturl.PathEscape(approvalID)+"/decision", map[string]any{
 		"decision": decision,
+		"remember": forever,
 		"forever":  forever,
 	}, nil)
 }
 
-// AnswerQuestion sends POST /client/questions/{questionId}.
+// AnswerQuestion sends POST /client/questions/{questionId}/answer (Desktop parity).
 func (c *Client) AnswerQuestion(ctx context.Context, questionID, answer string) error {
-	return c.postJSON(ctx, "/client/questions/"+questionID, map[string]any{
+	return c.postJSON(ctx, "/client/questions/"+neturl.PathEscape(questionID)+"/answer", map[string]any{
+		"choice": answer,
 		"answer": answer,
 	}, nil)
 }
 
 // Interrupt sends POST /client/workflow-runs/{runId}/interrupt.
 func (c *Client) Interrupt(ctx context.Context, runID string) error {
-	return c.postJSON(ctx, "/client/workflow-runs/"+runID+"/interrupt", nil, nil)
+	return c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/interrupt", nil, nil)
 }
 
-// SubmitGateDecision sends POST /client/workflow-runs/{runId}/gate.
+// StopAgentLoop sends POST /client/workflow-runs/{runId}/agent-loop/stop
+// (Desktop Stop: seal the hub and cancel every child).
+func (c *Client) StopAgentLoop(ctx context.Context, runID string) error {
+	return c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/agent-loop/stop", nil, nil)
+}
+
+// SubmitGateDecision sends POST /client/workflow-runs/{runId}/gate-decision (Desktop parity).
 func (c *Client) SubmitGateDecision(ctx context.Context, runID, decision string) error {
-	return c.postJSON(ctx, "/client/workflow-runs/"+runID+"/gate", map[string]any{
+	return c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/gate-decision", map[string]any{
+		"option":   decision,
 		"decision": decision,
 	}, nil)
 }
@@ -496,7 +602,7 @@ func (c *Client) SendTurn(ctx context.Context, input TurnInput) (<-chan Provider
 			err := c.postJSON(postCtx, "/client/workflow-runs/"+input.RunID+"/turns", input, &resp)
 			cancelPost()
 			if err != nil {
-				if apiErr, ok := err.(*APIError); ok && RetryableCode(apiErr.Code) && attempt < maxTurnRetries {
+				if IsRetryableAPIError(err) && attempt < maxTurnRetries {
 					continue
 				}
 				errCh <- err
@@ -514,8 +620,10 @@ func (c *Client) SendTurn(ctx context.Context, input TurnInput) (<-chan Provider
 			if ev.Seq > c.lastSeq[input.RunID] {
 				c.lastSeq[input.RunID] = ev.Seq
 			}
-			// filter to this turn only (pass-through events with no turnId)
-			if ev.ProviderTurnID != "" && ev.ProviderTurnID != turnID {
+			// Filter to this turn only. Always pass agent_graph_updated (and
+			// empty-turnId events) so flow step transitions during a long
+			// context.produce / hub turn still reach the TUI.
+			if ev.Type != "agent_graph_updated" && ev.ProviderTurnID != "" && ev.ProviderTurnID != turnID {
 				continue
 			}
 			evCh <- ev
@@ -537,7 +645,11 @@ func (c *Client) StreamRun(ctx context.Context, runID string, afterSeq int64) <-
 			if ev.Seq > c.lastSeq[runID] {
 				c.lastSeq[runID] = ev.Seq
 			}
-			ch <- ev
+			select {
+			case ch <- ev:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 	return ch
@@ -573,6 +685,43 @@ func (c *Client) StreamWithReconnect(ctx context.Context, runID string, afterSeq
 					return
 				}
 				if ev.Type == "turn_completed" || ev.Type == "run_completed" {
+					return
+				}
+			}
+			if ctx.Err() != nil {
+				return
+			}
+		}
+	}()
+	return ch
+}
+
+// StreamLive attaches to a run SSE and stays open across turn_completed so
+// flow orchestration (child graph / late gates) keeps arriving. Caller cancels ctx.
+func (c *Client) StreamLive(ctx context.Context, runID string, afterSeq int64) <-chan ProviderEvent {
+	ch := make(chan ProviderEvent, 32)
+	go func() {
+		defer close(ch)
+		const maxRetries = 5
+		backoff := 500 * time.Millisecond
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			if attempt > 0 {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(backoff):
+					if backoff < 8*time.Second {
+						backoff *= 2
+					}
+				}
+			}
+			for ev := range c.openStream(ctx, runID, afterSeq) {
+				if ev.Seq > afterSeq {
+					afterSeq = ev.Seq
+				}
+				select {
+				case ch <- ev:
+				case <-ctx.Done():
 					return
 				}
 			}

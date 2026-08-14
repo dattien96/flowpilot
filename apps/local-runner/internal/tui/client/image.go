@@ -37,12 +37,28 @@ const (
 )
 
 // SupportsImages reports whether providerKey accepts image attachments.
+// Mirrors Desktop VISION_PROVIDERS:
+//   - codex / claude: native multimodal (Task-052)
+//   - grok: path fallback — runner writes .tmp/images and injects paths into
+//     the text prompt (CA-483); ACP promptCapabilities.image stays false
 func SupportsImages(providerKey string) bool {
 	switch strings.ToLower(providerKey) {
-	case "codex", "claude":
+	case "codex", "claude", "grok":
 		return true
 	}
 	return false
+}
+
+// ImagesUnsupportedReason explains a SupportsImages=false result for UX copy.
+func ImagesUnsupportedReason(providerKey string) string {
+	key := strings.ToLower(strings.TrimSpace(providerKey))
+	if key == "" {
+		key = "current provider"
+	}
+	if SupportsImages(key) {
+		return ""
+	}
+	return fmt.Sprintf("provider %q does not support image attachments (codex/claude/grok only)", key)
 }
 
 // NormalizeImage decodes imgData, scales it down if any edge exceeds 1568 px,
@@ -115,7 +131,7 @@ func NormalizeImage(imgData []byte, fileName string) (*PromptAttachment, error) 
 // images, too many files are given, or any image fails normalization.
 func ValidateAttachments(paths []string, providerKey string) ([]PromptAttachment, error) {
 	if !SupportsImages(providerKey) {
-		return nil, fmt.Errorf("provider %q does not support image attachments (codex/claude only)", providerKey)
+		return nil, fmt.Errorf("%s", ImagesUnsupportedReason(providerKey))
 	}
 	if len(paths) > maxAttachments {
 		return nil, fmt.Errorf("too many images: %d provided, maximum is %d", len(paths), maxAttachments)

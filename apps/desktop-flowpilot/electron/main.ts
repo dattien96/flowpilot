@@ -75,11 +75,31 @@ async function loadPersistedAuthSession(): Promise<PersistedAuthSession | null> 
 
 async function savePersistedAuthSession(payload: PersistedAuthSession): Promise<void> {
   const dest = authSessionFilePath();
-  const tmp = dest + ".tmp";
+  const tmp = `${dest}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
   await mkdir(path.dirname(dest), { recursive: true });
   await writeFile(tmp, JSON.stringify(payload), "utf8");
   // Atomic rename so a mid-write kill never leaves a truncated file.
-  await rename(tmp, dest);
+  try {
+    await rename(tmp, dest);
+  } catch (err) {
+    const code =
+      typeof err === "object" && err !== null && "code" in err
+        ? (err as { code?: string }).code
+        : undefined;
+    // Windows rename cannot overwrite an existing dest (EPERM/EEXIST).
+    if (code === "EEXIST" || code === "EPERM") {
+      await rm(dest, { force: true }).catch(() => {});
+      try {
+        await rename(tmp, dest);
+        return;
+      } catch (retryErr) {
+        await rm(tmp, { force: true }).catch(() => {});
+        throw retryErr;
+      }
+    }
+    await rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 async function clearPersistedAuthSession(): Promise<void> {
@@ -222,6 +242,40 @@ ipcMain.handle("http:request", async (_event, payload: BridgeHttpRequest) => {
 });
 
 void app.whenReady().then(createWindow);
+
+const defaultRunnerURL = "http://127.0.0.1:4317";
+let runnerShutdownStarted = false;
+
+function localRunnerURL(): string {
+  const fromEnv = process.env.VITE_RUNNER_URL?.trim();
+  return fromEnv && fromEnv.length > 0 ? fromEnv.replace(/\/$/, "") : defaultRunnerURL;
+}
+
+async function shutdownLocalRunner(): Promise<void> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 2000);
+  try {
+    await fetch(`${localRunnerURL()}/system/shutdown`, {
+      method: "POST",
+      signal: ac.signal,
+    });
+  } catch {
+    // Runner already gone or never started.
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+app.on("before-quit", (event) => {
+  if (runnerShutdownStarted) {
+    return;
+  }
+  runnerShutdownStarted = true;
+  event.preventDefault();
+  void shutdownLocalRunner().finally(() => {
+    app.quit();
+  });
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

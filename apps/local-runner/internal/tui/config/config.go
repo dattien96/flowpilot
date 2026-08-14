@@ -11,6 +11,10 @@ type ChatConfig struct {
 	RunnerURL string
 	// NoStartRunner disables the auto-start heuristic (--no-start-runner).
 	NoStartRunner bool
+	// OwnsRunner is true when this TUI process spawned the runner (stderr
+	// "Runner started"). Exit still shuts the runner down even when this is
+	// false (reused listener on --port); leftover processes were leaking.
+	OwnsRunner bool
 
 	// RunnerWorkspace is the resolved runner workspace root.
 	// Resolution order: --workspace flag → FLOWPILOT_WORKSPACE env → walk up.
@@ -19,6 +23,11 @@ type ChatConfig struct {
 	RunnerHost string
 	// RunnerPort is the port the runner listens on (from root --port).
 	RunnerPort int
+
+	// DesktopHost/DesktopPort are where the Desktop Vite app listens
+	// (FLOWPILOT_DESKTOP_PORT, default 5173). Used by /settings.
+	DesktopHost string
+	DesktopPort int
 
 	// ProjectPath is the selected project path (--project flag).
 	// This is the StartRunInput.cwd — separate from RunnerWorkspace.

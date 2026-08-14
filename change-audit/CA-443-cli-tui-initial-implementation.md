@@ -179,6 +179,64 @@ Codex adapter (`fake_provider_adapter.go`). Fix:
 - Typing `/provider ` filters the loaded provider catalog; ↑↓ · Tab · Enter selects
   (same UX as `/model` / `/flow`).
 
+## Follow-up (2026-08-12) — `/settings` bridges to Desktop
+
+- `/settings` checks `FLOWPILOT_DESKTOP_PORT` (default 5173); reuses if TCP is open,
+  otherwise spawns `npm run dev` in `apps/desktop-flowpilot` with `VITE_RUNNER_URL`.
+- No deep-link into the Settings page — TUI prints a short “continue in Desktop” blurb.
+
+## Follow-up (2026-08-12) — Auth sync + `/provider connect`
+
+1. Root cause of Desktop Login after TUI `/login`: session was written only to
+   `%APPDATA%/FlowPilot/…` while Electron `userData` is `desktop-flowpilot`.
+   `PersistDesktopAuthSession` now writes **all** candidate paths; `/settings`
+   calls `SyncDesktopAuthSession` before ensuring Desktop.
+2. `/provider connect|config [key]` → `POST /provider-accounts/connect` (same as
+   Desktop Settings “Connect New Account”); picker via `/provider connect `.
+
+## Follow-up (2026-08-12) — Live workflow stream + clipboard images
+
+1. Turns stream SSE live (Desktop `consumeStream` parity) so catalog flows like
+   grok-flow no longer look hung on “Starting workflow run…”.
+2. `GET …/steps-runtime` drives a step list + “In progress” banner (and session
+   panel), refreshed on run start / `turn_started` / `agent_graph_updated`.
+3. Ctrl+V reads clipboard PNG via `golang.design/x/clipboard`; pending chips +
+   `/image open <n>` preview (codex/claude only — same as Desktop vision gate).
+
+## Follow-up (2026-08-12) — Desktop chat color parity
+
+TUI lipgloss palette now mirrors Desktop `styles.css` `:root`
+(`#ececec` text, `#9b9b9b` dim, `#4c8dff` accent, warn/ask/ok/err) instead of
+bright ANSI cyan/pink washes that were hard to read.
+
+## Follow-up (2026-08-12) — Statusline account bind + input stroke
+
+- Statusline account label is rebound to the **active account of the current
+  provider** after `/provider` (no stale Codex label while on Grok).
+- Chat input uses a stroke frame (`┃ label │`) instead of full-row background.
+- `session_unavailable` open errors include active provider account + Desktop
+  activate hint (still a runner/session limit, same as Desktop).
+
+## Follow-up (2026-08-12) — Chat layout / session panel / history scroll
+
+1. Statusline shows **active provider-account** label (not Supabase email); `SIGN-IN` kept when needed.
+2. User chat bubbles render **right-aligned**; assistant stays left.
+3. Bootstrap Connected/Project/Session lines move to a collapsible **top-right panel** (`F2` or `/info`).
+4. Suggestion pickers (esp. `/history`) use a **scrolling window** so older rows stay selectable.
+
+## Follow-up (2026-08-12) — Provider readiness + install parity
+
+Desktop ChatInput disables a provider unless CLI `installed` **and** an active
+`authStatus=connected` account exists. Settings shows install status for all
+providers; Install button is Gemini-only in UI, but `POST /providers/install`
+supports codex/claude/gemini/grok.
+
+TUI copy:
+- `/provider` list + picker detail show readiness (`ready` / `not installed` /
+  `no active|connected account`)
+- `/provider install [key]` → `POST /providers/install`
+- Connect refused when provider not installed (same as Desktop)
+
 ## Follow-up (2026-08-12) — Fix catalog `/flow` arm (Task-283 contract)
 
 Bug: TUI always set `subMode=bug` and sent catalog UUID as `flowRef` on turns →
@@ -208,9 +266,47 @@ shows a `SIGN IN REQUIRED` banner + statusline `SIGN-IN`, and supports `/login`:
 
 Additive tests: `client/auth_test.go`, `app/chat_ux_test.go` login/banner cases.
 
+## Follow-up (2026-08-12) — Running-step highlight, clipboard paste, grok-context liveness
+
+1. **Running step highlight** — session panel + steps banner + statusline use warn/accent
+   color for `RUNNING` / `WAITING_USER_APPROVAL` rows (`styleStepRunning`).
+2. **Clipboard images on Windows** — Ctrl+V often stolen by Windows Terminal; support
+   `Alt+V`, `/image paste`, native `FmtImage`, plus PowerShell `GetImage` and
+   Explorer file-drop (CF_HDROP) fallbacks. Codex/claude only (same as Desktop).
+3. **grok-context “hang” UX** — while a catalog/flow run is live, poll
+   `steps-runtime` on the cursor tick; forward `agent_graph_updated` during
+   `SendTurn`; after turn closes, start Desktop-parity orchestration SSE so
+   hub/child step transitions keep updating. Statusline shows `▶ <active-step>`.
+
+Additive tests: `app/steps_highlight_test.go`.
+
+## Follow-up (2026-08-12) — Image paste path bug + chat shows current step only
+
+- `/image paste` must not fall through to `os.ReadFile("paste")` (`read paste: open paste: invalid argument`); reserved subcommands dispatch first.
+- Grok image gate clarified: runner `Vision=false` (ACP `promptCapabilities.image=false`), same as Desktop.
+- Chat transcript announces only the current step line (`> … [RUNNING]` / `x … [FAILED]`); full step list stays in the top-right session panel.
+
+Additive tests: `app/step_chat_notice_test.go`.
+
+## Follow-up (2026-08-12) — Persist latest provider + FAILED reason in chat
+
+- Persist last `/provider` `/model` `/reasoning` to `tui-session.json` (FlowPilot userData);
+  new TUI process and `/new` restore that selection instead of resetting to first active/codex.
+- Chat `[FAILED]` step lines include `reason:` from `rejectionNote`, else last `turn_failed` error.
+
+Additive tests: `prefs/prefs_test.go`, `app/provider_prefs_test.go`.
+
+## Follow-up (2026-08-12) — `/skill` catalog list like Desktop
+
+- `/skill` / `/s` dumps the provider skill catalog (selected first, Account/Project source,
+  description) via `GET /client/skills`, matching Desktop ChatInput skill picker.
+- Live picker while typing `/skill <query>`; toggle resolves path/source from catalog.
+
+Additive tests: `app/skill_list_test.go`.
+
 # ---8<--- flowpilot:change-ledger
 feature_key: cli-tui
 source_doc_id: CP-56
 change_type: feature
-summary: TUI Supabase /login + SIGN-IN banner when Desktop session missing
+summary: TUI /skill lists Desktop-parity skill catalog with picker
 # --->8---

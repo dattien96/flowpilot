@@ -122,14 +122,15 @@ type ConnectedMsg struct{ RunnerURL string }
 
 // SessionDefaultsMsg carries active provider/model discovered after connect.
 type SessionDefaultsMsg struct {
-	Provider     string
-	Model        string
-	AccountLabel string
-	Providers    []client.Provider
-	Projects     []client.Project
-	Project      *client.Project
-	Account      *client.ProviderAccountSummary
-	CatalogErr   string
+	Provider         string
+	Model            string
+	AccountLabel     string
+	Providers        []client.Provider
+	ProviderAccounts []client.ProviderAccountSummary
+	Projects         []client.Project
+	Project          *client.Project
+	Account          *client.ProviderAccountSummary
+	CatalogErr       string
 }
 
 // FlowListMsg carries /flow list results.
@@ -154,6 +155,27 @@ type LoginResultMsg struct {
 // QuitMsg requests app exit.
 type QuitMsg struct{}
 
+// ApprovalResolvedMsg is a successful POST /client/approvals/{id}/decision.
+type ApprovalResolvedMsg struct {
+	ID       string
+	Decision string
+}
+
+// QuestionResolvedMsg is a successful POST /client/questions/{id}/answer.
+type QuestionResolvedMsg struct {
+	ID     string
+	Choice string
+}
+
+// StoppedMsg is a successful POST .../interrupt.
+type StoppedMsg struct{}
+
+// CopiedMsg reports a clipboard write from [copy] / /copy.
+type CopiedMsg struct {
+	Kind string
+	Err  string
+}
+
 // TokenUsageMsg carries updated token usage for the statusline.
 type TokenUsageMsg struct{ Usage *client.TokenUsageSnapshot }
 
@@ -169,22 +191,46 @@ type AppModel struct {
 	connStatus ConnStatus
 	statusMsg  string
 	messages   []ChatMessage
+	// visiblePromptCount is how many newest user-prompt groups to render (Task-290).
+	visiblePromptCount        int
+	historyLoadedAfterSeq     int64 // events with seq <= this are not in memory; 0 = loaded from start
+	mainHistoryLoadedAfterSeq int64 // preserved while viewing child transcript
+	historyChunkInFlight      bool
 
-	inputValue string
-	viewport   viewportState
-	runHandle  *client.RunHandle
+	inputValue  string
+	inputCursor int // rune index; <0 means caret sticks to the end
+	viewport    viewportState
+	mouseSel    mouseSelect
+	mouseDrag   mouseDrag
+	rowCache    []chatRow
+	rowCacheSig uint64
+	runHandle   *client.RunHandle
 
 	// Per-turn settings
-	yolo            bool
-	agentsFocus     bool
-	selectedSkills  []client.SkillSelection
-	pendingAttach   []client.PromptAttachment
-	launch          LaunchArm
+	yolo             bool
+	agentsFocus      bool
+	selectedSkills   []client.SkillSelection
+	skillsCatalog    []client.ProviderSkill // Desktop ChatInput skills list
+	pendingAttach     []client.PromptAttachment
+	pendingLocalPaths map[string]string // attachment ID → materialized temp path
+	attachPanelOpen   bool              // modal list of pending images (Desktop chips)
+	launch            LaunchArm
 	firstTurnPending bool // consume builtin FirstTurnExtras once
-	reasoningEffort string
-	flowBuiltins    []client.BuiltinFlowOption
-	flowWorkflows   []client.Workflow
-	chatList        []client.RunHistoryItem // last /history result for picker + /open <n>
+	reasoningEffort  string
+	flowBuiltins     []client.BuiltinFlowOption
+	flowWorkflows    []client.Workflow
+	chatList         []client.RunHistoryItem // last /history result for picker + /open <n>
+	sessionPanel     sessionInfoPanel        // collapsible top-right session/status overlay
+	flowSteps        []client.WorkflowStepRuntime
+	flowStepsActive  string // node name currently RUNNING
+	turnStream       *turnStreamState
+	orchStream       *orchStreamState // Desktop orchestration SSE after turn
+	focusStream      *orchStreamState // child transcript while /agent focused
+	focusRunID       string           // empty = main run viewport
+	mainTranscript   []ChatMessage    // cached while viewing a child
+	lastEventSeq     int64
+	stepsPollTicks   int    // cursor ticks while flow is live
+	lastTurnError    string // last turn_failed error (fallback FAIL reason in chat)
 
 	// Pending gate/approval/question state
 	gate     *GateState
@@ -192,21 +238,22 @@ type AppModel struct {
 	question *QuestionState
 
 	// Navigation
-	project         *client.Project
-	projects        []client.Project
-	projectPath     string // resolved target path for statusline
-	projectBranch   string // git branch at projectPath
-	provider        string
-	model           string
-	accountLabel    string // from provider-accounts display_label
-	account         *client.ProviderAccountSummary
-	providers       []client.Provider
-	modelContextWin int64
-	lastTokens      *client.TokenUsageSnapshot
-	agentRuns       []client.AgentRunSummary
-	focusedAgentIdx int
-	stepID          string // synthetic chat step from StartRun / Resume
-	pendingPrompt   string // first prompt waiting for StartRun to finish
+	project          *client.Project
+	projects         []client.Project
+	projectPath      string // resolved target path for statusline
+	projectBranch    string // git branch at projectPath
+	provider         string
+	model            string
+	accountLabel     string // from provider-accounts display_label
+	account          *client.ProviderAccountSummary
+	providers        []client.Provider
+	providerAccounts []client.ProviderAccountSummary // for ChatInput-parity readiness
+	modelContextWin  int64
+	lastTokens       *client.TokenUsageSnapshot
+	agentRuns        []client.AgentRunSummary
+	focusedAgentIdx  int
+	stepID           string // synthetic chat step from StartRun / Resume
+	pendingPrompt    string // first prompt waiting for StartRun to finish
 
 	// Supabase auth (Desktop LoginScreen parity via POST /supabase-auth/login)
 	authPhase     AuthPhase
@@ -215,8 +262,10 @@ type AppModel struct {
 	signedInEmail string
 
 	// Input focus / slash suggestion selection
-	cursorOn bool
-	suggIdx  int
+	cursorOn               bool
+	suggIdx                int
+	statusSkillsExpanded   bool // F3: expand attached skill names under the status chip
+	statusDetailsCollapsed bool // F4 / click line 0: hide mode–project rows; status row stays
 
 	// sessionLoading locks chat while provider/project catalogs load after connect.
 	sessionLoading bool
@@ -242,13 +291,62 @@ type AppModel struct {
 type suggestItem struct {
 	value  string // command name, flowRef/workflow id, chat run id, model, or effort
 	detail string
-	kind   string // "cmd" | "flow" | "history" | "model" | "reasoning" | "provider"
+	kind   string // "cmd" | "flow" | "history" | "model" | "reasoning" | "provider" | "provider-connect" | "skill"
 	slash  string // for history: "/history" | "/open" | "/resume"
 }
 
 // viewportState tracks scrolling state.
 type viewportState struct {
 	offset int // lines scrolled from bottom
+}
+
+// mouseSelect is drag transcript highlight (Shift optional), cell-accurate
+// from (x0,y0) to (x1,y1). A click with no motion still clears it so
+// Approve/copy chips stay distinct from select.
+type mouseSelect struct {
+	armed  bool
+	x0, y0 int
+	x1, y1 int
+}
+
+// mouseDrag tracks a button-down gesture so motion can start a selection
+// without treating the initial press as an armed highlight (legacy click tests).
+type mouseDrag struct {
+	down   bool
+	moved  bool
+	x0, y0 int
+}
+
+func (s mouseSelect) empty() bool {
+	return !s.armed
+}
+
+func (s mouseSelect) contains(x, y int) bool {
+	if s.empty() {
+		return false
+	}
+	y0, y1 := s.y0, s.y1
+	x0, x1 := s.x0, s.x1
+	if y0 > y1 {
+		y0, y1 = y1, y0
+		x0, x1 = x1, x0
+	}
+	if y < y0 || y > y1 {
+		return false
+	}
+	if x0 > x1 {
+		x0, x1 = x1, x0
+	}
+	if y0 == y1 {
+		return x >= x0 && x <= x1
+	}
+	if y == y0 {
+		return x >= x0
+	}
+	if y == y1 {
+		return x <= x1
+	}
+	return true
 }
 
 // slashCommand represents a slash command the user can invoke.
@@ -263,13 +361,14 @@ var knownSlashCommands = []slashCommand{
 	{"/exit", "Exit the TUI"},
 	{"/quit", "Exit the TUI"},
 	{"/yolo", "Toggle YOLO in chat mode (flow mode is auto-on)"},
-	{"/agents", "Focus on the agent graph"},
-	{"/agent", "Focus a specific agent by name"},
+	{"/agents", "List/cycle sub-agents (Tab while focused)"},
+	{"/agent", "View a sub-agent transcript — /agent main|<name>"},
+	{"/stop", "Stop the in-flight turn (flow: main + all children)"},
 	{"/flow", "Start or list flows"},
 	{"/chat", "Switch to chat mode"},
-	{"/skill", "Toggle a skill for the next turn"},
-	{"/image", "Attach an image to the next turn (codex/claude only)"},
-	{"/provider", "Switch provider — type /provider  then ↑↓ Tab Enter"},
+	{"/skill", "Skills — Tab multi-pick [name]+chip · Enter closes picker · F3"},
+	{"/image", "Images — Tab open/paste; pick index to view; [N img] panel [open]/[x]"},
+	{"/provider", "Switch / connect / install — /provider  then ↑↓ Tab Enter"},
 	{"/model", "Switch model — type /model  then ↑↓ Tab Enter"},
 	{"/reasoning", "Set effort — type /reasoning  then ↑↓ Tab Enter"},
 	{"/new", "Start a new conversation"},
@@ -281,5 +380,7 @@ var knownSlashCommands = []slashCommand{
 	{"/deny", "Deny a pending approval"},
 	{"/headless", "Print next response to stdout only"},
 	{"/status", "Show current connection status"},
+	{"/info", "Toggle session info panel (top-right; also F2)"},
 	{"/login", "Sign in to Supabase (email/password) — Desktop session parity"},
+	{"/settings", "Open Desktop app for Settings (start if not running)"},
 }

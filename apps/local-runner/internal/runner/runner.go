@@ -170,6 +170,9 @@ type Runner struct {
 	// would also have to accept and ignore). ensureGrokProcess reads this to
 	// decide whether to pass --always-approve at launch. Guarded by grokProcessMu.
 	grokDesiredAlwaysApprove bool
+	// grokRunSessions maps FlowPilot run id → Grok ACP session id across
+	// grokProcessKey respawns (model / reasoning / YOLO). Guarded by its own mu.
+	grokRunSessions *grokRunSessionIndex
 }
 
 func New(workspace string) (*Runner, error) {

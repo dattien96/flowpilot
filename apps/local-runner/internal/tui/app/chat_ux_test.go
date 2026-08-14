@@ -94,6 +94,15 @@ func TestMatchProjectByPath_BasenameFallback(t *testing.T) {
 	}
 }
 
+func TestMatchProjectByPath_NameFallback(t *testing.T) {
+	p := matchProjectByPath([]client.Project{
+		{ID: "p1", Name: "Gate Sandbox", Path: `/other/path/different_folder`},
+	}, `/Users/tiendat/Desktop/BE/gate-sandbox`)
+	if p == nil || p.ID != "p1" {
+		t.Fatalf("name match=%v", p)
+	}
+}
+
 func TestFormatAccountAndContextLimits(t *testing.T) {
 	five, seven := 72, 40
 	acc := &client.ProviderAccountSummary{Remaining5hPercent: &five, Remaining7dPercent: &seven}
@@ -231,6 +240,31 @@ func TestLoginSlash_StartsEmailPhase(t *testing.T) {
 	}
 	if !strings.Contains(am.renderInputLine(), "email") {
 		t.Fatalf("input line=%q", am.renderInputLine())
+	}
+}
+
+func TestLoginSlash_ShowsEmailWhenAlreadySignedIn(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
+	m.signedInEmail = "user@example.com"
+	m.authNeedLogin = false
+	m2, _ := m.handleSlashCommand("/login")
+	am := m2.(*AppModel)
+	if am.authPhase != AuthNone {
+		t.Fatalf("authPhase=%v want AuthNone when already signed in", am.authPhase)
+	}
+	lastMsg := am.messages[len(am.messages)-1].Content
+	if !strings.Contains(lastMsg, "user@example.com") {
+		t.Fatalf("expected message to contain email user@example.com, got %q", lastMsg)
+	}
+}
+
+func TestKeySpace_AppendsSpaceToInput(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
+	m.inputValue = "hello"
+	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeySpace})
+	am := m2.(*AppModel)
+	if am.inputValue != "hello " {
+		t.Fatalf("inputValue=%q want %q", am.inputValue, "hello ")
 	}
 }
 

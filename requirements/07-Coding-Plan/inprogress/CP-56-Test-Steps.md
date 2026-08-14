@@ -5,13 +5,13 @@
 - Document ID: `CP-56-Test-Steps`
 - Title: `Terminal TUI — Test Steps And Evidence Log`
 - Phase: `coding_plan`
-- Status: `approved` (tracks approved CP-56; fill evidence as Tasks 278–288 land)
+- Status: `approved` (tracks approved CP-56; fill evidence as Tasks 278–289 land)
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-12`
-- Last Updated: `2026-08-12` (approved with CP-56)
+- Last Updated: `2026-08-13` (added Task-290 P-8c + Task-291 YOLO write signatures)
 - Parent Documents: [CP-56: Terminal TUI Chat And Flow Client](./CP-56-Terminal-TUI-Chat-And-Flow-Client.md)
-- Child Documents: Task-278 … Task-288 (see CP-56 §11)
+- Child Documents: Task-278 … Task-291 (see CP-56 §11)
 - Related Documents: [04-02 Runner Contracts](../../10-Refactor/New-System/04-02-Phase2-Runner-Contracts-And-APIs.md)
 - Replaces: `None`
 - Tags: `cli-tui, testing, verification`
@@ -23,7 +23,7 @@
 
 ### Summary
 
-- Machine-checkable test signatures and manual acceptance steps for CP-56 phases P-0–P-9.
+- Machine-checkable test signatures and manual acceptance steps for CP-56 phases P-0–P-9 plus P-8b/P-8c and P-2 residual Task-291.
 - Prefer fake HTTP servers for unit/integration; live runner only for manual DOD rows.
 - Additive tests only; runner/desktop suites must stay green without edits.
 
@@ -222,6 +222,42 @@ Define machine-checkable signatures, live acceptance steps, and evidence require
 | A8.7 | `TestStreamWithReconnect_UsesLastSeqAndStopsOnCancel` | `internal/tui/client` | ☐ |
 | A8.8 | `TestResume_FollowupUsesResumedStepIDAndModeMetadata` | `internal/tui/app` | ☐ |
 
+### P-8b — Codex-style assistant markdown (Task-289)
+
+| ID | Signature | Package | Status |
+|---|---|---|---|
+| A8.9 | `TestRenderMarkdown_HeadingsListsAndInline` | `internal/tui/app` | ☑ |
+| A8.10 | `TestRenderMarkdown_FenceUnclosedDoesNotPanic` | `internal/tui/app` | ☑ |
+| A8.11 | `TestRenderMarkdown_TableFitsOrPipeFallback` | `internal/tui/app` | ☑ |
+| A8.12 | `TestRenderMarkdown_CacheHitOnUnchangedWidthAndHash` | `internal/tui/app` | ☑ |
+| A8.13 | `TestChatRows_ScrollDoesNotIncrementMarkdownParseCount` | `internal/tui/app` | ☑ |
+| A8.14 | `TestCopyChip_StillCopiesRawMarkdownSource` | `internal/tui/app` | ☑ |
+| A8.15 | `TestRenderMarkdown_HugeFenceIsBounded` | `internal/tui/app` | ☑ |
+
+### P-8c — Long-chat load-earlier windowing (Task-290)
+
+| ID | Signature | Package | Status |
+|---|---|---|---|
+| A8.16 | `TestChatWindow_ShowsNewestSixPromptGroups` | `internal/tui/app` | ☑ |
+| A8.17 | `TestChatWindow_LoadEarlierRevealsPreviousPage` | `internal/tui/app` | ☑ |
+| A8.18 | `TestChatWindow_PendingGateStaysVisible` | `internal/tui/app` | ☑ |
+| A8.19 | `TestChatWindow_NewResetsWindow` | `internal/tui/app` | ☑ |
+| A8.20 | `TestChatReplayTailAfterSeq` | `internal/tui/app` | ☑ |
+| A8.21 | `TestCmdOpenChat_UsesTailAfterSeq` | `internal/tui/app` | ☑ |
+| A8.22 | `TestLoadEarlier_FetchesOlderChunkWhenMemoryExhausted` | `internal/tui/app` | ☑ |
+| A8.23 | `TestCmdOpenChat_ReturnsWhenLastEventSeqReachedOnLiveStream` | `internal/tui/app` | ☑ |
+| A8.24 | `TestLoadEarlier_SecondClickDoesNotFetchWhileInFlight` | `internal/tui/app` | ☑ |
+
+### P-2 residual — Chat YOLO=on ordinary write (Task-291)
+
+| ID | Signature | Package | Status |
+|---|---|---|---|
+| A2.10 | `TestChatYoloOn_OrdinaryWriteDoesNotPrompt_Claude` | `internal/runner` | ☑ |
+| A2.11 | `TestChatYoloOn_OrdinaryWriteDoesNotPrompt_Codex` | `internal/runner` | ☑ |
+| A2.12 | `TestChatYoloOn_OrdinaryWriteDoesNotPrompt_Grok` | `internal/runner` | ☑ |
+| A2.13 | `TestChatYoloOff_OrdinaryWriteStillGates` | `internal/runner` | ☑ |
+| A2.14 | `TestChatYoloOn_AskUserStillPrompts` | `internal/runner` | ☑ |
+
 ### P-9 — Boundary
 
 | ID | Signature | Package | Status |
@@ -286,6 +322,7 @@ Prereq: Desktop has configured project + at least one provider account. Runner m
 | M15 | Run with multiple configured projects and no `--project` outside their paths | Project picker appears; first project is not silently selected | ☐ | |
 | M16 | Run `-p` and trigger approval/question | Turn is interrupted and command exits non-zero with guidance, not timeout | ☐ | |
 | M17 | Windows legacy conhost/non-UTF terminal | Viewport/status/agents use ASCII fallback without mojibake or wrap corruption | ☐ | |
+| M18 | Assistant reply with heading, GFM table, fence, and `**bold**` | Readable inside `markdown` box; `[copy]` pastes raw source; scroll stays smooth on a long transcript | ☐ | |
 
 ---
 
@@ -313,6 +350,6 @@ Prereq: Desktop has configured project + at least one provider account. Runner m
 ## 10. Definition of Done
 
 - [ ] All A0–A9 signatures exist and pass
-- [ ] Manual M1–M17 closed with evidence
+- [ ] Manual M1–M18 closed with evidence
 - [ ] Runner suite green without modifying pre-existing tests
 - [ ] CP-56 §10 checklist complete

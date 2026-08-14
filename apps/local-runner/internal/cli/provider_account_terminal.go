@@ -426,20 +426,33 @@ type grokAuthEntry struct {
 // `grok` binary, Task-216). The billing/usage route lives under it.
 const grokCLIChatProxyBaseURL = "https://cli-chat-proxy.grok.com/v1"
 
+// grokCLICreditsBillingPath is the query Grok CLI 1.0.3 uses for `/usage`
+// remaining (live-verified in grok.exe: `/billing?format=credits`). Plain
+// `/billing` returns team-credit monthlyLimit/used and is kept as fallback.
+const grokCLICreditsBillingPath = "/billing?format=credits"
+
 type grokBillingValue struct {
 	Val float64 `json:"val"`
 }
 
-// grokBillingConfig mirrors GET {grokCLIChatProxyBaseURL}/billing's `config`
-// object (live-verified response shape, Task-216). Grok bills either a
-// monthly or a weekly cycle depending on plan (the binary's `BillingCycle`
-// enum has both variants); only one of MonthlyLimit/WeeklyLimit is expected
-// to be present on any given account.
+type grokBillingPeriod struct {
+	Type  string `json:"type"`
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
+// grokBillingConfig mirrors GET {grokCLIChatProxyBaseURL}/billing config.
+// Task-216 shape: monthlyLimit/weeklyLimit + used (team credits).
+// Grok CLI 1.0.3 `/billing?format=credits` shape: currentPeriod +
+// creditUsagePercent (personal SuperGrok weekly remaining). Omitted
+// creditUsagePercent means 0% used.
 type grokBillingConfig struct {
-	MonthlyLimit     *grokBillingValue `json:"monthlyLimit"`
-	WeeklyLimit      *grokBillingValue `json:"weeklyLimit"`
-	Used             *grokBillingValue `json:"used"`
-	BillingPeriodEnd string            `json:"billingPeriodEnd"`
+	MonthlyLimit       *grokBillingValue  `json:"monthlyLimit"`
+	WeeklyLimit        *grokBillingValue  `json:"weeklyLimit"`
+	Used               *grokBillingValue  `json:"used"`
+	BillingPeriodEnd   string             `json:"billingPeriodEnd"`
+	CreditUsagePercent *float64           `json:"creditUsagePercent"`
+	CurrentPeriod      *grokBillingPeriod `json:"currentPeriod"`
 }
 
 type grokBillingResponse struct {
@@ -467,28 +480,32 @@ func loadGrokAccountMetadata(homePath string) (accountLaunchMetadata, error) {
 		} else {
 			metadata.usageSummary = "Personal"
 		}
-		if line := loadGrokQuota(entry.Key); line != nil {
-			metadata.usageDetailLines = append(metadata.usageDetailLines, *line)
-		}
+		applyGrokQuotaLine(&metadata, loadGrokQuota(entry.Key))
 		break // a single active auth entry is expected per home
 	}
 	return metadata, nil
 }
 
-// loadGrokQuota calls the same billing endpoint Grok Build's `/usage` TUI
-// command uses, authenticated with the account's cached OAuth bearer token
-// (live-verified 2026-07-10, Task-216 — corrects CP-46 Q-5/Task-210 Q-1).
+// loadGrokQuota calls the same billing route Grok CLI `/usage` uses:
+// GET /v1/billing?format=credits with the cached auth.json bearer token
+// (live-verified grok 1.0.3). Falls back to plain /billing (Task-216 team credits).
 func loadGrokQuota(bearerToken string) *usageDetailLine {
 	token := strings.TrimSpace(bearerToken)
 	if token == "" {
 		return nil
 	}
+	if line := fetchGrokBilling(token, grokCLICreditsBillingPath); line != nil {
+		return line
+	}
+	return fetchGrokBilling(token, "/billing")
+}
 
-	request, err := http.NewRequest(http.MethodGet, grokCLIChatProxyBaseURL+"/billing", nil)
+func fetchGrokBilling(bearerToken, path string) *usageDetailLine {
+	request, err := http.NewRequest(http.MethodGet, grokCLIChatProxyBaseURL+path, nil)
 	if err != nil {
 		return nil
 	}
-	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Authorization", "Bearer "+bearerToken)
 	request.Header.Set("Accept", "application/json")
 
 	response, err := httpClient().Do(request)
@@ -509,19 +526,48 @@ func loadGrokQuota(bearerToken string) *usageDetailLine {
 	return grokQuotaFromBilling(billing)
 }
 
+// applyGrokQuotaLine copies a Grok usage line onto account metadata. Weekly
+// remaining is also stored as remaining7dPercent so TUI statusline (5h/7d)
+// and Desktop meters both light up.
+func applyGrokQuotaLine(metadata *accountLaunchMetadata, line *usageDetailLine) {
+	if metadata == nil || line == nil {
+		return
+	}
+	metadata.usageDetailLines = append(metadata.usageDetailLines, *line)
+	if !strings.Contains(strings.ToLower(line.label), "weekly") {
+		return
+	}
+	metadata.remaining7dPercent = intPtr(line.remainingPercent)
+	metadata.remaining7dResetAt = line.resetAt
+}
+
 // grokQuotaFromBilling is the pure mapping half of loadGrokQuota, split out
 // so tests can exercise it against a captured response fixture without a
 // live network call (mirrors codexQuotaFromWindow's split).
 //
-// Labeled "Team Credits", not "Weekly limit": this endpoint reports the
-// account's shared billing/credit pool (Task-216). Live-testing against a
-// SuperGrok account (2026-07-10) showed the CLI's own `/usage`-style status
-// line ("Weekly limit: 1%", resets weekly) is a DIFFERENT, still-unlocated
-// metric — the personal SuperGrok included-usage allowance — not derivable
-// from this /billing response. Do not rename this label to "Weekly limit"
-// until that second endpoint is found and confirmed (tracked as a Task-216
-// follow-up); doing so would misrepresent which quota is being shown.
+// Credits format (`currentPeriod` + `creditUsagePercent`) is what Grok CLI
+// 1.0.3 `/usage` shows as "Weekly limit". creditUsagePercent is used-percent
+// (1.0 = 1% used → 99% remaining); omitted means 0% used.
+// Team-credit monthlyLimit/weeklyLimit+used (Task-216) remains the fallback
+// when currentPeriod is absent.
 func grokQuotaFromBilling(billing grokBillingResponse) *usageDetailLine {
+	if period := billing.Config.CurrentPeriod; period != nil && strings.TrimSpace(period.Type) != "" {
+		usedPct := 0.0
+		if billing.Config.CreditUsagePercent != nil {
+			usedPct = *billing.Config.CreditUsagePercent
+		}
+		label := "Weekly limit"
+		if strings.Contains(strings.ToUpper(period.Type), "MONTHLY") {
+			label = "Monthly limit"
+		}
+		resetAt := grokBillingResetAt(period.End, billing.Config.BillingPeriodEnd)
+		return &usageDetailLine{
+			label:            label,
+			remainingPercent: clampInt(int(100 - usedPct)),
+			resetAt:          resetAt,
+		}
+	}
+
 	limit := billing.Config.MonthlyLimit
 	label := "Team Credits (Monthly)"
 	if limit == nil {
@@ -533,16 +579,26 @@ func grokQuotaFromBilling(billing grokBillingResponse) *usageDetailLine {
 	}
 
 	remaining := clampInt(int(100 - (billing.Config.Used.Val/limit.Val)*100))
-	resetAt := ""
-	if parsed, err := time.Parse(time.RFC3339, billing.Config.BillingPeriodEnd); err == nil {
-		resetAt = parsed.UTC().Format(time.RFC3339)
-	}
-
 	return &usageDetailLine{
 		label:            label,
 		remainingPercent: remaining,
-		resetAt:          resetAt,
+		resetAt:          grokBillingResetAt(billing.Config.BillingPeriodEnd, ""),
 	}
+}
+
+func grokBillingResetAt(primary, fallback string) string {
+	for _, raw := range []string{strings.TrimSpace(primary), strings.TrimSpace(fallback)} {
+		if raw == "" {
+			continue
+		}
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+			return parsed.UTC().Format(time.RFC3339)
+		}
+		if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			return parsed.UTC().Format(time.RFC3339)
+		}
+	}
+	return ""
 }
 
 func loadCodexAccountMetadata(homePath string) (accountLaunchMetadata, error) {

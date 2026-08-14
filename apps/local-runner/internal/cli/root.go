@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"flowpilot-runner/internal/runner"
 
@@ -1762,6 +1763,13 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()
 				}
+				// Supervisor (just dev) also watches supervisor.cmd. TUI-spawned
+				// runners have no supervisor — exit this process so POST
+				// /system/shutdown actually stops the listener.
+				go func() {
+					time.Sleep(150 * time.Millisecond)
+					os.Exit(0)
+				}()
 			})
 			mux.HandleFunc("/system/restart", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
