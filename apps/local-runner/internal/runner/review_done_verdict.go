@@ -62,6 +62,12 @@ func (s *InteractiveService) recordReviewCohortMemberVerdict(parentRunID, label,
 func (s *InteractiveService) snapshotReviewCohortVerdicts(parentRunID string, entries []cohortEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.snapshotReviewCohortVerdictsLocked(parentRunID, entries)
+}
+
+// snapshotReviewCohortVerdictsLocked writes lastReviewCohortVerdicts.
+// Caller holds s.mu (settleFlowChildTurnCompletedLocked already holds it).
+func (s *InteractiveService) snapshotReviewCohortVerdictsLocked(parentRunID string, entries []cohortEntry) {
 	parent := s.runs[parentRunID]
 	if parent == nil {
 		return
