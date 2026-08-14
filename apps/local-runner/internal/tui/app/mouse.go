@@ -37,7 +37,7 @@ type tuiChrome struct {
 
 func (m *AppModel) tuiChrome() tuiChrome {
 	var c tuiChrome
-	if m.authPhase == AuthNone && (!m.sessionLoading || strings.HasPrefix(m.inputValue, "/")) {
+	if m.authPhase == AuthNone && (!m.sessionLoading || strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/")) {
 		c.sugg = m.collectSuggestions()
 	}
 	if len(c.sugg) > 0 {

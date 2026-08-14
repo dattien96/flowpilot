@@ -69,6 +69,12 @@ func (m *AppModel) insertInputAtCursor(s string) {
 	}
 	runes := []rune(m.inputValue)
 	cur := m.inputCaretIndex()
+	// Typing '/' after leftover draft text starts command mode (word-boundary
+	// slash). Skip during auth so emails/passwords are not rewritten. Bulk
+	// paste of a path is a longer string, not a lone "/".
+	if m.authPhase == AuthNone && s == "/" && cur > 0 && !isSlashBoundary(runes[cur-1]) && runes[cur-1] != '/' {
+		s = " /"
+	}
 	extra := []rune(s)
 	out := make([]rune, 0, len(runes)+len(extra))
 	out = append(out, runes[:cur]...)

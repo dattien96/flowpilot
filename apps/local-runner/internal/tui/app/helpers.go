@@ -471,6 +471,48 @@ func wrapParagraph(para string, width int) []string {
 	return lines
 }
 
+// isSlashBoundary is a word edge that can start a slash command (Desktop findActiveSlash).
+func isSlashBoundary(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n'
+}
+
+// activeSlashLine finds the nearest word-boundary '/' at or before caret.
+// Returns the suffix from that '/' through the end of input (args included).
+// Word boundary: start of input, or previous rune is space/tab/newline.
+// Spaces after '/' are command args — do not treat them as "no slash".
+// Glued slashes (https://, path/to) are skipped so an earlier " /cmd" still wins.
+func activeSlashLine(input string, caret int) (line string, start int, ok bool) {
+	runes := []rune(input)
+	n := len(runes)
+	if caret < 0 {
+		caret = 0
+	}
+	if caret > n {
+		caret = n
+	}
+	for i := caret - 1; i >= 0; i-- {
+		if runes[i] != '/' {
+			continue
+		}
+		if i == 0 || isSlashBoundary(runes[i-1]) {
+			return string(runes[i:]), i, true
+		}
+	}
+	return "", 0, false
+}
+
+// slashSuggestLine is the command token used by pickers. A mid-draft
+// "hello /mo" yields "/mo" so the list opens without deleting the draft first.
+// Falls back to the full input so "/cmd" still matches when the caret sits
+// before the slash (Home) or tests only set inputValue.
+func (m *AppModel) slashSuggestLine() string {
+	line, _, ok := activeSlashLine(m.inputValue, m.inputCaretIndex())
+	if ok {
+		return line
+	}
+	return m.inputValue
+}
+
 // filterSlashSuggestions returns slash commands matching the current input prefix.
 func filterSlashSuggestions(input string) []slashCommand {
 	in := strings.ToLower(strings.TrimSpace(input))

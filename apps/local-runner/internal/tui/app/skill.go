@@ -189,10 +189,11 @@ func (m *AppModel) cmdLoadSkills(show bool) tea.Cmd {
 }
 
 func (m *AppModel) cmdMaybePrefetchSkills() tea.Cmd {
-	okSkill, _ := parseSlashArgPrefix(m.inputValue, "/skill")
-	okS, _ := parseSlashArgPrefix(m.inputValue, "/s")
-	bare := strings.EqualFold(strings.TrimSpace(m.inputValue), "/skill") ||
-		strings.EqualFold(strings.TrimSpace(m.inputValue), "/s")
+	line := m.slashSuggestLine()
+	okSkill, _ := parseSlashArgPrefix(line, "/skill")
+	okS, _ := parseSlashArgPrefix(line, "/s")
+	bare := strings.EqualFold(strings.TrimSpace(line), "/skill") ||
+		strings.EqualFold(strings.TrimSpace(line), "/s")
 	if !okSkill && !okS && !bare {
 		return nil
 	}

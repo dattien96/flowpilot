@@ -226,8 +226,9 @@ func (m *AppModel) cmdFetchChats(silent bool) tea.Cmd {
 }
 
 func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
-	trimmed := strings.TrimSpace(m.inputValue)
-	_, _, argOK := parseChatOpenArgPrefix(m.inputValue)
+	line := m.slashSuggestLine()
+	trimmed := strings.TrimSpace(line)
+	_, _, argOK := parseChatOpenArgPrefix(line)
 	bare := false
 	for _, cmd := range chatOpenSlashCommands {
 		if strings.EqualFold(trimmed, cmd) {

@@ -1171,29 +1171,30 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if m.project != nil {
 		projectID = m.project.ID
 	}
-	if flows := filterFlowSuggestions(m.inputValue, m.flowBuiltins, m.flowWorkflows, projectID); len(flows) > 0 {
+	in := m.slashSuggestLine()
+	if flows := filterFlowSuggestions(in, m.flowBuiltins, m.flowWorkflows, projectID); len(flows) > 0 {
 		return flows
 	}
 	// While `/flow ` is open but catalog still loading, show a placeholder row.
-	if ok, _ := parseFlowArgPrefix(m.inputValue); ok {
+	if ok, _ := parseFlowArgPrefix(in); ok {
 		if len(m.flowBuiltins) == 0 && len(m.flowWorkflows) == 0 {
 			return []suggestItem{{value: "", detail: "loading flows…", kind: "flow"}}
 		}
 		return []suggestItem{{value: "", detail: "(no matching flows)", kind: "flow"}}
 	}
-	if chats := filterHistorySuggestions(m.inputValue, m.chatList); len(chats) > 0 {
+	if chats := filterHistorySuggestions(in, m.chatList); len(chats) > 0 {
 		return chats
 	}
-	if cmd, _, ok := parseChatOpenArgPrefix(m.inputValue); ok {
+	if cmd, _, ok := parseChatOpenArgPrefix(in); ok {
 		if len(m.chatList) == 0 {
 			return []suggestItem{{value: "", detail: "loading chats…", kind: "history", slash: cmd}}
 		}
 		return []suggestItem{{value: "", detail: "(no matching chats)", kind: "history", slash: cmd}}
 	}
-	if providerSugg := filterProviderSuggestions(m.inputValue, m.providers, m.providerAccounts, m.provider); len(providerSugg) > 0 {
+	if providerSugg := filterProviderSuggestions(in, m.providers, m.providerAccounts, m.provider); len(providerSugg) > 0 {
 		return providerSugg
 	}
-	if mode, _, ok := parseProviderPicker(m.inputValue); ok {
+	if mode, _, ok := parseProviderPicker(in); ok {
 		kind := "provider"
 		switch mode {
 		case "connect":
@@ -1207,43 +1208,43 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 		return []suggestItem{{value: "", detail: "(no matching providers)", kind: kind}}
 	}
 	models := modelsForProvider(m.providers, m.provider)
-	if modelSugg := filterModelSuggestions(m.inputValue, models, m.model); len(modelSugg) > 0 {
+	if modelSugg := filterModelSuggestions(in, models, m.model); len(modelSugg) > 0 {
 		return modelSugg
 	}
-	if ok, _ := parseSlashArgPrefix(m.inputValue, "/model"); ok {
+	if ok, _ := parseSlashArgPrefix(in, "/model"); ok {
 		if len(models) == 0 {
 			return []suggestItem{{value: "", detail: "no models — set /provider first", kind: "model"}}
 		}
 		return []suggestItem{{value: "", detail: "(no matching models)", kind: "model"}}
 	}
-	if reasonSugg := filterReasoningSuggestions(m.inputValue, m.reasoningEffort); len(reasonSugg) > 0 {
+	if reasonSugg := filterReasoningSuggestions(in, m.reasoningEffort); len(reasonSugg) > 0 {
 		return reasonSugg
 	}
-	if ok, _ := parseSlashArgPrefix(m.inputValue, "/reasoning"); ok {
+	if ok, _ := parseSlashArgPrefix(in, "/reasoning"); ok {
 		return []suggestItem{{value: "", detail: "(no matching effort)", kind: "reasoning"}}
 	}
-	if skillSugg := filterSkillSuggestions(m.inputValue, m.skillsCatalog, m.selectedSkills); len(skillSugg) > 0 {
+	if skillSugg := filterSkillSuggestions(in, m.skillsCatalog, m.selectedSkills); len(skillSugg) > 0 {
 		return skillSugg
 	}
-	if ok, _ := parseSlashArgPrefix(m.inputValue, "/skill"); ok {
+	if ok, _ := parseSlashArgPrefix(in, "/skill"); ok {
 		if len(m.skillsCatalog) == 0 && len(m.selectedSkills) == 0 {
 			return []suggestItem{{value: "", detail: "loading skills…", kind: "skill"}}
 		}
 		return []suggestItem{{value: "", detail: "(no matching skills)", kind: "skill"}}
 	}
-	if ok, _ := parseSlashArgPrefix(m.inputValue, "/s"); ok {
+	if ok, _ := parseSlashArgPrefix(in, "/s"); ok {
 		if len(m.skillsCatalog) == 0 && len(m.selectedSkills) == 0 {
 			return []suggestItem{{value: "", detail: "loading skills…", kind: "skill"}}
 		}
 		return []suggestItem{{value: "", detail: "(no matching skills)", kind: "skill"}}
 	}
-	if imgSugg := filterImageSuggestions(m.inputValue, m.pendingAttach); len(imgSugg) > 0 {
+	if imgSugg := filterImageSuggestions(in, m.pendingAttach); len(imgSugg) > 0 {
 		return imgSugg
 	}
-	if _, _, ok := parseImagePicker(m.inputValue); ok {
+	if _, _, ok := parseImagePicker(in); ok {
 		return []suggestItem{{value: "", detail: "(no matching /image option)", kind: "image-sub"}}
 	}
-	cmds := filterSlashSuggestions(m.inputValue)
+	cmds := filterSlashSuggestions(in)
 	out := make([]suggestItem, 0, len(cmds))
 	for _, sc := range cmds {
 		out = append(out, suggestItem{value: sc.name, detail: sc.description, kind: "cmd"})
@@ -1356,10 +1357,13 @@ func suggestionAcceptValue(it suggestItem) string {
 }
 
 func (m *AppModel) allowsKeyWhileLoading(msg tea.KeyMsg) bool {
-	if strings.HasPrefix(m.inputValue, "/") {
+	if _, _, ok := activeSlashLine(m.inputValue, m.inputCaretIndex()); ok {
 		return true
 	}
-	if msg.Type == tea.KeyRunes && len(m.inputValue) == 0 && len(msg.Runes) > 0 && msg.Runes[0] == '/' {
+	if strings.HasPrefix(strings.TrimSpace(m.inputValue), "/") {
+		return true
+	}
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 && msg.Runes[0] == '/' {
 		return true
 	}
 	return false
@@ -2572,7 +2576,7 @@ func (m *AppModel) renderInputLine() string {
 		w = 80
 	}
 	w = safeTermWidth(w)
-	if m.sessionLoading && !strings.HasPrefix(m.inputValue, "/") {
+	if m.sessionLoading && !strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/") {
 		frames := []string{"|", "/", "-", "\\"}
 		spin := frames[m.loadingFrame%len(frames)]
 		msg := fmt.Sprintf(" %s please wait… (chat disabled) ", spin)
@@ -3025,8 +3029,9 @@ func (m *AppModel) cmdFetchFlows(silent bool) tea.Cmd {
 }
 
 func (m *AppModel) cmdMaybePrefetchFlows() tea.Cmd {
-	ok, _ := parseFlowArgPrefix(m.inputValue)
-	if !ok && !strings.EqualFold(strings.TrimSpace(m.inputValue), "/flow") {
+	line := m.slashSuggestLine()
+	ok, _ := parseFlowArgPrefix(line)
+	if !ok && !strings.EqualFold(strings.TrimSpace(line), "/flow") {
 		return nil
 	}
 	if len(m.flowBuiltins) > 0 || len(m.flowWorkflows) > 0 {
