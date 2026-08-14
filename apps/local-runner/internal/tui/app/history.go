@@ -175,35 +175,46 @@ func replayHistoryMessages(evs []client.ProviderEvent) []ChatMessage {
 				out = append(out, ChatMessage{Role: "assistant", Content: ev.Text})
 			}
 		case "message_completed":
-			if isStepCompleteStub(ev.Text) {
-				continue
-			}
-			if ev.Text == "" {
-				continue
-			}
-			if len(out) > 0 && out[len(out)-1].Role == "assistant" {
-				if strings.TrimSpace(out[len(out)-1].Content) == "" {
-					out[len(out)-1].Content = ev.Text
-				}
-			} else {
-				out = append(out, ChatMessage{Role: "assistant", Content: ev.Text})
-			}
+			out = applyReplayAssistantText(out, ev.Text)
 		case "turn_completed":
-			if isStepCompleteStub(ev.FinalMessage) {
-				continue
-			}
-			if strings.TrimSpace(ev.FinalMessage) == "" {
-				continue
-			}
-			// Only fill empty assistant bubble; never replace streamed text with stub.
-			if len(out) == 0 || out[len(out)-1].Role != "assistant" {
-				out = append(out, ChatMessage{Role: "assistant", Content: ev.FinalMessage})
-			} else if strings.TrimSpace(out[len(out)-1].Content) == "" {
-				out[len(out)-1].Content = ev.FinalMessage
-			}
+			out = applyReplayAssistantText(out, ev.FinalMessage)
 		}
 	}
 	return out
+}
+
+// applyReplayAssistantText merges a later assistant frame into the last bubble.
+// Grok (and Claude/Codex JSONL seed) emit one message_completed before a tool
+// and another after — run-97624 dropped "Đã tạo file…" on /open because the
+// second completed was ignored once the first bubble was non-empty. Never
+// replace richer text with a step-complete stub (CA-475 / chooseAssistantFinal).
+func applyReplayAssistantText(out []ChatMessage, next string) []ChatMessage {
+	if isStepCompleteStub(next) || strings.TrimSpace(next) == "" {
+		return out
+	}
+	if len(out) == 0 || out[len(out)-1].Role != "assistant" {
+		return append(out, ChatMessage{Role: "assistant", Content: next})
+	}
+	out[len(out)-1].Content = mergeReplayAssistant(out[len(out)-1].Content, next)
+	return out
+}
+
+func mergeReplayAssistant(cur, next string) string {
+	c := strings.TrimSpace(cur)
+	n := strings.TrimSpace(next)
+	if n == "" || isStepCompleteStub(n) {
+		return cur
+	}
+	if c == "" {
+		return next
+	}
+	if strings.Contains(c, n) {
+		return cur
+	}
+	if strings.Contains(n, c) {
+		return next
+	}
+	return strings.TrimRight(cur, "\n") + "\n" + next
 }
 
 func (m *AppModel) cmdListChats() tea.Cmd {
