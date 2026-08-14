@@ -59,7 +59,8 @@ func (m *AppModel) buildTurnInput(prompt string) client.TurnInput {
 
 func (m *AppModel) clearPendingTurnPayload() {
 	m.selectedSkills = nil
-	m.pendingAttach = nil
+	// Drop pending images + temp files (do not leave orphans under flowpilot-tui-pending).
+	_ = m.clearPendingAttachments()
 }
 
 func (m *AppModel) canSend() bool {

@@ -211,8 +211,10 @@ type AppModel struct {
 	agentsFocus      bool
 	selectedSkills   []client.SkillSelection
 	skillsCatalog    []client.ProviderSkill // Desktop ChatInput skills list
-	pendingAttach    []client.PromptAttachment
-	launch           LaunchArm
+	pendingAttach     []client.PromptAttachment
+	pendingLocalPaths map[string]string // attachment ID → materialized temp path
+	attachPanelOpen   bool              // modal list of pending images (Desktop chips)
+	launch            LaunchArm
 	firstTurnPending bool // consume builtin FirstTurnExtras once
 	reasoningEffort  string
 	flowBuiltins     []client.BuiltinFlowOption
@@ -365,7 +367,7 @@ var knownSlashCommands = []slashCommand{
 	{"/flow", "Start or list flows"},
 	{"/chat", "Switch to chat mode"},
 	{"/skill", "Skills picker — /skill  then ↑↓ Tab tick · Enter apply · F3 status"},
-	{"/image", "Attach/list/open images — Alt+V or /image paste, /image <path>, /image open <n>"},
+	{"/image", "Images — Alt+V paste; click [N img] manage/[x] detach; /image rm <n>|clear|open <n>"},
 	{"/provider", "Switch / connect / install — /provider  then ↑↓ Tab Enter"},
 	{"/model", "Switch model — type /model  then ↑↓ Tab Enter"},
 	{"/reasoning", "Set effort — type /reasoning  then ↑↓ Tab Enter"},

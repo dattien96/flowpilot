@@ -9,7 +9,7 @@ import (
 
 // inputAttachChipPlain is the pending-image chip in the prompt row.
 // Empty when nothing is attached so the box does not look like it has an image.
-// Click still works on "[N img]" (hitAttachChrome); attach via Alt+V / /image paste.
+// Click "[N img]" opens the manage panel (detach); attach via Alt+V / /image paste.
 func (m *AppModel) inputAttachChipPlain() string {
 	n := len(m.pendingAttach)
 	if n <= 0 {

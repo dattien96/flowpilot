@@ -660,10 +660,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Attachment != nil {
-			m.pendingAttach = append(m.pendingAttach, *msg.Attachment)
+			m.appendPendingAttachment(*msg.Attachment)
 			m.addMessage("system", fmt.Sprintf(
-				"Attached image: %s (%d pending) — /image to list, /image open %d to view",
-				msg.Attachment.OriginalName, len(m.pendingAttach), len(m.pendingAttach),
+				"Attached image: %s (%d pending) — click [%d img] to manage, /image open %d to view",
+				msg.Attachment.OriginalName, len(m.pendingAttach), len(m.pendingAttach), len(m.pendingAttach),
 			), "")
 			return m, nil
 		}
@@ -976,6 +976,11 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.authEmail = ""
 			m.clearInputValue()
 			m.addMessage("system", "Login cancelled.", "")
+			return m, nil
+		}
+		if m.attachPanelOpen {
+			m.closeAttachPanel()
+			m.statusMsg = "image panel closed"
 			return m, nil
 		}
 		if !m.mouseSel.empty() {
@@ -1472,25 +1477,48 @@ func (m *AppModel) handleGateInput(input string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// dispatchImageCommand handles /image [paste|open|clear|list|<path>].
+// dispatchImageCommand handles /image [paste|open|clear|rm|list|<path>].
 // Reserved subcommands must never fall through to os.ReadFile (that produced
 // "read paste: open paste: invalid argument" when paste was treated as a path).
 func (m *AppModel) dispatchImageCommand(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
+		if len(m.pendingAttach) > 0 {
+			m.openAttachPanel()
+		}
 		m.addMessage("system", formatPendingAttachments(m.pendingAttach)+
-			"\nTip: Alt+V or /image paste (Windows Terminal often steals Ctrl+V). Images: codex/claude (native) + grok (path fallback → .tmp/images).", "")
+			"\nTip: click [N img] to manage · Alt+V / /image paste · /image rm <n> · /image clear", "")
 		return m, nil
 	}
 	sub := strings.ToLower(strings.TrimSpace(args[0]))
 	switch sub {
-	case "list", "ls":
+	case "list", "ls", "panel", "manage":
+		if len(m.pendingAttach) > 0 {
+			m.openAttachPanel()
+		}
 		m.addMessage("system", formatPendingAttachments(m.pendingAttach), "")
 		return m, nil
 	case "paste", "clip", "clipboard":
 		return m, m.cmdClipboardPaste()
 	case "clear":
-		m.pendingAttach = nil
-		m.addMessage("system", "Cleared pending images.", "")
+		n := m.clearPendingAttachments()
+		m.addMessage("system", fmt.Sprintf("Cleared %d pending image(s).", n), "")
+		return m, nil
+	case "rm", "remove", "del", "delete", "x":
+		if len(args) < 2 {
+			m.addMessage("system", "Usage: /image rm <n>  (1-based index from /image list)", "error")
+			return m, nil
+		}
+		idx, err := strconv.Atoi(strings.TrimSpace(args[1]))
+		if err != nil {
+			m.addMessage("system", "Usage: /image rm <n>  (1-based index)", "error")
+			return m, nil
+		}
+		name, ok := m.removePendingAttachment(idx)
+		if !ok {
+			m.addMessage("system", fmt.Sprintf("image index %d out of range (1-%d)", idx, len(m.pendingAttach)+1), "error")
+			return m, nil
+		}
+		m.addMessage("system", fmt.Sprintf("Removed pending image: %s (%d left)", name, len(m.pendingAttach)), "")
 		return m, nil
 	case "open", "view", "show":
 		idx := 1
@@ -1511,7 +1539,8 @@ func (m *AppModel) dispatchImageCommand(args []string) (tea.Model, tea.Cmd) {
 	}
 	// Belt-and-suspenders: never open reserved words as files.
 	switch strings.ToLower(path) {
-	case "paste", "clip", "clipboard", "list", "ls", "clear", "open", "view", "show":
+	case "paste", "clip", "clipboard", "list", "ls", "clear", "open", "view", "show",
+		"rm", "remove", "del", "delete", "x", "panel", "manage":
 		return m, m.cmdClipboardPaste()
 	}
 	if !client.SupportsImages(m.provider) {
@@ -1527,8 +1556,10 @@ func (m *AppModel) dispatchImageCommand(args []string) (tea.Model, tea.Cmd) {
 		m.addMessage("system", err.Error(), "error")
 		return m, nil
 	}
-	m.pendingAttach = append(m.pendingAttach, attachments...)
-	m.addMessage("system", fmt.Sprintf("Attached image: %s (%d pending) — /image open %d to view",
+	for _, att := range attachments {
+		m.appendPendingAttachment(att)
+	}
+	m.addMessage("system", fmt.Sprintf("Attached image: %s (%d pending) — click [%d img] to manage",
 		filepath.Base(path), len(m.pendingAttach), len(m.pendingAttach)), "")
 	return m, nil
 }
@@ -1898,7 +1929,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.connStatus = ConnIdle
 		m.statusMsg = "ready"
 		m.selectedSkills = nil
-		m.pendingAttach = nil
+		_ = m.clearPendingAttachments()
 		m.gate = nil
 		m.approval = nil
 		m.question = nil
@@ -2077,6 +2108,10 @@ func (m *AppModel) View() string {
 	sb.WriteString("\n")
 	if len(c.sugg) > 0 {
 		sb.WriteString(m.renderSuggestions(c.sugg))
+		sb.WriteString("\n")
+	}
+	if c.attachPanelBlock != "" {
+		sb.WriteString(c.attachPanelBlock)
 		sb.WriteString("\n")
 	}
 	sb.WriteString(m.renderInputLine())

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,19 +17,22 @@ func stripANSI(s string) string {
 }
 
 type tuiChrome struct {
-	panelLines     []string
-	panelH         int
-	bannerLines    int
-	statusBlock    string
-	statusH        int
-	inputBlock     string
-	inputH         int
-	inputY         int
-	sugg           []suggestItem
-	suggLines      int
-	messagesHeight int
-	statusY        int
-	chatSepH       int
+	panelLines      []string
+	panelH          int
+	bannerLines     int
+	statusBlock     string
+	statusH         int
+	inputBlock      string
+	inputH          int
+	inputY          int
+	attachPanelBlock string
+	attachPanelH     int
+	attachPanelY     int
+	sugg            []suggestItem
+	suggLines       int
+	messagesHeight  int
+	statusY         int
+	chatSepH        int
 }
 
 func (m *AppModel) tuiChrome() tuiChrome {
@@ -52,16 +56,25 @@ func (m *AppModel) tuiChrome() tuiChrome {
 	c.panelH = len(c.panelLines)
 	c.statusBlock = m.renderStatusLine()
 	c.statusH = strings.Count(c.statusBlock, "\n") + 1
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	c.attachPanelBlock = m.renderAttachPanel(w)
+	if c.attachPanelBlock != "" {
+		c.attachPanelH = strings.Count(c.attachPanelBlock, "\n") + 1
+	}
 	c.inputBlock = m.renderInputLine()
 	c.inputH = strings.Count(c.inputBlock, "\n") + 1
 	// Blank line + rule always sit between the transcript and the status chrome.
 	c.chatSepH = 2
-	c.messagesHeight = m.height - c.statusH - c.inputH - c.suggLines - c.bannerLines - c.panelH - c.chatSepH
+	c.messagesHeight = m.height - c.statusH - c.inputH - c.attachPanelH - c.suggLines - c.bannerLines - c.panelH - c.chatSepH
 	if c.messagesHeight < 1 {
 		c.messagesHeight = 1
 	}
 	c.statusY = c.panelH + c.messagesHeight + c.bannerLines + c.chatSepH
-	c.inputY = c.statusY + c.statusH + c.suggLines
+	c.attachPanelY = c.statusY + c.statusH + c.suggLines
+	c.inputY = c.attachPanelY + c.attachPanelH
 	return c
 }
 
@@ -212,7 +225,25 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 			return m.submitQuestionAnswer("deny")
 		}
 	case target == "attach":
+		// Pending chip [N img]: open manage panel (Desktop attachment chips).
+		// Empty chip is not rendered; paste remains Alt+V / /image paste.
+		if len(m.pendingAttach) > 0 {
+			if m.attachPanelOpen {
+				m.closeAttachPanel()
+			} else {
+				m.openAttachPanel()
+			}
+			return m, nil
+		}
 		return m, m.cmdClipboardPaste()
+	case strings.HasPrefix(target, "attach-rm:"):
+		idx, err := strconv.Atoi(strings.TrimPrefix(target, "attach-rm:"))
+		if err == nil {
+			if name, ok := m.removePendingAttachment(idx); ok {
+				m.addMessage("system", fmt.Sprintf("Removed pending image: %s (%d left)", name, len(m.pendingAttach)), "")
+			}
+		}
+		return m, nil
 	case strings.HasPrefix(target, "qopt:"):
 		idx, err := strconv.Atoi(strings.TrimPrefix(target, "qopt:"))
 		if err == nil && m.question != nil && idx >= 0 && idx < len(m.question.Options) {
@@ -256,6 +287,9 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 	}
 	if t := hitQuestionChrome(m, c, x, y); t != "" {
 		return t
+	}
+	if idx := hitAttachPanelRemove(c, x, y); idx > 0 {
+		return fmt.Sprintf("attach-rm:%d", idx)
 	}
 	if hitAttachChrome(c, x, y) {
 		return "attach"

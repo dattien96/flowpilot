@@ -138,7 +138,12 @@ func (m *AppModel) openTurnStream(prompt string) tea.Cmd {
 		m.firstTurnPending = false
 	}
 	catalogWorkflow := m.launch.IsCatalogWorkflow()
+	// Release local pending temp files; base64 already copied into attachments.
+	for _, att := range attachments {
+		m.unlinkPendingLocal(att.ID)
+	}
 	m.pendingAttach = nil
+	m.attachPanelOpen = false
 
 	return func() tea.Msg {
 		ctx := context.Background()

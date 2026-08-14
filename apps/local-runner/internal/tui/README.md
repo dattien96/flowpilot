@@ -78,7 +78,7 @@ Root persistent flags (`--workspace`, `--host`, `--port`) are inherited and not 
 | `/provider` | List/pick providers with Desktop readiness (`installed` + active connected account) |
 | `/provider connect` | Connect account (Desktop Settings parity) — blocked if CLI not installed |
 | `/provider install` | Install provider CLI via `POST /providers/install` (runner supports all; Desktop UI Install is Gemini-only) |
-| `/image` | List/attach images — **Alt+V** / `/image paste` (Ctrl+V often stolen by Windows Terminal); `/image open <n>` preview (codex/claude native; grok path-fallback via `.tmp/images`) |
+| `/image` | List/attach images — **Alt+V** / `/image paste`; click **`[N img]`** to manage (click **`[x]`** detach); `/image rm <n>` · `/image clear` · `/image open <n>` (codex/claude native; grok path-fallback) |
 | `/model` | Pick model — type `/model ` then ↑↓ · Tab · Enter |
 | `/skill` | List/toggle skills (Desktop `/s` picker) — `/skill` shows catalog; type `/skill ` then ↑↓ Tab Enter |
 | `/reasoning` | Pick effort — type `/reasoning ` then ↑↓ · Tab · Enter |

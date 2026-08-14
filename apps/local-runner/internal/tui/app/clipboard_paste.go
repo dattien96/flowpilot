@@ -304,7 +304,7 @@ func imagePathFromClipboardText(text string) string {
 
 func formatPendingAttachments(atts []client.PromptAttachment) string {
 	if len(atts) == 0 {
-		return "No pending images. Use Alt+V or /image paste (codex/claude), or /image <path>."
+		return "No pending images. Use Alt+V or /image paste, or /image <path>."
 	}
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Pending images (%d/6):\n", len(atts)))
@@ -312,6 +312,6 @@ func formatPendingAttachments(atts []client.PromptAttachment) string {
 		sb.WriteString(fmt.Sprintf("  %d. %s  %s  %dx%d  %d bytes\n",
 			i+1, a.OriginalName, a.MimeType, a.Width, a.Height, a.SizeBytes))
 	}
-	sb.WriteString("Open: /image open <n>  · Clear: /image clear")
+	sb.WriteString("Manage: click [N img] · Remove: /image rm <n> or click [x] · Open: /image open <n> · Clear: /image clear")
 	return sb.String()
 }
