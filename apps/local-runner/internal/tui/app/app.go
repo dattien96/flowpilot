@@ -397,6 +397,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "open failed"
 			return m, nil
 		}
+		m.stopOrchestrationStream()
 		handle := msg.Handle
 		m.runHandle = &handle
 		m.stepID = handle.StepID
@@ -423,7 +424,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connStatus = ConnIdle
 		m.statusMsg = fmt.Sprintf("opened %s", shortID(handle.RunID))
 		m.addMessage("system", fmt.Sprintf("Opened chat %s — continue typing or /history|/open|/resume to switch.", handle.RunID), "")
-		return m, nil
+		hydrate := m.applyPendingFromSnapshot(msg.Snapshot)
+		var listen tea.Cmd
+		if m.runHandle != nil && m.orchStream == nil {
+			listen = m.cmdStartOrchestrationStream()
+		}
+		return m, tea.Batch(hydrate, listen)
+
+	case runSnapshotMsg:
+		if msg.Err != "" {
+			return m, nil
+		}
+		return m, m.applyPendingFromSnapshot(msg.Snap)
 
 	case HistoryChunkMsg:
 		m.historyChunkInFlight = false
@@ -578,11 +590,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		cmds := []tea.Cmd{m.cmdRefreshStepsRuntime()}
-		// Desktop startOrchestrationStream: keep listening after the turn so
-		// hub/child step transitions (and late gate/approval events) surface.
-		if m.shouldPollStepsRuntime() && m.orchStream == nil {
+		// Desktop startOrchestrationStream: keep listening after the user turn
+		// so late gate/approval events (run-97624 chat-mode reprompt) surface.
+		// Do not reuse shouldPollStepsRuntime — that predicate is flow/step UI only.
+		if m.runHandle != nil && m.orchStream == nil {
 			cmds = append(cmds, m.cmdStartOrchestrationStream())
 		}
+		cmds = append(cmds, m.cmdHydratePendingFromSnapshot())
 		return m, tea.Batch(cmds...)
 
 	case orchStreamOpenedMsg:
@@ -1411,7 +1425,12 @@ func (m *AppModel) turnIsActive() bool {
 	if m.pendingPrompt != "" {
 		return true
 	}
-	if m.orchStream != nil || m.flowHasActiveAgents() {
+	if m.flowHasActiveAgents() {
+		return true
+	}
+	// Flow/step orch SSE is still in-flight work. Plain-chat orch SSE is only
+	// a late-gate listener (run-97624) and must not keep [stop] armed.
+	if m.shouldPollStepsRuntime() && m.orchStream != nil {
 		return true
 	}
 	if m.runHandle == nil {

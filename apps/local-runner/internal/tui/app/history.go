@@ -25,7 +25,15 @@ type ChatOpenedMsg struct {
 	Handle                client.RunHandle
 	Messages              []ChatMessage
 	HistoryLoadedAfterSeq int64 // events with seq <= this are not yet loaded; 0 = full history
+	Snapshot              client.RunSnapshot
 	Err                   string
+}
+
+// runSnapshotMsg is GET /client/workflow-runs/{id} used to hydrate a live
+// pending approval/question after the user turn stream closes (run-97624).
+type runSnapshotMsg struct {
+	Snap client.RunSnapshot
+	Err  string
 }
 
 // HistoryChunkMsg carries an older SSE chunk prepended on Load earlier (Task-290 Q-1).
@@ -282,10 +290,90 @@ func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
 		}
 		trimmed := trimEventsFromTurnStart(collected)
 		msgs := replayHistoryMessages(trimmed)
+		// Server snapshot is ground truth for a still-pending gate (CA-089 twin:
+		// do not infer live Approve from replayed permission_required events).
+		snap, _ := cl.GetRun(ctx, runID)
 		return ChatOpenedMsg{
 			Handle:                handle,
 			Messages:              msgs,
 			HistoryLoadedAfterSeq: historyCursorAfterReplay(after, collected, trimmed),
+			Snapshot:              snap,
 		}
+	}
+}
+
+func snapshotStatusWaiting(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "waiting_approval", "waiting_question":
+		return true
+	default:
+		return false
+	}
+}
+
+// applyPendingFromSnapshot mounts a live approval/question only when the
+// runner still reports waiting_* plus a pending card. Completed runs with
+// historical permission_required events stay read-only (CA-089).
+func (m *AppModel) applyPendingFromSnapshot(snap client.RunSnapshot) tea.Cmd {
+	if !snapshotStatusWaiting(snap.Status) {
+		return nil
+	}
+	runID := strings.TrimSpace(snap.RunID)
+	if runID == "" && m.runHandle != nil {
+		runID = m.runHandle.RunID
+	}
+	if snap.PendingApproval != nil && strings.TrimSpace(snap.PendingApproval.ID) != "" {
+		id := strings.TrimSpace(snap.PendingApproval.ID)
+		if m.effectiveYolo() {
+			m.connStatus = ConnRunning
+			m.statusMsg = "auto-approved"
+			return m.cmdAutoApprove(id, runID)
+		}
+		if m.approval != nil && m.approval.ID == id {
+			m.connStatus = ConnWaiting
+			m.statusMsg = "approval required"
+			return nil
+		}
+		m.approval = &ApprovalState{ID: id, RunID: runID, Details: snap.PendingApproval.Details}
+		m.connStatus = ConnWaiting
+		m.statusMsg = "approval required"
+		m.addMessage("system", formatApprovalWaitingLine(id, m.asciiMode), "approval")
+		return nil
+	}
+	if snap.PendingQuestion != nil && strings.TrimSpace(snap.PendingQuestion.ID) != "" {
+		id := strings.TrimSpace(snap.PendingQuestion.ID)
+		if m.question != nil && m.question.ID == id {
+			m.connStatus = ConnWaiting
+			m.statusMsg = "question"
+			return nil
+		}
+		m.question = &QuestionState{
+			ID:      id,
+			Prompt:  snap.PendingQuestion.Prompt,
+			Options: snap.PendingQuestion.Options,
+			RunID:   runID,
+		}
+		m.connStatus = ConnWaiting
+		m.statusMsg = "question"
+		m.addMessage("system", formatQuestionMessage(snap.PendingQuestion.Prompt, snap.PendingQuestion.Options), "question")
+	}
+	return nil
+}
+
+func (m *AppModel) cmdHydratePendingFromSnapshot() tea.Cmd {
+	if m.runHandle == nil {
+		return nil
+	}
+	runID := m.runHandle.RunID
+	runnerURL := m.runnerURL
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		snap, err := cl.GetRun(ctx, runID)
+		if err != nil {
+			return runSnapshotMsg{Err: err.Error()}
+		}
+		return runSnapshotMsg{Snap: snap}
 	}
 }
