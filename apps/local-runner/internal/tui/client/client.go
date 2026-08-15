@@ -18,6 +18,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -356,6 +357,7 @@ const (
 type Client struct {
 	base    string
 	http    *http.Client
+	mu      sync.Mutex
 	lastSeq map[string]int64
 }
 
@@ -386,6 +388,21 @@ func New(baseURL string) *Client {
 			Transport: transport,
 		},
 		lastSeq: make(map[string]int64),
+	}
+}
+
+// NoteLastSeq raises the per-run SSE cursor so a later SendTurn on the same run
+// never replays events the model already saw (e.g. after /open where the resume
+// handle carries LastEventSeq but the client cursor was never seeded). It never
+// decreases the cursor — an older snapshot cannot rewind a live stream.
+func (c *Client) NoteLastSeq(runID string, seq int64) {
+	if seq <= 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lastSeq[runID] < seq {
+		c.lastSeq[runID] = seq
 	}
 }
 
@@ -646,14 +663,18 @@ func (c *Client) SendTurn(ctx context.Context, input TurnInput) (<-chan Provider
 			break
 		}
 
+		c.mu.Lock()
 		after := c.lastSeq[input.RunID]
+		c.mu.Unlock()
 		streamCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
 		for ev := range c.openStream(streamCtx, input.RunID, after) {
+			c.mu.Lock()
 			if ev.Seq > c.lastSeq[input.RunID] {
 				c.lastSeq[input.RunID] = ev.Seq
 			}
+			c.mu.Unlock()
 			// Filter to this turn only. Always pass agent_graph_updated (and
 			// empty-turnId events) so flow step transitions during a long
 			// context.produce / hub turn still reach the TUI.
@@ -676,9 +697,11 @@ func (c *Client) StreamRun(ctx context.Context, runID string, afterSeq int64) <-
 	go func() {
 		defer close(ch)
 		for ev := range c.openStream(ctx, runID, afterSeq) {
+			c.mu.Lock()
 			if ev.Seq > c.lastSeq[runID] {
 				c.lastSeq[runID] = ev.Seq
 			}
+			c.mu.Unlock()
 			select {
 			case ch <- ev:
 			case <-ctx.Done():

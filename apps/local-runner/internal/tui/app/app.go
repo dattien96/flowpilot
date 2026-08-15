@@ -575,6 +575,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.historyLoadedAfterSeq = msg.HistoryLoadedAfterSeq
 		m.historyChunkInFlight = false
 		m.lastEventSeq = handle.LastEventSeq
+		// Seed the client per-run SSE cursor so a later continue turn streams
+		// from the resume snapshot instead of replaying the whole old turn
+		// (CA-520). Desktop already seeds this via consumeHistoryReplayStream.
+		if handle.RunID != "" {
+			m.client.NoteLastSeq(handle.RunID, handle.LastEventSeq)
+		}
 		m.viewport.offset = 0
 		if len(msg.Messages) > 0 {
 			m.messages = append([]ChatMessage(nil), msg.Messages...)
@@ -809,6 +815,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Ev.Seq > m.lastEventSeq {
 			m.lastEventSeq = msg.Ev.Seq
 		}
+		if m.runHandle != nil {
+			m.client.NoteLastSeq(m.runHandle.RunID, msg.Ev.Seq)
+		}
 		m2, cmd := m.handleEvent(msg.Ev)
 		am := m2.(*AppModel)
 		return am, tea.Batch(cmd, am.cmdPollTurnStream())
@@ -858,6 +867,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.Ev.Seq > m.lastEventSeq {
 			m.lastEventSeq = msg.Ev.Seq
+		}
+		if m.runHandle != nil {
+			m.client.NoteLastSeq(m.runHandle.RunID, msg.Ev.Seq)
 		}
 		if m.viewingChild() {
 			switch msg.Ev.Type {
