@@ -869,6 +869,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Err != "" {
+			// Total failure (runner unreachable / child not resumable): leave the
+			// main transcript visible instead of a stuck empty child chrome.
+			m.restoreMainTranscript()
 			m.addMessage("system", "Open child transcript failed: "+msg.Err, "error")
 			return m, nil
 		}
@@ -878,6 +881,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, msg.Messages...)
 			m.syncVisiblePromptCount()
 			m.viewport.offset = 0
+		} else if msg.Fallback != "" {
+			m.addMessage("system", msg.Fallback, "steps")
 		} else {
 			m.addMessage("system", "(no transcript events for this agent yet)", "")
 		}

@@ -17,7 +17,8 @@ type focusStreamOpenedMsg struct {
 	AfterSeq int64         // stream live events after this seq
 	EvCh     <-chan client.ProviderEvent
 	Cancel   context.CancelFunc
-	Err      string
+	Fallback string // resume failed → live-only fallback in effect (soft note)
+	Err      string // total failure (runner unreachable / child not resumable)
 }
 
 type focusStreamEventMsg struct {
@@ -179,31 +180,69 @@ func (m *AppModel) cmdFocusAgent(runID string) tea.Cmd {
 	m.viewport.offset = 0
 	runnerURL := m.runnerURL
 	return func() tea.Msg {
-		// Resume seeds durable transcript (turn log / Grok JSONL) into the
-		// runner event buffer — StreamLive alone on a cold child returns empty
-		// (run-98158 grok-coder after parent /open).
 		cl := client.New(runnerURL)
 		ctx, cancel := context.WithCancel(context.Background())
-		resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 45*time.Second)
-		defer resumeCancel()
-		handle, err := cl.ResumeRun(resumeCtx, runID)
-		if err != nil {
+		// Resume seeds durable transcript (turn log / Grok JSONL) into the
+		// runner event buffer — StreamLive alone on a cold child returns empty
+		// (run-98158 grok-coder after parent /open). CA-504.
+		handle, resumeErr := resumeChildRunForFocus(cl, runID)
+		if resumeErr == nil {
+			until := handle.LastEventSeq
+			var collected []client.ProviderEvent
+			if until > 0 {
+				collected = collectReplayEvents(ctx, cl, runID, 0, until, chatReplayMaxEvents)
+			}
+			trimmed := trimEventsFromTurnStart(collected)
+			msgs := replayChildHistoryMessages(trimmed)
+			ch := cl.StreamLive(ctx, runID, until)
+			return focusStreamOpenedMsg{
+				RunID: runID, Messages: msgs, AfterSeq: until,
+				EvCh: ch, Cancel: cancel,
+			}
+		}
+		// Resume failed. Distinguish dial-level failure (runner genuinely
+		// unreachable — the stream would fail too) from a server-side error
+		// (child cold / session unavailable — the live stream may still serve an
+		// in-memory child). Dial failure is a total failure: Err → restore main.
+		if runnerDialDeadErr(resumeErr.Error()) {
 			cancel()
-			return focusStreamOpenedMsg{RunID: runID, Err: err.Error(), Cancel: cancel}
+			return focusStreamOpenedMsg{RunID: runID, Err: resumeErr.Error(), Cancel: cancel}
 		}
-		until := handle.LastEventSeq
-		var collected []client.ProviderEvent
-		if until > 0 {
-			collected = collectReplayEvents(resumeCtx, cl, runID, 0, until, chatReplayMaxEvents)
-		}
-		trimmed := trimEventsFromTurnStart(collected)
-		msgs := replayChildHistoryMessages(trimmed)
-		ch := cl.StreamLive(ctx, runID, until)
+		// Server-side resume failure: do not hard-fail the child view, fall back
+		// to the pre-CA-504 live-only stream so an in-memory child still renders
+		// its transcript (run-193749). StreamLive never errors — a not-found run
+		// just closes the channel, so the handler shows the fallback note
+		// instead of a red error and a stuck empty chrome.
+		ch := cl.StreamLive(ctx, runID, 0)
 		return focusStreamOpenedMsg{
-			RunID: runID, Messages: msgs, AfterSeq: until,
-			EvCh: ch, Cancel: cancel,
+			RunID: runID, EvCh: ch, Cancel: cancel,
+			Fallback: fmt.Sprintf("child resume failed (%s); showing live events", resumeErr.Error()),
 		}
 	}
+}
+
+// resumeChildRunForFocus POSTs /resume for a child transcript, retrying once
+// when the runner looked momentarily unreachable (supervisor restart / port
+// handoff) so a transient dial failure does not drop the seed (CA-517).
+func resumeChildRunForFocus(cl *client.Client, runID string) (client.RunHandle, error) {
+	var handle client.RunHandle
+	var err error
+	for attempt := 0; attempt <= 1; attempt++ {
+		resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		handle, err = cl.ResumeRun(resumeCtx, runID)
+		resumeCancel()
+		if err == nil {
+			return handle, nil
+		}
+		if attempt == 0 && runnerDialDeadErr(err.Error()) {
+			select {
+			case <-time.After(300 * time.Millisecond):
+			}
+			continue
+		}
+		break
+	}
+	return handle, err
 }
 
 func (m *AppModel) agentNameForRun(runID string) string {
