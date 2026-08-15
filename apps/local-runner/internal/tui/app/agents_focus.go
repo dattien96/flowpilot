@@ -418,6 +418,36 @@ type agentRunsHydratedMsg struct {
 	Err         string
 }
 
+// AgentGraphHydratedMsg carries a one-shot GET /agent-graph result used to seed
+// loop state (done/blocked/running) on /open of a flow run (BUG-231 parity with
+// Desktop refreshAgentGraph on history open).
+type AgentGraphHydratedMsg struct {
+	ParentRunID string
+	Graph       *client.AgentGraphSnapshot
+	Err         string
+}
+
+// cmdHydrateAgentGraph is a one-shot graph fetch on flow open so the TUI can
+// show the awaiting-user banner / settle chrome without waiting for a live
+// agent_graph_updated event. Fires even on completed/blocked opens.
+func (m *AppModel) cmdHydrateAgentGraph(parentRunID string) tea.Cmd {
+	parentRunID = strings.TrimSpace(parentRunID)
+	if parentRunID == "" {
+		return nil
+	}
+	runnerURL := m.runnerURL
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		g, err := cl.GetAgentGraph(ctx, parentRunID)
+		if err != nil {
+			return AgentGraphHydratedMsg{ParentRunID: parentRunID, Err: err.Error()}
+		}
+		return AgentGraphHydratedMsg{ParentRunID: parentRunID, Graph: g}
+	}
+}
+
 func (m *AppModel) cmdHydrateAgentRuns(parentRunID string) tea.Cmd {
 	parentRunID = strings.TrimSpace(parentRunID)
 	if parentRunID == "" {

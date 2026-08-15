@@ -255,6 +255,10 @@ type AppModel struct {
 	// the raw handle status "running" past loop "done" until the last SSE settles,
 	// so the TUI settles chrome on loop+step+agent state, not the stale handle.
 	flowLoopStatus string
+	// flowBlockReason is LoopState.BlockReason when flowLoopStatus=="blocked"
+	// (BUG-231): "cap" | "escalate" | "member_stalled". Surfaced in the banner so
+	// the user knows the flow is parked awaiting their decision, not live-running.
+	flowBlockReason string
 	turnStream       *turnStreamState
 	orchStream       *orchStreamState // Desktop orchestration SSE after turn
 	focusStream      *orchStreamState // child transcript while /agent focused
@@ -400,6 +404,7 @@ var knownSlashCommands = []slashCommand{
 	{"/agents", "List/cycle sub-agents (Tab while focused)"},
 	{"/agent", "View a sub-agent transcript — /agent main|<name>"},
 	{"/stop", "Stop the in-flight turn (flow: main + all children)"},
+	{"/continue", "Unblock a parked (blocked) flow loop — /continue" },
 	{"/flow", "Start or list flows"},
 	{"/chat", "Switch to chat mode"},
 	{"/skill", "Skills — Tab multi-pick [name]+chip · Enter closes picker · F3"},

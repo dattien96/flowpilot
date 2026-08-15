@@ -225,6 +225,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.restoreMainTranscript()
 		m.connStatus = ConnIdle
 		m.statusMsg = "stopped"
+		m.flowLoopStatus = "stopped"
 		m.addMessage("system", "Stopped.", "")
 		return m, nil
 
@@ -631,6 +632,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Hydrate sub-agents so /agent Tab and step [open] work after /open.
 		if kind == "flow" && m.runHandle != nil {
 			cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
+			// One-shot graph fetch seeds loop state (done/blocked/running) so an
+			// opened blocked flow shows the awaiting-user banner instead of arming
+			// [stop] on the stale live handle (BUG-231 run-189839 parity with
+			// Desktop refreshAgentGraph on history open).
+			cmds = append(cmds, m.cmdHydrateAgentGraph(m.runHandle.RunID))
 		}
 		// Catalog may still be loading — refresh flow list so status label can use name.
 		if kind == "flow" && len(m.flowWorkflows) == 0 && len(m.flowBuiltins) == 0 {
@@ -825,6 +831,30 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case turnStreamClosedMsg:
 		m.turnStream = nil
 		if msg.Err != nil {
+			// BUG-231 (run-189839 parity): a freeform turn against a blocked flow
+			// answers 409 flow_awaiting_user. That is a deliberate parked state,
+			// not a failure — park the flow (keep the handle) so the user can
+			// /continue or /stop instead of being dropped to a dead error state.
+			if client.IsFlowAwaitingUserError(msg.Err) {
+				m.clearThinkingPlaceholder()
+				m.flowLoopStatus = "blocked"
+				if m.flowBlockReason == "" {
+					m.flowBlockReason = "awaiting_user"
+				}
+				m.showBlockedBanner(client.AgentLoopState{
+					Status:      "blocked",
+					BlockReason: m.flowBlockReason,
+					Round:       0,
+					RoundCap:    0,
+				})
+				var cmds []tea.Cmd
+				if m.runHandle != nil {
+					cmds = append(cmds, m.cmdHydrateAgentGraph(m.runHandle.RunID))
+					cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
+					cmds = append(cmds, m.cmdRefreshStepsRuntime())
+				}
+				return m, tea.Batch(cmds...)
+			}
 			m.connStatus = ConnError
 			m.statusMsg = "turn failed"
 			m.addMessage("system", "Send turn failed: "+msg.Err.Error(), "error")
@@ -1022,14 +1052,28 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case AgentGraphMsg:
+		// Stale-parent guard (Desktop run-63960): an agent graph for a different
+		// run must never overwrite the current loop state / agent runs, or a late
+		// blocked refresh could clobber a newer Continue/Stop/switch-run result.
 		if msg.Graph != nil {
-			m.flowLoopStatus = msg.Graph.LoopState.Status
-			m.agentRuns = msg.Graph.Runs
-			if m.focusedAgentIdx >= len(m.agentRuns) {
-				m.focusedAgentIdx = 0
+			if m.runHandle != nil && strings.TrimSpace(msg.Graph.ParentRunID) != "" &&
+				strings.TrimSpace(msg.Graph.ParentRunID) != m.runHandle.RunID {
+				return m, nil
 			}
-			m.expandSessionPanelForChildAgents()
-			m.settleFlowIfDone()
+			m.applyAgentGraph(msg.Graph)
+		}
+		return m, nil
+
+	case AgentGraphHydratedMsg:
+		if msg.Err != "" {
+			m.noteRunnerPollResult(msg.Err)
+			return m, nil
+		}
+		if m.runHandle == nil || m.runHandle.RunID != msg.ParentRunID {
+			return m, nil
+		}
+		if msg.Graph != nil {
+			m.applyAgentGraph(msg.Graph)
 		}
 		return m, nil
 
@@ -1214,13 +1258,13 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 
 	case "agent_graph_updated":
 		if ev.AgentGraph != nil {
-			m.flowLoopStatus = ev.AgentGraph.LoopState.Status
-			m.agentRuns = ev.AgentGraph.Runs
-			if m.focusedAgentIdx >= len(m.agentRuns) {
-				m.focusedAgentIdx = 0
+			// Stale-parent guard (Desktop run-63960): ignore graphs for a
+			// different run so a late blocked refresh cannot overwrite a newer
+			// Continue/Stop result.
+			if m.runHandle == nil || strings.TrimSpace(ev.AgentGraph.ParentRunID) == "" ||
+				strings.TrimSpace(ev.AgentGraph.ParentRunID) == m.runHandle.RunID {
+				m.applyAgentGraph(ev.AgentGraph)
 			}
-			m.expandSessionPanelForChildAgents()
-			m.settleFlowIfDone()
 		}
 		if m.agentsFocus {
 			m.addMessage("system", fmt.Sprintf("[agents] %d agents active", len(m.agentRuns)), "")
@@ -1813,6 +1857,12 @@ func (m *AppModel) turnIsActive() bool {
 	}
 	if m.flowHasActiveAgents() {
 		return true
+	}
+	// A blocked loop (awaiting-user pause, BUG-231) with no live child is parked,
+	// not running: [stop] must not arm against the very user the flow is waiting
+	// on to Continue/Stop. run-189839 showed [stop] on a parked blocked flow.
+	if m.flowLoopBlocked() {
+		return false
 	}
 	// Flow/step orch SSE can mean live work — but after /open we also attach orch
 	// as a late-event listener on finished runs (same idea as plain-chat run-97624).
@@ -2543,11 +2593,26 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.addMessage("system", "No pending approval.", "")
 
 	case "/stop":
-		if !m.turnIsActive() {
+		// A blocked (awaiting-user) flow has turnIsActive()==false but Stop is
+		// still valid — the user can end the parked loop (Desktop FlowAwaitingUser
+		// Stop parity, BUG-231).
+		if !m.turnIsActive() && !m.flowLoopBlocked() {
 			m.addMessage("system", "Nothing to stop.", "")
 			break
 		}
 		return m, m.cmdStopTurn()
+
+	case "/continue":
+		// Desktop continueFlow parity (BUG-231): unblock a parked blocked flow.
+		if !m.flowLoopBlocked() {
+			m.addMessage("system", "No parked (blocked) flow to continue.", "")
+			break
+		}
+		if m.runHandle == nil {
+			m.addMessage("system", "No run to continue.", "")
+			break
+		}
+		return m, m.cmdContinueFlow(m.runHandle.RunID)
 
 	case "/copy":
 		kind := "answer"
@@ -3744,6 +3809,21 @@ func (m *AppModel) cmdStopTurn() tea.Cmd {
 			_ = cl.Interrupt(ctx, id)
 		}
 		return StoppedMsg{}
+	}
+}
+
+func (m *AppModel) cmdContinueFlow(runID string) tea.Cmd {
+	runnerURL := m.runnerURL
+	parentID := runID
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		g, err := cl.ContinueFlow(ctx, parentID)
+		if err != nil {
+			return ErrMsg{Err: err}
+		}
+		return AgentGraphHydratedMsg{ParentRunID: parentID, Graph: g}
 	}
 }
 

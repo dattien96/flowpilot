@@ -170,6 +170,16 @@ type AgentLoopState struct {
 	Status   string `json:"status"`
 	Round    int    `json:"round"`
 	RoundCap int    `json:"roundCap"`
+	// Cap is the flow-engine cap (Task-090); use cap ?? roundCap for display.
+	Cap int `json:"cap,omitempty"`
+	// GateReason is the human explanation for a gate/block (BUG-231).
+	GateReason string `json:"gateReason,omitempty"`
+	// OpenIssues counts unresolved review issues when the loop blocks (BUG-231).
+	OpenIssues int `json:"openIssues,omitempty"`
+	// BlockReason is why status=="blocked" (BUG-231): cap | escalate | member_stalled.
+	BlockReason string `json:"blockReason,omitempty"`
+	// ActiveNode names the node the flow is waiting on when blocked.
+	ActiveNode string `json:"activeNode,omitempty"`
 }
 
 // AgentGraphSnapshot carries the current agent graph for an agent_graph_updated event.
@@ -326,9 +336,40 @@ func RetryableCode(code string) bool {
 	return false
 }
 
+// IsFlowAwaitingUserError reports whether an error means the flow loop is
+// deliberately parked waiting for a user decision (Continue/Stop). BUG-231:
+// the runner answers a freeform turn against a blocked loop with 409
+// flow_awaiting_user (or a 409 whose message carries the same meaning). This is
+// a permanent parked state, NOT a transient retryable conflict.
+func IsFlowAwaitingUserError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.Status != http.StatusConflict {
+			return false
+		}
+		if strings.EqualFold(strings.TrimSpace(apiErr.Code), "flow_awaiting_user") {
+			return true
+		}
+		msg := strings.ToLower(apiErr.Message)
+		return strings.Contains(msg, "flow_awaiting_user") ||
+			strings.Contains(msg, "waiting for your decision") ||
+			strings.Contains(msg, "resolve the form before a new turn")
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "flow_awaiting_user") ||
+		strings.Contains(s, "waiting for your decision")
+}
+
 // IsRetryableAPIError checks if an error represents a temporary 409 gate/turn lock.
 func IsRetryableAPIError(err error) bool {
 	if err == nil {
+		return false
+	}
+	// A 409 flow_awaiting_user is a permanent parked state (BUG-231) — never retry.
+	if IsFlowAwaitingUserError(err) {
 		return false
 	}
 	var apiErr *APIError
@@ -608,6 +649,28 @@ func (c *Client) Interrupt(ctx context.Context, runID string) error {
 // (Desktop Stop: seal the hub and cancel every child).
 func (c *Client) StopAgentLoop(ctx context.Context, runID string) error {
 	return c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/agent-loop/stop", nil, nil)
+}
+
+// GetAgentGraph fetches the current agent graph snapshot (Desktop
+// refreshAgentGraph parity) so the TUI can hydrate loopState/blockReason when
+// reopening a blocked flow (BUG-231 run-189839).
+func (c *Client) GetAgentGraph(ctx context.Context, runID string) (*AgentGraphSnapshot, error) {
+	var snap AgentGraphSnapshot
+	if err := c.getJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/agent-graph", &snap); err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
+
+// ContinueFlow unparks a blocked flow loop by POSTing a user decision to
+// /agent-loop/continue and returns the refreshed graph (Desktop continueFlow
+// parity, BUG-231).
+func (c *Client) ContinueFlow(ctx context.Context, runID string) (*AgentGraphSnapshot, error) {
+	var snap AgentGraphSnapshot
+	if err := c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/agent-loop/continue", map[string]string{"feedback": "continue"}, &snap); err != nil {
+		return nil, err
+	}
+	return &snap, nil
 }
 
 // SubmitGateDecision sends POST /client/workflow-runs/{runId}/gate-decision (Desktop parity).

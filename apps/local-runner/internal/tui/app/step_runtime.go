@@ -149,6 +149,62 @@ func (m *AppModel) flowLoopDone() bool {
 	return true
 }
 
+// flowLoopBlocked reports the loop is deliberately parked awaiting a user
+// decision (BUG-231, run-189839) with no child still live. A blocked loop is a
+// non-terminal "awaiting user" pause (escalate, or the round cap reached) — it
+// must NOT read as live-running, or [stop] arms with no way for the very user
+// the flow is waiting on to respond. Desktop parity: a running child still wins
+// over a blocked loop (BUG-231 legacy), so a live child keeps [stop] armed.
+func (m *AppModel) flowLoopBlocked() bool {
+	if strings.ToLower(strings.TrimSpace(m.flowLoopStatus)) != "blocked" {
+		return false
+	}
+	if m.flowHasActiveAgents() {
+		return false
+	}
+	if m.turnStream != nil || m.focusStream != nil {
+		return false
+	}
+	return true
+}
+
+// applyAgentGraph records the latest loop state + agent runs from an agent
+// graph snapshot and refreshes the awaiting-user banner. The caller guarantees
+// the snapshot belongs to the current run (stale-parent guard).
+func (m *AppModel) applyAgentGraph(g *client.AgentGraphSnapshot) {
+	if g == nil {
+		return
+	}
+	prevStatus := m.flowLoopStatus
+	m.flowLoopStatus = g.LoopState.Status
+	m.flowBlockReason = g.LoopState.BlockReason
+	m.agentRuns = g.Runs
+	if m.focusedAgentIdx >= len(m.agentRuns) {
+		m.focusedAgentIdx = 0
+	}
+	m.expandSessionPanelForChildAgents()
+	// Banner when the loop just transitioned into a parked awaiting-user state.
+	if strings.ToLower(strings.TrimSpace(m.flowLoopStatus)) == "blocked" &&
+		!strings.EqualFold(strings.TrimSpace(prevStatus), "blocked") {
+		m.showBlockedBanner(g.LoopState)
+	}
+	m.settleFlowIfDone()
+}
+
+// showBlockedBanner surfaces the parked awaiting-user state (Desktop
+// FlowAwaitingUserCard parity, BUG-231) so the user knows the flow is waiting
+// on their Continue/Stop decision, not stuck running.
+func (m *AppModel) showBlockedBanner(ls client.AgentLoopState) {
+	reason := strings.TrimSpace(ls.BlockReason)
+	line := "Flow is waiting for you (blocked) — /continue to proceed or /stop to end."
+	if reason != "" {
+		line = fmt.Sprintf("Flow is waiting for you (blocked: %s) — /continue to proceed or /stop to end.", reason)
+	}
+	m.addMessage("system", line, "warn")
+	m.connStatus = ConnWaiting
+	m.statusMsg = "awaiting your decision"
+}
+
 // settleFlowIfDone flips a finished flow to a clean ConnIdle "done" state so
 // the statusline drops [stop] and no longer shows streaming…/flow running…
 // once the loop is done, every step is terminal, and no agent is active.
