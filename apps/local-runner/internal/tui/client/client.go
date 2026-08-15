@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"strings"
@@ -360,9 +361,30 @@ type Client struct {
 
 // New creates a new Client targeting baseURL (e.g. "http://127.0.0.1:4317").
 func New(baseURL string) *Client {
+	// Timeout: 0 so SSE streams stay open. Bound dial + response headers so a
+	// dead/blackholed runner cannot hang TUI cmds forever (Windows connectex /
+	// silent drop previously left sessionLoading + key handling unusable).
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   3 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          32,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		// Long enough to not cut the 30s/45s catalog budgets while still guarding
+		// a hung-but-accepting runner; per-call ctx deadlines do the real capping.
+		ResponseHeaderTimeout: 60 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 	return &Client{
-		base:    strings.TrimRight(baseURL, "/"),
-		http:    &http.Client{Timeout: 0},
+		base: strings.TrimRight(baseURL, "/"),
+		http: &http.Client{
+			Timeout:   0,
+			Transport: transport,
+		},
 		lastSeq: make(map[string]int64),
 	}
 }

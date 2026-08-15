@@ -49,6 +49,78 @@ func (m *AppModel) flowHasActiveAgents() bool {
 	return false
 }
 
+// hasChildAgentRuns is true when the agent graph has a non-main child with a run id.
+func (m *AppModel) hasChildAgentRuns() bool {
+	mainID := m.mainRunID()
+	for _, r := range m.agentRuns {
+		if r.RunID == "" || r.RunID == mainID || isMainAgentRun(r) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// expandSessionPanelForChildAgents opens the F2 panel so step [open] is visible
+// as soon as a child agent exists (live or after hydrate).
+func (m *AppModel) expandSessionPanelForChildAgents() {
+	if m.hasChildAgentRuns() {
+		m.sessionPanel.Collapsed = false
+	}
+}
+
+// stepsSuggestChildAgentOpen is true when a step that can host a child agent
+// just became active/finished (or newly appeared) — trigger agent-graph hydrate.
+func stepsSuggestChildAgentOpen(prev, next []client.WorkflowStepRuntime) bool {
+	prevByID := make(map[string]client.WorkflowStepRuntime, len(prev))
+	for _, s := range prev {
+		prevByID[s.StepID] = s
+	}
+	for _, s := range next {
+		if !stepMayHostChildAgent(s) {
+			continue
+		}
+		st := strings.ToUpper(strings.TrimSpace(s.Status))
+		switch st {
+		case "RUNNING", "WAITING_USER_APPROVAL", "DONE", "FAILED":
+			// ok
+		default:
+			continue
+		}
+		old, ok := prevByID[s.StepID]
+		if !ok {
+			return true
+		}
+		oldSt := strings.ToUpper(strings.TrimSpace(old.Status))
+		if oldSt != st || strings.TrimSpace(old.AgentRef) != strings.TrimSpace(s.AgentRef) {
+			return true
+		}
+	}
+	return false
+}
+
+func stepMayHostChildAgent(s client.WorkflowStepRuntime) bool {
+	if strings.TrimSpace(s.AgentRef) != "" {
+		return true
+	}
+	// Common agent step types even when AgentRef is still empty on the DTO.
+	st := strings.ToLower(strings.TrimSpace(s.StepType))
+	switch st {
+	case "agent", "coder", "reviewer", "orchestrator", "worker":
+		return true
+	}
+	node := strings.ToLower(strings.TrimSpace(s.NodeID))
+	if node == "" || node == "main" {
+		return false
+	}
+	// Heuristic: non-context structural nodes often map to child agents.
+	if strings.Contains(node, "review") || strings.Contains(node, "coder") ||
+		strings.Contains(node, "agent") || strings.Contains(node, "worker") {
+		return true
+	}
+	return false
+}
+
 func (m *AppModel) stopFocusStream() {
 	if m.focusStream == nil {
 		return
@@ -312,10 +384,16 @@ func (m *AppModel) cmdHydrateAgentRuns(parentRunID string) tea.Cmd {
 	if parentRunID == "" {
 		return nil
 	}
+	if m.agentsHydrateInFlight {
+		return nil
+	}
+	// Auto-poll path pauses when runner is dead; one-shot hydrate from /open still
+	// runs when streak is high only if caller clears streak first (ChatOpenedMsg).
+	m.agentsHydrateInFlight = true
 	runnerURL := m.runnerURL
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
 		runs, err := cl.ListAgentRuns(ctx, parentRunID)
 		if err != nil {

@@ -401,12 +401,19 @@ func TestSessionLoading_DisablesChatUntilDefaults(t *testing.T) {
 	if !strings.Contains(view, "FlowPilot") && !strings.Contains(view, "loading session") {
 		t.Fatalf("missing FlowPilot loading UI:\n%s", view)
 	}
-	// Plain chat typing blocked; slash still allowed.
+	// Typing stays interactive while loading (CA-514: hung runner must not freeze TUI).
+	// Non-slash *send* is still blocked in processInput.
 	am.inputValue = ""
 	m3, _ := am.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
-	if m3.(*AppModel).inputValue != "" {
-		t.Fatalf("chat should be disabled while loading, got input=%q", m3.(*AppModel).inputValue)
+	if m3.(*AppModel).inputValue != "h" {
+		t.Fatalf("typing must work while loading, got input=%q", m3.(*AppModel).inputValue)
 	}
+	blocked, _ := am.processInput("hello while loading")
+	if b := blocked.(*AppModel); len(b.messages) == 0 ||
+		!strings.Contains(b.messages[len(b.messages)-1].Content, "Still loading") {
+		t.Fatalf("non-slash send must stay blocked while loading: %+v", b.messages)
+	}
+	am.inputValue = ""
 	m3b, _ := am.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	if m3b.(*AppModel).inputValue != "/" {
 		t.Fatalf("slash should remain available while loading, got %q", m3b.(*AppModel).inputValue)

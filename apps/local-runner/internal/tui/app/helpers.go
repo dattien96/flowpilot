@@ -37,6 +37,22 @@ func (m *AppModel) persistSessionPrefs() {
 	persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort, m.yolo, m.mode, m.launch)
 }
 
+// bindProjectIfPossible tries to bind a project from the known catalog using
+// the configured project path. Returns true when a project is bound.
+func (m *AppModel) bindProjectIfPossible() bool {
+	if m.project != nil {
+		return true
+	}
+	if len(m.projects) == 0 {
+		return false
+	}
+	if p := matchProjectByPath(m.projects, m.cfg.ProjectPath); p != nil {
+		m.project = p
+		return true
+	}
+	return false
+}
+
 // applySavedModeAndFlow restores Mode + LaunchArm from disk prefs (best-effort).
 // Catalog fields are refined when flow lists arrive via refineLaunchFromCatalog.
 func applySavedModeAndFlow(m *AppModel, saved prefs.Session) {
@@ -83,6 +99,69 @@ func applySavedModeAndFlow(m *AppModel, saved prefs.Session) {
 		}
 	}
 	m.launch = arm
+}
+
+// stashPendingFlowRestore keeps last flow prefs without arming ModeFlow yet.
+// Cold-start restore of flow mode (before project_id) made the TUI feel frozen.
+func stashPendingFlowRestore(m *AppModel, saved prefs.Session) {
+	mode := strings.ToLower(strings.TrimSpace(saved.Mode))
+	if mode != "flow" && mode != "step" {
+		m.pendingFlowRestore = nil
+		return
+	}
+	cp := saved
+	m.pendingFlowRestore = &cp
+	// Stay in chat until project catalog binds.
+	m.mode = ModeChat
+	m.launch = LaunchArm{}
+	m.firstTurnPending = false
+}
+
+// tryApplyPendingFlowRestore arms saved flow mode only when a project is bound.
+// Returns a short system notice when restore happens or when it is abandoned.
+func (m *AppModel) tryApplyPendingFlowRestore() string {
+	if m.pendingFlowRestore == nil {
+		return ""
+	}
+	if m.project == nil {
+		return ""
+	}
+	saved := *m.pendingFlowRestore
+	m.pendingFlowRestore = nil
+	applySavedModeAndFlow(m, saved)
+	if m.mode != ModeFlow && m.mode != ModeStep {
+		return ""
+	}
+	m.refineLaunchFromCatalog()
+	m.persistSessionPrefs()
+	label := m.launch.StatusLabel()
+	if label == "" {
+		label = "flow"
+	}
+	return fmt.Sprintf("Restored flow mode: %s (from last session).", label)
+}
+
+// pendingFlowRestoreHint is shown when catalog never bound a project.
+func (m *AppModel) pendingFlowRestoreHint() string {
+	if m.pendingFlowRestore == nil {
+		return ""
+	}
+	s := m.pendingFlowRestore
+	name := strings.TrimSpace(s.FlowLabel)
+	if name == "" {
+		name = strings.TrimSpace(s.FlowRef)
+	}
+	if name == "" {
+		name = strings.TrimSpace(s.WorkflowID)
+	}
+	if name == "" {
+		name = "last flow"
+	}
+	return fmt.Sprintf(
+		"Last session was flow mode (%s) — not restored until project catalog loads.\n"+
+			"Stay in chat, or after project binds re-open / use /flow %s",
+		name, name,
+	)
 }
 
 // refineLaunchFromCatalog re-resolves a prefs-restored arm against live builtins/workflows.

@@ -124,7 +124,10 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 		asciiMode:       isLegacyConsole(),
 	}
 	if haveSaved && !skipSessionUX {
-		applySavedModeAndFlow(m, savedPrefs)
+		// Defer flow-mode arm until project catalog binds (tryApplyPendingFlowRestore).
+		// Immediate ModeFlow restore on cold start left the TUI unusable when catalog
+		// was slow/empty (operator report: chat mode OK, restored flow mode hangs).
+		stashPendingFlowRestore(m, savedPrefs)
 	}
 	return m
 }
@@ -157,10 +160,16 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{tickCursor()}
 		// While a flow turn/orchestration is live, poll steps-runtime so long
 		// silent steps (e.g. grok-context / context.produce) stay visible.
+		// Also re-hydrate agent graph so F2 [open] appears as soon as a child
+		// agent starts (do not wait for run complete or a missed SSE).
+		// Gated by shouldPollStepsRuntime so idle/terminal + dead-runner pause.
 		if m.shouldPollStepsRuntime() {
 			m.stepsPollTicks++
 			if m.stepsPollTicks%3 == 0 { // ~1.6s
 				cmds = append(cmds, m.cmdRefreshStepsRuntime())
+				if m.runHandle != nil && m.runnerPollFailStreak < runnerPollFailPauseAfter {
+					cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
+				}
 			}
 		} else {
 			m.stepsPollTicks = 0
@@ -245,11 +254,80 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionPanel.RunnerURL = msg.RunnerURL
 		m.sessionPanel.ProjectPath = m.cfg.ProjectPath
 		m.sessionPanel.Collapsed = false
-		cmds := []tea.Cmd{m.cmdLoadSessionDefaults(), m.cmdPrefetchFlows()}
+		cmds := []tea.Cmd{
+			m.cmdLoadSessionDefaults(),
+			m.cmdPrefetchFlows(),
+			// The FlowPilot banner stays up until SessionDefaultsMsg decides the
+			// catalog (project bound or failed) — typing stays interactive, send
+			// stays blocked (CA-514). The 45s safety net is the only bail-out.
+			tea.Tick(45*time.Second, func(time.Time) tea.Msg { return sessionLoadTimeoutMsg{} }),
+		}
 		if m.cfg.ResumeRunID != "" {
 			cmds = append(cmds, m.cmdResume(m.cfg.ResumeRunID))
 		}
 		return m, tea.Batch(cmds...)
+
+	case sessionKeysUnlockMsg:
+		// Deprecated since CA-514 fourth pass: no longer scheduled. The FlowPilot
+		// banner stays up until SessionDefaultsMsg decides the catalog. Kept as a
+		// no-op so a stale delivery can never clear the banner early.
+		return m, nil
+
+	case sessionLoadTimeoutMsg:
+		// Safety net only if defaults never arrived (runner truly stuck).
+		// Do NOT mark sessionDefaultsLoaded: a late SessionDefaultsMsg must still
+		// count as first load so it persists provider/model and restores flow.
+		if m.sessionDefaultsLoaded {
+			return m, nil
+		}
+		m.sessionLoading = false
+		m.connStatus = ConnError
+		m.statusMsg = "session load failed"
+		m.addMessage("system",
+			"Session did not load from "+m.runnerURL+" within 45s.\n"+
+				"Check runner logs / .env (Supabase). UI stays usable: /help /login /status /provider",
+			"error",
+		)
+		m.refreshSessionPanel()
+		return m, nil
+
+	case ProjectsCatalogMsg:
+		if msg.Err != "" {
+			// Soft: keep UI usable; offer one more retry path via /login or restart.
+			if m.project == nil {
+				m.addMessage("system",
+					"Project catalog still unavailable: "+msg.Err+"\n"+
+						"Runner /health can be fine while Supabase catalog is slow — try /login or restart runner.",
+					"error",
+				)
+				if hint := m.pendingFlowRestoreHint(); hint != "" {
+					m.addMessage("system", hint, "")
+				}
+			}
+			return m, nil
+		}
+		if len(msg.Projects) > 0 {
+			m.projects = msg.Projects
+		}
+		if msg.Project != nil {
+			m.project = msg.Project
+		} else if m.project == nil && m.cfg.ProjectPath != "" && len(m.projects) > 0 {
+			m.project = matchProjectByPath(m.projects, m.cfg.ProjectPath)
+		}
+		m.refreshSessionPanel()
+		if m.project != nil {
+			m.statusMsg = "ready"
+			m.addMessage("system", fmt.Sprintf("Project bound: %s — you can chat now.", m.project.Name), "")
+			if notice := m.tryApplyPendingFlowRestore(); notice != "" {
+				m.addMessage("system", notice, "")
+			}
+			var cmds []tea.Cmd
+			if len(m.chatList) == 0 {
+				cmds = append(cmds, m.cmdPrefetchChats())
+			}
+			return m, tea.Batch(cmds...)
+		}
+		return m, nil
 
 	case SessionDefaultsMsg:
 		firstLoad := !m.sessionDefaultsLoaded
@@ -289,21 +367,60 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.persistSessionPrefs()
 		}
 		m.refreshSessionPanel()
-		if msg.CatalogErr != "" {
-			m.addMessage("system", "Project catalog unavailable: "+msg.CatalogErr+"\nChat needs Supabase catalog (same as Desktop). Fix .env / runner, then restart.", "error")
-		}
-		if m.project == nil && m.cfg.ProjectPath != "" {
-			m.addMessage("system", formatMissingProjectHelp(m.cfg.ProjectPath, m.projects), "error")
-		}
-		m.applyAuthNotice(msg.CatalogErr)
 		m.sessionLoading = false
 		m.sessionDefaultsLoaded = true
 		m.connStatus = ConnIdle
 		m.statusMsg = "ready"
+		// Never show a false "ready": when the catalog produced no project the
+		// operator must see why chat is disabled (CA-514).
+		if m.project == nil {
+			switch {
+			case runnerDialDeadErr(msg.CatalogErr):
+				m.statusMsg = "catalog unavailable"
+			case msg.CatalogErr != "":
+				m.statusMsg = "loading catalog…"
+			case len(m.projects) > 0:
+				m.statusMsg = "no project match"
+			default:
+				m.statusMsg = "no project"
+			}
+		}
+		var cmds []tea.Cmd
+		// Catalog timeout ≠ runner offline: /health can pass while Supabase is slow.
+		// Only a dial-level failure is the runner being dead; a ctx deadline from
+		// the catalog budget is slow-Supabase → schedule a background retry.
+		if msg.CatalogErr != "" {
+			if runnerDialDeadErr(msg.CatalogErr) {
+				m.addMessage("system", "Project catalog unavailable: "+msg.CatalogErr+"\nChat needs Supabase catalog (same as Desktop). Fix .env / runner, then restart.", "error")
+			} else {
+				m.addMessage("system",
+					"Project catalog slow/timeout: "+msg.CatalogErr+"\n"+
+						"Runner is up; waiting on Supabase catalog — retrying in background…",
+					"error",
+				)
+				cmds = append(cmds, m.cmdLoadProjectsCatalog())
+			}
+		}
+		// Chat is disabled without a bound project_id: always surface the help
+		// (also when the catalog error path already added a message above).
+		if m.project == nil && m.cfg.ProjectPath != "" {
+			m.addMessage("system", formatMissingProjectHelp(m.cfg.ProjectPath, m.projects), "error")
+		}
+		m.applyAuthNotice(msg.CatalogErr)
 		if firstLoad {
 			m.addMessage("system", "Ready — type / for commands · F2/click session panel · F3/click skills chip.", "")
 		}
-		cmds := []tea.Cmd{m.cmdRefreshProjectContext(), m.cmdLoadSkills(false)}
+		// Restore flow mode only after project_id exists (cold-start arm is unsafe).
+		if m.project != nil {
+			if notice := m.tryApplyPendingFlowRestore(); notice != "" {
+				m.addMessage("system", notice, "")
+			}
+		} else if firstLoad {
+			if hint := m.pendingFlowRestoreHint(); hint != "" {
+				m.addMessage("system", hint, "")
+			}
+		}
+		cmds = append(cmds, m.cmdRefreshProjectContext(), m.cmdLoadSkills(false))
 		if firstLoad && m.project != nil && len(m.chatList) == 0 {
 			cmds = append(cmds, m.cmdPrefetchChats())
 		}
@@ -428,10 +545,17 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addMessage("system", msg.Err, "error")
 			m.connStatus = ConnError
 			m.statusMsg = "open failed"
+			// Do not leave a half-open live poll arming on a failed open.
+			if runnerUnreachableErr(msg.Err) {
+				m.runnerPollFailStreak = runnerPollFailPauseAfter
+			}
 			return m, nil
 		}
 		m.stopOrchestrationStream()
 		handle := msg.Handle
+		m.runnerPollFailStreak = 0
+		m.stepsPollInFlight = false
+		m.agentsHydrateInFlight = false
 		// Prefer server snapshot / history row status so terminal opens do not
 		// arm [stop] via flow orch listener (empty resume status looked "live").
 		if st := strings.TrimSpace(msg.Snapshot.Status); st != "" {
@@ -498,16 +622,21 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case agentRunsHydratedMsg:
+		m.agentsHydrateInFlight = false
 		if msg.Err != "" {
+			m.noteRunnerPollResult(msg.Err)
 			return m, nil
 		}
 		if m.runHandle == nil || m.runHandle.RunID != msg.ParentRunID {
 			return m, nil
 		}
+		m.noteRunnerPollResult("")
 		m.agentRuns = msg.Runs
 		if m.focusedAgentIdx >= len(m.agentRuns) {
 			m.focusedAgentIdx = 0
 		}
+		// Live children → expand F2 so step [open] is visible immediately.
+		m.expandSessionPanelForChildAgents()
 		return m, nil
 
 	case runSnapshotMsg:
@@ -557,12 +686,23 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionLoading = true
 		m.statusMsg = "loading session..."
 		m.addMessage("system", "Reloading session after login…", "")
-		return m, m.cmdLoadSessionDefaults()
+		// Same banner-until-catalog contract as cold start: typing stays free,
+		// send stays blocked until SessionDefaultsMsg (or the 45s safety net).
+		return m, tea.Batch(
+			m.cmdLoadSessionDefaults(),
+			tea.Tick(45*time.Second, func(time.Time) tea.Msg { return sessionLoadTimeoutMsg{} }),
+		)
 
 	case FlowListMsg:
 		m.flowBuiltins = msg.Builtins
 		m.flowWorkflows = msg.Workflows
-		// After catalog load: re-resolve prefs-restored arm + upgrade UUID labels.
+		// After catalog load: re-resolve armed arm + upgrade UUID labels.
+		// Also apply deferred prefs flow restore if project is already bound.
+		if m.project != nil {
+			if notice := m.tryApplyPendingFlowRestore(); notice != "" && !msg.Silent {
+				m.addMessage("system", notice, "")
+			}
+		}
 		if m.mode == ModeFlow || m.mode == ModeStep {
 			m.refineLaunchFromCatalog()
 		}
@@ -609,6 +749,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RunStartedMsg:
 		handle := msg.Handle
 		m.runHandle = &handle
+		m.runnerPollFailStreak = 0
+		m.stepsPollInFlight = false
+		m.agentsHydrateInFlight = false
 		if handle.StepID != "" {
 			m.stepID = handle.StepID
 		}
@@ -623,6 +766,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmds []tea.Cmd
 		if m.launch.IsCatalogWorkflow() || m.mode == ModeFlow || m.mode == ModeStep {
 			cmds = append(cmds, m.cmdRefreshStepsRuntime())
+			// Seed agent list early so first child spawn can show [open] on next hydrate.
+			cmds = append(cmds, m.cmdHydrateAgentRuns(handle.RunID))
 		}
 		if prompt != "" {
 			cmds = append(cmds, m.cmdSendTurn(prompt))
@@ -755,13 +900,16 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.cmdRefreshStepsRuntime()
 
 	case StepsRuntimeMsg:
+		m.stepsPollInFlight = false
 		if m.runHandle == nil || msg.RunID != m.runHandle.RunID {
 			return m, nil
 		}
 		if msg.Err != "" {
-			// Soft failure — catalog may not have steps yet.
+			// Soft failure — catalog may not have steps yet; track dead-runner streak.
+			m.noteRunnerPollResult(msg.Err)
 			return m, nil
 		}
+		m.noteRunnerPollResult("")
 		prevSteps := append([]client.WorkflowStepRuntime(nil), m.flowSteps...)
 		prevActive := m.flowStepsActive
 		m.flowSteps = msg.Steps
@@ -777,7 +925,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.addMessage("system", line, "steps")
 			}
 		}
-		return m, nil
+		// Agent-bearing step became active / finished → re-hydrate so [open] appears live.
+		var cmds []tea.Cmd
+		if stepsSuggestChildAgentOpen(prevSteps, msg.Steps) {
+			cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
+		}
+		// Already have children mapped → keep F2 expanded for open/back.
+		m.expandSessionPanelForChildAgents()
+		return m, tea.Batch(cmds...)
 
 	case ClipboardPasteMsg:
 		if msg.Err != "" && msg.Attachment == nil && msg.Text == "" {
@@ -838,6 +993,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focusedAgentIdx >= len(m.agentRuns) {
 				m.focusedAgentIdx = 0
 			}
+			m.expandSessionPanelForChildAgents()
 		}
 		return m, nil
 
@@ -1023,6 +1179,7 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 			if m.focusedAgentIdx >= len(m.agentRuns) {
 				m.focusedAgentIdx = 0
 			}
+			m.expandSessionPanelForChildAgents()
 		}
 		if m.agentsFocus {
 			m.addMessage("system", fmt.Sprintf("[agents] %d agents active", len(m.agentRuns)), "")
@@ -1035,16 +1192,12 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 }
 
 func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// While session/project catalogs load: chat prompts are blocked.
-	// Slash commands (starting with '/') stay available so /help /clear /login work.
-	if m.sessionLoading && !m.allowsKeyWhileLoading(msg) {
-		switch msg.Type {
-		case tea.KeyCtrlC:
-			m.quitting = true
-			return m, m.cmdShutdownAndQuit()
-		default:
-			return m, nil
-		}
+	// Never hard-block keyboard while loading — a hung runner previously made
+	// the TUI feel fully frozen. processInput still rejects non-slash *send*.
+	if m.sessionLoading && msg.Type == tea.KeyCtrlC {
+		// Allow quit during load without waiting for catalog.
+		m.quitting = true
+		return m, m.cmdShutdownAndQuit()
 	}
 
 	if m.authPhase == AuthNone && (isPromptNewlineKey(msg) || isModifiedEnterNewline(msg)) {
@@ -1518,6 +1671,20 @@ func suggestionAcceptValue(it suggestItem) string {
 }
 
 func (m *AppModel) allowsKeyWhileLoading(msg tea.KeyMsg) bool {
+	// Chrome + navigation always available (avoids full freeze during catalog load).
+	switch msg.Type {
+	case tea.KeyCtrlC, tea.KeyEsc, tea.KeyF2, tea.KeyF3, tea.KeyF4,
+		tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight,
+		tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd,
+		tea.KeyTab, tea.KeyShiftTab:
+		return true
+	case tea.KeyEnter:
+		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/") ||
+			strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/")
+	case tea.KeyBackspace, tea.KeyDelete:
+		// Edit only when already composing a slash command.
+		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/")
+	}
 	if _, _, ok := activeSlashLine(m.inputValue, m.inputCaretIndex()); ok {
 		return true
 	}
@@ -1650,6 +1817,22 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	if m.sessionDefaultsLoaded && strings.TrimSpace(m.provider) == "" {
 		m.addMessage("system", "No provider selected — use /provider <key> (then /model).", "error")
 		return m, nil
+	}
+
+	// Never arm a run without a project_id: cmdStartRun re-fetches the catalog
+	// with an unbounded context and hung the TUI when the catalog was slow/empty
+	// (CA-514). When defaults are loaded but no project is bound, chat is
+	// disabled — record the draft line, clear it, and refuse fast. A late
+	// ProjectsCatalogMsg can still bind the project so the user can re-send.
+	if m.sessionDefaultsLoaded && m.project == nil && m.runHandle == nil {
+		if m.bindProjectIfPossible() {
+			m.refreshSessionPanel()
+		} else {
+			m.statusMsg = "chat disabled — no project_id"
+			m.addMessage("user", input, "")
+			m.addMessage("system", formatMissingProjectHelp(m.cfg.ProjectPath, m.projects), "error")
+			return m, nil
+		}
 	}
 
 	m.viewport.offset = 0
@@ -3127,7 +3310,8 @@ func (m *AppModel) cmdLogin(email, password string) tea.Cmd {
 	runnerURL := m.runnerURL
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
 		res, err := cl.LoginSupabase(ctx, email, password)
 		if err != nil {
 			return ErrMsg{Err: fmt.Errorf("login failed: %w", err)}
@@ -3182,22 +3366,52 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 		}
 	}
 	return func() tea.Msg {
+		// Start the slow catalog fetch FIRST so it overlaps the account/provider
+		// path during the FlowPilot banner phase. The banner already says
+		// "loading session · project · providers — chat locked", so the project
+		// catalog belongs to that phase — not a post-banner retry (CA-514).
+		type catalogResult struct {
+			projects []client.Project
+			err      error
+		}
+		catalogCh := make(chan catalogResult, 1)
+		go func() {
+			cl := client.New(runnerURL)
+			ctxProjects, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			ps, err := cl.ListProjects(ctxProjects)
+			catalogCh <- catalogResult{projects: ps, err: err}
+		}()
+
+		// Provider/account path: relatively fast.
 		cl := client.New(runnerURL)
-		ctx := context.Background()
-		accounts, _ := cl.ListProviderAccounts(ctx)
-		providers, _ := cl.ListProviders(ctx)
+		ctxFast, cancelFast := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancelFast()
+		accounts, accErr := cl.ListProviderAccounts(ctxFast)
+		providers, provErr := cl.ListProviders(ctxFast)
 		provider, model, label := pickActiveSessionDefaults(flagProvider, flagModel, accounts, providers)
+
+		cat := <-catalogCh
 		var (
 			projects   []client.Project
 			project    *client.Project
 			account    *client.ProviderAccountSummary
 			catalogErr string
 		)
-		if ps, err := cl.ListProjects(ctx); err == nil {
-			projects = ps
-			project = matchProjectByPath(ps, projectPath)
+		if cat.err == nil {
+			projects = cat.projects
+			project = matchProjectByPath(projects, projectPath)
 		} else {
-			catalogErr = err.Error()
+			catalogErr = cat.err.Error()
+		}
+		// Prefer a dial-level failure as the catalog message when projects is empty
+		// (a ctx deadline on the account path is not runner-dead evidence).
+		if catalogErr == "" {
+			if accErr != nil && runnerDialDeadErr(accErr.Error()) {
+				catalogErr = accErr.Error()
+			} else if provErr != nil && runnerDialDeadErr(provErr.Error()) {
+				catalogErr = provErr.Error()
+			}
 		}
 		for i := range accounts {
 			if accounts[i].IsActive && (provider == "" || strings.EqualFold(accounts[i].ProviderKey, provider)) {
@@ -3232,6 +3446,26 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 	}
 }
 
+// cmdLoadProjectsCatalog retries GET /client/projects with a long timeout.
+// Used when the first session load hit a catalog timeout while the runner is up.
+func (m *AppModel) cmdLoadProjectsCatalog() tea.Cmd {
+	runnerURL := m.runnerURL
+	projectPath := m.cfg.ProjectPath
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		ps, err := cl.ListProjects(ctx)
+		if err != nil {
+			return ProjectsCatalogMsg{Err: err.Error()}
+		}
+		return ProjectsCatalogMsg{
+			Projects: ps,
+			Project:  matchProjectByPath(ps, projectPath),
+		}
+	}
+}
+
 func (m *AppModel) cmdListFlows() tea.Cmd {
 	return m.cmdFetchFlows(false)
 }
@@ -3244,7 +3478,8 @@ func (m *AppModel) cmdFetchFlows(silent bool) tea.Cmd {
 	runnerURL := m.runnerURL
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		builtins, _ := cl.ListBuiltinOrchestrationOptions(ctx, "bug")
 		workflows, err := cl.ListWorkflows(ctx)
 		msg := FlowListMsg{Builtins: builtins, Workflows: workflows, Silent: silent}
@@ -3295,9 +3530,13 @@ func (m *AppModel) cmdStartRun() tea.Cmd {
 		if projectID == "" {
 			projects := knownProjects
 			if len(projects) == 0 {
+				// Bound this fallback: an unbounded ListProjects re-fetch is what
+				// hung the TUI in ConnRunning when the catalog was slow (CA-514).
+				ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				if ps, err := cl.ListProjects(ctx); err == nil {
 					projects = ps
 				}
+				cancel()
 			}
 			if matched := matchProjectByPath(projects, cwd); matched != nil {
 				projectID = matched.ID

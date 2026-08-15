@@ -2,6 +2,7 @@ package app
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -25,7 +26,7 @@ func isolateSessionFile(t *testing.T) string {
 	return path
 }
 
-func TestNew_RestoresFlowModeAndBuiltinFromPrefs(t *testing.T) {
+func TestNew_DefersFlowModeUntilProjectBound(t *testing.T) {
 	isolateSessionFile(t)
 	if _, err := prefs.Save(prefs.Session{
 		Provider:  "grok",
@@ -37,20 +38,15 @@ func TestNew_RestoresFlowModeAndBuiltinFromPrefs(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
-	if m.mode != ModeFlow {
-		t.Fatalf("mode=%v want ModeFlow", m.mode)
+	// Cold start must stay chat so the TUI is interactive without project_id.
+	if m.mode != ModeChat {
+		t.Fatalf("mode=%v want ModeChat on cold start", m.mode)
 	}
-	if m.launch.FlowRef != "pack/fix-bug" {
-		t.Fatalf("FlowRef=%q", m.launch.FlowRef)
+	if m.launch.IsArmed() {
+		t.Fatalf("launch must not arm before project: %+v", m.launch)
 	}
-	if m.launch.Label != "Fix Bug" {
-		t.Fatalf("Label=%q", m.launch.Label)
-	}
-	if !m.firstTurnPending {
-		t.Fatal("builtin restore should set firstTurnPending")
-	}
-	if m.launch.SubMode != "bug" || m.launch.ChangeType != "bugfix" {
-		t.Fatalf("builtin extras SubMode=%q ChangeType=%q", m.launch.SubMode, m.launch.ChangeType)
+	if m.pendingFlowRestore == nil || m.pendingFlowRestore.FlowRef != "pack/fix-bug" {
+		t.Fatalf("pending restore=%+v", m.pendingFlowRestore)
 	}
 }
 
@@ -59,11 +55,10 @@ func TestNew_RestoresChatModeClearsLaunch(t *testing.T) {
 	if _, err := prefs.Save(prefs.Session{
 		Provider: "grok",
 		Mode:     "chat",
-		FlowRef:  "stale", // Save normalizes chat → clear flow; write raw for Load path
+		FlowRef:  "stale",
 	}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	// After Save with mode=chat, flow is cleared on disk. New should be chat.
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
 	if m.mode != ModeChat {
 		t.Fatalf("mode=%v want ModeChat", m.mode)
@@ -71,23 +66,102 @@ func TestNew_RestoresChatModeClearsLaunch(t *testing.T) {
 	if m.launch.IsArmed() {
 		t.Fatalf("launch should be empty: %+v", m.launch)
 	}
+	if m.pendingFlowRestore != nil {
+		t.Fatal("chat prefs must not stash flow restore")
+	}
 }
 
-func TestNew_RestoresCatalogWorkflowID(t *testing.T) {
+func TestTryApplyPendingFlowRestore_AfterProject(t *testing.T) {
+	isolateSessionFile(t)
+	if _, err := prefs.Save(prefs.Session{
+		Mode:      "flow",
+		FlowRef:   "pack/fix-bug",
+		FlowLabel: "Fix Bug",
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
+	m.flowBuiltins = []client.BuiltinFlowOption{
+		{FlowRef: "pack/fix-bug", Label: "Fix Bug"},
+	}
+	// Still no project → no arm.
+	if notice := m.tryApplyPendingFlowRestore(); notice != "" || m.mode != ModeChat {
+		t.Fatalf("without project notice=%q mode=%v", notice, m.mode)
+	}
+	m.project = &client.Project{ID: "p1", Name: "gate-sandbox"}
+	notice := m.tryApplyPendingFlowRestore()
+	if !strings.Contains(notice, "Restored flow mode") {
+		t.Fatalf("notice=%q", notice)
+	}
+	if m.mode != ModeFlow || m.launch.FlowRef != "pack/fix-bug" {
+		t.Fatalf("mode=%v launch=%+v", m.mode, m.launch)
+	}
+	if m.pendingFlowRestore != nil {
+		t.Fatal("pending must clear after apply")
+	}
+	if !m.firstTurnPending {
+		t.Fatal("builtin restore should set firstTurnPending")
+	}
+}
+
+func TestSessionDefaults_RestoresFlowWhenProjectPresent(t *testing.T) {
 	isolateSessionFile(t)
 	if _, err := prefs.Save(prefs.Session{
 		Mode:       "flow",
-		WorkflowID: "wf-uuid-1",
+		WorkflowID: "wf-1",
 		FlowLabel:  "Custom Flow",
 	}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
-	if m.mode != ModeFlow || m.launch.WorkflowID != "wf-uuid-1" {
-		t.Fatalf("mode=%v launch=%+v", m.mode, m.launch)
+	if m.mode != ModeChat {
+		t.Fatal("deferred")
 	}
-	if m.firstTurnPending {
-		t.Fatal("catalog restore must not set firstTurnPending")
+	next, _ := m.Update(SessionDefaultsMsg{
+		Provider: "grok",
+		Model:    "grok-4.5",
+		Project:  &client.Project{ID: "p1", Name: "gate"},
+		Projects: []client.Project{{ID: "p1", Name: "gate"}},
+	})
+	am := next.(*AppModel)
+	if am.mode != ModeFlow || am.launch.WorkflowID != "wf-1" {
+		t.Fatalf("mode=%v launch=%+v", am.mode, am.launch)
+	}
+	found := false
+	for _, msg := range am.messages {
+		if strings.Contains(msg.Content, "Restored flow mode") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing restore notice: %+v", am.messages)
+	}
+}
+
+func TestSessionDefaults_NoProjectKeepsChatAndHints(t *testing.T) {
+	isolateSessionFile(t)
+	if _, err := prefs.Save(prefs.Session{
+		Mode:      "flow",
+		FlowRef:   "pack/fix-bug",
+		FlowLabel: "Fix Bug",
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	m := New(config.ChatConfig{ProjectPath: `D:\working\gate-sandbox`}, "http://127.0.0.1:4317")
+	next, _ := m.Update(SessionDefaultsMsg{
+		Provider:   "grok",
+		CatalogErr: "context deadline exceeded",
+	})
+	am := next.(*AppModel)
+	if am.mode != ModeChat {
+		t.Fatalf("must stay chat without project, mode=%v", am.mode)
+	}
+	blob := ""
+	for _, msg := range am.messages {
+		blob += msg.Content + "\n"
+	}
+	if !strings.Contains(blob, "Last session was flow mode") {
+		t.Fatalf("want pending flow hint, got:\n%s", blob)
 	}
 }
 
@@ -132,6 +206,44 @@ func TestSlashChat_PersistsChatAndClearsFlow(t *testing.T) {
 		t.Fatalf("prefs=%+v", got)
 	}
 }
+
+func TestRefineLaunchFromCatalog_UpgradesPartialArm(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
+	m.mode = ModeFlow
+	m.launch = LaunchArm{Mode: ModeFlow, FlowRef: "pack/fix-bug", Label: "pack/fix-bug"}
+	m.flowBuiltins = []client.BuiltinFlowOption{
+		{FlowRef: "pack/fix-bug", Label: "Fix Bug"},
+	}
+	m.refineLaunchFromCatalog()
+	if m.launch.Label != "Fix Bug" {
+		t.Fatalf("Label=%q want Fix Bug", m.launch.Label)
+	}
+	if m.launch.SubMode != "bug" {
+		t.Fatalf("SubMode=%q", m.launch.SubMode)
+	}
+}
+
+func TestFlowListMsg_SilentRefinesRestoredArm(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
+	m.mode = ModeFlow
+	m.launch = LaunchArm{Mode: ModeFlow, WorkflowID: "wf-1", Label: "wf-1"}
+	next, _ := m.Update(FlowListMsg{
+		Silent: true,
+		Workflows: []client.Workflow{
+			{ID: "wf-1", Name: "My Catalog Flow", ProjectID: ""},
+		},
+	})
+	am := next.(*AppModel)
+	if am.launch.Label != "My Catalog Flow" {
+		t.Fatalf("Label=%q after FlowListMsg", am.launch.Label)
+	}
+	if am.launch.WorkflowID != "wf-1" {
+		t.Fatalf("WorkflowID=%q", am.launch.WorkflowID)
+	}
+}
+
+// Ensure tea.Msg path still type-checks for Update.
+var _ tea.Msg = FlowListMsg{}
 
 func TestSlashYolo_PersistsChatPreference(t *testing.T) {
 	isolateSessionFile(t)
@@ -201,41 +313,3 @@ func TestPersist_FlowModeKeepsChatYoloPreference(t *testing.T) {
 		t.Fatalf("prefs=%+v", got)
 	}
 }
-
-func TestRefineLaunchFromCatalog_UpgradesPartialArm(t *testing.T) {
-	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
-	m.mode = ModeFlow
-	m.launch = LaunchArm{Mode: ModeFlow, FlowRef: "pack/fix-bug", Label: "pack/fix-bug"}
-	m.flowBuiltins = []client.BuiltinFlowOption{
-		{FlowRef: "pack/fix-bug", Label: "Fix Bug"},
-	}
-	m.refineLaunchFromCatalog()
-	if m.launch.Label != "Fix Bug" {
-		t.Fatalf("Label=%q want Fix Bug", m.launch.Label)
-	}
-	if m.launch.SubMode != "bug" {
-		t.Fatalf("SubMode=%q", m.launch.SubMode)
-	}
-}
-
-func TestFlowListMsg_SilentRefinesRestoredArm(t *testing.T) {
-	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
-	m.mode = ModeFlow
-	m.launch = LaunchArm{Mode: ModeFlow, WorkflowID: "wf-1", Label: "wf-1"}
-	next, _ := m.Update(FlowListMsg{
-		Silent: true,
-		Workflows: []client.Workflow{
-			{ID: "wf-1", Name: "My Catalog Flow", ProjectID: ""},
-		},
-	})
-	am := next.(*AppModel)
-	if am.launch.Label != "My Catalog Flow" {
-		t.Fatalf("Label=%q after FlowListMsg", am.launch.Label)
-	}
-	if am.launch.WorkflowID != "wf-1" {
-		t.Fatalf("WorkflowID=%q", am.launch.WorkflowID)
-	}
-}
-
-// Ensure tea.Msg path still type-checks for Update.
-var _ tea.Msg = FlowListMsg{}

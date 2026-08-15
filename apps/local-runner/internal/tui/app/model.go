@@ -7,6 +7,7 @@ package app
 import (
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
+	"flowpilot-runner/internal/tui/prefs"
 )
 
 // Mode represents the current display mode of the TUI.
@@ -120,6 +121,21 @@ type TurnFailedMsg struct{ Reason string }
 // ConnectedMsg signals runner connection ready.
 type ConnectedMsg struct{ RunnerURL string }
 
+// sessionKeysUnlockMsg is deprecated since CA-514 fourth pass: the FlowPilot
+// banner stays up until SessionDefaultsMsg decides the catalog (typing is never
+// hard-locked; only send is blocked). Kept as a defensive no-op in Update.
+type sessionKeysUnlockMsg struct{}
+
+// sessionLoadTimeoutMsg fires only if SessionDefaultsMsg never arrived.
+type sessionLoadTimeoutMsg struct{}
+
+// ProjectsCatalogMsg is a late/retry project list after the fast session path.
+type ProjectsCatalogMsg struct {
+	Projects []client.Project
+	Project  *client.Project
+	Err      string
+}
+
 // SessionDefaultsMsg carries active provider/model discovered after connect.
 type SessionDefaultsMsg struct {
 	Provider         string
@@ -224,6 +240,9 @@ type AppModel struct {
 	attachPanelOpen   bool              // modal list of pending images (Desktop chips)
 	launch            LaunchArm
 	firstTurnPending bool // consume builtin FirstTurnExtras once
+	// pendingFlowRestore holds mode/flow from disk until project catalog binds.
+	// Restoring ModeFlow on cold start (before project_id) left the TUI unusable.
+	pendingFlowRestore *prefs.Session
 	reasoningEffort  string
 	flowBuiltins     []client.BuiltinFlowOption
 	flowWorkflows    []client.Workflow
@@ -238,7 +257,11 @@ type AppModel struct {
 	mainTranscript   []ChatMessage    // cached while viewing a child
 	lastEventSeq     int64
 	stepsPollTicks   int    // cursor ticks while flow is live
-	lastTurnError    string // last turn_failed error (fallback FAIL reason in chat)
+	// In-flight + failure guards so dead runner cannot pile up HTTP cmds / lock UX.
+	stepsPollInFlight    bool
+	agentsHydrateInFlight bool
+	runnerPollFailStreak int // consecutive steps/agent poll dial/timeout failures
+	lastTurnError        string // last turn_failed error (fallback FAIL reason in chat)
 
 	// Pending gate/approval/question state
 	gate     *GateState
