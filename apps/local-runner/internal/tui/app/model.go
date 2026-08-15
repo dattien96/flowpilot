@@ -351,6 +351,11 @@ type AppModel struct {
 	width  int
 	height int
 
+	// fullWidth is the real terminal width, preserved even while View() temporarily
+	// narrows width to the chat column (right sidebar, CA-524). Sidebar geometry
+	// reads this so it is stable regardless of the render-time width mutation.
+	fullWidth int
+
 	// ASCII mode for legacy Windows consoles
 	asciiMode bool
 

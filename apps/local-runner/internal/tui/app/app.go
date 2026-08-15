@@ -150,6 +150,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.fullWidth = msg.Width
 		return m, nil
 
 	case cursorTickMsg:
@@ -2689,6 +2690,22 @@ func (m *AppModel) View() string {
 		return ""
 	}
 
+	fullW := m.width
+	if fullW <= 0 {
+		fullW = 80
+	}
+	m.fullWidth = fullW
+	useSide := m.useRightSidebar()
+
+	var sideLines []string
+	var sideW, sideX int
+	if useSide {
+		sideW = m.sideWidth()
+		sideX = fullW - sideW
+		sideLines = m.renderRightSidebar(m.height)
+		m.width = m.contentWidth()
+	}
+
 	c := m.tuiChrome()
 	var sb strings.Builder
 
@@ -2748,6 +2765,13 @@ func (m *AppModel) View() string {
 		sb.WriteString("\n")
 	}
 	sb.WriteString(m.renderInputLine())
+
+	if useSide {
+		m.width = fullW
+		left := strings.Split(strings.TrimRight(sb.String(), "\n"), "\n")
+		left = padLinesTo(left, m.height)
+		return joinRightSidebar(left, sideLines, sideW, sideX, m.asciiMode)
+	}
 
 	return sb.String()
 }

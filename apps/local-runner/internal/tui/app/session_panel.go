@@ -70,20 +70,27 @@ func (m *AppModel) flowStepsPanelLines() []string {
 			name = shortID(s.StepID)
 		}
 		st := strings.ToUpper(strings.TrimSpace(s.Status))
-		prefix := " "
+		// OpenCode todo-list glyph: [✓] done, [•] in progress, [x] failed, [ ] pending.
+		glyph := " "
+		if m.asciiMode {
+			glyph = "+"
+		} else {
+			glyph = "✓"
+		}
 		lineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+		var suffix string
 		switch st {
 		case "RUNNING", "WAITING_USER_APPROVAL":
-			prefix = ">"
+			glyph = "•"
+			suffix = " " + st
 			lineStyle = styleStepRunning
 		case "DONE":
-			prefix = "+"
 			lineStyle = styleStepDone
 		case "FAILED":
-			prefix = "x"
+			glyph = "x"
 			lineStyle = styleStepFailed
 		}
-		line := fmt.Sprintf("%s%d.%s %s", prefix, i+1, st, name)
+		line := fmt.Sprintf("[%s] %s%s", glyph, name, suffix)
 		action := ""
 		if child, ok := m.childRunForStep(s); ok {
 			if m.viewingChild() && child.RunID == m.focusRunID {
@@ -301,11 +308,135 @@ func rightAlignPlain(s string, width int) string {
 	return strings.Repeat(" ", width-w) + s
 }
 
+// useRightSidebar reports whether F2 content should render as a full-height right
+// sidebar column (OpenCode-style) instead of the legacy top-right overlay. It only
+// engages on wide terminals (>=100 cols) with an expanded session panel.
+func (m *AppModel) useRightSidebar() bool {
+	return m.sessionPanel.hasContent() && m.terminalWidth() >= 100 && !m.sessionPanel.Collapsed
+}
+
+// terminalWidth returns the real terminal width (stable even mid-render).
+func (m *AppModel) terminalWidth() int {
+	if m.fullWidth > 0 {
+		return m.fullWidth
+	}
+	return m.width
+}
+
+// sideWidth returns the right-sidebar column width (OpenCode default ~42, clamped).
+func (m *AppModel) sideWidth() int {
+	w := m.terminalWidth() * 2 / 5
+	if w < 30 {
+		w = 30
+	}
+	if w > 42 {
+		w = 42
+	}
+	return w
+}
+
+// contentWidth is the chat-column width available when the right sidebar is active.
+func (m *AppModel) contentWidth() int {
+	if !m.useRightSidebar() {
+		return m.terminalWidth()
+	}
+	w := m.terminalWidth() - m.sideWidth() - 1
+	if w < 20 {
+		w = 20
+	}
+	return w
+}
+
+// renderRightSidebar returns the full-height right sidebar lines (OpenCode-style):
+// session info header, then a todo-list of flow steps. h is the terminal height.
+func (m *AppModel) renderRightSidebar(h int) []string {
+	if !m.useRightSidebar() {
+		return nil
+	}
+	w := m.sideWidth()
+	var out []string
+	out = append(out, styleGate.Render("session"))
+	for _, line := range m.sessionPanel.lines() {
+		out = append(out, styleSystem.Render(truncateVisual(line, w-2)))
+	}
+	out = append(out, "")
+	out = append(out, styleGate.Render("steps"))
+	steps := m.flowStepsPanelLines()
+	for i, line := range steps {
+		// First steps line is the "Steps N:" header — render dim.
+		if i == 0 {
+			out = append(out, styleSystem.Render(line))
+			continue
+		}
+		out = append(out, truncateVisual(line, w-2))
+	}
+	if len(steps) == 0 {
+		out = append(out, styleSystem.Render("(no steps)"))
+	}
+	out = append(out, "")
+	out = append(out, styleLink.Render("[collapse]"))
+	// Pad to full height so the sidebar is a solid right column.
+	for len(out) < h {
+		out = append(out, " ")
+	}
+	return out
+}
+
 func max(a, b int) int {
 	if a > b {
 		return a
 	}
 	return b
+}
+
+// padTo pads a (possibly ANSI-styled) string to width w with trailing spaces.
+func padTo(s string, w int) string {
+	cur := lipgloss.Width(stripANSI(s))
+	if cur >= w {
+		return s
+	}
+	return s + strings.Repeat(" ", w-cur)
+}
+
+// padLinesTo pads a slice of lines up to height h with empty lines.
+func padLinesTo(lines []string, h int) []string {
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	return lines
+}
+
+// joinRightSidebar combines the main chat column with the full-height right
+// sidebar column. left lines are padded/truncated to contentW (== sideX-1), a
+// single separator column follows, then each sidebar line padded to sideW.
+func joinRightSidebar(left, side []string, sideW, sideX int, ascii bool) string {
+	contentW := sideX - 1
+	sep := "│"
+	if ascii {
+		sep = "|"
+	}
+	n := len(left)
+	if len(side) > n {
+		n = len(side)
+	}
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		l := ""
+		if i < len(left) {
+			l = left[i]
+		}
+		if lipgloss.Width(stripANSI(l)) > contentW {
+			l = truncateVisual(l, contentW)
+		}
+		l = padTo(l, contentW)
+		s := ""
+		if i < len(side) {
+			s = side[i]
+		}
+		s = padTo(s, sideW)
+		out = append(out, l+sep+s)
+	}
+	return strings.Join(out, "\n")
 }
 
 // suggestionWindow returns an inclusive-exclusive [start,end) window of size limit

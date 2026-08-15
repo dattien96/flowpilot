@@ -19,6 +19,10 @@ func stripANSI(s string) string {
 type tuiChrome struct {
 	panelLines       []string
 	panelH           int
+	sideActive       bool
+	sideW            int
+	sideX            int
+	sideLines        []string
 	bannerLines      int
 	statusBlock      string
 	statusH          int
@@ -54,6 +58,14 @@ func (m *AppModel) tuiChrome() tuiChrome {
 	}
 	c.panelLines = m.renderSessionPanelOverlay()
 	c.panelH = len(c.panelLines)
+	if m.useRightSidebar() {
+		c.sideActive = true
+		c.sideW = m.sideWidth()
+		c.sideX = m.terminalWidth() - c.sideW
+		c.sideLines = m.renderRightSidebar(m.height)
+		c.panelLines = nil
+		c.panelH = 0
+	}
 	c.statusBlock = m.renderStatusLine()
 	c.statusH = strings.Count(c.statusBlock, "\n") + 1
 	w := m.width
@@ -224,6 +236,9 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 	switch {
 	case target == "session":
 		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
+	case target == "sidebar-collapse":
+		// Collapse the full-height right sidebar back to the [info] chip.
+		m.sessionPanel.Collapsed = true
 	case target == "skills":
 		if len(attachedSkillNames(m.selectedSkills)) == 0 {
 			return m, nil
@@ -382,6 +397,9 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 		return ""
 	}
 	c := m.tuiChrome()
+	if t := m.hitSidebarChrome(c, x, y); t != "" {
+		return t
+	}
 	if t := m.hitSessionAgentChrome(c, x, y); t != "" {
 		return t
 	}
@@ -426,6 +444,38 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 	}
 	if t := hitCopyChrome(m, c, x, y); t != "" {
 		return t
+	}
+	return ""
+}
+
+// hitSidebarChrome maps a click in the full-height right sidebar (OpenCode-style,
+// CA-524) to a target: step [open]/[back], [collapse], or the session header
+// toggle. Only active when the sidebar is rendered (wide + expanded).
+func (m *AppModel) hitSidebarChrome(c tuiChrome, x, y int) string {
+	if !c.sideActive || y < 0 || y >= len(c.sideLines) {
+		return ""
+	}
+	if x < c.sideX {
+		return ""
+	}
+	// Sidebar lines are placed at absolute x>=sideX; hit-test against the line
+	// itself by offsetting x to line-local coordinates.
+	lx := x - c.sideX
+	stripped := stripANSI(c.sideLines[y])
+	if hitToken(stripped, "[back]", lx) && m.viewingChild() {
+		return "agent-back"
+	}
+	if hitToken(stripped, "[open]", lx) {
+		if runID := m.openRunIDFromPanelLine(stripped); runID != "" {
+			return "agent-open:" + runID
+		}
+	}
+	if hitToken(stripped, "[collapse]", lx) {
+		return "sidebar-collapse"
+	}
+	// Session header row ("session") and steps header ("steps") toggle the panel.
+	if hitToken(stripped, "session", lx) || hitToken(stripped, "steps", lx) {
+		return "session"
 	}
 	return ""
 }
