@@ -3258,6 +3258,9 @@ func (m *AppModel) renderInputLine() string {
 	if bar := m.renderAttentionBar(); bar != "" {
 		inner = append(inner, strings.Split(bar, "\n")...)
 	}
+	if bar := m.renderBlockedBar(); bar != "" {
+		inner = append(inner, strings.Split(bar, "\n")...)
+	}
 	caretAt := m.inputCaretIndex()
 	off := 0
 	for i, bl := range bodyLines {

@@ -205,6 +205,27 @@ func (m *AppModel) showBlockedBanner(ls client.AgentLoopState) {
 	m.statusMsg = "awaiting your decision"
 }
 
+// renderBlockedBar renders the awaiting-user action chips above the composer
+// (Desktop FlowAwaitingUserCard parity, BUG-231) when the flow loop is parked
+// on the user's Continue/Stop decision. Mirrors the Approve/Deny + attention
+// chip pattern: no slash command needed — [Continue] unparks via
+// agent-loop/continue, [Stop] ends the parked loop. Returns "" when not
+// blocked so no extra input-bar row is allocated.
+func (m *AppModel) renderBlockedBar() string {
+	if !m.flowLoopBlocked() {
+		return ""
+	}
+	reason := strings.TrimSpace(m.flowBlockReason)
+	head := styleGate.Render("flow") + " " + styleLink.Render("[blocked]") + " " +
+		styleSystem.Render("awaiting your decision")
+	if reason != "" {
+		head += styleSystem.Render(" (" + reason + ")")
+	}
+	return head + "\n" +
+		styleSystem.Render("  ") + styleLink.Render("[Continue]") + "  " +
+		styleLink.Render("[Stop]") + "  " + styleSystem.Render("click")
+}
+
 // settleFlowIfDone flips a finished flow to a clean ConnIdle "done" state so
 // the statusline drops [stop] and no longer shows streaming…/flow running…
 // once the loop is done, every step is terminal, and no agent is active.

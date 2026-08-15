@@ -235,6 +235,16 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		if m.turnIsActive() {
 			return m, m.cmdStopTurn()
 		}
+		if m.flowLoopBlocked() {
+			// Desktop FlowAwaitingUser Stop parity (BUG-231): a parked blocked flow
+			// has turnIsActive()==false but the user must still be able to end it.
+			return m, m.cmdStopTurn()
+		}
+	case target == "continue":
+		// Desktop continueFlow parity (BUG-231): unblock a parked blocked flow.
+		if m.flowLoopBlocked() && m.runHandle != nil {
+			return m, m.cmdContinueFlow(m.runHandle.RunID)
+		}
 	case target == "approve":
 		if m.approval != nil {
 			return m.submitPendingApproval("approve")
@@ -389,6 +399,9 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 		return "status-details"
 	}
 	if t := hitApprovalChrome(c, x, y); t != "" {
+		return t
+	}
+	if t := m.hitBlockedChrome(c, x, y); t != "" {
 		return t
 	}
 	if t := hitQuestionChrome(m, c, x, y); t != "" {
@@ -557,6 +570,28 @@ func hitApprovalChrome(c tuiChrome, x, y int) string {
 	}
 	if hitToken(stripped, "Deny", x) || hitToken(stripped, "/deny", x) {
 		return "deny"
+	}
+	return ""
+}
+
+// hitBlockedChrome maps a click in the awaiting-user action bar (Desktop
+// FlowAwaitingUserCard parity, BUG-231) to "continue" / "stop". The bar is
+// rendered inside the input block above the composer.
+func (m *AppModel) hitBlockedChrome(c tuiChrome, x, y int) string {
+	if !m.flowLoopBlocked() || c.inputH <= 0 || y < c.inputY || y >= c.inputY+c.inputH {
+		return ""
+	}
+	lines := strings.Split(c.inputBlock, "\n")
+	rel := y - c.inputY
+	if rel < 0 || rel >= len(lines) {
+		return ""
+	}
+	stripped := stripANSI(lines[rel])
+	if hitToken(stripped, "[Continue]", x) {
+		return "continue"
+	}
+	if hitToken(stripped, "[Stop]", x) {
+		return "stop"
 	}
 	return ""
 }
