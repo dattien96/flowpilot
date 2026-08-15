@@ -608,7 +608,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.runHandle != nil && m.orchStream == nil {
 			cmds = append(cmds, m.cmdStartOrchestrationStream())
 		}
-		if m.shouldPollStepsRuntime() {
+		// One-shot steps fetch always fires for flow opens so the F2 step
+		// timeline renders even for completed runs (run-189839). The cursor
+		// auto-poll cadence is still gated by shouldPollStepsRuntime (CA-508/514).
+		if kind == "flow" && m.runHandle != nil {
 			cmds = append(cmds, m.cmdRefreshStepsRuntime())
 		}
 		// Hydrate sub-agents so /agent Tab and step [open] work after /open.
