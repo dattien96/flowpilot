@@ -250,6 +250,33 @@ func (m *AppModel) clearPendingTurnPayload() {
 	_ = m.clearPendingAttachments()
 }
 
+// resolveTurnStepID returns the step id a new turn must send to startTurn. It
+// mirrors Desktop store.sendPrompt (store.ts): normal chat reuses the synthetic
+// "chat-<runId>" step minted by the runner (surfaced via RunHandle.StepID) so
+// follow-ups never POST an empty stepId (which startTurn rejects with 400
+// "stepId is required"); workflow/flow-mode runs fall back to the launch
+// workflow id so a resumed catalog flow can still continue (CA-519).
+func (m *AppModel) resolveTurnStepID() string {
+	if id := strings.TrimSpace(m.stepID); id != "" {
+		return id
+	}
+	if m.runHandle != nil {
+		if id := strings.TrimSpace(m.runHandle.StepID); id != "" {
+			return id
+		}
+	}
+	if id := strings.TrimSpace(m.launch.StepID); id != "" {
+		return id
+	}
+	if id := strings.TrimSpace(m.launch.WorkflowID); id != "" {
+		return id
+	}
+	if m.runHandle != nil && m.runHandle.RunID != "" {
+		return "chat-" + m.runHandle.RunID
+	}
+	return ""
+}
+
 func (m *AppModel) canSend() bool {
 	if m.viewingChild() {
 		return false

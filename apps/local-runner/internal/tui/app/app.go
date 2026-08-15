@@ -587,6 +587,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Restore flow chrome from resume handle (and history list as fallback).
 		m.applyOpenedRunFlowChrome(handle, msg.HistoryMeta)
+		// A resumed workflow/flow run may carry no StepID on the handle (runner
+		// only mints "chat-<runId>" for normal chat, T-7). Resolve the launch
+		// fallback now (workflow id / synthetic chat id) so continue turns after
+		// /open never POST an empty stepId — startTurn rejects that with 400
+		// (CA-519).
+		if strings.TrimSpace(m.stepID) == "" {
+			m.stepID = m.resolveTurnStepID()
+		}
 		m.connStatus = ConnIdle
 		m.statusMsg = fmt.Sprintf("opened %s", shortID(handle.RunID))
 		kind := "chat"
@@ -1221,8 +1229,15 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.cmdShutdownAndQuit()
 	}
 
-	if m.authPhase == AuthNone && (isPromptNewlineKey(msg) || isModifiedEnterNewline(msg)) {
+	if m.authPhase == AuthNone && (isPromptNewlineKey(msg) || isModifiedEnterNewline(msg)) && !m.viewingChild() {
 		m.inputValue += "\n"
+		return m, nil
+	}
+
+	// Desktop parity (CA-519): a focused sub-agent transcript is read-only. Only
+	// navigation, [back], agent-cycle, and slash commands are allowed; chat text
+	// input is dropped so the user cannot keep typing into the child view.
+	if m.viewingChild() && !m.allowsKeyWhileViewingChild(msg) {
 		return m, nil
 	}
 
@@ -1704,6 +1719,35 @@ func (m *AppModel) allowsKeyWhileLoading(msg tea.KeyMsg) bool {
 			strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/")
 	case tea.KeyBackspace, tea.KeyDelete:
 		// Edit only when already composing a slash command.
+		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/")
+	}
+	if _, _, ok := activeSlashLine(m.inputValue, m.inputCaretIndex()); ok {
+		return true
+	}
+	if strings.HasPrefix(strings.TrimSpace(m.inputValue), "/") {
+		return true
+	}
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 && msg.Runes[0] == '/' {
+		return true
+	}
+	return false
+}
+
+// allowsKeyWhileViewingChild is the child-view twin of allowsKeyWhileLoading: a
+// focused sub-agent transcript is read-only, so only navigation, agent-cycle,
+// [back]/Esc, copy, and slash commands are allowed. Plain chat text (including
+// Enter-to-send) is dropped — continue happens on the main run only (CA-519).
+func (m *AppModel) allowsKeyWhileViewingChild(msg tea.KeyMsg) bool {
+	switch msg.Type {
+	case tea.KeyCtrlC, tea.KeyEsc, tea.KeyF2, tea.KeyF3, tea.KeyF4,
+		tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight,
+		tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd,
+		tea.KeyTab, tea.KeyShiftTab, tea.KeyCtrlV:
+		return true
+	case tea.KeyEnter:
+		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/") ||
+			strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/")
+	case tea.KeyBackspace, tea.KeyDelete:
 		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/")
 	}
 	if _, _, ok := activeSlashLine(m.inputValue, m.inputCaretIndex()); ok {
@@ -3002,6 +3046,13 @@ func (m *AppModel) renderInputLine() string {
 		w = 80
 	}
 	w = safeTermWidth(w)
+	if m.viewingChild() {
+		// Desktop parity: a focused sub-agent transcript is read-only — chat may
+		// only continue on the main run. Render a locked banner instead of an
+		// editable composer (CA-519).
+		msg := " Child transcript is read-only — chat continues on main (/agent main or [back]) "
+		return styleSystem.Render(truncateVisual(msg, w))
+	}
 	if m.sessionLoading && !strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/") {
 		frames := []string{"|", "/", "-", "\\"}
 		spin := frames[m.loadingFrame%len(frames)]
