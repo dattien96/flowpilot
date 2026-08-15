@@ -637,6 +637,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Live children → expand F2 so step [open] is visible immediately.
 		m.expandSessionPanelForChildAgents()
+		// Loop may already be done from a prior agent_graph_updated; re-settle now
+		// that children are confirmed completed (run-189839).
+		m.settleFlowIfDone()
 		return m, nil
 
 	case runSnapshotMsg:
@@ -918,6 +921,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.flowStepsActive != "" && (m.connStatus == ConnRunning || m.connStatus == ConnWaiting) {
 			m.statusMsg = "step: " + m.flowStepsActive
 		}
+		// All steps now terminal + loop done + no active agents → finished flow:
+		// drop [stop] and any stale running/streaming chrome (run-189839).
+		m.settleFlowIfDone()
 		// Step progress lines only on main hub view — never while reading a child
 		// transcript (would interleave flow banners into sub-agent chat).
 		if !m.viewingChild() {
@@ -989,11 +995,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AgentGraphMsg:
 		if msg.Graph != nil {
+			m.flowLoopStatus = msg.Graph.LoopState.Status
 			m.agentRuns = msg.Graph.Runs
 			if m.focusedAgentIdx >= len(m.agentRuns) {
 				m.focusedAgentIdx = 0
 			}
 			m.expandSessionPanelForChildAgents()
+			m.settleFlowIfDone()
 		}
 		return m, nil
 
@@ -1055,7 +1063,10 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 	switch ev.Type {
 	case "message_delta":
 		m.appendAssistantDelta(ev.Text)
-		if m.connStatus == ConnRunning {
+		// Flow chrome is quiet (CA-511): progress lives on F2 steps + status line,
+		// so a delta must not overwrite "step: X"/"flow running…" with "streaming…"
+		// — that masked a finished flow behind a fake live spinner (run-189839).
+		if m.connStatus == ConnRunning && !m.isFlowChrome() {
 			m.statusMsg = "streaming…"
 		}
 
@@ -1175,11 +1186,13 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 
 	case "agent_graph_updated":
 		if ev.AgentGraph != nil {
+			m.flowLoopStatus = ev.AgentGraph.LoopState.Status
 			m.agentRuns = ev.AgentGraph.Runs
 			if m.focusedAgentIdx >= len(m.agentRuns) {
 				m.focusedAgentIdx = 0
 			}
 			m.expandSessionPanelForChildAgents()
+			m.settleFlowIfDone()
 		}
 		if m.agentsFocus {
 			m.addMessage("system", fmt.Sprintf("[agents] %d agents active", len(m.agentRuns)), "")

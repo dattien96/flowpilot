@@ -130,6 +130,44 @@ func (m *AppModel) noteRunnerPollResult(errText string) {
 	}
 }
 
+// flowLoopDone reports the orchestrator loop reached a terminal "done" state
+// with no step still active and no agent still live. This is the authoritative
+// "flow finished" signal even when the raw handle status still says "running"
+// (interactive_handlers.historyStatusForLiveRun comment: hub provider runs stay
+// "running" until the last SSE settles) — run-189839 showed [stop] + streaming…
+// forever after all steps DONE / children completed / loop done.
+func (m *AppModel) flowLoopDone() bool {
+	if strings.ToLower(strings.TrimSpace(m.flowLoopStatus)) != "done" {
+		return false
+	}
+	if strings.TrimSpace(m.flowStepsActive) != "" {
+		return false
+	}
+	if m.flowHasActiveAgents() {
+		return false
+	}
+	return true
+}
+
+// settleFlowIfDone flips a finished flow to a clean ConnIdle "done" state so
+// the statusline drops [stop] and no longer shows streaming…/flow running…
+// once the loop is done, every step is terminal, and no agent is active.
+// A live turn stream (follow-up chat turn after loop done) or a child focus
+// transcript is left untouched — only the settled chrome is updated.
+func (m *AppModel) settleFlowIfDone() {
+	if !m.isFlowChrome() || !m.flowLoopDone() {
+		return
+	}
+	if m.turnStream != nil || m.focusStream != nil {
+		return
+	}
+	m.connStatus = ConnIdle
+	m.statusMsg = "done"
+	if m.runHandle != nil && !runStatusIsTerminal(m.runHandle.Status) {
+		m.runHandle.Status = "completed"
+	}
+}
+
 func activeStepName(steps []client.WorkflowStepRuntime) string {
 	for _, s := range steps {
 		st := strings.ToUpper(strings.TrimSpace(s.Status))

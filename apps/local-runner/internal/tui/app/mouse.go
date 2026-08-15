@@ -116,6 +116,11 @@ func (m *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.mouseSel.x1 = msg.X
 				m.mouseSel.y1 = msg.Y
 			}
+			// Terminal.app never delivers Cmd+C, so releasing the drag copies the
+			// selection (CA-515). Ctrl+C stays as a fallback elsewhere.
+			if msg.Action == tea.MouseActionRelease {
+				return m, m.autoCopySelectionOnDragEnd()
+			}
 		}
 		return m, nil
 	}
@@ -145,7 +150,9 @@ func (m *AppModel) handlePlainLeftMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		dragged := m.mouseDrag.moved
 		m.mouseDrag = mouseDrag{}
 		if dragged {
-			return m, nil
+			// Drag-select just ended: copy on release (Terminal.app swallows
+			// Cmd+C, so the drag release is the reliable copy affordance, CA-515).
+			return m, m.autoCopySelectionOnDragEnd()
 		}
 		// Click-release with no motion: same as before (clear leftover highlight).
 		m.mouseSel = mouseSelect{}
@@ -192,6 +199,24 @@ func (m *AppModel) selectionPlainText() string {
 		parts = append(parts, seg)
 	}
 	return strings.Join(parts, "\n")
+}
+
+// autoCopySelectionOnDragEnd copies the armed drag selection when the mouse is
+// released. Terminal.app swallows Cmd+C for native copy and never delivers it to
+// the TUI, so releasing the drag is the reliable "copy selection" affordance
+// there (CA-515). The selection stays armed so Ctrl+C remains a working
+// fallback (CA-480 keeps the highlight after release); the next press clears it.
+// The CopiedMsg handler shows the "Copied selection." toast (CA-511).
+func (m *AppModel) autoCopySelectionOnDragEnd() tea.Cmd {
+	if m.mouseSel.empty() {
+		return nil
+	}
+	text := m.selectionPlainText()
+	if strings.TrimSpace(text) == "" {
+		m.statusMsg = "nothing to copy"
+		return nil
+	}
+	return m.cmdCopyText(text, "selection")
 }
 
 func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {

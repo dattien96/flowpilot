@@ -250,6 +250,11 @@ type AppModel struct {
 	sessionPanel     sessionInfoPanel        // collapsible top-right session/status overlay
 	flowSteps        []client.WorkflowStepRuntime
 	flowStepsActive  string // node name currently RUNNING
+	// flowLoopStatus mirrors the orchestrator LoopState.Status from the latest
+	// agent_graph_updated (done | running | blocked | stopped | …). Flow hubs keep
+	// the raw handle status "running" past loop "done" until the last SSE settles,
+	// so the TUI settles chrome on loop+step+agent state, not the stale handle.
+	flowLoopStatus string
 	turnStream       *turnStreamState
 	orchStream       *orchStreamState // Desktop orchestration SSE after turn
 	focusStream      *orchStreamState // child transcript while /agent focused
