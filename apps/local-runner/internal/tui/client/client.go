@@ -189,6 +189,66 @@ type AgentGraphSnapshot struct {
 	LoopState   AgentLoopState    `json:"loopState"`
 }
 
+// DispatchAttentionItem mirrors runner.AttentionItem surfaced by
+// GET /client/workflow-runs/{runId}/dispatch-attention (CP-51 Task-256).
+type DispatchAttentionItem struct {
+	Kind      string `json:"kind"` // uncertain|repair_required|cancel_required|settle_pending
+	RunID     string `json:"run_id"`
+	TurnID    string `json:"turn_id,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+// DispatchSettlement carries the ALREADY-COMMITTED settlement disposition that
+// resolve/retry-as-new responses surface (OR ledger row — never a follow-up read).
+type DispatchSettlement struct {
+	State       string `json:"state"`
+	SettlePhase string `json:"settlePhase"`
+	StopOutcome string `json:"stopOutcome,omitempty"`
+}
+
+// DispatchInspectResult mirrors GET /client/workflow-runs/{runId}/dispatches/{turnId}.
+// RE: only canonical identity/hash evidence is exposed — never raw secret payloads.
+type DispatchInspectResult struct {
+	DispatchSettlement
+	RunID            string                   `json:"runId"`
+	TurnID           string                   `json:"turnId"`
+	Revision         int64                    `json:"revision"`
+	CancelRequested  bool                     `json:"cancelRequested"`
+	EnvelopeHash     string                   `json:"envelopeHash"`
+	OuterIntentKey   string                   `json:"outerIntentKey"`
+	OuterIntentGen   int64                    `json:"outerIntentGen"`
+	IntentOwnerRunID string                   `json:"intentOwnerRunID"`
+	ReceiptEvidence  *ReceiptEvidenceSummary  `json:"receiptEvidence,omitempty"`
+	TerminalEvidence *TerminalEvidenceSummary `json:"terminalEvidence,omitempty"`
+	OpenRepair       *OpenRepairSummary       `json:"openRepair,omitempty"`
+}
+
+// ReceiptEvidenceSummary mirrors the redacted canonical receipt evidence.
+type ReceiptEvidenceSummary struct {
+	ProviderKey   string `json:"providerKey"`
+	ReceiptID     string `json:"receiptId"`
+	EvidenceKind  string `json:"evidenceKind"`
+	PayloadSHA256 string `json:"payloadSHA256"`
+}
+
+// TerminalEvidenceSummary mirrors the redacted terminal evidence.
+type TerminalEvidenceSummary struct {
+	ProviderKey   string `json:"providerKey"`
+	EvidenceKind  string `json:"evidenceKind"`
+	Outcome       string `json:"outcome"`
+	PayloadSHA256 string `json:"payloadSHA256"`
+}
+
+// OpenRepairSummary mirrors the quarantined repair metadata.
+type OpenRepairSummary struct {
+	RepairRevision int64  `json:"repairRevision"`
+	Reason         string `json:"reason"`
+	QuarantineHash string `json:"quarantineHash"`
+	State          string `json:"state"`
+	CreatedAt      string `json:"createdAt,omitempty"`
+}
+
 // BuiltinFlowOption mirrors /client/chat/builtin-orchestration-options.
 type BuiltinFlowOption struct {
 	FlowRef     string `json:"flowRef"`
@@ -413,10 +473,10 @@ func New(baseURL string) *Client {
 			Timeout:   3 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          32,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
+		ForceAttemptHTTP2:   true,
+		MaxIdleConns:        32,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 5 * time.Second,
 		// Long enough to not cut the 30s/45s catalog budgets while still guarding
 		// a hung-but-accepting runner; per-call ctx deadlines do the real capping.
 		ResponseHeaderTimeout: 60 * time.Second,
@@ -671,6 +731,78 @@ func (c *Client) ContinueFlow(ctx context.Context, runID string) (*AgentGraphSna
 		return nil, err
 	}
 	return &snap, nil
+}
+
+// ListDispatchAttention fetches operator-attention items for a run (CP-51
+// Task-256, Desktop listDispatchAttention parity).
+func (c *Client) ListDispatchAttention(ctx context.Context, runID string) ([]DispatchAttentionItem, error) {
+	var body struct {
+		Items []DispatchAttentionItem `json:"items"`
+	}
+	if err := c.getJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/dispatch-attention", &body); err != nil {
+		return nil, err
+	}
+	return body.Items, nil
+}
+
+// InspectDispatch fetches the full record for one turn (redacted evidence).
+func (c *Client) InspectDispatch(ctx context.Context, runID, turnID string) (*DispatchInspectResult, error) {
+	var out DispatchInspectResult
+	if err := c.getJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/dispatches/"+neturl.PathEscape(turnID), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ResolveDispatchUncertain POSTs an operator resolution for an uncertain turn.
+func (c *Client) ResolveDispatchUncertain(ctx context.Context, runID, turnID string, expectedRev int64, resolutionID, action, detail string) (*DispatchSettlement, error) {
+	var out DispatchSettlement
+	if err := c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/dispatches/"+neturl.PathEscape(turnID)+"/resolve", map[string]any{
+		"expectedRev":  expectedRev,
+		"resolutionId": resolutionID,
+		"action":       action,
+		"detail":       detail,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RetryDispatchAsNew POSTs a retry-as-new for an uncertain turn.
+func (c *Client) RetryDispatchAsNew(ctx context.Context, runID, turnID string, input RetryAsNewInput) (*DispatchSettlement, error) {
+	var out DispatchSettlement
+	if err := c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/dispatches/"+neturl.PathEscape(turnID)+"/retry-as-new", map[string]any{
+		"expectedRev":          input.ExpectedRev,
+		"resolutionId":         input.ResolutionID,
+		"newTurnId":            input.NewTurnID,
+		"expectedIntentGen":    input.ExpectedIntentGen,
+		"expectedEnvelopeHash": input.ExpectedEnvelopeHash,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ResolveDispatchRepair POSTs a repair resolution (retry_load | abandon).
+func (c *Client) ResolveDispatchRepair(ctx context.Context, runID string, expectedRepairRev int64, resolutionID, action string) (map[string]any, error) {
+	var out map[string]any
+	if err := c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/repair-resolution", map[string]any{
+		"expectedRepairRev": expectedRepairRev,
+		"resolutionId":      resolutionID,
+		"action":            action,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// RetryAsNewInput carries the fields for RetryDispatchAsNew.
+type RetryAsNewInput struct {
+	ExpectedRev          int64
+	ResolutionID         string
+	NewTurnID            string
+	ExpectedIntentGen    int64
+	ExpectedEnvelopeHash string
 }
 
 // SubmitGateDecision sends POST /client/workflow-runs/{runId}/gate-decision (Desktop parity).

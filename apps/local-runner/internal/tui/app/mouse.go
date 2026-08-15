@@ -17,22 +17,22 @@ func stripANSI(s string) string {
 }
 
 type tuiChrome struct {
-	panelLines      []string
-	panelH          int
-	bannerLines     int
-	statusBlock     string
-	statusH         int
-	inputBlock      string
-	inputH          int
-	inputY          int
+	panelLines       []string
+	panelH           int
+	bannerLines      int
+	statusBlock      string
+	statusH          int
+	inputBlock       string
+	inputH           int
+	inputY           int
 	attachPanelBlock string
 	attachPanelH     int
 	attachPanelY     int
-	sugg            []suggestItem
-	suggLines       int
-	messagesHeight  int
-	statusY         int
-	chatSepH        int
+	sugg             []suggestItem
+	suggLines        int
+	messagesHeight   int
+	statusY          int
+	chatSepH         int
 }
 
 func (m *AppModel) tuiChrome() tuiChrome {
@@ -299,8 +299,72 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		if runID != "" {
 			return m, m.cmdFocusAgent(runID)
 		}
+	case strings.HasPrefix(target, "attention-inspect:"):
+		runID, turnID, _ := parseAttentionKey(strings.TrimPrefix(target, "attention-inspect:"))
+		if runID != "" && turnID != "" {
+			return m, m.cmdInspectAttention(runID, turnID)
+		}
+	case strings.HasPrefix(target, "attention-resolve:"):
+		rest := strings.TrimPrefix(target, "attention-resolve:")
+		runID, turnID, action, _ := parseAttentionResolve(rest)
+		if runID != "" && turnID != "" && action != "" {
+			return m, m.cmdResolveAttention(runID, turnID, action)
+		}
+	case strings.HasPrefix(target, "attention-retry:"):
+		runID, turnID, _ := parseAttentionKey(strings.TrimPrefix(target, "attention-retry:"))
+		if runID != "" && turnID != "" {
+			key := attentionKey(runID, turnID)
+			if !m.attentionRetryConfirm[key] {
+				// T-5 cancel-bias: first click only arms the confirm; second click
+				// actually retries (Desktop confirmRetry double-step).
+				m.attentionRetryConfirm = map[string]bool{key: true}
+				m.addMessage("system", "Click [confirm-retry] again to retry this turn as new.", "warn")
+				return m, nil
+			}
+			m.attentionRetryConfirm = map[string]bool{}
+			return m, m.cmdRetryAttention(runID, turnID)
+		}
+	case strings.HasPrefix(target, "attention-repair:"):
+		rest := strings.TrimPrefix(target, "attention-repair:")
+		runID, action, _ := parseAttentionRepair(rest)
+		if runID != "" && action != "" {
+			return m, m.cmdResolveRepair(runID, action)
+		}
+	case strings.HasPrefix(target, "attention-details:"):
+		runID, turnID, _ := parseAttentionKey(strings.TrimPrefix(target, "attention-details:"))
+		if runID != "" && turnID != "" {
+			return m, m.cmdInspectAttention(runID, turnID)
+		}
 	}
 	return m, nil
+}
+
+// parseAttentionKey splits "runID/turnID".
+func parseAttentionKey(key string) (runID, turnID string, ok bool) {
+	i := strings.IndexByte(key, '/')
+	if i < 0 {
+		return "", "", false
+	}
+	return key[:i], key[i+1:], true
+}
+
+// parseAttentionResolve splits "runID/turnID:action".
+func parseAttentionResolve(rest string) (runID, turnID, action string, ok bool) {
+	key, act, found := strings.Cut(rest, ":")
+	if !found {
+		return "", "", "", false
+	}
+	r, t, ok := parseAttentionKey(key)
+	return r, t, act, ok
+}
+
+// parseAttentionRepair splits "runID:action".
+func parseAttentionRepair(rest string) (runID, action string, ok bool) {
+	r, a, found := strings.Cut(rest, ":")
+	if !found {
+		return "", "", false
+	}
+	return r, a, true
 }
 
 func (m *AppModel) clickTargetAt(x, y int) string {
@@ -328,6 +392,9 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 		return t
 	}
 	if t := hitQuestionChrome(m, c, x, y); t != "" {
+		return t
+	}
+	if t := m.hitAttentionChip(x, y); t != "" {
 		return t
 	}
 	if action, idx := hitAttachPanelAction(c, x, y); idx > 0 {

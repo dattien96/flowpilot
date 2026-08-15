@@ -53,7 +53,7 @@ var (
 	// agent:NAME and flow-name values — dedicated hues, not styleStatusHi/accent.
 	styleStatusAgent = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusAgent))
 	styleStatusFlow  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusFlow))
-	stylePrompt    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
+	stylePrompt      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
 	// Input stroke frame (Desktop accent / prompt-border — no neon wash).
 	stylePromptFocus = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
 	styleInputFocus  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
@@ -637,6 +637,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// [stop] on the stale live handle (BUG-231 run-189839 parity with
 			// Desktop refreshAgentGraph on history open).
 			cmds = append(cmds, m.cmdHydrateAgentGraph(m.runHandle.RunID))
+			cmds = append(cmds, m.cmdHydrateDispatchAttention(m.runHandle.RunID))
 		}
 		// Catalog may still be loading — refresh flow list so status label can use name.
 		if kind == "flow" && len(m.flowWorkflows) == 0 && len(m.flowBuiltins) == 0 {
@@ -852,6 +853,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, m.cmdHydrateAgentGraph(m.runHandle.RunID))
 					cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
 					cmds = append(cmds, m.cmdRefreshStepsRuntime())
+					cmds = append(cmds, m.cmdHydrateDispatchAttention(m.runHandle.RunID))
 				}
 				return m, tea.Batch(cmds...)
 			}
@@ -1076,6 +1078,47 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyAgentGraph(msg.Graph)
 		}
 		return m, nil
+
+	case AttentionLoadedMsg:
+		if m.runHandle == nil || m.runHandle.RunID != msg.RunID {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.attentionErr = msg.Err.Error()
+			m.noteRunnerPollResult(msg.Err.Error())
+			return m, nil
+		}
+		m.applyAttention(msg.Items)
+		return m, nil
+
+	case AttentionInspectedMsg:
+		if m.runHandle == nil || m.runHandle.RunID != msg.RunID {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.attentionErr = msg.Err.Error()
+			return m, nil
+		}
+		if msg.Result != nil {
+			if m.attentionInspect == nil {
+				m.attentionInspect = map[string]*client.DispatchInspectResult{}
+			}
+			m.attentionInspect[attentionKey(msg.RunID, msg.TurnID)] = msg.Result
+		}
+		return m, nil
+
+	case AttentionResolvedMsg:
+		if m.runHandle == nil || m.runHandle.RunID != msg.RunID {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.attentionErr = msg.Err.Error()
+			m.addMessage("system", "Dispatch resolution failed: "+msg.Err.Error(), "error")
+			return m, m.cmdHydrateDispatchAttention(m.runHandle.RunID)
+		}
+		m.addMessage("system", fmt.Sprintf("Dispatch %s resolved (%s).", msg.Kind, msg.Outcome), "")
+		// Drop the resolved item + refresh to reflect the committed settlement.
+		return m, m.cmdHydrateDispatchAttention(m.runHandle.RunID)
 
 	case TurnDoneMsg:
 		m.connStatus = ConnIdle
@@ -1831,6 +1874,11 @@ func (m *AppModel) sendBlocked() bool {
 	if m.pendingPrompt != "" {
 		return true
 	}
+	// Dispatch operator attention (CP-51 Task-256): a new turn must not be sent
+	// until every uncertain/repair item is resolved (Desktop blocked dispatch).
+	if m.hasUnresolvedAttention() {
+		return true
+	}
 	switch m.connStatus {
 	case ConnRunning, ConnWaiting:
 		return true
@@ -1857,6 +1905,12 @@ func (m *AppModel) turnIsActive() bool {
 	}
 	if m.flowHasActiveAgents() {
 		return true
+	}
+	// Dispatch operator attention (CP-51 Task-256): while an uncertain turn /
+	// open repair awaits a decision, the flow is parked — [stop] must not arm
+	// against the very user the flow is waiting on.
+	if m.hasUnresolvedAttention() {
+		return false
 	}
 	// A blocked loop (awaiting-user pause, BUG-231) with no live child is parked,
 	// not running: [stop] must not arm against the very user the flow is waiting
@@ -3200,6 +3254,9 @@ func (m *AppModel) renderInputLine() string {
 	}
 	if m.question != nil {
 		inner = append(inner, renderQuestionBar(left, mid, m.question, innerW))
+	}
+	if bar := m.renderAttentionBar(); bar != "" {
+		inner = append(inner, strings.Split(bar, "\n")...)
 	}
 	caretAt := m.inputCaretIndex()
 	off := 0
