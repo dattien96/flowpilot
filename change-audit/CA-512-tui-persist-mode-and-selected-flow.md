@@ -26,7 +26,8 @@ Extend `tui-session.json` (same prefs path as provider/model/reasoning) so
 | `/chat` | mode=chat, clear flow fields |
 | `/yolo` | chat only; toggle + persist yolo |
 | `/provider` `/model` `/reasoning` `/new` | keep current mode+flow+yolo |
-| `New()` | restore mode+flow from disk |
+| `New()` | stash flow prefs; **stay chat** until project binds |
+| Project bound | then restore ModeFlow + arm (tryApplyPendingFlowRestore) |
 | Silent/list `FlowListMsg` | re-resolve arm against catalog (label/SubMode) |
 
 `/open` run chrome does **not** rewrite prefs (session-only chrome; prefs
@@ -61,5 +62,5 @@ restore does not override an active run arm (refine skips re-resolve when
 feature_key: cli-tui
 source_doc_id: CP-56
 change_type: task
-summary: Persist TUI mode, selected flow, and chat YOLO in tui-session.json (flow YOLO stays auto-on)
+summary: Persist mode/flow/yolo; defer flow-mode restore until project catalog binds (cold-start hang fix)
 # --->8---
