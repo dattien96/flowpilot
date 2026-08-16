@@ -25,6 +25,9 @@ var (
 	styleMdDim     = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
 	styleMdBody    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
 	styleMdCodeBox = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText)).Background(lipgloss.Color(colorCodeBg))
+	// Fence border glyphs — dim on the same solid card bg (opencode-style, no
+	// bright outline around the code block).
+	styleMdCodeBar = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim)).Background(lipgloss.Color(colorCodeBg))
 )
 
 type mdCacheKey struct {

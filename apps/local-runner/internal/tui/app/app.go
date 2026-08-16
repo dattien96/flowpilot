@@ -33,7 +33,7 @@ const (
 	colorOK         = "#3fb950" // --ok
 	colorErr        = "#f85149" // --err
 	colorBg3        = "#1e1e1e" // --bg-3
-	colorCodeBg     = "#252526" // fenced-code panel (lifted vs terminal / --bg-3)
+	colorCodeBg     = "#2e2e2e" // fenced-code panel (solid lifted card vs terminal / --bg-3, opencode-style)
 	// Status-line exclusive values (not reused for model/YOLO/skills/open-back).
 	colorStatusAgent = "#2dd4bf" // teal — agent:<name> value
 	colorStatusFlow  = "#f472b6" // pink — flow name / active step value

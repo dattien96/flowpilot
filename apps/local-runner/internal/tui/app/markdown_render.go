@@ -418,7 +418,7 @@ func renderCodeFenceBox(body []string, title string, width int, ascii bool) []st
 	}
 	padW := boxW - 2
 	out := make([]string, 0, len(body)+2)
-	out = append(out, strokeTopChip(title, chip, boxW, ascii))
+	out = append(out, strokeTopSolid(title, chip, boxW, ascii))
 	if len(body) == 0 {
 		body = []string{""}
 	}
@@ -428,8 +428,57 @@ func renderCodeFenceBox(body []string, title string, width int, ascii bool) []st
 			out = append(out, strokeCodeFill(inner, boxW, ascii))
 		}
 	}
-	out = append(out, strokeBottom(boxW, ascii))
+	out = append(out, strokeBottomSolid(boxW, ascii))
 	return out
+}
+
+// strokeTopSolid paints the full code-fence header as a solid card: title and
+// border glyphs sit on colorCodeBg, matching the body fill (CA-531).
+func strokeTopSolid(title, chip string, boxW int, ascii bool) string {
+	tl, tr, _, _, h, _ := boxGlyphs(ascii)
+	innerW := boxW - 2
+	if innerW < 4 {
+		innerW = 4
+	}
+	title = strings.TrimSpace(title)
+	if title != "" {
+		title = " " + title + " "
+	}
+	tw := lipgloss.Width(title)
+	cw := lipgloss.Width(chip)
+	if tw+cw > innerW {
+		room := innerW - cw
+		if room < 0 {
+			chip = truncateVisual(chip, innerW)
+			cw = lipgloss.Width(chip)
+			room = innerW - cw
+		}
+		if room < 0 {
+			room = 0
+		}
+		if tw > room {
+			title = truncateVisual(title, room)
+			tw = lipgloss.Width(title)
+		}
+	}
+	fill := innerW - tw - cw
+	if fill < 0 {
+		fill = 0
+	}
+	box := styleMdCodeBox.Render(title)
+	fillS := styleMdCodeBar.Render(strings.Repeat(h, fill))
+	chipS := styleMdCodeBox.Render(chip)
+	return styleMdCodeBar.Render(tl) + box + fillS + chipS + styleMdCodeBar.Render(tr)
+}
+
+// strokeBottomSolid paints the full code-fence footer on colorCodeBg (CA-531).
+func strokeBottomSolid(boxW int, ascii bool) string {
+	_, _, bl, br, h, _ := boxGlyphs(ascii)
+	innerW := boxW - 2
+	if innerW < 4 {
+		innerW = 4
+	}
+	return styleMdCodeBar.Render(bl + strings.Repeat(h, innerW) + br)
 }
 
 func packMDLines(lines []string, copyAt map[int]string) []mdLine {
@@ -449,7 +498,7 @@ func strokeCodeFill(inner string, boxW int, ascii bool) string {
 	if innerW < 4 {
 		innerW = 4
 	}
-	return v + styleMdCodeBox.Render(padVisualANSI(inner, innerW)) + v
+	return styleMdCodeBar.Render(v) + styleMdCodeBox.Render(padVisualANSI(inner, innerW)) + styleMdCodeBar.Render(v)
 }
 
 func (w *mdWriter) walkEmphasis(n ast.Node, entering bool) {
