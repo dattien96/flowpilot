@@ -522,11 +522,30 @@ func (m *AppModel) openRunIDFromPanelLine(stripped string) string {
 			continue
 		}
 		name := stepDisplayName(s)
-		if name != "" && strings.Contains(stripped, name) {
+		if name != "" && stepRowMatchesName(stripped, name) {
 			return child.RunID
 		}
 	}
 	return ""
+}
+
+// stepRowMatchesName matches a step row against a step display name, tolerating
+// the "…" ellipsis that truncateStepLine appends when a long name/status row is
+// squeezed (CA-528). A meaningful-prefix match keeps a truncated [open] row
+// clickable.
+func stepRowMatchesName(stripped, name string) bool {
+	if strings.Contains(stripped, name) {
+		return true
+	}
+	for i := len(name); i > 0; i-- {
+		if i*2 < len(name) {
+			break
+		}
+		if strings.Contains(stripped, name[:i]+"…") {
+			return true
+		}
+	}
+	return false
 }
 
 func hitSessionPanel(c tuiChrome, x, y int) bool {

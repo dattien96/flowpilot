@@ -62,6 +62,93 @@ func (m *AppModel) hasChildAgentRuns() bool {
 	return false
 }
 
+// hasChildAgentRun reports whether any run in the given list is a child agent
+// (not the synthetic main row).
+func hasChildAgentRun(runs []client.AgentRunSummary) bool {
+	for _, r := range runs {
+		if r.RunID != "" && !isMainAgentRun(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// adoptAgentRuns applies a fresh agent-runs snapshot without clobbering known
+// children (CA-528). GET …/agents can return only the synthetic main row (or an
+// empty list) while a faster agent_graph_updated already populated children;
+// replacing wholesale would hide the step [open] chips until the next poll.
+func (m *AppModel) adoptAgentRuns(incoming []client.AgentRunSummary) {
+	if len(incoming) == 0 {
+		return // never drop known agents on an empty hydrate
+	}
+	if !hasChildAgentRun(incoming) && m.hasChildAgentRuns() {
+		return // main-only snapshot must not erase known children
+	}
+	m.agentRuns = incoming
+	m.afterAgentRunsAdopted()
+}
+
+// afterAgentRunsAdopted keeps agent display state consistent after agentRuns
+// changed: clamp the focused index, expand F2 when children exist, and re-settle
+// the flow chrome if the loop finished.
+func (m *AppModel) afterAgentRunsAdopted() {
+	if m.focusedAgentIdx >= len(m.agentRuns) {
+		m.focusedAgentIdx = 0
+	}
+	m.expandSessionPanelForChildAgents()
+	m.settleFlowIfDone()
+}
+
+// agentHydrateRetryLimit caps the automatic hydrate re-arm ladder so a slow or
+// dead runner is not flooded (CA-528; CA-514 keeps the poll pause intact).
+const agentHydrateRetryLimit = 3
+
+// stepsNeedChildOpenChip is true when a flow step that can host a child agent is
+// in an [open]-eligible state but no child run is mapped to it yet — the F2 step
+// list is missing its [open] button and a fresh hydrate may fix it (CA-528).
+func (m *AppModel) stepsNeedChildOpenChip() bool {
+	if !(m.launch.IsCatalogWorkflow() || m.mode == ModeFlow || m.mode == ModeStep) {
+		return false
+	}
+	for _, s := range m.flowSteps {
+		if !stepMayHostChildAgent(s) {
+			continue
+		}
+		switch strings.ToUpper(strings.TrimSpace(s.Status)) {
+		case "RUNNING", "WAITING_USER_APPROVAL", "DONE", "FAILED":
+		default:
+			continue
+		}
+		if _, ok := m.childRunForStep(s); !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// hydrateAgentRunsIfNeededMsg re-arms a one-shot agent hydrate after a short
+// tick when steps still need their child [open] chip (CA-528).
+type hydrateAgentRunsIfNeededMsg struct{}
+
+// cmdHydrateAgentRunsIfNeeded returns a bounded retry tick when a flow step is
+// still missing its child [open] chip and no hydrate is in flight. The in-flight
+// guard plus the retry cap keep this from flooding a slow or dead runner.
+func (m *AppModel) cmdHydrateAgentRunsIfNeeded() tea.Cmd {
+	if !m.stepsNeedChildOpenChip() {
+		return nil
+	}
+	if m.agentsHydrateInFlight {
+		return nil
+	}
+	if m.agentHydrateRetries >= agentHydrateRetryLimit {
+		return nil
+	}
+	m.agentHydrateRetries++
+	return tea.Tick(400*time.Millisecond, func(time.Time) tea.Msg {
+		return hydrateAgentRunsIfNeededMsg{}
+	})
+}
+
 // expandSessionPanelForChildAgents opens the F2 panel so step [open] is visible
 // as soon as a child agent exists (live or after hydrate).
 func (m *AppModel) expandSessionPanelForChildAgents() {

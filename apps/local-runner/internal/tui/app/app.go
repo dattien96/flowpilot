@@ -559,6 +559,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runnerPollFailStreak = 0
 		m.stepsPollInFlight = false
 		m.agentsHydrateInFlight = false
+		m.agentHydrateRetries = 0
 		// Prefer server snapshot / history row status so terminal opens do not
 		// arm [stop] via flow orch listener (empty resume status looked "live").
 		if st := strings.TrimSpace(msg.Snapshot.Status); st != "" {
@@ -651,21 +652,34 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.agentsHydrateInFlight = false
 		if msg.Err != "" {
 			m.noteRunnerPollResult(msg.Err)
-			return m, nil
+			// Dead runner: stop retrying (CA-514). Soft errors may still recover
+			// on a fresh hydrate (CA-528).
+			if runnerUnreachableErr(msg.Err) {
+				return m, nil
+			}
+			return m, m.cmdHydrateAgentRunsIfNeeded()
 		}
 		if m.runHandle == nil || m.runHandle.RunID != msg.ParentRunID {
 			return m, nil
 		}
 		m.noteRunnerPollResult("")
-		m.agentRuns = msg.Runs
-		if m.focusedAgentIdx >= len(m.agentRuns) {
-			m.focusedAgentIdx = 0
+		// Merge instead of clobber so a main-only/empty list cannot erase children
+		// a faster agent_graph_updated already mapped (CA-528).
+		m.adoptAgentRuns(msg.Runs)
+		if m.hasChildAgentRuns() {
+			m.agentHydrateRetries = 0
 		}
-		// Live children → expand F2 so step [open] is visible immediately.
-		m.expandSessionPanelForChildAgents()
-		// Loop may already be done from a prior agent_graph_updated; re-settle now
-		// that children are confirmed completed (run-189839).
-		m.settleFlowIfDone()
+		// Steps may still be missing a child [open] chip — re-arm a bounded retry
+		// so the chip appears without waiting for the next steps transition.
+		return m, m.cmdHydrateAgentRunsIfNeeded()
+
+	case hydrateAgentRunsIfNeededMsg:
+		if m.runHandle == nil {
+			return m, nil
+		}
+		if m.stepsNeedChildOpenChip() {
+			return m, m.cmdHydrateAgentRuns(m.runHandle.RunID)
+		}
 		return m, nil
 
 	case runSnapshotMsg:
@@ -781,6 +795,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runnerPollFailStreak = 0
 		m.stepsPollInFlight = false
 		m.agentsHydrateInFlight = false
+		m.agentHydrateRetries = 0
 		if handle.StepID != "" {
 			m.stepID = handle.StepID
 		}
@@ -1000,6 +1015,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Already have children mapped → keep F2 expanded for open/back.
 		m.expandSessionPanelForChildAgents()
+		// Steps still missing a child [open] chip (e.g. a slower/empty hydrate) →
+		// re-arm a bounded retry so the chip appears without waiting for the next
+		// steps transition (CA-528).
+		cmds = append(cmds, m.cmdHydrateAgentRunsIfNeeded())
 		return m, tea.Batch(cmds...)
 
 	case ClipboardPasteMsg:

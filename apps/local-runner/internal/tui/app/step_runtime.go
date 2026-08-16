@@ -179,16 +179,15 @@ func (m *AppModel) applyAgentGraph(g *client.AgentGraphSnapshot) {
 	m.flowLoopStatus = g.LoopState.Status
 	m.flowBlockReason = g.LoopState.BlockReason
 	m.agentRuns = g.Runs
-	if m.focusedAgentIdx >= len(m.agentRuns) {
-		m.focusedAgentIdx = 0
+	m.afterAgentRunsAdopted()
+	if m.hasChildAgentRuns() {
+		m.agentHydrateRetries = 0
 	}
-	m.expandSessionPanelForChildAgents()
 	// Banner when the loop just transitioned into a parked awaiting-user state.
 	if strings.ToLower(strings.TrimSpace(m.flowLoopStatus)) == "blocked" &&
 		!strings.EqualFold(strings.TrimSpace(prevStatus), "blocked") {
 		m.showBlockedBanner(g.LoopState)
 	}
-	m.settleFlowIfDone()
 }
 
 // showBlockedBanner surfaces the parked awaiting-user state (Desktop

@@ -275,8 +275,9 @@ func (m *AppModel) renderSessionPanelOverlay() []string {
 	}
 	framed = append(framed, top)
 	for _, line := range body {
-		// Width must ignore ANSI from step highlight styles.
-		line = lipgloss.NewStyle().MaxWidth(maxInner - 2).Render(line)
+		// Width must ignore ANSI from step highlight styles; keep any trailing
+		// [open]/[back] chip visible when a long step row is squeezed (CA-528).
+		line = truncateStepLine(line, maxInner-2)
 		pad := maxInner - 2 - lipgloss.Width(line)
 		if pad < 0 {
 			pad = 0
@@ -381,7 +382,7 @@ func (m *AppModel) renderRightSidebar(h int) []string {
 			out = append(out, styleSystem.Render(line))
 			continue
 		}
-		out = append(out, truncateVisual(line, w-2))
+		out = append(out, truncateStepLine(line, w-2))
 	}
 	if len(steps) == 0 {
 		out = append(out, styleSystem.Render("(no steps)"))
@@ -393,6 +394,34 @@ func (m *AppModel) renderRightSidebar(h int) []string {
 		out = append(out, " ")
 	}
 	return out
+}
+
+// truncateStepLine squeezes a step row to width while keeping a trailing
+// [open]/[back] action chip visible (CA-528). A plain end-truncation would cut
+// the chip first, hiding the only way to open the child agent transcript.
+func truncateStepLine(line string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	if lipgloss.Width(line) <= width {
+		return line
+	}
+	plain := stripANSI(line)
+	chip := ""
+	switch {
+	case strings.HasSuffix(plain, "[open]"):
+		chip = "[open]"
+	case strings.HasSuffix(plain, "[back]"):
+		chip = "[back]"
+	}
+	if chip == "" {
+		return truncateVisual(line, width)
+	}
+	// Reserve the "  <chip>" suffix; squeeze the styled prefix into the rest.
+	rest := strings.TrimSuffix(plain, chip)
+	rest = strings.TrimRight(rest, " ")
+	rest = truncateVisual(rest, max(0, width-2-lipgloss.Width(chip)))
+	return rest + "  " + chip
 }
 
 func max(a, b int) int {

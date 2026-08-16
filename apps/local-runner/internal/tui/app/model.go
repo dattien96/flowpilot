@@ -307,8 +307,12 @@ type AppModel struct {
 	// In-flight + failure guards so dead runner cannot pile up HTTP cmds / lock UX.
 	stepsPollInFlight     bool
 	agentsHydrateInFlight bool
-	runnerPollFailStreak  int    // consecutive steps/agent poll dial/timeout failures
-	lastTurnError         string // last turn_failed error (fallback FAIL reason in chat)
+	// agentHydrateRetries counts consecutive hydrate attempts that returned no
+	// child run while steps still need an [open] chip (CA-528). Capped so a slow
+	// or dead runner is not flooded.
+	agentHydrateRetries  int
+	runnerPollFailStreak int    // consecutive steps/agent poll dial/timeout failures
+	lastTurnError        string // last turn_failed error (fallback FAIL reason in chat)
 
 	// Pending gate/approval/question state
 	gate     *GateState
