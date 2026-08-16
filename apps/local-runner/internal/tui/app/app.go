@@ -2315,6 +2315,10 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 
 	case "/chat":
+		if m.runHandle != nil && m.mode != ModeChat {
+			m.addMessage("system", "Cannot switch to chat while a run is open. Use /new first.", "error")
+			break
+		}
 		m.mode = ModeChat
 		m.launch = LaunchArm{}
 		m.firstTurnPending = false
