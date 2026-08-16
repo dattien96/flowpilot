@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -2900,6 +2901,9 @@ type chatRow struct {
 	CopyText    string
 	FenceIdx    int
 	LoadEarlier bool
+	// ToolGroupKey is non-empty for the summary row of a collapsed run of 2+
+	// consecutive tool calls (CA-525). Clicking it toggles the run expansion.
+	ToolGroupKey string
 }
 
 func (m *AppModel) chatRows() []chatRow {
@@ -2932,7 +2936,65 @@ func (m *AppModel) chatRowsSig() uint64 {
 	}
 	_, _ = h.Write([]byte(strconv.Itoa(m.visiblePromptCount)))
 	_, _ = h.Write([]byte(strconv.FormatInt(m.historyLoadedAfterSeq, 10)))
+	keys := make([]string, 0, len(m.expandedToolGroups))
+	for k, v := range m.expandedToolGroups {
+		if v {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		_, _ = h.Write([]byte{2})
+		_, _ = h.Write([]byte(k))
+	}
 	return h.Sum64()
+}
+
+// toolGroupKey derives a stable identity for a run of consecutive tool calls from
+// its content alone, so the expanded/collapsed state survives thinking-placeholder
+// reordering (replaceThinkingAt moves messages, which shifts their indices).
+func toolGroupKey(tools []ChatMessage) string {
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		names = append(names, strings.TrimSpace(strings.TrimPrefix(t.Content, "→ ")))
+	}
+	return strings.Join(names, "\x1f")
+}
+
+// toolGroupRows renders a run of 2+ consecutive tool calls (CA-525) as a single
+// collapsible summary row. Collapsed by default; the individual → tool lines are
+// emitted only after the user clicks the summary (toggleToolGroup).
+func (m *AppModel) toolGroupRows(tools []ChatMessage) []chatRow {
+	key := toolGroupKey(tools)
+	expanded := m.expandedToolGroups[key]
+	marker, markerOpen := "▸", "▾"
+	if m.asciiMode {
+		marker, markerOpen = "+", "-"
+	}
+	if expanded {
+		marker = markerOpen
+	}
+	label := fmt.Sprintf("%d tool call", len(tools))
+	if len(tools) > 1 {
+		label += "s"
+	}
+	text := styleTool.Render(marker+" "+label) + styleLink.Render(" · click")
+	rows := []chatRow{{Text: text, MsgIdx: -1, ToolGroupKey: key}}
+	if expanded {
+		for _, t := range tools {
+			rows = append(rows, chatRow{Text: styleTool.Render(t.Content), MsgIdx: -1})
+		}
+	}
+	return rows
+}
+
+func (m *AppModel) toggleToolGroup(key string) {
+	if m.expandedToolGroups == nil {
+		m.expandedToolGroups = map[string]bool{}
+	}
+	m.expandedToolGroups[key] = !m.expandedToolGroups[key]
+	m.rowCache = nil
+	m.rowCacheSig = 0
 }
 
 func (m *AppModel) buildChatRows() []chatRow {
@@ -2955,6 +3017,19 @@ func (m *AppModel) buildChatRows() []chatRow {
 	start := m.windowStartIndex()
 	for mi := start; mi < len(m.messages); mi++ {
 		msg := m.messages[mi]
+		// CA-525: a run of 2+ consecutive tool calls renders as one collapsible
+		// summary row (click to expand) instead of N stacked tool lines.
+		if msg.Role == "tool" {
+			end := mi + 1
+			for end < len(m.messages) && m.messages[end].Role == "tool" {
+				end++
+			}
+			if end-mi > 1 {
+				rows = append(rows, m.toolGroupRows(m.messages[mi:end])...)
+				mi = end - 1
+				continue
+			}
+		}
 		prefix := ""
 		prefixStyle := styleSystem
 		style := styleSystem

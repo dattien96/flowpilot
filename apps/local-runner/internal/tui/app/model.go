@@ -254,6 +254,10 @@ type AppModel struct {
 	rowCache    []chatRow
 	rowCacheSig uint64
 	runHandle   *client.RunHandle
+	// expandedToolGroups tracks which multi-tool-call runs (CA-525) are expanded.
+	// Keyed by the joined tool names of the run (content-derived, stable across
+	// thinking-placeholder reordering that shifts message indices).
+	expandedToolGroups map[string]bool
 
 	// Per-turn settings
 	yolo              bool

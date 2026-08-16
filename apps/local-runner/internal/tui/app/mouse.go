@@ -310,6 +310,12 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		if ok {
 			return m, m.cmdCopyFence(msgIdx, fenceIdx)
 		}
+	case strings.HasPrefix(target, "tool-group:"):
+		key := strings.TrimPrefix(target, "tool-group:")
+		if key != "" {
+			m.toggleToolGroup(key)
+			return m, nil
+		}
 	case strings.HasPrefix(target, "copy:"):
 		idx, err := strconv.Atoi(strings.TrimPrefix(target, "copy:"))
 		if err == nil {
@@ -443,6 +449,9 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 		return t
 	}
 	if t := hitCopyChrome(m, c, x, y); t != "" {
+		return t
+	}
+	if t := hitToolGroupChrome(m, c, x, y); t != "" {
 		return t
 	}
 	return ""
@@ -777,6 +786,21 @@ func hitCopyChrome(m *AppModel, c tuiChrome, x, y int) string {
 		return "copyfence:" + strconv.Itoa(rows[rel].MsgIdx) + ":" + strconv.Itoa(rows[rel].FenceIdx)
 	}
 	return "copy:" + strconv.Itoa(rows[rel].MsgIdx)
+}
+
+// hitToolGroupChrome maps a click on a collapsed/expanded multi-tool summary row
+// (CA-525) to a "tool-group:<key>" toggle target. Individual → tool lines inside
+// an expanded group carry no key, so only the summary row toggles.
+func hitToolGroupChrome(m *AppModel, c tuiChrome, x, y int) string {
+	rows := sliceChatRows(m.chatRows(), c.messagesHeight, m.viewport.offset)
+	rel := y - c.panelH
+	if rel < 0 || rel >= len(rows) {
+		return ""
+	}
+	if rows[rel].ToolGroupKey == "" {
+		return ""
+	}
+	return "tool-group:" + rows[rel].ToolGroupKey
 }
 
 func parseCopyFenceTarget(target string) (msgIdx, fenceIdx int, ok bool) {
