@@ -450,7 +450,9 @@ func padLinesTo(lines []string, h int) []string {
 
 // joinRightSidebar combines the main chat column with the full-height right
 // sidebar column. left lines are padded/truncated to contentW (== sideX-1), a
-// single separator column follows, then each sidebar line padded to sideW.
+// single separator column follows, then each sidebar line padded to sideW. The
+// separator and sidebar are painted with the lighter sidebar background so the
+// right column reads as a solid panel over the dark canvas (CA-532).
 func joinRightSidebar(left, side []string, sideW, sideX int, ascii bool) string {
 	contentW := sideX - 1
 	sep := "│"
@@ -475,8 +477,8 @@ func joinRightSidebar(left, side []string, sideW, sideX int, ascii bool) string 
 		if i < len(side) {
 			s = side[i]
 		}
-		s = padTo(s, sideW)
-		out = append(out, l+sep+s)
+		s = paintRow(s, sideW, styleSidebar)
+		out = append(out, l+styleSidebar.Render(sep)+s)
 	}
 	return strings.Join(out, "\n")
 }

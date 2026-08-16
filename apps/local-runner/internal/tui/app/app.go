@@ -32,8 +32,13 @@ const (
 	colorAsk        = "#b07cff" // --ask (gate / questions)
 	colorOK         = "#3fb950" // --ok
 	colorErr        = "#f85149" // --err
-	colorBg3        = "#1e1e1e" // --bg-3
-	colorCodeBg     = "#2e2e2e" // fenced-code panel (solid lifted card vs terminal / --bg-3, opencode-style)
+	// Opencode-style hierarchy: the whole window canvas is the DARKEST layer
+	// (#0d0d0d) and the elevated panels (code blocks, right sidebar, chat bar)
+	// are progressively lighter grays above it (CA-532).
+	colorCanvas = "#0d0d0d" // --bg (opencode canvas)
+	colorBg2    = "#161616" // --bg-2 (right sidebar / elevated panel)
+	colorBg3    = "#1e1e1e" // --bg-3 (chat bar, loading, step-running)
+	colorCodeBg = "#2e2e2e" // fenced-code panel (solid lifted card vs --bg)
 	// Status-line exclusive values (not reused for model/YOLO/skills/open-back).
 	colorStatusAgent = "#2dd4bf" // teal — agent:<name> value
 	colorStatusFlow  = "#f472b6" // pink — flow name / active step value
@@ -72,6 +77,11 @@ var (
 	styleStepFailed  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorErr))
 	// F2 step [open]/[back] — distinct from step highlight (accent) and running (warn).
 	styleStepAgentAction = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color(colorAsk))
+	// Canvas + elevated-panel backgrounds (CA-532): whole window canvas is darkest,
+	// the right sidebar and chat bar are lighter grays like opencode.
+	styleCanvas  = lipgloss.NewStyle().Background(lipgloss.Color(colorCanvas))
+	styleSidebar = lipgloss.NewStyle().Background(lipgloss.Color(colorBg2))
+	styleChatBar = lipgloss.NewStyle().Background(lipgloss.Color(colorBg3))
 )
 
 // ---- New / Init -------------------------------------------------------------
@@ -2730,12 +2740,9 @@ func (m *AppModel) View() string {
 	}
 
 	c := m.tuiChrome()
-	var sb strings.Builder
+	var rows []string
 
-	for _, l := range c.panelLines {
-		sb.WriteString(l)
-		sb.WriteString("\n")
-	}
+	rows = append(rows, c.panelLines...)
 
 	lines := m.renderMessages()
 	// Freeze the viewport while the user is mid-select: clamping against a line
@@ -2748,59 +2755,66 @@ func (m *AppModel) View() string {
 	if !m.mouseSel.empty() {
 		lines = applyMouseSelection(lines, m.mouseSel, c.panelH)
 	}
-	for _, l := range lines {
-		sb.WriteString(l)
-		sb.WriteString("\n")
-	}
+	rows = append(rows, lines...)
 
 	for i := len(lines); i < c.messagesHeight; i++ {
-		sb.WriteString("\n")
+		rows = append(rows, "")
 	}
 
 	if m.sessionLoading {
 		for _, line := range strings.Split(m.loadingBannerText(), "\n") {
-			sb.WriteString(styleLoading.Render(line))
-			sb.WriteString("\n")
+			rows = append(rows, styleLoading.Render(line))
 		}
 	} else if m.authNeedLogin && m.authPhase == AuthNone {
 		banner := "SIGN IN REQUIRED — Desktop is signed out. Type /login (or /login you@email.com)"
 		if !m.asciiMode {
 			banner = "! " + banner
 		}
-		sb.WriteString(styleError.Render(banner))
-		sb.WriteString("\n")
+		rows = append(rows, styleError.Render(banner))
 	}
-	sb.WriteString("\n")
+	rows = append(rows, "")
 	w := m.chatWidth()
 	if w <= 0 {
 		w = 80
 	}
 	if m.asciiMode {
-		sb.WriteString(strings.Repeat("-", w))
+		rows = append(rows, strings.Repeat("-", w))
 	} else {
-		sb.WriteString(strings.Repeat("─", w))
+		rows = append(rows, strings.Repeat("─", w))
 	}
-	sb.WriteString("\n")
 	// flashToast is rendered on the project/git status row (see status_bar.go).
-	sb.WriteString(c.statusBlock)
-	sb.WriteString("\n")
+	rows = append(rows, strings.Split(c.statusBlock, "\n")...)
 	if len(c.sugg) > 0 {
-		sb.WriteString(m.renderSuggestions(c.sugg))
-		sb.WriteString("\n")
+		rows = append(rows, strings.Split(m.renderSuggestions(c.sugg), "\n")...)
 	}
 	if c.attachPanelBlock != "" {
-		sb.WriteString(c.attachPanelBlock)
-		sb.WriteString("\n")
+		rows = append(rows, strings.Split(c.attachPanelBlock, "\n")...)
 	}
-	sb.WriteString(m.renderInputLine())
+	inputStart := len(rows)
+	rows = append(rows, strings.Split(m.renderInputLine(), "\n")...)
+
+	// CA-532: paint the dark canvas across the whole chat column and give the chat
+	// bar a lighter elevated background. The right sidebar column is painted in
+	// joinRightSidebar. Every row is padded so the background fills the row; the
+	// chat-bar (input) rows keep one free last column (safeTermWidth) so Windows
+	// Terminal never wraps the composer.
+	rows = padLinesTo(rows, m.height)
+	barW := safeTermWidth(w)
+	for i, r := range rows {
+		st := styleCanvas
+		rw := w
+		if i >= inputStart {
+			st = styleChatBar
+			rw = barW
+		}
+		rows[i] = paintRow(r, rw, st)
+	}
 
 	if useSide {
-		left := strings.Split(strings.TrimRight(sb.String(), "\n"), "\n")
-		left = padLinesTo(left, m.height)
-		return joinRightSidebar(left, sideLines, sideW, sideX, m.asciiMode)
+		return joinRightSidebar(rows, sideLines, sideW, sideX, m.asciiMode)
 	}
 
-	return sb.String()
+	return strings.Join(rows, "\n")
 }
 
 func (m *AppModel) loadingBannerText() string {
