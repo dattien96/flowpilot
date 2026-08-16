@@ -2704,7 +2704,6 @@ func (m *AppModel) View() string {
 		sideW = m.sideWidth()
 		sideX = fullW - sideW
 		sideLines = m.renderRightSidebar(m.height)
-		m.width = m.contentWidth()
 	}
 
 	c := m.tuiChrome()
@@ -2716,7 +2715,12 @@ func (m *AppModel) View() string {
 	}
 
 	lines := m.renderMessages()
-	m.clampViewport(len(lines), c.messagesHeight)
+	// Freeze the viewport while the user is mid-select: clamping against a line
+	// count that changed (width flip / live stream) would yank the text out from
+	// under the cursor / reset a top-of-history drag to the bottom (CA-526).
+	if !m.selecting() {
+		m.clampViewport(len(lines), c.messagesHeight)
+	}
 	lines = sliceViewport(lines, c.messagesHeight, m.viewport.offset)
 	if !m.mouseSel.empty() {
 		lines = applyMouseSelection(lines, m.mouseSel, c.panelH)
@@ -2744,7 +2748,7 @@ func (m *AppModel) View() string {
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
-	w := m.width
+	w := m.chatWidth()
 	if w <= 0 {
 		w = 80
 	}
@@ -2768,7 +2772,6 @@ func (m *AppModel) View() string {
 	sb.WriteString(m.renderInputLine())
 
 	if useSide {
-		m.width = fullW
 		left := strings.Split(strings.TrimRight(sb.String(), "\n"), "\n")
 		left = padLinesTo(left, m.height)
 		return joinRightSidebar(left, sideLines, sideW, sideX, m.asciiMode)
@@ -2922,7 +2925,7 @@ func (m *AppModel) chatRows() []chatRow {
 
 func (m *AppModel) chatRowsSig() uint64 {
 	h := fnv.New64a()
-	_, _ = h.Write([]byte(strconv.Itoa(m.width)))
+	_, _ = h.Write([]byte(strconv.Itoa(m.chatWidth())))
 	if m.asciiMode {
 		_, _ = h.Write([]byte{1})
 	}
@@ -2998,10 +3001,10 @@ func (m *AppModel) toggleToolGroup(key string) {
 }
 
 func (m *AppModel) buildChatRows() []chatRow {
-	width := safeTermWidth(m.width)
+	width := safeTermWidth(m.chatWidth())
 	if width < 1 {
-		if m.width > 0 {
-			width = m.width
+		if m.chatWidth() > 0 {
+			width = m.chatWidth()
 		} else {
 			width = 80
 		}
@@ -3271,7 +3274,7 @@ func fitStatusWidth(s string, w int) string {
 }
 
 func (m *AppModel) renderInputLine() string {
-	w := m.width
+	w := m.chatWidth()
 	if w <= 0 {
 		w = 80
 	}

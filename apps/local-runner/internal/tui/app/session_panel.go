@@ -347,6 +347,19 @@ func (m *AppModel) contentWidth() int {
 	return w
 }
 
+// chatWidth is the width every transcript/status/composer/attach renderer must
+// use (CA-526). With the F2 right sidebar this is contentWidth(); otherwise the
+// terminal width. Paint and hit-test paths must share it so clicks and
+// drag-select align with what was drawn — the old View() width mutation made
+// clickTargetAt run at a different wrap than the painted rows.
+func (m *AppModel) chatWidth() int {
+	w := m.contentWidth()
+	if w < 1 {
+		w = 80
+	}
+	return w
+}
+
 // renderRightSidebar returns the full-height right sidebar lines (OpenCode-style):
 // session info header, then a todo-list of flow steps. h is the terminal height.
 func (m *AppModel) renderRightSidebar(h int) []string {

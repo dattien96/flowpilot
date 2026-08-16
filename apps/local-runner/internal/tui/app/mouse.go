@@ -68,7 +68,7 @@ func (m *AppModel) tuiChrome() tuiChrome {
 	}
 	c.statusBlock = m.renderStatusLine()
 	c.statusH = strings.Count(c.statusBlock, "\n") + 1
-	w := m.width
+	w := m.chatWidth()
 	if w <= 0 {
 		w = 80
 	}
@@ -198,7 +198,9 @@ func (m *AppModel) selectionPlainText() string {
 	}
 	c := m.tuiChrome()
 	lines := m.renderMessages()
-	m.clampViewport(len(lines), c.messagesHeight)
+	if !m.selecting() {
+		m.clampViewport(len(lines), c.messagesHeight)
+	}
 	vis := sliceViewport(lines, c.messagesHeight, m.viewport.offset)
 	var parts []string
 	for i, line := range vis {

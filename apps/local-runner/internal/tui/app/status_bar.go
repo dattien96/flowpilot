@@ -14,7 +14,7 @@ func (m *AppModel) renderStatusLine() string {
 	if m.asciiMode {
 		sep = " | "
 	}
-	w := m.width
+	w := m.chatWidth()
 	if w <= 0 {
 		w = 80
 	}

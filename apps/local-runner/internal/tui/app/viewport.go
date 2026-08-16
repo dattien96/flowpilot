@@ -1,5 +1,13 @@
 package app
 
+// selecting reports whether the user is mid-drag or has an armed highlight.
+// While true, renderers skip viewport clamping so a line-count change (width
+// flip, live stream) cannot yank the transcript out from under the cursor or
+// reset a top-of-history drag to the bottom (CA-526).
+func (m *AppModel) selecting() bool {
+	return m.mouseDrag.down || !m.mouseSel.empty()
+}
+
 // sliceViewport returns the visible window of transcript lines.
 // offset is the number of lines scrolled up from the bottom (0 = follow live).
 func sliceViewport(lines []string, height, offset int) []string {

@@ -155,7 +155,7 @@ func (m *AppModel) tryPlaceInputCursor(x, y int) bool {
 		return false
 	}
 
-	w := m.width
+	w := m.chatWidth()
 	if w < 1 {
 		w = 1
 	}
