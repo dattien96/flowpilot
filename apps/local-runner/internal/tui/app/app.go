@@ -2995,9 +2995,26 @@ func (m *AppModel) toggleToolGroup(key string) {
 	if m.expandedToolGroups == nil {
 		m.expandedToolGroups = map[string]bool{}
 	}
-	m.expandedToolGroups[key] = !m.expandedToolGroups[key]
+	expanding := !m.expandedToolGroups[key]
+	m.expandedToolGroups[key] = expanding
 	m.rowCache = nil
 	m.rowCacheSig = 0
+	// CA-527: the transcript is bottom-anchored (offset = rows from the bottom),
+	// so expanding a group inserts N tool rows after the summary without moving
+	// the anchor — the list would push UP and scroll off-screen. Shift the offset
+	// by ±N so the summary (and everything above it) stays pinned and the group
+	// expands downward. Skipped while the user is mid-drag (CA-526 freeze).
+	if !m.selecting() {
+		n := strings.Count(key, "\x1f") + 1
+		if expanding {
+			m.viewport.offset += n
+		} else {
+			m.viewport.offset -= n
+		}
+		if m.viewport.offset < 0 {
+			m.viewport.offset = 0
+		}
+	}
 }
 
 func (m *AppModel) buildChatRows() []chatRow {
