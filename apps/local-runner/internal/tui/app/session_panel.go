@@ -93,7 +93,7 @@ func (m *AppModel) flowStepsPanelLines() []string {
 		line := fmt.Sprintf("[%s] %s%s", glyph, name, suffix)
 		action := ""
 		if child, ok := m.childRunForStep(s); ok {
-			if m.viewingChild() && child.RunID == m.focusRunID {
+			if m.viewingChild() && strings.EqualFold(strings.TrimSpace(child.RunID), strings.TrimSpace(m.focusRunID)) {
 				// Emphasize focused child step; action chip uses a different color.
 				lineStyle = styleStatusHi
 				action = "  " + styleStepAgentAction.Render("[back]")

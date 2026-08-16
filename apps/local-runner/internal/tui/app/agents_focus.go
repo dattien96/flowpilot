@@ -608,6 +608,10 @@ func isMainAgentRun(r client.AgentRunSummary) bool {
 }
 
 // childRunForStep maps a flow step to a spawned child agent (never main).
+// The child that is currently focused wins over any other run that also matches
+// the step keys: live graph + list hydrate polls replace agentRuns and can
+// reorder same-named live/historical runs, which would otherwise flip the step's
+// [open]/[back] chip under a stable focus (CA-529).
 func (m *AppModel) childRunForStep(s client.WorkflowStepRuntime) (client.AgentRunSummary, bool) {
 	keys := []string{
 		strings.TrimSpace(s.AgentRef),
@@ -615,9 +619,9 @@ func (m *AppModel) childRunForStep(s client.WorkflowStepRuntime) (client.AgentRu
 		strings.TrimSpace(s.StepType),
 	}
 	mainID := m.mainRunID()
-	for _, r := range m.agentRuns {
+	matches := func(r client.AgentRunSummary) bool {
 		if r.RunID == "" || r.RunID == mainID || isMainAgentRun(r) {
-			continue
+			return false
 		}
 		for _, k := range keys {
 			if k == "" {
@@ -626,8 +630,21 @@ func (m *AppModel) childRunForStep(s client.WorkflowStepRuntime) (client.AgentRu
 			if strings.EqualFold(r.RunID, k) ||
 				strings.EqualFold(r.AgentName, k) ||
 				strings.EqualFold(r.Label, k) {
+				return true
+			}
+		}
+		return false
+	}
+	if m.viewingChild() {
+		for _, r := range m.agentRuns {
+			if strings.EqualFold(strings.TrimSpace(r.RunID), strings.TrimSpace(m.focusRunID)) && matches(r) {
 				return r, true
 			}
+		}
+	}
+	for _, r := range m.agentRuns {
+		if matches(r) {
+			return r, true
 		}
 	}
 	return client.AgentRunSummary{}, false
