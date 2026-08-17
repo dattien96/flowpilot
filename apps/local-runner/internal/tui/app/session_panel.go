@@ -14,6 +14,7 @@ import (
 type sessionInfoPanel struct {
 	Collapsed   bool
 	RunnerURL   string
+	RunID       string // current run id (e.g. "run-102521")
 	ProjectPath string
 	ProjectName string
 	ProjectID   string
@@ -22,6 +23,7 @@ type sessionInfoPanel struct {
 
 func (p sessionInfoPanel) hasContent() bool {
 	return strings.TrimSpace(p.RunnerURL) != "" ||
+		strings.TrimSpace(p.RunID) != "" ||
 		strings.TrimSpace(p.ProjectPath) != "" ||
 		strings.TrimSpace(p.ProjectName) != "" ||
 		strings.TrimSpace(p.Session) != ""
@@ -31,6 +33,9 @@ func (p sessionInfoPanel) lines() []string {
 	var out []string
 	if u := strings.TrimSpace(p.RunnerURL); u != "" {
 		out = append(out, "Runner: "+u)
+	}
+	if id := strings.TrimSpace(p.RunID); id != "" {
+		out = append(out, "Run: "+shortID(id))
 	}
 	if path := strings.TrimSpace(p.ProjectPath); path != "" {
 		out = append(out, "Path: "+path)
@@ -221,6 +226,10 @@ func (m *AppModel) sessionDisplayLine() string {
 
 func (m *AppModel) refreshSessionPanel() {
 	m.sessionPanel.RunnerURL = m.runnerURL
+	m.sessionPanel.RunID = ""
+	if m.runHandle != nil {
+		m.sessionPanel.RunID = m.runHandle.RunID
+	}
 	m.sessionPanel.ProjectPath = m.cfg.ProjectPath
 	if m.projectPath != "" {
 		m.sessionPanel.ProjectPath = m.projectPath

@@ -8,21 +8,6 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
-func TestFlowMode_NoThinkingPlaceholderInChat(t *testing.T) {
-	m := New(config.ChatConfig{Provider: "grok"}, "http://127.0.0.1:4317")
-	m.sessionLoading = false
-	m.mode = ModeFlow
-	m.launch = LaunchArm{Mode: ModeFlow, WorkflowID: "wf", Label: "grok-flow"}
-	m.runHandle = &client.RunHandle{RunID: "run-main", Status: "running"}
-	m2, _ := m.processInput("continue the flow")
-	am := m2.(*AppModel)
-	for _, msg := range am.messages {
-		if msg.FormatHint == "thinking" || strings.Contains(msg.Content, "thinking…") {
-			t.Fatalf("flow chat must not show thinking placeholder: %+v", msg)
-		}
-	}
-}
-
 func TestStepsRuntimeMsg_NoStepNoticeWhileViewingChild(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
 	m.mode = ModeFlow

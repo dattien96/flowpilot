@@ -629,8 +629,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if pk := strings.TrimSpace(handle.ProviderKey); pk != "" {
 			m.provider = pk
 			m.bindActiveAccountForProvider()
-			m.refreshSessionPanel()
 		}
+		m.refreshSessionPanel()
 		// Restore flow chrome from resume handle (and history list as fallback).
 		m.applyOpenedRunFlowChrome(handle, msg.HistoryMeta)
 		// A resumed workflow/flow run may carry no StepID on the handle (runner
@@ -841,6 +841,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connStatus = ConnRunning
 		m.statusMsg = fmt.Sprintf("run %s • %s", shortID(handle.RunID), handle.ProviderKey)
 		m.addMessage("system", fmt.Sprintf("Run %s started — streaming events…", shortID(handle.RunID)), "")
+		m.refreshSessionPanel()
 		prompt := m.pendingPrompt
 		m.pendingPrompt = ""
 		var cmds []tea.Cmd
@@ -1502,7 +1503,10 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.suggIdx = (m.suggIdx - 1 + n) % n
 				return m, nil
 			}
-			m.scrollTranscript(1)
+			// No picker open: Up/Down recall sent prompts (bash-style), never
+			// scroll the transcript — scroll is PgUp/PgDown + mouse wheel.
+			m.navigatePromptHistory(1)
+			m.suggIdx = 0
 			return m, nil
 		}
 
@@ -1512,7 +1516,8 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.suggIdx = (m.suggIdx + 1) % n
 				return m, nil
 			}
-			m.scrollTranscript(-1)
+			m.navigatePromptHistory(-1)
+			m.suggIdx = 0
 			return m, nil
 		}
 
@@ -2075,16 +2080,9 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 
 	m.viewport.offset = 0
 	m.addMessage("user", input, "")
-	// Flow mode: no thinking…/running… placeholders in the chat transcript —
-	// step progress lives in F2 / status; sub-agent views stay clean.
-	if !m.isFlowChrome() {
-		m.addMessage("assistant", "thinking…", "thinking")
-		m.statusMsg = "thinking…"
-	} else if m.flowStepsActive != "" {
-		m.statusMsg = "step: " + m.flowStepsActive
-	} else {
-		m.statusMsg = "flow running…"
-	}
+	m.recordPromptHistory(input)
+	m.addMessage("assistant", "thinking…", "thinking")
+	m.statusMsg = "thinking…"
 	m.connStatus = ConnRunning
 
 	// First message: start run, then send turn (desktop sendPrompt parity).
@@ -2102,8 +2100,8 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	return m, m.cmdSendTurn(input)
 }
 
-// isFlowChrome is true for catalog/step/flow runs where chat should not show
-// thinking placeholders (progress is on F2 steps + status).
+// isFlowChrome is true for catalog/step/flow runs where the status line favors
+// step/flow progress (F2 steps) over generic "turn running…" labels.
 func (m *AppModel) isFlowChrome() bool {
 	if m == nil {
 		return false
@@ -2130,6 +2128,10 @@ func (m *AppModel) handleGateInput(input string) (tea.Model, tea.Cmd) {
 			runID := m.gate.RunID
 			m.gate = nil
 			m.connStatus = ConnRunning
+			// The flow continues after a gate decision — surface the animated
+			// thinking placeholder so the live work is visible in the chat too.
+			m.addMessage("assistant", "thinking…", "thinking")
+			m.statusMsg = "thinking…"
 			return m, m.cmdSubmitGateDecision(runID, opt)
 		}
 	}

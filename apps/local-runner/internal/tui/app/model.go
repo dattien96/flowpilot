@@ -252,12 +252,17 @@ type AppModel struct {
 
 	inputValue  string
 	inputCursor int // rune index; <0 means caret sticks to the end
-	viewport    viewportState
-	mouseSel    mouseSelect
-	mouseDrag   mouseDrag
-	rowCache    []chatRow
-	rowCacheSig uint64
-	runHandle   *client.RunHandle
+	// promptHistory is the sent-prompts ring for Up/Down recall (bash-style).
+	// promptHistIdx points into it while browsing; -1 means "show live draft".
+	promptHistory []string
+	promptHistIdx int
+	promptDraft   string
+	viewport      viewportState
+	mouseSel      mouseSelect
+	mouseDrag     mouseDrag
+	rowCache      []chatRow
+	rowCacheSig   uint64
+	runHandle     *client.RunHandle
 	// expandedToolGroups tracks which multi-tool-call runs (CA-525) are expanded.
 	// Keyed by the joined tool names of the run (content-derived, stable across
 	// thinking-placeholder reordering that shifts message indices).
