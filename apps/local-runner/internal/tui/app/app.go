@@ -645,6 +645,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stepID = m.resolveTurnStepID()
 		}
 		m.connStatus = ConnIdle
+		// Per-run token usage (CA-540): /open must not carry another chat's ctx/
+		// token numbers. Clear, then seed from the run's own last usage event.
+		m.lastTokens = msg.TokenUsage
+		if msg.TokenUsage != nil && msg.TokenUsage.ModelContextWindow != nil && *msg.TokenUsage.ModelContextWindow > 0 {
+			m.modelContextWin = *msg.TokenUsage.ModelContextWindow
+		}
 		m.statusMsg = fmt.Sprintf("opened %s", shortID(handle.RunID))
 		kind := "chat"
 		if m.mode == ModeFlow || m.mode == ModeStep || m.launch.IsCatalogWorkflow() {

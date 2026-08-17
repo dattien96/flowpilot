@@ -28,7 +28,11 @@ type ChatOpenedMsg struct {
 	Snapshot              client.RunSnapshot
 	// HistoryMeta is the list row for this run when known (kind/workflow/flowRef).
 	HistoryMeta client.RunHistoryItem
-	Err         string
+	// TokenUsage is the last token_usage_updated snapshot replayed for this run
+	// (nil when the run never emitted one). Seeds the per-run ctx/token status
+	// line so /open of chat B never shows chat A's usage (CA-540).
+	TokenUsage *client.TokenUsageSnapshot
+	Err        string
 }
 
 // applyOpenedRunFlowChrome restores ModeFlow/launch + clears stale steps when
@@ -310,6 +314,21 @@ func mergeReplayAssistant(cur, next string) string {
 	return strings.TrimRight(cur, "\n") + "\n" + next
 }
 
+// lastReplayTokenUsage returns the last token_usage_updated snapshot from the
+// replayed events (the runner persists these for all providers), or nil when the
+// run never emitted one. Seeding the status line from this on /open makes ctx/
+// token usage per-run instead of leaking the previously-opened chat's numbers
+// (CA-540).
+func lastReplayTokenUsage(evs []client.ProviderEvent) *client.TokenUsageSnapshot {
+	var last *client.TokenUsageSnapshot
+	for _, ev := range evs {
+		if ev.Type == "token_usage_updated" && ev.TokenUsage != nil {
+			last = ev.TokenUsage
+		}
+	}
+	return last
+}
+
 func (m *AppModel) cmdListChats() tea.Cmd {
 	return m.cmdFetchChats(false)
 }
@@ -405,6 +424,7 @@ func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
 			HistoryLoadedAfterSeq: historyCursorAfterReplay(after, collected, trimmed),
 			Snapshot:              snap,
 			HistoryMeta:           historyMeta,
+			TokenUsage:            lastReplayTokenUsage(collected),
 		}
 	}
 }
