@@ -72,6 +72,8 @@ func (m *AppModel) applyOpenedRunFlowChrome(handle client.RunHandle, meta client
 	m.flowStepsActive = ""
 	m.agentRuns = nil
 	m.focusedAgentIdx = 0
+	// Do not persist here — /open is run chrome for this session only.
+	// Mode/flow prefs are owned by /flow and /chat (and explicit settings).
 }
 
 // resolveFlowDisplayName prefers catalog/builtin human names over raw UUIDs.

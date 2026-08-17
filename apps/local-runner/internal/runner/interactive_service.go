@@ -7432,6 +7432,20 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// BUG-293: redact the DISPLAY prompt for internal flow-engine/system prompts
 	// so the live bubble matches replay (which hides them). Provider still gets the
 	// full in.Prompt via runTurn and the turn log below.
+	// BUG-326 (run-104296): stamp every system-generated prompt (gate reprompt,
+	// handoff envelope, flow-engine/hub orchestration) with the durable
+	// systemPromptTag at the wire boundary. Replay classifies a prompt as system
+	// by the tag alone, so it survives provider-side wrapping — e.g. Grok embeds
+	// the prompt inside a "## History" preamble plus tool reinforcement within
+	// <user_query> and the old HasPrefix gate-detector missed it, shifting every
+	// Q/A pair by one on reopen. The stamp lands on what the provider receives
+	// AND what the turn log records (both derive from in.Prompt below), so replay
+	// from either source classifies identically. User prompts are never stamped —
+	// their ask_user/spawn_agent reinforcement is provider-adapter text, not a
+	// system prompt, and must stay visible.
+	if isSystemPrompt(in.Prompt) && !strings.Contains(in.Prompt, systemPromptTag) {
+		in.Prompt = systemPromptTag + "\n" + in.Prompt
+	}
 	s.emitLocked(rs, ProviderEvent{Type: EventTurnStarted, ProviderTurnID: turnID, WorkflowStepRunID: in.StepID, Prompt: liveTurnStartedDisplayPrompt(in.Prompt)})
 	// BUG-288 R20-1 / CP-51 DOD-G8: promote prep → bare launch-ack ONLY after
 	// TurnStarted is in RAM, and only launch the provider AFTER launch-ack is

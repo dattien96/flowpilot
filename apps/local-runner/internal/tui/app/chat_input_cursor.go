@@ -140,6 +140,10 @@ func (m *AppModel) tryPlaceInputCursor(x, y int) bool {
 	if c.inputH <= 0 || y < c.inputY || y >= c.inputY+c.inputH {
 		return false
 	}
+	// The right sidebar (CA-524) owns the x>=sideX region — never place the caret there.
+	if c.sideActive && x >= c.sideX {
+		return false
+	}
 	// Leave interactive chrome alone.
 	if hitAttachChrome(c, x, y) {
 		return false
@@ -151,7 +155,7 @@ func (m *AppModel) tryPlaceInputCursor(x, y int) bool {
 		return false
 	}
 
-	w := m.width
+	w := m.chatWidth()
 	if w < 1 {
 		w = 1
 	}

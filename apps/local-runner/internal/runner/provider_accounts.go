@@ -58,6 +58,7 @@ func (r *Runner) ListProviderAccounts() ([]ProviderAccount, error) {
 }
 
 func (r *Runner) ConnectProviderAccount(providerKey string) (ProviderAccount, error) {
+	r.invalidateProvidersCache()
 	state, err := r.loadProviderAccountState()
 	if err != nil {
 		return ProviderAccount{}, err
@@ -108,6 +109,7 @@ func (r *Runner) ConnectProviderAccount(providerKey string) (ProviderAccount, er
 }
 
 func (r *Runner) VerifyProviderAccount(accountID string) (ProviderAccount, bool, error) {
+	r.invalidateProvidersCache()
 	state, err := r.loadProviderAccountState()
 	if err != nil {
 		return ProviderAccount{}, false, err
@@ -139,6 +141,7 @@ func (r *Runner) VerifyProviderAccount(accountID string) (ProviderAccount, bool,
 }
 
 func (r *Runner) ActivateProviderAccount(accountID string) (ProviderAccount, error) {
+	r.invalidateProvidersCache()
 	state, err := r.loadProviderAccountState()
 	if err != nil {
 		return ProviderAccount{}, err

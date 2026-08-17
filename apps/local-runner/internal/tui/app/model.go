@@ -7,6 +7,7 @@ package app
 import (
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
+	"flowpilot-runner/internal/tui/prefs"
 )
 
 // Mode represents the current display mode of the TUI.
@@ -120,6 +121,21 @@ type TurnFailedMsg struct{ Reason string }
 // ConnectedMsg signals runner connection ready.
 type ConnectedMsg struct{ RunnerURL string }
 
+// sessionKeysUnlockMsg is deprecated since CA-514 fourth pass: the FlowPilot
+// banner stays up until SessionDefaultsMsg decides the catalog (typing is never
+// hard-locked; only send is blocked). Kept as a defensive no-op in Update.
+type sessionKeysUnlockMsg struct{}
+
+// sessionLoadTimeoutMsg fires only if SessionDefaultsMsg never arrived.
+type sessionLoadTimeoutMsg struct{}
+
+// ProjectsCatalogMsg is a late/retry project list after the fast session path.
+type ProjectsCatalogMsg struct {
+	Projects []client.Project
+	Project  *client.Project
+	Err      string
+}
+
 // SessionDefaultsMsg carries active provider/model discovered after connect.
 type SessionDefaultsMsg struct {
 	Provider         string
@@ -143,6 +159,10 @@ type FlowListMsg struct {
 
 // cursorTickMsg drives the blinking input caret.
 type cursorTickMsg struct{}
+
+// thinkingTickMsg advances the animated "Thinking" placeholder (spinner /
+// shimmer / elapsed). It self-cancels when the thinking row disappears.
+type thinkingTickMsg struct{}
 
 // LoginResultMsg carries a completed Supabase password login.
 type LoginResultMsg struct {
@@ -187,6 +207,31 @@ type TokenUsageMsg struct{ Usage *client.TokenUsageSnapshot }
 // AgentGraphMsg carries an updated agent graph snapshot.
 type AgentGraphMsg struct{ Graph *client.AgentGraphSnapshot }
 
+// AttentionLoadedMsg carries the result of a dispatch-attention refresh.
+type AttentionLoadedMsg struct {
+	RunID string
+	Items []client.DispatchAttentionItem
+	Err   error
+}
+
+// AttentionInspectedMsg carries a single turn inspect result.
+type AttentionInspectedMsg struct {
+	RunID  string
+	TurnID string
+	Result *client.DispatchInspectResult
+	Err    error
+}
+
+// AttentionResolvedMsg reports a successful operator resolution so the TUI can
+// drop the resolved item (and refresh) rather than require a separate read.
+type AttentionResolvedMsg struct {
+	RunID   string
+	TurnID  string
+	Kind    string // uncertain | repair_required
+	Outcome string
+	Err     error
+}
+
 // AppModel is the Bubble Tea model for the chat TUI.
 type AppModel struct {
 	cfg        config.ChatConfig
@@ -198,7 +243,7 @@ type AppModel struct {
 	// flashToast is a short-lived status overlay (e.g. "Copied answer.") — not chat.
 	flashToast   string
 	flashToastID int64
-	messages   []ChatMessage
+	messages     []ChatMessage
 	// visiblePromptCount is how many newest user-prompt groups to render (Task-290).
 	visiblePromptCount        int
 	historyLoadedAfterSeq     int64 // events with seq <= this are not in memory; 0 = loaded from start
@@ -207,38 +252,76 @@ type AppModel struct {
 
 	inputValue  string
 	inputCursor int // rune index; <0 means caret sticks to the end
-	viewport    viewportState
-	mouseSel    mouseSelect
-	mouseDrag   mouseDrag
-	rowCache    []chatRow
-	rowCacheSig uint64
-	runHandle   *client.RunHandle
+	// promptHistory is the sent-prompts ring for Up/Down recall (bash-style).
+	// promptHistIdx points into it while browsing; -1 means "show live draft".
+	promptHistory []string
+	promptHistIdx int
+	promptDraft   string
+	viewport      viewportState
+	mouseSel      mouseSelect
+	mouseDrag     mouseDrag
+	rowCache      []chatRow
+	rowCacheSig   uint64
+	runHandle     *client.RunHandle
+	// expandedToolGroups tracks which multi-tool-call runs (CA-525) are expanded.
+	// Keyed by the joined tool names of the run (content-derived, stable across
+	// thinking-placeholder reordering that shifts message indices).
+	expandedToolGroups map[string]bool
 
 	// Per-turn settings
-	yolo             bool
-	agentsFocus      bool
-	selectedSkills   []client.SkillSelection
-	skillsCatalog    []client.ProviderSkill // Desktop ChatInput skills list
+	yolo              bool
+	agentsFocus       bool
+	selectedSkills    []client.SkillSelection
+	skillsCatalog     []client.ProviderSkill // Desktop ChatInput skills list
 	pendingAttach     []client.PromptAttachment
 	pendingLocalPaths map[string]string // attachment ID → materialized temp path
 	attachPanelOpen   bool              // modal list of pending images (Desktop chips)
 	launch            LaunchArm
-	firstTurnPending bool // consume builtin FirstTurnExtras once
-	reasoningEffort  string
-	flowBuiltins     []client.BuiltinFlowOption
-	flowWorkflows    []client.Workflow
-	chatList         []client.RunHistoryItem // last /history result for picker + /open <n>
-	sessionPanel     sessionInfoPanel        // collapsible top-right session/status overlay
-	flowSteps        []client.WorkflowStepRuntime
-	flowStepsActive  string // node name currently RUNNING
-	turnStream       *turnStreamState
-	orchStream       *orchStreamState // Desktop orchestration SSE after turn
-	focusStream      *orchStreamState // child transcript while /agent focused
-	focusRunID       string           // empty = main run viewport
-	mainTranscript   []ChatMessage    // cached while viewing a child
-	lastEventSeq     int64
-	stepsPollTicks   int    // cursor ticks while flow is live
-	lastTurnError    string // last turn_failed error (fallback FAIL reason in chat)
+	firstTurnPending  bool // consume builtin FirstTurnExtras once
+	// pendingFlowRestore holds mode/flow from disk until project catalog binds.
+	// Restoring ModeFlow on cold start (before project_id) left the TUI unusable.
+	pendingFlowRestore *prefs.Session
+	reasoningEffort    string
+	flowBuiltins       []client.BuiltinFlowOption
+	flowWorkflows      []client.Workflow
+	chatList           []client.RunHistoryItem // last /history result for picker + /open <n>
+	sessionPanel       sessionInfoPanel        // collapsible top-right session/status overlay
+	flowSteps          []client.WorkflowStepRuntime
+	flowStepsActive    string // node name currently RUNNING
+	// flowLoopStatus mirrors the orchestrator LoopState.Status from the latest
+	// agent_graph_updated (done | running | blocked | stopped | …). Flow hubs keep
+	// the raw handle status "running" past loop "done" until the last SSE settles,
+	// so the TUI settles chrome on loop+step+agent state, not the stale handle.
+	flowLoopStatus string
+	// flowBlockReason is LoopState.BlockReason when flowLoopStatus=="blocked"
+	// (BUG-231): "cap" | "escalate" | "member_stalled". Surfaced in the banner so
+	// the user knows the flow is parked awaiting their decision, not live-running.
+	flowBlockReason string
+	// Dispatch operator attention (CP-51 Task-256): uncertain turns / open
+	// repairs that need an operator decision. Desktop DispatchAttentionCard
+	// parity — surfaced as clickable chips above the composer. Automated
+	// dispatch stays blocked until every item is resolved.
+	attention             []client.DispatchAttentionItem
+	attentionInspect      map[string]*client.DispatchInspectResult // key runID/turnID
+	attentionInFlight     bool
+	attentionErr          string
+	attentionRetryConfirm map[string]bool // retry-as-new cancel-bias double-confirm
+	turnStream            *turnStreamState
+	orchStream            *orchStreamState // Desktop orchestration SSE after turn
+	focusStream           *orchStreamState // child transcript while /agent focused
+	focusRunID            string           // empty = main run viewport
+	mainTranscript        []ChatMessage    // cached while viewing a child
+	lastEventSeq          int64
+	stepsPollTicks        int // cursor ticks while flow is live
+	// In-flight + failure guards so dead runner cannot pile up HTTP cmds / lock UX.
+	stepsPollInFlight     bool
+	agentsHydrateInFlight bool
+	// agentHydrateRetries counts consecutive hydrate attempts that returned no
+	// child run while steps still need an [open] chip (CA-528). Capped so a slow
+	// or dead runner is not flooded.
+	agentHydrateRetries  int
+	runnerPollFailStreak int    // consecutive steps/agent poll dial/timeout failures
+	lastTurnError        string // last turn_failed error (fallback FAIL reason in chat)
 
 	// Pending gate/approval/question state
 	gate     *GateState
@@ -281,9 +364,22 @@ type AppModel struct {
 	sessionDefaultsLoaded bool
 	loadingFrame          int
 
+	// thinkingFrame drives the animated "Thinking" placeholder (spinner /
+	// shimmer / elapsed). Advanced by thinkingTickMsg while a thinking row is
+	// live; the row-cache signature hashes it so the animation re-renders.
+	thinkingFrame int
+	// thinkingTickerActive tracks whether the 90ms thinking tick is scheduled,
+	// so the always-on cursor tick only (re)starts it once per thinking phase.
+	thinkingTickerActive bool
+
 	// Terminal dimensions
 	width  int
 	height int
+
+	// fullWidth is the real terminal width, preserved even while View() temporarily
+	// narrows width to the chat column (right sidebar, CA-524). Sidebar geometry
+	// reads this so it is stable regardless of the render-time width mutation.
+	fullWidth int
 
 	// ASCII mode for legacy Windows consoles
 	asciiMode bool
@@ -372,6 +468,7 @@ var knownSlashCommands = []slashCommand{
 	{"/agents", "List/cycle sub-agents (Tab while focused)"},
 	{"/agent", "View a sub-agent transcript — /agent main|<name>"},
 	{"/stop", "Stop the in-flight turn (flow: main + all children)"},
+	{"/continue", "Unblock a parked (blocked) flow loop — /continue"},
 	{"/flow", "Start or list flows"},
 	{"/chat", "Switch to chat mode"},
 	{"/skill", "Skills — Tab multi-pick [name]+chip · Enter closes picker · F3"},

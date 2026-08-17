@@ -12,13 +12,200 @@ import (
 	"flowpilot-runner/internal/tui/prefs"
 )
 
-// persistTUISessionPrefs writes latest provider/model so new TUI / /new keep them.
-func persistTUISessionPrefs(provider, model, reasoning string) {
-	_, _ = prefs.Save(prefs.Session{
+// persistTUISessionPrefs writes latest provider/model/yolo/mode/flow so new TUI sessions keep them.
+// yolo is the chat-mode toggle only (flow uses auto-on via effectiveYolo; we still
+// persist the underlying chat preference so /chat after restart keeps it).
+func persistTUISessionPrefs(provider, model, reasoning string, yolo bool, mode Mode, launch LaunchArm) {
+	yoloCopy := yolo
+	s := prefs.Session{
 		Provider:        strings.TrimSpace(provider),
 		Model:           strings.TrimSpace(model),
 		ReasoningEffort: strings.TrimSpace(reasoning),
-	})
+		Yolo:            &yoloCopy,
+		Mode:            mode.String(),
+	}
+	if mode == ModeFlow || mode == ModeStep {
+		s.FlowRef = strings.TrimSpace(launch.FlowRef)
+		s.WorkflowID = strings.TrimSpace(launch.WorkflowID)
+		s.FlowLabel = strings.TrimSpace(launch.Label)
+	}
+	_, _ = prefs.Save(s)
+}
+
+func (m *AppModel) persistSessionPrefs() {
+	// Always store m.yolo (chat preference), never effectiveYolo() auto-on.
+	persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort, m.yolo, m.mode, m.launch)
+}
+
+// bindProjectIfPossible tries to bind a project from the known catalog using
+// the configured project path. Returns true when a project is bound.
+func (m *AppModel) bindProjectIfPossible() bool {
+	if m.project != nil {
+		return true
+	}
+	if len(m.projects) == 0 {
+		return false
+	}
+	if p := matchProjectByPath(m.projects, m.cfg.ProjectPath); p != nil {
+		m.project = p
+		return true
+	}
+	return false
+}
+
+// applySavedModeAndFlow restores Mode + LaunchArm from disk prefs (best-effort).
+// Catalog fields are refined when flow lists arrive via refineLaunchFromCatalog.
+func applySavedModeAndFlow(m *AppModel, saved prefs.Session) {
+	mode := strings.ToLower(strings.TrimSpace(saved.Mode))
+	switch mode {
+	case "flow":
+		m.mode = ModeFlow
+	case "step":
+		m.mode = ModeStep
+	case "chat", "":
+		m.mode = ModeChat
+		m.launch = LaunchArm{}
+		m.firstTurnPending = false
+		return
+	default:
+		return
+	}
+	flowRef := strings.TrimSpace(saved.FlowRef)
+	workflowID := strings.TrimSpace(saved.WorkflowID)
+	label := strings.TrimSpace(saved.FlowLabel)
+	if flowRef == "" && workflowID == "" && label == "" {
+		m.launch = LaunchArm{Mode: m.mode}
+		m.firstTurnPending = false
+		return
+	}
+	arm := LaunchArm{
+		Mode:       m.mode,
+		FlowRef:    flowRef,
+		WorkflowID: workflowID,
+		Label:      label,
+	}
+	if arm.IsBuiltin() {
+		arm.SubMode = "bug"
+		arm.ChangeType = "bugfix"
+		m.firstTurnPending = true
+	} else {
+		m.firstTurnPending = false
+	}
+	if arm.Label == "" {
+		if arm.FlowRef != "" {
+			arm.Label = arm.FlowRef
+		} else {
+			arm.Label = arm.WorkflowID
+		}
+	}
+	m.launch = arm
+}
+
+// stashPendingFlowRestore keeps last flow prefs without arming ModeFlow yet.
+// Cold-start restore of flow mode (before project_id) made the TUI feel frozen.
+func stashPendingFlowRestore(m *AppModel, saved prefs.Session) {
+	mode := strings.ToLower(strings.TrimSpace(saved.Mode))
+	if mode != "flow" && mode != "step" {
+		m.pendingFlowRestore = nil
+		return
+	}
+	cp := saved
+	m.pendingFlowRestore = &cp
+	// Stay in chat until project catalog binds.
+	m.mode = ModeChat
+	m.launch = LaunchArm{}
+	m.firstTurnPending = false
+}
+
+// tryApplyPendingFlowRestore arms saved flow mode only when a project is bound.
+// Returns a short system notice when restore happens or when it is abandoned.
+func (m *AppModel) tryApplyPendingFlowRestore() string {
+	if m.pendingFlowRestore == nil {
+		return ""
+	}
+	if m.project == nil {
+		return ""
+	}
+	saved := *m.pendingFlowRestore
+	m.pendingFlowRestore = nil
+	applySavedModeAndFlow(m, saved)
+	if m.mode != ModeFlow && m.mode != ModeStep {
+		return ""
+	}
+	m.refineLaunchFromCatalog()
+	m.persistSessionPrefs()
+	label := m.launch.StatusLabel()
+	if label == "" {
+		label = "flow"
+	}
+	return fmt.Sprintf("Restored flow mode: %s (from last session).", label)
+}
+
+// pendingFlowRestoreHint is shown when catalog never bound a project.
+func (m *AppModel) pendingFlowRestoreHint() string {
+	if m.pendingFlowRestore == nil {
+		return ""
+	}
+	s := m.pendingFlowRestore
+	name := strings.TrimSpace(s.FlowLabel)
+	if name == "" {
+		name = strings.TrimSpace(s.FlowRef)
+	}
+	if name == "" {
+		name = strings.TrimSpace(s.WorkflowID)
+	}
+	if name == "" {
+		name = "last flow"
+	}
+	return fmt.Sprintf(
+		"Last session was flow mode (%s) — not restored until project catalog loads.\n"+
+			"Stay in chat, or after project binds re-open / use /flow %s",
+		name, name,
+	)
+}
+
+// refineLaunchFromCatalog re-resolves a prefs-restored arm against live builtins/workflows.
+func (m *AppModel) refineLaunchFromCatalog() {
+	if m.mode != ModeFlow && m.mode != ModeStep {
+		return
+	}
+	if !m.launch.IsArmed() && strings.TrimSpace(m.launch.Label) == "" {
+		return
+	}
+	// Do not re-arm over an active run's chrome.
+	if m.runHandle != nil {
+		if n := m.resolveFlowDisplayName(m.launch.WorkflowID, m.launch.FlowRef); n != "" {
+			m.launch.Label = n
+		}
+		return
+	}
+	projectID := ""
+	if m.project != nil {
+		projectID = m.project.ID
+	}
+	queries := []string{
+		strings.TrimSpace(m.launch.WorkflowID),
+		strings.TrimSpace(m.launch.FlowRef),
+		strings.TrimSpace(m.launch.Label),
+	}
+	for _, q := range queries {
+		if q == "" {
+			continue
+		}
+		arm, err := resolveFlowLaunch(m.flowBuiltins, m.flowWorkflows, projectID, q)
+		if err != nil {
+			continue
+		}
+		if m.mode == ModeStep {
+			arm.Mode = ModeStep
+		}
+		m.launch = arm
+		m.firstTurnPending = arm.IsBuiltin()
+		return
+	}
+	if n := m.resolveFlowDisplayName(m.launch.WorkflowID, m.launch.FlowRef); n != "" {
+		m.launch.Label = n
+	}
 }
 
 // parsedGate is a lightweight gate descriptor for tests and handlers.
@@ -61,6 +248,33 @@ func (m *AppModel) clearPendingTurnPayload() {
 	m.selectedSkills = nil
 	// Drop pending images + temp files (do not leave orphans under flowpilot-tui-pending).
 	_ = m.clearPendingAttachments()
+}
+
+// resolveTurnStepID returns the step id a new turn must send to startTurn. It
+// mirrors Desktop store.sendPrompt (store.ts): normal chat reuses the synthetic
+// "chat-<runId>" step minted by the runner (surfaced via RunHandle.StepID) so
+// follow-ups never POST an empty stepId (which startTurn rejects with 400
+// "stepId is required"); workflow/flow-mode runs fall back to the launch
+// workflow id so a resumed catalog flow can still continue (CA-519).
+func (m *AppModel) resolveTurnStepID() string {
+	if id := strings.TrimSpace(m.stepID); id != "" {
+		return id
+	}
+	if m.runHandle != nil {
+		if id := strings.TrimSpace(m.runHandle.StepID); id != "" {
+			return id
+		}
+	}
+	if id := strings.TrimSpace(m.launch.StepID); id != "" {
+		return id
+	}
+	if id := strings.TrimSpace(m.launch.WorkflowID); id != "" {
+		return id
+	}
+	if m.runHandle != nil && m.runHandle.RunID != "" {
+		return "chat-" + m.runHandle.RunID
+	}
+	return ""
 }
 
 func (m *AppModel) canSend() bool {

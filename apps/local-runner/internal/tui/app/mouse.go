@@ -17,22 +17,26 @@ func stripANSI(s string) string {
 }
 
 type tuiChrome struct {
-	panelLines      []string
-	panelH          int
-	bannerLines     int
-	statusBlock     string
-	statusH         int
-	inputBlock      string
-	inputH          int
-	inputY          int
+	panelLines       []string
+	panelH           int
+	sideActive       bool
+	sideW            int
+	sideX            int
+	sideLines        []string
+	bannerLines      int
+	statusBlock      string
+	statusH          int
+	inputBlock       string
+	inputH           int
+	inputY           int
 	attachPanelBlock string
 	attachPanelH     int
 	attachPanelY     int
-	sugg            []suggestItem
-	suggLines       int
-	messagesHeight  int
-	statusY         int
-	chatSepH        int
+	sugg             []suggestItem
+	suggLines        int
+	messagesHeight   int
+	statusY          int
+	chatSepH         int
 }
 
 func (m *AppModel) tuiChrome() tuiChrome {
@@ -54,9 +58,17 @@ func (m *AppModel) tuiChrome() tuiChrome {
 	}
 	c.panelLines = m.renderSessionPanelOverlay()
 	c.panelH = len(c.panelLines)
+	if m.useRightSidebar() {
+		c.sideActive = true
+		c.sideW = m.sideWidth()
+		c.sideX = m.terminalWidth() - c.sideW
+		c.sideLines = m.renderRightSidebar(m.height)
+		c.panelLines = nil
+		c.panelH = 0
+	}
 	c.statusBlock = m.renderStatusLine()
 	c.statusH = strings.Count(c.statusBlock, "\n") + 1
-	w := m.width
+	w := m.chatWidth()
 	if w <= 0 {
 		w = 80
 	}
@@ -116,6 +128,11 @@ func (m *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.mouseSel.x1 = msg.X
 				m.mouseSel.y1 = msg.Y
 			}
+			// Terminal.app never delivers Cmd+C, so releasing the drag copies the
+			// selection (CA-515). Ctrl+C stays as a fallback elsewhere.
+			if msg.Action == tea.MouseActionRelease {
+				return m, m.autoCopySelectionOnDragEnd()
+			}
 		}
 		return m, nil
 	}
@@ -145,7 +162,9 @@ func (m *AppModel) handlePlainLeftMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		dragged := m.mouseDrag.moved
 		m.mouseDrag = mouseDrag{}
 		if dragged {
-			return m, nil
+			// Drag-select just ended: copy on release (Terminal.app swallows
+			// Cmd+C, so the drag release is the reliable copy affordance, CA-515).
+			return m, m.autoCopySelectionOnDragEnd()
 		}
 		// Click-release with no motion: same as before (clear leftover highlight).
 		m.mouseSel = mouseSelect{}
@@ -179,7 +198,9 @@ func (m *AppModel) selectionPlainText() string {
 	}
 	c := m.tuiChrome()
 	lines := m.renderMessages()
-	m.clampViewport(len(lines), c.messagesHeight)
+	if !m.selecting() {
+		m.clampViewport(len(lines), c.messagesHeight)
+	}
 	vis := sliceViewport(lines, c.messagesHeight, m.viewport.offset)
 	var parts []string
 	for i, line := range vis {
@@ -194,11 +215,32 @@ func (m *AppModel) selectionPlainText() string {
 	return strings.Join(parts, "\n")
 }
 
+// autoCopySelectionOnDragEnd copies the armed drag selection when the mouse is
+// released. Terminal.app swallows Cmd+C for native copy and never delivers it to
+// the TUI, so releasing the drag is the reliable "copy selection" affordance
+// there (CA-515). The selection stays armed so Ctrl+C remains a working
+// fallback (CA-480 keeps the highlight after release); the next press clears it.
+// The CopiedMsg handler shows the "Copied selection." toast (CA-511).
+func (m *AppModel) autoCopySelectionOnDragEnd() tea.Cmd {
+	if m.mouseSel.empty() {
+		return nil
+	}
+	text := m.selectionPlainText()
+	if strings.TrimSpace(text) == "" {
+		m.statusMsg = "nothing to copy"
+		return nil
+	}
+	return m.cmdCopyText(text, "selection")
+}
+
 func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 	target := m.clickTargetAt(x, y)
 	switch {
 	case target == "session":
 		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
+	case target == "sidebar-collapse":
+		// Collapse the full-height right sidebar back to the [info] chip.
+		m.sessionPanel.Collapsed = true
 	case target == "skills":
 		if len(attachedSkillNames(m.selectedSkills)) == 0 {
 			return m, nil
@@ -209,6 +251,16 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 	case target == "stop":
 		if m.turnIsActive() {
 			return m, m.cmdStopTurn()
+		}
+		if m.flowLoopBlocked() {
+			// Desktop FlowAwaitingUser Stop parity (BUG-231): a parked blocked flow
+			// has turnIsActive()==false but the user must still be able to end it.
+			return m, m.cmdStopTurn()
+		}
+	case target == "continue":
+		// Desktop continueFlow parity (BUG-231): unblock a parked blocked flow.
+		if m.flowLoopBlocked() && m.runHandle != nil {
+			return m, m.cmdContinueFlow(m.runHandle.RunID)
 		}
 	case target == "approve":
 		if m.approval != nil {
@@ -260,6 +312,12 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		if ok {
 			return m, m.cmdCopyFence(msgIdx, fenceIdx)
 		}
+	case strings.HasPrefix(target, "tool-group:"):
+		key := strings.TrimPrefix(target, "tool-group:")
+		if key != "" {
+			m.toggleToolGroup(key)
+			return m, nil
+		}
 	case strings.HasPrefix(target, "copy:"):
 		idx, err := strconv.Atoi(strings.TrimPrefix(target, "copy:"))
 		if err == nil {
@@ -274,8 +332,72 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		if runID != "" {
 			return m, m.cmdFocusAgent(runID)
 		}
+	case strings.HasPrefix(target, "attention-inspect:"):
+		runID, turnID, _ := parseAttentionKey(strings.TrimPrefix(target, "attention-inspect:"))
+		if runID != "" && turnID != "" {
+			return m, m.cmdInspectAttention(runID, turnID)
+		}
+	case strings.HasPrefix(target, "attention-resolve:"):
+		rest := strings.TrimPrefix(target, "attention-resolve:")
+		runID, turnID, action, _ := parseAttentionResolve(rest)
+		if runID != "" && turnID != "" && action != "" {
+			return m, m.cmdResolveAttention(runID, turnID, action)
+		}
+	case strings.HasPrefix(target, "attention-retry:"):
+		runID, turnID, _ := parseAttentionKey(strings.TrimPrefix(target, "attention-retry:"))
+		if runID != "" && turnID != "" {
+			key := attentionKey(runID, turnID)
+			if !m.attentionRetryConfirm[key] {
+				// T-5 cancel-bias: first click only arms the confirm; second click
+				// actually retries (Desktop confirmRetry double-step).
+				m.attentionRetryConfirm = map[string]bool{key: true}
+				m.addMessage("system", "Click [confirm-retry] again to retry this turn as new.", "warn")
+				return m, nil
+			}
+			m.attentionRetryConfirm = map[string]bool{}
+			return m, m.cmdRetryAttention(runID, turnID)
+		}
+	case strings.HasPrefix(target, "attention-repair:"):
+		rest := strings.TrimPrefix(target, "attention-repair:")
+		runID, action, _ := parseAttentionRepair(rest)
+		if runID != "" && action != "" {
+			return m, m.cmdResolveRepair(runID, action)
+		}
+	case strings.HasPrefix(target, "attention-details:"):
+		runID, turnID, _ := parseAttentionKey(strings.TrimPrefix(target, "attention-details:"))
+		if runID != "" && turnID != "" {
+			return m, m.cmdInspectAttention(runID, turnID)
+		}
 	}
 	return m, nil
+}
+
+// parseAttentionKey splits "runID/turnID".
+func parseAttentionKey(key string) (runID, turnID string, ok bool) {
+	i := strings.IndexByte(key, '/')
+	if i < 0 {
+		return "", "", false
+	}
+	return key[:i], key[i+1:], true
+}
+
+// parseAttentionResolve splits "runID/turnID:action".
+func parseAttentionResolve(rest string) (runID, turnID, action string, ok bool) {
+	key, act, found := strings.Cut(rest, ":")
+	if !found {
+		return "", "", "", false
+	}
+	r, t, ok := parseAttentionKey(key)
+	return r, t, act, ok
+}
+
+// parseAttentionRepair splits "runID:action".
+func parseAttentionRepair(rest string) (runID, action string, ok bool) {
+	r, a, found := strings.Cut(rest, ":")
+	if !found {
+		return "", "", false
+	}
+	return r, a, true
 }
 
 func (m *AppModel) clickTargetAt(x, y int) string {
@@ -283,6 +405,9 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 		return ""
 	}
 	c := m.tuiChrome()
+	if t := m.hitSidebarChrome(c, x, y); t != "" {
+		return t
+	}
 	if t := m.hitSessionAgentChrome(c, x, y); t != "" {
 		return t
 	}
@@ -302,7 +427,13 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 	if t := hitApprovalChrome(c, x, y); t != "" {
 		return t
 	}
+	if t := m.hitBlockedChrome(c, x, y); t != "" {
+		return t
+	}
 	if t := hitQuestionChrome(m, c, x, y); t != "" {
+		return t
+	}
+	if t := m.hitAttentionChip(x, y); t != "" {
 		return t
 	}
 	if action, idx := hitAttachPanelAction(c, x, y); idx > 0 {
@@ -321,6 +452,41 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 	}
 	if t := hitCopyChrome(m, c, x, y); t != "" {
 		return t
+	}
+	if t := hitToolGroupChrome(m, c, x, y); t != "" {
+		return t
+	}
+	return ""
+}
+
+// hitSidebarChrome maps a click in the full-height right sidebar (OpenCode-style,
+// CA-524) to a target: step [open]/[back], [collapse], or the session header
+// toggle. Only active when the sidebar is rendered (wide + expanded).
+func (m *AppModel) hitSidebarChrome(c tuiChrome, x, y int) string {
+	if !c.sideActive || y < 0 || y >= len(c.sideLines) {
+		return ""
+	}
+	if x < c.sideX {
+		return ""
+	}
+	// Sidebar lines are placed at absolute x>=sideX; hit-test against the line
+	// itself by offsetting x to line-local coordinates.
+	lx := x - c.sideX
+	stripped := stripANSI(c.sideLines[y])
+	if hitToken(stripped, "[back]", lx) && m.viewingChild() {
+		return "agent-back"
+	}
+	if hitToken(stripped, "[open]", lx) {
+		if runID := m.openRunIDFromPanelLine(stripped); runID != "" {
+			return "agent-open:" + runID
+		}
+	}
+	if hitToken(stripped, "[collapse]", lx) {
+		return "sidebar-collapse"
+	}
+	// Session header row ("session") and steps header ("steps") toggle the panel.
+	if hitToken(stripped, "session", lx) || hitToken(stripped, "steps", lx) {
+		return "session"
 	}
 	return ""
 }
@@ -356,11 +522,30 @@ func (m *AppModel) openRunIDFromPanelLine(stripped string) string {
 			continue
 		}
 		name := stepDisplayName(s)
-		if name != "" && strings.Contains(stripped, name) {
+		if name != "" && stepRowMatchesName(stripped, name) {
 			return child.RunID
 		}
 	}
 	return ""
+}
+
+// stepRowMatchesName matches a step row against a step display name, tolerating
+// the "…" ellipsis that truncateStepLine appends when a long name/status row is
+// squeezed (CA-528). A meaningful-prefix match keeps a truncated [open] row
+// clickable.
+func stepRowMatchesName(stripped, name string) bool {
+	if strings.Contains(stripped, name) {
+		return true
+	}
+	for i := len(name); i > 0; i-- {
+		if i*2 < len(name) {
+			break
+		}
+		if strings.Contains(stripped, name[:i]+"…") {
+			return true
+		}
+	}
+	return false
 }
 
 func hitSessionPanel(c tuiChrome, x, y int) bool {
@@ -465,6 +650,28 @@ func hitApprovalChrome(c tuiChrome, x, y int) string {
 	}
 	if hitToken(stripped, "Deny", x) || hitToken(stripped, "/deny", x) {
 		return "deny"
+	}
+	return ""
+}
+
+// hitBlockedChrome maps a click in the awaiting-user action bar (Desktop
+// FlowAwaitingUserCard parity, BUG-231) to "continue" / "stop". The bar is
+// rendered inside the input block above the composer.
+func (m *AppModel) hitBlockedChrome(c tuiChrome, x, y int) string {
+	if !m.flowLoopBlocked() || c.inputH <= 0 || y < c.inputY || y >= c.inputY+c.inputH {
+		return ""
+	}
+	lines := strings.Split(c.inputBlock, "\n")
+	rel := y - c.inputY
+	if rel < 0 || rel >= len(lines) {
+		return ""
+	}
+	stripped := stripANSI(lines[rel])
+	if hitToken(stripped, "[Continue]", x) {
+		return "continue"
+	}
+	if hitToken(stripped, "[Stop]", x) {
+		return "stop"
 	}
 	return ""
 }
@@ -600,6 +807,21 @@ func hitCopyChrome(m *AppModel, c tuiChrome, x, y int) string {
 		return "copyfence:" + strconv.Itoa(rows[rel].MsgIdx) + ":" + strconv.Itoa(rows[rel].FenceIdx)
 	}
 	return "copy:" + strconv.Itoa(rows[rel].MsgIdx)
+}
+
+// hitToolGroupChrome maps a click on a collapsed/expanded multi-tool summary row
+// (CA-525) to a "tool-group:<key>" toggle target. Individual → tool lines inside
+// an expanded group carry no key, so only the summary row toggles.
+func hitToolGroupChrome(m *AppModel, c tuiChrome, x, y int) string {
+	rows := sliceChatRows(m.chatRows(), c.messagesHeight, m.viewport.offset)
+	rel := y - c.panelH
+	if rel < 0 || rel >= len(rows) {
+		return ""
+	}
+	if rows[rel].ToolGroupKey == "" {
+		return ""
+	}
+	return "tool-group:" + rows[rel].ToolGroupKey
 }
 
 func parseCopyFenceTarget(target string) (msgIdx, fenceIdx int, ok bool) {

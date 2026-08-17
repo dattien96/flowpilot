@@ -32,7 +32,7 @@ func TestHandleKey_CtrlJInsertsNewline(t *testing.T) {
 	}
 }
 
-func TestProcessInput_ShowsThinkingPlaceholder(t *testing.T) {
+func TestProcessInput_NoThinkingChatRow(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "codex", ProjectPath: t.TempDir()}, "http://127.0.0.1:9")
 	m.sessionLoading = false
 	m2, _ := m.processInput("hello")
@@ -40,14 +40,13 @@ func TestProcessInput_ShowsThinkingPlaceholder(t *testing.T) {
 	if am.statusMsg != "thinking…" {
 		t.Fatalf("statusMsg=%q", am.statusMsg)
 	}
-	found := false
 	for _, msg := range am.messages {
 		if msg.Role == "assistant" && msg.FormatHint == "thinking" {
-			found = true
+			t.Fatalf("processInput must not add a thinking chat message: %+v", msg)
 		}
 	}
-	if !found {
-		t.Fatal("expected thinking placeholder under the prompt")
+	if !am.workIsLive() {
+		t.Fatal("a sent turn must count as live work (status spinner)")
 	}
 }
 

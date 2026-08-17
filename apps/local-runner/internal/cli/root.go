@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -251,7 +252,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
-				providers, err := instance.DetectProviders(context.Background())
+				providers, err := instance.DetectProvidersCached(r.Context())
 				if err != nil {
 					writeHTTPError(w, http.StatusInternalServerError, err)
 					return
@@ -1823,7 +1824,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 			// Loopback base URL the Claude adapter uses to build per-turn --mcp-config URLs (07).
 			instance.SetMCPBaseURL(fmt.Sprintf("http://127.0.0.1:%v", cfg.port))
 			fmt.Fprintf(os.Stdout, "FlowPilot runner listening on http://%s\n", addr)
-			listenErr := http.ListenAndServe(addr, withCORS(mux))
+			listenErr := http.ListenAndServe(addr, withRecovery(withCORS(mux)))
 			instance.CleanupSessions()
 			return listenErr
 		},
@@ -2061,6 +2062,24 @@ func withCORS(next http.Handler) http.Handler {
 			return
 		}
 
+		next.ServeHTTP(w, r)
+	})
+}
+
+// withRecovery converts a handler panic into a 500 JSON response and logs the
+// stack trace instead of letting the panic kill the whole runner process
+// (CA-518). Without it, a panic inside a child resume / Grok seed handler on
+// the request goroutine would terminate the process and every later client call
+// would see "connection refused" even though the runner was healthy a second
+// ago.
+func withRecovery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("PANIC on %s %s: %v\n%s", r.Method, r.URL.Path, rec, debug.Stack())
+				writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("internal panic on %s %s: %v", r.Method, r.URL.Path, rec))
+			}
+		}()
 		next.ServeHTTP(w, r)
 	})
 }

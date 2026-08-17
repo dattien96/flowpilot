@@ -14,6 +14,7 @@ import (
 type sessionInfoPanel struct {
 	Collapsed   bool
 	RunnerURL   string
+	RunID       string // current run id (e.g. "run-102521")
 	ProjectPath string
 	ProjectName string
 	ProjectID   string
@@ -22,6 +23,7 @@ type sessionInfoPanel struct {
 
 func (p sessionInfoPanel) hasContent() bool {
 	return strings.TrimSpace(p.RunnerURL) != "" ||
+		strings.TrimSpace(p.RunID) != "" ||
 		strings.TrimSpace(p.ProjectPath) != "" ||
 		strings.TrimSpace(p.ProjectName) != "" ||
 		strings.TrimSpace(p.Session) != ""
@@ -31,6 +33,9 @@ func (p sessionInfoPanel) lines() []string {
 	var out []string
 	if u := strings.TrimSpace(p.RunnerURL); u != "" {
 		out = append(out, "Runner: "+u)
+	}
+	if id := strings.TrimSpace(p.RunID); id != "" {
+		out = append(out, "Run: "+shortID(id))
 	}
 	if path := strings.TrimSpace(p.ProjectPath); path != "" {
 		out = append(out, "Path: "+path)
@@ -70,23 +75,36 @@ func (m *AppModel) flowStepsPanelLines() []string {
 			name = shortID(s.StepID)
 		}
 		st := strings.ToUpper(strings.TrimSpace(s.Status))
-		prefix := " "
+		// OpenCode todo-list glyph: [✓] done, [•] in progress, [x] failed, [ ] pending.
+		glyph := " "
+		if m.asciiMode {
+			glyph = "+"
+		} else {
+			glyph = "✓"
+		}
 		lineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+		var suffix string
 		switch st {
-		case "RUNNING", "WAITING_USER_APPROVAL":
-			prefix = ">"
+		case "RUNNING":
+			// CA-537: the RUNNING step shows the same animated spinner as the
+			// status line (driven by thinkingFrame while work is live).
+			glyph = thinkingSpinner(m.thinkingFrame, m.asciiMode)
+			suffix = " " + st
+			lineStyle = styleStepRunning
+		case "WAITING_USER_APPROVAL":
+			glyph = "•"
+			suffix = " " + st
 			lineStyle = styleStepRunning
 		case "DONE":
-			prefix = "+"
 			lineStyle = styleStepDone
 		case "FAILED":
-			prefix = "x"
+			glyph = "x"
 			lineStyle = styleStepFailed
 		}
-		line := fmt.Sprintf("%s%d.%s %s", prefix, i+1, st, name)
+		line := fmt.Sprintf("[%s] %s%s", glyph, name, suffix)
 		action := ""
 		if child, ok := m.childRunForStep(s); ok {
-			if m.viewingChild() && child.RunID == m.focusRunID {
+			if m.viewingChild() && strings.EqualFold(strings.TrimSpace(child.RunID), strings.TrimSpace(m.focusRunID)) {
 				// Emphasize focused child step; action chip uses a different color.
 				lineStyle = styleStatusHi
 				action = "  " + styleStepAgentAction.Render("[back]")
@@ -214,6 +232,10 @@ func (m *AppModel) sessionDisplayLine() string {
 
 func (m *AppModel) refreshSessionPanel() {
 	m.sessionPanel.RunnerURL = m.runnerURL
+	m.sessionPanel.RunID = ""
+	if m.runHandle != nil {
+		m.sessionPanel.RunID = m.runHandle.RunID
+	}
 	m.sessionPanel.ProjectPath = m.cfg.ProjectPath
 	if m.projectPath != "" {
 		m.sessionPanel.ProjectPath = m.projectPath
@@ -268,8 +290,9 @@ func (m *AppModel) renderSessionPanelOverlay() []string {
 	}
 	framed = append(framed, top)
 	for _, line := range body {
-		// Width must ignore ANSI from step highlight styles.
-		line = lipgloss.NewStyle().MaxWidth(maxInner - 2).Render(line)
+		// Width must ignore ANSI from step highlight styles; keep any trailing
+		// [open]/[back] chip visible when a long step row is squeezed (CA-528).
+		line = truncateStepLine(line, maxInner-2)
 		pad := maxInner - 2 - lipgloss.Width(line)
 		if pad < 0 {
 			pad = 0
@@ -301,11 +324,178 @@ func rightAlignPlain(s string, width int) string {
 	return strings.Repeat(" ", width-w) + s
 }
 
+// useRightSidebar reports whether F2 content should render as a full-height right
+// sidebar column (OpenCode-style) instead of the legacy top-right overlay. It only
+// engages on wide terminals (>=100 cols) with an expanded session panel.
+func (m *AppModel) useRightSidebar() bool {
+	return m.sessionPanel.hasContent() && m.terminalWidth() >= 100 && !m.sessionPanel.Collapsed
+}
+
+// terminalWidth returns the real terminal width (stable even mid-render).
+func (m *AppModel) terminalWidth() int {
+	if m.fullWidth > 0 {
+		return m.fullWidth
+	}
+	return m.width
+}
+
+// sideWidth returns the right-sidebar column width (OpenCode default ~42, clamped).
+func (m *AppModel) sideWidth() int {
+	w := m.terminalWidth() * 2 / 5
+	if w < 30 {
+		w = 30
+	}
+	if w > 42 {
+		w = 42
+	}
+	return w
+}
+
+// contentWidth is the chat-column width available when the right sidebar is active.
+func (m *AppModel) contentWidth() int {
+	if !m.useRightSidebar() {
+		return m.terminalWidth()
+	}
+	w := m.terminalWidth() - m.sideWidth() - 1
+	if w < 20 {
+		w = 20
+	}
+	return w
+}
+
+// chatWidth is the width every transcript/status/composer/attach renderer must
+// use (CA-526). With the F2 right sidebar this is contentWidth(); otherwise the
+// terminal width. Paint and hit-test paths must share it so clicks and
+// drag-select align with what was drawn — the old View() width mutation made
+// clickTargetAt run at a different wrap than the painted rows.
+func (m *AppModel) chatWidth() int {
+	w := m.contentWidth()
+	if w < 1 {
+		w = 80
+	}
+	return w
+}
+
+// renderRightSidebar returns the full-height right sidebar lines (OpenCode-style):
+// session info header, then a todo-list of flow steps. h is the terminal height.
+func (m *AppModel) renderRightSidebar(h int) []string {
+	if !m.useRightSidebar() {
+		return nil
+	}
+	w := m.sideWidth()
+	var out []string
+	out = append(out, styleGate.Render("session"))
+	for _, line := range m.sessionPanel.lines() {
+		out = append(out, styleSystem.Render(truncateVisual(line, w-2)))
+	}
+	out = append(out, "")
+	out = append(out, styleGate.Render("steps"))
+	steps := m.flowStepsPanelLines()
+	for i, line := range steps {
+		// First steps line is the "Steps N:" header — render dim.
+		if i == 0 {
+			out = append(out, styleSystem.Render(line))
+			continue
+		}
+		out = append(out, truncateStepLine(line, w-2))
+	}
+	if len(steps) == 0 {
+		out = append(out, styleSystem.Render("(no steps)"))
+	}
+	out = append(out, "")
+	out = append(out, styleLink.Render("[collapse]"))
+	// Pad to full height so the sidebar is a solid right column.
+	for len(out) < h {
+		out = append(out, " ")
+	}
+	return out
+}
+
+// truncateStepLine squeezes a step row to width while keeping a trailing
+// [open]/[back] action chip visible (CA-528). A plain end-truncation would cut
+// the chip first, hiding the only way to open the child agent transcript.
+func truncateStepLine(line string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	if lipgloss.Width(line) <= width {
+		return line
+	}
+	plain := stripANSI(line)
+	chip := ""
+	switch {
+	case strings.HasSuffix(plain, "[open]"):
+		chip = "[open]"
+	case strings.HasSuffix(plain, "[back]"):
+		chip = "[back]"
+	}
+	if chip == "" {
+		return truncateVisual(line, width)
+	}
+	// Reserve the "  <chip>" suffix; squeeze the styled prefix into the rest.
+	rest := strings.TrimSuffix(plain, chip)
+	rest = strings.TrimRight(rest, " ")
+	rest = truncateVisual(rest, max(0, width-2-lipgloss.Width(chip)))
+	return rest + "  " + chip
+}
+
 func max(a, b int) int {
 	if a > b {
 		return a
 	}
 	return b
+}
+
+// padTo pads a (possibly ANSI-styled) string to width w with trailing spaces.
+func padTo(s string, w int) string {
+	cur := lipgloss.Width(stripANSI(s))
+	if cur >= w {
+		return s
+	}
+	return s + strings.Repeat(" ", w-cur)
+}
+
+// padLinesTo pads a slice of lines up to height h with empty lines.
+func padLinesTo(lines []string, h int) []string {
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	return lines
+}
+
+// joinRightSidebar combines the main chat column with the full-height right
+// sidebar column. left lines are padded/truncated to contentW (== sideX-1), a
+// single separator column follows, then each sidebar line padded to sideW. The
+// separator and sidebar are painted with the lighter sidebar background so the
+// right column reads as a solid panel over the dark canvas (CA-532).
+func joinRightSidebar(left, side []string, sideW, sideX int, ascii bool) string {
+	contentW := sideX - 1
+	sep := "│"
+	if ascii {
+		sep = "|"
+	}
+	n := len(left)
+	if len(side) > n {
+		n = len(side)
+	}
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		l := ""
+		if i < len(left) {
+			l = left[i]
+		}
+		if lipgloss.Width(stripANSI(l)) > contentW {
+			l = truncateVisual(l, contentW)
+		}
+		l = padTo(l, contentW)
+		s := ""
+		if i < len(side) {
+			s = side[i]
+		}
+		s = paintRow(s, sideW, styleSidebar)
+		out = append(out, l+styleSidebar.Render(sep)+s)
+	}
+	return strings.Join(out, "\n")
 }
 
 // suggestionWindow returns an inclusive-exclusive [start,end) window of size limit

@@ -14,7 +14,7 @@ func (m *AppModel) renderStatusLine() string {
 	if m.asciiMode {
 		sep = " | "
 	}
-	w := m.width
+	w := m.chatWidth()
 	if w <= 0 {
 		w = 80
 	}
@@ -74,6 +74,13 @@ func (m *AppModel) statusFoldChip() string {
 }
 
 func (m *AppModel) statusReadyLabel() string {
+	// Live work (chat turn or flow step): show the animated spinner + elapsed in
+	// the status line (plain text so it picks up the status color) instead of
+	// the static "thinking…" (CA-537). statusMsg itself stays untouched for
+	// legacy tests.
+	if m.workIsLive() {
+		return thinkingLabelText(m.thinkingFrame, m.asciiMode)
+	}
 	if m.sessionLoading {
 		if m.statusMsg != "" {
 			return m.statusMsg + " · loading…"

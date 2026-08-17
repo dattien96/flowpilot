@@ -114,10 +114,14 @@ func (m *AppModel) openTurnStream(prompt string) tea.Cmd {
 	// A new user turn owns the SSE filter; stop prior orchestration listener.
 	m.stopOrchestrationStream()
 	runID := m.runHandle.RunID
-	stepID := m.stepID
-	if stepID == "" {
-		stepID = m.runHandle.StepID
-	}
+	// Resolve the step id the same way Desktop does so a resumed/opened flow run
+	// never POSTs an empty stepId (startTurn rejects that with 400, CA-519).
+	stepID := m.resolveTurnStepID()
+	// Raise the client per-run SSE cursor to the last event the model has seen
+	// so the new turn streams from here instead of replaying the prior turn
+	// (CA-520). m.lastEventSeq may have advanced past the /open snapshot via
+	// the orchestration stream.
+	m.client.NoteLastSeq(runID, m.lastEventSeq)
 	cl := m.client
 	yolo := m.effectiveYolo()
 	model := m.model

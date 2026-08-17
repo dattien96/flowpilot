@@ -17,7 +17,8 @@ type focusStreamOpenedMsg struct {
 	AfterSeq int64         // stream live events after this seq
 	EvCh     <-chan client.ProviderEvent
 	Cancel   context.CancelFunc
-	Err      string
+	Fallback string // resume failed → live-only fallback in effect (soft note)
+	Err      string // total failure (runner unreachable / child not resumable)
 }
 
 type focusStreamEventMsg struct {
@@ -45,6 +46,165 @@ func (m *AppModel) flowHasActiveAgents() bool {
 		case "running", "waiting_approval", "waiting_question", "spawned", "waiting_user_approval":
 			return true
 		}
+	}
+	return false
+}
+
+// hasChildAgentRuns is true when the agent graph has a non-main child with a run id.
+func (m *AppModel) hasChildAgentRuns() bool {
+	mainID := m.mainRunID()
+	for _, r := range m.agentRuns {
+		if r.RunID == "" || r.RunID == mainID || isMainAgentRun(r) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// hasChildAgentRun reports whether any run in the given list is a child agent
+// (not the synthetic main row).
+func hasChildAgentRun(runs []client.AgentRunSummary) bool {
+	for _, r := range runs {
+		if r.RunID != "" && !isMainAgentRun(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// adoptAgentRuns applies a fresh agent-runs snapshot without clobbering known
+// children (CA-528). GET …/agents can return only the synthetic main row (or an
+// empty list) while a faster agent_graph_updated already populated children;
+// replacing wholesale would hide the step [open] chips until the next poll.
+func (m *AppModel) adoptAgentRuns(incoming []client.AgentRunSummary) {
+	if len(incoming) == 0 {
+		return // never drop known agents on an empty hydrate
+	}
+	if !hasChildAgentRun(incoming) && m.hasChildAgentRuns() {
+		return // main-only snapshot must not erase known children
+	}
+	m.agentRuns = incoming
+	m.afterAgentRunsAdopted()
+}
+
+// afterAgentRunsAdopted keeps agent display state consistent after agentRuns
+// changed: clamp the focused index, expand F2 when children exist, and re-settle
+// the flow chrome if the loop finished.
+func (m *AppModel) afterAgentRunsAdopted() {
+	if m.focusedAgentIdx >= len(m.agentRuns) {
+		m.focusedAgentIdx = 0
+	}
+	m.expandSessionPanelForChildAgents()
+	m.settleFlowIfDone()
+}
+
+// agentHydrateRetryLimit caps the automatic hydrate re-arm ladder so a slow or
+// dead runner is not flooded (CA-528; CA-514 keeps the poll pause intact).
+const agentHydrateRetryLimit = 3
+
+// stepsNeedChildOpenChip is true when a flow step that can host a child agent is
+// in an [open]-eligible state but no child run is mapped to it yet — the F2 step
+// list is missing its [open] button and a fresh hydrate may fix it (CA-528).
+func (m *AppModel) stepsNeedChildOpenChip() bool {
+	if !(m.launch.IsCatalogWorkflow() || m.mode == ModeFlow || m.mode == ModeStep) {
+		return false
+	}
+	for _, s := range m.flowSteps {
+		if !stepMayHostChildAgent(s) {
+			continue
+		}
+		switch strings.ToUpper(strings.TrimSpace(s.Status)) {
+		case "RUNNING", "WAITING_USER_APPROVAL", "DONE", "FAILED":
+		default:
+			continue
+		}
+		if _, ok := m.childRunForStep(s); !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// hydrateAgentRunsIfNeededMsg re-arms a one-shot agent hydrate after a short
+// tick when steps still need their child [open] chip (CA-528).
+type hydrateAgentRunsIfNeededMsg struct{}
+
+// cmdHydrateAgentRunsIfNeeded returns a bounded retry tick when a flow step is
+// still missing its child [open] chip and no hydrate is in flight. The in-flight
+// guard plus the retry cap keep this from flooding a slow or dead runner.
+func (m *AppModel) cmdHydrateAgentRunsIfNeeded() tea.Cmd {
+	if !m.stepsNeedChildOpenChip() {
+		return nil
+	}
+	if m.agentsHydrateInFlight {
+		return nil
+	}
+	if m.agentHydrateRetries >= agentHydrateRetryLimit {
+		return nil
+	}
+	m.agentHydrateRetries++
+	return tea.Tick(400*time.Millisecond, func(time.Time) tea.Msg {
+		return hydrateAgentRunsIfNeededMsg{}
+	})
+}
+
+// expandSessionPanelForChildAgents opens the F2 panel so step [open] is visible
+// as soon as a child agent exists (live or after hydrate).
+func (m *AppModel) expandSessionPanelForChildAgents() {
+	if m.hasChildAgentRuns() {
+		m.sessionPanel.Collapsed = false
+	}
+}
+
+// stepsSuggestChildAgentOpen is true when a step that can host a child agent
+// just became active/finished (or newly appeared) — trigger agent-graph hydrate.
+func stepsSuggestChildAgentOpen(prev, next []client.WorkflowStepRuntime) bool {
+	prevByID := make(map[string]client.WorkflowStepRuntime, len(prev))
+	for _, s := range prev {
+		prevByID[s.StepID] = s
+	}
+	for _, s := range next {
+		if !stepMayHostChildAgent(s) {
+			continue
+		}
+		st := strings.ToUpper(strings.TrimSpace(s.Status))
+		switch st {
+		case "RUNNING", "WAITING_USER_APPROVAL", "DONE", "FAILED":
+			// ok
+		default:
+			continue
+		}
+		old, ok := prevByID[s.StepID]
+		if !ok {
+			return true
+		}
+		oldSt := strings.ToUpper(strings.TrimSpace(old.Status))
+		if oldSt != st || strings.TrimSpace(old.AgentRef) != strings.TrimSpace(s.AgentRef) {
+			return true
+		}
+	}
+	return false
+}
+
+func stepMayHostChildAgent(s client.WorkflowStepRuntime) bool {
+	if strings.TrimSpace(s.AgentRef) != "" {
+		return true
+	}
+	// Common agent step types even when AgentRef is still empty on the DTO.
+	st := strings.ToLower(strings.TrimSpace(s.StepType))
+	switch st {
+	case "agent", "coder", "reviewer", "orchestrator", "worker":
+		return true
+	}
+	node := strings.ToLower(strings.TrimSpace(s.NodeID))
+	if node == "" || node == "main" {
+		return false
+	}
+	// Heuristic: non-context structural nodes often map to child agents.
+	if strings.Contains(node, "review") || strings.Contains(node, "coder") ||
+		strings.Contains(node, "agent") || strings.Contains(node, "worker") {
+		return true
 	}
 	return false
 }
@@ -107,31 +267,69 @@ func (m *AppModel) cmdFocusAgent(runID string) tea.Cmd {
 	m.viewport.offset = 0
 	runnerURL := m.runnerURL
 	return func() tea.Msg {
-		// Resume seeds durable transcript (turn log / Grok JSONL) into the
-		// runner event buffer — StreamLive alone on a cold child returns empty
-		// (run-98158 grok-coder after parent /open).
 		cl := client.New(runnerURL)
 		ctx, cancel := context.WithCancel(context.Background())
-		resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 45*time.Second)
-		defer resumeCancel()
-		handle, err := cl.ResumeRun(resumeCtx, runID)
-		if err != nil {
+		// Resume seeds durable transcript (turn log / Grok JSONL) into the
+		// runner event buffer — StreamLive alone on a cold child returns empty
+		// (run-98158 grok-coder after parent /open). CA-504.
+		handle, resumeErr := resumeChildRunForFocus(cl, runID)
+		if resumeErr == nil {
+			until := handle.LastEventSeq
+			var collected []client.ProviderEvent
+			if until > 0 {
+				collected = collectReplayEvents(ctx, cl, runID, 0, until, chatReplayMaxEvents)
+			}
+			trimmed := trimEventsFromTurnStart(collected)
+			msgs := replayChildHistoryMessages(trimmed)
+			ch := cl.StreamLive(ctx, runID, until)
+			return focusStreamOpenedMsg{
+				RunID: runID, Messages: msgs, AfterSeq: until,
+				EvCh: ch, Cancel: cancel,
+			}
+		}
+		// Resume failed. Distinguish dial-level failure (runner genuinely
+		// unreachable — the stream would fail too) from a server-side error
+		// (child cold / session unavailable — the live stream may still serve an
+		// in-memory child). Dial failure is a total failure: Err → restore main.
+		if runnerDialDeadErr(resumeErr.Error()) {
 			cancel()
-			return focusStreamOpenedMsg{RunID: runID, Err: err.Error(), Cancel: cancel}
+			return focusStreamOpenedMsg{RunID: runID, Err: resumeErr.Error(), Cancel: cancel}
 		}
-		until := handle.LastEventSeq
-		var collected []client.ProviderEvent
-		if until > 0 {
-			collected = collectReplayEvents(resumeCtx, cl, runID, 0, until, chatReplayMaxEvents)
-		}
-		trimmed := trimEventsFromTurnStart(collected)
-		msgs := replayChildHistoryMessages(trimmed)
-		ch := cl.StreamLive(ctx, runID, until)
+		// Server-side resume failure: do not hard-fail the child view, fall back
+		// to the pre-CA-504 live-only stream so an in-memory child still renders
+		// its transcript (run-193749). StreamLive never errors — a not-found run
+		// just closes the channel, so the handler shows the fallback note
+		// instead of a red error and a stuck empty chrome.
+		ch := cl.StreamLive(ctx, runID, 0)
 		return focusStreamOpenedMsg{
-			RunID: runID, Messages: msgs, AfterSeq: until,
-			EvCh: ch, Cancel: cancel,
+			RunID: runID, EvCh: ch, Cancel: cancel,
+			Fallback: fmt.Sprintf("child resume failed (%s); showing live events", resumeErr.Error()),
 		}
 	}
+}
+
+// resumeChildRunForFocus POSTs /resume for a child transcript, retrying once
+// when the runner looked momentarily unreachable (supervisor restart / port
+// handoff) so a transient dial failure does not drop the seed (CA-517).
+func resumeChildRunForFocus(cl *client.Client, runID string) (client.RunHandle, error) {
+	var handle client.RunHandle
+	var err error
+	for attempt := 0; attempt <= 1; attempt++ {
+		resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		handle, err = cl.ResumeRun(resumeCtx, runID)
+		resumeCancel()
+		if err == nil {
+			return handle, nil
+		}
+		if attempt == 0 && runnerDialDeadErr(err.Error()) {
+			select {
+			case <-time.After(300 * time.Millisecond):
+			}
+			continue
+		}
+		break
+	}
+	return handle, err
 }
 
 func (m *AppModel) agentNameForRun(runID string) string {
@@ -307,7 +505,19 @@ type agentRunsHydratedMsg struct {
 	Err         string
 }
 
-func (m *AppModel) cmdHydrateAgentRuns(parentRunID string) tea.Cmd {
+// AgentGraphHydratedMsg carries a one-shot GET /agent-graph result used to seed
+// loop state (done/blocked/running) on /open of a flow run (BUG-231 parity with
+// Desktop refreshAgentGraph on history open).
+type AgentGraphHydratedMsg struct {
+	ParentRunID string
+	Graph       *client.AgentGraphSnapshot
+	Err         string
+}
+
+// cmdHydrateAgentGraph is a one-shot graph fetch on flow open so the TUI can
+// show the awaiting-user banner / settle chrome without waiting for a live
+// agent_graph_updated event. Fires even on completed/blocked opens.
+func (m *AppModel) cmdHydrateAgentGraph(parentRunID string) tea.Cmd {
 	parentRunID = strings.TrimSpace(parentRunID)
 	if parentRunID == "" {
 		return nil
@@ -315,7 +525,31 @@ func (m *AppModel) cmdHydrateAgentRuns(parentRunID string) tea.Cmd {
 	runnerURL := m.runnerURL
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		g, err := cl.GetAgentGraph(ctx, parentRunID)
+		if err != nil {
+			return AgentGraphHydratedMsg{ParentRunID: parentRunID, Err: err.Error()}
+		}
+		return AgentGraphHydratedMsg{ParentRunID: parentRunID, Graph: g}
+	}
+}
+
+func (m *AppModel) cmdHydrateAgentRuns(parentRunID string) tea.Cmd {
+	parentRunID = strings.TrimSpace(parentRunID)
+	if parentRunID == "" {
+		return nil
+	}
+	if m.agentsHydrateInFlight {
+		return nil
+	}
+	// Auto-poll path pauses when runner is dead; one-shot hydrate from /open still
+	// runs when streak is high only if caller clears streak first (ChatOpenedMsg).
+	m.agentsHydrateInFlight = true
+	runnerURL := m.runnerURL
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
 		runs, err := cl.ListAgentRuns(ctx, parentRunID)
 		if err != nil {
@@ -374,6 +608,10 @@ func isMainAgentRun(r client.AgentRunSummary) bool {
 }
 
 // childRunForStep maps a flow step to a spawned child agent (never main).
+// The child that is currently focused wins over any other run that also matches
+// the step keys: live graph + list hydrate polls replace agentRuns and can
+// reorder same-named live/historical runs, which would otherwise flip the step's
+// [open]/[back] chip under a stable focus (CA-529).
 func (m *AppModel) childRunForStep(s client.WorkflowStepRuntime) (client.AgentRunSummary, bool) {
 	keys := []string{
 		strings.TrimSpace(s.AgentRef),
@@ -381,9 +619,9 @@ func (m *AppModel) childRunForStep(s client.WorkflowStepRuntime) (client.AgentRu
 		strings.TrimSpace(s.StepType),
 	}
 	mainID := m.mainRunID()
-	for _, r := range m.agentRuns {
+	matches := func(r client.AgentRunSummary) bool {
 		if r.RunID == "" || r.RunID == mainID || isMainAgentRun(r) {
-			continue
+			return false
 		}
 		for _, k := range keys {
 			if k == "" {
@@ -392,8 +630,21 @@ func (m *AppModel) childRunForStep(s client.WorkflowStepRuntime) (client.AgentRu
 			if strings.EqualFold(r.RunID, k) ||
 				strings.EqualFold(r.AgentName, k) ||
 				strings.EqualFold(r.Label, k) {
+				return true
+			}
+		}
+		return false
+	}
+	if m.viewingChild() {
+		for _, r := range m.agentRuns {
+			if strings.EqualFold(strings.TrimSpace(r.RunID), strings.TrimSpace(m.focusRunID)) && matches(r) {
 				return r, true
 			}
+		}
+	}
+	for _, r := range m.agentRuns {
+		if matches(r) {
+			return r, true
 		}
 	}
 	return client.AgentRunSummary{}, false

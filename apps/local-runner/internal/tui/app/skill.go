@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -180,7 +181,10 @@ func (m *AppModel) cmdLoadSkills(show bool) tea.Cmd {
 	}
 	cl := m.client
 	return func() tea.Msg {
-		skills, err := cl.ListSkills(context.Background(), provider, cwd)
+		// Bound so a slow/hung runner cannot freeze a slash completion fetch.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		skills, err := cl.ListSkills(ctx, provider, cwd)
 		if err != nil {
 			return SkillsListMsg{Err: err.Error(), Show: show}
 		}

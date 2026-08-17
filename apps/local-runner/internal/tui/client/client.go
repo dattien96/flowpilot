@@ -14,9 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -168,6 +170,16 @@ type AgentLoopState struct {
 	Status   string `json:"status"`
 	Round    int    `json:"round"`
 	RoundCap int    `json:"roundCap"`
+	// Cap is the flow-engine cap (Task-090); use cap ?? roundCap for display.
+	Cap int `json:"cap,omitempty"`
+	// GateReason is the human explanation for a gate/block (BUG-231).
+	GateReason string `json:"gateReason,omitempty"`
+	// OpenIssues counts unresolved review issues when the loop blocks (BUG-231).
+	OpenIssues int `json:"openIssues,omitempty"`
+	// BlockReason is why status=="blocked" (BUG-231): cap | escalate | member_stalled.
+	BlockReason string `json:"blockReason,omitempty"`
+	// ActiveNode names the node the flow is waiting on when blocked.
+	ActiveNode string `json:"activeNode,omitempty"`
 }
 
 // AgentGraphSnapshot carries the current agent graph for an agent_graph_updated event.
@@ -175,6 +187,66 @@ type AgentGraphSnapshot struct {
 	ParentRunID string            `json:"parentRunId"`
 	Runs        []AgentRunSummary `json:"runs"`
 	LoopState   AgentLoopState    `json:"loopState"`
+}
+
+// DispatchAttentionItem mirrors runner.AttentionItem surfaced by
+// GET /client/workflow-runs/{runId}/dispatch-attention (CP-51 Task-256).
+type DispatchAttentionItem struct {
+	Kind      string `json:"kind"` // uncertain|repair_required|cancel_required|settle_pending
+	RunID     string `json:"run_id"`
+	TurnID    string `json:"turn_id,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+// DispatchSettlement carries the ALREADY-COMMITTED settlement disposition that
+// resolve/retry-as-new responses surface (OR ledger row — never a follow-up read).
+type DispatchSettlement struct {
+	State       string `json:"state"`
+	SettlePhase string `json:"settlePhase"`
+	StopOutcome string `json:"stopOutcome,omitempty"`
+}
+
+// DispatchInspectResult mirrors GET /client/workflow-runs/{runId}/dispatches/{turnId}.
+// RE: only canonical identity/hash evidence is exposed — never raw secret payloads.
+type DispatchInspectResult struct {
+	DispatchSettlement
+	RunID            string                   `json:"runId"`
+	TurnID           string                   `json:"turnId"`
+	Revision         int64                    `json:"revision"`
+	CancelRequested  bool                     `json:"cancelRequested"`
+	EnvelopeHash     string                   `json:"envelopeHash"`
+	OuterIntentKey   string                   `json:"outerIntentKey"`
+	OuterIntentGen   int64                    `json:"outerIntentGen"`
+	IntentOwnerRunID string                   `json:"intentOwnerRunID"`
+	ReceiptEvidence  *ReceiptEvidenceSummary  `json:"receiptEvidence,omitempty"`
+	TerminalEvidence *TerminalEvidenceSummary `json:"terminalEvidence,omitempty"`
+	OpenRepair       *OpenRepairSummary       `json:"openRepair,omitempty"`
+}
+
+// ReceiptEvidenceSummary mirrors the redacted canonical receipt evidence.
+type ReceiptEvidenceSummary struct {
+	ProviderKey   string `json:"providerKey"`
+	ReceiptID     string `json:"receiptId"`
+	EvidenceKind  string `json:"evidenceKind"`
+	PayloadSHA256 string `json:"payloadSHA256"`
+}
+
+// TerminalEvidenceSummary mirrors the redacted terminal evidence.
+type TerminalEvidenceSummary struct {
+	ProviderKey   string `json:"providerKey"`
+	EvidenceKind  string `json:"evidenceKind"`
+	Outcome       string `json:"outcome"`
+	PayloadSHA256 string `json:"payloadSHA256"`
+}
+
+// OpenRepairSummary mirrors the quarantined repair metadata.
+type OpenRepairSummary struct {
+	RepairRevision int64  `json:"repairRevision"`
+	Reason         string `json:"reason"`
+	QuarantineHash string `json:"quarantineHash"`
+	State          string `json:"state"`
+	CreatedAt      string `json:"createdAt,omitempty"`
 }
 
 // BuiltinFlowOption mirrors /client/chat/builtin-orchestration-options.
@@ -279,25 +351,30 @@ type TurnInput struct {
 
 // ProviderEvent mirrors ProviderEvent from provider_event.go (camelCase JSON).
 type ProviderEvent struct {
-	ID                 string              `json:"id"`
-	Seq                int64               `json:"seq"`
-	Type               string              `json:"type"`
-	WorkflowRunID      string              `json:"workflowRunId"`
-	ProviderTurnID     string              `json:"providerTurnId,omitempty"`
-	ProviderKey        string              `json:"providerKey"`
-	Text               string              `json:"text,omitempty"`
-	FinalMessage       string              `json:"finalMessage,omitempty"`
-	ToolName           string              `json:"toolName,omitempty"`
-	ApprovalID         string              `json:"approvalId,omitempty"`
-	QuestionID         string              `json:"questionId,omitempty"`
-	Prompt             string              `json:"prompt,omitempty"`
-	GateOptions        []string            `json:"gateOptions,omitempty"`
-	GateRegressedTests []string            `json:"gateRegressedTests,omitempty"`
-	Error              string              `json:"error,omitempty"`
-	Recoverable        bool                `json:"recoverable,omitempty"`
-	Options            []map[string]string `json:"options,omitempty"`
-	MultiSelect        bool                `json:"multiSelect,omitempty"`
-	OccurredAt         string              `json:"occurredAt"`
+	ID                 string   `json:"id"`
+	Seq                int64    `json:"seq"`
+	Type               string   `json:"type"`
+	WorkflowRunID      string   `json:"workflowRunId"`
+	ProviderTurnID     string   `json:"providerTurnId,omitempty"`
+	ProviderKey        string   `json:"providerKey"`
+	Text               string   `json:"text,omitempty"`
+	FinalMessage       string   `json:"finalMessage,omitempty"`
+	ToolName           string   `json:"toolName,omitempty"`
+	ApprovalID         string   `json:"approvalId,omitempty"`
+	QuestionID         string   `json:"questionId,omitempty"`
+	Prompt             string   `json:"prompt,omitempty"`
+	GateOptions        []string `json:"gateOptions,omitempty"`
+	GateRegressedTests []string `json:"gateRegressedTests,omitempty"`
+	// Status is the runner gate verdict on flow_gate_violation events
+	// ("block" | "reprompt" | "warn" | "approve" | "pass"). Only "block"
+	// accompanied by GateOptions arms the interactive decision card; any other
+	// verdict must surface as info without locking the composer (CA-536).
+	Status      string              `json:"status,omitempty"`
+	Error       string              `json:"error,omitempty"`
+	Recoverable bool                `json:"recoverable,omitempty"`
+	Options     []map[string]string `json:"options,omitempty"`
+	MultiSelect bool                `json:"multiSelect,omitempty"`
+	OccurredAt  string              `json:"occurredAt"`
 	// TokenUsage is present on token_usage_updated events.
 	TokenUsage *TokenUsageSnapshot `json:"tokenUsage,omitempty"`
 	// AgentGraph is present on agent_graph_updated events.
@@ -324,9 +401,40 @@ func RetryableCode(code string) bool {
 	return false
 }
 
+// IsFlowAwaitingUserError reports whether an error means the flow loop is
+// deliberately parked waiting for a user decision (Continue/Stop). BUG-231:
+// the runner answers a freeform turn against a blocked loop with 409
+// flow_awaiting_user (or a 409 whose message carries the same meaning). This is
+// a permanent parked state, NOT a transient retryable conflict.
+func IsFlowAwaitingUserError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.Status != http.StatusConflict {
+			return false
+		}
+		if strings.EqualFold(strings.TrimSpace(apiErr.Code), "flow_awaiting_user") {
+			return true
+		}
+		msg := strings.ToLower(apiErr.Message)
+		return strings.Contains(msg, "flow_awaiting_user") ||
+			strings.Contains(msg, "waiting for your decision") ||
+			strings.Contains(msg, "resolve the form before a new turn")
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "flow_awaiting_user") ||
+		strings.Contains(s, "waiting for your decision")
+}
+
 // IsRetryableAPIError checks if an error represents a temporary 409 gate/turn lock.
 func IsRetryableAPIError(err error) bool {
 	if err == nil {
+		return false
+	}
+	// A 409 flow_awaiting_user is a permanent parked state (BUG-231) — never retry.
+	if IsFlowAwaitingUserError(err) {
 		return false
 	}
 	var apiErr *APIError
@@ -355,15 +463,52 @@ const (
 type Client struct {
 	base    string
 	http    *http.Client
+	mu      sync.Mutex
 	lastSeq map[string]int64
 }
 
 // New creates a new Client targeting baseURL (e.g. "http://127.0.0.1:4317").
 func New(baseURL string) *Client {
+	// Timeout: 0 so SSE streams stay open. Bound dial + response headers so a
+	// dead/blackholed runner cannot hang TUI cmds forever (Windows connectex /
+	// silent drop previously left sessionLoading + key handling unusable).
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   3 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:   true,
+		MaxIdleConns:        32,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 5 * time.Second,
+		// Long enough to not cut the 30s/45s catalog budgets while still guarding
+		// a hung-but-accepting runner; per-call ctx deadlines do the real capping.
+		ResponseHeaderTimeout: 60 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 	return &Client{
-		base:    strings.TrimRight(baseURL, "/"),
-		http:    &http.Client{Timeout: 0},
+		base: strings.TrimRight(baseURL, "/"),
+		http: &http.Client{
+			Timeout:   0,
+			Transport: transport,
+		},
 		lastSeq: make(map[string]int64),
+	}
+}
+
+// NoteLastSeq raises the per-run SSE cursor so a later SendTurn on the same run
+// never replays events the model already saw (e.g. after /open where the resume
+// handle carries LastEventSeq but the client cursor was never seeded). It never
+// decreases the cursor — an older snapshot cannot rewind a live stream.
+func (c *Client) NoteLastSeq(runID string, seq int64) {
+	if seq <= 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lastSeq[runID] < seq {
+		c.lastSeq[runID] = seq
 	}
 }
 
@@ -571,6 +716,100 @@ func (c *Client) StopAgentLoop(ctx context.Context, runID string) error {
 	return c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/agent-loop/stop", nil, nil)
 }
 
+// GetAgentGraph fetches the current agent graph snapshot (Desktop
+// refreshAgentGraph parity) so the TUI can hydrate loopState/blockReason when
+// reopening a blocked flow (BUG-231 run-189839).
+func (c *Client) GetAgentGraph(ctx context.Context, runID string) (*AgentGraphSnapshot, error) {
+	var snap AgentGraphSnapshot
+	if err := c.getJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/agent-graph", &snap); err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
+
+// ContinueFlow unparks a blocked flow loop by POSTing a user decision to
+// /agent-loop/continue and returns the refreshed graph (Desktop continueFlow
+// parity, BUG-231).
+func (c *Client) ContinueFlow(ctx context.Context, runID string) (*AgentGraphSnapshot, error) {
+	var snap AgentGraphSnapshot
+	if err := c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/agent-loop/continue", map[string]string{"feedback": "continue"}, &snap); err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
+
+// ListDispatchAttention fetches operator-attention items for a run (CP-51
+// Task-256, Desktop listDispatchAttention parity).
+func (c *Client) ListDispatchAttention(ctx context.Context, runID string) ([]DispatchAttentionItem, error) {
+	var body struct {
+		Items []DispatchAttentionItem `json:"items"`
+	}
+	if err := c.getJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/dispatch-attention", &body); err != nil {
+		return nil, err
+	}
+	return body.Items, nil
+}
+
+// InspectDispatch fetches the full record for one turn (redacted evidence).
+func (c *Client) InspectDispatch(ctx context.Context, runID, turnID string) (*DispatchInspectResult, error) {
+	var out DispatchInspectResult
+	if err := c.getJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/dispatches/"+neturl.PathEscape(turnID), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ResolveDispatchUncertain POSTs an operator resolution for an uncertain turn.
+func (c *Client) ResolveDispatchUncertain(ctx context.Context, runID, turnID string, expectedRev int64, resolutionID, action, detail string) (*DispatchSettlement, error) {
+	var out DispatchSettlement
+	if err := c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/dispatches/"+neturl.PathEscape(turnID)+"/resolve", map[string]any{
+		"expectedRev":  expectedRev,
+		"resolutionId": resolutionID,
+		"action":       action,
+		"detail":       detail,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RetryDispatchAsNew POSTs a retry-as-new for an uncertain turn.
+func (c *Client) RetryDispatchAsNew(ctx context.Context, runID, turnID string, input RetryAsNewInput) (*DispatchSettlement, error) {
+	var out DispatchSettlement
+	if err := c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/dispatches/"+neturl.PathEscape(turnID)+"/retry-as-new", map[string]any{
+		"expectedRev":          input.ExpectedRev,
+		"resolutionId":         input.ResolutionID,
+		"newTurnId":            input.NewTurnID,
+		"expectedIntentGen":    input.ExpectedIntentGen,
+		"expectedEnvelopeHash": input.ExpectedEnvelopeHash,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ResolveDispatchRepair POSTs a repair resolution (retry_load | abandon).
+func (c *Client) ResolveDispatchRepair(ctx context.Context, runID string, expectedRepairRev int64, resolutionID, action string) (map[string]any, error) {
+	var out map[string]any
+	if err := c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/repair-resolution", map[string]any{
+		"expectedRepairRev": expectedRepairRev,
+		"resolutionId":      resolutionID,
+		"action":            action,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// RetryAsNewInput carries the fields for RetryDispatchAsNew.
+type RetryAsNewInput struct {
+	ExpectedRev          int64
+	ResolutionID         string
+	NewTurnID            string
+	ExpectedIntentGen    int64
+	ExpectedEnvelopeHash string
+}
+
 // SubmitGateDecision sends POST /client/workflow-runs/{runId}/gate-decision (Desktop parity).
 func (c *Client) SubmitGateDecision(ctx context.Context, runID, decision string) error {
 	return c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/gate-decision", map[string]any{
@@ -624,14 +863,18 @@ func (c *Client) SendTurn(ctx context.Context, input TurnInput) (<-chan Provider
 			break
 		}
 
+		c.mu.Lock()
 		after := c.lastSeq[input.RunID]
+		c.mu.Unlock()
 		streamCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
 		for ev := range c.openStream(streamCtx, input.RunID, after) {
+			c.mu.Lock()
 			if ev.Seq > c.lastSeq[input.RunID] {
 				c.lastSeq[input.RunID] = ev.Seq
 			}
+			c.mu.Unlock()
 			// Filter to this turn only. Always pass agent_graph_updated (and
 			// empty-turnId events) so flow step transitions during a long
 			// context.produce / hub turn still reach the TUI.
@@ -654,9 +897,11 @@ func (c *Client) StreamRun(ctx context.Context, runID string, afterSeq int64) <-
 	go func() {
 		defer close(ch)
 		for ev := range c.openStream(ctx, runID, afterSeq) {
+			c.mu.Lock()
 			if ev.Seq > c.lastSeq[runID] {
 				c.lastSeq[runID] = ev.Seq
 			}
+			c.mu.Unlock()
 			select {
 			case ch <- ev:
 			case <-ctx.Done():

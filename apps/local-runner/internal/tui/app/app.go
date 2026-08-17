@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -31,8 +32,13 @@ const (
 	colorAsk        = "#b07cff" // --ask (gate / questions)
 	colorOK         = "#3fb950" // --ok
 	colorErr        = "#f85149" // --err
-	colorBg3        = "#1e1e1e" // --bg-3
-	colorCodeBg     = "#252526" // fenced-code panel (lifted vs terminal / --bg-3)
+	// Opencode-style hierarchy: the whole window canvas is the DARKEST layer
+	// (#0d0d0d) and the elevated panels (code blocks, right sidebar, chat bar)
+	// are progressively lighter grays above it (CA-532).
+	colorCanvas = "#0d0d0d" // --bg (opencode canvas)
+	colorBg2    = "#161616" // --bg-2 (right sidebar / elevated panel)
+	colorBg3    = "#1e1e1e" // --bg-3 (chat bar, loading, step-running)
+	colorCodeBg = "#2e2e2e" // fenced-code panel (solid lifted card vs --bg)
 	// Status-line exclusive values (not reused for model/YOLO/skills/open-back).
 	colorStatusAgent = "#2dd4bf" // teal — agent:<name> value
 	colorStatusFlow  = "#f472b6" // pink — flow name / active step value
@@ -53,7 +59,7 @@ var (
 	// agent:NAME and flow-name values — dedicated hues, not styleStatusHi/accent.
 	styleStatusAgent = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusAgent))
 	styleStatusFlow  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusFlow))
-	stylePrompt    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
+	stylePrompt      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
 	// Input stroke frame (Desktop accent / prompt-border — no neon wash).
 	stylePromptFocus = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
 	styleInputFocus  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
@@ -71,6 +77,11 @@ var (
 	styleStepFailed  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorErr))
 	// F2 step [open]/[back] — distinct from step highlight (accent) and running (warn).
 	styleStepAgentAction = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color(colorAsk))
+	// Canvas + elevated-panel backgrounds (CA-532): whole window canvas is darkest,
+	// the right sidebar and chat bar are lighter grays like opencode.
+	styleCanvas  = lipgloss.NewStyle().Background(lipgloss.Color(colorCanvas))
+	styleSidebar = lipgloss.NewStyle().Background(lipgloss.Color(colorBg2))
+	styleChatBar = lipgloss.NewStyle().Background(lipgloss.Color(colorBg3))
 )
 
 // ---- New / Init -------------------------------------------------------------
@@ -80,8 +91,12 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 	provider := cfg.Provider
 	model := cfg.Model
 	reasoning := cfg.ReasoningEffort
-	// Restore last TUI selection when flags omit provider/model.
+	// Restore last TUI selection when flags omit provider/model; restore mode/flow/yolo.
+	var savedPrefs prefs.Session
+	var haveSaved bool
 	if saved, _, err := prefs.Load(); err == nil {
+		haveSaved = true
+		savedPrefs = saved
 		if provider == "" {
 			provider = saved.Provider
 		}
@@ -95,12 +110,20 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 	if reasoning == "" {
 		reasoning = "medium"
 	}
+	yolo := cfg.Yolo
+	// TestMain sets FLOWPILOT_TUI_SKIP_MODE_RESTORE so shared session-file
+	// pollution from /flow or /yolo tests cannot force mode/yolo on every New().
+	skipSessionUX := strings.TrimSpace(os.Getenv("FLOWPILOT_TUI_SKIP_MODE_RESTORE")) != ""
+	// --yolo flag wins; otherwise restore chat-mode YOLO preference from disk.
+	if !cfg.Yolo && haveSaved && !skipSessionUX && savedPrefs.Yolo != nil {
+		yolo = *savedPrefs.Yolo
+	}
 	m := &AppModel{
 		cfg:             cfg,
 		runnerURL:       runnerURL,
 		client:          client.New(runnerURL),
 		inputCursor:     -1,
-		yolo:            cfg.Yolo,
+		yolo:            yolo,
 		provider:        provider,
 		model:           model,
 		reasoningEffort: reasoning,
@@ -110,6 +133,12 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 		width:           80,
 		height:          42, // room for /help + rounded input + 6-row status bar
 		asciiMode:       isLegacyConsole(),
+	}
+	if haveSaved && !skipSessionUX {
+		// Defer flow-mode arm until project catalog binds (tryApplyPendingFlowRestore).
+		// Immediate ModeFlow restore on cold start left the TUI unusable when catalog
+		// was slow/empty (operator report: chat mode OK, restored flow mode hangs).
+		stashPendingFlowRestore(m, savedPrefs)
 	}
 	return m
 }
@@ -125,6 +154,13 @@ func tickCursor() tea.Cmd {
 	})
 }
 
+// cmdThinkingTick schedules the 90ms spinner step while a thinking row is live.
+func cmdThinkingTick() tea.Cmd {
+	return tea.Tick(thinkingTickInterval, func(time.Time) tea.Msg {
+		return thinkingTickMsg{}
+	})
+}
+
 // ---- Update -----------------------------------------------------------------
 
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -132,6 +168,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.fullWidth = msg.Width
 		return m, nil
 
 	case cursorTickMsg:
@@ -140,17 +177,45 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loadingFrame = (m.loadingFrame + 1) % 64
 		}
 		cmds := []tea.Cmd{tickCursor()}
+		// Start the 90ms spinner ticker whenever a chat turn or flow step is live
+		// (CA-537): the spinner animates on the status line + F2 RUNNING step, not
+		// in the chat timeline. Frame resets on the idle→live edge so the elapsed
+		// clock does not race ahead while idle. The ticker self-cancels on its own
+		// tick once work is no longer live.
+		if m.workIsLive() {
+			if !m.thinkingTickerActive {
+				m.thinkingTickerActive = true
+				m.thinkingFrame = 0
+				cmds = append(cmds, cmdThinkingTick())
+			}
+		} else {
+			m.thinkingTickerActive = false
+		}
 		// While a flow turn/orchestration is live, poll steps-runtime so long
 		// silent steps (e.g. grok-context / context.produce) stay visible.
+		// Also re-hydrate agent graph so F2 [open] appears as soon as a child
+		// agent starts (do not wait for run complete or a missed SSE).
+		// Gated by shouldPollStepsRuntime so idle/terminal + dead-runner pause.
 		if m.shouldPollStepsRuntime() {
 			m.stepsPollTicks++
 			if m.stepsPollTicks%3 == 0 { // ~1.6s
 				cmds = append(cmds, m.cmdRefreshStepsRuntime())
+				if m.runHandle != nil && m.runnerPollFailStreak < runnerPollFailPauseAfter {
+					cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
+				}
 			}
 		} else {
 			m.stepsPollTicks = 0
 		}
 		return m, tea.Batch(cmds...)
+
+	case thinkingTickMsg:
+		m.thinkingFrame++
+		if m.workIsLive() {
+			return m, cmdThinkingTick()
+		}
+		m.thinkingTickerActive = false
+		return m, nil
 
 	case ErrMsg:
 		m.err = msg.Err
@@ -201,6 +266,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.restoreMainTranscript()
 		m.connStatus = ConnIdle
 		m.statusMsg = "stopped"
+		m.flowLoopStatus = "stopped"
 		m.addMessage("system", "Stopped.", "")
 		return m, nil
 
@@ -230,11 +296,80 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionPanel.RunnerURL = msg.RunnerURL
 		m.sessionPanel.ProjectPath = m.cfg.ProjectPath
 		m.sessionPanel.Collapsed = false
-		cmds := []tea.Cmd{m.cmdLoadSessionDefaults(), m.cmdPrefetchFlows()}
+		cmds := []tea.Cmd{
+			m.cmdLoadSessionDefaults(),
+			m.cmdPrefetchFlows(),
+			// The FlowPilot banner stays up until SessionDefaultsMsg decides the
+			// catalog (project bound or failed) — typing stays interactive, send
+			// stays blocked (CA-514). The 45s safety net is the only bail-out.
+			tea.Tick(45*time.Second, func(time.Time) tea.Msg { return sessionLoadTimeoutMsg{} }),
+		}
 		if m.cfg.ResumeRunID != "" {
 			cmds = append(cmds, m.cmdResume(m.cfg.ResumeRunID))
 		}
 		return m, tea.Batch(cmds...)
+
+	case sessionKeysUnlockMsg:
+		// Deprecated since CA-514 fourth pass: no longer scheduled. The FlowPilot
+		// banner stays up until SessionDefaultsMsg decides the catalog. Kept as a
+		// no-op so a stale delivery can never clear the banner early.
+		return m, nil
+
+	case sessionLoadTimeoutMsg:
+		// Safety net only if defaults never arrived (runner truly stuck).
+		// Do NOT mark sessionDefaultsLoaded: a late SessionDefaultsMsg must still
+		// count as first load so it persists provider/model and restores flow.
+		if m.sessionDefaultsLoaded {
+			return m, nil
+		}
+		m.sessionLoading = false
+		m.connStatus = ConnError
+		m.statusMsg = "session load failed"
+		m.addMessage("system",
+			"Session did not load from "+m.runnerURL+" within 45s.\n"+
+				"Check runner logs / .env (Supabase). UI stays usable: /help /login /status /provider",
+			"error",
+		)
+		m.refreshSessionPanel()
+		return m, nil
+
+	case ProjectsCatalogMsg:
+		if msg.Err != "" {
+			// Soft: keep UI usable; offer one more retry path via /login or restart.
+			if m.project == nil {
+				m.addMessage("system",
+					"Project catalog still unavailable: "+msg.Err+"\n"+
+						"Runner /health can be fine while Supabase catalog is slow — try /login or restart runner.",
+					"error",
+				)
+				if hint := m.pendingFlowRestoreHint(); hint != "" {
+					m.addMessage("system", hint, "")
+				}
+			}
+			return m, nil
+		}
+		if len(msg.Projects) > 0 {
+			m.projects = msg.Projects
+		}
+		if msg.Project != nil {
+			m.project = msg.Project
+		} else if m.project == nil && m.cfg.ProjectPath != "" && len(m.projects) > 0 {
+			m.project = matchProjectByPath(m.projects, m.cfg.ProjectPath)
+		}
+		m.refreshSessionPanel()
+		if m.project != nil {
+			m.statusMsg = "ready"
+			m.addMessage("system", fmt.Sprintf("Project bound: %s — you can chat now.", m.project.Name), "")
+			if notice := m.tryApplyPendingFlowRestore(); notice != "" {
+				m.addMessage("system", notice, "")
+			}
+			var cmds []tea.Cmd
+			if len(m.chatList) == 0 {
+				cmds = append(cmds, m.cmdPrefetchChats())
+			}
+			return m, tea.Batch(cmds...)
+		}
+		return m, nil
 
 	case SessionDefaultsMsg:
 		firstLoad := !m.sessionDefaultsLoaded
@@ -271,24 +406,63 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.bindActiveAccountForProvider()
 		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 		if firstLoad {
-			persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+			m.persistSessionPrefs()
 		}
 		m.refreshSessionPanel()
-		if msg.CatalogErr != "" {
-			m.addMessage("system", "Project catalog unavailable: "+msg.CatalogErr+"\nChat needs Supabase catalog (same as Desktop). Fix .env / runner, then restart.", "error")
-		}
-		if m.project == nil && m.cfg.ProjectPath != "" {
-			m.addMessage("system", formatMissingProjectHelp(m.cfg.ProjectPath, m.projects), "error")
-		}
-		m.applyAuthNotice(msg.CatalogErr)
 		m.sessionLoading = false
 		m.sessionDefaultsLoaded = true
 		m.connStatus = ConnIdle
 		m.statusMsg = "ready"
+		// Never show a false "ready": when the catalog produced no project the
+		// operator must see why chat is disabled (CA-514).
+		if m.project == nil {
+			switch {
+			case runnerDialDeadErr(msg.CatalogErr):
+				m.statusMsg = "catalog unavailable"
+			case msg.CatalogErr != "":
+				m.statusMsg = "loading catalog…"
+			case len(m.projects) > 0:
+				m.statusMsg = "no project match"
+			default:
+				m.statusMsg = "no project"
+			}
+		}
+		var cmds []tea.Cmd
+		// Catalog timeout ≠ runner offline: /health can pass while Supabase is slow.
+		// Only a dial-level failure is the runner being dead; a ctx deadline from
+		// the catalog budget is slow-Supabase → schedule a background retry.
+		if msg.CatalogErr != "" {
+			if runnerDialDeadErr(msg.CatalogErr) {
+				m.addMessage("system", "Project catalog unavailable: "+msg.CatalogErr+"\nChat needs Supabase catalog (same as Desktop). Fix .env / runner, then restart.", "error")
+			} else {
+				m.addMessage("system",
+					"Project catalog slow/timeout: "+msg.CatalogErr+"\n"+
+						"Runner is up; waiting on Supabase catalog — retrying in background…",
+					"error",
+				)
+				cmds = append(cmds, m.cmdLoadProjectsCatalog())
+			}
+		}
+		// Chat is disabled without a bound project_id: always surface the help
+		// (also when the catalog error path already added a message above).
+		if m.project == nil && m.cfg.ProjectPath != "" {
+			m.addMessage("system", formatMissingProjectHelp(m.cfg.ProjectPath, m.projects), "error")
+		}
+		m.applyAuthNotice(msg.CatalogErr)
 		if firstLoad {
 			m.addMessage("system", "Ready — type / for commands · F2/click session panel · F3/click skills chip.", "")
 		}
-		cmds := []tea.Cmd{m.cmdRefreshProjectContext(), m.cmdLoadSkills(false)}
+		// Restore flow mode only after project_id exists (cold-start arm is unsafe).
+		if m.project != nil {
+			if notice := m.tryApplyPendingFlowRestore(); notice != "" {
+				m.addMessage("system", notice, "")
+			}
+		} else if firstLoad {
+			if hint := m.pendingFlowRestoreHint(); hint != "" {
+				m.addMessage("system", hint, "")
+			}
+		}
+		cmds = append(cmds, m.cmdRefreshProjectContext(), m.cmdLoadSkills(false))
 		if firstLoad && m.project != nil && len(m.chatList) == 0 {
 			cmds = append(cmds, m.cmdPrefetchChats())
 		}
@@ -413,10 +587,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addMessage("system", msg.Err, "error")
 			m.connStatus = ConnError
 			m.statusMsg = "open failed"
+			// Do not leave a half-open live poll arming on a failed open.
+			if runnerUnreachableErr(msg.Err) {
+				m.runnerPollFailStreak = runnerPollFailPauseAfter
+			}
 			return m, nil
 		}
 		m.stopOrchestrationStream()
 		handle := msg.Handle
+		m.runnerPollFailStreak = 0
+		m.stepsPollInFlight = false
+		m.agentsHydrateInFlight = false
+		m.agentHydrateRetries = 0
 		// Prefer server snapshot / history row status so terminal opens do not
 		// arm [stop] via flow orch listener (empty resume status looked "live").
 		if st := strings.TrimSpace(msg.Snapshot.Status); st != "" {
@@ -436,6 +618,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.historyLoadedAfterSeq = msg.HistoryLoadedAfterSeq
 		m.historyChunkInFlight = false
 		m.lastEventSeq = handle.LastEventSeq
+		// Seed the client per-run SSE cursor so a later continue turn streams
+		// from the resume snapshot instead of replaying the whole old turn
+		// (CA-520). Desktop already seeds this via consumeHistoryReplayStream.
+		if handle.RunID != "" {
+			m.client.NoteLastSeq(handle.RunID, handle.LastEventSeq)
+		}
 		m.viewport.offset = 0
 		if len(msg.Messages) > 0 {
 			m.messages = append([]ChatMessage(nil), msg.Messages...)
@@ -444,10 +632,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if pk := strings.TrimSpace(handle.ProviderKey); pk != "" {
 			m.provider = pk
 			m.bindActiveAccountForProvider()
-			m.refreshSessionPanel()
 		}
+		m.refreshSessionPanel()
 		// Restore flow chrome from resume handle (and history list as fallback).
 		m.applyOpenedRunFlowChrome(handle, msg.HistoryMeta)
+		// A resumed workflow/flow run may carry no StepID on the handle (runner
+		// only mints "chat-<runId>" for normal chat, T-7). Resolve the launch
+		// fallback now (workflow id / synthetic chat id) so continue turns after
+		// /open never POST an empty stepId — startTurn rejects that with 400
+		// (CA-519).
+		if strings.TrimSpace(m.stepID) == "" {
+			m.stepID = m.resolveTurnStepID()
+		}
 		m.connStatus = ConnIdle
 		m.statusMsg = fmt.Sprintf("opened %s", shortID(handle.RunID))
 		kind := "chat"
@@ -469,12 +665,21 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.runHandle != nil && m.orchStream == nil {
 			cmds = append(cmds, m.cmdStartOrchestrationStream())
 		}
-		if m.shouldPollStepsRuntime() {
+		// One-shot steps fetch always fires for flow opens so the F2 step
+		// timeline renders even for completed runs (run-189839). The cursor
+		// auto-poll cadence is still gated by shouldPollStepsRuntime (CA-508/514).
+		if kind == "flow" && m.runHandle != nil {
 			cmds = append(cmds, m.cmdRefreshStepsRuntime())
 		}
 		// Hydrate sub-agents so /agent Tab and step [open] work after /open.
 		if kind == "flow" && m.runHandle != nil {
 			cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
+			// One-shot graph fetch seeds loop state (done/blocked/running) so an
+			// opened blocked flow shows the awaiting-user banner instead of arming
+			// [stop] on the stale live handle (BUG-231 run-189839 parity with
+			// Desktop refreshAgentGraph on history open).
+			cmds = append(cmds, m.cmdHydrateAgentGraph(m.runHandle.RunID))
+			cmds = append(cmds, m.cmdHydrateDispatchAttention(m.runHandle.RunID))
 		}
 		// Catalog may still be loading — refresh flow list so status label can use name.
 		if kind == "flow" && len(m.flowWorkflows) == 0 && len(m.flowBuiltins) == 0 {
@@ -483,15 +688,36 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case agentRunsHydratedMsg:
+		m.agentsHydrateInFlight = false
 		if msg.Err != "" {
-			return m, nil
+			m.noteRunnerPollResult(msg.Err)
+			// Dead runner: stop retrying (CA-514). Soft errors may still recover
+			// on a fresh hydrate (CA-528).
+			if runnerUnreachableErr(msg.Err) {
+				return m, nil
+			}
+			return m, m.cmdHydrateAgentRunsIfNeeded()
 		}
 		if m.runHandle == nil || m.runHandle.RunID != msg.ParentRunID {
 			return m, nil
 		}
-		m.agentRuns = msg.Runs
-		if m.focusedAgentIdx >= len(m.agentRuns) {
-			m.focusedAgentIdx = 0
+		m.noteRunnerPollResult("")
+		// Merge instead of clobber so a main-only/empty list cannot erase children
+		// a faster agent_graph_updated already mapped (CA-528).
+		m.adoptAgentRuns(msg.Runs)
+		if m.hasChildAgentRuns() {
+			m.agentHydrateRetries = 0
+		}
+		// Steps may still be missing a child [open] chip — re-arm a bounded retry
+		// so the chip appears without waiting for the next steps transition.
+		return m, m.cmdHydrateAgentRunsIfNeeded()
+
+	case hydrateAgentRunsIfNeededMsg:
+		if m.runHandle == nil {
+			return m, nil
+		}
+		if m.stepsNeedChildOpenChip() {
+			return m, m.cmdHydrateAgentRuns(m.runHandle.RunID)
 		}
 		return m, nil
 
@@ -542,17 +768,25 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionLoading = true
 		m.statusMsg = "loading session..."
 		m.addMessage("system", "Reloading session after login…", "")
-		return m, m.cmdLoadSessionDefaults()
+		// Same banner-until-catalog contract as cold start: typing stays free,
+		// send stays blocked until SessionDefaultsMsg (or the 45s safety net).
+		return m, tea.Batch(
+			m.cmdLoadSessionDefaults(),
+			tea.Tick(45*time.Second, func(time.Time) tea.Msg { return sessionLoadTimeoutMsg{} }),
+		)
 
 	case FlowListMsg:
 		m.flowBuiltins = msg.Builtins
 		m.flowWorkflows = msg.Workflows
-		// After silent catalog load on /open, upgrade launch label from UUID → name.
-		if msg.Silent && (m.mode == ModeFlow || m.mode == ModeStep) {
-			if n := m.resolveFlowDisplayName(m.launch.WorkflowID, m.launch.FlowRef); n != "" {
-				m.launch.Label = n
+		// After catalog load: re-resolve armed arm + upgrade UUID labels.
+		// Also apply deferred prefs flow restore if project is already bound.
+		if m.project != nil {
+			if notice := m.tryApplyPendingFlowRestore(); notice != "" && !msg.Silent {
+				m.addMessage("system", notice, "")
 			}
-			return m, nil
+		}
+		if m.mode == ModeFlow || m.mode == ModeStep {
+			m.refineLaunchFromCatalog()
 		}
 		if msg.Silent {
 			return m, nil
@@ -597,6 +831,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RunStartedMsg:
 		handle := msg.Handle
 		m.runHandle = &handle
+		m.runnerPollFailStreak = 0
+		m.stepsPollInFlight = false
+		m.agentsHydrateInFlight = false
+		m.agentHydrateRetries = 0
 		if handle.StepID != "" {
 			m.stepID = handle.StepID
 		}
@@ -606,11 +844,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connStatus = ConnRunning
 		m.statusMsg = fmt.Sprintf("run %s • %s", shortID(handle.RunID), handle.ProviderKey)
 		m.addMessage("system", fmt.Sprintf("Run %s started — streaming events…", shortID(handle.RunID)), "")
+		m.refreshSessionPanel()
 		prompt := m.pendingPrompt
 		m.pendingPrompt = ""
 		var cmds []tea.Cmd
 		if m.launch.IsCatalogWorkflow() || m.mode == ModeFlow || m.mode == ModeStep {
 			cmds = append(cmds, m.cmdRefreshStepsRuntime())
+			// Seed agent list early so first child spawn can show [open] on next hydrate.
+			cmds = append(cmds, m.cmdHydrateAgentRuns(handle.RunID))
 		}
 		if prompt != "" {
 			cmds = append(cmds, m.cmdSendTurn(prompt))
@@ -638,6 +879,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Ev.Seq > m.lastEventSeq {
 			m.lastEventSeq = msg.Ev.Seq
 		}
+		if m.runHandle != nil {
+			m.client.NoteLastSeq(m.runHandle.RunID, msg.Ev.Seq)
+		}
 		m2, cmd := m.handleEvent(msg.Ev)
 		am := m2.(*AppModel)
 		return am, tea.Batch(cmd, am.cmdPollTurnStream())
@@ -645,6 +889,31 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case turnStreamClosedMsg:
 		m.turnStream = nil
 		if msg.Err != nil {
+			// BUG-231 (run-189839 parity): a freeform turn against a blocked flow
+			// answers 409 flow_awaiting_user. That is a deliberate parked state,
+			// not a failure — park the flow (keep the handle) so the user can
+			// /continue or /stop instead of being dropped to a dead error state.
+			if client.IsFlowAwaitingUserError(msg.Err) {
+				m.clearThinkingPlaceholder()
+				m.flowLoopStatus = "blocked"
+				if m.flowBlockReason == "" {
+					m.flowBlockReason = "awaiting_user"
+				}
+				m.showBlockedBanner(client.AgentLoopState{
+					Status:      "blocked",
+					BlockReason: m.flowBlockReason,
+					Round:       0,
+					RoundCap:    0,
+				})
+				var cmds []tea.Cmd
+				if m.runHandle != nil {
+					cmds = append(cmds, m.cmdHydrateAgentGraph(m.runHandle.RunID))
+					cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
+					cmds = append(cmds, m.cmdRefreshStepsRuntime())
+					cmds = append(cmds, m.cmdHydrateDispatchAttention(m.runHandle.RunID))
+				}
+				return m, tea.Batch(cmds...)
+			}
 			m.connStatus = ConnError
 			m.statusMsg = "turn failed"
 			m.addMessage("system", "Send turn failed: "+msg.Err.Error(), "error")
@@ -688,6 +957,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Ev.Seq > m.lastEventSeq {
 			m.lastEventSeq = msg.Ev.Seq
 		}
+		if m.runHandle != nil {
+			m.client.NoteLastSeq(m.runHandle.RunID, msg.Ev.Seq)
+		}
 		if m.viewingChild() {
 			switch msg.Ev.Type {
 			case "message_delta", "message_completed", "turn_completed", "turn_failed", "tool_started":
@@ -706,6 +978,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Err != "" {
+			// Total failure (runner unreachable / child not resumable): leave the
+			// main transcript visible instead of a stuck empty child chrome.
+			m.restoreMainTranscript()
 			m.addMessage("system", "Open child transcript failed: "+msg.Err, "error")
 			return m, nil
 		}
@@ -715,6 +990,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, msg.Messages...)
 			m.syncVisiblePromptCount()
 			m.viewport.offset = 0
+		} else if msg.Fallback != "" {
+			m.addMessage("system", msg.Fallback, "steps")
 		} else {
 			m.addMessage("system", "(no transcript events for this agent yet)", "")
 		}
@@ -743,13 +1020,16 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.cmdRefreshStepsRuntime()
 
 	case StepsRuntimeMsg:
+		m.stepsPollInFlight = false
 		if m.runHandle == nil || msg.RunID != m.runHandle.RunID {
 			return m, nil
 		}
 		if msg.Err != "" {
-			// Soft failure — catalog may not have steps yet.
+			// Soft failure — catalog may not have steps yet; track dead-runner streak.
+			m.noteRunnerPollResult(msg.Err)
 			return m, nil
 		}
+		m.noteRunnerPollResult("")
 		prevSteps := append([]client.WorkflowStepRuntime(nil), m.flowSteps...)
 		prevActive := m.flowStepsActive
 		m.flowSteps = msg.Steps
@@ -758,6 +1038,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.flowStepsActive != "" && (m.connStatus == ConnRunning || m.connStatus == ConnWaiting) {
 			m.statusMsg = "step: " + m.flowStepsActive
 		}
+		// All steps now terminal + loop done + no active agents → finished flow:
+		// drop [stop] and any stale running/streaming chrome (run-189839).
+		m.settleFlowIfDone()
 		// Step progress lines only on main hub view — never while reading a child
 		// transcript (would interleave flow banners into sub-agent chat).
 		if !m.viewingChild() {
@@ -765,7 +1048,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.addMessage("system", line, "steps")
 			}
 		}
-		return m, nil
+		// Agent-bearing step became active / finished → re-hydrate so [open] appears live.
+		var cmds []tea.Cmd
+		if stepsSuggestChildAgentOpen(prevSteps, msg.Steps) {
+			cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
+		}
+		// Already have children mapped → keep F2 expanded for open/back.
+		m.expandSessionPanelForChildAgents()
+		// Steps still missing a child [open] chip (e.g. a slower/empty hydrate) →
+		// re-arm a bounded retry so the chip appears without waiting for the next
+		// steps transition (CA-528).
+		cmds = append(cmds, m.cmdHydrateAgentRunsIfNeeded())
+		return m, tea.Batch(cmds...)
 
 	case ClipboardPasteMsg:
 		if msg.Err != "" && msg.Attachment == nil && msg.Text == "" {
@@ -821,17 +1115,78 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case AgentGraphMsg:
+		// Stale-parent guard (Desktop run-63960): an agent graph for a different
+		// run must never overwrite the current loop state / agent runs, or a late
+		// blocked refresh could clobber a newer Continue/Stop/switch-run result.
 		if msg.Graph != nil {
-			m.agentRuns = msg.Graph.Runs
-			if m.focusedAgentIdx >= len(m.agentRuns) {
-				m.focusedAgentIdx = 0
+			if m.runHandle != nil && strings.TrimSpace(msg.Graph.ParentRunID) != "" &&
+				strings.TrimSpace(msg.Graph.ParentRunID) != m.runHandle.RunID {
+				return m, nil
 			}
+			m.applyAgentGraph(msg.Graph)
 		}
 		return m, nil
+
+	case AgentGraphHydratedMsg:
+		if msg.Err != "" {
+			m.noteRunnerPollResult(msg.Err)
+			return m, nil
+		}
+		if m.runHandle == nil || m.runHandle.RunID != msg.ParentRunID {
+			return m, nil
+		}
+		if msg.Graph != nil {
+			m.applyAgentGraph(msg.Graph)
+		}
+		return m, nil
+
+	case AttentionLoadedMsg:
+		if m.runHandle == nil || m.runHandle.RunID != msg.RunID {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.attentionErr = msg.Err.Error()
+			m.noteRunnerPollResult(msg.Err.Error())
+			return m, nil
+		}
+		m.applyAttention(msg.Items)
+		return m, nil
+
+	case AttentionInspectedMsg:
+		if m.runHandle == nil || m.runHandle.RunID != msg.RunID {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.attentionErr = msg.Err.Error()
+			return m, nil
+		}
+		if msg.Result != nil {
+			if m.attentionInspect == nil {
+				m.attentionInspect = map[string]*client.DispatchInspectResult{}
+			}
+			m.attentionInspect[attentionKey(msg.RunID, msg.TurnID)] = msg.Result
+		}
+		return m, nil
+
+	case AttentionResolvedMsg:
+		if m.runHandle == nil || m.runHandle.RunID != msg.RunID {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.attentionErr = msg.Err.Error()
+			m.addMessage("system", "Dispatch resolution failed: "+msg.Err.Error(), "error")
+			return m, m.cmdHydrateDispatchAttention(m.runHandle.RunID)
+		}
+		m.addMessage("system", fmt.Sprintf("Dispatch %s resolved (%s).", msg.Kind, msg.Outcome), "")
+		// Drop the resolved item + refresh to reflect the committed settlement.
+		return m, m.cmdHydrateDispatchAttention(m.runHandle.RunID)
 
 	case TurnDoneMsg:
 		m.connStatus = ConnIdle
 		m.statusMsg = "done"
+		// A completed turn means the flow moved on — a still-armed gate is stale
+		// (CA-536). It must not keep swallowing input.
+		m.gate = nil
 		if msg.FinalMsg != "" && !(isStepCompleteStub(msg.FinalMsg) && m.hasAssistantContent()) {
 			m.ensureAssistantMessage(msg.FinalMsg)
 		}
@@ -844,6 +1199,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case turnFinishedMsg:
 		m.connStatus = ConnIdle
 		m.statusMsg = "done"
+		// A completed turn means the flow moved on — a still-armed gate is stale
+		// (CA-536). It must not keep swallowing input.
+		m.gate = nil
 		if msg.Usage != nil {
 			m.lastTokens = msg.Usage
 			if msg.Usage.ModelContextWindow != nil && *msg.Usage.ModelContextWindow > 0 {
@@ -887,7 +1245,10 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 	switch ev.Type {
 	case "message_delta":
 		m.appendAssistantDelta(ev.Text)
-		if m.connStatus == ConnRunning {
+		// Flow chrome is quiet (CA-511): progress lives on F2 steps + status line,
+		// so a delta must not overwrite "step: X"/"flow running…" with "streaming…"
+		// — that masked a finished flow behind a fake live spinner (run-189839).
+		if m.connStatus == ConnRunning && !m.isFlowChrome() {
 			m.statusMsg = "streaming…"
 		}
 
@@ -895,6 +1256,9 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		m.appendAssistantDelta(ev.Text)
 
 	case "turn_completed":
+		// A completed turn means the flow moved on — a still-armed gate is stale
+		// (CA-536). It must not keep swallowing input.
+		m.gate = nil
 		// Prefer already-streamed assistant text; ignore step-complete stubs.
 		// run-92955: a prior turn's assistant text made hasAssistantContent()
 		// true, so thinking… on a follow-up was never replaced when tools
@@ -988,14 +1352,23 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		}
 
 	case "flow_gate_violation":
-		m.gate = &GateState{
-			Options:        ev.GateOptions,
-			RegressedTests: ev.GateRegressedTests,
-			RunID:          ev.WorkflowRunID,
-		}
-		m.connStatus = ConnWaiting
-		m.statusMsg = "gate"
+		// CA-536 (run-103672): only a genuine block with a decision card may
+		// lock the composer. The runner emits this event for warn/reprompt
+		// verdicts too (and for blocks without r-reg options), which carry
+		// empty GateOptions — arming the gate then made every keystroke
+		// re-print "Gate options:" with nothing to match, permanently freezing
+		// chat. Non-block / option-less verdicts surface as info instead.
+		blocking := strings.EqualFold(ev.Status, "block") && len(ev.GateOptions) > 0
 		m.addMessage("system", buildGateMessage(ev.GateOptions, ev.GateRegressedTests), "gate")
+		if blocking {
+			m.gate = &GateState{
+				Options:        ev.GateOptions,
+				RegressedTests: ev.GateRegressedTests,
+				RunID:          ev.WorkflowRunID,
+			}
+			m.connStatus = ConnWaiting
+			m.statusMsg = "gate"
+		}
 
 	case "token_usage_updated":
 		if ev.TokenUsage != nil {
@@ -1007,9 +1380,12 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 
 	case "agent_graph_updated":
 		if ev.AgentGraph != nil {
-			m.agentRuns = ev.AgentGraph.Runs
-			if m.focusedAgentIdx >= len(m.agentRuns) {
-				m.focusedAgentIdx = 0
+			// Stale-parent guard (Desktop run-63960): ignore graphs for a
+			// different run so a late blocked refresh cannot overwrite a newer
+			// Continue/Stop result.
+			if m.runHandle == nil || strings.TrimSpace(ev.AgentGraph.ParentRunID) == "" ||
+				strings.TrimSpace(ev.AgentGraph.ParentRunID) == m.runHandle.RunID {
+				m.applyAgentGraph(ev.AgentGraph)
 			}
 		}
 		if m.agentsFocus {
@@ -1023,20 +1399,23 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 }
 
 func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// While session/project catalogs load: chat prompts are blocked.
-	// Slash commands (starting with '/') stay available so /help /clear /login work.
-	if m.sessionLoading && !m.allowsKeyWhileLoading(msg) {
-		switch msg.Type {
-		case tea.KeyCtrlC:
-			m.quitting = true
-			return m, m.cmdShutdownAndQuit()
-		default:
-			return m, nil
-		}
+	// Never hard-block keyboard while loading — a hung runner previously made
+	// the TUI feel fully frozen. processInput still rejects non-slash *send*.
+	if m.sessionLoading && msg.Type == tea.KeyCtrlC {
+		// Allow quit during load without waiting for catalog.
+		m.quitting = true
+		return m, m.cmdShutdownAndQuit()
 	}
 
-	if m.authPhase == AuthNone && (isPromptNewlineKey(msg) || isModifiedEnterNewline(msg)) {
+	if m.authPhase == AuthNone && (isPromptNewlineKey(msg) || isModifiedEnterNewline(msg)) && !m.viewingChild() {
 		m.inputValue += "\n"
+		return m, nil
+	}
+
+	// Desktop parity (CA-519): a focused sub-agent transcript is read-only. Only
+	// navigation, [back], agent-cycle, and slash commands are allowed; chat text
+	// input is dropped so the user cannot keep typing into the child view.
+	if m.viewingChild() && !m.allowsKeyWhileViewingChild(msg) {
 		return m, nil
 	}
 
@@ -1145,7 +1524,10 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.suggIdx = (m.suggIdx - 1 + n) % n
 				return m, nil
 			}
-			m.scrollTranscript(1)
+			// No picker open: Up/Down recall sent prompts (bash-style), never
+			// scroll the transcript — scroll is PgUp/PgDown + mouse wheel.
+			m.navigatePromptHistory(1)
+			m.suggIdx = 0
 			return m, nil
 		}
 
@@ -1155,7 +1537,8 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.suggIdx = (m.suggIdx + 1) % n
 				return m, nil
 			}
-			m.scrollTranscript(-1)
+			m.navigatePromptHistory(-1)
+			m.suggIdx = 0
 			return m, nil
 		}
 
@@ -1506,6 +1889,49 @@ func suggestionAcceptValue(it suggestItem) string {
 }
 
 func (m *AppModel) allowsKeyWhileLoading(msg tea.KeyMsg) bool {
+	// Chrome + navigation always available (avoids full freeze during catalog load).
+	switch msg.Type {
+	case tea.KeyCtrlC, tea.KeyEsc, tea.KeyF2, tea.KeyF3, tea.KeyF4,
+		tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight,
+		tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd,
+		tea.KeyTab, tea.KeyShiftTab:
+		return true
+	case tea.KeyEnter:
+		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/") ||
+			strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/")
+	case tea.KeyBackspace, tea.KeyDelete:
+		// Edit only when already composing a slash command.
+		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/")
+	}
+	if _, _, ok := activeSlashLine(m.inputValue, m.inputCaretIndex()); ok {
+		return true
+	}
+	if strings.HasPrefix(strings.TrimSpace(m.inputValue), "/") {
+		return true
+	}
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 && msg.Runes[0] == '/' {
+		return true
+	}
+	return false
+}
+
+// allowsKeyWhileViewingChild is the child-view twin of allowsKeyWhileLoading: a
+// focused sub-agent transcript is read-only, so only navigation, agent-cycle,
+// [back]/Esc, copy, and slash commands are allowed. Plain chat text (including
+// Enter-to-send) is dropped — continue happens on the main run only (CA-519).
+func (m *AppModel) allowsKeyWhileViewingChild(msg tea.KeyMsg) bool {
+	switch msg.Type {
+	case tea.KeyCtrlC, tea.KeyEsc, tea.KeyF2, tea.KeyF3, tea.KeyF4,
+		tea.KeyUp, tea.KeyDown, tea.KeyLeft, tea.KeyRight,
+		tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd,
+		tea.KeyTab, tea.KeyShiftTab, tea.KeyCtrlV:
+		return true
+	case tea.KeyEnter:
+		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/") ||
+			strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/")
+	case tea.KeyBackspace, tea.KeyDelete:
+		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/")
+	}
 	if _, _, ok := activeSlashLine(m.inputValue, m.inputCaretIndex()); ok {
 		return true
 	}
@@ -1529,6 +1955,11 @@ func (m *AppModel) sendBlocked() bool {
 		return true
 	}
 	if m.pendingPrompt != "" {
+		return true
+	}
+	// Dispatch operator attention (CP-51 Task-256): a new turn must not be sent
+	// until every uncertain/repair item is resolved (Desktop blocked dispatch).
+	if m.hasUnresolvedAttention() {
 		return true
 	}
 	switch m.connStatus {
@@ -1558,6 +1989,18 @@ func (m *AppModel) turnIsActive() bool {
 	if m.flowHasActiveAgents() {
 		return true
 	}
+	// Dispatch operator attention (CP-51 Task-256): while an uncertain turn /
+	// open repair awaits a decision, the flow is parked — [stop] must not arm
+	// against the very user the flow is waiting on.
+	if m.hasUnresolvedAttention() {
+		return false
+	}
+	// A blocked loop (awaiting-user pause, BUG-231) with no live child is parked,
+	// not running: [stop] must not arm against the very user the flow is waiting
+	// on to Continue/Stop. run-189839 showed [stop] on a parked blocked flow.
+	if m.flowLoopBlocked() {
+		return false
+	}
 	// Flow/step orch SSE can mean live work — but after /open we also attach orch
 	// as a late-event listener on finished runs (same idea as plain-chat run-97624).
 	// Do not arm [stop] when the handle is known-terminal and no agent is active.
@@ -1575,6 +2018,46 @@ func (m *AppModel) turnIsActive() bool {
 	default:
 		return false
 	}
+}
+
+// workIsLive reports whether the chat turn or the flow is actively working, so
+// the status-line + F2 RUNNING-step spinner animates whenever there is real work
+// (CA-537). It must NOT animate while the user is deciding (gate/question/
+// approval), when the flow is parked on operator attention, or when a blocked
+// loop is paused — in those states the work is waiting on the user, not running.
+// ConnConnecting/session-loading is deliberately not "live": those phases already
+// surface their own "connecting…"/"loading…" labels.
+func (m *AppModel) workIsLive() bool {
+	// Decision states first: an agent waiting on the user reports a
+	// "waiting_user_approval" status, so flowHasActiveAgents must not win here.
+	if m.gate != nil || m.question != nil || m.approval != nil {
+		return false
+	}
+	if m.pendingPrompt != "" {
+		return true
+	}
+	if m.flowHasActiveAgents() {
+		return true
+	}
+	if m.hasUnresolvedAttention() {
+		return false
+	}
+	if m.flowLoopBlocked() {
+		return false
+	}
+	if m.connStatus == ConnRunning {
+		return true
+	}
+	if m.turnStream != nil || m.focusStream != nil {
+		return true
+	}
+	// Flow/step chrome: a live (non-terminal) handle is still working even on
+	// ConnIdle; reuse the poll predicate so the spinner only stops once the run
+	// is terminal.
+	if m.shouldPollStepsRuntime() {
+		return true
+	}
+	return false
 }
 
 func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
@@ -1640,18 +2123,28 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Never arm a run without a project_id: cmdStartRun re-fetches the catalog
+	// with an unbounded context and hung the TUI when the catalog was slow/empty
+	// (CA-514). When defaults are loaded but no project is bound, chat is
+	// disabled — record the draft line, clear it, and refuse fast. A late
+	// ProjectsCatalogMsg can still bind the project so the user can re-send.
+	if m.sessionDefaultsLoaded && m.project == nil && m.runHandle == nil {
+		if m.bindProjectIfPossible() {
+			m.refreshSessionPanel()
+		} else {
+			m.statusMsg = "chat disabled — no project_id"
+			m.addMessage("user", input, "")
+			m.addMessage("system", formatMissingProjectHelp(m.cfg.ProjectPath, m.projects), "error")
+			return m, nil
+		}
+	}
+
 	m.viewport.offset = 0
 	m.addMessage("user", input, "")
-	// Flow mode: no thinking…/running… placeholders in the chat transcript —
-	// step progress lives in F2 / status; sub-agent views stay clean.
-	if !m.isFlowChrome() {
-		m.addMessage("assistant", "thinking…", "thinking")
-		m.statusMsg = "thinking…"
-	} else if m.flowStepsActive != "" {
-		m.statusMsg = "step: " + m.flowStepsActive
-	} else {
-		m.statusMsg = "flow running…"
-	}
+	m.recordPromptHistory(input)
+	// CA-537: no "Thinking" row in the chat timeline — the spinner animates on
+	// the status line + F2 RUNNING step instead (workIsLive starts the ticker).
+	m.statusMsg = "thinking…"
 	m.connStatus = ConnRunning
 
 	// First message: start run, then send turn (desktop sendPrompt parity).
@@ -1669,8 +2162,8 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	return m, m.cmdSendTurn(input)
 }
 
-// isFlowChrome is true for catalog/step/flow runs where chat should not show
-// thinking placeholders (progress is on F2 steps + status).
+// isFlowChrome is true for catalog/step/flow runs where the status line favors
+// step/flow progress (F2 steps) over generic "turn running…" labels.
 func (m *AppModel) isFlowChrome() bool {
 	if m == nil {
 		return false
@@ -1691,12 +2184,22 @@ func (m *AppModel) showFlashToast(text string) tea.Cmd {
 // handleGateInput interprets user input when a flow_gate_violation is pending.
 // Accepts option number (1-based) or option name (case-insensitive).
 func (m *AppModel) handleGateInput(input string) (tea.Model, tea.Cmd) {
+	// CA-536 escape hatch: a gate armed with no decision options can never be
+	// answered. Clear it so the next Enter reaches chat instead of looping the
+	// empty "Gate options:" prompt forever.
+	if m.gate == nil || len(m.gate.Options) == 0 {
+		m.gate = nil
+		return m, nil
+	}
 	lowInput := strings.TrimSpace(strings.ToLower(input))
 	for i, opt := range m.gate.Options {
 		if lowInput == fmt.Sprintf("%d", i+1) || strings.EqualFold(lowInput, opt) {
 			runID := m.gate.RunID
 			m.gate = nil
 			m.connStatus = ConnRunning
+			// CA-537: the flow keeps working after a gate decision — the spinner
+			// animates on the status line + F2 RUNNING step, not as a chat row.
+			m.statusMsg = "thinking…"
 			return m, m.cmdSubmitGateDecision(runID, opt)
 		}
 	}
@@ -1823,6 +2326,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.yolo = !m.yolo
+		m.persistSessionPrefs()
 		state := "OFF"
 		if m.yolo {
 			state = "ON"
@@ -1903,6 +2407,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.launch = arm
 		m.mode = ModeFlow
 		m.firstTurnPending = arm.IsBuiltin()
+		m.persistSessionPrefs()
 		if arm.IsBuiltin() {
 			m.addMessage("system", fmt.Sprintf(
 				"Flow armed: %s (builtin · %s). Send a prompt to start.",
@@ -1916,9 +2421,14 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 
 	case "/chat":
+		if m.runHandle != nil && m.mode != ModeChat {
+			m.addMessage("system", "Cannot switch to chat while a run is open. Use /new first.", "error")
+			break
+		}
 		m.mode = ModeChat
 		m.launch = LaunchArm{}
 		m.firstTurnPending = false
+		m.persistSessionPrefs()
 		m.addMessage("system", "Switched to chat mode.", "")
 
 	case "/skill", "/s":
@@ -2071,7 +2581,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					m.provider = args[0]
 				}
 				m.bindActiveAccountForProvider()
-				persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+				m.persistSessionPrefs()
 				m.skillsCatalog = nil // Desktop reloads skills when provider changes.
 				msg := fmt.Sprintf("Provider set to: %s · model: %s (saved for next TUI /new)", m.provider, orDash(m.model))
 				if acc := m.activeProviderAccountLabel(); acc != "" {
@@ -2128,7 +2638,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.model = want
 			}
 			m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
-			persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+			m.persistSessionPrefs()
 			m.addMessage("system", fmt.Sprintf("Model set to: %s (next prompt uses this model)", m.model), "")
 			m.refreshSessionPanel()
 		}
@@ -2145,7 +2655,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			switch effort {
 			case "high", "medium", "low", "":
 				m.reasoningEffort = effort
-				persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+				m.persistSessionPrefs()
 				m.addMessage("system", fmt.Sprintf("Reasoning effort set to: %s (saved)", effort), "")
 			default:
 				m.addMessage("system", "Reasoning effort must be high, medium, or low.", "error")
@@ -2178,7 +2688,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.lastTokens = nil
 		// Keep provider/model/reasoning + armed flow (clear flow with /chat).
 		m.firstTurnPending = m.launch.IsBuiltin()
-		persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort)
+		m.persistSessionPrefs()
 		m.refreshSessionPanel()
 		m.addMessage("system", fmt.Sprintf(
 			"New conversation started — provider %s · model %s (latest selection kept).",
@@ -2268,11 +2778,26 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.addMessage("system", "No pending approval.", "")
 
 	case "/stop":
-		if !m.turnIsActive() {
+		// A blocked (awaiting-user) flow has turnIsActive()==false but Stop is
+		// still valid — the user can end the parked loop (Desktop FlowAwaitingUser
+		// Stop parity, BUG-231).
+		if !m.turnIsActive() && !m.flowLoopBlocked() {
 			m.addMessage("system", "Nothing to stop.", "")
 			break
 		}
 		return m, m.cmdStopTurn()
+
+	case "/continue":
+		// Desktop continueFlow parity (BUG-231): unblock a parked blocked flow.
+		if !m.flowLoopBlocked() {
+			m.addMessage("system", "No parked (blocked) flow to continue.", "")
+			break
+		}
+		if m.runHandle == nil {
+			m.addMessage("system", "No run to continue.", "")
+			break
+		}
+		return m, m.cmdContinueFlow(m.runHandle.RunID)
 
 	case "/copy":
 		kind := "answer"
@@ -2295,67 +2820,97 @@ func (m *AppModel) View() string {
 		return ""
 	}
 
-	c := m.tuiChrome()
-	var sb strings.Builder
+	fullW := m.width
+	if fullW <= 0 {
+		fullW = 80
+	}
+	m.fullWidth = fullW
+	useSide := m.useRightSidebar()
 
-	for _, l := range c.panelLines {
-		sb.WriteString(l)
-		sb.WriteString("\n")
+	var sideLines []string
+	var sideW, sideX int
+	if useSide {
+		sideW = m.sideWidth()
+		sideX = fullW - sideW
+		sideLines = m.renderRightSidebar(m.height)
 	}
 
+	c := m.tuiChrome()
+	var rows []string
+
+	rows = append(rows, c.panelLines...)
+
 	lines := m.renderMessages()
-	m.clampViewport(len(lines), c.messagesHeight)
+	// Freeze the viewport while the user is mid-select: clamping against a line
+	// count that changed (width flip / live stream) would yank the text out from
+	// under the cursor / reset a top-of-history drag to the bottom (CA-526).
+	if !m.selecting() {
+		m.clampViewport(len(lines), c.messagesHeight)
+	}
 	lines = sliceViewport(lines, c.messagesHeight, m.viewport.offset)
 	if !m.mouseSel.empty() {
 		lines = applyMouseSelection(lines, m.mouseSel, c.panelH)
 	}
-	for _, l := range lines {
-		sb.WriteString(l)
-		sb.WriteString("\n")
-	}
+	rows = append(rows, lines...)
 
 	for i := len(lines); i < c.messagesHeight; i++ {
-		sb.WriteString("\n")
+		rows = append(rows, "")
 	}
 
 	if m.sessionLoading {
 		for _, line := range strings.Split(m.loadingBannerText(), "\n") {
-			sb.WriteString(styleLoading.Render(line))
-			sb.WriteString("\n")
+			rows = append(rows, styleLoading.Render(line))
 		}
 	} else if m.authNeedLogin && m.authPhase == AuthNone {
 		banner := "SIGN IN REQUIRED — Desktop is signed out. Type /login (or /login you@email.com)"
 		if !m.asciiMode {
 			banner = "! " + banner
 		}
-		sb.WriteString(styleError.Render(banner))
-		sb.WriteString("\n")
+		rows = append(rows, styleError.Render(banner))
 	}
-	sb.WriteString("\n")
-	w := m.width
+	rows = append(rows, "")
+	w := m.chatWidth()
 	if w <= 0 {
 		w = 80
 	}
 	if m.asciiMode {
-		sb.WriteString(strings.Repeat("-", w))
+		rows = append(rows, strings.Repeat("-", w))
 	} else {
-		sb.WriteString(strings.Repeat("─", w))
+		rows = append(rows, strings.Repeat("─", w))
 	}
-	sb.WriteString("\n")
 	// flashToast is rendered on the project/git status row (see status_bar.go).
-	sb.WriteString(c.statusBlock)
-	sb.WriteString("\n")
+	rows = append(rows, strings.Split(c.statusBlock, "\n")...)
 	if len(c.sugg) > 0 {
-		sb.WriteString(m.renderSuggestions(c.sugg))
-		sb.WriteString("\n")
+		rows = append(rows, strings.Split(m.renderSuggestions(c.sugg), "\n")...)
 	}
 	if c.attachPanelBlock != "" {
-		sb.WriteString(c.attachPanelBlock)
-		sb.WriteString("\n")
+		rows = append(rows, strings.Split(c.attachPanelBlock, "\n")...)
 	}
-	sb.WriteString(m.renderInputLine())
+	inputStart := len(rows)
+	rows = append(rows, strings.Split(m.renderInputLine(), "\n")...)
 
-	return sb.String()
+	// CA-532: paint the dark canvas across the whole chat column and give the chat
+	// bar a lighter elevated background. The right sidebar column is painted in
+	// joinRightSidebar. Every row is padded so the background fills the row; the
+	// chat-bar (input) rows keep one free last column (safeTermWidth) so Windows
+	// Terminal never wraps the composer.
+	rows = padLinesTo(rows, m.height)
+	barW := safeTermWidth(w)
+	for i, r := range rows {
+		st := styleCanvas
+		rw := w
+		if i >= inputStart {
+			st = styleChatBar
+			rw = barW
+		}
+		rows[i] = paintRow(r, rw, st)
+	}
+
+	if useSide {
+		return joinRightSidebar(rows, sideLines, sideW, sideX, m.asciiMode)
+	}
+
+	return strings.Join(rows, "\n")
 }
 
 func (m *AppModel) loadingBannerText() string {
@@ -2482,6 +3037,9 @@ type chatRow struct {
 	CopyText    string
 	FenceIdx    int
 	LoadEarlier bool
+	// ToolGroupKey is non-empty for the summary row of a collapsed run of 2+
+	// consecutive tool calls (CA-525). Clicking it toggles the run expansion.
+	ToolGroupKey string
 }
 
 func (m *AppModel) chatRows() []chatRow {
@@ -2500,7 +3058,7 @@ func (m *AppModel) chatRows() []chatRow {
 
 func (m *AppModel) chatRowsSig() uint64 {
 	h := fnv.New64a()
-	_, _ = h.Write([]byte(strconv.Itoa(m.width)))
+	_, _ = h.Write([]byte(strconv.Itoa(m.chatWidth())))
 	if m.asciiMode {
 		_, _ = h.Write([]byte{1})
 	}
@@ -2512,16 +3070,94 @@ func (m *AppModel) chatRowsSig() uint64 {
 		_, _ = h.Write([]byte(msg.FormatHint))
 		_, _ = h.Write([]byte{1})
 	}
+	// CA-537: no thinking row renders in the chat timeline, so the chat cache is
+	// independent of thinkingFrame (the status line + F2 spinner re-render via
+	// the tick message, not through chatRows).
 	_, _ = h.Write([]byte(strconv.Itoa(m.visiblePromptCount)))
 	_, _ = h.Write([]byte(strconv.FormatInt(m.historyLoadedAfterSeq, 10)))
+	keys := make([]string, 0, len(m.expandedToolGroups))
+	for k, v := range m.expandedToolGroups {
+		if v {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		_, _ = h.Write([]byte{2})
+		_, _ = h.Write([]byte(k))
+	}
 	return h.Sum64()
 }
 
+// toolGroupKey derives a stable identity for a run of consecutive tool calls from
+// its content alone, so the expanded/collapsed state survives thinking-placeholder
+// reordering (replaceThinkingAt moves messages, which shifts their indices).
+func toolGroupKey(tools []ChatMessage) string {
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		names = append(names, strings.TrimSpace(strings.TrimPrefix(t.Content, "→ ")))
+	}
+	return strings.Join(names, "\x1f")
+}
+
+// toolGroupRows renders a run of 2+ consecutive tool calls (CA-525) as a single
+// collapsible summary row. Collapsed by default; the individual → tool lines are
+// emitted only after the user clicks the summary (toggleToolGroup).
+func (m *AppModel) toolGroupRows(tools []ChatMessage) []chatRow {
+	key := toolGroupKey(tools)
+	expanded := m.expandedToolGroups[key]
+	marker, markerOpen := "▸", "▾"
+	if m.asciiMode {
+		marker, markerOpen = "+", "-"
+	}
+	if expanded {
+		marker = markerOpen
+	}
+	label := fmt.Sprintf("%d tool call", len(tools))
+	if len(tools) > 1 {
+		label += "s"
+	}
+	text := styleTool.Render(marker+" "+label) + styleLink.Render(" · click")
+	rows := []chatRow{{Text: text, MsgIdx: -1, ToolGroupKey: key}}
+	if expanded {
+		for _, t := range tools {
+			rows = append(rows, chatRow{Text: styleTool.Render(t.Content), MsgIdx: -1})
+		}
+	}
+	return rows
+}
+
+func (m *AppModel) toggleToolGroup(key string) {
+	if m.expandedToolGroups == nil {
+		m.expandedToolGroups = map[string]bool{}
+	}
+	expanding := !m.expandedToolGroups[key]
+	m.expandedToolGroups[key] = expanding
+	m.rowCache = nil
+	m.rowCacheSig = 0
+	// CA-527: the transcript is bottom-anchored (offset = rows from the bottom),
+	// so expanding a group inserts N tool rows after the summary without moving
+	// the anchor — the list would push UP and scroll off-screen. Shift the offset
+	// by ±N so the summary (and everything above it) stays pinned and the group
+	// expands downward. Skipped while the user is mid-drag (CA-526 freeze).
+	if !m.selecting() {
+		n := strings.Count(key, "\x1f") + 1
+		if expanding {
+			m.viewport.offset += n
+		} else {
+			m.viewport.offset -= n
+		}
+		if m.viewport.offset < 0 {
+			m.viewport.offset = 0
+		}
+	}
+}
+
 func (m *AppModel) buildChatRows() []chatRow {
-	width := safeTermWidth(m.width)
+	width := safeTermWidth(m.chatWidth())
 	if width < 1 {
-		if m.width > 0 {
-			width = m.width
+		if m.chatWidth() > 0 {
+			width = m.chatWidth()
 		} else {
 			width = 80
 		}
@@ -2537,6 +3173,25 @@ func (m *AppModel) buildChatRows() []chatRow {
 	start := m.windowStartIndex()
 	for mi := start; mi < len(m.messages); mi++ {
 		msg := m.messages[mi]
+		// CA-537: the animated spinner lives on the status line + F2 RUNNING step,
+		// never as a chat-timeline row. Any stray thinking placeholder (legacy
+		// replay) is skipped so it stays invisible in the chat.
+		if msg.FormatHint == "thinking" {
+			continue
+		}
+		// CA-525: a run of 2+ consecutive tool calls renders as one collapsible
+		// summary row (click to expand) instead of N stacked tool lines.
+		if msg.Role == "tool" {
+			end := mi + 1
+			for end < len(m.messages) && m.messages[end].Role == "tool" {
+				end++
+			}
+			if end-mi > 1 {
+				rows = append(rows, m.toolGroupRows(m.messages[mi:end])...)
+				mi = end - 1
+				continue
+			}
+		}
 		prefix := ""
 		prefixStyle := styleSystem
 		style := styleSystem
@@ -2778,11 +3433,18 @@ func fitStatusWidth(s string, w int) string {
 }
 
 func (m *AppModel) renderInputLine() string {
-	w := m.width
+	w := m.chatWidth()
 	if w <= 0 {
 		w = 80
 	}
 	w = safeTermWidth(w)
+	if m.viewingChild() {
+		// Desktop parity: a focused sub-agent transcript is read-only — chat may
+		// only continue on the main run. Render a locked banner instead of an
+		// editable composer (CA-519).
+		msg := " Child transcript is read-only — chat continues on main (/agent main or [back]) "
+		return styleSystem.Render(truncateVisual(msg, w))
+	}
 	if m.sessionLoading && !strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/") {
 		frames := []string{"|", "/", "-", "\\"}
 		spin := frames[m.loadingFrame%len(frames)]
@@ -2854,6 +3516,12 @@ func (m *AppModel) renderInputLine() string {
 	if m.question != nil {
 		inner = append(inner, renderQuestionBar(left, mid, m.question, innerW))
 	}
+	if bar := m.renderAttentionBar(); bar != "" {
+		inner = append(inner, strings.Split(bar, "\n")...)
+	}
+	if bar := m.renderBlockedBar(); bar != "" {
+		inner = append(inner, strings.Split(bar, "\n")...)
+	}
 	caretAt := m.inputCaretIndex()
 	off := 0
 	for i, bl := range bodyLines {
@@ -2912,6 +3580,10 @@ func (m *AppModel) addMessage(role, content, hint string) {
 	})
 	if role == "user" {
 		m.syncVisiblePromptCount()
+	}
+	// A fresh thinking placeholder restarts the elapsed spinner at 0.
+	if hint == "thinking" {
+		m.thinkingFrame = 0
 	}
 }
 
@@ -3112,7 +3784,8 @@ func (m *AppModel) cmdLogin(email, password string) tea.Cmd {
 	runnerURL := m.runnerURL
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
 		res, err := cl.LoginSupabase(ctx, email, password)
 		if err != nil {
 			return ErrMsg{Err: fmt.Errorf("login failed: %w", err)}
@@ -3167,22 +3840,59 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 		}
 	}
 	return func() tea.Msg {
+		// Start the slow catalog fetch FIRST so it overlaps the account/provider
+		// path during the FlowPilot banner phase. The banner already says
+		// "loading session · project · providers — chat locked", so the project
+		// catalog belongs to that phase — not a post-banner retry (CA-514).
+		type catalogResult struct {
+			projects []client.Project
+			err      error
+		}
+		catalogCh := make(chan catalogResult, 1)
+		go func() {
+			cl := client.New(runnerURL)
+			ctxProjects, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			ps, err := cl.ListProjects(ctxProjects)
+			catalogCh <- catalogResult{projects: ps, err: err}
+		}()
+
+		// Provider/account path. Accounts are a local config read (fast); the
+		// providers scan can spawn CLI probes on the runner, so it gets a short
+		// independent budget instead of the shared fast-path window — a cold
+		// probe scan must never hold the session unlock for the full window
+		// (CA-535). The runner's /providers handler also honors r.Context()
+		// cancel and caches results, so in practice this resolves in ms.
 		cl := client.New(runnerURL)
-		ctx := context.Background()
-		accounts, _ := cl.ListProviderAccounts(ctx)
-		providers, _ := cl.ListProviders(ctx)
+		ctxFast, cancelFast := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancelFast()
+		accounts, accErr := cl.ListProviderAccounts(ctxFast)
+		ctxProvs, cancelProvs := context.WithTimeout(context.Background(), 2*time.Second)
+		providers, provErr := cl.ListProviders(ctxProvs)
+		cancelProvs()
 		provider, model, label := pickActiveSessionDefaults(flagProvider, flagModel, accounts, providers)
+
+		cat := <-catalogCh
 		var (
 			projects   []client.Project
 			project    *client.Project
 			account    *client.ProviderAccountSummary
 			catalogErr string
 		)
-		if ps, err := cl.ListProjects(ctx); err == nil {
-			projects = ps
-			project = matchProjectByPath(ps, projectPath)
+		if cat.err == nil {
+			projects = cat.projects
+			project = matchProjectByPath(projects, projectPath)
 		} else {
-			catalogErr = err.Error()
+			catalogErr = cat.err.Error()
+		}
+		// Prefer a dial-level failure as the catalog message when projects is empty
+		// (a ctx deadline on the account path is not runner-dead evidence).
+		if catalogErr == "" {
+			if accErr != nil && runnerDialDeadErr(accErr.Error()) {
+				catalogErr = accErr.Error()
+			} else if provErr != nil && runnerDialDeadErr(provErr.Error()) {
+				catalogErr = provErr.Error()
+			}
 		}
 		for i := range accounts {
 			if accounts[i].IsActive && (provider == "" || strings.EqualFold(accounts[i].ProviderKey, provider)) {
@@ -3217,6 +3927,26 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 	}
 }
 
+// cmdLoadProjectsCatalog retries GET /client/projects with a long timeout.
+// Used when the first session load hit a catalog timeout while the runner is up.
+func (m *AppModel) cmdLoadProjectsCatalog() tea.Cmd {
+	runnerURL := m.runnerURL
+	projectPath := m.cfg.ProjectPath
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		ps, err := cl.ListProjects(ctx)
+		if err != nil {
+			return ProjectsCatalogMsg{Err: err.Error()}
+		}
+		return ProjectsCatalogMsg{
+			Projects: ps,
+			Project:  matchProjectByPath(ps, projectPath),
+		}
+	}
+}
+
 func (m *AppModel) cmdListFlows() tea.Cmd {
 	return m.cmdFetchFlows(false)
 }
@@ -3229,7 +3959,8 @@ func (m *AppModel) cmdFetchFlows(silent bool) tea.Cmd {
 	runnerURL := m.runnerURL
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		builtins, _ := cl.ListBuiltinOrchestrationOptions(ctx, "bug")
 		workflows, err := cl.ListWorkflows(ctx)
 		msg := FlowListMsg{Builtins: builtins, Workflows: workflows, Silent: silent}
@@ -3280,9 +4011,13 @@ func (m *AppModel) cmdStartRun() tea.Cmd {
 		if projectID == "" {
 			projects := knownProjects
 			if len(projects) == 0 {
+				// Bound this fallback: an unbounded ListProjects re-fetch is what
+				// hung the TUI in ConnRunning when the catalog was slow (CA-514).
+				ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				if ps, err := cl.ListProjects(ctx); err == nil {
 					projects = ps
 				}
+				cancel()
 			}
 			if matched := matchProjectByPath(projects, cwd); matched != nil {
 				projectID = matched.ID
@@ -3406,6 +4141,21 @@ func (m *AppModel) cmdStopTurn() tea.Cmd {
 			_ = cl.Interrupt(ctx, id)
 		}
 		return StoppedMsg{}
+	}
+}
+
+func (m *AppModel) cmdContinueFlow(runID string) tea.Cmd {
+	runnerURL := m.runnerURL
+	parentID := runID
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		g, err := cl.ContinueFlow(ctx, parentID)
+		if err != nil {
+			return ErrMsg{Err: err}
+		}
+		return AgentGraphHydratedMsg{ParentRunID: parentID, Graph: g}
 	}
 }
 

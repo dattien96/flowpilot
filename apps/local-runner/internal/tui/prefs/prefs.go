@@ -1,4 +1,4 @@
-// Package prefs persists last TUI session choices (provider/model) across restarts.
+// Package prefs persists last TUI session choices (provider/model/mode/flow) across restarts.
 package prefs
 
 import (
@@ -14,6 +14,15 @@ type Session struct {
 	Provider        string `json:"provider,omitempty"`
 	Model           string `json:"model,omitempty"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	// Yolo is the chat-mode YOLO toggle (nil = never set). Flow mode is always
+	// auto-on and does not rewrite this preference.
+	Yolo *bool `json:"yolo,omitempty"`
+	// Mode is chat | flow | step (Mode.String()).
+	Mode string `json:"mode,omitempty"`
+	// Flow identity when Mode is flow/step (empty in chat mode).
+	FlowRef    string `json:"flowRef,omitempty"`    // builtin pack ref
+	WorkflowID string `json:"workflowId,omitempty"` // catalog workflow id
+	FlowLabel  string `json:"flowLabel,omitempty"`  // human name for status
 }
 
 // Paths returns candidate prefs file locations (FlowPilot + desktop-flowpilot userData).
@@ -62,10 +71,8 @@ func Load() (Session, string, error) {
 		if err := json.Unmarshal(raw, &s); err != nil {
 			continue
 		}
-		s.Provider = strings.TrimSpace(s.Provider)
-		s.Model = strings.TrimSpace(s.Model)
-		s.ReasoningEffort = strings.TrimSpace(s.ReasoningEffort)
-		if s.Provider == "" && s.Model == "" {
+		normalize(&s)
+		if !s.hasAny() {
 			continue
 		}
 		return s, path, nil
@@ -73,12 +80,10 @@ func Load() (Session, string, error) {
 	return Session{}, "", os.ErrNotExist
 }
 
-// Save writes provider/model prefs to every candidate path (best-effort).
+// Save writes session prefs to every candidate path (best-effort).
 // Returns the first path written successfully.
 func Save(s Session) (string, error) {
-	s.Provider = strings.TrimSpace(s.Provider)
-	s.Model = strings.TrimSpace(s.Model)
-	s.ReasoningEffort = strings.TrimSpace(s.ReasoningEffort)
+	normalize(&s)
 	paths := Paths()
 	if len(paths) == 0 {
 		return "", os.ErrNotExist
@@ -111,4 +116,26 @@ func Save(s Session) (string, error) {
 		return "", lastErr
 	}
 	return firstOK, nil
+}
+
+func normalize(s *Session) {
+	s.Provider = strings.TrimSpace(s.Provider)
+	s.Model = strings.TrimSpace(s.Model)
+	s.ReasoningEffort = strings.TrimSpace(s.ReasoningEffort)
+	s.Mode = strings.ToLower(strings.TrimSpace(s.Mode))
+	s.FlowRef = strings.TrimSpace(s.FlowRef)
+	s.WorkflowID = strings.TrimSpace(s.WorkflowID)
+	s.FlowLabel = strings.TrimSpace(s.FlowLabel)
+	// Chat mode must not keep a stale flow arm on disk.
+	if s.Mode == "" || s.Mode == "chat" {
+		s.FlowRef = ""
+		s.WorkflowID = ""
+		s.FlowLabel = ""
+	}
+}
+
+func (s Session) hasAny() bool {
+	return s.Provider != "" || s.Model != "" || s.Mode != "" ||
+		s.FlowRef != "" || s.WorkflowID != "" || s.ReasoningEffort != "" ||
+		s.Yolo != nil
 }
