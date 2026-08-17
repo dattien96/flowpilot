@@ -351,25 +351,30 @@ type TurnInput struct {
 
 // ProviderEvent mirrors ProviderEvent from provider_event.go (camelCase JSON).
 type ProviderEvent struct {
-	ID                 string              `json:"id"`
-	Seq                int64               `json:"seq"`
-	Type               string              `json:"type"`
-	WorkflowRunID      string              `json:"workflowRunId"`
-	ProviderTurnID     string              `json:"providerTurnId,omitempty"`
-	ProviderKey        string              `json:"providerKey"`
-	Text               string              `json:"text,omitempty"`
-	FinalMessage       string              `json:"finalMessage,omitempty"`
-	ToolName           string              `json:"toolName,omitempty"`
-	ApprovalID         string              `json:"approvalId,omitempty"`
-	QuestionID         string              `json:"questionId,omitempty"`
-	Prompt             string              `json:"prompt,omitempty"`
-	GateOptions        []string            `json:"gateOptions,omitempty"`
-	GateRegressedTests []string            `json:"gateRegressedTests,omitempty"`
-	Error              string              `json:"error,omitempty"`
-	Recoverable        bool                `json:"recoverable,omitempty"`
-	Options            []map[string]string `json:"options,omitempty"`
-	MultiSelect        bool                `json:"multiSelect,omitempty"`
-	OccurredAt         string              `json:"occurredAt"`
+	ID                 string   `json:"id"`
+	Seq                int64    `json:"seq"`
+	Type               string   `json:"type"`
+	WorkflowRunID      string   `json:"workflowRunId"`
+	ProviderTurnID     string   `json:"providerTurnId,omitempty"`
+	ProviderKey        string   `json:"providerKey"`
+	Text               string   `json:"text,omitempty"`
+	FinalMessage       string   `json:"finalMessage,omitempty"`
+	ToolName           string   `json:"toolName,omitempty"`
+	ApprovalID         string   `json:"approvalId,omitempty"`
+	QuestionID         string   `json:"questionId,omitempty"`
+	Prompt             string   `json:"prompt,omitempty"`
+	GateOptions        []string `json:"gateOptions,omitempty"`
+	GateRegressedTests []string `json:"gateRegressedTests,omitempty"`
+	// Status is the runner gate verdict on flow_gate_violation events
+	// ("block" | "reprompt" | "warn" | "approve" | "pass"). Only "block"
+	// accompanied by GateOptions arms the interactive decision card; any other
+	// verdict must surface as info without locking the composer (CA-536).
+	Status      string              `json:"status,omitempty"`
+	Error       string              `json:"error,omitempty"`
+	Recoverable bool                `json:"recoverable,omitempty"`
+	Options     []map[string]string `json:"options,omitempty"`
+	MultiSelect bool                `json:"multiSelect,omitempty"`
+	OccurredAt  string              `json:"occurredAt"`
 	// TokenUsage is present on token_usage_updated events.
 	TokenUsage *TokenUsageSnapshot `json:"tokenUsage,omitempty"`
 	// AgentGraph is present on agent_graph_updated events.

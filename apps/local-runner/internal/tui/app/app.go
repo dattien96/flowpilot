@@ -1181,6 +1181,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case TurnDoneMsg:
 		m.connStatus = ConnIdle
 		m.statusMsg = "done"
+		// A completed turn means the flow moved on — a still-armed gate is stale
+		// (CA-536). It must not keep swallowing input.
+		m.gate = nil
 		if msg.FinalMsg != "" && !(isStepCompleteStub(msg.FinalMsg) && m.hasAssistantContent()) {
 			m.ensureAssistantMessage(msg.FinalMsg)
 		}
@@ -1193,6 +1196,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case turnFinishedMsg:
 		m.connStatus = ConnIdle
 		m.statusMsg = "done"
+		// A completed turn means the flow moved on — a still-armed gate is stale
+		// (CA-536). It must not keep swallowing input.
+		m.gate = nil
 		if msg.Usage != nil {
 			m.lastTokens = msg.Usage
 			if msg.Usage.ModelContextWindow != nil && *msg.Usage.ModelContextWindow > 0 {
@@ -1247,6 +1253,9 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		m.appendAssistantDelta(ev.Text)
 
 	case "turn_completed":
+		// A completed turn means the flow moved on — a still-armed gate is stale
+		// (CA-536). It must not keep swallowing input.
+		m.gate = nil
 		// Prefer already-streamed assistant text; ignore step-complete stubs.
 		// run-92955: a prior turn's assistant text made hasAssistantContent()
 		// true, so thinking… on a follow-up was never replaced when tools
@@ -1340,14 +1349,23 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		}
 
 	case "flow_gate_violation":
-		m.gate = &GateState{
-			Options:        ev.GateOptions,
-			RegressedTests: ev.GateRegressedTests,
-			RunID:          ev.WorkflowRunID,
-		}
-		m.connStatus = ConnWaiting
-		m.statusMsg = "gate"
+		// CA-536 (run-103672): only a genuine block with a decision card may
+		// lock the composer. The runner emits this event for warn/reprompt
+		// verdicts too (and for blocks without r-reg options), which carry
+		// empty GateOptions — arming the gate then made every keystroke
+		// re-print "Gate options:" with nothing to match, permanently freezing
+		// chat. Non-block / option-less verdicts surface as info instead.
+		blocking := strings.EqualFold(ev.Status, "block") && len(ev.GateOptions) > 0
 		m.addMessage("system", buildGateMessage(ev.GateOptions, ev.GateRegressedTests), "gate")
+		if blocking {
+			m.gate = &GateState{
+				Options:        ev.GateOptions,
+				RegressedTests: ev.GateRegressedTests,
+				RunID:          ev.WorkflowRunID,
+			}
+			m.connStatus = ConnWaiting
+			m.statusMsg = "gate"
+		}
 
 	case "token_usage_updated":
 		if ev.TokenUsage != nil {
@@ -2122,6 +2140,13 @@ func (m *AppModel) showFlashToast(text string) tea.Cmd {
 // handleGateInput interprets user input when a flow_gate_violation is pending.
 // Accepts option number (1-based) or option name (case-insensitive).
 func (m *AppModel) handleGateInput(input string) (tea.Model, tea.Cmd) {
+	// CA-536 escape hatch: a gate armed with no decision options can never be
+	// answered. Clear it so the next Enter reaches chat instead of looping the
+	// empty "Gate options:" prompt forever.
+	if m.gate == nil || len(m.gate.Options) == 0 {
+		m.gate = nil
+		return m, nil
+	}
 	lowInput := strings.TrimSpace(strings.ToLower(input))
 	for i, opt := range m.gate.Options {
 		if lowInput == fmt.Sprintf("%d", i+1) || strings.EqualFold(lowInput, opt) {
