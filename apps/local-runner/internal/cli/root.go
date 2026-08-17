@@ -252,7 +252,7 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
-				providers, err := instance.DetectProviders(context.Background())
+				providers, err := instance.DetectProvidersCached(r.Context())
 				if err != nil {
 					writeHTTPError(w, http.StatusInternalServerError, err)
 					return

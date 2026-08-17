@@ -30,7 +30,7 @@ const Version = "dev"
 var (
 	lookPathFn   = exec.LookPath
 	runCommandFn = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, name, args...).CombinedOutput()
+		return newProbeCmd(ctx, name, args...).CombinedOutput()
 	}
 	httpRequestFn = func(
 		ctx context.Context,
@@ -173,6 +173,13 @@ type Runner struct {
 	// grokRunSessions maps FlowPilot run id → Grok ACP session id across
 	// grokProcessKey respawns (model / reasoning / YOLO). Guarded by its own mu.
 	grokRunSessions *grokRunSessionIndex
+
+	// providersCache holds a short-TTL cache of DetectProviders results so
+	// repeated TUI opens do not re-spawn every provider CLI probe (CA-535).
+	// It is invalidated by any provider/account mutation. Guarded by its own mu.
+	providersCacheMu  sync.Mutex
+	providersCachedAt time.Time
+	providersCache    []Provider
 }
 
 func New(workspace string) (*Runner, error) {
@@ -353,6 +360,53 @@ func (r *Runner) DetectProviders(ctx context.Context) ([]Provider, error) {
 	return providers, nil
 }
 
+// providersCacheTTL bounds how long a DetectProviders result is reused. Short
+// enough that a /providers refresh after login/install stays fresh, long enough
+// that a TUI restart right after connect does not re-spawn 4 CLI probes (CA-535).
+const providersCacheTTL = 3 * time.Second
+
+// DetectProvidersCached returns DetectProviders, reusing the result within
+// providersCacheTTL. The HTTP /providers handler (hit on every TUI open) uses
+// this so a quick TUI restart does not rescan every provider binary on Windows,
+// where spawning them risks stealing console input while they run.
+func (r *Runner) DetectProvidersCached(ctx context.Context) ([]Provider, error) {
+	if r != nil {
+		r.providersCacheMu.Lock()
+		if r.providersCache != nil && time.Since(r.providersCachedAt) < providersCacheTTL {
+			cached := r.providersCache
+			r.providersCacheMu.Unlock()
+			return cached, nil
+		}
+		r.providersCacheMu.Unlock()
+	}
+
+	providers, err := r.DetectProviders(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if r != nil {
+		r.providersCacheMu.Lock()
+		r.providersCache = providers
+		r.providersCachedAt = time.Now()
+		r.providersCacheMu.Unlock()
+	}
+	return providers, nil
+}
+
+// invalidateProvidersCache drops any cached DetectProviders result so the next
+// call re-probes. Called by provider/account mutations (install, auth, connect,
+// activate, verify) — those must always observe fresh state.
+func (r *Runner) invalidateProvidersCache() {
+	if r == nil {
+		return
+	}
+	r.providersCacheMu.Lock()
+	r.providersCache = nil
+	r.providersCachedAt = time.Time{}
+	r.providersCacheMu.Unlock()
+}
+
 func (r *Runner) ListProviders(ctx context.Context) (ProviderInventory, error) {
 	providers, err := r.DetectProviders(ctx)
 	if err != nil {
@@ -363,6 +417,7 @@ func (r *Runner) ListProviders(ctx context.Context) (ProviderInventory, error) {
 }
 
 func (r *Runner) InstallProvider(ctx context.Context, providerName string) (ProviderInventory, error) {
+	r.invalidateProvidersCache()
 	spec, ok := lookupProviderSpec(providerName)
 	if !ok {
 		return ProviderInventory{}, fmt.Errorf("unsupported AI provider %q", providerName)
@@ -2380,7 +2435,7 @@ func resolveByWalkingUp(start string) (string, error) {
 }
 
 func resolveVersion(ctx context.Context, binaryPath string) string {
-	command := exec.CommandContext(ctx, binaryPath, "--version")
+	command := newProbeCmd(ctx, binaryPath, "--version")
 	output, err := command.CombinedOutput()
 	if err != nil && len(output) == 0 {
 		return ""
@@ -3886,6 +3941,7 @@ func commandWithWorkingDirectory(command, workingDir string) string {
 }
 
 func (r *Runner) AuthenticateProvider(ctx context.Context, providerName string) error {
+	r.invalidateProvidersCache()
 	spec, ok := lookupProviderSpec(providerName)
 	if !ok {
 		return fmt.Errorf("unsupported AI provider %q", providerName)

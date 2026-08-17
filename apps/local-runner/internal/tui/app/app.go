@@ -3793,12 +3793,19 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 			catalogCh <- catalogResult{projects: ps, err: err}
 		}()
 
-		// Provider/account path: relatively fast.
+		// Provider/account path. Accounts are a local config read (fast); the
+		// providers scan can spawn CLI probes on the runner, so it gets a short
+		// independent budget instead of the shared fast-path window — a cold
+		// probe scan must never hold the session unlock for the full window
+		// (CA-535). The runner's /providers handler also honors r.Context()
+		// cancel and caches results, so in practice this resolves in ms.
 		cl := client.New(runnerURL)
 		ctxFast, cancelFast := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancelFast()
 		accounts, accErr := cl.ListProviderAccounts(ctxFast)
-		providers, provErr := cl.ListProviders(ctxFast)
+		ctxProvs, cancelProvs := context.WithTimeout(context.Background(), 2*time.Second)
+		providers, provErr := cl.ListProviders(ctxProvs)
+		cancelProvs()
 		provider, model, label := pickActiveSessionDefaults(flagProvider, flagModel, accounts, providers)
 
 		cat := <-catalogCh
