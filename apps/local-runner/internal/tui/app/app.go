@@ -280,6 +280,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if kind == "" {
 			kind = "selection"
 		}
+		// A successful selection copy clears the drag highlight so the UI returns
+		// to normal mode instead of staying in "copied" state (CA-543).
+		if kind == "selection" {
+			m.mouseSel = mouseSelect{}
+		}
 		return m, m.showFlashToast("Copied " + kind + ".")
 
 	case toastClearMsg:
