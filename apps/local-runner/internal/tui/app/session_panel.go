@@ -59,8 +59,9 @@ func (m *AppModel) flowStepsPanelLines() []string {
 		return nil
 	}
 	var out []string
-	// Sub-agent [open]/[back] on the step row only (no duplicate Viewing header).
-	out = append(out, fmt.Sprintf("Steps %d:", len(m.flowSteps)))
+	// Steps are listed without a count header — the sidebar/overlay render a
+	// "steps" section title (CA-542). Sub-agent [open] on the step row only;
+	// the focused child gets no chip because [back] lives on the steps header.
 	limit := len(m.flowSteps)
 	if limit > 8 {
 		limit = 8
@@ -105,9 +106,10 @@ func (m *AppModel) flowStepsPanelLines() []string {
 		action := ""
 		if child, ok := m.childRunForStep(s); ok {
 			if m.viewingChild() && strings.EqualFold(strings.TrimSpace(child.RunID), strings.TrimSpace(m.focusRunID)) {
-				// Emphasize focused child step; action chip uses a different color.
+				// Focused child step is highlighted but shows no [back] chip —
+				// back lives on the steps header (CA-542) so it never overlaps
+				// the [open] column, making double-click on [open] idempotent.
 				lineStyle = styleStatusHi
-				action = "  " + styleStepAgentAction.Render("[back]")
 			} else {
 				action = "  " + styleStepAgentAction.Render("[open]")
 			}
@@ -126,6 +128,18 @@ func (m *AppModel) flowStepsPanelLines() []string {
 		out = append(out, styleStepRunning.Render("Now: "+m.flowStepsActive))
 	}
 	return out
+}
+
+// stepsSectionTitle renders the "steps" section header for the sidebar and the
+// overlay. When a child agent is focused it carries the [back] chip (CA-542) so
+// back never overlaps the [open] column on step rows and double-click on [open]
+// stays idempotent.
+func (m *AppModel) stepsSectionTitle() string {
+	title := styleGate.Render("steps")
+	if m.viewingChild() {
+		title = title + "  " + styleStepAgentAction.Render("[back]")
+	}
+	return title
 }
 
 // bindActiveAccountForProvider sets account + accountLabel from the active
@@ -272,7 +286,10 @@ func (m *AppModel) renderSessionPanelOverlay() []string {
 	}
 
 	body := m.sessionPanel.lines()
-	body = append(body, m.flowStepsPanelLines()...)
+	if steps := m.flowStepsPanelLines(); len(steps) > 0 {
+		body = append(body, m.stepsSectionTitle())
+		body = append(body, steps...)
+	}
 	if len(body) == 0 {
 		return nil
 	}
@@ -389,14 +406,9 @@ func (m *AppModel) renderRightSidebar(h int) []string {
 		out = append(out, styleSystem.Render(truncateVisual(line, w-2)))
 	}
 	out = append(out, "")
-	out = append(out, styleGate.Render("steps"))
+	out = append(out, m.stepsSectionTitle())
 	steps := m.flowStepsPanelLines()
-	for i, line := range steps {
-		// First steps line is the "Steps N:" header — render dim.
-		if i == 0 {
-			out = append(out, styleSystem.Render(line))
-			continue
-		}
+	for _, line := range steps {
 		out = append(out, truncateStepLine(line, w-2))
 	}
 	if len(steps) == 0 {

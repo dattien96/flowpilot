@@ -125,7 +125,10 @@ func TestChatOpenedMsg_CompletedFlowStepsRenderAfterRefresh(t *testing.T) {
 	am = m4.(*AppModel)
 
 	joined := strings.Join(am.flowStepsPanelLines(), "\n")
-	if !strings.Contains(joined, "Steps 2:") {
+	if strings.Contains(joined, "Steps 2:") {
+		t.Fatalf("F2 must not show the redundant 'Steps N:' count line (CA-542):\n%s", joined)
+	}
+	if !strings.Contains(joined, "coder") || !strings.Contains(joined, "reviewer") {
 		t.Fatalf("F2 must list the completed steps:\n%s", joined)
 	}
 	if !strings.Contains(joined, "[open]") {

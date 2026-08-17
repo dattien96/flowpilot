@@ -72,15 +72,18 @@ func TestStepPanel_ClickBackReturnsMain(t *testing.T) {
 	m.focusRunID = "run-rev"
 	joined := strings.Join(m.flowStepsPanelLines(), "\n")
 	plain := stripANSI(joined)
-	if !strings.Contains(plain, "[back]") {
-		t.Fatalf("child view must show [back]:\n%s", plain)
+	if strings.Contains(plain, "[back]") {
+		t.Fatalf("focused step row must not hold [back] (moved to steps header, CA-542):\n%s", plain)
+	}
+	if strings.Contains(plain, "[open]") {
+		t.Fatalf("focused step row must not hold [open]:\n%s", plain)
 	}
 	if strings.Contains(plain, "Viewing:") {
 		t.Fatalf("no duplicate Viewing header when step is already highlighted:\n%s", plain)
 	}
-	// Action chip color is purple (ask), not step-highlight accent alone.
-	if !strings.Contains(joined, styleStepAgentAction.Render("[back]")) {
-		t.Fatalf("[back] must use step-agent action style:\n%q", joined)
+	// [back] lives on the "steps" section header and uses the action style.
+	if !strings.Contains(m.stepsSectionTitle(), styleStepAgentAction.Render("[back]")) {
+		t.Fatalf("[back] must use step-agent action style on the steps header:\n%q", m.stepsSectionTitle())
 	}
 	// Status is location-only; [back] is F2-only.
 	if st := stripANSI(m.renderStatusLine0(" | ", 120)); strings.Contains(st, "[back]") {
