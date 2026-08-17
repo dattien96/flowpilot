@@ -10,10 +10,12 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
-// CA-533 — opencode/Grok-style animated "Thinking" placeholder in the chat
-// row + status line. Provider-agnostic (Case 1): render/tick logic reads only
-// message FormatHint + thinkingFrame, never providerKey — parameterized over
-// claude/codex/grok anyway so a future provider-specific branch trips here.
+// CA-533/CA-537 — opencode/Grok-style animated spinner for live work. The
+// spinner lives on the status bottom line + the F2 RUNNING step (CA-537), NOT
+// as a chat-timeline row. Provider-agnostic (Case 1): render/tick logic reads
+// only message FormatHint + thinkingFrame + workIsLive, never providerKey —
+// parameterized over claude/codex/grok anyway so a future provider-specific
+// branch trips here.
 
 func thinkingModel(pk string) *AppModel {
 	m := New(config.ChatConfig{Provider: pk}, "http://127.0.0.1:4317")
@@ -135,22 +137,19 @@ func TestThinkingShimmer_WindowSweeps(t *testing.T) {
 	}
 }
 
-func TestThinkingRow_RendersAnimatedInView(t *testing.T) {
+func TestThinkingRow_NotRenderedInChatView(t *testing.T) {
 	for _, pk := range []string{"claude", "codex", "grok"} {
 		t.Run(pk, func(t *testing.T) {
 			m := thinkingModel(pk)
 			m.addMessage("user", "fix the bug", "")
 			m.addMessage("assistant", "thinking…", "thinking")
 			m.thinkingFrame = 0
-			view := stripANSI(m.View())
-			if !strings.Contains(view, "Thinking") {
-				t.Fatalf("%s: thinking row must render the animated label:\n%s", pk, view)
+			if row := thinkingRowText(m); row != "" {
+				t.Fatalf("%s: thinking placeholder must not render in the chat: %q", pk, row)
 			}
-			if !strings.Contains(view, "⠋") {
-				t.Fatalf("%s: thinking row must show the braille spinner:\n%s", pk, view)
-			}
-			if !strings.Contains(view, "0s") {
-				t.Fatalf("%s: thinking row must show elapsed seconds:\n%s", pk, view)
+			m.connStatus = ConnRunning
+			if got := m.statusReadyLabel(); !strings.Contains(got, "⠋") {
+				t.Fatalf("%s: status line must show the spinner when work is live: %q", pk, got)
 			}
 		})
 	}
@@ -172,6 +171,7 @@ func TestThinkingTick_AdvancesAndSelfStops(t *testing.T) {
 	m.addMessage("assistant", "thinking…", "thinking")
 	m.thinkingFrame = 0
 	m.thinkingTickerActive = true
+	m.connStatus = ConnRunning // live work keeps the ticker running
 
 	m2, cmd := m.Update(thinkingTickMsg{})
 	am := m2.(*AppModel)
@@ -179,24 +179,25 @@ func TestThinkingTick_AdvancesAndSelfStops(t *testing.T) {
 		t.Fatalf("thinkingFrame=%d want 1 after tick", am.thinkingFrame)
 	}
 	if cmd == nil {
-		t.Fatal("tick must reschedule while a thinking row is live")
+		t.Fatal("tick must reschedule while work is live")
 	}
 	if !am.thinkingTickerActive {
-		t.Fatal("ticker must stay active while a thinking row is live")
+		t.Fatal("ticker must stay active while work is live")
 	}
 
-	// The thinking placeholder is replaced by a real answer → ticker must stop.
-	am.replaceThinkingAt(am.thinkingIndex(), "answer")
+	// Work ends (idle) → ticker must stop even though the placeholder message
+	// is still present (CA-537: the spinner tracks workIsLive, not the row).
+	am.connStatus = ConnIdle
 	m3, cmd2 := am.Update(thinkingTickMsg{})
 	am2 := m3.(*AppModel)
 	if am2.thinkingFrame != 2 {
 		t.Fatalf("thinkingFrame=%d want 2 (tick still advances once more)", am2.thinkingFrame)
 	}
 	if cmd2 != nil {
-		t.Fatal("tick must not reschedule after the thinking row is gone")
+		t.Fatal("tick must not reschedule after work is no longer live")
 	}
 	if am2.thinkingTickerActive {
-		t.Fatal("ticker must be marked inactive after the thinking row is gone")
+		t.Fatal("ticker must be marked inactive after work is no longer live")
 	}
 }
 
@@ -212,7 +213,7 @@ func TestThinkingTick_ResetsOnFreshPlaceholder(t *testing.T) {
 	}
 }
 
-func TestChatRowsSig_ThinkingFrameInvalidates(t *testing.T) {
+func TestChatRowsSig_ThinkingPlaceholderDoesNotInvalidate(t *testing.T) {
 	for _, pk := range []string{"claude", "codex", "grok"} {
 		t.Run(pk, func(t *testing.T) {
 			m := thinkingModel(pk)
@@ -221,20 +222,16 @@ func TestChatRowsSig_ThinkingFrameInvalidates(t *testing.T) {
 			m.thinkingFrame = 0
 			_ = m.chatRows()
 			sig0 := m.rowCacheSig
-			text0 := thinkingRowText(m)
-			if text0 == "" {
-				t.Fatalf("%s: no thinking row rendered", pk)
+			if text := thinkingRowText(m); text != "" {
+				t.Fatalf("%s: thinking placeholder must not render a chat row: %q", pk, text)
 			}
 			m.thinkingFrame = 5
-			text1 := thinkingRowText(m)
-			if text1 == "" {
-				t.Fatalf("%s: no thinking row rendered after frame bump", pk)
+			if text := thinkingRowText(m); text != "" {
+				t.Fatalf("%s: thinking placeholder must stay invisible across frames: %q", pk, text)
 			}
-			if text0 == text1 {
-				t.Fatalf("%s: cache must re-render when thinking frame advances", pk)
-			}
-			if m.rowCacheSig == sig0 {
-				t.Fatalf("%s: row-cache signature must change with thinking frame", pk)
+			_ = m.chatRows()
+			if m.rowCacheSig != sig0 {
+				t.Fatalf("%s: row-cache signature must not depend on thinkingFrame", pk)
 			}
 		})
 	}
@@ -254,14 +251,13 @@ func TestChatRowsSig_StableWithoutThinkingRow(t *testing.T) {
 	}
 }
 
-func TestStatusReadyLabel_ShowsAnimatedThinking(t *testing.T) {
+func TestStatusReadyLabel_ShowsAnimatedSpinnerWhenLive(t *testing.T) {
 	m := thinkingModel("claude")
 	m.statusMsg = "thinking…"
 	if got := m.statusReadyLabel(); got != "thinking…" {
-		t.Fatalf("without a thinking row statusReadyLabel=%q want static thinking…", got)
+		t.Fatalf("idle: statusReadyLabel=%q want static thinking…", got)
 	}
-	m.addMessage("user", "u", "")
-	m.addMessage("assistant", "thinking…", "thinking")
+	m.connStatus = ConnRunning
 	m.thinkingFrame = 0
 	got := m.statusReadyLabel()
 	if !strings.HasPrefix(got, "⠋ ") {

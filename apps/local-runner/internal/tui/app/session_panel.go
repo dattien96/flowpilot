@@ -85,7 +85,13 @@ func (m *AppModel) flowStepsPanelLines() []string {
 		lineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
 		var suffix string
 		switch st {
-		case "RUNNING", "WAITING_USER_APPROVAL":
+		case "RUNNING":
+			// CA-537: the RUNNING step shows the same animated spinner as the
+			// status line (driven by thinkingFrame while work is live).
+			glyph = thinkingSpinner(m.thinkingFrame, m.asciiMode)
+			suffix = " " + st
+			lineStyle = styleStepRunning
+		case "WAITING_USER_APPROVAL":
 			glyph = "•"
 			suffix = " " + st
 			lineStyle = styleStepRunning

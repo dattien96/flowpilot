@@ -34,24 +34,26 @@ func flowThinkingRows(m *AppModel) []string {
 	return out
 }
 
-func TestFlowMode_ShowsThinkingPlaceholder(t *testing.T) {
+func TestFlowMode_SpinnerOnStatusLineNotChat(t *testing.T) {
 	for _, pk := range []string{"claude", "codex", "grok"} {
 		t.Run(pk, func(t *testing.T) {
 			m := flowThinkingModel(pk)
 			m2, _ := m.processInput("continue the flow")
 			am := m2.(*AppModel)
-			rows := flowThinkingRows(am)
-			if len(rows) == 0 {
-				t.Fatalf("flow chat must show an animated thinking row:\n%s", m.View())
+			if rows := flowThinkingRows(am); len(rows) != 0 {
+				t.Fatalf("flow chat must not render a Thinking row:\n%s", strings.Join(rows, "\n"))
 			}
-			if !strings.Contains(rows[0], "Thinking") || !strings.Contains(rows[0], "0s") {
-				t.Fatalf("expected spinner + elapsed: %q", rows[0])
+			if !am.workIsLive() {
+				t.Fatal("sending a flow prompt must count as live work")
+			}
+			if got := am.statusReadyLabel(); !strings.Contains(got, "Thinking") || !strings.Contains(got, "0s") {
+				t.Fatalf("status line must show spinner + elapsed: %q", got)
 			}
 		})
 	}
 }
 
-func TestGateDecision_ShowsThinkingPlaceholder(t *testing.T) {
+func TestGateDecision_SpinnerOnStatusLineNotChat(t *testing.T) {
 	for _, pk := range []string{"claude", "codex", "grok"} {
 		t.Run(pk, func(t *testing.T) {
 			m := flowThinkingModel(pk)
@@ -64,12 +66,14 @@ func TestGateDecision_ShowsThinkingPlaceholder(t *testing.T) {
 			if cmd == nil {
 				t.Fatal("expected gate submit cmd")
 			}
-			rows := flowThinkingRows(am)
-			if len(rows) == 0 {
-				t.Fatal("after a gate decision the flow keeps running and must show thinking")
+			if rows := flowThinkingRows(am); len(rows) != 0 {
+				t.Fatalf("after a gate decision the chat must not render a Thinking row:\n%s", strings.Join(rows, "\n"))
 			}
 			if am.statusMsg != "thinking…" {
 				t.Fatalf("statusMsg=%q want thinking…", am.statusMsg)
+			}
+			if !am.workIsLive() {
+				t.Fatal("a gate decision that continues the flow must count as live work")
 			}
 		})
 	}

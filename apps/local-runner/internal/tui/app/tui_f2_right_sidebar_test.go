@@ -143,7 +143,8 @@ func TestRightSidebar_ClickSessionToggles(t *testing.T) {
 
 // TestStepTodoRestyle_KeepsLegacyTokens: the todo-list step restyle still emits the
 // tokens the legacy suite asserts ("Steps N:", "RUNNING", "Now: <name>") plus the
-// OpenCode todo glyphs ([+]/[•]).
+// OpenCode todo glyphs ([+]/[x]) and, for the RUNNING step, the animated spinner
+// glyph (CA-537) instead of the legacy [•].
 func TestStepTodoRestyle_KeepsLegacyTokens(t *testing.T) {
 	m := sidebarFlowModel("codex", 120)
 	joined := strings.Join(m.flowStepsPanelLines(), "\n")
@@ -159,8 +160,8 @@ func TestStepTodoRestyle_KeepsLegacyTokens(t *testing.T) {
 	if !strings.Contains(joined, "[+]") {
 		t.Fatalf("DONE step must use [+] glyph:\n%s", joined)
 	}
-	if !strings.Contains(joined, "[•]") {
-		t.Fatalf("RUNNING step must use [•] glyph:\n%s", joined)
+	if !strings.Contains(joined, "[|]") {
+		t.Fatalf("RUNNING step must use the ascii spinner glyph (frame 0) instead of [•]:\n%s", joined)
 	}
 }
 

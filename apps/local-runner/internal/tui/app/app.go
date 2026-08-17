@@ -177,12 +177,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loadingFrame = (m.loadingFrame + 1) % 64
 		}
 		cmds := []tea.Cmd{tickCursor()}
-		// Start the 90ms thinking ticker once a thinking placeholder is live
-		// (any creation site: prompt send, high-reasoning stream, replay). The
-		// ticker self-cancels on its own tick when the row is gone.
-		if m.thinkingIndex() >= 0 {
+		// Start the 90ms spinner ticker whenever a chat turn or flow step is live
+		// (CA-537): the spinner animates on the status line + F2 RUNNING step, not
+		// in the chat timeline. Frame resets on the idle→live edge so the elapsed
+		// clock does not race ahead while idle. The ticker self-cancels on its own
+		// tick once work is no longer live.
+		if m.workIsLive() {
 			if !m.thinkingTickerActive {
 				m.thinkingTickerActive = true
+				m.thinkingFrame = 0
 				cmds = append(cmds, cmdThinkingTick())
 			}
 		} else {
@@ -208,7 +211,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case thinkingTickMsg:
 		m.thinkingFrame++
-		if m.thinkingIndex() >= 0 {
+		if m.workIsLive() {
 			return m, cmdThinkingTick()
 		}
 		m.thinkingTickerActive = false
@@ -2017,6 +2020,46 @@ func (m *AppModel) turnIsActive() bool {
 	}
 }
 
+// workIsLive reports whether the chat turn or the flow is actively working, so
+// the status-line + F2 RUNNING-step spinner animates whenever there is real work
+// (CA-537). It must NOT animate while the user is deciding (gate/question/
+// approval), when the flow is parked on operator attention, or when a blocked
+// loop is paused — in those states the work is waiting on the user, not running.
+// ConnConnecting/session-loading is deliberately not "live": those phases already
+// surface their own "connecting…"/"loading…" labels.
+func (m *AppModel) workIsLive() bool {
+	// Decision states first: an agent waiting on the user reports a
+	// "waiting_user_approval" status, so flowHasActiveAgents must not win here.
+	if m.gate != nil || m.question != nil || m.approval != nil {
+		return false
+	}
+	if m.pendingPrompt != "" {
+		return true
+	}
+	if m.flowHasActiveAgents() {
+		return true
+	}
+	if m.hasUnresolvedAttention() {
+		return false
+	}
+	if m.flowLoopBlocked() {
+		return false
+	}
+	if m.connStatus == ConnRunning {
+		return true
+	}
+	if m.turnStream != nil || m.focusStream != nil {
+		return true
+	}
+	// Flow/step chrome: a live (non-terminal) handle is still working even on
+	// ConnIdle; reuse the poll predicate so the spinner only stops once the run
+	// is terminal.
+	if m.shouldPollStepsRuntime() {
+		return true
+	}
+	return false
+}
+
 func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	if m.sessionLoading && !strings.HasPrefix(strings.TrimSpace(input), "/") {
 		m.addMessage("system", "Still loading session — chat is disabled until ready.", "error")
@@ -2099,7 +2142,8 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	m.viewport.offset = 0
 	m.addMessage("user", input, "")
 	m.recordPromptHistory(input)
-	m.addMessage("assistant", "thinking…", "thinking")
+	// CA-537: no "Thinking" row in the chat timeline — the spinner animates on
+	// the status line + F2 RUNNING step instead (workIsLive starts the ticker).
 	m.statusMsg = "thinking…"
 	m.connStatus = ConnRunning
 
@@ -2153,9 +2197,8 @@ func (m *AppModel) handleGateInput(input string) (tea.Model, tea.Cmd) {
 			runID := m.gate.RunID
 			m.gate = nil
 			m.connStatus = ConnRunning
-			// The flow continues after a gate decision — surface the animated
-			// thinking placeholder so the live work is visible in the chat too.
-			m.addMessage("assistant", "thinking…", "thinking")
+			// CA-537: the flow keeps working after a gate decision — the spinner
+			// animates on the status line + F2 RUNNING step, not as a chat row.
 			m.statusMsg = "thinking…"
 			return m, m.cmdSubmitGateDecision(runID, opt)
 		}
@@ -3027,12 +3070,9 @@ func (m *AppModel) chatRowsSig() uint64 {
 		_, _ = h.Write([]byte(msg.FormatHint))
 		_, _ = h.Write([]byte{1})
 	}
-	// An animated thinking row re-renders every tick — hash the frame so the
-	// row cache does not freeze the first spinner/shimmer frame (CA-533).
-	if m.thinkingIndex() >= 0 {
-		_, _ = h.Write([]byte{3})
-		_, _ = h.Write([]byte(strconv.Itoa(m.thinkingFrame)))
-	}
+	// CA-537: no thinking row renders in the chat timeline, so the chat cache is
+	// independent of thinkingFrame (the status line + F2 spinner re-render via
+	// the tick message, not through chatRows).
 	_, _ = h.Write([]byte(strconv.Itoa(m.visiblePromptCount)))
 	_, _ = h.Write([]byte(strconv.FormatInt(m.historyLoadedAfterSeq, 10)))
 	keys := make([]string, 0, len(m.expandedToolGroups))
@@ -3133,11 +3173,10 @@ func (m *AppModel) buildChatRows() []chatRow {
 	start := m.windowStartIndex()
 	for mi := start; mi < len(m.messages); mi++ {
 		msg := m.messages[mi]
-		// Opencode/Grok-style animated "Thinking" row. The placeholder's stored
-		// content stays "thinking…" (state/tests unchanged); only rendering is
-		// animated, driven by thinkingFrame. Left-aligned, no copy chip.
+		// CA-537: the animated spinner lives on the status line + F2 RUNNING step,
+		// never as a chat-timeline row. Any stray thinking placeholder (legacy
+		// replay) is skipped so it stays invisible in the chat.
 		if msg.FormatHint == "thinking" {
-			rows = append(rows, chatRow{Text: renderThinkingLine(m.thinkingFrame, m.asciiMode), MsgIdx: mi})
 			continue
 		}
 		// CA-525: a run of 2+ consecutive tool calls renders as one collapsible

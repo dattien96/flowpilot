@@ -74,10 +74,11 @@ func (m *AppModel) statusFoldChip() string {
 }
 
 func (m *AppModel) statusReadyLabel() string {
-	// Live thinking row: show the animated spinner + elapsed in the status line
-	// (plain text so it picks up the status color) instead of the static
-	// "thinking…". statusMsg itself stays untouched for legacy tests.
-	if m.thinkingIndex() >= 0 {
+	// Live work (chat turn or flow step): show the animated spinner + elapsed in
+	// the status line (plain text so it picks up the status color) instead of
+	// the static "thinking…" (CA-537). statusMsg itself stays untouched for
+	// legacy tests.
+	if m.workIsLive() {
 		return thinkingLabelText(m.thinkingFrame, m.asciiMode)
 	}
 	if m.sessionLoading {
