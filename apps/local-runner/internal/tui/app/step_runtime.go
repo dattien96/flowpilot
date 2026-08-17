@@ -234,6 +234,14 @@ func (m *AppModel) settleFlowIfDone() {
 	if !m.isFlowChrome() || !m.flowLoopDone() {
 		return
 	}
+	// run-107774: a follow-up chat turn sets ConnRunning + "thinking…" in
+	// processInput and arms turnSendPending, but the SSE stream only opens later
+	// (turnStreamOpenedMsg clears it). A steps poll landing in that gap would see
+	// flowLoopDone() + turnStream==nil and flash the chrome to "done" before the
+	// reply even starts. A turn send in flight is live work — never settle.
+	if m.turnSendPending {
+		return
+	}
 	if m.turnStream != nil || m.focusedChildLive() {
 		return
 	}

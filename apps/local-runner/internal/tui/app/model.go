@@ -309,6 +309,7 @@ type AppModel struct {
 	turnStream            *turnStreamState
 	orchStream            *orchStreamState // Desktop orchestration SSE after turn
 	focusStream           *orchStreamState // child transcript while /agent focused
+	turnSendPending       bool             // user turn POSTed, stream not opened yet (run-107774)
 	focusRunID            string           // empty = main run viewport
 	mainTranscript        []ChatMessage    // cached while viewing a child
 	lastEventSeq          int64

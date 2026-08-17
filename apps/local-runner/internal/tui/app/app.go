@@ -221,6 +221,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.Err
 		m.sessionLoading = false
 		m.pendingPrompt = ""
+		m.turnSendPending = false
 		m.connStatus = ConnError
 		m.statusMsg = "error"
 		errText := msg.Err.Error()
@@ -873,11 +874,17 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case turnStreamOpenedMsg:
 		m.turnStream = &turnStreamState{evCh: msg.EvCh, errCh: msg.ErrCh}
+		m.turnSendPending = false
 		m.connStatus = ConnRunning
 		m.statusMsg = "streaming…"
 		if m.isFlowChrome() {
 			if m.flowStepsActive != "" {
 				m.statusMsg = "step: " + m.flowStepsActive
+			} else if m.flowLoopDone() {
+				// run-107774: after a flow is done, a follow-up turn is plain hub
+				// chat, not a re-run — keep the chat label ("thinking…") instead of
+				// claiming the flow restarted.
+				m.statusMsg = "thinking…"
 			} else {
 				m.statusMsg = "flow running…"
 			}
@@ -899,6 +906,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case turnStreamClosedMsg:
 		m.turnStream = nil
+		m.turnSendPending = false
 		if msg.Err != nil {
 			// BUG-231 (run-189839 parity): a freeform turn against a blocked flow
 			// answers 409 flow_awaiting_user. That is a deliberate parked state,
@@ -1259,7 +1267,9 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		// Flow chrome is quiet (CA-511): progress lives on F2 steps + status line,
 		// so a delta must not overwrite "step: X"/"flow running…" with "streaming…"
 		// — that masked a finished flow behind a fake live spinner (run-189839).
-		if m.connStatus == ConnRunning && !m.isFlowChrome() {
+		// Post-done follow-up chat (run-107774) is plain hub chat, so deltas may
+		// surface "streaming…" there again.
+		if m.connStatus == ConnRunning && (!m.isFlowChrome() || m.flowLoopDone()) {
 			m.statusMsg = "streaming…"
 		}
 
@@ -1283,7 +1293,9 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		} else if ev.FinalMessage != "" && !m.hasAssistantContent() && !isStepCompleteStub(ev.FinalMessage) {
 			m.ensureAssistantMessage(ev.FinalMessage)
 		}
-		if m.shouldPollStepsRuntime() && (m.orchStream != nil || m.flowHasActiveAgents()) {
+		// run-107774: once the loop is done, a completed follow-up turn must not
+		// re-arm "flow running…" — the flow is finished, settle to done directly.
+		if !m.flowLoopDone() && m.shouldPollStepsRuntime() && (m.orchStream != nil || m.flowHasActiveAgents()) {
 			m.connStatus = ConnWaiting
 			m.statusMsg = "flow running…"
 			return m, m.cmdRefreshStepsRuntime()
@@ -1309,6 +1321,10 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		if m.isFlowChrome() {
 			if m.flowStepsActive != "" {
 				m.statusMsg = "step: " + m.flowStepsActive
+			} else if m.flowLoopDone() {
+				// run-107774: post-done follow-up is a plain hub chat turn, not a
+				// flow restart — use the chat label instead of "flow running…".
+				m.statusMsg = "turn running…"
 			} else {
 				m.statusMsg = "flow running…"
 			}
@@ -2175,6 +2191,7 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	// First message: start run, then send turn (desktop sendPrompt parity).
 	if m.runHandle == nil {
 		m.pendingPrompt = input
+		m.turnSendPending = true
 		startMsg := fmt.Sprintf("Starting chat run (%s · %s)…", m.provider, orDash(m.model))
 		if m.launch.IsCatalogWorkflow() {
 			startMsg = fmt.Sprintf("Starting workflow run (%s · %s · %s)…", m.launch.StatusLabel(), m.provider, orDash(m.model))
@@ -2184,6 +2201,9 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 		m.addMessage("system", startMsg, "")
 		return m, m.cmdStartRun()
 	}
+	// run-107774: mark the turn send in flight so a steps poll landing before
+	// turnStreamOpenedMsg cannot settle the finished loop (see settleFlowIfDone).
+	m.turnSendPending = true
 	return m, m.cmdSendTurn(input)
 }
 
