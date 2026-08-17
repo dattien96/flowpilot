@@ -10,6 +10,16 @@ import (
 	"flowpilot-runner/internal/flowgate"
 )
 
+// systemPromptTag is the durable marker stamped at the wire boundary onto every
+// system-generated prompt (gate reprompt, handoff envelope, flow-engine/hub
+// orchestration) before it is handed to the provider and written to the turn
+// log. Replay classifies a prompt as system by this tag alone, so it survives
+// provider-side wrapping — e.g. Grok embedding the prompt inside a "## History"
+// preamble plus tool reinforcement inside <user_query> (run-104296). It is
+// deliberately NEVER stamped on user prompts (including ask_user/spawn_agent
+// reinforcement), which would otherwise be hidden from the transcript.
+const systemPromptTag = "[SYSTEM_PROMPT]"
+
 func injectFeatureHistoryPrompt(workspace string, prompt string, priorTurns []transcriptTurn) string {
 	// Legacy package-level helper: multi-secret / active-secret verify (tests and
 	// one-shot callers). InteractiveService must use injectFeatureHistoryPromptCtx.
@@ -176,8 +186,13 @@ func resolveTurnsFeature(turns []transcriptTurn, catalog *featurecatalog.Catalog
 }
 
 // isGateReprompt reports whether a prompt is a system-issued flow-gate reprompt.
+// Contains, not HasPrefix: the provider (Grok) wraps the reprompt inside a
+// "## History" preamble and tool reinforcement within <user_query>, so the exact
+// prefix sentence is no longer at the very start (run-104296 Q/A shift). Newer
+// system prompts carry the durable systemPromptTag and are caught by
+// isSystemPrompt directly.
 func isGateReprompt(prompt string) bool {
-	return strings.HasPrefix(strings.TrimSpace(prompt), flowgate.GateRepromptPrefix)
+	return strings.Contains(prompt, flowgate.GateRepromptPrefix)
 }
 
 // isHandoffPrompt reports whether a prompt is (or contains) a cross-provider
@@ -196,6 +211,12 @@ func isFlowEnginePrompt(prompt string) bool {
 	p := strings.TrimSpace(prompt)
 	if p == "" {
 		return false
+	}
+	// Tag-aware: a stamped prompt is system regardless of where the legacy
+	// marker sits (direct callers like skipHistory use isFlowEnginePrompt, not
+	// isSystemPrompt, so this must recognize the durable tag itself).
+	if strings.HasPrefix(p, systemPromptTag) {
+		return true
 	}
 	if strings.HasPrefix(p, "[flow-engine]") ||
 		strings.HasPrefix(p, "[flow-engine joined result note]") ||
@@ -222,8 +243,13 @@ func isFlowEnginePrompt(prompt string) bool {
 // isSystemPrompt reports whether a prompt is system-generated (gate reprompt,
 // handoff envelope, or flow-engine/hub orchestration). Such prompts describe
 // process / embed prior conversation, so their text must not drive feature
-// resolution, recording, or bucketing.
+// resolution, recording, or bucketing. The durable systemPromptTag is checked
+// first (newly stamped prompts); legacy heuristics stay for historical data
+// that predates the tag.
 func isSystemPrompt(prompt string) bool {
+	if strings.Contains(prompt, systemPromptTag) {
+		return true
+	}
 	return isGateReprompt(prompt) || isHandoffPrompt(prompt) || isFlowEnginePrompt(prompt)
 }
 
