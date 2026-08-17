@@ -1655,10 +1655,24 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.cmdClipboardPaste()
 			}
 			// Windows Terminal often steals Ctrl+V and injects bracketed paste
-			// (KeyRunes+Paste). Prefer clipboard image/path, then text; fall
-			// back to the bracketed-paste runes when the clipboard is empty.
+			// (KeyRunes+Paste). The bracketed-paste runes already carry the
+			// pasted text — insert it directly. Reading the system clipboard on
+			// the typing hot path is what froze the composer: a locked
+			// clipboard (native read or PowerShell GetText) blocked forever, so
+			// typed/pasted characters never appeared while F2/F4 still worked.
+			// The clipboard is only consulted when the paste carries no text
+			// (image-only clipboard) or looks like a copied image file path.
 			if msg.Paste {
-				return m, m.cmdClipboardPasteWithFallback(string(msg.Runes))
+				pasted := string(msg.Runes)
+				if strings.TrimSpace(pasted) == "" {
+					return m, m.cmdClipboardPasteWithFallback("")
+				}
+				if path := imagePathFromClipboardText(pasted); path != "" {
+					return m, m.cmdAttachImagePath(path)
+				}
+				m.insertInputAtCursor(pasted)
+				m.suggIdx = 0
+				return m, m.cmdMaybePrefetchPickers()
 			}
 		}
 		if msg.Type == tea.KeySpace {
