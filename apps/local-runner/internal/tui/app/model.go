@@ -160,6 +160,10 @@ type FlowListMsg struct {
 // cursorTickMsg drives the blinking input caret.
 type cursorTickMsg struct{}
 
+// thinkingTickMsg advances the animated "Thinking" placeholder (spinner /
+// shimmer / elapsed). It self-cancels when the thinking row disappears.
+type thinkingTickMsg struct{}
+
 // LoginResultMsg carries a completed Supabase password login.
 type LoginResultMsg struct {
 	Email        string
@@ -354,6 +358,14 @@ type AppModel struct {
 	// sessionDefaultsLoaded is set after the first SessionDefaultsMsg (real chat gate).
 	sessionDefaultsLoaded bool
 	loadingFrame          int
+
+	// thinkingFrame drives the animated "Thinking" placeholder (spinner /
+	// shimmer / elapsed). Advanced by thinkingTickMsg while a thinking row is
+	// live; the row-cache signature hashes it so the animation re-renders.
+	thinkingFrame int
+	// thinkingTickerActive tracks whether the 90ms thinking tick is scheduled,
+	// so the always-on cursor tick only (re)starts it once per thinking phase.
+	thinkingTickerActive bool
 
 	// Terminal dimensions
 	width  int

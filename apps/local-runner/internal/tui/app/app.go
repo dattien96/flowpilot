@@ -154,6 +154,13 @@ func tickCursor() tea.Cmd {
 	})
 }
 
+// cmdThinkingTick schedules the 90ms spinner step while a thinking row is live.
+func cmdThinkingTick() tea.Cmd {
+	return tea.Tick(thinkingTickInterval, func(time.Time) tea.Msg {
+		return thinkingTickMsg{}
+	})
+}
+
 // ---- Update -----------------------------------------------------------------
 
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -170,6 +177,17 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loadingFrame = (m.loadingFrame + 1) % 64
 		}
 		cmds := []tea.Cmd{tickCursor()}
+		// Start the 90ms thinking ticker once a thinking placeholder is live
+		// (any creation site: prompt send, high-reasoning stream, replay). The
+		// ticker self-cancels on its own tick when the row is gone.
+		if m.thinkingIndex() >= 0 {
+			if !m.thinkingTickerActive {
+				m.thinkingTickerActive = true
+				cmds = append(cmds, cmdThinkingTick())
+			}
+		} else {
+			m.thinkingTickerActive = false
+		}
 		// While a flow turn/orchestration is live, poll steps-runtime so long
 		// silent steps (e.g. grok-context / context.produce) stay visible.
 		// Also re-hydrate agent graph so F2 [open] appears as soon as a child
@@ -187,6 +205,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stepsPollTicks = 0
 		}
 		return m, tea.Batch(cmds...)
+
+	case thinkingTickMsg:
+		m.thinkingFrame++
+		if m.thinkingIndex() >= 0 {
+			return m, cmdThinkingTick()
+		}
+		m.thinkingTickerActive = false
+		return m, nil
 
 	case ErrMsg:
 		m.err = msg.Err
@@ -2974,6 +3000,12 @@ func (m *AppModel) chatRowsSig() uint64 {
 		_, _ = h.Write([]byte(msg.FormatHint))
 		_, _ = h.Write([]byte{1})
 	}
+	// An animated thinking row re-renders every tick — hash the frame so the
+	// row cache does not freeze the first spinner/shimmer frame (CA-533).
+	if m.thinkingIndex() >= 0 {
+		_, _ = h.Write([]byte{3})
+		_, _ = h.Write([]byte(strconv.Itoa(m.thinkingFrame)))
+	}
 	_, _ = h.Write([]byte(strconv.Itoa(m.visiblePromptCount)))
 	_, _ = h.Write([]byte(strconv.FormatInt(m.historyLoadedAfterSeq, 10)))
 	keys := make([]string, 0, len(m.expandedToolGroups))
@@ -3074,6 +3106,13 @@ func (m *AppModel) buildChatRows() []chatRow {
 	start := m.windowStartIndex()
 	for mi := start; mi < len(m.messages); mi++ {
 		msg := m.messages[mi]
+		// Opencode/Grok-style animated "Thinking" row. The placeholder's stored
+		// content stays "thinking…" (state/tests unchanged); only rendering is
+		// animated, driven by thinkingFrame. Left-aligned, no copy chip.
+		if msg.FormatHint == "thinking" {
+			rows = append(rows, chatRow{Text: renderThinkingLine(m.thinkingFrame, m.asciiMode), MsgIdx: mi})
+			continue
+		}
 		// CA-525: a run of 2+ consecutive tool calls renders as one collapsible
 		// summary row (click to expand) instead of N stacked tool lines.
 		if msg.Role == "tool" {
@@ -3475,6 +3514,10 @@ func (m *AppModel) addMessage(role, content, hint string) {
 	})
 	if role == "user" {
 		m.syncVisiblePromptCount()
+	}
+	// A fresh thinking placeholder restarts the elapsed spinner at 0.
+	if hint == "thinking" {
+		m.thinkingFrame = 0
 	}
 }
 
