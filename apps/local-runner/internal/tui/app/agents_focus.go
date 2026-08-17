@@ -39,6 +39,31 @@ func (m *AppModel) viewingChild() bool {
 	return id != "" && id != m.mainRunID()
 }
 
+// focusedChildLive reports whether the focused sub-agent run is still actually
+// working. cmdFocusAgent always opens a listen-only StreamLive on a child even
+// when that child already finished (it is the only way to keep the transcript
+// readable), so a bare focusStream must NOT count as live work — otherwise
+// opening a completed sub-agent (run-101411 grok-coder) keeps the Thinking
+// spinner + elapsed clock running forever.
+func (m *AppModel) focusedChildLive() bool {
+	if m.focusStream == nil {
+		return false
+	}
+	id := strings.TrimSpace(m.focusRunID)
+	if id == "" || id == m.mainRunID() {
+		return false
+	}
+	for _, r := range m.agentRuns {
+		if strings.TrimSpace(r.RunID) != id {
+			continue
+		}
+		return !runStatusIsTerminal(r.Status)
+	}
+	// Focused run not in the hydrate snapshot yet: fall back to parent flow/turn
+	// liveness so the spinner does not drop mid-open.
+	return m.connStatus == ConnRunning || m.flowHasActiveAgents()
+}
+
 func (m *AppModel) flowHasActiveAgents() bool {
 	for _, r := range m.agentRuns {
 		st := strings.ToLower(strings.TrimSpace(r.Status))

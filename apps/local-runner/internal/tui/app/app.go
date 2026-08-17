@@ -2048,7 +2048,7 @@ func (m *AppModel) workIsLive() bool {
 	if m.connStatus == ConnRunning {
 		return true
 	}
-	if m.turnStream != nil || m.focusStream != nil {
+	if m.turnStream != nil || m.focusedChildLive() {
 		return true
 	}
 	// Flow/step chrome: a live (non-terminal) handle is still working even on

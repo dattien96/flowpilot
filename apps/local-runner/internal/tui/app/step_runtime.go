@@ -51,7 +51,7 @@ func (m *AppModel) shouldPollStepsRuntime() bool {
 	if m.flowHasActiveAgents() {
 		return true
 	}
-	if m.turnStream != nil || m.focusStream != nil {
+	if m.turnStream != nil || m.focusedChildLive() {
 		return true
 	}
 	return false
@@ -162,7 +162,7 @@ func (m *AppModel) flowLoopBlocked() bool {
 	if m.flowHasActiveAgents() {
 		return false
 	}
-	if m.turnStream != nil || m.focusStream != nil {
+	if m.turnStream != nil || m.focusedChildLive() {
 		return false
 	}
 	return true
@@ -234,7 +234,7 @@ func (m *AppModel) settleFlowIfDone() {
 	if !m.isFlowChrome() || !m.flowLoopDone() {
 		return
 	}
-	if m.turnStream != nil || m.focusStream != nil {
+	if m.turnStream != nil || m.focusedChildLive() {
 		return
 	}
 	m.connStatus = ConnIdle
