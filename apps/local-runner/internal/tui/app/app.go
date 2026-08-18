@@ -606,7 +606,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ChatListMsg:
 		if msg.Silent {
 			if msg.Err == "" {
-				m.chatList = msg.Items
+				m.chatList = mergeChatListSyncStatus(m.chatList, msg.Items)
 			}
 			return m, nil
 		}
@@ -614,8 +614,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addMessage("system", "Chat list failed: "+msg.Err, "error")
 			return m, nil
 		}
-		m.chatList = msg.Items
-		m.addMessage("system", formatChatList(msg.Items), "")
+		m.chatList = mergeChatListSyncStatus(m.chatList, msg.Items)
+		m.addMessage("system", formatChatListWithRemote(msg.Items, m.remoteChatList), "")
 		return m, nil
 
 	case DriveSyncBatchMsg:
@@ -1861,10 +1861,10 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 		}
 		return []suggestItem{{value: "", detail: "(no matching flows)", kind: "flow"}}
 	}
-	if chats := filterHistorySuggestions(in, m.chatList); len(chats) > 0 {
+	if chats := filterHistorySuggestionsWithRemote(in, m.chatList, m.remoteChatList); len(chats) > 0 {
 		return chats
 	}
-	if syncSugg := filterSyncSuggestions(in, m.syncableChats()); len(syncSugg) > 0 {
+	if syncSugg := filterSyncSuggestionsWithRemote(in, m.syncableChats(), m.remoteChatList); len(syncSugg) > 0 {
 		return syncSugg
 	}
 	if restoreSugg := filterRestoreSuggestions(in, m.remoteChatList); len(restoreSugg) > 0 {

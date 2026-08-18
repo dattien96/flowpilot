@@ -154,6 +154,13 @@ func filterParentHistory(items []client.RunHistoryItem) []client.RunHistoryItem 
 }
 
 func formatChatList(items []client.RunHistoryItem) string {
+	return formatChatListWithRemote(items, nil)
+}
+
+// formatChatListWithRemote is formatChatList with Drive-index reconciliation
+// (CA-552): a row that only matches the confirmed Drive index still gets its
+// (synced) badge even when the runner's local syncStatus is stale/empty.
+func formatChatListWithRemote(items []client.RunHistoryItem, remote []client.RemoteChatSessionSummary) string {
 	var sb strings.Builder
 	sb.WriteString("Recent chats (Desktop history parity):\n")
 	if len(items) == 0 {
@@ -193,7 +200,7 @@ func formatChatList(items []client.RunHistoryItem) string {
 			when = "—"
 		}
 		line := fmt.Sprintf("  %2d  %s  [%s] %s  %s · %s", i+1, shortID(it.RunID), kind, it.Status, when, title)
-		if badge := formatSyncBadge(it); badge != "" {
+		if badge := syncBadgeWithRemote(it, remote); badge != "" {
 			line += "  (" + badge + ")"
 		}
 		sb.WriteString(line + "\n")
@@ -226,6 +233,65 @@ func formatSyncBadge(it client.RunHistoryItem) string {
 	default:
 		return ""
 	}
+}
+
+// syncBadgeWithRemote is formatSyncBadge plus Drive-index reconciliation
+// (CA-552). The runner's syncStatus is written to its local store asynchronously
+// and can lag (or be lost across a restart), so a row that already appears in
+// the confirmed Drive index is treated as synced. A local marker always wins
+// (failed stays failed until the next successful sync).
+func syncBadgeWithRemote(it client.RunHistoryItem, remote []client.RemoteChatSessionSummary) string {
+	if badge := formatSyncBadge(it); badge != "" {
+		return badge
+	}
+	if len(remote) == 0 {
+		return ""
+	}
+	if strings.TrimSpace(it.SourceMachineID) != "" && strings.TrimSpace(it.SourceRunID) != "" {
+		for _, r := range remote {
+			if strings.TrimSpace(r.SourceMachineID) == strings.TrimSpace(it.SourceMachineID) &&
+				strings.TrimSpace(r.SourceRunID) == strings.TrimSpace(it.SourceRunID) {
+				return "synced"
+			}
+		}
+		return ""
+	}
+	runID := strings.TrimSpace(it.RunID)
+	if runID == "" {
+		return ""
+	}
+	for _, r := range remote {
+		if strings.TrimSpace(r.SourceRunID) == runID {
+			return "synced"
+		}
+	}
+	return ""
+}
+
+// mergeChatListSyncStatus carries known local sync markers forward across a
+// fresh runner fetch (Desktop parity, navigatorHistory.ts:19-24): the runner's
+// store write is async, so a prefetch/poll can race it and return syncStatus=""
+// right after a sync. A fresh non-empty status always wins.
+func mergeChatListSyncStatus(cached, fresh []client.RunHistoryItem) []client.RunHistoryItem {
+	known := make(map[string]string, len(cached))
+	for _, it := range cached {
+		if s := strings.TrimSpace(it.SyncStatus); s != "" {
+			known[it.RunID] = s
+		}
+	}
+	if len(known) == 0 {
+		return fresh
+	}
+	out := make([]client.RunHistoryItem, len(fresh))
+	for i, it := range fresh {
+		out[i] = it
+		if strings.TrimSpace(it.SyncStatus) == "" {
+			if s, ok := known[it.RunID]; ok {
+				out[i].SyncStatus = s
+			}
+		}
+	}
+	return out
 }
 
 // resolveChatOpenTarget maps /history|/open|/resume args to a run id using the last list.
@@ -396,10 +462,13 @@ func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
 	if !argOK && !bare && !syncBare && !syncArg && !restoreBare && !restoreArg {
 		return nil
 	}
+	// Reconcile badges against the confirmed Drive index (CA-552), so the remote
+	// index is fresh when the picker first opens; the batch /restore and /sync
+	// completion paths also refresh it afterwards.
 	if len(m.chatList) > 0 {
 		return nil
 	}
-	return m.cmdPrefetchChats()
+	return tea.Batch(m.cmdPrefetchChats(), m.cmdPrefetchRemoteChats())
 }
 
 func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {

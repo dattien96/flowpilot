@@ -224,6 +224,13 @@ func (m *AppModel) runSyncDispatch(args []string) (tea.Model, tea.Cmd) {
 // the generic pickers still win. The "all" row uses kind "sync" so accepting it
 // yields `/sync all` (Desktop Navigator "Sync all" parity).
 func filterSyncSuggestions(input string, syncable []client.RunHistoryItem) []suggestItem {
+	return filterSyncSuggestionsWithRemote(input, syncable, nil)
+}
+
+// filterSyncSuggestionsWithRemote is filterSyncSuggestions plus Drive-index
+// reconciliation (CA-552): a chat that only matches the remote index still gets
+// its (synced) marker so the picker never re-targets an already-synced chat.
+func filterSyncSuggestionsWithRemote(input string, syncable []client.RunHistoryItem, remote []client.RemoteChatSessionSummary) []suggestItem {
 	ok, query := parseSlashArgPrefix(input, "/sync")
 	if !ok {
 		return nil
@@ -252,7 +259,7 @@ func filterSyncSuggestions(input string, syncable []client.RunHistoryItem) []sug
 			continue
 		}
 		detail := title
-		if badge := formatSyncBadge(it); badge != "" {
+		if badge := syncBadgeWithRemote(it, remote); badge != "" {
 			detail += " · " + badge
 		}
 		out = append(out, suggestItem{value: it.RunID, detail: detail, kind: "sync", slash: "/sync"})

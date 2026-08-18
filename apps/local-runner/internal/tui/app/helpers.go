@@ -1071,6 +1071,13 @@ func filterReasoningSuggestions(input string, current string) []suggestItem {
 
 // filterHistorySuggestions returns chats matching the query after /history|/open|/resume .
 func filterHistorySuggestions(input string, items []client.RunHistoryItem) []suggestItem {
+	return filterHistorySuggestionsWithRemote(input, items, nil)
+}
+
+// filterHistorySuggestionsWithRemote is filterHistorySuggestions plus Drive-index
+// reconciliation (CA-552). The badge is placed before the title so it stays
+// visible when the (already truncated) title is long.
+func filterHistorySuggestionsWithRemote(input string, items []client.RunHistoryItem, remote []client.RemoteChatSessionSummary) []suggestItem {
 	cmd, query, ok := parseChatOpenArgPrefix(input)
 	if !ok {
 		return nil
@@ -1110,10 +1117,11 @@ func filterHistorySuggestions(input string, items []client.RunHistoryItem) []sug
 		if when == "" {
 			when = "—"
 		}
-		detail := fmt.Sprintf("#%d · %s · %s · %s · %s", i+1, kind, it.Status, when, title)
-		if badge := formatSyncBadge(it); badge != "" {
+		detail := fmt.Sprintf("#%d · %s · %s · %s", i+1, kind, it.Status, when)
+		if badge := syncBadgeWithRemote(it, remote); badge != "" {
 			detail += " · " + badge
 		}
+		detail += " · " + title
 		out = append(out, suggestItem{value: id, detail: detail, kind: "history", slash: cmd})
 	}
 	return out
