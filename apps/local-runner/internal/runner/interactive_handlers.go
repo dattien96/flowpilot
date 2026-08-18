@@ -58,6 +58,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/questions/{questionId}/google-drive-picker-token", s.handleGoogleDriveQuestionPickerToken)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/artifacts", s.handleListArtifacts)
 	mux.HandleFunc("GET /client/provider-skills", s.handleListSkills)
+	mux.HandleFunc("GET /client/workspace-files", s.handleListWorkspaceFiles)
 	mux.HandleFunc("GET /client/agents", s.handleListAgents)
 	mux.HandleFunc("GET /client/active-account", s.handleGetActiveAccount)
 	mux.HandleFunc("POST /client/active-account", s.handleSetActiveAccount)
@@ -133,6 +134,12 @@ func (s *InteractiveService) handleListSkills(w http.ResponseWriter, r *http.Req
 	provider := r.URL.Query().Get("provider")
 	cwd := r.URL.Query().Get("cwd")
 	writeInteractiveJSON(w, http.StatusOK, s.skillsCatalog.listSkills(provider, cwd))
+}
+
+func (s *InteractiveService) handleListWorkspaceFiles(w http.ResponseWriter, r *http.Request) {
+	cwd := r.URL.Query().Get("cwd")
+	query := r.URL.Query().Get("q")
+	writeInteractiveJSON(w, http.StatusOK, listWorkspaceFilePaths(cwd, query))
 }
 
 func (s *InteractiveService) handleGoogleDriveQuestionPicker(w http.ResponseWriter, r *http.Request) {

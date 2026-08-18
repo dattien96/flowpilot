@@ -391,6 +391,16 @@ export class MockRunnerClient implements RunnerClient {
     });
   }
 
+  async listWorkspaceFiles(_cwd: string, query?: string): Promise<string[]> {
+    await delay(20);
+    const all = [
+      "apps/desktop-flowpilot/src/components/ChatInput.tsx",
+      "apps/local-runner/internal/runner/workspace_files.go",
+    ];
+    const q = (query ?? "").toLowerCase();
+    return q ? all.filter((path) => path.toLowerCase().includes(q)) : all;
+  }
+
   async listSkills(provider: string, _cwd?: string): Promise<ProviderSkill[]> {
     await delay(40);
     if (provider === "claude") {
