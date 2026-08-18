@@ -399,6 +399,12 @@ type AppModel struct {
 	// so the always-on cursor tick only (re)starts it once per thinking phase.
 	thinkingTickerActive bool
 
+	// driveSyncFrame drives the animated Drive sync/restore spinner shown in the
+	// right sidebar / session panel while a batch is in flight (CA-551).
+	driveSyncFrame int
+	// driveSyncTickerActive tracks whether the 90ms drive tick is scheduled.
+	driveSyncTickerActive bool
+
 	// Terminal dimensions
 	width  int
 	height int

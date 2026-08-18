@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -16,6 +17,18 @@ type RemoteChatListMsg struct {
 	Items  []client.RemoteChatSessionSummary
 	Err    string
 	Silent bool
+}
+
+// driveSyncTickMsg advances the Drive sync/restore spinner (CA-551) while a
+// batch is in flight. The 90ms cadence matches the thinking spinner.
+type driveSyncTickMsg struct{}
+
+const driveSyncTickInterval = 90 * time.Millisecond
+
+func cmdDriveSyncTick() tea.Cmd {
+	return tea.Tick(driveSyncTickInterval, func(time.Time) tea.Msg {
+		return driveSyncTickMsg{}
+	})
 }
 
 // G2/G3 Drive chat-session sync surface (Desktop Navigator parity, CA-549/550).
@@ -112,6 +125,11 @@ func (m *AppModel) startSyncBatch(runIDs []string, projectID string) tea.Cmd {
 	if len(runIDs) == 0 {
 		m.addMessage("system", "Nothing to sync — every chat is already in Drive.", "")
 		return nil
+	}
+	if len(runIDs) == 1 {
+		m.addMessage("system", fmt.Sprintf("Syncing %s to Drive…", shortID(runIDs[0])), "")
+	} else {
+		m.addMessage("system", fmt.Sprintf("Syncing %d chats to Drive…", len(runIDs)), "")
 	}
 	m.driveSync = &driveSyncState{
 		queue:     runIDs[1:],
@@ -342,6 +360,11 @@ func (m *AppModel) startRestoreBatch(keys []string, projectID, cwd string, openA
 		m.addMessage("system", "Nothing to restore — no Drive-backed chats for this project.", "")
 		return nil
 	}
+	if len(keys) == 1 {
+		m.addMessage("system", fmt.Sprintf("Restoring %s from Drive…", keys[0]), "")
+	} else {
+		m.addMessage("system", fmt.Sprintf("Restoring %d chats from Drive…", len(keys)), "")
+	}
 	m.restoreBatch = &restoreState{
 		queue:     keys[1:],
 		projectID: projectID,
@@ -350,6 +373,24 @@ func (m *AppModel) startRestoreBatch(keys []string, projectID, cwd string, openA
 		openAfter: openAfter,
 	}
 	return m.cmdRestoreOne(keys[0], projectID, cwd)
+}
+
+// driveIndicatorLine returns the right-side Drive sync/restore status line shown
+// while a batch is in flight (CA-551): an animated spinner + progress. Empty
+// when idle so the session panel stays unchanged.
+func (m *AppModel) driveIndicatorLine() string {
+	switch {
+	case m.driveSync != nil:
+		st := m.driveSync
+		glyph := thinkingSpinner(m.driveSyncFrame, m.asciiMode)
+		return fmt.Sprintf("Drive: %s Syncing %d/%d", glyph, st.done, st.total)
+	case m.restoreBatch != nil:
+		st := m.restoreBatch
+		glyph := thinkingSpinner(m.driveSyncFrame, m.asciiMode)
+		return fmt.Sprintf("Drive: %s Restoring %d/%d", glyph, st.done, st.total)
+	default:
+		return ""
+	}
 }
 
 // formatRestoreErr maps runner restore errors to a TUI hint.

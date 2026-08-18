@@ -19,6 +19,7 @@ type sessionInfoPanel struct {
 	ProjectName string
 	ProjectID   string
 	Session     string // e.g. "codex · gpt-5.4 (acct-label)"
+	DriveStatus string // live Drive sync/restore progress line (CA-551); "" when idle
 }
 
 func (p sessionInfoPanel) hasContent() bool {
@@ -50,6 +51,9 @@ func (p sessionInfoPanel) lines() []string {
 	}
 	if s := strings.TrimSpace(p.Session); s != "" {
 		out = append(out, "Session: "+s)
+	}
+	if ds := strings.TrimSpace(p.DriveStatus); ds != "" {
+		out = append(out, ds)
 	}
 	return out
 }
@@ -285,6 +289,7 @@ func (m *AppModel) renderSessionPanelOverlay() []string {
 		return []string{rightAlignPlain(hintStyle.Render(chip), width)}
 	}
 
+	m.sessionPanel.DriveStatus = m.driveIndicatorLine()
 	body := m.sessionPanel.lines()
 	if steps := m.flowStepsPanelLines(); len(steps) > 0 {
 		body = append(body, m.stepsSectionTitle())
@@ -402,6 +407,7 @@ func (m *AppModel) renderRightSidebar(h int) []string {
 	w := m.sideWidth()
 	var out []string
 	out = append(out, styleGate.Render("session"))
+	m.sessionPanel.DriveStatus = m.driveIndicatorLine()
 	for _, line := range m.sessionPanel.lines() {
 		out = append(out, styleSystem.Render(truncateVisual(line, w-2)))
 	}

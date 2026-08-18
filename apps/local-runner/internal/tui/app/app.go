@@ -191,6 +191,17 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.thinkingTickerActive = false
 		}
+		// Drive sync/restore spinner (CA-551): same always-on cursor tick driver
+		// as the thinking ticker, but for the /sync and /restore batches.
+		if m.driveSync != nil || m.restoreBatch != nil {
+			if !m.driveSyncTickerActive {
+				m.driveSyncTickerActive = true
+				m.driveSyncFrame = 0
+				cmds = append(cmds, cmdDriveSyncTick())
+			}
+		} else {
+			m.driveSyncTickerActive = false
+		}
 		// While a flow turn/orchestration is live, poll steps-runtime so long
 		// silent steps (e.g. grok-context / context.produce) stay visible.
 		// Also re-hydrate agent graph so F2 [open] appears as soon as a child
@@ -215,6 +226,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmdThinkingTick()
 		}
 		m.thinkingTickerActive = false
+		return m, nil
+
+	case driveSyncTickMsg:
+		m.driveSyncFrame++
+		if m.driveSync != nil || m.restoreBatch != nil {
+			return m, cmdDriveSyncTick()
+		}
+		m.driveSyncTickerActive = false
 		return m, nil
 
 	case ErrMsg:
@@ -2894,6 +2913,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		sb.WriteString(fmt.Sprintf("Status: %s | Mode: %s | %s | Provider: %s | Model: %s | Auth: %s\n",
 			m.connStatus, m.mode, m.yoloStatusLabel(), m.provider, m.model, auth))
 		sb.WriteString("Active provider account: " + orDash(m.activeProviderAccountLabel()) + "\n")
+		m.sessionPanel.DriveStatus = m.driveIndicatorLine()
 		for _, line := range m.sessionPanel.lines() {
 			sb.WriteString(line + "\n")
 		}
