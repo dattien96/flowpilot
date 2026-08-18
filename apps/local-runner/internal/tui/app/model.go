@@ -296,9 +296,14 @@ type AppModel struct {
 	flowBuiltins       []client.BuiltinFlowOption
 	flowWorkflows      []client.Workflow
 	chatList           []client.RunHistoryItem // last /history result for picker + /open <n>
-	sessionPanel       sessionInfoPanel        // collapsible top-right session/status overlay
-	flowSteps          []client.WorkflowStepRuntime
-	flowStepsActive    string // node name currently RUNNING
+	// remoteChatList caches the project's Drive-backed chat index (G3 /restore).
+	// G2 /sync reconciles against it to skip runs already present on Drive.
+	remoteChatList []client.RemoteChatSessionSummary
+	// driveSync tracks an in-flight /sync batch; nil when idle.
+	driveSync       *driveSyncState
+	sessionPanel    sessionInfoPanel // collapsible top-right session/status overlay
+	flowSteps       []client.WorkflowStepRuntime
+	flowStepsActive string // node name currently RUNNING
 	// flowLoopStatus mirrors the orchestrator LoopState.Status from the latest
 	// agent_graph_updated (done | running | blocked | stopped | …). Flow hubs keep
 	// the raw handle status "running" past loop "done" until the last SSE settles,
@@ -508,4 +513,6 @@ var knownSlashCommands = []slashCommand{
 	{"/info", "Toggle session info panel (top-right; also F2)"},
 	{"/login", "Sign in to Supabase (email/password) — Desktop session parity"},
 	{"/settings", "Open Desktop app for Settings (start if not running)"},
+	{"/sync", "Push chat session to Drive — /sync  then ↑↓ Tab Enter · /sync all"},
+	{"/restore", "Pull a Drive-backed chat — /restore  then ↑↓ Tab Enter · /restore all"},
 }

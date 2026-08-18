@@ -599,6 +599,34 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addMessage("system", formatChatList(msg.Items), "")
 		return m, nil
 
+	case DriveSyncBatchMsg:
+		// G2 /sync progress: update the badge for the finished row, then either
+		// start the next upload or print the batch summary (Desktop Navigator
+		// "Synced n/m" parity). One HTTP per Update — the batch never freezes the
+		// composer and a single failure does not abort the rest.
+		st := m.driveSync
+		if st == nil {
+			// Stale message (batch already finished/reset): surface the result
+			// without touching counters.
+			if msg.Err != nil {
+				m.addMessage("system", formatDriveSyncErr(msg.RunID, msg.Err), "error")
+			}
+			return m, nil
+		}
+		m.markChatSyncStatus(msg.RunID, msg.Err, msg.Result)
+		st.done++
+		if msg.Err != nil {
+			st.failed++
+		}
+		if len(st.queue) == 0 {
+			m.driveSync = nil
+			m.addMessage("system", formatDriveSyncSummary(st), "")
+			return m, nil
+		}
+		next := st.queue[0]
+		st.queue = st.queue[1:]
+		return m, m.cmdSyncRun(next, st.projectID)
+
 	case ChatOpenedMsg:
 		if msg.Err != "" {
 			m.addMessage("system", msg.Err, "error")
@@ -1773,6 +1801,9 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if chats := filterHistorySuggestions(in, m.chatList); len(chats) > 0 {
 		return chats
 	}
+	if syncSugg := filterSyncSuggestions(in, m.syncableChats()); len(syncSugg) > 0 {
+		return syncSugg
+	}
 	if cmd, _, ok := parseChatOpenArgPrefix(in); ok {
 		if len(m.chatList) == 0 {
 			return []suggestItem{{value: "", detail: "loading chats…", kind: "history", slash: cmd}}
@@ -1892,6 +1923,15 @@ func suggestionAcceptValue(it suggestItem) string {
 		slash := it.slash
 		if slash == "" {
 			slash = "/history"
+		}
+		return slash + " " + it.value
+	case "sync":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		slash := it.slash
+		if slash == "" {
+			slash = "/sync"
 		}
 		return slash + " " + it.value
 	case "model":
@@ -2915,6 +2955,9 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			kind = strings.ToLower(args[0])
 		}
 		return m, m.cmdCopyKind(kind)
+
+	case "/sync":
+		return m.runSyncDispatch(args)
 
 	default:
 		m.addMessage("system", fmt.Sprintf("Unknown command: %s. Type /help for list.", cmd), "error")
