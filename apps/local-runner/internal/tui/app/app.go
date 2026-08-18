@@ -234,10 +234,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ApprovalResolvedMsg:
-		shown := m.approval != nil && (msg.ID == "" || m.approval.ID == msg.ID)
-		if shown {
-			m.approval = nil
-		}
+		shown := m.pendingApprovalShown(msg.ID)
+		m.removeApproval(msg.ID)
 		m.connStatus = ConnRunning
 		m.statusMsg = "approved"
 		if !shown {
@@ -247,16 +245,29 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if strings.EqualFold(msg.Decision, "deny") {
 			label = "Denied."
 		}
+		if m.approval != nil {
+			// More cards in the queue: stay waiting so the next head can be
+			// resolved (BUG-157/158 parallel approvals).
+			m.connStatus = ConnWaiting
+			m.statusMsg = "approval required"
+			m.addMessage("system", fmt.Sprintf("%s %d more pending — /approve-all resolves the rest.", label, len(m.approvals)), "")
+			return m, nil
+		}
 		m.addMessage("system", label, "")
 		return m, nil
 
 	case QuestionResolvedMsg:
-		if m.question != nil && (msg.ID == "" || m.question.ID == msg.ID) {
-			m.question = nil
-		}
+		shown := m.pendingQuestionShown(msg.ID)
+		m.removeQuestion(msg.ID)
 		m.connStatus = ConnRunning
 		m.statusMsg = "answered"
 		m.addMessage("system", "Answered: "+msg.Choice, "question")
+		if shown && m.question != nil {
+			// More cards in the queue: keep answering the next head.
+			m.connStatus = ConnWaiting
+			m.statusMsg = "question"
+			m.addMessage("system", fmt.Sprintf("%d question(s) still pending.", len(m.questions)), "question")
+		}
 		return m, nil
 
 	case StoppedMsg:
@@ -617,8 +628,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingPrompt = ""
 		m.firstTurnPending = false
 		m.gate = nil
-		m.approval = nil
-		m.question = nil
+		m.clearPendingDecisions()
 		m.messages = nil
 		m.visiblePromptCount = 0
 		m.historyLoadedAfterSeq = msg.HistoryLoadedAfterSeq
@@ -1352,13 +1362,15 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 				m.statusMsg = "auto-approved"
 				return m, m.cmdAutoApprove(ev.ApprovalID, ev.WorkflowRunID)
 			}
-			m.approval = &ApprovalState{
+			added := m.pushApproval(ApprovalState{
 				ID:    ev.ApprovalID,
 				RunID: ev.WorkflowRunID,
-			}
+			})
 			m.connStatus = ConnWaiting
 			m.statusMsg = "approval required"
-			m.addMessage("system", formatApprovalWaitingLine(ev.ApprovalID, m.asciiMode), "approval")
+			if added {
+				m.addMessage("system", formatApprovalWaitingLine(ev.ApprovalID, m.asciiMode), "approval")
+			}
 		}
 
 	case "user_question_required":
@@ -1367,15 +1379,17 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 			for _, o := range ev.Options {
 				opts = append(opts, o)
 			}
-			m.question = &QuestionState{
+			added := m.pushQuestion(QuestionState{
 				ID:      ev.QuestionID,
 				Prompt:  ev.Prompt,
 				Options: opts,
 				RunID:   ev.WorkflowRunID,
-			}
+			})
 			m.connStatus = ConnWaiting
 			m.statusMsg = "question"
-			m.addMessage("system", formatQuestionMessage(ev.Prompt, opts), "question")
+			if added {
+				m.addMessage("system", formatQuestionMessage(ev.Prompt, opts), "question")
+			}
 		}
 
 	case "flow_gate_violation":
@@ -2724,8 +2738,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.selectedSkills = nil
 		_ = m.clearPendingAttachments()
 		m.gate = nil
-		m.approval = nil
-		m.question = nil
+		m.clearPendingDecisions()
 		m.flowSteps = nil
 		m.flowStepsActive = ""
 		m.lastEventSeq = 0
@@ -2821,6 +2834,15 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			return m.submitQuestionAnswer("deny")
 		}
 		m.addMessage("system", "No pending approval.", "")
+
+	case "/approve-all", "/deny-all":
+		// BUG-157/158: a turn can fan out several parallel approvals; resolve
+		// every queued card at once (Desktop bulk-approve parity).
+		decision := "approve"
+		if strings.HasPrefix(input, "/deny") {
+			decision = "deny"
+		}
+		return m.resolveAllApprovals(decision)
 
 	case "/stop":
 		// A blocked (awaiting-user) flow has turnIsActive()==false but Stop is
@@ -3554,12 +3576,22 @@ func (m *AppModel) renderInputLine() string {
 
 	var inner []string
 	if m.approval != nil {
-		inner = append(inner, styleGate.Render("approval")+"  "+
-			styleLink.Render("Approve")+"  "+styleLink.Render("Deny")+"  "+
-			styleSystem.Render("click or type"))
+		head := "approval"
+		if n := len(m.approvals); n > 1 {
+			head = fmt.Sprintf("approval %d/%d", 1, n)
+		}
+		chips := styleLink.Render("Approve") + "  " + styleLink.Render("Deny")
+		if len(m.approvals) > 1 {
+			chips += "  " + styleLink.Render("Approve all") + "  " + styleLink.Render("Deny all")
+		}
+		inner = append(inner, styleGate.Render(head)+"  "+chips+"  "+styleSystem.Render("click or type"))
 	}
 	if m.question != nil {
-		inner = append(inner, renderQuestionBar(left, mid, m.question, innerW))
+		qbar := renderQuestionBar(left, mid, m.question, innerW)
+		if n := len(m.questions); n > 1 {
+			qbar = styleGate.Render(fmt.Sprintf("(%d/%d)", 1, n)) + " " + qbar
+		}
+		inner = append(inner, qbar)
 	}
 	if bar := m.renderAttentionBar(); bar != "" {
 		inner = append(inner, strings.Split(bar, "\n")...)

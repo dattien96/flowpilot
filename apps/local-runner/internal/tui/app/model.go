@@ -324,10 +324,18 @@ type AppModel struct {
 	runnerPollFailStreak int    // consecutive steps/agent poll dial/timeout failures
 	lastTurnError        string // last turn_failed error (fallback FAIL reason in chat)
 
-	// Pending gate/approval/question state
-	gate     *GateState
-	approval *ApprovalState
-	question *QuestionState
+	// Pending gate/approval/question state. A turn can fan out several approval
+	// or question cards in parallel (BUG-157/158); the TUI used to keep a single
+	// pointer and silently dropped every card but the last, leaving the dropped
+	// card unresolved and the run hung. `approval`/`question` are the HEAD (first
+	// unresolved) cards — kept as pointers so every legacy check works unchanged —
+	// while `approvals`/`questions` carry the full queue. All mutations go
+	// through the helpers in chat_pending_queue.go.
+	gate      *GateState
+	approval  *ApprovalState
+	question  *QuestionState
+	approvals []ApprovalState
+	questions []QuestionState
 
 	// Navigation
 	project          *client.Project

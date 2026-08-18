@@ -461,10 +461,11 @@ func (m *AppModel) applyPendingFromSnapshot(snap client.RunSnapshot) tea.Cmd {
 			m.statusMsg = "approval required"
 			return nil
 		}
-		m.approval = &ApprovalState{ID: id, RunID: runID, Details: snap.PendingApproval.Details}
-		m.connStatus = ConnWaiting
-		m.statusMsg = "approval required"
-		m.addMessage("system", formatApprovalWaitingLine(id, m.asciiMode), "approval")
+		if m.pushApproval(ApprovalState{ID: id, RunID: runID, Details: snap.PendingApproval.Details}) {
+			m.connStatus = ConnWaiting
+			m.statusMsg = "approval required"
+			m.addMessage("system", formatApprovalWaitingLine(id, m.asciiMode), "approval")
+		}
 		return nil
 	}
 	if snap.PendingQuestion != nil && strings.TrimSpace(snap.PendingQuestion.ID) != "" {
@@ -474,15 +475,16 @@ func (m *AppModel) applyPendingFromSnapshot(snap client.RunSnapshot) tea.Cmd {
 			m.statusMsg = "question"
 			return nil
 		}
-		m.question = &QuestionState{
+		if m.pushQuestion(QuestionState{
 			ID:      id,
 			Prompt:  snap.PendingQuestion.Prompt,
 			Options: snap.PendingQuestion.Options,
 			RunID:   runID,
+		}) {
+			m.connStatus = ConnWaiting
+			m.statusMsg = "question"
+			m.addMessage("system", formatQuestionMessage(snap.PendingQuestion.Prompt, snap.PendingQuestion.Options), "question")
 		}
-		m.connStatus = ConnWaiting
-		m.statusMsg = "question"
-		m.addMessage("system", formatQuestionMessage(snap.PendingQuestion.Prompt, snap.PendingQuestion.Options), "question")
 	}
 	return nil
 }

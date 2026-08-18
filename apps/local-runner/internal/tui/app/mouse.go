@@ -276,6 +276,13 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		if m.question != nil {
 			return m.submitQuestionAnswer("deny")
 		}
+	case target == "approve-all", target == "deny-all":
+		// BUG-157/158: bulk-resolve every queued approval card.
+		decision := "approve"
+		if target == "deny-all" {
+			decision = "deny"
+		}
+		return m.resolveAllApprovals(decision)
 	case target == "attach":
 		// Pending chip [N img]: open manage panel (Desktop attachment chips).
 		// Empty chip is not rendered; paste remains Alt+V / /image paste.
@@ -645,6 +652,12 @@ func hitApprovalChrome(c tuiChrome, x, y int) string {
 		return ""
 	}
 	stripped := stripANSI(lines[rel])
+	if hitToken(stripped, "Approve all", x) {
+		return "approve-all"
+	}
+	if hitToken(stripped, "Deny all", x) {
+		return "deny-all"
+	}
 	if hitToken(stripped, "Approve", x) || hitToken(stripped, "/approve", x) {
 		return "approve"
 	}
