@@ -276,6 +276,24 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		if m.question != nil {
 			return m.submitQuestionAnswer("deny")
 		}
+	case target == "approve-all", target == "deny-all":
+		// BUG-157/158: bulk-resolve every queued approval card.
+		decision := "approve"
+		if target == "deny-all" {
+			decision = "deny"
+		}
+		return m.resolveAllApprovals(decision)
+	case target == "approve-forever":
+		// BUG-246: "don't ask again" rides on an approve decision.
+		if m.approval != nil {
+			return m.submitPendingApprovalRemember("approve", approvalRememberable(m.approval))
+		}
+	case strings.HasPrefix(target, "adec:"):
+		// BUG-246: resolve with a runner-offered decision value.
+		decision := strings.TrimPrefix(target, "adec:")
+		if decision != "" && m.approval != nil {
+			return m.submitPendingApprovalDecision(decision)
+		}
 	case target == "attach":
 		// Pending chip [N img]: open manage panel (Desktop attachment chips).
 		// Empty chip is not rendered; paste remains Alt+V / /image paste.
@@ -307,6 +325,13 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		if err == nil && m.question != nil && idx >= 0 && idx < len(m.question.Options) {
 			return m.submitQuestionAnswer(questionOptionToken(m.question.Options[idx]))
 		}
+	case strings.HasPrefix(target, "qtoggle:"):
+		idx, err := strconv.Atoi(strings.TrimPrefix(target, "qtoggle:"))
+		if err == nil && m.question != nil && idx >= 0 && idx < len(m.question.Options) {
+			return m.toggleQuestionSelection(questionOptionToken(m.question.Options[idx])), nil
+		}
+	case target == "qsubmit":
+		return m.submitQuestionSubmit()
 	case strings.HasPrefix(target, "copyfence:"):
 		msgIdx, fenceIdx, ok := parseCopyFenceTarget(target)
 		if ok {
@@ -424,7 +449,7 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 	if hitStatusDetailsChrome(c, x, y) {
 		return "status-details"
 	}
-	if t := hitApprovalChrome(c, x, y); t != "" {
+	if t := m.hitApprovalChrome(c, x, y); t != "" {
 		return t
 	}
 	if t := m.hitBlockedChrome(c, x, y); t != "" {
@@ -635,7 +660,7 @@ func hitStopChrome(c tuiChrome, x, y int) bool {
 	return hitToken(stripANSI(lines[0]), "[stop]", x)
 }
 
-func hitApprovalChrome(c tuiChrome, x, y int) string {
+func (m *AppModel) hitApprovalChrome(c tuiChrome, x, y int) string {
 	if c.inputH <= 0 || y < c.inputY || y >= c.inputY+c.inputH {
 		return ""
 	}
@@ -645,6 +670,22 @@ func hitApprovalChrome(c tuiChrome, x, y int) string {
 		return ""
 	}
 	stripped := stripANSI(lines[rel])
+	if hitToken(stripped, "Approve all", x) {
+		return "approve-all"
+	}
+	if hitToken(stripped, "Deny all", x) {
+		return "deny-all"
+	}
+	if hitToken(stripped, "Approve forever", x) {
+		return "approve-forever"
+	}
+	if m.approval != nil {
+		for _, d := range m.approval.Decisions {
+			if hitToken(stripped, d.Label, x) {
+				return "adec:" + d.Value
+			}
+		}
+	}
 	if hitToken(stripped, "Approve", x) || hitToken(stripped, "/approve", x) {
 		return "approve"
 	}
@@ -686,6 +727,18 @@ func hitQuestionChrome(m *AppModel, c tuiChrome, x, y int) string {
 		return ""
 	}
 	stripped := stripANSI(lines[rel])
+	if m.question.MultiSelect {
+		if hitToken(stripped, "[Submit]", x) {
+			return "qsubmit"
+		}
+		for i := range m.question.Options {
+			label := questionOptionLabel(m.question.Options[i])
+			if label != "" && hitToken(stripped, label, x) {
+				return "qtoggle:" + strconv.Itoa(i)
+			}
+		}
+		return ""
+	}
 	if hitToken(stripped, "Approve", x) || hitToken(stripped, "/approve", x) {
 		return "approve"
 	}

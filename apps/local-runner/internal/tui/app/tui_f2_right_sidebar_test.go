@@ -142,14 +142,15 @@ func TestRightSidebar_ClickSessionToggles(t *testing.T) {
 }
 
 // TestStepTodoRestyle_KeepsLegacyTokens: the todo-list step restyle still emits the
-// tokens the legacy suite asserts ("Steps N:", "RUNNING", "Now: <name>") plus the
+// tokens the legacy suite asserts ("RUNNING", "Now: <name>") plus the
 // OpenCode todo glyphs ([+]/[x]) and, for the RUNNING step, the animated spinner
-// glyph (CA-537) instead of the legacy [•].
+// glyph (CA-537) instead of the legacy [•]. The redundant "Steps N:" count line
+// is gone (CA-542) — the sidebar renders a "steps" section title instead.
 func TestStepTodoRestyle_KeepsLegacyTokens(t *testing.T) {
 	m := sidebarFlowModel("codex", 120)
 	joined := strings.Join(m.flowStepsPanelLines(), "\n")
-	if !strings.Contains(joined, "Steps 2:") {
-		t.Fatalf("must keep 'Steps N:' header:\n%s", joined)
+	if strings.Contains(joined, "Steps 2:") {
+		t.Fatalf("'Steps N:' count line must be gone (CA-542):\n%s", joined)
 	}
 	if !strings.Contains(joined, "RUNNING") {
 		t.Fatalf("running step must keep RUNNING token:\n%s", joined)
@@ -162,6 +163,9 @@ func TestStepTodoRestyle_KeepsLegacyTokens(t *testing.T) {
 	}
 	if !strings.Contains(joined, "[|]") {
 		t.Fatalf("RUNNING step must use the ascii spinner glyph (frame 0) instead of [•]:\n%s", joined)
+	}
+	if !strings.Contains(strings.Join(m.renderRightSidebar(m.height), "\n"), "steps") {
+		t.Fatal("sidebar must keep the 'steps' section title")
 	}
 }
 

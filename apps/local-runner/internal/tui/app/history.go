@@ -28,7 +28,11 @@ type ChatOpenedMsg struct {
 	Snapshot              client.RunSnapshot
 	// HistoryMeta is the list row for this run when known (kind/workflow/flowRef).
 	HistoryMeta client.RunHistoryItem
-	Err         string
+	// TokenUsage is the last token_usage_updated snapshot replayed for this run
+	// (nil when the run never emitted one). Seeds the per-run ctx/token status
+	// line so /open of chat B never shows chat A's usage (CA-540).
+	TokenUsage *client.TokenUsageSnapshot
+	Err        string
 }
 
 // applyOpenedRunFlowChrome restores ModeFlow/launch + clears stale steps when
@@ -150,6 +154,13 @@ func filterParentHistory(items []client.RunHistoryItem) []client.RunHistoryItem 
 }
 
 func formatChatList(items []client.RunHistoryItem) string {
+	return formatChatListWithRemote(items, nil)
+}
+
+// formatChatListWithRemote is formatChatList with Drive-index reconciliation
+// (CA-552): a row that only matches the confirmed Drive index still gets its
+// (synced) badge even when the runner's local syncStatus is stale/empty.
+func formatChatListWithRemote(items []client.RunHistoryItem, remote []client.RemoteChatSessionSummary) string {
 	var sb strings.Builder
 	sb.WriteString("Recent chats (Desktop history parity):\n")
 	if len(items) == 0 {
@@ -188,7 +199,12 @@ func formatChatList(items []client.RunHistoryItem) string {
 		if when == "" {
 			when = "—"
 		}
-		sb.WriteString(fmt.Sprintf("  %2d  %s  [%s] %s  %s · %s\n", i+1, shortID(it.RunID), kind, it.Status, when, title))
+		line := fmt.Sprintf("  %2d  %s  [%s] %s", i+1, shortID(it.RunID), kind, it.Status)
+		if badge := syncBadgeWithRemote(it, remote); badge != "" {
+			line += " (" + badge + ")"
+		}
+		line += "  " + when + " · " + title
+		sb.WriteString(line + "\n")
 		sb.WriteString(fmt.Sprintf("      id %s  %s\n", it.RunID, it.ProviderKey))
 	}
 	if len(items) > limit {
@@ -200,6 +216,83 @@ func formatChatList(items []client.RunHistoryItem) string {
 
 func collapseWS(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// formatSyncBadge renders the Drive chat-session sync marker for a history row
+// (Desktop Navigator syncStatus parity, CA-548). Empty when the run was never
+// marked, so local-first rows stay visually unchanged.
+func formatSyncBadge(it client.RunHistoryItem) string {
+	switch strings.TrimSpace(it.SyncStatus) {
+	case "synced":
+		return "synced"
+	case "failed":
+		return "failed"
+	case "unsyncable":
+		return "unsyncable"
+	case "syncing":
+		return "syncing"
+	default:
+		return ""
+	}
+}
+
+// syncBadgeWithRemote is formatSyncBadge plus Drive-index reconciliation
+// (CA-552). The runner's syncStatus is written to its local store asynchronously
+// and can lag (or be lost across a restart), so a row that already appears in
+// the confirmed Drive index is treated as synced. A local marker always wins
+// (failed stays failed until the next successful sync).
+func syncBadgeWithRemote(it client.RunHistoryItem, remote []client.RemoteChatSessionSummary) string {
+	if badge := formatSyncBadge(it); badge != "" {
+		return badge
+	}
+	if len(remote) == 0 {
+		return ""
+	}
+	if strings.TrimSpace(it.SourceMachineID) != "" && strings.TrimSpace(it.SourceRunID) != "" {
+		for _, r := range remote {
+			if strings.TrimSpace(r.SourceMachineID) == strings.TrimSpace(it.SourceMachineID) &&
+				strings.TrimSpace(r.SourceRunID) == strings.TrimSpace(it.SourceRunID) {
+				return "synced"
+			}
+		}
+		return ""
+	}
+	runID := strings.TrimSpace(it.RunID)
+	if runID == "" {
+		return ""
+	}
+	for _, r := range remote {
+		if strings.TrimSpace(r.SourceRunID) == runID {
+			return "synced"
+		}
+	}
+	return ""
+}
+
+// mergeChatListSyncStatus carries known local sync markers forward across a
+// fresh runner fetch (Desktop parity, navigatorHistory.ts:19-24): the runner's
+// store write is async, so a prefetch/poll can race it and return syncStatus=""
+// right after a sync. A fresh non-empty status always wins.
+func mergeChatListSyncStatus(cached, fresh []client.RunHistoryItem) []client.RunHistoryItem {
+	known := make(map[string]string, len(cached))
+	for _, it := range cached {
+		if s := strings.TrimSpace(it.SyncStatus); s != "" {
+			known[it.RunID] = s
+		}
+	}
+	if len(known) == 0 {
+		return fresh
+	}
+	out := make([]client.RunHistoryItem, len(fresh))
+	for i, it := range fresh {
+		out[i] = it
+		if strings.TrimSpace(it.SyncStatus) == "" {
+			if s, ok := known[it.RunID]; ok {
+				out[i].SyncStatus = s
+			}
+		}
+	}
+	return out
 }
 
 // resolveChatOpenTarget maps /history|/open|/resume args to a run id using the last list.
@@ -310,6 +403,21 @@ func mergeReplayAssistant(cur, next string) string {
 	return strings.TrimRight(cur, "\n") + "\n" + next
 }
 
+// lastReplayTokenUsage returns the last token_usage_updated snapshot from the
+// replayed events (the runner persists these for all providers), or nil when the
+// run never emitted one. Seeding the status line from this on /open makes ctx/
+// token usage per-run instead of leaking the previously-opened chat's numbers
+// (CA-540).
+func lastReplayTokenUsage(evs []client.ProviderEvent) *client.TokenUsageSnapshot {
+	var last *client.TokenUsageSnapshot
+	for _, ev := range evs {
+		if ev.Type == "token_usage_updated" && ev.TokenUsage != nil {
+			last = ev.TokenUsage
+		}
+	}
+	return last
+}
+
 func (m *AppModel) cmdListChats() tea.Cmd {
 	return m.cmdFetchChats(false)
 }
@@ -348,13 +456,32 @@ func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
 			break
 		}
 	}
-	if !argOK && !bare {
+	syncBare := strings.EqualFold(trimmed, "/sync") || strings.EqualFold(trimmed, "/sync all")
+	syncArg, _ := parseSlashArgPrefix(line, "/sync")
+	restoreBare := strings.EqualFold(trimmed, "/restore") || strings.EqualFold(trimmed, "/restore all")
+	restoreArg, _ := parseSlashArgPrefix(line, "/restore")
+	if !argOK && !bare && !syncBare && !syncArg && !restoreBare && !restoreArg {
 		return nil
 	}
-	if len(m.chatList) > 0 {
+	// Reconcile badges against the confirmed Drive index (CA-552), so the remote
+	// index is fresh when the picker first opens; the batch /restore and /sync
+	// completion paths also refresh it afterwards.
+	var cmds []tea.Cmd
+	if len(m.chatList) == 0 {
+		// First open of any history/sync/restore picker: fetch both the local
+		// chat list and the remote index (CA-552 reconcile needs the remote list).
+		cmds = append(cmds, m.cmdPrefetchChats(), m.cmdPrefetchRemoteChats())
+	} else if (restoreBare || restoreArg) && len(m.remoteChatList) == 0 {
+		// CA-554: the /restore picker lists Drive-backed chats one at a time, so
+		// the remote index must prefetch for a restore command even when the local
+		// chatList is already cached (the old single gate returned nil as soon as
+		// chatList was populated, which made the /restore Tab picker never appear).
+		cmds = append(cmds, m.cmdPrefetchRemoteChats())
+	}
+	if len(cmds) == 0 {
 		return nil
 	}
-	return m.cmdPrefetchChats()
+	return tea.Batch(cmds...)
 }
 
 func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
@@ -405,6 +532,7 @@ func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {
 			HistoryLoadedAfterSeq: historyCursorAfterReplay(after, collected, trimmed),
 			Snapshot:              snap,
 			HistoryMeta:           historyMeta,
+			TokenUsage:            lastReplayTokenUsage(collected),
 		}
 	}
 }
@@ -441,10 +569,11 @@ func (m *AppModel) applyPendingFromSnapshot(snap client.RunSnapshot) tea.Cmd {
 			m.statusMsg = "approval required"
 			return nil
 		}
-		m.approval = &ApprovalState{ID: id, RunID: runID, Details: snap.PendingApproval.Details}
-		m.connStatus = ConnWaiting
-		m.statusMsg = "approval required"
-		m.addMessage("system", formatApprovalWaitingLine(id, m.asciiMode), "approval")
+		if m.pushApproval(approvalStateFromInfo(id, runID, snap.PendingApproval)) {
+			m.connStatus = ConnWaiting
+			m.statusMsg = "approval required"
+			m.addMessage("system", formatApprovalWaitingLineDetailed(id, m.asciiMode, *m.approval), "approval")
+		}
 		return nil
 	}
 	if snap.PendingQuestion != nil && strings.TrimSpace(snap.PendingQuestion.ID) != "" {
@@ -454,15 +583,17 @@ func (m *AppModel) applyPendingFromSnapshot(snap client.RunSnapshot) tea.Cmd {
 			m.statusMsg = "question"
 			return nil
 		}
-		m.question = &QuestionState{
-			ID:      id,
-			Prompt:  snap.PendingQuestion.Prompt,
-			Options: snap.PendingQuestion.Options,
-			RunID:   runID,
+		if m.pushQuestion(QuestionState{
+			ID:          id,
+			Prompt:      snap.PendingQuestion.Prompt,
+			Options:     snap.PendingQuestion.Options,
+			MultiSelect: snap.PendingQuestion.MultiSelect,
+			RunID:       runID,
+		}) {
+			m.connStatus = ConnWaiting
+			m.statusMsg = "question"
+			m.addMessage("system", formatQuestionMessage(snap.PendingQuestion.Prompt, snap.PendingQuestion.Options, snap.PendingQuestion.MultiSelect), "question")
 		}
-		m.connStatus = ConnWaiting
-		m.statusMsg = "question"
-		m.addMessage("system", formatQuestionMessage(snap.PendingQuestion.Prompt, snap.PendingQuestion.Options), "question")
 	}
 	return nil
 }

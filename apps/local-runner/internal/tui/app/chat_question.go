@@ -26,6 +26,10 @@ func questionOptionLabel(o map[string]string) string {
 	return questionOptionToken(o)
 }
 
+func questionOptionDescription(o map[string]string) string {
+	return strings.TrimSpace(o["description"])
+}
+
 func resolveQuestionChoice(input string, opts []map[string]string) string {
 	raw := strings.TrimSpace(input)
 	if raw == "" {
@@ -80,7 +84,7 @@ func matchQuestionAlias(opts []map[string]string, alias string) string {
 	return ""
 }
 
-func formatQuestionMessage(prompt string, opts []map[string]string) string {
+func formatQuestionMessage(prompt string, opts []map[string]string, multi bool) string {
 	var b strings.Builder
 	b.WriteString("[QUESTION] ")
 	b.WriteString(strings.TrimSpace(prompt))
@@ -93,9 +97,16 @@ func formatQuestionMessage(prompt string, opts []map[string]string) string {
 		b.WriteString(strconv.Itoa(i + 1))
 		b.WriteString(") ")
 		b.WriteString(questionOptionLabel(o))
+		if desc := questionOptionDescription(o); desc != "" {
+			b.WriteString(" — ")
+			b.WriteString(desc)
+		}
 		if i+1 < len(opts) {
 			b.WriteString("\n")
 		}
+	}
+	if multi {
+		b.WriteString("\n  [multi-select] pick options (click or type 1/2/3), then /submit to send")
 	}
 	return b.String()
 }
@@ -105,12 +116,67 @@ func (m *AppModel) submitQuestionAnswer(input string) (tea.Model, tea.Cmd) {
 		m.addMessage("system", "No pending question.", "")
 		return m, nil
 	}
-	choice := resolveQuestionChoice(input, m.question.Options)
+	q := m.question
+	choice := resolveQuestionChoice(input, q.Options)
 	if strings.TrimSpace(choice) == "" {
-		m.addMessage("system", "Pick an option (click, type 1/2/3, or approve/deny).", "question")
+		if q.MultiSelect {
+			m.addMessage("system", "Pick an option (click or type 1/2/3) to toggle it, or /submit to send.", "question")
+		} else {
+			m.addMessage("system", "Pick an option (click, type 1/2/3, or approve/deny).", "question")
+		}
 		return m, nil
 	}
+	if q.MultiSelect {
+		return m.toggleQuestionSelection(choice), nil
+	}
 	return m, m.cmdAnswerQuestion(m.question.ID, choice)
+}
+
+// toggleQuestionSelection flips one option in the multiSelect selection set.
+func (m *AppModel) toggleQuestionSelection(value string) *AppModel {
+	label := value
+	for _, o := range m.question.Options {
+		if questionOptionToken(o) == value {
+			label = questionOptionLabel(o)
+			break
+		}
+	}
+	sel := m.question.Selected
+	removed := false
+	for i, v := range sel {
+		if v == value {
+			sel = append(sel[:i], sel[i+1:]...)
+			removed = true
+			break
+		}
+	}
+	if !removed {
+		sel = append(sel, value)
+		m.addMessage("system", "Selected "+label+". /submit to send.", "question")
+	} else {
+		m.addMessage("system", "Deselected "+label+".", "question")
+	}
+	m.question.Selected = sel
+	return m
+}
+
+// submitQuestionSubmit sends the multiSelect selection set (or surfaces a hint
+// for a single-select question that expects one option).
+func (m *AppModel) submitQuestionSubmit() (tea.Model, tea.Cmd) {
+	if m.question == nil {
+		m.addMessage("system", "No pending question.", "")
+		return m, nil
+	}
+	if !m.question.MultiSelect {
+		m.addMessage("system", "This question takes one answer — click an option or type 1/2/3.", "question")
+		return m, nil
+	}
+	sel := m.question.Selected
+	if len(sel) == 0 {
+		m.addMessage("system", "Select at least one option first (click or type 1/2/3), then /submit.", "question")
+		return m, nil
+	}
+	return m, m.cmdAnswerQuestionMulti(m.question.ID, sel)
 }
 
 func (m *AppModel) cmdAnswerQuestion(questionID, choice string) tea.Cmd {
@@ -123,5 +189,18 @@ func (m *AppModel) cmdAnswerQuestion(questionID, choice string) tea.Cmd {
 			return ErrMsg{Err: err}
 		}
 		return QuestionResolvedMsg{ID: id, Choice: ch}
+	}
+}
+
+func (m *AppModel) cmdAnswerQuestionMulti(questionID string, choices []string) tea.Cmd {
+	runnerURL := m.runnerURL
+	id := questionID
+	ch := choices
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		if err := cl.AnswerQuestionMulti(context.Background(), id, ch); err != nil {
+			return ErrMsg{Err: err}
+		}
+		return QuestionResolvedMsg{ID: id, Choice: strings.Join(ch, ", ")}
 	}
 }

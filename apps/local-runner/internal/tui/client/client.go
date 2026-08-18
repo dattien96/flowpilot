@@ -286,6 +286,62 @@ type RunHistoryItem struct {
 	AgentName   string `json:"agentName,omitempty"`
 	SubMode     string `json:"subMode,omitempty"`
 	FlowRef     string `json:"flowRef,omitempty"`
+	// Drive chat-session sync metadata (Desktop Navigator parity, CA-548).
+	SourceMachineID   string `json:"sourceMachineId,omitempty"`
+	SourceRunID       string `json:"sourceRunId,omitempty"`
+	SyncStatus        string `json:"syncStatus,omitempty"`
+	UnavailableReason string `json:"unavailableReason,omitempty"`
+}
+
+// ChatSessionSyncRequest mirrors POST /client/workflow-runs/{runId}/sync-chat.
+type ChatSessionSyncRequest struct {
+	GoogleDriveProjectID string `json:"googleDriveProjectId,omitempty"`
+	GoogleDriveFolderID  string `json:"googleDriveFolderId,omitempty"`
+}
+
+// ChatSessionSyncResult mirrors the sync-chat response.
+type ChatSessionSyncResult struct {
+	RunID           string `json:"runId"`
+	SourceMachineID string `json:"sourceMachineId"`
+	SourceRunID     string `json:"sourceRunId"`
+	SyncStatus      string `json:"syncStatus"`
+	SyncedAt        string `json:"syncedAt"`
+	RemotePath      string `json:"remotePath"`
+}
+
+// ChatSessionRestoreRequest mirrors POST /client/chat-sessions/restore.
+type ChatSessionRestoreRequest struct {
+	ProjectID       string `json:"projectId"`
+	SourceMachineID string `json:"sourceMachineId"`
+	SourceRunID     string `json:"sourceRunId"`
+	Cwd             string `json:"cwd,omitempty"`
+}
+
+// ChatSessionRestoreResult mirrors the restore response.
+type ChatSessionRestoreResult struct {
+	RunID           string `json:"runId"`
+	SourceMachineID string `json:"sourceMachineId"`
+	SourceRunID     string `json:"sourceRunId"`
+	ProviderKey     string `json:"providerKey"`
+	RestoreStatus   string `json:"restoreStatus"`
+}
+
+// RemoteChatSessionSummary mirrors GET /client/projects/{id}/chat-sessions/remote.
+type RemoteChatSessionSummary struct {
+	RunID             string `json:"runId"`
+	ProjectID         string `json:"projectId"`
+	WorkflowID        string `json:"workflowId,omitempty"`
+	ProviderKey       string `json:"providerKey"`
+	Status            string `json:"status,omitempty"`
+	RunKind           string `json:"runKind,omitempty"`
+	SourceMachineID   string `json:"sourceMachineId"`
+	SourceRunID       string `json:"sourceRunId"`
+	LastPrompt        string `json:"lastPrompt,omitempty"`
+	LastMessage       string `json:"lastMessage,omitempty"`
+	StartedAt         string `json:"startedAt,omitempty"`
+	UpdatedAt         string `json:"updatedAt,omitempty"`
+	SyncedAt          string `json:"syncedAt,omitempty"`
+	UnavailableReason string `json:"unavailableReason,omitempty"`
 }
 
 // RunSnapshot mirrors GET /client/workflow-runs/{runId}.
@@ -311,9 +367,10 @@ type ApprovalInfo struct {
 
 // QuestionInfo minimal question state from a run snapshot.
 type QuestionInfo struct {
-	ID      string              `json:"questionId"`
-	Prompt  string              `json:"prompt"`
-	Options []map[string]string `json:"options"`
+	ID          string              `json:"questionId"`
+	Prompt      string              `json:"prompt"`
+	Options     []map[string]string `json:"options"`
+	MultiSelect bool                `json:"multiSelect,omitempty"`
 }
 
 // StartRunInput mirrors the runner StartRunInput DTO.
@@ -379,6 +436,36 @@ type ProviderEvent struct {
 	TokenUsage *TokenUsageSnapshot `json:"tokenUsage,omitempty"`
 	// AgentGraph is present on agent_graph_updated events.
 	AgentGraph *AgentGraphSnapshot `json:"agentGraph,omitempty"`
+	// Details is present on permission_required events (BUG-246): what the
+	// runtime wants to do (command/cwd/reason/kind) plus the offered decisions.
+	Details *ApprovalDetails `json:"details,omitempty"`
+	// Decision is populated only when replaying an already-resolved approval on
+	// a full server restart — the client renders it read-only instead of
+	// re-showing an interactive prompt the run no longer waits on.
+	Decision string `json:"decision,omitempty"`
+	// Answer is populated only when replaying an already-resolved question on
+	// reconnect — the recorded choice(s) so the client renders the question
+	// read-only instead of re-showing an interactive form (runner
+	// ProviderEvent.Answer twin).
+	Answer []string `json:"answer,omitempty"`
+}
+
+// ApprovalDecisionOption is one decision the runtime offers for an approval
+// (mirrors runner.ApprovalDecisionOption).
+type ApprovalDecisionOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+// ApprovalDetails describes what the runtime wants to do (permission_required,
+// BUG-246). Kind classifies the approval; only "exec" shell commands are
+// eligible for the per-project "don't ask again" allowlist.
+type ApprovalDetails struct {
+	Command   string                   `json:"command,omitempty"`
+	Cwd       string                   `json:"cwd,omitempty"`
+	Reason    string                   `json:"reason,omitempty"`
+	Kind      string                   `json:"kind,omitempty"`
+	Decisions []ApprovalDecisionOption `json:"decisions"`
 }
 
 // APIError represents an error response from the runner API.
@@ -631,6 +718,27 @@ func (c *Client) ListSkills(ctx context.Context, providerKey, cwd string) ([]Pro
 	return skills, err
 }
 
+// ListWorkspaceFiles fetches GET /client/workspace-files for the @file picker.
+func (c *Client) ListWorkspaceFiles(ctx context.Context, cwd, query string) ([]string, error) {
+	endpoint := "/client/workspace-files"
+	params := make([]string, 0, 2)
+	if cwd != "" {
+		params = append(params, "cwd="+neturl.QueryEscape(cwd))
+	}
+	if query != "" {
+		params = append(params, "q="+neturl.QueryEscape(query))
+	}
+	if len(params) > 0 {
+		endpoint += "?" + strings.Join(params, "&")
+	}
+	var paths []string
+	err := c.getJSON(ctx, endpoint, &paths)
+	if paths == nil && err == nil {
+		paths = []string{}
+	}
+	return paths, err
+}
+
 // ListAgents fetches GET /client/agents for a given workspace cwd.
 func (c *Client) ListAgents(ctx context.Context, cwd string) ([]AgentRunSummary, error) {
 	endpoint := "/client/agents"
@@ -688,6 +796,28 @@ func (c *Client) ListRunHistory(ctx context.Context, projectID string) ([]RunHis
 	return items, err
 }
 
+// SyncChatRun pushes a chat session to the project's Drive folder
+// (Desktop Navigator "Sync to Drive", CA-548).
+func (c *Client) SyncChatRun(ctx context.Context, runID string, req ChatSessionSyncRequest) (ChatSessionSyncResult, error) {
+	var out ChatSessionSyncResult
+	err := c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/sync-chat", req, &out)
+	return out, err
+}
+
+// ListRemoteChatSessions fetches GET /client/projects/{projectId}/chat-sessions/remote.
+func (c *Client) ListRemoteChatSessions(ctx context.Context, projectID string) ([]RemoteChatSessionSummary, error) {
+	var out []RemoteChatSessionSummary
+	err := c.getJSON(ctx, "/client/projects/"+neturl.PathEscape(projectID)+"/chat-sessions/remote", &out)
+	return out, err
+}
+
+// RestoreChatRun pulls a Drive-backed chat session back into the local runner.
+func (c *Client) RestoreChatRun(ctx context.Context, req ChatSessionRestoreRequest) (ChatSessionRestoreResult, error) {
+	var out ChatSessionRestoreResult
+	err := c.postJSON(ctx, "/client/chat-sessions/restore", req, &out)
+	return out, err
+}
+
 // SubmitApproval sends POST /client/approvals/{approvalId}/decision (Desktop parity).
 func (c *Client) SubmitApproval(ctx context.Context, approvalID, decision string, forever bool) error {
 	return c.postJSON(ctx, "/client/approvals/"+neturl.PathEscape(approvalID)+"/decision", map[string]any{
@@ -702,6 +832,14 @@ func (c *Client) AnswerQuestion(ctx context.Context, questionID, answer string) 
 	return c.postJSON(ctx, "/client/questions/"+neturl.PathEscape(questionID)+"/answer", map[string]any{
 		"choice": answer,
 		"answer": answer,
+	}, nil)
+}
+
+// AnswerQuestionMulti sends the same endpoint with a string array choice for
+// multiSelect questions (runner parseChoice already accepts string | string[]).
+func (c *Client) AnswerQuestionMulti(ctx context.Context, questionID string, answers []string) error {
+	return c.postJSON(ctx, "/client/questions/"+neturl.PathEscape(questionID)+"/answer", map[string]any{
+		"choice": answers,
 	}, nil)
 }
 

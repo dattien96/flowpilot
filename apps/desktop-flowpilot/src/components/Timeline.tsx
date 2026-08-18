@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { providerLabel, useStore, type TimelineItem } from "@/state/store";
+import { MentionText } from "@/components/MentionText";
 import type { AgentRunSummary } from "@/types/contract";
 
 // ---------------------------------------------------------------------------
@@ -598,7 +599,7 @@ function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
             </div>
           )}
           <CopyBubble text={it.text} className="bubble prompt">
-            {it.text}
+            <MentionText text={it.text} skillNames={it.selectedSkills} />
           </CopyBubble>
           {it.selectedSkills && it.selectedSkills.length > 0 && (
             <PromptSkillsSummary skills={it.selectedSkills} />

@@ -74,11 +74,14 @@ type InteractiveService struct {
 	dispatchLogSyncMu   sync.Mutex
 	dispatchLogSyncHash map[string]string
 
-	// chatSessionIndexMu guards chatSessionIndexLocks. Each project gets its own
-	// mutex covering Drive sessions.ndjson read-merge-write so concurrent
-	// syncChatRunToDrive / list reconcile cannot last-write-wins the index.
-	chatSessionIndexMu    sync.Mutex
-	chatSessionIndexLocks map[string]*sync.Mutex
+	// chatSessionIndexMu guards chatSessionIndexLocks and chatSessionIndexRepairing.
+	// Each project gets its own mutex covering Drive sessions.ndjson
+	// read-merge-write so concurrent syncChatRunToDrive / list reconcile cannot
+	// last-write-wins the index. chatSessionIndexRepairing debounces the
+	// CA-555 background discover so repeated list calls do not stack walks.
+	chatSessionIndexMu        sync.Mutex
+	chatSessionIndexLocks     map[string]*sync.Mutex
+	chatSessionIndexRepairing map[string]struct{}
 
 	idCounter atomic.Int64
 
@@ -751,27 +754,28 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 	// so this only sweeps the no-cwd temp root (project-local dirs age out later).
 	sweepGrokImagePathFallback("", time.Hour, time.Now())
 	svc := &InteractiveService{
-		catalog:               catalog,
-		skillsCatalog:         newInteractiveCatalog(),
-		agentCatalog:          newAgentCatalog(),
-		agentOrchestrator:     newAgentOrchestrator(),
-		registry:              registry,
-		policy:                DefaultApprovalPolicyEngine(),
-		finalizer:             newFinalizer(),
-		workflowStore:         workflowStore,
-		orchestrator:          NewWorkflowOrchestrator(workflowStore),
-		runs:                  map[string]*interactiveRun{},
-		approvals:             map[string]*approvalRecord{},
-		questions:             map[string]*questionRecord{},
-		activeAccountID:       "default",
-		approvalTTL:           10 * time.Minute,
-		questionTTL:           10 * time.Minute,
-		maxTurnAttempts:       3,
-		summaryTimers:         map[string]*time.Timer{},
-		markerSecret:          markerSec,
-		markerDir:             markerDir,
-		dispatchLogSyncHash:   map[string]string{},
-		chatSessionIndexLocks: map[string]*sync.Mutex{},
+		catalog:                   catalog,
+		skillsCatalog:             newInteractiveCatalog(),
+		agentCatalog:              newAgentCatalog(),
+		agentOrchestrator:         newAgentOrchestrator(),
+		registry:                  registry,
+		policy:                    DefaultApprovalPolicyEngine(),
+		finalizer:                 newFinalizer(),
+		workflowStore:             workflowStore,
+		orchestrator:              NewWorkflowOrchestrator(workflowStore),
+		runs:                      map[string]*interactiveRun{},
+		approvals:                 map[string]*approvalRecord{},
+		questions:                 map[string]*questionRecord{},
+		activeAccountID:           "default",
+		approvalTTL:               10 * time.Minute,
+		questionTTL:               10 * time.Minute,
+		maxTurnAttempts:           3,
+		summaryTimers:             map[string]*time.Timer{},
+		markerSecret:              markerSec,
+		markerDir:                 markerDir,
+		dispatchLogSyncHash:       map[string]string{},
+		chatSessionIndexLocks:     map[string]*sync.Mutex{},
+		chatSessionIndexRepairing: map[string]struct{}{},
 	}
 	// Seed the id counter above the highest persisted run id so a runner restart does NOT
 	// reuse ids (run-1, run-2, …). Reuse made a fresh chat collide with a previous run of

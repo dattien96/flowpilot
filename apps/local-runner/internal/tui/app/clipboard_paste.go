@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -9,12 +10,17 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"flowpilot-runner/internal/tui/client"
 	"golang.design/x/clipboard"
 )
+
+// clipboardPSTimeout bounds every PowerShell clipboard read so a locked
+// clipboard can never block the TUI forever (CA-541: composer freeze).
+const clipboardPSTimeout = 3 * time.Second
 
 var clipboardOnce sync.Once
 var clipboardOK bool
@@ -44,6 +50,24 @@ type AttachmentOpenMsg struct {
 
 func (m *AppModel) cmdClipboardPaste() tea.Cmd {
 	return m.cmdClipboardPasteWithFallback("")
+}
+
+// cmdAttachImagePath attaches a copied image *file* whose path was pasted as
+// text (Explorer "Copy" of an image, or a bracketed paste whose runes are a
+// path). It reads the file directly from disk — no clipboard round-trip, so a
+// locked/hung system clipboard can never freeze the composer (CA-541).
+func (m *AppModel) cmdAttachImagePath(path string) tea.Cmd {
+	provider := m.provider
+	return func() tea.Msg {
+		atts, err := client.ValidateAttachments([]string{path}, provider)
+		if err != nil {
+			return ClipboardPasteMsg{Err: err.Error()}
+		}
+		if len(atts) == 0 {
+			return ClipboardPasteMsg{Err: "could not attach image path from paste"}
+		}
+		return ClipboardPasteMsg{Attachment: &atts[0]}
+	}
 }
 
 // cmdClipboardPasteWithFallback reads the system clipboard. Text wins so a
@@ -159,7 +183,7 @@ $ms = New-Object System.IO.MemoryStream
 $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
 [Convert]::ToBase64String($ms.ToArray())
 `
-	out, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Output()
+	out, err := runClipboardPS(script)
 	if err != nil {
 		return nil, "", fmt.Errorf("windows GetImage: %w", err)
 	}
@@ -184,7 +208,7 @@ $ext = [IO.Path]::GetExtension($p).ToLowerInvariant()
 if ($ext -notin @('.png','.jpg','.jpeg')) { exit 3 }
 Write-Output $p
 `
-	out, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Output()
+	out, err := runClipboardPS(script)
 	if err != nil {
 		return nil, "", fmt.Errorf("windows file-drop: %w", err)
 	}
@@ -206,11 +230,20 @@ $t = [System.Windows.Forms.Clipboard]::GetText()
 if ($null -eq $t) { exit 2 }
 Write-Output $t
 `
-	out, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Output()
+	out, err := runClipboardPS(script)
 	if err != nil {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// runClipboardPS runs a PowerShell clipboard script with a hard timeout so a
+// clipboard locked by another process returns an error instead of hanging the
+// TUI (CA-541). Returns exec.ErrDeadlineExceeded wrapped in the exec error.
+func runClipboardPS(script string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), clipboardPSTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script).Output()
 }
 
 func (m *AppModel) cmdOpenPendingAttachment(index int) tea.Cmd {

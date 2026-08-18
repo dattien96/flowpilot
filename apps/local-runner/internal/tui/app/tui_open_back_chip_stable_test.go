@@ -32,7 +32,7 @@ func TestChildRunForStep_PrefersFocusedRun(t *testing.T) {
 
 // TestOpenBackChip_StableAcrossHydrateReorder locks the reported flicker: the
 // polled list puts a different same-named run first, yet the focused child keeps
-// [back] instead of flipping to [open].
+// no [open] chip and the steps header keeps [back] instead of flipping (CA-542).
 func TestOpenBackChip_StableAcrossHydrateReorder(t *testing.T) {
 	for _, pk := range []string{"claude", "codex", "grok"} {
 		t.Run(pk, func(t *testing.T) {
@@ -50,11 +50,14 @@ func TestOpenBackChip_StableAcrossHydrateReorder(t *testing.T) {
 			m.focusRunID = "run-b"
 
 			joined := strings.Join(m.flowStepsPanelLines(), "\n")
-			if !strings.Contains(joined, "[back]") {
-				t.Fatalf("%s: focused child must show [back]:\n%s", pk, joined)
-			}
 			if strings.Contains(joined, "[open]") {
-				t.Fatalf("%s: chip must not flip to [open] while viewing child:\n%s", pk, joined)
+				t.Fatalf("%s: focused child row must not show [open]:\n%s", pk, joined)
+			}
+			if strings.Contains(joined, "[back]") {
+				t.Fatalf("%s: [back] must live on the steps header, not the row (CA-542):\n%s", pk, joined)
+			}
+			if !strings.Contains(m.stepsSectionTitle(), "[back]") {
+				t.Fatalf("%s: focused child must keep [back] on the steps header:\n%s", pk, m.stepsSectionTitle())
 			}
 
 			// Hydrate reorder: same-named run-a now first.
@@ -68,11 +71,11 @@ func TestOpenBackChip_StableAcrossHydrateReorder(t *testing.T) {
 			})
 			am := next.(*AppModel)
 			joined2 := strings.Join(am.flowStepsPanelLines(), "\n")
-			if !strings.Contains(joined2, "[back]") {
-				t.Fatalf("%s: [back] must survive hydrate reorder:\n%s", pk, joined2)
-			}
 			if strings.Contains(joined2, "[open]") {
-				t.Fatalf("%s: reorder must not flip the focused chip to [open]:\n%s", pk, joined2)
+				t.Fatalf("%s: reorder must not flip the focused row to [open]:\n%s", pk, joined2)
+			}
+			if !strings.Contains(am.stepsSectionTitle(), "[back]") {
+				t.Fatalf("%s: [back] must survive hydrate reorder:\n%s", pk, am.stepsSectionTitle())
 			}
 		})
 	}
@@ -105,11 +108,11 @@ func TestOpenBackChip_GraphReorderKeepsBack(t *testing.T) {
 	}})
 	am := next.(*AppModel)
 	joined := strings.Join(am.flowStepsPanelLines(), "\n")
-	if !strings.Contains(joined, "[back]") {
-		t.Fatalf("graph reorder must keep [back] for the focused child:\n%s", joined)
-	}
 	if strings.Contains(joined, "[open]") {
-		t.Fatalf("graph reorder must not flip to [open]:\n%s", joined)
+		t.Fatalf("graph reorder must not flip the focused row to [open]:\n%s", joined)
+	}
+	if !strings.Contains(am.stepsSectionTitle(), "[back]") {
+		t.Fatalf("graph reorder must keep [back] on the steps header:\n%s", am.stepsSectionTitle())
 	}
 }
 

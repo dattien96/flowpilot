@@ -706,6 +706,8 @@ export interface RunnerClient {
   streamRun(runId: string, afterSeq?: number, signal?: AbortSignal): AsyncIterable<ProviderEventDTO>;
   listArtifacts(runId: string): Promise<Artifact[]>;
   listSkills(provider: string, cwd?: string): Promise<ProviderSkill[]>;
+  /** Workspace paths for the @file picker. Optional so older mocks stay valid. */
+  listWorkspaceFiles?(cwd: string, query?: string): Promise<string[]>;
   /**
    * List built-in Chat Mode orchestration flow options for subMode (CP-42/
    * Task-177), e.g. "Review Loop" for subMode="bug". Optional so existing

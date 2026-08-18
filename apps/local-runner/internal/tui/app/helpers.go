@@ -1071,6 +1071,13 @@ func filterReasoningSuggestions(input string, current string) []suggestItem {
 
 // filterHistorySuggestions returns chats matching the query after /history|/open|/resume .
 func filterHistorySuggestions(input string, items []client.RunHistoryItem) []suggestItem {
+	return filterHistorySuggestionsWithRemote(input, items, nil)
+}
+
+// filterHistorySuggestionsWithRemote is filterHistorySuggestions plus Drive-index
+// reconciliation (CA-552). The badge is placed right after the #N index (CA-553)
+// so it stays visible even when the detail line is truncated to chatWidth.
+func filterHistorySuggestionsWithRemote(input string, items []client.RunHistoryItem, remote []client.RemoteChatSessionSummary) []suggestItem {
 	cmd, query, ok := parseChatOpenArgPrefix(input)
 	if !ok {
 		return nil
@@ -1089,7 +1096,7 @@ func filterHistorySuggestions(input string, items []client.RunHistoryItem) []sug
 		if title == "" {
 			title = "(no prompt)"
 		}
-		hay := strings.ToLower(id + " " + title + " " + it.Status + " " + it.ProviderKey + " " + it.RunKind)
+		hay := strings.ToLower(id + " " + title + " " + it.Status + " " + it.ProviderKey + " " + it.RunKind + " " + it.SyncStatus)
 		if q != "" && !strings.Contains(hay, q) && !strings.Contains(strings.ToLower(shortID(id)), q) {
 			continue
 		}
@@ -1110,7 +1117,12 @@ func filterHistorySuggestions(input string, items []client.RunHistoryItem) []sug
 		if when == "" {
 			when = "—"
 		}
-		detail := fmt.Sprintf("#%d · %s · %s · %s · %s", i+1, kind, it.Status, when, title)
+		detail := fmt.Sprintf("#%d", i+1)
+		if badge := syncBadgeWithRemote(it, remote); badge != "" {
+			detail += " · " + badge
+		}
+		detail += " · " + kind + " · " + it.Status + " · " + when
+		detail += " · " + title
 		out = append(out, suggestItem{value: id, detail: detail, kind: "history", slash: cmd})
 	}
 	return out

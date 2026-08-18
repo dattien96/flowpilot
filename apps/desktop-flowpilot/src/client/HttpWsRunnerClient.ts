@@ -179,6 +179,11 @@ export class HttpWsRunnerClient implements RunnerClient {
     if (cwd) url += `&cwd=${encodeURIComponent(cwd)}`;
     return this.getJSON<ProviderSkill[]>(url);
   }
+  listWorkspaceFiles(cwd: string, query?: string): Promise<string[]> {
+    let url = `/client/workspace-files?cwd=${encodeURIComponent(cwd)}`;
+    if (query) url += `&q=${encodeURIComponent(query)}`;
+    return this.getJSON<string[]>(url);
+  }
 
   listBuiltinOrchestrationOptions(subMode: string): Promise<BuiltinFlowOption[]> {
     const url = `/client/chat/builtin-orchestration-options?subMode=${encodeURIComponent(subMode)}`;

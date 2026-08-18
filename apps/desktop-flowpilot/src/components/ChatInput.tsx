@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { useStore } from "@/state/store";
+import { findActiveAt, insertAtMention, isAgentAtMention } from "@/components/chatFileMention";
+import { findMentionSpans } from "@/components/mentionHighlight";
 import type { ProviderAccountSummary, ProviderKey, TokenUsageSnapshot } from "@/types/contract";
 import type { SupportedModel } from "@flowpilot/client-core";
 import { contextRemainingPercent, formatAccountRemainingLabel } from "@/lib/usageSummary";
@@ -223,18 +225,18 @@ function usageSummaryLine(
 type SkillToken = { name: string; start: number; end: number };
 
 // Build the backdrop children: plain strings interleaved with highlighted <mark> spans.
-function buildBackdrop(text: string, tokens: SkillToken[]): React.ReactNode[] {
-  const sorted = [...tokens].sort((a, b) => a.start - b.start);
+function buildBackdrop(text: string, skillNames: string[]): React.ReactNode[] {
+  const spans = findMentionSpans(text, skillNames);
   const parts: React.ReactNode[] = [];
   let pos = 0;
-  for (const token of sorted) {
-    if (token.start > pos) parts.push(text.slice(pos, token.start));
+  for (const span of spans) {
+    if (span.start > pos) parts.push(text.slice(pos, span.start));
     parts.push(
-      <mark key={`${token.name}-${token.start}`} className="skill-token-highlight">
-        {text.slice(token.start, token.end)}
+      <mark key={`${span.kind}-${span.start}`} className={`mention-token mention-${span.kind}${span.kind === "skill" ? " skill-token-highlight" : ""}`}>
+        {text.slice(span.start, span.end)}
       </mark>,
     );
-    pos = token.end;
+    pos = span.end;
   }
   if (pos < text.length) parts.push(text.slice(pos));
   return parts;
@@ -303,6 +305,7 @@ export function ChatInput(): React.ReactElement {
   const yoloMode = useStore((s) => s.yoloMode);
   const grokYoloPostureLoading = useStore((s) => s.grokYoloPostureLoading);
   const loadSkills = useStore((s) => s.loadSkills);
+  const client = useStore((s) => s.client);
   const selectProvider = useStore((s) => s.selectProvider);
   const setSelectedModel = useStore((s) => s.setSelectedModel);
   const setReasoningEffort = useStore((s) => s.setReasoningEffort);
@@ -337,6 +340,9 @@ export function ChatInput(): React.ReactElement {
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const [cursorPos, setCursorPos] = useState(0);
   const [slashDismissedIndex, setSlashDismissedIndex] = useState<number | null>(null);
+  const [atDismissedIndex, setAtDismissedIndex] = useState<number | null>(null);
+  const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
+  const [fileHighlightIndex, setFileHighlightIndex] = useState(0);
   const [skillTokens, setSkillTokens] = useState<SkillToken[]>([]);
   const [pickerHighlightIndex, setPickerHighlightIndex] = useState(-1);
   const [controllerExpanded, setControllerExpanded] = useState(true);
@@ -410,6 +416,33 @@ export function ChatInput(): React.ReactElement {
           : null;
   const showAgentCommand = isChatMode && !!selectedProvider && slashCommand === "agent";
   const showPicker = isChatMode && !!selectedProvider && (skillPickerOpen || slashCommand === "skill");
+  const atFragment = useMemo(() => {
+    if (!isChatMode) return null;
+    const frag = findActiveAt(text, cursorPos);
+    if (frag !== null && frag.index === atDismissedIndex) return null;
+    return frag;
+  }, [isChatMode, text, cursorPos, atDismissedIndex]);
+  const agentNames = useMemo(() => agentRuns.map((run) => run.agentName), [agentRuns]);
+  const showFilePicker = isChatMode && !!selectedProjectPath && atFragment !== null && !isAgentAtMention(atFragment, agentNames);
+  const mentionSpans = useMemo(() => findMentionSpans(text, selectedSkills), [text, selectedSkills]);
+
+  useEffect(() => {
+    if (!showFilePicker || !selectedProjectPath || !client.listWorkspaceFiles) {
+      setWorkspaceFiles([]);
+      return;
+    }
+    const query = atFragment?.query ?? "";
+    const handle = window.setTimeout(() => {
+      void client.listWorkspaceFiles!(selectedProjectPath, query)
+        .then((paths) => setWorkspaceFiles(paths))
+        .catch(() => setWorkspaceFiles([]));
+    }, 120);
+    return () => window.clearTimeout(handle);
+  }, [showFilePicker, selectedProjectPath, atFragment?.query, client]);
+
+  useEffect(() => {
+    setFileHighlightIndex(0);
+  }, [atFragment?.query, workspaceFiles]);
   const totalSkills = skills.length;
   const filtered = useMemo(
     () => {
@@ -538,6 +571,9 @@ export function ChatInput(): React.ReactElement {
     setPreviewAtt(null);
     setSkillPickerOpen(false);
     setSlashDismissedIndex(null);
+    setAtDismissedIndex(null);
+    setWorkspaceFiles([]);
+    setFileHighlightIndex(0);
     setPickerHighlightIndex(-1);
   }, [runId]);
 
@@ -608,7 +644,7 @@ export function ChatInput(): React.ReactElement {
   );
 
   const canSend = isChatMode
-    ? hasSelectedProject && selectedProviderInstalled && selectedProviderConnected && !blocked && !hasBlockingChild && !childRunFocused && text.trim().length > 0 && !showPicker && !showAgentCommand
+    ? hasSelectedProject && selectedProviderInstalled && selectedProviderConnected && !blocked && !hasBlockingChild && !childRunFocused && text.trim().length > 0 && !showPicker && !showAgentCommand && !showFilePicker
     : hasSelectedProject &&
       (launchMode === "workflow" ? !!selectedWorkflowId : !!selectedStepId) &&
       !blocked &&
@@ -616,6 +652,22 @@ export function ChatInput(): React.ReactElement {
 
   // Keep the skill picker multi-select active; the controller strip visually
   // downplays the other options but still reflects the current runtime state.
+  const pickFile = (path: string) => {
+    if (atFragment === null) return;
+    const next = insertAtMention(text, atFragment, cursorPos, path);
+    setText(next.text);
+    setCursorPos(next.cursor);
+    setSkillTokens((prev) => [...prev, { name: path, start: atFragment.index, end: atFragment.index + path.length }]);
+    setAtDismissedIndex(null);
+    setTimeout(() => {
+      if (textAreaRef.current) {
+        textAreaRef.current.selectionStart = next.cursor;
+        textAreaRef.current.selectionEnd = next.cursor;
+        textAreaRef.current.focus();
+      }
+    }, 0);
+  };
+
   const pickSkill = (name: string) => {
     setSelectedSkills((prev) => (prev.includes(name) ? prev : [...prev, name]));
     if (slashFragment !== null) {
@@ -807,6 +859,29 @@ export function ChatInput(): React.ReactElement {
         return;
       }
     }
+    if (showFilePicker) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setFileHighlightIndex((prev) => Math.min(prev + 1, Math.max(workspaceFiles.length - 1, 0)));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setFileHighlightIndex((prev) => Math.max(prev - 1, 0));
+        return;
+      }
+      if ((e.key === "Enter" || e.key === "Tab") && workspaceFiles.length > 0) {
+        e.preventDefault();
+        const picked = workspaceFiles[fileHighlightIndex] ?? workspaceFiles[0];
+        if (picked) pickFile(picked);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        if (atFragment !== null) setAtDismissedIndex(atFragment.index);
+        return;
+      }
+    }
     if (showPicker && slashFragment !== null) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -835,7 +910,7 @@ export function ChatInput(): React.ReactElement {
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey && !showPicker) {
+    if (e.key === "Enter" && !e.shiftKey && !showPicker && !showFilePicker) {
       e.preventDefault();
       void send();
     }
@@ -855,7 +930,7 @@ export function ChatInput(): React.ReactElement {
             ? "Install the provider CLI first."
             : !selectedProviderConnected
               ? "Activate a connected account for this provider first."
-              : "Type a message. Use /s for skills, /a to spawn an agent, @ to message an agent."
+              : "Type a message. Use /s for skills, /a to spawn an agent, @file for a path, @agent to message an agent."
           : "Select a provider first."
       : launchMode === "workflow"
         ? selectedWorkflowId
@@ -1112,6 +1187,37 @@ export function ChatInput(): React.ReactElement {
         </div>
       )}
 
+      {showFilePicker && (
+        <div className="skill-picker">
+          <div className="skill-picker-head">
+            <div className="skill-picker-head-top">
+              <span>Files · Tab or Enter to insert path</span>
+              <button
+                type="button"
+                className="skill-picker-close"
+                onClick={() => { if (atFragment !== null) setAtDismissedIndex(atFragment.index); }}
+                aria-label="Close file picker"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+          {workspaceFiles.length === 0 && <div className="skill-empty">No matching file</div>}
+          {workspaceFiles.map((path, idx) => (
+            <button
+              key={path}
+              type="button"
+              className={`skill-item ${idx === fileHighlightIndex ? "skill-item-highlighted" : ""}`}
+              onClick={() => pickFile(path)}
+            >
+              <span className="skill-copy">
+                <span className="skill-name skill-name-idle">{path}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {showAgentCommand && (
         <div className="skill-picker">
           <div className="skill-picker-head">
@@ -1260,10 +1366,10 @@ export function ChatInput(): React.ReactElement {
           </>
         ) : (
           <>
-            <div className={`text-area-wrapper${isChatMode && skillTokens.length > 0 ? " has-highlights" : ""}`}>
-              {isChatMode && skillTokens.length > 0 && (
+            <div className={`text-area-wrapper${isChatMode && mentionSpans.length > 0 ? " has-highlights" : ""}`}>
+              {isChatMode && mentionSpans.length > 0 && (
                 <div className="text-area-backdrop" aria-hidden="true">
-                  {buildBackdrop(text, skillTokens)}
+                  {buildBackdrop(text, selectedSkills)}
                 </div>
               )}
               <textarea

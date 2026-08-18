@@ -264,60 +264,7 @@ func skillPromptToken(name string) string {
 // inside the chat input. Plain text stays styleInputFocus; tokens use styleStatusHi.
 // selected names only — random [brackets] in the draft are not highlighted.
 func styleInputBodyWithSkillTokens(plain string, selected []client.SkillSelection) string {
-	if plain == "" {
-		return ""
-	}
-	tokens := make([]string, 0, len(selected))
-	seen := make(map[string]bool, len(selected))
-	for _, n := range attachedSkillNames(selected) {
-		tok := skillPromptToken(n)
-		if tok == "" || seen[tok] {
-			continue
-		}
-		seen[tok] = true
-		tokens = append(tokens, tok)
-	}
-	if len(tokens) == 0 {
-		return styleInputFocus.Render(plain)
-	}
-	// Longer tokens first so [safe-fix-contract] wins over a shorter prefix if any.
-	for i := 0; i < len(tokens); i++ {
-		for j := i + 1; j < len(tokens); j++ {
-			if len(tokens[j]) > len(tokens[i]) {
-				tokens[i], tokens[j] = tokens[j], tokens[i]
-			}
-		}
-	}
-	var b strings.Builder
-	i := 0
-	for i < len(plain) {
-		matched := ""
-		for _, tok := range tokens {
-			if strings.HasPrefix(plain[i:], tok) {
-				matched = tok
-				break
-			}
-		}
-		if matched != "" {
-			b.WriteString(styleStatusHi.Render(matched))
-			i += len(matched)
-			continue
-		}
-		next := len(plain)
-		for _, tok := range tokens {
-			if j := strings.Index(plain[i:], tok); j >= 0 && i+j < next {
-				next = i + j
-			}
-		}
-		if next > i {
-			b.WriteString(styleInputFocus.Render(plain[i:next]))
-			i = next
-			continue
-		}
-		b.WriteString(styleInputFocus.Render(plain[i:]))
-		break
-	}
-	return b.String()
+	return highlightMentions(plain, attachedSkillNames(selected), styleInputFocus)
 }
 
 func containsSkillPromptToken(input, token string) bool {

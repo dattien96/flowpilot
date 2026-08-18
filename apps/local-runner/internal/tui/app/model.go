@@ -50,14 +50,25 @@ type ApprovalState struct {
 	ID      string
 	Details map[string]any
 	RunID   string
+	// Command/Cwd/Reason/Kind/Decisions are the typed BUG-246 approval details
+	// surfaced by the runner; empty when the event carries no details.
+	Command   string
+	Cwd       string
+	Reason    string
+	Kind      string
+	Decisions []client.ApprovalDecisionOption
 }
 
 // QuestionState holds the active question UI state.
 type QuestionState struct {
-	ID      string
-	Prompt  string
-	Options []map[string]string
-	RunID   string
+	ID          string
+	Prompt      string
+	Options     []map[string]string
+	MultiSelect bool
+	// Selected holds the option values toggled so far for a multiSelect
+	// question; submitted as a string array only on explicit submit.
+	Selected []string
+	RunID    string
 }
 
 // AuthPhase is the interactive Supabase login wizard state (Desktop LoginScreen parity).
@@ -269,15 +280,17 @@ type AppModel struct {
 	expandedToolGroups map[string]bool
 
 	// Per-turn settings
-	yolo              bool
-	agentsFocus       bool
-	selectedSkills    []client.SkillSelection
-	skillsCatalog     []client.ProviderSkill // Desktop ChatInput skills list
-	pendingAttach     []client.PromptAttachment
-	pendingLocalPaths map[string]string // attachment ID → materialized temp path
-	attachPanelOpen   bool              // modal list of pending images (Desktop chips)
-	launch            LaunchArm
-	firstTurnPending  bool // consume builtin FirstTurnExtras once
+	yolo                bool
+	agentsFocus         bool
+	selectedSkills      []client.SkillSelection
+	skillsCatalog       []client.ProviderSkill // Desktop ChatInput skills list
+	workspaceFiles      []string               // last @file picker fetch (nil = not loaded)
+	workspaceFilesQuery string                 // query that produced workspaceFiles
+	pendingAttach       []client.PromptAttachment
+	pendingLocalPaths   map[string]string // attachment ID → materialized temp path
+	attachPanelOpen     bool              // modal list of pending images (Desktop chips)
+	launch              LaunchArm
+	firstTurnPending    bool // consume builtin FirstTurnExtras once
 	// pendingFlowRestore holds mode/flow from disk until project catalog binds.
 	// Restoring ModeFlow on cold start (before project_id) left the TUI unusable.
 	pendingFlowRestore *prefs.Session
@@ -285,9 +298,16 @@ type AppModel struct {
 	flowBuiltins       []client.BuiltinFlowOption
 	flowWorkflows      []client.Workflow
 	chatList           []client.RunHistoryItem // last /history result for picker + /open <n>
-	sessionPanel       sessionInfoPanel        // collapsible top-right session/status overlay
-	flowSteps          []client.WorkflowStepRuntime
-	flowStepsActive    string // node name currently RUNNING
+	// remoteChatList caches the project's Drive-backed chat index (G3 /restore).
+	// G2 /sync reconciles against it to skip runs already present on Drive.
+	remoteChatList []client.RemoteChatSessionSummary
+	// driveSync tracks an in-flight /sync batch; nil when idle.
+	driveSync *driveSyncState
+	// restoreBatch tracks an in-flight /restore batch; nil when idle.
+	restoreBatch    *restoreState
+	sessionPanel    sessionInfoPanel // collapsible top-right session/status overlay
+	flowSteps       []client.WorkflowStepRuntime
+	flowStepsActive string // node name currently RUNNING
 	// flowLoopStatus mirrors the orchestrator LoopState.Status from the latest
 	// agent_graph_updated (done | running | blocked | stopped | …). Flow hubs keep
 	// the raw handle status "running" past loop "done" until the last SSE settles,
@@ -309,6 +329,7 @@ type AppModel struct {
 	turnStream            *turnStreamState
 	orchStream            *orchStreamState // Desktop orchestration SSE after turn
 	focusStream           *orchStreamState // child transcript while /agent focused
+	turnSendPending       bool             // user turn POSTed, stream not opened yet (run-107774)
 	focusRunID            string           // empty = main run viewport
 	mainTranscript        []ChatMessage    // cached while viewing a child
 	lastEventSeq          int64
@@ -323,10 +344,18 @@ type AppModel struct {
 	runnerPollFailStreak int    // consecutive steps/agent poll dial/timeout failures
 	lastTurnError        string // last turn_failed error (fallback FAIL reason in chat)
 
-	// Pending gate/approval/question state
-	gate     *GateState
-	approval *ApprovalState
-	question *QuestionState
+	// Pending gate/approval/question state. A turn can fan out several approval
+	// or question cards in parallel (BUG-157/158); the TUI used to keep a single
+	// pointer and silently dropped every card but the last, leaving the dropped
+	// card unresolved and the run hung. `approval`/`question` are the HEAD (first
+	// unresolved) cards — kept as pointers so every legacy check works unchanged —
+	// while `approvals`/`questions` carry the full queue. All mutations go
+	// through the helpers in chat_pending_queue.go.
+	gate      *GateState
+	approval  *ApprovalState
+	question  *QuestionState
+	approvals []ApprovalState
+	questions []QuestionState
 
 	// Navigation
 	project          *client.Project
@@ -371,6 +400,12 @@ type AppModel struct {
 	// thinkingTickerActive tracks whether the 90ms thinking tick is scheduled,
 	// so the always-on cursor tick only (re)starts it once per thinking phase.
 	thinkingTickerActive bool
+
+	// driveSyncFrame drives the animated Drive sync/restore spinner shown in the
+	// right sidebar / session panel while a batch is in flight (CA-551).
+	driveSyncFrame int
+	// driveSyncTickerActive tracks whether the 90ms drive tick is scheduled.
+	driveSyncTickerActive bool
 
 	// Terminal dimensions
 	width  int
@@ -488,4 +523,6 @@ var knownSlashCommands = []slashCommand{
 	{"/info", "Toggle session info panel (top-right; also F2)"},
 	{"/login", "Sign in to Supabase (email/password) — Desktop session parity"},
 	{"/settings", "Open Desktop app for Settings (start if not running)"},
+	{"/sync", "Push chat session to Drive — /sync  then ↑↓ Tab Enter · /sync all"},
+	{"/restore", "Pull a Drive-backed chat — /restore  then ↑↓ Tab Enter · /restore all"},
 }

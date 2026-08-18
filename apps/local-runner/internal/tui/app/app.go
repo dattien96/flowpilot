@@ -45,17 +45,19 @@ const (
 )
 
 var (
-	styleUserLabel = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
-	styleUser      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorPromptText))
-	styleAssistant = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
-	styleSystem    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
-	styleTool      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn))
-	styleError     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
-	styleGate      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAsk))
-	styleStatus    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
-	styleStatusHi  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // model, reason value, YOLO value, 7d, skills
-	styleStatusOK  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))
-	styleStatusErr = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
+	styleUserLabel   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
+	styleUser        = lipgloss.NewStyle().Foreground(lipgloss.Color(colorPromptText))
+	styleAssistant   = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
+	styleSystem      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+	styleTool        = lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn))
+	styleError       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
+	styleGate        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAsk))
+	styleStatus      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+	styleStatusHi    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // model, reason value, YOLO value, 7d, skills
+	styleMention     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))     // skill tokens in prompt
+	styleMentionFile = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // @file paths in prompt
+	styleStatusOK    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))
+	styleStatusErr   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
 	// agent:NAME and flow-name values — dedicated hues, not styleStatusHi/accent.
 	styleStatusAgent = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusAgent))
 	styleStatusFlow  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusFlow))
@@ -191,6 +193,17 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.thinkingTickerActive = false
 		}
+		// Drive sync/restore spinner (CA-551): same always-on cursor tick driver
+		// as the thinking ticker, but for the /sync and /restore batches.
+		if m.driveSync != nil || m.restoreBatch != nil {
+			if !m.driveSyncTickerActive {
+				m.driveSyncTickerActive = true
+				m.driveSyncFrame = 0
+				cmds = append(cmds, cmdDriveSyncTick())
+			}
+		} else {
+			m.driveSyncTickerActive = false
+		}
 		// While a flow turn/orchestration is live, poll steps-runtime so long
 		// silent steps (e.g. grok-context / context.produce) stay visible.
 		// Also re-hydrate agent graph so F2 [open] appears as soon as a child
@@ -217,10 +230,19 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.thinkingTickerActive = false
 		return m, nil
 
+	case driveSyncTickMsg:
+		m.driveSyncFrame++
+		if m.driveSync != nil || m.restoreBatch != nil {
+			return m, cmdDriveSyncTick()
+		}
+		m.driveSyncTickerActive = false
+		return m, nil
+
 	case ErrMsg:
 		m.err = msg.Err
 		m.sessionLoading = false
 		m.pendingPrompt = ""
+		m.turnSendPending = false
 		m.connStatus = ConnError
 		m.statusMsg = "error"
 		errText := msg.Err.Error()
@@ -233,10 +255,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ApprovalResolvedMsg:
-		shown := m.approval != nil && (msg.ID == "" || m.approval.ID == msg.ID)
-		if shown {
-			m.approval = nil
-		}
+		shown := m.pendingApprovalShown(msg.ID)
+		m.removeApproval(msg.ID)
 		m.connStatus = ConnRunning
 		m.statusMsg = "approved"
 		if !shown {
@@ -246,16 +266,29 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if strings.EqualFold(msg.Decision, "deny") {
 			label = "Denied."
 		}
+		if m.approval != nil {
+			// More cards in the queue: stay waiting so the next head can be
+			// resolved (BUG-157/158 parallel approvals).
+			m.connStatus = ConnWaiting
+			m.statusMsg = "approval required"
+			m.addMessage("system", fmt.Sprintf("%s %d more pending — /approve-all resolves the rest.", label, len(m.approvals)), "")
+			return m, nil
+		}
 		m.addMessage("system", label, "")
 		return m, nil
 
 	case QuestionResolvedMsg:
-		if m.question != nil && (msg.ID == "" || m.question.ID == msg.ID) {
-			m.question = nil
-		}
+		shown := m.pendingQuestionShown(msg.ID)
+		m.removeQuestion(msg.ID)
 		m.connStatus = ConnRunning
 		m.statusMsg = "answered"
 		m.addMessage("system", "Answered: "+msg.Choice, "question")
+		if shown && m.question != nil {
+			// More cards in the queue: keep answering the next head.
+			m.connStatus = ConnWaiting
+			m.statusMsg = "question"
+			m.addMessage("system", fmt.Sprintf("%d question(s) still pending.", len(m.questions)), "question")
+		}
 		return m, nil
 
 	case StoppedMsg:
@@ -279,6 +312,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		kind := strings.TrimSpace(msg.Kind)
 		if kind == "" {
 			kind = "selection"
+		}
+		// A successful selection copy clears the drag highlight so the UI returns
+		// to normal mode instead of staying in "copied" state (CA-543).
+		if kind == "selection" {
+			m.mouseSel = mouseSelect{}
 		}
 		return m, m.showFlashToast("Copied " + kind + ".")
 
@@ -475,6 +513,23 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case WorkspaceFilesMsg:
+		query, start, ok := activeAtFragment(m.inputValue, m.inputCaretIndex())
+		if !ok || isAgentAtMention(start, query, m.agentRuns) || msg.Query != query {
+			return m, nil
+		}
+		if msg.Err != "" {
+			m.workspaceFiles = []string{}
+			m.workspaceFilesQuery = msg.Query
+			return m, nil
+		}
+		m.workspaceFiles = msg.Paths
+		if m.workspaceFiles == nil {
+			m.workspaceFiles = []string{}
+		}
+		m.workspaceFilesQuery = msg.Query
+		return m, nil
+
 	case SkillsListMsg:
 		if msg.Err != "" {
 			if msg.Show {
@@ -570,7 +625,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ChatListMsg:
 		if msg.Silent {
 			if msg.Err == "" {
-				m.chatList = msg.Items
+				m.chatList = mergeChatListSyncStatus(m.chatList, msg.Items)
 			}
 			return m, nil
 		}
@@ -578,9 +633,81 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addMessage("system", "Chat list failed: "+msg.Err, "error")
 			return m, nil
 		}
-		m.chatList = msg.Items
-		m.addMessage("system", formatChatList(msg.Items), "")
+		m.chatList = mergeChatListSyncStatus(m.chatList, msg.Items)
+		m.addMessage("system", formatChatListWithRemote(msg.Items, m.remoteChatList), "")
 		return m, nil
+
+	case DriveSyncBatchMsg:
+		// G2 /sync progress: update the badge for the finished row, then either
+		// start the next upload or print the batch summary (Desktop Navigator
+		// "Synced n/m" parity). One HTTP per Update — the batch never freezes the
+		// composer and a single failure does not abort the rest.
+		st := m.driveSync
+		if st == nil {
+			// Stale message (batch already finished/reset): surface the result
+			// without touching counters.
+			if msg.Err != nil {
+				m.addMessage("system", formatDriveSyncErr(msg.RunID, msg.Err), "error")
+			}
+			return m, nil
+		}
+		m.markChatSyncStatus(msg.RunID, msg.Err, msg.Result)
+		st.done++
+		if msg.Err != nil {
+			st.failed++
+		}
+		if len(st.queue) == 0 {
+			m.driveSync = nil
+			m.addMessage("system", formatDriveSyncSummary(st), "")
+			return m, nil
+		}
+		next := st.queue[0]
+		st.queue = st.queue[1:]
+		return m, m.cmdSyncRun(next, st.projectID)
+
+	case RemoteChatListMsg:
+		// G3 /restore index (silent refresh after a batch, loud bare dump).
+		if msg.Err != "" {
+			m.addMessage("system", "Remote chat list failed: "+msg.Err, "error")
+			return m, nil
+		}
+		m.remoteChatList = msg.Items
+		if !msg.Silent {
+			m.addMessage("system", formatRemoteChatList(msg.Items), "")
+		}
+		return m, nil
+
+	case RestoreBatchMsg:
+		// G3 /restore progress: sequential queue; single restore opens the
+		// restored chat on success, /restore all stays silent and refreshes
+		// both lists afterwards.
+		st := m.restoreBatch
+		if st == nil {
+			if msg.Err != nil {
+				m.addMessage("system", formatRestoreErr(msg.SourceKey, msg.Err), "error")
+			}
+			return m, nil
+		}
+		st.done++
+		if msg.Err != nil {
+			st.failed++
+		}
+		if len(st.queue) == 0 {
+			m.restoreBatch = nil
+			if st.openAfter {
+				if msg.Err == nil && msg.Result != nil && strings.TrimSpace(msg.Result.RunID) != "" {
+					m.addMessage("system", fmt.Sprintf("Restored %s from Drive.", msg.SourceKey), "")
+					return m, m.cmdOpenChat(msg.Result.RunID)
+				}
+				m.addMessage("system", formatRestoreErr(msg.SourceKey, msg.Err), "error")
+				return m, nil
+			}
+			m.addMessage("system", formatRestoreSummary(st), "")
+			return m, tea.Batch(m.cmdFetchChats(true), m.cmdFetchRemoteChats(true))
+		}
+		next := st.queue[0]
+		st.queue = st.queue[1:]
+		return m, m.cmdRestoreOne(next, st.projectID, st.cwd)
 
 	case ChatOpenedMsg:
 		if msg.Err != "" {
@@ -611,8 +738,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingPrompt = ""
 		m.firstTurnPending = false
 		m.gate = nil
-		m.approval = nil
-		m.question = nil
+		m.clearPendingDecisions()
 		m.messages = nil
 		m.visiblePromptCount = 0
 		m.historyLoadedAfterSeq = msg.HistoryLoadedAfterSeq
@@ -645,6 +771,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stepID = m.resolveTurnStepID()
 		}
 		m.connStatus = ConnIdle
+		// Per-run token usage (CA-540): /open must not carry another chat's ctx/
+		// token numbers. Clear, then seed from the run's own last usage event.
+		m.lastTokens = msg.TokenUsage
+		if msg.TokenUsage != nil && msg.TokenUsage.ModelContextWindow != nil && *msg.TokenUsage.ModelContextWindow > 0 {
+			m.modelContextWin = *msg.TokenUsage.ModelContextWindow
+		}
 		m.statusMsg = fmt.Sprintf("opened %s", shortID(handle.RunID))
 		kind := "chat"
 		if m.mode == ModeFlow || m.mode == ModeStep || m.launch.IsCatalogWorkflow() {
@@ -862,11 +994,17 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case turnStreamOpenedMsg:
 		m.turnStream = &turnStreamState{evCh: msg.EvCh, errCh: msg.ErrCh}
+		m.turnSendPending = false
 		m.connStatus = ConnRunning
 		m.statusMsg = "streaming…"
 		if m.isFlowChrome() {
 			if m.flowStepsActive != "" {
 				m.statusMsg = "step: " + m.flowStepsActive
+			} else if m.flowLoopDone() {
+				// run-107774: after a flow is done, a follow-up turn is plain hub
+				// chat, not a re-run — keep the chat label ("thinking…") instead of
+				// claiming the flow restarted.
+				m.statusMsg = "thinking…"
 			} else {
 				m.statusMsg = "flow running…"
 			}
@@ -888,6 +1026,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case turnStreamClosedMsg:
 		m.turnStream = nil
+		m.turnSendPending = false
 		if msg.Err != nil {
 			// BUG-231 (run-189839 parity): a freeform turn against a blocked flow
 			// answers 409 flow_awaiting_user. That is a deliberate parked state,
@@ -1248,7 +1387,9 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		// Flow chrome is quiet (CA-511): progress lives on F2 steps + status line,
 		// so a delta must not overwrite "step: X"/"flow running…" with "streaming…"
 		// — that masked a finished flow behind a fake live spinner (run-189839).
-		if m.connStatus == ConnRunning && !m.isFlowChrome() {
+		// Post-done follow-up chat (run-107774) is plain hub chat, so deltas may
+		// surface "streaming…" there again.
+		if m.connStatus == ConnRunning && (!m.isFlowChrome() || m.flowLoopDone()) {
 			m.statusMsg = "streaming…"
 		}
 
@@ -1272,7 +1413,9 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		} else if ev.FinalMessage != "" && !m.hasAssistantContent() && !isStepCompleteStub(ev.FinalMessage) {
 			m.ensureAssistantMessage(ev.FinalMessage)
 		}
-		if m.shouldPollStepsRuntime() && (m.orchStream != nil || m.flowHasActiveAgents()) {
+		// run-107774: once the loop is done, a completed follow-up turn must not
+		// re-arm "flow running…" — the flow is finished, settle to done directly.
+		if !m.flowLoopDone() && m.shouldPollStepsRuntime() && (m.orchStream != nil || m.flowHasActiveAgents()) {
 			m.connStatus = ConnWaiting
 			m.statusMsg = "flow running…"
 			return m, m.cmdRefreshStepsRuntime()
@@ -1298,6 +1441,10 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		if m.isFlowChrome() {
 			if m.flowStepsActive != "" {
 				m.statusMsg = "step: " + m.flowStepsActive
+			} else if m.flowLoopDone() {
+				// run-107774: post-done follow-up is a plain hub chat turn, not a
+				// flow restart — use the chat label instead of "flow running…".
+				m.statusMsg = "turn running…"
 			} else {
 				m.statusMsg = "flow running…"
 			}
@@ -1325,30 +1472,60 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 				m.statusMsg = "auto-approved"
 				return m, m.cmdAutoApprove(ev.ApprovalID, ev.WorkflowRunID)
 			}
-			m.approval = &ApprovalState{
+			if ev.Decision != "" {
+				// Replay of an already-resolved approval (BUG-ApprovalReplay-Restart):
+				// render read-only instead of re-mounting an interactive card the
+				// run no longer waits on.
+				m.connStatus = ConnRunning
+				m.statusMsg = "approval resolved"
+				m.addMessage("system", fmt.Sprintf("[APPROVAL] %s already resolved: %s", ev.ApprovalID, ev.Decision), "approval")
+				return m, nil
+			}
+			st := ApprovalState{
 				ID:    ev.ApprovalID,
 				RunID: ev.WorkflowRunID,
 			}
+			if d := ev.Details; d != nil {
+				st.Command = d.Command
+				st.Cwd = d.Cwd
+				st.Reason = d.Reason
+				st.Kind = d.Kind
+				st.Decisions = d.Decisions
+			}
+			added := m.pushApproval(st)
 			m.connStatus = ConnWaiting
 			m.statusMsg = "approval required"
-			m.addMessage("system", formatApprovalWaitingLine(ev.ApprovalID, m.asciiMode), "approval")
+			if added {
+				m.addMessage("system", formatApprovalWaitingLineDetailed(ev.ApprovalID, m.asciiMode, st), "approval")
+			}
 		}
 
 	case "user_question_required":
 		if ev.QuestionID != "" {
+			if len(ev.Answer) > 0 {
+				// Replay of an already-resolved question: render read-only, never
+				// mount an interactive card the run no longer waits on (G3 parity).
+				m.connStatus = ConnRunning
+				m.statusMsg = "question answered"
+				m.addMessage("system", fmt.Sprintf("[QUESTION] %s already answered: %s", ev.QuestionID, strings.Join(ev.Answer, ", ")), "question")
+				break
+			}
 			opts := make([]map[string]string, 0, len(ev.Options))
 			for _, o := range ev.Options {
 				opts = append(opts, o)
 			}
-			m.question = &QuestionState{
-				ID:      ev.QuestionID,
-				Prompt:  ev.Prompt,
-				Options: opts,
-				RunID:   ev.WorkflowRunID,
-			}
+			added := m.pushQuestion(QuestionState{
+				ID:          ev.QuestionID,
+				Prompt:      ev.Prompt,
+				Options:     opts,
+				MultiSelect: ev.MultiSelect,
+				RunID:       ev.WorkflowRunID,
+			})
 			m.connStatus = ConnWaiting
 			m.statusMsg = "question"
-			m.addMessage("system", formatQuestionMessage(ev.Prompt, opts), "question")
+			if added {
+				m.addMessage("system", formatQuestionMessage(ev.Prompt, opts, ev.MultiSelect), "question")
+			}
 		}
 
 	case "flow_gate_violation":
@@ -1502,6 +1679,10 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if items := m.collectSuggestions(); len(items) > 0 {
 			it := items[m.suggIdx%len(items)]
+			if it.kind == "file" && strings.TrimSpace(it.value) != "" {
+				m.applyFileMention(it.value)
+				return m, nil
+			}
 			if it.kind == "skill" && strings.TrimSpace(it.value) != "" {
 				m.toggleSkillByNameQuiet(it.value)
 				m.retargetSkillSuggestion(it.value)
@@ -1560,6 +1741,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.authPhase == AuthNone {
 			if items := m.collectSuggestions(); len(items) > 0 {
 				it := items[m.suggIdx%len(items)]
+				if it.kind == "file" {
+					if strings.TrimSpace(it.value) != "" {
+						m.applyFileMention(it.value)
+					}
+					return m, nil
+				}
 				if it.kind == "skill" {
 					// Tab ticks; Enter applies (closes picker, keeps ticks on the
 					// status chip). Strip only /skill… so draft prompt is preserved
@@ -1649,10 +1836,24 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.cmdClipboardPaste()
 			}
 			// Windows Terminal often steals Ctrl+V and injects bracketed paste
-			// (KeyRunes+Paste). Prefer clipboard image/path, then text; fall
-			// back to the bracketed-paste runes when the clipboard is empty.
+			// (KeyRunes+Paste). The bracketed-paste runes already carry the
+			// pasted text — insert it directly. Reading the system clipboard on
+			// the typing hot path is what froze the composer: a locked
+			// clipboard (native read or PowerShell GetText) blocked forever, so
+			// typed/pasted characters never appeared while F2/F4 still worked.
+			// The clipboard is only consulted when the paste carries no text
+			// (image-only clipboard) or looks like a copied image file path.
 			if msg.Paste {
-				return m, m.cmdClipboardPasteWithFallback(string(msg.Runes))
+				pasted := string(msg.Runes)
+				if strings.TrimSpace(pasted) == "" {
+					return m, m.cmdClipboardPasteWithFallback("")
+				}
+				if path := imagePathFromClipboardText(pasted); path != "" {
+					return m, m.cmdAttachImagePath(path)
+				}
+				m.insertInputAtCursor(pasted)
+				m.suggIdx = 0
+				return m, m.cmdMaybePrefetchPickers()
 			}
 		}
 		if msg.Type == tea.KeySpace {
@@ -1674,6 +1875,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *AppModel) collectSuggestions() []suggestItem {
+	if query, start, ok := activeAtFragment(m.inputValue, m.inputCaretIndex()); ok && !isAgentAtMention(start, query, m.agentRuns) {
+		if m.workspaceFilesQuery != query {
+			return filterFileMentionSuggestions(query, nil)
+		}
+		return filterFileMentionSuggestions(query, m.workspaceFiles)
+	}
 	projectID := ""
 	if m.project != nil {
 		projectID = m.project.ID
@@ -1689,8 +1896,23 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 		}
 		return []suggestItem{{value: "", detail: "(no matching flows)", kind: "flow"}}
 	}
-	if chats := filterHistorySuggestions(in, m.chatList); len(chats) > 0 {
+	if chats := filterHistorySuggestionsWithRemote(in, m.chatList, m.remoteChatList); len(chats) > 0 {
 		return chats
+	}
+	if syncSugg := filterSyncSuggestionsWithRemote(in, m.syncableChats(), m.remoteChatList); len(syncSugg) > 0 {
+		return syncSugg
+	}
+	if restoreSugg := filterRestoreSuggestions(in, m.remoteChatList); len(restoreSugg) > 0 {
+		return restoreSugg
+	}
+	// CA-554: /restore Tab picker must always open — show a loading row while
+	// the Drive index is in flight and an empty-state row once it is confirmed
+	// empty (mirrors the /history loading row below).
+	if ok, _ := parseSlashArgPrefix(in, "/restore"); ok {
+		if m.remoteChatList == nil {
+			return []suggestItem{{value: "", detail: "loading Drive chats…", kind: "restore", slash: "/restore"}}
+		}
+		return []suggestItem{{value: "", detail: "(no Drive-backed chats to restore)", kind: "restore", slash: "/restore"}}
 	}
 	if cmd, _, ok := parseChatOpenArgPrefix(in); ok {
 		if len(m.chatList) == 0 {
@@ -1779,6 +2001,8 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 	it := items[idx]
 	if cmd := suggestionAcceptValue(it); cmd == "" {
 		return
+	} else if it.kind == "file" {
+		m.applyFileMention(it.value)
 	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" {
 		// Nested pickers: only replace the active /… fragment (keep pre-slash draft).
 		m.setInputPreservingDraftPrefix(cmd)
@@ -1813,6 +2037,24 @@ func suggestionAcceptValue(it suggestItem) string {
 			slash = "/history"
 		}
 		return slash + " " + it.value
+	case "sync":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		slash := it.slash
+		if slash == "" {
+			slash = "/sync"
+		}
+		return slash + " " + it.value
+	case "restore":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		slash := it.slash
+		if slash == "" {
+			slash = "/restore"
+		}
+		return slash + " " + it.value
 	case "model":
 		if strings.TrimSpace(it.value) == "" {
 			return ""
@@ -1823,6 +2065,8 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/reasoning " + it.value
+	case "file":
+		return strings.TrimSpace(it.value)
 	case "skill":
 		if strings.TrimSpace(it.value) == "" {
 			return ""
@@ -2048,7 +2292,7 @@ func (m *AppModel) workIsLive() bool {
 	if m.connStatus == ConnRunning {
 		return true
 	}
-	if m.turnStream != nil || m.focusStream != nil {
+	if m.turnStream != nil || m.focusedChildLive() {
 		return true
 	}
 	// Flow/step chrome: a live (non-terminal) handle is still working even on
@@ -2150,6 +2394,7 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	// First message: start run, then send turn (desktop sendPrompt parity).
 	if m.runHandle == nil {
 		m.pendingPrompt = input
+		m.turnSendPending = true
 		startMsg := fmt.Sprintf("Starting chat run (%s · %s)…", m.provider, orDash(m.model))
 		if m.launch.IsCatalogWorkflow() {
 			startMsg = fmt.Sprintf("Starting workflow run (%s · %s · %s)…", m.launch.StatusLabel(), m.provider, orDash(m.model))
@@ -2159,6 +2404,9 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 		m.addMessage("system", startMsg, "")
 		return m, m.cmdStartRun()
 	}
+	// run-107774: mark the turn send in flight so a steps poll landing before
+	// turnStreamOpenedMsg cannot settle the finished loop (see settleFlowIfDone).
+	m.turnSendPending = true
 	return m, m.cmdSendTurn(input)
 }
 
@@ -2679,8 +2927,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.selectedSkills = nil
 		_ = m.clearPendingAttachments()
 		m.gate = nil
-		m.approval = nil
-		m.question = nil
+		m.clearPendingDecisions()
 		m.flowSteps = nil
 		m.flowStepsActive = ""
 		m.lastEventSeq = 0
@@ -2714,6 +2961,8 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		sb.WriteString(fmt.Sprintf("Status: %s | Mode: %s | %s | Provider: %s | Model: %s | Auth: %s\n",
 			m.connStatus, m.mode, m.yoloStatusLabel(), m.provider, m.model, auth))
 		sb.WriteString("Active provider account: " + orDash(m.activeProviderAccountLabel()) + "\n")
+		m.sessionPanel.DriveStatus = m.driveIndicatorLine()
+		m.sessionPanel.DriveBadge = m.openChatDriveBadge()
 		for _, line := range m.sessionPanel.lines() {
 			sb.WriteString(line + "\n")
 		}
@@ -2777,6 +3026,32 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		m.addMessage("system", "No pending approval.", "")
 
+	case "/approve forever", "/deny forever":
+		// BUG-246: "don't ask again" for the exec approval. A deny is never
+		// persisted (desktop parity); the remember flag rides only on approve.
+		decision := "approve"
+		if strings.HasPrefix(input, "/deny") {
+			decision = "deny"
+		}
+		if m.approval != nil {
+			remember := decision == "approve" && approvalRememberable(m.approval)
+			return m.submitPendingApprovalRemember(decision, remember)
+		}
+		m.addMessage("system", "No pending approval.", "")
+
+	case "/approve-all", "/deny-all":
+		// BUG-157/158: a turn can fan out several parallel approvals; resolve
+		// every queued card at once (Desktop bulk-approve parity).
+		decision := "approve"
+		if strings.HasPrefix(input, "/deny") {
+			decision = "deny"
+		}
+		return m.resolveAllApprovals(decision)
+
+	case "/submit":
+		// G3 multiSelect question: send the toggled selection set as an array.
+		return m.submitQuestionSubmit()
+
 	case "/stop":
 		// A blocked (awaiting-user) flow has turnIsActive()==false but Stop is
 		// still valid — the user can end the parked loop (Desktop FlowAwaitingUser
@@ -2805,6 +3080,12 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			kind = strings.ToLower(args[0])
 		}
 		return m, m.cmdCopyKind(kind)
+
+	case "/sync":
+		return m.runSyncDispatch(args)
+
+	case "/restore":
+		return m.runRestoreDispatch(args)
 
 	default:
 		m.addMessage("system", fmt.Sprintf("Unknown command: %s. Type /help for list.", cmd), "error")
@@ -2918,7 +3199,7 @@ func (m *AppModel) loadingBannerText() string {
 }
 
 func suggestionVisibleLimit(sugg []suggestItem) int {
-	if len(sugg) > 0 && (sugg[0].kind == "history" || sugg[0].kind == "skill") {
+	if len(sugg) > 0 && (sugg[0].kind == "history" || sugg[0].kind == "skill" || sugg[0].kind == "file") {
 		return 12
 	}
 	return 8
@@ -2941,6 +3222,12 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 			kind = "providers"
 		case "skill":
 			kind = "skills"
+		case "file":
+			kind = "files"
+		case "sync":
+			kind = "sync"
+		case "restore":
+			kind = "restore"
 		}
 	}
 	sel := 0
@@ -2952,6 +3239,9 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 	sb.WriteString(styleSuggest.Render(kind + ":"))
 	if kind == "skills" {
 		sb.WriteString(styleSuggest.Render("  Tab tick · Enter apply"))
+	}
+	if kind == "files" {
+		sb.WriteString(styleSuggest.Render("  Tab/Enter insert path"))
 	}
 	for i := start; i < end; i++ {
 		sb.WriteString("\n")
@@ -3254,9 +3544,14 @@ func (m *AppModel) buildChatRows() []chatRow {
 				contentWidth = 8
 			}
 		}
-		mdLines := textsToMD(trimEmptyEdges(wrapText(msg.Content, contentWidth)))
+		wrapped := wrapText(msg.Content, contentWidth)
+		mdLines := textsToMD(trimEmptyEdges(wrapped))
 		if msg.Role == "assistant" && msg.FormatHint == "" {
 			mdLines = renderMarkdownRows(msg.Content, contentWidth, m.asciiMode)
+		}
+		var userPainted []string
+		if msg.Role == "user" {
+			userPainted = paintWrappedMentions(msg.Content, attachedSkillNames(m.selectedSkills), mdTexts(mdLines), styleUser)
 		}
 		var msgRows []chatRow
 		fenceN := 0
@@ -3278,6 +3573,8 @@ func (m *AppModel) buildChatRows() []chatRow {
 				rendered = pad + lineStyle.Render(stripANSI(line))
 			} else if msg.Role == "assistant" && msg.FormatHint == "" {
 				rendered = line
+			} else if msg.Role == "user" && i < len(userPainted) {
+				rendered = userPainted[i]
 			} else {
 				rendered = lineStyle.Render(stripANSI(line))
 			}
@@ -3330,6 +3627,28 @@ func formatApprovalWaitingLine(approvalID string, ascii bool) string {
 		suffix = "Waiting user..."
 	}
 	return wait + fmt.Sprintf("[APPROVAL] %s %s", approvalID, suffix)
+}
+
+// formatApprovalWaitingLineDetailed extends the live-gate transcript line with
+// the approval kind + command so the operator sees exactly what they are being
+// asked to approve (BUG-246). Cards without details keep the legacy copy.
+func formatApprovalWaitingLineDetailed(approvalID string, ascii bool, a ApprovalState) string {
+	base := formatApprovalWaitingLine(approvalID, ascii)
+	if strings.TrimSpace(a.Command) == "" && strings.TrimSpace(a.Reason) == "" {
+		return base
+	}
+	var parts []string
+	if k := strings.TrimSpace(a.Kind); k != "" {
+		parts = append(parts, k)
+	}
+	if c := strings.TrimSpace(a.Command); c != "" {
+		parts = append(parts, c)
+	}
+	line := base + " · " + strings.Join(parts, ": ")
+	if r := strings.TrimSpace(a.Reason); r != "" {
+		line += " — " + r
+	}
+	return line
 }
 
 func renderApprovalText(line string) string {
@@ -3394,12 +3713,30 @@ func renderQuestionBar(left, mid string, q *QuestionState, width int) string {
 		if i > 0 {
 			b.WriteString("  ")
 		}
-		b.WriteString(styleLink.Render(strconv.Itoa(i+1) + ")"))
-		b.WriteString(" ")
-		b.WriteString(styleLink.Render(questionOptionLabel(o)))
+		if q.MultiSelect {
+			mark := "[ ]"
+			sel := ""
+			for _, v := range q.Selected {
+				if v == questionOptionToken(o) {
+					mark = "[x]"
+					break
+				}
+			}
+			sel = mark + " "
+			b.WriteString(styleLink.Render(sel + questionOptionLabel(o)))
+		} else {
+			b.WriteString(styleLink.Render(strconv.Itoa(i+1) + ")"))
+			b.WriteString(" ")
+			b.WriteString(styleLink.Render(questionOptionLabel(o)))
+		}
 	}
 	if len(q.Options) == 0 {
 		b.WriteString(styleSystem.Render("type an answer"))
+	} else if q.MultiSelect {
+		b.WriteString("  ")
+		b.WriteString(styleSystem.Render("toggle, then /submit or click Submit"))
+		b.WriteString("  ")
+		b.WriteString(styleLink.Render("[Submit]"))
 	} else {
 		b.WriteString("  ")
 		b.WriteString(styleSystem.Render("click or type"))
@@ -3509,12 +3846,22 @@ func (m *AppModel) renderInputLine() string {
 
 	var inner []string
 	if m.approval != nil {
-		inner = append(inner, styleGate.Render("approval")+"  "+
-			styleLink.Render("Approve")+"  "+styleLink.Render("Deny")+"  "+
-			styleSystem.Render("click or type"))
+		head := "approval"
+		if n := len(m.approvals); n > 1 {
+			head = fmt.Sprintf("approval %d/%d", 1, n)
+		}
+		chips := approvalDecisionChips(m.approval)
+		if len(m.approvals) > 1 {
+			chips += "  " + styleLink.Render("Approve all") + "  " + styleLink.Render("Deny all")
+		}
+		inner = append(inner, styleGate.Render(head)+"  "+chips+"  "+styleSystem.Render("click or type"))
 	}
 	if m.question != nil {
-		inner = append(inner, renderQuestionBar(left, mid, m.question, innerW))
+		qbar := renderQuestionBar(left, mid, m.question, innerW)
+		if n := len(m.questions); n > 1 {
+			qbar = styleGate.Render(fmt.Sprintf("(%d/%d)", 1, n)) + " " + qbar
+		}
+		inner = append(inner, qbar)
 	}
 	if bar := m.renderAttentionBar(); bar != "" {
 		inner = append(inner, strings.Split(bar, "\n")...)
@@ -3984,7 +4331,7 @@ func (m *AppModel) cmdMaybePrefetchFlows() tea.Cmd {
 }
 
 func (m *AppModel) cmdMaybePrefetchPickers() tea.Cmd {
-	return tea.Batch(m.cmdMaybePrefetchFlows(), m.cmdMaybePrefetchHistory(), m.cmdMaybePrefetchSkills())
+	return tea.Batch(m.cmdMaybePrefetchFlows(), m.cmdMaybePrefetchHistory(), m.cmdMaybePrefetchSkills(), m.cmdMaybePrefetchWorkspaceFiles())
 }
 
 func (m *AppModel) cmdStartRun() tea.Cmd {
@@ -4109,13 +4456,40 @@ func (m *AppModel) submitPendingApproval(decision string) (tea.Model, tea.Cmd) {
 	return m, m.cmdApprove(m.approval.ID, decision)
 }
 
+// submitPendingApprovalDecision resolves the head approval with a specific
+// decision value offered by the runner (BUG-246: decisions other than the
+// default approve/deny, e.g. approve_for_session).
+func (m *AppModel) submitPendingApprovalDecision(decision string) (tea.Model, tea.Cmd) {
+	if m.approval == nil {
+		m.addMessage("system", "No pending approval.", "")
+		return m, nil
+	}
+	return m, m.cmdApprove(m.approval.ID, decision)
+}
+
+// submitPendingApprovalRemember resolves the head approval carrying the
+// "don't ask again" remember flag (BUG-246 desktop parity — only an approve
+// decision is ever persisted; deny always passes remember=false).
+func (m *AppModel) submitPendingApprovalRemember(decision string, remember bool) (tea.Model, tea.Cmd) {
+	if m.approval == nil {
+		m.addMessage("system", "No pending approval.", "")
+		return m, nil
+	}
+	return m, m.cmdApproveWithRemember(m.approval.ID, decision, remember)
+}
+
 func (m *AppModel) cmdApprove(approvalID, decision string) tea.Cmd {
+	return m.cmdApproveWithRemember(approvalID, decision, false)
+}
+
+func (m *AppModel) cmdApproveWithRemember(approvalID, decision string, remember bool) tea.Cmd {
 	runnerURL := m.runnerURL
 	id := approvalID
 	dec := decision
+	rem := remember
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
-		if err := cl.SubmitApproval(context.Background(), id, dec, false); err != nil {
+		if err := cl.SubmitApproval(context.Background(), id, dec, rem); err != nil {
 			return ErrMsg{Err: err}
 		}
 		return ApprovalResolvedMsg{ID: id, Decision: dec}
