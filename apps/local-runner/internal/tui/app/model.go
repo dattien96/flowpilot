@@ -61,10 +61,14 @@ type ApprovalState struct {
 
 // QuestionState holds the active question UI state.
 type QuestionState struct {
-	ID      string
-	Prompt  string
-	Options []map[string]string
-	RunID   string
+	ID          string
+	Prompt      string
+	Options     []map[string]string
+	MultiSelect bool
+	// Selected holds the option values toggled so far for a multiSelect
+	// question; submitted as a string array only on explicit submit.
+	Selected []string
+	RunID    string
 }
 
 // AuthPhase is the interactive Supabase login wizard state (Desktop LoginScreen parity).

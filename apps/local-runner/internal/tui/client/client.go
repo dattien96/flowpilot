@@ -311,9 +311,10 @@ type ApprovalInfo struct {
 
 // QuestionInfo minimal question state from a run snapshot.
 type QuestionInfo struct {
-	ID      string              `json:"questionId"`
-	Prompt  string              `json:"prompt"`
-	Options []map[string]string `json:"options"`
+	ID          string              `json:"questionId"`
+	Prompt      string              `json:"prompt"`
+	Options     []map[string]string `json:"options"`
+	MultiSelect bool                `json:"multiSelect,omitempty"`
 }
 
 // StartRunInput mirrors the runner StartRunInput DTO.
@@ -386,6 +387,11 @@ type ProviderEvent struct {
 	// a full server restart — the client renders it read-only instead of
 	// re-showing an interactive prompt the run no longer waits on.
 	Decision string `json:"decision,omitempty"`
+	// Answer is populated only when replaying an already-resolved question on
+	// reconnect — the recorded choice(s) so the client renders the question
+	// read-only instead of re-showing an interactive form (runner
+	// ProviderEvent.Answer twin).
+	Answer []string `json:"answer,omitempty"`
 }
 
 // ApprovalDecisionOption is one decision the runtime offers for an approval
@@ -727,6 +733,14 @@ func (c *Client) AnswerQuestion(ctx context.Context, questionID, answer string) 
 	return c.postJSON(ctx, "/client/questions/"+neturl.PathEscape(questionID)+"/answer", map[string]any{
 		"choice": answer,
 		"answer": answer,
+	}, nil)
+}
+
+// AnswerQuestionMulti sends the same endpoint with a string array choice for
+// multiSelect questions (runner parseChoice already accepts string | string[]).
+func (c *Client) AnswerQuestionMulti(ctx context.Context, questionID string, answers []string) error {
+	return c.postJSON(ctx, "/client/questions/"+neturl.PathEscape(questionID)+"/answer", map[string]any{
+		"choice": answers,
 	}, nil)
 }
 

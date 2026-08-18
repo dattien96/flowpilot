@@ -1392,20 +1392,29 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 
 	case "user_question_required":
 		if ev.QuestionID != "" {
+			if len(ev.Answer) > 0 {
+				// Replay of an already-resolved question: render read-only, never
+				// mount an interactive card the run no longer waits on (G3 parity).
+				m.connStatus = ConnRunning
+				m.statusMsg = "question answered"
+				m.addMessage("system", fmt.Sprintf("[QUESTION] %s already answered: %s", ev.QuestionID, strings.Join(ev.Answer, ", ")), "question")
+				break
+			}
 			opts := make([]map[string]string, 0, len(ev.Options))
 			for _, o := range ev.Options {
 				opts = append(opts, o)
 			}
 			added := m.pushQuestion(QuestionState{
-				ID:      ev.QuestionID,
-				Prompt:  ev.Prompt,
-				Options: opts,
-				RunID:   ev.WorkflowRunID,
+				ID:          ev.QuestionID,
+				Prompt:      ev.Prompt,
+				Options:     opts,
+				MultiSelect: ev.MultiSelect,
+				RunID:       ev.WorkflowRunID,
 			})
 			m.connStatus = ConnWaiting
 			m.statusMsg = "question"
 			if added {
-				m.addMessage("system", formatQuestionMessage(ev.Prompt, opts), "question")
+				m.addMessage("system", formatQuestionMessage(ev.Prompt, opts, ev.MultiSelect), "question")
 			}
 		}
 
@@ -2874,6 +2883,10 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		return m.resolveAllApprovals(decision)
 
+	case "/submit":
+		// G3 multiSelect question: send the toggled selection set as an array.
+		return m.submitQuestionSubmit()
+
 	case "/stop":
 		// A blocked (awaiting-user) flow has turnIsActive()==false but Stop is
 		// still valid — the user can end the parked loop (Desktop FlowAwaitingUser
@@ -3513,12 +3526,30 @@ func renderQuestionBar(left, mid string, q *QuestionState, width int) string {
 		if i > 0 {
 			b.WriteString("  ")
 		}
-		b.WriteString(styleLink.Render(strconv.Itoa(i+1) + ")"))
-		b.WriteString(" ")
-		b.WriteString(styleLink.Render(questionOptionLabel(o)))
+		if q.MultiSelect {
+			mark := "[ ]"
+			sel := ""
+			for _, v := range q.Selected {
+				if v == questionOptionToken(o) {
+					mark = "[x]"
+					break
+				}
+			}
+			sel = mark + " "
+			b.WriteString(styleLink.Render(sel + questionOptionLabel(o)))
+		} else {
+			b.WriteString(styleLink.Render(strconv.Itoa(i+1) + ")"))
+			b.WriteString(" ")
+			b.WriteString(styleLink.Render(questionOptionLabel(o)))
+		}
 	}
 	if len(q.Options) == 0 {
 		b.WriteString(styleSystem.Render("type an answer"))
+	} else if q.MultiSelect {
+		b.WriteString("  ")
+		b.WriteString(styleSystem.Render("toggle, then /submit or click Submit"))
+		b.WriteString("  ")
+		b.WriteString(styleLink.Render("[Submit]"))
 	} else {
 		b.WriteString("  ")
 		b.WriteString(styleSystem.Render("click or type"))

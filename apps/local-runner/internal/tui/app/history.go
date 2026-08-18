@@ -476,14 +476,15 @@ func (m *AppModel) applyPendingFromSnapshot(snap client.RunSnapshot) tea.Cmd {
 			return nil
 		}
 		if m.pushQuestion(QuestionState{
-			ID:      id,
-			Prompt:  snap.PendingQuestion.Prompt,
-			Options: snap.PendingQuestion.Options,
-			RunID:   runID,
+			ID:          id,
+			Prompt:      snap.PendingQuestion.Prompt,
+			Options:     snap.PendingQuestion.Options,
+			MultiSelect: snap.PendingQuestion.MultiSelect,
+			RunID:       runID,
 		}) {
 			m.connStatus = ConnWaiting
 			m.statusMsg = "question"
-			m.addMessage("system", formatQuestionMessage(snap.PendingQuestion.Prompt, snap.PendingQuestion.Options), "question")
+			m.addMessage("system", formatQuestionMessage(snap.PendingQuestion.Prompt, snap.PendingQuestion.Options, snap.PendingQuestion.MultiSelect), "question")
 		}
 	}
 	return nil

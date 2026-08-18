@@ -325,6 +325,13 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		if err == nil && m.question != nil && idx >= 0 && idx < len(m.question.Options) {
 			return m.submitQuestionAnswer(questionOptionToken(m.question.Options[idx]))
 		}
+	case strings.HasPrefix(target, "qtoggle:"):
+		idx, err := strconv.Atoi(strings.TrimPrefix(target, "qtoggle:"))
+		if err == nil && m.question != nil && idx >= 0 && idx < len(m.question.Options) {
+			return m.toggleQuestionSelection(questionOptionToken(m.question.Options[idx])), nil
+		}
+	case target == "qsubmit":
+		return m.submitQuestionSubmit()
 	case strings.HasPrefix(target, "copyfence:"):
 		msgIdx, fenceIdx, ok := parseCopyFenceTarget(target)
 		if ok {
@@ -720,6 +727,18 @@ func hitQuestionChrome(m *AppModel, c tuiChrome, x, y int) string {
 		return ""
 	}
 	stripped := stripANSI(lines[rel])
+	if m.question.MultiSelect {
+		if hitToken(stripped, "[Submit]", x) {
+			return "qsubmit"
+		}
+		for i := range m.question.Options {
+			label := questionOptionLabel(m.question.Options[i])
+			if label != "" && hitToken(stripped, label, x) {
+				return "qtoggle:" + strconv.Itoa(i)
+			}
+		}
+		return ""
+	}
 	if hitToken(stripped, "Approve", x) || hitToken(stripped, "/approve", x) {
 		return "approve"
 	}
