@@ -280,15 +280,17 @@ type AppModel struct {
 	expandedToolGroups map[string]bool
 
 	// Per-turn settings
-	yolo              bool
-	agentsFocus       bool
-	selectedSkills    []client.SkillSelection
-	skillsCatalog     []client.ProviderSkill // Desktop ChatInput skills list
-	pendingAttach     []client.PromptAttachment
-	pendingLocalPaths map[string]string // attachment ID → materialized temp path
-	attachPanelOpen   bool              // modal list of pending images (Desktop chips)
-	launch            LaunchArm
-	firstTurnPending  bool // consume builtin FirstTurnExtras once
+	yolo                bool
+	agentsFocus         bool
+	selectedSkills      []client.SkillSelection
+	skillsCatalog       []client.ProviderSkill // Desktop ChatInput skills list
+	workspaceFiles      []string               // last @file picker fetch (nil = not loaded)
+	workspaceFilesQuery string                 // query that produced workspaceFiles
+	pendingAttach       []client.PromptAttachment
+	pendingLocalPaths   map[string]string // attachment ID → materialized temp path
+	attachPanelOpen     bool              // modal list of pending images (Desktop chips)
+	launch              LaunchArm
+	firstTurnPending    bool // consume builtin FirstTurnExtras once
 	// pendingFlowRestore holds mode/flow from disk until project catalog binds.
 	// Restoring ModeFlow on cold start (before project_id) left the TUI unusable.
 	pendingFlowRestore *prefs.Session

@@ -45,17 +45,19 @@ const (
 )
 
 var (
-	styleUserLabel = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
-	styleUser      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorPromptText))
-	styleAssistant = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
-	styleSystem    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
-	styleTool      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn))
-	styleError     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
-	styleGate      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAsk))
-	styleStatus    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
-	styleStatusHi  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // model, reason value, YOLO value, 7d, skills
-	styleStatusOK  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))
-	styleStatusErr = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
+	styleUserLabel   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
+	styleUser        = lipgloss.NewStyle().Foreground(lipgloss.Color(colorPromptText))
+	styleAssistant   = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
+	styleSystem      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+	styleTool        = lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn))
+	styleError       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
+	styleGate        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAsk))
+	styleStatus      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+	styleStatusHi    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // model, reason value, YOLO value, 7d, skills
+	styleMention     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))     // skill tokens in prompt
+	styleMentionFile = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // @file paths in prompt
+	styleStatusOK    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))
+	styleStatusErr   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
 	// agent:NAME and flow-name values — dedicated hues, not styleStatusHi/accent.
 	styleStatusAgent = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusAgent))
 	styleStatusFlow  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusFlow))
@@ -510,6 +512,23 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, tea.Batch(cmds...)
+
+	case WorkspaceFilesMsg:
+		query, start, ok := activeAtFragment(m.inputValue, m.inputCaretIndex())
+		if !ok || isAgentAtMention(start, query, m.agentRuns) || msg.Query != query {
+			return m, nil
+		}
+		if msg.Err != "" {
+			m.workspaceFiles = []string{}
+			m.workspaceFilesQuery = msg.Query
+			return m, nil
+		}
+		m.workspaceFiles = msg.Paths
+		if m.workspaceFiles == nil {
+			m.workspaceFiles = []string{}
+		}
+		m.workspaceFilesQuery = msg.Query
+		return m, nil
 
 	case SkillsListMsg:
 		if msg.Err != "" {
@@ -1660,6 +1679,10 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if items := m.collectSuggestions(); len(items) > 0 {
 			it := items[m.suggIdx%len(items)]
+			if it.kind == "file" && strings.TrimSpace(it.value) != "" {
+				m.applyFileMention(it.value)
+				return m, nil
+			}
 			if it.kind == "skill" && strings.TrimSpace(it.value) != "" {
 				m.toggleSkillByNameQuiet(it.value)
 				m.retargetSkillSuggestion(it.value)
@@ -1718,6 +1741,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.authPhase == AuthNone {
 			if items := m.collectSuggestions(); len(items) > 0 {
 				it := items[m.suggIdx%len(items)]
+				if it.kind == "file" {
+					if strings.TrimSpace(it.value) != "" {
+						m.applyFileMention(it.value)
+					}
+					return m, nil
+				}
 				if it.kind == "skill" {
 					// Tab ticks; Enter applies (closes picker, keeps ticks on the
 					// status chip). Strip only /skill… so draft prompt is preserved
@@ -1846,6 +1875,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *AppModel) collectSuggestions() []suggestItem {
+	if query, start, ok := activeAtFragment(m.inputValue, m.inputCaretIndex()); ok && !isAgentAtMention(start, query, m.agentRuns) {
+		if m.workspaceFilesQuery != query {
+			return filterFileMentionSuggestions(query, nil)
+		}
+		return filterFileMentionSuggestions(query, m.workspaceFiles)
+	}
 	projectID := ""
 	if m.project != nil {
 		projectID = m.project.ID
@@ -1966,6 +2001,8 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 	it := items[idx]
 	if cmd := suggestionAcceptValue(it); cmd == "" {
 		return
+	} else if it.kind == "file" {
+		m.applyFileMention(it.value)
 	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" {
 		// Nested pickers: only replace the active /… fragment (keep pre-slash draft).
 		m.setInputPreservingDraftPrefix(cmd)
@@ -2028,6 +2065,8 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/reasoning " + it.value
+	case "file":
+		return strings.TrimSpace(it.value)
 	case "skill":
 		if strings.TrimSpace(it.value) == "" {
 			return ""
@@ -3160,7 +3199,7 @@ func (m *AppModel) loadingBannerText() string {
 }
 
 func suggestionVisibleLimit(sugg []suggestItem) int {
-	if len(sugg) > 0 && (sugg[0].kind == "history" || sugg[0].kind == "skill") {
+	if len(sugg) > 0 && (sugg[0].kind == "history" || sugg[0].kind == "skill" || sugg[0].kind == "file") {
 		return 12
 	}
 	return 8
@@ -3183,6 +3222,8 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 			kind = "providers"
 		case "skill":
 			kind = "skills"
+		case "file":
+			kind = "files"
 		case "sync":
 			kind = "sync"
 		case "restore":
@@ -3198,6 +3239,9 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 	sb.WriteString(styleSuggest.Render(kind + ":"))
 	if kind == "skills" {
 		sb.WriteString(styleSuggest.Render("  Tab tick · Enter apply"))
+	}
+	if kind == "files" {
+		sb.WriteString(styleSuggest.Render("  Tab/Enter insert path"))
 	}
 	for i := start; i < end; i++ {
 		sb.WriteString("\n")
@@ -3500,9 +3544,14 @@ func (m *AppModel) buildChatRows() []chatRow {
 				contentWidth = 8
 			}
 		}
-		mdLines := textsToMD(trimEmptyEdges(wrapText(msg.Content, contentWidth)))
+		wrapped := wrapText(msg.Content, contentWidth)
+		mdLines := textsToMD(trimEmptyEdges(wrapped))
 		if msg.Role == "assistant" && msg.FormatHint == "" {
 			mdLines = renderMarkdownRows(msg.Content, contentWidth, m.asciiMode)
+		}
+		var userPainted []string
+		if msg.Role == "user" {
+			userPainted = paintWrappedMentions(msg.Content, attachedSkillNames(m.selectedSkills), mdTexts(mdLines), styleUser)
 		}
 		var msgRows []chatRow
 		fenceN := 0
@@ -3524,6 +3573,8 @@ func (m *AppModel) buildChatRows() []chatRow {
 				rendered = pad + lineStyle.Render(stripANSI(line))
 			} else if msg.Role == "assistant" && msg.FormatHint == "" {
 				rendered = line
+			} else if msg.Role == "user" && i < len(userPainted) {
+				rendered = userPainted[i]
 			} else {
 				rendered = lineStyle.Render(stripANSI(line))
 			}
@@ -4280,7 +4331,7 @@ func (m *AppModel) cmdMaybePrefetchFlows() tea.Cmd {
 }
 
 func (m *AppModel) cmdMaybePrefetchPickers() tea.Cmd {
-	return tea.Batch(m.cmdMaybePrefetchFlows(), m.cmdMaybePrefetchHistory(), m.cmdMaybePrefetchSkills())
+	return tea.Batch(m.cmdMaybePrefetchFlows(), m.cmdMaybePrefetchHistory(), m.cmdMaybePrefetchSkills(), m.cmdMaybePrefetchWorkspaceFiles())
 }
 
 func (m *AppModel) cmdStartRun() tea.Cmd {

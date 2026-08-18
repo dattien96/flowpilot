@@ -718,6 +718,27 @@ func (c *Client) ListSkills(ctx context.Context, providerKey, cwd string) ([]Pro
 	return skills, err
 }
 
+// ListWorkspaceFiles fetches GET /client/workspace-files for the @file picker.
+func (c *Client) ListWorkspaceFiles(ctx context.Context, cwd, query string) ([]string, error) {
+	endpoint := "/client/workspace-files"
+	params := make([]string, 0, 2)
+	if cwd != "" {
+		params = append(params, "cwd="+neturl.QueryEscape(cwd))
+	}
+	if query != "" {
+		params = append(params, "q="+neturl.QueryEscape(query))
+	}
+	if len(params) > 0 {
+		endpoint += "?" + strings.Join(params, "&")
+	}
+	var paths []string
+	err := c.getJSON(ctx, endpoint, &paths)
+	if paths == nil && err == nil {
+		paths = []string{}
+	}
+	return paths, err
+}
+
 // ListAgents fetches GET /client/agents for a given workspace cwd.
 func (c *Client) ListAgents(ctx context.Context, cwd string) ([]AgentRunSummary, error) {
 	endpoint := "/client/agents"
