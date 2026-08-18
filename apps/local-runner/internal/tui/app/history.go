@@ -466,10 +466,22 @@ func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
 	// Reconcile badges against the confirmed Drive index (CA-552), so the remote
 	// index is fresh when the picker first opens; the batch /restore and /sync
 	// completion paths also refresh it afterwards.
-	if len(m.chatList) > 0 {
+	var cmds []tea.Cmd
+	if len(m.chatList) == 0 {
+		// First open of any history/sync/restore picker: fetch both the local
+		// chat list and the remote index (CA-552 reconcile needs the remote list).
+		cmds = append(cmds, m.cmdPrefetchChats(), m.cmdPrefetchRemoteChats())
+	} else if (restoreBare || restoreArg) && len(m.remoteChatList) == 0 {
+		// CA-554: the /restore picker lists Drive-backed chats one at a time, so
+		// the remote index must prefetch for a restore command even when the local
+		// chatList is already cached (the old single gate returned nil as soon as
+		// chatList was populated, which made the /restore Tab picker never appear).
+		cmds = append(cmds, m.cmdPrefetchRemoteChats())
+	}
+	if len(cmds) == 0 {
 		return nil
 	}
-	return tea.Batch(m.cmdPrefetchChats(), m.cmdPrefetchRemoteChats())
+	return tea.Batch(cmds...)
 }
 
 func (m *AppModel) cmdOpenChat(runID string) tea.Cmd {

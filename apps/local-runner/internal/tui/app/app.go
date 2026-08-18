@@ -1870,6 +1870,15 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if restoreSugg := filterRestoreSuggestions(in, m.remoteChatList); len(restoreSugg) > 0 {
 		return restoreSugg
 	}
+	// CA-554: /restore Tab picker must always open — show a loading row while
+	// the Drive index is in flight and an empty-state row once it is confirmed
+	// empty (mirrors the /history loading row below).
+	if ok, _ := parseSlashArgPrefix(in, "/restore"); ok {
+		if m.remoteChatList == nil {
+			return []suggestItem{{value: "", detail: "loading Drive chats…", kind: "restore", slash: "/restore"}}
+		}
+		return []suggestItem{{value: "", detail: "(no Drive-backed chats to restore)", kind: "restore", slash: "/restore"}}
+	}
 	if cmd, _, ok := parseChatOpenArgPrefix(in); ok {
 		if len(m.chatList) == 0 {
 			return []suggestItem{{value: "", detail: "loading chats…", kind: "history", slash: cmd}}
@@ -3174,6 +3183,10 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 			kind = "providers"
 		case "skill":
 			kind = "skills"
+		case "sync":
+			kind = "sync"
+		case "restore":
+			kind = "restore"
 		}
 	}
 	sel := 0

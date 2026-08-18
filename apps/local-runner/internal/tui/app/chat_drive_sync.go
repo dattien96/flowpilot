@@ -490,7 +490,7 @@ func filterRestoreSuggestions(input string, remote []client.RemoteChatSessionSum
 		kind:   "restore",
 		slash:  "/restore",
 	})
-	for _, it := range remote {
+	for i, it := range remote {
 		title := strings.TrimSpace(it.LastPrompt)
 		if title == "" {
 			title = strings.TrimSpace(it.LastMessage)
@@ -502,7 +502,29 @@ func filterRestoreSuggestions(input string, remote []client.RemoteChatSessionSum
 		if q != "" && !strings.Contains(hay, q) {
 			continue
 		}
-		detail := fmt.Sprintf("%s [%s]", title, it.SourceMachineID)
+		// CA-554: one chat per row with the same #N · kind · status · date
+		// detail as /open so the /restore Tab picker reads like the history
+		// picker. The value stays machineId:runId (accept → /restore m1:r1).
+		kind := strings.TrimSpace(it.RunKind)
+		if kind == "" {
+			if strings.TrimSpace(it.WorkflowID) != "" {
+				kind = "workflow"
+			} else {
+				kind = "chat"
+			}
+		}
+		when := ""
+		if strings.TrimSpace(it.UpdatedAt) != "" {
+			when = formatQuotaResetAt(it.UpdatedAt)
+		}
+		if when == "" {
+			when = formatQuotaResetAt(it.StartedAt)
+		}
+		if when == "" {
+			when = "—"
+		}
+		detail := fmt.Sprintf("#%d · %s · %s · %s", i+1, kind, it.Status, when)
+		detail += " · " + title
 		out = append(out, suggestItem{value: remoteSourceKey(it), detail: detail, kind: "restore", slash: "/restore"})
 	}
 	return out
