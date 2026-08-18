@@ -391,7 +391,9 @@ func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
 	}
 	syncBare := strings.EqualFold(trimmed, "/sync") || strings.EqualFold(trimmed, "/sync all")
 	syncArg, _ := parseSlashArgPrefix(line, "/sync")
-	if !argOK && !bare && !syncBare && !syncArg {
+	restoreBare := strings.EqualFold(trimmed, "/restore") || strings.EqualFold(trimmed, "/restore all")
+	restoreArg, _ := parseSlashArgPrefix(line, "/restore")
+	if !argOK && !bare && !syncBare && !syncArg && !restoreBare && !restoreArg {
 		return nil
 	}
 	if len(m.chatList) > 0 {

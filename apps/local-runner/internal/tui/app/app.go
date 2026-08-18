@@ -627,6 +627,50 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		st.queue = st.queue[1:]
 		return m, m.cmdSyncRun(next, st.projectID)
 
+	case RemoteChatListMsg:
+		// G3 /restore index (silent refresh after a batch, loud bare dump).
+		if msg.Err != "" {
+			m.addMessage("system", "Remote chat list failed: "+msg.Err, "error")
+			return m, nil
+		}
+		m.remoteChatList = msg.Items
+		if !msg.Silent {
+			m.addMessage("system", formatRemoteChatList(msg.Items), "")
+		}
+		return m, nil
+
+	case RestoreBatchMsg:
+		// G3 /restore progress: sequential queue; single restore opens the
+		// restored chat on success, /restore all stays silent and refreshes
+		// both lists afterwards.
+		st := m.restoreBatch
+		if st == nil {
+			if msg.Err != nil {
+				m.addMessage("system", formatRestoreErr(msg.SourceKey, msg.Err), "error")
+			}
+			return m, nil
+		}
+		st.done++
+		if msg.Err != nil {
+			st.failed++
+		}
+		if len(st.queue) == 0 {
+			m.restoreBatch = nil
+			if st.openAfter {
+				if msg.Err == nil && msg.Result != nil && strings.TrimSpace(msg.Result.RunID) != "" {
+					m.addMessage("system", fmt.Sprintf("Restored %s from Drive.", msg.SourceKey), "")
+					return m, m.cmdOpenChat(msg.Result.RunID)
+				}
+				m.addMessage("system", formatRestoreErr(msg.SourceKey, msg.Err), "error")
+				return m, nil
+			}
+			m.addMessage("system", formatRestoreSummary(st), "")
+			return m, tea.Batch(m.cmdFetchChats(true), m.cmdFetchRemoteChats(true))
+		}
+		next := st.queue[0]
+		st.queue = st.queue[1:]
+		return m, m.cmdRestoreOne(next, st.projectID, st.cwd)
+
 	case ChatOpenedMsg:
 		if msg.Err != "" {
 			m.addMessage("system", msg.Err, "error")
@@ -1804,6 +1848,9 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if syncSugg := filterSyncSuggestions(in, m.syncableChats()); len(syncSugg) > 0 {
 		return syncSugg
 	}
+	if restoreSugg := filterRestoreSuggestions(in, m.remoteChatList); len(restoreSugg) > 0 {
+		return restoreSugg
+	}
 	if cmd, _, ok := parseChatOpenArgPrefix(in); ok {
 		if len(m.chatList) == 0 {
 			return []suggestItem{{value: "", detail: "loading chats…", kind: "history", slash: cmd}}
@@ -1932,6 +1979,15 @@ func suggestionAcceptValue(it suggestItem) string {
 		slash := it.slash
 		if slash == "" {
 			slash = "/sync"
+		}
+		return slash + " " + it.value
+	case "restore":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		slash := it.slash
+		if slash == "" {
+			slash = "/restore"
 		}
 		return slash + " " + it.value
 	case "model":
@@ -2958,6 +3014,9 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 
 	case "/sync":
 		return m.runSyncDispatch(args)
+
+	case "/restore":
+		return m.runRestoreDispatch(args)
 
 	default:
 		m.addMessage("system", fmt.Sprintf("Unknown command: %s. Type /help for list.", cmd), "error")

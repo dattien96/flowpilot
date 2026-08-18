@@ -300,7 +300,9 @@ type AppModel struct {
 	// G2 /sync reconciles against it to skip runs already present on Drive.
 	remoteChatList []client.RemoteChatSessionSummary
 	// driveSync tracks an in-flight /sync batch; nil when idle.
-	driveSync       *driveSyncState
+	driveSync *driveSyncState
+	// restoreBatch tracks an in-flight /restore batch; nil when idle.
+	restoreBatch    *restoreState
 	sessionPanel    sessionInfoPanel // collapsible top-right session/status overlay
 	flowSteps       []client.WorkflowStepRuntime
 	flowStepsActive string // node name currently RUNNING
