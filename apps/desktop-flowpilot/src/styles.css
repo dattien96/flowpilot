@@ -3677,9 +3677,27 @@ input {
   color: transparent;
 }
 .skill-token-highlight {
-  background: rgba(76, 141, 255, 0.18);
+  background: rgba(46, 204, 160, 0.22);
   border-radius: 3px;
   color: transparent;
+}
+.mention-token {
+  border-radius: 3px;
+  padding: 0 1px;
+}
+.bubble.prompt .mention-skill {
+  background: rgba(46, 204, 160, 0.22);
+  color: #3fb950;
+}
+.bubble.prompt .mention-file {
+  background: rgba(76, 141, 255, 0.22);
+  color: #4c8dff;
+}
+.text-area-backdrop .mention-skill {
+  background: rgba(46, 204, 160, 0.22);
+}
+.text-area-backdrop .mention-file {
+  background: rgba(76, 141, 255, 0.22);
 }
 
 /* chat input — same canvas + centered to match reading column */

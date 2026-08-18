@@ -26,14 +26,14 @@ func TestStyleInputBodyWithSkillTokens_HighlightsAttachedOnly(t *testing.T) {
 	}
 	// [other] is not attached — should not get its own hi span alone if coding/review do.
 	// Coding token must appear as a styled segment.
-	if !strings.Contains(got, styleStatusHi.Render("[coding]")) {
+	if !strings.Contains(got, styleMention.Render("[coding]")) {
 		t.Fatalf("missing hi [coding] in %q", got)
 	}
-	if !strings.Contains(got, styleStatusHi.Render("[review]")) {
+	if !strings.Contains(got, styleMention.Render("[review]")) {
 		t.Fatalf("missing hi [review]")
 	}
-	// Unattached [other] is rendered with input focus, not status hi.
-	if strings.Contains(got, styleStatusHi.Render("[other]")) {
+	// Unattached [other] is rendered with input focus, not mention green.
+	if strings.Contains(got, styleMention.Render("[other]")) {
 		t.Fatal("[other] must not be highlighted")
 	}
 }
@@ -52,7 +52,7 @@ func TestRenderInputLine_SkillTokensHighlighted(t *testing.T) {
 	if !strings.Contains(plain, "abc [coding] def") {
 		t.Fatalf("plain missing draft:\n%s", plain)
 	}
-	if !strings.Contains(line, styleStatusHi.Render("[coding]")) {
+	if !strings.Contains(line, styleMention.Render("[coding]")) {
 		t.Fatalf("input should highlight [coding]:\n%q", line)
 	}
 }
