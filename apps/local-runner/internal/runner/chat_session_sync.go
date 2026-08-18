@@ -730,47 +730,109 @@ func discoverChatSessionDriveManifestRecords(ctx context.Context, accessToken, r
 	return out, nil
 }
 
-// loadChatSessionDriveIndexRecords downloads sessions.ndjson, merges any run
-// manifests missing from the index, and rewrites the index when repair is needed.
+// readChatSessionDriveIndex downloads chat-sessions/_index/sessions.ndjson
+// only. Missing index is an empty list, not an error (CA-555 fast path).
+func readChatSessionDriveIndex(ctx context.Context, accessToken, rootFolderID string) ([]chatSessionDriveIndexRecord, *apiErr) {
+	indexFile, err := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, "chat-sessions/_index/sessions.ndjson")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []chatSessionDriveIndexRecord{}, nil
+		}
+		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
+	raw, err := downloadGoogleDriveFileByID(ctx, accessToken, indexFile.ID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []chatSessionDriveIndexRecord{}, nil
+		}
+		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
+	}
+	return parseChatSessionDriveIndex(raw), nil
+}
+
+func chatSessionIndexHasParentRunID(records []chatSessionDriveIndexRecord) bool {
+	for _, record := range records {
+		if strings.TrimSpace(record.ParentRunID) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// scheduleChatSessionIndexRepair walks runs/ and merges missing rows in the
+// background. Used when the index already has rows so list can return immediately
+// (CA-555) while still eventually repairing CA-404 under-written indexes.
+func (s *InteractiveService) scheduleChatSessionIndexRepair(projectID, accessToken, rootFolderID string) {
+	key := strings.TrimSpace(projectID)
+	if key == "" {
+		key = "_"
+	}
+	s.chatSessionIndexMu.Lock()
+	if s.chatSessionIndexRepairing == nil {
+		s.chatSessionIndexRepairing = map[string]struct{}{}
+	}
+	if _, busy := s.chatSessionIndexRepairing[key]; busy {
+		s.chatSessionIndexMu.Unlock()
+		return
+	}
+	s.chatSessionIndexRepairing[key] = struct{}{}
+	s.chatSessionIndexMu.Unlock()
+
+	go func() {
+		defer func() {
+			s.chatSessionIndexMu.Lock()
+			delete(s.chatSessionIndexRepairing, key)
+			s.chatSessionIndexMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		discovered, err := discoverChatSessionDriveManifestRecords(ctx, accessToken, rootFolderID)
+		if err != nil || len(discovered) == 0 {
+			return
+		}
+		lock := s.chatSessionIndexLock(projectID)
+		lock.Lock()
+		defer lock.Unlock()
+		_, _ = s.mergeAndUpsertChatSessionDriveIndexLocked(ctx, accessToken, rootFolderID, discovered)
+	}()
+}
+
+// loadChatSessionDriveIndexRecords reads sessions.ndjson first (CA-555). A
+// non-empty index is returned immediately; discover+repair runs in the
+// background. An empty/missing index still discovers runs/ synchronously so
+// CA-404 orphan-manifest repair stays on the request path.
 func (s *InteractiveService) loadChatSessionDriveIndexRecords(
 	ctx context.Context,
 	projectID, accessToken, rootFolderID string,
 ) ([]chatSessionDriveIndexRecord, *apiErr) {
+	records, apiErr := readChatSessionDriveIndex(ctx, accessToken, rootFolderID)
+	if apiErr != nil {
+		return nil, apiErr
+	}
+	if len(records) > 0 {
+		log.Printf("[chat-sync] remote index project=%s index_rows=%d discovered_manifests=deferred", projectID, len(records))
+		s.scheduleChatSessionIndexRepair(projectID, accessToken, rootFolderID)
+		return records, nil
+	}
+
 	discovered, discoverErr := discoverChatSessionDriveManifestRecords(ctx, accessToken, rootFolderID)
 	if discoverErr != nil {
 		return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", discoverErr.Error())
+	}
+	if len(discovered) == 0 {
+		log.Printf("[chat-sync] remote index project=%s index_rows=0 discovered_manifests=0", projectID)
+		return []chatSessionDriveIndexRecord{}, nil
 	}
 
 	lock := s.chatSessionIndexLock(projectID)
 	lock.Lock()
 	defer lock.Unlock()
 
-	// No run manifests: read index only (do not create empty Drive folders).
-	if len(discovered) == 0 {
-		indexFile, err := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, "chat-sessions/_index/sessions.ndjson")
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return []chatSessionDriveIndexRecord{}, nil
-			}
-			return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
-		}
-		raw, err := downloadGoogleDriveFileByID(ctx, accessToken, indexFile.ID)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return []chatSessionDriveIndexRecord{}, nil
-			}
-			return nil, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
-		}
-		records := parseChatSessionDriveIndex(raw)
-		log.Printf("[chat-sync] remote index project=%s index_rows=%d discovered_manifests=0", projectID, len(records))
-		return records, nil
-	}
-
 	merged, apiErr := s.mergeAndUpsertChatSessionDriveIndexLocked(ctx, accessToken, rootFolderID, discovered)
 	if apiErr != nil {
 		return nil, apiErr
 	}
-	records := parseChatSessionDriveIndex(merged)
+	records = parseChatSessionDriveIndex(merged)
 	log.Printf(
 		"[chat-sync] remote index project=%s index_rows=%d discovered_manifests=%d",
 		projectID,
@@ -999,66 +1061,53 @@ func (s *InteractiveService) listRemoteChatSessions(ctx context.Context, project
 			childKeys[record.SourceMachineID+"\x00"+record.SourceRunID] = struct{}{}
 		}
 	}
-	// BUG-123 backward compatibility: BUG-119 uploaded child manifests and index rows
-	// before parent_run_id was added to the index. Read the manifests once to discover
-	// those legacy child identities, then keep them out of the top-level remote list.
-	//
-	// Perf (found while investigating a multi-minute REMOTE CHATS load): each manifest
-	// lives at a 5-segment logical path, and findGoogleDriveFileByLogicalPath resolves
-	// every path segment as its own sequential Drive "list files" API call -- so one
-	// manifest costs ~5-6 round trips, and this loop used to run that cost, one record
-	// at a time, for every record in the index on every single load (no caching). A
-	// project with N synced chats paid roughly 5N-6N sequential Drive API calls just to
-	// list what's already synced. Two independent fixes, both safe because this loop
-	// only ever accumulates into childKeys (order-independent, read-only per record):
-	//  1. skip records that already carry a real parent_run_id -- they're already-known
-	//     children (excluded above) and, since child-of-child nesting isn't supported
-	//     (BUG-119), their own manifest can't discover any further exclusions.
-	//  2. fetch the remaining candidates concurrently (bounded pool) instead of one at a
-	//     time, so wall-clock cost is ~1 record's worth of round trips instead of N's.
-	type discoveredChildren struct {
-		machineID string
-		runIDs    []string
-	}
-	discoveries := make([]discoveredChildren, len(records))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, remoteChatSessionsManifestScanConcurrency)
-	for i, record := range records {
-		if strings.TrimSpace(record.ParentRunID) != "" {
-			continue
+	// BUG-123 backward compatibility: BUG-119 uploaded child manifests and index
+	// rows before parent_run_id was added. Only walk parent manifests when the
+	// whole index is legacy (no ParentRunID on any row). A modern index already
+	// marks children, so this scan would re-download every parent manifest on
+	// every list (CA-555 timeout: ~56 chats × 5 Drive hops).
+	if !chatSessionIndexHasParentRunID(records) {
+		type discoveredChildren struct {
+			machineID string
+			runIDs    []string
 		}
-		wg.Add(1)
-		go func(i int, record chatSessionDriveIndexRecord) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			manifestFile, findErr := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, record.ManifestPath)
-			if findErr != nil {
-				return
-			}
-			manifestBytes, downloadErr := downloadGoogleDriveFileByID(ctx, accessToken, manifestFile.ID)
-			if downloadErr != nil {
-				return
-			}
-			var manifest ChatSessionSyncManifest
-			if json.Unmarshal(manifestBytes, &manifest) != nil {
-				return
-			}
-			var runIDs []string
-			for _, child := range manifest.ChildAgents {
-				if childRunID := strings.TrimSpace(child.RunID); childRunID != "" {
-					runIDs = append(runIDs, childRunID)
+		discoveries := make([]discoveredChildren, len(records))
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, remoteChatSessionsManifestScanConcurrency)
+		for i, record := range records {
+			wg.Add(1)
+			go func(i int, record chatSessionDriveIndexRecord) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				manifestFile, findErr := findGoogleDriveFileByLogicalPath(accessToken, rootFolderID, record.ManifestPath)
+				if findErr != nil {
+					return
 				}
+				manifestBytes, downloadErr := downloadGoogleDriveFileByID(ctx, accessToken, manifestFile.ID)
+				if downloadErr != nil {
+					return
+				}
+				var manifest ChatSessionSyncManifest
+				if json.Unmarshal(manifestBytes, &manifest) != nil {
+					return
+				}
+				var runIDs []string
+				for _, child := range manifest.ChildAgents {
+					if childRunID := strings.TrimSpace(child.RunID); childRunID != "" {
+						runIDs = append(runIDs, childRunID)
+					}
+				}
+				if len(runIDs) > 0 {
+					discoveries[i] = discoveredChildren{machineID: manifest.SourceMachineID, runIDs: runIDs}
+				}
+			}(i, record)
+		}
+		wg.Wait()
+		for _, d := range discoveries {
+			for _, childRunID := range d.runIDs {
+				childKeys[d.machineID+"\x00"+childRunID] = struct{}{}
 			}
-			if len(runIDs) > 0 {
-				discoveries[i] = discoveredChildren{machineID: manifest.SourceMachineID, runIDs: runIDs}
-			}
-		}(i, record)
-	}
-	wg.Wait()
-	for _, d := range discoveries {
-		for _, childRunID := range d.runIDs {
-			childKeys[d.machineID+"\x00"+childRunID] = struct{}{}
 		}
 	}
 	out := make([]RemoteChatSessionSummary, 0, len(records))
