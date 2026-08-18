@@ -1075,8 +1075,8 @@ func filterHistorySuggestions(input string, items []client.RunHistoryItem) []sug
 }
 
 // filterHistorySuggestionsWithRemote is filterHistorySuggestions plus Drive-index
-// reconciliation (CA-552). The badge is placed before the title so it stays
-// visible when the (already truncated) title is long.
+// reconciliation (CA-552). The badge is placed right after the #N index (CA-553)
+// so it stays visible even when the detail line is truncated to chatWidth.
 func filterHistorySuggestionsWithRemote(input string, items []client.RunHistoryItem, remote []client.RemoteChatSessionSummary) []suggestItem {
 	cmd, query, ok := parseChatOpenArgPrefix(input)
 	if !ok {
@@ -1117,10 +1117,11 @@ func filterHistorySuggestionsWithRemote(input string, items []client.RunHistoryI
 		if when == "" {
 			when = "—"
 		}
-		detail := fmt.Sprintf("#%d · %s · %s · %s", i+1, kind, it.Status, when)
+		detail := fmt.Sprintf("#%d", i+1)
 		if badge := syncBadgeWithRemote(it, remote); badge != "" {
 			detail += " · " + badge
 		}
+		detail += " · " + kind + " · " + it.Status + " · " + when
 		detail += " · " + title
 		out = append(out, suggestItem{value: id, detail: detail, kind: "history", slash: cmd})
 	}

@@ -165,6 +165,28 @@ func (m *AppModel) markChatSyncStatus(runID string, err error, res *client.ChatS
 	}
 }
 
+// openChatDriveBadge returns the Drive sync badge for the currently open chat
+// (CA-553). It resolves the open run against the cached /history rows plus the
+// confirmed Drive index — the same reconciliation the picker/dump use — so the
+// session panel's "Drive: <badge>" line under the Run line always matches.
+func (m *AppModel) openChatDriveBadge() string {
+	if m.runHandle == nil {
+		return ""
+	}
+	runID := strings.TrimSpace(m.runHandle.RunID)
+	if runID == "" {
+		return ""
+	}
+	for _, it := range m.chatList {
+		if strings.TrimSpace(it.RunID) == runID {
+			if badge := syncBadgeWithRemote(it, m.remoteChatList); badge != "" {
+				return badge
+			}
+		}
+	}
+	return ""
+}
+
 // formatDriveSyncErr maps runner sync errors to a TUI hint.
 func formatDriveSyncErr(runID string, err error) string {
 	if ae, ok := err.(*client.APIError); ok {
@@ -260,7 +282,7 @@ func filterSyncSuggestionsWithRemote(input string, syncable []client.RunHistoryI
 		}
 		detail := title
 		if badge := syncBadgeWithRemote(it, remote); badge != "" {
-			detail += " · " + badge
+			detail = badge + " · " + title
 		}
 		out = append(out, suggestItem{value: it.RunID, detail: detail, kind: "sync", slash: "/sync"})
 	}

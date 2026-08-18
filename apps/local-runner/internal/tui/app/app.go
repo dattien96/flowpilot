@@ -2914,6 +2914,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			m.connStatus, m.mode, m.yoloStatusLabel(), m.provider, m.model, auth))
 		sb.WriteString("Active provider account: " + orDash(m.activeProviderAccountLabel()) + "\n")
 		m.sessionPanel.DriveStatus = m.driveIndicatorLine()
+		m.sessionPanel.DriveBadge = m.openChatDriveBadge()
 		for _, line := range m.sessionPanel.lines() {
 			sb.WriteString(line + "\n")
 		}

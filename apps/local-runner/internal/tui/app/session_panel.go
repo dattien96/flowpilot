@@ -20,6 +20,10 @@ type sessionInfoPanel struct {
 	ProjectID   string
 	Session     string // e.g. "codex · gpt-5.4 (acct-label)"
 	DriveStatus string // live Drive sync/restore progress line (CA-551); "" when idle
+	// DriveBadge is the sync marker of the currently open chat (CA-553): shown
+	// as its own line right below the Run line so an open chat's Drive state is
+	// always visible even when the history picker/dump rows are narrow.
+	DriveBadge string
 }
 
 func (p sessionInfoPanel) hasContent() bool {
@@ -37,6 +41,9 @@ func (p sessionInfoPanel) lines() []string {
 	}
 	if id := strings.TrimSpace(p.RunID); id != "" {
 		out = append(out, "Run: "+shortID(id))
+		if b := strings.TrimSpace(p.DriveBadge); b != "" {
+			out = append(out, "Drive: "+b)
+		}
 	}
 	if path := strings.TrimSpace(p.ProjectPath); path != "" {
 		out = append(out, "Path: "+path)
@@ -266,6 +273,7 @@ func (m *AppModel) refreshSessionPanel() {
 		}
 	}
 	m.sessionPanel.Session = m.sessionDisplayLine()
+	m.sessionPanel.DriveBadge = m.openChatDriveBadge()
 }
 
 // renderSessionPanelOverlay returns right-aligned panel lines (collapsed chip or expanded box).
@@ -290,6 +298,7 @@ func (m *AppModel) renderSessionPanelOverlay() []string {
 	}
 
 	m.sessionPanel.DriveStatus = m.driveIndicatorLine()
+	m.sessionPanel.DriveBadge = m.openChatDriveBadge()
 	body := m.sessionPanel.lines()
 	if steps := m.flowStepsPanelLines(); len(steps) > 0 {
 		body = append(body, m.stepsSectionTitle())
@@ -408,6 +417,7 @@ func (m *AppModel) renderRightSidebar(h int) []string {
 	var out []string
 	out = append(out, styleGate.Render("session"))
 	m.sessionPanel.DriveStatus = m.driveIndicatorLine()
+	m.sessionPanel.DriveBadge = m.openChatDriveBadge()
 	for _, line := range m.sessionPanel.lines() {
 		out = append(out, styleSystem.Render(truncateVisual(line, w-2)))
 	}

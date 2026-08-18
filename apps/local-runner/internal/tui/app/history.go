@@ -199,10 +199,11 @@ func formatChatListWithRemote(items []client.RunHistoryItem, remote []client.Rem
 		if when == "" {
 			when = "—"
 		}
-		line := fmt.Sprintf("  %2d  %s  [%s] %s  %s · %s", i+1, shortID(it.RunID), kind, it.Status, when, title)
+		line := fmt.Sprintf("  %2d  %s  [%s] %s", i+1, shortID(it.RunID), kind, it.Status)
 		if badge := syncBadgeWithRemote(it, remote); badge != "" {
-			line += "  (" + badge + ")"
+			line += " (" + badge + ")"
 		}
+		line += "  " + when + " · " + title
 		sb.WriteString(line + "\n")
 		sb.WriteString(fmt.Sprintf("      id %s  %s\n", it.RunID, it.ProviderKey))
 	}
