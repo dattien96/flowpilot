@@ -461,10 +461,10 @@ func (m *AppModel) applyPendingFromSnapshot(snap client.RunSnapshot) tea.Cmd {
 			m.statusMsg = "approval required"
 			return nil
 		}
-		if m.pushApproval(ApprovalState{ID: id, RunID: runID, Details: snap.PendingApproval.Details}) {
+		if m.pushApproval(approvalStateFromInfo(id, runID, snap.PendingApproval)) {
 			m.connStatus = ConnWaiting
 			m.statusMsg = "approval required"
-			m.addMessage("system", formatApprovalWaitingLine(id, m.asciiMode), "approval")
+			m.addMessage("system", formatApprovalWaitingLineDetailed(id, m.asciiMode, *m.approval), "approval")
 		}
 		return nil
 	}

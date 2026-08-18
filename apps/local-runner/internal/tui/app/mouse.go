@@ -283,6 +283,17 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 			decision = "deny"
 		}
 		return m.resolveAllApprovals(decision)
+	case target == "approve-forever":
+		// BUG-246: "don't ask again" rides on an approve decision.
+		if m.approval != nil {
+			return m.submitPendingApprovalRemember("approve", approvalRememberable(m.approval))
+		}
+	case strings.HasPrefix(target, "adec:"):
+		// BUG-246: resolve with a runner-offered decision value.
+		decision := strings.TrimPrefix(target, "adec:")
+		if decision != "" && m.approval != nil {
+			return m.submitPendingApprovalDecision(decision)
+		}
 	case target == "attach":
 		// Pending chip [N img]: open manage panel (Desktop attachment chips).
 		// Empty chip is not rendered; paste remains Alt+V / /image paste.
@@ -431,7 +442,7 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 	if hitStatusDetailsChrome(c, x, y) {
 		return "status-details"
 	}
-	if t := hitApprovalChrome(c, x, y); t != "" {
+	if t := m.hitApprovalChrome(c, x, y); t != "" {
 		return t
 	}
 	if t := m.hitBlockedChrome(c, x, y); t != "" {
@@ -642,7 +653,7 @@ func hitStopChrome(c tuiChrome, x, y int) bool {
 	return hitToken(stripANSI(lines[0]), "[stop]", x)
 }
 
-func hitApprovalChrome(c tuiChrome, x, y int) string {
+func (m *AppModel) hitApprovalChrome(c tuiChrome, x, y int) string {
 	if c.inputH <= 0 || y < c.inputY || y >= c.inputY+c.inputH {
 		return ""
 	}
@@ -657,6 +668,16 @@ func hitApprovalChrome(c tuiChrome, x, y int) string {
 	}
 	if hitToken(stripped, "Deny all", x) {
 		return "deny-all"
+	}
+	if hitToken(stripped, "Approve forever", x) {
+		return "approve-forever"
+	}
+	if m.approval != nil {
+		for _, d := range m.approval.Decisions {
+			if hitToken(stripped, d.Label, x) {
+				return "adec:" + d.Value
+			}
+		}
 	}
 	if hitToken(stripped, "Approve", x) || hitToken(stripped, "/approve", x) {
 		return "approve"

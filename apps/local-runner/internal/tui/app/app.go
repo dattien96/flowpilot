@@ -1362,14 +1362,31 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 				m.statusMsg = "auto-approved"
 				return m, m.cmdAutoApprove(ev.ApprovalID, ev.WorkflowRunID)
 			}
-			added := m.pushApproval(ApprovalState{
+			if ev.Decision != "" {
+				// Replay of an already-resolved approval (BUG-ApprovalReplay-Restart):
+				// render read-only instead of re-mounting an interactive card the
+				// run no longer waits on.
+				m.connStatus = ConnRunning
+				m.statusMsg = "approval resolved"
+				m.addMessage("system", fmt.Sprintf("[APPROVAL] %s already resolved: %s", ev.ApprovalID, ev.Decision), "approval")
+				return m, nil
+			}
+			st := ApprovalState{
 				ID:    ev.ApprovalID,
 				RunID: ev.WorkflowRunID,
-			})
+			}
+			if d := ev.Details; d != nil {
+				st.Command = d.Command
+				st.Cwd = d.Cwd
+				st.Reason = d.Reason
+				st.Kind = d.Kind
+				st.Decisions = d.Decisions
+			}
+			added := m.pushApproval(st)
 			m.connStatus = ConnWaiting
 			m.statusMsg = "approval required"
 			if added {
-				m.addMessage("system", formatApprovalWaitingLine(ev.ApprovalID, m.asciiMode), "approval")
+				m.addMessage("system", formatApprovalWaitingLineDetailed(ev.ApprovalID, m.asciiMode, st), "approval")
 			}
 		}
 
@@ -2835,6 +2852,19 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		m.addMessage("system", "No pending approval.", "")
 
+	case "/approve forever", "/deny forever":
+		// BUG-246: "don't ask again" for the exec approval. A deny is never
+		// persisted (desktop parity); the remember flag rides only on approve.
+		decision := "approve"
+		if strings.HasPrefix(input, "/deny") {
+			decision = "deny"
+		}
+		if m.approval != nil {
+			remember := decision == "approve" && approvalRememberable(m.approval)
+			return m.submitPendingApprovalRemember(decision, remember)
+		}
+		m.addMessage("system", "No pending approval.", "")
+
 	case "/approve-all", "/deny-all":
 		// BUG-157/158: a turn can fan out several parallel approvals; resolve
 		// every queued card at once (Desktop bulk-approve parity).
@@ -3399,6 +3429,28 @@ func formatApprovalWaitingLine(approvalID string, ascii bool) string {
 	return wait + fmt.Sprintf("[APPROVAL] %s %s", approvalID, suffix)
 }
 
+// formatApprovalWaitingLineDetailed extends the live-gate transcript line with
+// the approval kind + command so the operator sees exactly what they are being
+// asked to approve (BUG-246). Cards without details keep the legacy copy.
+func formatApprovalWaitingLineDetailed(approvalID string, ascii bool, a ApprovalState) string {
+	base := formatApprovalWaitingLine(approvalID, ascii)
+	if strings.TrimSpace(a.Command) == "" && strings.TrimSpace(a.Reason) == "" {
+		return base
+	}
+	var parts []string
+	if k := strings.TrimSpace(a.Kind); k != "" {
+		parts = append(parts, k)
+	}
+	if c := strings.TrimSpace(a.Command); c != "" {
+		parts = append(parts, c)
+	}
+	line := base + " · " + strings.Join(parts, ": ")
+	if r := strings.TrimSpace(a.Reason); r != "" {
+		line += " — " + r
+	}
+	return line
+}
+
 func renderApprovalText(line string) string {
 	stripped := stripANSI(line)
 	var b strings.Builder
@@ -3580,7 +3632,7 @@ func (m *AppModel) renderInputLine() string {
 		if n := len(m.approvals); n > 1 {
 			head = fmt.Sprintf("approval %d/%d", 1, n)
 		}
-		chips := styleLink.Render("Approve") + "  " + styleLink.Render("Deny")
+		chips := approvalDecisionChips(m.approval)
 		if len(m.approvals) > 1 {
 			chips += "  " + styleLink.Render("Approve all") + "  " + styleLink.Render("Deny all")
 		}
@@ -4186,13 +4238,40 @@ func (m *AppModel) submitPendingApproval(decision string) (tea.Model, tea.Cmd) {
 	return m, m.cmdApprove(m.approval.ID, decision)
 }
 
+// submitPendingApprovalDecision resolves the head approval with a specific
+// decision value offered by the runner (BUG-246: decisions other than the
+// default approve/deny, e.g. approve_for_session).
+func (m *AppModel) submitPendingApprovalDecision(decision string) (tea.Model, tea.Cmd) {
+	if m.approval == nil {
+		m.addMessage("system", "No pending approval.", "")
+		return m, nil
+	}
+	return m, m.cmdApprove(m.approval.ID, decision)
+}
+
+// submitPendingApprovalRemember resolves the head approval carrying the
+// "don't ask again" remember flag (BUG-246 desktop parity — only an approve
+// decision is ever persisted; deny always passes remember=false).
+func (m *AppModel) submitPendingApprovalRemember(decision string, remember bool) (tea.Model, tea.Cmd) {
+	if m.approval == nil {
+		m.addMessage("system", "No pending approval.", "")
+		return m, nil
+	}
+	return m, m.cmdApproveWithRemember(m.approval.ID, decision, remember)
+}
+
 func (m *AppModel) cmdApprove(approvalID, decision string) tea.Cmd {
+	return m.cmdApproveWithRemember(approvalID, decision, false)
+}
+
+func (m *AppModel) cmdApproveWithRemember(approvalID, decision string, remember bool) tea.Cmd {
 	runnerURL := m.runnerURL
 	id := approvalID
 	dec := decision
+	rem := remember
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
-		if err := cl.SubmitApproval(context.Background(), id, dec, false); err != nil {
+		if err := cl.SubmitApproval(context.Background(), id, dec, rem); err != nil {
 			return ErrMsg{Err: err}
 		}
 		return ApprovalResolvedMsg{ID: id, Decision: dec}

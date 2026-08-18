@@ -379,6 +379,31 @@ type ProviderEvent struct {
 	TokenUsage *TokenUsageSnapshot `json:"tokenUsage,omitempty"`
 	// AgentGraph is present on agent_graph_updated events.
 	AgentGraph *AgentGraphSnapshot `json:"agentGraph,omitempty"`
+	// Details is present on permission_required events (BUG-246): what the
+	// runtime wants to do (command/cwd/reason/kind) plus the offered decisions.
+	Details *ApprovalDetails `json:"details,omitempty"`
+	// Decision is populated only when replaying an already-resolved approval on
+	// a full server restart — the client renders it read-only instead of
+	// re-showing an interactive prompt the run no longer waits on.
+	Decision string `json:"decision,omitempty"`
+}
+
+// ApprovalDecisionOption is one decision the runtime offers for an approval
+// (mirrors runner.ApprovalDecisionOption).
+type ApprovalDecisionOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+// ApprovalDetails describes what the runtime wants to do (permission_required,
+// BUG-246). Kind classifies the approval; only "exec" shell commands are
+// eligible for the per-project "don't ask again" allowlist.
+type ApprovalDetails struct {
+	Command   string                   `json:"command,omitempty"`
+	Cwd       string                   `json:"cwd,omitempty"`
+	Reason    string                   `json:"reason,omitempty"`
+	Kind      string                   `json:"kind,omitempty"`
+	Decisions []ApprovalDecisionOption `json:"decisions"`
 }
 
 // APIError represents an error response from the runner API.

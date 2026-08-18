@@ -148,7 +148,7 @@ func (m *AppModel) tryPlaceInputCursor(x, y int) bool {
 	if hitAttachChrome(c, x, y) {
 		return false
 	}
-	if hitApprovalChrome(c, x, y) != "" {
+	if m.hitApprovalChrome(c, x, y) != "" {
 		return false
 	}
 	if hitQuestionChrome(m, c, x, y) != "" {

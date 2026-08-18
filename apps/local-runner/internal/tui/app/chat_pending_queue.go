@@ -1,6 +1,12 @@
 package app
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"flowpilot-runner/internal/tui/client"
+)
 
 // Pending approval/question cards can arrive in parallel: a single turn fans
 // out several tool approvals and multiple agents can raise questions at once
@@ -147,4 +153,95 @@ func (m *AppModel) resolveAllApprovals(decision string) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.cmdApprove(a.ID, decision))
 	}
 	return m, tea.Batch(cmds...)
+}
+
+// approvalCommandOperators mirror the runner's approvalCommandOperators
+// (BUG-246): a compound command can never be remembered.
+var approvalCommandOperators = []string{"&&", "||", "|", ";", "&", ">", "<", "`", "$(", "(", ")", "{", "}", "\n", "\r"}
+
+func isCompoundCommand(command string) bool {
+	for _, op := range approvalCommandOperators {
+		if strings.Contains(command, op) {
+			return true
+		}
+	}
+	return false
+}
+
+// approvalRememberable reports whether the "don't ask again" path may be
+// offered for the head card: only "exec" shell commands that are single
+// (non-compound) and that offer an approve decision (BUG-246 desktop parity —
+// a deny is never persisted).
+func approvalRememberable(a *ApprovalState) bool {
+	if a == nil {
+		return false
+	}
+	if a.Kind != "exec" || strings.TrimSpace(a.Command) == "" {
+		return false
+	}
+	if isCompoundCommand(a.Command) {
+		return false
+	}
+	if len(a.Decisions) > 0 {
+		for _, d := range a.Decisions {
+			if d.Value == "approve" {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// approvalDecisionChips renders the decision buttons for the head approval.
+// The runner's offered decisions win; the legacy Approve/Deny fallback covers
+// cards without details.
+func approvalDecisionChips(a *ApprovalState) string {
+	var chips []string
+	if a != nil && len(a.Decisions) > 0 {
+		for _, d := range a.Decisions {
+			chips = append(chips, styleLink.Render(d.Label))
+		}
+	} else {
+		chips = append(chips, styleLink.Render("Approve"), styleLink.Render("Deny"))
+	}
+	if approvalRememberable(a) {
+		chips = append(chips, styleLink.Render("Approve forever"))
+	}
+	return strings.Join(chips, "  ")
+}
+
+// approvalStateFromInfo builds a queued ApprovalState from a run-snapshot
+// ApprovalInfo, lifting the typed BUG-246 detail fields out of the Details map
+// so resume/reopen renders the same command/kind/decisions as a live card.
+func approvalStateFromInfo(id, runID string, info *client.ApprovalInfo) ApprovalState {
+	st := ApprovalState{ID: id, RunID: runID}
+	if info == nil || info.Details == nil {
+		return st
+	}
+	st.Details = info.Details
+	if s, ok := info.Details["command"].(string); ok {
+		st.Command = s
+	}
+	if s, ok := info.Details["cwd"].(string); ok {
+		st.Cwd = s
+	}
+	if s, ok := info.Details["reason"].(string); ok {
+		st.Reason = s
+	}
+	if s, ok := info.Details["kind"].(string); ok {
+		st.Kind = s
+	}
+	if arr, ok := info.Details["decisions"].([]any); ok {
+		for _, item := range arr {
+			mm, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			v, _ := mm["value"].(string)
+			l, _ := mm["label"].(string)
+			st.Decisions = append(st.Decisions, client.ApprovalDecisionOption{Value: v, Label: l})
+		}
+	}
+	return st
 }

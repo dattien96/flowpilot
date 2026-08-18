@@ -50,6 +50,13 @@ type ApprovalState struct {
 	ID      string
 	Details map[string]any
 	RunID   string
+	// Command/Cwd/Reason/Kind/Decisions are the typed BUG-246 approval details
+	// surfaced by the runner; empty when the event carries no details.
+	Command   string
+	Cwd       string
+	Reason    string
+	Kind      string
+	Decisions []client.ApprovalDecisionOption
 }
 
 // QuestionState holds the active question UI state.
