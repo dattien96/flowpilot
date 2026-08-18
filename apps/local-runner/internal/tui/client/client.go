@@ -286,6 +286,62 @@ type RunHistoryItem struct {
 	AgentName   string `json:"agentName,omitempty"`
 	SubMode     string `json:"subMode,omitempty"`
 	FlowRef     string `json:"flowRef,omitempty"`
+	// Drive chat-session sync metadata (Desktop Navigator parity, CA-548).
+	SourceMachineID   string `json:"sourceMachineId,omitempty"`
+	SourceRunID       string `json:"sourceRunId,omitempty"`
+	SyncStatus        string `json:"syncStatus,omitempty"`
+	UnavailableReason string `json:"unavailableReason,omitempty"`
+}
+
+// ChatSessionSyncRequest mirrors POST /client/workflow-runs/{runId}/sync-chat.
+type ChatSessionSyncRequest struct {
+	GoogleDriveProjectID string `json:"googleDriveProjectId,omitempty"`
+	GoogleDriveFolderID  string `json:"googleDriveFolderId,omitempty"`
+}
+
+// ChatSessionSyncResult mirrors the sync-chat response.
+type ChatSessionSyncResult struct {
+	RunID           string `json:"runId"`
+	SourceMachineID string `json:"sourceMachineId"`
+	SourceRunID     string `json:"sourceRunId"`
+	SyncStatus      string `json:"syncStatus"`
+	SyncedAt        string `json:"syncedAt"`
+	RemotePath      string `json:"remotePath"`
+}
+
+// ChatSessionRestoreRequest mirrors POST /client/chat-sessions/restore.
+type ChatSessionRestoreRequest struct {
+	ProjectID       string `json:"projectId"`
+	SourceMachineID string `json:"sourceMachineId"`
+	SourceRunID     string `json:"sourceRunId"`
+	Cwd             string `json:"cwd,omitempty"`
+}
+
+// ChatSessionRestoreResult mirrors the restore response.
+type ChatSessionRestoreResult struct {
+	RunID           string `json:"runId"`
+	SourceMachineID string `json:"sourceMachineId"`
+	SourceRunID     string `json:"sourceRunId"`
+	ProviderKey     string `json:"providerKey"`
+	RestoreStatus   string `json:"restoreStatus"`
+}
+
+// RemoteChatSessionSummary mirrors GET /client/projects/{id}/chat-sessions/remote.
+type RemoteChatSessionSummary struct {
+	RunID             string `json:"runId"`
+	ProjectID         string `json:"projectId"`
+	WorkflowID        string `json:"workflowId,omitempty"`
+	ProviderKey       string `json:"providerKey"`
+	Status            string `json:"status,omitempty"`
+	RunKind           string `json:"runKind,omitempty"`
+	SourceMachineID   string `json:"sourceMachineId"`
+	SourceRunID       string `json:"sourceRunId"`
+	LastPrompt        string `json:"lastPrompt,omitempty"`
+	LastMessage       string `json:"lastMessage,omitempty"`
+	StartedAt         string `json:"startedAt,omitempty"`
+	UpdatedAt         string `json:"updatedAt,omitempty"`
+	SyncedAt          string `json:"syncedAt,omitempty"`
+	UnavailableReason string `json:"unavailableReason,omitempty"`
 }
 
 // RunSnapshot mirrors GET /client/workflow-runs/{runId}.
@@ -717,6 +773,28 @@ func (c *Client) ListRunHistory(ctx context.Context, projectID string) ([]RunHis
 	var items []RunHistoryItem
 	err := c.getJSON(ctx, "/client/projects/"+neturl.PathEscape(projectID)+"/workflow-runs", &items)
 	return items, err
+}
+
+// SyncChatRun pushes a chat session to the project's Drive folder
+// (Desktop Navigator "Sync to Drive", CA-548).
+func (c *Client) SyncChatRun(ctx context.Context, runID string, req ChatSessionSyncRequest) (ChatSessionSyncResult, error) {
+	var out ChatSessionSyncResult
+	err := c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/sync-chat", req, &out)
+	return out, err
+}
+
+// ListRemoteChatSessions fetches GET /client/projects/{projectId}/chat-sessions/remote.
+func (c *Client) ListRemoteChatSessions(ctx context.Context, projectID string) ([]RemoteChatSessionSummary, error) {
+	var out []RemoteChatSessionSummary
+	err := c.getJSON(ctx, "/client/projects/"+neturl.PathEscape(projectID)+"/chat-sessions/remote", &out)
+	return out, err
+}
+
+// RestoreChatRun pulls a Drive-backed chat session back into the local runner.
+func (c *Client) RestoreChatRun(ctx context.Context, req ChatSessionRestoreRequest) (ChatSessionRestoreResult, error) {
+	var out ChatSessionRestoreResult
+	err := c.postJSON(ctx, "/client/chat-sessions/restore", req, &out)
+	return out, err
 }
 
 // SubmitApproval sends POST /client/approvals/{approvalId}/decision (Desktop parity).

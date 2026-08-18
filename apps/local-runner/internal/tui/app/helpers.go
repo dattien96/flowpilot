@@ -1089,7 +1089,7 @@ func filterHistorySuggestions(input string, items []client.RunHistoryItem) []sug
 		if title == "" {
 			title = "(no prompt)"
 		}
-		hay := strings.ToLower(id + " " + title + " " + it.Status + " " + it.ProviderKey + " " + it.RunKind)
+		hay := strings.ToLower(id + " " + title + " " + it.Status + " " + it.ProviderKey + " " + it.RunKind + " " + it.SyncStatus)
 		if q != "" && !strings.Contains(hay, q) && !strings.Contains(strings.ToLower(shortID(id)), q) {
 			continue
 		}
@@ -1111,6 +1111,9 @@ func filterHistorySuggestions(input string, items []client.RunHistoryItem) []sug
 			when = "—"
 		}
 		detail := fmt.Sprintf("#%d · %s · %s · %s · %s", i+1, kind, it.Status, when, title)
+		if badge := formatSyncBadge(it); badge != "" {
+			detail += " · " + badge
+		}
 		out = append(out, suggestItem{value: id, detail: detail, kind: "history", slash: cmd})
 	}
 	return out

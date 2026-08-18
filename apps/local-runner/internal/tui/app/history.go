@@ -192,7 +192,11 @@ func formatChatList(items []client.RunHistoryItem) string {
 		if when == "" {
 			when = "—"
 		}
-		sb.WriteString(fmt.Sprintf("  %2d  %s  [%s] %s  %s · %s\n", i+1, shortID(it.RunID), kind, it.Status, when, title))
+		line := fmt.Sprintf("  %2d  %s  [%s] %s  %s · %s", i+1, shortID(it.RunID), kind, it.Status, when, title)
+		if badge := formatSyncBadge(it); badge != "" {
+			line += "  (" + badge + ")"
+		}
+		sb.WriteString(line + "\n")
 		sb.WriteString(fmt.Sprintf("      id %s  %s\n", it.RunID, it.ProviderKey))
 	}
 	if len(items) > limit {
@@ -204,6 +208,24 @@ func formatChatList(items []client.RunHistoryItem) string {
 
 func collapseWS(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// formatSyncBadge renders the Drive chat-session sync marker for a history row
+// (Desktop Navigator syncStatus parity, CA-548). Empty when the run was never
+// marked, so local-first rows stay visually unchanged.
+func formatSyncBadge(it client.RunHistoryItem) string {
+	switch strings.TrimSpace(it.SyncStatus) {
+	case "synced":
+		return "synced"
+	case "failed":
+		return "failed"
+	case "unsyncable":
+		return "unsyncable"
+	case "syncing":
+		return "syncing"
+	default:
+		return ""
+	}
 }
 
 // resolveChatOpenTarget maps /history|/open|/resume args to a run id using the last list.
