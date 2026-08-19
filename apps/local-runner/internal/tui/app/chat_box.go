@@ -228,7 +228,7 @@ func strokeChatRows(inner []chatRow, width int, user, ascii bool) []chatRow {
 	if user {
 		top = rightAlignPlain(top, width)
 	}
-	out = append(out, chatRow{Text: top, MsgIdx: idx})
+	out = append(out, chatRow{Text: top, MsgIdx: idx, PromptExpandKey: inner[0].PromptExpandKey})
 	for i, r := range inner {
 		text := " " + r.Text
 		copyOn := r.Copy && i == len(inner)-1
@@ -248,13 +248,13 @@ func strokeChatRows(inner []chatRow, width int, user, ascii bool) []chatRow {
 		if user {
 			line = rightAlignPlain(line, width)
 		}
-		out = append(out, chatRow{Text: line, MsgIdx: r.MsgIdx, Copy: copyOn})
+		out = append(out, chatRow{Text: line, MsgIdx: r.MsgIdx, Copy: copyOn, PromptExpandKey: r.PromptExpandKey})
 	}
 	bot := strokeBottom(boxW, ascii)
 	if user {
 		bot = rightAlignPlain(bot, width)
 	}
-	out = append(out, chatRow{Text: bot, MsgIdx: inner[len(inner)-1].MsgIdx})
+	out = append(out, chatRow{Text: bot, MsgIdx: inner[len(inner)-1].MsgIdx, PromptExpandKey: inner[len(inner)-1].PromptExpandKey})
 	return out
 }
 

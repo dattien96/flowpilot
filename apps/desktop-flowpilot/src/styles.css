@@ -2773,6 +2773,26 @@ input {
 .prompt-stack .bubble.prompt {
   max-width: min(var(--chat-prompt-max), 100%);
 }
+.prompt-truncatable {
+  cursor: pointer;
+}
+.prompt-text-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.prompt-ellipsis {
+  position: absolute;
+  right: 34px;
+  bottom: 1px;
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+}
+.prompt-expanded .prompt-ellipsis {
+  display: none;
+}
 .prompt-skills-summary {
   appearance: none;
   width: min(100%, var(--chat-prompt-max));

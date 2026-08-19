@@ -278,6 +278,9 @@ type AppModel struct {
 	// Keyed by the joined tool names of the run (content-derived, stable across
 	// thinking-placeholder reordering that shifts message indices).
 	expandedToolGroups map[string]bool
+	// expandedUserPrompts tracks which user prompt bubbles (4-line clamp) are
+	// expanded. Keyed by message content (content-derived like expandedToolGroups).
+	expandedUserPrompts map[string]bool
 
 	// Per-turn settings
 	yolo                bool

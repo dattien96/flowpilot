@@ -343,6 +343,12 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 			m.toggleToolGroup(key)
 			return m, nil
 		}
+	case strings.HasPrefix(target, "user-prompt-expand:"):
+		content := strings.TrimPrefix(target, "user-prompt-expand:")
+		if content != "" {
+			m.toggleUserPrompt(content)
+			return m, nil
+		}
 	case strings.HasPrefix(target, "copy:"):
 		idx, err := strconv.Atoi(strings.TrimPrefix(target, "copy:"))
 		if err == nil {
@@ -476,6 +482,9 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 		return t
 	}
 	if t := hitCopyChrome(m, c, x, y); t != "" {
+		return t
+	}
+	if t := hitUserPromptChrome(m, c, x, y); t != "" {
 		return t
 	}
 	if t := hitToolGroupChrome(m, c, x, y); t != "" {
@@ -860,6 +869,22 @@ func hitCopyChrome(m *AppModel, c tuiChrome, x, y int) string {
 		return "copyfence:" + strconv.Itoa(rows[rel].MsgIdx) + ":" + strconv.Itoa(rows[rel].FenceIdx)
 	}
 	return "copy:" + strconv.Itoa(rows[rel].MsgIdx)
+}
+
+// hitUserPromptChrome maps a click on any row of a user prompt bubble that
+// exceeds the 4-line clamp to a "user-prompt-expand:<content>" toggle target.
+// The whole box is clickable; the [copy] chip is hit-tested first (hitCopyChrome),
+// so clicking the chip copies instead of toggling.
+func hitUserPromptChrome(m *AppModel, c tuiChrome, x, y int) string {
+	rows := sliceChatRows(m.chatRows(), c.messagesHeight, m.viewport.offset)
+	rel := y - c.panelH
+	if rel < 0 || rel >= len(rows) {
+		return ""
+	}
+	if rows[rel].PromptExpandKey == "" {
+		return ""
+	}
+	return "user-prompt-expand:" + rows[rel].PromptExpandKey
 }
 
 // hitToolGroupChrome maps a click on a collapsed/expanded multi-tool summary row

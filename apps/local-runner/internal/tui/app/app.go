@@ -3330,6 +3330,29 @@ type chatRow struct {
 	// ToolGroupKey is non-empty for the summary row of a collapsed run of 2+
 	// consecutive tool calls (CA-525). Clicking it toggles the run expansion.
 	ToolGroupKey string
+	// PromptExpandKey is non-empty for rows of a user prompt bubble that exceeds
+	// the 4-line clamp. Clicking any such row toggles the bubble expansion.
+	PromptExpandKey string
+}
+
+// maxUserPromptLines caps boxed user prompt bubbles; longer prompts collapse to
+// this many wrapped lines with a "...." tail until the bubble is expanded.
+const maxUserPromptLines = 4
+
+// userPromptEllipsis marks a truncated user prompt bubble.
+const userPromptEllipsis = "...."
+
+func (m *AppModel) userPromptExpanded(content string) bool {
+	return m.expandedUserPrompts[content]
+}
+
+func (m *AppModel) toggleUserPrompt(content string) {
+	if m.expandedUserPrompts == nil {
+		m.expandedUserPrompts = map[string]bool{}
+	}
+	m.expandedUserPrompts[content] = !m.expandedUserPrompts[content]
+	m.rowCache = nil
+	m.rowCacheSig = 0
 }
 
 func (m *AppModel) chatRows() []chatRow {
@@ -3374,6 +3397,17 @@ func (m *AppModel) chatRowsSig() uint64 {
 	sort.Strings(keys)
 	for _, k := range keys {
 		_, _ = h.Write([]byte{2})
+		_, _ = h.Write([]byte(k))
+	}
+	upKeys := make([]string, 0, len(m.expandedUserPrompts))
+	for k, v := range m.expandedUserPrompts {
+		if v {
+			upKeys = append(upKeys, k)
+		}
+	}
+	sort.Strings(upKeys)
+	for _, k := range upKeys {
+		_, _ = h.Write([]byte{3})
 		_, _ = h.Write([]byte(k))
 	}
 	return h.Sum64()
@@ -3550,7 +3584,14 @@ func (m *AppModel) buildChatRows() []chatRow {
 			mdLines = renderMarkdownRows(msg.Content, contentWidth, m.asciiMode)
 		}
 		var userPainted []string
+		userTruncated := false
+		userTruncatable := false
 		if msg.Role == "user" {
+			userTruncatable = len(mdLines) > maxUserPromptLines
+			if !m.userPromptExpanded(msg.Content) && userTruncatable {
+				mdLines = mdLines[:maxUserPromptLines]
+				userTruncated = true
+			}
 			userPainted = paintWrappedMentions(msg.Content, attachedSkillNames(m.selectedSkills), mdTexts(mdLines), styleUser)
 		}
 		var msgRows []chatRow
@@ -3586,7 +3627,13 @@ func (m *AppModel) buildChatRows() []chatRow {
 			if rightAlign && !boxed {
 				rendered = rightAlignPlain(rendered, width)
 			}
+			if userTruncated && i == len(mdLines)-1 {
+				rendered += styleStatus.Render(userPromptEllipsis)
+			}
 			row := chatRow{Text: rendered, MsgIdx: mi, Copy: copyOn || copyFence}
+			if msg.Role == "user" && userTruncatable {
+				row.PromptExpandKey = msg.Content
+			}
 			if copyFence {
 				row.CopyText = ml.CopyCode
 				row.FenceIdx = fenceN

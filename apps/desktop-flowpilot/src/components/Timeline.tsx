@@ -331,6 +331,73 @@ function CopyBubble({
   );
 }
 
+const PROMPT_MAX_LINES = 4;
+const PROMPT_ELLIPSIS = "....";
+
+function PromptCard({ it }: { it: Extract<TimelineItem, { kind: "prompt" }> }): React.ReactElement {
+  const [expanded, setExpanded] = useState(false);
+  const [truncated, setTruncated] = useState(false);
+  const textRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = textRef.current;
+    if (!el) return;
+    const check = () => setTruncated(el.scrollHeight > el.clientHeight + 1);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [it.text]);
+
+  const toggle = (event: React.MouseEvent) => {
+    const target = event.target as HTMLElement;
+    if (target.closest(".bubble-copy") || target.closest(".prompt-skills-summary")) return;
+    setExpanded((value) => !value);
+  };
+
+  const clamped = truncated && !expanded;
+
+  return (
+    <div
+      className={`prompt-stack ${truncated ? "prompt-truncatable" : ""} ${expanded ? "prompt-expanded" : ""}`}
+      onClick={toggle}
+    >
+      {it.attachments && it.attachments.length > 0 && (
+        <div className="prompt-attachments" aria-label={`${it.attachments.length} image attachment(s)`}>
+          {it.attachments.map((att) =>
+            att.previewUrl ? (
+              <img
+                key={att.id}
+                className="prompt-attachment-thumb"
+                src={att.previewUrl}
+                alt={att.originalName}
+                title={att.originalName}
+              />
+            ) : (
+              <span key={att.id} className="prompt-attachment-chip" title={att.originalName}>
+                🖼 {att.originalName}
+              </span>
+            ),
+          )}
+        </div>
+      )}
+      <CopyBubble text={it.text} className="bubble prompt">
+        <div
+          ref={textRef}
+          className={`prompt-text ${clamped ? "prompt-text-clamped" : ""}`}
+          style={clamped ? { WebkitLineClamp: PROMPT_MAX_LINES } : undefined}
+        >
+          <MentionText text={it.text} skillNames={it.selectedSkills} />
+        </div>
+        {clamped && <span className="prompt-ellipsis">{PROMPT_ELLIPSIS}</span>}
+      </CopyBubble>
+      {it.selectedSkills && it.selectedSkills.length > 0 && (
+        <PromptSkillsSummary skills={it.selectedSkills} />
+      )}
+    </div>
+  );
+}
+
 function PromptSkillsSummary({ skills }: { skills: string[] }): React.ReactElement {
   const [open, setOpen] = useState(false);
   const summary = `${skills.length} skill${skills.length === 1 ? "" : "s"} selected`;
@@ -577,35 +644,7 @@ function Item({ it }: { it: TimelineGroup }): React.ReactElement | null {
         </CopyBubble>
       );
     case "prompt":
-      return (
-        <div className="prompt-stack">
-          {it.attachments && it.attachments.length > 0 && (
-            <div className="prompt-attachments" aria-label={`${it.attachments.length} image attachment(s)`}>
-              {it.attachments.map((att) =>
-                att.previewUrl ? (
-                  <img
-                    key={att.id}
-                    className="prompt-attachment-thumb"
-                    src={att.previewUrl}
-                    alt={att.originalName}
-                    title={att.originalName}
-                  />
-                ) : (
-                  <span key={att.id} className="prompt-attachment-chip" title={att.originalName}>
-                    🖼 {att.originalName}
-                  </span>
-                ),
-              )}
-            </div>
-          )}
-          <CopyBubble text={it.text} className="bubble prompt">
-            <MentionText text={it.text} skillNames={it.selectedSkills} />
-          </CopyBubble>
-          {it.selectedSkills && it.selectedSkills.length > 0 && (
-            <PromptSkillsSummary skills={it.selectedSkills} />
-          )}
-        </div>
-      );
+      return <PromptCard it={it} />;
     case "thinking":
       return <div className="system-line thinking">{it.text}</div>;
     case "tool":
