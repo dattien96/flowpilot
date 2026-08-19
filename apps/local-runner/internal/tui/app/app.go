@@ -1200,6 +1200,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.cmdHydrateAgentRunsIfNeeded())
 		return m, tea.Batch(cmds...)
 
+	case pasteBurstSettleMsg:
+		// A raw-paste burst finished quietly — collapse it to a token without
+		// waiting for the next keystroke.
+		if m.pasteBurst.active && pasteNow().Sub(m.pasteBurst.lastRuneAt) >= burstSettle {
+			m.collapsePasteBurst()
+		}
+		return m, nil
+
 	case ClipboardPasteMsg:
 		if msg.Err != "" && msg.Attachment == nil && msg.Text == "" {
 			m.addMessage("system", msg.Err, "error")
@@ -1599,7 +1607,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// line break is a plain Enter. Swallow those Enters as newlines while the
 		// flood is active so pasting never auto-submits per line.
 		if isBurstNewlineKey(msg) && m.handleBurstNewline(now) {
-			return m, nil
+			return m, cmdPasteBurstSettle()
 		}
 		if isPromptNewlineKey(msg) || isModifiedEnterNewline(msg) {
 			m.inputValue += "\n"
@@ -1892,6 +1900,10 @@ if path := imagePathFromClipboardText(pasted); path != "" {
 		}
 		m.insertInputAtCursor(s)
 		m.suggIdx = 0
+		// Auto-collapse the burst ~burstSettle after it stops (no keystroke needed).
+		if m.pasteBurst.active {
+			return m, tea.Batch(m.cmdMaybePrefetchPickers(), cmdPasteBurstSettle())
+		}
 		return m, m.cmdMaybePrefetchPickers()
 	}
 	// Alt+V / ctrl+shift+v when not delivered as KeyRunes (some terminals).
@@ -3916,10 +3928,10 @@ func (m *AppModel) renderInputLine() string {
 	}
 
 	bodyLines := strings.Split(body, "\n")
-	const maxVis = 6
-	if len(bodyLines) > maxVis {
-		bodyLines = bodyLines[len(bodyLines)-maxVis:]
-	}
+	// No composer clamp: pastes collapse to one "[Pasted N chars]" token and
+	// manually typed multi-line prompts render fully (CA-560). Clamping also
+	// misaligned caret offsets once the input grew past the window, losing the
+	// cursor entirely.
 
 	var inner []string
 	if m.approval != nil {

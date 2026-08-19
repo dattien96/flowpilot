@@ -29,14 +29,14 @@ func newPasteModel() *AppModel {
 	return m
 }
 
-func TestPasteSummaryToken_CountsLinesAndChars(t *testing.T) {
-	if got := pasteSummaryToken("a\nb\nc"); got != "[Pasted 3 lines · 5 chars]" {
+func TestPasteSummaryToken_OneGenericLine(t *testing.T) {
+	if got := pasteSummaryToken("a\nb\nc"); got != "[Pasted 5 chars]" {
 		t.Fatalf("got %q", got)
 	}
-	if got := pasteSummaryToken("trailing\nline\n"); got != "[Pasted 2 lines · 14 chars]" {
-		t.Fatalf("trailing newline must not inflate line count, got %q", got)
+	if got := pasteSummaryToken("single"); got != "[Pasted 6 chars]" {
+		t.Fatalf("got %q", got)
 	}
-	if got := pasteSummaryToken("single"); got != "[Pasted 1 lines · 6 chars]" {
+	if got := pasteSummaryToken(""); got != "[Pasted 0 chars]" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -47,11 +47,12 @@ func TestNeedsPasteSummary_Thresholds(t *testing.T) {
 		text string
 		want bool
 	}{
-		{"short single line", "hello world", false},
-		{"short multi line", "multi-line\npaste body", false},
-		{"5 lines fit composer", strings.Repeat("x\n", 4) + "x", false},
-		{"7 lines overflow", strings.Repeat("line\n", 6) + "last", true},
-		{"long single line stays verbatim", strings.Repeat("a", 200), false},
+		{"single keystroke", "h", false},
+		{"tiny snippet", " world", false},
+		{"short single line", "hello", false},
+		{"block-length single line", "some text", true},
+		{"multi-line always collapses", "a\nb", true},
+		{"long single line", strings.Repeat("a", 200), true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -62,16 +63,16 @@ func TestNeedsPasteSummary_Thresholds(t *testing.T) {
 	}
 }
 
-// CA-5xx: a long multi-line bracketed paste (Windows Terminal Ctrl+V) must
-// collapse to a "[Pasted N lines · C chars]" token so the composer never shows
-// a cut block; the full text is stored for expansion on submit.
+// CA-560: a multi-line bracketed paste (Windows Terminal Ctrl+V) must collapse
+// to a one-line "[Pasted N chars]" token so the composer never shows a cut
+// block and never loses the caret; the full text is stored for expansion.
 func TestBracketedPaste_LongMultiLineCollapsesToToken(t *testing.T) {
 	m := newPasteModel()
 	full := strings.Join([]string{"L1", "L2", "L3", "L4", "L5", "L6", "L7"}, "\n")
 
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(full), Paste: true})
 	am := m2.(*AppModel)
-	if am.inputValue != "[Pasted 7 lines · 20 chars]" {
+	if am.inputValue != "[Pasted 20 chars]" {
 		t.Fatalf("composer must show the paste token, got %q", am.inputValue)
 	}
 	if len(am.pasteSegments) != 1 || am.pasteSegments[0].text != full {
@@ -82,32 +83,46 @@ func TestBracketedPaste_LongMultiLineCollapsesToToken(t *testing.T) {
 	}
 }
 
-// Short multi-line pastes still insert verbatim (CA-541 contract: the composer
-// handles a couple of lines fine — only long blocks are collapsed).
-func TestBracketedPaste_ShortMultiLineStaysVerbatim(t *testing.T) {
+// Even a short multi-line paste collapses — the composer shows one token line,
+// never raw multi-line text.
+func TestBracketedPaste_ShortMultiLineCollapses(t *testing.T) {
 	m := newPasteModel()
 	m.inputValue = "hi "
 
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("multi-line\npaste body"), Paste: true})
 	am := m2.(*AppModel)
-	if am.inputValue != "hi multi-line\npaste body" {
-		t.Fatalf("short multi-line paste must insert directly, got %q", am.inputValue)
+	if am.inputValue != "hi [Pasted 21 chars]" {
+		t.Fatalf("multi-line paste must collapse, got %q", am.inputValue)
 	}
-	if len(am.pasteSegments) != 0 {
-		t.Fatalf("no segment expected for short paste, got %+v", am.pasteSegments)
+	if len(am.pasteSegments) != 1 {
+		t.Fatalf("one segment expected, got %+v", am.pasteSegments)
 	}
 }
 
-// Single-line pastes (paths, URLs, short code) always insert verbatim — only
-// multi-line blocks overflow the 6-line composer and collapse.
-func TestBracketedPaste_LongSingleLineStaysVerbatim(t *testing.T) {
+// A block-length single-line paste collapses too.
+func TestBracketedPaste_LongSingleLineCollapses(t *testing.T) {
 	m := newPasteModel()
 	full := strings.Repeat("a", 200)
 
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(full), Paste: true})
 	am := m2.(*AppModel)
-	if am.inputValue != full {
-		t.Fatalf("single-line paste must insert verbatim, got len=%d", len(am.inputValue))
+	if am.inputValue != "[Pasted 200 chars]" {
+		t.Fatalf("long single-line paste must collapse, got len=%d", len(am.inputValue))
+	}
+	if got := am.expandPasteTokens(am.inputValue); got != full {
+		t.Fatalf("expand must restore, got len=%d", len(got))
+	}
+}
+
+// Tiny single-line pastes (like " world") still insert verbatim.
+func TestBracketedPaste_TinySnippetStaysVerbatim(t *testing.T) {
+	m := newPasteModel()
+	m.inputValue = "hello"
+
+	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" world"), Paste: true})
+	am := m2.(*AppModel)
+	if am.inputValue != "hello world" {
+		t.Fatalf("tiny snippet must insert verbatim, got %q", am.inputValue)
 	}
 	if len(am.pasteSegments) != 0 {
 		t.Fatalf("no segment expected, got %+v", am.pasteSegments)
@@ -122,7 +137,7 @@ func TestClipboardPasteMsg_LongMultiLineCollapses(t *testing.T) {
 
 	m2, _ := m.Update(ClipboardPasteMsg{Text: full})
 	am := m2.(*AppModel)
-	if am.inputValue != "[Pasted 7 lines · 20 chars]" {
+	if am.inputValue != "[Pasted 20 chars]" {
 		t.Fatalf("got %q", am.inputValue)
 	}
 }
@@ -170,7 +185,7 @@ func TestPasteSummary_TwoCollapsesExpandInOrder(t *testing.T) {
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(f1), Paste: true})
 	m3, _ := m2.(*AppModel).handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(f2), Paste: true})
 	am := m3.(*AppModel)
-	want := "[Pasted 7 lines · 20 chars][Pasted 7 lines · 20 chars]"
+	want := "[Pasted 20 chars][Pasted 20 chars]"
 	if am.inputValue != want {
 		t.Fatalf("got %q", am.inputValue)
 	}
@@ -236,7 +251,7 @@ func TestBurst_CollapseReplacesRegionWithToken(t *testing.T) {
 	}
 
 	m.collapsePasteBurst()
-	if m.inputValue != "[Pasted 7 lines · 20 chars]" {
+	if m.inputValue != "[Pasted 20 chars]" {
 		t.Fatalf("burst region must collapse to token, got %q", m.inputValue)
 	}
 	if len(m.pasteSegments) != 1 || m.pasteSegments[0].text != full {
@@ -247,9 +262,38 @@ func TestBurst_CollapseReplacesRegionWithToken(t *testing.T) {
 	}
 }
 
-// A short raw paste (below the collapse threshold) is left verbatim but its
-// Enters are still swallowed — no auto-submit — and the text survives.
-func TestBurst_ShortRawPasteStaysVerbatimNoSubmit(t *testing.T) {
+// The settle tick collapses an idle burst automatically — no keystroke needed.
+func TestBurst_SettleTickCollapsesAutomatically(t *testing.T) {
+	advance := clockAt(t)
+	m := newPasteModel()
+	full := strings.Join([]string{"L1", "L2", "L3", "L4", "L5", "L6", "L7"}, "\n")
+	lines := strings.Split(full, "\n")
+	for i, line := range lines {
+		for _, r := range line {
+			advance(5 * time.Millisecond)
+			m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			m = m2.(*AppModel)
+		}
+		if i < len(lines)-1 {
+			advance(5 * time.Millisecond)
+			m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+			m = m2.(*AppModel)
+		}
+	}
+	if m.inputValue != full {
+		t.Fatalf("raw text must still be present pre-settle, got %q", m.inputValue)
+	}
+
+	advance(200 * time.Millisecond)
+	m2, _ := m.Update(pasteBurstSettleMsg{})
+	am := m2.(*AppModel)
+	if am.inputValue != "[Pasted 20 chars]" {
+		t.Fatalf("settle tick must collapse the burst, got %q", am.inputValue)
+	}
+}
+
+// A burst Enter becomes a newline — no auto-submit — even for a short flood.
+func TestBurst_EnterDuringShortBurstBecomesNewline(t *testing.T) {
 	advance := clockAt(t)
 	m := newPasteModel()
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
@@ -267,9 +311,46 @@ func TestBurst_ShortRawPasteStaysVerbatimNoSubmit(t *testing.T) {
 	if len(m.messages) != 0 {
 		t.Fatalf("must not auto-submit, got %d messages", len(m.messages))
 	}
+}
+
+// A short single-line burst stays verbatim (below the collapse threshold).
+func TestBurst_ShortSingleLineBurstStaysVerbatim(t *testing.T) {
+	advance := clockAt(t)
+	m := newPasteModel()
+	for _, r := range "hi" {
+		m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = m2.(*AppModel)
+		advance(5 * time.Millisecond)
+	}
+	if !m.pasteBurst.active {
+		t.Fatal("burst should be armed")
+	}
 	m.collapsePasteBurst()
-	if m.inputValue != "hi\n" {
-		t.Fatalf("short burst must stay verbatim, got %q", m.inputValue)
+	if m.inputValue != "hi" {
+		t.Fatalf("short single-line burst must stay verbatim, got %q", m.inputValue)
+	}
+	if len(m.pasteSegments) != 0 {
+		t.Fatalf("no segment expected, got %+v", m.pasteSegments)
+	}
+}
+
+// CA-560: the composer must not clamp to 6 lines. Clamping misaligned caret
+// offsets once input grew past the window (cursor vanished, arrows/mouse
+// stopped placing it). Pasting collapses to one token and manually typed
+// multi-line prompts render fully.
+func TestRenderInputLine_NoComposerClamp(t *testing.T) {
+	m := newPasteModel()
+	m.width = 100
+	lines := []string{"l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7"}
+	m.inputValue = strings.Join(lines, "\n")
+	m.inputCursor = -1
+
+	out := stripANSI(m.renderInputLine())
+	if !strings.Contains(out, "l0") {
+		t.Fatalf("first line must render (no clamp):\n%s", out)
+	}
+	if !strings.Contains(out, "l7") {
+		t.Fatalf("last line must render:\n%s", out)
 	}
 }
 

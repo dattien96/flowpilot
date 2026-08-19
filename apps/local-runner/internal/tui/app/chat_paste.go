@@ -8,17 +8,16 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Paste-summary constants (CA-560). A long or multi-line paste is collapsed to
-// a "[Pasted N lines · C chars]" placeholder in the composer instead of being
-// inserted verbatim (opencode-style). The full text is kept in pasteSegments
-// and expanded when the prompt is submitted, so the timeline shows the real
-// text while the composer stays compact and never auto-submits partial lines.
+// Paste-summary constants (CA-560). Any paste that forms a text block — multi-
+// line, or at least pasteCollapseMinRunes long — collapses to a one-line
+// "[Pasted N chars]" placeholder in the composer instead of inserting the raw
+// text (opencode-style). The full text is kept in pasteSegments and expanded
+// when the prompt is submitted, so the timeline shows the real text while the
+// composer stays a single line and never auto-submits partial lines. Single
+// keystrokes (stuck-paste typing, tiny bits like " world") insert verbatim.
 const (
-	// pasteCollapseMinLines collapses pastes with at least this many line
-	// breaks (composer only renders 6 lines, so longer blocks look "cut").
-	// Single-line pastes (paths, URLs, code) are never collapsed — they render
-	// fine inside the 6-line composer and must insert verbatim.
-	pasteCollapseMinLines = 6
+	// pasteCollapseMinRunes is the shortest single-line paste that collapses.
+	pasteCollapseMinRunes = 8
 	// burstRuneGap is the inter-key interval under which consecutive runes are
 	// considered one paste burst. Human typing is far slower than 25ms/key, so
 	// this only ever matches real pastes.
@@ -29,6 +28,15 @@ const (
 
 // pasteNow is the injectable clock for burst tests.
 var pasteNow = time.Now
+
+// pasteBurstSettleMsg fires ~burstSettle after the last raw-paste key so the
+// burst region collapses to a token even when the user presses nothing after
+// pasting (no need to wait for the next keystroke).
+type pasteBurstSettleMsg struct{}
+
+func cmdPasteBurstSettle() tea.Cmd {
+	return tea.Tick(burstSettle, func(time.Time) tea.Msg { return pasteBurstSettleMsg{} })
+}
 
 // pasteSegment holds the full text behind one collapsed placeholder token.
 type pasteSegment struct {
@@ -51,20 +59,17 @@ type pasteBurst struct {
 	lastRuneAt time.Time
 }
 
-// pasteSummaryToken renders the visible placeholder for a collapsed paste.
+// pasteSummaryToken renders the visible placeholder for a collapsed paste — one
+// generic line so the composer never shows the raw block.
 func pasteSummaryToken(text string) string {
-	lines := 1 + strings.Count(text, "\n")
-	if strings.HasSuffix(text, "\n") {
-		lines--
-	}
-	return fmt.Sprintf("[Pasted %d lines · %d chars]", lines, len([]rune(text)))
+	return fmt.Sprintf("[Pasted %d chars]", len([]rune(text)))
 }
 
 // needsPasteSummary reports whether a pasted block should collapse to a token
-// instead of being inserted verbatim: a multi-line prompt long enough to
-// overflow the 6-line composer. Single-line text never collapses.
+// instead of being inserted verbatim: multi-line, or a block of at least
+// pasteCollapseMinRunes chars. Single keystrokes and tiny snippets stay inline.
 func needsPasteSummary(text string) bool {
-	return strings.Count(text, "\n") >= pasteCollapseMinLines
+	return len([]rune(text)) >= pasteCollapseMinRunes || strings.Contains(text, "\n")
 }
 
 // isBurstNewlineKey reports whether the key is a raw newline delivery (Enter,

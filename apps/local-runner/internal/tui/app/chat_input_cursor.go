@@ -179,19 +179,7 @@ func (m *AppModel) tryPlaceInputCursor(x, y int) bool {
 
 	body := m.inputValue
 	bodyLines := strings.Split(body, "\n")
-	const maxVis = 6
-	hiddenLines := 0
-	if len(bodyLines) > maxVis {
-		hiddenLines = len(bodyLines) - maxVis
-		bodyLines = bodyLines[len(bodyLines)-maxVis:]
-	}
 	off := 0
-	if hiddenLines > 0 {
-		all := strings.Split(m.inputValue, "\n")
-		for i := 0; i < hiddenLines && i < len(all); i++ {
-			off += len([]rune(all[i])) + 1
-		}
-	}
 
 	innerLead := 0
 	if m.approval != nil {
