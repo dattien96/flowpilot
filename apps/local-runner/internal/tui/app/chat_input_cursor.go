@@ -61,6 +61,8 @@ func (m *AppModel) clearInputValue() {
 	m.inputValue = ""
 	m.inputCursor = -1
 	m.suggIdx = 0
+	m.pasteSegments = nil
+	m.resetPasteBurst()
 }
 
 func (m *AppModel) insertInputAtCursor(s string) {

@@ -1214,7 +1214,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Text != "" {
-			m.insertInputAtCursor(msg.Text)
+			// Same paste-summary handling as bracketed paste: long blocks show a
+			// token and expand on submit.
+			if needsPasteSummary(msg.Text) {
+				m.insertPasteSummary(msg.Text)
+			} else {
+				m.insertInputAtCursor(msg.Text)
+			}
 			return m, nil
 		}
 		if msg.Err != "" {
@@ -1584,9 +1590,21 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.cmdShutdownAndQuit()
 	}
 
-	if m.authPhase == AuthNone && (isPromptNewlineKey(msg) || isModifiedEnterNewline(msg)) && !m.viewingChild() {
-		m.inputValue += "\n"
-		return m, nil
+	if m.authPhase == AuthNone && !m.viewingChild() {
+		now := pasteNow()
+		if m.pasteBurst.active && now.Sub(m.pasteBurst.lastRuneAt) >= burstSettle {
+			m.collapsePasteBurst()
+		}
+		// Raw (non-bracketed) paste arrives as a flood of key events where every
+		// line break is a plain Enter. Swallow those Enters as newlines while the
+		// flood is active so pasting never auto-submits per line.
+		if isBurstNewlineKey(msg) && m.handleBurstNewline(now) {
+			return m, nil
+		}
+		if isPromptNewlineKey(msg) || isModifiedEnterNewline(msg) {
+			m.inputValue += "\n"
+			return m, nil
+		}
 	}
 
 	// Desktop parity (CA-519): a focused sub-agent transcript is read-only. Only
@@ -1777,7 +1795,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				// Placeholder (loading / no match): if the user already typed an
 				// arg (e.g. /model custom-id), run the typed line instead of trapping Enter.
-				if typed := strings.TrimSpace(m.inputValue); len(strings.Fields(typed)) >= 2 {
+				if typed := strings.TrimSpace(m.expandPasteTokens(m.inputValue)); len(strings.Fields(typed)) >= 2 {
 					if m.sendBlocked() && !strings.HasPrefix(typed, "/") {
 						return m, nil
 					}
@@ -1787,7 +1805,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		input := strings.TrimSpace(m.inputValue)
+		input := strings.TrimSpace(m.expandPasteTokens(m.inputValue))
 		if input == "" {
 			return m, nil
 		}
@@ -1848,19 +1866,31 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if strings.TrimSpace(pasted) == "" {
 					return m, m.cmdClipboardPasteWithFallback("")
 				}
-				if path := imagePathFromClipboardText(pasted); path != "" {
-					return m, m.cmdAttachImagePath(path)
-				}
+if path := imagePathFromClipboardText(pasted); path != "" {
+				return m, m.cmdAttachImagePath(path)
+			}
+			// Long/multi-line pastes collapse to a "[Pasted N lines · C chars]"
+			// token so the composer never shows a cut block and the pasted line
+			// breaks can never auto-submit. The full text is expanded on send.
+			if needsPasteSummary(pasted) {
+				m.insertPasteSummary(pasted)
+			} else {
 				m.insertInputAtCursor(pasted)
-				m.suggIdx = 0
-				return m, m.cmdMaybePrefetchPickers()
+			}
+			m.suggIdx = 0
+			return m, m.cmdMaybePrefetchPickers()
 			}
 		}
-		if msg.Type == tea.KeySpace {
-			m.insertInputAtCursor(" ")
-		} else {
-			m.insertInputAtCursor(string(msg.Runes))
+		s := " "
+		if msg.Type == tea.KeyRunes {
+			s = string(msg.Runes)
 		}
+		// Track raw (non-bracketed) paste floods so their Enters become newlines
+		// instead of submits; bracketed pastes are handled above.
+		if m.authPhase == AuthNone && !msg.Paste && !msg.Alt {
+			m.noteBurstRune(s)
+		}
+		m.insertInputAtCursor(s)
 		m.suggIdx = 0
 		return m, m.cmdMaybePrefetchPickers()
 	}

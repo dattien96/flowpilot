@@ -263,6 +263,12 @@ type AppModel struct {
 
 	inputValue  string
 	inputCursor int // rune index; <0 means caret sticks to the end
+	// pasteSegments holds the full text behind collapsed "[Pasted N lines]" tokens.
+	// pasteBurst guards a raw (non-bracketed) paste arriving as a flood of key
+	// events: while a rune burst is active, Enter inserts a newline instead of
+	// submitting, and the settled region collapses to a paste token.
+	pasteSegments []pasteSegment
+	pasteBurst    pasteBurst
 	// promptHistory is the sent-prompts ring for Up/Down recall (bash-style).
 	// promptHistIdx points into it while browsing; -1 means "show live draft".
 	promptHistory []string
