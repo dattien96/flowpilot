@@ -99,6 +99,10 @@ func runnerDialDeadErr(errText string) bool {
 		strings.Contains(s, "connectex") ||
 		strings.Contains(s, "dial tcp") ||
 		strings.Contains(s, "connection reset") ||
+		// Windows WSAECONNRESET (10054) surfaces as wsarecv/wsasend "An existing
+		// connection was forcibly closed by the remote host" — an active reset,
+		// the same dead-connection signal as Linux "connection reset by peer".
+		strings.Contains(s, "forcibly closed by the remote host") ||
 		strings.Contains(s, "no such host") ||
 		strings.Contains(s, "network is unreachable")
 }
