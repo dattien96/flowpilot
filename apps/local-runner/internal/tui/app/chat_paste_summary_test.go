@@ -401,3 +401,56 @@ func TestBurst_EnterAfterSettleCollapsesAndSubmits(t *testing.T) {
 		t.Fatalf("Enter after settle must submit the full pasted text, first=%+v", sent.messages)
 	}
 }
+
+// CA-562: a prompt pasted with a leading NUL byte (run-117747) copied as EMPTY
+// — on Windows the text is encoded to UTF-16, the first 0x0000 is read back as
+// the string terminator, and the clipboard ends up empty everywhere. Paste
+// sanitization must scrub NUL and other C0 control bytes so the composer,
+// stored message, and copied text all stay clean while real whitespace survives.
+func TestPaste_NulBytesScrubbedFromPrompt(t *testing.T) {
+	prompt := "\u0000Prompt:\n[Change Contract]\nfeature: calc-core\nintent: them ham SubtractWithGuard\nfiles: calc.go, calc_test.go\nsymbols: Subtract"
+	m := newPasteModel()
+	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(prompt), Paste: true})
+	am := m2.(*AppModel)
+	if strings.Contains(am.inputValue, "\x00") {
+		t.Fatalf("composer must not hold NUL bytes, got %q", am.inputValue)
+	}
+
+	m3, _ := am.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	am = m3.(*AppModel)
+	var user *ChatMessage
+	for i := len(am.messages) - 1; i >= 0; i-- {
+		if am.messages[i].Role == "user" {
+			user = &am.messages[i]
+			break
+		}
+	}
+	if user == nil {
+		t.Fatal("no user message after send")
+	}
+	if strings.Contains(user.Content, "\x00") {
+		t.Fatalf("message must not hold NUL bytes, got %q", user.Content)
+	}
+	if !strings.HasPrefix(user.Content, "Prompt:\n[Change Contract]") {
+		t.Fatalf("message must keep the real prompt text, got %q", user.Content)
+	}
+}
+
+// CA-562: sanitizePasteText must drop NUL/C0/DEL control bytes (the clipboard
+// terminator / terminal noise) but preserve the whitespace that matters.
+func TestSanitizePasteText_StripsControlBytes(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"\x00Prompt:\nline2", "Prompt:\nline2"},
+		{"keep\ttab\nand\r\nlines", "keep\ttab\nand\r\nlines"},
+		{"a\x01b\x02c\x7fd", "abcd"},
+		{"plain text", "plain text"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := sanitizePasteText(c.in); got != c.want {
+			t.Errorf("sanitizePasteText(%q)=%q want %q", c.in, got, c.want)
+		}
+	}
+}

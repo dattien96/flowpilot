@@ -1223,7 +1223,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.Text != "" {
 			// Same paste-summary handling as bracketed paste: long blocks show a
-			// token and expand on submit.
+			// token and expand on submit. NUL/control bytes from the clipboard
+			// are stripped so the message copies cleanly (run-117747).
+			msg.Text = sanitizePasteText(msg.Text)
 			if needsPasteSummary(msg.Text) {
 				m.insertPasteSummary(msg.Text)
 			} else {
@@ -1870,7 +1872,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// The clipboard is only consulted when the paste carries no text
 			// (image-only clipboard) or looks like a copied image file path.
 			if msg.Paste {
-				pasted := string(msg.Runes)
+				pasted := sanitizePasteText(string(msg.Runes))
 				if strings.TrimSpace(pasted) == "" {
 					return m, m.cmdClipboardPasteWithFallback("")
 				}

@@ -296,6 +296,11 @@ func openPath(path string) error {
 }
 
 func writeClipboardText(s string) error {
+	// NUL/control bytes truncate the write: on Windows the text is encoded to
+	// UTF-16 and a leading 0x0000 becomes the string terminator, so the
+	// clipboard reads back EMPTY even though the app "copied" the full text
+	// (run-117747: a prompt pasted with a leading \u0000 copied as nothing).
+	s = sanitizePasteText(s)
 	if initClipboard() {
 		clipboard.Write(clipboard.FmtText, []byte(s))
 		return nil

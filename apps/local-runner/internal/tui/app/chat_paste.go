@@ -72,6 +72,26 @@ func needsPasteSummary(text string) bool {
 	return len([]rune(text)) >= pasteCollapseMinRunes || strings.Contains(text, "\n")
 }
 
+// sanitizePasteText strips C0 control characters (NUL and friends) from
+// externally pasted text, keeping only meaningful whitespace (\n \r \t).
+// A prompt copied from a tool/terminal can carry a leading \u0000; when such a
+// string is written to the Windows clipboard it is encoded to UTF-16 and the
+// first code unit 0x0000 is read back as the string terminator — so the
+// clipboard ends up EMPTY even though the app "copied" a full prompt
+// (run-117747: prompt starting with \u0000 could not be copied or expanded).
+func sanitizePasteText(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\r', '\t':
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // isBurstNewlineKey reports whether the key is a raw newline delivery (Enter,
 // Ctrl+J, or a lone '\n' rune) that a paste burst may swallow as a line break.
 func isBurstNewlineKey(msg tea.KeyMsg) bool {
@@ -171,19 +191,29 @@ func (m *AppModel) collapsePasteBurst() {
 		return
 	}
 	start := b.start
-	text := string(b.buf)
+	raw := string(b.buf)
 	m.resetPasteBurst()
-	if !needsPasteSummary(text) {
-		return
-	}
-	// Guard: only collapse when the region still matches what we tracked. If the
+	// Guard: only rewrite when the region still matches what we tracked. If the
 	// caret moved or a "/" rewrite shifted the text mid-burst, keep it verbatim.
-	end := start + len([]rune(text))
+	end := start + len([]rune(raw))
 	runes := []rune(m.inputValue)
 	if start < 0 || start > len(runes) || end > len(runes) {
 		return
 	}
-	if string(runes[start:end]) != text {
+	if string(runes[start:end]) != raw {
+		return
+	}
+	// NUL/control bytes can ride along in a raw paste; scrub them from the
+	// inserted region so the eventual message copies cleanly (run-117747).
+	text := sanitizePasteText(raw)
+	if !needsPasteSummary(text) {
+		// Below the collapse threshold: stay verbatim, but drop control junk.
+		if text != raw {
+			repl := append(append([]rune{}, runes[:start]...), []rune(text)...)
+			repl = append(repl, runes[end:]...)
+			m.inputValue = string(repl)
+			m.setInputCaret(start + len([]rune(text)))
+		}
 		return
 	}
 	token := pasteSummaryToken(text)
