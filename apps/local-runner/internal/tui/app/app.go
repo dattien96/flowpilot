@@ -540,6 +540,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, c)
 			}
 		}
+		// CP-56 restart restore: TUI must resume the runner's persisted active
+		// posture (scan/plan/code) and its pinned profile after reopen — the
+		// runner is SSOT, the TUI default is code, so without this GET the mode
+		// looks lost. Not a user switch, so the restore does not PUT.
+		if firstLoad {
+			m.chatPosturePending = "restore"
+			cmds = append(cmds, m.cmdLoadChatPosture())
+		}
 		return m, tea.Batch(cmds...)
 
 	case WorkspaceFilesMsg:

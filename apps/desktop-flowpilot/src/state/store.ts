@@ -7,6 +7,7 @@ import type {
   BuiltinFlowOption,
   ChatPosture,
   ChatPostureConfig,
+  ChatPostureProfile,
   ChatSessionRestoreRequest,
   Project,
   ProviderAccountSummary,
@@ -612,6 +613,32 @@ export const useStore = create<AppState>((set, get) => ({
         // eslint-disable-next-line no-console
         console.error("[FlowPilot] listProviderAccounts failed:", err);
       }
+      // CP-56 restart restore: resume the runner-persisted active posture
+      // (scan/plan/code) and its pinned profile after Desktop reopen — mirrors
+      // the TUI SessionDefaultsMsg restore. Uses the same withRetry so the
+      // boot-time GET survives the runner compile window.
+      try {
+        const getPosture = client.getChatPosture;
+        if (getPosture) {
+          const config = await withRetry(() => getPosture());
+          const active = (config.active as ChatPosture) ?? get().chatPosture;
+          const profile = (config.profiles as Record<string, ChatPostureProfile>)[active] ?? {};
+          set(() => ({
+            chatPostureConfig: config,
+            chatPosture: active,
+            ...(profile.provider ? { selectedProvider: profile.provider as ProviderKey } : {}),
+            ...(profile.model ? { selectedModel: profile.model } : {}),
+            ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}),
+            ...(typeof profile.yolo === "boolean" ? { yoloMode: profile.yolo } : {}),
+          }));
+          if ((get().selectedProvider as string) === "grok" && typeof profile.yolo === "boolean") {
+            void get().toggleYoloForActiveProvider(profile.yolo);
+          }
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[FlowPilot] loadChatPostureConfig (boot) failed:", err);
+      }
     })().finally(() => {
       loadProjectsInFlight = null;
     });
@@ -1203,10 +1230,19 @@ export const useStore = create<AppState>((set, get) => ({
     if (!client.getChatPosture) return;
     try {
       const config = await client.getChatPosture();
-      set((state) => ({
+      const active = (config.active as ChatPosture) ?? get().chatPosture;
+      const profile = (config.profiles as Record<string, ChatPostureProfile>)[active] ?? {};
+      set(() => ({
         chatPostureConfig: config,
-        chatPosture: config.active ?? state.chatPosture,
+        chatPosture: active,
+        ...(profile.provider ? { selectedProvider: profile.provider as ProviderKey } : {}),
+        ...(profile.model ? { selectedModel: profile.model } : {}),
+        ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}),
+        ...(typeof profile.yolo === "boolean" ? { yoloMode: profile.yolo } : {}),
       }));
+      if ((get().selectedProvider as string) === "grok" && typeof profile.yolo === "boolean") {
+        void get().toggleYoloForActiveProvider(profile.yolo);
+      }
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] loadChatPostureConfig failed:", err);

@@ -87,6 +87,18 @@ func (m *AppModel) chatPostureCmdFromPending(cfg client.ChatPostureConfig) tea.C
 	pending := m.chatPosturePending
 	m.chatPosturePending = ""
 	switch {
+	case pending == "restore":
+		// TUI restart restore (SessionDefaultsMsg firstLoad): apply the runner's
+		// persisted Active and its profile pins without marking dirty — this is
+		// a read-only restore, not a user switch that must PUT active back.
+		active := strings.TrimSpace(cfg.Active)
+		if !validPosture(active) {
+			active = "code"
+		}
+		m.restoreChatPostureProfile(cfg, active)
+		m.chatPostureCfg = cfg
+		m.chatPostureCfg.Active = active
+		return nil
 	case pending == "show":
 		m.displayChatPosture(cfg)
 		return nil
@@ -141,6 +153,34 @@ func (m *AppModel) applyChatPostureProfile(cfg client.ChatPostureConfig, name st
 	m.persistSessionPrefs()
 	m.refreshSessionPanel()
 	m.addMessage("system", fmt.Sprintf("Mode: %s", postureLabel(name)), "")
+}
+
+// restoreChatPostureProfile is the restart-restore variant of
+// applyChatPostureProfile: it applies the persisted Active's pinned fields
+// without marking dirty and without the "Mode: …" banner — the TUI is just
+// resuming where the user left off.
+func (m *AppModel) restoreChatPostureProfile(cfg client.ChatPostureConfig, name string) {
+	m.chatPosture = name
+	prof := cfg.Profiles[name]
+	if prof.Provider != "" {
+		m.setPostureProvider(prof.Provider)
+	}
+	if prof.Model != "" {
+		m.model = prof.Model
+		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
+	}
+	if prof.ReasoningEffort != "" {
+		m.reasoningEffort = prof.ReasoningEffort
+	}
+	if prof.Yolo != nil {
+		m.yolo = *prof.Yolo
+		if strings.ToLower(m.provider) == "grok" {
+			m.postureGrokSync = *prof.Yolo
+			m.postureGrokSyncSet = true
+		}
+	}
+	m.persistSessionPrefs()
+	m.refreshSessionPanel()
 }
 
 // setPostureProvider mirrors /provider <key> application.
