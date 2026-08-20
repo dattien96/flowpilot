@@ -21,12 +21,19 @@ func TestModeSetupProviderFallbackWhenCatalogEmpty(t *testing.T) {
 	m.inputCursor = -1
 
 	items := m.collectSuggestions()
-	if len(items) != 3 {
-		t.Fatalf("fallback must show 3 providers, got %d: %+v", len(items), items)
+	// Filter out wizard back row
+	var filtered []string
+	for _, it := range items {
+		if it.kind == "mode-setup-value" {
+			filtered = append(filtered, it.value)
+		}
+	}
+	if len(filtered) != 3 {
+		t.Fatalf("fallback must show 3 providers, got %d: %+v (filtered %v)", len(items), items, filtered)
 	}
 	seen := map[string]bool{}
-	for _, it := range items {
-		seen[it.value] = true
+	for _, v := range filtered {
+		seen[v] = true
 	}
 	for _, want := range []string{"scan provider claude", "scan provider codex", "scan provider grok"} {
 		if !seen[want] {
@@ -69,8 +76,14 @@ func TestModeSetupProviderFiltersFallback(t *testing.T) {
 	m.inputCursor = -1
 
 	items := m.collectSuggestions()
-	if len(items) != 1 || items[0].value != "scan provider claude" {
-		t.Fatalf("filter cla must yield only claude, got %+v", items)
+	var filtered []string
+	for _, it := range items {
+		if it.kind == "mode-setup-value" {
+			filtered = append(filtered, it.value)
+		}
+	}
+	if len(filtered) != 1 || filtered[0] != "scan provider claude" {
+		t.Fatalf("filter cla must yield only claude, got %+v (filtered %v)", items, filtered)
 	}
 }
 

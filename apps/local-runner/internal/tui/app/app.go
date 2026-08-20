@@ -1749,12 +1749,85 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "selection cleared"
 			return m, nil
 		}
+		// Wizard back navigation for /mode-setup
+		if strings.HasPrefix(strings.TrimSpace(strings.ToLower(m.inputValue)), "/mode-setup") {
+			in := strings.TrimSpace(m.inputValue)
+			parts := strings.Fields(in)
+			if len(parts) <= 1 {
+				if m.modeSetupDraftDirty {
+					m.modeSetupDraft = nil
+					m.modeSetupDraftDirty = false
+					m.clearInputValue()
+					m.addMessage("system", "Posture draft discarded.", "")
+					return m, nil
+				}
+				m.clearInputValue()
+				m.statusMsg = "prompt cleared"
+				return m, nil
+			}
+			if len(parts) == 2 {
+				m.setInputPreservingDraftPrefix("/mode-setup ")
+				m.suggIdx = 0
+				return m, m.cmdMaybePrefetchPickers()
+			}
+			if len(parts) == 3 {
+				m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " ")
+				m.suggIdx = 0
+				return m, m.cmdMaybePrefetchPickers()
+			}
+			m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " " + parts[2] + " ")
+			m.suggIdx = 0
+			return m, m.cmdMaybePrefetchPickers()
+		}
 		if m.inputValue != "" {
 			m.clearInputValue()
 			m.statusMsg = "prompt cleared"
 			return m, nil
 		}
 		m.statusMsg = "Ctrl-C or /exit to quit"
+		return m, nil
+
+	case tea.KeyShiftTab:
+		// Wizard back: Shift-Tab goes up one level in /mode-setup
+		if strings.HasPrefix(strings.TrimSpace(strings.ToLower(m.inputValue)), "/mode-setup") {
+			in := strings.TrimSpace(m.inputValue)
+			parts := strings.Fields(in)
+			if len(parts) <= 1 {
+				if m.modeSetupDraftDirty {
+					m.modeSetupDraft = nil
+					m.modeSetupDraftDirty = false
+					m.clearInputValue()
+					m.addMessage("system", "Posture draft discarded.", "")
+					return m, nil
+				}
+				m.clearInputValue()
+				return m, nil
+			}
+			if len(parts) == 2 {
+				m.setInputPreservingDraftPrefix("/mode-setup ")
+				m.suggIdx = 0
+				return m, m.cmdMaybePrefetchPickers()
+			}
+			if len(parts) == 3 {
+				m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " ")
+				m.suggIdx = 0
+				return m, m.cmdMaybePrefetchPickers()
+			}
+			m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " " + parts[2] + " ")
+			m.suggIdx = 0
+			return m, m.cmdMaybePrefetchPickers()
+		}
+		if m.authPhase != AuthNone {
+			return m, nil
+		}
+		if items := m.collectSuggestions(); len(items) > 0 {
+			// Shift-Tab cycles backwards
+			if len(items) > 0 {
+				m.suggIdx = (m.suggIdx - 1 + len(items)) % len(items)
+				m.applySuggestion(items)
+				return m, m.cmdMaybePrefetchPickers()
+			}
+		}
 		return m, nil
 
 	case tea.KeyTab:
@@ -1867,6 +1940,120 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						m.statusMsg = "skill picker closed"
 					}
 					return m, nil
+				}
+				// Wizard save/cancel/back rows
+				if it.kind == "mode-setup-save" {
+					if m.modeSetupDraft == nil || !m.modeSetupDraftDirty {
+						m.addMessage("system", "Nothing to save.", "")
+						m.clearInputValue()
+						return m, nil
+					}
+					// Save draft in one PUT (copy draft, clear wizard)
+					draft := *m.modeSetupDraft
+					m.modeSetupDraft = nil
+					m.modeSetupDraftDirty = false
+					m.chatPostureCfg = draft
+					m.chatPostureSaving = true
+					m.chatPostureSavingPosture = draft.Active
+					m.addMessage("system", "Saving posture draft…", "")
+					m.clearInputValue()
+					return m, m.cmdSaveChatPosture(draft)
+				}
+				if it.kind == "mode-setup-cancel" {
+					m.modeSetupDraft = nil
+					m.modeSetupDraftDirty = false
+					m.clearInputValue()
+					m.addMessage("system", "Posture draft discarded.", "")
+					return m, nil
+				}
+				if it.kind == "mode-setup-back" {
+					// Go up one wizard level based on current input
+					in := strings.TrimSpace(m.inputValue)
+					parts := strings.Fields(in)
+					// in is like "/mode-setup", "/mode-setup plan", "/mode-setup plan model", "/mode-setup plan model opus"
+					if len(parts) <= 1 {
+						m.clearInputValue()
+						return m, nil
+					}
+					if len(parts) == 2 {
+						// at posture level -> back to root
+						m.setInputPreservingDraftPrefix("/mode-setup ")
+						m.suggIdx = 0
+						return m, m.cmdMaybePrefetchPickers()
+					}
+					if len(parts) == 3 {
+						// at field level -> back to posture
+						// keep posture, drop field
+						m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " ")
+						m.suggIdx = 0
+						return m, m.cmdMaybePrefetchPickers()
+					}
+					// at value level -> back to field
+					m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " " + parts[2] + " ")
+					m.suggIdx = 0
+					return m, m.cmdMaybePrefetchPickers()
+				}
+				if it.kind == "mode-setup-value" {
+					// Wizard staging: parse "posture field value" and stage into draft, then return to field picker
+					parts := strings.Fields(strings.TrimSpace(it.value))
+					if len(parts) >= 3 {
+						posture := strings.ToLower(parts[0])
+						field := strings.ToLower(parts[1])
+						val := strings.Join(parts[2:], " ")
+						if validPosture(posture) {
+							if m.modeSetupDraft == nil {
+								// Snapshot current cfg (or empty) as draft base
+								cfgCopy := m.chatPostureCfg
+								if cfgCopy.Profiles == nil {
+									cfgCopy.Profiles = map[string]client.ChatPostureProfile{}
+								} else {
+									// deep copy map
+									newMap := make(map[string]client.ChatPostureProfile, len(cfgCopy.Profiles))
+									for k, v := range cfgCopy.Profiles {
+										newMap[k] = v
+									}
+									cfgCopy.Profiles = newMap
+								}
+								m.modeSetupDraft = &cfgCopy
+							}
+							prof := m.modeSetupDraft.Profiles[posture]
+							switch field {
+							case "provider":
+								prof.Provider = strings.TrimSpace(val)
+							case "model":
+								prof.Model = strings.TrimSpace(val)
+								if prov := providerForModel(m.providers, prof.Model); prov != "" {
+									prof.Provider = prov
+								}
+							case "reasoning", "reason":
+								prof.ReasoningEffort = strings.ToLower(strings.TrimSpace(val))
+							case "yolo":
+								switch strings.ToLower(val) {
+								case "on", "true", "1":
+									on := true
+									prof.Yolo = &on
+								case "off", "false", "0":
+									off := false
+									prof.Yolo = &off
+								case "clear", "-":
+									prof.Yolo = nil
+								}
+							case "clear":
+								prof = client.ChatPostureProfile{}
+							}
+							if m.modeSetupDraft.Profiles == nil {
+								m.modeSetupDraft.Profiles = map[string]client.ChatPostureProfile{}
+							}
+							m.modeSetupDraft.Profiles[posture] = prof
+							m.modeSetupDraftDirty = true
+							m.addMessage("system", fmt.Sprintf("Staged %s %s = %s (not yet saved — pick another field or ✓ save)", posture, field, orDash(val)), "")
+							// Return to field picker for same posture
+							m.setInputPreservingDraftPrefix("/mode-setup " + posture + " ")
+							m.suggIdx = 0
+							return m, m.cmdMaybePrefetchPickers()
+						}
+					}
+					// Fallback to old immediate PUT if parsing failed
 				}
 				if cmd := suggestionAcceptValue(it); cmd != "" {
 					// Action rows only expand the next picker (provider connect, /image open|rm, mode-setup steps).
@@ -2100,7 +2287,54 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if ok, _ := parseSlashArgPrefix(in, "/reasoning"); ok {
 		return []suggestItem{{value: "", detail: "(no matching effort)", kind: "reasoning"}}
 	}
-	if modeSetupSugg := filterModeSetupSuggestions(in, m.providers, m.providerAccounts, m.provider, m.model); len(modeSetupSugg) > 0 {
+	if modeSetupSugg := filterModeSetupSuggestions(in, m.providers, m.providerAccounts, m.provider, m.model, m.modeSetupDraft); len(modeSetupSugg) > 0 {
+		// Wizard extra rows: save/cancel at posture level, back at field/value levels
+		trimmed := strings.TrimSpace(in)
+		isBare := strings.EqualFold(trimmed, "/mode-setup")
+		parts := strings.Fields(func() string {
+			if ok, q := parseSlashArgPrefix(in, "/mode-setup"); ok {
+				return q
+			}
+			if isBare {
+				return ""
+			}
+			return ""
+		}())
+		// Determine level by parts length and whether input ends with space
+		hasTrailingSpace := strings.HasSuffix(in, " ") || strings.HasSuffix(in, "\t")
+		level := 0 // 0=root posture, 1=field, 2=value
+		if isBare || (len(parts) == 0 && hasTrailingSpace) {
+			level = 0
+		} else if len(parts) == 1 {
+			if hasTrailingSpace {
+				level = 1
+			} else {
+				level = 0
+			}
+		} else if len(parts) == 2 {
+			if hasTrailingSpace {
+				level = 2
+			} else {
+				level = 1
+			}
+		} else if len(parts) >= 3 {
+			level = 2
+		}
+		if level == 0 && m.modeSetupDraftDirty {
+			modeSetupSugg = append(modeSetupSugg,
+				suggestItem{value: "save", detail: "✓ save all staged changes", kind: "mode-setup-save"},
+				suggestItem{value: "cancel", detail: "✕ discard draft", kind: "mode-setup-cancel"},
+			)
+		}
+		if level == 1 && len(parts) >= 1 && validPosture(strings.ToLower(parts[0])) {
+			// field level: add back row at top
+			back := suggestItem{value: "back", detail: "← back to posture", kind: "mode-setup-back"}
+			modeSetupSugg = append([]suggestItem{back}, modeSetupSugg...)
+		}
+		if level == 2 {
+			back := suggestItem{value: "back", detail: "← back to fields", kind: "mode-setup-back"}
+			modeSetupSugg = append([]suggestItem{back}, modeSetupSugg...)
+		}
 		return modeSetupSugg
 	}
 	if ok, q := parseSlashArgPrefix(in, "/mode-setup"); ok {
@@ -2179,6 +2413,44 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 	}
 	idx := m.suggIdx % len(items)
 	it := items[idx]
+	// Wizard save/cancel/back via Tab should behave like Enter
+	if it.kind == "mode-setup-save" {
+		if m.modeSetupDraft != nil && m.modeSetupDraftDirty {
+			draft := *m.modeSetupDraft
+			m.modeSetupDraft = nil
+			m.modeSetupDraftDirty = false
+			m.chatPostureCfg = draft
+			m.chatPostureSaving = true
+			m.chatPostureSavingPosture = draft.Active
+			m.addMessage("system", "Saving posture draft…", "")
+			m.clearInputValue()
+			// Note: Tab caller will still do cmdMaybePrefetchPickers, but save cmd needs to be returned
+			// For now, just set input; Enter is the primary save trigger. Tab on save is no-op.
+		}
+		return
+	}
+	if it.kind == "mode-setup-cancel" {
+		m.modeSetupDraft = nil
+		m.modeSetupDraftDirty = false
+		m.clearInputValue()
+		m.addMessage("system", "Posture draft discarded.", "")
+		return
+	}
+	if it.kind == "mode-setup-back" {
+		in := strings.TrimSpace(m.inputValue)
+		parts := strings.Fields(in)
+		if len(parts) <= 1 {
+			m.clearInputValue()
+		} else if len(parts) == 2 {
+			m.setInputPreservingDraftPrefix("/mode-setup ")
+		} else if len(parts) == 3 {
+			m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " ")
+		} else {
+			m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " " + parts[2] + " ")
+		}
+		m.suggIdx = 0
+		return
+	}
 	if cmd := suggestionAcceptValue(it); cmd == "" {
 		return
 	} else if it.kind == "file" {

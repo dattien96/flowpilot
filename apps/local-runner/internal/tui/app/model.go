@@ -315,6 +315,10 @@ type AppModel struct {
 	// so the "saving…" banner can be replaced with "saved" instead of hanging.
 	chatPostureSaving        bool
 	chatPostureSavingPosture string
+	// modeSetupDraft holds staged wizard edits for /mode-setup (multiple fields
+	// and postures) before a single Enter save. Nil when wizard not open.
+	modeSetupDraft      *client.ChatPostureConfig
+	modeSetupDraftDirty bool
 	// chatPosturePending remembers what to do after the runner config loads:
 	// "" = nothing; "apply:<posture>" = apply that posture's profile; "show" =
 	// just display the config; "setup:<posture>:<field>:<value>" = apply a

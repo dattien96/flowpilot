@@ -1076,7 +1076,16 @@ func filterReasoningSuggestions(input string, current string) []suggestItem {
 // providerAccounts and then to the known claude/codex/grok keys so the picker
 // is never empty — pins are plain strings and do not require a CLI to be
 // installed.
-func filterModeSetupSuggestions(input string, providers []client.Provider, accounts []client.ProviderAccountSummary, currentProvider, currentModel string) []suggestItem {
+func filterModeSetupSuggestions(input string, providers []client.Provider, accounts []client.ProviderAccountSummary, currentProvider, currentModel string, draft *client.ChatPostureConfig) []suggestItem {
+	// Bare "/mode-setup" without trailing space should also open the posture picker
+	// (user reported "không có command scan show ra để chọn").
+	if strings.EqualFold(strings.TrimSpace(input), "/mode-setup") {
+		out := make([]suggestItem, 0, len(postureOrder))
+		for _, p := range postureOrder {
+			out = append(out, suggestItem{value: p, detail: postureLabel(p), kind: "mode-setup-posture"})
+		}
+		return out
+	}
 	ok, query := parseSlashArgPrefix(input, "/mode-setup")
 	if !ok {
 		return nil
