@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -244,10 +245,56 @@ func HasBugFixDocInPaths(paths []string) bool {
 
 func IsDocOrAuditFile(path string) bool {
 	// BUG-288 #16 / F-25: .flowpilot/** is runtime metadata, not product code.
-	return strings.HasPrefix(path, "requirements/") ||
+	// Also treat build artifacts as non-code for scope/code checks (gatesandbox).
+	if strings.HasPrefix(path, "requirements/") ||
 		strings.HasPrefix(path, "change-audit/") ||
 		strings.HasPrefix(path, ".flowpilot/") ||
-		strings.HasSuffix(path, ".md")
+		strings.HasSuffix(path, ".md") {
+		return true
+	}
+	return IsBinaryOrBuildArtifact(path)
+}
+
+// IsBinaryOrBuildArtifact reports whether path is a build artifact that must not
+// participate in scope/code checks (CP-43 D-3: declared scope is for source).
+// Covers binary extensions, build output dirs, and bare root binaries like
+// `gatesandbox` (go build without extension) that otherwise triggered r-scope.
+func IsBinaryOrBuildArtifact(path string) bool {
+	p := strings.ToLower(strings.TrimSpace(path))
+	if p == "" {
+		return false
+	}
+	// Binary extensions.
+	for _, ext := range []string{".exe", ".dll", ".so", ".dylib", ".a", ".o", ".out", ".test", ".bin"} {
+		if strings.HasSuffix(p, ext) {
+			return true
+		}
+	}
+	// Build output directories.
+	for _, dir := range []string{"bin/", "dist/", "build/", "out/", "target/", ".tmp/", "tmp/"} {
+		if strings.HasPrefix(p, dir) || strings.Contains(p, "/"+dir) {
+			return true
+		}
+	}
+	// Bare root binary without extension (e.g. `gatesandbox` from `go build`).
+	// All source files have an extension (.go, .ts, etc.); a root file with
+	// no dot is almost certainly a compiled binary. Exclude known text files.
+	base := strings.ToLower(filepath.Base(p))
+	if !strings.Contains(base, ".") && !strings.Contains(p, "/") {
+		switch base {
+		case "makefile", "dockerfile", "license", "readme", "justfile", "taskfile", "brewfile", "procfile", "gemfile", "rakefile":
+			return false
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// IsIgnoredForScope reports whether path must be excluded from scope/code
+// checks: doc/audit/metadata OR build artifact.
+func IsIgnoredForScope(path string) bool {
+	return IsDocOrAuditFile(path) || IsBinaryOrBuildArtifact(path)
 }
 
 func HasCodeChanges(diff []ChangedFile) bool {

@@ -160,7 +160,9 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 
 	// 1b. Task-184/185: prepare Change Contract + scope for evaluation WITHOUT
 	// saving/head update (V9-02/V9-04). Commit only after gate allows.
-	prepared := prepareChangeContract(ctx, cwd, rs.id, rs.stepID, fin.FinalMessage, diff, suggestedFeatureKeys)
+	// CP-43 P-1 Plan A: also consider the turn's prompt so a user-declared
+	// [Change Contract] is not missed when the AI does not echo it.
+	prepared := prepareChangeContract(ctx, cwd, rs.id, rs.stepID, rs.lastFullPrompt, fin.FinalMessage, diff, suggestedFeatureKeys)
 	contractDeclared := prepared.declared
 	scopeOutOfScopePaths := prepared.outOfScopePaths
 	scopeHighSeverity := prepared.highSeverity
@@ -630,7 +632,7 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		if stepForContract == "" {
 			stepForContract = rs.stepID
 		}
-		prepared = prepareChangeContract(ctx, cwd, contractRunID, stepForContract, fin.FinalMessage, diff, suggested)
+		prepared = prepareChangeContract(ctx, cwd, contractRunID, stepForContract, rs.lastFullPrompt, fin.FinalMessage, diff, suggested)
 		hasPreparedContract = true
 		contractDeclared = prepared.declared
 		scopeOutOfScopePaths = prepared.outOfScopePaths
@@ -1955,7 +1957,15 @@ type preparedChangeContract struct {
 }
 
 // prepareChangeContract builds contract + scope flags WITHOUT Save/Head update.
-func prepareChangeContract(ctx context.Context, cwd, runID, stepID, finalMessage string, diff []flowgate.ChangedFile, suggestedFeatureKeys []string) preparedChangeContract {
+//
+// CP-43 P-1 Plan A: also accepts the turn's user prompt as a fallback source.
+// D-1 originally parsed only finalMessage (assistant turn). When a user/operator
+// pre-declares [Change Contract] in the prompt (C1), the gate must see it even
+// if the AI does not echo the block. Try finalMessage first; if absent, try
+// prompt before falling back to inferred. V9-04's "do not overwrite declared"
+// guard also checks the prompt so a prompt-declared contract is not silently
+// dropped.
+func prepareChangeContract(ctx context.Context, cwd, runID, stepID, prompt, finalMessage string, diff []flowgate.ChangedFile, suggestedFeatureKeys []string) preparedChangeContract {
 	out := preparedChangeContract{cwd: cwd}
 	if cwd == "" {
 		return out
@@ -1972,7 +1982,9 @@ func prepareChangeContract(ctx context.Context, cwd, runID, stepID, finalMessage
 
 	// V9-04: do not let inferred hub/root contracts overwrite a declared coder contract.
 	if existing, ok := store.GetLatestForRun(runID); ok && existing.Confidence == changecontract.ConfidenceDeclared {
-		if _, declaredNow := changecontract.ParseDeclaration(finalMessage); !declaredNow {
+		_, declaredNow := changecontract.ParseDeclaration(finalMessage)
+		_, promptDeclared := changecontract.ParseDeclaration(prompt)
+		if !declaredNow && !promptDeclared {
 			out.ok = true
 			out.contract = existing
 			out.declared = true
@@ -1989,6 +2001,12 @@ func prepareChangeContract(ctx context.Context, cwd, runID, stepID, finalMessage
 	}
 
 	c, declared := changecontract.ParseDeclaration(finalMessage)
+	if !declared && strings.TrimSpace(prompt) != "" {
+		if pc, ok := changecontract.ParseDeclaration(prompt); ok {
+			c = pc
+			declared = true
+		}
+	}
 	if declared {
 		if c.FeatureKey == "" {
 			c.FeatureKey = featureKey
@@ -2098,7 +2116,7 @@ type canonicalPendingRoute struct {
 
 // captureChangeContract is the legacy all-in-one path (tests / non-gate callers).
 func captureChangeContract(ctx context.Context, cwd, runID, stepID, finalMessage string, diff []flowgate.ChangedFile, suggestedFeatureKeys []string) (declared bool, outOfScopePaths []string, highSeverity, specDrifted, codeDrifted, attachSpecPending bool) {
-	p := prepareChangeContract(ctx, cwd, runID, stepID, finalMessage, diff, suggestedFeatureKeys)
+	p := prepareChangeContract(ctx, cwd, runID, stepID, "", finalMessage, diff, suggestedFeatureKeys)
 	_ = commitChangeContract(cwd, p, canonicalPendingRoute{}, nil)
 	return p.declared, p.outOfScopePaths, p.highSeverity, p.specDrifted, p.codeDrifted, p.attachSpecPending
 }

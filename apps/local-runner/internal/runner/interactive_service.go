@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/flowgate"
 )
 
 // InteractiveService implements the Phase 2 (04-02) interactive + admin APIs: the
@@ -351,6 +352,7 @@ type interactiveRun struct {
 	createdAt       string
 	updatedAt       string
 	lastPrompt      string
+	lastFullPrompt  string
 	lastMessage     string
 	sourceMachineID string
 	sourceRunID     string
@@ -3330,6 +3332,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		WorkingDirectory:                rs.workspaceCwd,
 		Status:                          rs.status,
 		LastPrompt:                      rs.lastPrompt,
+		LastFullPrompt:                  rs.lastFullPrompt,
 		LastMessage:                     rs.lastMessage,
 		StartedAt:                       rs.createdAt,
 		UpdatedAt:                       rs.updatedAt,
@@ -4609,9 +4612,30 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			rs.agentStatus = string(RunStatusCompleted)
 			s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
 			s.settleFlowChildTurnCompletedLocked(rs, finalMsg, ev)
-		} else if rs.flowEngineDriven && !rs.turnStartedAfterLoopDone {
-			// Root flow-engine: same gate-before-Completed contract as children.
-			_ = s.markPendingFlowGateSettleLocked(rs, finalMsg, ev.OccurredAt)
+		} else if !rs.turnStartedAfterLoopDone {
+			// Root: defer Completed until post-turn gate when the turn touched
+			// code. Plain chat previously published Completed immediately even
+			// when code changed, so dispatch settle saw Completed and returned
+			// allow:true before the gate queued its reprompt — UI stalled at
+			// one auto-reprompt line (run-208282). Arming the same pending gate
+			// contract as children/flow roots makes settle wait for the real
+			// disposition. Plain turns without code (e.g. "hi") still complete
+			// immediately to preserve the original 3-event shape.
+			hasCode := false
+			for _, e := range rs.events {
+				if e.Type == EventFileChanged && e.Path != "" && !flowgate.IsDocOrAuditFile(e.Path) {
+					hasCode = true
+					break
+				}
+			}
+			if hasCode {
+				_ = s.markPendingFlowGateSettleLocked(rs, finalMsg, ev.OccurredAt)
+			} else {
+				rs.status = RunStatusCompleted
+				rs.agentStatus = string(RunStatusCompleted)
+				s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
+				break
+			}
 		} else {
 			// BUG-305: a plain follow-up on an already-"done" loop (rs.turnStartedAfterLoopDone)
 			// falls through here and completes like normal chat — publish Completed and let
@@ -7396,6 +7420,15 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// lastPrompt is still empty, so a run always has SOME title).
 	if p := strings.TrimSpace(in.Prompt); !isSystemPrompt(p) || rs.lastPrompt == "" {
 		rs.lastPrompt = truncateDisplayField(in.Prompt, 100)
+	}
+	// CP-43 P-1 Plan A: keep the full user prompt for Change Contract fallback.
+	// lastPrompt is truncated to 100 chars for display, so a declared contract
+	// from the prompt would be lost at gate time. Store the complete text when
+	// it is a real user prompt (not a system reprompt/flow-engine note).
+	if p := strings.TrimSpace(in.Prompt); !isSystemPrompt(p) {
+		rs.lastFullPrompt = in.Prompt
+	} else if strings.TrimSpace(rs.lastFullPrompt) == "" {
+		rs.lastFullPrompt = in.Prompt
 	}
 	rs.updatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	ctx, cancel := context.WithCancel(context.Background())

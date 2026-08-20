@@ -27,6 +27,11 @@ var (
 // with some lines missing is tolerated — a partial Contract is still
 // returned with Confidence=ConfidenceDeclared, since the AI did declare.
 func ParseDeclaration(text string) (Contract, bool) {
+	// Normalize CRLF/CR so prompts/tests using \r separators (e.g. NDJSON log
+	// with \r) still split into separate lines. TrimSpace already strips \r but
+	// splitting only on \n would keep a whole block as one line.
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
 	lines := strings.Split(text, "\n")
 
 	markerIdx := -1
