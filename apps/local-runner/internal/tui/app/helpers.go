@@ -1072,8 +1072,11 @@ func filterReasoningSuggestions(input string, current string) []suggestItem {
 
 // filterModeSetupSuggestions returns picker items for `/mode-setup …`
 // (posture → field → value). Each stage filters by the trailing query so
-// ↑↓ Tab never requires typing values by hand.
-func filterModeSetupSuggestions(input string, providers []client.Provider, currentProvider string) []suggestItem {
+// ↑↓ Tab never requires typing values by hand. Provider values fall back to
+// providerAccounts and then to the known claude/codex/grok keys so the picker
+// is never empty — pins are plain strings and do not require a CLI to be
+// installed.
+func filterModeSetupSuggestions(input string, providers []client.Provider, accounts []client.ProviderAccountSummary, currentProvider string) []suggestItem {
 	ok, query := parseSlashArgPrefix(input, "/mode-setup")
 	if !ok {
 		return nil
@@ -1124,7 +1127,7 @@ func filterModeSetupSuggestions(input string, providers []client.Provider, curre
 				if f == "clear" {
 					return nil // no value stage
 				}
-				return modeSetupValueSuggestions(posture, f, "", providers, currentProvider)
+				return modeSetupValueSuggestions(posture, f, "", providers, accounts, currentProvider)
 			}
 		}
 		out := make([]suggestItem, 0, len(fields))
@@ -1142,7 +1145,7 @@ func filterModeSetupSuggestions(input string, providers []client.Provider, curre
 		return nil
 	}
 	valueQuery := strings.Join(parts[2:], " ")
-	return modeSetupValueSuggestions(posture, field, valueQuery, providers, currentProvider)
+	return modeSetupValueSuggestions(posture, field, valueQuery, providers, accounts, currentProvider)
 }
 
 func modeSetupFieldDetail(field string) string {
@@ -1162,20 +1165,65 @@ func modeSetupFieldDetail(field string) string {
 	}
 }
 
-func modeSetupValueSuggestions(posture, field, query string, providers []client.Provider, currentProvider string) []suggestItem {
+func modeSetupValueSuggestions(posture, field, query string, providers []client.Provider, accounts []client.ProviderAccountSummary, currentProvider string) []suggestItem {
 	q := strings.ToLower(strings.TrimSpace(query))
 	switch field {
 	case "provider":
-		out := make([]suggestItem, 0)
+		seen := make(map[string]bool, len(providers)+len(accounts)+3)
+		providerMap := make(map[string]client.Provider, len(providers))
+		var keys []string
 		for _, p := range providers {
-			key := strings.TrimSpace(p.Key)
-			if key == "" {
+			k := strings.TrimSpace(p.Key)
+			if k == "" {
 				continue
 			}
-			if q != "" && !strings.Contains(strings.ToLower(key), q) {
+			lk := strings.ToLower(k)
+			if seen[lk] {
 				continue
 			}
-			out = append(out, suggestItem{value: posture + " provider " + key, detail: providerSuggestionDetail(p, nil, currentProvider, "select"), kind: "mode-setup-value"})
+			seen[lk] = true
+			keys = append(keys, k)
+			providerMap[lk] = p
+		}
+		if len(keys) == 0 {
+			for _, a := range accounts {
+				k := strings.TrimSpace(a.ProviderKey)
+				if k == "" {
+					continue
+				}
+				lk := strings.ToLower(k)
+				if seen[lk] {
+					continue
+				}
+				seen[lk] = true
+				keys = append(keys, k)
+			}
+		}
+		if len(keys) == 0 {
+			for _, k := range []string{"claude", "codex", "grok"} {
+				lk := strings.ToLower(k)
+				if seen[lk] {
+					continue
+				}
+				seen[lk] = true
+				keys = append(keys, k)
+			}
+		}
+		out := make([]suggestItem, 0, len(keys))
+		for _, k := range keys {
+			if q != "" && !strings.Contains(strings.ToLower(k), q) {
+				continue
+			}
+			var detail string
+			if p, ok := providerMap[strings.ToLower(k)]; ok {
+				detail = providerSuggestionDetail(p, nil, currentProvider, "select")
+			} else {
+				detail = "provider"
+				if strings.EqualFold(k, currentProvider) {
+					detail = "current · provider"
+				}
+			}
+			out = append(out, suggestItem{value: posture + " provider " + k, detail: detail, kind: "mode-setup-value"})
 		}
 		return out
 	case "model":

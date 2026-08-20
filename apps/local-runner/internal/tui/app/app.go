@@ -2056,20 +2056,25 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if ok, _ := parseSlashArgPrefix(in, "/reasoning"); ok {
 		return []suggestItem{{value: "", detail: "(no matching effort)", kind: "reasoning"}}
 	}
-	if modeSetupSugg := filterModeSetupSuggestions(in, m.providers, m.provider); len(modeSetupSugg) > 0 {
+	if modeSetupSugg := filterModeSetupSuggestions(in, m.providers, m.providerAccounts, m.provider); len(modeSetupSugg) > 0 {
 		return modeSetupSugg
 	}
 	if ok, q := parseSlashArgPrefix(in, "/mode-setup"); ok {
 		// Offer a placeholder when the field is known but the value list is
 		// empty (e.g. /mode-setup scan model with no models) so Tab still
 		// opens a picker row instead of falling through to /help.
+		// Provider now falls back to claude/codex/grok, so the only empty
+		// provider case is still loading catalog — show a loading row.
 		parts := strings.Fields(q)
 		if len(parts) >= 2 {
 			field := strings.ToLower(parts[1])
 			if validPosture(strings.ToLower(parts[0])) {
 				switch field {
 				case "provider":
-					return []suggestItem{{value: "", detail: "(no providers)", kind: "mode-setup-value"}}
+					if !m.sessionDefaultsLoaded && len(m.providers) == 0 && len(m.providerAccounts) == 0 {
+						return []suggestItem{{value: "", detail: "loading providers…", kind: "mode-setup-value"}}
+					}
+					return []suggestItem{{value: "", detail: "(no matching providers)", kind: "mode-setup-value"}}
 				case "model":
 					return []suggestItem{{value: "", detail: "no models — set /provider first", kind: "mode-setup-value"}}
 				case "reasoning":
