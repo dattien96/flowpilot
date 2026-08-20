@@ -120,6 +120,11 @@ func (m *AppModel) chatPostureCmdFromPending(cfg client.ChatPostureConfig) tea.C
 			m.editChatPostureProfile(cfg, parts[0], parts[1], parts[2])
 		}
 		return nil
+	case strings.HasPrefix(pending, "modal:"):
+		tab := strings.TrimPrefix(pending, "modal:")
+		m.chatPostureCfg = cfg
+		m.openModeSetupModal(cfg, tab)
+		return nil
 	default:
 		return nil
 	}

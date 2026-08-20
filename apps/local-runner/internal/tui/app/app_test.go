@@ -146,11 +146,13 @@ func TestA8d_SlashStatus(t *testing.T) {
 // A8e: /help shows known commands.
 func TestA8e_SlashHelp(t *testing.T) {
 	m := newTestModel(config.ChatConfig{})
+	tmp, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 60})
+	m = tmp.(*app.AppModel)
 	m, _ = typeKeys(m, "/help")
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	view := m2.(*app.AppModel).View()
 
-	for _, cmd := range []string{"/yolo", "/clear", "/exit", "/agents"} {
+	for _, cmd := range []string{"/yolo", "/clear", "/exit", "/agents", "/scan"} {
 		if !strings.Contains(view, cmd) {
 			t.Errorf("After /help, expected %q in view;\ngot:\n%s", cmd, view)
 		}

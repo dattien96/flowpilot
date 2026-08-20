@@ -168,8 +168,8 @@ func TestSlashModeSetup_ShowListsPostures(t *testing.T) {
 
 	m2, cmd := m.handleSlashCommand("/mode-setup")
 	am := m2.(*AppModel)
-	if am.chatPosturePending != "show" {
-		t.Fatalf("pending = %q, want show", am.chatPosturePending)
+	if am.chatPosturePending != "modal:" {
+		t.Fatalf("pending = %q, want modal:", am.chatPosturePending)
 	}
 	if cmd == nil {
 		t.Fatal("expected a load-chat-posture cmd")
@@ -180,8 +180,8 @@ func TestSlashModeSetup_ShowListsPostures(t *testing.T) {
 		t.Fatalf("load chat posture: %v", cp.Err)
 	}
 	am.chatPostureCmdFromPending(cp.Cfg)
-	if !strings.Contains(am.View(), "Chat postures") {
-		t.Fatalf("expected posture summary in view:\n%s", am.View())
+	if !am.modeSetupModalOpen {
+		t.Fatalf("bare /mode-setup must open modal, got view:\n%s", am.View())
 	}
 }
 

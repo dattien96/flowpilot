@@ -1676,6 +1676,10 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Modal takes precedence over all other key handling.
+	if m.modeSetupModalOpen {
+		return m.handleModeSetupModalKey(msg)
+	}
 	// Desktop parity (CA-519): a focused sub-agent transcript is read-only. Only
 	// navigation, [back], agent-cycle, and slash commands are allowed; chat text
 	// input is dropped so the user cannot keep typing into the child view.
@@ -2402,6 +2406,23 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if _, _, ok := parseImagePicker(in); ok {
 		return []suggestItem{{value: "", detail: "(no matching /image option)", kind: "image-sub"}}
 	}
+	// /mode <name> picker — scan/plan/code
+	if ok, q := parseSlashArgPrefix(in, "/mode"); ok {
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(in)), "/mode-setup") {
+			qLower := strings.ToLower(strings.TrimSpace(q))
+			out := make([]suggestItem, 0, 3)
+			for _, p := range postureOrder {
+				if qLower != "" && !strings.Contains(strings.ToLower(p), qLower) {
+					continue
+				}
+				out = append(out, suggestItem{value: p, detail: postureLabel(p), kind: "mode"})
+			}
+			if len(out) > 0 {
+				return out
+			}
+			return []suggestItem{{value: "", detail: "(no matching posture)", kind: "mode"}}
+		}
+	}
 	if initSugg := filterInitSuggestions(in); len(initSugg) > 0 {
 		return initSugg
 	}
@@ -2461,7 +2482,7 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 		return
 	} else if it.kind == "file" {
 		m.applyFileMention(it.value)
-	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" || it.kind == "mode-setup-posture" || it.kind == "mode-setup-field" || it.kind == "mode-setup-value" || it.kind == "init" {
+	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" || it.kind == "mode-setup-posture" || it.kind == "mode-setup-field" || it.kind == "mode-setup-value" || it.kind == "mode" || it.kind == "init" {
 		// Nested pickers: only replace the active /… fragment (keep pre-slash draft).
 		m.setInputPreservingDraftPrefix(cmd)
 	} else {
@@ -2602,6 +2623,11 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/mode-setup " + strings.TrimSpace(it.value)
+	case "mode":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/mode " + strings.TrimSpace(it.value)
 	case "init":
 		if strings.TrimSpace(it.value) == "" {
 			return ""
@@ -3054,6 +3080,14 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, m.cmdShutdownAndQuit()
 
+	case "/scan":
+		if m.mode != ModeChat {
+			m.addMessage("system", "Scan/Plan/Code postures apply to chat mode only.", "")
+			break
+		}
+		m.chatPosturePending = "apply:scan"
+		return m, m.cmdLoadChatPosture()
+
 	case "/mode":
 		if m.mode != ModeChat {
 			m.addMessage("system", "Scan/Plan/Code postures apply to chat mode only.", "")
@@ -3092,7 +3126,11 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			break
 		}
 		if len(args) == 0 {
-			m.chatPosturePending = "show"
+			m.chatPosturePending = "modal:"
+			return m, m.cmdLoadChatPosture()
+		}
+		if len(args) == 1 && validPosture(strings.ToLower(args[0])) {
+			m.chatPosturePending = "modal:" + strings.ToLower(args[0])
 			return m, m.cmdLoadChatPosture()
 		}
 		// /mode-setup <posture> <field> <value>  (clear needs no value)
@@ -3752,8 +3790,11 @@ func (m *AppModel) View() string {
 	}
 	// flashToast is rendered on the project/git status row (see status_bar.go).
 	rows = append(rows, strings.Split(c.statusBlock, "\n")...)
-	if len(c.sugg) > 0 {
+	if len(c.sugg) > 0 && !m.modeSetupModalOpen {
 		rows = append(rows, strings.Split(m.renderSuggestions(c.sugg), "\n")...)
+	}
+	if m.modeSetupModalOpen {
+		rows = append(rows, strings.Split(m.renderModeSetupModal(w), "\n")...)
 	}
 	if c.attachPanelBlock != "" {
 		rows = append(rows, strings.Split(c.attachPanelBlock, "\n")...)
@@ -3819,6 +3860,8 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 			kind = "sync"
 		case "restore":
 			kind = "restore"
+		case "mode":
+			kind = "postures"
 		}
 	}
 	sel := 0
