@@ -268,11 +268,18 @@ func strokeChatRows(inner []chatRow, width int, user, ascii bool) []chatRow {
 		innerW = 4
 	}
 
+	alignW := width
+	if user {
+		alignW = width - userBoxGutter
+		if alignW < 10 {
+			alignW = width
+		}
+	}
 	out := make([]chatRow, 0, len(inner)+2)
 	idx := inner[0].MsgIdx
 	top := strokeTop(title, boxW, ascii)
 	if user {
-		top = rightAlignPlain(top, width)
+		top = rightAlignPlain(top, alignW)
 	}
 	out = append(out, chatRow{Text: top, MsgIdx: idx, PromptExpandKey: inner[0].PromptExpandKey})
 	for i, r := range inner {
@@ -288,17 +295,19 @@ func strokeChatRows(inner []chatRow, width int, user, ascii bool) []chatRow {
 		}
 		line := strokeLine(text, boxW, ascii)
 		if user {
-			line = rightAlignPlain(line, width)
+			line = rightAlignPlain(line, alignW)
 		}
 		out = append(out, chatRow{Text: line, MsgIdx: r.MsgIdx, Copy: copyOn, PromptExpandKey: r.PromptExpandKey})
 	}
 	bot := strokeBottom(boxW, ascii)
 	if user {
-		bot = rightAlignPlain(bot, width)
+		bot = rightAlignPlain(bot, alignW)
 	}
 	out = append(out, chatRow{Text: bot, MsgIdx: inner[len(inner)-1].MsgIdx, PromptExpandKey: inner[len(inner)-1].PromptExpandKey})
 	return out
 }
+
+const userBoxGutter = 2
 
 func hugBoxWidth(inner []chatRow, title string, maxW int, user bool) int {
 	innerW := 4
@@ -318,9 +327,13 @@ func hugBoxWidth(inner []chatRow, title string, maxW int, user bool) int {
 	boxW := innerW + 2
 	capW := maxW
 	if user {
-		capW = maxW * 7 / 10
+		effW := maxW - userBoxGutter
+		if effW < 10 {
+			effW = maxW
+		}
+		capW = effW * 7 / 10
 		if capW < 16 {
-			capW = maxW
+			capW = effW
 		}
 	}
 	if boxW > capW {
