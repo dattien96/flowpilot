@@ -1076,7 +1076,7 @@ func filterReasoningSuggestions(input string, current string) []suggestItem {
 // providerAccounts and then to the known claude/codex/grok keys so the picker
 // is never empty — pins are plain strings and do not require a CLI to be
 // installed.
-func filterModeSetupSuggestions(input string, providers []client.Provider, accounts []client.ProviderAccountSummary, currentProvider string) []suggestItem {
+func filterModeSetupSuggestions(input string, providers []client.Provider, accounts []client.ProviderAccountSummary, currentProvider, currentModel string) []suggestItem {
 	ok, query := parseSlashArgPrefix(input, "/mode-setup")
 	if !ok {
 		return nil
@@ -1097,7 +1097,9 @@ func filterModeSetupSuggestions(input string, providers []client.Provider, accou
 		tok := strings.ToLower(parts[0])
 		if validPosture(tok) {
 			// Exact posture -> show field picker for that posture.
-			fields := []string{"provider", "model", "reasoning", "yolo", "clear"}
+			// Provider removed from picker (model auto-pins provider); typing
+			// "provider" still works via value stage.
+			fields := []string{"model", "reasoning", "yolo", "clear"}
 			out := make([]suggestItem, 0, len(fields))
 			for _, f := range fields {
 				out = append(out, suggestItem{value: tok + " " + f, detail: modeSetupFieldDetail(f), kind: "mode-setup-field"})
@@ -1121,17 +1123,20 @@ func filterModeSetupSuggestions(input string, providers []client.Provider, accou
 	}
 	if len(parts) == 2 {
 		fieldPart := strings.ToLower(parts[1])
-		fields := []string{"provider", "model", "reasoning", "yolo", "clear"}
-		for _, f := range fields {
+		// Keep provider in exact-match so typed "/mode-setup scan provider" still works,
+		// but don't advertise it in partial picker.
+		allFields := []string{"provider", "model", "reasoning", "yolo", "clear"}
+		for _, f := range allFields {
 			if f == fieldPart {
 				if f == "clear" {
 					return nil // no value stage
 				}
-				return modeSetupValueSuggestions(posture, f, "", providers, accounts, currentProvider)
+				return modeSetupValueSuggestions(posture, f, "", providers, accounts, currentProvider, currentModel)
 			}
 		}
-		out := make([]suggestItem, 0, len(fields))
-		for _, f := range fields {
+		pickerFields := []string{"model", "reasoning", "yolo", "clear"}
+		out := make([]suggestItem, 0, len(pickerFields))
+		for _, f := range pickerFields {
 			if strings.HasPrefix(f, fieldPart) || strings.Contains(f, fieldPart) {
 				out = append(out, suggestItem{value: posture + " " + f, detail: modeSetupFieldDetail(f), kind: "mode-setup-field"})
 			}
@@ -1145,7 +1150,7 @@ func filterModeSetupSuggestions(input string, providers []client.Provider, accou
 		return nil
 	}
 	valueQuery := strings.Join(parts[2:], " ")
-	return modeSetupValueSuggestions(posture, field, valueQuery, providers, accounts, currentProvider)
+	return modeSetupValueSuggestions(posture, field, valueQuery, providers, accounts, currentProvider, currentModel)
 }
 
 func modeSetupFieldDetail(field string) string {
@@ -1165,7 +1170,7 @@ func modeSetupFieldDetail(field string) string {
 	}
 }
 
-func modeSetupValueSuggestions(posture, field, query string, providers []client.Provider, accounts []client.ProviderAccountSummary, currentProvider string) []suggestItem {
+func modeSetupValueSuggestions(posture, field, query string, providers []client.Provider, accounts []client.ProviderAccountSummary, currentProvider, currentModel string) []suggestItem {
 	q := strings.ToLower(strings.TrimSpace(query))
 	switch field {
 	case "provider":
@@ -1251,10 +1256,15 @@ func modeSetupValueSuggestions(posture, field, query string, providers []client.
 				all = append(all, entry{provider: p.Key, id: id})
 			}
 		}
-		// If catalog has no models but the session already has a model, surface
-		// it so the user sees at least the current selection.
-		if len(all) == 0 && strings.TrimSpace(currentProvider) != "" {
-			// no-op: we don't synthesize model names; placeholder will guide.
+		// Fallback: if catalog has no models (or session model not in catalog),
+		// surface m.model so picker is never empty — matches live TUI where
+		// statusline shows grok-4.5 from prefs while GET /providers Models=[].
+		if cm := strings.TrimSpace(currentModel); cm != "" {
+			lk := strings.ToLower(cm)
+			if !seen[lk] {
+				seen[lk] = true
+				all = append(all, entry{provider: currentProvider, id: cm})
+			}
 		}
 		out := make([]suggestItem, 0, len(all))
 		for _, e := range all {

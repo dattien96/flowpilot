@@ -313,9 +313,13 @@ func TestModeSetupPicker_PostureFieldValue(t *testing.T) {
 	for _, it := range items {
 		found[it.value] = true
 	}
-	if !found["scan provider"] || !found["scan model"] {
-		t.Fatalf("field picker must show provider/model, got %+v", items)
+	if found["scan provider"] {
+		t.Fatalf("field picker must not show provider (removed), got %+v", items)
 	}
+	if !found["scan model"] {
+		t.Fatalf("field picker must show model, got %+v", items)
+	}
+	// Typing provider still works via value stage (not advertised in picker)
 	m.inputValue = "/mode-setup scan provider "
 	m.inputCursor = -1
 	items = m.collectSuggestions()

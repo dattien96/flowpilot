@@ -2075,7 +2075,7 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if ok, _ := parseSlashArgPrefix(in, "/reasoning"); ok {
 		return []suggestItem{{value: "", detail: "(no matching effort)", kind: "reasoning"}}
 	}
-	if modeSetupSugg := filterModeSetupSuggestions(in, m.providers, m.providerAccounts, m.provider); len(modeSetupSugg) > 0 {
+	if modeSetupSugg := filterModeSetupSuggestions(in, m.providers, m.providerAccounts, m.provider, m.model); len(modeSetupSugg) > 0 {
 		return modeSetupSugg
 	}
 	if ok, q := parseSlashArgPrefix(in, "/mode-setup"); ok {
@@ -2095,7 +2095,10 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 					}
 					return []suggestItem{{value: "", detail: "(no matching providers)", kind: "mode-setup-value"}}
 				case "model":
-					return []suggestItem{{value: "", detail: "no models — set /provider first", kind: "mode-setup-value"}}
+					if !m.sessionDefaultsLoaded && len(m.providers) == 0 {
+						return []suggestItem{{value: "", detail: "loading models…", kind: "mode-setup-value"}}
+					}
+					return []suggestItem{{value: "", detail: "no models in catalog", kind: "mode-setup-value"}}
 				case "reasoning":
 					return []suggestItem{{value: "", detail: "(no matching effort)", kind: "mode-setup-value"}}
 				case "yolo":
