@@ -39,6 +39,54 @@ func TestGeminiCLIArgsForReadOnlyAndYolo(t *testing.T) {
 	}
 }
 
+func TestGeminiAdapterReadOnlyPostureNeverSkipsPermissions(t *testing.T) {
+	// scan/plan must force --sandbox and inject a read-only prompt guard even
+	// when YoloMode=true (Gemini has no RequestApproval path, so passing
+	// --dangerously-skip-permissions would let writes through).
+	for _, posture := range []string{ChatPostureScan, ChatPosturePlan} {
+		var gotArgs []string
+		defer mockGeminiCommand(t, func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			gotArgs = append([]string{}, args...)
+			return testShellCommand(ctx, "printf 'ok\\n'")
+		})()
+
+		homePath := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(homePath, ".gemini", "config", "projects"), 0o755); err != nil {
+			t.Fatalf("mkdir projects dir: %v", err)
+		}
+		a := newGeminiAdapter(".", "acct-gemini", map[string]string{"HOME": homePath})
+		b := &fakeClaudeBridge{}
+		workspace := t.TempDir()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		if err := a.SendTurn(ctx, TurnRequest{
+			RunID:             "run-1",
+			StepID:            "step-1",
+			ProjectID:         "flowpilot",
+			Cwd:               workspace,
+			Prompt:            "hi",
+			ModelName:         "gemini-flash",
+			ProviderSessionID: "thread-1",
+			YoloMode:          true,
+			ChatPosture:       posture,
+		}, b); err != nil {
+			t.Fatalf("SendTurn(%s): %v", posture, err)
+		}
+
+		args := strings.Join(gotArgs, " ")
+		if strings.Contains(args, "--dangerously-skip-permissions") {
+			t.Fatalf("posture %s args = %q, must NOT skip permissions", posture, args)
+		}
+		if !strings.Contains(args, "--sandbox") {
+			t.Fatalf("posture %s args = %q, want --sandbox", posture, args)
+		}
+		if !strings.Contains(args, "READ-ONLY") {
+			t.Fatalf("posture %s args = %q, want read-only prompt guard", posture, args)
+		}
+	}
+}
+
 func TestGeminiAdapterRunsAgyPrintAndCompletesTurn(t *testing.T) {
 	var gotName string
 	var gotArgs []string

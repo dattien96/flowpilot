@@ -144,6 +144,10 @@ type interactiveRun struct {
 	yolo                  bool
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
+	// chatPosture is the per-turn posture (scan/plan/code, "" = code). Persisted
+	// on the run like yolo/model so children spawned mid-turn inherit it and the
+	// approval bridge applies the read-only policy for scan/plan.
+	chatPosture string
 	changeType      string
 	sourceDocID     string
 	turnCount       int
@@ -4872,6 +4876,11 @@ type turnBridge struct {
 	// approval bridge must use it — not rs.yolo — so a YOLO change between chat prompts
 	// drives the runner's auto-approve the same way it drives the adapter's sandbox/mode.
 	yolo bool
+	// posture is the effective chat posture for THIS turn (scan/plan/code, "" = code).
+	// Scan/Plan are read-only: RequestApproval auto-approves reads and auto-denies writes
+	// without asking (checked before the YOLO branch so a profile YOLO never leaks a
+	// write through).
+	posture string
 }
 
 func (b *turnBridge) Emit(ev ProviderEvent) {
@@ -4916,6 +4925,17 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 	if isFlowCodingCommitAttempt(s, b.rs, details) {
 		s.recordAutoApproval(b.rs, details, "deny", "flow_coding_commit_reserved_for_audit")
 		return "deny", nil
+	}
+
+	// Read-only posture (Scan/Plan): auto-decide WITHOUT asking the human. Reads
+	// are approved, writes and anything unclassified are denied, and the reply is
+	// recorded like every auto-decision so the adapter never hangs. Checked BEFORE
+	// the YOLO branch below so a profile YOLO never auto-approves a write through
+	// a read-only posture (the posture's permission discipline wins).
+	if IsReadOnlyChatPosture(b.posture) {
+		decision := readOnlyApprovalDecision(details)
+		s.recordAutoApproval(b.rs, details, decision, "posture_read_only_"+b.posture)
+		return decision, nil
 	}
 
 	// YOLO=true (RunnerAutoApprove): the runtime runs in "never" approval mode and
@@ -5934,6 +5954,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// run-level default.
 	model, effort := resolveTurnModelAndEffort(rs, in)
 	yolo := resolveTurnYolo(rs, in)
+	posture := resolveTurnChatPosture(rs, in)
 	// Fold any pending UI-spawn context into the provider prompt (NOT the displayed prompt,
 	// which was already emitted via turn_started with in.Prompt). This is how the parent
 	// agent learns about children started from the UI. Cleared once consumed; the cleared
@@ -5988,6 +6009,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// even when the turn request omitted yoloMode.
 	if in.YoloMode != nil || shouldForceFlowYolo(rs.runKind, rs.workflowID, rs.flowEngineDriven) {
 		rs.yolo = yolo
+	}
+	// Persist the per-turn posture as the run's current default for the SAME
+	// reason YOLO is persisted just above: the approval bridge for the rest of
+	// this turn (and any child spawned mid-turn) must see the posture the user
+	// actually selected, and a scan/plan posture must stay read-only even after
+	// the composing client stops resending it.
+	if in.ChatPosture != "" || shouldForceFlowYolo(rs.runKind, rs.workflowID, rs.flowEngineDriven) {
+		rs.chatPosture = posture
 	}
 	// Persist the per-turn model/reasoning-effort as the run's current default,
 	// for the SAME reason YOLO is persisted just above. A child spawned during
@@ -6078,6 +6107,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		YoloMode:               yolo,
 		ForceShellBridge:       forceShellBridge,
 		ReasoningEffort:        effort,
+		ChatPosture:            posture,
 		Cwd:                    rs.workspaceCwd,
 		Scenario:               scenario,
 		Attachments:            in.Attachments,
@@ -6145,7 +6175,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		s.notifyTurnIdle(rs.id)
 		return
 	}
-	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo}
+	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo, posture: posture}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
 	if err != nil && s.dispatchStore != nil && s.dispatchV2ActiveForRun(ctx, rs.id) {
 		// Ambiguous: may have reached the provider. Never terminalize/clear.

@@ -404,6 +404,10 @@ type TurnInput struct {
 	SubMode        string `json:"subMode,omitempty"`
 	FlowRef        string `json:"flowRef,omitempty"`
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
+	// ChatPosture is the per-turn chat posture (scan/plan/code, empty = code).
+	// Scan/Plan are read-only; the TUI resends it on every chat turn so switching
+	// mid-chat takes effect immediately.
+	ChatPosture string `json:"chatPosture,omitempty"`
 }
 
 // ProviderEvent mirrors ProviderEvent from provider_event.go (camelCase JSON).
@@ -963,6 +967,36 @@ func (c *Client) ApplyGrokYoloPosture(ctx context.Context, yolo bool) error {
 	}, nil)
 }
 
+// ChatPostureProfile mirrors runner.ChatPostureProfile. Empty fields mean
+// "inherit current session selection".
+type ChatPostureProfile struct {
+	Provider        string `json:"provider,omitempty"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	Yolo            *bool  `json:"yolo,omitempty"`
+}
+
+// ChatPostureConfig mirrors runner.ChatPostureConfig. Both the TUI and Desktop
+// read/write this ONLY through the runner endpoints (SSOT).
+type ChatPostureConfig struct {
+	Active   string                        `json:"active"`
+	Profiles map[string]ChatPostureProfile `json:"profiles"`
+}
+
+// GetChatPosture calls GET /client/chat-posture (runner SSOT).
+func (c *Client) GetChatPosture(ctx context.Context) (ChatPostureConfig, error) {
+	var out ChatPostureConfig
+	err := c.getJSON(ctx, "/client/chat-posture", &out)
+	return out, err
+}
+
+// SetChatPosture calls PUT /client/chat-posture (runner SSOT).
+func (c *Client) SetChatPosture(ctx context.Context, cfg ChatPostureConfig) (ChatPostureConfig, error) {
+	var out ChatPostureConfig
+	err := c.putJSON(ctx, "/client/chat-posture", cfg, &out)
+	return out, err
+}
+
 // SendTurn posts a turn and yields events for that turn's providerTurnId via SSE.
 // Retries retryable errors up to maxTurnRetries times.
 func (c *Client) SendTurn(ctx context.Context, input TurnInput) (<-chan ProviderEvent, <-chan error) {
@@ -1206,6 +1240,16 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 }
 
 func (c *Client) postJSON(ctx context.Context, path string, in, out any) error {
+	return c.methodJSON(ctx, http.MethodPost, path, in, out)
+}
+
+// putJSON sends a PUT request with a JSON body (used by the chat-posture store,
+// whose runner endpoints are GET/PUT).
+func (c *Client) putJSON(ctx context.Context, path string, in, out any) error {
+	return c.methodJSON(ctx, http.MethodPut, path, in, out)
+}
+
+func (c *Client) methodJSON(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -1214,7 +1258,7 @@ func (c *Client) postJSON(ctx context.Context, path string, in, out any) error {
 		}
 		body = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
 	if err != nil {
 		return err
 	}

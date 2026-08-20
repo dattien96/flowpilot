@@ -4,6 +4,7 @@ import type {
   AgentGraphSnapshot,
   Artifact,
   BuiltinFlowOption,
+  ChatPostureConfig,
   ChatSessionRestoreRequest,
   ChatSessionRestoreResult,
   ChatSessionSyncRequest,
@@ -127,6 +128,15 @@ export class HttpWsRunnerClient implements RunnerClient {
     const resp = await fetch(this.base + path, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json", ...(headers ?? {}) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return this.parse<T>(resp);
+  }
+
+  private async putJSON<T>(path: string, body?: unknown): Promise<T> {
+    const resp = await fetch(this.base + path, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     return this.parse<T>(resp);
@@ -345,6 +355,12 @@ export class HttpWsRunnerClient implements RunnerClient {
   applyGrokYoloPosture(yolo: boolean): Promise<void> {
     return this.postJSON<void>("/provider-accounts/grok-yolo-posture", { yolo });
   }
+  getChatPosture(): Promise<ChatPostureConfig> {
+    return this.getJSON<ChatPostureConfig>("/client/chat-posture");
+  }
+  setChatPosture(config: ChatPostureConfig): Promise<ChatPostureConfig> {
+    return this.putJSON<ChatPostureConfig>("/client/chat-posture", config);
+  }
   openProviderAccountTerminal(accountId: string): Promise<void> {
     return this.postJSON<void>("/provider-accounts/test", { accountId });
   }
@@ -370,6 +386,7 @@ export class HttpWsRunnerClient implements RunnerClient {
         reasoningEffort: input.reasoningEffort,
         model: input.model,
         yoloMode: input.yoloMode,
+        chatPosture: input.chatPosture,
         attachments: input.attachments,
         subMode: input.subMode,
         flowRef: input.flowRef,

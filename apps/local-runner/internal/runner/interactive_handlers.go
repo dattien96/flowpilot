@@ -41,6 +41,10 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/projects/{projectId}/features/{featureKey}/canonical-head/rebaseline", s.handleRebaselineCanonicalHead)
 	mux.HandleFunc("POST /client/projects/{projectId}/features/{featureKey}/canonical-head/retire", s.handleRetireCanonicalHead)
 	mux.HandleFunc("POST /client/workflow-runs", s.handleStartRun)
+	// Chat posture (OpenCode-style Scan/Plan/Code modes): shared document owned by
+	// the runner; TUI and Desktop read/write through these endpoints (SSOT).
+	mux.HandleFunc("GET /client/chat-posture", s.handleGetChatPosture)
+	mux.HandleFunc("PUT /client/chat-posture", s.handleSetChatPosture)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/steps-runtime", s.handleGetWorkflowStepsRuntime)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/resume", s.handleResumeRun)
@@ -297,6 +301,10 @@ type turnBody struct {
 	ReasoningEffort string  `json:"reasoningEffort"`
 	Model           *string `json:"model"`
 	YoloMode        *bool   `json:"yoloMode"`
+	// ChatPosture is the per-turn chat posture ("scan"/"plan"/"code", empty =
+	// code). Scan/Plan are read-only (bridge auto-approves reads, auto-denies
+	// writes, never asks). The desktop resends it every chat turn.
+	ChatPosture string `json:"chatPosture,omitempty"`
 	// Attachments carries chat-turn image attachments (Task-052), inline base64.
 	Attachments []PromptAttachment `json:"attachments,omitempty"`
 	Scenario    string             `json:"scenario"` // P2 fake-adapter hint only
@@ -357,7 +365,7 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 	}
 	turnID, e := s.startTurn(
 		r.PathValue("runId"),
-		TurnInput{StepID: body.StepID, Prompt: body.Prompt, ChangeType: body.ChangeType, SourceDocID: body.SourceDocID, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, Attachments: body.Attachments, SubMode: body.SubMode, FlowRef: body.FlowRef},
+		TurnInput{StepID: body.StepID, Prompt: body.Prompt, ChangeType: body.ChangeType, SourceDocID: body.SourceDocID, SelectedSkills: body.SelectedSkills, ReasoningEffort: body.ReasoningEffort, Model: body.Model, YoloMode: body.YoloMode, ChatPosture: body.ChatPosture, Attachments: body.Attachments, SubMode: body.SubMode, FlowRef: body.FlowRef},
 		body.Scenario,
 		r.Header.Get("Idempotency-Key"),
 	)

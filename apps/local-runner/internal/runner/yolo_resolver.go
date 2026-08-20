@@ -81,6 +81,26 @@ func resolveYoloPostureForTurn(yolo, forceShellBridge bool) YoloPosture {
 	return p
 }
 
+// resolveYoloPostureForChatPosture extends resolveYoloPostureForTurn with the
+// read-only chat postures (scan/plan). A read-only posture must route EVERY tool
+// through the runner bridge so the read-only policy can approve reads / deny
+// writes — provider bypass modes (approval-never, bypassPermissions) would
+// silently let writes through. So scan/plan force the same gated provider modes
+// as forceShellBridge, and additionally clear RunnerAutoApprove (the bridge's
+// read-only policy owns the decision; the profile YOLO flag is deliberately
+// ignored for scan/plan).
+func resolveYoloPostureForChatPosture(yolo, forceShellBridge bool, posture string) YoloPosture {
+	p := resolveYoloPostureForTurn(yolo, forceShellBridge)
+	if IsReadOnlyChatPosture(posture) {
+		p.CodexSandbox = "workspace-write"
+		p.CodexApprovalMode = "untrusted"
+		p.ClaudePermissionMode = "default"
+		p.GrokPermissionMode = ""
+		p.RunnerAutoApprove = false
+	}
+	return p
+}
+
 // shouldForceFlowYolo reports whether product policy requires YOLO=true for this
 // run (BUG-299 residual). Normal Chat (runKind=="chat", no workflow, not
 // flow-engine-driven) keeps the user's toggle and is never forced here.

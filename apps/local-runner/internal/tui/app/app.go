@@ -42,6 +42,10 @@ const (
 	// Status-line exclusive values (not reused for model/YOLO/skills/open-back).
 	colorStatusAgent = "#2dd4bf" // teal — agent:<name> value
 	colorStatusFlow  = "#f472b6" // pink — flow name / active step value
+	// Posture chip colors — each posture gets its own hue on the status line.
+	colorPostureScan = "#38bdf8" // sky — scan (read-only)
+	colorPosturePlan = "#f59e0b" // amber — plan (read-only)
+	colorPostureCode = "#3fb950" // green — code (normal gated chat)
 )
 
 var (
@@ -61,6 +65,10 @@ var (
 	// agent:NAME and flow-name values — dedicated hues, not styleStatusHi/accent.
 	styleStatusAgent = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusAgent))
 	styleStatusFlow  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusFlow))
+	// Posture chip colors — dedicated hues for scan/plan/code on the status line.
+	stylePostureScan = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorPostureScan))
+	stylePosturePlan = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorPosturePlan))
+	stylePostureCode = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorPostureCode))
 	stylePrompt      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
 	// Input stroke frame (Desktop accent / prompt-border — no neon wash).
 	stylePromptFocus = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
@@ -252,6 +260,27 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			strings.Contains(errText, "dispatch_prepare_failed") {
 			m.runHandle = nil
 		}
+		return m, nil
+
+	case chatPostureMsg:
+		if msg.Err != nil {
+			m.chatPosturePending = ""
+			m.addMessage("system", "Chat posture error: "+msg.Err.Error(), "error")
+			return m, nil
+		}
+		cmd := m.chatPostureCmdFromPending(msg.Cfg)
+		if m.chatPostureDirty {
+			m.chatPostureDirty = false
+			return m, tea.Batch(m.cmdSaveChatPosture(m.chatPostureCfg), cmd)
+		}
+		return m, cmd
+
+	case grokSyncFailedMsg:
+		// Grok YOLO posture sync failed — re-enable the flag so the next
+		// turn retries. The turn already sent (sync failure does not block
+		// the conversation), but Grok's runtime config may be stale.
+		m.postureGrokSync = msg.Yolo
+		m.postureGrokSyncSet = true
 		return m, nil
 
 	case ApprovalResolvedMsg:
@@ -1725,6 +1754,29 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			agent := runs[m.focusedAgentIdx]
 			return m, m.cmdFocusAgent(agent.RunID)
 		}
+		// Empty input + no picker/agents: Tab cycles the chat posture
+		// (plan ↔ code). Scan is only reachable via explicit /mode scan.
+		// Guard with sessionDefaultsLoaded so a stray Tab right after the chat
+		// input appears cannot fire a GET /client/chat-posture before the
+		// session is ready (the "treo" report — F2 lúc được lúc không).
+		if m.mode == ModeChat && m.sessionDefaultsLoaded && m.inputValue == "" {
+			next := m.activePosture()
+			found := false
+			for i, p := range tabPostureOrder {
+				if p == next {
+					next = tabPostureOrder[(i+1)%len(tabPostureOrder)]
+					found = true
+					break
+				}
+			}
+			if !found {
+				// Current posture (e.g. scan) is not in the Tab cycle;
+				// default to the first entry (plan).
+				next = tabPostureOrder[0]
+			}
+			m.chatPosturePending = "apply:" + next
+			return m, m.cmdLoadChatPosture()
+		}
 		return m, nil
 
 	case tea.KeyUp:
@@ -1790,8 +1842,8 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if cmd := suggestionAcceptValue(it); cmd != "" {
-					// Action rows only expand the next picker (provider connect, /image open|rm).
-					if it.kind == "provider-action" || it.kind == "image-sub-next" {
+					// Action rows only expand the next picker (provider connect, /image open|rm, mode-setup steps).
+					if it.kind == "provider-action" || it.kind == "image-sub-next" || it.kind == "mode-setup-posture" || (it.kind == "mode-setup-field" && !strings.HasSuffix(strings.ToLower(strings.TrimSpace(it.value)), " clear")) {
 						m.setInputPreservingDraftPrefix(cmd)
 						m.suggIdx = 0
 						return m, m.cmdMaybePrefetchPickers()
@@ -1996,6 +2048,30 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if ok, _ := parseSlashArgPrefix(in, "/reasoning"); ok {
 		return []suggestItem{{value: "", detail: "(no matching effort)", kind: "reasoning"}}
 	}
+	if modeSetupSugg := filterModeSetupSuggestions(in, m.providers, m.provider); len(modeSetupSugg) > 0 {
+		return modeSetupSugg
+	}
+	if ok, q := parseSlashArgPrefix(in, "/mode-setup"); ok {
+		// Offer a placeholder when the field is known but the value list is
+		// empty (e.g. /mode-setup scan model with no models) so Tab still
+		// opens a picker row instead of falling through to /help.
+		parts := strings.Fields(q)
+		if len(parts) >= 2 {
+			field := strings.ToLower(parts[1])
+			if validPosture(strings.ToLower(parts[0])) {
+				switch field {
+				case "provider":
+					return []suggestItem{{value: "", detail: "(no providers)", kind: "mode-setup-value"}}
+				case "model":
+					return []suggestItem{{value: "", detail: "no models — set /provider first", kind: "mode-setup-value"}}
+				case "reasoning":
+					return []suggestItem{{value: "", detail: "(no matching effort)", kind: "mode-setup-value"}}
+				case "yolo":
+					return []suggestItem{{value: "", detail: "(no matching yolo option)", kind: "mode-setup-value"}}
+				}
+			}
+		}
+	}
 	if skillSugg := filterSkillSuggestions(in, m.skillsCatalog, m.selectedSkills); len(skillSugg) > 0 {
 		return skillSugg
 	}
@@ -2047,7 +2123,7 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 		return
 	} else if it.kind == "file" {
 		m.applyFileMention(it.value)
-	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" {
+	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" || it.kind == "mode-setup-posture" || it.kind == "mode-setup-field" || it.kind == "mode-setup-value" {
 		// Nested pickers: only replace the active /… fragment (keep pre-slash draft).
 		m.setInputPreservingDraftPrefix(cmd)
 	} else {
@@ -2169,6 +2245,25 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/image rm " + strings.TrimSpace(it.value)
+	case "mode-setup-posture":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/mode-setup " + strings.TrimSpace(it.value) + " "
+	case "mode-setup-field":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		v := strings.TrimSpace(it.value)
+		if strings.HasSuffix(strings.ToLower(v), " clear") {
+			return "/mode-setup " + v
+		}
+		return "/mode-setup " + v + " "
+	case "mode-setup-value":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/mode-setup " + strings.TrimSpace(it.value)
 	case "cmd":
 		return strings.TrimSpace(it.value)
 	default:
@@ -2612,6 +2707,70 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, m.cmdShutdownAndQuit()
 
+	case "/mode":
+		if m.mode != ModeChat {
+			m.addMessage("system", "Scan/Plan/Code postures apply to chat mode only.", "")
+			break
+		}
+		// /mode <name> applies a posture; /mode cycles scan→plan→code.
+		next := m.activePosture()
+		if len(args) > 0 {
+			want := strings.ToLower(args[0])
+			if !validPosture(want) {
+				m.addMessage("system", "Mode must be scan, plan, or code.", "error")
+				break
+			}
+			next = want
+		} else {
+			// /mode without args cycles plan ↔ code. Scan requires
+			// explicit /mode scan so the user opts in intentionally.
+			found := false
+			for i, p := range tabPostureOrder {
+				if p == next {
+					next = tabPostureOrder[(i+1)%len(tabPostureOrder)]
+					found = true
+					break
+				}
+			}
+			if !found {
+				next = tabPostureOrder[0]
+			}
+		}
+		m.chatPosturePending = "apply:" + next
+		return m, m.cmdLoadChatPosture()
+
+	case "/mode-setup":
+		if m.mode != ModeChat {
+			m.addMessage("system", "Scan/Plan/Code postures apply to chat mode only.", "")
+			break
+		}
+		if len(args) == 0 {
+			m.chatPosturePending = "show"
+			return m, m.cmdLoadChatPosture()
+		}
+		// /mode-setup <posture> <field> <value>  (clear needs no value)
+		if len(args) < 2 {
+			m.addMessage("system", "Usage: /mode-setup <scan|plan|code> <provider|model|reasoning|yolo|clear> <value>", "error")
+			break
+		}
+		posture := strings.ToLower(args[0])
+		field := strings.ToLower(args[1])
+		if field == "clear" {
+			if len(args) != 2 {
+				m.addMessage("system", "Usage: /mode-setup <scan|plan|code> clear (no value)", "error")
+				break
+			}
+			m.chatPosturePending = "setup:" + posture + ":" + field + ":"
+			return m, m.cmdLoadChatPosture()
+		}
+		if len(args) < 3 {
+			m.addMessage("system", "Usage: /mode-setup <scan|plan|code> <provider|model|reasoning|yolo|clear> <value>", "error")
+			break
+		}
+		value := strings.Join(args[2:], " ")
+		m.chatPosturePending = "setup:" + posture + ":" + field + ":" + value
+		return m, m.cmdLoadChatPosture()
+
 	case "/yolo":
 		if m.mode != ModeChat || m.launch.IsArmed() {
 			m.addMessage("system", "YOLO is auto-on in flow mode. Switch to /chat to toggle.", "")
@@ -2985,6 +3144,14 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			"New conversation started — provider %s · model %s (latest selection kept).",
 			orDash(m.provider), orDash(m.model),
 		), "")
+		if !m.sessionDefaultsLoaded {
+			break
+		}
+		// Reload the posture profile from the runner (SSOT) so /new applies
+		// the active posture's pinned provider/model/reasoning/yolo — the
+		// same pins that a fresh Desktop session reads on mount.
+		m.chatPosturePending = "apply:" + m.activePosture()
+		return m, m.cmdLoadChatPosture()
 
 	case "/step":
 		if len(args) == 0 {
@@ -4767,6 +4934,7 @@ func runHeadless(m *AppModel, prompt string) error {
 		Prompt:          prompt,
 		ReasoningEffort: m.cfg.ReasoningEffort,
 		YoloMode:        &yoloCopy,
+		ChatPosture:     m.activePosture(),
 	}
 	if m.cfg.Model != "" {
 		model := m.cfg.Model

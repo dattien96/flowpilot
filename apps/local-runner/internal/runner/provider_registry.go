@@ -58,6 +58,11 @@ type TurnRequest struct {
 	// stays true for ordinary commands.
 	ForceShellBridge bool
 	ReasoningEffort  string
+	// ChatPosture is the per-turn posture ("scan"/"plan"/"code", empty = code).
+	// Scan/Plan are read-only: the adapter must use gated permission modes so
+	// every tool reaches the bridge, where the read-only policy auto-approves
+	// reads and auto-denies writes (never asks).
+	ChatPosture string
 	// Cwd is the run's active workspace directory (04-06). The adapter binds the
 	// provider thread to this cwd; it takes precedence over any adapter default.
 	Cwd string

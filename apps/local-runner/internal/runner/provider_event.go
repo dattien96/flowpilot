@@ -331,6 +331,11 @@ type TurnInput struct {
 	ReasoningEffort string  `json:"reasoningEffort,omitempty"`
 	Model           *string `json:"model,omitempty"`
 	YoloMode        *bool   `json:"yoloMode,omitempty"`
+	// ChatPosture is the per-turn chat posture ("scan"/"plan"/"code", empty =
+	// code). Scan/Plan are read-only: the runner bridge auto-approves reads and
+	// auto-denies writes without asking. The desktop resends the current posture
+	// on every chat turn so switching mid-chat takes effect immediately.
+	ChatPosture string `json:"chatPosture,omitempty"`
 	// Attachments carries image attachments for chat-mode turns (Task-052), inline as
 	// base64. Empty in workflow/step mode and when no images are attached.
 	Attachments []PromptAttachment `json:"attachments,omitempty"`

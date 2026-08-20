@@ -312,7 +312,11 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 	a.allowReviewOutcome[sessionID] = req.OfferReviewOutcomeTool
 	// V9-21: ForceShellBridge keeps YOLO auto-approve for ordinary tools but
 	// still routes shell approvals through RequestApproval (commit denylist).
-	a.yoloModes[sessionID] = req.YoloMode && !req.ForceShellBridge
+	// Read-only postures (scan/plan) must ALSO route every tool through
+	// RequestApproval so the read-only policy approves reads / denies writes —
+	// so they clear the yoloModes auto-approve flag regardless of the profile's
+	// YOLO flag.
+	a.yoloModes[sessionID] = req.YoloMode && !req.ForceShellBridge && !IsReadOnlyChatPosture(req.ChatPosture)
 	a.mu.Unlock()
 	defer func() {
 		a.mu.Lock()

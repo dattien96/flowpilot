@@ -223,6 +223,7 @@ func (m *AppModel) buildTurnInput(prompt string) client.TurnInput {
 		ReasoningEffort: m.reasoningEffort,
 		SelectedSkills:  append([]client.SkillSelection(nil), m.selectedSkills...),
 		Attachments:     append([]client.PromptAttachment(nil), m.pendingAttach...),
+		ChatPosture:     m.activePosture(),
 	}
 	if m.runHandle != nil {
 		in.RunID = m.runHandle.RunID
@@ -1067,6 +1068,152 @@ func filterReasoningSuggestions(input string, current string) []suggestItem {
 		out = append(out, suggestItem{value: effort, detail: detail, kind: "reasoning"})
 	}
 	return out
+}
+
+// filterModeSetupSuggestions returns picker items for `/mode-setup …`
+// (posture → field → value). Each stage filters by the trailing query so
+// ↑↓ Tab never requires typing values by hand.
+func filterModeSetupSuggestions(input string, providers []client.Provider, currentProvider string) []suggestItem {
+	ok, query := parseSlashArgPrefix(input, "/mode-setup")
+	if !ok {
+		return nil
+	}
+	parts := strings.Fields(query)
+
+	// No args yet: show posture picker (scan/plan/code).
+	if query == "" {
+		out := make([]suggestItem, 0, len(postureOrder))
+		for _, p := range postureOrder {
+			out = append(out, suggestItem{value: p, detail: postureLabel(p), kind: "mode-setup-posture"})
+		}
+		return out
+	}
+
+	// One token: posture (partial or exact).
+	if len(parts) == 1 {
+		tok := strings.ToLower(parts[0])
+		if validPosture(tok) {
+			// Exact posture -> show field picker for that posture.
+			fields := []string{"provider", "model", "reasoning", "yolo", "clear"}
+			out := make([]suggestItem, 0, len(fields))
+			for _, f := range fields {
+				out = append(out, suggestItem{value: tok + " " + f, detail: modeSetupFieldDetail(f), kind: "mode-setup-field"})
+			}
+			return out
+		}
+		// Partial posture -> filter posture list.
+		out := make([]suggestItem, 0, len(postureOrder))
+		for _, p := range postureOrder {
+			if strings.HasPrefix(p, tok) || strings.Contains(p, tok) {
+				out = append(out, suggestItem{value: p, detail: postureLabel(p), kind: "mode-setup-posture"})
+			}
+		}
+		return out
+	}
+
+	// Two tokens: posture + field (partial or exact).
+	posture := strings.ToLower(parts[0])
+	if !validPosture(posture) {
+		return nil
+	}
+	if len(parts) == 2 {
+		fieldPart := strings.ToLower(parts[1])
+		fields := []string{"provider", "model", "reasoning", "yolo", "clear"}
+		for _, f := range fields {
+			if f == fieldPart {
+				if f == "clear" {
+					return nil // no value stage
+				}
+				return modeSetupValueSuggestions(posture, f, "", providers, currentProvider)
+			}
+		}
+		out := make([]suggestItem, 0, len(fields))
+		for _, f := range fields {
+			if strings.HasPrefix(f, fieldPart) || strings.Contains(f, fieldPart) {
+				out = append(out, suggestItem{value: posture + " " + f, detail: modeSetupFieldDetail(f), kind: "mode-setup-field"})
+			}
+		}
+		return out
+	}
+
+	// Three+ tokens: posture + field + value query.
+	field := strings.ToLower(parts[1])
+	if field == "clear" {
+		return nil
+	}
+	valueQuery := strings.Join(parts[2:], " ")
+	return modeSetupValueSuggestions(posture, field, valueQuery, providers, currentProvider)
+}
+
+func modeSetupFieldDetail(field string) string {
+	switch field {
+	case "provider":
+		return "pin provider for this posture"
+	case "model":
+		return "pin model for this posture"
+	case "reasoning":
+		return "pin reasoning effort"
+	case "yolo":
+		return "pin YOLO on/off/clear"
+	case "clear":
+		return "clear all pins for this posture"
+	default:
+		return field
+	}
+}
+
+func modeSetupValueSuggestions(posture, field, query string, providers []client.Provider, currentProvider string) []suggestItem {
+	q := strings.ToLower(strings.TrimSpace(query))
+	switch field {
+	case "provider":
+		out := make([]suggestItem, 0)
+		for _, p := range providers {
+			key := strings.TrimSpace(p.Key)
+			if key == "" {
+				continue
+			}
+			if q != "" && !strings.Contains(strings.ToLower(key), q) {
+				continue
+			}
+			out = append(out, suggestItem{value: posture + " provider " + key, detail: providerSuggestionDetail(p, nil, currentProvider, "select"), kind: "mode-setup-value"})
+		}
+		return out
+	case "model":
+		models := modelsForProvider(providers, currentProvider)
+		out := make([]suggestItem, 0, len(models))
+		for _, id := range models {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if q != "" && !strings.Contains(strings.ToLower(id), q) {
+				continue
+			}
+			out = append(out, suggestItem{value: posture + " model " + id, detail: "model", kind: "mode-setup-value"})
+		}
+		return out
+	case "reasoning":
+		out := make([]suggestItem, 0, len(reasoningEffortOptions))
+		for _, eff := range reasoningEffortOptions {
+			if q != "" && !strings.HasPrefix(eff, q) && !strings.Contains(eff, q) {
+				continue
+			}
+			out = append(out, suggestItem{value: posture + " reasoning " + eff, detail: eff, kind: "mode-setup-value"})
+		}
+		return out
+	case "yolo":
+		opts := []string{"on", "off", "clear"}
+		out := make([]suggestItem, 0, len(opts))
+		for _, o := range opts {
+			if q != "" && !strings.HasPrefix(o, q) && !strings.Contains(o, q) {
+				continue
+			}
+			out = append(out, suggestItem{value: posture + " yolo " + o, detail: "yolo " + o, kind: "mode-setup-value"})
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 // filterHistorySuggestions returns chats matching the query after /history|/open|/resume .

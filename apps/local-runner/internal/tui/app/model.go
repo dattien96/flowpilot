@@ -114,6 +114,20 @@ func (s ConnStatus) String() string {
 // ErrMsg carries an error to the Update loop.
 type ErrMsg struct{ Err error }
 
+// chatPostureMsg carries the runner's chat-posture document after a GET/PUT so
+// Update can apply the active posture's profile (provider/model/reasoning/yolo)
+// to the session.
+type chatPostureMsg struct {
+	Cfg client.ChatPostureConfig
+	Err error
+}
+
+// grokSyncFailedMsg is returned when the Grok YOLO posture sync HTTP call
+// fails. The Update handler re-enables the flag so the next turn retries.
+type grokSyncFailedMsg struct {
+	Yolo bool
+}
+
 // RunStartedMsg carries a newly created RunHandle.
 type RunStartedMsg struct{ Handle client.RunHandle }
 
@@ -291,7 +305,22 @@ type AppModel struct {
 	// Per-turn settings
 	yolo                bool
 	agentsFocus         bool
-	selectedSkills      []client.SkillSelection
+	// chatPosture is the active Scan/Plan/Code posture ("" = code). Scan/Plan are
+	// read-only: the runner auto-approves reads and auto-denies writes without
+	// asking. Set via /mode or the Tab cycle; resend on every chat turn.
+	chatPosture         string
+	chatPostureCfg      client.ChatPostureConfig // cached runner document (/mode-setup reads it)
+	chatPostureDirty    bool                     // local profile edit pending a PUT
+	// chatPosturePending remembers what to do after the runner config loads:
+	// "" = nothing; "apply:<posture>" = apply that posture's profile; "show" =
+	// just display the config; "setup:<posture>:<field>:<value>" = apply a
+	// profile edit and save.
+	chatPosturePending string
+	// postureGrokSync / postureGrokSyncSet mirror a Grok YOLO posture sync
+	// requested by a scan/plan profile pin (applied via cmdGrokYoloPosture).
+	postureGrokSync    bool
+	postureGrokSyncSet bool
+	selectedSkills     []client.SkillSelection
 	skillsCatalog       []client.ProviderSkill // Desktop ChatInput skills list
 	workspaceFiles      []string               // last @file picker fetch (nil = not loaded)
 	workspaceFilesQuery string                 // query that produced workspaceFiles
@@ -509,6 +538,8 @@ var knownSlashCommands = []slashCommand{
 	{"/exit", "Exit the TUI"},
 	{"/quit", "Exit the TUI"},
 	{"/yolo", "Toggle YOLO in chat mode (flow mode is auto-on)"},
+	{"/mode", "Switch chat posture — /mode scan|plan|code"},
+	{"/mode-setup", "Configure posture profiles (provider/model/reasoning/yolo)"},
 	{"/agents", "List/cycle sub-agents (Tab while focused)"},
 	{"/agent", "View a sub-agent transcript — /agent main|<name>"},
 	{"/stop", "Stop the in-flight turn (flow: main + all children)"},
@@ -516,7 +547,7 @@ var knownSlashCommands = []slashCommand{
 	{"/flow", "Start or list flows"},
 	{"/chat", "Switch to chat mode"},
 	{"/skill", "Skills — Tab multi-pick [name]+chip · Enter closes picker · F3"},
-	{"/image", "Images — Tab open/paste; pick index to view; [N img] panel [open]/[x]"},
+	{"/image", "Images — Tab open/paste; pick index · [N img] [open]/[x]"},
 	{"/provider", "Switch / connect / install — /provider  then ↑↓ Tab Enter"},
 	{"/model", "Switch model — type /model  then ↑↓ Tab Enter"},
 	{"/reasoning", "Set effort — type /reasoning  then ↑↓ Tab Enter"},
@@ -532,6 +563,6 @@ var knownSlashCommands = []slashCommand{
 	{"/info", "Toggle session info panel (top-right; also F2)"},
 	{"/login", "Sign in to Supabase (email/password) — Desktop session parity"},
 	{"/settings", "Open Desktop app for Settings (start if not running)"},
-	{"/sync", "Push chat session to Drive — /sync  then ↑↓ Tab Enter · /sync all"},
-	{"/restore", "Pull a Drive-backed chat — /restore  then ↑↓ Tab Enter · /restore all"},
+	{"/sync", "Push session to Drive — /sync · /sync all"},
+	{"/restore", "Pull a Drive-backed chat — /restore · /restore all"},
 }

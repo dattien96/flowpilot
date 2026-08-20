@@ -6670,3 +6670,33 @@ body.is-resizing-sidebar {
   display: inline-block;
   text-align: center;
 }
+
+/* Chat posture modal tabs — posture-specific active colors */
+.chat-posture-modal-tabs {
+  margin-bottom: 12px;
+}
+.chat-posture-modal-tab {
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 5px 8px;
+}
+.chat-posture-modal-tab.is-scan.active {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+}
+.chat-posture-modal-tab.is-plan.active {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+}
+.chat-posture-modal-tab.is-code.active {
+  background: rgba(63, 185, 80, 0.15);
+  color: #3fb950;
+}
+.chat-posture-modal-tab-active-dot {
+  font-size: 7px;
+  opacity: 0.7;
+}
+.chat-posture-modal-profile {
+  padding: 8px 0;
+}

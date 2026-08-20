@@ -73,8 +73,18 @@ func (a *geminiAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 	//  2) PATH git shim — fail closed if install fails (no prompt-only fallthrough)
 	//  3) post-turn undo of any commits that bypassed PATH (absolute git / libgit2)
 	//  4) post-turn gate as last line of defense
-	yoloSkipPerms := req.YoloMode && !req.ForceShellBridge
+	yoloSkipPerms := req.YoloMode && !req.ForceShellBridge && !IsReadOnlyChatPosture(req.ChatPosture)
 	prompt := a.preparePrompt(req)
+	// Read-only chat postures (scan/plan) have no RequestApproval path on
+	// Gemini (--print is one-shot), so the ONLY enforcement is: never pass
+	// --dangerously-skip-permissions (force --sandbox) and inject a read-only
+	// guard into the prompt. Writes are then left to the sandbox + prompt, not
+	// to a denial bridge — documented residual risk (see CA note).
+	if IsReadOnlyChatPosture(req.ChatPosture) {
+		prompt = "[FlowPilot read-only posture] You are in READ-ONLY mode. Do NOT create, edit, delete, " +
+			"move, rename, or commit any file. Only read/query and answer. " +
+			"Do not run commands that write to disk or the network.\n\n" + prompt
+	}
 	envOverrides := a.env
 	agentCwd := cwd
 	var headCheckpoint gitHeadCheckpoint

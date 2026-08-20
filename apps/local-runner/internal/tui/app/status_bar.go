@@ -175,6 +175,10 @@ func (m *AppModel) renderStatusModelLine(sep string) string {
 		styleStatus.Render("reasoning: ") + styleStatusHi.Render(reasoning),
 		styleYoloStatus(m.yoloStatusLabel()),
 	}
+	// Posture chip — dedicated hue per posture (not styleStatusHi accent).
+	if posture := m.activePosture(); m.mode == ModeChat {
+		parts = append(parts, styleStatus.Render("mode: ")+postureStyle(posture).Render(posture))
+	}
 	if sk := formatAttachedSkillsChip(len(attachedSkillNames(m.selectedSkills)), m.statusSkillsExpanded, m.asciiMode); sk != "" {
 		parts = append(parts, styleStatusHi.Render(sk))
 	}
@@ -188,6 +192,18 @@ func styleYoloStatus(label string) string {
 		return styleStatus.Render(prefix) + styleStatusHi.Render(strings.TrimPrefix(label, prefix))
 	}
 	return styleStatusHi.Render(label)
+}
+
+// postureStyle returns the lipgloss style for a posture name (scan/plan/code).
+func postureStyle(posture string) lipgloss.Style {
+	switch posture {
+	case "scan":
+		return stylePostureScan
+	case "plan":
+		return stylePosturePlan
+	default:
+		return stylePostureCode
+	}
 }
 
 func (m *AppModel) renderStatusAccountLine(sep string) string {
