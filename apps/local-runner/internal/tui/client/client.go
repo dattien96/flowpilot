@@ -33,10 +33,11 @@ type HealthResponse struct {
 
 // Project mirrors the /client/projects catalog entry.
 type Project struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	Model string `json:"model,omitempty"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	Model    string `json:"model,omitempty"`
+	Platform string `json:"platform,omitempty"`
 }
 
 // Workflow mirrors the /client/workflows catalog entry.
@@ -820,6 +821,46 @@ func (c *Client) RestoreChatRun(ctx context.Context, req ChatSessionRestoreReque
 	var out ChatSessionRestoreResult
 	err := c.postJSON(ctx, "/client/chat-sessions/restore", req, &out)
 	return out, err
+}
+
+// EngineInitResult mirrors the runner's POST /client/projects/{id}/engine/init response.
+type EngineInitResult struct {
+	ProjectID        string `json:"projectId"`
+	WorkingDirectory string `json:"workingDirectory"`
+	Initialized      bool   `json:"initialized"`
+	GateMode         string `json:"gateMode"`
+	Warnings         []string `json:"warnings"`
+	LastInit         *struct {
+		Status  string `json:"status"`
+		Steps   []struct {
+			Step    string `json:"step"`
+			Outcome string `json:"outcome"`
+			Detail  string `json:"detail"`
+		} `json:"steps"`
+		Install struct {
+			InstalledPaths []string `json:"installedPaths"`
+			SkippedPaths   []string `json:"skippedPaths"`
+			Errors         []string `json:"errors"`
+		} `json:"install"`
+	} `json:"lastInit"`
+}
+
+// InitEngine calls POST /client/projects/{projectId}/engine/init.
+// kind is "skill" (pack only) or "all" (full engine, same as Desktop manual).
+func (c *Client) InitEngine(ctx context.Context, projectID, workingDirectory, platform, kind string) (*EngineInitResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	var out EngineInitResult
+	err := c.postJSON(ctx, "/client/projects/"+neturl.PathEscape(projectID)+"/engine/init", map[string]any{
+		"workingDirectory": workingDirectory,
+		"trigger":          "manual",
+		"platform":         platform,
+		"kind":             kind,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // SubmitApproval sends POST /client/approvals/{approvalId}/decision (Desktop parity).

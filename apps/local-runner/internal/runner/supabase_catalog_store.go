@@ -80,12 +80,13 @@ func (s *SupabaseCatalogStore) getJSON(ctx context.Context, endpoint string, out
 }
 
 func (s *SupabaseCatalogStore) ListProjects(ctx context.Context) ([]Project, error) {
-	endpoint := s.restURL + "/projects?select=id,name,directory_path,default_model,project_workspace_bindings(local_path)&order=name.asc"
+	endpoint := s.restURL + "/projects?select=id,name,directory_path,default_model,platform,project_workspace_bindings(local_path)&order=name.asc"
 	var raw []struct {
 		ID                    string  `json:"id"`
 		Name                  string  `json:"name"`
 		DirectoryPath         string  `json:"directory_path"`
 		DefaultModel          *string `json:"default_model"`
+		Platform             *string `json:"platform"`
 		ProjectWorkspaceBinds []struct {
 			LocalPath string `json:"local_path"`
 		} `json:"project_workspace_bindings"`
@@ -104,7 +105,11 @@ func (s *SupabaseCatalogStore) ListProjects(ctx context.Context) ([]Project, err
 		if r.DefaultModel != nil {
 			model = *r.DefaultModel
 		}
-		out[i] = Project{ID: r.ID, Name: r.Name, Path: chooseUsableProjectPath(candidates), Model: model}
+		platform := ""
+		if r.Platform != nil {
+			platform = *r.Platform
+		}
+		out[i] = Project{ID: r.ID, Name: r.Name, Path: chooseUsableProjectPath(candidates), Model: model, Platform: platform}
 	}
 	return out, nil
 }

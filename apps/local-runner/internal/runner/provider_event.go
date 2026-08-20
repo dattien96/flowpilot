@@ -357,6 +357,9 @@ type Project struct {
 	// Model is projects.default_model — the "Project" tier of the Step > Flow >
 	// Project > default resolution order (SS-05/SD-06, BUG-165).
 	Model string `json:"model,omitempty"`
+	// Platform is projects.platform (none, android, ios, kmm, react-native, ...).
+	// TUI /init skill routing needs this to pick the correct flow-pack group.
+	Platform string `json:"platform,omitempty"`
 }
 
 type Workflow struct {

@@ -721,6 +721,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		st.queue = st.queue[1:]
 		return m, m.cmdSyncRun(next, st.projectID)
 
+	case EngineInitMsg:
+		return m.handleEngineInitMsg(msg)
+
 	case RemoteChatListMsg:
 		// G3 /restore index (silent refresh after a batch, loud bare dump).
 		if msg.Err != "" {
@@ -2399,6 +2402,9 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if _, _, ok := parseImagePicker(in); ok {
 		return []suggestItem{{value: "", detail: "(no matching /image option)", kind: "image-sub"}}
 	}
+	if initSugg := filterInitSuggestions(in); len(initSugg) > 0 {
+		return initSugg
+	}
 	cmds := filterSlashSuggestions(in)
 	out := make([]suggestItem, 0, len(cmds))
 	for _, sc := range cmds {
@@ -2455,7 +2461,7 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 		return
 	} else if it.kind == "file" {
 		m.applyFileMention(it.value)
-	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" || it.kind == "mode-setup-posture" || it.kind == "mode-setup-field" || it.kind == "mode-setup-value" {
+	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" || it.kind == "mode-setup-posture" || it.kind == "mode-setup-field" || it.kind == "mode-setup-value" || it.kind == "init" {
 		// Nested pickers: only replace the active /… fragment (keep pre-slash draft).
 		m.setInputPreservingDraftPrefix(cmd)
 	} else {
@@ -2596,6 +2602,15 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/mode-setup " + strings.TrimSpace(it.value)
+	case "init":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		slash := it.slash
+		if slash == "" {
+			slash = "/init"
+		}
+		return slash + " " + strings.TrimSpace(it.value)
 	case "cmd":
 		return strings.TrimSpace(it.value)
 	default:
@@ -3644,6 +3659,18 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			kind = strings.ToLower(args[0])
 		}
 		return m, m.cmdCopyKind(kind)
+
+	case "/init":
+		if len(args) == 0 {
+			m.addMessage("system", "Usage: /init <skill|all>  — Tab shows skill (flow-pack) or all (full engine).", "")
+			break
+		}
+		kind := strings.ToLower(strings.TrimSpace(args[0]))
+		if kind != "skill" && kind != "all" {
+			m.addMessage("system", fmt.Sprintf("Unknown /init kind %q — use /init skill or /init all (Tab).", args[0]), "error")
+			break
+		}
+		return m, m.cmdInitEngine(kind)
 
 	case "/sync":
 		return m.runSyncDispatch(args)

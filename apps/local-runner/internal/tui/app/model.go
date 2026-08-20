@@ -319,10 +319,18 @@ type AppModel struct {
 	// and postures) before a single Enter save. Nil when wizard not open.
 	modeSetupDraft      *client.ChatPostureConfig
 	modeSetupDraftDirty bool
+	// modeSetupModal is the 3-tab overlay that replaces the wizard's tmp steps.
+	modeSetupModalOpen      bool
+	modeSetupModalTab       string
+	modeSetupModalDraft     *client.ChatPostureConfig
+	modeSetupModalFocus     int
+	modeSetupModalPickerOpen bool
+	modeSetupModalPickerKind string
+	modeSetupModalPickerIdx  int
 	// chatPosturePending remembers what to do after the runner config loads:
 	// "" = nothing; "apply:<posture>" = apply that posture's profile; "show" =
 	// just display the config; "setup:<posture>:<field>:<value>" = apply a
-	// profile edit and save.
+	// profile edit and save; "modal:<tab>" = open modal.
 	chatPosturePending string
 	// postureGrokSync / postureGrokSyncSet mirror a Grok YOLO posture sync
 	// requested by a scan/plan profile pin (applied via cmdGrokYoloPosture).
@@ -545,6 +553,7 @@ var knownSlashCommands = []slashCommand{
 	{"/clear", "Clear conversation history"},
 	{"/exit", "Exit the TUI"},
 	{"/quit", "Exit the TUI"},
+	{"/scan", "Switch to scan posture — read-only (like /mode scan)"},
 	{"/yolo", "Toggle YOLO in chat mode (flow mode is auto-on)"},
 	{"/mode", "Switch chat posture — /mode scan|plan|code"},
 	{"/mode-setup", "Configure posture profiles (provider/model/reasoning/yolo)"},
@@ -573,4 +582,5 @@ var knownSlashCommands = []slashCommand{
 	{"/settings", "Open Desktop app for Settings (start if not running)"},
 	{"/sync", "Push session to Drive — /sync · /sync all"},
 	{"/restore", "Pull a Drive-backed chat — /restore · /restore all"},
+	{"/init", "Init — /init skill (flow-pack) · /init all (full engine)"},
 }

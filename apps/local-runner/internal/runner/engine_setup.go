@@ -27,6 +27,7 @@ type engineSetupRequest struct {
 	WorkingDirectory string `json:"workingDirectory"`
 	Trigger          string `json:"trigger,omitempty"`
 	Platform         string `json:"platform,omitempty"`
+	Kind             string `json:"kind,omitempty"`
 	XcodeScheme      string `json:"xcodeScheme,omitempty"`
 	XcodeDestination string `json:"xcodeDestination,omitempty"`
 }
@@ -129,6 +130,14 @@ func (s *InteractiveService) handleInitEngine(w http.ResponseWriter, r *http.Req
 	}
 
 	platform := strings.TrimSpace(request.Platform)
+	kind := strings.ToLower(strings.TrimSpace(request.Kind))
+	if kind == "" {
+		kind = "all"
+	}
+	if kind != "all" && kind != "skill" {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_kind", "kind must be all or skill"))
+		return
+	}
 	xcodeScheme := strings.TrimSpace(request.XcodeScheme)
 	xcodeDestination := strings.TrimSpace(request.XcodeDestination)
 
@@ -142,7 +151,7 @@ func (s *InteractiveService) handleInitEngine(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	status, initState := s.runEngineInit(r.PathValue("projectId"), workingDirectory, platform, trigger)
+	status, initState := s.runEngineInit(r.PathValue("projectId"), workingDirectory, platform, trigger, kind)
 	status.LastInit = initState
 	writeInteractiveJSON(w, http.StatusOK, status)
 }
@@ -242,6 +251,7 @@ func (s *InteractiveService) runEngineInit(
 	workingDirectory string,
 	platform string,
 	trigger string,
+	kind string,
 ) (EngineStatusResponse, *EngineInitState) {
 	dotFlowpilotDir := filepath.Join(workingDirectory, ".flowpilot")
 	attemptedAt := time.Now().UTC().Format(time.RFC3339)
@@ -265,7 +275,13 @@ func (s *InteractiveService) runEngineInit(
 		}
 	}
 
-	if shouldSkipBindInit(trigger, dotFlowpilotDir, currentSkillPack) {
+	if kind == "" {
+		kind = "all"
+	}
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	isSkillOnly := kind == "skill"
+
+	if !isSkillOnly && shouldSkipBindInit(trigger, dotFlowpilotDir, currentSkillPack) {
 		initState := &EngineInitState{
 			Trigger:          trigger,
 			Status:           "skipped",
@@ -287,6 +303,36 @@ func (s *InteractiveService) runEngineInit(
 
 	// Install skill pack first so the skill_pack sentinel exists when CheckAll probes it.
 	installResult, installErr := skillpack.Install(workingDirectory, platform)
+	if isSkillOnly {
+		// Skill-only init: install pack and refresh tooling/sentinel, skip scaffold/ledger/catalog.
+		statuses, toolingErr := tooling.CheckAll(workingDirectory, dotFlowpilotDir)
+		steps := []EngineInitStepResult{
+			buildEngineStep(
+				"skillpack_install",
+				installErr,
+				fmt.Sprintf("%d installed, %d skipped, %d install errors", len(installResult.Installed), len(installResult.Skipped), len(installResult.Errors)),
+			),
+			buildEngineStep("tooling_check", toolingErr, fmt.Sprintf("%d tool entries refreshed", len(statuses))),
+		}
+		initState := &EngineInitState{
+			Trigger:          trigger,
+			Status:           summarizeEngineInitStatus(toolingErr, installErr, installResult.Errors, nil, nil, nil, nil),
+			Skipped:          false,
+			AttemptedAt:      attemptedAt,
+			CompletedAt:      time.Now().UTC().Format(time.RFC3339),
+			WorkingDirectory: workingDirectory,
+			Install: EngineInstallSummary{
+				InstalledPaths: append([]string(nil), installResult.Installed...),
+				SkippedPaths:   append([]string(nil), installResult.Skipped...),
+				Errors:         append([]string(nil), installResult.Errors...),
+			},
+			Steps: steps,
+		}
+		if err := saveEngineInitState(dotFlowpilotDir, initState); err != nil {
+			warnings = append(warnings, fmt.Sprintf("engine-init state warning: %v", err))
+		}
+		return s.buildEngineStatusResponse(projectID, workingDirectory, platform, statuses, warnings), initState
+	}
 	statuses, toolingErr := tooling.CheckAll(workingDirectory, dotFlowpilotDir)
 
 	// Scaffold requirements/ folder structure with embedded FORMAT-REFERENCE files.
