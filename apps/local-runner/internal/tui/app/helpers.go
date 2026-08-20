@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/prefs"
 )
@@ -658,28 +660,43 @@ func wrapText(s string, width int) []string {
 }
 
 func wrapParagraph(para string, width int) []string {
-	runes := []rune(para)
-	if len(runes) == 0 {
+	if width < 1 {
+		width = 1
+	}
+	if para == "" {
 		return []string{""}
 	}
-	if len(runes) <= width {
+	if lipgloss.Width(para) <= width {
 		return []string{para}
 	}
+	runes := []rune(para)
 	var lines []string
 	for len(runes) > 0 {
-		if len(runes) <= width {
+		if lipgloss.Width(string(runes)) <= width {
 			lines = append(lines, string(runes))
 			break
 		}
 		cut := width
+		if cut > len(runes) {
+			cut = len(runes)
+		}
 		// Prefer breaking on whitespace in the right half of the window.
-		for i := width; i > width/2; i-- {
+		for i := width; i > width/2 && i < len(runes); i-- {
 			if runes[i] == ' ' || runes[i] == '\t' {
 				cut = i
 				break
 			}
 		}
+		if cut <= 0 {
+			cut = width
+			if cut > len(runes) {
+				cut = len(runes)
+			}
+		}
 		line := strings.TrimRight(string(runes[:cut]), " \t")
+		if lipgloss.Width(line) > width {
+			line = truncateVisual(line, width)
+		}
 		lines = append(lines, line)
 		runes = runes[cut:]
 		for len(runes) > 0 && (runes[0] == ' ' || runes[0] == '\t') {

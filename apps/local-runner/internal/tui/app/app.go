@@ -1610,8 +1610,11 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		// empty GateOptions — arming the gate then made every keystroke
 		// re-print "Gate options:" with nothing to match, permanently freezing
 		// chat. Non-block / option-less verdicts surface as info instead.
+		// CA-545 (run-204658): reprompt/warn and block-without-options must not
+		// render a misleading "Options:" line — they auto-reprompt or are info
+		// only. buildGateMessage now varies by status + error.
 		blocking := strings.EqualFold(ev.Status, "block") && len(ev.GateOptions) > 0
-		m.addMessage("system", buildGateMessage(ev.GateOptions, ev.GateRegressedTests), "gate")
+		m.addMessage("system", buildGateMessage(ev.Status, ev.Error, ev.GateOptions, ev.GateRegressedTests), "gate")
 		if blocking {
 			m.gate = &GateState{
 				Options:        ev.GateOptions,
@@ -4193,6 +4196,25 @@ func (m *AppModel) buildChatRows() []chatRow {
 				rendered = rightAlignPlain(rendered, width)
 			}
 			if userTruncated && i == len(mdLines)-1 {
+				ellipsisW := lipgloss.Width(userPromptEllipsis)
+				if lipgloss.Width(stripANSI(rendered))+ellipsisW > contentWidth {
+					target := max(0, contentWidth-ellipsisW)
+					// Cut visual width without adding "…" (truncateVisual adds one).
+					plain := stripANSI(rendered)
+					w := 0
+					cut := 0
+					for idx, r := range []rune(plain) {
+						rw := lipgloss.Width(string(r))
+						if w+rw > target {
+							break
+						}
+						w += rw
+						cut = idx + 1
+					}
+					plainCut := string([]rune(plain)[:cut])
+					// Preserve user style for the truncated tail.
+					rendered = styleUser.Render(plainCut)
+				}
 				rendered += styleStatus.Render(userPromptEllipsis)
 			}
 			row := chatRow{Text: rendered, MsgIdx: mi, Copy: copyOn || copyFence}
@@ -4616,14 +4638,45 @@ func (m *AppModel) lastAssistantText() string {
 	return ""
 }
 
-func buildGateMessage(opts []string, regressed []string) string {
+func buildGateMessage(status, errMsg string, opts []string, regressed []string) string {
 	var sb strings.Builder
-	sb.WriteString("[GATE] Flow gate triggered.\n")
-	if len(regressed) > 0 {
-		sb.WriteString(fmt.Sprintf("  Regressed tests: %s\n", strings.Join(regressed, ", ")))
+	lowStatus := strings.ToLower(strings.TrimSpace(status))
+	hasOpts := len(opts) > 0
+	hasRegressed := len(regressed) > 0
+	// Only a real block with a decision card keeps the legacy detailed card.
+	// Legacy tests emit GateOptions without Status — treat empty status + opts as block for view compat.
+	if hasOpts && (lowStatus == "block" || lowStatus == "") {
+		sb.WriteString("[GATE] Flow gate blocked.\n")
+		if hasRegressed {
+			sb.WriteString(fmt.Sprintf("  Regressed tests: %s\n", strings.Join(regressed, ", ")))
+		}
+		sb.WriteString("  Options: ")
+		sb.WriteString(strings.Join(opts, ", "))
+		return sb.String()
 	}
-	sb.WriteString("  Options: ")
-	sb.WriteString(strings.Join(opts, ", "))
+	switch lowStatus {
+	case "reprompt":
+		sb.WriteString("[GATE] auto-reprompt")
+	case "warn":
+		sb.WriteString("[GATE] warn")
+	case "block":
+		sb.WriteString("[GATE] blocked")
+	default:
+		if lowStatus == "" {
+			sb.WriteString("[GATE] Flow gate triggered.")
+		} else {
+			sb.WriteString("[GATE] " + lowStatus)
+		}
+	}
+	if msg := strings.TrimSpace(errMsg); msg != "" {
+		sb.WriteString(" — " + msg)
+	} else if lowStatus == "reprompt" {
+		sb.WriteString(" — gate is re-applying fixes (no action needed)")
+	}
+	if hasRegressed {
+		sb.WriteString(fmt.Sprintf("\n  Regressed tests: %s", strings.Join(regressed, ", ")))
+	}
+	// Intentionally no "Options:" line when hasOpts == false.
 	return sb.String()
 }
 

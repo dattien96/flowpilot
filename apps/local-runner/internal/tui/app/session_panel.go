@@ -349,7 +349,10 @@ func (m *AppModel) renderSessionPanelOverlay() []string {
 
 func rightAlignPlain(s string, width int) string {
 	w := lipgloss.Width(s)
-	if w >= width {
+	if w > width {
+		return truncateVisual(s, width)
+	}
+	if w == width {
 		return s
 	}
 	return strings.Repeat(" ", width-w) + s

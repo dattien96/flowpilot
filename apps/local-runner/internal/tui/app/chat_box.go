@@ -269,7 +269,7 @@ func hugBoxWidth(inner []chatRow, title string, maxW int, user bool) int {
 			innerW = w
 		}
 	}
-	tlen := len([]rune(" " + strings.TrimSpace(title) + " "))
+	tlen := lipgloss.Width(" " + strings.TrimSpace(title) + " ")
 	if tlen > innerW {
 		innerW = tlen
 	}
