@@ -1429,8 +1429,10 @@ func defaultModelsForKey(key string) []string {
 // always show the full supported list, not just the current provider.
 func allModelsAcrossProviders(providers []client.Provider, currentProvider, currentModel string) []modelEntry {
 	seen := make(map[string]bool, 32)
+	seenProvider := make(map[string]bool, 8)
 	var out []modelEntry
 	for _, p := range providers {
+		seenProvider[strings.ToLower(p.Key)] = true
 		ids := make([]string, 0, len(p.Models))
 		for _, m := range p.Models {
 			if id := strings.TrimSpace(m.ModelID()); id != "" {
@@ -1447,6 +1449,22 @@ func allModelsAcrossProviders(providers []client.Provider, currentProvider, curr
 			}
 			seen[lk] = true
 			out = append(out, modelEntry{provider: p.Key, id: id})
+		}
+	}
+	// Ensure full registry is visible even when catalog hasn't loaded or a
+	// provider is missing from m.providers (live: only grok present). This
+	// makes /model always the full supported list, not just the detected one.
+	for _, key := range []string{"claude", "codex", "grok", "gemini"} {
+		if seenProvider[strings.ToLower(key)] {
+			continue
+		}
+		for _, id := range defaultModelsForKey(key) {
+			lk := strings.ToLower(id)
+			if seen[lk] {
+				continue
+			}
+			seen[lk] = true
+			out = append(out, modelEntry{provider: key, id: id})
 		}
 	}
 	if cm := strings.TrimSpace(currentModel); cm != "" {
