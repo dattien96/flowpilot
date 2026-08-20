@@ -222,6 +222,52 @@ func strokeChatRows(inner []chatRow, width int, user, ascii bool) []chatRow {
 	}
 	title := "You"
 	boxW := hugBoxWidth(inner, title, width, user)
+	innerW := boxW - 2
+	if innerW < 4 {
+		innerW = 4
+	}
+	// Re-wrap inner rows that are wider than the final innerW (hug may be
+	// smaller than the width used for the initial wrap). Wrap, don't
+	// truncate — the old pad-then-truncate produced the "mãi không xong"
+	// where long prompts were cut mid-box (e.g. "|Path:" lost).
+	wrappedInner := make([]chatRow, 0, len(inner)*2)
+	for i, r := range inner {
+		copyOn := r.Copy && i == len(inner)-1
+		textW := innerW - 1 // leading " "
+		if copyOn {
+			textW -= lipgloss.Width(copyChip)
+			if textW < 4 {
+				textW = 4
+			}
+		}
+		plain := stripANSI(r.Text)
+		if lipgloss.Width(plain) <= textW {
+			wrappedInner = append(wrappedInner, r)
+			continue
+		}
+		parts := wrapText(plain, textW)
+		for j, part := range parts {
+			txt := part
+			if user {
+				// Preserve user prompt styling (and re-apply after split).
+				txt = styleUser.Render(part)
+			}
+			nr := chatRow{Text: txt, MsgIdx: r.MsgIdx, PromptExpandKey: r.PromptExpandKey}
+			// Only the last wrapped piece of the last inner carries the copy chip.
+			if copyOn && j == len(parts)-1 {
+				nr.Copy = true
+			}
+			wrappedInner = append(wrappedInner, nr)
+		}
+	}
+	inner = wrappedInner
+	// Recompute boxW after re-wrap (content may have grown taller but narrower).
+	boxW = hugBoxWidth(inner, title, width, user)
+	innerW = boxW - 2
+	if innerW < 4 {
+		innerW = 4
+	}
+
 	out := make([]chatRow, 0, len(inner)+2)
 	idx := inner[0].MsgIdx
 	top := strokeTop(title, boxW, ascii)
@@ -232,10 +278,6 @@ func strokeChatRows(inner []chatRow, width int, user, ascii bool) []chatRow {
 	for i, r := range inner {
 		text := " " + r.Text
 		copyOn := r.Copy && i == len(inner)-1
-		innerW := boxW - 2
-		if innerW < 4 {
-			innerW = 4
-		}
 		if copyOn {
 			chip := stripANSI(copyChip)
 			room := innerW - lipgloss.Width(chip)
