@@ -264,6 +264,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case chatPostureMsg:
 		if msg.Err != nil {
+			if m.chatPostureSaving {
+				posture := m.chatPostureSavingPosture
+				m.chatPostureSaving = false
+				m.chatPostureSavingPosture = ""
+				m.chatPosturePending = ""
+				m.addMessage("system", fmt.Sprintf("Posture %s save failed: %s", posture, msg.Err.Error()), "error")
+				return m, nil
+			}
 			m.chatPosturePending = ""
 			m.addMessage("system", "Chat posture error: "+msg.Err.Error(), "error")
 			return m, nil
@@ -272,6 +280,17 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.chatPostureDirty {
 			m.chatPostureDirty = false
 			return m, tea.Batch(m.cmdSaveChatPosture(m.chatPostureCfg), cmd)
+		}
+		// PUT completed for /mode-setup edit — replace the "saving…" banner.
+		if m.chatPostureSaving {
+			posture := m.chatPostureSavingPosture
+			m.chatPostureSaving = false
+			m.chatPostureSavingPosture = ""
+			m.chatPostureCfg = msg.Cfg
+			if posture != "" {
+				m.addMessage("system", fmt.Sprintf("Posture %s saved.", posture), "")
+			}
+			return m, cmd
 		}
 		return m, cmd
 

@@ -311,6 +311,10 @@ type AppModel struct {
 	chatPosture         string
 	chatPostureCfg      client.ChatPostureConfig // cached runner document (/mode-setup reads it)
 	chatPostureDirty    bool                     // local profile edit pending a PUT
+	// chatPostureSaving tracks a /mode-setup edit that is awaiting PUT completion
+	// so the "saving…" banner can be replaced with "saved" instead of hanging.
+	chatPostureSaving        bool
+	chatPostureSavingPosture string
 	// chatPosturePending remembers what to do after the runner config loads:
 	// "" = nothing; "apply:<posture>" = apply that posture's profile; "show" =
 	// just display the config; "setup:<posture>:<field>:<value>" = apply a

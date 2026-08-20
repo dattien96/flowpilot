@@ -1227,17 +1227,45 @@ func modeSetupValueSuggestions(posture, field, query string, providers []client.
 		}
 		return out
 	case "model":
-		models := modelsForProvider(providers, currentProvider)
-		out := make([]suggestItem, 0, len(models))
-		for _, id := range models {
-			id = strings.TrimSpace(id)
-			if id == "" {
+		// FlowPilot rule: picking a model auto-pins its provider, and /model
+		// lists all models across providers. So /mode-setup model must also
+		// show every model with its provider as detail, not just the current
+		// provider's models (which is empty for grok in the report).
+		seen := make(map[string]bool, 16)
+		type entry struct {
+			provider string
+			id       string
+		}
+		var all []entry
+		for _, p := range providers {
+			for _, m := range p.Models {
+				id := strings.TrimSpace(m.ModelID())
+				if id == "" {
+					continue
+				}
+				lk := strings.ToLower(id)
+				if seen[lk] {
+					continue
+				}
+				seen[lk] = true
+				all = append(all, entry{provider: p.Key, id: id})
+			}
+		}
+		// If catalog has no models but the session already has a model, surface
+		// it so the user sees at least the current selection.
+		if len(all) == 0 && strings.TrimSpace(currentProvider) != "" {
+			// no-op: we don't synthesize model names; placeholder will guide.
+		}
+		out := make([]suggestItem, 0, len(all))
+		for _, e := range all {
+			if q != "" && !strings.Contains(strings.ToLower(e.id), q) && !strings.Contains(strings.ToLower(e.provider), q) {
 				continue
 			}
-			if q != "" && !strings.Contains(strings.ToLower(id), q) {
-				continue
+			detail := e.provider
+			if detail == "" {
+				detail = "model"
 			}
-			out = append(out, suggestItem{value: posture + " model " + id, detail: "model", kind: "mode-setup-value"})
+			out = append(out, suggestItem{value: posture + " model " + e.id, detail: detail, kind: "mode-setup-value"})
 		}
 		return out
 	case "reasoning":

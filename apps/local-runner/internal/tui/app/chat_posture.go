@@ -207,6 +207,22 @@ func (m *AppModel) setPostureProvider(want string) {
 	m.skillsCatalog = nil
 }
 
+// providerForModel returns the provider key that owns a model ID, or "".
+func providerForModel(providers []client.Provider, modelID string) string {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return ""
+	}
+	for _, p := range providers {
+		for _, m := range p.Models {
+			if strings.EqualFold(m.ModelID(), modelID) {
+				return p.Key
+			}
+		}
+	}
+	return ""
+}
+
 // editChatPostureProfile applies a profile edit from /mode-setup and saves.
 func (m *AppModel) editChatPostureProfile(cfg client.ChatPostureConfig, posture, field, value string) {
 	if !validPosture(posture) {
@@ -220,6 +236,13 @@ func (m *AppModel) editChatPostureProfile(cfg client.ChatPostureConfig, posture,
 		prof.Provider = strings.TrimSpace(value)
 	case "model":
 		prof.Model = strings.TrimSpace(value)
+		// FlowPilot rule: picking a model auto-pins its provider (like /model
+		// lists all models across providers). Infer provider from catalog.
+		if prof.Model != "" {
+			if inferred := providerForModel(m.providers, prof.Model); inferred != "" {
+				prof.Provider = inferred
+			}
+		}
 	case "reasoning", "reason":
 		eff := strings.ToLower(strings.TrimSpace(value))
 		if eff != "" && eff != "high" && eff != "medium" && eff != "low" {
@@ -253,6 +276,8 @@ func (m *AppModel) editChatPostureProfile(cfg client.ChatPostureConfig, posture,
 	cfg.Profiles[posture] = prof
 	m.chatPostureCfg = cfg
 	m.chatPostureDirty = true
+	m.chatPostureSaving = true
+	m.chatPostureSavingPosture = posture
 	m.addMessage("system", fmt.Sprintf("Posture %s updated (saving…)", posture), "")
 }
 
