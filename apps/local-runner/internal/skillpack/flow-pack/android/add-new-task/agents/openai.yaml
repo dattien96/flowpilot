@@ -1,0 +1,4 @@
+interface:
+  display_name: "Add New Task"
+  short_description: "Implement an Android task and close out the workflow"
+  default_prompt: "Use $add-new-task to investigate an Android task, implement it, verify it, and update the repo's audit and walkthrough artifacts."

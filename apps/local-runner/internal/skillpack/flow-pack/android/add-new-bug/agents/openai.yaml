@@ -1,0 +1,4 @@
+interface:
+  display_name: "Add New Bug"
+  short_description: "Fix an Android bug and close out the workflow"
+  default_prompt: "Use $add-new-bug to investigate an Android bug, fix it, verify it, and update the repo's audit and walkthrough artifacts."
