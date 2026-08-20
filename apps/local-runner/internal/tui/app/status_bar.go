@@ -111,6 +111,11 @@ func (m *AppModel) renderStatusLine0(sep string, w int) string {
 	sepStyled := styleStatus.Render(sep)
 	var parts []string
 	parts = append(parts, styleStatus.Render(m.statusFoldChip()))
+	// Pin remaining quota so collapsed F4 (single-line) still shows 7d/5h like Desktop.
+	// Compact without "· resets" suffix; expanded account row keeps full detail.
+	if q := m.collapsedQuotaChip(); q != "" {
+		parts = append(parts, q)
+	}
 	if m.turnIsActive() {
 		parts = append(parts, styleError.Render("[stop]"))
 	}
@@ -126,6 +131,41 @@ func (m *AppModel) renderStatusLine0(sep string, w int) string {
 		raw = truncateVisual(raw, w)
 	}
 	return raw
+}
+
+// collapsedQuotaChip returns a compact quota chip for the always-visible F4 line.
+// No "· resets" suffix — that stays on the expanded account row.
+func (m *AppModel) collapsedQuotaChip() string {
+	acc := m.account
+	if acc == nil {
+		return ""
+	}
+	var chips []string
+	if acc.Remaining5hPercent != nil {
+		chips = append(chips, styleStatus.Render(fmt.Sprintf("5h:%d%%", *acc.Remaining5hPercent)))
+	}
+	if acc.Remaining7dPercent != nil {
+		chips = append(chips, styleStatusHi.Render(fmt.Sprintf("7d:%d%%", *acc.Remaining7dPercent)))
+	}
+	if len(chips) > 0 {
+		return strings.Join(chips, " ")
+	}
+	for _, line := range acc.UsageDetailLines {
+		if l := strings.TrimSpace(line.Label); l != "" {
+			lower := strings.ToLower(l)
+			if strings.HasPrefix(lower, "7d") || strings.Contains(lower, "weekly") || strings.Contains(lower, "week") {
+				return styleStatusHi.Render(fmt.Sprintf("%s:%d%%", l, line.RemainingPercent))
+			}
+		}
+	}
+	// Fallback to first detail line (e.g. Team Credits) if weekly missing — but
+	// never the Grok "Team <uuid>" / "Personal" UsageSummary (Desktop parity).
+	for _, line := range acc.UsageDetailLines {
+		if l := strings.TrimSpace(line.Label); l != "" {
+			return styleStatusHi.Render(fmt.Sprintf("%s:%d%%", l, line.RemainingPercent))
+		}
+	}
+	return ""
 }
 
 func (m *AppModel) renderStatusModeLine(w int) string {
@@ -256,8 +296,14 @@ func formatAccountLimitsStyled(acc *client.ProviderAccountSummary) string {
 			}
 		}
 	}
-	if len(parts) == 0 && acc.UsageSummary != nil && strings.TrimSpace(*acc.UsageSummary) != "" {
-		return styleStatus.Render(strings.TrimSpace(*acc.UsageSummary))
+	if len(parts) == 0 && acc.UsageSummary != nil {
+		s := strings.TrimSpace(*acc.UsageSummary)
+		// Grok sets UsageSummary to "Team <uuid>" / "Personal" as a team marker, not a quota.
+		// Desktop never renders that as a quota chip (usageSummary.ts); don't pollute the
+		// quota row with it. Keep real plan summaries (e.g. Claude "Pro").
+		if s != "" && !strings.HasPrefix(s, "Team ") && s != "Personal" {
+			return styleStatus.Render(s)
+		}
 	}
 	return strings.Join(parts, " ")
 }

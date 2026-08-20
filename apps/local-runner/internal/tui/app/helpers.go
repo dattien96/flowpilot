@@ -498,8 +498,11 @@ func formatAccountLimits(acc *client.ProviderAccountSummary) string {
 			parts = append(parts, formatQuotaChip(label, line.RemainingPercent, resetPtr))
 		}
 	}
-	if len(parts) == 0 && acc.UsageSummary != nil && strings.TrimSpace(*acc.UsageSummary) != "" {
-		return strings.TrimSpace(*acc.UsageSummary)
+	if len(parts) == 0 && acc.UsageSummary != nil {
+		s := strings.TrimSpace(*acc.UsageSummary)
+		if s != "" && !strings.HasPrefix(s, "Team ") && s != "Personal" {
+			return s
+		}
 	}
 	return strings.Join(parts, " ")
 }
