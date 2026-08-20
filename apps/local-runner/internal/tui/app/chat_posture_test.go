@@ -296,56 +296,57 @@ func TestModeSetupPicker_PostureFieldValue(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "codex"}, "http://127.0.0.1:4317")
 	m.providers = []client.Provider{{Key: "claude"}, {Key: "codex"}}
 	m.provider = "claude"
+	// TAB picker for /mode-setup is now disabled (modal on Enter)
 	m.inputValue = "/mode-setup "
 	m.inputCursor = -1
 	items := m.collectSuggestions()
-	found := map[string]bool{}
 	for _, it := range items {
+		if it.kind == "mode-setup-posture" || it.kind == "mode-setup-field" || it.kind == "mode-setup-value" {
+			t.Fatalf("TAB picker for /mode-setup must be disabled, got %+v", items)
+		}
+	}
+	// Underlying filter still works for typed power-user path
+	filtered := filterModeSetupSuggestions("/mode-setup ", m.providers, m.providerAccounts, m.provider, m.model, m.modeSetupDraft)
+	found := map[string]bool{}
+	for _, it := range filtered {
 		found[it.value] = true
 	}
 	if !found["scan"] || !found["plan"] || !found["code"] {
-		t.Fatalf("posture picker must show scan/plan/code, got %+v", items)
+		t.Fatalf("filterModeSetupSuggestions must still show scan/plan/code, got %+v", filtered)
 	}
 	m.inputValue = "/mode-setup scan "
-	m.inputCursor = -1
-	items = m.collectSuggestions()
+	filtered = filterModeSetupSuggestions(m.inputValue, m.providers, m.providerAccounts, m.provider, m.model, m.modeSetupDraft)
 	found = map[string]bool{}
-	for _, it := range items {
+	for _, it := range filtered {
 		found[it.value] = true
 	}
 	if found["scan provider"] {
-		t.Fatalf("field picker must not show provider (removed), got %+v", items)
+		t.Fatalf("field picker must not show provider (removed), got %+v", filtered)
 	}
 	if !found["scan model"] {
-		t.Fatalf("field picker must show model, got %+v", items)
+		t.Fatalf("field picker must show model, got %+v", filtered)
 	}
 	// Typing provider still works via value stage (not advertised in picker)
 	m.inputValue = "/mode-setup scan provider "
-	m.inputCursor = -1
-	items = m.collectSuggestions()
-	if len(items) == 0 {
-		t.Fatal("provider value picker must show providers")
+	filtered = filterModeSetupSuggestions(m.inputValue, m.providers, m.providerAccounts, m.provider, m.model, m.modeSetupDraft)
+	if len(filtered) == 0 {
+		t.Fatal("provider value picker must show providers via filter")
 	}
 	hasClaude := false
-	for _, it := range items {
+	for _, it := range filtered {
 		if it.value == "scan provider claude" {
 			hasClaude = true
 		}
 	}
 	if !hasClaude {
-		t.Fatalf("provider picker must contain scan provider claude, got %+v", items)
+		t.Fatalf("provider picker must contain scan provider claude, got %+v", filtered)
 	}
 	// clear has no value stage
 	m.inputValue = "/mode-setup scan clear"
-	m.inputCursor = -1
-	items = m.collectSuggestions()
-	// /mode-setup scan clear is a complete command — no picker, Enter runs
-	if len(items) != 0 {
-		// filter returns nil for clear value stage; only slash suggestions may appear
-		for _, it := range items {
-			if it.kind == "mode-setup-value" {
-				t.Fatalf("clear must not show value picker, got %+v", items)
-			}
+	filtered = filterModeSetupSuggestions(m.inputValue, m.providers, m.providerAccounts, m.provider, m.model, m.modeSetupDraft)
+	for _, it := range filtered {
+		if it.kind == "mode-setup-value" {
+			t.Fatalf("clear must not show value picker, got %+v", filtered)
 		}
 	}
 }

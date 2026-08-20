@@ -2294,84 +2294,15 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if ok, _ := parseSlashArgPrefix(in, "/reasoning"); ok {
 		return []suggestItem{{value: "", detail: "(no matching effort)", kind: "reasoning"}}
 	}
-	if modeSetupSugg := filterModeSetupSuggestions(in, m.providers, m.providerAccounts, m.provider, m.model, m.modeSetupDraft); len(modeSetupSugg) > 0 {
-		// Wizard extra rows: save/cancel at posture level, back at field/value levels
-		trimmed := strings.TrimSpace(in)
-		isBare := strings.EqualFold(trimmed, "/mode-setup")
-		parts := strings.Fields(func() string {
-			if ok, q := parseSlashArgPrefix(in, "/mode-setup"); ok {
-				return q
-			}
-			if isBare {
-				return ""
-			}
-			return ""
-		}())
-		// Determine level by parts length and whether input ends with space
-		hasTrailingSpace := strings.HasSuffix(in, " ") || strings.HasSuffix(in, "\t")
-		level := 0 // 0=root posture, 1=field, 2=value
-		if isBare || (len(parts) == 0 && hasTrailingSpace) {
-			level = 0
-		} else if len(parts) == 1 {
-			if hasTrailingSpace {
-				level = 1
-			} else {
-				level = 0
-			}
-		} else if len(parts) == 2 {
-			if hasTrailingSpace {
-				level = 2
-			} else {
-				level = 1
-			}
-		} else if len(parts) >= 3 {
-			level = 2
-		}
-		if level == 0 && m.modeSetupDraftDirty {
-			modeSetupSugg = append(modeSetupSugg,
-				suggestItem{value: "save", detail: "✓ save all staged changes", kind: "mode-setup-save"},
-				suggestItem{value: "cancel", detail: "✕ discard draft", kind: "mode-setup-cancel"},
-			)
-		}
-		if level == 1 && len(parts) >= 1 && validPosture(strings.ToLower(parts[0])) {
-			// field level: add back row at top
-			back := suggestItem{value: "back", detail: "← back to posture", kind: "mode-setup-back"}
-			modeSetupSugg = append([]suggestItem{back}, modeSetupSugg...)
-		}
-		if level == 2 {
-			back := suggestItem{value: "back", detail: "← back to fields", kind: "mode-setup-back"}
-			modeSetupSugg = append([]suggestItem{back}, modeSetupSugg...)
-		}
+	// /mode-setup now uses modal on Enter, TAB picker disabled per user request
+	// (previously wizard posture→field→value). Keep typed 3-arg via handleSlashCommand.
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(in)), "/mode-setup") {
+		// No TAB suggestions for this command; Enter opens modal
+		// Fall through to let slash command handling decide (bare shows command, with args no picker)
+	} else if modeSetupSugg := filterModeSetupSuggestions(in, m.providers, m.providerAccounts, m.provider, m.model, m.modeSetupDraft); len(modeSetupSugg) > 0 {
+		// Legacy wizard path kept for typed power-user but not exposed via TAB
+		// (kept for backward compat if needed, but currently unreachable due to guard above)
 		return modeSetupSugg
-	}
-	if ok, q := parseSlashArgPrefix(in, "/mode-setup"); ok {
-		// Offer a placeholder when the field is known but the value list is
-		// empty (e.g. /mode-setup scan model with no models) so Tab still
-		// opens a picker row instead of falling through to /help.
-		// Provider now falls back to claude/codex/grok, so the only empty
-		// provider case is still loading catalog — show a loading row.
-		parts := strings.Fields(q)
-		if len(parts) >= 2 {
-			field := strings.ToLower(parts[1])
-			if validPosture(strings.ToLower(parts[0])) {
-				switch field {
-				case "provider":
-					if !m.sessionDefaultsLoaded && len(m.providers) == 0 && len(m.providerAccounts) == 0 {
-						return []suggestItem{{value: "", detail: "loading providers…", kind: "mode-setup-value"}}
-					}
-					return []suggestItem{{value: "", detail: "(no matching providers)", kind: "mode-setup-value"}}
-				case "model":
-					if !m.sessionDefaultsLoaded && len(m.providers) == 0 {
-						return []suggestItem{{value: "", detail: "loading models…", kind: "mode-setup-value"}}
-					}
-					return []suggestItem{{value: "", detail: "no models in catalog", kind: "mode-setup-value"}}
-				case "reasoning":
-					return []suggestItem{{value: "", detail: "(no matching effort)", kind: "mode-setup-value"}}
-				case "yolo":
-					return []suggestItem{{value: "", detail: "(no matching yolo option)", kind: "mode-setup-value"}}
-				}
-			}
-		}
 	}
 	if skillSugg := filterSkillSuggestions(in, m.skillsCatalog, m.selectedSkills); len(skillSugg) > 0 {
 		return skillSugg

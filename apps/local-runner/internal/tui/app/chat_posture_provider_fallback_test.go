@@ -9,8 +9,8 @@ import (
 )
 
 // Reported bug: /mode-setup scan provider showed "(no providers)" when the
-// catalog had not loaded yet (m.providers empty). Pins are plain strings —
-// the picker must offer claude/codex/grok even with no catalog.
+// catalog had not loaded yet. Underlying filter still offers claude/codex/grok,
+// but TAB picker for /mode-setup is now disabled (modal on Enter).
 func TestModeSetupProviderFallbackWhenCatalogEmpty(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "codex"}, "http://127.0.0.1:4317")
 	m.providers = nil
@@ -20,8 +20,16 @@ func TestModeSetupProviderFallbackWhenCatalogEmpty(t *testing.T) {
 	m.inputValue = "/mode-setup scan provider "
 	m.inputCursor = -1
 
-	items := m.collectSuggestions()
-	// Filter out wizard back row
+	// TAB flow disabled for /mode-setup — collectSuggestions must not return wizard picker
+	if items := m.collectSuggestions(); len(items) > 0 {
+		for _, it := range items {
+			if it.kind == "mode-setup-value" || it.kind == "mode-setup-posture" || it.kind == "mode-setup-field" {
+				t.Fatalf("TAB picker for /mode-setup must be disabled, got %+v", items)
+			}
+		}
+	}
+	// Underlying filter still provides fallback (used by typed power-user path)
+	items := filterModeSetupSuggestions(m.inputValue, m.providers, m.providerAccounts, m.provider, m.model, m.modeSetupDraft)
 	var filtered []string
 	for _, it := range items {
 		if it.kind == "mode-setup-value" {
@@ -54,8 +62,7 @@ func TestModeSetupProviderUsesAccountsWhenProvidersEmpty(t *testing.T) {
 	m.inputValue = "/mode-setup scan provider "
 	m.inputCursor = -1
 
-	items := m.collectSuggestions()
-	// Must contain myprov (from accounts) and codex, not fallback grok/claude when accounts present
+	items := filterModeSetupSuggestions(m.inputValue, m.providers, m.providerAccounts, m.provider, m.model, m.modeSetupDraft)
 	seen := map[string]bool{}
 	for _, it := range items {
 		seen[it.value] = true
@@ -75,7 +82,7 @@ func TestModeSetupProviderFiltersFallback(t *testing.T) {
 	m.inputValue = "/mode-setup scan provider cla"
 	m.inputCursor = -1
 
-	items := m.collectSuggestions()
+	items := filterModeSetupSuggestions(m.inputValue, m.providers, m.providerAccounts, m.provider, m.model, m.modeSetupDraft)
 	var filtered []string
 	for _, it := range items {
 		if it.kind == "mode-setup-value" {
@@ -88,8 +95,6 @@ func TestModeSetupProviderFiltersFallback(t *testing.T) {
 }
 
 func TestModeSetupModelShowsAllProviders(t *testing.T) {
-	// Current provider grok has no models, but claude/codex do — picker must
-	// still list all models with provider detail, and provider auto-inferred.
 	m := New(config.ChatConfig{Provider: "grok"}, "http://127.0.0.1:4317")
 	m.providers = []client.Provider{
 		{Key: "claude", Models: []client.ProviderModel{{ID: "opus"}, {ID: "sonnet"}}},
@@ -97,12 +102,12 @@ func TestModeSetupModelShowsAllProviders(t *testing.T) {
 		{Key: "grok", Models: nil},
 	}
 	m.provider = "grok"
-	m.model = "" // ensure no fallback currentModel adds extra
+	m.model = ""
 	m.sessionDefaultsLoaded = true
 	m.inputValue = "/mode-setup scan model "
 	m.inputCursor = -1
 
-	items := m.collectSuggestions()
+	items := filterModeSetupSuggestions(m.inputValue, m.providers, m.providerAccounts, m.provider, m.model, m.modeSetupDraft)
 	if len(items) < 3 {
 		t.Fatalf("must show at least 3 models across providers, got %d: %+v", len(items), items)
 	}
