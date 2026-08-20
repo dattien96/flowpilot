@@ -2059,13 +2059,38 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 		}
 		return []suggestItem{{value: "", detail: "(no matching providers)", kind: kind}}
 	}
-	models := modelsForProvider(m.providers, m.provider)
-	if modelSugg := filterModelSuggestions(in, models, m.model); len(modelSugg) > 0 {
-		return modelSugg
-	}
-	if ok, _ := parseSlashArgPrefix(in, "/model"); ok {
-		if len(models) == 0 {
-			return []suggestItem{{value: "", detail: "no models — set /provider first", kind: "model"}}
+	// /model now lists every supported model across all providers (catalog ∪
+	// defaults) with provider as detail — picking a model auto-switches provider
+	// per FlowPilot rule. Mirrors /mode-setup model behavior.
+	if ok, q := parseSlashArgPrefix(in, "/model"); ok {
+		all := allModelsAcrossProviders(m.providers, m.provider, m.model)
+		qLower := strings.ToLower(strings.TrimSpace(q))
+		out := make([]suggestItem, 0, len(all))
+		for _, e := range all {
+			if qLower != "" && !strings.Contains(strings.ToLower(e.id), qLower) {
+				continue
+			}
+			detail := e.provider
+			if detail == "" {
+				detail = "model"
+			}
+			if strings.EqualFold(e.id, m.model) {
+				if detail == "model" {
+					detail = "current"
+				} else {
+					detail = detail + " · current"
+				}
+			}
+			out = append(out, suggestItem{value: e.id, detail: detail, kind: "model"})
+		}
+		if len(out) > 0 {
+			return out
+		}
+		if len(all) == 0 {
+			if !m.sessionDefaultsLoaded && len(m.providers) == 0 {
+				return []suggestItem{{value: "", detail: "loading models…", kind: "model"}}
+			}
+			return []suggestItem{{value: "", detail: "no models in catalog", kind: "model"}}
 		}
 		return []suggestItem{{value: "", detail: "(no matching models)", kind: "model"}}
 	}
@@ -3089,44 +3114,65 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			var sb strings.Builder
 			sb.WriteString(fmt.Sprintf("Provider: %s\n", orDash(m.provider)))
 			sb.WriteString(fmt.Sprintf("Current model: %s\n", orDash(m.model)))
-			models := modelsForProvider(m.providers, m.provider)
-			if len(models) == 0 {
-				sb.WriteString("No models listed for this provider. Check Desktop provider install, or /provider first.")
+			all := allModelsAcrossProviders(m.providers, m.provider, m.model)
+			if len(all) == 0 {
+				sb.WriteString("No models listed. Check catalog.")
 			} else {
-				sb.WriteString("Available models:\n")
-				for _, id := range models {
+				sb.WriteString("Available models (provider → model):\n")
+				for _, e := range all {
 					mark := " "
-					if id == m.model {
+					if strings.EqualFold(e.id, m.model) {
 						mark = "*"
 					}
-					sb.WriteString(fmt.Sprintf("  %s %s\n", mark, id))
+					prov := e.provider
+					if prov == "" {
+						prov = orDash(m.provider)
+					}
+					sb.WriteString(fmt.Sprintf("  %s %s · %s\n", mark, prov, e.id))
 				}
-				sb.WriteString("Pick: type /model  then ↑↓ · Tab · Enter")
+				sb.WriteString("Pick: type /model  then ↑↓ · Tab · Enter (provider auto-switches)")
 			}
 			m.addMessage("system", sb.String(), "")
 		} else {
-			want := strings.Join(args, " ")
-			models := modelsForProvider(m.providers, m.provider)
-			if len(models) > 0 {
-				ok := false
-				for _, id := range models {
-					if strings.EqualFold(id, want) {
-						m.model = id
-						ok = true
-						break
-					}
-				}
-				if !ok {
-					m.addMessage("system", fmt.Sprintf("Model %q not in catalog for %s. Try /model to list.", want, orDash(m.provider)), "error")
+			want := strings.TrimSpace(strings.Join(args, " "))
+			all := allModelsAcrossProviders(m.providers, m.provider, m.model)
+			var matched *modelEntry
+			for _, e := range all {
+				if strings.EqualFold(e.id, want) {
+					tmp := e
+					matched = &tmp
 					break
 				}
+			}
+			providerSwitched := false
+			if matched != nil {
+				if matched.provider != "" && !strings.EqualFold(matched.provider, m.provider) {
+					m.provider = matched.provider
+					m.bindActiveAccountForProvider()
+					m.skillsCatalog = nil
+					providerSwitched = true
+				}
+				m.model = matched.id
 			} else {
+				if prov := providerForModel(m.providers, want); prov != "" && !strings.EqualFold(prov, m.provider) {
+					m.provider = prov
+					m.bindActiveAccountForProvider()
+					m.skillsCatalog = nil
+					providerSwitched = true
+				}
 				m.model = want
 			}
 			m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 			m.persistSessionPrefs()
-			m.addMessage("system", fmt.Sprintf("Model set to: %s (next prompt uses this model)", m.model), "")
+			if matched != nil && matched.provider != "" {
+				m.addMessage("system", fmt.Sprintf("Model set to: %s · provider: %s (next prompt uses this model)", m.model, m.provider), "")
+			} else {
+				m.addMessage("system", fmt.Sprintf("Model set to: %s (next prompt uses this model)", m.model), "")
+			}
 			m.refreshSessionPanel()
+			if providerSwitched {
+				return m, m.cmdLoadSkills(false)
+			}
 		}
 
 	case "/reasoning":

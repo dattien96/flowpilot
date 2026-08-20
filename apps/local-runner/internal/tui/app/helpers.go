@@ -1236,36 +1236,7 @@ func modeSetupValueSuggestions(posture, field, query string, providers []client.
 		// lists all models across providers. So /mode-setup model must also
 		// show every model with its provider as detail, not just the current
 		// provider's models (which is empty for grok in the report).
-		seen := make(map[string]bool, 16)
-		type entry struct {
-			provider string
-			id       string
-		}
-		var all []entry
-		for _, p := range providers {
-			for _, m := range p.Models {
-				id := strings.TrimSpace(m.ModelID())
-				if id == "" {
-					continue
-				}
-				lk := strings.ToLower(id)
-				if seen[lk] {
-					continue
-				}
-				seen[lk] = true
-				all = append(all, entry{provider: p.Key, id: id})
-			}
-		}
-		// Fallback: if catalog has no models (or session model not in catalog),
-		// surface m.model so picker is never empty — matches live TUI where
-		// statusline shows grok-4.5 from prefs while GET /providers Models=[].
-		if cm := strings.TrimSpace(currentModel); cm != "" {
-			lk := strings.ToLower(cm)
-			if !seen[lk] {
-				seen[lk] = true
-				all = append(all, entry{provider: currentProvider, id: cm})
-			}
-		}
+		all := allModelsAcrossProviders(providers, currentProvider, currentModel)
 		out := make([]suggestItem, 0, len(all))
 		for _, e := range all {
 			if q != "" && !strings.Contains(strings.ToLower(e.id), q) && !strings.Contains(strings.ToLower(e.provider), q) {
@@ -1432,6 +1403,69 @@ func modelsForProvider(providers []client.Provider, providerKey string) []string
 		return out
 	}
 	return nil
+}
+
+// defaultModelsForKey returns registry defaults when a provider is in m.providers
+// but its Models slice is empty (live grok cache miss, codex/claude not probed).
+// Mirrors runner/providerSpecs defaults so picker never empty for a known provider.
+func defaultModelsForKey(key string) []string {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "codex":
+		return []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini"}
+	case "claude":
+		return []string{"claude-opus", "claude-sonnet", "claude-haiku"}
+	case "grok":
+		return []string{"grok-4.5", "grok-build"}
+	case "gemini":
+		return []string{"gemini-3.5-flash-medium", "gemini-3.5-flash-high", "gemini-3.5-flash-low", "gemini-3.1-pro-low", "gemini-3.1-pro-high"}
+	default:
+		return nil
+	}
+}
+
+// allModelsAcrossProviders returns every model id across m.providers (dedup),
+// filling registry defaults for providers that are present but have no Models,
+// plus currentModel if not already present — so /model and /mode-setup model
+// always show the full supported list, not just the current provider.
+func allModelsAcrossProviders(providers []client.Provider, currentProvider, currentModel string) []modelEntry {
+	seen := make(map[string]bool, 32)
+	var out []modelEntry
+	for _, p := range providers {
+		ids := make([]string, 0, len(p.Models))
+		for _, m := range p.Models {
+			if id := strings.TrimSpace(m.ModelID()); id != "" {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) == 0 {
+			ids = defaultModelsForKey(p.Key)
+		}
+		for _, id := range ids {
+			lk := strings.ToLower(id)
+			if seen[lk] {
+				continue
+			}
+			seen[lk] = true
+			out = append(out, modelEntry{provider: p.Key, id: id})
+		}
+	}
+	if cm := strings.TrimSpace(currentModel); cm != "" {
+		lk := strings.ToLower(cm)
+		if !seen[lk] {
+			seen[lk] = true
+			prov := providerForModel(providers, cm)
+			if prov == "" {
+				prov = currentProvider
+			}
+			out = append(out, modelEntry{provider: prov, id: cm})
+		}
+	}
+	return out
+}
+
+type modelEntry struct {
+	provider string
+	id       string
 }
 
 func gateFromEvent(ev client.ProviderEvent) *parsedGate {
