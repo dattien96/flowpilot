@@ -4823,7 +4823,10 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 		// (CA-535). The runner's /providers handler also honors r.Context()
 		// cancel and caches results, so in practice this resolves in ms.
 		cl := client.New(runnerURL)
-		ctxFast, cancelFast := context.WithTimeout(context.Background(), 8*time.Second)
+		// Grok quota needs 2× billing HTTP (credits + fallback) per home; 4 homes
+		// serial is up to ~20s cold. Desktop shows 7d fine; TUI's 8s budget
+		// truncated it to Team UUID fallback. Give it a dedicated 20s.
+		ctxFast, cancelFast := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelFast()
 		accounts, accErr := cl.ListProviderAccounts(ctxFast)
 		ctxProvs, cancelProvs := context.WithTimeout(context.Background(), 2*time.Second)
