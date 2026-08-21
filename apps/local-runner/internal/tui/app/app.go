@@ -1306,6 +1306,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if pasteNow().Sub(m.pasteBurst.lastRuneAt) >= burstSettle {
 			wasActive := m.pasteBurst.active
+			// Production Windows rejects raw floods entirely (hint at arm time),
+			// so settle just resets without collapsing to [Pasted] or re-hinting.
+			if wasActive && runtime.GOOS == "windows" && m.rejectWindowsRawPaste {
+				m.resetPasteBurst()
+				tuiLog("burst collapse (windows reject) active=false inputLen=%d", len([]rune(m.inputValue)))
+				return m, nil
+			}
 			m.collapsePasteBurst()
 			tuiLog("burst collapse active=false inputLen=%d", len([]rune(m.inputValue)))
 			// Windows: WT steals Ctrl+V so raw paste always comes as a flood.
@@ -1313,8 +1320,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// only text and causes the char-by-char burst).
 			if wasActive && runtime.GOOS == "windows" && !m.pasteCtrlVHintShown {
 				m.pasteCtrlVHintShown = true
-				hint := "Windows Terminal steals Ctrl+V — use Alt+V for paste (text + image)"
-				m.addMessage("system", hint, "")
+				hint := "Use Alt+V for paste (text + image)"
+				m.addMessage("system", hint, "gate")
 				return m, m.showFlashToast(hint)
 			}
 		} else {
@@ -1727,6 +1734,22 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pasteBurst.active && now.Sub(m.pasteBurst.lastRuneAt) >= burstSettle {
 			m.collapsePasteBurst()
 		}
+		// Windows production rejects raw flood (WT Ctrl+V) entirely.
+		if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && isBurstNewlineKey(msg) {
+			b := &m.pasteBurst
+			if b.active || (b.chainLen >= 1 && now.Sub(b.lastRuneAt) < burstRuneGap && !strings.HasPrefix(m.inputValue, "/")) {
+				wasActive := b.active
+				m.pasteBurst.lastRuneAt = now
+				// Hint once per flood (on arm), not per Enter.
+				if !wasActive && b.chainLen >= 1 {
+					hint := "Use Alt+V for paste (text + image)"
+					m.addMessage("system", hint, "gate")
+					m.pasteCtrlVHintShown = true
+					return m, tea.Batch(m.showFlashToast(hint), cmdPasteBurstSettle())
+				}
+				return m, cmdPasteBurstSettle()
+			}
+		}
 		// Raw (non-bracketed) paste arrives as a flood of key events where every
 		// line break is a plain Enter. Swallow those Enters as newlines while the
 		// flood is active so pasting never auto-submits per line.
@@ -1798,8 +1821,8 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if runtime.GOOS == "windows" {
-			hint := "Use Alt+V for paste on Windows (text + image) — Ctrl+V is taken by Windows Terminal"
-			m.addMessage("system", hint, "")
+			hint := "Use Alt+V for paste (text + image)"
+			m.addMessage("system", hint, "gate")
 			return m, m.showFlashToast(hint)
 		}
 		// Prefer image clipboard; falls back to text.
@@ -2239,6 +2262,24 @@ if path := imagePathFromClipboardText(pasted); path != "" {
 		// instead of submits; bracketed pastes are handled above.
 		if m.authPhase == AuthNone && !msg.Paste && !msg.Alt {
 			m.noteBurstRune(s)
+			// Windows production: reject raw flood entirely (WT Ctrl+V) — show
+			// Alt+V hint and swallow the rune flood. Tests keep reject off.
+			if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && m.pasteBurst.active {
+				// Revert any already-inserted burst chars (first 2 runes arm).
+				if runes := []rune(m.inputValue); len(runes) > m.pasteBurst.start {
+					m.inputValue = string(runes[:m.pasteBurst.start])
+					m.setInputCaret(m.pasteBurst.start)
+				}
+				// Show hint once per paste flood (on arm), not per rune.
+				if m.pasteBurst.chainLen == 2 {
+					hint := "Use Alt+V for paste (text + image)"
+					m.addMessage("system", hint, "gate")
+					// Mark session hint too to suppress settle duplicate.
+					m.pasteCtrlVHintShown = true
+					return m, tea.Batch(m.showFlashToast(hint), cmdPasteBurstSettle())
+				}
+				return m, cmdPasteBurstSettle()
+			}
 		}
 		m.insertInputAtCursor(s)
 		m.suggIdx = 0
@@ -4546,7 +4587,8 @@ func (m *AppModel) renderInputLine() string {
 		// While a raw (non-bracketed) paste flood is active, chars arrive
 		// one-by-one and would render as char-by-char. Hide the partial flood
 		// and show a single placeholder until it settles to [Pasted N chars].
-		if m.pasteBurst.active && m.authPhase == AuthNone {
+		// On production Windows the flood is rejected outright (use Alt+V).
+		if m.pasteBurst.active && m.authPhase == AuthNone && !(runtime.GOOS == "windows" && m.rejectWindowsRawPaste) {
 			body = "[Pasting…]"
 		} else {
 			body = m.inputValue
@@ -5443,6 +5485,9 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 		return err
 	}
 
+	if runtime.GOOS == "windows" {
+		m.rejectWindowsRawPaste = true
+	}
 	p := tea.NewProgram(m, tuiProgramOpts()...)
 	_, err := p.Run()
 	tuiLog("Run() exit err=%v", err)

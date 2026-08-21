@@ -286,6 +286,9 @@ type AppModel struct {
 	// pasteCtrlVHintShown ensures the Windows Ctrl+V hint toast fires once per
 	// session after the first raw paste flood (WT steals Ctrl+V).
 	pasteCtrlVHintShown bool
+	// rejectWindowsRawPaste blocks raw (non-bracketed) paste floods on Windows
+	// (WT steals Ctrl+V). Set only in Run() so tests keep the burst green.
+	rejectWindowsRawPaste bool
 	// promptHistory is the sent-prompts ring for Up/Down recall (bash-style).
 	// promptHistIdx points into it while browsing; -1 means "show live draft".
 	promptHistory []string
