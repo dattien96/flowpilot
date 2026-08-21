@@ -1307,14 +1307,6 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if pasteNow().Sub(m.pasteBurst.lastRuneAt) >= burstSettle {
 			m.collapsePasteBurst()
 			tuiLog("burst collapse active=false inputLen=%d", len([]rune(m.inputValue)))
-			// Windows conpty + mouse cell-motion can stick keys after a raw paste
-			// flood (log 22964 10:02:04 collapse then 32s MouseMsg-only until
-			// click unblocked Enter). Re-enable cell-motion after collapse to
-			// unstick the keyboard — Enable alone is safe, Disable+Enable drops
-			// the next KeyMsg on Windows (mouse.go).
-			if runtime.GOOS == "windows" {
-				return m, pulseMouseTracking()
-			}
 		} else {
 			// Fired early (e.g. 129ms <150ms due to 15 runes each scheduling a tick) — reschedule.
 			tuiLog("burst settle early, reschedule active=true")
@@ -5399,9 +5391,24 @@ func (m *AppModel) startupGrokYoloPostureCmd() tea.Cmd {
 	return m.cmdGrokYoloPosture(true)
 }
 
+// tuiProgramOpts returns Bubble Tea program options. On Windows the conhost
+// ReadConsoleInput path with ENABLE_MOUSE_INPUT (WithMouseCellMotion) shares
+// a 64-event queue with keys; a WT paste flood fills it with coninput mouse
+// + key records so keys stick until a click (log 18936 10:13:31 Enable-only
+// did not unstick, 22964 needed a real click). Disable mouse on Windows so
+// Enter/F2/F4/Alt+V/Ctrl+V stay live — click affordances fall back to keys.
+// The helper is exported for tests to assert the platform split.
+func tuiProgramOpts() []tea.ProgramOption {
+	opts := []tea.ProgramOption{tea.WithAltScreen()}
+	if runtime.GOOS != "windows" {
+		opts = append(opts, tea.WithMouseCellMotion())
+	}
+	return opts
+}
+
 // ---- Run (entrypoint) -------------------------------------------------------
 
-// Run starts the Bubble Tea program. In headless/print mode it runs
+ // Run starts the Bubble Tea program. In headless/print mode it runs
 // the model loop and prints the final response to stdout, then exits.
 func Run(cfg config.ChatConfig, runnerURL string) error {
 	initTUILog()
@@ -5415,7 +5422,7 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 		return err
 	}
 
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tuiProgramOpts()...)
 	_, err := p.Run()
 	tuiLog("Run() exit err=%v", err)
 	tuiLogClose()

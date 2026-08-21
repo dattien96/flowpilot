@@ -9,13 +9,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Win conpty: after a raw paste burst settles, keys stay stuck until a mouse
-// click re-enables cell-motion (log 22964 10:02:04.145 collapse -> 32s
-// MouseMsg-only -> click -> Enter). The settle tick must pulse mouse tracking
-// on Windows to unstick the keyboard without dropping the next KeyMsg.
-func TestBurst_SettleTickPulsesMouseOnWindows(t *testing.T) {
+// Windows mouse is now disabled (tuiProgramOpts) so conhost 64-event queue
+// never fills with mouse records (log 18936 Enable-only was a no-op). Settle
+// must NOT re-enable mouse on Windows — keys stay live without a pulse.
+func TestBurst_SettleTickNoPulseWhenMouseOffOnWindows(t *testing.T) {
 	if runtime.GOOS != "windows" {
-		t.Skip("windows-only mouse unstick")
+		t.Skip("windows-only: mouse is off so no pulse needed")
 	}
 	advance := clockAt(t)
 	m := newPasteModel()
@@ -35,13 +34,13 @@ func TestBurst_SettleTickPulsesMouseOnWindows(t *testing.T) {
 	}
 	advance(200 * time.Millisecond)
 	_, cmd := m.Update(pasteBurstSettleMsg{})
-	if cmd == nil {
-		t.Fatal("settle tick after raw paste must return a pulse cmd on windows to unstick keys")
+	if cmd != nil {
+		t.Fatalf("windows settle must not pulse mouse (mouse is off), got cmd %v", cmd)
 	}
 }
 
 // After the burst settles and collapses, a real Enter must still submit the
-// full expanded prompt — pulse must be Enable-only (Disable+Enable drops it).
+// full expanded prompt — with mouse off on Windows no pulse is needed.
 func TestBurst_EnterAfterSettleStillSubmitsAfterPulse(t *testing.T) {
 	advance := clockAt(t)
 	m := newPasteModel()
