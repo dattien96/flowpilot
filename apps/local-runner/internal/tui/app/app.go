@@ -1797,8 +1797,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.authPhase != AuthNone {
 			return m, nil
 		}
-		// Prefer image clipboard; falls back to text. On Windows Terminal, Ctrl+V
-		// is often stolen for text-only paste — use /image paste or Alt+V then.
+		if runtime.GOOS == "windows" {
+			hint := "Use Alt+V for paste on Windows (text + image) — Ctrl+V is taken by Windows Terminal"
+			m.addMessage("system", hint, "")
+			return m, m.showFlashToast(hint)
+		}
+		// Prefer image clipboard; falls back to text.
 		return m, m.cmdClipboardPaste()
 
 	case tea.KeyEscape:

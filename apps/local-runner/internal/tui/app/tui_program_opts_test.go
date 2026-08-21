@@ -2,6 +2,7 @@ package app
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -66,10 +67,50 @@ func TestTuiProgramOpts_KeysForSessionPanel(t *testing.T) {
 func TestTuiProgramOpts_ClipboardKeysStayLive(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:9")
 	m.authPhase = AuthNone
-	if _, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlV}); cmd == nil {
-		t.Fatal("Ctrl+V must return cmdClipboardPaste (mouse off must not kill it)")
+	if runtime.GOOS == "windows" {
+		// Windows: Ctrl+V is intercepted to guide to Alt+V (WT steals Ctrl+V).
+		m2, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlV})
+		am := m2.(*AppModel)
+		if cmd == nil {
+			t.Fatal("Ctrl+V on Windows must return hint toast")
+		}
+		if len(am.messages) == 0 || am.messages[len(am.messages)-1].Content == "" {
+			t.Fatal("Ctrl+V on Windows must add hint message")
+		}
+	} else {
+		if _, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlV}); cmd == nil {
+			t.Fatal("Ctrl+V must return cmdClipboardPaste (mouse off must not kill it)")
+		}
 	}
 	if _, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}, Alt: true}); cmd == nil {
 		t.Fatal("Alt+V must return cmdClipboardPaste")
 	}
+}
+
+// Windows Ctrl+V must be stopped and show Alt+V hint (user request).
+func TestCtrlV_OnWindows_ShowsAltVHint(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only Ctrl+V hint")
+	}
+	m := New(config.ChatConfig{}, "http://127.0.0.1:9")
+	m.authPhase = AuthNone
+	m2, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlV})
+	am := m2.(*AppModel)
+	if cmd == nil {
+		t.Fatal("Ctrl+V on Windows must return hint toast cmd")
+	}
+	if len(am.messages) == 0 {
+		t.Fatal("hint message must be added")
+	}
+	last := am.messages[len(am.messages)-1].Content
+	if last == "" || !containsIgnoreCase(last, "Alt+V") {
+		t.Fatalf("hint must mention Alt+V, got %q", last)
+	}
+	if am.inputValue != "" {
+		t.Fatalf("Ctrl+V on Windows must not paste, input=%q", am.inputValue)
+	}
+}
+
+func containsIgnoreCase(s, sub string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
 }
