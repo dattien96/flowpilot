@@ -498,17 +498,11 @@ func padLinesTo(lines []string, h int) []string {
 	return lines
 }
 
-// joinRightSidebar combines the main chat column with the full-height right
-// sidebar column. left lines are padded/truncated to contentW (== sideX-1), a
-// single separator column follows, then each sidebar line padded to sideW. The
-// separator and sidebar are painted with the lighter sidebar background so the
-// right column reads as a solid panel over the dark canvas (CA-532).
-// The combined line must stay < terminalWidth so macOS Terminal.app / Ghostty
-// / iTerm don't autowrap a full-width row (Windows Terminal is fine at full
-// width, but macOS is not — the "transfills" screenshot was desync, not text
-// wrapping in the You box). Keep the chat column intact and shave the last
-// column off the sidebar side (one default-bg column remains at the terminal's
-// right edge).
+// joinRightSidebar joins the chat and right-sidebar columns as two isolated
+// rectangles. Previous code did `l+sep+s` per line — a long right-aligned You
+// bubble could fill `contentW` and `l` was truncated to `contentW`, while the
+// sidebar side bled into chat on macOS wrap. Isolate via lipgloss blocks so
+// neither column can ever flow into the other (CA-587).
 func joinRightSidebar(left, side []string, sideW, sideX int, ascii bool) string {
 	contentW := sideX - 1
 	fullW := sideX + sideW
@@ -517,8 +511,6 @@ func joinRightSidebar(left, side []string, sideW, sideX int, ascii bool) string 
 	if ascii {
 		sep = "|"
 	}
-	// Reserve safeFull: keep chat at contentW, shrink sidebar paint by the delta
-	// (normally 1) so total == safeFull instead of fullW.
 	sidePaintW := sideW - (fullW - safeFull)
 	if sidePaintW < 1 {
 		sidePaintW = 1
@@ -527,24 +519,44 @@ func joinRightSidebar(left, side []string, sideW, sideX int, ascii bool) string 
 	if len(side) > n {
 		n = len(side)
 	}
-	out := make([]string, 0, n)
-	for i := 0; i < n; i++ {
-		l := ""
-		if i < len(left) {
-			l = left[i]
-		}
-		if lipgloss.Width(stripANSI(l)) > contentW {
-			l = truncateVisual(l, contentW)
-		}
-		l = padTo(l, contentW)
-		s := ""
-		if i < len(side) {
-			s = side[i]
-		}
-		s = paintRow(s, sidePaintW, styleSidebar)
-		out = append(out, l+styleSidebar.Render(sep)+s)
+	// Pad both sides to full height so JoinHorizontal sees h rows.
+	for len(left) < n {
+		left = append(left, "")
 	}
-	return strings.Join(out, "\n")
+	for len(side) < n {
+		side = append(side, "")
+	}
+	// Enforce contentW strictly — lipgloss must truncate inside the block,
+	// never spill. Paint sidebar rows to sidePaintW with its background.
+	leftText := strings.Join(left, "\n")
+	sideText := strings.Join(side, "\n")
+	// Pre-truncate left lines to contentW (visual) so lipgloss does not wrap
+	// inside the block and shift rows. Keep the per-line truncate rather than
+	// relying on Width/MaxWidth wrapping.
+	lines := strings.Split(leftText, "\n")
+	for i, line := range lines {
+		if lipgloss.Width(line) > contentW {
+			lines[i] = truncateVisual(line, contentW)
+		}
+	}
+	leftText = strings.Join(lines, "\n")
+
+	leftCol := lipgloss.NewStyle().Width(contentW).MaxWidth(contentW).MaxHeight(n).Render(leftText)
+	sepLines := make([]string, n)
+	for i := range sepLines {
+		sepLines[i] = sep
+	}
+	sepCol := lipgloss.NewStyle().Width(1).MaxWidth(1).Height(n).MaxHeight(n).Background(lipgloss.Color(colorBg2)).Render(strings.Join(sepLines, "\n"))
+	// Sidebar column is pre-painted per-row so its per-line background (CA-532)
+	// stays; then clamp the whole block to sidePaintW.
+	sideLines := strings.Split(sideText, "\n")
+	for i, line := range sideLines {
+		sideLines[i] = paintRow(line, sidePaintW, styleSidebar)
+	}
+	sideColText := strings.Join(sideLines, "\n")
+	rightCol := lipgloss.NewStyle().Width(sidePaintW).MaxWidth(sidePaintW).Height(n).MaxHeight(n).Render(sideColText)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftCol, sepCol, rightCol)
 }
 
 // suggestionWindow returns an inclusive-exclusive [start,end) window of size limit
