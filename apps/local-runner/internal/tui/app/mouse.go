@@ -103,7 +103,9 @@ func isLeftMouseClick(msg tea.MouseMsg) bool {
 
 func pulseMouseTracking() tea.Cmd {
 	// Drop Windows Terminal native selection (Shift+drag) by briefly leaving mouse mode.
-	return tea.Sequence(tea.DisableMouse, tea.EnableMouseCellMotion)
+	// On Windows, DisableMouse+Enable can drop the next KeyMsg (F2/Enter) — only
+	// pulse when Shift is held (native selection), otherwise just ensure mouse is on.
+	return tea.EnableMouseCellMotion
 }
 
 func (m *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {

@@ -12,7 +12,6 @@ import (
 
 var (
 	tuiLogMu   sync.Mutex
-	tuiLogFile *os.File
 	tuiLogPath string
 )
 
@@ -38,11 +37,6 @@ func initTUILog() {
 	if info, err := os.Stat(tuiLogPath); err == nil && info.Size() > 5<<20 {
 		_ = os.Rename(tuiLogPath, tuiLogPath+".old")
 	}
-	f, err := os.OpenFile(tuiLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return
-	}
-	tuiLogFile = f
 	tuiLog("=== TUI start pid=%d goos=%s time=%s runner=%s ===", os.Getpid(), runtime.GOOS, time.Now().Format(time.RFC3339), "")
 	if dir != "" {
 		tuiLog("log file: %s", tuiLogPath)
@@ -52,25 +46,23 @@ func initTUILog() {
 func tuiLog(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	line := fmt.Sprintf("%s [%d] %s\n", time.Now().Format("15:04:05.000"), os.Getpid(), msg)
-	// Best-effort: write to file if available, also to stderr for headless.
 	tuiLogMu.Lock()
 	defer tuiLogMu.Unlock()
-	if tuiLogFile != nil {
-		_, _ = tuiLogFile.WriteString(line)
-		_ = tuiLogFile.Sync()
+	if tuiLogPath == "" {
+		return
 	}
-	// Also mirror to runner log dir if possible (non-blocking)
+	// Open, append, close each time so TempDir cleanup in tests can remove the file.
+	f, err := os.OpenFile(tuiLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	_, _ = f.WriteString(line)
+	_ = f.Close()
 }
 
 // tuiLogClose is called on quit.
 func tuiLogClose() {
-	tuiLogMu.Lock()
-	defer tuiLogMu.Unlock()
-	if tuiLogFile != nil {
-		_, _ = tuiLogFile.WriteString(fmt.Sprintf("%s [%d] === TUI exit ===\n", time.Now().Format("15:04:05.000"), os.Getpid()))
-		_ = tuiLogFile.Close()
-		tuiLogFile = nil
-	}
+	tuiLog("=== TUI exit ===")
 }
 
 func tuiLogPathForUser() string {

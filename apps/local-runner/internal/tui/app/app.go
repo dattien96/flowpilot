@@ -179,10 +179,14 @@ func cmdThinkingTick() tea.Cmd {
 
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Log startup-relevant messages (skip high-frequency ticks to keep log readable).
-	switch msg.(type) {
+	switch v := msg.(type) {
 	case cursorTickMsg, thinkingTickMsg, tea.WindowSizeMsg:
 	default:
-		tuiLog("Update %T", msg)
+		if km, ok := msg.(tea.KeyMsg); ok {
+			tuiLog("Update KeyMsg Type=%v String=%q Paste=%v Runes=%q", km.Type, km.String(), km.Paste, string(km.Runes))
+		} else {
+			tuiLog("Update %T %v", msg, v)
+		}
 	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -1297,8 +1301,16 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pasteBurstSettleMsg:
 		// A raw-paste burst finished quietly — collapse it to a token without
 		// waiting for the next keystroke.
-		if m.pasteBurst.active && pasteNow().Sub(m.pasteBurst.lastRuneAt) >= burstSettle {
+		if !m.pasteBurst.active {
+			return m, nil
+		}
+		if pasteNow().Sub(m.pasteBurst.lastRuneAt) >= burstSettle {
 			m.collapsePasteBurst()
+			tuiLog("burst collapse active=false inputLen=%d", len([]rune(m.inputValue)))
+		} else {
+			// Fired early (e.g. 129ms <150ms due to 15 runes each scheduling a tick) — reschedule.
+			tuiLog("burst settle early, reschedule active=true")
+			return m, cmdPasteBurstSettle()
 		}
 		return m, nil
 
@@ -1713,25 +1725,6 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if isPromptNewlineKey(msg) || isModifiedEnterNewline(msg) {
 			m.inputValue += "\n"
-			return m, nil
-		}
-	}
-
-	// Session loading: hide chat controls until done (avoid hang feeling).
-	// Only slash commands and chrome (F2/F3/F4, arrows, etc.) are allowed.
-	if m.sessionLoading {
-		if m.allowsKeyWhileLoading(msg) {
-			// Allow chrome/navigation, but block normal typing except slash.
-			if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 && msg.Runes[0] != '/' {
-				// Show a clear message on timeline, not silent.
-				m.addMessage("system", "Still loading session — chat is disabled until ready. (providers: loading...)", "error")
-				tuiLog("send blocked: sessionLoading typing blocked")
-				return m, nil
-			}
-			// Fall through to normal handling for allowed keys (F2/F4, etc.)
-		} else if msg.Type == tea.KeyRunes || msg.Type == tea.KeyEnter || msg.Type == tea.KeyBackspace || msg.Type == tea.KeyDelete {
-			m.addMessage("system", "Still loading session — chat is disabled until ready.", "error")
-			tuiLog("send blocked: sessionLoading key blocked %v", msg.Type)
 			return m, nil
 		}
 	}
@@ -2885,10 +2878,10 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.sessionDefaultsLoaded && len(m.providers) == 0 {
-		msg := "Provider list not loaded yet (cold start) — please wait 2-3s then retry. If persists, run /status or restart TUI."
-		m.addMessage("system", msg, "error")
-		tuiLog("send blocked: providers empty")
-		return m, m.showFlashToast(msg)
+		// Cold start: providers not yet loaded (log showed 2s timeout). Don't
+		// silently block — log and let the run attempt proceed; the runner
+		// will return a proper error if the provider is truly unavailable.
+		tuiLog("send with providers empty (cold start) provider=%q", m.provider)
 	}
 
 	// Never arm a run without a project_id: cmdStartRun re-fetches the catalog
