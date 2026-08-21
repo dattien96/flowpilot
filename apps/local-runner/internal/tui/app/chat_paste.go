@@ -226,4 +226,5 @@ func (m *AppModel) collapsePasteBurst() {
 
 func (m *AppModel) resetPasteBurst() {
 	m.pasteBurst = pasteBurst{}
+	m.pasteHijacked = false
 }

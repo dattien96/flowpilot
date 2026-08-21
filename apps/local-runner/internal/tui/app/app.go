@@ -2268,6 +2268,13 @@ if path := imagePathFromClipboardText(pasted); path != "" {
 			// Only swallow rapid runes (chainLen>=2) so slow typing after settle
 			// is not blocked (user reported "k chat thêm được").
 			if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && m.pasteBurst.active && m.pasteBurst.chainLen >= 2 {
+				// After hijack, keep the [Pasted] token — do not revert again
+				// (log 18700: ClipboardPaste inserted [Pasted] then next rune
+				// reverted it to empty). Subsequent flood runes are just
+				// swallowed, not reverted.
+				if m.pasteHijacked {
+					return m, cmdPasteBurstSettle()
+				}
 				// Revert any already-inserted burst chars (first 2 runes arm).
 				if runes := []rune(m.inputValue); len(runes) > m.pasteBurst.start {
 					m.inputValue = string(runes[:m.pasteBurst.start])
@@ -2279,6 +2286,7 @@ if path := imagePathFromClipboardText(pasted); path != "" {
 					hint := "Use Alt+V for paste (text + image)"
 					m.addMessage("system", hint, "gate")
 					m.pasteCtrlVHintShown = true
+					m.pasteHijacked = true
 					return m, tea.Batch(m.showFlashToast(hint), m.cmdClipboardPaste(), cmdPasteBurstSettle())
 				}
 				return m, cmdPasteBurstSettle()

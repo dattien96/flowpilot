@@ -289,6 +289,10 @@ type AppModel struct {
 	// rejectWindowsRawPaste blocks raw (non-bracketed) paste floods on Windows
 	// (WT steals Ctrl+V). Set only in Run() so tests keep the burst green.
 	rejectWindowsRawPaste bool
+	// pasteHijacked marks that the current raw flood has been hijacked to
+	// clipboard (1 msg). While true, subsequent flood runes must be swallowed
+	// without reverting the just-inserted [Pasted] token (log 18700).
+	pasteHijacked bool
 	// promptHistory is the sent-prompts ring for Up/Down recall (bash-style).
 	// promptHistIdx points into it while browsing; -1 means "show live draft".
 	promptHistory []string

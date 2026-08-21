@@ -107,3 +107,56 @@ func TestWindowsReject_CtrlVShowsHint(t *testing.T) {
 		t.Fatalf("hint text must be short 'Use Alt+V for paste (text + image)', got %q", am.messages[len(am.messages)-1].Content)
 	}
 }
+
+// Log 18700: hijack ClipboardPasteMsg inserted [Pasted] then next flood
+// runes reverted it to empty. Subsequent runes after hijack must be
+// swallowed without reverting the token.
+func TestWindowsReject_HijackNotWipedByTrailingFlood(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only")
+	}
+	advance := clockAt(t)
+	m := newPasteModel()
+	m.rejectWindowsRawPaste = true
+	// Start flood: 2 runes to arm + hijack.
+	for _, r := range "ab" {
+		advance(5 * time.Millisecond)
+		m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = m2.(*AppModel)
+	}
+	if m.inputValue != "" {
+		t.Fatalf("after hijack arm input must be empty, got %q", m.inputValue)
+	}
+	// ClipboardPaste arrives (hijack result) → [Pasted].
+	clampText := "Them ham ClampChecked(n, lo, hi int) (int, error) vao format.go: tra error khi lo > hi"
+	m2, _ := m.Update(ClipboardPasteMsg{Text: clampText})
+	m = m2.(*AppModel)
+	if !strings.HasPrefix(m.inputValue, "[Pasted ") {
+		t.Fatalf("clipboard hijack must insert [Pasted], got %q", m.inputValue)
+	}
+	token := m.inputValue
+	// More flood runes (the tail of the original Ctrl+V) must be swallowed
+	// without reverting the token.
+	for _, r := range "tail" {
+		advance(5 * time.Millisecond)
+		m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = m2.(*AppModel)
+	}
+	if m.inputValue != token {
+		t.Fatalf("trailing flood must not wipe [Pasted], got %q want %q", m.inputValue, token)
+	}
+	// Enter after hijacked paste must send the full text (after burst settles).
+	advance(200 * time.Millisecond)
+	m2, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	sent := m2.(*AppModel)
+	found := false
+	for _, msg := range sent.messages {
+		if msg.Role == "user" && msg.Content == clampText {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("Enter after hijacked paste must send full text, got %+v", sent.messages)
+	}
+}
