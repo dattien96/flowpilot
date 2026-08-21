@@ -111,7 +111,12 @@ func (s *InteractiveService) flowRunTerminalLocked(parentRunID string) bool {
 		return true
 	}
 	switch rs.status {
-	case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+	case RunStatusFailed, RunStatusCancelled:
+		return true
+	case RunStatusCompleted:
+		if s.loopIsAdvancing(parentRunID) {
+			return false
+		}
 		return true
 	default:
 		return false
@@ -142,7 +147,12 @@ func (s *InteractiveService) flowInlineContext(parentRunID string) context.Conte
 		return alreadyCancelledContext()
 	}
 	switch rs.status {
-	case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+	case RunStatusFailed, RunStatusCancelled:
+		return alreadyCancelledContext()
+	case RunStatusCompleted:
+		if s.loopIsAdvancing(parentRunID) {
+			break
+		}
 		return alreadyCancelledContext()
 	}
 	if rs.flowInlineCtx != nil {
