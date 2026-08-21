@@ -2262,21 +2262,24 @@ if path := imagePathFromClipboardText(pasted); path != "" {
 		// instead of submits; bracketed pastes are handled above.
 		if m.authPhase == AuthNone && !msg.Paste && !msg.Alt {
 			m.noteBurstRune(s)
-			// Windows production: reject raw flood entirely (WT Ctrl+V) — show
-			// Alt+V hint and swallow the rune flood. Tests keep reject off.
-			if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && m.pasteBurst.active {
+			// Windows production: hijack WT Ctrl+V raw flood (char-by-char) to
+			// clipboard (1 msg → [Pasted]) and guide to Alt+V. Tests keep
+			// reject off so burst char-by-char + [Pasting…] stays testable.
+			// Only swallow rapid runes (chainLen>=2) so slow typing after settle
+			// is not blocked (user reported "k chat thêm được").
+			if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && m.pasteBurst.active && m.pasteBurst.chainLen >= 2 {
 				// Revert any already-inserted burst chars (first 2 runes arm).
 				if runes := []rune(m.inputValue); len(runes) > m.pasteBurst.start {
 					m.inputValue = string(runes[:m.pasteBurst.start])
 					m.setInputCaret(m.pasteBurst.start)
 				}
-				// Show hint once per paste flood (on arm), not per rune.
+				// Hijack once per flood (on arm): show hint and paste via
+				// clipboard so Ctrl+V WT behaves like Alt+V (text+image).
 				if m.pasteBurst.chainLen == 2 {
 					hint := "Use Alt+V for paste (text + image)"
 					m.addMessage("system", hint, "gate")
-					// Mark session hint too to suppress settle duplicate.
 					m.pasteCtrlVHintShown = true
-					return m, tea.Batch(m.showFlashToast(hint), cmdPasteBurstSettle())
+					return m, tea.Batch(m.showFlashToast(hint), m.cmdClipboardPaste(), cmdPasteBurstSettle())
 				}
 				return m, cmdPasteBurstSettle()
 			}

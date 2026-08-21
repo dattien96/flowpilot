@@ -58,6 +58,25 @@ func TestWindowsReject_RawFlood_BlockedAndHints(t *testing.T) {
 	if strings.Contains(m.inputValue, "Pasted") || strings.Contains(m.inputValue, "Pasting") {
 		t.Fatalf("rejected flood must not leave token, got %q", m.inputValue)
 	}
+	// Slow typing after settle must not be blocked (user: "k chat thêm được").
+	advance(200 * time.Millisecond)
+	m2, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = m2.(*AppModel)
+	if m.inputValue != "h" {
+		t.Fatalf("typing after rejected flood must insert, got %q", m.inputValue)
+	}
+	advance(200 * time.Millisecond)
+	m2, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	m = m2.(*AppModel)
+	if m.inputValue != "hi" {
+		t.Fatalf("second slow char must append, got %q", m.inputValue)
+	}
+	// Enter after typing must send
+	m2, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	sent := m2.(*AppModel)
+	if len(sent.messages) == 0 {
+		t.Fatal("Enter after typing after rejected flood must send")
+	}
 }
 
 func TestWindowsReject_AltVStillWorks(t *testing.T) {
