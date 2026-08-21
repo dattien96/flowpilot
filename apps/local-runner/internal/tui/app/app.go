@@ -157,9 +157,28 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 }
 
 // Init is the Bubble Tea Init function.
+const (
+	decawmOff = "\x1b[?7l" // disable autowrap — macOS Terminal.app/Ghostty/iTerm wrap the last column and desync bubbletea diff (CA-585)
+	decawmOn  = "\x1b[?7h" // restore
+)
+
+func cmdSetAutoWrap(on bool) tea.Cmd {
+	return func() tea.Msg {
+		seq := decawmOff
+		if on {
+			seq = decawmOn
+		}
+		_, _ = os.Stdout.WriteString(seq)
+		return nil
+	}
+}
+
 func (m *AppModel) Init() tea.Cmd {
-	tuiLog("Init() -> cmdConnect + tickCursor")
-	return tea.Batch(m.cmdConnect(), tickCursor())
+	tuiLog("Init() -> disable autowrap + cmdConnect + tickCursor")
+	return tea.Sequence(
+		cmdSetAutoWrap(false),
+		tea.Batch(m.cmdConnect(), tickCursor()),
+	)
 }
 
 func tickCursor() tea.Cmd {
@@ -193,7 +212,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.fullWidth = msg.Width
-		return m, nil
+		return m, tea.ClearScreen
 
 	case cursorTickMsg:
 		m.cursorOn = !m.cursorOn
@@ -5495,6 +5514,7 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 	}
 	p := tea.NewProgram(m, tuiProgramOpts()...)
 	_, err := p.Run()
+	_, _ = os.Stdout.WriteString(decawmOn)
 	tuiLog("Run() exit err=%v", err)
 	tuiLogClose()
 	return err
