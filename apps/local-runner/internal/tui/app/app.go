@@ -3814,29 +3814,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// ---- View -------------------------------------------------------------------
-
-func (m *AppModel) View() string {
-	if m.quitting {
-		return ""
-	}
-	viewStart := time.Now()
-
-	fullW := m.width
-	if fullW <= 0 {
-		fullW = 80
-	}
-	m.fullWidth = fullW
-	useSide := m.useRightSidebar()
-
-	var sideLines []string
-	var sideW, sideX int
-	if useSide {
-		sideW = m.sideWidth()
-		sideX = fullW - sideW
-		sideLines = m.renderRightSidebar(m.height)
-	}
-
+func (m *AppModel) renderChatPane(w, h int) string {
 	c := m.tuiChrome()
 	var rows []string
 
@@ -3871,7 +3849,6 @@ func (m *AppModel) View() string {
 		rows = append(rows, styleError.Render(banner))
 	}
 	rows = append(rows, "")
-	w := m.chatWidth()
 	if w <= 0 {
 		w = 80
 	}
@@ -3905,11 +3882,10 @@ func (m *AppModel) View() string {
 	}
 
 	// CA-532: paint the dark canvas across the whole chat column and give the chat
-	// bar a lighter elevated background. The right sidebar column is painted in
-	// joinRightSidebar. Every row is padded so the background fills the row; the
+	// bar a lighter elevated background. Every row is padded so the background fills the row; the
 	// chat-bar (input) rows keep one free last column (safeTermWidth) so Windows
 	// Terminal never wraps the composer.
-	rows = padLinesTo(rows, m.height)
+	rows = padLinesTo(rows, h)
 	barW := safeTermWidth(w)
 	for i, r := range rows {
 		st := styleCanvas
@@ -3921,19 +3897,40 @@ func (m *AppModel) View() string {
 		rows[i] = paintRow(r, rw, st)
 	}
 
-	if useSide {
-		out := joinRightSidebar(rows, sideLines, sideW, sideX, m.asciiMode)
-		if d := time.Since(viewStart); d > 100*time.Millisecond {
-			tuiLog("View slow dur=%v width=%d height=%d side=%v", d, m.width, m.height, useSide)
-		}
-		return out
-	}
+	body := strings.Join(rows, "\n")
+	// Do not force outer Width/Height — rows are already painted to w/barW
+	// and padded to h. Forcing Width(w) would pad chat-bar rows (barW) back to
+	// w and break the safeTermWidth gutter (narrow test expects <w).
+	return body
+}
 
-	out := strings.Join(rows, "\n")
-	if d := time.Since(viewStart); d > 100*time.Millisecond {
-		tuiLog("View slow dur=%v width=%d height=%d side=%v", d, m.width, m.height, useSide)
+// ---- View -------------------------------------------------------------------
+
+func (m *AppModel) View() string {
+	if m.quitting {
+		return ""
 	}
-	return out
+	viewStart := time.Now()
+
+	fullW := m.width
+	if fullW <= 0 {
+		fullW = 80
+	}
+	m.fullWidth = fullW
+	h := m.height
+	if h < 1 {
+		h = 1
+	}
+	chatW := m.chatWidth()
+	chat := m.renderChatPane(chatW, h)
+	if m.useRightSidebar() {
+		side := m.renderSidebarPane(m.sideWidth(), h)
+		chat = lipgloss.JoinHorizontal(lipgloss.Top, chat, side)
+	}
+	if d := time.Since(viewStart); d > 100*time.Millisecond {
+		tuiLog("View slow dur=%v width=%d height=%d side=%v", d, m.width, m.height, m.useRightSidebar())
+	}
+	return chat
 }
 
 func (m *AppModel) loadingBannerText() string {

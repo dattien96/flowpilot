@@ -61,7 +61,7 @@ func (m *AppModel) tuiChrome() tuiChrome {
 	if m.useRightSidebar() {
 		c.sideActive = true
 		c.sideW = m.sideWidth()
-		c.sideX = m.terminalWidth() - c.sideW
+		c.sideX = m.chatWidth()
 		c.sideLines = m.renderRightSidebar(m.height)
 		c.panelLines = nil
 		c.panelH = 0
