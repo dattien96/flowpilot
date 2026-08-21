@@ -1308,10 +1308,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			wasActive := m.pasteBurst.active
 			// Production Windows rejects raw floods entirely (hint at arm time),
 			// so settle just resets without collapsing to [Pasted] or re-hinting.
+			// Pulse Disable→Enable once to reinit conhost reader and unstick
+			// keys after flood filled the 64-slot queue (log 18216 42s no KeyMsg).
 			if wasActive && runtime.GOOS == "windows" && m.rejectWindowsRawPaste {
 				m.resetPasteBurst()
 				tuiLog("burst collapse (windows reject) active=false inputLen=%d", len([]rune(m.inputValue)))
-				return m, nil
+				return m, tea.Sequence(tea.DisableMouse, tea.EnableMouseCellMotion)
 			}
 			m.collapsePasteBurst()
 			tuiLog("burst collapse active=false inputLen=%d", len([]rune(m.inputValue)))
@@ -2262,32 +2264,27 @@ if path := imagePathFromClipboardText(pasted); path != "" {
 		// instead of submits; bracketed pastes are handled above.
 		if m.authPhase == AuthNone && !msg.Paste && !msg.Alt {
 			m.noteBurstRune(s)
-			// Windows production: hijack WT Ctrl+V raw flood (char-by-char) to
-			// clipboard (1 msg → [Pasted]) and guide to Alt+V. Tests keep
+			// Windows: WT Ctrl+V floods as char-by-char (Paste=false).
+			// Production swallows the flood and guides to Alt+V (Alt+V is
+			// the reliable 1-msg path for text+image). No clipboard hijack —
+			// flood is just dropped so composer stays empty. Tests keep
 			// reject off so burst char-by-char + [Pasting…] stays testable.
 			// Only swallow rapid runes (chainLen>=2) so slow typing after settle
 			// is not blocked (user reported "k chat thêm được").
 			if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && m.pasteBurst.active && m.pasteBurst.chainLen >= 2 {
-				// After hijack, keep the [Pasted] token — do not revert again
-				// (log 18700: ClipboardPaste inserted [Pasted] then next rune
-				// reverted it to empty). Subsequent flood runes are just
-				// swallowed, not reverted.
-				if m.pasteHijacked {
-					return m, cmdPasteBurstSettle()
-				}
-				// Revert any already-inserted burst chars (first 2 runes arm).
-				if runes := []rune(m.inputValue); len(runes) > m.pasteBurst.start {
-					m.inputValue = string(runes[:m.pasteBurst.start])
-					m.setInputCaret(m.pasteBurst.start)
-				}
-				// Hijack once per flood (on arm): show hint and paste via
-				// clipboard so Ctrl+V WT behaves like Alt+V (text+image).
+				// Hint once per flood (on arm) and revert the 2 chars that armed.
+				// Subsequent rapid runes in same flood are just swallowed without
+				// reverting so an Alt+V [Pasted] token inserted after the flood
+				// is not wiped (log 18700 race).
 				if m.pasteBurst.chainLen == 2 {
+					if runes := []rune(m.inputValue); len(runes) > m.pasteBurst.start {
+						m.inputValue = string(runes[:m.pasteBurst.start])
+						m.setInputCaret(m.pasteBurst.start)
+					}
 					hint := "Use Alt+V for paste (text + image)"
 					m.addMessage("system", hint, "gate")
 					m.pasteCtrlVHintShown = true
-					m.pasteHijacked = true
-					return m, tea.Batch(m.showFlashToast(hint), m.cmdClipboardPaste(), cmdPasteBurstSettle())
+					return m, tea.Batch(m.showFlashToast(hint), cmdPasteBurstSettle())
 				}
 				return m, cmdPasteBurstSettle()
 			}
