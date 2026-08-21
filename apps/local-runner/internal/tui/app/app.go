@@ -348,6 +348,29 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connStatus = ConnIdle
 		m.statusMsg = "stopped"
 		m.flowLoopStatus = "stopped"
+		// Freeze liveness so the status bar does not keep "Thinking Ns" and
+		// the spinner/elapsed clock stops. The backend run is interrupted by
+		// user — the local handle and its agents/steps are still marked
+		// "running" until the next poll, which would keep workIsLive() and
+		// shouldPollStepsRuntime() true and the 27s timer ticking.
+		if m.runHandle != nil {
+			m.runHandle.Status = "stopped"
+		}
+		for i := range m.agentRuns {
+			if !runStatusIsTerminal(m.agentRuns[i].Status) {
+				m.agentRuns[i].Status = "stopped"
+			}
+		}
+		for i := range m.flowSteps {
+			st := strings.ToUpper(strings.TrimSpace(m.flowSteps[i].Status))
+			if st == "RUNNING" || st == "WAITING_USER_APPROVAL" {
+				m.flowSteps[i].Status = "CANCELLED"
+			}
+		}
+		m.flowStepsActive = ""
+		m.turnStream = nil
+		m.thinkingTickerActive = false
+		m.thinkingFrame = 0
 		m.addMessage("system", "Stopped.", "")
 		return m, nil
 
