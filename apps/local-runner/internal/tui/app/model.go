@@ -283,6 +283,9 @@ type AppModel struct {
 	// submitting, and the settled region collapses to a paste token.
 	pasteSegments []pasteSegment
 	pasteBurst    pasteBurst
+	// pasteCtrlVHintShown ensures the Windows Ctrl+V hint toast fires once per
+	// session after the first raw paste flood (WT steals Ctrl+V).
+	pasteCtrlVHintShown bool
 	// promptHistory is the sent-prompts ring for Up/Down recall (bash-style).
 	// promptHistIdx points into it while browsing; -1 means "show live draft".
 	promptHistory []string

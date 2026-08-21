@@ -1305,8 +1305,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if pasteNow().Sub(m.pasteBurst.lastRuneAt) >= burstSettle {
+			wasActive := m.pasteBurst.active
 			m.collapsePasteBurst()
 			tuiLog("burst collapse active=false inputLen=%d", len([]rune(m.inputValue)))
+			// Windows: WT steals Ctrl+V so raw paste always comes as a flood.
+			// Hint once that Alt+V is the reliable text+image path (Ctrl+V is
+			// only text and causes the char-by-char burst).
+			if wasActive && runtime.GOOS == "windows" && !m.pasteCtrlVHintShown {
+				m.pasteCtrlVHintShown = true
+				hint := "Windows Terminal steals Ctrl+V — use Alt+V for paste (text + image)"
+				m.addMessage("system", hint, "")
+				return m, m.showFlashToast(hint)
+			}
 		} else {
 			// Fired early (e.g. 129ms <150ms due to 15 runes each scheduling a tick) — reschedule.
 			tuiLog("burst settle early, reschedule active=true")
@@ -4529,7 +4539,14 @@ func (m *AppModel) renderInputLine() string {
 		default:
 			prefix = " chat "
 		}
-		body = m.inputValue
+		// While a raw (non-bracketed) paste flood is active, chars arrive
+		// one-by-one and would render as char-by-char. Hide the partial flood
+		// and show a single placeholder until it settles to [Pasted N chars].
+		if m.pasteBurst.active && m.authPhase == AuthNone {
+			body = "[Pasting…]"
+		} else {
+			body = m.inputValue
+		}
 	}
 	caret := " "
 	if m.cursorOn {
