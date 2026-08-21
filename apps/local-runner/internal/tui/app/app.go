@@ -209,10 +209,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
+		w := msg.Width - 2
+		if w < 40 {
+			w = msg.Width
+		}
+		m.width = w
 		m.height = msg.Height
-		m.fullWidth = msg.Width
-		return m, tea.ClearScreen
+		m.fullWidth = w
+		return m, tea.Batch(tea.ClearScreen, cmdSetAutoWrap(false))
 
 	case cursorTickMsg:
 		m.cursorOn = !m.cursorOn
