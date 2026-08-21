@@ -503,11 +503,25 @@ func padLinesTo(lines []string, h int) []string {
 // single separator column follows, then each sidebar line padded to sideW. The
 // separator and sidebar are painted with the lighter sidebar background so the
 // right column reads as a solid panel over the dark canvas (CA-532).
+// The combined line must stay < terminalWidth so macOS Terminal.app / Ghostty
+// / iTerm don't autowrap a full-width row (Windows Terminal is fine at full
+// width, but macOS is not — the "transfills" screenshot was desync, not text
+// wrapping in the You box). Keep the chat column intact and shave the last
+// column off the sidebar side (one default-bg column remains at the terminal's
+// right edge).
 func joinRightSidebar(left, side []string, sideW, sideX int, ascii bool) string {
 	contentW := sideX - 1
+	fullW := sideX + sideW
+	safeFull := safeTermWidth(fullW)
 	sep := "│"
 	if ascii {
 		sep = "|"
+	}
+	// Reserve safeFull: keep chat at contentW, shrink sidebar paint by the delta
+	// (normally 1) so total == safeFull instead of fullW.
+	sidePaintW := sideW - (fullW - safeFull)
+	if sidePaintW < 1 {
+		sidePaintW = 1
 	}
 	n := len(left)
 	if len(side) > n {
@@ -527,7 +541,7 @@ func joinRightSidebar(left, side []string, sideW, sideX int, ascii bool) string 
 		if i < len(side) {
 			s = side[i]
 		}
-		s = paintRow(s, sideW, styleSidebar)
+		s = paintRow(s, sidePaintW, styleSidebar)
 		out = append(out, l+styleSidebar.Render(sep)+s)
 	}
 	return strings.Join(out, "\n")
