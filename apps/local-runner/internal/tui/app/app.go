@@ -4935,10 +4935,14 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 		// truncated it to Team UUID fallback. Give it a dedicated 20s.
 		ctxFast, cancelFast := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelFast()
+		t0Provs := time.Now()
 		accounts, accErr := cl.ListProviderAccounts(ctxFast)
-		ctxProvs, cancelProvs := context.WithTimeout(context.Background(), 2*time.Second)
+		tuiLog("cmdLoadSessionDefaults accounts done dur=%v err=%v n=%d", time.Since(t0Provs), accErr, len(accounts))
+		t0Provs2 := time.Now()
+		ctxProvs, cancelProvs := context.WithTimeout(context.Background(), 8*time.Second)
 		providers, provErr := cl.ListProviders(ctxProvs)
 		cancelProvs()
+		tuiLog("cmdLoadSessionDefaults providers done dur=%v err=%v n=%d", time.Since(t0Provs2), provErr, len(providers))
 		provider, model, label := pickActiveSessionDefaults(flagProvider, flagModel, accounts, providers)
 
 		cat := <-catalogCh
