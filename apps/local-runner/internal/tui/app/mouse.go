@@ -235,6 +235,7 @@ func (m *AppModel) autoCopySelectionOnDragEnd() tea.Cmd {
 
 func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 	target := m.clickTargetAt(x, y)
+	tuiLog("mouse click x=%d y=%d target=%q", x, y, target)
 	switch {
 	case target == "session":
 		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
@@ -360,6 +361,7 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		return m, m.cmdFocusAgent(m.mainRunID())
 	case strings.HasPrefix(target, "agent-open:"):
 		runID := strings.TrimPrefix(target, "agent-open:")
+		tuiLog("mouse agent-open runID=%s", runID)
 		if runID != "" {
 			return m, m.cmdFocusAgent(runID)
 		}

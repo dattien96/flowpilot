@@ -98,6 +98,8 @@ var (
 
 // New creates a new AppModel from ChatConfig and the runner URL.
 func New(cfg config.ChatConfig, runnerURL string) *AppModel {
+	initTUILog()
+	tuiLog("New() provider=%q model=%q reasoning=%q runner=%s project=%q", cfg.Provider, cfg.Model, cfg.ReasoningEffort, runnerURL, cfg.ProjectPath)
 	provider := cfg.Provider
 	model := cfg.Model
 	reasoning := cfg.ReasoningEffort
@@ -150,11 +152,13 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 		// was slow/empty (operator report: chat mode OK, restored flow mode hangs).
 		stashPendingFlowRestore(m, savedPrefs)
 	}
+	tuiLog("New() done provider=%q model=%q yolo=%v mode=%q width=%d", m.provider, m.model, m.yolo, m.mode.String(), m.width)
 	return m
 }
 
 // Init is the Bubble Tea Init function.
 func (m *AppModel) Init() tea.Cmd {
+	tuiLog("Init() -> cmdConnect + tickCursor")
 	return tea.Batch(m.cmdConnect(), tickCursor())
 }
 
@@ -174,6 +178,12 @@ func cmdThinkingTick() tea.Cmd {
 // ---- Update -----------------------------------------------------------------
 
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Log startup-relevant messages (skip high-frequency ticks to keep log readable).
+	switch msg.(type) {
+	case cursorTickMsg, thinkingTickMsg, tea.WindowSizeMsg:
+	default:
+		tuiLog("Update %T", msg)
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -398,6 +408,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ConnectedMsg:
+		tuiLog("ConnectedMsg runner=%s -> sessionLoading=true", msg.RunnerURL)
 		m.runnerURL = msg.RunnerURL
 		m.connStatus = ConnIdle
 		m.statusMsg = "connected"
@@ -481,6 +492,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case SessionDefaultsMsg:
+		tuiLog("SessionDefaultsMsg firstLoad=%v providers=%d accounts=%d projects=%d catalogErr=%q", !m.sessionDefaultsLoaded, len(msg.Providers), len(msg.ProviderAccounts), len(msg.Projects), msg.CatalogErr)
 		firstLoad := !m.sessionDefaultsLoaded
 		if m.provider == "" && msg.Provider != "" {
 			m.provider = msg.Provider
@@ -1677,6 +1689,9 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 }
 
 func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Paste {
+		tuiLog("handleKey Paste runes=%d type=%v", len(msg.Runes), msg.Type)
+	}
 	// Never hard-block keyboard while loading — a hung runner previously made
 	// the TUI feel fully frozen. processInput still rejects non-slash *send*.
 	if m.sessionLoading && msg.Type == tea.KeyCtrlC {
@@ -3686,6 +3701,7 @@ func (m *AppModel) View() string {
 	if m.quitting {
 		return ""
 	}
+	viewStart := time.Now()
 
 	fullW := m.width
 	if fullW <= 0 {
@@ -3777,10 +3793,18 @@ func (m *AppModel) View() string {
 	}
 
 	if useSide {
-		return joinRightSidebar(rows, sideLines, sideW, sideX, m.asciiMode)
+		out := joinRightSidebar(rows, sideLines, sideW, sideX, m.asciiMode)
+		if d := time.Since(viewStart); d > 100*time.Millisecond {
+			tuiLog("View slow dur=%v width=%d height=%d side=%v", d, m.width, m.height, useSide)
+		}
+		return out
 	}
 
-	return strings.Join(rows, "\n")
+	out := strings.Join(rows, "\n")
+	if d := time.Since(viewStart); d > 100*time.Millisecond {
+		tuiLog("View slow dur=%v width=%d height=%d side=%v", d, m.width, m.height, useSide)
+	}
+	return out
 }
 
 func (m *AppModel) loadingBannerText() string {
@@ -4796,7 +4820,9 @@ func (m *AppModel) beginLogin(args []string) (tea.Model, tea.Cmd) {
 // ---- Commands (Tea.Cmd factories) -------------------------------------------
 
 func (m *AppModel) cmdConnect() tea.Cmd {
+	tuiLog("cmdConnect() start runner=%s", m.runnerURL)
 	return func() tea.Msg {
+		tuiLog("cmdConnect() -> ConnectedMsg runner=%s", m.runnerURL)
 		return ConnectedMsg{RunnerURL: m.runnerURL}
 	}
 }
@@ -4875,6 +4901,8 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 		}
 	}
 	return func() tea.Msg {
+		tuiLog("cmdLoadSessionDefaults() start flagProvider=%q flagModel=%q project=%q", flagProvider, flagModel, projectPath)
+		start := time.Now()
 		// Start the slow catalog fetch FIRST so it overlaps the account/provider
 		// path during the FlowPilot banner phase. The banner already says
 		// "loading session · project · providers — chat locked", so the project
@@ -4885,10 +4913,13 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 		}
 		catalogCh := make(chan catalogResult, 1)
 		go func() {
+			t0 := time.Now()
+			tuiLog("cmdLoadSessionDefaults catalog fetch start")
 			cl := client.New(runnerURL)
 			ctxProjects, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			ps, err := cl.ListProjects(ctxProjects)
+			tuiLog("cmdLoadSessionDefaults catalog fetch done dur=%v err=%v n=%d", time.Since(t0), err, len(ps))
 			catalogCh <- catalogResult{projects: ps, err: err}
 		}()
 
@@ -4951,6 +4982,7 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 				}
 			}
 		}
+		tuiLog("cmdLoadSessionDefaults() done dur=%v accounts=%d providers=%d projects=%d catalogErr=%q accErr=%v provErr=%v", time.Since(start), len(accounts), len(providers), len(projects), catalogErr, accErr, provErr)
 		return SessionDefaultsMsg{
 			Provider:         provider,
 			Model:            model,
@@ -5317,14 +5349,21 @@ func (m *AppModel) startupGrokYoloPostureCmd() tea.Cmd {
 // Run starts the Bubble Tea program. In headless/print mode it runs
 // the model loop and prints the final response to stdout, then exits.
 func Run(cfg config.ChatConfig, runnerURL string) error {
+	initTUILog()
+	tuiLog("Run() start print=%v runner=%s", cfg.Print, runnerURL)
 	m := New(cfg, runnerURL)
 
 	if cfg.Print {
-		return runHeadless(m, cfg.Prompt)
+		err := runHeadless(m, cfg.Prompt)
+		tuiLog("Run() headless done err=%v", err)
+		tuiLogClose()
+		return err
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
+	tuiLog("Run() exit err=%v", err)
+	tuiLogClose()
 	return err
 }
 
