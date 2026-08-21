@@ -88,12 +88,9 @@ func (m *AppModel) flowStepsPanelLines() []string {
 		}
 		st := strings.ToUpper(strings.TrimSpace(s.Status))
 		// OpenCode todo-list glyph: [✓] done, [•] in progress, [x] failed, [ ] pending.
+		// Pending/empty must be [ ] — not ✓ — so the F2 list does not look done
+		// before the step ever ran (rag-harness F1: validate/audit pending).
 		glyph := " "
-		if m.asciiMode {
-			glyph = "+"
-		} else {
-			glyph = "✓"
-		}
 		lineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
 		var suffix string
 		switch st {
@@ -108,10 +105,17 @@ func (m *AppModel) flowStepsPanelLines() []string {
 			suffix = " " + st
 			lineStyle = styleStepRunning
 		case "DONE":
+			if m.asciiMode {
+				glyph = "+"
+			} else {
+				glyph = "✓"
+			}
 			lineStyle = styleStepDone
 		case "FAILED":
 			glyph = "x"
 			lineStyle = styleStepFailed
+		case "SKIPPED", "CANCELLED", "CANCELED":
+			glyph = "-"
 		}
 		line := fmt.Sprintf("[%s] %s%s", glyph, name, suffix)
 		action := ""
