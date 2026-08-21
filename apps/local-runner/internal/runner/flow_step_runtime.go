@@ -222,6 +222,26 @@ func (s *InteractiveService) setFlowStepAwaitingUser(ctx context.Context, parent
 	}
 	if hubID := hubInlineNodeID(s.activeFlowNodesFor(parentRunID)); hubID != "" {
 		s.setFlowStepStatus(ctx, parentRunID, hubID, StepStatusWaitingUserApr)
+		return
+	}
+	// Fallback for flows without hub.inline (rag-harness audit): mark the
+	// RUNNING node (e.g. audit) as WAITING_USER so F2/Thinking stop. The hub
+	// path above is review-loop's "synthesis"; rag-harness's escalate was
+	// otherwise a no-op and left audit RUNNING (run-125458).
+	if steps, err := s.workflowStore.LoadRunSteps(ctx, parentRunID); err == nil {
+		for _, st := range steps {
+			if st.Status == StepStatusRunning {
+				s.setFlowStepStatus(ctx, parentRunID, st.ID, StepStatusWaitingUserApr)
+				return
+			}
+		}
+		// No RUNNING found (e.g. already DONE/FAILED) — still try audit if present.
+		for _, st := range steps {
+			if st.ID == "audit" {
+				s.setFlowStepStatus(ctx, parentRunID, st.ID, StepStatusWaitingUserApr)
+				return
+			}
+		}
 	}
 }
 
