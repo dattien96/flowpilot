@@ -56,6 +56,7 @@ func (m *AppModel) closeModeSetupModal(save bool) tea.Cmd {
 		return nil
 	}
 	draft := m.modeSetupModalDraft
+	tab := m.modeSetupModalTab
 	m.modeSetupModalOpen = false
 	m.modeSetupModalPickerOpen = false
 	m.modeSetupModalPickerKind = ""
@@ -68,6 +69,32 @@ func (m *AppModel) closeModeSetupModal(save bool) tea.Cmd {
 	}
 	m.modeSetupModalDraft = nil
 	m.chatPostureCfg = *draft
+	// Apply live if the edited tab is the active posture — the user expects
+	// the status bar (model/reason) to reflect B immediately, not after TAB.
+	// Grok-only previous fix (7d refresh) was unrelated; this is TUI state.
+	if tab != "" && tab == m.activePosture() {
+		if prof, ok := draft.Profiles[tab]; ok {
+			if prof.Provider != "" {
+				m.setPostureProvider(prof.Provider)
+			}
+			if prof.Model != "" {
+				m.model = prof.Model
+				m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
+			}
+			if prof.ReasoningEffort != "" {
+				m.reasoningEffort = prof.ReasoningEffort
+			}
+			if prof.Yolo != nil {
+				m.yolo = *prof.Yolo
+				if strings.ToLower(m.provider) == "grok" {
+					m.postureGrokSync = *prof.Yolo
+					m.postureGrokSyncSet = true
+				}
+			}
+			m.persistSessionPrefs()
+			m.refreshSessionPanel()
+		}
+	}
 	m.chatPostureSaving = true
 	m.chatPostureSavingPosture = draft.Active
 	m.addMessage("system", "Saving posture profiles…", "")
