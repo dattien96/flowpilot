@@ -216,7 +216,7 @@ func frameInput(lines []string, width int, title, footer string, ascii bool) str
 	return b.String()
 }
 
-func strokeChatRows(inner []chatRow, width int, user, ascii bool) []chatRow {
+func strokeChatRows(inner []chatRow, width int, user, ascii, alignRight bool) []chatRow {
 	if len(inner) == 0 || width < 10 {
 		return inner
 	}
@@ -269,7 +269,7 @@ func strokeChatRows(inner []chatRow, width int, user, ascii bool) []chatRow {
 	}
 
 	alignW := width
-	if user {
+	if user && alignRight {
 		alignW = width - userBoxGutter
 		if alignW < 10 {
 			alignW = width
@@ -278,7 +278,7 @@ func strokeChatRows(inner []chatRow, width int, user, ascii bool) []chatRow {
 	out := make([]chatRow, 0, len(inner)+2)
 	idx := inner[0].MsgIdx
 	top := strokeTop(title, boxW, ascii)
-	if user {
+	if user && alignRight {
 		top = rightAlignPlain(top, alignW)
 	}
 	out = append(out, chatRow{Text: top, MsgIdx: idx, PromptExpandKey: inner[0].PromptExpandKey})
@@ -294,13 +294,13 @@ func strokeChatRows(inner []chatRow, width int, user, ascii bool) []chatRow {
 			text = padVisualANSI(text, room) + chip
 		}
 		line := strokeLine(text, boxW, ascii)
-		if user {
+		if user && alignRight {
 			line = rightAlignPlain(line, alignW)
 		}
 		out = append(out, chatRow{Text: line, MsgIdx: r.MsgIdx, Copy: copyOn, PromptExpandKey: r.PromptExpandKey})
 	}
 	bot := strokeBottom(boxW, ascii)
-	if user {
+	if user && alignRight {
 		bot = rightAlignPlain(bot, alignW)
 	}
 	out = append(out, chatRow{Text: bot, MsgIdx: inner[len(inner)-1].MsgIdx, PromptExpandKey: inner[len(inner)-1].PromptExpandKey})

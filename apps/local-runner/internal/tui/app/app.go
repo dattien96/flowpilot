@@ -4402,7 +4402,7 @@ func (m *AppModel) buildChatRows() []chatRow {
 			msgRows = append(msgRows, row)
 		}
 		if boxed {
-			msgRows = strokeChatRows(msgRows, width, true, m.asciiMode)
+			msgRows = strokeChatRows(msgRows, width, true, m.asciiMode, !m.useRightSidebar())
 		}
 		if mi > 0 && chatGapBefore(m.messages[mi-1], msg) {
 			rows = append(rows, chatRow{})
