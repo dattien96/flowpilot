@@ -10,26 +10,13 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
-// Windows: mouse must be off so Enter/F2/F4 survive a WT paste flood
-// (log 18936 Enable-only was a no-op, 22964 needed a click). Non-Windows
-// keeps mouse for click affordances. Ctrl+V/Alt+V stay live on both.
+// Mouse is enabled on all platforms so F2 [open]/[back]/[stop] and wheel
+// scroll stay live while a sub-agent is RUNNING. Windows Ctrl+V raw flood
+// is rejected via Alt+V hint instead of disabling mouse.
 func TestTuiProgramOpts_WindowsNoMouse(t *testing.T) {
 	opts := tuiProgramOpts()
-	if len(opts) == 0 {
-		t.Fatal("opts must not be empty (WithAltScreen)")
-	}
-
-	// Probe by constructing programs with the returned opts — we assert the
-	// count rather than deep option internals: Windows = 1 (AltScreen only),
-	// other = 2 (AltScreen + MouseCellMotion). This is stable and additive.
-	if runtime.GOOS == "windows" {
-		if len(opts) != 1 {
-			t.Fatalf("windows opts must be AltScreen only, got %d", len(opts))
-		}
-	} else {
-		if len(opts) != 2 {
-			t.Fatalf("non-windows opts must include mouse, got %d", len(opts))
-		}
+	if len(opts) != 2 {
+		t.Fatalf("opts must be AltScreen+MouseCellMotion (click+scroll live), got %d", len(opts))
 	}
 }
 
@@ -47,7 +34,7 @@ func TestBurst_WindowsFix_KeysLive_AfterBurstEnterSubmits(t *testing.T) {
 	}
 }
 
-// F2/F4 are key-only fallbacks when mouse is off on Windows.
+// F2/F4 are click+key live (mouse enabled, keys always live).
 func TestTuiProgramOpts_KeysForSessionPanel(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:9")
 	m.authPhase = AuthNone

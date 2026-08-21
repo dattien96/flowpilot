@@ -5457,16 +5457,13 @@ func (m *AppModel) startupGrokYoloPostureCmd() tea.Cmd {
 // tuiProgramOpts returns Bubble Tea program options. On Windows the conhost
 // ReadConsoleInput path with ENABLE_MOUSE_INPUT (WithMouseCellMotion) shares
 // a 64-event queue with keys; a WT paste flood fills it with coninput mouse
-// + key records so keys stick until a click (log 18936 10:13:31 Enable-only
-// did not unstick, 22964 needed a real click). Disable mouse on Windows so
-// Enter/F2/F4/Alt+V/Ctrl+V stay live — click affordances fall back to keys.
-// The helper is exported for tests to assert the platform split.
+// Mouse is enabled on all platforms so F2 [open]/[back]/[stop]/[copy] and
+// wheel scroll stay live while a sub-agent is RUNNING. Windows Ctrl+V is
+// rejected as a raw flood (use Alt+V) so the 64-event conhost queue does not
+// fill with mouse+key records (log 18936/22964). Alt+V (clipboard 1 msg) and
+// Ctrl+V KeyCtrlV hint remain.
 func tuiProgramOpts() []tea.ProgramOption {
-	opts := []tea.ProgramOption{tea.WithAltScreen()}
-	if runtime.GOOS != "windows" {
-		opts = append(opts, tea.WithMouseCellMotion())
-	}
-	return opts
+	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion()}
 }
 
 // ---- Run (entrypoint) -------------------------------------------------------
