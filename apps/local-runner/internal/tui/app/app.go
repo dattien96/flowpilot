@@ -1717,6 +1717,25 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Session loading: hide chat controls until done (avoid hang feeling).
+	// Only slash commands and chrome (F2/F3/F4, arrows, etc.) are allowed.
+	if m.sessionLoading {
+		if m.allowsKeyWhileLoading(msg) {
+			// Allow chrome/navigation, but block normal typing except slash.
+			if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 && msg.Runes[0] != '/' {
+				// Show a clear message on timeline, not silent.
+				m.addMessage("system", "Still loading session — chat is disabled until ready. (providers: loading...)", "error")
+				tuiLog("send blocked: sessionLoading typing blocked")
+				return m, nil
+			}
+			// Fall through to normal handling for allowed keys (F2/F4, etc.)
+		} else if msg.Type == tea.KeyRunes || msg.Type == tea.KeyEnter || msg.Type == tea.KeyBackspace || msg.Type == tea.KeyDelete {
+			m.addMessage("system", "Still loading session — chat is disabled until ready.", "error")
+			tuiLog("send blocked: sessionLoading key blocked %v", msg.Type)
+			return m, nil
+		}
+	}
+
 	// Modal takes precedence over all other key handling.
 	if m.modeSetupModalOpen {
 		return m.handleModeSetupModalKey(msg)
@@ -2790,8 +2809,13 @@ func (m *AppModel) workIsLive() bool {
 
 func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	if m.sessionLoading && !strings.HasPrefix(strings.TrimSpace(input), "/") {
-		m.addMessage("system", "Still loading session — chat is disabled until ready.", "error")
-		return m, nil
+		msg := "Still loading session — chat is disabled until ready. (F2/F4 still work)"
+		if len(m.providers) == 0 {
+			msg = "Still loading session — providers not ready yet, please wait 2-3s then retry."
+		}
+		m.addMessage("system", msg, "error")
+		tuiLog("processInput blocked: sessionLoading providers=%d", len(m.providers))
+		return m, m.showFlashToast(msg)
 	}
 	if m.authPhase == AuthEmail {
 		email := strings.TrimSpace(input)
@@ -2841,14 +2865,30 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	}
 
 	if m.sendBlocked() {
-		m.addMessage("system", "A turn is already in progress — wait for it to finish (draft kept in the input).", "error")
-		return m, nil
+		msg := "A turn is already in progress — wait for it to finish (draft kept in the input)."
+		if m.pendingPrompt != "" {
+			msg = "A turn is already in progress (pendingPrompt) — wait for it to finish."
+		} else if m.approval != nil {
+			msg = "Pending approval — click Approve/Deny first."
+		} else if m.hasUnresolvedAttention() {
+			msg = "Flow needs your decision — check dispatch attention above."
+		}
+		m.addMessage("system", msg, "error")
+		tuiLog("send blocked: %s", msg)
+		// Also flash to status bar so it's visible even if viewport is scrolled.
+		return m, m.showFlashToast(msg)
 	}
 
 	// After session defaults load, refuse empty provider (avoids silent fake Codex).
 	if m.sessionDefaultsLoaded && strings.TrimSpace(m.provider) == "" {
 		m.addMessage("system", "No provider selected — use /provider <key> (then /model).", "error")
 		return m, nil
+	}
+	if m.sessionDefaultsLoaded && len(m.providers) == 0 {
+		msg := "Provider list not loaded yet (cold start) — please wait 2-3s then retry. If persists, run /status or restart TUI."
+		m.addMessage("system", msg, "error")
+		tuiLog("send blocked: providers empty")
+		return m, m.showFlashToast(msg)
 	}
 
 	// Never arm a run without a project_id: cmdStartRun re-fetches the catalog
@@ -3773,7 +3813,17 @@ func (m *AppModel) View() string {
 		rows = append(rows, strings.Split(c.attachPanelBlock, "\n")...)
 	}
 	inputStart := len(rows)
-	rows = append(rows, strings.Split(m.renderInputLine(), "\n")...)
+	if m.sessionLoading {
+		// Hide normal chat input until loading is done — show a clear loading
+		// placeholder instead so the user doesn't feel the UI is hung.
+		// F2/F4 still work via allowsKeyWhileLoading.
+		frames := []string{"|", "/", "-", "\\"}
+		spin := frames[m.loadingFrame%len(frames)]
+		msg := fmt.Sprintf(" %s Loading session · project · providers — chat locked (F2/F4 still work) ", spin)
+		rows = append(rows, styleLoading.Render(truncateVisual(msg, w)))
+	} else {
+		rows = append(rows, strings.Split(m.renderInputLine(), "\n")...)
+	}
 
 	// CA-532: paint the dark canvas across the whole chat column and give the chat
 	// bar a lighter elevated background. The right sidebar column is painted in
