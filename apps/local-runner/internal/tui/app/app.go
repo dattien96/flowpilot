@@ -1307,6 +1307,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if pasteNow().Sub(m.pasteBurst.lastRuneAt) >= burstSettle {
 			m.collapsePasteBurst()
 			tuiLog("burst collapse active=false inputLen=%d", len([]rune(m.inputValue)))
+			// Windows conpty + mouse cell-motion can stick keys after a raw paste
+			// flood (log 22964 10:02:04 collapse then 32s MouseMsg-only until
+			// click unblocked Enter). Re-enable cell-motion after collapse to
+			// unstick the keyboard — Enable alone is safe, Disable+Enable drops
+			// the next KeyMsg on Windows (mouse.go).
+			if runtime.GOOS == "windows" {
+				return m, pulseMouseTracking()
+			}
 		} else {
 			// Fired early (e.g. 129ms <150ms due to 15 runes each scheduling a tick) — reschedule.
 			tuiLog("burst settle early, reschedule active=true")
