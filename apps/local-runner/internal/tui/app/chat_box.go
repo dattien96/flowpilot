@@ -318,12 +318,7 @@ func strokeChatRows(inner []chatRow, width int, user, ascii, alignRight bool) []
 			} else if len([]rune(base)) > innerW {
 				base = string([]rune(base)[:innerW])
 			}
-			styledBase := styleUser.Render(base)
-			if len([]rune(stripANSI(styledBase))) != innerW {
-				line = "│" + base + "│"
-			} else {
-				line = "│" + styledBase + "│"
-			}
+			line = "│" + base + "│"
 		}
 		out = append(out, chatRow{Text: line, MsgIdx: r.MsgIdx, Copy: copyOn, PromptExpandKey: r.PromptExpandKey})
 	}
