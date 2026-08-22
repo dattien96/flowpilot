@@ -522,6 +522,46 @@ func (m *AppModel) renderSidebarPane(w, h int) string {
 		Render(strings.Join(lines, "\n"))
 }
 
+// joinPanes joins chat and sidebar as two fixed-width columns by visual width
+// (stripANSI), not lipgloss.Width on styled strings — Ghostty's width for
+// styleUser You-box rows differs from lipgloss, so Width().Render + JoinHorizontal
+// left the narrow You rows short and sidebar started mid-screen (CA-592).
+func joinPanes(chat, side string, chatW, sideW, h int) string {
+	chatLines := strings.Split(chat, "\n")
+	sideLines := strings.Split(side, "\n")
+	// Ensure exactly h rows for both sides.
+	for len(chatLines) < h {
+		chatLines = append(chatLines, "")
+	}
+	if len(chatLines) > h {
+		chatLines = chatLines[:h]
+	}
+	for len(sideLines) < h {
+		sideLines = append(sideLines, "")
+	}
+	if len(sideLines) > h {
+		sideLines = sideLines[:h]
+	}
+	out := make([]string, h)
+	for i := 0; i < h; i++ {
+		cl := chatLines[i]
+		// Truncate if wider than chatW (visual).
+		if lipgloss.Width(stripANSI(cl)) > chatW {
+			cl = truncateVisual(cl, chatW)
+		}
+		// Pad chat line to exactly chatW visual columns. Use canvas bg for the gap
+		// so the column between a narrow left-aligned You box and the sidebar is
+		// the dark canvas, not default terminal bg.
+		vw := lipgloss.Width(stripANSI(cl))
+		if vw < chatW {
+			cl = cl + styleCanvas.Render(strings.Repeat(" ", chatW-vw))
+		}
+		sl := sideLines[i]
+		out[i] = cl + sl
+	}
+	return strings.Join(out, "\n")
+}
+
 // suggestionWindow returns an inclusive-exclusive [start,end) window of size limit
 // that keeps selected index visible (so long pickers remain navigable).
 func suggestionWindow(total, selected, limit int) (start, end int) {

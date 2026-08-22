@@ -3925,9 +3925,8 @@ func (m *AppModel) View() string {
 	chatRaw := m.renderChatPane(chatW, h)
 	chat := chatRaw
 	if m.useRightSidebar() {
-		chat = lipgloss.NewStyle().Width(chatW).MaxWidth(chatW).Render(chatRaw)
 		side := m.renderSidebarPane(m.sideWidth(), h)
-		chat = lipgloss.JoinHorizontal(lipgloss.Top, chat, side)
+		chat = joinPanes(chatRaw, side, chatW, m.sideWidth(), h)
 	}
 	if d := time.Since(viewStart); d > 100*time.Millisecond {
 		tuiLog("View slow dur=%v width=%d height=%d side=%v", d, m.width, m.height, m.useRightSidebar())
