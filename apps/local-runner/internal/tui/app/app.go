@@ -3922,8 +3922,10 @@ func (m *AppModel) View() string {
 		h = 1
 	}
 	chatW := m.chatWidth()
-	chat := m.renderChatPane(chatW, h)
+	chatRaw := m.renderChatPane(chatW, h)
+	chat := chatRaw
 	if m.useRightSidebar() {
+		chat = lipgloss.NewStyle().Width(chatW).MaxWidth(chatW).Render(chatRaw)
 		side := m.renderSidebarPane(m.sideWidth(), h)
 		chat = lipgloss.JoinHorizontal(lipgloss.Top, chat, side)
 	}
