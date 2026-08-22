@@ -129,7 +129,7 @@ func roundGlyphs(ascii bool) (tl, tr, bl, br, h, v string) {
 }
 
 func padVisualANSI(s string, width int) string {
-	n := lipgloss.Width(s)
+	n := len([]rune(stripANSI(s)))
 	if n > width {
 		return truncateVisual(s, width)
 	}
@@ -238,13 +238,13 @@ func strokeChatRows(inner []chatRow, width int, user, ascii, alignRight bool) []
 		copyOn := r.Copy && i == len(inner)-1
 		textW := innerW - 1 // leading " "
 		if copyOn {
-			textW -= lipgloss.Width(copyChip)
+			textW -= len([]rune(stripANSI(copyChip)))
 			if textW < 4 {
 				textW = 4
 			}
 		}
 		plain := stripANSI(r.Text)
-		if lipgloss.Width(plain) <= textW {
+		if len([]rune(plain)) <= textW {
 			wrappedInner = append(wrappedInner, r)
 			continue
 		}
@@ -290,7 +290,7 @@ func strokeChatRows(inner []chatRow, width int, user, ascii, alignRight bool) []
 		copyOn := r.Copy && i == len(inner)-1
 		if copyOn {
 			chip := stripANSI(copyChip)
-			room := innerW - lipgloss.Width(chip)
+			room := innerW - len([]rune(chip))
 			if room < 4 {
 				room = 4
 			}
@@ -299,6 +299,31 @@ func strokeChatRows(inner []chatRow, width int, user, ascii, alignRight bool) []
 		line := strokeLine(text, boxW, ascii)
 		if user && alignRight {
 			line = rightAlignPlain(line, alignW)
+		}
+		if fullPane {
+			plainPart := stripANSI(r.Text)
+			base := " " + plainPart
+			if copyOn {
+				chipPlain := stripANSI(copyChip)
+				target := innerW - len([]rune(chipPlain))
+				if len([]rune(base)) < target {
+					base = base + strings.Repeat(" ", target-len([]rune(base)))
+				} else if len([]rune(base)) > target {
+					base = string([]rune(base)[:target])
+				}
+				base = base + chipPlain
+			}
+			if len([]rune(base)) < innerW {
+				base = base + strings.Repeat(" ", innerW-len([]rune(base)))
+			} else if len([]rune(base)) > innerW {
+				base = string([]rune(base)[:innerW])
+			}
+			styledBase := styleUser.Render(base)
+			if len([]rune(stripANSI(styledBase))) != innerW {
+				line = "│" + base + "│"
+			} else {
+				line = "│" + styledBase + "│"
+			}
 		}
 		out = append(out, chatRow{Text: line, MsgIdx: r.MsgIdx, Copy: copyOn, PromptExpandKey: r.PromptExpandKey})
 	}
@@ -313,22 +338,20 @@ func strokeChatRows(inner []chatRow, width int, user, ascii, alignRight bool) []
 const userBoxGutter = 2
 
 func hugBoxWidth(inner []chatRow, title string, maxW int, user bool, fullPane bool) int {
-	// debug
-	// fmt.Printf("hug user=%v fullPane=%v maxW=%d\n", user, fullPane, maxW)
 	if user && fullPane {
 		return maxW
 	}
 	innerW := 4
 	for _, r := range inner {
-		w := lipgloss.Width(r.Text) + 1
+		w := len([]rune(stripANSI(r.Text))) + 1
 		if r.Copy {
-			w += lipgloss.Width(copyChip)
+			w += len([]rune(stripANSI(copyChip)))
 		}
 		if w > innerW {
 			innerW = w
 		}
 	}
-	tlen := lipgloss.Width(" " + strings.TrimSpace(title) + " ")
+	tlen := len([]rune(" " + strings.TrimSpace(title) + " "))
 	if tlen > innerW {
 		innerW = tlen
 	}

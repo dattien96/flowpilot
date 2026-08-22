@@ -4117,6 +4117,9 @@ func (m *AppModel) chatRowsSig() uint64 {
 	if m.asciiMode {
 		_, _ = h.Write([]byte{1})
 	}
+	if m.useRightSidebar() {
+		_, _ = h.Write([]byte{9})
+	}
 	for _, msg := range m.messages {
 		_, _ = h.Write([]byte(msg.Role))
 		_, _ = h.Write([]byte{0})
