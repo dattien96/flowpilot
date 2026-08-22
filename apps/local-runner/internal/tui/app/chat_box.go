@@ -223,7 +223,8 @@ func strokeChatRows(inner []chatRow, width int, user, ascii, alignRight bool) []
 		return inner
 	}
 	title := "You"
-	boxW := hugBoxWidth(inner, title, width, user)
+	fullPane := user && !alignRight
+	boxW := hugBoxWidth(inner, title, width, user, fullPane)
 	innerW := boxW - 2
 	if innerW < 4 {
 		innerW = 4
@@ -264,7 +265,7 @@ func strokeChatRows(inner []chatRow, width int, user, ascii, alignRight bool) []
 	}
 	inner = wrappedInner
 	// Recompute boxW after re-wrap (content may have grown taller but narrower).
-	boxW = hugBoxWidth(inner, title, width, user)
+	boxW = hugBoxWidth(inner, title, width, user, fullPane)
 	innerW = boxW - 2
 	if innerW < 4 {
 		innerW = 4
@@ -311,7 +312,12 @@ func strokeChatRows(inner []chatRow, width int, user, ascii, alignRight bool) []
 
 const userBoxGutter = 2
 
-func hugBoxWidth(inner []chatRow, title string, maxW int, user bool) int {
+func hugBoxWidth(inner []chatRow, title string, maxW int, user bool, fullPane bool) int {
+	// debug
+	// fmt.Printf("hug user=%v fullPane=%v maxW=%d\n", user, fullPane, maxW)
+	if user && fullPane {
+		return maxW
+	}
 	innerW := 4
 	for _, r := range inner {
 		w := lipgloss.Width(r.Text) + 1
