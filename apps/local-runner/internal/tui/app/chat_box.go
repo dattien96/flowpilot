@@ -143,17 +143,19 @@ func padVisualANSI(s string, width int) string {
 // The text keeps any inner background (e.g. code panels), and the trailing
 // padding is emitted as its own styled segment so a lipgloss reset inside the
 // styled text cannot leak the terminal background behind the row (CA-532).
-// Width is checked on the raw lipgloss width (ANSI-aware) and again after
-// Render so a styled SGR never makes the raw line wider than width (CA-585).
+// Measure visual width on stripANSI plain (rune count) so Ghostty's SGR colon
+// handling (38;2;R;G;B) does not miscount and leave the narrow You box short
+// (CA-593). Check again after Render so a styled SGR never makes raw wider.
 func paintRow(s string, width int, st lipgloss.Style) string {
 	if width < 1 {
 		return st.Render(s)
 	}
-	if lipgloss.Width(s) > width {
+	if len([]rune(stripANSI(s))) > width {
 		s = truncateVisual(s, width)
 	}
 	out := st.Render(s)
-	if n := lipgloss.Width(out); n > width {
+	n := len([]rune(stripANSI(out)))
+	if n > width {
 		return truncateVisual(out, width)
 	} else if n < width {
 		out += st.Render(strings.Repeat(" ", width-n))

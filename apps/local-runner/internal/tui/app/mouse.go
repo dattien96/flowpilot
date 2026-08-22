@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var ansiCSI = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
+var ansiCSI = regexp.MustCompile(`\x1b\[[0-9:;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b\(B`)
 
 func stripANSI(s string) string {
 	return ansiCSI.ReplaceAllString(s, "")

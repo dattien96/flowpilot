@@ -516,20 +516,18 @@ func (m *AppModel) renderSidebarPane(w, h int) string {
 	for i, line := range lines {
 		lines[i] = paintRow(line, w, styleSidebar)
 	}
-	return lipgloss.NewStyle().
-		Width(w).MaxWidth(w).
-		Height(h).MaxHeight(h).
-		Render(strings.Join(lines, "\n"))
+	return strings.Join(lines, "\n")
 }
 
 // joinPanes joins chat and sidebar as two fixed-width columns by visual width
 // (stripANSI), not lipgloss.Width on styled strings — Ghostty's width for
 // styleUser You-box rows differs from lipgloss, so Width().Render + JoinHorizontal
 // left the narrow You rows short and sidebar started mid-screen (CA-592).
+// Use rune count on stripped string so wide SGR colon forms (38;2;R;G;B) do not
+// miscount, and pad with canvas bg.
 func joinPanes(chat, side string, chatW, sideW, h int) string {
 	chatLines := strings.Split(chat, "\n")
 	sideLines := strings.Split(side, "\n")
-	// Ensure exactly h rows for both sides.
 	for len(chatLines) < h {
 		chatLines = append(chatLines, "")
 	}
@@ -545,14 +543,13 @@ func joinPanes(chat, side string, chatW, sideW, h int) string {
 	out := make([]string, h)
 	for i := 0; i < h; i++ {
 		cl := chatLines[i]
-		// Truncate if wider than chatW (visual).
-		if lipgloss.Width(stripANSI(cl)) > chatW {
+		plain := stripANSI(cl)
+		vw := len([]rune(plain))
+		if vw > chatW {
 			cl = truncateVisual(cl, chatW)
+			plain = stripANSI(cl)
+			vw = len([]rune(plain))
 		}
-		// Pad chat line to exactly chatW visual columns. Use canvas bg for the gap
-		// so the column between a narrow left-aligned You box and the sidebar is
-		// the dark canvas, not default terminal bg.
-		vw := lipgloss.Width(stripANSI(cl))
 		if vw < chatW {
 			cl = cl + styleCanvas.Render(strings.Repeat(" ", chatW-vw))
 		}
