@@ -519,42 +519,52 @@ func (m *AppModel) renderSidebarPane(w, h int) string {
 	return strings.Join(lines, "\n")
 }
 
-// joinPanes joins chat and sidebar as two fixed-width columns by visual width
-// (stripANSI), not lipgloss.Width on styled strings — Ghostty's width for
-// styleUser You-box rows differs from lipgloss, so Width().Render + JoinHorizontal
-// left the narrow You rows short and sidebar started mid-screen (CA-592).
-// Use rune count on stripped string so wide SGR colon forms (38;2;R;G;B) do not
-// miscount, and pad with canvas bg.
-func joinPanes(chat, side string, chatW, sideW, h int) string {
-	chatLines := strings.Split(chat, "\n")
-	sideLines := strings.Split(side, "\n")
-	for len(chatLines) < h {
-		chatLines = append(chatLines, "")
+// visualTakeStyled clips/pads s to exactly n visible cells (plain rune count
+// after stripANSI), then re-paints the slice with st so the column background
+// survives the clip (CA-598). No lipgloss.Width on styled strings — Ghostty's
+// width for true-color SGR (38;2;R;G;B) differs, so all geometry here is plain.
+func visualTakeStyled(s string, n int, st lipgloss.Style) string {
+	if n <= 0 {
+		return ""
 	}
-	if len(chatLines) > h {
-		chatLines = chatLines[:h]
+	rs := []rune(stripANSI(s))
+	vw := len(rs)
+	if vw <= n {
+		// Fits: keep inner SGR (e.g. code panel bg), pad with st as its own
+		// segment so a lipgloss reset inside cannot leak (CA-532).
+		if vw < n {
+			return s + st.Render(strings.Repeat(" ", n-vw))
+		}
+		return s
 	}
-	for len(sideLines) < h {
-		sideLines = append(sideLines, "")
+	// Exceeds column: clip on plain runes, then repaint the slice with st.
+	return paintRow(string(rs[:n]), n, st)
+}
+
+// rasterClip hard-isolates the chat and right-sidebar columns: chat pane may
+// only occupy the left chatW cells, sidebar only the right sideW cells. Each
+// row is rebuilt from the plain runes of the two panes so nothing can bleed
+// across the boundary, regardless of styled-width miscounts (CA-598).
+func rasterClip(chat, side string, chatW, sideW, h int) string {
+	cl := strings.Split(chat, "\n")
+	sl := strings.Split(side, "\n")
+	for len(cl) < h {
+		cl = append(cl, "")
 	}
-	if len(sideLines) > h {
-		sideLines = sideLines[:h]
+	if len(cl) > h {
+		cl = cl[:h]
+	}
+	for len(sl) < h {
+		sl = append(sl, "")
+	}
+	if len(sl) > h {
+		sl = sl[:h]
 	}
 	out := make([]string, h)
 	for i := 0; i < h; i++ {
-		cl := chatLines[i]
-		plain := stripANSI(cl)
-		vw := len([]rune(plain))
-		if vw > chatW {
-			cl = truncateVisual(cl, chatW)
-			plain = stripANSI(cl)
-			vw = len([]rune(plain))
-		}
-		if vw < chatW {
-			cl = cl + styleCanvas.Render(strings.Repeat(" ", chatW-vw))
-		}
-		sl := sideLines[i]
-		out[i] = cl + sl
+		left := visualTakeStyled(cl[i], chatW, styleCanvas)
+		right := visualTakeStyled(sl[i], sideW, styleSidebar)
+		out[i] = left + right
 	}
 	return strings.Join(out, "\n")
 }

@@ -3926,7 +3926,7 @@ func (m *AppModel) View() string {
 	chat := chatRaw
 	if m.useRightSidebar() {
 		side := m.renderSidebarPane(m.sideWidth(), h)
-		chat = joinPanes(chatRaw, side, chatW, m.sideWidth(), h)
+		chat = rasterClip(chatRaw, side, chatW, m.sideWidth(), h)
 	}
 	if d := time.Since(viewStart); d > 100*time.Millisecond {
 		tuiLog("View slow dur=%v width=%d height=%d side=%v", d, m.width, m.height, m.useRightSidebar())
