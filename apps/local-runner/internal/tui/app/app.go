@@ -4287,6 +4287,15 @@ func (m *AppModel) buildChatRows() []chatRow {
 			}
 			prefixStyle = style
 		}
+		showCopy := (msg.Role == "user" || msg.Role == "assistant") && msg.FormatHint != "thinking" && strings.TrimSpace(msg.Content) != ""
+		boxed := msg.Role == "user"
+		// Boxed user prompt is full-pane when F2 sidebar is on (CA-594) but was
+		// still wrapped at 7/10 width, so text broke mid-word at the box edge
+		// (tra│ / │ve error) while the box was full width. Keep the two in sync.
+		isFullPaneBox := boxed && m.useRightSidebar()
+		if isFullPaneBox {
+			rightAlign = false
+		}
 		contentWidth := width
 		if rightAlign {
 			contentWidth = width * 7 / 10
@@ -4306,8 +4315,6 @@ func (m *AppModel) buildChatRows() []chatRow {
 				prefix = ""
 			}
 		}
-		showCopy := (msg.Role == "user" || msg.Role == "assistant") && msg.FormatHint != "thinking" && strings.TrimSpace(msg.Content) != ""
-		boxed := msg.Role == "user"
 		if showCopy && boxed {
 			contentWidth -= len([]rune(copyChip))
 			if contentWidth < 8 {
@@ -4315,6 +4322,17 @@ func (m *AppModel) buildChatRows() []chatRow {
 			}
 		}
 		if boxed {
+			contentWidth -= 4
+			if contentWidth < 8 {
+				contentWidth = 8
+			}
+		}
+		if isFullPaneBox {
+			// Re-derive from full width so wrap == inner box width, not 7/10.
+			contentWidth = width
+			if showCopy {
+				contentWidth -= len([]rune(copyChip))
+			}
 			contentWidth -= 4
 			if contentWidth < 8 {
 				contentWidth = 8
