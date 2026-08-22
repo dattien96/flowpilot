@@ -519,56 +519,6 @@ func (m *AppModel) renderSidebarPane(w, h int) string {
 	return strings.Join(lines, "\n")
 }
 
-// visualTakeStyled clips/pads s to exactly n visible cells (plain rune count
-// after stripANSI), then re-paints the slice with st so the column background
-// survives the clip (CA-598). No lipgloss.Width on styled strings — Ghostty's
-// width for true-color SGR (38;2;R;G;B) differs, so all geometry here is plain.
-func visualTakeStyled(s string, n int, st lipgloss.Style) string {
-	if n <= 0 {
-		return ""
-	}
-	rs := []rune(stripANSI(s))
-	vw := len(rs)
-	if vw <= n {
-		// Fits: keep inner SGR (e.g. code panel bg), pad with st as its own
-		// segment so a lipgloss reset inside cannot leak (CA-532).
-		if vw < n {
-			return s + st.Render(strings.Repeat(" ", n-vw))
-		}
-		return s
-	}
-	// Exceeds column: clip on plain runes, then repaint the slice with st.
-	return paintRow(string(rs[:n]), n, st)
-}
-
-// rasterClip hard-isolates the chat and right-sidebar columns: chat pane may
-// only occupy the left chatW cells, sidebar only the right sideW cells. Each
-// row is rebuilt from the plain runes of the two panes so nothing can bleed
-// across the boundary, regardless of styled-width miscounts (CA-598).
-func rasterClip(chat, side string, chatW, sideW, h int) string {
-	cl := strings.Split(chat, "\n")
-	sl := strings.Split(side, "\n")
-	for len(cl) < h {
-		cl = append(cl, "")
-	}
-	if len(cl) > h {
-		cl = cl[:h]
-	}
-	for len(sl) < h {
-		sl = append(sl, "")
-	}
-	if len(sl) > h {
-		sl = sl[:h]
-	}
-	out := make([]string, h)
-	for i := 0; i < h; i++ {
-		left := visualTakeStyled(cl[i], chatW, styleCanvas)
-		right := visualTakeStyled(sl[i], sideW, styleSidebar)
-		out[i] = left + right
-	}
-	return strings.Join(out, "\n")
-}
-
 // suggestionWindow returns an inclusive-exclusive [start,end) window of size limit
 // that keeps selected index visible (so long pickers remain navigable).
 func suggestionWindow(total, selected, limit int) (start, end int) {
