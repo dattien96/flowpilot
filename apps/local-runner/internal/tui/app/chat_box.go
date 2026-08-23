@@ -120,7 +120,7 @@ func roundGlyphs(ascii bool) (tl, tr, bl, br, h, v string) {
 }
 
 func padVisualANSI(s string, width int) string {
-	n := len([]rune(stripANSI(s)))
+	n := lipgloss.Width(stripANSI(s))
 	if n > width {
 		return truncateVisual(s, width)
 	}

@@ -391,14 +391,42 @@ func looksLikeGFMTable(s string) bool {
 	return pipes >= 2 && seps >= 1
 }
 
+func expandTabs(s string, tabWidth int) string {
+	if !strings.Contains(s, "\t") {
+		return s
+	}
+	if tabWidth <= 0 {
+		tabWidth = 4
+	}
+	var b strings.Builder
+	col := 0
+	for _, r := range s {
+		if r == '\t' {
+			spaces := tabWidth - (col % tabWidth)
+			b.WriteString(strings.Repeat(" ", spaces))
+			col += spaces
+		} else if r == '\n' || r == '\r' {
+			b.WriteRune(r)
+			col = 0
+		} else {
+			b.WriteRune(r)
+			col += lipgloss.Width(string(r))
+		}
+	}
+	return b.String()
+}
+
 func renderCodeFenceBox(body []string, title string, width int, ascii bool) []string {
 	if width < 12 {
 		width = 12
 	}
 	chip := styleLink.Render(copyChip)
 	innerW := 4
-	for _, line := range body {
-		if w := len([]rune(line)); w > innerW {
+	expandedBody := make([]string, len(body))
+	for i, line := range body {
+		expanded := expandTabs(line, 4)
+		expandedBody[i] = expanded
+		if w := lipgloss.Width(expanded); w > innerW {
 			innerW = w
 		}
 	}
@@ -417,12 +445,12 @@ func renderCodeFenceBox(body []string, title string, width int, ascii bool) []st
 		}
 	}
 	padW := boxW - 2
-	out := make([]string, 0, len(body)+2)
+	out := make([]string, 0, len(expandedBody)+2)
 	out = append(out, strokeTopSolid(title, chip, boxW, ascii))
-	if len(body) == 0 {
-		body = []string{""}
+	if len(expandedBody) == 0 {
+		expandedBody = []string{""}
 	}
-	for _, line := range body {
+	for _, line := range expandedBody {
 		for _, wrapped := range wrapText(line, padW-1) {
 			inner := padVisualANSI(" "+wrapped, padW)
 			out = append(out, strokeCodeFill(inner, boxW, ascii))
