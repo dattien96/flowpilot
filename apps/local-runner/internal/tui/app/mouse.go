@@ -876,9 +876,10 @@ func hitCopyChrome(m *AppModel, c tuiChrome, x, y int) string {
 }
 
 // hitUserPromptChrome maps a click on any row of a user prompt bubble that
-// exceeds the 4-line clamp to a "user-prompt-expand:<content>" toggle target.
-// The whole box is clickable; the [copy] chip is hit-tested first (hitCopyChrome),
-// so clicking the chip copies instead of toggling.
+// exceeds the 4-line clamp (CA-559/CA-607) to a "user-prompt-expand:<content>"
+// toggle target. The whole box is clickable (every youBox row carries the key);
+// the [copy] chip is hit-tested first (hitCopyChrome), so clicking the chip
+// copies instead of toggling.
 func hitUserPromptChrome(m *AppModel, c tuiChrome, x, y int) string {
 	rows := sliceChatRows(m.chatRows(), c.messagesHeight, m.viewport.offset)
 	rel := y - c.panelH

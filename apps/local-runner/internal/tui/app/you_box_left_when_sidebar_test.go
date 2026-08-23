@@ -47,7 +47,9 @@ func TestRegression_YouBoxLeftAlignedWhenSidebarOn(t *testing.T) {
 	}
 }
 
-func TestRegression_YouBoxRightAlignedWhenSidebarOff(t *testing.T) {
+// CA-600: sidebar off keeps the You box full-width and left aligned too — the
+// old right-aligned hug is gone entirely.
+func TestRegression_YouBoxFullWidthWhenSidebarOff(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "grok", Model: "m"}, "http://127.0.0.1:4317")
 	m.width, m.height = 80, 24
 	m.addMessage("user", "hello right", "")
@@ -56,15 +58,20 @@ func TestRegression_YouBoxRightAlignedWhenSidebarOff(t *testing.T) {
 	if !strings.Contains(plain, "You") {
 		t.Fatal("missing You")
 	}
-	foundLead := false
+	width := safeTermWidth(m.chatWidth())
+	foundTop := false
 	for _, line := range strings.Split(plain, "\n") {
 		if strings.Contains(line, "┌") && strings.Contains(line, "You") {
 			if strings.HasPrefix(line, " ") {
-				foundLead = true
+				t.Fatalf("sidebar off must keep box left aligned:\n%s", plain)
 			}
+			if bar := lastBarCol([]rune(line)); bar < width-2 {
+				t.Fatalf("sidebar off must keep box full width: bar=%d want>=%d line=%q", bar, width-2, line)
+			}
+			foundTop = true
 		}
 	}
-	if !foundLead {
-		t.Fatalf("sidebar off must keep right-align:\n%s", plain)
+	if !foundTop {
+		t.Fatalf("missing You box top:\n%s", plain)
 	}
 }

@@ -32,8 +32,9 @@ func TestRegression_ChangeContractPromptBoxWrapsAtInnerWidth(t *testing.T) {
 			if strings.Contains(plain, "│ ve error") || strings.Contains(plain, "│ve error") {
 				// The wrap was at box inner, not at "tra ve" split.
 			}
-			// Must contain all prompt parts in plain view.
-			for _, need := range []string{"[Change Contract]", "feature: calc-core", "intent:", "tra ve error khi b > a"} {
+			// Must contain all prompt parts in plain view (word groups may wrap
+			// across lines at the box inner width — CA-600 full-width box).
+			for _, need := range []string{"[Change Contract]", "feature: calc-core", "intent:", "tra ve error", "khi b > a"} {
 				if !strings.Contains(plain, need) {
 					t.Fatalf("[%s w=%d] missing %q in %q", pk, w, need, plain)
 				}

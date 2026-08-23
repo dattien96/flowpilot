@@ -3657,6 +3657,14 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			m.addMessage("system", fmt.Sprintf("Step selected: %s (will apply on next run start)", args[0]), "")
 		}
 
+	case "/dumpview":
+		path := filepath.Join(os.TempDir(), "flowpilot-you-view.txt")
+		if err := writeYouViewDump(m, path); err != nil {
+			m.addMessage("system", "dump failed: "+err.Error(), "error")
+			break
+		}
+		return m, m.showFlashToast("dumped " + youBoxLayoutRev + " → " + path)
+
 	case "/status":
 		auth := "(not signed in)"
 		if m.signedInEmail != "" {
@@ -3894,6 +3902,13 @@ func (m *AppModel) renderChatPane(w, h int) string {
 			st = styleChatBar
 			rw = barW
 		}
+		// CA-605: You-box rows keep plain glyphs (canvas fill comes from
+		// cellbuf.Fill / trailing pad) — wrapping them in styleCanvas made
+		// Ghostty miscount truecolor SGR and wrap the box mid-pane.
+		if i < inputStart && isYouBoxRow(r) {
+			rows[i] = padYouBoxRow(r, rw)
+			continue
+		}
 		rows[i] = paintRow(r, rw, st)
 	}
 
@@ -4073,7 +4088,9 @@ type chatRow struct {
 	// consecutive tool calls (CA-525). Clicking it toggles the run expansion.
 	ToolGroupKey string
 	// PromptExpandKey is non-empty for rows of a user prompt bubble that exceeds
-	// the 4-line clamp. Clicking any such row toggles the bubble expansion.
+	// the 4-line clamp (CA-559/CA-607). Clicking any such row toggles the
+	// bubble expansion. All box rows carry the key, so the whole box is
+	// clickable; the [copy] chip is hit-tested first.
 	PromptExpandKey string
 }
 
@@ -4095,6 +4112,38 @@ func (m *AppModel) toggleUserPrompt(content string) {
 	m.expandedUserPrompts[content] = !m.expandedUserPrompts[content]
 	m.rowCache = nil
 	m.rowCacheSig = 0
+}
+
+// clampPromptLines collapses wrapped prompt lines to maxUserPromptLines and
+// appends the "...." ellipsis to the last kept line, cut so the tail never
+// exceeds innerW (youBox hard-slices rows at the inner width, so the tail must
+// fit before framing).
+func clampPromptLines(lines []string, innerW int) []string {
+	if len(lines) <= maxUserPromptLines {
+		return lines
+	}
+	kept := append([]string(nil), lines[:maxUserPromptLines]...)
+	last := kept[len(kept)-1]
+	ellipsisW := lipgloss.Width(userPromptEllipsis)
+	target := innerW - ellipsisW
+	if target < 0 {
+		target = 0
+	}
+	if lipgloss.Width(last) > target {
+		w := 0
+		cut := 0
+		for i, r := range []rune(last) {
+			rw := lipgloss.Width(string(r))
+			if w+rw > target {
+				break
+			}
+			w += rw
+			cut = i + 1
+		}
+		last = string([]rune(last)[:cut])
+	}
+	kept[len(kept)-1] = last + userPromptEllipsis
+	return kept
 }
 
 func (m *AppModel) chatRows() []chatRow {
@@ -4264,12 +4313,10 @@ func (m *AppModel) buildChatRows() []chatRow {
 		prefix := ""
 		prefixStyle := styleSystem
 		style := styleSystem
-		rightAlign := false
 		switch msg.Role {
 		case "user":
 			prefixStyle = styleUserLabel
 			style = styleUser
-			rightAlign = true
 		case "assistant":
 			style = styleAssistant
 			if msg.FormatHint == "thinking" {
@@ -4292,70 +4339,42 @@ func (m *AppModel) buildChatRows() []chatRow {
 		}
 		showCopy := (msg.Role == "user" || msg.Role == "assistant") && msg.FormatHint != "thinking" && strings.TrimSpace(msg.Content) != ""
 		boxed := msg.Role == "user"
-		// Boxed user prompt is full-pane when F2 sidebar is on (CA-594) but was
-		// still wrapped at 7/10 width, so text broke mid-word at the box edge
-		// (tra│ / │ve error) while the box was full width. Keep the two in sync.
-		isFullPaneBox := boxed && m.useRightSidebar()
-		if isFullPaneBox {
-			rightAlign = false
+		if boxed {
+			// CA-607: boxed user prompts clamp at maxUserPromptLines (4) with a
+			// "...." tail on the last shown line; clicking the box expands the
+			// full prompt (youBox attaches PromptExpandKey to every row). Wrap
+			// at the box inner text width (pane - left border - right border -
+			// leading space); youBox draws plain runes only so the right border
+			// stays flush on every row (Ghostty SGR counting can no longer
+			// shift the │ mid-row).
+			innerW := width - 3
+			if innerW < 8 {
+				innerW = 8
+			}
+			lines := trimEmptyEdges(wrapText(msg.Content, innerW))
+			truncatable := len(lines) > maxUserPromptLines
+			if truncatable && !m.userPromptExpanded(msg.Content) {
+				lines = clampPromptLines(lines, innerW)
+			}
+			msgRows := youBox(lines, width, m.asciiMode, showCopy, mi, truncatable, msg.Content)
+			if mi > 0 && chatGapBefore(m.messages[mi-1], msg) {
+				rows = append(rows, chatRow{})
+			}
+			rows = append(rows, msgRows...)
+			continue
 		}
 		contentWidth := width
-		if rightAlign {
-			contentWidth = width * 7 / 10
-			if contentWidth < 16 {
-				contentWidth = width
-			}
-			if prefix != "" {
-				contentWidth -= len([]rune(prefix))
-				if contentWidth < 8 {
-					contentWidth = width - len([]rune(prefix))
-				}
-			}
-		} else if prefix != "" {
+		if prefix != "" {
 			contentWidth = width - len([]rune(prefix))
 			if contentWidth < 8 {
 				contentWidth = width
 				prefix = ""
 			}
 		}
-		if showCopy && boxed {
-			contentWidth -= len([]rune(copyChip))
-			if contentWidth < 8 {
-				contentWidth = 8
-			}
-		}
-		if boxed {
-			contentWidth -= 4
-			if contentWidth < 8 {
-				contentWidth = 8
-			}
-		}
-		if isFullPaneBox {
-			// Re-derive from full width so wrap == inner box width, not 7/10.
-			contentWidth = width
-			if showCopy {
-				contentWidth -= len([]rune(copyChip))
-			}
-			contentWidth -= 4
-			if contentWidth < 8 {
-				contentWidth = 8
-			}
-		}
 		wrapped := wrapText(msg.Content, contentWidth)
 		mdLines := textsToMD(trimEmptyEdges(wrapped))
 		if msg.Role == "assistant" && msg.FormatHint == "" {
 			mdLines = renderMarkdownRows(msg.Content, contentWidth, m.asciiMode)
-		}
-		var userPainted []string
-		userTruncated := false
-		userTruncatable := false
-		if msg.Role == "user" {
-			userTruncatable = len(mdLines) > maxUserPromptLines
-			if !m.userPromptExpanded(msg.Content) && userTruncatable {
-				mdLines = mdLines[:maxUserPromptLines]
-				userTruncated = true
-			}
-			userPainted = paintWrappedMentions(msg.Content, attachedSkillNames(m.selectedSkills), mdTexts(mdLines), styleUser)
 		}
 		var msgRows []chatRow
 		fenceN := 0
@@ -4377,54 +4396,21 @@ func (m *AppModel) buildChatRows() []chatRow {
 				rendered = pad + lineStyle.Render(stripANSI(line))
 			} else if msg.Role == "assistant" && msg.FormatHint == "" {
 				rendered = line
-			} else if msg.Role == "user" && i < len(userPainted) {
-				rendered = userPainted[i]
 			} else {
 				rendered = lineStyle.Render(stripANSI(line))
 			}
 			copyFence := ml.CopyCode != ""
 			copyOn := showCopy && i == len(mdLines)-1
-			if copyOn && !boxed && !copyFence {
+			if copyOn && !copyFence {
 				rendered = rendered + styleLink.Render(copyChip)
 			}
-			if rightAlign && !boxed {
-				rendered = rightAlignPlain(rendered, width)
-			}
-			if userTruncated && i == len(mdLines)-1 {
-				ellipsisW := lipgloss.Width(userPromptEllipsis)
-				if lipgloss.Width(stripANSI(rendered))+ellipsisW > contentWidth {
-					target := max(0, contentWidth-ellipsisW)
-					// Cut visual width without adding "…" (truncateVisual adds one).
-					plain := stripANSI(rendered)
-					w := 0
-					cut := 0
-					for idx, r := range []rune(plain) {
-						rw := lipgloss.Width(string(r))
-						if w+rw > target {
-							break
-						}
-						w += rw
-						cut = idx + 1
-					}
-					plainCut := string([]rune(plain)[:cut])
-					// Preserve user style for the truncated tail.
-					rendered = styleUser.Render(plainCut)
-				}
-				rendered += styleStatus.Render(userPromptEllipsis)
-			}
 			row := chatRow{Text: rendered, MsgIdx: mi, Copy: copyOn || copyFence}
-			if msg.Role == "user" && userTruncatable {
-				row.PromptExpandKey = msg.Content
-			}
 			if copyFence {
 				row.CopyText = ml.CopyCode
 				row.FenceIdx = fenceN
 				fenceN++
 			}
 			msgRows = append(msgRows, row)
-		}
-		if boxed {
-			msgRows = strokeChatRows(msgRows, width, true, m.asciiMode, !m.useRightSidebar())
 		}
 		if mi > 0 && chatGapBefore(m.messages[mi-1], msg) {
 			rows = append(rows, chatRow{})

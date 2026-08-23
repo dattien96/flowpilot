@@ -65,15 +65,6 @@ func padVisual(s string, width int) string {
 	return s
 }
 
-func strokeLine(inner string, boxW int, ascii bool) string {
-	_, _, _, _, _, v := boxGlyphs(ascii)
-	innerW := boxW - 2
-	if innerW < 1 {
-		innerW = 1
-	}
-	return v + padVisualANSI(inner, innerW) + v
-}
-
 func strokeTop(title string, boxW int, ascii bool) string {
 	return strokeTopChip(title, "", boxW, ascii)
 }
@@ -163,6 +154,39 @@ func paintRow(s string, width int, st lipgloss.Style) string {
 	return out
 }
 
+// isYouBoxRow reports whether a chat row is a You-box border/content line
+// (CA-605). These rows must never be wrapped in styleCanvas.Render: Ghostty /
+// cellbuf count truecolor SGR (38;2;R;G;B) differently from rune counts, which
+// wrapped the full-width box mid-pane and hid prompt lines.
+func isYouBoxRow(s string) bool {
+	p := stripANSI(s)
+	if p == "" {
+		return false
+	}
+	switch []rune(p)[0] {
+	case '┌', '│', '└', '+', '|':
+		return true
+	}
+	return false
+}
+
+// padYouBoxRow pads a You-box row with the canvas background WITHOUT styling
+// the box glyphs/text (CA-605). The canvas fill comes from cellbuf.Fill / the
+// trailing pad segment, so the row never carries a leading SGR wrap.
+func padYouBoxRow(s string, width int) string {
+	if width < 1 {
+		return s
+	}
+	n := len([]rune(stripANSI(s)))
+	if n > width {
+		return truncateVisual(s, width)
+	}
+	if n < width {
+		return s + styleCanvas.Render(strings.Repeat(" ", width-n))
+	}
+	return s
+}
+
 func frameInput(lines []string, width int, title, footer string, ascii bool) string {
 	if width < 1 {
 		width = 1
@@ -218,161 +242,48 @@ func frameInput(lines []string, width int, title, footer string, ascii bool) str
 	return b.String()
 }
 
-func strokeChatRows(inner []chatRow, width int, user, ascii, alignRight bool) []chatRow {
-	if len(inner) == 0 || width < 10 {
-		return inner
+// youBox frames a user prompt as a full chat-pane-width box (CA-602). Plain
+// runes only — no styled spans, no ANSI-aware padding — so every row's right
+// border sits at exactly width-1 on any terminal. Lines arrive pre-wrapped at
+// the box inner text width and pre-clamped (CA-607: max 4 lines + "...." tail
+// when collapsed). The [copy] chip rides its own last row (CA-604): content
+// rows never share a row with the chip, so prompt text is never cut to make
+// room for it. When truncatable, every row (borders included) carries
+// PromptExpandKey so the whole box is a click-to-expand target.
+func youBox(lines []string, width int, ascii bool, copyOn bool, msgIdx int, truncatable bool, expandKey string) []chatRow {
+	if width < 10 {
+		width = 10
 	}
-	title := "You"
-	fullPane := user && !alignRight
-	boxW := hugBoxWidth(inner, title, width, user, fullPane)
-	innerW := boxW - 2
+	innerW := width - 2
 	if innerW < 4 {
 		innerW = 4
 	}
-	// Re-wrap inner rows that are wider than the final innerW (hug may be
-	// smaller than the width used for the initial wrap). Wrap, don't
-	// truncate — the old pad-then-truncate produced the "mãi không xong"
-	// where long prompts were cut mid-box (e.g. "|Path:" lost).
-	wrappedInner := make([]chatRow, 0, len(inner)*2)
-	for i, r := range inner {
-		copyOn := r.Copy && i == len(inner)-1
-		textW := innerW - 1 // leading " "
-		if copyOn {
-			textW -= len([]rune(stripANSI(copyChip)))
-			if textW < 4 {
-				textW = 4
-			}
+	row := func(s string, isCopy bool) chatRow {
+		r := chatRow{Text: s, MsgIdx: msgIdx, Copy: isCopy}
+		if truncatable {
+			r.PromptExpandKey = expandKey
 		}
-		plain := stripANSI(r.Text)
-		if len([]rune(plain)) <= textW {
-			wrappedInner = append(wrappedInner, r)
-			continue
-		}
-		parts := wrapText(plain, textW)
-		for j, part := range parts {
-			txt := part
-			if user {
-				// Preserve user prompt styling (and re-apply after split).
-				txt = styleUser.Render(part)
-			}
-			nr := chatRow{Text: txt, MsgIdx: r.MsgIdx, PromptExpandKey: r.PromptExpandKey}
-			// Only the last wrapped piece of the last inner carries the copy chip.
-			if copyOn && j == len(parts)-1 {
-				nr.Copy = true
-			}
-			wrappedInner = append(wrappedInner, nr)
-		}
+		return r
 	}
-	inner = wrappedInner
-	// Recompute boxW after re-wrap (content may have grown taller but narrower).
-	boxW = hugBoxWidth(inner, title, width, user, fullPane)
-	innerW = boxW - 2
-	if innerW < 4 {
-		innerW = 4
-	}
-
-	alignW := width
-	if user && alignRight {
-		alignW = width - userBoxGutter
-		if alignW < 10 {
-			alignW = width
+	body := func(line string) string {
+		b := " " + line
+		if len([]rune(b)) < innerW {
+			b += strings.Repeat(" ", innerW-len([]rune(b)))
+		} else if len([]rune(b)) > innerW {
+			b = string([]rune(b)[:innerW])
 		}
+		return "│" + b + "│"
 	}
-	out := make([]chatRow, 0, len(inner)+2)
-	idx := inner[0].MsgIdx
-	top := strokeTop(title, boxW, ascii)
-	if user && alignRight {
-		top = rightAlignPlain(top, alignW)
+	out := make([]chatRow, 0, len(lines)+3)
+	out = append(out, row(strokeTop("You", width, ascii), false))
+	for _, line := range lines {
+		out = append(out, row(body(line), false))
 	}
-	out = append(out, chatRow{Text: top, MsgIdx: idx, PromptExpandKey: inner[0].PromptExpandKey})
-	for i, r := range inner {
-		text := " " + r.Text
-		copyOn := r.Copy && i == len(inner)-1
-		if copyOn {
-			chip := stripANSI(copyChip)
-			room := innerW - len([]rune(chip))
-			if room < 4 {
-				room = 4
-			}
-			text = padVisualANSI(text, room) + chip
-		}
-		line := strokeLine(text, boxW, ascii)
-		if user && alignRight {
-			line = rightAlignPlain(line, alignW)
-		}
-		if fullPane {
-			plainPart := stripANSI(r.Text)
-			base := " " + plainPart
-			if copyOn {
-				chipPlain := stripANSI(copyChip)
-				target := innerW - len([]rune(chipPlain))
-				if len([]rune(base)) < target {
-					base = base + strings.Repeat(" ", target-len([]rune(base)))
-				} else if len([]rune(base)) > target {
-					base = string([]rune(base)[:target])
-				}
-				base = base + chipPlain
-			}
-			if len([]rune(base)) < innerW {
-				base = base + strings.Repeat(" ", innerW-len([]rune(base)))
-			} else if len([]rune(base)) > innerW {
-				base = string([]rune(base)[:innerW])
-			}
-			line = "│" + base + "│"
-		}
-		out = append(out, chatRow{Text: line, MsgIdx: r.MsgIdx, Copy: copyOn, PromptExpandKey: r.PromptExpandKey})
+	if copyOn {
+		chip := stripANSI(copyChip)
+		b := strings.Repeat(" ", innerW-len([]rune(chip)))
+		out = append(out, row("│"+b+chip+"│", true))
 	}
-	bot := strokeBottom(boxW, ascii)
-	if user && alignRight {
-		bot = rightAlignPlain(bot, alignW)
-	}
-	out = append(out, chatRow{Text: bot, MsgIdx: inner[len(inner)-1].MsgIdx, PromptExpandKey: inner[len(inner)-1].PromptExpandKey})
+	out = append(out, row(strokeBottom(width, ascii), false))
 	return out
-}
-
-const userBoxGutter = 2
-
-func hugBoxWidth(inner []chatRow, title string, maxW int, user bool, fullPane bool) int {
-	if user && fullPane {
-		return maxW
-	}
-	innerW := 4
-	for _, r := range inner {
-		w := len([]rune(stripANSI(r.Text))) + 1
-		if r.Copy {
-			w += len([]rune(stripANSI(copyChip)))
-		}
-		if w > innerW {
-			innerW = w
-		}
-	}
-	tlen := len([]rune(" " + strings.TrimSpace(title) + " "))
-	if tlen > innerW {
-		innerW = tlen
-	}
-	boxW := innerW + 2
-	capW := maxW
-	if user {
-		effW := maxW - userBoxGutter
-		if effW < 10 {
-			effW = maxW
-		}
-		capW = effW * 7 / 10
-		if capW < 16 {
-			capW = effW
-		}
-	}
-	if boxW > capW {
-		boxW = capW
-	}
-	if boxW > maxW {
-		boxW = maxW
-	}
-	if boxW < 10 {
-		boxW = 10
-		if boxW > maxW {
-			boxW = maxW
-		}
-	}
-	return boxW
 }

@@ -309,7 +309,8 @@ type AppModel struct {
 	// thinking-placeholder reordering that shifts message indices).
 	expandedToolGroups map[string]bool
 	// expandedUserPrompts tracks which user prompt bubbles (4-line clamp) are
-	// expanded. Keyed by message content (content-derived like expandedToolGroups).
+	// expanded (CA-559/CA-607). Content-keyed so expansion survives message
+	// index shifts.
 	expandedUserPrompts map[string]bool
 
 	// Per-turn settings
@@ -587,6 +588,7 @@ var knownSlashCommands = []slashCommand{
 	{"/deny", "Deny a pending approval"},
 	{"/headless", "Print next response to stdout only"},
 	{"/status", "Show current connection status"},
+	{"/dumpview", "Dump live View() layout to /tmp/flowpilot-you-view.txt (debug)"},
 	{"/info", "Toggle session info panel (top-right; also F2)"},
 	{"/login", "Sign in to Supabase (email/password) — Desktop session parity"},
 	{"/settings", "Open Desktop app for Settings (start if not running)"},

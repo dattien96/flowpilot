@@ -643,7 +643,7 @@ func contextWindowForModel(providers []client.Provider, providerKey, modelID str
 	return 0
 }
 
-// wrapText wraps s to width columns, preserving existing newlines.
+// wrapText wraps s to width columns, preserving existing newlines (LF, CRLF, bare CR).
 // Long tokens without spaces are hard-broken so nothing is truncated off-screen.
 func wrapText(s string, width int) []string {
 	if width < 8 {
@@ -652,6 +652,8 @@ func wrapText(s string, width int) []string {
 	if s == "" {
 		return []string{""}
 	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
 	var out []string
 	for _, para := range strings.Split(s, "\n") {
 		out = append(out, wrapParagraph(para, width)...)

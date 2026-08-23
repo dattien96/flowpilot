@@ -54,7 +54,10 @@ func TestPaintWrappedMentions_FilePathKeepsBlueAcrossWrap(t *testing.T) {
 	}
 }
 
-func TestRenderMessages_UserPromptHighlightsFilePath(t *testing.T) {
+// CA-601: boxed user prompts render as plain lines (styled SGR shifted the
+// box's right border on Ghostty). Mention text must still appear — uncolored —
+// inside the You box.
+func TestRenderMessages_UserPromptShowsMentionText(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
 
@@ -64,10 +67,11 @@ func TestRenderMessages_UserPromptHighlightsFilePath(t *testing.T) {
 	m.selectedSkills = []client.SkillSelection{{Name: "coding"}}
 	m.addMessage("user", "look apps/foo/ChatInput.tsx [coding]", "")
 	view := m.View()
-	if !strings.Contains(view, styleMentionFile.Render("apps/foo/ChatInput.tsx")) {
-		t.Fatalf("timeline missing file highlight:\n%s", view)
+	plain := stripANSI(view)
+	if !strings.Contains(plain, "apps/foo/ChatInput.tsx") {
+		t.Fatalf("timeline missing file mention text:\n%s", plain)
 	}
-	if !strings.Contains(view, styleMention.Render("[coding]")) {
-		t.Fatalf("timeline missing skill highlight:\n%s", view)
+	if !strings.Contains(plain, "[coding]") {
+		t.Fatalf("timeline missing skill mention text:\n%s", plain)
 	}
 }

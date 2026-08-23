@@ -9,7 +9,10 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
-func TestRenderMessages_UserPromptHugsContent(t *testing.T) {
+// CA-600: user prompt boxes are full chat-pane width — no hugging. The box
+// top must start at column 0 and the right border must sit at width-2
+// (safeTermWidth leaves the last column free).
+func TestRenderMessages_UserPromptFullWidth(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
 	m.width = 80
 	m.asciiMode = true
@@ -28,16 +31,17 @@ func TestRenderMessages_UserPromptHugsContent(t *testing.T) {
 	if !strings.Contains(joined, "+-") && !strings.Contains(joined, "└") {
 		t.Fatalf("prompt should have a bottom stroke:\n%s", joined)
 	}
-	content := ""
+	width := safeTermWidth(m.chatWidth())
 	for _, line := range lines {
 		plain := stripANSI(line)
-		if strings.Contains(plain, "short ask") {
-			content = strings.TrimSpace(plain)
-			break
+		if strings.Contains(plain, "┌") && strings.Contains(plain, "You") {
+			if strings.HasPrefix(plain, " ") {
+				t.Fatalf("prompt box must start at column 0, got %q", plain)
+			}
+			if bar := lastBarCol([]rune(plain)); bar < width-2 {
+				t.Fatalf("prompt box must span full chat width: bar=%d want>=%d line=%q", bar, width-2, plain)
+			}
 		}
-	}
-	if len([]rune(content)) > 40 {
-		t.Fatalf("prompt box should hug content, got %q", content)
 	}
 }
 
