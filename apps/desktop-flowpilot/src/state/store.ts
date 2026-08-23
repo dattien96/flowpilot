@@ -5,6 +5,9 @@ import type {
   AgentGraphSnapshot,
   AgentRunSummary,
   BuiltinFlowOption,
+  ChatPosture,
+  ChatPostureConfig,
+  ChatPostureProfile,
   ChatSessionRestoreRequest,
   Project,
   ProviderAccountSummary,
@@ -257,6 +260,16 @@ interface AppState {
   chatStartMode: ChatStartMode;
   chatSourceDocId: string;
   /**
+   * Active chat posture (scan/plan/code) — OpenCode-style mode switching
+   * (Task-xxx/CA-xxx). Sent on every chat turn. Scan/Plan are read-only: the
+   * runner auto-approves reads and auto-denies writes. Defaults to "code".
+   */
+  chatPosture: ChatPosture;
+  /** Runner-owned posture document (SSOT), cached for the setup modal. */
+  chatPostureConfig: ChatPostureConfig;
+  /** True while the posture setup modal is open. */
+  chatPostureSetupOpen: boolean;
+  /**
    * Selected built-in orchestration flowRef for the current chat start
    * (CP-42/Task-177), e.g. "flowpilot-core-flow-pack/review-loop". Only
    * meaningful when chatStartMode === "bugfix"; cleared whenever chatStartMode
@@ -392,6 +405,14 @@ interface AppState {
   setChatSourceDocId(sourceDocId: string): void;
   setFlowRef(flowRef: string | undefined): void;
   loadBuiltinOrchestrationOptions(subMode: string): Promise<void>;
+  /** Activate a chat posture (scan/plan/code) and apply its pinned profile fields. */
+  setChatPosture(posture: ChatPosture): Promise<void>;
+  /** Fetch the runner-owned posture document into chatPostureConfig. */
+  loadChatPostureConfig(): Promise<void>;
+  /** Persist an edited posture document back to the runner. */
+  saveChatPostureConfig(config: ChatPostureConfig): Promise<void>;
+  openChatPostureSetup(): void;
+  closeChatPostureSetup(): void;
   selectWorkflow(workflowId: string): Promise<void>;
   selectStep(stepId: string): void;
   setScenario(scenario: ScenarioName): void;
@@ -488,6 +509,12 @@ export const useStore = create<AppState>((set, get) => ({
   summaryGenerating: false,
   chatStartMode: "normal",
   chatSourceDocId: "",
+  chatPosture: "code",
+  chatPostureConfig: {
+    active: "code",
+    profiles: { scan: {}, plan: {}, code: {} },
+  },
+  chatPostureSetupOpen: false,
   flowRef: undefined,
   builtinOrchestrationOptions: [],
   workspaceMainView: "chat",
@@ -585,6 +612,32 @@ export const useStore = create<AppState>((set, get) => ({
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[FlowPilot] listProviderAccounts failed:", err);
+      }
+      // CP-56 restart restore: resume the runner-persisted active posture
+      // (scan/plan/code) and its pinned profile after Desktop reopen — mirrors
+      // the TUI SessionDefaultsMsg restore. Uses the same withRetry so the
+      // boot-time GET survives the runner compile window.
+      try {
+        const getPosture = client.getChatPosture;
+        if (getPosture) {
+          const config = await withRetry(() => getPosture());
+          const active = (config.active as ChatPosture) ?? get().chatPosture;
+          const profile = (config.profiles as Record<string, ChatPostureProfile>)[active] ?? {};
+          set(() => ({
+            chatPostureConfig: config,
+            chatPosture: active,
+            ...(profile.provider ? { selectedProvider: profile.provider as ProviderKey } : {}),
+            ...(profile.model ? { selectedModel: profile.model } : {}),
+            ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}),
+            ...(typeof profile.yolo === "boolean" ? { yoloMode: profile.yolo } : {}),
+          }));
+          if ((get().selectedProvider as string) === "grok" && typeof profile.yolo === "boolean") {
+            void get().toggleYoloForActiveProvider(profile.yolo);
+          }
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[FlowPilot] loadChatPostureConfig (boot) failed:", err);
       }
     })().finally(() => {
       loadProjectsInFlight = null;
@@ -1128,6 +1181,95 @@ export const useStore = create<AppState>((set, get) => ({
     set({ chatSourceDocId: sourceDocId });
   },
 
+  async setChatPosture(posture) {
+    const { client, chatPostureConfig } = get();
+    let config = chatPostureConfig;
+    if (client.getChatPosture) {
+      try {
+        config = await client.getChatPosture();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[FlowPilot] loadChatPostureConfig failed on posture switch:", err);
+      }
+    }
+    const profile = config.profiles[posture] ?? {};
+    set((state) => ({
+      chatPosture: posture,
+      chatPostureConfig: { ...config, active: posture },
+      // Apply the posture's pinned profile fields when set; empty inherits the
+      // current session selection (mirrors the TUI's /mode apply).
+      ...(profile.provider ? { selectedProvider: profile.provider as ProviderKey } : {}),
+      ...(profile.model ? { selectedModel: profile.model } : {}),
+      ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}),
+      ...(typeof profile.yolo === "boolean" ? { yoloMode: profile.yolo } : {}),
+    }));
+    if (client.setChatPosture) {
+      try {
+        await client.setChatPosture({ ...config, active: posture });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[FlowPilot] setChatPosture failed:", err);
+      }
+    }
+    const provider = get().selectedProvider;
+    if (get().chatMode === "normal_chat" && provider) {
+      void get().loadSkills(provider, selectedProjectPath(get()));
+    }
+    // Grok YOLO sync: if the active profile pins YOLO, the Grok process
+    // config.toml must be rewritten (Task-218). Desktop previously skipped
+    // this — TUI did it via /mode but the same posture switch on Desktop left
+    // Grok's runtime YOLO stale. Call the existing sync path (same as the
+    // YOLO toggle button) so both surfaces stay consistent.
+    if (get().selectedProvider === "grok" && typeof profile.yolo === "boolean") {
+      void get().toggleYoloForActiveProvider(profile.yolo);
+    }
+  },
+
+  async loadChatPostureConfig() {
+    const { client } = get();
+    if (!client.getChatPosture) return;
+    try {
+      const config = await client.getChatPosture();
+      const active = (config.active as ChatPosture) ?? get().chatPosture;
+      const profile = (config.profiles as Record<string, ChatPostureProfile>)[active] ?? {};
+      set(() => ({
+        chatPostureConfig: config,
+        chatPosture: active,
+        ...(profile.provider ? { selectedProvider: profile.provider as ProviderKey } : {}),
+        ...(profile.model ? { selectedModel: profile.model } : {}),
+        ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}),
+        ...(typeof profile.yolo === "boolean" ? { yoloMode: profile.yolo } : {}),
+      }));
+      if ((get().selectedProvider as string) === "grok" && typeof profile.yolo === "boolean") {
+        void get().toggleYoloForActiveProvider(profile.yolo);
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] loadChatPostureConfig failed:", err);
+    }
+  },
+
+  async saveChatPostureConfig(config) {
+    const client = get().client;
+    if (!client.setChatPosture) return;
+    try {
+      const saved = await client.setChatPosture(config);
+      set({ chatPostureConfig: saved });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[FlowPilot] saveChatPostureConfig failed:", err);
+      throw err;
+    }
+  },
+
+  openChatPostureSetup() {
+    set({ chatPostureSetupOpen: true });
+  },
+
+  closeChatPostureSetup() {
+    set({ chatPostureSetupOpen: false });
+  },
+
   setFlowRef(flowRef) {
     set({ flowRef });
   },
@@ -1283,6 +1425,10 @@ export const useStore = create<AppState>((set, get) => ({
         // Workflow/step mode keeps the run-level values captured at startRun.
         model: chatMode === "normal_chat" ? (selectedModel ?? "") : undefined,
         yoloMode: chatMode === "normal_chat" ? yoloMode : undefined,
+        // Resend the current posture every chat turn like model/YOLO (BUG-063
+        // pattern, Task-xxx/CA-xxx); the runner's read-only policy for scan/plan
+        // is keyed off this per turn. Workflow/step mode omits it (never read-only).
+        chatPosture: chatMode === "normal_chat" ? get().chatPosture : undefined,
         attachments:
           chatMode === "normal_chat" && attachments && attachments.length > 0
             ? attachments

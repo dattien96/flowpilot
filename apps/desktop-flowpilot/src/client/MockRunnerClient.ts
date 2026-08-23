@@ -4,6 +4,8 @@ import type {
   AgentRunSummary,
   AgentGraphSnapshot,
   BuiltinFlowOption,
+  ChatPostureConfig,
+  ChatPostureProfile,
   ChatSessionRestoreRequest,
   ChatSessionRestoreResult,
   ChatSessionSyncRequest,
@@ -232,6 +234,14 @@ export class MockRunnerClient implements RunnerClient {
   private readonly aborted = new Set<string>();
   /** Cancels the pending approval/question gate for a run (used by interrupt). */
   private readonly pendingGateCancel = new Map<string, () => void>();
+
+  /** In-memory chat-posture document (mock stand-in for the runner's shared file). */
+  private chatPostureActive: ChatPostureConfig["active"] = "code";
+  private chatPostureProfiles: Record<ChatPostureConfig["active"], ChatPostureProfile> = {
+    scan: {},
+    plan: {},
+    code: {},
+  };
 
   setScenario(scenario: ScenarioName): void {
     this.scenario = scenario;
@@ -672,6 +682,29 @@ export class MockRunnerClient implements RunnerClient {
 
   async applyGrokYoloPosture(_yolo: boolean): Promise<void> {
     await delay(300); // mirrors the real config.toml rewrite + process respawn taking a moment
+  }
+
+  async getChatPosture(): Promise<ChatPostureConfig> {
+    await delay(30);
+    return {
+      active: this.chatPostureActive,
+      profiles: {
+        scan: this.chatPostureProfiles.scan,
+        plan: this.chatPostureProfiles.plan,
+        code: this.chatPostureProfiles.code,
+      },
+    };
+  }
+
+  async setChatPosture(config: ChatPostureConfig): Promise<ChatPostureConfig> {
+    await delay(30);
+    this.chatPostureActive = config.active;
+    this.chatPostureProfiles = {
+      scan: { ...config.profiles.scan },
+      plan: { ...config.profiles.plan },
+      code: { ...config.profiles.code },
+    };
+    return this.getChatPosture();
   }
 
   async openProviderAccountTerminal(_accountId: string): Promise<void> {

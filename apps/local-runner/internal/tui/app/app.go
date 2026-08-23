@@ -42,6 +42,10 @@ const (
 	// Status-line exclusive values (not reused for model/YOLO/skills/open-back).
 	colorStatusAgent = "#2dd4bf" // teal — agent:<name> value
 	colorStatusFlow  = "#f472b6" // pink — flow name / active step value
+	// Posture chip colors — each posture gets its own hue on the status line.
+	colorPostureScan = "#38bdf8" // sky — scan (read-only)
+	colorPosturePlan = "#f59e0b" // amber — plan (read-only)
+	colorPostureCode = "#3fb950" // green — code (normal gated chat)
 )
 
 var (
@@ -61,6 +65,10 @@ var (
 	// agent:NAME and flow-name values — dedicated hues, not styleStatusHi/accent.
 	styleStatusAgent = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusAgent))
 	styleStatusFlow  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusFlow))
+	// Posture chip colors — dedicated hues for scan/plan/code on the status line.
+	stylePostureScan = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorPostureScan))
+	stylePosturePlan = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorPosturePlan))
+	stylePostureCode = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorPostureCode))
 	stylePrompt      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
 	// Input stroke frame (Desktop accent / prompt-border — no neon wash).
 	stylePromptFocus = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
@@ -90,6 +98,8 @@ var (
 
 // New creates a new AppModel from ChatConfig and the runner URL.
 func New(cfg config.ChatConfig, runnerURL string) *AppModel {
+	initTUILog()
+	tuiLog("New() provider=%q model=%q reasoning=%q runner=%s project=%q", cfg.Provider, cfg.Model, cfg.ReasoningEffort, runnerURL, cfg.ProjectPath)
 	provider := cfg.Provider
 	model := cfg.Model
 	reasoning := cfg.ReasoningEffort
@@ -142,12 +152,33 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 		// was slow/empty (operator report: chat mode OK, restored flow mode hangs).
 		stashPendingFlowRestore(m, savedPrefs)
 	}
+	tuiLog("New() done provider=%q model=%q yolo=%v mode=%q width=%d", m.provider, m.model, m.yolo, m.mode.String(), m.width)
 	return m
 }
 
 // Init is the Bubble Tea Init function.
+const (
+	decawmOff = "\x1b[?7l" // disable autowrap — macOS Terminal.app/Ghostty/iTerm wrap the last column and desync bubbletea diff (CA-585)
+	decawmOn  = "\x1b[?7h" // restore
+)
+
+func cmdSetAutoWrap(on bool) tea.Cmd {
+	return func() tea.Msg {
+		seq := decawmOff
+		if on {
+			seq = decawmOn
+		}
+		_, _ = os.Stdout.WriteString(seq)
+		return nil
+	}
+}
+
 func (m *AppModel) Init() tea.Cmd {
-	return tea.Batch(m.cmdConnect(), tickCursor())
+	tuiLog("Init() -> disable autowrap + cmdConnect + tickCursor")
+	return tea.Sequence(
+		cmdSetAutoWrap(false),
+		tea.Batch(m.cmdConnect(), tickCursor()),
+	)
 }
 
 func tickCursor() tea.Cmd {
@@ -166,12 +197,26 @@ func cmdThinkingTick() tea.Cmd {
 // ---- Update -----------------------------------------------------------------
 
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Log startup-relevant messages (skip high-frequency ticks to keep log readable).
+	switch v := msg.(type) {
+	case cursorTickMsg, thinkingTickMsg, tea.WindowSizeMsg:
+	default:
+		if km, ok := msg.(tea.KeyMsg); ok {
+			tuiLog("Update KeyMsg Type=%v String=%q Paste=%v Runes=%q", km.Type, km.String(), km.Paste, string(km.Runes))
+		} else {
+			tuiLog("Update %T %v", msg, v)
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
+		w := msg.Width - 2
+		if w < 40 {
+			w = msg.Width
+		}
+		m.width = w
 		m.height = msg.Height
-		m.fullWidth = msg.Width
-		return m, nil
+		m.fullWidth = w
+		return m, tea.Batch(tea.ClearScreen, cmdSetAutoWrap(false))
 
 	case cursorTickMsg:
 		m.cursorOn = !m.cursorOn
@@ -254,6 +299,46 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case chatPostureMsg:
+		if msg.Err != nil {
+			if m.chatPostureSaving {
+				posture := m.chatPostureSavingPosture
+				m.chatPostureSaving = false
+				m.chatPostureSavingPosture = ""
+				m.chatPosturePending = ""
+				m.addMessage("system", fmt.Sprintf("Posture %s save failed: %s", posture, msg.Err.Error()), "error")
+				return m, nil
+			}
+			m.chatPosturePending = ""
+			m.addMessage("system", "Chat posture error: "+msg.Err.Error(), "error")
+			return m, nil
+		}
+		cmd := m.chatPostureCmdFromPending(msg.Cfg)
+		if m.chatPostureDirty {
+			m.chatPostureDirty = false
+			return m, tea.Batch(m.cmdSaveChatPosture(m.chatPostureCfg), cmd)
+		}
+		// PUT completed for /mode-setup edit — replace the "saving…" banner.
+		if m.chatPostureSaving {
+			posture := m.chatPostureSavingPosture
+			m.chatPostureSaving = false
+			m.chatPostureSavingPosture = ""
+			m.chatPostureCfg = msg.Cfg
+			if posture != "" {
+				m.addMessage("system", fmt.Sprintf("Posture %s saved.", posture), "")
+			}
+			return m, cmd
+		}
+		return m, cmd
+
+	case grokSyncFailedMsg:
+		// Grok YOLO posture sync failed — re-enable the flag so the next
+		// turn retries. The turn already sent (sync failure does not block
+		// the conversation), but Grok's runtime config may be stale.
+		m.postureGrokSync = msg.Yolo
+		m.postureGrokSyncSet = true
+		return m, nil
+
 	case ApprovalResolvedMsg:
 		shown := m.pendingApprovalShown(msg.ID)
 		m.removeApproval(msg.ID)
@@ -300,6 +385,29 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connStatus = ConnIdle
 		m.statusMsg = "stopped"
 		m.flowLoopStatus = "stopped"
+		// Freeze liveness so the status bar does not keep "Thinking Ns" and
+		// the spinner/elapsed clock stops. The backend run is interrupted by
+		// user — the local handle and its agents/steps are still marked
+		// "running" until the next poll, which would keep workIsLive() and
+		// shouldPollStepsRuntime() true and the 27s timer ticking.
+		if m.runHandle != nil {
+			m.runHandle.Status = "stopped"
+		}
+		for i := range m.agentRuns {
+			if !runStatusIsTerminal(m.agentRuns[i].Status) {
+				m.agentRuns[i].Status = "stopped"
+			}
+		}
+		for i := range m.flowSteps {
+			st := strings.ToUpper(strings.TrimSpace(m.flowSteps[i].Status))
+			if st == "RUNNING" || st == "WAITING_USER_APPROVAL" {
+				m.flowSteps[i].Status = "CANCELLED"
+			}
+		}
+		m.flowStepsActive = ""
+		m.turnStream = nil
+		m.thinkingTickerActive = false
+		m.thinkingFrame = 0
 		m.addMessage("system", "Stopped.", "")
 		return m, nil
 
@@ -327,6 +435,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ConnectedMsg:
+		tuiLog("ConnectedMsg runner=%s -> sessionLoading=true", msg.RunnerURL)
 		m.runnerURL = msg.RunnerURL
 		m.connStatus = ConnIdle
 		m.statusMsg = "connected"
@@ -410,6 +519,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case SessionDefaultsMsg:
+		tuiLog("SessionDefaultsMsg firstLoad=%v providers=%d accounts=%d projects=%d catalogErr=%q", !m.sessionDefaultsLoaded, len(msg.Providers), len(msg.ProviderAccounts), len(msg.Projects), msg.CatalogErr)
 		firstLoad := !m.sessionDefaultsLoaded
 		if m.provider == "" && msg.Provider != "" {
 			m.provider = msg.Provider
@@ -510,6 +620,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if c := m.startupGrokYoloPostureCmd(); c != nil {
 				cmds = append(cmds, c)
 			}
+		}
+		// CP-56 restart restore: TUI must resume the runner's persisted active
+		// posture (scan/plan/code) and its pinned profile after reopen — the
+		// runner is SSOT, the TUI default is code, so without this GET the mode
+		// looks lost. Not a user switch, so the restore does not PUT.
+		if firstLoad {
+			m.chatPosturePending = "restore"
+			cmds = append(cmds, m.cmdLoadChatPosture())
 		}
 		return m, tea.Batch(cmds...)
 
@@ -664,6 +782,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next := st.queue[0]
 		st.queue = st.queue[1:]
 		return m, m.cmdSyncRun(next, st.projectID)
+
+	case EngineInitMsg:
+		return m.handleEngineInitMsg(msg)
 
 	case RemoteChatListMsg:
 		// G3 /restore index (silent refresh after a batch, loud bare dump).
@@ -1200,6 +1321,41 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.cmdHydrateAgentRunsIfNeeded())
 		return m, tea.Batch(cmds...)
 
+	case pasteBurstSettleMsg:
+		// A raw-paste burst finished quietly — collapse it to a token without
+		// waiting for the next keystroke.
+		if !m.pasteBurst.active {
+			return m, nil
+		}
+		if pasteNow().Sub(m.pasteBurst.lastRuneAt) >= burstSettle {
+			wasActive := m.pasteBurst.active
+			// Production Windows rejects raw floods entirely (hint at arm time),
+			// so settle just resets without collapsing to [Pasted] or re-hinting.
+			// Pulse Disable→Enable once to reinit conhost reader and unstick
+			// keys after flood filled the 64-slot queue (log 18216 42s no KeyMsg).
+			if wasActive && runtime.GOOS == "windows" && m.rejectWindowsRawPaste {
+				m.resetPasteBurst()
+				tuiLog("burst collapse (windows reject) active=false inputLen=%d", len([]rune(m.inputValue)))
+				return m, tea.Sequence(tea.DisableMouse, tea.EnableMouseCellMotion)
+			}
+			m.collapsePasteBurst()
+			tuiLog("burst collapse active=false inputLen=%d", len([]rune(m.inputValue)))
+			// Windows: WT steals Ctrl+V so raw paste always comes as a flood.
+			// Hint once that Alt+V is the reliable text+image path (Ctrl+V is
+			// only text and causes the char-by-char burst).
+			if wasActive && runtime.GOOS == "windows" && !m.pasteCtrlVHintShown {
+				m.pasteCtrlVHintShown = true
+				hint := "Use Alt+V for paste (text + image)"
+				m.addMessage("system", hint, "gate")
+				return m, m.showFlashToast(hint)
+			}
+		} else {
+			// Fired early (e.g. 129ms <150ms due to 15 runes each scheduling a tick) — reschedule.
+			tuiLog("burst settle early, reschedule active=true")
+			return m, cmdPasteBurstSettle()
+		}
+		return m, nil
+
 	case ClipboardPasteMsg:
 		if msg.Err != "" && msg.Attachment == nil && msg.Text == "" {
 			m.addMessage("system", msg.Err, "error")
@@ -1214,7 +1370,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Text != "" {
-			m.insertInputAtCursor(msg.Text)
+			// Same paste-summary handling as bracketed paste: long blocks show a
+			// token and expand on submit. NUL/control bytes from the clipboard
+			// are stripped so the message copies cleanly (run-117747).
+			msg.Text = sanitizePasteText(msg.Text)
+			if needsPasteSummary(msg.Text) {
+				m.insertPasteSummary(msg.Text)
+			} else {
+				m.insertInputAtCursor(msg.Text)
+			}
 			return m, nil
 		}
 		if msg.Err != "" {
@@ -1535,8 +1699,11 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		// empty GateOptions — arming the gate then made every keystroke
 		// re-print "Gate options:" with nothing to match, permanently freezing
 		// chat. Non-block / option-less verdicts surface as info instead.
+		// CA-545 (run-204658): reprompt/warn and block-without-options must not
+		// render a misleading "Options:" line — they auto-reprompt or are info
+		// only. buildGateMessage now varies by status + error.
 		blocking := strings.EqualFold(ev.Status, "block") && len(ev.GateOptions) > 0
-		m.addMessage("system", buildGateMessage(ev.GateOptions, ev.GateRegressedTests), "gate")
+		m.addMessage("system", buildGateMessage(ev.Status, ev.Error, ev.GateOptions, ev.GateRegressedTests), "gate")
 		if blocking {
 			m.gate = &GateState{
 				Options:        ev.GateOptions,
@@ -1576,6 +1743,9 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 }
 
 func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Paste {
+		tuiLog("handleKey Paste runes=%d type=%v", len(msg.Runes), msg.Type)
+	}
 	// Never hard-block keyboard while loading — a hung runner previously made
 	// the TUI feel fully frozen. processInput still rejects non-slash *send*.
 	if m.sessionLoading && msg.Type == tea.KeyCtrlC {
@@ -1584,11 +1754,43 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.cmdShutdownAndQuit()
 	}
 
-	if m.authPhase == AuthNone && (isPromptNewlineKey(msg) || isModifiedEnterNewline(msg)) && !m.viewingChild() {
-		m.inputValue += "\n"
-		return m, nil
+	if m.authPhase == AuthNone && !m.viewingChild() {
+		now := pasteNow()
+		if m.pasteBurst.active && now.Sub(m.pasteBurst.lastRuneAt) >= burstSettle {
+			m.collapsePasteBurst()
+		}
+		// Windows production rejects raw flood (WT Ctrl+V) entirely.
+		if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && isBurstNewlineKey(msg) {
+			b := &m.pasteBurst
+			if b.active || (b.chainLen >= 1 && now.Sub(b.lastRuneAt) < burstRuneGap && !strings.HasPrefix(m.inputValue, "/")) {
+				wasActive := b.active
+				m.pasteBurst.lastRuneAt = now
+				// Hint once per flood (on arm), not per Enter.
+				if !wasActive && b.chainLen >= 1 {
+					hint := "Use Alt+V for paste (text + image)"
+					m.addMessage("system", hint, "gate")
+					m.pasteCtrlVHintShown = true
+					return m, tea.Batch(m.showFlashToast(hint), cmdPasteBurstSettle())
+				}
+				return m, cmdPasteBurstSettle()
+			}
+		}
+		// Raw (non-bracketed) paste arrives as a flood of key events where every
+		// line break is a plain Enter. Swallow those Enters as newlines while the
+		// flood is active so pasting never auto-submits per line.
+		if isBurstNewlineKey(msg) && m.handleBurstNewline(now) {
+			return m, cmdPasteBurstSettle()
+		}
+		if isPromptNewlineKey(msg) || isModifiedEnterNewline(msg) {
+			m.inputValue += "\n"
+			return m, nil
+		}
 	}
 
+	// Modal takes precedence over all other key handling.
+	if m.modeSetupModalOpen {
+		return m.handleModeSetupModalKey(msg)
+	}
 	// Desktop parity (CA-519): a focused sub-agent transcript is read-only. Only
 	// navigation, [back], agent-cycle, and slash commands are allowed; chat text
 	// input is dropped so the user cannot keep typing into the child view.
@@ -1643,8 +1845,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.authPhase != AuthNone {
 			return m, nil
 		}
-		// Prefer image clipboard; falls back to text. On Windows Terminal, Ctrl+V
-		// is often stolen for text-only paste — use /image paste or Alt+V then.
+		if runtime.GOOS == "windows" {
+			hint := "Use Alt+V for paste (text + image)"
+			m.addMessage("system", hint, "gate")
+			return m, m.showFlashToast(hint)
+		}
+		// Prefer image clipboard; falls back to text.
 		return m, m.cmdClipboardPaste()
 
 	case tea.KeyEscape:
@@ -1665,12 +1871,85 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "selection cleared"
 			return m, nil
 		}
+		// Wizard back navigation for /mode-setup
+		if strings.HasPrefix(strings.TrimSpace(strings.ToLower(m.inputValue)), "/mode-setup") {
+			in := strings.TrimSpace(m.inputValue)
+			parts := strings.Fields(in)
+			if len(parts) <= 1 {
+				if m.modeSetupDraftDirty {
+					m.modeSetupDraft = nil
+					m.modeSetupDraftDirty = false
+					m.clearInputValue()
+					m.addMessage("system", "Posture draft discarded.", "")
+					return m, nil
+				}
+				m.clearInputValue()
+				m.statusMsg = "prompt cleared"
+				return m, nil
+			}
+			if len(parts) == 2 {
+				m.setInputPreservingDraftPrefix("/mode-setup ")
+				m.suggIdx = 0
+				return m, m.cmdMaybePrefetchPickers()
+			}
+			if len(parts) == 3 {
+				m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " ")
+				m.suggIdx = 0
+				return m, m.cmdMaybePrefetchPickers()
+			}
+			m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " " + parts[2] + " ")
+			m.suggIdx = 0
+			return m, m.cmdMaybePrefetchPickers()
+		}
 		if m.inputValue != "" {
 			m.clearInputValue()
 			m.statusMsg = "prompt cleared"
 			return m, nil
 		}
 		m.statusMsg = "Ctrl-C or /exit to quit"
+		return m, nil
+
+	case tea.KeyShiftTab:
+		// Wizard back: Shift-Tab goes up one level in /mode-setup
+		if strings.HasPrefix(strings.TrimSpace(strings.ToLower(m.inputValue)), "/mode-setup") {
+			in := strings.TrimSpace(m.inputValue)
+			parts := strings.Fields(in)
+			if len(parts) <= 1 {
+				if m.modeSetupDraftDirty {
+					m.modeSetupDraft = nil
+					m.modeSetupDraftDirty = false
+					m.clearInputValue()
+					m.addMessage("system", "Posture draft discarded.", "")
+					return m, nil
+				}
+				m.clearInputValue()
+				return m, nil
+			}
+			if len(parts) == 2 {
+				m.setInputPreservingDraftPrefix("/mode-setup ")
+				m.suggIdx = 0
+				return m, m.cmdMaybePrefetchPickers()
+			}
+			if len(parts) == 3 {
+				m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " ")
+				m.suggIdx = 0
+				return m, m.cmdMaybePrefetchPickers()
+			}
+			m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " " + parts[2] + " ")
+			m.suggIdx = 0
+			return m, m.cmdMaybePrefetchPickers()
+		}
+		if m.authPhase != AuthNone {
+			return m, nil
+		}
+		if items := m.collectSuggestions(); len(items) > 0 {
+			// Shift-Tab cycles backwards
+			if len(items) > 0 {
+				m.suggIdx = (m.suggIdx - 1 + len(items)) % len(items)
+				m.applySuggestion(items)
+				return m, m.cmdMaybePrefetchPickers()
+			}
+		}
 		return m, nil
 
 	case tea.KeyTab:
@@ -1696,6 +1975,29 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focusedAgentIdx = (m.focusedAgentIdx + 1) % len(runs)
 			agent := runs[m.focusedAgentIdx]
 			return m, m.cmdFocusAgent(agent.RunID)
+		}
+		// Empty input + no picker/agents: Tab cycles the chat posture
+		// (plan ↔ code). Scan is only reachable via explicit /mode scan.
+		// Guard with sessionDefaultsLoaded so a stray Tab right after the chat
+		// input appears cannot fire a GET /client/chat-posture before the
+		// session is ready (the "treo" report — F2 lúc được lúc không).
+		if m.mode == ModeChat && m.sessionDefaultsLoaded && m.inputValue == "" {
+			next := m.activePosture()
+			found := false
+			for i, p := range tabPostureOrder {
+				if p == next {
+					next = tabPostureOrder[(i+1)%len(tabPostureOrder)]
+					found = true
+					break
+				}
+			}
+			if !found {
+				// Current posture (e.g. scan) is not in the Tab cycle;
+				// default to the first entry (plan).
+				next = tabPostureOrder[0]
+			}
+			m.chatPosturePending = "apply:" + next
+			return m, m.cmdLoadChatPosture()
 		}
 		return m, nil
 
@@ -1761,9 +2063,123 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 					return m, nil
 				}
+				// Wizard save/cancel/back rows
+				if it.kind == "mode-setup-save" {
+					if m.modeSetupDraft == nil || !m.modeSetupDraftDirty {
+						m.addMessage("system", "Nothing to save.", "")
+						m.clearInputValue()
+						return m, nil
+					}
+					// Save draft in one PUT (copy draft, clear wizard)
+					draft := *m.modeSetupDraft
+					m.modeSetupDraft = nil
+					m.modeSetupDraftDirty = false
+					m.chatPostureCfg = draft
+					m.chatPostureSaving = true
+					m.chatPostureSavingPosture = draft.Active
+					m.addMessage("system", "Saving posture draft…", "")
+					m.clearInputValue()
+					return m, m.cmdSaveChatPosture(draft)
+				}
+				if it.kind == "mode-setup-cancel" {
+					m.modeSetupDraft = nil
+					m.modeSetupDraftDirty = false
+					m.clearInputValue()
+					m.addMessage("system", "Posture draft discarded.", "")
+					return m, nil
+				}
+				if it.kind == "mode-setup-back" {
+					// Go up one wizard level based on current input
+					in := strings.TrimSpace(m.inputValue)
+					parts := strings.Fields(in)
+					// in is like "/mode-setup", "/mode-setup plan", "/mode-setup plan model", "/mode-setup plan model opus"
+					if len(parts) <= 1 {
+						m.clearInputValue()
+						return m, nil
+					}
+					if len(parts) == 2 {
+						// at posture level -> back to root
+						m.setInputPreservingDraftPrefix("/mode-setup ")
+						m.suggIdx = 0
+						return m, m.cmdMaybePrefetchPickers()
+					}
+					if len(parts) == 3 {
+						// at field level -> back to posture
+						// keep posture, drop field
+						m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " ")
+						m.suggIdx = 0
+						return m, m.cmdMaybePrefetchPickers()
+					}
+					// at value level -> back to field
+					m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " " + parts[2] + " ")
+					m.suggIdx = 0
+					return m, m.cmdMaybePrefetchPickers()
+				}
+				if it.kind == "mode-setup-value" {
+					// Wizard staging: parse "posture field value" and stage into draft, then return to field picker
+					parts := strings.Fields(strings.TrimSpace(it.value))
+					if len(parts) >= 3 {
+						posture := strings.ToLower(parts[0])
+						field := strings.ToLower(parts[1])
+						val := strings.Join(parts[2:], " ")
+						if validPosture(posture) {
+							if m.modeSetupDraft == nil {
+								// Snapshot current cfg (or empty) as draft base
+								cfgCopy := m.chatPostureCfg
+								if cfgCopy.Profiles == nil {
+									cfgCopy.Profiles = map[string]client.ChatPostureProfile{}
+								} else {
+									// deep copy map
+									newMap := make(map[string]client.ChatPostureProfile, len(cfgCopy.Profiles))
+									for k, v := range cfgCopy.Profiles {
+										newMap[k] = v
+									}
+									cfgCopy.Profiles = newMap
+								}
+								m.modeSetupDraft = &cfgCopy
+							}
+							prof := m.modeSetupDraft.Profiles[posture]
+							switch field {
+							case "provider":
+								prof.Provider = strings.TrimSpace(val)
+							case "model":
+								prof.Model = strings.TrimSpace(val)
+								if prov := providerForModel(m.providers, prof.Model); prov != "" {
+									prof.Provider = prov
+								}
+							case "reasoning", "reason":
+								prof.ReasoningEffort = strings.ToLower(strings.TrimSpace(val))
+							case "yolo":
+								switch strings.ToLower(val) {
+								case "on", "true", "1":
+									on := true
+									prof.Yolo = &on
+								case "off", "false", "0":
+									off := false
+									prof.Yolo = &off
+								case "clear", "-":
+									prof.Yolo = nil
+								}
+							case "clear":
+								prof = client.ChatPostureProfile{}
+							}
+							if m.modeSetupDraft.Profiles == nil {
+								m.modeSetupDraft.Profiles = map[string]client.ChatPostureProfile{}
+							}
+							m.modeSetupDraft.Profiles[posture] = prof
+							m.modeSetupDraftDirty = true
+							m.addMessage("system", fmt.Sprintf("Staged %s %s = %s (not yet saved — pick another field or ✓ save)", posture, field, orDash(val)), "")
+							// Return to field picker for same posture
+							m.setInputPreservingDraftPrefix("/mode-setup " + posture + " ")
+							m.suggIdx = 0
+							return m, m.cmdMaybePrefetchPickers()
+						}
+					}
+					// Fallback to old immediate PUT if parsing failed
+				}
 				if cmd := suggestionAcceptValue(it); cmd != "" {
-					// Action rows only expand the next picker (provider connect, /image open|rm).
-					if it.kind == "provider-action" || it.kind == "image-sub-next" {
+					// Action rows only expand the next picker (provider connect, /image open|rm, mode-setup steps).
+					if it.kind == "provider-action" || it.kind == "image-sub-next" || it.kind == "mode-setup-posture" || (it.kind == "mode-setup-field" && !strings.HasSuffix(strings.ToLower(strings.TrimSpace(it.value)), " clear")) {
 						m.setInputPreservingDraftPrefix(cmd)
 						m.suggIdx = 0
 						return m, m.cmdMaybePrefetchPickers()
@@ -1777,7 +2193,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				// Placeholder (loading / no match): if the user already typed an
 				// arg (e.g. /model custom-id), run the typed line instead of trapping Enter.
-				if typed := strings.TrimSpace(m.inputValue); len(strings.Fields(typed)) >= 2 {
+				if typed := strings.TrimSpace(m.expandPasteTokens(m.inputValue)); len(strings.Fields(typed)) >= 2 {
 					if m.sendBlocked() && !strings.HasPrefix(typed, "/") {
 						return m, nil
 					}
@@ -1787,7 +2203,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		input := strings.TrimSpace(m.inputValue)
+		input := strings.TrimSpace(m.expandPasteTokens(m.inputValue))
 		if input == "" {
 			return m, nil
 		}
@@ -1844,24 +2260,64 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// The clipboard is only consulted when the paste carries no text
 			// (image-only clipboard) or looks like a copied image file path.
 			if msg.Paste {
-				pasted := string(msg.Runes)
+				pasted := sanitizePasteText(string(msg.Runes))
 				if strings.TrimSpace(pasted) == "" {
 					return m, m.cmdClipboardPasteWithFallback("")
 				}
-				if path := imagePathFromClipboardText(pasted); path != "" {
-					return m, m.cmdAttachImagePath(path)
-				}
+if path := imagePathFromClipboardText(pasted); path != "" {
+				return m, m.cmdAttachImagePath(path)
+			}
+			// Long/multi-line pastes collapse to a "[Pasted N lines · C chars]"
+			// token so the composer never shows a cut block and the pasted line
+			// breaks can never auto-submit. The full text is expanded on send.
+			if needsPasteSummary(pasted) {
+				m.insertPasteSummary(pasted)
+			} else {
 				m.insertInputAtCursor(pasted)
-				m.suggIdx = 0
-				return m, m.cmdMaybePrefetchPickers()
+			}
+			m.suggIdx = 0
+			return m, m.cmdMaybePrefetchPickers()
 			}
 		}
-		if msg.Type == tea.KeySpace {
-			m.insertInputAtCursor(" ")
-		} else {
-			m.insertInputAtCursor(string(msg.Runes))
+		s := " "
+		if msg.Type == tea.KeyRunes {
+			s = string(msg.Runes)
 		}
+		// Track raw (non-bracketed) paste floods so their Enters become newlines
+		// instead of submits; bracketed pastes are handled above.
+		if m.authPhase == AuthNone && !msg.Paste && !msg.Alt {
+			m.noteBurstRune(s)
+			// Windows: WT Ctrl+V floods as char-by-char (Paste=false).
+			// Production swallows the flood and guides to Alt+V (Alt+V is
+			// the reliable 1-msg path for text+image). No clipboard hijack —
+			// flood is just dropped so composer stays empty. Tests keep
+			// reject off so burst char-by-char + [Pasting…] stays testable.
+			// Only swallow rapid runes (chainLen>=2) so slow typing after settle
+			// is not blocked (user reported "k chat thêm được").
+			if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && m.pasteBurst.active && m.pasteBurst.chainLen >= 2 {
+				// Hint once per flood (on arm) and revert the 2 chars that armed.
+				// Subsequent rapid runes in same flood are just swallowed without
+				// reverting so an Alt+V [Pasted] token inserted after the flood
+				// is not wiped (log 18700 race).
+				if m.pasteBurst.chainLen == 2 {
+					if runes := []rune(m.inputValue); len(runes) > m.pasteBurst.start {
+						m.inputValue = string(runes[:m.pasteBurst.start])
+						m.setInputCaret(m.pasteBurst.start)
+					}
+					hint := "Use Alt+V for paste (text + image)"
+					m.addMessage("system", hint, "gate")
+					m.pasteCtrlVHintShown = true
+					return m, tea.Batch(m.showFlashToast(hint), cmdPasteBurstSettle())
+				}
+				return m, cmdPasteBurstSettle()
+			}
+		}
+		m.insertInputAtCursor(s)
 		m.suggIdx = 0
+		// Auto-collapse the burst ~burstSettle after it stops (no keystroke needed).
+		if m.pasteBurst.active {
+			return m, tea.Batch(m.cmdMaybePrefetchPickers(), cmdPasteBurstSettle())
+		}
 		return m, m.cmdMaybePrefetchPickers()
 	}
 	// Alt+V / ctrl+shift+v when not delivered as KeyRunes (some terminals).
@@ -1936,13 +2392,38 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 		}
 		return []suggestItem{{value: "", detail: "(no matching providers)", kind: kind}}
 	}
-	models := modelsForProvider(m.providers, m.provider)
-	if modelSugg := filterModelSuggestions(in, models, m.model); len(modelSugg) > 0 {
-		return modelSugg
-	}
-	if ok, _ := parseSlashArgPrefix(in, "/model"); ok {
-		if len(models) == 0 {
-			return []suggestItem{{value: "", detail: "no models — set /provider first", kind: "model"}}
+	// /model now lists every supported model across all providers (catalog ∪
+	// defaults) with provider as detail — picking a model auto-switches provider
+	// per FlowPilot rule. Mirrors /mode-setup model behavior.
+	if ok, q := parseSlashArgPrefix(in, "/model"); ok {
+		all := allModelsAcrossProviders(m.providers, m.provider, m.model)
+		qLower := strings.ToLower(strings.TrimSpace(q))
+		out := make([]suggestItem, 0, len(all))
+		for _, e := range all {
+			if qLower != "" && !strings.Contains(strings.ToLower(e.id), qLower) {
+				continue
+			}
+			detail := e.provider
+			if detail == "" {
+				detail = "model"
+			}
+			if strings.EqualFold(e.id, m.model) {
+				if detail == "model" {
+					detail = "current"
+				} else {
+					detail = detail + " · current"
+				}
+			}
+			out = append(out, suggestItem{value: e.id, detail: detail, kind: "model"})
+		}
+		if len(out) > 0 {
+			return out
+		}
+		if len(all) == 0 {
+			if !m.sessionDefaultsLoaded && len(m.providers) == 0 {
+				return []suggestItem{{value: "", detail: "loading models…", kind: "model"}}
+			}
+			return []suggestItem{{value: "", detail: "no models in catalog", kind: "model"}}
 		}
 		return []suggestItem{{value: "", detail: "(no matching models)", kind: "model"}}
 	}
@@ -1951,6 +2432,16 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	}
 	if ok, _ := parseSlashArgPrefix(in, "/reasoning"); ok {
 		return []suggestItem{{value: "", detail: "(no matching effort)", kind: "reasoning"}}
+	}
+	// /mode-setup now uses modal on Enter, TAB picker disabled per user request
+	// (previously wizard posture→field→value). Keep typed 3-arg via handleSlashCommand.
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(in)), "/mode-setup") {
+		// No TAB suggestions for this command; Enter opens modal
+		// Fall through to let slash command handling decide (bare shows command, with args no picker)
+	} else if modeSetupSugg := filterModeSetupSuggestions(in, m.providers, m.providerAccounts, m.provider, m.model, m.modeSetupDraft); len(modeSetupSugg) > 0 {
+		// Legacy wizard path kept for typed power-user but not exposed via TAB
+		// (kept for backward compat if needed, but currently unreachable due to guard above)
+		return modeSetupSugg
 	}
 	if skillSugg := filterSkillSuggestions(in, m.skillsCatalog, m.selectedSkills); len(skillSugg) > 0 {
 		return skillSugg
@@ -1985,6 +2476,26 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if _, _, ok := parseImagePicker(in); ok {
 		return []suggestItem{{value: "", detail: "(no matching /image option)", kind: "image-sub"}}
 	}
+	// /mode <name> picker — scan/plan/code
+	if ok, q := parseSlashArgPrefix(in, "/mode"); ok {
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(in)), "/mode-setup") {
+			qLower := strings.ToLower(strings.TrimSpace(q))
+			out := make([]suggestItem, 0, 3)
+			for _, p := range postureOrder {
+				if qLower != "" && !strings.Contains(strings.ToLower(p), qLower) {
+					continue
+				}
+				out = append(out, suggestItem{value: p, detail: postureLabel(p), kind: "mode"})
+			}
+			if len(out) > 0 {
+				return out
+			}
+			return []suggestItem{{value: "", detail: "(no matching posture)", kind: "mode"}}
+		}
+	}
+	if initSugg := filterInitSuggestions(in); len(initSugg) > 0 {
+		return initSugg
+	}
 	cmds := filterSlashSuggestions(in)
 	out := make([]suggestItem, 0, len(cmds))
 	for _, sc := range cmds {
@@ -1999,11 +2510,49 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 	}
 	idx := m.suggIdx % len(items)
 	it := items[idx]
+	// Wizard save/cancel/back via Tab should behave like Enter
+	if it.kind == "mode-setup-save" {
+		if m.modeSetupDraft != nil && m.modeSetupDraftDirty {
+			draft := *m.modeSetupDraft
+			m.modeSetupDraft = nil
+			m.modeSetupDraftDirty = false
+			m.chatPostureCfg = draft
+			m.chatPostureSaving = true
+			m.chatPostureSavingPosture = draft.Active
+			m.addMessage("system", "Saving posture draft…", "")
+			m.clearInputValue()
+			// Note: Tab caller will still do cmdMaybePrefetchPickers, but save cmd needs to be returned
+			// For now, just set input; Enter is the primary save trigger. Tab on save is no-op.
+		}
+		return
+	}
+	if it.kind == "mode-setup-cancel" {
+		m.modeSetupDraft = nil
+		m.modeSetupDraftDirty = false
+		m.clearInputValue()
+		m.addMessage("system", "Posture draft discarded.", "")
+		return
+	}
+	if it.kind == "mode-setup-back" {
+		in := strings.TrimSpace(m.inputValue)
+		parts := strings.Fields(in)
+		if len(parts) <= 1 {
+			m.clearInputValue()
+		} else if len(parts) == 2 {
+			m.setInputPreservingDraftPrefix("/mode-setup ")
+		} else if len(parts) == 3 {
+			m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " ")
+		} else {
+			m.setInputPreservingDraftPrefix("/mode-setup " + parts[1] + " " + parts[2] + " ")
+		}
+		m.suggIdx = 0
+		return
+	}
 	if cmd := suggestionAcceptValue(it); cmd == "" {
 		return
 	} else if it.kind == "file" {
 		m.applyFileMention(it.value)
-	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" {
+	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" || it.kind == "mode-setup-posture" || it.kind == "mode-setup-field" || it.kind == "mode-setup-value" || it.kind == "mode" || it.kind == "init" {
 		// Nested pickers: only replace the active /… fragment (keep pre-slash draft).
 		m.setInputPreservingDraftPrefix(cmd)
 	} else {
@@ -2125,6 +2674,39 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/image rm " + strings.TrimSpace(it.value)
+	case "mode-setup-posture":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/mode-setup " + strings.TrimSpace(it.value) + " "
+	case "mode-setup-field":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		v := strings.TrimSpace(it.value)
+		if strings.HasSuffix(strings.ToLower(v), " clear") {
+			return "/mode-setup " + v
+		}
+		return "/mode-setup " + v + " "
+	case "mode-setup-value":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/mode-setup " + strings.TrimSpace(it.value)
+	case "mode":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/mode " + strings.TrimSpace(it.value)
+	case "init":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		slash := it.slash
+		if slash == "" {
+			slash = "/init"
+		}
+		return slash + " " + strings.TrimSpace(it.value)
 	case "cmd":
 		return strings.TrimSpace(it.value)
 	default:
@@ -2306,8 +2888,13 @@ func (m *AppModel) workIsLive() bool {
 
 func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	if m.sessionLoading && !strings.HasPrefix(strings.TrimSpace(input), "/") {
-		m.addMessage("system", "Still loading session — chat is disabled until ready.", "error")
-		return m, nil
+		msg := "Still loading session — chat is disabled until ready. (F2/F4 still work)"
+		if len(m.providers) == 0 {
+			msg = "Still loading session — providers not ready yet, please wait 2-3s then retry."
+		}
+		m.addMessage("system", msg, "error")
+		tuiLog("processInput blocked: sessionLoading providers=%d", len(m.providers))
+		return m, m.showFlashToast(msg)
 	}
 	if m.authPhase == AuthEmail {
 		email := strings.TrimSpace(input)
@@ -2357,14 +2944,30 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	}
 
 	if m.sendBlocked() {
-		m.addMessage("system", "A turn is already in progress — wait for it to finish (draft kept in the input).", "error")
-		return m, nil
+		msg := "A turn is already in progress — wait for it to finish (draft kept in the input)."
+		if m.pendingPrompt != "" {
+			msg = "A turn is already in progress (pendingPrompt) — wait for it to finish."
+		} else if m.approval != nil {
+			msg = "Pending approval — click Approve/Deny first."
+		} else if m.hasUnresolvedAttention() {
+			msg = "Flow needs your decision — check dispatch attention above."
+		}
+		m.addMessage("system", msg, "error")
+		tuiLog("send blocked: %s", msg)
+		// Also flash to status bar so it's visible even if viewport is scrolled.
+		return m, m.showFlashToast(msg)
 	}
 
 	// After session defaults load, refuse empty provider (avoids silent fake Codex).
 	if m.sessionDefaultsLoaded && strings.TrimSpace(m.provider) == "" {
 		m.addMessage("system", "No provider selected — use /provider <key> (then /model).", "error")
 		return m, nil
+	}
+	if m.sessionDefaultsLoaded && len(m.providers) == 0 {
+		// Cold start: providers not yet loaded (log showed 2s timeout). Don't
+		// silently block — log and let the run attempt proceed; the runner
+		// will return a proper error if the provider is truly unavailable.
+		tuiLog("send with providers empty (cold start) provider=%q", m.provider)
 	}
 
 	// Never arm a run without a project_id: cmdStartRun re-fetches the catalog
@@ -2567,6 +3170,82 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	case "/exit", "/quit":
 		m.quitting = true
 		return m, m.cmdShutdownAndQuit()
+
+	case "/scan":
+		if m.mode != ModeChat {
+			m.addMessage("system", "Scan/Plan/Code postures apply to chat mode only.", "")
+			break
+		}
+		m.chatPosturePending = "apply:scan"
+		return m, m.cmdLoadChatPosture()
+
+	case "/mode":
+		if m.mode != ModeChat {
+			m.addMessage("system", "Scan/Plan/Code postures apply to chat mode only.", "")
+			break
+		}
+		// /mode <name> applies a posture; /mode cycles scan→plan→code.
+		next := m.activePosture()
+		if len(args) > 0 {
+			want := strings.ToLower(args[0])
+			if !validPosture(want) {
+				m.addMessage("system", "Mode must be scan, plan, or code.", "error")
+				break
+			}
+			next = want
+		} else {
+			// /mode without args cycles plan ↔ code. Scan requires
+			// explicit /mode scan so the user opts in intentionally.
+			found := false
+			for i, p := range tabPostureOrder {
+				if p == next {
+					next = tabPostureOrder[(i+1)%len(tabPostureOrder)]
+					found = true
+					break
+				}
+			}
+			if !found {
+				next = tabPostureOrder[0]
+			}
+		}
+		m.chatPosturePending = "apply:" + next
+		return m, m.cmdLoadChatPosture()
+
+	case "/mode-setup":
+		if m.mode != ModeChat {
+			m.addMessage("system", "Scan/Plan/Code postures apply to chat mode only.", "")
+			break
+		}
+		if len(args) == 0 {
+			m.chatPosturePending = "modal:"
+			return m, m.cmdLoadChatPosture()
+		}
+		if len(args) == 1 && validPosture(strings.ToLower(args[0])) {
+			m.chatPosturePending = "modal:" + strings.ToLower(args[0])
+			return m, m.cmdLoadChatPosture()
+		}
+		// /mode-setup <posture> <field> <value>  (clear needs no value)
+		if len(args) < 2 {
+			m.addMessage("system", "Usage: /mode-setup <scan|plan|code> <provider|model|reasoning|yolo|clear> <value>", "error")
+			break
+		}
+		posture := strings.ToLower(args[0])
+		field := strings.ToLower(args[1])
+		if field == "clear" {
+			if len(args) != 2 {
+				m.addMessage("system", "Usage: /mode-setup <scan|plan|code> clear (no value)", "error")
+				break
+			}
+			m.chatPosturePending = "setup:" + posture + ":" + field + ":"
+			return m, m.cmdLoadChatPosture()
+		}
+		if len(args) < 3 {
+			m.addMessage("system", "Usage: /mode-setup <scan|plan|code> <provider|model|reasoning|yolo|clear> <value>", "error")
+			break
+		}
+		value := strings.Join(args[2:], " ")
+		m.chatPosturePending = "setup:" + posture + ":" + field + ":" + value
+		return m, m.cmdLoadChatPosture()
 
 	case "/yolo":
 		if m.mode != ModeChat || m.launch.IsArmed() {
@@ -2851,44 +3530,65 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			var sb strings.Builder
 			sb.WriteString(fmt.Sprintf("Provider: %s\n", orDash(m.provider)))
 			sb.WriteString(fmt.Sprintf("Current model: %s\n", orDash(m.model)))
-			models := modelsForProvider(m.providers, m.provider)
-			if len(models) == 0 {
-				sb.WriteString("No models listed for this provider. Check Desktop provider install, or /provider first.")
+			all := allModelsAcrossProviders(m.providers, m.provider, m.model)
+			if len(all) == 0 {
+				sb.WriteString("No models listed. Check catalog.")
 			} else {
-				sb.WriteString("Available models:\n")
-				for _, id := range models {
+				sb.WriteString("Available models (provider → model):\n")
+				for _, e := range all {
 					mark := " "
-					if id == m.model {
+					if strings.EqualFold(e.id, m.model) {
 						mark = "*"
 					}
-					sb.WriteString(fmt.Sprintf("  %s %s\n", mark, id))
+					prov := e.provider
+					if prov == "" {
+						prov = orDash(m.provider)
+					}
+					sb.WriteString(fmt.Sprintf("  %s %s · %s\n", mark, prov, e.id))
 				}
-				sb.WriteString("Pick: type /model  then ↑↓ · Tab · Enter")
+				sb.WriteString("Pick: type /model  then ↑↓ · Tab · Enter (provider auto-switches)")
 			}
 			m.addMessage("system", sb.String(), "")
 		} else {
-			want := strings.Join(args, " ")
-			models := modelsForProvider(m.providers, m.provider)
-			if len(models) > 0 {
-				ok := false
-				for _, id := range models {
-					if strings.EqualFold(id, want) {
-						m.model = id
-						ok = true
-						break
-					}
-				}
-				if !ok {
-					m.addMessage("system", fmt.Sprintf("Model %q not in catalog for %s. Try /model to list.", want, orDash(m.provider)), "error")
+			want := strings.TrimSpace(strings.Join(args, " "))
+			all := allModelsAcrossProviders(m.providers, m.provider, m.model)
+			var matched *modelEntry
+			for _, e := range all {
+				if strings.EqualFold(e.id, want) {
+					tmp := e
+					matched = &tmp
 					break
 				}
+			}
+			providerSwitched := false
+			if matched != nil {
+				if matched.provider != "" && !strings.EqualFold(matched.provider, m.provider) {
+					m.provider = matched.provider
+					m.bindActiveAccountForProvider()
+					m.skillsCatalog = nil
+					providerSwitched = true
+				}
+				m.model = matched.id
 			} else {
+				if prov := providerForModel(m.providers, want); prov != "" && !strings.EqualFold(prov, m.provider) {
+					m.provider = prov
+					m.bindActiveAccountForProvider()
+					m.skillsCatalog = nil
+					providerSwitched = true
+				}
 				m.model = want
 			}
 			m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 			m.persistSessionPrefs()
-			m.addMessage("system", fmt.Sprintf("Model set to: %s (next prompt uses this model)", m.model), "")
+			if matched != nil && matched.provider != "" {
+				m.addMessage("system", fmt.Sprintf("Model set to: %s · provider: %s (next prompt uses this model)", m.model, m.provider), "")
+			} else {
+				m.addMessage("system", fmt.Sprintf("Model set to: %s (next prompt uses this model)", m.model), "")
+			}
 			m.refreshSessionPanel()
+			if providerSwitched {
+				return m, m.cmdLoadSkills(false)
+			}
 		}
 
 	case "/reasoning":
@@ -2941,6 +3641,14 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			"New conversation started — provider %s · model %s (latest selection kept).",
 			orDash(m.provider), orDash(m.model),
 		), "")
+		if !m.sessionDefaultsLoaded {
+			break
+		}
+		// Reload the posture profile from the runner (SSOT) so /new applies
+		// the active posture's pinned provider/model/reasoning/yolo — the
+		// same pins that a fresh Desktop session reads on mount.
+		m.chatPosturePending = "apply:" + m.activePosture()
+		return m, m.cmdLoadChatPosture()
 
 	case "/step":
 		if len(args) == 0 {
@@ -2948,6 +3656,14 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		} else {
 			m.addMessage("system", fmt.Sprintf("Step selected: %s (will apply on next run start)", args[0]), "")
 		}
+
+	case "/dumpview":
+		path := filepath.Join(os.TempDir(), "flowpilot-you-view.txt")
+		if err := writeYouViewDump(m, path); err != nil {
+			m.addMessage("system", "dump failed: "+err.Error(), "error")
+			break
+		}
+		return m, m.showFlashToast("dumped " + youBoxLayoutRev + " → " + path)
 
 	case "/status":
 		auth := "(not signed in)"
@@ -3081,6 +3797,18 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		return m, m.cmdCopyKind(kind)
 
+	case "/init":
+		if len(args) == 0 {
+			m.addMessage("system", "Usage: /init <skill|all>  — Tab shows skill (flow-pack) or all (full engine).", "")
+			break
+		}
+		kind := strings.ToLower(strings.TrimSpace(args[0]))
+		if kind != "skill" && kind != "all" {
+			m.addMessage("system", fmt.Sprintf("Unknown /init kind %q — use /init skill or /init all (Tab).", args[0]), "error")
+			break
+		}
+		return m, m.cmdInitEngine(kind)
+
 	case "/sync":
 		return m.runSyncDispatch(args)
 
@@ -3094,28 +3822,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// ---- View -------------------------------------------------------------------
-
-func (m *AppModel) View() string {
-	if m.quitting {
-		return ""
-	}
-
-	fullW := m.width
-	if fullW <= 0 {
-		fullW = 80
-	}
-	m.fullWidth = fullW
-	useSide := m.useRightSidebar()
-
-	var sideLines []string
-	var sideW, sideX int
-	if useSide {
-		sideW = m.sideWidth()
-		sideX = fullW - sideW
-		sideLines = m.renderRightSidebar(m.height)
-	}
-
+func (m *AppModel) renderChatPane(w, h int) string {
 	c := m.tuiChrome()
 	var rows []string
 
@@ -3150,7 +3857,6 @@ func (m *AppModel) View() string {
 		rows = append(rows, styleError.Render(banner))
 	}
 	rows = append(rows, "")
-	w := m.chatWidth()
 	if w <= 0 {
 		w = 80
 	}
@@ -3161,21 +3867,33 @@ func (m *AppModel) View() string {
 	}
 	// flashToast is rendered on the project/git status row (see status_bar.go).
 	rows = append(rows, strings.Split(c.statusBlock, "\n")...)
-	if len(c.sugg) > 0 {
+	if len(c.sugg) > 0 && !m.modeSetupModalOpen {
 		rows = append(rows, strings.Split(m.renderSuggestions(c.sugg), "\n")...)
+	}
+	if m.modeSetupModalOpen {
+		rows = append(rows, strings.Split(m.renderModeSetupModal(w), "\n")...)
 	}
 	if c.attachPanelBlock != "" {
 		rows = append(rows, strings.Split(c.attachPanelBlock, "\n")...)
 	}
 	inputStart := len(rows)
-	rows = append(rows, strings.Split(m.renderInputLine(), "\n")...)
+	if m.sessionLoading {
+		// Hide normal chat input until loading is done — show a clear loading
+		// placeholder instead so the user doesn't feel the UI is hung.
+		// F2/F4 still work via allowsKeyWhileLoading.
+		frames := []string{"|", "/", "-", "\\"}
+		spin := frames[m.loadingFrame%len(frames)]
+		msg := fmt.Sprintf(" %s Loading session · project · providers — chat locked (F2/F4 still work) ", spin)
+		rows = append(rows, styleLoading.Render(truncateVisual(msg, w)))
+	} else {
+		rows = append(rows, strings.Split(m.renderInputLine(), "\n")...)
+	}
 
 	// CA-532: paint the dark canvas across the whole chat column and give the chat
-	// bar a lighter elevated background. The right sidebar column is painted in
-	// joinRightSidebar. Every row is padded so the background fills the row; the
+	// bar a lighter elevated background. Every row is padded so the background fills the row; the
 	// chat-bar (input) rows keep one free last column (safeTermWidth) so Windows
 	// Terminal never wraps the composer.
-	rows = padLinesTo(rows, m.height)
+	rows = padLinesTo(rows, h)
 	barW := safeTermWidth(w)
 	for i, r := range rows {
 		st := styleCanvas
@@ -3184,14 +3902,51 @@ func (m *AppModel) View() string {
 			st = styleChatBar
 			rw = barW
 		}
+		// CA-605: You-box rows keep plain glyphs (canvas fill comes from
+		// cellbuf.Fill / trailing pad) — wrapping them in styleCanvas made
+		// Ghostty miscount truecolor SGR and wrap the box mid-pane.
+		if i < inputStart && isYouBoxRow(r) {
+			rows[i] = padYouBoxRow(r, rw)
+			continue
+		}
 		rows[i] = paintRow(r, rw, st)
 	}
 
-	if useSide {
-		return joinRightSidebar(rows, sideLines, sideW, sideX, m.asciiMode)
-	}
+	body := strings.Join(rows, "\n")
+	// Do not force outer Width/Height — rows are already painted to w/barW
+	// and padded to h. Forcing Width(w) would pad chat-bar rows (barW) back to
+	// w and break the safeTermWidth gutter (narrow test expects <w).
+	return body
+}
 
-	return strings.Join(rows, "\n")
+// ---- View -------------------------------------------------------------------
+
+func (m *AppModel) View() string {
+	if m.quitting {
+		return ""
+	}
+	viewStart := time.Now()
+
+	fullW := m.width
+	if fullW <= 0 {
+		fullW = 80
+	}
+	m.fullWidth = fullW
+	h := m.height
+	if h < 1 {
+		h = 1
+	}
+	chatW := m.chatWidth()
+	chatRaw := m.renderChatPane(chatW, h)
+	chat := chatRaw
+	if m.useRightSidebar() {
+		side := m.renderSidebarPane(m.sideWidth(), h)
+		chat = composeCellBuf(chatRaw, side, fullW, chatW, m.sideWidth(), h)
+	}
+	if d := time.Since(viewStart); d > 100*time.Millisecond {
+		tuiLog("View slow dur=%v width=%d height=%d side=%v", d, m.width, m.height, m.useRightSidebar())
+	}
+	return chat
 }
 
 func (m *AppModel) loadingBannerText() string {
@@ -3228,6 +3983,8 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 			kind = "sync"
 		case "restore":
 			kind = "restore"
+		case "mode":
+			kind = "postures"
 		}
 	}
 	sel := 0
@@ -3330,6 +4087,63 @@ type chatRow struct {
 	// ToolGroupKey is non-empty for the summary row of a collapsed run of 2+
 	// consecutive tool calls (CA-525). Clicking it toggles the run expansion.
 	ToolGroupKey string
+	// PromptExpandKey is non-empty for rows of a user prompt bubble that exceeds
+	// the 4-line clamp (CA-559/CA-607). Clicking any such row toggles the
+	// bubble expansion. All box rows carry the key, so the whole box is
+	// clickable; the [copy] chip is hit-tested first.
+	PromptExpandKey string
+}
+
+// maxUserPromptLines caps boxed user prompt bubbles; longer prompts collapse to
+// this many wrapped lines with a "...." tail until the bubble is expanded.
+const maxUserPromptLines = 4
+
+// userPromptEllipsis marks a truncated user prompt bubble.
+const userPromptEllipsis = "...."
+
+func (m *AppModel) userPromptExpanded(content string) bool {
+	return m.expandedUserPrompts[content]
+}
+
+func (m *AppModel) toggleUserPrompt(content string) {
+	if m.expandedUserPrompts == nil {
+		m.expandedUserPrompts = map[string]bool{}
+	}
+	m.expandedUserPrompts[content] = !m.expandedUserPrompts[content]
+	m.rowCache = nil
+	m.rowCacheSig = 0
+}
+
+// clampPromptLines collapses wrapped prompt lines to maxUserPromptLines and
+// appends the "...." ellipsis to the last kept line, cut so the tail never
+// exceeds innerW (youBox hard-slices rows at the inner width, so the tail must
+// fit before framing).
+func clampPromptLines(lines []string, innerW int) []string {
+	if len(lines) <= maxUserPromptLines {
+		return lines
+	}
+	kept := append([]string(nil), lines[:maxUserPromptLines]...)
+	last := kept[len(kept)-1]
+	ellipsisW := lipgloss.Width(userPromptEllipsis)
+	target := innerW - ellipsisW
+	if target < 0 {
+		target = 0
+	}
+	if lipgloss.Width(last) > target {
+		w := 0
+		cut := 0
+		for i, r := range []rune(last) {
+			rw := lipgloss.Width(string(r))
+			if w+rw > target {
+				break
+			}
+			w += rw
+			cut = i + 1
+		}
+		last = string([]rune(last)[:cut])
+	}
+	kept[len(kept)-1] = last + userPromptEllipsis
+	return kept
 }
 
 func (m *AppModel) chatRows() []chatRow {
@@ -3351,6 +4165,9 @@ func (m *AppModel) chatRowsSig() uint64 {
 	_, _ = h.Write([]byte(strconv.Itoa(m.chatWidth())))
 	if m.asciiMode {
 		_, _ = h.Write([]byte{1})
+	}
+	if m.useRightSidebar() {
+		_, _ = h.Write([]byte{9})
 	}
 	for _, msg := range m.messages {
 		_, _ = h.Write([]byte(msg.Role))
@@ -3374,6 +4191,17 @@ func (m *AppModel) chatRowsSig() uint64 {
 	sort.Strings(keys)
 	for _, k := range keys {
 		_, _ = h.Write([]byte{2})
+		_, _ = h.Write([]byte(k))
+	}
+	upKeys := make([]string, 0, len(m.expandedUserPrompts))
+	for k, v := range m.expandedUserPrompts {
+		if v {
+			upKeys = append(upKeys, k)
+		}
+	}
+	sort.Strings(upKeys)
+	for _, k := range upKeys {
+		_, _ = h.Write([]byte{3})
 		_, _ = h.Write([]byte(k))
 	}
 	return h.Sum64()
@@ -3485,12 +4313,10 @@ func (m *AppModel) buildChatRows() []chatRow {
 		prefix := ""
 		prefixStyle := styleSystem
 		style := styleSystem
-		rightAlign := false
 		switch msg.Role {
 		case "user":
 			prefixStyle = styleUserLabel
 			style = styleUser
-			rightAlign = true
 		case "assistant":
 			style = styleAssistant
 			if msg.FormatHint == "thinking" {
@@ -3511,47 +4337,44 @@ func (m *AppModel) buildChatRows() []chatRow {
 			}
 			prefixStyle = style
 		}
+		showCopy := (msg.Role == "user" || msg.Role == "assistant") && msg.FormatHint != "thinking" && strings.TrimSpace(msg.Content) != ""
+		boxed := msg.Role == "user"
+		if boxed {
+			// CA-607: boxed user prompts clamp at maxUserPromptLines (4) with a
+			// "...." tail on the last shown line; clicking the box expands the
+			// full prompt (youBox attaches PromptExpandKey to every row). Wrap
+			// at the box inner text width (pane - left border - right border -
+			// leading space); youBox draws plain runes only so the right border
+			// stays flush on every row (Ghostty SGR counting can no longer
+			// shift the │ mid-row).
+			innerW := width - 3
+			if innerW < 8 {
+				innerW = 8
+			}
+			lines := trimEmptyEdges(wrapText(msg.Content, innerW))
+			truncatable := len(lines) > maxUserPromptLines
+			if truncatable && !m.userPromptExpanded(msg.Content) {
+				lines = clampPromptLines(lines, innerW)
+			}
+			msgRows := youBox(lines, width, m.asciiMode, showCopy, mi, truncatable, msg.Content)
+			if mi > 0 && chatGapBefore(m.messages[mi-1], msg) {
+				rows = append(rows, chatRow{})
+			}
+			rows = append(rows, msgRows...)
+			continue
+		}
 		contentWidth := width
-		if rightAlign {
-			contentWidth = width * 7 / 10
-			if contentWidth < 16 {
-				contentWidth = width
-			}
-			if prefix != "" {
-				contentWidth -= len([]rune(prefix))
-				if contentWidth < 8 {
-					contentWidth = width - len([]rune(prefix))
-				}
-			}
-		} else if prefix != "" {
+		if prefix != "" {
 			contentWidth = width - len([]rune(prefix))
 			if contentWidth < 8 {
 				contentWidth = width
 				prefix = ""
 			}
 		}
-		showCopy := (msg.Role == "user" || msg.Role == "assistant") && msg.FormatHint != "thinking" && strings.TrimSpace(msg.Content) != ""
-		boxed := msg.Role == "user"
-		if showCopy && boxed {
-			contentWidth -= len([]rune(copyChip))
-			if contentWidth < 8 {
-				contentWidth = 8
-			}
-		}
-		if boxed {
-			contentWidth -= 4
-			if contentWidth < 8 {
-				contentWidth = 8
-			}
-		}
 		wrapped := wrapText(msg.Content, contentWidth)
 		mdLines := textsToMD(trimEmptyEdges(wrapped))
 		if msg.Role == "assistant" && msg.FormatHint == "" {
 			mdLines = renderMarkdownRows(msg.Content, contentWidth, m.asciiMode)
-		}
-		var userPainted []string
-		if msg.Role == "user" {
-			userPainted = paintWrappedMentions(msg.Content, attachedSkillNames(m.selectedSkills), mdTexts(mdLines), styleUser)
 		}
 		var msgRows []chatRow
 		fenceN := 0
@@ -3573,18 +4396,13 @@ func (m *AppModel) buildChatRows() []chatRow {
 				rendered = pad + lineStyle.Render(stripANSI(line))
 			} else if msg.Role == "assistant" && msg.FormatHint == "" {
 				rendered = line
-			} else if msg.Role == "user" && i < len(userPainted) {
-				rendered = userPainted[i]
 			} else {
 				rendered = lineStyle.Render(stripANSI(line))
 			}
 			copyFence := ml.CopyCode != ""
 			copyOn := showCopy && i == len(mdLines)-1
-			if copyOn && !boxed && !copyFence {
+			if copyOn && !copyFence {
 				rendered = rendered + styleLink.Render(copyChip)
-			}
-			if rightAlign && !boxed {
-				rendered = rightAlignPlain(rendered, width)
 			}
 			row := chatRow{Text: rendered, MsgIdx: mi, Copy: copyOn || copyFence}
 			if copyFence {
@@ -3593,9 +4411,6 @@ func (m *AppModel) buildChatRows() []chatRow {
 				fenceN++
 			}
 			msgRows = append(msgRows, row)
-		}
-		if boxed {
-			msgRows = strokeChatRows(msgRows, width, true, m.asciiMode)
 		}
 		if mi > 0 && chatGapBefore(m.messages[mi-1], msg) {
 			rows = append(rows, chatRow{})
@@ -3805,7 +4620,15 @@ func (m *AppModel) renderInputLine() string {
 		default:
 			prefix = " chat "
 		}
-		body = m.inputValue
+		// While a raw (non-bracketed) paste flood is active, chars arrive
+		// one-by-one and would render as char-by-char. Hide the partial flood
+		// and show a single placeholder until it settles to [Pasted N chars].
+		// On production Windows the flood is rejected outright (use Alt+V).
+		if m.pasteBurst.active && m.authPhase == AuthNone && !(runtime.GOOS == "windows" && m.rejectWindowsRawPaste) {
+			body = "[Pasting…]"
+		} else {
+			body = m.inputValue
+		}
 	}
 	caret := " "
 	if m.cursorOn {
@@ -3839,10 +4662,10 @@ func (m *AppModel) renderInputLine() string {
 	}
 
 	bodyLines := strings.Split(body, "\n")
-	const maxVis = 6
-	if len(bodyLines) > maxVis {
-		bodyLines = bodyLines[len(bodyLines)-maxVis:]
-	}
+	// No composer clamp: pastes collapse to one "[Pasted N chars]" token and
+	// manually typed multi-line prompts render fully (CA-560). Clamping also
+	// misaligned caret offsets once the input grew past the window, losing the
+	// cursor entirely.
 
 	var inner []string
 	if m.approval != nil {
@@ -4004,14 +4827,45 @@ func (m *AppModel) lastAssistantText() string {
 	return ""
 }
 
-func buildGateMessage(opts []string, regressed []string) string {
+func buildGateMessage(status, errMsg string, opts []string, regressed []string) string {
 	var sb strings.Builder
-	sb.WriteString("[GATE] Flow gate triggered.\n")
-	if len(regressed) > 0 {
-		sb.WriteString(fmt.Sprintf("  Regressed tests: %s\n", strings.Join(regressed, ", ")))
+	lowStatus := strings.ToLower(strings.TrimSpace(status))
+	hasOpts := len(opts) > 0
+	hasRegressed := len(regressed) > 0
+	// Only a real block with a decision card keeps the legacy detailed card.
+	// Legacy tests emit GateOptions without Status — treat empty status + opts as block for view compat.
+	if hasOpts && (lowStatus == "block" || lowStatus == "") {
+		sb.WriteString("[GATE] Flow gate blocked.\n")
+		if hasRegressed {
+			sb.WriteString(fmt.Sprintf("  Regressed tests: %s\n", strings.Join(regressed, ", ")))
+		}
+		sb.WriteString("  Options: ")
+		sb.WriteString(strings.Join(opts, ", "))
+		return sb.String()
 	}
-	sb.WriteString("  Options: ")
-	sb.WriteString(strings.Join(opts, ", "))
+	switch lowStatus {
+	case "reprompt":
+		sb.WriteString("[GATE] auto-reprompt")
+	case "warn":
+		sb.WriteString("[GATE] warn")
+	case "block":
+		sb.WriteString("[GATE] blocked")
+	default:
+		if lowStatus == "" {
+			sb.WriteString("[GATE] Flow gate triggered.")
+		} else {
+			sb.WriteString("[GATE] " + lowStatus)
+		}
+	}
+	if msg := strings.TrimSpace(errMsg); msg != "" {
+		sb.WriteString(" — " + msg)
+	} else if lowStatus == "reprompt" {
+		sb.WriteString(" — gate is re-applying fixes (no action needed)")
+	}
+	if hasRegressed {
+		sb.WriteString(fmt.Sprintf("\n  Regressed tests: %s", strings.Join(regressed, ", ")))
+	}
+	// Intentionally no "Options:" line when hasOpts == false.
 	return sb.String()
 }
 
@@ -4108,7 +4962,9 @@ func (m *AppModel) beginLogin(args []string) (tea.Model, tea.Cmd) {
 // ---- Commands (Tea.Cmd factories) -------------------------------------------
 
 func (m *AppModel) cmdConnect() tea.Cmd {
+	tuiLog("cmdConnect() start runner=%s", m.runnerURL)
 	return func() tea.Msg {
+		tuiLog("cmdConnect() -> ConnectedMsg runner=%s", m.runnerURL)
 		return ConnectedMsg{RunnerURL: m.runnerURL}
 	}
 }
@@ -4187,6 +5043,8 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 		}
 	}
 	return func() tea.Msg {
+		tuiLog("cmdLoadSessionDefaults() start flagProvider=%q flagModel=%q project=%q", flagProvider, flagModel, projectPath)
+		start := time.Now()
 		// Start the slow catalog fetch FIRST so it overlaps the account/provider
 		// path during the FlowPilot banner phase. The banner already says
 		// "loading session · project · providers — chat locked", so the project
@@ -4197,10 +5055,13 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 		}
 		catalogCh := make(chan catalogResult, 1)
 		go func() {
+			t0 := time.Now()
+			tuiLog("cmdLoadSessionDefaults catalog fetch start")
 			cl := client.New(runnerURL)
 			ctxProjects, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			ps, err := cl.ListProjects(ctxProjects)
+			tuiLog("cmdLoadSessionDefaults catalog fetch done dur=%v err=%v n=%d", time.Since(t0), err, len(ps))
 			catalogCh <- catalogResult{projects: ps, err: err}
 		}()
 
@@ -4211,12 +5072,19 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 		// (CA-535). The runner's /providers handler also honors r.Context()
 		// cancel and caches results, so in practice this resolves in ms.
 		cl := client.New(runnerURL)
-		ctxFast, cancelFast := context.WithTimeout(context.Background(), 8*time.Second)
+		// Grok quota needs 2× billing HTTP (credits + fallback) per home; 4 homes
+		// serial is up to ~20s cold. Desktop shows 7d fine; TUI's 8s budget
+		// truncated it to Team UUID fallback. Give it a dedicated 20s.
+		ctxFast, cancelFast := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelFast()
+		t0Provs := time.Now()
 		accounts, accErr := cl.ListProviderAccounts(ctxFast)
-		ctxProvs, cancelProvs := context.WithTimeout(context.Background(), 2*time.Second)
+		tuiLog("cmdLoadSessionDefaults accounts done dur=%v err=%v n=%d", time.Since(t0Provs), accErr, len(accounts))
+		t0Provs2 := time.Now()
+		ctxProvs, cancelProvs := context.WithTimeout(context.Background(), 8*time.Second)
 		providers, provErr := cl.ListProviders(ctxProvs)
 		cancelProvs()
+		tuiLog("cmdLoadSessionDefaults providers done dur=%v err=%v n=%d", time.Since(t0Provs2), provErr, len(providers))
 		provider, model, label := pickActiveSessionDefaults(flagProvider, flagModel, accounts, providers)
 
 		cat := <-catalogCh
@@ -4260,6 +5128,7 @@ func (m *AppModel) cmdLoadSessionDefaults() tea.Cmd {
 				}
 			}
 		}
+		tuiLog("cmdLoadSessionDefaults() done dur=%v accounts=%d providers=%d projects=%d catalogErr=%q accErr=%v provErr=%v", time.Since(start), len(accounts), len(providers), len(projects), catalogErr, accErr, provErr)
 		return SessionDefaultsMsg{
 			Provider:         provider,
 			Model:            model,
@@ -4621,19 +5490,42 @@ func (m *AppModel) startupGrokYoloPostureCmd() tea.Cmd {
 	return m.cmdGrokYoloPosture(true)
 }
 
+// tuiProgramOpts returns Bubble Tea program options. On Windows the conhost
+// ReadConsoleInput path with ENABLE_MOUSE_INPUT (WithMouseCellMotion) shares
+// a 64-event queue with keys; a WT paste flood fills it with coninput mouse
+// Mouse is enabled on all platforms so F2 [open]/[back]/[stop]/[copy] and
+// wheel scroll stay live while a sub-agent is RUNNING. Windows Ctrl+V is
+// rejected as a raw flood (use Alt+V) so the 64-event conhost queue does not
+// fill with mouse+key records (log 18936/22964). Alt+V (clipboard 1 msg) and
+// Ctrl+V KeyCtrlV hint remain.
+func tuiProgramOpts() []tea.ProgramOption {
+	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion()}
+}
+
 // ---- Run (entrypoint) -------------------------------------------------------
 
-// Run starts the Bubble Tea program. In headless/print mode it runs
+ // Run starts the Bubble Tea program. In headless/print mode it runs
 // the model loop and prints the final response to stdout, then exits.
 func Run(cfg config.ChatConfig, runnerURL string) error {
+	initTUILog()
+	tuiLog("Run() start print=%v runner=%s", cfg.Print, runnerURL)
 	m := New(cfg, runnerURL)
 
 	if cfg.Print {
-		return runHeadless(m, cfg.Prompt)
+		err := runHeadless(m, cfg.Prompt)
+		tuiLog("Run() headless done err=%v", err)
+		tuiLogClose()
+		return err
 	}
 
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	if runtime.GOOS == "windows" {
+		m.rejectWindowsRawPaste = true
+	}
+	p := tea.NewProgram(m, tuiProgramOpts()...)
 	_, err := p.Run()
+	_, _ = os.Stdout.WriteString(decawmOn)
+	tuiLog("Run() exit err=%v", err)
+	tuiLogClose()
 	return err
 }
 
@@ -4676,6 +5568,7 @@ func runHeadless(m *AppModel, prompt string) error {
 		Prompt:          prompt,
 		ReasoningEffort: m.cfg.ReasoningEffort,
 		YoloMode:        &yoloCopy,
+		ChatPosture:     m.activePosture(),
 	}
 	if m.cfg.Model != "" {
 		model := m.cfg.Model

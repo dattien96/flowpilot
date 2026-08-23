@@ -414,17 +414,28 @@ func loadAccountLaunchMetadata(account runner.ProviderAccount) (accountLaunchMet
 // OAuth bearer token Grok Build's own `/usage` TUI command uses, and
 // loadGrokQuota calls the real billing endpoint behind it (live-verified).
 type grokAuthEntry struct {
-	Email     string `json:"email"`
-	FirstName string `json:"first_name"`
-	LastName  string `json:"last_name"`
-	TeamID    string `json:"team_id"`
-	Key       string `json:"key"`
+	Email                     string `json:"email"`
+	FirstName                 string `json:"first_name"`
+	LastName                  string `json:"last_name"`
+	TeamID                    string `json:"team_id"`
+	Key                       string `json:"key"`
+	RefreshToken              string `json:"refresh_token"`
+	ExpiresAt                 string `json:"expires_at"`
+	OidcIssuer                string `json:"oidc_issuer"`
+	OidcClientID              string `json:"oidc_client_id"`
+	AuthMode                  string `json:"auth_mode"`
+	CreateTime                string `json:"create_time"`
+	UserID                    string `json:"user_id"`
+	ProfileImageAssetID       string `json:"profile_image_asset_id"`
+	PrincipalType             string `json:"principal_type"`
+	PrincipalID               string `json:"principal_id"`
+	CodingDataRetentionOptOut bool   `json:"coding_data_retention_opt_out"`
 }
 
 // grokCLIChatProxyBaseURL is Grok Build's own backend base URL, overridable
 // via GROK_CLI_CHAT_PROXY_BASE_URL (live-verified string in the installed
 // `grok` binary, Task-216). The billing/usage route lives under it.
-const grokCLIChatProxyBaseURL = "https://cli-chat-proxy.grok.com/v1"
+var grokCLIChatProxyBaseURL = "https://cli-chat-proxy.grok.com/v1"
 
 // grokCLICreditsBillingPath is the query Grok CLI 1.0.3 uses for `/usage`
 // remaining (live-verified in grok.exe: `/billing?format=credits`). Plain
@@ -470,17 +481,25 @@ func loadGrokAccountMetadata(homePath string) (accountLaunchMetadata, error) {
 	if err := readJSONFile(authPath, &raw); err != nil {
 		return metadata, nil
 	}
-	for _, entry := range raw {
-		metadata.accountEmail = entry.Email
-		if name := strings.TrimSpace(entry.FirstName + " " + entry.LastName); name != "" {
+	for mapKey, entry := range raw {
+		mutable := entry
+		// Pre-emptive refresh when key is expired (Grok OIDC 6h TTL, live-verified).
+		// Avoids a wasted 401 then retry. This is Grok-only; Codex/Claude/Gemini unchanged.
+		if grokKeyExpired(mutable.ExpiresAt) && strings.TrimSpace(mutable.RefreshToken) != "" {
+			if refreshed := tryRefreshGrokAuth(authPath, mapKey, &mutable); refreshed {
+				// mutable now holds fresh key/refresh_token/expires_at
+			}
+		}
+		metadata.accountEmail = mutable.Email
+		if name := strings.TrimSpace(mutable.FirstName + " " + mutable.LastName); name != "" {
 			metadata.accountName = name
 		}
-		if entry.TeamID != "" {
-			metadata.usageSummary = "Team " + entry.TeamID
+		if mutable.TeamID != "" {
+			metadata.usageSummary = "Team " + mutable.TeamID
 		} else {
 			metadata.usageSummary = "Personal"
 		}
-		applyGrokQuotaLine(&metadata, loadGrokQuota(entry.Key))
+		applyGrokQuotaLine(&metadata, loadGrokQuotaWithRefresh(&mutable, authPath, mapKey))
 		break // a single active auth entry is expected per home
 	}
 	return metadata, nil
@@ -501,29 +520,188 @@ func loadGrokQuota(bearerToken string) *usageDetailLine {
 }
 
 func fetchGrokBilling(bearerToken, path string) *usageDetailLine {
+	line, _ := fetchGrokBillingWithStatus(bearerToken, path)
+	return line
+}
+
+func fetchGrokBillingWithStatus(bearerToken, path string) (*usageDetailLine, int) {
 	request, err := http.NewRequest(http.MethodGet, grokCLIChatProxyBaseURL+path, nil)
 	if err != nil {
-		return nil
+		return nil, 0
 	}
 	request.Header.Set("Authorization", "Bearer "+bearerToken)
 	request.Header.Set("Accept", "application/json")
 
 	response, err := httpClient().Do(request)
 	if err != nil {
-		return nil
+		return nil, 0
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil
+		return nil, response.StatusCode
 	}
 
 	var billing grokBillingResponse
 	if err := json.NewDecoder(response.Body).Decode(&billing); err != nil {
-		return nil
+		return nil, response.StatusCode
 	}
 
-	return grokQuotaFromBilling(billing)
+	return grokQuotaFromBilling(billing), response.StatusCode
+}
+
+// loadGrokQuotaWithRefresh is the Grok-only 401/expired -> OIDC refresh -> retry path.
+// Pre-emptive expiry refresh is handled in loadGrokAccountMetadata; this handles the
+// 401-after-call fallback. Scope is Grok-only; Codex/Claude/Gemini untouched.
+func loadGrokQuotaWithRefresh(entry *grokAuthEntry, authPath, mapKey string) *usageDetailLine {
+	if entry == nil {
+		return nil
+	}
+	token := strings.TrimSpace(entry.Key)
+	if token == "" {
+		return nil
+	}
+	// attempt credits path
+	if line, status := fetchGrokBillingWithStatus(token, grokCLICreditsBillingPath); line != nil {
+		return line
+	} else if status == http.StatusUnauthorized && strings.TrimSpace(entry.RefreshToken) != "" {
+		if tryRefreshGrokAuth(authPath, mapKey, entry) {
+			token = strings.TrimSpace(entry.Key)
+			if line2, _ := fetchGrokBillingWithStatus(token, grokCLICreditsBillingPath); line2 != nil {
+				return line2
+			}
+			// retry fallback with fresh token as well
+			if line2, _ := fetchGrokBillingWithStatus(token, "/billing"); line2 != nil {
+				return line2
+			}
+			return nil
+		}
+	}
+	// credits miss without 401, or refresh not applicable -> try fallback with original token
+	if line, status := fetchGrokBillingWithStatus(token, "/billing"); line != nil {
+		return line
+	} else if status == http.StatusUnauthorized && strings.TrimSpace(entry.RefreshToken) != "" {
+		if tryRefreshGrokAuth(authPath, mapKey, entry) {
+			token = strings.TrimSpace(entry.Key)
+			if line2, _ := fetchGrokBillingWithStatus(token, "/billing"); line2 != nil {
+				return line2
+			}
+			if line2, _ := fetchGrokBillingWithStatus(token, grokCLICreditsBillingPath); line2 != nil {
+				return line2
+			}
+		}
+	}
+	return nil
+}
+
+func grokKeyExpired(expiresAt string) bool {
+	raw := strings.TrimSpace(expiresAt)
+	if raw == "" {
+		return false
+	}
+	var t time.Time
+	var err error
+	t, err = time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return false
+		}
+	}
+	// 5m early buffer so we refresh before the exact expiry second.
+	return time.Now().After(t.Add(-5 * time.Minute))
+}
+
+func refreshGrokAccessToken(refreshToken, oidcIssuer, oidcClientID string) (string, string, time.Time, error) {
+	refreshToken = strings.TrimSpace(refreshToken)
+	oidcIssuer = strings.TrimSpace(oidcIssuer)
+	oidcClientID = strings.TrimSpace(oidcClientID)
+	if refreshToken == "" || oidcIssuer == "" || oidcClientID == "" {
+		return "", "", time.Time{}, fmt.Errorf("missing refresh material")
+	}
+	issuer := strings.TrimRight(oidcIssuer, "/")
+	tokenURL := issuer + "/oauth2/token"
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	form.Set("client_id", oidcClientID)
+	req, err := http.NewRequest(http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return "", "", time.Time{}, fmt.Errorf("grok refresh %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var payload struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int64  `json:"expires_in"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", "", time.Time{}, err
+	}
+	if strings.TrimSpace(payload.AccessToken) == "" {
+		return "", "", time.Time{}, fmt.Errorf("empty access_token")
+	}
+	expiresAt := time.Now().UTC().Add(time.Duration(payload.ExpiresIn) * time.Second)
+	if payload.ExpiresIn <= 0 {
+		expiresAt = time.Now().UTC().Add(6 * time.Hour)
+	}
+	newRefresh := strings.TrimSpace(payload.RefreshToken)
+	if newRefresh == "" {
+		newRefresh = refreshToken
+	}
+	return strings.TrimSpace(payload.AccessToken), newRefresh, expiresAt, nil
+}
+
+func tryRefreshGrokAuth(authPath, mapKey string, entry *grokAuthEntry) bool {
+	if entry == nil || strings.TrimSpace(entry.RefreshToken) == "" {
+		return false
+	}
+	issuer := strings.TrimSpace(entry.OidcIssuer)
+	if issuer == "" {
+		issuer = "https://auth.x.ai"
+	}
+	clientID := strings.TrimSpace(entry.OidcClientID)
+	if clientID == "" {
+		clientID = "b1a00492-073a-47ea-816f-4c329264a828"
+	}
+	newKey, newRefresh, expiresAt, err := refreshGrokAccessToken(entry.RefreshToken, issuer, clientID)
+	if err != nil {
+		return false
+	}
+	entry.Key = newKey
+	entry.RefreshToken = newRefresh
+	entry.ExpiresAt = expiresAt.Format(time.RFC3339Nano)
+	// Persist back to auth.json preserving other fields.
+	rawBytes, err := os.ReadFile(authPath)
+	if err != nil {
+		return true // in-memory updated, file write best-effort
+	}
+	var fileMap map[string]map[string]any
+	if err := json.Unmarshal(rawBytes, &fileMap); err != nil {
+		return true
+	}
+	if m, ok := fileMap[mapKey]; ok {
+		m["key"] = entry.Key
+		m["refresh_token"] = entry.RefreshToken
+		m["expires_at"] = entry.ExpiresAt
+		fileMap[mapKey] = m
+		out, err := json.MarshalIndent(fileMap, "", "  ")
+		if err != nil {
+			return true
+		}
+		_ = os.WriteFile(authPath, append(out, '\n'), 0600)
+	}
+	return true
 }
 
 // applyGrokQuotaLine copies a Grok usage line onto account metadata. Weekly
@@ -1221,6 +1399,8 @@ func readJSONFile(path string, target any) error {
 	if err != nil {
 		return err
 	}
+	// Strip UTF-8 BOM (PowerShell Set-Content writes BOM on Windows, breaks json.Unmarshal).
+	raw = bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
 	return json.Unmarshal(raw, target)
 }
 

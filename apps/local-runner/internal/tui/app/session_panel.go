@@ -88,12 +88,9 @@ func (m *AppModel) flowStepsPanelLines() []string {
 		}
 		st := strings.ToUpper(strings.TrimSpace(s.Status))
 		// OpenCode todo-list glyph: [✓] done, [•] in progress, [x] failed, [ ] pending.
+		// Pending/empty must be [ ] — not ✓ — so the F2 list does not look done
+		// before the step ever ran (rag-harness F1: validate/audit pending).
 		glyph := " "
-		if m.asciiMode {
-			glyph = "+"
-		} else {
-			glyph = "✓"
-		}
 		lineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
 		var suffix string
 		switch st {
@@ -108,10 +105,17 @@ func (m *AppModel) flowStepsPanelLines() []string {
 			suffix = " " + st
 			lineStyle = styleStepRunning
 		case "DONE":
+			if m.asciiMode {
+				glyph = "+"
+			} else {
+				glyph = "✓"
+			}
 			lineStyle = styleStepDone
 		case "FAILED":
 			glyph = "x"
 			lineStyle = styleStepFailed
+		case "SKIPPED", "CANCELLED", "CANCELED":
+			glyph = "-"
 		}
 		line := fmt.Sprintf("[%s] %s%s", glyph, name, suffix)
 		action := ""
@@ -349,7 +353,10 @@ func (m *AppModel) renderSessionPanelOverlay() []string {
 
 func rightAlignPlain(s string, width int) string {
 	w := lipgloss.Width(s)
-	if w >= width {
+	if w > width {
+		return truncateVisual(s, width)
+	}
+	if w == width {
 		return s
 	}
 	return strings.Repeat(" ", width-w) + s
@@ -382,7 +389,8 @@ func (m *AppModel) sideWidth() int {
 	return w
 }
 
-// contentWidth is the chat-column width available when the right sidebar is active.
+// contentWidth is the chat-pane width. The -1 is the unused last terminal
+// column (macOS autowrap), not a separator between panes.
 func (m *AppModel) contentWidth() int {
 	if !m.useRightSidebar() {
 		return m.terminalWidth()
@@ -491,39 +499,24 @@ func padLinesTo(lines []string, h int) []string {
 	return lines
 }
 
-// joinRightSidebar combines the main chat column with the full-height right
-// sidebar column. left lines are padded/truncated to contentW (== sideX-1), a
-// single separator column follows, then each sidebar line padded to sideW. The
-// separator and sidebar are painted with the lighter sidebar background so the
-// right column reads as a solid panel over the dark canvas (CA-532).
-func joinRightSidebar(left, side []string, sideW, sideX int, ascii bool) string {
-	contentW := sideX - 1
-	sep := "│"
-	if ascii {
-		sep = "|"
+func (m *AppModel) renderSidebarPane(w, h int) string {
+	if w < 1 {
+		w = 1
 	}
-	n := len(left)
-	if len(side) > n {
-		n = len(side)
+	if h < 1 {
+		h = 1
 	}
-	out := make([]string, 0, n)
-	for i := 0; i < n; i++ {
-		l := ""
-		if i < len(left) {
-			l = left[i]
-		}
-		if lipgloss.Width(stripANSI(l)) > contentW {
-			l = truncateVisual(l, contentW)
-		}
-		l = padTo(l, contentW)
-		s := ""
-		if i < len(side) {
-			s = side[i]
-		}
-		s = paintRow(s, sideW, styleSidebar)
-		out = append(out, l+styleSidebar.Render(sep)+s)
+	lines := m.renderRightSidebar(h)
+	if len(lines) > h {
+		lines = lines[:h]
 	}
-	return strings.Join(out, "\n")
+	for len(lines) < h {
+		lines = append(lines, " ")
+	}
+	for i, line := range lines {
+		lines[i] = paintRow(line, w, styleSidebar)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // suggestionWindow returns an inclusive-exclusive [start,end) window of size limit

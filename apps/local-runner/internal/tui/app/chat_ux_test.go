@@ -18,8 +18,12 @@ func TestFilterSlashSuggestions_ShowsOnSlash(t *testing.T) {
 		t.Fatal("expected suggestions for '/'")
 	}
 	sugg = filterSlashSuggestions("/mo")
-	if len(sugg) != 1 || sugg[0].name != "/model" {
-		t.Fatalf("got %+v want /model", sugg)
+	names := map[string]bool{}
+	for _, sc := range sugg {
+		names[sc.name] = true
+	}
+	if !names["/model"] || !names["/mode"] || !names["/mode-setup"] {
+		t.Fatalf("got %+v want /model + /mode + /mode-setup", sugg)
 	}
 	if filterSlashSuggestions("/model gpt") != nil {
 		t.Fatal("no suggestions once args are typed")

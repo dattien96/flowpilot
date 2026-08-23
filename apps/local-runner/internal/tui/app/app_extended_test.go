@@ -212,10 +212,12 @@ func TestA8_4_SlashStatus_ShowsState(t *testing.T) {
 
 func TestA8_5_SlashHelp_ShowsCommands(t *testing.T) {
 	m := app.New(config.ChatConfig{}, "http://127.0.0.1:4317")
+	tmp, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 60})
+	m = tmp.(*app.AppModel)
 	m, _ = typeKeysExt(m, "/help")
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	view := m2.(*app.AppModel).View()
-	for _, cmd := range []string{"/yolo", "/clear", "/exit", "/agents", "/skill", "/image"} {
+	for _, cmd := range []string{"/yolo", "/clear", "/exit", "/agents", "/skill", "/image", "/scan"} {
 		if !strings.Contains(view, cmd) {
 			t.Errorf("expected %q in /help view:\n%s", cmd, view)
 		}

@@ -482,6 +482,13 @@ export interface TurnInput {
   model?: string;
   yoloMode?: boolean;
   /**
+   * Chat posture (scan/plan/code) — OpenCode-style mode switching (Task-xxx/
+   * CA-xxx). Omitted in workflow/step mode. Scan/Plan are read-only: the runner
+   * auto-approves reads and auto-denies writes without asking the user. The
+   * composer resends the current posture on every chat turn, like model/YOLO.
+   */
+  chatPosture?: "scan" | "plan" | "code";
+  /**
    * Image attachments for this chat turn (Task-052). Carried inline as base64.
    * Omitted in workflow/step mode and when no images are attached. Supported only
    * by vision-capable providers; the composer gates the attach control accordingly.
@@ -507,6 +514,35 @@ export interface BuiltinFlowOption {
   label: string;
   description: string;
 }
+
+/**
+ * Chat posture (Task-xxx / CA-xxx): OpenCode-style Scan/Plan/Code mode
+ * switching. Each posture has an optional pinned profile (provider/model/
+ * reasoning/yolo) that the client applies when the posture is activated; empty
+ * fields inherit the current session selection. The document is owned by the
+ * runner (SSOT, shared file) and both Desktop + TUI reach it ONLY through the
+ * runner's GET/PUT /client/chat-posture endpoints.
+ */
+export type ChatPosture = "scan" | "plan" | "code";
+
+export interface ChatPostureProfile {
+  provider?: string;
+  model?: string;
+  reasoningEffort?: string;
+  yolo?: boolean;
+}
+
+export interface ChatPostureConfig {
+  active: ChatPosture;
+  profiles: Record<ChatPosture, ChatPostureProfile>;
+}
+
+/** Posture labels/descriptions for the composer tabs + setup modal. */
+export const CHAT_POSTURES: { key: ChatPosture; label: string; hint: string }[] = [
+  { key: "scan", label: "Scan", hint: "Read-only exploration — reads auto-approve, writes auto-deny." },
+  { key: "plan", label: "Plan", hint: "Read-only planning — reads auto-approve, writes auto-deny." },
+  { key: "code", label: "Code", hint: "Normal approvals / YOLO — full tool access." },
+];
 
 // ---- ProviderEventDTO (serialized ProviderEvent union) ---------------------
 
@@ -822,6 +858,14 @@ export interface RunnerClient {
    * state flip. See store.ts's toggleYoloForActiveProvider.
    */
   applyGrokYoloPosture(yolo: boolean): Promise<void>;
+  /**
+   * Chat posture document (Task-xxx/CA-xxx): GET /client/chat-posture.
+   * The runner owns the shared file (SSOT); the client never touches it directly.
+   * Optional so mock/older clients degrade gracefully.
+   */
+  getChatPosture?(): Promise<ChatPostureConfig>;
+  /** PUT /client/chat-posture — persists the active posture + profile pins. */
+  setChatPosture?(config: ChatPostureConfig): Promise<ChatPostureConfig>;
   openProviderAccountTerminal(accountId: string): Promise<void>;
   /** System control — mirrors admin-web's runner gateway (`POST /system/restart`). */
   restartStack(): Promise<void>;

@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var ansiCSI = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
+var ansiCSI = regexp.MustCompile(`\x1b\[[0-9:;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b\(B`)
 
 func stripANSI(s string) string {
 	return ansiCSI.ReplaceAllString(s, "")
@@ -61,7 +61,7 @@ func (m *AppModel) tuiChrome() tuiChrome {
 	if m.useRightSidebar() {
 		c.sideActive = true
 		c.sideW = m.sideWidth()
-		c.sideX = m.terminalWidth() - c.sideW
+		c.sideX = m.chatWidth()
 		c.sideLines = m.renderRightSidebar(m.height)
 		c.panelLines = nil
 		c.panelH = 0
@@ -103,7 +103,9 @@ func isLeftMouseClick(msg tea.MouseMsg) bool {
 
 func pulseMouseTracking() tea.Cmd {
 	// Drop Windows Terminal native selection (Shift+drag) by briefly leaving mouse mode.
-	return tea.Sequence(tea.DisableMouse, tea.EnableMouseCellMotion)
+	// On Windows, DisableMouse+Enable can drop the next KeyMsg (F2/Enter) — only
+	// pulse when Shift is held (native selection), otherwise just ensure mouse is on.
+	return tea.EnableMouseCellMotion
 }
 
 func (m *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
@@ -235,6 +237,7 @@ func (m *AppModel) autoCopySelectionOnDragEnd() tea.Cmd {
 
 func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 	target := m.clickTargetAt(x, y)
+	tuiLog("mouse click x=%d y=%d target=%q", x, y, target)
 	switch {
 	case target == "session":
 		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
@@ -343,6 +346,12 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 			m.toggleToolGroup(key)
 			return m, nil
 		}
+	case strings.HasPrefix(target, "user-prompt-expand:"):
+		content := strings.TrimPrefix(target, "user-prompt-expand:")
+		if content != "" {
+			m.toggleUserPrompt(content)
+			return m, nil
+		}
 	case strings.HasPrefix(target, "copy:"):
 		idx, err := strconv.Atoi(strings.TrimPrefix(target, "copy:"))
 		if err == nil {
@@ -354,6 +363,7 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		return m, m.cmdFocusAgent(m.mainRunID())
 	case strings.HasPrefix(target, "agent-open:"):
 		runID := strings.TrimPrefix(target, "agent-open:")
+		tuiLog("mouse agent-open runID=%s", runID)
 		if runID != "" {
 			return m, m.cmdFocusAgent(runID)
 		}
@@ -476,6 +486,9 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 		return t
 	}
 	if t := hitCopyChrome(m, c, x, y); t != "" {
+		return t
+	}
+	if t := hitUserPromptChrome(m, c, x, y); t != "" {
 		return t
 	}
 	if t := hitToolGroupChrome(m, c, x, y); t != "" {
@@ -860,6 +873,23 @@ func hitCopyChrome(m *AppModel, c tuiChrome, x, y int) string {
 		return "copyfence:" + strconv.Itoa(rows[rel].MsgIdx) + ":" + strconv.Itoa(rows[rel].FenceIdx)
 	}
 	return "copy:" + strconv.Itoa(rows[rel].MsgIdx)
+}
+
+// hitUserPromptChrome maps a click on any row of a user prompt bubble that
+// exceeds the 4-line clamp (CA-559/CA-607) to a "user-prompt-expand:<content>"
+// toggle target. The whole box is clickable (every youBox row carries the key);
+// the [copy] chip is hit-tested first (hitCopyChrome), so clicking the chip
+// copies instead of toggling.
+func hitUserPromptChrome(m *AppModel, c tuiChrome, x, y int) string {
+	rows := sliceChatRows(m.chatRows(), c.messagesHeight, m.viewport.offset)
+	rel := y - c.panelH
+	if rel < 0 || rel >= len(rows) {
+		return ""
+	}
+	if rows[rel].PromptExpandKey == "" {
+		return ""
+	}
+	return "user-prompt-expand:" + rows[rel].PromptExpandKey
 }
 
 // hitToolGroupChrome maps a click on a collapsed/expanded multi-tool summary row

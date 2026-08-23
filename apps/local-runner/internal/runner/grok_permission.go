@@ -22,8 +22,19 @@ func grokApprovalDetailsFromRequest(params map[string]any) ApprovalDetails {
 			command = cmd
 		}
 	}
+	// Reason carries the tool name/kind so the read-only posture classifier
+	// (chat_posture_policy.go) can tell a Grok read tool from a write/edit.
+	reason := title
+	if meta, _ := toolCall["_meta"].(map[string]any); meta != nil {
+		if toolMeta, ok := meta["x.ai/tool"].(map[string]any); ok {
+			if name, _ := toolMeta["name"].(string); name != "" {
+				reason = name
+			}
+		}
+	}
 	return ApprovalDetails{
 		Command: command,
+		Reason:  reason,
 		Kind:    grokPermissionKind(toolCall),
 		Decisions: []ApprovalDecisionOption{
 			{Value: "approve", Label: "Approve"},

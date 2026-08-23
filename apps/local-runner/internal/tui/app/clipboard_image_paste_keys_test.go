@@ -36,9 +36,9 @@ func TestAltV_KeyRunes_DispatchesClipboardPaste(t *testing.T) {
 
 // Bracketed paste (Windows Terminal Ctrl+V) delivers the pasted text directly
 // in the runes. CA-541: it must NOT go through the system clipboard — a locked
-// clipboard read on the typing hot path froze the composer. Plain text inserts
-// immediately; the clipboard is only consulted for empty (image-only) pastes or
-// pasted image file paths.
+// clipboard read on the typing hot path froze the composer. A paste block
+// collapses to a "[Pasted N chars]" token (CA-560); the clipboard is only
+// consulted for empty (image-only) pastes or pasted image file paths.
 func TestBracketedPaste_PlainTextInsertsDirectly(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:9")
 	m.provider = "codex"
@@ -49,8 +49,8 @@ func TestBracketedPaste_PlainTextInsertsDirectly(t *testing.T) {
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("some text"), Paste: true}
 	m2, _ := m.handleKey(msg)
 	am := m2.(*AppModel)
-	if am.inputValue != "presome text" {
-		t.Fatalf("plain bracketed paste must insert directly; input=%q", am.inputValue)
+	if am.inputValue != "pre[Pasted 9 chars]" {
+		t.Fatalf("paste block must collapse to a token; input=%q", am.inputValue)
 	}
 }
 

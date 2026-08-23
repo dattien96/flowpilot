@@ -328,3 +328,124 @@ Parser schema v2 + trả error thay vì rỗng im lặng. Follow-up CA-434 map f
 | P-6 Dependence | ☐ automated ✅ | ☐ B12/B23 | **Code done** — manual tick in doc |
 
 **CP-43 code complete (2026-08-11).** Verification-complete = tick manual steps trong doc này + one-shot bundle xanh.
+
+
+
+
+
+###############################################
+# P-1 — Change Contract
+## [CHAT] C1 — Khai contract declared → lưu store
+Prompt:
+[Change Contract]
+feature: calc-core
+intent: them ham SubtractWithGuard vao calc.go tra ve error khi b > a
+files: calc.go, calc_test.go
+symbols: Subtract
+
+Thuc hien:
+1. Them `SubtractWithGuard(a, b int) (int, error)` vao calc.go (b > a -> error).
+2. Them test vao calc_test.go.
+3. Chay `go test ./...`.
+Verify: contracts.ndjson entry confidence:"declared", declared_paths, feature_key; log gate pass không violation.
+## [CHAT] C2 — Không khai → reprompt 1 lần → inferred (B15)
+Prompt:
+Fix giup toi: Percentage(part, whole int) tra ve 0.0 khi whole=0 nhung khong canh bao. Them ham PercentageSafe tra error khi whole=0.
+Verify: log có đúng 1 lần reprompt r-contract; entry confidence:"inferred"; turn không chặn.
+## [FLOW] F1 — Planner freeze → FrozenContractRecord
+Mở /flow → chọn rag-harness (có preflight_contract_plan → preflight_contract_freeze → context → implement). Prompt (chỉ nêu task, KHÔNG khai contract):
+Them ham ClampChecked(n, lo, hi int) (int, error) vao format.go: tra error khi lo > hi, ngoai ra clamp n vao [lo, hi]. Them test vao format_test.go. Chay go test ./...
+Verify:
+- contracts/frozen_contracts.ndjson + frozen_contract_events.ndjson có record (feature_key, intent, declared_paths, version).
+- Context step prompt (log context.produce) build được package từ rec.DeclaredPaths.
+# P-2 — Scope drift
+## [CHAT] C3 — Warn khi sửa file ngoài scope (B13)
+Chuẩn bị: gate-config.json → "gate_mode":"warn", restart runner.
+Prompt:
+[Change Contract]
+feature: calc-core
+intent: them ham ClampLoHi vao format.go
+files: format.go
+symbols: Clamp
+
+Thuc hien:
+1. Them `ClampLoHi(n, lo, hi int) int` vao format.go.
+2. Them test vao user_test.go.
+3. Chay go test ./...
+Verify: SSE warn liệt kê user_test.go; không chặn; sửa docs/*.md không bị tính drift.
+## [CHAT] C4 — Block high-severity (B14) — cần enforce + gitnexus
+Chuẩn bị: đổi gate_mode về enforce, restart.
+Prompt:
+[Change Contract]
+feature: calc-core
+intent: refactor parseUserID trong user.go dung helper moi
+files: user.go
+symbols: parseUserID
+
+Thuc hien:
+1. Them `IsValidInt(s string) bool` vao calc.go.
+2. Sua parseUserID goi IsValidInt.
+3. Chay go test ./...
+Verify: calc.go ngoài scope + có dependents → block severity=high. (GitNexus không có dependents → chỉ warn = degrade hợp lệ.)
+## [FLOW] F2 — Drift ngoài frozen declared_paths → hard block
+Mở /flow → rag-harness. Prompt cố ý để coder chạm file không nằm trong path planner khai:
+Hien tai Add tra ve a + b. Them mot ham AddWithLog(a, b int) int vao calc.go in log va tra ket qua, dong thoi them test cho no trong user_test.go.
+Verify: nếu planner chỉ khai calc.go mà coder sửa user_test.go → gate block + escalate (log flow_contract_freeze_chain / FrozenContractScopeDrift), flow dừng chờ amend; nếu planner khai đủ cả 2 file → flow chạy tiếp (không lỗi).
+
+## [FLOW] F3 — Planner khai sai/thiếu path → amend
+Prompt (task đòi sửa nhiều file nhưng nêu hướng hẹp):
+Sua ham Subtract trong calc.go va dong thoi cap nhat goi ham Subtract trong user.go cho dung kieu int.
+Verify: coder đụng user.go ngoài frozen scope → block → amend (tăng version, Supersedes) → chạy tiếp.
+# P-3 — Canonical Head
+## [CHAT] C5 — Gate pass → ghi Head ngay
+Prompt:
+[Change Contract]
+feature: calc-core
+intent: them ham ModuloChecked2 tra error khi b = 0
+files: calc.go, calc_test.go
+symbols: Modulo
+
+Thuc hien:
+1. Them `ModuloChecked2(a, b int) (int, error)` vao calc.go (b==0 -> ErrDivideByZero).
+2. Them test.
+3. Chay go test ./...
+Verify: canonical/calc-core.json updated_at đổi, status:"current", intent_signature tính lại.
+## [FLOW] F4 — Gate pass → Head PENDING (3.M3)
+Mở /flow → context-coding-review-synthesis. Prompt:
+Them ham MaxChecked(a, b int) (int, error) vao calc.go. Them test vao calc_test.go.
+Verify sau coder gate pass (trước khi flow done): canonical-pending/pending_canonical.ndjson có record "pending"; canonical/calc-core.json chưa ghi.
+## [FLOW] F5 — Terminal done → finalize đúng 1 lần (3.M4)
+Tiếp tục F4 đến khi flow đạt done. Verify: record pending thành finalized; canonical/calc-core.json ghi đúng 1 lần; chạy lại → không ghi lần 2 (durable, 2-phase).
+# P-4 — Superseding decisions
+## [CHAT] C6 — Rejected alternatives hiển thị (B18)
+Không cần prompt mới — sau C5:
+- Desktop panel ProjectsSettings → Canonical Head feature calc-core: thấy rejected decisions + do NOT re-attempt.
+- Prompt turn Coding kế tiếp (Chat) có ## Canonical state kèm rejected.
+## [FLOW] F6 — Churn A→B→C→A không replay (B17) — optional, 4 commit
+4 flow chạy riêng, mỗi cái 1 commit, đều dùng rag-harness:
+# Run 1: "Them doc comment cho Add trong calc.go"
+# Run 2: "Doi Add tra ve a+b+1 de thu nghiem"
+# Run 3: "Hoan nguyen Add ve a+b-1"
+# Run 4: "Dam bao Add tra ve a + b dung"
+Verify run 4: context prompt chỉ canonical hiện hành + rejected, không replay churn dương.
+# P-5 — Head-first packing
+## [CHAT] C7 — Head trước history (B19, chat)
+Chạy C5 prompt với Claude, rồi mở phiên mới với Codex (đổi provider).
+Verify cả 2: prompt-log ## Canonical state trước ## History/### Change History, không lặp.
+## [FLOW] F7 — Context package thứ tự section
+Mở /flow → rag-harness, prompt:
+Them ham PercentageChecked(part, whole int) (float64, error) vao calc.go. Them test.
+Verify prompt coder: thứ tự section theo priority — canonical.head (1) → feature.history (2, ranked theo locus nếu >30 candidates) → change.contract/source.dependence (3) → source.excerpt (4) → chat.summary (5). Chạy 2 lần → thứ tự giống hệt.
+## [CHAT|FLOW] C8 — Panel + sync (B21/B22) — không phụ thuộc mode
+- Panel Canonical Head feature calc-core → behavior + chip + rejected + scope-diff.
+- Chạy contextsync → manifest có canonical/*.json, không bao giờ có contracts.ndjson.
+- 
+# P-6 — source.dependence (FLOW only)
+## [FLOW] F8 — Blast-radius live (B12/B23)
+Mở /flow → context-coding-review-synthesis. Prompt:
+Them ham DivideChecked3(a, b int) (int, error) vao calc.go: b==0 -> (0, ErrDivideByZero).
+Verify ở bước reviewer_correctness/synthesis:
+- Prompt có ### source.dependence: "Sửa Divide ảnh hưởng <dependents> + flows" (live GitNexus).
+- Chạy 2 lần → output giống hệt (sorted/deterministic).
+- Flow với task không khai file cụ thể (planner chỉ dir) → section rỗng có chủ đích.
+- Tắt gitnexus → note "chưa index", không lỗi.

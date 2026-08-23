@@ -331,6 +331,11 @@ type TurnInput struct {
 	ReasoningEffort string  `json:"reasoningEffort,omitempty"`
 	Model           *string `json:"model,omitempty"`
 	YoloMode        *bool   `json:"yoloMode,omitempty"`
+	// ChatPosture is the per-turn chat posture ("scan"/"plan"/"code", empty =
+	// code). Scan/Plan are read-only: the runner bridge auto-approves reads and
+	// auto-denies writes without asking. The desktop resends the current posture
+	// on every chat turn so switching mid-chat takes effect immediately.
+	ChatPosture string `json:"chatPosture,omitempty"`
 	// Attachments carries image attachments for chat-mode turns (Task-052), inline as
 	// base64. Empty in workflow/step mode and when no images are attached.
 	Attachments []PromptAttachment `json:"attachments,omitempty"`
@@ -352,6 +357,9 @@ type Project struct {
 	// Model is projects.default_model — the "Project" tier of the Step > Flow >
 	// Project > default resolution order (SS-05/SD-06, BUG-165).
 	Model string `json:"model,omitempty"`
+	// Platform is projects.platform (none, android, ios, kmm, react-native, ...).
+	// TUI /init skill routing needs this to pick the correct flow-pack group.
+	Platform string `json:"platform,omitempty"`
 }
 
 type Workflow struct {

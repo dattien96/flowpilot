@@ -196,6 +196,33 @@ func TestRunnerDialDeadErr_ClassifiesTimeoutVsDead(t *testing.T) {
 	}
 }
 
+// CA-561: Windows reports an active TCP reset as WSAECONNRESET (10054) via
+// wsarecv/wsasend — "An existing connection was forcibly closed by the remote
+// host". That is the same dead-connection signal as Linux "connection reset
+// by peer", so it must trip the dial-dead classifier (resume retry + total
+// failure restore) while Windows i/o timeouts stay classified as slow.
+func TestRunnerDialDeadErr_ClassifiesWindowsRST(t *testing.T) {
+	cases := []struct {
+		err  string
+		want bool
+	}{
+		{`read tcp 127.0.0.1:64252->127.0.0.1:64251: wsarecv: An existing connection was forcibly closed by the remote host.`, true},
+		{`write tcp 127.0.0.1:64252->127.0.0.1:64251: wsasend: An existing connection was forcibly closed by the remote host.`, true},
+		{"wsarecv: An existing connection was forcibly closed by the remote host", true},
+		// Windows connect timeouts must stay "slow", not dead (CA-514).
+		{"A connection attempt failed because the connected party did not properly respond after a period of time", false},
+		{"i/o timeout", false},
+	}
+	for _, tc := range cases {
+		if got := runnerDialDeadErr(tc.err); got != tc.want {
+			t.Errorf("runnerDialDeadErr(%q)=%v want %v", tc.err, got, tc.want)
+		}
+	}
+	if !runnerUnreachableErr("wsarecv: An existing connection was forcibly closed by the remote host") {
+		t.Error("Windows RST must count toward the poll pause too")
+	}
+}
+
 // No false "ready": the status bar must reflect that chat is disabled when the
 // catalog produced no project (slow retry, runner dead, or no path match).
 func TestSessionDefaults_NoProjectStatusNotReady(t *testing.T) {

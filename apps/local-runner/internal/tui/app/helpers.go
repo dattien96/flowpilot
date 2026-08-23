@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/prefs"
 )
@@ -223,6 +225,7 @@ func (m *AppModel) buildTurnInput(prompt string) client.TurnInput {
 		ReasoningEffort: m.reasoningEffort,
 		SelectedSkills:  append([]client.SkillSelection(nil), m.selectedSkills...),
 		Attachments:     append([]client.PromptAttachment(nil), m.pendingAttach...),
+		ChatPosture:     m.activePosture(),
 	}
 	if m.runHandle != nil {
 		in.RunID = m.runHandle.RunID
@@ -497,8 +500,11 @@ func formatAccountLimits(acc *client.ProviderAccountSummary) string {
 			parts = append(parts, formatQuotaChip(label, line.RemainingPercent, resetPtr))
 		}
 	}
-	if len(parts) == 0 && acc.UsageSummary != nil && strings.TrimSpace(*acc.UsageSummary) != "" {
-		return strings.TrimSpace(*acc.UsageSummary)
+	if len(parts) == 0 && acc.UsageSummary != nil {
+		s := strings.TrimSpace(*acc.UsageSummary)
+		if s != "" && !strings.HasPrefix(s, "Team ") && s != "Personal" {
+			return s
+		}
 	}
 	return strings.Join(parts, " ")
 }
@@ -637,7 +643,7 @@ func contextWindowForModel(providers []client.Provider, providerKey, modelID str
 	return 0
 }
 
-// wrapText wraps s to width columns, preserving existing newlines.
+// wrapText wraps s to width columns, preserving existing newlines (LF, CRLF, bare CR).
 // Long tokens without spaces are hard-broken so nothing is truncated off-screen.
 func wrapText(s string, width int) []string {
 	if width < 8 {
@@ -646,6 +652,8 @@ func wrapText(s string, width int) []string {
 	if s == "" {
 		return []string{""}
 	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
 	var out []string
 	for _, para := range strings.Split(s, "\n") {
 		out = append(out, wrapParagraph(para, width)...)
@@ -654,28 +662,43 @@ func wrapText(s string, width int) []string {
 }
 
 func wrapParagraph(para string, width int) []string {
-	runes := []rune(para)
-	if len(runes) == 0 {
+	if width < 1 {
+		width = 1
+	}
+	if para == "" {
 		return []string{""}
 	}
-	if len(runes) <= width {
+	if lipgloss.Width(para) <= width {
 		return []string{para}
 	}
+	runes := []rune(para)
 	var lines []string
 	for len(runes) > 0 {
-		if len(runes) <= width {
+		if lipgloss.Width(string(runes)) <= width {
 			lines = append(lines, string(runes))
 			break
 		}
 		cut := width
+		if cut > len(runes) {
+			cut = len(runes)
+		}
 		// Prefer breaking on whitespace in the right half of the window.
-		for i := width; i > width/2; i-- {
+		for i := width; i > width/2 && i < len(runes); i-- {
 			if runes[i] == ' ' || runes[i] == '\t' {
 				cut = i
 				break
 			}
 		}
+		if cut <= 0 {
+			cut = width
+			if cut > len(runes) {
+				cut = len(runes)
+			}
+		}
 		line := strings.TrimRight(string(runes[:cut]), " \t")
+		if lipgloss.Width(line) > width {
+			line = truncateVisual(line, width)
+		}
 		lines = append(lines, line)
 		runes = runes[cut:]
 		for len(runes) > 0 && (runes[0] == ' ' || runes[0] == '\t') {
@@ -1069,6 +1092,218 @@ func filterReasoningSuggestions(input string, current string) []suggestItem {
 	return out
 }
 
+// filterModeSetupSuggestions returns picker items for `/mode-setup …`
+// (posture → field → value). Each stage filters by the trailing query so
+// ↑↓ Tab never requires typing values by hand. Provider values fall back to
+// providerAccounts and then to the known claude/codex/grok keys so the picker
+// is never empty — pins are plain strings and do not require a CLI to be
+// installed.
+func filterModeSetupSuggestions(input string, providers []client.Provider, accounts []client.ProviderAccountSummary, currentProvider, currentModel string, draft *client.ChatPostureConfig) []suggestItem {
+	// Bare "/mode-setup" without trailing space should also open the posture picker
+	// (user reported "không có command scan show ra để chọn").
+	if strings.EqualFold(strings.TrimSpace(input), "/mode-setup") {
+		out := make([]suggestItem, 0, len(postureOrder))
+		for _, p := range postureOrder {
+			out = append(out, suggestItem{value: p, detail: postureLabel(p), kind: "mode-setup-posture"})
+		}
+		return out
+	}
+	ok, query := parseSlashArgPrefix(input, "/mode-setup")
+	if !ok {
+		return nil
+	}
+	parts := strings.Fields(query)
+
+	// No args yet: show posture picker (scan/plan/code).
+	if query == "" {
+		out := make([]suggestItem, 0, len(postureOrder))
+		for _, p := range postureOrder {
+			out = append(out, suggestItem{value: p, detail: postureLabel(p), kind: "mode-setup-posture"})
+		}
+		return out
+	}
+
+	// One token: posture (partial or exact).
+	if len(parts) == 1 {
+		tok := strings.ToLower(parts[0])
+		if validPosture(tok) {
+			// Exact posture -> show field picker for that posture.
+			// Provider removed from picker (model auto-pins provider); typing
+			// "provider" still works via value stage.
+			fields := []string{"model", "reasoning", "yolo", "clear"}
+			out := make([]suggestItem, 0, len(fields))
+			for _, f := range fields {
+				out = append(out, suggestItem{value: tok + " " + f, detail: modeSetupFieldDetail(f), kind: "mode-setup-field"})
+			}
+			return out
+		}
+		// Partial posture -> filter posture list.
+		out := make([]suggestItem, 0, len(postureOrder))
+		for _, p := range postureOrder {
+			if strings.HasPrefix(p, tok) || strings.Contains(p, tok) {
+				out = append(out, suggestItem{value: p, detail: postureLabel(p), kind: "mode-setup-posture"})
+			}
+		}
+		return out
+	}
+
+	// Two tokens: posture + field (partial or exact).
+	posture := strings.ToLower(parts[0])
+	if !validPosture(posture) {
+		return nil
+	}
+	if len(parts) == 2 {
+		fieldPart := strings.ToLower(parts[1])
+		// Keep provider in exact-match so typed "/mode-setup scan provider" still works,
+		// but don't advertise it in partial picker.
+		allFields := []string{"provider", "model", "reasoning", "yolo", "clear"}
+		for _, f := range allFields {
+			if f == fieldPart {
+				if f == "clear" {
+					return nil // no value stage
+				}
+				return modeSetupValueSuggestions(posture, f, "", providers, accounts, currentProvider, currentModel)
+			}
+		}
+		pickerFields := []string{"model", "reasoning", "yolo", "clear"}
+		out := make([]suggestItem, 0, len(pickerFields))
+		for _, f := range pickerFields {
+			if strings.HasPrefix(f, fieldPart) || strings.Contains(f, fieldPart) {
+				out = append(out, suggestItem{value: posture + " " + f, detail: modeSetupFieldDetail(f), kind: "mode-setup-field"})
+			}
+		}
+		return out
+	}
+
+	// Three+ tokens: posture + field + value query.
+	field := strings.ToLower(parts[1])
+	if field == "clear" {
+		return nil
+	}
+	valueQuery := strings.Join(parts[2:], " ")
+	return modeSetupValueSuggestions(posture, field, valueQuery, providers, accounts, currentProvider, currentModel)
+}
+
+func modeSetupFieldDetail(field string) string {
+	switch field {
+	case "provider":
+		return "pin provider for this posture"
+	case "model":
+		return "pin model for this posture"
+	case "reasoning":
+		return "pin reasoning effort"
+	case "yolo":
+		return "pin YOLO on/off/clear"
+	case "clear":
+		return "clear all pins for this posture"
+	default:
+		return field
+	}
+}
+
+func modeSetupValueSuggestions(posture, field, query string, providers []client.Provider, accounts []client.ProviderAccountSummary, currentProvider, currentModel string) []suggestItem {
+	q := strings.ToLower(strings.TrimSpace(query))
+	switch field {
+	case "provider":
+		seen := make(map[string]bool, len(providers)+len(accounts)+3)
+		providerMap := make(map[string]client.Provider, len(providers))
+		var keys []string
+		for _, p := range providers {
+			k := strings.TrimSpace(p.Key)
+			if k == "" {
+				continue
+			}
+			lk := strings.ToLower(k)
+			if seen[lk] {
+				continue
+			}
+			seen[lk] = true
+			keys = append(keys, k)
+			providerMap[lk] = p
+		}
+		if len(keys) == 0 {
+			for _, a := range accounts {
+				k := strings.TrimSpace(a.ProviderKey)
+				if k == "" {
+					continue
+				}
+				lk := strings.ToLower(k)
+				if seen[lk] {
+					continue
+				}
+				seen[lk] = true
+				keys = append(keys, k)
+			}
+		}
+		if len(keys) == 0 {
+			for _, k := range []string{"claude", "codex", "grok"} {
+				lk := strings.ToLower(k)
+				if seen[lk] {
+					continue
+				}
+				seen[lk] = true
+				keys = append(keys, k)
+			}
+		}
+		out := make([]suggestItem, 0, len(keys))
+		for _, k := range keys {
+			if q != "" && !strings.Contains(strings.ToLower(k), q) {
+				continue
+			}
+			var detail string
+			if p, ok := providerMap[strings.ToLower(k)]; ok {
+				detail = providerSuggestionDetail(p, nil, currentProvider, "select")
+			} else {
+				detail = "provider"
+				if strings.EqualFold(k, currentProvider) {
+					detail = "current · provider"
+				}
+			}
+			out = append(out, suggestItem{value: posture + " provider " + k, detail: detail, kind: "mode-setup-value"})
+		}
+		return out
+	case "model":
+		// FlowPilot rule: picking a model auto-pins its provider, and /model
+		// lists all models across providers. So /mode-setup model must also
+		// show every model with its provider as detail, not just the current
+		// provider's models (which is empty for grok in the report).
+		all := allModelsAcrossProviders(providers, currentProvider, currentModel)
+		out := make([]suggestItem, 0, len(all))
+		for _, e := range all {
+			if q != "" && !strings.Contains(strings.ToLower(e.id), q) && !strings.Contains(strings.ToLower(e.provider), q) {
+				continue
+			}
+			detail := e.provider
+			if detail == "" {
+				detail = "model"
+			}
+			out = append(out, suggestItem{value: posture + " model " + e.id, detail: detail, kind: "mode-setup-value"})
+		}
+		return out
+	case "reasoning":
+		out := make([]suggestItem, 0, len(reasoningEffortOptions))
+		for _, eff := range reasoningEffortOptions {
+			if q != "" && !strings.HasPrefix(eff, q) && !strings.Contains(eff, q) {
+				continue
+			}
+			out = append(out, suggestItem{value: posture + " reasoning " + eff, detail: eff, kind: "mode-setup-value"})
+		}
+		return out
+	case "yolo":
+		opts := []string{"on", "off", "clear"}
+		out := make([]suggestItem, 0, len(opts))
+		for _, o := range opts {
+			if q != "" && !strings.HasPrefix(o, q) && !strings.Contains(o, q) {
+				continue
+			}
+			out = append(out, suggestItem{value: posture + " yolo " + o, detail: "yolo " + o, kind: "mode-setup-value"})
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 // filterHistorySuggestions returns chats matching the query after /history|/open|/resume .
 func filterHistorySuggestions(input string, items []client.RunHistoryItem) []suggestItem {
 	return filterHistorySuggestionsWithRemote(input, items, nil)
@@ -1199,6 +1434,87 @@ func modelsForProvider(providers []client.Provider, providerKey string) []string
 		return out
 	}
 	return nil
+}
+
+// defaultModelsForKey returns registry defaults when a provider is in m.providers
+// but its Models slice is empty (live grok cache miss, codex/claude not probed).
+// Mirrors runner/providerSpecs defaults so picker never empty for a known provider.
+func defaultModelsForKey(key string) []string {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "codex":
+		return []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini"}
+	case "claude":
+		return []string{"claude-opus", "claude-sonnet", "claude-haiku"}
+	case "grok":
+		return []string{"grok-4.5", "grok-build"}
+	case "gemini":
+		return []string{"gemini-3.5-flash-medium", "gemini-3.5-flash-high", "gemini-3.5-flash-low", "gemini-3.1-pro-low", "gemini-3.1-pro-high"}
+	default:
+		return nil
+	}
+}
+
+// allModelsAcrossProviders returns every model id across m.providers (dedup),
+// filling registry defaults for providers that are present but have no Models,
+// plus currentModel if not already present — so /model and /mode-setup model
+// always show the full supported list, not just the current provider.
+func allModelsAcrossProviders(providers []client.Provider, currentProvider, currentModel string) []modelEntry {
+	seen := make(map[string]bool, 32)
+	seenProvider := make(map[string]bool, 8)
+	var out []modelEntry
+	for _, p := range providers {
+		seenProvider[strings.ToLower(p.Key)] = true
+		ids := make([]string, 0, len(p.Models))
+		for _, m := range p.Models {
+			if id := strings.TrimSpace(m.ModelID()); id != "" {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) == 0 {
+			ids = defaultModelsForKey(p.Key)
+		}
+		for _, id := range ids {
+			lk := strings.ToLower(id)
+			if seen[lk] {
+				continue
+			}
+			seen[lk] = true
+			out = append(out, modelEntry{provider: p.Key, id: id})
+		}
+	}
+	// Ensure full registry is visible even when catalog hasn't loaded or a
+	// provider is missing from m.providers (live: only grok present). This
+	// makes /model always the full supported list, not just the detected one.
+	for _, key := range []string{"claude", "codex", "grok", "gemini"} {
+		if seenProvider[strings.ToLower(key)] {
+			continue
+		}
+		for _, id := range defaultModelsForKey(key) {
+			lk := strings.ToLower(id)
+			if seen[lk] {
+				continue
+			}
+			seen[lk] = true
+			out = append(out, modelEntry{provider: key, id: id})
+		}
+	}
+	if cm := strings.TrimSpace(currentModel); cm != "" {
+		lk := strings.ToLower(cm)
+		if !seen[lk] {
+			seen[lk] = true
+			prov := providerForModel(providers, cm)
+			if prov == "" {
+				prov = currentProvider
+			}
+			out = append(out, modelEntry{provider: prov, id: cm})
+		}
+	}
+	return out
+}
+
+type modelEntry struct {
+	provider string
+	id       string
 }
 
 func gateFromEvent(ev client.ProviderEvent) *parsedGate {

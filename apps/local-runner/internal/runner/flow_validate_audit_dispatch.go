@@ -111,7 +111,12 @@ func (s *InteractiveService) flowRunTerminalLocked(parentRunID string) bool {
 		return true
 	}
 	switch rs.status {
-	case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+	case RunStatusFailed, RunStatusCancelled:
+		return true
+	case RunStatusCompleted:
+		if s.loopIsAdvancing(parentRunID) {
+			return false
+		}
 		return true
 	default:
 		return false
@@ -142,7 +147,12 @@ func (s *InteractiveService) flowInlineContext(parentRunID string) context.Conte
 		return alreadyCancelledContext()
 	}
 	switch rs.status {
-	case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+	case RunStatusFailed, RunStatusCancelled:
+		return alreadyCancelledContext()
+	case RunStatusCompleted:
+		if s.loopIsAdvancing(parentRunID) {
+			break
+		}
 		return alreadyCancelledContext()
 	}
 	if rs.flowInlineCtx != nil {
@@ -450,6 +460,13 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 			return false
 		}
 		return true
+	}
+
+	// Make validate visible as RUNNING before the potentially long baseline +
+	// command execution, so F2 and Thinking accurately reflect the inline step
+	// (rag-harness F1: validate/audit looked pending while go test ran).
+	if s.isFlowEngineDriven(parentRunID) {
+		s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusRunning)
 	}
 
 	// BUG-288 #3: wait for baseline singleflight so first validate is not skipped.
@@ -800,6 +817,12 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 		}
 	}
 	s.mu.Unlock()
+
+	// Make audit visible as RUNNING before observation + BuildAuditDraft, so
+	// F2 does not look pending while the audit gate runs (rag-harness F1).
+	if s.isFlowEngineDriven(parentRunID) {
+		s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusRunning)
+	}
 
 	// BuildAuditDraft derives SourceDocID from pkg.SourceDocIDs[0] itself
 	// (flow_audit_draft.go) â€” no separate source needed here.

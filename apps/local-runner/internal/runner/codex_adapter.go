@@ -145,7 +145,7 @@ func (a *codexAdapter) Capabilities() ProviderCapabilities {
 }
 
 func (a *codexAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge TurnBridge) error {
-	sandbox, approvalMode := codexYoloDeriveForTurn(req.YoloMode, req.ForceShellBridge)
+	sandbox, approvalMode := codexYoloDeriveForChatPosture(req.YoloMode, req.ForceShellBridge, req.ChatPosture)
 
 	// Per-thread cwd is authoritative (04-06 multi-workspace): the run's cwd takes
 	// precedence over the adapter default.
@@ -629,5 +629,14 @@ func codexYoloDerive(yolo bool) (sandbox, approvalMode string) {
 // flow coding children under YOLO (commit denylist must still see approvals).
 func codexYoloDeriveForTurn(yolo, forceShellBridge bool) (sandbox, approvalMode string) {
 	p := resolveYoloPostureForTurn(yolo, forceShellBridge)
+	return p.CodexSandbox, p.CodexApprovalMode
+}
+
+// codexYoloDeriveForChatPosture is codexYoloDeriveForTurn extended for the
+// read-only chat postures (scan/plan): the Codex approval mode is forced to
+// "untrusted" so every file/exec approval reaches the runner bridge, where the
+// read-only policy approves reads and denies writes without asking.
+func codexYoloDeriveForChatPosture(yolo, forceShellBridge bool, posture string) (sandbox, approvalMode string) {
+	p := resolveYoloPostureForChatPosture(yolo, forceShellBridge, posture)
 	return p.CodexSandbox, p.CodexApprovalMode
 }

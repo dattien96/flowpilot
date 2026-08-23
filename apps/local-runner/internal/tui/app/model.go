@@ -114,6 +114,20 @@ func (s ConnStatus) String() string {
 // ErrMsg carries an error to the Update loop.
 type ErrMsg struct{ Err error }
 
+// chatPostureMsg carries the runner's chat-posture document after a GET/PUT so
+// Update can apply the active posture's profile (provider/model/reasoning/yolo)
+// to the session.
+type chatPostureMsg struct {
+	Cfg client.ChatPostureConfig
+	Err error
+}
+
+// grokSyncFailedMsg is returned when the Grok YOLO posture sync HTTP call
+// fails. The Update handler re-enables the flag so the next turn retries.
+type grokSyncFailedMsg struct {
+	Yolo bool
+}
+
 // RunStartedMsg carries a newly created RunHandle.
 type RunStartedMsg struct{ Handle client.RunHandle }
 
@@ -263,6 +277,22 @@ type AppModel struct {
 
 	inputValue  string
 	inputCursor int // rune index; <0 means caret sticks to the end
+	// pasteSegments holds the full text behind collapsed "[Pasted N lines]" tokens.
+	// pasteBurst guards a raw (non-bracketed) paste arriving as a flood of key
+	// events: while a rune burst is active, Enter inserts a newline instead of
+	// submitting, and the settled region collapses to a paste token.
+	pasteSegments []pasteSegment
+	pasteBurst    pasteBurst
+	// pasteCtrlVHintShown ensures the Windows Ctrl+V hint toast fires once per
+	// session after the first raw paste flood (WT steals Ctrl+V).
+	pasteCtrlVHintShown bool
+	// rejectWindowsRawPaste blocks raw (non-bracketed) paste floods on Windows
+	// (WT steals Ctrl+V). Set only in Run() so tests keep the burst green.
+	rejectWindowsRawPaste bool
+	// pasteHijacked marks that the current raw flood has been hijacked to
+	// clipboard (1 msg). While true, subsequent flood runes must be swallowed
+	// without reverting the just-inserted [Pasted] token (log 18700).
+	pasteHijacked bool
 	// promptHistory is the sent-prompts ring for Up/Down recall (bash-style).
 	// promptHistIdx points into it while browsing; -1 means "show live draft".
 	promptHistory []string
@@ -278,11 +308,46 @@ type AppModel struct {
 	// Keyed by the joined tool names of the run (content-derived, stable across
 	// thinking-placeholder reordering that shifts message indices).
 	expandedToolGroups map[string]bool
+	// expandedUserPrompts tracks which user prompt bubbles (4-line clamp) are
+	// expanded (CA-559/CA-607). Content-keyed so expansion survives message
+	// index shifts.
+	expandedUserPrompts map[string]bool
 
 	// Per-turn settings
 	yolo                bool
 	agentsFocus         bool
-	selectedSkills      []client.SkillSelection
+	// chatPosture is the active Scan/Plan/Code posture ("" = code). Scan/Plan are
+	// read-only: the runner auto-approves reads and auto-denies writes without
+	// asking. Set via /mode or the Tab cycle; resend on every chat turn.
+	chatPosture         string
+	chatPostureCfg      client.ChatPostureConfig // cached runner document (/mode-setup reads it)
+	chatPostureDirty    bool                     // local profile edit pending a PUT
+	// chatPostureSaving tracks a /mode-setup edit that is awaiting PUT completion
+	// so the "saving…" banner can be replaced with "saved" instead of hanging.
+	chatPostureSaving        bool
+	chatPostureSavingPosture string
+	// modeSetupDraft holds staged wizard edits for /mode-setup (multiple fields
+	// and postures) before a single Enter save. Nil when wizard not open.
+	modeSetupDraft      *client.ChatPostureConfig
+	modeSetupDraftDirty bool
+	// modeSetupModal is the 3-tab overlay that replaces the wizard's tmp steps.
+	modeSetupModalOpen      bool
+	modeSetupModalTab       string
+	modeSetupModalDraft     *client.ChatPostureConfig
+	modeSetupModalFocus     int
+	modeSetupModalPickerOpen bool
+	modeSetupModalPickerKind string
+	modeSetupModalPickerIdx  int
+	// chatPosturePending remembers what to do after the runner config loads:
+	// "" = nothing; "apply:<posture>" = apply that posture's profile; "show" =
+	// just display the config; "setup:<posture>:<field>:<value>" = apply a
+	// profile edit and save; "modal:<tab>" = open modal.
+	chatPosturePending string
+	// postureGrokSync / postureGrokSyncSet mirror a Grok YOLO posture sync
+	// requested by a scan/plan profile pin (applied via cmdGrokYoloPosture).
+	postureGrokSync    bool
+	postureGrokSyncSet bool
+	selectedSkills     []client.SkillSelection
 	skillsCatalog       []client.ProviderSkill // Desktop ChatInput skills list
 	workspaceFiles      []string               // last @file picker fetch (nil = not loaded)
 	workspaceFilesQuery string                 // query that produced workspaceFiles
@@ -499,7 +564,10 @@ var knownSlashCommands = []slashCommand{
 	{"/clear", "Clear conversation history"},
 	{"/exit", "Exit the TUI"},
 	{"/quit", "Exit the TUI"},
+	{"/scan", "Switch to scan posture — read-only (like /mode scan)"},
 	{"/yolo", "Toggle YOLO in chat mode (flow mode is auto-on)"},
+	{"/mode", "Switch chat posture — /mode scan|plan|code"},
+	{"/mode-setup", "Configure posture profiles (provider/model/reasoning/yolo)"},
 	{"/agents", "List/cycle sub-agents (Tab while focused)"},
 	{"/agent", "View a sub-agent transcript — /agent main|<name>"},
 	{"/stop", "Stop the in-flight turn (flow: main + all children)"},
@@ -507,7 +575,7 @@ var knownSlashCommands = []slashCommand{
 	{"/flow", "Start or list flows"},
 	{"/chat", "Switch to chat mode"},
 	{"/skill", "Skills — Tab multi-pick [name]+chip · Enter closes picker · F3"},
-	{"/image", "Images — Tab open/paste; pick index to view; [N img] panel [open]/[x]"},
+	{"/image", "Images — Tab open/paste; pick index · [N img] [open]/[x]"},
 	{"/provider", "Switch / connect / install — /provider  then ↑↓ Tab Enter"},
 	{"/model", "Switch model — type /model  then ↑↓ Tab Enter"},
 	{"/reasoning", "Set effort — type /reasoning  then ↑↓ Tab Enter"},
@@ -520,9 +588,11 @@ var knownSlashCommands = []slashCommand{
 	{"/deny", "Deny a pending approval"},
 	{"/headless", "Print next response to stdout only"},
 	{"/status", "Show current connection status"},
+	{"/dumpview", "Dump live View() layout to /tmp/flowpilot-you-view.txt (debug)"},
 	{"/info", "Toggle session info panel (top-right; also F2)"},
 	{"/login", "Sign in to Supabase (email/password) — Desktop session parity"},
 	{"/settings", "Open Desktop app for Settings (start if not running)"},
-	{"/sync", "Push chat session to Drive — /sync  then ↑↓ Tab Enter · /sync all"},
-	{"/restore", "Pull a Drive-backed chat — /restore  then ↑↓ Tab Enter · /restore all"},
+	{"/sync", "Push session to Drive — /sync · /sync all"},
+	{"/restore", "Pull a Drive-backed chat — /restore · /restore all"},
+	{"/init", "Init — /init skill (flow-pack) · /init all (full engine)"},
 }

@@ -97,6 +97,7 @@ type ProviderSessionState struct {
 	WorkingDirectory  string
 	Status            RunStatus
 	LastPrompt        string
+	LastFullPrompt    string `json:"lastFullPrompt,omitempty"`
 	LastMessage       string
 	StartedAt         string
 	UpdatedAt         string

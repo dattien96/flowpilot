@@ -79,7 +79,10 @@ func TestBindActiveAccount_IgnoresStaleOtherProviderAccount(t *testing.T) {
 	}
 }
 
-func TestRenderMessages_UserAlignedRight(t *testing.T) {
+// CA-600: user prompt boxes are full chat-pane width, left aligned — no
+// leading pad, right border at width-2 (safeTermWidth leaves the last column
+// free). Supersedes the old right-aligned hug behavior.
+func TestRenderMessages_UserFullWidthLeftAligned(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
 	m.width = 40
 	m.messages = []ChatMessage{
@@ -100,8 +103,14 @@ func TestRenderMessages_UserAlignedRight(t *testing.T) {
 			assist = line
 		}
 	}
-	if user == "" || !strings.HasPrefix(user, " ") {
-		t.Fatalf("user line should be right-padded: %q", user)
+	if user == "" || strings.HasPrefix(user, " ") {
+		t.Fatalf("user line should start at column 0 without lead pad: %q", user)
+	}
+	if !strings.HasPrefix(user, "┌") && !strings.HasPrefix(user, "│") && !strings.HasPrefix(user, "+") && !strings.HasPrefix(user, "|") {
+		t.Fatalf("user line should start with a box border: %q", user)
+	}
+	if bar := lastBarCol([]rune(stripANSI(user))); bar < len([]rune(stripANSI(user)))-3 {
+		t.Fatalf("user box right border should sit at width-2: bar=%d line=%q", bar, user)
 	}
 	if assist == "" || strings.HasPrefix(assist, " ") {
 		t.Fatalf("assistant should stay left: %q", assist)

@@ -887,6 +887,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		createdAt:              st.StartedAt,
 		updatedAt:              updatedAt,
 		lastPrompt:             st.LastPrompt,
+		lastFullPrompt:         st.LastFullPrompt,
 		lastMessage:            st.LastMessage,
 		sourceMachineID:        st.SourceMachineID,
 		sourceRunID:            st.SourceRunID,

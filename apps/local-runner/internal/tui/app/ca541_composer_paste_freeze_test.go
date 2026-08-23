@@ -30,10 +30,11 @@ func writeTestPNG(t *testing.T, path string) {
 // Windows Terminal on Ctrl+V) used to route EVERY keystroke through the system
 // clipboard (native clipboard.Read or PowerShell GetText). A locked clipboard
 // blocked forever, so typed characters never appeared while F2/F4 (handled in
-// earlier switch cases) still worked. Plain paste text now inserts directly;
-// the clipboard is only consulted when the paste is empty (image-only) or is a
-// copied image file path. Provider-agnostic logic, parameterized over all three
-// providers.
+// earlier switch cases) still worked. Paste text now inserts directly — no
+// clipboard read — and a paste block collapses to a "[Pasted N chars]" token
+// (CA-560); the clipboard is only consulted when the paste is empty
+// (image-only) or is a copied image file path. Provider-agnostic logic,
+// parameterized over all three providers.
 func TestBracketedPaste_PlainTextNeverReadsClipboard(t *testing.T) {
 	for _, pk := range []string{"claude", "codex", "grok"} {
 		t.Run(pk, func(t *testing.T) {
@@ -45,8 +46,8 @@ func TestBracketedPaste_PlainTextNeverReadsClipboard(t *testing.T) {
 
 			m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("multi-line\npaste body"), Paste: true})
 			am := m2.(*AppModel)
-			if am.inputValue != "hi multi-line\npaste body" {
-				t.Fatalf("%s: multi-line paste must insert directly, got %q", pk, am.inputValue)
+			if am.inputValue != "hi [Pasted 21 chars]" {
+				t.Fatalf("%s: multi-line paste must collapse to a token, got %q", pk, am.inputValue)
 			}
 		})
 	}
@@ -152,8 +153,9 @@ func TestCmdAttachImagePath_ReadsFromDiskNoClipboard(t *testing.T) {
 	}
 }
 
-// A non-image path pasted as text (e.g. a code file path or URL) must insert
-// as plain text, not attempt an attachment.
+// A non-image path pasted as text (e.g. a code file path or URL) must not
+// attempt an attachment — it collapses to a paste token like any other block
+// (CA-560) and expands to the full path on submit.
 func TestBracketedPaste_NonImagePathInsertsAsText(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "codex"}, "http://127.0.0.1:9")
 	m.provider = "codex"
@@ -161,15 +163,15 @@ func TestBracketedPaste_NonImagePathInsertsAsText(t *testing.T) {
 	m.authPhase = AuthNone
 	m.inputValue = ""
 
-	// Real file, wrong extension — must NOT attach, must insert text.
+	// Real file, wrong extension — must NOT attach, must collapse to a token.
 	p := filepath.Join(t.TempDir(), "note.txt")
 	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(p), Paste: true})
 	am := m2.(*AppModel)
-	if am.inputValue != p {
-		t.Fatalf("non-image path must insert as text, got %q", am.inputValue)
+	if am.inputValue != pasteSummaryToken(p) {
+		t.Fatalf("non-image path must collapse to a token, got %q", am.inputValue)
 	}
 }
 

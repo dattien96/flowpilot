@@ -126,8 +126,15 @@ func (m *AppModel) openTurnStream(prompt string) tea.Cmd {
 	yolo := m.effectiveYolo()
 	model := m.model
 	reasoningEffort := m.reasoningEffort
+	posture := m.chatPosture
 	skills := m.selectedSkills
 	attachments := m.pendingAttach
+	// Snapshot any pending Grok YOLO posture sync off the cmd goroutine so the
+	// values are read/cleared on the model goroutine only (no data race with
+	// later posture switches), then applied before the turn posts below.
+	grokSyncSet := m.postureGrokSyncSet
+	grokSyncYolo := m.postureGrokSync
+	m.postureGrokSyncSet = false
 	var (
 		turnSubMode    string
 		turnFlowRef    string
@@ -149,7 +156,18 @@ func (m *AppModel) openTurnStream(prompt string) tea.Cmd {
 	m.pendingAttach = nil
 	m.attachPanelOpen = false
 
-	return func() tea.Msg {
+	// Grok sync: separate cmd so a failure re-enables the flag (via
+	// grokSyncFailedMsg) while the turn is still sent (via turnCmd).
+	var cmds []tea.Cmd
+	if grokSyncSet {
+		cmds = append(cmds, func() tea.Msg {
+			if err := cl.ApplyGrokYoloPosture(context.Background(), grokSyncYolo); err != nil {
+				return grokSyncFailedMsg{Yolo: grokSyncYolo}
+			}
+			return nil
+		})
+	}
+	cmds = append(cmds, func() tea.Msg {
 		ctx := context.Background()
 		turnIn := client.TurnInput{
 			RunID:           runID,
@@ -161,6 +179,7 @@ func (m *AppModel) openTurnStream(prompt string) tea.Cmd {
 			SubMode:         turnSubMode,
 			FlowRef:         turnFlowRef,
 			ChangeType:      turnChangeType,
+			ChatPosture:     posture,
 		}
 		if !catalogWorkflow {
 			yoloCopy := yolo
@@ -172,7 +191,8 @@ func (m *AppModel) openTurnStream(prompt string) tea.Cmd {
 		}
 		evCh, errCh := cl.SendTurn(ctx, turnIn)
 		return turnStreamOpenedMsg{EvCh: evCh, ErrCh: errCh}
-	}
+	})
+	return tea.Batch(cmds...)
 }
 
 func (m *AppModel) cmdSendTurn(prompt string) tea.Cmd {

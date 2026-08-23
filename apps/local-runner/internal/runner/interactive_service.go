@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/flowgate"
 )
 
 // InteractiveService implements the Phase 2 (04-02) interactive + admin APIs: the
@@ -144,6 +145,10 @@ type interactiveRun struct {
 	yolo                  bool
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
+	// chatPosture is the per-turn posture (scan/plan/code, "" = code). Persisted
+	// on the run like yolo/model so children spawned mid-turn inherit it and the
+	// approval bridge applies the read-only policy for scan/plan.
+	chatPosture string
 	changeType      string
 	sourceDocID     string
 	turnCount       int
@@ -347,6 +352,7 @@ type interactiveRun struct {
 	createdAt       string
 	updatedAt       string
 	lastPrompt      string
+	lastFullPrompt  string
 	lastMessage     string
 	sourceMachineID string
 	sourceRunID     string
@@ -3326,6 +3332,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		WorkingDirectory:                rs.workspaceCwd,
 		Status:                          rs.status,
 		LastPrompt:                      rs.lastPrompt,
+		LastFullPrompt:                  rs.lastFullPrompt,
 		LastMessage:                     rs.lastMessage,
 		StartedAt:                       rs.createdAt,
 		UpdatedAt:                       rs.updatedAt,
@@ -4605,9 +4612,30 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			rs.agentStatus = string(RunStatusCompleted)
 			s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
 			s.settleFlowChildTurnCompletedLocked(rs, finalMsg, ev)
-		} else if rs.flowEngineDriven && !rs.turnStartedAfterLoopDone {
-			// Root flow-engine: same gate-before-Completed contract as children.
-			_ = s.markPendingFlowGateSettleLocked(rs, finalMsg, ev.OccurredAt)
+		} else if !rs.turnStartedAfterLoopDone {
+			// Root: defer Completed until post-turn gate when the turn touched
+			// code. Plain chat previously published Completed immediately even
+			// when code changed, so dispatch settle saw Completed and returned
+			// allow:true before the gate queued its reprompt — UI stalled at
+			// one auto-reprompt line (run-208282). Arming the same pending gate
+			// contract as children/flow roots makes settle wait for the real
+			// disposition. Plain turns without code (e.g. "hi") still complete
+			// immediately to preserve the original 3-event shape.
+			hasCode := false
+			for _, e := range rs.events {
+				if e.Type == EventFileChanged && e.Path != "" && !flowgate.IsDocOrAuditFile(e.Path) {
+					hasCode = true
+					break
+				}
+			}
+			if hasCode {
+				_ = s.markPendingFlowGateSettleLocked(rs, finalMsg, ev.OccurredAt)
+			} else {
+				rs.status = RunStatusCompleted
+				rs.agentStatus = string(RunStatusCompleted)
+				s.agentOrchestrator.signalChild(rs.id, finalMsg, false, "", RunStatusCompleted)
+				break
+			}
 		} else {
 			// BUG-305: a plain follow-up on an already-"done" loop (rs.turnStartedAfterLoopDone)
 			// falls through here and completes like normal chat — publish Completed and let
@@ -4872,6 +4900,11 @@ type turnBridge struct {
 	// approval bridge must use it — not rs.yolo — so a YOLO change between chat prompts
 	// drives the runner's auto-approve the same way it drives the adapter's sandbox/mode.
 	yolo bool
+	// posture is the effective chat posture for THIS turn (scan/plan/code, "" = code).
+	// Scan/Plan are read-only: RequestApproval auto-approves reads and auto-denies writes
+	// without asking (checked before the YOLO branch so a profile YOLO never leaks a
+	// write through).
+	posture string
 }
 
 func (b *turnBridge) Emit(ev ProviderEvent) {
@@ -4916,6 +4949,17 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 	if isFlowCodingCommitAttempt(s, b.rs, details) {
 		s.recordAutoApproval(b.rs, details, "deny", "flow_coding_commit_reserved_for_audit")
 		return "deny", nil
+	}
+
+	// Read-only posture (Scan/Plan): auto-decide WITHOUT asking the human. Reads
+	// are approved, writes and anything unclassified are denied, and the reply is
+	// recorded like every auto-decision so the adapter never hangs. Checked BEFORE
+	// the YOLO branch below so a profile YOLO never auto-approves a write through
+	// a read-only posture (the posture's permission discipline wins).
+	if IsReadOnlyChatPosture(b.posture) {
+		decision := readOnlyApprovalDecision(details)
+		s.recordAutoApproval(b.rs, details, decision, "posture_read_only_"+b.posture)
+		return decision, nil
 	}
 
 	// YOLO=true (RunnerAutoApprove): the runtime runs in "never" approval mode and
@@ -5934,6 +5978,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// run-level default.
 	model, effort := resolveTurnModelAndEffort(rs, in)
 	yolo := resolveTurnYolo(rs, in)
+	posture := resolveTurnChatPosture(rs, in)
 	// Fold any pending UI-spawn context into the provider prompt (NOT the displayed prompt,
 	// which was already emitted via turn_started with in.Prompt). This is how the parent
 	// agent learns about children started from the UI. Cleared once consumed; the cleared
@@ -5988,6 +6033,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// even when the turn request omitted yoloMode.
 	if in.YoloMode != nil || shouldForceFlowYolo(rs.runKind, rs.workflowID, rs.flowEngineDriven) {
 		rs.yolo = yolo
+	}
+	// Persist the per-turn posture as the run's current default for the SAME
+	// reason YOLO is persisted just above: the approval bridge for the rest of
+	// this turn (and any child spawned mid-turn) must see the posture the user
+	// actually selected, and a scan/plan posture must stay read-only even after
+	// the composing client stops resending it.
+	if in.ChatPosture != "" || shouldForceFlowYolo(rs.runKind, rs.workflowID, rs.flowEngineDriven) {
+		rs.chatPosture = posture
 	}
 	// Persist the per-turn model/reasoning-effort as the run's current default,
 	// for the SAME reason YOLO is persisted just above. A child spawned during
@@ -6078,6 +6131,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		YoloMode:               yolo,
 		ForceShellBridge:       forceShellBridge,
 		ReasoningEffort:        effort,
+		ChatPosture:            posture,
 		Cwd:                    rs.workspaceCwd,
 		Scenario:               scenario,
 		Attachments:            in.Attachments,
@@ -6145,7 +6199,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		s.notifyTurnIdle(rs.id)
 		return
 	}
-	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo}
+	bridge := &turnBridge{svc: s, rs: rs, ctx: ctx, turnID: turnID, yolo: yolo, posture: posture}
 	err := s.sendTurnWithRetry(ctx, adapter, req, bridge)
 	if err != nil && s.dispatchStore != nil && s.dispatchV2ActiveForRun(ctx, rs.id) {
 		// Ambiguous: may have reached the provider. Never terminalize/clear.
@@ -7366,6 +7420,15 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// lastPrompt is still empty, so a run always has SOME title).
 	if p := strings.TrimSpace(in.Prompt); !isSystemPrompt(p) || rs.lastPrompt == "" {
 		rs.lastPrompt = truncateDisplayField(in.Prompt, 100)
+	}
+	// CP-43 P-1 Plan A: keep the full user prompt for Change Contract fallback.
+	// lastPrompt is truncated to 100 chars for display, so a declared contract
+	// from the prompt would be lost at gate time. Store the complete text when
+	// it is a real user prompt (not a system reprompt/flow-engine note).
+	if p := strings.TrimSpace(in.Prompt); !isSystemPrompt(p) {
+		rs.lastFullPrompt = in.Prompt
+	} else if strings.TrimSpace(rs.lastFullPrompt) == "" {
+		rs.lastFullPrompt = in.Prompt
 	}
 	rs.updatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	ctx, cancel := context.WithCancel(context.Background())

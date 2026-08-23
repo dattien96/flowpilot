@@ -743,6 +743,13 @@ type GrokAuthEntry = {
   last_name?: string | null;
   team_id?: string | null;
   key?: string | null;
+  refresh_token?: string | null;
+  expires_at?: string | null;
+  oidc_issuer?: string | null;
+  oidc_client_id?: string | null;
+  auth_mode?: string | null;
+  create_time?: string | null;
+  user_id?: string | null;
 };
 
 // GROK_CLI_CHAT_PROXY_BASE_URL is Grok Build's own backend base URL
@@ -869,6 +876,132 @@ async function loadGrokQuota(bearerToken: string | null | undefined) {
   }
 }
 
+function grokKeyExpired(expiresAt: string | null | undefined): boolean {
+  const raw = String(expiresAt ?? "").trim();
+  if (!raw) return false;
+  const t = Date.parse(raw);
+  if (Number.isNaN(t)) return false;
+  return Date.now() > t - 5 * 60 * 1000;
+}
+
+async function refreshGrokAccessToken(
+  refreshToken: string,
+  oidcIssuer: string,
+  oidcClientId: string,
+): Promise<{ accessToken: string; refreshToken: string; expiresAt: string } | null> {
+  const rt = String(refreshToken ?? "").trim();
+  const issuer = String(oidcIssuer ?? "").trim() || "https://auth.x.ai";
+  const clientId = String(oidcClientId ?? "").trim() || "b1a00492-073a-47ea-816f-4c329264a828";
+  if (!rt || !issuer || !clientId) return null;
+  const tokenUrl = issuer.replace(/\/+$/, "") + "/oauth2/token";
+  try {
+    const body = new URLSearchParams();
+    body.set("grant_type", "refresh_token");
+    body.set("refresh_token", rt);
+    body.set("client_id", clientId);
+    const resp = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+      body: body.toString(),
+      cache: "no-store",
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+    };
+    const at = String(data.access_token ?? "").trim();
+    if (!at) return null;
+    const newRt = String(data.refresh_token ?? rt).trim() || rt;
+    const expiresIn = typeof data.expires_in === "number" && data.expires_in > 0 ? data.expires_in : 21600;
+    const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+    return { accessToken: at, refreshToken: newRt, expiresAt };
+  } catch {
+    return null;
+  }
+}
+
+async function tryRefreshGrokAuth(
+  authPath: string,
+  mapKey: string,
+  entry: GrokAuthEntry,
+): Promise<boolean> {
+  const rt = String(entry.refresh_token ?? "").trim();
+  if (!rt) return false;
+  const refreshed = await refreshGrokAccessToken(rt, String(entry.oidc_issuer ?? ""), String(entry.oidc_client_id ?? ""));
+  if (!refreshed) return false;
+  entry.key = refreshed.accessToken;
+  entry.refresh_token = refreshed.refreshToken;
+  entry.expires_at = refreshed.expiresAt;
+  try {
+    const text = fs.readFileSync(authPath, "utf8").replace(/^\uFEFF/, "");
+    const raw = JSON.parse(text) as Record<string, Record<string, unknown>>;
+    const rec = raw[mapKey];
+    if (rec) {
+      rec["key"] = refreshed.accessToken;
+      rec["refresh_token"] = refreshed.refreshToken;
+      rec["expires_at"] = refreshed.expiresAt;
+      fs.writeFileSync(authPath, JSON.stringify(raw, null, 2) + "\n", "utf8");
+    }
+  } catch {
+    // in-memory updated, file write best-effort
+  }
+  return true;
+}
+
+async function fetchGrokBillingWithStatus(
+  bearerToken: string,
+  path: string,
+): Promise<{ line: AccountMetadata["usageDetailLines"][number] | null; status: number }> {
+  try {
+    const resp = await fetch(`${GROK_CLI_CHAT_PROXY_BASE_URL}${path}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${bearerToken}`, Accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!resp.ok) return { line: null, status: resp.status };
+    const billing = (await resp.json()) as GrokBillingResponse;
+    return { line: grokQuotaFromBilling(billing), status: resp.status };
+  } catch {
+    return { line: null, status: 0 };
+  }
+}
+
+async function loadGrokQuotaWithRefresh(
+  entry: GrokAuthEntry,
+  authPath: string,
+  mapKey: string,
+): Promise<AccountMetadata["usageDetailLines"][number] | null> {
+  let token = String(entry.key ?? "").trim();
+  if (!token) return null;
+  // credits path
+  let res = await fetchGrokBillingWithStatus(token, "/billing?format=credits");
+  if (res.line) return res.line;
+  if (res.status === 401 && String(entry.refresh_token ?? "").trim()) {
+    if (await tryRefreshGrokAuth(authPath, mapKey, entry)) {
+      token = String(entry.key ?? "").trim();
+      const r2 = await fetchGrokBillingWithStatus(token, "/billing?format=credits");
+      if (r2.line) return r2.line;
+      const r3 = await fetchGrokBillingWithStatus(token, "/billing");
+      if (r3.line) return r3.line;
+      return null;
+    }
+  }
+  const fb = await fetchGrokBillingWithStatus(token, "/billing");
+  if (fb.line) return fb.line;
+  if (fb.status === 401 && String(entry.refresh_token ?? "").trim()) {
+    if (await tryRefreshGrokAuth(authPath, mapKey, entry)) {
+      token = String(entry.key ?? "").trim();
+      const r2 = await fetchGrokBillingWithStatus(token, "/billing");
+      if (r2.line) return r2.line;
+      const r3 = await fetchGrokBillingWithStatus(token, "/billing?format=credits");
+      if (r3.line) return r3.line;
+    }
+  }
+  return null;
+}
+
 async function grokMetadata(homePath: string): Promise<AccountMetadata> {
   const authPath = firstExistingPath([path.join(homePath, "auth.json")]);
   const base: AccountMetadata = {
@@ -891,18 +1024,20 @@ async function grokMetadata(homePath: string): Promise<AccountMetadata> {
   }
 
   try {
-    const raw = JSON.parse(fs.readFileSync(authPath, "utf8")) as Record<
-      string,
-      GrokAuthEntry
-    >;
-    const entry = Object.values(raw)[0];
+    const text = fs.readFileSync(authPath, "utf8").replace(/^\uFEFF/, "");
+    const raw = JSON.parse(text) as Record<string, GrokAuthEntry>;
+    const mapKey = Object.keys(raw)[0];
+    const entry = raw[mapKey];
     if (!entry) {
       return base;
+    }
+    if (grokKeyExpired(String(entry.expires_at ?? "")) && String(entry.refresh_token ?? "").trim()) {
+      await tryRefreshGrokAuth(authPath, mapKey, entry);
     }
 
     const accountName = `${entry.first_name ?? ""} ${entry.last_name ?? ""}`.trim();
     const usageSummary = entry.team_id ? `Team ${entry.team_id}` : "Personal";
-    const quotaLine = await loadGrokQuota(entry.key);
+    const quotaLine = await loadGrokQuotaWithRefresh(entry, authPath, mapKey);
     const weekly = quotaLine?.label.toLowerCase().includes("weekly") ?? false;
 
     return {

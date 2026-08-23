@@ -65,15 +65,6 @@ func padVisual(s string, width int) string {
 	return s
 }
 
-func strokeLine(inner string, boxW int, ascii bool) string {
-	_, _, _, _, _, v := boxGlyphs(ascii)
-	innerW := boxW - 2
-	if innerW < 1 {
-		innerW = 1
-	}
-	return v + padVisualANSI(inner, innerW) + v
-}
-
 func strokeTop(title string, boxW int, ascii bool) string {
 	return strokeTopChip(title, "", boxW, ascii)
 }
@@ -129,7 +120,7 @@ func roundGlyphs(ascii bool) (tl, tr, bl, br, h, v string) {
 }
 
 func padVisualANSI(s string, width int) string {
-	n := lipgloss.Width(s)
+	n := lipgloss.Width(stripANSI(s))
 	if n > width {
 		return truncateVisual(s, width)
 	}
@@ -143,22 +134,57 @@ func padVisualANSI(s string, width int) string {
 // The text keeps any inner background (e.g. code panels), and the trailing
 // padding is emitted as its own styled segment so a lipgloss reset inside the
 // styled text cannot leak the terminal background behind the row (CA-532).
+// Measure visual width on stripANSI plain (rune count) so Ghostty's SGR colon
+// handling (38;2;R;G;B) does not miscount and leave the narrow You box short
+// (CA-593). Check again after Render so a styled SGR never makes raw wider.
 func paintRow(s string, width int, st lipgloss.Style) string {
 	if width < 1 {
 		return st.Render(s)
 	}
-	if lipgloss.Width(stripANSI(s)) > width {
+	if len([]rune(stripANSI(s))) > width {
 		s = truncateVisual(s, width)
 	}
-	cur := lipgloss.Width(stripANSI(s))
-	if cur > width {
-		cur = width
-	}
 	out := st.Render(s)
-	if pad := width - cur; pad > 0 {
-		out += st.Render(strings.Repeat(" ", pad))
+	n := len([]rune(stripANSI(out)))
+	if n > width {
+		return truncateVisual(out, width)
+	} else if n < width {
+		out += st.Render(strings.Repeat(" ", width-n))
 	}
 	return out
+}
+
+// isYouBoxRow reports whether a chat row is a You-box border/content line
+// (CA-605). These rows must never be wrapped in styleCanvas.Render: Ghostty /
+// cellbuf count truecolor SGR (38;2;R;G;B) differently from rune counts, which
+// wrapped the full-width box mid-pane and hid prompt lines.
+func isYouBoxRow(s string) bool {
+	p := stripANSI(s)
+	if p == "" {
+		return false
+	}
+	switch []rune(p)[0] {
+	case '┌', '│', '└', '+', '|':
+		return true
+	}
+	return false
+}
+
+// padYouBoxRow pads a You-box row with the canvas background WITHOUT styling
+// the box glyphs/text (CA-605). The canvas fill comes from cellbuf.Fill / the
+// trailing pad segment, so the row never carries a leading SGR wrap.
+func padYouBoxRow(s string, width int) string {
+	if width < 1 {
+		return s
+	}
+	n := len([]rune(stripANSI(s)))
+	if n > width {
+		return truncateVisual(s, width)
+	}
+	if n < width {
+		return s + styleCanvas.Render(strings.Repeat(" ", width-n))
+	}
+	return s
 }
 
 func frameInput(lines []string, width int, title, footer string, ascii bool) string {
@@ -216,82 +242,48 @@ func frameInput(lines []string, width int, title, footer string, ascii bool) str
 	return b.String()
 }
 
-func strokeChatRows(inner []chatRow, width int, user, ascii bool) []chatRow {
-	if len(inner) == 0 || width < 10 {
-		return inner
+// youBox frames a user prompt as a full chat-pane-width box (CA-602). Plain
+// runes only — no styled spans, no ANSI-aware padding — so every row's right
+// border sits at exactly width-1 on any terminal. Lines arrive pre-wrapped at
+// the box inner text width and pre-clamped (CA-607: max 4 lines + "...." tail
+// when collapsed). The [copy] chip rides its own last row (CA-604): content
+// rows never share a row with the chip, so prompt text is never cut to make
+// room for it. When truncatable, every row (borders included) carries
+// PromptExpandKey so the whole box is a click-to-expand target.
+func youBox(lines []string, width int, ascii bool, copyOn bool, msgIdx int, truncatable bool, expandKey string) []chatRow {
+	if width < 10 {
+		width = 10
 	}
-	title := "You"
-	boxW := hugBoxWidth(inner, title, width, user)
-	out := make([]chatRow, 0, len(inner)+2)
-	idx := inner[0].MsgIdx
-	top := strokeTop(title, boxW, ascii)
-	if user {
-		top = rightAlignPlain(top, width)
+	innerW := width - 2
+	if innerW < 4 {
+		innerW = 4
 	}
-	out = append(out, chatRow{Text: top, MsgIdx: idx})
-	for i, r := range inner {
-		text := " " + r.Text
-		copyOn := r.Copy && i == len(inner)-1
-		innerW := boxW - 2
-		if innerW < 4 {
-			innerW = 4
+	row := func(s string, isCopy bool) chatRow {
+		r := chatRow{Text: s, MsgIdx: msgIdx, Copy: isCopy}
+		if truncatable {
+			r.PromptExpandKey = expandKey
 		}
-		if copyOn {
-			chip := stripANSI(copyChip)
-			room := innerW - lipgloss.Width(chip)
-			if room < 4 {
-				room = 4
-			}
-			text = padVisualANSI(text, room) + chip
-		}
-		line := strokeLine(text, boxW, ascii)
-		if user {
-			line = rightAlignPlain(line, width)
-		}
-		out = append(out, chatRow{Text: line, MsgIdx: r.MsgIdx, Copy: copyOn})
+		return r
 	}
-	bot := strokeBottom(boxW, ascii)
-	if user {
-		bot = rightAlignPlain(bot, width)
+	body := func(line string) string {
+		b := " " + line
+		if len([]rune(b)) < innerW {
+			b += strings.Repeat(" ", innerW-len([]rune(b)))
+		} else if len([]rune(b)) > innerW {
+			b = string([]rune(b)[:innerW])
+		}
+		return "│" + b + "│"
 	}
-	out = append(out, chatRow{Text: bot, MsgIdx: inner[len(inner)-1].MsgIdx})
+	out := make([]chatRow, 0, len(lines)+3)
+	out = append(out, row(strokeTop("You", width, ascii), false))
+	for _, line := range lines {
+		out = append(out, row(body(line), false))
+	}
+	if copyOn {
+		chip := stripANSI(copyChip)
+		b := strings.Repeat(" ", innerW-len([]rune(chip)))
+		out = append(out, row("│"+b+chip+"│", true))
+	}
+	out = append(out, row(strokeBottom(width, ascii), false))
 	return out
-}
-
-func hugBoxWidth(inner []chatRow, title string, maxW int, user bool) int {
-	innerW := 4
-	for _, r := range inner {
-		w := lipgloss.Width(r.Text) + 1
-		if r.Copy {
-			w += lipgloss.Width(copyChip)
-		}
-		if w > innerW {
-			innerW = w
-		}
-	}
-	tlen := len([]rune(" " + strings.TrimSpace(title) + " "))
-	if tlen > innerW {
-		innerW = tlen
-	}
-	boxW := innerW + 2
-	capW := maxW
-	if user {
-		capW = maxW * 7 / 10
-		if capW < 16 {
-			capW = maxW
-		}
-	}
-	if boxW > capW {
-		boxW = capW
-	}
-	if boxW > maxW {
-		boxW = maxW
-	}
-	if boxW < 10 {
-		boxW = 10
-		if boxW > maxW {
-			boxW = maxW
-		}
-	}
-	return boxW
 }
