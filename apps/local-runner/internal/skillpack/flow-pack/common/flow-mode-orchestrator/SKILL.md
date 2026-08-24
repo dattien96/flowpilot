@@ -14,6 +14,13 @@ Use this skill to execute a governed, closed-loop engineering workflow that emul
 
 In FlowPilot, **Flow Mode** differs fundamentally from Normal Chat by enforcing **Preflight Commitment, Scope Enforcement, Locus Context Synthesis, Automated Validation, Independent Review, and Deferred Canonical Finalization**.
 
+### ⚠️ MANDATORY RULE: Strict `/safe-fix-contract` Compliance
+Mọi phiên làm việc theo Flow Mode **BẮT BUỘC** phải tuân thủ nghiêm ngặt hợp đồng `/safe-fix-contract`:
+1. **R1 — Giữ nguyên bộ test cũ (Fail → Report → Stop)**: Tuyệt đối **KHÔNG SỬA** hoặc làm yếu các unit test cũ đang có sẵn để pass CI. Nếu test cũ fail, phải sửa production code; nếu không thể, phải DỪNG LẠI và báo cáo người dùng.
+2. **R2 — Bình đẳng 3 Provider (Claude + Codex + Grok Parity)**: Bất kỳ thay đổi nào liên quan đến provider, stream, session, TUI hay gate hooks đều phải kiểm chứng hoạt động đồng nhất trên cả 3 provider **Claude, Codex, và Grok**.
+3. **R3 — Additive Tests Matrix**: Chỉ **thêm mới** test (`additive-tests-only`), phủ đầy đủ ma trận các trường hợp biên (re-entry, restart, multi-round, park, error paths), không chỉ viết 1 happy path.
+4. **Context & Oracle Rule**: Tìm nguyên nhân ở code production (`oracle-rule`), dựa trên tri thức từ `change-audit/FEATURE-KEYS.md` và các CA notes trước đó (`context-discipline`).
+
 This skill orchestrates two engines:
 1. **Grok 4.6 (`--reasoning-effort xhigh`) (Headless CLI)**: Serves as the independent **Contract Planner**, **Context Synthesizer**, and **Adversarial Review Gate**.
 2. **Main Agent (Current Model)**: Serves as the **Developer & Implementer** (Code writing, test execution, remediation, and audit commit).
@@ -27,9 +34,9 @@ This skill orchestrates two engines:
 | **1** | **Preflight Plan & Context** | **Grok 4.6 (xhigh)** | Headless CLI (`grok --single`) | Read-only analysis, resolve `feature_key` in `FEATURE-KEYS.md`, locus retrieval, define `declared_paths`, write Implementation Plan | `[Change Contract]` + Plan |
 | **2** | **Contract Freeze (Soft Gate)** | **Main Agent** | Interactive | Commit to `declared_paths`. Lock scope before writing code | Scope Locked |
 | **3** | **TDD Test Signatures** | **Main Agent** | Interactive | Tạo trước khung/chữ ký hàm test (Test Signatures / Cases) cho toàn bộ kịch bản trong plan (chưa viết body logic) | Unit Test Signatures |
-| **4** | **Implementation & Full Tests** | **Main Agent** | Interactive | Viết code logic VÀ hoàn thiện đầy đủ toàn bộ body/assertions cho các test signatures đã tạo | Production Code + Full Tests |
+| **4** | **Implementation & Full Tests** | **Main Agent** | Interactive | Viết code logic VÀ hoàn thiện đầy đủ toàn bộ body/assertions cho các test signatures đã tạo (Tuân thủ `/safe-fix-contract`) | Production Code + Full Tests |
 | **5** | **Automated Validation** | **Main Agent** | Local Shell | Run local test suites (`go test`, `npm test`, builds) | Green Test Results |
-| **6** | **Review Gate & Loop** | **Grok 4.6 (xhigh)** | Headless CLI (`grok --single`) | Critical adversarial review for scope drift, logic bugs, regressions, test coverage | `review_result.md` (OK / Findings) |
+| **6** | **Review Gate & Loop** | **Grok 4.6 (xhigh)** | Headless CLI (`grok --single`) | Critical adversarial review for safe-fix compliance, scope drift, logic bugs, regressions, test coverage | `review_result.md` (OK / Findings) |
 | **6b** | **Remediation Loop** | **Main Agent** | Interactive | Fix confirmed findings, re-validate, re-invoke Grok until `VERDICT: OK` | Clean Verified Code |
 | **7** | **Audit & Terminal Acceptance** | **Main Agent** | Interactive | Write `change-audit/CA-NNN.md` with change ledger, update `FEATURE-KEYS.md`, commit with standard tag | Git Commit & Terminal Done |
 
@@ -42,9 +49,9 @@ flowchart TD
     User([Task / Bug Report]) --> Step1[Bước 1: Grok 4.6 xhigh Headless<br/>Plan + Scope + Context]
     Step1 --> Step2[Bước 2: Main Agent<br/>Freeze Scope Commitment]
     Step2 --> Step3[Bước 3: Main Agent<br/>Viết Unit Test Signatures rỗng]
-    Step3 --> Step4[Bước 4: Main Agent<br/>Viết Code & Điền đầy đủ logic Test]
+    Step3 --> Step4[Bước 4: Main Agent<br/>Coding & Điền Test tuân thủ safe-fix-contract]
     Step4 --> Step5[Bước 5: Main Agent<br/>Automated Validation Tests]
-    Step5 --> Step6[Bước 6: Grok 4.6 xhigh Headless<br/>Adversarial Review Gate]
+    Step5 --> Step6[Bước 6: Grok 4.6 xhigh Headless<br/>Review Gate & safe-fix check]
     Step6 -- Actionable Findings --> Step6b[Bước 6b: Main Agent<br/>Fix & Re-validate]
     Step6b --> Step6
     Step6 -- VERDICT: OK --> Step7[Bước 7: Main Agent<br/>Audit Ledger & Terminal Commit]
@@ -65,7 +72,7 @@ Instructions:
 1. Analyze the codebase, inspect relevant files, and check change-audit/FEATURE-KEYS.md to find or propose the exact feature_key.
 2. Search change-audit/CA-*.md for related past changes on this feature locus.
 3. Formulate the exact Change Contract with declared_paths (only files that need modification or creation, including test files).
-4. Provide a clear, actionable Step-by-Step Implementation Plan with test strategy.
+4. Provide a clear, actionable Step-by-Step Implementation Plan with test strategy following /safe-fix-contract.
 
 Format your response exactly as:
 [Change Contract]
@@ -106,10 +113,11 @@ The Main Agent reviews Grok's output and freezes the scope:
 2. **Điền đầy đủ Test (Bắt buộc)**:
    - Quay lại các test signature đã tạo ở Step 3, **viết toàn bộ body, assertions, mock và logic test hoàn chỉnh**.
    - Không được để lại test case rỗng, test bị comment, hoặc `t.Skip` không có lý do.
-3. **Safe-Fix & Parity Rules**:
-   - Never break or modify pre-existing green tests without explicit user escalation.
-   - Write **additive tests** covering all edge cases.
-   - If touching provider-specific paths, ensure parity across **Claude**, **Codex**, and **Grok**.
+3. **🚨 BẮT BUỘC: Tuân thủ `/safe-fix-contract` (Nhắc lại tại bước Coding)**:
+   - **R1 (Không phá test cũ)**: Tuyệt đối không chỉnh sửa file test cũ hoặc thay đổi assertions của test cũ để ép pass. Nếu test cũ fail → **STOP**, xác định lỗi ở code production và sửa code production.
+   - **R2 (Parity 3 Provider)**: Nếu sửa đổi touch vào adapter, orchestrator, TUI, event stream hay session state → code phải hoạt động bình đẳng trên **Claude**, **Codex**, và **Grok**.
+   - **R3 (Additive Tests)**: Toàn bộ test mới viết ở Step 3 & 4 phải là **additive tests**, bao phủ cả trường hợp biên (error handling, timeout, park/resume, invalid payload).
+   - **Oracle Rule**: Test fail là chỉ báo code sai, sửa code chứ không sửa test.
 
 ---
 
@@ -126,7 +134,7 @@ All tests (cả test cũ lẫn toàn bộ test mới vừa fill ở Step 4) MUST
 
 ### Step 6: Adversarial Review Gate & Review Loop (Grok 4.6 xhigh Headless)
 
-Invoke Grok in headless mode to review the diff against the declared plan, scope, and test completeness:
+Invoke Grok in headless mode to review the diff against the declared plan, scope, test completeness, and **`/safe-fix-contract` compliance**:
 
 ```bash
 grok --single "You are FlowPilot's Adversarial Review Gate.
@@ -138,13 +146,16 @@ declared_paths:
 
 Instructions:
 1. Inspect the current git diff and changed files in the workspace.
-2. Check for:
-   - Scope Drift: Were any files modified outside declared_paths? (Note: change-audit/*.md and requirements/*.md are allowed).
+2. 🚨 STRICT AUDIT ON /safe-fix-contract RULES:
+   - R1: Were any pre-existing tests modified, weakened, or deleted? (If YES -> FAIL immediately, old tests must remain untouched).
+   - R2: If provider/runtime behavior was touched, is there parity across Claude, Codex, and Grok?
+   - R3: Are new tests truly additive and comprehensive (covering edge cases, not just 1 happy path)?
    - Test Completeness: Are all unit test signatures from Step 3 fully implemented with real assertions (no empty/stubbed tests)?
+3. Check for:
+   - Scope Drift: Were any files modified outside declared_paths? (Note: change-audit/*.md and requirements/*.md are allowed).
    - Logic bugs, edge cases, nil pointer / off-by-one errors.
    - Regressions or breaks in existing behavior.
-   - Test correctness and additive coverage.
-3. Output format:
+4. Output format:
    - If completely clean with no blocking issues, output:
      VERDICT: OK (No blocking issues)
    - If issues are found, output:
