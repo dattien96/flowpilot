@@ -5,6 +5,8 @@
 package app
 
 import (
+	"time"
+
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
 	"flowpilot-runner/internal/tui/prefs"
@@ -480,6 +482,9 @@ type AppModel struct {
 	// narrows width to the chat column (right sidebar, CA-524). Sidebar geometry
 	// reads this so it is stable regardless of the render-time width mutation.
 	fullWidth int
+
+	// CA-621: throttle View slow log so chat history open does not spam tui.log
+	lastViewSlowLog time.Time
 
 	// ASCII mode for legacy Windows consoles
 	asciiMode bool
