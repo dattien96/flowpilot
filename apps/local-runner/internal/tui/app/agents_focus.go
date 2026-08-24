@@ -79,7 +79,11 @@ func (m *AppModel) flowHasActiveAgents() bool {
 // stamped WAITING_USER_APPROVAL for an escalate/cap park. BUG-231 stamp must not
 // hide the [Continue]/[Stop] bar nor keep Thinking on (run-136749).
 func (m *AppModel) hasLiveWorkingChild() bool {
+	mainID := m.mainRunID()
 	for _, r := range m.agentRuns {
+		if r.RunID == "" || r.RunID == mainID || isMainAgentRun(r) {
+			continue
+		}
 		st := strings.ToLower(strings.TrimSpace(r.Status))
 		switch st {
 		case "running", "spawned":

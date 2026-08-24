@@ -772,7 +772,9 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		// flows made that a live path.
 		codeOnlyWritten := writtenAgainstFrozen[:0:0]
 		for _, p := range writtenAgainstFrozen {
-			if changecontract.IsFrozenStoreBookkeepingPath(p) || changecontract.IsPendingCanonicalStoreBookkeepingPath(p) {
+			if changecontract.IsFrozenStoreBookkeepingPath(p) ||
+				changecontract.IsPendingCanonicalStoreBookkeepingPath(p) ||
+				changecontract.IsRunnerLedgerBookkeepingPath(p) {
 				continue
 			}
 			codeOnlyWritten = append(codeOnlyWritten, p)

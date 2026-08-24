@@ -126,6 +126,36 @@ func TestIsPendingCanonicalStoreBookkeepingPathRejectsEverythingElse(t *testing.
 	}
 }
 
+func TestIsRunnerLedgerBookkeepingPathMatchesExactFiles(t *testing.T) {
+	for _, p := range []string{
+		".flowpilot/ledger/chat_summary.ndjson",
+		".flowpilot/ledger/feature_history.ndjson",
+		`.flowpilot\ledger\chat_summary.ndjson`,
+		`.flowpilot\ledger\feature_history.ndjson`,
+	} {
+		if !IsRunnerLedgerBookkeepingPath(p) {
+			t.Errorf("%q should be recognized as runner-ledger bookkeeping", p)
+		}
+	}
+}
+
+func TestIsRunnerLedgerBookkeepingPathRejectsEverythingElse(t *testing.T) {
+	for _, p := range []string{
+		".flowpilot/contracts/frozen_contracts.ndjson",
+		".flowpilot/settings/flow-rules.json",
+		".flowpilot/canonical/calc-core.json",
+		".flowpilot/ledger/other_file.ndjson",
+		"requirements/08-Task/todo/Task-1.md",
+		"change-audit/CA-1.md",
+		"README.md",
+		"src/calc.go",
+	} {
+		if IsRunnerLedgerBookkeepingPath(p) {
+			t.Errorf("%q must NOT be recognized as runner-ledger bookkeeping", p)
+		}
+	}
+}
+
 func newAmendTestFixture(t *testing.T) (dir string, store *FrozenStore, rec FrozenContractRecord) {
 	t.Helper()
 	dir = t.TempDir()

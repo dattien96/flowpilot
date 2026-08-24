@@ -58,6 +58,32 @@ func IsFrozenStoreBookkeepingPath(p string) bool {
 	return false
 }
 
+// RunnerLedgerBookkeepingPaths returns the exact repo-relative paths
+// (forward slash) that FlowPilot's runner-internal ledger (changeledger /
+// contextsync / chat_summary) writes into the workspace it is rooted at.
+// These exact bookkeeping files are excluded from a Flow writer's scope-drift
+// comparison so runner ledger writes during turns do not false-positive as
+// scope drift (BUG-327).
+func RunnerLedgerBookkeepingPaths() []string {
+	return []string{
+		path.Join(".flowpilot", "ledger", "chat_summary.ndjson"),
+		path.Join(".flowpilot", "ledger", "feature_history.ndjson"),
+	}
+}
+
+// IsRunnerLedgerBookkeepingPath reports whether p is one of
+// RunnerLedgerBookkeepingPaths (after the same normalization
+// FrozenContractScopeDrift applies to every path it compares).
+func IsRunnerLedgerBookkeepingPath(p string) bool {
+	np := normalizeScopePath(p)
+	for _, b := range RunnerLedgerBookkeepingPaths() {
+		if np == b {
+			return true
+		}
+	}
+	return false
+}
+
 // PendingCanonicalStoreBookkeepingPaths returns the exact repo-relative paths
 // PendingCanonicalStore (pending_head.go, CP-55 P-5) writes into the
 // workspace it is rooted at — the same idiom as FrozenStoreBookkeepingPaths,

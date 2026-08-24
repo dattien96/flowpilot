@@ -31,6 +31,7 @@ const (
 	RunStatusCompleted       RunStatus = "completed"
 	RunStatusFailed          RunStatus = "failed"
 	RunStatusCancelled       RunStatus = "cancelled"
+	RunStatusWaitingUserApr  RunStatus = "waiting_user_approval"
 )
 
 // ProviderEventType is the discriminator for the normalized event union.

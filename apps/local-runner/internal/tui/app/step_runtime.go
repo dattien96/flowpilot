@@ -171,7 +171,7 @@ func (m *AppModel) flowLoopBlocked() bool {
 	if m.hasLiveWorkingChild() {
 		return false
 	}
-	if m.turnStream != nil || m.focusedChildLive() {
+	if m.focusedChildLive() {
 		return false
 	}
 	return true
