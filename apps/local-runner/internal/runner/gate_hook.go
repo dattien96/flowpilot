@@ -476,6 +476,35 @@ func (s *InteractiveService) runChildArtifactOutputGate(
 	return s.runChildArtifactOutputGateAtEpoch(ctx, rs, turnID, fin, -1)
 }
 
+// childEscalatedNodeID returns the flow-node id a child run's gate escalate
+// should be attributed to, falling back label -> stepID. Deliberately NO
+// agentName fallback: stamping a role name ("coder") would never match a flow
+// node id ("implement") and Continue would fall through to the generic hub
+// reinvoke — worse than not stamping at all. Returns "" when neither is set;
+// stampEscalatedChildNodeLocked is a no-op for "".
+func childEscalatedNodeID(rs *interactiveRun) string {
+	if id := strings.TrimSpace(rs.label); id != "" {
+		return id
+	}
+	if id := strings.TrimSpace(rs.stepID); id != "" {
+		return id
+	}
+	return ""
+}
+
+// stampEscalatedChildNodeLocked records the flow node a child gate escalate came
+// from on the parent run so Continue (resumeFlowWithFeedback) can retry that
+// node's child instead of reinvoking a (possibly nonexistent) hub — the
+// run-221516 scope-drift park. Caller holds s.mu.
+func (s *InteractiveService) stampEscalatedChildNodeLocked(parentRunID, nodeID string) {
+	if strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(nodeID) == "" {
+		return
+	}
+	if parent := s.runs[parentRunID]; parent != nil {
+		parent.lastEscalatedInlineNodeID = nodeID
+	}
+}
+
 func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	ctx context.Context, rs *interactiveRun, turnID string, fin finalizeInput, epoch int64,
 ) (block bool) {
@@ -559,16 +588,7 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		}
 		if parentID != "" && s.gateEpochStillValid(runID, epoch) {
 			s.mu.Lock()
-			if parent := s.runs[parentID]; parent != nil {
-				childStepID := strings.TrimSpace(rs.label)
-				if childStepID == "" {
-					childStepID = rs.stepID
-				}
-				if childStepID == "" {
-					childStepID = rs.agentName
-				}
-				parent.lastEscalatedInlineNodeID = childStepID
-			}
+			s.stampEscalatedChildNodeLocked(parentID, childEscalatedNodeID(rs))
 			s.mu.Unlock()
 			_, _ = s.applyFlowControl(parentID, FlowControlInput{
 				Status:  "escalate",
@@ -717,9 +737,7 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			s.mu.Unlock()
 			if s.gateEpochStillValid(runID, epoch) {
 				s.mu.Lock()
-				if parent := s.runs[parentID]; parent != nil {
-					parent.lastEscalatedInlineNodeID = coderStepID
-				}
+				s.stampEscalatedChildNodeLocked(parentID, coderStepID)
 				s.mu.Unlock()
 				_, _ = s.applyFlowControl(parentID, FlowControlInput{
 					Status:  "escalate",
@@ -757,9 +775,7 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			s.mu.Unlock()
 			if s.gateEpochStillValid(runID, epoch) {
 				s.mu.Lock()
-				if parent := s.runs[parentID]; parent != nil {
-					parent.lastEscalatedInlineNodeID = coderStepID
-				}
+				s.stampEscalatedChildNodeLocked(parentID, coderStepID)
 				s.mu.Unlock()
 				_, _ = s.applyFlowControl(parentID, FlowControlInput{
 					Status:  "escalate",
@@ -820,9 +836,7 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			s.mu.Unlock()
 			if s.gateEpochStillValid(runID, epoch) {
 				s.mu.Lock()
-				if parent := s.runs[parentID]; parent != nil {
-					parent.lastEscalatedInlineNodeID = coderStepID
-				}
+				s.stampEscalatedChildNodeLocked(parentID, coderStepID)
 				s.mu.Unlock()
 				_, _ = s.applyFlowControl(parentID, FlowControlInput{
 					Status:  "escalate",
@@ -963,6 +977,9 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 				s.mu.Unlock()
 			}
 			if parentID != "" && s.gateEpochStillValid(runID, epoch) {
+				s.mu.Lock()
+				s.stampEscalatedChildNodeLocked(parentID, childEscalatedNodeID(rs))
+				s.mu.Unlock()
 				_, _ = s.applyFlowControl(parentID, FlowControlInput{
 					Status:  "escalate",
 					Summary: "flow gate block: " + msg,
@@ -974,6 +991,9 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		oracle := flowgate.RunOracleContext(ctx, cwd, baseline, diff, overrides)
 		if s.gateBlindBlocksTurn(runID, turnID, epoch, rs, dotFP, baseline, oracle, diff) {
 			if parentID != "" && s.gateEpochStillValid(runID, epoch) {
+				s.mu.Lock()
+				s.stampEscalatedChildNodeLocked(parentID, childEscalatedNodeID(rs))
+				s.mu.Unlock()
 				_, _ = s.applyFlowControl(parentID, FlowControlInput{
 					Status:  "escalate",
 					Summary: "flow gate block: gate_blind",
@@ -1026,6 +1046,9 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		}
 		s.mu.Unlock()
 		if parentID != "" && s.gateEpochStillValid(runID, epoch) {
+			s.mu.Lock()
+			s.stampEscalatedChildNodeLocked(parentID, childEscalatedNodeID(rs))
+			s.mu.Unlock()
 			_, _ = s.applyFlowControl(parentID, FlowControlInput{
 				Status:  "escalate",
 				Summary: "flow gate block: " + msg,
@@ -1069,6 +1092,9 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 					}
 					s.mu.Unlock()
 					if parentID != "" {
+						s.mu.Lock()
+						s.stampEscalatedChildNodeLocked(parentID, childEscalatedNodeID(rs))
+						s.mu.Unlock()
 						_, _ = s.applyFlowControl(parentID, FlowControlInput{
 							Status:  "escalate",
 							Summary: "flow gate block on coding step: " + msg,
@@ -1166,6 +1192,9 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		// owns remediation; the next post-turn gate re-checks remaining rules.
 		// Auto fix-code reprompt also suppresses hub escalate.
 		if parentID != "" && s.gateEpochStillValid(runID, epoch) && len(emitOptions) == 0 && autoFixPrompt == "" {
+			s.mu.Lock()
+			s.stampEscalatedChildNodeLocked(parentID, childEscalatedNodeID(rs))
+			s.mu.Unlock()
 			_, _ = s.applyFlowControl(parentID, FlowControlInput{
 				Status:  "escalate",
 				Summary: "flow gate block on coding step: " + result.Message,
@@ -1213,6 +1242,9 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		}
 		// BUG-288 #9: exhausted reprompt budget â€” escalate to human, do not wedge.
 		if parentRunID != "" {
+			s.mu.Lock()
+			s.stampEscalatedChildNodeLocked(parentRunID, childEscalatedNodeID(rs))
+			s.mu.Unlock()
 			_, _ = s.applyFlowControl(parentRunID, FlowControlInput{
 				Status:  "escalate",
 				Summary: "flow gate: max reprompts exceeded on coding step: " + result.Message,

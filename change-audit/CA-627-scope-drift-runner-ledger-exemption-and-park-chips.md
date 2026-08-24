@@ -15,6 +15,7 @@ declared_paths:
   - apps/local-runner/internal/changecontract/frozen_scope_test.go
   - apps/local-runner/internal/runner/gate_hook.go
   - apps/local-runner/internal/runner/interactive_service.go
+  - apps/local-runner/internal/runner/flow_validate_audit_dispatch.go
   - apps/local-runner/internal/runner/provider_event.go
   - apps/local-runner/internal/runner/bug327_scope_drift_ledger_exemption_test.go
   - apps/local-runner/internal/tui/app/agents_focus.go
@@ -37,16 +38,25 @@ declared_paths:
    - Added `path.Join(".flowpilot", "manifest.json")` to `RunnerLedgerBookkeepingPaths`.
    - Added `IsChangeAuditPath` for `change-audit/*.md` notes allowed per BUG-278.
    - Updated `gate_hook.go` to exclude runner bookkeeping and change-audit notes from scope drift checks.
-2. **F-2: Escalated Node Stamping on Gate Blocks (`gate_hook.go`)**:
-   - Stamped `parent.lastEscalatedInlineNodeID = coderStepID` on child gate escalations so Continue reliably resumes the escalated node.
+2. **F-2: Escalated Node Stamping + Correct Continue Routing (`gate_hook.go`, `flow_validate_audit_dispatch.go`, `interactive_service.go`)**:
+   - Stamped `parent.lastEscalatedInlineNodeID` on child gate escalations (scope drift, missing contract, diff observation error, LoadBaseline, gate_blind, coding commit, change-contract commit fail, generic block, max reprompts) so Continue reliably resumes the escalated node.
+   - **Continue routing fix (run-221516 residual):** `resumeFlowWithFeedback` now routes an escalated WRITER/delegate node (e.g. implement, `agent.code`) to `reinvokeMatchingFlowChild` — retrying the child run — instead of `tryAdvanceFlowThroughInline` (a no-op for `agent.code`) or the hub->done skip that previously marked validate/audit SKIPPED. Inline-dispatchable nodes (validate/audit/notify/freeze) still use `tryAdvanceFlowThroughInline` via the new `flowNodeInlineDispatchable` gate, kept in lock-step with that switch.
+   - `IsChangeAuditPath` tightened to `change-audit/CA-*.md` only (not `FEATURE-KEYS.md` or nested notes) so the registry stays under scope enforcement.
 3. **F-3: Park State & Action Chips Cleanup (`interactive_service.go`, `agents_focus.go`, `step_runtime.go`)**:
    - In `parkFlowForAwaitingUser` and `parkFlowForAwaitingUserLocked`: child runs transitioned to `RunStatusWaitingUserApr` / `waiting_user_approval` and updated in `agentOrchestrator` preserving existing summary fields (`ActivationSeq`, `ProviderKey`, `ModelName`, `WaitForResult`, `DependsOn`).
    - Park hygiene: cleared `pendingFlowGateTurnID` and `pendingGateChangedFiles` consistently across park handlers and `finishTurn` post-gate settle.
    - In `interactive_service.go` (`finishTurn` post-gate settle): do not reset child status to `running` if parent loop is `blocked`.
-   - In `agents_focus.go`: `hasLiveWorkingChild()` skips `mainRunID()` and synthetic main runs so it only evaluates real child agent liveness; `focusedChildLive()` treats `waiting_user_approval` as parked.
+   - In `agents_focus.go`: `hasLiveWorkingChild()` skips `mainRunID()` and synthetic main runs so it only evaluates real child agent liveness; `focusedChildLive()` treats `waiting_user_approval` as parked. **`hasLiveWorkingChild` no longer skips empty-RunID child runs** (a `RunID == ""` skip regressed `TestWorkIsLive_Matrix`'s CA-537 active-agent contract) — main is skipped via `RunID != "" && RunID == mainID || isMainAgentRun`.
 4. **F-4: Flow Done Settle & Thinking Cleanup (`step_runtime.go`, `app.go`)**:
    - Updated `flowLoopDone` to use `hasLiveWorkingChild` and `applyAgentGraph` to settle chrome on done.
    - Updated `workIsLive` in `app.go` to stop spinner immediately when `flowLoopDone` is true.
+5. **F-5: Park `agentStatus` parity (`interactive_service.go`)**: park now also stamps `AgentStatus = "waiting_user_approval"` on the existing summary so the Desktop Agents panel does not read a stale `running`.
+6. **F-6: Restart-settle twin + late-event unpark guard (review follow-up)**:
+   - `resumePendingFlowGate` now uses the same `settleChildStatusAfterGateBlockLocked` helper instead of hardcoding `Running` — a crash landing between settle-arm and loop-blocked no longer undoes the park on restart.
+   - `settleChildStatusAfterGateBlockLocked` pushes its decision to the orchestrator summary (preserving `ActivationSeq` etc.) so settle-only paths never leave the graph stale.
+   - `emitLocked` default branch no longer flips a `WAITING_USER_APPROVAL` child back to `Running` — a late stray event after park cannot re-arm TUI Thinking or hide Continue/Stop.
+   - `IsChangeAuditPath` tightened to flat `change-audit/CA-*.md` direct children only (matcher + `path.Base`); `change-audit/CA-1/note.md` and `FEATURE-KEYS.md` are fully in scope (gate-level `TestBUG327_FeatureKeysWriteStillBlocks` added).
+   - `childEscalatedNodeID` dropped the `agentName` fallback — stamping a role name (`"coder"`) would never match a flow node id (`"implement"`) and mis-routed Continue; empty → no stamp.
 
 ## Validation
 

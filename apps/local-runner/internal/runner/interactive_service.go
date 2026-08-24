@@ -149,9 +149,9 @@ type interactiveRun struct {
 	// on the run like yolo/model so children spawned mid-turn inherit it and the
 	// approval bridge applies the read-only policy for scan/plan.
 	chatPosture string
-	changeType      string
-	sourceDocID     string
-	turnCount       int
+	changeType  string
+	sourceDocID string
+	turnCount   int
 	// runKind is "chat" for normal-chat runs, "" / "workflow" for workflow runs (T-7).
 	runKind string
 
@@ -1848,8 +1848,16 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	}
 	if escalatedNodeID != "" && hubInline == "" {
 		if node, ok := findFlowNode(nodes, escalatedNodeID); ok {
-			go s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, node, feedback)
-			return snap, nil
+			if flowNodeInlineDispatchable(node) {
+				go s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, node, feedback)
+				return snap, nil
+			}
+			// Writer/delegate node (e.g. the implement scope-drift park on
+			// run-221516): tryAdvanceFlowThroughInline is a no-op for
+			// agent.code/agent.delegate, and there is no hub to reinvoke. Retry
+			// the node's own child run via the delegate reinvoke path below so
+			// validate/audit still run instead of the old hub->done skip.
+			failedDelegateNodeID = escalatedNodeID
 		}
 	}
 	if failedDelegateNodeID != "" && hubInline == "" {
@@ -2151,6 +2159,7 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 			child.agentStatus = "waiting_user_approval"
 			if existing, ok := s.agentOrchestrator.currentSummary(parentRunID, child.id); ok {
 				existing.Status = RunStatusWaitingUserApr
+				existing.AgentStatus = "waiting_user_approval"
 				s.agentOrchestrator.upsertSummary(parentRunID, existing)
 			} else {
 				s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
@@ -2159,6 +2168,7 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 					AgentName:   child.agentName,
 					Role:        child.role,
 					Status:      RunStatusWaitingUserApr,
+					AgentStatus: "waiting_user_approval",
 					Label:       child.label,
 				})
 			}
@@ -2237,6 +2247,7 @@ func (s *InteractiveService) parkFlowForAwaitingUserLocked(parentRunID string) {
 			child.agentStatus = "waiting_user_approval"
 			if existing, ok := s.agentOrchestrator.currentSummary(parentRunID, child.id); ok {
 				existing.Status = RunStatusWaitingUserApr
+				existing.AgentStatus = "waiting_user_approval"
 				s.agentOrchestrator.upsertSummary(parentRunID, existing)
 			} else {
 				s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
@@ -2245,6 +2256,7 @@ func (s *InteractiveService) parkFlowForAwaitingUserLocked(parentRunID string) {
 					AgentName:   child.agentName,
 					Role:        child.role,
 					Status:      RunStatusWaitingUserApr,
+					AgentStatus: "waiting_user_approval",
 					Label:       child.label,
 				})
 			}
@@ -2252,6 +2264,35 @@ func (s *InteractiveService) parkFlowForAwaitingUserLocked(parentRunID string) {
 	}
 	s.flowDiagLog(parentRunID, "flow_parked_awaiting_user",
 		"flow frozen for human decision form; cancelled in-flight turns and dropped auto-intents")
+}
+
+// settleChildStatusAfterGateBlockLocked decides a child's status right after a
+// post-turn gate block/reprompt settle: keep WAITING_USER_APPROVAL when the
+// parent flow loop is already blocked (a park stamp — run-218125/221516) instead
+// of resetting to Running, which would keep the TUI Thinking timer on and hide
+// the Continue/Stop chips. The decision is also pushed to the orchestrator
+// summary the TUI/desktop read (preserving all other fields, e.g. ActivationSeq)
+// so a settle-only path never leaves the graph stale. Caller holds s.mu and the
+// gate is NOT mid-stop.
+func (s *InteractiveService) settleChildStatusAfterGateBlockLocked(rs *interactiveRun) {
+	if rs == nil {
+		return
+	}
+	if rs.parentRunID != "" && s.agentOrchestrator.loopStateFor(rs.parentRunID).Status == "blocked" {
+		rs.status = RunStatusWaitingUserApr
+		rs.agentStatus = "waiting_user_approval"
+	} else {
+		rs.status = RunStatusRunning
+		rs.agentStatus = string(RunStatusRunning)
+	}
+	if rs.parentRunID == "" {
+		return
+	}
+	if existing, ok := s.agentOrchestrator.currentSummary(rs.parentRunID, rs.id); ok {
+		existing.Status = rs.status
+		existing.AgentStatus = rs.agentStatus
+		s.agentOrchestrator.upsertSummary(rs.parentRunID, existing)
+	}
 }
 
 // clearStaleHubPendingGateSettleLocked drops hub pendingFlowGateSettle when no
@@ -3660,7 +3701,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		PendingGateRepromptProvenanceRunID: rs.pendingGateRepromptProvenanceRunID,
 		// BUG-299 residual: round-trip YOLO so chat restart keeps the toggle and
 		// flow rehydrate has a durable value to force against when missing.
-		Yolo: rs.yolo,
+		Yolo:                      rs.yolo,
 		LastFailedDelegateNodeID:  rs.lastFailedDelegateNodeID,
 		LastEscalatedInlineNodeID: rs.lastEscalatedInlineNodeID,
 	}
@@ -4234,8 +4275,7 @@ func (s *InteractiveService) resumePendingFlowGate(runID string) {
 		rs.pendingFlowGateOccurredAt = ""
 		rs.pendingFlowGateTurnID = ""
 		rs.pendingGateChangedFiles = nil
-		rs.status = RunStatusRunning
-		rs.agentStatus = string(RunStatusRunning)
+		s.settleChildStatusAfterGateBlockLocked(rs)
 		// V10R4 P1: keep durable reprompt intent on session (do not clear before
 		// startTurn succeeds). Code paths + attempts already on rs.
 		repromptPrompt := rs.pendingGateRepromptPrompt
@@ -5012,9 +5052,15 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		// the parent's run status to running. Only genuine turn-progress events advance status.
 		if ev.Type != EventAgentGraphUpdated && ev.Type != EventAgentBusMessage &&
 			ev.Type != EventAgentSpawnedByUser && ev.Type != EventAgentResultInjected {
-			rs.status = RunStatusRunning
-			if rs.parentRunID != "" {
-				rs.agentStatus = string(RunStatusRunning)
+			// BUG-327: never unpark a child already stamped WAITING_USER_APPROVAL
+			// (escalate/cap park). A late stray event (e.g. a second
+			// flow_gate_violation) must not flip it back to Running — that would
+			// re-arm the TUI Thinking timer and hide Continue/Stop.
+			if rs.status != RunStatusWaitingUserApr {
+				rs.status = RunStatusRunning
+				if rs.parentRunID != "" {
+					rs.agentStatus = string(RunStatusRunning)
+				}
 			}
 		}
 	}
@@ -6761,13 +6807,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 					rs.pendingFlowGateTurnID = ""
 					rs.pendingGateChangedFiles = nil
 					if !stoppedMidGate {
-						if rs.parentRunID != "" && s.agentOrchestrator.loopStateFor(rs.parentRunID).Status == "blocked" {
-							rs.status = RunStatusWaitingUserApr
-							rs.agentStatus = "waiting_user_approval"
-						} else {
-							rs.status = RunStatusRunning
-							rs.agentStatus = string(RunStatusRunning)
-						}
+						s.settleChildStatusAfterGateBlockLocked(rs)
 					}
 					rs.turnInFlight = false
 					rs.postTurnGateCancel = nil

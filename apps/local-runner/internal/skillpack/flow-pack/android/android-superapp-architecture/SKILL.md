@@ -1,4 +1,5 @@
 ---
+version: 6
 name: android-superapp-architecture
 description: >-
   Kiến trúc và chuẩn chia module cho ứng dụng Android quy mô lớn (Superapp).

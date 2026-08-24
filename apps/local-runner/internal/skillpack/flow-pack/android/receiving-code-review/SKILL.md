@@ -1,4 +1,5 @@
 ---
+version: 6
 name: receiving-code-review-skill
 description: Use this skill PROACTIVELY when processing reviewer comments or evaluating architectural pushback to ensure technical correctness over social comfort.
 ---

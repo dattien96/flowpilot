@@ -43,7 +43,7 @@ During flow runs against a frozen contract, runner bookkeeping and audit note up
 
 ## 3. Resolution
 
-1. Added `RunnerLedgerBookkeepingPaths`, `IsRunnerLedgerBookkeepingPath`, and `IsChangeAuditPath` in `frozen_scope.go` and checked in `gate_hook.go`.
-2. Stamped `lastEscalatedInlineNodeID` in `gate_hook.go` on all child gate escalations.
-3. Cleaned up park handlers in `interactive_service.go` to preserve summary metadata and set `waiting_user_approval`.
-4. Updated `agents_focus.go`, `step_runtime.go`, and `app.go` in TUI to settle chrome on done and stop Thinking timer when parked or completed.
+1. Added `RunnerLedgerBookkeepingPaths`, `IsRunnerLedgerBookkeepingPath`, and `IsChangeAuditPath` in `frozen_scope.go` and checked in `gate_hook.go`. `IsChangeAuditPath` matches only `change-audit/CA-*.md` (flat) — `FEATURE-KEYS.md` and nested notes remain in scope.
+2. Stamped `lastEscalatedInlineNodeID` in `gate_hook.go` on all child gate escalations, and routed Continue for WRITER/delegate nodes (agent.code, e.g. implement scope-drift) to `reinvokeMatchingFlowChild` (retry the child) instead of the no-op `tryAdvanceFlowThroughInline` / hub->done skip. validate/audit still run.
+3. Cleaned up park handlers in `interactive_service.go` to preserve summary metadata, set `waiting_user_approval` (status + agentStatus), and keep the gate-block settle as a park when the loop is blocked.
+4. Updated `agents_focus.go`, `step_runtime.go`, and `app.go` in TUI to settle chrome on done and stop Thinking timer when parked or completed; fixed the `TestWorkIsLive_Matrix` active-agent regression from the empty-RunID skip.

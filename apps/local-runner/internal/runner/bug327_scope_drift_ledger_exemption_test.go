@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // BUG-327: runner-internal ledger writes (.flowpilot/ledger/chat_summary.ndjson,
@@ -202,7 +204,8 @@ func TestBUG327_GateBlockPostTurnSettleKeepsWaitingUserApproval(t *testing.T) {
 		Status:      RunStatusRunning,
 	})
 
-	// Writer changed declared file + extra.go to trigger scope drift gate block
+	// Writer changed declared file + extra.go to trigger a real scope-drift
+	// gate block, which parks the parent loop to blocked + escalates.
 	p4WriteFile(t, dir, "src/calc.go", "package calc\n")
 	p4WriteFile(t, dir, "src/extra.go", "package calc\n")
 
@@ -215,30 +218,15 @@ func TestBUG327_GateBlockPostTurnSettleKeepsWaitingUserApproval(t *testing.T) {
 	if !blocked {
 		t.Fatal("expected scope drift block")
 	}
-
-	// Verify loop is blocked
 	if loop := svc.agentOrchestrator.loopStateFor(parentID); loop.Status != "blocked" {
 		t.Fatalf("expected loop blocked, got %q", loop.Status)
 	}
 
-	// Simulate finishTurn post-gate settle branch
+	// finishTurn's post-gate settle calls the PRODUCTION helper; with the parent
+	// loop blocked it must keep the child WAITING_USER_APPROVAL (park), not reset
+	// it to Running (which would keep TUI Thinking on and hide Continue/Stop).
 	svc.mu.Lock()
-	if rs.pendingFlowGateSettle {
-		rs.pendingFlowGateSettle = false
-		rs.pendingFlowGateFinalMsg = ""
-		rs.pendingFlowGateOccurredAt = ""
-		rs.pendingFlowGateTurnID = ""
-		rs.pendingGateChangedFiles = nil
-		if rs.parentRunID != "" && svc.agentOrchestrator.loopStateFor(rs.parentRunID).Status == "blocked" {
-			rs.status = RunStatusWaitingUserApr
-			rs.agentStatus = "waiting_user_approval"
-		} else {
-			rs.status = RunStatusRunning
-			rs.agentStatus = string(RunStatusRunning)
-		}
-		rs.turnInFlight = false
-		rs.postTurnGateCancel = nil
-	}
+	svc.settleChildStatusAfterGateBlockLocked(rs)
 	svc.mu.Unlock()
 
 	if rs.status != RunStatusWaitingUserApr {
@@ -247,8 +235,113 @@ func TestBUG327_GateBlockPostTurnSettleKeepsWaitingUserApproval(t *testing.T) {
 	if rs.agentStatus != "waiting_user_approval" {
 		t.Fatalf("rs.agentStatus = %q, want waiting_user_approval", rs.agentStatus)
 	}
-	if rs.pendingGateChangedFiles != nil {
-		t.Fatalf("expected pendingGateChangedFiles cleared, got %v", rs.pendingGateChangedFiles)
+
+	// The same settle on a NON-blocked loop keeps Running (the reprompt path).
+	svc.agentOrchestrator.setLoop(parentID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
+	svc.mu.Lock()
+	svc.settleChildStatusAfterGateBlockLocked(rs)
+	svc.mu.Unlock()
+	if rs.status != RunStatusRunning {
+		t.Fatalf("non-blocked settle: rs.status = %q, want %q", rs.status, RunStatusRunning)
+	}
+}
+
+// flowNodeInlineDispatchable must stay in lock-step with
+// tryAdvanceFlowThroughInline's dispatch switch: writer/delegate nodes are not
+// inline-dispatchable (BUG-327 — Continue must retry the child, not no-op).
+func TestBUG327_FlowNodeInlineDispatchable(t *testing.T) {
+	cases := []struct {
+		behavior string
+		want     bool
+	}{
+		{"agent.code", false},
+		{"agent.delegate", false},
+		{"command.validate", true},
+		{"artifact.audit_draft", true},
+		{"contract.freeze", true},
+		{"telegram.notify", true},
+		{"hub.notify", true},
+		{"", false},
+		{"bogus", false},
+	}
+	for _, tc := range cases {
+		if got := flowNodeInlineDispatchable(agentpack.FlowNode{Behavior: tc.behavior}); got != tc.want {
+			t.Errorf("flowNodeInlineDispatchable(%q) = %v, want %v", tc.behavior, got, tc.want)
+		}
+	}
+}
+
+// Continue after a scope-drift escalate on a rag-harness implement (agent.code)
+// must retry the implement child — not tryAdvance no-op, not hub->done skip.
+//
+// The implement child's activationSeq is the deterministic reinvoke signal:
+// reinvokeMatchingFlowChild increments it synchronously and a re-park (the
+// retried coder writing out-of-scope again, correct behavior for genuine drift)
+// preserves it — whereas both broken paths leave it at 0. Provider-agnostic
+// routing (no providerKey branch), matrixed claude/codex/grok per house rule.
+func TestBUG327_ScopeDriftContinueReinvokesImplementChild(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider ProviderKey
+		model    string
+	}{
+		{"grok", ProviderKeyGrok, "grok-4.5"},
+		{"codex", ProviderKeyCodex, "gpt-5.4-mini"},
+		{"claude", ProviderKeyClaude, "claude-sonnet"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), newFakeWorkflowStore())
+			parent, _ := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Model: "gpt-5.4-mini"})
+			pid := parent.RunID
+			svc.agentOrchestrator.setLoop(pid, AgentLoopState{Status: "blocked", Mode: "explicit", Cap: 3, RoundCap: 3, BlockReason: "escalate"})
+			nodes := ragHarnessNodes()
+			svc.mu.Lock()
+			p := svc.runs[pid]
+			p.activeFlowNodes = nodes
+			p.activeFlowAcceptanceNodes = []string{"validate", "audit"}
+			p.autoOrchestrate = true
+			p.flowEngineDriven = true
+			p.chatFlowRef = "flowpilot-core-flow-pack/rag-harness"
+			p.modelName = tc.model
+			p.providerKey = tc.provider
+			p.lastEscalatedInlineNodeID = "implement"
+			svc.mu.Unlock()
+			svc.reseedFlowStepRuntime(pid, nodes)
+			svc.setFlowStepStatus(context.Background(), pid, "implement", StepStatusWaitingUserApr)
+
+			// implement child parked (CA-627 park stamp)
+			child, _ := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Model: "gpt-5.4-mini"})
+			svc.mu.Lock()
+			crs := svc.runs[child.RunID]
+			crs.parentRunID = pid
+			crs.agentName = "coder"
+			crs.label = "implement"
+			crs.role = "coder"
+			crs.providerKey = tc.provider
+			crs.modelName = tc.model
+			crs.status = RunStatusWaitingUserApr
+			crs.agentStatus = "waiting_user_approval"
+			svc.mu.Unlock()
+			svc.agentOrchestrator.registerChild(pid, child.RunID)
+			svc.agentOrchestrator.upsertSummary(pid, AgentRunSummary{RunID: child.RunID, AgentName: "coder", Label: "implement", Role: "coder", Status: RunStatusWaitingUserApr, ParentRunID: pid})
+
+			_, err := svc.resumeFlowWithFeedback(pid, "")
+			if err != nil {
+				t.Fatalf("%s: resumeFlowWithFeedback: %v", tc.name, err)
+			}
+
+			svc.mu.Lock()
+			activationSeq := svc.runs[child.RunID].activationSeq
+			lastEsc := svc.runs[pid].lastEscalatedInlineNodeID
+			svc.mu.Unlock()
+
+			if lastEsc != "" {
+				t.Fatalf("%s: lastEscalatedInlineNodeID not cleared, got %q", tc.name, lastEsc)
+			}
+			if activationSeq != 1 {
+				t.Fatalf("%s: implement child was not reinvoked (activationSeq=%d, want 1) — Continue must retry the child, not leave it parked", tc.name, activationSeq)
+			}
+		})
 	}
 }
 
@@ -279,5 +372,144 @@ func TestBUG327_ScopeDriftEscalateStampsLastEscalatedNodeID(t *testing.T) {
 
 	if lastEsc != "implement" {
 		t.Fatalf("parent.lastEscalatedInlineNodeID = %q, want implement", lastEsc)
+	}
+}
+
+// FEATURE-KEYS.md (the feature registry) must NOT be treated as a coder's own
+// change-audit note — writing it is real scope drift and must still block
+// (BUG-278 allowed CA-* notes only).
+func TestBUG327_FeatureKeysWriteStillBlocks(t *testing.T) {
+	dir, head := newContractFreezeTestRepo(t)
+	svc, parentID := newP4CodeWriterFixture(t, dir)
+	freezeP4Contract(t, dir, parentID, "coder", head, []string{"src/calc.go"})
+	rs := newP4ChildRun(svc, "child-1", parentID, dir, head)
+
+	p4WriteFile(t, dir, "src/calc.go", "package calc\n")
+	p4WriteFile(t, dir, "change-audit/FEATURE-KEYS.md", "# keys\n")
+
+	blocked := svc.runChildArtifactOutputGateAtEpoch(context.Background(), rs, "turn-1", finalizeInput{
+		FinalMessage: "done",
+		ChangedFiles: []string{"src/calc.go", "change-audit/FEATURE-KEYS.md"},
+	}, 0)
+
+	if !blocked {
+		t.Fatal("expected block: change-audit/FEATURE-KEYS.md is not exempt")
+	}
+	snap := svc.agentGraphSnapshot(parentID)
+	if !strings.Contains(snap.LoopState.GateReason, "change-audit/FEATURE-KEYS.md") {
+		t.Fatalf("expected gate reason to name FEATURE-KEYS.md, got %q", snap.LoopState.GateReason)
+	}
+}
+
+// Restart twin of the gate-block settle: resumePendingFlowGate re-runs the
+// pending gate after a crash. When the parent loop is ALREADY blocked (park),
+// it must keep the child WAITING_USER_APPROVAL, not force it back to Running —
+// the old hardcoded Running undid the park and re-armed TUI Thinking.
+func TestBUG327_ResumePendingFlowGateKeepsWaitingWhenLoopBlocked(t *testing.T) {
+	t.Run("loop_already_blocked_early_return", func(t *testing.T) {
+		dir, head := newContractFreezeTestRepo(t)
+		svc, parentID := newP4CodeWriterFixture(t, dir)
+		freezeP4Contract(t, dir, parentID, "coder", head, []string{"src/calc.go"})
+		rs := newP4ChildRun(svc, "child-1", parentID, dir, head)
+		svc.agentOrchestrator.registerChild(parentID, rs.id)
+		svc.agentOrchestrator.upsertSummary(parentID, AgentRunSummary{
+			RunID:       rs.id,
+			ParentRunID: parentID,
+			AgentName:   "coder",
+			Role:        "coder",
+			Status:      RunStatusWaitingUserApr,
+		})
+
+		// Park already in effect: loop blocked + child stamped waiting.
+		svc.agentOrchestrator.setLoop(parentID, AgentLoopState{Status: "blocked", Cap: 3, RoundCap: 3, BlockReason: "escalate"})
+		svc.mu.Lock()
+		rs.status = RunStatusWaitingUserApr
+		rs.agentStatus = "waiting_user_approval"
+		rs.pendingFlowGateSettle = true
+		rs.pendingFlowGateTurnID = "turn-1"
+		rs.pendingGateChangedFiles = []string{"src/extra.go"}
+		svc.mu.Unlock()
+
+		svc.resumePendingFlowGate(rs.id)
+
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		if rs.status != RunStatusWaitingUserApr {
+			t.Fatalf("child status = %q, want %q (park must survive resume)", rs.status, RunStatusWaitingUserApr)
+		}
+		if rs.pendingFlowGateSettle {
+			t.Fatal("stale pendingFlowGateSettle must be cleared on blocked loop")
+		}
+	})
+
+	t.Run("rerun_gate_parks_not_running", func(t *testing.T) {
+		dir, head := newContractFreezeTestRepo(t)
+		svc, parentID := newP4CodeWriterFixture(t, dir)
+		freezeP4Contract(t, dir, parentID, "coder", head, []string{"src/calc.go"})
+		rs := newP4ChildRun(svc, "child-1", parentID, dir, head)
+		svc.agentOrchestrator.registerChild(parentID, rs.id)
+		svc.agentOrchestrator.upsertSummary(parentID, AgentRunSummary{
+			RunID:       rs.id,
+			ParentRunID: parentID,
+			AgentName:   "coder",
+			Role:        "coder",
+			Status:      RunStatusRunning,
+		})
+
+		// Crash window: settle armed, loop still running, out-of-scope file
+		// already in the worktree. Resume re-runs the child gate → escalate →
+		// park; the settle must keep the child WAITING, not reset Running.
+		p4WriteFile(t, dir, "src/calc.go", "package calc\n")
+		p4WriteFile(t, dir, "src/extra.go", "package calc\n")
+		svc.mu.Lock()
+		rs.pendingFlowGateSettle = true
+		rs.pendingFlowGateTurnID = "turn-1"
+		rs.pendingGateChangedFiles = []string{"src/calc.go", "src/extra.go"}
+		svc.mu.Unlock()
+
+		svc.resumePendingFlowGate(rs.id)
+
+		svc.mu.Lock()
+		defer svc.mu.Unlock()
+		if rs.status != RunStatusWaitingUserApr {
+			t.Fatalf("child status after re-run gate block = %q, want %q (park, not Running)", rs.status, RunStatusWaitingUserApr)
+		}
+		if loop := svc.agentOrchestrator.loopStateFor(parentID); loop.Status != "blocked" {
+			t.Fatalf("loop = %q, want blocked", loop.Status)
+		}
+	})
+}
+
+// A late stray event after park (e.g. a second flow_gate_violation) must NOT
+// unpark the child — the default emitLocked branch must skip WAITING_USER_APPROVAL.
+func TestBUG327_EmitLockedDoesNotUnparkWaitingChild(t *testing.T) {
+	dir, head := newContractFreezeTestRepo(t)
+	svc, parentID := newP4CodeWriterFixture(t, dir)
+	rs := newP4ChildRun(svc, "child-1", parentID, dir, head)
+	svc.agentOrchestrator.registerChild(parentID, rs.id)
+	svc.agentOrchestrator.upsertSummary(parentID, AgentRunSummary{
+		RunID:       rs.id,
+		ParentRunID: parentID,
+		AgentName:   "coder",
+		Role:        "coder",
+		Status:      RunStatusWaitingUserApr,
+	})
+	svc.agentOrchestrator.setLoop(parentID, AgentLoopState{Status: "blocked", Cap: 3, RoundCap: 3, BlockReason: "escalate"})
+	svc.mu.Lock()
+	rs.status = RunStatusWaitingUserApr
+	rs.agentStatus = "waiting_user_approval"
+	svc.mu.Unlock()
+
+	svc.mu.Lock()
+	svc.emitLocked(rs, ProviderEvent{Type: EventFlowGateViolation, Error: "stray", Status: "block"})
+	svc.mu.Unlock()
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if rs.status != RunStatusWaitingUserApr {
+		t.Fatalf("child status after stray event = %q, want %q (park must not unpark)", rs.status, RunStatusWaitingUserApr)
+	}
+	if rs.agentStatus != "waiting_user_approval" {
+		t.Fatalf("agentStatus = %q, want waiting_user_approval", rs.agentStatus)
 	}
 }

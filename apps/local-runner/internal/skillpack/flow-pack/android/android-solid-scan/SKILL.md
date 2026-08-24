@@ -1,7 +1,7 @@
 ---
 name: android-solid-scan
 description: Mechanical Playbook for detecting SOLID violations in Android
-version: 1.0.0
+version: 6
 ---
 
 # Mechanical Playbook: Android SOLID Scan

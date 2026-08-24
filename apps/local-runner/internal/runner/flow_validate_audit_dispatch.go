@@ -27,6 +27,24 @@ import (
 // function called from here already exists and is unit-tested; this file is
 // the live dispatch path that was missing.
 
+// flowNodeInlineDispatchable reports whether a node's behavior can be dispatched
+// in-process by tryAdvanceFlowThroughInline (validate/audit/notify/freeze). A
+// writer/delegate node (agent.code/agent.delegate) is NOT — Continue must retry
+// that node's child run instead of a no-op inline dispatch (BUG-327, run-221516
+// scope-drift park on implement). Kept in lock-step with tryAdvanceFlowThroughInline's
+// own switch so the two cannot drift apart.
+func flowNodeInlineDispatchable(node agentpack.FlowNode) bool {
+	canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior)
+	if !ok {
+		return false
+	}
+	switch canonical {
+	case "command.validate", "artifact.audit_draft", "telegram.notify", "hub.notify", "contract.freeze":
+		return true
+	}
+	return false
+}
+
 // edgeTargetFrom finds the single edge matching (from, when, kind) and
 // returns its target, mirroring resolveContinueBackEdgeTarget but scoped to
 // one specific source node â€” needed here because validate/audit each have

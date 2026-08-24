@@ -162,7 +162,6 @@ func TestIsChangeAuditPathMatchesAuditNotes(t *testing.T) {
 	for _, p := range []string{
 		"change-audit/CA-1.md",
 		"change-audit/CA-914-calc-format-clamp-checked.md",
-		"change-audit/FEATURE-KEYS.md",
 		`change-audit\CA-914.md`,
 	} {
 		if !IsChangeAuditPath(p) {
@@ -176,8 +175,13 @@ func TestIsChangeAuditPathRejectsNonAuditNotes(t *testing.T) {
 		"src/calc.go",
 		"requirements/08-Task/todo/Task-1.md",
 		"change-audit/sub/other.go",
+		"change-audit/sub/CA-1.md",
+		"change-audit/CA-1/note.md",
+		"change-audit/CA-1",
+		"change-audit/FEATURE-KEYS.md",
 		".flowpilot/manifest.json",
 		"README.md",
+		"CHANGE-AUDIT/CA-1.md",
 	} {
 		if IsChangeAuditPath(p) {
 			t.Errorf("%q must NOT be recognized as change-audit path", p)

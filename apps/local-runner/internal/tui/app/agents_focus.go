@@ -85,7 +85,7 @@ func (m *AppModel) flowHasActiveAgents() bool {
 func (m *AppModel) hasLiveWorkingChild() bool {
 	mainID := m.mainRunID()
 	for _, r := range m.agentRuns {
-		if r.RunID == "" || r.RunID == mainID || isMainAgentRun(r) {
+		if (r.RunID != "" && r.RunID == mainID) || isMainAgentRun(r) {
 			continue
 		}
 		st := strings.ToLower(strings.TrimSpace(r.Status))

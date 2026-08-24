@@ -1,4 +1,5 @@
 ---
+version: 6
 name: add-new-bug
 description: Use when the user invokes `$add-new-bug` or reports a bug, regression, broken workflow, or incorrect behavior in the Android/KMP repo and wants the issue investigated, fixed, tested, and wrapped up with the repo's normal planning, audit, and walkthrough artifacts.
 ---

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flow Mode Orchestrator"
+  short_description: "Emulate Flow Mode with Grok 4.6 xhigh for Planning & Review."
+  default_prompt: "Orchestrate Plan-to-Code-to-Review loop using Grok 4.6 xhigh."

@@ -1,4 +1,5 @@
 ---
+version: 6
 name: android-memory-leak
 description: Use this skill PROACTIVELY when diagnosing, fixing, or preventing Android memory leaks. Covers ART GC reachability, heap dump analysis, LeakCanary/Profiler heuristics, and lifecycle-safe architecture.
 ---

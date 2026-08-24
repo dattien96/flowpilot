@@ -20,6 +20,8 @@ var commonSkills = []string{
 	"codex-grok-review-loop",
 	"cross-provider-parity",
 	"safe-fix-contract",
+	"web-design-guidelines",
+	"flow-mode-orchestrator",
 }
 
 func TestInstall_CommonOnlyForNonePlatform(t *testing.T) {
@@ -78,8 +80,11 @@ func TestInstall_AndroidIncludesCommonAndAndroid(t *testing.T) {
 		t.Error("common skill git-commit-format should be installed for platform=android")
 	}
 
-	// (common + 1 android skill) * 2 roots
-	want := (len(commonSkills) + 1) * len(installRoots)
+	androidSkills, err := skillsForPlatform("android")
+	if err != nil {
+		t.Fatalf("skillsForPlatform(android) failed: %v", err)
+	}
+	want := len(androidSkills) * len(installRoots)
 	if len(result.Installed) != want {
 		t.Errorf("Installed count = %d, want %d", len(result.Installed), want)
 	}
@@ -102,8 +107,11 @@ func TestInstall_KMMIncludesCommonAndroidIosAndKmm(t *testing.T) {
 		}
 	}
 
-	// (common + kmm + android + ios) * 2 roots
-	want := (len(commonSkills) + 3) * len(installRoots)
+	kmmSkills, err := skillsForPlatform("kmm")
+	if err != nil {
+		t.Fatalf("skillsForPlatform(kmm) failed: %v", err)
+	}
+	want := len(kmmSkills) * len(installRoots)
 	if len(result.Installed) != want {
 		t.Errorf("Installed count = %d, want %d", len(result.Installed), want)
 	}
@@ -227,7 +235,11 @@ func TestInstall_SkipsExistingSameVersionFiles(t *testing.T) {
 		t.Errorf("second Install.Installed = %d, want 0 (all should be skipped)", len(second.Installed))
 	}
 
-	want := (len(commonSkills) + 1) * len(installRoots)
+	androidSkills, err := skillsForPlatform("android")
+	if err != nil {
+		t.Fatalf("skillsForPlatform(android) failed: %v", err)
+	}
+	want := len(androidSkills) * len(installRoots)
 	if len(second.Skipped) != want {
 		t.Errorf("second Install.Skipped = %d, want %d", len(second.Skipped), want)
 	}

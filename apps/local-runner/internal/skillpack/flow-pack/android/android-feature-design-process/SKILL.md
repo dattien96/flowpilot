@@ -1,4 +1,5 @@
 ---
+version: 6
 name: android-feature-design-process
 description: Quy trình thiết kế tính năng 2 pha (HLD & LLD), cổng kiểm duyệt SOLID (SOLID Gate) và tư duy Lead Design (Lead Design Mindset) cho kỹ sư Android.
 ---

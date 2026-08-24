@@ -1,4 +1,5 @@
 ---
+version: 6
 name: android-solid-principles
 description: Comprehensive Android SOLID principles skill
 ---

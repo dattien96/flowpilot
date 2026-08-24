@@ -85,12 +85,24 @@ func IsRunnerLedgerBookkeepingPath(p string) bool {
 	return false
 }
 
-// IsChangeAuditPath reports whether p is a change audit note under change-audit/*.md
-// which coding agents are explicitly allowed to create per BUG-278 without triggering
-// code scope drift.
+// IsChangeAuditPath reports whether p is a change audit note — flat, direct
+// children of change-audit/ named CA-*.md — which coding agents are explicitly
+// allowed to create per BUG-278 without triggering code scope drift.
+// Deliberately NOT every .md under change-audit/: FEATURE-KEYS.md (the feature
+// registry) and any nested sub-directory note are still fully subject to scope
+// enforcement — BUG-278 allowed a coder to write its own CA note, not to
+// mutate the registry or unrelated notes.
 func IsChangeAuditPath(p string) bool {
 	np := normalizeScopePath(p)
-	return strings.HasPrefix(np, "change-audit/") && strings.HasSuffix(np, ".md")
+	if !strings.HasPrefix(np, "change-audit/") {
+		return false
+	}
+	rest := np[len("change-audit/"):]
+	if rest == "" || strings.Contains(rest, "/") {
+		return false
+	}
+	base := path.Base(rest)
+	return strings.HasPrefix(base, "CA-") && strings.HasSuffix(base, ".md")
 }
 
 // PendingCanonicalStoreBookkeepingPaths returns the exact repo-relative paths

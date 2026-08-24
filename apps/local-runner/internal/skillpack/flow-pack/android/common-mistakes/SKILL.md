@@ -1,4 +1,5 @@
 ---
+version: 6
 name: common-mistakes-skill
 description: Use this skill PROACTIVELY as a self-check before starting any new task or during the final review phase to avoid common AI agent pitfalls like missing context or overlapping tasks.
 ---

@@ -1,4 +1,5 @@
 ---
+version: 6
 name: add-new-task
 description: Use when the user invokes `$add-new-task` or asks for a new Android/KMP task or feature slice that should be planned, implemented, tested, and closed out through the repo's normal workflow artifacts.
 ---

@@ -1,4 +1,5 @@
 ---
+version: 6
 name: code-style-skill
 description: Use this skill PROACTIVELY when referencing general rules for clean code, naming, comments, null safety, and security to ensure implementation quality.
 ---
