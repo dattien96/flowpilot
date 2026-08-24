@@ -2853,6 +2853,12 @@ func (m *AppModel) sendBlocked() bool {
 	if m.hasUnresolvedAttention() {
 		return true
 	}
+	// Parked blocked loop (escalate/cap/delegate_failed) is waiting on the user
+	// to Continue/Stop — chat input must stay enabled for /continue. A WAITING
+	// stamp alone must not block input (run-136749 regression).
+	if m.flowLoopBlocked() {
+		return false
+	}
 	switch m.connStatus {
 	case ConnRunning, ConnWaiting:
 		return true
@@ -2877,9 +2883,6 @@ func (m *AppModel) turnIsActive() bool {
 	if m.pendingPrompt != "" {
 		return true
 	}
-	if m.flowHasActiveAgents() {
-		return true
-	}
 	// Dispatch operator attention (CP-51 Task-256): while an uncertain turn /
 	// open repair awaits a decision, the flow is parked — [stop] must not arm
 	// against the very user the flow is waiting on.
@@ -2889,8 +2892,13 @@ func (m *AppModel) turnIsActive() bool {
 	// A blocked loop (awaiting-user pause, BUG-231) with no live child is parked,
 	// not running: [stop] must not arm against the very user the flow is waiting
 	// on to Continue/Stop. run-189839 showed [stop] on a parked blocked flow.
+	// Check before flowHasActiveAgents: WAITING_USER_APPROVAL is a park stamp
+	// (run-136749), not live work.
 	if m.flowLoopBlocked() {
 		return false
+	}
+	if m.flowHasActiveAgents() {
+		return true
 	}
 	// Flow/step orch SSE can mean live work — but after /open we also attach orch
 	// as a late-event listener on finished runs (same idea as plain-chat run-97624).
@@ -2927,14 +2935,17 @@ func (m *AppModel) workIsLive() bool {
 	if m.pendingPrompt != "" {
 		return true
 	}
-	if m.flowHasActiveAgents() {
-		return true
-	}
 	if m.hasUnresolvedAttention() {
 		return false
 	}
+	// Blocked park (escalate/cap/delegate_failed) is waiting on the user, not
+	// live work — check before flowHasActiveAgents: WAITING_USER_APPROVAL is a
+	// park stamp (run-136749), not a running child.
 	if m.flowLoopBlocked() {
 		return false
+	}
+	if m.flowHasActiveAgents() {
+		return true
 	}
 	if m.connStatus == ConnRunning {
 		return true

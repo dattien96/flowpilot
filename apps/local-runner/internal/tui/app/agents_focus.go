@@ -75,6 +75,28 @@ func (m *AppModel) flowHasActiveAgents() bool {
 	return false
 }
 
+// hasLiveWorkingChild reports a child that is truly still working, not just
+// stamped WAITING_USER_APPROVAL for an escalate/cap park. BUG-231 stamp must not
+// hide the [Continue]/[Stop] bar nor keep Thinking on (run-136749).
+func (m *AppModel) hasLiveWorkingChild() bool {
+	for _, r := range m.agentRuns {
+		st := strings.ToLower(strings.TrimSpace(r.Status))
+		switch st {
+		case "running", "spawned":
+			return true
+		case "waiting_approval", "waiting_question":
+			// YOLO/ask_user gate not yet mounted as a clickable card — keep
+			// [Continue] hidden until the user can actually Approve/Deny.
+			if m.approval == nil && m.question == nil && m.gate == nil {
+				return true
+			}
+		case "waiting_user_approval":
+			// Park stamp (escalate/cap/delegate_failed) — not live work.
+		}
+	}
+	return false
+}
+
 // hasChildAgentRuns is true when the agent graph has a non-main child with a run id.
 func (m *AppModel) hasChildAgentRuns() bool {
 	mainID := m.mainRunID()
