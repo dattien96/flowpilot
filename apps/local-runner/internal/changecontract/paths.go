@@ -75,10 +75,9 @@ func NormalizeDeclaredCodePaths(workspace string, paths []string) ([]string, err
 		if trimmed == "" {
 			continue
 		}
-		// IsAbs must run on the OS-native form: path.IsAbs (POSIX-only) never
-		// recognizes a Windows drive-letter path like "C:/outside/x.go" once it
-		// has been slash-normalized, which would let it slip through unrejected.
-		native := filepath.Clean(filepath.FromSlash(trimmed))
+		// Normalize backslashes to forward slashes across all platforms
+		forward := strings.ReplaceAll(trimmed, `\`, `/`)
+		native := filepath.Clean(filepath.FromSlash(forward))
 		if filepath.IsAbs(native) {
 			if absWorkspace == "" {
 				return nil, fmt.Errorf("changecontract: declared path %q is absolute but no workspace was given", raw)

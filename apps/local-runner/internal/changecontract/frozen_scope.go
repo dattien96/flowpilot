@@ -117,7 +117,8 @@ func FrozenContractScopeDrift(rec FrozenContractRecord, writtenPaths []string) [
 }
 
 func normalizeScopePath(p string) string {
-	p = filepath.ToSlash(strings.TrimSpace(p))
+	p = strings.ReplaceAll(strings.TrimSpace(p), `\`, `/`)
+	p = filepath.ToSlash(p)
 	if p == "" {
 		return ""
 	}
