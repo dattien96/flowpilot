@@ -18,8 +18,10 @@ func TestWindowsReject_RawFlood_BlockedAndHints(t *testing.T) {
 	advance := clockAt(t)
 	m := newPasteModel()
 	m.rejectWindowsRawPaste = true
-	// Simulate a long Ctrl+V flood: 20 rapid runes (no Paste flag).
-	for _, r := range strings.Repeat("a", 20) {
+	// Simulate a long Ctrl+V flood: 20 rapid varied runes (no Paste flag).
+	// CA-611: single-repeated chains (e.g. "ssss" Telex tone) are exempt
+	// up to the paste threshold, so use varied text for the flood.
+	for _, r := range "abcdefghijklmnopqrst" {
 		advance(5 * time.Millisecond)
 		m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		m = m2.(*AppModel)
@@ -117,8 +119,8 @@ func TestWindowsReject_HijackNotWipedByTrailingFlood(t *testing.T) {
 	advance := clockAt(t)
 	m := newPasteModel()
 	m.rejectWindowsRawPaste = true
-	// Start flood: 2 runes to arm.
-	for _, r := range "ab" {
+	// Start flood: pasteCollapseMinRunes runes to arm (CA-611: 2 is IME, not paste).
+	for _, r := range "abcdefgh" {
 		advance(5 * time.Millisecond)
 		m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		m = m2.(*AppModel)

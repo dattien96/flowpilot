@@ -228,3 +228,20 @@ func (m *AppModel) resetPasteBurst() {
 	m.pasteBurst = pasteBurst{}
 	m.pasteHijacked = false
 }
+
+// isSingleRepeatedRuneChain reports whether buf is a single rune repeated
+// (e.g. "ssss"). Holding a tone key or IME repeat produces such a chain;
+// a real WT Ctrl+V paste of varied text does not. Used to avoid
+// false-positive Windows paste rejection for Vietnamese Telex (CA-611).
+func isSingleRepeatedRuneChain(buf []rune) bool {
+	if len(buf) < 2 {
+		return false
+	}
+	first := buf[0]
+	for _, r := range buf[1:] {
+		if r != first {
+			return false
+		}
+	}
+	return true
+}

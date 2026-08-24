@@ -2246,6 +2246,10 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyBackspace:
 		m.deleteInputBeforeCursor()
 		m.suggIdx = 0
+		// IME Telex rewrite (dd->đ) sends Backspace+runes in 3-5ms. The
+		// Backspace must break the raw-paste chain, otherwise the 2 runes
+		// after it are mistaken for a WT Ctrl+V flood (CA-611, log 4332).
+		m.resetPasteBurst()
 		return m, m.cmdMaybePrefetchPickers()
 
 	case tea.KeySpace, tea.KeyRunes:
@@ -2298,14 +2302,16 @@ if path := imagePathFromClipboardText(pasted); path != "" {
 			// the reliable 1-msg path for text+image). No clipboard hijack —
 			// flood is just dropped so composer stays empty. Tests keep
 			// reject off so burst char-by-char + [Pasting…] stays testable.
-			// Only swallow rapid runes (chainLen>=2) so slow typing after settle
-			// is not blocked (user reported "k chat thêm được").
-			if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && m.pasteBurst.active && m.pasteBurst.chainLen >= 2 {
-				// Hint once per flood (on arm) and revert the 2 chars that armed.
+			// Threshold is pasteCollapseMinRunes (8) so short IME rewrites
+			// (dd->đ, 2-4 events) and tone-key holds (ssss) are not
+			// mistaken for paste (CA-611, log 4332). Only swallow once the
+			// chain is long enough and not a single repeated rune.
+			if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && m.pasteBurst.active && m.pasteBurst.chainLen >= pasteCollapseMinRunes && !isSingleRepeatedRuneChain(m.pasteBurst.chainBuf) {
+				// Hint once per flood (on arm) and revert the chars that armed.
 				// Subsequent rapid runes in same flood are just swallowed without
 				// reverting so an Alt+V [Pasted] token inserted after the flood
 				// is not wiped (log 18700 race).
-				if m.pasteBurst.chainLen == 2 {
+				if m.pasteBurst.chainLen == pasteCollapseMinRunes {
 					if runes := []rune(m.inputValue); len(runes) > m.pasteBurst.start {
 						m.inputValue = string(runes[:m.pasteBurst.start])
 						m.setInputCaret(m.pasteBurst.start)
