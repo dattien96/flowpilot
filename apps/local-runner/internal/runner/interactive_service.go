@@ -1610,7 +1610,19 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			}
 		}
 		s.mu.Unlock()
-		s.setFlowStepAwaitingUser(context.Background(), parentRunID)
+		// CA-623: if freeze/chain already stamped a specific node (lastEscalated),
+		// settle that node instead of the generic helper's audit fallback.
+		var escalatedNode string
+		s.mu.Lock()
+		if rs := s.runs[parentRunID]; rs != nil {
+			escalatedNode = strings.TrimSpace(rs.lastEscalatedInlineNodeID)
+		}
+		s.mu.Unlock()
+		if escalatedNode != "" {
+			s.setFlowStepStatus(context.Background(), parentRunID, escalatedNode, StepStatusWaitingUserApr)
+		} else {
+			s.setFlowStepAwaitingUser(context.Background(), parentRunID)
+		}
 		snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 			st.Status = "blocked"
 			st.BlockReason = "escalate" // BUG-231

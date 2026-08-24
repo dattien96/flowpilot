@@ -264,7 +264,14 @@ func (s *InteractiveService) setFlowStepAwaitingUser(ctx context.Context, parent
 	// RUNNING node (e.g. audit) as WAITING_USER so F2/Thinking stop. The hub
 	// path above is review-loop's "synthesis"; rag-harness's escalate was
 	// otherwise a no-op and left audit RUNNING (run-125458).
+	// CA-623: if some step is already WAITING (e.g. freeze stamped first), do
+	// not stamp a second one (audit) — prevents freeze→audit confusion.
 	if steps, err := s.workflowStore.LoadRunSteps(ctx, parentRunID); err == nil {
+		for _, st := range steps {
+			if st.Status == StepStatusWaitingUserApr {
+				return
+			}
+		}
 		for _, st := range steps {
 			if st.Status == StepStatusRunning {
 				s.setFlowStepStatus(ctx, parentRunID, st.ID, StepStatusWaitingUserApr)

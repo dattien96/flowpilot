@@ -1358,7 +1358,8 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 	escalate := func(reason string) bool {
 		s.flowDiagLog(parentRunID, "flow_contract_freeze_blocked", reason, "node_id", node.ID)
 		if s.isFlowEngineDriven(parentRunID) {
-			s.setFlowStepAwaitingUser(ctx, parentRunID)
+			s.stampLastEscalatedInlineNode(parentRunID, node.ID)
+			s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusWaitingUserApr)
 		}
 		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
 			Status:  "escalate",
@@ -1507,7 +1508,12 @@ func (s *InteractiveService) advanceFlowThroughFreezeChain(ctx context.Context, 
 	escalate := func(nodeID, reason string) bool {
 		s.flowDiagLog(parentRunID, "flow_contract_freeze_chain_failed", reason, "node_id", nodeID)
 		if s.isFlowEngineDriven(parentRunID) {
-			s.setFlowStepAwaitingUser(ctx, parentRunID)
+			if strings.TrimSpace(nodeID) != "" {
+				s.stampLastEscalatedInlineNode(parentRunID, nodeID)
+				s.setFlowStepStatus(ctx, parentRunID, nodeID, StepStatusWaitingUserApr)
+			} else {
+				s.setFlowStepAwaitingUser(ctx, parentRunID)
+			}
 		}
 		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
 			Status:  "escalate",
