@@ -1,0 +1,13 @@
+[FlowPilot implement step]
+
+Implement the planned change AND complete every test signature written in the
+test-signatures step.
+
+1. Implement the production change scoped to the frozen declared paths.
+2. Fill every test signature with real bodies, assertions and mocks. No empty
+   test bodies, no commented-out tests, no t.Skip without a stated reason.
+3. safe-fix contract: never edit, weaken, or delete pre-existing tests; if a
+   pre-existing test fails, stop and report instead of editing it. New tests
+   must cover the situation matrix, not only the happy path. If the change
+   touches provider code, verify Claude, Codex and Grok.
+4. Run the validation command when available and report results honestly.

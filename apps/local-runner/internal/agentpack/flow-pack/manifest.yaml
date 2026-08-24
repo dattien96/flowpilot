@@ -40,6 +40,10 @@ prompts:
   - prompts/auto-reinvoke.md
   - prompts/coder-reentry.md
   - prompts/flow-start-wait.md
+  - prompts/plan-safe-fix-contract.md
+  - prompts/test-signatures.md
+  - prompts/implement-complete-tests.md
+  - prompts/review-safe-fix-contract.md
 compatibility:
   minRunnerVersion: TBD
   fallbackToGoBuiltins: true

@@ -121,9 +121,11 @@ func TestLoadBuiltinRAGHarnessFlow(t *testing.T) {
 		t.Fatalf("main_context ref not parsed: %+v", rag.Contexts)
 	}
 	// CP-55 P-8: 4 original nodes plus preflight_contract_plan/
-	// preflight_contract_freeze prepended ahead of context.
-	if len(rag.Nodes) != 6 {
-		t.Fatalf("expected 6 nodes, got %d", len(rag.Nodes))
+	// preflight_contract_freeze prepended ahead of context. Task-293: adds
+	// test_signatures (agent.code tester), reviewer (agent.delegate cohort)
+	// and synthesis (hub.inline) for the TDD + review-until-clean lifecycle.
+	if len(rag.Nodes) != 9 {
+		t.Fatalf("expected 9 nodes, got %d", len(rag.Nodes))
 	}
 	behaviors := map[string]string{}
 	for _, node := range rag.Nodes {
@@ -135,6 +137,15 @@ func TestLoadBuiltinRAGHarnessFlow(t *testing.T) {
 	if !strings.EqualFold(behaviors["implement"], "agent.code") {
 		t.Fatalf("implement behavior = %q, want agent.code", behaviors["implement"])
 	}
+	if !strings.EqualFold(behaviors["test_signatures"], "agent.code") {
+		t.Fatalf("test_signatures behavior = %q, want agent.code", behaviors["test_signatures"])
+	}
+	if !strings.EqualFold(behaviors["reviewer"], "agent.delegate") {
+		t.Fatalf("reviewer behavior = %q, want agent.delegate", behaviors["reviewer"])
+	}
+	if !strings.EqualFold(behaviors["synthesis"], "hub.inline") {
+		t.Fatalf("synthesis behavior = %q, want hub.inline", behaviors["synthesis"])
+	}
 	if !strings.EqualFold(behaviors["preflight_contract_plan"], "agent.delegate") {
 		t.Fatalf("preflight_contract_plan behavior = %q, want agent.delegate", behaviors["preflight_contract_plan"])
 	}
@@ -143,6 +154,26 @@ func TestLoadBuiltinRAGHarnessFlow(t *testing.T) {
 	}
 	if len(rag.AcceptanceNodes) == 0 {
 		t.Fatal("expected rag-harness to declare acceptance_nodes now that implement is agent.code")
+	}
+	// Task-293: acceptance includes synthesis so the reviewer machine-verdict
+	// gate (CP-53) applies; the flow declares submit_review_outcome.
+	hasSynthesisAcceptance := false
+	for _, id := range rag.AcceptanceNodes {
+		if id == "synthesis" {
+			hasSynthesisAcceptance = true
+		}
+	}
+	if !hasSynthesisAcceptance {
+		t.Fatalf("expected rag-harness acceptance_nodes to include synthesis, got %v", rag.AcceptanceNodes)
+	}
+	hasReviewTool := false
+	for _, tool := range rag.Tools {
+		if tool == "tools/submit-review-outcome.yaml" {
+			hasReviewTool = true
+		}
+	}
+	if !hasReviewTool {
+		t.Fatalf("expected rag-harness to declare tools/submit-review-outcome.yaml, got %v", rag.Tools)
 	}
 }
 

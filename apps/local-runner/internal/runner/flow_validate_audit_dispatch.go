@@ -570,7 +570,15 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 
 	switch state.Status {
 	case "passed":
-		return s.advanceToNextInlineOrDelegate(ctx, parentRunID, edges, nodes, node.ID, "done", resultMessage)
+		// Task-293: rag-harness's validate forward-done edge now targets the
+		// review cohort (reviewer), not only inline audit — route through the
+		// full forward-done advance so a delegate/writer target can spawn.
+		// Preserve the terminal (done/ask_user) settle for flows whose
+		// validate edges straight to a terminal.
+		if targetID, ok := edgeTargetFrom(edges, node.ID, "done", "forward"); ok && (targetID == "done" || targetID == "ask_user") {
+			return s.advanceToNextInlineOrDelegate(ctx, parentRunID, edges, nodes, node.ID, "done", resultMessage)
+		}
+		return s.tryAdvanceFlowFromNode(parentRunID, node.ID, resultMessage)
 
 	case "skipped_env_error":
 		// V9-01: env/timeout/oracle setup failure is not a green suite â€” escalate
@@ -1501,6 +1509,18 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 		if s.isFlowEngineDriven(parentRunID) {
 			s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusDone)
 		}
+		// Task-293: recovery/repeat delivery must also (re)bind any sibling
+		// agent.code writer still missing a contract, from the already-frozen
+		// record's own draft fields.
+		existingDraft := changecontract.PreflightContractDraft{
+			FeatureKey:    existing.FeatureKey,
+			Intent:        existing.Intent,
+			DeclaredPaths: existing.DeclaredPaths,
+			SourceDocID:   existing.SourceDocID,
+		}
+		if err := s.bindFrozenContractToSiblingWriters(store, workspace, parentRunID, node.ID, existingDraft, nodes, writerNode.ID, existing.BaseSHA, existing.BaselineWorktree); err != nil {
+			return escalate("could not bind sibling writer contracts: " + err.Error())
+		}
 		return s.advanceFlowThroughFreezeChain(ctx, parentRunID, node, writerNode, existing, path)
 	}
 
@@ -1524,6 +1544,13 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 		lock.Unlock()
 		return escalate("could not persist frozen contract: " + err.Error())
 	}
+	// Task-293: the freeze node's contract governs EVERY agent.code writer in
+	// the flow (rag-harness: test_signatures AND implement), so each writer's
+	// own gate pass finds a frozen contract bound to its node id.
+	if err := s.bindFrozenContractToSiblingWriters(store, workspace, parentRunID, node.ID, draft, nodes, writerNode.ID, baseSHA, baseline); err != nil {
+		lock.Unlock()
+		return escalate("could not bind sibling writer contracts: " + err.Error())
+	}
 	lock.Unlock()
 
 	// Reload-verify durability before advancing (spec step 7): open a fresh
@@ -1533,8 +1560,17 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 	if err != nil {
 		return escalate("could not reload frozen contract store: " + err.Error())
 	}
-	if _, ok, _ := reloaded.GetFrozenForStep(parentRunID, writerNode.ID); !ok {
-		return escalate("frozen contract did not survive reload")
+	// Reload-verify every bound writer survives (first writer + siblings).
+	verifyIDs := []string{writerNode.ID}
+	for _, w := range flowAgentCodeWriterNodes(nodes) {
+		if w.ID != writerNode.ID {
+			verifyIDs = append(verifyIDs, w.ID)
+		}
+	}
+	for _, id := range verifyIDs {
+		if _, ok, _ := reloaded.GetFrozenForStep(parentRunID, id); !ok {
+			return escalate(fmt.Sprintf("frozen contract for writer %q did not survive reload", id))
+		}
 	}
 
 	if s.isFlowEngineDriven(parentRunID) {
@@ -1661,17 +1697,32 @@ func (s *InteractiveService) advanceFlowThroughFreezeChain(ctx context.Context, 
 		return true
 	}
 
-	agentName := flowNodeAgentName(writerNode)
-	if agentName == "" {
-		return escalate(writerNode.ID, "writer node has no resolvable agent")
+	if err := s.spawnFrozenWriterChild(ctx, parentRunID, writerNode, rec); err != nil {
+		return escalate(writerNode.ID, "failed to spawn writer: "+err.Error())
 	}
+	return true
+}
 
+// spawnFrozenWriterChild spawns writerNode as a child agent run bound to rec
+// (a frozen preflight contract). Composes the writer prompt from the rendered
+// context package (when one exists) + the node's own static promptTemplate +
+// the frozen change contract. Shared by advanceFlowThroughFreezeChain (first
+// writer after freeze) and tryAdvanceFlowFromNode (subsequent agent.code
+// writers, e.g. rag-harness's test_signatures -> implement) so both paths use
+// the same writer prompt and never the review handoff.
+func (s *InteractiveService) spawnFrozenWriterChild(ctx context.Context, parentRunID string, writerNode agentpack.FlowNode, rec changecontract.FrozenContractRecord) error {
+	workspace := s.workspaceCwdFor(parentRunID)
+	pkg, hasPkg := s.loadPlanContextPackage(ctx, parentRunID)
 	writerPrompt := rec.Intent
-	if pkg != nil {
-		writerPrompt = renderFlowContextPromptWithSecret(ctx, *pkg, rec.Intent, s.markerSecret)
+	if hasPkg {
+		writerPrompt = renderFlowContextPromptWithSecret(ctx, pkg, rec.Intent, s.markerSecret)
 	}
 	prompt := composeFlowNodeAgentPrompt(workspace, writerPrompt, writerNode)
 	prompt = appendChangeContractIfAnyWithSecret(workspace, parentRunID, prompt, s.markerSecret)
+	agentName := flowNodeAgentName(writerNode)
+	if agentName == "" {
+		return fmt.Errorf("writer node %q has no resolvable agent", writerNode.ID)
+	}
 	agentDef, _ := resolvePackAgentDefinition(agentName)
 	if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
 		Agent:            agentName,
@@ -1680,8 +1731,7 @@ func (s *InteractiveService) advanceFlowThroughFreezeChain(ctx context.Context, 
 		Label:            writerNode.ID,
 		AgentDefOverride: agentDef,
 	}); err != nil {
-		log.Printf("[flow-executor] contract-freeze-chain: spawn writer node %q (agent %q) failed: %v", writerNode.ID, agentName, err)
-		return escalate(writerNode.ID, "failed to spawn writer: "+err.Error())
+		return fmt.Errorf("failed to spawn writer node %q (agent %q): %w", writerNode.ID, agentName, err)
 	}
 	if s.isFlowEngineDriven(parentRunID) {
 		s.setFlowStepStatus(ctx, parentRunID, writerNode.ID, StepStatusRunning)
@@ -1689,5 +1739,46 @@ func (s *InteractiveService) advanceFlowThroughFreezeChain(ctx context.Context, 
 	s.flowDiagLog(parentRunID, "flow_contract_freeze_writer_spawned", "spawned frozen-contract writer",
 		"node_id", writerNode.ID, "agent_name", agentName, "contract_id", rec.ContractID,
 	)
-	return true
+	return nil
+}
+
+// flowAgentCodeWriterNodes returns every agent.code writer node in nodes — the
+// nodes a frozen preflight contract must be bound to (Task-293: a freeze node
+// governs the whole coding chain, e.g. rag-harness's test_signatures AND
+// implement, not only the first writer resolveFreezeWriterTarget finds).
+func flowAgentCodeWriterNodes(nodes []agentpack.FlowNode) []agentpack.FlowNode {
+	var out []agentpack.FlowNode
+	for _, n := range nodes {
+		canonical, ok := agentpack.NormalizeBehaviorID(n.Behavior)
+		if !ok || canonical != "agent.code" {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// bindFrozenContractToSiblingWriters freezes the same validated draft for
+// every agent.code writer in nodes other than firstWriterID, so each writer's
+// own gate pass (GetFrozenForStep keyed by its node id) finds a frozen
+// contract. Idempotent: a step that already has an active frozen record is
+// skipped (duplicate delivery / recovery reuse path).
+func (s *InteractiveService) bindFrozenContractToSiblingWriters(store *changecontract.FrozenStore, workspace, runID, plannerStepID string, draft changecontract.PreflightContractDraft, nodes []agentpack.FlowNode, firstWriterID, baseSHA string, baseline map[string]string) error {
+	for _, w := range flowAgentCodeWriterNodes(nodes) {
+		if w.ID == firstWriterID {
+			continue
+		}
+		if _, ok, _ := store.GetFrozenForStep(runID, w.ID); ok {
+			continue
+		}
+		versions, _ := store.ListVersionsForStep(runID, w.ID)
+		rec, err := changecontract.FreezeContract(workspace, runID, plannerStepID, w.ID, draft, baseSHA, baseline, "", len(versions)+1, time.Now().UTC())
+		if err != nil {
+			return fmt.Errorf("writer %q: %w", w.ID, err)
+		}
+		if err := store.SaveFrozen(rec); err != nil {
+			return fmt.Errorf("writer %q: %w", w.ID, err)
+		}
+	}
+	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/changecontract"
 )
 
 // startResolvedFlow is the one place a CP-42 flowRef selection becomes a
@@ -1071,8 +1072,8 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 			return false
 		}
 		canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior)
-		if !ok || canonical != "agent.delegate" {
-			s.flowDiagLog(parentRunID, "flow_advance_target_not_delegate", "target node is not a spawnable delegate",
+		if !ok || (canonical != "agent.delegate" && canonical != "agent.code") {
+			s.flowDiagLog(parentRunID, "flow_advance_target_not_spawnable", "target node is not a spawnable delegate or frozen writer",
 				"completed_node_id", completedNodeID,
 				"target_node_id", node.ID,
 				"behavior", node.Behavior,
@@ -1127,6 +1128,39 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				"completed_node_id", completedNodeID,
 				"target_node_id", node.ID,
 			)
+			continue
+		}
+		// Task-293: an agent.code forward-done target (e.g. rag-harness's
+		// test_signatures -> implement) is a frozen-contract writer, not a
+		// review delegate — spawn it through the shared frozen-writer path with
+		// its bound contract and writer prompt, never the review handoff.
+		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.code" {
+			store, storeErr := changecontract.NewFrozenStore(cwd)
+			if storeErr != nil {
+				s.flowDiagLog(parentRunID, "flow_advance_writer_store_failed", "cannot open frozen contract store for writer spawn",
+					"target_node_id", node.ID, "error", storeErr.Error(),
+				)
+				continue
+			}
+			rec, frozenOK, _ := store.GetFrozenForStep(parentRunID, node.ID)
+			if !frozenOK {
+				s.flowDiagLog(parentRunID, "flow_advance_writer_no_contract", "agent.code target has no frozen contract; blocking spawn",
+					"target_node_id", node.ID,
+				)
+				continue
+			}
+			if err := s.spawnFrozenWriterChild(context.Background(), parentRunID, node, rec); err != nil {
+				log.Printf("[flow-executor] auto-advance: spawn writer node %q failed: %v", node.ID, err)
+				s.flowDiagLog(parentRunID, "flow_advance_writer_spawn_failed", "writer spawn failed",
+					"target_node_id", node.ID, "error", err.Error(),
+				)
+				continue
+			}
+			spawnedAny = true
+			if flowDriven {
+				s.setFlowStepStatus(context.Background(), parentRunID, node.ID, StepStatusRunning)
+				s.stampFlowNodePosture(context.Background(), parentRunID, node)
+			}
 			continue
 		}
 		// Task-224 / BUG-277: deliverable-centric review â€” when the target has

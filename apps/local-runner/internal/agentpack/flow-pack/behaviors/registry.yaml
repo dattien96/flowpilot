@@ -43,6 +43,36 @@ behaviors:
       - flows/review-loop.yaml#coder
       - flows/review-loop.yaml#reviewer_correctness
       - flows/review-loop.yaml#reviewer_security
+      - flows/rag-harness.yaml#reviewer
+
+  - id: agent.code
+    scope: delegate
+    aliases: []
+    purpose: Write production code under a frozen preflight contract (CP-55 writer).
+    runtimeHandler: behaviorAgentDelegate
+    aiRole:
+      sees:
+        - The rendered Flow Context Package plus the frozen contract's intent.
+        - The node's own static promptTemplate (e.g. test-signatures /
+          implement-complete-tests instructions) appended by the runner.
+      does:
+        - Performs the actual model reasoning and writes the scoped change.
+      doesNotDo:
+        - Does not select or execute the Go handler.
+        - Does not decide flow state; scope is enforced by the frozen contract gate.
+    goRuntime:
+      inputs:
+        - BehaviorInput.Prompt
+      does:
+        - Spawns the node's agent as a child run bound to the frozen contract.
+        - Enforces declared-path scope at the gate (GetFrozenForStep).
+      usesExistingLogic:
+        - spawnFrozenWriterChild (flow_validate_audit_dispatch.go)
+        - Frozen gate pass in gate_hook.go
+      doesNotDo:
+        - No provider call inside the handler itself.
+    usedBy:
+      - flows/rag-harness.yaml#test_signatures
       - flows/rag-harness.yaml#implement
 
   - id: hub.inline
@@ -71,6 +101,7 @@ behaviors:
         - No direct applyFlowControl call from this handler alone.
     usedBy:
       - flows/review-loop.yaml#synthesis
+      - flows/rag-harness.yaml#synthesis
 
   - id: context.produce
     scope: inline

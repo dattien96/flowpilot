@@ -1,6 +1,10 @@
+# rag-harness: Flow Mode Plan -> Freeze -> Context -> Test Signatures ->
+# Implement -> Validate -> Review -> Synthesis -> Audit template without
+# hardcoded step names (TDD test-signatures step + review-until-clean loop,
+# following the flow-mode-orchestrator lifecycle).
 id: rag-harness
 version: 1
-description: Flow Mode Plan-to-Code-to-Test-to-Audit template without hardcoded step names.
+description: Flow Mode Plan-to-Code-to-Test-to-Review-to-Audit template without hardcoded step names.
 mode: flow
 builtin:
   editable: false
@@ -29,8 +33,11 @@ contexts:
       - feature.history
       - chat.summary
       - source.excerpt
+tools:
+  - tools/submit-review-outcome.yaml
 acceptance_nodes:
   - validate
+  - synthesis
   - audit
 nodes:
   - id: preflight_contract_plan
@@ -38,6 +45,7 @@ nodes:
     lifecycle: once
     behavior: agent.delegate
     agent: agents/contract-planner.md
+    promptTemplate: prompts/plan-safe-fix-contract.md
   - id: preflight_contract_freeze
     run: inline
     lifecycle: once
@@ -46,16 +54,38 @@ nodes:
     run: inline
     lifecycle: once
     behavior: context.produce
+  - id: test_signatures
+    run: delegate
+    lifecycle: once
+    behavior: agent.code
+    agent: agents/tester.md
+    promptTemplate: prompts/test-signatures.md
   - id: implement
     run: delegate
     lifecycle: reinvoke
     behavior: agent.code
     agent: agents/coder.md
-    promptTemplate: prompts/flow-context-handoff.md
+    promptTemplate: prompts/implement-complete-tests.md
   - id: validate
     run: inline
     lifecycle: once
     behavior: command.validate
+  - id: reviewer
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/reviewer.md
+    promptTemplate: prompts/review-safe-fix-contract.md
+    dependsOn:
+      - validate
+    cohort: review
+    join: all
+  - id: synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
   - id: audit
     run: inline
     lifecycle: once
@@ -70,6 +100,10 @@ edges:
     when: done
     kind: forward
   - from: context
+    to: test_signatures
+    when: done
+    kind: forward
+  - from: test_signatures
     to: implement
     when: done
     kind: forward
@@ -82,10 +116,29 @@ edges:
     when: continue
     kind: back
   - from: validate
-    to: audit
+    to: reviewer
     when: done
     kind: forward
   - from: validate
+    to: ask_user
+    when: escalate
+    kind: forward
+  - from: reviewer
+    to: synthesis
+    when: done
+    kind: forward
+  # NOTE: the flow declares exactly ONE "continue" back-edge (validate ->
+  # implement). The pack validator rejects duplicate back-edges for the same
+  # status, and the hub synthesis's changes_requested (continue) resolves the
+  # SAME edge via resolveContinueBackEdgeTarget — so review findings re-enter
+  # at implement (reset covering implement -> validate -> reviewer ->
+  # synthesis), while validate's own retry path reuses the identical edge
+  # (edgeTargetFrom validate/continue/back) for validation-failure re-entries.
+  - from: synthesis
+    to: audit
+    when: done
+    kind: forward
+  - from: synthesis
     to: ask_user
     when: escalate
     kind: forward

@@ -615,6 +615,11 @@ func composeFlowNodeAgentPrompt(workspaceCwd, prompt string, node agentpack.Flow
 	prompt = appendInputArtifactPrompt(workspaceCwd, prompt, node)
 	prompt = appendRequiredOutputArtifactPrompt(prompt, node)
 	prompt = appendTelegramOutputPrompt(prompt, node)
+	// Task-293: a node's declared static promptTemplate (e.g. safe-fix-contract
+	// instructions on the plan/review nodes, test-signatures/implement rules on
+	// the writers) is appended to every composed node prompt. Render-only Go
+	// templates are skipped — see appendStaticNodePrompt.
+	prompt = appendStaticNodePrompt(prompt, node)
 	// Task-247: inject latest Change Contract for the run when available.
 	// parent/run id is not on node; callers pass it via workspace-side store lookup
 	// using optional WorkflowRunID on a package-level helper when available.
@@ -624,6 +629,28 @@ func composeFlowNodeAgentPrompt(workspaceCwd, prompt string, node agentpack.Flow
 	// Actual run-scoped inject is applied by appendChangeContractIfAny from
 	// flow_executor with the real parentRunID.
 	return prompt
+}
+
+// appendStaticNodePrompt appends the node's declared static promptTemplate to
+// a node prompt. Render-only Go templates (contents containing "{{") are
+// skipped — they are composed by their own render paths (e.g.
+// flow-context-handoff.md) and must never be injected raw into a provider
+// prompt. Missing/undeclared templates are silently ignored so a node with a
+// stale ref degrades to the base prompt instead of blocking the flow.
+func appendStaticNodePrompt(prompt string, node agentpack.FlowNode) string {
+	rel := strings.TrimSpace(node.PromptTemplate)
+	if rel == "" {
+		return prompt
+	}
+	tmpl, ok, err := agentpack.LoadBuiltinPrompt(rel)
+	if err != nil || !ok {
+		return prompt
+	}
+	contents := strings.TrimSpace(tmpl.Contents)
+	if contents == "" || strings.Contains(contents, "{{") {
+		return prompt
+	}
+	return prompt + "\n\n" + contents
 }
 
 // appendChangeContractIfAny appends the run's latest Change Contract to a node

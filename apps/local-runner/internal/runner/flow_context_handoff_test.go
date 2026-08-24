@@ -342,6 +342,13 @@ func TestMaybeClearPlanContextIsNoOpForNonPlanStep(t *testing.T) {
 // wrapped shape the isolated unit tests above never construct.
 func TestFlowCodingPromptSpawnWrappedDoesNotDuplicateHistory(t *testing.T) {
 	workspace, _ := fcpFixture(t)
+	// Task-293: rag-harness now freezes a preflight contract BEFORE the
+	// test_signatures writer runs, and that writer's post-turn gate observes
+	// the workspace diff against the frozen BaseSHA (fail-closed on unreadable
+	// diff). fcpFixture's workspace is not a git repo, so make it one here —
+	// matching how a real FlowPilot project workspace behaves — so the
+	// tester's gate pass succeeds and the implement child actually spawns.
+	initGitRepoForAuditFixture(t, workspace)
 
 	var captured string
 	captureDone := make(chan struct{})
@@ -365,7 +372,13 @@ func TestFlowCodingPromptSpawnWrappedDoesNotDuplicateHistory(t *testing.T) {
 					b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: `{"feature_key":"agent-flow-engine","intent":"agent-flow-engine: fix the thing","declared_paths":["src/app.go"]}`})
 					return nil
 				}
-				if strings.Contains(req.Prompt, "agent-flow-engine") {
+				// Task-293: rag-harness now runs a test_signatures writer
+				// (tester) BEFORE implement — the tester's prompt also embeds
+				// the frozen contract's intent, so capture only the actual
+				// implement (coder) child's prompt via the implement step's own
+				// static prompt marker, keeping this test's original assertion
+				// target (the coding agent's turn-1 prompt) intact.
+				if strings.Contains(req.Prompt, "[FlowPilot implement step]") {
 					captured = req.Prompt
 					close(captureDone)
 				}
