@@ -77,6 +77,14 @@ func (s *InteractiveService) tryAdvanceFlowThroughInline(parentRunID string, edg
 	if !ok {
 		return false
 	}
+	// BUG-327 lock-step guard: Continue routes a non-inline escalated node to
+	// child reinvoke via flowNodeInlineDispatchable — tryAdvance must never
+	// dispatch a behavior that helper excludes, or a writer/delegate node would
+	// no-op here and hang the flow waiting on nothing. If a new inline behavior
+	// is added to the switch below, it MUST also be added to the helper.
+	if !flowNodeInlineDispatchable(node) {
+		return false
+	}
 	// BUG-288 P1-12: recheck the run's terminal/stop status right here, before
 	// any dispatch work, not only when acquiring the context below. A
 	// late/queued inline dispatch callback (validate/audit/telegram/delegate)

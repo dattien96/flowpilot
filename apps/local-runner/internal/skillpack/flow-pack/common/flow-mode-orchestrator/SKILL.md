@@ -24,9 +24,10 @@ This skill orchestrates two engines:
 
 | Step | Phase Name | Execution Engine | Mode | Responsibility | Output Artifact |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1-3** | **Preflight Plan & Context** | **Grok 4.6 (xhigh)** | Headless CLI (`grok --single`) | Read-only analysis, resolve `feature_key` in `FEATURE-KEYS.md`, locus retrieval, define `declared_paths`, write Implementation Plan | `[Change Contract]` + Plan |
+| **1** | **Preflight Plan & Context** | **Grok 4.6 (xhigh)** | Headless CLI (`grok --single`) | Read-only analysis, resolve `feature_key` in `FEATURE-KEYS.md`, locus retrieval, define `declared_paths`, write Implementation Plan | `[Change Contract]` + Plan |
 | **2** | **Contract Freeze (Soft Gate)** | **Main Agent** | Interactive | Commit to `declared_paths`. Lock scope before writing code | Scope Locked |
-| **4** | **Implementation / Coding** | **Main Agent** | Interactive | Write code & unit tests strictly within `declared_paths` (+ `change-audit/*.md`) | Code + Additive Tests |
+| **3** | **TDD Test Signatures** | **Main Agent** | Interactive | Tạo trước khung/chữ ký hàm test (Test Signatures / Cases) cho toàn bộ kịch bản trong plan (chưa viết body logic) | Unit Test Signatures |
+| **4** | **Implementation & Full Tests** | **Main Agent** | Interactive | Viết code logic VÀ hoàn thiện đầy đủ toàn bộ body/assertions cho các test signatures đã tạo | Production Code + Full Tests |
 | **5** | **Automated Validation** | **Main Agent** | Local Shell | Run local test suites (`go test`, `npm test`, builds) | Green Test Results |
 | **6** | **Review Gate & Loop** | **Grok 4.6 (xhigh)** | Headless CLI (`grok --single`) | Critical adversarial review for scope drift, logic bugs, regressions, test coverage | `review_result.md` (OK / Findings) |
 | **6b** | **Remediation Loop** | **Main Agent** | Interactive | Fix confirmed findings, re-validate, re-invoke Grok until `VERDICT: OK` | Clean Verified Code |
@@ -38,9 +39,10 @@ This skill orchestrates two engines:
 
 ```mermaid
 flowchart TD
-    User([Task / Bug Report]) --> Step1[Bước 1-3: Grok 4.6 xhigh Headless<br/>Plan + Scope + Context]
+    User([Task / Bug Report]) --> Step1[Bước 1: Grok 4.6 xhigh Headless<br/>Plan + Scope + Context]
     Step1 --> Step2[Bước 2: Main Agent<br/>Freeze Scope Commitment]
-    Step2 --> Step4[Bước 4: Main Agent<br/>Implementation in declared_paths]
+    Step2 --> Step3[Bước 3: Main Agent<br/>Viết Unit Test Signatures rỗng]
+    Step3 --> Step4[Bước 4: Main Agent<br/>Viết Code & Điền đầy đủ logic Test]
     Step4 --> Step5[Bước 5: Main Agent<br/>Automated Validation Tests]
     Step5 --> Step6[Bước 6: Grok 4.6 xhigh Headless<br/>Adversarial Review Gate]
     Step6 -- Actionable Findings --> Step6b[Bước 6b: Main Agent<br/>Fix & Re-validate]
@@ -51,7 +53,7 @@ flowchart TD
 
 ---
 
-### Step 1-3: Preflight Planning & Context Synthesis (Grok 4.6 xhigh Headless)
+### Step 1: Preflight Planning & Context Synthesis (Grok 4.6 xhigh Headless)
 
 Invoke Grok in headless mode to inspect the task, resolve the feature key, check history, and define the contract:
 
@@ -62,7 +64,7 @@ Task Request: <USER_REQUEST>
 Instructions:
 1. Analyze the codebase, inspect relevant files, and check change-audit/FEATURE-KEYS.md to find or propose the exact feature_key.
 2. Search change-audit/CA-*.md for related past changes on this feature locus.
-3. Formulate the exact Change Contract with declared_paths (only files that need modification or creation).
+3. Formulate the exact Change Contract with declared_paths (only files that need modification or creation, including test files).
 4. Provide a clear, actionable Step-by-Step Implementation Plan with test strategy.
 
 Format your response exactly as:
@@ -83,15 +85,28 @@ declared_paths:
 
 The Main Agent reviews Grok's output and freezes the scope:
 1. Confirm `feature_key` is registered in `change-audit/FEATURE-KEYS.md`.
-2. Confirm `declared_paths` covers all necessary files without over-scoping.
+2. Confirm `declared_paths` covers all necessary files (including test files) without over-scoping.
 3. **Soft Gate Enforcement**: Main Agent commits to modifying **ONLY** files listed in `declared_paths` (plus `change-audit/CA-*.md` and `requirements/`).
 
 ---
 
-### Step 4: Implementation (Main Agent)
+### Step 3: TDD Test Signatures (Main Agent)
 
-1. Main Agent edits source code and writes tests strictly within `declared_paths`.
-2. **Safe-Fix & Parity Rules**:
+**TRƯỚC KHI VIẾT CODE LOGIC**, Main Agent tạo khung định nghĩa chữ ký hàm cho toàn bộ các unit test cases được vạch ra trong plan:
+1. Tạo hoặc mở file test trong `declared_paths` (ví dụ `feature_test.go`).
+2. Viết chữ ký hàm test (`func TestFeature_ScenarioName(t *testing.T)`) với mô tả rõ ràng kịch bản kiểm thử, input và output kỳ vọng.
+3. **Quy tắc**: Chỉ khai báo khung test, chưa viết thân hàm (assertions/mock/logic phức tạp).
+4. **Mục tiêu**: Đóng đinh danh sách các ca kiểm thử cần pass trước khi bắt đầu code.
+
+---
+
+### Step 4: Implementation & Complete Tests (Main Agent)
+
+1. Main Agent tiến hành viết source code trong `declared_paths` để hiện thực hóa tính năng/bugfix.
+2. **Điền đầy đủ Test (Bắt buộc)**:
+   - Quay lại các test signature đã tạo ở Step 3, **viết toàn bộ body, assertions, mock và logic test hoàn chỉnh**.
+   - Không được để lại test case rỗng, test bị comment, hoặc `t.Skip` không có lý do.
+3. **Safe-Fix & Parity Rules**:
    - Never break or modify pre-existing green tests without explicit user escalation.
    - Write **additive tests** covering all edge cases.
    - If touching provider-specific paths, ensure parity across **Claude**, **Codex**, and **Grok**.
@@ -101,17 +116,17 @@ The Main Agent reviews Grok's output and freezes the scope:
 ### Step 5: Automated Validation (Main Agent)
 
 Run local verification commands to ensure zero compile errors and green test suite:
-- Go runner: `go test -count=1 ./internal/...` or focused suite `go test -count=1 ./internal/<pkg>/ -run="..."`
+- Go runner: `go test -count=1 ./internal/...` hoặc focused suite `go test -count=1 ./internal/<pkg>/ -run="..."`
 - Admin Web: `npm test` (in `apps/admin-web/`)
 - Desktop: `npm run typecheck` (in `apps/desktop-flowpilot/`)
 
-All tests MUST be green before proceeding to Step 6.
+All tests (cả test cũ lẫn toàn bộ test mới vừa fill ở Step 4) MUST be green before proceeding to Step 6.
 
 ---
 
 ### Step 6: Adversarial Review Gate & Review Loop (Grok 4.6 xhigh Headless)
 
-Invoke Grok in headless mode to review the diff against the declared plan and scope:
+Invoke Grok in headless mode to review the diff against the declared plan, scope, and test completeness:
 
 ```bash
 grok --single "You are FlowPilot's Adversarial Review Gate.
@@ -125,9 +140,10 @@ Instructions:
 1. Inspect the current git diff and changed files in the workspace.
 2. Check for:
    - Scope Drift: Were any files modified outside declared_paths? (Note: change-audit/*.md and requirements/*.md are allowed).
+   - Test Completeness: Are all unit test signatures from Step 3 fully implemented with real assertions (no empty/stubbed tests)?
    - Logic bugs, edge cases, nil pointer / off-by-one errors.
    - Regressions or breaks in existing behavior.
-   - Test completeness and additive coverage.
+   - Test correctness and additive coverage.
 3. Output format:
    - If completely clean with no blocking issues, output:
      VERDICT: OK (No blocking issues)

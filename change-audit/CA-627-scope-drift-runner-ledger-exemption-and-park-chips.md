@@ -36,7 +36,7 @@ declared_paths:
 
 1. **F-1: Exact-Path Runner Bookkeeping & Change-Audit Exemption (`frozen_scope.go`, `gate_hook.go`)**:
    - Added `path.Join(".flowpilot", "manifest.json")` to `RunnerLedgerBookkeepingPaths`.
-   - Added `IsChangeAuditPath` for `change-audit/*.md` notes allowed per BUG-278.
+   - Added `IsChangeAuditPath` for flat `change-audit/CA-*.md` notes allowed per BUG-278 (registry + nested notes stay in scope).
    - Updated `gate_hook.go` to exclude runner bookkeeping and change-audit notes from scope drift checks.
 2. **F-2: Escalated Node Stamping + Correct Continue Routing (`gate_hook.go`, `flow_validate_audit_dispatch.go`, `interactive_service.go`)**:
    - Stamped `parent.lastEscalatedInlineNodeID` on child gate escalations (scope drift, missing contract, diff observation error, LoadBaseline, gate_blind, coding commit, change-contract commit fail, generic block, max reprompts) so Continue reliably resumes the escalated node.
@@ -57,6 +57,8 @@ declared_paths:
    - `emitLocked` default branch no longer flips a `WAITING_USER_APPROVAL` child back to `Running` — a late stray event after park cannot re-arm TUI Thinking or hide Continue/Stop.
    - `IsChangeAuditPath` tightened to flat `change-audit/CA-*.md` direct children only (matcher + `path.Base`); `change-audit/CA-1/note.md` and `FEATURE-KEYS.md` are fully in scope (gate-level `TestBUG327_FeatureKeysWriteStillBlocks` added).
    - `childEscalatedNodeID` dropped the `agentName` fallback — stamping a role name (`"coder"`) would never match a flow node id (`"implement"`) and mis-routed Continue; empty → no stamp.
+   - `tryAdvanceFlowThroughInline` is now guarded by the same `flowNodeInlineDispatchable` predicate — a writer/delegate behavior can never be silently inline-dispatched (lock-step test on a real run locks the pair).
+   - Tests now assert the orchestrator graph `Status`/`AgentStatus` after settle and park (not just `rs.status`), and the Continue test asserts the forbidden `waiting + loop running` state.
 
 ## Validation
 

@@ -150,6 +150,7 @@ func TestBUG327_EscalateParkPreservesSummaryFields(t *testing.T) {
 		AgentName:     "coder",
 		Role:          "coder",
 		Status:        RunStatusRunning,
+		AgentStatus:   string(RunStatusRunning),
 		ActivationSeq: 42,
 		ProviderKey:   "codex",
 		ModelName:     "gpt-5.1",
@@ -172,6 +173,9 @@ func TestBUG327_EscalateParkPreservesSummaryFields(t *testing.T) {
 	}
 	if childSummary.Status != RunStatusWaitingUserApr {
 		t.Fatalf("status = %q, want %q", childSummary.Status, RunStatusWaitingUserApr)
+	}
+	if childSummary.AgentStatus != "waiting_user_approval" {
+		t.Fatalf("AgentStatus = %q, want waiting_user_approval (Desktop Agents panel reads agentStatus)", childSummary.AgentStatus)
 	}
 	if childSummary.ActivationSeq != 42 {
 		t.Fatalf("ActivationSeq = %d, want 42", childSummary.ActivationSeq)
@@ -235,6 +239,24 @@ func TestBUG327_GateBlockPostTurnSettleKeepsWaitingUserApproval(t *testing.T) {
 	if rs.agentStatus != "waiting_user_approval" {
 		t.Fatalf("rs.agentStatus = %q, want waiting_user_approval", rs.agentStatus)
 	}
+	// The helper must push the park to the orchestrator graph the TUI/desktop
+	// read — a settle-only write to rs.status would leave the Agents panel stale.
+	{
+		snap := svc.agentGraphSnapshot(parentID)
+		found := false
+		for _, r := range snap.Runs {
+			if r.RunID == rs.id {
+				found = true
+				if r.Status != RunStatusWaitingUserApr || r.AgentStatus != "waiting_user_approval" {
+					t.Fatalf("graph summary after blocked settle = status %q agentStatus %q, want %q/%q",
+						r.Status, r.AgentStatus, RunStatusWaitingUserApr, "waiting_user_approval")
+				}
+			}
+		}
+		if !found {
+			t.Fatal("child summary missing from graph after settle")
+		}
+	}
 
 	// The same settle on a NON-blocked loop keeps Running (the reprompt path).
 	svc.agentOrchestrator.setLoop(parentID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
@@ -244,12 +266,27 @@ func TestBUG327_GateBlockPostTurnSettleKeepsWaitingUserApproval(t *testing.T) {
 	if rs.status != RunStatusRunning {
 		t.Fatalf("non-blocked settle: rs.status = %q, want %q", rs.status, RunStatusRunning)
 	}
+	{
+		snap := svc.agentGraphSnapshot(parentID)
+		for _, r := range snap.Runs {
+			if r.RunID == rs.id {
+				if r.Status != RunStatusRunning {
+					t.Fatalf("graph summary after non-blocked settle = %q, want %q", r.Status, RunStatusRunning)
+				}
+			}
+		}
+	}
 }
 
 // flowNodeInlineDispatchable must stay in lock-step with
 // tryAdvanceFlowThroughInline's dispatch switch: writer/delegate nodes are not
 // inline-dispatchable (BUG-327 — Continue must retry the child, not no-op).
+// tryAdvance is guarded by the same predicate, so a non-dispatchable behavior
+// can never be silently dispatched (and thus never no-op the Continue path).
 func TestBUG327_FlowNodeInlineDispatchable(t *testing.T) {
+	svc := newInteractiveService(DefaultProviderRegistry(), newInteractiveCatalog(), newFakeWorkflowStore())
+	parent, _ := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex, Model: "gpt-5.4-mini"})
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "running", Cap: 3, RoundCap: 3})
 	cases := []struct {
 		behavior string
 		want     bool
@@ -267,6 +304,16 @@ func TestBUG327_FlowNodeInlineDispatchable(t *testing.T) {
 	for _, tc := range cases {
 		if got := flowNodeInlineDispatchable(agentpack.FlowNode{Behavior: tc.behavior}); got != tc.want {
 			t.Errorf("flowNodeInlineDispatchable(%q) = %v, want %v", tc.behavior, got, tc.want)
+		}
+		if !tc.want {
+			// On a REAL, non-terminal run, tryAdvance must refuse to dispatch a
+			// writer/delegate behavior: if it ever returns true here, Continue
+			// would treat the escalated writer node as "advanced" (a no-op) and
+			// hang the flow — the exact run-221516 failure mode. This locks the
+			// lock-step: a future switch case must ALSO update the helper.
+			if adv := svc.tryAdvanceFlowThroughInline(parent.RunID, nil, nil, agentpack.FlowNode{Behavior: tc.behavior}, ""); adv {
+				t.Errorf("tryAdvanceFlowThroughInline(%q) must return false (guard)", tc.behavior)
+			}
 		}
 	}
 }
@@ -332,7 +379,9 @@ func TestBUG327_ScopeDriftContinueReinvokesImplementChild(t *testing.T) {
 
 			svc.mu.Lock()
 			activationSeq := svc.runs[child.RunID].activationSeq
+			childStatus := svc.runs[child.RunID].status
 			lastEsc := svc.runs[pid].lastEscalatedInlineNodeID
+			loop := svc.agentOrchestrator.loopStateFor(pid)
 			svc.mu.Unlock()
 
 			if lastEsc != "" {
@@ -340,6 +389,15 @@ func TestBUG327_ScopeDriftContinueReinvokesImplementChild(t *testing.T) {
 			}
 			if activationSeq != 1 {
 				t.Fatalf("%s: implement child was not reinvoked (activationSeq=%d, want 1) — Continue must retry the child, not leave it parked", tc.name, activationSeq)
+			}
+			// The reinvoke schedules the child synchronously (Running). By the
+			// time we read, the retried turn may already have completed
+			// (completed + loop running) or the gate re-parked it (waiting +
+			// loop blocked) — all legitimate retry outcomes. The ONLY forbidden
+			// state is the old hang: child still parked with the loop still
+			// running (tryAdvance no-op never scheduled anything).
+			if childStatus == RunStatusWaitingUserApr && loop.Status != "blocked" {
+				t.Fatalf("%s: child still parked (status=%q) with loop=%q — Continue must retry the child, not no-op", tc.name, childStatus, loop.Status)
 			}
 		})
 	}
@@ -511,5 +569,14 @@ func TestBUG327_EmitLockedDoesNotUnparkWaitingChild(t *testing.T) {
 	}
 	if rs.agentStatus != "waiting_user_approval" {
 		t.Fatalf("agentStatus = %q, want waiting_user_approval", rs.agentStatus)
+	}
+	// The graph summary must stay parked too — emitLocked's default upserts it.
+	snap := svc.agentGraphSnapshot(parentID)
+	for _, r := range snap.Runs {
+		if r.RunID == rs.id {
+			if r.Status != RunStatusWaitingUserApr || r.AgentStatus != "waiting_user_approval" {
+				t.Fatalf("graph summary after stray event = status %q agentStatus %q, want parked", r.Status, r.AgentStatus)
+			}
+		}
 	}
 }
