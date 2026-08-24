@@ -1335,6 +1335,45 @@ func baselineWorktreeFingerprint(workspace string) map[string]string {
 // mint-vs-reuse version number is derived from the store instead of
 // hardcoded, so a future superseded/abandoned version cannot permanently
 // collide with a fresh one.
+// findPlannerResultForFreeze retrieves the planner output from the predecessor child run
+// when plannerResult is empty or unparseable (e.g. user submitted "/continue" feedback).
+func (s *InteractiveService) findPlannerResultForFreeze(parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, freezeNodeID string) string {
+	var fromNodeID string
+	for _, e := range edges {
+		if e.To == freezeNodeID {
+			fromNodeID = e.From
+			break
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, child := range s.runs {
+		if child.parentRunID != parentRunID {
+			continue
+		}
+		if fromNodeID != "" && (child.label == fromNodeID || child.stepID == fromNodeID) {
+			for i := len(child.events) - 1; i >= 0; i-- {
+				if child.events[i].Type == EventTurnCompleted && child.events[i].FinalMessage != "" {
+					return child.events[i].FinalMessage
+				}
+			}
+		}
+	}
+	for _, child := range s.runs {
+		if child.parentRunID != parentRunID {
+			continue
+		}
+		for i := len(child.events) - 1; i >= 0; i-- {
+			if child.events[i].Type == EventTurnCompleted && child.events[i].FinalMessage != "" {
+				if _, err := changecontract.ParsePreflightDraft(child.events[i].FinalMessage); err == nil {
+					return child.events[i].FinalMessage
+				}
+			}
+		}
+	}
+	return ""
+}
+
 func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, node agentpack.FlowNode, plannerResult string) bool {
 	if s.flowRunTerminalLocked(parentRunID) {
 		return true
@@ -1386,6 +1425,14 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 	}
 
 	draft, err := changecontract.ParsePreflightDraft(plannerResult)
+	if err != nil {
+		if fallback := s.findPlannerResultForFreeze(parentRunID, edges, nodes, node.ID); fallback != "" && fallback != plannerResult {
+			if d2, err2 := changecontract.ParsePreflightDraft(fallback); err2 == nil {
+				draft = d2
+				err = nil
+			}
+		}
+	}
 	if err != nil {
 		return escalate("invalid planner proposal: " + err.Error())
 	}

@@ -77,30 +77,92 @@ type ContractStatusEvent struct {
 	At         time.Time `json:"at"`
 }
 
-// ParsePreflightDraft strictly parses text as a single JSON
-// PreflightContractDraft object: unknown fields are rejected, and any
-// non-whitespace content before or after the JSON value is rejected. Unlike
-// ParseDeclaration (the legacy `[Change Contract]` marker format, which
-// tolerates prose around a declaration block because it is extracted from a
-// free-form coder turn), a preflight draft is the only thing the planner step
-// produces — there is no reason to tolerate trailing prose, and tolerating it
-// would let a planner that "mostly" followed the format silently pass through
-// content Go never validated.
+// extractJSONObject extracts the first balanced top-level JSON object from text,
+// stripping any surrounding markdown fences (```json ... ```) or conversational prose.
+func extractJSONObject(text string) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, "```") {
+		lines := strings.Split(trimmed, "\n")
+		if len(lines) >= 2 {
+			if strings.HasPrefix(lines[0], "```") {
+				lines = lines[1:]
+			}
+			if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
+				lines = lines[:len(lines)-1]
+			}
+			trimmed = strings.TrimSpace(strings.Join(lines, "\n"))
+		}
+	}
+	start := strings.IndexByte(trimmed, '{')
+	if start < 0 {
+		return "", false
+	}
+	depth := 0
+	inString := false
+	escape := false
+	for i := start; i < len(trimmed); i++ {
+		b := trimmed[i]
+		if inString {
+			if escape {
+				escape = false
+			} else if b == '\\' {
+				escape = true
+			} else if b == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch b {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return trimmed[start : i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+// ParsePreflightDraft parses text as a PreflightContractDraft object.
+// Unknown fields are rejected. If the model enclosed the draft in conversational
+// prose (e.g. Grok or Claude leading commentary) or markdown code fences,
+// the embedded JSON object is automatically extracted and validated.
 func ParsePreflightDraft(text string) (PreflightContractDraft, error) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return PreflightContractDraft{}, errors.New("changecontract: empty preflight draft")
 	}
+	// Try direct strict decode first.
 	dec := json.NewDecoder(strings.NewReader(trimmed))
 	dec.DisallowUnknownFields()
 	var draft PreflightContractDraft
-	if err := dec.Decode(&draft); err != nil {
+	if err := dec.Decode(&draft); err == nil && !dec.More() {
+		return draft, nil
+	}
+	// If direct strict decode failed, try extracting the embedded JSON object.
+	if candidate, ok := extractJSONObject(trimmed); ok {
+		dec2 := json.NewDecoder(strings.NewReader(candidate))
+		dec2.DisallowUnknownFields()
+		var draft2 PreflightContractDraft
+		if err := dec2.Decode(&draft2); err == nil {
+			return draft2, nil
+		}
+	}
+	// Fall back to returning the original strict decode error for diagnostics.
+	dec3 := json.NewDecoder(strings.NewReader(trimmed))
+	dec3.DisallowUnknownFields()
+	var draft3 PreflightContractDraft
+	if err := dec3.Decode(&draft3); err != nil {
 		return PreflightContractDraft{}, fmt.Errorf("changecontract: strict preflight draft parse: %w", err)
 	}
-	if dec.More() {
+	if dec3.More() {
 		return PreflightContractDraft{}, errors.New("changecontract: preflight draft has trailing content after the JSON value")
 	}
-	return draft, nil
+	return draft3, nil
 }
 
 // ValidatePreflightDraft checks the structural requirements a draft must meet

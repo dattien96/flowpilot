@@ -28,10 +28,25 @@ func TestParsePreflightDraftAcceptsSurroundingWhitespace(t *testing.T) {
 	}
 }
 
-func TestParsePreflightDraftRejectsTrailingProse(t *testing.T) {
-	_, err := ParsePreflightDraft(`{"feature_key":"x","intent":"y","declared_paths":["a.go"]} thanks!`)
-	if err == nil {
-		t.Fatal("trailing prose after the JSON value must be rejected")
+func TestParsePreflightDraftAcceptsLeadingAndTrailingProse(t *testing.T) {
+	text := "I'll locate `format.go` and `format_test.go` so the contract can list exact paths only. {\"feature_key\":\"calc-format\",\"intent\":\"add ClampChecked\",\"declared_paths\":[\"format.go\",\"format_test.go\"]}"
+	draft, err := ParsePreflightDraft(text)
+	if err != nil {
+		t.Fatalf("unexpected error parsing prose-wrapped draft: %v", err)
+	}
+	if draft.FeatureKey != "calc-format" || len(draft.DeclaredPaths) != 2 {
+		t.Fatalf("unexpected draft: %+v", draft)
+	}
+}
+
+func TestParsePreflightDraftAcceptsMarkdownCodeFence(t *testing.T) {
+	text := "Here is the contract:\n```json\n{\n  \"feature_key\": \"calc-format\",\n  \"intent\": \"add ClampChecked\",\n  \"declared_paths\": [\"format.go\"]\n}\n```\nDone."
+	draft, err := ParsePreflightDraft(text)
+	if err != nil {
+		t.Fatalf("unexpected error parsing markdown code fence draft: %v", err)
+	}
+	if draft.FeatureKey != "calc-format" || len(draft.DeclaredPaths) != 1 {
+		t.Fatalf("unexpected draft: %+v", draft)
 	}
 }
 

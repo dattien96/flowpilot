@@ -678,98 +678,139 @@ func hitStopChrome(c tuiChrome, x, y int) bool {
 }
 
 func (m *AppModel) hitApprovalChrome(c tuiChrome, x, y int) string {
-	if c.inputH <= 0 || y < c.inputY || y >= c.inputY+c.inputH {
+	checkLine := func(stripped string) string {
+		if hitToken(stripped, "Approve all", x) {
+			return "approve-all"
+		}
+		if hitToken(stripped, "Deny all", x) {
+			return "deny-all"
+		}
+		if hitToken(stripped, "Approve forever", x) {
+			return "approve-forever"
+		}
+		if m.approval != nil {
+			for _, d := range m.approval.Decisions {
+				if hitToken(stripped, d.Label, x) {
+					return "adec:" + d.Value
+				}
+			}
+		}
+		if hitToken(stripped, "[Approve]", x) || hitToken(stripped, "Approve", x) || hitToken(stripped, "/approve", x) {
+			return "approve"
+		}
+		if hitToken(stripped, "[Deny]", x) || hitToken(stripped, "Deny", x) || hitToken(stripped, "/deny", x) {
+			return "deny"
+		}
 		return ""
 	}
-	lines := strings.Split(c.inputBlock, "\n")
-	rel := y - c.inputY
-	if rel < 0 || rel >= len(lines) {
-		return ""
-	}
-	stripped := stripANSI(lines[rel])
-	if hitToken(stripped, "Approve all", x) {
-		return "approve-all"
-	}
-	if hitToken(stripped, "Deny all", x) {
-		return "deny-all"
-	}
-	if hitToken(stripped, "Approve forever", x) {
-		return "approve-forever"
-	}
-	if m.approval != nil {
-		for _, d := range m.approval.Decisions {
-			if hitToken(stripped, d.Label, x) {
-				return "adec:" + d.Value
+
+	if c.messagesHeight > 0 && y >= c.panelH && y < c.panelH+c.messagesHeight {
+		rows := sliceChatRows(m.chatRows(), c.messagesHeight, m.viewport.offset)
+		rel := y - c.panelH
+		if rel >= 0 && rel < len(rows) {
+			if res := checkLine(stripANSI(rows[rel].Text)); res != "" {
+				return res
 			}
 		}
 	}
-	if hitToken(stripped, "Approve", x) || hitToken(stripped, "/approve", x) {
-		return "approve"
-	}
-	if hitToken(stripped, "Deny", x) || hitToken(stripped, "/deny", x) {
-		return "deny"
+	if c.inputH > 0 && y >= c.inputY && y < c.inputY+c.inputH {
+		lines := strings.Split(c.inputBlock, "\n")
+		rel := y - c.inputY
+		if rel >= 0 && rel < len(lines) {
+			if res := checkLine(stripANSI(lines[rel])); res != "" {
+				return res
+			}
+		}
 	}
 	return ""
 }
 
-// hitBlockedChrome maps a click in the awaiting-user action bar (Desktop
-// FlowAwaitingUserCard parity, BUG-231) to "continue" / "stop". The bar is
-// rendered inside the input block above the composer.
+// hitBlockedChrome maps a click in the awaiting-user action bar to "continue" / "stop".
 func (m *AppModel) hitBlockedChrome(c tuiChrome, x, y int) string {
-	if !m.flowLoopBlocked() || c.inputH <= 0 || y < c.inputY || y >= c.inputY+c.inputH {
+	if !m.flowLoopBlocked() {
 		return ""
 	}
-	lines := strings.Split(c.inputBlock, "\n")
-	rel := y - c.inputY
-	if rel < 0 || rel >= len(lines) {
-		return ""
+	if c.messagesHeight > 0 && y >= c.panelH && y < c.panelH+c.messagesHeight {
+		rows := sliceChatRows(m.chatRows(), c.messagesHeight, m.viewport.offset)
+		rel := y - c.panelH
+		if rel >= 0 && rel < len(rows) {
+			stripped := stripANSI(rows[rel].Text)
+			if hitToken(stripped, "[Continue]", x) {
+				return "continue"
+			}
+			if hitToken(stripped, "[Stop]", x) {
+				return "stop"
+			}
+		}
 	}
-	stripped := stripANSI(lines[rel])
-	if hitToken(stripped, "[Continue]", x) {
-		return "continue"
-	}
-	if hitToken(stripped, "[Stop]", x) {
-		return "stop"
+	if c.inputH > 0 && y >= c.inputY && y < c.inputY+c.inputH {
+		lines := strings.Split(c.inputBlock, "\n")
+		rel := y - c.inputY
+		if rel >= 0 && rel < len(lines) {
+			stripped := stripANSI(lines[rel])
+			if hitToken(stripped, "[Continue]", x) {
+				return "continue"
+			}
+			if hitToken(stripped, "[Stop]", x) {
+				return "stop"
+			}
+		}
 	}
 	return ""
 }
 
 func hitQuestionChrome(m *AppModel, c tuiChrome, x, y int) string {
-	if m.question == nil || c.inputH <= 0 || y < c.inputY || y >= c.inputY+c.inputH {
+	if m.question == nil {
 		return ""
 	}
-	lines := strings.Split(c.inputBlock, "\n")
-	rel := y - c.inputY
-	if rel < 0 || rel >= len(lines) {
-		return ""
-	}
-	stripped := stripANSI(lines[rel])
-	if m.question.MultiSelect {
-		if hitToken(stripped, "[Submit]", x) {
-			return "qsubmit"
+	checkLine := func(stripped string) string {
+		if m.question.MultiSelect {
+			if hitToken(stripped, "[Submit]", x) {
+				return "qsubmit"
+			}
+			for i := range m.question.Options {
+				label := questionOptionLabel(m.question.Options[i])
+				if label != "" && hitToken(stripped, label, x) {
+					return "qtoggle:" + strconv.Itoa(i)
+				}
+			}
+			return ""
+		}
+		if hitToken(stripped, "Approve", x) || hitToken(stripped, "/approve", x) {
+			return "approve"
+		}
+		if hitToken(stripped, "Deny", x) || hitToken(stripped, "/deny", x) {
+			return "deny"
 		}
 		for i := range m.question.Options {
+			token := strconv.Itoa(i+1) + ")"
+			if hitToken(stripped, token, x) {
+				return "qopt:" + strconv.Itoa(i)
+			}
 			label := questionOptionLabel(m.question.Options[i])
 			if label != "" && hitToken(stripped, label, x) {
-				return "qtoggle:" + strconv.Itoa(i)
+				return "qopt:" + strconv.Itoa(i)
 			}
 		}
 		return ""
 	}
-	if hitToken(stripped, "Approve", x) || hitToken(stripped, "/approve", x) {
-		return "approve"
-	}
-	if hitToken(stripped, "Deny", x) || hitToken(stripped, "/deny", x) {
-		return "deny"
-	}
-	for i := range m.question.Options {
-		token := strconv.Itoa(i+1) + ")"
-		if hitToken(stripped, token, x) {
-			return "qopt:" + strconv.Itoa(i)
+
+	if c.messagesHeight > 0 && y >= c.panelH && y < c.panelH+c.messagesHeight {
+		rows := sliceChatRows(m.chatRows(), c.messagesHeight, m.viewport.offset)
+		rel := y - c.panelH
+		if rel >= 0 && rel < len(rows) {
+			if res := checkLine(stripANSI(rows[rel].Text)); res != "" {
+				return res
+			}
 		}
-		label := questionOptionLabel(m.question.Options[i])
-		if label != "" && hitToken(stripped, label, x) {
-			return "qopt:" + strconv.Itoa(i)
+	}
+	if c.inputH > 0 && y >= c.inputY && y < c.inputY+c.inputH {
+		lines := strings.Split(c.inputBlock, "\n")
+		rel := y - c.inputY
+		if rel >= 0 && rel < len(lines) {
+			if res := checkLine(stripANSI(lines[rel])); res != "" {
+				return res
+			}
 		}
 	}
 	return ""

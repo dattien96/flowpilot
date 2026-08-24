@@ -4314,6 +4314,33 @@ func (m *AppModel) chatRowsSig() uint64 {
 		_, _ = h.Write([]byte{3})
 		_, _ = h.Write([]byte(k))
 	}
+	if m.approval != nil {
+		_, _ = h.Write([]byte{4, 1})
+		_, _ = h.Write([]byte(m.approval.ID))
+		_, _ = h.Write([]byte(m.approval.Command))
+		_, _ = h.Write([]byte(strconv.Itoa(len(m.approvals))))
+	}
+	if m.question != nil {
+		_, _ = h.Write([]byte{4, 2})
+		_, _ = h.Write([]byte(m.question.ID))
+		_, _ = h.Write([]byte(strconv.Itoa(len(m.questions))))
+		for _, opt := range m.question.Options {
+			for k, v := range opt {
+				_, _ = h.Write([]byte(k + ":" + v))
+			}
+		}
+	}
+	if m.flowLoopBlocked() {
+		_, _ = h.Write([]byte{4, 3})
+		_, _ = h.Write([]byte(m.flowBlockReason))
+	}
+	if len(m.attention) > 0 {
+		_, _ = h.Write([]byte{4, 4})
+		_, _ = h.Write([]byte(strconv.Itoa(len(m.attention))))
+		for _, it := range m.attention {
+			_, _ = h.Write([]byte(it.RunID + ":" + it.Kind + ":" + it.Reason))
+		}
+	}
 	return h.Sum64()
 }
 
@@ -4527,6 +4554,43 @@ func (m *AppModel) buildChatRows() []chatRow {
 		}
 		rows = append(rows, msgRows...)
 	}
+
+	// Interactive action cards rendered directly on the chat timeline
+	if m.approval != nil {
+		head := formatApprovalWaitingLineDetailed(m.approval.ID, m.asciiMode, *m.approval)
+		chips := approvalDecisionChips(m.approval)
+		if len(m.approvals) > 1 {
+			chips += "  " + styleLink.Render("Approve all") + "  " + styleLink.Render("Deny all")
+		}
+		rows = append(rows, chatRow{})
+		rows = append(rows, chatRow{Text: styleGate.Render(head), MsgIdx: -1})
+		rows = append(rows, chatRow{Text: "  " + chips + "  " + styleSystem.Render("click or type"), MsgIdx: -1})
+	}
+	if m.question != nil {
+		left := styleInputStroke.Render("┃")
+		mid := styleInputStroke.Render("│")
+		qbar := renderQuestionBar(left, mid, m.question, width)
+		if n := len(m.questions); n > 1 {
+			qbar = styleGate.Render(fmt.Sprintf("(%d/%d)", 1, n)) + " " + qbar
+		}
+		rows = append(rows, chatRow{})
+		for _, ql := range strings.Split(qbar, "\n") {
+			rows = append(rows, chatRow{Text: ql, MsgIdx: -1})
+		}
+	}
+	if bar := m.renderAttentionBar(); bar != "" {
+		rows = append(rows, chatRow{})
+		for _, al := range strings.Split(bar, "\n") {
+			rows = append(rows, chatRow{Text: al, MsgIdx: -1})
+		}
+	}
+	if bar := m.renderBlockedBar(); bar != "" {
+		rows = append(rows, chatRow{})
+		for _, bl := range strings.Split(bar, "\n") {
+			rows = append(rows, chatRow{Text: bl, MsgIdx: -1})
+		}
+	}
+
 	return rows
 }
 
@@ -4748,8 +4812,6 @@ func (m *AppModel) renderInputLine() string {
 			caret = styleCursor.Render("▌")
 		}
 	}
-	left := styleInputStroke.Render("┃")
-	mid := styleInputStroke.Render("│")
 	label := strings.TrimSpace(prefix)
 	// Only show when images are pending — bare "[+img]" looked like an attachment.
 	attachPlain := m.inputAttachChipPlain()
@@ -4778,30 +4840,6 @@ func (m *AppModel) renderInputLine() string {
 	// cursor entirely.
 
 	var inner []string
-	if m.approval != nil {
-		head := "approval"
-		if n := len(m.approvals); n > 1 {
-			head = fmt.Sprintf("approval %d/%d", 1, n)
-		}
-		chips := approvalDecisionChips(m.approval)
-		if len(m.approvals) > 1 {
-			chips += "  " + styleLink.Render("Approve all") + "  " + styleLink.Render("Deny all")
-		}
-		inner = append(inner, styleGate.Render(head)+"  "+chips+"  "+styleSystem.Render("click or type"))
-	}
-	if m.question != nil {
-		qbar := renderQuestionBar(left, mid, m.question, innerW)
-		if n := len(m.questions); n > 1 {
-			qbar = styleGate.Render(fmt.Sprintf("(%d/%d)", 1, n)) + " " + qbar
-		}
-		inner = append(inner, qbar)
-	}
-	if bar := m.renderAttentionBar(); bar != "" {
-		inner = append(inner, strings.Split(bar, "\n")...)
-	}
-	if bar := m.renderBlockedBar(); bar != "" {
-		inner = append(inner, strings.Split(bar, "\n")...)
-	}
 	caretAt := m.inputCaretIndex()
 	off := 0
 	for i, bl := range bodyLines {

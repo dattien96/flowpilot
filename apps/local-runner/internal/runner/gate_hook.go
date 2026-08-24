@@ -2390,7 +2390,9 @@ func captureGitHead(repoDir string) (string, error) {
 	if repoDir == "" {
 		return "", nil
 	}
-	out, err := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD").Output()
+	cmd := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}

@@ -259,62 +259,73 @@ func (m *AppModel) renderAttentionBar() string {
 	return strings.Join(lines, "\n")
 }
 
-// hitAttentionChip maps a click position in the rendered attention bar to a
-// command tag. It mirrors hitApprovalChrome: the click is resolved against the
-// actual input-block row so x/y map to the real rendered chip positions.
+// hitAttentionChip maps a click position in the rendered attention bar to a command tag.
 func (m *AppModel) hitAttentionChip(x, y int) string {
 	if m.runHandle == nil || len(m.attention) == 0 {
 		return ""
 	}
 	c := m.tuiChrome()
-	if c.inputH <= 0 || y < c.inputY || y >= c.inputY+c.inputH {
-		return ""
-	}
-	lines := strings.Split(c.inputBlock, "\n")
-	rel := y - c.inputY
-	if rel < 0 || rel >= len(lines) {
-		return ""
-	}
-	stripped := stripANSI(lines[rel])
-	for _, it := range m.attention {
-		if strings.TrimSpace(it.RunID) != m.runHandle.RunID {
-			continue
-		}
-		key := attentionKey(it.RunID, it.TurnID)
-		var tokens, tags []string
-		switch it.Kind {
-		case "settle_pending":
-			tokens = append(tokens, "[details]")
-			tags = append(tags, "attention-details:"+key)
-		case "uncertain", "cancel_required":
-			tokens = append(tokens, "[inspect]")
-			tags = append(tags, "attention-inspect:"+key)
-			tokens = append(tokens, "[confirm-cancelled]")
-			tags = append(tags, "attention-resolve:"+key+":confirm_cancelled")
-			tokens = append(tokens, "[mark-completed]")
-			tags = append(tags, "attention-resolve:"+key+":mark_completed")
-			tokens = append(tokens, "[mark-failed]")
-			tags = append(tags, "attention-resolve:"+key+":mark_failed")
-			if m.attentionRetryConfirm[key] {
-				tokens = append(tokens, "[confirm-retry]")
-				tags = append(tags, "attention-retry:"+key)
-			} else {
-				tokens = append(tokens, "[retry-as-new]")
-				tags = append(tags, "attention-retry:"+key)
+	checkLine := func(stripped string) string {
+		for _, it := range m.attention {
+			if strings.TrimSpace(it.RunID) != m.runHandle.RunID {
+				continue
 			}
-			tokens = append(tokens, "[abandon]")
-			tags = append(tags, "attention-resolve:"+key+":abandon")
-		case "repair_required":
-			tokens = append(tokens, "[inspect]")
-			tags = append(tags, "attention-inspect:"+key)
-			tokens = append(tokens, "[retry-load]")
-			tags = append(tags, "attention-repair:"+it.RunID+":retry_load")
-			tokens = append(tokens, "[abandon-repair]")
-			tags = append(tags, "attention-repair:"+it.RunID+":abandon")
+			key := attentionKey(it.RunID, it.TurnID)
+			var tokens, tags []string
+			switch it.Kind {
+			case "settle_pending":
+				tokens = append(tokens, "[details]")
+				tags = append(tags, "attention-details:"+key)
+			case "uncertain", "cancel_required":
+				tokens = append(tokens, "[inspect]")
+				tags = append(tags, "attention-inspect:"+key)
+				tokens = append(tokens, "[confirm-cancelled]")
+				tags = append(tags, "attention-resolve:"+key+":confirm_cancelled")
+				tokens = append(tokens, "[mark-completed]")
+				tags = append(tags, "attention-resolve:"+key+":mark_completed")
+				tokens = append(tokens, "[mark-failed]")
+				tags = append(tags, "attention-resolve:"+key+":mark_failed")
+				if m.attentionRetryConfirm[key] {
+					tokens = append(tokens, "[confirm-retry]")
+					tags = append(tags, "attention-retry:"+key)
+				} else {
+					tokens = append(tokens, "[retry-as-new]")
+					tags = append(tags, "attention-retry:"+key)
+				}
+				tokens = append(tokens, "[abandon]")
+				tags = append(tags, "attention-resolve:"+key+":abandon")
+			case "repair_required":
+				tokens = append(tokens, "[inspect]")
+				tags = append(tags, "attention-inspect:"+key)
+				tokens = append(tokens, "[retry-load]")
+				tags = append(tags, "attention-repair:"+it.RunID+":retry_load")
+				tokens = append(tokens, "[abandon-repair]")
+				tags = append(tags, "attention-repair:"+it.RunID+":abandon")
+			}
+			for i, token := range tokens {
+				if hitToken(stripped, token, x) {
+					return tags[i]
+				}
+			}
 		}
-		for i, token := range tokens {
-			if hitToken(stripped, token, x) {
-				return tags[i]
+		return ""
+	}
+
+	if c.messagesHeight > 0 && y >= c.panelH && y < c.panelH+c.messagesHeight {
+		rows := sliceChatRows(m.chatRows(), c.messagesHeight, m.viewport.offset)
+		rel := y - c.panelH
+		if rel >= 0 && rel < len(rows) {
+			if res := checkLine(stripANSI(rows[rel].Text)); res != "" {
+				return res
+			}
+		}
+	}
+	if c.inputH > 0 && y >= c.inputY && y < c.inputY+c.inputH {
+		lines := strings.Split(c.inputBlock, "\n")
+		rel := y - c.inputY
+		if rel >= 0 && rel < len(lines) {
+			if res := checkLine(stripANSI(lines[rel])); res != "" {
+				return res
 			}
 		}
 	}
