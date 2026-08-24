@@ -161,7 +161,8 @@ type ProviderEvent struct {
 	// flow_gate_violation (r-reg decision card — Task-155)
 	GateOptions        []string `json:"gateOptions,omitempty"`
 	GateRegressedTests []string `json:"gateRegressedTests,omitempty"`
-	// agent_graph_updated / agent_bus_message
+	// agent_graph_updated / agent_bus_message (accept both json names for compat)
+	AgentGraph         *AgentGraphSnapshot `json:"agentGraph,omitempty"`
 	AgentGraphSnapshot *AgentGraphSnapshot `json:"agentGraphSnapshot,omitempty"`
 	AgentBusMessage    *AgentBusMessage    `json:"agentBusMessage,omitempty"`
 	// agent_spawned_by_user / agent_result_injected (BUG-121)

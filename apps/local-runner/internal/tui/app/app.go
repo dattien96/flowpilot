@@ -1323,6 +1323,17 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// re-arm a bounded retry so the chip appears without waiting for the next
 		// steps transition (CA-528).
 		cmds = append(cmds, m.cmdHydrateAgentRunsIfNeeded())
+		// run-127174: step already WAITING but SSE graph used agentGraphSnapshot (TUI decoded only agentGraph) → loop still "running" and Thinking spins. Hydrate graph when any step is WAITING and no child is live.
+		hasWaiting := false
+		for _, s := range msg.Steps {
+			if strings.EqualFold(strings.TrimSpace(string(s.Status)), "WAITING_USER_APPROVAL") {
+				hasWaiting = true
+				break
+			}
+		}
+		if hasWaiting && !m.flowLoopBlocked() && !m.flowHasActiveAgents() && m.runHandle != nil {
+			cmds = append(cmds, m.cmdHydrateAgentGraph(m.runHandle.RunID))
+		}
 		return m, tea.Batch(cmds...)
 
 	case pasteBurstSettleMsg:
@@ -1744,13 +1755,13 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		}
 
 	case "agent_graph_updated":
-		if ev.AgentGraph != nil {
+		if g := ev.EffectiveAgentGraph(); g != nil {
 			// Stale-parent guard (Desktop run-63960): ignore graphs for a
 			// different run so a late blocked refresh cannot overwrite a newer
 			// Continue/Stop result.
-			if m.runHandle == nil || strings.TrimSpace(ev.AgentGraph.ParentRunID) == "" ||
-				strings.TrimSpace(ev.AgentGraph.ParentRunID) == m.runHandle.RunID {
-				m.applyAgentGraph(ev.AgentGraph)
+			if m.runHandle == nil || strings.TrimSpace(g.ParentRunID) == "" ||
+				strings.TrimSpace(g.ParentRunID) == m.runHandle.RunID {
+				m.applyAgentGraph(g)
 			}
 		}
 		if m.agentsFocus {

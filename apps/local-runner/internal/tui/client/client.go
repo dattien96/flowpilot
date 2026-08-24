@@ -439,8 +439,11 @@ type ProviderEvent struct {
 	OccurredAt  string              `json:"occurredAt"`
 	// TokenUsage is present on token_usage_updated events.
 	TokenUsage *TokenUsageSnapshot `json:"tokenUsage,omitempty"`
-	// AgentGraph is present on agent_graph_updated events.
+	// AgentGraph is present on agent_graph_updated events (legacy runner name).
 	AgentGraph *AgentGraphSnapshot `json:"agentGraph,omitempty"`
+	// AgentGraphSnapshot is the canonical desktop-aligned name ("agentGraphSnapshot").
+	// Runner provider_event.go emits this; accept both so TUI never misses blocked.
+	AgentGraphSnapshot *AgentGraphSnapshot `json:"agentGraphSnapshot,omitempty"`
 	// Details is present on permission_required events (BUG-246): what the
 	// runtime wants to do (command/cwd/reason/kind) plus the offered decisions.
 	Details *ApprovalDetails `json:"details,omitempty"`
@@ -453,6 +456,15 @@ type ProviderEvent struct {
 	// read-only instead of re-showing an interactive form (runner
 	// ProviderEvent.Answer twin).
 	Answer []string `json:"answer,omitempty"`
+}
+
+// EffectiveAgentGraph returns the graph from either json name so old and new
+// runner payloads both hydrate the TUI loop state (run-127174: agentGraphSnapshot vs agentGraph).
+func (e ProviderEvent) EffectiveAgentGraph() *AgentGraphSnapshot {
+	if e.AgentGraph != nil {
+		return e.AgentGraph
+	}
+	return e.AgentGraphSnapshot
 }
 
 // ApprovalDecisionOption is one decision the runtime offers for an approval

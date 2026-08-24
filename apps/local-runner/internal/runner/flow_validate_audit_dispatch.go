@@ -940,6 +940,18 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 		return false
 	}
 
+	// run-127174: package.FeatureKey was "grok" (catalog noise from .grok/skills), while the coder already declared "calc-format" in the contract store. Prefer the declared contract when it is registered, so a valid implementation does not escalate as blocked_missing_feature_key.
+	if workspace != "" {
+		if store, err := changecontract.OpenStoreReadOnly(workspace); err == nil && store != nil {
+			if c, ok := store.GetLatestForRun(parentRunID); ok && strings.TrimSpace(c.FeatureKey) != "" && c.Confidence == changecontract.ConfidenceDeclared {
+				if featureKeyRegistered(workspace, c.FeatureKey) {
+					pkg.FeatureKey = c.FeatureKey
+					pkg.FeatureConfidence = ConfidenceVerified
+				}
+			}
+		}
+	}
+
 	draft := BuildAuditDraft(AuditDraftInput{
 		WorkflowRunID:   parentRunID,
 		AuditStepID:     node.ID,
