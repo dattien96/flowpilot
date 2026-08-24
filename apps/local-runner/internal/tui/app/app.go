@@ -1328,11 +1328,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pasteBurstSettleMsg:
 		// A raw-paste burst finished quietly — collapse it to a token without
 		// waiting for the next keystroke.
-		if !m.pasteBurst.active {
+		// Clear pending so a new Tick can be scheduled.
+		m.pasteBurst.settlePending = false
+		if !m.pasteBurst.active && !m.pasteBurst.rejectArmed {
 			return m, nil
 		}
 		if pasteNow().Sub(m.pasteBurst.lastRuneAt) >= burstSettle {
 			wasActive := m.pasteBurst.active
+			wasRejectArmed := m.pasteBurst.rejectArmed
 			// Production Windows rejects raw floods entirely (hint at arm time),
 			// so settle just resets without collapsing to [Pasted] or re-hinting.
 			// No Disable→Enable pulse here: on Windows that sequence drops the
@@ -1340,6 +1343,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Motion is already filtered by tuiMsgFilter, so the queue cannot
 			// fill.
 			if wasActive && runtime.GOOS == "windows" && m.rejectWindowsRawPaste {
+				// CA-612: if reject was armed, wipe any leaked tail that slipped
+				// through a 25ms gap (log 11764: settle at inputLen 31 then 40).
+				if wasRejectArmed {
+					if runes := []rune(m.inputValue); len(runes) > m.pasteBurst.start {
+						// Only wipe if the prefix matches the burst region; otherwise
+						// leave typing that happened after the burst.
+						if m.pasteBurst.start == 0 || len(runes) >= m.pasteBurst.start {
+							m.inputValue = string(runes[:m.pasteBurst.start])
+							m.setInputCaret(m.pasteBurst.start)
+						}
+					}
+				}
 				m.resetPasteBurst()
 				tuiLog("burst collapse (windows reject) active=false inputLen=%d", len([]rune(m.inputValue)))
 				return m, nil
@@ -1358,7 +1373,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			// Fired early (e.g. 129ms <150ms due to 15 runes each scheduling a tick) — reschedule.
 			tuiLog("burst settle early, reschedule active=true")
-			return m, cmdPasteBurstSettle()
+			return m, m.cmdPasteBurstSettleOnce()
 		}
 		return m, nil
 
@@ -1765,6 +1780,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pasteBurst.active && now.Sub(m.pasteBurst.lastRuneAt) >= burstSettle {
 			m.collapsePasteBurst()
 		}
+		// CA-612: once reject is armed, swallow any newline until settle
+		// (prevents leaked \n from mid-paste gap, even if burst chain resets).
+		if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && m.pasteBurst.rejectArmed && isBurstNewlineKey(msg) {
+			m.pasteBurst.lastRuneAt = now
+			return m, m.cmdPasteBurstSettleOnce()
+		}
 		// Windows production rejects raw flood (WT Ctrl+V) entirely.
 		if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && isBurstNewlineKey(msg) {
 			b := &m.pasteBurst
@@ -1776,16 +1797,16 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					hint := "Use Alt+V for paste (text + image)"
 					m.addMessage("system", hint, "gate")
 					m.pasteCtrlVHintShown = true
-					return m, tea.Batch(m.showFlashToast(hint), cmdPasteBurstSettle())
+					return m, tea.Batch(m.showFlashToast(hint), m.cmdPasteBurstSettleOnce())
 				}
-				return m, cmdPasteBurstSettle()
+				return m, m.cmdPasteBurstSettleOnce()
 			}
 		}
 		// Raw (non-bracketed) paste arrives as a flood of key events where every
 		// line break is a plain Enter. Swallow those Enters as newlines while the
 		// flood is active so pasting never auto-submits per line.
 		if isBurstNewlineKey(msg) && m.handleBurstNewline(now) {
-			return m, cmdPasteBurstSettle()
+			return m, m.cmdPasteBurstSettleOnce()
 		}
 		if isPromptNewlineKey(msg) || isModifiedEnterNewline(msg) {
 			m.inputValue += "\n"
@@ -1852,6 +1873,19 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if runtime.GOOS == "windows" {
+			// CA-612: if WT delivers KeyCtrlV, arm reject so the following
+			// char-by-char flood (if any) is swallowed without inserting.
+			if m.rejectWindowsRawPaste {
+				if !m.pasteBurst.rejectArmed {
+					m.pasteBurst.rejectArmed = true
+					if !m.pasteBurst.active {
+						m.pasteBurst.active = true
+						m.pasteBurst.start = len([]rune(m.inputValue))
+						m.pasteBurst.buf = nil
+						m.pasteBurst.lastRuneAt = pasteNow()
+					}
+				}
+			}
 			hint := "Use Alt+V for paste (text + image)"
 			m.addMessage("system", hint, "gate")
 			return m, m.showFlashToast(hint)
@@ -2297,6 +2331,13 @@ if path := imagePathFromClipboardText(pasted); path != "" {
 		// instead of submits; bracketed pastes are handled above.
 		if m.authPhase == AuthNone && !msg.Paste && !msg.Alt {
 			m.noteBurstRune(s)
+			// CA-612: once reject is armed, swallow everything until settle,
+			// even across burstRuneGap chain resets (log 11764: 25ms gap let
+			// tail "t..." re-insert, then settle at inputLen 31 left residue).
+			if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && m.pasteBurst.rejectArmed {
+				m.pasteBurst.lastRuneAt = pasteNow()
+				return m, m.cmdPasteBurstSettleOnce()
+			}
 			// Windows: WT Ctrl+V floods as char-by-char (Paste=false).
 			// Production swallows the flood and guides to Alt+V (Alt+V is
 			// the reliable 1-msg path for text+image). No clipboard hijack —
@@ -2307,6 +2348,7 @@ if path := imagePathFromClipboardText(pasted); path != "" {
 			// mistaken for paste (CA-611, log 4332). Only swallow once the
 			// chain is long enough and not a single repeated rune.
 			if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && m.pasteBurst.active && m.pasteBurst.chainLen >= pasteCollapseMinRunes && !isSingleRepeatedRuneChain(m.pasteBurst.chainBuf) {
+				m.pasteBurst.rejectArmed = true
 				// Hint once per flood (on arm) and revert the chars that armed.
 				// Subsequent rapid runes in same flood are just swallowed without
 				// reverting so an Alt+V [Pasted] token inserted after the flood
@@ -2319,16 +2361,16 @@ if path := imagePathFromClipboardText(pasted); path != "" {
 					hint := "Use Alt+V for paste (text + image)"
 					m.addMessage("system", hint, "gate")
 					m.pasteCtrlVHintShown = true
-					return m, tea.Batch(m.showFlashToast(hint), cmdPasteBurstSettle())
+					return m, tea.Batch(m.showFlashToast(hint), m.cmdPasteBurstSettleOnce())
 				}
-				return m, cmdPasteBurstSettle()
+				return m, m.cmdPasteBurstSettleOnce()
 			}
 		}
 		m.insertInputAtCursor(s)
 		m.suggIdx = 0
 		// Auto-collapse the burst ~burstSettle after it stops (no keystroke needed).
 		if m.pasteBurst.active {
-			return m, tea.Batch(m.cmdMaybePrefetchPickers(), cmdPasteBurstSettle())
+			return m, tea.Batch(m.cmdMaybePrefetchPickers(), m.cmdPasteBurstSettleOnce())
 		}
 		return m, m.cmdMaybePrefetchPickers()
 	}

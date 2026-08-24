@@ -38,6 +38,14 @@ func cmdPasteBurstSettle() tea.Cmd {
 	return tea.Tick(burstSettle, func(time.Time) tea.Msg { return pasteBurstSettleMsg{} })
 }
 
+func (m *AppModel) cmdPasteBurstSettleOnce() tea.Cmd {
+	if m.pasteBurst.settlePending {
+		return nil
+	}
+	m.pasteBurst.settlePending = true
+	return cmdPasteBurstSettle()
+}
+
 // pasteSegment holds the full text behind one collapsed placeholder token.
 type pasteSegment struct {
 	token string // exact text present in inputValue
@@ -50,13 +58,15 @@ type pasteSegment struct {
 // what turned every pasted line into a separate auto-sent message. When the
 // burst settles, the tracked region collapses to a paste token.
 type pasteBurst struct {
-	active     bool
-	start      int // rune index in inputValue where the burst region begins
-	buf        []rune
-	chainLen   int   // consecutive rapid runes in the current chain
-	chainStart int   // inputValue rune length before the current chain began
-	chainBuf   []rune
-	lastRuneAt time.Time
+	active        bool
+	start         int // rune index in inputValue where the burst region begins
+	buf           []rune
+	chainLen      int   // consecutive rapid runes in the current chain
+	chainStart    int   // inputValue rune length before the current chain began
+	chainBuf      []rune
+	lastRuneAt    time.Time
+	rejectArmed   bool // CA-612: Windows reject stays armed across 25ms gaps until settle
+	settlePending bool // at most one settle Tick in flight (prevents per-rune storm)
 }
 
 // pasteSummaryToken renders the visible placeholder for a collapsed paste — one
