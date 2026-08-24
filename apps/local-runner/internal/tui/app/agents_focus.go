@@ -57,6 +57,10 @@ func (m *AppModel) focusedChildLive() bool {
 		if strings.TrimSpace(r.RunID) != id {
 			continue
 		}
+		st := strings.ToLower(strings.TrimSpace(r.Status))
+		if st == "waiting_user_approval" {
+			return false
+		}
 		return !runStatusIsTerminal(r.Status)
 	}
 	// Focused run not in the hydrate snapshot yet: fall back to parent flow/turn

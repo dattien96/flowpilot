@@ -2137,6 +2137,8 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 		child.pendingFlowGateSettle = false
 		child.pendingFlowGateFinalMsg = ""
 		child.pendingFlowGateOccurredAt = ""
+		child.pendingFlowGateTurnID = ""
+		child.pendingGateChangedFiles = nil
 		if child.turnInFlight && child.turnCancel != nil {
 			child.turnCancel()
 		}
@@ -2147,14 +2149,19 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 		if child.status == RunStatusRunning {
 			child.status = RunStatusWaitingUserApr
 			child.agentStatus = "waiting_user_approval"
-			s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
-				RunID:       child.id,
-				ParentRunID: parentRunID,
-				AgentName:   child.agentName,
-				Role:        child.role,
-				Status:      RunStatusWaitingUserApr,
-				Label:       child.label,
-			})
+			if existing, ok := s.agentOrchestrator.currentSummary(parentRunID, child.id); ok {
+				existing.Status = RunStatusWaitingUserApr
+				s.agentOrchestrator.upsertSummary(parentRunID, existing)
+			} else {
+				s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
+					RunID:       child.id,
+					ParentRunID: parentRunID,
+					AgentName:   child.agentName,
+					Role:        child.role,
+					Status:      RunStatusWaitingUserApr,
+					Label:       child.label,
+				})
+			}
 		}
 	}
 	s.flowDiagLog(parentRunID, "flow_parked_awaiting_user",
@@ -2217,6 +2224,7 @@ func (s *InteractiveService) parkFlowForAwaitingUserLocked(parentRunID string) {
 		child.pendingFlowGateFinalMsg = ""
 		child.pendingFlowGateOccurredAt = ""
 		child.pendingFlowGateTurnID = ""
+		child.pendingGateChangedFiles = nil
 		if child.turnInFlight && child.turnCancel != nil {
 			child.turnCancel()
 		}
@@ -2227,14 +2235,19 @@ func (s *InteractiveService) parkFlowForAwaitingUserLocked(parentRunID string) {
 		if child.status == RunStatusRunning {
 			child.status = RunStatusWaitingUserApr
 			child.agentStatus = "waiting_user_approval"
-			s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
-				RunID:       child.id,
-				ParentRunID: parentRunID,
-				AgentName:   child.agentName,
-				Role:        child.role,
-				Status:      RunStatusWaitingUserApr,
-				Label:       child.label,
-			})
+			if existing, ok := s.agentOrchestrator.currentSummary(parentRunID, child.id); ok {
+				existing.Status = RunStatusWaitingUserApr
+				s.agentOrchestrator.upsertSummary(parentRunID, existing)
+			} else {
+				s.agentOrchestrator.upsertSummary(parentRunID, AgentRunSummary{
+					RunID:       child.id,
+					ParentRunID: parentRunID,
+					AgentName:   child.agentName,
+					Role:        child.role,
+					Status:      RunStatusWaitingUserApr,
+					Label:       child.label,
+				})
+			}
 		}
 	}
 	s.flowDiagLog(parentRunID, "flow_parked_awaiting_user",
@@ -6746,6 +6759,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 					rs.pendingFlowGateFinalMsg = ""
 					rs.pendingFlowGateOccurredAt = ""
 					rs.pendingFlowGateTurnID = ""
+					rs.pendingGateChangedFiles = nil
 					if !stoppedMidGate {
 						if rs.parentRunID != "" && s.agentOrchestrator.loopStateFor(rs.parentRunID).Status == "blocked" {
 							rs.status = RunStatusWaitingUserApr

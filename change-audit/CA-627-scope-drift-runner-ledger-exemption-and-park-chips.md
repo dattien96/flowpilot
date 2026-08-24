@@ -20,6 +20,7 @@ declared_paths:
   - apps/local-runner/internal/tui/app/agents_focus.go
   - apps/local-runner/internal/tui/app/step_runtime.go
   - apps/local-runner/internal/tui/app/bug327_blocked_waiting_turnstream_chips_test.go
+  - requirements/09-BugFix/done/BUG-327-Scope-Drift-Runner-Ledger-Park-Chips.md
 ```
 <!-- /flowpilot:change-ledger -->
 
@@ -35,9 +36,10 @@ declared_paths:
    - Updated `gate_hook.go` to exclude runner ledger bookkeeping files from the written paths compared against `FrozenContractScopeDrift`.
    - Preserves security: does NOT blanket exempt `.flowpilot/**` or `settings/flow-rules.json`.
 2. **F-2: Park State & Action Chips Cleanup (`interactive_service.go`, `agents_focus.go`, `step_runtime.go`)**:
-   - In `parkFlowForAwaitingUser` and `parkFlowForAwaitingUserLocked`: child runs transitioned to `RunStatusWaitingUserApr` / `waiting_user_approval` and recorded in `agentOrchestrator`.
+   - In `parkFlowForAwaitingUser` and `parkFlowForAwaitingUserLocked`: child runs transitioned to `RunStatusWaitingUserApr` / `waiting_user_approval` and updated in `agentOrchestrator` preserving existing summary fields (`ActivationSeq`, `ProviderKey`, `ModelName`, `WaitForResult`, `DependsOn`).
+   - Park hygiene: cleared `pendingFlowGateTurnID` and `pendingGateChangedFiles` consistently across park handlers and `finishTurn` post-gate settle.
    - In `interactive_service.go` (`finishTurn` post-gate settle): do not reset child status to `running` if parent loop is `blocked`.
-   - In `agents_focus.go`: `hasLiveWorkingChild()` skips `mainRunID()` and synthetic main runs so it only evaluates real child agent liveness.
+   - In `agents_focus.go`: `hasLiveWorkingChild()` skips `mainRunID()` and synthetic main runs so it only evaluates real child agent liveness; `focusedChildLive()` treats `waiting_user_approval` as parked.
    - In `step_runtime.go`: `flowLoopBlocked()` no longer blocks on `turnStream != nil` when no child is working.
 
 ## Validation
@@ -45,3 +47,4 @@ declared_paths:
 - `go test -count=1 ./internal/changecontract/...`: PASSED.
 - `go test -count=1 ./internal/runner/ -run="TestBUG327_|TestContractFreeze_|TestFrozen"`: PASSED.
 - `go test -count=1 ./internal/tui/app/ -run="TestBUG327_|TestTimelineActionChips_|TestTUIInput_|TestBlockedBar_|TestCA622_|TestRun136749_"`: PASSED across `claude`, `codex`, and `grok`.
+

@@ -76,3 +76,36 @@ func TestBUG327_BlockedWaitingTurnStreamRendersChipsAndStopsThinking(t *testing.
 		})
 	}
 }
+
+func TestBUG327_FocusedParkedChildDoesNotHideChipsOrTurnThinkingOn(t *testing.T) {
+	for _, pk := range []string{"claude", "codex", "grok"} {
+		t.Run(pk, func(t *testing.T) {
+			m := New(config.ChatConfig{Provider: pk}, "http://127.0.0.1:4317")
+			m.width = 100
+			m.height = 30
+			m.asciiMode = true
+			m.mode = ModeFlow
+			m.launch = LaunchArm{Mode: ModeFlow, WorkflowID: "wf", Label: pk + "-flow"}
+			m.runHandle = &client.RunHandle{RunID: "run-218125", Status: "running"}
+			m.flowLoopStatus = "blocked"
+			m.flowBlockReason = "escalate"
+			m.agentRuns = []client.AgentRunSummary{
+				{RunID: "run-218125", AgentName: "main", Role: "main", Status: "running"},
+				{RunID: "run-218126", AgentName: "implement", Role: "coder", Status: "waiting_user_approval"},
+			}
+			// User opens F2 and focuses the parked implement child
+			m.focusRunID = "run-218126"
+			m.focusStream = &orchStreamState{}
+
+			if m.focusedChildLive() {
+				t.Fatalf("%s: focusedChildLive must be false when focused child is parked (waiting_user_approval)", pk)
+			}
+			if !m.flowLoopBlocked() {
+				t.Fatalf("%s: flowLoopBlocked must be true when focusing a parked child", pk)
+			}
+			if m.workIsLive() {
+				t.Fatalf("%s: workIsLive must be false when focusing a parked child (Thinking off)", pk)
+			}
+		})
+	}
+}
