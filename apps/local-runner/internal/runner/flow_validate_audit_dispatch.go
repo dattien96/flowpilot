@@ -617,7 +617,7 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 			Label:                    targetNode.ID,
 			AutoOrchestrate:          true,
 			AgentDefOverride:         agentDef,
-			Model:                    s.resolveFlowNodeModel(ctx, parentRunID, targetNode),
+			Model:                    s.delegateSpawnModel(ctx, parentRunID, targetNode),
 			FCPMarkerProvenanceRunID: fcpProvenanceRunID,
 		}); err != nil {
 			log.Printf("[flow-executor] validate: retry spawn of %q failed: %v", targetNode.ID, err)
@@ -770,7 +770,7 @@ func (s *InteractiveService) advanceToNextInlineOrDelegate(ctx context.Context, 
 			Label:            nextNode.ID,
 			AutoOrchestrate:  true,
 			AgentDefOverride: agentDef,
-			Model:            s.resolveFlowNodeModel(ctx, parentRunID, nextNode),
+			Model:            s.delegateSpawnModel(ctx, parentRunID, nextNode),
 		}); err != nil {
 			log.Printf("[flow-executor] advance: spawn %q failed: %v", nextNode.ID, err)
 			return false

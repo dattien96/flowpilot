@@ -209,6 +209,42 @@ func (s *InteractiveService) setFlowStepStatusCore(ctx context.Context, parentRu
 	s.appendStepTransitionLog(parentRunID, nodeID, string(status), "", "", muHeld)
 }
 
+// setFlowStepFailedWithReason is like setFlowStepStatus(FAILED) but also stores
+// the failure's RejectionNote so the F2 timeline / step chat line can surface
+// the real provider error instead of "(no detail from runner)".
+// Additive — existing setFlowStepStatus call sites stay untouched.
+func (s *InteractiveService) setFlowStepFailedWithReason(ctx context.Context, parentRunID, nodeID, reason string) {
+	s.setFlowStepFailedWithReasonCore(ctx, parentRunID, nodeID, reason, false)
+}
+func (s *InteractiveService) setFlowStepFailedWithReasonLocked(ctx context.Context, parentRunID, nodeID, reason string) {
+	s.setFlowStepFailedWithReasonCore(ctx, parentRunID, nodeID, reason, true)
+}
+func (s *InteractiveService) setFlowStepFailedWithReasonCore(ctx context.Context, parentRunID, nodeID, reason string, muHeld bool) {
+	if nodeID == "" {
+		return
+	}
+	reason = truncateDisplayField(strings.TrimSpace(reason), 500)
+	s.flowDiagLog(parentRunID, "step_status_transition", "updating flow step status",
+		"node_id", nodeID,
+		"status", string(StepStatusFailed),
+	)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	patch := WorkflowStepPatch{Status: StepStatusFailed, FinishedAt: strptr(now), RejectionNote: strptr(reason)}
+	if err := s.workflowStore.ApplyStepTransition(ctx, parentRunID, WorkflowStepTransition{
+		StepID: nodeID,
+		Patch:  patch,
+	}); err != nil {
+		log.Printf("[flow-step] set node %q -> %s on run %q failed: %v", nodeID, StepStatusFailed, parentRunID, err)
+		s.flowDiagLog(parentRunID, "step_status_transition_failed", "flow step status update failed",
+			"node_id", nodeID,
+			"status", string(StepStatusFailed),
+			"error", err.Error(),
+		)
+		return
+	}
+	s.appendStepTransitionLog(parentRunID, nodeID, string(StepStatusFailed), "", "", muHeld)
+}
+
 // setFlowStepAwaitingUser transitions the flow's hub inline node (the
 // control/synthesis node) to WAITING_USER_APPROVAL (BUG-231) when the loop
 // pauses awaiting a human decision — escalate, or the round cap being

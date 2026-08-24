@@ -280,6 +280,10 @@ type ProviderSessionState struct {
 	// ambiguous with "field missing" on legacy rows — resolveEffectiveYolo still
 	// forces true for Flow/Workflow regardless of this field.
 	Yolo bool
+	// LastFailedDelegateNodeID persists the hub-less delegate that failed (CA-616/617).
+	LastFailedDelegateNodeID string `json:"lastFailedDelegateNodeID,omitempty"`
+	// LastEscalatedInlineNodeID persists the hub-less inline that escalated (BUG-289 A5), twin of the above.
+	LastEscalatedInlineNodeID string `json:"lastEscalatedInlineNodeID,omitempty"`
 }
 
 type ProviderApprovalState struct {

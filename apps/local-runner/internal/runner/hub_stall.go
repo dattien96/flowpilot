@@ -55,11 +55,24 @@ func (s *InteractiveService) touchParentHubProgressFromChildLocked(child *intera
 // hasActiveFlowChild reports whether a child/sub-agent is still doing or
 // awaiting work for this parent. The hub watchdog must not convert that state
 // into hub_stalled; child/member stall handling owns those cases.
+//
+// CA-616: a terminal child (Failed/Completed/Cancelled) is NOT active even if
+// turnInFlight still lingers for the few ms between EventTurnFailed and its
+// clearing — otherwise a planner that just 400'd keeps the hub hub_parked
+// forever and F-0 never surfaces (run-135037).
 func (s *InteractiveService) hasActiveFlowChild(parentRunID string) bool {
 	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
 		s.mu.Lock()
 		child := s.runs[childID]
-		active := child != nil && (child.turnInFlight ||
+		if child == nil {
+			s.mu.Unlock()
+			continue
+		}
+		if child.status == RunStatusFailed || child.status == RunStatusCompleted || child.status == RunStatusCancelled {
+			s.mu.Unlock()
+			continue
+		}
+		active := child.turnInFlight ||
 			child.pendingTurnPrompt != "" ||
 			child.pendingApprovalID != "" ||
 			child.pendingQuestionID != "" ||
@@ -68,7 +81,7 @@ func (s *InteractiveService) hasActiveFlowChild(parentRunID string) bool {
 			child.status == RunStatusStarting ||
 			child.status == RunStatusRunning ||
 			child.status == RunStatusWaitingApproval ||
-			child.status == RunStatusWaitingQuestion)
+			child.status == RunStatusWaitingQuestion
 		s.mu.Unlock()
 		if active {
 			return true

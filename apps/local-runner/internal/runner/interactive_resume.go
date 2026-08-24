@@ -962,6 +962,8 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		pendingGateRepromptProvenanceRunID: st.PendingGateRepromptProvenanceRunID,
 		// BUG-299 residual: restore durable YOLO when present; flow force applied below.
 		yolo: st.Yolo,
+		lastFailedDelegateNodeID:  st.LastFailedDelegateNodeID,
+		lastEscalatedInlineNodeID: st.LastEscalatedInlineNodeID,
 	}
 	if rs.idempotency == nil {
 		rs.idempotency = map[string]string{}

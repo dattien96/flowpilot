@@ -166,6 +166,8 @@ type ndjsonSessionRecord struct {
 	PendingGateRepromptProvenanceRunID string `json:"pending_gate_reprompt_provenance_run_id,omitempty"`
 	// BUG-299 residual: durable YOLO posture (additive on legacy rows).
 	Yolo bool `json:"yolo,omitempty"`
+	LastFailedDelegateNodeID  string `json:"last_failed_delegate_node_id,omitempty"`
+	LastEscalatedInlineNodeID string `json:"last_escalated_inline_node_id,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -470,6 +472,8 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		PendingRestartProvenanceRunID:      r.PendingRestartProvenanceRunID,
 		PendingGateRepromptProvenanceRunID: r.PendingGateRepromptProvenanceRunID,
 		Yolo:                               r.Yolo,
+		LastFailedDelegateNodeID:           r.LastFailedDelegateNodeID,
+		LastEscalatedInlineNodeID:          r.LastEscalatedInlineNodeID,
 	}
 }
 
@@ -919,6 +923,8 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		PendingRestartProvenanceRunID:      s.PendingRestartProvenanceRunID,
 		PendingGateRepromptProvenanceRunID: s.PendingGateRepromptProvenanceRunID,
 		Yolo:                               s.Yolo,
+		LastFailedDelegateNodeID:           s.LastFailedDelegateNodeID,
+		LastEscalatedInlineNodeID:          s.LastEscalatedInlineNodeID,
 	}
 }
 

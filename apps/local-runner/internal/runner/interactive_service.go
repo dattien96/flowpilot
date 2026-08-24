@@ -382,6 +382,10 @@ type interactiveRun struct {
 	// validate/audit node escalated in a hub-less flow so Continue re-enters
 	// that node instead of reinvoking a nonexistent hub.
 	lastEscalatedInlineNodeID string
+	// lastFailedDelegateNodeID (CA-616) remembers which hub-less delegate
+	// (preflight_contract_plan) failed so Continue can retry that same node
+	// via reinvokeMatchingFlowChild instead of a generic hub reinvoke.
+	lastFailedDelegateNodeID string
 	// lastProviderEventAt is stamped on every emitLocked for stall detection
 	// (Task-241 T-11). Zero means no event yet (member just spawned).
 	lastProviderEventAt time.Time
@@ -1700,6 +1704,9 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 
 	feedback = strings.TrimSpace(feedback)
 	wasBlocked := false
+	prevBlockReason := s.agentOrchestrator.loopStateFor(parentRunID).BlockReason
+	prevGateReason := s.agentOrchestrator.loopStateFor(parentRunID).GateReason
+	_ = prevGateReason
 	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		if st.Status != "blocked" {
 			return st
@@ -1719,6 +1726,7 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	if !wasBlocked {
 		return snap, nil
 	}
+	_ = prevBlockReason
 
 	// BUG-284: a hub.notify reinvoke that was blocked (re-armed in
 	// maybeAutoReinvokeHubWithPrompt) takes priority over the generic
@@ -1771,8 +1779,10 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	// BUG-289 A5/F-9: hub-less flows (rag-harness) escalate from inline
 	// validate/audit with no hub.inline — Continue must re-enter that node,
 	// not reinvoke a nonexistent hub.
+	// CA-616: same for a hub-less delegate fail (preflight_contract_plan).
 	s.mu.Lock()
 	escalatedNodeID := ""
+	failedDelegateNodeID := ""
 	var edges []agentpack.FlowEdge
 	var nodes []agentpack.FlowNode
 	if rs := s.runs[parentRunID]; rs != nil {
@@ -1782,16 +1792,113 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 			nodes = rs.activeFlowNodes
 			rs.lastEscalatedInlineNodeID = ""
 		}
+		failedDelegateNodeID = strings.TrimSpace(rs.lastFailedDelegateNodeID)
+		if failedDelegateNodeID != "" {
+			if edges == nil {
+				edges = rs.activeFlowEdges
+				nodes = rs.activeFlowNodes
+			}
+			rs.lastFailedDelegateNodeID = ""
+		}
 	}
 	hubInline := hubInlineNodeID(nodes)
-	if hubInline == "" && escalatedNodeID == "" {
+	s.mu.Unlock()
+	// CA-617 fallback: restart lost RAM field — infer failed delegate from FAILED step with note.
+	if failedDelegateNodeID == "" && hubInline == "" && prevBlockReason == "delegate_failed" {
+		if steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID); err == nil {
+			for _, st := range steps {
+				if st.Status == StepStatusFailed && strings.EqualFold(strings.TrimSpace(st.ID), "preflight_contract_plan") {
+					failedDelegateNodeID = st.ID
+					break
+				}
+			}
+			if failedDelegateNodeID == "" {
+				for _, st := range steps {
+					if st.Status == StepStatusFailed && strings.TrimSpace(st.RejectionNote) != "" {
+						failedDelegateNodeID = st.ID
+						break
+					}
+				}
+			}
+			if failedDelegateNodeID != "" && len(nodes) == 0 {
+				s.mu.Lock()
+				if rs := s.runs[parentRunID]; rs != nil {
+					nodes = append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
+					edges = append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...)
+				}
+				s.mu.Unlock()
+				hubInline = hubInlineNodeID(nodes)
+			}
+		}
+	}
+	if hubInline == "" && escalatedNodeID == "" && failedDelegateNodeID == "" {
 		// Still no hub and no remembered node — fall through to generic reinvoke.
 	}
-	s.mu.Unlock()
 	if escalatedNodeID != "" && hubInline == "" {
 		if node, ok := findFlowNode(nodes, escalatedNodeID); ok {
 			go s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, node, feedback)
 			return snap, nil
+		}
+	}
+	if failedDelegateNodeID != "" && hubInline == "" {
+		// CA-616: retry the same delegate. Prefer reinvokeMatchingFlowChild so
+		// the existing failed child is reset to RUNNING instead of spawning a
+		// second child for the same node/activation.
+		if node, ok := findFlowNode(nodes, failedDelegateNodeID); ok {
+			resumePrompt := "[flow-engine] Retrying failed delegate after user Continue."
+			if strings.TrimSpace(feedback) != "" {
+				resumePrompt = strings.TrimSpace(feedback) + "\n\n---\n\n" + resumePrompt
+			}
+			resumePrompt = composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), resumePrompt, node)
+			expectedAgent := flowNodeAgentName(node)
+			reinvoked := s.reinvokeMatchingFlowChild(parentRunID, resumePrompt, func(child *interactiveRun) bool {
+				if child.label == failedDelegateNodeID {
+					return true
+				}
+				if strings.TrimSpace(child.label) == "" && expectedAgent != "" && strings.EqualFold(strings.TrimSpace(child.agentName), expectedAgent) {
+					return true
+				}
+				return false
+			})
+			if reinvoked {
+				s.setFlowStepStatus(context.Background(), parentRunID, failedDelegateNodeID, StepStatusRunning)
+				return snap, nil
+			}
+			// M6: if a child with same label/agent already exists but reinvoke missed
+			// (e.g. label empty pre-adapter), do not spawn a second one.
+			for _, cid := range s.agentOrchestrator.listChildren(parentRunID) {
+				if c := s.runs[cid]; c != nil {
+					matchesLabel := c.label == failedDelegateNodeID
+					matchesAgent := expectedAgent != "" && strings.EqualFold(strings.TrimSpace(c.agentName), expectedAgent) && strings.TrimSpace(c.label) == ""
+					if (matchesLabel || matchesAgent) && c.status == RunStatusRunning {
+						s.setFlowStepStatus(context.Background(), parentRunID, failedDelegateNodeID, StepStatusRunning)
+						return snap, nil
+					}
+				}
+			}
+			// No reusable child — fall through to spawn below (generic path
+			// would also miss the node; retry as a fresh spawn).
+			agentName := expectedAgent
+			if agentName != "" {
+				agentDef, _ := resolvePackAgentDefinition(agentName)
+				prompt := composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), "[flow-engine] Retrying failed delegate after user Continue.", node)
+				if feedback != "" {
+					prompt = feedback + "\n\n---\n\n" + prompt
+				}
+				if _, err := s.spawnChildRun(context.Background(), parentRunID, SpawnAgentInput{
+					Agent:            agentName,
+					Prompt:           prompt,
+					Wait:             false,
+					Label:            node.ID,
+					AutoOrchestrate:  true,
+					AgentDefOverride: agentDef,
+					Model:            s.delegateSpawnModel(context.Background(), parentRunID, node),
+				}); err == nil {
+					s.setFlowStepStatus(context.Background(), parentRunID, failedDelegateNodeID, StepStatusRunning)
+					s.stampFlowNodePosture(context.Background(), parentRunID, node)
+					return snap, nil
+				}
+			}
 		}
 	}
 
@@ -2032,6 +2139,75 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 		"flow frozen for human decision form; cancelled in-flight turns and dropped auto-intents")
 }
 
+// parkFlowForAwaitingUserLocked is like parkFlowForAwaitingUser but caller
+// already holds s.mu (e.g. notifyHubOfFlowChildFailureLocked via emitLocked).
+// CA-616 uses it for hub-less delegate fail to avoid deadlock (park would
+// Lock again while emitLocked holds s.mu).
+func (s *InteractiveService) parkFlowForAwaitingUserLocked(parentRunID string) {
+	if strings.TrimSpace(parentRunID) == "" {
+		return
+	}
+	if parent := s.runs[parentRunID]; parent != nil {
+		parent.reinvokeInFlight = false
+		parent.pendingHubReinvoke = false
+		parent.pendingHubReinvokePrompt = ""
+		parent.pendingGateRepromptPrompt = ""
+		parent.pendingGateRepromptStepID = ""
+		parent.pendingGateRepromptGen = 0
+		parent.pendingGateRepromptDeliveredGen = 0
+		parent.pendingGateRepromptAcceptedTurn = ""
+		parent.pendingResumePrompt = ""
+		parent.pendingResumeStepID = ""
+		parent.pendingResumeGen = 0
+		parent.pendingResumeDeliveredGen = 0
+		parent.pendingResumeAcceptedTurn = ""
+		parent.pendingFlowGateSettle = false
+		parent.pendingFlowGateFinalMsg = ""
+		parent.pendingFlowGateOccurredAt = ""
+		parent.pendingFlowGateTurnID = ""
+		parent.pendingGateChangedFiles = nil
+		if parent.turnInFlight && parent.turnCancel != nil {
+			parent.turnCancel()
+		}
+		if parent.postTurnGateCancel != nil {
+			parent.postTurnGateCancel()
+			parent.postTurnGateCancel = nil
+		}
+		if parent.flowInlineCancel != nil {
+			parent.flowInlineCancel()
+			parent.flowInlineCancel = nil
+			parent.flowInlineCtx = nil
+		}
+	}
+	for _, childID := range s.agentOrchestrator.listChildren(parentRunID) {
+		child := s.runs[childID]
+		if child == nil {
+			continue
+		}
+		child.pendingTurnPrompt = ""
+		child.pendingGateRepromptPrompt = ""
+		child.pendingGateRepromptStepID = ""
+		child.pendingGateRepromptGen = 0
+		child.pendingResumePrompt = ""
+		child.pendingResumeStepID = ""
+		child.pendingResumeGen = 0
+		child.pendingFlowGateSettle = false
+		child.pendingFlowGateFinalMsg = ""
+		child.pendingFlowGateOccurredAt = ""
+		child.pendingFlowGateTurnID = ""
+		child.pendingGateChangedFiles = nil
+		if child.turnInFlight && child.turnCancel != nil {
+			child.turnCancel()
+		}
+		if child.postTurnGateCancel != nil {
+			child.postTurnGateCancel()
+			child.postTurnGateCancel = nil
+		}
+	}
+	s.flowDiagLog(parentRunID, "flow_parked_awaiting_user",
+		"flow frozen for human decision form; cancelled in-flight turns and dropped auto-intents")
+}
+
 // clearStaleHubPendingGateSettleLocked drops hub pendingFlowGateSettle when no
 // live post-turn gate is running. Used after flowStartOnly synthetic complete,
 // child fail reinvoke (CA-355 / H-A), and entry spawn failure (H-B).
@@ -2055,6 +2231,13 @@ func (s *InteractiveService) clearStaleHubPendingGateSettleLocked(parent *intera
 // Caller holds s.mu. child.parentRunID must be set.
 //
 // Covers EventTurnFailed (CA-355/run-1618) and pre-adapter startTurn fail (H-A).
+//
+// CA-616: hub-less flows (rag-harness, no hub.inline) must NOT reinvoke the
+// hub on a delegate fail — there is no hub to reinvoke — and must not stay
+// "rejected" with Thinking forever. Instead the failed delegate is marked
+// FAILED with its RejectionNote, the loop is parked blocked/delegate_failed,
+// and the user gets [Continue]/[Stop]. Review-loop (with hub.inline) keeps
+// the original reinvoke path unchanged so CA-355's tests stay green.
 func (s *InteractiveService) notifyHubOfFlowChildFailureLocked(child *interactiveRun, errMsg string) {
 	if child == nil || child.parentRunID == "" {
 		return
@@ -2070,7 +2253,7 @@ func (s *InteractiveService) notifyHubOfFlowChildFailureLocked(child *interactiv
 		"Sub-agent %q (provider: %s) failed: %s",
 		child.agentName, child.providerKey, truncateDisplayField(errMsg, 500))
 	if child.label != "" {
-		s.setFlowStepStatusLocked(context.Background(), child.parentRunID, child.label, StepStatusFailed)
+		s.setFlowStepFailedWithReasonLocked(context.Background(), child.parentRunID, child.label, errMsg)
 	}
 	s.clearStaleHubPendingGateSettleLocked(parent)
 	s.appendPendingAgentContextLocked(child.parentRunID, failNote)
@@ -2081,9 +2264,29 @@ func (s *InteractiveService) notifyHubOfFlowChildFailureLocked(child *interactiv
 	if hubNodeID == "" {
 		hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
 	}
-	if hubNodeID != "" {
-		s.setFlowStepStatusLocked(context.Background(), child.parentRunID, hubNodeID, StepStatusRunning)
+	// CA-616 hub-less branch: no hub.inline → park, don't reinvoke.
+	if hubNodeID == "" {
+		if child.label != "" {
+			parent.lastFailedDelegateNodeID = child.label
+		}
+		snap := s.agentOrchestrator.mutateLoop(child.parentRunID, func(st AgentLoopState) AgentLoopState {
+			st.Status = "blocked"
+			st.BlockReason = "delegate_failed"
+			st.GateReason = truncateDisplayField(errMsg, 500)
+			return st
+		})
+		s.parkFlowForAwaitingUserLocked(child.parentRunID)
+		s.emitAgentGraphLocked(child.parentRunID, snap)
+		go s.persistParentSession(child.parentRunID)
+		s.flowDiagLog(child.parentRunID, "delegate_failed_parked",
+			"hub-less delegate failed; parked blocked/delegate_failed for Continue/Stop",
+			"child_run_id", child.id,
+			"label", child.label,
+			"error", truncateDisplayField(errMsg, 500),
+		)
+		return
 	}
+	s.setFlowStepStatusLocked(context.Background(), child.parentRunID, hubNodeID, StepStatusRunning)
 	parentRunID := child.parentRunID
 	capturedFailNote := failNote
 	s.flowDiagLog(parentRunID, "entry_or_delegate_failed_reinvoke_hub",
@@ -2625,7 +2828,7 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 			Label:            composeNode.ID,
 			AutoOrchestrate:  true,
 			AgentDefOverride: agentDef,
-			Model:            s.resolveFlowNodeModel(context.Background(), parentRunID, composeNode),
+			Model:            s.delegateSpawnModel(context.Background(), parentRunID, composeNode),
 		}); err != nil {
 			log.Printf("[flow-executor] continue: spawn node %q (agent %q) failed: %v", composeNode.ID, agentName, err)
 			return
@@ -3412,6 +3615,8 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		// BUG-299 residual: round-trip YOLO so chat restart keeps the toggle and
 		// flow rehydrate has a durable value to force against when missing.
 		Yolo: rs.yolo,
+		LastFailedDelegateNodeID:  rs.lastFailedDelegateNodeID,
+		LastEscalatedInlineNodeID: rs.lastEscalatedInlineNodeID,
 	}
 }
 

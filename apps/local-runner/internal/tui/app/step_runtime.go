@@ -159,11 +159,16 @@ func (m *AppModel) flowLoopDone() bool {
 // must NOT read as live-running, or [stop] arms with no way for the very user
 // the flow is waiting on to respond. Desktop parity: a running child still wins
 // over a blocked loop (BUG-231 legacy), so a live child keeps [stop] armed.
+// WAITING_USER_APPROVAL is a park stamp, not live work (run-136749).
 func (m *AppModel) flowLoopBlocked() bool {
 	if strings.ToLower(strings.TrimSpace(m.flowLoopStatus)) != "blocked" {
 		return false
 	}
-	if m.flowHasActiveAgents() {
+	// YOLO/ask_user gate has its own Approve/Deny chips — do not show Continue.
+	if m.approval != nil || m.question != nil || m.gate != nil {
+		return false
+	}
+	if m.hasLiveWorkingChild() {
 		return false
 	}
 	if m.turnStream != nil || m.focusedChildLive() {
@@ -199,9 +204,20 @@ func (m *AppModel) applyAgentGraph(g *client.AgentGraphSnapshot) {
 // on their Continue/Stop decision, not stuck running.
 func (m *AppModel) showBlockedBanner(ls client.AgentLoopState) {
 	reason := strings.TrimSpace(ls.BlockReason)
-	line := "Flow is waiting for you (blocked) — /continue to proceed or /stop to end."
+	gate := strings.TrimSpace(ls.GateReason)
+	base := "Flow is waiting for you (blocked) — /continue to proceed or /stop to end"
 	if reason != "" {
-		line = fmt.Sprintf("Flow is waiting for you (blocked: %s) — /continue to proceed or /stop to end.", reason)
+		base = fmt.Sprintf("Flow is waiting for you (blocked: %s) — /continue to proceed or /stop to end", reason)
+	}
+	line := base + "."
+	// CA-617 surfaced gate for delegate_failed; CA-619 extends to escalate/cap
+	// so the review reason is visible without opening F2 (run-136749).
+	if gate != "" && (reason == "delegate_failed" || reason == "escalate" || reason == "cap") {
+		gate = truncateRunes(gate, 120)
+		line = strings.TrimSuffix(base, ".") + " — " + strings.TrimSuffix(gate, ".") + "."
+	} else if gate != "" && reason == "" {
+		gate = truncateRunes(gate, 120)
+		line = base + " — " + strings.TrimSuffix(gate, ".")
 	}
 	m.addMessage("system", line, "warn")
 	m.connStatus = ConnWaiting
@@ -342,6 +358,58 @@ func formatStepChatNotices(prev, next []client.WorkflowStepRuntime, prevActive, 
 			continue
 		}
 		out = append(out, formatStepChatLine(i, s, fallbackFailReason))
+	}
+	// CA-618: late RejectionNote, first-poll FAILED, and PENDING→FAILED.
+	// First-poll (prev empty, e.g. /open): cap to at most one FAILED+note — the
+	// last FAILED in declaration order that has no later RUNNING sibling.
+	if len(prev) == 0 {
+		lastIdx := -1
+		for i, s := range next {
+			if strings.ToUpper(strings.TrimSpace(s.Status)) != "FAILED" {
+				continue
+			}
+			if strings.TrimSpace(s.RejectionNote) == "" {
+				continue
+			}
+			lastIdx = i
+		}
+		if lastIdx >= 0 {
+			// If a later step is still RUNNING/WAITING, the FAILED is history past
+			// the active work — do not dump old-park reasons on open.
+			hasLaterActive := false
+			for j := lastIdx + 1; j < len(next); j++ {
+				stj := strings.ToUpper(strings.TrimSpace(next[j].Status))
+				if stj == "RUNNING" || stj == "WAITING_USER_APPROVAL" {
+					hasLaterActive = true
+					break
+				}
+			}
+			if !hasLaterActive {
+				out = append(out, formatStepChatLine(lastIdx, next[lastIdx], fallbackFailReason))
+			}
+		}
+	} else {
+		for i, s := range next {
+			if strings.ToUpper(strings.TrimSpace(s.Status)) != "FAILED" {
+				continue
+			}
+			if strings.TrimSpace(s.RejectionNote) == "" {
+				continue
+			}
+			old, ok := prevByID[s.StepID]
+			if !ok {
+				continue
+			}
+			oldSt := strings.ToUpper(strings.TrimSpace(old.Status))
+			if oldSt == "FAILED" && strings.TrimSpace(old.RejectionNote) == "" {
+				out = append(out, formatStepChatLine(i, s, fallbackFailReason))
+				continue
+			}
+			if oldSt != "RUNNING" && oldSt != "WAITING_USER_APPROVAL" && oldSt != "FAILED" {
+				// PENDING (or unknown) → FAILED+note: poll skipped RUNNING.
+				out = append(out, formatStepChatLine(i, s, fallbackFailReason))
+			}
+		}
 	}
 
 	// New current RUNNING/WAITING step.

@@ -179,7 +179,7 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 			AutoOrchestrate:   true,
 			AgentDefOverride:  agentDef,
 			ParentContextNote: waitNotice,
-			Model:             s.resolveFlowNodeModel(ctx, parentRunID, node),
+			Model:             s.delegateSpawnModel(ctx, parentRunID, node),
 		}); err != nil {
 			log.Printf("[flow-executor] spawn entry node %q (agent %q) for flow %q on run %q failed: %v",
 				node.ID, agentName, flowRef, parentRunID, err)
@@ -513,7 +513,7 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 		Label:                    delegateTarget.ID,
 		AutoOrchestrate:          true,
 		AgentDefOverride:         agentDef,
-		Model:                    s.resolveFlowNodeModel(ctx, parentRunID, *delegateTarget),
+		Model:                    s.delegateSpawnModel(ctx, parentRunID, *delegateTarget),
 		FCPMarkerProvenanceRunID: fcpProvenanceRunID,
 	}); err != nil {
 		log.Printf("[flow-executor] spawn inline-chain delegate node %q (agent %q) for flow %q on run %q failed: %v",
@@ -1170,7 +1170,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 			CohortSize:       len(targetNodes),
 			AutoOrchestrate:  i == 0,
 			AgentDefOverride: agentDef,
-			Model:            s.resolveFlowNodeModel(context.Background(), parentRunID, node),
+			Model:            s.delegateSpawnModel(context.Background(), parentRunID, node),
 		}); err != nil {
 			log.Printf("[flow-executor] auto-advance: spawn node %q (agent %q) failed: %v", node.ID, agentName, err)
 			s.flowDiagLog(parentRunID, "flow_advance_spawn_failed", "auto-advanced target node spawn failed",
@@ -1356,11 +1356,17 @@ func (s *InteractiveService) reinvokeMatchingFlowChild(parentRunID, prompt strin
 		snap = s.agentOrchestrator.graphSnapshot(parentRunID)
 		runID = child.id
 		stepID = child.stepID
+		if stepID == "" {
+			stepID = child.lastTurnStepID
+		}
+		if stepID == "" {
+			stepID = "retry-" + child.id
+		}
 		agentName = child.agentName
 		break
 	}
 	s.mu.Unlock()
-	if runID == "" || stepID == "" {
+	if runID == "" {
 		return false
 	}
 	s.emitAgentGraph(parentRunID, snap)
@@ -1437,6 +1443,22 @@ func agentNameFromRef(agentRef string) string {
 	agent = strings.ReplaceAll(agent, "\\", "/")
 	base := path.Base(agent)
 	return strings.TrimSuffix(base, path.Ext(base))
+}
+
+// delegateSpawnModel returns the model to actually pass into spawnChildRun
+// for node. For the preflight contract-planner it returns "" so the child
+// inherits the hub's own provider/model (grok-4.5 / claude-sonnet etc.),
+// even when a seeded step_definitions row carries the legacy gpt-5.4. Other
+// delegate nodes (coder/reviewer) keep CA-230/239/241 behavior — their own
+// node-specific model when one exists.
+//
+// CA-616: run-135037 Codex+ChatGPT has no gpt-5.4; planner must follow parent.
+func (s *InteractiveService) delegateSpawnModel(ctx context.Context, parentRunID string, node agentpack.FlowNode) string {
+	if strings.EqualFold(strings.TrimSpace(flowNodeAgentName(node)), "contract-planner") ||
+		strings.EqualFold(strings.TrimSpace(node.ID), "preflight_contract_plan") {
+		return ""
+	}
+	return s.resolveFlowNodeModel(ctx, parentRunID, node)
 }
 
 // resolveFlowNodeModel resolves an agent.delegate flow node's OWN configured
@@ -1596,9 +1618,22 @@ func isGenericFlowDispatchStepType(stepType string) bool {
 // resolveFlowNodeProviderModel resolves node's OWN actually-effective
 // provider/model: its role's step_definitions row when one resolves, else the
 // run's own baseline (the same fallback spawnChildRun applies once the node
-// is actually spawned) â€” so callers get the node's true eventual posture
+// is actually spawned) — so callers get the node's true eventual posture
 // whether or not it has been spawned yet.
 func (s *InteractiveService) resolveFlowNodeProviderModel(ctx context.Context, parentRunID string, node agentpack.FlowNode) (provider, model string) {
+	// CA-616: planner always shows/inherits hub posture (grok-4.5 etc.).
+	if strings.EqualFold(strings.TrimSpace(flowNodeAgentName(node)), "contract-planner") ||
+		strings.EqualFold(strings.TrimSpace(node.ID), "preflight_contract_plan") {
+		s.mu.Lock()
+		if parent := s.runs[parentRunID]; parent != nil {
+			provider = string(parent.providerKey)
+			model = parent.modelName
+		}
+		s.mu.Unlock()
+		if model != "" || provider != "" {
+			return provider, model
+		}
+	}
 	model = s.resolveFlowNodeModel(ctx, parentRunID, node)
 	if model != "" {
 		if pk, ok := providerKeyFromModel(model); ok {
