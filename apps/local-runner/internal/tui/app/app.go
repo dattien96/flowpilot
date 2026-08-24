@@ -2957,6 +2957,10 @@ func (m *AppModel) turnIsActive() bool {
 // ConnConnecting/session-loading is deliberately not "live": those phases already
 // surface their own "connecting…"/"loading…" labels.
 func (m *AppModel) workIsLive() bool {
+	// A completed flow loop is not live work — stop spinner / thinking immediately.
+	if m.flowLoopDone() {
+		return false
+	}
 	// Decision states first: an agent waiting on the user reports a
 	// "waiting_user_approval" status, so flowHasActiveAgents must not win here.
 	if m.gate != nil || m.question != nil || m.approval != nil {
@@ -2974,7 +2978,7 @@ func (m *AppModel) workIsLive() bool {
 	if m.flowLoopBlocked() {
 		return false
 	}
-	if m.flowHasActiveAgents() {
+	if m.hasLiveWorkingChild() {
 		return true
 	}
 	if m.connStatus == ConnRunning {

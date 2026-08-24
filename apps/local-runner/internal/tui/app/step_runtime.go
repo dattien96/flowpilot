@@ -147,7 +147,7 @@ func (m *AppModel) flowLoopDone() bool {
 	if strings.TrimSpace(m.flowStepsActive) != "" {
 		return false
 	}
-	if m.flowHasActiveAgents() {
+	if m.hasLiveWorkingChild() {
 		return false
 	}
 	return true
@@ -196,6 +196,9 @@ func (m *AppModel) applyAgentGraph(g *client.AgentGraphSnapshot) {
 	if strings.ToLower(strings.TrimSpace(m.flowLoopStatus)) == "blocked" &&
 		!strings.EqualFold(strings.TrimSpace(prevStatus), "blocked") {
 		m.showBlockedBanner(g.LoopState)
+	}
+	if strings.ToLower(strings.TrimSpace(m.flowLoopStatus)) == "done" {
+		m.settleFlowIfDone()
 	}
 }
 

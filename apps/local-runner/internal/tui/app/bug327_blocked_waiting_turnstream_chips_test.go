@@ -109,3 +109,48 @@ func TestBUG327_FocusedParkedChildDoesNotHideChipsOrTurnThinkingOn(t *testing.T)
 		})
 	}
 }
+
+func TestBUG327_FlowDoneStopsThinkingAndSettlesStatusline(t *testing.T) {
+	for _, pk := range []string{"claude", "codex", "grok"} {
+		t.Run(pk, func(t *testing.T) {
+			m := New(config.ChatConfig{Provider: pk}, "http://127.0.0.1:4317")
+			m.width = 100
+			m.height = 30
+			m.asciiMode = true
+			m.mode = ModeFlow
+			m.launch = LaunchArm{Mode: ModeFlow, WorkflowID: "wf", Label: pk + "-flow"}
+			m.runHandle = &client.RunHandle{RunID: "run-221516", Status: "running"}
+			m.connStatus = ConnRunning
+			m.flowLoopStatus = "done"
+			m.flowStepsActive = ""
+			m.agentRuns = []client.AgentRunSummary{
+				{RunID: "run-221516", AgentName: "main", Role: "main", Status: "running"},
+				{RunID: "run-221517", AgentName: "implement", Role: "coder", Status: "completed"},
+			}
+
+			// 1. flowLoopDone must be true
+			if !m.flowLoopDone() {
+				t.Fatalf("%s: flowLoopDone must be true when loop status is done", pk)
+			}
+
+			// 2. workIsLive must be false (Thinking off immediately)
+			if m.workIsLive() {
+				t.Fatalf("%s: workIsLive must be false when flowLoopDone is true", pk)
+			}
+
+			// 3. applyAgentGraph on done settles chrome to done
+			m.applyAgentGraph(&client.AgentGraphSnapshot{
+				ParentRunID: "run-221516",
+				LoopState:   client.AgentLoopState{Status: "done"},
+				Runs:        m.agentRuns,
+			})
+
+			if m.connStatus != ConnIdle {
+				t.Fatalf("%s: connStatus want ConnIdle (%v), got %v", pk, ConnIdle, m.connStatus)
+			}
+			if m.statusMsg != "done" {
+				t.Fatalf("%s: statusMsg want done, got %q", pk, m.statusMsg)
+			}
+		})
+	}
+}

@@ -558,6 +558,18 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			s.mu.Unlock()
 		}
 		if parentID != "" && s.gateEpochStillValid(runID, epoch) {
+			s.mu.Lock()
+			if parent := s.runs[parentID]; parent != nil {
+				childStepID := strings.TrimSpace(rs.label)
+				if childStepID == "" {
+					childStepID = rs.stepID
+				}
+				if childStepID == "" {
+					childStepID = rs.agentName
+				}
+				parent.lastEscalatedInlineNodeID = childStepID
+			}
+			s.mu.Unlock()
 			_, _ = s.applyFlowControl(parentID, FlowControlInput{
 				Status:  "escalate",
 				Summary: "flow gate block: " + msg,
@@ -704,6 +716,11 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			}
 			s.mu.Unlock()
 			if s.gateEpochStillValid(runID, epoch) {
+				s.mu.Lock()
+				if parent := s.runs[parentID]; parent != nil {
+					parent.lastEscalatedInlineNodeID = coderStepID
+				}
+				s.mu.Unlock()
 				_, _ = s.applyFlowControl(parentID, FlowControlInput{
 					Status:  "escalate",
 					Summary: "flow gate block: " + msg,
@@ -739,6 +756,11 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			}
 			s.mu.Unlock()
 			if s.gateEpochStillValid(runID, epoch) {
+				s.mu.Lock()
+				if parent := s.runs[parentID]; parent != nil {
+					parent.lastEscalatedInlineNodeID = coderStepID
+				}
+				s.mu.Unlock()
 				_, _ = s.applyFlowControl(parentID, FlowControlInput{
 					Status:  "escalate",
 					Summary: "flow gate block: " + msg,
@@ -774,7 +796,8 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		for _, p := range writtenAgainstFrozen {
 			if changecontract.IsFrozenStoreBookkeepingPath(p) ||
 				changecontract.IsPendingCanonicalStoreBookkeepingPath(p) ||
-				changecontract.IsRunnerLedgerBookkeepingPath(p) {
+				changecontract.IsRunnerLedgerBookkeepingPath(p) ||
+				changecontract.IsChangeAuditPath(p) {
 				continue
 			}
 			codeOnlyWritten = append(codeOnlyWritten, p)
@@ -796,6 +819,11 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			}
 			s.mu.Unlock()
 			if s.gateEpochStillValid(runID, epoch) {
+				s.mu.Lock()
+				if parent := s.runs[parentID]; parent != nil {
+					parent.lastEscalatedInlineNodeID = coderStepID
+				}
+				s.mu.Unlock()
 				_, _ = s.applyFlowControl(parentID, FlowControlInput{
 					Status:  "escalate",
 					Summary: "flow gate block: " + msg,

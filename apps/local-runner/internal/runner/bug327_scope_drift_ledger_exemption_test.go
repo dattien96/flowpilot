@@ -17,22 +17,26 @@ func TestBUG327_RunnerLedgerWritesDoNotTriggerScopeDrift(t *testing.T) {
 	freezeP4Contract(t, dir, parentID, "coder", head, []string{"src/calc.go"})
 	rs := newP4ChildRun(svc, "child-1", parentID, dir, head)
 
-	// Writer changed declared file AND runner wrote ledger files
+	// Writer changed declared file AND runner wrote manifest/ledger files AND coder wrote CA note
 	p4WriteFile(t, dir, "src/calc.go", "package calc\n")
+	p4WriteFile(t, dir, ".flowpilot/manifest.json", `{"version":1}`+"\n")
 	p4WriteFile(t, dir, ".flowpilot/ledger/chat_summary.ndjson", `{"summary":"hello"}`+"\n")
 	p4WriteFile(t, dir, ".flowpilot/ledger/feature_history.ndjson", `{"feature":"calc-core"}`+"\n")
+	p4WriteFile(t, dir, "change-audit/CA-914-calc-format-clamp-checked.md", "# CA-914\n")
 
 	blocked := svc.runChildArtifactOutputGateAtEpoch(context.Background(), rs, "turn-1", finalizeInput{
 		FinalMessage: "done",
 		ChangedFiles: []string{
 			"src/calc.go",
+			".flowpilot/manifest.json",
 			".flowpilot/ledger/chat_summary.ndjson",
 			".flowpilot/ledger/feature_history.ndjson",
+			"change-audit/CA-914-calc-format-clamp-checked.md",
 		},
 	}, 0)
 
 	if blocked {
-		t.Fatal("ledger writes must not cause scope drift block")
+		t.Fatal("manifest, ledger, and change-audit writes must not cause scope drift block")
 	}
 }
 
@@ -245,5 +249,35 @@ func TestBUG327_GateBlockPostTurnSettleKeepsWaitingUserApproval(t *testing.T) {
 	}
 	if rs.pendingGateChangedFiles != nil {
 		t.Fatalf("expected pendingGateChangedFiles cleared, got %v", rs.pendingGateChangedFiles)
+	}
+}
+
+func TestBUG327_ScopeDriftEscalateStampsLastEscalatedNodeID(t *testing.T) {
+	dir, head := newContractFreezeTestRepo(t)
+	svc, parentID := newP4CodeWriterFixture(t, dir)
+	freezeP4Contract(t, dir, parentID, "implement", head, []string{"src/calc.go"})
+	rs := newP4ChildRun(svc, "child-1", parentID, dir, head)
+	rs.label = "implement"
+
+	p4WriteFile(t, dir, "src/calc.go", "package calc\n")
+	p4WriteFile(t, dir, "src/extra.go", "package calc\n")
+
+	blocked := svc.runChildArtifactOutputGateAtEpoch(context.Background(), rs, "turn-1", finalizeInput{
+		FinalMessage: "done",
+		ChangedFiles: []string{"src/calc.go", "src/extra.go"},
+	}, 0)
+
+	if !blocked {
+		t.Fatal("expected scope drift block")
+	}
+
+	// Verify parent.lastEscalatedInlineNodeID was stamped with implement
+	svc.mu.Lock()
+	parent := svc.runs[parentID]
+	lastEsc := parent.lastEscalatedInlineNodeID
+	svc.mu.Unlock()
+
+	if lastEsc != "implement" {
+		t.Fatalf("parent.lastEscalatedInlineNodeID = %q, want implement", lastEsc)
 	}
 }

@@ -18,29 +18,35 @@ declared_paths:
   - apps/local-runner/internal/runner/provider_event.go
   - apps/local-runner/internal/runner/bug327_scope_drift_ledger_exemption_test.go
   - apps/local-runner/internal/tui/app/agents_focus.go
+  - apps/local-runner/internal/tui/app/app.go
   - apps/local-runner/internal/tui/app/step_runtime.go
   - apps/local-runner/internal/tui/app/bug327_blocked_waiting_turnstream_chips_test.go
   - requirements/09-BugFix/done/BUG-327-Scope-Drift-Runner-Ledger-Park-Chips.md
 ```
 <!-- /flowpilot:change-ledger -->
 
-## Context & Problem (BUG-327, run-218125)
+## Context & Problem (BUG-327, run-218125, run-221516)
 
-1. In `run-218125` (Rag Harness with Grok 4.5), during the `implement` node execution, the frozen contract declared `format.go` and `format_test.go`. The runner automatically updated its internal ledger files (`.flowpilot/ledger/chat_summary.ndjson` and `feature_history.ndjson`). Because CA-427 intentionally did not blanket-exempt `.flowpilot/**` to prevent tampering with `settings/flow-rules.json`, the gate diff treated runner ledger writes as scope drift and escalated to `WAITING_USER_APPROVAL`.
-2. When the flow was escalated to `blocked` (awaiting user), `finishTurn` post-gate settle kept child status as `running`, leaving `turnStream` active. The TUI's `flowLoopBlocked()` returned `false` because `hasLiveWorkingChild()` did not filter out the main run row and checked `turnStream != nil`, keeping the Thinking timer running (`Thinking 4m 08s`) and hiding the `[Continue]` `[Stop]` action chips.
+1. In `run-218125` and `run-221516` (Rag Harness with Grok 4.5), during the `implement` node execution, the frozen contract declared `format.go` and `format_test.go`. The runner automatically updated `.flowpilot/manifest.json`, `.flowpilot/ledger/chat_summary.ndjson`, and `feature_history.ndjson`, and the coder wrote `change-audit/CA-*.md`. The gate diff treated these as scope drift and escalated to `WAITING_USER_APPROVAL`.
+2. When the flow was escalated to `blocked` (awaiting user), scope-drift escalate did not stamp `parent.lastEscalatedInlineNodeID = "implement"`, causing Continue to reinvoke the hub instead of the coder.
+3. On flow completion, `flowLoopDone` and `workIsLive` continued showing `Thinking` because `flowHasActiveAgents` did not skip the main agent or parked runs.
 
 ## Changes Made
 
-1. **F-1: Exact-Path Runner Ledger Exemption (`frozen_scope.go`, `gate_hook.go`)**:
-   - Added `RunnerLedgerBookkeepingPaths` and `IsRunnerLedgerBookkeepingPath` matching `.flowpilot/ledger/chat_summary.ndjson` and `.flowpilot/ledger/feature_history.ndjson`.
-   - Updated `gate_hook.go` to exclude runner ledger bookkeeping files from the written paths compared against `FrozenContractScopeDrift`.
-   - Preserves security: does NOT blanket exempt `.flowpilot/**` or `settings/flow-rules.json`.
-2. **F-2: Park State & Action Chips Cleanup (`interactive_service.go`, `agents_focus.go`, `step_runtime.go`)**:
+1. **F-1: Exact-Path Runner Bookkeeping & Change-Audit Exemption (`frozen_scope.go`, `gate_hook.go`)**:
+   - Added `path.Join(".flowpilot", "manifest.json")` to `RunnerLedgerBookkeepingPaths`.
+   - Added `IsChangeAuditPath` for `change-audit/*.md` notes allowed per BUG-278.
+   - Updated `gate_hook.go` to exclude runner bookkeeping and change-audit notes from scope drift checks.
+2. **F-2: Escalated Node Stamping on Gate Blocks (`gate_hook.go`)**:
+   - Stamped `parent.lastEscalatedInlineNodeID = coderStepID` on child gate escalations so Continue reliably resumes the escalated node.
+3. **F-3: Park State & Action Chips Cleanup (`interactive_service.go`, `agents_focus.go`, `step_runtime.go`)**:
    - In `parkFlowForAwaitingUser` and `parkFlowForAwaitingUserLocked`: child runs transitioned to `RunStatusWaitingUserApr` / `waiting_user_approval` and updated in `agentOrchestrator` preserving existing summary fields (`ActivationSeq`, `ProviderKey`, `ModelName`, `WaitForResult`, `DependsOn`).
    - Park hygiene: cleared `pendingFlowGateTurnID` and `pendingGateChangedFiles` consistently across park handlers and `finishTurn` post-gate settle.
    - In `interactive_service.go` (`finishTurn` post-gate settle): do not reset child status to `running` if parent loop is `blocked`.
    - In `agents_focus.go`: `hasLiveWorkingChild()` skips `mainRunID()` and synthetic main runs so it only evaluates real child agent liveness; `focusedChildLive()` treats `waiting_user_approval` as parked.
-   - In `step_runtime.go`: `flowLoopBlocked()` no longer blocks on `turnStream != nil` when no child is working.
+4. **F-4: Flow Done Settle & Thinking Cleanup (`step_runtime.go`, `app.go`)**:
+   - Updated `flowLoopDone` to use `hasLiveWorkingChild` and `applyAgentGraph` to settle chrome on done.
+   - Updated `workIsLive` in `app.go` to stop spinner immediately when `flowLoopDone` is true.
 
 ## Validation
 

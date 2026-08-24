@@ -66,6 +66,7 @@ func IsFrozenStoreBookkeepingPath(p string) bool {
 // scope drift (BUG-327).
 func RunnerLedgerBookkeepingPaths() []string {
 	return []string{
+		path.Join(".flowpilot", "manifest.json"),
 		path.Join(".flowpilot", "ledger", "chat_summary.ndjson"),
 		path.Join(".flowpilot", "ledger", "feature_history.ndjson"),
 	}
@@ -82,6 +83,14 @@ func IsRunnerLedgerBookkeepingPath(p string) bool {
 		}
 	}
 	return false
+}
+
+// IsChangeAuditPath reports whether p is a change audit note under change-audit/*.md
+// which coding agents are explicitly allowed to create per BUG-278 without triggering
+// code scope drift.
+func IsChangeAuditPath(p string) bool {
+	np := normalizeScopePath(p)
+	return strings.HasPrefix(np, "change-audit/") && strings.HasSuffix(np, ".md")
 }
 
 // PendingCanonicalStoreBookkeepingPaths returns the exact repo-relative paths

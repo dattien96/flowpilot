@@ -20,27 +20,30 @@
 
 ### Summary
 
-- In `run-218125` (Rag Harness with Grok 4.5), the frozen contract declared `format.go` and `format_test.go`. The runner automatically updated `.flowpilot/ledger/chat_summary.ndjson` and `feature_history.ndjson`, which the gate diff treated as scope drift and escalated to `WAITING_USER_APPROVAL`.
-- When escalated, `finishTurn` post-gate settle kept child status as `running` and `turnStream` active. The TUI's `flowLoopBlocked()` returned `false` because `hasLiveWorkingChild()` did not skip the main run row and checked `turnStream != nil`, keeping the Thinking timer running (`Thinking 4m 08s`) and hiding `[Continue]` `[Stop]` chips.
+- In `run-218125` and `run-221516` (Rag Harness with Grok 4.5), the frozen contract declared `format.go` and `format_test.go`. The runner automatically updated `.flowpilot/manifest.json`, `.flowpilot/ledger/chat_summary.ndjson`, and the coder created `change-audit/CA-*.md`. The gate diff treated these as scope drift and escalated to `WAITING_USER_APPROVAL`.
+- When escalated, scope-drift escalate did not stamp `parent.lastEscalatedInlineNodeID = "implement"`, causing Continue to reinvoke the hub instead of the coder.
+- On flow completion, `flowLoopDone` and `workIsLive` continued showing `Thinking` because `flowHasActiveAgents` did not skip the main agent or parked runs.
 
 ### Key Decisions
 
-- `F-1`: Add exact-path exemption in `frozen_scope.go` and `gate_hook.go` for runner ledger bookkeeping files (`.flowpilot/ledger/chat_summary.ndjson`, `.flowpilot/ledger/feature_history.ndjson`), without blanket exempting `.flowpilot/**` or `settings/flow-rules.json`.
-- `F-2`: On park/escalate, transition child runs to `waiting_user_approval` preserving existing summary fields (`ActivationSeq`, `ProviderKey`, `ModelName`, `WaitForResult`, `DependsOn`).
-- `F-3`: Update TUI `hasLiveWorkingChild` to skip main run, `flowLoopBlocked` to not block on `turnStream != nil`, and `focusedChildLive` to treat `waiting_user_approval` as parked.
+- `F-1`: Add exact-path exemption in `frozen_scope.go` and `gate_hook.go` for runner ledger bookkeeping files (`.flowpilot/manifest.json`, `.flowpilot/ledger/chat_summary.ndjson`, `.flowpilot/ledger/feature_history.ndjson`) and change-audit notes (`change-audit/*.md`, per BUG-278).
+- `F-2`: Stamp `parent.lastEscalatedInlineNodeID` on child gate blocks (scope drift, missing contract, diff observation error) so Continue reliably resumes the escalated node.
+- `F-3`: On park/escalate, transition child runs to `waiting_user_approval` preserving existing summary fields (`ActivationSeq`, `ProviderKey`, `ModelName`, `WaitForResult`, `DependsOn`).
+- `F-4`: Update TUI `flowLoopDone`, `hasLiveWorkingChild`, and `workIsLive` to immediately settle statusline to `done` and stop Thinking spinner when the flow finishes.
 
 ## 1. Issue Summary
 
-During flow runs against a frozen contract, runner ledger updates caused false-positive scope drift escalations. Once escalated, missing park state cleanup in the runner and TUI caused the UI to hide action chips and keep the Thinking timer active.
+During flow runs against a frozen contract, runner bookkeeping and audit note updates caused false-positive scope drift escalations. Once escalated, Continue reinvoked the wrong node, and upon completion the TUI statusline kept Thinking active.
 
 ## 2. Root Cause
 
-1. Gate scope diff did not exclude runner internal ledger bookkeeping files.
-2. Park handlers reset child status to running on gate settle and did not update the orchestrator summary cleanly.
-3. TUI liveness predicates treated main agent and open turn streams as live work even when the flow was parked.
+1. Gate scope diff did not exclude runner internal ledger bookkeeping files or `change-audit/*.md`.
+2. Child gate escalations did not set `lastEscalatedInlineNodeID`, causing `/continue` to default to the hub.
+3. TUI liveness predicates treated main agent and open turn streams as live work even when the flow loop was done or parked.
 
 ## 3. Resolution
 
-1. Added `RunnerLedgerBookkeepingPaths` and `IsRunnerLedgerBookkeepingPath` in `frozen_scope.go` and checked in `gate_hook.go`.
-2. Cleaned up park handlers in `interactive_service.go` to preserve summary metadata and set `waiting_user_approval`.
-3. Updated `agents_focus.go` and `step_runtime.go` in TUI to properly recognize parked states and render `[Continue] [Stop]` chips across Claude, Codex, and Grok.
+1. Added `RunnerLedgerBookkeepingPaths`, `IsRunnerLedgerBookkeepingPath`, and `IsChangeAuditPath` in `frozen_scope.go` and checked in `gate_hook.go`.
+2. Stamped `lastEscalatedInlineNodeID` in `gate_hook.go` on all child gate escalations.
+3. Cleaned up park handlers in `interactive_service.go` to preserve summary metadata and set `waiting_user_approval`.
+4. Updated `agents_focus.go`, `step_runtime.go`, and `app.go` in TUI to settle chrome on done and stop Thinking timer when parked or completed.

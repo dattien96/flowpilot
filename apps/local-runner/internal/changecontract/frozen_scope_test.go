@@ -128,8 +128,10 @@ func TestIsPendingCanonicalStoreBookkeepingPathRejectsEverythingElse(t *testing.
 
 func TestIsRunnerLedgerBookkeepingPathMatchesExactFiles(t *testing.T) {
 	for _, p := range []string{
+		".flowpilot/manifest.json",
 		".flowpilot/ledger/chat_summary.ndjson",
 		".flowpilot/ledger/feature_history.ndjson",
+		`.flowpilot\manifest.json`,
 		`.flowpilot\ledger\chat_summary.ndjson`,
 		`.flowpilot\ledger\feature_history.ndjson`,
 	} {
@@ -152,6 +154,33 @@ func TestIsRunnerLedgerBookkeepingPathRejectsEverythingElse(t *testing.T) {
 	} {
 		if IsRunnerLedgerBookkeepingPath(p) {
 			t.Errorf("%q must NOT be recognized as runner-ledger bookkeeping", p)
+		}
+	}
+}
+
+func TestIsChangeAuditPathMatchesAuditNotes(t *testing.T) {
+	for _, p := range []string{
+		"change-audit/CA-1.md",
+		"change-audit/CA-914-calc-format-clamp-checked.md",
+		"change-audit/FEATURE-KEYS.md",
+		`change-audit\CA-914.md`,
+	} {
+		if !IsChangeAuditPath(p) {
+			t.Errorf("%q should be recognized as change-audit path", p)
+		}
+	}
+}
+
+func TestIsChangeAuditPathRejectsNonAuditNotes(t *testing.T) {
+	for _, p := range []string{
+		"src/calc.go",
+		"requirements/08-Task/todo/Task-1.md",
+		"change-audit/sub/other.go",
+		".flowpilot/manifest.json",
+		"README.md",
+	} {
+		if IsChangeAuditPath(p) {
+			t.Errorf("%q must NOT be recognized as change-audit path", p)
 		}
 	}
 }
