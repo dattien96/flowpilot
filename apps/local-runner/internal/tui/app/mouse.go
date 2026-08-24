@@ -102,10 +102,14 @@ func isLeftMouseClick(msg tea.MouseMsg) bool {
 }
 
 func pulseMouseTracking() tea.Cmd {
-	// Drop Windows Terminal native selection (Shift+drag) by briefly leaving mouse mode.
-	// On Windows, DisableMouse+Enable can drop the next KeyMsg (F2/Enter) — only
-	// pulse when Shift is held (native selection), otherwise just ensure mouse is on.
-	return tea.EnableMouseCellMotion
+	// No-op. Mouse is already enabled via tuiProgramOpts WithMouseCellMotion.
+	// Pulsing DisableMouse→EnableMouseCellMotion on every click or paste settle
+	// dropped the next KeyMsg on Windows and bricked input for minutes
+	// (CA-610: log 18216 29 min, 18700 19 min). Motion is filtered by
+	// tuiMsgFilter, so the queue cannot fill. Return a no-op Batch member so
+	// existing tests that assert Batch shape keep passing; the no-op does
+	// nothing. See app.go tuiMsgFilter.
+	return func() tea.Msg { return nil }
 }
 
 func (m *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {

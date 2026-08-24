@@ -13,10 +13,11 @@ import (
 // Mouse is enabled on all platforms so F2 [open]/[back]/[stop] and wheel
 // scroll stay live while a sub-agent is RUNNING. Windows Ctrl+V raw flood
 // is rejected via Alt+V hint instead of disabling mouse.
+// CA-610 adds WithFilter so hover motion never reaches Update/View.
 func TestTuiProgramOpts_WindowsNoMouse(t *testing.T) {
 	opts := tuiProgramOpts()
-	if len(opts) != 2 {
-		t.Fatalf("opts must be AltScreen+MouseCellMotion (click+scroll live), got %d", len(opts))
+	if len(opts) != 3 {
+		t.Fatalf("opts must be AltScreen+MouseCellMotion+Filter (click+scroll live), got %d", len(opts))
 	}
 }
 

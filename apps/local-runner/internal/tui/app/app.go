@@ -201,7 +201,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
 	case cursorTickMsg, thinkingTickMsg, tea.WindowSizeMsg:
 	default:
-		if km, ok := msg.(tea.KeyMsg); ok {
+		if _, ok := msg.(tea.MouseMsg); ok {
+			// Mouse motion is filtered by tuiMsgFilter; logging every motion here
+			// would still open/write/close the log file for each of the 60+ motion
+			// events per second and reintroduce the stall the filter fixed.
+		} else if km, ok := msg.(tea.KeyMsg); ok {
 			tuiLog("Update KeyMsg Type=%v String=%q Paste=%v Runes=%q", km.Type, km.String(), km.Paste, string(km.Runes))
 		} else {
 			tuiLog("Update %T %v", msg, v)
@@ -1331,12 +1335,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			wasActive := m.pasteBurst.active
 			// Production Windows rejects raw floods entirely (hint at arm time),
 			// so settle just resets without collapsing to [Pasted] or re-hinting.
-			// Pulse Disable→Enable once to reinit conhost reader and unstick
-			// keys after flood filled the 64-slot queue (log 18216 42s no KeyMsg).
+			// No Disable→Enable pulse here: on Windows that sequence drops the
+			// next KeyMsg and bricks input for minutes (log 18216/18700).
+			// Motion is already filtered by tuiMsgFilter, so the queue cannot
+			// fill.
 			if wasActive && runtime.GOOS == "windows" && m.rejectWindowsRawPaste {
 				m.resetPasteBurst()
 				tuiLog("burst collapse (windows reject) active=false inputLen=%d", len([]rune(m.inputValue)))
-				return m, tea.Sequence(tea.DisableMouse, tea.EnableMouseCellMotion)
+				return m, nil
 			}
 			m.collapsePasteBurst()
 			tuiLog("burst collapse active=false inputLen=%d", len([]rune(m.inputValue)))
@@ -5490,6 +5496,30 @@ func (m *AppModel) startupGrokYoloPostureCmd() tea.Cmd {
 	return m.cmdGrokYoloPosture(true)
 }
 
+// tuiMsgFilter drops hover mouse motion before Bubble Tea processes it.
+// WithMouseCellMotion delivers MouseMsg motion on every pixel move; on
+// Windows this shares the 64-slot conhost ReadConsoleInput queue with keys.
+// Filtering here (not in Update) avoids tuiLog + View (100-170ms when the
+// right sidebar is open) for every hover event.
+func tuiMsgFilter(model tea.Model, msg tea.Msg) tea.Msg {
+	m, ok := model.(*AppModel)
+	if !ok {
+		return msg
+	}
+	mm, isMouse := msg.(tea.MouseMsg)
+	if !isMouse {
+		return msg
+	}
+	switch mm.Button {
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+		return msg
+	}
+	if mm.Action == tea.MouseActionMotion && !m.mouseDrag.down && !mm.Shift {
+		return nil
+	}
+	return msg
+}
+
 // tuiProgramOpts returns Bubble Tea program options. On Windows the conhost
 // ReadConsoleInput path with ENABLE_MOUSE_INPUT (WithMouseCellMotion) shares
 // a 64-event queue with keys; a WT paste flood fills it with coninput mouse
@@ -5499,7 +5529,7 @@ func (m *AppModel) startupGrokYoloPostureCmd() tea.Cmd {
 // fill with mouse+key records (log 18936/22964). Alt+V (clipboard 1 msg) and
 // Ctrl+V KeyCtrlV hint remain.
 func tuiProgramOpts() []tea.ProgramOption {
-	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion()}
+	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithFilter(tuiMsgFilter)}
 }
 
 // ---- Run (entrypoint) -------------------------------------------------------
