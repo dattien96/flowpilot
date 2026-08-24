@@ -22,6 +22,12 @@ import (
 // clipboard can never block the TUI forever (CA-541: composer freeze).
 const clipboardPSTimeout = 3 * time.Second
 
+// clipboardNativeTimeout bounds every native golang.design/x/clipboard read
+// so Alt+V cannot hang the TUI even when the native API deadlocks (CA-615:
+// log 10:05:40 — gõ tay ok, Alt+V treo cả process). Windows paste already
+// avoids native entirely; Darwin/Linux keep a short fallback bounded here.
+const clipboardNativeTimeout = 2 * time.Second
+
 var clipboardOnce sync.Once
 var clipboardOK bool
 
@@ -134,15 +140,37 @@ func (m *AppModel) cmdClipboardPasteWithFallback(fallbackText string) tea.Cmd {
 	}
 }
 
+// readWithTimeout bounds a blocking clipboard.Read so it cannot hang the TUI
+// forever. It is testable without touching the real system clipboard (CA-615).
+func readWithTimeout[T any](d time.Duration, fn func() T) (T, bool) {
+	ch := make(chan T, 1)
+	go func() { ch <- fn() }()
+	select {
+	case v := <-ch:
+		return v, true
+	case <-time.After(d):
+		var zero T
+		return zero, false
+	}
+}
+
 // readClipboardImageBytes tries native clipboard image, then Windows CF_HDROP /
 // System.Windows.Forms fallbacks (Explorer "Copy" of a file is not FmtImage).
+// Windows paste is PS-only so native Read never runs there (CA-615 deadlock).
 func readClipboardImageBytes() (data []byte, fileName string, note string) {
-	if initClipboard() {
-		if img := clipboard.Read(clipboard.FmtImage); len(img) > 0 {
-			return img, "clipboard.png", ""
+	if runtime.GOOS != "windows" {
+		if initClipboard() {
+			if img, ok := readWithTimeout(clipboardNativeTimeout, func() []byte { return clipboard.Read(clipboard.FmtImage) }); ok && len(img) > 0 {
+				return img, "clipboard.png", ""
+			} else if !ok && note == "" {
+				note = "clipboard image read timed out"
+			}
+		} else if note == "" {
+			note = "native clipboard init failed"
 		}
-	} else {
-		note = "native clipboard init failed"
+	} else if note == "" {
+		// Windows path is PS-only; native Read is skipped to avoid deadlock.
+		note = ""
 	}
 	if runtime.GOOS == "windows" {
 		if img, name, err := readWindowsClipboardImagePS(); err == nil && len(img) > 0 {
@@ -160,15 +188,22 @@ func readClipboardImageBytes() (data []byte, fileName string, note string) {
 }
 
 func readClipboardText() string {
+	if runtime.GOOS == "windows" {
+		if t, err := readWindowsClipboardTextPS(); err == nil {
+			if strings.TrimSpace(t) != "" {
+				return t
+			}
+			return ""
+		}
+		return ""
+	}
 	if initClipboard() {
-		if t := string(clipboard.Read(clipboard.FmtText)); strings.TrimSpace(t) != "" {
+		if t, ok := readWithTimeout(clipboardNativeTimeout, func() string { return string(clipboard.Read(clipboard.FmtText)) }); ok && strings.TrimSpace(t) != "" {
 			return t
 		}
 	}
-	if runtime.GOOS == "windows" {
-		if t, err := readWindowsClipboardTextPS(); err == nil {
-			return t
-		}
+	if t, err := readWindowsClipboardTextPS(); err == nil && strings.TrimSpace(t) != "" {
+		return t
 	}
 	return ""
 }
