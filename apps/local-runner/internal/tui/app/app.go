@@ -208,7 +208,27 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if km, ok := msg.(tea.KeyMsg); ok {
 			tuiLog("Update KeyMsg Type=%v String=%q Paste=%v Runes=%q", km.Type, km.String(), km.Paste, string(km.Runes))
 		} else {
-			tuiLog("Update %T %v", msg, v)
+			// Large payloads (chat history, skills, catalog) must not dump entire
+			// bodies into the log — that I/O stalls the event loop and drops keys
+			// (CA-621, View slow 100-800ms on open with sidebar).
+			switch x := v.(type) {
+			case ChatListMsg:
+				tuiLog("Update ChatListMsg n=%d err=%q silent=%v", len(x.Items), x.Err, x.Silent)
+			case FlowListMsg:
+				tuiLog("Update FlowListMsg builtins=%d workflows=%d err=%q silent=%v", len(x.Builtins), len(x.Workflows), x.CatalogErr, x.Silent)
+			case SessionDefaultsMsg:
+				tuiLog("Update SessionDefaultsMsg providers=%d accounts=%d projects=%d err=%q", len(x.Providers), len(x.ProviderAccounts), len(x.Projects), x.CatalogErr)
+			case SkillsListMsg:
+				tuiLog("Update SkillsListMsg n=%d err=%q show=%v", len(x.Skills), x.Err, x.Show)
+			case ChatOpenedMsg:
+				tuiLog("Update ChatOpenedMsg run=%s msgs=%d err=%q", x.Handle.RunID, len(x.Messages), x.Err)
+			case ProjectContextMsg:
+				tuiLog("Update ProjectContextMsg path=%q branch=%q", x.Path, x.Branch)
+			case ClipboardPasteMsg:
+				tuiLog("Update ClipboardPasteMsg textLen=%d hasAtt=%v err=%q noImage=%v", len([]rune(x.Text)), x.Attachment != nil, x.Err, x.NoImage)
+			default:
+				tuiLog("Update %T %v", msg, v)
+			}
 		}
 	}
 	switch msg := msg.(type) {
@@ -1353,7 +1373,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// next KeyMsg and bricks input for minutes (log 18216/18700).
 			// Motion is already filtered by tuiMsgFilter, so the queue cannot
 			// fill.
-			if wasActive && runtime.GOOS == "windows" && m.rejectWindowsRawPaste {
+			if wasActive && m.rejectWindowsRawPaste {
 				// CA-612: if reject was armed, wipe any leaked tail that slipped
 				// through a 25ms gap (log 11764: settle at inputLen 31 then 40).
 				if wasRejectArmed {
@@ -1793,12 +1813,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// CA-612: once reject is armed, swallow any newline until settle
 		// (prevents leaked \n from mid-paste gap, even if burst chain resets).
-		if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && m.pasteBurst.rejectArmed && isBurstNewlineKey(msg) {
+		if m.rejectWindowsRawPaste && m.pasteBurst.rejectArmed && isBurstNewlineKey(msg) {
 			m.pasteBurst.lastRuneAt = now
 			return m, m.cmdPasteBurstSettleOnce()
 		}
 		// Windows production rejects raw flood (WT Ctrl+V) entirely.
-		if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && isBurstNewlineKey(msg) {
+		if m.rejectWindowsRawPaste && isBurstNewlineKey(msg) {
 			b := &m.pasteBurst
 			if b.active || (b.chainLen >= 1 && now.Sub(b.lastRuneAt) < burstRuneGap && !strings.HasPrefix(m.inputValue, "/")) {
 				wasActive := b.active
@@ -1852,6 +1872,11 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.turnIsActive() {
 			return m, m.cmdStopTurn()
 		}
+		if m.inputValue != "" {
+			m.clearInputValue()
+			m.statusMsg = "prompt cleared"
+			return m, nil
+		}
 		m.quitting = true
 		return m, m.cmdShutdownAndQuit()
 
@@ -1883,22 +1908,21 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.authPhase != AuthNone {
 			return m, nil
 		}
-		if runtime.GOOS == "windows" {
+		if m.rejectWindowsRawPaste {
 			// CA-612: if WT delivers KeyCtrlV, arm reject so the following
 			// char-by-char flood (if any) is swallowed without inserting.
-			if m.rejectWindowsRawPaste {
-				if !m.pasteBurst.rejectArmed {
-					m.pasteBurst.rejectArmed = true
-					if !m.pasteBurst.active {
-						m.pasteBurst.active = true
-						m.pasteBurst.start = len([]rune(m.inputValue))
-						m.pasteBurst.buf = nil
-						m.pasteBurst.lastRuneAt = pasteNow()
-					}
+			if !m.pasteBurst.rejectArmed {
+				m.pasteBurst.rejectArmed = true
+				if !m.pasteBurst.active {
+					m.pasteBurst.active = true
+					m.pasteBurst.start = len([]rune(m.inputValue))
+					m.pasteBurst.buf = nil
+					m.pasteBurst.lastRuneAt = pasteNow()
 				}
 			}
 			hint := "Use Alt+V for paste (text + image)"
 			m.addMessage("system", hint, "gate")
+			m.pasteCtrlVHintShown = true
 			return m, m.showFlashToast(hint)
 		}
 		// Prefer image clipboard; falls back to text.
@@ -2297,6 +2321,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.resetPasteBurst()
 		return m, m.cmdMaybePrefetchPickers()
 
+	case tea.KeyDelete:
+		m.deleteInputAfterCursor()
+		m.suggIdx = 0
+		m.resetPasteBurst()
+		return m, m.cmdMaybePrefetchPickers()
+
 	case tea.KeySpace, tea.KeyRunes:
 		// Bubble Tea delivers Alt+letter as KeyRunes+Alt (String() == "alt+v").
 		// Handle image-paste chords before inserting the bare rune — otherwise
@@ -2345,7 +2375,7 @@ if path := imagePathFromClipboardText(pasted); path != "" {
 			// CA-612: once reject is armed, swallow everything until settle,
 			// even across burstRuneGap chain resets (log 11764: 25ms gap let
 			// tail "t..." re-insert, then settle at inputLen 31 left residue).
-			if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && m.pasteBurst.rejectArmed {
+			if m.rejectWindowsRawPaste && m.pasteBurst.rejectArmed {
 				m.pasteBurst.lastRuneAt = pasteNow()
 				return m, m.cmdPasteBurstSettleOnce()
 			}
@@ -2358,7 +2388,7 @@ if path := imagePathFromClipboardText(pasted); path != "" {
 			// (dd->đ, 2-4 events) and tone-key holds (ssss) are not
 			// mistaken for paste (CA-611, log 4332). Only swallow once the
 			// chain is long enough and not a single repeated rune.
-			if runtime.GOOS == "windows" && m.rejectWindowsRawPaste && m.pasteBurst.active && m.pasteBurst.chainLen >= pasteCollapseMinRunes && !isSingleRepeatedRuneChain(m.pasteBurst.chainBuf) {
+			if m.rejectWindowsRawPaste && m.pasteBurst.active && m.pasteBurst.chainLen >= pasteCollapseMinRunes && !isSingleRepeatedRuneChain(m.pasteBurst.chainBuf) {
 				m.pasteBurst.rejectArmed = true
 				// Hint once per flood (on arm) and revert the chars that armed.
 				// Subsequent rapid runes in same flood are just swallowed without
@@ -4020,7 +4050,11 @@ func (m *AppModel) View() string {
 		chat = composeCellBuf(chatRaw, side, fullW, chatW, m.sideWidth(), h)
 	}
 	if d := time.Since(viewStart); d > 100*time.Millisecond {
-		tuiLog("View slow dur=%v width=%d height=%d side=%v", d, m.width, m.height, m.useRightSidebar())
+		// CA-621: throttle View slow log so chat history open does not spam tui.log and drop keys
+		if time.Since(m.lastViewSlowLog) > 5*time.Second {
+			m.lastViewSlowLog = time.Now()
+			tuiLog("View slow dur=%v width=%d height=%d side=%v", d, m.width, m.height, m.useRightSidebar())
+		}
 	}
 	return chat
 }
@@ -4700,7 +4734,7 @@ func (m *AppModel) renderInputLine() string {
 		// one-by-one and would render as char-by-char. Hide the partial flood
 		// and show a single placeholder until it settles to [Pasted N chars].
 		// On production Windows the flood is rejected outright (use Alt+V).
-		if m.pasteBurst.active && m.authPhase == AuthNone && !(runtime.GOOS == "windows" && m.rejectWindowsRawPaste) {
+		if m.pasteBurst.active && m.authPhase == AuthNone && !m.rejectWindowsRawPaste {
 			body = "[Pasting…]"
 		} else {
 			body = m.inputValue
