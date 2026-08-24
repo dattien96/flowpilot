@@ -95,6 +95,44 @@ func (m *AppModel) deleteInputBeforeCursor() {
 	if cur == 0 || len(runes) == 0 {
 		return
 	}
+	// CA-624: paste tokens "[Pasted N chars]" must delete as a whole.
+	// If caret is right after a collapsed token, remove the entire token
+	// and its pasteSegment so one Backspace clears the paste.
+	if len(m.pasteSegments) > 0 {
+		for i, seg := range m.pasteSegments {
+			tokenRunes := []rune(seg.token)
+			tlen := len(tokenRunes)
+			if tlen == 0 || cur < tlen {
+				continue
+			}
+			start := cur - tlen
+			if start < 0 || start+tlen > len(runes) {
+				continue
+			}
+			match := true
+			for k := 0; k < tlen; k++ {
+				if runes[start+k] != tokenRunes[k] {
+					match = false
+					break
+				}
+			}
+			if match {
+				out := append(append([]rune{}, runes[:start]...), runes[cur:]...)
+				m.inputValue = string(out)
+				// Remove the matched segment
+				m.pasteSegments = append(m.pasteSegments[:i], m.pasteSegments[i+1:]...)
+				if m.inputCursor < 0 {
+					// sticky-end stays sticky
+					m.inputCursor = -1
+				} else {
+					m.setInputCaret(start)
+				}
+				// Pasting may have left burst state armed; clear it
+				m.resetPasteBurst()
+				return
+			}
+		}
+	}
 	// Sticky-end backspace must stay sticky. Using moveInputCursor(-1) after
 	// shortening the string treated caret as (newLen) then -1 → before the
 	// last remaining rune ("ab|" BS → "|a" instead of "a|"), so retyping
@@ -107,6 +145,50 @@ func (m *AppModel) deleteInputBeforeCursor() {
 		return
 	}
 	m.setInputCaret(cur - 1)
+}
+
+func (m *AppModel) deleteInputAfterCursor() {
+	runes := []rune(m.inputValue)
+	cur := m.inputCaretIndex()
+	if cur >= len(runes) || len(runes) == 0 {
+		return
+	}
+	// CA-624 forward-delete: if caret is right before a paste token, remove whole token
+	if len(m.pasteSegments) > 0 {
+		for i, seg := range m.pasteSegments {
+			tokenRunes := []rune(seg.token)
+			tlen := len(tokenRunes)
+			if tlen == 0 || cur+tlen > len(runes) {
+				continue
+			}
+			match := true
+			for k := 0; k < tlen; k++ {
+				if runes[cur+k] != tokenRunes[k] {
+					match = false
+					break
+				}
+			}
+			if match {
+				out := append(append([]rune{}, runes[:cur]...), runes[cur+tlen:]...)
+				m.inputValue = string(out)
+				m.pasteSegments = append(m.pasteSegments[:i], m.pasteSegments[i+1:]...)
+				if cur >= len(out) {
+					m.inputCursor = -1
+				} else {
+					m.setInputCaret(cur)
+				}
+				m.resetPasteBurst()
+				return
+			}
+		}
+	}
+	out := append(append([]rune{}, runes[:cur]...), runes[cur+1:]...)
+	m.inputValue = string(out)
+	if cur >= len(out) {
+		m.inputCursor = -1
+	} else {
+		m.setInputCaret(cur)
+	}
 }
 
 // windowRunesAround keeps caret visible when a single input line is wider
@@ -156,6 +238,12 @@ func (m *AppModel) tryPlaceInputCursor(x, y int) bool {
 	if hitQuestionChrome(m, c, x, y) != "" {
 		return false
 	}
+	if m.hitBlockedChrome(c, x, y) != "" {
+		return false
+	}
+	if m.hitAttentionChip(x, y) != "" {
+		return false
+	}
 
 	w := m.chatWidth()
 	if w < 1 {
@@ -187,6 +275,12 @@ func (m *AppModel) tryPlaceInputCursor(x, y int) bool {
 	}
 	if m.question != nil {
 		innerLead++
+	}
+	if bar := m.renderAttentionBar(); bar != "" {
+		innerLead += strings.Count(bar, "\n") + 1
+	}
+	if bar := m.renderBlockedBar(); bar != "" {
+		innerLead += strings.Count(bar, "\n") + 1
 	}
 
 	rel := y - c.inputY
