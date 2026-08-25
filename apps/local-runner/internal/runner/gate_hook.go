@@ -2092,11 +2092,10 @@ func prepareChangeContract(ctx context.Context, cwd, runID, stepID, prompt, fina
 	}
 
 	c, declared := changecontract.ParseDeclaration(finalMessage)
-	if !declared && strings.TrimSpace(prompt) != "" {
-		if pc, ok := changecontract.ParseDeclaration(prompt); ok {
-			c = pc
-			declared = true
-		}
+	promptC, promptDeclared := changecontract.ParseDeclaration(prompt)
+	if !declared && promptDeclared {
+		c = promptC
+		declared = true
 	}
 	if declared {
 		if c.FeatureKey == "" {
@@ -2107,10 +2106,32 @@ func prepareChangeContract(ctx context.Context, cwd, runID, stepID, prompt, fina
 	}
 	c.RunID = runID
 	c.StepID = stepID
+
+	// Scope authority for r-scope: a user-declared scope (this turn's prompt)
+	// is the ground truth for drift. The model's final echo can widen its own
+	// declared paths to cover every file it touched, which silently defeats
+	// r-scope (run-232492) — the echo must never extend the user-declared
+	// scope. When this turn has no fresh user declaration, a previously stored
+	// declared contract (persisted from the user's prompt) stays authoritative
+	// so a later model echo cannot re-widen it either.
+	scopeC := c
+	if promptDeclared {
+		scopeC = promptC
+	} else if declared {
+		if existing, ok := store.GetLatestForRun(runID); ok && existing.Confidence == changecontract.ConfidenceDeclared {
+			scopeC = existing
+		}
+	}
+	if scopeC.FeatureKey == "" && c.FeatureKey != "" {
+		scopeC.FeatureKey = c.FeatureKey
+	}
+	scopeC.RunID = runID
+	scopeC.StepID = stepID
+
 	out.ok = true
 	out.contract = c
 	out.declared = declared
-	out.outOfScopePaths, _ = changecontract.ScopeDiff(c, diff, nil)
+	out.outOfScopePaths, _ = changecontract.ScopeDiff(scopeC, diff, nil)
 	if len(out.outOfScopePaths) > 0 {
 		hasGitNexus := tooling.CheckTool("gitnexus", cwd).Status == "ok"
 		sp := structure.New(cwd, hasGitNexus)
@@ -2118,8 +2139,10 @@ func prepareChangeContract(ctx context.Context, cwd, runID, stepID, prompt, fina
 	}
 	// Declared contracts may be saved immediately so reprompt/re-entry inject
 	// still sees them (V9-02 blocks only Head + inferred save until allow).
+	// Persist the user-authoritative scope (scopeC) so follow-up turns cannot
+	// be widened by a later model echo.
 	if declared {
-		if err := store.Save(c); err != nil {
+		if err := store.Save(scopeC); err != nil {
 			log.Printf("[changecontract] save declared failed: %v", err)
 		}
 		out.skipSave = true // already saved; commit only updates Head
