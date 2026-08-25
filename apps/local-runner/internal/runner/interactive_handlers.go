@@ -611,6 +611,11 @@ func (s *InteractiveService) handleAdminQuestions(w http.ResponseWriter, r *http
 // ---- run creation / snapshot / fake artifacts ------------------------------
 
 func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
+	// CA-638: ensure the target workspace is GitNexus-indexed so scope-drift
+	// HighSeverity and source.dependence can query real dependents. Runs once
+	// per process per workspace; non-blocking.
+	s.ensureGitNexusIndexAsync(in.Cwd)
+
 	stepID := in.StepID
 	runKind := "workflow"
 	if in.ChatMode == "normal_chat" {

@@ -65,6 +65,9 @@ type InteractiveService struct {
 	runs      map[string]*interactiveRun
 	approvals map[string]*approvalRecord
 	questions map[string]*questionRecord
+	// gitnexusAnalyzeOnce tracks workspaces where an auto `gitnexus analyze`
+	// was already kicked off this process (see ensureGitNexusIndexAsync).
+	gitnexusAnalyzeOnce map[string]bool
 
 	// dispatchLogSyncMu guards dispatchLogSyncHash, kept separate from the main
 	// s.mu since a Drive upload is slow network I/O unrelated to run-state locking.
@@ -786,6 +789,7 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 		dispatchLogSyncHash:       map[string]string{},
 		chatSessionIndexLocks:     map[string]*sync.Mutex{},
 		chatSessionIndexRepairing: map[string]struct{}{},
+		gitnexusAnalyzeOnce:       map[string]bool{},
 	}
 	// Seed the id counter above the highest persisted run id so a runner restart does NOT
 	// reuse ids (run-1, run-2, …). Reuse made a fresh chat collide with a previous run of
