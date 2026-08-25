@@ -174,9 +174,12 @@ func (m *AppModel) restoreChatPostureProfile(cfg client.ChatPostureConfig, name 
 		m.model = prof.Model
 		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 	}
-	if prof.ReasoningEffort != "" {
-		m.reasoningEffort = prof.ReasoningEffort
-	}
+	// CA-638: restart-resume must NOT re-pin ReasoningEffort. /reasoning is a
+	// user preference persisted in session prefs; re-applying the posture
+	// profile's default here clobbers it back on every reopen (e.g. low -> the
+	// code profile's medium). An explicit posture switch (/mode plan) still
+	// applies the pin via applyChatPostureProfile — only the resume path keeps
+	// the user's last choice.
 	if prof.Yolo != nil {
 		m.yolo = *prof.Yolo
 		if strings.ToLower(m.provider) == "grok" {
