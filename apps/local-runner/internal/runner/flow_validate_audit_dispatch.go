@@ -925,10 +925,12 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 					docRules = append(docRules, r)
 				}
 			}
-			contractDeclared := false
-			if store, err := changecontract.OpenStoreReadOnly(workspace); err == nil && store != nil {
-				if c, ok := store.GetLatestForRun(parentRunID); ok {
-					contractDeclared = c.Confidence == changecontract.ConfidenceDeclared
+			contractDeclared := s.frozenContractDeclaredForRun(workspace, parentRunID)
+			if !contractDeclared {
+				if store, err := changecontract.OpenStoreReadOnly(workspace); err == nil && store != nil {
+					if c, ok := store.GetLatestForRun(parentRunID); ok {
+						contractDeclared = c.Confidence == changecontract.ConfidenceDeclared
+					}
 				}
 			}
 			tr := flowgate.TurnResult{
@@ -982,6 +984,15 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 					pkg.FeatureKey = c.FeatureKey
 					pkg.FeatureConfidence = ConfidenceVerified
 				}
+			}
+		}
+		// run-147126: same as above but the declared contract lives in the
+		// FrozenStore (CP-55 P-8 skipSave:true) — prefer it so the audit draft
+		// does not resolve a catalog-noise feature key.
+		if c, ok := s.frozenContractForRun(workspace, parentRunID); ok && strings.TrimSpace(c.FeatureKey) != "" {
+			if featureKeyRegistered(workspace, c.FeatureKey) {
+				pkg.FeatureKey = c.FeatureKey
+				pkg.FeatureConfidence = ConfidenceVerified
 			}
 		}
 	}
@@ -1772,6 +1783,47 @@ func flowAgentCodeWriterNodes(nodes []agentpack.FlowNode) []agentpack.FlowNode {
 		out = append(out, n)
 	}
 	return out
+}
+
+// frozenContractForRun returns an active frozen preflight contract for the
+// parent run — the first agent.code writer node in the live topology that has
+// a frozen (not superseded/abandoned) record. A frozen contract IS a declared
+// Change Contract; the coder is deliberately skipSave (CP-55 P-8) so the
+// legacy Store never sees it, which previously made audit tier-3 fire
+// r-contract on a valid run (run-147126).
+func (s *InteractiveService) frozenContractForRun(workspace, parentRunID string) (changecontract.FrozenContractRecord, bool) {
+	if strings.TrimSpace(workspace) == "" || parentRunID == "" {
+		return changecontract.FrozenContractRecord{}, false
+	}
+	frozenStore, err := changecontract.NewFrozenStore(workspace)
+	if err != nil {
+		return changecontract.FrozenContractRecord{}, false
+	}
+	nodes := s.activeFlowNodesFor(parentRunID)
+	for _, w := range flowAgentCodeWriterNodes(nodes) {
+		if rec, ok, _ := frozenStore.GetFrozenForStep(parentRunID, w.ID); ok {
+			return rec, true
+		}
+	}
+	// Fallback: restart may not have live topology — scan any record bound to
+	// this run that is still active, regardless of step id.
+	if recs, err := frozenStore.ListForRun(parentRunID); err == nil {
+		for _, rec := range recs {
+			if rec.CoderStepID != "" {
+				if _, ok, _ := frozenStore.GetFrozenForStep(parentRunID, rec.CoderStepID); ok {
+					return rec, true
+				}
+			}
+		}
+	}
+	return changecontract.FrozenContractRecord{}, false
+}
+
+// frozenContractDeclaredForRun reports whether any active frozen contract
+// exists for the run (see frozenContractForRun).
+func (s *InteractiveService) frozenContractDeclaredForRun(workspace, parentRunID string) bool {
+	_, ok := s.frozenContractForRun(workspace, parentRunID)
+	return ok
 }
 
 // bindFrozenContractToSiblingWriters freezes the same validated draft for

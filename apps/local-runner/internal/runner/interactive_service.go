@@ -1771,13 +1771,23 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	// emitAgentGraph fires the SSE event that triggers the desktop's step-runtime
 	// refresh, which could otherwise read the store before this write landed and
 	// render the pre-Continue (WAITING_USER_APPROVAL / stale-done) snapshot.
+	// run-147126: when Continue is retrying an escalated WRITER/audit node, do
+	// not flip the hub (synthesis) to RUNNING — that flapped the last two steps
+	// while the actual node was still parked. Only hub-targeted resumes stamp it.
 	if s.isFlowEngineDriven(parentRunID) {
 		hubID := activeHubNodeID
 		if hubID == "" {
 			hubID = hubInlineNodeID(s.activeFlowNodesFor(parentRunID))
 		}
 		if hubID != "" {
-			s.setFlowStepStatus(context.Background(), parentRunID, hubID, StepStatusRunning)
+			escalatedIsHub := false
+			if rs := s.runs[parentRunID]; rs != nil {
+				esc := strings.TrimSpace(rs.lastEscalatedInlineNodeID)
+				escalatedIsHub = esc != "" && esc == hubID
+			}
+			if escalatedIsHub || pendingPrompt != "" {
+				s.setFlowStepStatus(context.Background(), parentRunID, hubID, StepStatusRunning)
+			}
 		}
 	}
 	s.emitAgentGraph(parentRunID, snap)

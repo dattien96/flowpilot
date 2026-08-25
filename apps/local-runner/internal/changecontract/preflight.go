@@ -492,7 +492,6 @@ func (s *FrozenStore) GetFrozenForStep(runID, coderStepID string) (FrozenContrac
 
 	versions := append([]FrozenContractRecord(nil), s.versionsByStep[stepKey(runID, coderStepID)]...)
 	sort.Slice(versions, func(i, j int) bool { return versions[i].Version < versions[j].Version })
-
 	for i := len(versions) - 1; i >= 0; i-- {
 		rec := versions[i]
 		if s.isActiveLocked(rec.ContractID) {
@@ -524,6 +523,28 @@ func (s *FrozenStore) ListVersionsForStep(runID, coderStepID string) ([]FrozenCo
 	versions := append([]FrozenContractRecord(nil), s.versionsByStep[stepKey(runID, coderStepID)]...)
 	sort.Slice(versions, func(i, j int) bool { return versions[i].Version < versions[j].Version })
 	return versions, nil
+}
+
+// ListForRun returns every frozen contract record bound to runID, including
+// superseded/abandoned versions. Used by audit (run-147126) to discover a
+// declared contract for the run when the live topology may not resolve.
+func (s *FrozenStore) ListForRun(runID string) ([]FrozenContractRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var out []FrozenContractRecord
+	for _, rec := range s.byID {
+		if rec.RunID == runID {
+			out = append(out, rec)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CoderStepID != out[j].CoderStepID {
+			return out[i].CoderStepID < out[j].CoderStepID
+		}
+		return out[i].Version < out[j].Version
+	})
+	return out, nil
 }
 
 // AppendStatus records a lifecycle transition for an already-frozen
