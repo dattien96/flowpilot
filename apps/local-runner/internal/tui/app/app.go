@@ -5676,12 +5676,30 @@ func tuiProgramOpts() []tea.ProgramOption {
 
 // ---- Run (entrypoint) -------------------------------------------------------
 
- // Run starts the Bubble Tea program. In headless/print mode it runs
+// applyProductionInputGuards arms the Windows-only raw-paste rejection so a
+// Ctrl+V flood in Windows Terminal (which steals the chord and delivers one
+// rune per key event) is rejected at the composer boundary instead of being
+// inserted char-by-char and collapsing into a paste token. CA-630 removed the
+// Run() assignment, so production Windows never armed the guard while every
+// test still set the field directly — the suite stayed green and live sessions
+// regressed (log pid 16512: "burst collapse inputLen=16" instead of
+// "(windows reject)", then 0 KeyMsg for minutes because the flood filled the
+// 64-slot conhost queue while View ~357ms with the F2 sidebar). goos is passed
+// in so the contract is testable on any host; Run() always passes runtime.GOOS.
+func applyProductionInputGuards(m *AppModel, goos string) {
+	if goos == "windows" {
+		m.rejectWindowsRawPaste = true
+	}
+	tuiLog("input guards: rejectWindowsRawPaste=%v goos=%s", m.rejectWindowsRawPaste, goos)
+}
+
+// Run starts the Bubble Tea program. In headless/print mode it runs
 // the model loop and prints the final response to stdout, then exits.
 func Run(cfg config.ChatConfig, runnerURL string) error {
 	initTUILog()
 	tuiLog("Run() start print=%v runner=%s", cfg.Print, runnerURL)
 	m := New(cfg, runnerURL)
+	applyProductionInputGuards(m, runtime.GOOS)
 
 	if cfg.Print {
 		err := runHeadless(m, cfg.Prompt)
