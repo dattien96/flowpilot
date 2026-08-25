@@ -1306,12 +1306,31 @@ func resolveFreezeWriterTarget(edges []agentpack.FlowEdge, nodes []agentpack.Flo
 func worktreeMutatedSincePaths(baseline, current map[string]string) []string {
 	var mutated []string
 	for p, hash := range current {
+		// CA-638 / run-243681: FlowPilot's own runtime metadata (.flowpilot/**)
+		// and the GitNexus index (.gitnexus/**) are written by the runner itself
+		// every turn — never attribute them to the read-only planner.
+		if isFlowPlannerExcludedPath(p) {
+			continue
+		}
 		if baseline[p] != hash {
 			mutated = append(mutated, p)
 		}
 	}
 	sort.Strings(mutated)
 	return mutated
+}
+
+// isFlowPlannerExcludedPath reports whether a worktree path is FlowPilot's own
+// runtime metadata or a tool-owned index — written by the runner (`.flowpilot/**`
+// ledger/manifest/canonical/contracts/gate-metrics) or by the GitNexus
+// auto-indexer (`.gitnexus/**`, CA-639), not by the contract planner. The
+// planner-mutation guard in runContractFreezeNode must never flag these
+// (run-243681: every turn rewrites chat_summary.ndjson + manifest.json, which
+// permanently false-blocked contract.freeze → "ask continue" loop).
+func isFlowPlannerExcludedPath(path string) bool {
+	p := filepath.ToSlash(strings.TrimSpace(path))
+	return p == ".flowpilot" || strings.HasPrefix(p, ".flowpilot/") ||
+		p == ".gitnexus" || strings.HasPrefix(p, ".gitnexus/")
 }
 
 // runContractFreezeNodeLocks path-keys an in-process mutex per
@@ -1361,7 +1380,7 @@ func baselineWorktreeFingerprint(workspace string) map[string]string {
 	out := make(map[string]string, len(files))
 	for _, f := range files {
 		p := filepath.ToSlash(f.Path)
-		if p == "" {
+		if p == "" || isFlowPlannerExcludedPath(p) {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(workspace, filepath.FromSlash(p)))
