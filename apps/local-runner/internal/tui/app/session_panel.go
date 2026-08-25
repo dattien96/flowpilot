@@ -65,19 +65,28 @@ func (p sessionInfoPanel) lines() []string {
 	return out
 }
 
+// flowStepsPanelLines is the legacy fixed-8-row view (kept for the overlay and
+// the pre-CA-632 contract; the right sidebar uses the height-aware variant).
 func (m *AppModel) flowStepsPanelLines() []string {
+	return m.flowStepsPanelLinesMax(8)
+}
+
+// flowStepsPanelLinesMax renders up to maxRows step rows (each FAILED row may
+// add one RejectionNote sub-line). A "… +N more" tail appears only when steps
+// overflow maxRows — rag-harness has 9 nodes, so a 50-row sidebar now shows
+// the full list including audit instead of truncating at 8 (run-142155).
+func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 	if len(m.flowSteps) == 0 {
 		return nil
+	}
+	if maxRows < 1 {
+		maxRows = 1
 	}
 	var out []string
 	// Steps are listed without a count header — the sidebar/overlay render a
 	// "steps" section title (CA-542). Sub-agent [open] on the step row only;
 	// the focused child gets no chip because [back] lives on the steps header.
-	limit := len(m.flowSteps)
-	if limit > 8 {
-		limit = 8
-	}
-	for i := 0; i < limit; i++ {
+	for i := 0; i < len(m.flowSteps) && i < maxRows; i++ {
 		s := m.flowSteps[i]
 		name := strings.TrimSpace(s.NodeID)
 		if name == "" {
@@ -136,8 +145,8 @@ func (m *AppModel) flowStepsPanelLines() []string {
 			}
 		}
 	}
-	if len(m.flowSteps) > limit {
-		out = append(out, fmt.Sprintf("… +%d more", len(m.flowSteps)-limit))
+	if len(m.flowSteps) > maxRows {
+		out = append(out, fmt.Sprintf("… +%d more", len(m.flowSteps)-maxRows))
 	}
 	if m.flowStepsActive != "" {
 		out = append(out, styleStepRunning.Render("Now: "+m.flowStepsActive))
@@ -431,7 +440,14 @@ func (m *AppModel) renderRightSidebar(h int) []string {
 	}
 	out = append(out, "")
 	out = append(out, m.stepsSectionTitle())
-	steps := m.flowStepsPanelLines()
+	// Height-aware step budget (run-142155): fit as many steps as the sidebar
+	// rows allow after the session header block; floor at 8 so a short
+	// terminal still shows the core list, and "… +N more" only when overflow.
+	maxRows := h - len(out) - 4
+	if maxRows < 8 {
+		maxRows = 8
+	}
+	steps := m.flowStepsPanelLinesMax(maxRows)
 	for _, line := range steps {
 		out = append(out, truncateStepLine(line, w-2))
 	}

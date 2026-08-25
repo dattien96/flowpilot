@@ -185,16 +185,21 @@ func (m *AppModel) applyAgentGraph(g *client.AgentGraphSnapshot) {
 		return
 	}
 	prevStatus := m.flowLoopStatus
+	prevGateReason := m.flowGateReason
 	m.flowLoopStatus = g.LoopState.Status
 	m.flowBlockReason = g.LoopState.BlockReason
+	m.flowGateReason = strings.TrimSpace(g.LoopState.GateReason)
 	m.agentRuns = g.Runs
 	m.afterAgentRunsAdopted()
 	if m.hasChildAgentRuns() {
 		m.agentHydrateRetries = 0
 	}
-	// Banner when the loop just transitioned into a parked awaiting-user state.
+	// Banner when the loop just transitioned into a parked awaiting-user state,
+	// or when a blocked loop finally received its GateReason (late gate —
+	// run-142155: the park reason arrives with the same snapshot as the park,
+	// but a missed SSE + poll can surface blocked first with an empty reason).
 	if strings.ToLower(strings.TrimSpace(m.flowLoopStatus)) == "blocked" &&
-		!strings.EqualFold(strings.TrimSpace(prevStatus), "blocked") {
+		(!strings.EqualFold(strings.TrimSpace(prevStatus), "blocked") || (prevGateReason == "" && m.flowGateReason != "")) {
 		m.showBlockedBanner(g.LoopState)
 	}
 	if strings.ToLower(strings.TrimSpace(m.flowLoopStatus)) == "done" {
@@ -243,9 +248,32 @@ func (m *AppModel) renderBlockedBar() string {
 	if reason != "" {
 		head += styleSystem.Render(" (" + reason + ")")
 	}
-	return head + "\n" +
-		styleSystem.Render("  ") + styleLink.Render("[Continue]") + "  " +
+	bar := head + "\n"
+	if detail := m.blockedDecisionReason(); detail != "" {
+		bar += styleSystem.Render("  reason: " + detail) + "\n"
+	}
+	bar += styleSystem.Render("  ") + styleLink.Render("[Continue]") + "  " +
 		styleLink.Render("[Stop]") + "  " + styleSystem.Render("click")
+	return bar
+}
+
+// blockedDecisionReason returns the human explanation for a parked
+// Continue/Stop decision: LoopState.GateReason first (run-142155: "Review
+// cannot proceed: the Codex reviewer failed with ..."), else the first FAILED
+// step's RejectionNote (stamped by the runner for cohort fails too since
+// CA-632). Empty when the runner provided no detail.
+func (m *AppModel) blockedDecisionReason() string {
+	if g := strings.TrimSpace(m.flowGateReason); g != "" {
+		return truncateRunes(g, 160)
+	}
+	for _, s := range m.flowSteps {
+		if strings.EqualFold(strings.TrimSpace(s.Status), "FAILED") {
+			if n := strings.TrimSpace(s.RejectionNote); n != "" {
+				return truncateRunes(n, 160)
+			}
+		}
+	}
+	return ""
 }
 
 // settleFlowIfDone flips a finished flow to a clean ConnIdle "done" state so

@@ -384,6 +384,10 @@ type AppModel struct {
 	// (BUG-231): "cap" | "escalate" | "member_stalled". Surfaced in the banner so
 	// the user knows the flow is parked awaiting their decision, not live-running.
 	flowBlockReason string
+	// flowGateReason is LoopState.GateReason — the human explanation behind a
+	// parked Continue/Stop decision (escalate/cap/delegate_failed). Surfaced on
+	// the blocked bar so a chip is never shown without its reason (run-142155).
+	flowGateReason string
 	// Dispatch operator attention (CP-51 Task-256): uncertain turns / open
 	// repairs that need an operator decision. Desktop DispatchAttentionCard
 	// parity — surfaced as clickable chips above the composer. Automated

@@ -4997,8 +4997,12 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 				// failure, mirroring the completed path, so a failed reviewer reads
 				// FAILED immediately instead of RUNNING until the barrier.
 				if parent := s.runs[rs.parentRunID]; parent != nil && parent.flowEngineDriven && rs.label != "" {
-					// Caller holds s.mu (emitLocked EventTurnFailed).
-					s.setFlowStepStatusLocked(context.Background(), rs.parentRunID, rs.label, StepStatusFailed)
+					// Caller holds s.mu (emitLocked EventTurnFailed). Stamp the
+					// real failure reason (run-142155: codex reviewer fail showed
+					// "(no detail from runner)" because the cohort path used the
+					// reason-less setFlowStepStatusLocked, unlike the non-cohort
+					// delegate-fail path which uses setFlowStepFailedWithReasonLocked).
+					s.setFlowStepFailedWithReasonLocked(context.Background(), rs.parentRunID, rs.label, truncateDisplayField(ev.Error, 500))
 					cohortDiagLog("member self-settled FAILED parent=%q run=%q label=%q", rs.parentRunID, rs.id, rs.label)
 				}
 				s.ensureCohortExpectedLocked(rs.parentRunID, rs.flowCohortId)
