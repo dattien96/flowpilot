@@ -75,7 +75,7 @@ func TestSafeFixPromptsCoverHardRules(t *testing.T) {
 		want []string
 	}{
 		{"prompts/plan-safe-fix-contract.md", []string{"FEATURE-KEYS.md", "additive tests only", "Claude, Codex and Grok"}},
-		{"prompts/test-signatures.md", []string{"UNIT TEST SIGNATURES ONLY", "Do NOT write any production code"}},
+		{"prompts/test-signatures.md", []string{"UNIT TEST SIGNATURES ONLY", "Do NOT write any production code", "OVERRIDE any default tester instructions"}},
 		{"prompts/implement-complete-tests.md", []string{"safe-fix contract", "no t.Skip without a stated reason"}},
 		{"prompts/review-safe-fix-contract.md", []string{"R1", "R2", "R3", "submit_review_outcome"}},
 	} {
