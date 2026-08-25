@@ -105,7 +105,11 @@ func (m *AppModel) chatPostureCmdFromPending(cfg client.ChatPostureConfig) tea.C
 	case strings.HasPrefix(pending, "apply:"):
 		name := strings.TrimPrefix(pending, "apply:")
 		if validPosture(name) {
-			m.applyChatPostureProfile(cfg, name)
+			// CA-641: /new re-applies the already-active posture; keep the
+			// user's /reasoning choice there (same rationale as CA-638 —
+			// the profile pin must not clobber + re-persist it). A real
+			// posture switch (Tab, /mode) still applies the profile pin.
+			m.applyChatPostureProfile(cfg, name, name == m.activePosture())
 			// Persist the active posture back to the runner (SSOT) so the
 			// Desktop and a later /new read the same selection — mirrors the
 			// Desktop tab switch which PUTs active.
@@ -132,7 +136,9 @@ func (m *AppModel) chatPostureCmdFromPending(cfg client.ChatPostureConfig) tea.C
 
 // applyChatPostureProfile switches the session to a posture and applies its
 // pinned profile fields (provider/model/reasoning/yolo) when set.
-func (m *AppModel) applyChatPostureProfile(cfg client.ChatPostureConfig, name string) {
+// keepReasoning skips the ReasoningEffort pin (CA-641): re-applying the
+// already-active posture (/new) must preserve the user's /reasoning choice.
+func (m *AppModel) applyChatPostureProfile(cfg client.ChatPostureConfig, name string, keepReasoning bool) {
 	m.chatPosture = name
 	// A profile switching to scan/plan also flips the read-only expectation; the
 	// runner enforces it via ChatPosture on the turn.
@@ -144,7 +150,7 @@ func (m *AppModel) applyChatPostureProfile(cfg client.ChatPostureConfig, name st
 		m.model = prof.Model
 		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 	}
-	if prof.ReasoningEffort != "" {
+	if !keepReasoning && prof.ReasoningEffort != "" {
 		m.reasoningEffort = prof.ReasoningEffort
 	}
 	if prof.Yolo != nil {
