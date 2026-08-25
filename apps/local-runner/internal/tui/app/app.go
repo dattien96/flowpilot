@@ -243,9 +243,19 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(tea.ClearScreen, cmdSetAutoWrap(false))
 
 	case cursorTickMsg:
-		m.cursorOn = !m.cursorOn
 		if m.sessionLoading {
 			m.loadingFrame = (m.loadingFrame + 1) % 64
+		}
+		// CA-633: blink only while the caret is meaningful (draft, live turn,
+		// blocked bar, loading, selection). Truly idle frames pin a steady
+		// caret so the rendered chat pane stays byte-identical across ticks —
+		// the composeCellBuf merge below then hits its pure-function cache
+		// instead of rebuilding the 126×50 cellbuf (log 24144: 0 KeyMsg after
+		// ready while every tick rebuilt with the sidebar open).
+		if m.cursorBlinkRelevant() {
+			m.cursorOn = !m.cursorOn
+		} else if !m.cursorOn {
+			m.cursorOn = true
 		}
 		cmds := []tea.Cmd{tickCursor()}
 		// Start the 90ms spinner ticker whenever a chat turn or flow step is live
@@ -466,7 +476,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionLoading = true
 		m.sessionPanel.RunnerURL = msg.RunnerURL
 		m.sessionPanel.ProjectPath = m.cfg.ProjectPath
-		m.sessionPanel.Collapsed = false
+		// CA-633: start with the F2 sidebar COLLAPSED. The panel has content
+		// (RunnerURL) the moment we connect, so the zero-value Collapsed=false
+		// opened it on every cold start — with composeCellBuf ~300ms+ at
+		// 126×50, hover motion + cursor ticks filled the conhost 64-slot queue
+		// and keys dropped before ever reaching Update. F2 opens it; flow
+		// steps/agents auto-open it via agents_focus.go when a run starts.
+		m.sessionPanel.Collapsed = true
 		cmds := []tea.Cmd{
 			m.cmdLoadSessionDefaults(),
 			m.cmdPrefetchFlows(),
@@ -4023,6 +4039,25 @@ func (m *AppModel) renderChatPane(w, h int) string {
 
 // ---- View -------------------------------------------------------------------
 
+// cursorBlinkRelevant reports whether the input caret should keep blinking:
+// anything live or active makes the caret meaningful. When false the caret is
+// pinned steady and the composed frame is cached across cursor ticks (CA-633).
+func (m *AppModel) cursorBlinkRelevant() bool {
+	if m.sessionLoading || m.authPhase != AuthNone || m.modeSetupModalOpen || m.viewingChild() {
+		return true
+	}
+	if m.workIsLive() || m.flowLoopBlocked() {
+		return true
+	}
+	if m.driveSync != nil || m.restoreBatch != nil {
+		return true
+	}
+	if strings.TrimSpace(m.inputValue) != "" || !m.mouseSel.empty() {
+		return true
+	}
+	return false
+}
+
 func (m *AppModel) View() string {
 	if m.quitting {
 		return ""
@@ -4043,7 +4078,20 @@ func (m *AppModel) View() string {
 	chat := chatRaw
 	if m.useRightSidebar() {
 		side := m.renderSidebarPane(m.sideWidth(), h)
-		chat = composeCellBuf(chatRaw, side, fullW, chatW, m.sideWidth(), h)
+		// CA-633: composeCellBuf is a pure function of its inputs — skip the
+		// expensive cellbuf merge when nothing changed (idle cursor ticks keep
+		// chatRaw byte-identical via the pinned caret, so idle frames cost ~0).
+		if m.lastComposeChat == chatRaw && m.lastComposeSide == side &&
+			m.lastComposeFullW == fullW && m.lastComposeChatW == chatW &&
+			m.lastComposeSideW == m.sideWidth() && m.lastComposeH == h {
+			chat = m.composeOut
+		} else {
+			m.composeBuilds++
+			m.lastComposeChat, m.lastComposeSide = chatRaw, side
+			m.lastComposeFullW, m.lastComposeChatW, m.lastComposeSideW, m.lastComposeH = fullW, chatW, m.sideWidth(), h
+			m.composeOut = composeCellBuf(chatRaw, side, fullW, chatW, m.sideWidth(), h)
+			chat = m.composeOut
+		}
 	}
 	if d := time.Since(viewStart); d > 100*time.Millisecond {
 		// CA-621: throttle View slow log so chat history open does not spam tui.log and drop keys

@@ -388,6 +388,21 @@ type AppModel struct {
 	// parked Continue/Stop decision (escalate/cap/delegate_failed). Surfaced on
 	// the blocked bar so a chip is never shown without its reason (run-142155).
 	flowGateReason string
+	// CA-633: composeCellBuf cache. composeCellBuf(chat,side,...) is a pure
+	// function of its inputs, so when the chat/side pane strings and geometry
+	// are byte-identical to the last call the ~300ms cellbuf merge (126×50,
+	// Windows conhost) is skipped. Together with the idle caret pinning this
+	// keeps idle frames off the heavy path — rebuilding the merged buffer
+	// every 530ms cursor tick filled the 64-slot input queue and keys never
+	// reached Update (logs 16512/24144: 0 KeyMsg after session ready).
+	lastComposeChat  string
+	lastComposeSide  string
+	lastComposeFullW int
+	lastComposeChatW int
+	lastComposeSideW int
+	lastComposeH     int
+	composeOut       string
+	composeBuilds    int // instrumentation: how many times composeCellBuf ran
 	// Dispatch operator attention (CP-51 Task-256): uncertain turns / open
 	// repairs that need an operator decision. Desktop DispatchAttentionCard
 	// parity — surfaced as clickable chips above the composer. Automated
