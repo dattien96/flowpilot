@@ -3537,6 +3537,25 @@ type workflowRunSeeder interface {
 	seed(runID string, steps []RuntimeWorkflowStep)
 }
 
+// flowRootIDLocked walks a run's parentRunID chain up to its root flow run
+// (the highest flowEngineDriven ancestor), or "" when the run is not part of a
+// flow-engine tree. CA-642: child questions must surface on the root run's
+// event stream because clients subscribe to the root only. Caller must hold
+// s.mu.
+func (s *InteractiveService) flowRootIDLocked(rs *interactiveRun) string {
+	for cur := rs; cur != nil && cur.parentRunID != ""; {
+		parent := s.runs[cur.parentRunID]
+		if parent == nil || !parent.flowEngineDriven {
+			return ""
+		}
+		if parent.parentRunID == "" {
+			return parent.id
+		}
+		cur = parent
+	}
+	return ""
+}
+
 func (s *InteractiveService) nextID(prefix string) string {
 	return prefix + "-" + strconv.FormatInt(s.idCounter.Add(1), 10)
 }
@@ -5413,6 +5432,23 @@ func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiS
 		Options:        options,
 		MultiSelect:    multiSelect,
 	})
+	// CA-642: a model ask_user question on a flow-engine child (planner/tester/
+	// coder) lives on the child's event stream, but the TUI/desktop subscribe to
+	// the root run stream — the operator sees the step WAITING_USER_APPROVAL but
+	// no card to answer. Mirror the question onto the root flow run's stream
+	// (walking nested sub-hub chains); AnswerQuestion resolves globally by
+	// question id, so answering from the main timeline unblocks the child.
+	if rootID := s.flowRootIDLocked(b.rs); rootID != "" {
+		if root := s.runs[rootID]; root != nil {
+			s.emitLocked(root, ProviderEvent{
+				Type:        EventUserQuestionRequired,
+				QuestionID:  rec.id,
+				Prompt:      prompt,
+				Options:     options,
+				MultiSelect: multiSelect,
+			})
+		}
+	}
 	s.mu.Unlock()
 
 	timer := time.NewTimer(s.questionTTL)
