@@ -5756,7 +5756,14 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 		return err
 	}
 
-	p := tea.NewProgram(m, tuiProgramOpts()...)
+	// CA-636: bound the renderer output through a queue-backed writer so a
+	// wedged console (Windows text selection blocks WriteConsole until a
+	// keypress) can never hold the renderer mutex and freeze the event loop.
+	// Without this, a copy-paste into the chat box froze the TUI for minutes
+	// with 0 KeyMsg (tui.log 13:06:31 → 13:54:51). queuedOutput keeps
+	// term.File (Fd) semantics so resize/WindowSizeMsg still work.
+	out := newQueuedOutput(os.Stdout)
+	p := tea.NewProgram(m, append(tuiProgramOpts(), tea.WithOutput(out))...)
 	_, err := p.Run()
 	_, _ = os.Stdout.WriteString(decawmOn)
 	tuiLog("Run() exit err=%v", err)
