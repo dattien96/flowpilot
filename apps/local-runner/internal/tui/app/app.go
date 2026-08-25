@@ -56,6 +56,15 @@ var (
 	styleTool        = lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn))
 	styleError       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
 	styleGate        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAsk))
+	// Question-card hierarchy (CA-643): the [QUESTION] head, the prompt body,
+	// the option rows and the "Answered:" confirmation used to be one flat
+	// --ask purple block. Each part now has its own hue so the card is scannable:
+	// amber head + option indexes, light body, accent option labels, green answer.
+	styleQuestionHead = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorWarn))
+	styleQuestionBody = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
+	styleQuestionOpt  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent))
+	styleQuestionDesc = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+	styleAnswer       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))
 	styleStatus      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
 	styleStatusHi    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // model, reason value, YOLO value, 7d, skills
 	styleMention     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))     // skill tokens in prompt
@@ -4704,22 +4713,34 @@ func renderApprovalText(line string) string {
 
 func renderQuestionText(line string) string {
 	stripped := stripANSI(line)
-	var b strings.Builder
-	rest := stripped
-	tokens := []string{"/approve", "/deny", "Approve", "Deny"}
-	for i := 1; i <= 9; i++ {
-		tokens = append(tokens, strconv.Itoa(i)+")")
+	// CA-643: part-aware question card — head, body, options and the answer
+	// confirmation each get their own color instead of one flat purple block.
+	if strings.HasPrefix(stripped, "[QUESTION]") {
+		return styleQuestionHead.Render("[QUESTION]") + styleQuestionBody.Render(strings.TrimPrefix(stripped, "[QUESTION]"))
 	}
-	for {
-		next, token := nextHighlightToken(rest, tokens)
-		if next < 0 {
-			b.WriteString(styleGate.Render(rest))
-			return b.String()
+	if strings.HasPrefix(stripped, "Answered:") {
+		return styleAnswer.Render("Answered:") + styleQuestionBody.Render(strings.TrimPrefix(stripped, "Answered:"))
+	}
+	if i := strings.Index(stripped, ") "); i > 0 && i <= 3 {
+		num := stripped[:i+2]
+		rest := stripped[i+2:]
+		label, desc := rest, ""
+		if j := strings.Index(rest, " — "); j >= 0 {
+			label, desc = rest[:j], rest[j+len(" — "):]
 		}
-		b.WriteString(styleGate.Render(rest[:next]))
-		b.WriteString(styleLink.Render(token))
-		rest = rest[next+len(token):]
+		out := styleQuestionHead.Render(num)
+		out += styleQuestionOpt.Render(label)
+		if desc != "" {
+			out += styleQuestionDesc.Render(" — " + desc)
+		}
+		return out
 	}
+	if strings.Contains(stripped, "[multi-select]") {
+		return styleQuestionDesc.Render(stripped)
+	}
+	// Wrapped prompt continuation or plain question hints ("Pick an option…",
+	// "Selected …") — light body, distinct from the dim system default.
+	return styleQuestionBody.Render(stripped)
 }
 
 func nextHighlightToken(s string, tokens []string) (int, string) {
