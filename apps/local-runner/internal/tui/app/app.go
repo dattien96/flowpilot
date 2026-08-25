@@ -1359,7 +1359,6 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pasteBurstSettleMsg:
 		// A raw-paste burst finished quietly — collapse it to a token without
 		// waiting for the next keystroke.
-		// Clear pending so a new Tick can be scheduled.
 		m.pasteBurst.settlePending = false
 		if !m.pasteBurst.active && !m.pasteBurst.rejectArmed {
 			return m, nil
@@ -1367,19 +1366,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if pasteNow().Sub(m.pasteBurst.lastRuneAt) >= burstSettle {
 			wasActive := m.pasteBurst.active
 			wasRejectArmed := m.pasteBurst.rejectArmed
-			// Production Windows rejects raw floods entirely (hint at arm time),
-			// so settle just resets without collapsing to [Pasted] or re-hinting.
-			// No Disable→Enable pulse here: on Windows that sequence drops the
-			// next KeyMsg and bricks input for minutes (log 18216/18700).
-			// Motion is already filtered by tuiMsgFilter, so the queue cannot
-			// fill.
 			if wasActive && m.rejectWindowsRawPaste {
-				// CA-612: if reject was armed, wipe any leaked tail that slipped
-				// through a 25ms gap (log 11764: settle at inputLen 31 then 40).
 				if wasRejectArmed {
 					if runes := []rune(m.inputValue); len(runes) > m.pasteBurst.start {
-						// Only wipe if the prefix matches the burst region; otherwise
-						// leave typing that happened after the burst.
 						if m.pasteBurst.start == 0 || len(runes) >= m.pasteBurst.start {
 							m.inputValue = string(runes[:m.pasteBurst.start])
 							m.setInputCaret(m.pasteBurst.start)
@@ -1392,23 +1381,22 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.collapsePasteBurst()
 			tuiLog("burst collapse active=false inputLen=%d", len([]rune(m.inputValue)))
-			// Windows: WT steals Ctrl+V so raw paste always comes as a flood.
-			// Hint once that Alt+V is the reliable text+image path (Ctrl+V is
-			// only text and causes the char-by-char burst).
-			if wasActive && runtime.GOOS == "windows" && !m.pasteCtrlVHintShown {
+			if wasActive && !m.pasteCtrlVHintShown {
 				m.pasteCtrlVHintShown = true
 				hint := "Use Alt+V for paste (text + image)"
 				m.addMessage("system", hint, "gate")
 				return m, m.showFlashToast(hint)
 			}
 		} else {
-			// Fired early (e.g. 129ms <150ms due to 15 runes each scheduling a tick) — reschedule.
+			// Fired early — reschedule.
 			tuiLog("burst settle early, reschedule active=true")
 			return m, m.cmdPasteBurstSettleOnce()
 		}
 		return m, nil
 
 	case ClipboardPasteMsg:
+		// Reset any active burst state so clipboard paste and subsequent typing stay clean.
+		m.resetPasteBurst()
 		if msg.Err != "" && msg.Attachment == nil && msg.Text == "" {
 			m.addMessage("system", msg.Err, "error")
 			return m, nil
@@ -1817,7 +1805,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pasteBurst.lastRuneAt = now
 			return m, m.cmdPasteBurstSettleOnce()
 		}
-		// Windows production rejects raw flood (WT Ctrl+V) entirely.
+		// When raw paste reject is active, reject raw flood Enters.
 		if m.rejectWindowsRawPaste && isBurstNewlineKey(msg) {
 			b := &m.pasteBurst
 			if b.active || (b.chainLen >= 1 && now.Sub(b.lastRuneAt) < burstRuneGap && !strings.HasPrefix(m.inputValue, "/")) {
@@ -1908,17 +1896,21 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.authPhase != AuthNone {
 			return m, nil
 		}
-		if m.rejectWindowsRawPaste {
-			// CA-612: if WT delivers KeyCtrlV, arm reject so the following
-			// char-by-char flood (if any) is swallowed without inserting.
-			if !m.pasteBurst.rejectArmed {
-				m.pasteBurst.rejectArmed = true
-				if !m.pasteBurst.active {
-					m.pasteBurst.active = true
-					m.pasteBurst.start = len([]rune(m.inputValue))
-					m.pasteBurst.buf = nil
-					m.pasteBurst.lastRuneAt = pasteNow()
+		if m.rejectWindowsRawPaste || runtime.GOOS == "windows" {
+			if m.rejectWindowsRawPaste {
+				if !m.pasteBurst.rejectArmed {
+					m.pasteBurst.rejectArmed = true
+					if !m.pasteBurst.active {
+						m.pasteBurst.active = true
+						m.pasteBurst.start = len([]rune(m.inputValue))
+						m.pasteBurst.buf = nil
+						m.pasteBurst.lastRuneAt = pasteNow()
+					}
 				}
+				hint := "Use Alt+V for paste (text + image)"
+				m.addMessage("system", hint, "gate")
+				m.pasteCtrlVHintShown = true
+				return m, tea.Batch(m.showFlashToast(hint), m.cmdPasteBurstSettleOnce())
 			}
 			hint := "Use Alt+V for paste (text + image)"
 			m.addMessage("system", hint, "gate")
@@ -2328,6 +2320,25 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.cmdMaybePrefetchPickers()
 
 	case tea.KeySpace, tea.KeyRunes:
+		// Drop NUL and raw control noise universally across all platforms/terminals (only for non-bracketed paste)
+		if msg.Type == tea.KeyRunes && !msg.Paste {
+			if len(msg.Runes) == 0 {
+				return m, nil
+			}
+			if msg.String() == "alt+\x00" || msg.String() == "\x00" {
+				return m, nil
+			}
+			isOnlyNul := true
+			for _, r := range msg.Runes {
+				if r != 0 {
+					isOnlyNul = false
+					break
+				}
+			}
+			if isOnlyNul {
+				return m, nil
+			}
+		}
 		// Bubble Tea delivers Alt+letter as KeyRunes+Alt (String() == "alt+v").
 		// Handle image-paste chords before inserting the bare rune — otherwise
 		// Alt+V becomes a literal "v" and never reaches the chord handler below.
@@ -2336,64 +2347,45 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case "alt+v", "ctrl+shift+v":
 				return m, m.cmdClipboardPaste()
 			}
-			// Windows Terminal often steals Ctrl+V and injects bracketed paste
-			// (KeyRunes+Paste). The bracketed-paste runes already carry the
-			// pasted text — insert it directly. Reading the system clipboard on
-			// the typing hot path is what froze the composer: a locked
-			// clipboard (native read or PowerShell GetText) blocked forever, so
-			// typed/pasted characters never appeared while F2/F4 still worked.
-			// The clipboard is only consulted when the paste carries no text
-			// (image-only clipboard) or looks like a copied image file path.
+			// Bracketed paste (KeyRunes+Paste).
 			if msg.Paste {
 				pasted := sanitizePasteText(string(msg.Runes))
 				if strings.TrimSpace(pasted) == "" {
 					return m, m.cmdClipboardPasteWithFallback("")
 				}
-if path := imagePathFromClipboardText(pasted); path != "" {
-				return m, m.cmdAttachImagePath(path)
-			}
-			// Long/multi-line pastes collapse to a "[Pasted N lines · C chars]"
-			// token so the composer never shows a cut block and the pasted line
-			// breaks can never auto-submit. The full text is expanded on send.
-			if needsPasteSummary(pasted) {
-				m.insertPasteSummary(pasted)
-			} else {
-				m.insertInputAtCursor(pasted)
-			}
-			m.suggIdx = 0
-			return m, m.cmdMaybePrefetchPickers()
+				if path := imagePathFromClipboardText(pasted); path != "" {
+					return m, m.cmdAttachImagePath(path)
+				}
+				// Long/multi-line pastes collapse to a "[Pasted N lines · C chars]"
+				// token so the composer never shows a cut block and the pasted line
+				// breaks can never auto-submit. The full text is expanded on send.
+				if needsPasteSummary(pasted) {
+					m.insertPasteSummary(pasted)
+				} else {
+					m.insertInputAtCursor(pasted)
+				}
+				m.suggIdx = 0
+				return m, m.cmdMaybePrefetchPickers()
 			}
 		}
 		s := " "
 		if msg.Type == tea.KeyRunes {
 			s = string(msg.Runes)
+			s = strings.ReplaceAll(s, "\x00", "")
+			if s == "" {
+				return m, nil
+			}
 		}
 		// Track raw (non-bracketed) paste floods so their Enters become newlines
 		// instead of submits; bracketed pastes are handled above.
 		if m.authPhase == AuthNone && !msg.Paste && !msg.Alt {
 			m.noteBurstRune(s)
-			// CA-612: once reject is armed, swallow everything until settle,
-			// even across burstRuneGap chain resets (log 11764: 25ms gap let
-			// tail "t..." re-insert, then settle at inputLen 31 left residue).
 			if m.rejectWindowsRawPaste && m.pasteBurst.rejectArmed {
 				m.pasteBurst.lastRuneAt = pasteNow()
 				return m, m.cmdPasteBurstSettleOnce()
 			}
-			// Windows: WT Ctrl+V floods as char-by-char (Paste=false).
-			// Production swallows the flood and guides to Alt+V (Alt+V is
-			// the reliable 1-msg path for text+image). No clipboard hijack —
-			// flood is just dropped so composer stays empty. Tests keep
-			// reject off so burst char-by-char + [Pasting…] stays testable.
-			// Threshold is pasteCollapseMinRunes (8) so short IME rewrites
-			// (dd->đ, 2-4 events) and tone-key holds (ssss) are not
-			// mistaken for paste (CA-611, log 4332). Only swallow once the
-			// chain is long enough and not a single repeated rune.
 			if m.rejectWindowsRawPaste && m.pasteBurst.active && m.pasteBurst.chainLen >= pasteCollapseMinRunes && !isSingleRepeatedRuneChain(m.pasteBurst.chainBuf) {
 				m.pasteBurst.rejectArmed = true
-				// Hint once per flood (on arm) and revert the chars that armed.
-				// Subsequent rapid runes in same flood are just swallowed without
-				// reverting so an Alt+V [Pasted] token inserted after the flood
-				// is not wiped (log 18700 race).
 				if m.pasteBurst.chainLen == pasteCollapseMinRunes {
 					if runes := []rune(m.inputValue); len(runes) > m.pasteBurst.start {
 						m.inputValue = string(runes[:m.pasteBurst.start])
@@ -4561,14 +4553,16 @@ func (m *AppModel) buildChatRows() []chatRow {
 
 	// Interactive action cards rendered directly on the chat timeline
 	if m.approval != nil {
-		head := formatApprovalWaitingLineDetailed(m.approval.ID, m.asciiMode, *m.approval)
+		head := "approval"
+		if n := len(m.approvals); n > 1 {
+			head = fmt.Sprintf("approval 1/%d", n)
+		}
 		chips := approvalDecisionChips(m.approval)
 		if len(m.approvals) > 1 {
 			chips += "  " + styleLink.Render("Approve all") + "  " + styleLink.Render("Deny all")
 		}
 		rows = append(rows, chatRow{})
-		rows = append(rows, chatRow{Text: styleGate.Render(head), MsgIdx: -1})
-		rows = append(rows, chatRow{Text: "  " + chips + "  " + styleSystem.Render("click or type"), MsgIdx: -1})
+		rows = append(rows, chatRow{Text: styleGate.Render(head) + "  " + chips + "  " + styleSystem.Render("click or type"), MsgIdx: -1})
 	}
 	if m.question != nil {
 		left := styleInputStroke.Render("┃")
@@ -4801,8 +4795,7 @@ func (m *AppModel) renderInputLine() string {
 		// While a raw (non-bracketed) paste flood is active, chars arrive
 		// one-by-one and would render as char-by-char. Hide the partial flood
 		// and show a single placeholder until it settles to [Pasted N chars].
-		// On production Windows the flood is rejected outright (use Alt+V).
-		if m.pasteBurst.active && m.authPhase == AuthNone && !m.rejectWindowsRawPaste {
+		if m.pasteBurst.active && m.authPhase == AuthNone {
 			body = "[Pasting…]"
 		} else {
 			body = m.inputValue
@@ -4844,6 +4837,9 @@ func (m *AppModel) renderInputLine() string {
 	// cursor entirely.
 
 	var inner []string
+	if bar := m.renderAttentionBar(); bar != "" {
+		inner = append(inner, strings.Split(bar, "\n")...)
+	}
 	caretAt := m.inputCaretIndex()
 	off := 0
 	for i, bl := range bodyLines {
@@ -5694,9 +5690,6 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 		return err
 	}
 
-	if runtime.GOOS == "windows" {
-		m.rejectWindowsRawPaste = true
-	}
 	p := tea.NewProgram(m, tuiProgramOpts()...)
 	_, err := p.Run()
 	_, _ = os.Stdout.WriteString(decawmOn)

@@ -66,6 +66,7 @@ func (m *AppModel) clearInputValue() {
 }
 
 func (m *AppModel) insertInputAtCursor(s string) {
+	s = strings.ReplaceAll(s, "\x00", "")
 	if s == "" {
 		return
 	}
