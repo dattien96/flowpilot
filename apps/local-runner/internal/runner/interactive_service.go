@@ -1846,21 +1846,24 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	if hubInline == "" && escalatedNodeID == "" && failedDelegateNodeID == "" {
 		// Still no hub and no remembered node — fall through to generic reinvoke.
 	}
-	if escalatedNodeID != "" && hubInline == "" {
+	// Run-144900: writer parks (agent.code / agent.delegate) must retry the
+	// delegate child even on live rag-harness which has hub.inline=synthesis.
+	// CA-627's hub-less guard (hubInline == "") is correct for inline helpers
+	// like contract.freeze, but for writers it dead-ended at
+	// maybeAutoReinvokeHubWithNote and faked a 5-minute synthesis turn.
+	if escalatedNodeID != "" {
 		if node, ok := findFlowNode(nodes, escalatedNodeID); ok {
 			if flowNodeInlineDispatchable(node) {
 				go s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, node, feedback)
 				return snap, nil
 			}
-			// Writer/delegate node (e.g. the implement scope-drift park on
-			// run-221516): tryAdvanceFlowThroughInline is a no-op for
-			// agent.code/agent.delegate, and there is no hub to reinvoke. Retry
-			// the node's own child run via the delegate reinvoke path below so
-			// validate/audit still run instead of the old hub->done skip.
+			// Writer/delegate node (e.g. test_signatures run-144900, implement
+			// run-221516): retry the node's own child run via the delegate
+			// reinvoke path below — do not fall through to hub reinvoke.
 			failedDelegateNodeID = escalatedNodeID
 		}
 	}
-	if failedDelegateNodeID != "" && hubInline == "" {
+	if failedDelegateNodeID != "" {
 		// CA-616: retry the same delegate. Prefer reinvokeMatchingFlowChild so
 		// the existing failed child is reset to RUNNING instead of spawning a
 		// second child for the same node/activation.

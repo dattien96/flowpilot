@@ -818,6 +818,35 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			}
 			codeOnlyWritten = append(codeOnlyWritten, p)
 		}
+		// Run-144900 false-drift fix: leftover untracked skill dirs
+		// (e.g. .agents/skills/flow-mode-orchestrator/SKILL.md created at
+		// 10:28 before the flow started) show up in ObserveGitDiffSince(BaseSHA)
+		// and would otherwise look like this writer touched them. Subtract any
+		// path whose content fingerprint matches the freeze baseline or the
+		// turn-start snapshot — i.e. pre-existing dirt unchanged this turn.
+		// Do NOT exempt the whole .agents/** tree (CA-427); only unchanged
+		// fingerprints are subtracted, a new or mutated skill still drifts.
+		if len(codeOnlyWritten) > 0 {
+			filtered := codeOnlyWritten[:0]
+			for _, p := range codeOnlyWritten {
+				if rs != nil && rs.turnStartWorktree != nil {
+					if prev, ok := rs.turnStartWorktree[p]; ok {
+						if cur := worktreeFileFingerprint(cwd, p); prev == cur {
+							continue
+						}
+					}
+				}
+				if rec.BaselineWorktree != nil {
+					if base, ok := rec.BaselineWorktree[p]; ok {
+						if cur := worktreeFileFingerprint(cwd, p); base == cur {
+							continue
+						}
+					}
+				}
+				filtered = append(filtered, p)
+			}
+			codeOnlyWritten = filtered
+		}
 		drift := changecontract.FrozenContractScopeDrift(rec, codeOnlyWritten)
 		if len(drift) > 0 {
 			if !s.gateEpochStillValid(runID, epoch) {

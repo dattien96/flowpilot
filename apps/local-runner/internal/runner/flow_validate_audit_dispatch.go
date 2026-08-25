@@ -1333,13 +1333,26 @@ func runContractFreezeNodeLockFor(key string) *sync.Mutex {
 // share the same HEAD but different working-tree state. Best-effort — an
 // unreadable file yields an empty-string fingerprint entry rather than
 // failing the whole freeze; a workspace with nothing dirty yields nil.
+//
+// Fix run-144900: use the full dirty snapshot (flowgate.ObserveGitDiff) so
+// leftover untracked skill dirs (e.g. .agents/skills/.../SKILL.md) are
+// captured in the baseline. The previous impl used uncommittedChangedPaths
+// which excludes docs/*.md and caps at 20 paths and therefore missed the
+// leftover that later tripped a false scope-drift park on test_signatures.
 func baselineWorktreeFingerprint(workspace string) map[string]string {
-	paths := uncommittedChangedPaths(workspace)
-	if len(paths) == 0 {
+	if strings.TrimSpace(workspace) == "" {
 		return nil
 	}
-	out := make(map[string]string, len(paths))
-	for _, p := range paths {
+	files, err := flowgate.ObserveGitDiff(workspace)
+	if err != nil || len(files) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(files))
+	for _, f := range files {
+		p := filepath.ToSlash(f.Path)
+		if p == "" {
+			continue
+		}
 		data, err := os.ReadFile(filepath.Join(workspace, filepath.FromSlash(p)))
 		if err != nil {
 			out[p] = ""
@@ -1347,6 +1360,9 @@ func baselineWorktreeFingerprint(workspace string) map[string]string {
 		}
 		sum := sha256.Sum256(data)
 		out[p] = hex.EncodeToString(sum[:])
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
