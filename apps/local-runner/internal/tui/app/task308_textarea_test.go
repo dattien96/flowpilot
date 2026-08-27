@@ -424,6 +424,10 @@ func TestTUIInput_Bubbles_View_FallsBackOnAttachChip(t *testing.T) {
 }
 
 func TestTUIInput_Bubbles_View_FallsBackOnLongLineWrap(t *testing.T) {
+	// Exact boundary: innerW = safeTermWidth(chatWidth)-2. Width 40 -> 37.
+	// 100 a's is huge overflow — kept as smoke, but ccc7eba innerW alignment
+	// now requires exact-boundary lock below; reverting to chatWidth()-2 or >
+	// would still pass the 100 case.
 	m := newTask308Model()
 	m.width = 40
 	m.fullWidth = 40
@@ -434,6 +438,43 @@ func TestTUIInput_Bubbles_View_FallsBackOnLongLineWrap(t *testing.T) {
 	m.pasteBurst = pasteBurst{}
 	if m.useTextareaView() {
 		t.Fatal("long line that overflows inner width must fallback to keep caret visible")
+	}
+	// Exact boundary — guards ccc7eba s safeTermWidth and >=
+	for _, tc := range []struct {
+		name string
+		len  int
+		want bool
+	}{
+		{"innerW-1 stays on View", func() int {
+			w := safeTermWidth(m.chatWidth())
+			innerW := w - 2
+			if innerW < 1 {
+				innerW = 1
+			}
+			return innerW - 1
+		}(), true},
+		{"innerW falls back", func() int {
+			w := safeTermWidth(m.chatWidth())
+			innerW := w - 2
+			if innerW < 1 {
+				innerW = 1
+			}
+			return innerW
+		}(), false},
+	} {
+		m2 := newTask308Model()
+		m2.width = 40
+		m2.fullWidth = 40
+		for _, r := range strings.Repeat("a", tc.len) {
+			mm, _ := m2.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			m2 = mm.(*AppModel)
+		}
+		m2.pasteBurst = pasteBurst{}
+		if got := m2.useTextareaView(); got != tc.want {
+			w := safeTermWidth(m2.chatWidth())
+			innerW := w - 2
+			t.Fatalf("%s: len=%d innerW=%d chatWidth=%d want View=%v got %v", tc.name, tc.len, innerW, m2.chatWidth(), tc.want, got)
+		}
 	}
 }
 
