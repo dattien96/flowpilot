@@ -211,6 +211,9 @@ func providerKeyFromModel(model string) (ProviderKey, bool) {
 	case strings.HasPrefix(m, "grok-"), m == "grok-build":
 		// Appended last (CP-46 P-0): existing prefix cases above are unchanged.
 		return ProviderKeyGrok, true
+	case strings.HasPrefix(m, "opencode/"), strings.HasPrefix(m, "opencode-go/"):
+		// Appended last (CP-57 P-0): existing prefix cases above are unchanged.
+		return ProviderKeyOpencode, true
 	}
 	return "", false
 }
@@ -542,6 +545,66 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				a.mcpServer = r.claudeMCP
 				a.mcpBaseURL = r.mcpBaseURLValue
 				accountHome := env["GROK_HOME"]
+				a.extraMCPServers = func(yolo bool) map[string]claudeMcpServer {
+					return r.flowpilotClaudeExtraMCPServers(accountHome, yolo)
+				}
+				return a
+			},
+		})
+	}
+	if opencodeAgentEnabled() {
+		reg.register(ProviderRegistration{
+			Key:         ProviderKeyOpencode,
+			DisplayName: "Opencode",
+			Status:      ProviderStatusAvailable,
+			Capabilities: (&opencodeAdapter{}).Capabilities(),
+			newAdapter: func() ProviderRuntimeAdapter {
+				scopeKey := "default"
+				env := map[string]string{}
+				account, err := r.ResolveProviderAccount(string(ProviderKeyOpencode), "")
+				if err == nil {
+					scopeKey = account.ID
+					for k, v := range account.ExtraEnv {
+						env[k] = v
+					}
+					if account.HomePath != "" {
+						env["OPENCODE_HOME"] = account.HomePath
+						env["HOME"] = account.HomePath
+						env["XDG_CONFIG_HOME"] = filepath.Join(account.HomePath, ".config")
+						env["OPENCODE_CONFIG"] = filepath.Join(account.HomePath, ".config", "opencode")
+						if drive, path, ok := windowsHomeDriveAndPath(account.HomePath); ok {
+							env["USERPROFILE"] = account.HomePath
+							env["APPDATA"] = filepath.Join(account.HomePath, "AppData", "Roaming")
+							env["LOCALAPPDATA"] = filepath.Join(account.HomePath, "AppData", "Local")
+							env["HOMEDRIVE"] = drive
+							env["HOMEPATH"] = path
+						}
+					}
+				} else if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
+					scopeKey = "env:" + home
+					env["OPENCODE_HOME"] = home
+					env["HOME"] = home
+					env["XDG_CONFIG_HOME"] = filepath.Join(home, ".config")
+					env["OPENCODE_CONFIG"] = filepath.Join(home, ".config", "opencode")
+				} else {
+					return errorAdapter{key: ProviderKeyOpencode, err: err}
+				}
+				h, ensureErr := r.ensureOpencodeProcess(context.Background(), scopeKey, r.workspace, env, "", "", false)
+				if ensureErr != nil {
+					return errorAdapter{key: ProviderKeyOpencode, err: ensureErr}
+				}
+				a := h.adapter
+				a.sessionStore = ProviderSessionStoreFor(r)
+				a.promptPrep = func(req TurnRequest) string {
+					workspace := r.workspace
+					if req.Cwd != "" {
+						workspace = req.Cwd
+					}
+					return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills)
+				}
+				a.mcpServer = r.claudeMCP
+				a.mcpBaseURL = r.mcpBaseURLValue
+				accountHome := env["HOME"]
 				a.extraMCPServers = func(yolo bool) map[string]claudeMcpServer {
 					return r.flowpilotClaudeExtraMCPServers(accountHome, yolo)
 				}

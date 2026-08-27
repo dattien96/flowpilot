@@ -16,6 +16,9 @@ const (
 	// ProviderKeyGrok is Grok Build over ACP (CP-46). Appended last — existing
 	// cases/order are unchanged (CP-46 P-0 base-regression guard).
 	ProviderKeyGrok ProviderKey = "grok"
+	// ProviderKeyOpencode is Opencode over ACP (CP-57). Appended last — existing
+	// cases/order are unchanged (CP-57 P-0).
+	ProviderKeyOpencode ProviderKey = "opencode"
 )
 
 // RunStatus mirrors the client-facing RunStatus set (04-01) — the user-facing
