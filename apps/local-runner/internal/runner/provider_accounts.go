@@ -333,7 +333,7 @@ func (r *Runner) syncProviderAccounts(accounts []ProviderAccount) ([]ProviderAcc
 	synced := make([]ProviderAccount, len(accounts))
 	copy(synced, accounts)
 
-	for _, providerKey := range []string{"codex", "claude", "gemini", "grok"} {
+	for _, providerKey := range []string{"codex", "claude", "gemini", "grok", "opencode"} {
 		defaultIndex := indexDefaultProviderAccount(synced, providerKey)
 		defaultPath, hasDefault := DetectDefaultAccountHomePath(providerKey)
 
@@ -648,6 +648,9 @@ func managedProviderHomePrefix(providerKey string) (string, bool) {
 	case "grok":
 		// Appended last (CP-46 P-0/Task-210 T-2).
 		return ".grokHome", true
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-2).
+		return ".opencodeHome", true
 	default:
 		return "", false
 	}
@@ -692,6 +695,9 @@ func DiscoverProviderAccountHomes(providerKey string) ([]string, error) {
 	case "grok":
 		// Appended last (CP-46 P-0/Task-210 T-4).
 		return discoverGrokAccountHomes()
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-2).
+		return discoverOpencodeAccountHomes()
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -872,6 +878,64 @@ func isValidGrokAccountPath(homePath string) bool {
 	}
 
 	return HasLocalAuthAtPath("grok", homePath)
+}
+
+func discoverOpencodeAccountHomes() ([]string, error) {
+	discovered := make(map[string]struct{})
+	var accountPaths []string
+
+	if cfg := os.Getenv("OPENCODE_CONFIG"); strings.TrimSpace(cfg) != "" {
+		home := strings.TrimSpace(cfg)
+		// OPENCODE_CONFIG is a directory like /home/user/.config/opencode, derive home
+		// Handle both POSIX and Windows separators.
+		normalized := filepath.ToSlash(home)
+		if strings.HasSuffix(normalized, "/opencode") {
+			normalized = strings.TrimSuffix(normalized, "/opencode")
+			home = filepath.FromSlash(normalized)
+		}
+		normalized = filepath.ToSlash(home)
+		if strings.HasSuffix(normalized, "/.config") {
+			normalized = strings.TrimSuffix(normalized, "/.config")
+			home = filepath.FromSlash(normalized)
+		}
+		home = strings.TrimSpace(home)
+		if home != "" {
+			accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, home, isValidOpencodeAccountPath)
+		}
+	}
+	if home := os.Getenv("OPENCODE_HOME"); strings.TrimSpace(home) != "" {
+		accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, home, isValidOpencodeAccountPath)
+	}
+
+	homeDir := preferredUserHomeDir()
+	if homeDir != "" {
+		accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, homeDir, isValidOpencodeAccountPath)
+		for _, path := range discoverManagedProviderHomeSlots(homeDir, ".opencodeHome", isValidOpencodeAccountPath) {
+			accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, path, nil)
+		}
+	}
+
+	return accountPaths, nil
+}
+
+func isValidOpencodeAccountPath(homePath string) bool {
+	info, err := os.Stat(homePath)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(homePath, ".config", "opencode", "opencode.json")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(homePath, ".config", "opencode", "opencode.jsonc")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(homePath, ".config", "opencode", "config.json")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(homePath, ".config", "opencode", "auth.json")); err == nil {
+		return true
+	}
+	return HasLocalAuthAtPath("opencode", homePath)
 }
 
 // discoverManagedCodexAccounts discovers managed Codex account slots from ~/codex-accounts/* directory.
