@@ -410,18 +410,14 @@ Hien tai Add tra ve a + b. Them mot ham AddWithLog(a, b int) int vao calc.go in 
 
 Verify: nếu planner chỉ khai calc.go mà coder sửa user_test.go → gate block + escalate (log flow_contract_freeze_chain / FrozenContractScopeDrift), flow dừng chờ amend; nếu planner khai đủ cả 2 file → flow chạy tiếp (không lỗi).
 
-## [FLOW] F3 — Planner khai sai/thiếu path → amend (live trigger CA-647)
+## [FLOW] ✅ F3 — Planner khai sai/thiếu path → amend (PASSED LIVE 2026-08-27 run-169381)
 
-**Kết quả thực tế (2026-08-27): Nhánh B pass — planner thông minh khai đủ
-`calc.go` + file caller (`user.go`/`user_decoy.go`) → không drift → flow pass.**
-Không thể ép planner khai thiếu bằng prompt nhắc file: LLM scan call site và
-khai luôn.
+> **Trạng thái:** ✅ **Nhánh A live-verified (run-169381):** planner freeze `calc-core` v1 `declared_paths=["calc.go"]` (07:48:42, additive-tests-only không khai test cũ — CA-647); tester `test_signatures` Append vào `calc_test.go` ngoài scope → `flow gate block: flow scope drift: wrote outside the frozen contract's declared paths: calc_test.go` (07:54:33, step WAITING_USER_APPROVAL, `flow_parked_awaiting_user`), amend `POST .../agent-loop/amend {"paths":["calc_test.go"]}` → `frozen_contracts.ndjson` **v2 Supersedes v1** `declared_paths=["calc.go","calc_test.go"]` (07:54:33) cho cả 2 writer steps; flow resume → implement/coder đổi `Subtract` sang `int64`, validate/reviewer/synthesis/audit pass → `done` (08:00:13, `go test ./...` ok, pending canonical `calc-core` updated). Nhánh B (planner khai đủ, không drift) đã pass từ run-165644/165818.
 
 **Recipe deterministic (dùng file planner không khai):** ép coder sửa
 `calc_test.go` — file cũ có `TestSubtract` vẫn dùng `int`; đổi `Subtract`
 sang `int64` mà không sửa test → `go test` fail → coder phải sửa
-`calc_test.go`. Planner theo bias safe-fix luôn khai **file test MỚI**
-(`subtract_int64_test.go`), không khai `calc_test.go` cũ → drift thật.
+`calc_test.go`. Planner theo bias safe-fix (Q1 `Only edit calc.go; leave calc_test.go untouched`) luôn khai **v1 chỉ `calc.go`** (không có test file) → drift thật khi tester/coder Append `calc_test.go`.
 
 Prompt (chạy sau khi đã xóa `user_decoy.go`, restart runner để load CA-647):
 Doi ham Subtract(a, b int) int trong calc.go thanh Subtract(a, b int64) int64 (phan than tra ve int64). Sua lai tat ca TestSubtract trong calc_test.go cho dung kieu int64. Chay go test ./...
@@ -434,7 +430,7 @@ Verify:
   Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:4317/client/workflow-runs/<runId>/agent-loop/amend" -ContentType "application/json" -Body '{"paths":["calc_test.go"]}'
   ```
 - `frozen_contracts.ndjson`: **v2 + Supersedes v1**; flow resume → coder retry pass.
-- Nếu planner vẫn khai `calc_test.go` → Nhánh B (đã live-verified). Decoy
+- Nếu planner vẫn khai `calc_test.go` → Nhánh B (đã live-verified từ run-165644). Decoy
   `user_decoy.go` không còn cần (planner scan call site).
 
 # P-3 — Canonical Head
