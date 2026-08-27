@@ -3184,7 +3184,10 @@ func (m *AppModel) showFlashToast(text string) tea.Cmd {
 }
 
 // handleGateInput interprets user input when a flow_gate_violation is pending.
-// Accepts option number (1-based) or option name (case-insensitive).
+// Accepts option number (1-based) or option name (case-insensitive). CA-650:
+// "custom <text>" submits the custom decision with text; a bare "custom"/"3"
+// (or the [Custom] chip) arms AwaitingCustom so the next Enter submits the
+// typed reason — the runner rejects option=custom without customText.
 func (m *AppModel) handleGateInput(input string) (tea.Model, tea.Cmd) {
 	// CA-536 escape hatch: a gate armed with no decision options can never be
 	// answered. Clear it so the next Enter reaches chat instead of looping the
@@ -3194,8 +3197,31 @@ func (m *AppModel) handleGateInput(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	lowInput := strings.TrimSpace(strings.ToLower(input))
+
+	// [Custom] chip armed: the whole input is the custom reason.
+	if m.gate.AwaitingCustom {
+		text := strings.TrimSpace(input)
+		if text == "" {
+			m.addMessage("system", "Custom gate decision: type your reason, then press Enter (or Esc/backspace to cancel).", "gate")
+			return m, nil
+		}
+		return m.submitGateCustom(text)
+	}
+
+	// "custom <text>" typed directly.
+	if strings.HasPrefix(lowInput, "custom ") {
+		text := strings.TrimSpace(input[len("custom"):])
+		if text == "" {
+			return m.armGateCustom()
+		}
+		return m.submitGateCustom(text)
+	}
+
 	for i, opt := range m.gate.Options {
 		if lowInput == fmt.Sprintf("%d", i+1) || strings.EqualFold(lowInput, opt) {
+			if opt == "custom" {
+				return m.armGateCustom()
+			}
 			runID := m.gate.RunID
 			m.gate = nil
 			m.connStatus = ConnRunning
@@ -3205,9 +3231,30 @@ func (m *AppModel) handleGateInput(input string) (tea.Model, tea.Cmd) {
 			return m, m.cmdSubmitGateDecision(runID, opt)
 		}
 	}
-	opts := strings.Join(m.gate.Options, ", ")
-	m.addMessage("system", fmt.Sprintf("Gate options: %s (enter number or name)", opts), "gate")
+	opts := strings.Join(optionChips(m.gate.Options), " ")
+	m.addMessage("system", fmt.Sprintf("Gate options: %s (click a chip or type number/name)", opts), "gate")
 	return m, nil
+}
+
+// armGateCustom arms the [Custom] chip flow: the next Enter submits the typed
+// text as the custom gate decision.
+func (m *AppModel) armGateCustom() (tea.Model, tea.Cmd) {
+	m.gate.AwaitingCustom = true
+	m.inputValue = ""
+	m.setInputCaret(0)
+	m.statusMsg = "gate custom: type your reason then Enter"
+	m.addMessage("system", "Custom gate decision — type your remediation instruction, then press Enter.", "gate")
+	return m, nil
+}
+
+// submitGateCustom posts the custom gate decision with the typed text and
+// clears the gate card (runner requires customText for option=custom).
+func (m *AppModel) submitGateCustom(text string) (tea.Model, tea.Cmd) {
+	runID := m.gate.RunID
+	m.gate = nil
+	m.connStatus = ConnRunning
+	m.statusMsg = "thinking…"
+	return m, m.cmdSubmitGateDecisionCustom(runID, text)
 }
 
 // dispatchImageCommand handles /image [paste|open|clear|rm|list|<path>].
@@ -5068,6 +5115,31 @@ func (m *AppModel) lastAssistantText() string {
 	return ""
 }
 
+// gateOptionChip renders a clickable chip label for a gate decision option
+// (CA-650 desktop parity: the desktop modal shows radio choices — the TUI
+// surfaces the same three as clickable chips).
+func gateOptionChip(opt string) string {
+	switch opt {
+	case "keep-test-fix-code":
+		return "[Fix code]"
+	case "suggest-requirement-change":
+		return "[Suggest req]"
+	case "custom":
+		return "[Custom]"
+	default:
+		return "[" + opt + "]"
+	}
+}
+
+// optionChips maps every gate option to its clickable chip label.
+func optionChips(opts []string) []string {
+	chips := make([]string, 0, len(opts))
+	for _, o := range opts {
+		chips = append(chips, gateOptionChip(o))
+	}
+	return chips
+}
+
 func buildGateMessage(status, errMsg string, opts []string, regressed []string) string {
 	var sb strings.Builder
 	lowStatus := strings.ToLower(strings.TrimSpace(status))
@@ -5082,6 +5154,9 @@ func buildGateMessage(status, errMsg string, opts []string, regressed []string) 
 		}
 		sb.WriteString("  Options: ")
 		sb.WriteString(strings.Join(opts, ", "))
+		// CA-650: clickable chips (desktop parity); number/name typing still works.
+		sb.WriteString("\n  " + strings.Join(optionChips(opts), "  "))
+		sb.WriteString("\n  (or type number / option name)")
 		return sb.String()
 	}
 	switch lowStatus {
@@ -5704,6 +5779,19 @@ func (m *AppModel) cmdSubmitGateDecision(runID, decision string) tea.Cmd {
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
 		if err := cl.SubmitGateDecision(context.Background(), runID, decision); err != nil {
+			return ErrMsg{Err: err}
+		}
+		return nil
+	}
+}
+
+// cmdSubmitGateDecisionCustom posts the custom gate decision with the
+// operator's own remediation text (CA-650).
+func (m *AppModel) cmdSubmitGateDecisionCustom(runID, customText string) tea.Cmd {
+	runnerURL := m.runnerURL
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		if err := cl.SubmitGateDecisionCustom(context.Background(), runID, customText); err != nil {
 			return ErrMsg{Err: err}
 		}
 		return nil

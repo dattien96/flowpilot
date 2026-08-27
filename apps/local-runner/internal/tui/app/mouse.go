@@ -332,6 +332,15 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		if err == nil && m.question != nil && idx >= 0 && idx < len(m.question.Options) {
 			return m.submitQuestionAnswer(questionOptionToken(m.question.Options[idx]))
 		}
+	case strings.HasPrefix(target, "gopt:"):
+		// CA-650: gate decision chip click — Fix code / Suggest req / Custom.
+		opt := strings.TrimPrefix(target, "gopt:")
+		if opt != "" && m.gate != nil {
+			if opt == "custom" {
+				return m.armGateCustom()
+			}
+			return m.handleGateInput(opt)
+		}
 	case strings.HasPrefix(target, "qtoggle:"):
 		idx, err := strconv.Atoi(strings.TrimPrefix(target, "qtoggle:"))
 		if err == nil && m.question != nil && idx >= 0 && idx < len(m.question.Options) {
@@ -467,6 +476,9 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 		return t
 	}
 	if t := m.hitBlockedChrome(c, x, y); t != "" {
+		return t
+	}
+	if t := hitGateChrome(m, c, x, y); t != "" {
 		return t
 	}
 	if t := hitQuestionChrome(m, c, x, y); t != "" {
@@ -753,6 +765,42 @@ func (m *AppModel) hitBlockedChrome(c tuiChrome, x, y int) string {
 			}
 			if hitToken(stripped, "[Stop]", x) {
 				return "stop"
+			}
+		}
+	}
+	return ""
+}
+
+// hitGateChrome maps a click on a gate decision chip ("[Fix code]", "[Suggest
+// req]", "[Custom]") to "gopt:<option>" (CA-650). Only active while a gate
+// card is armed; mirrors hitQuestionChrome.
+func hitGateChrome(m *AppModel, c tuiChrome, x, y int) string {
+	if m.gate == nil || len(m.gate.Options) == 0 {
+		return ""
+	}
+	checkLine := func(stripped string) string {
+		for _, opt := range m.gate.Options {
+			if hitToken(stripped, gateOptionChip(opt), x) {
+				return "gopt:" + opt
+			}
+		}
+		return ""
+	}
+	if c.messagesHeight > 0 && y >= c.panelH && y < c.panelH+c.messagesHeight {
+		rows := sliceChatRows(m.chatRows(), c.messagesHeight, m.viewport.offset)
+		rel := y - c.panelH
+		if rel >= 0 && rel < len(rows) {
+			if res := checkLine(stripANSI(rows[rel].Text)); res != "" {
+				return res
+			}
+		}
+	}
+	if c.inputH > 0 && y >= c.inputY && y < c.inputY+c.inputH {
+		lines := strings.Split(c.inputBlock, "\n")
+		rel := y - c.inputY
+		if rel >= 0 && rel < len(lines) {
+			if res := checkLine(stripANSI(lines[rel])); res != "" {
+				return res
 			}
 		}
 	}

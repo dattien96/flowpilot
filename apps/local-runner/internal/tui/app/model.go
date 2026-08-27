@@ -45,6 +45,10 @@ type GateState struct {
 	Options        []string
 	RegressedTests []string
 	RunID          string
+	// AwaitingCustom is set after the operator clicked the [Custom] chip
+	// (CA-650): the next Enter submits the typed input as the custom gate
+	// decision. The runner rejects option=custom without customText.
+	AwaitingCustom bool
 }
 
 // ApprovalState holds the active approval UI state.

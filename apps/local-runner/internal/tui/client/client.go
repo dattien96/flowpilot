@@ -1013,6 +1013,17 @@ func (c *Client) SubmitGateDecision(ctx context.Context, runID, decision string)
 	}, nil)
 }
 
+// SubmitGateDecisionCustom sends the custom gate decision with the operator's
+// own remediation instruction. The runner rejects option=custom without
+// customText (CA-650: the plain SubmitGateDecision above would 400).
+func (c *Client) SubmitGateDecisionCustom(ctx context.Context, runID, customText string) error {
+	return c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/gate-decision", map[string]any{
+		"option":     "custom",
+		"decision":   "custom",
+		"customText": customText,
+	}, nil)
+}
+
 // ApplyGrokYoloPosture calls POST /provider-accounts/grok-yolo-posture.
 func (c *Client) ApplyGrokYoloPosture(ctx context.Context, yolo bool) error {
 	return c.postJSON(ctx, "/provider-accounts/grok-yolo-posture", map[string]any{
