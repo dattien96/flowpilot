@@ -37,6 +37,26 @@ side had no equivalent detector, so the stall stayed silent and undiagnosable.
 - `inputWatchdogMsg` is excluded from the generic Update log (no 10s log
   noise).
 
+### Follow-up (same session, live feedback): eligibility gate + motion liveness
+
+First live run of the watchdog false-positived on plain idleness: sessions
+21472/25580/12300 sat 1-3 minutes without touching keys while the runner was
+starting or the screen was being read (`connStatus=connecting`/`idle`,
+`flowBlocked=false`) and the banner fired "stalled" even though input was
+perfectly fine (each later "recovered" on the next keystroke).
+
+- `inputStallEligible()` — the stall is only flagged when the app is in a
+  state that **requires** operator input: `flowLoopBlocked()` (Continue/Stop
+  bar — the run-151954 real wedge) or an approval/question/gate card. Silence
+  while idle, connecting, or watching a running turn is normal user behavior.
+- Outside eligible states the stale stall flag is dropped so a later eligible
+  stall re-arms cleanly.
+- `lastMotionAt` stamped at the `tuiMsgFilter` level on hover motion (which
+  never reaches Update): the stall fingerprint now includes `motionLive=`
+  (has the console pipe delivered ANY event during the stall window?), which
+  separates "keys dropped upstream" from "console fully dead". Hover motion
+  alone never clears a stall — only keys/clicks do.
+
 Deliberately NO mouse-pulse/`EnableMouse` re-issue: CA-610 proved pulsing
 drops the next KeyMsg on Windows and bricks input for minutes. The watchdog
 only observes and reports; the recovery action (restart / any key) stays with
@@ -53,13 +73,21 @@ CA-630/631 raw-paste guards.
 Additive only — legacy suite untouched.
 
 - `apps/local-runner/internal/tui/app/input_watchdog_test.go` (new):
-  - `TestInputWatchdog_StallDetectedOnce` — >45s silence flags + banner; repeat
-    tick does not re-log/replace.
+  - `TestInputWatchdog_StallDetectedOnce` — >45s silence in an input-requiring
+    state flags + banner; repeat tick does not re-log/replace.
+  - `TestInputWatchdog_StallEligibleViaGateAndQuestion` — approval / question /
+    gate cards are all eligible states.
+  - `TestInputWatchdog_NotEligibleWhenIdleDoesNotFlag` — long silence while
+    idle/connecting never flags (the false-positive repro).
+  - `TestInputWatchdog_NotEligibleClearsStaleStall` — stale flag dropped when
+    no input-requiring state is active.
   - `TestInputWatchdog_NoStallBeforeThreshold` — <45s silence changes nothing.
   - `TestInputWatchdog_FirstTickArmsBaseline` — fresh model arms baseline, never
     flags.
   - `TestInputWatchdog_KeyResumesAfterStall` / `...MouseClickResumesAfterStall`
     — arriving input clears flag + banner, refreshes `lastInputAt`.
+  - `TestInputWatchdog_MotionStampsLivenessAtFilter` — hover motion stamps
+    `lastMotionAt` at the filter, stays dropped, and never clears a stall.
   - `TestInputWatchdog_CmdReArms` — watchdog tick always returns a cmd.
   - `TestInputWatchdog_NormalKeyDoesNotTouchBanner` — a normal key never
     clobbers a legitimate live status banner.
@@ -81,5 +109,5 @@ line, and if it recurs the fingerprint goes into a follow-up fix.
 feature_key: cli-tui
 source_doc_id: CA-646
 change_type: bugfix
-summary: TUI input watchdog detects the silent Windows 0-KeyMsg console wedge — 10s tick, lastInputAt stamped on KeyMsg/MouseMsg, one fingerprint log + one visible banner after 45s silence, recovery log on next input (session 25708: 9+ min dead input after flow start)
+summary: TUI input watchdog detects the silent Windows 0-KeyMsg console wedge — 10s tick, lastInputAt stamped on KeyMsg/MouseMsg, one fingerprint log + one visible banner after 45s silence, recovery log on next input (session 25708: 9+ min dead input after flow start); follow-up: flag only when operator input is required (blocked flow/gate/approval/question), motionLive= liveness from hover-motion stamping at tuiMsgFilter
 # --->8---

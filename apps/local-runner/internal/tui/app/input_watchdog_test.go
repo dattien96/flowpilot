@@ -21,7 +21,8 @@ func configForWatchdogTest() config.ChatConfig {
 func TestInputWatchdog_StallDetectedOnce(t *testing.T) {
 	m := New(configForWatchdogTest(), "http://127.0.0.1:9")
 	now := time.Now()
-	m.lastInputAt = now.Add(-60 * time.Second) // no input for 60s > 45s threshold
+	m.approval = &ApprovalState{ID: "ap-1", RunID: "run-1"} // input-requiring state
+	m.lastInputAt = now.Add(-60 * time.Second)               // no input for 60s > 45s threshold
 
 	first, _ := m.Update(inputWatchdogMsg{at: now})
 	m2 := first.(*AppModel)
@@ -43,11 +44,66 @@ func TestInputWatchdog_StallDetectedOnce(t *testing.T) {
 	}
 }
 
+func TestInputWatchdog_StallEligibleViaGateAndQuestion(t *testing.T) {
+	now := time.Now()
+	for name, arm := range map[string]func(*AppModel){
+		"approval": func(m *AppModel) { m.approval = &ApprovalState{ID: "ap-1"} },
+		"question": func(m *AppModel) { m.question = &QuestionState{} },
+		"gate":     func(m *AppModel) { m.gate = &GateState{Options: []string{"continue", "stop"}} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := New(configForWatchdogTest(), "http://127.0.0.1:9")
+			arm(m)
+			m.lastInputAt = now.Add(-90 * time.Second)
+			updated, _ := m.Update(inputWatchdogMsg{at: now})
+			m2 := updated.(*AppModel)
+			if !m2.inputStallLogged {
+				t.Fatalf("stall must be flagged in %s-requiring state", name)
+			}
+		})
+	}
+}
+
+func TestInputWatchdog_NotEligibleWhenIdleDoesNotFlag(t *testing.T) {
+	// CA-645 follow-up: sessions 21472/25580/12300 sat 1-3 min without input
+	// while connecting/idle — normal silence, must NOT raise the banner.
+	m := New(configForWatchdogTest(), "http://127.0.0.1:9")
+	now := time.Now()
+	m.connStatus = ConnIdle
+	m.lastInputAt = now.Add(-90 * time.Second) // long silence, but nothing awaits input
+	before := m.statusMsg                      // New() seeds "connecting..."
+
+	updated, _ := m.Update(inputWatchdogMsg{at: now})
+	m2 := updated.(*AppModel)
+	if m2.inputStallLogged {
+		t.Fatal("idle silence must not flag a stall")
+	}
+	if m2.statusMsg != before {
+		t.Fatalf("idle silence must not raise a banner: statusMsg changed from %q to %q", before, m2.statusMsg)
+	}
+}
+
+func TestInputWatchdog_NotEligibleClearsStaleStall(t *testing.T) {
+	// A stall flagged while blocked must self-clear once the state no longer
+	// requires input (e.g. the flow unblocked) so a later stall re-arms.
+	m := New(configForWatchdogTest(), "http://127.0.0.1:9")
+	now := time.Now()
+	m.inputStallLogged = true
+	m.lastInputAt = now.Add(-120 * time.Second)
+
+	updated, _ := m.Update(inputWatchdogMsg{at: now})
+	m2 := updated.(*AppModel)
+	if m2.inputStallLogged {
+		t.Fatal("stale stall flag must clear when no input-requiring state is active")
+	}
+}
+
 func TestInputWatchdog_NoStallBeforeThreshold(t *testing.T) {
 	m := New(configForWatchdogTest(), "http://127.0.0.1:9")
 	now := time.Now()
-	m.lastInputAt = now.Add(-10 * time.Second) // under threshold
-	before := m.statusMsg                      // New() seeds "connecting..."
+	m.approval = &ApprovalState{ID: "ap-1", RunID: "run-1"} // input-requiring state
+	m.lastInputAt = now.Add(-10 * time.Second)               // under threshold
+	before := m.statusMsg                                    // New() seeds "connecting..."
 
 	updated, _ := m.Update(inputWatchdogMsg{at: now})
 	m2 := updated.(*AppModel)
@@ -105,6 +161,30 @@ func TestInputWatchdog_MouseClickResumesAfterStall(t *testing.T) {
 	m2 := updated.(*AppModel)
 	if m2.inputStallLogged {
 		t.Fatal("an arriving mouse click must clear the stall flag")
+	}
+}
+
+func TestInputWatchdog_MotionStampsLivenessAtFilter(t *testing.T) {
+	m := New(configForWatchdogTest(), "http://127.0.0.1:9")
+	before := time.Now().Add(-time.Hour)
+	m.lastMotionAt = before
+
+	motion := tea.MouseMsg{X: 10, Y: 5, Button: tea.MouseButtonNone, Action: tea.MouseActionMotion}
+	if got := tuiMsgFilter(m, motion); got != nil {
+		t.Fatalf("hover motion must still be dropped by the filter, got %v", got)
+	}
+	if m.lastMotionAt.Before(before) {
+		t.Fatal("hover motion must stamp lastMotionAt at the filter level")
+	}
+
+	// A motion stamp alone must NOT clear/reset a logged key/click stall.
+	m.inputStallLogged = true
+	m.lastInputAt = time.Now().Add(-90 * time.Second)
+	if got := tuiMsgFilter(m, motion); got != nil {
+		t.Fatalf("hover motion must be dropped even during a stall, got %v", got)
+	}
+	if !m.inputStallLogged {
+		t.Fatal("hover motion must never clear the stall flag — only keys/clicks do")
 	}
 }
 

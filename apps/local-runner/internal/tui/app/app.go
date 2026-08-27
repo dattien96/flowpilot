@@ -5731,6 +5731,7 @@ func tuiMsgFilter(model tea.Model, msg tea.Msg) tea.Msg {
 		return msg
 	}
 	if mm.Action == tea.MouseActionMotion && !m.mouseDrag.down && !mm.Shift {
+		m.markMotionAlive()
 		return nil
 	}
 	return msg

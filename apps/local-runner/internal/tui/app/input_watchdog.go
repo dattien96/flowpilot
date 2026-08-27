@@ -20,6 +20,12 @@ import (
 // app state at the moment of the stall plus a one-time visible banner, so the
 // operator knows to restart instead of staring at a dead screen, and the next
 // occurrence carries full context in tui.log.
+//
+// The stall is only flagged when the app is in a state that REQUIRES operator
+// input (blocked flow, gate/approval/question card). Silence while idle,
+// connecting, or watching a running turn is normal user behavior — sessions
+// 21472/25580/12300 sat 1-3 minutes without any input while waiting on the
+// runner and must not trigger the banner.
 
 const (
 	inputWatchdogInterval = 10 * time.Second
@@ -34,6 +40,26 @@ func cmdInputWatchdog() tea.Cmd {
 	})
 }
 
+// inputStallEligible reports whether the app currently requires the operator
+// to act — the only states where input silence is suspicious:
+//   - flow loop parked "blocked" (Continue/Stop bar — the run-151954 wedge)
+//   - a gate block, approval card, or question card waiting for a decision
+func (m *AppModel) inputStallEligible() bool {
+	if m.flowLoopBlocked() {
+		return true
+	}
+	return m.approval != nil || m.question != nil || m.gate != nil
+}
+
+// markMotionAlive stamps hover-motion delivery. Hover motion is filtered out
+// before Update (tuiMsgFilter), so it cannot mark a key/click stall as
+// recovered by itself — but its arrival proves the console input pipe is
+// delivering events at all, which separates "keys dropped upstream" from
+// "console fully dead" in the stall fingerprint.
+func (m *AppModel) markMotionAlive() {
+	m.lastMotionAt = time.Now()
+}
+
 // markInputAlive stamps the last-seen console input time; called on every
 // KeyMsg and MouseMsg that reaches Update, before normal handling.
 func (m *AppModel) markInputAlive() {
@@ -46,21 +72,27 @@ func (m *AppModel) markInputAlive() {
 	m.inputStallLogged = false
 }
 
-// checkInputWatchdog runs on inputWatchdogMsg. When no console input has
-// arrived for inputStallThreshold while the app is still responsive, it logs
-// one diagnostic fingerprint (conn status, flow block state, child view, live
-// turn) and shows a one-time banner. The banner is not repeated; the next
-// input or a restart clears it.
+// checkInputWatchdog runs on inputWatchdogMsg. When the app is in an
+// input-requiring state and no console input has arrived for
+// inputStallThreshold, it logs one diagnostic fingerprint (conn status, flow
+// block state, child view, live turn, mouse-motion liveness) and shows a
+// one-time banner. Outside input-requiring states, silence is normal and any
+// stale stall flag is dropped so a later eligible stall re-arms cleanly.
 func (m *AppModel) checkInputWatchdog(at time.Time) (tea.Model, tea.Cmd) {
 	if m.lastInputAt.IsZero() {
 		m.lastInputAt = at
 		return m, cmdInputWatchdog()
 	}
+	if !m.inputStallEligible() {
+		m.inputStallLogged = false
+		return m, cmdInputWatchdog()
+	}
 	if !m.inputStallLogged && at.Sub(m.lastInputAt) >= inputStallThreshold {
 		stall := at.Sub(m.lastInputAt)
-		tuiLog("input-watchdog: console input stalled — no KeyMsg/MouseMsg for %s since %s; connStatus=%s flowBlocked=%v viewingChild=%v turnActive=%v; press any key or Ctrl+C to restart",
+		motionLive := !m.lastMotionAt.IsZero() && at.Sub(m.lastMotionAt) < inputStallThreshold
+		tuiLog("input-watchdog: console input stalled — no KeyMsg/MouseMsg for %s since %s; connStatus=%s flowBlocked=%v viewingChild=%v turnActive=%v motionLive=%v; press any key or Ctrl+C to restart",
 			stall.Round(time.Second), m.lastInputAt.Format(time.RFC3339),
-			m.connStatus, m.flowLoopBlocked(), m.viewingChild(), m.turnIsActive())
+			m.connStatus, m.flowLoopBlocked(), m.viewingChild(), m.turnIsActive(), motionLive)
 		m.inputStallLogged = true
 		m.statusMsg = "input stalled: no keys/mouse received (" + stall.Round(time.Second).String() + ") — press any key or Ctrl+C to restart"
 		m.addMessage("system", "Input stalled: console is not delivering keys/mouse to the TUI (the session is otherwise alive). Press any key, or Ctrl+C and restart the TUI.", "gate")

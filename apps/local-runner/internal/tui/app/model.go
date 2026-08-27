@@ -305,6 +305,11 @@ type AppModel struct {
 	// (input_watchdog.go, CA-645) so it logs once per stall episode.
 	lastInputAt      time.Time
 	inputStallLogged bool
+	// lastMotionAt is stamped by hover-motion events at the tuiMsgFilter level
+	// (they never reach Update). It proves the console input pipe is still
+	// delivering events during an input stall, separating "keys dropped
+	// upstream" from "console fully dead" in the watchdog fingerprint.
+	lastMotionAt time.Time
 	viewport      viewportState
 	mouseSel      mouseSelect
 	mouseDrag     mouseDrag
