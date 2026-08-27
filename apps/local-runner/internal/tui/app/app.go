@@ -5794,6 +5794,7 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 	tuiLog("Run() start print=%v runner=%s", cfg.Print, runnerURL)
 	m := New(cfg, runnerURL)
 	applyProductionInputGuards(m, runtime.GOOS)
+	disableConsoleQuickEdit()
 
 	if cfg.Print {
 		err := runHeadless(m, cfg.Prompt)
