@@ -60,15 +60,19 @@ func IsFrozenStoreBookkeepingPath(p string) bool {
 
 // RunnerLedgerBookkeepingPaths returns the exact repo-relative paths
 // (forward slash) that FlowPilot's runner-internal ledger (changeledger /
-// contextsync / chat_summary) writes into the workspace it is rooted at.
-// These exact bookkeeping files are excluded from a Flow writer's scope-drift
-// comparison so runner ledger writes during turns do not false-positive as
-// scope drift (BUG-327).
+// contextsync / chat_summary / gate-metrics) writes into the workspace it is
+// rooted at. These exact bookkeeping files are excluded from a Flow writer's
+// scope-drift comparison so runner ledger writes during turns do not
+// false-positive as scope drift (BUG-327). CA-649: gate-metrics.ndjson is
+// appended by the gate itself on EVERY gate pass, so it is always dirty at the
+// moment the coder's own FrozenContractScopeDrift check runs — without the
+// exemption the gate parks itself on its own observability file.
 func RunnerLedgerBookkeepingPaths() []string {
 	return []string{
 		path.Join(".flowpilot", "manifest.json"),
 		path.Join(".flowpilot", "ledger", "chat_summary.ndjson"),
 		path.Join(".flowpilot", "ledger", "feature_history.ndjson"),
+		path.Join(".flowpilot", "gate-metrics.ndjson"),
 	}
 }
 
