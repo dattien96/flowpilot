@@ -5001,6 +5001,39 @@ func (m *AppModel) renderInputLine() string {
 	if bar := m.renderAttentionBar(); bar != "" {
 		inner = append(inner, strings.Split(bar, "\n")...)
 	}
+	// Phase 2 (Task-308): when caret is sticky-end, render via textarea.View()
+	// instead of the custom bodyLines+windowRunesAround path.
+	if m.useTextareaView() {
+		m.syncTextareaValue()
+		// Keep width in sync (render may be called without WindowSizeMsg).
+		m.textarea.SetWidth(innerW)
+		h := m.textarea.LineCount()
+		if h < 1 {
+			h = 1
+		}
+		if h > 8 {
+			h = 8
+		}
+		m.textarea.SetHeight(h)
+		// Mirror m.cursorOn into textarea focus so View changes with the blink
+		// (CA-633 idle pin must still recompose once).
+		if m.cursorOn {
+			m.textarea.Focus()
+		} else {
+			m.textarea.Blur()
+		}
+		view := strings.TrimSuffix(m.textarea.View(), "\n")
+		viewLines := strings.Split(view, "\n")
+		// Prepend attach chip on first View line (if present and fits).
+		if attach != "" && len(viewLines) > 0 {
+			viewLines[0] = attach + viewLines[0]
+		} else if attach != "" {
+			viewLines = []string{attach}
+		}
+		inner = append(inner, viewLines...)
+		footer := strings.TrimSpace(m.model)
+		return frameInput(inner, w, label, footer, m.asciiMode)
+	}
 	caretAt := m.inputCaretIndex()
 	off := 0
 	for i, bl := range bodyLines {

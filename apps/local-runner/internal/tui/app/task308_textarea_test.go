@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
 )
 
@@ -315,5 +316,96 @@ func TestTUIInput_Bubbles_CollapseBurstSyncsMirror(t *testing.T) {
 	}
 	if m.textarea.Value() != m.inputValue {
 		t.Fatalf("mirror must equal token, input=%q mirror=%q", m.inputValue, m.textarea.Value())
+	}
+}
+
+// 13-18. Phase 2: View-when-sticky-end (renderInputLine uses textarea.View when sticky-end).
+func TestTUIInput_Bubbles_View_WhenStickyEnd(t *testing.T) {
+	m := newTask308Model()
+	for _, r := range "hello" {
+		m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = m2.(*AppModel)
+	}
+	// Typing "hello" quickly arms pasteBurst (2+ runes <25ms); clear it for View check.
+	m.pasteBurst = pasteBurst{}
+	view := m.renderInputLine()
+	if !strings.Contains(view, "hello") {
+		t.Fatalf("render must contain hello, got %q", view)
+	}
+	if strings.Contains(view, "┃") {
+		t.Fatalf("render must not contain Prompt ┃, got %q", view)
+	}
+	// Mirror must hold hello (value-only).
+	if m.textarea.Value() != "hello" {
+		t.Fatalf("mirror must hold hello, got %q", m.textarea.Value())
+	}
+}
+
+func TestTUIInput_Bubbles_View_EmptyShowsPlaceholder(t *testing.T) {
+	m := newTask308Model()
+	// Empty composer: mirror holds "", textarea placeholder is set, render shows frame.
+	if m.inputValue != "" || m.textarea.Value() != "" {
+		t.Fatalf("empty composer: input=%q mirror=%q", m.inputValue, m.textarea.Value())
+	}
+	if m.textarea.Placeholder != "Type a message, /command, or @file..." {
+		t.Fatalf("placeholder mismatch: %q", m.textarea.Placeholder)
+	}
+	view := m.renderInputLine()
+	if !strings.Contains(view, "chat") {
+		t.Fatalf("empty render must contain frame label, got %q", view)
+	}
+}
+
+func TestTUIInput_Bubbles_View_FallsBackWhenCaretMid(t *testing.T) {
+	m := newTask308Model()
+	for _, r := range "hello" {
+		m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = m2.(*AppModel)
+	}
+	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyLeft})
+	m = m2.(*AppModel)
+	m2, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyLeft})
+	m = m2.(*AppModel)
+	if m.useTextareaView() {
+		t.Fatal("mid-string caret should fallback to custom renderer")
+	}
+	m2, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
+	m = m2.(*AppModel)
+	if m.inputValue != "helXlo" {
+		t.Fatalf("mid insert failed, got %q", m.inputValue)
+	}
+}
+
+func TestTUIInput_Bubbles_View_FallsBackOnSkillHighlight(t *testing.T) {
+	m := newTask308Model()
+	m.selectedSkills = []client.SkillSelection{{Name: "coding"}}
+	// Even with sticky-end, skill highlight forces fallback (keeps highlight).
+	if m.useTextareaView() {
+		t.Fatal("skill highlight must fallback to custom renderer")
+	}
+}
+
+func TestTUIInput_Bubbles_View_BurstShowsPastingPlaceholder(t *testing.T) {
+	m := newTask308Model()
+	m.pasteBurst.active = true
+	if m.useTextareaView() {
+		t.Fatal("burst active must fallback")
+	}
+	view := m.renderInputLine()
+	if !strings.Contains(view, "[Pasting…]") {
+		t.Fatalf("burst render must show [Pasting…], got %q", view)
+	}
+}
+
+func TestTUIInput_Bubbles_View_AuthDoesNotLeak(t *testing.T) {
+	m := newTask308Model()
+	m.authPhase = AuthPassword
+	m.inputValue = "secret123"
+	view := m.renderInputLine()
+	if strings.Contains(view, "secret123") {
+		t.Fatalf("auth View leaked password, got %q", view)
+	}
+	if !strings.Contains(view, "*") {
+		t.Fatalf("auth View should mask password, got %q", view)
 	}
 }

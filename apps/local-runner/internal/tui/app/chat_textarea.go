@@ -9,11 +9,12 @@ import (
 )
 
 // newChatTextArea creates a focused textarea for the chat composer (Task-308).
-// Width is set via SetWidth before first View; height is 3 lines and grows.
+// Width is set via SetWidth before first View; height is 3 lines and grows
+// up to 8 lines when the user types multi-line input.
 func newChatTextArea(width int) textarea.Model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message, /command, or @file..."
-	ta.Prompt = "┃ "
+	ta.Prompt = ""
 	ta.CharLimit = 0
 	ta.ShowLineNumbers = false
 	ta.SetWidth(width)
@@ -25,11 +26,23 @@ func newChatTextArea(width int) textarea.Model {
 	ta.KeyMap.Paste = key.NewBinding()
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.FocusedStyle.Placeholder = styleSystem
-	ta.FocusedStyle.Prompt = styleInputStroke
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle()
 	ta.FocusedStyle.Text = styleUser
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 	ta.Focus()
 	return ta
+}
+
+// useTextareaView reports whether the composer should be rendered via
+// textarea.View() (sticky-end path) or the legacy custom renderer. Sticky-end
+// covers the common case — typing at the end, no active paste burst, no skill
+// highlight, no blocked flow attention, no live turn — where SetValue leaves
+// the caret at the right place. Live/blocked caret keeps the legacy
+// cursorOn path so the CA-633 recompose/caching contract stays intact.
+// Temporarily disabled for CA-633 idle pin stability — re-enable after
+// fixing the idle View cache interaction.
+func (m *AppModel) useTextareaView() bool {
+	return false
 }
 
 // normalizeComposerForMirror rewrites inputValue the same way bubbles'
