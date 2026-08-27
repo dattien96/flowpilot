@@ -37,9 +37,9 @@ func newChatTextArea(width int) textarea.Model {
 // textarea.View() (sticky-end with draft) or the legacy custom renderer.
 // Sticky-end with draft covers the common typing case where SetValue leaves
 // the caret at the right place. Empty idle, mid-string caret, skill highlight,
-// attach chip, burst, live turn, and blocked/attention chrome stay on the
-// legacy path so the CA-633 idle-pin/caching contract and CA-560 no-clamp
-// are preserved.
+// attach chip, burst, live turn, blocked/attention, and soft-wrap overflow
+// stay on the legacy path so the CA-633 idle-pin/caching contract and CA-560
+// no-clamp/windowRunesAround caret-visibility are preserved.
 func (m *AppModel) useTextareaView() bool {
 	if !m.mirrorReady() || m.authPhase != AuthNone || m.viewingChild() || m.modeSetupModalOpen || m.pasteBurst.active {
 		return false
@@ -61,6 +61,17 @@ func (m *AppModel) useTextareaView() bool {
 	}
 	if m.turnIsActive() || m.workIsLive() {
 		return false
+	}
+	// Soft-wrap would clip the sticky-end caret with a fixed-height viewport.
+	// Keep the legacy windowRunesAround path when any logical line overflows.
+	innerW := m.chatWidth() - 2
+	if innerW < 1 {
+		innerW = 1
+	}
+	for _, line := range strings.Split(m.inputValue, "\n") {
+		if lipgloss.Width(line) > innerW {
+			return false
+		}
 	}
 	return true
 }

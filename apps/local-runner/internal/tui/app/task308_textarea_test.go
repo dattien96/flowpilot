@@ -333,6 +333,11 @@ func TestTUIInput_Bubbles_View_WhenStickyEnd(t *testing.T) {
 	if m.textarea.Prompt != "" {
 		t.Fatalf("View Prompt must be empty, got %q", m.textarea.Prompt)
 	}
+	// View-only side effect: SetHeight(LineCount) vs constructor 3.
+	m.renderInputLine()
+	if m.textarea.Height() != 1 {
+		t.Fatalf("View should set Height to LineCount (1), got %d", m.textarea.Height())
+	}
 	view := m.renderInputLine()
 	if !strings.Contains(view, "hello") {
 		t.Fatalf("View must contain hello, got %q", view)
@@ -340,6 +345,7 @@ func TestTUIInput_Bubbles_View_WhenStickyEnd(t *testing.T) {
 	if strings.Contains(view, "┃") {
 		t.Fatalf("View must not contain Prompt ┃, got %q", view)
 	}
+	// Deleting the View branch must break the Height assertion above — proves the path ran.
 }
 
 func TestTUIInput_Bubbles_View_EmptyShowsPlaceholder(t *testing.T) {
@@ -365,6 +371,11 @@ func TestTUIInput_Bubbles_View_FallsBackWhenCaretMid(t *testing.T) {
 		m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		m = m2.(*AppModel)
 	}
+	m.pasteBurst = pasteBurst{}
+	// Establish sticky-end draft that would use View.
+	if !m.useTextareaView() {
+		t.Fatal("setup: sticky-end draft should use View")
+	}
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyLeft})
 	m = m2.(*AppModel)
 	m2, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyLeft})
@@ -381,6 +392,14 @@ func TestTUIInput_Bubbles_View_FallsBackWhenCaretMid(t *testing.T) {
 
 func TestTUIInput_Bubbles_View_FallsBackOnSkillHighlight(t *testing.T) {
 	m := newTask308Model()
+	for _, r := range "hi" {
+		m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = m2.(*AppModel)
+	}
+	m.pasteBurst = pasteBurst{}
+	if !m.useTextareaView() {
+		t.Fatal("setup: hi should use View")
+	}
 	m.selectedSkills = []client.SkillSelection{{Name: "coding"}}
 	if m.useTextareaView() {
 		t.Fatal("skill highlight must fallback to custom renderer")
@@ -394,10 +413,27 @@ func TestTUIInput_Bubbles_View_FallsBackOnAttachChip(t *testing.T) {
 		m = m2.(*AppModel)
 	}
 	m.pasteBurst = pasteBurst{}
-	// Simulate image attach chip.
+	if !m.useTextareaView() {
+		t.Fatal("setup: hi should use View")
+	}
+	// Simulate image attach chip — must flip the predicate.
 	m.pendingAttach = []client.PromptAttachment{{ID: "a1", OriginalName: "a.png"}}
 	if m.useTextareaView() {
 		t.Fatal("attach chip must fallback to custom renderer")
+	}
+}
+
+func TestTUIInput_Bubbles_View_FallsBackOnLongLineWrap(t *testing.T) {
+	m := newTask308Model()
+	m.width = 40
+	m.fullWidth = 40
+	for _, r := range strings.Repeat("a", 100) {
+		m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = m2.(*AppModel)
+	}
+	m.pasteBurst = pasteBurst{}
+	if m.useTextareaView() {
+		t.Fatal("long line that overflows inner width must fallback to keep caret visible")
 	}
 }
 
