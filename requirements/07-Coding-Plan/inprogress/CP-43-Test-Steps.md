@@ -410,11 +410,19 @@ Hien tai Add tra ve a + b. Them mot ham AddWithLog(a, b int) int vao calc.go in 
 
 Verify: nếu planner chỉ khai calc.go mà coder sửa user_test.go → gate block + escalate (log flow_contract_freeze_chain / FrozenContractScopeDrift), flow dừng chờ amend; nếu planner khai đủ cả 2 file → flow chạy tiếp (không lỗi).
 
-## [FLOW] PENDING-F3 — Planner khai sai/thiếu path → amend
+## [FLOW] F3 — Planner khai sai/thiếu path → amend (live trigger CA-647)
 
 Prompt (task đòi sửa nhiều file nhưng nêu hướng hẹp):
 Sua ham Subtract trong calc.go va dong thoi cap nhat goi ham Subtract trong user.go cho dung kieu int.
 Verify: coder đụng user.go ngoài frozen scope → block → amend (tăng version, Supersedes) → chạy tiếp.
+
+Khi flow park WAITING_USER_APPROVAL vì drift, amend trực tiếp qua API (runner restart để load CA-647):
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:4317/client/workflow-runs/<runId>/agent-loop/amend" -ContentType "application/json" -Body '{"paths":["user.go"]}'
+```
+
+Verify: `frozen_contracts.ndjson` có v2 + Supersedes v1; flow resume → coder retry pass.
 
 # P-3 — Canonical Head
 
