@@ -51,6 +51,9 @@ func summarizerModelFor(providerKey ProviderKey) string {
 		// `grok -p` exec adapter (P-13 exception, resolvePromptExecutionAdapter)
 		// use the account's configured default model.
 		return ""
+	case ProviderKeyOpencode:
+		// Appended last (CP-57 P-0/Task-303 T-6): cheap tier via opencode/gpt-5.4-nano
+		return "opencode/gpt-5.4-nano"
 	default:
 		return ""
 	}
@@ -74,11 +77,12 @@ func (r *Runner) SummarizeChatTranscript(ctx context.Context, transcript string,
 	if transcript == "" {
 		return "", errors.New("empty transcript")
 	}
-	if !supportsHandoffSource(providerKey) && providerKey != ProviderKeyGemini && providerKey != ProviderKeyGrok {
+	if !supportsHandoffSource(providerKey) && providerKey != ProviderKeyGemini && providerKey != ProviderKeyGrok && providerKey != ProviderKeyOpencode {
 		// Only providers with a one-shot exec adapter can summarize. Grok
 		// summarizes via the same one-shot `grok -p` exec adapter as Gemini's
 		// `agy --print` (P-13 exception) despite not being a handoff SOURCE yet
 		// (CP-46 Task-212 T-5, Q-7) — those are deliberately independent gates.
+		// Opencode also uses one-shot `opencode run --format json` (CP-57 P-1).
 		return "", fmt.Errorf("provider %q has no summarizer adapter", providerKey)
 	}
 	if len(transcript) > summarizerMaxInputBytes {
@@ -115,6 +119,10 @@ func (r *Runner) SummarizeChatTranscript(ctx context.Context, transcript string,
 	prompt := summarizerInstruction + "\n\n<conversation>\n" + transcript + "\n</conversation>\n"
 	if providerKey == ProviderKeyGemini {
 		args = append(args, "--print", prompt)
+	} else if providerKey == ProviderKeyGrok || providerKey == ProviderKeyOpencode {
+		// Appended last (CP-57 Task-303): opencode/grok one-shot use positional prompt arg
+		// (resolvePromptExecutionAdapter + ExecutePrompt usesPromptArg), not stdin.
+		args = append(args, prompt)
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, summarizerTimeout)
@@ -123,7 +131,7 @@ func (r *Runner) SummarizeChatTranscript(ctx context.Context, transcript string,
 	cmd := exec.CommandContext(execCtx, binary, args...)
 	cmd.Env = r.getEnvForExecution(string(providerKey), homePath, nil, "")
 	cmd.Dir = workspace
-	if providerKey != ProviderKeyGemini {
+	if providerKey != ProviderKeyGemini && providerKey != ProviderKeyGrok && providerKey != ProviderKeyOpencode {
 		cmd.Stdin = strings.NewReader(prompt)
 	}
 

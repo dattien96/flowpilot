@@ -68,6 +68,42 @@ func LocateSessionFile(providerKey ProviderKey, accountHome, sessionID, cwd stri
 			return "", false
 		}
 		return dir, true
+	case ProviderKeyOpencode:
+		// Appended last (CP-57 P-0/Task-303 T-7): Opencode sessions are stored under
+		// ~/.config/opencode. accountHome may be user HOME (e.g. /Users/x) or the
+		// config dir itself (e.g. /Users/x/.config/opencode) depending on caller
+		// (defaultProviderSessionHome vs connected account HomePath). Check both.
+		if !isOpencodeRealSessionID(sessionID) {
+			return "", false
+		}
+		isConfigDir := strings.HasSuffix(filepath.ToSlash(filepath.Clean(accountHome)), ".config/opencode") || strings.HasSuffix(filepath.ToSlash(filepath.Clean(accountHome)), "/opencode")
+		var candidates []string
+		if isConfigDir {
+			candidates = []string{
+				filepath.Join(accountHome, "sessions", sessionID+".json"),
+				filepath.Join(accountHome, "storage", "session", sessionID, "store.json"),
+				filepath.Join(accountHome, "sessions", sessionID, "session.json"),
+			}
+		} else {
+			candidates = []string{
+				filepath.Join(accountHome, ".config", "opencode", "sessions", sessionID+".json"),
+				filepath.Join(accountHome, ".config", "opencode", "storage", "session", sessionID, "store.json"),
+				filepath.Join(accountHome, ".local", "share", "opencode", "sessions", sessionID+".jsonl"),
+				filepath.Join(accountHome, ".config", "opencode", "sessions", sessionID, "session.json"),
+			}
+		}
+		for _, p := range candidates {
+			if info, err := os.Stat(p); err == nil && !info.IsDir() {
+				return p, true
+			}
+			if info, err := os.Stat(p); err == nil && info.IsDir() {
+				// Directory case: check for a session file inside
+				if _, err := os.Stat(filepath.Join(p, "session.json")); err == nil {
+					return p, true
+				}
+			}
+		}
+		return "", false
 	default:
 		return "", false
 	}
@@ -478,6 +514,8 @@ func defaultProviderSessionHome(providerKey ProviderKey) (string, bool) {
 		return userHome, true
 	case ProviderKeyGrok:
 		return filepath.Join(userHome, ".grok"), true
+	case ProviderKeyOpencode:
+		return filepath.Join(userHome, ".config", "opencode"), true
 	default:
 		return "", false
 	}
@@ -592,6 +630,49 @@ func relocationTargetPath(providerKey ProviderKey, srcPath, targetHome, sessionI
 			return "", errors.New("grok relocation target escapes account home")
 		}
 		return dst, nil
+	case ProviderKeyOpencode:
+		// Appended last (CP-57): single file under .config/opencode/sessions or storage/session
+		id := strings.TrimSpace(sessionID)
+		if id == "" {
+			base := filepath.Base(srcPath)
+			id = strings.TrimSuffix(strings.TrimSuffix(base, ".json"), ".jsonl")
+			if strings.HasSuffix(base, "store.json") {
+				id = filepath.Base(filepath.Dir(filepath.Dir(srcPath)))
+			}
+		}
+		if !isOpencodeRealSessionID(id) {
+			return "", errors.New("opencode relocation requires a real session id")
+		}
+		isConfigDir := strings.HasSuffix(filepath.ToSlash(filepath.Clean(targetHome)), ".config/opencode") || strings.HasSuffix(filepath.ToSlash(filepath.Clean(targetHome)), "/opencode")
+		var dst string
+		if strings.Contains(filepath.ToSlash(srcPath), "/storage/session/") {
+			if isConfigDir {
+				dst = filepath.Join(targetHome, "storage", "session", id, "store.json")
+			} else {
+				dst = filepath.Join(targetHome, ".config", "opencode", "storage", "session", id, "store.json")
+			}
+		} else {
+			// Default sessions/<id>.json
+			parts := strings.Split(filepath.ToSlash(srcPath), "/sessions/")
+			if len(parts) == 2 {
+				rel := filepath.FromSlash(parts[1])
+				if isConfigDir {
+					dst = filepath.Join(targetHome, "sessions", rel)
+				} else {
+					dst = filepath.Join(targetHome, ".config", "opencode", "sessions", rel)
+				}
+			} else {
+				if isConfigDir {
+					dst = filepath.Join(targetHome, "sessions", id+".json")
+				} else {
+					dst = filepath.Join(targetHome, ".config", "opencode", "sessions", id+".json")
+				}
+			}
+		}
+		if !pathUnderRoot(targetHome, dst) {
+			return "", errors.New("opencode relocation target escapes account home")
+		}
+		return dst, nil
 	default:
 		return "", errors.New("unsupported provider session relocation")
 	}
@@ -637,6 +718,35 @@ func restoreTargetPath(providerKey ProviderKey, targetHome, relativePath, sessio
 		dst := filepath.Join(grokSessionDirPath(targetHome, cwd, sessionID), "chat_history.jsonl")
 		if !pathUnderRoot(targetHome, dst) {
 			return "", errors.New("grok restore target escapes account home")
+		}
+		return dst, nil
+	case ProviderKeyOpencode:
+		if !isOpencodeRealSessionID(sessionID) {
+			return "", errors.New("opencode restore requires a real session id")
+		}
+		isConfigDir := strings.HasSuffix(filepath.ToSlash(filepath.Clean(targetHome)), ".config/opencode") || strings.HasSuffix(filepath.ToSlash(filepath.Clean(targetHome)), "/opencode")
+		// Strict validation: only sessions/storage under opencode config
+		valid := false
+		if isConfigDir {
+			if clean == "sessions" || strings.HasPrefix(clean, "sessions/") || strings.HasPrefix(clean, "storage/session/") || clean == ".config/opencode" || strings.HasPrefix(clean, ".config/opencode/sessions/") || strings.HasPrefix(clean, ".config/opencode/storage/session/") {
+				valid = true
+			}
+		} else {
+			if clean == ".config/opencode" || strings.HasPrefix(clean, ".config/opencode/sessions/") || strings.HasPrefix(clean, ".config/opencode/storage/session/") {
+				valid = true
+			}
+		}
+		if !valid {
+			return "", errors.New("invalid opencode restore path")
+		}
+		dst := filepath.Join(targetHome, filepath.FromSlash(clean))
+		// Normalize for config-dir targetHome
+		if isConfigDir && strings.HasPrefix(clean, ".config/opencode/") {
+			rel := strings.TrimPrefix(clean, ".config/opencode/")
+			dst = filepath.Join(targetHome, filepath.FromSlash(rel))
+		}
+		if !pathUnderRoot(targetHome, dst) {
+			return "", errors.New("opencode restore target escapes account home")
 		}
 		return dst, nil
 	default:
