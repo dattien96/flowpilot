@@ -9,8 +9,8 @@ import (
 )
 
 // newChatTextArea creates a focused textarea for the chat composer (Task-308).
-// Width is set via SetWidth before first View; height is 3 lines and grows
-// up to 8 lines when the user types multi-line input.
+// Width is set via SetWidth before first View; height follows LineCount()
+// (CA-560: no upper clamp, textarea MaxHeight 99 is the only limit).
 func newChatTextArea(width int) textarea.Model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message, /command, or @file..."
@@ -64,12 +64,15 @@ func (m *AppModel) useTextareaView() bool {
 	}
 	// Soft-wrap would clip the sticky-end caret with a fixed-height viewport.
 	// Keep the legacy windowRunesAround path when any logical line overflows.
-	innerW := m.chatWidth() - 2
+	// Use the same innerW as renderInputLine (safeTermWidth - 2) and >=
+	// because bubbles wrap() uses >= width and appends a trailing space.
+	w := safeTermWidth(m.chatWidth())
+	innerW := w - 2
 	if innerW < 1 {
 		innerW = 1
 	}
 	for _, line := range strings.Split(m.inputValue, "\n") {
-		if lipgloss.Width(line) > innerW {
+		if lipgloss.Width(line) >= innerW {
 			return false
 		}
 	}

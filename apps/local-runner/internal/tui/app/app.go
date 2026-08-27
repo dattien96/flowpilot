@@ -5002,8 +5002,7 @@ func (m *AppModel) renderInputLine() string {
 		inner = append(inner, strings.Split(bar, "\n")...)
 	}
 	// Phase 2 (Task-308): when caret is sticky-end with draft, render via
-	// textarea.View() instead of custom bodyLines. CA-560: no height clamp for
-	// typed multi-line (only lower bound 1).
+	// textarea.View() instead of custom bodyLines. CA-560: no height clamp.
 	if m.useTextareaView() {
 		m.syncTextareaValue()
 		m.textarea.SetWidth(innerW)
@@ -5012,19 +5011,8 @@ func (m *AppModel) renderInputLine() string {
 			h = 1
 		}
 		m.textarea.SetHeight(h)
-		if m.cursorOn {
-			m.textarea.Focus()
-		} else {
-			m.textarea.Blur()
-		}
 		view := strings.TrimSuffix(m.textarea.View(), "\n")
 		viewLines := strings.Split(view, "\n")
-		// Prepend attach chip on first View line (if present and fits).
-		if attach != "" && len(viewLines) > 0 {
-			viewLines[0] = attach + viewLines[0]
-		} else if attach != "" {
-			viewLines = []string{attach}
-		}
 		inner = append(inner, viewLines...)
 		footer := strings.TrimSpace(m.model)
 		return frameInput(inner, w, label, footer, m.asciiMode)
