@@ -51,6 +51,14 @@ function GrokIcon(): React.ReactElement {
   );
 }
 
+function OpencodeIcon(): React.ReactElement {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+    </svg>
+  );
+}
+
 function StopIcon(): React.ReactElement {
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
@@ -73,6 +81,7 @@ const PROVIDER_CARDS: { value: ProviderKey; label: string; icon: React.ReactElem
   { value: "claude", label: "Claude", icon: <ClaudeIcon /> },
   { value: "gemini", label: "Gemini", icon: <GeminiIcon /> },
   { value: "grok", label: "Grok", icon: <GrokIcon /> },
+  { value: "opencode", label: "OpenCode", icon: <OpencodeIcon /> },
 ];
 
 // Providers that accept chat image attachments (Task-052 / CA-483).

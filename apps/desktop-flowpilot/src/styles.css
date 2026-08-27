@@ -26,6 +26,7 @@
   --claude-brand: #e17554;
   --gemini-brand: #7c6ff0;
   --grok-brand: #ff6b4a;
+  --opencode-brand: #5cc8ff;
   --role-main: #4c8dff;
   --role-coder: #3fb950;
   --role-reviewer: #b07cff;
@@ -3947,6 +3948,7 @@ input {
 .provider-chip-claude .provider-chip-icon { color: var(--claude-brand); }
 .provider-chip-gemini .provider-chip-icon { color: var(--gemini-brand); }
 .provider-chip-grok .provider-chip-icon { color: var(--grok-brand); }
+.provider-chip-opencode .provider-chip-icon { color: var(--opencode-brand); }
 .provider-chip-codex.provider-chip-selected {
   border-color: var(--codex-brand);
   background: rgba(224, 224, 224, 0.07);
@@ -3967,6 +3969,11 @@ input {
   background: rgba(255, 107, 74, 0.09);
 }
 .provider-chip-grok.provider-chip-selected .provider-chip-name { color: var(--grok-brand); }
+.provider-chip-opencode.provider-chip-selected {
+  border-color: var(--opencode-brand);
+  background: rgba(92, 200, 255, 0.09);
+}
+.provider-chip-opencode.provider-chip-selected .provider-chip-name { color: var(--opencode-brand); }
 .chat-controller-switch {
   align-content: start;
 }
@@ -6328,6 +6335,14 @@ body.is-resizing-sidebar {
 .prov-gemini {
   color: var(--gemini-brand);
   border-color: #403a66;
+}
+.prov-grok {
+  color: var(--grok-brand);
+  border-color: #5a3a30;
+}
+.prov-opencode {
+  color: var(--opencode-brand);
+  border-color: #2a4a5a;
 }
 .node button {
   margin-top: 10px;
