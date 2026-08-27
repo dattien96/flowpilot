@@ -400,9 +400,9 @@ Thuc hien:
 3. Chay go test ./...
    Verify: calc.go ngoài scope + có dependents → block severity=high. (GitNexus không có dependents → chỉ warn = degrade hợp lệ.)
 
-## [FLOW] PENDING-F2 — Drift ngoài frozen declared_paths → hard block
+## [FLOW] ✅ F2 — Drift ngoài frozen declared_paths → hard block (PASSED LIVE 2026-08-27)
 
-> **Trạng thái:** pass Nhánh B (planner khai đủ → flow chạy tiếp: run-247326, run-249193; CA-640 freeze fix live-verified). Nhánh A (hard-block FrozenContractScopeDrift) chưa kích hoạt live — planner luôn freeze đủ; đường block được phủ bằng automated tests (TestFlowScopeDriftBlocksAcceptance + CA-640 suite). Re-test khi có scenario drift tự nhiên hoặc sau CA-642 runner restart.
+> **Trạng thái:** ✅ **Nhánh A live-verified (run-153698):** planner freeze `calc-core` v1 `declared_paths=[calc.go, add_with_log_test.go]` (08:12:35, freeze không còn park giả — CA-645); coder implement chạm `drift_probe.go` ngoài scope → `flow gate block: flow scope drift: wrote outside the frozen contract's declared paths: drift_probe.go` (08:14:55, log FrozenContractScopeDrift), flow dừng WAITING_USER_APPROVAL chờ amend; Stop của operator kết thúc flow. Nhánh B (planner khai đủ → chạy tiếp) đã pass từ run-247326/249193.
 
 Mở /flow → rag-harness. Prompt cố ý để coder chạm file không nằm trong path planner khai:
 
