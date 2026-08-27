@@ -193,10 +193,11 @@ func TestIsInstalled_RequiresGrokSentinel(t *testing.T) {
 
 func TestProviderStatuses_IncludesGrokWithoutAlteringOthers(t *testing.T) {
 	want := map[string]string{
-		"claude": filepath.Join(".claude", "skills"),
-		"codex":  filepath.Join(".agents", "skills"),
-		"gemini": filepath.Join(".agents", "skills"),
-		"grok":   filepath.Join(".grok", "skills"),
+		"claude":   filepath.Join(".claude", "skills"),
+		"codex":    filepath.Join(".agents", "skills"),
+		"gemini":   filepath.Join(".agents", "skills"),
+		"grok":     filepath.Join(".grok", "skills"),
+		"opencode": filepath.Join(".opencode", "skills"),
 	}
 	if len(providerStatuses) != len(want) {
 		t.Fatalf("providerStatuses has %d entries, want %d", len(providerStatuses), len(want))

@@ -28,6 +28,7 @@ var installRoots = []installRoot{
 	{Provider: "claude", RootPath: filepath.Join(".claude", "skills")},
 	{Provider: "agents", RootPath: filepath.Join(".agents", "skills")},
 	{Provider: "grok", RootPath: filepath.Join(".grok", "skills")},
+	{Provider: "opencode", RootPath: filepath.Join(".opencode", "skills")},
 }
 
 var providerStatuses = []installRoot{
@@ -35,6 +36,7 @@ var providerStatuses = []installRoot{
 	{Provider: "codex", RootPath: filepath.Join(".agents", "skills")},
 	{Provider: "gemini", RootPath: filepath.Join(".agents", "skills")},
 	{Provider: "grok", RootPath: filepath.Join(".grok", "skills")},
+	{Provider: "opencode", RootPath: filepath.Join(".opencode", "skills")},
 }
 
 // skillRef identifies one embedded skill by its flow-pack group and skill name.
@@ -189,6 +191,7 @@ func IsInstalled(targetRepoDir string) bool {
 		filepath.Join(targetRepoDir, ".claude", "skills", "git-commit-format", "SKILL.md"),
 		filepath.Join(targetRepoDir, ".agents", "skills", "git-commit-format", "SKILL.md"),
 		filepath.Join(targetRepoDir, ".grok", "skills", "git-commit-format", "SKILL.md"),
+		filepath.Join(targetRepoDir, ".opencode", "skills", "git-commit-format", "SKILL.md"),
 	}
 	for _, sentinel := range sentinels {
 		if _, err := os.Stat(sentinel); err != nil {
