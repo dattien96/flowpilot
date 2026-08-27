@@ -1458,6 +1458,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case AttachmentOpenMsg:
+		// Re-arm console input after ShellExecuteW / openPath: the viewer may
+		// have stolen focus or cmd/start left the console in QuickEdit. This
+		// restores mouse delivery that was lost for 49s in log pid 12736.
+		disableConsoleQuickEdit()
 		if msg.Err != "" && msg.Path == "" {
 			m.addMessage("system", "Open image failed: "+msg.Err, "error")
 			return m, nil

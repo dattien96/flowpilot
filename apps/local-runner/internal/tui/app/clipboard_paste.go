@@ -319,17 +319,6 @@ func decodeAttachmentData(b64 string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(b64)
 }
 
-func openPath(path string) error {
-	switch runtime.GOOS {
-	case "windows":
-		return exec.Command("cmd", "/c", "start", "", path).Start()
-	case "darwin":
-		return exec.Command("open", path).Start()
-	default:
-		return exec.Command("xdg-open", path).Start()
-	}
-}
-
 func writeClipboardText(s string) error {
 	// NUL/control bytes truncate the write: on Windows the text is encoded to
 	// UTF-16 and a leading 0x0000 becomes the string terminator, so the
