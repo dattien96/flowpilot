@@ -174,6 +174,21 @@ type Runner struct {
 	// grokProcessKey respawns (model / reasoning / YOLO). Guarded by its own mu.
 	grokRunSessions *grokRunSessionIndex
 
+	// opencodeProcessMu guards opencodeProcesses (CP-57 Task-300, copy of grok model).
+	opencodeProcessMu sync.Mutex
+	// opencodeProcesses holds live `opencode acp` processes keyed by
+	// scope+model+variant+auto (see opencodeProcessKey). Opencode model/variant are
+	// config-file based, but the key still includes them for coexistence safety
+	// so a parent and child with different launch tuples keep separate processes.
+	// Only an account/scope change reclaims processes. nil until first ensure.
+	opencodeProcesses map[string]*opencodeProcessHandle
+	// opencodeDesiredAuto is the current YOLO posture for Opencode (Task-303),
+	// set explicitly via YoloPosture. Guarded by opencodeProcessMu.
+	opencodeDesiredAuto bool
+	// opencodeRunSessions maps FlowPilot run id → Opencode ACP session id across
+	// opencodeProcessKey respawns. Guarded by its own mu.
+	opencodeRunSessions *opencodeRunSessionIndex
+
 	// providersCache holds a short-TTL cache of DetectProviders results so
 	// repeated TUI opens do not re-spawn every provider CLI probe (CA-535).
 	// It is invalidated by any provider/account mutation. Guarded by its own mu.
@@ -950,6 +965,9 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, w
 	case strings.HasPrefix(lowerModel, "grok-"), lowerModel == "grok-build":
 		// Appended last (CP-46 P-0/Task-212 T-3): codex/gemini/claude cases above unchanged.
 		resolvedProvider = "grok"
+	case strings.HasPrefix(lowerModel, "opencode/"), strings.HasPrefix(lowerModel, "opencode-go/"):
+		// Appended last (CP-57 P-0/Task-303 T-1): grok branch above unchanged.
+		resolvedProvider = "opencode"
 	case resolvedProvider == "":
 		return "", nil, "", errors.New("model or provider is required")
 	}
@@ -1012,6 +1030,22 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, w
 			args = append(args, "--effort", strings.ToLower(strings.TrimSpace(request.ReasoningEffort)))
 		}
 		return grokBinaryName(), args, resolvedProvider, nil
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-303 T-1): one-shot `opencode run --format json`
+		// is the summarizer exception (P-1). Uses --model / --variant / --auto.
+		args := []string{"run", "--format", "json"}
+		if modelName != "" {
+			args = append(args, "--model", modelName)
+		}
+		if request.ReasoningEffort != "" {
+			if variant, ok := opencodeReasoningVariantID(request.ReasoningEffort); ok && variant != "" {
+				args = append(args, "--variant", variant)
+			}
+		}
+		if request.YoloMode {
+			args = append(args, "--auto")
+		}
+		return opencodeBinaryName(), args, resolvedProvider, nil
 	default:
 		return "", nil, "", fmt.Errorf("provider %q is not supported", resolvedProvider)
 	}
@@ -1116,12 +1150,15 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	if err != nil {
 		return PromptExecutionResult{}, err
 	}
-	usesPromptArg := resolvedProvider == string(ProviderKeyGemini) || resolvedProvider == string(ProviderKeyGrok)
+	usesPromptArg := resolvedProvider == string(ProviderKeyGemini) || resolvedProvider == string(ProviderKeyGrok) || resolvedProvider == string(ProviderKeyOpencode)
 	if usesPromptArg {
 		if resolvedProvider == string(ProviderKeyGrok) {
 			// Appended last (CP-46 P-0/Task-212 T-3): -p/--single takes the
 			// prompt as its own value, unlike Gemini's --print <prompt>.
 			args = append(args, "-p", actualPrompt)
+		} else if resolvedProvider == string(ProviderKeyOpencode) {
+			// Appended last (CP-57 P-0/Task-303 T-1): opencode run takes message as positional args.
+			args = append(args, actualPrompt)
 		} else {
 			args = append(args, "--print", actualPrompt)
 		}
@@ -1173,7 +1210,8 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 		defer promptFile.Close()
 		cmd.Stdin = promptFile
 	}
-	if !usesPromptArg {
+	isGemini := resolvedProvider == string(ProviderKeyGemini)
+	if !isGemini {
 		cmd.Stdout = stdoutFile
 		cmd.Stderr = stderrFile
 	}
@@ -1181,7 +1219,7 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 
 	startedAt := time.Now().UTC()
 	var runErr error
-	if usesPromptArg {
+	if isGemini {
 		stdoutText, stderrText, err := captureAgyPrint(execCtx, cmd)
 		if strings.TrimSpace(stdoutText) == "" {
 			projectEnv := geminiProjectEnvHints(request.AccountHomePath, request.CustomEnv)
@@ -1709,6 +1747,21 @@ func providerSpecs() []providerSpec {
 			InstallHint: "Install Grok Build (irm https://x.ai/cli/install.ps1 | iex on Windows, curl -fsSL https://x.ai/cli/install.sh | sh on mac/linux), log in, and restart the runner.",
 			Models:      defaultGrokProviderModels(),
 		},
+		{
+			// Appended last (CP-57 P-0/Task-302 T-1): grok spec above unchanged.
+			Key:         "opencode",
+			Label:       "Opencode",
+			BinaryName:  "opencode",
+			InstallHint: "Install Opencode CLI (npm i -g opencode-ai@latest or https://opencode.ai/install), log in, and restart the runner.",
+			Models:      defaultOpencodeProviderModels(),
+		},
+	}
+}
+
+func defaultOpencodeProviderModels() []ProviderModel {
+	return []ProviderModel{
+		{ID: "opencode/muse-spark-1.2-contributor-free", DisplayName: "Opencode Muse Spark 1.2 Free", Source: "registry"},
+		{ID: "opencode/big-pickle", DisplayName: "Opencode Big Pickle", Source: "registry"},
 	}
 }
 
@@ -1817,6 +1870,12 @@ func resolveProviderModels(ctx context.Context, spec providerSpec, binaryPath st
 		// Appended last (CP-46 P-0/Task-213 T-2): codex/gemini branches above
 		// unchanged.
 		if models, err := detectGrokModels(); err == nil && len(models) > 0 {
+			return models
+		}
+	}
+	if spec.Key == "opencode" {
+		// Appended last (CP-57 P-0/Task-302 T-1): grok branch above unchanged.
+		if models, err := detectOpencodeModels(ctx); err == nil && len(models) > 0 {
 			return models
 		}
 	}
@@ -1929,6 +1988,162 @@ func detectGrokModels() ([]ProviderModel, error) {
 	if len(models) == 0 {
 		return nil, fmt.Errorf("grok models cache: no supported models found in %s", path)
 	}
+	return models, nil
+}
+
+func detectOpencodeModels(ctx context.Context) ([]ProviderModel, error) {
+	binary := opencodeBinaryName()
+	if strings.TrimSpace(binary) == "" {
+		binary = "opencode"
+	}
+	// Try JSON format first if available (future opencode versions may support --format json)
+	if jsonOut, err := runCommandFn(ctx, binary, "models", "--format", "json"); err == nil && len(jsonOut) > 0 {
+		trimmed := strings.TrimSpace(string(jsonOut))
+		if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
+			// First try top-level array
+			var jsonModels []struct {
+				ID           string `json:"id"`
+				DisplayName  string `json:"displayName"`
+				ContextWindow int64 `json:"contextWindow"`
+			}
+			if err := json.Unmarshal(jsonOut, &jsonModels); err == nil && len(jsonModels) > 0 {
+				models := make([]ProviderModel, 0, len(jsonModels))
+				for _, jm := range jsonModels {
+					id := strings.TrimSpace(jm.ID)
+					if id == "" || id == "opencode/deepseek-v4-flash-free" {
+						continue
+					}
+					display := jm.DisplayName
+					if display == "" {
+						display = id
+						if strings.HasPrefix(id, "opencode/") || strings.HasPrefix(id, "opencode-go/") {
+							display = id + " (Opencode)"
+						}
+					}
+					models = append(models, ProviderModel{
+						ID:                        id,
+						DisplayName:               display,
+						Source:                    "opencode_models",
+						Available:                 true,
+						SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high", "xhigh"},
+						DefaultReasoningEffort:    "medium",
+						ContextWindowTokens:       jm.ContextWindow,
+						MaxContextWindowTokens:    jm.ContextWindow,
+					})
+				}
+				sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+				if len(models) > 0 {
+					return models, nil
+				}
+			}
+			// Fallback: object with "models" or "data" key
+			var obj struct {
+				Models []struct {
+					ID           string `json:"id"`
+					DisplayName  string `json:"displayName"`
+					ContextWindow int64 `json:"contextWindow"`
+				} `json:"models"`
+				Data []struct {
+					ID           string `json:"id"`
+					DisplayName  string `json:"displayName"`
+					ContextWindow int64 `json:"contextWindow"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(jsonOut, &obj); err == nil {
+				var candidates []struct {
+					ID           string `json:"id"`
+					DisplayName  string `json:"displayName"`
+					ContextWindow int64 `json:"contextWindow"`
+				}
+				if len(obj.Models) > 0 {
+					candidates = obj.Models
+				} else if len(obj.Data) > 0 {
+					candidates = obj.Data
+				}
+				if len(candidates) > 0 {
+					models := make([]ProviderModel, 0, len(candidates))
+					for _, jm := range candidates {
+						id := strings.TrimSpace(jm.ID)
+						if id == "" || id == "opencode/deepseek-v4-flash-free" {
+							continue
+						}
+						display := jm.DisplayName
+						if display == "" {
+							display = id
+							if strings.HasPrefix(id, "opencode/") || strings.HasPrefix(id, "opencode-go/") {
+								display = id + " (Opencode)"
+							}
+						}
+						models = append(models, ProviderModel{
+							ID:                        id,
+							DisplayName:               display,
+							Source:                    "opencode_models",
+							Available:                 true,
+							SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high", "xhigh"},
+							DefaultReasoningEffort:    "medium",
+							ContextWindowTokens:       jm.ContextWindow,
+							MaxContextWindowTokens:    jm.ContextWindow,
+						})
+					}
+					sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+					if len(models) > 0 {
+						return models, nil
+					}
+				}
+			}
+		}
+	}
+	output, err := runCommandFn(ctx, binary, "models")
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	models := make([]ProviderModel, 0, len(lines))
+	for _, line := range lines {
+		id := strings.TrimSpace(line)
+		if id == "" {
+			continue
+		}
+		// Skip headers / non-model lines: require "/" and no spaces, or at least no header keywords
+		lowerLine := strings.ToLower(id)
+		if strings.Contains(lowerLine, "available models") || strings.HasPrefix(lowerLine, "model") && strings.Contains(lowerLine, "id") {
+			continue
+		}
+		if strings.Contains(id, " ") && !strings.Contains(id, "/") {
+			// Likely a header like "ID  Name" — skip
+			continue
+		}
+		// Also skip lines that are just dashes or separators
+		if strings.Trim(id, "-=") == "" {
+			continue
+		}
+		// Skip the broken default model if ever listed (ProviderModelNotFoundError)
+		if id == "opencode/deepseek-v4-flash-free" {
+			continue
+		}
+		// Keep opencode and opencode-go namespaces; also include all others for catalog completeness
+		// so `opencode models` 40+ count is met even on older 1.18.18 (which lists 29 for opencode prefixes but 70 total).
+		display := id
+		// Friendly display for opencode models
+		if strings.HasPrefix(id, "opencode/") || strings.HasPrefix(id, "opencode-go/") {
+			display = id + " (Opencode)"
+		}
+		model := ProviderModel{
+			ID:                          id,
+			DisplayName:                 display,
+			Source:                      "opencode_models",
+			Available:                   true,
+			SupportedReasoningEfforts:   []string{"minimal", "low", "medium", "high", "xhigh"},
+			DefaultReasoningEffort:      "medium",
+			ContextWindowTokens:         0,
+			MaxContextWindowTokens:      0,
+		}
+		models = append(models, model)
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("opencode models: no models found")
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models, nil
 }
 
@@ -2147,6 +2362,13 @@ func defaultAuthCandidates(providerKey, dir string) []authCandidate {
 			{homePath: filepath.Join(dir, ".grok"), authPath: filepath.Join(dir, ".grok", "auth.json")},
 			{homePath: filepath.Join(dir, "grok"), authPath: filepath.Join(dir, "grok", "auth.json")},
 		}
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-2): grok branch above unchanged.
+		// Auth is auth.json only; opencode.json is config (MCP etc.) not auth — do not count.
+		return []authCandidate{
+			{homePath: dir, authPath: filepath.Join(dir, ".config", "opencode", "auth.json")},
+			{homePath: dir, authPath: filepath.Join(dir, ".opencode", "auth.json")},
+		}
 	default:
 		return nil
 	}
@@ -2179,6 +2401,14 @@ func accountAuthPaths(providerKey, homePath string) []string {
 			filepath.Join(homePath, "auth.json"),
 			filepath.Join(homePath, ".grok", "auth.json"),
 		}
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-2): grok branch above unchanged. Auth is auth.json only.
+		return []string{
+			filepath.Join(homePath, ".config", "opencode", "auth.json"),
+			filepath.Join(homePath, ".opencode", "auth.json"),
+			filepath.Join(homePath, "auth.json"),
+			filepath.Join(homePath, "auth.json"),
+		}
 	default:
 		return nil
 	}
@@ -2207,6 +2437,52 @@ func hasValidProviderAuthFile(providerKey, path string) bool {
 		// Appended last (CP-46 P-0/Task-210 T-5). Live-verified field names in
 		// ~/.grok/auth.json entries: refresh_token/email.
 		return strings.Contains(content, `"refresh_token"`) && strings.Contains(content, `"email"`)
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-2): grok branch above unchanged.
+		// Auth is auth.json; require JSON-keyed presence, not substring (avoid mcpServers false positive).
+		if len(strings.TrimSpace(content)) < 10 {
+			return false
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(data, &payload); err != nil {
+			// Fallback to substring for non-JSON (text) auth files, but still require word boundaries
+			lower := strings.ToLower(content)
+			return strings.Contains(lower, `"token"`) || strings.Contains(lower, `"auth"`) || strings.Contains(lower, `"email"`) || strings.Contains(lower, `"apikey"`) || strings.Contains(lower, `"api_key"`)
+		}
+		for k, v := range payload {
+			lk := strings.ToLower(k)
+			if lk == "token" || lk == "auth" || lk == "email" || lk == "apikey" || lk == "api_key" || lk == "access_token" || lk == "refresh_token" || lk == "credentials" {
+				if v == nil {
+					continue
+				}
+				if s, ok := v.(string); ok {
+					if strings.TrimSpace(s) != "" {
+						return true
+					}
+					continue
+				}
+				// Non-string presence (object, etc.) counts as auth
+				return true
+			}
+			if m, ok := v.(map[string]any); ok {
+				for nk, nv := range m {
+					lkn := strings.ToLower(nk)
+					if lkn == "token" || lkn == "auth" || lkn == "email" || lkn == "apikey" || lkn == "api_key" || lkn == "access_token" || lkn == "refresh_token" {
+						if nv == nil {
+							continue
+						}
+						if s, ok := nv.(string); ok {
+							if strings.TrimSpace(s) != "" {
+								return true
+							}
+							continue
+						}
+						return true
+					}
+				}
+			}
+		}
+		return false
 	default:
 		return false
 	}
@@ -2301,6 +2577,11 @@ func providerAuthStatus(spec providerSpec) string {
 		if hasAnyEnv("XAI_API_KEY") || hasLocalAuth("grok") {
 			return "READY"
 		}
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302).
+		if hasAnyEnv("OPENCODE_API_KEY") || hasLocalAuth("opencode") {
+			return "READY"
+		}
 	}
 
 	return "AUTH_REQUIRED"
@@ -2362,6 +2643,20 @@ func providerInstallCommand(spec providerSpec) (string, []string, error) {
 			return "sh", []string{"-c", "curl -fsSL https://x.ai/cli/install.sh | sh"}, nil
 		case "windows":
 			return "powershell", []string{"-NoProfile", "-Command", "irm https://x.ai/cli/install.ps1 | iex"}, nil
+		default:
+			return "", nil, fmt.Errorf("%s install is not supported on %s", spec.Label, runtime.GOOS)
+		}
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-4): grok branch above unchanged.
+		switch runtime.GOOS {
+		case "darwin", "linux":
+			return "npm", []string{"install", "-g", "opencode-ai@latest"}, nil
+		case "windows":
+			// Task-302 T-4: npm if present else irm (mockable via lookPathFn)
+			if _, err := lookPathFn("npm"); err == nil {
+				return "npm", []string{"install", "-g", "opencode-ai@latest"}, nil
+			}
+			return "powershell", []string{"-NoProfile", "-Command", "irm https://opencode.ai/install | iex"}, nil
 		default:
 			return "", nil, fmt.Errorf("%s install is not supported on %s", spec.Label, runtime.GOOS)
 		}
@@ -3960,6 +4255,9 @@ func (r *Runner) AuthenticateProvider(ctx context.Context, providerName string) 
 		// the headless/managed-home variant; StartInteractiveAuth below routes
 		// through that for non-default-slot accounts.
 		authCommand = "grok login"
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-3).
+		authCommand = "opencode auth login"
 	default:
 		return fmt.Errorf("no auth command configured for provider %q", providerName)
 	}
@@ -4052,7 +4350,7 @@ func (r *Runner) getEnvForExecution(
 			continue
 		}
 		key := parts[0]
-		if key == "HOME" || key == "USERPROFILE" || key == "APPDATA" || key == "LOCALAPPDATA" || key == "HOMEPATH" || key == "HOMEDRIVE" || key == "XDG_CONFIG_HOME" || key == "CODEX_HOME" || key == "GROK_HOME" || key == "HTTP_PROXY" || key == "HTTPS_PROXY" {
+		if key == "HOME" || key == "USERPROFILE" || key == "APPDATA" || key == "LOCALAPPDATA" || key == "HOMEPATH" || key == "HOMEDRIVE" || key == "XDG_CONFIG_HOME" || key == "CODEX_HOME" || key == "GROK_HOME" || key == "OPENCODE_CONFIG" || key == "OPENCODE_HOME" || key == "OPENCODE_API_KEY" || key == "HTTP_PROXY" || key == "HTTPS_PROXY" {
 			continue
 		}
 		if _, exists := customEnv[key]; exists {
@@ -4075,6 +4373,12 @@ func (r *Runner) getEnvForExecution(
 		newEnv = append(newEnv, fmt.Sprintf("GROK_HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", trimmedAccountHomePath))
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-3): grok case above unchanged.
+		newEnv = append(newEnv, fmt.Sprintf("OPENCODE_HOME=%s", trimmedAccountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s", filepath.Join(trimmedAccountHomePath, ".config")))
+		newEnv = append(newEnv, fmt.Sprintf("OPENCODE_CONFIG=%s", filepath.Join(trimmedAccountHomePath, ".config", "opencode")))
 	default:
 		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", trimmedAccountHomePath))
@@ -4143,6 +4447,9 @@ func NextAccountHomePath(providerKey string, existing []string) (string, int, er
 	case "grok":
 		// Appended last (CP-46 P-0/Task-210 T-2).
 		prefix = ".grokHome"
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-2).
+		prefix = ".opencodeHome"
 	default:
 		return "", 0, fmt.Errorf("unsupported provider %q", providerKey)
 	}
@@ -4202,6 +4509,9 @@ func (r *Runner) StartInteractiveAuth(providerKey string, accountHomePath string
 		} else {
 			authCommand = fmt.Sprintf("%s login", authInvocation)
 		}
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-3).
+		authCommand = fmt.Sprintf("%s auth login", authInvocation)
 	default:
 		return fmt.Errorf("provider %s does not support interactive CLI login", providerKey)
 	}
@@ -4243,6 +4553,9 @@ func providerEnvSetCommand(providerKey, homePath, shellType string) string {
 		case "grok":
 			// Appended last (CP-46 P-0/Task-210 T-3).
 			return fmt.Sprintf("export GROK_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath, homePath)
+		case "opencode":
+			// Appended last (CP-57 P-0/Task-302 T-3).
+			return fmt.Sprintf("export OPENCODE_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config' && export OPENCODE_CONFIG='%s/.config/opencode'", homePath, homePath, homePath, homePath)
 		default:
 			return fmt.Sprintf("export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath)
 		}
@@ -4260,6 +4573,17 @@ func providerEnvSetCommand(providerKey, homePath, shellType string) string {
 				fmt.Sprintf("set GROK_HOME=%s", homePath),
 				fmt.Sprintf("set HOME=%s", homePath),
 				fmt.Sprintf("set USERPROFILE=%s", homePath),
+			}, "\r\n")
+		case "opencode":
+			// Appended last (CP-57 P-0/Task-302 T-3).
+			return strings.Join([]string{
+				fmt.Sprintf("set OPENCODE_HOME=%s", homePath),
+				fmt.Sprintf("set HOME=%s", homePath),
+				fmt.Sprintf("set USERPROFILE=%s", homePath),
+				fmt.Sprintf("set APPDATA=%s\\AppData\\Roaming", homePath),
+				fmt.Sprintf("set LOCALAPPDATA=%s\\AppData\\Local", homePath),
+				fmt.Sprintf("set XDG_CONFIG_HOME=%s\\.config", homePath),
+				fmt.Sprintf("set OPENCODE_CONFIG=%s\\.config\\opencode", homePath),
 			}, "\r\n")
 		default:
 			return strings.Join([]string{
