@@ -65,6 +65,15 @@ var (
 	styleQuestionOpt  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent))
 	styleQuestionDesc = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
 	styleAnswer       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))
+	// Question and Answer card box styles with solid grey background (colorBg3).
+	styleQuestionBoxBg   = lipgloss.NewStyle().Background(lipgloss.Color(colorBg3))
+	styleQuestionBorder  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn)).Background(lipgloss.Color(colorBg3))
+	styleQuestionHeadBox = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorWarn)).Background(lipgloss.Color(colorBg3))
+	styleQuestionBodyBox = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText)).Background(lipgloss.Color(colorBg3))
+	styleQuestionOptBox  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent)).Background(lipgloss.Color(colorBg3))
+	styleQuestionDescBox = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim)).Background(lipgloss.Color(colorBg3))
+	styleAnswerBorder    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOK)).Background(lipgloss.Color(colorBg3))
+	styleAnswerHeadBox   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK)).Background(lipgloss.Color(colorBg3))
 	styleStatus      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
 	styleStatusHi    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // model, reason value, YOLO value, 7d, skills
 	styleMention     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))     // skill tokens in prompt
@@ -4651,6 +4660,24 @@ func (m *AppModel) buildChatRows() []chatRow {
 			rows = append(rows, msgRows...)
 			continue
 		}
+		if msg.FormatHint == "question" {
+			trimmed := strings.TrimSpace(msg.Content)
+			if strings.HasPrefix(trimmed, "[QUESTION]") {
+				msgRows := questionBox(msg.Content, width, m.asciiMode, mi)
+				if mi > 0 && chatGapBefore(m.messages[mi-1], msg) {
+					rows = append(rows, chatRow{})
+				}
+				rows = append(rows, msgRows...)
+				continue
+			} else if strings.HasPrefix(trimmed, "Answered:") {
+				msgRows := answeredBox(msg.Content, width, m.asciiMode, mi)
+				if mi > 0 && chatGapBefore(m.messages[mi-1], msg) {
+					rows = append(rows, chatRow{})
+				}
+				rows = append(rows, msgRows...)
+				continue
+			}
+		}
 		contentWidth := width
 		if prefix != "" {
 			contentWidth = width - len([]rune(prefix))
@@ -4754,6 +4781,10 @@ func chatGapBefore(prev, cur ChatMessage) bool {
 func isChatBubble(msg ChatMessage) bool {
 	if msg.Role == "user" {
 		return true
+	}
+	if msg.FormatHint == "question" {
+		trimmed := strings.TrimSpace(msg.Content)
+		return strings.HasPrefix(trimmed, "[QUESTION]") || strings.HasPrefix(trimmed, "Answered:")
 	}
 	return msg.Role == "assistant" && msg.FormatHint == ""
 }
