@@ -206,6 +206,14 @@ function pickDefaultModel(provider: ProviderKey | undefined, models: SupportedMo
       enabled[0]?.modelId
     );
   }
+  if (provider === "opencode") {
+    // Appended last (CP-57 P-0/Task-303 T-1).
+    return (
+      enabled.find((m) => m.modelId === "opencode/muse-spark-1.2-contributor-free")?.modelId ??
+      enabled.find((m) => m.modelId === "opencode/gpt-5.4-nano")?.modelId ??
+      enabled[0]?.modelId
+    );
+  }
   return undefined;
 }
 
@@ -2270,7 +2278,9 @@ export function accountLabel(account: ProviderAccountSummary): string {
 export function providerLabel(providerKey: string): string {
   if (providerKey === "claude") return "Claude";
   if (providerKey === "codex") return "Codex";
+  if (providerKey === "gemini") return "Gemini";
   if (providerKey === "grok") return "Grok";
+  if (providerKey === "opencode") return "OpenCode";
   return providerKey;
 }
 
