@@ -64,37 +64,51 @@ func TestInputWatchdog_StallEligibleViaGateAndQuestion(t *testing.T) {
 	}
 }
 
-func TestInputWatchdog_NotEligibleWhenIdleDoesNotFlag(t *testing.T) {
-	// CA-645 follow-up: sessions 21472/25580/12300 sat 1-3 min without input
-	// while connecting/idle — normal silence, must NOT raise the banner.
+func TestInputWatchdog_NotEligibleWhenIdleLogsButNoBanner(t *testing.T) {
+	// CA-645 v3: idle silence (sessions 21472/25580/12300/9176) must be logged
+	// as a fingerprint but must NOT raise the visible banner.
 	m := New(configForWatchdogTest(), "http://127.0.0.1:9")
 	now := time.Now()
 	m.connStatus = ConnIdle
-	m.lastInputAt = now.Add(-90 * time.Second) // long silence, but nothing awaits input
+	m.lastInputAt = now.Add(-90 * time.Second) // long silence, nothing awaits input
 	before := m.statusMsg                      // New() seeds "connecting..."
+	beforeMsgs := len(m.messages)
 
 	updated, _ := m.Update(inputWatchdogMsg{at: now})
 	m2 := updated.(*AppModel)
-	if m2.inputStallLogged {
-		t.Fatal("idle silence must not flag a stall")
+	if !m2.inputStallLogged {
+		t.Fatal("idle stall must still be logged/flagged (diagnostic fingerprint)")
 	}
 	if m2.statusMsg != before {
 		t.Fatalf("idle silence must not raise a banner: statusMsg changed from %q to %q", before, m2.statusMsg)
 	}
+	if len(m2.messages) != beforeMsgs {
+		t.Fatalf("idle silence must not add a transcript message, got %d -> %d", beforeMsgs, len(m2.messages))
+	}
 }
 
-func TestInputWatchdog_NotEligibleClearsStaleStall(t *testing.T) {
-	// A stall flagged while blocked must self-clear once the state no longer
-	// requires input (e.g. the flow unblocked) so a later stall re-arms.
+func TestInputWatchdog_EligibleLaterRaisesBannerWithoutRelog(t *testing.T) {
+	// A stall first logged while idle must raise the banner once the app
+	// enters an input-requiring state, without a second stall log.
 	m := New(configForWatchdogTest(), "http://127.0.0.1:9")
 	now := time.Now()
-	m.inputStallLogged = true
+	m.connStatus = ConnIdle
 	m.lastInputAt = now.Add(-120 * time.Second)
 
-	updated, _ := m.Update(inputWatchdogMsg{at: now})
-	m2 := updated.(*AppModel)
-	if m2.inputStallLogged {
-		t.Fatal("stale stall flag must clear when no input-requiring state is active")
+	first, _ := m.Update(inputWatchdogMsg{at: now})
+	m2 := first.(*AppModel)
+	if !m2.inputStallLogged {
+		t.Fatal("idle stall must be flagged")
+	}
+	if m2.statusMsg == "" {
+		t.Fatal("idle stall flag alone must not raise a banner")
+	}
+
+	m2.approval = &ApprovalState{ID: "ap-1"} // now the operator must act
+	second, _ := m2.Update(inputWatchdogMsg{at: now.Add(10 * time.Second)})
+	m3 := second.(*AppModel)
+	if m3.statusMsg == "" {
+		t.Fatal("banner must appear once an input-requiring state is active")
 	}
 }
 

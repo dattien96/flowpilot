@@ -37,6 +37,15 @@ side had no equivalent detector, so the stall stayed silent and undiagnosable.
 - `inputWatchdogMsg` is excluded from the generic Update log (no 10s log
   noise).
 
+### Follow-up 2 (same session, live feedback): always-log fingerprint
+
+Session 9176 wedged at STARTUP — 0 KeyMsg from birth, no flow involved (the
+wedge is environmental/intermittent: 21472/25116 ran 5 flows each with 147
+keys fine; 25708 wedged at flow start; 9176 wedged at launch). v2's eligibility
+gate made that wedge fully invisible (no log, no banner — user only knew the
+screen didn't respond). The fingerprint is now **always** logged once per stall
+episode in every app state; only the visible banner stays eligibility-gated.
+
 ### Follow-up (same session, live feedback): eligibility gate + motion liveness
 
 First live run of the watchdog false-positived on plain idleness: sessions
@@ -77,10 +86,11 @@ Additive only — legacy suite untouched.
     state flags + banner; repeat tick does not re-log/replace.
   - `TestInputWatchdog_StallEligibleViaGateAndQuestion` — approval / question /
     gate cards are all eligible states.
-  - `TestInputWatchdog_NotEligibleWhenIdleDoesNotFlag` — long silence while
-    idle/connecting never flags (the false-positive repro).
-  - `TestInputWatchdog_NotEligibleClearsStaleStall` — stale flag dropped when
-    no input-requiring state is active.
+  - `TestInputWatchdog_NotEligibleWhenIdleLogsButNoBanner` — idle silence logs
+    the fingerprint but never raises the banner or adds a transcript message.
+  - `TestInputWatchdog_EligibleLaterRaisesBannerWithoutRelog` — a stall logged
+    while idle raises the banner once an input-requiring state becomes active,
+    without a second stall log.
   - `TestInputWatchdog_NoStallBeforeThreshold` — <45s silence changes nothing.
   - `TestInputWatchdog_FirstTickArmsBaseline` — fresh model arms baseline, never
     flags.
@@ -109,5 +119,5 @@ line, and if it recurs the fingerprint goes into a follow-up fix.
 feature_key: cli-tui
 source_doc_id: CA-646
 change_type: bugfix
-summary: TUI input watchdog detects the silent Windows 0-KeyMsg console wedge — 10s tick, lastInputAt stamped on KeyMsg/MouseMsg, one fingerprint log + one visible banner after 45s silence, recovery log on next input (session 25708: 9+ min dead input after flow start); follow-up: flag only when operator input is required (blocked flow/gate/approval/question), motionLive= liveness from hover-motion stamping at tuiMsgFilter
+summary: TUI input watchdog detects the silent Windows 0-KeyMsg console wedge — 10s tick, lastInputAt stamped on KeyMsg/MouseMsg, one fingerprint log + one visible banner after 45s silence, recovery log on next input (session 25708: 9+ min dead input after flow start); follow-ups: banner only when operator input is required, fingerprint always logged (session 9176 wedged at startup while idle), motionLive= liveness from hover-motion stamping at tuiMsgFilter
 # --->8---

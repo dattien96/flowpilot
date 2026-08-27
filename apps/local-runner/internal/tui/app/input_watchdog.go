@@ -72,19 +72,21 @@ func (m *AppModel) markInputAlive() {
 	m.inputStallLogged = false
 }
 
-// checkInputWatchdog runs on inputWatchdogMsg. When the app is in an
-// input-requiring state and no console input has arrived for
-// inputStallThreshold, it logs one diagnostic fingerprint (conn status, flow
-// block state, child view, live turn, mouse-motion liveness) and shows a
-// one-time banner. Outside input-requiring states, silence is normal and any
-// stale stall flag is dropped so a later eligible stall re-arms cleanly.
+// checkInputWatchdog runs on inputWatchdogMsg.
+//
+// The stall FINGERPRINT is always logged once per stall episode regardless of
+// app state: session 9176 wedged at startup while idle (no flow, no block),
+// and v2's eligibility gate kept that wedge entirely invisible. The log line
+// is cheap and harmless when silence is just the user reading.
+//
+// The visible BANNER is only raised in input-requiring states (blocked flow,
+// gate/approval/question card): silence there means the operator is probably
+// trying to act and the wedge is real (the run-151954 case). Silence while
+// idle/connecting/watching is normal user behavior — sessions
+// 21472/25580/12300 sat 1-3 minutes without input and must not be alarmed.
 func (m *AppModel) checkInputWatchdog(at time.Time) (tea.Model, tea.Cmd) {
 	if m.lastInputAt.IsZero() {
 		m.lastInputAt = at
-		return m, cmdInputWatchdog()
-	}
-	if !m.inputStallEligible() {
-		m.inputStallLogged = false
 		return m, cmdInputWatchdog()
 	}
 	if !m.inputStallLogged && at.Sub(m.lastInputAt) >= inputStallThreshold {
@@ -94,8 +96,10 @@ func (m *AppModel) checkInputWatchdog(at time.Time) (tea.Model, tea.Cmd) {
 			stall.Round(time.Second), m.lastInputAt.Format(time.RFC3339),
 			m.connStatus, m.flowLoopBlocked(), m.viewingChild(), m.turnIsActive(), motionLive)
 		m.inputStallLogged = true
-		m.statusMsg = "input stalled: no keys/mouse received (" + stall.Round(time.Second).String() + ") — press any key or Ctrl+C to restart"
-		m.addMessage("system", "Input stalled: console is not delivering keys/mouse to the TUI (the session is otherwise alive). Press any key, or Ctrl+C and restart the TUI.", "gate")
+		if m.inputStallEligible() {
+			m.statusMsg = "input stalled: no keys/mouse received (" + stall.Round(time.Second).String() + ") — press any key or Ctrl+C to restart"
+			m.addMessage("system", "Input stalled: console is not delivering keys/mouse to the TUI (the session is otherwise alive). Press any key, or Ctrl+C and restart the TUI.", "gate")
+		}
 	}
 	return m, cmdInputWatchdog()
 }
