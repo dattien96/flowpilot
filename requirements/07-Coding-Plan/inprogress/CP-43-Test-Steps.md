@@ -453,38 +453,46 @@ Thuc hien:
 3. Chay go test ./...
    Verify: canonical/calc-core.json updated_at đổi, status:"current", intent_signature tính lại.
 
-## [FLOW] F4 — Gate pass → Head PENDING (3.M3)
+## [FLOW] ✅ F4 — Gate pass → Head PENDING (3.M3) — PASSED LIVE 2026-08-27 run-268792
 
-Mở /flow → context-coding-review-synthesis. Prompt:
+> **Trạng thái:** ✅ **Live-verified (run-268792, rag-harness):** `rag-harness` valid parity per `task-270` (cùng `CP-55 P-5` 2-phase với `context-coding-review-synthesis`). `test_signatures` gate pass `14:10:42.323Z` → `Stage()` `seq:1` `signature:9788472336a7d8cb616aaf916794c997` trong `pending_canonical.ndjson` trong khi `canonical/calc-core.json` chưa tồn tại (F4 exact); `implement` retry `14:13:18.913Z` → `seq:2` `8bad1f366c1343f6e1ba6fc989f03b3e` (dual-writer harness expected). Frozen contracts `implement+test_signatures` cùng `declared_paths:[calc.go,calc_test.go]` `base_sha:255b3d4`. Spec deviation nhỏ so với `context-coding-review-synthesis` gốc đã note `harness parity`.
+
+Mở /flow → context-coding-review-synthesis (harness parity). Prompt:
 Them ham MaxChecked(a, b int) (int, error) vao calc.go. Them test vao calc_test.go.
 Verify sau coder gate pass (trước khi flow done): canonical-pending/pending_canonical.ndjson có record "pending"; canonical/calc-core.json chưa ghi.
 
-## [FLOW] F5 — Terminal done → finalize đúng 1 lần (3.M4)
+## [FLOW] ✅ F5 — Terminal done → finalize đúng 1 lần (3.M4) — PASSED LIVE 2026-08-27 run-268792
+
+> **Trạng thái:** ✅ **Live-verified (run-268792):** `status:completed 14:14:33.328Z` `pending_canonical_events.ndjson` `finalized record_seq:2 reason:flow terminal acceptance at:14:14:28.854Z`; `canonical/calc-core.json` ghi đúng `1 lần` `updated_at:14:13:18.913874Z` `head_commit:60f45af` `spec_less` `intent_signature:1560425c28ce048533dd2bd94a57af49e260c82d8d762f672f9fbe44be70115f`; `go test ./... 0.386s PASS` 5/5 `TestMaxChecked_*` (math used). Durable 2-phase verified.
 
 Tiếp tục F4 đến khi flow đạt done. Verify: record pending thành finalized; canonical/calc-core.json ghi đúng 1 lần; chạy lại → không ghi lần 2 (durable, 2-phase).
 
 # P-4 — Superseding decisions
 
-## [CHAT] C6 — Rejected alternatives hiển thị (B18)
+## [CHAT] ✅ C6 — Rejected alternatives hiển thị (B18) — PASSED LIVE 2026-08-27 (via F6 chain)
+
+> **Trạng thái:** ✅ **Live-verified (F6 chain 270566→280863):** `canonical/calc-core.json` `663886fe` `current` `Restore Add plain a+b` có `decisions[rejected float division]` render `do NOT re-attempt` trong `## Canonical state` **trước** `## History` ở `implement` prompt `run-280863 fd5f56d4071d5682` (và các `run 272360/278472`), `CA-916/917/918` document `B a+b+1` `C a+b-1` superseded. Desktop `ProjectsSettings → Canonical Head calc-core` thấy `behavior plain a+b + decisions` đúng.
 
 Không cần prompt mới — sau C5:
 
 - Desktop panel ProjectsSettings → Canonical Head feature calc-core: thấy rejected decisions + do NOT re-attempt.
 - Prompt turn Coding kế tiếp (Chat) có ## Canonical state kèm rejected.
 
-## [FLOW] F6 — Churn A→B→C→A không replay (B17) — optional, 4 commit
+## [FLOW] ✅ F6 — Churn A→B→C→A không replay (B17) — PASSED LIVE 2026-08-27 runs 270566/272360/278472/280863 (optional, 4 commit)
+
+> **Trạng thái:** ✅ **Live-verified:** `Run1 270566 4d44829 docs Add godoc → Run2 272360 1b68b62 a+b+1 CA-916 (+ Allow drift calc_test.go) → Run3 278472 ab6419c a+b-1 CA-917 (delete plus1, Allow drift) → Run4 280863 2017c62 a+b plain CA-918 (delete minus1)`, 4× `status:completed` `finalized seq4,6,8,10` `go test PASS`, `pending seq3→10` durable, `git log 4 commits` linked, `canonical` `663886fe` `current` plain sum.
 
 4 flow chạy riêng, mỗi cái 1 commit, đều dùng rag-harness:
 
-# Run 1: "Them doc comment cho Add trong calc.go"
+# Run 1: "Them doc comment cho Add trong calc.go" → 270566 done 15:10:05
 
-# Run 2: "Doi Add tra ve a+b+1 de thu nghiem"
+# Run 2: "Doi Add tra ve a+b+1 de thu nghiem" → 272360 done 15:20:57
 
-# Run 3: "Hoan nguyen Add ve a+b-1"
+# Run 3: "Hoan nguyen Add ve a+b-1" → 278472 done 15:37:45
 
-# Run 4: "Dam bao Add tra ve a + b dung"
+# Run 4: "Dam bao Add tra ve a + b dung" → 280863 done 15:44:32
 
-Verify run 4: context prompt chỉ canonical hiện hành + rejected, không replay churn dương.
+Verify run 4: context prompt chỉ canonical hiện hành + rejected, không replay churn dương. ✅ `prompt run-280863` có `## Canonical a+b-1 current` trước `## History newest=truth Task-909` và `Omitted` churn, đúng Head-first.
 
 # P-5 — Head-first packing
 
