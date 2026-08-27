@@ -319,36 +319,39 @@ func TestTUIInput_Bubbles_CollapseBurstSyncsMirror(t *testing.T) {
 	}
 }
 
-// 13-18. Phase 2: View-when-sticky-end (renderInputLine uses textarea.View when sticky-end).
+// 13-18. Phase 2: View-when-sticky-end (renderInputLine uses textarea.View when sticky-end with draft).
 func TestTUIInput_Bubbles_View_WhenStickyEnd(t *testing.T) {
 	m := newTask308Model()
 	for _, r := range "hello" {
 		m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		m = m2.(*AppModel)
 	}
-	// Typing "hello" quickly arms pasteBurst (2+ runes <25ms); clear it for View check.
 	m.pasteBurst = pasteBurst{}
+	if !m.useTextareaView() {
+		t.Fatalf("sticky-end draft should use View (burst=%+v cursor=%d skills=%d)", m.pasteBurst, m.inputCursor, len(m.selectedSkills))
+	}
+	if m.textarea.Prompt != "" {
+		t.Fatalf("View Prompt must be empty, got %q", m.textarea.Prompt)
+	}
 	view := m.renderInputLine()
 	if !strings.Contains(view, "hello") {
-		t.Fatalf("render must contain hello, got %q", view)
+		t.Fatalf("View must contain hello, got %q", view)
 	}
 	if strings.Contains(view, "┃") {
-		t.Fatalf("render must not contain Prompt ┃, got %q", view)
-	}
-	// Mirror must hold hello (value-only).
-	if m.textarea.Value() != "hello" {
-		t.Fatalf("mirror must hold hello, got %q", m.textarea.Value())
+		t.Fatalf("View must not contain Prompt ┃, got %q", view)
 	}
 }
 
 func TestTUIInput_Bubbles_View_EmptyShowsPlaceholder(t *testing.T) {
 	m := newTask308Model()
-	// Empty composer: mirror holds "", textarea placeholder is set, render shows frame.
 	if m.inputValue != "" || m.textarea.Value() != "" {
 		t.Fatalf("empty composer: input=%q mirror=%q", m.inputValue, m.textarea.Value())
 	}
 	if m.textarea.Placeholder != "Type a message, /command, or @file..." {
 		t.Fatalf("placeholder mismatch: %q", m.textarea.Placeholder)
+	}
+	if m.useTextareaView() {
+		t.Fatal("empty input must fallback to custom (no draft)")
 	}
 	view := m.renderInputLine()
 	if !strings.Contains(view, "chat") {
@@ -379,9 +382,22 @@ func TestTUIInput_Bubbles_View_FallsBackWhenCaretMid(t *testing.T) {
 func TestTUIInput_Bubbles_View_FallsBackOnSkillHighlight(t *testing.T) {
 	m := newTask308Model()
 	m.selectedSkills = []client.SkillSelection{{Name: "coding"}}
-	// Even with sticky-end, skill highlight forces fallback (keeps highlight).
 	if m.useTextareaView() {
 		t.Fatal("skill highlight must fallback to custom renderer")
+	}
+}
+
+func TestTUIInput_Bubbles_View_FallsBackOnAttachChip(t *testing.T) {
+	m := newTask308Model()
+	for _, r := range "hi" {
+		m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = m2.(*AppModel)
+	}
+	m.pasteBurst = pasteBurst{}
+	// Simulate image attach chip.
+	m.pendingAttach = []client.PromptAttachment{{ID: "a1", OriginalName: "a.png"}}
+	if m.useTextareaView() {
+		t.Fatal("attach chip must fallback to custom renderer")
 	}
 }
 

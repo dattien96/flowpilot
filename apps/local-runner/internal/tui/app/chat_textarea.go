@@ -34,15 +34,35 @@ func newChatTextArea(width int) textarea.Model {
 }
 
 // useTextareaView reports whether the composer should be rendered via
-// textarea.View() (sticky-end path) or the legacy custom renderer. Sticky-end
-// covers the common case — typing at the end, no active paste burst, no skill
-// highlight, no blocked flow attention, no live turn — where SetValue leaves
-// the caret at the right place. Live/blocked caret keeps the legacy
-// cursorOn path so the CA-633 recompose/caching contract stays intact.
-// Temporarily disabled for CA-633 idle pin stability — re-enable after
-// fixing the idle View cache interaction.
+// textarea.View() (sticky-end with draft) or the legacy custom renderer.
+// Sticky-end with draft covers the common typing case where SetValue leaves
+// the caret at the right place. Empty idle, mid-string caret, skill highlight,
+// attach chip, burst, live turn, and blocked/attention chrome stay on the
+// legacy path so the CA-633 idle-pin/caching contract and CA-560 no-clamp
+// are preserved.
 func (m *AppModel) useTextareaView() bool {
-	return false
+	if !m.mirrorReady() || m.authPhase != AuthNone || m.viewingChild() || m.modeSetupModalOpen || m.pasteBurst.active {
+		return false
+	}
+	if m.inputCursor >= 0 {
+		return false
+	}
+	if strings.TrimSpace(m.inputValue) == "" {
+		return false
+	}
+	if len(m.selectedSkills) > 0 {
+		return false
+	}
+	if strings.TrimSpace(m.inputAttachChipPlain()) != "" {
+		return false
+	}
+	if m.flowLoopBlocked() || m.gate != nil || m.question != nil || m.approval != nil || len(m.attention) > 0 {
+		return false
+	}
+	if m.turnIsActive() || m.workIsLive() {
+		return false
+	}
+	return true
 }
 
 // normalizeComposerForMirror rewrites inputValue the same way bubbles'

@@ -240,10 +240,12 @@ slice that landed — deliberately does NOT complete the DOD. It embeds
 - Tests: additive only (CP-56 D-8). Old matrix untouched. `task308_textarea_test.go`
   covers mirror fidelity, auth no-leak, reject-revert sync, collapse sync.
 
-Phase 2 (not started): adopt `textarea.View()` inside `frameInput`, migrate
-caret/selection, resolve the trailing-newline fidelity constraint, and only
-then evaluate deleting `pasteBurst`/`chat_paste.go` (Windows raw-paste reject
-CA-612/CA-631 must be re-verified live before any deletion).
+Phase 2 (landed as View-when-sticky-end, CA-652): `renderInputLine` uses
+`textarea.View()` only when `useTextareaView()` is true (sticky-end with draft,
+no burst/skills/attach/live/blocked); all other cases stay on the legacy
+custom renderer so CA-633 idle-pin and CA-560 no-clamp are preserved.
+`Prompt=""`, height is `LineCount()` with no 1..8 clamp. Full caret/selection
+migration and `pasteBurst` deletion remain out of scope (CA-612/CA-631).
 
 ## 5. Test Signatures & Matrix
 

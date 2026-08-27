@@ -5001,22 +5001,17 @@ func (m *AppModel) renderInputLine() string {
 	if bar := m.renderAttentionBar(); bar != "" {
 		inner = append(inner, strings.Split(bar, "\n")...)
 	}
-	// Phase 2 (Task-308): when caret is sticky-end, render via textarea.View()
-	// instead of the custom bodyLines+windowRunesAround path.
+	// Phase 2 (Task-308): when caret is sticky-end with draft, render via
+	// textarea.View() instead of custom bodyLines. CA-560: no height clamp for
+	// typed multi-line (only lower bound 1).
 	if m.useTextareaView() {
 		m.syncTextareaValue()
-		// Keep width in sync (render may be called without WindowSizeMsg).
 		m.textarea.SetWidth(innerW)
 		h := m.textarea.LineCount()
 		if h < 1 {
 			h = 1
 		}
-		if h > 8 {
-			h = 8
-		}
 		m.textarea.SetHeight(h)
-		// Mirror m.cursorOn into textarea focus so View changes with the blink
-		// (CA-633 idle pin must still recompose once).
 		if m.cursorOn {
 			m.textarea.Focus()
 		} else {
