@@ -63,6 +63,9 @@ func (m *AppModel) clearInputValue() {
 	m.suggIdx = 0
 	m.pasteSegments = nil
 	m.resetPasteBurst()
+	if m.mirrorReady() {
+		m.textarea.Reset()
+	}
 }
 
 func (m *AppModel) insertInputAtCursor(s string) {
@@ -88,6 +91,9 @@ func (m *AppModel) insertInputAtCursor(s string) {
 	// inputCaretIndex() already reflects the *new* length after assignment,
 	// so +len would overshoot or leave a stale mid-index after backspace.
 	m.setInputCaret(cur + len(extra))
+	if m.mirrorReady() {
+		m.syncTextareaValue()
+	}
 }
 
 func (m *AppModel) deleteInputBeforeCursor() {
@@ -130,6 +136,9 @@ func (m *AppModel) deleteInputBeforeCursor() {
 				}
 				// Pasting may have left burst state armed; clear it
 				m.resetPasteBurst()
+				if m.mirrorReady() {
+					m.syncTextareaValue()
+				}
 				return
 			}
 		}
@@ -143,9 +152,13 @@ func (m *AppModel) deleteInputBeforeCursor() {
 	m.inputValue = string(out)
 	if wasStickyEnd || len(out) == 0 {
 		m.inputCursor = -1
-		return
+	} else {
+		m.setInputCaret(cur - 1)
 	}
-	m.setInputCaret(cur - 1)
+	if m.mirrorReady() {
+		m.syncTextareaValue()
+	}
+	return
 }
 
 func (m *AppModel) deleteInputAfterCursor() {
@@ -179,6 +192,9 @@ func (m *AppModel) deleteInputAfterCursor() {
 					m.setInputCaret(cur)
 				}
 				m.resetPasteBurst()
+				if m.mirrorReady() {
+					m.syncTextareaValue()
+				}
 				return
 			}
 		}
@@ -189,6 +205,9 @@ func (m *AppModel) deleteInputAfterCursor() {
 		m.inputCursor = -1
 	} else {
 		m.setInputCaret(cur)
+	}
+	if m.mirrorReady() {
+		m.syncTextareaValue()
 	}
 }
 
@@ -364,3 +383,4 @@ func (m *AppModel) tryPlaceInputCursor(x, y int) bool {
 	}
 	return true
 }
+

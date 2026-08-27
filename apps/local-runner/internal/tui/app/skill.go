@@ -233,6 +233,9 @@ func (m *AppModel) toggleSkillByNameQuiet(name string) (added bool, selName, sou
 			m.selectedSkills = append(m.selectedSkills[:i], m.selectedSkills[i+1:]...)
 			m.inputValue = removeSkillPromptToken(m.inputValue, s.Name)
 			m.inputCursor = -1
+			if m.mirrorReady() {
+				m.syncTextareaValue()
+			}
 			return false, s.Name, s.Source
 		}
 	}
@@ -248,6 +251,9 @@ func (m *AppModel) toggleSkillByNameQuiet(name string) (added bool, selName, sou
 	m.selectedSkills = append(m.selectedSkills, sel)
 	m.inputValue = insertSkillPromptToken(m.inputValue, m.inputCaretIndex(), sel.Name)
 	m.inputCursor = -1
+	if m.mirrorReady() {
+		m.syncTextareaValue()
+	}
 	return true, sel.Name, sel.Source
 }
 
@@ -392,3 +398,4 @@ func (m *AppModel) retargetSkillSuggestion(name string) {
 		}
 	}
 }
+

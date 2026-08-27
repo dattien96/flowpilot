@@ -261,4 +261,8 @@ func (m *AppModel) applyFileMention(path string) {
 	m.inputValue = replaceActiveAtWith(m.inputValue, m.inputCaretIndex(), path)
 	m.inputCursor = -1
 	m.suggIdx = 0
+	if m.mirrorReady() {
+		m.syncTextareaValue()
+	}
 }
+

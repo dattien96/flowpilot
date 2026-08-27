@@ -144,6 +144,8 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 		runnerURL:       runnerURL,
 		client:          client.New(runnerURL),
 		inputCursor:     -1,
+		textarea:        newChatTextArea(80),
+		textareaReady:   true,
 		yolo:            yolo,
 		provider:        provider,
 		model:           model,
@@ -249,6 +251,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = w
 		m.height = msg.Height
 		m.fullWidth = w
+		if m.mirrorReady() {
+			m.textarea.SetWidth(w - 2)
+		}
 		return m, tea.Batch(tea.ClearScreen, cmdSetAutoWrap(false))
 
 	case cursorTickMsg:
@@ -1401,6 +1406,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				m.resetPasteBurst()
+				m.syncTextareaValue()
 				tuiLog("burst collapse (windows reject) active=false inputLen=%d", len([]rune(m.inputValue)))
 				return m, nil
 			}
@@ -1859,6 +1865,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if isPromptNewlineKey(msg) || isModifiedEnterNewline(msg) {
 			m.inputValue += "\n"
+			m.syncTextareaValue()
 			return m, nil
 		}
 	}
@@ -2146,6 +2153,9 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					// (Desktop pickSkill keeps pre-slash text; runner injects via SelectedSkills).
 					m.inputValue = stripActiveSlashCommand(m.inputValue, m.inputCaretIndex())
 					m.inputCursor = -1
+					if m.mirrorReady() {
+						m.syncTextareaValue()
+					}
 					m.suggIdx = 0
 					if n := len(attachedSkillNames(m.selectedSkills)); n > 0 {
 						m.statusMsg = fmt.Sprintf("skills:%d attached — prompt kept", n)
@@ -2432,6 +2442,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						m.inputValue = string(runes[:m.pasteBurst.start])
 						m.setInputCaret(m.pasteBurst.start)
 					}
+					m.syncTextareaValue()
 					hint := "Use Alt+V for paste (text + image)"
 					m.addMessage("system", hint, "gate")
 					m.pasteCtrlVHintShown = true
@@ -2703,6 +2714,9 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 func (m *AppModel) setInputPreservingDraftPrefix(slashLine string) {
 	m.inputValue = replaceActiveSlashWith(m.inputValue, m.inputCaretIndex(), slashLine)
 	m.inputCursor = -1
+	if m.mirrorReady() {
+		m.syncTextareaValue()
+	}
 }
 
 // suggestionAcceptValue returns the slash line to run for Enter (or empty if not actionable).
@@ -3242,6 +3256,9 @@ func (m *AppModel) armGateCustom() (tea.Model, tea.Cmd) {
 	m.gate.AwaitingCustom = true
 	m.inputValue = ""
 	m.setInputCaret(0)
+	if m.mirrorReady() {
+		m.syncTextareaValue()
+	}
 	m.statusMsg = "gate custom: type your reason then Enter"
 	m.addMessage("system", "Custom gate decision — type your remediation instruction, then press Enter.", "gate")
 	return m, nil
@@ -4902,6 +4919,10 @@ func (m *AppModel) renderInputLine() string {
 		w = 80
 	}
 	w = safeTermWidth(w)
+	// Task-308: keep textarea width in sync with chat pane for correct wrapping.
+	if m.isTextareaReady() {
+		m.textarea.SetWidth(w - 2)
+	}
 	if m.viewingChild() {
 		// Desktop parity: a focused sub-agent transcript is read-only — chat may
 		// only continue on the main run. Render a locked banner instead of an
@@ -5981,3 +6002,4 @@ func runHeadless(m *AppModel, prompt string) error {
 	fmt.Fprintln(os.Stdout, finalMsg)
 	return nil
 }
+

@@ -56,10 +56,17 @@ func (m *AppModel) navigatePromptHistory(dir int) bool {
 			m.promptHistIdx = -1
 			m.inputValue = m.promptDraft
 			m.inputCursor = -1
+			if m.mirrorReady() {
+				m.syncTextareaValue()
+			}
 			return true
 		}
 	}
 	m.inputValue = m.promptHistory[m.promptHistIdx]
 	m.inputCursor = -1
+	if m.mirrorReady() {
+		m.syncTextareaValue()
+	}
 	return true
 }
+

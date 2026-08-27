@@ -224,6 +224,7 @@ func (m *AppModel) collapsePasteBurst() {
 			m.inputValue = string(repl)
 			m.setInputCaret(start + len([]rune(text)))
 		}
+		m.syncTextareaValue()
 		return
 	}
 	token := pasteSummaryToken(text)
@@ -232,6 +233,7 @@ func (m *AppModel) collapsePasteBurst() {
 	m.inputValue = string(repl)
 	m.setInputCaret(start + len([]rune(token)))
 	m.pasteSegments = append(m.pasteSegments, pasteSegment{token: token, text: text})
+	m.syncTextareaValue()
 }
 
 func (m *AppModel) resetPasteBurst() {

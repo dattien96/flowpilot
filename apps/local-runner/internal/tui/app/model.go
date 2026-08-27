@@ -7,6 +7,8 @@ package app
 import (
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
+
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
 	"flowpilot-runner/internal/tui/prefs"
@@ -283,6 +285,11 @@ type AppModel struct {
 
 	inputValue  string
 	inputCursor int // rune index; <0 means caret sticks to the end
+	// textarea is the bubbles/textarea composer (Task-308). inputValue/inputCursor
+	// are kept as live composer (old tests assign them). textarea is a
+	// value-only mirror for future View() migration — no caret poke.
+	textarea      textarea.Model
+	textareaReady bool
 	// pasteSegments holds the full text behind collapsed "[Pasted N lines]" tokens.
 	// pasteBurst guards a raw (non-bracketed) paste arriving as a flood of key
 	// events: while a rune burst is active, Enter inserts a newline instead of
