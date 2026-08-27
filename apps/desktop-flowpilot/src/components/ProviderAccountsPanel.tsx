@@ -9,6 +9,7 @@ const PROVIDERS = [
   { key: "codex", label: "Codex" },
   { key: "gemini", label: "Gemini" },
   { key: "grok", label: "Grok" },
+  { key: "opencode", label: "OpenCode" },
 ] as const;
 
 function formatDateTime(value: string | null): string | null {
@@ -65,6 +66,10 @@ function saveProviderVisibility(next: Record<string, boolean>): void {
 }
 
 function compactUsageLines(account: ProviderAccountSummary): ProviderAccountSummary["usageDetailLines"] {
+  if (account.providerKey === "opencode") {
+    // Opencode is zen proxy — no upstream limit, hide fabricated 0% meters (Task-302 T-6)
+    return [];
+  }
   if (account.providerKey !== "gemini") {
     return account.usageDetailLines;
   }
@@ -193,7 +198,7 @@ export function ProviderAccountsPanel(): React.ReactElement | null {
       const knownAccountIds = providerAccounts
         .filter((account) => account.providerKey === providerKey)
         .map((account) => account.id);
-      await client.connectProviderAccount(providerKey as "claude" | "codex" | "gemini" | "grok");
+      await client.connectProviderAccount(providerKey as "claude" | "codex" | "gemini" | "grok" | "opencode");
       setPendingKnownAccountIds(knownAccountIds);
       setPendingProviderKey(providerKey);
       setMessage(
@@ -274,7 +279,9 @@ export function ProviderAccountsPanel(): React.ReactElement | null {
                   {pinned.accountName && pinned.accountEmail && pinned.accountName !== pinned.accountEmail ? (
                     <div className="account-pin-sub">{pinned.accountName}</div>
                   ) : null}
-                  {lines.length > 0 ? (
+                  {group.key === "opencode" ? (
+                    <div className="account-pin-sub" title="Opencode is a zen proxy — limit depends on upstream provider, see opencode stats">Limit: N/A (zen proxy)</div>
+                  ) : lines.length > 0 ? (
                     <div className="account-bars">
                       {lines.map((line) => (
                         <div key={`${pinned.id}-${line.label}`} className="account-bar-row">
@@ -403,21 +410,37 @@ export function ProviderAccountsPanel(): React.ReactElement | null {
                         </div>
 
                         {account.usageDetailLines.length > 0 ? (
-                          <div className="account-bars details">
-                            {account.usageDetailLines.map((line) => (
-                              <div key={`${account.id}-detail-${line.label}`} className="account-bar-row">
-                                <div className="account-bar-meta">
-                                  <span>
-                                    {line.label}: {line.remainingPercent}%
-                                  </span>
-                                  <span>{formatDateTime(line.resetAt) ? `resets ${formatDateTime(line.resetAt)}` : ""}</span>
+                          account.providerKey === "opencode" ? (
+                            <div className="account-bars details">
+                              {account.usageDetailLines.map((line) => (
+                                <div key={`${account.id}-detail-${line.label}`} className="account-bar-row">
+                                  <div className="account-bar-meta">
+                                    <span title="Opencode is a zen proxy — limit depends on upstream provider, see opencode stats">{line.label}</span>
+                                    <span>{formatDateTime(line.resetAt) ? `resets ${formatDateTime(line.resetAt)}` : ""}</span>
+                                  </div>
                                 </div>
-                                <div className="meter">
-                                  <div className={`meter-fill ${usageTone(line.remainingPercent)}`} style={{ width: `${line.remainingPercent}%` }} />
+                              ))}
+                              <div className="account-pin-sub" title="Opencode is a zen proxy — limit depends on upstream provider, see opencode stats">Limit: N/A (zen proxy)</div>
+                            </div>
+                          ) : (
+                            <div className="account-bars details">
+                              {account.usageDetailLines.map((line) => (
+                                <div key={`${account.id}-detail-${line.label}`} className="account-bar-row">
+                                  <div className="account-bar-meta">
+                                    <span>
+                                      {line.label}: {line.remainingPercent}%
+                                    </span>
+                                    <span>{formatDateTime(line.resetAt) ? `resets ${formatDateTime(line.resetAt)}` : ""}</span>
+                                  </div>
+                                  <div className="meter">
+                                    <div className={`meter-fill ${usageTone(line.remainingPercent)}`} style={{ width: `${line.remainingPercent}%` }} />
+                                  </div>
                                 </div>
-                              </div>
-                            ))}
-                          </div>
+                              ))}
+                            </div>
+                          )
+                        ) : account.providerKey === "opencode" ? (
+                          <div className="account-pin-sub" title="Opencode is a zen proxy — limit depends on upstream provider, see opencode stats">Limit: N/A (zen proxy)</div>
                         ) : null}
 
                         <div className="account-detail-actions">

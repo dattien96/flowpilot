@@ -245,7 +245,7 @@ export function AiProvidersSettings(): React.ReactElement {
       const nextProviders = await admin.providers.installLocalProvider(providerKey);
       setProviders(nextProviders);
       await loadLocalProviders();
-      setMessage(`${providerKey === "gemini" ? "AGY CLI" : providerKey} install requested. Refresh or connect an account after the installer completes.`);
+      setMessage(`${providerKey === "gemini" ? "AGY CLI" : providerKey === "opencode" ? "OpenCode CLI" : providerKey} install requested. Refresh or connect an account after the installer completes.`);
     } catch (error) {
       setMessageTone("error");
       setMessage(toErrorMessage(error, "Unable to install provider CLI."));
@@ -307,9 +307,9 @@ export function AiProvidersSettings(): React.ReactElement {
                   {detectError[provider.key] ? <span className="settings-feedback error">{detectError[provider.key]}</span> : null}
                 </div>
                 <div className="settings-provider-actions">
-                  {provider.key === "gemini" ? (
+                  {provider.key === "gemini" || provider.key === "opencode" ? (
                     <button className="secondary-btn" disabled={busy || installingProviderKey === provider.key || provider.installed} onClick={() => void installProvider(provider.key as ProviderKey)} type="button">
-                      {installingProviderKey === provider.key ? "Installing AGY..." : provider.installed ? "AGY Installed" : "Install AGY CLI"}
+                      {installingProviderKey === provider.key ? `Installing ${provider.key === "gemini" ? "AGY" : "OpenCode"}...` : provider.installed ? `${provider.key === "gemini" ? "AGY" : "OpenCode"} Installed` : `Install ${provider.key === "gemini" ? "AGY CLI" : "OpenCode CLI"}`}
                     </button>
                   ) : null}
                   <button className="secondary-btn" disabled={busy || connectingProviderKey === provider.key || !provider.installed} onClick={() => void connectAccount(provider.key as ProviderKey)} type="button">
@@ -324,7 +324,7 @@ export function AiProvidersSettings(): React.ReactElement {
             ))}
           </div>
         </div>
-        <div className="settings-subpanel"><h3>Add Supported Model</h3><div className="settings-grid"><label className="settings-field"><span>Provider</span><select value={draft.providerKey} onChange={(event) => setDraft((current) => ({ ...current, providerKey: event.target.value as "codex" | "claude" | "gemini" | "grok" }))}><option value="codex">codex</option><option value="claude">claude</option><option value="gemini">gemini</option><option value="grok">grok</option></select></label><label className="settings-field"><span>Model ID</span><input value={draft.modelId} onChange={(event) => setDraft((current) => ({ ...current, modelId: event.target.value }))} /></label><label className="settings-field settings-field-full"><span>Display Name</span><input value={draft.displayName} onChange={(event) => setDraft((current) => ({ ...current, displayName: event.target.value }))} /></label></div><div className="settings-actions"><button className="primary-btn" disabled={busy} onClick={() => void addModel()} type="button">Add Model</button></div></div>
+        <div className="settings-subpanel"><h3>Add Supported Model</h3><div className="settings-grid"><label className="settings-field"><span>Provider</span><select value={draft.providerKey} onChange={(event) => setDraft((current) => ({ ...current, providerKey: event.target.value as "codex" | "claude" | "gemini" | "grok" | "opencode" }))}><option value="codex">codex</option><option value="claude">claude</option><option value="gemini">gemini</option><option value="grok">grok</option><option value="opencode">opencode</option></select></label><label className="settings-field"><span>Model ID</span><input value={draft.modelId} onChange={(event) => setDraft((current) => ({ ...current, modelId: event.target.value }))} /></label><label className="settings-field settings-field-full"><span>Display Name</span><input value={draft.displayName} onChange={(event) => setDraft((current) => ({ ...current, displayName: event.target.value }))} /></label></div><div className="settings-actions"><button className="primary-btn" disabled={busy} onClick={() => void addModel()} type="button">Add Model</button></div></div>
       </div>
       <div className="settings-subpanel">
         <h3>Supported Models</h3>
