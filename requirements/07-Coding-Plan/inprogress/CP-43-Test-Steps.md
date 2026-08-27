@@ -412,17 +412,29 @@ Verify: nếu planner chỉ khai calc.go mà coder sửa user_test.go → gate b
 
 ## [FLOW] F3 — Planner khai sai/thiếu path → amend (live trigger CA-647)
 
-Prompt (task đòi sửa nhiều file nhưng nêu hướng hẹp):
-Sua ham Subtract trong calc.go va dong thoi cap nhat goi ham Subtract trong user.go cho dung kieu int.
-Verify: coder đụng user.go ngoài frozen scope → block → amend (tăng version, Supersedes) → chạy tiếp.
+**Cơ chế:** không thể ép planner khai sai (LLM đọc prompt + scan workspace). Cách
+đúng là ép TÌNH HUỐNG: drift file (1) không nằm trong prompt, (2) ngoài tầm
+planner khai, nhưng (3) coder BUỘC phải chạm để build pass (giống F2 —
+drift_probe.go là file coder chạm, planner không biết).
 
-Khi flow park WAITING_USER_APPROVAL vì drift, amend trực tiếp qua API (runner restart để load CA-647):
+**Chuẩn bị (đã làm):** user.go có `idBalanceDelta(a, b int) int` gọi `Subtract`
+(committed `a6c2c45`). Đổi Subtract signature → build fail ở user.go → coder
+phải sửa user.go.
 
-```powershell
-Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:4317/client/workflow-runs/<runId>/agent-loop/amend" -ContentType "application/json" -Body '{"paths":["user.go"]}'
-```
+Prompt (không nhắc user.go):
+Doi ham Subtract(a, b int) int trong calc.go thanh Subtract(a, b int64) int64. Chay go test ./...
 
-Verify: `frozen_contracts.ndjson` có v2 + Supersedes v1; flow resume → coder retry pass.
+Verify:
+- Planner khai chỉ `calc.go` (+ calc_test.go) → coder đổi signature → `go build`
+  fail ở `idBalanceDelta` → coder sửa user.go → **drift thật** → block
+  WAITING_USER_APPROVAL.
+- Amend qua API (runner restart để load CA-647):
+  ```powershell
+  Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:4317/client/workflow-runs/<runId>/agent-loop/amend" -ContentType "application/json" -Body '{"paths":["user.go"]}'
+  ```
+- `frozen_contracts.ndjson`: **v2 + Supersedes v1**; flow resume → coder retry pass.
+- Nếu planner scan ra user.go và khai đủ → không drift (Nhánh B); để ép Nhánh A
+  có thể trả lời câu hỏi planner theo hướng "chỉ calc.go".
 
 # P-3 — Canonical Head
 
