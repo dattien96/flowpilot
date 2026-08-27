@@ -413,30 +413,29 @@ Verify: nếu planner chỉ khai calc.go mà coder sửa user_test.go → gate b
 ## [FLOW] F3 — Planner khai sai/thiếu path → amend (live trigger CA-647)
 
 **Kết quả thực tế (2026-08-27): Nhánh B pass — planner thông minh khai đủ
-(`calc.go` + `user.go`) → không drift → flow pass.** Đây là hành vi ĐÚNG: planner
-tốt ngăn drift từ gốc. Không thể ép planner khai sai (LLM đọc prompt + scan
-workspace).
+`calc.go` + file caller (`user.go`/`user_decoy.go`) → không drift → flow pass.**
+Không thể ép planner khai thiếu bằng prompt nhắc file: LLM scan call site và
+khai luôn.
 
-**Leg amend còn lại — live-test deterministic bằng recipe decoy (như F2):
-drift file phải (1) không nằm trong prompt, (2) ngoài tầm planner khai, nhưng
-(3) coder BUỘC phải chạm để build pass.**
+**Recipe deterministic (dùng file planner không khai):** ép coder sửa
+`calc_test.go` — file cũ có `TestSubtract` vẫn dùng `int`; đổi `Subtract`
+sang `int64` mà không sửa test → `go test` fail → coder phải sửa
+`calc_test.go`. Planner theo bias safe-fix luôn khai **file test MỚI**
+(`subtract_int64_test.go`), không khai `calc_test.go` cũ → drift thật.
 
-Chuẩn bị (đã làm): `user_decoy.go` (untracked) có `accountDelta` gọi `Subtract`
-với `int`. Đổi Subtract signature → build fail ở user_decoy.go → coder phải
-sửa nó → drift (planner không khai file này).
-
-Prompt (không nhắc user_decoy.go):
-Doi ham Subtract(a, b int) int trong calc.go thanh Subtract(a, b int64) int64. Chay go test ./...
+Prompt (chạy sau khi đã xóa `user_decoy.go`, restart runner để load CA-647):
+Doi ham Subtract(a, b int) int trong calc.go thanh Subtract(a, b int64) int64 (phan than tra ve int64). Sua lai tat ca TestSubtract trong calc_test.go cho dung kieu int64. Chay go test ./...
 
 Verify:
-- Coder đổi calc.go → `go build` fail ở `accountDelta` → coder sửa
-  `user_decoy.go` → **drift thật** → block WAITING_USER_APPROVAL.
-- Amend qua API (runner restart để load CA-647):
+- Coder đổi calc.go → `go test` fail ở `calc_test.go` → coder sửa
+  `calc_test.go` → **drift `calc_test.go` thật** → block WAITING_USER_APPROVAL.
+- Amend:
   ```powershell
-  Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:4317/client/workflow-runs/<runId>/agent-loop/amend" -ContentType "application/json" -Body '{"paths":["user_decoy.go"]}'
+  Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:4317/client/workflow-runs/<runId>/agent-loop/amend" -ContentType "application/json" -Body '{"paths":["calc_test.go"]}'
   ```
 - `frozen_contracts.ndjson`: **v2 + Supersedes v1**; flow resume → coder retry pass.
-- Nếu planner vẫn scan ra user_decoy.go → Nhánh B (đã pass); thử decoy tên khác.
+- Nếu planner vẫn khai `calc_test.go` → Nhánh B (đã live-verified). Decoy
+  `user_decoy.go` không còn cần (planner scan call site).
 
 # P-3 — Canonical Head
 
