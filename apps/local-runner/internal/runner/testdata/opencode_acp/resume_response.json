@@ -1,0 +1,15 @@
+{
+  "sessionId": "ses_fbc474c23ffepaXAU763cB2QPr",
+  "configOptions": [
+    {
+      "id": "model",
+      "name": "Model",
+      "category": "model",
+      "type": "select",
+      "currentValue": "opencode/muse-spark-1.2-contributor-free",
+      "options": [
+        {"value": "opencode/muse-spark-1.2-contributor-free", "name": "OpenCode Zen/Muse Spark 1.2 Free"}
+      ]
+    }
+  ]
+}
