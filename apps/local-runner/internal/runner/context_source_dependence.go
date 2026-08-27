@@ -39,11 +39,7 @@ func (s *dependenceSource) Fetch(ctx context.Context, hints FlowContextHints) (F
 		return section, nil
 	}
 
-	store, err := changecontract.OpenStoreReadOnly(hints.Workspace)
-	if err != nil || store == nil {
-		return section, nil
-	}
-	c, ok := store.GetLatestForRun(hints.WorkflowRunID)
+	c, ok := latestContractForRun(hints.Workspace, hints.WorkflowRunID)
 	if !ok {
 		return section, nil
 	}

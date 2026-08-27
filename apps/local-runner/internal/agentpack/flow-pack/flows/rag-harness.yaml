@@ -24,13 +24,16 @@ contexts:
   main_context:
     ref: contexts/flow-context-package.yaml
     # CP-44 P-4/Task-194: explicit enabled-source declaration. CP-55 P-8 added
-    # change.contract/canonical.head so this flow's default context package
-    # exposes the frozen preflight contract and Canonical Head sections
-    # (spec 3.15) alongside the 3 sources the runner already defaulted to.
+    # change.contract/canonical.head (spec 3.15) and Task-259 added
+    # source.dependence; together these six ids reproduce defaultContextSourceIDs
+    # (see context_sources_builtin.go) so flow renders match the runner's default
+    # set even though this flow-level list is now retired for Collect (it still
+    # validates via ValidateFlowContextSources).
     sources:
-      - change.contract
       - canonical.head
       - feature.history
+      - change.contract
+      - source.dependence
       - chat.summary
       - source.excerpt
 tools:
