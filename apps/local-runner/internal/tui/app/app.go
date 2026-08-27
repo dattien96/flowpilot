@@ -1927,25 +1927,19 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.rejectWindowsRawPaste || runtime.GOOS == "windows" {
-			if m.rejectWindowsRawPaste {
-				if !m.pasteBurst.rejectArmed {
-					m.pasteBurst.rejectArmed = true
-					if !m.pasteBurst.active {
-						m.pasteBurst.active = true
-						m.pasteBurst.start = len([]rune(m.inputValue))
-						m.pasteBurst.buf = nil
-						m.pasteBurst.lastRuneAt = pasteNow()
-					}
+			if !m.pasteBurst.rejectArmed {
+				m.pasteBurst.rejectArmed = true
+				if !m.pasteBurst.active {
+					m.pasteBurst.active = true
+					m.pasteBurst.start = len([]rune(m.inputValue))
+					m.pasteBurst.buf = nil
+					m.pasteBurst.lastRuneAt = pasteNow()
 				}
-				hint := "Use Alt+V for paste (text + image)"
-				m.addMessage("system", hint, "gate")
-				m.pasteCtrlVHintShown = true
-				return m, tea.Batch(m.showFlashToast(hint), m.cmdPasteBurstSettleOnce())
 			}
 			hint := "Use Alt+V for paste (text + image)"
 			m.addMessage("system", hint, "gate")
 			m.pasteCtrlVHintShown = true
-			return m, m.showFlashToast(hint)
+			return m, tea.Batch(m.showFlashToast(hint), m.cmdPasteBurstSettleOnce())
 		}
 		// Prefer image clipboard; falls back to text.
 		return m, m.cmdClipboardPaste()
@@ -2376,6 +2370,23 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "alt+v", "ctrl+shift+v":
 				return m, m.cmdClipboardPaste()
+			case "ctrl+v", "\x16":
+				if m.rejectWindowsRawPaste || runtime.GOOS == "windows" {
+					if !m.pasteBurst.rejectArmed {
+						m.pasteBurst.rejectArmed = true
+						if !m.pasteBurst.active {
+							m.pasteBurst.active = true
+							m.pasteBurst.start = len([]rune(m.inputValue))
+							m.pasteBurst.buf = nil
+							m.pasteBurst.lastRuneAt = pasteNow()
+						}
+					}
+					hint := "Use Alt+V for paste (text + image)"
+					m.addMessage("system", hint, "gate")
+					m.pasteCtrlVHintShown = true
+					return m, tea.Batch(m.showFlashToast(hint), m.cmdPasteBurstSettleOnce())
+				}
+				return m, m.cmdClipboardPaste()
 			}
 			// Bracketed paste (KeyRunes+Paste).
 			if msg.Paste {
@@ -2441,6 +2452,14 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.authPhase == AuthNone {
 		switch msg.String() {
 		case "alt+v", "ctrl+shift+v":
+			return m, m.cmdClipboardPaste()
+		case "ctrl+v", "\x16":
+			if m.rejectWindowsRawPaste || runtime.GOOS == "windows" {
+				hint := "Use Alt+V for paste (text + image)"
+				m.addMessage("system", hint, "gate")
+				m.pasteCtrlVHintShown = true
+				return m, m.showFlashToast(hint)
+			}
 			return m, m.cmdClipboardPaste()
 		}
 	}

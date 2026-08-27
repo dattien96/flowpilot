@@ -165,3 +165,24 @@ func TestWindowsReject_HijackNotWipedByTrailingFlood(t *testing.T) {
 	}
 	_ = token
 }
+
+func TestWindowsReject_KeyRunesCtrlVBlockedAndHints(t *testing.T) {
+	m := newPasteModel()
+	m.rejectWindowsRawPaste = true
+	m2, _ := m.handleKey(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune{'\x16'}, // Ctrl+V / SYN
+	})
+	am := m2.(*AppModel)
+	if am.inputValue != "" {
+		t.Fatalf("KeyRunes ctrl+v on Windows must not insert rune, got %q", am.inputValue)
+	}
+	if !am.pasteCtrlVHintShown {
+		t.Fatal("KeyRunes ctrl+v on Windows must set pasteCtrlVHintShown")
+	}
+	if len(am.messages) == 0 || !strings.Contains(am.messages[len(am.messages)-1].Content, "Use Alt+V for paste") {
+		t.Fatalf("must show Alt+V hint message on KeyRunes ctrl+v, got %+v", am.messages)
+	}
+}
+
+
