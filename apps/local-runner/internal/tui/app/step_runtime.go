@@ -307,19 +307,14 @@ func (m *AppModel) renderBlockedBar() string {
 	isStalled := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "member_stalled")
 	drifted := parseDriftedPaths(m.blockedDecisionReason())
 	showAllow := !isCap && !isStalled && len(drifted) > 0
-	// Chip tokens on their own row so 80-col terminals keep reliable click targets (Task-309 T-6).
-	bar += styleSystem.Render("  ") + styleLink.Render("[Retry]") + "  " +
-		styleLink.Render("[Stop]")
+
+	var options []string
+	options = append(options, styleSystem.Render("  ")+styleLink.Render("[Retry]")+styleSystem.Render(" - run again with old scope"))
+	options = append(options, styleSystem.Render("  ")+styleLink.Render("[Stop]")+styleSystem.Render(" - end flow"))
 	if showAllow {
-		bar += "  " + styleLink.Render("[Allow]")
+		options = append(options, styleSystem.Render("  ")+styleLink.Render("[Allow]")+styleSystem.Render(" - continue with new scope (match code changed)"))
 	}
-	bar += "  " + styleSystem.Render("click") + "\n"
-	desc := styleSystem.Render("run again with old scope") + styleSystem.Render(" · ") +
-		styleSystem.Render("end flow")
-	if showAllow {
-		desc += styleSystem.Render(" · ") + styleSystem.Render("continue with new scope (match code changed)")
-	}
-	bar += styleSystem.Render("  ") + desc
+	bar += strings.Join(options, "\n")
 	return bar
 }
 
