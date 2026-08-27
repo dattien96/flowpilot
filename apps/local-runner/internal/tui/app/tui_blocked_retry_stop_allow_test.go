@@ -170,6 +170,41 @@ func TestBlockedBar_ClickAllowPostsAmend(t *testing.T) {
 	}
 }
 
+func TestBlockedBar_ClickRetryPostsContinueOnDrift(t *testing.T) {
+	for _, pk := range []string{"claude", "codex", "grok"} {
+		t.Run(pk, func(t *testing.T) {
+			var continueHit bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.Contains(r.URL.Path, "/agent-loop/continue") {
+					continueHit = true
+					json.NewEncoder(w).Encode(client.AgentGraphSnapshot{
+						ParentRunID: "run-1",
+						LoopState:   client.AgentLoopState{Status: "running"},
+					})
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer srv.Close()
+
+			m := driftBlockedModel(pk, "flow scope drift: wrote outside the frozen contract's declared paths: calc_test.go")
+			m.runnerURL = srv.URL
+			x, y, ok := findClickTarget(m, "retry")
+			if !ok {
+				t.Fatalf("%s: expected clickable [Retry] chip", pk)
+			}
+			_, cmd := m.dispatchMouseClick(x, y)
+			if cmd == nil {
+				t.Fatalf("%s: clicking [Retry] returned nil cmd", pk)
+			}
+			_ = cmd()
+			if !continueHit {
+				t.Fatalf("%s: drift Retry must POST /agent-loop/continue (old scope)", pk)
+			}
+		})
+	}
+}
+
 func TestBlockedBar_ClickAllowMultiPath(t *testing.T) {
 	var captured []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

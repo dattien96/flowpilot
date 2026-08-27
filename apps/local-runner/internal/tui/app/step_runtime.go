@@ -213,9 +213,9 @@ func (m *AppModel) applyAgentGraph(g *client.AgentGraphSnapshot) {
 func (m *AppModel) showBlockedBanner(ls client.AgentLoopState) {
 	reason := strings.TrimSpace(ls.BlockReason)
 	gate := strings.TrimSpace(ls.GateReason)
-	base := "Flow is waiting for you (blocked) — /continue to proceed or /stop to end"
+	base := "Flow is waiting for you (blocked) — click Retry / Stop / Allow above, or /continue or /stop"
 	if reason != "" {
-		base = fmt.Sprintf("Flow is waiting for you (blocked: %s) — /continue to proceed or /stop to end", reason)
+		base = fmt.Sprintf("Flow is waiting for you (blocked: %s) — click Retry / Stop / Allow above, or /continue or /stop", reason)
 	}
 	line := base + "."
 	// CA-617 surfaced gate for delegate_failed; CA-619 extends to escalate/cap
@@ -306,12 +306,20 @@ func (m *AppModel) renderBlockedBar() string {
 	isCap := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "cap")
 	isStalled := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "member_stalled")
 	drifted := parseDriftedPaths(m.blockedDecisionReason())
-	bar += styleSystem.Render("  ") + styleLink.Render("[Retry]") + styleSystem.Render(" run again with old scope") + "  " +
-		styleLink.Render("[Stop]") + styleSystem.Render(" end flow")
-	if !isCap && !isStalled && len(drifted) > 0 {
-		bar += "  " + styleLink.Render("[Allow]") + styleSystem.Render(" continue with new scope (match code changed)")
+	showAllow := !isCap && !isStalled && len(drifted) > 0
+	// Chip tokens on their own row so 80-col terminals keep reliable click targets (Task-309 T-6).
+	bar += styleSystem.Render("  ") + styleLink.Render("[Retry]") + "  " +
+		styleLink.Render("[Stop]")
+	if showAllow {
+		bar += "  " + styleLink.Render("[Allow]")
 	}
-	bar += "  " + styleSystem.Render("click")
+	bar += "  " + styleSystem.Render("click") + "\n"
+	desc := styleSystem.Render("run again with old scope") + styleSystem.Render(" · ") +
+		styleSystem.Render("end flow")
+	if showAllow {
+		desc += styleSystem.Render(" · ") + styleSystem.Render("continue with new scope (match code changed)")
+	}
+	bar += styleSystem.Render("  ") + desc
 	return bar
 }
 

@@ -269,7 +269,7 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 		if m.flowLoopBlocked() && m.runHandle != nil {
 			return m, m.cmdContinueFlow(m.runHandle.RunID)
 		}
-	case target == "allow", target == "amend":
+	case target == "allow":
 		if m.flowLoopBlocked() && m.runHandle != nil {
 			isCap := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "cap")
 			isStalled := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "member_stalled")
@@ -765,9 +765,6 @@ func (m *AppModel) hitBlockedChrome(c tuiChrome, x, y int) string {
 		// Alias for old tests / muscle memory.
 		if hitToken(stripped, "[Continue]", x) {
 			return "retry"
-		}
-		if hitToken(stripped, "[Amend]", x) {
-			return "allow"
 		}
 		return ""
 	}

@@ -3581,6 +3581,12 @@ input {
 .btn-ghost {
   background: transparent;
 }
+.btn-desc {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-dim);
+  margin-left: 4px;
+}
 .text-input,
 .text-area {
   background: var(--bg-3);

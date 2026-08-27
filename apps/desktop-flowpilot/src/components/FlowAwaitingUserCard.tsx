@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { awaitingUserDriftState } from "@/components/flowAwaitingUserDrift";
 import { useStore } from "@/state/store";
 
 // BUG-231: an escalate (or round-cap-reached) outcome pauses the flow's agent
@@ -18,19 +19,6 @@ import { useStore } from "@/state/store";
 //
 // Task-241: blockReason=member_stalled shows Retry / Skip / Stop instead of
 // the generic Continue form (I-16).
-function parseDriftedPaths(gate: string): string[] | null {
-  const marker = "wrote outside the frozen contract's declared paths:";
-  const idx = gate.indexOf(marker);
-  if (idx < 0) return null;
-  let rest = gate.slice(idx + marker.length).trim();
-  if (rest.endsWith(".")) rest = rest.slice(0, -1).trim();
-  if (!rest) return null;
-  const parts = rest
-    .split(",")
-    .map((p) => p.trim().replace(/\.$/, "").trim())
-    .filter((p) => p.length > 0);
-  return parts.length > 0 ? parts : null;
-}
 
 export function FlowAwaitingUserCard(): React.ReactElement | null {
   const loopState = useStore((s) => s.agentGraphSnapshot?.loopState);
@@ -46,10 +34,7 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
   // escalate card so operators are not offered Retry/Stop/Allow behind a second modal.
   if (gateBlock) return null;
 
-  const stalled = loopState.blockReason === "member_stalled";
-  const isCap = loopState.blockReason === "cap";
-  const driftedPaths = !stalled && !isCap ? parseDriftedPaths(loopState.gateReason ?? "") : null;
-  const isDrift = driftedPaths !== null && driftedPaths.length > 0;
+  const { stalled, isCap, driftedPaths, isDrift, retryIsPrimary } = awaitingUserDriftState(loopState);
   const reasonLabel =
     isCap
       ? "Round limit reached"
@@ -145,7 +130,7 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
           <>
             <button
               type="button"
-              className="btn btn-ghost"
+              className={`btn ${retryIsPrimary ? "btn-primary" : "btn-ghost"}`}
               onClick={() => void handleRetry()}
               disabled={submitting}
               title="run again with old scope"

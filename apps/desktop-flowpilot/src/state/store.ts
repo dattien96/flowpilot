@@ -759,9 +759,12 @@ export const useStore = create<AppState>((set, get) => ({
     });
   },
   async amendFlow(paths: string[]) {
-    const { client, mainRunId, runId } = get();
+    const { client, mainRunId, runId, activeAgentRunId } = get();
     const parentRunId = mainRunId ?? runId;
     if (!parentRunId || !client.amendFlow) return;
+    if (activeAgentRunId && activeAgentRunId !== parentRunId) {
+      get().backToMainRun();
+    }
     set({
       ...applyAgentGraphSnapshot(await client.amendFlow(parentRunId, paths)),
       _agentGraphLoadSeq: get()._agentGraphLoadSeq + 1,
