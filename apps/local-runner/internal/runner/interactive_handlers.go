@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/changecontract"
 )
 
 // RegisterInteractiveRoutes wires the Phase 2 interactive + admin endpoints onto
@@ -77,6 +80,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/flow-control", s.handleSubmitFlowControl)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/extend-cap", s.handleExtendCap)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/continue", s.handleContinueFlow)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/amend", s.handleAmendFlow)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-decision", s.handleGateDecision)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-agreement", s.handleGateAgreement)
 
@@ -1502,4 +1506,83 @@ func fakeArtifacts(runID string) []Artifact {
 		{ID: runID + "-final", RunID: runID, Kind: "final_response", Name: "final-response.md", Preview: "Implemented the feature.", CreatedAt: "2026-06-12T10:00:00Z"},
 		{ID: runID + "-diff", RunID: runID, Kind: "diff_snapshot", Name: "changes.diff", Preview: "3 files changed", CreatedAt: "2026-06-12T10:00:01Z"},
 	}
+}
+
+// handleAmendFlow handles POST /client/workflow-runs/{runId}/agent-loop/amend.
+// Body: {"paths": ["user.go"]}. CP-55 P-4 / CP-43 F3 live trigger for
+// changecontract.AmendFrozenContract: widens every active frozen contract of
+// the run that is missing the additional paths (union semantics, mints
+// version+1 with Supersedes pointing at the prior), then resumes the parked
+// flow so the retried writer passes its scope gate. Applies only to a run
+// currently parked blocked (a scope-drift park); returns 409 otherwise.
+func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runId")
+	var body struct {
+		Paths []string `json:"paths"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
+			return
+		}
+	}
+	paths := make([]string, 0, len(body.Paths))
+	for _, p := range body.Paths {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			paths = append(paths, trimmed)
+		}
+	}
+	if len(paths) == 0 {
+		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "amend requires at least one non-blank path"))
+		return
+	}
+
+	s.mu.Lock()
+	rs := s.runs[runID]
+	if rs == nil {
+		s.mu.Unlock()
+		writeInteractiveError(w, newAPIErr(http.StatusNotFound, "run_not_found", "run not found"))
+		return
+	}
+	workspace := rs.workspaceCwd
+	loopStatus := s.agentOrchestrator.loopStateFor(runID).Status
+	nodes := append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
+	s.mu.Unlock()
+
+	if strings.ToLower(strings.TrimSpace(loopStatus)) != "blocked" {
+		writeInteractiveError(w, newAPIErr(http.StatusConflict, "flow_not_blocked", "flow is not parked; amend only applies to a blocked flow awaiting a decision"))
+		return
+	}
+
+	store, err := changecontract.NewFrozenStore(workspace)
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "frozen_store_open_failed", err.Error()))
+		return
+	}
+	amended := 0
+	for _, wn := range flowAgentCodeWriterNodes(nodes) {
+		rec, ok, err := store.GetFrozenForStep(runID, wn.ID)
+		if err != nil || !ok {
+			continue
+		}
+		next, err := changecontract.AmendFrozenContract(store, workspace, rec, paths, time.Now().UTC())
+		if err != nil {
+			writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "amend_failed", err.Error()))
+			return
+		}
+		if next.ContractID != rec.ContractID {
+			amended++
+		}
+	}
+	if amended == 0 {
+		writeInteractiveError(w, newAPIErr(http.StatusNotFound, "no_frozen_contract", "no frozen contract of this run needed widening for the given paths"))
+		return
+	}
+
+	snap, err := s.resumeFlowWithFeedback(runID, "")
+	if err != nil {
+		writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "continue_flow_failed", err.Error()))
+		return
+	}
+	writeInteractiveJSON(w, http.StatusOK, snap)
 }
