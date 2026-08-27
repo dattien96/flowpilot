@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -399,9 +400,35 @@ func loadAccountLaunchMetadata(account runner.ProviderAccount) (accountLaunchMet
 	case "grok":
 		// Appended last (CP-46 P-0/Task-210 T-9): codex/claude/gemini cases above unchanged.
 		return loadGrokAccountMetadata(account.HomePath)
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-13).
+		return loadOpencodeAccountMetadata(account.HomePath)
 	default:
 		return accountLaunchMetadata{}, nil
 	}
+}
+
+func loadOpencodeAccountMetadata(homePath string) (accountLaunchMetadata, error) {
+	// Delegate to runner's shared implementation (CP-57 Task-302 DOD-7) and map to cli type.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	runnerMeta, err := runner.LoadOpencodeAccountMetadata(ctx, homePath)
+	if err != nil {
+		// Best-effort fallback: at least return authStorePath
+		return accountLaunchMetadata{authStorePath: homePath}, nil
+	}
+	metadata := accountLaunchMetadata{
+		authStorePath: homePath,
+		accountEmail:  runnerMeta.AccountEmail,
+		accountName:   runnerMeta.DisplayName,
+		usageSummary:  runnerMeta.UsageSummary,
+	}
+	for _, line := range runnerMeta.UsageDetailLines {
+		metadata.usageDetailLines = append(metadata.usageDetailLines, usageDetailLine{label: line.Label})
+	}
+	metadata.remaining5hPercent = nil
+	metadata.remaining7dPercent = nil
+	return metadata, nil
 }
 
 // grokAuthEntry is one value in ~/.grok/auth.json, which is keyed by
