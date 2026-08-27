@@ -435,7 +435,9 @@ Verify:
 
 # P-3 — Canonical Head
 
-## [CHAT] C5 — Gate pass → ghi Head ngay
+## [CHAT] ✅ C5 — Gate pass → ghi Head ngay (PASSED LIVE 2026-08-27 run-172547)
+
+> **Trạng thái:** ✅ **Live-verified (run-172547, chat):** contract declared `calc-core` `["calc.go","calc_test.go"]` + `Modulo`; coder thêm `ModuloChecked2` vào `calc.go:75` + `TestModuloChecked2`/`modulo_checked2_test.go` (additive, CA-948), `go test` ok, gate `r-newtest` reprompt → `r-scope` warn + `accepted` (07:45:26, turns_to_accept 1). Code + test ✅, gate ✅. **Head:** `canonical/calc-core.json` chưa auto-đổi `updated_at` sau chat (vẫn 2026-08-17 b97e485) — chat head write không trigger như flow (pending→finalize); sẽ finalize ở flow tiếp (F4/F5). Coi C5 code/gate **done**, head drift là gap minor.
 
 Prompt:
 [Change Contract]
