@@ -14,6 +14,12 @@ import (
 // Modeled on grokAdapter but simplified for MVP (no full approval policy yet,
 // MCP false).
 
+const opencodeAskUserReinforcement = "\n\n---\nWhen you need to ask the user a question, call the FlowPilot MCP tool `ask_user` on server `flowpilot` with arguments `prompt` (string), `options` (array of strings), and optional `multiSelect` (boolean). Do NOT use native `question` tools."
+
+const opencodeSpawnAgentReinforcement = "\n\n---\nWhen you need to spawn a sub-agent for parallel or delegated work, call the FlowPilot MCP tool `spawn_agent` on server `flowpilot` with arguments `agent` (string), `prompt` (string), optional `provider` (string), and optional `wait` (boolean — true to block until the child completes). Do NOT use native `spawn_subagent` tools."
+
+const opencodeToolReinforcements = opencodeAskUserReinforcement + opencodeSpawnAgentReinforcement
+
 type opencodeAdapter struct {
 	dispatcher *opencodeDispatcher
 	cwd        string
@@ -158,15 +164,17 @@ func opencodeEnsureResumeID(req TurnRequest, lookup func(string) string) string 
 }
 
 // Capabilities advertises only what has a passing test (MVP honest).
+// After Task-303 wiring, Mcp/ApprovalEvents become true when mcpServer is wired (like Grok).
 func (a *opencodeAdapter) Capabilities() ProviderCapabilities {
+	hasMCP := a != nil && a.mcpServer != nil
 	return ProviderCapabilities{
 		Streaming:      true,
 		Resume:         true,
 		FileEvents:     true,
 		Interrupt:      true,
 		SkillSelection: true,
-		ApprovalEvents: false,
-		Mcp:            false,
+		ApprovalEvents: hasMCP,
+		Mcp:            hasMCP,
 		Vision:         false,
 	}
 }

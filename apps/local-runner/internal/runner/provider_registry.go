@@ -558,7 +558,7 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 			DisplayName: "Opencode",
 			Status:      ProviderStatusAvailable,
 			Capabilities: (&opencodeAdapter{}).Capabilities(),
-			newAdapter: func() ProviderRuntimeAdapter {
+			newAdapterForTurn: func(model, reasoningEffort string) ProviderRuntimeAdapter {
 				scopeKey := "default"
 				env := map[string]string{}
 				account, err := r.ResolveProviderAccount(string(ProviderKeyOpencode), "")
@@ -589,7 +589,25 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				} else {
 					return errorAdapter{key: ProviderKeyOpencode, err: err}
 				}
-				h, ensureErr := r.ensureOpencodeProcess(context.Background(), scopeKey, r.workspace, env, "", "", false)
+				// Map reasoningEffort to variant for per-turn respawn key (like Grok grokEffort)
+				variant := ""
+				if mapped, ok := opencodeReasoningVariantID(reasoningEffort); ok {
+					variant = mapped
+				}
+				// Use provided model if given, else resolve via defaultModelForProvider (like other providers)
+				if strings.TrimSpace(model) == "" {
+					// Try to resolve default model for opencode if not provided
+					if def := defaultModelForProvider(ProviderKeyOpencode); strings.TrimSpace(def) != "" {
+						model = def
+					}
+				}
+				r.opencodeProcessMu.Lock()
+				auto := r.opencodeDesiredAuto
+				r.opencodeProcessMu.Unlock()
+				// Also consider YOLO posture's OpencodePermissionMode for --auto, but global auto is SSOT
+				// Log the posture for observability (blank identifier was previous dead code)
+				_ = resolveYoloPosture(auto).OpencodePermissionMode
+				h, ensureErr := r.ensureOpencodeProcess(context.Background(), scopeKey, r.workspace, env, model, variant, auto)
 				if ensureErr != nil {
 					return errorAdapter{key: ProviderKeyOpencode, err: ensureErr}
 				}
@@ -600,7 +618,7 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 					if req.Cwd != "" {
 						workspace = req.Cwd
 					}
-					return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills)
+					return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills) + opencodeToolReinforcements
 				}
 				a.mcpServer = r.claudeMCP
 				a.mcpBaseURL = r.mcpBaseURLValue

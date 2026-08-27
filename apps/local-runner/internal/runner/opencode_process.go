@@ -532,3 +532,20 @@ func opencodeProcessEnv(extraEnv map[string]string) []string {
 	}
 	return filtered
 }
+
+func (r *Runner) ApplyOpencodeYoloPosture(ctx context.Context, yolo bool) error {
+	account, err := r.ResolveProviderAccount(string(ProviderKeyOpencode), "")
+	if err != nil {
+		return fmt.Errorf("resolve active opencode account: %w", err)
+	}
+	if strings.TrimSpace(account.HomePath) == "" {
+		return fmt.Errorf("active opencode account %q has no home path", account.ID)
+	}
+	// Opencode YOLO is per-turn --auto, not config.toml rewrite. Just flip the
+	// desired auto flag and close live processes so next turn respawns with new auto.
+	r.opencodeProcessMu.Lock()
+	r.opencodeDesiredAuto = yolo
+	r.closeAllOpencodeProcessesLocked()
+	r.opencodeProcessMu.Unlock()
+	return nil
+}
