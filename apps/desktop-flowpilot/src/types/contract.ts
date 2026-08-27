@@ -878,6 +878,11 @@ export interface RunnerClient {
    */
   submitGateDecision?(runId: string, option: string, customText?: string): Promise<void>;
   /**
+   * Task-309: widen the frozen contract for a scope-drift block and resume.
+   * Calls POST /client/workflow-runs/{runId}/agent-loop/amend {"paths":[...] }.
+   */
+  amendFlow?(runId: string, paths: string[]): Promise<AgentGraphSnapshot>;
+  /**
    * Record explicit user agreement to the AI's opt-2 requirement proposal (Task-155).
    * testNames: the test names to unlock (written as overrides).
    */

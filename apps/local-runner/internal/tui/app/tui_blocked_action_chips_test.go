@@ -12,7 +12,7 @@ import (
 )
 
 // FlowAwaitingUserCard parity for the TUI (BUG-231): a blocked (awaiting-user)
-// flow must surface clickable [Continue]/[Stop] action chips above the composer,
+// flow must surface clickable [Retry]/[Stop] action chips above the composer,
 // mirroring the Approve/Deny + dispatch-attention chip pattern — no slash command
 // required. run-189839 blocked flows previously only advertised /continue and
 // /stop as text.
@@ -35,14 +35,14 @@ func blockedChipModel(pk string) *AppModel {
 }
 
 // TestBlockedBar_RendersContinueStopChips: a blocked (awaiting-user) flow renders
-// clickable [Continue] and [Stop] chips in the input bar.
+// clickable [Retry] and [Stop] chips in the input bar.
 func TestBlockedBar_RendersContinueStopChips(t *testing.T) {
 	for _, pk := range []string{"claude", "codex", "grok"} {
 		t.Run(pk, func(t *testing.T) {
 			m := blockedChipModel(pk)
 			view := stripANSI(m.View())
-			if !strings.Contains(view, "[Continue]") {
-				t.Fatalf("%s: blocked view must render [Continue] chip:\n%s", pk, view)
+			if !strings.Contains(view, "[Retry]") {
+				t.Fatalf("%s: blocked view must render [Retry] chip:\n%s", pk, view)
 			}
 			if !strings.Contains(view, "[Stop]") {
 				t.Fatalf("%s: blocked view must render [Stop] chip:\n%s", pk, view)
@@ -52,14 +52,14 @@ func TestBlockedBar_RendersContinueStopChips(t *testing.T) {
 }
 
 // TestBlockedBar_NoChipsWhenNotBlocked: a non-blocked flow must NOT render the
-// [Continue]/[Stop] action chips.
+// [Retry]/[Stop] action chips.
 func TestBlockedBar_NoChipsWhenNotBlocked(t *testing.T) {
 	for _, st := range []string{"running", "done"} {
 		m := blockedChipModel("codex")
 		m.flowLoopStatus = st
 		view := stripANSI(m.View())
-		if strings.Contains(view, "[Continue]") {
-			t.Fatalf("%s: view must not render [Continue] when not blocked:\n%s", st, view)
+		if strings.Contains(view, "[Retry]") {
+			t.Fatalf("%s: view must not render [Retry] when not blocked:\n%s", st, view)
 		}
 		if strings.Contains(view, "[Stop]") {
 			t.Fatalf("%s: view must not render [Stop] action chip when not blocked:\n%s", st, view)
@@ -80,12 +80,12 @@ func TestBlockedBar_NoChipsWhenRunningChild(t *testing.T) {
 		t.Fatal("blocked loop with a running child must not read as parked")
 	}
 	view := stripANSI(m.View())
-	if strings.Contains(view, "[Continue]") {
-		t.Fatal("running-child blocked flow must not render [Continue] chip")
+	if strings.Contains(view, "[Retry]") {
+		t.Fatal("running-child blocked flow must not render [Retry] chip")
 	}
 }
 
-// TestBlockedBar_ClickContinueUnparks: clicking [Continue] on a parked blocked
+// TestBlockedBar_ClickContinueUnparks: clicking [Retry] on a parked blocked
 // flow POSTs /agent-loop/continue and applies the returned running graph —
 // Desktop FlowAwaitingUser Continue parity, no slash command.
 func TestBlockedBar_ClickContinueUnparks(t *testing.T) {
@@ -120,21 +120,21 @@ func TestBlockedBar_ClickContinueUnparks(t *testing.T) {
 				{RunID: "run-63960", AgentName: "main", Role: "main", Status: "completed"},
 			}
 
-			x, y, ok := findClickTarget(m, "continue")
+			x, y, ok := findClickTarget(m, "retry")
 			if !ok {
-				t.Fatalf("%s: expected a clickable [Continue] chip", pk)
+				t.Fatalf("%s: expected a clickable [Retry] chip", pk)
 			}
 			m2, cmd := m.dispatchMouseClick(x, y)
 			if cmd == nil {
-				t.Fatalf("%s: clicking [Continue] returned nil cmd", pk)
+				t.Fatalf("%s: clicking [Retry] returned nil cmd", pk)
 			}
 			_ = m2
 			msg := cmd()
 			if _, ok := msg.(AgentGraphHydratedMsg); !ok {
-				t.Fatalf("%s: [Continue] cmd returned %T, want AgentGraphHydratedMsg", pk, msg)
+				t.Fatalf("%s: [Retry] cmd returned %T, want AgentGraphHydratedMsg", pk, msg)
 			}
 			if !continueHit {
-				t.Fatalf("%s: clicking [Continue] did not POST /agent-loop/continue", pk)
+				t.Fatalf("%s: clicking [Retry] did not POST /agent-loop/continue", pk)
 			}
 			m3, _ := m.Update(msg)
 			am := m3.(*AppModel)
@@ -199,7 +199,7 @@ func TestBlockedBar_ClickStopEnds(t *testing.T) {
 }
 
 // TestBlockedBar_ContinueChipGoneAfterUnpark: once the flow is no longer blocked
-// (e.g. Continue applied a running graph), the [Continue] chip disappears.
+// (e.g. Continue applied a running graph), the [Retry] chip disappears.
 func TestBlockedBar_ContinueChipGoneAfterUnpark(t *testing.T) {
 	m := blockedChipModel("codex")
 	m2, _ := m.Update(AgentGraphMsg{Graph: &client.AgentGraphSnapshot{
@@ -211,7 +211,7 @@ func TestBlockedBar_ContinueChipGoneAfterUnpark(t *testing.T) {
 	}})
 	am := m2.(*AppModel)
 	view := stripANSI(am.View())
-	if strings.Contains(view, "[Continue]") {
-		t.Fatal("[Continue] chip must disappear once the flow is no longer blocked")
+	if strings.Contains(view, "[Retry]") {
+		t.Fatal("[Retry] chip must disappear once the flow is no longer blocked")
 	}
 }

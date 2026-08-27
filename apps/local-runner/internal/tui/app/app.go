@@ -5796,6 +5796,22 @@ func (m *AppModel) cmdContinueFlow(runID string) tea.Cmd {
 	}
 }
 
+func (m *AppModel) cmdAmendFlow(runID string, paths []string) tea.Cmd {
+	runnerURL := m.runnerURL
+	parentID := runID
+	amendPaths := append([]string(nil), paths...)
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		g, err := cl.AmendFlow(ctx, parentID, amendPaths)
+		if err != nil {
+			return ErrMsg{Err: err}
+		}
+		return AgentGraphHydratedMsg{ParentRunID: parentID, Graph: g}
+	}
+}
+
 func (m *AppModel) cmdCopyKind(kind string) tea.Cmd {
 	idx := -1
 	wantUser := kind == "prompt" || kind == "user"

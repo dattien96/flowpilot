@@ -933,6 +933,17 @@ func (c *Client) ContinueFlow(ctx context.Context, runID string) (*AgentGraphSna
 	return &snap, nil
 }
 
+// AmendFlow widens the frozen contract for a blocked scope-drift park and
+// resumes the flow (Task-309, CP-43 F3 / CP-55 P-4). It POSTs
+// /agent-loop/amend {"paths":[...]} and returns the refreshed graph.
+func (c *Client) AmendFlow(ctx context.Context, runID string, paths []string) (*AgentGraphSnapshot, error) {
+	var snap AgentGraphSnapshot
+	if err := c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/agent-loop/amend", map[string][]string{"paths": paths}, &snap); err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
+
 // ListDispatchAttention fetches operator-attention items for a run (CP-51
 // Task-256, Desktop listDispatchAttention parity).
 func (c *Client) ListDispatchAttention(ctx context.Context, runID string) ([]DispatchAttentionItem, error) {

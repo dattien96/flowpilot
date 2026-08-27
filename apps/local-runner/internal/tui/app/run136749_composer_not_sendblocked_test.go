@@ -56,7 +56,7 @@ func TestCA620_BlockedPark_DoesNotBlockSend(t *testing.T) {
 func TestCA620_BlockedPark_StillShowsChipsAndNoThinking(t *testing.T) {
 	m := blockedEscalateWithWaitingModel()
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "[Continue]") {
+	if !strings.Contains(view, "[Retry]") {
 		t.Fatalf("blocked park must show [Continue], got:\n%s", view)
 	}
 	if m.workIsLive() {

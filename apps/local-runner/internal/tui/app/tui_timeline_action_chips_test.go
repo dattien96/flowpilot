@@ -75,7 +75,7 @@ func TestTimelineActionChips_BlockedContinueStopRenderAndClick(t *testing.T) {
 			foundStop := false
 			for _, r := range rows {
 				text := stripANSI(r.Text)
-				if strings.Contains(text, "[Continue]") {
+				if strings.Contains(text, "[Retry]") {
 					foundContinue = true
 				}
 				if strings.Contains(text, "[Stop]") {
@@ -88,17 +88,17 @@ func TestTimelineActionChips_BlockedContinueStopRenderAndClick(t *testing.T) {
 
 			// 2. Verify composer input bar does not contain blocked chips
 			c := m.tuiChrome()
-			if strings.Contains(c.inputBlock, "[Continue]") || strings.Contains(c.inputBlock, "[Stop]") {
+			if strings.Contains(c.inputBlock, "[Retry]") || strings.Contains(c.inputBlock, "[Stop]") {
 				t.Fatalf("%s: input block must not contain blocked chips", pk)
 			}
 
-			// 3. Verify click targeting finds continue and stop in timeline
-			xCont, yCont, okCont := findClickTarget(m, "continue")
+			// 3. Verify click targeting finds retry and stop in timeline
+			xCont, yCont, okCont := findClickTarget(m, "retry")
 			if !okCont {
-				t.Fatalf("%s: continue chip must be clickable in timeline", pk)
+				t.Fatalf("%s: retry chip must be clickable in timeline", pk)
 			}
-			if target := m.clickTargetAt(xCont, yCont); target != "continue" {
-				t.Fatalf("%s: expected target continue, got %q", pk, target)
+			if target := m.clickTargetAt(xCont, yCont); target != "retry" {
+				t.Fatalf("%s: expected target retry, got %q", pk, target)
 			}
 
 			xStop, yStop, okStop := findClickTarget(m, "stop")

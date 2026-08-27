@@ -82,7 +82,7 @@ func TestRun142155_BlockedBarShowsGateReason_ClaudeCodexGrok(t *testing.T) {
 				Runs: []client.AgentRunSummary{{RunID: "run-142155", AgentName: "main", Status: "completed"}},
 			})
 			view := stripANSI(m.View())
-			if !strings.Contains(view, "[Continue]") || !strings.Contains(view, "[Stop]") {
+			if !strings.Contains(view, "[Retry]") || !strings.Contains(view, "[Stop]") {
 				t.Fatalf("[%s] blocked bar must render chips, got:\n%s", pk, view)
 			}
 			if !strings.Contains(view, "codex") {
@@ -106,7 +106,7 @@ func TestRun142155_BlockedBarFallsBackToRejectionNote(t *testing.T) {
 		t.Fatal("must be flowLoopBlocked")
 	}
 	bar := stripANSI(m.renderBlockedBar())
-	if !strings.Contains(bar, "[Continue]") || !strings.Contains(bar, "[Stop]") {
+	if !strings.Contains(bar, "[Retry]") || !strings.Contains(bar, "[Stop]") {
 		t.Fatalf("chips must render, got:\n%s", bar)
 	}
 	if !strings.Contains(bar, `provider "codex"`) {
@@ -125,7 +125,7 @@ func TestRun142155_BlockedBarNoReasonOmitsLine(t *testing.T) {
 		Runs:      []client.AgentRunSummary{{RunID: "run-142155", AgentName: "main", Status: "completed"}},
 	})
 	bar := stripANSI(m.renderBlockedBar())
-	if !strings.Contains(bar, "[Continue]") || !strings.Contains(bar, "[Stop]") {
+	if !strings.Contains(bar, "[Retry]") || !strings.Contains(bar, "[Stop]") {
 		t.Fatalf("chips must render even without a reason, got:\n%s", bar)
 	}
 	if strings.Contains(bar, "reason:") {

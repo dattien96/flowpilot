@@ -435,6 +435,8 @@ interface AppState {
   /** BUG-231's unified "Continue" action for a blocked/awaiting-user loop.
    * Task-241: optional memberAction for blockReason=member_stalled (retry|skip). */
   continueFlow(feedback: string, memberAction?: { action: "retry" | "skip"; node?: string }): Promise<void>;
+  /** Task-309: widen frozen contract + resume after scope drift. */
+  amendFlow(paths: string[]): Promise<void>;
   listAgents(cwd?: string): Promise<AgentDefinition[]>;
   focusAgentRun(runId: string): Promise<void>;
   backToMainRun(): void;
@@ -753,6 +755,15 @@ export const useStore = create<AppState>((set, get) => ({
     // Bump graph load seq so a late blocked HTTP refresh cannot restore the card.
     set({
       ...applyAgentGraphSnapshot(await client.continueFlow(parentRunId, feedback, memberAction)),
+      _agentGraphLoadSeq: get()._agentGraphLoadSeq + 1,
+    });
+  },
+  async amendFlow(paths: string[]) {
+    const { client, mainRunId, runId } = get();
+    const parentRunId = mainRunId ?? runId;
+    if (!parentRunId || !client.amendFlow) return;
+    set({
+      ...applyAgentGraphSnapshot(await client.amendFlow(parentRunId, paths)),
       _agentGraphLoadSeq: get()._agentGraphLoadSeq + 1,
     });
   },

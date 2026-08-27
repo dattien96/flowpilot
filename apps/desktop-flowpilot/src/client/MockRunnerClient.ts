@@ -557,6 +557,15 @@ export class MockRunnerClient implements RunnerClient {
     return graph.snapshot;
   }
 
+  async amendFlow(runId: string, _paths: string[]): Promise<AgentGraphSnapshot> {
+    const graph = await this.syncParentGraph(runId);
+    const prev = graph.snapshot.loopState;
+    if (prev.status !== "blocked") return graph.snapshot;
+    graph.snapshot = { ...graph.snapshot, loopState: { ...prev, status: "running", gateReason: undefined, blockReason: undefined } };
+    this.parentGraphs.set(runId, graph);
+    return graph.snapshot;
+  }
+
   // BUG-231: mirrors the runner's resumeFlowWithFeedback — auto-extends the
   // cap only when the block reason was "cap", leaves it alone for "escalate".
   async continueFlow(

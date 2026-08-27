@@ -228,6 +228,9 @@ export class HttpWsRunnerClient implements RunnerClient {
       ...(memberAction ? { memberAction } : {}),
     });
   }
+  amendFlow(runId: string, paths: string[]): Promise<AgentGraphSnapshot> {
+    return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/agent-loop/amend`, { paths });
+  }
 
   spawnAgent(input: SpawnAgentInput & { parentRunId: string }): Promise<SpawnAgentResult> {
     const { parentRunId, ...body } = input;

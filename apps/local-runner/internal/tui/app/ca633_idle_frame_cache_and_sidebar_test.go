@@ -170,7 +170,7 @@ func TestCA633_BlockedBar_StillRenderedAfterCompose(t *testing.T) {
 	}})
 	am := m2.(*AppModel)
 	view := stripANSI(am.View())
-	if !strings.Contains(view, "[Continue]") || !strings.Contains(view, "codex account missing") {
+	if !strings.Contains(view, "[Retry]") || !strings.Contains(view, "codex account missing") {
 		t.Fatalf("blocked bar must render after recompose, got:\n%s", view)
 	}
 	// Blocked caret stays meaningful → keeps recomposing (fresh chips).

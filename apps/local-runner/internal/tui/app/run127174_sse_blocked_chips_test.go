@@ -57,7 +57,7 @@ func TestRun127174_SSEAgentGraphSnapshotShowsBlockedChips(t *testing.T) {
 			}
 			// Must render Continue/Stop and not be "live" (Thinking off, banner on)
 			view := stripANSI(am.View())
-			if !strings.Contains(view, "[Continue]") {
+			if !strings.Contains(view, "[Retry]") {
 				t.Fatalf("%s: blocked view must contain [Continue]:\n%s", pk, view)
 			}
 			if !strings.Contains(view, "[Stop]") {

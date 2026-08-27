@@ -41,7 +41,7 @@ func TestCA622_BlockedContinueViaUpdate_NotCaret(t *testing.T) {
 			m.inputValue = "hello"
 			m.inputCursor = -1
 
-			x, y, ok := findClickTarget(m, "continue")
+			x, y, ok := findClickTarget(m, "retry")
 			if !ok {
 				t.Fatalf("%s: expected clickable [Continue]", pk)
 			}
@@ -169,7 +169,7 @@ func TestCA622_BodyClickStillPlacesCaret(t *testing.T) {
 	}
 	// Explicit body area: use a point just after blocked bar. We reuse find of non-chip.
 	// Verify that tryPlaceInputCursor on blocked chip is false, but on body true.
-	x, y, ok := findClickTarget(m, "continue")
+	x, y, ok := findClickTarget(m, "retry")
 	if !ok {
 		t.Fatal("no continue chip")
 	}
@@ -195,7 +195,7 @@ func TestCA622_AttentionChipNotCaret(t *testing.T) {
 		}
 	}
 	// If no attention chip resolved via hitAttentionChip, still verify blocked still false
-	x, y, ok := findClickTarget(m, "continue")
+	x, y, ok := findClickTarget(m, "retry")
 	if !ok {
 		t.Skip("no continue chip with attention")
 	}

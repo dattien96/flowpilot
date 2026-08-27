@@ -18,39 +18,68 @@ import { useStore } from "@/state/store";
 //
 // Task-241: blockReason=member_stalled shows Retry / Skip / Stop instead of
 // the generic Continue form (I-16).
+function parseDriftedPaths(gate: string): string[] | null {
+  const marker = "wrote outside the frozen contract's declared paths:";
+  const idx = gate.indexOf(marker);
+  if (idx < 0) return null;
+  let rest = gate.slice(idx + marker.length).trim();
+  if (rest.endsWith(".")) rest = rest.slice(0, -1).trim();
+  if (!rest) return null;
+  const parts = rest
+    .split(",")
+    .map((p) => p.trim().replace(/\.$/, "").trim())
+    .filter((p) => p.length > 0);
+  return parts.length > 0 ? parts : null;
+}
+
 export function FlowAwaitingUserCard(): React.ReactElement | null {
   const loopState = useStore((s) => s.agentGraphSnapshot?.loopState);
   const gateBlock = useStore((s) => s.gateBlock);
   const continueFlow = useStore((s) => s.continueFlow);
+  const amendFlow = useStore((s) => s.amendFlow);
   const stop = useStore((s) => s.stop);
   const [feedback, setFeedback] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   if (!loopState || loopState.status !== "blocked") return null;
   // CP-51 A1 dual-UI: when a regression/gate decision modal is open, hide this
-  // escalate card so operators are not offered Continue+Stop behind a second modal.
+  // escalate card so operators are not offered Retry/Stop/Allow behind a second modal.
   if (gateBlock) return null;
 
   const stalled = loopState.blockReason === "member_stalled";
+  const isCap = loopState.blockReason === "cap";
+  const driftedPaths = !stalled && !isCap ? parseDriftedPaths(loopState.gateReason ?? "") : null;
+  const isDrift = driftedPaths !== null && driftedPaths.length > 0;
   const reasonLabel =
-    loopState.blockReason === "cap"
+    isCap
       ? "Round limit reached"
       : stalled
         ? "Member stalled"
         : "Needs your decision";
   const detail =
     loopState.gateReason ||
-    (loopState.blockReason === "cap"
+    (isCap
       ? "The review loop reached its round limit."
       : stalled
         ? "A cohort member stopped producing events. Retry it, skip it (mark failed and join), or stop the flow."
         : "The flow paused and is waiting for your input.");
 
-  const handleContinue = async () => {
+  const handleRetry = async () => {
     if (submitting) return;
     setSubmitting(true);
     try {
       await continueFlow(feedback.trim());
+      setFeedback("");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAllow = async () => {
+    if (submitting || !driftedPaths) return;
+    setSubmitting(true);
+    try {
+      await amendFlow(driftedPaths);
       setFeedback("");
     } finally {
       setSubmitting(false);
@@ -94,8 +123,14 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
         />
       )}
       <div className="other-row">
-        <button type="button" className="btn btn-ghost" onClick={() => void handleStop()} disabled={submitting}>
-          Stop
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => void handleStop()}
+          disabled={submitting}
+          title="end flow"
+        >
+          Stop <span className="btn-desc">end flow</span>
         </button>
         {stalled ? (
           <>
@@ -107,9 +142,28 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
             </button>
           </>
         ) : (
-          <button type="button" className="btn btn-primary" onClick={() => void handleContinue()} disabled={submitting}>
-            Continue
-          </button>
+          <>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => void handleRetry()}
+              disabled={submitting}
+              title="run again with old scope"
+            >
+              Retry <span className="btn-desc">run again with old scope</span>
+            </button>
+            {isDrift && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => void handleAllow()}
+                disabled={submitting}
+                title="continue with new scope match code changed"
+              >
+                Allow <span className="btn-desc">continue with new scope (match code changed)</span>
+              </button>
+            )}
+          </>
         )}
       </div>
     </div>

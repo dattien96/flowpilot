@@ -46,7 +46,7 @@ func TestBUG327_BlockedWaitingTurnStreamRendersChipsAndStopsThinking(t *testing.
 			foundContinue, foundStop := false, false
 			for _, r := range rows {
 				text := stripANSI(r.Text)
-				if strings.Contains(text, "[Continue]") {
+				if strings.Contains(text, "[Retry]") {
 					foundContinue = true
 				}
 				if strings.Contains(text, "[Stop]") {
@@ -57,13 +57,13 @@ func TestBUG327_BlockedWaitingTurnStreamRendersChipsAndStopsThinking(t *testing.
 				t.Fatalf("%s: expected [Continue] and [Stop] chips in chat timeline", pk)
 			}
 
-			// 4. Click targeting must resolve continue and stop
-			xCont, yCont, okCont := findClickTarget(m, "continue")
+			// 4. Click targeting must resolve retry and stop
+			xCont, yCont, okCont := findClickTarget(m, "retry")
 			if !okCont {
-				t.Fatalf("%s: continue chip must be clickable", pk)
+				t.Fatalf("%s: retry chip must be clickable", pk)
 			}
-			if target := m.clickTargetAt(xCont, yCont); target != "continue" {
-				t.Fatalf("%s: expected target continue, got %q", pk, target)
+			if target := m.clickTargetAt(xCont, yCont); target != "retry" {
+				t.Fatalf("%s: expected target retry, got %q", pk, target)
 			}
 
 			xStop, yStop, okStop := findClickTarget(m, "stop")

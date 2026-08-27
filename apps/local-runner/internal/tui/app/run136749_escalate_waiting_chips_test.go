@@ -42,7 +42,7 @@ func escalateBlockedModel() *AppModel {
 func TestRun136749_EscalateWAITINGHasContinueStopNoApprove(t *testing.T) {
 	m := escalateBlockedModel()
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "[Continue]") || !strings.Contains(view, "[Stop]") {
+	if !strings.Contains(view, "[Retry]") || !strings.Contains(view, "[Stop]") {
 		t.Fatalf("escalate WAITING must render [Continue]/[Stop], got:\n%s", view)
 	}
 	if strings.Contains(view, "Approve") || strings.Contains(view, "Deny") {
@@ -63,7 +63,7 @@ func TestRun136749_YOLOApprovalStillWinsOverPark(t *testing.T) {
 	m := escalateBlockedModel()
 	m.approval = &ApprovalState{ID: "ap-1", Kind: "exec", Command: "go test ./..."}
 	view := stripANSI(m.View())
-	if strings.Contains(view, "[Continue]") {
+	if strings.Contains(view, "[Retry]") {
 		t.Fatalf("YOLO approval present must not show [Continue], got:\n%s", view)
 	}
 	if m.flowLoopBlocked() {
@@ -82,7 +82,7 @@ func TestRun136749_QuestionWinsOverPark(t *testing.T) {
 		t.Fatal("flowLoopBlocked must be false when question is pending")
 	}
 	view := stripANSI(m.View())
-	if strings.Contains(view, "[Continue]") {
+	if strings.Contains(view, "[Retry]") {
 		t.Fatalf("question present must not show [Continue], got:\n%s", view)
 	}
 }
@@ -98,7 +98,7 @@ func TestRun136749_RunningChildStillHidesChips(t *testing.T) {
 		t.Fatal("blocked with running child must not read as parked")
 	}
 	view := stripANSI(m.View())
-	if strings.Contains(view, "[Continue]") {
+	if strings.Contains(view, "[Retry]") {
 		t.Fatalf("running child must hide [Continue], got:\n%s", view)
 	}
 }
@@ -111,7 +111,7 @@ func TestRun136749_CapAndDelegateFailedAlsoPark(t *testing.T) {
 			t.Fatalf("%s + WAITING park must be blocked", reason)
 		}
 		view := stripANSI(m.View())
-		if !strings.Contains(view, "[Continue]") {
+		if !strings.Contains(view, "[Retry]") {
 			t.Fatalf("%s must render [Continue], got:\n%s", reason, view)
 		}
 	}

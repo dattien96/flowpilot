@@ -35,7 +35,7 @@ func TestRun135037_TUI_FailedPlannerShowsReasonAndBlockedChips(t *testing.T) {
 				t.Fatalf("%s: formatStepChatLine must surface RejectionNote gpt-5.4, got %q", pk, line)
 			}
 			view := stripANSI(m.View())
-			if !strings.Contains(view, "[Continue]") || !strings.Contains(view, "[Stop]") {
+			if !strings.Contains(view, "[Retry]") || !strings.Contains(view, "[Stop]") {
 				t.Fatalf("%s: blocked delegate_failed must render [Continue]/[Stop], got:\n%s", pk, view)
 			}
 			if m.workIsLive() {

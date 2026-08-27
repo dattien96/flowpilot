@@ -264,10 +264,20 @@ func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 			// has turnIsActive()==false but the user must still be able to end it.
 			return m, m.cmdStopTurn()
 		}
-	case target == "continue":
-		// Desktop continueFlow parity (BUG-231): unblock a parked blocked flow.
+	case target == "retry", target == "continue":
+		// Retry = run again with old scope (continue) — Task-309 rename with alias.
 		if m.flowLoopBlocked() && m.runHandle != nil {
 			return m, m.cmdContinueFlow(m.runHandle.RunID)
+		}
+	case target == "allow", target == "amend":
+		if m.flowLoopBlocked() && m.runHandle != nil {
+			isCap := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "cap")
+			isStalled := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "member_stalled")
+			if !isCap && !isStalled {
+				if drifted := parseDriftedPaths(m.blockedDecisionReason()); len(drifted) > 0 {
+					return m, m.cmdAmendFlow(m.runHandle.RunID, drifted)
+				}
+			}
 		}
 	case target == "approve":
 		if m.approval != nil {
@@ -737,9 +747,28 @@ func (m *AppModel) hitApprovalChrome(c tuiChrome, x, y int) string {
 	return ""
 }
 
-// hitBlockedChrome maps a click in the awaiting-user action bar to "continue" / "stop".
+// hitBlockedChrome maps a click in the awaiting-user action bar to "retry" / "stop" / "allow".
 func (m *AppModel) hitBlockedChrome(c tuiChrome, x, y int) string {
 	if !m.flowLoopBlocked() {
+		return ""
+	}
+	checkLine := func(stripped string, x int) string {
+		if hitToken(stripped, "[Retry]", x) {
+			return "retry"
+		}
+		if hitToken(stripped, "[Allow]", x) {
+			return "allow"
+		}
+		if hitToken(stripped, "[Stop]", x) {
+			return "stop"
+		}
+		// Alias for old tests / muscle memory.
+		if hitToken(stripped, "[Continue]", x) {
+			return "retry"
+		}
+		if hitToken(stripped, "[Amend]", x) {
+			return "allow"
+		}
 		return ""
 	}
 	if c.messagesHeight > 0 && y >= c.panelH && y < c.panelH+c.messagesHeight {
@@ -747,11 +776,8 @@ func (m *AppModel) hitBlockedChrome(c tuiChrome, x, y int) string {
 		rel := y - c.panelH
 		if rel >= 0 && rel < len(rows) {
 			stripped := stripANSI(rows[rel].Text)
-			if hitToken(stripped, "[Continue]", x) {
-				return "continue"
-			}
-			if hitToken(stripped, "[Stop]", x) {
-				return "stop"
+			if t := checkLine(stripped, x); t != "" {
+				return t
 			}
 		}
 	}
@@ -760,11 +786,8 @@ func (m *AppModel) hitBlockedChrome(c tuiChrome, x, y int) string {
 		rel := y - c.inputY
 		if rel >= 0 && rel < len(lines) {
 			stripped := stripANSI(lines[rel])
-			if hitToken(stripped, "[Continue]", x) {
-				return "continue"
-			}
-			if hitToken(stripped, "[Stop]", x) {
-				return "stop"
+			if t := checkLine(stripped, x); t != "" {
+				return t
 			}
 		}
 	}

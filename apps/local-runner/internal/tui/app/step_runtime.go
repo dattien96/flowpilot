@@ -232,12 +232,45 @@ func (m *AppModel) showBlockedBanner(ls client.AgentLoopState) {
 	m.statusMsg = "awaiting your decision"
 }
 
+// parseDriftedPaths extracts the scope-drift paths from a gate reason of the
+// form "flow scope drift: wrote outside the frozen contract's declared paths: a.go, b.go".
+// It mirrors gate_hook.go:863 and Task-309 T-1. Returns nil when not a drift gate or no paths.
+func parseDriftedPaths(gate string) []string {
+	const marker = "wrote outside the frozen contract's declared paths:"
+	idx := strings.Index(gate, marker)
+	if idx < 0 {
+		return nil
+	}
+	rest := gate[idx+len(marker):]
+	rest = strings.TrimSpace(rest)
+	rest = strings.TrimSuffix(rest, ".")
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return nil
+	}
+	parts := strings.Split(rest, ",")
+	var out []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		p = strings.TrimSuffix(p, ".")
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // renderBlockedBar renders the awaiting-user action chips above the composer
 // (Desktop FlowAwaitingUserCard parity, BUG-231) when the flow loop is parked
 // on the user's Continue/Stop decision. Mirrors the Approve/Deny + attention
-// chip pattern: no slash command needed — [Continue] unparks via
-// agent-loop/continue, [Stop] ends the parked loop. Returns "" when not
-// blocked so no extra input-bar row is allocated.
+// chip pattern: no slash command needed — [Retry] unparks via
+// agent-loop/continue (run again with old scope), [Stop] ends the parked loop,
+// and when the gate is a frozen-contract scope drift, [Allow] widens the freeze
+// via agent-loop/amend (continue with new scope match code changed) per Task-309.
 func (m *AppModel) renderBlockedBar() string {
 	if !m.flowLoopBlocked() {
 		return ""
@@ -270,8 +303,15 @@ func (m *AppModel) renderBlockedBar() string {
 			bar += styleSystem.Render(prefix+wline) + "\n"
 		}
 	}
-	bar += styleSystem.Render("  ") + styleLink.Render("[Continue]") + "  " +
-		styleLink.Render("[Stop]") + "  " + styleSystem.Render("click")
+	isCap := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "cap")
+	isStalled := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "member_stalled")
+	drifted := parseDriftedPaths(m.blockedDecisionReason())
+	bar += styleSystem.Render("  ") + styleLink.Render("[Retry]") + styleSystem.Render(" run again with old scope") + "  " +
+		styleLink.Render("[Stop]") + styleSystem.Render(" end flow")
+	if !isCap && !isStalled && len(drifted) > 0 {
+		bar += "  " + styleLink.Render("[Allow]") + styleSystem.Render(" continue with new scope (match code changed)")
+	}
+	bar += "  " + styleSystem.Render("click")
 	return bar
 }
 
