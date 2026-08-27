@@ -93,13 +93,14 @@ func discoverProjectAgents(cwd string) []AgentDefinition {
 	defs := make([]AgentDefinition, 0, 8)
 	defs = append(defs, agentsFromDir(filepath.Join(cwd, ".claude", "agents"), "claude")...)
 	defs = append(defs, agentsFromDir(filepath.Join(cwd, ".codex", "agents"), "codex")...)
+	defs = append(defs, agentsFromDir(filepath.Join(cwd, ".opencode", "agents"), "opencode")...)
 	return defs
 }
 
 func discoverProviderHomeAgents() []AgentDefinition {
 	defs := make([]AgentDefinition, 0, 8)
 	seenRoots := make(map[string]struct{})
-	for _, provider := range []string{"claude", "codex"} {
+	for _, provider := range []string{"claude", "codex", "grok", "gemini", "opencode"} {
 		homePaths, err := DiscoverProviderAccountHomes(provider)
 		if err != nil {
 			continue
@@ -127,7 +128,7 @@ func discoverActiveProviderHomeAgents(r *Runner) []AgentDefinition {
 	}
 	defs := make([]AgentDefinition, 0, 8)
 	seenRoots := make(map[string]struct{})
-	for _, provider := range []string{"claude", "codex"} {
+	for _, provider := range []string{"claude", "codex", "grok", "gemini", "opencode"} {
 		account, err := r.ResolveProviderAccount(provider, "")
 		if err != nil {
 			continue
@@ -157,6 +158,12 @@ func providerHomeAgentDirs(provider, homePath string) []string {
 		return []string{filepath.Join(homePath, ".claude", "agents"), filepath.Join(homePath, "agents")}
 	case "codex":
 		return []string{filepath.Join(homePath, ".codex", "agents"), filepath.Join(homePath, "agents")}
+	case "opencode":
+		isConfigDir := strings.HasSuffix(filepath.ToSlash(filepath.Clean(homePath)), ".config/opencode") || strings.HasSuffix(filepath.ToSlash(filepath.Clean(homePath)), "/opencode")
+		if isConfigDir {
+			return []string{filepath.Join(homePath, "agents")}
+		}
+		return []string{filepath.Join(homePath, ".config", "opencode", "agents"), filepath.Join(homePath, ".opencode", "agents"), filepath.Join(homePath, "agents")}
 	default:
 		return nil
 	}
