@@ -141,6 +141,8 @@ type interactiveRun struct {
 	// turn, so each turn's id is logged once for precise transcript replay
 	// (BUG-GrokReplay-Restart).
 	lastGrokTurnSessionID string
+	// lastOpencodeTurnSessionID is the Opencode twin (CP-57).
+	lastOpencodeTurnSessionID string
 	providerAccountID     string
 	workspaceCwd          string
 	stepID                string
@@ -6661,6 +6663,8 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			kind := turnLogKindCodexSession
 			if rs.providerKey == ProviderKeyGrok {
 				kind = turnLogKindGrokSession
+			} else if rs.providerKey == ProviderKeyOpencode {
+				kind = turnLogKindOpencodeSession
 			}
 			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{Kind: kind, SessionID: newTurnSessionID})
 		}
@@ -8248,6 +8252,27 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 		// do not invent one from disk. Leave realProviderSessionID unchanged so
 		// a failed first turn cannot rebind the run onto someone else's session.
 		return ""
+	case ProviderKeyOpencode:
+		// Appended last (CP-57 P-0/Task-303 T-7): mirror Grok's durable resume.
+		// Only promote an id the adapter actually opened this turn via
+		// session/new or session/load (LastOpencodeSessionID). Never steal from disk.
+		if reporter, ok := adapter.(interface{ LastOpencodeSessionID() string }); ok {
+			if id := strings.TrimSpace(reporter.LastOpencodeSessionID()); isOpencodeRealSessionID(id) {
+				if s.isForeignProviderSessionID(rs, id) {
+					return ""
+				}
+				rs.realProviderSessionID = id
+				if !isOpencodeRealSessionID(rs.providerSessionID) {
+					rs.providerSessionID = id
+				}
+				if id != rs.lastOpencodeTurnSessionID {
+					rs.lastOpencodeTurnSessionID = id
+					return id
+				}
+				return ""
+			}
+		}
+		return ""
 	}
 	return ""
 }
@@ -8273,7 +8298,7 @@ func (s *InteractiveService) isForeignProviderSessionID(rs *interactiveRun, sess
 	if sessionID == strings.TrimSpace(rs.realProviderSessionID) || sessionID == strings.TrimSpace(rs.providerSessionID) {
 		return false
 	}
-	if sessionID == strings.TrimSpace(rs.lastCodexTurnSessionID) || sessionID == strings.TrimSpace(rs.lastGrokTurnSessionID) {
+	if sessionID == strings.TrimSpace(rs.lastCodexTurnSessionID) || sessionID == strings.TrimSpace(rs.lastGrokTurnSessionID) || sessionID == strings.TrimSpace(rs.lastOpencodeTurnSessionID) {
 		return false
 	}
 	foreign := s.foreignProviderSessionIDs(rs)
@@ -8319,7 +8344,7 @@ func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[s
 		if !related {
 			continue
 		}
-		if sid := strings.TrimSpace(st.ProviderSessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) {
+		if sid := strings.TrimSpace(st.ProviderSessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) || isOpencodeRealSessionID(sid) {
 			// Do not treat our own id as foreign if listed under another row erroneously.
 			if sid == strings.TrimSpace(rs.realProviderSessionID) || sid == strings.TrimSpace(rs.providerSessionID) {
 				continue
@@ -8347,7 +8372,7 @@ func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[s
 		if !related {
 			continue
 		}
-		for _, sid := range []string{other.realProviderSessionID, other.providerSessionID, other.lastGrokTurnSessionID, other.lastCodexTurnSessionID} {
+		for _, sid := range []string{other.realProviderSessionID, other.providerSessionID, other.lastGrokTurnSessionID, other.lastCodexTurnSessionID, other.lastOpencodeTurnSessionID} {
 			sid = strings.TrimSpace(sid)
 			if sid == "" || strings.HasPrefix(sid, "thread-") {
 				continue
@@ -8387,10 +8412,10 @@ func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[s
 				continue
 			}
 			for _, e := range entries {
-				if e.Kind != turnLogKindCodexSession && e.Kind != turnLogKindGrokSession {
+				if e.Kind != turnLogKindCodexSession && e.Kind != turnLogKindGrokSession && e.Kind != turnLogKindOpencodeSession {
 					continue
 				}
-				if sid := strings.TrimSpace(e.SessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) {
+				if sid := strings.TrimSpace(e.SessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) || isOpencodeRealSessionID(sid) {
 					if sid == strings.TrimSpace(rs.realProviderSessionID) || sid == strings.TrimSpace(rs.providerSessionID) {
 						continue
 					}
@@ -9001,6 +9026,9 @@ func defaultModelForProvider(key ProviderKey) string {
 	case ProviderKeyGrok:
 		// Appended last (CP-46 P-0/Task-209 T-11): codex/claude cases above unchanged.
 		return "grok-4.5"
+	case ProviderKeyOpencode:
+		// Appended last (CP-57 P-0/Task-303 T-1).
+		return "opencode/muse-spark-1.2-contributor-free"
 	default:
 		return ""
 	}

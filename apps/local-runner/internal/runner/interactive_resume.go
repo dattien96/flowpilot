@@ -3019,6 +3019,11 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 		s.appendResumedParentAnnotations(rs)
 		return
 	}
+	if rs.providerKey == ProviderKeyOpencode {
+		s.seedOpencodeTranscriptFromDisk(rs)
+		s.appendResumedParentAnnotations(rs)
+		return
+	}
 	var loader func(string) []ProviderEvent
 	switch rs.providerKey {
 	case ProviderKeyClaude:
@@ -4041,6 +4046,34 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	if len(allEntries) > 0 {
 		historical = mergeTurnLogAssistantsIntoTranscript(historical, allEntries)
 	}
+	historical = userFacingTranscriptEvents(historical)
+	if len(historical) == 0 {
+		return
+	}
+	s.appendTranscriptReplayEvents(rs, stampReplayPromptIDs(historical))
+}
+
+func (s *InteractiveService) seedOpencodeTranscriptFromDisk(rs *interactiveRun) {
+	// Opencode: no provider-owned transcript file loader yet (unlike Grok's chat_history.jsonl).
+	// Rebuild from durable turn-log prompts/assistants so reopen UI is not empty.
+	// ACP session/load still continues the provider thread via LastOpencodeSessionID.
+	var rawPrompts []turnLogLine
+	var allEntries []turnLogLine
+	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
+		if entries, _ := logger.ReadTurnLog(context.Background(), rs.id); len(entries) > 0 {
+			allEntries = entries
+			for _, e := range entries {
+				if e.Kind == turnLogKindPrompt && strings.TrimSpace(e.Prompt) != "" && !isSystemPrompt(e.Prompt) {
+					rawPrompts = append(rawPrompts, e)
+				}
+			}
+		}
+	}
+	if s.preferFlowHubTurnLogTranscript(rs, allEntries) {
+		s.seedFlowHubTranscriptFromTurnLog(rs, allEntries)
+		return
+	}
+	historical := mergeTurnLogAssistantsIntoTranscript(promptOnlyTurnLogEvents(rawPrompts), allEntries)
 	historical = userFacingTranscriptEvents(historical)
 	if len(historical) == 0 {
 		return
