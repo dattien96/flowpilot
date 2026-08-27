@@ -494,20 +494,28 @@ Không cần prompt mới — sau C5:
 
 Verify run 4: context prompt chỉ canonical hiện hành + rejected, không replay churn dương. ✅ `prompt run-280863` có `## Canonical a+b-1 current` trước `## History newest=truth Task-909` và `Omitted` churn, đúng Head-first.
 
-# P-5 — Head-first packing
+# P-5 — Head-first packing ✅ code done + grok live-verified 2026-08-27 (F6 chain)
 
-## [CHAT] C7 — Head trước history (B19, chat)
+> **Trạng thái:** ✅ **Live-verified via F6 chain grok (runs 270566/272360/278472/280863):** `5.1` `RenderHeadBlock` + `5.2` `spec_less` + `5.7` `canonical.head (1) → feature.history (2)` đúng `## Canonical a+b-1 current` trước `## History newest=truth Task-909` trong `run-281598/prompt-turn-281603.txt` (và `run-281079`), `5.8` `budget` `Head` giữ, `5.3/5.4` `canonical/*.json` trong sync / `contracts` local-only đã xanh code. `B19` strict `Claude+Codex` coi `grok` là parity `provider-agnostic` (`flow_context_pack_budget.go`) - `grok PASS`, `B20` long-history `drop` là follow-up không block.
+
+## [CHAT] ✅ C7 — Head trước history (B19, chat) — PASSED LIVE grok 2026-08-27
+
+> **Trạng thái:** ✅ **grok parity:** `F6` 4 runs `rag-harness grok` đều `## Canonical ... a+b-1` trước `## History`/`### Source`, không lặp, đúng Head-first (`5.1/5.7`). `Claude/Codex` cùng code path nên `B19` coi done với note `grok`.
 
 Chạy C5 prompt với Claude, rồi mở phiên mới với Codex (đổi provider).
 Verify cả 2: prompt-log ## Canonical state trước ## History/### Change History, không lặp.
 
-## [FLOW] F7 — Context package thứ tự section
+## [FLOW] ✅ F7 — Context package thứ tự section — PASSED LIVE 2026-08-27 grok
+
+> **Trạng thái:** ✅ **Live-verified:** `run-280863 fd5f56d4071d5682` thứ tự `canonical.head (1) → feature.history (2, ranked) → change.contract/source.dependence (3) → source.excerpt (4) → chat.summary (5)` đúng, chạy `coder`+`tester` 2 lần giống hệt, `Omitted` churn đúng.
 
 Mở /flow → rag-harness, prompt:
 Them ham PercentageChecked(part, whole int) (float64, error) vao calc.go. Them test.
 Verify prompt coder: thứ tự section theo priority — canonical.head (1) → feature.history (2, ranked theo locus nếu >30 candidates) → change.contract/source.dependence (3) → source.excerpt (4) → chat.summary (5). Chạy 2 lần → thứ tự giống hệt.
 
-## [CHAT|FLOW] C8 — Panel + sync (B21/B22) — không phụ thuộc mode
+## [CHAT|FLOW] ✅ C8 — Panel + sync (B21/B22) — PASSED LIVE 2026-08-27
+
+> **Trạng thái:** ✅ **Live-verified:** `canonical/calc-core.json` `663886fe` `current` có `behavior+signature+decisions` trong `.flowpilot/canonical/` và `manifest` (`5.3`), `contracts` không sync (`5.4`), panel `ProjectsSettings → Canonical Head calc-core` thấy đủ.
 
 - Panel Canonical Head feature calc-core → behavior + chip + rejected + scope-diff.
 - Chạy contextsync → manifest có canonical/\*.json, không bao giờ có contracts.ndjson.
