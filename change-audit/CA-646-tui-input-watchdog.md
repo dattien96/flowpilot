@@ -77,6 +77,18 @@ branch.
 Will not undo: CA-610 no-pulse invariant, CA-633/636 renderer bounds,
 CA-630/631 raw-paste guards.
 
+### Live outcome (08:09, same session)
+
+The recurring "wedges" (sessions 25708/9176/8000) turned out NOT to be a
+console bug: the terminal **pane lost input focus** — keyboard/click events
+went to the active pane while hover motion (which needs no focus) still
+arrived, producing exactly the "pipe alive, no keys" signature. Session 8000:
+`motionLive=true` fingerprint → one click inside the TUI screen at 08:08:56 →
+keys + F2 arrived instantly (logged `mouse click` + `Update KeyMsg`). The
+watchdog's `motionLive` discriminator proved its worth: `motionLive=true` =
+focus/active-pane issue (click the pane), `motionLive=false` = true console
+death (restart).
+
 ## Tests
 
 Additive only — legacy suite untouched.
