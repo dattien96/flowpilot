@@ -77,6 +77,215 @@ Allow `task-harness` (11-step) and `cp-harness` (12-step) to declare two distinc
 - `T-7` `apps/local-runner/internal/runner/flow_executor_test.go` — add `TestResolveContinueSourceAware` table for the same edges, plus fallback when `from` is omitted.
 - `T-8` `apps/local-runner/internal/runner/interactive_service_test.go` — add `TestApplyFlowControlContinueHubRouting`: flow with both back-edges; `activeHubNodeID=plan_synthesis` + continue re-enters `plan_writer` (PENDING reset covers only `plan_writer→test_signatures→plan_reviewer→plan_synthesis`; `context`/`freeze` stay DONE); `activeHubNodeID=synthesis` + continue re-enters `implement` (reset covers `implement→validate→reviewer→synthesis`; plan-loop nodes stay DONE).
 
+## Code Guide
+
+### CG-1: Validator — `backEdgeSources` key change (`pack.go:845`)
+
+**BEFORE** (current — keys on `when` only, rejects any 2nd `continue/back`):
+```go
+// pack.go:845
+backEdgeSources := make(map[string]string, len(def.Edges)) // when -> first-seen from
+// ...
+if kind == "back" {
+    if prev, exists := backEdgeSources[edge.When]; exists {
+        return fmt.Errorf("flow %q has duplicate back-edge for status %q (from %q and %q)",
+            def.ID, edge.When, prev, edge.From)
+    }
+    backEdgeSources[edge.When] = edge.From
+}
+```
+
+**AFTER** (key on `from+"\x00"+when` — two `continue/back` with different `From` pass, same `From+When` still fails):
+```go
+// pack.go:845
+backEdgeSources := make(map[string]string, len(def.Edges)) // "from\x00when" -> from
+// ...
+if kind == "back" {
+    dedup := edge.From + "\x00" + edge.When
+    if prev, exists := backEdgeSources[dedup]; exists {
+        return fmt.Errorf("flow %q has duplicate back-edge for status %q from %q (already declared from %q)",
+            def.ID, edge.When, edge.From, prev)
+    }
+    backEdgeSources[dedup] = edge.From
+}
+```
+
+### CG-2: Resolver — source-aware `resolveContinueBackEdgeTarget` (`flow_executor.go:904`)
+
+**BEFORE** (current — first-match, no source awareness):
+```go
+// flow_executor.go:904-919
+func resolveContinueBackEdgeTarget(edges []agentpack.FlowEdge) (string, bool) {
+    for _, edge := range edges {
+        if strings.EqualFold(strings.TrimSpace(edge.Kind), "back") &&
+            strings.EqualFold(strings.TrimSpace(edge.When), "continue") {
+            if edge.To != "" {
+                return edge.To, true
+            }
+        }
+    }
+    return "", false
+}
+```
+
+**AFTER** (variadic `from` — all existing call sites compile unchanged, new call sites pass `activeHubNodeID`):
+```go
+// flow_executor.go:904 — SIGNATURE CHANGE (variadic, backward-compatible)
+func resolveContinueBackEdgeTarget(edges []agentpack.FlowEdge, from ...string) (string, bool) {
+    fromID := ""
+    if len(from) > 0 {
+        fromID = from[0]
+    }
+
+    // (a) Exact match: edge.From == fromID
+    if fromID != "" {
+        for _, edge := range edges {
+            if !isContinueBack(edge) || edge.To == "" {
+                continue
+            }
+            if edge.From == fromID {
+                return edge.To, true
+            }
+        }
+    }
+
+    // (b) Hub-aware: fromID is a hub.inline node → find the back-edge whose
+    //     From is a non-hub.inline node and fromID ∈ forwardReachableNodeIDs(edges, edge.From)
+    if fromID != "" {
+        for _, edge := range edges {
+            if !isContinueBack(edge) || edge.To == "" || edge.From == fromID {
+                continue
+            }
+            reachable := forwardReachableNodeIDs(edges, edge.From)
+            if reachable[fromID] {
+                return edge.To, true
+            }
+        }
+    }
+
+    // (c) First-match fallback (preserves single-loop behavior for all existing flows)
+    for _, edge := range edges {
+        if isContinueBack(edge) && edge.To != "" {
+            return edge.To, true
+        }
+    }
+    return "", false
+}
+
+// isContinueBack is a helper — extract from the repeated condition
+func isContinueBack(e agentpack.FlowEdge) bool {
+    return strings.EqualFold(strings.TrimSpace(e.Kind), "back") &&
+        strings.EqualFold(strings.TrimSpace(e.When), "continue")
+}
+```
+
+### CG-3: Hub-inline activity tracking (`interactive_service.go`)
+
+**Call site 1** — `applyFlowControl` continue reset (`:1504`):
+```go
+// BEFORE:
+reentryID, ok := resolveContinueBackEdgeTarget(edges)
+
+// AFTER — pass activeHubNodeID from run state:
+hubFrom := rs.activeHubNodeID
+if hubFrom == "" {
+    hubFrom = hubInlineNodeID(nodes)
+}
+reentryID, ok := resolveContinueBackEdgeTarget(edges, hubFrom)
+```
+
+**Call site 2** — `maybeReinvokeCoderForContinue` (`:2900`):
+```go
+// BEFORE:
+targetNodeID, _ = resolveContinueBackEdgeTarget(parent.activeFlowEdges)
+
+// AFTER:
+hubFrom := parent.activeHubNodeID
+if hubFrom == "" {
+    hubFrom = hubInlineNodeID(parent.activeFlowNodes)
+}
+targetNodeID, _ = resolveContinueBackEdgeTarget(parent.activeFlowEdges, hubFrom)
+```
+
+**Hub-inline tracking** — set `rs.activeHubNodeID = node.ID` at cohort-join RUNNING transition:
+
+Affected sites (all under `s.mu.Lock()`):
+- `:4711` — cohort-join path (hub.inline step goes RUNNING)
+- `:1131` / `:2459` / `:2527` / `:5065` — `loopIsAdvancing` sites
+
+```go
+// Pattern at each site — ADDITIVE, guarded for >1 hub.inline:
+if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "hub.inline" {
+    rs.activeHubNodeID = node.ID
+}
+```
+
+### CG-4: `hubInlineNodeID` guard for >1 hub.inline (`flow_step_runtime.go:575`)
+
+**NO SIGNATURE CHANGE** — the existing function stays as-is:
+```go
+// flow_step_runtime.go:575 — UNCHANGED
+func hubInlineNodeID(nodes []agentpack.FlowNode) string {
+    for _, n := range nodes {
+        if canonical, ok := agentpack.NormalizeBehaviorID(n.Behavior); ok && canonical == "hub.inline" {
+            return n.ID
+        }
+    }
+    return ""
+}
+```
+The function returns the first hub.inline as a **fallback only**. Dual-hub flows use `rs.activeHubNodeID` set by CG-3. No edit needed.
+
+### CG-5: Test Signatures
+
+```go
+// --- pack_test.go ---
+
+func TestValidateFlowAllowsTwoContinueBackEdgesWithDifferentFrom(t *testing.T) {
+    // Build a FlowDefinition with 2 continue/back edges:
+    //   plan_synthesis -> plan_writer (continue/back)
+    //   validate       -> implement   (continue/back)
+    // Assert: ValidateFlowDefinition returns nil
+}
+
+func TestValidateFlowRejectsDuplicateFromWhen(t *testing.T) {
+    // Build a FlowDefinition with 2 continue/back edges from SAME From:
+    //   validate -> implement (continue/back)
+    //   validate -> coder     (continue/back)
+    // Assert: ValidateFlowDefinition returns error containing "duplicate back-edge"
+}
+
+// --- flow_executor_test.go ---
+
+func TestResolveContinueBackEdgeIsSourceAware(t *testing.T) {
+    // Table-driven:
+    // edges = [
+    //   {From:"plan_synthesis", To:"plan_writer",  When:"continue", Kind:"back"},
+    //   {From:"validate",      To:"implement",     When:"continue", Kind:"back"},
+    // ]
+    // | from              | expected target | ok   |
+    // |-------------------|-----------------|------|
+    // | "plan_synthesis"  | "plan_writer"   | true |
+    // | "validate"        | "implement"     | true |
+    // | "synthesis"       | "implement"     | true | // hub-aware: synthesis ∈ forwardReachable(validate)
+    // | ""                | "plan_writer"   | true | // first-match fallback
+}
+
+// --- interactive_service_test.go ---
+
+func TestApplyFlowControlContinueHubRouting(t *testing.T) {
+    // Setup: flow with both back-edges (task-harness topology)
+    // Case 1: activeHubNodeID = "plan_synthesis" + continue
+    //   → re-enters plan_writer
+    //   → PENDING reset covers plan_writer→test_signatures→plan_reviewer→plan_synthesis
+    //   → context/freeze stay DONE
+    // Case 2: activeHubNodeID = "synthesis" + continue
+    //   → re-enters implement
+    //   → PENDING reset covers implement→validate→reviewer→synthesis
+    //   → plan-loop nodes stay DONE
+}
+```
+
 ## 5. Touched Areas
 
 - files: `apps/local-runner/internal/agentpack/pack.go`, `apps/local-runner/internal/agentpack/pack_test.go`, `apps/local-runner/internal/runner/flow_executor.go`, `apps/local-runner/internal/runner/flow_executor_test.go`, `apps/local-runner/internal/runner/interactive_service.go` (2 resolver call sites + hub-inline activity tracking), `apps/local-runner/internal/runner/flow_step_runtime.go` (hubInlineNodeID guarded for >1 hub.inline), `apps/local-runner/internal/runner/interactive_service_test.go`

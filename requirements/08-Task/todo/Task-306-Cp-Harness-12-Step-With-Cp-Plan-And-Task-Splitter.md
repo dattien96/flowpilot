@@ -20,8 +20,8 @@
 
 ### Summary
 
-- Adds built-in `cp-harness.yaml` **slice-only (8 nodes)** default: `cp_plan_writer` writes `CP-5x.md` (CP §1-§10 + `P-*`/`R-*`/`DOD`) → `cp_review` loop (`cp_reviewer`+`cp_synthesis` `--continue-->cp_plan_writer`) → `task_splitter` reads `CP.md` file_artifact INPUT and writes `Task-30x.md × N` file_artifact OUTPUTs (one per `P-*`) → `audit→done`. No coding chain in the default flow (dead `agent.delegate` nodes would be spawned as entry nodes at flow start).
-- Reuses `task-harness` prompts/nodes; only `cp_plan`/`splitter` are new. Default terminal is slice-only so per-Task coding runs via `task-harness` separately; a separate opt-in `cp-harness-smoke.yaml` (13 nodes) chains coding of the first sliced Task.
+- Adds built-in `cp-harness.yaml` **slice-only (7 nodes)** default: `plan (Scout)→context (Draft Context)→cp_plan_writer` (writes `CP-5x.md`) → `cp_review` loop (`cp_reviewer`+`cp_synthesis` `--continue-->cp_plan_writer`) → `task_splitter` (reads `CP.md` file_artifact INPUT and writes `Task-30x.md × N` file_artifact OUTPUTs) → `audit→done`. No `freeze`/`test_signatures` or coding chain in the default flow (slice-only planning; per-Task execution runs via `task-harness`).
+- Reuses `task-harness` prompts/nodes; only `cp_plan`/`splitter` are new. Default terminal is slice-only so per-Task coding runs via `task-harness` separately; a separate opt-in `cp-harness-smoke.yaml` (13 nodes) chains `freeze→test_signatures→implement→validate→reviewer→synthesis→audit` for coding of the first sliced Task.
 
 ### Current Ask
 
@@ -30,9 +30,10 @@
 ### Key Decisions
 
 - `T-1` `task_splitter` is `context.produce` (deterministic, no provider call) reading `CP.md` file_artifact INPUT — cheaper than `agent.code` and keeps `CP.md` parse pure; fallback to `agent.code` if LLM parsing of `P-*` is needed (hybrid: `context.produce` extracts `P-*` blocks, `agent.code` formats `Task.md`).
-- `T-2` CP flow default stops after `task_splitter` + slice `audit` (plan+slice), not full coding of every sliced Task — avoids `cap` sharing across many tasks and keeps cost `cap:3` per tier.
-- `T-3` Opt-in smoke = separate `flows/cp-harness-smoke.yaml` (13 nodes) chaining `task_splitter→test_signatures→implement→validate→reviewer→synthesis→audit` of the first sliced Task; documented as variant, not default. (Cannot be a clone-with-edge-replacement: the slice-only flow must not declare the coding-chain nodes at all — see T-1.)
+- `T-2` CP flow default stops after `task_splitter` + slice `audit` (plan+slice), not full coding of every sliced Task — avoids `cap` sharing across many tasks and keeps cost `cap:3` per tier. Uses `context.produce` before `cp_plan_writer` to package broad repo context for architecture authoring; no `freeze`/`test_signatures`/`coding` in slice-only.
+- `T-3` Opt-in smoke = separate `flows/cp-harness-smoke.yaml` (13 nodes) chaining `task_splitter→freeze→test_signatures→implement→validate→reviewer→synthesis→audit` of the first sliced Task; documented as variant, not default. (Cannot be a clone-with-edge-replacement: the slice-only flow must not declare the coding-chain nodes at all — see T-1.)
 - `T-4` Two `hub.inline` nodes (`cp_synthesis` + `synthesis`) require Task-304's `activeHubNodeID` tracking; do not rely on `hubInlineNodeID` first-match for step marking in this flow.
+- `T-5` **Model Tiering for CP:** `preflight_contract_plan` (Scout) runs with a Fast/Cheap model tier and Broad Context for initial architecture exploration; `cp_plan_writer` and `cp_reviewer` run with the **Highest Reasoning model** (e.g. Claude 3.7 Sonnet, o3, Grok 4.5 high) to author and gate the `CP-*.md` architecture document and oversee `task_splitter` decomposition.
 
 ### Constraints
 
@@ -66,13 +67,405 @@ Automate `CP → Task` decomposition: a CP run writes a reviewed `CP-5x.md`, a `
 
 ## 4. Exact Change
 
-- `T-1` Add `apps/local-runner/internal/agentpack/flow-pack/flows/cp-harness.yaml` — **8 nodes incl. `audit` (7 steps + terminal)**: `preflight_contract_plan→preflight_contract_freeze→context→cp_plan_writer→cp_reviewer→cp_synthesis --continue(back)--> cp_plan_writer --done(forward)--> task_splitter→audit→done`. The CP plan loop contains exactly `{cp_plan_writer, cp_reviewer, cp_synthesis}` — **no `test_signatures` inside** (a CP has no tests yet; `test_signatures` belongs to per-Task coding only, per `CP-58 §3.1`). **The coding chain MUST NOT be declared in the slice-only flow**: an `agent.delegate` node with no incoming forward edge is an entry node and is spawned at flow start (`flow_executor.go:97/152` spawns ALL `entryDelegateNodes`), and any incoming forward edge would auto-advance into coding — both break slice-only. Variant B (smoke) is a **separate opt-in flow file** `flows/cp-harness-smoke.yaml` (13 nodes incl. `audit`): same preflight + cp plan loop, then `task_splitter→test_signatures→implement→validate→reviewer→synthesis→audit→done` for the first sliced Task. `acceptance_nodes:[cp_synthesis, audit]` (smoke extends with `validate, synthesis`).
-- `T-2` Add `apps/local-runner/internal/agentpack/flow-pack/prompts/plan-cp.md` — instructs to write `requirements/07-Coding-Plan/todo/CP-5x-*.md` per `FORMAT-REFERENCE-CP.md` §§1-10 with `DOD`, `P-*`, `R-*`, `Source Refs`, `Touched Areas`.
+- `T-1` Add `apps/local-runner/internal/agentpack/flow-pack/flows/cp-harness.yaml` — **7 nodes incl. `audit` (6 steps + terminal)**: `preflight_contract_plan→context→cp_plan_writer→cp_reviewer→cp_synthesis --continue(back)--> cp_plan_writer --done(forward)--> task_splitter→audit→done`. The CP plan loop contains `{context, cp_plan_writer, cp_reviewer, cp_synthesis}` — **no `test_signatures` and no `freeze`/`coding` inside** (a CP has no tests or code in slice-only mode; coding runs via `task-harness` per Task). **The coding chain MUST NOT be declared in the slice-only flow**: an `agent.delegate` node with no incoming forward edge is an entry node and is spawned at flow start (`flow_executor.go:97/152` spawns ALL `entryDelegateNodes`), and any incoming forward edge would auto-advance into coding — both break slice-only. Variant B (smoke) is a **separate opt-in flow file** `flows/cp-harness-smoke.yaml` (13 nodes incl. `audit`): same preflight + context + cp plan loop, then `task_splitter→freeze→test_signatures→implement→validate→reviewer→synthesis→audit→done` for the first sliced Task. `acceptance_nodes:[cp_synthesis, audit]` (smoke extends with `validate, synthesis`).
+- `T-2` Add `apps/local-runner/internal/agentpack/flow-pack/prompts/plan-cp.md` — instructs to write `requirements/07-Coding-Plan/todo/CP-5x-*.md` per `FORMAT-REFERENCE-CP.md` §§1-10 with `DOD`, `P-*`, `R-*`, `Source Refs`, `Touched Areas`, and 3-Layer Defense.
 - `T-3` Add `apps/local-runner/internal/agentpack/flow-pack/prompts/review-cp.md` — gate: `§10 DOD` measurable, `P-*` actionable+ordered, `§5 Touched Areas` exhaustive, `R-*` mitigations non-trivial, contradicts `CA` history check.
 - `T-4` Add `apps/local-runner/internal/agentpack/flow-pack/prompts/task-splitter.md` — reads `CP.md` file_artifact (INPUT `cp_md`) via `file_artifact` resolver, splits each `P-*` into one `requirements/08-Task/todo/Task-*.md` per `FORMAT-REFERENCE-TASK.md` with `Parent Documents: CP-5x` + `P-*` traceability, `file_artifact` OUTPUT `task_md[]` (one per `P-*`, pathTemplate `Task-{{idx}}-{{slug}}.md`).
 - `T-5` Update `apps/local-runner/internal/agentpack/flow-pack/manifest.yaml` — add `flows/cp-harness.yaml` + 3 prompts to `prompts`.
-- `T-6` Add `apps/local-runner/internal/agentpack/cp_harness_pack_test.go` — `TestCpHarnessPackTopology` asserts **8 nodes**, plan loop = exactly `{cp_plan_writer, cp_reviewer, cp_synthesis}` (no `test_signatures` anywhere in the slice-only flow; no `agent.code` node other than `cp_plan_writer`), `cp_plan_writer` `file_artifact` OUTPUT, `task_splitter` INPUT `cp_md` OUTPUT `task_md[]`, 1 `continue/back` (plan loop only), `acceptance_nodes:[cp_synthesis, audit]`, `cp-harness` selectable; `TestCpHarnessSmokePackTopology` asserts `cp-harness-smoke.yaml` = 13 nodes with the full coding chain and 2 `continue/back` with different `From`.
+- `T-6` Add `apps/local-runner/internal/agentpack/cp_harness_pack_test.go` — `TestCpHarnessPackTopology` asserts **7 nodes**, plan loop = `preflight_contract_plan→context→cp_plan_writer→cp_reviewer→cp_synthesis` (no `freeze`/`test_signatures` anywhere in the slice-only flow; no `agent.code` node other than `cp_plan_writer` and `task_splitter`), `cp_plan_writer` `file_artifact` OUTPUT, `task_splitter` INPUT `cp_md` OUTPUT `task_md[]`, 1 `continue/back` (plan loop only), `acceptance_nodes:[cp_synthesis, audit]`, `cp-harness` selectable; `TestCpHarnessSmokePackTopology` asserts `cp-harness-smoke.yaml` = 13 nodes with the full coding chain and 2 `continue/back` with different `From`.
 - `T-7` Do NOT seed `artifact_types`/`artifact_instances` here — instance seeding for `cp_md`/`task_md` is owned by Task-307 (service role, `is_builtin=true`); this task only declares the bindings in YAML (T-1) and asserts them in pack tests (T-6).
+
+## Code Guide
+
+### CG-1: `cp-harness.yaml` — Slice-Only Default (7 Nodes, NO freeze/test_signatures/coding)
+
+```yaml
+# apps/local-runner/internal/agentpack/flow-pack/flows/cp-harness.yaml
+id: cp-harness
+description: "Coding Plan (big feature / epic) — CP Plan Writer + CP Review Loop + Task Splitter (slice-only)"
+builtin:
+  editable: false
+  selectableIn: [flow]
+  cloneable: true
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 3
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+acceptanceNodes:
+  - cp_synthesis
+  - audit
+
+nodes:
+  # ─── Scout ───
+  - id: preflight_contract_plan
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/contract-planner.md          # Scout — Fast/Cheap model
+    promptTemplate: prompts/plan-safe-fix-contract.md
+
+  # ─── Draft Context (broad repo architecture excerpts) ───
+  - id: context
+    run: inline
+    lifecycle: once
+    behavior: context.produce
+
+  # ─── CP Plan Phase (High-Reasoning model with 3-layer defense) ───
+  - id: cp_plan_writer
+    run: delegate
+    lifecycle: reinvoke                        # reinvoke on cp_synthesis continue
+    behavior: agent.code
+    agent: agents/coder.md
+    promptTemplate: prompts/plan-cp.md         # NEW prompt
+
+  # NOTE: NO freeze/test_signatures here — a CP is planning only;
+  # freeze + test_signatures + coding belongs to per-Task `task-harness` runs
+
+  - id: cp_reviewer
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/reviewer.md
+    promptTemplate: prompts/review-cp.md       # NEW prompt
+    dependsOn:
+      - cp_plan_writer
+    cohort: plan
+    join: all
+
+  - id: cp_synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+
+  # ─── Task Splitter ───
+  - id: task_splitter
+    run: delegate
+    lifecycle: once
+    behavior: agent.code                       # or context.produce if deterministic parse
+    agent: agents/coder.md
+    promptTemplate: prompts/task-splitter.md   # NEW prompt
+
+  - id: audit
+    run: inline
+    lifecycle: once
+    behavior: artifact.audit_draft
+
+edges:
+  # ── Scout → Draft Context → CP plan loop ──
+  - { from: preflight_contract_plan, to: context, when: done, kind: forward }
+  - { from: context, to: cp_plan_writer, when: done, kind: forward }
+  - { from: cp_plan_writer, to: cp_reviewer, when: done, kind: forward }
+  - { from: cp_reviewer, to: cp_synthesis, when: done, kind: forward }
+  - { from: cp_synthesis, to: cp_plan_writer, when: continue, kind: back }   # LOOP back-edge
+
+  # ── Plan approved → Slice → Audit (NO coding chain) ──
+  - { from: cp_synthesis, to: task_splitter, when: done, kind: forward }
+  - { from: task_splitter, to: audit, when: done, kind: forward }
+  - { from: audit, to: done, when: done, kind: forward }
+```
+
+### CG-2: `cp-harness-smoke.yaml` — Opt-In 13 Nodes (First-Task Coding)
+
+```yaml
+# apps/local-runner/internal/agentpack/flow-pack/flows/cp-harness-smoke.yaml
+id: cp-harness-smoke
+description: "Coding Plan + first-Task smoke coding — CP Plan + Review + Split + TDD + Code Review"
+builtin:
+  editable: false
+  selectableIn: []           # opt-in only, not in default /flow picker
+  cloneable: true
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 3
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+acceptanceNodes:
+  - cp_synthesis
+  - validate
+  - synthesis
+  - audit
+
+nodes:
+  # ─── Identical to cp-harness preflight + CP plan loop ───
+  # ... (copy nodes from cp-harness.yaml: preflight_contract_plan through cp_synthesis)
+  # ... (copy task_splitter)
+
+  # ─── Scope Lock & First-Task Coding Chain (like rag-harness code loop) ───
+  - id: preflight_contract_freeze
+    run: inline
+    lifecycle: once
+    behavior: contract.freeze
+
+  - id: test_signatures
+    run: delegate
+    lifecycle: once
+    behavior: agent.code
+    agent: agents/tester.md
+    promptTemplate: prompts/test-signatures.md
+
+  - id: implement
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.code
+    agent: agents/coder.md
+    promptTemplate: prompts/implement-complete-tests.md
+
+  - id: validate
+    run: inline
+    lifecycle: once
+    behavior: command.validate
+
+  - id: reviewer
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/reviewer.md
+    promptTemplate: prompts/review-safe-fix-contract.md
+    dependsOn: [validate]
+    cohort: review
+    join: all
+
+  - id: synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+
+  - id: audit
+    run: inline
+    lifecycle: once
+    behavior: artifact.audit_draft
+
+edges:
+  # ── Same scout + CP plan loop edges as cp-harness ──
+  # ...
+
+  # ── Slice → Freeze Scope → First-Task coding chain ──
+  - { from: task_splitter, to: preflight_contract_freeze, when: done, kind: forward }
+  - { from: preflight_contract_freeze, to: test_signatures, when: done, kind: forward }
+  - { from: test_signatures, to: implement, when: done, kind: forward }
+  - { from: implement, to: validate, when: done, kind: forward }
+  - { from: validate, to: implement, when: continue, kind: back }           # LOOP 2 back-edge
+  - { from: validate, to: reviewer, when: done, kind: forward }
+  - { from: validate, to: ask_user, when: escalate, kind: forward }
+  - { from: reviewer, to: synthesis, when: done, kind: forward }
+  - { from: synthesis, to: audit, when: done, kind: forward }
+  - { from: synthesis, to: ask_user, when: escalate, kind: forward }
+  - { from: audit, to: done, when: done, kind: forward }
+```
+
+### CG-3: `prompts/plan-cp.md` — CP Plan Writer Prompt Structure
+
+```markdown
+# CP Plan Writer — Coding Plan Architecture
+
+You are an architecture plan writer. Your output MUST be a single markdown file
+written to `requirements/07-Coding-Plan/todo/CP-{{cpID}}-{{slug}}.md`.
+
+## Inputs Available
+- `preflight_contract_plan` JSON (`candidate_feature_keys` + initial scope hypothesis from Scout)
+- `FEATURE-KEYS.md` reference
+- Latest `CA-*` change-audit history
+- Tools: `read_file`, `grep_search` for targeted codebase investigation
+
+## 3-Layer Defense: Architecture Verification
+- Verify Scout's `candidate_feature_keys` and candidate scope against the architecture requirements.
+- Use `read_file` / `grep_search` to investigate module boundaries, existing interfaces, and shared types.
+- Ensure all sliced tasks in §4 have explicit `DeclaredPaths` and clear dependency ordering.
+
+## Output Contract
+Write exactly one `CP-*.md` per FORMAT-REFERENCE-CP.md (SS-13) with:
+- §1 Goal
+- §2 Input Documents (SD-*, SS-* references)
+- §3 Implementation Strategy (approach, sequencing, dependencies)
+  - §3.1 Topology Sketches (normative node/edge tables)
+- §4 Work Breakdown (P-* items with file paths, line-level guidance)
+- §5 Touched Areas (files, modules, database, external systems)
+- §6 Data or Migration Steps
+- §7 Validation Plan (tests to add, manual checks, failure cases)
+- §8 Rollout and Fallback
+- §9 Risks (R-* with mitigations)
+- §10 Definition of Done (DOD-* checkboxes)
+
+## Quality Gates
+- Every P-* MUST be actionable with DeclaredPaths
+- DOD-* items MUST be measurable (go test commands or manual steps)
+- R-* mitigations MUST be non-trivial (not "be careful")
+- §5 Touched Areas MUST be exhaustive (file paths, modules, tables)
+```
+
+### CG-4: `prompts/review-cp.md` — CP Reviewer Prompt Structure
+
+```markdown
+# CP Reviewer — Coding Plan Architecture Gate
+
+You are reviewing a CP-*.md architecture document.
+
+## Review Criteria (submit_review_outcome)
+1. **§10 DOD Measurability**: Every DOD-* has a runnable verification
+2. **P-* Actionability**: Each P-* has file paths + enough detail to implement
+3. **§5 Touched Areas Exhaustive**: No missing file/module/table
+4. **R-* Mitigations Non-Trivial**: Mitigations are specific, not generic
+5. **CA Contradiction Check**: Changes don't contradict recent CA-* history
+6. **P-* Ordering**: Sequencing logic in §3 is sound (dependencies honored)
+
+## Outcome
+- `approved` — all criteria clean
+- `changes_requested` — findings per criterion (triggers cp_plan_writer re-entry)
+```
+
+### CG-5: `prompts/task-splitter.md` — Task Splitter Prompt Structure
+
+```markdown
+# Task Splitter — CP → Task Decomposition
+
+You are splitting an approved CP-*.md into individual Task-*.md files.
+
+## Input
+- `CP.md` file_artifact (INPUT binding `cp_md`) — read via file_artifact resolver
+
+## Output Contract
+For each P-* in the CP's §4 Work Breakdown, write one:
+  `requirements/08-Task/todo/Task-{{idx}}-{{slug}}.md`
+
+Each Task file MUST follow FORMAT-REFERENCE-TASK.md with:
+- §Metadata: Parent Documents → link to this CP
+- §AI Quick View: Summary referencing the P-* it implements
+- §4 Exact Change: Copy the P-*'s file paths + guidance verbatim
+- §6 Acceptance Check: Copy relevant DOD-* from the CP
+- P-* traceability in Source Refs
+
+## Constraints
+- One Task per P-* (no merging, no splitting a single P-*)
+- Task count N = number of P-* items in CP §4
+- file_artifact OUTPUT binding: `task_md[]` (one per P-*)
+```
+
+### CG-6: Test Signatures
+
+```go
+// --- apps/local-runner/internal/agentpack/cp_harness_pack_test.go (NEW) ---
+
+func TestCpHarnessPackTopology(t *testing.T) {
+    pack, err := agentpack.LoadBuiltinPack()
+    require.NoError(t, err)
+
+    def := findFlowDef(t, pack, "cp-harness")
+
+    // Assert: 7 nodes (slice-only default: scout, context, cp_plan_writer, cp_reviewer, cp_synthesis, task_splitter, audit)
+    assert.Len(t, def.Nodes, 7)
+
+    // Assert: plan loop = {preflight_contract_plan, context, cp_plan_writer, cp_reviewer, cp_synthesis}
+    // NO test_signatures inside (CP has no tests yet)
+    assertNodeExists(t, def, "preflight_contract_plan")
+    assertNodeExists(t, def, "context")
+    assertNodeExists(t, def, "cp_plan_writer")
+    assertNodeExists(t, def, "cp_reviewer")
+    assertNodeExists(t, def, "cp_synthesis")
+    assertNodeNotExists(t, def, "test_signatures") // not in slice-only
+
+    // Assert: forward edge chain
+    assertEdgeExists(t, def.Edges, "preflight_contract_plan", "context", "done", "forward")
+    assertEdgeExists(t, def.Edges, "context", "cp_plan_writer", "done", "forward")
+    assertEdgeExists(t, def.Edges, "cp_plan_writer", "cp_reviewer", "done", "forward")
+    assertEdgeExists(t, def.Edges, "cp_reviewer", "cp_synthesis", "done", "forward")
+    assertEdgeExists(t, def.Edges, "cp_synthesis", "task_splitter", "done", "forward")
+    assertEdgeExists(t, def.Edges, "task_splitter", "audit", "done", "forward")
+
+    // Assert: no agent.code node other than cp_plan_writer and task_splitter
+    agentCodeNodes := filterByBehavior(def.Nodes, "agent.code")
+    codeIDs := map[string]bool{}
+    for _, n := range agentCodeNodes {
+        codeIDs[n.ID] = true
+    }
+    assert.True(t, codeIDs["cp_plan_writer"])
+    assert.True(t, codeIDs["task_splitter"])
+    assert.Len(t, agentCodeNodes, 2) // only these two
+
+    // Assert: 1 continue/back (plan loop only — no code loop in slice-only)
+    backEdges := filterBackEdges(def.Edges, "continue")
+    assert.Len(t, backEdges, 1)
+    assert.Equal(t, "cp_synthesis", backEdges[0].From)
+    assert.Equal(t, "cp_plan_writer", backEdges[0].To)
+
+    // Assert: acceptance_nodes = [cp_synthesis, audit]
+    assert.Len(t, def.AcceptanceNodes, 2)
+    assert.Contains(t, def.AcceptanceNodes, "cp_synthesis")
+    assert.Contains(t, def.AcceptanceNodes, "audit")
+
+    // Assert: cp_plan_writer prompt = plan-cp.md
+    cpw := findNode(t, def, "cp_plan_writer")
+    assert.Equal(t, "prompts/plan-cp.md", cpw.PromptTemplate)
+
+    // Assert: cp_reviewer cohort=plan, join=all
+    cpr := findNode(t, def, "cp_reviewer")
+    assert.Equal(t, "plan", cpr.Cohort)
+    assert.Equal(t, "all", cpr.Join)
+
+    // Assert: task_splitter prompt = task-splitter.md
+    ts := findNode(t, def, "task_splitter")
+    assert.Equal(t, "prompts/task-splitter.md", ts.PromptTemplate)
+}
+
+func TestCpHarnessSmokePackTopology(t *testing.T) {
+    pack, err := agentpack.LoadBuiltinPack()
+    require.NoError(t, err)
+
+    def := findFlowDef(t, pack, "cp-harness-smoke")
+
+    // Assert: 13 nodes (CP plan loop + task_splitter + coding chain)
+    assert.Len(t, def.Nodes, 13)
+
+    // Assert: 2 continue/back edges with different From
+    backEdges := filterBackEdges(def.Edges, "continue")
+    assert.Len(t, backEdges, 2)
+    froms := map[string]bool{}
+    for _, e := range backEdges {
+        froms[e.From] = true
+    }
+    assert.True(t, froms["cp_synthesis"]) // CP plan loop
+    assert.True(t, froms["validate"])     // code loop
+
+    // Assert: acceptance_nodes extends with validate + synthesis
+    assert.Contains(t, def.AcceptanceNodes, "cp_synthesis")
+    assert.Contains(t, def.AcceptanceNodes, "validate")
+    assert.Contains(t, def.AcceptanceNodes, "synthesis")
+    assert.Contains(t, def.AcceptanceNodes, "audit")
+
+    // Assert: test_signatures exists in smoke variant
+    assertNodeExists(t, def, "test_signatures")
+    assertNodeExists(t, def, "implement")
+}
+
+// --- apps/local-runner/internal/runner/cp_harness_test.go (NEW) ---
+
+func TestCpHarnessSliceOnlyTerminal(t *testing.T) {
+    // Setup: cp-harness default flow (8 nodes)
+    // Simulate: run through preflight → cp_plan_writer → cp_reviewer →
+    //   cp_synthesis (done) → task_splitter → audit → done
+    // Assert: step timeline contains NO implement/validate/reviewer/synthesis steps
+    // Assert: no entry spawn beyond preflight_contract_plan
+    // Assert: task_splitter writes file_artifact outputs
+}
+
+func TestCpHarnessSmokeVariant(t *testing.T) {
+    // Setup: cp-harness-smoke flow (13 nodes)
+    // Simulate: cp_synthesis continue → re-enters cp_plan_writer
+    // Then: cp_synthesis done → task_splitter → test_signatures → implement →
+    //   validate → reviewer → synthesis → audit → done
+    // Assert: validate continue re-enters implement (code loop)
+}
+```
 
 ## 5. Touched Areas
 

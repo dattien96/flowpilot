@@ -75,6 +75,308 @@ Without bindings, `plan_writer` free-writes `requirements/08-Task/todo/*.md` wit
 - `T-7` Desktop `apps/desktop-flowpilot/src/components/settings/WorkflowsSettings.tsx` harness labels (optional): picker shows `bug-harness` / `task-harness` / `cp-harness` with description; clone preserves `acceptance_nodes` (already fixed CP-55 P-1, re-assert).
 - `T-8` Pack/runner tests: `TestHarnessArtifactBindings` asserts each harness node has expected `ArtifactBindings` length/direction/required/ArtifactTypeID; `TestHarnessArtifactBindingRejectsPathOutsideRequirements` — binding validation fails deterministically when an OUTPUT path escapes `requirements/` (e.g. `../../etc/passwd` or `D:\out.md`), at authoring/load time, not as an opaque provider error.
 
+## Code Guide
+
+### CG-1: SQL Migration — Artifact Instance Seeding
+
+```sql
+-- supabase/migrations/20260828_add_harness_plan_artifacts.sql
+
+-- Ensure artifact_type 'file_artifact' exists (idempotent, from CP-45)
+INSERT INTO artifact_types (id, name, description, is_builtin)
+VALUES ('file_artifact', 'File Artifact', 'Markdown file output bound to a flow node', true)
+ON CONFLICT (id) DO NOTHING;
+
+-- Seed artifact instances for plan outputs (is_builtin=true, service role only)
+INSERT INTO artifact_instances (id, artifact_type_id, is_builtin, config)
+VALUES
+  ('plan_md', 'file_artifact', true, '{
+    "pathTemplate": "requirements/08-Task/todo/Task-{{idx}}-{{slug}}.md",
+    "required": true,
+    "description": "Task plan md from task-harness plan_writer"
+  }'::jsonb),
+  ('cp_md', 'file_artifact', true, '{
+    "pathTemplate": "requirements/07-Coding-Plan/todo/CP-{{cpID}}-{{slug}}.md",
+    "required": true,
+    "description": "CP architecture md from cp-harness cp_plan_writer"
+  }'::jsonb),
+  ('task_md', 'file_artifact', true, '{
+    "pathTemplate": "requirements/08-Task/todo/Task-{{idx}}-{{slug}}.md",
+    "required": true,
+    "count": "N per P-*",
+    "description": "Individual Task md files from cp-harness task_splitter"
+  }'::jsonb)
+ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config;
+
+-- RLS: authenticated role CANNOT write is_builtin rows
+-- (already enforced by existing policy on artifact_instances, verify)
+```
+
+### CG-2: YAML Artifact Bindings — `task-harness.yaml` Changes
+
+Add `artifactBindings` to relevant nodes in `task-harness.yaml`:
+
+```yaml
+# In task-harness.yaml, update plan_writer node:
+  - id: plan_writer
+    # ... existing fields ...
+    artifactBindings:
+      - direction: output
+        slotName: plan_md
+        artifactInstanceId: plan_md
+        required: true
+        position: 0
+
+# Update plan_reviewer node:
+  - id: plan_reviewer
+    # ... existing fields ...
+    artifactBindings:
+      - direction: input
+        slotName: plan_md
+        artifactInstanceId: plan_md
+        required: true
+        position: 0
+```
+
+### CG-3: YAML Artifact Bindings — `cp-harness.yaml` Changes
+
+```yaml
+# In cp-harness.yaml, update cp_plan_writer node:
+  - id: cp_plan_writer
+    # ... existing fields ...
+    artifactBindings:
+      - direction: output
+        slotName: cp_md
+        artifactInstanceId: cp_md
+        required: true
+        position: 0
+
+# Update cp_reviewer node:
+  - id: cp_reviewer
+    # ... existing fields ...
+    artifactBindings:
+      - direction: input
+        slotName: cp_md
+        artifactInstanceId: cp_md
+        required: true
+        position: 0
+
+# Update task_splitter node:
+  - id: task_splitter
+    # ... existing fields ...
+    artifactBindings:
+      - direction: input
+        slotName: cp_md
+        artifactInstanceId: cp_md
+        required: true
+        position: 0
+      - direction: output
+        slotName: task_md
+        artifactInstanceId: task_md
+        required: true
+        position: 1
+```
+
+### CG-4: `recordFromWorkflowRow` — Binding Denormalization Path
+
+**NO SIGNATURE CHANGE** — the existing code already handles `ArtifactBindings`:
+
+```go
+// supabase_workflow_flow_store.go:138-275 — recordFromWorkflowRow
+// This already denormalizes artifact bindings at lines ~250-268:
+for _, b := range defn.ArtifactBindings {
+    binding := agentpack.FlowArtifactBinding{
+        Direction:          b.Direction,
+        SlotName:           b.SlotName,
+        ArtifactInstanceID: b.ArtifactInstanceID,
+        Required:           b.Required,
+        Position:           b.Position,
+    }
+    if b.ArtifactInstance != nil {
+        binding.ArtifactTypeID = b.ArtifactInstance.ArtifactTypeID
+        binding.ConfigJSON = b.ArtifactInstance.ConfigJSON
+    }
+    node.ArtifactBindings = append(node.ArtifactBindings, binding)
+}
+// NEW instances (plan_md/cp_md/task_md) flow through this existing path
+// as long as step_artifact_bindings rows are seeded via EnsureBuiltinArtifactBindingsWithStore
+```
+
+### CG-5: `ArtifactTypeRegistry` — Resolver Reuse
+
+**NO NEW RESOLVER** — reuse existing `fileArtifactResolver`:
+
+```go
+// artifact_type_registry.go — already registered:
+var defaultArtifactTypeRegistry = func() *ArtifactTypeRegistry {
+    r := NewArtifactTypeRegistry()
+    if err := r.Register(&fileArtifactResolver{}); err != nil {
+        panic(err)
+    }
+    return r
+}()
+
+// The fileArtifactResolver handles:
+// - INPUT: path-list mention only (reads file at pathTemplate, injects into prompt)
+// - OUTPUT: required-path write contract + template guidance
+// plan_md/cp_md/task_md all use ArtifactTypeID="file_artifact" → same resolver
+
+// ArtifactResolver interface (for reference, NO CHANGE):
+type ArtifactResolver interface {
+    ArtifactTypeID() string
+    Resolve(workspaceCwd string, binding agentpack.FlowArtifactBinding) (ArtifactResolveResult, error)
+}
+```
+
+### CG-6: Path Validation — Binding Security Check
+
+Add validation in `fileArtifactResolver.Resolve()` or at pack load time:
+
+```go
+// Ensure OUTPUT paths stay within requirements/ directory
+func validateArtifactOutputPath(pathTemplate string) error {
+    // Normalize and check the template doesn't escape requirements/
+    normalized := filepath.Clean(pathTemplate)
+    if !strings.HasPrefix(normalized, "requirements/") &&
+       !strings.HasPrefix(normalized, "requirements\\") {
+        return fmt.Errorf("file_artifact OUTPUT path %q must be under requirements/", pathTemplate)
+    }
+    // Reject path traversal
+    if strings.Contains(normalized, "..") {
+        return fmt.Errorf("file_artifact OUTPUT path %q contains path traversal", pathTemplate)
+    }
+    return nil
+}
+```
+
+### CG-7: Desktop Harness Labels (`WorkflowsSettings.tsx`)
+
+```tsx
+// apps/desktop-flowpilot/src/components/settings/WorkflowsSettings.tsx
+// Add harness display labels (additive, no existing code change)
+
+const HARNESS_LABELS: Record<string, { label: string; description: string }> = {
+  'bug-harness': {
+    label: 'Bug / Hotfix',
+    description: '9-step: TDD + Code Review (fast, no plan overhead)',
+  },
+  'task-harness': {
+    label: 'Task / Feature',
+    description: '11-step: Plan Writer + Plan Review + TDD + Code Review',
+  },
+  'cp-harness': {
+    label: 'Coding Plan',
+    description: '8-node: CP Plan + Review + Auto Task Splitter (slice-only)',
+  },
+};
+```
+
+### CG-8: Test Signatures
+
+```go
+// --- apps/local-runner/internal/runner/artifact_binding_test.go (NEW) ---
+
+func TestHarnessArtifactBindings(t *testing.T) {
+    pack, err := agentpack.LoadBuiltinPack()
+    require.NoError(t, err)
+
+    t.Run("task-harness bindings", func(t *testing.T) {
+        def := findFlowDef(t, pack, "task-harness")
+
+        // plan_writer has 1 OUTPUT binding (plan_md)
+        pw := findNode(t, def, "plan_writer")
+        assert.Len(t, pw.ArtifactBindings, 1)
+        assert.Equal(t, "output", pw.ArtifactBindings[0].Direction)
+        assert.Equal(t, "plan_md", pw.ArtifactBindings[0].SlotName)
+        assert.Equal(t, "file_artifact", pw.ArtifactBindings[0].ArtifactTypeID)
+        assert.True(t, pw.ArtifactBindings[0].Required)
+
+        // plan_reviewer has 1 INPUT binding (plan_md)
+        pr := findNode(t, def, "plan_reviewer")
+        assert.Len(t, pr.ArtifactBindings, 1)
+        assert.Equal(t, "input", pr.ArtifactBindings[0].Direction)
+        assert.Equal(t, "plan_md", pr.ArtifactBindings[0].SlotName)
+        assert.True(t, pr.ArtifactBindings[0].Required)
+    })
+
+    t.Run("cp-harness bindings", func(t *testing.T) {
+        def := findFlowDef(t, pack, "cp-harness")
+
+        // cp_plan_writer has 1 OUTPUT binding (cp_md)
+        cpw := findNode(t, def, "cp_plan_writer")
+        assert.Len(t, cpw.ArtifactBindings, 1)
+        assert.Equal(t, "output", cpw.ArtifactBindings[0].Direction)
+        assert.Equal(t, "cp_md", cpw.ArtifactBindings[0].SlotName)
+        assert.Equal(t, "file_artifact", cpw.ArtifactBindings[0].ArtifactTypeID)
+        assert.True(t, cpw.ArtifactBindings[0].Required)
+
+        // cp_reviewer has 1 INPUT binding (cp_md)
+        cpr := findNode(t, def, "cp_reviewer")
+        assert.Len(t, cpr.ArtifactBindings, 1)
+        assert.Equal(t, "input", cpr.ArtifactBindings[0].Direction)
+        assert.Equal(t, "cp_md", cpr.ArtifactBindings[0].SlotName)
+
+        // task_splitter has 1 INPUT (cp_md) + 1 OUTPUT (task_md)
+        ts := findNode(t, def, "task_splitter")
+        assert.Len(t, ts.ArtifactBindings, 2)
+
+        inputBinding := findBinding(ts.ArtifactBindings, "input", "cp_md")
+        assert.NotNil(t, inputBinding)
+        assert.True(t, inputBinding.Required)
+
+        outputBinding := findBinding(ts.ArtifactBindings, "output", "task_md")
+        assert.NotNil(t, outputBinding)
+        assert.True(t, outputBinding.Required)
+    })
+}
+
+func TestHarnessArtifactBindingRejectsPathOutsideRequirements(t *testing.T) {
+    // Create a FlowArtifactBinding with pathTemplate outside requirements/
+    binding := agentpack.FlowArtifactBinding{
+        Direction:      "output",
+        SlotName:       "plan_md",
+        ArtifactTypeID: "file_artifact",
+        ConfigJSON: map[string]any{
+            "pathTemplate": "../../etc/passwd",
+            "required":     true,
+        },
+        Required: true,
+    }
+
+    // Assert: validation fails deterministically at binding validation
+    err := validateArtifactOutputPath(binding.ConfigJSON["pathTemplate"].(string))
+    assert.Error(t, err)
+    assert.Contains(t, err.Error(), "must be under requirements/")
+}
+
+func TestHarnessArtifactBindingRejectsWindowsPathTraversal(t *testing.T) {
+    binding := agentpack.FlowArtifactBinding{
+        Direction:      "output",
+        SlotName:       "plan_md",
+        ArtifactTypeID: "file_artifact",
+        ConfigJSON: map[string]any{
+            "pathTemplate": "D:\\out.md",
+            "required":     true,
+        },
+        Required: true,
+    }
+
+    err := validateArtifactOutputPath(binding.ConfigJSON["pathTemplate"].(string))
+    assert.Error(t, err)
+}
+
+// --- Helper functions (shared across harness tests) ---
+
+func findBinding(bindings []agentpack.FlowArtifactBinding, dir, slot string) *agentpack.FlowArtifactBinding {
+    for i := range bindings {
+        if bindings[i].Direction == dir && bindings[i].SlotName == slot {
+            return &bindings[i]
+        }
+    }
+    return nil
+}
+```
+
 ## 5. Touched Areas
 
 - files: `supabase/migrations/*_add_harness_artifacts.sql` (new if needed), `apps/local-runner/internal/agentpack/flow-pack/artifact_instances/*.yaml` or pack embedded JSON, `apps/local-runner/internal/agentpack/flow-pack/flows/task-harness.yaml` + `cp-harness.yaml` (bindings), `apps/local-runner/internal/runner/artifact_type_registry.go`, `apps/local-runner/internal/runner/supabase_workflow_flow_store.go`, `apps/desktop-flowpilot/src/components/settings/WorkflowsSettings.tsx` (labels)
