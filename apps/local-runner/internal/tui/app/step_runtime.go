@@ -242,6 +242,14 @@ func (m *AppModel) renderBlockedBar() string {
 	if !m.flowLoopBlocked() {
 		return ""
 	}
+	width := safeTermWidth(m.chatWidth())
+	if width < 1 {
+		if m.chatWidth() > 0 {
+			width = m.chatWidth()
+		} else {
+			width = 80
+		}
+	}
 	reason := strings.TrimSpace(m.flowBlockReason)
 	head := styleGate.Render("flow") + " " + styleLink.Render("[blocked]") + " " +
 		styleSystem.Render("awaiting your decision")
@@ -250,7 +258,17 @@ func (m *AppModel) renderBlockedBar() string {
 	}
 	bar := head + "\n"
 	if detail := m.blockedDecisionReason(); detail != "" {
-		bar += styleSystem.Render("  reason: " + detail) + "\n"
+		lead := "  reason: "
+		indent := "          "
+		avail := max(10, width-len([]rune(lead)))
+		wrapped := wrapText(detail, avail)
+		for i, wline := range wrapped {
+			prefix := indent
+			if i == 0 {
+				prefix = lead
+			}
+			bar += styleSystem.Render(prefix+wline) + "\n"
+		}
 	}
 	bar += styleSystem.Render("  ") + styleLink.Render("[Continue]") + "  " +
 		styleLink.Render("[Stop]") + "  " + styleSystem.Render("click")
@@ -264,12 +282,12 @@ func (m *AppModel) renderBlockedBar() string {
 // CA-632). Empty when the runner provided no detail.
 func (m *AppModel) blockedDecisionReason() string {
 	if g := strings.TrimSpace(m.flowGateReason); g != "" {
-		return truncateRunes(g, 160)
+		return g
 	}
 	for _, s := range m.flowSteps {
 		if strings.EqualFold(strings.TrimSpace(s.Status), "FAILED") {
 			if n := strings.TrimSpace(s.RejectionNote); n != "" {
-				return truncateRunes(n, 160)
+				return n
 			}
 		}
 	}

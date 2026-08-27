@@ -165,3 +165,26 @@ func TestRun142155_LateGateReasonRebanners(t *testing.T) {
 		t.Fatal("blocked bar must show late gate reason")
 	}
 }
+
+func TestRun142155_BlockedBarLongReasonWrapsWithoutTruncation(t *testing.T) {
+	m := New(config.ChatConfig{Provider: "codex"}, "http://127.0.0.1:4317")
+	m.width, m.height = 80, 30
+	m.asciiMode = true
+	m.mode = ModeFlow
+	longGate := "flow gate block: flow scope drift: wrote outside the frozen contract's declared paths: internal/tui/app/drift_probe.go, internal/tui/app/another_probe.go"
+	m.applyAgentGraph(&client.AgentGraphSnapshot{
+		LoopState: client.AgentLoopState{Status: "blocked", BlockReason: "escalate", GateReason: longGate},
+		Runs:      []client.AgentRunSummary{{RunID: "run-142155", AgentName: "main", Status: "completed"}},
+	})
+	bar := stripANSI(m.renderBlockedBar())
+	if !strings.Contains(bar, "another_probe.go") {
+		t.Fatalf("long reason must not be truncated, got:\n%s", bar)
+	}
+	if strings.Contains(bar, "…") {
+		t.Fatalf("long reason should wrap cleanly without truncation ellipsis, got:\n%s", bar)
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "another_probe.go") {
+		t.Fatalf("full view must display the wrapped long reason without truncation, got:\n%s", view)
+	}
+}
