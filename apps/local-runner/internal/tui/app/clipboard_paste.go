@@ -278,7 +278,9 @@ Write-Output $t
 func runClipboardPS(script string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), clipboardPSTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script).Output()
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	applyClipboardSysProcAttr(cmd)
+	return cmd.Output()
 }
 
 func (m *AppModel) cmdOpenPendingAttachment(index int) tea.Cmd {

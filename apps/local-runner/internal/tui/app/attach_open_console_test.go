@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"flowpilot-runner/internal/tui/config"
 )
 
@@ -67,5 +69,62 @@ func TestOpenPath_OtherUsesOpenFallback(t *testing.T) {
 	}
 	if !strings.Contains(s, "xdg-open") || !strings.Contains(s, "go:build !windows") {
 		t.Fatalf("open_path_other.go should handle darwin/linux, got %q", s)
+	}
+}
+
+func TestRunClipboardPS_UsesCreateNoWindow(t *testing.T) {
+	b, err := os.ReadFile("clipboard_ps_windows.go")
+	if err != nil {
+		t.Skipf("clipboard_ps_windows.go not present: %v", err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "CREATE_NO_WINDOW") && !strings.Contains(s, "0x08000000") && !strings.Contains(s, "clipboardCreateNoWindow") {
+		t.Fatalf("clipboard_ps_windows.go should set CREATE_NO_WINDOW, got %q", s)
+	}
+	if !strings.Contains(s, "go:build windows") {
+		t.Fatalf("clipboard_ps_windows.go missing build tag")
+	}
+	b2, err := os.ReadFile("clipboard_paste.go")
+	if err != nil {
+		t.Fatalf("clipboard_paste.go read: %v", err)
+	}
+	if !strings.Contains(string(b2), "applyClipboardSysProcAttr") {
+		t.Fatalf("clipboard_paste.go should call applyClipboardSysProcAttr")
+	}
+}
+
+func TestClipboardPasteMsg_TextThenEnterSubmits(t *testing.T) {
+	// Regression for pid 9288: Alt+V text paste 192 chars left TUI Enter-dead
+	// (no KeyMsg after ClipboardPasteMsg). Paste text then Enter must submit.
+	// Short paste (<8 runes) stays inline (CA-541 threshold).
+	m := New(config.ChatConfig{Provider: "codex"}, "http://127.0.0.1:9")
+	m.width, m.height = 80, 30
+	m.sessionLoading = false
+	m.authPhase = AuthNone
+	m2, _ := m.Update(ClipboardPasteMsg{Text: "hi", NoImage: true})
+	am := m2.(*AppModel)
+	if am.inputValue != "hi" {
+		t.Fatalf("short paste should insert inline, got %q", am.inputValue)
+	}
+	m3, _ := am.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	bm := m3.(*AppModel)
+	if len(bm.messages) == 0 {
+		t.Fatalf("Enter after short clipboard paste must submit, messages=%+v input=%q", bm.messages, bm.inputValue)
+	}
+	// Long paste collapses to token but Enter still submits full text
+	m = New(config.ChatConfig{Provider: "codex"}, "http://127.0.0.1:9")
+	m.width, m.height = 80, 30
+	m.sessionLoading = false
+	m.authPhase = AuthNone
+	long := strings.Repeat("a", 300)
+	m2, _ = m.Update(ClipboardPasteMsg{Text: long, NoImage: true})
+	am = m2.(*AppModel)
+	if !strings.Contains(am.inputValue, "[Pasted") {
+		t.Fatalf("long paste should collapse, got %q", am.inputValue)
+	}
+	m3, _ = am.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	bm = m3.(*AppModel)
+	if len(bm.messages) == 0 {
+		t.Fatalf("Enter after long collapsed paste must submit")
 	}
 }

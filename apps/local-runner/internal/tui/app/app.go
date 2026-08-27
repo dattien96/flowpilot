@@ -1426,6 +1426,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ClipboardPasteMsg:
+		// PowerShell clipboard helpers on Windows previously attached to the
+		// TUI console (no CREATE_NO_WINDOW) and left conhost without keys
+		// after Alt+V text paste (pid 9288: 47s stall). Re-arm here for all
+		// ClipboardPasteMsg branches; applyClipboardSysProcAttr prevents the
+		// attach for future pastes.
+		disableConsoleQuickEdit()
 		// Reset any active burst state so clipboard paste and subsequent typing stay clean.
 		m.resetPasteBurst()
 		if msg.Err != "" && msg.Attachment == nil && msg.Text == "" {
