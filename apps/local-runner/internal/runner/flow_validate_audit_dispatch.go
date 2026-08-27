@@ -1321,16 +1321,26 @@ func worktreeMutatedSincePaths(baseline, current map[string]string) []string {
 }
 
 // isFlowPlannerExcludedPath reports whether a worktree path is FlowPilot's own
-// runtime metadata or a tool-owned index — written by the runner (`.flowpilot/**`
-// ledger/manifest/canonical/contracts/gate-metrics) or by the GitNexus
-// auto-indexer (`.gitnexus/**`, CA-639), not by the contract planner. The
-// planner-mutation guard in runContractFreezeNode must never flag these
-// (run-243681: every turn rewrites chat_summary.ndjson + manifest.json, which
-// permanently false-blocked contract.freeze → "ask continue" loop).
+// runtime metadata or a tool-owned surface — written by the runner
+// (`.flowpilot/**` ledger/manifest/canonical/contracts/gate-metrics), by the
+// GitNexus auto-indexer (`.gitnexus/**`, CA-639), or by skillpack/desktop
+// skill sync (`.claude/**`, `.agents/**`, `.grok/**` agent skill dirs plus the
+// root `AGENTS.md`/`CLAUDE.md`/`.gitignore` scaffold — CA-645), never by the
+// contract planner. The planner-mutation guard in runContractFreezeNode must
+// never flag these (run-243681: every turn rewrites chat_summary.ndjson +
+// manifest.json; run-151954: gitnexus skillpack installs 7 SKILL.md +
+// AGENTS.md + CLAUDE.md + .gitignore mid-flow — both permanently
+// false-blocked contract.freeze → WAITING_USER_APPROVAL park).
 func isFlowPlannerExcludedPath(path string) bool {
 	p := filepath.ToSlash(strings.TrimSpace(path))
-	return p == ".flowpilot" || strings.HasPrefix(p, ".flowpilot/") ||
-		p == ".gitnexus" || strings.HasPrefix(p, ".gitnexus/")
+	if p == ".flowpilot" || strings.HasPrefix(p, ".flowpilot/") ||
+		p == ".gitnexus" || strings.HasPrefix(p, ".gitnexus/") ||
+		p == ".claude" || strings.HasPrefix(p, ".claude/") ||
+		p == ".agents" || strings.HasPrefix(p, ".agents/") ||
+		p == ".grok" || strings.HasPrefix(p, ".grok/") {
+		return true
+	}
+	return p == "AGENTS.md" || p == "CLAUDE.md" || p == ".gitignore"
 }
 
 // runContractFreezeNodeLocks path-keys an in-process mutex per
