@@ -186,7 +186,7 @@ func (m *AppModel) Init() tea.Cmd {
 	tuiLog("Init() -> disable autowrap + cmdConnect + tickCursor")
 	return tea.Sequence(
 		cmdSetAutoWrap(false),
-		tea.Batch(m.cmdConnect(), tickCursor()),
+		tea.Batch(m.cmdConnect(), tickCursor(), cmdInputWatchdog()),
 	)
 }
 
@@ -208,7 +208,7 @@ func cmdThinkingTick() tea.Cmd {
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Log startup-relevant messages (skip high-frequency ticks to keep log readable).
 	switch v := msg.(type) {
-	case cursorTickMsg, thinkingTickMsg, tea.WindowSizeMsg:
+	case cursorTickMsg, thinkingTickMsg, tea.WindowSizeMsg, inputWatchdogMsg:
 	default:
 		if _, ok := msg.(tea.MouseMsg); ok {
 			// Mouse motion is filtered by tuiMsgFilter; logging every motion here
@@ -1600,10 +1600,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case tea.KeyMsg:
+		m.markInputAlive()
 		return m.handleKey(msg)
 
 	case tea.MouseMsg:
+		m.markInputAlive()
 		return m.handleMouse(msg)
+
+	case inputWatchdogMsg:
+		return m.checkInputWatchdog(msg.at)
 	}
 
 	return m, nil
