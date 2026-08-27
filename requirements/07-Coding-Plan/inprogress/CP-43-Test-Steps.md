@@ -412,29 +412,31 @@ Verify: nếu planner chỉ khai calc.go mà coder sửa user_test.go → gate b
 
 ## [FLOW] F3 — Planner khai sai/thiếu path → amend (live trigger CA-647)
 
-**Cơ chế:** không thể ép planner khai sai (LLM đọc prompt + scan workspace). Cách
-đúng là ép TÌNH HUỐNG: drift file (1) không nằm trong prompt, (2) ngoài tầm
-planner khai, nhưng (3) coder BUỘC phải chạm để build pass (giống F2 —
-drift_probe.go là file coder chạm, planner không biết).
+**Kết quả thực tế (2026-08-27): Nhánh B pass — planner thông minh khai đủ
+(`calc.go` + `user.go`) → không drift → flow pass.** Đây là hành vi ĐÚNG: planner
+tốt ngăn drift từ gốc. Không thể ép planner khai sai (LLM đọc prompt + scan
+workspace).
 
-**Chuẩn bị (đã làm):** user.go có `idBalanceDelta(a, b int) int` gọi `Subtract`
-(committed `a6c2c45`). Đổi Subtract signature → build fail ở user.go → coder
-phải sửa user.go.
+**Leg amend còn lại — live-test deterministic bằng recipe decoy (như F2):
+drift file phải (1) không nằm trong prompt, (2) ngoài tầm planner khai, nhưng
+(3) coder BUỘC phải chạm để build pass.**
 
-Prompt (không nhắc user.go):
+Chuẩn bị (đã làm): `user_decoy.go` (untracked) có `accountDelta` gọi `Subtract`
+với `int`. Đổi Subtract signature → build fail ở user_decoy.go → coder phải
+sửa nó → drift (planner không khai file này).
+
+Prompt (không nhắc user_decoy.go):
 Doi ham Subtract(a, b int) int trong calc.go thanh Subtract(a, b int64) int64. Chay go test ./...
 
 Verify:
-- Planner khai chỉ `calc.go` (+ calc_test.go) → coder đổi signature → `go build`
-  fail ở `idBalanceDelta` → coder sửa user.go → **drift thật** → block
-  WAITING_USER_APPROVAL.
+- Coder đổi calc.go → `go build` fail ở `accountDelta` → coder sửa
+  `user_decoy.go` → **drift thật** → block WAITING_USER_APPROVAL.
 - Amend qua API (runner restart để load CA-647):
   ```powershell
-  Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:4317/client/workflow-runs/<runId>/agent-loop/amend" -ContentType "application/json" -Body '{"paths":["user.go"]}'
+  Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:4317/client/workflow-runs/<runId>/agent-loop/amend" -ContentType "application/json" -Body '{"paths":["user_decoy.go"]}'
   ```
 - `frozen_contracts.ndjson`: **v2 + Supersedes v1**; flow resume → coder retry pass.
-- Nếu planner scan ra user.go và khai đủ → không drift (Nhánh B); để ép Nhánh A
-  có thể trả lời câu hỏi planner theo hướng "chỉ calc.go".
+- Nếu planner vẫn scan ra user_decoy.go → Nhánh B (đã pass); thử decoy tên khác.
 
 # P-3 — Canonical Head
 
