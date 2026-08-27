@@ -813,7 +813,15 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			if changecontract.IsFrozenStoreBookkeepingPath(p) ||
 				changecontract.IsPendingCanonicalStoreBookkeepingPath(p) ||
 				changecontract.IsRunnerLedgerBookkeepingPath(p) ||
-				changecontract.IsChangeAuditPath(p) {
+				changecontract.IsChangeAuditPath(p) ||
+				// CA-648: tool/skill-pack owned scaffold surfaces
+				// (.claude/** .agents/** .grok/** AGENTS.md CLAUDE.md
+				// .gitignore) are installed mid-flow by skillpack/desktop
+				// sync, never written by the coder — same exemption the
+				// freeze planner guard got in CA-645. Deliberately NOT
+				// .flowpilot/** (CA-427: a writer rewriting its own gate
+				// rules must still drift).
+				changecontract.IsToolOwnedScaffoldPath(p) {
 				continue
 			}
 			codeOnlyWritten = append(codeOnlyWritten, p)

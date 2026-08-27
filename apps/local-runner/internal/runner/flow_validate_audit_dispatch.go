@@ -1334,13 +1334,10 @@ func worktreeMutatedSincePaths(baseline, current map[string]string) []string {
 func isFlowPlannerExcludedPath(path string) bool {
 	p := filepath.ToSlash(strings.TrimSpace(path))
 	if p == ".flowpilot" || strings.HasPrefix(p, ".flowpilot/") ||
-		p == ".gitnexus" || strings.HasPrefix(p, ".gitnexus/") ||
-		p == ".claude" || strings.HasPrefix(p, ".claude/") ||
-		p == ".agents" || strings.HasPrefix(p, ".agents/") ||
-		p == ".grok" || strings.HasPrefix(p, ".grok/") {
+		p == ".gitnexus" || strings.HasPrefix(p, ".gitnexus/") {
 		return true
 	}
-	return p == "AGENTS.md" || p == "CLAUDE.md" || p == ".gitignore"
+	return changecontract.IsToolOwnedScaffoldPath(p)
 }
 
 // runContractFreezeNodeLocks path-keys an in-process mutex per

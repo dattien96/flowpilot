@@ -135,6 +135,41 @@ func IsPendingCanonicalStoreBookkeepingPath(p string) bool {
 	return false
 }
 
+// ToolOwnedScaffoldPaths returns the repo-relative path prefixes and exact
+// root files owned by tool/skill-pack installers (CA-645/CA-648), NOT by the
+// flow writer: `.claude/**`, `.agents/**`, `.grok/**` agent skill dirs plus
+// the root `AGENTS.md`/`CLAUDE.md`/`.gitignore` scaffold. Skillpack install
+// and desktop skill sync write these mid-flow (run-151954: 9 files at
+// 06:58:50, 17s after flow start), so both the freeze planner-mutation guard
+// and the coder's frozen-scope drift gate must never attribute them to the
+// writer. Deliberately NOT `.flowpilot/**` or `.gitnexus/**` — those stay
+// subject to the same per-path rules CA-427/CA-640 already established.
+func ToolOwnedScaffoldPaths() []string {
+	return []string{
+		".claude", ".agents", ".grok",
+		"AGENTS.md", "CLAUDE.md", ".gitignore",
+	}
+}
+
+// IsToolOwnedScaffoldPath reports whether p is a tool/skill-pack owned
+// scaffold path — one of ToolOwnedScaffoldPaths (path prefix) — after the
+// same normalization FrozenContractScopeDrift applies to every path it
+// compares, so `.claude/x`, `./claude/x`, `.\\claude\\x` and `claude/x` all
+// resolve to the same normalized form.
+func IsToolOwnedScaffoldPath(p string) bool {
+	np := normalizeScopePath(p)
+	if np == "" {
+		return false
+	}
+	for _, s := range ToolOwnedScaffoldPaths() {
+		ns := normalizeScopePath(s)
+		if np == ns || strings.HasPrefix(np, ns+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 // FrozenContractScopeDrift returns the paths in writtenPaths that are not
 // among rec.DeclaredPaths — what a Flow writer touched beyond what its
 // frozen contract authorized. Both sides are forward-slash normalized,
