@@ -42,8 +42,8 @@ func TestRenderMessages_CodeFenceCopyKeepsAnswerCopy(t *testing.T) {
 	if _, _, ok := findClickTarget(m, "copyfence:0:0"); !ok {
 		t.Fatal("expected clickable [copy] on the code fence")
 	}
-	if _, _, ok := findClickTarget(m, "copy:0"); !ok {
-		t.Fatal("expected clickable [copy] on the full answer")
+	if _, _, ok := findClickTarget(m, "copy:0"); ok {
+		t.Fatal("trailing [copy] on answer should be removed (user request)")
 	}
 	var payload string
 	for _, row := range m.chatRows() {

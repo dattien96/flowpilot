@@ -101,20 +101,12 @@ func TestUserPrompt_CopyWinsOverExpand(t *testing.T) {
 	prompt := longPrompt()
 	m.addMessage("user", prompt, "")
 	m.addMessage("assistant", "ok", "")
-	x, y, target, ok := findAnyTarget(m, "copy:")
-	if !ok {
-		t.Fatal("truncated user box must still expose a copy chip")
+	if _, _, _, ok := findAnyTarget(m, "copy:"); ok {
+		t.Fatal("trailing [copy] should be removed (user request)")
 	}
-	if !strings.HasPrefix(target, "copy:") {
-		t.Fatalf("expected copy target, got %q", target)
-	}
-	m2, _ := m.Update(clickLeft(x, y))
-	view := stripANSI(m2.(*AppModel).View())
+	view := stripANSI(m.View())
 	if !strings.Contains(view, "....") {
-		t.Fatalf("copy click must not expand the prompt:\n%s", view)
-	}
-	if strings.Contains(view, "TAIL") {
-		t.Fatalf("copy click must not expand the prompt (tail visible):\n%s", view)
+		t.Fatalf("collapsed prompt must show '....':\n%s", view)
 	}
 }
 

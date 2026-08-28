@@ -41,11 +41,14 @@ func TestDumpView_WritesRevAndPrompt(t *testing.T) {
 			t.Fatalf("dump missing %q:\n%s", need, got)
 		}
 	}
-	// Collapsed: first 4 lines + "...." tail + [copy] chip.
-	for _, need := range []string{"[Change Contract]", "feature: calc-core", "tra ve error khi b > a", "files: calc.go, calc_test.go....", "[copy]"} {
+	// Collapsed: first 4 lines + "...." tail (user request: [copy] removed).
+	for _, need := range []string{"[Change Contract]", "feature: calc-core", "tra ve error khi b > a", "files: calc.go, calc_test.go...."} {
 		if !strings.Contains(got, need) {
 			t.Fatalf("dump missing clamped prompt %q:\n%s", need, got)
 		}
+	}
+	if strings.Contains(got, "[copy]") {
+		t.Fatalf("dump should not contain [copy] (user request):\n%s", got)
 	}
 	if strings.Contains(got, "symbols: Subtract") {
 		t.Fatalf("dump shows hidden clamp tail line:\n%s", got)
@@ -60,10 +63,13 @@ func TestDumpView_WritesRevAndPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = string(raw)
-	for _, need := range []string{"[Change Contract]", "feature: calc-core", "tra ve error khi b > a", "files: calc.go, calc_test.go", "symbols: Subtract", "[copy]"} {
+	for _, need := range []string{"[Change Contract]", "feature: calc-core", "tra ve error khi b > a", "files: calc.go, calc_test.go", "symbols: Subtract"} {
 		if !strings.Contains(got, need) {
 			t.Fatalf("expanded dump missing prompt %q:\n%s", need, got)
 		}
+	}
+	if strings.Contains(got, "[copy]") {
+		t.Fatalf("expanded dump should not contain [copy] (user request):\n%s", got)
 	}
 	if strings.Contains(got, "calc_test.go....") {
 		t.Fatalf("expanded dump must not show the ellipsis tail:\n%s", got)

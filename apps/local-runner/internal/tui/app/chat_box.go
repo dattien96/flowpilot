@@ -312,11 +312,9 @@ func frameInput(lines []string, width int, title, footer string, ascii bool) str
 // runes only — no styled spans, no ANSI-aware padding — so every row's right
 // border sits at exactly width-1 on any terminal. Lines arrive pre-wrapped at
 // the box inner text width and pre-clamped (CA-607: max 4 lines + "...." tail
-// when collapsed). The [copy] chip rides its own last row (CA-604): content
-// rows never share a row with the chip, so prompt text is never cut to make
-// room for it. When truncatable, every row (borders included) carries
+// when collapsed). When truncatable, every row (borders included) carries
 // PromptExpandKey so the whole box is a click-to-expand target.
-func youBox(lines []string, width int, ascii bool, copyOn bool, msgIdx int, truncatable bool, expandKey string) []chatRow {
+func youBox(lines []string, width int, ascii bool, _ bool, msgIdx int, truncatable bool, expandKey string) []chatRow {
 	if width < 10 {
 		width = 10
 	}
@@ -344,11 +342,6 @@ func youBox(lines []string, width int, ascii bool, copyOn bool, msgIdx int, trun
 	out = append(out, row(strokeTop("You", width, ascii), false))
 	for _, line := range lines {
 		out = append(out, row(body(line), false))
-	}
-	if copyOn {
-		chip := stripANSI(copyChip)
-		b := strings.Repeat(" ", innerW-len([]rune(chip)))
-		out = append(out, row("│"+b+chip+"│", true))
 	}
 	out = append(out, row(strokeBottom(width, ascii), false))
 	return out

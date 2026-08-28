@@ -274,20 +274,12 @@ func TestYouBoxClamp_BareCRCopyChip(t *testing.T) {
 		m.addMessage("user", bareCRPrompt, "")
 		m.addMessage("assistant", "ok", "")
 
-		x, y, target, ok := findAnyTarget(m, "copy:")
-		if !ok {
-			t.Fatalf("%s: clamped box must expose copy chip", pk)
+		if _, _, _, ok := findAnyTarget(m, "copy:"); ok {
+			t.Fatalf("%s: [copy] should be removed (user request)", pk)
 		}
-		if !strings.HasPrefix(target, "copy:") {
-			t.Fatalf("%s: expected copy target, got %q", pk, target)
-		}
-		m2, _ := m.Update(clickLeft(x, y))
-		view := stripANSI(m2.(*AppModel).View())
-		if strings.Contains(view, "symbols: Subtract") {
-			t.Fatalf("%s: copy click must not expand prompt:\n%s", pk, view)
-		}
-		if !strings.Contains(view, "....") {
-			t.Fatalf("%s: copy click must keep collapsed tail:\n%s", pk, view)
+		view := stripANSI(m.View())
+		if strings.Contains(view, "....") == false {
+			t.Fatalf("%s: collapsed tail must remain\n%s", pk, view)
 		}
 	}
 }

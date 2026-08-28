@@ -68,8 +68,8 @@ func TestRegression_UserPromptLongNoOverflow(t *testing.T) {
 	}
 }
 
-// CA-603 → CA-607: prompts clamp to 4 lines + "...." when collapsed — the
-// [copy] chip still renders on its own row and nothing overflows the chat pane.
+// CA-603 → CA-607: prompts clamp to 4 lines + "...." when collapsed — nothing
+// overflows the chat pane (user request: [copy] removed).
 func TestRegression_UserPromptShowsCopyWithoutOverflow(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "codex", Model: "gpt-5.4"}, "http://127.0.0.1:4317")
 	m.width = 80
@@ -78,8 +78,8 @@ func TestRegression_UserPromptShowsCopyWithoutOverflow(t *testing.T) {
 	m.addMessage("user", long, "")
 	m.addMessage("assistant", "ok", "")
 	got := stripANSI(strings.Join(m.renderMessages(), "\n"))
-	if !strings.Contains(got, "[copy]") {
-		t.Fatalf("You box must show [copy] chip, got:\n%s", got)
+	if strings.Contains(got, "[copy]") {
+		t.Fatalf("trailing [copy] should be removed (user request), got:\n%s", got)
 	}
 	for i, line := range m.renderMessages() {
 		if lipgloss.Width(line) > m.chatWidth() {

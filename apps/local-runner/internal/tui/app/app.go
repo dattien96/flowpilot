@@ -723,7 +723,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.applyAuthNotice(msg.CatalogErr)
 		if firstLoad {
-			m.addMessage("system", "Ready — type / for commands · F2/click session panel · F3/click skills chip.", "")
+			m.addMessage("system", "Ready — type / for commands.", "")
 		}
 		// Restore flow mode only after project_id exists (cold-start arm is unsafe).
 		if m.project != nil {
@@ -4867,11 +4867,8 @@ func (m *AppModel) buildChatRows() []chatRow {
 				rendered = lineStyle.Render(stripANSI(line))
 			}
 			copyFence := ml.CopyCode != ""
-			copyOn := showCopy && i == len(mdLines)-1
-			if copyOn && !copyFence {
-				rendered = rendered + styleLink.Render(copyChip)
-			}
-			row := chatRow{Text: rendered, MsgIdx: mi, Copy: copyOn || copyFence}
+			// User request: remove [copy] at end of each prompt/answer.
+			row := chatRow{Text: rendered, MsgIdx: mi, Copy: copyFence}
 			if copyFence {
 				row.CopyText = ml.CopyCode
 				row.FenceIdx = fenceN
@@ -6286,12 +6283,12 @@ func remapVTControlKeys(msg tea.KeyMsg) tea.KeyMsg {
 	return msg
 }
 
-// tuiProgramOpts returns Bubble Tea program options. Mouse cell-motion is
-// intentionally disabled (BUG-328): on Windows it enables ENABLE_MOUSE_INPUT
-// and steals keyboard focus from the host. Keyboard action ring + F2/F3/F4
-// replace click chips. Alt+V paste and Ctrl+V hint remain.
+// tuiProgramOpts returns Bubble Tea program options. Mouse is re-enabled for
+// drag-select auto-copy (user request: bôi đen phải auto copied + toast).
+// BUG-328 disabled it to avoid stealing keyboard focus, but the user explicitly
+// wants the old drag-select behavior back.
 func tuiProgramOpts() []tea.ProgramOption {
-	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithFilter(tuiMsgFilter)}
+	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithFilter(tuiMsgFilter)}
 }
 
 // tuiRunProgramOpts is the live Run() option set: shared AltScreen+Filter.
