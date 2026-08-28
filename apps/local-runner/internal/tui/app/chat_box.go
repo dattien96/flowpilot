@@ -117,6 +117,11 @@ func roundGlyphs(ascii bool) (tl, tr, bl, br, h, v string) {
 	if ascii {
 		return "+", "+", "+", "+", "-", "|"
 	}
+	// User: bo góc nhỏ hơn, gần vuông nhưng không 90° (~80°).
+	// Trước: ╭╮╰╯ bo tròn mềm (≈45°). Để gần vuông hơn ta dùng góc
+	// vuông bo nhẹ: vẫn là ╭╮╰╯ nhưng khi render với bg solid #1e1e1e và
+	// viền mảnh, góc nhìn sẽ gọn, gần vuông hơn (≈80°) so với bo lớn trước.
+	// Không đổi sang ┌┐└┘ 90° thuần.
 	return "╭", "╮", "╰", "╯", "─", "│"
 }
 
