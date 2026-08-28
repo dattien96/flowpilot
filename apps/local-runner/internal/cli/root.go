@@ -252,7 +252,12 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
-				providers, err := instance.DetectProvidersCached(r.Context())
+				// Plain ListenAndServe request contexts have no deadline. The TUI
+				// session unlock is 8s (CA-535); pass the same budget so
+				// detectOpencodeModels' adaptive probe is real, not the 1.2s fallback.
+				ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+				defer cancel()
+				providers, err := instance.DetectProvidersCached(ctx)
 				if err != nil {
 					writeHTTPError(w, http.StatusInternalServerError, err)
 					return

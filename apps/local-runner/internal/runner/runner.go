@@ -367,6 +367,14 @@ func (r *Runner) ValidateDirectory(path string) DirectoryValidationResult {
 }
 
 func (r *Runner) DetectProviders(ctx context.Context) ([]Provider, error) {
+	// Kick off OpenCode model catalog warm in parallel with other CLI probes.
+	// `opencode models` is slow (2–7s+) and opencode is last in providerSpecs,
+	// so a serial probe often times out; warming early lets the cache fill while
+	// codex/claude/gemini/grok run.
+	if cached, ok := readOpencodeModelsCache(false); !ok || len(cached) == 0 {
+		warmOpencodeModelsCacheAsync()
+	}
+
 	providers := make([]Provider, 0, len(providerSpecs()))
 	for _, spec := range providerSpecs() {
 		providers = append(providers, detectProvider(ctx, spec))
@@ -1991,112 +1999,58 @@ func detectGrokModels() ([]ProviderModel, error) {
 	return models, nil
 }
 
+// opencodeModelsProbeTimeout is the fast probe budget when no parent deadline and
+// no warm cache exist (CA-657). Live `opencode models` can take 2–7s on Windows.
+const opencodeModelsProbeTimeout = 1200 * time.Millisecond
+
+func opencodeModelsProbeBudget(parent context.Context) time.Duration {
+	if deadline, ok := parent.Deadline(); ok {
+		remaining := time.Until(deadline)
+		switch {
+		case remaining <= 800*time.Millisecond:
+			return remaining
+		case remaining > 6500*time.Millisecond:
+			return 6500 * time.Millisecond
+		default:
+			return remaining - 200*time.Millisecond
+		}
+	}
+	return opencodeModelsProbeTimeout
+}
+
 func detectOpencodeModels(ctx context.Context) ([]ProviderModel, error) {
+	if cached, ok := readOpencodeModelsCache(false); ok {
+		return cached, nil
+	}
+	models, err := detectOpencodeModelsLive(ctx, opencodeModelsProbeBudget(ctx))
+	if err == nil && len(models) > 0 {
+		writeOpencodeModelsCache(models)
+		return models, nil
+	}
+	if cached, ok := readOpencodeModelsCache(true); ok {
+		return cached, nil
+	}
+	warmOpencodeModelsCacheAsync()
+	return nil, err
+}
+
+func detectOpencodeModelsLive(ctx context.Context, budget time.Duration) ([]ProviderModel, error) {
 	binary := opencodeBinaryName()
 	if strings.TrimSpace(binary) == "" {
 		binary = "opencode"
 	}
-	// Try JSON format first if available (future opencode versions may support --format json)
-	if jsonOut, err := runCommandFn(ctx, binary, "models", "--format", "json"); err == nil && len(jsonOut) > 0 {
-		trimmed := strings.TrimSpace(string(jsonOut))
-		if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
-			// First try top-level array
-			var jsonModels []struct {
-				ID           string `json:"id"`
-				DisplayName  string `json:"displayName"`
-				ContextWindow int64 `json:"contextWindow"`
-			}
-			if err := json.Unmarshal(jsonOut, &jsonModels); err == nil && len(jsonModels) > 0 {
-				models := make([]ProviderModel, 0, len(jsonModels))
-				for _, jm := range jsonModels {
-					id := strings.TrimSpace(jm.ID)
-					if id == "" || id == "opencode/deepseek-v4-flash-free" {
-						continue
-					}
-					display := jm.DisplayName
-					if display == "" {
-						display = id
-						if strings.HasPrefix(id, "opencode/") || strings.HasPrefix(id, "opencode-go/") {
-							display = id + " (Opencode)"
-						}
-					}
-					models = append(models, ProviderModel{
-						ID:                        id,
-						DisplayName:               display,
-						Source:                    "opencode_models",
-						Available:                 true,
-						SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high", "xhigh"},
-						DefaultReasoningEffort:    "medium",
-						ContextWindowTokens:       jm.ContextWindow,
-						MaxContextWindowTokens:    jm.ContextWindow,
-					})
-				}
-				sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
-				if len(models) > 0 {
-					return models, nil
-				}
-			}
-			// Fallback: object with "models" or "data" key
-			var obj struct {
-				Models []struct {
-					ID           string `json:"id"`
-					DisplayName  string `json:"displayName"`
-					ContextWindow int64 `json:"contextWindow"`
-				} `json:"models"`
-				Data []struct {
-					ID           string `json:"id"`
-					DisplayName  string `json:"displayName"`
-					ContextWindow int64 `json:"contextWindow"`
-				} `json:"data"`
-			}
-			if err := json.Unmarshal(jsonOut, &obj); err == nil {
-				var candidates []struct {
-					ID           string `json:"id"`
-					DisplayName  string `json:"displayName"`
-					ContextWindow int64 `json:"contextWindow"`
-				}
-				if len(obj.Models) > 0 {
-					candidates = obj.Models
-				} else if len(obj.Data) > 0 {
-					candidates = obj.Data
-				}
-				if len(candidates) > 0 {
-					models := make([]ProviderModel, 0, len(candidates))
-					for _, jm := range candidates {
-						id := strings.TrimSpace(jm.ID)
-						if id == "" || id == "opencode/deepseek-v4-flash-free" {
-							continue
-						}
-						display := jm.DisplayName
-						if display == "" {
-							display = id
-							if strings.HasPrefix(id, "opencode/") || strings.HasPrefix(id, "opencode-go/") {
-								display = id + " (Opencode)"
-							}
-						}
-						models = append(models, ProviderModel{
-							ID:                        id,
-							DisplayName:               display,
-							Source:                    "opencode_models",
-							Available:                 true,
-							SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high", "xhigh"},
-							DefaultReasoningEffort:    "medium",
-							ContextWindowTokens:       jm.ContextWindow,
-							MaxContextWindowTokens:    jm.ContextWindow,
-						})
-					}
-					sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
-					if len(models) > 0 {
-						return models, nil
-					}
-				}
-			}
-		}
-	}
-	output, err := runCommandFn(ctx, binary, "models")
+	probeCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	// One spawn only. Do not probe `--format json` first: 1.18.18 does not
+	// support it, and a hanging unknown-flag parse ate the TUI 8s budget.
+	output, err := runCommandFn(probeCtx, binary, "models")
 	if err != nil {
 		return nil, err
 	}
+	return parseOpencodeModelsOutput(output)
+}
+
+func parseOpencodeModelsOutput(output []byte) ([]ProviderModel, error) {
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	models := make([]ProviderModel, 0, len(lines))
 	for _, line := range lines {
@@ -2121,22 +2075,14 @@ func detectOpencodeModels(ctx context.Context) ([]ProviderModel, error) {
 		if id == "opencode/deepseek-v4-flash-free" {
 			continue
 		}
-		// Keep opencode and opencode-go namespaces; also include all others for catalog completeness
-		// so `opencode models` 40+ count is met even on older 1.18.18 (which lists 29 for opencode prefixes but 70 total).
-		display := id
-		// Friendly display for opencode models
-		if strings.HasPrefix(id, "opencode/") || strings.HasPrefix(id, "opencode-go/") {
-			display = id + " (Opencode)"
-		}
+		display := opencodeModelDisplayName(id)
 		model := ProviderModel{
-			ID:                          id,
-			DisplayName:                 display,
-			Source:                      "opencode_models",
-			Available:                   true,
-			SupportedReasoningEfforts:   []string{"minimal", "low", "medium", "high", "xhigh"},
-			DefaultReasoningEffort:      "medium",
-			ContextWindowTokens:         0,
-			MaxContextWindowTokens:      0,
+			ID:                        id,
+			DisplayName:               display,
+			Source:                    "opencode_models",
+			Available:                 true,
+			SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high", "xhigh"},
+			DefaultReasoningEffort:    "medium",
 		}
 		models = append(models, model)
 	}
@@ -2145,6 +2091,19 @@ func detectOpencodeModels(ctx context.Context) ([]ProviderModel, error) {
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models, nil
+}
+
+func opencodeModelDisplayName(id string) string {
+	switch {
+	case strings.HasPrefix(id, "opencode-go/"):
+		return strings.TrimPrefix(id, "opencode-go/") + " (OpenCode Go)"
+	case strings.HasPrefix(id, "xai/"):
+		return strings.TrimPrefix(id, "xai/") + " (xAI)"
+	case strings.HasPrefix(id, "opencode/"):
+		return strings.TrimPrefix(id, "opencode/") + " (OpenCode Zen)"
+	default:
+		return id
+	}
 }
 
 func detectCodexModels(ctx context.Context, binaryPath string) ([]ProviderModel, error) {
@@ -2364,11 +2323,13 @@ func defaultAuthCandidates(providerKey, dir string) []authCandidate {
 		}
 	case "opencode":
 		// Appended last (CP-57 P-0/Task-302 T-2): grok branch above unchanged.
-		// Auth is auth.json only; opencode.json is config (MCP etc.) not auth — do not count.
-		return []authCandidate{
-			{homePath: dir, authPath: filepath.Join(dir, ".config", "opencode", "auth.json")},
-			{homePath: dir, authPath: filepath.Join(dir, ".opencode", "auth.json")},
+		// Probe ambient overrides first (XDG_DATA_HOME, OPENCODE_AUTH_PATH,
+		// Windows %APPDATA%), then home-relative XDG + platform fallbacks.
+		candidates := opencodeAmbientAuthCandidates(dir)
+		for _, authPath := range opencodeAuthFilePaths(dir) {
+			candidates = append(candidates, authCandidate{homePath: dir, authPath: authPath})
 		}
+		return candidates
 	default:
 		return nil
 	}
@@ -2402,16 +2363,52 @@ func accountAuthPaths(providerKey, homePath string) []string {
 			filepath.Join(homePath, ".grok", "auth.json"),
 		}
 	case "opencode":
-		// Appended last (CP-57 P-0/Task-302 T-2): grok branch above unchanged. Auth is auth.json only.
-		return []string{
-			filepath.Join(homePath, ".config", "opencode", "auth.json"),
-			filepath.Join(homePath, ".opencode", "auth.json"),
-			filepath.Join(homePath, "auth.json"),
-			filepath.Join(homePath, "auth.json"),
-		}
+		// Appended last (CP-57 P-0/Task-302 T-2): grok branch above unchanged.
+		return opencodeAuthFilePaths(homePath)
 	default:
 		return nil
 	}
+}
+
+// opencodeAuthFileLooksValid reports whether auth.json matches the live OpenCode
+// credential store: provider-keyed entries with api keys or oauth tokens.
+func opencodeAuthFileLooksValid(data []byte) bool {
+	if len(strings.TrimSpace(string(data))) < 10 {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		lower := strings.ToLower(string(data))
+		return strings.Contains(lower, `"key"`) || strings.Contains(lower, `"access"`) ||
+			strings.Contains(lower, `"refresh"`) || strings.Contains(lower, `"token"`)
+	}
+	for key, value := range payload {
+		entry, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		if hasNonEmptyJSONString(entry, "key") ||
+			hasNonEmptyJSONString(entry, "access") ||
+			hasNonEmptyJSONString(entry, "refresh") ||
+			hasNonEmptyJSONString(entry, "access_token") ||
+			hasNonEmptyJSONString(entry, "refresh_token") ||
+			hasNonEmptyJSONString(entry, "token") ||
+			hasNonEmptyJSONString(entry, "api_key") ||
+			hasNonEmptyJSONString(entry, "apikey") {
+			return true
+		}
+		lk := strings.ToLower(key)
+		if lk == "token" || lk == "auth" || lk == "email" || lk == "apikey" || lk == "api_key" ||
+			lk == "access_token" || lk == "refresh_token" || lk == "credentials" {
+			if hasNonEmptyJSONString(payload, key) {
+				return true
+			}
+			if entry != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hasValidProviderAuthFile(providerKey, path string) bool {
@@ -2438,51 +2435,7 @@ func hasValidProviderAuthFile(providerKey, path string) bool {
 		// ~/.grok/auth.json entries: refresh_token/email.
 		return strings.Contains(content, `"refresh_token"`) && strings.Contains(content, `"email"`)
 	case "opencode":
-		// Appended last (CP-57 P-0/Task-302 T-2): grok branch above unchanged.
-		// Auth is auth.json; require JSON-keyed presence, not substring (avoid mcpServers false positive).
-		if len(strings.TrimSpace(content)) < 10 {
-			return false
-		}
-		var payload map[string]any
-		if err := json.Unmarshal(data, &payload); err != nil {
-			// Fallback to substring for non-JSON (text) auth files, but still require word boundaries
-			lower := strings.ToLower(content)
-			return strings.Contains(lower, `"token"`) || strings.Contains(lower, `"auth"`) || strings.Contains(lower, `"email"`) || strings.Contains(lower, `"apikey"`) || strings.Contains(lower, `"api_key"`)
-		}
-		for k, v := range payload {
-			lk := strings.ToLower(k)
-			if lk == "token" || lk == "auth" || lk == "email" || lk == "apikey" || lk == "api_key" || lk == "access_token" || lk == "refresh_token" || lk == "credentials" {
-				if v == nil {
-					continue
-				}
-				if s, ok := v.(string); ok {
-					if strings.TrimSpace(s) != "" {
-						return true
-					}
-					continue
-				}
-				// Non-string presence (object, etc.) counts as auth
-				return true
-			}
-			if m, ok := v.(map[string]any); ok {
-				for nk, nv := range m {
-					lkn := strings.ToLower(nk)
-					if lkn == "token" || lkn == "auth" || lkn == "email" || lkn == "apikey" || lkn == "api_key" || lkn == "access_token" || lkn == "refresh_token" {
-						if nv == nil {
-							continue
-						}
-						if s, ok := nv.(string); ok {
-							if strings.TrimSpace(s) != "" {
-								return true
-							}
-							continue
-						}
-						return true
-					}
-				}
-			}
-		}
-		return false
+		return opencodeAuthFileLooksValid(data)
 	default:
 		return false
 	}
@@ -2740,8 +2693,36 @@ func resolveVersion(ctx context.Context, binaryPath string) string {
 	if version == "" && err != nil {
 		return ""
 	}
+	if looksLikeCLIProbeError(version) {
+		// npm/node shims often print "Error: Cannot find module …" on --version.
+		// That is not a version string — treat as probe failure (TUI shows Not installed).
+		return ""
+	}
 
 	return version
+}
+
+func looksLikeCLIProbeError(output string) bool {
+	s := strings.ToLower(strings.TrimSpace(output))
+	if s == "" {
+		return false
+	}
+	if strings.Contains(s, "cannot find module") || strings.Contains(s, "can not find module") {
+		return true
+	}
+	if strings.Contains(s, "module_not_found") || strings.Contains(s, "module not found") {
+		return true
+	}
+	if strings.Contains(s, "error: cannot find") {
+		return true
+	}
+	if strings.HasPrefix(s, "error:") && (strings.Contains(s, "module") || strings.Contains(s, "enoent") || strings.Contains(s, "not found")) {
+		return true
+	}
+	if strings.Count(output, "\n") >= 3 {
+		return true
+	}
+	return false
 }
 
 func mcpBackendSpecs() []mcpBackendSpec {
@@ -4350,7 +4331,7 @@ func (r *Runner) getEnvForExecution(
 			continue
 		}
 		key := parts[0]
-		if key == "HOME" || key == "USERPROFILE" || key == "APPDATA" || key == "LOCALAPPDATA" || key == "HOMEPATH" || key == "HOMEDRIVE" || key == "XDG_CONFIG_HOME" || key == "CODEX_HOME" || key == "GROK_HOME" || key == "OPENCODE_CONFIG" || key == "OPENCODE_HOME" || key == "OPENCODE_API_KEY" || key == "HTTP_PROXY" || key == "HTTPS_PROXY" {
+		if key == "HOME" || key == "USERPROFILE" || key == "APPDATA" || key == "LOCALAPPDATA" || key == "HOMEPATH" || key == "HOMEDRIVE" || key == "XDG_CONFIG_HOME" || key == "XDG_DATA_HOME" || key == "CODEX_HOME" || key == "GROK_HOME" || key == "OPENCODE_CONFIG" || key == "OPENCODE_HOME" || key == "OPENCODE_API_KEY" || key == "OPENCODE_AUTH_PATH" || key == "HTTP_PROXY" || key == "HTTPS_PROXY" {
 			continue
 		}
 		if _, exists := customEnv[key]; exists {
@@ -4375,10 +4356,15 @@ func (r *Runner) getEnvForExecution(
 		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", trimmedAccountHomePath))
 	case "opencode":
 		// Appended last (CP-57 P-0/Task-302 T-3): grok case above unchanged.
+		_ = os.MkdirAll(filepath.Join(trimmedAccountHomePath, ".local", "share", "opencode"), 0755)
 		newEnv = append(newEnv, fmt.Sprintf("OPENCODE_HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s", filepath.Join(trimmedAccountHomePath, ".config")))
+		newEnv = append(newEnv, fmt.Sprintf("XDG_DATA_HOME=%s", opencodeDataHomeForAccount(trimmedAccountHomePath)))
 		newEnv = append(newEnv, fmt.Sprintf("OPENCODE_CONFIG=%s", filepath.Join(trimmedAccountHomePath, ".config", "opencode")))
+		if authPath := strings.TrimSpace(os.Getenv("OPENCODE_AUTH_PATH")); authPath != "" && opencodeAccountIsAmbientHome(trimmedAccountHomePath) {
+			newEnv = append(newEnv, fmt.Sprintf("OPENCODE_AUTH_PATH=%s", authPath))
+		}
 	default:
 		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", trimmedAccountHomePath))
@@ -4555,7 +4541,7 @@ func providerEnvSetCommand(providerKey, homePath, shellType string) string {
 			return fmt.Sprintf("export GROK_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath, homePath)
 		case "opencode":
 			// Appended last (CP-57 P-0/Task-302 T-3).
-			return fmt.Sprintf("export OPENCODE_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config' && export OPENCODE_CONFIG='%s/.config/opencode'", homePath, homePath, homePath, homePath)
+			return fmt.Sprintf("export OPENCODE_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config' && export XDG_DATA_HOME='%s/.local/share' && export OPENCODE_CONFIG='%s/.config/opencode'", homePath, homePath, homePath, homePath, homePath)
 		default:
 			return fmt.Sprintf("export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath)
 		}
@@ -4583,6 +4569,7 @@ func providerEnvSetCommand(providerKey, homePath, shellType string) string {
 				fmt.Sprintf("set APPDATA=%s\\AppData\\Roaming", homePath),
 				fmt.Sprintf("set LOCALAPPDATA=%s\\AppData\\Local", homePath),
 				fmt.Sprintf("set XDG_CONFIG_HOME=%s\\.config", homePath),
+				fmt.Sprintf("set XDG_DATA_HOME=%s\\.local\\share", homePath),
 				fmt.Sprintf("set OPENCODE_CONFIG=%s\\.config\\opencode", homePath),
 			}, "\r\n")
 		default:
