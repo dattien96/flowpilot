@@ -906,9 +906,16 @@ func discoverOpencodeAccountHomes() ([]string, error) {
 	if home := os.Getenv("OPENCODE_HOME"); strings.TrimSpace(home) != "" {
 		accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, home, isValidOpencodeAccountPath)
 	}
-
 	homeDir := preferredUserHomeDir()
 	if homeDir != "" {
+		if authPath := resolveOpencodeAuthPathFromEnv(homeDir); authPath != "" && fileExists(authPath) {
+			accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, homeDir, nil)
+		}
+		if xdg := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); xdg != "" {
+			if fileExists(filepath.Join(xdg, "opencode", "auth.json")) {
+				accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, homeDir, nil)
+			}
+		}
 		accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, homeDir, isValidOpencodeAccountPath)
 		for _, path := range discoverManagedProviderHomeSlots(homeDir, ".opencodeHome", isValidOpencodeAccountPath) {
 			accountPaths = appendDiscoveredAccountPath(accountPaths, discovered, path, nil)
@@ -923,16 +930,7 @@ func isValidOpencodeAccountPath(homePath string) bool {
 	if err != nil || !info.IsDir() {
 		return false
 	}
-	if _, err := os.Stat(filepath.Join(homePath, ".config", "opencode", "opencode.json")); err == nil {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(homePath, ".config", "opencode", "opencode.jsonc")); err == nil {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(homePath, ".config", "opencode", "config.json")); err == nil {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(homePath, ".config", "opencode", "auth.json")); err == nil {
+	if opencodeConfigOrAuthFileExists(homePath) {
 		return true
 	}
 	return HasLocalAuthAtPath("opencode", homePath)

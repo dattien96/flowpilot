@@ -530,6 +530,18 @@ func opencodeProcessEnv(extraEnv map[string]string) []string {
 	if !hasOpencodeConfig && home != "" {
 		filtered = append(filtered, fmt.Sprintf("OPENCODE_CONFIG=%s", filepath.Join(home, ".config", "opencode")))
 	}
+	if home != "" {
+		hasDataHome := false
+		for _, kv := range filtered {
+			if strings.HasPrefix(kv, "XDG_DATA_HOME=") {
+				hasDataHome = true
+				break
+			}
+		}
+		if !hasDataHome {
+			filtered = append(filtered, fmt.Sprintf("XDG_DATA_HOME=%s", filepath.Join(home, ".local", "share")))
+		}
+	}
 	return filtered
 }
 

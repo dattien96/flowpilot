@@ -571,6 +571,7 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 						env["OPENCODE_HOME"] = account.HomePath
 						env["HOME"] = account.HomePath
 						env["XDG_CONFIG_HOME"] = filepath.Join(account.HomePath, ".config")
+						env["XDG_DATA_HOME"] = opencodeDataHomeForAccount(account.HomePath)
 						env["OPENCODE_CONFIG"] = filepath.Join(account.HomePath, ".config", "opencode")
 						if drive, path, ok := windowsHomeDriveAndPath(account.HomePath); ok {
 							env["USERPROFILE"] = account.HomePath
@@ -585,6 +586,7 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 					env["OPENCODE_HOME"] = home
 					env["HOME"] = home
 					env["XDG_CONFIG_HOME"] = filepath.Join(home, ".config")
+					env["XDG_DATA_HOME"] = opencodeDataHomeForAccount(home)
 					env["OPENCODE_CONFIG"] = filepath.Join(home, ".config", "opencode")
 				} else {
 					return errorAdapter{key: ProviderKeyOpencode, err: err}

@@ -420,7 +420,7 @@ func loadOpencodeAccountMetadata(homePath string) (accountLaunchMetadata, error)
 	metadata := accountLaunchMetadata{
 		authStorePath: homePath,
 		accountEmail:  runnerMeta.AccountEmail,
-		accountName:   runnerMeta.DisplayName,
+		accountName:   runnerMeta.DisplayLabel,
 		usageSummary:  runnerMeta.UsageSummary,
 	}
 	for _, line := range runnerMeta.UsageDetailLines {

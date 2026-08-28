@@ -2,10 +2,8 @@ package runner
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,8 +13,8 @@ import (
 // Task-302 T-13: Opencode account metadata (zen proxy, single account)
 
 // LoadOpencodeAccountMetadata loads metadata for an Opencode account home.
-// It tries `opencode providers` and `opencode stats` to get email/plan and usage.
-// Returns a runner-local summary; caller (cli) converts to accountLaunchMetadata.
+// It reads auth.json for connected providers and optionally probes
+// `opencode providers list` / `opencode stats` for usage.
 // Exported so cli can reuse (CP-57 Task-302 DOD-7).
 func LoadOpencodeAccountMetadata(ctx context.Context, homePath string) (OpencodeAccountSummary, error) {
 	return loadOpencodeAccountMetadataInternal(ctx, homePath)
@@ -34,52 +32,25 @@ func loadOpencodeAccountMetadataInternal(ctx context.Context, homePath string) (
 		AuthStatus:  "connected",
 	}
 	summary.ID = deterministicProviderAccountID("opencode", homePath)
-	summary.DisplayLabel = "OpenCode"
 
-	if out, err := runOpencodeCommand(ctx, homePath, "providers"); err == nil && len(out) > 0 {
-		var providersOut map[string]any
-		if jsonErr := json.Unmarshal(out, &providersOut); jsonErr == nil {
-			if email, ok := providersOut["email"].(string); ok && strings.TrimSpace(email) != "" {
-				summary.AccountEmail = strings.TrimSpace(email)
+	labels, email := loadOpencodeConnectedProvidersFromAuth(homePath)
+	if len(labels) == 0 {
+		if out, err := runOpencodeCommand(ctx, homePath, "providers", "list"); err == nil && len(out) > 0 {
+			listLabels, listEmail := parseOpencodeProvidersListOutput(out)
+			if len(listLabels) > 0 {
+				labels = listLabels
 			}
-			if plan, ok := providersOut["plan"].(string); ok {
-				summary.UsageSummary = plan
-			}
-		} else {
-			text := string(out)
-			for _, line := range strings.Split(text, "\n") {
-				if strings.Contains(strings.ToLower(line), "email") {
-					parts := strings.SplitN(line, ":", 2)
-					if len(parts) == 2 {
-						summary.AccountEmail = strings.TrimSpace(parts[1])
-					}
-				}
+			if listEmail != "" {
+				email = listEmail
 			}
 		}
 	}
-
-	if out, err := runOpencodeCommand(ctx, homePath, "stats"); err == nil && len(out) > 0 {
-		var stats struct {
-			Cost   float64 `json:"cost"`
-			Tokens int64   `json:"tokens"`
-			Usage  string  `json:"usage"`
-		}
-		if jsonErr := json.Unmarshal(out, &stats); jsonErr == nil {
-			lines := []OpencodeAccountUsageLine{}
-			if stats.Cost > 0 {
-				lines = append(lines, OpencodeAccountUsageLine{Label: fmt.Sprintf("cost: $%.2f", stats.Cost), RemainingPercent: 0, ResetAt: nil})
-			}
-			if stats.Tokens > 0 {
-				lines = append(lines, OpencodeAccountUsageLine{Label: fmt.Sprintf("tokens: %d", stats.Tokens), RemainingPercent: 0, ResetAt: nil})
-			}
-			summary.UsageDetailLines = lines
-		} else {
-			text := strings.TrimSpace(string(out))
-			if text != "" {
-				summary.UsageDetailLines = []OpencodeAccountUsageLine{{Label: text, RemainingPercent: 0, ResetAt: nil}}
-			}
-		}
-	}
+	summary.AccountEmail = strings.TrimSpace(email)
+	summary.DisplayLabel = opencodeAccountDisplayLabel(labels, email)
+	summary.DisplayName = summary.DisplayLabel
+	summary.UsageSummary = opencodeAccountUsageSummary(labels)
+	// Skip `opencode stats` on this path: live CLI takes ~8s, the caller budget
+	// is 5s, and non-JSON help text was dumped into usage lines.
 
 	summary.Remaining5hPercent = nil
 	summary.Remaining7dPercent = nil
@@ -90,12 +61,11 @@ func loadOpencodeAccountMetadataInternal(ctx context.Context, homePath string) (
 	return summary, nil
 }
 
-func runOpencodeCommand(ctx context.Context, homePath, subCommand string) ([]byte, error) {
-	// Managed-home isolation: strip ambient HOME/XDG/OPENCODE_CONFIG and re-inject isolated.
+func runOpencodeCommand(ctx context.Context, homePath string, args ...string) ([]byte, error) {
 	baseEnv := os.Environ()
 	filtered := make([]string, 0, len(baseEnv))
 	for _, kv := range baseEnv {
-		if strings.HasPrefix(kv, "HOME=") || strings.HasPrefix(kv, "XDG_CONFIG_HOME=") || strings.HasPrefix(kv, "OPENCODE_CONFIG=") || strings.HasPrefix(kv, "OPENCODE_HOME=") || strings.HasPrefix(kv, "USERPROFILE=") || strings.HasPrefix(kv, "APPDATA=") || strings.HasPrefix(kv, "LOCALAPPDATA=") {
+		if strings.HasPrefix(kv, "HOME=") || strings.HasPrefix(kv, "XDG_CONFIG_HOME=") || strings.HasPrefix(kv, "XDG_DATA_HOME=") || strings.HasPrefix(kv, "OPENCODE_CONFIG=") || strings.HasPrefix(kv, "OPENCODE_HOME=") || strings.HasPrefix(kv, "OPENCODE_AUTH_PATH=") || strings.HasPrefix(kv, "USERPROFILE=") || strings.HasPrefix(kv, "APPDATA=") || strings.HasPrefix(kv, "LOCALAPPDATA=") {
 			continue
 		}
 		filtered = append(filtered, kv)
@@ -105,6 +75,7 @@ func runOpencodeCommand(ctx context.Context, homePath, subCommand string) ([]byt
 		filtered = append(filtered, fmt.Sprintf("OPENCODE_HOME=%s", homePath))
 		filtered = append(filtered, fmt.Sprintf("HOME=%s", homePath))
 		filtered = append(filtered, fmt.Sprintf("XDG_CONFIG_HOME=%s", filepath.Join(homePath, ".config")))
+		filtered = append(filtered, fmt.Sprintf("XDG_DATA_HOME=%s", opencodeDataHomeForAccount(homePath)))
 		filtered = append(filtered, fmt.Sprintf("OPENCODE_CONFIG=%s", filepath.Join(homePath, ".config", "opencode")))
 		if runtime.GOOS == "windows" {
 			filtered = append(filtered, fmt.Sprintf("USERPROFILE=%s", homePath))
@@ -116,14 +87,11 @@ func runOpencodeCommand(ctx context.Context, homePath, subCommand string) ([]byt
 			}
 		}
 	}
-	cmd := exec.CommandContext(ctx, opencodeBinaryName(), subCommand)
+	cmd := newProbeCmd(ctx, opencodeBinaryName(), args...)
 	cmd.Env = filtered
 	dir := homePath
 	if dir == "" {
 		dir = os.TempDir()
-	} else {
-		// Prefer workspace dir if home is not a valid dir? Use homePath itself.
-		dir = homePath
 	}
 	_ = os.MkdirAll(dir, 0755)
 	cmd.Dir = dir
