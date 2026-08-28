@@ -8,7 +8,7 @@
 - Status: `active`
 - Owner: `FlowPilot`
 - Created: `2026-08-11`
-- Parent Documents: [CP-55: Flow-First Preflight Contract, Context Retrieval, And Canonical Acceptance](./CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [CP-43-Test-Steps](./CP-43-Test-Steps.md), [CP-54-Test-Steps](../inprogress/CP-54-Test-Steps.md)
+- Parent Documents: [CP-55: Flow-First Preflight Contract, Context Retrieval, And Canonical Acceptance](./CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [CP-43-Test-Steps](./CP-43-Test-Steps.md), [CP-54-Test-Steps](./CP-54-Test-Steps.md)
 - Related Documents: Task-263…271 / CA-424…432 (xem bảng phase bên dưới)
 - Tags: `flow, change-contract, preflight, canonical-acceptance, verification`
 
@@ -27,8 +27,8 @@
 | **P-3** | Planner + freeze runtime + advance chain | Task-265 / CA-426 | Phần 3 |
 | **P-4** | Frozen scope gate + amendment | Task-266 / CA-427 | Phần 4 |
 | **P-5** | Pending Canonical → finalize @ `done` | Task-267 / CA-428 | Phần 5 |
-| **P-6** | Deterministic history scorer | Task-268 / CA-429 | → [CP-54-Test-Steps §3](../inprogress/CP-54-Test-Steps.md) |
-| **P-7** | Wire ranking vào `feature.history` | Task-269 / CA-430 | → [CP-54-Test-Steps §4](../inprogress/CP-54-Test-Steps.md) |
+| **P-6** | Deterministic history scorer | Task-268 / CA-429 | → [CP-54-Test-Steps §3](./CP-54-Test-Steps.md) |
+| **P-7** | Wire ranking vào `feature.history` | Task-269 / CA-430 | → [CP-54-Test-Steps §4](./CP-54-Test-Steps.md) |
 | **P-8** | Migrate 3 built-in flows + E2E/restart/parity | Task-270 / CA-431 | Phần 8 |
 | **P-9** | Docs + rollout evidence | Task-271 / CA-432 | Phần 9 |
 

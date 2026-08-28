@@ -5,17 +5,18 @@
 - Document ID: `CP-54-TEST-STEPS`
 - Title: `CP-54 Verification Steps By Phase`
 - Phase: `verification`
-- Status: `active`
+- Status: `done` (verification complete 2026-08-28 — TUI F-flow gate-sandbox)
 - Owner: `FlowPilot`
 - Created: `2026-08-11`
-- Parent Documents: [CP-54: Locus-Anchored Context Relevance](./CP-54-Locus-Anchored-Context-Relevance.md), [CP-43-Test-Steps](./CP-43-Test-Steps.md)
+- Last Updated: `2026-08-28` (manual 4.M1–M2 + 6.M1–M2 closed; automated bundle green)
+- Parent Documents: [CP-54: Locus-Anchored Context Relevance](../inprogress/CP-54-Locus-Anchored-Context-Relevance.md), [CP-43-Test-Steps](./CP-43-Test-Steps.md)
 - Related Documents: [Task-261](../done/Task-261-Persist-Changed-Paths-In-Change-Ledger.md) (P-1), [Task-262](../done/Task-262-Shared-Retrieval-Locus-Builder.md) (P-2), [Task-268](../done/Task-268-Deterministic-History-Relevance-Scorer.md) (P-3 via CP-55), [Task-269](../done/Task-269-Wire-Ranking-Into-Feature-History.md) (P-4 via CP-55), [CP-55](../done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [BUG-323](../../09-BugFix/done/BUG-323-GitNexus-Structure-Provider-Always-Returns-Empty.md), [CA-436](../../change-audit/CA-436-cp54-p6-symbol-overlap-and-rank-telemetry.md)
 - Tags: `context-regression-engine, locus, relevance-ranking, verification`
 
 ## AI Quick View
 
 - **What:** Checklist test từng phase CP-54 — enabler ledger/locus (P-1/P-2) + ranking path+symbol (P-3/P-4 ship qua CP-55) + P-6 symbol tier + rank telemetry.
-- **Why:** Xác nhận retrieval đảo trục sang locus hoạt động và superset an toàn (locus rỗng → recency cũ).
+- **Why:** Xác nhận retrieval đảo trục sang locus hoạt động và superset an toàn (locus rỗng → recency cũ). **Verification closed 2026-08-28** — ranked BIG + fallback small + `[context-rank]` telemetry on gate-sandbox TUI (`run-181548` / `run-184828`).
 - **Working dir:** `cd apps/local-runner` cho mọi lệnh `go test`.
 
 ## Map phase → trạng thái
@@ -224,11 +225,35 @@ go test ./internal/runner/ -count=1 -timeout 8m \
 
 | Phần | Automated | Manual | Ghi chú |
 |------|-----------|--------|---------|
-| P-1 ChangedPaths | ☐ | ☐ | Done |
-| P-2 Locus builder | ☐ | ☐ | Done |
-| P-3 Scorer | ☐ | — | Done via CP-55 |
-| P-4 Ranked history | ☐ | ☐ 4.M1–M3 | Done via CP-55 P-7/P-8 |
-| P-5 chat.summary | ☐ | ☐ spot | No change by design |
-| P-6 Symbol tier | ☐ | ☐ 6.M1–M3 | **Code done** — manual tick in doc |
+| P-1 ChangedPaths | ✅ | ✅ 1.M1 | Ledger `fe40784` has `changed_paths`; 1.M2 legacy via backfill tests |
+| P-2 Locus builder | ✅ | ✅ 2.M1 | Frozen contract locus on runs `181548` / `184828`; 2.M2–M3 not run separately |
+| P-3 Scorer | ✅ | — | Done via CP-55 |
+| P-4 Ranked history | ✅ | ✅ 4.M1–M2 | `181548` ranked; `184828` recency fallback; **4.M3 residual** |
+| P-5 chat.summary | ✅ | ✅ spot | `(newest last)` in FCP both runs; no ranked chat |
+| P-6 Symbol tier | ✅ | ✅ 6.M1–M2 | `cli-runner.log` `08:48:03` `[context-rank]` + `symbol_overlap` / `locus_symbols=7` |
 
-**CP-54 code complete (2026-08-11).** Verification-complete = P-1→P-6 bundle xanh + manual 4.M1–M2 + 6.M1–M2 tick trong doc.
+**CP-54 verification complete (2026-08-28).** Code done 2026-08-11; manual battery closed TUI `run-181548` (calc-core BIG) + `run-184828` (sandbox-meta small).
+
+---
+
+## Live verification log (TUI / gate-sandbox)
+
+### [FLOW] ✅ F1 — Ranked history on feature BIG (4.M1 / 6.M1–M2) — PASSED LIVE 2026-08-28 run-181548
+
+> **Live-verified (`just chat-dev D:/working/gate-sandbox`, rag-harness/grok):** FCP `fcp-d7f833cb` has `## History "calc-core" (ranked, 15/55; ← truth)` with calc-domain commits prioritized over pure recency. Tester/coder prompts (`run-181702`, `run-181992`) omit `### Source:` (Task-310). `cli-runner.log` at `2026/08/28 08:48:03` emits `[context-rank] feature=calc-core ... path_overlap=1 symbol_overlap=1 locus_paths=7 locus_symbols=7 limit=15`. Frozen `declared_paths:[calc.go,divide_checked4_test.go]`.
+
+### [FLOW] ✅ F2 — Recency fallback on feature small (4.M2) — PASSED LIVE 2026-08-28 run-184828
+
+> **Live-verified (same TUI session):** FCP `fcp-ef63fcfc` has `featureKey":"sandbox-meta"` and `## History "sandbox-meta" (newest = truth)` — **no** `(ranked,`. Tester prompt `run-184927` matches. No `[context-rank]` lines at context step `09:04:35`. **Residual:** flow hit frozen scope drift on `parse_userid_comment_test.go` (CP-43 gate, not CP-54).
+
+### [FLOW] ✅ F3 — P-1 changed_paths after commit — PASSED 2026-08-28 commit fe40784
+
+> Commit `[Feature][calc-core][logic] add DivideChecked4 with additive tests` → ledger entry `fe40784...` with `changed_paths:["calc.go","change-audit/CA-949.md","divide_checked4_test.go"]`.
+
+### Residual (không block CP-54 done)
+
+| Step | Ghi chú |
+|------|---------|
+| 4.M3 | Tắt `change.contract` trong flow sources — chưa live-run |
+| 2.M2–M3 | Chat locus-only / empty locus — chưa live-run |
+| Full-loop E2E #4 | Đổi locus sang vùng Y (amend contract) — chưa live-run |
