@@ -388,6 +388,26 @@ func produceFlowContextPackage(ctx context.Context, workspace string, hints Flow
 	return pkg, nil
 }
 
+// omitSourceExcerptFromPackage drops source.excerpt from a copy used for coding
+// prompts (Task-310). change.contract already lists declared_paths; file bodies
+// belong to Read/Grep. Fetch/registry stay so package-level tests and CP-55
+// freeze-chain still see SourceExcerpts on the stored package.
+func omitSourceExcerptFromPackage(pkg FlowContextPackage) FlowContextPackage {
+	pkg.SourceExcerpts = nil
+	if len(pkg.Sections) == 0 {
+		return pkg
+	}
+	out := make([]FlowContextSection, 0, len(pkg.Sections))
+	for _, s := range pkg.Sections {
+		if ContextSourceID(s.SourceType) == ContextSourceSourceExcerpt {
+			continue
+		}
+		out = append(out, s)
+	}
+	pkg.Sections = out
+	return pkg
+}
+
 // ComposeFlowCodingPrompt prepends the rendered FlowContextPackage plus a brief
 // "use this as context" instruction before the Coding step's user instruction.
 // The flowContextHandoffPrefix sentinel prevents injectFeatureHistoryPrompt from
@@ -401,7 +421,7 @@ func ComposeFlowCodingPrompt(pkg FlowContextPackage, codingInstruction string) s
 		trustID = pkg.PackageID
 	}
 	sb.WriteString(flowContextTrustedMarker(trustID) + "\n\n")
-	sb.WriteString(RenderFlowContextPackage(pkg))
+	sb.WriteString(RenderFlowContextPackage(omitSourceExcerptFromPackage(pkg)))
 	sb.WriteString("\n---\n\n")
 	sb.WriteString("[Context: use sections above as feature truth. Stay in scope.]\n\n")
 	sb.WriteString(codingInstruction)
@@ -418,7 +438,7 @@ func ComposeFlowCodingPromptWithSecret(pkg FlowContextPackage, codingInstruction
 		trustID = pkg.PackageID
 	}
 	sb.WriteString(flowContextTrustedMarkerWith(secret, trustID) + "\n\n")
-	sb.WriteString(RenderFlowContextPackage(pkg))
+	sb.WriteString(RenderFlowContextPackage(omitSourceExcerptFromPackage(pkg)))
 	sb.WriteString("\n---\n\n")
 	sb.WriteString("[Context: use sections above as feature truth. Stay in scope.]\n\n")
 	sb.WriteString(codingInstruction)
