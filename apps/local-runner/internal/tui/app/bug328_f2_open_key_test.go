@@ -12,8 +12,8 @@ import (
 func TestBug328_F2BracketOpenStep(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:9")
 	m.authPhase = AuthNone
-	m.sessionPanel.Collapsed = false
-	m.sessionPanel.RunnerURL = "http://127.0.0.1:9"
+	enableSidebarForTest(m)
+	m.width, m.fullWidth = tuiSidebarMinWidth+10, tuiSidebarMinWidth+10
 	m.flowSteps = []client.WorkflowStepRuntime{
 		{StepID: "s1", NodeID: "plan", Status: "DONE"},
 		{StepID: "s2", NodeID: "coder", Status: "RUNNING", AgentRef: "coder"},
@@ -29,20 +29,20 @@ func TestBug328_F2BracketOpenStep(t *testing.T) {
 	}
 	m2, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
 	if cmd == nil {
-		t.Fatal("o must open highlighted F2 step")
+		t.Fatal("o must open highlighted sidebar step")
 	}
 	if m2 == nil {
 		t.Fatal("must return model")
 	}
 }
 
-func TestBug328_F2BracketNoOpWhenCollapsed(t *testing.T) {
+func TestBug328_F2BracketNoOpWhenSidebarHidden(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:9")
 	m.authPhase = AuthNone
-	m.sessionPanel.Collapsed = true
+	m.width, m.fullWidth = tuiSidebarMinWidth-1, tuiSidebarMinWidth-1
 	m.flowSteps = []client.WorkflowStepRuntime{{StepID: "s1", NodeID: "plan", Status: "RUNNING"}}
 	_, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
 	if cmd != nil {
-		t.Fatal("o must be no-op when F2 panel is collapsed")
+		t.Fatal("o must be no-op when the sidebar is hidden")
 	}
 }

@@ -11,6 +11,9 @@ import (
 // newChatTextArea creates a focused textarea for the chat composer (Task-308).
 // Width is set via SetWidth before first View; height follows LineCount()
 // (CA-560: no upper clamp, textarea MaxHeight 99 is the only limit).
+// The composer frame is solid #1e1e1e (styleChatBar) — every inner segment must
+// carry that bg so a lipgloss reset does not punch a black hole in the gray
+// card (see chatFrameTitle / renderInputLine barBg handling).
 func newChatTextArea(width int) textarea.Model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message, /command, or @file..."
@@ -24,11 +27,15 @@ func newChatTextArea(width int) textarea.Model {
 	// not used in this slice (see handleKey revert below).
 	ta.KeyMap.InsertNewline = key.NewBinding()
 	ta.KeyMap.Paste = key.NewBinding()
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Placeholder = styleSystem
-	ta.FocusedStyle.Prompt = lipgloss.NewStyle()
-	ta.FocusedStyle.Text = styleUser
-	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(lipgloss.Color(colorBg3))
+	ta.FocusedStyle.Placeholder = styleSystem.Background(lipgloss.Color(colorBg3))
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Background(lipgloss.Color(colorBg3))
+	ta.FocusedStyle.Text = styleUser.Background(lipgloss.Color(colorBg3))
+	ta.FocusedStyle.Base = lipgloss.NewStyle().Background(lipgloss.Color(colorBg3))
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle().Background(lipgloss.Color(colorBg3))
+	ta.BlurredStyle.Text = styleUser.Background(lipgloss.Color(colorBg3))
+	ta.BlurredStyle.Placeholder = styleSystem.Background(lipgloss.Color(colorBg3))
+	ta.BlurredStyle.Base = lipgloss.NewStyle().Background(lipgloss.Color(colorBg3))
 	ta.Focus()
 	return ta
 }

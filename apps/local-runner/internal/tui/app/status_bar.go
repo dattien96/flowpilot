@@ -10,67 +10,29 @@ import (
 )
 
 func (m *AppModel) renderStatusLine() string {
-	sep := " │ "
-	if m.asciiMode {
-		sep = " | "
-	}
+	// Per user request: the separate status row is gone – the chat input frame
+	// now owns the chrome (top-left: chat/flow · ready · agent, bottom-right:
+	// Model · reasoning · YOLO). The only thing that still needs a dedicated
+	// line is the transient flash toast (Copied, etc.).
 	w := m.chatWidth()
 	if w <= 0 {
 		w = 80
 	}
 	w = safeTermWidth(w)
-
-	line0 := m.renderStatusLine0(sep, w)
-	if m.statusDetailsCollapsed {
-		// Project line is folded — keep toast visible on the compact status row.
-		if t := strings.TrimSpace(m.flashToast); t != "" {
-			line0 = fitStatusWidth(line0+styleStatus.Render(sep)+styleStatusOK.Render(t), w)
-		}
-		return line0
+	if t := strings.TrimSpace(m.flashToast); t != "" {
+		return fitStatusWidth(styleStatusOK.Render(t), w)
 	}
-
-	var lines []string
-	lines = append(lines, line0)
-	lines = append(lines, m.renderStatusModeLine(w))
-	// Model line already mixes dim labels + accent values — do not re-wrap in styleStatus.
-	lines = append(lines, fitStatusWidth(m.renderStatusModelLine(sep), w))
-	if m.statusSkillsExpanded {
-		for _, extra := range formatAttachedSkillsExpanded(attachedSkillNames(m.selectedSkills), w) {
-			lines = append(lines, styleStatus.Render(fitStatusWidth(extra, w)))
-		}
-	}
-	if acc := m.renderStatusAccountLine(sep); acc != "" {
-		lines = append(lines, fitStatusWidth(acc, w))
-	}
-	if usage := formatContextLimits(m.lastTokens, m.modelContextWin); usage != "" {
-		lines = append(lines, styleStatus.Render(fitStatusWidth(usage, w)))
-	}
-	// Project · path · branch — toast shares this row (not a separate chat line).
-	lines = append(lines, m.renderProjectStatusLine(sep, w))
-	return strings.Join(lines, "\n")
+	return ""
 }
 
-// renderProjectStatusLine is the bottom status row (project / path / git branch).
-// Copy toasts append on the same line so they do not push layout or pollute chat.
+// renderProjectStatusLine is kept for callers that still want the project
+// row; the main status line is single-row now (Task-311).
 func (m *AppModel) renderProjectStatusLine(sep string, w int) string {
 	body := styleStatus.Render(m.projectStatusLabel())
 	if t := strings.TrimSpace(m.flashToast); t != "" {
 		body = body + styleStatus.Render(sep) + styleStatusOK.Render(t)
 	}
 	return fitStatusWidth(body, w)
-}
-
-func (m *AppModel) statusFoldChip() string {
-	if m.asciiMode {
-		if m.statusDetailsCollapsed {
-			return "> F4"
-		}
-		return "v F4"
-	}
-	if m.statusDetailsCollapsed {
-		return "▸ F4"
-	}
-	return "▾ F4"
 }
 
 func (m *AppModel) statusReadyLabel() string {
@@ -107,12 +69,11 @@ func (m *AppModel) renderStatusLine0(sep string, w int) string {
 	if m.sessionLoading {
 		statusStyle = styleStatusOK
 	}
-	// Pre-style segments so agent:<name> highlight survives. Open/back is on F2 panel.
+	// Pre-style segments so agent:<name> highlight survives. Open/back is on the sidebar.
 	sepStyled := styleStatus.Render(sep)
 	var parts []string
-	parts = append(parts, styleStatus.Render(m.statusFoldChip()))
-	// Pin remaining quota so collapsed F4 (single-line) still shows 7d/5h like Desktop.
-	// Compact without "· resets" suffix; expanded account row keeps full detail.
+	// Pin remaining quota so the single always-visible line still shows 7d/5h like Desktop.
+	// Compact without "· resets" suffix; the sidebar account row keeps full detail.
 	if q := m.collapsedQuotaChip(); q != "" {
 		parts = append(parts, q)
 	}
@@ -219,7 +180,7 @@ func (m *AppModel) renderStatusModelLine(sep string) string {
 	if posture := m.activePosture(); m.mode == ModeChat {
 		parts = append(parts, styleStatus.Render("mode: ")+postureStyle(posture).Render(posture))
 	}
-	if sk := formatAttachedSkillsChip(len(attachedSkillNames(m.selectedSkills)), m.statusSkillsExpanded, m.asciiMode); sk != "" {
+	if sk := formatAttachedSkillsChip(len(attachedSkillNames(m.selectedSkills)), false, m.asciiMode); sk != "" {
 		parts = append(parts, styleStatusHi.Render(sk))
 	}
 	return strings.Join(parts, sepStyled)

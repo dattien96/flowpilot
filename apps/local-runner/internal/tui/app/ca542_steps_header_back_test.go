@@ -24,7 +24,7 @@ func TestStepsHeader_HostsBackWhileViewingChild(t *testing.T) {
 			m.asciiMode = true
 			m.mode = ModeFlow
 			m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-			m.sessionPanel.Collapsed = false
+			enableSidebarForTest(m)
 			m.runHandle = &client.RunHandle{RunID: "run-main", Status: "running"}
 			m.agentRuns = []client.AgentRunSummary{
 				{RunID: "run-main", AgentName: "main", Role: "main", Status: "running"},
@@ -125,9 +125,10 @@ func TestStepsHeaderBack_ClickReturnsMain(t *testing.T) {
 	}
 }
 
-// TestStepsHeaderBack_OverlayPath: the narrow-terminal overlay also renders the
-// header [back] (hittable via the F2 panel) and lists steps without the count line.
-func TestStepsHeaderBack_OverlayPath(t *testing.T) {
+// TestStepsHeaderBack_ReactivePaths (Task-311): the [back] chip lives in the
+// reactive sidebar. A narrow terminal shows no panel surface at all — chat
+// column only; wide terminals render the sidebar with a hittable [back].
+func TestStepsHeaderBack_ReactivePaths(t *testing.T) {
 	for _, pk := range []string{"claude", "codex", "grok"} {
 		t.Run(pk, func(t *testing.T) {
 			m := New(config.ChatConfig{Provider: pk}, "http://127.0.0.1:4317")
@@ -135,7 +136,6 @@ func TestStepsHeaderBack_OverlayPath(t *testing.T) {
 			m.asciiMode = true
 			m.mode = ModeFlow
 			m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-			m.sessionPanel.Collapsed = false
 			m.runHandle = &client.RunHandle{RunID: "run-main", Status: "running"}
 			m.agentRuns = []client.AgentRunSummary{
 				{RunID: "run-main", AgentName: "main", Role: "main", Status: "running"},
@@ -147,17 +147,20 @@ func TestStepsHeaderBack_OverlayPath(t *testing.T) {
 			m.flowStepsActive = "my-reviewer"
 			m.focusRunID = "run-rev"
 			if m.useRightSidebar() {
-				t.Fatal("80-col terminal must use the overlay, not the sidebar")
+				t.Fatal("80-col terminal must not show the sidebar")
 			}
-			overlay := strings.Join(m.renderSessionPanelOverlay(), "\n")
-			if strings.Contains(overlay, "Steps 1:") {
-				t.Fatalf("%s: overlay must not show the count line (CA-542):\n%s", pk, overlay)
+			if c := m.tuiChrome(); len(c.panelLines) != 0 {
+				t.Fatalf("%s: narrow terminal must have no panel overlay rows (Task-311): %v", pk, c.panelLines)
 			}
-			if !strings.Contains(overlay, "[back]") {
-				t.Fatalf("%s: overlay must render header [back]:\n%s", pk, overlay)
+			// Wide → sidebar renders the steps header with [back] and is hittable.
+			enableSidebarForTest(m)
+			m.width, m.fullWidth = tuiSidebarMinWidth+20, tuiSidebarMinWidth+20
+			side := strings.Join(m.renderRightSidebar(30), "\n")
+			if !strings.Contains(side, "[back]") {
+				t.Fatalf("%s: wide sidebar must render header [back]:\n%s", pk, side)
 			}
 			if _, _, ok := findClickTarget(m, "agent-back"); !ok {
-				t.Fatalf("%s: overlay header [back] must be hittable:\n%s", pk, overlay)
+				t.Fatalf("%s: sidebar header [back] must be hittable:\n%s", pk, side)
 			}
 		})
 	}

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func boxGlyphs(ascii bool) (tl, tr, bl, br, h, v string) {
@@ -154,13 +155,55 @@ func paintRow(s string, width int, st lipgloss.Style) string {
 	return out
 }
 
+// paintComposerRow is the solid #1e1e1e composer variant — the whole row must
+// stay elevated gray even though inner title/body segments (Chat: Scan, skill
+// mentions, attach chip) are styled without a bg and each ends with a reset
+// that would otherwise punch a black hole. We re-apply the bar bg after every
+// reset so the frame reads as one uniform panel.
+func paintComposerRow(s string, width int) string {
+	row := paintRow(s, width, styleChatBar)
+	// In Ascii profile lipgloss strips colors anyway — no injection needed.
+	if lipgloss.ColorProfile() == termenv.Ascii {
+		return row
+	}
+	bgSeq := chatBarBgSeq()
+	if bgSeq == "" {
+		return row
+	}
+	// Every inner styled segment ends with \x1b[0m which clears the bar bg for
+	// the next chars. Re-assert the bar bg after each reset so the whole row
+	// stays #1e1e1e (the trailing pad already has bar bg from paintRow).
+	const reset = "\x1b[0m"
+	row = strings.ReplaceAll(row, reset, reset+bgSeq)
+	// The final reset+bg at the very end would leave a stray bg before the
+	// line's newline (next row starts with its own bg), so trim the last bg.
+	if strings.HasSuffix(row, bgSeq) {
+		row = strings.TrimSuffix(row, bgSeq)
+	}
+	return row
+}
+
+func chatBarBgSeq() string {
+	s := styleChatBar.Render("X")
+	idx := strings.Index(s, "X")
+	if idx < 0 {
+		return ""
+	}
+	return s[:idx]
+}
+
 // isYouBoxRow reports whether a chat row is a You-box border/content line
 // (CA-605). These rows must never be wrapped in styleCanvas.Render: Ghostty /
 // cellbuf count truecolor SGR (38;2;R;G;B) differently from rune counts, which
 // wrapped the full-width box mid-pane and hid prompt lines.
+// Plain-only: composer frame rows (╭╮╰╯ │ with styled title/input) carry ANSI
+// and must not be mistaken for You-box; You-box is always plain runes.
 func isYouBoxRow(s string) bool {
 	p := stripANSI(s)
 	if p == "" {
+		return false
+	}
+	if s != p {
 		return false
 	}
 	switch []rune(p)[0] {
@@ -187,6 +230,23 @@ func padYouBoxRow(s string, width int) string {
 	return s
 }
 
+// padYouBoxRowUniform pads a You-box row with the chatBar background for uniform
+// gray chat cell (user request: no black/gray mix). Used when the whole chat
+// column is painted with styleChatBar.
+func padYouBoxRowUniform(s string, width int) string {
+	if width < 1 {
+		return s
+	}
+	n := len([]rune(stripANSI(s)))
+	if n > width {
+		return truncateVisual(s, width)
+	}
+	if n < width {
+		return s + styleChatBar.Render(strings.Repeat(" ", width-n))
+	}
+	return s
+}
+
 func frameInput(lines []string, width int, title, footer string, ascii bool) string {
 	if width < 1 {
 		width = 1
@@ -203,12 +263,13 @@ func frameInput(lines []string, width int, title, footer string, ascii bool) str
 	if title != "" {
 		title = " " + title + " "
 	}
-	tRunes := []rune(title)
-	if len(tRunes) > innerW {
-		title = string(tRunes[:innerW])
-		tRunes = []rune(title)
+	// Use visual width (strip ANSI) so styled Chat/Flow/agent values don't overflow
+	titleW := lipgloss.Width(stripANSI(title))
+	if titleW > innerW {
+		title = truncateVisual(title, innerW)
+		titleW = lipgloss.Width(stripANSI(title))
 	}
-	fill := innerW - len(tRunes)
+	fill := innerW - titleW
 	if fill < 0 {
 		fill = 0
 	}
@@ -224,12 +285,12 @@ func frameInput(lines []string, width int, title, footer string, ascii bool) str
 	foot := strings.TrimSpace(footer)
 	if foot != "" {
 		foot = " " + foot + " "
-		fRunes := []rune(foot)
-		if len(fRunes) > innerW {
-			foot = string(fRunes[:innerW])
-			fRunes = []rune(foot)
+		footW := lipgloss.Width(stripANSI(foot))
+		if footW > innerW {
+			foot = truncateVisual(foot, innerW)
+			footW = lipgloss.Width(stripANSI(foot))
 		}
-		lead := innerW - len(fRunes)
+		lead := innerW - footW
 		if lead < 0 {
 			lead = 0
 		}

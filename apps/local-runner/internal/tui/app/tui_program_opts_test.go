@@ -34,17 +34,18 @@ func TestBurst_WindowsFix_KeysLive_AfterBurstEnterSubmits(t *testing.T) {
 	}
 }
 
-// F2/F4 stay keyboard-live with mouse tracking disabled (BUG-328).
+// F2/F4 stay keyboard-live with mouse tracking disabled (BUG-328). Task-311:
+// F2 prints the info dump, F4 is a no-op that must not be swallowed.
 func TestTuiProgramOpts_KeysForSessionPanel(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:9")
 	m.authPhase = AuthNone
-	m.sessionPanel.Collapsed = true
+	m.sessionDefaultsLoaded = true
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyF2})
-	if m2.(*AppModel).sessionPanel.Collapsed {
-		t.Fatal("F2 must toggle session panel (key fallback when mouse off)")
+	if len(m2.(*AppModel).messages) == 0 {
+		t.Fatal("F2 must print the info dump (key fallback when mouse off)")
 	}
 	m2, _ = m2.(*AppModel).handleKey(tea.KeyMsg{Type: tea.KeyF4})
-	// F4 toggles status details — must not be swallowed.
+	// F4 is a no-op — must not be swallowed or crash.
 	if m2 == nil {
 		t.Fatal("F4 handleKey must return model")
 	}

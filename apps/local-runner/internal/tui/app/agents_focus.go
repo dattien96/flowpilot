@@ -144,13 +144,12 @@ func (m *AppModel) adoptAgentRuns(incoming []client.AgentRunSummary) {
 }
 
 // afterAgentRunsAdopted keeps agent display state consistent after agentRuns
-// changed: clamp the focused index, expand F2 when children exist, and re-settle
-// the flow chrome if the loop finished.
+// changed: clamp the focused index and re-settle the flow chrome if the loop
+// finished. (Task-311: no panel-expand — the sidebar is width-reactive.)
 func (m *AppModel) afterAgentRunsAdopted() {
 	if m.focusedAgentIdx >= len(m.agentRuns) {
 		m.focusedAgentIdx = 0
 	}
-	m.expandSessionPanelForChildAgents()
 	m.settleFlowIfDone()
 }
 
@@ -204,13 +203,8 @@ func (m *AppModel) cmdHydrateAgentRunsIfNeeded() tea.Cmd {
 	})
 }
 
-// expandSessionPanelForChildAgents opens the F2 panel so step [open] is visible
-// as soon as a child agent exists (live or after hydrate).
-func (m *AppModel) expandSessionPanelForChildAgents() {
-	if m.hasChildAgentRuns() {
-		m.sessionPanel.Collapsed = false
-	}
-}
+// (Task-311: expandSessionPanelForChildAgents removed — the sidebar is
+// width-reactive, there is no collapsed panel to expand.)
 
 // stepsSuggestChildAgentOpen is true when a step that can host a child agent
 // just became active/finished (or newly appeared) — trigger agent-graph hydrate.
@@ -313,9 +307,8 @@ func (m *AppModel) cmdFocusAgent(runID string) tea.Cmd {
 			break
 		}
 	}
-	// Expand F2 panel so step [open]/[back] controls are visible.
-	// No "Viewing agent:" chat spam — status agent:name + F2 highlight suffice.
-	m.sessionPanel.Collapsed = false
+	// Task-311: no panel expansion — the sidebar is width-reactive; [open]/[back]
+	// controls are visible whenever the terminal is wide enough.
 	m.messages = nil
 	m.visiblePromptCount = 0
 	m.historyLoadedAfterSeq = 0

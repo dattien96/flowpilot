@@ -10,7 +10,10 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
-func TestStatusBar_ExpandedRowOrder(t *testing.T) {
+// Task-311: the main status is ONE always-visible line; mode/model/account/
+// context rows moved into the reactive sidebar.
+
+func TestStatusBar_SingleLineAndSidebarDetails(t *testing.T) {
 	seven := 99
 	reset := "2026-08-20T06:46:00Z"
 	m := New(config.ChatConfig{Provider: "grok", Model: "grok-4.6"}, "http://127.0.0.1:4317")
@@ -35,34 +38,35 @@ func TestStatusBar_ExpandedRowOrder(t *testing.T) {
 	m.modelContextWin = 500000
 	m.lastTokens = &client.TokenUsageSnapshot{ModelContextWindow: &win}
 
+	// Per user request: status line is empty (only toast), chrome is in input frame
 	got := stripANSI(m.renderStatusLine())
-	lines := strings.Split(got, "\n")
-	if len(lines) < 6 {
-		t.Fatalf("want 6 status rows, got %d:\n%s", len(lines), got)
+	if strings.TrimSpace(got) != "" {
+		t.Fatalf("status line must be empty (chrome moved to input frame), got %q", got)
 	}
-	if !strings.Contains(lines[0], "ready") || !strings.Contains(lines[0], "F4") {
-		t.Fatalf("line0 status/fold: %q", lines[0])
+	header := stripANSI(m.chatFrameTitle())
+	if !strings.Contains(strings.ToLower(header), "chat") || !strings.Contains(strings.ToLower(header), "ready") {
+		t.Fatalf("input header must show Chat · ready, got %q", header)
 	}
-	if !strings.Contains(lines[1], "[chat]") {
-		t.Fatalf("line1 mode: %q", lines[1])
+	footer := m.inputFrameFooter()
+	if !strings.Contains(footer, "grok-4.6") || !strings.Contains(footer, "reasoning: medium") || !strings.Contains(footer, "YOLO:OFF") {
+		t.Fatalf("input footer must be Model · reasoning · YOLO, got %q", footer)
 	}
-	if strings.Contains(lines[1], "grok-4.6") {
-		t.Fatalf("model must not sit on mode row: %q", lines[1])
+	if strings.Contains(footer, "7d:99%") || strings.Contains(footer, "trashname") {
+		t.Fatalf("footer must NOT contain quota/account (user request), got %q", footer)
 	}
-	if !strings.Contains(lines[2], "grok-4.6") || !strings.Contains(lines[2], "reasoning: medium") || !strings.Contains(lines[2], "YOLO:OFF") {
-		t.Fatalf("line2 model/reasoning/yolo: %q", lines[2])
+
+	enableSidebarForTest(m)
+	m.width, m.fullWidth = tuiSidebarMinWidth+10, tuiSidebarMinWidth+10
+	side := strings.Join(m.renderRightSidebar(30), "\n")
+	// Sidebar now only session + steps (no status)
+	if strings.Contains(side, "grok-4.6") || strings.Contains(side, "YOLO") || strings.Contains(side, "trashname") || strings.Contains(side, "ctx") {
+		t.Fatalf("sidebar must NOT contain status details (moved to input frame):\n%s", side)
 	}
-	if strings.Contains(lines[1], "reasoning:") {
-		t.Fatalf("reasoning must sit on the model row, not mode: %q", lines[1])
+	if !strings.Contains(side, "session") {
+		t.Fatalf("sidebar must keep session:\n%s", side)
 	}
-	if !strings.Contains(lines[3], "trashname899@gmail.com") || !strings.Contains(lines[3], "7d:99%") || !strings.Contains(lines[3], "resets") {
-		t.Fatalf("line3 account/quota: %q", lines[3])
-	}
-	if !strings.Contains(lines[4], "ctx") {
-		t.Fatalf("line4 context: %q", lines[4])
-	}
-	if !strings.Contains(lines[5], "Gate-sandbox") || !strings.Contains(lines[5], "master") {
-		t.Fatalf("line5 project/branch: %q", lines[5])
+	if !strings.Contains(side, "steps") && !strings.Contains(side, "(no steps)") {
+		t.Fatalf("sidebar must keep steps:\n%s", side)
 	}
 }
 
@@ -72,20 +76,18 @@ func TestStatusBar_FlowModeHighlightsAndKeepsYoloAuto(t *testing.T) {
 	m.yolo = false
 	m.mode = ModeFlow
 	m.launch = LaunchArm{Label: "flow-claude-2-review", Mode: ModeFlow, WorkflowID: "wf"}
-	got := stripANSI(m.renderStatusLine())
-	if !strings.Contains(got, "[flow]") || !strings.Contains(got, "flow-claude-2-review") {
-		t.Fatalf("missing flow mode: %s", got)
+	// Flow name and YOLO now live in input frame chrome, not sidebar
+	header := stripANSI(m.chatFrameTitle())
+	if !strings.Contains(header, "flow-claude-2-review") {
+		t.Fatalf("header missing flow name: %s", header)
 	}
-	if !strings.Contains(got, "YOLO:ON(auto)") {
-		t.Fatalf("flow must still show YOLO auto-on: %s", got)
-	}
-	raw := m.renderStatusLine()
-	if !strings.Contains(raw, "flow-claude-2-review") {
-		t.Fatalf("flow name missing from styled line")
+	footer := m.inputFrameFooter()
+	if !strings.Contains(footer, "YOLO:ON(auto)") {
+		t.Fatalf("footer must still show YOLO auto-on: %s", footer)
 	}
 }
 
-func TestStatusBar_F4CollapsesDetailsKeepsLine0(t *testing.T) {
+func TestStatusBar_F4IsNoOpAndLineStaysSingle(t *testing.T) {
 	m := New(config.ChatConfig{Model: "grok-4.6"}, "http://127.0.0.1:4317")
 	m.asciiMode = true
 	m.sessionLoading = false
@@ -93,43 +95,33 @@ func TestStatusBar_F4CollapsesDetailsKeepsLine0(t *testing.T) {
 	m.statusMsg = ""
 	m.project = &client.Project{Name: "Gate-sandbox"}
 	m.projectBranch = "master"
-	full := stripANSI(m.renderStatusLine())
-	if strings.Count(full, "\n") < 2 {
-		t.Fatalf("expanded should have detail rows:\n%s", full)
-	}
+	before := stripANSI(m.renderStatusLine())
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyF4})
 	am := m2.(*AppModel)
-	if !am.statusDetailsCollapsed {
-		t.Fatal("F4 should collapse details")
+	after := stripANSI(am.renderStatusLine())
+	if after != before {
+		t.Fatalf("F4 must be a no-op: before=%q after=%q", before, after)
 	}
-	got := stripANSI(am.renderStatusLine())
-	if strings.Contains(got, "\n") {
-		t.Fatalf("collapsed must keep only line 0:\n%s", got)
+	if strings.Contains(after, "\n") {
+		t.Fatalf("status must stay a single line:\n%s", after)
 	}
-	if !strings.Contains(got, "ready") || !strings.Contains(got, "F4") {
-		t.Fatalf("line0 missing: %q", got)
+	// Ready now lives in input header, status line is empty (only toast)
+	if strings.Contains(after, "ready") {
+		t.Fatalf("status line must be empty (ready moved to input header), got %q", after)
 	}
-	if strings.Contains(got, "[chat]") || strings.Contains(got, "Gate-sandbox") || strings.Contains(got, "YOLO") {
-		t.Fatalf("details leaked while collapsed: %q", got)
-	}
-	m3, _ := am.handleKey(tea.KeyMsg{Type: tea.KeyF4})
-	if m3.(*AppModel).statusDetailsCollapsed {
-		t.Fatal("F4 again should expand")
+	header := stripANSI(am.chatFrameTitle())
+	if !strings.Contains(header, "ready") {
+		t.Fatalf("header must contain ready: %q", header)
 	}
 }
 
-func TestStatusBar_ClickLine0TogglesDetails(t *testing.T) {
+func TestStatusBar_StatusDetailsClickIsNoOp(t *testing.T) {
 	m := New(config.ChatConfig{Model: "grok-4.6"}, "http://127.0.0.1:4317")
 	m.width, m.height = 80, 24
 	m.asciiMode = true
 	m.sessionLoading = false
-	m.sessionPanel.Collapsed = true
-	x, y, ok := findClickTarget(m, "status-details")
-	if !ok {
-		t.Fatal("expected clickable status row")
-	}
-	m2, _ := m.Update(clickLeft(x, y))
-	if !m2.(*AppModel).statusDetailsCollapsed {
-		t.Fatalf("click at %d,%d should collapse status details", x, y)
+	m2, _ := m.activateClickTarget("status-details")
+	if len(m2.(*AppModel).messages) != 0 {
+		t.Fatal("status-details click must be a no-op")
 	}
 }

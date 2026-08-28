@@ -9,41 +9,35 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
-func TestBug328_F2SetsVisibleStatus(t *testing.T) {
+// Task-311: F2/F4 no longer toggle anything. F2 is the /info alias and must
+// print the session dump; F3/F4 must be no-ops.
+func TestBug328_F2PrintsInfoDump(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:9")
 	m.authPhase = AuthNone
-	m.sessionPanel.Collapsed = true
+	m.sessionDefaultsLoaded = true
 
 	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyF2})
 	am := got.(*AppModel)
-	if am.sessionPanel.Collapsed {
-		t.Fatal("F2 must expand a collapsed steps panel")
+	if len(am.messages) == 0 {
+		t.Fatal("F2 must print the info dump")
 	}
-	if !strings.Contains(am.statusMsg, "F2") {
-		t.Fatalf("F2 must set a visible status, got %q", am.statusMsg)
-	}
-
-	got, _ = am.handleKey(tea.KeyMsg{Type: tea.KeyF2})
-	am = got.(*AppModel)
-	if !am.sessionPanel.Collapsed {
-		t.Fatal("second F2 must collapse again")
-	}
-	if !strings.Contains(am.statusMsg, "F2") {
-		t.Fatalf("second F2 must still set status, got %q", am.statusMsg)
+	if !strings.Contains(am.messages[len(am.messages)-1].Content, "Status:") {
+		t.Fatalf("F2 info dump must contain Status line, got %q", am.messages[len(am.messages)-1].Content)
 	}
 }
 
-func TestBug328_F4SetsVisibleStatus(t *testing.T) {
+func TestBug328_F4IsNoOp(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:9")
 	m.authPhase = AuthNone
-	m.statusDetailsCollapsed = false
+	m.sessionDefaultsLoaded = true
+	m.statusMsg = ""
 
 	got, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyF4})
 	am := got.(*AppModel)
-	if !am.statusDetailsCollapsed {
-		t.Fatal("F4 must collapse details")
+	if len(am.messages) != 0 {
+		t.Fatal("F4 must not add messages")
 	}
-	if !strings.Contains(am.statusMsg, "F4") {
-		t.Fatalf("F4 must set a visible status, got %q", am.statusMsg)
+	if am.statusMsg != "" {
+		t.Fatalf("F4 must not set status, got %q", am.statusMsg)
 	}
 }

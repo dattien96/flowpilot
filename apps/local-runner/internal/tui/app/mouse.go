@@ -17,26 +17,28 @@ func stripANSI(s string) string {
 }
 
 type tuiChrome struct {
-	panelLines       []string
-	panelH           int
-	sideActive       bool
-	sideW            int
-	sideX            int
-	sideLines        []string
-	bannerLines      int
-	statusBlock      string
-	statusH          int
-	inputBlock       string
-	inputH           int
-	inputY           int
-	attachPanelBlock string
-	attachPanelH     int
-	attachPanelY     int
-	sugg             []suggestItem
-	suggLines        int
-	messagesHeight   int
-	statusY          int
-	chatSepH         int
+	panelLines        []string
+	panelH            int
+	sideActive        bool
+	sideW             int
+	sideX             int
+	sideLines         []string
+	bannerLines       int
+	statusBlock       string
+	statusH           int
+	bottomNoticeBlock string
+	bottomNoticeH     int
+	inputBlock        string
+	inputH            int
+	inputY            int
+	attachPanelBlock  string
+	attachPanelH      int
+	attachPanelY      int
+	sugg              []suggestItem
+	suggLines         int
+	messagesHeight    int
+	statusY           int
+	chatSepH          int
 }
 
 func (m *AppModel) tuiChrome() tuiChrome {
@@ -56,7 +58,7 @@ func (m *AppModel) tuiChrome() tuiChrome {
 	} else if m.authNeedLogin && m.authPhase == AuthNone {
 		c.bannerLines = 1
 	}
-	c.panelLines = m.renderSessionPanelOverlay()
+	c.panelLines = nil // Task-311: no overlay — sidebar is the only panel surface
 	c.panelH = len(c.panelLines)
 	if m.useRightSidebar() {
 		c.sideActive = true
@@ -67,10 +69,25 @@ func (m *AppModel) tuiChrome() tuiChrome {
 		c.panelH = 0
 	}
 	c.statusBlock = m.renderStatusLine()
-	c.statusH = strings.Count(c.statusBlock, "\n") + 1
+	if strings.TrimSpace(c.statusBlock) == "" {
+		c.statusBlock = ""
+		c.statusH = 0
+	} else {
+		c.statusH = strings.Count(c.statusBlock, "\n") + 1
+	}
 	w := m.chatWidth()
 	if w <= 0 {
 		w = 80
+	}
+	// Bottom notice (Copied / input stalled) lives below the composer frame,
+	// outside it — one small line at the bottom of the chat pane. The watchdog
+	// warning is moved here so top-left chrome stays clean.
+	c.bottomNoticeBlock = m.renderBottomNotice(w)
+	if strings.TrimSpace(c.bottomNoticeBlock) == "" {
+		c.bottomNoticeBlock = ""
+		c.bottomNoticeH = 0
+	} else {
+		c.bottomNoticeH = strings.Count(c.bottomNoticeBlock, "\n") + 1
 	}
 	c.attachPanelBlock = m.renderAttachPanel(w)
 	if c.attachPanelBlock != "" {
@@ -80,12 +97,14 @@ func (m *AppModel) tuiChrome() tuiChrome {
 	c.inputH = strings.Count(c.inputBlock, "\n") + 1
 	// Blank line + rule always sit between the transcript and the status chrome.
 	c.chatSepH = 2
-	c.messagesHeight = m.height - c.statusH - c.inputH - c.attachPanelH - c.suggLines - c.bannerLines - c.panelH - c.chatSepH
+	// statusH is kept for legacy callers but no longer occupies the main column
+	// above the composer — the single visible bottom line is bottomNoticeH.
+	c.messagesHeight = m.height - c.inputH - c.attachPanelH - c.suggLines - c.bannerLines - c.panelH - c.chatSepH - c.bottomNoticeH
 	if c.messagesHeight < 1 {
 		c.messagesHeight = 1
 	}
 	c.statusY = c.panelH + c.messagesHeight + c.bannerLines + c.chatSepH
-	c.attachPanelY = c.statusY + c.statusH + c.suggLines
+	c.attachPanelY = c.statusY + c.suggLines
 	c.inputY = c.attachPanelY + c.attachPanelH
 	return c
 }
@@ -510,14 +529,27 @@ func hitToken(stripped string, token string, x int) bool {
 }
 
 func hitStopChrome(c tuiChrome, x, y int) bool {
-	if y != c.statusY {
-		return false
+	// Status line is now empty (only toast) – [stop] lives in the input frame
+	// header (top border) as part of chatFrameTitle. Check both places.
+	if c.statusH > 0 && y == c.statusY {
+		lines := strings.Split(c.statusBlock, "\n")
+		if len(lines) > 0 && hitToken(stripANSI(lines[0]), "[stop]", x) {
+			return true
+		}
 	}
-	lines := strings.Split(c.statusBlock, "\n")
-	if len(lines) == 0 {
-		return false
+	if c.inputH > 0 && y >= c.inputY && y < c.inputY+c.inputH {
+		lines := strings.Split(c.inputBlock, "\n")
+		if len(lines) > 0 && hitToken(stripANSI(lines[0]), "[stop]", x) {
+			return true
+		}
+		// Fallback: also check any input line for [stop] (in case header wraps)
+		for _, l := range lines {
+			if hitToken(stripANSI(l), "[stop]", x) {
+				return true
+			}
+		}
 	}
-	return hitToken(stripANSI(lines[0]), "[stop]", x)
+	return false
 }
 
 func (m *AppModel) hitApprovalChrome(c tuiChrome, x, y int) string {

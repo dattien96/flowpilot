@@ -56,7 +56,7 @@ func TestView_RespectsViewportOffset(t *testing.T) {
 	m.width, m.height = 80, 16
 	m.asciiMode = true
 	m.sessionLoading = false
-	m.sessionPanel.Collapsed = true
+	m.width = tuiSidebarMinWidth - 1
 	for i := 0; i < 40; i++ {
 		m.addMessage("assistant", fmt.Sprintf("line-%02d unique", i), "")
 	}
@@ -232,12 +232,17 @@ func TestView_ChatSeparatedFromStatusByRule(t *testing.T) {
 	m.addMessage("user", "hello", "")
 	m.addMessage("assistant", "world", "")
 	view := m.View()
-	if !strings.Contains(view, strings.Repeat("-", 80)) {
-		t.Fatal("expected a horizontal rule between chat and status")
+	// Rule removed per user request – padding separates transcript from input
+	if strings.Contains(view, strings.Repeat("-", 80)) || strings.Contains(view, strings.Repeat("─", 80)) {
+		t.Fatalf("horizontal rule should be removed:\n%s", view)
 	}
 	plain := stripANSI(view)
-	if !strings.Contains(plain, "|") {
+	if !strings.Contains(plain, "|") && !strings.Contains(plain, "│") {
 		t.Fatal("expected stroke boxes around chat bubbles")
+	}
+	// Input frame should be present with uniform gray bg
+	if !strings.Contains(strings.ToLower(plain), "chat") {
+		t.Fatalf("input frame missing chat header:\n%s", plain)
 	}
 }
 
@@ -254,25 +259,18 @@ func TestStatusLine_PutsContextUsageOnOwnRow(t *testing.T) {
 		Last:               &client.TokenUsageBreakdown{TotalTokens: 800, InputTokens: 500, OutputTokens: 300},
 	}
 	got := m.renderStatusLine()
-	lines := strings.Split(got, "\n")
-	if len(lines) < 3 {
-		t.Fatalf("want usage on its own row, got %d lines:\n%s", len(lines), got)
+	if strings.Count(got, "\n") != 0 {
+		t.Fatalf("status must stay single-line (Task-311):\n%s", got)
 	}
-	usage := ""
-	for _, line := range lines {
-		if strings.Contains(line, "ctx") {
-			usage = line
-			break
-		}
-	}
+	usage := strings.Join(m.renderSidebarStatusSection(80), "\n")
 	if !strings.Contains(usage, "ctx") || !strings.Contains(usage, "128.0k") || !strings.Contains(usage, "left") {
 		t.Fatalf("usage row missing window context: %q", usage)
 	}
 	if !strings.Contains(usage, "in:500") || !strings.Contains(usage, "out:300") || !strings.Contains(usage, "last 800") {
 		t.Fatalf("usage row missing token counts: %q", usage)
 	}
-	if strings.Contains(lines[0], "ctx ") {
-		t.Fatal("context must not sit on the truncated chip row")
+	if strings.Contains(got, "ctx ") {
+		t.Fatal("context must not sit on the single-line status")
 	}
 }
 

@@ -225,10 +225,11 @@ func TestStatuslineShowsPostureChip(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "codex"}, "http://127.0.0.1:4317")
 	m.mode = ModeChat
 	m.chatPosture = "scan"
-	m.width, m.height = 120, 30
-	view := m.View()
-	if !strings.Contains(view, "mode:") || !strings.Contains(view, "scan") {
-		t.Fatalf("statusline missing posture chip:\n%s", view)
+	enableSidebarForTest(m)
+	m.width, m.fullWidth, m.height = tuiSidebarMinWidth+10, tuiSidebarMinWidth+10, 30
+	side := strings.Join(m.renderSidebarStatusSection(80), "\n")
+	if !strings.Contains(side, "mode:") || !strings.Contains(side, "scan") {
+		t.Fatalf("sidebar missing posture chip:\n%s", side)
 	}
 }
 

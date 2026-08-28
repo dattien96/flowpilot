@@ -59,7 +59,7 @@ func TestRenderInputLine_RoundedStrokeFrame(t *testing.T) {
 	if !strings.Contains(line, "╭") && !strings.Contains(line, "+") {
 		t.Fatalf("expected rounded/ascii stroke frame: %q", line)
 	}
-	if !strings.Contains(line, "hello") || !strings.Contains(stripANSI(line), "chat") {
+	if !strings.Contains(line, "hello") || !strings.Contains(strings.ToLower(stripANSI(line)), "chat") {
 		t.Fatalf("missing body/title: %q", line)
 	}
 }

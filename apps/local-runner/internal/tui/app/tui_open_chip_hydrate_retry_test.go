@@ -200,7 +200,7 @@ func TestRightSidebar_LongStepKeepsOpenChip(t *testing.T) {
 			m.asciiMode = true
 			m.mode = ModeFlow
 			m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-			m.sessionPanel.Collapsed = false
+			enableSidebarForTest(m)
 			m.runHandle = &client.RunHandle{RunID: "run-main", Status: "running"}
 			m.agentRuns = []client.AgentRunSummary{
 				{RunID: "run-main", AgentName: "main", Role: "main", Status: "running"},
@@ -236,7 +236,7 @@ func TestOverlay_LongStepKeepsOpenChip(t *testing.T) {
 	m.asciiMode = true
 	m.mode = ModeFlow
 	m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-	m.sessionPanel.Collapsed = false
+	enableSidebarForTest(m)
 	m.runHandle = &client.RunHandle{RunID: "run-main", Status: "running"}
 	m.agentRuns = []client.AgentRunSummary{
 		{RunID: "run-main", AgentName: "main", Role: "main", Status: "running"},
@@ -246,13 +246,11 @@ func TestOverlay_LongStepKeepsOpenChip(t *testing.T) {
 		{StepID: "s1", NodeID: "reviewer-for-fix-super-long-name", AgentRef: "reviewer-for-fix-super-long-name", Status: "RUNNING"},
 	}
 	if m.useRightSidebar() {
-		t.Fatal("narrow must keep the top-right overlay")
+		t.Fatal("narrow must not show the sidebar")
 	}
-	panel := strings.Join(m.renderSessionPanelOverlay(), "\n")
-	if !strings.Contains(panel, "[open]") {
-		t.Fatalf("overlay long step must keep [open]:\n%s", panel)
-	}
-	if _, _, ok := findClickTarget(m, "agent-open:run-r"); !ok {
-		t.Fatalf("overlay truncated [open] must stay hittable:\n%s", panel)
+	// Task-311: no overlay — the [open] chip is hittable only in the wide
+	// sidebar. At narrow width the step rows carry no hit-test surface.
+	if _, _, ok := findClickTarget(m, "agent-open:run-r"); ok {
+		t.Fatal("narrow terminal must not expose an overlay [open] (Task-311)")
 	}
 }

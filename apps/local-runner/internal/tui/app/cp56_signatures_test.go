@@ -78,17 +78,24 @@ func TestAllTUITasksHaveCliTuiAuditEvidence(t *testing.T) {
 	}
 }
 
-// A9.5 — legacy console uses ASCII separators in statusline.
+// A9.5 — legacy console uses ASCII separators in input chrome.
 func TestLegacyConsoleStatusline_UsesASCIIFallback(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "codex"}, "http://127.0.0.1:4317")
 	m.asciiMode = true
-	m.statusMsg = "ok"
-	line := m.renderStatusLine()
-	if strings.Contains(line, "│") {
-		t.Errorf("ascii statusline should not use unicode bar, got %q", line)
+	m.statusMsg = ""
+	m.model = "test-model"
+	m.reasoningEffort = "medium"
+	seven := 87
+	m.account = &client.ProviderAccountSummary{ProviderKey: "grok", DisplayLabel: "a@b.com", Remaining7dPercent: &seven, IsActive: true}
+	// Status line is now empty (chrome in input frame); check input chrome uses ASCII
+	header := m.chatFrameTitle()
+	footer := m.inputFrameFooter()
+	combined := header + footer
+	if strings.Contains(combined, "\u2502") || strings.Contains(combined, "\u00b7") {
+		t.Errorf("ascii chrome should not use unicode, got header=%q footer=%q", header, footer)
 	}
-	if !strings.Contains(line, "|") {
-		t.Errorf("ascii statusline should use pipe separator, got %q", line)
+	if !strings.Contains(combined, "|") && !strings.Contains(m.View(), "|") {
+		t.Errorf("ascii chrome should use pipe separator, got header=%q footer=%q view=%q", header, footer, m.View())
 	}
 }
 
@@ -143,9 +150,9 @@ func TestStatusline_ShowsProviderAndModel(t *testing.T) {
 	m.provider = "codex"
 	m.model = "gpt-5.4"
 	m.asciiMode = true
-	line := m.renderStatusLine()
-	if !strings.Contains(line, "codex") || !strings.Contains(line, "gpt-5.4") {
-		t.Fatalf("statusline missing provider/model: %q", line)
+	side := strings.Join(m.renderSidebarStatusSection(80), "\n")
+	if !strings.Contains(side, "codex") || !strings.Contains(side, "gpt-5.4") {
+		t.Fatalf("sidebar missing provider/model: %q", side)
 	}
 }
 

@@ -11,3 +11,10 @@ func setSysProcAttr(cmd *exec.Cmd) {
 	// the spawned runner (CA-474).
 	_ = cmd
 }
+
+func assignRunnerJob(pid uint32) error {
+	_ = pid
+	return nil
+}
+
+func closeRunnerJob() {}

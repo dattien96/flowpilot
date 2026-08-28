@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -111,6 +112,22 @@ var (
 	styleSidebar = lipgloss.NewStyle().Background(lipgloss.Color(colorBg2))
 	styleChatBar = lipgloss.NewStyle().Background(lipgloss.Color(colorBg3))
 )
+
+// isStalledStatus reports the watchdog banner that must not pollute the input
+// frame chrome (user request: that long warning goes to the bottom line outside
+// the composer instead of top-left "Chat: ... | stalled ...").
+func isStalledStatus(s string) bool {
+	low := strings.ToLower(strings.TrimSpace(s))
+	return strings.Contains(low, "input stalled") || strings.Contains(low, "close this window to exit")
+}
+
+// chatBarBg returns s with the composer #1e1e1e background. Composer inner
+// segments (title, body, attach) must carry the bar bg themselves so a lipgloss
+// reset inside the segment does not punch a black hole in the solid gray frame
+// (see renderChatPane / frameInput).
+func chatBarBg(s lipgloss.Style) lipgloss.Style {
+	return s.Background(lipgloss.Color(colorBg3))
+}
 
 // ---- New / Init -------------------------------------------------------------
 
@@ -503,13 +520,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionLoading = true
 		m.sessionPanel.RunnerURL = msg.RunnerURL
 		m.sessionPanel.ProjectPath = m.cfg.ProjectPath
-		// CA-633: start with the F2 sidebar COLLAPSED. The panel has content
-		// (RunnerURL) the moment we connect, so the zero-value Collapsed=false
-		// opened it on every cold start — with composeCellBuf ~300ms+ at
-		// 126×50, hover motion + cursor ticks filled the conhost 64-slot queue
-		// and keys dropped before ever reaching Update. F2 opens it; flow
-		// steps/agents auto-open it via agents_focus.go when a run starts.
-		m.sessionPanel.Collapsed = true
+		// Task-311: the sidebar is width-reactive (>= tuiSidebarMinWidth) and
+		// starts visible on wide terminals; no Collapsed state exists anymore.
 		cmds := []tea.Cmd{
 			m.cmdLoadSessionDefaults(),
 			m.cmdPrefetchFlows(),
@@ -1438,8 +1450,6 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if stepsSuggestChildAgentOpen(prevSteps, msg.Steps) {
 			cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
 		}
-		// Already have children mapped → keep F2 expanded for open/back.
-		m.expandSessionPanelForChildAgents()
 		// Steps still missing a child [open] chip (e.g. a slower/empty hydrate) →
 		// re-arm a bounded retry so the chip appears without waiting for the next
 		// steps transition (CA-528).
@@ -1904,6 +1914,14 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Paste {
 		tuiLog("handleKey Paste runes=%d type=%v", len(msg.Runes), msg.Type)
 	}
+	// Flush a held SS3 'O' before any non-rune key (Backspace, Esc, VK F-keys
+	// from Windows Terminal, …) so the user's typed 'O' is never lost when
+	// the ConPTY SS3 suffix never arrives.
+	if m.ss3.waiting && msg.Type != tea.KeyRunes {
+		m.ss3.waiting = false
+		m.insertInputAtCursor("O")
+		m.suggIdx = 0
+	}
 	// Never hard-block keyboard while loading — a hung runner previously made
 	// the TUI feel fully frozen. processInput still rejects non-slash *send*.
 	if m.sessionLoading && msg.Type == tea.KeyCtrlC {
@@ -1993,37 +2011,19 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.cmdShutdownAndQuit()
 
 	case tea.KeyF2:
+		// Task-311: F2 is the /info alias — prints the session/status dump as a
+		// chat message. The sidebar itself is width-reactive, no toggle.
 		if m.authPhase != AuthNone {
 			return m, nil
 		}
-		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
-		if m.sessionPanel.Collapsed {
-			m.statusMsg = "F2: steps hidden"
-		} else {
-			m.statusMsg = "F2: steps shown"
-		}
-		return m, nil
+		return m.infoDump()
 
 	case tea.KeyF3:
-		if m.authPhase != AuthNone {
-			return m, nil
-		}
-		if len(attachedSkillNames(m.selectedSkills)) == 0 {
-			return m, nil
-		}
-		m.statusSkillsExpanded = !m.statusSkillsExpanded
+		// Task-311: F3 is a no-op — skills details live in the sidebar.
 		return m, nil
 
 	case tea.KeyF4:
-		if m.authPhase != AuthNone {
-			return m, nil
-		}
-		m.statusDetailsCollapsed = !m.statusDetailsCollapsed
-		if m.statusDetailsCollapsed {
-			m.statusMsg = "F4: details hidden"
-		} else {
-			m.statusMsg = "F4: details shown"
-		}
+		// Task-311: F4 is a no-op — status details live in the sidebar.
 		return m, nil
 
 	case tea.KeyCtrlV:
@@ -2454,7 +2454,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputCursor = -1
 		return m, nil
 
-	case tea.KeyBackspace:
+	case tea.KeyBackspace, tea.KeyCtrlH:
 		m.deleteInputBeforeCursor()
 		m.suggIdx = 0
 		// IME Telex rewrite (dd->đ) sends Backspace+runes in 3-5ms. The
@@ -2470,6 +2470,26 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.cmdMaybePrefetchPickers()
 
 	case tea.KeySpace, tea.KeyRunes:
+		// Windows ConPTY delivers SS3 F-keys ('\x1bOQ' = F2) as two rune
+		// records 'O','Q' with the ESC dropped. Rebuild F1-F4 before anything
+		// else — otherwise the pair lands in the composer (tui.log pid 18400)
+		// and trips the raw-paste guard.
+		if msg.Type == tea.KeyRunes {
+			if repl, flush, consumed := m.ss3FKey(msg); consumed {
+				if flush != "" {
+					m.insertInputAtCursor(flush)
+					m.suggIdx = 0
+				}
+				if repl.Type != tea.KeyRunes {
+					return m.handleKey(repl)
+				}
+				if flush == "" {
+					// Held 'O' or swallowed pair member: nothing to insert.
+					return m, nil
+				}
+				msg = repl
+			}
+		}
 		// Drop NUL and raw control noise universally across all platforms/terminals (only for non-bracketed paste)
 		if msg.Type == tea.KeyRunes && !msg.Paste {
 			if len(msg.Runes) == 0 {
@@ -3004,7 +3024,7 @@ func (m *AppModel) allowsKeyWhileLoading(msg tea.KeyMsg) bool {
 	case tea.KeyEnter:
 		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/") ||
 			strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/")
-	case tea.KeyBackspace, tea.KeyDelete:
+	case tea.KeyBackspace, tea.KeyDelete, tea.KeyCtrlH:
 		// Edit only when already composing a slash command.
 		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/")
 	}
@@ -3034,7 +3054,7 @@ func (m *AppModel) allowsKeyWhileViewingChild(msg tea.KeyMsg) bool {
 	case tea.KeyEnter:
 		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/") ||
 			strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/")
-	case tea.KeyBackspace, tea.KeyDelete:
+	case tea.KeyBackspace, tea.KeyDelete, tea.KeyCtrlH:
 		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/")
 	}
 	if _, _, ok := activeSlashLine(m.inputValue, m.inputCaretIndex()); ok {
@@ -4013,33 +4033,12 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, m.showFlashToast("dumped " + youBoxLayoutRev + " → " + path)
 
 	case "/status":
-		auth := "(not signed in)"
-		if m.signedInEmail != "" {
-			auth = m.signedInEmail
-		} else if m.authNeedLogin {
-			auth = "SIGN-IN REQUIRED — /login"
-		}
-		m.refreshSessionPanel()
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("Status: %s | Mode: %s | %s | Provider: %s | Model: %s | Auth: %s\n",
-			m.connStatus, m.mode, m.yoloStatusLabel(), m.provider, m.model, auth))
-		sb.WriteString("Active provider account: " + orDash(m.activeProviderAccountLabel()) + "\n")
-		m.sessionPanel.DriveStatus = m.driveIndicatorLine()
-		m.sessionPanel.DriveBadge = m.openChatDriveBadge()
-		for _, line := range m.sessionPanel.lines() {
-			sb.WriteString(line + "\n")
-		}
-		sb.WriteString("(F2 or click session panel · F4 or click status row to fold details · F3 or click skills:N chip · /info also toggles the panel)")
-		m.addMessage("system", strings.TrimRight(sb.String(), "\n"), "")
+		return m.infoDump()
 
 	case "/info":
-		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
-		m.refreshSessionPanel()
-		state := "expanded"
-		if m.sessionPanel.Collapsed {
-			state = "collapsed"
-		}
-		m.addMessage("system", "Session panel "+state+" (F2 or /info to toggle).", "")
+		// Task-311: /info prints the session/status dump (F2 aliases it). The
+		// sidebar has no toggle anymore — it follows terminal width.
+		return m.infoDump()
 
 	case "/login":
 		return m.beginLogin(args)
@@ -4170,12 +4169,17 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 }
 
 func (m *AppModel) renderChatPane(w, h int) string {
+	debug := viewDebugEnabled()
+	stage := time.Now()
 	c := m.tuiChrome()
 	var rows []string
 
 	rows = append(rows, c.panelLines...)
 
+	tChrome := time.Since(stage)
+	stage = time.Now()
 	lines := m.renderMessages()
+	tMsgs := time.Since(stage)
 	// Freeze the viewport while the user is mid-select: clamping against a line
 	// count that changed (width flip / live stream) would yank the text out from
 	// under the cursor / reset a top-of-history drag to the bottom (CA-526).
@@ -4203,17 +4207,12 @@ func (m *AppModel) renderChatPane(w, h int) string {
 		}
 		rows = append(rows, styleError.Render(banner))
 	}
+	// Small padding separates transcript from the input frame; the horizontal
+	// rule is removed per user request. Transcript stays on the dark canvas
+	// (#0d0d0d) — only the composer frame is the elevated gray (#1e1e1e) so no
+	// black/gray mix inside the input.
 	rows = append(rows, "")
-	if w <= 0 {
-		w = 80
-	}
-	if m.asciiMode {
-		rows = append(rows, strings.Repeat("-", w))
-	} else {
-		rows = append(rows, strings.Repeat("─", w))
-	}
-	// flashToast is rendered on the project/git status row (see status_bar.go).
-	rows = append(rows, strings.Split(c.statusBlock, "\n")...)
+	rows = append(rows, "")
 	if len(c.sugg) > 0 && !m.modeSetupModalOpen {
 		rows = append(rows, strings.Split(m.renderSuggestions(c.sugg), "\n")...)
 	}
@@ -4223,50 +4222,73 @@ func (m *AppModel) renderChatPane(w, h int) string {
 	if c.attachPanelBlock != "" {
 		rows = append(rows, strings.Split(c.attachPanelBlock, "\n")...)
 	}
-	inputStart := len(rows)
+	_ = len(rows)
+	inputStart, inputEnd := -1, -1
 	if m.sessionLoading {
 		// Hide normal chat input until loading is done — show a clear loading
 		// placeholder instead so the user doesn't feel the UI is hung.
-		// F2/F4 still work via allowsKeyWhileLoading.
+		// Slash commands and F2 (/info alias) still work via allowsKeyWhileLoading.
 		frames := []string{"|", "/", "-", "\\"}
 		spin := frames[m.loadingFrame%len(frames)]
 		msg := fmt.Sprintf(" %s Loading session · project · providers — chat locked (F2/F4 still work) ", spin)
 		rows = append(rows, styleLoading.Render(truncateVisual(msg, w)))
 	} else {
+		inputStart = len(rows)
 		rows = append(rows, strings.Split(m.renderInputLine(), "\n")...)
+		inputEnd = len(rows)
 	}
+	// Bottom notice (Copied / error-warning) — one small line outside the
+	// composer frame, at the bottom of the chat pane. The watchdog
+	// "input stalled ..." banner is moved here so top-left chrome stays clean
+	// (user request). Only one line, canvas bg, truncated to width.
+	if n := strings.TrimSpace(c.bottomNoticeBlock); n != "" {
+		rows = append(rows, strings.Split(n, "\n")...)
+	}
+	// Legacy flash toast above the composer is kept for old callers
+	// (renderStatusLine) but is no longer rendered here — the bottom notice is
+	// the single visible location. If we rendered statusBlock here too the View
+	// would show the toast twice.
 
-	// CA-532: paint the dark canvas across the whole chat column and give the chat
-	// bar a lighter elevated background. Every row is padded so the background fills the row; the
-	// chat-bar (input) rows keep one free last column (safeTermWidth) so Windows
-	// Terminal never wraps the composer.
+	// CA-532 hierarchy restored: transcript = canvas, composer = chatBar.
+	stage = time.Now()
 	rows = padLinesTo(rows, h)
 	barW := safeTermWidth(w)
 	for i, r := range rows {
-		st := styleCanvas
-		rw := w
-		if i >= inputStart {
-			st = styleChatBar
-			rw = barW
+		rw := barW
+		if inputStart >= 0 && i >= inputStart && i < inputEnd {
+			rows[i] = paintComposerRow(r, rw)
+			continue
 		}
-		// CA-605: You-box rows keep plain glyphs (canvas fill comes from
-		// cellbuf.Fill / trailing pad) — wrapping them in styleCanvas made
-		// Ghostty miscount truecolor SGR and wrap the box mid-pane.
-		if i < inputStart && isYouBoxRow(r) {
+		if isYouBoxRow(r) {
 			rows[i] = padYouBoxRow(r, rw)
 			continue
 		}
-		rows[i] = paintRow(r, rw, st)
+		rows[i] = paintRow(r, rw, styleCanvas)
 	}
 
 	body := strings.Join(rows, "\n")
 	// Do not force outer Width/Height — rows are already painted to w/barW
 	// and padded to h. Forcing Width(w) would pad chat-bar rows (barW) back to
 	// w and break the safeTermWidth gutter (narrow test expects <w).
+	if debug {
+		tuiLog("viewDbg chatPane w=%d h=%d tuiChrome=%v messages=%v paint=%v", w, h, tChrome, tMsgs, time.Since(stage))
+	}
 	return body
 }
 
 // ---- View -------------------------------------------------------------------
+
+var viewDebugOnce sync.Once
+var viewDebug bool
+
+// viewDebugEnabled gates the FLOWPILOT_DEBUG_VIEW per-frame render breakdown.
+// The env var is read once (process-start) so the hot path never re-parses it.
+func viewDebugEnabled() bool {
+	viewDebugOnce.Do(func() {
+		viewDebug = strings.TrimSpace(os.Getenv("FLOWPILOT_DEBUG_VIEW")) != ""
+	})
+	return viewDebug
+}
 
 // cursorBlinkRelevant reports whether the input caret should keep blinking:
 // anything live or active makes the caret meaningful. When false the caret is
@@ -4303,7 +4325,9 @@ func (m *AppModel) View() string {
 		h = 1
 	}
 	chatW := m.chatWidth()
+	chatStart := time.Now()
 	chatRaw := m.renderChatPane(chatW, h)
+	chatPaneDur := time.Since(chatStart)
 	chat := chatRaw
 	if m.useRightSidebar() {
 		side := m.renderSidebarPane(m.sideWidth(), h)
@@ -4322,12 +4346,17 @@ func (m *AppModel) View() string {
 			chat = m.composeOut
 		}
 	}
-	if d := time.Since(viewStart); d > 100*time.Millisecond {
+	d := time.Since(viewStart)
+	if d > 100*time.Millisecond {
 		// CA-621: throttle View slow log so chat history open does not spam tui.log and drop keys
 		if time.Since(m.lastViewSlowLog) > 5*time.Second {
 			m.lastViewSlowLog = time.Now()
 			tuiLog("View slow dur=%v width=%d height=%d side=%v", d, m.width, m.height, m.useRightSidebar())
 		}
+	}
+	if viewDebugEnabled() && d > 30*time.Millisecond {
+		tuiLog("viewDbg View total=%v chatPane=%v composeBuilds=%d width=%d height=%d side=%v",
+			d, chatPaneDur, m.composeBuilds, m.width, m.height, m.useRightSidebar())
 	}
 	return chat
 }
@@ -5143,6 +5172,14 @@ func (m *AppModel) renderInputLine() string {
 		}
 	}
 	label := strings.TrimSpace(prefix)
+	// User request: top-left of the input frame shows "chat" or the flow name
+	// (in flow/step mode) and, beside it, the two status values "ready" and
+	// "agent:main". The sidebar now only holds session+steps.
+	if m.authPhase == AuthNone && !m.viewingChild() && !m.sessionLoading {
+		if label == "chat" || label == "next" {
+			label = m.chatFrameTitle()
+		}
+	}
 	// Only show when images are pending — bare "[+img]" looked like an attachment.
 	attachPlain := m.inputAttachChipPlain()
 	attach := ""
@@ -5186,7 +5223,7 @@ func (m *AppModel) renderInputLine() string {
 		view := strings.TrimSuffix(m.textarea.View(), "\n")
 		viewLines := strings.Split(view, "\n")
 		inner = append(inner, viewLines...)
-		footer := strings.TrimSpace(m.model)
+		footer := m.inputFrameFooter()
 		return frameInput(inner, w, label, footer, m.asciiMode)
 	}
 	caretAt := m.inputCaretIndex()
@@ -5233,8 +5270,137 @@ func (m *AppModel) renderInputLine() string {
 		}
 		off = lineEnd + 1
 	}
-	footer := strings.TrimSpace(m.model)
+	footer := m.inputFrameFooter()
 	return frameInput(inner, w, label, footer, m.asciiMode)
+}
+
+// inputFrameFooter is the bottom-right of the chat input frame.
+// Per user request: bottom-right shows Model · reasoning · YOLO (no provider,
+// no quota/limits). The sidebar already holds session+steps only.
+func (m *AppModel) inputFrameFooter() string {
+	model := strings.TrimSpace(m.model)
+	if model == "" {
+		model = "—"
+	}
+	reasoning := strings.TrimSpace(m.reasoningEffort)
+	if reasoning == "" {
+		reasoning = "medium"
+	}
+	sep := " · "
+	if m.asciiMode {
+		sep = " | "
+	}
+	return fmt.Sprintf("%s%sreasoning: %s%s%s", model, sep, reasoning, sep, m.yoloStatusLabel())
+}
+
+// chatFrameTitle is the top-left of the chat input frame.
+// Per user request: top-left shows "Chat: <posture>" (scan/plan/code) in chat
+// mode or "Flow: <flowName>" in flow/step mode, with the value highlighted.
+// The two status values "ready" and "agent: main" are beside it, with the agent
+// name highlighted. Only this header and the bottom-right footer exist.
+// All segments carry the composer #1e1e1e bg so a lipgloss reset inside the
+// title does not punch a black hole in the solid gray frame. The watchdog
+// "input stalled ..." warning is intentionally excluded here — it goes to the
+// small bottom line outside the frame (renderBottomNotice).
+func (m *AppModel) chatFrameTitle() string {
+	sepStyled := chatBarBg(styleStatus).Render(" · ")
+	if m.asciiMode {
+		sepStyled = chatBarBg(styleStatus).Render(" | ")
+	}
+	var baseStyled string
+	if m.mode == ModeFlow || m.mode == ModeStep {
+		label := strings.TrimSpace(m.launch.StatusLabel())
+		if label == "" {
+			label = "flow"
+		}
+		if len([]rune(label)) > 24 {
+			label = string([]rune(label)[:21]) + "…"
+		}
+		// "Flow:" dim, value pink (styleStatusFlow) — on bar bg
+		baseStyled = chatBarBg(styleStatus).Render("Flow:") + " " + chatBarBg(styleStatusFlow).Render(label)
+	} else {
+		posture := m.activePosture()
+		if posture == "" {
+			posture = "code"
+		}
+		displayPosture := posture
+		if displayPosture != "" {
+			displayPosture = strings.ToUpper(displayPosture[:1]) + displayPosture[1:]
+		}
+		baseStyled = chatBarBg(styleStatus).Render("Chat:") + " " + chatBarBg(postureStyle(posture)).Render(displayPosture)
+	}
+	var parts []string
+	parts = append(parts, baseStyled)
+	if m.turnIsActive() {
+		parts = append(parts, chatBarBg(styleError).Render("[stop]"))
+	}
+	if r := strings.TrimSpace(m.statusReadyLabel()); r != "" && !isStalledStatus(r) {
+		// ready / thinking spinner – use status style on bar bg
+		parts = append(parts, chatBarBg(styleStatus).Render(r))
+	}
+	if m.authNeedLogin {
+		parts = append(parts, chatBarBg(styleStatusErr).Render("SIGN-IN"))
+	}
+	avPlain := strings.TrimSpace(m.formatAgentViewStatus())
+	if avPlain != "" {
+		// Re-render agent chip on bar bg so its bg is also #1e1e1e (original
+		// formatAgentViewStatus has no bg and would punch a hole).
+		name := ""
+		switch {
+		case m.viewingChild():
+			name = m.agentNameForRun(m.focusRunID)
+			if name == "" {
+				name = shortID(m.focusRunID)
+			}
+		case m.mode == ModeFlow || m.mode == ModeStep || len(m.agentRuns) > 0:
+			name = "main"
+		}
+		if name != "" {
+			parts = append(parts, chatBarBg(styleStatus).Render("agent:")+chatBarBg(styleStatusAgent).Render(name))
+		} else {
+			// Fallback: wrap original but force bg via re-render (should not happen)
+			parts = append(parts, avPlain)
+		}
+	} else {
+		// Always show main agent beside ready per user request, highlighted
+		parts = append(parts, chatBarBg(styleStatus).Render("agent:")+chatBarBg(styleStatusAgent).Render("main"))
+	}
+	return strings.Join(parts, sepStyled)
+}
+
+// renderBottomNotice is the single small line outside the composer frame at the
+// bottom of the chat pane. It shows transient toasts (Copied) and the watchdog
+// "input stalled ..." warning so the input chrome stays clean (user request).
+func (m *AppModel) renderBottomNotice(w int) string {
+	if w < 1 {
+		w = 80
+	}
+	w = safeTermWidth(w)
+	var parts []string
+	if t := strings.TrimSpace(m.flashToast); t != "" {
+		parts = append(parts, styleStatusOK.Render(truncateVisual(t, w)))
+	}
+	if s := strings.TrimSpace(m.statusMsg); s != "" && isStalledStatus(s) {
+		// Stalled warning is long; truncate to width and keep error color.
+		if len(parts) > 0 {
+			// Join with dim separator so both show on one line when overlapping.
+			w2 := w - lipgloss.Width(stripANSI(strings.Join(parts, " · "))) - lipgloss.Width(" · ") - 2
+			if w2 < 10 {
+				w2 = 10
+			}
+			parts = append(parts, styleStatus.Render(" · ")+styleStatusErr.Render(truncateVisual(s, w2)))
+		} else {
+			parts = append(parts, styleStatusErr.Render(truncateVisual(s, w)))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	raw := strings.Join(parts, "")
+	if lipgloss.Width(raw) > w {
+		raw = truncateVisual(raw, w)
+	}
+	return raw
 }
 
 // ---- Helpers ----------------------------------------------------------------
@@ -6084,6 +6250,14 @@ func (m *AppModel) startupGrokYoloPostureCmd() tea.Cmd {
 // right sidebar is open) for every hover event.
 func tuiMsgFilter(model tea.Model, msg tea.Msg) tea.Msg {
 	m, ok := model.(*AppModel)
+	if ok {
+		if km, isKey := msg.(tea.KeyMsg); isKey {
+			// BUG-328: the only KeyMsg rewrite is the ConPTY ctrl+h -> Backspace
+			// remap. No debounce/dedupe lives here anymore — every key Bubble Tea
+			// parses from the single VT pipe reader must reach handleKey.
+			msg = remapVTControlKeys(km)
+		}
+	}
 	if !ok {
 		return msg
 	}
@@ -6102,12 +6276,33 @@ func tuiMsgFilter(model tea.Model, msg tea.Msg) tea.Msg {
 	return msg
 }
 
+// remapVTControlKeys maps Windows VT bytes onto the keys handleKey already
+// implements. ConPTY sends Backspace as 0x08 (KeyCtrlH), while KeyBackspace
+// is 0x7F (tui.log pid 2692: dozens of ctrl+h, zero backspace).
+func remapVTControlKeys(msg tea.KeyMsg) tea.KeyMsg {
+	if msg.Type == tea.KeyCtrlH {
+		msg.Type = tea.KeyBackspace
+	}
+	return msg
+}
+
 // tuiProgramOpts returns Bubble Tea program options. Mouse cell-motion is
 // intentionally disabled (BUG-328): on Windows it enables ENABLE_MOUSE_INPUT
 // and steals keyboard focus from the host. Keyboard action ring + F2/F3/F4
 // replace click chips. Alt+V paste and Ctrl+V hint remain.
 func tuiProgramOpts() []tea.ProgramOption {
 	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithFilter(tuiMsgFilter)}
+}
+
+// tuiRunProgramOpts is the live Run() option set: shared AltScreen+Filter.
+// Windows input is intentionally NOT wrapped: Bubble Tea's native coninput
+// reader (readConInputs over the console record queue) is the only path that
+// delivered F2/F4/Esc and IME text reliably (tui.log pid 19296/14012). The
+// VT-pipe wrapper (CA-663/664) depended on ConPTY's record→VT translation,
+// which mangles IME commits and drops ESC-prefixed sequences afterwards
+// (tui.log pid 11948: "A,\u0091" mojibake, then zero f2/f4/esc for 49s).
+func tuiRunProgramOpts() []tea.ProgramOption {
+	return tuiProgramOpts()
 }
 
 // ---- Run (entrypoint) -------------------------------------------------------
@@ -6137,7 +6332,7 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 	m := New(cfg, runnerURL)
 	applyProductionInputGuards(m, runtime.GOOS)
 	primeConsoleBeforeProgram()
-	tuiLog("tuiProgramOpts: AltScreen+Filter mouseCellMotion=off (BUG-328)")
+	tuiLog("tuiProgramOpts: AltScreen+Filter mouseCellMotion=off nativeConinputReader=true (BUG-328)")
 
 	if cfg.Print {
 		err := runHeadless(m, cfg.Prompt)
@@ -6153,8 +6348,9 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 	// with 0 KeyMsg (tui.log 13:06:31 → 13:54:51). queuedOutput keeps
 	// term.File (Fd) semantics so resize/WindowSizeMsg still work.
 	out := newQueuedOutput(os.Stdout)
-	p := tea.NewProgram(m, append(tuiProgramOpts(), tea.WithOutput(out))...)
+	p := tea.NewProgram(m, append(tuiRunProgramOpts(), tea.WithOutput(out))...)
 	_, err := p.Run()
+	restoreWindowsStdin()
 	_, _ = os.Stdout.WriteString(decawmOn)
 	tuiLog("Run() exit err=%v", err)
 	tuiLogClose()

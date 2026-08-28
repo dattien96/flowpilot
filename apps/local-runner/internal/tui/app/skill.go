@@ -273,6 +273,13 @@ func styleInputBodyWithSkillTokens(plain string, selected []client.SkillSelectio
 	return highlightMentions(plain, attachedSkillNames(selected), styleInputFocus)
 }
 
+// styleInputBodyWithSkillTokensOnBar is the composer-bar (#1e1e1e) variant —
+// every segment carries the chatBar bg so a lipgloss reset does not punch a
+// black hole in the solid gray composer frame.
+func styleInputBodyWithSkillTokensOnBar(plain string, selected []client.SkillSelection) string {
+	return highlightMentionsOnBar(plain, attachedSkillNames(selected), chatBarBg(styleInputFocus))
+}
+
 func containsSkillPromptToken(input, token string) bool {
 	if token == "" {
 		return false

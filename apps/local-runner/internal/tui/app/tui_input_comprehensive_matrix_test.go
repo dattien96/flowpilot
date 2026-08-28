@@ -465,11 +465,12 @@ func TestTUIInput_ChildViewReadOnlyGate(t *testing.T) {
 		t.Fatalf("plain typing in child view must be dropped, got %q", m.inputValue)
 	}
 
-	// Navigation keys (F2, Tab, Esc, Arrows) MUST still work
+	// Navigation keys (F2, Tab, Esc, Arrows) MUST still work — F2 prints the
+	// info dump (Task-311).
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyF2})
 	m = m2.(*AppModel)
-	if !m.sessionPanel.Collapsed {
-		t.Fatal("F2 toggle must work in child view")
+	if len(m.messages) == 0 {
+		t.Fatal("F2 must print the info dump in child view")
 	}
 
 	// Slash commands allowed in child view (e.g. /agent to switch back)

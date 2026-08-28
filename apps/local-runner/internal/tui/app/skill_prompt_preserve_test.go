@@ -80,9 +80,9 @@ func TestSkillPicker_InsertsBracketNamesThenContinuesDraft(t *testing.T) {
 	if am.inputValue != "abc [coding] [review] def" {
 		t.Fatalf("continued prompt: %q", am.inputValue)
 	}
-	line := am.renderStatusLine()
-	if !strings.Contains(line, "skills:2") {
-		t.Fatalf("status chip: %q", line)
+	// Skills now hidden per new UI (sidebar only session+steps, status line empty)
+	if len(am.selectedSkills) != 2 {
+		t.Fatalf("selectedSkills should remain 2, got %+v", am.selectedSkills)
 	}
 	in := am.buildTurnInput(am.inputValue)
 	if in.Prompt != "abc [coding] [review] def" {

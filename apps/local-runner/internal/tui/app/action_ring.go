@@ -297,16 +297,17 @@ func (m *AppModel) actionRingEnterActivates() bool {
 func (m *AppModel) activateClickTarget(target string) (tea.Model, tea.Cmd) {
 	switch {
 	case target == "session":
-		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
+		// Task-311: no panel toggle — the sidebar follows terminal width.
+		return m, nil
 	case target == "sidebar-collapse":
-		m.sessionPanel.Collapsed = true
+		// Task-311: no collapse — width is the only switch.
+		return m, nil
 	case target == "skills":
-		if len(attachedSkillNames(m.selectedSkills)) == 0 {
-			return m, nil
-		}
-		m.statusSkillsExpanded = !m.statusSkillsExpanded
+		// Task-311: skills live in the sidebar, no expand toggle.
+		return m, nil
 	case target == "status-details":
-		m.statusDetailsCollapsed = !m.statusDetailsCollapsed
+		// Task-311: details live in the sidebar, no fold toggle.
+		return m, nil
 	case target == "stop":
 		if m.turnIsActive() {
 			return m, m.cmdStopTurn()

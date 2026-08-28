@@ -345,7 +345,10 @@ type AppModel struct {
 	// inputExpectedSince is set when session defaults finish loading; the
 	// watchdog uses it to detect startup wedges with zero KeyMsg (BUG-328).
 	inputExpectedSince time.Time
-	viewport      viewportState
+	// ss3 holds a bare 'O' rune while Windows ConPTY delivers an SS3 function
+	// key as 'O'+suffix rune records (BUG-328, tui.log pid 18400).
+	ss3               ss3FKeyState
+	viewport            viewportState
 	mouseSel      mouseSelect
 	mouseDrag     mouseDrag
 	rowCache      []chatRow
@@ -515,8 +518,6 @@ type AppModel struct {
 	// Input focus / slash suggestion selection
 	cursorOn               bool
 	suggIdx                int
-	statusSkillsExpanded   bool // F3: expand attached skill names under the status chip
-	statusDetailsCollapsed bool // F4 / click line 0: hide mode–project rows; status row stays
 
 	// sessionLoading locks chat while provider/project catalogs load after connect.
 	sessionLoading bool
@@ -661,7 +662,7 @@ var knownSlashCommands = []slashCommand{
 	{"/headless", "Print next response to stdout only"},
 	{"/status", "Show current connection status"},
 	{"/dumpview", "Dump live View() layout to /tmp/flowpilot-you-view.txt (debug)"},
-	{"/info", "Toggle session info panel (top-right; also F2)"},
+	{"/info", "Print session/status details (also F2)"},
 	{"/login", "Sign in to Supabase (email/password) — Desktop session parity"},
 	{"/settings", "Open Desktop app for Settings (start if not running)"},
 	{"/sync", "Push session to Drive — /sync · /sync all"},

@@ -28,19 +28,24 @@ func TestCA633_ConnectedMsg_StartsSidebarCollapsed_ClaudeCodexGrok(t *testing.T)
 		t.Run(pk, func(t *testing.T) {
 			m := New(config.ChatConfig{Provider: pk}, "http://127.0.0.1:4317")
 			m.width, m.height = 126, 50
+			m.fullWidth = 126
 			m2, _ := m.Update(ConnectedMsg{RunnerURL: "http://127.0.0.1:4317"})
 			am := m2.(*AppModel)
-			if am.useRightSidebar() {
-				t.Fatalf("[%s] cold start must NOT force the F2 sidebar open", pk)
+			if !am.useRightSidebar() {
+				t.Fatalf("[%s] cold start must show the reactive sidebar on wide terminal (Task-311)", pk)
 			}
-			// F2 still toggles it open (existing contract).
+			// F2 is now the /info alias and no longer toggles the sidebar (Task-311).
+			before := am.useRightSidebar()
 			m3, _ := am.handleKey(tea.KeyMsg{Type: tea.KeyF2})
-			if !m3.(*AppModel).useRightSidebar() {
-				t.Fatalf("[%s] F2 must still open the sidebar", pk)
+			if m3.(*AppModel).useRightSidebar() != before {
+				t.Fatalf("[%s] F2 must not toggle the sidebar (Task-311)", pk)
 			}
-			m4, _ := m3.(*AppModel).handleKey(tea.KeyMsg{Type: tea.KeyF2})
-			if m4.(*AppModel).useRightSidebar() {
-				t.Fatalf("[%s] F2 must still collapse the sidebar", pk)
+			if len(m3.(*AppModel).messages) == 0 {
+				t.Fatalf("[%s] F2 must print the /info dump (Task-311)", pk)
+			}
+			m4, _ := m3.(*AppModel).handleKey(tea.KeyMsg{Type: tea.KeyF4})
+			if m4.(*AppModel).useRightSidebar() != before {
+				t.Fatalf("[%s] F4 must not toggle the sidebar (Task-311)", pk)
 			}
 		})
 	}
@@ -79,7 +84,7 @@ func TestCA633_IdleCursorTick_SkipsComposeCache(t *testing.T) {
 	m.sessionLoading = false
 	m.sessionDefaultsLoaded = true
 	m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-	m.sessionPanel.Collapsed = false // sidebar ON → compose path exercised
+	enableSidebarForTest(m) // sidebar ON → compose path exercised
 	for i := 0; i < 10; i++ {
 		m.addMessage("assistant", "line", "")
 	}
@@ -124,7 +129,7 @@ func TestCA633_TypingRebuildsCompose(t *testing.T) {
 	m.sessionLoading = false
 	m.sessionDefaultsLoaded = true
 	m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-	m.sessionPanel.Collapsed = false
+	enableSidebarForTest(m)
 	m.View() // compose once
 
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
@@ -143,7 +148,7 @@ func TestCA633_LiveCursorStillRecomposes(t *testing.T) {
 	m.width, m.height = 126, 50
 	m.sessionLoading = false
 	m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-	m.sessionPanel.Collapsed = false
+	enableSidebarForTest(m)
 	m.turnStream = &turnStreamState{}
 	m.View() // compose once
 
@@ -162,7 +167,7 @@ func TestCA633_BlockedBar_StillRenderedAfterCompose(t *testing.T) {
 	m.asciiMode = true
 	m.mode = ModeFlow
 	m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-	m.sessionPanel.Collapsed = false
+	enableSidebarForTest(m)
 	m.View()
 	m2, _ := m.Update(AgentGraphMsg{Graph: &client.AgentGraphSnapshot{
 		LoopState: client.AgentLoopState{Status: "blocked", BlockReason: "escalate", GateReason: "codex account missing"},

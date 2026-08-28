@@ -22,7 +22,7 @@ func (m *AppModel) openableStepRunIDs() []string {
 }
 
 func (m *AppModel) f2StepPickerActive() bool {
-	return m.authPhase == AuthNone && !m.sessionPanel.Collapsed && len(m.collectSuggestions()) == 0
+	return m.authPhase == AuthNone && m.useRightSidebar() && len(m.collectSuggestions()) == 0
 }
 
 func (m *AppModel) clampF2StepPickIdx() {

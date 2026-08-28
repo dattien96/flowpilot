@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"flowpilot-runner/internal/tui/client"
 )
@@ -12,7 +13,6 @@ import (
 // sessionInfoPanel is a collapsible top-right overlay for bootstrap/session status
 // (runner URL, project, active provider session) so it does not spam the chat transcript.
 type sessionInfoPanel struct {
-	Collapsed   bool
 	RunnerURL   string
 	RunID       string // current run id (e.g. "run-102521")
 	ProjectPath string
@@ -289,76 +289,33 @@ func (m *AppModel) refreshSessionPanel() {
 	m.sessionPanel.DriveBadge = m.openChatDriveBadge()
 }
 
-// renderSessionPanelOverlay returns right-aligned panel lines (collapsed chip or expanded box).
-func (m *AppModel) renderSessionPanelOverlay() []string {
-	if !m.sessionPanel.hasContent() {
-		return nil
+// infoDump prints the session/status details as a chat message — the shared
+// body of /info, /status and the F2 alias (Task-311: no panel toggle exists).
+func (m *AppModel) infoDump() (tea.Model, tea.Cmd) {
+	auth := "(not signed in)"
+	if m.signedInEmail != "" {
+		auth = m.signedInEmail
+	} else if m.authNeedLogin {
+		auth = "SIGN-IN REQUIRED — /login"
 	}
-	width := m.width
-	if width < 20 {
-		width = 80
-	}
-	// Match Desktop --text-dim / --accent / --bg-3 (styles.css :root).
-	boxStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim)).BorderForeground(lipgloss.Color(colorAccent))
-	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
-
-	if m.sessionPanel.Collapsed {
-		chip := "[info] F2 or /info"
-		if m.asciiMode {
-			chip = "[info] F2|/info"
-		}
-		return []string{rightAlignPlain(hintStyle.Render(chip), width)}
-	}
-
+	m.refreshSessionPanel()
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Status: %s | Mode: %s | %s | Provider: %s | Model: %s | Auth: %s\n",
+		m.connStatus, m.mode, m.yoloStatusLabel(), m.provider, m.model, auth))
+	sb.WriteString("Active provider account: " + orDash(m.activeProviderAccountLabel()) + "\n")
 	m.sessionPanel.DriveStatus = m.driveIndicatorLine()
 	m.sessionPanel.DriveBadge = m.openChatDriveBadge()
-	body := m.sessionPanel.lines()
-	if steps := m.flowStepsPanelLines(); len(steps) > 0 {
-		body = append(body, m.stepsSectionTitle())
-		body = append(body, steps...)
+	for _, line := range m.sessionPanel.lines() {
+		sb.WriteString(line + "\n")
 	}
-	if len(body) == 0 {
-		return nil
-	}
-	maxInner := width * 2 / 5
-	if maxInner < 28 {
-		maxInner = 28
-	}
-	if maxInner > width-2 {
-		maxInner = width - 2
-	}
-	var framed []string
-	top := "┌─ session " + strings.Repeat("─", max(0, maxInner-11)) + "┐"
-	if m.asciiMode {
-		top = "+- session " + strings.Repeat("-", max(0, maxInner-11)) + "+"
-	}
-	framed = append(framed, top)
-	for _, line := range body {
-		// Width must ignore ANSI from step highlight styles; keep any trailing
-		// [open]/[back] chip visible when a long step row is squeezed (CA-528).
-		line = truncateStepLine(line, maxInner-2)
-		pad := maxInner - 2 - lipgloss.Width(line)
-		if pad < 0 {
-			pad = 0
-		}
-		inner := "│ " + line + strings.Repeat(" ", pad) + "│"
-		if m.asciiMode {
-			inner = "| " + line + strings.Repeat(" ", pad) + "|"
-		}
-		framed = append(framed, inner)
-	}
-	bot := "└─ F2 or /info " + strings.Repeat("─", max(0, maxInner-16)) + "┘"
-	if m.asciiMode {
-		bot = "+- F2 or /info " + strings.Repeat("-", max(0, maxInner-16)) + "+"
-	}
-	framed = append(framed, bot)
-
-	out := make([]string, 0, len(framed))
-	for _, line := range framed {
-		out = append(out, rightAlignPlain(boxStyle.Render(line), width))
-	}
-	return out
+	sb.WriteString("(sidebar follows terminal width · /info prints this dump · /open /agent for navigation)")
+	m.addMessage("system", strings.TrimRight(sb.String(), "\n"), "")
+	return m, nil
 }
+
+// renderSessionPanelOverlay is gone (Task-311): the session/steps/details
+// content renders only as the reactive right sidebar column
+// (renderRightSidebar). No overlay, no F2 toggle, no collapsed chip.
 
 func rightAlignPlain(s string, width int) string {
 	w := lipgloss.Width(s)
@@ -375,8 +332,14 @@ func rightAlignPlain(s string, width int) string {
 // sidebar column (OpenCode-style) instead of the legacy top-right overlay. It only
 // engages on wide terminals (>=100 cols) with an expanded session panel.
 func (m *AppModel) useRightSidebar() bool {
-	return m.sessionPanel.hasContent() && m.terminalWidth() >= 100 && !m.sessionPanel.Collapsed
+	return m.sessionPanel.hasContent() && m.terminalWidth() >= tuiSidebarMinWidth
 }
+
+// tuiSidebarMinWidth is the terminal width at which the reactive right sidebar
+// appears (OpenCode-style): wide terminals get the session/steps/details
+// column, narrow ones get chat only. There is no F2 toggle anymore — width is
+// the only switch (Task-311).
+const tuiSidebarMinWidth = 120
 
 // terminalWidth returns the real terminal width (stable even mid-render).
 func (m *AppModel) terminalWidth() int {
@@ -425,7 +388,9 @@ func (m *AppModel) chatWidth() int {
 }
 
 // renderRightSidebar returns the full-height right sidebar lines (OpenCode-style):
-// session info header, then a todo-list of flow steps. h is the terminal height.
+// session info header, flow steps, then the status-details section that used to be
+// the F4-expanded status rows (mode / model / skills / account / context limits)
+// (Task-311). h is the terminal height.
 func (m *AppModel) renderRightSidebar(h int) []string {
 	if !m.useRightSidebar() {
 		return nil
@@ -436,14 +401,20 @@ func (m *AppModel) renderRightSidebar(h int) []string {
 	m.sessionPanel.DriveStatus = m.driveIndicatorLine()
 	m.sessionPanel.DriveBadge = m.openChatDriveBadge()
 	for _, line := range m.sessionPanel.lines() {
-		out = append(out, styleSystem.Render(truncateVisual(line, w-2)))
+		plain := stripANSI(styleSystem.Render(line))
+		for _, wl := range wrapText(plain, w-2) {
+			if wl == "" {
+				continue
+			}
+			out = append(out, styleSystem.Render(wl))
+		}
 	}
 	out = append(out, "")
 	out = append(out, m.stepsSectionTitle())
-	// Height-aware step budget (run-142155): fit as many steps as the sidebar
-	// rows allow after the session header block; floor at 8 so a short
-	// terminal still shows the core list, and "… +N more" only when overflow.
-	maxRows := h - len(out) - 4
+	// Height-aware step budget: fit as many steps as the sidebar rows allow
+	// after the session header. Sidebar now only holds session + steps (no
+	// status) per user request – status details live in the chat chrome.
+	maxRows := h - len(out) - 2
 	if maxRows < 8 {
 		maxRows = 8
 	}
@@ -454,11 +425,63 @@ func (m *AppModel) renderRightSidebar(h int) []string {
 	if len(steps) == 0 {
 		out = append(out, styleSystem.Render("(no steps)"))
 	}
-	out = append(out, "")
-	out = append(out, styleLink.Render("[collapse]"))
 	// Pad to full height so the sidebar is a solid right column.
 	for len(out) < h {
 		out = append(out, " ")
+	}
+	return out
+}
+
+// renderSidebarStatusSection is the former F4 status-details content, rendered
+// as sidebar rows (Task-311): mode, model · reasoning · YOLO · posture, attached
+// skills, active account + quota, context limits.
+// Truncation hid the account email/quota (sidebar ~40 cols). Wrap instead so
+// every token stays visible on a narrow sidebar.
+func (m *AppModel) renderSidebarStatusSection(w int) []string {
+	var out []string
+	out = append(out, styleGate.Render("status"))
+	appendWrapped := func(styled string) {
+		if styled == "" {
+			return
+		}
+		plain := stripANSI(styled)
+		wrapped := wrapText(plain, w)
+		for _, wl := range wrapped {
+			if wl == "" {
+				continue
+			}
+			out = append(out, styleSystem.Render(wl))
+		}
+	}
+	// Mode line: render without the status-line fitStatusWidth truncation so
+	// wrapText can show the full flow label instead of "…" on a 40-col sidebar.
+	if line := m.renderStatusModeLine(200); line != "" {
+		appendWrapped(line)
+	}
+	if line := m.renderStatusModelLine(" · "); line != "" {
+		appendWrapped(line)
+	}
+	for _, extra := range formatAttachedSkillsExpanded(attachedSkillNames(m.selectedSkills), w) {
+		appendWrapped(extra)
+	}
+	// Account line: provider | account | quota — wrap so email + quota never
+	// get cut to "…" on a 40-col sidebar (user report: acc info missing).
+	if acc := m.renderStatusAccountLine(" | "); acc != "" {
+		appendWrapped(acc)
+		// When quota wrapped onto its own line, also emit the full styled quota
+		// detail on the next line so "7d:84% · resets Jan 5" is never lost.
+		if m.account != nil {
+			if q := strings.TrimSpace(formatAccountLimits(m.account)); q != "" && !strings.Contains(stripANSI(acc), stripANSI(q)) {
+				appendWrapped(q)
+			}
+		}
+	} else if p := strings.TrimSpace(m.provider); p != "" {
+		// No account yet (catalog loading) — still show provider so sidebar never
+		// looks empty; account appears once SessionDefaultsMsg binds it.
+		appendWrapped(styleStatus.Render(p))
+	}
+	if usage := formatContextLimits(m.lastTokens, m.modelContextWin); usage != "" {
+		appendWrapped(usage)
 	}
 	return out
 }

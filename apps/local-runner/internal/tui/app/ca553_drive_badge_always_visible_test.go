@@ -140,7 +140,7 @@ func TestRenderRightSidebar_ShowsOpenChatBadge(t *testing.T) {
 	m.width = 120
 	m.height = 30
 	m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-	m.sessionPanel.Collapsed = false
+	enableSidebarForTest(m)
 	m.chatList = []client.RunHistoryItem{{RunID: "run-107774", Status: "completed", RunKind: "workflow", SyncStatus: "synced"}}
 	m.runHandle = &client.RunHandle{RunID: "run-107774"}
 	m.sessionPanel.RunID = "run-107774"

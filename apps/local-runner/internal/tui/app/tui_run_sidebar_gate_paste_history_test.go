@@ -136,7 +136,7 @@ func TestRightSidebar_IncludesRunID(t *testing.T) {
 	m := flowThinkingModel("grok")
 	m.width, m.height = 120, 30
 	m.fullWidth = 120
-	m.sessionPanel.Collapsed = false
+	enableSidebarForTest(m)
 	m.refreshSessionPanel()
 	lines := m.renderRightSidebar(m.height)
 	joined := strings.Join(lines, "\n")

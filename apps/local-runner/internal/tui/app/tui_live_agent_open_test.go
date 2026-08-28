@@ -36,13 +36,15 @@ func TestStepsSuggestChildAgentOpen_IgnoresContextOnly(t *testing.T) {
 	}
 }
 
-func TestAgentRunsHydrated_ExpandsF2AndShowsOpen(t *testing.T) {
+func TestAgentRunsHydrated_ShowsOpenInSidebar(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "grok"}, "http://127.0.0.1:4317")
-	m.width, m.height = 120, 36
+	enableSidebarForTest(m)
+	m.width, m.height = tuiSidebarMinWidth+20, 36
+	m.fullWidth = tuiSidebarMinWidth + 20
 	m.asciiMode = true
 	m.mode = ModeFlow
 	m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-	m.sessionPanel.Collapsed = true // start folded
+	m.width, m.fullWidth = tuiSidebarMinWidth-1, tuiSidebarMinWidth-1 // start narrow
 	m.runHandle = &client.RunHandle{RunID: "run-main", Status: "running"}
 	m.flowSteps = []client.WorkflowStepRuntime{
 		{StepID: "s1", NodeID: "my-reviewer", AgentRef: "my-reviewer", Status: "RUNNING"},
@@ -52,6 +54,7 @@ func TestAgentRunsHydrated_ExpandsF2AndShowsOpen(t *testing.T) {
 	if strings.Contains(strings.Join(m.flowStepsPanelLines(), "\n"), "[open]") {
 		t.Fatal("must not show [open] before agent graph hydrate")
 	}
+	m.width, m.fullWidth = tuiSidebarMinWidth+20, tuiSidebarMinWidth+20
 
 	next, _ := m.Update(agentRunsHydratedMsg{
 		ParentRunID: "run-main",
@@ -61,23 +64,24 @@ func TestAgentRunsHydrated_ExpandsF2AndShowsOpen(t *testing.T) {
 		},
 	})
 	am := next.(*AppModel)
-	if am.sessionPanel.Collapsed {
-		t.Fatal("F2 panel must expand when child agents hydrate")
+	if !am.useRightSidebar() {
+		t.Fatal("wide terminal must show the sidebar")
 	}
 	joined := strings.Join(am.flowStepsPanelLines(), "\n")
 	if !strings.Contains(joined, "[open]") {
 		t.Fatalf("expected live [open] after hydrate:\n%s", joined)
 	}
 	if _, _, ok := findClickTarget(am, "agent-open:run-rev"); !ok {
-		t.Fatalf("F2 [open] must be hittable while panel expanded:\n%s",
-			strings.Join(am.renderSessionPanelOverlay(), "\n"))
+		t.Fatalf("sidebar [open] must be hittable:\n%s",
+			strings.Join(am.renderRightSidebar(30), "\n"))
 	}
 }
 
-func TestAgentGraphUpdated_ExpandsF2ForLiveChild(t *testing.T) {
+func TestAgentGraphUpdated_LiveChildShowsOpen(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "codex"}, "http://127.0.0.1:4317")
 	m.mode = ModeFlow
-	m.sessionPanel.Collapsed = true
+	enableSidebarForTest(m)
+	m.width, m.fullWidth = tuiSidebarMinWidth+20, tuiSidebarMinWidth+20
 	m.runHandle = &client.RunHandle{RunID: "run-p", Status: "running"}
 	m.flowSteps = []client.WorkflowStepRuntime{
 		{StepID: "s1", NodeID: "coder", AgentRef: "coder", Status: "RUNNING"},
@@ -93,8 +97,8 @@ func TestAgentGraphUpdated_ExpandsF2ForLiveChild(t *testing.T) {
 		},
 	}})
 	am := next.(*AppModel)
-	if am.sessionPanel.Collapsed {
-		t.Fatal("agent_graph_updated must expand F2 when children present")
+	if !am.useRightSidebar() {
+		t.Fatal("wide terminal must keep the sidebar")
 	}
 	if !strings.Contains(strings.Join(am.flowStepsPanelLines(), "\n"), "[open]") {
 		t.Fatal("live child step must show [open]")

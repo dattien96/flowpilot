@@ -98,25 +98,26 @@ func (m *AppModel) checkInputWatchdog(at time.Time) (tea.Model, tea.Cmd) {
 	if m.lastInputAt.IsZero() {
 		if !m.inputExpectedSince.IsZero() && at.Sub(m.inputExpectedSince) >= inputStallThreshold && !m.inputStallLogged {
 			stall := at.Sub(m.inputExpectedSince)
-			tuiLog("input-watchdog: startup input stalled — session ready but no KeyMsg for %s since %s; connStatus=%s flowBlocked=%v viewingChild=%v turnActive=%v; click terminal title for focus or Ctrl+C restart",
+			tuiLog("input-watchdog: startup input stalled — session ready but no KeyMsg for %s since %s; connStatus=%s flowBlocked=%v viewingChild=%v turnActive=%v; terminal not delivering keys",
 				stall.Round(time.Second), m.inputExpectedSince.Format(time.RFC3339),
 				m.connStatus, m.flowLoopBlocked(), m.viewingChild(), m.turnIsActive())
 			m.inputStallLogged = true
-			m.statusMsg = "input stalled: no keys received (" + stall.Round(time.Second).String() + ") — click terminal for focus, use ← → Enter, or Ctrl+C"
-			m.addMessage("system", "Input stalled at startup: console is not delivering keys to the TUI (F2/F4 and typing will not work). Click the terminal window for focus, or Ctrl+C and restart.", "gate")
+			m.statusMsg = "input stalled: terminal is not delivering keys — close this window to exit (runner is cleaned up)"
+			m.addMessage("system", "Input stalled: the terminal stopped delivering keys to the TUI (the session is otherwise alive). Close this terminal window to exit — the Go runner is terminated automatically.", "gate")
 		}
 		return m, cmdInputWatchdog()
 	}
 	if !m.inputStallLogged && at.Sub(m.lastInputAt) >= inputStallThreshold {
 		stall := at.Sub(m.lastInputAt)
 		motionLive := !m.lastMotionAt.IsZero() && at.Sub(m.lastMotionAt) < inputStallThreshold
-		tuiLog("input-watchdog: console input stalled — no KeyMsg/MouseMsg for %s since %s; connStatus=%s flowBlocked=%v viewingChild=%v turnActive=%v motionLive=%v hadRealKey=%v; use ← → Enter on cards or Ctrl+C",
+		pending := pendingConsoleInputEvents()
+		tuiLog("input-watchdog: console input stalled — no KeyMsg/MouseMsg for %s since %s; connStatus=%s flowBlocked=%v viewingChild=%v turnActive=%v motionLive=%v hadRealKey=%v pendingConsoleEvents=%d; use ← → Enter on cards or Ctrl+C",
 			stall.Round(time.Second), m.lastInputAt.Format(time.RFC3339),
-			m.connStatus, m.flowLoopBlocked(), m.viewingChild(), m.turnIsActive(), motionLive, m.inputHadRealKey)
+			m.connStatus, m.flowLoopBlocked(), m.viewingChild(), m.turnIsActive(), motionLive, m.inputHadRealKey, pending)
 		m.inputStallLogged = true
 		if m.inputStallEligible() {
-			m.statusMsg = "input stalled: no keys received (" + stall.Round(time.Second).String() + ") — use ← → Enter on cards or Ctrl+C"
-			m.addMessage("system", "Input stalled: console is not delivering keys to the TUI (the session is otherwise alive). Use ← → Enter on action cards, or Ctrl+C and restart.", "gate")
+			m.statusMsg = "input stalled: terminal is not delivering keys — close this window to exit (runner is cleaned up)"
+			m.addMessage("system", "Input stalled: the terminal stopped delivering keys to the TUI (the session is otherwise alive). Close this terminal window to exit — the Go runner is terminated automatically.", "gate")
 		}
 	}
 	return m, cmdInputWatchdog()

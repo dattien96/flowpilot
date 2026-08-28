@@ -14,7 +14,7 @@ func testFlowWithChildAgents() *AppModel {
 	m.asciiMode = true
 	m.mode = ModeFlow
 	m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-	m.sessionPanel.Collapsed = false
+	enableSidebarForTest(m)
 	m.runHandle = &client.RunHandle{RunID: "run-main", Status: "running"}
 	m.agentRuns = []client.AgentRunSummary{
 		{RunID: "run-main", AgentName: "main", Role: "main", Status: "running"},
@@ -57,7 +57,7 @@ func TestStepPanel_ClickOpenFocusesChild(t *testing.T) {
 	m := testFlowWithChildAgents()
 	x, y, ok := findClickTarget(m, "agent-open:run-rev")
 	if !ok {
-		t.Fatalf("expected [open] hit; panel:\n%s", strings.Join(m.renderSessionPanelOverlay(), "\n"))
+		t.Fatalf("expected [open] hit; panel:\n%s", strings.Join(m.renderRightSidebar(m.height), "\n"))
 	}
 	m2, _ := m.dispatchMouseClick(x, y)
 	am := m2.(*AppModel)
@@ -92,7 +92,7 @@ func TestStepPanel_ClickBackReturnsMain(t *testing.T) {
 	x, y, ok := findClickTarget(m, "agent-back")
 	if !ok {
 		t.Fatalf("expected [back] hit; overlay:\n%s\nstatus:\n%s",
-			strings.Join(m.renderSessionPanelOverlay(), "\n"), m.renderStatusLine())
+			strings.Join(m.renderRightSidebar(m.height), "\n"), m.renderStatusLine())
 	}
 	m2, _ := m.dispatchMouseClick(x, y)
 	am := m2.(*AppModel)

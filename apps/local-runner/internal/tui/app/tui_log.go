@@ -44,6 +44,9 @@ func initTUILog() {
 }
 
 func tuiLog(format string, args ...any) {
+	if strings.TrimSpace(os.Getenv("FLOWPILOT_TUI_SKIP_MODE_RESTORE")) != "" {
+		return
+	}
 	msg := fmt.Sprintf(format, args...)
 	line := fmt.Sprintf("%s [%d] %s\n", time.Now().Format("15:04:05.000"), os.Getpid(), msg)
 	tuiLogMu.Lock()

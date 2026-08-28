@@ -24,7 +24,7 @@ func sidebarToolGroupModel(pk string) *AppModel {
 	m.width, m.height = 120, 30
 	m.asciiMode = true
 	m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-	m.sessionPanel.Collapsed = false
+	enableSidebarForTest(m)
 	m.addMessage("user", "fix the bug", "")
 	m.addMessage("assistant", strings.Repeat("context line ", 25), "")
 	m.addMessage("tool", "→ read_file", "tool")

@@ -94,8 +94,8 @@ func TestFlowSlash_CatalogDoesNotForceSubModeBug(t *testing.T) {
 	if !strings.Contains(view, "Ship Android") {
 		t.Fatalf("expected workflow name in message:\n%s", view)
 	}
-	if !strings.Contains(am.renderStatusLine(), "Ship Android") {
-		t.Fatalf("statusline missing flow name: %q", am.renderStatusLine())
+	if !strings.Contains(strings.Join(am.renderSidebarStatusSection(80), "\n"), "Ship Android") {
+		t.Fatalf("sidebar missing flow name")
 	}
 }
 
