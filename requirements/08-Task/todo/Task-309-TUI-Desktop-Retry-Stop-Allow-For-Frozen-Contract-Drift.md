@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-08-27`
 - Last Updated: `2026-08-27`
-- Parent Documents: [CP-43](../../07-Coding-Plan/inprogress/CP-43-Change-Contract-And-Canonical-Intent-Signature.md), [CP-43-Test-Steps F3](../../07-Coding-Plan/inprogress/CP-43-Test-Steps.md), [CP-55](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md)
+- Parent Documents: [CP-43](../../07-Coding-Plan/done/CP-43-Change-Contract-And-Canonical-Intent-Signature.md), [CP-43-Test-Steps F3](../../07-Coding-Plan/done/CP-43-Test-Steps.md), [CP-55](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md)
 - Child Documents: `None`
 - Related Documents: [CA-647](../../../change-audit/) (live F3 amend REST), BUG-231 FlowAwaitingUser Continue/Stop parity
 - Tags: `cli-tui, desktop, frozen-contract, scope-drift, cp-43, cp-55`
@@ -59,7 +59,7 @@ Operator bị frozen-contract scope drift có thể chọn 1 trong 3 hành vi t�
 
 ## 2. Parent Links
 
-- coding plan: [CP-43](../../07-Coding-Plan/inprogress/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) F3, [CP-55](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md) P-4
+- coding plan: [CP-43](../../07-Coding-Plan/done/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) F3, [CP-55](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md) P-4
 - tech design: delta UI; API đã ship `interactive_handlers.go:1511`
 - system spec: n/a
 - specific upstream ids: BUG-231 Continue/Stop chips, CA-647 amend REST

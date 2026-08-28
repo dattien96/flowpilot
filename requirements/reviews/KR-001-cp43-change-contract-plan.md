@@ -3,7 +3,7 @@
 ## Metadata
 
 - Review ID: `KR-001`
-- Subject: `CP-43` (`requirements/07-Coding-Plan/inprogress/CP-43-Change-Contract-And-Canonical-Intent-Signature.md`) + child Tasks 184–188
+- Subject: `CP-43` (`requirements/07-Coding-Plan/done/CP-43-Change-Contract-And-Canonical-Intent-Signature.md`) + child Tasks 184–188
 - Mode: `plan` (plan integrity + plan↔status↔code consistency for *claimed* deliverables; not a full runtime crash audit)
 - Claim-Revision: `1`
 - Reviewer: `Grok 4.5 (kill-review skill / SP-05)`

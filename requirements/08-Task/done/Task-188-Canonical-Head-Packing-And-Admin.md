@@ -5,12 +5,12 @@
 - Document ID: `Task-188`
 - Title: `Canonical-Head Packing And Admin Visibility`
 - Phase: `task`
-- Status: `done` (2026-08-11 — code complete per [CA-435](../../change-audit/CA-435-cp43-p5-pack-budget-and-admin-scope-diff.md); manual B19/B20 = tick in [CP-43-Test-Steps](../../07-Coding-Plan/inprogress/CP-43-Test-Steps.md))
+- Status: `done` (2026-08-11 — code complete per [CA-435](../../change-audit/CA-435-cp43-p5-pack-budget-and-admin-scope-diff.md); manual B19/B20 = tick in [CP-43-Test-Steps](../../07-Coding-Plan/done/CP-43-Test-Steps.md))
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-03`
 - Last Updated: `2026-08-11`
-- Parent Documents: [CP-43: Change Contract And Canonical Intent Signature](../../07-Coding-Plan/inprogress/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (P-5), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (AC-3, AC-8, AC-15)
+- Parent Documents: [CP-43: Change Contract And Canonical Intent Signature](../../07-Coding-Plan/done/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (P-5), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (AC-3, AC-8, AC-15)
 - Child Documents: `None`
 - Related Documents: [Task-186: Canonical Head And Intent Signature](./Task-186-Canonical-Head-And-Intent-Signature.md), [Task-187: Superseding Decision Records And Retire](./Task-187-Superseding-Decision-Records-And-Retire.md), [Task-097: Feature Catalog And Resolver](../../08-Task/done/Task-097-Feature-Catalog-And-Resolver.md), [Task-103: Engine Local Store And Drive Sync](../../08-Task/done/Task-103-Engine-Local-Store-And-Drive-Sync.md)
 - Replaces: `None`

@@ -13,7 +13,7 @@
 - Feature Keys: `agent-flow-engine`
 - Parent Documents: [CP-55: Flow-First Preflight Contract, Context Retrieval, and Canonical Acceptance](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md) (P-1), [SD-21: Change Contract And Canonical Intent Signature](../../06-System-Tech-Design/SD-21-Change-Contract-And-Canonical-Intent-Signature.md), [SS-14: Code Context And Regression Safety](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md)
 - Child Documents: `none`
-- Related Documents: [CA-328](../../../change-audit/CA-328-bug288-flow-mode-three-tier-gate-and-change-contract-reentry.md) (most recent prior `agent-flow-engine` entry, claims preserved), [CP-43](../../07-Coding-Plan/inprogress/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (P-3 will consume `agent.code`/`contract.freeze`), [CP-54](../../07-Coding-Plan/todo/CP-54-Locus-Anchored-Context-Relevance.md) (sibling foundation slice, same additive-only pattern)
+- Related Documents: [CA-328](../../../change-audit/CA-328-bug288-flow-mode-three-tier-gate-and-change-contract-reentry.md) (most recent prior `agent-flow-engine` entry, claims preserved), [CP-43](../../07-Coding-Plan/done/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (P-3 will consume `agent.code`/`contract.freeze`), [CP-54](../../07-Coding-Plan/todo/CP-54-Locus-Anchored-Context-Relevance.md) (sibling foundation slice, same additive-only pattern)
 - Replaces: `None`
 - Tags: `agent-flow-engine, change-contract, behavior-registry, flow-topology, deterministic, additive`
 

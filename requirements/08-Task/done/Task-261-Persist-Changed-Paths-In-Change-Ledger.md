@@ -13,7 +13,7 @@
 - Feature Keys: `context-regression-engine`
 - Parent Documents: [CP-54: Locus-Anchored Relevance Retrieval](../../07-Coding-Plan/todo/CP-54-Locus-Anchored-Context-Relevance.md) (P-1), [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md) (D-3 ordered-history, D-4 no-vector), [SS-14](../../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md) (AC-7 ghi files changed)
 - Child Documents: `none`
-- Related Documents: [CP-35](../../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md) (§4.1 `changeledger` gốc), [CP-43](../../07-Coding-Plan/inprogress/CP-43-Change-Contract-And-Canonical-Intent-Signature.md), [BUG-266] (determinism tie-break `CommitHash` — phải giữ), [BUG-323](../../09-BugFix/todo/BUG-323-GitNexus-Structure-Provider-Always-Returns-Empty.md) (**không chặn task này** — P-1 thuần git, không đụng GitNexus)
+- Related Documents: [CP-35](../../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md) (§4.1 `changeledger` gốc), [CP-43](../../07-Coding-Plan/done/CP-43-Change-Contract-And-Canonical-Intent-Signature.md), [BUG-266] (determinism tie-break `CommitHash` — phải giữ), [BUG-323](../../09-BugFix/todo/BUG-323-GitNexus-Structure-Provider-Always-Returns-Empty.md) (**không chặn task này** — P-1 thuần git, không đụng GitNexus)
 - Replaces: `None`
 - Tags: `context-regression-engine, changeledger, locus, retrieval, enabler, additive, backward-compatible`
 

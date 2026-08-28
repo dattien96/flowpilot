@@ -8,7 +8,7 @@
 - Status: `active`
 - Owner: `FlowPilot`
 - Created: `2026-08-11`
-- Parent Documents: [CP-55: Flow-First Preflight Contract, Context Retrieval, And Canonical Acceptance](./CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [CP-43-Test-Steps](../inprogress/CP-43-Test-Steps.md), [CP-54-Test-Steps](../inprogress/CP-54-Test-Steps.md)
+- Parent Documents: [CP-55: Flow-First Preflight Contract, Context Retrieval, And Canonical Acceptance](./CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [CP-43-Test-Steps](./CP-43-Test-Steps.md), [CP-54-Test-Steps](../inprogress/CP-54-Test-Steps.md)
 - Related Documents: Task-263…271 / CA-424…432 (xem bảng phase bên dưới)
 - Tags: `flow, change-contract, preflight, canonical-acceptance, verification`
 

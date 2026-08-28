@@ -13,7 +13,7 @@
 - Feature Keys: `context-regression-engine`
 - Parent Documents: [CP-35: Context And Regression Engine Rollout](../../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md) (§4.3 — nơi module `structure` ra đời)
 - Child Documents: `none`
-- Related Documents: [Task-185: Scope-Drift Detection](../../08-Task/done/Task-185-Scope-Drift-Detection.md) (**bị ảnh hưởng ngược** — `HighSeverity` không bao giờ true ⇒ `r-scope` không bao giờ block; claim `done-with-waiver` của [CA-353](../../change-audit/CA-353-task249-185-done-re-audit.md) bị vô hiệu một phần), [Task-259: source.dependence Context Source](../../08-Task/todo/Task-259-Source-Dependence-Context-Source.md) (**bị chặn** — T-3/T-5 bất khả thi khi chưa fix), [CP-43](../../07-Coding-Plan/inprogress/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (Q-3 "symbol-level block khi có GitNexus" — thực tế chưa từng chạy), [CP-43-CATALOG](../../07-Coding-Plan/inprogress/CP-43-Context-Source-Catalog-And-Test-Log.md) (§5 ghi lệnh người chạy tay **đúng**; §6 B12 đã đặt sẵn điều kiện dừng này), [CP-54](../../07-Coding-Plan/todo/CP-54-Locus-Anchored-Context-Relevance.md) (P-6 symbol-tier thừa hưởng cùng blocker), [CA-294](../../change-audit/CA-294-scope-drift-detection.md) (ghi nhận `DeclaredSymbols` là extension point chưa ai populate)
+- Related Documents: [Task-185: Scope-Drift Detection](../../08-Task/done/Task-185-Scope-Drift-Detection.md) (**bị ảnh hưởng ngược** — `HighSeverity` không bao giờ true ⇒ `r-scope` không bao giờ block; claim `done-with-waiver` của [CA-353](../../change-audit/CA-353-task249-185-done-re-audit.md) bị vô hiệu một phần), [Task-259: source.dependence Context Source](../../08-Task/todo/Task-259-Source-Dependence-Context-Source.md) (**bị chặn** — T-3/T-5 bất khả thi khi chưa fix), [CP-43](../../07-Coding-Plan/done/CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (Q-3 "symbol-level block khi có GitNexus" — thực tế chưa từng chạy), [CP-43-CATALOG](../../07-Coding-Plan/done/CP-43-Context-Source-Catalog-And-Test-Log.md) (§5 ghi lệnh người chạy tay **đúng**; §6 B12 đã đặt sẵn điều kiện dừng này), [CP-54](../../07-Coding-Plan/todo/CP-54-Locus-Anchored-Context-Relevance.md) (P-6 symbol-tier thừa hưởng cùng blocker), [CA-294](../../change-audit/CA-294-scope-drift-detection.md) (ghi nhận `DeclaredSymbols` là extension point chưa ai populate)
 - Replaces: `none`
 - Tags: `context-regression-engine, gitnexus, structure, blast-radius, cli-contract-drift, silent-failure, scope-drift, severity-high`
 
@@ -21,7 +21,7 @@
 
 ### Summary
 
-Phát hiện khi chuẩn bị implement Task-259 (`source.dependence`), trong bước verify CLI mà chính [CP-43-CATALOG §6 B12](../../07-Coding-Plan/inprogress/CP-43-Context-Source-Catalog-And-Test-Log.md) yêu cầu làm trước. Module `structure` — nền của mọi truy vấn "đổi cái này ảnh hưởng cái nào" — **chưa từng hoạt động** kể từ khi viết:
+Phát hiện khi chuẩn bị implement Task-259 (`source.dependence`), trong bước verify CLI mà chính [CP-43-CATALOG §6 B12](../../07-Coding-Plan/done/CP-43-Context-Source-Catalog-And-Test-Log.md) yêu cầu làm trước. Module `structure` — nền của mọi truy vấn "đổi cái này ảnh hưởng cái nào" — **chưa từng hoạt động** kể từ khi viết:
 
 `gitNexusProvider.Dependents` ([gitnexus.go:25](../../../apps/local-runner/internal/structure/gitnexus.go)) chạy `npx gitnexus impact <target> --json`. CLI thật **không có** flag `--json` ⇒ exit non-zero ⇒ [dòng 32-34](../../../apps/local-runner/internal/structure/gitnexus.go) nuốt lỗi và trả `DependentsSummary{Complete:false}` rỗng. Không log, không warning, không phân biệt được với "target thật sự không có dependents".
 
@@ -140,7 +140,7 @@ Help text nói rõ: *"what breaks if you change a **symbol**"*.
 
 `structure_test.go` kiểm `parseGitNexusOutput` bằng **JSON tổng hợp viết theo schema giả định** (`{dependents,nearest,flows}`). **Không test nào chạy CLI thật**, nên hợp đồng CLI trôi đi mà bộ test vẫn xanh 100%.
 
-Trớ trêu: [CP-43-CATALOG §5](../../07-Coding-Plan/inprogress/CP-43-Context-Source-Catalog-And-Test-Log.md) ghi lại các lần chạy impact **thủ công** với lệnh **đúng** (`--repo flowpilot`, không `--json`) và thu được kết quả thật. Người chạy đúng, code chạy sai, và không có gì đối chiếu hai đường đó.
+Trớ trêu: [CP-43-CATALOG §5](../../07-Coding-Plan/done/CP-43-Context-Source-Catalog-And-Test-Log.md) ghi lại các lần chạy impact **thủ công** với lệnh **đúng** (`--repo flowpilot`, không `--json`) và thu được kết quả thật. Người chạy đúng, code chạy sai, và không có gì đối chiếu hai đường đó.
 
 ## 3. Tác động
 

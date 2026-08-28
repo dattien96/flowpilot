@@ -20,7 +20,7 @@
 > **Closed 2026-07-24.** Every A1–A13 and C1–C17 row is done. The 2 remaining
 > non-optional cross-cut items (X1, X2) closed live this session; X3/X4 are
 > non-gating sanity notes by their own row text; A7's live click-through and
-> Phase B (B1–B12, moved to [CP-43](../inprogress/CP-43-Context-Source-Catalog-And-Test-Log.md))
+> Phase B (B1–B12, moved to [CP-43](../done/CP-43-Context-Source-Catalog-And-Test-Log.md))
 > are explicitly optional / out of this doc's own scope. Moved to `done/`
 > alongside [CP-51](./CP-51-Durable-Turn-Dispatch-State-Machine-And-Recovery-Reconciliation.md)
 > and [BUG-288](../../09-BugFix/done/BUG-288-Flow-Mode-Three-Tier-Gate-And-Change-Contract-Reentry-Gaps.md)

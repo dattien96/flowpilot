@@ -13,7 +13,7 @@
 - Feature Keys: `context-regression-engine`, `agent-flow-engine`, `change-contract`
 - Parent Documents: [CP-55: Flow-First Preflight Contract, Context Retrieval, and Canonical Acceptance](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md) (P-9, final phase)
 - Child Documents: `none`
-- Related Documents: [CA-424](../../../change-audit/CA-424-explicit-flow-writer-semantics-and-safety-topology.md) through [CA-431](../../../change-audit/CA-431-migrate-built-in-flows-and-e2e-recovery-parity-coverage.md) (every prior CP-55 phase), [CP-43](../../07-Coding-Plan/inprogress/CP-43-Change-Contract-And-Canonical-Intent-Signature.md), [CP-54](../../07-Coding-Plan/todo/CP-54-Locus-Anchored-Context-Relevance.md)
+- Related Documents: [CA-424](../../../change-audit/CA-424-explicit-flow-writer-semantics-and-safety-topology.md) through [CA-431](../../../change-audit/CA-431-migrate-built-in-flows-and-e2e-recovery-parity-coverage.md) (every prior CP-55 phase), [CP-43](../../07-Coding-Plan/done/CP-43-Change-Contract-And-Canonical-Intent-Signature.md), [CP-54](../../07-Coding-Plan/todo/CP-54-Locus-Anchored-Context-Relevance.md)
 - Replaces: `None`
 - Tags: `agent-flow-engine, context-regression-engine, change-contract, documentation, rollout, cp-closeout`
 
@@ -58,7 +58,7 @@ P-1 through P-8 are all implemented, reviewed, and regression-clean. The coding 
 ## 4. Exact Change
 
 - `requirements/07-Coding-Plan/todo/CP-54-Locus-Anchored-Context-Relevance.md` (**modified**): Child Documents clarifying note + Related Documents cross-reference.
-- `requirements/07-Coding-Plan/inprogress/CP-43-Change-Contract-And-Canonical-Intent-Signature.md` (**modified**): Related Documents cross-reference.
+- `requirements/07-Coding-Plan/done/CP-43-Change-Contract-And-Canonical-Intent-Signature.md` (**modified**): Related Documents cross-reference.
 - This Task doc + CA-432 (**new**).
 
 ## 5. Touched Areas

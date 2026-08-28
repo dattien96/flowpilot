@@ -5,7 +5,7 @@
 - Document ID: `CP-43-TEST-STEPS`
 - Title: `CP-43 Verification Steps By Feature Part`
 - Phase: `verification`
-- Status: `active`
+- Status: `done` (verification complete 2026-08-28 — F8 live run-174539)
 - Owner: `FlowPilot`
 - Created: `2026-08-11`
 - Parent Documents: [CP-43: Change Contract And Canonical Intent Signature](./CP-43-Change-Contract-And-Canonical-Intent-Signature.md), [CP-43-CATALOG: Context Source Catalog And Test Log](./CP-43-Context-Source-Catalog-And-Test-Log.md)
@@ -15,7 +15,7 @@
 ## AI Quick View
 
 - **What:** Checklist từng bước test cho 4 cơ chế cốt lõi CP-43 (P-1→P-4) + phần mở rộng P-5/P-6.
-- **Why:** Operator chạy một lần, tick pass/fail trong doc này. **Code CP-43 v1 done (2026-08-11)** — manual steps tick khi rảnh, không block ship.
+- **Why:** Operator chạy một lần, tick pass/fail trong doc này. **Code + verification CP-43 done (2026-08-28)** — F8 blast-radius live closed on run-174539.
 - **Working dir:** `cd apps/local-runner` cho mọi lệnh `go test` bên dưới.
 
 ## 4 phần cốt lõi (map CP-43)
@@ -232,9 +232,9 @@ go test ./internal/structure/... -count=1 -v
 
 | Step | Hành động                                          | Pass khi                                                          | Ref           |
 | ---- | -------------------------------------------------- | ----------------------------------------------------------------- | ------------- |
-| 6.M1 | Contract declared file/symbol thật → step validate | Block `### source.dependence` với dependents **live** từ GitNexus | B12 ⚠️        |
+| 6.M1 | Contract declared file/symbol thật → step validate | Block `### source.dependence` với dependents **live** từ GitNexus | B12 ✅ F8 run-174539 |
 | 6.M2 | Contract inferred (dir-bucket only)                | Section rỗng có chủ đích                                          | B12 ✅ (unit) |
-| 6.M3 | >10 targets, mix glob/doc                          | Chỉ query concrete; cap + deterministic                           | B23 ⚠️ live   |
+| 6.M3 | >10 targets, mix glob/doc                          | Chỉ query concrete; cap + deterministic                           | B23 ✅ (unit + F8 intra-run) |
 
 ---
 
@@ -250,7 +250,7 @@ Chạy **một phiên** liên tục sau khi 4 phần automated xanh. Tick từng
 | 4   | Hoàn nguyên hướng cũ + rejected record              | P-4               |
 | 5   | Prompt Claude + Codex Head-first                    | P-5               |
 | 6   | Panel desktop scope view                            | P-5               |
-| 7   | Dependence blast-radius step sau                    | P-6 ⚠️ manual B12 |
+| 7   | Dependence blast-radius step sau                    | P-6 ✅ F8 run-174539 |
 | 8   | contextsync manifest                                | P-5               |
 
 Chi tiết: [CP-43-CATALOG §6.1](./CP-43-Context-Source-Catalog-And-Test-Log.md).
@@ -279,11 +279,11 @@ Không phải tính Head hay drift (đó là P-3). P-5 trả lời: _AI và oper
 
 **Đã xong:** render Head block, source `canonical.head`, sync manifest, HTTP read endpoints, panel MVP, **T-2 budget-drop (render path)**, **ScopeDiff + feature list API + panel scope view**.
 
-**Chưa xong:** B19 live verify Claude/Codex; B20 manual log check under real long history; full CP-10 packer (v1 char budget only).
+**Residual (không block CP-43 done):** B20 long-history drop log; full CP-10 packer (v1 char budget only).
 
-### 2. P-6 — trạng thái (2026-08-11)
+### 2. P-6 — trạng thái (2026-08-28)
 
-**Code done; verification chưa đóng hết.**
+**Code + verification done.**
 
 | Tiêu chí                                          | Trạng thái                                                                                  |
 | ------------------------------------------------- | ------------------------------------------------------------------------------------------- |
@@ -292,9 +292,7 @@ Không phải tính Head hay drift (đó là P-3). P-5 trả lời: _AI và oper
 | Path → symbol heuristic (`GitNexusImpactTargets`) | ✅ Done (CA-434)                                                                            |
 | Task-259 `source.dependence` + default set        | ✅ Done                                                                                     |
 | Unit tests `context_source_dependence_test.go`    | ✅ Pass                                                                                     |
-| Manual B12 / B23 live GitNexus trên Flow thật     | ⚠️ **Chưa tick**                                                                            |
-
-**Còn lại để đóng P-6 verification:** chạy B12/B23 trên desktop + runner live (`npx gitnexus analyze` trước).
+| Manual B12 / B23 live GitNexus trên Flow thật     | ✅ **F8 run-174539** (B12 live; B23 cap/sort intra-run)                                     |
 
 ### 3. BUG-323 — đã fix (2026-08-11)
 
@@ -311,23 +309,23 @@ Parser schema v2 + trả error thay vì rỗng im lặng. Follow-up CA-434 map f
 | Chứ năng                            | Trạng thái                                 |
 | ----------------------------------- | ------------------------------------------ |
 | P-2 `r-scope` block (high-severity) | ✅ Code path hoạt động; ⚠️ B14 manual live |
-| P-6 `source.dependence`             | ✅ Unit pass; ⚠️ B12/B23 manual live       |
+| P-6 `source.dependence`             | ✅ Unit + F8 live (run-174539)             |
 | P-5 packing                         | Không phụ thuộc GitNexus                   |
 
 ---
 
 ## Checklist tổng (operator)
 
-| Phần               | Automated      | Manual      | Ghi chú                            |
-| ------------------ | -------------- | ----------- | ---------------------------------- |
-| P-1 Contract       | ☐              | ☐           | Code done                          |
-| P-2 Scope drift    | ☐              | ☐ B13 ☐ B14 | Code done; B14 manual in doc       |
-| P-3 Canonical Head | ☐              | ☐           | Code done                          |
-| P-4 Decisions      | ☐              | ☐           | Code done                          |
-| P-5 Packing/Admin  | ☐              | ☐ B19-B20   | **Code done** — manual tick in doc |
-| P-6 Dependence     | ☐ automated ✅ | ☐ B12/B23   | **Code done** — manual tick in doc |
+| Phần               | Automated | Manual              | Ghi chú                                      |
+| ------------------ | --------- | ------------------- | -------------------------------------------- |
+| P-1 Contract       | ✅        | ✅ C1/C2/F1         | Live-verified 2026-08-27                     |
+| P-2 Scope drift    | ✅        | ✅ B13/B14 F2/F3    | Live-verified 2026-08-27                     |
+| P-3 Canonical Head | ✅        | ✅ C5/F4/F5         | Live-verified run-268792                     |
+| P-4 Decisions      | ✅        | ✅ C6/F6            | Live-verified F6 chain                       |
+| P-5 Packing/Admin  | ✅        | ✅ B19/B21/B22      | B20 residual (long-history log)              |
+| P-6 Dependence     | ✅        | ✅ B12/F8           | F8 run-174539; B23 unit + intra-run          |
 
-**CP-43 code complete (2026-08-11).** Verification-complete = tick manual steps trong doc này + one-shot bundle xanh.
+**CP-43 verification complete (2026-08-28).** Code done 2026-08-11; manual battery closed F8 run-174539.
 
 ###############################################
 
@@ -523,13 +521,15 @@ Verify prompt coder: thứ tự section theo priority — canonical.head (1) →
 
 # P-6 — source.dependence (FLOW only)
 
-## [FLOW] F8 — Blast-radius live (B12/B23)
+## [FLOW] ✅ F8 — Blast-radius live (B12/B23) — PASSED LIVE 2026-08-28 run-174539
 
-Mở /flow → context-coding-review-synthesis. Prompt:
+> **Trạng thái:** ✅ **Live-verified (run-174539, rag-harness/grok, gate-sandbox):** context package `fcp-282be184` + child prompts `run-174731` (tester) và `run-175051` (coder) đều có `### source.dependence` với `Calc → 4` dependents + flows (`FormatMean`, `ShareCreditsViaCalc`, `SplitBillViaCalc`) từ GitNexus live (`npx gitnexus analyze` trên gate-sandbox). Frozen `declared_paths:[calc.go,divide_checked3_test.go]` → heuristic `calc.go` → `Calc` (không query `Divide`). Hai writer prompts **giống hệt** (deterministic intra-run). Flow `done` `00:10:04Z`; `go test -v ./...` pass; canonical `calc-core` finalized `record_seq:4`. **Residual không block:** dir-bucket empty + GitNexus-off note chưa tick riêng; cross-flow B23 2-run chưa chạy (unit tests cover cap/filter).
+
+Mở /flow → context-coding-review-synthesis (hoặc rag-harness parity). Prompt:
 Them ham DivideChecked3(a, b int) (int, error) vao calc.go: b==0 -> (0, ErrDivideByZero).
-Verify ở bước reviewer_correctness/synthesis:
+Verify ở bước tester/implement (context package):
 
-- Prompt có ### source.dependence: "Sửa Divide ảnh hưởng <dependents> + flows" (live GitNexus).
-- Chạy 2 lần → output giống hệt (sorted/deterministic).
-- Flow với task không khai file cụ thể (planner chỉ dir) → section rỗng có chủ đích.
-- Tắt gitnexus → note "chưa index", không lỗi.
+- Prompt có ### source.dependence: blast-radius live GitNexus (path `calc.go` → symbol `Calc`).
+- Chạy 2 lần trong cùng flow → output giống hệt (sorted/deterministic).
+- Flow với task không khai file cụ thể (planner chỉ dir) → section rỗng có chủ đích (unit).
+- Tắt gitnexus → note "chưa index", không lỗi (chưa tick live).
