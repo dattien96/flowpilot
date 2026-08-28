@@ -135,15 +135,18 @@ func (m *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.authPhase != AuthNone {
 		return m, nil
 	}
-	if msg.Button == tea.MouseButtonWheelUp {
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
 		m.scrollTranscript(3)
 		return m, nil
-	}
-	if msg.Button == tea.MouseButtonWheelDown {
+	case tea.MouseButtonWheelDown:
 		m.scrollTranscript(-3)
 		return m, nil
 	}
-	if msg.Shift && isLeftMouse(msg) {
+	// Shift: copy selection (drag OR single click on a line). SGR 1006 encodes
+	// drag motion and release with Button=None, so do NOT gate on isLeftMouse —
+	// Terminal.app only delivers press/release reliably, not mid-drag motion.
+	if msg.Shift {
 		m.mouseDrag = mouseDrag{}
 		switch msg.Action {
 		case tea.MouseActionPress:
@@ -156,12 +159,27 @@ func (m *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			// Terminal.app never delivers Cmd+C, so releasing the drag copies the
 			// selection (CA-515). Ctrl+C stays as a fallback elsewhere.
 			if msg.Action == tea.MouseActionRelease {
+				// Shift+click (zero-area selection, no drag motion) copies the
+				// whole clicked line — the reliable copy affordance on terminals
+				// that do not forward drag motion (macOS Terminal.app).
+				if m.mouseSel.x0 == m.mouseSel.x1 && m.mouseSel.y0 == m.mouseSel.y1 {
+					m.mouseSel.x0 = 0
+					m.mouseSel.x1 = 1 << 20
+				}
 				return m, m.autoCopySelectionOnDragEnd()
 			}
 		}
 		return m, nil
 	}
-	if isLeftMouse(msg) && !msg.Shift {
+	// Plain drag: motion may arrive with Button=None mid-drag (SGR 1006), so
+	// handle it here rather than only on isLeftMouse.
+	if msg.Action == tea.MouseActionMotion {
+		if m.mouseDrag.down {
+			return m.handlePlainLeftMouse(msg)
+		}
+		return m, nil
+	}
+	if isLeftMouse(msg) {
 		return m.handlePlainLeftMouse(msg)
 	}
 	return m, nil

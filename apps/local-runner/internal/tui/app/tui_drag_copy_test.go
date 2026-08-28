@@ -128,3 +128,39 @@ func isQuitOrCopied(msg tea.Msg) bool {
 	}
 	return false
 }
+
+// TestShiftClick_CopiesWholeLine: on terminals that do not forward drag motion
+// (macOS Terminal.app), a Shift+click (press+release, no motion) must still copy
+// the full clicked line and toast "Copied selection." (CA-674 follow-up).
+func TestShiftClick_CopiesWholeLine(t *testing.T) {
+	m := New(config.ChatConfig{Provider: "grok"}, "http://127.0.0.1:4317")
+	m.width, m.height = 80, 24
+	m.sessionLoading = false
+	m.asciiMode = true
+	m.addMessage("assistant", "shift click copies this whole line", "")
+	_ = m.View()
+	c := m.tuiChrome()
+
+	p1, _ := m.handleMouse(tea.MouseMsg{
+		X: 4, Y: c.panelH, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, Shift: true,
+	})
+	p2, cmd := p1.(*AppModel).handleMouse(tea.MouseMsg{
+		X: 4, Y: c.panelH, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft, Shift: true,
+	})
+	am := p2.(*AppModel)
+	if cmd == nil {
+		t.Fatal("shift+click must issue a copy cmd")
+	}
+	msg := cmd()
+	cm, ok := msg.(CopiedMsg)
+	if !ok {
+		t.Fatalf("expected CopiedMsg, got %T", msg)
+	}
+	if cm.Err != "" {
+		t.Fatalf("shift+click copy failed: %s", cm.Err)
+	}
+	m3, _ := am.Update(msg)
+	if !strings.Contains(m3.(*AppModel).flashToast, "Copied selection") {
+		t.Fatalf("expected copy toast, got %q", m3.(*AppModel).flashToast)
+	}
+}
