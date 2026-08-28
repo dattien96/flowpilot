@@ -2,9 +2,27 @@ package app
 
 import (
 	"os"
+	"runtime"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// shouldDisableMouseTracking reports whether the platform must keep application
+// mouse tracking OFF. Windows conhost steals keyboard focus from the host when
+// the TUI enables mouse mode (BUG-328), so it stays off there. Every other
+// platform keeps it ON so drag-select / Shift+click copy works (user request).
+func shouldDisableMouseTracking() bool {
+	return runtime.GOOS == "windows"
+}
+
+// initMouseCmd returns the mouse-tracking-off cmd for platforms that must keep
+// tracking disabled (Windows), else nil so drag-select copy keeps working.
+func initMouseCmd() tea.Cmd {
+	if shouldDisableMouseTracking() {
+		return cmdEnsureMouseTrackingOff()
+	}
+	return nil
+}
 
 // mouseTrackingOffANSI disables common xterm mouse modes left over from a prior
 // session or another app in the same terminal (BUG-328). Without this, Windows
