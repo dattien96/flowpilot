@@ -194,9 +194,10 @@ func cmdSetAutoWrap(on bool) tea.Cmd {
 }
 
 func (m *AppModel) Init() tea.Cmd {
-	tuiLog("Init() -> disable autowrap + cmdConnect + tickCursor")
+	tuiLog("Init() -> disable autowrap + mouse-off ANSI + cmdConnect + tickCursor")
 	return tea.Sequence(
 		cmdSetAutoWrap(false),
+		cmdEnsureMouseTrackingOff(),
 		tea.Batch(m.cmdConnect(), tickCursor(), cmdInputWatchdog()),
 	)
 }
@@ -217,6 +218,7 @@ func cmdThinkingTick() tea.Cmd {
 // ---- Update -----------------------------------------------------------------
 
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m.syncActionRingCard()
 	// Log startup-relevant messages (skip high-frequency ticks to keep log readable).
 	switch v := msg.(type) {
 	case cursorTickMsg, thinkingTickMsg, tea.WindowSizeMsg, inputWatchdogMsg:
@@ -238,6 +240,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				tuiLog("Update FlowListMsg builtins=%d workflows=%d err=%q silent=%v", len(x.Builtins), len(x.Workflows), x.CatalogErr, x.Silent)
 			case SessionDefaultsMsg:
 				tuiLog("Update SessionDefaultsMsg providers=%d accounts=%d projects=%d err=%q", len(x.Providers), len(x.ProviderAccounts), len(x.Projects), x.CatalogErr)
+			case ProvidersCatalogMsg:
+				tuiLog("Update ProvidersCatalogMsg providers=%d err=%q", len(x.Providers), x.Err)
 			case SkillsListMsg:
 				tuiLog("Update SkillsListMsg n=%d err=%q show=%v", len(x.Skills), x.Err, x.Show)
 			case ChatOpenedMsg:
@@ -530,6 +534,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Do NOT mark sessionDefaultsLoaded: a late SessionDefaultsMsg must still
 		// count as first load so it persists provider/model and restores flow.
 		if m.sessionDefaultsLoaded {
+			tuiLog("sessionLoadTimeoutMsg ignored (defaults already loaded)")
 			return m, nil
 		}
 		m.sessionLoading = false
@@ -581,6 +586,50 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case ProvidersCatalogMsg:
+		if msg.Err != "" {
+			tuiLog("ProvidersCatalogMsg retry err=%q", msg.Err)
+			if len(m.providers) == 0 {
+				m.addMessage("system",
+					"Provider catalog still empty after retry: "+msg.Err+"\n"+
+						"/provider list needs GET /providers — try /status or restart chat.",
+					"error",
+				)
+			}
+			return m, nil
+		}
+		if len(msg.Providers) == 0 {
+			return m, nil
+		}
+		m.providers = msg.Providers
+		if m.model == "" && m.provider != "" {
+			if models := modelsForProvider(m.providers, m.provider); len(models) > 0 {
+				m.model = models[0]
+			}
+		}
+		m.bindActiveAccountForProvider()
+		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
+		m.refreshSessionPanel()
+		n := opencodeCatalogModelCount(m.providers)
+		if n > 0 && n < minOpencodeCatalogModels {
+			m.addMessage("system", fmt.Sprintf("OpenCode catalog still warming (%d models) — retrying in background…", n), "")
+		} else {
+			m.addMessage("system", fmt.Sprintf("Provider catalog loaded (%d). /provider to list.", len(m.providers)), "")
+		}
+		var cmds []tea.Cmd
+		cmds = append(cmds, m.cmdLoadSkills(false))
+		if cmd := m.scheduleOpencodeCatalogRetryCmd(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+
+	case ProvidersWarmRetryMsg:
+		m.providersWarmRetries++
+		if !needsOpencodeCatalogWarmRetry(m.providers) {
+			return m, nil
+		}
+		return m, m.cmdLoadProvidersCatalog()
+
 	case SessionDefaultsMsg:
 		tuiLog("SessionDefaultsMsg firstLoad=%v providers=%d accounts=%d projects=%d catalogErr=%q", !m.sessionDefaultsLoaded, len(msg.Providers), len(msg.ProviderAccounts), len(msg.Projects), msg.CatalogErr)
 		firstLoad := !m.sessionDefaultsLoaded
@@ -618,6 +667,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 		if firstLoad {
 			m.persistSessionPrefs()
+			m.inputExpectedSince = time.Now()
 		}
 		m.refreshSessionPanel()
 		m.sessionLoading = false
@@ -674,6 +724,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		cmds = append(cmds, m.cmdRefreshProjectContext(), m.cmdLoadSkills(false))
+		if firstLoad && len(m.providers) == 0 {
+			// CA-535: session unlock must not wait on a slow /providers scan.
+			// CA-657: empty catalog after that budget is sticky — backfill like
+			// the project-catalog retry, without holding sessionLoading.
+			m.addMessage("system", "Provider catalog still loading in background… /provider will fill when ready.", "")
+			cmds = append(cmds, m.cmdLoadProvidersCatalog())
+		} else if firstLoad && needsOpencodeCatalogWarmRetry(m.providers) {
+			m.addMessage("system", fmt.Sprintf("OpenCode models still loading (%d) — will refresh in background…", opencodeCatalogModelCount(m.providers)), "")
+			if cmd := m.scheduleOpencodeCatalogRetryCmd(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
 		if firstLoad && m.project != nil && len(m.chatList) == 0 {
 			cmds = append(cmds, m.cmdPrefetchChats())
 		}
@@ -1439,8 +1501,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// TUI console (no CREATE_NO_WINDOW) and left conhost without keys
 		// after Alt+V text paste (pid 9288: 47s stall). Re-arm here for all
 		// ClipboardPasteMsg branches; applyClipboardSysProcAttr prevents the
-		// attach for future pastes.
-		disableConsoleQuickEdit()
+		// attach for future pastes. Only mouse-off ANSI — SetConsoleMode wedges
+		// the live coninput reader (BUG-328).
+		ensureMouseTrackingOff()
 		// Reset any active burst state so clipboard paste and subsequent typing stay clean.
 		m.resetPasteBurst()
 		if msg.Err != "" && msg.Attachment == nil && msg.Text == "" {
@@ -1893,6 +1956,11 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.modeSetupModalOpen {
 		return m.handleModeSetupModalKey(msg)
 	}
+	if m.authPhase == AuthNone && m.attachPanelOpen {
+		if handled, model, cmd := m.handleAttachPanelKey(msg); handled {
+			return model, cmd
+		}
+	}
 	// Desktop parity (CA-519): a focused sub-agent transcript is read-only. Only
 	// navigation, [back], agent-cycle, and slash commands are allowed; chat text
 	// input is dropped so the user cannot keep typing into the child view.
@@ -1929,6 +1997,11 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
+		if m.sessionPanel.Collapsed {
+			m.statusMsg = "F2: steps hidden"
+		} else {
+			m.statusMsg = "F2: steps shown"
+		}
 		return m, nil
 
 	case tea.KeyF3:
@@ -1946,6 +2019,11 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.statusDetailsCollapsed = !m.statusDetailsCollapsed
+		if m.statusDetailsCollapsed {
+			m.statusMsg = "F4: details hidden"
+		} else {
+			m.statusMsg = "F4: details shown"
+		}
 		return m, nil
 
 	case tea.KeyCtrlV:
@@ -1976,6 +2054,16 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.authEmail = ""
 			m.clearInputValue()
 			m.addMessage("system", "Login cancelled.", "")
+			return m, nil
+		}
+		if m.gate != nil && m.gate.AwaitingCustom {
+			m.gate.AwaitingCustom = false
+			m.statusMsg = "custom gate cancelled"
+			return m, nil
+		}
+		if m.actionRingFocus {
+			m.actionRingFocus = false
+			m.statusMsg = "action ring unfocused"
 			return m, nil
 		}
 		if m.attachPanelOpen {
@@ -2323,6 +2411,9 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		if m.authPhase == AuthNone && m.actionRingEnterActivates() {
+			return m.activateHighlightedAction()
+		}
 		input := strings.TrimSpace(m.expandPasteTokens(m.inputValue))
 		if input == "" {
 			return m, nil
@@ -2342,10 +2433,16 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.processInput(input)
 
 	case tea.KeyLeft:
+		if handled, model, cmd := m.handleActionRingKey(msg); handled {
+			return model, cmd
+		}
 		m.moveInputCursor(-1)
 		return m, nil
 
 	case tea.KeyRight:
+		if handled, model, cmd := m.handleActionRingKey(msg); handled {
+			return model, cmd
+		}
 		m.moveInputCursor(1)
 		return m, nil
 
@@ -2390,6 +2487,19 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			if isOnlyNul {
 				return m, nil
+			}
+		}
+		if m.authPhase == AuthNone && msg.Type == tea.KeySpace {
+			if handled, model, cmd := m.handleActionRingKey(msg); handled {
+				return model, cmd
+			}
+		}
+		if m.authPhase == AuthNone {
+			if handled, model, cmd := m.handleF2StepPickerKey(msg); handled {
+				return model, cmd
+			}
+			if handled, model, cmd := m.handleActionRingKey(msg); handled {
+				return model, cmd
 			}
 		}
 		// Bubble Tea delivers Alt+letter as KeyRunes+Alt (String() == "alt+v").
@@ -3622,7 +3732,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					m.addMessage("system", "Usage: /provider connect <key> — or type /provider connect  then ↑↓ Tab Enter\n(Desktop Settings → Connect New Account parity)", "")
 					break
 				}
-				if p := findProvider(m.providers, key); p != nil && !p.Installed {
+				if p := findProvider(m.providers, key); p != nil && (!p.Installed || providerCLIUnusable(*p)) {
 					m.addMessage("system", fmt.Sprintf(
 						"Provider %s is not installed. Run /provider install %s first (Desktop disables Connect until installed).",
 						key, key,
@@ -3643,7 +3753,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					m.addMessage("system", "Usage: /provider install <key> — or type /provider install  then ↑↓ Tab Enter\n(Runner POST /providers/install; Desktop Settings Install button is Gemini-only in UI, API supports all)", "")
 					break
 				}
-				if p := findProvider(m.providers, key); p != nil && p.Installed {
+				if p := findProvider(m.providers, key); p != nil && p.Installed && !providerCLIUnusable(*p) {
 					m.addMessage("system", fmt.Sprintf("Provider %s is already installed.", key), "")
 					break
 				}
@@ -3693,6 +3803,9 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 						readyMark = "+"
 					} else {
 						readyMark = "-"
+					}
+					if code == "not_installed" {
+						status = "not installed"
 					}
 					sb.WriteString(fmt.Sprintf("  %s%s %s  %s\n", mark, readyMark, p.Key, status))
 					for _, acc := range m.providerAccounts {
@@ -4277,12 +4390,19 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 			label = "—"
 		}
 		line := fmt.Sprintf("  %-28s %s", label, sugg[i].detail)
+		notInstalled := strings.Contains(strings.ToLower(sugg[i].detail), "not installed")
 		if i == sel {
 			marker := "> "
 			if !m.asciiMode {
 				marker = "▸ "
 			}
-			sb.WriteString(styleSuggestSel.Render(marker + strings.TrimLeft(line, " ")))
+			if notInstalled {
+				sb.WriteString(styleError.Underline(true).Render(marker + strings.TrimLeft(line, " ")))
+			} else {
+				sb.WriteString(styleSuggestSel.Render(marker + strings.TrimLeft(line, " ")))
+			}
+		} else if notInstalled {
+			sb.WriteString(styleError.Render(line))
 		} else {
 			sb.WriteString(styleSuggest.Render(line))
 		}
@@ -4696,6 +4816,9 @@ func (m *AppModel) buildChatRows() []chatRow {
 		for i, ml := range mdLines {
 			line := ml.Text
 			lineStyle := style
+			if msg.Role == "system" && strings.Contains(strings.ToLower(stripANSI(line)), "not installed") {
+				lineStyle = styleError
+			}
 			if msg.FormatHint == "steps" {
 				lineStyle = styleForStepBannerLine(line)
 			}
@@ -4739,17 +4862,22 @@ func (m *AppModel) buildChatRows() []chatRow {
 		if n := len(m.approvals); n > 1 {
 			head = fmt.Sprintf("approval 1/%d", n)
 		}
-		chips := approvalDecisionChips(m.approval)
-		if len(m.approvals) > 1 {
-			chips += "  " + styleLink.Render("Approve all") + "  " + styleLink.Render("Deny all")
+		chips := approvalDecisionChipsAt(m.approval, m.approvals, m.ringHighlightFor("approval"))
+		rows = append(rows, chatRow{})
+		rows = append(rows, chatRow{Text: styleGate.Render(head) + "  " + chips + "  " + styleSystem.Render("← → Enter · 1-9"), MsgIdx: -1})
+	}
+	if m.gate != nil && len(m.gate.Options) > 0 {
+		var chips []string
+		for i, opt := range m.gate.Options {
+			chips = append(chips, renderActionRingChip(gateOptionChip(opt), m.actionRingHighlighted("gate", i)))
 		}
 		rows = append(rows, chatRow{})
-		rows = append(rows, chatRow{Text: styleGate.Render(head) + "  " + chips + "  " + styleSystem.Render("click or type"), MsgIdx: -1})
+		rows = append(rows, chatRow{Text: styleGate.Render("gate") + "  " + strings.Join(chips, "  ") + "  " + styleSystem.Render("← → Enter · 1-9"), MsgIdx: -1})
 	}
 	if m.question != nil {
 		left := styleInputStroke.Render("┃")
 		mid := styleInputStroke.Render("│")
-		qbar := renderQuestionBar(left, mid, m.question, width)
+		qbar := renderQuestionBar(left, mid, m.question, width, m.ringHighlightFor("question"))
 		if n := len(m.questions); n > 1 {
 			qbar = styleGate.Render(fmt.Sprintf("(%d/%d)", 1, n)) + " " + qbar
 		}
@@ -4886,7 +5014,7 @@ func nextHighlightToken(s string, tokens []string) (int, string) {
 	return best, tok
 }
 
-func renderQuestionBar(left, mid string, q *QuestionState, width int) string {
+func renderQuestionBar(left, mid string, q *QuestionState, width int, highlightIdx int) string {
 	var b strings.Builder
 	b.WriteString(left)
 	b.WriteString(" ")
@@ -4894,10 +5022,13 @@ func renderQuestionBar(left, mid string, q *QuestionState, width int) string {
 	b.WriteString(" ")
 	b.WriteString(mid)
 	b.WriteString(" ")
+	chipIdx := 0
 	for i, o := range q.Options {
 		if i > 0 {
 			b.WriteString("  ")
 		}
+		hi := highlightIdx == chipIdx
+		chipIdx++
 		if q.MultiSelect {
 			mark := "[ ]"
 			sel := ""
@@ -4908,23 +5039,23 @@ func renderQuestionBar(left, mid string, q *QuestionState, width int) string {
 				}
 			}
 			sel = mark + " "
-			b.WriteString(styleLink.Render(sel + questionOptionLabel(o)))
+			b.WriteString(renderActionRingChip(sel+questionOptionLabel(o), hi))
 		} else {
-			b.WriteString(styleLink.Render(strconv.Itoa(i+1) + ")"))
+			b.WriteString(renderActionRingChip(strconv.Itoa(i+1)+")", hi))
 			b.WriteString(" ")
-			b.WriteString(styleLink.Render(questionOptionLabel(o)))
+			b.WriteString(renderActionRingChip(questionOptionLabel(o), hi))
 		}
 	}
 	if len(q.Options) == 0 {
 		b.WriteString(styleSystem.Render("type an answer"))
 	} else if q.MultiSelect {
 		b.WriteString("  ")
-		b.WriteString(styleSystem.Render("toggle, then /submit or click Submit"))
+		b.WriteString(styleSystem.Render("Space toggle · Enter submit"))
 		b.WriteString("  ")
-		b.WriteString(styleLink.Render("[Submit]"))
+		b.WriteString(renderActionRingChip("[Submit]", highlightIdx == chipIdx))
 	} else {
 		b.WriteString("  ")
-		b.WriteString(styleSystem.Render("click or type"))
+		b.WriteString(styleSystem.Render("← → Enter · 1-9"))
 	}
 	line := b.String()
 	plain := stripANSI(line)
@@ -5557,6 +5688,39 @@ func (m *AppModel) cmdLoadProjectsCatalog() tea.Cmd {
 	}
 }
 
+// cmdLoadProvidersCatalog retries GET /providers after the 8s session-unlock
+// budget. First load must not hold chat locked (CA-535); an empty list after
+// that timeout must still backfill (CA-657).
+func (m *AppModel) cmdLoadProvidersCatalog() tea.Cmd {
+	runnerURL := m.runnerURL
+	return func() tea.Msg {
+		tuiLog("cmdLoadProvidersCatalog() start")
+		start := time.Now()
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		ps, err := cl.ListProviders(ctx)
+		if err != nil {
+			tuiLog("cmdLoadProvidersCatalog() done dur=%v err=%v n=0", time.Since(start), err)
+			return ProvidersCatalogMsg{Err: err.Error()}
+		}
+		tuiLog("cmdLoadProvidersCatalog() done dur=%v err=<nil> n=%d", time.Since(start), len(ps))
+		return ProvidersCatalogMsg{Providers: ps}
+	}
+}
+
+func (m *AppModel) scheduleOpencodeCatalogRetryCmd() tea.Cmd {
+	if m.providersWarmRetries >= 3 {
+		return nil
+	}
+	if !needsOpencodeCatalogWarmRetry(m.providers) {
+		return nil
+	}
+	return tea.Tick(12*time.Second, func(time.Time) tea.Msg {
+		return ProvidersWarmRetryMsg{}
+	})
+}
+
 func (m *AppModel) cmdListFlows() tea.Cmd {
 	return m.cmdFetchFlows(false)
 }
@@ -5938,16 +6102,12 @@ func tuiMsgFilter(model tea.Model, msg tea.Msg) tea.Msg {
 	return msg
 }
 
-// tuiProgramOpts returns Bubble Tea program options. On Windows the conhost
-// ReadConsoleInput path with ENABLE_MOUSE_INPUT (WithMouseCellMotion) shares
-// a 64-event queue with keys; a WT paste flood fills it with coninput mouse
-// Mouse is enabled on all platforms so F2 [open]/[back]/[stop]/[copy] and
-// wheel scroll stay live while a sub-agent is RUNNING. Windows Ctrl+V is
-// rejected as a raw flood (use Alt+V) so the 64-event conhost queue does not
-// fill with mouse+key records (log 18936/22964). Alt+V (clipboard 1 msg) and
-// Ctrl+V KeyCtrlV hint remain.
+// tuiProgramOpts returns Bubble Tea program options. Mouse cell-motion is
+// intentionally disabled (BUG-328): on Windows it enables ENABLE_MOUSE_INPUT
+// and steals keyboard focus from the host. Keyboard action ring + F2/F3/F4
+// replace click chips. Alt+V paste and Ctrl+V hint remain.
 func tuiProgramOpts() []tea.ProgramOption {
-	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithFilter(tuiMsgFilter)}
+	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithFilter(tuiMsgFilter)}
 }
 
 // ---- Run (entrypoint) -------------------------------------------------------
@@ -5976,7 +6136,8 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 	tuiLog("Run() start print=%v runner=%s", cfg.Print, runnerURL)
 	m := New(cfg, runnerURL)
 	applyProductionInputGuards(m, runtime.GOOS)
-	disableConsoleQuickEdit()
+	primeConsoleBeforeProgram()
+	tuiLog("tuiProgramOpts: AltScreen+Filter mouseCellMotion=off (BUG-328)")
 
 	if cfg.Print {
 		err := runHeadless(m, cfg.Prompt)

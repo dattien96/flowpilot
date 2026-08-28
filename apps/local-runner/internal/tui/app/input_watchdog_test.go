@@ -129,7 +129,25 @@ func TestInputWatchdog_NoStallBeforeThreshold(t *testing.T) {
 	}
 }
 
-func TestInputWatchdog_FirstTickArmsBaseline(t *testing.T) {
+func TestInputWatchdog_StartupStallAfterSessionReady(t *testing.T) {
+	m := New(configForWatchdogTest(), "http://127.0.0.1:9")
+	now := time.Now()
+	m.sessionDefaultsLoaded = true
+	m.inputExpectedSince = now.Add(-60 * time.Second)
+
+	updated, _ := m.Update(inputWatchdogMsg{at: now})
+	m2 := updated.(*AppModel)
+	if !m2.inputStallLogged {
+		t.Fatal("startup stall must be flagged when session is ready but no keys arrived")
+	}
+	if m2.statusMsg == "" {
+		t.Fatal("startup stall must surface a visible status banner")
+	}
+}
+
+func TestInputWatchdog_FirstTickDoesNotArmBaseline(t *testing.T) {
+	// BUG-328: baseline is not seeded from the watchdog tick alone — only a
+	// real KeyMsg/MouseMsg arms lastInputAt (see markInputAlive).
 	m := New(configForWatchdogTest(), "http://127.0.0.1:9")
 	now := time.Now()
 	if !m.lastInputAt.IsZero() {
@@ -137,8 +155,8 @@ func TestInputWatchdog_FirstTickArmsBaseline(t *testing.T) {
 	}
 	updated, _ := m.Update(inputWatchdogMsg{at: now})
 	m2 := updated.(*AppModel)
-	if m2.lastInputAt.IsZero() {
-		t.Fatal("first tick must arm the baseline timestamp")
+	if !m2.lastInputAt.IsZero() {
+		t.Fatal("first tick must not arm lastInputAt without a real key")
 	}
 	if m2.inputStallLogged {
 		t.Fatal("first tick must never flag a stall")

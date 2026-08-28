@@ -117,9 +117,11 @@ func (m *AppModel) appendPendingAttachment(att client.PromptAttachment) {
 func (m *AppModel) openAttachPanel() {
 	if len(m.pendingAttach) == 0 {
 		m.attachPanelOpen = false
+		m.attachPanelSel = 0
 		return
 	}
 	m.attachPanelOpen = true
+	m.clampAttachPanelSel()
 }
 
 func (m *AppModel) closeAttachPanel() {
@@ -170,12 +172,16 @@ func (m *AppModel) renderAttachPanel(width int) string {
 		if pad < 0 {
 			pad = 0
 		}
+		rowStyle := styleInputFocus
+		if m.attachPanelOpen && i == m.attachPanelSel {
+			rowStyle = styleStatusHi
+		}
 		if m.asciiMode {
 			sb.WriteString(styleSystem.Render("|"))
 		} else {
 			sb.WriteString(styleSystem.Render("│"))
 		}
-		sb.WriteString(styleInputFocus.Render(line + strings.Repeat(" ", pad)))
+		sb.WriteString(rowStyle.Render(line + strings.Repeat(" ", pad)))
 		sb.WriteString(styleLink.Render("[open]"))
 		sb.WriteString(" ")
 		sb.WriteString(styleLink.Render("[x]"))

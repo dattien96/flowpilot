@@ -64,8 +64,18 @@ func (m *AppModel) markMotionAlive() {
 // KeyMsg and MouseMsg that reaches Update, before normal handling.
 func (m *AppModel) markInputAlive() {
 	now := time.Now()
+	m.inputHadRealKey = true
+	m.maybeRearmConsoleInput(now)
 	if m.inputStallLogged {
-		tuiLog("input-watchdog: console input recovered after %s stall", now.Sub(m.lastInputAt).Round(time.Second))
+		since := m.lastInputAt
+		if since.IsZero() {
+			since = m.inputExpectedSince
+		}
+		if since.IsZero() {
+			tuiLog("input-watchdog: console input recovered (no prior key baseline)")
+		} else {
+			tuiLog("input-watchdog: console input recovered after %s stall", now.Sub(since).Round(time.Second))
+		}
 		m.statusMsg = ""
 	}
 	m.lastInputAt = now
@@ -86,19 +96,27 @@ func (m *AppModel) markInputAlive() {
 // 21472/25580/12300 sat 1-3 minutes without input and must not be alarmed.
 func (m *AppModel) checkInputWatchdog(at time.Time) (tea.Model, tea.Cmd) {
 	if m.lastInputAt.IsZero() {
-		m.lastInputAt = at
+		if !m.inputExpectedSince.IsZero() && at.Sub(m.inputExpectedSince) >= inputStallThreshold && !m.inputStallLogged {
+			stall := at.Sub(m.inputExpectedSince)
+			tuiLog("input-watchdog: startup input stalled — session ready but no KeyMsg for %s since %s; connStatus=%s flowBlocked=%v viewingChild=%v turnActive=%v; click terminal title for focus or Ctrl+C restart",
+				stall.Round(time.Second), m.inputExpectedSince.Format(time.RFC3339),
+				m.connStatus, m.flowLoopBlocked(), m.viewingChild(), m.turnIsActive())
+			m.inputStallLogged = true
+			m.statusMsg = "input stalled: no keys received (" + stall.Round(time.Second).String() + ") — click terminal for focus, use ← → Enter, or Ctrl+C"
+			m.addMessage("system", "Input stalled at startup: console is not delivering keys to the TUI (F2/F4 and typing will not work). Click the terminal window for focus, or Ctrl+C and restart.", "gate")
+		}
 		return m, cmdInputWatchdog()
 	}
 	if !m.inputStallLogged && at.Sub(m.lastInputAt) >= inputStallThreshold {
 		stall := at.Sub(m.lastInputAt)
 		motionLive := !m.lastMotionAt.IsZero() && at.Sub(m.lastMotionAt) < inputStallThreshold
-		tuiLog("input-watchdog: console input stalled — no KeyMsg/MouseMsg for %s since %s; connStatus=%s flowBlocked=%v viewingChild=%v turnActive=%v motionLive=%v; press any key or Ctrl+C to restart",
+		tuiLog("input-watchdog: console input stalled — no KeyMsg/MouseMsg for %s since %s; connStatus=%s flowBlocked=%v viewingChild=%v turnActive=%v motionLive=%v hadRealKey=%v; use ← → Enter on cards or Ctrl+C",
 			stall.Round(time.Second), m.lastInputAt.Format(time.RFC3339),
-			m.connStatus, m.flowLoopBlocked(), m.viewingChild(), m.turnIsActive(), motionLive)
+			m.connStatus, m.flowLoopBlocked(), m.viewingChild(), m.turnIsActive(), motionLive, m.inputHadRealKey)
 		m.inputStallLogged = true
 		if m.inputStallEligible() {
-			m.statusMsg = "input stalled: no keys/mouse received (" + stall.Round(time.Second).String() + ") — press any key or Ctrl+C to restart"
-			m.addMessage("system", "Input stalled: console is not delivering keys/mouse to the TUI (the session is otherwise alive). Press any key, or Ctrl+C and restart the TUI.", "gate")
+			m.statusMsg = "input stalled: no keys received (" + stall.Round(time.Second).String() + ") — use ← → Enter on cards or Ctrl+C"
+			m.addMessage("system", "Input stalled: console is not delivering keys to the TUI (the session is otherwise alive). Use ← → Enter on action cards, or Ctrl+C and restart.", "gate")
 		}
 	}
 	return m, cmdInputWatchdog()
