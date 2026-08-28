@@ -4,10 +4,11 @@ import (
 	"testing"
 )
 
-// User wants drag-select auto-copy back, so mouse is re-enabled despite BUG-328.
+// BUG-328: mouse cell-motion is removed so Windows conhost does not steal
+// keyboard focus from the host terminal.
 func TestBug328_TuiProgramOpts_NoMouseCellMotion(t *testing.T) {
 	opts := tuiProgramOpts()
-	if len(opts) != 3 {
-		t.Fatalf("opts must be AltScreen+MouseCellMotion+Filter (drag-select), got %d", len(opts))
+	if len(opts) != 2 {
+		t.Fatalf("opts must be AltScreen+Filter only, got %d", len(opts))
 	}
 }

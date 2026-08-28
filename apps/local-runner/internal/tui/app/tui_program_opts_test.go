@@ -10,49 +10,13 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
-// User request: drag-select (bôi đen) must auto-copy again, so mouse is
-// re-enabled (AltScreen + MouseCellMotion + Filter). Old BUG-328 disabled it.
+// BUG-328: mouse cell-motion is off on all platforms (Windows conhost focus
+// steal). F2/F3/F4 and the action ring are keyboard-only. CA-610 WithFilter
+// remains so any stray motion events never reach Update/View.
 func TestTuiProgramOpts_WindowsNoMouse(t *testing.T) {
 	opts := tuiProgramOpts()
-	if len(opts) != 3 {
-		t.Fatalf("opts must be AltScreen+MouseCellMotion+Filter (user wants drag-select), got %d", len(opts))
-	}
-}
-
-// shouldDisableMouseTracking gates the mouse-off ANSI: Windows must keep it off
-// (BUG-328 conhost focus steal); every other platform keeps it on for copy.
-func TestShouldDisableMouseTracking_WindowsOnly(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		if !shouldDisableMouseTracking() {
-			t.Fatal("Windows must disable mouse tracking")
-		}
-	} else {
-		if shouldDisableMouseTracking() {
-			t.Fatalf("non-Windows (%s) must NOT disable mouse tracking", runtime.GOOS)
-		}
-	}
-}
-
-// Init() must NOT attach the mouse-off cmd on platforms that keep tracking on,
-// otherwise the app never receives MouseMsg and drag/Shift-click copy is dead.
-func TestInitMouseCmd_OnlyWindows(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		if initMouseCmd() == nil {
-			t.Fatal("Windows must return the mouse-off cmd")
-		}
-	} else {
-		if initMouseCmd() != nil {
-			t.Fatalf("non-Windows (%s) must return nil mouse cmd", runtime.GOOS)
-		}
-	}
-}
-
-// Init() returns a Sequence that does not disable mouse tracking off-platform.
-func TestInit_SkipsMouseOffWhenTrackingWanted(t *testing.T) {
-	m := New(config.ChatConfig{Provider: "grok"}, "http://127.0.0.1:4317")
-	_ = m.Init()
-	if !shouldDisableMouseTracking() && initMouseCmd() != nil {
-		t.Fatal("Init must not disable mouse tracking on this platform")
+	if len(opts) != 2 {
+		t.Fatalf("opts must be AltScreen+Filter only (no MouseCellMotion), got %d", len(opts))
 	}
 }
 

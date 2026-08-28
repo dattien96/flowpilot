@@ -40,9 +40,13 @@ Shift is only a modifier on a mouse event, so with no mouse events it did nothin
 - Typing stays live (no key wedge).
 - Windows: mouse still off (drag-copy N/A, per BUG-328).
 
+> SUPERSEDED by CA-677: user decided to keep BUG-328 (no hang regression). CA-676's
+> mouse-ON on macOS/Linux is reverted; `tuiProgramOpts` is back to AltScreen+Filter
+> only. Copy is native terminal bôi-đen + `/copy` (no in-app toast).
+
 # ---8<--- flowpilot:change-ledger
 feature_key: cli-tui
 source_doc_id: Task-311
 change_type: bugfix
-summary: Keep mouse tracking ON on macOS/Linux so drag/Shift-click auto-copy works
+summary: Keep mouse tracking ON on macOS/Linux so drag/Shift-click auto-copy works (REVERTED by CA-677)
 # --->8---

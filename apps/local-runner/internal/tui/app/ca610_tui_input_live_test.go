@@ -109,8 +109,8 @@ func TestPulseMouseTracking_IsNoop(t *testing.T) {
 
 func TestTuiProgramOpts_IncludesFilter(t *testing.T) {
 	opts := tuiProgramOpts()
-	if len(opts) != 3 {
-		t.Fatalf("opts must be AltScreen+MouseCellMotion+Filter (drag-select), got %d", len(opts))
+	if len(opts) != 2 {
+		t.Fatalf("opts must be AltScreen+Filter (BUG-328: no MouseCellMotion), got %d", len(opts))
 	}
 }
 

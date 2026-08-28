@@ -211,19 +211,10 @@ func cmdSetAutoWrap(on bool) tea.Cmd {
 }
 
 func (m *AppModel) Init() tea.Cmd {
-	tuiLog("Init() -> disable autowrap + mouse-off(Windows only) + cmdConnect + tickCursor")
-	if shouldDisableMouseTracking() {
-		// Windows: keep mouse tracking off to avoid conhost focus steal (BUG-328).
-		return tea.Sequence(
-			cmdSetAutoWrap(false),
-			initMouseCmd(),
-			tea.Batch(m.cmdConnect(), tickCursor(), cmdInputWatchdog()),
-		)
-	}
-	// macOS/Linux: leave mouse tracking ON (WithMouseCellMotion) so drag-select
-	// and Shift+click copy reach the app.
+	tuiLog("Init() -> disable autowrap + mouse-off ANSI + cmdConnect + tickCursor")
 	return tea.Sequence(
 		cmdSetAutoWrap(false),
+		cmdEnsureMouseTrackingOff(),
 		tea.Batch(m.cmdConnect(), tickCursor(), cmdInputWatchdog()),
 	)
 }
@@ -1520,12 +1511,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// TUI console (no CREATE_NO_WINDOW) and left conhost without keys
 		// after Alt+V text paste (pid 9288: 47s stall). Re-arm here for all
 		// ClipboardPasteMsg branches; applyClipboardSysProcAttr prevents the
-		// attach for future pastes. Only mouse-off ANSI on Windows — SetConsoleMode
-		// wedges the live coninput reader (BUG-328). Non-Windows keeps mouse
-		// tracking ON for drag-select copy (user request).
-		if runtime.GOOS == "windows" {
-			ensureMouseTrackingOff()
-		}
+		// attach for future pastes. Only mouse-off ANSI — SetConsoleMode wedges
+		// the live coninput reader (BUG-328).
+		ensureMouseTrackingOff()
 		// Reset any active burst state so clipboard paste and subsequent typing stay clean.
 		m.resetPasteBurst()
 		if msg.Err != "" && msg.Attachment == nil && msg.Text == "" {
@@ -6295,12 +6283,13 @@ func remapVTControlKeys(msg tea.KeyMsg) tea.KeyMsg {
 	return msg
 }
 
-// tuiProgramOpts returns Bubble Tea program options. Mouse is re-enabled for
-// drag-select auto-copy (user request: bôi đen phải auto copied + toast).
-// BUG-328 disabled it to avoid stealing keyboard focus, but the user explicitly
-// wants the old drag-select behavior back.
+// tuiProgramOpts returns Bubble Tea program options. Application mouse tracking
+// stays OFF on every platform (BUG-328): WithMouseCellMotion enables the host
+// mouse mode that wedges keyboard input (Windows conhost focus steal). Copy is
+// the terminal's native bôi-đen + /copy, not an in-app drag affordance. AltScreen
+// + Filter only.
 func tuiProgramOpts() []tea.ProgramOption {
-	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithFilter(tuiMsgFilter)}
+	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithFilter(tuiMsgFilter)}
 }
 
 // tuiRunProgramOpts is the live Run() option set: shared AltScreen+Filter.
@@ -6341,8 +6330,8 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 	m := New(cfg, runnerURL)
 	applyProductionInputGuards(m, runtime.GOOS)
 	primeConsoleBeforeProgram()
-	tuiLog("tuiProgramOpts: AltScreen+Filter mouseCellMotion=%v nativeConinputReader=%v",
-		!shouldDisableMouseTracking(), runtime.GOOS == "windows")
+	tuiLog("tuiProgramOpts: AltScreen+Filter mouseCellMotion=off nativeConinputReader=%v (BUG-328)",
+		runtime.GOOS == "windows")
 
 	if cfg.Print {
 		err := runHeadless(m, cfg.Prompt)
