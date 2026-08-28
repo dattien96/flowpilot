@@ -891,7 +891,7 @@ func parseProviderPicker(input string) (mode, filter string, ok bool) {
 // providerReadiness mirrors Desktop ChatInput: ready only when CLI installed AND an
 // active connected account exists for that provider key.
 func providerReadiness(p client.Provider, accounts []client.ProviderAccountSummary) (code, detail string) {
-	if !p.Installed {
+	if !p.Installed || providerCLIUnusable(p) {
 		return "not_installed", "not installed — /provider install " + strings.TrimSpace(p.Key)
 	}
 	hasAccount := false
@@ -924,13 +924,44 @@ func providerReadiness(p client.Provider, accounts []client.ProviderAccountSumma
 	return "ready", "ready"
 }
 
+func providerCLIUnusable(p client.Provider) bool {
+	if strings.EqualFold(strings.TrimSpace(p.InstallStatus), "FAILED") {
+		return true
+	}
+	ver := strings.TrimSpace(p.DetectedVersion)
+	if ver == "" {
+		ver = strings.TrimSpace(p.Version)
+	}
+	return looksLikeProviderProbeError(ver)
+}
+
+func looksLikeProviderProbeError(s string) bool {
+	low := strings.ToLower(strings.TrimSpace(s))
+	if low == "" {
+		return false
+	}
+	if strings.Contains(low, "cannot find module") || strings.Contains(low, "can not find module") {
+		return true
+	}
+	if strings.Contains(low, "module_not_found") || strings.Contains(low, "module not found") {
+		return true
+	}
+	if strings.HasPrefix(low, "error:") && (strings.Contains(low, "module") || strings.Contains(low, "enoent") || strings.Contains(low, "not found")) {
+		return true
+	}
+	if strings.Count(s, "\n") >= 3 {
+		return true
+	}
+	return false
+}
+
 func accountAuthOK(a client.ProviderAccountSummary) bool {
 	s := strings.ToLower(strings.TrimSpace(a.AuthStatus))
 	return s == "" || s == "connected" || s == "authenticated"
 }
 
 func providerSuggestionDetail(p client.Provider, accounts []client.ProviderAccountSummary, current, mode string) string {
-	_, status := providerReadiness(p, accounts)
+	code, status := providerReadiness(p, accounts)
 	label := strings.TrimSpace(p.Label)
 	if label == "" {
 		label = strings.TrimSpace(p.Name)
@@ -949,15 +980,20 @@ func providerSuggestionDetail(p client.Provider, accounts []client.ProviderAccou
 		parts = append(parts, "install CLI")
 	}
 	parts = append(parts, status)
-	if mode == "select" {
+	if mode == "select" && code != "not_installed" {
 		ver := strings.TrimSpace(p.DetectedVersion)
 		if ver == "" {
 			ver = strings.TrimSpace(p.Version)
 		}
-		if ver != "" {
+		if ver != "" && !looksLikeProviderProbeError(ver) {
 			parts = append(parts, ver)
 		}
 		parts = append(parts, fmt.Sprintf("%d models", len(p.Models)))
+	}
+	if code == "not_installed" {
+		// Keep "not installed" substring for existing picker tests; do not
+		// append Node "Cannot find module" dumps as a fake version.
+		parts[len(parts)-1] = "not installed"
 	}
 	return strings.Join(parts, " · ")
 }
@@ -1434,6 +1470,27 @@ func modelsForProvider(providers []client.Provider, providerKey string) []string
 		return out
 	}
 	return nil
+}
+
+const minOpencodeCatalogModels = 10
+
+func opencodeCatalogModelCount(providers []client.Provider) int {
+	for _, p := range providers {
+		if strings.EqualFold(p.Key, "opencode") {
+			return len(p.Models)
+		}
+	}
+	return 0
+}
+
+func needsOpencodeCatalogWarmRetry(providers []client.Provider) bool {
+	for _, p := range providers {
+		if !strings.EqualFold(p.Key, "opencode") {
+			continue
+		}
+		return p.Installed && len(p.Models) < minOpencodeCatalogModels
+	}
+	return false
 }
 
 // defaultModelsForKey returns registry defaults when a provider is in m.providers

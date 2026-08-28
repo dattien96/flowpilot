@@ -169,6 +169,18 @@ type ProjectsCatalogMsg struct {
 	Err      string
 }
 
+// ProvidersCatalogMsg is a late/retry provider list after the 8s session
+// unlock (CA-535). Session load must not wait on a slow CLI probe, but an
+// empty catalog after timeout is sticky unless we backfill (CA-657).
+type ProvidersCatalogMsg struct {
+	Providers []client.Provider
+	Err       string
+}
+
+// ProvidersWarmRetryMsg triggers a background GET /providers after OpenCode
+// model warm has had time to finish (undersized catalog retry).
+type ProvidersWarmRetryMsg struct{}
+
 // SessionDefaultsMsg carries active provider/model discovered after connect.
 type SessionDefaultsMsg struct {
 	Provider         string
@@ -316,11 +328,23 @@ type AppModel struct {
 	// (input_watchdog.go, CA-645) so it logs once per stall episode.
 	lastInputAt      time.Time
 	inputStallLogged bool
+	inputHadRealKey  bool // true after the first real KeyMsg/MouseMsg (BUG-328 watchdog)
+	// actionRingIdx highlights one chip in the must-answer action ring (BUG-328).
+	actionRingIdx      int
+	actionRingFocus    bool
+	actionRingCardSig  string
+	f2StepPickIdx      int
+	attachPanelSel     int // 0-based row while attach panel is open
 	// lastMotionAt is stamped by hover-motion events at the tuiMsgFilter level
 	// (they never reach Update). It proves the console input pipe is still
 	// delivering events during an input stall, separating "keys dropped
 	// upstream" from "console fully dead" in the watchdog fingerprint.
 	lastMotionAt time.Time
+	// lastConsoleRearmAt throttles Windows QuickEdit/mouse-off re-arm (BUG-328).
+	lastConsoleRearmAt time.Time
+	// inputExpectedSince is set when session defaults finish loading; the
+	// watchdog uses it to detect startup wedges with zero KeyMsg (BUG-328).
+	inputExpectedSince time.Time
 	viewport      viewportState
 	mouseSel      mouseSelect
 	mouseDrag     mouseDrag
@@ -498,6 +522,9 @@ type AppModel struct {
 	sessionLoading bool
 	// sessionDefaultsLoaded is set after the first SessionDefaultsMsg (real chat gate).
 	sessionDefaultsLoaded bool
+	// providersWarmRetries counts background /providers refetches while OpenCode
+	// model cache is still warming (undersized catalog).
+	providersWarmRetries int
 	loadingFrame          int
 
 	// thinkingFrame drives the animated "Thinking" placeholder (spinner /
