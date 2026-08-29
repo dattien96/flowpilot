@@ -886,9 +886,17 @@ func discoverOpencodeAccountHomes() ([]string, error) {
 
 	if cfg := os.Getenv("OPENCODE_CONFIG"); strings.TrimSpace(cfg) != "" {
 		home := strings.TrimSpace(cfg)
-		// OPENCODE_CONFIG is a directory like /home/user/.config/opencode, derive home
+		// CA-679: OPENCODE_CONFIG is now written as the config FILE
+		// (.../opencode/opencode.json); older writers and operator shells may
+		// still carry the directory form (.../opencode). Accept both.
 		// Handle both POSIX and Windows separators.
 		normalized := filepath.ToSlash(home)
+		if strings.HasSuffix(normalized, "/opencode.json") {
+			normalized = strings.TrimSuffix(normalized, "/opencode.json")
+			home = filepath.FromSlash(normalized)
+		}
+		// Legacy directory style like /home/user/.config/opencode, derive home.
+		normalized = filepath.ToSlash(home)
 		if strings.HasSuffix(normalized, "/opencode") {
 			normalized = strings.TrimSuffix(normalized, "/opencode")
 			home = filepath.FromSlash(normalized)

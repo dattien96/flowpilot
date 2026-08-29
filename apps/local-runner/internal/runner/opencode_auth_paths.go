@@ -96,6 +96,20 @@ func resolveOpencodeAuthPathFromEnv(homePath string) string {
 	return filepath.Clean(filepath.Join(dataDir, raw))
 }
 
+// opencodeConfigFilePath returns the opencode.json config FILE path under an
+// account home. OPENCODE_CONFIG must point at a file, not the config
+// directory: opencode reads it with readFile and dies with
+// "BadResource: FileSystem.readFile" when given a directory (CA-679, live
+// verified on 1.18.18 for both `opencode acp` boot and `opencode models`).
+// filepath.Join yields OS-correct separators on Windows and POSIX.
+func opencodeConfigFilePath(homePath string) string {
+	homePath = strings.TrimSpace(homePath)
+	if homePath == "" {
+		return ""
+	}
+	return filepath.Join(homePath, ".config", "opencode", "opencode.json")
+}
+
 func opencodeConfigFilePaths(homePath string) []string {
 	homePath = strings.TrimSpace(homePath)
 	if homePath == "" {

@@ -4361,7 +4361,8 @@ func (r *Runner) getEnvForExecution(
 		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s", filepath.Join(trimmedAccountHomePath, ".config")))
 		newEnv = append(newEnv, fmt.Sprintf("XDG_DATA_HOME=%s", opencodeDataHomeForAccount(trimmedAccountHomePath)))
-		newEnv = append(newEnv, fmt.Sprintf("OPENCODE_CONFIG=%s", filepath.Join(trimmedAccountHomePath, ".config", "opencode")))
+		// CA-679: config FILE path — a directory value crashes opencode CLI runs.
+		newEnv = append(newEnv, fmt.Sprintf("OPENCODE_CONFIG=%s", opencodeConfigFilePath(trimmedAccountHomePath)))
 		if authPath := strings.TrimSpace(os.Getenv("OPENCODE_AUTH_PATH")); authPath != "" && opencodeAccountIsAmbientHome(trimmedAccountHomePath) {
 			newEnv = append(newEnv, fmt.Sprintf("OPENCODE_AUTH_PATH=%s", authPath))
 		}
@@ -4540,8 +4541,9 @@ func providerEnvSetCommand(providerKey, homePath, shellType string) string {
 			// Appended last (CP-46 P-0/Task-210 T-3).
 			return fmt.Sprintf("export GROK_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath, homePath)
 		case "opencode":
-			// Appended last (CP-57 P-0/Task-302 T-3).
-			return fmt.Sprintf("export OPENCODE_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config' && export XDG_DATA_HOME='%s/.local/share' && export OPENCODE_CONFIG='%s/.config/opencode'", homePath, homePath, homePath, homePath, homePath)
+			// Appended last (CP-57 P-0/Task-302 T-3). CA-679: OPENCODE_CONFIG is a
+			// config FILE path (opencode.json), not the config directory.
+			return fmt.Sprintf("export OPENCODE_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config' && export XDG_DATA_HOME='%s/.local/share' && export OPENCODE_CONFIG='%s/.config/opencode/opencode.json'", homePath, homePath, homePath, homePath, homePath)
 		default:
 			return fmt.Sprintf("export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath)
 		}
@@ -4570,7 +4572,7 @@ func providerEnvSetCommand(providerKey, homePath, shellType string) string {
 				fmt.Sprintf("set LOCALAPPDATA=%s\\AppData\\Local", homePath),
 				fmt.Sprintf("set XDG_CONFIG_HOME=%s\\.config", homePath),
 				fmt.Sprintf("set XDG_DATA_HOME=%s\\.local\\share", homePath),
-				fmt.Sprintf("set OPENCODE_CONFIG=%s\\.config\\opencode", homePath),
+				fmt.Sprintf("set OPENCODE_CONFIG=%s\\.config\\opencode\\opencode.json", homePath),
 			}, "\r\n")
 		default:
 			return strings.Join([]string{

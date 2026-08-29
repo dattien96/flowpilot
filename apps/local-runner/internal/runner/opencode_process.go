@@ -528,7 +528,9 @@ func opencodeProcessEnv(extraEnv map[string]string) []string {
 		}
 	}
 	if !hasOpencodeConfig && home != "" {
-		filtered = append(filtered, fmt.Sprintf("OPENCODE_CONFIG=%s", filepath.Join(home, ".config", "opencode")))
+		// CA-679: OPENCODE_CONFIG is a config FILE path, not a directory — a
+		// directory value kills `opencode acp`/`opencode models` at boot.
+		filtered = append(filtered, fmt.Sprintf("OPENCODE_CONFIG=%s", opencodeConfigFilePath(home)))
 	}
 	if home != "" {
 		hasDataHome := false

@@ -61,7 +61,10 @@ func loadOpencodeAccountMetadataInternal(ctx context.Context, homePath string) (
 	return summary, nil
 }
 
-func runOpencodeCommand(ctx context.Context, homePath string, args ...string) ([]byte, error) {
+// opencodeAccountCommandEnv builds the isolated environment for an `opencode`
+// CLI probe under an account home: host HOME/XDG/OPENCODE_* values are stripped
+// and re-derived from the home. Exported for tests via opencodeAccountCommandEnv.
+func opencodeAccountCommandEnv(homePath string) []string {
 	baseEnv := os.Environ()
 	filtered := make([]string, 0, len(baseEnv))
 	for _, kv := range baseEnv {
@@ -76,7 +79,8 @@ func runOpencodeCommand(ctx context.Context, homePath string, args ...string) ([
 		filtered = append(filtered, fmt.Sprintf("HOME=%s", homePath))
 		filtered = append(filtered, fmt.Sprintf("XDG_CONFIG_HOME=%s", filepath.Join(homePath, ".config")))
 		filtered = append(filtered, fmt.Sprintf("XDG_DATA_HOME=%s", opencodeDataHomeForAccount(homePath)))
-		filtered = append(filtered, fmt.Sprintf("OPENCODE_CONFIG=%s", filepath.Join(homePath, ".config", "opencode")))
+		// CA-679: config FILE path — a directory value crashes opencode probes.
+		filtered = append(filtered, fmt.Sprintf("OPENCODE_CONFIG=%s", opencodeConfigFilePath(homePath)))
 		if runtime.GOOS == "windows" {
 			filtered = append(filtered, fmt.Sprintf("USERPROFILE=%s", homePath))
 			filtered = append(filtered, fmt.Sprintf("APPDATA=%s\\AppData\\Roaming", homePath))
@@ -87,6 +91,12 @@ func runOpencodeCommand(ctx context.Context, homePath string, args ...string) ([
 			}
 		}
 	}
+	return filtered
+}
+
+func runOpencodeCommand(ctx context.Context, homePath string, args ...string) ([]byte, error) {
+	filtered := opencodeAccountCommandEnv(homePath)
+	homePath = strings.TrimSpace(homePath)
 	cmd := newProbeCmd(ctx, opencodeBinaryName(), args...)
 	cmd.Env = filtered
 	dir := homePath

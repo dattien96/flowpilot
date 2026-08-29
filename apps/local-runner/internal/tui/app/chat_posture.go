@@ -134,19 +134,40 @@ func (m *AppModel) chatPostureCmdFromPending(cfg client.ChatPostureConfig) tea.C
 	}
 }
 
+// postureModelPinWins decides whether a posture profile's pinned model may
+// override the current session model. Real posture switches always pin (old
+// parity: /mode plan adopts the profile's provider+model). Resume-flavored
+// applies — restart restore and /new re-applying the already-active posture
+// (keepReasoning, CA-641) — keep the user's persisted /model choice (CA-679,
+// the CA-638 analog for model): the pin only wins when the profile switches
+// to a different provider (the user's model is invalid there, and the pin is
+// the only model meaningful for it) or the session has no model yet.
+// currentProvider must be captured BEFORE setPostureProvider runs.
+func (m *AppModel) postureModelPinWins(profProvider, currentProvider string, resume bool) bool {
+	if !resume {
+		return true
+	}
+	if strings.TrimSpace(profProvider) != "" && !strings.EqualFold(profProvider, currentProvider) {
+		return true
+	}
+	return strings.TrimSpace(m.model) == ""
+}
+
 // applyChatPostureProfile switches the session to a posture and applies its
 // pinned profile fields (provider/model/reasoning/yolo) when set.
-// keepReasoning skips the ReasoningEffort pin (CA-641): re-applying the
-// already-active posture (/new) must preserve the user's /reasoning choice.
+// keepReasoning marks the resume-flavored re-apply (CA-641): re-applying the
+// already-active posture (/new) must preserve the user's /reasoning choice —
+// and, since CA-679, their /model choice too (postureModelPinWins).
 func (m *AppModel) applyChatPostureProfile(cfg client.ChatPostureConfig, name string, keepReasoning bool) {
 	m.chatPosture = name
 	// A profile switching to scan/plan also flips the read-only expectation; the
 	// runner enforces it via ChatPosture on the turn.
 	prof := cfg.Profiles[name]
+	providerBefore := m.provider
 	if prof.Provider != "" {
 		m.setPostureProvider(prof.Provider)
 	}
-	if prof.Model != "" {
+	if prof.Model != "" && m.postureModelPinWins(prof.Provider, providerBefore, keepReasoning) {
 		m.model = prof.Model
 		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 	}
@@ -170,13 +191,22 @@ func (m *AppModel) applyChatPostureProfile(cfg client.ChatPostureConfig, name st
 // applyChatPostureProfile: it applies the persisted Active's pinned fields
 // without marking dirty and without the "Mode: …" banner — the TUI is just
 // resuming where the user left off.
+// CA-679: the resume path must NOT re-pin the profile model over the user's
+// persisted /model choice (CA-638 analog for model; operator report: an
+// opencode model selected in chat reverted to the posture's grok-4.5 pin on
+// every restart, and the clobbered value was re-persisted to session prefs).
+// setPostureProvider is also skipped when the pinned provider equals the
+// current one — it would silently reset the model to the provider's first
+// entry through the back door.
 func (m *AppModel) restoreChatPostureProfile(cfg client.ChatPostureConfig, name string) {
 	m.chatPosture = name
 	prof := cfg.Profiles[name]
-	if prof.Provider != "" {
+	providerBefore := m.provider
+	providerSwitched := strings.TrimSpace(prof.Provider) != "" && !strings.EqualFold(prof.Provider, providerBefore)
+	if providerSwitched {
 		m.setPostureProvider(prof.Provider)
 	}
-	if prof.Model != "" {
+	if prof.Model != "" && (providerSwitched || strings.TrimSpace(m.model) == "") {
 		m.model = prof.Model
 		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 	}
