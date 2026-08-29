@@ -512,6 +512,32 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 
 				writeHTTPJSON(w, map[string]any{"ok": true})
 			})
+			// /provider-accounts/opencode-yolo-posture (CP-57 Task-303, BUG-329
+			// era): the Opencode counterpart to the Grok toggle. Opencode acp has
+			// no --auto launch flag, so this only flips the runner's desired-auto
+			// SSOT (process respawn key) — live per-turn enforcement already rides
+			// on TurnRequest.YoloMode via the adapter's permission auto-approve.
+			// See ApplyOpencodeYoloPosture (opencode_process.go).
+			mux.HandleFunc("/provider-accounts/opencode-yolo-posture", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload struct {
+					Yolo bool `json:"yolo"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				if err := instance.ApplyOpencodeYoloPosture(r.Context(), payload.Yolo); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				writeHTTPJSON(w, map[string]any{"ok": true})
+			})
 			mux.HandleFunc("/provider-accounts/test", func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

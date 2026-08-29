@@ -201,7 +201,7 @@ Each `P-item` below maps to a finalized child Task (IDs: Task-300..303). **Names
   - Card parity: `permission_required` → grouped approval queue (`ca195_parallel_approval_queue_test.go`), `user_question_required` → `QuestionCard` with `multiSelect`, `tool_started/completed` → `TuiToolGroup`, `file_changed` → `fileChanged` event, all provider-neutral (`GR-BR` analog).
 
 - `P-9` **Resume / history / handoff** (Task-301 + Task-303 split).
-  - Task-301: persist real `sessionId` via `ProviderSessionStore.UpsertSession{ProviderKey:"opencode"}` after `session/new`; resume via `session/load{sessionId,cwd,mcpServers}` (probed in Task-300 `T-2b`) or typed mismatch; synthetic `thread-*` → explicit fail; registration in `ProviderRegistryFor` only (Task-301 gate), `DefaultProviderRegistry` **without** opencode like Grok `provider_registry.go:221-247`.
+  - Task-301: persist real `sessionId` via `ProviderSessionStore.UpsertSession{ProviderKey:"opencode"}` after `session/new`; resume via `session/load{sessionId,cwd,mcpServers}` or typed mismatch; synthetic `thread-*` never `session/load` — starts a fresh session (2026-08-29 reconciliation: Grok BUG-324 parity, shipped in Task-301; the original "explicit fail" was relaxed because `TestOpencodeAdapterSyntheticIdFails` now asserts fresh-session semantics and mid-chat continuation beats a hard error); registration in `ProviderRegistryFor` only (Task-301 gate), `DefaultProviderRegistry` **without** opencode like Grok `provider_registry.go:221-247`.
   - Task-303: `LocateSessionFile` opencode branch (+ `isOpencodeRealSessionID` analog to `grok_transcript_loader.go:208 isGrokRealSessionID`) for Drive restore / cross-account resume; `handoff_context.go:142 supportsHandoffSource` stays `false` until extractor proven; do not corrupt history.
 
 - `P-10` **Skill / context / flow gates / summaries** (Task-303, parity with Grok `P-10`).
@@ -319,7 +319,7 @@ Scan roots: `apps/local-runner/internal/runner` (438 files) + `internal/tui` (25
   - `OC-09` Context injection: feature history + audit + summary injected before turn.
   - `OC-10` Flow rules: `r-ca`/`r-bug`/`r-task` via `finishTurn`; gate-repair prompts run on Opencode.
   - `OC-11` Tool events: `tool_started`/`tool_completed` render; `FileEvents` from diffs.
-  - `OC-12` Cross-account / resume: single zen account; synthetic `thread-*` → explicit fail; `session/prompt` result `sessionId` adopted.
+  - `OC-12` Cross-account / resume: single zen account; synthetic `thread-*` never resumed (fresh session, Grok parity — 2026-08-29 reconciliation); `session/prompt` result `sessionId` adopted.
   - `OC-16` Interrupt: `ctx.Done()` → ACP `session/cancel` → `ctx.Err()`.
   - `OC-17` MCP readiness: withhold `session/prompt` until FlowPilot MCP `tools/list` arrives (first-turn drop guard).
   - `OC-18` Settings detect: `opencode --version` + compat baseline check; binary missing → `tooling.json` `missing`.
@@ -339,7 +339,7 @@ Scan roots: `apps/local-runner/internal/runner` (438 files) + `internal/tui` (25
   - `ProviderModelNotFoundError: opencode/deepseek-v4-flash-free` → typed terminal error with suggestion list.
   - ACP `initialize`/`session/new` failure → normalized `turn_failed` recoverable.
   - Permission deny → `PermissionRejected` not wedge.
-  - Synthetic `thread-*` resume → explicit fail (no fresh `session/new`).
+  - Synthetic `thread-*` resume → never `session/load`; a fresh session starts (2026-08-29 reconciliation: Grok BUG-324 parity — an explicit fail here cost mid-chat continuation; a real cross-account mismatch still refuses via the run-owner guard).
   - External MCP configured but not visible → capability stays `false` with diagnostic log.
 
 ### 7.1 E2E Test Items
@@ -352,7 +352,7 @@ Scan roots: `apps/local-runner/internal/runner` (438 files) + `internal/tui` (25
 | `E2E-04` | Same-account resume | Opencode | Turn → continue in same runner session | Reuses real `ses_*` via scoped map |
 | `E2E-05` | Restart resume | Opencode, Grok, Codex | Restart runner/app, resume all three | Opencode resumes only when safe else typed mismatch |
 | `E2E-06` | Cross-account safety | Opencode, Grok, Codex | Chat under account A → switch to B → resume | No silent cross-account resume; Opencode returns mismatch |
-| `E2E-07` | Synthetic resume guard | Opencode | Resume with `thread-*` + no real map | Explicit fail, no fresh `session/new` |
+| `E2E-07` | Synthetic resume guard | Opencode | Resume with `thread-*` + no real map | `thread-*` never `session/load`; fresh session starts (2026-08-29: Grok-parity reconciliation) |
 | `E2E-08` | Prompt-result session id | Opencode | Turn where ACP `turn_completed` returns new `sessionId` via `_meta.sessionId` (like Grok `Task-207 DOD-6`) | Adopted as stored provider session id |
 | `E2E-09` | Approval gate | Opencode, Grok, Codex | YOLO off, deny filesystem/shell action | Approval card, denial blocks, others unchanged |
 | `E2E-10` | YOLO policy | Opencode, Grok, Codex | YOLO on, eligible + `ask_user` | Eligible follows policy; `ask_user` not auto-approved |
