@@ -392,27 +392,19 @@ func (r *Runner) closeAllOpencodeProcessesLocked() {
 	}
 }
 
-// ensureOpencodeProcess returns an opencode acp process handle for a
-// scope+model+variant+auto combination, spawning a fresh process when none matches.
-// Handles are keyed by that full tuple (opencodeProcessKey) and COEXIST: a live
-// handle is reused only when scope, model, variant, AND auto all match; a mismatch
-// spawns an additional process rather than tearing the existing one down. Only an
-// account/scope change reclaims processes (every handle bound to a different scope
-// is closed here), so a parent turn and a concurrently-spawned child turn on the
-// same account but different launch flags no longer kill each other's process.
-//
-// Task-300 T-2c probe result (2026-08-27, opencode 1.18.18):
-// - `opencode acp --help` shows NO --model/--variant/--auto launch flags (only
-//   --cwd, --port, --hostname, etc.). Model is selected via opencode.json
-//   config file (cwd-bound), not via CLI. The adapter (Task-301) will ensure the
-//   correct config file exists before session/new, but the process key still
-//   includes model/variant/auto so a per-turn model change respawns (mirroring
-//   grokProcessKey safety) and so tests for reuse/respawn remain deterministic.
-// - initialize returns agentCapabilities.loadSession=true, mcpCapabilities.http/sse,
-//   promptCapabilities.image=true, sessionCapabilities resume/list etc.
-// This header documents the launch-flag vs per-session decision for Task-301:
-// model/variant/auto are treated as per-session config (written to opencode.json)
-// but the process layer still keys by them for coexistence safety.
+// ensureOpencodeProcess returns a live `opencode acp` process handle for a
+// scope. Handles are keyed by the scope+model+variant+auto tuple
+// (opencodeProcessKey — kept for old-test stability), but BUG-329 changed the
+// miss behavior: an exact-key miss now REUSES any live handle bound to the
+// same scope instead of spawning a second process. Live probe (1.18.18):
+// sessions live inside the creating process instance — `session/load` of a
+// ses_* created in process A returns RPC-OK with a config-only result and NO
+// sessionId on a fresh process B, so a mid-chat model change must keep using
+// the same process (the per-turn model rides on session/set_config_option,
+// applied by applyOpencodeSessionConfig after ensureSession). Variant/auto
+// never reach the command line (`opencode acp` has no such flags), so reusing
+// across those is also safe. Only an account/scope change reclaims processes
+// (every handle bound to a different scope is closed here).
 func (r *Runner) ensureOpencodeProcess(ctx context.Context, scopeKey, cwd string, extraEnv map[string]string, model, variant string, auto bool) (*opencodeProcessHandle, error) {
 	r.opencodeProcessMu.Lock()
 	defer r.opencodeProcessMu.Unlock()
@@ -439,6 +431,14 @@ func (r *Runner) ensureOpencodeProcess(ctx context.Context, scopeKey, cwd string
 		}
 		h.close()
 		delete(r.opencodeProcesses, key)
+	}
+	// BUG-329: exact-key miss → reuse any other live handle in the same scope.
+	// Spawning a fresh process for a mid-chat model change orphans every
+	// session created by the old process (session/load returns no sessionId).
+	for _, h := range r.opencodeProcesses {
+		if h.scopeKey == scopeKey && !h.dispatcher.isClosed() {
+			return h, nil
+		}
 	}
 
 	if !opencodeAgentEnabled() {

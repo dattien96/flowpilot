@@ -331,6 +331,16 @@ func (a *opencodeAdapter) ensureSession(ctx context.Context, req TurnRequest, cw
 		return "", err
 	}
 	sessionID := opencodeACPResponseSessionIDFromResult(result)
+	if sessionID == "" && method == "session/load" && isOpencodeRealSessionID(resumeID) {
+		// BUG-329: on a fresh `opencode acp` process, session/load of a ses_*
+		// created by another process instance answers RPC-OK with a config-only
+		// result and NO sessionId (live-probed 1.18.18). The RPC succeeded, so
+		// adopt the requested resume id instead of failing the turn — and never
+		// fall back to session/new here, which would silently lose history.
+		// With the BUG-329 process-reuse the id does live in this process; the
+		// config-only shape is a response quirk, not a load failure.
+		sessionID = resumeID
+	}
 	if sessionID == "" {
 		return "", fmt.Errorf("opencode %s returned no sessionId", method)
 	}

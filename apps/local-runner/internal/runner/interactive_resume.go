@@ -880,6 +880,10 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		realProviderSessionID:  st.ProviderSessionID,
 		lastCodexTurnSessionID: st.ProviderSessionID,
 		lastGrokTurnSessionID:  st.ProviderSessionID,
+		// BUG-329: mirror Grok — a restored opencode run resumes its real ses_*
+		// through the lastOpencodeTurnSessionID fallback in
+		// turnResumeProviderSessionID.
+		lastOpencodeTurnSessionID: st.ProviderSessionID,
 		providerAccountID:      st.ProviderAccountID,
 		workspaceCwd:           st.WorkingDirectory,
 		runKind:                st.RunKind,

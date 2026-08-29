@@ -6305,6 +6305,8 @@ func resolveTurnModelAndEffort(rs *interactiveRun, in TurnInput) (model, effort 
 // real id. Grok also falls back to lastGrokTurnSessionID when the synthetic
 // thread-* is still on providerSessionID and real is empty — a model-change
 // respawn (run-92955) must session/load that ACP id, not session/new.
+// Opencode mirrors the Grok fallback with lastOpencodeTurnSessionID (BUG-329,
+// run-307050): a mid-chat model switch must session/load the real ses_* id.
 func turnResumeProviderSessionID(rs *interactiveRun) string {
 	if rs == nil {
 		return ""
@@ -6313,11 +6315,17 @@ func turnResumeProviderSessionID(rs *interactiveRun) string {
 	if rs.realProviderSessionID != "" && rs.providerKey != ProviderKeyClaude {
 		id = rs.realProviderSessionID
 	}
-	if rs.providerKey != ProviderKeyGrok {
+	if rs.providerKey != ProviderKeyGrok && rs.providerKey != ProviderKeyOpencode {
 		return id
 	}
 	trimmed := strings.TrimSpace(id)
 	if trimmed != "" && !strings.HasPrefix(trimmed, "thread-") {
+		return id
+	}
+	if rs.providerKey == ProviderKeyOpencode {
+		if alt := strings.TrimSpace(rs.lastOpencodeTurnSessionID); isOpencodeRealSessionID(alt) {
+			return alt
+		}
 		return id
 	}
 	if alt := strings.TrimSpace(rs.lastGrokTurnSessionID); isGrokRealSessionID(alt) {
