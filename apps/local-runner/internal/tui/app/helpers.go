@@ -522,6 +522,12 @@ func formatAccountLimits(acc *client.ProviderAccountSummary) string {
 }
 
 func formatQuotaChip(label string, pct int, resetAt *string) string {
+	// CA-684: a usage line with no real percent and no reset is informational
+	// (opencode stats rows — sessions/cost/tokens), not a quota meter. Never
+	// fabricate a ":0%" suffix onto it.
+	if pct <= 0 && (resetAt == nil || strings.TrimSpace(*resetAt) == "") {
+		return label
+	}
 	chip := fmt.Sprintf("%s:%d%%", label, pct)
 	if resetAt == nil {
 		return chip

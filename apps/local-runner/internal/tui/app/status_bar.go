@@ -122,9 +122,16 @@ func (m *AppModel) collapsedQuotaChip() string {
 	// Fallback to first detail line (e.g. Team Credits) if weekly missing — but
 	// never the Grok "Team <uuid>" / "Personal" UsageSummary (Desktop parity).
 	for _, line := range acc.UsageDetailLines {
-		if l := strings.TrimSpace(line.Label); l != "" {
-			return styleStatusHi.Render(fmt.Sprintf("%s:%d%%", l, line.RemainingPercent))
+		l := strings.TrimSpace(line.Label)
+		if l == "" {
+			continue
 		}
+		// CA-684: informational stats lines carry no meter data — render the
+		// label alone instead of a fabricated ":0%".
+		if line.RemainingPercent <= 0 && strings.TrimSpace(line.ResetAt) == "" {
+			return styleStatusHi.Render(l)
+		}
+		return styleStatusHi.Render(fmt.Sprintf("%s:%d%%", l, line.RemainingPercent))
 	}
 	return ""
 }
