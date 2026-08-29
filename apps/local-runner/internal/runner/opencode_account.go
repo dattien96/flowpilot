@@ -49,8 +49,12 @@ func loadOpencodeAccountMetadataInternal(ctx context.Context, homePath string) (
 	summary.DisplayLabel = opencodeAccountDisplayLabel(labels, email)
 	summary.DisplayName = summary.DisplayLabel
 	summary.UsageSummary = opencodeAccountUsageSummary(labels)
-	// Skip `opencode stats` on this path: live CLI takes ~8s, the caller budget
-	// is 5s, and non-JSON help text was dumped into usage lines.
+	// CP-57 OC-30: attempt `opencode stats` within a bounded slice of the
+	// caller budget (live CLI can take seconds — degrade to no lines). Only on
+	// the cheap auth.json path so the slow CLI fallback above is not doubled.
+	if len(labels) > 0 {
+		summary.UsageDetailLines = opencodeStatsDetailLines(ctx, homePath)
+	}
 
 	summary.Remaining5hPercent = nil
 	summary.Remaining7dPercent = nil
