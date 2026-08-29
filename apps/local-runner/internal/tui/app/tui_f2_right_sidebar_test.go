@@ -74,17 +74,15 @@ func TestRightSidebar_NarrowKeepsChatOnly(t *testing.T) {
 	}
 }
 
-// TestRightSidebar_ClickOpenFocusesChild: clicking [open] on a child step row in the
-// right sidebar focuses that child agent.
-func TestRightSidebar_ClickOpenFocusesChild(t *testing.T) {
+// TestRightSidebar_FocusChildViaAgents: focusing a child agent via /agents (no click chip).
+func TestRightSidebar_FocusChildViaAgents(t *testing.T) {
 	for _, pk := range []string{"claude", "codex", "grok"} {
 		t.Run(pk, func(t *testing.T) {
 			m := sidebarFlowModel(pk, 120)
-			x, y, ok := findClickTarget(m, "agent-open:run-rev")
-			if !ok {
-				t.Fatalf("%s: expected clickable [open] in right sidebar", pk)
+			m2, cmd := m.handleSlashCommand("/agents my-reviewer")
+			if cmd == nil {
+				t.Fatalf("%s: /agents must focus child", pk)
 			}
-			m2, _ := m.dispatchMouseClick(x, y)
 			am := m2.(*AppModel)
 			if !am.viewingChild() || am.focusRunID != "run-rev" {
 				t.Fatalf("%s: focusRunID=%q viewingChild=%v", pk, am.focusRunID, am.viewingChild())

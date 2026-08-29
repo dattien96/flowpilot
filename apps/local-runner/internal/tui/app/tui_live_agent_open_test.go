@@ -68,12 +68,11 @@ func TestAgentRunsHydrated_ShowsOpenInSidebar(t *testing.T) {
 		t.Fatal("wide terminal must show the sidebar")
 	}
 	joined := strings.Join(am.flowStepsPanelLines(), "\n")
-	if !strings.Contains(joined, "[open]") {
-		t.Fatalf("expected live [open] after hydrate:\n%s", joined)
+	if strings.Contains(joined, "[open]") {
+		t.Fatalf("live child must NOT show [open] chip (keyboard-only via /agents):\n%s", joined)
 	}
-	if _, _, ok := findClickTarget(am, "agent-open:run-rev"); !ok {
-		t.Fatalf("sidebar [open] must be hittable:\n%s",
-			strings.Join(am.renderRightSidebar(30), "\n"))
+	if !strings.Contains(joined, "my-reviewer") {
+		t.Fatalf("child step must render after hydrate:\n%s", joined)
 	}
 }
 
@@ -100,8 +99,12 @@ func TestAgentGraphUpdated_LiveChildShowsOpen(t *testing.T) {
 	if !am.useRightSidebar() {
 		t.Fatal("wide terminal must keep the sidebar")
 	}
-	if !strings.Contains(strings.Join(am.flowStepsPanelLines(), "\n"), "[open]") {
-		t.Fatal("live child step must show [open]")
+	joined := strings.Join(am.flowStepsPanelLines(), "\n")
+	if strings.Contains(joined, "[open]") {
+		t.Fatalf("live child must NOT show [open] chip:\n%s", joined)
+	}
+	if !strings.Contains(joined, "coder") {
+		t.Fatalf("child step must render:\n%s", joined)
 	}
 	// Still refreshes steps (existing CA behavior).
 	if cmd == nil {

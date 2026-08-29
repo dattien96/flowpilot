@@ -260,15 +260,19 @@ func TestFocusAgent_DisablesSendOnChild(t *testing.T) {
 	}
 }
 
-// A6.4 — Tab wraps agent focus.
-func TestCycleAgent_Wraps(t *testing.T) {
+// A6.4 — Tab no longer cycles agents (keyboard-only via /agents + Esc).
+func TestTab_DoesNotCycleAgent(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
 	m.agentRuns = []client.AgentRunSummary{{AgentName: "main", Role: "main"}, {AgentName: "child", Role: "reviewer"}}
 	m.agentsFocus = true
 	m.focusedAgentIdx = 1
+	prev := m.focusedAgentIdx
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyTab})
-	if m2.(*AppModel).focusedAgentIdx != 0 {
-		t.Fatalf("idx = %d want 0", m2.(*AppModel).focusedAgentIdx)
+	if m2.(*AppModel).focusedAgentIdx != prev {
+		t.Fatalf("Tab must not cycle agents: idx = %d want %d", m2.(*AppModel).focusedAgentIdx, prev)
+	}
+	if m2.(*AppModel).focusRunID != "" {
+		t.Fatalf("Tab must not auto-focus a child: focusRunID=%q", m2.(*AppModel).focusRunID)
 	}
 }
 

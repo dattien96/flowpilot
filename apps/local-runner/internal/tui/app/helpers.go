@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -334,24 +335,35 @@ func formatUsageLine(lastTokens, contextWindow, lastTurn int64) string {
 	return fmt.Sprintf("ctx:%dk/%dk last:%dk", lastTokens/1000, contextWindow/1000, lastTurn/1000)
 }
 
+// orderAgentsMainFirst keeps main first, then sorts the remaining child agents
+// STABLY by AgentName then RunID. A stable sort prevents the /agents list and the
+// Tab/picker from flickering/reordering every time a fresh agent_graph_updated
+// snapshot replaces agentRuns (the SSE arrival order differs from poll order).
 func orderAgentsMainFirst(runs []client.AgentRunSummary) []client.AgentRunSummary {
-	if len(runs) <= 1 {
+	if len(runs) == 0 {
 		return runs
 	}
-	out := make([]client.AgentRunSummary, 0, len(runs))
-	var rest []client.AgentRunSummary
+	var main, rest []client.AgentRunSummary
 	for _, r := range runs {
 		if strings.EqualFold(r.Role, "main") || strings.EqualFold(r.AgentName, "main") {
-			out = append(out, r)
+			main = append(main, r)
 		} else {
 			rest = append(rest, r)
 		}
 	}
+	sort.SliceStable(rest, func(i, j int) bool {
+		ni, nj := strings.ToLower(strings.TrimSpace(rest[i].AgentName)), strings.ToLower(strings.TrimSpace(rest[j].AgentName))
+		if ni != nj {
+			return ni < nj
+		}
+		return strings.TrimSpace(rest[i].RunID) < strings.TrimSpace(rest[j].RunID)
+	})
+	out := append([]client.AgentRunSummary(nil), main...)
+	out = append(out, rest...)
 	if len(out) == 0 {
-		out = append(out, runs[0])
-		rest = runs[1:]
+		return runs
 	}
-	return append(out, rest...)
+	return out
 }
 
 // pickActiveSessionDefaults chooses provider/model for the statusline.

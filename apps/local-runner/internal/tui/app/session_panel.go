@@ -130,12 +130,16 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 		action := ""
 		if child, ok := m.childRunForStep(s); ok {
 			if m.viewingChild() && strings.EqualFold(strings.TrimSpace(child.RunID), strings.TrimSpace(m.focusRunID)) {
-				// Focused child step is highlighted but shows no [back] chip —
-				// back lives on the steps header (CA-542) so it never overlaps
-				// the [open] column, making double-click on [open] idempotent.
-				lineStyle = styleStatusHi
-			} else {
-				action = "  " + styleStepAgentAction.Render("[open]")
+				// Highlight the agent currently being viewed: teal marker +
+				// styleStatusAgent (agent hue) so the selected step is obvious
+				// without a clickable chip. No [open]/[back] — switching is
+				// keyboard-only via /agents (user request).
+				marker := "▸"
+				if m.asciiMode {
+					marker = ">"
+				}
+				line = fmt.Sprintf("[%s] %s %s%s", glyph, marker, name, suffix)
+				lineStyle = styleStatusAgent
 			}
 		}
 		out = append(out, lineStyle.Render(line)+action)
@@ -155,15 +159,10 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 }
 
 // stepsSectionTitle renders the "steps" section header for the sidebar and the
-// overlay. When a child agent is focused it carries the [back] chip (CA-542) so
-// back never overlaps the [open] column on step rows and double-click on [open]
-// stays idempotent.
+// overlay. The focused child has no [back] chip (switching is keyboard-only via
+// /agents + Esc, per user request) — it is highlighted in the step row instead.
 func (m *AppModel) stepsSectionTitle() string {
-	title := styleGate.Render("steps")
-	if m.viewingChild() {
-		title = title + "  " + styleStepAgentAction.Render("[back]")
-	}
-	return title
+	return styleGate.Render("steps")
 }
 
 // bindActiveAccountForProvider sets account + accountLabel from the active

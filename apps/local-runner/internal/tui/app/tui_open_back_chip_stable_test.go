@@ -8,8 +8,9 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
-// CA-529 — the step [open]/[back] chip must stay stable while viewing a child,
-// even when live graph + list hydrate polls replace/reorder agentRuns.
+// CA-529 follow-up — the focused child stays stable (no chip flicker) while live
+// graph + list hydrate polls replace/reorder agentRuns. Chips are gone; the
+// focused child is highlighted with a teal marker instead.
 
 func TestChildRunForStep_PrefersFocusedRun(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
@@ -30,10 +31,10 @@ func TestChildRunForStep_PrefersFocusedRun(t *testing.T) {
 	}
 }
 
-// TestOpenBackChip_StableAcrossHydrateReorder locks the reported flicker: the
+// TestChildHighlight_StableAcrossHydrateReorder locks the reported flicker: the
 // polled list puts a different same-named run first, yet the focused child keeps
-// no [open] chip and the steps header keeps [back] instead of flipping (CA-542).
-func TestOpenBackChip_StableAcrossHydrateReorder(t *testing.T) {
+// no [open]/[back] chip and the teal marker stays stable.
+func TestChildHighlight_StableAcrossHydrateReorder(t *testing.T) {
 	for _, pk := range []string{"claude", "codex", "grok"} {
 		t.Run(pk, func(t *testing.T) {
 			m := New(config.ChatConfig{Provider: pk}, "http://127.0.0.1:4317")
@@ -49,15 +50,18 @@ func TestOpenBackChip_StableAcrossHydrateReorder(t *testing.T) {
 			}
 			m.focusRunID = "run-b"
 
-			joined := strings.Join(m.flowStepsPanelLines(), "\n")
+			joined := stripANSI(strings.Join(m.flowStepsPanelLines(), "\n"))
 			if strings.Contains(joined, "[open]") {
 				t.Fatalf("%s: focused child row must not show [open]:\n%s", pk, joined)
 			}
 			if strings.Contains(joined, "[back]") {
-				t.Fatalf("%s: [back] must live on the steps header, not the row (CA-542):\n%s", pk, joined)
+				t.Fatalf("%s: focused row must not hold [back]:\n%s", pk, joined)
 			}
-			if !strings.Contains(m.stepsSectionTitle(), "[back]") {
-				t.Fatalf("%s: focused child must keep [back] on the steps header:\n%s", pk, m.stepsSectionTitle())
+			if !strings.Contains(joined, ">") && !strings.Contains(joined, "▸") {
+				t.Fatalf("%s: focused child must show selection marker: %s", pk, joined)
+			}
+			if strings.Contains(m.stepsSectionTitle(), "[back]") {
+				t.Fatalf("%s: steps header must not host [back]:\n%s", pk, m.stepsSectionTitle())
 			}
 
 			// Hydrate reorder: same-named run-a now first.
@@ -70,20 +74,23 @@ func TestOpenBackChip_StableAcrossHydrateReorder(t *testing.T) {
 				},
 			})
 			am := next.(*AppModel)
-			joined2 := strings.Join(am.flowStepsPanelLines(), "\n")
+			joined2 := stripANSI(strings.Join(am.flowStepsPanelLines(), "\n"))
 			if strings.Contains(joined2, "[open]") {
 				t.Fatalf("%s: reorder must not flip the focused row to [open]:\n%s", pk, joined2)
 			}
-			if !strings.Contains(am.stepsSectionTitle(), "[back]") {
-				t.Fatalf("%s: [back] must survive hydrate reorder:\n%s", pk, am.stepsSectionTitle())
+			if strings.Contains(joined2, "[back]") {
+				t.Fatalf("%s: reorder must not add [back]:\n%s", pk, joined2)
+			}
+			if !strings.Contains(joined2, ">") && !strings.Contains(joined2, "▸") {
+				t.Fatalf("%s: marker must survive hydrate reorder: %s", pk, joined2)
 			}
 		})
 	}
 }
 
-// TestOpenBackChip_GraphReorderKeepsBack drives the same guarantee through the
+// TestChildHighlight_GraphReorder keeps the highlight stable through the
 // agent_graph_updated path, which replaces agentRuns authoritatively.
-func TestOpenBackChip_GraphReorderKeepsBack(t *testing.T) {
+func TestChildHighlight_GraphReorder(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
 	m.mode = ModeFlow
 	m.runHandle = &client.RunHandle{RunID: "run-main", Status: "running"}
@@ -107,18 +114,22 @@ func TestOpenBackChip_GraphReorderKeepsBack(t *testing.T) {
 		},
 	}})
 	am := next.(*AppModel)
-	joined := strings.Join(am.flowStepsPanelLines(), "\n")
+	joined := stripANSI(strings.Join(am.flowStepsPanelLines(), "\n"))
 	if strings.Contains(joined, "[open]") {
 		t.Fatalf("graph reorder must not flip the focused row to [open]:\n%s", joined)
 	}
-	if !strings.Contains(am.stepsSectionTitle(), "[back]") {
-		t.Fatalf("graph reorder must keep [back] on the steps header:\n%s", am.stepsSectionTitle())
+	if strings.Contains(joined, "[back]") {
+		t.Fatalf("graph reorder must not add [back]:\n%s", joined)
+	}
+	if !strings.Contains(joined, ">") && !strings.Contains(joined, "▸") {
+		t.Fatalf("marker must survive graph reorder: %s", joined)
 	}
 }
 
-// TestOpenBackChip_OpenWhenNotFocused keeps the CA-513/524 contract: without a
-// focused child the mapped step still shows [open].
-func TestOpenBackChip_OpenWhenNotFocused(t *testing.T) {
+// TestChildStep_NoOpenChipWhenNotFocused keeps the CA-513/524 mapping contract:
+// without a focused child the mapped step still highlights via the teal marker
+// once focused, but never renders an [open] chip.
+func TestChildStep_NoOpenChipWhenNotFocused(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
 	m.mode = ModeFlow
 	m.runHandle = &client.RunHandle{RunID: "run-main", Status: "running"}
@@ -129,11 +140,11 @@ func TestOpenBackChip_OpenWhenNotFocused(t *testing.T) {
 		{RunID: "run-main", AgentName: "main", Role: "main", Status: "running"},
 		{RunID: "run-rev", AgentName: "my-reviewer", Status: "running"},
 	}
-	joined := strings.Join(m.flowStepsPanelLines(), "\n")
-	if !strings.Contains(joined, "[open]") {
-		t.Fatalf("unfocused child step must show [open]:\n%s", joined)
+	joined := stripANSI(strings.Join(m.flowStepsPanelLines(), "\n"))
+	if strings.Contains(joined, "[open]") {
+		t.Fatalf("child step must NOT show [open] chip:\n%s", joined)
 	}
 	if strings.Contains(joined, "[back]") {
-		t.Fatalf("unfocused must not show [back]:\n%s", joined)
+		t.Fatalf("must not show [back]:\n%s", joined)
 	}
 }

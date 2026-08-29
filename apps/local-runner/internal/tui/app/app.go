@@ -1900,9 +1900,6 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 				m.applyAgentGraph(g)
 			}
 		}
-		if m.agentsFocus {
-			m.addMessage("system", fmt.Sprintf("[agents] %d agents active", len(m.agentRuns)), "")
-		}
 		// Desktop refreshes the step timeline on agent_graph_updated.
 		return m, m.cmdRefreshStepsRuntime()
 	}
@@ -2076,6 +2073,13 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "selection cleared"
 			return m, nil
 		}
+		// Return from a focused sub-agent transcript to main (Esc, per user
+		// request). /agents <name> is the only way to enter a child view.
+		if m.viewingChild() {
+			m.restoreMainTranscript()
+			m.addMessage("system", "Returned to main transcript (Esc).", "")
+			return m, nil
+		}
 		// Wizard back navigation for /mode-setup
 		if strings.HasPrefix(strings.TrimSpace(strings.ToLower(m.inputValue)), "/mode-setup") {
 			in := strings.TrimSpace(m.inputValue)
@@ -2155,6 +2159,11 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.cmdMaybePrefetchPickers()
 			}
 		}
+		if m.authPhase == AuthNone && m.actionRingKeysActive() {
+			if handled, model, cmd := m.handleActionRingKey(tea.KeyMsg{Type: tea.KeyLeft}); handled {
+				return model, cmd
+			}
+		}
 		return m, nil
 
 	case tea.KeyTab:
@@ -2175,13 +2184,14 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.applySuggestion(items)
 			return m, m.cmdMaybePrefetchPickers()
 		}
-		if len(m.agentRuns) > 0 {
-			runs := orderAgentsMainFirst(m.agentRuns)
-			m.focusedAgentIdx = (m.focusedAgentIdx + 1) % len(runs)
-			agent := runs[m.focusedAgentIdx]
-			return m, m.cmdFocusAgent(agent.RunID)
+		// Tab cycles the keyboard action ring (Approve/Deny/Retry/...) when a
+		// card is active. Agent view is switched only via /agents, never Tab.
+		if m.actionRingKeysActive() {
+			if handled, model, cmd := m.handleActionRingKey(tea.KeyMsg{Type: tea.KeyRight}); handled {
+				return model, cmd
+			}
 		}
-		// Empty input + no picker/agents: Tab cycles the chat posture
+		// Empty input + no picker/ring: Tab cycles the chat posture
 		// (plan ↔ code). Scan is only reachable via explicit /mode scan.
 		// Guard with sessionDefaultsLoaded so a stray Tab right after the chat
 		// input appears cannot fire a GET /client/chat-posture before the
@@ -3655,7 +3665,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			break
 		}
 		var b strings.Builder
-		b.WriteString("Agents (Tab cycles, /agent <name> or step [open] opens transcript):\n")
+		b.WriteString("Agents (/agents <name> to open transcript · Esc returns to main):\n")
 		for _, r := range runs {
 			cur := ""
 			if r.RunID == m.focusRunID || (m.focusRunID == "" && (strings.EqualFold(r.Role, "main") || r.RunID == m.mainRunID())) {
@@ -5125,7 +5135,7 @@ func (m *AppModel) renderInputLine() string {
 		// Desktop parity: a focused sub-agent transcript is read-only — chat may
 		// only continue on the main run. Render a locked banner instead of an
 		// editable composer (CA-519).
-		msg := " Child transcript is read-only — chat continues on main (/agent main or [back]) "
+		msg := " Child transcript is read-only — chat continues on main (/agent main or Esc) "
 		return styleSystem.Render(truncateVisual(msg, w))
 	}
 	if m.sessionLoading && !strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/") {
