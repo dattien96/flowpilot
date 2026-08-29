@@ -400,3 +400,63 @@ func TestReasoningEffortDetailWording(t *testing.T) {
 		t.Fatalf("low detail = %q", d)
 	}
 }
+
+func TestProviderRefreshCommandDispatchesCatalogLoad(t *testing.T) {
+	// CA-687: /provider refresh is the TUI's "Detect models" button (Desktop
+	// parity) — it must re-fetch the provider catalog without switching
+	// provider or starting a run.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/providers" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"key":"grok","installed":true,"models":[{"id":"grok-4.5","supported_reasoning_efforts":["high","medium","low"]},{"id":"grok-4.6","supported_reasoning_efforts":["xhigh","high","medium","low"]}]}]`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	m := New(config.ChatConfig{Provider: "grok"}, srv.URL)
+	m.provider = "grok"
+	m.model = "grok-4.5"
+	before := len(m.providers)
+
+	m2, cmd := m.handleSlashCommand("/provider refresh")
+	am := m2.(*AppModel)
+	if am.provider != "grok" || am.model != "grok-4.5" {
+		t.Fatalf("refresh must not change provider/model, got %q/%q", am.provider, am.model)
+	}
+	if cmd == nil {
+		t.Fatal("refresh must dispatch a catalog load cmd")
+	}
+	msg := cmd()
+	pm, ok := msg.(ProvidersCatalogMsg)
+	if !ok || pm.Err != "" {
+		t.Fatalf("expected ProvidersCatalogMsg, got %T (%+v)", msg, pm)
+	}
+	am2, _ := am.Update(pm)
+	final := am2.(*AppModel)
+	if len(final.providers) != 1 {
+		t.Fatalf("catalog after refresh = %d providers, want 1 (grok)", len(final.providers))
+	}
+	var grok *client.Provider
+	for i := range final.providers {
+		if final.providers[i].Key == "grok" {
+			grok = &final.providers[i]
+		}
+	}
+	if grok == nil || len(grok.Models) != 2 {
+		t.Fatalf("grok models after refresh = %+v", grok)
+	}
+	found46 := false
+	for _, mod := range grok.Models {
+		if mod.ModelID() == "grok-4.6" {
+			found46 = true
+		}
+	}
+	if !found46 {
+		t.Fatal("grok-4.6 must appear after /provider refresh")
+	}
+	if before != 0 {
+		t.Fatalf("fixture expectation: catalog started empty, got %d", before)
+	}
+}

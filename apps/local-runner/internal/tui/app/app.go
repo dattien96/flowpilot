@@ -3790,6 +3790,13 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				}
 				m.addMessage("system", fmt.Sprintf("Installing provider CLI %s… (may take a minute)", key), "")
 				return m, m.cmdInstallProvider(key)
+			case "refresh", "reload":
+				// CA-687: the TUI has no Desktop "Detect models" button — this is
+				// its equivalent. Re-fetches GET /providers (fresh model
+				// detection: new grok/opencode/... entries land without a
+				// restart) and keeps the current provider/model selection.
+				m.addMessage("system", "Refreshing provider catalog and models…", "")
+				return m, m.cmdLoadProvidersCatalog()
 			case "account", "switch", "activate", "acc":
 				if len(args) < 2 {
 					var sb strings.Builder
@@ -3820,7 +3827,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			sb.WriteString(fmt.Sprintf("Current provider: %s\n", orDash(m.provider)))
 			sb.WriteString(fmt.Sprintf("Current model:    %s\n", orDash(m.model)))
 			if len(m.providers) == 0 {
-				sb.WriteString("No provider catalog loaded yet. Wait for connect, or restart chat.")
+				sb.WriteString("No provider catalog loaded yet. Wait for connect, or run /provider refresh.")
 			} else {
 				sb.WriteString("Providers & Accounts (Desktop Settings parity):\n")
 				for _, p := range m.providers {
@@ -3856,7 +3863,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
-				sb.WriteString("Pick provider: /provider <key>  · Switch account: /provider account <account-id>  · Connect: /provider connect  · Install: /provider install")
+				sb.WriteString("Pick provider: /provider <key>  · Switch account: /provider account <account-id>  · Connect: /provider connect  · Install: /provider install  · Refresh models: /provider refresh")
 			}
 			m.addMessage("system", sb.String(), "")
 		} else if m.runHandle != nil {
@@ -3925,7 +3932,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					}
 					sb.WriteString(fmt.Sprintf("  %s %s · %s\n", mark, prov, e.id))
 				}
-				sb.WriteString("Pick: type /model  then ↑↓ · Tab · Enter (provider auto-switches)")
+				sb.WriteString("Pick: type /model  then ↑↓ · Tab · Enter (provider auto-switches)\nMissing a new model? /provider refresh reloads the catalog")
 			}
 			m.addMessage("system", sb.String(), "")
 		} else {
