@@ -125,7 +125,7 @@ Trạng thái: YOLO **OFF** (`/yolo` hiện OFF).
 | I1 | Chat vài turn → thoát TUI → mở lại → `/history` | Run opencode xuất hiện trong list |
 | I2 | `/open <run>` → "trước đó tôi nói gì?" | Model trả lời đúng nội dung cũ (resume cùng `ses_*`) |
 | I3 | Kill runner (thoát `just chat-dev`) → mở lại → mở chat cũ → hỏi tiếp | Tiếp tục được (session persist trong opencode.db) |
-| I4 | `/sync` → `/restore` với chat opencode | Trả lỗi **typed** rõ ràng (restore file-based chưa hỗ trợ opencode — known gap có chủ đích, xem CP-57 §10.2), không corrupt history |
+| I4 | `/sync` → `/restore` với chat opencode | Trả lỗi **typed** rõ ràng (Drive file-copy restore chưa hỗ trợ opencode — known gap có chủ đích, xem CP-57 §10.2), không corrupt history. **Lưu ý CA-688**: `/open` chat opencode LOCAL thì hoạt động bình thường (I1/I2) — nếu gặp `session_unavailable` khi mở chat local, restart runner để nhận fix |
 
 ## J. Summary (E2E-13)
 

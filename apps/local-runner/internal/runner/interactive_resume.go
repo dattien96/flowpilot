@@ -2648,6 +2648,28 @@ func (s *InteractiveService) ensureResumeReady(rs *interactiveRun) *apiErr {
 		"[chat-history-open] resume check run_id=%q provider=%q stored_account_id=%q active_account_id=%q provider_session_id=%q cwd=%q resumed_from_disk=%t",
 		rs.id, rs.providerKey, rs.providerAccountID, activeAccountID, s.resumeSessionID(rs), rs.workspaceCwd, rs.resumedFromDisk,
 	)
+	if rs.providerKey == ProviderKeyOpencode {
+		// CA-688: opencode keeps sessions in the shared
+		// ~/.local/share/opencode/opencode.db — there are no per-session files
+		// and ACP session/load works from any process on this machine (BUG-329
+		// live probe). A real ses_* id is enough to resume, so the whole
+		// file-based availability flow below (account-home resolution +
+		// LocateSessionFile) does not apply. Synthetic thread-* ids still
+		// cannot resume; the auth check runs only when the account home resolves.
+		sessionID := s.resumeSessionID(rs)
+		if !isOpencodeRealSessionID(sessionID) {
+			log.Printf("[chat-history-open] opencode session id not resumable run_id=%q session_id=%q", rs.id, sessionID)
+			return newAPIErr(http.StatusConflict, "session_unavailable", "opencode session has no real session id to resume")
+		}
+		if srcHome, homeOK := s.resolveAccountHome(rs.providerKey, rs.providerAccountID); homeOK {
+			if rs.providerAccountID == activeAccountID && !HasLocalAuthAtPath(string(rs.providerKey), srcHome) {
+				log.Printf("[chat-history-open] auth missing run_id=%q provider=%q account_id=%q home=%q", rs.id, rs.providerKey, activeAccountID, srcHome)
+				return newAPIErr(http.StatusConflict, "account_not_signed_in", "can't open — the active account isn't signed in")
+			}
+		}
+		log.Printf("[chat-history-open] opencode db-backed session run_id=%q session_id=%q (file check not applicable)", rs.id, sessionID)
+		return nil
+	}
 	srcHome, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 	if !ok && (strings.TrimSpace(rs.providerAccountID) == "" || rs.providerAccountID == "default") {
 		srcHome, ok = defaultProviderSessionHome(rs.providerKey)

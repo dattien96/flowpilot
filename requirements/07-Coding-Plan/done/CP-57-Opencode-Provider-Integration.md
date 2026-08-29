@@ -462,12 +462,14 @@ catalog, MCP-ready gate, stats), CA-683 (desktop stats + 60s cache).
 
 Known bounded gaps (documented, accepted):
 
-- `POST /client/workflow-runs/{id}/resume` (Drive-style restore precheck) returns
-  typed `session_unavailable` for opencode: `LocateSessionFile` probes per-session
-  files while opencode 1.18.x stores sessions in the shared
-  `~/.local/share/opencode/opencode.db`. Conversation continuity does not need it
-  (ACP `session/load` + the run session index work across restarts — proven
-  above); file-copy restore stays typed-unsupported by design (`Q-4` answer).
+- ~~`POST /client/workflow-runs/{id}/resume` returned typed `session_unavailable`
+  for opencode~~ **Fixed in CA-688** (operator report via the CP-57 test guide:
+  `/open` of an old opencode chat failed): `ensureResumeReady` now treats a real
+  `ses_*` id as resumable without session files — opencode keeps sessions in the
+  shared `~/.local/share/opencode/opencode.db` and ACP `session/load` works from
+  any process on this machine. Synthetic `thread-*` still cannot resume; the
+  auth check still runs when the account home resolves. **Still
+  typed-unsupported by design**: Drive file-copy `/sync` → `/restore` (`Q-4`).
 - `Vision=false` and handoff-as-source `false` remain by design (unproven).
 - DOD "desktop turn endpoint network panel" check inherited from the shared
   client — no `/opencode/*` endpoint exists (code-verified).

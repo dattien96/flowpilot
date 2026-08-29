@@ -6643,7 +6643,10 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// single grok_session id may only reload the latest segment, so without a
 	// turn-log assistant the main chat loses res-after-review-round-N (run-9034).
 	durableTurn := transcriptTurn{}
-	if completed && (rs.providerKey == ProviderKeyGemini || rs.providerKey == ProviderKeyGrok) {
+	// CA-688: opencode has NO provider-owned transcript file at all (sessions
+	// live in the shared opencode.db), so its prompt/assistant pairs must ride
+	// the durable turn log for /open replay — same rationale as Gemini/Grok.
+	if completed && (rs.providerKey == ProviderKeyGemini || rs.providerKey == ProviderKeyGrok || rs.providerKey == ProviderKeyOpencode) {
 		durableTurn = transcriptTurnForProviderTurnLocked(rs, turnID)
 	}
 	snap := sessionStateOf(rs)
