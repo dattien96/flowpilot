@@ -48,10 +48,10 @@ Mở Desktop → Settings → AI Providers.
 | A1 ✅ PASSED 08-30 | Xem card Opencode | "Installed 1.18.x (tested 1.18.18)", trạng thái READY |
 | A2 ✅ PASSED 08-30 (DB: cần chạy migration CA-689 trước — check constraint `ai_supported_models_provider_key_check`) | Bấm **Detect models** | Danh sách model opencode/* + opencode-go/* (≥10; TUI có retry warm nếu ít hơn) |
 | A3 ✅ PASSED 08-30 | Xem hàng version (CheckVersion) | **4 hàng**: Claude / Codex / Grok / Opencode |
-| A4 ⏳ BLOCKED → FIXED CA-689b (restart Desktop để nhận CSS scroll mới) | Account sidebar: pin Opencode | Email/label từ auth.json (Zen, Go, xAI) + **"Limit: N/A (zen proxy)"** + tối đa 2 dòng stats text (CA-683: "cost: $… total", "stats: N sessions"); bấm **All** → modal hiện đầy đủ usage lines dạng text (không có thanh %) |
+| A4 ✅ PASSED 08-30 (CA-689b scroll fix) | Account sidebar: pin Opencode | Email/label từ auth.json (Zen, Go, xAI) + **"Limit: N/A (zen proxy)"** + tối đa 2 dòng stats text (CA-683: "cost: $… total", "stats: N sessions"); bấm **All** → modal hiện đầy đủ usage lines dạng text (không có thanh %) |
 | A5 | MCP tab → Google Drive connect | `~/.config/opencode/opencode.json` xuất hiện `mcpServers` mới; `opencode mcp` (CLI) list thấy |
 
-## B. TUI — chọn provider/model + persistence (CA-679)
+## B. TUI — chọn provider/model + persistence (CA-679) — **PASSED 08-30 (B1-B7)**
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
@@ -63,7 +63,7 @@ Mở Desktop → Settings → AI Providers.
 | B6 | `/reasoning low` → thoát → mở lại | Reasoning giữ nguyên |
 | B7 | Chọn model opencode → thoát hẳn máy (không /new) → mở lại | Vẫn model opencode — **đây là regression CA-679**: posture scan/plan pin grok-4.5 không được đè lựa chọn |
 
-## C. Chat cơ bản (OC-01/OC-11/OC-24)
+## C. Chat cơ bản (OC-01/OC-11/OC-24) — **PASSED 08-30 (C1-C4)**
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
@@ -72,7 +72,8 @@ Mở Desktop → Settings → AI Providers.
 | C3 | Gửi "đọc file README.md rồi tóm tắt 1 dòng" | Tool card xuất hiện (read), rồi câu trả lời |
 | C4 | Gửi "tạo file ghi-chu.txt có nội dung xin-chao" (YOLO đang ON) | File được tạo + event file_changed; `flow_gate_violation` có thể xuất hiện ở sidebar steps (r-ca — xem mục K) |
 
-## D. Đổi model giữa chat (BUG-329) — **test quan trọng nhất**
+## D. Đổi model giữa chat (BUG-329) — **test quan trọng nhất** — **PASSED 08-30 (D1-D3)**
+> D3 wire proof run-345019 (cùng session `ses_fb11b1cd…`): 02:00:18 `effort=xhigh` (turn-345021) → 02:00:28 `effort=medium` (turn-345040), không turn-failed. Reasoning đổi giữa chat đi tới opencode thật.
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
