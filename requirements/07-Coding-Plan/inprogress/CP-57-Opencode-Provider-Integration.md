@@ -5,13 +5,13 @@
 - Document ID: `CP-57`
 - Title: `Opencode Provider Integration (Controlled Adapter + Settings + Chat/Flow Parity)`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-27`
-- Last Updated: `2026-08-27` (exhaustive desktop+runner scan synced)
+- Last Updated: `2026-08-29` (moved todo→inprogress; CA-679 lands) (exhaustive desktop+runner scan synced)
 - Parent Documents: [SS-05: Workflow AI Provider](../../05-System-Specs/SS-05-Workflow-Ai-Provider.md), [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md), [SS-12: Multiple Agents](../../05-System-Specs/SS-12-Multiple-Agents.md), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md), [SD-16: Agent Spawn And Tool Calling Design](../../06-System-Tech-Design/SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [SD-11: MCP Connection Flows](../../06-System-Tech-Design/SD-11-MCP-Connection-Flows.md)
-- Child Documents: [Task-300: Opencode ACP Transport And Process/Dispatcher](../../08-Task/todo/Task-300-Opencode-ACP-Transport-And-Process-Dispatcher.md), [Task-301: Opencode Controlled Adapter MVP](../../08-Task/todo/Task-301-Opencode-Controlled-Adapter-MVP.md), [Task-302: Opencode Settings — Detect/Install/Models/MCP/Account](../../08-Task/todo/Task-302-Opencode-Settings-Detect-Install-Models-MCP-Account.md), [Task-303: Opencode Chat/Flow — Model/Reasoning/YOLO/Cards/Tools](../../08-Task/todo/Task-303-Opencode-Chat-Flow-Model-Reasoning-YOLO-Cards-Tools.md)
+- Child Documents: [Task-300: Opencode ACP Transport And Process/Dispatcher](../../08-Task/inprogress/Task-300-Opencode-ACP-Transport-And-Process-Dispatcher.md), [Task-301: Opencode Controlled Adapter MVP](../../08-Task/inprogress/Task-301-Opencode-Controlled-Adapter-MVP.md), [Task-302: Opencode Settings — Detect/Install/Models/MCP/Account](../../08-Task/inprogress/Task-302-Opencode-Settings-Detect-Install-Models-MCP-Account.md), [Task-303: Opencode Chat/Flow — Model/Reasoning/YOLO/Cards/Tools](../../08-Task/inprogress/Task-303-Opencode-Chat-Flow-Model-Reasoning-YOLO-Cards-Tools.md)
 - Related Documents: [CP-46: Grok Build Controlled Adapter Over ACP](../done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [CP-40: Gemini Controlled Adapter](../todo/CP-40-Gemini-Adapter-Plan.md), [07 — Claude Provider Adapter Plan](../../10-Refactor/New-System/07-Claude-Adapter-Plan.md), [04-07 — Phase 7: Providers Capability Packaging](../../10-Refactor/New-System/04-07-Phase7-Providers-Capability-Packaging.md), [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md)
 - Replaces: `None`
 - Tags: `opencode, ai-providers, adapter, acp, mcp, local-runner, desktop-chat, settings`

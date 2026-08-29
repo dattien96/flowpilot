@@ -5,11 +5,11 @@
 - Document ID: `Task-303`
 - Title: `Opencode Chat/Flow — Model / Reasoning / YOLO / Cards / Tools + Parity Hardening`
 - Phase: `task`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-27`
-- Last Updated: `2026-08-27`
+- Last Updated: `2026-08-29` (moved todo→inprogress; CA-679 lands)
 - Parent Documents: [CP-57: Opencode Provider Integration](../../07-Coding-Plan/todo/CP-57-Opencode-Provider-Integration.md), [Task-301: Opencode Controlled Adapter MVP](./Task-301-Opencode-Controlled-Adapter-MVP.md), [Task-302: Opencode Settings — Detect/Install/Models/MCP/Account](./Task-302-Opencode-Settings-Detect-Install-Models-MCP-Account.md)
 - Child Documents: `None`
 - Related Documents: [Task-208: Grok Permission Channel And YOLO Posture](../done/Task-208-Grok-Permission-Channel-And-Yolo-Posture.md), [Task-209: Grok MCP, Ask-User, And Spawn-Agent Parity](../done/Task-209-Grok-MCP-Ask-User-Spawn-Agent-Parity.md), [Task-211: Grok Desktop UI Surface](../done/Task-211-Grok-Desktop-UI-Surface.md), [Task-215: Per-Model Reasoning-Effort Detection](../done/Task-215-Per-Model-Reasoning-Effort-Detection-And-Model-Aware-UI.md)

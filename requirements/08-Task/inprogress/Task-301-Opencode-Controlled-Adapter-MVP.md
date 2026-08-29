@@ -5,11 +5,11 @@
 - Document ID: `Task-301`
 - Title: `Opencode Controlled Adapter MVP (Chat/Stream/Resume/Token)`
 - Phase: `task`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-27`
-- Last Updated: `2026-08-27`
+- Last Updated: `2026-08-29` (moved todo→inprogress; CA-679 lands)
 - Parent Documents: [CP-57: Opencode Provider Integration](../../07-Coding-Plan/todo/CP-57-Opencode-Provider-Integration.md), [Task-300: Opencode ACP Transport And Process/Dispatcher](./Task-300-Opencode-ACP-Transport-And-Process-Dispatcher.md)
 - Child Documents: `None`
 - Related Documents: [Task-207: Grok Controlled Adapter MVP](../done/Task-207-Grok-Controlled-Adapter-MVP.md), [Task-165: Gemini Controlled Adapter MVP](../done/Task-165-Gemini-Controlled-Adapter-MVP.md)
