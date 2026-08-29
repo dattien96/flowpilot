@@ -5,12 +5,12 @@
 - Document ID: `Task-302`
 - Title: `Opencode Settings — Detect / Install / Models / MCP / Account`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-27`
-- Last Updated: `2026-08-29` (moved todo→inprogress; CA-679 lands)
-- Parent Documents: [CP-57: Opencode Provider Integration](../../07-Coding-Plan/todo/CP-57-Opencode-Provider-Integration.md), [Task-300: Opencode ACP Transport](./Task-300-Opencode-ACP-Transport-And-Process-Dispatcher.md), [Task-301: Opencode Controlled Adapter MVP](./Task-301-Opencode-Controlled-Adapter-MVP.md)
+- Last Updated: `2026-08-29` (done — CP-57 §10.2 verification record; CA-679..CA-683, BUG-329)
+- Parent Documents: [CP-57: Opencode Provider Integration](../../07-Coding-Plan/done/CP-57-Opencode-Provider-Integration.md), [Task-300: Opencode ACP Transport](./Task-300-Opencode-ACP-Transport-And-Process-Dispatcher.md), [Task-301: Opencode Controlled Adapter MVP](./Task-301-Opencode-Controlled-Adapter-MVP.md)
 - Child Documents: `None`
 - Related Documents: [Task-213: Auto-Detect And Sync Provider Models](../done/Task-213-Auto-Detect-And-Sync-Provider-Models.md), [Task-215: Per-Model Reasoning-Effort Detection](../done/Task-215-Per-Model-Reasoning-Effort-Detection-And-Model-Aware-UI.md), [Task-210: Grok Account Model](../done/Task-210-Grok-Account-Model-Detect-Connect-Switch-Quota.md), [SD-11: MCP Connection Flows](../../06-System-Tech-Design/SD-11-MCP-Connection-Flows.md)
 - Replaces: `None`

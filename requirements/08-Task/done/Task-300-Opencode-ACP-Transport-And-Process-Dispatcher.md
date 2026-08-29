@@ -5,12 +5,12 @@
 - Document ID: `Task-300`
 - Title: `Opencode ACP Transport And Process/Dispatcher`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-27`
-- Last Updated: `2026-08-29` (moved todo→inprogress; CA-679 lands)
-- Parent Documents: [CP-57: Opencode Provider Integration](../../07-Coding-Plan/todo/CP-57-Opencode-Provider-Integration.md)
+- Last Updated: `2026-08-29` (done — CP-57 §10.2 verification record; CA-679..CA-683, BUG-329)
+- Parent Documents: [CP-57: Opencode Provider Integration](../../07-Coding-Plan/done/CP-57-Opencode-Provider-Integration.md)
 - Child Documents: `None`
 - Related Documents: [Task-206: Grok ACP Transport And Process/Dispatcher](../done/Task-206-Grok-ACP-Transport-And-Process-Dispatcher.md), [Task-164: Gemini ACP Transport Extraction](../done/Task-164-Gemini-ACP-Transport-Extraction.md)
 - Replaces: `None`

@@ -5,13 +5,13 @@
 - Document ID: `CP-57`
 - Title: `Opencode Provider Integration (Controlled Adapter + Settings + Chat/Flow Parity)`
 - Phase: `coding_plan`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-27`
-- Last Updated: `2026-08-29` (moved todo→inprogress; CA-679 lands) (exhaustive desktop+runner scan synced)
+- Last Updated: `2026-08-29` (DOD closed — see §10.2; CA-679..CA-683, BUG-329)
 - Parent Documents: [SS-05: Workflow AI Provider](../../05-System-Specs/SS-05-Workflow-Ai-Provider.md), [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md), [SS-12: Multiple Agents](../../05-System-Specs/SS-12-Multiple-Agents.md), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md), [SD-16: Agent Spawn And Tool Calling Design](../../06-System-Tech-Design/SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [SD-11: MCP Connection Flows](../../06-System-Tech-Design/SD-11-MCP-Connection-Flows.md)
-- Child Documents: [Task-300: Opencode ACP Transport And Process/Dispatcher](../../08-Task/inprogress/Task-300-Opencode-ACP-Transport-And-Process-Dispatcher.md), [Task-301: Opencode Controlled Adapter MVP](../../08-Task/inprogress/Task-301-Opencode-Controlled-Adapter-MVP.md), [Task-302: Opencode Settings — Detect/Install/Models/MCP/Account](../../08-Task/inprogress/Task-302-Opencode-Settings-Detect-Install-Models-MCP-Account.md), [Task-303: Opencode Chat/Flow — Model/Reasoning/YOLO/Cards/Tools](../../08-Task/inprogress/Task-303-Opencode-Chat-Flow-Model-Reasoning-YOLO-Cards-Tools.md)
+- Child Documents: [Task-300: Opencode ACP Transport And Process/Dispatcher](../../08-Task/done/Task-300-Opencode-ACP-Transport-And-Process-Dispatcher.md), [Task-301: Opencode Controlled Adapter MVP](../../08-Task/done/Task-301-Opencode-Controlled-Adapter-MVP.md), [Task-302: Opencode Settings — Detect/Install/Models/MCP/Account](../../08-Task/done/Task-302-Opencode-Settings-Detect-Install-Models-MCP-Account.md), [Task-303: Opencode Chat/Flow — Model/Reasoning/YOLO/Cards/Tools](../../08-Task/done/Task-303-Opencode-Chat-Flow-Model-Reasoning-YOLO-Cards-Tools.md)
 - Related Documents: [CP-46: Grok Build Controlled Adapter Over ACP](../done/CP-46-Grok-Build-Controlled-Adapter-Over-ACP.md), [CP-40: Gemini Controlled Adapter](../todo/CP-40-Gemini-Adapter-Plan.md), [07 — Claude Provider Adapter Plan](../../10-Refactor/New-System/07-Claude-Adapter-Plan.md), [04-07 — Phase 7: Providers Capability Packaging](../../10-Refactor/New-System/04-07-Phase7-Providers-Capability-Packaging.md), [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md)
 - Replaces: `None`
 - Tags: `opencode, ai-providers, adapter, acp, mcp, local-runner, desktop-chat, settings`
@@ -433,3 +433,41 @@ Scan roots: `apps/local-runner/internal/runner` (438 files) + `internal/tui` (25
 | Summary generation | `TestOpencodeSummarizer` `Gen summary` + idle summary inject into next Opencode turn; uses `opencode/gpt-5.4-nano` cheap model |
 | Token/context UI | `TestOpencodeTokenUsage` asserts ACP `turn_completed` `tokens`/`cost` → `EventTokenUsageUpdated` and UI renders; absence degrades without crash (`step_finish.tokens` is one-shot contrast only) |
 | End-to-end parity | Manual script records one real desktop Opencode run covering chat, approval, spawned agent, summary, flow gate, resume |
+
+### 10.2 DOD Verification Record (2026-08-29 — closes this CP)
+
+Environment: opencode CLI `1.18.18` (the shipped `compat.go` baseline; the
+`1.18.23` probes above were authoring-time observations on a newer binary —
+reconciled to 1.18.18). Evidence chain: CA-679 (config env + TUI model restore),
+BUG-329/CA-680 (mid-chat model switch), CA-681 (YOLO route + approval/summarizer/
+install/MCP/tooling tests), CA-682 (flow gates, skill exactness, locator, agent
+catalog, MCP-ready gate, stats), CA-683 (desktop stats + 60s cache).
+
+| DOD item | Verdict | Evidence |
+|---|---|---|
+| Adapter implements `ProviderRuntimeAdapter` | DONE | `opencode_adapter.go`; `TestOpencodeAdapterSendTurnStreamsAndCompletes` + fixture/golden tests |
+| Live registry gated, `DefaultProviderRegistry` without opencode | DONE | `TestDefaultProviderRegistryHasNoOpencode`, `TestProviderRegistryForOpencodeUsesLiveWhenFlagOn/OptOut` |
+| Desktop chat via shared `/client/workflow-runs` turns | DONE | no `/opencode/*` route in desktop src; live run-1 turns via shared endpoint |
+| Normalized events only | DONE | `opencode_event_mapper_test.go` suite; mapper maps ACP→ProviderEvent |
+| Session persistence + resume via real `ses_*` | DONE | `TestOpencodeAdapterSessionPersistenceAndResume`, `TestOpencodeAdapterAdoptsPostPromptSessionID`; live: one `ses_fb312ff67ffel7Gvor1TPdecxq` across all turns incl. after runner restart (BUG-329 adopt path) |
+| Capability truthfulness | DONE | `TestOpencodeCapabilitiesMatchProvenSet`; `Vision=false` enforced (desktop `VISION_PROVIDERS` excludes opencode) |
+| Base regression (OC-BR) | DONE | `TestOpencodeProviderKeyFromModelBaseRegressionPlusOpencode`, env parity tests (CA-679/681); pre-existing WIP failures documented identical with changes stashed |
+| Settings detect / install / models / MCP one-click / account / limits / compat | DONE | `TestCheckToolOpencode*`, `TestOpencodeProviderInstallCommand`, `TestDetectOpencodeModels*`, `TestOpencodeMcpWrite*`, `LoadOpencodeAccountMetadata` + bounded `opencode stats` lines + 60s cache (CA-682/683), desktop pin card shows stats + "Limit: N/A (zen proxy)" (CA-683), compat 4th row |
+| Chat/Flow per-turn model/reasoning/YOLO/posture | DONE | `session/set_config_option` per turn (BUG-329 kept), `TestOpencodeReasoningVariantID`, per-turn `TurnRequest.YoloMode` auto-approve tests + `POST /provider-accounts/opencode-yolo-posture` (CA-681); sync-per-turn default per §5.2 row 13 |
+| Approval gate + YOLO policy + question guard | DONE | `TestOpencodeApprovalDeniedRoutesToBridgeAndRejects`, `TestOpencodeYoloAutoApprovesToolPermissionButNotQuestion`, missing-bridge fail-closed; live: `appr-14` deny → `deny-me.txt` NOT created, controlled completion; `appr-28` approve → `allow-me.txt` created |
+| `ask_user` / `spawn_agent` | DONE | reinforcements + FlowPilot MCP wired (`TestOpencodeRegistryPromptPrepInjectsSkillsLikeClaude`); live: `spawn_agent` called by the real model → child run-46 "helper" (wait=true) completed and replied `child-ok` |
+| Flow rules / gates (r-ca/r-bug/r-task) | DONE | `TestOpencodeNormalChatRCAFiresFromMappedFileChange`, `TestOpencodeNormalChatRBugAndRTaskUseDeclaredChangeType`; live: `flow_gate_violation` fired on the real run |
+| Summaries (cheap tier) | DONE | `summarizerModelFor` + `resolvePromptExecutionAdapter` one-shot tests; live: `POST /chat-summary` → `generated:true` (feature catalog fixture in project) |
+| DOD final bullet — recorded end-to-end real run | DONE | Live record 2026-08-29 (isolated runner, real `opencode acp`): chat `turn_completed` "one" → approval deny (blocked) → approval allow (`allow-me.txt`="hello") → `spawn_agent` child `run-46` replied "child-ok" → `flow_gate_violation` fired → summary `generated:true` → runner restart → same `ses_*` continued, `turn_completed` "after-restart" |
+
+Known bounded gaps (documented, accepted):
+
+- `POST /client/workflow-runs/{id}/resume` (Drive-style restore precheck) returns
+  typed `session_unavailable` for opencode: `LocateSessionFile` probes per-session
+  files while opencode 1.18.x stores sessions in the shared
+  `~/.local/share/opencode/opencode.db`. Conversation continuity does not need it
+  (ACP `session/load` + the run session index work across restarts — proven
+  above); file-copy restore stays typed-unsupported by design (`Q-4` answer).
+- `Vision=false` and handoff-as-source `false` remain by design (unproven).
+- DOD "desktop turn endpoint network panel" check inherited from the shared
+  client — no `/opencode/*` endpoint exists (code-verified).
