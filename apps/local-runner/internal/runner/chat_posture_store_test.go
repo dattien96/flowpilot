@@ -15,8 +15,9 @@ import (
 
 func TestChatPostureDefaultConfig(t *testing.T) {
 	cfg := defaultChatPostureConfig()
-	if cfg.Active != ChatPostureCode {
-		t.Fatalf("default active = %q, want code", cfg.Active)
+	// CA-685: the operator-set default posture is now "non" (no mode).
+	if cfg.Active != ChatPostureNon {
+		t.Fatalf("default active = %q, want non", cfg.Active)
 	}
 	if !IsReadOnlyChatPosture(ChatPostureScan) || !IsReadOnlyChatPosture(ChatPosturePlan) {
 		t.Fatal("scan/plan must be read-only")
@@ -65,8 +66,9 @@ func TestChatPostureStore_MissingFileReturnsDefault(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("FLOWPILOT_CHAT_POSTURE_FILE", filepath.Join(dir, "nope.json"))
 	cfg, path := loadChatPosture()
-	if cfg.Active != ChatPostureCode {
-		t.Fatalf("missing file active = %q, want default code", cfg.Active)
+	// CA-685: missing file defaults to "non".
+	if cfg.Active != ChatPostureNon {
+		t.Fatalf("missing file active = %q, want default non", cfg.Active)
 	}
 	if path == "" {
 		t.Fatal("missing file should still report the candidate path")
@@ -77,8 +79,8 @@ func TestChatPostureStore_Normalize(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("FLOWPILOT_CHAT_POSTURE_FILE", filepath.Join(dir, "chat-posture.json"))
 
-	// Invalid active falls back to code; unknown profile keys are dropped;
-	// values are trimmed/lowercased.
+	// Invalid active falls back to the default ("non" per CA-685); unknown
+	// profile keys are dropped; values are trimmed/lowercased.
 	cfg := ChatPostureConfig{
 		Active: "nonsense",
 		Profiles: map[string]ChatPostureProfile{
@@ -93,8 +95,8 @@ func TestChatPostureStore_Normalize(t *testing.T) {
 		t.Fatalf("saveChatPosture: %v", err)
 	}
 	loaded, _ := loadChatPosture()
-	if loaded.Active != ChatPostureCode {
-		t.Fatalf("normalized active = %q, want code", loaded.Active)
+	if loaded.Active != ChatPostureNon {
+		t.Fatalf("normalized active = %q, want non", loaded.Active)
 	}
 	if _, ok := loaded.Profiles["evil"]; ok {
 		t.Fatal("unknown profile key must be dropped")

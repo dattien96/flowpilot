@@ -11,14 +11,14 @@ import (
 	"flowpilot-runner/internal/tui/prefs"
 )
 
-// CA-679: resume-flavored posture applications (restart restore, /new
-// re-applying the already-active posture) must keep the user's persisted
-// /model choice instead of re-pinning the posture profile's model — the
-// CA-638 analog for model. Operator report: an opencode model selected in
-// chat reverted to the posture's grok-4.5 pin on every TUI restart, and the
-// clobbered value was re-persisted to session prefs, destroying the choice.
-// Additive — the chat_posture_restore_test.go / ca638 / ca641 suites are
-// untouched.
+// Posture model semantics after CA-685 (operator decision, superseding the
+// CA-679 interim rule): scan/plan/code ALWAYS come back with their pinned
+// model on restart restore and /new re-apply — the pin only changes via
+// /mode-setup or Desktop settings; mid-session /model changes do not survive
+// a restart while a real posture is active. The "non" posture applies no
+// pins at all (see ca685_posture_non_mode_test.go). The CA-679 tests below
+// were rewritten to the CA-685 spec the same day they were authored; no
+// legacy (pre-2026-08-29) test was edited.
 
 func postureModelRestoreServer(t *testing.T, body string) *httptest.Server {
 	t.Helper()
@@ -45,7 +45,7 @@ func runRestore(t *testing.T, m *AppModel) {
 	m.chatPostureCmdFromPending(cp.Cfg)
 }
 
-func TestRestorePostureKeepsUserModelSameProvider(t *testing.T) {
+func TestRestorePostureAppliesPinnedModelSameProvider(t *testing.T) {
 	srv := postureModelRestoreServer(t,
 		`{"active":"code","profiles":{"scan":{},"plan":{},"code":{"model":"grok-4.5"}}}`)
 
@@ -53,12 +53,12 @@ func TestRestorePostureKeepsUserModelSameProvider(t *testing.T) {
 	m.mode = ModeChat
 	m.chatPosture = "code"
 	m.provider = "grok"
-	m.model = "opencode/muse-spark-1.2-contributor-free" // user's /model choice
+	m.model = "grok-4.6" // user's mid-session /model change
 	m.sessionDefaultsLoaded = false
 
 	runRestore(t, m)
-	if m.model != "opencode/muse-spark-1.2-contributor-free" {
-		t.Fatalf("restore must keep user model, got %q", m.model)
+	if m.model != "grok-4.5" {
+		t.Fatalf("restore in a real posture must show the pinned model, got %q", m.model)
 	}
 	if m.chatPosture != "code" {
 		t.Fatalf("posture after restore = %q, want code", m.chatPosture)
@@ -68,7 +68,7 @@ func TestRestorePostureKeepsUserModelSameProvider(t *testing.T) {
 	}
 }
 
-func TestRestorePostureDoesNotClobberPersistedPrefs(t *testing.T) {
+func TestRestorePosturePinWinsOverUserModelPersistedPrefs(t *testing.T) {
 	srv := postureModelRestoreServer(t,
 		`{"active":"scan","profiles":{"scan":{"model":"grok-4.5","yolo":true},"plan":{},"code":{}}}`)
 
@@ -78,21 +78,44 @@ func TestRestorePostureDoesNotClobberPersistedPrefs(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "grok"}, srv.URL)
 	m.mode = ModeChat
 	m.chatPosture = "scan"
-	m.provider = "opencode"
-	m.model = "opencode/muse-spark-1.2-contributor-free"
-	m.persistSessionPrefs() // simulates the /model save from the previous run
+	m.provider = "grok"
+	m.model = "grok-4.6"
+	m.persistSessionPrefs() // simulates the mid-session /model save
 
-	runRestore(t, m) // restart restore must not overwrite the saved model
+	runRestore(t, m) // restart restore in a real posture: the pin wins (CA-685)
 
 	saved, _, err := prefs.Load()
 	if err != nil {
 		t.Fatalf("load persisted prefs: %v", err)
 	}
-	if saved.Model != "opencode/muse-spark-1.2-contributor-free" {
-		t.Fatalf("persisted model was clobbered by posture restore, got %q", saved.Model)
+	if saved.Model != "grok-4.5" {
+		t.Fatalf("posture pin must be the persisted model after restore, got %q", saved.Model)
 	}
-	if m.model != "opencode/muse-spark-1.2-contributor-free" {
-		t.Fatalf("session model changed by restore, got %q", m.model)
+}
+
+func TestRestorePostureModelPinInfersProviderFromModel(t *testing.T) {
+	// BUG-330 guard: a pinned model without an explicit provider pin must not
+	// stamp a foreign provider — the provider is inferred from the model.
+	srv := postureModelRestoreServer(t,
+		`{"active":"plan","profiles":{"scan":{},"plan":{"model":"grok-4.5"},"code":{}}}`)
+
+	m := New(config.ChatConfig{Provider: "opencode"}, srv.URL)
+	m.mode = ModeChat
+	m.chatPosture = "code"
+	m.provider = "opencode"
+	m.model = "opencode-go/muse-spark-1.2-contributor"
+	m.providers = []client.Provider{
+		{Key: "opencode", Models: []client.ProviderModel{{ID: "opencode-go/muse-spark-1.2-contributor"}}},
+		{Key: "grok", Models: []client.ProviderModel{{ID: "grok-4.5"}}},
+	}
+	m.sessionDefaultsLoaded = false
+
+	runRestore(t, m)
+	if m.model != "grok-4.5" {
+		t.Fatalf("pin model must apply, got %q", m.model)
+	}
+	if m.provider != "grok" {
+		t.Fatalf("provider must follow the pinned model, got %q", m.provider)
 	}
 }
 
@@ -138,7 +161,7 @@ func TestRestorePosturePinsModelWhenProfileSwitchesProvider(t *testing.T) {
 	}
 }
 
-func TestNewReapplyKeepsUserModelSameProvider(t *testing.T) {
+func TestNewReapplyPinsModelSameProvider(t *testing.T) {
 	srv := postureModelRestoreServer(t,
 		`{"active":"code","profiles":{"scan":{},"plan":{},"code":{"model":"grok-4.5"}}}`)
 
@@ -146,15 +169,16 @@ func TestNewReapplyKeepsUserModelSameProvider(t *testing.T) {
 	m.mode = ModeChat
 	m.chatPosture = "code"
 	m.provider = "grok"
-	m.model = "opencode/muse-spark-1.2-contributor-free"
+	m.model = "grok-4.6"
 
-	// /new arms "apply:<activePosture>" — keepReasoning=true resume semantics.
+	// /new re-applies the already-active posture — the pin wins (CA-685);
+	// only reasoning is kept (CA-641).
 	cmd := m.cmdLoadChatPosture()
 	cp := cmd().(chatPostureMsg)
 	m.chatPosturePending = "apply:" + m.activePosture()
 	m.chatPostureCmdFromPending(cp.Cfg)
-	if m.model != "opencode/muse-spark-1.2-contributor-free" {
-		t.Fatalf("/new re-apply must keep user model, got %q", m.model)
+	if m.model != "grok-4.5" {
+		t.Fatalf("/new re-apply must pin the posture model, got %q", m.model)
 	}
 }
 

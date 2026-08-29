@@ -267,6 +267,7 @@ export class MockRunnerClient implements RunnerClient {
     scan: {},
     plan: {},
     code: {},
+    non: {},
   };
 
   setScenario(scenario: ScenarioName): void {
@@ -738,6 +739,7 @@ export class MockRunnerClient implements RunnerClient {
       scan: { ...config.profiles.scan },
       plan: { ...config.profiles.plan },
       code: { ...config.profiles.code },
+      non: { ...config.profiles.non },
     };
     return this.getChatPosture();
   }

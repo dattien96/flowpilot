@@ -39,8 +39,11 @@ func TestSlashMode_NoArgsCyclesPosture(t *testing.T) {
 
 	m2, cmd := m.handleSlashCommand("/mode")
 	am := m2.(*AppModel)
-	if am.chatPosturePending != "apply:plan" {
-		t.Fatalf("pending = %q, want apply:plan (code→plan)", am.chatPosturePending)
+	// CA-685: the /mode no-args cycle is plan → code → non → plan, so from
+	// code the next posture is now "non" (was "plan" before the non posture
+	// joined the cycle).
+	if am.chatPosturePending != "apply:non" {
+		t.Fatalf("pending = %q, want apply:non (code→non)", am.chatPosturePending)
 	}
 	if cmd == nil {
 		t.Fatal("expected a load-chat-posture cmd")
@@ -196,8 +199,10 @@ func TestTabCycleOnEmptyInputAdvancesPosture(t *testing.T) {
 	m2, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	am := m2.(*AppModel)
 	// With no agent runs and no suggestions, Tab on empty input cycles posture.
-	if am.chatPosturePending != "apply:plan" {
-		t.Fatalf("pending after Tab = %q, want apply:plan (code→plan)", am.chatPosturePending)
+	// CA-685: the cycle is plan → code → non → plan, so from code the next
+	// posture is "non".
+	if am.chatPosturePending != "apply:non" {
+		t.Fatalf("pending after Tab = %q, want apply:non (code→non)", am.chatPosturePending)
 	}
 	if cmd == nil {
 		t.Fatal("Tab cycle must dispatch a load cmd")

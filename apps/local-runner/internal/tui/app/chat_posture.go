@@ -18,12 +18,14 @@ import (
 // Desktop, so both surfaces always agree.
 
 // postureOrder is the full posture key order (used by /mode <name> and /mode-setup).
-var postureOrder = []string{"scan", "plan", "code"}
+// "non" (CA-685) is the no-mode posture: no pins, the session keeps the user's
+// last provider/model choice.
+var postureOrder = []string{"scan", "plan", "code", "non"}
 
-// tabPostureOrder is the Tab/cycle order: Plan ↔ Code only. Scan is only
+// tabPostureOrder is the Tab/cycle order: Plan → Code → Non → Plan. Scan is only
 // reachable via explicit /mode scan — the user must opt into a read-only
 // posture intentionally, not cycle into it accidentally.
-var tabPostureOrder = []string{"plan", "code"}
+var tabPostureOrder = []string{"plan", "code", "non"}
 
 func validPosture(name string) bool {
 	for _, p := range postureOrder {
@@ -41,15 +43,18 @@ func postureLabel(name string) string {
 		return "scan — read-only (reads auto-approve, writes auto-deny)"
 	case "plan":
 		return "plan — read-only (reads auto-approve, writes auto-deny)"
+	case "non":
+		return "non — no posture (keeps your last model choice)"
 	default:
 		return "code — normal approvals / YOLO"
 	}
 }
 
-// activePosture returns the TUI's current posture ("" = code).
+// activePosture returns the TUI's current posture ("" = non, the no-mode
+// default per CA-685).
 func (m *AppModel) activePosture() string {
 	if m.chatPosture == "" {
-		return "code"
+		return "non"
 	}
 	return m.chatPosture
 }
@@ -93,7 +98,7 @@ func (m *AppModel) chatPostureCmdFromPending(cfg client.ChatPostureConfig) tea.C
 		// a read-only restore, not a user switch that must PUT active back.
 		active := strings.TrimSpace(cfg.Active)
 		if !validPosture(active) {
-			active = "code"
+			active = "non" // CA-685: no-mode default for unknown/empty active
 		}
 		m.restoreChatPostureProfile(cfg, active)
 		m.chatPostureCfg = cfg
@@ -135,39 +140,53 @@ func (m *AppModel) chatPostureCmdFromPending(cfg client.ChatPostureConfig) tea.C
 }
 
 // postureModelPinWins decides whether a posture profile's pinned model may
-// override the current session model. Real posture switches always pin (old
-// parity: /mode plan adopts the profile's provider+model). Resume-flavored
-// applies — restart restore and /new re-applying the already-active posture
-// (keepReasoning, CA-641) — keep the user's persisted /model choice (CA-679,
-// the CA-638 analog for model): the pin only wins when the profile switches
-// to a different provider (the user's model is invalid there, and the pin is
-// the only model meaningful for it) or the session has no model yet.
-// currentProvider must be captured BEFORE setPostureProvider runs.
-func (m *AppModel) postureModelPinWins(profProvider, currentProvider string, resume bool) bool {
-	if !resume {
-		return true
+// override the current session model. Superseded by CA-685 (operator decision):
+// the posture semantics are now explicit —
+//
+//   - "non" (ChatPostureNon): NO mode. No pins are applied, ever; the session
+//     keeps the user's last provider/model choice across restarts.
+//   - scan/plan/code: the pinned profile IS the posture's config. Restart
+//     restore and /new re-apply always show the pinned model; the pin itself
+//     only changes via /mode-setup or the Desktop settings. Mid-session /model
+//     still works for the current chat, it just does not survive a restart
+//     while a real posture is active.
+
+// posturePinProvider resolves the provider a posture pin demands: the explicit
+// provider pin when present, else the provider inferred from the pinned model
+// (BUG-330 guard — a grok-4.5 pin must not stamp an opencode session).
+func (m *AppModel) posturePinProvider(prof client.ChatPostureProfile) string {
+	if p := strings.TrimSpace(prof.Provider); p != "" {
+		return p
 	}
-	if strings.TrimSpace(profProvider) != "" && !strings.EqualFold(profProvider, currentProvider) {
-		return true
+	if prof.Model != "" {
+		if inferred := providerForModel(m.providers, prof.Model); inferred != "" {
+			return inferred
+		}
 	}
-	return strings.TrimSpace(m.model) == ""
+	return ""
 }
 
 // applyChatPostureProfile switches the session to a posture and applies its
 // pinned profile fields (provider/model/reasoning/yolo) when set.
-// keepReasoning marks the resume-flavored re-apply (CA-641): re-applying the
-// already-active posture (/new) must preserve the user's /reasoning choice —
-// and, since CA-679, their /model choice too (postureModelPinWins).
+// CA-685: "non" applies nothing — the session keeps the user's last choice.
+// keepReasoning marks the resume-flavored re-apply (CA-641): /new re-applying
+// the already-active posture preserves the user's /reasoning choice.
 func (m *AppModel) applyChatPostureProfile(cfg client.ChatPostureConfig, name string, keepReasoning bool) {
 	m.chatPosture = name
+	if name == "non" {
+		// No pins — provider/model/reasoning stay exactly as the user left them.
+		m.persistSessionPrefs()
+		m.refreshSessionPanel()
+		m.addMessage("system", fmt.Sprintf("Mode: %s", postureLabel(name)), "")
+		return
+	}
 	// A profile switching to scan/plan also flips the read-only expectation; the
 	// runner enforces it via ChatPosture on the turn.
 	prof := cfg.Profiles[name]
-	providerBefore := m.provider
-	if prof.Provider != "" {
-		m.setPostureProvider(prof.Provider)
+	if pinProvider := m.posturePinProvider(prof); pinProvider != "" {
+		m.setPostureProvider(pinProvider)
 	}
-	if prof.Model != "" && m.postureModelPinWins(prof.Provider, providerBefore, keepReasoning) {
+	if prof.Model != "" {
 		m.model = prof.Model
 		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 	}
@@ -191,22 +210,23 @@ func (m *AppModel) applyChatPostureProfile(cfg client.ChatPostureConfig, name st
 // applyChatPostureProfile: it applies the persisted Active's pinned fields
 // without marking dirty and without the "Mode: …" banner — the TUI is just
 // resuming where the user left off.
-// CA-679: the resume path must NOT re-pin the profile model over the user's
-// persisted /model choice (CA-638 analog for model; operator report: an
-// opencode model selected in chat reverted to the posture's grok-4.5 pin on
-// every restart, and the clobbered value was re-persisted to session prefs).
-// setPostureProvider is also skipped when the pinned provider equals the
-// current one — it would silently reset the model to the provider's first
-// entry through the back door.
+// CA-685 semantics: scan/plan/code always come back with their pinned model
+// (mid-session /model changes do not survive a restart in a real posture —
+// the pin only changes via /mode-setup or Desktop settings); "non" applies
+// nothing, so the user's persisted model survives. CA-638 still holds:
+// restart-resume does NOT re-pin ReasoningEffort.
 func (m *AppModel) restoreChatPostureProfile(cfg client.ChatPostureConfig, name string) {
 	m.chatPosture = name
-	prof := cfg.Profiles[name]
-	providerBefore := m.provider
-	providerSwitched := strings.TrimSpace(prof.Provider) != "" && !strings.EqualFold(prof.Provider, providerBefore)
-	if providerSwitched {
-		m.setPostureProvider(prof.Provider)
+	if name == "non" {
+		m.persistSessionPrefs()
+		m.refreshSessionPanel()
+		return
 	}
-	if prof.Model != "" && (providerSwitched || strings.TrimSpace(m.model) == "") {
+	prof := cfg.Profiles[name]
+	if pinProvider := m.posturePinProvider(prof); pinProvider != "" {
+		m.setPostureProvider(pinProvider)
+	}
+	if prof.Model != "" {
 		m.model = prof.Model
 		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 	}

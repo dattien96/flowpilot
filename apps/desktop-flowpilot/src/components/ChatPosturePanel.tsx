@@ -17,6 +17,14 @@ function PostureModeIcon({ posture }: { posture: ChatPosture }): React.ReactElem
       </svg>
     );
   }
+  if (posture === "non") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+        <path d="M5.4 8h5.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      </svg>
+    );
+  }
   if (posture === "plan") {
     return (
       <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -75,7 +83,7 @@ export function ChatPosturePanel(): React.ReactElement | null {
           </svg>
         </button>
       </div>
-      <div className="tab-list tab-list-three" role="tablist" aria-label="Chat posture">
+      <div className="tab-list tab-list-four" role="tablist" aria-label="Chat posture">
         {CHAT_POSTURES.map((item) => (
           <button
             key={item.key}

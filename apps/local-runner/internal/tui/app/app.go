@@ -5328,13 +5328,19 @@ func (m *AppModel) chatFrameTitle() string {
 	} else {
 		posture := m.activePosture()
 		if posture == "" {
-			posture = "code"
+			posture = "non"
 		}
-		displayPosture := posture
-		if displayPosture != "" {
-			displayPosture = strings.ToUpper(displayPosture[:1]) + displayPosture[1:]
+		// CA-685: "non" is the no-mode default — the chrome shows just "Chat",
+		// no "Chat: Non" suffix.
+		if posture == "non" {
+			baseStyled = chatBarBg(styleStatus).Render("Chat:")
+		} else {
+			displayPosture := posture
+			if displayPosture != "" {
+				displayPosture = strings.ToUpper(displayPosture[:1]) + displayPosture[1:]
+			}
+			baseStyled = chatBarBg(styleStatus).Render("Chat:") + " " + chatBarBg(postureStyle(posture)).Render(displayPosture)
 		}
-		baseStyled = chatBarBg(styleStatus).Render("Chat:") + " " + chatBarBg(postureStyle(posture)).Render(displayPosture)
 	}
 	var parts []string
 	parts = append(parts, baseStyled)
