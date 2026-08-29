@@ -3,20 +3,54 @@ package runner
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 )
 
 // CP-57 OC-30 / Q-5 / R-5 / R-9: surface `opencode stats` cost/token usage on
 // the account card. Zen is a proxy — no per-model token limit exists, so the
 // lines state that explicitly instead of inventing one. The live CLI can take
-// seconds (CA-659 skipped it for that reason), so the call is bounded and
-// degrades to no lines rather than delaying account refresh.
+// seconds (CA-659 skipped it for that reason), so the call is bounded, cached
+// briefly (CA-683 — /client/provider-accounts fans out per account on every
+// TUI connect and desktop panel open), and degrades to no lines rather than
+// delaying account refresh.
 
-const opencodeStatsTimeout = 3 * time.Second
+const (
+	opencodeStatsTimeout  = 3 * time.Second
+	opencodeStatsCacheTTL = 60 * time.Second
+)
 
-// opencodeStatsDetailLines runs `opencode stats` (bounded) and extracts the
-// overview + cost/token rows for the account card.
+var (
+	opencodeStatsCacheMu sync.Mutex
+	opencodeStatsCache   = map[string]opencodeStatsCacheEntry{}
+)
+
+type opencodeStatsCacheEntry struct {
+	lines     []OpencodeAccountUsageLine
+	fetchedAt time.Time
+}
+
+// opencodeStatsDetailLines runs `opencode stats` (bounded, 60s cached) and
+// extracts the overview + cost/token rows for the account card. Failures are
+// cached too so a wedged CLI cannot stall every account refresh.
 func opencodeStatsDetailLines(ctx context.Context, homePath string) []OpencodeAccountUsageLine {
+	opencodeStatsCacheMu.Lock()
+	if entry, ok := opencodeStatsCache[homePath]; ok && time.Since(entry.fetchedAt) < opencodeStatsCacheTTL {
+		lines := entry.lines
+		opencodeStatsCacheMu.Unlock()
+		return lines
+	}
+	opencodeStatsCacheMu.Unlock()
+
+	lines := fetchOpencodeStatsLines(ctx, homePath)
+
+	opencodeStatsCacheMu.Lock()
+	opencodeStatsCache[homePath] = opencodeStatsCacheEntry{lines: lines, fetchedAt: time.Now()}
+	opencodeStatsCacheMu.Unlock()
+	return lines
+}
+
+func fetchOpencodeStatsLines(ctx context.Context, homePath string) []OpencodeAccountUsageLine {
 	if ctx == nil {
 		ctx = context.Background()
 	}

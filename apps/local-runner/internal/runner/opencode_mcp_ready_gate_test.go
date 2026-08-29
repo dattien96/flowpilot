@@ -143,3 +143,25 @@ func TestParseOpencodeStatsTable(t *testing.T) {
 		t.Fatalf("garbage input must degrade to nil, got %+v", lines)
 	}
 }
+
+func TestOpencodeStatsCacheDedupesWithinTTL(t *testing.T) {
+	// CA-683: /client/provider-accounts fans out per account on every poll —
+	// the stats lookup must be served from cache within the TTL instead of
+	// re-running the multi-second CLI.
+	opencodeStatsCacheMu.Lock()
+	opencodeStatsCache["/fake/cache-home"] = opencodeStatsCacheEntry{
+		lines:     []OpencodeAccountUsageLine{{Label: "cost: cached"}},
+		fetchedAt: time.Now(),
+	}
+	opencodeStatsCacheMu.Unlock()
+	t.Cleanup(func() {
+		opencodeStatsCacheMu.Lock()
+		delete(opencodeStatsCache, "/fake/cache-home")
+		opencodeStatsCacheMu.Unlock()
+	})
+
+	lines := opencodeStatsDetailLines(context.Background(), "/fake/cache-home")
+	if len(lines) != 1 || lines[0].Label != "cost: cached" {
+		t.Fatalf("cache must serve the entry, got %+v", lines)
+	}
+}
