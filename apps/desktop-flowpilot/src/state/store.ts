@@ -1127,6 +1127,48 @@ export const useStore = create<AppState>((set, get) => ({
       reasoningEffort = def && efforts.some((e) => e.toLowerCase() === def.toLowerCase()) ? def : "";
     }
     set({ selectedModel: model, reasoningEffort });
+
+    // CA-689c parity with the TUI: opencode model variants live only in the
+    // ACP session config — fetch the real list on selection (runner-side
+    // cache short-circuits repeat picks) and patch the catalog entry so the
+    // Reasoning dropdown re-derives from truth. Failures are silent: the turn
+    // still works with the guessed list.
+    const client = get().client;
+    const providerKey = get().selectedProvider;
+    if (providerKey === "opencode" && model && client.getOpencodeModelVariants) {
+      void client
+        .getOpencodeModelVariants(model)
+        .then((variants) => {
+          const st = get();
+          const patched = st.supportedModels.map((m) =>
+            m.modelId === model
+              ? {
+                  ...m,
+                  supportedReasoningEfforts: variants.supportedEfforts,
+                  defaultReasoningEffort: variants.defaultReasoningEffort || null,
+                }
+              : m,
+          );
+          set({ supportedModels: patched });
+          // Re-clamp if the user is still on this model.
+          if (get().selectedModel === model && get().selectedProvider === "opencode") {
+            const live = variants.supportedEfforts;
+            const cur = (get().reasoningEffort ?? "").trim();
+            let updated = get().reasoningEffort;
+            if (live.length > 0 && cur && !live.some((e) => e.toLowerCase() === cur.toLowerCase())) {
+              const def = (variants.defaultReasoningEffort ?? "").trim();
+              updated = def && live.some((e) => e.toLowerCase() === def.toLowerCase()) ? def : "";
+            }
+            if (updated !== get().reasoningEffort) {
+              set({ reasoningEffort: updated });
+            }
+          }
+        })
+        .catch((err) => {
+          // eslint-disable-next-line no-console
+          console.error("[FlowPilot] opencode variants fetch failed:", err);
+        });
+    }
   },
 
   setReasoningEffort(effort) {

@@ -867,6 +867,12 @@ export interface RunnerClient {
    * Optional so mock/older clients degrade gracefully.
    */
   getChatPosture?(): Promise<ChatPostureConfig>;
+  /**
+   * CA-689c: the model's real reasoning effort options (live ACP probe on the
+   * runner, cached runner-side). Opencode-only today — the models CLI cannot
+   * report per-model variants. Optional so mock/older clients degrade.
+   */
+  getOpencodeModelVariants?(modelId: string): Promise<{ supportedEfforts: string[]; defaultReasoningEffort: string }>;
   /** PUT /client/chat-posture — persists the active posture + profile pins. */
   setChatPosture?(config: ChatPostureConfig): Promise<ChatPostureConfig>;
   openProviderAccountTerminal(accountId: string): Promise<void>;

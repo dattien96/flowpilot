@@ -42,12 +42,40 @@ opencode account card (tall stats text) was unreachable below the fold.
 - Test guide section A statuses recorded (S + A1/A2/A3 passed; A2 requires the
   CA-689 DB migration first; A4 unblocked by the CSS fix).
 
+## Follow-up CA-689c (operator UX call: "phải chat mới get được list là sai")
+
+Chat-to-learn was wrong UX — the picker must be correct at SELECTION time. New
+`FetchOpencodeModelVariants` (opencode_model_variants.go): cached observation
+short-circuits; otherwise a throwaway ACP session probes the model
+(`session/new` → `set_config_option(model)` → read the effort select →
+`session/close`), seconds, no turn. Served at
+`GET /client/providers/opencode-variants?model=`; the shared
+`opencodeLaunchEnv` helper now backs both the turn factory and the prober.
+TUI dispatches the fetch the moment an opencode model is selected (`/model`)
+and when the catalog lands (`ProvidersCatalogMsg`); the reply patches the
+catalog entry in place and re-clamps reasoning. Desktop can call the same
+endpoint. `opencodeLaunchEnv` refactor: the registry factory env block moved
+verbatim into the helper (parity across both callers).
+
+- **Desktop parity for CA-689c** (operator report: desktop dropdown did not
+  update reasoning on model change): `RunnerClient.getOpencodeModelVariants?`
+  contract + `HttpWsRunnerClient` GET implementation; `setSelectedModel` fires
+  the fetch for opencode selections, patches the `supportedModels` entry with
+  the real efforts/default, and re-clamps reasoning if the user stayed on the
+  model. The Task-215 degrade effect then re-derives the dropdown. Silent on
+  failure (the turn still works with the guessed list).
+
 ## Tests
 
 - `opencode_variants_cache_test.go` — fake ACP set_config response with
   default/none/low/high → capture hook fires with the exact list; merge
   overrides the guessed list + default; disk cache written; malformed payloads
   degrade to empty.
+- `TestFetchOpencodeModelVariantsLiveProbeAndCache` — fake ACP probe returns
+  none/low/high; cached second call short-circuits without a dispatcher.
+- `TestOpencodeVariantsFetchOnModelSelection` — `/model opencode-go/hy3`
+  dispatches the fetch; the reply patches the catalog and the picker offers
+  exactly none/low/high.
 - Existing opencode suites green (capture is additive; SendTurn flow
   unchanged when no hook/payload).
 

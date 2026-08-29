@@ -634,6 +634,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd := m.scheduleOpencodeCatalogRetryCmd(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+		if cmd := m.maybeFetchOpencodeVariants(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 		return m, tea.Batch(cmds...)
 
 	case ProvidersWarmRetryMsg:
@@ -642,6 +645,30 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.cmdLoadProvidersCatalog()
+
+	case opencodeVariantsMsg:
+		if msg.Err != "" {
+			tuiLog("opencodeVariantsMsg err model=%q err=%q", msg.Model, msg.Err)
+			return m, nil
+		}
+		for pi := range m.providers {
+			if !strings.EqualFold(m.providers[pi].Key, "opencode") {
+				continue
+			}
+			for mi := range m.providers[pi].Models {
+				if strings.EqualFold(m.providers[pi].Models[mi].ModelID(), msg.Model) {
+					m.providers[pi].Models[mi].SupportedReasoningEfforts = msg.Efforts
+					m.providers[pi].Models[mi].DefaultReasoningEffort = msg.Default
+				}
+			}
+		}
+		if strings.EqualFold(m.provider, "opencode") && strings.EqualFold(m.model, msg.Model) {
+			m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
+			m.clampReasoningForCurrentModel()
+			m.refreshSessionPanel()
+			m.addMessage("system", fmt.Sprintf("Reasoning options for %s: %s", msg.Model, strings.Join(msg.Efforts, " · ")), "")
+		}
+		return m, nil
 
 	case SessionDefaultsMsg:
 		tuiLog("SessionDefaultsMsg firstLoad=%v providers=%d accounts=%d projects=%d catalogErr=%q", !m.sessionDefaultsLoaded, len(msg.Providers), len(msg.ProviderAccounts), len(msg.Projects), msg.CatalogErr)
@@ -3973,6 +4000,14 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.addMessage("system", fmt.Sprintf("Model set to: %s (next prompt uses this model)", m.model), "")
 			}
 			m.refreshSessionPanel()
+			// CA-689c: correct reasoning options at selection time — fetch the
+			// model's real effort list if the catalog only has the guess.
+			if fetch := m.maybeFetchOpencodeVariants(); fetch != nil {
+				if providerSwitched {
+					return m, tea.Batch(m.cmdLoadSkills(false), fetch)
+				}
+				return m, fetch
+			}
 			if providerSwitched {
 				return m, m.cmdLoadSkills(false)
 			}
@@ -5879,6 +5914,45 @@ func (m *AppModel) cmdLoadProjectsCatalog() tea.Cmd {
 // cmdLoadProvidersCatalog retries GET /providers after the 8s session-unlock
 // budget. First load must not hold chat locked (CA-535); an empty list after
 // that timeout must still backfill (CA-657).
+// opencodeVariantsMsg carries the real per-model effort options fetched from
+// the runner (CA-689c) — the picker must be correct at model-selection time,
+// not only after a chat turn happened to capture them.
+type opencodeVariantsMsg struct {
+	Model   string
+	Efforts []string
+	Default string
+	Err     string
+}
+
+func (m *AppModel) cmdFetchOpencodeVariants(modelID string) tea.Cmd {
+	runnerURL := m.runnerURL
+	modelID = strings.TrimSpace(modelID)
+	return func() tea.Msg {
+		if modelID == "" {
+			return nil
+		}
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		defer cancel()
+		efforts, current, err := cl.GetOpencodeModelVariants(ctx, modelID)
+		if err != nil {
+			return opencodeVariantsMsg{Model: modelID, Err: err.Error()}
+		}
+		return opencodeVariantsMsg{Model: modelID, Efforts: efforts, Default: current}
+	}
+}
+
+// maybeFetchOpencodeVariants returns a fetch cmd for the current opencode
+// model selection. Always fires for opencode — the catalog cannot distinguish
+// its guessed effort list from captured truth, and the runner short-circuits
+// already-captured models in milliseconds (CA-689c).
+func (m *AppModel) maybeFetchOpencodeVariants() tea.Cmd {
+	if !strings.EqualFold(m.provider, "opencode") || strings.TrimSpace(m.model) == "" {
+		return nil
+	}
+	return m.cmdFetchOpencodeVariants(m.model)
+}
+
 func (m *AppModel) cmdLoadProvidersCatalog() tea.Cmd {
 	runnerURL := m.runnerURL
 	return func() tea.Msg {

@@ -630,6 +630,22 @@ func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
 	return ps, err
 }
 
+// GetOpencodeModelVariants fetches GET /client/providers/opencode-variants —
+// the model's real reasoning effort options (live ACP probe, cached runner-side).
+func (c *Client) GetOpencodeModelVariants(ctx context.Context, modelID string) ([]string, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	defer cancel()
+	var out struct {
+		ModelId       string   `json:"modelId"`
+		Efforts       []string `json:"supportedEfforts"`
+		DefaultEffort string   `json:"defaultReasoningEffort"`
+	}
+	if err := c.getJSON(ctx, "/client/providers/opencode-variants?model="+neturl.QueryEscape(modelID), &out); err != nil {
+		return nil, "", err
+	}
+	return out.Efforts, out.DefaultEffort, nil
+}
+
 // ShutdownStack sends POST /system/shutdown to terminate the local runner process.
 func (c *Client) ShutdownStack(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/system/shutdown", nil)

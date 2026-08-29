@@ -113,3 +113,53 @@ func TestOpencodeEffortOptionsFromConfigMalformed(t *testing.T) {
 		t.Fatalf("malformed entries must be skipped, got %v / %q", efforts, current)
 	}
 }
+
+func TestFetchOpencodeModelVariantsLiveProbeAndCache(t *testing.T) {
+	variantsFile := filepath.Join(t.TempDir(), "opencode_variants_cache.json")
+	t.Setenv("FLOWPILOT_OPENCODE_VARIANTS_FILE", variantsFile)
+	// Isolate the package-level in-memory overlay from sibling tests.
+	opencodeVariantMu.Lock()
+	opencodeVariantInMemory = map[string]opencodeVariantEntry{}
+	opencodeVariantMu.Unlock()
+	t.Cleanup(func() {
+		opencodeVariantMu.Lock()
+		opencodeVariantInMemory = map[string]opencodeVariantEntry{}
+		opencodeVariantMu.Unlock()
+	})
+	defer mockOpencodeInitProcess(t)()
+
+	// Probe path driven through a fake ACP dispatcher (the ensure-process spawn
+	// is bypassed via the fetchDispatcher test seam).
+	d, fg := startFakeOpencode(t, nil)
+	fg.serve(func(fg *fakeOpencode, m map[string]any) {
+		switch m["method"] {
+		case "session/new":
+			fg.reply(m["id"], map[string]any{"sessionId": "ses_probe1"})
+		case "session/set_config_option":
+			fg.reply(m["id"], map[string]any{"configOptions": []any{
+				map[string]any{"id": "effort", "currentValue": "high", "options": []any{
+					map[string]any{"value": "none"}, map[string]any{"value": "low"}, map[string]any{"value": "high"},
+				}},
+			}})
+		case "session/close":
+			fg.reply(m["id"], map[string]any{})
+		}
+	})
+	r := &Runner{workspace: "/tmp"}
+	fetchDispatcher = d
+	t.Cleanup(func() { fetchDispatcher = nil })
+
+	efforts, current, err := r.FetchOpencodeModelVariants(context.Background(), "opencode-go/hy3")
+	if err != nil {
+		t.Fatalf("FetchOpencodeModelVariants: %v", err)
+	}
+	if len(efforts) != 3 || efforts[0] != "none" || current != "high" {
+		t.Fatalf("efforts=%v current=%q", efforts, current)
+	}
+	// Recorded → second call short-circuits from cache (no dispatcher needed).
+	fetchDispatcher = nil
+	efforts2, current2, err := r.FetchOpencodeModelVariants(context.Background(), "opencode-go/hy3")
+	if err != nil || len(efforts2) != 3 || current2 != "high" {
+		t.Fatalf("cached fetch = %v/%q err=%v", efforts2, current2, err)
+	}
+}

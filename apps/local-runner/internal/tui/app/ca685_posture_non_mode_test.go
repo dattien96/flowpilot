@@ -460,3 +460,57 @@ func TestProviderRefreshCommandDispatchesCatalogLoad(t *testing.T) {
 		t.Fatalf("fixture expectation: catalog started empty, got %d", before)
 	}
 }
+
+func TestOpencodeVariantsFetchOnModelSelection(t *testing.T) {
+	// CA-689c: picking an opencode model whose catalog efforts are still the
+	// guess must immediately fetch the REAL list — no chat required.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/client/providers/opencode-variants" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"modelId":"opencode-go/hy3","supportedEfforts":["none","low","high"],"defaultReasoningEffort":"none"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	m := New(config.ChatConfig{}, srv.URL)
+	m.provider = "opencode"
+	m.model = "opencode-go/hy3"
+	m.providers = []client.Provider{{
+		Key: "opencode",
+		Models: []client.ProviderModel{{
+			ID:                        "opencode-go/hy3",
+			SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high", "xhigh"}, // guess
+		}},
+	}}
+	// Sanity: before selection the guess is the menu.
+	if got := m.modelReasoningEfforts(); len(got) != 5 {
+		t.Fatalf("pre-selection efforts = %v", got)
+	}
+
+	// Execute /model set → a fetch cmd must come back.
+	m2, cmd := m.handleSlashCommand("/model opencode-go/hy3")
+	am := m2.(*AppModel)
+	if cmd == nil {
+		t.Fatal("model selection must dispatch the variants fetch")
+	}
+	msg := cmd()
+	vm, ok := msg.(opencodeVariantsMsg)
+	if !ok || vm.Err != "" || vm.Model != "opencode-go/hy3" {
+		t.Fatalf("expected opencodeVariantsMsg, got %T %+v", msg, vm)
+	}
+
+	// Applying the message updates the catalog entry in place and clamps.
+	am2, _ := am.Update(vm)
+	final := am2.(*AppModel)
+	efforts := final.modelReasoningEfforts()
+	if len(efforts) != 3 || efforts[0] != "none" {
+		t.Fatalf("post-fetch efforts = %v, want none/low/high", efforts)
+	}
+	// Picker now offers exactly the real list.
+	items := filterReasoningSuggestions("/reasoning ", final.reasoningEffort, final.modelReasoningEfforts())
+	if len(items) != 3 {
+		t.Fatalf("picker = %+v, want 3 real efforts", items)
+	}
+}

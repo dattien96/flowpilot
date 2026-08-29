@@ -559,37 +559,10 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 			Status:      ProviderStatusAvailable,
 			Capabilities: (&opencodeAdapter{}).Capabilities(),
 			newAdapterForTurn: func(model, reasoningEffort string) ProviderRuntimeAdapter {
-				scopeKey := "default"
-				env := map[string]string{}
-				account, err := r.ResolveProviderAccount(string(ProviderKeyOpencode), "")
-				if err == nil {
-					scopeKey = account.ID
-					for k, v := range account.ExtraEnv {
-						env[k] = v
-					}
-					if account.HomePath != "" {
-						env["OPENCODE_HOME"] = account.HomePath
-						env["HOME"] = account.HomePath
-						env["XDG_CONFIG_HOME"] = filepath.Join(account.HomePath, ".config")
-						env["XDG_DATA_HOME"] = opencodeDataHomeForAccount(account.HomePath)
-						env["OPENCODE_CONFIG"] = opencodeConfigFilePath(account.HomePath)
-						if drive, path, ok := windowsHomeDriveAndPath(account.HomePath); ok {
-							env["USERPROFILE"] = account.HomePath
-							env["APPDATA"] = filepath.Join(account.HomePath, "AppData", "Roaming")
-							env["LOCALAPPDATA"] = filepath.Join(account.HomePath, "AppData", "Local")
-							env["HOMEDRIVE"] = drive
-							env["HOMEPATH"] = path
-						}
-					}
-				} else if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
-					scopeKey = "env:" + home
-					env["OPENCODE_HOME"] = home
-					env["HOME"] = home
-					env["XDG_CONFIG_HOME"] = filepath.Join(home, ".config")
-						env["XDG_DATA_HOME"] = opencodeDataHomeForAccount(home)
-						env["OPENCODE_CONFIG"] = opencodeConfigFilePath(home)
-				} else {
-					return errorAdapter{key: ProviderKeyOpencode, err: err}
+				// CA-689c: env/scope resolution shared with the variants prober.
+				scopeKey, env, envErr := r.opencodeLaunchEnv()
+				if envErr != nil {
+					return errorAdapter{key: ProviderKeyOpencode, err: envErr}
 				}
 				// Map reasoningEffort to variant for per-turn respawn key (like Grok grokEffort)
 				variant := ""

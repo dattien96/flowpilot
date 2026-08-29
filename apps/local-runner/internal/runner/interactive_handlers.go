@@ -48,6 +48,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	// the runner; TUI and Desktop read/write through these endpoints (SSOT).
 	mux.HandleFunc("GET /client/chat-posture", s.handleGetChatPosture)
 	mux.HandleFunc("PUT /client/chat-posture", s.handleSetChatPosture)
+	// CA-689c: on-demand per-model reasoning variants (live ACP probe; cached).
+	mux.HandleFunc("GET /client/providers/opencode-variants", s.handleGetOpencodeModelVariants)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/steps-runtime", s.handleGetWorkflowStepsRuntime)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/resume", s.handleResumeRun)

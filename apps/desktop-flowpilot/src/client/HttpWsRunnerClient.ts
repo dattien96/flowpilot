@@ -358,6 +358,11 @@ export class HttpWsRunnerClient implements RunnerClient {
   applyGrokYoloPosture(yolo: boolean): Promise<void> {
     return this.postJSON<void>("/provider-accounts/grok-yolo-posture", { yolo });
   }
+  async getOpencodeModelVariants(modelId: string): Promise<{ supportedEfforts: string[]; defaultReasoningEffort: string }> {
+    return this.getJSON<{ supportedEfforts: string[]; defaultReasoningEffort: string }>(
+      `/client/providers/opencode-variants?model=${encodeURIComponent(modelId)}`,
+    );
+  }
   getChatPosture(): Promise<ChatPostureConfig> {
     return this.getJSON<ChatPostureConfig>("/client/chat-posture");
   }
