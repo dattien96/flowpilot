@@ -335,3 +335,39 @@ func opencodeACPFlowPilotMCPServerEntry(baseURL, token string) map[string]interf
 	}
 	return nil
 }
+
+// opencodeEffortOptionsFromConfig (CA-689b) extracts the effort select from a
+// session/set_config_option response's configOptions: the option values are
+// the freshly-selected model's real variants and currentValue its default.
+// Returns empty when the payload lacks an effort entry.
+func opencodeEffortOptionsFromConfig(result map[string]any) ([]string, string) {
+	if result == nil {
+		return nil, ""
+	}
+	raw, _ := result["configOptions"].([]any)
+	for _, entry := range raw {
+		m, _ := entry.(map[string]any)
+		if m == nil {
+			continue
+		}
+		if id, _ := m["id"].(string); !strings.EqualFold(id, "effort") {
+			continue
+		}
+		current, _ := m["currentValue"].(string)
+		opts, _ := m["options"].([]any)
+		var efforts []string
+		for _, opt := range opts {
+			om, _ := opt.(map[string]any)
+			if om == nil {
+				continue
+			}
+			v, _ := om["value"].(string)
+			if v == "" {
+				continue
+			}
+			efforts = append(efforts, v)
+		}
+		return efforts, current
+	}
+	return nil, ""
+}

@@ -4399,6 +4399,10 @@ input {
   gap: 10px;
   min-height: 0;
   padding: 10px;
+  /* CA-689b: the stack holds tall panels (accounts cards with opencode stats
+     text) — without its own scroll the cards below the fold were unreachable. */
+  height: 100%;
+  overflow-y: auto;
 }
 
 body.is-resizing-sidebar {

@@ -2019,15 +2019,21 @@ func opencodeModelsProbeBudget(parent context.Context) time.Duration {
 }
 
 func detectOpencodeModels(ctx context.Context) ([]ProviderModel, error) {
+	// CA-689b: the observed per-model variant overrides must apply on EVERY
+	// return path — the models cache stores the pre-capture guessed list, so a
+	// fresh cache hit otherwise hides the live ACP truth.
 	if cached, ok := readOpencodeModelsCache(false); ok {
+		mergeOpencodeVariantOverrides(cached)
 		return cached, nil
 	}
 	models, err := detectOpencodeModelsLive(ctx, opencodeModelsProbeBudget(ctx))
 	if err == nil && len(models) > 0 {
+		mergeOpencodeVariantOverrides(models)
 		writeOpencodeModelsCache(models)
 		return models, nil
 	}
 	if cached, ok := readOpencodeModelsCache(true); ok {
+		mergeOpencodeVariantOverrides(cached)
 		return cached, nil
 	}
 	warmOpencodeModelsCacheAsync()
@@ -2090,6 +2096,8 @@ func parseOpencodeModelsOutput(output []byte) ([]ProviderModel, error) {
 		return nil, fmt.Errorf("opencode models: no models found")
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	// CA-689b: observed live ACP variants override the guessed uniform list.
+	mergeOpencodeVariantOverrides(models)
 	return models, nil
 }
 

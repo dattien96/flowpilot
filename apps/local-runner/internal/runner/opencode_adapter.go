@@ -25,6 +25,12 @@ type opencodeAdapter struct {
 	cwd        string
 	initResult map[string]any
 
+	// onVariantsCaptured (CA-689b) receives the REAL per-model effort options
+	// opencode returns with every set_config_option response — the models CLI
+	// cannot provide them, and per-model truth is what makes the reasoning
+	// picker honest (hy3: default/none/low/high ≠ muse-spark's list).
+	onVariantsCaptured func(modelID string, efforts []string, current string)
+
 	promptPrep func(TurnRequest) string
 
 	sessionStore ProviderSessionStore
@@ -387,8 +393,17 @@ func (a *opencodeAdapter) applyOpencodeSessionConfig(ctx context.Context, sessio
 		func() {
 			cfgCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			defer cancel()
-			if _, err := a.dispatcher.call(cfgCtx, "session/set_config_option", opencodeACPSessionSetConfigParams(sessionID, "model", modelName)); err != nil {
+			result, err := a.dispatcher.call(cfgCtx, "session/set_config_option", opencodeACPSessionSetConfigParams(sessionID, "model", modelName))
+			if err != nil {
 				_, _ = a.dispatcher.call(cfgCtx, "session/set_config", opencodeACPSessionSetConfigParamsAlt(sessionID, "model", modelName))
+				return
+			}
+			// CA-689b: the response's configOptions echo the effort select for
+			// the freshly-selected model — the only live per-model variant truth.
+			if a.onVariantsCaptured != nil {
+				if efforts, current := opencodeEffortOptionsFromConfig(result); len(efforts) > 0 {
+					a.onVariantsCaptured(modelName, efforts, current)
+				}
 			}
 		}()
 	}

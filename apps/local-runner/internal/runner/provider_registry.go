@@ -614,6 +614,7 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 					return errorAdapter{key: ProviderKeyOpencode, err: ensureErr}
 				}
 				a := h.adapter
+				a.onVariantsCaptured = recordOpencodeModelVariants // CA-689b: live per-model variants
 				a.sessionStore = ProviderSessionStoreFor(r)
 				a.promptPrep = func(req TurnRequest) string {
 					workspace := r.workspace

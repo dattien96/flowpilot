@@ -29,7 +29,7 @@
 
 Lưu ý: một số bước cần Desktop app (`/settings` từ TUI mở Desktop).
 
-## S. Smoke 10 phút (chạy nhanh nhất nếu ít thời gian)
+## S. Smoke 10 phút (chạy nhanh nhất nếu ít thời gian) — **PASSED 2026-08-30** (S1-S5; kèm CA-688 fix /open chat cũ)
 
 1. `/model opencode/muse-spark-1.2-contributor-free` → "Model set to …"
 2. Gửi "hello" → stream trả lời, có token usage ở status line.
@@ -45,10 +45,10 @@ Mở Desktop → Settings → AI Providers.
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
-| A1 | Xem card Opencode | "Installed 1.18.x (tested 1.18.18)", trạng thái READY |
-| A2 | Bấm **Detect models** | Danh sách model opencode/* + opencode-go/* (≥10; TUI có retry warm nếu ít hơn) |
-| A3 | Xem hàng version (CheckVersion) | **4 hàng**: Claude / Codex / Grok / Opencode |
-| A4 | Account sidebar: pin Opencode | Email/label từ auth.json (Zen, Go, xAI) + **"Limit: N/A (zen proxy)"** + tối đa 2 dòng stats text (CA-683: "cost: $… total", "stats: N sessions"); bấm **All** → modal hiện đầy đủ usage lines dạng text (không có thanh %) |
+| A1 ✅ PASSED 08-30 | Xem card Opencode | "Installed 1.18.x (tested 1.18.18)", trạng thái READY |
+| A2 ✅ PASSED 08-30 (DB: cần chạy migration CA-689 trước — check constraint `ai_supported_models_provider_key_check`) | Bấm **Detect models** | Danh sách model opencode/* + opencode-go/* (≥10; TUI có retry warm nếu ít hơn) |
+| A3 ✅ PASSED 08-30 | Xem hàng version (CheckVersion) | **4 hàng**: Claude / Codex / Grok / Opencode |
+| A4 ⏳ BLOCKED → FIXED CA-689b (restart Desktop để nhận CSS scroll mới) | Account sidebar: pin Opencode | Email/label từ auth.json (Zen, Go, xAI) + **"Limit: N/A (zen proxy)"** + tối đa 2 dòng stats text (CA-683: "cost: $… total", "stats: N sessions"); bấm **All** → modal hiện đầy đủ usage lines dạng text (không có thanh %) |
 | A5 | MCP tab → Google Drive connect | `~/.config/opencode/opencode.json` xuất hiện `mcpServers` mới; `opencode mcp` (CLI) list thấy |
 
 ## B. TUI — chọn provider/model + persistence (CA-679)
