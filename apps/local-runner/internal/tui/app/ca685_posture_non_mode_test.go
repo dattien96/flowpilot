@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
 	"flowpilot-runner/internal/tui/prefs"
 )
@@ -178,5 +179,224 @@ func TestDefaultPostureIsNon(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
 	if m.activePosture() != "non" {
 		t.Fatalf("default activePosture = %q, want non", m.activePosture())
+	}
+}
+
+func TestRestoreAppliesModelAndReasoningPinsOpencodeXhigh(t *testing.T) {
+	// Operator report (2026-08-29): the scan posture pins muse-spark + xhigh —
+	// after restart the TUI must show reasoning xhigh, not the stale prefs value.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/client/chat-posture" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"active":"scan","profiles":{"scan":{"provider":"opencode","model":"opencode-go/muse-spark-1.2-contributor","reasoningEffort":"xhigh","yolo":true},"plan":{},"code":{}}}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	m := New(config.ChatConfig{Provider: "opencode"}, srv.URL)
+	m.mode = ModeChat
+	m.chatPosture = "code"
+	m.provider = "opencode"
+	m.model = "opencode/muse-spark-1.2-contributor-free"
+	m.reasoningEffort = "medium"
+	m.sessionDefaultsLoaded = false
+
+	m.chatPosturePending = "restore"
+	cmd := m.cmdLoadChatPosture()
+	cp := cmd().(chatPostureMsg)
+	m.chatPostureCmdFromPending(cp.Cfg)
+
+	if m.model != "opencode-go/muse-spark-1.2-contributor" {
+		t.Fatalf("pin model must load, got %q", m.model)
+	}
+	if m.reasoningEffort != "xhigh" {
+		t.Fatalf("pin reasoning xhigh must load, got %q", m.reasoningEffort)
+	}
+}
+
+func TestSlashReasoningAcceptsXhigh(t *testing.T) {
+	// CA-685: /reasoning accepts the full vocabulary (xhigh was rejected before).
+	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
+	m2, _ := m.handleSlashCommand("/reasoning xhigh")
+	am := m2.(*AppModel)
+	if am.reasoningEffort != "xhigh" {
+		t.Fatalf("/reasoning xhigh rejected, got %q", am.reasoningEffort)
+	}
+	m3, _ := am.handleSlashCommand("/reasoning minimal")
+	if m3.(*AppModel).reasoningEffort != "minimal" {
+		t.Fatalf("/reasoning minimal rejected")
+	}
+	// Unknown values still fail with guidance.
+	m4, _ := m3.(*AppModel).handleSlashCommand("/reasoning turbo")
+	if m4.(*AppModel).reasoningEffort == "turbo" {
+		t.Fatal("unknown effort must be rejected")
+	}
+}
+
+func TestReasoningModelFirstValidation(t *testing.T) {
+	// CA-686 operator note: not every model has xhigh (claude has max instead).
+	// When the selected model advertises efforts, ONLY those are valid.
+	m := New(config.ChatConfig{Provider: "claude"}, "http://127.0.0.1:4317")
+	m.provider = "claude"
+	m.model = "claude-opus-5"
+	m.providers = []client.Provider{{
+		Key: "claude",
+		Models: []client.ProviderModel{{
+			ID:                        "claude-opus-5",
+			SupportedReasoningEfforts: []string{"low", "medium", "high", "max"},
+		}},
+	}}
+
+	if !reasoningEffortAllowed(m, "max") {
+		t.Fatal("claude max must be allowed")
+	}
+	if reasoningEffortAllowed(m, "xhigh") {
+		t.Fatal("xhigh must be rejected for a model that does not advertise it")
+	}
+	if !reasoningEffortAllowed(m, "") {
+		t.Fatal("empty (model default) must stay allowed")
+	}
+
+	// opencode advertises xhigh instead.
+	m2 := New(config.ChatConfig{Provider: "opencode"}, "http://127.0.0.1:4317")
+	m2.provider = "opencode"
+	m2.model = "opencode-go/muse-spark-1.2-contributor"
+	m2.providers = []client.Provider{{
+		Key: "opencode",
+		Models: []client.ProviderModel{{
+			ID:                        "opencode-go/muse-spark-1.2-contributor",
+			SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high", "xhigh"},
+		}},
+	}}
+	if !reasoningEffortAllowed(m2, "xhigh") {
+		t.Fatal("opencode xhigh must be allowed")
+	}
+	if reasoningEffortAllowed(m2, "max") {
+		t.Fatal("max must be rejected for opencode muse-spark")
+	}
+
+	// Picker lists exactly the model's efforts (Desktop Task-215 parity).
+	items := filterReasoningSuggestions("/reasoning ", "high", m.modelReasoningEfforts())
+	if len(items) != 4 {
+		t.Fatalf("claude picker = %+v, want 4 model efforts", items)
+	}
+	for _, it := range items {
+		if it.value == "xhigh" {
+			t.Fatalf("claude picker must not offer xhigh: %+v", items)
+		}
+	}
+}
+
+func TestReasoningClampsToNewModelDefault(t *testing.T) {
+	// CA-686 operator point: reasoning is dynamic per model. Switching from an
+	// xhigh opencode model to a claude model without xhigh must land the
+	// reasoning on the new model's catalog default — not keep xhigh.
+	m := New(config.ChatConfig{Provider: "opencode"}, "http://127.0.0.1:4317")
+	m.provider = "opencode"
+	m.model = "opencode-go/muse-spark-1.2-contributor"
+	m.reasoningEffort = "xhigh"
+	m.providers = []client.Provider{
+		{
+			Key: "opencode",
+			Models: []client.ProviderModel{{
+				ID:                        "opencode-go/muse-spark-1.2-contributor",
+				SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high", "xhigh"},
+			}},
+		},
+		{
+			Key: "claude",
+			Models: []client.ProviderModel{{
+				ID:                        "claude-opus-5",
+				SupportedReasoningEfforts: []string{"low", "medium", "high", "max"},
+				DefaultReasoningEffort:    "medium",
+			}},
+		},
+	}
+
+	// Simulate /model claude-opus-5: model changes, effort goes stale.
+	m.provider = "claude"
+	m.model = "claude-opus-5"
+	m.clampReasoningForCurrentModel()
+	if m.reasoningEffort != "medium" {
+		t.Fatalf("stale xhigh must clamp to the claude default medium, got %q", m.reasoningEffort)
+	}
+
+	// Consistent effort survives.
+	m.reasoningEffort = "max"
+	m.clampReasoningForCurrentModel()
+	if m.reasoningEffort != "max" {
+		t.Fatalf("supported effort must survive, got %q", m.reasoningEffort)
+	}
+
+	// Model with no default advertised: stale effort clears to model default.
+	m.providers[1].Models[0].DefaultReasoningEffort = ""
+	m.reasoningEffort = "xhigh"
+	m.clampReasoningForCurrentModel()
+	if m.reasoningEffort != "" {
+		t.Fatalf("stale effort without a default must clear, got %q", m.reasoningEffort)
+	}
+
+	// No catalog data → no clamp (cannot know).
+	m.providers = nil
+	m.reasoningEffort = "xhigh"
+	m.clampReasoningForCurrentModel()
+	if m.reasoningEffort != "xhigh" {
+		t.Fatalf("no catalog data must not clamp, got %q", m.reasoningEffort)
+	}
+}
+
+func TestModelReasoningEffortsFromRealCatalogWire(t *testing.T) {
+	// The exact /providers wire shape (grok-4.5 advertises high/medium/low —
+	// matching the official grok CLI's Low/Medium/High list) must drive the
+	// /reasoning picker, not the fallback vocabulary.
+	wire := []client.Provider{{
+		Key: "grok",
+		Models: []client.ProviderModel{
+			{ID: "grok-4.5", SupportedReasoningEfforts: []string{"high", "medium", "low"}},
+			{ID: "grok-4.6", SupportedReasoningEfforts: []string{"xhigh", "high", "medium", "low"}},
+		},
+	}}
+	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
+	m.provider = "grok"
+	m.model = "grok-4.5"
+	m.providers = wire
+
+	efforts := m.modelReasoningEfforts()
+	if len(efforts) != 3 || efforts[0] != "high" {
+		t.Fatalf("grok-4.5 efforts = %v, want [high medium low]", efforts)
+	}
+	items := filterReasoningSuggestions("/reasoning ", "medium", m.modelReasoningEfforts())
+	if len(items) != 3 {
+		t.Fatalf("grok-4.5 picker = %+v, want exactly 3 model efforts", items)
+	}
+	var mediumDetail string
+	for _, it := range items {
+		if it.value == "medium" {
+			mediumDetail = it.detail
+		}
+		if it.value == "xhigh" || it.value == "minimal" {
+			t.Fatalf("grok-4.5 picker must not offer %s", it.value)
+		}
+	}
+	if !strings.Contains(mediumDetail, "Medium effort") || !strings.Contains(mediumDetail, "active") {
+		t.Fatalf("active row must carry a human description + active marker, got %q", mediumDetail)
+	}
+
+	// Cross-provider fallback: provider key renamed in prefs but the model id
+	// still resolves through another catalog entry.
+	m.provider = "opencode"
+	if efforts := m.modelReasoningEfforts(); len(efforts) != 3 {
+		t.Fatalf("cross-provider model lookup = %v, want grok-4.5 efforts", efforts)
+	}
+}
+
+func TestReasoningEffortDetailWording(t *testing.T) {
+	if d := reasoningEffortDetail("xhigh"); !strings.Contains(d, "Extra high effort") {
+		t.Fatalf("xhigh detail = %q", d)
+	}
+	if d := reasoningEffortDetail("low"); !strings.Contains(d, "quick, fast implementations") {
+		t.Fatalf("low detail = %q", d)
 	}
 }

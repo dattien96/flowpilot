@@ -1114,7 +1114,19 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setSelectedModel(model) {
-    set({ selectedModel: model });
+    // CA-686 parity with the TUI: reasoning is dynamic per model — a stale
+    // effort the new model does not advertise resets to that model's catalog
+    // default (or empty = model default). No catalog data → keep as-is.
+    const state = get();
+    const next = state.supportedModels.find((m) => m.modelId === model);
+    const efforts = next?.supportedReasoningEfforts ?? [];
+    const current = (state.reasoningEffort ?? "").trim();
+    let reasoningEffort = state.reasoningEffort;
+    if (efforts.length > 0 && current && !efforts.some((e) => e.toLowerCase() === current.toLowerCase())) {
+      const def = (next?.defaultReasoningEffort ?? "").trim();
+      reasoningEffort = def && efforts.some((e) => e.toLowerCase() === def.toLowerCase()) ? def : "";
+    }
+    set({ selectedModel: model, reasoningEffort });
   },
 
   setReasoningEffort(effort) {

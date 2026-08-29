@@ -50,13 +50,13 @@ const (
 )
 
 var (
-	styleUserLabel   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
-	styleUser        = lipgloss.NewStyle().Foreground(lipgloss.Color(colorPromptText))
-	styleAssistant   = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
-	styleSystem      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
-	styleTool        = lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn))
-	styleError       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
-	styleGate        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAsk))
+	styleUserLabel = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
+	styleUser      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorPromptText))
+	styleAssistant = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
+	styleSystem    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+	styleTool      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn))
+	styleError     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
+	styleGate      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAsk))
 	// Question-card hierarchy (CA-643): the [QUESTION] head, the prompt body,
 	// the option rows and the "Answered:" confirmation used to be one flat
 	// --ask purple block. Each part now has its own hue so the card is scannable:
@@ -75,12 +75,12 @@ var (
 	styleQuestionDescBox = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim)).Background(lipgloss.Color(colorBg3))
 	styleAnswerBorder    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOK)).Background(lipgloss.Color(colorBg3))
 	styleAnswerHeadBox   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK)).Background(lipgloss.Color(colorBg3))
-	styleStatus      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
-	styleStatusHi    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // model, reason value, YOLO value, 7d, skills
-	styleMention     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))     // skill tokens in prompt
-	styleMentionFile = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // @file paths in prompt
-	styleStatusOK    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))
-	styleStatusErr   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
+	styleStatus          = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+	styleStatusHi        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // model, reason value, YOLO value, 7d, skills
+	styleMention         = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))     // skill tokens in prompt
+	styleMentionFile     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // @file paths in prompt
+	styleStatusOK        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))
+	styleStatusErr       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
 	// agent:NAME and flow-name values — dedicated hues, not styleStatusHi/accent.
 	styleStatusAgent = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusAgent))
 	styleStatusFlow  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusFlow))
@@ -617,6 +617,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.model == "" && m.provider != "" {
 			if models := modelsForProvider(m.providers, m.provider); len(models) > 0 {
 				m.model = models[0]
+				m.clampReasoningForCurrentModel() // CA-686
 			}
 		}
 		m.bindActiveAccountForProvider()
@@ -2733,7 +2734,7 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 		}
 		return []suggestItem{{value: "", detail: "(no matching models)", kind: "model"}}
 	}
-	if reasonSugg := filterReasoningSuggestions(in, m.reasoningEffort); len(reasonSugg) > 0 {
+	if reasonSugg := filterReasoningSuggestions(in, m.reasoningEffort, m.modelReasoningEfforts()); len(reasonSugg) > 0 {
 		return reasonSugg
 	}
 	if ok, _ := parseSlashArgPrefix(in, "/reasoning"); ok {
@@ -3873,6 +3874,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					} else {
 						m.model = ""
 					}
+					m.clampReasoningForCurrentModel() // CA-686: per-model efforts
 					selected = &m.providers[i]
 					found = true
 					break
@@ -3956,6 +3958,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.model = want
 			}
 			m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
+			m.clampReasoningForCurrentModel() // CA-686: reasoning is dynamic per model
 			m.persistSessionPrefs()
 			if matched != nil && matched.provider != "" {
 				m.addMessage("system", fmt.Sprintf("Model set to: %s · provider: %s (next prompt uses this model)", m.model, m.provider), "")
@@ -3972,18 +3975,17 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		if len(args) == 0 {
 			var sb strings.Builder
 			sb.WriteString(fmt.Sprintf("Current reasoning effort: %s\n", orDash(m.reasoningEffort)))
-			sb.WriteString("Options: high · medium · low\n")
+			sb.WriteString(reasoningEffortHelp(m) + "\n")
 			sb.WriteString("Pick: type /reasoning  then ↑↓ · Tab · Enter")
 			m.addMessage("system", sb.String(), "")
 		} else {
-			effort := strings.ToLower(args[0])
-			switch effort {
-			case "high", "medium", "low", "":
+			effort := strings.ToLower(strings.TrimSpace(args[0]))
+			if reasoningEffortAllowed(m, effort) {
 				m.reasoningEffort = effort
 				m.persistSessionPrefs()
 				m.addMessage("system", fmt.Sprintf("Reasoning effort set to: %s (saved)", effort), "")
-			default:
-				m.addMessage("system", "Reasoning effort must be high, medium, or low.", "error")
+			} else {
+				m.addMessage("system", "Reasoning effort not supported by "+orDash(m.model)+". "+reasoningEffortHelp(m), "error")
 			}
 		}
 
@@ -6447,4 +6449,3 @@ func runHeadless(m *AppModel, prompt string) error {
 	fmt.Fprintln(os.Stdout, finalMsg)
 	return nil
 }
-

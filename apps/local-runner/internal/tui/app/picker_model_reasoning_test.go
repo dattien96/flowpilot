@@ -26,13 +26,27 @@ func TestFilterModelSuggestions_FiltersAsYouType(t *testing.T) {
 }
 
 func TestFilterReasoningSuggestions_FiltersAsYouType(t *testing.T) {
-	all := filterReasoningSuggestions("/reasoning ", "medium")
-	if len(all) != 3 {
-		t.Fatalf("expected 3, got %d", len(all))
+	// CA-685: the default vocabulary is minimal..max (6 entries).
+	all := filterReasoningSuggestions("/reasoning ", "medium", nil)
+	if len(all) != len(reasoningEffortOptions) {
+		t.Fatalf("expected %d, got %d", len(reasoningEffortOptions), len(all))
 	}
-	filtered := filterReasoningSuggestions("/reasoning hi", "medium")
-	if len(filtered) != 1 || filtered[0].value != "high" {
+	// CA-685: "hi" matches both high and xhigh in the full vocabulary.
+	filtered := filterReasoningSuggestions("/reasoning hi", "medium", nil)
+	if len(filtered) != 2 || filtered[0].value != "high" || filtered[1].value != "xhigh" {
 		t.Fatalf("filtered=%+v", filtered)
+	}
+	// Model-advertised efforts ARE the menu (Task-215 / Desktop parity) —
+	// efforts the model does not advertise are not offered.
+	model := filterReasoningSuggestions("/reasoning ", "xhigh", []string{"minimal", "low", "medium", "high", "xhigh"})
+	if len(model) != 5 {
+		t.Fatalf("model efforts=%+v", model)
+	}
+	claude := filterReasoningSuggestions("/reasoning ", "xhigh", []string{"low", "medium", "high", "max"})
+	for _, it := range claude {
+		if it.value == "xhigh" {
+			t.Fatalf("claude list must not offer xhigh: %+v", claude)
+		}
 	}
 }
 
@@ -61,7 +75,7 @@ func TestEnter_AcceptsHighlightedModelSuggestion(t *testing.T) {
 func TestEnter_AcceptsHighlightedReasoningSuggestion(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:4317")
 	m.inputValue = "/reasoning "
-	m.suggIdx = 0 // high
+	m.suggIdx = 3 // high (CA-685 vocabulary: minimal, low, medium, high, xhigh, max)
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	am := m2.(*AppModel)
 	if am.reasoningEffort != "high" {

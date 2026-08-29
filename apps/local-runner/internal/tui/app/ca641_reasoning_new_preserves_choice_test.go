@@ -9,17 +9,17 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
-// CA-641: /new re-applies the already-active posture and must preserve the
-// user's /reasoning choice instead of re-pinning the posture profile default
-// (operator report: /reasoning high in chat resets to the code profile's
-// medium after /new and the clobbered value is persisted to session prefs).
-// Additive — the existing ca638_reasoning_restore_test.go suite is untouched.
+// CA-641 history: /new used to preserve the user's /reasoning choice.
+// SUPERSEDED 2026-08-29 by the CA-685 operator decision — /new re-applying
+// the active scan/plan/code posture reloads the FULL profile (reasoning
+// included); "non" is where a personal reasoning choice survives. The tests
+// below encode the CA-685 spec (same-day rewrite, flagged per R1).
 
-func TestNewReapplyKeepsUserReasoning(t *testing.T) {
+func TestNewReapplyAppliesReasoningPin(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/client/chat-posture" {
 			w.Header().Set("Content-Type", "application/json")
-			// code profile pins reasoning=medium — must NOT override the user's high.
+			// code profile pins reasoning=medium — the pin reloads (CA-685).
 			_, _ = w.Write([]byte(`{"active":"code","profiles":{"scan":{},"plan":{},"code":{"reasoningEffort":"medium"}}}`))
 			return
 		}
@@ -30,22 +30,22 @@ func TestNewReapplyKeepsUserReasoning(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "grok"}, srv.URL)
 	m.mode = ModeChat
 	m.chatPosture = "code"
-	m.reasoningEffort = "high" // user's /reasoning choice
+	m.reasoningEffort = "high" // user's mid-session /reasoning change
 
 	cmd := m.cmdLoadChatPosture()
 	cp := cmd().(chatPostureMsg)
 	if cp.Err != nil {
 		t.Fatalf("load chat posture failed: %+v", cp)
 	}
-	// /new arms "apply:<activePosture>" — posture is unchanged.
+	// /new arms "apply:<activePosture>" — posture is unchanged, pin reloads.
 	m.chatPosturePending = "apply:" + m.activePosture()
 	m.chatPostureCmdFromPending(cp.Cfg)
-	if m.reasoningEffort != "high" {
-		t.Fatalf("/new re-apply must keep user reasoning=high, got %q", m.reasoningEffort)
+	if m.reasoningEffort != "medium" {
+		t.Fatalf("/new re-apply must reload the reasoning pin, got %q", m.reasoningEffort)
 	}
 }
 
-func TestNewReapplyKeepsUserReasoningEvenWhenActiveDiffersFromRunner(t *testing.T) {
+func TestNewReapplyAppliesReasoningPinActiveDiffersFromRunner(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/client/chat-posture" {
 			w.Header().Set("Content-Type", "application/json")
@@ -65,8 +65,8 @@ func TestNewReapplyKeepsUserReasoningEvenWhenActiveDiffersFromRunner(t *testing.
 	cp := cmd().(chatPostureMsg)
 	m.chatPosturePending = "apply:plan"
 	m.chatPostureCmdFromPending(cp.Cfg)
-	if m.reasoningEffort != "low" {
-		t.Fatalf("re-apply of active plan must keep user reasoning=low, got %q", m.reasoningEffort)
+	if m.reasoningEffort != "high" {
+		t.Fatalf("re-apply of active plan must reload the reasoning pin, got %q", m.reasoningEffort)
 	}
 	if m.chatPosture != "plan" {
 		t.Fatalf("posture = %q, want plan", m.chatPosture)
@@ -99,7 +99,7 @@ func TestRealPostureSwitchStillPinsReasoning(t *testing.T) {
 	}
 }
 
-func TestNewReapplyKeepsUserReasoningAndPersistsIt(t *testing.T) {
+func TestNewReapplyPersistsReloadedReasoningPin(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("FLOWPILOT_TUI_SESSION_FILE", dir+"/tui-session.json")
 
@@ -127,7 +127,7 @@ func TestNewReapplyKeepsUserReasoningAndPersistsIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load session prefs: %v", err)
 	}
-	if saved.ReasoningEffort != "low" {
-		t.Fatalf("session prefs must keep user reasoning=low after /new, got %q", saved.ReasoningEffort)
+	if saved.ReasoningEffort != "medium" {
+		t.Fatalf("session prefs must persist the reloaded pin after /new, got %q", saved.ReasoningEffort)
 	}
 }

@@ -873,7 +873,62 @@ func parseHistoryArgPrefix(input string) (ok bool, query string) {
 	return true, query
 }
 
-var reasoningEffortOptions = []string{"high", "medium", "low"}
+// CA-685: full canonical reasoning vocabulary — the runner mappers accept all
+// of these (opencode --variant minimal..xhigh/max, see opencodeReasoningVariantID).
+// When the selected model carries catalog efforts (Task-215), the picker shows
+// those instead — see AppModel.modelReasoningEfforts.
+var reasoningEffortOptions = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+
+// modelReasoningEfforts returns the selected model's detected reasoning efforts
+// from the provider catalog (empty when unknown). The current provider is
+// searched first; if the model id is not found there (stale catalog shard,
+// provider rename), any provider owning that exact model id answers.
+func (m *AppModel) modelReasoningEfforts() []string {
+	modelID := strings.TrimSpace(m.model)
+	if modelID == "" {
+		return nil
+	}
+	var crossProvider []string
+	for _, p := range m.providers {
+		foundHere := false
+		for _, mod := range p.Models {
+			if !strings.EqualFold(mod.ModelID(), modelID) {
+				continue
+			}
+			foundHere = true
+			if len(mod.SupportedReasoningEfforts) > 0 && len(crossProvider) == 0 {
+				crossProvider = mod.SupportedReasoningEfforts
+			}
+		}
+		if foundHere && strings.EqualFold(p.Key, m.provider) && len(crossProvider) > 0 {
+			return crossProvider
+		}
+	}
+	return crossProvider
+}
+
+// reasoningEffortDetail is the grok-CLI-style human label + description for a
+// reasoning effort (shown in the /reasoning picker's right column).
+func reasoningEffortDetail(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "minimal":
+		return "Minimal effort — fastest, minimal reasoning"
+	case "low":
+		return "Low effort — quick, fast implementations"
+	case "medium":
+		return "Medium effort — balanced implementation and testing"
+	case "high":
+		return "High effort — higher quality with extensive reasoning"
+	case "xhigh":
+		return "Extra high effort — highest effort and reasoning level"
+	case "max":
+		return "Max effort — maximum reasoning level"
+	case "":
+		return "Model default effort"
+	default:
+		return "Custom effort"
+	}
+}
 
 // parseProviderPicker reports `/provider <query>` or `/provider connect|config|install|account|switch|activate <query>`.
 func parseProviderPicker(input string) (mode, filter string, ok bool) {
@@ -1126,24 +1181,102 @@ func filterModelSuggestions(input string, models []string, current string) []sug
 }
 
 // filterReasoningSuggestions returns effort levels matching `/reasoning `.
-func filterReasoningSuggestions(input string, current string) []suggestItem {
+func filterReasoningSuggestions(input string, current string, modelEfforts []string) []suggestItem {
 	ok, query := parseSlashArgPrefix(input, "/reasoning")
 	if !ok {
 		return nil
 	}
+	// CA-686: when the selected model advertises efforts (Task-215 catalog),
+	// that list IS the menu — Desktop parity. No catalog data falls back to the
+	// canonical vocabulary.
+	efforts := modelEfforts
+	if len(efforts) == 0 {
+		efforts = reasoningEffortOptions
+	}
 	q := strings.ToLower(query)
-	out := make([]suggestItem, 0, len(reasoningEffortOptions))
-	for _, effort := range reasoningEffortOptions {
+	out := make([]suggestItem, 0, len(efforts))
+	for _, effort := range efforts {
 		if q != "" && !strings.HasPrefix(effort, q) && !strings.Contains(effort, q) {
 			continue
 		}
-		detail := "effort"
+		detail := reasoningEffortDetail(effort)
 		if strings.EqualFold(effort, current) {
-			detail = "current"
+			detail += " — active"
 		}
 		out = append(out, suggestItem{value: effort, detail: detail, kind: "reasoning"})
 	}
 	return out
+}
+
+// reasoningEffortAllowed reports whether an effort may be set. Model-first
+// (CA-686): when the selected model advertises efforts, ONLY those (plus
+// empty = model default) are valid — claude has max but not xhigh, opencode
+// has xhigh but not max. Without catalog data the canonical vocabulary applies.
+func reasoningEffortAllowed(m *AppModel, effort string) bool {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if effort == "" {
+		return true
+	}
+	if efforts := m.modelReasoningEfforts(); len(efforts) > 0 {
+		for _, e := range efforts {
+			if strings.EqualFold(e, effort) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, e := range reasoningEffortOptions {
+		if e == effort {
+			return true
+		}
+	}
+	return false
+}
+
+// clampReasoningForCurrentModel (CA-686): reasoning is dynamic per model —
+// after the model changes, a stale effort the new model does not advertise
+// resets to that model's catalog default (or empty = model default). No-op
+// when the catalog carries no effort data for the model.
+func (m *AppModel) clampReasoningForCurrentModel() {
+	efforts := m.modelReasoningEfforts()
+	if len(efforts) == 0 {
+		return
+	}
+	current := strings.ToLower(strings.TrimSpace(m.reasoningEffort))
+	if current == "" {
+		return
+	}
+	for _, e := range efforts {
+		if strings.EqualFold(e, current) {
+			return
+		}
+	}
+	var def string
+	for _, p := range m.providers {
+		if !strings.EqualFold(p.Key, m.provider) {
+			continue
+		}
+		for _, mod := range p.Models {
+			if strings.EqualFold(mod.ModelID(), m.model) {
+				def = strings.ToLower(strings.TrimSpace(mod.DefaultReasoningEffort))
+			}
+		}
+	}
+	for _, e := range efforts {
+		if strings.EqualFold(e, def) {
+			m.reasoningEffort = def
+			return
+		}
+	}
+	m.reasoningEffort = ""
+}
+
+// reasoningEffortHelp lists the efforts valid for the selected model.
+func reasoningEffortHelp(m *AppModel) string {
+	if efforts := m.modelReasoningEfforts(); len(efforts) > 0 {
+		return "Options (" + m.model + "): " + strings.Join(efforts, " · ") + " · (empty = model default)"
+	}
+	return "Options: minimal · low · medium · high · xhigh · max · (empty = model default)"
 }
 
 // filterModeSetupSuggestions returns picker items for `/mode-setup …`
