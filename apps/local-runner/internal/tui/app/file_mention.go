@@ -206,6 +206,53 @@ func highlightMentions(plain string, skillNames []string, base lipgloss.Style) s
 	return paintMentionRange(plain, 0, len(plain), collectMentionSpans(plain, skillNames), base)
 }
 
+// highlightMentionsOnBar is the composer-solid-gray variant — both base and
+// mention segments carry the #1e1e1e bar bg so an inner reset cannot leak the
+// canvas behind the composer frame.
+func highlightMentionsOnBar(plain string, skillNames []string, base lipgloss.Style) string {
+	if plain == "" {
+		return ""
+	}
+	spans := collectMentionSpans(plain, skillNames)
+	return paintMentionRangeBar(plain, 0, len(plain), spans, base)
+}
+
+func mentionStyleOnBar(kind string) lipgloss.Style {
+	if kind == "file" {
+		return chatBarBg(styleMentionFile)
+	}
+	return chatBarBg(styleMention)
+}
+
+func paintMentionRangeBar(plain string, start, end int, spans []mentionSpan, base lipgloss.Style) string {
+	if start >= end || start < 0 || end > len(plain) {
+		return ""
+	}
+	var b strings.Builder
+	cursor := start
+	for _, s := range spans {
+		if s.end <= start || s.start >= end {
+			continue
+		}
+		a, z := s.start, s.end
+		if a < start {
+			a = start
+		}
+		if z > end {
+			z = end
+		}
+		if a > cursor {
+			b.WriteString(base.Render(plain[cursor:a]))
+		}
+		b.WriteString(mentionStyleOnBar(s.kind).Render(plain[a:z]))
+		cursor = z
+	}
+	if cursor < end {
+		b.WriteString(base.Render(plain[cursor:end]))
+	}
+	return b.String()
+}
+
 func paintMentionRange(plain string, start, end int, spans []mentionSpan, base lipgloss.Style) string {
 	if start >= end || start < 0 || end > len(plain) {
 		return ""

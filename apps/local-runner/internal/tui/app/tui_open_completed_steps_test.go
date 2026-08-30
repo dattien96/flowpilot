@@ -131,8 +131,8 @@ func TestChatOpenedMsg_CompletedFlowStepsRenderAfterRefresh(t *testing.T) {
 	if !strings.Contains(joined, "coder") || !strings.Contains(joined, "reviewer") {
 		t.Fatalf("F2 must list the completed steps:\n%s", joined)
 	}
-	if !strings.Contains(joined, "[open]") {
-		t.Fatalf("F2 step rows must expose [open] after hydrate:\n%s", joined)
+	if strings.Contains(joined, "[open]") {
+		t.Fatalf("F2 step rows must NOT expose [open] chip (keyboard-only via /agents):\n%s", joined)
 	}
 	if strings.Contains(stripANSI(am.renderStatusLine()), "[stop]") {
 		t.Fatalf("completed flow with steps must not show [stop]:\n%s", am.renderStatusLine())

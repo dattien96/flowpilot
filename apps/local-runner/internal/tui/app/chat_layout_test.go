@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
 )
@@ -49,12 +47,16 @@ func TestStatusline_ShowsProviderAccountNotSupabaseEmail(t *testing.T) {
 	m.signedInEmail = "you@supabase.example"
 	m.authNeedLogin = false
 	m.asciiMode = true
-	line := m.renderStatusLine()
-	if !strings.Contains(line, "codex-main") {
-		t.Fatalf("want provider account label: %q", line)
+	enableSidebarForTest(m)
+	side := strings.Join(m.renderSidebarStatusSection(40), "\n")
+	if !strings.Contains(side, "codex-main") {
+		t.Fatalf("sidebar must show provider account label: %q", side)
 	}
-	if strings.Contains(line, "you@supabase.example") {
-		t.Fatalf("statusline must not show Supabase email: %q", line)
+	if strings.Contains(side, "you@supabase.example") {
+		t.Fatalf("sidebar must not show Supabase email: %q", side)
+	}
+	if strings.Contains(m.renderStatusLine(), "you@supabase.example") {
+		t.Fatalf("status line must not show Supabase email")
 	}
 }
 
@@ -73,9 +75,10 @@ func TestBindActiveAccount_IgnoresStaleOtherProviderAccount(t *testing.T) {
 	if got := m.activeProviderAccountLabel(); got != "grok-ready" {
 		t.Fatalf("label=%q want grok-ready", got)
 	}
-	line := m.renderStatusLine()
-	if strings.Contains(line, "stale-codex") || !strings.Contains(line, "grok-ready") {
-		t.Fatalf("statusline=%q", line)
+	enableSidebarForTest(m)
+	side := strings.Join(m.renderSidebarStatusSection(40), "\n")
+	if strings.Contains(side, "stale-codex") || !strings.Contains(side, "grok-ready") {
+		t.Fatalf("sidebar=%q", side)
 	}
 }
 
@@ -117,30 +120,28 @@ func TestRenderMessages_UserFullWidthLeftAligned(t *testing.T) {
 	}
 }
 
-func TestSessionPanel_ToggleF2AndInfo(t *testing.T) {
+func TestSessionPanel_InfoDumpAndSidebar(t *testing.T) {
 	m := New(config.ChatConfig{ProjectPath: `D:\proj`}, "http://127.0.0.1:4317")
 	m.sessionPanel = sessionInfoPanel{
 		RunnerURL:   "http://127.0.0.1:4317",
 		ProjectPath: `D:\proj`,
 		Session:     "codex · o3 (acct)",
-		Collapsed:   false,
 	}
-	overlay := m.renderSessionPanelOverlay()
-	if len(overlay) < 3 {
-		t.Fatalf("expanded overlay too short: %v", overlay)
+	// Wide terminal → the sidebar is the panel surface (Task-311).
+	enableSidebarForTest(m)
+	m.width, m.fullWidth = tuiSidebarMinWidth+10, tuiSidebarMinWidth+10
+	side := m.renderRightSidebar(30)
+	if len(side) < 3 {
+		t.Fatalf("sidebar too short: %v", side)
 	}
-	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyF2})
+	// /info prints the dump as a chat message, never toggles.
+	m2, _ := m.handleSlashCommand("/info")
 	am := m2.(*AppModel)
-	if !am.sessionPanel.Collapsed {
-		t.Fatal("F2 should collapse panel")
+	if len(am.messages) == 0 {
+		t.Fatal("/info must print the info dump")
 	}
-	chip := am.renderSessionPanelOverlay()
-	if len(chip) != 1 || !strings.Contains(chip[0], "info") {
-		t.Fatalf("collapsed chip=%v", chip)
-	}
-	m3, _ := am.handleSlashCommand("/info")
-	if m3.(*AppModel).sessionPanel.Collapsed {
-		t.Fatal("/info should expand again")
+	if !strings.Contains(am.messages[len(am.messages)-1].Content, "Status:") {
+		t.Fatalf("/info dump missing Status line: %q", am.messages[len(am.messages)-1].Content)
 	}
 }
 
@@ -189,7 +190,7 @@ func TestRenderInputLine_UsesStrokeNotFullBackground(t *testing.T) {
 	line := m.renderInputLine()
 	if !strings.Contains(line, "┃") && !strings.Contains(line, "|") {
 		// lipgloss may wrap; ensure no solid bg wash style by checking stroke glyph present
-		if !strings.Contains(line, "chat") {
+		if !strings.Contains(strings.ToLower(line), "chat") {
 			t.Fatalf("input=%q", line)
 		}
 	}

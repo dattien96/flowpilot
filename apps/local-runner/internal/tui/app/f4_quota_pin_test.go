@@ -13,10 +13,15 @@ func TestF4Collapsed_ShowsGrok7d(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "grok", Model: "grok-4.6"}, "http://127.0.0.1:4317")
 	m.account = &client.ProviderAccountSummary{ProviderKey: "grok", DisplayLabel: "grok@example.com", Remaining7dPercent: &seven, IsActive: true}
 	m.accountLabel = "grok@example.com"
-	m.statusDetailsCollapsed = true
 	got := stripANSI(m.renderStatusLine())
-	if !strings.Contains(got, "7d:87%") {
-		t.Fatalf("collapsed F4 must still show Grok 7d:87%%, got %q", got)
+	// Per user request: status line is now empty (chrome moved to input frame:
+	// top-left chat/flow·ready·agent, bottom-right Model·reason·YOLO). Quota
+	// is no longer on the status line nor in sidebar/footer.
+	if strings.Contains(got, "7d:87%") {
+		t.Fatalf("quota must NOT be on status line (moved/hidden), got %q", got)
+	}
+	if !strings.Contains(m.inputFrameFooter(), "YOLO") {
+		t.Fatalf("input footer must still show YOLO, got %q", m.inputFrameFooter())
 	}
 }
 
@@ -25,10 +30,9 @@ func TestF4Collapsed_ShowsClaude5h(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "claude", Model: "sonnet"}, "http://127.0.0.1:4317")
 	m.account = &client.ProviderAccountSummary{ProviderKey: "claude", DisplayLabel: "claude@example.com", Remaining5hPercent: &five, IsActive: true}
 	m.accountLabel = "claude@example.com"
-	m.statusDetailsCollapsed = true
 	got := stripANSI(m.renderStatusLine())
-	if !strings.Contains(got, "5h:72%") {
-		t.Fatalf("collapsed F4 must still show Claude 5h:72%%, got %q", got)
+	if strings.Contains(got, "5h:72%") {
+		t.Fatalf("quota must NOT be on status line, got %q", got)
 	}
 }
 
@@ -37,10 +41,9 @@ func TestF4Collapsed_ShowsBothWhenPresent(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "claude", Model: "sonnet"}, "http://127.0.0.1:4317")
 	m.account = &client.ProviderAccountSummary{ProviderKey: "claude", DisplayLabel: "a@b.com", Remaining5hPercent: &five, Remaining7dPercent: &seven, IsActive: true}
 	m.accountLabel = "a@b.com"
-	m.statusDetailsCollapsed = true
 	got := stripANSI(m.renderStatusLine())
-	if !strings.Contains(got, "5h:72%") || !strings.Contains(got, "7d:40%") {
-		t.Fatalf("collapsed with both windows must show 5h and 7d, got %q", got)
+	if strings.Contains(got, "5h:72%") || strings.Contains(got, "7d:40%") {
+		t.Fatalf("quota must NOT be on status line, got %q", got)
 	}
 }
 
@@ -53,10 +56,9 @@ func TestF4Collapsed_UsageDetailFallbackShowsWeekly(t *testing.T) {
 		IsActive: true,
 	}
 	m.accountLabel = "grok@example.com"
-	m.statusDetailsCollapsed = true
 	got := stripANSI(m.renderStatusLine())
-	if !strings.Contains(got, "Weekly limit:99%") {
-		t.Fatalf("collapsed fallback must show weekly line, got %q", got)
+	if strings.Contains(got, "Weekly limit:99%") {
+		t.Fatalf("quota must NOT be on status line, got %q", got)
 	}
 }
 
@@ -71,10 +73,9 @@ func TestF4Collapsed_TeamCreditsFallback(t *testing.T) {
 		IsActive: true,
 	}
 	m.accountLabel = "trashname899@gmail.com"
-	m.statusDetailsCollapsed = true
 	got := stripANSI(m.renderStatusLine())
-	if !strings.Contains(got, "Team Credits") {
-		t.Fatalf("collapsed Team Credits monthly must show fallback, got %q", got)
+	if strings.Contains(got, "Team Credits") {
+		t.Fatalf("quota must NOT be on status line, got %q", got)
 	}
 	if strings.Contains(got, "Team 54b113be") {
 		t.Fatalf("collapsed must not show Team UUID as quota, got %q", got)
@@ -86,12 +87,10 @@ func TestF4Collapsed_TeamUUIDNotShownAsQuota(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "grok", Model: "grok-4.6"}, "http://127.0.0.1:4317")
 	m.account = &client.ProviderAccountSummary{ProviderKey: "grok", DisplayLabel: "trashname899@gmail.com", UsageSummary: &summary, IsActive: true}
 	m.accountLabel = "trashname899@gmail.com"
-	m.statusDetailsCollapsed = true
 	got := stripANSI(m.renderStatusLine())
 	if strings.Contains(got, "Team 54b113be") {
 		t.Fatalf("collapsed must not show Team UUID as quota, got %q", got)
 	}
-	m.statusDetailsCollapsed = false
 	got = stripANSI(m.renderStatusLine())
 	if strings.Contains(got, "Team 54b113be") {
 		t.Fatalf("expanded must not show Team UUID as quota, got %q", got)
@@ -103,12 +102,11 @@ func TestF4ExpandedAndCollapsed_BothShow7d(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "grok", Model: "grok-4.6"}, "http://127.0.0.1:4317")
 	m.account = &client.ProviderAccountSummary{ProviderKey: "grok", DisplayLabel: "grok@example.com", Remaining7dPercent: &seven, IsActive: true}
 	m.accountLabel = "grok@example.com"
-	m.statusDetailsCollapsed = false
-	if !strings.Contains(stripANSI(m.renderStatusLine()), "7d:99%") {
-		t.Fatalf("expanded must show 7d")
+	if strings.Contains(stripANSI(m.renderStatusLine()), "7d:99%") {
+		t.Fatalf("quota must NOT be on status line")
 	}
-	m.statusDetailsCollapsed = true
-	if !strings.Contains(stripANSI(m.renderStatusLine()), "7d:99%") {
-		t.Fatalf("collapsed must show 7d")
+	// Footer still shows YOLO
+	if !strings.Contains(m.inputFrameFooter(), "YOLO") {
+		t.Fatalf("footer must show YOLO")
 	}
 }

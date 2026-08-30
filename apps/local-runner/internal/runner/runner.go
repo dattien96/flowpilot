@@ -174,6 +174,21 @@ type Runner struct {
 	// grokProcessKey respawns (model / reasoning / YOLO). Guarded by its own mu.
 	grokRunSessions *grokRunSessionIndex
 
+	// opencodeProcessMu guards opencodeProcesses (CP-57 Task-300, copy of grok model).
+	opencodeProcessMu sync.Mutex
+	// opencodeProcesses holds live `opencode acp` processes keyed by
+	// scope+model+variant+auto (see opencodeProcessKey). Opencode model/variant are
+	// config-file based, but the key still includes them for coexistence safety
+	// so a parent and child with different launch tuples keep separate processes.
+	// Only an account/scope change reclaims processes. nil until first ensure.
+	opencodeProcesses map[string]*opencodeProcessHandle
+	// opencodeDesiredAuto is the current YOLO posture for Opencode (Task-303),
+	// set explicitly via YoloPosture. Guarded by opencodeProcessMu.
+	opencodeDesiredAuto bool
+	// opencodeRunSessions maps FlowPilot run id → Opencode ACP session id across
+	// opencodeProcessKey respawns. Guarded by its own mu.
+	opencodeRunSessions *opencodeRunSessionIndex
+
 	// providersCache holds a short-TTL cache of DetectProviders results so
 	// repeated TUI opens do not re-spawn every provider CLI probe (CA-535).
 	// It is invalidated by any provider/account mutation. Guarded by its own mu.
@@ -352,6 +367,14 @@ func (r *Runner) ValidateDirectory(path string) DirectoryValidationResult {
 }
 
 func (r *Runner) DetectProviders(ctx context.Context) ([]Provider, error) {
+	// Kick off OpenCode model catalog warm in parallel with other CLI probes.
+	// `opencode models` is slow (2–7s+) and opencode is last in providerSpecs,
+	// so a serial probe often times out; warming early lets the cache fill while
+	// codex/claude/gemini/grok run.
+	if cached, ok := readOpencodeModelsCache(false); !ok || len(cached) == 0 {
+		warmOpencodeModelsCacheAsync()
+	}
+
 	providers := make([]Provider, 0, len(providerSpecs()))
 	for _, spec := range providerSpecs() {
 		providers = append(providers, detectProvider(ctx, spec))
@@ -950,6 +973,9 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, w
 	case strings.HasPrefix(lowerModel, "grok-"), lowerModel == "grok-build":
 		// Appended last (CP-46 P-0/Task-212 T-3): codex/gemini/claude cases above unchanged.
 		resolvedProvider = "grok"
+	case strings.HasPrefix(lowerModel, "opencode/"), strings.HasPrefix(lowerModel, "opencode-go/"):
+		// Appended last (CP-57 P-0/Task-303 T-1): grok branch above unchanged.
+		resolvedProvider = "opencode"
 	case resolvedProvider == "":
 		return "", nil, "", errors.New("model or provider is required")
 	}
@@ -1012,6 +1038,22 @@ func resolvePromptExecutionAdapter(request PromptExecutionRequest, outputPath, w
 			args = append(args, "--effort", strings.ToLower(strings.TrimSpace(request.ReasoningEffort)))
 		}
 		return grokBinaryName(), args, resolvedProvider, nil
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-303 T-1): one-shot `opencode run --format json`
+		// is the summarizer exception (P-1). Uses --model / --variant / --auto.
+		args := []string{"run", "--format", "json"}
+		if modelName != "" {
+			args = append(args, "--model", modelName)
+		}
+		if request.ReasoningEffort != "" {
+			if variant, ok := opencodeReasoningVariantID(request.ReasoningEffort); ok && variant != "" {
+				args = append(args, "--variant", variant)
+			}
+		}
+		if request.YoloMode {
+			args = append(args, "--auto")
+		}
+		return opencodeBinaryName(), args, resolvedProvider, nil
 	default:
 		return "", nil, "", fmt.Errorf("provider %q is not supported", resolvedProvider)
 	}
@@ -1116,12 +1158,15 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 	if err != nil {
 		return PromptExecutionResult{}, err
 	}
-	usesPromptArg := resolvedProvider == string(ProviderKeyGemini) || resolvedProvider == string(ProviderKeyGrok)
+	usesPromptArg := resolvedProvider == string(ProviderKeyGemini) || resolvedProvider == string(ProviderKeyGrok) || resolvedProvider == string(ProviderKeyOpencode)
 	if usesPromptArg {
 		if resolvedProvider == string(ProviderKeyGrok) {
 			// Appended last (CP-46 P-0/Task-212 T-3): -p/--single takes the
 			// prompt as its own value, unlike Gemini's --print <prompt>.
 			args = append(args, "-p", actualPrompt)
+		} else if resolvedProvider == string(ProviderKeyOpencode) {
+			// Appended last (CP-57 P-0/Task-303 T-1): opencode run takes message as positional args.
+			args = append(args, actualPrompt)
 		} else {
 			args = append(args, "--print", actualPrompt)
 		}
@@ -1173,7 +1218,8 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 		defer promptFile.Close()
 		cmd.Stdin = promptFile
 	}
-	if !usesPromptArg {
+	isGemini := resolvedProvider == string(ProviderKeyGemini)
+	if !isGemini {
 		cmd.Stdout = stdoutFile
 		cmd.Stderr = stderrFile
 	}
@@ -1181,7 +1227,7 @@ func (r *Runner) ExecutePrompt(ctx context.Context, request PromptExecutionReque
 
 	startedAt := time.Now().UTC()
 	var runErr error
-	if usesPromptArg {
+	if isGemini {
 		stdoutText, stderrText, err := captureAgyPrint(execCtx, cmd)
 		if strings.TrimSpace(stdoutText) == "" {
 			projectEnv := geminiProjectEnvHints(request.AccountHomePath, request.CustomEnv)
@@ -1709,6 +1755,21 @@ func providerSpecs() []providerSpec {
 			InstallHint: "Install Grok Build (irm https://x.ai/cli/install.ps1 | iex on Windows, curl -fsSL https://x.ai/cli/install.sh | sh on mac/linux), log in, and restart the runner.",
 			Models:      defaultGrokProviderModels(),
 		},
+		{
+			// Appended last (CP-57 P-0/Task-302 T-1): grok spec above unchanged.
+			Key:         "opencode",
+			Label:       "Opencode",
+			BinaryName:  "opencode",
+			InstallHint: "Install Opencode CLI (npm i -g opencode-ai@latest or https://opencode.ai/install), log in, and restart the runner.",
+			Models:      defaultOpencodeProviderModels(),
+		},
+	}
+}
+
+func defaultOpencodeProviderModels() []ProviderModel {
+	return []ProviderModel{
+		{ID: "opencode/muse-spark-1.2-contributor-free", DisplayName: "Opencode Muse Spark 1.2 Free", Source: "registry"},
+		{ID: "opencode/big-pickle", DisplayName: "Opencode Big Pickle", Source: "registry"},
 	}
 }
 
@@ -1817,6 +1878,12 @@ func resolveProviderModels(ctx context.Context, spec providerSpec, binaryPath st
 		// Appended last (CP-46 P-0/Task-213 T-2): codex/gemini branches above
 		// unchanged.
 		if models, err := detectGrokModels(); err == nil && len(models) > 0 {
+			return models
+		}
+	}
+	if spec.Key == "opencode" {
+		// Appended last (CP-57 P-0/Task-302 T-1): grok branch above unchanged.
+		if models, err := detectOpencodeModels(ctx); err == nil && len(models) > 0 {
 			return models
 		}
 	}
@@ -1930,6 +1997,139 @@ func detectGrokModels() ([]ProviderModel, error) {
 		return nil, fmt.Errorf("grok models cache: no supported models found in %s", path)
 	}
 	return models, nil
+}
+
+// opencodeModelsProbeTimeout is the fast probe budget when no parent deadline and
+// no warm cache exist (CA-657). Live `opencode models` can take 2–7s on Windows.
+const opencodeModelsProbeTimeout = 1200 * time.Millisecond
+
+func opencodeModelsProbeBudget(parent context.Context) time.Duration {
+	if deadline, ok := parent.Deadline(); ok {
+		remaining := time.Until(deadline)
+		switch {
+		case remaining <= 800*time.Millisecond:
+			return remaining
+		case remaining > 6500*time.Millisecond:
+			return 6500 * time.Millisecond
+		default:
+			return remaining - 200*time.Millisecond
+		}
+	}
+	return opencodeModelsProbeTimeout
+}
+
+func detectOpencodeModels(ctx context.Context) ([]ProviderModel, error) {
+	// CA-689b: the observed per-model variant overrides must apply on EVERY
+	// return path — the models cache stores the pre-capture guessed list, so a
+	// fresh cache hit otherwise hides the live ACP truth.
+	if cached, ok := readOpencodeModelsCache(false); ok {
+		mergeOpencodeVariantOverrides(cached)
+		return cached, nil
+	}
+	models, err := detectOpencodeModelsLive(ctx, opencodeModelsProbeBudget(ctx))
+	if err == nil && len(models) > 0 {
+		mergeOpencodeVariantOverrides(models)
+		writeOpencodeModelsCache(models)
+		return models, nil
+	}
+	if cached, ok := readOpencodeModelsCache(true); ok {
+		mergeOpencodeVariantOverrides(cached)
+		return cached, nil
+	}
+	warmOpencodeModelsCacheAsync()
+	return nil, err
+}
+
+func detectOpencodeModelsLive(ctx context.Context, budget time.Duration) ([]ProviderModel, error) {
+	binary := opencodeBinaryName()
+	if strings.TrimSpace(binary) == "" {
+		binary = "opencode"
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	// One spawn only. Do not probe `--format json` first: 1.18.18 does not
+	// support it, and a hanging unknown-flag parse ate the TUI 8s budget.
+	// Task-319: `--verbose` carries per-model capability metadata (models.dev
+	// capabilities.input.image) that the plain listing lacks; older CLIs that
+	// reject the flag fall back to the plain `models` spawn.
+	output, err := runCommandFn(probeCtx, binary, "models", "--verbose")
+	if err != nil {
+		output, err = runCommandFn(probeCtx, binary, "models")
+		if err != nil {
+			return nil, err
+		}
+	}
+	return parseOpencodeModelsOutput(output)
+}
+
+func parseOpencodeModelsOutput(output []byte) ([]ProviderModel, error) {
+	// Task-319: prefer the `--verbose` shape (ID line + JSON metadata blob per
+	// model) so per-model capabilities (input.image) are captured. Fall back
+	// to the plain line-only parse for older CLIs.
+	if models, ok := parseOpencodeVerboseModelsOutput(output); ok {
+		// CA-689b: observed live ACP variants override the guessed uniform list.
+		mergeOpencodeVariantOverrides(models)
+		return models, nil
+	}
+	return parseOpencodePlainModelsOutput(output)
+}
+
+func parseOpencodePlainModelsOutput(output []byte) ([]ProviderModel, error) {
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	models := make([]ProviderModel, 0, len(lines))
+	for _, line := range lines {
+		id := strings.TrimSpace(line)
+		if id == "" {
+			continue
+		}
+		// Skip headers / non-model lines: require "/" and no spaces, or at least no header keywords
+		lowerLine := strings.ToLower(id)
+		if strings.Contains(lowerLine, "available models") || strings.HasPrefix(lowerLine, "model") && strings.Contains(lowerLine, "id") {
+			continue
+		}
+		if strings.Contains(id, " ") && !strings.Contains(id, "/") {
+			// Likely a header like "ID  Name" — skip
+			continue
+		}
+		// Also skip lines that are just dashes or separators
+		if strings.Trim(id, "-=") == "" {
+			continue
+		}
+		// Skip the broken default model if ever listed (ProviderModelNotFoundError)
+		if id == "opencode/deepseek-v4-flash-free" {
+			continue
+		}
+		display := opencodeModelDisplayName(id)
+		model := ProviderModel{
+			ID:                        id,
+			DisplayName:               display,
+			Source:                    "opencode_models",
+			Available:                 true,
+			SupportedReasoningEfforts: []string{"minimal", "low", "medium", "high", "xhigh"},
+			DefaultReasoningEffort:    "medium",
+		}
+		models = append(models, model)
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("opencode models: no models found")
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	// CA-689b: observed live ACP variants override the guessed uniform list.
+	mergeOpencodeVariantOverrides(models)
+	return models, nil
+}
+
+func opencodeModelDisplayName(id string) string {
+	switch {
+	case strings.HasPrefix(id, "opencode-go/"):
+		return strings.TrimPrefix(id, "opencode-go/") + " (OpenCode Go)"
+	case strings.HasPrefix(id, "xai/"):
+		return strings.TrimPrefix(id, "xai/") + " (xAI)"
+	case strings.HasPrefix(id, "opencode/"):
+		return strings.TrimPrefix(id, "opencode/") + " (OpenCode Zen)"
+	default:
+		return id
+	}
 }
 
 func detectCodexModels(ctx context.Context, binaryPath string) ([]ProviderModel, error) {
@@ -2147,6 +2347,15 @@ func defaultAuthCandidates(providerKey, dir string) []authCandidate {
 			{homePath: filepath.Join(dir, ".grok"), authPath: filepath.Join(dir, ".grok", "auth.json")},
 			{homePath: filepath.Join(dir, "grok"), authPath: filepath.Join(dir, "grok", "auth.json")},
 		}
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-2): grok branch above unchanged.
+		// Probe ambient overrides first (XDG_DATA_HOME, OPENCODE_AUTH_PATH,
+		// Windows %APPDATA%), then home-relative XDG + platform fallbacks.
+		candidates := opencodeAmbientAuthCandidates(dir)
+		for _, authPath := range opencodeAuthFilePaths(dir) {
+			candidates = append(candidates, authCandidate{homePath: dir, authPath: authPath})
+		}
+		return candidates
 	default:
 		return nil
 	}
@@ -2179,9 +2388,53 @@ func accountAuthPaths(providerKey, homePath string) []string {
 			filepath.Join(homePath, "auth.json"),
 			filepath.Join(homePath, ".grok", "auth.json"),
 		}
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-2): grok branch above unchanged.
+		return opencodeAuthFilePaths(homePath)
 	default:
 		return nil
 	}
+}
+
+// opencodeAuthFileLooksValid reports whether auth.json matches the live OpenCode
+// credential store: provider-keyed entries with api keys or oauth tokens.
+func opencodeAuthFileLooksValid(data []byte) bool {
+	if len(strings.TrimSpace(string(data))) < 10 {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		lower := strings.ToLower(string(data))
+		return strings.Contains(lower, `"key"`) || strings.Contains(lower, `"access"`) ||
+			strings.Contains(lower, `"refresh"`) || strings.Contains(lower, `"token"`)
+	}
+	for key, value := range payload {
+		entry, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		if hasNonEmptyJSONString(entry, "key") ||
+			hasNonEmptyJSONString(entry, "access") ||
+			hasNonEmptyJSONString(entry, "refresh") ||
+			hasNonEmptyJSONString(entry, "access_token") ||
+			hasNonEmptyJSONString(entry, "refresh_token") ||
+			hasNonEmptyJSONString(entry, "token") ||
+			hasNonEmptyJSONString(entry, "api_key") ||
+			hasNonEmptyJSONString(entry, "apikey") {
+			return true
+		}
+		lk := strings.ToLower(key)
+		if lk == "token" || lk == "auth" || lk == "email" || lk == "apikey" || lk == "api_key" ||
+			lk == "access_token" || lk == "refresh_token" || lk == "credentials" {
+			if hasNonEmptyJSONString(payload, key) {
+				return true
+			}
+			if entry != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hasValidProviderAuthFile(providerKey, path string) bool {
@@ -2207,6 +2460,8 @@ func hasValidProviderAuthFile(providerKey, path string) bool {
 		// Appended last (CP-46 P-0/Task-210 T-5). Live-verified field names in
 		// ~/.grok/auth.json entries: refresh_token/email.
 		return strings.Contains(content, `"refresh_token"`) && strings.Contains(content, `"email"`)
+	case "opencode":
+		return opencodeAuthFileLooksValid(data)
 	default:
 		return false
 	}
@@ -2301,6 +2556,11 @@ func providerAuthStatus(spec providerSpec) string {
 		if hasAnyEnv("XAI_API_KEY") || hasLocalAuth("grok") {
 			return "READY"
 		}
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302).
+		if hasAnyEnv("OPENCODE_API_KEY") || hasLocalAuth("opencode") {
+			return "READY"
+		}
 	}
 
 	return "AUTH_REQUIRED"
@@ -2362,6 +2622,20 @@ func providerInstallCommand(spec providerSpec) (string, []string, error) {
 			return "sh", []string{"-c", "curl -fsSL https://x.ai/cli/install.sh | sh"}, nil
 		case "windows":
 			return "powershell", []string{"-NoProfile", "-Command", "irm https://x.ai/cli/install.ps1 | iex"}, nil
+		default:
+			return "", nil, fmt.Errorf("%s install is not supported on %s", spec.Label, runtime.GOOS)
+		}
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-4): grok branch above unchanged.
+		switch runtime.GOOS {
+		case "darwin", "linux":
+			return "npm", []string{"install", "-g", "opencode-ai@latest"}, nil
+		case "windows":
+			// Task-302 T-4: npm if present else irm (mockable via lookPathFn)
+			if _, err := lookPathFn("npm"); err == nil {
+				return "npm", []string{"install", "-g", "opencode-ai@latest"}, nil
+			}
+			return "powershell", []string{"-NoProfile", "-Command", "irm https://opencode.ai/install | iex"}, nil
 		default:
 			return "", nil, fmt.Errorf("%s install is not supported on %s", spec.Label, runtime.GOOS)
 		}
@@ -2445,8 +2719,36 @@ func resolveVersion(ctx context.Context, binaryPath string) string {
 	if version == "" && err != nil {
 		return ""
 	}
+	if looksLikeCLIProbeError(version) {
+		// npm/node shims often print "Error: Cannot find module …" on --version.
+		// That is not a version string — treat as probe failure (TUI shows Not installed).
+		return ""
+	}
 
 	return version
+}
+
+func looksLikeCLIProbeError(output string) bool {
+	s := strings.ToLower(strings.TrimSpace(output))
+	if s == "" {
+		return false
+	}
+	if strings.Contains(s, "cannot find module") || strings.Contains(s, "can not find module") {
+		return true
+	}
+	if strings.Contains(s, "module_not_found") || strings.Contains(s, "module not found") {
+		return true
+	}
+	if strings.Contains(s, "error: cannot find") {
+		return true
+	}
+	if strings.HasPrefix(s, "error:") && (strings.Contains(s, "module") || strings.Contains(s, "enoent") || strings.Contains(s, "not found")) {
+		return true
+	}
+	if strings.Count(output, "\n") >= 3 {
+		return true
+	}
+	return false
 }
 
 func mcpBackendSpecs() []mcpBackendSpec {
@@ -3960,6 +4262,9 @@ func (r *Runner) AuthenticateProvider(ctx context.Context, providerName string) 
 		// the headless/managed-home variant; StartInteractiveAuth below routes
 		// through that for non-default-slot accounts.
 		authCommand = "grok login"
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-3).
+		authCommand = "opencode auth login"
 	default:
 		return fmt.Errorf("no auth command configured for provider %q", providerName)
 	}
@@ -4052,7 +4357,7 @@ func (r *Runner) getEnvForExecution(
 			continue
 		}
 		key := parts[0]
-		if key == "HOME" || key == "USERPROFILE" || key == "APPDATA" || key == "LOCALAPPDATA" || key == "HOMEPATH" || key == "HOMEDRIVE" || key == "XDG_CONFIG_HOME" || key == "CODEX_HOME" || key == "GROK_HOME" || key == "HTTP_PROXY" || key == "HTTPS_PROXY" {
+		if key == "HOME" || key == "USERPROFILE" || key == "APPDATA" || key == "LOCALAPPDATA" || key == "HOMEPATH" || key == "HOMEDRIVE" || key == "XDG_CONFIG_HOME" || key == "XDG_DATA_HOME" || key == "CODEX_HOME" || key == "GROK_HOME" || key == "OPENCODE_CONFIG" || key == "OPENCODE_HOME" || key == "OPENCODE_API_KEY" || key == "OPENCODE_AUTH_PATH" || key == "HTTP_PROXY" || key == "HTTPS_PROXY" {
 			continue
 		}
 		if _, exists := customEnv[key]; exists {
@@ -4075,6 +4380,18 @@ func (r *Runner) getEnvForExecution(
 		newEnv = append(newEnv, fmt.Sprintf("GROK_HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", trimmedAccountHomePath))
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-3): grok case above unchanged.
+		_ = os.MkdirAll(filepath.Join(trimmedAccountHomePath, ".local", "share", "opencode"), 0755)
+		newEnv = append(newEnv, fmt.Sprintf("OPENCODE_HOME=%s", trimmedAccountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
+		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s", filepath.Join(trimmedAccountHomePath, ".config")))
+		newEnv = append(newEnv, fmt.Sprintf("XDG_DATA_HOME=%s", opencodeDataHomeForAccount(trimmedAccountHomePath)))
+		// CA-679: config FILE path — a directory value crashes opencode CLI runs.
+		newEnv = append(newEnv, fmt.Sprintf("OPENCODE_CONFIG=%s", opencodeConfigFilePath(trimmedAccountHomePath)))
+		if authPath := strings.TrimSpace(os.Getenv("OPENCODE_AUTH_PATH")); authPath != "" && opencodeAccountIsAmbientHome(trimmedAccountHomePath) {
+			newEnv = append(newEnv, fmt.Sprintf("OPENCODE_AUTH_PATH=%s", authPath))
+		}
 	default:
 		newEnv = append(newEnv, fmt.Sprintf("HOME=%s", trimmedAccountHomePath))
 		newEnv = append(newEnv, fmt.Sprintf("XDG_CONFIG_HOME=%s/.config", trimmedAccountHomePath))
@@ -4143,6 +4460,9 @@ func NextAccountHomePath(providerKey string, existing []string) (string, int, er
 	case "grok":
 		// Appended last (CP-46 P-0/Task-210 T-2).
 		prefix = ".grokHome"
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-2).
+		prefix = ".opencodeHome"
 	default:
 		return "", 0, fmt.Errorf("unsupported provider %q", providerKey)
 	}
@@ -4202,6 +4522,9 @@ func (r *Runner) StartInteractiveAuth(providerKey string, accountHomePath string
 		} else {
 			authCommand = fmt.Sprintf("%s login", authInvocation)
 		}
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-3).
+		authCommand = fmt.Sprintf("%s auth login", authInvocation)
 	default:
 		return fmt.Errorf("provider %s does not support interactive CLI login", providerKey)
 	}
@@ -4243,6 +4566,10 @@ func providerEnvSetCommand(providerKey, homePath, shellType string) string {
 		case "grok":
 			// Appended last (CP-46 P-0/Task-210 T-3).
 			return fmt.Sprintf("export GROK_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath, homePath)
+		case "opencode":
+			// Appended last (CP-57 P-0/Task-302 T-3). CA-679: OPENCODE_CONFIG is a
+			// config FILE path (opencode.json), not the config directory.
+			return fmt.Sprintf("export OPENCODE_HOME='%s' && export HOME='%s' && export XDG_CONFIG_HOME='%s/.config' && export XDG_DATA_HOME='%s/.local/share' && export OPENCODE_CONFIG='%s/.config/opencode/opencode.json'", homePath, homePath, homePath, homePath, homePath)
 		default:
 			return fmt.Sprintf("export HOME='%s' && export XDG_CONFIG_HOME='%s/.config'", homePath, homePath)
 		}
@@ -4260,6 +4587,18 @@ func providerEnvSetCommand(providerKey, homePath, shellType string) string {
 				fmt.Sprintf("set GROK_HOME=%s", homePath),
 				fmt.Sprintf("set HOME=%s", homePath),
 				fmt.Sprintf("set USERPROFILE=%s", homePath),
+			}, "\r\n")
+		case "opencode":
+			// Appended last (CP-57 P-0/Task-302 T-3).
+			return strings.Join([]string{
+				fmt.Sprintf("set OPENCODE_HOME=%s", homePath),
+				fmt.Sprintf("set HOME=%s", homePath),
+				fmt.Sprintf("set USERPROFILE=%s", homePath),
+				fmt.Sprintf("set APPDATA=%s\\AppData\\Roaming", homePath),
+				fmt.Sprintf("set LOCALAPPDATA=%s\\AppData\\Local", homePath),
+				fmt.Sprintf("set XDG_CONFIG_HOME=%s\\.config", homePath),
+				fmt.Sprintf("set XDG_DATA_HOME=%s\\.local\\share", homePath),
+				fmt.Sprintf("set OPENCODE_CONFIG=%s\\.config\\opencode\\opencode.json", homePath),
 			}, "\r\n")
 		default:
 			return strings.Join([]string{

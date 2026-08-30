@@ -1,4 +1,5 @@
 ---
+version: 6
 name: coding-skill
 description: Use this skill PROACTIVELY during Phase 3 (Coding) to enforce tactical implementation standards, including UI patterns, visibility, naming, and KMP type safety.
 ---

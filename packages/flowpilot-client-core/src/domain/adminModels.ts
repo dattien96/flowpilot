@@ -86,7 +86,7 @@ export interface Integration {
 
 export interface SupportedModel {
   id: string;
-  providerKey: "codex" | "claude" | "gemini" | "grok";
+  providerKey: "codex" | "claude" | "gemini" | "grok" | "opencode";
   modelId: string;
   displayName: string;
   isEnabled: boolean;
@@ -104,6 +104,10 @@ export interface SupportedModel {
   defaultReasoningEffort: string | null;
   contextWindowTokens: number | null;
   maxContextWindowTokens: number | null;
+  // Task-319: per-model image-input capability (models.dev input.image via
+  // `opencode models --verbose`). Only Opencode reports it today; null when
+  // the row was never detected or the provider has no such per-model flag.
+  inputImage: boolean | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -490,6 +494,8 @@ export interface LocalRunnerProviderModel {
   defaultReasoningEffort?: string;
   contextWindowTokens?: number;
   maxContextWindowTokens?: number;
+  // Task-319: mirrors the Go ProviderModel InputImage field (see SupportedModel).
+  inputImage?: boolean;
 }
 
 export interface LocalRunnerProvider {

@@ -38,8 +38,8 @@ func TestAdoptAgentRuns_MainOnlyListKeepsChildren(t *testing.T) {
 			if !am.hasChildAgentRuns() {
 				t.Fatalf("%s: main-only hydrate must not erase known children", pk)
 			}
-			if !strings.Contains(strings.Join(am.flowStepsPanelLines(), "\n"), "[open]") {
-				t.Fatalf("%s: [open] must survive a main-only hydrate", pk)
+			if strings.Contains(strings.Join(am.flowStepsPanelLines(), "\n"), "[open]") {
+				t.Fatalf("%s: [open] must NOT appear (no clickable chips):\n%s", pk, strings.Join(am.flowStepsPanelLines(), "\n"))
 			}
 		})
 	}
@@ -109,8 +109,8 @@ func TestHydrateRetry_ResetsOnChildSuccess(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("chip mapped — no further retry needed")
 	}
-	if !strings.Contains(strings.Join(am.flowStepsPanelLines(), "\n"), "[open]") {
-		t.Fatal("[open] must appear after child hydrate")
+	if strings.Contains(strings.Join(am.flowStepsPanelLines(), "\n"), "[open]") {
+		t.Fatalf("[open] must NOT appear:\n%s", strings.Join(am.flowStepsPanelLines(), "\n"))
 	}
 }
 
@@ -200,7 +200,7 @@ func TestRightSidebar_LongStepKeepsOpenChip(t *testing.T) {
 			m.asciiMode = true
 			m.mode = ModeFlow
 			m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-			m.sessionPanel.Collapsed = false
+			enableSidebarForTest(m)
 			m.runHandle = &client.RunHandle{RunID: "run-main", Status: "running"}
 			m.agentRuns = []client.AgentRunSummary{
 				{RunID: "run-main", AgentName: "main", Role: "main", Status: "running"},
@@ -214,17 +214,17 @@ func TestRightSidebar_LongStepKeepsOpenChip(t *testing.T) {
 			}
 			lines := m.renderRightSidebar(m.height)
 			joined := strings.Join(lines, "\n")
-			if !strings.Contains(joined, "[open]") {
-				t.Fatalf("%s: long step must keep [open]:\n%s", pk, joined)
+			if strings.Contains(joined, "[open]") {
+				t.Fatalf("%s: long step must NOT show [open] (no chips):\n%s", pk, joined)
+			}
+			if !strings.Contains(joined, "reviewer-for-fix-super-long-name") {
+				t.Fatalf("%s: long step name must render:\n%s", pk, joined)
 			}
 			sideW := m.sideWidth()
 			for _, l := range lines {
 				if pl := stripANSI(l); strings.TrimSpace(pl) != "" && lipgloss.Width(pl) > sideW {
 					t.Fatalf("%s: sidebar line wider than %d: %q", pk, sideW, pl)
 				}
-			}
-			if _, _, ok := findClickTarget(m, "agent-open:run-r"); !ok {
-				t.Fatalf("%s: truncated [open] must stay hittable:\n%s", pk, joined)
 			}
 		})
 	}
@@ -236,7 +236,7 @@ func TestOverlay_LongStepKeepsOpenChip(t *testing.T) {
 	m.asciiMode = true
 	m.mode = ModeFlow
 	m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-	m.sessionPanel.Collapsed = false
+	enableSidebarForTest(m)
 	m.runHandle = &client.RunHandle{RunID: "run-main", Status: "running"}
 	m.agentRuns = []client.AgentRunSummary{
 		{RunID: "run-main", AgentName: "main", Role: "main", Status: "running"},
@@ -246,13 +246,11 @@ func TestOverlay_LongStepKeepsOpenChip(t *testing.T) {
 		{StepID: "s1", NodeID: "reviewer-for-fix-super-long-name", AgentRef: "reviewer-for-fix-super-long-name", Status: "RUNNING"},
 	}
 	if m.useRightSidebar() {
-		t.Fatal("narrow must keep the top-right overlay")
+		t.Fatal("narrow must not show the sidebar")
 	}
-	panel := strings.Join(m.renderSessionPanelOverlay(), "\n")
-	if !strings.Contains(panel, "[open]") {
-		t.Fatalf("overlay long step must keep [open]:\n%s", panel)
-	}
-	if _, _, ok := findClickTarget(m, "agent-open:run-r"); !ok {
-		t.Fatalf("overlay truncated [open] must stay hittable:\n%s", panel)
+	// Task-311: no overlay — the [open] chip is hittable only in the wide
+	// sidebar. At narrow width the step rows carry no hit-test surface.
+	if _, _, ok := findClickTarget(m, "agent-open:run-r"); ok {
+		t.Fatal("narrow terminal must not expose an overlay [open] (Task-311)")
 	}
 }

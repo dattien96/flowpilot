@@ -136,8 +136,8 @@ func TestCopyChipIsClickable(t *testing.T) {
 	m.asciiMode = true
 	m.sessionLoading = false
 	m.addMessage("assistant", "hello from the model", "")
-	if _, _, ok := findClickTarget(m, "copy:0"); !ok {
-		t.Fatal("expected clickable [copy] on the answer")
+	if _, _, ok := findClickTarget(m, "copy:0"); ok {
+		t.Fatal("trailing [copy] should be removed (user request)")
 	}
 }
 

@@ -378,9 +378,11 @@ export function AgentsPanel(): React.ReactElement | null {
                     const lowerPath = (agent.path ?? "").toLowerCase().replace(/\\/g, "/");
                     const isClaudeSource = agent.source === "claude" ||
                       (agent.source === "provider" && lowerPath.includes(".claude"));
+                    const isOpencodeSource = agent.source === "opencode" ||
+                      (agent.source === "provider" && lowerPath.includes(".opencode"));
                     const isProviderAgnostic = agent.source === "flowpilot" && !agent.provider;
-                    const cardProvBadge = isProviderAgnostic ? null : (isClaudeSource ? "CLAUDE" : "CODEX");
-                    const cardProvClass = isClaudeSource ? "claude" : "codex";
+                    const cardProvBadge = isProviderAgnostic ? null : (isOpencodeSource ? "OPENCODE" : isClaudeSource ? "CLAUDE" : "CODEX");
+                    const cardProvClass = isOpencodeSource ? "opencode" : isClaudeSource ? "claude" : "codex";
 
                     return (
                       <div
@@ -418,6 +420,7 @@ export function AgentsPanel(): React.ReactElement | null {
                   <span className={`chip ${dialog?.providerOverride === "codex" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "codex" } : null)}>◎ Codex</span>
                   <span className={`chip ${dialog?.providerOverride === "gemini" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "gemini" } : null)}>◆ Gemini</span>
                   <span className={`chip ${dialog?.providerOverride === "grok" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "grok" } : null)}>✦ Grok</span>
+                  <span className={`chip ${dialog?.providerOverride === "opencode" ? "sel" : ""}`} onClick={() => setDialog(c => c ? { ...c, providerOverride: "opencode" } : null)}>⬡ OpenCode</span>
                 </div>
               </div>
 

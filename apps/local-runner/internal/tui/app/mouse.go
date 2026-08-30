@@ -17,26 +17,30 @@ func stripANSI(s string) string {
 }
 
 type tuiChrome struct {
-	panelLines       []string
-	panelH           int
-	sideActive       bool
-	sideW            int
-	sideX            int
-	sideLines        []string
-	bannerLines      int
-	statusBlock      string
-	statusH          int
-	inputBlock       string
-	inputH           int
-	inputY           int
-	attachPanelBlock string
-	attachPanelH     int
-	attachPanelY     int
-	sugg             []suggestItem
-	suggLines        int
-	messagesHeight   int
-	statusY          int
-	chatSepH         int
+	panelLines        []string
+	panelH            int
+	sideActive        bool
+	sideW             int
+	sideX             int
+	sideLines         []string
+	bannerLines       int
+	statusBlock       string
+	statusH           int
+	bottomNoticeBlock string
+	bottomNoticeH     int
+	modalBlock        string
+	modalH            int
+	inputBlock        string
+	inputH            int
+	inputY            int
+	attachPanelBlock  string
+	attachPanelH      int
+	attachPanelY      int
+	sugg              []suggestItem
+	suggLines         int
+	messagesHeight    int
+	statusY           int
+	chatSepH          int
 }
 
 func (m *AppModel) tuiChrome() tuiChrome {
@@ -56,7 +60,7 @@ func (m *AppModel) tuiChrome() tuiChrome {
 	} else if m.authNeedLogin && m.authPhase == AuthNone {
 		c.bannerLines = 1
 	}
-	c.panelLines = m.renderSessionPanelOverlay()
+	c.panelLines = nil // Task-311: no overlay — sidebar is the only panel surface
 	c.panelH = len(c.panelLines)
 	if m.useRightSidebar() {
 		c.sideActive = true
@@ -67,25 +71,58 @@ func (m *AppModel) tuiChrome() tuiChrome {
 		c.panelH = 0
 	}
 	c.statusBlock = m.renderStatusLine()
-	c.statusH = strings.Count(c.statusBlock, "\n") + 1
+	if strings.TrimSpace(c.statusBlock) == "" {
+		c.statusBlock = ""
+		c.statusH = 0
+	} else {
+		c.statusH = strings.Count(c.statusBlock, "\n") + 1
+	}
 	w := m.chatWidth()
 	if w <= 0 {
 		w = 80
+	}
+	// Bottom notice (Copied / input stalled) lives below the composer frame,
+	// outside it — one small line at the bottom of the chat pane. The watchdog
+	// warning is moved here so top-left chrome stays clean.
+	c.bottomNoticeBlock = m.renderBottomNotice(w)
+	if strings.TrimSpace(c.bottomNoticeBlock) == "" {
+		c.bottomNoticeBlock = ""
+		c.bottomNoticeH = 0
+	} else {
+		c.bottomNoticeH = strings.Count(c.bottomNoticeBlock, "\n") + 1
 	}
 	c.attachPanelBlock = m.renderAttachPanel(w)
 	if c.attachPanelBlock != "" {
 		c.attachPanelH = strings.Count(c.attachPanelBlock, "\n") + 1
 	}
+	// BUG-332: while the /mode-setup modal is open it renders between the
+	// transcript and the attach panel (suggestions are suppressed). Its block
+	// must be built ONCE here and its height MUST be part of the height
+	// budget below — otherwise the frame overflows the terminal and the
+	// modal's fields/buttons (and composer) get clipped off-screen.
+	if m.modeSetupModalOpen {
+		c.modalBlock = m.renderModeSetupModal(w)
+		if c.modalBlock != "" {
+			c.modalH = strings.Count(c.modalBlock, "\n") + 1
+		}
+	}
 	c.inputBlock = m.renderInputLine()
 	c.inputH = strings.Count(c.inputBlock, "\n") + 1
 	// Blank line + rule always sit between the transcript and the status chrome.
 	c.chatSepH = 2
-	c.messagesHeight = m.height - c.statusH - c.inputH - c.attachPanelH - c.suggLines - c.bannerLines - c.panelH - c.chatSepH
+	// statusH is kept for legacy callers but no longer occupies the main column
+	// above the composer — the single visible bottom line is bottomNoticeH.
+	c.messagesHeight = m.height - c.inputH - c.attachPanelH - c.suggLines - c.bannerLines - c.panelH - c.chatSepH - c.bottomNoticeH - c.modalH
 	if c.messagesHeight < 1 {
 		c.messagesHeight = 1
 	}
 	c.statusY = c.panelH + c.messagesHeight + c.bannerLines + c.chatSepH
-	c.attachPanelY = c.statusY + c.statusH + c.suggLines
+	// With the modal open the suggestions block is NOT rendered — the modal
+	// occupies that slot, so the mouse/cursor Y chain must step over modalH.
+	c.attachPanelY = c.statusY + c.suggLines
+	if m.modeSetupModalOpen {
+		c.attachPanelY = c.statusY + c.modalH
+	}
 	c.inputY = c.attachPanelY + c.attachPanelH
 	return c
 }
@@ -116,15 +153,18 @@ func (m *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.authPhase != AuthNone {
 		return m, nil
 	}
-	if msg.Button == tea.MouseButtonWheelUp {
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
 		m.scrollTranscript(3)
 		return m, nil
-	}
-	if msg.Button == tea.MouseButtonWheelDown {
+	case tea.MouseButtonWheelDown:
 		m.scrollTranscript(-3)
 		return m, nil
 	}
-	if msg.Shift && isLeftMouse(msg) {
+	// Shift: copy selection (drag OR single click on a line). SGR 1006 encodes
+	// drag motion and release with Button=None, so do NOT gate on isLeftMouse —
+	// Terminal.app only delivers press/release reliably, not mid-drag motion.
+	if msg.Shift {
 		m.mouseDrag = mouseDrag{}
 		switch msg.Action {
 		case tea.MouseActionPress:
@@ -137,12 +177,27 @@ func (m *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			// Terminal.app never delivers Cmd+C, so releasing the drag copies the
 			// selection (CA-515). Ctrl+C stays as a fallback elsewhere.
 			if msg.Action == tea.MouseActionRelease {
+				// Shift+click (zero-area selection, no drag motion) copies the
+				// whole clicked line — the reliable copy affordance on terminals
+				// that do not forward drag motion (macOS Terminal.app).
+				if m.mouseSel.x0 == m.mouseSel.x1 && m.mouseSel.y0 == m.mouseSel.y1 {
+					m.mouseSel.x0 = 0
+					m.mouseSel.x1 = 1 << 20
+				}
 				return m, m.autoCopySelectionOnDragEnd()
 			}
 		}
 		return m, nil
 	}
-	if isLeftMouse(msg) && !msg.Shift {
+	// Plain drag: motion may arrive with Button=None mid-drag (SGR 1006), so
+	// handle it here rather than only on isLeftMouse.
+	if msg.Action == tea.MouseActionMotion {
+		if m.mouseDrag.down {
+			return m.handlePlainLeftMouse(msg)
+		}
+		return m, nil
+	}
+	if isLeftMouse(msg) {
 		return m.handlePlainLeftMouse(msg)
 	}
 	return m, nil
@@ -242,192 +297,13 @@ func (m *AppModel) autoCopySelectionOnDragEnd() tea.Cmd {
 func (m *AppModel) dispatchMouseClick(x, y int) (tea.Model, tea.Cmd) {
 	target := m.clickTargetAt(x, y)
 	tuiLog("mouse click x=%d y=%d target=%q", x, y, target)
-	switch {
-	case target == "session":
-		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
-	case target == "sidebar-collapse":
-		// Collapse the full-height right sidebar back to the [info] chip.
-		m.sessionPanel.Collapsed = true
-	case target == "skills":
-		if len(attachedSkillNames(m.selectedSkills)) == 0 {
-			return m, nil
-		}
-		m.statusSkillsExpanded = !m.statusSkillsExpanded
-	case target == "status-details":
-		m.statusDetailsCollapsed = !m.statusDetailsCollapsed
-	case target == "stop":
-		if m.turnIsActive() {
-			return m, m.cmdStopTurn()
-		}
-		if m.flowLoopBlocked() {
-			// Desktop FlowAwaitingUser Stop parity (BUG-231): a parked blocked flow
-			// has turnIsActive()==false but the user must still be able to end it.
-			return m, m.cmdStopTurn()
-		}
-	case target == "retry", target == "continue":
-		// Retry = run again with old scope (continue) — Task-309 rename with alias.
-		if m.flowLoopBlocked() && m.runHandle != nil {
-			return m, m.cmdContinueFlow(m.runHandle.RunID)
-		}
-	case target == "allow":
-		if m.flowLoopBlocked() && m.runHandle != nil {
-			isCap := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "cap")
-			isStalled := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "member_stalled")
-			if !isCap && !isStalled {
-				if drifted := parseDriftedPaths(m.blockedDecisionReason()); len(drifted) > 0 {
-					return m, m.cmdAmendFlow(m.runHandle.RunID, drifted)
-				}
-			}
-		}
-	case target == "approve":
-		if m.approval != nil {
-			return m.submitPendingApproval("approve")
-		}
-		if m.question != nil {
-			return m.submitQuestionAnswer("approve")
-		}
-	case target == "deny":
-		if m.approval != nil {
-			return m.submitPendingApproval("deny")
-		}
-		if m.question != nil {
-			return m.submitQuestionAnswer("deny")
-		}
-	case target == "approve-all", target == "deny-all":
-		// BUG-157/158: bulk-resolve every queued approval card.
-		decision := "approve"
-		if target == "deny-all" {
-			decision = "deny"
-		}
-		return m.resolveAllApprovals(decision)
-	case target == "approve-forever":
-		// BUG-246: "don't ask again" rides on an approve decision.
-		if m.approval != nil {
-			return m.submitPendingApprovalRemember("approve", approvalRememberable(m.approval))
-		}
-	case strings.HasPrefix(target, "adec:"):
-		// BUG-246: resolve with a runner-offered decision value.
-		decision := strings.TrimPrefix(target, "adec:")
-		if decision != "" && m.approval != nil {
-			return m.submitPendingApprovalDecision(decision)
-		}
-	case target == "attach":
-		// Pending chip [N img]: open manage panel (Desktop attachment chips).
-		// Empty chip is not rendered; paste remains Alt+V / /image paste.
-		if len(m.pendingAttach) > 0 {
-			if m.attachPanelOpen {
-				m.closeAttachPanel()
-			} else {
-				m.openAttachPanel()
-			}
-			return m, nil
-		}
-		return m, m.cmdClipboardPaste()
-	case strings.HasPrefix(target, "attach-rm:"):
-		idx, err := strconv.Atoi(strings.TrimPrefix(target, "attach-rm:"))
-		if err == nil {
-			if name, ok := m.removePendingAttachment(idx); ok {
-				m.addMessage("system", fmt.Sprintf("Removed pending image: %s (%d left)", name, len(m.pendingAttach)), "")
-			}
-		}
+	if target == "" {
 		return m, nil
-	case strings.HasPrefix(target, "attach-open:"):
-		idx, err := strconv.Atoi(strings.TrimPrefix(target, "attach-open:"))
-		if err == nil {
-			return m, m.cmdOpenPendingAttachment(idx)
-		}
-		return m, nil
-	case strings.HasPrefix(target, "qopt:"):
-		idx, err := strconv.Atoi(strings.TrimPrefix(target, "qopt:"))
-		if err == nil && m.question != nil && idx >= 0 && idx < len(m.question.Options) {
-			return m.submitQuestionAnswer(questionOptionToken(m.question.Options[idx]))
-		}
-	case strings.HasPrefix(target, "gopt:"):
-		// CA-650: gate decision chip click — Fix code / Suggest req / Custom.
-		opt := strings.TrimPrefix(target, "gopt:")
-		if opt != "" && m.gate != nil {
-			if opt == "custom" {
-				return m.armGateCustom()
-			}
-			return m.handleGateInput(opt)
-		}
-	case strings.HasPrefix(target, "qtoggle:"):
-		idx, err := strconv.Atoi(strings.TrimPrefix(target, "qtoggle:"))
-		if err == nil && m.question != nil && idx >= 0 && idx < len(m.question.Options) {
-			return m.toggleQuestionSelection(questionOptionToken(m.question.Options[idx])), nil
-		}
-	case target == "qsubmit":
-		return m.submitQuestionSubmit()
-	case strings.HasPrefix(target, "copyfence:"):
-		msgIdx, fenceIdx, ok := parseCopyFenceTarget(target)
-		if ok {
-			return m, m.cmdCopyFence(msgIdx, fenceIdx)
-		}
-	case strings.HasPrefix(target, "tool-group:"):
-		key := strings.TrimPrefix(target, "tool-group:")
-		if key != "" {
-			m.toggleToolGroup(key)
-			return m, nil
-		}
-	case strings.HasPrefix(target, "user-prompt-expand:"):
-		content := strings.TrimPrefix(target, "user-prompt-expand:")
-		if content != "" {
-			m.toggleUserPrompt(content)
-			return m, nil
-		}
-	case strings.HasPrefix(target, "copy:"):
-		idx, err := strconv.Atoi(strings.TrimPrefix(target, "copy:"))
-		if err == nil {
-			return m, m.cmdCopyMessage(idx)
-		}
-	case target == "load-earlier":
-		return m, m.loadEarlierPrompts()
-	case target == "agent-back":
-		return m, m.cmdFocusAgent(m.mainRunID())
-	case strings.HasPrefix(target, "agent-open:"):
-		runID := strings.TrimPrefix(target, "agent-open:")
-		tuiLog("mouse agent-open runID=%s", runID)
-		if runID != "" {
-			return m, m.cmdFocusAgent(runID)
-		}
-	case strings.HasPrefix(target, "attention-inspect:"):
-		runID, turnID, _ := parseAttentionKey(strings.TrimPrefix(target, "attention-inspect:"))
-		if runID != "" && turnID != "" {
-			return m, m.cmdInspectAttention(runID, turnID)
-		}
-	case strings.HasPrefix(target, "attention-resolve:"):
-		rest := strings.TrimPrefix(target, "attention-resolve:")
-		runID, turnID, action, _ := parseAttentionResolve(rest)
-		if runID != "" && turnID != "" && action != "" {
-			return m, m.cmdResolveAttention(runID, turnID, action)
-		}
-	case strings.HasPrefix(target, "attention-retry:"):
-		runID, turnID, _ := parseAttentionKey(strings.TrimPrefix(target, "attention-retry:"))
-		if runID != "" && turnID != "" {
-			key := attentionKey(runID, turnID)
-			if !m.attentionRetryConfirm[key] {
-				// T-5 cancel-bias: first click only arms the confirm; second click
-				// actually retries (Desktop confirmRetry double-step).
-				m.attentionRetryConfirm = map[string]bool{key: true}
-				m.addMessage("system", "Click [confirm-retry] again to retry this turn as new.", "warn")
-				return m, nil
-			}
-			m.attentionRetryConfirm = map[string]bool{}
-			return m, m.cmdRetryAttention(runID, turnID)
-		}
-	case strings.HasPrefix(target, "attention-repair:"):
-		rest := strings.TrimPrefix(target, "attention-repair:")
-		runID, action, _ := parseAttentionRepair(rest)
-		if runID != "" && action != "" {
-			return m, m.cmdResolveRepair(runID, action)
-		}
-	case strings.HasPrefix(target, "attention-details:"):
-		runID, turnID, _ := parseAttentionKey(strings.TrimPrefix(target, "attention-details:"))
-		if runID != "" && turnID != "" {
-			return m, m.cmdInspectAttention(runID, turnID)
-		}
 	}
-	return m, nil
+	if strings.HasPrefix(target, "agent-open:") {
+		tuiLog("mouse agent-open runID=%s", strings.TrimPrefix(target, "agent-open:"))
+	}
+	return m.activateClickTarget(target)
 }
 
 // parseAttentionKey splits "runID/turnID".
@@ -689,14 +565,27 @@ func hitToken(stripped string, token string, x int) bool {
 }
 
 func hitStopChrome(c tuiChrome, x, y int) bool {
-	if y != c.statusY {
-		return false
+	// Status line is now empty (only toast) – [stop] lives in the input frame
+	// header (top border) as part of chatFrameTitle. Check both places.
+	if c.statusH > 0 && y == c.statusY {
+		lines := strings.Split(c.statusBlock, "\n")
+		if len(lines) > 0 && hitToken(stripANSI(lines[0]), "[stop]", x) {
+			return true
+		}
 	}
-	lines := strings.Split(c.statusBlock, "\n")
-	if len(lines) == 0 {
-		return false
+	if c.inputH > 0 && y >= c.inputY && y < c.inputY+c.inputH {
+		lines := strings.Split(c.inputBlock, "\n")
+		if len(lines) > 0 && hitToken(stripANSI(lines[0]), "[stop]", x) {
+			return true
+		}
+		// Fallback: also check any input line for [stop] (in case header wraps)
+		for _, l := range lines {
+			if hitToken(stripANSI(l), "[stop]", x) {
+				return true
+			}
+		}
 	}
-	return hitToken(stripANSI(lines[0]), "[stop]", x)
+	return false
 }
 
 func (m *AppModel) hitApprovalChrome(c tuiChrome, x, y int) string {

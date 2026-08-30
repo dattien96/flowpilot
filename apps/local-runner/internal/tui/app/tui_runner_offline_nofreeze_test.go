@@ -18,10 +18,10 @@ func TestSessionLoading_TypingAndF2NeverFrozen(t *testing.T) {
 	if m2.(*AppModel).inputValue != "h" {
 		t.Fatalf("typing while loading=%q want h", m2.(*AppModel).inputValue)
 	}
-	m.sessionPanel.Collapsed = false
+	enableSidebarForTest(m)
 	m3, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyF2})
-	if !m3.(*AppModel).sessionPanel.Collapsed {
-		t.Fatal("F2 must toggle panel while sessionLoading")
+	if len(m3.(*AppModel).messages) == 0 {
+		t.Fatal("F2 must print the info dump while sessionLoading")
 	}
 }
 

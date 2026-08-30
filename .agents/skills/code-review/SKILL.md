@@ -1,4 +1,5 @@
 ---
+version: 6
 name: code-review-skill
 description: Use this skill PROACTIVELY after completing tasks, implementing major features, or before merging to verify work meets requirements and catch issues early via the reviewer subagent.
 ---

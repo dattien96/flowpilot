@@ -360,7 +360,7 @@ func TestTUIInput_Bubbles_View_EmptyShowsPlaceholder(t *testing.T) {
 		t.Fatal("empty input must fallback to custom (no draft)")
 	}
 	view := m.renderInputLine()
-	if !strings.Contains(view, "chat") {
+	if !strings.Contains(strings.ToLower(view), "chat") {
 		t.Fatalf("empty render must contain frame label, got %q", view)
 	}
 }

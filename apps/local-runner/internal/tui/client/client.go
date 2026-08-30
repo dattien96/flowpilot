@@ -86,6 +86,11 @@ type ProviderModel struct {
 	SupportedReasoningEfforts []string `json:"supported_reasoning_efforts,omitempty"`
 	DefaultReasoningEffort    string   `json:"default_reasoning_effort,omitempty"`
 	ContextWindowTokens       int64    `json:"context_window_tokens,omitempty"`
+	// InputImage (Task-319): per-model image-input capability (models.dev
+	// input.image via `opencode models --verbose`). Drives the TUI image
+	// paste/attach gate for opencode (per-model), alongside the provider-level
+	// SupportsImages set.
+	InputImage bool `json:"input_image,omitempty"`
 	// Name is a legacy/test alias; prefer ID via ModelID().
 	Name string `json:"name,omitempty"`
 }
@@ -164,6 +169,10 @@ type AgentRunSummary struct {
 	Status      string `json:"status"`
 	Role        string `json:"role,omitempty"`
 	ProviderKey string `json:"providerKey,omitempty"`
+	// CreatedAt mirrors the runner's agent-graph field (BUG-336): the sidebar
+	// agents section sorts by spawn time so rows stop re-ordering between
+	// graph events and hydrate polls.
+	CreatedAt string `json:"createdAt,omitempty"`
 }
 
 // AgentLoopState carries loop progress metadata from the orchestrator.
@@ -630,6 +639,22 @@ func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
 	return ps, err
 }
 
+// GetOpencodeModelVariants fetches GET /client/providers/opencode-variants —
+// the model's real reasoning effort options (live ACP probe, cached runner-side).
+func (c *Client) GetOpencodeModelVariants(ctx context.Context, modelID string) ([]string, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	defer cancel()
+	var out struct {
+		ModelId       string   `json:"modelId"`
+		Efforts       []string `json:"supportedEfforts"`
+		DefaultEffort string   `json:"defaultReasoningEffort"`
+	}
+	if err := c.getJSON(ctx, "/client/providers/opencode-variants?model="+neturl.QueryEscape(modelID), &out); err != nil {
+		return nil, "", err
+	}
+	return out.Efforts, out.DefaultEffort, nil
+}
+
 // ShutdownStack sends POST /system/shutdown to terminate the local runner process.
 func (c *Client) ShutdownStack(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/system/shutdown", nil)
@@ -837,14 +862,14 @@ func (c *Client) RestoreChatRun(ctx context.Context, req ChatSessionRestoreReque
 
 // EngineInitResult mirrors the runner's POST /client/projects/{id}/engine/init response.
 type EngineInitResult struct {
-	ProjectID        string `json:"projectId"`
-	WorkingDirectory string `json:"workingDirectory"`
-	Initialized      bool   `json:"initialized"`
-	GateMode         string `json:"gateMode"`
+	ProjectID        string   `json:"projectId"`
+	WorkingDirectory string   `json:"workingDirectory"`
+	Initialized      bool     `json:"initialized"`
+	GateMode         string   `json:"gateMode"`
 	Warnings         []string `json:"warnings"`
 	LastInit         *struct {
-		Status  string `json:"status"`
-		Steps   []struct {
+		Status string `json:"status"`
+		Steps  []struct {
 			Step    string `json:"step"`
 			Outcome string `json:"outcome"`
 			Detail  string `json:"detail"`
@@ -1116,6 +1141,8 @@ func (c *Client) SendTurn(ctx context.Context, input TurnInput) (<-chan Provider
 		streamCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
+		seenTerminal := false
+		seenTurnEvent := false
 		for ev := range c.openStream(streamCtx, input.RunID, after) {
 			c.mu.Lock()
 			if ev.Seq > c.lastSeq[input.RunID] {
@@ -1128,10 +1155,20 @@ func (c *Client) SendTurn(ctx context.Context, input TurnInput) (<-chan Provider
 			if ev.Type != "agent_graph_updated" && ev.ProviderTurnID != "" && ev.ProviderTurnID != turnID {
 				continue
 			}
+			if ev.ProviderTurnID == turnID {
+				seenTurnEvent = true
+			}
 			evCh <- ev
 			if (ev.Type == "turn_completed" || ev.Type == "turn_failed") && ev.ProviderTurnID == turnID {
+				seenTerminal = true
 				return
 			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if seenTurnEvent && !seenTerminal {
+			errCh <- fmt.Errorf("turn stream ended without terminal event")
 		}
 	}()
 
@@ -1261,6 +1298,7 @@ func (c *Client) openStream(ctx context.Context, runID string, afterSeq int64) <
 		}
 
 		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 		var dataBuf strings.Builder
 		for scanner.Scan() {
 			line := scanner.Text()

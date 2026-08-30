@@ -184,6 +184,19 @@ function reconcileStoppedRunSnapshots(
   );
 }
 
+// CA-685: mirror the TUI's posturePinProvider — infer the provider a pinned
+// model belongs to (prefix rules first, runner BUG-171 routing stays the SSOT).
+function providerKeyForPinnedModel(modelId?: string): ProviderKey | null {
+  const id = (modelId ?? "").trim();
+  if (!id) return null;
+  if (id.startsWith("gpt-")) return "codex";
+  if (id.startsWith("gemini-") || id.startsWith("auto-gemini-")) return "gemini";
+  if (id.startsWith("claude-")) return "claude";
+  if (id.startsWith("grok-") || id === "grok-build") return "grok";
+  if (id.startsWith("opencode/") || id.startsWith("opencode-go/")) return "opencode";
+  return null;
+}
+
 function pickDefaultModel(provider: ProviderKey | undefined, models: SupportedModel[]): string | undefined {
   if (!provider) return undefined;
   const enabled = models.filter((m) => m.providerKey === provider && m.isEnabled);
@@ -203,6 +216,14 @@ function pickDefaultModel(provider: ProviderKey | undefined, models: SupportedMo
     // live-verified against Grok Build 0.2.93) over the grok-build alias.
     return (
       enabled.find((m) => m.modelId.toLowerCase() === "grok-4.5")?.modelId ??
+      enabled[0]?.modelId
+    );
+  }
+  if (provider === "opencode") {
+    // Appended last (CP-57 P-0/Task-303 T-1).
+    return (
+      enabled.find((m) => m.modelId === "opencode/muse-spark-1.2-contributor-free")?.modelId ??
+      enabled.find((m) => m.modelId === "opencode/gpt-5.4-nano")?.modelId ??
       enabled[0]?.modelId
     );
   }
@@ -511,10 +532,12 @@ export const useStore = create<AppState>((set, get) => ({
   summaryGenerating: false,
   chatStartMode: "normal",
   chatSourceDocId: "",
-  chatPosture: "code",
+  // CA-685: "non" is the no-mode default — the session keeps the user's
+  // choices; the runner SSOT overrides this once the posture doc loads.
+  chatPosture: "non",
   chatPostureConfig: {
-    active: "code",
-    profiles: { scan: {}, plan: {}, code: {} },
+    active: "non",
+    profiles: { scan: {}, plan: {}, code: {}, non: {} },
   },
   chatPostureSetupOpen: false,
   flowRef: undefined,
@@ -1091,7 +1114,61 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setSelectedModel(model) {
-    set({ selectedModel: model });
+    // CA-686 parity with the TUI: reasoning is dynamic per model — a stale
+    // effort the new model does not advertise resets to that model's catalog
+    // default (or empty = model default). No catalog data → keep as-is.
+    const state = get();
+    const next = state.supportedModels.find((m) => m.modelId === model);
+    const efforts = next?.supportedReasoningEfforts ?? [];
+    const current = (state.reasoningEffort ?? "").trim();
+    let reasoningEffort = state.reasoningEffort;
+    if (efforts.length > 0 && current && !efforts.some((e) => e.toLowerCase() === current.toLowerCase())) {
+      const def = (next?.defaultReasoningEffort ?? "").trim();
+      reasoningEffort = def && efforts.some((e) => e.toLowerCase() === def.toLowerCase()) ? def : "";
+    }
+    set({ selectedModel: model, reasoningEffort });
+
+    // CA-689c parity with the TUI: opencode model variants live only in the
+    // ACP session config — fetch the real list on selection (runner-side
+    // cache short-circuits repeat picks) and patch the catalog entry so the
+    // Reasoning dropdown re-derives from truth. Failures are silent: the turn
+    // still works with the guessed list.
+    const client = get().client;
+    const providerKey = get().selectedProvider;
+    if (providerKey === "opencode" && model && client.getOpencodeModelVariants) {
+      void client
+        .getOpencodeModelVariants(model)
+        .then((variants) => {
+          const st = get();
+          const patched = st.supportedModels.map((m) =>
+            m.modelId === model
+              ? {
+                  ...m,
+                  supportedReasoningEfforts: variants.supportedEfforts,
+                  defaultReasoningEffort: variants.defaultReasoningEffort || null,
+                }
+              : m,
+          );
+          set({ supportedModels: patched });
+          // Re-clamp if the user is still on this model.
+          if (get().selectedModel === model && get().selectedProvider === "opencode") {
+            const live = variants.supportedEfforts;
+            const cur = (get().reasoningEffort ?? "").trim();
+            let updated = get().reasoningEffort;
+            if (live.length > 0 && cur && !live.some((e) => e.toLowerCase() === cur.toLowerCase())) {
+              const def = (variants.defaultReasoningEffort ?? "").trim();
+              updated = def && live.some((e) => e.toLowerCase() === def.toLowerCase()) ? def : "";
+            }
+            if (updated !== get().reasoningEffort) {
+              set({ reasoningEffort: updated });
+            }
+          }
+        })
+        .catch((err) => {
+          // eslint-disable-next-line no-console
+          console.error("[FlowPilot] opencode variants fetch failed:", err);
+        });
+    }
   },
 
   setReasoningEffort(effort) {
@@ -1207,12 +1284,18 @@ export const useStore = create<AppState>((set, get) => ({
       }
     }
     const profile = config.profiles[posture] ?? {};
+    // CA-685 (BUG-330 parity with the TUI): a pinned model without an explicit
+    // provider pin infers its provider from the model id so a grok-4.5 pin
+    // never stamps an opencode session.
+    const pinnedProvider =
+      profile.provider ?? providerKeyForPinnedModel(profile.model) ?? undefined;
     set((state) => ({
       chatPosture: posture,
       chatPostureConfig: { ...config, active: posture },
       // Apply the posture's pinned profile fields when set; empty inherits the
-      // current session selection (mirrors the TUI's /mode apply).
-      ...(profile.provider ? { selectedProvider: profile.provider as ProviderKey } : {}),
+      // current session selection (mirrors the TUI's /mode apply). The "non"
+      // posture has no profile — nothing is applied.
+      ...(pinnedProvider ? { selectedProvider: pinnedProvider as ProviderKey } : {}),
       ...(profile.model ? { selectedModel: profile.model } : {}),
       ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}),
       ...(typeof profile.yolo === "boolean" ? { yoloMode: profile.yolo } : {}),
@@ -2270,7 +2353,9 @@ export function accountLabel(account: ProviderAccountSummary): string {
 export function providerLabel(providerKey: string): string {
   if (providerKey === "claude") return "Claude";
   if (providerKey === "codex") return "Codex";
+  if (providerKey === "gemini") return "Gemini";
   if (providerKey === "grok") return "Grok";
+  if (providerKey === "opencode") return "OpenCode";
   return providerKey;
 }
 

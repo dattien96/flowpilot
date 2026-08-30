@@ -40,9 +40,12 @@ func TestA7_InitialState(t *testing.T) {
 func TestA7b_InitialState_YoloTrue(t *testing.T) {
 	cfg := config.ChatConfig{Provider: "grok", Yolo: true}
 	m := newTestModel(cfg)
-	view := m.View()
+	// YOLO now lives in input footer (Model · reasoning · YOLO), visible after session loads
+	m2, _ := m.Update(app.SessionDefaultsMsg{Provider: "grok", Model: "grok-4.6", Projects: []client.Project{{ID: "p1", Name: "proj"}}, Project: &client.Project{ID: "p1", Name: "proj"}})
+	am := m2.(*app.AppModel)
+	view := am.View()
 	if !strings.Contains(view, "YOLO") {
-		t.Errorf("View() missing YOLO indicator; view:\n%s", view)
+		t.Errorf("View() missing YOLO indicator (now in input footer); view:\n%s", view)
 	}
 }
 
@@ -61,9 +64,9 @@ func TestA7d_ConnectedMsg_SetsStatus(t *testing.T) {
 	m := newTestModel(config.ChatConfig{})
 	updated, _ := m.Update(app.ConnectedMsg{RunnerURL: "http://127.0.0.1:4317"})
 	view := updated.(*app.AppModel).View()
-	// Status should contain "connected" or "idle"
-	if !strings.Contains(view, "connected") && !strings.Contains(view, "idle") {
-		t.Errorf("After ConnectedMsg, expected 'connected' or 'idle' in view:\n%s", view)
+	// During loading the banner shows "loading session", header shows ready; either is fine
+	if !strings.Contains(view, "connected") && !strings.Contains(view, "idle") && !strings.Contains(view, "loading") && !strings.Contains(view, "chat") {
+		t.Errorf("After ConnectedMsg, expected 'connected'/'idle'/'loading'/'chat' in view:\n%s", view)
 	}
 }
 

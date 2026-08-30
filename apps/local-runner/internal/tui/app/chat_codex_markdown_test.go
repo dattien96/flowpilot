@@ -74,8 +74,8 @@ func TestCopyChip_StillCopiesRawMarkdownSource(t *testing.T) {
 	src := "# Title\n\nUse **bold** and `code`.\n"
 	m.addMessage("assistant", src, "")
 	joined := stripANSI(strings.Join(m.renderMessages(), "\n"))
-	if !strings.Contains(joined, "[copy]") {
-		t.Fatalf("missing copy chip:\n%s", joined)
+	if strings.Contains(joined, "[copy]") {
+		t.Fatalf("trailing [copy] should be removed, found in %q", joined)
 	}
 	if m.messages[0].Content != src {
 		t.Fatalf("copy source mutated: %q", m.messages[0].Content)

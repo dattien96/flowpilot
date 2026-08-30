@@ -413,10 +413,115 @@ func grokToolStatus(status string) string {
 }
 
 func grokToolOutput(update map[string]any) any {
-	if out, ok := update["rawOutput"]; ok {
-		return out
+	var out any
+	if v, ok := update["rawOutput"]; ok {
+		out = v
+	} else {
+		out = update["content"]
 	}
-	return update["content"]
+	return omitOversizedImageOutput(out)
+}
+
+// omitOversizedImageOutput stubs image base64 payloads so the SSE frame stays small.
+// Grok's read_file on a PNG via the path-fallback returns ImageContent {data, mimeType}
+// with MB of base64. The TUI's SSE scanner (64 KB default, now 8 MB) would still
+// choke on the full frame, so we replace the payload with a short hint. Text outputs
+// are left untouched. Shared with opencode (same shape).
+func omitOversizedImageOutput(v any) any {
+	if v == nil {
+		return v
+	}
+	if s, ok := v.(string); ok {
+		if len(s) > 64*1024 {
+			return "[output omitted: " + bug337GrokItoa(len(s)) + " bytes]"
+		}
+		return v
+	}
+	if m, ok := v.(map[string]any); ok {
+		if ic, has := m["ImageContent"]; has {
+			if icMap, ok := ic.(map[string]any); ok {
+				if data, _ := icMap["data"].(string); data != "" {
+					return "[image omitted: " + bug337GrokItoa(len(data)) + " bytes]"
+				}
+			}
+			return "[image omitted]"
+		}
+		if data, ok := m["data"].(string); ok && len(data) > 10*1024 {
+			if mt, _ := m["mimeType"].(string); mt != "" && bug337GrokContainsFold(mt, "image") {
+				return "[image omitted: " + bug337GrokItoa(len(data)) + " bytes]"
+			}
+			if len(data) > 50*1024 && (bug337GrokHasPrefix(data, "iVBORw0KGgo") || bug337GrokHasPrefix(data, "/9j/") || bug337GrokHasPrefix(data, "R0lGOD")) {
+				return "[image omitted: " + bug337GrokItoa(len(data)) + " bytes]"
+			}
+		}
+		for _, val := range m {
+			if s, ok := val.(string); ok && len(s) > 100*1024 {
+				return "[output omitted: " + bug337GrokItoa(len(s)) + " bytes]"
+			}
+			if sub, ok := val.(map[string]any); ok {
+				if d, ok := sub["data"].(string); ok && len(d) > 50*1024 {
+					return "[image omitted: " + bug337GrokItoa(len(d)) + " bytes]"
+				}
+				if _, has := sub["ImageContent"]; has {
+					return "[image omitted]"
+				}
+			}
+		}
+	}
+	return v
+}
+
+func bug337GrokItoa(n int) string {
+	// small helper avoids fmt import for a hot path; fmt is already used elsewhere
+	// but this keeps the change minimal.
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	pos := len(buf)
+	for n > 0 {
+		pos--
+		buf[pos] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[pos:])
+}
+
+func bug337GrokContainsFold(s, substr string) bool {
+	ls := len(s)
+	lf := len(substr)
+	if lf == 0 || ls < lf {
+		return false
+	}
+	// ASCII case-insensitive contains (mimeType is ASCII)
+	for i := 0; i <= ls-lf; i++ {
+		match := true
+		for j := 0; j < lf; j++ {
+			c1 := s[i+j]
+			c2 := substr[j]
+			if c1 >= 'A' && c1 <= 'Z' {
+				c1 += 'a' - 'A'
+			}
+			if c2 >= 'A' && c2 <= 'Z' {
+				c2 += 'a' - 'A'
+			}
+			if c1 != c2 {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+func bug337GrokHasPrefix(s, prefix string) bool {
+	if len(s) < len(prefix) {
+		return false
+	}
+	return s[:len(prefix)] == prefix
 }
 
 // grokToolDisplayName prefers the structured x.ai/tool name (stable, machine

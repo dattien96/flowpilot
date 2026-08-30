@@ -225,27 +225,34 @@ func (m *AppModel) renderAttentionBar() string {
 		}
 		lines = append(lines, left+" "+head)
 		var chips []string
+		chipIdx := 0
+		hiBase := m.ringHighlightFor("attention")
+		renderChip := func(label string) string {
+			hi := hiBase == chipIdx
+			chipIdx++
+			return renderActionRingChip(label, hi)
+		}
 		switch it.Kind {
 		case "settle_pending":
-			chips = append(chips, styleLink.Render("[details]"))
+			chips = append(chips, renderChip("[details]"))
 		case "uncertain", "cancel_required":
 			chips = append(chips,
-				styleLink.Render("[inspect]"),
-				styleLink.Render("[confirm-cancelled]"),
-				styleLink.Render("[mark-completed]"),
-				styleLink.Render("[mark-failed]"),
+				renderChip("[inspect]"),
+				renderChip("[confirm-cancelled]"),
+				renderChip("[mark-completed]"),
+				renderChip("[mark-failed]"),
 			)
 			if m.attentionRetryConfirm[attentionKey(it.RunID, it.TurnID)] {
-				chips = append(chips, styleLink.Render("[confirm-retry]"))
+				chips = append(chips, renderChip("[confirm-retry]"))
 			} else {
-				chips = append(chips, styleLink.Render("[retry-as-new]"))
+				chips = append(chips, renderChip("[retry-as-new]"))
 			}
-			chips = append(chips, styleLink.Render("[abandon]"))
+			chips = append(chips, renderChip("[abandon]"))
 		case "repair_required":
 			chips = append(chips,
-				styleLink.Render("[inspect]"),
-				styleLink.Render("[retry-load]"),
-				styleLink.Render("[abandon-repair]"),
+				renderChip("[inspect]"),
+				renderChip("[retry-load]"),
+				renderChip("[abandon-repair]"),
 			)
 		}
 		if info := m.attentionInspect[attentionKey(it.RunID, it.TurnID)]; info != nil {
@@ -255,7 +262,7 @@ func (m *AppModel) renderAttentionBar() string {
 		}
 		lines = append(lines, left+" "+mid+" "+strings.Join(chips, "  "))
 	}
-	lines = append(lines, styleSystem.Render("automated dispatch is blocked until resolved"))
+	lines = append(lines, styleSystem.Render("← → Enter · 1-9 · automated dispatch is blocked until resolved"))
 	return strings.Join(lines, "\n")
 }
 

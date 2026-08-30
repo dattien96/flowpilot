@@ -46,6 +46,7 @@ next-env.d.ts
 .claude/
 .codex/
 .grok/
+.opencode/
 /mcps/
 core-ai-rules/
 .cursorrules

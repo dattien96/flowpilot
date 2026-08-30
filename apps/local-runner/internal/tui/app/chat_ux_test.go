@@ -230,8 +230,9 @@ func TestAuthBanner_ShowsWhenNeedLogin(t *testing.T) {
 	if !strings.Contains(view, "SIGN IN REQUIRED") {
 		t.Fatalf("missing auth banner:\n%s", view)
 	}
-	if !strings.Contains(m.renderStatusLine(), "SIGN-IN") {
-		t.Fatalf("statusline missing SIGN-IN: %q", m.renderStatusLine())
+	// SIGN-IN now lives in input header (top-left), not status line
+	if !strings.Contains(stripANSI(m.chatFrameTitle()), "SIGN-IN") {
+		t.Fatalf("header missing SIGN-IN: %q", m.chatFrameTitle())
 	}
 }
 
@@ -500,14 +501,14 @@ func TestInputLine_ShowsFocusIndicator(t *testing.T) {
 	m.cursorOn = true
 	m.inputValue = "hello"
 	line := m.renderInputLine()
-	if !strings.Contains(line, "chat") {
+	if !strings.Contains(strings.ToLower(line), "chat") {
 		t.Fatalf("missing chat focus label: %q", line)
 	}
 	if !strings.Contains(line, "hello") {
 		t.Fatalf("missing typed text: %q", line)
 	}
 	view := m.View()
-	if !strings.Contains(view, "chat") {
+	if !strings.Contains(strings.ToLower(view), "chat") {
 		t.Fatalf("view missing input focus label:\n%s", view)
 	}
 }

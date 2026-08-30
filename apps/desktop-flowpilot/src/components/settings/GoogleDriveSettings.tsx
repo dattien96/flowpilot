@@ -92,7 +92,7 @@ function pickerAllowedReferrers(runnerUrl: string): string[] {
   if (url.hostname === "localhost") hosts.add("127.0.0.1");
   return Array.from(hosts).map((host) => `${url.protocol}//${host}${port}/*`);
 }
-const PROVIDER_LABELS: Record<string, string> = { codex: "Codex", gemini: "Gemini", claude: "Claude", grok: "Grok" };
+const PROVIDER_LABELS: Record<string, string> = { codex: "Codex", gemini: "Gemini", claude: "Claude", grok: "Grok", opencode: "OpenCode" };
 
 function runnerFetch(path: string, init?: RequestInit): Promise<Response> {
   return fetch(new URL(path, RUNNER_URL).toString(), { cache: "no-store", ...init });

@@ -10,6 +10,7 @@ export function resolveProviderKeyForModel(
   }
   if (modelId.startsWith("claude-")) return "claude";
   if (modelId.startsWith("grok-") || modelId === "grok-build") return "grok";
+  if (modelId.startsWith("opencode/") || modelId.startsWith("opencode-go/")) return "opencode";
   return (
     supportedModels.find((entry) => entry.modelId === modelId)?.providerKey ?? null
   );

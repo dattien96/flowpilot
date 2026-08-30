@@ -44,6 +44,13 @@ type ProviderModel struct {
 	DefaultReasoningEffort    string   `json:"default_reasoning_effort,omitempty"`
 	ContextWindowTokens       int64    `json:"context_window_tokens,omitempty"`
 	MaxContextWindowTokens    int64    `json:"max_context_window_tokens,omitempty"`
+	// InputImage (Task-319) mirrors the model's own `capabilities.input.image`
+	// from `opencode models --verbose` (models.dev capability). Opencode image
+	// support is per-MODEL, not per-provider: 16/31 opencode*/* models accept
+	// image input (live-verified 2026-08-30, v1.18.25). This is the Task-318
+	// unlock data — the UI/adapter gates use it instead of a blanket
+	// provider-level Vision=false.
+	InputImage bool `json:"input_image,omitempty"`
 }
 
 type ProviderDiscoveredAccount struct {

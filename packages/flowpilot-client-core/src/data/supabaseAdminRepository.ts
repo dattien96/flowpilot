@@ -139,6 +139,7 @@ function mapSupportedModel(row: Row): SupportedModel {
     defaultReasoningEffort: row.default_reasoning_effort ? String(row.default_reasoning_effort) : null,
     contextWindowTokens: row.context_window_tokens == null ? null : Number(row.context_window_tokens),
     maxContextWindowTokens: row.max_context_window_tokens == null ? null : Number(row.max_context_window_tokens),
+    inputImage: row.input_image == null ? null : Boolean(row.input_image),
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
   };
@@ -1045,6 +1046,7 @@ export class SupabaseAdminRepository implements
       default_reasoning_effort: model.defaultReasoningEffort,
       context_window_tokens: model.contextWindowTokens,
       max_context_window_tokens: model.maxContextWindowTokens,
+      input_image: model.inputImage,
     }).select("*").single();
     assertNoError(error, "Unable to create supported model.");
     return mapSupportedModel(data);
@@ -1064,6 +1066,7 @@ export class SupabaseAdminRepository implements
     if (patch.defaultReasoningEffort !== undefined) payload.default_reasoning_effort = patch.defaultReasoningEffort;
     if (patch.contextWindowTokens !== undefined) payload.context_window_tokens = patch.contextWindowTokens;
     if (patch.maxContextWindowTokens !== undefined) payload.max_context_window_tokens = patch.maxContextWindowTokens;
+    if (patch.inputImage !== undefined) payload.input_image = patch.inputImage;
     const { data, error } = await this.supabase.from("ai_supported_models").update(payload).eq("id", id).select("*").single();
     assertNoError(error, "Unable to update supported model.");
     return mapSupportedModel(data);

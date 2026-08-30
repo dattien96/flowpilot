@@ -1,0 +1,21 @@
+{
+  "jsonrpc": "2.0",
+  "id": 0,
+  "method": "session/request_permission",
+  "params": {
+    "sessionId": "ses_fbc474c23ffepaXAU763cB2QPr",
+    "toolCall": {
+      "toolCallId": "call_01a043b8bc557932a865a20b765653e6",
+      "title": "/tmp/opencode_test",
+      "kind": "other",
+      "status": "pending",
+      "locations": [{"path": "/tmp/opencode_test/hello2.txt"}, {"path": "/tmp/opencode_test"}],
+      "rawInput": {"filepath": "/tmp/opencode_test/hello2.txt", "parentDir": "/tmp/opencode_test"}
+    },
+    "options": [
+      {"optionId": "once", "kind": "allow_once", "name": "Allow once"},
+      {"optionId": "always", "kind": "allow_always", "name": "Always allow"},
+      {"optionId": "reject", "kind": "reject_once", "name": "Reject"}
+    ]
+  }
+}

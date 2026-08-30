@@ -19,7 +19,7 @@ interface RunnerProviderAccount {
   is_active: boolean;
 }
 
-const PROVIDER_LABELS: Record<string, string> = { codex: "Codex", gemini: "Gemini", claude: "Claude", grok: "Grok" };
+const PROVIDER_LABELS: Record<string, string> = { codex: "Codex", gemini: "Gemini", claude: "Claude", grok: "Grok", opencode: "OpenCode" };
 
 interface McpProviderConfigResult {
   providerKey: string;
@@ -589,8 +589,8 @@ export function McpSettings({ mode = "all" }: McpSettingsProps): React.ReactElem
           <h3>Configure Providers</h3>
           <small className="settings-field-help">
             {type === "jira"
-              ? "Writes mcpServers.jira (Atlassian Rovo remote MCP) into every discovered AI provider account (Claude, Codex, Gemini, Grok). Uses the connected email+API token as Basic auth against mcp.atlassian.com/v1/mcp. Live Claude/Grok turns also merge this server automatically when connected."
-              : `Writes mcpServers.${type} into every discovered AI provider account (Claude, Codex, Gemini, Grok) so each can launch the ${type === "firebase" ? "firebase-tools" : "flowpilot telegram-mcp"} server.`}
+              ? "Writes mcpServers.jira (Atlassian Rovo remote MCP) into every discovered AI provider account (Claude, Codex, Gemini, Grok, Opencode). Uses the connected email+API token as Basic auth against mcp.atlassian.com/v1/mcp. Live Claude/Grok turns also merge this server automatically when connected."
+              : `Writes mcpServers.${type} into every discovered AI provider account (Claude, Codex, Gemini, Grok, Opencode) so each can launch the ${type === "firebase" ? "firebase-tools" : "flowpilot telegram-mcp"} server.`}
           </small>
           {type === "jira" ? (
             <small className="settings-field-help">

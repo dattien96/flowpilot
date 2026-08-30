@@ -46,6 +46,8 @@ interface RawLocalRunnerProviderModel {
   default_reasoning_effort?: string;
   context_window_tokens?: number;
   max_context_window_tokens?: number;
+  // Task-319: see LocalRunnerProviderModel/ProviderModel (Go).
+  input_image?: boolean;
 }
 
 interface RawLocalRunnerProvider {
@@ -70,6 +72,7 @@ function mapLocalRunnerProviderModel(raw: RawLocalRunnerProviderModel): LocalRun
     defaultReasoningEffort: raw.default_reasoning_effort,
     contextWindowTokens: raw.context_window_tokens,
     maxContextWindowTokens: raw.max_context_window_tokens,
+    inputImage: raw.input_image,
   };
 }
 

@@ -24,6 +24,10 @@ const (
 	ChatPostureScan = "scan"
 	ChatPosturePlan = "plan"
 	ChatPostureCode = "code"
+	// ChatPostureNon (CA-685): "no mode" — the chat carries no posture pins at
+	// all, so the session keeps the user's last provider/model choice across
+	// restarts. Chat-only: flow mode never touches postures.
+	ChatPostureNon = "non"
 )
 
 // chatPostureProfiles is the canonical posture key order.
@@ -78,10 +82,10 @@ func IsReadOnlyChatPosture(posture string) bool {
 	return posture == ChatPostureScan || posture == ChatPosturePlan
 }
 
-// ValidChatPosture reports whether a posture name is one of scan/plan/code.
+// ValidChatPosture reports whether a posture name is one of scan/plan/code/non.
 func ValidChatPosture(posture string) bool {
 	switch posture {
-	case ChatPostureScan, ChatPosturePlan, ChatPostureCode:
+	case ChatPostureScan, ChatPosturePlan, ChatPostureCode, ChatPostureNon:
 		return true
 	default:
 		return false
@@ -122,24 +126,26 @@ func chatPosturePaths() []string {
 	return out
 }
 
-// defaultChatPostureConfig returns the bootstrap posture document: active=code
-// (today's behavior) with all profiles empty (inherit current selection).
+// defaultChatPostureConfig returns the bootstrap posture document: active=non
+// (CA-685 — the no-mode default, the session keeps the user's choices) with
+// all profiles empty (inherit current selection). Existing files keep their
+// persisted active; only fresh installs and invalid values fall to non.
 func defaultChatPostureConfig() ChatPostureConfig {
 	return ChatPostureConfig{
-		Active:   ChatPostureCode,
+		Active:   ChatPostureNon,
 		Profiles: map[string]ChatPostureProfile{},
 	}
 }
 
 // normalizeChatPostureConfig validates/normalizes a config: active must be a
-// valid posture (falls back to code), profile keys outside scan/plan/code are
-// dropped, and field values are trimmed.
+// valid posture (falls back to non per CA-685), profile keys outside
+// scan/plan/code are dropped, and field values are trimmed.
 func normalizeChatPostureConfig(cfg *ChatPostureConfig) {
 	if cfg == nil {
 		return
 	}
 	if !ValidChatPosture(cfg.Active) {
-		cfg.Active = ChatPostureCode
+		cfg.Active = ChatPostureNon
 	}
 	cleaned := make(map[string]ChatPostureProfile, len(chatPostureProfiles))
 	for _, key := range chatPostureProfiles {

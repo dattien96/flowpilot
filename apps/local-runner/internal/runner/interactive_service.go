@@ -141,6 +141,8 @@ type interactiveRun struct {
 	// turn, so each turn's id is logged once for precise transcript replay
 	// (BUG-GrokReplay-Restart).
 	lastGrokTurnSessionID string
+	// lastOpencodeTurnSessionID is the Opencode twin (CP-57).
+	lastOpencodeTurnSessionID string
 	providerAccountID     string
 	workspaceCwd          string
 	stepID                string
@@ -5143,6 +5145,12 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		// (the "empty transcript" sub-agents seen in the Agents panel).
 		log.Printf("[agent-spawn] child terminal parent=%q child=%q agent=%q type=%q status=%q finalMsgLen=%d events=%d",
 			rs.parentRunID, rs.id, rs.agentName, ev.Type, rs.status, len(ev.FinalMessage), len(rs.events))
+		// BUG-334: the child's isolated opencode acp process is throwaway —
+		// tear it down with the child's terminal event so short-lived children
+		// do not leak processes. Chat-scope handles are never touched.
+		if s.runner != nil {
+			s.runner.CloseOpencodeProcessesForChildRun(rs.id)
+		}
 	}
 	// Flow-engine children: releaseDependentAgents runs only after gate pass
 	// (settleFlowChildTurnCompletedLocked / post-gate branch). Immediate release
@@ -5473,6 +5481,16 @@ func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiS
 // SpawnAgent creates a child agent run from the current turn (CP-19 / Task-082).
 // When in.Wait==true it blocks until the child run's first turn completes, returning
 // its final message. Cancellation follows b.ctx (parent turn interrupt).
+// opencodeChildScopeHint returns the run id for spawned child runs (parentRunID
+// set) so the opencode factory isolates their acp process (BUG-334); "" for
+// normal runs, which keep the shared chat process (BUG-329 reuse).
+func opencodeChildScopeHint(rs *interactiveRun) string {
+	if rs == nil || strings.TrimSpace(rs.parentRunID) == "" {
+		return ""
+	}
+	return strings.TrimSpace(rs.id)
+}
+
 func (b *turnBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
 	return b.svc.spawnChildRun(b.ctx, b.rs.id, in)
 }
@@ -6303,6 +6321,8 @@ func resolveTurnModelAndEffort(rs *interactiveRun, in TurnInput) (model, effort 
 // real id. Grok also falls back to lastGrokTurnSessionID when the synthetic
 // thread-* is still on providerSessionID and real is empty — a model-change
 // respawn (run-92955) must session/load that ACP id, not session/new.
+// Opencode mirrors the Grok fallback with lastOpencodeTurnSessionID (BUG-329,
+// run-307050): a mid-chat model switch must session/load the real ses_* id.
 func turnResumeProviderSessionID(rs *interactiveRun) string {
 	if rs == nil {
 		return ""
@@ -6311,11 +6331,17 @@ func turnResumeProviderSessionID(rs *interactiveRun) string {
 	if rs.realProviderSessionID != "" && rs.providerKey != ProviderKeyClaude {
 		id = rs.realProviderSessionID
 	}
-	if rs.providerKey != ProviderKeyGrok {
+	if rs.providerKey != ProviderKeyGrok && rs.providerKey != ProviderKeyOpencode {
 		return id
 	}
 	trimmed := strings.TrimSpace(id)
 	if trimmed != "" && !strings.HasPrefix(trimmed, "thread-") {
+		return id
+	}
+	if rs.providerKey == ProviderKeyOpencode {
+		if alt := strings.TrimSpace(rs.lastOpencodeTurnSessionID); isOpencodeRealSessionID(alt) {
+			return alt
+		}
 		return id
 	}
 	if alt := strings.TrimSpace(rs.lastGrokTurnSessionID); isGrokRealSessionID(alt) {
@@ -6633,7 +6659,10 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// single grok_session id may only reload the latest segment, so without a
 	// turn-log assistant the main chat loses res-after-review-round-N (run-9034).
 	durableTurn := transcriptTurn{}
-	if completed && (rs.providerKey == ProviderKeyGemini || rs.providerKey == ProviderKeyGrok) {
+	// CA-688: opencode has NO provider-owned transcript file at all (sessions
+	// live in the shared opencode.db), so its prompt/assistant pairs must ride
+	// the durable turn log for /open replay — same rationale as Gemini/Grok.
+	if completed && (rs.providerKey == ProviderKeyGemini || rs.providerKey == ProviderKeyGrok || rs.providerKey == ProviderKeyOpencode) {
 		durableTurn = transcriptTurnForProviderTurnLocked(rs, turnID)
 	}
 	snap := sessionStateOf(rs)
@@ -6661,6 +6690,8 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			kind := turnLogKindCodexSession
 			if rs.providerKey == ProviderKeyGrok {
 				kind = turnLogKindGrokSession
+			} else if rs.providerKey == ProviderKeyOpencode {
+				kind = turnLogKindOpencodeSession
 			}
 			_ = logger.AppendTurnLog(context.Background(), rs.id, turnLogLine{Kind: kind, SessionID: newTurnSessionID})
 		}
@@ -7624,7 +7655,11 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// is model-dependent (Grok — see ProviderRegistration.newAdapterForTurn) gets
 	// the right value at construction time, not just when TurnRequest is built.
 	turnModel, turnEffort := resolveTurnModelAndEffort(rs, in)
-	adapter, aerr := s.registry.Adapter(rs.providerKey, turnModel, turnEffort)
+	// BUG-334: spawned child runs isolate their opencode acp process so their
+	// per-turn session/new (fresh MCP token) cannot reset a concurrent parent
+	// turn's MCP connection (opencode keys MCP clients by server NAME per
+	// process — the F-section spawn_agent "Connection closed" failure).
+	adapter, aerr := s.registry.AdapterWithScope(rs.providerKey, turnModel, turnEffort, opencodeChildScopeHint(rs))
 	if aerr != nil {
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusBadRequest, "provider_unavailable", aerr.Error())
@@ -8248,6 +8283,27 @@ func (s *InteractiveService) refreshResumeHandleLocked(rs *interactiveRun, adapt
 		// do not invent one from disk. Leave realProviderSessionID unchanged so
 		// a failed first turn cannot rebind the run onto someone else's session.
 		return ""
+	case ProviderKeyOpencode:
+		// Appended last (CP-57 P-0/Task-303 T-7): mirror Grok's durable resume.
+		// Only promote an id the adapter actually opened this turn via
+		// session/new or session/load (LastOpencodeSessionID). Never steal from disk.
+		if reporter, ok := adapter.(interface{ LastOpencodeSessionID() string }); ok {
+			if id := strings.TrimSpace(reporter.LastOpencodeSessionID()); isOpencodeRealSessionID(id) {
+				if s.isForeignProviderSessionID(rs, id) {
+					return ""
+				}
+				rs.realProviderSessionID = id
+				if !isOpencodeRealSessionID(rs.providerSessionID) {
+					rs.providerSessionID = id
+				}
+				if id != rs.lastOpencodeTurnSessionID {
+					rs.lastOpencodeTurnSessionID = id
+					return id
+				}
+				return ""
+			}
+		}
+		return ""
 	}
 	return ""
 }
@@ -8273,7 +8329,7 @@ func (s *InteractiveService) isForeignProviderSessionID(rs *interactiveRun, sess
 	if sessionID == strings.TrimSpace(rs.realProviderSessionID) || sessionID == strings.TrimSpace(rs.providerSessionID) {
 		return false
 	}
-	if sessionID == strings.TrimSpace(rs.lastCodexTurnSessionID) || sessionID == strings.TrimSpace(rs.lastGrokTurnSessionID) {
+	if sessionID == strings.TrimSpace(rs.lastCodexTurnSessionID) || sessionID == strings.TrimSpace(rs.lastGrokTurnSessionID) || sessionID == strings.TrimSpace(rs.lastOpencodeTurnSessionID) {
 		return false
 	}
 	foreign := s.foreignProviderSessionIDs(rs)
@@ -8319,7 +8375,7 @@ func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[s
 		if !related {
 			continue
 		}
-		if sid := strings.TrimSpace(st.ProviderSessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) {
+		if sid := strings.TrimSpace(st.ProviderSessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) || isOpencodeRealSessionID(sid) {
 			// Do not treat our own id as foreign if listed under another row erroneously.
 			if sid == strings.TrimSpace(rs.realProviderSessionID) || sid == strings.TrimSpace(rs.providerSessionID) {
 				continue
@@ -8347,7 +8403,7 @@ func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[s
 		if !related {
 			continue
 		}
-		for _, sid := range []string{other.realProviderSessionID, other.providerSessionID, other.lastGrokTurnSessionID, other.lastCodexTurnSessionID} {
+		for _, sid := range []string{other.realProviderSessionID, other.providerSessionID, other.lastGrokTurnSessionID, other.lastCodexTurnSessionID, other.lastOpencodeTurnSessionID} {
 			sid = strings.TrimSpace(sid)
 			if sid == "" || strings.HasPrefix(sid, "thread-") {
 				continue
@@ -8387,10 +8443,10 @@ func (s *InteractiveService) foreignProviderSessionIDs(rs *interactiveRun) map[s
 				continue
 			}
 			for _, e := range entries {
-				if e.Kind != turnLogKindCodexSession && e.Kind != turnLogKindGrokSession {
+				if e.Kind != turnLogKindCodexSession && e.Kind != turnLogKindGrokSession && e.Kind != turnLogKindOpencodeSession {
 					continue
 				}
-				if sid := strings.TrimSpace(e.SessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) {
+				if sid := strings.TrimSpace(e.SessionID); isCodexRealSessionID(sid) || isGrokRealSessionID(sid) || isOpencodeRealSessionID(sid) {
 					if sid == strings.TrimSpace(rs.realProviderSessionID) || sid == strings.TrimSpace(rs.providerSessionID) {
 						continue
 					}
@@ -9001,6 +9057,9 @@ func defaultModelForProvider(key ProviderKey) string {
 	case ProviderKeyGrok:
 		// Appended last (CP-46 P-0/Task-209 T-11): codex/claude cases above unchanged.
 		return "grok-4.5"
+	case ProviderKeyOpencode:
+		// Appended last (CP-57 P-0/Task-303 T-1).
+		return "opencode/muse-spark-1.2-contributor-free"
 	default:
 		return ""
 	}

@@ -40,6 +40,10 @@ type ChatMessage struct {
 	Content string
 	// FormatHint is one of: "" (plain), "tool", "approval", "question", "gate", "error"
 	FormatHint string
+	// Attachments holds the original file names of images attached to a user turn.
+	// Only set on Role=="user" messages that were sent with images. The chip is
+	// rendered outside the 4-line prompt clamp so it is always visible (BUG-337).
+	Attachments []string
 }
 
 // GateState holds the active gate decision UI state.
@@ -168,6 +172,18 @@ type ProjectsCatalogMsg struct {
 	Project  *client.Project
 	Err      string
 }
+
+// ProvidersCatalogMsg is a late/retry provider list after the 8s session
+// unlock (CA-535). Session load must not wait on a slow CLI probe, but an
+// empty catalog after timeout is sticky unless we backfill (CA-657).
+type ProvidersCatalogMsg struct {
+	Providers []client.Provider
+	Err       string
+}
+
+// ProvidersWarmRetryMsg triggers a background GET /providers after OpenCode
+// model warm has had time to finish (undersized catalog retry).
+type ProvidersWarmRetryMsg struct{}
 
 // SessionDefaultsMsg carries active provider/model discovered after connect.
 type SessionDefaultsMsg struct {
@@ -316,12 +332,27 @@ type AppModel struct {
 	// (input_watchdog.go, CA-645) so it logs once per stall episode.
 	lastInputAt      time.Time
 	inputStallLogged bool
+	inputHadRealKey  bool // true after the first real KeyMsg/MouseMsg (BUG-328 watchdog)
+	// actionRingIdx highlights one chip in the must-answer action ring (BUG-328).
+	actionRingIdx      int
+	actionRingFocus    bool
+	actionRingCardSig  string
+	f2StepPickIdx      int
+	attachPanelSel     int // 0-based row while attach panel is open
 	// lastMotionAt is stamped by hover-motion events at the tuiMsgFilter level
 	// (they never reach Update). It proves the console input pipe is still
 	// delivering events during an input stall, separating "keys dropped
 	// upstream" from "console fully dead" in the watchdog fingerprint.
 	lastMotionAt time.Time
-	viewport      viewportState
+	// lastConsoleRearmAt throttles Windows QuickEdit/mouse-off re-arm (BUG-328).
+	lastConsoleRearmAt time.Time
+	// inputExpectedSince is set when session defaults finish loading; the
+	// watchdog uses it to detect startup wedges with zero KeyMsg (BUG-328).
+	inputExpectedSince time.Time
+	// ss3 holds a bare 'O' rune while Windows ConPTY delivers an SS3 function
+	// key as 'O'+suffix rune records (BUG-328, tui.log pid 18400).
+	ss3               ss3FKeyState
+	viewport            viewportState
 	mouseSel      mouseSelect
 	mouseDrag     mouseDrag
 	rowCache      []chatRow
@@ -491,13 +522,14 @@ type AppModel struct {
 	// Input focus / slash suggestion selection
 	cursorOn               bool
 	suggIdx                int
-	statusSkillsExpanded   bool // F3: expand attached skill names under the status chip
-	statusDetailsCollapsed bool // F4 / click line 0: hide mode–project rows; status row stays
 
 	// sessionLoading locks chat while provider/project catalogs load after connect.
 	sessionLoading bool
 	// sessionDefaultsLoaded is set after the first SessionDefaultsMsg (real chat gate).
 	sessionDefaultsLoaded bool
+	// providersWarmRetries counts background /providers refetches while OpenCode
+	// model cache is still warming (undersized catalog).
+	providersWarmRetries int
 	loadingFrame          int
 
 	// thinkingFrame drives the animated "Thinking" placeholder (spinner /
@@ -634,7 +666,7 @@ var knownSlashCommands = []slashCommand{
 	{"/headless", "Print next response to stdout only"},
 	{"/status", "Show current connection status"},
 	{"/dumpview", "Dump live View() layout to /tmp/flowpilot-you-view.txt (debug)"},
-	{"/info", "Toggle session info panel (top-right; also F2)"},
+	{"/info", "Print session/status details (also F2)"},
 	{"/login", "Sign in to Supabase (email/password) — Desktop session parity"},
 	{"/settings", "Open Desktop app for Settings (start if not running)"},
 	{"/sync", "Push session to Drive — /sync · /sync all"},

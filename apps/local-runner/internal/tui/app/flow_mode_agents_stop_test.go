@@ -21,8 +21,12 @@ func TestStatusLine_FlowModeKeepsAccount(t *testing.T) {
 		{RunID: "run-rev", AgentName: "my-reviewer", Status: "running"},
 	}
 	got := stripANSI(m.renderStatusLine())
-	if !strings.Contains(got, "grok-ready") {
-		t.Fatalf("flow statusline dropped current account:\n%s", got)
+	if strings.Contains(got, "grok-ready") {
+		t.Fatalf("account moved to the sidebar (Task-311):\n%s", got)
+	}
+	side := strings.Join(m.renderSidebarStatusSection(60), "\n")
+	if !strings.Contains(side, "grok-ready") {
+		t.Fatalf("sidebar must keep the current account:\n%s", side)
 	}
 }
 
@@ -37,8 +41,9 @@ func TestTurnIsActive_FlowChildrenKeepStop(t *testing.T) {
 	if !m.turnIsActive() {
 		t.Fatal("flow with running children must keep [stop] armed")
 	}
-	if !strings.Contains(stripANSI(m.renderStatusLine()), "[stop]") {
-		t.Fatalf("missing [stop]:\n%s", m.renderStatusLine())
+	// [stop] now lives in input header (top-left), not status line
+	if !strings.Contains(stripANSI(m.chatFrameTitle()), "[stop]") {
+		t.Fatalf("missing [stop] in header: %q", m.chatFrameTitle())
 	}
 }
 

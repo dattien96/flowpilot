@@ -17,7 +17,7 @@ func TestRegression_YouBoxSidebarColumnFixed(t *testing.T) {
 			m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
 			m.sessionPanel.RunID = "run-208282"
 			m.sessionPanel.ProjectPath = "/tmp/p"
-			m.sessionPanel.Collapsed = false
+			enableSidebarForTest(m)
 			m.addMessage("user", prompt, "")
 			m.addMessage("assistant", "assistant reply that is long enough to fill chat width and should not bleed", "")
 			if !m.useRightSidebar() {

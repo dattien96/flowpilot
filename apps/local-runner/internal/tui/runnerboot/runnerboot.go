@@ -195,6 +195,12 @@ func spawnRunner(cfg Config) error {
 		logF.Close()
 		return err
 	}
+	// KILL_ON_JOB_CLOSE: when this TUI process dies (force-kill, crash, or
+	// terminal close) Windows terminates the runner too — a wedged TUI can
+	// never orphan the --port listener (BUG-328).
+	if err := assignRunnerJob(uint32(cmd.Process.Pid)); err != nil {
+		fmt.Fprintf(logF, "[runnerboot] job-assign skipped (runner may outlive TUI): %v\n", err)
+	}
 	// Don't wait — runner runs in background. Close the log file handle in this process.
 	go func() {
 		cmd.Wait() //nolint:errcheck

@@ -1,0 +1,8 @@
+{
+  "sessionId": "ses_fbc4837c1ffeGsh8h6gO3YTEIn",
+  "update": {
+    "sessionUpdate": "agent_message_chunk",
+    "messageId": "msg_043b7c8560016j9R6Yb609fqjV",
+    "content": {"type": "text", "text": "Hello World"}
+  }
+}

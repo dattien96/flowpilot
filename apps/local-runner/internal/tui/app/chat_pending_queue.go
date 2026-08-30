@@ -197,16 +197,29 @@ func approvalRememberable(a *ApprovalState) bool {
 // The runner's offered decisions win; the legacy Approve/Deny fallback covers
 // cards without details.
 func approvalDecisionChips(a *ApprovalState) string {
+	return approvalDecisionChipsAt(a, nil, -1)
+}
+
+func approvalDecisionChipsAt(a *ApprovalState, approvals []ApprovalState, highlightIdx int) string {
 	var chips []string
+	idx := 0
+	render := func(label string) string {
+		hi := highlightIdx == idx
+		idx++
+		return renderActionRingChip(label, hi)
+	}
 	if a != nil && len(a.Decisions) > 0 {
 		for _, d := range a.Decisions {
-			chips = append(chips, styleLink.Render(d.Label))
+			chips = append(chips, render(d.Label))
 		}
 	} else {
-		chips = append(chips, styleLink.Render("Approve"), styleLink.Render("Deny"))
+		chips = append(chips, render("Approve"), render("Deny"))
+	}
+	if len(approvals) > 1 {
+		chips = append(chips, render("Approve all"), render("Deny all"))
 	}
 	if approvalRememberable(a) {
-		chips = append(chips, styleLink.Render("Approve forever"))
+		chips = append(chips, render("Approve forever"))
 	}
 	return strings.Join(chips, "  ")
 }

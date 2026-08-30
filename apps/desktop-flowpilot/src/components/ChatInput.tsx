@@ -14,6 +14,7 @@ import {
   toWire,
   type PendingAttachment,
 } from "@/lib/normalizeImage";
+import { supportsVisionFor } from "./visionProviders";
 
 function CodexIcon(): React.ReactElement {
   return (
@@ -51,6 +52,14 @@ function GrokIcon(): React.ReactElement {
   );
 }
 
+function OpencodeIcon(): React.ReactElement {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+    </svg>
+  );
+}
+
 function StopIcon(): React.ReactElement {
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
@@ -73,14 +82,9 @@ const PROVIDER_CARDS: { value: ProviderKey; label: string; icon: React.ReactElem
   { value: "claude", label: "Claude", icon: <ClaudeIcon /> },
   { value: "gemini", label: "Gemini", icon: <GeminiIcon /> },
   { value: "grok", label: "Grok", icon: <GrokIcon /> },
+  { value: "opencode", label: "OpenCode", icon: <OpencodeIcon /> },
 ];
 
-// Providers that accept chat image attachments (Task-052 / CA-483).
-// codex + claude: native multimodal. grok: runner path-fallback writes
-// <cwd>/.tmp/images and injects absolute paths into the text prompt (ACP
-// promptCapabilities.image remains false; Capabilities.Vision stays false).
-// A follow-up should source this from the runner capability surface.
-const VISION_PROVIDERS = new Set<ProviderKey>(["codex", "claude", "grok"]);
 
 // Fallback reasoning-effort options (Task-215): used only when the selected
 // model has no detected `supportedReasoningEfforts` in the catalog (a
@@ -365,7 +369,6 @@ export function ChatInput(): React.ReactElement {
 
   const isChatMode = chatMode === "normal_chat";
   const isSwitchBusy = pendingProviderSwitch !== undefined || providerSwitchLoading;
-  const supportsVision = !!selectedProvider && VISION_PROVIDERS.has(selectedProvider);
   const hasSelectedProject = !!selectedProjectId;
   const selectedProjectPath = useMemo(
     () => projects.find((project) => project.id === selectedProjectId)?.path,
@@ -385,6 +388,9 @@ export function ChatInput(): React.ReactElement {
     () => availableModels.find((model) => model.modelId === selectedModel),
     [availableModels, selectedModel],
   );
+  // Task-319: per-model image gate — provider-level VISION_PROVIDERS plus the
+  // opencode per-model unlock (models.dev input.image on the selected model).
+  const supportsVision = supportsVisionFor(selectedProvider, selectedModelInfo?.inputImage);
   const reasoningOptions = useMemo(() => reasoningOptionsFor(selectedModelInfo), [selectedModelInfo]);
   useEffect(() => {
     if (reasoningEffort === undefined) return;

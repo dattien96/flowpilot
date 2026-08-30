@@ -10,14 +10,13 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
-// Mouse is enabled on all platforms so F2 [open]/[back]/[stop] and wheel
-// scroll stay live while a sub-agent is RUNNING. Windows Ctrl+V raw flood
-// is rejected via Alt+V hint instead of disabling mouse.
-// CA-610 adds WithFilter so hover motion never reaches Update/View.
+// BUG-328: mouse cell-motion is off on all platforms (Windows conhost focus
+// steal). F2/F3/F4 and the action ring are keyboard-only. CA-610 WithFilter
+// remains so any stray motion events never reach Update/View.
 func TestTuiProgramOpts_WindowsNoMouse(t *testing.T) {
 	opts := tuiProgramOpts()
-	if len(opts) != 3 {
-		t.Fatalf("opts must be AltScreen+MouseCellMotion+Filter (click+scroll live), got %d", len(opts))
+	if len(opts) != 2 {
+		t.Fatalf("opts must be AltScreen+Filter only (no MouseCellMotion), got %d", len(opts))
 	}
 }
 
@@ -35,17 +34,18 @@ func TestBurst_WindowsFix_KeysLive_AfterBurstEnterSubmits(t *testing.T) {
 	}
 }
 
-// F2/F4 are click+key live (mouse enabled, keys always live).
+// F2/F4 stay keyboard-live with mouse tracking disabled (BUG-328). Task-311:
+// F2 prints the info dump, F4 is a no-op that must not be swallowed.
 func TestTuiProgramOpts_KeysForSessionPanel(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:9")
 	m.authPhase = AuthNone
-	m.sessionPanel.Collapsed = true
+	m.sessionDefaultsLoaded = true
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyF2})
-	if m2.(*AppModel).sessionPanel.Collapsed {
-		t.Fatal("F2 must toggle session panel (key fallback when mouse off)")
+	if len(m2.(*AppModel).messages) == 0 {
+		t.Fatal("F2 must print the info dump (key fallback when mouse off)")
 	}
 	m2, _ = m2.(*AppModel).handleKey(tea.KeyMsg{Type: tea.KeyF4})
-	// F4 toggles status details — must not be swallowed.
+	// F4 is a no-op — must not be swallowed or crash.
 	if m2 == nil {
 		t.Fatal("F4 handleKey must return model")
 	}

@@ -29,13 +29,15 @@ func TestRegression_ViewNeverFillsLastColumn(t *testing.T) {
 			for _, pk := range []string{"claude", "codex", "grok"} {
 				m := New(config.ChatConfig{Provider: pk, Model: "m"}, "http://127.0.0.1:4317")
 				m.width, m.height = tc.w, 30
+				m.fullWidth = tc.w
 				m.asciiMode = false
 				if tc.side {
 					m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
 					m.sessionPanel.ProjectPath = "/tmp/p"
-					m.sessionPanel.Collapsed = false
+					enableSidebarForTest(m)
+					m.width, m.fullWidth = tc.w, tc.w
 				} else {
-					m.sessionPanel.Collapsed = true
+					m.width, m.fullWidth = tc.w, tc.w
 				}
 				m.addMessage("user", prompt, "")
 				m.addMessage("assistant", "ok", "")

@@ -115,7 +115,13 @@ type ProviderRegistration struct {
 	// session-level way to switch model mid-process. Constructing the adapter
 	// for THIS turn must know the model before the shared process is
 	// ensured/respawned, so newAdapter's zero-arg shape can't carry it.
-	newAdapterForTurn func(model, reasoningEffort string) ProviderRuntimeAdapter
+	// newAdapterForTurn receives the resolved model/effort plus an optional
+	// child-process scope hint (BUG-334): non-empty only for CHILD run turns
+	// (rs.parentRunID != ""), asking the factory to isolate its runtime
+	// process so a child session/new cannot reset a parent turn's in-flight
+	// MCP connection (opencode keys MCP clients by server NAME per process).
+	// Grok ignores the hint (its process keying is model-based).
+	newAdapterForTurn func(model, reasoningEffort, childScope string) ProviderRuntimeAdapter
 }
 
 // ProviderRegistry holds provider registrations in a stable order.
@@ -155,6 +161,13 @@ func (r *ProviderRegistry) Get(key ProviderKey) (ProviderRegistration, bool) {
 // are this turn's resolved values; only a registration with newAdapterForTurn set
 // (Grok) actually uses them -- see ProviderRegistration.newAdapterForTurn.
 func (r *ProviderRegistry) Adapter(key ProviderKey, model, reasoningEffort string) (ProviderRuntimeAdapter, error) {
+	return r.AdapterWithScope(key, model, reasoningEffort, "")
+}
+
+// AdapterWithScope is Adapter with a BUG-334 child-process scope hint: pass the
+// child run id when the turn belongs to a spawned child so per-provider factories
+// can isolate the runtime process from concurrent parent turns.
+func (r *ProviderRegistry) AdapterWithScope(key ProviderKey, model, reasoningEffort, childScope string) (ProviderRuntimeAdapter, error) {
 	reg, ok := r.regs[key]
 	// Only an available provider with a factory yields an adapter; disabled/
 	// placeholder providers surface the typed error here (runner-side boundary),
@@ -163,7 +176,7 @@ func (r *ProviderRegistry) Adapter(key ProviderKey, model, reasoningEffort strin
 		return nil, &UnsupportedProviderRuntimeError{ProviderKey: key}
 	}
 	if reg.newAdapterForTurn != nil {
-		return reg.newAdapterForTurn(model, reasoningEffort), nil
+		return reg.newAdapterForTurn(model, reasoningEffort, childScope), nil
 	}
 	return reg.newAdapter(), nil
 }
@@ -211,6 +224,9 @@ func providerKeyFromModel(model string) (ProviderKey, bool) {
 	case strings.HasPrefix(m, "grok-"), m == "grok-build":
 		// Appended last (CP-46 P-0): existing prefix cases above are unchanged.
 		return ProviderKeyGrok, true
+	case strings.HasPrefix(m, "opencode/"), strings.HasPrefix(m, "opencode-go/"):
+		// Appended last (CP-57 P-0): existing prefix cases above are unchanged.
+		return ProviderKeyOpencode, true
 	}
 	return "", false
 }
@@ -461,7 +477,8 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				Streaming: true, Resume: true, ApprovalEvents: true, FileEvents: true, Interrupt: true,
 				SkillSelection: true,
 			},
-			newAdapterForTurn: func(model, reasoningEffort string) ProviderRuntimeAdapter {
+			newAdapterForTurn: func(model, reasoningEffort, childScope string) ProviderRuntimeAdapter {
+				_ = childScope // Grok keys its process by model/variant; child isolation is opencode-only (BUG-334)
 				scopeKey := "default"
 				env := map[string]string{}
 				account, err := r.ResolveProviderAccount(string(ProviderKeyGrok), "")
@@ -542,6 +559,67 @@ func ProviderRegistryFor(r *Runner) *ProviderRegistry {
 				a.mcpServer = r.claudeMCP
 				a.mcpBaseURL = r.mcpBaseURLValue
 				accountHome := env["GROK_HOME"]
+				a.extraMCPServers = func(yolo bool) map[string]claudeMcpServer {
+					return r.flowpilotClaudeExtraMCPServers(accountHome, yolo)
+				}
+				return a
+			},
+		})
+	}
+	if opencodeAgentEnabled() {
+		reg.register(ProviderRegistration{
+			Key:          ProviderKeyOpencode,
+			DisplayName:  "Opencode",
+			Status:       ProviderStatusAvailable,
+			Capabilities: (&opencodeAdapter{}).Capabilities(),
+			newAdapterForTurn: func(model, reasoningEffort, childScope string) ProviderRuntimeAdapter {
+				// CA-689c: env/scope resolution shared with the variants prober.
+				scopeKey, env, envErr := r.opencodeLaunchEnv()
+				if envErr != nil {
+					return errorAdapter{key: ProviderKeyOpencode, err: envErr}
+				}
+				// Map reasoningEffort to variant for per-turn respawn key (like Grok grokEffort)
+				variant := ""
+				if mapped, ok := opencodeReasoningVariantID(reasoningEffort); ok {
+					variant = mapped
+				}
+				// Use provided model if given, else resolve via defaultModelForProvider (like other providers)
+				if strings.TrimSpace(model) == "" {
+					// Try to resolve default model for opencode if not provided
+					if def := defaultModelForProvider(ProviderKeyOpencode); strings.TrimSpace(def) != "" {
+						model = def
+					}
+				}
+				r.opencodeProcessMu.Lock()
+				auto := r.opencodeDesiredAuto
+				r.opencodeProcessMu.Unlock()
+				// Also consider YOLO posture's OpencodePermissionMode for --auto, but global auto is SSOT
+				// Log the posture for observability (blank identifier was previous dead code)
+				_ = resolveYoloPosture(auto).OpencodePermissionMode
+				// BUG-334: child runs get their own opencode acp process segment.
+				// opencode keys its MCP clients by server NAME per process, so a
+				// child session/new (new per-turn MCP token) on the SHARED process
+				// replaced the connection mid-parent-turn and killed the parent's
+				// in-flight spawn_agent/ask_user call (MCP -32000 Connection
+				// closed). Chat turns keep segment "" (shared process, BUG-329
+				// reuse intact); child turns isolate under "|child:<runID>".
+				h, ensureErr := r.ensureOpencodeProcessSegmented(context.Background(), scopeKey, childScope, r.workspace, env, model, variant, auto)
+				if ensureErr != nil {
+					return errorAdapter{key: ProviderKeyOpencode, err: ensureErr}
+				}
+				a := h.adapter
+				a.onVariantsCaptured = recordOpencodeModelVariants // CA-689b: live per-model variants
+				a.sessionStore = ProviderSessionStoreFor(r)
+				a.promptPrep = func(req TurnRequest) string {
+					workspace := r.workspace
+					if req.Cwd != "" {
+						workspace = req.Cwd
+					}
+					return r.injectSelectedSkills(workspace, req.Prompt, req.SelectedSkills) + opencodeToolReinforcements
+				}
+				a.mcpServer = r.claudeMCP
+				a.mcpBaseURL = r.mcpBaseURLValue
+				accountHome := env["HOME"]
 				a.extraMCPServers = func(yolo bool) map[string]claudeMcpServer {
 					return r.flowpilotClaudeExtraMCPServers(accountHome, yolo)
 				}

@@ -75,7 +75,7 @@ func TestStepsRuntimeMsg_ChatShowsCurrentNotFullList(t *testing.T) {
 	m.runHandle = &client.RunHandle{RunID: "run-1"}
 	m.launch = LaunchArm{WorkflowID: "wf-1", Label: "grok-flow", Mode: ModeFlow}
 	m.mode = ModeFlow
-	m.sessionPanel.Collapsed = false
+	enableSidebarForTest(m)
 	m2, _ := m.Update(StepsRuntimeMsg{
 		RunID: "run-1",
 		Steps: []client.WorkflowStepRuntime{
@@ -99,9 +99,11 @@ func TestStepsRuntimeMsg_ChatShowsCurrentNotFullList(t *testing.T) {
 	if !strings.Contains(chat, "[RUNNING] grok-context") {
 		t.Fatalf("chat missing current step:\n%s", chat)
 	}
-	// Full list still available in the session panel overlay.
-	if !strings.Contains(am.View(), "grok-reviewer") {
-		t.Fatalf("panel should still list other steps in view")
+	// Full list still available in the wide sidebar (Task-311).
+	enableSidebarForTest(am)
+	am.width, am.fullWidth = tuiSidebarMinWidth+10, tuiSidebarMinWidth+10
+	if !strings.Contains(strings.Join(am.renderRightSidebar(30), "\n"), "grok-reviewer") {
+		t.Fatalf("sidebar should still list other steps")
 	}
 }
 

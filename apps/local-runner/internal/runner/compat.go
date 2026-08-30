@@ -22,6 +22,10 @@ const (
 	// CompatTestedGrokVersion is seeded from the Grok Build binary live-verified
 	// during CP-46/Task-206/Task-210 authoring (appended last, CP-46 P-0).
 	CompatTestedGrokVersion = "0.2.93"
+	// CompatTestedOpencodeVersion is seeded from the Opencode binary live-verified
+	// during CP-57 Task-300 (appended last, CP-57 P-0). Spec CP-57 lists 1.18.23 but
+	// live probe on 2026-08-27 is 1.18.18; we keep live and document drift (review I-?).
+	CompatTestedOpencodeVersion = "1.18.18"
 )
 
 // compatClaudeFlags are the CLI flags passed on every `claude -p` invocation.
@@ -48,6 +52,9 @@ type CompatVersionInfo struct {
 	// CheckVersionSettings.tsx stays valid for Codex/Claude.
 	TestedGrokVersion    string `json:"testedGrokVersion"`
 	InstalledGrokVersion string `json:"installedGrokVersion"`
+	// Appended last (CP-57 P-0/Task-302 T-6): grok fields above unchanged.
+	TestedOpencodeVersion    string `json:"testedOpencodeVersion"`
+	InstalledOpencodeVersion string `json:"installedOpencodeVersion"`
 }
 
 type CompatConfig struct {
@@ -55,6 +62,8 @@ type CompatConfig struct {
 	TestedCodexVersion  string `json:"testedCodexVersion"`
 	// Appended last (CP-46 P-0/Task-210 T-11).
 	TestedGrokVersion string `json:"testedGrokVersion"`
+	// Appended last (CP-57 P-0/Task-302 T-6): grok field above unchanged.
+	TestedOpencodeVersion string `json:"testedOpencodeVersion"`
 }
 
 // CompatItem is one check result.
@@ -115,12 +124,14 @@ func (r *Runner) CompatLoadInfo(ctx context.Context) CompatVersionInfo {
 		config = defaultCompatConfig()
 	}
 	return CompatVersionInfo{
-		TestedClaudeVersion:    config.TestedClaudeVersion,
-		InstalledClaudeVersion: compatRunVersion(ctx, "claude"),
-		TestedCodexVersion:     config.TestedCodexVersion,
-		InstalledCodexVersion:  compatRunVersion(ctx, "codex"),
-		TestedGrokVersion:      config.TestedGrokVersion,
-		InstalledGrokVersion:   compatRunVersion(ctx, grokBinaryName()),
+		TestedClaudeVersion:      config.TestedClaudeVersion,
+		InstalledClaudeVersion:   compatRunVersion(ctx, "claude"),
+		TestedCodexVersion:       config.TestedCodexVersion,
+		InstalledCodexVersion:    compatRunVersion(ctx, "codex"),
+		TestedGrokVersion:        config.TestedGrokVersion,
+		InstalledGrokVersion:     compatRunVersion(ctx, grokBinaryName()),
+		TestedOpencodeVersion:    config.TestedOpencodeVersion,
+		InstalledOpencodeVersion: compatRunVersion(ctx, opencodeBinaryName()),
 	}
 }
 
@@ -135,6 +146,7 @@ func (r *Runner) RunCompatCheck(ctx context.Context) CompatCheckResult {
 	items = append(items, compatVersionItem("Claude version", info.InstalledClaudeVersion, info.TestedClaudeVersion))
 	items = append(items, compatVersionItem("Codex version", info.InstalledCodexVersion, info.TestedCodexVersion))
 	items = append(items, compatVersionItem("Grok version", info.InstalledGrokVersion, info.TestedGrokVersion))
+	items = append(items, compatVersionItem("Opencode version", info.InstalledOpencodeVersion, info.TestedOpencodeVersion))
 
 	// 2. Claude required flags (each is passed on every `claude -p` invocation)
 	claudeHelp := compatRunHelp(ctx, "claude")
@@ -211,9 +223,10 @@ func (r *Runner) compatConfigPath() string {
 
 func defaultCompatConfig() CompatConfig {
 	return CompatConfig{
-		TestedClaudeVersion: CompatTestedClaudeVersion,
-		TestedCodexVersion:  CompatTestedCodexVersion,
-		TestedGrokVersion:   CompatTestedGrokVersion,
+		TestedClaudeVersion:   CompatTestedClaudeVersion,
+		TestedCodexVersion:    CompatTestedCodexVersion,
+		TestedGrokVersion:     CompatTestedGrokVersion,
+		TestedOpencodeVersion: CompatTestedOpencodeVersion,
 	}
 }
 
@@ -221,6 +234,7 @@ func normalizeCompatConfig(config CompatConfig) CompatConfig {
 	config.TestedClaudeVersion = strings.TrimSpace(config.TestedClaudeVersion)
 	config.TestedCodexVersion = strings.TrimSpace(config.TestedCodexVersion)
 	config.TestedGrokVersion = strings.TrimSpace(config.TestedGrokVersion)
+	config.TestedOpencodeVersion = strings.TrimSpace(config.TestedOpencodeVersion)
 	if config.TestedClaudeVersion == "" {
 		config.TestedClaudeVersion = CompatTestedClaudeVersion
 	}
@@ -229,6 +243,9 @@ func normalizeCompatConfig(config CompatConfig) CompatConfig {
 	}
 	if config.TestedGrokVersion == "" {
 		config.TestedGrokVersion = CompatTestedGrokVersion
+	}
+	if config.TestedOpencodeVersion == "" {
+		config.TestedOpencodeVersion = CompatTestedOpencodeVersion
 	}
 	return config
 }

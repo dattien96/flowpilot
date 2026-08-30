@@ -23,7 +23,7 @@ func TestYouBoxClamp_ChangeContractCollapsedExpanded(t *testing.T) {
 				m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
 				m.sessionPanel.RunID = "run-208282"
 				m.sessionPanel.ProjectPath = "/tmp/p"
-				m.sessionPanel.Collapsed = false
+				enableSidebarForTest(m)
 			}
 			m.addMessage("user", changeContractPrompt, "")
 			m.addMessage("assistant", "ok", "")
@@ -37,11 +37,8 @@ func TestYouBoxClamp_ChangeContractCollapsedExpanded(t *testing.T) {
 			if strings.Contains(view, "symbols: Subtract") {
 				t.Fatalf("[%s w=%d] collapsed box must hide the 5th line:\n%s", pk, w, view)
 			}
-			// [copy] rides its own row and never shares a content line.
-			for _, row := range strings.Split(view, "\n") {
-				if strings.Contains(row, "[copy]") && strings.Contains(row, "calc_test.go") {
-					t.Fatalf("[%s w=%d] [copy] must be on its own row:\n%s", pk, w, view)
-				}
+			if strings.Contains(view, "[copy]") {
+				t.Fatalf("[%s w=%d] [copy] should be removed (user request):\n%s", pk, w, view)
 			}
 			// Whole box is clickable: any row exposes the expand target.
 			x, y, ok := findClickTarget(m, "user-prompt-expand:"+changeContractPrompt)
@@ -90,20 +87,12 @@ func TestYouBoxClamp_CopyWinsOverExpand(t *testing.T) {
 		m.width, m.height = 80, 24
 		m.addMessage("user", changeContractPrompt, "")
 		m.addMessage("assistant", "ok", "")
-		x, y, target, ok := findAnyTarget(m, "copy:")
-		if !ok {
-			t.Fatalf("%s: clamped box must still expose a copy chip", pk)
+		if _, _, _, ok := findAnyTarget(m, "copy:"); ok {
+			t.Fatalf("%s: [copy] should be removed (user request)", pk)
 		}
-		if !strings.HasPrefix(target, "copy:") {
-			t.Fatalf("%s: expected copy target, got %q", pk, target)
-		}
-		m2, _ := m.Update(clickLeft(x, y))
-		view := stripANSI(m2.(*AppModel).View())
-		if strings.Contains(view, "symbols: Subtract") {
-			t.Fatalf("%s: copy click must not expand the prompt:\n%s", pk, view)
-		}
+		view := stripANSI(m.View())
 		if !strings.Contains(view, "....") {
-			t.Fatalf("%s: copy click must keep the collapsed tail:\n%s", pk, view)
+			t.Fatalf("%s: collapsed tail must remain\n%s", pk, view)
 		}
 	}
 }

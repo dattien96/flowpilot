@@ -65,7 +65,7 @@ func TestCopiedMsg_FlashToastNotChatTimeline(t *testing.T) {
 	m.width, m.height = 80, 24
 	m.projectPath = "/repo/myapp"
 	m.projectBranch = "main"
-	m.statusDetailsCollapsed = false
+	
 	before := len(m.messages)
 	m2, cmd := m.Update(CopiedMsg{Kind: "answer"})
 	am := m2.(*AppModel)

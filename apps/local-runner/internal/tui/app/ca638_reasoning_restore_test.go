@@ -9,16 +9,17 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
-// CA-638: restart-resume must preserve the user's last /reasoning choice
-// instead of re-pinning the posture profile's default (operator report:
-// /reasoning low in chat resets to the code profile's medium on reopen).
-// Additive — the existing chat_posture_restore_test.go suite is untouched.
+// CA-638 history: restart-resume used to keep the user's /reasoning choice.
+// SUPERSEDED 2026-08-29 by the CA-685 operator decision — scan/plan/code are
+// pinned postures: the FULL profile (reasoning included) reloads on restart,
+// and the "non" posture is where a personal reasoning choice survives. The
+// tests below encode the CA-685 spec (same-day rewrite, flagged per R1).
 
-func TestRestorePostureKeepsUserReasoning(t *testing.T) {
+func TestRestorePostureAppliesReasoningPin(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/client/chat-posture" {
 			w.Header().Set("Content-Type", "application/json")
-			// code profile pins reasoning=medium — must NOT override the user's low.
+			// code profile pins reasoning=medium — the pin reloads (CA-685).
 			_, _ = w.Write([]byte(`{"active":"code","profiles":{"scan":{},"plan":{},"code":{"reasoningEffort":"medium"}}}`))
 			return
 		}
@@ -40,8 +41,8 @@ func TestRestorePostureKeepsUserReasoning(t *testing.T) {
 		t.Fatalf("load chat posture failed: %+v", cp)
 	}
 	am.chatPostureCmdFromPending(cp.Cfg)
-	if am.reasoningEffort != "low" {
-		t.Fatalf("restore must keep user reasoning=low, got %q", am.reasoningEffort)
+	if am.reasoningEffort != "medium" {
+		t.Fatalf("restore must apply the code posture reasoning pin, got %q", am.reasoningEffort)
 	}
 	if am.chatPosture != "code" {
 		t.Fatalf("posture after restore = %q, want code", am.chatPosture)
@@ -51,11 +52,11 @@ func TestRestorePostureKeepsUserReasoning(t *testing.T) {
 	}
 }
 
-func TestRestorePostureKeepsUserReasoningOtherProfile(t *testing.T) {
+func TestRestorePostureAppliesReasoningPinOtherProfile(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/client/chat-posture" {
 			w.Header().Set("Content-Type", "application/json")
-			// plan profile pins high; restore must not clobber the user's medium.
+			// plan profile pins high — the pin reloads on restore (CA-685).
 			_, _ = w.Write([]byte(`{"active":"plan","profiles":{"scan":{},"plan":{"provider":"grok","reasoningEffort":"high"},"code":{}}}`))
 			return
 		}
@@ -78,8 +79,8 @@ func TestRestorePostureKeepsUserReasoningOtherProfile(t *testing.T) {
 	if am.chatPosture != "plan" {
 		t.Fatalf("posture after restore = %q, want plan", am.chatPosture)
 	}
-	if am.reasoningEffort != "medium" {
-		t.Fatalf("restore must keep user reasoning=medium, got %q", am.reasoningEffort)
+	if am.reasoningEffort != "high" {
+		t.Fatalf("restore must apply the plan reasoning pin, got %q", am.reasoningEffort)
 	}
 }
 

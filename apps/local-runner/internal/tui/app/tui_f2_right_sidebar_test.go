@@ -16,7 +16,7 @@ func sidebarFlowModel(pk string, width int) *AppModel {
 	m.asciiMode = true
 	m.mode = ModeFlow
 	m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-	m.sessionPanel.Collapsed = false
+	enableSidebarForTest(m)
 	m.runHandle = &client.RunHandle{RunID: "run-main", Status: "running"}
 	m.agentRuns = []client.AgentRunSummary{
 		{RunID: "run-main", AgentName: "main", Role: "main", Status: "running"},
@@ -30,14 +30,14 @@ func sidebarFlowModel(pk string, width int) *AppModel {
 	return m
 }
 
-// TestRightSidebar_WideExpandedEngages: a wide (>=100) expanded F2 panel renders a
-// full-height right sidebar (panelH=0, sideActive) instead of the top overlay.
-func TestRightSidebar_WideExpandedEngages(t *testing.T) {
+// TestRightSidebar_WideEngages: a wide (>= tuiSidebarMinWidth) terminal renders
+// the full-height right sidebar column (panelH=0, sideActive).
+func TestRightSidebar_WideEngages(t *testing.T) {
 	for _, pk := range []string{"claude", "codex", "grok"} {
 		t.Run(pk, func(t *testing.T) {
 			m := sidebarFlowModel(pk, 120)
 			if !m.useRightSidebar() {
-				t.Fatalf("%s: wide expanded must engage right sidebar", pk)
+				t.Fatalf("%s: wide terminal must engage right sidebar", pk)
 			}
 			c := m.tuiChrome()
 			if !c.sideActive {
@@ -46,18 +46,21 @@ func TestRightSidebar_WideExpandedEngages(t *testing.T) {
 			if c.panelH != 0 {
 				t.Fatalf("%s: sidebar must not reserve top overlay rows (panelH=%d)", pk, c.panelH)
 			}
-			// Sidebar column present in the rendered view.
+			// Sidebar column present in the rendered view – now only session+steps (no status)
 			view := m.View()
-			if !strings.Contains(view, "[collapse]") {
-				t.Fatalf("%s: view missing sidebar [collapse]:\n%s", pk, view)
+			if !strings.Contains(view, "session") {
+				t.Fatalf("%s: view missing sidebar session section:\n%s", pk, view)
+			}
+			if !strings.Contains(view, "steps") {
+				t.Fatalf("%s: view missing sidebar steps section:\n%s", pk, view)
 			}
 		})
 	}
 }
 
-// TestRightSidebar_NarrowUsesOverlay: a narrow (<100) expanded F2 panel keeps the
-// legacy top-right overlay (no sidebar column).
-func TestRightSidebar_NarrowUsesOverlay(t *testing.T) {
+// TestRightSidebar_NarrowKeepsChatOnly: a narrow (< tuiSidebarMinWidth)
+// terminal shows no sidebar and no overlay — chat column only (Task-311).
+func TestRightSidebar_NarrowKeepsChatOnly(t *testing.T) {
 	m := sidebarFlowModel("codex", 80)
 	if m.useRightSidebar() {
 		t.Fatal("narrow terminal must not engage right sidebar")
@@ -66,43 +69,20 @@ func TestRightSidebar_NarrowUsesOverlay(t *testing.T) {
 	if c.sideActive {
 		t.Fatal("narrow terminal must not set sideActive")
 	}
-	if c.panelH == 0 {
-		t.Fatal("narrow terminal must keep the top-right overlay (panelH>0)")
+	if len(c.panelLines) != 0 {
+		t.Fatal("narrow terminal must have no overlay rows (Task-311)")
 	}
 }
 
-// TestRightSidebar_CollapsedWideShowsChip: a wide but collapsed F2 panel shows only
-// the [info] chip overlay (no sidebar column).
-func TestRightSidebar_CollapsedWideShowsChip(t *testing.T) {
-	m := sidebarFlowModel("codex", 120)
-	m.sessionPanel.Collapsed = true
-	if m.useRightSidebar() {
-		t.Fatal("collapsed panel must not engage right sidebar")
-	}
-	c := m.tuiChrome()
-	if c.sideActive {
-		t.Fatal("collapsed panel must not set sideActive")
-	}
-	view := stripANSI(m.View())
-	if strings.Contains(view, "[collapse]") {
-		t.Fatal("collapsed panel must not render sidebar [collapse]")
-	}
-	if !strings.Contains(view, "[info]") {
-		t.Fatal("collapsed panel must render the [info] chip")
-	}
-}
-
-// TestRightSidebar_ClickOpenFocusesChild: clicking [open] on a child step row in the
-// right sidebar focuses that child agent.
-func TestRightSidebar_ClickOpenFocusesChild(t *testing.T) {
+// TestRightSidebar_FocusChildViaAgents: focusing a child agent via /agents (no click chip).
+func TestRightSidebar_FocusChildViaAgents(t *testing.T) {
 	for _, pk := range []string{"claude", "codex", "grok"} {
 		t.Run(pk, func(t *testing.T) {
 			m := sidebarFlowModel(pk, 120)
-			x, y, ok := findClickTarget(m, "agent-open:run-rev")
-			if !ok {
-				t.Fatalf("%s: expected clickable [open] in right sidebar", pk)
+			m2, cmd := m.handleSlashCommand("/agents my-reviewer")
+			if cmd == nil {
+				t.Fatalf("%s: /agents must focus child", pk)
 			}
-			m2, _ := m.dispatchMouseClick(x, y)
 			am := m2.(*AppModel)
 			if !am.viewingChild() || am.focusRunID != "run-rev" {
 				t.Fatalf("%s: focusRunID=%q viewingChild=%v", pk, am.focusRunID, am.viewingChild())
@@ -111,33 +91,23 @@ func TestRightSidebar_ClickOpenFocusesChild(t *testing.T) {
 	}
 }
 
-// TestRightSidebar_ClickCollapseFolds: clicking [collapse] in the right sidebar
-// collapses the F2 panel back to the [info] chip.
-func TestRightSidebar_ClickCollapseFolds(t *testing.T) {
+// TestRightSidebar_ClickCollapseIsNoOp: the [collapse] click target is gone —
+// width is the only switch (Task-311).
+func TestRightSidebar_ClickCollapseIsNoOp(t *testing.T) {
 	m := sidebarFlowModel("codex", 120)
-	x, y, ok := findClickTarget(m, "sidebar-collapse")
-	if !ok {
-		t.Fatalf("expected clickable [collapse] in right sidebar")
-	}
-	m2, _ := m.dispatchMouseClick(x, y)
-	am := m2.(*AppModel)
-	if !am.sessionPanel.Collapsed {
-		t.Fatal("clicking [collapse] must fold the F2 panel")
+	m2, _ := m.activateClickTarget("sidebar-collapse")
+	if len(m2.(*AppModel).messages) != 0 {
+		t.Fatal("sidebar-collapse click must be a no-op")
 	}
 }
 
-// TestRightSidebar_ClickSessionToggles: clicking the sidebar "session" header toggles
-// the F2 panel collapsed.
-func TestRightSidebar_ClickSessionToggles(t *testing.T) {
+// TestRightSidebar_ClickSessionIsNoOp: clicking the sidebar "session" header no
+// longer toggles anything (Task-311).
+func TestRightSidebar_ClickSessionIsNoOp(t *testing.T) {
 	m := sidebarFlowModel("codex", 120)
-	x, y, ok := findClickTarget(m, "session")
-	if !ok {
-		t.Fatalf("expected clickable session header in right sidebar")
-	}
-	m2, _ := m.dispatchMouseClick(x, y)
-	am := m2.(*AppModel)
-	if !am.sessionPanel.Collapsed {
-		t.Fatal("clicking session header must toggle F2 collapsed")
+	m2, _ := m.activateClickTarget("session")
+	if len(m2.(*AppModel).messages) != 0 {
+		t.Fatal("session click must be a no-op")
 	}
 }
 

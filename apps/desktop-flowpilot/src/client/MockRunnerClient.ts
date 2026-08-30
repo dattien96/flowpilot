@@ -152,6 +152,32 @@ const MOCK_PROVIDER_ACCOUNTS: ProviderAccountSummary[] = [
     usageDetailLines: [],
   },
   {
+    // Appended last (CP-57 P-0/Task-302 T-2).
+    id: "acct-opencode-1",
+    providerKey: "opencode",
+    displayName: "Account 1",
+    displayLabel: "opencode.user@example.com",
+    homePath: "/Users/demo/.config/opencode",
+    authStorePath: "/Users/demo/.config/opencode/auth.json",
+    slotIndex: 0,
+    authStatus: "connected",
+    isActive: true,
+    createdAt: "2026-08-27T10:00:00.000Z",
+    lastAuthenticatedAt: "2026-08-27T10:00:00.000Z",
+    accountEmail: "opencode.user@example.com",
+    accountName: "Opencode User",
+    usageSummary: "Zen Proxy",
+    remaining5hPercent: null,
+    remaining7dPercent: null,
+    remaining5hResetAt: null,
+    remaining7dResetAt: null,
+    usageSource: "provider_api",
+    accessTokenExpiresAt: null,
+    refreshTokenExpiresAt: null,
+    refreshTokenExpiryNote: null,
+    usageDetailLines: [{ label: "cost: $0.00", remainingPercent: 0, resetAt: null }],
+  },
+  {
     id: "acct-codex-2",
     providerKey: "codex",
     displayName: "Account 2",
@@ -241,6 +267,7 @@ export class MockRunnerClient implements RunnerClient {
     scan: {},
     plan: {},
     code: {},
+    non: {},
   };
 
   setScenario(scenario: ScenarioName): void {
@@ -367,7 +394,7 @@ export class MockRunnerClient implements RunnerClient {
     return { runId, generated: true, skipped: false };
   }
 
-  async connectProviderAccount(providerKey: "codex" | "claude" | "gemini" | "grok"): Promise<void> {
+  async connectProviderAccount(providerKey: "codex" | "claude" | "gemini" | "grok" | "opencode"): Promise<void> {
     await delay(80);
     const nextSlotIndex =
       MOCK_PROVIDER_ACCOUNTS.filter((account) => account.providerKey === providerKey).reduce(
@@ -712,6 +739,7 @@ export class MockRunnerClient implements RunnerClient {
       scan: { ...config.profiles.scan },
       plan: { ...config.profiles.plan },
       code: { ...config.profiles.code },
+      non: { ...config.profiles.non },
     };
     return this.getChatPosture();
   }

@@ -1,4 +1,5 @@
 ---
+version: 6
 name: tdd-skill
 description: Use this skill PROACTIVELY during the TDD phase (after Architecture) to define test signatures and expectations based on the implementation plan.
 ---

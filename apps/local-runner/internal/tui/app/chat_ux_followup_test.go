@@ -89,18 +89,17 @@ func TestView_PadsBlankLineAndRuleBeforeStatus(t *testing.T) {
 	m.addMessage("user", "hello", "")
 	m.addMessage("assistant", "world", "")
 	view := m.View()
-	rule := strings.Repeat("-", 80)
 	plain := stripANSI(view)
-	idx := strings.Index(plain, "YOLO")
-	if idx < 0 {
-		t.Fatalf("missing status:\n%s", plain)
+	// Per user request: horizontal rule removed, replaced by small padding; bg uniform gray
+	if strings.Contains(plain, strings.Repeat("-", 80)) || strings.Contains(plain, strings.Repeat("─", 80)) {
+		t.Fatalf("horizontal rule should be removed (padding only), got:\n%s", plain)
 	}
-	before := plain[:idx]
-	if !strings.Contains(before, rule) {
-		t.Fatal("expected a rule above the status line")
+	if !strings.Contains(plain, "hello") || !strings.Contains(plain, "world") {
+		t.Fatal("transcript must be present")
 	}
-	if !strings.Contains(plain, "\n"+rule+"\n") {
-		t.Fatalf("rule must have padding around it, got:\n%s", plain)
+	// Padding separates transcript from input frame
+	if !strings.Contains(plain, "hello") {
+		t.Fatalf("missing hello:\n%s", plain)
 	}
 }
 

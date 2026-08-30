@@ -8,7 +8,7 @@
 // Keep this in sync with the Go runner's event DTOs.
 // ============================================================================
 
-export type ProviderKey = "codex" | "claude" | "gemini" | "grok";
+export type ProviderKey = "codex" | "claude" | "gemini" | "grok" | "opencode";
 
 // ---- Domain (navigator) ----------------------------------------------------
 
@@ -487,7 +487,7 @@ export interface TurnInput {
    * auto-approves reads and auto-denies writes without asking the user. The
    * composer resends the current posture on every chat turn, like model/YOLO.
    */
-  chatPosture?: "scan" | "plan" | "code";
+  chatPosture?: ChatPosture;
   /**
    * Image attachments for this chat turn (Task-052). Carried inline as base64.
    * Omitted in workflow/step mode and when no images are attached. Supported only
@@ -523,7 +523,7 @@ export interface BuiltinFlowOption {
  * runner (SSOT, shared file) and both Desktop + TUI reach it ONLY through the
  * runner's GET/PUT /client/chat-posture endpoints.
  */
-export type ChatPosture = "scan" | "plan" | "code";
+export type ChatPosture = "scan" | "plan" | "code" | "non";
 
 export interface ChatPostureProfile {
   provider?: string;
@@ -534,7 +534,9 @@ export interface ChatPostureProfile {
 
 export interface ChatPostureConfig {
   active: ChatPosture;
-  profiles: Record<ChatPosture, ChatPostureProfile>;
+  // CA-685: partial by design — the runner omits empty profiles and the "non"
+  // posture has none, so every key access must tolerate a missing entry.
+  profiles: Partial<Record<ChatPosture, ChatPostureProfile>>;
 }
 
 /** Posture labels/descriptions for the composer tabs + setup modal. */
@@ -542,6 +544,7 @@ export const CHAT_POSTURES: { key: ChatPosture; label: string; hint: string }[] 
   { key: "scan", label: "Scan", hint: "Read-only exploration — reads auto-approve, writes auto-deny." },
   { key: "plan", label: "Plan", hint: "Read-only planning — reads auto-approve, writes auto-deny." },
   { key: "code", label: "Code", hint: "Normal approvals / YOLO — full tool access." },
+  { key: "non", label: "Non", hint: "No posture — keeps your last model choice across restarts." },
 ];
 
 // ---- ProviderEventDTO (serialized ProviderEvent union) ---------------------
@@ -864,6 +867,12 @@ export interface RunnerClient {
    * Optional so mock/older clients degrade gracefully.
    */
   getChatPosture?(): Promise<ChatPostureConfig>;
+  /**
+   * CA-689c: the model's real reasoning effort options (live ACP probe on the
+   * runner, cached runner-side). Opencode-only today — the models CLI cannot
+   * report per-model variants. Optional so mock/older clients degrade.
+   */
+  getOpencodeModelVariants?(modelId: string): Promise<{ supportedEfforts: string[]; defaultReasoningEffort: string }>;
   /** PUT /client/chat-posture — persists the active posture + profile pins. */
   setChatPosture?(config: ChatPostureConfig): Promise<ChatPostureConfig>;
   openProviderAccountTerminal(accountId: string): Promise<void>;

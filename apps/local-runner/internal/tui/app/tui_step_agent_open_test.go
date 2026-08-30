@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
 )
@@ -14,7 +16,7 @@ func testFlowWithChildAgents() *AppModel {
 	m.asciiMode = true
 	m.mode = ModeFlow
 	m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
-	m.sessionPanel.Collapsed = false
+	enableSidebarForTest(m)
 	m.runHandle = &client.RunHandle{RunID: "run-main", Status: "running"}
 	m.agentRuns = []client.AgentRunSummary{
 		{RunID: "run-main", AgentName: "main", Role: "main", Status: "running"},
@@ -28,17 +30,17 @@ func testFlowWithChildAgents() *AppModel {
 	return m
 }
 
-func TestStepPanel_OpenButtonOnlyOnChildStep(t *testing.T) {
+func TestStepPanel_ChildStepHasNoOpenChip(t *testing.T) {
 	m := testFlowWithChildAgents()
 	joined := strings.Join(m.flowStepsPanelLines(), "\n")
-	if !strings.Contains(joined, "my-reviewer") || !strings.Contains(joined, "[open]") {
-		t.Fatalf("child step should show [open]:\n%s", joined)
+	if !strings.Contains(joined, "my-reviewer") {
+		t.Fatalf("child step must render:\n%s", joined)
 	}
-	if strings.Count(joined, "[open]") != 1 {
-		t.Fatalf("only child step should have [open]:\n%s", joined)
+	if strings.Contains(joined, "[open]") {
+		t.Fatalf("child step must NOT show [open] (keyboard-only via /agents):\n%s", joined)
 	}
-	if strings.Contains(joined, "coder [open]") {
-		t.Fatalf("main/coder step must not have [open]:\n%s", joined)
+	if strings.Contains(joined, "[back]") {
+		t.Fatalf("child step must NOT show [back]:\n%s", joined)
 	}
 }
 
@@ -53,57 +55,53 @@ func TestStepPanel_NoOpenWithoutChildRun(t *testing.T) {
 	}
 }
 
-func TestStepPanel_ClickOpenFocusesChild(t *testing.T) {
+func TestStepPanel_FocusChildViaAgentsShowsTealMarker(t *testing.T) {
 	m := testFlowWithChildAgents()
-	x, y, ok := findClickTarget(m, "agent-open:run-rev")
-	if !ok {
-		t.Fatalf("expected [open] hit; panel:\n%s", strings.Join(m.renderSessionPanelOverlay(), "\n"))
+	m2, cmd := m.handleSlashCommand("/agents my-reviewer")
+	if cmd == nil {
+		t.Fatal("expected focus cmd")
 	}
-	m2, _ := m.dispatchMouseClick(x, y)
 	am := m2.(*AppModel)
 	if !am.viewingChild() || am.focusRunID != "run-rev" {
 		t.Fatalf("focusRunID=%q viewingChild=%v", am.focusRunID, am.viewingChild())
 	}
+	// The focused child step row uses the teal agent style + a marker (no chip).
+	joined := stripANSI(strings.Join(am.flowStepsPanelLines(), "\n"))
+	if !strings.Contains(joined, "my-reviewer") {
+		t.Fatalf("child step must render:\n%s", joined)
+	}
+	if !strings.Contains(joined, ">") && !strings.Contains(joined, "▸") {
+		t.Fatalf("focused child step must show a selection marker: %s", joined)
+	}
+	if strings.Contains(joined, "[open]") || strings.Contains(joined, "[back]") {
+		t.Fatalf("no clickable chips on the focused row:\n%s", joined)
+	}
 }
 
-func TestStepPanel_ClickBackReturnsMain(t *testing.T) {
+func TestStepPanel_EscFromChildReturnsMain(t *testing.T) {
 	m := testFlowWithChildAgents()
 	m.mainTranscript = []ChatMessage{{Role: "user", Content: "hello"}}
 	m.focusRunID = "run-rev"
-	joined := strings.Join(m.flowStepsPanelLines(), "\n")
-	plain := stripANSI(joined)
-	if strings.Contains(plain, "[back]") {
-		t.Fatalf("focused step row must not hold [back] (moved to steps header, CA-542):\n%s", plain)
+	joined := stripANSI(strings.Join(m.flowStepsPanelLines(), "\n"))
+	if strings.Contains(joined, "[back]") {
+		t.Fatalf("focused step row must not hold [back]:\n%s", joined)
 	}
-	if strings.Contains(plain, "[open]") {
-		t.Fatalf("focused step row must not hold [open]:\n%s", plain)
+	if strings.Contains(joined, "[open]") {
+		t.Fatalf("focused step row must not hold [open]:\n%s", joined)
 	}
-	if strings.Contains(plain, "Viewing:") {
-		t.Fatalf("no duplicate Viewing header when step is already highlighted:\n%s", plain)
+	// stepsSectionTitle carries no [back] chip (switching is /agents + Esc).
+	if strings.Contains(m.stepsSectionTitle(), "[back]") {
+		t.Fatalf("steps header must not host [back]: %q", m.stepsSectionTitle())
 	}
-	// [back] lives on the "steps" section header and uses the action style.
-	if !strings.Contains(m.stepsSectionTitle(), styleStepAgentAction.Render("[back]")) {
-		t.Fatalf("[back] must use step-agent action style on the steps header:\n%q", m.stepsSectionTitle())
-	}
-	// Status is location-only; [back] is F2-only.
-	if st := stripANSI(m.renderStatusLine0(" | ", 120)); strings.Contains(st, "[back]") {
-		t.Fatalf("status must not show [back]: %q", st)
-	}
-	x, y, ok := findClickTarget(m, "agent-back")
-	if !ok {
-		t.Fatalf("expected [back] hit; overlay:\n%s\nstatus:\n%s",
-			strings.Join(m.renderSessionPanelOverlay(), "\n"), m.renderStatusLine())
-	}
-	m2, _ := m.dispatchMouseClick(x, y)
+	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEscape})
 	am := m2.(*AppModel)
 	if am.viewingChild() || am.focusRunID != "" {
-		t.Fatalf("expected main; focusRunID=%q", am.focusRunID)
+		t.Fatalf("Esc must return to main; focusRunID=%q", am.focusRunID)
 	}
 }
 
 func TestStepPanel_OpenBackNotOnStatus(t *testing.T) {
 	m := testFlowWithChildAgents()
-	// Expand F2 so [open] is hittable there; status still must not list agents.
 	_ = m.View()
 	line0 := stripANSI(m.renderStatusLine0(" | ", 120))
 	if !strings.Contains(line0, "agent:main") {
@@ -113,11 +111,8 @@ func TestStepPanel_OpenBackNotOnStatus(t *testing.T) {
 		t.Fatalf("status must not host open chrome: %q", line0)
 	}
 	panel := strings.Join(m.flowStepsPanelLines(), "\n")
-	if !strings.Contains(panel, styleStepAgentAction.Render("[open]")) {
-		t.Fatalf("[open] must use step-agent action style:\n%q", panel)
-	}
-	if _, _, ok := findClickTarget(m, "agent-open:run-rev"); !ok {
-		t.Fatal("F2 [open] must still hit")
+	if strings.Contains(panel, "[open]") || strings.Contains(panel, "[back]") {
+		t.Fatalf("panel must not host click chips:\n%q", panel)
 	}
 }
 

@@ -1,4 +1,5 @@
 ---
+version: 6
 name: planner-skill
 description: Use this skill PROACTIVELY during the initial planning phase, when refining task breakdowns, or performing context research using the 4C Checklist.
 ---

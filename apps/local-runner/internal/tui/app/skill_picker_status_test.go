@@ -15,14 +15,19 @@ func TestStatusLine_OmitsChatModeChip(t *testing.T) {
 	m.mode = ModeChat
 	m.asciiMode = true
 	line := m.renderStatusLine()
-	if !strings.Contains(line, "[chat]") {
-		t.Fatalf("chat mode should label [chat]: %q", line)
+	if strings.Contains(line, "[chat]") {
+		t.Fatalf("status line must not carry the mode chip: %q", line)
 	}
 	m.mode = ModeFlow
 	m.launch = LaunchArm{FlowRef: "pack/review-loop", Label: "review-loop"}
 	line = m.renderStatusLine()
-	if !strings.Contains(line, "[flow]") {
-		t.Fatalf("flow mode should keep [flow]: %q", line)
+	if strings.Contains(line, "[flow]") {
+		t.Fatalf("status line must not carry the mode chip: %q", line)
+	}
+	// Mode now lives in input header
+	header := stripANSI(m.chatFrameTitle())
+	if !strings.Contains(header, "review-loop") && !strings.Contains(header, "flow") {
+		t.Fatalf("header should label flow mode: %q", header)
 	}
 }
 
@@ -34,42 +39,33 @@ func TestStatusLine_ShowsAttachedSkills(t *testing.T) {
 		{Name: "oracle-rule"},
 	}
 	line := m.renderStatusLine()
-	if !strings.Contains(line, "skills:2") {
-		t.Fatalf("missing skill count: %q", line)
+	if strings.Contains(line, "skills:2") {
+		t.Fatalf("skills chip must not be on status line (hidden per new UI): %q", line)
 	}
-	if !strings.Contains(line, ">") {
-		t.Fatalf("collapsed chip should show expand marker: %q", line)
-	}
-	if strings.Contains(line, "additive-tests-only") {
-		t.Fatalf("collapsed status must not dump skill names: %q", line)
+	// Skills are attached but not shown in input chrome per new spec (sidebar only session+steps)
+	// Just verify they are stored
+	if len(m.selectedSkills) != 2 {
+		t.Fatalf("selectedSkills not stored")
 	}
 }
 
-func TestStatusLine_SkillsExpandOnF3(t *testing.T) {
+func TestStatusLine_SkillsNamesLiveInSidebar(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "grok"}, "http://127.0.0.1:4317")
 	m.asciiMode = true
-	m.width = 80
 	m.selectedSkills = []client.SkillSelection{
 		{Name: "additive-tests-only"},
 		{Name: "oracle-rule"},
-		{Name: "safe-fix-contract"},
 	}
 	m2, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyF3})
 	am := m2.(*AppModel)
-	if !am.statusSkillsExpanded {
-		t.Fatal("F3 should expand skill names")
-	}
 	line := am.renderStatusLine()
-	if !strings.Contains(line, "additive-tests-only") || !strings.Contains(line, "oracle-rule") {
-		t.Fatalf("expanded status missing names: %q", line)
+	if strings.Count(line, "\n") != 0 {
+		t.Fatalf("F3 must not add status rows (no-op): %q", line)
 	}
-	if strings.Count(line, "\n") < 2 {
-		t.Fatalf("expanded status should add a skills row: %q", line)
-	}
-	m3, _ := am.handleKey(tea.KeyMsg{Type: tea.KeyF3})
-	am = m3.(*AppModel)
-	if am.statusSkillsExpanded {
-		t.Fatal("F3 again should collapse")
+	// Skills no longer in sidebar (sidebar only session+steps per user request)
+	// Just verify F3 is no-op
+	if len(am.selectedSkills) != 2 {
+		t.Fatalf("skills should remain after F3")
 	}
 }
 
@@ -117,9 +113,9 @@ func TestSkillPicker_TabTicksEnterApplies(t *testing.T) {
 	if len(am.selectedSkills) != 2 {
 		t.Fatalf("Enter apply must keep ticks, got %+v", am.selectedSkills)
 	}
-	line := am.renderStatusLine()
-	if !strings.Contains(line, "skills:2") {
-		t.Fatalf("status after apply missing skill chip: %q", line)
+	// Skills are stored, not shown on status line per new UI
+	if len(am.selectedSkills) != 2 {
+		t.Fatalf("skills should remain")
 	}
 }
 

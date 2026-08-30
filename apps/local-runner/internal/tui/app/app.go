@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -49,13 +50,13 @@ const (
 )
 
 var (
-	styleUserLabel   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
-	styleUser        = lipgloss.NewStyle().Foreground(lipgloss.Color(colorPromptText))
-	styleAssistant   = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
-	styleSystem      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
-	styleTool        = lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn))
-	styleError       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
-	styleGate        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAsk))
+	styleUserLabel = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
+	styleUser      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorPromptText))
+	styleAssistant = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
+	styleSystem    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+	styleTool      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorWarn))
+	styleError     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
+	styleGate      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAsk))
 	// Question-card hierarchy (CA-643): the [QUESTION] head, the prompt body,
 	// the option rows and the "Answered:" confirmation used to be one flat
 	// --ask purple block. Each part now has its own hue so the card is scannable:
@@ -74,12 +75,12 @@ var (
 	styleQuestionDescBox = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim)).Background(lipgloss.Color(colorBg3))
 	styleAnswerBorder    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOK)).Background(lipgloss.Color(colorBg3))
 	styleAnswerHeadBox   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK)).Background(lipgloss.Color(colorBg3))
-	styleStatus      = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
-	styleStatusHi    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // model, reason value, YOLO value, 7d, skills
-	styleMention     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))     // skill tokens in prompt
-	styleMentionFile = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // @file paths in prompt
-	styleStatusOK    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))
-	styleStatusErr   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
+	styleStatus          = lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+	styleStatusHi        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // model, reason value, YOLO value, 7d, skills
+	styleMention         = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))     // skill tokens in prompt
+	styleMentionFile     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)) // @file paths in prompt
+	styleStatusOK        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorOK))
+	styleStatusErr       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorErr))
 	// agent:NAME and flow-name values — dedicated hues, not styleStatusHi/accent.
 	styleStatusAgent = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusAgent))
 	styleStatusFlow  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorStatusFlow))
@@ -97,20 +98,47 @@ var (
 	styleSuggestSel  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)).Underline(true)
 	styleLoading     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorWarn)).Background(lipgloss.Color(colorBg3))
 	styleLink        = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color(colorAccent))
-	styleSelect      = lipgloss.NewStyle().Reverse(true)
-	styleThinking    = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color(colorTextDim))
+	// BUG-333 UX: the selected action in an action ring (Approve/Deny, gate
+	// options, question options, attention/blocked actions) renders as a
+	// FILLED chip — same selection language as the /mode-setup tab row — so
+	// Tab/arrows moves are impossible to miss (accent-colored text on both
+	// states was nearly invisible).
+	styleRingSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Background(lipgloss.Color("62"))
+	styleSelect       = lipgloss.NewStyle().Reverse(true)
+	styleThinking     = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color(colorTextDim))
 	// Active workflow step (Desktop timeline “current” accent).
 	styleStepRunning = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorWarn)).Background(lipgloss.Color(colorBg3))
 	styleStepDone    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOK))
 	styleStepFailed  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorErr))
 	// F2 step [open]/[back] — distinct from step highlight (accent) and running (warn).
 	styleStepAgentAction = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color(colorAsk))
+	// Selected step row (sidebar steps view) — same filled-chip selection
+	// language as the action ring / mode-setup tab row (BUG-333): bold white on
+	// the 62 blue background. The old teal text (styleStatusAgent) did not
+	// stand out against the dim unselected rows.
+	styleStepSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Background(lipgloss.Color("62"))
 	// Canvas + elevated-panel backgrounds (CA-532): whole window canvas is darkest,
 	// the right sidebar and chat bar are lighter grays like opencode.
 	styleCanvas  = lipgloss.NewStyle().Background(lipgloss.Color(colorCanvas))
 	styleSidebar = lipgloss.NewStyle().Background(lipgloss.Color(colorBg2))
 	styleChatBar = lipgloss.NewStyle().Background(lipgloss.Color(colorBg3))
 )
+
+// isStalledStatus reports the watchdog banner that must not pollute the input
+// frame chrome (user request: that long warning goes to the bottom line outside
+// the composer instead of top-left "Chat: ... | stalled ...").
+func isStalledStatus(s string) bool {
+	low := strings.ToLower(strings.TrimSpace(s))
+	return strings.Contains(low, "input stalled") || strings.Contains(low, "close this window to exit")
+}
+
+// chatBarBg returns s with the composer #1e1e1e background. Composer inner
+// segments (title, body, attach) must carry the bar bg themselves so a lipgloss
+// reset inside the segment does not punch a black hole in the solid gray frame
+// (see renderChatPane / frameInput).
+func chatBarBg(s lipgloss.Style) lipgloss.Style {
+	return s.Background(lipgloss.Color(colorBg3))
+}
 
 // ---- New / Init -------------------------------------------------------------
 
@@ -194,9 +222,10 @@ func cmdSetAutoWrap(on bool) tea.Cmd {
 }
 
 func (m *AppModel) Init() tea.Cmd {
-	tuiLog("Init() -> disable autowrap + cmdConnect + tickCursor")
+	tuiLog("Init() -> disable autowrap + mouse-off ANSI + cmdConnect + tickCursor")
 	return tea.Sequence(
 		cmdSetAutoWrap(false),
+		cmdEnsureMouseTrackingOff(),
 		tea.Batch(m.cmdConnect(), tickCursor(), cmdInputWatchdog()),
 	)
 }
@@ -217,6 +246,7 @@ func cmdThinkingTick() tea.Cmd {
 // ---- Update -----------------------------------------------------------------
 
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m.syncActionRingCard()
 	// Log startup-relevant messages (skip high-frequency ticks to keep log readable).
 	switch v := msg.(type) {
 	case cursorTickMsg, thinkingTickMsg, tea.WindowSizeMsg, inputWatchdogMsg:
@@ -238,6 +268,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				tuiLog("Update FlowListMsg builtins=%d workflows=%d err=%q silent=%v", len(x.Builtins), len(x.Workflows), x.CatalogErr, x.Silent)
 			case SessionDefaultsMsg:
 				tuiLog("Update SessionDefaultsMsg providers=%d accounts=%d projects=%d err=%q", len(x.Providers), len(x.ProviderAccounts), len(x.Projects), x.CatalogErr)
+			case ProvidersCatalogMsg:
+				tuiLog("Update ProvidersCatalogMsg providers=%d err=%q", len(x.Providers), x.Err)
 			case SkillsListMsg:
 				tuiLog("Update SkillsListMsg n=%d err=%q show=%v", len(x.Skills), x.Err, x.Show)
 			case ChatOpenedMsg:
@@ -499,13 +531,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionLoading = true
 		m.sessionPanel.RunnerURL = msg.RunnerURL
 		m.sessionPanel.ProjectPath = m.cfg.ProjectPath
-		// CA-633: start with the F2 sidebar COLLAPSED. The panel has content
-		// (RunnerURL) the moment we connect, so the zero-value Collapsed=false
-		// opened it on every cold start — with composeCellBuf ~300ms+ at
-		// 126×50, hover motion + cursor ticks filled the conhost 64-slot queue
-		// and keys dropped before ever reaching Update. F2 opens it; flow
-		// steps/agents auto-open it via agents_focus.go when a run starts.
-		m.sessionPanel.Collapsed = true
+		// Task-311: the sidebar is width-reactive (>= tuiSidebarMinWidth) and
+		// starts visible on wide terminals; no Collapsed state exists anymore.
 		cmds := []tea.Cmd{
 			m.cmdLoadSessionDefaults(),
 			m.cmdPrefetchFlows(),
@@ -530,6 +557,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Do NOT mark sessionDefaultsLoaded: a late SessionDefaultsMsg must still
 		// count as first load so it persists provider/model and restores flow.
 		if m.sessionDefaultsLoaded {
+			tuiLog("sessionLoadTimeoutMsg ignored (defaults already loaded)")
 			return m, nil
 		}
 		m.sessionLoading = false
@@ -581,6 +609,78 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case ProvidersCatalogMsg:
+		if msg.Err != "" {
+			tuiLog("ProvidersCatalogMsg retry err=%q", msg.Err)
+			if len(m.providers) == 0 {
+				m.addMessage("system",
+					"Provider catalog still empty after retry: "+msg.Err+"\n"+
+						"/provider list needs GET /providers — try /status or restart chat.",
+					"error",
+				)
+			}
+			return m, nil
+		}
+		if len(msg.Providers) == 0 {
+			return m, nil
+		}
+		m.providers = msg.Providers
+		if m.model == "" && m.provider != "" {
+			if models := modelsForProvider(m.providers, m.provider); len(models) > 0 {
+				m.model = models[0]
+				m.clampReasoningForCurrentModel() // CA-686
+			}
+		}
+		m.bindActiveAccountForProvider()
+		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
+		m.refreshSessionPanel()
+		n := opencodeCatalogModelCount(m.providers)
+		if n > 0 && n < minOpencodeCatalogModels {
+			m.addMessage("system", fmt.Sprintf("OpenCode catalog still warming (%d models) — retrying in background…", n), "")
+		} else {
+			m.addMessage("system", fmt.Sprintf("Provider catalog loaded (%d). /provider to list.", len(m.providers)), "")
+		}
+		var cmds []tea.Cmd
+		cmds = append(cmds, m.cmdLoadSkills(false))
+		if cmd := m.scheduleOpencodeCatalogRetryCmd(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		if cmd := m.maybeFetchOpencodeVariants(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+
+	case ProvidersWarmRetryMsg:
+		m.providersWarmRetries++
+		if !needsOpencodeCatalogWarmRetry(m.providers) {
+			return m, nil
+		}
+		return m, m.cmdLoadProvidersCatalog()
+
+	case opencodeVariantsMsg:
+		if msg.Err != "" {
+			tuiLog("opencodeVariantsMsg err model=%q err=%q", msg.Model, msg.Err)
+			return m, nil
+		}
+		for pi := range m.providers {
+			if !strings.EqualFold(m.providers[pi].Key, "opencode") {
+				continue
+			}
+			for mi := range m.providers[pi].Models {
+				if strings.EqualFold(m.providers[pi].Models[mi].ModelID(), msg.Model) {
+					m.providers[pi].Models[mi].SupportedReasoningEfforts = msg.Efforts
+					m.providers[pi].Models[mi].DefaultReasoningEffort = msg.Default
+				}
+			}
+		}
+		if strings.EqualFold(m.provider, "opencode") && strings.EqualFold(m.model, msg.Model) {
+			m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
+			m.clampReasoningForCurrentModel()
+			m.refreshSessionPanel()
+			m.addMessage("system", fmt.Sprintf("Reasoning options for %s: %s", msg.Model, strings.Join(msg.Efforts, " · ")), "")
+		}
+		return m, nil
+
 	case SessionDefaultsMsg:
 		tuiLog("SessionDefaultsMsg firstLoad=%v providers=%d accounts=%d projects=%d catalogErr=%q", !m.sessionDefaultsLoaded, len(msg.Providers), len(msg.ProviderAccounts), len(msg.Projects), msg.CatalogErr)
 		firstLoad := !m.sessionDefaultsLoaded
@@ -618,6 +718,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
 		if firstLoad {
 			m.persistSessionPrefs()
+			m.inputExpectedSince = time.Now()
 		}
 		m.refreshSessionPanel()
 		m.sessionLoading = false
@@ -661,7 +762,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.applyAuthNotice(msg.CatalogErr)
 		if firstLoad {
-			m.addMessage("system", "Ready — type / for commands · F2/click session panel · F3/click skills chip.", "")
+			m.addMessage("system", "Ready — type / for commands.", "")
 		}
 		// Restore flow mode only after project_id exists (cold-start arm is unsafe).
 		if m.project != nil {
@@ -674,6 +775,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		cmds = append(cmds, m.cmdRefreshProjectContext(), m.cmdLoadSkills(false))
+		if firstLoad && len(m.providers) == 0 {
+			// CA-535: session unlock must not wait on a slow /providers scan.
+			// CA-657: empty catalog after that budget is sticky — backfill like
+			// the project-catalog retry, without holding sessionLoading.
+			m.addMessage("system", "Provider catalog still loading in background… /provider will fill when ready.", "")
+			cmds = append(cmds, m.cmdLoadProvidersCatalog())
+		} else if firstLoad && needsOpencodeCatalogWarmRetry(m.providers) {
+			m.addMessage("system", fmt.Sprintf("OpenCode models still loading (%d) — will refresh in background…", opencodeCatalogModelCount(m.providers)), "")
+			if cmd := m.scheduleOpencodeCatalogRetryCmd(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
 		if firstLoad && m.project != nil && len(m.chatList) == 0 {
 			cmds = append(cmds, m.cmdPrefetchChats())
 		}
@@ -987,8 +1100,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if kind == "flow" && m.runHandle != nil {
 			cmds = append(cmds, m.cmdRefreshStepsRuntime())
 		}
-		// Hydrate sub-agents so /agent Tab and step [open] work after /open.
-		if kind == "flow" && m.runHandle != nil {
+		// Hydrate sub-agents so /agent Tab, step [open] and the sidebar agents
+		// section work after /open — chat runs too (BUG-335: spawned children
+		// were invisible after a TUI/runner restart because the hydrate only
+		// ran for flow opens).
+		if m.runHandle != nil {
 			cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
 			// One-shot graph fetch seeds loop state (done/blocked/running) so an
 			// opened blocked flow shows the awaiting-user banner instead of arming
@@ -1376,8 +1492,6 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if stepsSuggestChildAgentOpen(prevSteps, msg.Steps) {
 			cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
 		}
-		// Already have children mapped → keep F2 expanded for open/back.
-		m.expandSessionPanelForChildAgents()
 		// Steps still missing a child [open] chip (e.g. a slower/empty hydrate) →
 		// re-arm a bounded retry so the chip appears without waiting for the next
 		// steps transition (CA-528).
@@ -1439,8 +1553,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// TUI console (no CREATE_NO_WINDOW) and left conhost without keys
 		// after Alt+V text paste (pid 9288: 47s stall). Re-arm here for all
 		// ClipboardPasteMsg branches; applyClipboardSysProcAttr prevents the
-		// attach for future pastes.
-		disableConsoleQuickEdit()
+		// attach for future pastes. Only mouse-off ANSI — SetConsoleMode wedges
+		// the live coninput reader (BUG-328).
+		ensureMouseTrackingOff()
 		// Reset any active burst state so clipboard paste and subsequent typing stay clean.
 		m.resetPasteBurst()
 		if msg.Err != "" && msg.Attachment == nil && msg.Text == "" {
@@ -1827,9 +1942,6 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 				m.applyAgentGraph(g)
 			}
 		}
-		if m.agentsFocus {
-			m.addMessage("system", fmt.Sprintf("[agents] %d agents active", len(m.agentRuns)), "")
-		}
 		// Desktop refreshes the step timeline on agent_graph_updated.
 		return m, m.cmdRefreshStepsRuntime()
 	}
@@ -1840,6 +1952,14 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Paste {
 		tuiLog("handleKey Paste runes=%d type=%v", len(msg.Runes), msg.Type)
+	}
+	// Flush a held SS3 'O' before any non-rune key (Backspace, Esc, VK F-keys
+	// from Windows Terminal, …) so the user's typed 'O' is never lost when
+	// the ConPTY SS3 suffix never arrives.
+	if m.ss3.waiting && msg.Type != tea.KeyRunes {
+		m.ss3.waiting = false
+		m.insertInputAtCursor("O")
+		m.suggIdx = 0
 	}
 	// Never hard-block keyboard while loading — a hung runner previously made
 	// the TUI feel fully frozen. processInput still rejects non-slash *send*.
@@ -1893,6 +2013,11 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.modeSetupModalOpen {
 		return m.handleModeSetupModalKey(msg)
 	}
+	if m.authPhase == AuthNone && m.attachPanelOpen {
+		if handled, model, cmd := m.handleAttachPanelKey(msg); handled {
+			return model, cmd
+		}
+	}
 	// Desktop parity (CA-519): a focused sub-agent transcript is read-only. Only
 	// navigation, [back], agent-cycle, and slash commands are allowed; chat text
 	// input is dropped so the user cannot keep typing into the child view.
@@ -1925,27 +2050,19 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.cmdShutdownAndQuit()
 
 	case tea.KeyF2:
+		// Task-311: F2 is the /info alias — prints the session/status dump as a
+		// chat message. The sidebar itself is width-reactive, no toggle.
 		if m.authPhase != AuthNone {
 			return m, nil
 		}
-		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
-		return m, nil
+		return m.infoDump()
 
 	case tea.KeyF3:
-		if m.authPhase != AuthNone {
-			return m, nil
-		}
-		if len(attachedSkillNames(m.selectedSkills)) == 0 {
-			return m, nil
-		}
-		m.statusSkillsExpanded = !m.statusSkillsExpanded
+		// Task-311: F3 is a no-op — skills details live in the sidebar.
 		return m, nil
 
 	case tea.KeyF4:
-		if m.authPhase != AuthNone {
-			return m, nil
-		}
-		m.statusDetailsCollapsed = !m.statusDetailsCollapsed
+		// Task-311: F4 is a no-op — status details live in the sidebar.
 		return m, nil
 
 	case tea.KeyCtrlV:
@@ -1978,6 +2095,16 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.addMessage("system", "Login cancelled.", "")
 			return m, nil
 		}
+		if m.gate != nil && m.gate.AwaitingCustom {
+			m.gate.AwaitingCustom = false
+			m.statusMsg = "custom gate cancelled"
+			return m, nil
+		}
+		if m.actionRingFocus {
+			m.actionRingFocus = false
+			m.statusMsg = "action ring unfocused"
+			return m, nil
+		}
 		if m.attachPanelOpen {
 			m.closeAttachPanel()
 			m.statusMsg = "image panel closed"
@@ -1986,6 +2113,13 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.mouseSel.empty() {
 			m.mouseSel = mouseSelect{}
 			m.statusMsg = "selection cleared"
+			return m, nil
+		}
+		// Return from a focused sub-agent transcript to main (Esc, per user
+		// request). /agents <name> is the only way to enter a child view.
+		if m.viewingChild() {
+			m.restoreMainTranscript()
+			m.addMessage("system", "Returned to main transcript (Esc).", "")
 			return m, nil
 		}
 		// Wizard back navigation for /mode-setup
@@ -2067,11 +2201,29 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.cmdMaybePrefetchPickers()
 			}
 		}
+		if m.authPhase == AuthNone && m.actionRingKeysActive() {
+			if handled, model, cmd := m.handleActionRingKey(tea.KeyMsg{Type: tea.KeyLeft}); handled {
+				return model, cmd
+			}
+		}
 		return m, nil
 
 	case tea.KeyTab:
 		if m.authPhase != AuthNone {
 			return m, nil
+		}
+		// BUG-333: with a blocking card pending (approval/question/gate) the
+		// ring owns Tab BEFORE any passive suggestion list — the operator saw
+		// a mounted gate whose Tab did nothing while a suggestion source was
+		// alive. Diagnostic log eases the next live repro.
+		if m.approval != nil || m.question != nil || m.gate != nil {
+			tuiLog("tab-ring: active=%v sugg=%d input=%q idx=%d focus=%v",
+				m.actionRingKeysActive(), len(m.collectSuggestions()), m.inputValue, m.actionRingIdx, m.actionRingFocus)
+		}
+		if m.actionRingKeysActive() {
+			if handled, model, cmd := m.handleActionRingKey(tea.KeyMsg{Type: tea.KeyRight}); handled {
+				return model, cmd
+			}
 		}
 		if items := m.collectSuggestions(); len(items) > 0 {
 			it := items[m.suggIdx%len(items)]
@@ -2087,13 +2239,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.applySuggestion(items)
 			return m, m.cmdMaybePrefetchPickers()
 		}
-		if len(m.agentRuns) > 0 {
-			runs := orderAgentsMainFirst(m.agentRuns)
-			m.focusedAgentIdx = (m.focusedAgentIdx + 1) % len(runs)
-			agent := runs[m.focusedAgentIdx]
-			return m, m.cmdFocusAgent(agent.RunID)
-		}
-		// Empty input + no picker/agents: Tab cycles the chat posture
+		// Empty input + no picker/ring: Tab cycles the chat posture
 		// (plan ↔ code). Scan is only reachable via explicit /mode scan.
 		// Guard with sessionDefaultsLoaded so a stray Tab right after the chat
 		// input appears cannot fire a GET /client/chat-posture before the
@@ -2323,6 +2469,9 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		if m.authPhase == AuthNone && m.actionRingEnterActivates() {
+			return m.activateHighlightedAction()
+		}
 		input := strings.TrimSpace(m.expandPasteTokens(m.inputValue))
 		if input == "" {
 			return m, nil
@@ -2342,10 +2491,16 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.processInput(input)
 
 	case tea.KeyLeft:
+		if handled, model, cmd := m.handleActionRingKey(msg); handled {
+			return model, cmd
+		}
 		m.moveInputCursor(-1)
 		return m, nil
 
 	case tea.KeyRight:
+		if handled, model, cmd := m.handleActionRingKey(msg); handled {
+			return model, cmd
+		}
 		m.moveInputCursor(1)
 		return m, nil
 
@@ -2357,7 +2512,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputCursor = -1
 		return m, nil
 
-	case tea.KeyBackspace:
+	case tea.KeyBackspace, tea.KeyCtrlH:
 		m.deleteInputBeforeCursor()
 		m.suggIdx = 0
 		// IME Telex rewrite (dd->đ) sends Backspace+runes in 3-5ms. The
@@ -2373,6 +2528,26 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.cmdMaybePrefetchPickers()
 
 	case tea.KeySpace, tea.KeyRunes:
+		// Windows ConPTY delivers SS3 F-keys ('\x1bOQ' = F2) as two rune
+		// records 'O','Q' with the ESC dropped. Rebuild F1-F4 before anything
+		// else — otherwise the pair lands in the composer (tui.log pid 18400)
+		// and trips the raw-paste guard.
+		if msg.Type == tea.KeyRunes {
+			if repl, flush, consumed := m.ss3FKey(msg); consumed {
+				if flush != "" {
+					m.insertInputAtCursor(flush)
+					m.suggIdx = 0
+				}
+				if repl.Type != tea.KeyRunes {
+					return m.handleKey(repl)
+				}
+				if flush == "" {
+					// Held 'O' or swallowed pair member: nothing to insert.
+					return m, nil
+				}
+				msg = repl
+			}
+		}
 		// Drop NUL and raw control noise universally across all platforms/terminals (only for non-bracketed paste)
 		if msg.Type == tea.KeyRunes && !msg.Paste {
 			if len(msg.Runes) == 0 {
@@ -2390,6 +2565,19 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			if isOnlyNul {
 				return m, nil
+			}
+		}
+		if m.authPhase == AuthNone && msg.Type == tea.KeySpace {
+			if handled, model, cmd := m.handleActionRingKey(msg); handled {
+				return model, cmd
+			}
+		}
+		if m.authPhase == AuthNone {
+			if handled, model, cmd := m.handleF2StepPickerKey(msg); handled {
+				return model, cmd
+			}
+			if handled, model, cmd := m.handleActionRingKey(msg); handled {
+				return model, cmd
 			}
 		}
 		// Bubble Tea delivers Alt+letter as KeyRunes+Alt (String() == "alt+v").
@@ -2593,7 +2781,7 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 		}
 		return []suggestItem{{value: "", detail: "(no matching models)", kind: "model"}}
 	}
-	if reasonSugg := filterReasoningSuggestions(in, m.reasoningEffort); len(reasonSugg) > 0 {
+	if reasonSugg := filterReasoningSuggestions(in, m.reasoningEffort, m.modelReasoningEfforts()); len(reasonSugg) > 0 {
 		return reasonSugg
 	}
 	if ok, _ := parseSlashArgPrefix(in, "/reasoning"); ok {
@@ -2894,7 +3082,7 @@ func (m *AppModel) allowsKeyWhileLoading(msg tea.KeyMsg) bool {
 	case tea.KeyEnter:
 		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/") ||
 			strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/")
-	case tea.KeyBackspace, tea.KeyDelete:
+	case tea.KeyBackspace, tea.KeyDelete, tea.KeyCtrlH:
 		// Edit only when already composing a slash command.
 		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/")
 	}
@@ -2924,7 +3112,7 @@ func (m *AppModel) allowsKeyWhileViewingChild(msg tea.KeyMsg) bool {
 	case tea.KeyEnter:
 		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/") ||
 			strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/")
-	case tea.KeyBackspace, tea.KeyDelete:
+	case tea.KeyBackspace, tea.KeyDelete, tea.KeyCtrlH:
 		return strings.HasPrefix(strings.TrimSpace(m.inputValue), "/")
 	}
 	if _, _, ok := activeSlashLine(m.inputValue, m.inputCaretIndex()); ok {
@@ -3165,6 +3353,17 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 		} else {
 			m.statusMsg = "chat disabled — no project_id"
 			m.addMessage("user", input, "")
+			if len(m.pendingAttach) > 0 {
+				names := make([]string, 0, len(m.pendingAttach))
+				for _, att := range m.pendingAttach {
+					if n := strings.TrimSpace(att.OriginalName); n != "" {
+						names = append(names, n)
+					} else {
+						names = append(names, "image")
+					}
+				}
+				m.messages[len(m.messages)-1].Attachments = names
+			}
 			m.addMessage("system", formatMissingProjectHelp(m.cfg.ProjectPath, m.projects), "error")
 			return m, nil
 		}
@@ -3172,6 +3371,17 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 
 	m.viewport.offset = 0
 	m.addMessage("user", input, "")
+	if len(m.pendingAttach) > 0 {
+		names := make([]string, 0, len(m.pendingAttach))
+		for _, att := range m.pendingAttach {
+			if n := strings.TrimSpace(att.OriginalName); n != "" {
+				names = append(names, n)
+			} else {
+				names = append(names, "image")
+			}
+		}
+		m.messages[len(m.messages)-1].Attachments = names
+	}
 	m.recordPromptHistory(input)
 	// CA-537: no "Thinking" row in the chat timeline — the spinner animates on
 	// the status line + F2 RUNNING step instead (workIsLive starts the ticker).
@@ -3359,8 +3569,8 @@ func (m *AppModel) dispatchImageCommand(args []string) (tea.Model, tea.Cmd) {
 		"rm", "remove", "del", "delete", "x", "panel", "manage":
 		return m, m.cmdClipboardPaste()
 	}
-	if !client.SupportsImages(m.provider) {
-		m.addMessage("system", client.ImagesUnsupportedReason(m.provider), "error")
+	if !m.chatSupportsImages() {
+		m.addMessage("system", m.imagesUnsupportedReason(), "error")
 		return m, nil
 	}
 	if len(m.pendingAttach) >= 6 {
@@ -3525,7 +3735,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			break
 		}
 		var b strings.Builder
-		b.WriteString("Agents (Tab cycles, /agent <name> or step [open] opens transcript):\n")
+		b.WriteString("Agents (/agents <name> to open transcript · Esc returns to main):\n")
 		for _, r := range runs {
 			cur := ""
 			if r.RunID == m.focusRunID || (m.focusRunID == "" && (strings.EqualFold(r.Role, "main") || r.RunID == m.mainRunID())) {
@@ -3622,7 +3832,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					m.addMessage("system", "Usage: /provider connect <key> — or type /provider connect  then ↑↓ Tab Enter\n(Desktop Settings → Connect New Account parity)", "")
 					break
 				}
-				if p := findProvider(m.providers, key); p != nil && !p.Installed {
+				if p := findProvider(m.providers, key); p != nil && (!p.Installed || providerCLIUnusable(*p)) {
 					m.addMessage("system", fmt.Sprintf(
 						"Provider %s is not installed. Run /provider install %s first (Desktop disables Connect until installed).",
 						key, key,
@@ -3643,12 +3853,19 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					m.addMessage("system", "Usage: /provider install <key> — or type /provider install  then ↑↓ Tab Enter\n(Runner POST /providers/install; Desktop Settings Install button is Gemini-only in UI, API supports all)", "")
 					break
 				}
-				if p := findProvider(m.providers, key); p != nil && p.Installed {
+				if p := findProvider(m.providers, key); p != nil && p.Installed && !providerCLIUnusable(*p) {
 					m.addMessage("system", fmt.Sprintf("Provider %s is already installed.", key), "")
 					break
 				}
 				m.addMessage("system", fmt.Sprintf("Installing provider CLI %s… (may take a minute)", key), "")
 				return m, m.cmdInstallProvider(key)
+			case "refresh", "reload":
+				// CA-687: the TUI has no Desktop "Detect models" button — this is
+				// its equivalent. Re-fetches GET /providers (fresh model
+				// detection: new grok/opencode/... entries land without a
+				// restart) and keeps the current provider/model selection.
+				m.addMessage("system", "Refreshing provider catalog and models…", "")
+				return m, m.cmdLoadProvidersCatalog()
 			case "account", "switch", "activate", "acc":
 				if len(args) < 2 {
 					var sb strings.Builder
@@ -3679,7 +3896,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			sb.WriteString(fmt.Sprintf("Current provider: %s\n", orDash(m.provider)))
 			sb.WriteString(fmt.Sprintf("Current model:    %s\n", orDash(m.model)))
 			if len(m.providers) == 0 {
-				sb.WriteString("No provider catalog loaded yet. Wait for connect, or restart chat.")
+				sb.WriteString("No provider catalog loaded yet. Wait for connect, or run /provider refresh.")
 			} else {
 				sb.WriteString("Providers & Accounts (Desktop Settings parity):\n")
 				for _, p := range m.providers {
@@ -3693,6 +3910,9 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 						readyMark = "+"
 					} else {
 						readyMark = "-"
+					}
+					if code == "not_installed" {
+						status = "not installed"
 					}
 					sb.WriteString(fmt.Sprintf("  %s%s %s  %s\n", mark, readyMark, p.Key, status))
 					for _, acc := range m.providerAccounts {
@@ -3712,7 +3932,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
-				sb.WriteString("Pick provider: /provider <key>  · Switch account: /provider account <account-id>  · Connect: /provider connect  · Install: /provider install")
+				sb.WriteString("Pick provider: /provider <key>  · Switch account: /provider account <account-id>  · Connect: /provider connect  · Install: /provider install  · Refresh models: /provider refresh")
 			}
 			m.addMessage("system", sb.String(), "")
 		} else if m.runHandle != nil {
@@ -3730,6 +3950,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					} else {
 						m.model = ""
 					}
+					m.clampReasoningForCurrentModel() // CA-686: per-model efforts
 					selected = &m.providers[i]
 					found = true
 					break
@@ -3780,7 +4001,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					}
 					sb.WriteString(fmt.Sprintf("  %s %s · %s\n", mark, prov, e.id))
 				}
-				sb.WriteString("Pick: type /model  then ↑↓ · Tab · Enter (provider auto-switches)")
+				sb.WriteString("Pick: type /model  then ↑↓ · Tab · Enter (provider auto-switches)\nMissing a new model? /provider refresh reloads the catalog")
 			}
 			m.addMessage("system", sb.String(), "")
 		} else {
@@ -3813,6 +4034,7 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.model = want
 			}
 			m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
+			m.clampReasoningForCurrentModel() // CA-686: reasoning is dynamic per model
 			m.persistSessionPrefs()
 			if matched != nil && matched.provider != "" {
 				m.addMessage("system", fmt.Sprintf("Model set to: %s · provider: %s (next prompt uses this model)", m.model, m.provider), "")
@@ -3820,6 +4042,14 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.addMessage("system", fmt.Sprintf("Model set to: %s (next prompt uses this model)", m.model), "")
 			}
 			m.refreshSessionPanel()
+			// CA-689c: correct reasoning options at selection time — fetch the
+			// model's real effort list if the catalog only has the guess.
+			if fetch := m.maybeFetchOpencodeVariants(); fetch != nil {
+				if providerSwitched {
+					return m, tea.Batch(m.cmdLoadSkills(false), fetch)
+				}
+				return m, fetch
+			}
 			if providerSwitched {
 				return m, m.cmdLoadSkills(false)
 			}
@@ -3829,18 +4059,17 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		if len(args) == 0 {
 			var sb strings.Builder
 			sb.WriteString(fmt.Sprintf("Current reasoning effort: %s\n", orDash(m.reasoningEffort)))
-			sb.WriteString("Options: high · medium · low\n")
+			sb.WriteString(reasoningEffortHelp(m) + "\n")
 			sb.WriteString("Pick: type /reasoning  then ↑↓ · Tab · Enter")
 			m.addMessage("system", sb.String(), "")
 		} else {
-			effort := strings.ToLower(args[0])
-			switch effort {
-			case "high", "medium", "low", "":
+			effort := strings.ToLower(strings.TrimSpace(args[0]))
+			if reasoningEffortAllowed(m, effort) {
 				m.reasoningEffort = effort
 				m.persistSessionPrefs()
 				m.addMessage("system", fmt.Sprintf("Reasoning effort set to: %s (saved)", effort), "")
-			default:
-				m.addMessage("system", "Reasoning effort must be high, medium, or low.", "error")
+			} else {
+				m.addMessage("system", "Reasoning effort not supported by "+orDash(m.model)+". "+reasoningEffortHelp(m), "error")
 			}
 		}
 
@@ -3900,33 +4129,12 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m, m.showFlashToast("dumped " + youBoxLayoutRev + " → " + path)
 
 	case "/status":
-		auth := "(not signed in)"
-		if m.signedInEmail != "" {
-			auth = m.signedInEmail
-		} else if m.authNeedLogin {
-			auth = "SIGN-IN REQUIRED — /login"
-		}
-		m.refreshSessionPanel()
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("Status: %s | Mode: %s | %s | Provider: %s | Model: %s | Auth: %s\n",
-			m.connStatus, m.mode, m.yoloStatusLabel(), m.provider, m.model, auth))
-		sb.WriteString("Active provider account: " + orDash(m.activeProviderAccountLabel()) + "\n")
-		m.sessionPanel.DriveStatus = m.driveIndicatorLine()
-		m.sessionPanel.DriveBadge = m.openChatDriveBadge()
-		for _, line := range m.sessionPanel.lines() {
-			sb.WriteString(line + "\n")
-		}
-		sb.WriteString("(F2 or click session panel · F4 or click status row to fold details · F3 or click skills:N chip · /info also toggles the panel)")
-		m.addMessage("system", strings.TrimRight(sb.String(), "\n"), "")
+		return m.infoDump()
 
 	case "/info":
-		m.sessionPanel.Collapsed = !m.sessionPanel.Collapsed
-		m.refreshSessionPanel()
-		state := "expanded"
-		if m.sessionPanel.Collapsed {
-			state = "collapsed"
-		}
-		m.addMessage("system", "Session panel "+state+" (F2 or /info to toggle).", "")
+		// Task-311: /info prints the session/status dump (F2 aliases it). The
+		// sidebar has no toggle anymore — it follows terminal width.
+		return m.infoDump()
 
 	case "/login":
 		return m.beginLogin(args)
@@ -4057,12 +4265,17 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 }
 
 func (m *AppModel) renderChatPane(w, h int) string {
+	debug := viewDebugEnabled()
+	stage := time.Now()
 	c := m.tuiChrome()
 	var rows []string
 
 	rows = append(rows, c.panelLines...)
 
+	tChrome := time.Since(stage)
+	stage = time.Now()
 	lines := m.renderMessages()
+	tMsgs := time.Since(stage)
 	// Freeze the viewport while the user is mid-select: clamping against a line
 	// count that changed (width flip / live stream) would yank the text out from
 	// under the cursor / reset a top-of-history drag to the bottom (CA-526).
@@ -4090,70 +4303,90 @@ func (m *AppModel) renderChatPane(w, h int) string {
 		}
 		rows = append(rows, styleError.Render(banner))
 	}
+	// Small padding separates transcript from the input frame; the horizontal
+	// rule is removed per user request. Transcript stays on the dark canvas
+	// (#0d0d0d) — only the composer frame is the elevated gray (#1e1e1e) so no
+	// black/gray mix inside the input.
 	rows = append(rows, "")
-	if w <= 0 {
-		w = 80
-	}
-	if m.asciiMode {
-		rows = append(rows, strings.Repeat("-", w))
-	} else {
-		rows = append(rows, strings.Repeat("─", w))
-	}
-	// flashToast is rendered on the project/git status row (see status_bar.go).
-	rows = append(rows, strings.Split(c.statusBlock, "\n")...)
+	rows = append(rows, "")
 	if len(c.sugg) > 0 && !m.modeSetupModalOpen {
 		rows = append(rows, strings.Split(m.renderSuggestions(c.sugg), "\n")...)
 	}
-	if m.modeSetupModalOpen {
-		rows = append(rows, strings.Split(m.renderModeSetupModal(w), "\n")...)
+	if m.modeSetupModalOpen && c.modalBlock != "" {
+		// BUG-332: render the block cached by tuiChrome — same string its
+		// modalH was measured from, so the height budget is always exact.
+		rows = append(rows, strings.Split(c.modalBlock, "\n")...)
 	}
 	if c.attachPanelBlock != "" {
 		rows = append(rows, strings.Split(c.attachPanelBlock, "\n")...)
 	}
-	inputStart := len(rows)
+	_ = len(rows)
+	inputStart, inputEnd := -1, -1
 	if m.sessionLoading {
 		// Hide normal chat input until loading is done — show a clear loading
 		// placeholder instead so the user doesn't feel the UI is hung.
-		// F2/F4 still work via allowsKeyWhileLoading.
+		// Slash commands and F2 (/info alias) still work via allowsKeyWhileLoading.
 		frames := []string{"|", "/", "-", "\\"}
 		spin := frames[m.loadingFrame%len(frames)]
 		msg := fmt.Sprintf(" %s Loading session · project · providers — chat locked (F2/F4 still work) ", spin)
 		rows = append(rows, styleLoading.Render(truncateVisual(msg, w)))
 	} else {
+		inputStart = len(rows)
 		rows = append(rows, strings.Split(m.renderInputLine(), "\n")...)
+		inputEnd = len(rows)
 	}
+	// Bottom notice (Copied / error-warning) — one small line outside the
+	// composer frame, at the bottom of the chat pane. The watchdog
+	// "input stalled ..." banner is moved here so top-left chrome stays clean
+	// (user request). Only one line, canvas bg, truncated to width.
+	if n := strings.TrimSpace(c.bottomNoticeBlock); n != "" {
+		rows = append(rows, strings.Split(n, "\n")...)
+	}
+	// Legacy flash toast above the composer is kept for old callers
+	// (renderStatusLine) but is no longer rendered here — the bottom notice is
+	// the single visible location. If we rendered statusBlock here too the View
+	// would show the toast twice.
 
-	// CA-532: paint the dark canvas across the whole chat column and give the chat
-	// bar a lighter elevated background. Every row is padded so the background fills the row; the
-	// chat-bar (input) rows keep one free last column (safeTermWidth) so Windows
-	// Terminal never wraps the composer.
+	// CA-532 hierarchy restored: transcript = canvas, composer = chatBar.
+	stage = time.Now()
 	rows = padLinesTo(rows, h)
 	barW := safeTermWidth(w)
 	for i, r := range rows {
-		st := styleCanvas
-		rw := w
-		if i >= inputStart {
-			st = styleChatBar
-			rw = barW
+		rw := barW
+		if inputStart >= 0 && i >= inputStart && i < inputEnd {
+			rows[i] = paintComposerRow(r, rw)
+			continue
 		}
-		// CA-605: You-box rows keep plain glyphs (canvas fill comes from
-		// cellbuf.Fill / trailing pad) — wrapping them in styleCanvas made
-		// Ghostty miscount truecolor SGR and wrap the box mid-pane.
-		if i < inputStart && isYouBoxRow(r) {
+		if isYouBoxRow(r) {
 			rows[i] = padYouBoxRow(r, rw)
 			continue
 		}
-		rows[i] = paintRow(r, rw, st)
+		rows[i] = paintRow(r, rw, styleCanvas)
 	}
 
 	body := strings.Join(rows, "\n")
 	// Do not force outer Width/Height — rows are already painted to w/barW
 	// and padded to h. Forcing Width(w) would pad chat-bar rows (barW) back to
 	// w and break the safeTermWidth gutter (narrow test expects <w).
+	if debug {
+		tuiLog("viewDbg chatPane w=%d h=%d tuiChrome=%v messages=%v paint=%v", w, h, tChrome, tMsgs, time.Since(stage))
+	}
 	return body
 }
 
 // ---- View -------------------------------------------------------------------
+
+var viewDebugOnce sync.Once
+var viewDebug bool
+
+// viewDebugEnabled gates the FLOWPILOT_DEBUG_VIEW per-frame render breakdown.
+// The env var is read once (process-start) so the hot path never re-parses it.
+func viewDebugEnabled() bool {
+	viewDebugOnce.Do(func() {
+		viewDebug = strings.TrimSpace(os.Getenv("FLOWPILOT_DEBUG_VIEW")) != ""
+	})
+	return viewDebug
+}
 
 // cursorBlinkRelevant reports whether the input caret should keep blinking:
 // anything live or active makes the caret meaningful. When false the caret is
@@ -4190,7 +4423,9 @@ func (m *AppModel) View() string {
 		h = 1
 	}
 	chatW := m.chatWidth()
+	chatStart := time.Now()
 	chatRaw := m.renderChatPane(chatW, h)
+	chatPaneDur := time.Since(chatStart)
 	chat := chatRaw
 	if m.useRightSidebar() {
 		side := m.renderSidebarPane(m.sideWidth(), h)
@@ -4209,12 +4444,17 @@ func (m *AppModel) View() string {
 			chat = m.composeOut
 		}
 	}
-	if d := time.Since(viewStart); d > 100*time.Millisecond {
+	d := time.Since(viewStart)
+	if d > 100*time.Millisecond {
 		// CA-621: throttle View slow log so chat history open does not spam tui.log and drop keys
 		if time.Since(m.lastViewSlowLog) > 5*time.Second {
 			m.lastViewSlowLog = time.Now()
 			tuiLog("View slow dur=%v width=%d height=%d side=%v", d, m.width, m.height, m.useRightSidebar())
 		}
+	}
+	if viewDebugEnabled() && d > 30*time.Millisecond {
+		tuiLog("viewDbg View total=%v chatPane=%v composeBuilds=%d width=%d height=%d side=%v",
+			d, chatPaneDur, m.composeBuilds, m.width, m.height, m.useRightSidebar())
 	}
 	return chat
 }
@@ -4277,12 +4517,19 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 			label = "—"
 		}
 		line := fmt.Sprintf("  %-28s %s", label, sugg[i].detail)
+		notInstalled := strings.Contains(strings.ToLower(sugg[i].detail), "not installed")
 		if i == sel {
 			marker := "> "
 			if !m.asciiMode {
 				marker = "▸ "
 			}
-			sb.WriteString(styleSuggestSel.Render(marker + strings.TrimLeft(line, " ")))
+			if notInstalled {
+				sb.WriteString(styleError.Underline(true).Render(marker + strings.TrimLeft(line, " ")))
+			} else {
+				sb.WriteString(styleSuggestSel.Render(marker + strings.TrimLeft(line, " ")))
+			}
+		} else if notInstalled {
+			sb.WriteString(styleError.Render(line))
 		} else {
 			sb.WriteString(styleSuggest.Render(line))
 		}
@@ -4501,6 +4748,34 @@ func (m *AppModel) chatRowsSig() uint64 {
 			_, _ = h.Write([]byte(it.RunID + ":" + it.Kind + ":" + it.Reason))
 		}
 	}
+	// BUG-333 (operator report: approval gate mounted, Tab/arrows looked dead):
+	// the interactive card rows (approval/gate/question bar) render from LIVE
+	// ring state — actionRingIdx, focus, keys-active, gate custom mode,
+	// question selections — that is NOT part of the message content hashed
+	// above. The tui.log proved actionRingIdx cycled 0↔1 while the row cache
+	// kept serving the bar with a frozen highlight. Hash the ring state so any
+	// keyboard move repaints the card row.
+	_, _ = h.Write([]byte{5, 0})
+	_, _ = h.Write([]byte(strconv.Itoa(m.actionRingIdx)))
+	_, _ = h.Write([]byte{0})
+	if m.actionRingFocus {
+		_, _ = h.Write([]byte{5, 1})
+	}
+	if m.actionRingKeysActive() {
+		_, _ = h.Write([]byte{5, 2})
+	}
+	if m.gate != nil {
+		_, _ = h.Write([]byte{5, 3})
+		_, _ = h.Write([]byte(m.gate.RunID))
+		_, _ = h.Write([]byte(strings.Join(m.gate.Options, ",")))
+		if m.gate.AwaitingCustom {
+			_, _ = h.Write([]byte{5, 4})
+		}
+	}
+	if m.question != nil && len(m.question.Selected) > 0 {
+		_, _ = h.Write([]byte{5, 5})
+		_, _ = h.Write([]byte(strings.Join(m.question.Selected, ",")))
+	}
 	return h.Sum64()
 }
 
@@ -4653,6 +4928,15 @@ func (m *AppModel) buildChatRows() []chatRow {
 			if truncatable && !m.userPromptExpanded(msg.Content) {
 				lines = clampPromptLines(lines, innerW)
 			}
+			if len(msg.Attachments) > 0 {
+				chip := ""
+				if len(msg.Attachments) == 1 {
+					chip = "[1 image attached]"
+				} else {
+					chip = fmt.Sprintf("[%d images attached]", len(msg.Attachments))
+				}
+				lines = append(lines, chip)
+			}
 			msgRows := youBox(lines, width, m.asciiMode, showCopy, mi, truncatable, msg.Content)
 			if mi > 0 && chatGapBefore(m.messages[mi-1], msg) {
 				rows = append(rows, chatRow{})
@@ -4696,6 +4980,9 @@ func (m *AppModel) buildChatRows() []chatRow {
 		for i, ml := range mdLines {
 			line := ml.Text
 			lineStyle := style
+			if msg.Role == "system" && strings.Contains(strings.ToLower(stripANSI(line)), "not installed") {
+				lineStyle = styleError
+			}
 			if msg.FormatHint == "steps" {
 				lineStyle = styleForStepBannerLine(line)
 			}
@@ -4715,11 +5002,8 @@ func (m *AppModel) buildChatRows() []chatRow {
 				rendered = lineStyle.Render(stripANSI(line))
 			}
 			copyFence := ml.CopyCode != ""
-			copyOn := showCopy && i == len(mdLines)-1
-			if copyOn && !copyFence {
-				rendered = rendered + styleLink.Render(copyChip)
-			}
-			row := chatRow{Text: rendered, MsgIdx: mi, Copy: copyOn || copyFence}
+			// User request: remove [copy] at end of each prompt/answer.
+			row := chatRow{Text: rendered, MsgIdx: mi, Copy: copyFence}
 			if copyFence {
 				row.CopyText = ml.CopyCode
 				row.FenceIdx = fenceN
@@ -4739,17 +5023,22 @@ func (m *AppModel) buildChatRows() []chatRow {
 		if n := len(m.approvals); n > 1 {
 			head = fmt.Sprintf("approval 1/%d", n)
 		}
-		chips := approvalDecisionChips(m.approval)
-		if len(m.approvals) > 1 {
-			chips += "  " + styleLink.Render("Approve all") + "  " + styleLink.Render("Deny all")
+		chips := approvalDecisionChipsAt(m.approval, m.approvals, m.ringHighlightFor("approval"))
+		rows = append(rows, chatRow{})
+		rows = append(rows, chatRow{Text: styleGate.Render(head) + "  " + chips + "  " + styleSystem.Render("← → Enter · 1-9"), MsgIdx: -1})
+	}
+	if m.gate != nil && len(m.gate.Options) > 0 {
+		var chips []string
+		for i, opt := range m.gate.Options {
+			chips = append(chips, renderActionRingChip(gateOptionChip(opt), m.actionRingHighlighted("gate", i)))
 		}
 		rows = append(rows, chatRow{})
-		rows = append(rows, chatRow{Text: styleGate.Render(head) + "  " + chips + "  " + styleSystem.Render("click or type"), MsgIdx: -1})
+		rows = append(rows, chatRow{Text: styleGate.Render("gate") + "  " + strings.Join(chips, "  ") + "  " + styleSystem.Render("← → Enter · 1-9"), MsgIdx: -1})
 	}
 	if m.question != nil {
 		left := styleInputStroke.Render("┃")
 		mid := styleInputStroke.Render("│")
-		qbar := renderQuestionBar(left, mid, m.question, width)
+		qbar := renderQuestionBar(left, mid, m.question, width, m.ringHighlightFor("question"))
 		if n := len(m.questions); n > 1 {
 			qbar = styleGate.Render(fmt.Sprintf("(%d/%d)", 1, n)) + " " + qbar
 		}
@@ -4886,19 +5175,54 @@ func nextHighlightToken(s string, tokens []string) (int, string) {
 	return best, tok
 }
 
-func renderQuestionBar(left, mid string, q *QuestionState, width int) string {
-	var b strings.Builder
-	b.WriteString(left)
-	b.WriteString(" ")
-	b.WriteString(styleGate.Render("question"))
-	b.WriteString(" ")
-	b.WriteString(mid)
-	b.WriteString(" ")
-	for i, o := range q.Options {
-		if i > 0 {
-			b.WriteString("  ")
+func renderQuestionBar(left, mid string, q *QuestionState, width int, highlightIdx int) string {
+	hint := "← → Enter · 1-9"
+	if q.MultiSelect {
+		hint = "Space toggle · Enter submit"
+	}
+	prefixStyled := left + " " + styleGate.Render("question") + " " + mid + " "
+	prefixW := lipgloss.Width(prefixStyled)
+	hintW := lipgloss.Width("  " + hint)
+	// BUG-333 UX follow-up (operator: long question options lost the selected
+	// chip's fill — "chỉ có vài padding được apply"): the overflow path used to
+	// stripANSI the whole bar and re-render it flat, erasing every style.
+	// Instead, SQUEEZE each option label (ANSI-safe, with an ellipsis) so the
+	// STYLED line fits the width; chips, the selected fill and the hint all
+	// survive. Highlight padding widens exactly one chip per surface, which the
+	// budget accounts for.
+	n := len(q.Options)
+	hintStyled := styleSystem.Render("  " + hint)
+	fit := func(label string, budget int) string {
+		if budget < 3 {
+			budget = 3
 		}
-		if q.MultiSelect {
+		if lipgloss.Width(label) <= budget {
+			return label
+		}
+		return truncateVisual(label, budget-1) + "…"
+	}
+	var chips []string
+	if q.MultiSelect {
+		// Conservative budget: count every chip as padded (highlight worst
+		// case) so the assembled line always fits; non-highlighted chips just
+		// leave a couple of spare columns.
+		submitW := 2 + lipgloss.Width(renderActionRingChip("[Submit]", false))
+		overhead := prefixW + hintW + submitW
+		if n > 1 {
+			overhead += (n - 1) * 2
+		}
+		overhead += n * (4 + 2) // "[x] " mark + chip padding
+		budget := 3
+		if n > 0 {
+			budget = (width - overhead) / n
+		}
+		chipIdx := 0
+		for i, o := range q.Options {
+			if i > 0 {
+				chips = append(chips, "  ")
+			}
+			hi := highlightIdx == chipIdx
+			chipIdx++
 			mark := "[ ]"
 			sel := ""
 			for _, v := range q.Selected {
@@ -4908,28 +5232,39 @@ func renderQuestionBar(left, mid string, q *QuestionState, width int) string {
 				}
 			}
 			sel = mark + " "
-			b.WriteString(styleLink.Render(sel + questionOptionLabel(o)))
-		} else {
-			b.WriteString(styleLink.Render(strconv.Itoa(i+1) + ")"))
-			b.WriteString(" ")
-			b.WriteString(styleLink.Render(questionOptionLabel(o)))
+			chips = append(chips, renderActionRingChip(sel+fit(questionOptionLabel(o), budget), hi))
+		}
+		chips = append(chips, "  ")
+		chips = append(chips, renderActionRingChip("[Submit]", highlightIdx == chipIdx))
+	} else {
+		// Single select: "1)" num chip + " " + label chip per option.
+		overhead := prefixW + hintW
+		if n > 1 {
+			overhead += (n - 1) * 2
+		}
+		overhead += n * (2 + 1 + 2 + 2) // num text + space + num chip pad + label chip pad
+		budget := 3
+		if n > 0 {
+			budget = (width - overhead) / n
+		}
+		chipIdx := 0
+		for i, o := range q.Options {
+			if i > 0 {
+				chips = append(chips, "  ")
+			}
+			hiNum := highlightIdx == chipIdx
+			chipIdx++
+			hiLabel := highlightIdx == chipIdx
+			chipIdx++
+			chips = append(chips, renderActionRingChip(strconv.Itoa(i+1)+")", hiNum))
+			chips = append(chips, " ")
+			chips = append(chips, renderActionRingChip(fit(questionOptionLabel(o), budget), hiLabel))
 		}
 	}
-	if len(q.Options) == 0 {
-		b.WriteString(styleSystem.Render("type an answer"))
-	} else if q.MultiSelect {
-		b.WriteString("  ")
-		b.WriteString(styleSystem.Render("toggle, then /submit or click Submit"))
-		b.WriteString("  ")
-		b.WriteString(styleLink.Render("[Submit]"))
-	} else {
-		b.WriteString("  ")
-		b.WriteString(styleSystem.Render("click or type"))
-	}
-	line := b.String()
-	plain := stripANSI(line)
-	if width > 1 && len([]rune(plain)) > width {
-		return styleGate.Render(fitStatusWidth(plain, width))
+	line := prefixStyled + strings.Join(chips, "") + hintStyled
+	if width > 1 && lipgloss.Width(line) > width {
+		// Pathological ultra-narrow fallback: never emit a ragged row.
+		return styleGate.Render(fitStatusWidth(stripANSI(line), width))
 	}
 	return line
 }
@@ -4968,7 +5303,7 @@ func (m *AppModel) renderInputLine() string {
 		// Desktop parity: a focused sub-agent transcript is read-only — chat may
 		// only continue on the main run. Render a locked banner instead of an
 		// editable composer (CA-519).
-		msg := " Child transcript is read-only — chat continues on main (/agent main or [back]) "
+		msg := " Child transcript is read-only — chat continues on main (/agent main or Esc) "
 		return styleSystem.Render(truncateVisual(msg, w))
 	}
 	if m.sessionLoading && !strings.HasPrefix(strings.TrimSpace(m.slashSuggestLine()), "/") {
@@ -5012,6 +5347,14 @@ func (m *AppModel) renderInputLine() string {
 		}
 	}
 	label := strings.TrimSpace(prefix)
+	// User request: top-left of the input frame shows "chat" or the flow name
+	// (in flow/step mode) and, beside it, the two status values "ready" and
+	// "agent:main". The sidebar now only holds session+steps.
+	if m.authPhase == AuthNone && !m.viewingChild() && !m.sessionLoading {
+		if label == "chat" || label == "next" {
+			label = m.chatFrameTitle()
+		}
+	}
 	// Only show when images are pending — bare "[+img]" looked like an attachment.
 	attachPlain := m.inputAttachChipPlain()
 	attach := ""
@@ -5055,7 +5398,7 @@ func (m *AppModel) renderInputLine() string {
 		view := strings.TrimSuffix(m.textarea.View(), "\n")
 		viewLines := strings.Split(view, "\n")
 		inner = append(inner, viewLines...)
-		footer := strings.TrimSpace(m.model)
+		footer := m.inputFrameFooter()
 		return frameInput(inner, w, label, footer, m.asciiMode)
 	}
 	caretAt := m.inputCaretIndex()
@@ -5102,8 +5445,143 @@ func (m *AppModel) renderInputLine() string {
 		}
 		off = lineEnd + 1
 	}
-	footer := strings.TrimSpace(m.model)
+	footer := m.inputFrameFooter()
 	return frameInput(inner, w, label, footer, m.asciiMode)
+}
+
+// inputFrameFooter is the bottom-right of the chat input frame.
+// Per user request: bottom-right shows Model · reasoning · YOLO (no provider,
+// no quota/limits). The sidebar already holds session+steps only.
+func (m *AppModel) inputFrameFooter() string {
+	model := strings.TrimSpace(m.model)
+	if model == "" {
+		model = "—"
+	}
+	reasoning := strings.TrimSpace(m.reasoningEffort)
+	if reasoning == "" {
+		reasoning = "medium"
+	}
+	sep := " · "
+	if m.asciiMode {
+		sep = " | "
+	}
+	return fmt.Sprintf("%s%sreasoning: %s%s%s", model, sep, reasoning, sep, m.yoloStatusLabel())
+}
+
+// chatFrameTitle is the top-left of the chat input frame.
+// Per user request: top-left shows "Chat: <posture>" (scan/plan/code) in chat
+// mode or "Flow: <flowName>" in flow/step mode, with the value highlighted.
+// The two status values "ready" and "agent: main" are beside it, with the agent
+// name highlighted. Only this header and the bottom-right footer exist.
+// All segments carry the composer #1e1e1e bg so a lipgloss reset inside the
+// title does not punch a black hole in the solid gray frame. The watchdog
+// "input stalled ..." warning is intentionally excluded here — it goes to the
+// small bottom line outside the frame (renderBottomNotice).
+func (m *AppModel) chatFrameTitle() string {
+	sepStyled := chatBarBg(styleStatus).Render(" · ")
+	if m.asciiMode {
+		sepStyled = chatBarBg(styleStatus).Render(" | ")
+	}
+	var baseStyled string
+	if m.mode == ModeFlow || m.mode == ModeStep {
+		label := strings.TrimSpace(m.launch.StatusLabel())
+		if label == "" {
+			label = "flow"
+		}
+		if len([]rune(label)) > 24 {
+			label = string([]rune(label)[:21]) + "…"
+		}
+		// "Flow:" dim, value pink (styleStatusFlow) — on bar bg
+		baseStyled = chatBarBg(styleStatus).Render("Flow:") + " " + chatBarBg(styleStatusFlow).Render(label)
+	} else {
+		posture := m.activePosture()
+		if posture == "" {
+			posture = "non"
+		}
+		// CA-685: "non" is the no-mode default — the chrome shows just "Chat",
+		// no "Chat: Non" suffix.
+		if posture == "non" {
+			baseStyled = chatBarBg(styleStatus).Render("Chat:")
+		} else {
+			displayPosture := posture
+			if displayPosture != "" {
+				displayPosture = strings.ToUpper(displayPosture[:1]) + displayPosture[1:]
+			}
+			baseStyled = chatBarBg(styleStatus).Render("Chat:") + " " + chatBarBg(postureStyle(posture)).Render(displayPosture)
+		}
+	}
+	var parts []string
+	parts = append(parts, baseStyled)
+	if m.turnIsActive() {
+		parts = append(parts, chatBarBg(styleError).Render("[stop]"))
+	}
+	if r := strings.TrimSpace(m.statusReadyLabel()); r != "" && !isStalledStatus(r) {
+		// ready / thinking spinner – use status style on bar bg
+		parts = append(parts, chatBarBg(styleStatus).Render(r))
+	}
+	if m.authNeedLogin {
+		parts = append(parts, chatBarBg(styleStatusErr).Render("SIGN-IN"))
+	}
+	avPlain := strings.TrimSpace(m.formatAgentViewStatus())
+	if avPlain != "" {
+		// Re-render agent chip on bar bg so its bg is also #1e1e1e (original
+		// formatAgentViewStatus has no bg and would punch a hole).
+		name := ""
+		switch {
+		case m.viewingChild():
+			name = m.agentNameForRun(m.focusRunID)
+			if name == "" {
+				name = shortID(m.focusRunID)
+			}
+		case m.mode == ModeFlow || m.mode == ModeStep || len(m.agentRuns) > 0:
+			name = "main"
+		}
+		if name != "" {
+			parts = append(parts, chatBarBg(styleStatus).Render("agent:")+chatBarBg(styleStatusAgent).Render(name))
+		} else {
+			// Fallback: wrap original but force bg via re-render (should not happen)
+			parts = append(parts, avPlain)
+		}
+	} else {
+		// Always show main agent beside ready per user request, highlighted
+		parts = append(parts, chatBarBg(styleStatus).Render("agent:")+chatBarBg(styleStatusAgent).Render("main"))
+	}
+	return strings.Join(parts, sepStyled)
+}
+
+// renderBottomNotice is the single small line outside the composer frame at the
+// bottom of the chat pane. It shows transient toasts (Copied) and the watchdog
+// "input stalled ..." warning so the input chrome stays clean (user request).
+func (m *AppModel) renderBottomNotice(w int) string {
+	if w < 1 {
+		w = 80
+	}
+	w = safeTermWidth(w)
+	var parts []string
+	if t := strings.TrimSpace(m.flashToast); t != "" {
+		parts = append(parts, styleStatusOK.Render(truncateVisual(t, w)))
+	}
+	if s := strings.TrimSpace(m.statusMsg); s != "" && isStalledStatus(s) {
+		// Stalled warning is long; truncate to width and keep error color.
+		if len(parts) > 0 {
+			// Join with dim separator so both show on one line when overlapping.
+			w2 := w - lipgloss.Width(stripANSI(strings.Join(parts, " · "))) - lipgloss.Width(" · ") - 2
+			if w2 < 10 {
+				w2 = 10
+			}
+			parts = append(parts, styleStatus.Render(" · ")+styleStatusErr.Render(truncateVisual(s, w2)))
+		} else {
+			parts = append(parts, styleStatusErr.Render(truncateVisual(s, w)))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	raw := strings.Join(parts, "")
+	if lipgloss.Width(raw) > w {
+		raw = truncateVisual(raw, w)
+	}
+	return raw
 }
 
 // ---- Helpers ----------------------------------------------------------------
@@ -5557,6 +6035,78 @@ func (m *AppModel) cmdLoadProjectsCatalog() tea.Cmd {
 	}
 }
 
+// cmdLoadProvidersCatalog retries GET /providers after the 8s session-unlock
+// budget. First load must not hold chat locked (CA-535); an empty list after
+// that timeout must still backfill (CA-657).
+// opencodeVariantsMsg carries the real per-model effort options fetched from
+// the runner (CA-689c) — the picker must be correct at model-selection time,
+// not only after a chat turn happened to capture them.
+type opencodeVariantsMsg struct {
+	Model   string
+	Efforts []string
+	Default string
+	Err     string
+}
+
+func (m *AppModel) cmdFetchOpencodeVariants(modelID string) tea.Cmd {
+	runnerURL := m.runnerURL
+	modelID = strings.TrimSpace(modelID)
+	return func() tea.Msg {
+		if modelID == "" {
+			return nil
+		}
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		defer cancel()
+		efforts, current, err := cl.GetOpencodeModelVariants(ctx, modelID)
+		if err != nil {
+			return opencodeVariantsMsg{Model: modelID, Err: err.Error()}
+		}
+		return opencodeVariantsMsg{Model: modelID, Efforts: efforts, Default: current}
+	}
+}
+
+// maybeFetchOpencodeVariants returns a fetch cmd for the current opencode
+// model selection. Always fires for opencode — the catalog cannot distinguish
+// its guessed effort list from captured truth, and the runner short-circuits
+// already-captured models in milliseconds (CA-689c).
+func (m *AppModel) maybeFetchOpencodeVariants() tea.Cmd {
+	if !strings.EqualFold(m.provider, "opencode") || strings.TrimSpace(m.model) == "" {
+		return nil
+	}
+	return m.cmdFetchOpencodeVariants(m.model)
+}
+
+func (m *AppModel) cmdLoadProvidersCatalog() tea.Cmd {
+	runnerURL := m.runnerURL
+	return func() tea.Msg {
+		tuiLog("cmdLoadProvidersCatalog() start")
+		start := time.Now()
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		ps, err := cl.ListProviders(ctx)
+		if err != nil {
+			tuiLog("cmdLoadProvidersCatalog() done dur=%v err=%v n=0", time.Since(start), err)
+			return ProvidersCatalogMsg{Err: err.Error()}
+		}
+		tuiLog("cmdLoadProvidersCatalog() done dur=%v err=<nil> n=%d", time.Since(start), len(ps))
+		return ProvidersCatalogMsg{Providers: ps}
+	}
+}
+
+func (m *AppModel) scheduleOpencodeCatalogRetryCmd() tea.Cmd {
+	if m.providersWarmRetries >= 3 {
+		return nil
+	}
+	if !needsOpencodeCatalogWarmRetry(m.providers) {
+		return nil
+	}
+	return tea.Tick(12*time.Second, func(time.Time) tea.Msg {
+		return ProvidersWarmRetryMsg{}
+	})
+}
+
 func (m *AppModel) cmdListFlows() tea.Cmd {
 	return m.cmdFetchFlows(false)
 }
@@ -5920,6 +6470,14 @@ func (m *AppModel) startupGrokYoloPostureCmd() tea.Cmd {
 // right sidebar is open) for every hover event.
 func tuiMsgFilter(model tea.Model, msg tea.Msg) tea.Msg {
 	m, ok := model.(*AppModel)
+	if ok {
+		if km, isKey := msg.(tea.KeyMsg); isKey {
+			// BUG-328: the only KeyMsg rewrite is the ConPTY ctrl+h -> Backspace
+			// remap. No debounce/dedupe lives here anymore — every key Bubble Tea
+			// parses from the single VT pipe reader must reach handleKey.
+			msg = remapVTControlKeys(km)
+		}
+	}
 	if !ok {
 		return msg
 	}
@@ -5938,16 +6496,34 @@ func tuiMsgFilter(model tea.Model, msg tea.Msg) tea.Msg {
 	return msg
 }
 
-// tuiProgramOpts returns Bubble Tea program options. On Windows the conhost
-// ReadConsoleInput path with ENABLE_MOUSE_INPUT (WithMouseCellMotion) shares
-// a 64-event queue with keys; a WT paste flood fills it with coninput mouse
-// Mouse is enabled on all platforms so F2 [open]/[back]/[stop]/[copy] and
-// wheel scroll stay live while a sub-agent is RUNNING. Windows Ctrl+V is
-// rejected as a raw flood (use Alt+V) so the 64-event conhost queue does not
-// fill with mouse+key records (log 18936/22964). Alt+V (clipboard 1 msg) and
-// Ctrl+V KeyCtrlV hint remain.
+// remapVTControlKeys maps Windows VT bytes onto the keys handleKey already
+// implements. ConPTY sends Backspace as 0x08 (KeyCtrlH), while KeyBackspace
+// is 0x7F (tui.log pid 2692: dozens of ctrl+h, zero backspace).
+func remapVTControlKeys(msg tea.KeyMsg) tea.KeyMsg {
+	if msg.Type == tea.KeyCtrlH {
+		msg.Type = tea.KeyBackspace
+	}
+	return msg
+}
+
+// tuiProgramOpts returns Bubble Tea program options. Application mouse tracking
+// stays OFF on every platform (BUG-328): WithMouseCellMotion enables the host
+// mouse mode that wedges keyboard input (Windows conhost focus steal). Copy is
+// the terminal's native bôi-đen + /copy, not an in-app drag affordance. AltScreen
+// + Filter only.
 func tuiProgramOpts() []tea.ProgramOption {
-	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithFilter(tuiMsgFilter)}
+	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithFilter(tuiMsgFilter)}
+}
+
+// tuiRunProgramOpts is the live Run() option set: shared AltScreen+Filter.
+// Windows input is intentionally NOT wrapped: Bubble Tea's native coninput
+// reader (readConInputs over the console record queue) is the only path that
+// delivered F2/F4/Esc and IME text reliably (tui.log pid 19296/14012). The
+// VT-pipe wrapper (CA-663/664) depended on ConPTY's record→VT translation,
+// which mangles IME commits and drops ESC-prefixed sequences afterwards
+// (tui.log pid 11948: "A,\u0091" mojibake, then zero f2/f4/esc for 49s).
+func tuiRunProgramOpts() []tea.ProgramOption {
+	return tuiProgramOpts()
 }
 
 // ---- Run (entrypoint) -------------------------------------------------------
@@ -5976,7 +6552,9 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 	tuiLog("Run() start print=%v runner=%s", cfg.Print, runnerURL)
 	m := New(cfg, runnerURL)
 	applyProductionInputGuards(m, runtime.GOOS)
-	disableConsoleQuickEdit()
+	primeConsoleBeforeProgram()
+	tuiLog("tuiProgramOpts: AltScreen+Filter mouseCellMotion=off nativeConinputReader=%v (BUG-328)",
+		runtime.GOOS == "windows")
 
 	if cfg.Print {
 		err := runHeadless(m, cfg.Prompt)
@@ -5992,8 +6570,9 @@ func Run(cfg config.ChatConfig, runnerURL string) error {
 	// with 0 KeyMsg (tui.log 13:06:31 → 13:54:51). queuedOutput keeps
 	// term.File (Fd) semantics so resize/WindowSizeMsg still work.
 	out := newQueuedOutput(os.Stdout)
-	p := tea.NewProgram(m, append(tuiProgramOpts(), tea.WithOutput(out))...)
+	p := tea.NewProgram(m, append(tuiRunProgramOpts(), tea.WithOutput(out))...)
 	_, err := p.Run()
+	restoreWindowsStdin()
 	_, _ = os.Stdout.WriteString(decawmOn)
 	tuiLog("Run() exit err=%v", err)
 	tuiLogClose()
@@ -6075,4 +6654,3 @@ func runHeadless(m *AppModel, prompt string) error {
 	fmt.Fprintln(os.Stdout, finalMsg)
 	return nil
 }
-

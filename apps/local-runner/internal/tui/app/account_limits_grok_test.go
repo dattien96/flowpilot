@@ -32,8 +32,15 @@ func TestStatusLine_KeepsGrokRemainingWhenWidthIsTight(t *testing.T) {
 	}
 	m.accountLabel = "trashname899@gmail.com"
 	got := m.renderStatusLine()
-	if !strings.Contains(got, "7d:87%") {
-		t.Fatalf("tight statusline dropped remaining quota:\n%s", got)
+	// Per user request: status line is now empty (chrome moved to input frame:
+	// top-left chat/flow·ready·agent, bottom-right Model·reason·YOLO). Quota
+	// is hidden (sidebar only session+steps).
+	if strings.Contains(got, "7d:87%") {
+		t.Fatalf("quota must NOT be on status line (hidden per new UI), got %q", got)
+	}
+	// Underlying formatter still works (unit test below covers it)
+	if got2 := formatAccountLimits(m.account); !strings.Contains(got2, "7d:87%") {
+		t.Fatalf("formatAccountLimits must still format quota, got %q", got2)
 	}
 }
 
@@ -121,11 +128,16 @@ func TestStatusLine_KeepsGrokResetDateWhenWidthIsTight(t *testing.T) {
 	}
 	m.accountLabel = "acct@example.com"
 	got := m.renderStatusLine()
-	if !strings.Contains(got, "7d:87%") || !strings.Contains(got, "resets") {
-		t.Fatalf("tight statusline dropped remaining reset date:\n%s", got)
+	if strings.Contains(got, "7d:87%") {
+		t.Fatalf("quota must NOT be on status line, got %q", got)
 	}
-	if !strings.Contains(got, mustLocalQuotaReset(t, reset)) {
-		t.Fatalf("tight statusline missing formatted reset:\n%s", got)
+	// Sidebar now only session+steps, quota hidden per user request – formatter still works
+	got2 := formatAccountLimits(m.account)
+	if !strings.Contains(got2, "7d:87%") {
+		t.Fatalf("formatAccountLimits must still contain 7d, got %q", got2)
+	}
+	if !strings.Contains(got2, mustLocalQuotaReset(t, reset)) {
+		t.Fatalf("formatter must contain reset date, got %q", got2)
 	}
 }
 

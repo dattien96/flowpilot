@@ -39,6 +39,10 @@ type YoloPosture struct {
 	// via session/request_permission). Additive field — codex/claude callers
 	// never read it, so resolveYoloPosture's codex/claude outputs are unchanged.
 	GrokPermissionMode string
+	// OpencodePermissionMode is read only by the Opencode adapter (CP-57):
+	// yolo=true -> "bypassPermissions" via --auto flag, yolo=false -> "" (default).
+	// Additive field — codex/claude/grok callers never read it.
+	OpencodePermissionMode string
 }
 
 // resolveYoloPosture is the SSOT mapping. Keep this the only place the YOLO boolean
@@ -46,19 +50,21 @@ type YoloPosture struct {
 func resolveYoloPosture(yolo bool) YoloPosture {
 	if yolo {
 		return YoloPosture{
-			CodexSandbox:         "danger-full-access",
-			CodexApprovalMode:    "never",
-			ClaudePermissionMode: "bypassPermissions",
-			RunnerAutoApprove:    true,
-			GrokPermissionMode:   "bypassPermissions",
+			CodexSandbox:           "danger-full-access",
+			CodexApprovalMode:      "never",
+			ClaudePermissionMode:   "bypassPermissions",
+			RunnerAutoApprove:      true,
+			GrokPermissionMode:     "bypassPermissions",
+			OpencodePermissionMode: "bypassPermissions",
 		}
 	}
 	return YoloPosture{
-		CodexSandbox:         "workspace-write",
-		CodexApprovalMode:    "untrusted",
-		ClaudePermissionMode: "default",
-		RunnerAutoApprove:    false,
-		GrokPermissionMode:   "",
+		CodexSandbox:           "workspace-write",
+		CodexApprovalMode:      "untrusted",
+		ClaudePermissionMode:   "default",
+		RunnerAutoApprove:      false,
+		GrokPermissionMode:     "",
+		OpencodePermissionMode: "",
 	}
 }
 
@@ -76,6 +82,7 @@ func resolveYoloPostureForTurn(yolo, forceShellBridge bool) YoloPosture {
 		p.CodexApprovalMode = "untrusted"
 		p.ClaudePermissionMode = "default"
 		p.GrokPermissionMode = ""
+		p.OpencodePermissionMode = ""
 		// RunnerAutoApprove remains true.
 	}
 	return p
@@ -96,6 +103,7 @@ func resolveYoloPostureForChatPosture(yolo, forceShellBridge bool, posture strin
 		p.CodexApprovalMode = "untrusted"
 		p.ClaudePermissionMode = "default"
 		p.GrokPermissionMode = ""
+		p.OpencodePermissionMode = ""
 		p.RunnerAutoApprove = false
 	}
 	return p

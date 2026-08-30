@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -334,24 +335,35 @@ func formatUsageLine(lastTokens, contextWindow, lastTurn int64) string {
 	return fmt.Sprintf("ctx:%dk/%dk last:%dk", lastTokens/1000, contextWindow/1000, lastTurn/1000)
 }
 
+// orderAgentsMainFirst keeps main first, then sorts the remaining child agents
+// STABLY by AgentName then RunID. A stable sort prevents the /agents list and the
+// Tab/picker from flickering/reordering every time a fresh agent_graph_updated
+// snapshot replaces agentRuns (the SSE arrival order differs from poll order).
 func orderAgentsMainFirst(runs []client.AgentRunSummary) []client.AgentRunSummary {
-	if len(runs) <= 1 {
+	if len(runs) == 0 {
 		return runs
 	}
-	out := make([]client.AgentRunSummary, 0, len(runs))
-	var rest []client.AgentRunSummary
+	var main, rest []client.AgentRunSummary
 	for _, r := range runs {
 		if strings.EqualFold(r.Role, "main") || strings.EqualFold(r.AgentName, "main") {
-			out = append(out, r)
+			main = append(main, r)
 		} else {
 			rest = append(rest, r)
 		}
 	}
+	sort.SliceStable(rest, func(i, j int) bool {
+		ni, nj := strings.ToLower(strings.TrimSpace(rest[i].AgentName)), strings.ToLower(strings.TrimSpace(rest[j].AgentName))
+		if ni != nj {
+			return ni < nj
+		}
+		return strings.TrimSpace(rest[i].RunID) < strings.TrimSpace(rest[j].RunID)
+	})
+	out := append([]client.AgentRunSummary(nil), main...)
+	out = append(out, rest...)
 	if len(out) == 0 {
-		out = append(out, runs[0])
-		rest = runs[1:]
+		return runs
 	}
-	return append(out, rest...)
+	return out
 }
 
 // pickActiveSessionDefaults chooses provider/model for the statusline.
@@ -510,6 +522,12 @@ func formatAccountLimits(acc *client.ProviderAccountSummary) string {
 }
 
 func formatQuotaChip(label string, pct int, resetAt *string) string {
+	// CA-684: a usage line with no real percent and no reset is informational
+	// (opencode stats rows — sessions/cost/tokens), not a quota meter. Never
+	// fabricate a ":0%" suffix onto it.
+	if pct <= 0 && (resetAt == nil || strings.TrimSpace(*resetAt) == "") {
+		return label
+	}
 	chip := fmt.Sprintf("%s:%d%%", label, pct)
 	if resetAt == nil {
 		return chip
@@ -855,7 +873,62 @@ func parseHistoryArgPrefix(input string) (ok bool, query string) {
 	return true, query
 }
 
-var reasoningEffortOptions = []string{"high", "medium", "low"}
+// CA-685: full canonical reasoning vocabulary — the runner mappers accept all
+// of these (opencode --variant minimal..xhigh/max, see opencodeReasoningVariantID).
+// When the selected model carries catalog efforts (Task-215), the picker shows
+// those instead — see AppModel.modelReasoningEfforts.
+var reasoningEffortOptions = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+
+// modelReasoningEfforts returns the selected model's detected reasoning efforts
+// from the provider catalog (empty when unknown). The current provider is
+// searched first; if the model id is not found there (stale catalog shard,
+// provider rename), any provider owning that exact model id answers.
+func (m *AppModel) modelReasoningEfforts() []string {
+	modelID := strings.TrimSpace(m.model)
+	if modelID == "" {
+		return nil
+	}
+	var crossProvider []string
+	for _, p := range m.providers {
+		foundHere := false
+		for _, mod := range p.Models {
+			if !strings.EqualFold(mod.ModelID(), modelID) {
+				continue
+			}
+			foundHere = true
+			if len(mod.SupportedReasoningEfforts) > 0 && len(crossProvider) == 0 {
+				crossProvider = mod.SupportedReasoningEfforts
+			}
+		}
+		if foundHere && strings.EqualFold(p.Key, m.provider) && len(crossProvider) > 0 {
+			return crossProvider
+		}
+	}
+	return crossProvider
+}
+
+// reasoningEffortDetail is the grok-CLI-style human label + description for a
+// reasoning effort (shown in the /reasoning picker's right column).
+func reasoningEffortDetail(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "minimal":
+		return "Minimal effort — fastest, minimal reasoning"
+	case "low":
+		return "Low effort — quick, fast implementations"
+	case "medium":
+		return "Medium effort — balanced implementation and testing"
+	case "high":
+		return "High effort — higher quality with extensive reasoning"
+	case "xhigh":
+		return "Extra high effort — highest effort and reasoning level"
+	case "max":
+		return "Max effort — maximum reasoning level"
+	case "":
+		return "Model default effort"
+	default:
+		return "Custom effort"
+	}
+}
 
 // parseProviderPicker reports `/provider <query>` or `/provider connect|config|install|account|switch|activate <query>`.
 func parseProviderPicker(input string) (mode, filter string, ok bool) {
@@ -891,7 +964,7 @@ func parseProviderPicker(input string) (mode, filter string, ok bool) {
 // providerReadiness mirrors Desktop ChatInput: ready only when CLI installed AND an
 // active connected account exists for that provider key.
 func providerReadiness(p client.Provider, accounts []client.ProviderAccountSummary) (code, detail string) {
-	if !p.Installed {
+	if !p.Installed || providerCLIUnusable(p) {
 		return "not_installed", "not installed — /provider install " + strings.TrimSpace(p.Key)
 	}
 	hasAccount := false
@@ -924,13 +997,44 @@ func providerReadiness(p client.Provider, accounts []client.ProviderAccountSumma
 	return "ready", "ready"
 }
 
+func providerCLIUnusable(p client.Provider) bool {
+	if strings.EqualFold(strings.TrimSpace(p.InstallStatus), "FAILED") {
+		return true
+	}
+	ver := strings.TrimSpace(p.DetectedVersion)
+	if ver == "" {
+		ver = strings.TrimSpace(p.Version)
+	}
+	return looksLikeProviderProbeError(ver)
+}
+
+func looksLikeProviderProbeError(s string) bool {
+	low := strings.ToLower(strings.TrimSpace(s))
+	if low == "" {
+		return false
+	}
+	if strings.Contains(low, "cannot find module") || strings.Contains(low, "can not find module") {
+		return true
+	}
+	if strings.Contains(low, "module_not_found") || strings.Contains(low, "module not found") {
+		return true
+	}
+	if strings.HasPrefix(low, "error:") && (strings.Contains(low, "module") || strings.Contains(low, "enoent") || strings.Contains(low, "not found")) {
+		return true
+	}
+	if strings.Count(s, "\n") >= 3 {
+		return true
+	}
+	return false
+}
+
 func accountAuthOK(a client.ProviderAccountSummary) bool {
 	s := strings.ToLower(strings.TrimSpace(a.AuthStatus))
 	return s == "" || s == "connected" || s == "authenticated"
 }
 
 func providerSuggestionDetail(p client.Provider, accounts []client.ProviderAccountSummary, current, mode string) string {
-	_, status := providerReadiness(p, accounts)
+	code, status := providerReadiness(p, accounts)
 	label := strings.TrimSpace(p.Label)
 	if label == "" {
 		label = strings.TrimSpace(p.Name)
@@ -949,15 +1053,20 @@ func providerSuggestionDetail(p client.Provider, accounts []client.ProviderAccou
 		parts = append(parts, "install CLI")
 	}
 	parts = append(parts, status)
-	if mode == "select" {
+	if mode == "select" && code != "not_installed" {
 		ver := strings.TrimSpace(p.DetectedVersion)
 		if ver == "" {
 			ver = strings.TrimSpace(p.Version)
 		}
-		if ver != "" {
+		if ver != "" && !looksLikeProviderProbeError(ver) {
 			parts = append(parts, ver)
 		}
 		parts = append(parts, fmt.Sprintf("%d models", len(p.Models)))
+	}
+	if code == "not_installed" {
+		// Keep "not installed" substring for existing picker tests; do not
+		// append Node "Cannot find module" dumps as a fake version.
+		parts[len(parts)-1] = "not installed"
 	}
 	return strings.Join(parts, " · ")
 }
@@ -1072,24 +1181,102 @@ func filterModelSuggestions(input string, models []string, current string) []sug
 }
 
 // filterReasoningSuggestions returns effort levels matching `/reasoning `.
-func filterReasoningSuggestions(input string, current string) []suggestItem {
+func filterReasoningSuggestions(input string, current string, modelEfforts []string) []suggestItem {
 	ok, query := parseSlashArgPrefix(input, "/reasoning")
 	if !ok {
 		return nil
 	}
+	// CA-686: when the selected model advertises efforts (Task-215 catalog),
+	// that list IS the menu — Desktop parity. No catalog data falls back to the
+	// canonical vocabulary.
+	efforts := modelEfforts
+	if len(efforts) == 0 {
+		efforts = reasoningEffortOptions
+	}
 	q := strings.ToLower(query)
-	out := make([]suggestItem, 0, len(reasoningEffortOptions))
-	for _, effort := range reasoningEffortOptions {
+	out := make([]suggestItem, 0, len(efforts))
+	for _, effort := range efforts {
 		if q != "" && !strings.HasPrefix(effort, q) && !strings.Contains(effort, q) {
 			continue
 		}
-		detail := "effort"
+		detail := reasoningEffortDetail(effort)
 		if strings.EqualFold(effort, current) {
-			detail = "current"
+			detail += " — active"
 		}
 		out = append(out, suggestItem{value: effort, detail: detail, kind: "reasoning"})
 	}
 	return out
+}
+
+// reasoningEffortAllowed reports whether an effort may be set. Model-first
+// (CA-686): when the selected model advertises efforts, ONLY those (plus
+// empty = model default) are valid — claude has max but not xhigh, opencode
+// has xhigh but not max. Without catalog data the canonical vocabulary applies.
+func reasoningEffortAllowed(m *AppModel, effort string) bool {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if effort == "" {
+		return true
+	}
+	if efforts := m.modelReasoningEfforts(); len(efforts) > 0 {
+		for _, e := range efforts {
+			if strings.EqualFold(e, effort) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, e := range reasoningEffortOptions {
+		if e == effort {
+			return true
+		}
+	}
+	return false
+}
+
+// clampReasoningForCurrentModel (CA-686): reasoning is dynamic per model —
+// after the model changes, a stale effort the new model does not advertise
+// resets to that model's catalog default (or empty = model default). No-op
+// when the catalog carries no effort data for the model.
+func (m *AppModel) clampReasoningForCurrentModel() {
+	efforts := m.modelReasoningEfforts()
+	if len(efforts) == 0 {
+		return
+	}
+	current := strings.ToLower(strings.TrimSpace(m.reasoningEffort))
+	if current == "" {
+		return
+	}
+	for _, e := range efforts {
+		if strings.EqualFold(e, current) {
+			return
+		}
+	}
+	var def string
+	for _, p := range m.providers {
+		if !strings.EqualFold(p.Key, m.provider) {
+			continue
+		}
+		for _, mod := range p.Models {
+			if strings.EqualFold(mod.ModelID(), m.model) {
+				def = strings.ToLower(strings.TrimSpace(mod.DefaultReasoningEffort))
+			}
+		}
+	}
+	for _, e := range efforts {
+		if strings.EqualFold(e, def) {
+			m.reasoningEffort = def
+			return
+		}
+	}
+	m.reasoningEffort = ""
+}
+
+// reasoningEffortHelp lists the efforts valid for the selected model.
+func reasoningEffortHelp(m *AppModel) string {
+	if efforts := m.modelReasoningEfforts(); len(efforts) > 0 {
+		return "Options (" + m.model + "): " + strings.Join(efforts, " · ") + " · (empty = model default)"
+	}
+	return "Options: minimal · low · medium · high · xhigh · max · (empty = model default)"
 }
 
 // filterModeSetupSuggestions returns picker items for `/mode-setup …`
@@ -1434,6 +1621,27 @@ func modelsForProvider(providers []client.Provider, providerKey string) []string
 		return out
 	}
 	return nil
+}
+
+const minOpencodeCatalogModels = 10
+
+func opencodeCatalogModelCount(providers []client.Provider) int {
+	for _, p := range providers {
+		if strings.EqualFold(p.Key, "opencode") {
+			return len(p.Models)
+		}
+	}
+	return 0
+}
+
+func needsOpencodeCatalogWarmRetry(providers []client.Provider) bool {
+	for _, p := range providers {
+		if !strings.EqualFold(p.Key, "opencode") {
+			continue
+		}
+		return p.Installed && len(p.Models) < minOpencodeCatalogModels
+	}
+	return false
 }
 
 // defaultModelsForKey returns registry defaults when a provider is in m.providers

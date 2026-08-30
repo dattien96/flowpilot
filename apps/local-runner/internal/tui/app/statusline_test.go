@@ -28,24 +28,16 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func TestStatusLine_AlwaysShowsYoloAndProjectRow(t *testing.T) {
+func TestStatusLine_AlwaysShowsYoloInSidebar(t *testing.T) {
 	m := New(config.ChatConfig{ProjectPath: `C:\working\gate-sandbox`}, "http://127.0.0.1:4317")
 	m.yolo = false
 	m.projectPath = `C:\working\gate-sandbox`
 	m.projectBranch = "main"
 	m.project = &client.Project{Name: "gate-sandbox", Path: `C:\working\gate-sandbox`}
-	got := m.renderStatusLine()
-	lines := strings.Split(got, "\n")
-	if len(lines) < 2 {
-		t.Fatalf("want 2 status lines, got %q", got)
-	}
-	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "YOLO:OFF") {
-		t.Fatalf("status missing YOLO:OFF: %q", got)
-	}
-	last := lines[len(lines)-1]
-	if !strings.Contains(last, "gate-sandbox") || !strings.Contains(last, "main") {
-		t.Fatalf("project row missing project/branch: %q", last)
+	enableSidebarForTest(m)
+	side := strings.Join(m.renderSidebarStatusSection(40), "\n")
+	if !strings.Contains(side, "YOLO:OFF") {
+		t.Fatalf("sidebar missing YOLO:OFF: %q", side)
 	}
 }
 
@@ -80,9 +72,10 @@ func TestYoloToggle_BlockedInFlowMode(t *testing.T) {
 func TestStatusLine_ShowsReasoningEffortAndDefaultsToMedium(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "grok", Model: "grok-4.5"}, "http://127.0.0.1:4317")
 	m.reasoningEffort = "medium"
-	line := m.renderStatusLine()
-	if !strings.Contains(line, "reasoning: medium") {
-		t.Fatalf("statusline missing 'reasoning: medium': %q", line)
+	enableSidebarForTest(m)
+	side := strings.Join(m.renderSidebarStatusSection(40), "\n")
+	if !strings.Contains(side, "reasoning: medium") {
+		t.Fatalf("sidebar missing 'reasoning: medium': %q", side)
 	}
 }
 

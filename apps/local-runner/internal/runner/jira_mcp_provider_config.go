@@ -268,6 +268,9 @@ func (r *Runner) EnsureJiraMcpProviderConfig(req JiraMcpProviderConfigRequest) (
 		return r.ensureGeminiJiraMcpConfig(accountHomePath, auth)
 	case "grok":
 		return r.ensureGrokJiraMcpConfig(accountHomePath, auth)
+	case "opencode":
+		// Appended last (CP-57): Opencode Jira uses same HTTP MCP as Claude/Grok, written to opencode.json
+		return r.ensureOpencodeJiraMcpConfig(accountHomePath, auth)
 	default:
 		return JiraMcpProviderConfigResponse{}, fmt.Errorf("Jira MCP provider config is not yet implemented for provider: %s", providerKey)
 	}
@@ -289,7 +292,7 @@ func (r *Runner) EnsureJiraMcpProviderConfig(req JiraMcpProviderConfigRequest) (
 // only when the entry differs), so re-pushing an already-correct config is a
 // no-op.
 func (r *Runner) rePushJiraConfigToConnectedProviders() {
-	for _, providerKey := range []string{"codex", "claude", "grok", "gemini"} {
+	for _, providerKey := range []string{"codex", "claude", "grok", "gemini", "opencode"} {
 		home, ok := DetectDefaultAccountHomePath(providerKey)
 		if !ok || strings.TrimSpace(home) == "" {
 			continue
@@ -689,6 +692,66 @@ func (r *Runner) ensureGrokJiraMcpConfig(accountHomePath string, auth jiraMcpAut
 	}, nil
 }
 
+// ensureOpencodeJiraMcpConfig writes Opencode opencode.json mcpServers.jira (CP-57, appended last).
+func (r *Runner) ensureOpencodeJiraMcpConfig(accountHomePath string, auth jiraMcpAuthConfig) (JiraMcpProviderConfigResponse, error) {
+	configPath := getOpencodeMcpConfigPath(accountHomePath)
+	doc, err := readOpencodeMcpConfig(configPath)
+	if err != nil {
+		return JiraMcpProviderConfigResponse{}, err
+	}
+	mcpServers, _ := doc["mcpServers"].(map[string]interface{})
+	if mcpServers == nil {
+		mcpServers = map[string]interface{}{}
+		doc["mcpServers"] = mcpServers
+	}
+	if legacy := legacyMcpServerName(jiraMcpServerName); legacy != "" {
+		if _, ok := mcpServers[legacy]; ok {
+			delete(mcpServers, legacy)
+		}
+	}
+	expected := map[string]interface{}{
+		"type": "http",
+		"name": jiraMcpServerName,
+		"url":  auth.URL,
+		"headers": []interface{}{
+			map[string]interface{}{"name": "Authorization", "value": auth.Authorization},
+		},
+	}
+	// Also support simple headers map for opencode compat
+	existingMatches := false
+	if existingRaw, exists := mcpServers[jiraMcpServerName]; exists {
+		if existingMap, ok := existingRaw.(map[string]interface{}); ok {
+			a, _ := json.Marshal(existingMap)
+			b, _ := json.Marshal(expected)
+			if string(a) == string(b) {
+				existingMatches = true
+			}
+			// Also check alternative shape with headers as map
+			if !existingMatches {
+				if hdr, ok := existingMap["headers"].(map[string]interface{}); ok {
+					if hdr["Authorization"] == auth.Authorization && existingMap["url"] == auth.URL {
+						existingMatches = true
+					}
+				}
+			}
+		}
+	}
+	changed := !existingMatches
+	if changed {
+		mcpServers[jiraMcpServerName] = expected
+		if err := writeOpencodeMcpConfigAtomic(configPath, doc); err != nil {
+			return JiraMcpProviderConfigResponse{}, err
+		}
+	}
+	return JiraMcpProviderConfigResponse{
+		ProviderKey: "opencode",
+		ServerName:  jiraMcpServerName,
+		Status:      "configured",
+		Changed:     changed,
+		ConfigPath:  configPath,
+	}, nil
+}
+
 // ensureGeminiJiraMcpConfig writes Gemini settings.json mcpServers.jira with
 // httpUrl + headers.Authorization.
 func (r *Runner) ensureGeminiJiraMcpConfig(accountHomePath string, auth jiraMcpAuthConfig) (JiraMcpProviderConfigResponse, error) {
@@ -911,6 +974,21 @@ func (r *Runner) PreflightJiraMcp(providerKey string, accountHomePath string) MC
 			result.ErrorMessage = "Provider has stale Jira MCP config. Re-run Configure Providers."
 			return result
 		}
+	case "opencode":
+		// Appended last (CP-57): Opencode uses opencode.json, same HTTP server.
+		status, err := r.checkOpencodeJiraMcpConfig(accountHomePath)
+		if err != nil {
+			result.ErrorMessage = fmt.Sprintf("Failed to check Opencode Jira MCP config: %v", err)
+			return result
+		}
+		if !status.Configured {
+			result.ErrorMessage = fmt.Sprintf("The selected AI provider is not configured with the %s MCP server. Run Configure Providers first.", jiraMcpServerName)
+			return result
+		}
+		if status.Stale {
+			result.ErrorMessage = "Provider has stale Jira MCP config. Re-run Configure Providers."
+			return result
+		}
 	default:
 		// codex/gemini Ensure writers exist; preflight for those providers is
 		// still a follow-up (not G2). Empty providerKey already returned above.
@@ -960,6 +1038,62 @@ func (r *Runner) checkGrokJiraMcpConfig(accountHomePath string) (claudeJiraMcpCo
 		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
 	}
 	if server.URL != jiraMcpAPITokenRemoteURL && server.URL != jiraMcpOAuthRemoteURL {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	return claudeJiraMcpConfigStatus{Configured: true, Stale: false}, nil
+}
+
+func (r *Runner) checkOpencodeJiraMcpConfig(accountHomePath string) (claudeJiraMcpConfigStatus, error) {
+	configPath := getOpencodeMcpConfigPath(accountHomePath)
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return claudeJiraMcpConfigStatus{}, nil
+		}
+		return claudeJiraMcpConfigStatus{}, fmt.Errorf("failed to read Opencode config: %w", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	mcpServers, _ := doc["mcpServers"].(map[string]interface{})
+	if mcpServers == nil {
+		return claudeJiraMcpConfigStatus{}, nil
+	}
+	existingRaw, ok := mcpServers[jiraMcpServerName]
+	if !ok {
+		return claudeJiraMcpConfigStatus{}, nil
+	}
+	existingMap, ok := existingRaw.(map[string]interface{})
+	if !ok {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	// Check for URL and Authorization
+	urlVal, _ := existingMap["url"].(string)
+	if strings.TrimSpace(urlVal) == "" {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	if headers, ok := existingMap["headers"].([]interface{}); ok {
+		found := false
+		for _, h := range headers {
+			if hm, ok := h.(map[string]interface{}); ok {
+				if strings.EqualFold(fmt.Sprint(hm["name"]), "Authorization") && strings.TrimSpace(fmt.Sprint(hm["value"])) != "" {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+		}
+	} else if headersMap, ok := existingMap["headers"].(map[string]interface{}); ok {
+		if auth, ok := headersMap["Authorization"].(string); !ok || strings.TrimSpace(auth) == "" {
+			return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+		}
+	} else {
+		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
+	}
+	if urlVal != jiraMcpAPITokenRemoteURL && urlVal != jiraMcpOAuthRemoteURL {
 		return claudeJiraMcpConfigStatus{Configured: true, Stale: true}, nil
 	}
 	return claudeJiraMcpConfigStatus{Configured: true, Stale: false}, nil

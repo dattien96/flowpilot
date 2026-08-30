@@ -20,6 +20,8 @@ const (
 	// records the chain so seedTranscriptFromDisk can replay each turn's
 	// chat_history.jsonl precisely (instead of the cwd-wide mtime fallback).
 	turnLogKindGrokSession turnLogKind = "grok_session"
+	// turnLogKindOpencodeSession records the real Opencode ACP session id (CP-57, appended last).
+	turnLogKindOpencodeSession turnLogKind = "opencode_session"
 	// turnLogKindAssistant records the full assistant response for providers
 	// that do not expose a provider-owned transcript file for replay.
 	turnLogKindAssistant turnLogKind = "assistant"

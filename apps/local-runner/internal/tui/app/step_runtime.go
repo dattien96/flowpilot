@@ -309,12 +309,16 @@ func (m *AppModel) renderBlockedBar() string {
 	showAllow := !isCap && !isStalled && len(drifted) > 0
 
 	var options []string
-	options = append(options, styleSystem.Render("  ")+styleLink.Render("[Retry]")+styleSystem.Render(" - run again with old scope"))
-	options = append(options, styleSystem.Render("  ")+styleLink.Render("[Stop]")+styleSystem.Render(" - end flow"))
+	retryHi := m.actionRingHighlighted("blocked", 0)
+	stopHi := m.actionRingHighlighted("blocked", 1)
+	options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Retry]", retryHi)+styleSystem.Render(" - run again with old scope"))
+	options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Stop]", stopHi)+styleSystem.Render(" - end flow"))
 	if showAllow {
-		options = append(options, styleSystem.Render("  ")+styleLink.Render("[Allow]")+styleSystem.Render(" - continue with new scope (match code changed)"))
+		allowHi := m.actionRingHighlighted("blocked", 2)
+		options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Allow]", allowHi)+styleSystem.Render(" - continue with new scope (match code changed)"))
 	}
 	bar += strings.Join(options, "\n")
+	bar += "\n" + styleSystem.Render("  ← → select · Enter · /continue /stop")
 	return bar
 }
 

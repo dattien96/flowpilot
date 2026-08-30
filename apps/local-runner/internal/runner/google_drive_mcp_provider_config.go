@@ -352,6 +352,29 @@ func (r *Runner) EnsureGoogleDriveMcpProviderConfig(req GoogleDriveMcpProviderCo
 		return r.ensureClaudeGoogleDriveMcpConfig(accountHomePath, mode, req.YoloMode, runtimeMcpStatus)
 	case "grok":
 		return r.ensureGrokGoogleDriveMcpConfig(accountHomePath, mode, req.YoloMode, runtimeMcpStatus)
+	case "opencode":
+		// Appended last (CP-57): Opencode uses same proxy/npx server as Claude, written to opencode.json
+		expected := expectedClaudeGoogleDriveMcpServer(r.workspace, accountHomePath, mode, req.YoloMode, runtimeMcpStatus)
+		serverMap := map[string]interface{}{
+			"type":    expected.Type,
+			"command": expected.Command,
+			"args":    expected.Args,
+			"env":     expected.Env,
+		}
+		if expected.Timeout != 0 {
+			serverMap["timeout"] = expected.Timeout
+		}
+		changed, err := ensureOpencodeDriveMcpServer(accountHomePath, googleDriveMcpServerName, serverMap)
+		if err != nil {
+			return GoogleDriveMcpProviderConfigResponse{}, err
+		}
+		return GoogleDriveMcpProviderConfigResponse{
+			ProviderKey: "opencode",
+			ServerName:  googleDriveMcpServerName,
+			Status:      "configured",
+			Changed:     changed,
+			ConfigPath:  getOpencodeMcpConfigPath(accountHomePath),
+		}, nil
 	default:
 		return GoogleDriveMcpProviderConfigResponse{}, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -1227,7 +1250,7 @@ func (r *Runner) resolveGoogleDriveMcpProviderStatuses() ([]GoogleDriveMcpProvid
 	accounts, _ := r.ListProviderAccounts()
 
 	// Check each provider
-	for _, providerKey := range []string{"codex", "gemini", "claude", "grok"} {
+	for _, providerKey := range []string{"codex", "gemini", "claude", "grok", "opencode"} {
 		accountHomes, discoverErr := DiscoverProviderAccountHomes(providerKey)
 		if discoverErr != nil {
 			statuses = append(statuses, GoogleDriveMcpProviderConfigStatus{
@@ -1355,6 +1378,9 @@ func getProviderConfigPath(providerKey string, accountHomePath string) string {
 		return filepath.Join(accountHomePath, ".claude.json")
 	case "grok":
 		return filepath.Join(accountHomePath, "config.toml")
+	case "opencode":
+		// Appended last (CP-57 P-0/Task-302 T-5): opencode uses opencode.json
+		return getOpencodeMcpConfigPath(accountHomePath)
 	default:
 		return ""
 	}
@@ -1383,9 +1409,38 @@ func (r *Runner) checkProviderGoogleDriveMcpConfig(
 		return r.checkClaudeGoogleDriveMcpConfig(result, configPath, mcpStatus)
 	case "grok":
 		return r.checkGrokGoogleDriveMcpConfig(result, configPath, mcpStatus)
+	case "opencode":
+		return r.checkOpencodeGoogleDriveMcpConfig(result, configPath)
 	default:
 		return result, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
+}
+
+func (r *Runner) checkOpencodeGoogleDriveMcpConfig(result GoogleDriveMcpProviderConfigStatus, configPath string) (GoogleDriveMcpProviderConfigStatus, error) {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		result.Status = "not_started"
+		return result, nil
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		result.Status = "failed"
+		return result, fmt.Errorf("invalid JSON config: %w", err)
+	}
+	mcpServers, _ := doc["mcpServers"].(map[string]interface{})
+	if mcpServers == nil {
+		result.Status = "not_started"
+		return result, nil
+	}
+	if _, ok := mcpServers[googleDriveMcpServerName]; ok {
+		result.Status = "configured"
+	} else if _, ok := mcpServers["google-drive"]; ok {
+		// Legacy name still counts as configured (migration from early CP-57)
+		result.Status = "configured"
+	} else {
+		result.Status = "not_started"
+	}
+	return result, nil
 }
 
 // checkCodexGoogleDriveMcpConfig checks Codex config.toml for google-drive MCP

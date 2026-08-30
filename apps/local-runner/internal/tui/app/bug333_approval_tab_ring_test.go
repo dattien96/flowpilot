@@ -1,0 +1,354 @@
+package app
+
+import (
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
+	"flowpilot-runner/internal/tui/client"
+)
+
+// BUG-333 (operator report, E1 re-test): the approval gate card shows
+// Approve/Deny but pressing Tab does not move the keyboard selection — the
+// Tab-cycles-ring mechanism (BUG-328) must work for approval cards exactly
+// like ←/→, including opencode approvals that carry typed Decisions.
+
+func bug333ApprovalModel() *AppModel {
+	m := bug328Model()
+	m.approval = &ApprovalState{
+		ID:    "appr-1",
+		RunID: "run-1",
+		Decisions: []client.ApprovalDecisionOption{
+			{Value: "approve", Label: "Approve"},
+			{Value: "deny", Label: "Deny"},
+		},
+	}
+	m.syncActionRingCard()
+	return m
+}
+
+func TestBug333_Approval_TabCyclesRing(t *testing.T) {
+	m := bug333ApprovalModel()
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	am := m2.(*AppModel)
+	if am.actionRingIdx != 1 {
+		t.Fatalf("Tab must cycle the approval ring to idx 1 (Deny), got idx=%d focus=%v sugg=%d", am.actionRingIdx, am.actionRingFocus, len(am.collectSuggestions()))
+	}
+	m3, _ := am.Update(tea.KeyMsg{Type: tea.KeyTab})
+	am3 := m3.(*AppModel)
+	if am3.actionRingIdx != 0 {
+		t.Fatalf("second Tab must wrap to idx 0 (Approve), got %d", am3.actionRingIdx)
+	}
+}
+
+func TestBug333_Approval_ShiftTabCyclesBack(t *testing.T) {
+	m := bug333ApprovalModel()
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	am := m2.(*AppModel)
+	if am.actionRingIdx != 1 {
+		t.Fatalf("Shift+Tab must cycle back to idx 1 (Deny), got %d", am.actionRingIdx)
+	}
+}
+
+func TestBug333_Approval_TabThenEnterDenies(t *testing.T) {
+	m := bug333ApprovalModel()
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	am := m2.(*AppModel)
+	_, cmd := am.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter on the Tab-selected ring item must dispatch the decision")
+	}
+}
+
+// bug333PopulatedModel returns the approval model with every passive
+// suggestion source populated (history, remote chats, flows, providers,
+// accounts, workspace files) — the closest unit approximation of the live
+// session where the ring keys died.
+func bug333PopulatedModel() *AppModel {
+	m := bug333ApprovalModel()
+	m.project = &client.Project{ID: "p1"}
+	m.chatList = []client.RunHistoryItem{{RunID: "run-old", LastPrompt: "old chat"}}
+	m.remoteChatList = []client.RemoteChatSessionSummary{{RunID: "run-remote", SourceRunID: "remote chat"}}
+	m.flowBuiltins = []client.BuiltinFlowOption{{FlowRef: "pack/flow-1", Label: "Flow One"}}
+	m.providers = []client.Provider{{Key: "codex", Models: []client.ProviderModel{{ID: "o3"}}}}
+	m.providerAccounts = []client.ProviderAccountSummary{{ProviderKey: "codex", DisplayLabel: "acc"}}
+	m.workspaceFiles = []string{"main.go"}
+	return m
+}
+
+func TestBug333_Approval_TabCyclesEvenWithSuggestionSourcesLoaded(t *testing.T) {
+	m := bug333PopulatedModel()
+	if m.actionRingKeysActive() == false {
+		t.Fatal("a pending approval with empty input must keep the ring keys active")
+	}
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	am := m2.(*AppModel)
+	if am.actionRingIdx != 1 {
+		t.Fatalf("Tab must cycle the ring (idx 1) even when suggestion sources are loaded, got %d", am.actionRingIdx)
+	}
+	if am.approval == nil {
+		t.Fatal("approval card must still be mounted")
+	}
+}
+
+func TestBug333_Approval_ArrowsCycleEvenWithSuggestionSourcesLoaded(t *testing.T) {
+	m := bug333PopulatedModel()
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	am := m2.(*AppModel)
+	if am.actionRingIdx != 1 {
+		t.Fatalf("Right must cycle the ring, got %d", am.actionRingIdx)
+	}
+	m3, _ := am.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	am3 := m3.(*AppModel)
+	if am3.actionRingIdx != 0 {
+		t.Fatalf("Left must cycle back, got %d", am3.actionRingIdx)
+	}
+}
+
+func TestBug333_Approval_TypingStillGetsSuggestions(t *testing.T) {
+	m := bug333PopulatedModel()
+	m.inputValue = "/ap"
+	m.syncTextareaValue()
+	if m.actionRingKeysActive() {
+		t.Fatal("typing with a card pending must hand keys back to the composer")
+	}
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	am := m2.(*AppModel)
+	if am.actionRingIdx != 0 {
+		t.Fatalf("Tab while typing must NOT cycle the ring, got idx %d", am.actionRingIdx)
+	}
+}
+
+func TestBug333_Approval_TabNeverCyclesPostureWhileCardPending(t *testing.T) {
+	m := bug333PopulatedModel()
+	m.sessionDefaultsLoaded = true
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	am := m2.(*AppModel)
+	if am.chatPosturePending != "" {
+		t.Fatalf("Tab with a pending approval must never schedule a posture apply, got %q", am.chatPosturePending)
+	}
+	if am.actionRingIdx != 1 {
+		t.Fatalf("Tab must cycle the ring, got %d", am.actionRingIdx)
+	}
+}
+
+func TestBug333_Approval_HighlightVisibleWhileCardPending(t *testing.T) {
+	m := bug333PopulatedModel()
+	if got := m.ringHighlightFor("approval"); got != 0 {
+		t.Fatalf("approval surface must highlight idx 0 while the card is pending, got %d", got)
+	}
+}
+
+// cardRow returns the interactive card row ("… ← → Enter · 1-9") from rendered
+// chat rows, or "" when absent.
+func cardRow(rows []chatRow) string {
+	for _, r := range rows {
+		if strings.Contains(stripANSI(r.Text), "← → Enter") {
+			return r.Text
+		}
+	}
+	return ""
+}
+
+// BUG-333 UX follow-up (operator: "hiệu ứng selection khó nhận biết quá"):
+// the moving selection rendered as accent-colored text in BOTH states — the
+// selected action must read as a FILLED CHIP (same selection language as the
+// /mode-setup tab row), on every surface that routes through
+// renderActionRingChip (approval, gate, question, attention, blocked flow).
+func TestBug333UX_SelectedRingChipRendersFilled(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	sel := renderActionRingChip("Approve", true)
+	idle := renderActionRingChip("Deny", false)
+	if !strings.Contains(sel, "48;5;62") {
+		t.Fatalf("selected chip must render a filled 256-color background 62, got %q", sel)
+	}
+	if got := stripANSI(sel); got != " Approve " {
+		t.Fatalf("selected chip must be space-padded so the fill reads as a chip, got %q", got)
+	}
+	if strings.Contains(idle, "48;5;") {
+		t.Fatalf("idle chip must not carry a background fill, got %q", idle)
+	}
+	if strings.Contains(idle, "Approve") {
+		t.Fatal("idle chip must keep its own label")
+	}
+}
+
+func TestBug333UX_ApprovalCardShowsFilledSelection(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	m := bug333ApprovalModel()
+	row0 := cardRow(m.chatRows())
+	if !strings.Contains(row0, "48;5;62") {
+		t.Fatalf("idx0 selection must paint the filled chip on the card row, got %q", row0)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	row1 := cardRow(m.chatRows())
+	if !strings.Contains(row1, "48;5;62") {
+		t.Fatalf("idx1 selection must paint the filled chip too, got %q", row1)
+	}
+	if row0 == row1 {
+		t.Fatal("selection move must move the fill between chips")
+	}
+	// The filled fill sits on the second chip now: the Deny label is inside the
+	// background-colored span.
+	if !strings.Contains(stripANSI(row1), " Deny ") {
+		t.Fatalf("padded Deny chip missing after Tab, got %q", stripANSI(row1))
+	}
+}
+
+// BUG-333 UX follow-up 2 (operator screenshot): long question option rows were
+// flattened with stripANSI when wider than the terminal — the selected chip's
+// fill vanished ("chỉ có vài padding được apply"). The bar must SQUEEZE labels
+// and keep every style: selected fill, hint, and a width that always fits.
+func TestBug333UX_QuestionBarKeepsFillWhenLong(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	q := &QuestionState{
+		ID: "q-1", RunID: "run-1", Prompt: "pick a filename",
+		Options: []map[string]string{
+			{"label": "hello-grok.txt (ghi đè lên file cũ nếu có)", "value": "a"},
+			{"label": "hello-grok-abc-xyz-very-long-option-name.txt", "value": "b"},
+			{"label": "grok-abc-secondary-backup-copy.txt", "value": "c"},
+			{"label": "Nhập tên khác hoàn toàn mới", "value": "d"},
+		},
+	}
+	bar := renderQuestionBar(styleInputStroke.Render("┃"), styleInputStroke.Render("│"), q, 100, 0)
+	if lipgloss.Width(bar) > 100 {
+		t.Fatalf("question bar must fit width 100, got %d", lipgloss.Width(bar))
+	}
+	if !strings.Contains(bar, "48;5;62") {
+		t.Fatal("selected option fill must survive long-content squeezing")
+	}
+	if !strings.Contains(stripANSI(bar), "← → Enter") {
+		t.Fatal("hint must survive squeezing")
+	}
+	if !strings.Contains(stripANSI(bar), "…") {
+		t.Fatal("long labels must be truncated with an ellipsis")
+	}
+	// Selection move repaints the fill on the moved option.
+	bar2 := renderQuestionBar(styleInputStroke.Render("┃"), styleInputStroke.Render("│"), q, 100, 3)
+	if !strings.Contains(bar2, "48;5;62") {
+		t.Fatal("fill must follow the selection on long rows too")
+	}
+}
+
+func TestBug333UX_QuestionBarShortKeepsFullLabels(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	q := &QuestionState{ID: "q-2", RunID: "run-1", Options: []map[string]string{
+		{"label": "yes", "value": "yes"}, {"label": "no", "value": "no"},
+	}}
+	bar := renderQuestionBar(styleInputStroke.Render("┃"), styleInputStroke.Render("│"), q, 200, 0)
+	plain := stripANSI(bar)
+	for _, want := range []string{"yes", "no", "← → Enter"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("short options must render fully, missing %q in %q", want, plain)
+		}
+	}
+	if strings.Contains(plain, "…") {
+		t.Fatal("short options must not be truncated")
+	}
+}
+
+func TestBug333UX_QuestionBarMultiSelectKeepsSubmitAndFill(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	q := &QuestionState{ID: "q-3", RunID: "run-1", MultiSelect: true, Options: []map[string]string{
+		{"label": "enable-drive-sync-for-this-project-folder", "value": "a"},
+		{"label": "enable-auto-audit-note-generation", "value": "b"},
+	}}
+	// highlightIdx 2 == the [Submit] chip (two option chips first).
+	bar := renderQuestionBar(styleInputStroke.Render("┃"), styleInputStroke.Render("│"), q, 90, 2)
+	if lipgloss.Width(bar) > 90 {
+		t.Fatalf("multiselect bar must fit width 90, got %d", lipgloss.Width(bar))
+	}
+	if !strings.Contains(stripANSI(bar), "[Submit]") {
+		t.Fatal("Submit chip must survive squeezing")
+	}
+	if !strings.Contains(stripANSI(bar), "Space toggle") {
+		t.Fatal("multiselect hint must survive squeezing")
+	}
+	if !strings.Contains(bar, "48;5;62") {
+		t.Fatal("Submit highlight fill must survive squeezing")
+	}
+}
+
+func TestBug333_QuestionChipFillFollowsSelection(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	m := bug328Model()
+	m.question = &QuestionState{ID: "q-1", RunID: "run-1", Prompt: "pick", Options: []map[string]string{{"label": "Yes", "value": "yes"}, {"label": "No", "value": "no"}}}
+	m.syncActionRingCard()
+	rows := m.chatRows()
+	found := false
+	for _, r := range rows {
+		if strings.Contains(stripANSI(r.Text), "1)") || strings.Contains(stripANSI(r.Text), "Yes") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("question options must render through the chip renderer")
+	}
+	if !m.actionRingKeysActive() {
+		t.Fatal("question card must keep ring keys active")
+	}
+}
+
+// THE operator report, reproduced: the ring state cycles but the row cache
+// keyed on message content served the approval bar with a FROZEN highlight.
+// TrueColor profile is forced because highlight styles degrade to identical
+// plain text without a TTY (ca558 pattern).
+func TestBug333_Approval_RowCacheRepaintsOnRingMove(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	m := bug333ApprovalModel()
+	before := cardRow(m.chatRows())
+	if before == "" {
+		t.Fatal("approval card row must render on the chat timeline")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	after := cardRow(m.chatRows())
+	if after == "" {
+		t.Fatal("approval card row must still render after Tab")
+	}
+	if after == before {
+		t.Fatal("ring move must repaint the approval card highlight — row cache served a frozen bar (operator report)")
+	}
+}
+
+func TestBug333_Gate_RowCacheRepaintsOnRingMove(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	m := bug328Model()
+	m.gate = &GateState{Options: []string{"r-ca", "r-na"}, RunID: "run-1"}
+	m.syncActionRingCard()
+	before := cardRow(m.chatRows())
+	if before == "" {
+		t.Fatal("gate card row must render")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	after := cardRow(m.chatRows())
+	if after == before {
+		t.Fatal("gate ring move must repaint the highlight — row cache stale")
+	}
+}
+
+func TestBug333_Approval_RowCacheRepaintsOnKeysActiveFlip(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	m := bug333ApprovalModel()
+	active := cardRow(m.chatRows())
+	m.inputValue = "/ap"
+	m.syncTextareaValue()
+	typing := cardRow(m.chatRows())
+	if typing == "" {
+		t.Fatal("approval card row must render while typing too")
+	}
+	if typing == active {
+		t.Fatal("keys-active flip (typing) must repaint the highlight — row cache stale")
+	}
+}

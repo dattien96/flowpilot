@@ -252,7 +252,12 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 					return
 				}
-				providers, err := instance.DetectProvidersCached(r.Context())
+				// Plain ListenAndServe request contexts have no deadline. The TUI
+				// session unlock is 8s (CA-535); pass the same budget so
+				// detectOpencodeModels' adaptive probe is real, not the 1.2s fallback.
+				ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+				defer cancel()
+				providers, err := instance.DetectProvidersCached(ctx)
 				if err != nil {
 					writeHTTPError(w, http.StatusInternalServerError, err)
 					return
@@ -501,6 +506,32 @@ func newRunnerCommand(cfg *config) *cobra.Command {
 				}
 
 				if err := instance.ApplyGrokYoloPosture(r.Context(), payload.Yolo); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, err)
+					return
+				}
+
+				writeHTTPJSON(w, map[string]any{"ok": true})
+			})
+			// /provider-accounts/opencode-yolo-posture (CP-57 Task-303, BUG-329
+			// era): the Opencode counterpart to the Grok toggle. Opencode acp has
+			// no --auto launch flag, so this only flips the runner's desired-auto
+			// SSOT (process respawn key) — live per-turn enforcement already rides
+			// on TurnRequest.YoloMode via the adapter's permission auto-approve.
+			// See ApplyOpencodeYoloPosture (opencode_process.go).
+			mux.HandleFunc("/provider-accounts/opencode-yolo-posture", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var payload struct {
+					Yolo bool `json:"yolo"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+					return
+				}
+
+				if err := instance.ApplyOpencodeYoloPosture(r.Context(), payload.Yolo); err != nil {
 					writeHTTPError(w, http.StatusBadRequest, err)
 					return
 				}

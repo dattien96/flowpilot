@@ -62,7 +62,7 @@ func TestStatusLine_NoAgentOpenClickTarget(t *testing.T) {
 		{RunID: "run-98158", AgentName: "coder", Label: "grok-coder", Status: "completed"},
 	}
 	// Collapse F2 so only status could expose agent targets (it must not).
-	m.sessionPanel.Collapsed = true
+	m.width = tuiSidebarMinWidth - 1
 	_ = m.View()
 	if _, _, ok := findClickTarget(m, "agent-open:run-98158"); ok {
 		t.Fatal("status/collapsed chrome must not expose agent-open click")

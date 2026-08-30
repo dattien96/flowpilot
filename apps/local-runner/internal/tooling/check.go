@@ -35,6 +35,65 @@ func CheckTool(name string, repoDir string) ToolStatus {
 	ts := ToolStatus{Tool: name, CheckedAt: now}
 
 	switch name {
+	case "claude":
+		if path, err := exec.LookPath("claude"); err == nil && path != "" {
+			out, err := exec.Command("claude", "--version").Output()
+			if err == nil {
+				ts.Version = strings.TrimSpace(string(out))
+				ts.Status = "ok"
+				return ts
+			}
+		}
+		ts.Status = "missing"
+		return ts
+	case "codex":
+		if path, err := exec.LookPath("codex"); err == nil && path != "" {
+			out, err := exec.Command("codex", "--version").Output()
+			if err == nil {
+				ts.Version = strings.TrimSpace(string(out))
+				ts.Status = "ok"
+				return ts
+			}
+		}
+		ts.Status = "missing"
+		return ts
+	case "grok":
+		if path, err := exec.LookPath("grok"); err == nil && path != "" {
+			out, err := exec.Command("grok", "--version").Output()
+			if err == nil {
+				ts.Version = strings.TrimSpace(string(out))
+				ts.Status = "ok"
+				return ts
+			}
+		}
+		ts.Status = "missing"
+		return ts
+	case "opencode":
+		// Appended last (CP-57 P-0): respect FLOWPILOT_OPENCODE_BIN override
+		bin := strings.TrimSpace(os.Getenv("FLOWPILOT_OPENCODE_BIN"))
+		if bin == "" {
+			bin = "opencode"
+		}
+		if path, err := exec.LookPath(bin); err == nil && path != "" {
+			out, err := exec.Command(bin, "--version").Output()
+			if err == nil {
+				ts.Version = strings.TrimSpace(string(out))
+				ts.Status = "ok"
+				return ts
+			}
+		} else if bin != "opencode" {
+			// Absolute path override may not be on PATH but still be executable
+			if _, err := os.Stat(bin); err == nil {
+				out, err := exec.Command(bin, "--version").Output()
+				if err == nil {
+					ts.Version = strings.TrimSpace(string(out))
+					ts.Status = "ok"
+					return ts
+				}
+			}
+		}
+		ts.Status = "missing"
+		return ts
 	case "gitnexus":
 		// Prefer a native binary; fall back to npx.
 		if path, err := exec.LookPath("gitnexus"); err == nil && path != "" {

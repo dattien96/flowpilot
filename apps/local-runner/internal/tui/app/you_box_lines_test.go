@@ -28,7 +28,7 @@ func TestRegression_YouBoxRendersPromptLinesPlainly(t *testing.T) {
 			m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
 			m.sessionPanel.RunID = "run-208282"
 			m.sessionPanel.ProjectPath = "/tmp/p"
-			m.sessionPanel.Collapsed = false
+			enableSidebarForTest(m)
 			m.addMessage("user", prompt, "")
 			if m.useRightSidebar() != tc.sideOn {
 				t.Fatalf("[%s w=%d] sidebar expected %v got %v", pk, tc.w, tc.sideOn, m.useRightSidebar())
@@ -75,33 +75,18 @@ func TestRegression_YouBoxRendersPromptLinesPlainly(t *testing.T) {
 
 // CA-604: the [copy] chip rides its own row (after the content rows, before the
 // bottom border) — never on a content row, so prompt text is never cut for it.
+// User request: [copy] at end of prompt removed, so this test now verifies no [copy].
 func TestRegression_YouBoxCopyChipOnLastRow(t *testing.T) {
 	m := New(config.ChatConfig{Provider: "grok", Model: "m"}, "http://127.0.0.1:4317")
 	m.width, m.height = 120, 24
 	m.addMessage("user", "intent: them ham SubtractWithGuard vao calc.go tra ve error khi b > a", "")
 	view := stripANSI(strings.Join(m.renderMessages(), "\n"))
+	if strings.Contains(view, "[copy]") {
+		t.Fatalf("[copy] should be removed (user request), found in:\n%s", view)
+	}
 	rows := strings.Split(view, "\n")
-	chipRow := -1
-	for i, row := range rows {
-		if strings.Contains(row, "[copy]") {
-			chipRow = i
-		}
-	}
-	if chipRow < 0 {
-		t.Fatalf("missing [copy] chip:\n%s", view)
-	}
-	if strings.Contains(rows[chipRow], "tra ve error") {
-		t.Fatalf("[copy] must be on its own row, got %q\n%s", rows[chipRow], view)
-	}
-	if strings.Trim(rows[chipRow], "│ ") != "[copy]" {
-		t.Fatalf("[copy] row must hold only the chip, got %q\n%s", rows[chipRow], view)
-	}
-	if !strings.HasSuffix(rows[chipRow], "│") {
-		t.Fatalf("[copy] row missing right border: %q", rows[chipRow])
-	}
-	// The chip row sits directly above the bottom border.
-	if chipRow+1 >= len(rows) || !strings.Contains(rows[chipRow+1], "└") {
-		t.Fatalf("[copy] row must precede the bottom border:\n%s", view)
+	if len(rows) == 0 || !strings.Contains(rows[len(rows)-1], "└") {
+		t.Fatalf("bottom border must be last row:\n%s", view)
 	}
 }
 
@@ -133,7 +118,7 @@ func TestRegression_YouBoxUserPastedPromptAllLines(t *testing.T) {
 					m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
 					m.sessionPanel.RunID = "run-208282"
 					m.sessionPanel.ProjectPath = "/tmp/p"
-					m.sessionPanel.Collapsed = false
+					enableSidebarForTest(m)
 				}
 				m.addMessage("user", prompt, "")
 				checkOrder := func(label string, order []string, view string) {

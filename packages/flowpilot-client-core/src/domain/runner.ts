@@ -13,12 +13,17 @@ export interface CompatVersionInfo {
   // Appended last (CP-46 P-0/Task-211 T-10).
   testedGrokVersion: string;
   installedGrokVersion: string;
+  // Appended last (CP-57 P-0/Task-302 T-6).
+  testedOpencodeVersion: string;
+  installedOpencodeVersion: string;
 }
 
 export interface CompatConfig {
   testedClaudeVersion: string;
   testedCodexVersion: string;
   testedGrokVersion: string;
+  // Appended last (CP-57 P-0/Task-302 T-6).
+  testedOpencodeVersion: string;
 }
 
 export interface CompatItem {

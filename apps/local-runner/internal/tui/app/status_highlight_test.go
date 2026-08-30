@@ -36,45 +36,29 @@ func TestStatusLine_HighlightsModelReasoningYoloSkillsAnd7d(t *testing.T) {
 
 	got := m.renderStatusLine()
 	plain := stripANSI(got)
+	// Per new UI: status line is empty (only toast), chrome in input frame
+	if strings.Contains(plain, "7d:87%") {
+		t.Fatalf("quota must NOT be on status line (hidden), got %q", plain)
+	}
+	// Input frame now holds Model·reason·YOLO
+	footer := stripANSI(m.inputFrameFooter())
+	if !strings.Contains(footer, "grok-4.5") {
+		t.Fatalf("footer missing model: %q", footer)
+	}
+	if !strings.Contains(footer, "reasoning: high") {
+		t.Fatalf("footer missing reasoning: %q", footer)
+	}
+	if !strings.Contains(footer, "YOLO:ON") {
+		t.Fatalf("footer missing YOLO: %q", footer)
+	}
+	// Skills are stored but not shown in input chrome per new spec (sidebar only session+steps)
+	if len(m.selectedSkills) != 1 {
+		t.Fatalf("selectedSkills not stored")
+	}
 
-	// Plain content still carries labels + values (no regression for click/parse).
-	if !strings.Contains(plain, "grok-4.5") {
-		t.Fatalf("missing model:\n%s", plain)
-	}
-	if !strings.Contains(plain, "reasoning: high") {
-		t.Fatalf("missing reasoning label+value:\n%s", plain)
-	}
-	if !strings.Contains(plain, "YOLO:ON") {
-		t.Fatalf("missing YOLO:\n%s", plain)
-	}
-	if !strings.Contains(plain, "skills:1") {
-		t.Fatalf("missing skills chip:\n%s", plain)
-	}
-	if !strings.Contains(plain, "7d:87%") {
-		t.Fatalf("missing 7d:\n%s", plain)
-	}
-
-	// Highlighted segments must use ANSI (styleStatusHi); dim labels alone are not enough.
-	if !strings.Contains(got, "\x1b[") {
-		t.Fatal("status line should include ANSI highlight codes")
-	}
-	// model line is built with accent on values — full line must not be plain-only equal.
-	modelLine := ""
-	for _, line := range strings.Split(got, "\n") {
-		if strings.Contains(stripANSI(line), "reasoning:") {
-			modelLine = line
-			break
-		}
-	}
-	if modelLine == "" {
-		t.Fatal("model/reasoning row missing")
-	}
-	if modelLine == stripANSI(modelLine) {
-		t.Fatalf("model row should be styled, got plain-only %q", modelLine)
-	}
-	// "reasoning: " label should remain present in plain; value "high" present.
-	if !strings.Contains(stripANSI(modelLine), "reasoning: high") {
-		t.Fatalf("model row plain: %q", stripANSI(modelLine))
+	// Footer is plain (no ANSI) per new UI; highlight is tested via styleYoloStatus separately
+	if !strings.Contains(footer, "reasoning: high") {
+		t.Fatalf("footer missing reasoning: %q", footer)
 	}
 }
 

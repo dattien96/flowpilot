@@ -1,0 +1,10 @@
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "session/load",
+  "params": {
+    "sessionId": "ses_fbc474c23ffepaXAU763cB2QPr",
+    "cwd": "/tmp/opencode_test",
+    "mcpServers": []
+  }
+}

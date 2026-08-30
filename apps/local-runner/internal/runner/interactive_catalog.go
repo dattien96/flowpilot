@@ -155,6 +155,9 @@ func discoverProjectSkills(provider string, cwd string) []ProviderSkill {
 		return providerSkillsFromDir(filepath.Join(cwd, ".claude", "skills"), "workspace")
 	case "grok":
 		return providerSkillsFromDir(filepath.Join(cwd, ".grok", "skills"), "workspace")
+	case "opencode":
+		// Appended last (CP-57)
+		return providerSkillsFromDir(filepath.Join(cwd, ".opencode", "skills"), "workspace")
 	default:
 		return nil
 	}
@@ -218,6 +221,19 @@ func providerHomeSkillDirs(provider string, homePath string) []string {
 		return []string{
 			filepath.Join(homePath, "skills"),
 			filepath.Join(homePath, ".grok", "skills"),
+		}
+	case "opencode":
+		// Appended last (CP-57): HOME is user home or config dir; check both
+		isConfigDir := strings.HasSuffix(filepath.ToSlash(filepath.Clean(homePath)), ".config/opencode") || strings.HasSuffix(filepath.ToSlash(filepath.Clean(homePath)), "/opencode")
+		if isConfigDir {
+			return []string{
+				filepath.Join(homePath, "skills"),
+			}
+		}
+		return []string{
+			filepath.Join(homePath, ".config", "opencode", "skills"),
+			filepath.Join(homePath, ".opencode", "skills"),
+			filepath.Join(homePath, "skills"),
 		}
 	default:
 		return nil

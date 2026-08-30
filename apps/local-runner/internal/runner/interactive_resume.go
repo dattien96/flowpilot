@@ -880,6 +880,10 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		realProviderSessionID:  st.ProviderSessionID,
 		lastCodexTurnSessionID: st.ProviderSessionID,
 		lastGrokTurnSessionID:  st.ProviderSessionID,
+		// BUG-329: mirror Grok — a restored opencode run resumes its real ses_*
+		// through the lastOpencodeTurnSessionID fallback in
+		// turnResumeProviderSessionID.
+		lastOpencodeTurnSessionID: st.ProviderSessionID,
 		providerAccountID:      st.ProviderAccountID,
 		workspaceCwd:           st.WorkingDirectory,
 		runKind:                st.RunKind,
@@ -2644,6 +2648,28 @@ func (s *InteractiveService) ensureResumeReady(rs *interactiveRun) *apiErr {
 		"[chat-history-open] resume check run_id=%q provider=%q stored_account_id=%q active_account_id=%q provider_session_id=%q cwd=%q resumed_from_disk=%t",
 		rs.id, rs.providerKey, rs.providerAccountID, activeAccountID, s.resumeSessionID(rs), rs.workspaceCwd, rs.resumedFromDisk,
 	)
+	if rs.providerKey == ProviderKeyOpencode {
+		// CA-688: opencode keeps sessions in the shared
+		// ~/.local/share/opencode/opencode.db — there are no per-session files
+		// and ACP session/load works from any process on this machine (BUG-329
+		// live probe). A real ses_* id is enough to resume, so the whole
+		// file-based availability flow below (account-home resolution +
+		// LocateSessionFile) does not apply. Synthetic thread-* ids still
+		// cannot resume; the auth check runs only when the account home resolves.
+		sessionID := s.resumeSessionID(rs)
+		if !isOpencodeRealSessionID(sessionID) {
+			log.Printf("[chat-history-open] opencode session id not resumable run_id=%q session_id=%q", rs.id, sessionID)
+			return newAPIErr(http.StatusConflict, "session_unavailable", "opencode session has no real session id to resume")
+		}
+		if srcHome, homeOK := s.resolveAccountHome(rs.providerKey, rs.providerAccountID); homeOK {
+			if rs.providerAccountID == activeAccountID && !HasLocalAuthAtPath(string(rs.providerKey), srcHome) {
+				log.Printf("[chat-history-open] auth missing run_id=%q provider=%q account_id=%q home=%q", rs.id, rs.providerKey, activeAccountID, srcHome)
+				return newAPIErr(http.StatusConflict, "account_not_signed_in", "can't open — the active account isn't signed in")
+			}
+		}
+		log.Printf("[chat-history-open] opencode db-backed session run_id=%q session_id=%q (file check not applicable)", rs.id, sessionID)
+		return nil
+	}
 	srcHome, ok := s.resolveAccountHome(rs.providerKey, rs.providerAccountID)
 	if !ok && (strings.TrimSpace(rs.providerAccountID) == "" || rs.providerAccountID == "default") {
 		srcHome, ok = defaultProviderSessionHome(rs.providerKey)
@@ -3016,6 +3042,11 @@ func (s *InteractiveService) seedTranscriptFromDisk(rs *interactiveRun) {
 	}
 	if rs.providerKey == ProviderKeyGrok {
 		s.seedGrokTranscriptFromDisk(rs)
+		s.appendResumedParentAnnotations(rs)
+		return
+	}
+	if rs.providerKey == ProviderKeyOpencode {
+		s.seedOpencodeTranscriptFromDisk(rs)
 		s.appendResumedParentAnnotations(rs)
 		return
 	}
@@ -4041,6 +4072,34 @@ func (s *InteractiveService) seedGrokTranscriptFromDisk(rs *interactiveRun) {
 	if len(allEntries) > 0 {
 		historical = mergeTurnLogAssistantsIntoTranscript(historical, allEntries)
 	}
+	historical = userFacingTranscriptEvents(historical)
+	if len(historical) == 0 {
+		return
+	}
+	s.appendTranscriptReplayEvents(rs, stampReplayPromptIDs(historical))
+}
+
+func (s *InteractiveService) seedOpencodeTranscriptFromDisk(rs *interactiveRun) {
+	// Opencode: no provider-owned transcript file loader yet (unlike Grok's chat_history.jsonl).
+	// Rebuild from durable turn-log prompts/assistants so reopen UI is not empty.
+	// ACP session/load still continues the provider thread via LastOpencodeSessionID.
+	var rawPrompts []turnLogLine
+	var allEntries []turnLogLine
+	if logger, logOK := s.workflowStore.(TurnLogStore); logOK {
+		if entries, _ := logger.ReadTurnLog(context.Background(), rs.id); len(entries) > 0 {
+			allEntries = entries
+			for _, e := range entries {
+				if e.Kind == turnLogKindPrompt && strings.TrimSpace(e.Prompt) != "" && !isSystemPrompt(e.Prompt) {
+					rawPrompts = append(rawPrompts, e)
+				}
+			}
+		}
+	}
+	if s.preferFlowHubTurnLogTranscript(rs, allEntries) {
+		s.seedFlowHubTranscriptFromTurnLog(rs, allEntries)
+		return
+	}
+	historical := mergeTurnLogAssistantsIntoTranscript(promptOnlyTurnLogEvents(rawPrompts), allEntries)
 	historical = userFacingTranscriptEvents(historical)
 	if len(historical) == 0 {
 		return
