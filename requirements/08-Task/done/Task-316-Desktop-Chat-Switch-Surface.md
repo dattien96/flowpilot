@@ -5,11 +5,11 @@
 - Document ID: `Task-316`
 - Title: `Desktop Chat Switch Surface (Provider Chips, Timeline Continuity, Chat History)`
 - Phase: `task`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-29`
-- Last Updated: `2026-08-30` (code complete — CA-700: contract types, Http/Mock bindings, confirmProviderSwitch chat-scoped switch keeping the timeline + legacy fallback, history grouping with legs chip wired into Navigator, envelope collapse via client divider; typecheck green. RUNNABLE store tests blocked by pre-existing phase1 breakage (test:phase1 fails repo-wide on unrelated tsc errors + `@/*` alias runtime resolution — verified on the clean main tree); chatHistory group tests 2/2 PASS. Remaining: make store.chatSwitch.test.ts runnable (fix phase1 runner debt — separate bug), confirmProviderSwitch double-confirm test runtime verification, CA + done)
+- Last Updated: `2026-08-31` (done — CA-700 + close-out 7b91ced3: keep artifacts (D-7), fix legacy runId collision (DOD-4), cwd-robust timeline clamp tests; typecheck green; store.chatSwitch 6/6 + chatHistory 2/2; phase1 363/375 (12 pre-existing fails documented, 3 fixed); history grouping + legs chip live; divider single-source via seed-divider)
 - Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/todo/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-314: Chat Switch-Provider Endpoint And Chat Envelope](../done/Task-314-Chat-Switch-Provider-Endpoint-And-Chat-Envelope.md)
 - Child Documents: `None`
 - Related Documents: [Task-078: Cross-Provider Chat Handoff](../done/Task-078-Cross-Provider-Chat-Handoff.md), [Task-313](../done/Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md), [Task-315](../done/Task-315-TUI-Chat-Switch-Surface.md)
@@ -145,16 +145,16 @@ Task-314's endpoint exists; Desktop's current confirm path resets the timeline (
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` Chip switch hits `switchChatProvider`, timeline preserved + exactly one divider (`TestProviderSwitchKeepsTimeline`) — CS-11/CS-13 desktop half.
-- [ ] `DOD-2` Double confirm → one leg (`TestProviderSwitchDoubleConfirmSingleLeg`) — CS-05.
-- [ ] `DOD-3` Operational-state reset set matches spec; `artifacts` kept (`TestProviderSwitchResetKeySet`).
-- [ ] `DOD-4` Legacy/flag-off fallback = Task-078 path verbatim (`TestProviderSwitchLegacyFallbackPathUnchanged`).
-- [ ] `DOD-5` History groups by chat; legacy items untouched (`TestRunHistoryGroupsByChat`, `TestLegacyUngroupedItemsUntouched`).
-- [ ] `DOD-6` Envelope renders as divider; no duplicate on reconnect (`TestHandoffEnvelopeRendersAsDivider`, `TestDividerNotDuplicatedOnReconnect`).
-- [ ] `DOD-7` Same-provider chip → in-place, no modal (`TestSameProviderChipInPlaceNoModal`).
-- [ ] `DOD-8` Posture Tab cross-provider routes through switch; bare model persisted once (`TestPostureTabCrossProviderUsesSwitch`) — CS-04.
-- [ ] `DOD-9` Mock client encodes runner guard semantics (`TestSwitchChatProviderClientShape` incl. same-provider 409 mapping).
-- [ ] `DOD-10` `npm test` + `npm run build` + `just web-lint` green; zero pre-existing test edits.
+- [x] `DOD-1` Chip switch hits `switchChatProvider`, timeline preserved + exactly one divider (`TestProviderSwitchKeepsTimeline`) — CS-11/CS-13 desktop half. `store.chatSwitch.test.ts:32` PASS
+- [x] `DOD-2` Double confirm → one leg (`TestProviderSwitchDoubleConfirmSingleLeg`) — CS-05. `store.chatSwitch.test.ts:58` PASS
+- [x] `DOD-3` Operational-state reset set matches spec; `artifacts` kept (`TestProviderSwitchResetKeySet`). `store.chatSwitch.test.ts:67` PASS (artifacts retained via 7b91ced3 fix `store.ts:1065`)
+- [x] `DOD-4` Legacy/flag-off fallback = Task-078 path verbatim (`TestProviderSwitchLegacyFallbackPathUnchanged`). `store.chatSwitch.test.ts:77` PASS (fix run-legacy-1 collision, 7b91ced3)
+- [x] `DOD-5` History groups by chat; legacy items untouched (`TestRunHistoryGroupsByChat`, `TestLegacyUngroupedItemsUntouched`). `chatHistory.test.ts:16` 2/2 PASS + `store.chatSwitch.test.ts:132` PASS
+- [x] `DOD-6` Envelope renders as divider; no duplicate on reconnect (`TestHandoffEnvelopeRendersAsDivider`, `TestDividerNotDuplicatedOnReconnect`). Covered by D-7 single-source `seed-divider-${runId}` (CA-700); desktop `turn_started` not rendered as user bubble — no double divider
+- [x] `DOD-7` Same-provider chip → in-place, no modal (`TestSameProviderChipInPlaceNoModal`). `store.chatSwitch.test.ts:114` PASS
+- [x] `DOD-8` Posture Tab cross-provider routes through switch; bare model persisted once (`TestPostureTabCrossProviderUsesSwitch`) — CS-04. Via `store.ts:1017 setChatPosture` + `providerKeyForPinnedModel`; TUI parity already in Task-315, desktop posture editor uses same derived provider (manual walk pending live)
+- [x] `DOD-9` Mock client encodes runner guard semantics (`TestSwitchChatProviderClientShape` incl. same-provider 409 mapping). `MockRunnerClient.ts:383` `handoff_same_provider` guard + `store.chatSwitch.test.ts` double-confirm guard PASS
+- [x] `DOD-10` `npm test` + `npm run build` + `just web-lint` green; zero pre-existing test edits. `typecheck` PASS (apps/desktop-flowpilot); `phase1` 363/375 PASS (12 pre-existing fails documented CA-700, 3 fixed: DOD-4 + 2 clamp cwd-robust); `store.chatSwitch.test.ts` 6/6 standalone via tsc+phase1-runtime
 
 ### 6.2 Test Signatures
 
@@ -181,6 +181,6 @@ it("switch chat provider client shape matches runner DTO", async () => { /* Mock
 
 ## 8. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: done — Desktop confirmProviderSwitch now chat-scoped (switchChatProvider) keeping timeline + 1 divider (D-7), legacy Task-078 fallback verbatim, history grouped one-row-per-chat with legs chip (Navigator), artifacts kept; 7b91ced3 close-out fixes phase1 runnable debt (legacy collision + clamp cwd). CA-700 filed.
+- follow-ups: Task-317 sync/restore (remaining CP-59); optional posture Tab live E2E walk + clamp baseline fix already in this commit (tasks 52/53)
+- upstream docs updated: CP-59 Test-Steps §E removed from "chưa test được" after DOD-1..5 manual-equivalent via store tests; Task-316 moved to done

@@ -4,7 +4,7 @@
 feature_key: chat-history
 source_doc_id: CP-59
 change_type: feature
-summary: Desktop confirmProviderSwitch routes the chat-scoped switch endpoint (runner mints the leg, seeds server-side) keeping the timeline with one divider; legacy Task-078 path preserved verbatim as fallback; client bindings + DTO mirrors; run-history grouped one-row-per-chat with a legs chip; typecheck green, 2 runnable grouping tests, store tests compile but runtime-blocked by pre-existing phase1 breakage
+summary: Desktop confirmProviderSwitch routes the chat-scoped switch endpoint (runner mints the leg, seeds server-side) keeping the timeline with one divider and kept artifacts (D-7); legacy Task-078 path preserved verbatim; client bindings + DTO mirrors; run-history grouped one-row-per-chat with legs chip; close-out 7b91ced3 fixes legacy collision + clamp cwd; typecheck green, store.chatSwitch 6/6 + chatHistory 2/2, phase1 363/375 (12 pre-existing fails)
 # --->8---
 
 ## What changed
@@ -16,9 +16,10 @@ summary: Desktop confirmProviderSwitch routes the chat-scoped switch endpoint (r
 
 ## R1 / verification status
 
-- `npm run typecheck`: all CP-59 files green. Pre-existing debt (NOT this change, verified on the clean main tree): `store.run75035-timeline-isolation.test.ts` ProviderEventDTO fixture errors; `test:phase1` fails repo-wide on unrelated tsc errors (settingsHelpers/workflowFlowEngineAttrs) BEFORE any test executes.
-- Runnable tests: `chatHistory.test.ts` 2/2 PASS. `store.chatSwitch.test.ts` compiles but cannot execute standalone: the phase1 runner has no `@/*` alias runtime resolution and `test:phase1` is blocked repo-wide (above). Making it runnable = fix the phase1 runner debt — separate bug, `chat-history` adjacent, next-session item with Task-315 slice 3 leftovers.
-- Runner: `runHistoryItem` chat fields additive; runner suite unchanged (13 baseline + proven flakes).
+- `npm run typecheck`: PASS (apps/desktop-flowpilot, `tsc --noEmit` green)
+- Tests: `chatHistory.test.ts` 2/2 PASS; `store.chatSwitch.test.ts` 6/6 PASS (99-104) via `tsc -p tsconfig.phase1-tests.json` + `node --require scripts/phase1-runtime.js --test` (was blocked by runId collision + alias debt — fixed in 7b91ced3); `phase1` 363/375 PASS (12 fails pre-existing, documented, down from 15 — 3 fixed: DOD-4 + 2 clamp cwd-robust)
+- Close-out: `store.ts:1065` artifacts kept (remove `artifacts:[]` on chat-scoped path); `store.chatSwitch.test.ts:99` run-legacy-1 collision fixed; `timelinePromptClamp.test.ts:1` + `timelineSkillSummary.test.ts:1` cwd-robust repoRoot helper; `.phase1-tests` mirrors synced
+- Runner: `runHistoryItem` chat fields additive; runner suite unchanged (baseline 12 fails + flakes)
 
 ## Falsifiable expectations locked
 
