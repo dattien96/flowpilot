@@ -86,18 +86,19 @@ Mở Desktop → Settings → AI Providers.
 Trạng thái: YOLO **OFF** (`/yolo` hiện OFF).
 
 > **BUG-331 / CA-690**: E1 fail lần đầu (opencode default allow-all, không bao giờ hỏi → không card).
-> Đã fix: mọi process `opencode acp` giờ spawn với `OPENCODE_CONFIG_CONTENT={"permission":{"edit":"ask","bash":"ask"}}`;
-> YOLO/posture quyết ở runner per-turn. **Restart runner/TUI trước khi re-test** (process cũ giữ env cũ).
-> Pre-verified bằng live probes 1.18.25: allow → file tạo (B/C/D); reject → file KHÔNG tạo, turn end_turn sạch (J);
-> E4 tự duyệt nhánh yolo đã có sẵn; E5 chỉ auto-approve `session/request_permission`, question luôn qua card.
+> Đã fix: mọi process `opencode acp` spawn với `OPENCODE_CONFIG_CONTENT={"permission":{"edit":"ask","bash":"ask"}}`;
+> YOLO/posture quyết ở runner per-turn. Kèm BUG-332 (modal clipped) + BUG-333 (Tab/arrows ring + row-cache
+> highlight + chip fill + question-bar squeeze) trong quá trình re-test.
+> Probe J live: reject → file KHÔNG tạo, turn end_turn sạch. Watch item: `file_changed` event đến trước
+> `permission_required` trong transcript (artifact mapper, không phải bypass) — xác nhận qua E2 pass.
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
-| E1 | "tạo file approval-test.txt nội dung ok" | Card **permission_required** hiện ra (F2 panel + `/approve`/`/deny`) |
-| E2 | `/deny` | File **không** được tạo; turn kết thúc có kiểm soát (không treo) |
-| E3 | Gửi lại yêu cầu tạo file → `/approve` | File được tạo |
-| E4 | `/yolo` (bật ON) → yêu cầu tạo file khác | Tự động được duyệt, **không** hiện card |
-| E5 | YOLO ON, yêu cầu model "hỏi tôi muốn tên file gì" | Câu hỏi vẫn **chặn hỏi user** (question không bao giờ auto-approve) |
+| E1 ✅ PASSED 08-30 | "tạo file approval-test.txt nội dung ok" | Card **permission_required** hiện ra (F2 panel + `/approve`/`/deny`) |
+| E2 ✅ PASSED 08-30 | `/deny` | File **không** được tạo; turn kết thúc có kiểm soát (không treo) |
+| E3 ✅ PASSED 08-30 | Gửi lại yêu cầu tạo file → `/approve` | File được tạo |
+| E4 ✅ PASSED 08-30 | `/yolo` (bật ON) → yêu cầu tạo file khác | Tự động được duyệt, **không** hiện card |
+| E5 ✅ PASSED 08-30 | YOLO ON, yêu cầu model "hỏi tôi muốn tên file gì" | Câu hỏi vẫn **chặn hỏi user** (question không bao giờ auto-approve) |
 
 ## F. spawn_agent (OC-07/E2E-17)
 

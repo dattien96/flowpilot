@@ -5137,21 +5137,53 @@ func nextHighlightToken(s string, tokens []string) (int, string) {
 }
 
 func renderQuestionBar(left, mid string, q *QuestionState, width int, highlightIdx int) string {
-	var b strings.Builder
-	b.WriteString(left)
-	b.WriteString(" ")
-	b.WriteString(styleGate.Render("question"))
-	b.WriteString(" ")
-	b.WriteString(mid)
-	b.WriteString(" ")
-	chipIdx := 0
-	for i, o := range q.Options {
-		if i > 0 {
-			b.WriteString("  ")
+	hint := "← → Enter · 1-9"
+	if q.MultiSelect {
+		hint = "Space toggle · Enter submit"
+	}
+	prefixStyled := left + " " + styleGate.Render("question") + " " + mid + " "
+	prefixW := lipgloss.Width(prefixStyled)
+	hintW := lipgloss.Width("  " + hint)
+	// BUG-333 UX follow-up (operator: long question options lost the selected
+	// chip's fill — "chỉ có vài padding được apply"): the overflow path used to
+	// stripANSI the whole bar and re-render it flat, erasing every style.
+	// Instead, SQUEEZE each option label (ANSI-safe, with an ellipsis) so the
+	// STYLED line fits the width; chips, the selected fill and the hint all
+	// survive. Highlight padding widens exactly one chip per surface, which the
+	// budget accounts for.
+	n := len(q.Options)
+	hintStyled := styleSystem.Render("  " + hint)
+	fit := func(label string, budget int) string {
+		if budget < 3 {
+			budget = 3
 		}
-		hi := highlightIdx == chipIdx
-		chipIdx++
-		if q.MultiSelect {
+		if lipgloss.Width(label) <= budget {
+			return label
+		}
+		return truncateVisual(label, budget-1) + "…"
+	}
+	var chips []string
+	if q.MultiSelect {
+		// Conservative budget: count every chip as padded (highlight worst
+		// case) so the assembled line always fits; non-highlighted chips just
+		// leave a couple of spare columns.
+		submitW := 2 + lipgloss.Width(renderActionRingChip("[Submit]", false))
+		overhead := prefixW + hintW + submitW
+		if n > 1 {
+			overhead += (n - 1) * 2
+		}
+		overhead += n * (4 + 2) // "[x] " mark + chip padding
+		budget := 3
+		if n > 0 {
+			budget = (width - overhead) / n
+		}
+		chipIdx := 0
+		for i, o := range q.Options {
+			if i > 0 {
+				chips = append(chips, "  ")
+			}
+			hi := highlightIdx == chipIdx
+			chipIdx++
 			mark := "[ ]"
 			sel := ""
 			for _, v := range q.Selected {
@@ -5161,28 +5193,39 @@ func renderQuestionBar(left, mid string, q *QuestionState, width int, highlightI
 				}
 			}
 			sel = mark + " "
-			b.WriteString(renderActionRingChip(sel+questionOptionLabel(o), hi))
-		} else {
-			b.WriteString(renderActionRingChip(strconv.Itoa(i+1)+")", hi))
-			b.WriteString(" ")
-			b.WriteString(renderActionRingChip(questionOptionLabel(o), hi))
+			chips = append(chips, renderActionRingChip(sel+fit(questionOptionLabel(o), budget), hi))
+		}
+		chips = append(chips, "  ")
+		chips = append(chips, renderActionRingChip("[Submit]", highlightIdx == chipIdx))
+	} else {
+		// Single select: "1)" num chip + " " + label chip per option.
+		overhead := prefixW + hintW
+		if n > 1 {
+			overhead += (n - 1) * 2
+		}
+		overhead += n * (2 + 1 + 2 + 2) // num text + space + num chip pad + label chip pad
+		budget := 3
+		if n > 0 {
+			budget = (width - overhead) / n
+		}
+		chipIdx := 0
+		for i, o := range q.Options {
+			if i > 0 {
+				chips = append(chips, "  ")
+			}
+			hiNum := highlightIdx == chipIdx
+			chipIdx++
+			hiLabel := highlightIdx == chipIdx
+			chipIdx++
+			chips = append(chips, renderActionRingChip(strconv.Itoa(i+1)+")", hiNum))
+			chips = append(chips, " ")
+			chips = append(chips, renderActionRingChip(fit(questionOptionLabel(o), budget), hiLabel))
 		}
 	}
-	if len(q.Options) == 0 {
-		b.WriteString(styleSystem.Render("type an answer"))
-	} else if q.MultiSelect {
-		b.WriteString("  ")
-		b.WriteString(styleSystem.Render("Space toggle · Enter submit"))
-		b.WriteString("  ")
-		b.WriteString(renderActionRingChip("[Submit]", highlightIdx == chipIdx))
-	} else {
-		b.WriteString("  ")
-		b.WriteString(styleSystem.Render("← → Enter · 1-9"))
-	}
-	line := b.String()
-	plain := stripANSI(line)
-	if width > 1 && len([]rune(plain)) > width {
-		return styleGate.Render(fitStatusWidth(plain, width))
+	line := prefixStyled + strings.Join(chips, "") + hintStyled
+	if width > 1 && lipgloss.Width(line) > width {
+		// Pathological ultra-narrow fallback: never emit a ragged row.
+		return styleGate.Render(fitStatusWidth(stripANSI(line), width))
 	}
 	return line
 }

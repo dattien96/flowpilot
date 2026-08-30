@@ -79,6 +79,22 @@ Tests (TrueColor profile): selected chip carries the 48;5;62 background +
 padded label, idle chip carries no fill; the approval card row moves the fill
 between chips on Tab; question options route through the same renderer.
 
+## UX follow-up 2 (operator screenshot: long question rows lost the fill)
+
+`renderQuestionBar` flattened ANY bar wider than the terminal via
+`stripANSI(line)` + flat `styleGate` re-render — with long option labels the
+selected chip's fill (and every other style) vanished, leaving only padding
+characters. The bar now SQUEEZES each option label (ANSI-safe
+`truncateVisual` + "…") against a conservative per-chip width budget so the
+STYLED line always fits: selected fill, hint ("← → Enter · 1-9" /
+"Space toggle · Enter submit"), and the [Submit] chip all survive; a
+pathological ultra-narrow width still falls back to the flat render as a last
+resort. Tests: long single-select keeps fill+hint+ellipsis and fits width 100;
+short options render fully without truncation; multiselect keeps
+[Submit]+fill+hint at width 90.
+
+Guide section E marked PASSED 08-30 (E1–E5) after the operator rebuild.
+
 ## Residual notes (separate findings, not fixed here)
 
 - **E2 ordering watch**: live log showed `file_changed` (12:13:57.030) arriving 1ms BEFORE `permission_required` for the same write. Probe J proved opencode does NOT touch disk on deny, so this is a transcript-event ordering artifact of the opencode mapper (the streamed edit diff surfaces as file_changed before the ask), not an actual gate bypass — re-check during E2 that `/deny` leaves no file.

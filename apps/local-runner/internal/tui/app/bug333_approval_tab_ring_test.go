@@ -200,6 +200,83 @@ func TestBug333UX_ApprovalCardShowsFilledSelection(t *testing.T) {
 	}
 }
 
+// BUG-333 UX follow-up 2 (operator screenshot): long question option rows were
+// flattened with stripANSI when wider than the terminal — the selected chip's
+// fill vanished ("chỉ có vài padding được apply"). The bar must SQUEEZE labels
+// and keep every style: selected fill, hint, and a width that always fits.
+func TestBug333UX_QuestionBarKeepsFillWhenLong(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	q := &QuestionState{
+		ID: "q-1", RunID: "run-1", Prompt: "pick a filename",
+		Options: []map[string]string{
+			{"label": "hello-grok.txt (ghi đè lên file cũ nếu có)", "value": "a"},
+			{"label": "hello-grok-abc-xyz-very-long-option-name.txt", "value": "b"},
+			{"label": "grok-abc-secondary-backup-copy.txt", "value": "c"},
+			{"label": "Nhập tên khác hoàn toàn mới", "value": "d"},
+		},
+	}
+	bar := renderQuestionBar(styleInputStroke.Render("┃"), styleInputStroke.Render("│"), q, 100, 0)
+	if lipgloss.Width(bar) > 100 {
+		t.Fatalf("question bar must fit width 100, got %d", lipgloss.Width(bar))
+	}
+	if !strings.Contains(bar, "48;5;62") {
+		t.Fatal("selected option fill must survive long-content squeezing")
+	}
+	if !strings.Contains(stripANSI(bar), "← → Enter") {
+		t.Fatal("hint must survive squeezing")
+	}
+	if !strings.Contains(stripANSI(bar), "…") {
+		t.Fatal("long labels must be truncated with an ellipsis")
+	}
+	// Selection move repaints the fill on the moved option.
+	bar2 := renderQuestionBar(styleInputStroke.Render("┃"), styleInputStroke.Render("│"), q, 100, 3)
+	if !strings.Contains(bar2, "48;5;62") {
+		t.Fatal("fill must follow the selection on long rows too")
+	}
+}
+
+func TestBug333UX_QuestionBarShortKeepsFullLabels(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	q := &QuestionState{ID: "q-2", RunID: "run-1", Options: []map[string]string{
+		{"label": "yes", "value": "yes"}, {"label": "no", "value": "no"},
+	}}
+	bar := renderQuestionBar(styleInputStroke.Render("┃"), styleInputStroke.Render("│"), q, 200, 0)
+	plain := stripANSI(bar)
+	for _, want := range []string{"yes", "no", "← → Enter"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("short options must render fully, missing %q in %q", want, plain)
+		}
+	}
+	if strings.Contains(plain, "…") {
+		t.Fatal("short options must not be truncated")
+	}
+}
+
+func TestBug333UX_QuestionBarMultiSelectKeepsSubmitAndFill(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	q := &QuestionState{ID: "q-3", RunID: "run-1", MultiSelect: true, Options: []map[string]string{
+		{"label": "enable-drive-sync-for-this-project-folder", "value": "a"},
+		{"label": "enable-auto-audit-note-generation", "value": "b"},
+	}}
+	// highlightIdx 2 == the [Submit] chip (two option chips first).
+	bar := renderQuestionBar(styleInputStroke.Render("┃"), styleInputStroke.Render("│"), q, 90, 2)
+	if lipgloss.Width(bar) > 90 {
+		t.Fatalf("multiselect bar must fit width 90, got %d", lipgloss.Width(bar))
+	}
+	if !strings.Contains(stripANSI(bar), "[Submit]") {
+		t.Fatal("Submit chip must survive squeezing")
+	}
+	if !strings.Contains(stripANSI(bar), "Space toggle") {
+		t.Fatal("multiselect hint must survive squeezing")
+	}
+	if !strings.Contains(bar, "48;5;62") {
+		t.Fatal("Submit highlight fill must survive squeezing")
+	}
+}
+
 func TestBug333_QuestionChipFillFollowsSelection(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
