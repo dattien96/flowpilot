@@ -12,7 +12,7 @@
 - Last Updated: `2026-08-29`
 - Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/todo/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-314: Chat Switch-Provider Endpoint And Chat Envelope](./Task-314-Chat-Switch-Provider-Endpoint-And-Chat-Envelope.md)
 - Child Documents: `None`
-- Related Documents: [BUG-330](../../09-BugFix/done/BUG-330-Posture-Tab-Applies-Foreign-Provider-Model-On-Pinned-Run.md), [CA-679](../../../change-audit/CA-679-opencode-config-file-env-and-tui-model-restore.md), [Task-313](./Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md)
+- Related Documents: [BUG-330](../../09-BugFix/done/BUG-330-Posture-Tab-Applies-Foreign-Provider-Model-On-Pinned-Run.md), [CA-679](../../../change-audit/CA-679-opencode-config-file-env-and-tui-model-restore.md), [Task-313](../done/Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md)
 - Replaces: `None`
 - Tags: `chat-ssot, tui, cli-tui, posture-tab, provider-switch, bug330`
 

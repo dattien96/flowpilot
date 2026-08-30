@@ -47,6 +47,10 @@ const (
 	EventTypeChatQuestionAsked     = "question_asked"
 	EventTypeChatTokenUsage        = "token_usage"
 	EventTypeChatProviderSwitch    = "chat_provider_switch"
+	// EventTypeChatBackfillMarker gates the one-shot legacy backfill (Task-313
+	// DOD-8): its presence means raw turns were already synthesized from the
+	// pre-flag run events; not part of the SD26-E contract families.
+	EventTypeChatBackfillMarker = "chat_backfilled"
 )
 
 // chatSSOTEnvFlag gates every chat-SSOT behavior (SD-26 Key Decision D-10).

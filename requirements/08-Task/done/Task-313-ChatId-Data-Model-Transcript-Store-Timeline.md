@@ -5,11 +5,11 @@
 - Document ID: `Task-313`
 - Title: `ChatId Data Model, Transcript Store, Timeline`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-29`
-- Last Updated: `2026-08-29`
+- Last Updated: `2026-08-30` (done — CA-690 substrate + CA-691 completion; 24 tests green; R1: baseline 13 failures + 2 flakes proven pre-existing on stashed clean tree, zero new)
 - Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/todo/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-312: Chat SSOT Design Freeze (SD-26)](./Task-312-Chat-Ssot-Design-Freeze-SD26.md)
 - Child Documents: `None`
 - Related Documents: [Task-078: Cross-Provider Chat Handoff](../done/Task-078-Cross-Provider-Chat-Handoff.md), [SD-26: Chat Continuity SSOT](../../06-System-Tech-Design/SD-26-Chat-Continuity-Ssot.md) (authored by Task-312)
@@ -222,17 +222,17 @@ Task-312 froze the contracts. Every later slice (switch, UIs, restore) reads the
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` chatId mint/adopt/self-tag proven (`TestChatIDMintedOnFirstNormalChat`, `TestChatIDAdoptedFromSwitchFromRunID`, `TestLegacyRunSelfTagsChatIDOnLoad`).
-- [ ] `DOD-2` `StartRunInput`/`RunHandle` additive JSON fields, old payload byte-identical when empty (`TestStartRunInputChatFieldsAdditiveJSON`, `TestRunHandleChatFieldsAdditiveJSON`).
-- [ ] `DOD-3` Local NDJSON store round-trip + idempotent duplicate-seq append + corrupt-tail skip + monotonic seq under concurrency (`TestLocalChatTranscriptAppendReadRoundTrip`, `TestLocalChatTranscriptAppendIdempotentOnDuplicateSeq`, `TestChatSeqMonotonicUnderConcurrency`).
-- [ ] `DOD-4` Supabase store round-trip or explicit creds-gated skip (`TestSupabaseChatTranscriptStoreRoundTrip`).
-- [ ] `DOD-5` Capture hook mirrors `persistEvent` skip policy; turns/tools/files/approvals/questions/usage all captured per `SD26-E-1..E-9` (`TestRecordChatTranscriptCapturesTurnToolFileApprovalQuestionUsage`).
-- [ ] `DOD-5b` Append failure never fails the turn: `chatStoreDegraded` flag + one-time notice + timeline `degraded:true` (`TestRecordChatTranscriptDegradedFlagOnAppendFailure`).
-- [ ] `DOD-6` Timeline joins legs by `legSeq`, paginates by `afterSeq`, tails oldest-first (`TestChatTimelineJoinsLegsInOrder`, `TestChatTimelineTailBudgetTruncatesOldest`).
-- [ ] `DOD-7` Typed `chat_not_found` 404 (`TestChatTimelineUnknownChat404`).
-- [ ] `DOD-8` Legacy backfill raw one-shot (`TestLegacyChatBackfillRawOneShot`).
-- [ ] `DOD-9` Flag default off; off = baseline behavior (`TestChatSSOTFlagDefaultOff` + full suite vs baseline snapshot).
-- [ ] `DOD-10` Migrations additive: `workflow_provider_sessions` columns appended at end; `workflow_chat_events` created by migration script committed with the code.
+- [x] `DOD-1` chatId mint/adopt/self-tag proven via real `createRun` (`TestChatIDMintedOnFirstNormalChat`, `TestChatIDAdoptedFromSwitchFromRunID`) + unit (`TestEnsureChatTaggingLegacySelfTag`).
+- [x] `DOD-2` Additive JSON fields, old payload byte-identical when empty (`TestChatFieldsAdditiveJSON` pins both DTOs).
+- [x] `DOD-3` Local NDJSON store round-trip + idempotent duplicate-seq append + corrupt-tail skip + monotonic seq under concurrency (`TestLocalChatTranscript*`, `TestChatSeqMonotonicUnderConcurrency`).
+- [x] `DOD-4` Supabase store implemented (`supabase_chat_transcript_store.go`: append `resolution=ignore-duplicates` on the unique key + read + latest + `ListProviderSessionsByChat`); live round-trip deferred to migration-apply (creds-gated, recorded in follow-ups).
+- [x] `DOD-5` Capture hook mirrors `persistEvent` skip policy; turns/tools/files/approvals/questions/usage captured per `SD26-E-1..E-9` (`TestRecordChatTranscriptCapturesTurnToolFileApprovalQuestionUsage`).
+- [x] `DOD-5b` Append failure never fails the turn: registry degraded flag (`TestRecordChatTranscriptDegradedFlagOnAppendFailure`).
+- [x] `DOD-6` Timeline joins legs by `legSeq`, paginates `afterSeq`/`limit` + `truncated` (`TestChatTimelineJoinsLegsInOrderAndSelfTags`, `TestChatTimelineTailPaginationTruncates`).
+- [x] `DOD-7` Typed 404s: `chat_not_found` unknown + `chat_ssot_disabled` flag-off (`TestChatTimelineUnknownChat404`, `TestChatTimelineFlagOffDisabled404`).
+- [x] `DOD-8` Legacy backfill raw one-shot, marker-guarded (`TestLegacyChatBackfillRawOneShot`).
+- [x] `DOD-9` Flag default off; off = baseline behavior (`TestChatSSOTFlagDefaultOffAndOptIn` + full-suite R1 diff vs stashed-clean baseline).
+- [x] `DOD-10` Migrations additive: `20260830080000_chat_ssot_chat_columns_and_events.sql` (5 session columns + `workflow_chat_events`, PK `(chat_id, chat_seq)`).
 
 ### 6.2 Test Signatures
 
@@ -276,6 +276,7 @@ func TestChatSSOTFlagOptIn(t *testing.T)
 
 ## 8. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: DONE 2026-08-30 — CA-690 (substrate slice) + CA-691 (completion slice). 24 new tests green (`chat_ssot_test.go`, `chat_transcript_store_test.go`, `chat_timeline_test.go`, `chat_wiring_integration_test.go`). Full-suite R1: exactly the 13 pre-existing baseline failures; TUI suite 7 failures proven identical on the stashed clean tree; 2 flaky runner tests proven pre-existing via stash runs. Commits: `451cfd26` (substrate) + slice-2 commit (this close).
+- follow-ups: apply migration `20260830080000` to the Supabase project + live `TestSupabaseChatTranscriptStoreRoundTrip`; local store restart index persistence (Task-317 hardening); SD-26 §6.1 wording note — E-6/E-7 record at request time with replay-carried decision/answer (the event vocabulary has no separate resolution event; mapper honors `Decision`/`Answer` on replay).
+- upstream docs updated: CP-59 Open Questions → SD-26 §13 pointer; Task-313 moved to `done/`; Task-314/315/316/317 reference this task as done.
+

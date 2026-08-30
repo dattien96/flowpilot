@@ -53,6 +53,13 @@ func (s *InteractiveService) ensureChatTranscriptWriter() *chatTranscriptWriter 
 	}
 	s.chatOnce.Do(func() {
 		s.chatRuns = newChatRunRegistry()
+		// Supabase-backed runners record the chat timeline in
+		// workflow_chat_events (same durability as run events); everyone else
+		// uses the local NDJSON store (SD-26 §5.3).
+		if sb, ok := s.workflowStore.(*SupabaseWorkflowStore); ok {
+			s.chatTranscripts = newChatTranscriptWriter(sb)
+			return
+		}
 		dir := strings.TrimSpace(os.Getenv("FLOWPILOT_CHAT_STORE_DIR"))
 		if dir == "" {
 			if home, err := os.UserHomeDir(); err == nil {
@@ -155,6 +162,11 @@ func (s *InteractiveService) handleChatTimeline(w http.ResponseWriter, r *http.R
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].LegSeq < ordered[j].LegSeq })
 
+	// One-shot legacy backfill (Task-313 DOD-8): a pre-flag chat has no
+	// records; synthesize raw turns from the newest resident leg's in-memory
+	// events, marker-guarded so it runs exactly once.
+	s.backfillLegacyChatTranscript(r.Context(), chatID, ordered)
+
 	records := []ChatTranscriptRecord{}
 	var nextSeq int64
 	truncated := false
@@ -180,6 +192,51 @@ func (s *InteractiveService) handleChatTimeline(w http.ResponseWriter, r *http.R
 		Truncated: truncated,
 		Degraded:  degraded,
 	})
+}
+
+// backfillLegacyChatTranscript synthesizes raw turn records from the newest
+// resident leg's in-memory events when a legacy chat is first read (Task-313
+// DOD-8). One-shot: guarded by the chat_backfilled marker record. Best effort —
+// an append failure leaves the chat unbackfilled (a later read retries) and
+// never fails the timeline request.
+func (s *InteractiveService) backfillLegacyChatTranscript(ctx context.Context, chatID string, legs []chatLegView) {
+	writer := s.ensureChatTranscriptWriter()
+	if writer == nil || len(legs) == 0 {
+		return
+	}
+	existing, err := writer.store.ReadChatRecords(ctx, chatID, 0, 1)
+	if err != nil || len(existing) > 0 {
+		return // already captured/backfilled
+	}
+	s.mu.Lock()
+	var rs *interactiveRun
+	for i := len(legs) - 1; i >= 0 && rs == nil; i-- {
+		if cand := s.runs[legs[i].RunID]; cand != nil && len(cand.events) > 0 {
+			rs = cand
+		}
+	}
+	s.mu.Unlock()
+	if rs == nil {
+		return
+	}
+	turns := transcriptTurnsFromRun(rs)
+	if len(turns) == 0 {
+		return
+	}
+	recs := make([]ChatTranscriptRecord, 0, len(turns)*2+1)
+	for _, turn := range turns {
+		if turn.User != "" {
+			payload, _ := json.Marshal(map[string]any{"prompt": turn.User, "backfill": true})
+			recs = append(recs, ChatTranscriptRecord{ChatID: chatID, LegRunID: rs.id, Type: EventTypeChatTurnStarted, Payload: payload})
+		}
+		if turn.Assistant != "" {
+			payload, _ := json.Marshal(map[string]any{"text": turn.Assistant, "backfill": true})
+			recs = append(recs, ChatTranscriptRecord{ChatID: chatID, LegRunID: rs.id, Type: EventTypeChatMessageCompleted, Payload: payload})
+		}
+	}
+	markerPayload, _ := json.Marshal(map[string]any{"turns": len(turns)})
+	recs = append(recs, ChatTranscriptRecord{ChatID: chatID, LegRunID: rs.id, Type: EventTypeChatBackfillMarker, Payload: markerPayload})
+	_ = writer.append(ctx, recs...)
 }
 
 // collapseRepeatedFinals drops a message_completed record whose text equals the
