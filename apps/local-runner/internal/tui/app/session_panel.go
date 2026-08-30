@@ -142,16 +142,19 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 				agentChip = styleStatusAgent.Render(" · agent: " + agentName)
 			}
 			if m.viewingChild() && strings.EqualFold(strings.TrimSpace(child.RunID), strings.TrimSpace(m.focusRunID)) {
-				// Highlight the agent currently being viewed: teal marker +
-				// styleStatusAgent (agent hue) so the selected step is obvious
-				// without a clickable chip. No [open]/[back] — switching is
-				// keyboard-only via /agents (user request).
+				// Highlight the agent currently being viewed with the SAME
+				// filled-chip selection language as the action ring and the
+				// /mode-setup tab row (BUG-333): bold white on the 62 blue
+				// background. The old teal text (styleStatusAgent) did not
+				// stand out against the dim unselected rows. No [open]/[back]
+				// — switching is keyboard-only via /agents (user request).
 				marker := "▸"
 				if m.asciiMode {
 					marker = ">"
 				}
-				line = fmt.Sprintf("[%s] %s %s%s", glyph, marker, name, suffix)
-				lineStyle = styleStatusAgent
+				// Chip padding inside the fill, like renderActionRingChip.
+				line = " " + fmt.Sprintf("[%s] %s %s%s", glyph, marker, name, suffix) + " "
+				lineStyle = styleStepSelected
 			}
 		}
 		out = append(out, lineStyle.Render(line)+agentChip+action)

@@ -104,14 +104,19 @@ var (
 	// Tab/arrows moves are impossible to miss (accent-colored text on both
 	// states was nearly invisible).
 	styleRingSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Background(lipgloss.Color("62"))
-	styleSelect      = lipgloss.NewStyle().Reverse(true)
-	styleThinking    = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color(colorTextDim))
+	styleSelect       = lipgloss.NewStyle().Reverse(true)
+	styleThinking     = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color(colorTextDim))
 	// Active workflow step (Desktop timeline “current” accent).
 	styleStepRunning = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorWarn)).Background(lipgloss.Color(colorBg3))
 	styleStepDone    = lipgloss.NewStyle().Foreground(lipgloss.Color(colorOK))
 	styleStepFailed  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorErr))
 	// F2 step [open]/[back] — distinct from step highlight (accent) and running (warn).
 	styleStepAgentAction = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color(colorAsk))
+	// Selected step row (sidebar steps view) — same filled-chip selection
+	// language as the action ring / mode-setup tab row (BUG-333): bold white on
+	// the 62 blue background. The old teal text (styleStatusAgent) did not
+	// stand out against the dim unselected rows.
+	styleStepSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Background(lipgloss.Color("62"))
 	// Canvas + elevated-panel backgrounds (CA-532): whole window canvas is darkest,
 	// the right sidebar and chat bar are lighter grays like opencode.
 	styleCanvas  = lipgloss.NewStyle().Background(lipgloss.Color(colorCanvas))
