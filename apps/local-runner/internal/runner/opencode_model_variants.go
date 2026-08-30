@@ -23,12 +23,38 @@ import (
 // to this dispatcher instead of ensuring a real `opencode acp` process.
 var fetchDispatcher *opencodeDispatcher
 
+// BUG-331: opencode's default permission config is allow-all ("opencode allows
+// all operations without approval"), so a YOLO-off turn could never show an
+// approval card — opencode executed every write/bash silently and the runner's
+// complete decision layer (handleInbound → yolo auto-approve / bridge
+// RequestApproval / read-only posture deny) stayed dead code. `opencode acp`
+// has no permission launch flag (verified 1.18.25 `--help`), but the config
+// permission block does gate it: live probes proved OPENCODE_CONFIG_CONTENT
+// with permission edit/bash=ask makes opencode emit real session/request_permission
+// calls (allow → file created, reject → file NOT created, turn still end_turn),
+// that the overlay WINS over the account config file on conflict and
+// DEEP-MERGES without wiping its other keys (mcpServers/auth intact), and that
+// opencode survives a client error reply to its fs/write_text_file probe.
+// Always spawn ask-gated; the per-turn YOLO/posture decision is made runner-side
+// (yoloModes + bridge), so no respawn on toggle (that would re-orphan sessions,
+// BUG-329). webfetch is deliberately NOT pinned: Codex/Claude/Grok gate
+// file/exec only.
+const (
+	opencodePermissionOverlayEnv  = "OPENCODE_CONFIG_CONTENT"
+	opencodePermissionOverlayJSON = `{"permission":{"edit":"ask","bash":"ask"}}`
+)
+
 // opencodeLaunchEnv resolves the account-scoped scopeKey + launch env for an
 // `opencode acp` process (shared by the turn adapter factory and the variant
 // prober so both always agree).
 func (r *Runner) opencodeLaunchEnv() (string, map[string]string, error) {
 	scopeKey := "default"
 	env := map[string]string{}
+	// BUG-331: the ask-gate overlay rides EVERY opencode acp spawn — both the
+	// turn path and the variants prober share this map, so same-scope reuse
+	// never hands a chat turn an ungated process. Set before the branches so
+	// the account-resolved and env-HOME fallback paths both carry it.
+	env[opencodePermissionOverlayEnv] = opencodePermissionOverlayJSON
 	account, err := r.ResolveProviderAccount(string(ProviderKeyOpencode), "")
 	if err == nil {
 		scopeKey = account.ID
