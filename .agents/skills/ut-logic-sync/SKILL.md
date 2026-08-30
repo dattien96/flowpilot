@@ -1,4 +1,5 @@
 ---
+version: 6
 name: ut-logic-sync-skill
 description: Use this skill PROACTIVELY to verify that existing Unit Tests (UT) correctly follow current business logic requirements. It identifies missing, outdated, or misaligned test logic.
 ---

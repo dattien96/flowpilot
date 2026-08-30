@@ -1,4 +1,5 @@
 ---
+version: 6
 name: kmp-interop-skill
 description: Use this skill PROACTIVELY when implementing native iOS features, bridging KMP logic to Swift, or handling iOS-specific platform APIs.
 ---

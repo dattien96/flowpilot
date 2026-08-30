@@ -1,4 +1,5 @@
 ---
+version: 6
 name: testing-skill
 description: Use this skill PROACTIVELY when writing unit tests to ensure 2-path coverage (Fast/Suspend) for coroutines and proper mocking with Mokkery.
 ---

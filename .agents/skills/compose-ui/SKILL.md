@@ -1,4 +1,5 @@
 ---
+version: 6
 name: compose-ui-skill
 description: Use this skill PROACTIVELY when developing Jetpack Compose UI, handling multi-platform layouts, or optimizing component reuse.
 ---

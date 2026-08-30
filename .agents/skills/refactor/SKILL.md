@@ -1,4 +1,5 @@
 ---
+version: 6
 name: refactor-skill
 description: Use this skill PROACTIVELY when improving code structure, migrating patterns, or modernizing legacy code while preserving external behavior.
 ---

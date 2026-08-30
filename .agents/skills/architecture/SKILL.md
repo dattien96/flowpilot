@@ -1,4 +1,5 @@
 ---
+version: 6
 name: architecture-skill
 description: Use this skill PROACTIVELY when designing system architecture, package structure, layer boundaries, and communication patterns during Phase 2 (Architecture).
 ---
