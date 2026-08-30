@@ -7,8 +7,10 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -433,4 +435,207 @@ func TestSwitchSeedFailedRecordEmitted(t *testing.T) {
 	if p["runId"] != "run-seed" {
 		t.Fatalf("payload = %v", p)
 	}
+}
+
+// ---- guard variants: approval / question / in-flight / detached ----------
+
+func TestSwitchBusyDuringApproval(t *testing.T) {
+	svc, _ := newSwitchTestService(t)
+	handle, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.mu.Lock()
+	svc.runs[handle.RunID].pendingApprovalID = "appr-1"
+	svc.mu.Unlock()
+	rec := postSwitch(t, svc, handle.ChatID, chatSwitchRequest{TargetProviderKey: ProviderKeyClaude})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "handoff_run_busy") {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSwitchBusyDuringQuestion(t *testing.T) {
+	svc, _ := newSwitchTestService(t)
+	handle, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.mu.Lock()
+	svc.runs[handle.RunID].pendingQuestionID = "q-1"
+	svc.mu.Unlock()
+	rec := postSwitch(t, svc, handle.ChatID, chatSwitchRequest{TargetProviderKey: ProviderKeyClaude})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "handoff_run_busy") {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSwitchInFlightDoubleCall409(t *testing.T) {
+	svc, _ := newSwitchTestService(t)
+	handle, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.mu.Lock()
+	svc.chatSwitchInFlight = map[string]bool{handle.ChatID: true}
+	svc.mu.Unlock()
+	rec := postSwitch(t, svc, handle.ChatID, chatSwitchRequest{TargetProviderKey: ProviderKeyClaude})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "handoff_run_busy") {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSwitchDetachedChatNoActiveLeg409(t *testing.T) {
+	svc, _ := newSwitchTestService(t)
+	// Restored chat: legs exist but all closed (detach policy, SD26 §10).
+	closed := &interactiveRun{id: "run-old", runKind: "chat", chatID: "cht_det", legSeq: 0, legState: LegStateClosed, legClosedReason: LegClosedReasonRestored, providerKey: ProviderKeyCodex}
+	svc.runs[closed.id] = closed
+	svc.chatRuns.register(closed.id, "cht_det")
+	rec := postSwitch(t, svc, "cht_det", chatSwitchRequest{TargetProviderKey: ProviderKeyClaude})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "chat_no_active_leg") {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestSwitchModelStampsNewLeg pins the model propagation: the response echoes
+// the requested model AND the new leg's run carries it (I-R6 server half).
+func TestSwitchModelStampsNewLeg(t *testing.T) {
+	svc, _ := newSwitchTestService(t)
+	handle, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := postSwitch(t, svc, handle.ChatID, chatSwitchRequest{TargetProviderKey: ProviderKeyClaude, Model: "claude-sonnet-x"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var resp chatSwitchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	svc.mu.Lock()
+	newLeg := svc.runs[resp.Handle.RunID]
+	svc.mu.Unlock()
+	if newLeg == nil || newLeg.modelName != "claude-sonnet-x" {
+		t.Fatalf("new leg model = %+v", newLeg)
+	}
+	if resp.Model != "claude-sonnet-x" {
+		t.Fatalf("response model = %q", resp.Model)
+	}
+}
+
+// TestSwitchChainThreeProvidersMultiLeg exercises the multi-leg future: three
+// switches build three ordered legs with two E-9 records, and the second
+// envelope carries turns from BOTH prior legs (chat-scoped, not run-scoped).
+func TestSwitchChainThreeProvidersMultiLeg(t *testing.T) {
+	svc, writer := newSwitchTestService(t)
+	svc.registry.register(ProviderRegistration{
+		Key: ProviderKeyGrok, DisplayName: "Grok", Status: ProviderStatusAvailable,
+		Capabilities: ProviderCapabilities{Streaming: true},
+		newAdapter:   func() ProviderRuntimeAdapter { return newFakeProviderAdapter(ProviderKeyGrok) },
+	})
+	handle, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := func(m map[string]any) json.RawMessage { b, _ := json.Marshal(m); return b }
+	if err := writer.append(context.Background(),
+		ChatTranscriptRecord{ChatID: handle.ChatID, LegRunID: handle.RunID, Type: EventTypeChatTurnStarted, Payload: payload(map[string]any{"prompt": "turn on codex"})},
+		ChatTranscriptRecord{ChatID: handle.ChatID, LegRunID: handle.RunID, Type: EventTypeChatMessageCompleted, Payload: payload(map[string]any{"text": "codex reply"})},
+	); err != nil {
+		t.Fatal(err)
+	}
+	rec := postSwitch(t, svc, handle.ChatID, chatSwitchRequest{TargetProviderKey: ProviderKeyClaude, Model: "claude-sonnet-x"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("switch 1 = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var leg2 chatSwitchResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &leg2)
+	// The seed turn streams fire-and-return; the busy guard correctly blocks a
+	// switch while it runs — wait for leg 2 to go idle first.
+	waitLegIdle(t, svc, leg2.Handle.RunID)
+	// Give leg 2 its own turn in the transcript.
+	if err := writer.append(context.Background(),
+		ChatTranscriptRecord{ChatID: handle.ChatID, LegRunID: leg2.Handle.RunID, Type: EventTypeChatTurnStarted, Payload: payload(map[string]any{"prompt": "turn on claude"})},
+		ChatTranscriptRecord{ChatID: handle.ChatID, LegRunID: leg2.Handle.RunID, Type: EventTypeChatMessageCompleted, Payload: payload(map[string]any{"text": "claude reply"})},
+	); err != nil {
+		t.Fatal(err)
+	}
+	rec = postSwitch(t, svc, handle.ChatID, chatSwitchRequest{TargetProviderKey: ProviderKeyGrok, Model: "grok-4.5"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("switch 2 = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var leg3 chatSwitchResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &leg3)
+
+	// Three legs, one chatId, ordered.
+	svc.mu.Lock()
+	var seqs []int
+	var dump string
+	for _, rs := range svc.runs {
+		if rs.chatID == handle.ChatID && rs.legState == LegStateActive {
+			dump += fmt.Sprintf("{%s seq=%d switchFrom=%q} ", rs.id, rs.legSeq, rs.switchFromRunID)
+		}
+		if rs.chatID == handle.ChatID {
+			seqs = append(seqs, rs.legSeq)
+		}
+	}
+	svc.mu.Unlock()
+	sort.Ints(seqs)
+	if len(seqs) != 3 || seqs[0] != 0 || seqs[1] != 1 || seqs[2] != 2 {
+		t.Fatalf("legs = %v activeDump=%s", seqs, dump)
+	}
+	// Exactly one active leg — the newest (grok). Its residual switchFromRunID
+	// is the durable provenance pointer; heal ignores it because the E-9
+	// record for the pair already exists.
+	if n := strings.Count(dump, "{"); n != 1 {
+		t.Fatalf("expected exactly one active leg after chain, got %d: %s", n, dump)
+	}
+	if !strings.Contains(dump, leg3.Handle.RunID) || !strings.Contains(dump, "seq=2") {
+		t.Fatalf("active leg is not the newest: %s", dump)
+	}
+	// Exactly two E-9 records; the second envelope spans both prior legs.
+	records, rerr := writer.store.ReadChatRecords(context.Background(), handle.ChatID, 0, 0)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	switches := 0
+	for _, r := range records {
+		if r.Type == EventTypeChatProviderSwitch {
+			switches++
+		}
+	}
+	if switches != 2 {
+		t.Fatalf("E-9 count = %d, want 2", switches)
+	}
+	svc.mu.Lock()
+	src := svc.runs[handle.RunID]
+	svc.mu.Unlock()
+	env := svc.buildChatHandoffContext(context.Background(), handle.ChatID, src, chatSwitchRequest{TargetProviderKey: ProviderKeyOpencode})
+	for _, want := range []string{"turn on codex", "codex reply", "turn on claude", "claude reply"} {
+		if !strings.Contains(env.Prompt, want) {
+			t.Fatalf("chain envelope missing %q", want)
+		}
+	}
+	for _, notWant := range []string{EventTypeChatProviderSwitch} {
+		if strings.Contains(env.Prompt, notWant) {
+			t.Fatalf("switch records leaked into conversation body")
+		}
+	}
+}
+
+// waitLegIdle blocks until the run's turnInFlight clears (seed turns are
+// fire-and-return; the busy guard correctly serializes switches behind them).
+func waitLegIdle(t *testing.T, svc *InteractiveService, runID string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		svc.mu.Lock()
+		busy := svc.runs[runID] != nil && svc.runs[runID].turnInFlight
+		svc.mu.Unlock()
+		if !busy {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("leg %s still busy after 15s", runID)
 }

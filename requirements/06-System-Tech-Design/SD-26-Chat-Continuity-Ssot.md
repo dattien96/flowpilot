@@ -244,3 +244,14 @@ Define the technical contracts that make one logical chat survive provider switc
 | Restore | Detach all legs; reattach via direct `createRun(chatId, switchFromRunID=latest)` — never the switch endpoint | Detached chat has no active leg; `X-2` is correct there | 315, 316, 317 |
 | Divider | Seed is the only live divider; `E-9` is the replay divider; dedupe by `toRunId` | Kills double-divider (review I-4) | 315, 316 |
 | Degraded store | Flag + one notice + timeline `degraded:true`; never fails a turn | Chat availability > transcript completeness | 313 |
+
+## 14. Account-Switch Interaction (correction — 2026-08-30, operator review)
+
+Account-switch continuity for codex/grok/claude (+ a gemini variant) **already exists** and this design does NOT replace it: reopening a chat whose stored `providerAccountID` differs from the active account copies the session into the active account's home and continues there — `prepareCrossAccountResume` (`interactive_resume.go:2784`, log `mode=cross_account … target_home=…`). The E2E-06 mismatch guard only blocks **silent** wrong-account resume; the deliberate copy path is the product behavior. Earlier statements claiming mid-conversation account switching "does not work" for those providers were wrong and are corrected here.
+
+Composition with this design:
+
+- The **active leg** keeps using the existing copy-cross-home resume (100% provider memory) — CP-59 does not touch that path.
+- Legs from **other providers** render from the chat transcript (§6.1) — full multi-provider scrollback the old mechanism never had; only the active leg continues executing.
+- **Opencode** cannot use file-copy resume (sessions live in the shared `opencode.db`; `LocateSessionFile` typed-unsupported per CP-57 §10.2) — the switch endpoint's envelope (§7.1) is opencode's continuity mechanism for provider AND account changes, already shipped (Task-314/315).
+- Optional future wiring (not this design's scope): a same-provider account change on a live chat can reuse `prepareCrossAccountResume` in place (activate → copy → stamp update) instead of close+reopen; opencode keeps the envelope fallback. Any such wiring must keep the silent-resume mismatch guard intact on all other paths.

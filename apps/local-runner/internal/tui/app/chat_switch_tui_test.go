@@ -168,3 +168,75 @@ func TestBareModelPinDerivesProviderAndPersists(t *testing.T) {
 		t.Fatalf("derive-once not persisted: provider=%q dirty=%v", cfg.Profiles["plan"].Provider, m.chatPostureDirty)
 	}
 }
+
+// TestProviderAndModelCommandsOnLiveChat drives the REAL slash dispatcher:
+// /provider <key> and /model <foreign> on a live chat route to the switch
+// endpoint; same-provider /model stays in-place; a workflow run keeps the
+// legacy block (CS-12 surface).
+func TestProviderAndModelCommandsOnLiveChat(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
+	m.providers = []client.Provider{
+		{Key: "opencode", Models: []client.ProviderModel{{ID: "opencode-go/muse-spark"}, {ID: "opencode-go/deepseek-v4-flash"}}},
+		{Key: "grok", Models: []client.ProviderModel{{ID: "grok-4.5"}}},
+	}
+	m.runHandle = &client.RunHandle{RunID: "run-1", RunKind: "chat", ChatID: "cht_a"}
+	m.provider = "opencode"
+
+	// /provider grok on the live chat → switch command issued, guard raised.
+	_, cmd := m.handleSlashCommand("/provider grok")
+	if cmd == nil || !m.chatSwitchInFlight {
+		t.Fatalf("/provider grok did not route: cmd=%v inFlight=%v", cmd, m.chatSwitchInFlight)
+	}
+	// In-flight: a second re-route is dropped.
+	_, cmd2 := m.handleSlashCommand("/provider claude")
+	if cmd2 != nil {
+		t.Fatal("in-flight re-route must be dropped")
+	}
+	m.chatSwitchInFlight = false
+
+	// /model same-provider → in-place model change, no switch.
+	_, cmd = m.handleSlashCommand("/model opencode-go/deepseek-v4-flash")
+	if cmd != nil && m.chatSwitchInFlight {
+		t.Fatal("same-provider /model must not route")
+	}
+	if m.model != "opencode-go/deepseek-v4-flash" {
+		t.Fatalf("in-place model = %q", m.model)
+	}
+
+	// /model foreign → routes (cross-provider on live chat).
+	_, cmd = m.handleSlashCommand("/model grok-4.5")
+	if cmd == nil || !m.chatSwitchInFlight {
+		t.Fatalf("/model grok-4.5 did not route: cmd=%v inFlight=%v", cmd, m.chatSwitchInFlight)
+	}
+	m.chatSwitchInFlight = false
+
+	// Workflow run keeps the legacy block.
+	m.runHandle = &client.RunHandle{RunID: "run-wf", RunKind: "workflow", ChatID: ""}
+	before := len(m.messages)
+	_, cmd = m.handleSlashCommand("/provider grok")
+	if cmd != nil {
+		t.Fatal("workflow run must not route")
+	}
+	if len(m.messages) != before+1 || !strings.Contains(m.messages[len(m.messages)-1].Content, "Cannot change provider after a run has started") {
+		t.Fatalf("legacy block missing: %+v", m.messages[len(m.messages)-1])
+	}
+}
+
+// TestSameProviderTabInPlace pins the Tab case for a same-provider pin: no
+// switch, and the profile's model applies in place (BUG-329 semantics).
+func TestSameProviderTabInPlace(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
+	m.runHandle = &client.RunHandle{RunID: "run-1", RunKind: "chat", ChatID: "cht_a"}
+	m.provider = "opencode"
+	m.model = "opencode-go/muse-spark"
+	cfg := client.ChatPostureConfig{Active: "code", Profiles: map[string]client.ChatPostureProfile{
+		"code": {Provider: "opencode", Model: "opencode-go/deepseek-v4-flash"},
+	}}
+	if cmd := m.routePostureSwitch(cfg, "code"); cmd != nil {
+		t.Fatal("same-provider Tab must not route")
+	}
+	m.applyChatPostureProfile(cfg, "code")
+	if m.model != "opencode-go/deepseek-v4-flash" || m.chatSwitchInFlight {
+		t.Fatalf("in-place Tab = model:%q inFlight:%v", m.model, m.chatSwitchInFlight)
+	}
+}
