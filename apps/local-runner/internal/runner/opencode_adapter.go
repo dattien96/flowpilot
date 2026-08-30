@@ -181,7 +181,11 @@ func (a *opencodeAdapter) Capabilities() ProviderCapabilities {
 		SkillSelection: true,
 		ApprovalEvents: hasMCP,
 		Mcp:            hasMCP,
-		Vision:         false,
+		// Vision stays false at the provider level (Task-318/319): opencode
+		// image support is per-MODEL (models.dev input.image), so the UI gates
+		// and adapter use the per-model catalog (opencodeModelSupportsImages),
+		// not this provider-wide flag — same pattern as Grok (grok_adapter.go).
+		Vision: false,
 	}
 }
 
@@ -190,6 +194,44 @@ func (a *opencodeAdapter) preparePrompt(req TurnRequest) string {
 		return a.promptPrep(req)
 	}
 	return req.Prompt
+}
+
+// opencodeModelSupportsImages reports whether the model's own capability says
+// it accepts image input (models.dev capabilities.input.image, captured by the
+// Task-319 verbose models parse). Conservative: unknown/absent model → false.
+// The models cache is written on every successful detection and warmed async
+// at boot, so it is populated by the time a user attaches an image.
+func opencodeModelSupportsImages(modelID string) bool {
+	id := strings.TrimSpace(modelID)
+	if id == "" {
+		return false
+	}
+	cached, ok := readOpencodeModelsCache(true)
+	if !ok {
+		return false
+	}
+	for _, m := range cached {
+		if strings.EqualFold(strings.TrimSpace(m.ID), id) {
+			return m.InputImage
+		}
+	}
+	return false
+}
+
+// opencodeTurnImageAttachments returns the turn's attachments only when the
+// selected model is image-capable; otherwise nil — non-vision models silently
+// ignore attachments (provider_registry contract), matching pre-Task-319
+// behavior. The desktop/TUI gates prevent attaching to non-vision models; this
+// is defense-in-depth so a stale UI can never blind-copy bytes to a model that
+// cannot see them.
+func opencodeTurnImageAttachments(req TurnRequest) []PromptAttachment {
+	if len(req.Attachments) == 0 {
+		return nil
+	}
+	if !opencodeModelSupportsImages(req.ModelName) {
+		return nil
+	}
+	return req.Attachments
 }
 
 func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge TurnBridge) error {
@@ -251,7 +293,7 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 	}()
 
 	prompt := a.preparePrompt(req)
-	promptParams := opencodeACPPromptParams(sessionID, prompt)
+	promptParams := opencodeACPPromptParamsWithAttachments(sessionID, prompt, opencodeTurnImageAttachments(req))
 
 	type promptOutcome struct {
 		result map[string]any

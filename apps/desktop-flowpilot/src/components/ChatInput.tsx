@@ -14,7 +14,7 @@ import {
   toWire,
   type PendingAttachment,
 } from "@/lib/normalizeImage";
-import { VISION_PROVIDERS } from "./visionProviders";
+import { supportsVisionFor } from "./visionProviders";
 
 function CodexIcon(): React.ReactElement {
   return (
@@ -369,7 +369,6 @@ export function ChatInput(): React.ReactElement {
 
   const isChatMode = chatMode === "normal_chat";
   const isSwitchBusy = pendingProviderSwitch !== undefined || providerSwitchLoading;
-  const supportsVision = !!selectedProvider && VISION_PROVIDERS.has(selectedProvider);
   const hasSelectedProject = !!selectedProjectId;
   const selectedProjectPath = useMemo(
     () => projects.find((project) => project.id === selectedProjectId)?.path,
@@ -389,6 +388,9 @@ export function ChatInput(): React.ReactElement {
     () => availableModels.find((model) => model.modelId === selectedModel),
     [availableModels, selectedModel],
   );
+  // Task-319: per-model image gate — provider-level VISION_PROVIDERS plus the
+  // opencode per-model unlock (models.dev input.image on the selected model).
+  const supportsVision = supportsVisionFor(selectedProvider, selectedModelInfo?.inputImage);
   const reasoningOptions = useMemo(() => reasoningOptionsFor(selectedModelInfo), [selectedModelInfo]);
   useEffect(() => {
     if (reasoningEffort === undefined) return;

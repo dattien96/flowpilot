@@ -92,6 +92,7 @@ export function AiProvidersSettings(): React.ReactElement {
         defaultReasoningEffort: null,
         contextWindowTokens: null,
         maxContextWindowTokens: null,
+        inputImage: null,
       });
       setDraft({ providerKey: "codex", modelId: "", displayName: "" });
       await refresh();
@@ -150,6 +151,7 @@ export function AiProvidersSettings(): React.ReactElement {
           defaultReasoningEffort: detectedModel.defaultReasoningEffort ?? null,
           contextWindowTokens: detectedModel.contextWindowTokens ?? null,
           maxContextWindowTokens: detectedModel.maxContextWindowTokens ?? null,
+          inputImage: detectedModel.inputImage ?? null,
         };
         const existing = registeredByModelId.get(detectedModel.id);
         if (existing) {

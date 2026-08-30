@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -68,11 +69,21 @@ func TestResolveProviderModelsFallsBackWhenOpencodeProbeTimesOut(t *testing.T) {
 func TestDetectOpencodeModelsParsesFastTextCatalog(t *testing.T) {
 	orig := runCommandFn
 	t.Cleanup(func() { runCommandFn = orig })
+	spawns := 0
 	runCommandFn = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		if len(args) != 1 || args[0] != "models" {
-			t.Fatalf("expected single `models` arg, got %v", args)
+		spawns++
+		if spawns == 1 {
+			// Task-319: the verbose probe carries per-model capability
+			// metadata (models.dev input.image).
+			if len(args) != 2 || args[0] != "models" || args[1] != "--verbose" {
+				t.Fatalf("expected `models --verbose` probe, got %v", args)
+			}
+			// A plain-text catalog (older CLI / non-verbose output) must
+			// still parse via the line-only fallback.
+			return []byte("opencode/muse-spark-1.2-contributor-free\nopencode/deepseek-v4-flash-free\nopencode/gpt-5.4-nano\n"), nil
 		}
-		return []byte("opencode/muse-spark-1.2-contributor-free\nopencode/deepseek-v4-flash-free\nopencode/gpt-5.4-nano\n"), nil
+		t.Fatalf("plain fallback spawn must not run when the verbose probe succeeds, got %v", args)
+		return nil, nil
 	}
 
 	models, err := detectOpencodeModels(context.Background())
@@ -90,6 +101,38 @@ func TestDetectOpencodeModelsParsesFastTextCatalog(t *testing.T) {
 		if m.ID == "opencode/deepseek-v4-flash-free" {
 			t.Fatal("broken default model must be skipped")
 		}
+		if m.InputImage {
+			t.Fatalf("plain catalog must not claim InputImage: %+v", m)
+		}
+	}
+}
+
+// Task-319: a CLI that rejects the `--verbose` flag falls back to the plain
+// `models` spawn instead of failing detection outright.
+func TestDetectOpencodeModelsFallsBackToPlainWhenVerboseUnsupported(t *testing.T) {
+	orig := runCommandFn
+	t.Cleanup(func() { runCommandFn = orig })
+	spawns := 0
+	runCommandFn = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		spawns++
+		if len(args) == 2 && args[1] == "--verbose" {
+			return nil, fmt.Errorf("unknown flag: --verbose")
+		}
+		if len(args) != 1 || args[0] != "models" {
+			t.Fatalf("expected plain `models` fallback, got %v", args)
+		}
+		return []byte("opencode/muse-spark-1.2-contributor-free\n"), nil
+	}
+
+	models, err := detectOpencodeModels(context.Background())
+	if err != nil {
+		t.Fatalf("detectOpencodeModels: %v", err)
+	}
+	if spawns != 2 {
+		t.Fatalf("expected 2 spawns (verbose + plain fallback), got %d", spawns)
+	}
+	if len(models) != 1 || models[0].ID != "opencode/muse-spark-1.2-contributor-free" {
+		t.Fatalf("unexpected fallback catalog: %+v", models)
 	}
 }
 

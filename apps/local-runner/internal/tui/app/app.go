@@ -3547,8 +3547,8 @@ func (m *AppModel) dispatchImageCommand(args []string) (tea.Model, tea.Cmd) {
 		"rm", "remove", "del", "delete", "x", "panel", "manage":
 		return m, m.cmdClipboardPaste()
 	}
-	if !client.SupportsImages(m.provider) {
-		m.addMessage("system", client.ImagesUnsupportedReason(m.provider), "error")
+	if !m.chatSupportsImages() {
+		m.addMessage("system", m.imagesUnsupportedReason(), "error")
 		return m, nil
 	}
 	if len(m.pendingAttach) >= 6 {

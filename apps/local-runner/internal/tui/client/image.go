@@ -130,7 +130,16 @@ func NormalizeImage(imgData []byte, fileName string) (*PromptAttachment, error) 
 // attachment to a chat turn. Returns an error if the provider does not support
 // images, too many files are given, or any image fails normalization.
 func ValidateAttachments(paths []string, providerKey string) ([]PromptAttachment, error) {
-	if !SupportsImages(providerKey) {
+	return ValidateAttachmentsForModel(paths, providerKey, false)
+}
+
+// ValidateAttachmentsForModel validates image files for a provider+model pair
+// (Task-319). The provider-level SupportsImages set unlocks natively (codex/
+// claude/grok); modelSupportsImages unlocks per-MODEL (opencode, models.dev
+// input.image=true from the detected catalog). Both false → the unsupported
+// reason error, same copy as before.
+func ValidateAttachmentsForModel(paths []string, providerKey string, modelSupportsImages bool) ([]PromptAttachment, error) {
+	if !SupportsImages(providerKey) && !modelSupportsImages {
 		return nil, fmt.Errorf("%s", ImagesUnsupportedReason(providerKey))
 	}
 	if len(paths) > maxAttachments {

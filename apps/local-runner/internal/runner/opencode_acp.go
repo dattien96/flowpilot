@@ -84,16 +84,36 @@ func opencodeACPSessionLoadParams(sessionID, cwd string, mcpServers []interface{
 }
 
 // opencodeACPPromptParams builds the `session/prompt` request params. Prompt
-// content blocks use {type:"text",text} shape same as Grok; image blocks are
-// intentionally not built here — Vision stays false until
-// promptCapabilities.image is proven true (live-verified true, but adapter
-// keeps false until Task-301 proves attachment round-trip).
+// content blocks use {type:"text",text} shape same as Grok. Task-319: image
+// blocks are appended only via opencodeACPPromptParamsWithAttachments when the
+// selected model is image-capable — the no-attachments shape stays identical.
 func opencodeACPPromptParams(sessionID, prompt string) map[string]interface{} {
+	return opencodeACPPromptParamsWithAttachments(sessionID, prompt, nil)
+}
+
+// opencodeACPPromptParamsWithAttachments builds `session/prompt` params with
+// the text block followed by one ACP image block per image attachment.
+// Live-proven round-trip (Task-319, 2026-08-30, opencode 1.18.25, model
+// opencode/mimo-v2.5-free): prompt [{type:"text"},{type:"image",data:<base64>,
+// mimeType:"image/png"}] → model described the image ("Red") and the turn
+// ended (stopReason end_turn). This satisfies the Task-318 unlock condition.
+func opencodeACPPromptParamsWithAttachments(sessionID, prompt string, atts []PromptAttachment) map[string]interface{} {
+	blocks := []map[string]string{
+		{"type": "text", "text": prompt},
+	}
+	for _, att := range atts {
+		if att.Kind != "image" || strings.TrimSpace(att.Data) == "" {
+			continue
+		}
+		blocks = append(blocks, map[string]string{
+			"type":     "image",
+			"data":     att.Data,
+			"mimeType": att.MimeType,
+		})
+	}
 	return map[string]interface{}{
 		"sessionId": sessionID,
-		"prompt": []map[string]string{
-			{"type": "text", "text": prompt},
-		},
+		"prompt":    blocks,
 	}
 }
 

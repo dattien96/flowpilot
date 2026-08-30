@@ -64,8 +64,9 @@ func (m *AppModel) cmdClipboardPaste() tea.Cmd {
 // locked/hung system clipboard can never freeze the composer (CA-541).
 func (m *AppModel) cmdAttachImagePath(path string) tea.Cmd {
 	provider := m.provider
+	modelSupports := m.chatSupportsImages()
 	return func() tea.Msg {
-		atts, err := client.ValidateAttachments([]string{path}, provider)
+		atts, err := client.ValidateAttachmentsForModel([]string{path}, provider, modelSupports)
 		if err != nil {
 			return ClipboardPasteMsg{Err: err.Error()}
 		}
@@ -85,11 +86,13 @@ func (m *AppModel) cmdAttachImagePath(path string) tea.Cmd {
 // inserted so text paste still works if the native clipboard read fails.
 func (m *AppModel) cmdClipboardPasteWithFallback(fallbackText string) tea.Cmd {
 	provider := m.provider
+	modelSupports := m.chatSupportsImages()
+	unsupportedReason := m.imagesUnsupportedReason()
 	pending := len(m.pendingAttach)
 	return func() tea.Msg {
 		text := readClipboardText()
 		if path := imagePathFromClipboardText(text); path != "" {
-			atts, err := client.ValidateAttachments([]string{path}, provider)
+			atts, err := client.ValidateAttachmentsForModel([]string{path}, provider, modelSupports)
 			if err != nil {
 				return ClipboardPasteMsg{Err: err.Error()}
 			}
@@ -102,7 +105,7 @@ func (m *AppModel) cmdClipboardPasteWithFallback(fallbackText string) tea.Cmd {
 			return ClipboardPasteMsg{Text: text, NoImage: true}
 		}
 		if path := imagePathFromClipboardText(fallbackText); path != "" {
-			atts, err := client.ValidateAttachments([]string{path}, provider)
+			atts, err := client.ValidateAttachmentsForModel([]string{path}, provider, modelSupports)
 			if err != nil {
 				return ClipboardPasteMsg{Err: err.Error()}
 			}
@@ -116,8 +119,8 @@ func (m *AppModel) cmdClipboardPasteWithFallback(fallbackText string) tea.Cmd {
 		}
 		img, src, imgErr := readClipboardImageBytes()
 		if len(img) > 0 {
-			if !client.SupportsImages(provider) {
-				return ClipboardPasteMsg{Err: client.ImagesUnsupportedReason(provider)}
+			if !client.SupportsImages(provider) && !modelSupports {
+				return ClipboardPasteMsg{Err: unsupportedReason}
 			}
 			if pending >= 6 {
 				return ClipboardPasteMsg{Err: "Maximum 6 images per turn."}

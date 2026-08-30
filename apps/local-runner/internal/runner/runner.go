@@ -2049,14 +2049,32 @@ func detectOpencodeModelsLive(ctx context.Context, budget time.Duration) ([]Prov
 	defer cancel()
 	// One spawn only. Do not probe `--format json` first: 1.18.18 does not
 	// support it, and a hanging unknown-flag parse ate the TUI 8s budget.
-	output, err := runCommandFn(probeCtx, binary, "models")
+	// Task-319: `--verbose` carries per-model capability metadata (models.dev
+	// capabilities.input.image) that the plain listing lacks; older CLIs that
+	// reject the flag fall back to the plain `models` spawn.
+	output, err := runCommandFn(probeCtx, binary, "models", "--verbose")
 	if err != nil {
-		return nil, err
+		output, err = runCommandFn(probeCtx, binary, "models")
+		if err != nil {
+			return nil, err
+		}
 	}
 	return parseOpencodeModelsOutput(output)
 }
 
 func parseOpencodeModelsOutput(output []byte) ([]ProviderModel, error) {
+	// Task-319: prefer the `--verbose` shape (ID line + JSON metadata blob per
+	// model) so per-model capabilities (input.image) are captured. Fall back
+	// to the plain line-only parse for older CLIs.
+	if models, ok := parseOpencodeVerboseModelsOutput(output); ok {
+		// CA-689b: observed live ACP variants override the guessed uniform list.
+		mergeOpencodeVariantOverrides(models)
+		return models, nil
+	}
+	return parseOpencodePlainModelsOutput(output)
+}
+
+func parseOpencodePlainModelsOutput(output []byte) ([]ProviderModel, error) {
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	models := make([]ProviderModel, 0, len(lines))
 	for _, line := range lines {

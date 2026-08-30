@@ -86,6 +86,11 @@ type ProviderModel struct {
 	SupportedReasoningEfforts []string `json:"supported_reasoning_efforts,omitempty"`
 	DefaultReasoningEffort    string   `json:"default_reasoning_effort,omitempty"`
 	ContextWindowTokens       int64    `json:"context_window_tokens,omitempty"`
+	// InputImage (Task-319): per-model image-input capability (models.dev
+	// input.image via `opencode models --verbose`). Drives the TUI image
+	// paste/attach gate for opencode (per-model), alongside the provider-level
+	// SupportsImages set.
+	InputImage bool `json:"input_image,omitempty"`
 	// Name is a legacy/test alias; prefer ID via ModelID().
 	Name string `json:"name,omitempty"`
 }
