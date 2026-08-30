@@ -32,3 +32,8 @@ summary: Supabase workflow_chat_events ChatTranscriptStore + chat columns on wor
 1. A Supabase-backed runner (post-migration, flag on) records chat timelines durably in `workflow_chat_events`; a local runner uses NDJSON under `~/.flowpilot/chat-transcripts`.
 2. Pre-migration Supabase deployments see zero behavior change with the flag off (chat keys write as SQL NULL).
 3. A legacy chat's first timeline read backfills its raw turns exactly once (marker present; second read adds nothing).
+
+## Addendum (2026-08-30 — migration applied by operator, DOD-4 closed)
+
+- `TestSupabaseChatTranscriptStoreRoundTrip` now runs **live against the real project**: 3 records appended, duplicate replay ignored (unique `(chat_id, chat_seq)`), `afterSeq` pagination + `LatestChatSeq` verified; test rows cleaned up after. Creds-gated (skips when SUPABASE_API_URL/SUPABASE_SERVICE_ROLE_KEY absent).
+- Boundary fix found by the live test: PostgREST maps JSON keys to snake_case columns — added `dbChatEventRow` conversion in the Supabase store (public `ChatTranscriptRecord` JSON stays camelCase; timeline contract unchanged).
