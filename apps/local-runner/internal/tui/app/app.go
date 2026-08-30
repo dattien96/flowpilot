@@ -1095,8 +1095,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if kind == "flow" && m.runHandle != nil {
 			cmds = append(cmds, m.cmdRefreshStepsRuntime())
 		}
-		// Hydrate sub-agents so /agent Tab and step [open] work after /open.
-		if kind == "flow" && m.runHandle != nil {
+		// Hydrate sub-agents so /agent Tab, step [open] and the sidebar agents
+		// section work after /open — chat runs too (BUG-335: spawned children
+		// were invisible after a TUI/runner restart because the hydrate only
+		// ran for flow opens).
+		if m.runHandle != nil {
 			cmds = append(cmds, m.cmdHydrateAgentRuns(m.runHandle.RunID))
 			// One-shot graph fetch seeds loop state (done/blocked/running) so an
 			// opened blocked flow shows the awaiting-user banner instead of arming
