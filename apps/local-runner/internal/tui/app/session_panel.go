@@ -128,8 +128,19 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 			glyph = "-"
 		}
 		line := fmt.Sprintf("[%s] %s%s", glyph, name, suffix)
+		agentChip := ""
 		action := ""
 		if child, ok := m.childRunForStep(s); ok {
+			// BUG-336 UX: flow mode has no agents sidebar section (steps ARE
+			// the view) — a step executed by a spawned agent names it inline,
+			// in the agent hue so it reads as a label, not step status.
+			agentName := strings.TrimSpace(child.AgentName)
+			if agentName == "" {
+				agentName = strings.TrimSpace(child.Label)
+			}
+			if agentName != "" {
+				agentChip = styleStatusAgent.Render(" · agent: " + agentName)
+			}
 			if m.viewingChild() && strings.EqualFold(strings.TrimSpace(child.RunID), strings.TrimSpace(m.focusRunID)) {
 				// Highlight the agent currently being viewed: teal marker +
 				// styleStatusAgent (agent hue) so the selected step is obvious
@@ -143,7 +154,7 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 				lineStyle = styleStatusAgent
 			}
 		}
-		out = append(out, lineStyle.Render(line)+action)
+		out = append(out, lineStyle.Render(line)+agentChip+action)
 		if st == "FAILED" {
 			if note := strings.TrimSpace(s.RejectionNote); note != "" {
 				out = append(out, lineStyle.Render("  "+note))
@@ -425,10 +436,12 @@ func (m *AppModel) renderRightSidebar(h int) []string {
 	if len(steps) == 0 {
 		out = append(out, styleSystem.Render("(no steps)"))
 	}
-	// Guide-F UX follow-up: live sub-agent rows (spawn_agent children, flow
-	// reviewers) — the always-visible main-view counterpart of /agents, styled
-	// like the steps section. Hidden entirely when the agent graph is empty.
-	if len(m.agentRuns) > 0 {
+	// Guide-F UX follow-up: live sub-agent rows (spawn_agent children) — the
+	// always-visible main-view counterpart of /agents, styled like the steps
+	// section. CHAT MODE ONLY (BUG-336 UX): flow mode already shows every
+	// agent-backed step in the steps view (with an inline "agent: name" chip),
+	// so a second agents list would just duplicate it.
+	if len(m.agentRuns) > 0 && m.mode == ModeChat && !m.launch.IsCatalogWorkflow() {
 		agentRows := h - len(out) - 2
 		if agentRows > len(m.agentRuns)+1 {
 			agentRows = len(m.agentRuns) + 1 // +1 section header

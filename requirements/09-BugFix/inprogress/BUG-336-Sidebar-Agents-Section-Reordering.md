@@ -35,6 +35,17 @@
 - `TestAgentsSidebar_StableMainFirstThenSpawnOrder` (additive): shuffled delivery renders main → test_signatures → implement → reviewer by spawn time; a second service with the SAME set in a DIFFERENT delivery order renders byte-identical rows.
 - Existing agents-sidebar tests (visible rows / hidden when empty / height cap) stay green; full tui package shows exactly the 7 documented pre-existing failures.
 
+## UX follow-up (operator): agents section is chat-only; flow names agents on step rows
+
+Flow mode already renders every agent-backed step in the steps view, so a
+second agents list duplicated it. The sidebar `agents` section now renders in
+CHAT MODE ONLY (`mode == ModeChat && !launch.IsCatalogWorkflow()`), and in
+flow mode each step executed by a spawned agent carries an inline
+` · agent: <name>` chip in the agent hue (`styleStatusAgent`) right on its
+step row (via the existing `childRunForStep` match; main runs excluded by
+that matcher). Tests: flow-mode sidebar hides the section; the agent-backed
+step names its agent exactly once while agent-less steps stay bare.
+
 # ---8<--- flowpilot:change-ledger
 feature_key: cli-tui
 source_doc_id: CP-57

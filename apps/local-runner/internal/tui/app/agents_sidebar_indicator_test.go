@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
 )
@@ -112,5 +115,45 @@ func TestAgentsSidebar_RowsTruncatedToHeight(t *testing.T) {
 	}
 	if !strings.Contains(stripANSI(strings.Join(lines, "\n")), "more") {
 		t.Fatal("overflow agents must collapse into a … +N more row")
+	}
+}
+
+// BUG-336 UX: flow mode must NOT render the agents section — steps already
+// name their agent inline. Chat mode keeps the section (existing tests).
+func TestAgentsSidebar_HiddenInFlowMode(t *testing.T) {
+	m := agentsSidebarModel(t)
+	m.mode = ModeFlow
+	m.agentRuns = []client.AgentRunSummary{
+		{RunID: "run-a", AgentName: "reviewer", Role: "reviewer", Status: "completed"},
+	}
+	lines := m.renderRightSidebar(m.height)
+	for _, l := range lines {
+		if strings.Contains(stripANSI(l), "agents") || strings.Contains(stripANSI(l), "reviewer") {
+			t.Fatalf("flow-mode sidebar must not show the agents section, got %q", stripANSI(l))
+		}
+	}
+}
+
+// BUG-336 UX: in flow mode a step executed by a spawned agent carries an
+// inline "· agent: <name>" label on its row.
+func TestFlowSteps_AgentBackedStepNamesItsAgent(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	m := agentsSidebarModel(t)
+	m.mode = ModeFlow
+	m.flowSteps = []client.WorkflowStepRuntime{
+		{StepID: "s1", NodeID: "reviewer", StepType: "review", Status: "done"},
+		{StepID: "s2", NodeID: "context", StepType: "context", Status: "done"},
+	}
+	m.agentRuns = []client.AgentRunSummary{
+		{RunID: "run-child-1", AgentName: "reviewer-1", Label: "reviewer", Role: "reviewer", Status: "completed"},
+	}
+	lines := m.flowStepsPanelLinesMax(20)
+	joined := stripANSI(strings.Join(lines, "\n"))
+	if !strings.Contains(joined, "agent: reviewer-1") {
+		t.Fatalf("agent-backed step must name its agent inline, got:\n%s", joined)
+	}
+	if strings.Count(joined, "agent: reviewer-1") != 1 {
+		t.Fatalf("the agent-less step must not carry the chip:\n%s", joined)
 	}
 }
