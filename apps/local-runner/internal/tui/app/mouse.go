@@ -28,6 +28,8 @@ type tuiChrome struct {
 	statusH           int
 	bottomNoticeBlock string
 	bottomNoticeH     int
+	modalBlock        string
+	modalH            int
 	inputBlock        string
 	inputH            int
 	inputY            int
@@ -93,18 +95,34 @@ func (m *AppModel) tuiChrome() tuiChrome {
 	if c.attachPanelBlock != "" {
 		c.attachPanelH = strings.Count(c.attachPanelBlock, "\n") + 1
 	}
+	// BUG-332: while the /mode-setup modal is open it renders between the
+	// transcript and the attach panel (suggestions are suppressed). Its block
+	// must be built ONCE here and its height MUST be part of the height
+	// budget below — otherwise the frame overflows the terminal and the
+	// modal's fields/buttons (and composer) get clipped off-screen.
+	if m.modeSetupModalOpen {
+		c.modalBlock = m.renderModeSetupModal(w)
+		if c.modalBlock != "" {
+			c.modalH = strings.Count(c.modalBlock, "\n") + 1
+		}
+	}
 	c.inputBlock = m.renderInputLine()
 	c.inputH = strings.Count(c.inputBlock, "\n") + 1
 	// Blank line + rule always sit between the transcript and the status chrome.
 	c.chatSepH = 2
 	// statusH is kept for legacy callers but no longer occupies the main column
 	// above the composer — the single visible bottom line is bottomNoticeH.
-	c.messagesHeight = m.height - c.inputH - c.attachPanelH - c.suggLines - c.bannerLines - c.panelH - c.chatSepH - c.bottomNoticeH
+	c.messagesHeight = m.height - c.inputH - c.attachPanelH - c.suggLines - c.bannerLines - c.panelH - c.chatSepH - c.bottomNoticeH - c.modalH
 	if c.messagesHeight < 1 {
 		c.messagesHeight = 1
 	}
 	c.statusY = c.panelH + c.messagesHeight + c.bannerLines + c.chatSepH
+	// With the modal open the suggestions block is NOT rendered — the modal
+	// occupies that slot, so the mouse/cursor Y chain must step over modalH.
 	c.attachPanelY = c.statusY + c.suggLines
+	if m.modeSetupModalOpen {
+		c.attachPanelY = c.statusY + c.modalH
+	}
 	c.inputY = c.attachPanelY + c.attachPanelH
 	return c
 }

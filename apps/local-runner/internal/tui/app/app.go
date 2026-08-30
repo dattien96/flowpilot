@@ -4270,8 +4270,10 @@ func (m *AppModel) renderChatPane(w, h int) string {
 	if len(c.sugg) > 0 && !m.modeSetupModalOpen {
 		rows = append(rows, strings.Split(m.renderSuggestions(c.sugg), "\n")...)
 	}
-	if m.modeSetupModalOpen {
-		rows = append(rows, strings.Split(m.renderModeSetupModal(w), "\n")...)
+	if m.modeSetupModalOpen && c.modalBlock != "" {
+		// BUG-332: render the block cached by tuiChrome — same string its
+		// modalH was measured from, so the height budget is always exact.
+		rows = append(rows, strings.Split(c.modalBlock, "\n")...)
 	}
 	if c.attachPanelBlock != "" {
 		rows = append(rows, strings.Split(c.attachPanelBlock, "\n")...)
