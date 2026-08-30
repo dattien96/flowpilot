@@ -53,6 +53,8 @@
 
 ### Open Questions
 
+> **All questions below are CLOSED by [SD-26 §13 Decision Register](../../06-System-Tech-Design/SD-26-Chat-Continuity-Ssot.md) (2026-08-30, Task-312).** They remain here for rationale history; SD-26 §13 is the decision of record.
+
 - `Q-1` Chat transcript store shape: per-chat NDJSON sidecar under the local session dir (mirrors flow-events sidecar, `local_file_session_store.go:661`) + a `workflow_chat_events` Supabase table vs reusing the events table with an added `chat_id` column? Decide in SD-26 (P-1); default lean: dedicated store + `ChatTranscriptStore` interface mirroring the `localFileSessionStore`/`SupabaseWorkflowStore` duality.
 - `Q-2` Chat seq model: global monotonic `chatSeq` stamped at append time vs `(legSeq, eventSeq)` tuple ordering? Tuple is migration-free; chatSeq is simpler for pagination/tail (TUI budgets, `chat_history_replay.go:6`). Decide in SD-26.
 - `Q-3` Should switching close the old leg's provider process (opencode `acp` process reuse per BUG-329 lives per scopeKey, not per run) or keep it warm for a switch-back? Default: keep warm (process per scopeKey already shared), close only the leg record.
