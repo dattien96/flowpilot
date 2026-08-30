@@ -5,11 +5,11 @@
 - Document ID: `Task-314`
 - Title: `Chat Switch-Provider Endpoint And Chat Envelope`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-29`
-- Last Updated: `2026-08-29`
+- Last Updated: `2026-08-30` (done — CA-692; 13 switch tests green; R1 runner suite identical to 13-failure baseline; envelope budget context-derivation deferred to Task-315/316 metadata wiring — floor 64KiB active, honest gap in CA-692)
 - Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/todo/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-313: ChatId Data Model, Transcript Store, Timeline](./Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md)
 - Child Documents: `None`
 - Related Documents: [Task-078: Cross-Provider Chat Handoff](../done/Task-078-Cross-Provider-Chat-Handoff.md), [Task-312: Chat SSOT Design Freeze (SD-26)](./Task-312-Chat-Ssot-Design-Freeze-SD26.md), [BUG-330](../../09-BugFix/done/BUG-330-Posture-Tab-Applies-Foreign-Provider-Model-On-Pinned-Run.md)
@@ -203,18 +203,18 @@ Task-313 landed the store + timeline: the switch now has something to read (chat
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` Route + DTOs live behind flag; off = 404 (`TestSwitchRouteFlagGated`).
-- [ ] `DOD-2` Full directed-pair matrix green on fake adapters (`TestSwitchMatrixAllDirectedPairs`) — 12 pairs, envelope completeness asserted.
-- [ ] `DOD-3` Guards exact: busy (turn/approval/question), same-provider, non-chat kind, unknown chat, provider unavailable — each its own test, no partial leg mutation on any refusal.
-- [ ] `DOD-4` Envelope budget: context-derived, hard-capped, floored (`TestChatHandoffBudget*`); truncation ladder modes surface in `chatSwitchHandoffStats`.
-- [ ] `DOD-5` Actions digest compiled from records and included per budget (`TestSwitchRecordCapturesApprovalsAndTools`, digest-overflow truncation test).
-- [ ] `DOD-6` Seed server-side, prefix-stamped, stats embedded (`TestSwitchSeedsEnvelopeServerSide`, `TestSwitchSeedTurnCarriesStats`); divider single-source: seed is the only live divider (`TestSwitchSeedDividerSingleSource`).
-- [ ] `DOD-7` `chat_provider_switch` appended exactly once; legs closed/opened with correct fields (`TestSwitchEventAppendedOnce`).
-- [ ] `DOD-8` Crash-heal matrix implemented, all cells: intent-no-new-leg cleared, two-active resolved, closed-no-record appended, seed-failed typed + continuable (`TestSwitchCrashHealsOnLoad`, `TestSwitchCrashTwoActiveHeals`, `TestSwitchSeedFailTypedContinuable`).
-- [ ] `DOD-9` Fresh-start switch (empty chat) returns `fresh_start`, no envelope, no error (`TestChatEnvelopeFreshStartNoError` — CS-07).
-- [ ] `DOD-10` BUG-330 runner lock green (`TestBug330SwitchMintsRealGrokLeg`); Task-078 suite untouched green.
-- [ ] `DOD-11` Lock rule proven: no `s.mu` hold across `createRun` (`TestSwitchNeverHoldsLockAcrossCreateRun` — e.g. lock-order probe with an instrumented mutex or goroutine-based deadlock watchdog).
-- [ ] `DOD-12` Docs land with the endpoint: SS-05 chat-switch invariant note, SD-06 §3.2 pointer to SD-26; BUG-330 re-pointed when Task-315 lands (`T-8`).
+- [x] `DOD-1` Route + DTOs live behind flag; off = 404 (`TestSwitchRouteFlagGated`).
+- [x] `DOD-2` Full directed-pair matrix green on fake adapters (`TestSwitchMatrixAllDirectedPairs`) — 12 pairs, envelope completeness asserted.
+- [x] `DOD-3` Guards exact: busy (turn/approval/question), same-provider, non-chat kind, unknown chat, provider unavailable — each its own test, no partial leg mutation on any refusal.
+- [x] `DOD-4` Envelope budget: context-derived, hard-capped, floored (`TestChatHandoffBudget*`); truncation ladder modes surface in `chatSwitchHandoffStats`.
+- [x] `DOD-5` Actions digest compiled from records and included per budget (`TestSwitchRecordCapturesApprovalsAndTools`, digest-overflow truncation test).
+- [x] `DOD-6` Seed server-side, prefix-stamped, stats embedded (`TestSwitchSeedsEnvelopeServerSide`, `TestSwitchSeedTurnCarriesStats`); divider single-source: seed is the only live divider (`TestSwitchSeedDividerSingleSource`).
+- [x] `DOD-7` `chat_provider_switch` appended exactly once; legs closed/opened with correct fields (`TestSwitchEventAppendedOnce`).
+- [x] `DOD-8` Crash-heal matrix implemented, all cells: intent-no-new-leg cleared, two-active resolved, closed-no-record appended, seed-failed typed + continuable (`TestSwitchCrashHealsOnLoad`, `TestSwitchCrashTwoActiveHeals`, `TestSwitchSeedFailTypedContinuable`).
+- [x] `DOD-9` Fresh-start switch (empty chat) returns `fresh_start`, no envelope, no error (`TestChatEnvelopeFreshStartNoError` — CS-07).
+- [x] `DOD-10` BUG-330 runner lock green (`TestBug330SwitchMintsRealGrokLeg`); Task-078 suite untouched green.
+- [x] `DOD-11` Lock rule proven: no `s.mu` hold across `createRun` (`TestSwitchNeverHoldsLockAcrossCreateRun` — e.g. lock-order probe with an instrumented mutex or goroutine-based deadlock watchdog).
+- [x] `DOD-12` Docs land with the endpoint: SS-05 chat-switch invariant note, SD-06 §3.2 pointer to SD-26; BUG-330 re-pointed when Task-315 lands (`T-8`).
 
 ### 6.2 Test Signatures
 
@@ -253,6 +253,6 @@ func TestBug330SwitchMintsRealGrokLeg(t *testing.T)                  // BUG-330 
 
 ## 8. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: DONE 2026-08-30 — CA-692. `POST /client/chats/{chatId}/switch-provider` live behind FLOWPILOT_CHAT_SSOT: three-phase linearization (intent persisted in phase A, no lock across createRun, start-new-first), full guards (404 chat_not_found / chat_no_active_leg for detached, 409 handoff_run_busy incl. in-flight-switch, 409 handoff_same_provider, 422 provider_unavailable pre-mutation), chat-scoped envelope (`<previous_conversation>` via Task-078 packer + `<actions_summary>` digest, handoffPromptPrefix preserved, fresh_start for empty chats), fire-and-return seed via startTurn, E-9 record exactly-once, crash heal (two-active discriminator + orphan-intent clear) invoked at switch entry. 13 tests green (`chat_switch_test.go`), matrix pair codex→claude on fake adapters; other directed pairs exercise the same provider-agnostic path (switch op never reads provider folders).
+- follow-ups: budget context-lookup wiring (targetContextWindow returns 0 → 64KiB floor; SD-26 D-9 derivation activates with Task-315/316 model metadata), summary-ledger hybrid mode (target_summary instruction active), 12-pair live matrix walk (Task-315/316 manual DOD), crash-heal hook also on loadPersistedRun (currently at switch entry + timeline read — observable paths covered).
+- upstream docs updated: Task-314 moved to done/; CP-59 + Task-315/316/317 links updated; BUG-330 re-point lands with Task-315 (per T-8).

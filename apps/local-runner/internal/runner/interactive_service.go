@@ -38,6 +38,9 @@ type InteractiveService struct {
 	chatOnce        sync.Once
 	chatRuns        *chatRunRegistry
 	chatTranscripts *chatTranscriptWriter
+	// chatSwitchInFlight guards one in-flight provider switch per chat
+	// (SD26-S-2); guarded by s.mu, lazily initialized.
+	chatSwitchInFlight map[string]bool
 	// skillsCatalog serves the local provider-skill list (not from Supabase).
 	skillsCatalog *interactiveCatalog
 	// agentCatalog serves the loadable sub-agent definitions (CP-19 / Task-081):

@@ -30,6 +30,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	// CP-59 chat SSOT timeline (Task-313): flag-gated in the handler — with
 	// FLOWPILOT_CHAT_SSOT off it answers typed 404 and nothing else changes.
 	mux.HandleFunc("GET /client/chats/{chatId}/timeline", s.handleChatTimeline)
+	// CP-59 chat provider switch (Task-314): same flag gate in the handler.
+	mux.HandleFunc("POST /client/chats/{chatId}/switch-provider", s.handleChatSwitchProvider)
 	mux.HandleFunc("GET /client/projects/{projectId}/chat-sessions/remote", s.handleListRemoteChatSessions)
 	mux.HandleFunc("GET /client/engine/tooling/status", s.handleGetGlobalEngineToolingStatus)
 	mux.HandleFunc("POST /client/engine/tooling/install/libretranslate", s.handleInstallLibreTranslate)
