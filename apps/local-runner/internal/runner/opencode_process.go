@@ -354,13 +354,23 @@ func logOpencodeFrameDebug(direction, rawLine string) {
 
 type opencodeProcessHandle struct {
 	scopeKey string
-	model    string
-	variant  string
-	auto     bool
-	dispatcher *opencodeDispatcher
-	adapter    *opencodeAdapter
-	initResult map[string]any
-	kill       func()
+	// BUG-334: scopeBase is the account-level scope (account.ID / env:$HOME)
+	// and scopeSegment isolates run families on the same account ("|child:<id>"
+	// for spawned child runs, "probe" for variants probes, "" for chat turns).
+	// The account-switch reclaim closes by BASE, so a child turn spawning its
+	// own process never tears down a live parent process (whose in-flight MCP
+	// tool call would die with "Connection closed" — opencode keys its MCP
+	// clients by server NAME per process, and the child's session/new carries
+	// a fresh per-turn token).
+	scopeBase    string
+	scopeSegment string
+	model        string
+	variant      string
+	auto         bool
+	dispatcher   *opencodeDispatcher
+	adapter      *opencodeAdapter
+	initResult   map[string]any
+	kill         func()
 }
 
 func (h *opencodeProcessHandle) close() {
@@ -406,6 +416,24 @@ func (r *Runner) closeAllOpencodeProcessesLocked() {
 // across those is also safe. Only an account/scope change reclaims processes
 // (every handle bound to a different scope is closed here).
 func (r *Runner) ensureOpencodeProcess(ctx context.Context, scopeKey, cwd string, extraEnv map[string]string, model, variant string, auto bool) (*opencodeProcessHandle, error) {
+	return r.ensureOpencodeProcessSegmented(ctx, scopeKey, "", cwd, extraEnv, model, variant, auto)
+}
+
+// opencodeSegmentedScope joins an account-level base with a run-family segment.
+func opencodeSegmentedScope(base, segment string) string {
+	if strings.TrimSpace(segment) == "" {
+		return base
+	}
+	return base + "|child:" + segment
+}
+
+// ensureOpencodeProcessSegmented is ensureOpencodeProcess with a BUG-334
+// run-family segment. The account-switch reclaim closes handles whose BASE
+// differs, so a child segment spawning its own process never kills a live
+// parent process; within one segment the BUG-329 same-scope reuse rules apply
+// unchanged (mid-chat model change reuses, only base switches reclaim).
+func (r *Runner) ensureOpencodeProcessSegmented(ctx context.Context, scopeBase, scopeSegment, cwd string, extraEnv map[string]string, model, variant string, auto bool) (*opencodeProcessHandle, error) {
+	scopeKey := opencodeSegmentedScope(scopeBase, scopeSegment)
 	r.opencodeProcessMu.Lock()
 	defer r.opencodeProcessMu.Unlock()
 
@@ -414,11 +442,13 @@ func (r *Runner) ensureOpencodeProcess(ctx context.Context, scopeKey, cwd string
 	}
 
 	// Account switch still reclaims processes: close every handle bound to a
-	// DIFFERENT scope. Same-scope handles that differ only by model/variant/auto
-	// are LEFT RUNNING so a parent turn and a concurrently-spawned child turn
-	// with different launch flags coexist.
+	// DIFFERENT account base. Same-base handles in other run-family segments
+	// (BUG-334 child/probe) are LEFT RUNNING so a spawned child's process never
+	// tears down a live parent process whose in-flight MCP tool call would die
+	// with "Connection closed" (opencode keys MCP clients by server NAME per
+	// process; a child session/new carries a fresh per-turn token).
 	for k, h := range r.opencodeProcesses {
-		if h.scopeKey != scopeKey {
+		if opencodeScopeBaseOf(h) != scopeBase {
 			h.close()
 			delete(r.opencodeProcesses, k)
 		}
@@ -432,11 +462,12 @@ func (r *Runner) ensureOpencodeProcess(ctx context.Context, scopeKey, cwd string
 		h.close()
 		delete(r.opencodeProcesses, key)
 	}
-	// BUG-329: exact-key miss → reuse any other live handle in the same scope.
-	// Spawning a fresh process for a mid-chat model change orphans every
-	// session created by the old process (session/load returns no sessionId).
+	// BUG-329 (segment-scoped): exact-key miss → reuse any other live handle
+	// in the same account base + run-family segment. Spawning a fresh process
+	// for a mid-chat model change orphans every session created by the old
+	// process (session/load returns no sessionId).
 	for _, h := range r.opencodeProcesses {
-		if h.scopeKey == scopeKey && !h.dispatcher.isClosed() {
+		if opencodeScopeBaseOf(h) == scopeBase && h.scopeSegment == scopeSegment && !h.dispatcher.isClosed() {
 			return h, nil
 		}
 	}
@@ -485,9 +516,39 @@ func (r *Runner) ensureOpencodeProcess(ctx context.Context, scopeKey, cwd string
 	}
 	adapter.runSessions = r.opencodeRunSessions
 
-	h := &opencodeProcessHandle{scopeKey: scopeKey, model: model, variant: variant, auto: auto, dispatcher: dispatcher, adapter: adapter, initResult: initResult, kill: kill}
+	h := &opencodeProcessHandle{scopeKey: scopeKey, scopeBase: scopeBase, scopeSegment: scopeSegment, model: model, variant: variant, auto: auto, dispatcher: dispatcher, adapter: adapter, initResult: initResult, kill: kill}
 	r.opencodeProcesses[key] = h
 	return h, nil
+}
+
+// opencodeScopeBaseOf tolerates old-test handle literals that only set scopeKey.
+func opencodeScopeBaseOf(h *opencodeProcessHandle) string {
+	if h == nil {
+		return ""
+	}
+	if strings.TrimSpace(h.scopeBase) != "" {
+		return h.scopeBase
+	}
+	return h.scopeKey
+}
+
+// CloseOpencodeProcessesForChildRun tears down the BUG-334 isolated process of
+// one spawned child run after its terminal event, so short-lived children do
+// not leak `opencode acp` processes. Chat-scope (segment "") handles are never
+// touched.
+func (r *Runner) CloseOpencodeProcessesForChildRun(childRunID string) {
+	suffix := "|child:" + strings.TrimSpace(childRunID)
+	if suffix == "|child:" {
+		return
+	}
+	r.opencodeProcessMu.Lock()
+	defer r.opencodeProcessMu.Unlock()
+	for k, h := range r.opencodeProcesses {
+		if strings.HasSuffix(h.scopeKey, suffix) {
+			h.close()
+			delete(r.opencodeProcesses, k)
+		}
+	}
 }
 
 // opencodeProcessEnv builds the launch environment for `opencode acp`.

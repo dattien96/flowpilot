@@ -96,15 +96,17 @@ CLIs ask by default, which is exactly the behavior the overlay gives opencode.
   `os.Environ` (same class as `OPENCODE_API_KEY`) so the gate can only travel
   via extraEnv. Tests: `TestBug331OverlaySurvivesAccountExtraEnv`,
   `TestBug331ProcessEnvStripsHostOverlayContent`.
-- **Accepted tradeoff (review Important #3, no change)**: the variants probe
-  rides the shared ACP process (CA-689c). RPCs multiplex by sessionId and the
-  dispatcher is built for concurrent call/notification pumping; probe
-  session/new + set_config_option + close target its own throwaway session,
-  never the chat session. A separate probe process is NOT safe here: a
-  different scopeKey triggers the account-switch reclaim that closes the live
-  chat process, and respawning mid-chat re-creates BUG-329. If interleaving
-  latency ever shows up, the fix is an in-flight-turn guard, not a second
-  process.
+- **SUPERSEDED (BUG-334)**: the "sessions are independent" claim below held
+  for prompts but NOT for MCP — opencode keys its MCP clients by server NAME
+  per PROCESS, so any session/new with a different/empty mcpServers block on
+  the shared process (child turn, variants probe) replaced the connection and
+  killed in-flight parent MCP calls ("MCP -32000 Connection closed", guide
+  section F). BUG-334 isolates child runs (`|child:<runID>`) and probes
+  (`probe`) on their own process segments with base-only reclaim, and closes
+  child processes on their terminal event. Original note kept for history:
+  the variants probe rode the shared ACP process (CA-689c); a separate probe
+  process was then judged unsafe because the old reclaim closed other
+  scopes — the segmented reclaim removes that objection.
 - **Accepted minor (no change)**: `handleGetOpencodeModelVariants` returns raw
   `err.Error()` with 502 — local-only endpoint, desktop is the sole client;
   message text is diagnostic, not a security boundary.

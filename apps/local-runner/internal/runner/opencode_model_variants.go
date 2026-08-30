@@ -117,11 +117,18 @@ func (r *Runner) FetchOpencodeModelVariants(ctx context.Context, modelID string)
 	if fetchDispatcher != nil {
 		d = fetchDispatcher // test seam
 	} else {
-		h, err := r.ensureOpencodeProcess(probeCtx, scopeKey, r.workspace, env, modelID, "", false)
+		// BUG-334: the probe runs on its OWN throwaway process (segment
+		// "probe", closed below). The probe's session/new carries EMPTY
+		// mcpServers, and opencode keys its MCP clients by server NAME per
+		// process — probing on the SHARED chat process reset that connection
+		// and would kill any in-flight parent MCP tool call (spawn_agent /
+		// ask_user) with "Connection closed".
+		h, err := r.ensureOpencodeProcessSegmented(probeCtx, scopeKey, "probe", r.workspace, env, modelID, "", false)
 		if err != nil {
 			return nil, "", err
 		}
 		d = h.dispatcher
+		defer h.close()
 	}
 	newRes, err := d.call(probeCtx, "session/new", opencodeACPSessionNewParams(r.workspace, nil, nil, "", ""))
 	if err != nil {

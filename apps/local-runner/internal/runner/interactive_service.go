@@ -5145,6 +5145,12 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 		// (the "empty transcript" sub-agents seen in the Agents panel).
 		log.Printf("[agent-spawn] child terminal parent=%q child=%q agent=%q type=%q status=%q finalMsgLen=%d events=%d",
 			rs.parentRunID, rs.id, rs.agentName, ev.Type, rs.status, len(ev.FinalMessage), len(rs.events))
+		// BUG-334: the child's isolated opencode acp process is throwaway —
+		// tear it down with the child's terminal event so short-lived children
+		// do not leak processes. Chat-scope handles are never touched.
+		if s.runner != nil {
+			s.runner.CloseOpencodeProcessesForChildRun(rs.id)
+		}
 	}
 	// Flow-engine children: releaseDependentAgents runs only after gate pass
 	// (settleFlowChildTurnCompletedLocked / post-gate branch). Immediate release
@@ -5475,6 +5481,16 @@ func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiS
 // SpawnAgent creates a child agent run from the current turn (CP-19 / Task-082).
 // When in.Wait==true it blocks until the child run's first turn completes, returning
 // its final message. Cancellation follows b.ctx (parent turn interrupt).
+// opencodeChildScopeHint returns the run id for spawned child runs (parentRunID
+// set) so the opencode factory isolates their acp process (BUG-334); "" for
+// normal runs, which keep the shared chat process (BUG-329 reuse).
+func opencodeChildScopeHint(rs *interactiveRun) string {
+	if rs == nil || strings.TrimSpace(rs.parentRunID) == "" {
+		return ""
+	}
+	return strings.TrimSpace(rs.id)
+}
+
 func (b *turnBridge) SpawnAgent(in SpawnAgentInput) (SpawnAgentResult, error) {
 	return b.svc.spawnChildRun(b.ctx, b.rs.id, in)
 }
@@ -7639,7 +7655,11 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 	// is model-dependent (Grok — see ProviderRegistration.newAdapterForTurn) gets
 	// the right value at construction time, not just when TurnRequest is built.
 	turnModel, turnEffort := resolveTurnModelAndEffort(rs, in)
-	adapter, aerr := s.registry.Adapter(rs.providerKey, turnModel, turnEffort)
+	// BUG-334: spawned child runs isolate their opencode acp process so their
+	// per-turn session/new (fresh MCP token) cannot reset a concurrent parent
+	// turn's MCP connection (opencode keys MCP clients by server NAME per
+	// process — the F-section spawn_agent "Connection closed" failure).
+	adapter, aerr := s.registry.AdapterWithScope(rs.providerKey, turnModel, turnEffort, opencodeChildScopeHint(rs))
 	if aerr != nil {
 		s.mu.Unlock()
 		return "", newAPIErr(http.StatusBadRequest, "provider_unavailable", aerr.Error())
