@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-29`
-- Last Updated: `2026-08-30` (done — CA-690 substrate + CA-691 completion; 24 tests green; R1: baseline 13 failures + 2 flakes proven pre-existing on stashed clean tree, zero new)
+- Last Updated: `2026-08-30` (done — CA-693 substrate + CA-694 completion; 24 tests green; R1: baseline 13 failures + 2 flakes proven pre-existing on stashed clean tree, zero new)
 - Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/todo/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-312: Chat SSOT Design Freeze (SD-26)](./Task-312-Chat-Ssot-Design-Freeze-SD26.md)
 - Child Documents: `None`
 - Related Documents: [Task-078: Cross-Provider Chat Handoff](../done/Task-078-Cross-Provider-Chat-Handoff.md), [SD-26: Chat Continuity SSOT](../../06-System-Tech-Design/SD-26-Chat-Continuity-Ssot.md) (authored by Task-312)
@@ -276,7 +276,7 @@ func TestChatSSOTFlagOptIn(t *testing.T)
 
 ## 8. Completion Notes
 
-- result: DONE 2026-08-30 — CA-690 (substrate slice) + CA-691 (completion slice). 24 new tests green (`chat_ssot_test.go`, `chat_transcript_store_test.go`, `chat_timeline_test.go`, `chat_wiring_integration_test.go`). Full-suite R1: exactly the 13 pre-existing baseline failures; TUI suite 7 failures proven identical on the stashed clean tree; 2 flaky runner tests proven pre-existing via stash runs. Commits: `451cfd26` (substrate) + slice-2 commit (this close).
+- result: DONE 2026-08-30 — CA-693 (substrate slice) + CA-694 (completion slice). 24 new tests green (`chat_ssot_test.go`, `chat_transcript_store_test.go`, `chat_timeline_test.go`, `chat_wiring_integration_test.go`). Full-suite R1: exactly the 13 pre-existing baseline failures; TUI suite 7 failures proven identical on the stashed clean tree; 2 flaky runner tests proven pre-existing via stash runs. Commits: `451cfd26` (substrate) + slice-2 commit (this close).
 - follow-ups: apply migration `20260830080000` to the Supabase project + live `TestSupabaseChatTranscriptStoreRoundTrip`; local store restart index persistence (Task-317 hardening); SD-26 §6.1 wording note — E-6/E-7 record at request time with replay-carried decision/answer (the event vocabulary has no separate resolution event; mapper honors `Decision`/`Answer` on replay).
 - upstream docs updated: CP-59 Open Questions → SD-26 §13 pointer; Task-313 moved to `done/`; Task-314/315/316/317 reference this task as done.
 

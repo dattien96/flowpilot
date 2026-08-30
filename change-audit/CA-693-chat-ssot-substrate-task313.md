@@ -1,4 +1,4 @@
-# CA-690 — Chat SSOT substrate: chatId, transcript store, timeline (Task-313 slice 1)
+# CA-693 — Chat SSOT substrate: chatId, transcript store, timeline (Task-313 slice 1)
 
 # ---8<--- flowpilot:change-ledger
 feature_key: chat-history

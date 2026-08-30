@@ -1,4 +1,4 @@
-# CA-692 — Chat switch-provider endpoint: three-phase linearization + chat envelope (Task-314)
+# CA-695 — Chat switch-provider endpoint: three-phase linearization + chat envelope (Task-314)
 
 # ---8<--- flowpilot:change-ledger
 feature_key: chat-history
@@ -17,7 +17,7 @@ summary: POST /client/chats/{chatId}/switch-provider behind FLOWPILOT_CHAT_SSOT 
 ## Prior claims honored
 
 - Task-078 (envelope contract) — `packConversationTurns`/`renderHandoffPrompt`/`handoffPromptPrefix` reused verbatim; run-scoped endpoint untouched.
-- CA-690/CA-691 (Task-313 substrate) — capture/store contracts unchanged; switch only appends E-9 through the same writer.
+- CA-693/CA-694 (Task-313 substrate) — capture/store contracts unchanged; switch only appends E-9 through the same writer.
 - BUG-330 — the repro path is now impossible by construction: cross-provider Tab routes to this endpoint (Task-315), never injecting a foreign model into the old adapter.
 
 ## R1 evidence

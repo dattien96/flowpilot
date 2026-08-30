@@ -1,4 +1,4 @@
-# CA-691 — Chat SSOT Task-313 completion: Supabase store, legacy backfill, integration tests, migration
+# CA-694 — Chat SSOT Task-313 completion: Supabase store, legacy backfill, integration tests, migration
 
 # ---8<--- flowpilot:change-ledger
 feature_key: chat-history
@@ -17,7 +17,7 @@ summary: Supabase workflow_chat_events ChatTranscriptStore + chat columns on wor
 
 ## Prior claims honored
 
-- CA-690 (substrate slice) — extended, not reworked; `recordChatTranscript`/writer/store contracts unchanged.
+- CA-693 (substrate slice) — extended, not reworked; `recordChatTranscript`/writer/store contracts unchanged.
 - CA-688 (opencode resume precheck) — no resume-path edits.
 - CA-679 / BUG-329 — untouched paths.
 
