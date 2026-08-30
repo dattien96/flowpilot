@@ -143,6 +143,8 @@ Trạng thái: YOLO **OFF** (`/yolo` hiện OFF).
 
 ## J. Summary (E2E-13)
 
+> **Note:** Test J sẽ thực hiện trong **CP-59** vì **CP-59 sẽ refactor lại summary** — không test ở đây.
+
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
 | J1 | Chat dài vài turn → Desktop mở chat → **Gen summary** | Summary generated (chạy qua cheap tier `opencode/gpt-5.4-nano`) |
@@ -165,17 +167,17 @@ Lưu ý: summary cần project có feature catalog (`.flowpilot/catalog/features
 | L1 | Trong chat, yêu cầu dùng tool ask_user (xem E5) | Question chặn → trả lời → turn tiếp tục |
 | L2 | A5 đã connect Google Drive → chat yêu cầu list Drive | Tool Drive xuất hiện (nếu account đã cấu hình) |
 
-## M. Vision guard (E2E-27)
+## M. Vision guard (E2E-27) — **PASSED 08-30 (M1)**
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
-| M1 | `/image attach <ảnh>` hoặc drag ảnh vào composer khi model opencode | Bị **chặn trước khi gửi prompt** với thông báo rõ (Vision=false — không mất prompt) |
+| M1 ✅ PASSED 08-30 | `/image attach <ảnh>` hoặc drag ảnh vào composer khi model opencode | Bị **chặn trước khi gửi prompt** với thông báo rõ (Vision=false — không mất prompt) |
 
-## N. Account usage sau nhiều turn (CA-683)
+## N. Account usage sau nhiều turn (CA-683) — **PASSED 08-30 (N1)**
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
-| N1 | Chat vài chục turn → mở Desktop sidebar account Opencode (hoặc bấm All) | Stats lines cập nhật (60s cache — chờ ~1 phút rồi refresh) |
+| N1 ✅ PASSED 08-30 | Chat vài chục turn → mở Desktop sidebar account Opencode (hoặc bấm All) | Stats lines cập nhật (60s cache — chờ ~1 phút rồi refresh) |
 
 ## Kết luận phiên test
 
