@@ -11,7 +11,7 @@
 - Created: `2026-08-30`
 - Last Updated: `2026-08-30`
 - Feature Keys: `ai-providers`
-- Parent Documents: [CP-57: Opencode Provider Integration](../../07-Coding-Plan/inprogress/CP-57-Opencode-Provider-Integration.md), [CP-57-Test-Steps](../done/CP-57-Test-Steps.md) (section E), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md)
+- Parent Documents: [CP-57: Opencode Provider Integration](../../07-Coding-Plan/done/CP-57-Opencode-Provider-Integration.md), [CP-57-Test-Steps](../../07-Coding-Plan/done/CP-57-Test-Steps.md) (section E), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md)
 - Child Documents: `none`
 - Related Documents: [CA-679](../../../change-audit/CA-679-opencode-config-file-env-and-tui-model-restore.md), [CA-680](../../../change-audit/CA-680-opencode-midchat-model-session-load.md) (BUG-329), [CA-681](../../../change-audit/CA-681-opencode-yolo-posture-endpoint.md), CP-57 OC-04/P-5/R-3 (do-not-trust-allowlist requirements)
 - Replaces: `none`

@@ -501,7 +501,11 @@ func opencodeProcessEnv(extraEnv map[string]string) []string {
 	filtered := make([]string, 0, len(env)+len(extraEnv)+5)
 	for _, kv := range env {
 		// Strip host OPENCODE secrets beyond scope; they will be re-injected only via extraEnv if needed.
-		if strings.HasPrefix(kv, "OPENCODE_API_KEY=") || strings.HasPrefix(kv, "OPENCODE_HOME=") {
+		// OPENCODE_CONFIG_CONTENT is also stripped (BUG-331): the permission
+		// ask-gate overlay travels via extraEnv and must never be defeated by
+		// an ambient host value sneaking through os.Environ.
+		if strings.HasPrefix(kv, "OPENCODE_API_KEY=") || strings.HasPrefix(kv, "OPENCODE_HOME=") ||
+			strings.HasPrefix(kv, "OPENCODE_CONFIG_CONTENT=") {
 			continue
 		}
 		filtered = append(filtered, kv)

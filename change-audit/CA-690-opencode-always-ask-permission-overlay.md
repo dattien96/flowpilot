@@ -86,6 +86,32 @@ CLIs ask by default, which is exactly the behavior the overlay gives opencode.
   package failures (5) reproduce identically with the fix stashed →
   pre-existing, unrelated (firebase/flow/drive).
 
+## Review hardening (post-review, same day)
+
+- **Overlay must win (review Important #1)**: `opencodeLaunchEnv` previously
+  set the overlay before `account.ExtraEnv` was spread over the map — a
+  custom/stale account env carrying `OPENCODE_CONFIG_CONTENT` could ungate the
+  process. The overlay is now assigned LAST in both branches, and
+  `opencodeProcessEnv` strips a host-inherited `OPENCODE_CONFIG_CONTENT` from
+  `os.Environ` (same class as `OPENCODE_API_KEY`) so the gate can only travel
+  via extraEnv. Tests: `TestBug331OverlaySurvivesAccountExtraEnv`,
+  `TestBug331ProcessEnvStripsHostOverlayContent`.
+- **Accepted tradeoff (review Important #3, no change)**: the variants probe
+  rides the shared ACP process (CA-689c). RPCs multiplex by sessionId and the
+  dispatcher is built for concurrent call/notification pumping; probe
+  session/new + set_config_option + close target its own throwaway session,
+  never the chat session. A separate probe process is NOT safe here: a
+  different scopeKey triggers the account-switch reclaim that closes the live
+  chat process, and respawning mid-chat re-creates BUG-329. If interleaving
+  latency ever shows up, the fix is an in-flight-turn guard, not a second
+  process.
+- **Accepted minor (no change)**: `handleGetOpencodeModelVariants` returns raw
+  `err.Error()` with 502 — local-only endpoint, desktop is the sole client;
+  message text is diagnostic, not a security boundary.
+- Guide/commit wording corrected: E is pre-verified by probes but NOT yet
+  ✅-marked — re-test E1–E5 after the runner restart (commit `4ba11d77`
+  amended to `15ce6d6b` says "pending re-test").
+
 ## Residual notes
 
 - Opencode processes already running from before this fix keep the old env —

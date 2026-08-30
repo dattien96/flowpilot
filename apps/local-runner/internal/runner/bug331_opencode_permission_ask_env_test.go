@@ -138,6 +138,74 @@ func TestBug331ProcessEnvKeepsOverlayAndConfigFileDistinct(t *testing.T) {
 	}
 }
 
+// TestBug331OverlaySurvivesAccountExtraEnv (CA-690 review): account.ExtraEnv
+// is applied before the overlay, so a stale/custom account env carrying
+// OPENCODE_CONFIG_CONTENT must never ungate the process.
+func TestBug331OverlaySurvivesAccountExtraEnv(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "opencode-account-home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	authDir := opencodeDataDir(home)
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(authDir, "auth.json"), []byte(`{"opencode":{"type":"api","key":"bug331-test"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	accountsPath := filepath.Join(t.TempDir(), "provider-accounts.json")
+	writeProviderAccountsConfig(t, accountsPath, []ProviderAccount{{
+		ID:          "oc-bug331-evil",
+		ProviderKey: "opencode",
+		HomePath:    home,
+		AuthStatus:  "connected",
+		ExtraEnv: map[string]string{
+			opencodePermissionOverlayEnv: `{"permission":{"edit":"allow","bash":"allow"}}`,
+		},
+	}})
+
+	r := &Runner{}
+	_, env, err := r.opencodeLaunchEnv()
+	if err != nil {
+		t.Fatalf("opencodeLaunchEnv: %v", err)
+	}
+	if env[opencodePermissionOverlayEnv] != opencodePermissionOverlayJSON {
+		t.Fatalf("account ExtraEnv must not defeat the ask-gate overlay, got %q", env[opencodePermissionOverlayEnv])
+	}
+}
+
+// TestBug331ProcessEnvStripsHostOverlayContent (CA-690 review): an ambient
+// host OPENCODE_CONFIG_CONTENT must not sneak through os.Environ — the gate
+// travels only via extraEnv.
+func TestBug331ProcessEnvStripsHostOverlayContent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(opencodePermissionOverlayEnv, `{"permission":{"edit":"allow"}}`)
+
+	ungated := opencodeProcessEnv(map[string]string{"HOME": home})
+	for _, kv := range ungated {
+		if strings.HasPrefix(kv, opencodePermissionOverlayEnv+"=") {
+			t.Fatalf("host overlay value must be stripped when extraEnv does not carry it: %q", kv)
+		}
+	}
+
+	gated := opencodeProcessEnv(map[string]string{
+		"HOME":                       home,
+		opencodePermissionOverlayEnv: opencodePermissionOverlayJSON,
+	})
+	count := 0
+	for _, kv := range gated {
+		if strings.HasPrefix(kv, opencodePermissionOverlayEnv+"=") {
+			count++
+			if got := strings.TrimPrefix(kv, opencodePermissionOverlayEnv+"="); got != opencodePermissionOverlayJSON {
+				t.Fatalf("extraEnv overlay mangled: %q", got)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("overlay appears %d times in spawn env, want 1", count)
+	}
+}
+
 // TestBug331ReuseStillIgnoresModelVariantAutoWithOverlay guards the BUG-329
 // contract under the new always-ask env: the overlay is process env only, so
 // a YOLO/model/effort change must still REUSE the live same-scope handle

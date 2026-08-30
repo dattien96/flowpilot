@@ -50,11 +50,6 @@ const (
 func (r *Runner) opencodeLaunchEnv() (string, map[string]string, error) {
 	scopeKey := "default"
 	env := map[string]string{}
-	// BUG-331: the ask-gate overlay rides EVERY opencode acp spawn — both the
-	// turn path and the variants prober share this map, so same-scope reuse
-	// never hands a chat turn an ungated process. Set before the branches so
-	// the account-resolved and env-HOME fallback paths both carry it.
-	env[opencodePermissionOverlayEnv] = opencodePermissionOverlayJSON
 	account, err := r.ResolveProviderAccount(string(ProviderKeyOpencode), "")
 	if err == nil {
 		scopeKey = account.ID
@@ -75,6 +70,12 @@ func (r *Runner) opencodeLaunchEnv() (string, map[string]string, error) {
 				env["HOMEPATH"] = path
 			}
 		}
+		// BUG-331: the ask-gate overlay must win over account.ExtraEnv, so it is
+		// assigned LAST here (a stale/custom account env carrying the key must
+		// never ungate the process). Both the turn path and the variants prober
+		// share this map, so same-scope reuse never hands a chat turn an
+		// ungated process.
+		env[opencodePermissionOverlayEnv] = opencodePermissionOverlayJSON
 		return scopeKey, env, nil
 	}
 	home := strings.TrimSpace(os.Getenv("HOME"))
@@ -87,6 +88,7 @@ func (r *Runner) opencodeLaunchEnv() (string, map[string]string, error) {
 	env["XDG_CONFIG_HOME"] = filepath.Join(home, ".config")
 	env["XDG_DATA_HOME"] = opencodeDataHomeForAccount(home)
 	env["OPENCODE_CONFIG"] = opencodeConfigFilePath(home)
+	env[opencodePermissionOverlayEnv] = opencodePermissionOverlayJSON
 	return scopeKey, env, nil
 }
 
