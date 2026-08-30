@@ -31,6 +31,14 @@ sends the right fields (supabaseAdminRepository.createSupportedModel).
 - `select provider_key, count(*) from ai_supported_models group by 1;`
   should gain an opencode bucket.
 
+## Follow-up (CA-690 review)
+
+The first draft left `alter table ... add constraint` outside the guarded
+DO block, so a re-run failed with "constraint already exists". Rewritten
+truly idempotent: the whole drop-if-exists + add fires only while the
+constraint definition lacks 'opencode'; re-runs against a migrated DB are
+no-ops.
+
 # ---8<--- flowpilot:change-ledger
 feature_key: ai-providers
 source_doc_id: CP-57

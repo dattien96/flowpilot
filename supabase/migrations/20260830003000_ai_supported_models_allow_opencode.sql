@@ -13,23 +13,25 @@
 --   select conname, pg_get_constraintdef(oid)
 --   from pg_constraint where conname = 'ai_supported_models_provider_key_check';
 --
--- Idempotent: the drop only fires while the constraint still lacks 'opencode'.
+-- Idempotent (CA-690 review: the first draft left the ADD outside the guard,
+-- so a re-run failed with "constraint already exists"): the whole drop+add
+-- only fires while the constraint still lacks 'opencode'; a re-run against an
+-- already-migrated DB is a no-op.
 
 do $$
 begin
-  if exists (
+  if not exists (
     select 1
     from pg_constraint c
     join pg_class t on t.oid = c.conrelid
     where c.conname = 'ai_supported_models_provider_key_check'
       and t.relname = 'ai_supported_models'
-      and pg_get_constraintdef(c.oid) not like '%opencode%'
+      and pg_get_constraintdef(c.oid) like '%opencode%'
   ) then
     alter table ai_supported_models
-      drop constraint ai_supported_models_provider_key_check;
+      drop constraint if exists ai_supported_models_provider_key_check;
+    alter table ai_supported_models
+      add constraint ai_supported_models_provider_key_check
+      check (provider_key in ('codex', 'claude', 'gemini', 'grok', 'opencode'));
   end if;
 end $$;
-
-alter table ai_supported_models
-  add constraint ai_supported_models_provider_key_check
-  check (provider_key in ('codex', 'claude', 'gemini', 'grok', 'opencode'));
