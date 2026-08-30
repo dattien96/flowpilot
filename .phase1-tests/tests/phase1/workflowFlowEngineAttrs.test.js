@@ -26,6 +26,10 @@ class FakeTable {
         this.lastEqFilters[column] = value;
         return this;
     }
+    in(column, values) {
+        this.lastEqFilters[column] = values;
+        return this;
+    }
     not() {
         return this;
     }
@@ -107,11 +111,44 @@ function builtinWorkflowRow(overrides = {}) {
         ...overrides,
     };
 }
-(0, node_test_1.default)("saveWorkflow rejects editing a non-editable (built-in) workflow", async () => {
+(0, node_test_1.default)("saveWorkflow limits built-in workflow saves to override fields only", async () => {
     const supabase = new FakeSupabase();
-    supabase.register("workflows", new FakeTable({ maybeSingle: { data: { editable: false }, error: null } }));
+    const workflowsTable = new FakeTable({
+        maybeSingle: { data: { editable: false }, error: null },
+        single: {
+            data: builtinWorkflowRow({
+                model_override: "gpt-5.4",
+                reasoning_effort_override: "high",
+                yolo_mode: true,
+                name: "Review Loop",
+            }),
+            error: null,
+        },
+    });
+    const captured = { updatePayload: null };
+    workflowsTable.update = function (payload) {
+        captured.updatePayload = payload;
+        return this;
+    };
+    supabase.register("workflows", workflowsTable);
     const repo = new supabaseAdminRepository_1.SupabaseAdminRepository(supabase);
-    await strict_1.default.rejects(() => repo.saveWorkflow({ id: "wf-builtin-1", name: "hacked name" }), /built-in template/);
+    const saved = await repo.saveWorkflow({
+        id: "wf-builtin-1",
+        name: "hacked name",
+        modelOverride: "gpt-5.4",
+        reasoningEffortOverride: "high",
+        yoloMode: true,
+    });
+    strict_1.default.deepEqual(captured.updatePayload, {
+        model_override: "gpt-5.4",
+        reasoning_effort_override: "high",
+        yolo_mode: true,
+        updated_at: captured.updatePayload?.updated_at,
+    });
+    strict_1.default.equal(saved.name, "Review Loop");
+    strict_1.default.equal(saved.modelOverride, "gpt-5.4");
+    strict_1.default.equal(saved.reasoningEffortOverride, "high");
+    strict_1.default.equal(saved.yoloMode, true);
 });
 (0, node_test_1.default)("saveWorkflow allows editing when editable=true", async () => {
     const supabase = new FakeSupabase();
@@ -147,6 +184,82 @@ function builtinWorkflowRow(overrides = {}) {
     strict_1.default.equal(cloned.editable, true);
     strict_1.default.equal(cloned.clonedFrom, "wf-builtin-1");
     strict_1.default.equal(cloned.name, "My Review Loop");
+});
+// Regression test for BUG-262 (+ BUG-282): cloneWorkflow used to reuse the
+// source's step_type verbatim for the clone's workflow_steps, so both
+// workflows pointed at the SAME step_definitions row; editing the clone's
+// edges then silently overwrote the source's shared fields. The fix gives
+// every cloned step its own fresh, workflow-scoped step_type and an
+// independent step_definitions row. BUG-282 additionally removes flow
+// topology from step_definitions entirely — `depends_on_json` is no longer a
+// column and the clone must NOT copy it (topology lives only on the workflow's
+// own edges_json, which cloneWorkflow copies onto the clone's row).
+(0, node_test_1.default)("cloneWorkflow gives every cloned step its own step_definitions row, not the source's", async () => {
+    const supabase = new FakeSupabase();
+    const sourceRow = builtinWorkflowRow();
+    const clonedRow = builtinWorkflowRow({
+        id: "wf-clone-1",
+        is_builtin: false,
+        editable: true,
+        cloned_from: "wf-builtin-1",
+        name: "My Review Loop",
+    });
+    const workflowsResponses = [sourceRow, clonedRow];
+    const workflowsTable = new FakeTable({});
+    workflowsTable.single = () => Promise.resolve({ data: workflowsResponses.shift(), error: null });
+    supabase.register("workflows", workflowsTable);
+    const sourceStepType = "flowpilot_core_flow_pack_review_loop_synthesis";
+    supabase.register("workflow_steps", new FakeTable({
+        list: {
+            data: [
+                {
+                    id: "wfstep-1",
+                    workflow_id: "wf-builtin-1",
+                    step_type: sourceStepType,
+                    order_index: 3,
+                    is_enabled: true,
+                    requires_approval: true,
+                },
+            ],
+            error: null,
+        },
+    }));
+    const stepDefinitionsTable = new FakeTable({
+        write: {
+            data: [
+                {
+                    step_type: sourceStepType,
+                    name: "Review Loop: Synthesis",
+                    description: "synthesis node",
+                    node_id: "synthesis",
+                    behavior_id: "hub.inline",
+                    agent_ref: "agents/synthesizer.md",
+                    node_lifecycle: "reinvoke",
+                    depends_on_json: ["reviewer_correctness", "reviewer_security"],
+                    model: "claude-haiku",
+                },
+            ],
+            error: null,
+        },
+    });
+    supabase.register("step_definitions", stepDefinitionsTable);
+    const repo = new supabaseAdminRepository_1.SupabaseAdminRepository(supabase);
+    const cloned = await repo.cloneWorkflow("wf-builtin-1", "My Review Loop");
+    const newDefinitionRows = stepDefinitionsTable.insertPayloads[0];
+    strict_1.default.equal(newDefinitionRows.length, 1);
+    const newStepType = newDefinitionRows[0].step_type;
+    strict_1.default.notEqual(newStepType, sourceStepType, "clone must not reuse the source's step_type");
+    strict_1.default.equal(newStepType, `${cloned.id}__${sourceStepType}`);
+    strict_1.default.equal(newDefinitionRows[0].node_id, "synthesis");
+    // BUG-282: flow topology is not stored on the step definition, so the clone
+    // must not copy depends_on_json — even though the seeded source row (a legacy
+    // row from before the column was dropped) still carries it.
+    strict_1.default.ok(!("depends_on_json" in newDefinitionRows[0]), "clone must not copy flow topology onto the cloned step definition");
+    const workflowStepsTable = supabase.tables.get("workflow_steps");
+    const newRelationRows = workflowStepsTable.insertPayloads[0];
+    strict_1.default.equal(newRelationRows.length, 1);
+    strict_1.default.equal(newRelationRows[0].step_type, newStepType);
+    strict_1.default.equal(newRelationRows[0].workflow_id, cloned.id);
 });
 // Regression test for BUG-NOTE-CP42 #18: saveWorkflow used to DELETE every
 // existing workflow_steps row before inserting the replacements, so an
@@ -229,9 +342,12 @@ function builtinWorkflowRow(overrides = {}) {
     strict_1.default.equal(sawDelete, false, "existing steps must not be deleted when the replacement insert failed");
 });
 // Task-189 (owner-confirmed 2026-07-06, = BUG-236 contract): node identity
-// (nodeId/behaviorId/agentRef/dependsOn/joinMode/cohort) lives ONLY on
-// StepDefinition — WorkflowStep/workflow_steps is a pure relation/order
-// table and must never carry node data. This test used to be named
+// (nodeId/behaviorId/agentRef/joinMode/cohort) lives ONLY on StepDefinition —
+// WorkflowStep/workflow_steps is a pure relation/order table and must never
+// carry node data. (BUG-282: flow topology, formerly `depends_on_json`, no
+// longer lives on StepDefinition either — it lives only on the workflow's
+// edges_json — so workflow_steps still must never carry it.) This test used
+// to be named
 // "mapWorkflowStep round-trips the new flow-engine attrs" and asserted the
 // OPPOSITE (that saveWorkflow wrote node_id/behavior_id/etc into the
 // workflow_steps insert payload) — that was the design BUG-236 explicitly
@@ -251,7 +367,7 @@ function builtinWorkflowRow(overrides = {}) {
         name: "wf",
         steps: [{ stepType: "coding", orderIndex: 0, isEnabled: true, requiresApproval: false }],
     });
-    const payload = stepsTable.lastPayload;
+    const payload = stepsTable.insertPayloads[0];
     strict_1.default.deepEqual(Object.keys(payload[0]).sort(), [
         "is_enabled",
         "order_index",
@@ -260,7 +376,7 @@ function builtinWorkflowRow(overrides = {}) {
         "workflow_id",
     ]);
     strict_1.default.equal(payload[0].step_type, "coding");
-    strict_1.default.equal(payload[0].order_index, 0);
+    strict_1.default.equal(payload[0].order_index, 1_000_000);
     strict_1.default.equal(payload[0].is_enabled, true);
     strict_1.default.equal(payload[0].requires_approval, false);
     for (const nodeField of ["node_id", "behavior_id", "agent_ref", "depends_on_json", "join_mode", "cohort"]) {

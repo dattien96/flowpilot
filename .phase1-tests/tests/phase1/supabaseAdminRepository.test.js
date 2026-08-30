@@ -118,7 +118,7 @@ class FakeSupabase {
     strict_1.default.equal(project.sessionIdleTtlMinutes, 90);
     strict_1.default.equal(supabase.updatedProject?.session_idle_ttl_minutes, 90);
 });
-(0, node_test_1.default)("SupabaseAdminRepository reads step definitions from the migrated step tables", async () => {
+(0, node_test_1.default)("SupabaseAdminRepository reads step definitions with their CP-45 artifact bindings", async () => {
     const touchedTables = [];
     const supabase = {
         from(table) {
@@ -145,15 +145,18 @@ class FakeSupabase {
                     error: null,
                 }));
             }
-            if (table === "step_input_artifact_definitions") {
+            if (table === "step_artifact_bindings") {
                 return new FakeQuery(async () => ({
-                    data: [{ step_type: "tech_spec", artifact_definition_key: "prd", order_index: 0 }],
-                    error: null,
-                }));
-            }
-            if (table === "step_output_artifact_definitions") {
-                return new FakeQuery(async () => ({
-                    data: [{ step_type: "tech_spec", artifact_definition_key: "spec", order_index: 0 }],
+                    data: [{
+                            id: "binding-1",
+                            step_definition_id: "tech_spec",
+                            direction: "input",
+                            slot_name: "",
+                            artifact_instance_id: "instance-1",
+                            required: true,
+                            position: 0,
+                            created_at: "",
+                        }],
                     error: null,
                 }));
             }
@@ -163,12 +166,11 @@ class FakeSupabase {
     const repository = new supabaseAdminRepository_1.SupabaseAdminRepository(supabase);
     const [definition] = await repository.listStepDefinitions();
     strict_1.default.equal(definition.stepType, "tech_spec");
-    strict_1.default.deepEqual(definition.inputArtifactDefinitions, ["prd"]);
-    strict_1.default.deepEqual(definition.outputArtifactDefinitions, ["spec"]);
+    strict_1.default.equal(definition.artifactBindings.length, 1);
+    strict_1.default.equal(definition.artifactBindings[0].artifactInstanceId, "instance-1");
     strict_1.default.deepEqual(touchedTables, [
         "step_definitions",
-        "step_input_artifact_definitions",
-        "step_output_artifact_definitions",
+        "step_artifact_bindings",
     ]);
 });
 (0, node_test_1.default)("SupabaseAdminRepository lists only definition workflows, not runtime-generated rows", async () => {

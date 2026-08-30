@@ -85,6 +85,58 @@ const MOCK_PROVIDER_ACCOUNTS = [
         usageDetailLines: [{ label: "Remaining quota", remainingPercent: 73, resetAt: "2026-06-13T00:00:00.000Z" }],
     },
     {
+        // Appended last (CP-46 P-0/Task-211 T-11).
+        id: "acct-grok-1",
+        providerKey: "grok",
+        displayName: "Account 1",
+        displayLabel: "grok.user@example.com",
+        homePath: "/Users/demo/.grok",
+        authStorePath: "/Users/demo/.grok",
+        slotIndex: 0,
+        authStatus: "connected",
+        isActive: true,
+        createdAt: "2026-07-09T10:00:00.000Z",
+        lastAuthenticatedAt: "2026-07-09T10:00:00.000Z",
+        accountEmail: "grok.user@example.com",
+        accountName: "Grok User",
+        usageSummary: "Personal",
+        remaining5hPercent: null,
+        remaining7dPercent: null,
+        remaining5hResetAt: null,
+        remaining7dResetAt: null,
+        usageSource: "provider_api",
+        accessTokenExpiresAt: null,
+        refreshTokenExpiresAt: null,
+        refreshTokenExpiryNote: null,
+        usageDetailLines: [],
+    },
+    {
+        // Appended last (CP-57 P-0/Task-302 T-2).
+        id: "acct-opencode-1",
+        providerKey: "opencode",
+        displayName: "Account 1",
+        displayLabel: "opencode.user@example.com",
+        homePath: "/Users/demo/.config/opencode",
+        authStorePath: "/Users/demo/.config/opencode/auth.json",
+        slotIndex: 0,
+        authStatus: "connected",
+        isActive: true,
+        createdAt: "2026-08-27T10:00:00.000Z",
+        lastAuthenticatedAt: "2026-08-27T10:00:00.000Z",
+        accountEmail: "opencode.user@example.com",
+        accountName: "Opencode User",
+        usageSummary: "Zen Proxy",
+        remaining5hPercent: null,
+        remaining7dPercent: null,
+        remaining5hResetAt: null,
+        remaining7dResetAt: null,
+        usageSource: "provider_api",
+        accessTokenExpiresAt: null,
+        refreshTokenExpiresAt: null,
+        refreshTokenExpiryNote: null,
+        usageDetailLines: [{ label: "cost: $0.00", remainingPercent: 0, resetAt: null }],
+    },
+    {
         id: "acct-codex-2",
         providerKey: "codex",
         displayName: "Account 2",
@@ -141,6 +193,14 @@ class MockRunnerClient {
     aborted = new Set();
     /** Cancels the pending approval/question gate for a run (used by interrupt). */
     pendingGateCancel = new Map();
+    /** In-memory chat-posture document (mock stand-in for the runner's shared file). */
+    chatPostureActive = "code";
+    chatPostureProfiles = {
+        scan: {},
+        plan: {},
+        code: {},
+        non: {},
+    };
     setScenario(scenario) {
         this.scenario = scenario;
     }
@@ -242,6 +302,31 @@ class MockRunnerClient {
             restoreStatus: "restored",
         };
     }
+    chatLegs = new Map();
+    async switchChatProvider(chatId, input) {
+        await delay(30);
+        if (input.targetProviderKey === this.switchLastProvider.get(chatId)) {
+            throw new Error("handoff_same_provider: same-provider continuity uses the in-place model-change path");
+        }
+        const legSeq = (this.chatLegs.get(chatId) ?? 0) + 1;
+        this.chatLegs.set(chatId, legSeq);
+        this.switchLastProvider.set(chatId, input.targetProviderKey);
+        const runId = `mock-run-${chatId}-${legSeq}`;
+        return {
+            handle: { runId, providerSessionId: `ses-${legSeq}`, providerKey: input.targetProviderKey, status: "starting", chatId, legSeq },
+            chatId,
+            legSeq,
+            model: input.model ?? "",
+            handoff: { handoffMode: "raw", includedTurnCount: 2, omittedTurnCount: 0, truncated: false, actionsDigestIncluded: false },
+        };
+    }
+    switchLastProvider = new Map();
+    async chatTimeline(chatId, afterSeq, limit) {
+        await delay(20);
+        void afterSeq;
+        void limit;
+        return { chatId, legs: [], records: [], nextSeq: 0, truncated: false, degraded: false };
+    }
     async handoffContext(runId, input) {
         await delay(40);
         return {
@@ -287,6 +372,15 @@ class MockRunnerClient {
             refreshTokenExpiryNote: null,
             usageDetailLines: [],
         });
+    }
+    async listWorkspaceFiles(_cwd, query) {
+        await delay(20);
+        const all = [
+            "apps/desktop-flowpilot/src/components/ChatInput.tsx",
+            "apps/local-runner/internal/runner/workspace_files.go",
+        ];
+        const q = (query ?? "").toLowerCase();
+        return q ? all.filter((path) => path.toLowerCase().includes(q)) : all;
     }
     async listSkills(provider, _cwd) {
         await delay(40);
@@ -422,12 +516,35 @@ class MockRunnerClient {
         this.parentGraphs.set(parentRunId, graph);
         return graph.snapshot;
     }
+    async amendFlow(runId, _paths) {
+        const graph = await this.syncParentGraph(runId);
+        const prev = graph.snapshot.loopState;
+        if (prev.status !== "blocked")
+            return graph.snapshot;
+        graph.snapshot = { ...graph.snapshot, loopState: { ...prev, status: "running", gateReason: undefined, blockReason: undefined } };
+        this.parentGraphs.set(runId, graph);
+        return graph.snapshot;
+    }
     // BUG-231: mirrors the runner's resumeFlowWithFeedback — auto-extends the
     // cap only when the block reason was "cap", leaves it alone for "escalate".
-    async continueFlow(parentRunId, _feedback) {
+    async continueFlow(parentRunId, _feedback, memberAction) {
         const graph = await this.syncParentGraph(parentRunId);
         const prev = graph.snapshot.loopState;
         if (prev.status !== "blocked") {
+            return graph.snapshot;
+        }
+        // Task-241: member_stalled retry/skip just clears the block in the mock.
+        if (prev.blockReason === "member_stalled" && memberAction) {
+            graph.snapshot = {
+                ...graph.snapshot,
+                loopState: {
+                    ...prev,
+                    status: "running",
+                    gateReason: undefined,
+                    blockReason: undefined,
+                },
+            };
+            this.parentGraphs.set(parentRunId, graph);
             return graph.snapshot;
         }
         const currentCap = prev.cap ?? prev.roundCap ?? 3;
@@ -519,6 +636,31 @@ class MockRunnerClient {
                 account.isActive = account.id === accountId;
             }
         }
+    }
+    async applyGrokYoloPosture(_yolo) {
+        await delay(300); // mirrors the real config.toml rewrite + process respawn taking a moment
+    }
+    async getChatPosture() {
+        await delay(30);
+        return {
+            active: this.chatPostureActive,
+            profiles: {
+                scan: this.chatPostureProfiles.scan,
+                plan: this.chatPostureProfiles.plan,
+                code: this.chatPostureProfiles.code,
+            },
+        };
+    }
+    async setChatPosture(config) {
+        await delay(30);
+        this.chatPostureActive = config.active;
+        this.chatPostureProfiles = {
+            scan: { ...config.profiles.scan },
+            plan: { ...config.profiles.plan },
+            code: { ...config.profiles.code },
+            non: { ...config.profiles.non },
+        };
+        return this.getChatPosture();
     }
     async openProviderAccountTerminal(_accountId) {
         await delay(60);

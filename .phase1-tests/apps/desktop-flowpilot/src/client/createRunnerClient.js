@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.resolveRunnerUrlFromSources = resolveRunnerUrlFromSources;
+exports.getRunnerBaseUrl = getRunnerBaseUrl;
 exports.createRunnerClient = createRunnerClient;
 exports.isMockMode = isMockMode;
 exports.runnerModeLabel = runnerModeLabel;
@@ -33,6 +34,9 @@ function resolvedRunnerUrl() {
     const viteEnv = candidate.__FLOWPILOT_VITE_ENV__ ?? {};
     const processEnv = (typeof process !== "undefined" ? process.env : {});
     return resolveRunnerUrlFromSources(viteEnv, processEnv);
+}
+function getRunnerBaseUrl() {
+    return resolvedRunnerUrl();
 }
 function createRunnerClient() {
     const url = resolvedRunnerUrl();

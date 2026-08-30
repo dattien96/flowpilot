@@ -26,6 +26,10 @@ const runs = [
 (0, node_test_1.default)("formatDependencyLabels resolves dependency run ids to agent names", () => {
     strict_1.default.deepEqual((0, agentDependencies_1.formatDependencyLabels)(["run-reviewer", "missing-run"], runs), ["reviewer", "missing-run"]);
 });
+(0, node_test_1.default)("agentRunDisplayName prefers flow node label over generic agent name", () => {
+    strict_1.default.equal((0, AgentsPanel_1.agentRunDisplayName)({ agentName: "reviewer-agent", label: "review-security-gpt" }), "review-security-gpt");
+    strict_1.default.equal((0, AgentsPanel_1.agentRunDisplayName)({ agentName: "reviewer-agent" }), "reviewer-agent");
+});
 // BUG-227: a started run's actual resolved posture (workflowStepRuntimeMeta,
 // e.g. Claude Haiku from the workflow's model_override) must win on the main
 // card even when the pre-run catalog preview (selectedWorkflow?.model ||

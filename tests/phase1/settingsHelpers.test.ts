@@ -2,12 +2,19 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { validateDirectoryBindingsInOrder } from "../../apps/desktop-flowpilot/src/components/settings/settingsHelpers";
-import type { DirectoryRepository, ProjectWorkspaceBinding } from "../../packages/flowpilot-client-core/src";
+import type { DirectoryRepository, DirectorySelectionResult, ProjectWorkspaceBinding } from "../../packages/flowpilot-client-core/src";
 
 class FakeDirectoryRepository implements DirectoryRepository {
   constructor(
     private readonly results: Record<string, { usable: boolean; reason: string }>,
   ) {}
+
+  // The phase1 light-weight fake never drives the real directory picker
+  // dialog; keeping the signature aligned with the interface (Task-316
+  // phase1 runner debt follow-up) without a DOM dependency.
+  async pickDirectory(): Promise<DirectorySelectionResult> {
+    throw new Error("pickDirectory not used in this fixture");
+  }
 
   async validatePath(path: string) {
     const result = this.results[path];

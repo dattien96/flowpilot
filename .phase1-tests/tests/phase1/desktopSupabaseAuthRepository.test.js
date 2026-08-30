@@ -27,6 +27,9 @@ class FakeRuntimeConfigRepository {
     validateSupabaseConfig(_input) {
         throw new Error("Not implemented in test.");
     }
+    applySupabaseMigrations(_input) {
+        throw new Error("Not implemented in test.");
+    }
     saveSupabaseConfig(_input) {
         throw new Error("Not implemented in test.");
     }

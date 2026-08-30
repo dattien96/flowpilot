@@ -1062,7 +1062,6 @@ export const useStore = create<AppState>((set, get) => ({
           activeAgentRunId: undefined,
           activeStepId: resp.handle.stepId,
           status: resp.handle.status,
-          artifacts: [],
           pendingApprovals: [],
           pendingQuestions: [],
           gateBlock: undefined,

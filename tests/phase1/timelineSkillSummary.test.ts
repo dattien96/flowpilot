@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
-const timelinePath = path.join(process.cwd(), "apps/desktop-flowpilot/src/components/Timeline.tsx");
+function repoRoot(): string {
+  const candidates = [process.cwd(), path.resolve(process.cwd(), "../.."), path.resolve(__dirname, "../../..")];
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, "apps/desktop-flowpilot/src/components/Timeline.tsx"))) return c;
+  }
+  return process.cwd();
+}
+const timelinePath = path.join(repoRoot(), "apps/desktop-flowpilot/src/components/Timeline.tsx");
 const timelineSource = fs.readFileSync(timelinePath, "utf8");
 
 test("Timeline keeps prompt skill summary collapsed to the first two selections", () => {

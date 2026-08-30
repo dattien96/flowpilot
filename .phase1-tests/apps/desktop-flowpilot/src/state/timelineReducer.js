@@ -2,6 +2,28 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.shouldApplyRunEvent = shouldApplyRunEvent;
 exports.applyTimelineEvent = applyTimelineEvent;
+/** BUG-243 F-3: condenses a FlowAuditDraft into the inline timeline card's
+ *  markdown text. Mirrors RenderAuditDraftText's section order
+ *  (flow_audit_draft.go) but trimmed for a chat-sized card rather than a
+ *  full standalone document. */
+function renderAuditDraftSummary(draft) {
+    const lines = [];
+    const heading = draft.status === "ready" ? "📝 Audit draft ready" : `📝 Audit draft — ${draft.status}`;
+    lines.push(`**${heading}**`);
+    if (draft.featureKey)
+        lines.push(`Feature: \`${draft.featureKey}\``);
+    lines.push(`Validation: ${draft.validationResult}`);
+    if (draft.whatChanged)
+        lines.push(`\n${draft.whatChanged}`);
+    if (draft.commitMessage)
+        lines.push(`\nSuggested commit:\n\`\`\`\n${draft.commitMessage}\n\`\`\``);
+    if (draft.changeLedgerBlock)
+        lines.push(`\n${draft.changeLedgerBlock}`);
+    if (draft.status !== "ready") {
+        lines.push("\n_This is a draft only — no file was written and no commit was created._");
+    }
+    return lines.join("\n");
+}
 function shouldApplyRunEvent(activeRunId, streamRunId) {
     return activeRunId === streamRunId;
 }
@@ -10,9 +32,15 @@ function statusFromEvent(e, prev) {
         case "turn_started":
             return "running";
         case "permission_required":
-            return "waiting_approval";
+            // A replayed already-resolved approval (BUG-ApprovalReplay-Restart,
+            // carries `decision`) is not a new pending state — it must not flip a
+            // settled run back to "waiting_approval" on a full server restart.
+            return e.decision !== undefined ? prev : "waiting_approval";
         case "user_question_required":
-            return "waiting_question";
+            // A replayed already-resolved question (BUG-StaleQuestion, carries
+            // `answer`) is not a new pending state — it must not flip a settled run
+            // back to "waiting_question" on reconnect.
+            return e.answer !== undefined ? prev : "waiting_question";
         case "turn_completed":
             return "completed";
         case "turn_failed":
@@ -223,9 +251,15 @@ function applyTimelineEvent(s, e) {
             break;
         case "permission_required":
             closeAssistant();
-            timeline.push({ kind: "approval", id: e.id, approvalId: e.approvalId, details: e.details });
+            timeline.push({ kind: "approval", id: e.id, approvalId: e.approvalId, details: e.details, decision: e.decision });
+            // A replayed already-resolved approval (BUG-ApprovalReplay-Restart) must
+            // stay out of pendingApprovals — it renders read-only via `decision`
+            // above, not as a new interactive card the run is waiting on. Mirrors the
+            // user_question_required `answer` handling below.
             return finalize(timeline, {
-                pendingApprovals: [...s.pendingApprovals, { approvalId: e.approvalId, details: e.details }],
+                pendingApprovals: e.decision !== undefined
+                    ? s.pendingApprovals
+                    : [...s.pendingApprovals, { approvalId: e.approvalId, details: e.details }],
             });
         case "user_question_required":
             closeAssistant();
@@ -236,12 +270,18 @@ function applyTimelineEvent(s, e) {
                 prompt: e.prompt,
                 options: e.options,
                 multiSelect: e.multiSelect,
+                answer: e.answer,
             });
+            // A replayed already-resolved question (BUG-StaleQuestion) must stay
+            // out of pendingQuestions — it renders read-only via `answer` above,
+            // not as a new interactive card the run is waiting on.
             return finalize(timeline, {
-                pendingQuestions: [
-                    ...s.pendingQuestions,
-                    { questionId: e.questionId, prompt: e.prompt, options: e.options, multiSelect: e.multiSelect },
-                ],
+                pendingQuestions: e.answer !== undefined
+                    ? s.pendingQuestions
+                    : [
+                        ...s.pendingQuestions,
+                        { questionId: e.questionId, prompt: e.prompt, options: e.options, multiSelect: e.multiSelect },
+                    ],
             });
         case "turn_completed":
             closeAssistant();
@@ -253,17 +293,47 @@ function applyTimelineEvent(s, e) {
             }
             return finalize(timeline, { recoverable: e.recoverable });
         case "agent_spawned_by_user":
-            // Idempotent — replay from seq 0 must not duplicate the row. (BUG-121)
-            if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
-                timeline.push({ kind: "system", id: e.id, text: `Spawned agent **${e.agentName}**`, tone: "info" });
+            // Agent lifecycle belongs in an agent card, not a prose transcript row.
+            // Idempotent by *event id*, not childRunId: lifecycle:reinvoke reuses the
+            // same child run across Review Loop rounds and re-emits spawn with a new
+            // event id (BUG-Rnd2). Dedupe-by-childRunId / "open card" heuristics both
+            // fail on live wait:false flow children, which historically never received
+            // agent_result_injected until settle (run-9034) — so the round-2 coder card
+            // never appeared on the main chat timeline.
+            if (!timeline.some((it) => it.kind === "agent" && it.id === e.id)) {
+                timeline.push({ kind: "agent", id: e.id, agentName: e.agentName, childRunId: e.childRunId });
             }
             // Only keep an existing thinking row — never create a new one for annotation events.
             shouldKeepThinking = thinkingItem !== undefined;
             break;
         case "agent_result_injected":
-            // Idempotent — replay from seq 0 must not duplicate the row. (BUG-121)
-            if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
-                timeline.push({ kind: "system", id: e.id, text: `**[${e.agentName}]** ${e.finalMessage}`, tone: "info" });
+            {
+                // Prefer the latest open activation for this child (reinvoke rounds);
+                // fall back to the latest card of any status so resume dumps still bind.
+                let index = -1;
+                for (let i = timeline.length - 1; i >= 0; i--) {
+                    const it = timeline[i];
+                    if (it.kind === "agent" && it.childRunId === e.childRunId && !it.finalMessage) {
+                        index = i;
+                        break;
+                    }
+                }
+                if (index < 0) {
+                    for (let i = timeline.length - 1; i >= 0; i--) {
+                        const it = timeline[i];
+                        if (it.kind === "agent" && it.childRunId === e.childRunId) {
+                            index = i;
+                            break;
+                        }
+                    }
+                }
+                if (index >= 0) {
+                    const agent = timeline[index];
+                    timeline[index] = { ...agent, finalMessage: e.finalMessage };
+                }
+                else {
+                    timeline.push({ kind: "agent", id: e.id, agentName: e.agentName, childRunId: e.childRunId, finalMessage: e.finalMessage });
+                }
             }
             shouldKeepThinking = thinkingItem !== undefined;
             break;
@@ -273,6 +343,22 @@ function applyTimelineEvent(s, e) {
             // thinking row, so block rules don't leave a dangling "Thinking..." line.
             if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
                 timeline.push({ kind: "system", id: e.id, text: `⚠ ${e.error}`, tone: "warn" });
+            }
+            shouldKeepThinking = thinkingItem !== undefined;
+            break;
+        case "flow_audit_draft":
+            // BUG-243 F-3: the first UI surface for a produced audit draft (Task-171's
+            // "inspectable before any write/commit" acceptance criterion — this
+            // renders the draft, it never writes a file or creates a commit itself).
+            // A blocked_* status is not an error, but it is not "ready" either, so
+            // it gets the same warn tone as a gate violation rather than plain info.
+            if (!timeline.some((it) => it.kind === "system" && it.id === e.id)) {
+                timeline.push({
+                    kind: "system",
+                    id: e.id,
+                    text: renderAuditDraftSummary(e.flowAuditDraft),
+                    tone: e.flowAuditDraft.status === "ready" ? "info" : "warn",
+                });
             }
             shouldKeepThinking = thinkingItem !== undefined;
             break;

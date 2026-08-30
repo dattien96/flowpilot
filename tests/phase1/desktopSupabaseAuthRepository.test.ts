@@ -8,6 +8,8 @@ import type {
   SupabaseConfigInput,
   SupabaseConfigValidation,
   SupabaseRuntimeStatus,
+  SupabaseSchemaApplyInput,
+  SupabaseSchemaApplyResult,
 } from "../../packages/flowpilot-client-core/src";
 
 const runtimeStatus: SupabaseRuntimeStatus = {
@@ -31,6 +33,10 @@ class FakeRuntimeConfigRepository implements RuntimeConfigRepository {
   }
 
   validateSupabaseConfig(_input: SupabaseConfigInput): Promise<SupabaseConfigValidation> {
+    throw new Error("Not implemented in test.");
+  }
+
+  applySupabaseMigrations(_input: SupabaseSchemaApplyInput): Promise<SupabaseSchemaApplyResult> {
     throw new Error("Not implemented in test.");
   }
 

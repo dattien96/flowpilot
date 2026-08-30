@@ -65,12 +65,22 @@ class HttpWsRunnerClient {
         });
         return this.parse(resp);
     }
+    async putJSON(path, body) {
+        const resp = await fetch(this.base + path, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        return this.parse(resp);
+    }
     async parse(resp) {
         const text = await resp.text();
         const data = text ? JSON.parse(text) : undefined;
         if (!resp.ok) {
             const err = (data && data.error) || {};
-            throw new RunnerApiError(resp.status, err.code ?? "http_error", err.message ?? resp.statusText);
+            // stopAgentLoop may attach graph snapshot after RAM cancel even when durable
+            // fence/persist fails (CP-51 A1) — surface it on the error for UI settle.
+            throw new RunnerApiError(resp.status, err.code ?? "http_error", err.message ?? resp.statusText, data?.snapshot);
         }
         return data;
     }
@@ -102,6 +112,12 @@ class HttpWsRunnerClient {
             url += `&cwd=${encodeURIComponent(cwd)}`;
         return this.getJSON(url);
     }
+    listWorkspaceFiles(cwd, query) {
+        let url = `/client/workspace-files?cwd=${encodeURIComponent(cwd)}`;
+        if (query)
+            url += `&q=${encodeURIComponent(query)}`;
+        return this.getJSON(url);
+    }
     listBuiltinOrchestrationOptions(subMode) {
         const url = `/client/chat/builtin-orchestration-options?subMode=${encodeURIComponent(subMode)}`;
         return this.getJSON(url);
@@ -125,7 +141,15 @@ class HttpWsRunnerClient {
     stopAgentLoop(parentRunId) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/stop`); }
     submitReviewOutcome(parentRunId, input) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/flow-control`, input); }
     extendCap(parentRunId) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/extend-cap`); }
-    continueFlow(parentRunId, feedback) { return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/continue`, { feedback }); }
+    continueFlow(parentRunId, feedback, memberAction) {
+        return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/agent-loop/continue`, {
+            feedback,
+            ...(memberAction ? { memberAction } : {}),
+        });
+    }
+    amendFlow(runId, paths) {
+        return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/agent-loop/amend`, { paths });
+    }
     spawnAgent(input) {
         const { parentRunId, ...body } = input;
         return this.postJSON(`/client/workflow-runs/${encodeURIComponent(parentRunId)}/spawn-agent`, body);
@@ -156,6 +180,21 @@ class HttpWsRunnerClient {
     handoffContext(runId, input) {
         return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/handoff-context`, input);
     }
+    switchChatProvider(chatId, input) {
+        return this.postJSON(`/client/chats/${encodeURIComponent(chatId)}/switch-provider`, input);
+    }
+    async chatTimeline(chatId, afterSeq, limit) {
+        let path = `/client/chats/${encodeURIComponent(chatId)}/timeline`;
+        if (afterSeq !== undefined || limit !== undefined) {
+            const q = new URLSearchParams();
+            if (afterSeq !== undefined)
+                q.set("afterSeq", String(afterSeq));
+            if (limit !== undefined)
+                q.set("limit", String(limit));
+            path += `?${q.toString()}`;
+        }
+        return this.getJSON(path);
+    }
     generateChatSummary(runId) {
         return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/chat-summary`, {});
     }
@@ -171,6 +210,32 @@ class HttpWsRunnerClient {
     interrupt(runId) {
         return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/interrupt`);
     }
+    // SS-17 / CP-51 Task-256 — per-run REST paths (never a root /dispatch namespace).
+    async listDispatchAttention(runId) {
+        const body = await this.getJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/dispatch-attention`);
+        return (body.items ?? []).map((it) => ({
+            kind: it.kind ?? "",
+            runId: it.run_id ?? it.runId ?? "",
+            turnId: it.turn_id ?? it.turnId,
+            reason: it.reason,
+            updatedAt: it.updated_at ?? it.updatedAt,
+        }));
+    }
+    inspectDispatch(runId, turnId) {
+        return this.getJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/dispatches/${encodeURIComponent(turnId)}`);
+    }
+    getDispatchAudit(runId, turnId) {
+        return this.getJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/dispatches/${encodeURIComponent(turnId)}/audit`);
+    }
+    resolveDispatchUncertain(runId, turnId, input) {
+        return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/dispatches/${encodeURIComponent(turnId)}/resolve`, input);
+    }
+    retryDispatchAsNew(runId, turnId, input) {
+        return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/dispatches/${encodeURIComponent(turnId)}/retry-as-new`, input);
+    }
+    resolveDispatchRepair(runId, input) {
+        return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/repair-resolution`, input);
+    }
     submitGateDecision(runId, option, customText) {
         return this.postJSON(`/client/workflow-runs/${encodeURIComponent(runId)}/gate-decision`, { option, ...(customText ? { customText } : {}) });
     }
@@ -182,6 +247,18 @@ class HttpWsRunnerClient {
     }
     activateProviderAccount(accountId) {
         return this.postJSON("/provider-accounts/activate", { accountId });
+    }
+    applyGrokYoloPosture(yolo) {
+        return this.postJSON("/provider-accounts/grok-yolo-posture", { yolo });
+    }
+    async getOpencodeModelVariants(modelId) {
+        return this.getJSON(`/client/providers/opencode-variants?model=${encodeURIComponent(modelId)}`);
+    }
+    getChatPosture() {
+        return this.getJSON("/client/chat-posture");
+    }
+    setChatPosture(config) {
+        return this.putJSON("/client/chat-posture", config);
     }
     openProviderAccountTerminal(accountId) {
         return this.postJSON("/provider-accounts/test", { accountId });
@@ -204,6 +281,7 @@ class HttpWsRunnerClient {
             reasoningEffort: input.reasoningEffort,
             model: input.model,
             yoloMode: input.yoloMode,
+            chatPosture: input.chatPosture,
             attachments: input.attachments,
             subMode: input.subMode,
             flowRef: input.flowRef,
@@ -292,10 +370,14 @@ exports.HttpWsRunnerClient = HttpWsRunnerClient;
 class RunnerApiError extends Error {
     status;
     code;
-    constructor(status, code, message) {
+    snapshot;
+    constructor(status, code, message, 
+    /** Optional body field (e.g. stopAgentLoop snapshot after partial durable failure). */
+    snapshot) {
         super(message);
         this.status = status;
         this.code = code;
+        this.snapshot = snapshot;
         this.name = "RunnerApiError";
     }
 }

@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test:phase1": "tsc -p ../../tsconfig.phase1-tests.json && node --test ../../.phase1-tests/tests/phase1",
+    "test:phase1": "tsc -p ../../tsconfig.phase1-tests.json && node --require ../../scripts/phase1-runtime.js --test ../../.phase1-tests/tests/phase1 ../../.phase1-tests/apps/desktop-flowpilot/src",
     "typecheck": "tsc --noEmit",
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",

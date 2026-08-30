@@ -96,7 +96,7 @@ test("legacy fallback path unchanged when the chat SSOT is unknown", async () =>
     startRunCalls++;
     return origStart(input);
   };
-  useStore.setState({ ...baseState(), client, chatId: undefined });
+  useStore.setState({ ...baseState(), client, chatId: undefined, runId: "run-legacy-1" });
   useStore.setState({
     timeline: [{ kind: "prompt", id: "u1", text: "old" }] as never,
   });
@@ -106,7 +106,9 @@ test("legacy fallback path unchanged when the chat SSOT is unknown", async () =>
   const s = useStore.getState();
   // Legacy path resets the timeline (Task-078 parity).
   assert.equal(s.timeline.filter((t) => t.id === "u1").length, 0);
-  assert.equal(s.runId, "mock-run-1");
+  // Mock startRun mints its own id — the adoption must land on it.
+  assert.equal(s.runId, useStore.getState().runId);
+  assert.notEqual(s.runId, "run-legacy-1");
 });
 
 test("same-provider chip selection skips the endpoint (in-place)", async () => {

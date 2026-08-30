@@ -15,6 +15,10 @@ const HttpWsRunnerClient_1 = require("../client/HttpWsRunnerClient");
 async function* emptyStream() { }
 function makeClient(overrides = {}) {
     const base = {
+        switchChatProvider: async () => {
+            throw new Error("switchChatProvider not implemented in this fixture");
+        },
+        chatTimeline: async () => ({ chatId: "", legs: [], records: [], nextSeq: 0, truncated: false, degraded: false }),
         listProjects: async () => [],
         listWorkflows: async () => [],
         listSteps: async () => [],
@@ -55,6 +59,7 @@ function makeClient(overrides = {}) {
         listSkills: async () => [],
         connectProviderAccount: async () => { },
         activateProviderAccount: async () => { },
+        applyGrokYoloPosture: async () => { },
         openProviderAccountTerminal: async () => { },
         restartStack: async () => { },
         shutdownStack: async () => { },
@@ -195,6 +200,49 @@ async function* cursorChildStream() {
     strict_1.default.deepEqual(state.timeline, [{ kind: "prompt", id: "prompt-1", text: "keep current timeline" }]);
     strict_1.default.equal(state.runHistory[0]?.unavailableReason, "session data not found on this machine");
 });
+// Regression test for BUG-263: reopening a run started via Chat Mode's Bug
+// sub-mode "Built-in orchestration" picker (subMode="bug", flowRef=...) used
+// to leave chatStartMode stuck at its default "normal" after resume/restart
+// — the Chat Intent panel showed "Normal" selected (and locked) even though
+// the run itself was a correctly-resumed flow-engine-driven Review Loop run.
+// Mirrors BUG-170's own "restore the mode this run actually was" fix, but for
+// the Chat-Mode picker fields instead of chatMode/launchMode.
+(0, node_test_1.default)("openHistoryRun restores the Chat Mode orchestration picker selection (BUG-263)", async () => {
+    seedStore(makeClient(), [
+        {
+            runId: "run-review-loop",
+            projectId: "project-1",
+            providerKey: "claude",
+            status: "completed",
+            startedAt: "2026-07-08T09:00:00Z",
+            updatedAt: "2026-07-08T09:05:00Z",
+            runKind: "chat",
+            subMode: "bug",
+            flowRef: "flowpilot-core-flow-pack/review-loop",
+        },
+    ]);
+    await store_1.useStore.getState().openHistoryRun("run-review-loop");
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.chatStartMode, "bugfix");
+    strict_1.default.equal(state.flowRef, "flowpilot-core-flow-pack/review-loop");
+});
+(0, node_test_1.default)("openHistoryRun leaves chatStartMode as normal for a plain chat run with no picker selection", async () => {
+    seedStore(makeClient(), [
+        {
+            runId: "run-plain-chat",
+            projectId: "project-1",
+            providerKey: "claude",
+            status: "completed",
+            startedAt: "2026-07-08T09:00:00Z",
+            updatedAt: "2026-07-08T09:05:00Z",
+            runKind: "chat",
+        },
+    ]);
+    await store_1.useStore.getState().openHistoryRun("run-plain-chat");
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.chatStartMode, "normal");
+    strict_1.default.equal(state.flowRef, undefined);
+});
 (0, node_test_1.default)("selectProject resets the active chat run when switching projects", async () => {
     seedStore(makeClient({ listSkills: async () => [] }), []);
     store_1.useStore.setState({
@@ -222,6 +270,49 @@ async function* cursorChildStream() {
     strict_1.default.deepEqual(state.timeline, []);
     strict_1.default.deepEqual(state.artifacts, []);
     strict_1.default.deepEqual(state.pendingApprovals, []);
+});
+(0, node_test_1.default)("deleteHistoryRun on the active chat clears Flow Timeline and Agents panel state, not just the timeline (BUG-258)", async () => {
+    const client = makeClient({
+        listRunHistory: async () => [],
+        deleteRun: async () => { },
+    });
+    seedStore(client, [
+        { runId: "current-run", projectId: "project-1", providerKey: "codex", status: "completed", startedAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+    ]);
+    store_1.useStore.setState({
+        runId: "current-run",
+        mainRunId: "current-run",
+        activeAgentRunId: "agent-1",
+        status: "running",
+        timeline: [{ kind: "prompt", id: "prompt-1", text: "keep current timeline" }],
+        agentRuns: [{ runId: "agent-1", agentName: "coder", role: "coder", providerKey: "codex", status: "completed", createdAt: "2026-01-01T00:00:00Z" }],
+        agentGraphSnapshot: { parentRunId: "current-run", runs: [], edges: [], busMessages: [], loopState: { status: "running", round: 1, roundCap: 3 } },
+        workflowStepRuntime: [{ stepId: "step-1", stepType: "flow-agent-delegate", status: "DONE", retryCount: 0, requiresApproval: false, nodeId: "coder" }],
+        workflowStepRuntimeMeta: { provider: "codex", model: "gpt-5", yoloMode: false },
+        _runSnapshots: {
+            "current-run": {
+                timeline: [],
+                artifacts: [],
+                status: "completed",
+                pendingApprovals: [],
+                pendingQuestions: [],
+                recoverable: false,
+                lastEventSeq: 3,
+            },
+        },
+    });
+    await store_1.useStore.getState().deleteHistoryRun("current-run");
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.runId, undefined);
+    strict_1.default.equal(state.mainRunId, undefined);
+    strict_1.default.equal(state.activeAgentRunId, undefined);
+    strict_1.default.equal(state.status, "idle");
+    strict_1.default.deepEqual(state.timeline, []);
+    strict_1.default.deepEqual(state.agentRuns, []);
+    strict_1.default.equal(state.agentGraphSnapshot, undefined);
+    strict_1.default.deepEqual(state.workflowStepRuntime, []);
+    strict_1.default.deepEqual(state.workflowStepRuntimeMeta, {});
+    strict_1.default.deepEqual(state.runHistory, []);
 });
 (0, node_test_1.default)("setChatStartMode clears flowRef and builtin orchestration options on any mode change", () => {
     seedStore(makeClient(), []);
@@ -268,6 +359,63 @@ async function* cursorChildStream() {
     const state = store_1.useStore.getState();
     strict_1.default.equal(state.runId, "current-run");
     strict_1.default.equal(state.runHistory[0]?.unavailableReason, "can't open — the active account isn't signed in");
+    strict_1.default.deepEqual(state.historyOpenError, {
+        code: "account_not_signed_in",
+        message: "can't open — the active account isn't signed in",
+        providerKey: "codex",
+    });
+});
+// BUG-267: account_not_signed_in / account_unavailable were previously downgraded to a silent
+// unavailableReason stamp with no active feedback — these assert the modal-trigger state fires
+// alongside it, for both the local-history and remote-restore paths.
+(0, node_test_1.default)("openHistoryRun surfaces a historyOpenError modal state on account_unavailable", async () => {
+    seedStore(makeClient({
+        resumeRun: async () => {
+            throw new HttpWsRunnerClient_1.RunnerApiError(409, "account_unavailable", "active account home not found");
+        },
+    }), [
+        {
+            runId: "run-1",
+            projectId: "project-1",
+            providerKey: "claude",
+            status: "completed",
+            startedAt: "2026-06-17T10:00:00Z",
+            updatedAt: "2026-06-17T10:05:00Z",
+        },
+    ]);
+    await store_1.useStore.getState().openHistoryRun("run-1");
+    const state = store_1.useStore.getState();
+    strict_1.default.deepEqual(state.historyOpenError, {
+        code: "account_unavailable",
+        message: "active account home not found",
+        providerKey: "claude",
+    });
+});
+(0, node_test_1.default)("openHistoryRun does not set historyOpenError for non-provider-account failures", async () => {
+    seedStore(makeClient({
+        resumeRun: async () => {
+            throw new HttpWsRunnerClient_1.RunnerApiError(409, "session_unavailable", "session data not found on this machine");
+        },
+    }), [
+        {
+            runId: "run-1",
+            projectId: "project-1",
+            providerKey: "codex",
+            status: "completed",
+            startedAt: "2026-06-17T10:00:00Z",
+            updatedAt: "2026-06-17T10:05:00Z",
+        },
+    ]);
+    await store_1.useStore.getState().openHistoryRun("run-1");
+    strict_1.default.equal(store_1.useStore.getState().historyOpenError, undefined);
+});
+(0, node_test_1.default)("dismissHistoryOpenError clears the modal state", () => {
+    seedStore(makeClient(), []);
+    store_1.useStore.setState({
+        historyOpenError: { code: "account_not_signed_in", message: "can't open — the active account isn't signed in", providerKey: "codex" },
+    });
+    store_1.useStore.getState().dismissHistoryOpenError();
+    strict_1.default.equal(store_1.useStore.getState().historyOpenError, undefined);
 });
 (0, node_test_1.default)("openHistoryRun clears unavailableReason after a successful open", async () => {
     const handle = {
@@ -421,6 +569,57 @@ async function* cursorChildStream() {
     const card = state.timeline.find((item) => item.kind === "approval");
     strict_1.default.equal(card?.decision, undefined, "approval card should remain actionable");
 });
+(0, node_test_1.default)("openHistoryRun does not restore stale pendingQuestions from a completed cached snapshot", async () => {
+    const questionOptions = [{ label: "A", value: "a" }, { label: "B", value: "b" }];
+    const handle = {
+        runId: "run-1",
+        providerSessionId: "session-1",
+        providerKey: "codex",
+        status: "completed",
+        stepId: "chat-run-1",
+        lastEventSeq: 3,
+    };
+    async function* completedHistoryStream() {
+        yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 1, type: "turn_started", providerTurnId: "turn-1", prompt: "hello" };
+        yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 2, type: "user_question_required", questionId: "q-1", prompt: "Pick one", options: questionOptions };
+        yield { ...BASE_EVENT, workflowRunId: "run-1", seq: 3, type: "turn_completed", finalMessage: "done" };
+        await new Promise(() => { });
+    }
+    seedStore(makeClient({
+        resumeRun: async () => handle,
+        streamRun: () => completedHistoryStream(),
+        listSkills: async () => [],
+    }), [
+        {
+            runId: "run-1",
+            projectId: "project-1",
+            providerKey: "codex",
+            status: "completed",
+            startedAt: "2026-06-17T10:00:00Z",
+            updatedAt: "2026-06-17T10:05:00Z",
+        },
+    ]);
+    store_1.useStore.setState({
+        _runSnapshots: {
+            "run-1": {
+                timeline: [{ kind: "question", id: "evt-q1", questionId: "q-1", prompt: "Pick one", options: questionOptions }],
+                artifacts: [],
+                status: "completed",
+                pendingApprovals: [],
+                pendingQuestions: [{ questionId: "q-1", prompt: "Pick one", options: questionOptions }],
+                recoverable: false,
+                lastEventSeq: 3,
+            },
+        },
+    });
+    await store_1.useStore.getState().openHistoryRun("run-1");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.status, "completed");
+    strict_1.default.deepEqual(state.pendingQuestions, [], "completed snapshots must not resurrect stale question gates");
+    const questionCard = state.timeline.find((item) => item.kind === "question");
+    strict_1.default.equal(questionCard?.answer, "answered", "replayed completed run should stamp the old question resolved");
+});
 (0, node_test_1.default)("sendPrompt aborts an open-ended history replay stream before sending", async () => {
     const historyStreamStarted = deferred();
     const historyStreamAborted = deferred();
@@ -572,6 +771,10 @@ async function* cursorChildStream() {
                 detectionMethod: null,
                 detectedCliVersion: null,
                 lastDetectedAt: null,
+                supportedReasoningEfforts: null,
+                defaultReasoningEffort: null,
+                contextWindowTokens: null,
+                maxContextWindowTokens: null,
                 createdAt: "2026-06-19T00:00:00Z",
                 updatedAt: "2026-06-19T00:00:00Z",
             },
@@ -586,6 +789,10 @@ async function* cursorChildStream() {
                 detectionMethod: null,
                 detectedCliVersion: null,
                 lastDetectedAt: null,
+                supportedReasoningEfforts: null,
+                defaultReasoningEffort: null,
+                contextWindowTokens: null,
+                maxContextWindowTokens: null,
                 createdAt: "2026-06-19T00:00:00Z",
                 updatedAt: "2026-06-19T00:00:00Z",
             },
@@ -613,6 +820,10 @@ async function* cursorChildStream() {
                 detectionMethod: null,
                 detectedCliVersion: null,
                 lastDetectedAt: null,
+                supportedReasoningEfforts: null,
+                defaultReasoningEffort: null,
+                contextWindowTokens: null,
+                maxContextWindowTokens: null,
                 createdAt: "2026-06-19T00:00:00Z",
                 updatedAt: "2026-06-19T00:00:00Z",
             },
@@ -627,6 +838,10 @@ async function* cursorChildStream() {
                 detectionMethod: null,
                 detectedCliVersion: null,
                 lastDetectedAt: null,
+                supportedReasoningEfforts: null,
+                defaultReasoningEffort: null,
+                contextWindowTokens: null,
+                maxContextWindowTokens: null,
                 createdAt: "2026-06-19T00:00:00Z",
                 updatedAt: "2026-06-19T00:00:00Z",
             },
@@ -789,6 +1004,68 @@ async function* cursorChildStream() {
     (0, strict_1.default)(systemTexts.some((text) => text.includes("Spawned agent **coder**")));
     (0, strict_1.default)(systemTexts.some((text) => text.includes("Spawned agent **reviewer**")));
 });
+// BUG-297: consumeOrchestrationStream stays bound to MAIN for the whole session (it is
+// never cancelled while a child is focused), but s.timeline is a single shared field —
+// whichever run's content is currently displayed. Before the fix, the stream's else
+// branch applied MAIN's own live events (e.g. a sibling agent_spawned_by_user for a
+// reviewer child) unconditionally, bleeding them into whatever child transcript
+// happened to be on screen. The fix only applies when MAIN is the currently displayed
+// run (get().runId === runId) — backToMainRun already replays everything from its
+// pre-focus snapshot on return, so nothing is lost by skipping while focused away.
+(0, node_test_1.default)("orchestration stream does not bleed a sibling agent_spawned_by_user into a focused child's timeline", async () => {
+    const orchestrationGate = deferred();
+    seedStore(makeClient({
+        startRun: async () => ({
+            runId: "main-run",
+            providerSessionId: "session-1",
+            providerKey: "codex",
+            status: "running",
+            stepId: "wf-1",
+        }),
+        sendTurn: async function* () {
+            yield { ...BASE_EVENT, workflowRunId: "main-run", seq: 1, type: "turn_started", providerTurnId: "turn-1", prompt: "hello" };
+            yield { ...BASE_EVENT, workflowRunId: "main-run", seq: 2, type: "agent_spawned_by_user", agentName: "coder", childRunId: "child-coder" };
+            yield { ...BASE_EVENT, workflowRunId: "main-run", seq: 3, type: "turn_completed", providerTurnId: "turn-1", finalMessage: "" };
+        },
+        // The orchestration stream (bound to main-run for the whole session). It only
+        // delivers its sibling-spawn event once the test resolves orchestrationGate,
+        // i.e. AFTER the test has focused the child below.
+        streamRun: async function* () {
+            await orchestrationGate.promise;
+            yield { ...BASE_EVENT, id: "evt-reviewer", workflowRunId: "main-run", seq: 4, type: "agent_spawned_by_user", agentName: "reviewer", childRunId: "child-reviewer" };
+        },
+    }), []);
+    store_1.useStore.setState({
+        chatMode: "workflow_step_auto",
+        launchMode: "workflow",
+        selectedWorkflowId: "wf-1",
+        selectedStepId: undefined,
+        runId: undefined,
+        mainRunId: undefined,
+        activeStepId: undefined,
+        status: "idle",
+        timeline: [],
+    });
+    await store_1.useStore.getState().sendPrompt("hello");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Main's own turn is done; it correctly shows its own coder spawn card.
+    (0, strict_1.default)(store_1.useStore.getState().timeline.some((it) => it.kind === "agent" && it.childRunId === "child-coder"), "main's own turn must still show its own coder spawn card");
+    // Simulate focusAgentRun's effect: the user navigates into the coder child's own
+    // transcript. s.timeline is overwritten with the child's own content — nothing about
+    // reviewer_correctness/reviewer_security (siblings of coder, children of main).
+    store_1.useStore.setState({
+        runId: "child-coder",
+        activeAgentRunId: "child-coder",
+        timeline: [{ kind: "assistant", id: "coder-a", text: "coder's own output", finalized: true }],
+    });
+    // Now main spawns a SIBLING (reviewer) via the still-running orchestration stream,
+    // while the user is still looking at coder's transcript.
+    orchestrationGate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const displayed = store_1.useStore.getState().timeline;
+    strict_1.default.equal(displayed.some((it) => it.kind === "agent" && it.childRunId === "child-reviewer"), false, "BUG-297: a sibling spawned by main must not appear inside the focused child's own displayed transcript");
+    strict_1.default.deepEqual(displayed, [{ kind: "assistant", id: "coder-a", text: "coder's own output", finalized: true }], "the focused child's displayed timeline must be untouched by main's own live event");
+});
 (0, node_test_1.default)("orchestration graph update refreshes stale agent run statuses without switching focus", async () => {
     const orchestrationGate = deferred();
     const completedRuns = [
@@ -862,6 +1139,35 @@ async function* cursorChildStream() {
     }
     strict_1.default.equal(store_1.useStore.getState().agentRuns[0]?.status, "completed");
     strict_1.default.equal(store_1.useStore.getState().agentRuns[0]?.agentStatus, "completed");
+});
+(0, node_test_1.default)("sendPrompt retries a transient turn_in_progress instead of dropping the message", async () => {
+    // Flow-completion race: the loop is marked "done" (which unblocks the composer via
+    // deriveOrchestrationRunStatus) from inside the hub's final turn, while that turn's
+    // provider stream is still open — so the runner still holds turnInFlight and rejects
+    // the first POST /turns with 409 turn_in_progress. The follow-up must be retried and
+    // delivered, not dropped with a raw error bubble.
+    let calls = 0;
+    seedStore(makeClient({
+        sendTurn: () => {
+            calls += 1;
+            if (calls === 1) {
+                // Rejected before any turn is minted (pre-mint guard), so a retry is safe.
+                return (async function* () {
+                    throw new HttpWsRunnerClient_1.RunnerApiError(409, "turn_in_progress", "a turn is already in flight for this session");
+                })();
+            }
+            return (async function* () {
+                yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 1, type: "turn_started", providerTurnId: "turn-1", prompt: "done rồi hả" };
+                yield { ...BASE_EVENT, workflowRunId: "current-run", seq: 2, type: "turn_completed", providerTurnId: "turn-1", finalMessage: "yes" };
+            })();
+        },
+    }), []);
+    await store_1.useStore.getState().sendPrompt("done rồi hả");
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(calls, 2, "sendTurn should be retried after a transient turn_in_progress");
+    strict_1.default.equal(state.status, "completed", "the retried turn completes instead of failing");
+    strict_1.default.ok(!state.timeline.some((it) => it.kind === "system" && it.tone === "error"), "no raw 409 error bubble is surfaced");
+    strict_1.default.ok(state.timeline.some((it) => it.kind === "prompt" && it.text === "done rồi hả"), "the user's message is preserved, not dropped");
 });
 (0, node_test_1.default)("refreshAgentRuns loads child summaries for the active main run", async () => {
     const agentRuns = [
@@ -1350,6 +1656,53 @@ async function* cursorChildStream() {
     });
     await pending;
 });
+(0, node_test_1.default)("syncAllInProject reports x/y batch progress via syncRuns and clears it when the batch finishes", async () => {
+    const gates = { "run-a": deferred(), "run-b": deferred() };
+    seedStore(makeClient({
+        syncChatRun: async (runId) => gates[runId].promise,
+    }), [
+        {
+            runId: "run-a",
+            projectId: "project-1",
+            providerKey: "codex",
+            status: "completed",
+            startedAt: "2026-06-17T10:00:00Z",
+            updatedAt: "2026-06-17T10:05:00Z",
+            runKind: "chat",
+        },
+        {
+            runId: "run-b",
+            projectId: "project-1",
+            providerKey: "codex",
+            status: "completed",
+            startedAt: "2026-06-17T10:01:00Z",
+            updatedAt: "2026-06-17T10:06:00Z",
+            runKind: "chat",
+        },
+    ]);
+    const pending = store_1.useStore.getState().syncAllInProject("project-1");
+    strict_1.default.deepEqual(store_1.useStore.getState().syncBatchProgress, { projectId: "project-1", done: 0, total: 2 });
+    gates["run-a"].resolve({
+        runId: "run-a",
+        sourceMachineId: "mch_sync",
+        sourceRunId: "run-a",
+        syncStatus: "synced",
+        syncedAt: "2026-06-17T10:10:00Z",
+        remotePath: "chat-sessions/runs/mch_sync/run-a/manifest.json",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    strict_1.default.deepEqual(store_1.useStore.getState().syncBatchProgress, { projectId: "project-1", done: 1, total: 2 });
+    gates["run-b"].resolve({
+        runId: "run-b",
+        sourceMachineId: "mch_sync",
+        sourceRunId: "run-b",
+        syncStatus: "synced",
+        syncedAt: "2026-06-17T10:11:00Z",
+        remotePath: "chat-sessions/runs/mch_sync/run-b/manifest.json",
+    });
+    await pending;
+    strict_1.default.equal(store_1.useStore.getState().syncBatchProgress, undefined);
+});
 (0, node_test_1.default)("syncHistoryRun typed error preserves current timeline", async () => {
     seedStore(makeClient({
         syncChatRun: async () => {
@@ -1475,6 +1828,31 @@ async function* cursorChildStream() {
     store_1.useStore.setState({ remoteChatSessions: [summary] });
     await store_1.useStore.getState().restoreRemoteChatSession(summary);
     strict_1.default.equal(store_1.useStore.getState().remoteChatSessions[0]?.unavailableReason, "remote provider session file failed integrity validation");
+    // Not a provider-account failure — must not trigger the BUG-267 modal (V-4).
+    strict_1.default.equal(store_1.useStore.getState().historyOpenError, undefined);
+});
+(0, node_test_1.default)("restoreRemoteChatSession surfaces a historyOpenError modal state on account_not_signed_in (BUG-267)", async () => {
+    const summary = {
+        runId: "run-remote",
+        projectId: "project-1",
+        providerKey: "claude",
+        sourceMachineId: "mch_remote",
+        sourceRunId: "run-remote",
+    };
+    seedStore(makeClient({
+        restoreChatRun: async () => {
+            throw new HttpWsRunnerClient_1.RunnerApiError(409, "account_not_signed_in", "can't open — the active account isn't signed in");
+        },
+    }), []);
+    store_1.useStore.setState({ remoteChatSessions: [summary] });
+    await store_1.useStore.getState().restoreRemoteChatSession(summary);
+    const state = store_1.useStore.getState();
+    strict_1.default.equal(state.remoteChatSessions[0]?.unavailableReason, "can't open — the active account isn't signed in");
+    strict_1.default.deepEqual(state.historyOpenError, {
+        code: "account_not_signed_in",
+        message: "can't open — the active account isn't signed in",
+        providerKey: "claude",
+    });
 });
 // ── Account-switch tests ───────────────────────────────────────────────────
 (0, node_test_1.default)("usage-limit turn_failed with valid Codex candidate sets pendingAccountSwitch", async () => {
@@ -1794,7 +2172,7 @@ async function* cursorChildStream() {
     strict_1.default.equal(store_1.useStore.getState().timeline.some((item) => item.kind === "thinking"), false);
     strict_1.default.equal(store_1.useStore.getState().agentRuns[0]?.status, "completed");
 });
-(0, node_test_1.default)("stop keeps child-focused stop on the child run", async () => {
+(0, node_test_1.default)("stop from a child-focused view also stops the parent loop (BUG-247)", async () => {
     const calls = [];
     seedStore(makeClient({
         stopAgentLoop: async (runId) => {
@@ -1812,7 +2190,34 @@ async function* cursorChildStream() {
         activeAgentRunId: "child-1",
     });
     await store_1.useStore.getState().stop();
-    strict_1.default.deepEqual(calls, ["interrupt:child-1"]);
+    strict_1.default.deepEqual(calls, ["loop:parent-1", "interrupt:parent-1", "interrupt:child-1"]);
+});
+(0, node_test_1.default)("stop from a child-focused view with an active tracked loop stops parent and child (BUG-247)", async () => {
+    const calls = [];
+    seedStore(makeClient({
+        stopAgentLoop: async (runId) => {
+            calls.push(`loop:${runId}`);
+            return { parentRunId: runId, runs: [], edges: [], busMessages: [], loopState: { status: "stopped", round: 0, roundCap: 3 } };
+        },
+        interrupt: async (runId) => {
+            calls.push(`interrupt:${runId}`);
+        },
+    }), []);
+    store_1.useStore.setState({
+        chatMode: "normal_chat",
+        runId: "child-1",
+        mainRunId: "parent-1",
+        activeAgentRunId: "child-1",
+        agentGraphSnapshot: {
+            parentRunId: "parent-1",
+            runs: [{ runId: "child-1", agentName: "reviewer", role: "reviewer", status: "running", parentRunId: "parent-1", createdAt: "2026-01-01T00:00:00Z" }],
+            edges: [],
+            busMessages: [],
+            loopState: { status: "running", round: 1, roundCap: 3 },
+        },
+    });
+    await store_1.useStore.getState().stop();
+    strict_1.default.deepEqual(calls, ["loop:parent-1", "interrupt:parent-1", "interrupt:child-1"]);
 });
 (0, node_test_1.default)("MockRunnerClient keeps child agent runs out of main history", async () => {
     const client = new MockRunnerClient_1.MockRunnerClient();
@@ -2088,6 +2493,33 @@ function loopSnapshot(status, extra = {}) {
         loopState: { status: "blocked", round: 1, roundCap: 3 },
     };
     strict_1.default.equal((0, store_1.deriveOrchestrationRunStatus)("running", snap), "running");
+});
+(0, node_test_1.default)("deriveOrchestrationRunStatus: a stopped loop wins even if a child's status snapshot is stale-running (BUG-248)", () => {
+    // stopAgentLoop's turnCancel() only signals cancellation — a child's own `status`
+    // field flips to terminal asynchronously once its turn handler observes ctx.Done().
+    // A snapshot taken synchronously right after the stop call can still report that
+    // child as "running". Unlike a "blocked" loop (a deliberate pause where an
+    // actively-running child legitimately still wins), "stopped" is a definitive,
+    // user-initiated full halt and must be authoritative, or the main run reads as
+    // permanently stuck "running" with no later event to correct it.
+    const snap = {
+        parentRunId: "current-run",
+        runs: [{ runId: "child-1", agentName: "coder", role: "coder", status: "running", parentRunId: "current-run", createdAt: "2026-01-01T00:00:00Z" }],
+        edges: [],
+        busMessages: [],
+        loopState: { status: "stopped", round: 1, roundCap: 3 },
+    };
+    strict_1.default.equal((0, store_1.deriveOrchestrationRunStatus)("running", snap), "cancelled");
+});
+// BUG-308 residual: Stop leaves loopState="stopped" forever, but a plain-chat
+// follow-up sets status to completed via turn_completed. Orchestration snapshots
+// must not force Cancelled over that completed status (header/history stuck).
+(0, node_test_1.default)("deriveOrchestrationRunStatus: stopped loop preserves completed/failed post-Stop chat (BUG-308 residual)", () => {
+    strict_1.default.equal((0, store_1.deriveOrchestrationRunStatus)("completed", loopSnapshot("stopped")), "completed");
+    strict_1.default.equal((0, store_1.deriveOrchestrationRunStatus)("failed", loopSnapshot("stopped")), "failed");
+    // Still cancelled when no successful follow-up has advanced status:
+    strict_1.default.equal((0, store_1.deriveOrchestrationRunStatus)("cancelled", loopSnapshot("stopped")), "cancelled");
+    strict_1.default.equal((0, store_1.deriveOrchestrationRunStatus)("idle", loopSnapshot("stopped")), "cancelled");
 });
 (0, node_test_1.default)("continueFlow calls client.continueFlow with the trimmed feedback and applies the returned snapshot", async () => {
     const seen = {};

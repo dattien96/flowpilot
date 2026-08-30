@@ -8,6 +8,31 @@ async function readJson(response) {
     }
     return (await response.json());
 }
+function mapLocalRunnerProviderModel(raw) {
+    return {
+        id: raw.id,
+        displayName: raw.display_name,
+        available: raw.available,
+        source: raw.source,
+        supportedReasoningEfforts: raw.supported_reasoning_efforts,
+        defaultReasoningEffort: raw.default_reasoning_effort,
+        contextWindowTokens: raw.context_window_tokens,
+        maxContextWindowTokens: raw.max_context_window_tokens,
+    };
+}
+function mapLocalRunnerProvider(raw) {
+    return {
+        key: raw.key,
+        label: raw.label,
+        installed: raw.installed,
+        version: raw.version,
+        authStatus: raw.auth_status,
+        installHint: raw.installHint,
+        detectedBinary: raw.detected_binary,
+        detectedVersion: raw.detected_version,
+        models: raw.models?.map(mapLocalRunnerProviderModel),
+    };
+}
 class RunnerAdminRepository {
     httpClient;
     runnerBaseUrl;
@@ -17,7 +42,8 @@ class RunnerAdminRepository {
     }
     async listLocalProviders() {
         const response = await this.httpClient.request(new URL("/providers", this.runnerBaseUrl), { cache: "no-store" });
-        return readJson(response).catch(() => []);
+        const raw = await readJson(response).catch(() => []);
+        return raw.map(mapLocalRunnerProvider);
     }
     async installLocalProvider(providerKey) {
         const response = await this.httpClient.request(new URL("/providers/install", this.runnerBaseUrl), {
@@ -26,7 +52,7 @@ class RunnerAdminRepository {
             body: JSON.stringify({ providerName: providerKey }),
         });
         const payload = await readJson(response);
-        return payload.providers ?? [];
+        return (payload.providers ?? []).map(mapLocalRunnerProvider);
     }
     async authenticateProvider(providerKey) {
         const response = await this.httpClient.request(new URL("/providers/auth", this.runnerBaseUrl), {
@@ -74,7 +100,7 @@ class RunnerAdminRepository {
         const response = await this.httpClient.request(new URL(path, this.runnerBaseUrl), {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ action, projectId, integrationId }),
+            body: JSON.stringify({ action, ...(projectId ? { projectId } : {}), ...(integrationId ? { integrationId } : {}) }),
         });
         await readJson(response).catch(async (error) => {
             if (error instanceof SyntaxError)
@@ -83,19 +109,19 @@ class RunnerAdminRepository {
         });
     }
     async testIntegration(projectId, integrationId, providerType, fields) {
-        const response = await this.httpClient.request(new URL("/integrations/connect", this.runnerBaseUrl), {
+        const response = await this.httpClient.request(new URL(`/integrations/${encodeURIComponent(integrationId)}/connection`, this.runnerBaseUrl), {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-                projectId,
-                integrationId,
+                ...(projectId ? { projectId } : {}),
                 providerType,
                 action: "test",
                 ...fields,
             }),
         });
         const payload = await readJson(response);
-        return payload.message ?? null;
+        const ok = payload.requestStatus !== "rejected" && payload.integrationStatus !== "failed";
+        return { message: payload.message ?? null, ok };
     }
     async pickDirectory() {
         const response = await this.httpClient.request(new URL("/directories/pick", this.runnerBaseUrl), {
@@ -122,8 +148,6 @@ class CompositeArtifactRepository {
         this.supabaseRepository = supabaseRepository;
         this.runnerRepository = runnerRepository;
     }
-    listDefinitions() { return this.supabaseRepository.listDefinitions(); }
-    saveDefinition(definition) { return this.supabaseRepository.saveDefinition(definition); }
     listRuns(projectId) { return this.supabaseRepository.listRuns(projectId); }
     listLocalArtifacts() { return this.runnerRepository.listLocalArtifacts(); }
     getStorageDriver() { return this.runnerRepository.getStorageDriver(); }
@@ -160,6 +184,7 @@ class CompositeIntegrationRepository {
         return this.supabaseRepository.createIntegration(input);
     }
     updateIntegration(id, patch) { return this.supabaseRepository.updateIntegration(id, patch); }
+    deleteIntegration(id) { return this.supabaseRepository.deleteIntegration(id); }
     listLinkedIntegrations(projectId) { return this.supabaseRepository.listLinkedIntegrations(projectId); }
     setProjectIntegration(projectId, type, integrationId) {
         return this.supabaseRepository.setProjectIntegration(projectId, type, integrationId);
