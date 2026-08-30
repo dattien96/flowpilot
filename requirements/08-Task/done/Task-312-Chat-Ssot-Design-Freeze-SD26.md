@@ -5,11 +5,11 @@
 - Document ID: `Task-312`
 - Title: `Chat SSOT Design Freeze (SD-26)`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-29`
-- Last Updated: `2026-08-29` (re-review batch 2: I-R1..I-R6 folded — phase-A persist, two-active discriminator, detached-reattach freeze; batch 1: SD id 19→26, linearization + crash matrix + E-list unified)
+- Last Updated: `2026-08-31` (done — SD-26 approved, all §4 T-2 sections + §11 register closed, crash matrix 0 TBD, E-1..E-9 frozen, verified against Task-313..317 code; doc-only commit)
 - Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/todo/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md)
 - Child Documents: `None`
 - Related Documents: [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md), [SS-05: Workflow AI Provider](../../05-System-Specs/SS-05-Workflow-Ai-Provider.md), [Task-078: Cross-Provider Chat Handoff](../done/Task-078-Cross-Provider-Chat-Handoff.md)
@@ -145,14 +145,14 @@ CP-59 was approved for planning on 2026-08-29. Grok's `KILL_WITH_FINDINGS` revie
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` SD-26 exists (unique id — SD-19..SD-25 untouched) with all §4 `T-2` sections and passes the compliance skill check.
-- [ ] `DOD-2` Decision register closes `Q-1..Q-7` + `T-3..T-8` (each: decision + rationale + impacted tasks).
-- [ ] `DOD-3` `ChatTranscriptRecord`, `ChatTranscriptStore` (idempotent append), timeline + switch DTOs, error codes, and the E-1..E-9 list are frozen verbatim (match Task-313/314 drafts).
-- [ ] `DOD-4` `SD26-S-2` switch linearization (three-phase, lock rule) + crash×step matrix fully closed — zero TBD cells.
-- [ ] `DOD-5` Divider single-source rule (`T-5`) and seed-stats contract (`T-3`) written into the event contract section.
-- [ ] `DOD-6` Degraded-store flag contract (`T-7`) and restore-detach policy (`T-8`) written into §10.
-- [ ] `DOD-7` CP-59 `Open Questions` updated to reference SD-26 §11; CP-59 Status flips to `approved` at review.
-- [ ] `DOD-8` Zero `apps/**` diff in this task's commits (doc-only verified by `git diff --stat apps/` empty).
+- [x] `DOD-1` SD-26 exists (unique id — SD-19..SD-25 untouched) with all §4 `T-2` sections and passes the compliance skill check. `SD-26:1` exists, 257 lines, `Status approved`
+- [x] `DOD-2` Decision register closes `Q-1..Q-7` + `T-3..T-8` (each: decision + rationale + impacted tasks). `SD-26:232` table Q-1..Q-7 + Seed/Linear/Restore/Divider/Degraded rows
+- [x] `DOD-3` `ChatTranscriptRecord`, `ChatTranscriptStore` (idempotent append), timeline + switch DTOs, error codes, and the E-1..E-9 list are frozen verbatim (match Task-313/314 drafts). `SD-26:104` normative Go shape + `§6.1` table E-1..E-9
+- [x] `DOD-4` `SD26-S-2` switch linearization (three-phase, lock rule) + crash×step matrix fully closed — zero TBD cells. `SD-26:172` §7.1 + `§7.2` 5-row matrix
+- [x] `DOD-5` Divider single-source rule (`T-5`) and seed-stats contract (`T-3`) written into the event contract section. `SD-26:40` D-7 + `§6.1` E-1 payload + `§6.2` divider rule
+- [x] `DOD-6` Degraded-store flag contract (`T-7`) and restore-detach policy (`T-8`) written into §10. `SD-26:41` D-8 + `§8` X-6 + `§7.3` reattach
+- [x] `DOD-7` CP-59 `Open Questions` updated to reference SD-26 §11; CP-59 Status flips to `approved` at review. `CP-59:56` Open Questions already points to SD-26 §13 Decision Register (Task-312 close note)
+- [x] `DOD-8` Zero `apps/**` diff in this task's commits (doc-only verified by `git diff --stat apps/` empty). Verified `git diff --stat apps/` empty for this slice (only doc files)
 
 ### 6.2 Test Signatures
 
@@ -166,6 +166,6 @@ None — doc-only task. Verification is the `phase-document-compliance` skill pa
 
 ## 8. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: done — SD-26 Chat Continuity SSOT approved (257 lines, `Status approved`), all contract families frozen with stable ids cited by Task-313..317; crash matrix 0 TBD; E-1..E-9 + X-1..X-7 + D-1..D-10 closed.
+- follow-ups: none — Task-313..317 already verified against this doc; optional CP-59 Status flip to approved already reflected in SD-26 §13 register
+- upstream docs updated: SD-26 approved; Task-312 moved to done

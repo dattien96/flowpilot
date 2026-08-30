@@ -5,11 +5,11 @@
 - Document ID: `SD-26`
 - Title: `Chat Continuity SSOT (chatId, Legs, Switch Linearization)`
 - Phase: `tech_design`
-- Status: `reviewing`
+- Status: `approved`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-30`
-- Last Updated: `2026-08-30`
+- Last Updated: `2026-08-31` (approved — Task-312 close, all CP-59 Q-1..Q-7 + T-3..T-8 frozen, code in Task-313..317 verified against this doc)
 - Parent Documents: [SS-05: Workflow AI Provider](../05-System-Specs/SS-05-Workflow-Ai-Provider.md), [SS-11: Workflow With Session](../05-System-Specs/SS-11-Workflow-With_Session.md)
 - Child Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../07-Coding-Plan/todo/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md)
 - Related Documents: [SD-06: AI Provider Integration](./SD-06-AI-Provider-Integration.md), [SD-14: Codex Cross-Account Chat Resume And Home Sync](./SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md), [Task-078: Cross-Provider Chat Handoff](../08-Task/done/Task-078-Cross-Provider-Chat-Handoff.md), [Task-312: Chat SSOT Design Freeze](../08-Task/todo/Task-312-Chat-Ssot-Design-Freeze-SD26.md)
