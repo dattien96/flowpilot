@@ -424,9 +424,78 @@ func (m *AppModel) renderRightSidebar(h int) []string {
 	if len(steps) == 0 {
 		out = append(out, styleSystem.Render("(no steps)"))
 	}
+	// Guide-F UX follow-up: live sub-agent rows (spawn_agent children, flow
+	// reviewers) — the always-visible main-view counterpart of /agents, styled
+	// like the steps section. Hidden entirely when the agent graph is empty.
+	if len(m.agentRuns) > 0 {
+		agentRows := h - len(out) - 2
+		if agentRows > len(m.agentRuns)+1 {
+			agentRows = len(m.agentRuns) + 1 // +1 section header
+		}
+		if agentRows >= 2 {
+			out = append(out, "")
+			for _, line := range m.agentRunsSectionLines(agentRows-1) {
+				out = append(out, truncateStepLine(line, w-2))
+			}
+		}
+	}
 	// Pad to full height so the sidebar is a solid right column.
 	for len(out) < h {
 		out = append(out, " ")
+	}
+	return out
+}
+
+// agentRunsSectionLines renders the sidebar "agents" section: one row per run
+// in the current run's agent graph (spawn_agent children, flow reviewers),
+// with the same status glyphs as the steps section. Header included; capped at
+// maxRows data rows with a … +N more tail.
+func (m *AppModel) agentRunsSectionLines(maxRows int) []string {
+	if len(m.agentRuns) == 0 || maxRows < 1 {
+		return nil
+	}
+	out := []string{styleGate.Render("agents")}
+	for i, a := range m.agentRuns {
+		if i >= maxRows {
+			out = append(out, fmt.Sprintf("… +%d more", len(m.agentRuns)-maxRows))
+			break
+		}
+		name := strings.TrimSpace(a.Label)
+		if name == "" {
+			name = strings.TrimSpace(a.AgentName)
+		}
+		if name == "" {
+			name = shortID(a.RunID)
+		}
+		st := strings.ToUpper(strings.TrimSpace(a.Status))
+		// Same glyph language as the steps rows: spinner while running,
+		// ✓ done, x failed, - cancelled, blank pending/unknown.
+		glyph := " "
+		lineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorTextDim))
+		suffix := ""
+		switch st {
+		case "RUNNING", "IN_PROGRESS":
+			glyph = thinkingSpinner(m.thinkingFrame, m.asciiMode)
+			suffix = " " + st
+			lineStyle = styleStepRunning
+		case "WAITING_USER_APPROVAL":
+			glyph = "•"
+			suffix = " " + st
+			lineStyle = styleStepRunning
+		case "COMPLETED", "DONE":
+			if m.asciiMode {
+				glyph = "+"
+			} else {
+				glyph = "✓"
+			}
+			lineStyle = styleStepDone
+		case "FAILED", "ERROR":
+			glyph = "x"
+			lineStyle = styleStepFailed
+		case "CANCELLED", "CANCELED", "SKIPPED":
+			glyph = "-"
+		}
+		out = append(out, lineStyle.Render(fmt.Sprintf("[%s] %s%s", glyph, name, suffix)))
 	}
 	return out
 }

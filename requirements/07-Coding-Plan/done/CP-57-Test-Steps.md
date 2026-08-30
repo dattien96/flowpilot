@@ -102,11 +102,17 @@ Trạng thái: YOLO **OFF** (`/yolo` hiện OFF).
 
 ## F. spawn_agent (OC-07/E2E-17)
 
+> **BUG-334**: F1 fail lần đầu — `MCP error -32000 Connection closed` sau ~400ms: session/new của child (token MCP
+> per-turn mới) trên shared acp process replace process-level MCP client → in-flight tools/call của parent đứt;
+> retry còn landing nhầm bridge của child (spawn lồng grandchild). Fix: child run + variants probe chạy process
+> riêng theo scope segment (`account|child:<runID>` / `probe`), reclaim theo base, đóng process khi child terminal.
+> Runner log verify: `[agent-spawn] child terminal ... completed finalMsgLen=8` về đúng turn.
+
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
-| F1 | "Dùng tool spawn_agent trên server flowpilot với agent='helper', prompt='trả lời: child-ok', wait=true, rồi báo tôi child trả lời gì" | Child agent chạy xong; model báo lại kết quả child |
-| F2 | Tab (hoặc `/agents`) | Panel agents hiện child "helper · completed"; `/agent helper` mở transcript child |
-| F3 | Lặp F1 với wait=false | Trả lời ngay, child chạy nền, xuất hiện trong panel |
+| F1 ✅ PASSED 08-30 | "Dùng tool spawn_agent trên server flowpilot với agent='helper', prompt='trả lời: child-ok', wait=true, rồi báo tôi child trả lời gì" | Child agent chạy xong; model báo lại kết quả child |
+| F2 ✅ PASSED 08-30 | Tab (hoặc `/agents`) | Panel agents hiện child "helper · completed"; `/agent helper` mở transcript child |
+| F3 ✅ PASSED 08-30 | Lặp F1 với wait=false | Trả lời ngay, child chạy nền, xuất hiện trong panel |
 
 ## G. Skills (OC-08) — **PASSED 08-30 (G1-G3)**
 
