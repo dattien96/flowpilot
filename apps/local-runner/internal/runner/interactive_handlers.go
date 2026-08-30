@@ -27,6 +27,9 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/workflows/{workflowId}/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/chat/builtin-orchestration-options", s.handleListBuiltinOrchestrationOptions)
 	mux.HandleFunc("GET /client/projects/{projectId}/workflow-runs", s.handleListProjectRunHistory)
+	// CP-59 chat SSOT timeline (Task-313): flag-gated in the handler — with
+	// FLOWPILOT_CHAT_SSOT off it answers typed 404 and nothing else changes.
+	mux.HandleFunc("GET /client/chats/{chatId}/timeline", s.handleChatTimeline)
 	mux.HandleFunc("GET /client/projects/{projectId}/chat-sessions/remote", s.handleListRemoteChatSessions)
 	mux.HandleFunc("GET /client/engine/tooling/status", s.handleGetGlobalEngineToolingStatus)
 	mux.HandleFunc("POST /client/engine/tooling/install/libretranslate", s.handleInstallLibreTranslate)
@@ -794,6 +797,16 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	// since it may read the provider-accounts store.
 	stampAccount := s.activeAccountForProvider(providerKey)
 
+	// CP-59 chat SSOT (SD-26 §5.1): resolve chat identity before the lock —
+	// adoption reads resident runs (same resolve-before-lock pattern as
+	// stampAccount above). Flag-gated: workflow runs and flag-off keep zero
+	// chat fields everywhere.
+	chatID, legSeq, switchFrom := "", 0, ""
+	if chatSSOTEnabled() && runKind == "chat" {
+		chatID, legSeq, switchFrom = s.resolveChatIdentity(in)
+		s.ensureChatTranscriptWriter()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	runID := s.nextID("run")
@@ -834,6 +847,13 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		subs:              map[int64]chan ProviderEvent{},
 		idempotency:       map[string]string{},
 	}
+	if chatID != "" {
+		rs.chatID = chatID
+		rs.legSeq = legSeq
+		rs.legState = LegStateActive
+		rs.switchFromRunID = switchFrom
+		s.chatRuns.register(runID, chatID)
+	}
 	s.runs[runID] = rs
 	if seeder, ok := s.workflowStore.(workflowRunSeeder); ok {
 		seeder.seed(runID, seedSteps)
@@ -850,12 +870,16 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		StartedAt:         now,
 		UpdatedAt:         now,
 		RunKind:           runKind,
+		ChatID:            chatID,
+		LegSeq:            legSeq,
+		LegState:          rs.legState,
+		SwitchFromRunID:   switchFrom,
 		Yolo:              resolvedYolo,
 	}); err != nil {
 		delete(s.runs, runID)
 		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
-	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID}, nil
+	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID, ChatID: chatID, LegSeq: legSeq}, nil
 }
 
 // skipsResumeSessionValidation reports whether resumeRun should skip the

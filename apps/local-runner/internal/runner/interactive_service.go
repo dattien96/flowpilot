@@ -32,6 +32,12 @@ type InteractiveService struct {
 	// catalog serves projects/workflows/steps — the fake interactiveCatalog when
 	// Supabase is not configured, SupabaseCatalogStore when it is (04-08 A1).
 	catalog CatalogStore
+	// Chat SSOT capture stack (CP-59 / SD-26). Lazily initialized by
+	// ensureChatTranscriptWriter only when FLOWPILOT_CHAT_SSOT is on; all zero
+	// values are valid — capture is a no-op until then.
+	chatOnce        sync.Once
+	chatRuns        *chatRunRegistry
+	chatTranscripts *chatTranscriptWriter
 	// skillsCatalog serves the local provider-skill list (not from Supabase).
 	skillsCatalog *interactiveCatalog
 	// agentCatalog serves the loadable sub-agent definitions (CP-19 / Task-081):
@@ -159,6 +165,15 @@ type interactiveRun struct {
 	turnCount   int
 	// runKind is "chat" for normal-chat runs, "" / "workflow" for workflow runs (T-7).
 	runKind string
+
+	// Chat SSOT leg fields (CP-59 / SD-26 §5.1). Zero-valued for workflow runs
+	// and for legacy chat runs until ensureChatTagging self-tags them.
+	// switchFromRunID is the durable switch intent (SD26-S-2 phase A).
+	chatID          string
+	legSeq          int
+	legState        string
+	legClosedReason string
+	switchFromRunID string
 
 	// Agent identity (CP-19 / Task-081). All fields are additive and zero-valued
 	// for an ordinary parentless "main" run, so existing behavior is unchanged.
@@ -3665,6 +3680,11 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		StartedAt:                       rs.createdAt,
 		UpdatedAt:                       rs.updatedAt,
 		RunKind:                         rs.runKind,
+		ChatID:                          rs.chatID,
+		LegSeq:                          rs.legSeq,
+		LegState:                        rs.legState,
+		LegClosedReason:                 rs.legClosedReason,
+		SwitchFromRunID:                 rs.switchFromRunID,
 		SourceMachineID:                 rs.sourceMachineID,
 		SourceRunID:                     rs.sourceRunID,
 		RestoredFrom:                    rs.restoredFrom,
@@ -3945,6 +3965,10 @@ func (s *InteractiveService) persistQuestion(record ProviderQuestionState) error
 }
 
 func (s *InteractiveService) persistEvent(event ProviderEvent) error {
+	// CP-59 chat SSOT capture (SD-26 §5.3): mirrors this function's delta-skip
+	// policy, flag-gated, never fails the turn. Kept beside persistEvent so the
+	// two writers share one call graph.
+	s.recordChatTranscript(event)
 	store := s.persistenceStore()
 	if store == nil || event.Type == EventMessageDelta {
 		return nil

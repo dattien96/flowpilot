@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	"flowpilot-runner/internal/agentpack"
@@ -284,6 +285,15 @@ type ProviderSessionState struct {
 	LastFailedDelegateNodeID string `json:"lastFailedDelegateNodeID,omitempty"`
 	// LastEscalatedInlineNodeID persists the hub-less inline that escalated (BUG-289 A5), twin of the above.
 	LastEscalatedInlineNodeID string `json:"lastEscalatedInlineNodeID,omitempty"`
+	// Chat SSOT leg fields (CP-59 / SD-26 §5.1): additive, zero-valued for
+	// workflow runs and legacy untagged chat runs. Persisted beside run_kind so
+	// a restarted runner can reassemble a chat's legs; Supabase mapping adds
+	// the keys only when non-empty (no migration needed while the flag is off).
+	ChatID          string
+	LegSeq          int
+	LegState        string
+	LegClosedReason string
+	SwitchFromRunID string
 }
 
 type ProviderApprovalState struct {
@@ -414,6 +424,23 @@ func (f *fakeWorkflowStore) AppendEvent(_ context.Context, event ProviderEvent) 
 	defer f.mu.Unlock()
 	f.events[event.WorkflowRunID] = append(f.events[event.WorkflowRunID], event)
 	return nil
+}
+
+// ListProviderSessionsByChat discovers a chat's persisted legs (SD-26 §6.2
+// ChatSessionReader). In-memory over the fake store's session map — the
+// localFileSessionStore embeds this store and inherits the method; restart
+// persistence of the index itself is Task-317 hardening.
+func (f *fakeWorkflowStore) ListProviderSessionsByChat(_ context.Context, chatID string) ([]ProviderSessionState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]ProviderSessionState, 0, 4)
+	for _, session := range f.sessions {
+		if session.ChatID == chatID || (session.RunKind == "chat" && session.RunID == chatID) {
+			out = append(out, session)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LegSeq < out[j].LegSeq })
+	return out, nil
 }
 
 func (f *fakeWorkflowStore) UpsertProviderSession(_ context.Context, session ProviderSessionState) error {

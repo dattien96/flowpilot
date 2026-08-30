@@ -278,6 +278,10 @@ type RunHandle struct {
 	RunKind    string `json:"runKind,omitempty"`
 	WorkflowID string `json:"workflowId,omitempty"`
 	FlowRef    string `json:"flowRef,omitempty"`
+	// Chat SSOT (CP-59 / SD-26 §5.1): the logical chat this run belongs to and
+	// its leg ordinal. Omitted for workflow runs and when the runner flag is off.
+	ChatID string `json:"chatId,omitempty"`
+	LegSeq int    `json:"legSeq,omitempty"`
 }
 
 // RunHistoryItem mirrors GET /client/projects/{id}/workflow-runs (desktop listRunHistory).
@@ -395,6 +399,12 @@ type StartRunInput struct {
 	// ChatMode is "normal_chat" for provider-chat mode (CP-56 §3.2).
 	ChatMode string `json:"chatMode,omitempty"`
 	Cwd      string `json:"cwd,omitempty"`
+	// Chat SSOT (CP-59 / SD-26 §5.1): attach to an existing chat (switch legs /
+	// reattach) or mint a new one. Additive — the TUI omits all three until
+	// Task-315 routes the reattach path.
+	ChatID          string `json:"chatId,omitempty"`
+	SwitchFromRunID string `json:"switchFromRunId,omitempty"`
+	LegSeq          int    `json:"legSeq,omitempty"`
 }
 
 // TurnInput mirrors the runner TurnInput DTO (CP-56/BUG-063).
