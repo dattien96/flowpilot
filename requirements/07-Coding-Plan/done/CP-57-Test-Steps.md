@@ -8,7 +8,7 @@
 - Status: `active`
 - Owner: `FlowPilot`
 - Created: `2026-08-29`
-- Last Updated: `2026-08-29`
+- Last Updated: `2026-08-30`
 - Parent Documents: [CP-57: Opencode Provider Integration](./CP-57-Opencode-Provider-Integration.md)
 - Related Documents: [Task-300..303](../../08-Task/done/), CA-679..CA-683, BUG-329
 - Tags: `opencode, verification, test-steps, manual-test, cp-57`
@@ -55,35 +55,41 @@ Mở Desktop → Settings → AI Providers.
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
-| B1 | `/provider` | Danh sách có `opencode` |
-| B2 | `/model` | Danh sách model mọi provider; model opencode có detail "opencode" |
-| B3 | `/model opencode/muse-spark-1.2-contributor-free` | "Model set to … · provider: opencode"; **provider tự switch** theo model |
-| B4 | `/status` | Session panel: provider opencode · model đã chọn · account label |
-| B5 | `/new` → thoát TUI → mở lại | Model/provider **giữ nguyên** (không quay về grok-4.5 cũ) |
-| B6 | `/reasoning low` → thoát → mở lại | Reasoning giữ nguyên |
-| B7 | Chọn model opencode → thoát hẳn máy (không /new) → mở lại | Vẫn model opencode — **đây là regression CA-679**: posture scan/plan pin grok-4.5 không được đè lựa chọn |
+| B1 ✅ PASSED 08-30 | `/provider` | Danh sách có `opencode` |
+| B2 ✅ PASSED 08-30 | `/model` | Danh sách model mọi provider; model opencode có detail "opencode" |
+| B3 ✅ PASSED 08-30 | `/model opencode/muse-spark-1.2-contributor-free` | "Model set to … · provider: opencode"; **provider tự switch** theo model |
+| B4 ✅ PASSED 08-30 | `/status` | Session panel: provider opencode · model đã chọn · account label |
+| B5 ✅ PASSED 08-30 | `/new` → thoát TUI → mở lại | Model/provider **giữ nguyên** (không quay về grok-4.5 cũ) |
+| B6 ✅ PASSED 08-30 | `/reasoning low` → thoát → mở lại | Reasoning giữ nguyên |
+| B7 ✅ PASSED 08-30 | Chọn model opencode → thoát hẳn máy (không /new) → mở lại | Vẫn model opencode — **đây là regression CA-679**: posture scan/plan pin grok-4.5 không được đè lựa chọn |
 
 ## C. Chat cơ bản (OC-01/OC-11/OC-24) — **PASSED 08-30 (C1-C4)**
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
-| C1 | Gửi "hello" | Stream `message_delta` mượt, tin nhắn cuối lưu vào history |
-| C2 | Nhìn status line sau turn | Token usage "ctx:…k/1M last:…k" (context window 1,048,576) |
-| C3 | Gửi "đọc file README.md rồi tóm tắt 1 dòng" | Tool card xuất hiện (read), rồi câu trả lời |
-| C4 | Gửi "tạo file ghi-chu.txt có nội dung xin-chao" (YOLO đang ON) | File được tạo + event file_changed; `flow_gate_violation` có thể xuất hiện ở sidebar steps (r-ca — xem mục K) |
+| C1 ✅ PASSED 08-30 | Gửi "hello" | Stream `message_delta` mượt, tin nhắn cuối lưu vào history |
+| C2 ✅ PASSED 08-30 | Nhìn status line sau turn | Token usage "ctx:…k/1M last:…k" (context window 1,048,576) |
+| C3 ✅ PASSED 08-30 | Gửi "đọc file README.md rồi tóm tắt 1 dòng" | Tool card xuất hiện (read), rồi câu trả lời |
+| C4 ✅ PASSED 08-30 | Gửi "tạo file ghi-chu.txt có nội dung xin-chao" (YOLO đang ON) | File được tạo + event file_changed; `flow_gate_violation` có thể xuất hiện ở sidebar steps (r-ca — xem mục K) |
 
 ## D. Đổi model giữa chat (BUG-329) — **test quan trọng nhất** — **PASSED 08-30 (D1-D3)**
 > D3 wire proof run-345019 (cùng session `ses_fb11b1cd…`): 02:00:18 `effort=xhigh` (turn-345021) → 02:00:28 `effort=medium` (turn-345040), không turn-failed. Reasoning đổi giữa chat đi tới opencode thật.
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
-| D1 | "Nhớ số 42 nhé" (model muse-spark) → `/model opencode-go/deepseek-v4-flash` → "số mấy tôi bảo nhớ?" | Trả lời **42** — history giữ nguyên, KHÔNG lỗi "session/load returned no sessionId" |
-| D2 | Đổi tiếp sang model thứ 3 (vd `opencode/gpt-5.4-nano`) và hỏi tiếp | Vẫn tiếp tục cùng cuộc hội thoại |
-| D3 | Trong lúc chat, đổi `/reasoning` | Turn sau dùng effort mới, không spawn lỗi |
+| D1 ✅ PASSED 08-30 | "Nhớ số 42 nhé" (model muse-spark) → `/model opencode-go/deepseek-v4-flash` → "số mấy tôi bảo nhớ?" | Trả lời **42** — history giữ nguyên, KHÔNG lỗi "session/load returned no sessionId" |
+| D2 ✅ PASSED 08-30 | Đổi tiếp sang model thứ 3 (vd `opencode/gpt-5.4-nano`) và hỏi tiếp | Vẫn tiếp tục cùng cuộc hội thoại |
+| D3 ✅ PASSED 08-30 | Trong lúc chat, đổi `/reasoning` | Turn sau dùng effort mới, không spawn lỗi |
 
 ## E. Approval + YOLO (OC-04/OC-05/E2E-09/10)
 
 Trạng thái: YOLO **OFF** (`/yolo` hiện OFF).
+
+> **BUG-331 / CA-690**: E1 fail lần đầu (opencode default allow-all, không bao giờ hỏi → không card).
+> Đã fix: mọi process `opencode acp` giờ spawn với `OPENCODE_CONFIG_CONTENT={"permission":{"edit":"ask","bash":"ask"}}`;
+> YOLO/posture quyết ở runner per-turn. **Restart runner/TUI trước khi re-test** (process cũ giữ env cũ).
+> Pre-verified bằng live probes 1.18.25: allow → file tạo (B/C/D); reject → file KHÔNG tạo, turn end_turn sạch (J);
+> E4 tự duyệt nhánh yolo đã có sẵn; E5 chỉ auto-approve `session/request_permission`, question luôn qua card.
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
@@ -101,32 +107,32 @@ Trạng thái: YOLO **OFF** (`/yolo` hiện OFF).
 | F2 | Tab (hoặc `/agents`) | Panel agents hiện child "helper · completed"; `/agent helper` mở transcript child |
 | F3 | Lặp F1 với wait=false | Trả lời ngay, child chạy nền, xuất hiện trong panel |
 
-## G. Skills (OC-08)
+## G. Skills (OC-08) — **PASSED 08-30 (G1-G3)**
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
-| G1 | `/skill` | Catalog skills hiện ra |
-| G2 | `/skill audit-logging` → hỏi việc liên quan change | Prompt có inject skill (model nhắc quy tắc audit/CA) |
-| G3 | `/skill clear` | Về trạng thái không skill |
+| G1 ✅ PASSED 08-30 | `/skill` | Catalog skills hiện ra |
+| G2 ✅ PASSED 08-30 | `/skill audit-logging` → hỏi việc liên quan change | Prompt có inject skill (model nhắc quy tắc audit/CA) |
+| G3 ✅ PASSED 08-30 | `/skill clear` | Về trạng thái không skill |
 
-## H. Chat posture + restore giữ model (CA-679)
-
-| # | Bước | Kết quả mong đợi |
-|---|------|------------------|
-| H1 | `/mode` | Hiện 3 posture scan/plan/code + profile pins |
-| H2 | `/mode scan` | "Mode: scan — read-only"; yêu cầu write bị chặn/auto-deny |
-| H3 | Tab | Cycled plan ↔ code |
-| H4 | Đang active posture có pin model (vd scan pin grok-4.5): chọn model opencode → thoát → mở lại | **Model opencode giữ nguyên** (restore không re-pin đè — CA-679); posture vẫn đúng active |
-| H5 | `/mode plan` (switch THẬT sang posture có pin model) | Pin model của posture được áp (hành vi cũ giữ nguyên) |
-
-## I. Session resume / history (OC-12/E2E-04/05)
+## H. Chat posture + restore giữ model (CA-679) — **PASSED 08-30 (H1-H5)**
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
-| I1 | Chat vài turn → thoát TUI → mở lại → `/history` | Run opencode xuất hiện trong list |
-| I2 | `/open <run>` → "trước đó tôi nói gì?" | Model trả lời đúng nội dung cũ (resume cùng `ses_*`) |
-| I3 | Kill runner (thoát `just chat-dev`) → mở lại → mở chat cũ → hỏi tiếp | Tiếp tục được (session persist trong opencode.db) |
-| I4 | `/sync` → `/restore` với chat opencode | Trả lỗi **typed** rõ ràng (Drive file-copy restore chưa hỗ trợ opencode — known gap có chủ đích, xem CP-57 §10.2), không corrupt history. **Lưu ý CA-688**: `/open` chat opencode LOCAL thì hoạt động bình thường (I1/I2) — nếu gặp `session_unavailable` khi mở chat local, restart runner để nhận fix |
+| H1 ✅ PASSED 08-30 | `/mode` | Hiện 3 posture scan/plan/code + profile pins |
+| H2 ✅ PASSED 08-30 | `/mode scan` | "Mode: scan — read-only"; yêu cầu write bị chặn/auto-deny |
+| H3 ✅ PASSED 08-30 | Tab | Cycled plan ↔ code |
+| H4 ✅ PASSED 08-30 | Đang active posture có pin model (vd scan pin grok-4.5): chọn model opencode → thoát → mở lại | **Model opencode giữ nguyên** (restore không re-pin đè — CA-679); posture vẫn đúng active |
+| H5 ✅ PASSED 08-30 | `/mode plan` (switch THẬT sang posture có pin model) | Pin model của posture được áp (hành vi cũ giữ nguyên) |
+
+## I. Session resume / history (OC-12/E2E-04/05) — **PASSED 08-30 (I1-I4)**
+
+| # | Bước | Kết quả mong đợi |
+|---|------|------------------|
+| I1 ✅ PASSED 08-30 | Chat vài turn → thoát TUI → mở lại → `/history` | Run opencode xuất hiện trong list |
+| I2 ✅ PASSED 08-30 | `/open <run>` → "trước đó tôi nói gì?" | Model trả lời đúng nội dung cũ (resume cùng `ses_*`) |
+| I3 ✅ PASSED 08-30 | Kill runner (thoát `just chat-dev`) → mở lại → mở chat cũ → hỏi tiếp | Tiếp tục được (session persist trong opencode.db) |
+| I4 ✅ PASSED 08-30 | `/sync` → `/restore` với chat opencode | Trả lỗi **typed** rõ ràng (Drive file-copy restore chưa hỗ trợ opencode — known gap có chủ đích, xem CP-57 §10.2), không corrupt history. **Lưu ý CA-688**: `/open` chat opencode LOCAL thì hoạt động bình thường (I1/I2) — nếu gặp `session_unavailable` khi mở chat local, restart runner để nhận fix |
 
 ## J. Summary (E2E-13)
 
