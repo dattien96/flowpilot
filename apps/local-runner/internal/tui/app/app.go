@@ -2198,6 +2198,19 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.authPhase != AuthNone {
 			return m, nil
 		}
+		// BUG-333: with a blocking card pending (approval/question/gate) the
+		// ring owns Tab BEFORE any passive suggestion list — the operator saw
+		// a mounted gate whose Tab did nothing while a suggestion source was
+		// alive. Diagnostic log eases the next live repro.
+		if m.approval != nil || m.question != nil || m.gate != nil {
+			tuiLog("tab-ring: active=%v sugg=%d input=%q idx=%d focus=%v",
+				m.actionRingKeysActive(), len(m.collectSuggestions()), m.inputValue, m.actionRingIdx, m.actionRingFocus)
+		}
+		if m.actionRingKeysActive() {
+			if handled, model, cmd := m.handleActionRingKey(tea.KeyMsg{Type: tea.KeyRight}); handled {
+				return model, cmd
+			}
+		}
 		if items := m.collectSuggestions(); len(items) > 0 {
 			it := items[m.suggIdx%len(items)]
 			if it.kind == "file" && strings.TrimSpace(it.value) != "" {
@@ -2211,13 +2224,6 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.applySuggestion(items)
 			return m, m.cmdMaybePrefetchPickers()
-		}
-		// Tab cycles the keyboard action ring (Approve/Deny/Retry/...) when a
-		// card is active. Agent view is switched only via /agents, never Tab.
-		if m.actionRingKeysActive() {
-			if handled, model, cmd := m.handleActionRingKey(tea.KeyMsg{Type: tea.KeyRight}); handled {
-				return model, cmd
-			}
 		}
 		// Empty input + no picker/ring: Tab cycles the chat posture
 		// (plan ↔ code). Scan is only reachable via explicit /mode scan.

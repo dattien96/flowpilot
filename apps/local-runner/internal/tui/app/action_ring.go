@@ -25,7 +25,19 @@ func (m *AppModel) hasActionRingCard() bool {
 }
 
 func (m *AppModel) actionRingKeysActive() bool {
-	if m.attachPanelOpen || len(m.collectSuggestions()) > 0 {
+	if m.attachPanelOpen {
+		return false
+	}
+	// BUG-333 (operator report: visible Approve/Deny gate, Tab/arrows dead): a
+	// blocking card OWNS ←/→/Tab/Enter while the user is not typing. Passive
+	// suggestion lists (history/flows/providers at empty input) must never veto
+	// the gate ring — previously collectSuggestions()>0 disabled the whole ring
+	// even with a card up. Typing still hands keys back to the composer so
+	// "/approve"-style commands keep their pickers.
+	if m.approval != nil || m.question != nil || m.gate != nil || m.hasUnresolvedAttention() {
+		return strings.TrimSpace(m.inputValue) == ""
+	}
+	if len(m.collectSuggestions()) > 0 {
 		return false
 	}
 	if m.actionRingFocus {
