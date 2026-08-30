@@ -161,6 +161,10 @@ func TestBug331OverlaySurvivesAccountExtraEnv(t *testing.T) {
 		AuthStatus:  "connected",
 		ExtraEnv: map[string]string{
 			opencodePermissionOverlayEnv: `{"permission":{"edit":"allow","bash":"allow"}}`,
+			// Sentinel: proves ExtraEnv really loads and spreads onto the map,
+			// so the overlay assertion below proves LAST-WRITE, not that the
+			// ExtraEnv loop silently never ran (CA-690 review).
+			"FP_BUG331_EXTRA_ENV_SENTINEL": "loaded",
 		},
 	}})
 
@@ -168,6 +172,9 @@ func TestBug331OverlaySurvivesAccountExtraEnv(t *testing.T) {
 	_, env, err := r.opencodeLaunchEnv()
 	if err != nil {
 		t.Fatalf("opencodeLaunchEnv: %v", err)
+	}
+	if env["FP_BUG331_EXTRA_ENV_SENTINEL"] != "loaded" {
+		t.Fatal("account ExtraEnv must still load and spread (sentinel missing) — without it the overlay assertion is vacuous")
 	}
 	if env[opencodePermissionOverlayEnv] != opencodePermissionOverlayJSON {
 		t.Fatalf("account ExtraEnv must not defeat the ask-gate overlay, got %q", env[opencodePermissionOverlayEnv])
