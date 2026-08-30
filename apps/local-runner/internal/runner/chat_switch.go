@@ -99,34 +99,96 @@ func (s *InteractiveService) activeChatLegsLocked(chatID string) []*interactiveR
 
 // healChatLegsLocked closes the SD26-S-2 crash windows observable on leg
 // records: two-active (discriminator: keep `switchFromRunID != own id`, close
-// `switchFromRunID == own id` + append the missing E-9 record) and orphan
+// `switchFromRunID == own id` + append the missing E-9 record), closed-no-
+// record (old already closed, new active, E-9 missing → append), and orphan
 // intent (single active leg stamped with its own id and no partner → clear).
 // Caller holds s.mu. Best effort: record appends are non-fatal.
 func (s *InteractiveService) healChatLegsLocked(chatID string) {
 	legs := s.activeChatLegsLocked(chatID)
 	var newLeg, oldLeg *interactiveRun
+	var closedSrc *interactiveRun
 	for _, rs := range legs {
-		if rs.legState != LegStateActive {
-			continue
-		}
 		switch {
-		case rs.switchFromRunID != "" && rs.switchFromRunID != rs.id:
+		case rs.legState == LegStateActive && rs.switchFromRunID != "" && rs.switchFromRunID != rs.id:
 			newLeg = rs
-		case rs.switchFromRunID == rs.id:
+		case rs.legState == LegStateActive && rs.switchFromRunID == rs.id:
 			oldLeg = rs
+		case rs.legState == LegStateClosed && rs.legClosedReason == LegClosedReasonProviderSwitch:
+			closedSrc = rs
 		}
 	}
-	if newLeg == nil || oldLeg == nil {
+	switch {
+	case newLeg != nil && oldLeg != nil:
+		// Two-active window: keep the new leg (it points at the source), close
+		// the source, append the missing record.
+		oldLeg.legState = LegStateClosed
+		oldLeg.legClosedReason = LegClosedReasonProviderSwitch
+		s.appendChatSwitchRecordOnce(chatID, oldLeg, newLeg)
+	case newLeg != nil && closedSrc != nil && closedSrc.id == newLeg.switchFromRunID:
+		// Closed-no-record window (review C-3): phase C's record write was
+		// lost — append it idempotently.
+		s.appendChatSwitchRecordOnce(chatID, closedSrc, newLeg)
+	default:
 		// Orphan intent: a lone active leg carrying its own id means a switch
 		// was interrupted before createRun — clear so it can be retried.
 		if newLeg == nil && oldLeg != nil && oldLeg.legState == LegStateActive {
 			oldLeg.switchFromRunID = ""
 		}
+	}
+}
+
+// appendChatSwitchRecordOnce emits the SD26-E-9 record only when the pair has
+// none yet (heal re-entry safety); the direct switch path appends without the
+// scan because the in-flight guard already serializes it.
+func (s *InteractiveService) appendChatSwitchRecordOnce(chatID string, from, to *interactiveRun, stats ...chatSwitchHandoffStats) {
+	if s.chatTranscripts == nil {
 		return
 	}
-	oldLeg.legState = LegStateClosed
-	oldLeg.legClosedReason = LegClosedReasonProviderSwitch
-	s.appendChatSwitchRecord(chatID, oldLeg, newLeg, chatSwitchHandoffStats{Mode: "raw"})
+	if s.hasSwitchRecord(context.Background(), chatID, to.id) {
+		return
+	}
+	st := chatSwitchHandoffStats{Mode: "raw"}
+	if len(stats) > 0 {
+		st = stats[0]
+	}
+	s.appendChatSwitchRecord(chatID, from, to, st)
+}
+
+// hasSwitchRecord reports whether an E-9 record for toRunID already exists.
+func (s *InteractiveService) hasSwitchRecord(ctx context.Context, chatID, toRunID string) bool {
+	if s.chatTranscripts == nil {
+		return false
+	}
+	records, err := s.chatTranscripts.store.ReadChatRecords(ctx, chatID, 0, 0)
+	if err != nil {
+		return false
+	}
+	for _, rec := range records {
+		if rec.Type != EventTypeChatProviderSwitch {
+			continue
+		}
+		var p struct {
+			ToRunID string `json:"toRunId"`
+		}
+		if json.Unmarshal(rec.Payload, &p) == nil && p.ToRunID == toRunID {
+			return true
+		}
+	}
+	return false
+}
+
+// markSwitchSeedFailed records the SD26-X-7 state as a queryable chat record
+// (type switch_seed_failed) instead of log-only: the timeline consumer and
+// operators can see the committed switch whose seed turn failed, and the chat
+// stays continuable.
+func (s *InteractiveService) markSwitchSeedFailed(chatID, runID string, cause error) {
+	if s.chatTranscripts == nil {
+		return
+	}
+	payload, _ := json.Marshal(map[string]any{"runId": runID, "error": cause.Error()})
+	_ = s.chatTranscripts.append(context.Background(), ChatTranscriptRecord{
+		ChatID: chatID, LegRunID: runID, Type: EventTypeChatSeedFailed, Payload: payload,
+	})
 }
 
 // appendChatSwitchRecord emits the SD26-E-9 record exactly once per
@@ -243,6 +305,9 @@ func (s *InteractiveService) switchChatProvider(ctx context.Context, chatID stri
 	// (SD26-X-7).
 	if seedPrompt != "" {
 		if _, seedErr := s.startTurn(newHandle.RunID, TurnInput{StepID: newHandle.StepID, Prompt: seedPrompt}, "chat_switch_seed", "chat-switch-seed-"+chatID+"-"+newHandle.RunID); seedErr != nil {
+			// SD26-X-7: queryable record + log; the leg stays active and the
+			// chat continuable (resend or re-switch).
+			s.markSwitchSeedFailed(chatID, newHandle.RunID, seedErr)
 			fmt.Printf("[chat-ssot] switch seed failed chat=%s leg=%s: %v (switch_seed_failed)\n", chatID, newHandle.RunID, seedErr)
 		}
 	}

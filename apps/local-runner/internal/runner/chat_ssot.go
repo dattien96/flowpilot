@@ -51,6 +51,9 @@ const (
 	// DOD-8): its presence means raw turns were already synthesized from the
 	// pre-flag run events; not part of the SD26-E contract families.
 	EventTypeChatBackfillMarker = "chat_backfilled"
+	// EventTypeChatSeedFailed records SD26-X-7: a committed switch whose seed
+	// turn failed. The leg stays active and the chat continuable.
+	EventTypeChatSeedFailed = "switch_seed_failed"
 )
 
 // chatSSOTEnvFlag gates every chat-SSOT behavior (SD-26 Key Decision D-10).

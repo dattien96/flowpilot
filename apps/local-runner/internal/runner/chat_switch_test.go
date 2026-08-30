@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newSwitchTestService builds a service whose registry has codex (fake) plus a
@@ -316,5 +317,120 @@ func TestChatEnvelopeFreshStartNoError(t *testing.T) {
 	env := svc.buildChatHandoffContext(context.Background(), handle.ChatID, src, chatSwitchRequest{TargetProviderKey: ProviderKeyClaude})
 	if env.Stats.Mode != "fresh_start" || env.Prompt != "" {
 		t.Fatalf("fresh_start envelope = %+v", env)
+	}
+}
+
+// TestSwitchNeverHoldsLockAcrossCreateRun is the SD26-S-2 lock-rule canary
+// (Task-314 DOD-11): the switch must complete without deadlocking AND s.mu
+// must be acquirable from outside during phase B (envelope/createRun/seed run
+// unlocked). A held-across-createRun bug would hang the switch past the
+// watchdog or starve the probe for the whole window.
+func TestSwitchNeverHoldsLockAcrossCreateRun(t *testing.T) {
+	svc, writer := newSwitchTestService(t)
+	handle, err := svc.createRun(StartRunInput{ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(map[string]any{"prompt": "hello"})
+	if err := writer.append(context.Background(), ChatTranscriptRecord{ChatID: handle.ChatID, LegRunID: handle.RunID, Type: EventTypeChatTurnStarted, Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+
+	prevDelay := fakeAdapterDelay
+	fakeAdapterDelay = 120 * time.Millisecond // widen the phase-B window
+	defer func() { fakeAdapterDelay = prevDelay }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rec := postSwitch(t, svc, handle.ChatID, chatSwitchRequest{TargetProviderKey: ProviderKeyClaude})
+		if rec.Code != http.StatusOK {
+			t.Errorf("switch status = %d body=%s", rec.Code, rec.Body.String())
+		}
+	}()
+
+	probeAcquired := false
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case <-done:
+			if !probeAcquired {
+				t.Fatal("s.mu was never acquirable during the switch — lock likely held across createRun")
+			}
+			return // completed without deadlock, probe saw the unlock window
+		case <-deadline:
+			t.Fatal("switch did not complete within 15s — deadlock suspected (s.mu held across createRun?)")
+		default:
+		}
+		if svc.mu.TryLock() {
+			svc.mu.Unlock()
+			probeAcquired = true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestSwitchCrashHealsOnLoad covers the closed-no-record crash window
+// (review C-3): phase C's close landed but the E-9 record write was lost —
+// heal appends it exactly once without touching the active new leg.
+func TestSwitchCrashHealsOnLoad(t *testing.T) {
+	svc, writer := newSwitchTestService(t)
+	closedSrc := &interactiveRun{id: "run-src", runKind: "chat", chatID: "cht_k", legSeq: 0, legState: LegStateClosed, legClosedReason: LegClosedReasonProviderSwitch, switchFromRunID: "run-src", providerKey: ProviderKeyCodex}
+	newLeg := &interactiveRun{id: "run-new", runKind: "chat", chatID: "cht_k", legSeq: 1, legState: LegStateActive, switchFromRunID: "run-src", providerKey: ProviderKeyClaude}
+	svc.runs[closedSrc.id] = closedSrc
+	svc.runs[newLeg.id] = newLeg
+	svc.chatRuns.register(closedSrc.id, "cht_k")
+	svc.chatRuns.register(newLeg.id, "cht_k")
+
+	svc.mu.Lock()
+	svc.healChatLegsLocked("cht_k")
+	svc.mu.Unlock()
+
+	if newLeg.legState != LegStateActive {
+		t.Fatalf("new leg disturbed: %s", newLeg.legState)
+	}
+	count := func() int {
+		records, rerr := writer.store.ReadChatRecords(context.Background(), "cht_k", 0, 0)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		n := 0
+		for _, r := range records {
+			if r.Type == EventTypeChatProviderSwitch {
+				n++
+			}
+		}
+		return n
+	}
+	if n := count(); n != 1 {
+		t.Fatalf("heal record count = %d, want 1", n)
+	}
+	// Heal re-entry is idempotent (appendChatSwitchRecordOnce).
+	svc.mu.Lock()
+	svc.healChatLegsLocked("cht_k")
+	svc.mu.Unlock()
+	if n := count(); n != 1 {
+		t.Fatalf("heal re-entry duplicated the record: %d", n)
+	}
+}
+
+// TestSwitchSeedFailedRecordEmitted pins SD26-X-7: a seed failure leaves a
+// queryable switch_seed_failed record and the leg stays continuable.
+func TestSwitchSeedFailedRecordEmitted(t *testing.T) {
+	svc, writer := newSwitchTestService(t)
+	svc.markSwitchSeedFailed("cht_s", "run-seed", context.DeadlineExceeded)
+	records, rerr := writer.store.ReadChatRecords(context.Background(), "cht_s", 0, 0)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if len(records) != 1 || records[0].Type != EventTypeChatSeedFailed {
+		t.Fatalf("seed-fail records = %+v", records)
+	}
+	var p map[string]any
+	if err := json.Unmarshal(records[0].Payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p["runId"] != "run-seed" {
+		t.Fatalf("payload = %v", p)
 	}
 }

@@ -37,3 +37,11 @@ summary: POST /client/chats/{chatId}/switch-provider behind FLOWPILOT_CHAT_SSOT 
 1. Same-provider switch never mints a leg (409 + leg count unchanged).
 2. A refused switch leaves zero mutation (intent empty, leg active — asserted).
 3. E-9 appears exactly once per switch with the from/to pair; crash windows heal to one active leg with the switch record present.
+
+## Audit addendum (2026-08-30, post-review)
+
+- Correction: the slice initially shipped **11** switch tests, not 13 as first reported. The two DOD-named tests have since been added — `TestSwitchNeverHoldsLockAcrossCreateRun` (watchdog + `TryLock` probe: switch completes and `s.mu` is provably acquirable during phase B, DOD-11) and `TestSwitchCrashHealsOnLoad` (closed-no-record cell, idempotent heal re-entry). Suite now **14 tests**.
+- X-7 upgraded from log-only to a queryable `switch_seed_failed` chat record (`markSwitchSeedFailed`), pinned by `TestSwitchSeedFailedRecordEmitted`.
+- `healChatLegsLocked` extended with the closed-no-record window + `appendChatSwitchRecordOnce` re-entry guard.
+- Still deferred (unchanged): context-window budget lookup (floor active), hybrid summary ladder, live 12-pair matrix (manual DOD of Task-315/316), `TestSupabaseChatTranscriptStoreRoundTrip` (needs migration applied — operator step).
+- R1 after this addendum: full runner suite identical to the 13-failure baseline.
