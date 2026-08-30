@@ -17,13 +17,36 @@ import (
 // the chat columns to exist (pre-migration deployments stay untouched).
 const providerSessionSelectChat = "run_id,project_id,provider_key,provider_session_id,status,started_at,updated_at,run_kind,chat_id,leg_seq,leg_state,leg_closed_reason,switch_from_run_id"
 
+// dbChatEventRow maps the snake_case workflow_chat_events columns; the public
+// ChatTranscriptRecord JSON stays camelCase (timeline contract), so the
+// Supabase store converts at the boundary.
+type dbChatEventRow struct {
+	ChatID   string          `json:"chat_id"`
+	ChatSeq  int64           `json:"chat_seq"`
+	LegRunID string          `json:"leg_run_id"`
+	Type     string          `json:"type"`
+	Payload  json.RawMessage `json:"payload"`
+}
+
+func chatEventRowFrom(rec ChatTranscriptRecord) dbChatEventRow {
+	return dbChatEventRow{ChatID: rec.ChatID, ChatSeq: rec.ChatSeq, LegRunID: rec.LegRunID, Type: rec.Type, Payload: rec.Payload}
+}
+
+func (r dbChatEventRow) toRecord() ChatTranscriptRecord {
+	return ChatTranscriptRecord{ChatID: r.ChatID, ChatSeq: r.ChatSeq, LegRunID: r.LegRunID, Type: r.Type, Payload: r.Payload}
+}
+
 // AppendChatRecords implements ChatTranscriptStore. Idempotent on
 // (chat_id, chat_seq): duplicates are ignored server-side by the unique key.
 func (s *SupabaseWorkflowStore) AppendChatRecords(ctx context.Context, recs []ChatTranscriptRecord) error {
 	if len(recs) == 0 {
 		return nil
 	}
-	body, err := json.Marshal(recs)
+	rows := make([]dbChatEventRow, 0, len(recs))
+	for _, rec := range recs {
+		rows = append(rows, chatEventRowFrom(rec))
+	}
+	body, err := json.Marshal(rows)
 	if err != nil {
 		return err
 	}
@@ -56,8 +79,12 @@ func (s *SupabaseWorkflowStore) ReadChatRecords(ctx context.Context, chatID stri
 		return nil, fmt.Errorf("supabase read chat records failed: status %d: %s", code, string(body))
 	}
 	out := make([]ChatTranscriptRecord, 0, 32)
-	if err := json.Unmarshal(body, &out); err != nil {
+	var rows []dbChatEventRow
+	if err := json.Unmarshal(body, &rows); err != nil {
 		return nil, fmt.Errorf("supabase read chat records decode: %w", err)
+	}
+	for _, r := range rows {
+		out = append(out, r.toRecord())
 	}
 	return out, nil
 }
