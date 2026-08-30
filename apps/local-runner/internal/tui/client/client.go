@@ -802,6 +802,84 @@ func (c *Client) ListAgents(ctx context.Context, cwd string) ([]AgentRunSummary,
 	return agents, err
 }
 
+// HandoffPromptPrefix mirrors the runner's handoff marker (Task-078 /
+// chat_switch seed turns). Parity with the runner constant is pinned by
+// TestHandoffPromptPrefixParity (Task-315 T-6).
+const HandoffPromptPrefix = "[FlowPilot cross-provider chat handoff]"
+
+// ChatSwitchInput mirrors the runner chatSwitchRequest DTO (Task-314).
+type ChatSwitchInput struct {
+	TargetProviderKey string `json:"targetProviderKey"`
+	Model             string `json:"model,omitempty"`
+	ReasoningEffort   string `json:"reasoningEffort,omitempty"`
+	YoloMode          *bool  `json:"yoloMode,omitempty"`
+}
+
+// ChatSwitchHandoffStats mirrors the runner handoff stats block.
+type ChatSwitchHandoffStats struct {
+	HandoffMode       string `json:"handoffMode"`
+	IncludedTurnCount int    `json:"includedTurnCount"`
+	OmittedTurnCount  int    `json:"omittedTurnCount"`
+	Truncated         bool   `json:"truncated"`
+	ActionsDigest     bool   `json:"actionsDigestIncluded"`
+}
+
+// ChatSwitchResponse mirrors the runner chatSwitchResponse DTO.
+type ChatSwitchResponse struct {
+	Handle  RunHandle              `json:"handle"`
+	ChatID  string                 `json:"chatId"`
+	LegSeq  int                    `json:"legSeq"`
+	Model   string                 `json:"model"`
+	Handoff ChatSwitchHandoffStats `json:"handoff"`
+}
+
+// ChatTimelineResponse mirrors GET /client/chats/{chatId}/timeline (Task-313).
+type ChatTimelineResponse struct {
+	ChatID    string                 `json:"chatId"`
+	Legs      []ChatTimelineLeg      `json:"legs"`
+	Records   []ChatTranscriptRecord `json:"records"`
+	NextSeq   int64                  `json:"nextSeq"`
+	Truncated bool                   `json:"truncated"`
+	Degraded  bool                   `json:"degraded"`
+}
+
+type ChatTimelineLeg struct {
+	RunID           string `json:"runId"`
+	ProviderKey     string `json:"providerKey"`
+	LegSeq          int    `json:"legSeq"`
+	LegState        string `json:"legState"`
+	LegClosedReason string `json:"legClosedReason,omitempty"`
+	Status          string `json:"status,omitempty"`
+}
+
+type ChatTranscriptRecord struct {
+	ChatID   string          `json:"chatId"`
+	ChatSeq  int64           `json:"chatSeq"`
+	LegRunID string          `json:"legRunId"`
+	Type     string          `json:"type"`
+	Payload  json.RawMessage `json:"payload"`
+}
+
+// SwitchChatProvider POSTs /client/chats/{chatId}/switch-provider (CP-59
+// Task-314). Refusals surface as typed errors (handoff_run_busy,
+// handoff_same_provider, provider_unavailable, chat_no_active_leg, ...).
+func (c *Client) SwitchChatProvider(ctx context.Context, chatID string, in ChatSwitchInput) (ChatSwitchResponse, error) {
+	var out ChatSwitchResponse
+	err := c.postJSON(ctx, "/client/chats/"+neturl.PathEscape(chatID)+"/switch-provider", in, &out)
+	return out, err
+}
+
+// GetChatTimeline fetches the chat's joined leg + record timeline (Task-313).
+func (c *Client) GetChatTimeline(ctx context.Context, chatID string, afterSeq int64, limit int) (ChatTimelineResponse, error) {
+	var out ChatTimelineResponse
+	path := "/client/chats/" + neturl.PathEscape(chatID) + "/timeline"
+	if afterSeq > 0 || limit > 0 {
+		path += fmt.Sprintf("?afterSeq=%d&limit=%d", afterSeq, limit)
+	}
+	err := c.getJSON(ctx, path, &out)
+	return out, err
+}
+
 // ListAgentRuns fetches GET /client/workflow-runs/{runId}/agents (children of a parent run).
 func (c *Client) ListAgentRuns(ctx context.Context, parentRunID string) ([]AgentRunSummary, error) {
 	var agents []AgentRunSummary

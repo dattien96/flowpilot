@@ -1297,6 +1297,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case ChatSwitchedMsg:
+		// CP-59 Task-315 (SD-26 D-7): adopt in place — transcript kept, no
+		// client-synthesized divider on success (the seed turn carries it).
+		m.applyChatSwitched(msg)
+		if msg.Err == nil && msg.Resp != nil {
+			return m, m.cmdStartOrchestrationStream()
+		}
+		return m, nil
+
 	case turnStreamOpenedMsg:
 		m.turnStream = &turnStreamState{evCh: msg.EvCh, errCh: msg.ErrCh}
 		m.turnSendPending = false
@@ -4171,6 +4180,11 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			}
 			m.addMessage("system", sb.String(), "")
 		} else if m.runHandle != nil {
+			// CP-59 Task-315: a chat run routes provider changes through the
+			// runner switch endpoint (in-place adoption, transcript kept).
+			if cmd := m.routeProviderSwitch(strings.ToLower(args[0]), ""); cmd != nil {
+				return m, cmd
+			}
 			m.addMessage("system", "Cannot change provider after a run has started. Use /new to start fresh.", "error")
 		} else {
 			want := strings.ToLower(args[0])
@@ -4253,6 +4267,12 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			providerSwitched := false
 			if matched != nil {
 				if matched.provider != "" && !strings.EqualFold(matched.provider, m.provider) {
+					// CP-59 Task-315: a foreign-provider model on a live chat
+					// routes through the switch endpoint instead of swapping
+					// m.model inside the old provider (BUG-330 class).
+					if cmd := m.routeProviderSwitch(matched.provider, matched.id); cmd != nil {
+						return m, cmd
+					}
 					m.provider = matched.provider
 					m.bindActiveAccountForProvider()
 					m.skillsCatalog = nil
@@ -4261,6 +4281,9 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.model = matched.id
 			} else {
 				if prov := providerForModel(m.providers, want); prov != "" && !strings.EqualFold(prov, m.provider) {
+					if cmd := m.routeProviderSwitch(prov, want); cmd != nil {
+						return m, cmd
+					}
 					m.provider = prov
 					m.bindActiveAccountForProvider()
 					m.skillsCatalog = nil
@@ -5867,6 +5890,12 @@ func (m *AppModel) renderBottomNotice(w int) string {
 // ---- Helpers ----------------------------------------------------------------
 
 func (m *AppModel) addMessage(role, content, hint string) {
+	// CP-59 Task-315 (SD-26 D-7): the handoff seed envelope renders as a
+	// one-line divider, never as a raw user bubble (live stream + replay).
+	if role == "user" && strings.HasPrefix(content, client.HandoffPromptPrefix) {
+		role = "system"
+		content = "⇄ provider switched — prior conversation carried below"
+	}
 	m.messages = append(m.messages, ChatMessage{
 		Role:       role,
 		Content:    content,

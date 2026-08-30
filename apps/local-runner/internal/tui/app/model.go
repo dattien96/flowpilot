@@ -534,6 +534,11 @@ type AppModel struct {
 	stepID           string // synthetic chat step from StartRun / Resume
 	pendingPrompt    string // first prompt waiting for StartRun to finish
 
+	// Chat switch surface (CP-59 Task-315): one in-flight switch at a time;
+	// a posture picked mid-switch queues for the new leg.
+	chatSwitchInFlight      bool
+	chatSwitchQueuedPosture string
+
 	// Supabase auth (Desktop LoginScreen parity via POST /supabase-auth/login)
 	authPhase     AuthPhase
 	authEmail     string
