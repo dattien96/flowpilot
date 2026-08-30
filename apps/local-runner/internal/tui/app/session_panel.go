@@ -2,10 +2,11 @@ package app
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"flowpilot-runner/internal/tui/client"
 )
@@ -434,7 +435,7 @@ func (m *AppModel) renderRightSidebar(h int) []string {
 		}
 		if agentRows >= 2 {
 			out = append(out, "")
-			for _, line := range m.agentRunsSectionLines(agentRows-1) {
+			for _, line := range m.agentRunsSectionLines(agentRows - 1) {
 				out = append(out, truncateStepLine(line, w-2))
 			}
 		}
@@ -446,18 +447,43 @@ func (m *AppModel) renderRightSidebar(h int) []string {
 	return out
 }
 
+// agentRowIsMain reports whether an agent-graph row is the hub/main run,
+// which pins to the top of the sidebar agents section (BUG-336).
+func agentRowIsMain(a client.AgentRunSummary) bool {
+	return strings.EqualFold(strings.TrimSpace(a.Role), "main") ||
+		strings.EqualFold(strings.TrimSpace(a.AgentName), "main")
+}
+
 // agentRunsSectionLines renders the sidebar "agents" section: one row per run
 // in the current run's agent graph (spawn_agent children, flow reviewers),
 // with the same status glyphs as the steps section. Header included; capped at
 // maxRows data rows with a … +N more tail.
+//
+// Display order is DETERMINISTIC and stable across snapshot jitter (BUG-336,
+// operator report: the section flickered and re-ordered continuously because
+// graph events and hydrate polls deliver the same runs in varying orders):
+// the main run pins to the top, the rest sort by CreatedAt (spawn time) with
+// RunID as the tiebreak.
 func (m *AppModel) agentRunsSectionLines(maxRows int) []string {
 	if len(m.agentRuns) == 0 || maxRows < 1 {
 		return nil
 	}
+	rows := make([]client.AgentRunSummary, len(m.agentRuns))
+	copy(rows, m.agentRuns)
+	sort.SliceStable(rows, func(i, j int) bool {
+		mi, mj := agentRowIsMain(rows[i]), agentRowIsMain(rows[j])
+		if mi != mj {
+			return mi
+		}
+		if rows[i].CreatedAt != rows[j].CreatedAt {
+			return rows[i].CreatedAt < rows[j].CreatedAt
+		}
+		return rows[i].RunID < rows[j].RunID
+	})
 	out := []string{styleGate.Render("agents")}
-	for i, a := range m.agentRuns {
+	for i, a := range rows {
 		if i >= maxRows {
-			out = append(out, fmt.Sprintf("… +%d more", len(m.agentRuns)-maxRows))
+			out = append(out, fmt.Sprintf("… +%d more", len(rows)-maxRows))
 			break
 		}
 		name := strings.TrimSpace(a.Label)

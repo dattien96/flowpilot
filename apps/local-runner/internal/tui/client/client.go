@@ -164,6 +164,10 @@ type AgentRunSummary struct {
 	Status      string `json:"status"`
 	Role        string `json:"role,omitempty"`
 	ProviderKey string `json:"providerKey,omitempty"`
+	// CreatedAt mirrors the runner's agent-graph field (BUG-336): the sidebar
+	// agents section sorts by spawn time so rows stop re-ordering between
+	// graph events and hydrate polls.
+	CreatedAt string `json:"createdAt,omitempty"`
 }
 
 // AgentLoopState carries loop progress metadata from the orchestrator.
@@ -853,14 +857,14 @@ func (c *Client) RestoreChatRun(ctx context.Context, req ChatSessionRestoreReque
 
 // EngineInitResult mirrors the runner's POST /client/projects/{id}/engine/init response.
 type EngineInitResult struct {
-	ProjectID        string `json:"projectId"`
-	WorkingDirectory string `json:"workingDirectory"`
-	Initialized      bool   `json:"initialized"`
-	GateMode         string `json:"gateMode"`
+	ProjectID        string   `json:"projectId"`
+	WorkingDirectory string   `json:"workingDirectory"`
+	Initialized      bool     `json:"initialized"`
+	GateMode         string   `json:"gateMode"`
 	Warnings         []string `json:"warnings"`
 	LastInit         *struct {
-		Status  string `json:"status"`
-		Steps   []struct {
+		Status string `json:"status"`
+		Steps  []struct {
 			Step    string `json:"step"`
 			Outcome string `json:"outcome"`
 			Detail  string `json:"detail"`

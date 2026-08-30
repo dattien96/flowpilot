@@ -61,6 +61,45 @@ func TestAgentsSidebar_HiddenWithoutAgentRuns(t *testing.T) {
 	}
 }
 
+// BUG-336 (operator report: agents rows flickered and re-ordered constantly):
+// display order is deterministic — main pinned first, the rest by spawn time
+// (CreatedAt), RunID tiebreak — so the same set of runs always renders in the
+// same order no matter which snapshot/hydrate delivered it.
+func TestAgentsSidebar_StableMainFirstThenSpawnOrder(t *testing.T) {
+	m := agentsSidebarModel(t)
+	// Deliberately shuffled: snapshot delivered main LAST and reviewers mid-list.
+	m.agentRuns = []client.AgentRunSummary{
+		{RunID: "run-3", AgentName: "reviewer", Role: "reviewer", Status: "completed", CreatedAt: "2026-08-30T10:05:00Z"},
+		{RunID: "run-1", AgentName: "main", Role: "main", Status: "completed", CreatedAt: "2026-08-30T10:00:00Z"},
+		{RunID: "run-4", AgentName: "implement", Role: "coder", Status: "completed", CreatedAt: "2026-08-30T10:03:00Z"},
+		{RunID: "run-2", AgentName: "test_signatures", Role: "coder", Status: "completed", CreatedAt: "2026-08-30T10:01:00Z"},
+	}
+	want := []string{"main", "test_signatures", "implement", "reviewer"}
+	got := stripANSI(strings.Join(m.agentRunsSectionLines(10), "\n"))
+	pos := -1
+	for _, w := range want {
+		next := strings.Index(got, w)
+		if next < 0 {
+			t.Fatalf("missing agent %q in section:\n%s", w, got)
+		}
+		if next < pos {
+			t.Fatalf("agents out of time order: %q appears before the previous row\n%s", w, got)
+		}
+		pos = next
+	}
+	// Same set in a different delivery order must render identically.
+	m2 := agentsSidebarModel(t)
+	m2.agentRuns = []client.AgentRunSummary{
+		{RunID: "run-2", AgentName: "test_signatures", Role: "coder", Status: "completed", CreatedAt: "2026-08-30T10:01:00Z"},
+		{RunID: "run-4", AgentName: "implement", Role: "coder", Status: "completed", CreatedAt: "2026-08-30T10:03:00Z"},
+		{RunID: "run-1", AgentName: "main", Role: "main", Status: "completed", CreatedAt: "2026-08-30T10:00:00Z"},
+		{RunID: "run-3", AgentName: "reviewer", Role: "reviewer", Status: "completed", CreatedAt: "2026-08-30T10:05:00Z"},
+	}
+	if strings.Join(m2.agentRunsSectionLines(10), "|") != strings.Join(m.agentRunsSectionLines(10), "|") {
+		t.Fatal("identical run sets must render identically regardless of delivery order (flicker fix)")
+	}
+}
+
 func TestAgentsSidebar_RowsTruncatedToHeight(t *testing.T) {
 	m := agentsSidebarModel(t)
 	m.height = 10
