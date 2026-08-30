@@ -3353,6 +3353,17 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 		} else {
 			m.statusMsg = "chat disabled — no project_id"
 			m.addMessage("user", input, "")
+			if len(m.pendingAttach) > 0 {
+				names := make([]string, 0, len(m.pendingAttach))
+				for _, att := range m.pendingAttach {
+					if n := strings.TrimSpace(att.OriginalName); n != "" {
+						names = append(names, n)
+					} else {
+						names = append(names, "image")
+					}
+				}
+				m.messages[len(m.messages)-1].Attachments = names
+			}
 			m.addMessage("system", formatMissingProjectHelp(m.cfg.ProjectPath, m.projects), "error")
 			return m, nil
 		}
@@ -3360,6 +3371,17 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 
 	m.viewport.offset = 0
 	m.addMessage("user", input, "")
+	if len(m.pendingAttach) > 0 {
+		names := make([]string, 0, len(m.pendingAttach))
+		for _, att := range m.pendingAttach {
+			if n := strings.TrimSpace(att.OriginalName); n != "" {
+				names = append(names, n)
+			} else {
+				names = append(names, "image")
+			}
+		}
+		m.messages[len(m.messages)-1].Attachments = names
+	}
 	m.recordPromptHistory(input)
 	// CA-537: no "Thinking" row in the chat timeline — the spinner animates on
 	// the status line + F2 RUNNING step instead (workIsLive starts the ticker).
@@ -4905,6 +4927,15 @@ func (m *AppModel) buildChatRows() []chatRow {
 			truncatable := len(lines) > maxUserPromptLines
 			if truncatable && !m.userPromptExpanded(msg.Content) {
 				lines = clampPromptLines(lines, innerW)
+			}
+			if len(msg.Attachments) > 0 {
+				chip := ""
+				if len(msg.Attachments) == 1 {
+					chip = "[1 image attached]"
+				} else {
+					chip = fmt.Sprintf("[%d images attached]", len(msg.Attachments))
+				}
+				lines = append(lines, chip)
 			}
 			msgRows := youBox(lines, width, m.asciiMode, showCopy, mi, truncatable, msg.Content)
 			if mi > 0 && chatGapBefore(m.messages[mi-1], msg) {

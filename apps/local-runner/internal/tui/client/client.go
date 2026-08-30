@@ -1141,6 +1141,8 @@ func (c *Client) SendTurn(ctx context.Context, input TurnInput) (<-chan Provider
 		streamCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
+		seenTerminal := false
+		seenTurnEvent := false
 		for ev := range c.openStream(streamCtx, input.RunID, after) {
 			c.mu.Lock()
 			if ev.Seq > c.lastSeq[input.RunID] {
@@ -1153,10 +1155,20 @@ func (c *Client) SendTurn(ctx context.Context, input TurnInput) (<-chan Provider
 			if ev.Type != "agent_graph_updated" && ev.ProviderTurnID != "" && ev.ProviderTurnID != turnID {
 				continue
 			}
+			if ev.ProviderTurnID == turnID {
+				seenTurnEvent = true
+			}
 			evCh <- ev
 			if (ev.Type == "turn_completed" || ev.Type == "turn_failed") && ev.ProviderTurnID == turnID {
+				seenTerminal = true
 				return
 			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if seenTurnEvent && !seenTerminal {
+			errCh <- fmt.Errorf("turn stream ended without terminal event")
 		}
 	}()
 
@@ -1286,6 +1298,7 @@ func (c *Client) openStream(ctx context.Context, runID string, afterSeq int64) <
 		}
 
 		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 		var dataBuf strings.Builder
 		for scanner.Scan() {
 			line := scanner.Text()

@@ -40,6 +40,10 @@ type ChatMessage struct {
 	Content string
 	// FormatHint is one of: "" (plain), "tool", "approval", "question", "gate", "error"
 	FormatHint string
+	// Attachments holds the original file names of images attached to a user turn.
+	// Only set on Role=="user" messages that were sent with images. The chip is
+	// rendered outside the 4-line prompt clamp so it is always visible (BUG-337).
+	Attachments []string
 }
 
 // GateState holds the active gate decision UI state.
