@@ -1000,6 +1000,9 @@ type runHistoryItem struct {
 	// RunKind distinguishes normal chat runs from workflow runs so chat runs
 	// are excluded from workflow catalogs and labeled correctly in history (T-7).
 	RunKind         string `json:"runKind,omitempty"`
+	// Chat SSOT (CP-59 / SD-26 §5.1): chat grouping for the navigator.
+	ChatID          string `json:"chatId,omitempty"`
+	LegSeq          int    `json:"legSeq,omitempty"`
 	SourceMachineID string `json:"sourceMachineId,omitempty"`
 	SourceRunID     string `json:"sourceRunId,omitempty"`
 	SyncStatus      string `json:"syncStatus,omitempty"`
@@ -1055,6 +1058,8 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 			LastPrompt:  rs.lastPrompt,
 			LastMessage: rs.lastMessage,
 			RunKind:     rs.runKind,
+				ChatID:          rs.chatID,
+				LegSeq:          rs.legSeq,
 			ParentRunID: rs.parentRunID,
 			AgentName:   rs.agentName,
 			Role:        rs.role,

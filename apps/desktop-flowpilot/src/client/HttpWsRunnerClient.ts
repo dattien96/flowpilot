@@ -8,6 +8,9 @@ import type {
   ChatSessionRestoreRequest,
   ChatSessionRestoreResult,
   ChatSessionSyncRequest,
+  ChatSwitchInput,
+  ChatSwitchResponse,
+  ChatTimelineResponse,
   ChatSessionSyncResult,
   HandoffContextRequest,
   HandoffContextResponse,
@@ -267,6 +270,19 @@ export class HttpWsRunnerClient implements RunnerClient {
   }
   handoffContext(runId: string, input: HandoffContextRequest): Promise<HandoffContextResponse> {
     return this.postJSON<HandoffContextResponse>(`/client/workflow-runs/${encodeURIComponent(runId)}/handoff-context`, input);
+  }
+  switchChatProvider(chatId: string, input: ChatSwitchInput): Promise<ChatSwitchResponse> {
+    return this.postJSON<ChatSwitchResponse>(`/client/chats/${encodeURIComponent(chatId)}/switch-provider`, input);
+  }
+  async chatTimeline(chatId: string, afterSeq?: number, limit?: number): Promise<ChatTimelineResponse> {
+    let path = `/client/chats/${encodeURIComponent(chatId)}/timeline`;
+    if (afterSeq !== undefined || limit !== undefined) {
+      const q = new URLSearchParams();
+      if (afterSeq !== undefined) q.set("afterSeq", String(afterSeq));
+      if (limit !== undefined) q.set("limit", String(limit));
+      path += `?${q.toString()}`;
+    }
+    return this.getJSON<ChatTimelineResponse>(path);
   }
   generateChatSummary(runId: string): Promise<ChatSummaryResult> {
     return this.postJSON<ChatSummaryResult>(`/client/workflow-runs/${encodeURIComponent(runId)}/chat-summary`, {});

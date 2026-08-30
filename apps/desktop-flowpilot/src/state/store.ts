@@ -302,6 +302,8 @@ interface AppState {
 
   // run
   runId?: string;
+  /** CP-59 chat SSOT: the logical chat the current run belongs to. */
+  chatId?: string;
   mainRunId?: string;
   activeAgentRunId?: string;
   workspaceMainView: WorkspaceMainView;
@@ -1037,6 +1039,68 @@ export const useStore = create<AppState>((set, get) => ({
     set({ providerSwitchLoading: true });
 
     try {
+      // CP-59 Task-316: chat-scoped switch when the chat SSOT knows the chat
+      // (runner mints the leg and seeds the envelope server-side). The
+      // timeline is KEPT — one divider, transcript continuous (no `timeline: []`).
+      const chatId = get().chatId;
+      if (chatId) {
+        const resp = await state.client.switchChatProvider(chatId, {
+          targetProviderKey,
+          model: targetModel,
+          reasoningEffort: state.reasoningEffort,
+          yoloMode: state.yoloMode,
+        });
+        const carried = resp.handoff.truncated && resp.handoff.omittedTurnCount > 0
+          ? `${resp.handoff.includedTurnCount} of ${resp.handoff.includedTurnCount + resp.handoff.omittedTurnCount} turns`
+          : `${resp.handoff.includedTurnCount} turns`;
+        set({
+          selectedProvider: targetProviderKey,
+          selectedModel: targetModel,
+          runId: resp.handle.runId,
+          chatId: resp.handle.chatId ?? chatId,
+          mainRunId: resp.handle.runId,
+          activeAgentRunId: undefined,
+          activeStepId: resp.handle.stepId,
+          status: resp.handle.status,
+          artifacts: [],
+          pendingApprovals: [],
+          pendingQuestions: [],
+          gateBlock: undefined,
+          latestTokenUsage: undefined,
+          lastTurnInput: undefined,
+          recoverable: false,
+          pendingAccountSwitch: undefined,
+          accountSwitchLoading: false,
+          pendingProviderSwitch: undefined,
+          providerSwitchLoading: false,
+          _accountSwitchTriedIds: [],
+          _streamingAssistantId: undefined,
+          agentRuns: [],
+          agentGraphSnapshot: undefined,
+          agentBusMessages: [],
+          workflowStepRuntime: [],
+          workflowStepRuntimeMeta: {},
+          agentSpawnGuideOpen: false,
+          agentSpawnGuideAgentName: undefined,
+          _runReplaySeq: {},
+          _runSnapshots: {},
+          _historyReplaying: false,
+          _streamRunSeq: state._streamRunSeq + 1,
+          timeline: [
+            ...state.timeline,
+            {
+              kind: "system" as const,
+              id: `seed-divider-${resp.handle.runId}`,
+              text: `⇄ switched to ${providerLabel(targetProviderKey)} · ${targetModel} — carried ${carried} (${resp.handoff.handoffMode})`,
+              tone: "info" as const,
+            },
+          ],
+        });
+        void get().loadSkills(targetProviderKey);
+        void get().loadRunHistory();
+        return;
+      }
+      // Legacy Task-078 path (pre-CP-59 runner / flag off): summary + new chat.
       const handoff = await state.client.handoffContext(pending.sourceRunId, { targetProviderKey });
       const handle = await state.client.startRun({
         projectId: state.selectedProjectId,
@@ -1051,6 +1115,7 @@ export const useStore = create<AppState>((set, get) => ({
         selectedProvider: targetProviderKey,
         selectedModel: targetModel,
         runId: handle.runId,
+        chatId: handle.chatId,
         mainRunId: handle.runId,
         activeAgentRunId: undefined,
         activeStepId: handle.stepId,
@@ -2100,6 +2165,7 @@ export const useStore = create<AppState>((set, get) => ({
     const chatStartMode: ChatStartMode = historyItem?.subMode === "bug" ? "bugfix" : "normal";
     set({
       runId: handle.runId,
+      chatId: handle.chatId,
       mainRunId: handle.runId,
       activeAgentRunId: undefined,
       status: handle.status,
@@ -2194,6 +2260,7 @@ export const useStore = create<AppState>((set, get) => ({
     cancelAgentFocusStream();
     set({
       runId: undefined,
+      chatId: undefined,
       mainRunId: undefined,
       activeAgentRunId: undefined,
       activeStepId: undefined,

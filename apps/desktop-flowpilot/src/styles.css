@@ -6728,3 +6728,13 @@ body.is-resizing-sidebar {
 .chat-posture-modal-profile {
   padding: 8px 0;
 }
+
+/* CP-59 Task-316: leg-count chip on grouped chat rows (one chat = N legs). */
+.project-history-legs-count {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  opacity: 0.65;
+  border: 1px solid currentColor;
+}

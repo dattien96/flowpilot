@@ -5,11 +5,11 @@
 - Document ID: `Task-316`
 - Title: `Desktop Chat Switch Surface (Provider Chips, Timeline Continuity, Chat History)`
 - Phase: `task`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-29`
-- Last Updated: `2026-08-29`
+- Last Updated: `2026-08-30` (code complete — CA-700: contract types, Http/Mock bindings, confirmProviderSwitch chat-scoped switch keeping the timeline + legacy fallback, history grouping with legs chip wired into Navigator, envelope collapse via client divider; typecheck green. RUNNABLE store tests blocked by pre-existing phase1 breakage (test:phase1 fails repo-wide on unrelated tsc errors + `@/*` alias runtime resolution — verified on the clean main tree); chatHistory group tests 2/2 PASS. Remaining: make store.chatSwitch.test.ts runnable (fix phase1 runner debt — separate bug), confirmProviderSwitch double-confirm test runtime verification, CA + done)
 - Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/todo/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-314: Chat Switch-Provider Endpoint And Chat Envelope](../done/Task-314-Chat-Switch-Provider-Endpoint-And-Chat-Envelope.md)
 - Child Documents: `None`
 - Related Documents: [Task-078: Cross-Provider Chat Handoff](../done/Task-078-Cross-Provider-Chat-Handoff.md), [Task-313](../done/Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md), [Task-315](../done/Task-315-TUI-Chat-Switch-Surface.md)

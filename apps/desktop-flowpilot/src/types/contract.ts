@@ -322,6 +322,10 @@ export interface StartRunInput {
   chatMode?: string;
   /** Active project binding path used as the provider working directory. */
   cwd?: string;
+  /** CP-59 chat SSOT: attach this run to an existing chat (switch/reattach). */
+  chatId?: string;
+  switchFromRunId?: string;
+  legSeq?: number;
 }
 
 export interface RunHandle {
@@ -336,6 +340,9 @@ export interface RunHandle {
    * turn_completed. Undefined when the runner predates this field. (BUG-112)
    */
   lastEventSeq?: number;
+  /** CP-59 chat SSOT: the logical chat this run belongs to + its leg ordinal. */
+  chatId?: string;
+  legSeq?: number;
 }
 
 export interface RunHistoryItem {
@@ -350,6 +357,9 @@ export interface RunHistoryItem {
   lastMessage?: string;
   /** "chat" for normal_chat runs; undefined for workflow/step runs. */
   runKind?: string;
+  /** CP-59 chat SSOT: chat grouping for the navigator. */
+  chatId?: string;
+  legSeq?: number;
   sourceMachineId?: string;
   sourceRunId?: string;
   syncStatus?: string;
@@ -734,6 +744,10 @@ export interface RunnerClient {
   deleteRun(runId: string): Promise<void>;
   restoreChatRun(input: ChatSessionRestoreRequest): Promise<ChatSessionRestoreResult>;
   handoffContext(runId: string, input: HandoffContextRequest): Promise<HandoffContextResponse>;
+  /** CP-59 Task-314: chat-scoped cross-provider switch (runner mints the new leg). */
+  switchChatProvider(chatId: string, input: ChatSwitchInput): Promise<ChatSwitchResponse>;
+  /** CP-59 Task-313: joined multi-leg chat timeline. */
+  chatTimeline(chatId: string, afterSeq?: number, limit?: number): Promise<ChatTimelineResponse>;
   generateChatSummary(runId: string): Promise<ChatSummaryResult>;
   /** Streaming turn: yields normalized provider events until terminal. */
   sendTurn(input: TurnInput): AsyncIterable<ProviderEventDTO>;
@@ -906,4 +920,59 @@ export interface IdeBridge {
   openInIde(file: string, line?: number): Promise<void>;
   /** Open a URL in the user's default browser (e.g. the admin-web app). */
   openExternal(url: string): Promise<void>;
+}
+
+
+// ---- CP-59 chat SSOT (Task-316) -------------------------------------------
+
+/** Mirrors the runner's handoff marker — parity pinned in the TUI runner suite. */
+export const HANDOFF_PROMPT_PREFIX = "[FlowPilot cross-provider chat handoff]";
+
+export interface ChatSwitchInput {
+  targetProviderKey: ProviderKey;
+  model?: string;
+  reasoningEffort?: string;
+  yoloMode?: boolean;
+}
+
+export interface ChatSwitchHandoffStats {
+  handoffMode: "raw" | "hybrid" | "target_summary" | "fresh_start";
+  includedTurnCount: number;
+  omittedTurnCount: number;
+  truncated: boolean;
+  actionsDigestIncluded: boolean;
+}
+
+export interface ChatSwitchResponse {
+  handle: RunHandle;
+  chatId: string;
+  legSeq: number;
+  model: string;
+  handoff: ChatSwitchHandoffStats;
+}
+
+export interface ChatTimelineLeg {
+  runId: string;
+  providerKey: string;
+  legSeq: number;
+  legState: string;
+  legClosedReason?: string;
+  status?: string;
+}
+
+export interface ChatTranscriptRecord {
+  chatId: string;
+  chatSeq: number;
+  legRunId: string;
+  type: string;
+  payload: unknown;
+}
+
+export interface ChatTimelineResponse {
+  chatId: string;
+  legs: ChatTimelineLeg[];
+  records: ChatTranscriptRecord[];
+  nextSeq: number;
+  truncated: boolean;
+  degraded: boolean;
 }

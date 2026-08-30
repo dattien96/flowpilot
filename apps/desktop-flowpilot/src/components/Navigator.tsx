@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useStore } from "@/state/store";
 import type { RemoteChatSessionSummary, RunHistoryItem } from "@/types/contract";
 import { filterVisibleHistory, isAgentHistoryItem, isProjectSyncing, isSyncableRun } from "@/components/navigatorHistory";
+import { flattenGroupedHistory, groupRunsByChatId } from "../state/chatHistory";
 
 const HISTORY_LIMIT = 5;
 const REMOTE_CHATS_LIMIT = 4;
@@ -389,7 +390,12 @@ export function Navigator(): React.ReactElement {
       .filter((project): project is (typeof projects)[number] => Boolean(project));
   }, [projects, recentProjectIds]);
 
-  const activeHistory = selectedProjectId ? (projectHistoryById[selectedProjectId] ?? []) : [];
+  // CP-59 Task-316 (DOD-5): one row per logical chat — provider-switch legs
+  // collapse under the chat head (latest leg) with a leg-count chip.
+  const activeHistory = useMemo(() => {
+    const base = selectedProjectId ? (projectHistoryById[selectedProjectId] ?? []) : [];
+    return flattenGroupedHistory(groupRunsByChatId(base));
+  }, [selectedProjectId, projectHistoryById]);
   const showAllHistory = expandedHistoryIds.has(selectedProjectId ?? "");
   const visibleHistory = showAllHistory ? activeHistory : activeHistory.slice(0, HISTORY_LIMIT);
   const activeRemoteChatSessions = selectedProjectId ? (remoteChatSessionsByProjectId[selectedProjectId] ?? []) : [];
@@ -617,6 +623,9 @@ export function Navigator(): React.ReactElement {
                         <HistoryStatusIcon status={item.status} isNew={isNew} />
                         <span className="project-history-item-title">
                           {runTitle(item.lastPrompt || item.lastMessage)}
+                          {item.legsCount && item.legsCount > 1 ? (
+                            <span className="project-history-legs-count">{item.legsCount} legs</span>
+                          ) : null}
                         </span>
                       </span>
                       <span className="project-history-item-meta">

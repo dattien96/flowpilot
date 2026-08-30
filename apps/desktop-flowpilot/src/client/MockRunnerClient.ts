@@ -1,4 +1,7 @@
 import type {
+  ChatSwitchInput,
+  ChatSwitchResponse,
+  ChatTimelineResponse,
   Artifact,
   AgentDefinition,
   AgentRunSummary,
@@ -373,6 +376,34 @@ export class MockRunnerClient implements RunnerClient {
       providerKey: "codex",
       restoreStatus: "restored",
     };
+  }
+
+  private chatLegs = new Map<string, number>();
+
+  async switchChatProvider(chatId: string, input: ChatSwitchInput): Promise<ChatSwitchResponse> {
+    await delay(30);
+    if (input.targetProviderKey === this.switchLastProvider.get(chatId)) {
+      throw new Error("handoff_same_provider: same-provider continuity uses the in-place model-change path");
+    }
+    const legSeq = (this.chatLegs.get(chatId) ?? 0) + 1;
+    this.chatLegs.set(chatId, legSeq);
+    this.switchLastProvider.set(chatId, input.targetProviderKey);
+    const runId = `mock-run-${chatId}-${legSeq}`;
+    return {
+      handle: { runId, providerSessionId: `ses-${legSeq}`, providerKey: input.targetProviderKey, status: "starting", chatId, legSeq },
+      chatId,
+      legSeq,
+      model: input.model ?? "",
+      handoff: { handoffMode: "raw", includedTurnCount: 2, omittedTurnCount: 0, truncated: false, actionsDigestIncluded: false },
+    };
+  }
+  private switchLastProvider = new Map<string, string>();
+
+  async chatTimeline(chatId: string, afterSeq?: number, limit?: number): Promise<ChatTimelineResponse> {
+    await delay(20);
+    void afterSeq;
+    void limit;
+    return { chatId, legs: [], records: [], nextSeq: 0, truncated: false, degraded: false };
   }
 
   async handoffContext(runId: string, input: HandoffContextRequest): Promise<HandoffContextResponse> {
