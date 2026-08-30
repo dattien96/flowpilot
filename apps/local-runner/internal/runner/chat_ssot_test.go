@@ -5,6 +5,7 @@ package runner
 // (safe-fix-contract R1/R3).
 
 import (
+	"context"
 	"encoding/json"
 	"regexp"
 	"testing"
@@ -149,4 +150,20 @@ func containsJSONKey(raw []byte, key string) bool {
 	}
 	_, ok := m[key]
 	return ok
+}
+
+// TestResolveChatIdentityUsesPersistedLegSeq pins the detached-reattach rule
+// (SD26 §10): after a restart the prior legs live in the persisted session
+// store — an explicit ChatID without LegSeq must continue after the persisted
+// max, not collide at leg 1.
+func TestResolveChatIdentityUsesPersistedLegSeq(t *testing.T) {
+	fws := newFakeWorkflowStore()
+	svc := &InteractiveService{runs: map[string]*interactiveRun{}, workflowStore: fws}
+	ctx := context.Background()
+	_ = fws.UpsertProviderSession(ctx, ProviderSessionState{RunID: "run-1", RunKind: "chat", ChatID: "cht_x", LegSeq: 0})
+	_ = fws.UpsertProviderSession(ctx, ProviderSessionState{RunID: "run-2", RunKind: "chat", ChatID: "cht_x", LegSeq: 2})
+	chatID, legSeq, switchFrom := svc.resolveChatIdentity(StartRunInput{ChatID: "cht_x", SwitchFromRunID: "run-2"})
+	if chatID != "cht_x" || legSeq != 3 || switchFrom != "run-2" {
+		t.Fatalf("persisted max = (%q %d %q), want (cht_x 3 run-2)", chatID, legSeq, switchFrom)
+	}
 }

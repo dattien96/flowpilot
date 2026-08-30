@@ -196,6 +196,13 @@ func (m *AppModel) openTurnStream(prompt string) tea.Cmd {
 }
 
 func (m *AppModel) cmdSendTurn(prompt string) tea.Cmd {
+	// CP-59 Task-315 slice 3 (SD26 §10): a detached chat (restored, no active
+	// leg) reattaches on the first prompt — a fresh leg mints via startRun
+	// carrying the chat identity, then the prompt sends on it.
+	if m.chatDetached && m.runHandle != nil && strings.TrimSpace(m.runHandle.ChatID) != "" {
+		m.pendingPrompt = prompt
+		return m.cmdReattachChat()
+	}
 	return m.openTurnStream(prompt)
 }
 

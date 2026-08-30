@@ -240,3 +240,125 @@ func TestSameProviderTabInPlace(t *testing.T) {
 		t.Fatalf("in-place Tab = model:%q inFlight:%v", m.model, m.chatSwitchInFlight)
 	}
 }
+
+// ---- slice 3: detached reattach + /open restore-by-chat -------------------
+
+func TestDetachedProviderChangeDefersToReattach(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
+	m.chatDetached = true
+	m.runHandle = &client.RunHandle{RunID: "run-old", RunKind: "chat", ChatID: "cht_a"}
+	m.provider = "codex"
+	before := len(m.messages)
+	_, cmd := m.handleSlashCommand("/provider grok")
+	if cmd == nil {
+		t.Fatal("detached /provider must apply locally (non-nil cmd)")
+	}
+	if m.provider != "grok" || m.chatSwitchInFlight {
+		t.Fatalf("provider = %q inFlight=%v", m.provider, m.chatSwitchInFlight)
+	}
+	if len(m.messages) != before+1 || !strings.Contains(m.messages[len(m.messages)-1].Content, "reattaches") {
+		t.Fatalf("no defer notice: %+v", m.messages[len(m.messages)-1])
+	}
+}
+
+func TestReattachOnSendMintsLegAndContinuesPrompt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/client/workflow-runs" {
+			t.Errorf("path = %q", r.URL.Path)
+			w.WriteHeader(404)
+			return
+		}
+		var in client.StartRunInput
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if in.ChatID != "cht_a" || in.SwitchFromRunID != "run-old" {
+			t.Errorf("reattach input = %+v", in)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"runId": "run-new", "providerKey": "grok", "chatId": "cht_a", "legSeq": 3, "lastEventSeq": 0,
+		})
+	}))
+	defer srv.Close()
+	m := New(config.ChatConfig{}, srv.URL)
+	m.chatDetached = true
+	m.runHandle = &client.RunHandle{RunID: "run-old", RunKind: "chat", ChatID: "cht_a"}
+	m.provider = "grok"
+	m.model = "grok-4.5"
+
+	cmd := m.cmdSendTurn("tiếp đi")
+	if cmd == nil {
+		t.Fatal("detached send must return the reattach cmd")
+	}
+	msg := cmd()
+	re, ok := msg.(ReattachedMsg)
+	if !ok || re.Err != nil || re.Handle.RunID != "run-new" {
+		t.Fatalf("reattach msg = %+v", msg)
+	}
+	m2, next := m.Update(re)
+	am := m2.(*AppModel)
+	if am.chatDetached {
+		t.Fatal("detached flag not cleared after reattach")
+	}
+	if am.runHandle.RunID != "run-new" || am.runHandle.LegSeq != 3 {
+		t.Fatalf("handle = %+v", am.runHandle)
+	}
+	if next == nil {
+		t.Fatal("queued prompt was not sent after reattach")
+	}
+	_ = next
+}
+
+func TestOpenBackfillsPriorLegTurns(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
+	payload := func(m map[string]any) json.RawMessage { b, _ := json.Marshal(m); return b }
+	msg := chatTimelineBackfillMsg{
+		Current:  "run-2",
+		Detached: true, // derived by cmdBackfillChatTimeline from legs (none active)
+		Records: []client.ChatTranscriptRecord{
+			{ChatID: "cht_a", ChatSeq: 1, LegRunID: "run-1", Type: tuiRecTurnStarted, Payload: payload(map[string]any{"prompt": "hello ban la model gi"})},
+			{ChatID: "cht_a", ChatSeq: 2, LegRunID: "run-1", Type: tuiRecMessageCompleted, Payload: payload(map[string]any{"text": "toi la Muse Spark"})},
+			{ChatID: "cht_a", ChatSeq: 3, LegRunID: "run-1", Type: tuiRecProviderSwitch, Payload: payload(map[string]any{"toProvider": "grok", "toModel": "grok-4.5", "handoffMode": "raw", "includedTurnCount": 1, "omittedTurnCount": 2, "truncated": true})},
+			{ChatID: "cht_a", ChatSeq: 4, LegRunID: "run-2", Type: tuiRecTurnStarted, Payload: payload(map[string]any{"prompt": "current leg — must be skipped"})},
+		},
+	}
+	m2, _ := m.Update(msg)
+	am := m2.(*AppModel)
+	// 3 messages: prior user + prior assistant + switch divider. Current-leg
+	// record skipped; detached derived from legs (none active in msg legs —
+	// Detached flag rides the msg, set by the cmd).
+	if len(am.messages) != 3 {
+		t.Fatalf("messages = %d, want 3: %+v", len(am.messages), am.messages)
+	}
+	if am.messages[0].Content != "hello ban la model gi" {
+		t.Fatalf("prior user turn missing: %+v", am.messages[0])
+	}
+	if !strings.Contains(am.messages[2].Content, "switched to grok") || !strings.Contains(am.messages[2].Content, "1 of 3 turns") {
+		t.Fatalf("divider stats wrong: %+v", am.messages[2])
+	}
+	if !am.chatDetached {
+		t.Fatal("detached flag not derived")
+	}
+	// Idempotent: replaying the backfill must not duplicate.
+	m3, _ := am.Update(msg)
+	if len(m3.(*AppModel).messages) != 3 {
+		t.Fatal("backfill not idempotent")
+	}
+}
+
+func TestSwitchAdoptAttachesNewRunStream(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
+	m.runHandle = &client.RunHandle{RunID: "run-1", RunKind: "chat", ChatID: "cht_a", ProviderKey: "codex"}
+	m.provider = "codex"
+	m2, cmd := m.Update(ChatSwitchedMsg{Resp: &client.ChatSwitchResponse{
+		Handle: client.RunHandle{RunID: "run-2", RunKind: "chat", ChatID: "cht_a", ProviderKey: "grok"},
+		ChatID: "cht_a", LegSeq: 1, Model: "grok-4.5",
+		Handoff: client.ChatSwitchHandoffStats{HandoffMode: "raw", IncludedTurnCount: 2},
+	}})
+	am := m2.(*AppModel)
+	if cmd == nil {
+		t.Fatal("adopt must attach the new leg's stream (orchestration cmd)")
+	}
+	if am.runHandle.RunID != "run-2" || am.provider != "grok" {
+		t.Fatalf("adopt state = %s/%s", am.runHandle.RunID, am.provider)
+	}
+}

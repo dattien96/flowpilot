@@ -113,6 +113,18 @@ func (s *InteractiveService) resolveChatIdentity(in StartRunInput) (string, int,
 			}
 		}
 		s.mu.Unlock()
+		// Detached reattach (SD26 §10): after a restart the prior legs live in
+		// the persisted session store, not s.runs — consult the reader so the
+		// new leg never reuses an existing legSeq.
+		if reader, ok := s.workflowStore.(ChatSessionReader); ok {
+			if rows, err := reader.ListProviderSessionsByChat(context.Background(), in.ChatID); err == nil {
+				for _, row := range rows {
+					if row.LegSeq > maxSeq {
+						maxSeq = row.LegSeq
+					}
+				}
+			}
+		}
 		return in.ChatID, maxSeq + 1, in.SwitchFromRunID
 	}
 	if in.SwitchFromRunID != "" {

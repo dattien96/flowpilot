@@ -1306,6 +1306,39 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case ReattachedMsg:
+		// CP-59 Task-315 slice 3: a detached chat reattached — a fresh local
+		// leg exists; the queued prompt sends on it via the normal path.
+		m.chatDetached = false
+		m.chatBackfillDone = false
+		if msg.Err != nil {
+			m.addMessage("system", "Reattach failed: "+msg.Err.Error()+" — the prompt was not sent; try again or /new", "error")
+			return m, nil
+		}
+		h := msg.Handle
+		m.runHandle = &h
+		if h.ProviderKey != "" {
+			m.provider = string(h.ProviderKey)
+		}
+		m.lastEventSeq = h.LastEventSeq
+		m.client.NoteLastSeq(h.RunID, h.LastEventSeq)
+		m.refreshSessionPanel()
+		if prompt := m.pendingPrompt; prompt != "" {
+			m.pendingPrompt = ""
+			return m, m.cmdSendTurn(prompt)
+		}
+		return m, nil
+
+	case chatTimelineBackfillMsg:
+		// CP-59 Task-315 slice 3: /open restore-by-chat — prior legs' turns
+		// render from the chat timeline; the detached flag derives from legs.
+		m.chatDetached = msg.Detached
+		m.renderChatTimelineBackfill(msg)
+		return m, nil
+
+	case detachedNoticeMsg:
+		return m, nil
+
 	case turnStreamOpenedMsg:
 		m.turnStream = &turnStreamState{evCh: msg.EvCh, errCh: msg.ErrCh}
 		m.turnSendPending = false
@@ -1627,7 +1660,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.connStatus = ConnRunning
 		m.addMessage("system", fmt.Sprintf("Resumed run %s", shortID(handle.RunID)), "")
-		return m, m.cmdStreamRun(handle.RunID, handle.LastEventSeq)
+		// CP-59 Task-315 slice 3: restore-by-chat — prior legs' turns backfill
+		// from the chat timeline; best effort (silent on transport errors).
+		return m, tea.Batch(m.cmdStreamRun(handle.RunID, handle.LastEventSeq), m.cmdBackfillChatTimeline(handle))
 
 	case EventMsg:
 		return m.handleEvent(msg.Ev)
@@ -5892,9 +5927,20 @@ func (m *AppModel) renderBottomNotice(w int) string {
 func (m *AppModel) addMessage(role, content, hint string) {
 	// CP-59 Task-315 (SD-26 D-7): the handoff seed envelope renders as a
 	// one-line divider, never as a raw user bubble (live stream + replay).
+	// The just-committed switch's stats format the carried count when present.
 	if role == "user" && strings.HasPrefix(content, client.HandoffPromptPrefix) {
 		role = "system"
-		content = "⇄ provider switched — prior conversation carried below"
+		if m.lastSwitchStats != nil {
+			st := m.lastSwitchStats
+			carried := fmt.Sprintf("%d turns", st.IncludedTurnCount)
+			if st.Truncated && st.OmittedTurnCount > 0 {
+				carried = fmt.Sprintf("%d of %d turns", st.IncludedTurnCount, st.IncludedTurnCount+st.OmittedTurnCount)
+			}
+			content = fmt.Sprintf("⇄ switched to %s — carried %s (%s)", m.lastSwitchTarget, carried, st.HandoffMode)
+			m.lastSwitchStats = nil
+		} else {
+			content = "⇄ provider switched — prior conversation carried below"
+		}
 	}
 	m.messages = append(m.messages, ChatMessage{
 		Role:       role,

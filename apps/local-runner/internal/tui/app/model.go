@@ -538,6 +538,16 @@ type AppModel struct {
 	// a posture picked mid-switch queues for the new leg.
 	chatSwitchInFlight      bool
 	chatSwitchQueuedPosture string
+	// chatDetached marks a restored chat with no locally-active leg (SD26 §10):
+	// the next prompt reattaches via startRun carrying the chat identity.
+	chatDetached bool
+	// chatBackfillDone guards /open restore-by-chat rendering (idempotent per
+	// opened chat).
+	chatBackfillDone bool
+	// lastSwitchStats/lastSwitchTarget carry the just-committed switch's handoff
+	// stats so the seed-envelope collapse renders the carried-count divider.
+	lastSwitchStats  *client.ChatSwitchHandoffStats
+	lastSwitchTarget string
 
 	// Supabase auth (Desktop LoginScreen parity via POST /supabase-auth/login)
 	authPhase     AuthPhase

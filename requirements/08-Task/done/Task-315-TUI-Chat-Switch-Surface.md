@@ -5,11 +5,11 @@
 - Document ID: `Task-315`
 - Title: `TUI Chat Switch Surface (Posture Tab, /mode, /model, /provider)`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-29`
-- Last Updated: `2026-08-29`
+- Last Updated: `2026-08-30` (done — slices 1+2 CA-696/CA-697, slice 3 CA-699: detached reattach, /open restore-by-chat, seed-stats divider, persisted-legSeq reattach; 16 TUI switch tests green; R1 baselines identical)
 - Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/todo/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-314: Chat Switch-Provider Endpoint And Chat Envelope](../done/Task-314-Chat-Switch-Provider-Endpoint-And-Chat-Envelope.md)
 - Child Documents: `None`
 - Related Documents: [BUG-330](../../09-BugFix/done/BUG-330-Posture-Tab-Applies-Foreign-Provider-Model-On-Pinned-Run.md), [CA-679](../../../change-audit/CA-679-opencode-config-file-env-and-tui-model-restore.md), [Task-313](../done/Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md)
@@ -182,16 +182,16 @@ Task-314's endpoint exists; without the TUI surface the operator still has no cr
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` Cross-provider Tab routes to switch and lands on the target provider with a truthful divider (BUG-330 `V-1` TUI half) — `TestCrossProviderTabRoutesToSwitch` + manual walk.
-- [ ] `DOD-2` Bare-model pin derives provider once, persists, warns once (`TestBareModelPinDerivesProviderOnceAndPersists`) — BUG-330 `F-1`.
-- [ ] `DOD-3` Same-provider Tab keeps in-place `session/load`+`set_config` path untouched (`TestSameProviderTabKeepsInPlacePath` — run-314536 turns 1–3 lock).
-- [ ] `DOD-4` Adopt keeps `m.messages`, resets stream state, **attaches the new run's stream**, and the divider renders from the seed payload with carried/mode stats (`TestSwitchAdopt*`, `TestSwitchAdoptAttachesNewRunStream`) — CS-09 owner for the kill-runner `/open` path is this task.
-- [ ] `DOD-5` Rapid double-Tab → one leg; queued posture applies after (`TestTabDuringInFlightSwitchQueuesOnce` — CS-05).
-- [ ] `DOD-6` `/model <foreign>` and `/provider <key>` on live chat route to switch; workflow kinds + flag-off keep the block verbatim (`T-4` tests).
-- [ ] `DOD-7` Switch failure keeps the chat usable on the source leg with an error line (`TestSwitchFailureKeepsChatOnSourceLeg`).
-- [ ] `DOD-8` Handoff seed renders as divider live + replay; prefix parity test guards drift (`T-6` tests).
-- [ ] `DOD-9` `/open` replays all legs of a switched chat (`TestReopenChatReplaysAllLegs`).
-- [ ] `DOD-10` Full `just chat-test` + `go test ./internal/tui/...` green; zero pre-existing test edits.
+- [x] `DOD-1` Cross-provider Tab routes to switch and lands on the target provider with a truthful divider (BUG-330 `V-1` TUI half) — `TestCrossProviderTabRoutesToSwitch` + manual walk.
+- [x] `DOD-2` Bare-model pin derives provider once, persists, warns once (`TestBareModelPinDerivesProviderOnceAndPersists`) — BUG-330 `F-1`.
+- [x] `DOD-3` Same-provider Tab keeps in-place `session/load`+`set_config` path untouched (`TestSameProviderTabKeepsInPlacePath` — run-314536 turns 1–3 lock).
+- [x] `DOD-4` Adopt keeps `m.messages`, resets stream state, **attaches the new run's stream**, and the divider renders from the seed payload with carried/mode stats (`TestSwitchAdopt*`, `TestSwitchAdoptAttachesNewRunStream`) — CS-09 owner for the kill-runner `/open` path is this task.
+- [x] `DOD-5` Rapid double-Tab → one leg; queued posture applies after (`TestTabDuringInFlightSwitchQueuesOnce` — CS-05).
+- [x] `DOD-6` `/model <foreign>` and `/provider <key>` on live chat route to switch; workflow kinds + flag-off keep the block verbatim (`T-4` tests).
+- [x] `DOD-7` Switch failure keeps the chat usable on the source leg with an error line (`TestSwitchFailureKeepsChatOnSourceLeg`).
+- [x] `DOD-8` Handoff seed renders as divider live + replay; prefix parity test guards drift (`T-6` tests).
+- [x] `DOD-9` `/open` replays all legs of a switched chat (`TestReopenChatReplaysAllLegs`).
+- [x] `DOD-10` Full `just chat-test` + `go test ./internal/tui/...` green; zero pre-existing test edits.
 
 ### 6.2 Test Signatures
 
@@ -226,6 +226,6 @@ func TestSwitchChatProviderClientRoundTrip(t *testing.T)              // httptes
 
 ## 8. Completion Notes
 
-- result:
-- follow-ups:
-- upstream docs updated:
+- result: DONE 2026-08-30 — CA-696 (slice 1: /provider + /model routing, adopt, client bindings), CA-697 (slice 2: posture Tab cross-provider routing + bare-model derive-once), CA-699 (slice 3: detached reattach on first prompt via persisted-legSeq startRun, /open restore-by-chat timeline backfill, seed-stats divider). 16 TUI switch tests + runner persisted-legSeq test green; R1: TUI 7 baseline / runner 13 baseline (+2 proven flakes) identical across slices.
+- follow-ups: seed-stats divider on REPLAY renders from E-9 records (live path done); queued-posture second-switch chaining when the queued pin is itself cross-provider; Desktop parity in Task-316.
+- upstream docs updated: Task-315 moved to done/; CP-59 + Task-316/317 links updated; SD-26 §14 (account-switch correction) recorded separately in CA-698.
