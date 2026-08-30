@@ -126,3 +126,45 @@ func TestClientSwitchChatProviderRoundTrip(t *testing.T) {
 		t.Fatalf("round-trip = %+v", resp)
 	}
 }
+
+func TestTabCrossProviderRoutesToSwitch(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
+	m.runHandle = &client.RunHandle{RunID: "run-1", RunKind: "chat", ChatID: "cht_a"}
+	m.provider = "opencode"
+	cfg := client.ChatPostureConfig{Active: "code", Profiles: map[string]client.ChatPostureProfile{
+		"plan": {Provider: "grok", Model: "grok-4.5"},
+	}}
+	if cmd := m.routePostureSwitch(cfg, "plan"); cmd == nil {
+		t.Fatal("cross-provider Tab must route to the switch endpoint")
+	}
+	if !m.chatSwitchInFlight || m.chatSwitchQueuedPosture != "plan" {
+		t.Fatalf("guard/queue = %v/%q", m.chatSwitchInFlight, m.chatSwitchQueuedPosture)
+	}
+	// Same-provider pin stays in-place.
+	m.chatSwitchInFlight = false
+	m.chatSwitchQueuedPosture = ""
+	m.provider = "opencode"
+	cfg.Profiles["plan"] = client.ChatPostureProfile{Provider: "opencode", Model: "opencode-go/deepseek-v4-flash"}
+	if cmd := m.routePostureSwitch(cfg, "plan"); cmd != nil {
+		t.Fatal("same-provider Tab must apply in place")
+	}
+}
+
+func TestBareModelPinDerivesProviderAndPersists(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
+	m.runHandle = &client.RunHandle{RunID: "run-1", RunKind: "chat", ChatID: "cht_a"}
+	m.provider = "opencode"
+	m.providers = []client.Provider{{Key: "grok", Models: []client.ProviderModel{{ID: "grok-4.5"}}}}
+	cfg := client.ChatPostureConfig{Active: "code", Profiles: map[string]client.ChatPostureProfile{
+		"plan": {Model: "grok-4.5"}, // BUG-330 pin: bare model, no provider
+	}}
+	if m.pinnedProviderFor(cfg.Profiles["plan"]) != "grok" {
+		t.Fatalf("pinnedProviderFor = %q, want grok", m.pinnedProviderFor(cfg.Profiles["plan"]))
+	}
+	if cmd := m.routePostureSwitch(cfg, "plan"); cmd == nil {
+		t.Fatal("bare-model Tab must route")
+	}
+	if cfg.Profiles["plan"].Provider != "grok" || !m.chatPostureDirty {
+		t.Fatalf("derive-once not persisted: provider=%q dirty=%v", cfg.Profiles["plan"].Provider, m.chatPostureDirty)
+	}
+}

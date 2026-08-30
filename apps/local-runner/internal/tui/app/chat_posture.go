@@ -110,6 +110,13 @@ func (m *AppModel) chatPostureCmdFromPending(cfg client.ChatPostureConfig) tea.C
 	case strings.HasPrefix(pending, "apply:"):
 		name := strings.TrimPrefix(pending, "apply:")
 		if validPosture(name) {
+			// CP-59 Task-315 (BUG-330): a cross-provider posture pin on a live
+			// chat routes through the switch endpoint instead of swapping the
+			// model inside the old provider; the full profile re-applies on the
+			// new leg via the queued-posture path (applyChatSwitched).
+			if cmd := m.routePostureSwitch(cfg, name); cmd != nil {
+				return cmd
+			}
 			// CA-685: the active posture's full profile (reasoning included)
 			// re-applies; /new is a refresh, not an override (supersedes the
 			// CA-641 reasoning-keep carve-out).
