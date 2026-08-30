@@ -136,6 +136,189 @@ func BuildChatSyncManifestV2(ctx context.Context, s *InteractiveService, chatID 
 	return manifest, nil
 }
 
+// SyncChatV2ToDrive uploads a chat's v2 bundle to a fake Drive (map[DrivePath]bytes).
+// It is flag-gated, idempotent (overwrite), and leaves legs sorted; sidecars are
+// best-effort via BuildChatSyncManifestV2 (T-2 + T-4).
+func SyncChatV2ToDrive(ctx context.Context, s *InteractiveService, chatID string, drive map[string][]byte) (ChatSyncManifest, error) {
+	if !chatSSOTEnabled() {
+		return ChatSyncManifest{}, fmt.Errorf("chat SSOT disabled (FLOWPILOT_CHAT_SSOT)")
+	}
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return ChatSyncManifest{}, fmt.Errorf("chatId is required")
+	}
+	if s == nil {
+		return ChatSyncManifest{}, fmt.Errorf("service unavailable")
+	}
+	if drive == nil {
+		return ChatSyncManifest{}, fmt.Errorf("drive is required")
+	}
+	manifest, err := BuildChatSyncManifestV2(ctx, s, chatID)
+	if err != nil {
+		return ChatSyncManifest{}, err
+	}
+	sort.Slice(manifest.Legs, func(i, j int) bool { return manifest.Legs[i].LegSeq < manifest.Legs[j].LegSeq })
+	writer := s.ensureChatTranscriptWriter()
+	var transcriptBytes []byte
+	if writer != nil && writer.store != nil {
+		recs, readErr := writer.store.ReadChatRecords(ctx, chatID, 0, 0)
+		if readErr != nil {
+			log.Printf("[chat-sync] v2 transcript read failed chat=%q: %v", chatID, readErr)
+		} else {
+			var buf []byte
+			for _, rec := range recs {
+				line, mErr := json.Marshal(rec)
+				if mErr != nil {
+					log.Printf("[chat-sync] v2 transcript marshal failed chat=%q seq=%d: %v", chatID, rec.ChatSeq, mErr)
+					continue
+				}
+				buf = append(buf, line...)
+				buf = append(buf, '\n')
+			}
+			transcriptBytes = buf
+		}
+	}
+	drive[chatSyncTranscriptDrivePath(chatID)] = transcriptBytes
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		return ChatSyncManifest{}, fmt.Errorf("marshal manifest: %w", err)
+	}
+	drive[ChatSyncManifestDrivePath(chatID)] = manifestBytes
+	log.Printf("[chat-sync] v2 sync chat=%q legs=%d transcriptBytes=%d", chatID, len(manifest.Legs), len(transcriptBytes))
+	return manifest, nil
+}
+
+// RestoreChatFromManifestV2 restores a chat from a v2 manifest + fake Drive.
+// Transcript-first: the transcript NDJSON is appended before any leg work, so a
+// leg failure still leaves the full timeline (T-3). Every leg is restored as
+// closed(restored) (detached per SD26 §10); missing sidecars → session_unavailable,
+// unknown provider → provider_unavailable with install hint (typed degradation).
+func RestoreChatFromManifestV2(ctx context.Context, target *InteractiveService, drive map[string][]byte, manifest ChatSyncManifest, availableProviders map[ProviderKey]bool) error {
+	if !chatSSOTEnabled() {
+		return fmt.Errorf("chat SSOT disabled (FLOWPILOT_CHAT_SSOT)")
+	}
+	if target == nil {
+		return fmt.Errorf("service unavailable")
+	}
+	chatID := strings.TrimSpace(manifest.ChatID)
+	if chatID == "" {
+		return fmt.Errorf("chatId is required")
+	}
+	if drive == nil {
+		drive = map[string][]byte{}
+	}
+	writer := target.ensureChatTranscriptWriter()
+	if writer != nil && writer.store != nil {
+		transcriptPath := chatSyncTranscriptDrivePath(chatID)
+		if data, ok := drive[transcriptPath]; ok && len(strings.TrimSpace(string(data))) > 0 {
+			var recs []ChatTranscriptRecord
+			lines := strings.Split(string(data), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				var rec ChatTranscriptRecord
+				if err := json.Unmarshal([]byte(line), &rec); err != nil {
+					log.Printf("[chat-sync] restore transcript skip malformed chat=%q: %v", chatID, err)
+					continue
+				}
+				if strings.TrimSpace(rec.ChatID) == "" {
+					rec.ChatID = chatID
+				}
+				recs = append(recs, rec)
+			}
+			if len(recs) > 0 {
+				sort.Slice(recs, func(i, j int) bool { return recs[i].ChatSeq < recs[j].ChatSeq })
+				if err := writer.store.AppendChatRecords(ctx, recs); err != nil {
+					log.Printf("[chat-sync] restore transcript append failed chat=%q: %v", chatID, err)
+				}
+			}
+		} else {
+			log.Printf("[chat-sync] restore transcript missing chat=%q path=%q", chatID, transcriptPath)
+		}
+	}
+	legs := append([]ChatSyncLeg(nil), manifest.Legs...)
+	sort.Slice(legs, func(i, j int) bool { return legs[i].LegSeq < legs[j].LegSeq })
+	type upserter interface {
+		UpsertProviderSession(context.Context, ProviderSessionState) error
+	}
+	up, ok := target.workflowStore.(upserter)
+	if !ok {
+		return fmt.Errorf("workflow store unavailable")
+	}
+	for _, leg := range legs {
+		runID := strings.TrimSpace(leg.RunID)
+		if runID == "" {
+			log.Printf("[chat-sync] restore skip leg with empty runId chat=%q legSeq=%d", chatID, leg.LegSeq)
+			continue
+		}
+		providerKey := ProviderKey(strings.TrimSpace(leg.ProviderKey))
+		sess := ProviderSessionState{
+			RunID:           runID,
+			ProjectID:       strings.TrimSpace(manifest.ProjectID),
+			ProviderKey:     providerKey,
+			RunKind:         "chat",
+			ChatID:          chatID,
+			LegSeq:          leg.LegSeq,
+			LegState:        LegStateClosed,
+			LegClosedReason: LegClosedReasonRestored,
+			Status:          RunStatusCompleted,
+			RestoredFrom:    "drive",
+			SyncStatus:      "restored",
+		}
+		if len(leg.SidecarsAbsent) > 0 {
+			sess.SyncStatus = "session_unavailable"
+		} else if providerKey == ProviderKeyGrok && len(leg.SidecarsAbsent) > 0 {
+			sess.SyncStatus = "session_unavailable"
+		}
+		if availableProviders != nil {
+			if avail, exists := availableProviders[providerKey]; exists && !avail {
+				sess.SyncStatus = "provider_unavailable"
+				sess.LastMessage = fmt.Sprintf("install %s", string(providerKey))
+			}
+		}
+		if err := up.UpsertProviderSession(ctx, sess); err != nil {
+			log.Printf("[chat-sync] restore leg upsert failed chat=%q leg=%q: %v", chatID, runID, err)
+			continue
+		}
+	}
+	return nil
+}
+
+// IsChatDetached reports whether a chat has no active leg — every persisted leg
+// is closed(restored) (SD26 §10). Used by the detached-reattach contract and
+// tests to prove a restored chat is detached until the first local turn.
+func IsChatDetached(s *InteractiveService, chatID string) bool {
+	if !chatSSOTEnabled() {
+		return false
+	}
+	if s == nil {
+		return false
+	}
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return false
+	}
+	reader, ok := s.workflowStore.(ChatSessionReader)
+	if !ok {
+		return false
+	}
+	sessions, err := reader.ListProviderSessionsByChat(context.Background(), chatID)
+	if err != nil || len(sessions) == 0 {
+		return false
+	}
+	for _, sess := range sessions {
+		if sess.LegState != LegStateClosed || sess.LegClosedReason != LegClosedReasonRestored {
+			return false
+		}
+		if sess.LegState == LegStateActive {
+			return false
+		}
+	}
+	return true
+}
+
 // ReadChatSyncManifest decodes a Drive manifest blob as either v2 (chatId present,
 // schemaVersion 2) or v1 (sourceRunId, schemaVersion 1). It tries v2 first (chatId
 // present), falls back to v1 (SourceRunID), and handles both schemaVersions.
