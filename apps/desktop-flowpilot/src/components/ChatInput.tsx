@@ -14,6 +14,7 @@ import {
   toWire,
   type PendingAttachment,
 } from "@/lib/normalizeImage";
+import { VISION_PROVIDERS } from "./visionProviders";
 
 function CodexIcon(): React.ReactElement {
   return (
@@ -84,12 +85,6 @@ const PROVIDER_CARDS: { value: ProviderKey; label: string; icon: React.ReactElem
   { value: "opencode", label: "OpenCode", icon: <OpencodeIcon /> },
 ];
 
-// Providers that accept chat image attachments (Task-052 / CA-483).
-// codex + claude: native multimodal. grok: runner path-fallback writes
-// <cwd>/.tmp/images and injects absolute paths into the text prompt (ACP
-// promptCapabilities.image remains false; Capabilities.Vision stays false).
-// A follow-up should source this from the runner capability surface.
-const VISION_PROVIDERS = new Set<ProviderKey>(["codex", "claude", "grok"]);
 
 // Fallback reasoning-effort options (Task-215): used only when the selected
 // model has no detected `supportedReasoningEfforts` in the catalog (a
