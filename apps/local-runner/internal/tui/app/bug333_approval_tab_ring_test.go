@@ -153,9 +153,76 @@ func cardRow(rows []chatRow) string {
 	return ""
 }
 
-// THE operator report, reproduced: the ring state cycles (tui.log proved idx
-// flips) but the row cache keyed on message content served the approval bar
-// with a FROZEN highlight — Tab/arrows looked completely dead on screen.
+// BUG-333 UX follow-up (operator: "hiệu ứng selection khó nhận biết quá"):
+// the moving selection rendered as accent-colored text in BOTH states — the
+// selected action must read as a FILLED CHIP (same selection language as the
+// /mode-setup tab row), on every surface that routes through
+// renderActionRingChip (approval, gate, question, attention, blocked flow).
+func TestBug333UX_SelectedRingChipRendersFilled(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	sel := renderActionRingChip("Approve", true)
+	idle := renderActionRingChip("Deny", false)
+	if !strings.Contains(sel, "48;5;62") {
+		t.Fatalf("selected chip must render a filled 256-color background 62, got %q", sel)
+	}
+	if got := stripANSI(sel); got != " Approve " {
+		t.Fatalf("selected chip must be space-padded so the fill reads as a chip, got %q", got)
+	}
+	if strings.Contains(idle, "48;5;") {
+		t.Fatalf("idle chip must not carry a background fill, got %q", idle)
+	}
+	if strings.Contains(idle, "Approve") {
+		t.Fatal("idle chip must keep its own label")
+	}
+}
+
+func TestBug333UX_ApprovalCardShowsFilledSelection(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	m := bug333ApprovalModel()
+	row0 := cardRow(m.chatRows())
+	if !strings.Contains(row0, "48;5;62") {
+		t.Fatalf("idx0 selection must paint the filled chip on the card row, got %q", row0)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	row1 := cardRow(m.chatRows())
+	if !strings.Contains(row1, "48;5;62") {
+		t.Fatalf("idx1 selection must paint the filled chip too, got %q", row1)
+	}
+	if row0 == row1 {
+		t.Fatal("selection move must move the fill between chips")
+	}
+	// The filled fill sits on the second chip now: the Deny label is inside the
+	// background-colored span.
+	if !strings.Contains(stripANSI(row1), " Deny ") {
+		t.Fatalf("padded Deny chip missing after Tab, got %q", stripANSI(row1))
+	}
+}
+
+func TestBug333_QuestionChipFillFollowsSelection(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	m := bug328Model()
+	m.question = &QuestionState{ID: "q-1", RunID: "run-1", Prompt: "pick", Options: []map[string]string{{"label": "Yes", "value": "yes"}, {"label": "No", "value": "no"}}}
+	m.syncActionRingCard()
+	rows := m.chatRows()
+	found := false
+	for _, r := range rows {
+		if strings.Contains(stripANSI(r.Text), "1)") || strings.Contains(stripANSI(r.Text), "Yes") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("question options must render through the chip renderer")
+	}
+	if !m.actionRingKeysActive() {
+		t.Fatal("question card must keep ring keys active")
+	}
+}
+
+// THE operator report, reproduced: the ring state cycles but the row cache
+// keyed on message content served the approval bar with a FROZEN highlight.
 // TrueColor profile is forced because highlight styles degrade to identical
 // plain text without a TTY (ca558 pattern).
 func TestBug333_Approval_RowCacheRepaintsOnRingMove(t *testing.T) {

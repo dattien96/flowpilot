@@ -64,6 +64,21 @@ row repaints on ring move, approval row repaints on keys-active flip.
 
 
 
+## UX follow-up (operator: "hiệu ứng selection khó nhận biết quá")
+
+The repainting selection was still hard to see — both ring states were
+accent-colored text (bold vs bold+underline). `renderActionRingChip` now
+renders the SELECTED action as a filled chip: bold + white foreground +
+indigo background (lipgloss 62, same selection language as the /mode-setup
+tab row) with space padding so the fill reads as a pill. Idle chips keep the
+underline link style. Single choke point — covers approval Approve/Deny(+all/
+forever), gate options, question options/Submit, the attention bar and the
+flow-blocked Retry/Stop/Allow row.
+
+Tests (TrueColor profile): selected chip carries the 48;5;62 background +
+padded label, idle chip carries no fill; the approval card row moves the fill
+between chips on Tab; question options route through the same renderer.
+
 ## Residual notes (separate findings, not fixed here)
 
 - **E2 ordering watch**: live log showed `file_changed` (12:13:57.030) arriving 1ms BEFORE `permission_required` for the same write. Probe J proved opencode does NOT touch disk on deny, so this is a transcript-event ordering artifact of the opencode mapper (the streamed edit diff surfaces as file_changed before the ask), not an actual gate bypass — re-check during E2 that `/deny` leaves no file.

@@ -98,6 +98,12 @@ var (
 	styleSuggestSel  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)).Underline(true)
 	styleLoading     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorWarn)).Background(lipgloss.Color(colorBg3))
 	styleLink        = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color(colorAccent))
+	// BUG-333 UX: the selected action in an action ring (Approve/Deny, gate
+	// options, question options, attention/blocked actions) renders as a
+	// FILLED chip — same selection language as the /mode-setup tab row — so
+	// Tab/arrows moves are impossible to miss (accent-colored text on both
+	// states was nearly invisible).
+	styleRingSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Background(lipgloss.Color("62"))
 	styleSelect      = lipgloss.NewStyle().Reverse(true)
 	styleThinking    = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color(colorTextDim))
 	// Active workflow step (Desktop timeline “current” accent).

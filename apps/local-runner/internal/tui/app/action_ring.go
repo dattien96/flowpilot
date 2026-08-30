@@ -193,7 +193,11 @@ func (m *AppModel) clampActionRingIdx() {
 
 func renderActionRingChip(label string, highlight bool) string {
 	if highlight {
-		return styleStatusHi.Render(label)
+		// BUG-333 UX: selected action = filled chip (background + padding), not
+		// another accent-colored text. Single choke point for every ring
+		// surface: approval chips, gate options, question options/submit,
+		// attention bar and flow-blocked Retry/Stop/Allow.
+		return styleRingSelected.Render(" " + label + " ")
 	}
 	return styleLink.Render(label)
 }
