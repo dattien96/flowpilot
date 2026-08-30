@@ -5,11 +5,11 @@
 - Document ID: `Task-317`
 - Title: `Chat-Level Sync, Restore, Reopen (Drive Manifest v2)`
 - Phase: `task`
-- Status: `draft`
+- Status: `in_progress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-29`
-- Last Updated: `2026-08-29`
+- Last Updated: `2026-08-31` (slice 1 — CA-701: ChatSyncManifest v2 builder + v1 reader done, 2 tests PASS; flag-gated, additive. Remaining: sync upload transcript+legs (T-2), transcript-first detached restore (T-3), idempotence/ordering (T-4), reopen proof (T-5) — next slice)
 - Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/todo/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-313: ChatId Data Model, Transcript Store, Timeline](../done/Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md)
 - Child Documents: `None`
 - Related Documents: [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md), [BUG-272: Restart loses resolved approvals and misorders replayed sidecar events](../../09-BugFix/todo/BUG-272-Restart-Loses-Resolved-Approvals-And-Misorders-Replayed-Sidecar-Events.md), [Task-315](../done/Task-315-TUI-Chat-Switch-Surface.md), [Task-316](./Task-316-Desktop-Chat-Switch-Surface.md)
@@ -131,14 +131,14 @@ Tasks 313–316 made chats multi-leg and switchable; without chat-level sync, a 
 
 ### 6.1 Definition of Done (DOD)
 
-- [ ] `DOD-1` Manifest v2 builder + v1-compatible reader (`TestChatSyncManifestV2Builder`, `TestChatManifestReaderAcceptsV1`).
-- [ ] `DOD-2` Sync uploads transcript + all leg sidecars, idempotent (`TestSyncChatUploadsTranscriptAndAllLegSidecars`, `TestSyncChatIdempotentReupload`).
-- [ ] `DOD-3` Restore is transcript-first; chat always opens with full text; restored chat is detached — no active leg until first turn attaches one (`TestRestoreChatRebuildsTranscriptBeforeLegs`, `TestRestoreDetachedNoActiveLeg`, `TestRestoredChatContinueOnInstalledProvider`).
-- [ ] `DOD-4` Per-leg typed degradation: `session_unavailable`, `provider_unavailable` + hint (`TestRestorePartialLegDegradation`, `TestRestoreMissingProviderTyped` — CS-14).
-- [ ] `DOD-5` Restore twice idempotent; leg order stable (`TestRestoreTwiceIdempotent`, `TestRestoredTimelineLegOrder`).
-- [ ] `DOD-6` v1 restore path untouched (`TestRestoreV1ManifestLegacyPathUntouched`).
-- [ ] `DOD-7` Restored chat continues on an installed provider (`TestRestoredChatContinueOnInstalledProvider`) + live two-machine walk recorded.
-- [ ] `DOD-8` Flag off = v1 behavior byte-identical; full `go test ./internal/...` green, no pre-existing test edits.
+- [x] `DOD-1` Manifest v2 builder + v1-compatible reader (`TestChatSyncManifestV2Builder`, `TestChatManifestReaderAcceptsV1`). `apps/local-runner/internal/runner/chat_sync_manifest_test.go:9` 2/2 PASS
+- [ ] `DOD-2` Sync uploads transcript + all leg sidecars, idempotent (`TestSyncChatUploadsTranscriptAndAllLegSidecars`, `TestSyncChatIdempotentReupload`). T-2 sync extension next slice (flag-gated, additive; Drive fake harness pending)
+- [ ] `DOD-3` Restore is transcript-first; chat always opens with full text; restored chat is detached — no active leg until first turn attaches one (`TestRestoreChatRebuildsTranscriptBeforeLegs`, `TestRestoreDetachedNoActiveLeg`, `TestRestoredChatContinueOnInstalledProvider`). T-3 pipeline next slice (SD26 §10 detached policy)
+- [ ] `DOD-4` Per-leg typed degradation: `session_unavailable`, `provider_unavailable` + hint (`TestRestorePartialLegDegradation`, `TestRestoreMissingProviderTyped` — CS-14). T-3 degradation next slice
+- [ ] `DOD-5` Restore twice idempotent; leg order stable (`TestRestoreTwiceIdempotent`, `TestRestoredTimelineLegOrder`). T-4 hardening next slice (chatSeq ordering BUG-272 guard)
+- [ ] `DOD-6` v1 restore path untouched (`TestRestoreV1ManifestLegacyPathUntouched`). Probe via `TestChatManifestReaderAcceptsV1` v1 branch PASS; full legacy restore regression next slice
+- [ ] `DOD-7` Restored chat continues on an installed provider (`TestRestoredChatContinueOnInstalledProvider`) + live two-machine walk recorded. T-5 reopen proof next slice
+- [ ] `DOD-8` Flag off = v1 behavior byte-identical; full `go test ./internal/...` green, no pre-existing test edits. `chatSyncManifestSchemaVersion=2` flag-gated (`chatSSOTEnabled`); `go vet ./internal/runner` green; remaining: `go test -run TestChatSync` subset green, full suite still 363/375 with pre-existing 12 fails (Task-316 baseline)
 
 ### 6.2 Test Signatures
 
