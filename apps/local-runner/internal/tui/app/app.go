@@ -4712,6 +4712,34 @@ func (m *AppModel) chatRowsSig() uint64 {
 			_, _ = h.Write([]byte(it.RunID + ":" + it.Kind + ":" + it.Reason))
 		}
 	}
+	// BUG-333 (operator report: approval gate mounted, Tab/arrows looked dead):
+	// the interactive card rows (approval/gate/question bar) render from LIVE
+	// ring state — actionRingIdx, focus, keys-active, gate custom mode,
+	// question selections — that is NOT part of the message content hashed
+	// above. The tui.log proved actionRingIdx cycled 0↔1 while the row cache
+	// kept serving the bar with a frozen highlight. Hash the ring state so any
+	// keyboard move repaints the card row.
+	_, _ = h.Write([]byte{5, 0})
+	_, _ = h.Write([]byte(strconv.Itoa(m.actionRingIdx)))
+	_, _ = h.Write([]byte{0})
+	if m.actionRingFocus {
+		_, _ = h.Write([]byte{5, 1})
+	}
+	if m.actionRingKeysActive() {
+		_, _ = h.Write([]byte{5, 2})
+	}
+	if m.gate != nil {
+		_, _ = h.Write([]byte{5, 3})
+		_, _ = h.Write([]byte(m.gate.RunID))
+		_, _ = h.Write([]byte(strings.Join(m.gate.Options, ",")))
+		if m.gate.AwaitingCustom {
+			_, _ = h.Write([]byte{5, 4})
+		}
+	}
+	if m.question != nil && len(m.question.Selected) > 0 {
+		_, _ = h.Write([]byte{5, 5})
+		_, _ = h.Write([]byte(strings.Join(m.question.Selected, ",")))
+	}
 	return h.Sum64()
 }
 

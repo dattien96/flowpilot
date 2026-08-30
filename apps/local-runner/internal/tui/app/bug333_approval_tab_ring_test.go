@@ -1,9 +1,12 @@
 package app
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"flowpilot-runner/internal/tui/client"
 )
@@ -136,5 +139,72 @@ func TestBug333_Approval_HighlightVisibleWhileCardPending(t *testing.T) {
 	m := bug333PopulatedModel()
 	if got := m.ringHighlightFor("approval"); got != 0 {
 		t.Fatalf("approval surface must highlight idx 0 while the card is pending, got %d", got)
+	}
+}
+
+// cardRow returns the interactive card row ("… ← → Enter · 1-9") from rendered
+// chat rows, or "" when absent.
+func cardRow(rows []chatRow) string {
+	for _, r := range rows {
+		if strings.Contains(stripANSI(r.Text), "← → Enter") {
+			return r.Text
+		}
+	}
+	return ""
+}
+
+// THE operator report, reproduced: the ring state cycles (tui.log proved idx
+// flips) but the row cache keyed on message content served the approval bar
+// with a FROZEN highlight — Tab/arrows looked completely dead on screen.
+// TrueColor profile is forced because highlight styles degrade to identical
+// plain text without a TTY (ca558 pattern).
+func TestBug333_Approval_RowCacheRepaintsOnRingMove(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	m := bug333ApprovalModel()
+	before := cardRow(m.chatRows())
+	if before == "" {
+		t.Fatal("approval card row must render on the chat timeline")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	after := cardRow(m.chatRows())
+	if after == "" {
+		t.Fatal("approval card row must still render after Tab")
+	}
+	if after == before {
+		t.Fatal("ring move must repaint the approval card highlight — row cache served a frozen bar (operator report)")
+	}
+}
+
+func TestBug333_Gate_RowCacheRepaintsOnRingMove(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	m := bug328Model()
+	m.gate = &GateState{Options: []string{"r-ca", "r-na"}, RunID: "run-1"}
+	m.syncActionRingCard()
+	before := cardRow(m.chatRows())
+	if before == "" {
+		t.Fatal("gate card row must render")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	after := cardRow(m.chatRows())
+	if after == before {
+		t.Fatal("gate ring move must repaint the highlight — row cache stale")
+	}
+}
+
+func TestBug333_Approval_RowCacheRepaintsOnKeysActiveFlip(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+	m := bug333ApprovalModel()
+	active := cardRow(m.chatRows())
+	m.inputValue = "/ap"
+	m.syncTextareaValue()
+	typing := cardRow(m.chatRows())
+	if typing == "" {
+		t.Fatal("approval card row must render while typing too")
+	}
+	if typing == active {
+		t.Fatal("keys-active flip (typing) must repaint the highlight — row cache stale")
 	}
 }

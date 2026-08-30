@@ -38,6 +38,32 @@
 - R1: `Bug328` (21 blocked-flow/SS3/paste tests), `ChatPosture`, `ActionRing` suites green; full `tui/app` package shows exactly the 7 documented pre-existing failures (stash-verified earlier today).
 - Operator follow-up: rebuild + re-test E1–E5; if Tab ever dies again, `tui.log` now records the ring branch state.
 
+## Follow-up (same day): TRUE live root cause — chat row cache froze the highlight
+
+The operator re-tested after the keyboard-priority fix and Tab/arrows STILL
+looked dead. The new `tab-ring:` diagnostic log (pid 87392) proved the ring
+state was cycling perfectly — `active=true sugg=0 input="" idx=0↔1` on every
+press — so the failure was purely VISUAL. Reproduced as failing tests this
+time: `chatRows()` caches `buildChatRows()` output keyed on `chatRowsSig()`,
+which hashes message content + approval/question/attention/blocked identity
+but NOT the live ring visual state. Every Tab/←/→ moved `actionRingIdx` while
+the cache kept serving the approval bar with the idx=0 highlight baked in —
+the selection moved, the screen never repainted it. (The row cache landed
+with the CA-5xx scroll-chrome perf work, which is why Tab worked before it.)
+
+Fix: `chatRowsSig` now hashes `actionRingIdx`, `actionRingFocus`,
+`actionRingKeysActive()`, gate identity + `AwaitingCustom`, and
+`question.Selected` — any keyboard move on any card invalidates the rows and
+the highlight repaints. Scroll reuse (TestChatRows_ScrollReusesRowCache)
+stays green.
+
+Tests added (TrueColor profile forced — without a TTY lipgloss degrades both
+highlight styles to identical plain text, which is ALSO why the first unit
+attempts could not see the freeze): approval row repaints on ring move, gate
+row repaints on ring move, approval row repaints on keys-active flip.
+
+
+
 ## Residual notes (separate findings, not fixed here)
 
 - **E2 ordering watch**: live log showed `file_changed` (12:13:57.030) arriving 1ms BEFORE `permission_required` for the same write. Probe J proved opencode does NOT touch disk on deny, so this is a transcript-event ordering artifact of the opencode mapper (the streamed edit diff surfaces as file_changed before the ask), not an actual gate bypass — re-check during E2 that `/deny` leaves no file.
