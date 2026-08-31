@@ -57,6 +57,23 @@ type chatTimelineBackfillMsg struct {
 	Detached bool
 }
 
+// isChatHandle reports whether a handle is a chat leg. Runner now echoes
+// RunKind ("chat") and ChatID on createRun/resumeRun; legacy handles may
+// carry ChatID without RunKind, so that counts as chat. Workflow runs are
+// never chat (RunKind=="workflow").
+func isChatHandle(h *client.RunHandle) bool {
+	if h == nil {
+		return false
+	}
+	if h.RunKind == "chat" {
+		return true
+	}
+	if h.RunKind == "workflow" {
+		return false
+	}
+	return strings.TrimSpace(h.ChatID) != ""
+}
+
 // routeProviderSwitch decides whether a provider change on a live chat goes
 // through the switch endpoint (Task-315 T-3 routing rule). Returns a command
 // when routed; nil when the caller must fall back to the legacy path (no chat
@@ -68,7 +85,7 @@ func (m *AppModel) routeProviderSwitch(targetProvider, model string) tea.Cmd {
 	}
 	// Detached chat (restored, no active leg — SD26 §10): selections apply
 	// locally and ride the next prompt's reattach; no switch endpoint call.
-	if m.chatDetached && m.runHandle.RunKind == "chat" && strings.TrimSpace(m.runHandle.ChatID) != "" {
+	if m.chatDetached && isChatHandle(m.runHandle) && strings.TrimSpace(m.runHandle.ChatID) != "" {
 		if targetProvider != "" {
 			m.provider = targetProvider
 			m.bindActiveAccountForProvider()
@@ -81,7 +98,7 @@ func (m *AppModel) routeProviderSwitch(targetProvider, model string) tea.Cmd {
 		m.refreshSessionPanel()
 		return func() tea.Msg { return detachedNoticeMsg{} }
 	}
-	if m.runHandle.RunKind != "chat" || strings.TrimSpace(m.runHandle.ChatID) == "" {
+	if !isChatHandle(m.runHandle) || strings.TrimSpace(m.runHandle.ChatID) == "" {
 		return nil
 	}
 	if strings.EqualFold(targetProvider, m.provider) {
@@ -140,7 +157,7 @@ func (m *AppModel) routePostureSwitch(cfg client.ChatPostureConfig, name string)
 	if pinned == "" || m.runHandle == nil || m.chatSwitchInFlight {
 		return nil
 	}
-	if m.runHandle.RunKind != "chat" || strings.TrimSpace(m.runHandle.ChatID) == "" {
+	if !isChatHandle(m.runHandle) || strings.TrimSpace(m.runHandle.ChatID) == "" {
 		return nil
 	}
 	if strings.EqualFold(pinned, m.provider) {

@@ -879,7 +879,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		delete(s.runs, runID)
 		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
-	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID, ChatID: chatID, LegSeq: legSeq}, nil
+	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID, RunKind: runKind, ChatID: chatID, LegSeq: legSeq}, nil
 }
 
 // skipsResumeSessionValidation reports whether resumeRun should skip the
@@ -944,6 +944,8 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 		RunKind:           rs.runKind,
 		WorkflowID:        rs.workflowID,
 		FlowRef:           rs.chatFlowRef,
+		ChatID:            rs.chatID,
+		LegSeq:            rs.legSeq,
 	}
 	// Surface the synthetic chat step so the desktop can continue a resumed normal_chat
 	// run; its turns need a stepId and the chat step id is deterministic (T-7). Workflow

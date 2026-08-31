@@ -1555,6 +1555,7 @@ export const useStore = create<AppState>((set, get) => ({
         }
         set({
           mainRunId: handle.runId,
+          chatId: handle.chatId,
           activeAgentRunId: undefined,
         });
       }

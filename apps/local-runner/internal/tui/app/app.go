@@ -4308,6 +4308,10 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 					if cmd := m.routeProviderSwitch(matched.provider, matched.id); cmd != nil {
 						return m, cmd
 					}
+					if m.runHandle != nil {
+						m.addMessage("system", fmt.Sprintf("Cannot switch to %s \u00b7 %s on this chat (missing chat identity) \u2014 use /new", matched.provider, matched.id), "error")
+						return m, nil
+					}
 					m.provider = matched.provider
 					m.bindActiveAccountForProvider()
 					m.skillsCatalog = nil
@@ -4318,6 +4322,10 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				if prov := providerForModel(m.providers, want); prov != "" && !strings.EqualFold(prov, m.provider) {
 					if cmd := m.routeProviderSwitch(prov, want); cmd != nil {
 						return m, cmd
+					}
+					if m.runHandle != nil {
+						m.addMessage("system", fmt.Sprintf("Cannot switch to %s \u00b7 %s on this chat (missing chat identity) \u2014 use /new", prov, want), "error")
+						return m, nil
 					}
 					m.provider = prov
 					m.bindActiveAccountForProvider()
