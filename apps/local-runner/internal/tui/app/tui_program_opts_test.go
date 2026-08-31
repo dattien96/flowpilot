@@ -10,11 +10,11 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
-// Mouse CellMotion is ON so wheel scroll does not steal Up/Down history.
+// Wheel-only mouse (1000h): AltScreen+Filter, wheel via Init (no CellMotion hover).
 func TestTuiProgramOpts_WindowsNoMouse(t *testing.T) {
 	opts := tuiProgramOpts()
-	if len(opts) != 3 {
-		t.Fatalf("opts must be AltScreen+Filter+MouseCellMotion, got %d", len(opts))
+	if len(opts) != 2 {
+		t.Fatalf("opts must be AltScreen+Filter (wheel-only, no MouseCellMotion), got %d", len(opts))
 	}
 }
 

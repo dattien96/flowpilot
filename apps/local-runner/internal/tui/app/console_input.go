@@ -11,8 +11,38 @@ import (
 // Terminal / Cursor can keep delivering mouse records that starve KeyMsg.
 const mouseTrackingOffANSI = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
 
+// wheelMouseOnANSI enables button+wheel tracking only (1000h+1006h) so wheel
+// scroll reaches handleMouse as MouseWheel without the hover flood of 1002/1003
+// (BUG-328). Chip clicks remain keyboard-only so no click handling is needed.
+const wheelMouseOnANSI = "\x1b[?1002l\x1b[?1003l\x1b[?1000h\x1b[?1006h"
+
+func isStdoutTerminal() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
 func ensureMouseTrackingOff() {
+	if !isStdoutTerminal() {
+		return
+	}
 	_, _ = os.Stdout.WriteString(mouseTrackingOffANSI)
+}
+
+func ensureWheelMouseOn() {
+	if !isStdoutTerminal() {
+		return
+	}
+	_, _ = os.Stdout.WriteString(wheelMouseOnANSI)
+}
+
+func cmdEnableWheelMouse() tea.Cmd {
+	return func() tea.Msg {
+		ensureWheelMouseOn()
+		return nil
+	}
 }
 
 // primeConsoleBeforeProgram clears QuickEdit (Windows), disables mouse

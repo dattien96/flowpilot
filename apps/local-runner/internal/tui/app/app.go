@@ -222,9 +222,10 @@ func cmdSetAutoWrap(on bool) tea.Cmd {
 }
 
 func (m *AppModel) Init() tea.Cmd {
-	tuiLog("Init() -> disable autowrap + MouseCellMotion ON (wheel=scroll, Up/Down=history) + cmdConnect + tickCursor")
+	tuiLog("Init() -> disable autowrap + wheel-only mouse (1000h wheel, no 1002/1003 hover) + cmdConnect + tickCursor")
 	return tea.Sequence(
 		cmdSetAutoWrap(false),
+		cmdEnableWheelMouse(),
 		tea.Batch(m.cmdConnect(), tickCursor(), cmdInputWatchdog()),
 	)
 }
@@ -6561,12 +6562,12 @@ func remapVTControlKeys(msg tea.KeyMsg) tea.KeyMsg {
 	return msg
 }
 
-// tuiProgramOpts returns Bubble Tea program options. Mouse CellMotion is ON
-// so wheel scroll is MouseWheel (scrollTranscript) and does not steal Up/Down
-// prompt history. Motion is filtered via tuiMsgFilter, so the 64-slot conhost
-// queue is not wedged (BUG-328 mitigation). AltScreen + Filter + MouseCellMotion.
+// tuiProgramOpts returns Bubble Tea program options. Wheel-only mouse:
+// AltScreen + Filter only (no CellMotion). Wheel scroll is enabled via
+// ?1000h (button+wheel) in Init/maybeRearm so Up/Down stays prompt history
+// and hover motion never enters the 64-slot conhost queue (BUG-328).
 func tuiProgramOpts() []tea.ProgramOption {
-	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithFilter(tuiMsgFilter), tea.WithMouseCellMotion()}
+	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithFilter(tuiMsgFilter)}
 }
 
 // tuiRunProgramOpts is the live Run() option set: shared AltScreen+Filter.
