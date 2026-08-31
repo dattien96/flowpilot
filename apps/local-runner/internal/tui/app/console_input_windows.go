@@ -6,12 +6,8 @@ import "time"
 
 const consoleRearmInterval = 2 * time.Second
 
-// maybeRearmConsoleInput re-sends mouse-off ANSI periodically. SetConsoleMode
-// (QuickEdit) must not run after bubbletea starts its reader — only stdout ANSI.
+// maybeRearmConsoleInput keeps mouse tracking ON for wheel scroll.
 func (m *AppModel) maybeRearmConsoleInput(now time.Time) {
-	if !m.lastConsoleRearmAt.IsZero() && now.Sub(m.lastConsoleRearmAt) < consoleRearmInterval {
-		return
-	}
-	ensureMouseTrackingOff()
-	m.lastConsoleRearmAt = now
+	_ = now
+	// No-op: keep WithMouseCellMotion enabled (wheel=scroll, not history).
 }

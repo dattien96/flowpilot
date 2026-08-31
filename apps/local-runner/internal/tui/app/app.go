@@ -222,10 +222,9 @@ func cmdSetAutoWrap(on bool) tea.Cmd {
 }
 
 func (m *AppModel) Init() tea.Cmd {
-	tuiLog("Init() -> disable autowrap + mouse-off ANSI + cmdConnect + tickCursor")
+	tuiLog("Init() -> disable autowrap + MouseCellMotion ON (wheel=scroll, Up/Down=history) + cmdConnect + tickCursor")
 	return tea.Sequence(
 		cmdSetAutoWrap(false),
-		cmdEnsureMouseTrackingOff(),
 		tea.Batch(m.cmdConnect(), tickCursor(), cmdInputWatchdog()),
 	)
 }
@@ -6506,13 +6505,12 @@ func remapVTControlKeys(msg tea.KeyMsg) tea.KeyMsg {
 	return msg
 }
 
-// tuiProgramOpts returns Bubble Tea program options. Application mouse tracking
-// stays OFF on every platform (BUG-328): WithMouseCellMotion enables the host
-// mouse mode that wedges keyboard input (Windows conhost focus steal). Copy is
-// the terminal's native bôi-đen + /copy, not an in-app drag affordance. AltScreen
-// + Filter only.
+// tuiProgramOpts returns Bubble Tea program options. Mouse CellMotion is ON
+// so wheel scroll is MouseWheel (scrollTranscript) and does not steal Up/Down
+// prompt history. Motion is filtered via tuiMsgFilter, so the 64-slot conhost
+// queue is not wedged (BUG-328 mitigation). AltScreen + Filter + MouseCellMotion.
 func tuiProgramOpts() []tea.ProgramOption {
-	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithFilter(tuiMsgFilter)}
+	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithFilter(tuiMsgFilter), tea.WithMouseCellMotion()}
 }
 
 // tuiRunProgramOpts is the live Run() option set: shared AltScreen+Filter.
