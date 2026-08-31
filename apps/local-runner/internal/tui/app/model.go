@@ -358,6 +358,12 @@ type AppModel struct {
 	// key as 'O'+suffix rune records (BUG-328, tui.log pid 18400).
 	ss3               ss3FKeyState
 	viewport            viewportState
+	// wheel coalesce: burst wheel events share one View() to avoid BUG-328 hang
+	// after ~20s of continuous scroll (pid 20632: wheel-only 1000h still wedged
+	// when every notch painted the full markdown transcript).
+	lastWheelAt       time.Time
+	pendingWheelDelta int
+	lastWheelDelta    int
 	mouseSel      mouseSelect
 	mouseDrag     mouseDrag
 	rowCache      []chatRow

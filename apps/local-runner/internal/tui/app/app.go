@@ -1553,9 +1553,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// TUI console (no CREATE_NO_WINDOW) and left conhost without keys
 		// after Alt+V text paste (pid 9288: 47s stall). Re-arm here for all
 		// ClipboardPasteMsg branches; applyClipboardSysProcAttr prevents the
-		// attach for future pastes. Only mouse-off ANSI — SetConsoleMode wedges
-		// the live coninput reader (BUG-328).
-		ensureMouseTrackingOff()
+		// attach for future pastes. Keep wheel-only (1000h) so scroll survives
+		// paste (was ensureMouseTrackingOff which killed wheel).
+		ensureWheelMouseOn()
 		// Reset any active burst state so clipboard paste and subsequent typing stay clean.
 		m.resetPasteBurst()
 		if msg.Err != "" && msg.Attachment == nil && msg.Text == "" {
@@ -1738,6 +1738,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case QuitMsg:
 		m.quitting = true
 		return m, tea.Quit
+
+	case wheelFlushMsg:
+		return m.flushPendingWheel()
 
 	case tea.KeyMsg:
 		m.markInputAlive()

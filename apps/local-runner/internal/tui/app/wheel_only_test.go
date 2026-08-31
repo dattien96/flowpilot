@@ -42,6 +42,43 @@ func TestWheelOnly_WheelScrollsTranscriptNotHistory(t *testing.T) {
 	}
 }
 
+// Wheel burst within 40ms coalesces to one View() to avoid 20s hang (BUG-328).
+func TestWheelOnly_BurstCoalesces(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:9")
+	m.width, m.height = 80, 24
+	m.sessionLoading = false
+	m.asciiMode = true
+	for i := 0; i < 20; i++ {
+		m.addMessage("assistant", "line", "")
+	}
+	_ = m.View()
+	m2, _ := m.handleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	am := m2.(*AppModel)
+	if am.viewport.offset != 3 {
+		t.Fatalf("first wheel offset=3, got %d", am.viewport.offset)
+	}
+	// Second wheel immediately — coalesced, not yet flushed.
+	m3, cmd := am.handleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	am3 := m3.(*AppModel)
+	if am3.viewport.offset != 3 {
+		t.Fatalf("burst wheel must coalesce, offset still 3, got %d", am3.viewport.offset)
+	}
+	if am3.pendingWheelDelta != 3 {
+		t.Fatalf("pending delta=3, got %d", am3.pendingWheelDelta)
+	}
+	if cmd == nil {
+		t.Fatal("burst must schedule flush tick")
+	}
+	msg := cmd()
+	if _, ok := msg.(wheelFlushMsg); !ok {
+		t.Fatalf("flush msg type wheelFlushMsg, got %T", msg)
+	}
+	m4, _ := am3.Update(msg)
+	if m4.(*AppModel).viewport.offset != 6 {
+		t.Fatalf("after flush offset=6, got %d", m4.(*AppModel).viewport.offset)
+	}
+}
+
 // Up/Down when not over viewport still navigates history (keyboard).
 func TestWheelOnly_UpDownStillHistory(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:9")
