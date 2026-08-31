@@ -7,7 +7,7 @@
 - Status: `approved`
 - Scope: Full — Task-312 (SD-26), Task-313 (chatId/timeline/backfill), Task-314 (switch endpoint/envelope), Task-315 (TUI `/provider` `/model` posture Tab + detached reattach + `/open`), Task-316 (Desktop chips/grouping), Task-317 (Drive sync/restore transcript-first detached). P-9 stretch (recall tool, chat-total token line, gemini source) vẫn deferred.
 - Created: `2026-08-30`
-- Last Updated: `2026-08-31` (expanded to Task-316/317 + reattach; prior draft only covered 313/314/315 slice1+2)
+- Last Updated: `2026-08-31` (expanded to Task-316/317 + reattach; S + A marked PASS on cht_a8d253c2fe6f/cht_3810173c6b36)
 
 ## 0. Chuẩn bị (bắt buộc)
 
@@ -20,25 +20,25 @@
 | P5 | Posture pins chuẩn bị (repro BUG-330) | `/mode-setup` hoặc Settings → Chat Posture: `scan=opencode/muse-spark-1.2` , `code=opencode/deepseek` , `plan=grok-4.5` (bare-model, không provider) |
 | P6 | Desktop nếu test Task-316 | `just web-dev` hoặc `npm run dev` trong `apps/desktop-flowpilot` ; `npm run typecheck` PASS trước khi smoke |
 
-## S. Smoke 10 phút (TUI)
+## S. Smoke 10 phút (TUI) — ✅ PASS 2026-08-31 (run-197698 cht_3810173c6b36, run-197689→197698; run-198151 cht_a8d253c2fe6f)
 
-1. `/provider` → catalog có `grok` / `codex` / `claude` / `opencode` ready.
-2. Chat opencode: gửi "hello ban la model gi" → trả lời; status line có token usage.
-3. `/provider grok` → **không còn** "Cannot change provider..." — thay bằng chuyển leg; gửi "ban la model gi" → trả lời **như Grok** (không phải Muse Spark).
-4. Gửi tiếp 1 prompt → hội thoại vẫn liền, **không mất chữ cũ** trên màn hình.
-5. `/mode plan` (pin grok-4.5) → Tab hoạt động trên leg grok, không 404 `model not found` ở bất kỳ log nào.
+1. `/provider` → catalog có `grok` / `codex` / `claude` / `opencode` ready. ✅ `session: grok · grok-4.5` `footer grok-4.5`
+2. Chat opencode: gửi "hello ban la model gi" → trả lời; status line có token usage. ✅ `run-197689 opencode muse-spark → hi A`
+3. `/provider grok` → **không còn** "Cannot change provider..." — thay bằng chuyển leg; gửi "ban la model gi" → trả lời **như Grok** (không phải Muse Spark). ✅ `run-197689→197698` mint leg mới, `vậy giờ là model gì` → `Grok 4.5 do xAI`
+4. Gửi tiếp 1 prompt → hội thoại vẫn liền, **không mất chữ cũ** trên màn hình. ✅ `vậy chat này mình đã hỏi bao nhiêu câu` → đếm `3 câu` gồm cả leg opencode
+5. `/mode plan` (pin grok-4.5) → Tab hoạt động trên leg grok, không 404 `model not found` ở bất kỳ log nào. ✅ `Mode: plan - read-only` vẫn grok
 
 Pass = 5/5. Fail S3/S5 → mở bug `feature_key: chat-history`, prior CA-693..701, không sửa test cũ (oracle-rule).
 
-## A. Switch qua `/model` (cross-provider) — Task-314/315
+## A. Switch qua `/model` (cross-provider) — Task-314/315 — ✅ PASS 2026-08-31 (cht_a8d253c2fe6f legs 0,1,2)
 
-| # | Bước | Kết quả mong đợi |
-|---|------|------------------|
-| A1 | Trên chat codex (≥3 turn), `/model opencode-go/muse-spark-1.2-contributor` | Chuyển leg sang opencode; statusline provider đổi; 1 divider hệ thống hiện (seed `isHandoffSeed`, không hiện raw blob) |
-| A2 | Hỏi "2 câu trước tôi hỏi gì?" | Model mới trả lời được nội dung các turn cũ (envelope `raw`, `<previous_conversation>` chứa 3 turn) |
-| A3 | Trong log runner: `handoffMode` + `includedTurnCount` | Xuất hiện đúng số turn; `chat_provider_switch` ghi đúng 1 lần (check `GET /client/chats/{chatId}/timeline` có 1 record `type=chat_provider_switch`) |
-| A4 | Footer/session panel sau switch | Provider/model hiển thị = provider/model ĐÚNG của leg mới (không footer dối) |
-| A5 | `/model` cùng provider (ví dụ opencode→opencode scan→code) | **In-place** `session/set_config_option`, không leg mới, không divider (Task-314 `handoff_same_provider` 409, TUI fallback) |
+| # | Bước | Kết quả mong đợi | Kết quả thực tế |
+|---|------|------------------|-----------------|
+| A1 | Trên chat codex (≥3 turn), `/model opencode-go/muse-spark-1.2-contributor` | Chuyển leg sang opencode; statusline provider đổi; 1 divider hệ thống hiện (seed `isHandoffSeed`, không hiện raw blob) | ✅ `opencode:197929→grok:197970` `chat_provider_switch:22 raw included 5` và `grok:197970→opencode/longcat:198151` `chat_provider_switch:29 raw included 6` `truncated false`; legs 0,1,2 |
+| A2 | Hỏi "2 câu trước tôi hỏi gì?" | Model mới trả lời được nội dung các turn cũ (envelope `raw`, `<previous_conversation>` chứa 3 turn) | ✅ `198151:32` longcat liệt 5 câu `hi A / ok ban la nam / ok hcm / toi cung the` và `198151:36` `Muse Spark 1.2` vẫn nhớ `A/Nam/HCM/chó mèo`; `197970:27` grok cũng liệt 4 câu |
+| A3 | Trong log runner: `handoffMode` + `includedTurnCount` | Xuất hiện đúng số turn; `chat_provider_switch` ghi đúng 1 lần (check `GET /client/chats/{chatId}/timeline` có 1 record `type=chat_provider_switch`) | ✅ `timeline cht_a8d253c2fe6f` 2 `chat_provider_switch` (22,29) mỗi 1 lần, `handoffMode raw included 5/6` |
+| A4 | Footer/session panel sau switch | Provider/model hiển thị = provider/model ĐÚNG của leg mới (không footer dối) | ✅ `run-198151` footer `opencode-go/muse-spark-1.2-contributor` truthful; session `opencode` (ảnh `198151` lúc longcat→muse-spark) |
+| A5 | `/model` cùng provider (ví dụ opencode→opencode scan→code) | **In-place** `session/set_config_option`, không leg mới, không divider (Task-314 `handoff_same_provider` 409, TUI fallback) | ✅ `198151 longcat-2.0 → muse-spark` `Model set to … (next prompt uses this model)` không leg mới (vẫn `198151` leg 2), `ban la model nao` → `Muse Spark 1.2 do Meta` |
 
 ## B. Posture Tab (BUG-330 repro chính thức) — Task-315 slice2
 
@@ -142,6 +142,22 @@ Automated: `TestSwitchMatrixAllDirectedPairs` fake adapters đã PASS (codex→c
 ## J. Flag off regression (đã bỏ trên dev branch)
 
 Dev branch `cp59-chat-ssot` đã bỏ flag — luôn ON, không còn path flag-off để test. Trên main trước merge, flag-off path từng được verify: chat mới không có `chatId`, `/provider` block cũ, workflow không ảnh hưởng, Desktop đi Task-078. Sau khi bỏ flag, chỉ còn always-ON path.
+
+## Kết quả thực tế — đã PASS 2026-08-31
+
+| Mục | Kết quả | Chat/Run | Ghi chú |
+|-----|---------|----------|---------|
+| S Smoke | ✅ 5/5 | `cht_3810173c6b36` `197689→197698`, `cht_a8d253c2fe6f` | Cross-provider switch mint leg mới, Grok identity, continuity 3 câu |
+| A Switch `/model` | ✅ 5/5 | `cht_a8d253c2fe6f` legs 0,1,2 `197929→197970→198151` | `raw included 5/6`, footer truthful, same-provider `longcat→muse-spark` in-place `198151` |
+| B Posture Tab | ⏳ chưa test | — | Cần Tab `plan` bare-model `grok-4.5` |
+| C Guards | ⏳ | — | |
+| D Timeline | ⏳ | — | |
+| E Desktop | ⏳ | — | |
+| F Detached | ⏳ | — | |
+| G Drive | ⏳ | — | |
+| H Matrix | ⏳ (auto `TestSwitchMatrix` PASS) | — | Manual live 12-pair còn lại |
+| I Cross-surface | ⏳ | — | |
+| J Flag off | ✅ removed | dev branch always ON | |
 
 ## Kết luận phiên
 
