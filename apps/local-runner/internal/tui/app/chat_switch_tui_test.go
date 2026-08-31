@@ -23,7 +23,13 @@ func TestHandoffPromptPrefixParity(t *testing.T) {
 }
 
 func TestRouteProviderSwitchRules(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("FLOWPILOT_TUI_SESSION_FILE", dir+"/tui-session.json")
+	t.Setenv("APPDATA", dir)
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
+	m.provider = ""
 	// No run → legacy path (nil command).
 	if cmd := m.routeProviderSwitch("grok", ""); cmd != nil {
 		t.Fatal("no-run must not route")

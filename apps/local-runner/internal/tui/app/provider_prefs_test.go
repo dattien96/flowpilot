@@ -11,6 +11,7 @@ import (
 
 func TestNew_RestoresProviderFromPrefs(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("FLOWPILOT_TUI_SESSION_FILE", filepath.Join(dir, "tui-session.json"))
 	t.Setenv("APPDATA", dir)
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir)
@@ -25,6 +26,7 @@ func TestNew_RestoresProviderFromPrefs(t *testing.T) {
 
 func TestNew_FlagOverridesPrefs(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("FLOWPILOT_TUI_SESSION_FILE", filepath.Join(dir, "tui-session.json"))
 	t.Setenv("APPDATA", dir)
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir)
@@ -39,6 +41,7 @@ func TestNew_FlagOverridesPrefs(t *testing.T) {
 
 func TestSlashNew_KeepsProviderAndPersists(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("FLOWPILOT_TUI_SESSION_FILE", filepath.Join(dir, "tui-session.json"))
 	t.Setenv("APPDATA", dir)
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir)

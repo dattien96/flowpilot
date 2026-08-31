@@ -76,6 +76,11 @@ type ndjsonSessionRecord struct {
 	StartedAt           string          `json:"started_at,omitempty"`
 	UpdatedAt           string          `json:"updated_at,omitempty"`
 	RunKind             string          `json:"run_kind,omitempty"`
+	ChatID              string          `json:"chat_id,omitempty"`
+	LegSeq              int             `json:"leg_seq,omitempty"`
+	LegState            string          `json:"leg_state,omitempty"`
+	LegClosedReason     string          `json:"leg_closed_reason,omitempty"`
+	SwitchFromRunID     string          `json:"switch_from_run_id,omitempty"`
 	SourceMachineID     string          `json:"source_machine_id,omitempty"`
 	SourceRunID         string          `json:"source_run_id,omitempty"`
 	RestoredFrom        string          `json:"restored_from,omitempty"`
@@ -399,6 +404,11 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		StartedAt:                          r.StartedAt,
 		UpdatedAt:                          r.UpdatedAt,
 		RunKind:                            r.RunKind,
+		ChatID:                             r.ChatID,
+		LegSeq:                             r.LegSeq,
+		LegState:                           r.LegState,
+		LegClosedReason:                    r.LegClosedReason,
+		SwitchFromRunID:                    r.SwitchFromRunID,
 		SourceMachineID:                    r.SourceMachineID,
 		SourceRunID:                        r.SourceRunID,
 		RestoredFrom:                       r.RestoredFrom,
@@ -850,6 +860,11 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		StartedAt:                          s.StartedAt,
 		UpdatedAt:                          s.UpdatedAt,
 		RunKind:                            s.RunKind,
+		ChatID:                             s.ChatID,
+		LegSeq:                             s.LegSeq,
+		LegState:                           s.LegState,
+		LegClosedReason:                    s.LegClosedReason,
+		SwitchFromRunID:                    s.SwitchFromRunID,
 		SourceMachineID:                    s.SourceMachineID,
 		SourceRunID:                        s.SourceRunID,
 		RestoredFrom:                       s.RestoredFrom,

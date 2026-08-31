@@ -1108,6 +1108,8 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 					LastPrompt:      sess.LastPrompt,
 					LastMessage:     sess.LastMessage,
 					RunKind:         sess.RunKind,
+					ChatID:          sess.ChatID,
+					LegSeq:          sess.LegSeq,
 					SourceMachineID: sess.SourceMachineID,
 					SourceRunID:     sess.SourceRunID,
 					SyncStatus:      sess.SyncStatus,

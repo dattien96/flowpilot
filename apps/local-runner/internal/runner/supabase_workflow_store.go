@@ -59,7 +59,9 @@ func idempotencyKeysOrEmpty(m map[string]string) map[string]string {
 
 // providerSessionSelectRecovery is the PostgREST select list for full session
 // recovery (stall-retry, gate settle, idempotency, runtime blob) — BUG-288 R17/R18.
-const providerSessionSelectRecovery = "workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,parent_run_id,agent_name,agent_role,agent_status,pending_restart_run_id,pending_restart_prompt,pending_restart_gen,flow_context_injected,idempotency_keys,session_runtime,workflow_runs(project_id,workflow_id)"
+// CP-59 chat SSOT (chat_id/leg_*) additive: grouped history relies on persisted
+// legs, so recovery must select them.
+const providerSessionSelectRecovery = "workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,chat_id,leg_seq,leg_state,leg_closed_reason,switch_from_run_id,parent_run_id,agent_name,agent_role,agent_status,pending_restart_run_id,pending_restart_prompt,pending_restart_gen,flow_context_injected,idempotency_keys,session_runtime,workflow_runs(project_id,workflow_id)"
 
 // sessionRuntimeBlob holds flow-recovery fields that are not first-class
 // Supabase columns (BUG-288 R18-3). Packed into session_runtime jsonb.
@@ -466,6 +468,13 @@ func derefString(p *string) string {
 	return *p
 }
 
+func derefInt(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
 // buildStepPatchBody renders a WorkflowStepPatch to a PostgREST PATCH body. Only
 // fields the patch sets are included; a non-nil pointer to "" becomes JSON null.
 func buildStepPatchBody(p WorkflowStepPatch) map[string]any {
@@ -767,6 +776,7 @@ func providerSessionFromDBRow(r dbProviderSessionRow) ProviderSessionState {
 		UpdatedAt:        r.UpdatedAt,
 		RunKind:          r.RunKind,
 		ChatID:           derefString(r.ChatID),
+		LegSeq:           derefInt(r.LegSeq),
 		LegState:         derefString(r.LegState),
 		LegClosedReason:  derefString(r.LegClosedReason),
 		SwitchFromRunID:  derefString(r.SwitchFromRunID),

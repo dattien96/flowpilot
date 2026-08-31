@@ -300,6 +300,10 @@ type RunHistoryItem struct {
 	AgentName   string `json:"agentName,omitempty"`
 	SubMode     string `json:"subMode,omitempty"`
 	FlowRef     string `json:"flowRef,omitempty"`
+	// Chat SSOT grouping (CP-59 Q-4): logical chat id + leg ordinal. Empty for
+	// legacy untagged rows and workflow runs — they stay 1:1 (Desktop parity).
+	ChatID string `json:"chatId,omitempty"`
+	LegSeq int    `json:"legSeq,omitempty"`
 	// Drive chat-session sync metadata (Desktop Navigator parity, CA-548).
 	SourceMachineID   string `json:"sourceMachineId,omitempty"`
 	SourceRunID       string `json:"sourceRunId,omitempty"`
