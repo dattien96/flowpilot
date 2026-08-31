@@ -210,6 +210,21 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 		if HasCodeChanges(tr.GitDiff) && !HasNewTestFileAdded(tr.GitDiff) {
 			return &Violation{Rule: rule, Detail: "production code changed without a newly added test file in this turn"}
 		}
+
+	case "pre_existing_test_edited":
+		// Task-260: hard enforce additive-tests-only. TamperedTestPaths is
+		// populated from oracle.Tampered (IsTestFile M/D/R/C already filtered
+		// by test_overrides on filepath.Base). Pure A (new test file) never
+		// appears there, so it correctly does not fire for additive work.
+		// No GitDiff fallback — a GitDiff M/D/R/C that oracle filtered via
+		// override must NOT re-fire here (Critical: overrides would be ignored).
+		// Callers constructing TurnResult directly must populate TamperedTestPaths.
+		if len(tr.TamperedTestPaths) > 0 {
+			return &Violation{
+				Rule:   rule,
+				Detail: "pre-existing test file(s) edited: " + strings.Join(tr.TamperedTestPaths, ", "),
+			}
+		}
 	}
 	return nil
 }

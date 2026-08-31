@@ -273,6 +273,7 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		HeadCodeDrifted:             headCodeDrifted,
 		HeadAttachSpecPending:       headAttachSpecPending,
 		HeadRetirePending:           detectRetirePending(cwd, knownFeatureKeys),
+		TamperedTestPaths:           append([]string(nil), oracle.Tampered...),
 	}
 
 	// 7. Load rules; fall back to defaults when flow-rules.json is absent.
@@ -306,19 +307,8 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		log.Printf("[gate] proposal turn: r-reg/r-tests suppressed")
 	}
 
-	// 9. Surface oracle-detected tampering as an additional warn violation.
-	if oracle.HasTampering {
-		violations = append(violations, flowgate.Violation{
-			Rule: flowgate.Rule{
-				ID:      "r-tamper",
-				Scope:   "step",
-				Trigger: "oracle_tamper",
-				Action:  "warn",
-				Enabled: true,
-			},
-			Detail: "pre-existing test file modified: " + strings.Join(oracle.Tampered, ", "),
-		})
-	}
+	// 9. Tampering is now evaluated as r-additive-tests via TurnResult.TamperedTestPaths (Task-260).
+	// No synthetic r-tamper warn — the rule itself (reprompt) owns the signal.
 
 	if len(violations) == 0 {
 		// V10R4 P0-03 / BUG-288 R16-P0: durable commit under s.mu (no TOCTOU).
@@ -355,7 +345,7 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		return false
 	}
 
-	// 10. Enforce â€” read gate_mode from .flowpilot/settings/gate-config.json; default warn.
+	// 10. Enforce — read gate_mode from .flowpilot/settings/gate-config.json; default enforce (see readGateMode).
 	gateMode := loadGateMode(dotFP)
 	result := flowgate.Enforce(violations, gateMode)
 	s.recordGateEnforceMetric(dotFP, rs, turnID, gateMode, result)

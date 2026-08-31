@@ -161,6 +161,16 @@ func remediationFor(v Violation) string {
 		return "• Missing new test coverage. You changed production code but did not ADD a new test file in this turn. " +
 			"Create a NEW `*_test.go` / `*.test.ts` file with a failing-or-asserting case derived from the acceptance criteria. " +
 			"Do NOT edit or delete existing tests to make the gate pass (oracle-rule / additive-tests-only)."
+	case "pre_existing_test_edited":
+		// Task-260: actionable guidance for additive-tests-only + oracle-rule. Detail already
+		// lists the tampered path(s) from Evaluate.
+		return "• " + v.Detail + ". " +
+			"safe-fix-contract / additive-tests-only / oracle-rule: do not modify legacy tests without user approval. " +
+			"1. Revert edits to those files (git checkout / git restore). " +
+			"2. Add NEW regression tests in a new file (or new cases in a new file only). " +
+			"3. Fix production code so old + new tests pass. " +
+			"4. If an old test is truly wrong vs AC: stop and ask the user — do not silent-edit. " +
+			"Do NOT edit change-audit solely to dismiss this rule."
 	default:
 		return "• " + v.Detail
 	}
