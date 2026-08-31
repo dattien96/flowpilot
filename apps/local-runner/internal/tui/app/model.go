@@ -428,6 +428,16 @@ type AppModel struct {
 	flowBuiltins       []client.BuiltinFlowOption
 	flowWorkflows      []client.Workflow
 	chatList           []client.RunHistoryItem // last /history result for picker + /open <n>
+	// deleteSelected tracks ticked rows in the /delete picker (skill-like multi-select).
+	deleteSelected map[string]bool
+	// deletePending* arms a two-step delete confirm for /delete (Task-318).
+	// Single and batch deletes share the same y/n gate — pending may be 1..N ids.
+	deletePendingRunID string
+	deletePendingIDs   []string
+	deletePendingLabel string
+	// deleteBatch* tracks sequential batch deletes after y confirm (Enter on picker).
+	deleteBatchQueue []string
+	deleteBatchTotal int
 	// remoteChatList caches the project's Drive-backed chat index (G3 /restore).
 	// G2 /sync reconciles against it to skip runs already present on Drive.
 	remoteChatList []client.RemoteChatSessionSummary
@@ -672,6 +682,7 @@ var knownSlashCommands = []slashCommand{
 	{"/resume", "Open chat — type /resume  then ↑↓ Tab Enter"},
 	{"/history", "List/open chats — type /history  then ↑↓ Tab Enter"},
 	{"/open", "Open chat — type /open  then ↑↓ Tab Enter"},
+	{"/delete", "Delete chats — type /delete  then Tab tick · Enter del · all"},
 	{"/approve", "Approve a pending approval"},
 	{"/deny", "Deny a pending approval"},
 	{"/headless", "Print next response to stdout only"},
