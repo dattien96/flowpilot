@@ -626,21 +626,17 @@ func TestRestoreChatV1Untouched(t *testing.T) {
 	if gotV1.SourceRunID != "run-1" {
 		t.Fatalf("v1 mismatch: %+v", gotV1)
 	}
+	// Flag removed: always ON — even with env 0 these must NOT be disabled.
 	t.Setenv("FLOWPILOT_CHAT_SSOT", "0")
+	t.Setenv("FLOWPILOT_CHAT_STORE_DIR", t.TempDir())
 	fws := newFakeWorkflowStore()
 	svc := &InteractiveService{workflowStore: fws, runs: map[string]*interactiveRun{}}
 	_, err = SyncChatV2ToDrive(context.Background(), svc, "cht_x", map[string][]byte{})
-	if err == nil {
-		t.Fatalf("expected flag-gated error when SSOT off")
-	}
-	if !strings.Contains(err.Error(), "SSOT") && !strings.Contains(err.Error(), "disabled") {
-		t.Fatalf("unexpected error %v", err)
+	if err != nil && (strings.Contains(err.Error(), "SSOT") || strings.Contains(err.Error(), "disabled")) {
+		t.Fatalf("must not be disabled when flag removed, got %v", err)
 	}
 	err = RestoreChatFromManifestV2(context.Background(), svc, map[string][]byte{}, ChatSyncManifest{ChatID: "cht_x", SchemaVersion: 2}, nil)
-	if err == nil {
-		t.Fatalf("expected restore flag-gated error")
-	}
-	if !strings.Contains(err.Error(), "SSOT") && !strings.Contains(err.Error(), "disabled") {
-		t.Fatalf("unexpected restore error %v", err)
+	if err != nil && (strings.Contains(err.Error(), "SSOT") || strings.Contains(err.Error(), "disabled")) {
+		t.Fatalf("restore must not be disabled when flag removed, got %v", err)
 	}
 }

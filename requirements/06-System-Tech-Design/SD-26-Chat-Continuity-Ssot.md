@@ -40,7 +40,7 @@
 - `D-7` **One divider per switch, single source**: live renders the seed as the divider; replay renders the `chat_provider_switch` record (`SD26-E-9`) and suppresses the duplicate seed; dedupe by `toRunId`; clients never synthesize a divider (review I-4).
 - `D-8` **Restore-detach + reattach** (review I-8/I-R3): restored chats have zero active legs (all `closed(restored)`); the next turn/Tab/provider pick reattaches via direct `createRun(chatId, switchFromRunID=latestLeg)` — the switch endpoint correctly 409s `chat_no_active_leg` there and is never called for detached chats.
 - `D-9` **Envelope: chat-scoped, context-budgeted, action-aware** (`SD26-D-6`): budget `min(contextWindowTokens × 3 chars, 512 KiB)`, floor 64 KiB (`handoffMaxBytes`) when unknown; `<previous_conversation>` (Task-078 `packConversationTurns` semantics) + optional `<actions_summary>` from tool/file/approval records; `handoffPromptPrefix` preserved for feature-resolution skip.
-- `D-10` **Flag-gated, additive** (`FLOWPILOT_CHAT_SSOT`, default off): flag off = byte-identical behavior (endpoint absent → clients fall back); all migrations additive columns + one new table.
+- `D-10` **Always ON (dev branch `cp59-chat-ssot`; flag removed)**: additive — all migrations additive columns + one new table. `FLOWPILOT_CHAT_SSOT` env is ignored (see `D-10` history).
 
 ### Constraints
 
@@ -204,7 +204,7 @@ Define the technical contracts that make one logical chat survive provider switc
 - auth: endpoints ride the existing runner client auth surface; no new credentials.
 - secrets: envelope never embeds provider credentials; transcripts may embed user content — chat files live under the local session dir with existing permissions.
 - audit: `E-9` records are the switch audit trail; legs stay queryable for drill-down.
-- rollback: `FLOWPILOT_CHAT_SSOT=0` returns every surface to byte-identical legacy behavior; crash heal is rollback-safe per §7.2.
+- rollback: (dev branch) flag removed — always ON. Crash heal is rollback-safe per §7.2; reverting requires a code rollback, not an env toggle.
 
 ## 10. Risks and Trade-Offs
 

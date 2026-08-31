@@ -27,10 +27,9 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/workflows/{workflowId}/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/chat/builtin-orchestration-options", s.handleListBuiltinOrchestrationOptions)
 	mux.HandleFunc("GET /client/projects/{projectId}/workflow-runs", s.handleListProjectRunHistory)
-	// CP-59 chat SSOT timeline (Task-313): flag-gated in the handler — with
-	// FLOWPILOT_CHAT_SSOT off it answers typed 404 and nothing else changes.
+	// CP-59 chat SSOT timeline (Task-313) — always ON.
 	mux.HandleFunc("GET /client/chats/{chatId}/timeline", s.handleChatTimeline)
-	// CP-59 chat provider switch (Task-314): same flag gate in the handler.
+	// CP-59 chat provider switch (Task-314) — always ON.
 	mux.HandleFunc("POST /client/chats/{chatId}/switch-provider", s.handleChatSwitchProvider)
 	mux.HandleFunc("GET /client/projects/{projectId}/chat-sessions/remote", s.handleListRemoteChatSessions)
 	mux.HandleFunc("GET /client/engine/tooling/status", s.handleGetGlobalEngineToolingStatus)
@@ -801,10 +800,9 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 
 	// CP-59 chat SSOT (SD-26 §5.1): resolve chat identity before the lock —
 	// adoption reads resident runs (same resolve-before-lock pattern as
-	// stampAccount above). Flag-gated: workflow runs and flag-off keep zero
-	// chat fields everywhere.
+	// stampAccount above). Always ON for chat runs on dev branch.
 	chatID, legSeq, switchFrom := "", 0, ""
-	if chatSSOTEnabled() && runKind == "chat" {
+	if runKind == "chat" {
 		chatID, legSeq, switchFrom = s.resolveChatIdentity(in)
 		s.ensureChatTranscriptWriter()
 	}

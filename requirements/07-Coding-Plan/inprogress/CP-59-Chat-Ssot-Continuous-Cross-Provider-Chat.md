@@ -182,7 +182,7 @@ Child Tasks allocated (this batch, post Grok review): Task-312 → P-1 (SD-26 de
 
 - **schema:** additive columns on the durable run record + new chat-transcript store (Q-1). No existing column reordered or repurposed (Supabase column list `supabase_workflow_store.go:62` extended at the end).
 - **data backfill:** legacy chat runs self-tag on first touch (load or switch): `chatId=runId`, `legSeq=0`. Chat transcript backfill for legacy chats happens lazily from per-run `transcriptTurnsFromRun` when a legacy chat is first opened/switched (best effort, raw mode) — never blocks the turn.
-- **config updates:** none mandatory; optional `FLOWPILOT_CHAT_SSOT` feature flag (default off → on after E2E, §8) and optional envelope cap override per deployment.
+- **config updates:** none mandatory on dev branch — `FLOWPILOT_CHAT_SSOT` removed, always ON; optional envelope cap override per deployment.
 
 ## 7. Validation Plan
 
@@ -232,4 +232,4 @@ Child Tasks allocated (this batch, post Grok review): Task-312 → P-1 (SD-26 de
 - Reopen-after-restart and Drive restore operate per chat with full text continuity and typed per-leg degradation (CS-09, CS-10).
 - Zero pre-existing test edited; all suites listed in §5.1 stay green; every new behavior covered by the CS-* files.
 - SD-26 exists, approved, and linked; SS-05 carries the chat-switch invariant note; CA notes filed per merged slice (`chat-history` dominant key).
-- Feature flag `FLOWPILOT_CHAT_SSOT` defaults on only after the E2E walk is recorded; fallback path (§8) verified once with the flag off.
+- Chat SSOT is always ON on dev branch `cp59-chat-ssot` (flag removed). No fallback flag-off path needed there; main-branch rollout still follows SD-26 D-10 once merged.

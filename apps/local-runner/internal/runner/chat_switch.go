@@ -50,10 +50,6 @@ type chatSwitchResponse struct {
 }
 
 func (s *InteractiveService) handleChatSwitchProvider(w http.ResponseWriter, r *http.Request) {
-	if !chatSSOTEnabled() {
-		writeInteractiveError(w, newAPIErr(http.StatusNotFound, "chat_ssot_disabled", "chat SSOT is disabled (FLOWPILOT_CHAT_SSOT)"))
-		return
-	}
 	var req chatSwitchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))

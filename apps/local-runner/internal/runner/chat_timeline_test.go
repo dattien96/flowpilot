@@ -50,13 +50,14 @@ func TestRecordChatTranscriptSkipsDeltas(t *testing.T) {
 }
 
 func TestRecordChatTranscriptFlagOffNoop(t *testing.T) {
+	// Flag removed: always ON — even with env 0 writer must exist and record.
 	t.Setenv("FLOWPILOT_CHAT_SSOT", "0")
 	t.Setenv("FLOWPILOT_CHAT_STORE_DIR", t.TempDir())
 	svc := &InteractiveService{runs: map[string]*interactiveRun{}}
-	if svc.ensureChatTranscriptWriter() != nil {
-		t.Fatal("writer must stay nil with flag off")
+	if svc.ensureChatTranscriptWriter() == nil {
+		t.Fatal("writer must be non-nil even with flag 0 (always ON)")
 	}
-	// Must not panic and must not record anything.
+	svc.chatRuns.register("run-1", "cht_a")
 	svc.recordChatTranscript(chatEvent(EventTurnStarted, "run-1"))
 }
 
@@ -159,14 +160,16 @@ func TestChatTimelineUnknownChat404(t *testing.T) {
 }
 
 func TestChatTimelineFlagOffDisabled404(t *testing.T) {
+	// Flag removed: timeline must NOT return chat_ssot_disabled even with env 0.
 	t.Setenv("FLOWPILOT_CHAT_SSOT", "0")
+	t.Setenv("FLOWPILOT_CHAT_STORE_DIR", t.TempDir())
 	svc := &InteractiveService{runs: map[string]*interactiveRun{}}
 	req := httptest.NewRequest(http.MethodGet, "/client/chats/cht_x/timeline", nil)
 	req.SetPathValue("chatId", "cht_x")
 	rec := httptest.NewRecorder()
 	svc.handleChatTimeline(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("flag-off status = %d, want 404", rec.Code)
+	if strings.Contains(rec.Body.String(), "chat_ssot_disabled") {
+		t.Fatalf("must not be chat_ssot_disabled when flag removed, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

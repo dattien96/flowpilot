@@ -55,15 +55,12 @@ func chatSyncTranscriptDrivePath(chatID string) string {
 	))
 }
 
-// BuildChatSyncManifestV2 builds a v2 manifest for chatID (flag-gated, additive).
+// BuildChatSyncManifestV2 builds a v2 manifest for chatID (always ON).
 // It collects legs via ChatSessionReader.ListProviderSessionsByChat, transcript
 // file path via ChatTranscriptStore (localFileChatTranscriptStore.chatPath when
 // available, otherwise the canonical Drive transcript path), and sidecars via
 // resolveGrokSessionSidecarFiles per leg (best-effort), sorted by legSeq.
 func BuildChatSyncManifestV2(ctx context.Context, s *InteractiveService, chatID string) (ChatSyncManifest, error) {
-	if !chatSSOTEnabled() {
-		return ChatSyncManifest{}, fmt.Errorf("chat SSOT disabled (FLOWPILOT_CHAT_SSOT)")
-	}
 	chatID = strings.TrimSpace(chatID)
 	if chatID == "" {
 		return ChatSyncManifest{}, fmt.Errorf("chatId is required")
@@ -137,12 +134,9 @@ func BuildChatSyncManifestV2(ctx context.Context, s *InteractiveService, chatID 
 }
 
 // SyncChatV2ToDrive uploads a chat's v2 bundle to a fake Drive (map[DrivePath]bytes).
-// It is flag-gated, idempotent (overwrite), and leaves legs sorted; sidecars are
+// Always ON, idempotent (overwrite), and leaves legs sorted; sidecars are
 // best-effort via BuildChatSyncManifestV2 (T-2 + T-4).
 func SyncChatV2ToDrive(ctx context.Context, s *InteractiveService, chatID string, drive map[string][]byte) (ChatSyncManifest, error) {
-	if !chatSSOTEnabled() {
-		return ChatSyncManifest{}, fmt.Errorf("chat SSOT disabled (FLOWPILOT_CHAT_SSOT)")
-	}
 	chatID = strings.TrimSpace(chatID)
 	if chatID == "" {
 		return ChatSyncManifest{}, fmt.Errorf("chatId is required")
@@ -194,9 +188,6 @@ func SyncChatV2ToDrive(ctx context.Context, s *InteractiveService, chatID string
 // closed(restored) (detached per SD26 §10); missing sidecars → session_unavailable,
 // unknown provider → provider_unavailable with install hint (typed degradation).
 func RestoreChatFromManifestV2(ctx context.Context, target *InteractiveService, drive map[string][]byte, manifest ChatSyncManifest, availableProviders map[ProviderKey]bool) error {
-	if !chatSSOTEnabled() {
-		return fmt.Errorf("chat SSOT disabled (FLOWPILOT_CHAT_SSOT)")
-	}
 	if target == nil {
 		return fmt.Errorf("service unavailable")
 	}
@@ -290,9 +281,6 @@ func RestoreChatFromManifestV2(ctx context.Context, target *InteractiveService, 
 // is closed(restored) (SD26 §10). Used by the detached-reattach contract and
 // tests to prove a restored chat is detached until the first local turn.
 func IsChatDetached(s *InteractiveService, chatID string) bool {
-	if !chatSSOTEnabled() {
-		return false
-	}
 	if s == nil {
 		return false
 	}
@@ -364,13 +352,12 @@ func ReadChatSyncManifest(data []byte) (isV2 bool, v2 ChatSyncManifest, v1 ChatS
 	return false, ChatSyncManifest{}, ChatSessionSyncManifest{}, fmt.Errorf("unrecognized manifest: missing chatId and sourceRunId")
 }
 
-// maybeLogChatSyncV2ForRun is a flag-gated best-effort helper that can be called
+// maybeLogChatSyncV2ForRun is a best-effort helper that can be called
 // from syncChatRunToDrive without breaking the v1 path. It resolves the run's
 // chatId via SessionHistoryReader.GetProviderSession, builds a v2 manifest when
-// the flag is on and chatId != "", and logs the result. It never returns an
-// error to the caller — v1 uploads remain the source of truth.
+// chatId != "", and logs the result. It never returns an error to the caller — v1 uploads remain the source of truth.
 func maybeLogChatSyncV2ForRun(ctx context.Context, s *InteractiveService, runID string) {
-	if !chatSSOTEnabled() || s == nil || strings.TrimSpace(runID) == "" {
+	if s == nil || strings.TrimSpace(runID) == "" {
 		return
 	}
 	reader, ok := s.workflowStore.(SessionHistoryReader)

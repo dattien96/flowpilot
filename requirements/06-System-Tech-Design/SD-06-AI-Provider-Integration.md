@@ -236,7 +236,7 @@ Reasoning Effort has no equivalent step-type-level tier today (`step_definitions
 
 ### 6.2.1 Per-Node Override Within A Running Flow (BUG-228)
 
-> **Pointer Task-314 DOD-12 (CP-59 / SD-26):** chat-level provider switches are **not** per-node overrides — they are a chat-leg operation on `chatId`. For `normal_chat` legs the switch contract lives in `SD-26 §5..§7`; this section stays the authority for `workflow`/`flow` runs only (`runKind != "chat"`).
+> **Pointer Task-314 DOD-12 (CP-59 / SD-26):** chat-level provider switches are **not** per-node overrides — they are a chat-leg operation on `chatId` (always ON on dev branch; flag removed). For `normal_chat` legs the switch contract lives in `SD-26 §5..§7`; this section stays the authority for `workflow`/`flow` runs only (`runKind != "chat"`).
 
 The chain above resolves one baseline model/provider **for the run**, once, at start. Within that same run, the flow executor (`flow_executor.go`) additionally lets an individual flow-graph node override that baseline at spawn time, depending on the node's kind:
 

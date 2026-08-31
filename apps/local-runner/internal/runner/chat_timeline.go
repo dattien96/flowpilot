@@ -2,8 +2,7 @@ package runner
 
 // Chat timeline read model (CP-59 / SD-26 §6.2, Task-313 T-6): joins a chat's
 // legs (resident runs + persisted session rows) with its transcript records
-// into one ordered view. Flag-gated: with FLOWPILOT_CHAT_SSOT off the route
-// answers typed 404 and nothing else in the service changes.
+// into one ordered view. Always ON (flag removed on dev branch).
 
 import (
 	"context"
@@ -42,15 +41,10 @@ type chatTimelineResponse struct {
 	Degraded  bool                   `json:"degraded"`
 }
 
-// ensureChatTranscriptWriter lazily builds the capture stack when
-// FLOWPILOT_CHAT_SSOT is on (SD-26 Key Decision D-10). Returns nil when the
-// flag is off — every caller treats nil as "capture disabled". The store
-// directory defaults to ~/.flowpilot/chat-transcripts and is overridable via
-// FLOWPILOT_CHAT_STORE_DIR (tests / per-worktree isolation).
+// ensureChatTranscriptWriter lazily builds the capture stack (always ON on
+// dev branch). The store directory defaults to ~/.flowpilot/chat-transcripts
+// and is overridable via FLOWPILOT_CHAT_STORE_DIR (tests / per-worktree isolation).
 func (s *InteractiveService) ensureChatTranscriptWriter() *chatTranscriptWriter {
-	if !chatSSOTEnabled() {
-		return nil
-	}
 	s.chatOnce.Do(func() {
 		s.chatRuns = newChatRunRegistry()
 		// Supabase-backed runners record the chat timeline in
@@ -75,10 +69,6 @@ func (s *InteractiveService) ensureChatTranscriptWriter() *chatTranscriptWriter 
 }
 
 func (s *InteractiveService) handleChatTimeline(w http.ResponseWriter, r *http.Request) {
-	if !chatSSOTEnabled() {
-		writeInteractiveError(w, newAPIErr(http.StatusNotFound, "chat_ssot_disabled", "chat SSOT is disabled (FLOWPILOT_CHAT_SSOT)"))
-		return
-	}
 	chatID := strings.TrimSpace(r.PathValue("chatId"))
 	if chatID == "" {
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "chatId is required"))

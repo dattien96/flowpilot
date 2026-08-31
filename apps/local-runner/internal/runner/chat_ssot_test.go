@@ -90,20 +90,11 @@ func TestResolveChatIdentityMintAdoptExplicit(t *testing.T) {
 }
 
 func TestChatSSOTFlagDefaultOffAndOptIn(t *testing.T) {
-	t.Setenv("FLOWPILOT_CHAT_SSOT", "")
-	if chatSSOTEnabled() {
-		t.Fatal("flag must default off")
-	}
-	for _, on := range []string{"1", "true", "yes", "TRUE"} {
-		t.Setenv("FLOWPILOT_CHAT_SSOT", on)
+	// Dev branch: always ON (flag removed). Env is ignored.
+	for _, v := range []string{"", "0", "1", "true", "false", "yes", "no", "TRUE"} {
+		t.Setenv("FLOWPILOT_CHAT_SSOT", v)
 		if !chatSSOTEnabled() {
-			t.Fatalf("flag %q must enable", on)
-		}
-	}
-	for _, off := range []string{"0", "false", "no", ""} {
-		t.Setenv("FLOWPILOT_CHAT_SSOT", off)
-		if chatSSOTEnabled() {
-			t.Fatalf("flag %q must not enable", off)
+			t.Fatalf("flag %q must still be enabled (always ON)", v)
 		}
 	}
 }

@@ -53,12 +53,13 @@ func postSwitch(t *testing.T, svc *InteractiveService, chatID string, body chatS
 }
 
 func TestSwitchRouteFlagGated(t *testing.T) {
+	// Flag removed: switch must NOT return chat_ssot_disabled even with env 0.
 	t.Setenv("FLOWPILOT_CHAT_SSOT", "0")
-	svc, _ := newCaptureTestService(t)
-	t.Setenv("FLOWPILOT_CHAT_SSOT", "0") // capture helper forces it on; re-off
+	svc, _ := newSwitchTestService(t)
+	t.Setenv("FLOWPILOT_CHAT_SSOT", "0")
 	rec := postSwitch(t, svc, "cht_x", chatSwitchRequest{TargetProviderKey: ProviderKeyClaude})
-	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "chat_ssot_disabled") {
-		t.Fatalf("flag-off status = %d body=%s", rec.Code, rec.Body.String())
+	if strings.Contains(rec.Body.String(), "chat_ssot_disabled") {
+		t.Fatalf("must not be chat_ssot_disabled when flag removed, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

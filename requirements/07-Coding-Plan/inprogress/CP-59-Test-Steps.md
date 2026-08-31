@@ -14,7 +14,7 @@
 | # | Việc | Cách kiểm |
 |---|------|-----------|
 | P1 | Chạy trên branch `cp59-chat-ssot` (đã merge local) | `git log --oneline -5` → có `chat sync v2 restore`, `desktop chat switch`, `tui detached reattach` |
-| P2 | Bật flag trong `.env.dev` | `FLOWPILOT_CHAT_SSOT=1` (mặc định off — không set thì `GET /client/chats/.../timeline` và `POST .../switch-provider` 404 `chat_ssot_disabled`) |
+| P2 | (dev branch) Không cần flag | `FLOWPILOT_CHAT_SSOT` đã bỏ — luôn ON. Bỏ qua bước bật flag; nếu vẫn set `FLOWPILOT_CHAT_SSOT` thì bị ignore |
 | P3 | (Supabase-backed runner) Apply migration trước | `supabase/migrations/20260830080000_chat_ssot_chat_columns_and_events.sql` — 5 cột `workflow_provider_sessions` + `workflow_chat_events` PK `(chat_id, chat_seq)`. Chưa apply mà bật flag → lỗi ghi cột mới (`nilIfEmpty` chỉ cứu flag-off) |
 | P4 | Restart runner sau khi set env | `just chat-dev <project>` ; banner Ready ; `curl http://localhost:17812/client/providers` 200 |
 | P5 | Posture pins chuẩn bị (repro BUG-330) | `/mode-setup` hoặc Settings → Chat Posture: `scan=opencode/muse-spark-1.2` , `code=opencode/deepseek` , `plan=grok-4.5` (bare-model, không provider) |
@@ -79,7 +79,7 @@ curl -s "http://localhost:17812/client/chats/cht_xxx/timeline?afterSeq=10&limit=
 
 ## E. Desktop chip switch + history grouping — Task-316
 
-Prereq: `FLOWPILOT_CHAT_SSOT=1`, runner đã bật, Desktop `store.chatSwitch` bindings đã build.
+Prereq: runner đã bật (luôn ON trên dev branch), Desktop `store.chatSwitch` bindings đã build.
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
@@ -139,17 +139,13 @@ Automated: `TestSwitchMatrixAllDirectedPairs` fake adapters đã PASS (codex→c
 | I2 | Restart runner giữa multi-leg chat → reopen TUI `/open` + Desktop reload | Replay identical (stable `chatSeq`, `E-9` id), current leg resume via `seedTranscriptFromDisk` (engine) nhưng display từ chat store |
 | I3 | Envelope collapse | `handoffPromptPrefix`/`isHandoffSeed` render thành divider ở cả TUI live stream, TUI replay, Desktop timeline — không bao giờ thành user bubble thô (`TestHandoffSeedRendersAsDivider*`) |
 
-## J. Flag off regression (bắt buộc trước khi flip default on)
+## J. Flag off regression (đã bỏ trên dev branch)
 
-1. Tắt flag (`FLOWPILOT_CHAT_SSOT=0` hoặc unset) → restart runner.
-2. Tạo chat mới → không có `chatId` echo, không NDJSON, không route 404 ngoài `chat_not_found` cũ.
-3. `/provider` cross-provider → block text cũ byte-identical.
-4. Workflow run không bị ảnh hưởng.
-5. Desktop chip switch đi Task-078 path verbatim (timeline reset).
+Dev branch `cp59-chat-ssot` đã bỏ flag — luôn ON, không còn path flag-off để test. Trên main trước merge, flag-off path từng được verify: chat mới không có `chatId`, `/provider` block cũ, workflow không ảnh hưởng, Desktop đi Task-078. Sau khi bỏ flag, chỉ còn always-ON path.
 
 ## Kết luận phiên
 
-Ghi Pass/Fail từng mục kèm `chatId`/`runId`/`legSeq`/`handoffMode`/`includedTurnCount`. Fail B1/B2/A4/E1/G3 → mở bug theo `$add-new-bug`, `feature_key: chat-history`, prior CA-693..701 (không sửa test cũ — sửa production code). Khi E2E matrix §H + cross-surface §I + restore §G đều Pass trên providers thật, ghi CA đóng CP-59 và flip `FLOWPILOT_CHAT_SSOT` default on (SD-26 D-10, CP-59 §8).
+Ghi Pass/Fail từng mục kèm `chatId`/`runId`/`legSeq`/`handoffMode`/`includedTurnCount`. Fail B1/B2/A4/E1/G3 → mở bug theo `$add-new-bug`, `feature_key: chat-history`, prior CA-693..701 (không sửa test cũ — sửa production code). Khi E2E matrix §H + cross-surface §I + restore §G đều Pass trên providers thật, ghi CA đóng CP-59 (flag đã bỏ trên dev branch, không cần flip).
 
 ## Tham chiếu nhanh (endpoint)
 

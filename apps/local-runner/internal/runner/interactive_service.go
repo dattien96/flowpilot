@@ -32,9 +32,8 @@ type InteractiveService struct {
 	// catalog serves projects/workflows/steps — the fake interactiveCatalog when
 	// Supabase is not configured, SupabaseCatalogStore when it is (04-08 A1).
 	catalog CatalogStore
-	// Chat SSOT capture stack (CP-59 / SD-26). Lazily initialized by
-	// ensureChatTranscriptWriter only when FLOWPILOT_CHAT_SSOT is on; all zero
-	// values are valid — capture is a no-op until then.
+	// Chat SSOT capture stack (CP-59 / SD-26). Always ON on dev branch; lazily
+	// initialized by ensureChatTranscriptWriter. Zero values valid before init.
 	chatOnce        sync.Once
 	chatRuns        *chatRunRegistry
 	chatTranscripts *chatTranscriptWriter

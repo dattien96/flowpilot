@@ -1,11 +1,8 @@
 package runner
 
-// Chat SSOT substrate (CP-59 / SD-26): chat identity, leg lifecycle constants,
-// the FLOWPILOT_CHAT_SSOT gate, and the transcript capture hook.
-//
-// Everything here is inert while the flag is off (default): recordChatTranscript
-// no-ops, no chat fields are stamped beyond zero values, and the timeline route
-// is only registered when the flag is on (Task-313 T-6/T-7).
+// Chat SSOT substrate (CP-59 / SD-26): chat identity, leg lifecycle constants
+// and the transcript capture hook. Always ON on the cp59-chat-ssot dev branch
+// (flag removed). Every chat run is tagged and every transcript record captured.
 
 import (
 	"context"
@@ -13,7 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -56,13 +52,11 @@ const (
 	EventTypeChatSeedFailed = "switch_seed_failed"
 )
 
-// chatSSOTEnvFlag gates every chat-SSOT behavior (SD-26 Key Decision D-10).
-// Default off: flag-off behavior is byte-identical to the pre-CP-59 runner.
-const chatSSOTEnvFlag = "FLOWPILOT_CHAT_SSOT"
-
+// chatSSOTEnabled reports whether chat SSOT is enabled.
+// CP-59 dev branch: always ON (flag removed). Previously gated by
+// FLOWPILOT_CHAT_SSOT; that env is now ignored.
 func chatSSOTEnabled() bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv(chatSSOTEnvFlag)))
-	return v == "1" || v == "true" || v == "yes"
+	return true
 }
 
 // newChatID mints `cht_<12-hex>` (SD-26 §5.1, SD26-D-0). Machine-local
