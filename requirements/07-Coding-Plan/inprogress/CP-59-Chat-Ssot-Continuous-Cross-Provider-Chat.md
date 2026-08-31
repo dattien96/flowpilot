@@ -5,13 +5,13 @@
 - Document ID: `CP-59`
 - Title: `Chat SSOT — Continuous Cross-Provider Chat (chatId)`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `approved`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-29`
-- Last Updated: `2026-08-29`
+- Last Updated: `2026-08-31` (approved — SD-26 frozen Task-312 done, Task-313/314/315/316/317 done CA-693..701; SS-05/SD-06 amended Task-314 T-8)
 - Parent Documents: [SS-05: Workflow AI Provider](../../05-System-Specs/SS-05-Workflow-Ai-Provider.md), [SS-11: Workflow With Session](../../05-System-Specs/SS-11-Workflow-With_Session.md), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md), [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md)
-- Child Documents: [Task-312: Chat SSOT Design Freeze (SD-26)](../../08-Task/todo/Task-312-Chat-Ssot-Design-Freeze-SD26.md), [Task-313: ChatId Data Model, Transcript Store, Timeline](../../08-Task/done/Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md), [Task-314: Chat Switch-Provider Endpoint And Chat Envelope](../../08-Task/done/Task-314-Chat-Switch-Provider-Endpoint-And-Chat-Envelope.md), [Task-315: TUI Chat Switch Surface](../../08-Task/done/Task-315-TUI-Chat-Switch-Surface.md), [Task-316: Desktop Chat Switch Surface](../../08-Task/todo/Task-316-Desktop-Chat-Switch-Surface.md), [Task-317: Chat-Level Sync Restore Reopen](../../08-Task/todo/Task-317-Chat-Level-Sync-Restore-Reopen.md)
+- Child Documents: [Task-312: Chat SSOT Design Freeze (SD-26)](../../08-Task/done/Task-312-Chat-Ssot-Design-Freeze-SD26.md), [Task-313: ChatId Data Model, Transcript Store, Timeline](../../08-Task/done/Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md), [Task-314: Chat Switch-Provider Endpoint And Chat Envelope](../../08-Task/done/Task-314-Chat-Switch-Provider-Endpoint-And-Chat-Envelope.md), [Task-315: TUI Chat Switch Surface](../../08-Task/done/Task-315-TUI-Chat-Switch-Surface.md), [Task-316: Desktop Chat Switch Surface](../../08-Task/done/Task-316-Desktop-Chat-Switch-Surface.md), [Task-317: Chat-Level Sync Restore Reopen](../../08-Task/done/Task-317-Chat-Level-Sync-Restore-Reopen.md)
 - Related Documents: [BUG-330: Posture Tab applies foreign provider model on pinned run](../../09-BugFix/done/BUG-330-Posture-Tab-Applies-Foreign-Provider-Model-On-Pinned-Run.md) (this CP generalizes BUG-330 F-3 to chat-level switch; BUG-330's repro is the regression trigger), [Task-078: Cross-Provider Chat Handoff](../../08-Task/done/Task-078-Cross-Provider-Chat-Handoff.md) (envelope contract reused, not replaced), [CP-57: Opencode Provider Integration](../done/CP-57-Opencode-Provider-Integration.md), [BUG-329](../../09-BugFix/todo/BUG-329-Opencode-Midchat-Model-Switch-Session-Load-No-SessionId.md), [CA-679](../../../change-audit/CA-679-opencode-config-file-env-and-tui-model-restore.md)
 - Replaces: `None` (Task-078 handoff stays the transport for context carry; this CP adds the chat-level continuity layer above it)
 - Tags: `chat-ssot, chatId, cross-provider, chat-history, provider-switch, tui, desktop, durable-replay, severity-high`

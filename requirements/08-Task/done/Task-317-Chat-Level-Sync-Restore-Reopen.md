@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-08-29`
 - Last Updated: `2026-08-31` (done — CA-701: T-1..T-5 all landed: manifest v2 builder/reader, SyncChatV2ToDrive transcript+legs idempotent, RestoreChatFromManifestV2 transcript-first detached + typed degradation, idempotence/ordering, reopen proof; 10 tests PASS; go vet green; flag-gated, v1 untouched)
-- Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/todo/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-313: ChatId Data Model, Transcript Store, Timeline](../done/Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md)
+- Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/inprogress/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-313: ChatId Data Model, Transcript Store, Timeline](../done/Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md)
 - Child Documents: `None`
 - Related Documents: [SD-14: Codex Cross-Account Chat Resume And Home Sync](../../06-System-Tech-Design/SD-14-Codex-Cross-Account-Chat-Resume-And-Home-Sync.md), [BUG-272: Restart loses resolved approvals and misorders replayed sidecar events](../../09-BugFix/todo/BUG-272-Restart-Loses-Resolved-Approvals-And-Misorders-Replayed-Sidecar-Events.md), [Task-315](../done/Task-315-TUI-Chat-Switch-Surface.md), [Task-316](./Task-316-Desktop-Chat-Switch-Surface.md)
 - Replaces: `None`

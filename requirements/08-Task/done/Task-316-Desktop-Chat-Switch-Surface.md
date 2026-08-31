@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-08-29`
 - Last Updated: `2026-08-31` (done — CA-700 + close-out 7b91ced3: keep artifacts (D-7), fix legacy runId collision (DOD-4), cwd-robust timeline clamp tests; typecheck green; store.chatSwitch 6/6 + chatHistory 2/2; phase1 363/375 (12 pre-existing fails documented, 3 fixed); history grouping + legs chip live; divider single-source via seed-divider)
-- Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/todo/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-314: Chat Switch-Provider Endpoint And Chat Envelope](../done/Task-314-Chat-Switch-Provider-Endpoint-And-Chat-Envelope.md)
+- Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/inprogress/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-314: Chat Switch-Provider Endpoint And Chat Envelope](../done/Task-314-Chat-Switch-Provider-Endpoint-And-Chat-Envelope.md)
 - Child Documents: `None`
 - Related Documents: [Task-078: Cross-Provider Chat Handoff](../done/Task-078-Cross-Provider-Chat-Handoff.md), [Task-313](../done/Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md), [Task-315](../done/Task-315-TUI-Chat-Switch-Surface.md)
 - Replaces: `None`

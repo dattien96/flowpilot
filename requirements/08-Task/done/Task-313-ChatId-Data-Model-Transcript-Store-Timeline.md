@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-08-29`
 - Last Updated: `2026-08-30` (done — CA-693 substrate + CA-694 completion; 24 tests green; R1: baseline 13 failures + 2 flakes proven pre-existing on stashed clean tree, zero new)
-- Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/todo/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-312: Chat SSOT Design Freeze (SD-26)](./Task-312-Chat-Ssot-Design-Freeze-SD26.md)
+- Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/inprogress/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-312: Chat SSOT Design Freeze (SD-26)](./Task-312-Chat-Ssot-Design-Freeze-SD26.md)
 - Child Documents: `None`
 - Related Documents: [Task-078: Cross-Provider Chat Handoff](../done/Task-078-Cross-Provider-Chat-Handoff.md), [SD-26: Chat Continuity SSOT](../../06-System-Tech-Design/SD-26-Chat-Continuity-Ssot.md) (authored by Task-312)
 - Replaces: `None`

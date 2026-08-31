@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-08-29`
 - Last Updated: `2026-08-30` (done — slices 1+2 CA-696/CA-697, slice 3 CA-699: detached reattach, /open restore-by-chat, seed-stats divider, persisted-legSeq reattach; 16 TUI switch tests green; R1 baselines identical)
-- Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/todo/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-314: Chat Switch-Provider Endpoint And Chat Envelope](../done/Task-314-Chat-Switch-Provider-Endpoint-And-Chat-Envelope.md)
+- Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/inprogress/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-314: Chat Switch-Provider Endpoint And Chat Envelope](../done/Task-314-Chat-Switch-Provider-Endpoint-And-Chat-Envelope.md)
 - Child Documents: `None`
 - Related Documents: [BUG-330](../../09-BugFix/done/BUG-330-Posture-Tab-Applies-Foreign-Provider-Model-On-Pinned-Run.md), [CA-679](../../../change-audit/CA-679-opencode-config-file-env-and-tui-model-restore.md), [Task-313](../done/Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md)
 - Replaces: `None`
