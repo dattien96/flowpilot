@@ -462,7 +462,9 @@ func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
 	syncArg, _ := parseSlashArgPrefix(line, "/sync")
 	restoreBare := strings.EqualFold(trimmed, "/restore") || strings.EqualFold(trimmed, "/restore all")
 	restoreArg, _ := parseSlashArgPrefix(line, "/restore")
-	if !argOK && !bare && !syncBare && !syncArg && !restoreBare && !restoreArg {
+	deleteBare := strings.EqualFold(trimmed, "/delete")
+	deleteArg, _ := parseDeleteArgPrefix(line)
+	if !argOK && !bare && !syncBare && !syncArg && !restoreBare && !restoreArg && !deleteBare && !deleteArg {
 		return nil
 	}
 	// Reconcile badges against the confirmed Drive index (CA-552), so the remote
@@ -616,4 +618,193 @@ func (m *AppModel) cmdHydratePendingFromSnapshot() tea.Cmd {
 		}
 		return runSnapshotMsg{Snap: snap}
 	}
+}
+
+// ChatDeletedMsg carries the result of DELETE /client/workflow-runs/{runId} (Task-318).
+type ChatDeletedMsg struct {
+	RunID string
+	Err   string
+}
+
+func (m *AppModel) cmdDeleteChat(runID string) tea.Cmd {
+	runnerURL := m.runnerURL
+	return func() tea.Msg {
+		cl := client.New(runnerURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := cl.DeleteRun(ctx, runID); err != nil {
+			return ChatDeletedMsg{RunID: runID, Err: err.Error()}
+		}
+		return ChatDeletedMsg{RunID: runID}
+	}
+}
+
+func (m *AppModel) handleChatDeleted(msg ChatDeletedMsg) (tea.Model, tea.Cmd) {
+	runID := strings.TrimSpace(msg.RunID)
+	// Clear pending confirm regardless of outcome.
+	m.deletePendingRunID = ""
+	m.deletePendingIDs = nil
+	m.deletePendingLabel = ""
+	if strings.TrimSpace(msg.Err) != "" {
+		m.addMessage("system", fmt.Sprintf("Delete failed for %s: %s", orDash(runID), msg.Err), "error")
+		// Continue batch on error — dispatch next if queued
+		if len(m.deleteBatchQueue) > 0 {
+			next := m.deleteBatchQueue[0]
+			m.deleteBatchQueue = m.deleteBatchQueue[1:]
+			return m, m.cmdDeleteChat(next)
+		}
+		if m.deleteBatchTotal > 1 && len(m.deleteBatchQueue) == 0 {
+			m.addMessage("system", fmt.Sprintf("Delete batch finished (%d total, with errors).", m.deleteBatchTotal), "")
+			m.deleteBatchQueue = nil
+			m.deleteBatchTotal = 0
+			m.deleteSelected = nil
+		}
+		return m, nil
+	}
+	// Optimistically drop from local list.
+	if len(m.chatList) > 0 {
+		kept := make([]client.RunHistoryItem, 0, len(m.chatList))
+		for _, it := range m.chatList {
+			if strings.TrimSpace(it.RunID) != runID {
+				kept = append(kept, it)
+			}
+		}
+		m.chatList = kept
+	}
+	// Remove from tick set if present
+	if m.deleteSelected != nil {
+		delete(m.deleteSelected, runID)
+	}
+	openID := ""
+	if m.runHandle != nil {
+		openID = strings.TrimSpace(m.runHandle.RunID)
+	}
+	isBatch := m.deleteBatchTotal > 1 || len(m.deleteBatchQueue) > 0
+	if runID != "" && runID == openID {
+		// Current chat deleted — reset like /new / Desktop BUG-258.
+		m.stopOrchestrationStream()
+		m.turnStream = nil
+		m.runHandle = nil
+		m.stepID = ""
+		m.pendingPrompt = ""
+		m.messages = nil
+		m.visiblePromptCount = 0
+		m.historyLoadedAfterSeq = 0
+		m.mainHistoryLoadedAfterSeq = 0
+		m.historyChunkInFlight = false
+		m.viewport.offset = 0
+		m.connStatus = ConnIdle
+		m.statusMsg = "ready"
+		m.lastEventSeq = 0
+		m.lastTurnError = ""
+		m.lastTokens = nil
+		m.gate = nil
+		m.clearPendingDecisions()
+		m.refreshSessionPanel()
+		if isBatch {
+			m.addMessage("system", fmt.Sprintf("Deleted current chat %s (batch).", orDash(runID)), "")
+		} else {
+			m.addMessage("system", fmt.Sprintf("Deleted current chat %s — started new conversation.", orDash(runID)), "")
+		}
+	} else {
+		if !isBatch {
+			m.addMessage("system", fmt.Sprintf("Deleted chat %s.", orDash(runID)), "")
+		}
+	}
+	// Batch: dispatch next or finish
+	if len(m.deleteBatchQueue) > 0 {
+		next := m.deleteBatchQueue[0]
+		m.deleteBatchQueue = m.deleteBatchQueue[1:]
+		return m, m.cmdDeleteChat(next)
+	}
+	if m.deleteBatchTotal > 1 {
+		m.addMessage("system", fmt.Sprintf("Deleted %d chats.", m.deleteBatchTotal), "")
+		m.deleteBatchTotal = 0
+		m.deleteBatchQueue = nil
+		m.deleteSelected = nil
+	} else if m.deleteBatchTotal == 1 {
+		m.deleteBatchTotal = 0
+		m.deleteBatchQueue = nil
+	}
+	if len(m.deleteBatchQueue) == 0 && m.deleteSelected != nil && len(m.deleteSelected) == 0 {
+		// keep nil for clean state; no-op
+	}
+	return m, nil
+}
+
+// toggleDeleteSelection toggles tick for /delete picker (skill-like).
+func (m *AppModel) toggleDeleteSelection(runID string) {
+	if strings.EqualFold(strings.TrimSpace(runID), "all") {
+		// Toggle all
+		allTicked := true
+		if m.deleteSelected == nil {
+			allTicked = false
+		} else {
+			for _, ch := range m.chatList {
+				if !m.deleteSelected[strings.TrimSpace(ch.RunID)] {
+					allTicked = false
+					break
+				}
+			}
+		}
+		if allTicked {
+			m.deleteSelected = nil
+		} else {
+			if m.deleteSelected == nil {
+				m.deleteSelected = make(map[string]bool)
+			}
+			for _, ch := range m.chatList {
+				if id := strings.TrimSpace(ch.RunID); id != "" {
+					m.deleteSelected[id] = true
+				}
+			}
+		}
+		return
+	}
+	id := strings.TrimSpace(runID)
+	if id == "" {
+		return
+	}
+	if m.deleteSelected == nil {
+		m.deleteSelected = make(map[string]bool)
+	}
+	if m.deleteSelected[id] {
+		delete(m.deleteSelected, id)
+		if len(m.deleteSelected) == 0 {
+			m.deleteSelected = nil
+		}
+	} else {
+		m.deleteSelected[id] = true
+	}
+}
+
+func (m *AppModel) retargetDeleteSuggestion(value string) {
+	items := m.collectSuggestions()
+	for i, it := range items {
+		if it.kind == "delete" && strings.EqualFold(it.value, value) {
+			m.suggIdx = i
+			return
+		}
+	}
+}
+
+func chatLabelForRunID(items []client.RunHistoryItem, runID string) string {
+	for _, it := range items {
+		if strings.TrimSpace(it.RunID) == strings.TrimSpace(runID) {
+			t := strings.TrimSpace(it.LastPrompt)
+			if t == "" {
+				t = strings.TrimSpace(it.LastMessage)
+			}
+			if t == "" {
+				t = it.RunID
+			}
+			t = collapseWS(t)
+			if len([]rune(t)) > 48 {
+				r := []rune(t)
+				t = string(r[:45]) + "…"
+			}
+			return t
+		}
+	}
+	return runID
 }

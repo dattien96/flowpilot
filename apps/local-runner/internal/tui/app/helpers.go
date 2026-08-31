@@ -873,6 +873,11 @@ func parseHistoryArgPrefix(input string) (ok bool, query string) {
 	return true, query
 }
 
+// parseDeleteArgPrefix reports whether input is `/delete <query…>` (space after /delete).
+func parseDeleteArgPrefix(input string) (ok bool, query string) {
+	return parseSlashArgPrefix(input, "/delete")
+}
+
 // CA-685: full canonical reasoning vocabulary — the runner mappers accept all
 // of these (opencode --variant minimal..xhigh/max, see opencodeReasoningVariantID).
 // When the selected model carries catalog efforts (Task-215), the picker shows
@@ -1546,6 +1551,96 @@ func filterHistorySuggestionsWithRemote(input string, items []client.RunHistoryI
 		detail += " · " + kind + " · " + it.Status + " · " + when
 		detail += " · " + title
 		out = append(out, suggestItem{value: id, detail: detail, kind: "history", slash: cmd})
+	}
+	return out
+}
+
+// filterDeleteSuggestions returns chats matching the query after `/delete `.
+// Task-318 v2: skill-like multi-select — Tab ticks, Enter deletes. Includes an
+// `all` row plus filtered chats. Tick state is caller-owned; this pure helper
+// defaults to unticked (use filterDeleteSuggestionsWithSelected for ticks).
+func filterDeleteSuggestions(input string, items []client.RunHistoryItem) []suggestItem {
+	return filterDeleteSuggestionsWithRemote(input, items, nil)
+}
+
+func filterDeleteSuggestionsWithRemote(input string, items []client.RunHistoryItem, remote []client.RemoteChatSessionSummary) []suggestItem {
+	return filterDeleteSuggestionsWithSelected(input, items, remote, nil)
+}
+
+// filterDeleteSuggestionsWithSelected is filterDeleteSuggestions plus tick state.
+// selected[runID]==true → "[*]" else "[ ]". The "all" row reflects all-ticked.
+func filterDeleteSuggestionsWithSelected(input string, items []client.RunHistoryItem, remote []client.RemoteChatSessionSummary, selected map[string]bool) []suggestItem {
+	ok, query := parseDeleteArgPrefix(input)
+	if !ok {
+		return nil
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	q := strings.ToLower(query)
+	// all-ticked when every run is selected and at least one exists
+	allTicked := len(selected) > 0
+	for _, it := range items {
+		if !selected[strings.TrimSpace(it.RunID)] {
+			allTicked = false
+			break
+		}
+	}
+	out := make([]suggestItem, 0, len(items)+1)
+	tickAll := "[ ]"
+	if allTicked && len(items) > 0 {
+		tickAll = "[*]"
+	}
+	out = append(out, suggestItem{
+		value:  "all",
+		detail: fmt.Sprintf("%s all · delete all %d chats", tickAll, len(items)),
+		kind:   "delete",
+		slash:  "/delete",
+	})
+	for i, it := range items {
+		id := strings.TrimSpace(it.RunID)
+		if id == "" {
+			continue
+		}
+		title := strings.TrimSpace(it.LastPrompt)
+		if title == "" {
+			title = strings.TrimSpace(it.LastMessage)
+		}
+		if title == "" {
+			title = "(no prompt)"
+		}
+		hay := strings.ToLower(id + " " + title + " " + it.Status + " " + it.ProviderKey + " " + it.RunKind + " " + it.SyncStatus)
+		if q != "" && q != "all" && !strings.Contains(hay, q) && !strings.Contains(strings.ToLower(shortID(id)), q) {
+			continue
+		}
+		kind := it.RunKind
+		if kind == "" {
+			if it.WorkflowID != "" {
+				kind = "workflow"
+			} else {
+				kind = "chat"
+			}
+		}
+		title = collapseWS(title)
+		if len([]rune(title)) > 42 {
+			r := []rune(title)
+			title = string(r[:39]) + "…"
+		}
+		when := formatHistoryChangedAt(it)
+		if when == "" {
+			when = "—"
+		}
+		tick := "[ ]"
+		if selected[id] {
+			tick = "[*]"
+		}
+		detail := fmt.Sprintf("%s #%d", tick, i+1)
+		if badge := syncBadgeWithRemote(it, remote); badge != "" {
+			detail += " · " + badge
+		}
+		detail += " · " + kind + " · " + it.Status + " · " + when
+		detail += " · " + title
+		out = append(out, suggestItem{value: id, detail: detail, kind: "delete", slash: "/delete"})
 	}
 	return out
 }

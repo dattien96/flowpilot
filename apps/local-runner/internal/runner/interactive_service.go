@@ -6499,6 +6499,8 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			}
 		}
 	}
+	// Task-260: auto-mention safe-fix-contract on Chat Plan/Code (pointer only, not full content).
+	mergedSkills := mergeChatSafeFixContractSkills(posture, rs.runKind, rs.flowEngineDriven, in.SelectedSkills)
 	req := TurnRequest{
 		RunID:                  rs.id,
 		StepID:                 in.StepID,
@@ -6507,7 +6509,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 		ProviderTurnID:         turnID,
 		Prompt:                 providerPrompt,
 		ModelName:              model,
-		SelectedSkills:         in.SelectedSkills,
+		SelectedSkills:         mergedSkills,
 		YoloMode:               yolo,
 		ForceShellBridge:       forceShellBridge,
 		ReasoningEffort:        effort,

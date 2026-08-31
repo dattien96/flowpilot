@@ -97,6 +97,11 @@ type TurnResult struct {
 	// (rename/merge/deprecate) for the active feature awaiting human
 	// confirmation of targets before RetireHead runs (BR-2, never automatic).
 	HeadRetirePending bool `json:"head_retire_pending,omitempty"`
+	// Task-260: pre-existing test files edited in this turn (populated from
+	// oracle.Tampered, already filtered by test_overrides). Used by
+	// r-additive-tests (pre_existing_test_edited) so Evaluate can fire without
+	// re-deriving the IsTestFile M/D/R/C signal.
+	TamperedTestPaths []string `json:"tampered_test_paths,omitempty"`
 }
 
 // StructuredFileArtifactOutput is a required file_artifact OUTPUT path with
@@ -199,6 +204,8 @@ func DefaultRules() []Rule {
 		{ID: "r-retire", Scope: "step", Trigger: "feature_rename_merge_or_deprecate", RequiredOutput: "confirm_targets_then_retire", Action: "approve", Enabled: true},
 		// CP-53 P-5 / Task-277: production code change without a newly added test file.
 		{ID: "r-newtest", Scope: "step", Trigger: "production_change_no_new_test", RequiredOutput: "new_additive_test_file", Action: "reprompt", Enabled: true},
+		// Task-260: pre-existing test file edited without human approval (hard enforce additive-tests-only).
+		{ID: "r-additive-tests", Scope: "step", Trigger: "pre_existing_test_edited", RequiredOutput: "additive_tests_only_or_user_approved_legacy_edit", Action: "reprompt", Enabled: true},
 	}
 }
 

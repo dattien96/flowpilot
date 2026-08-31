@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -149,16 +150,52 @@ func pulseMouseTracking() tea.Cmd {
 	return func() tea.Msg { return nil }
 }
 
+const wheelCoalesceWindow = 40 * time.Millisecond
+
+type wheelFlushMsg struct{}
+
+func (m *AppModel) flushPendingWheel() (tea.Model, tea.Cmd) {
+	if m.pendingWheelDelta == 0 {
+		return m, nil
+	}
+	delta := m.pendingWheelDelta
+	m.pendingWheelDelta = 0
+	m.lastWheelDelta = delta
+	m.scrollTranscript(delta)
+	return m, nil
+}
+
 func (m *AppModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.authPhase != AuthNone {
 		return m, nil
 	}
 	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		m.scrollTranscript(3)
-		return m, nil
-	case tea.MouseButtonWheelDown:
-		m.scrollTranscript(-3)
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+		delta := 3
+		if msg.Button == tea.MouseButtonWheelDown {
+			delta = -3
+		}
+		now := time.Now()
+		// Coalesce wheel while burst is hot: accumulate delta and flush once
+		// per wheelCoalesceWindow so continuous scroll does not wedge the
+		// 64-slot conhost queue with a View() per notch (BUG-328, pid 20632).
+		// Opposite direction is never coalesced (user reversed).
+		isBurst := !m.lastWheelAt.IsZero() && now.Sub(m.lastWheelAt) < wheelCoalesceWindow
+		sameDir := (m.pendingWheelDelta != 0 && (m.pendingWheelDelta > 0) == (delta > 0)) ||
+			(m.pendingWheelDelta == 0 && m.lastWheelDelta != 0 && (m.lastWheelDelta > 0) == (delta > 0)) ||
+			(m.pendingWheelDelta == 0 && m.lastWheelDelta == 0)
+		if isBurst && sameDir {
+			m.pendingWheelDelta += delta
+			m.lastWheelAt = now
+			return m, tea.Tick(wheelCoalesceWindow, func(time.Time) tea.Msg { return wheelFlushMsg{} })
+		}
+		if m.pendingWheelDelta != 0 {
+			delta += m.pendingWheelDelta
+			m.pendingWheelDelta = 0
+		}
+		m.lastWheelAt = now
+		m.lastWheelDelta = delta
+		m.scrollTranscript(delta)
 		return m, nil
 	}
 	// Shift: copy selection (drag OR single click on a line). SGR 1006 encodes

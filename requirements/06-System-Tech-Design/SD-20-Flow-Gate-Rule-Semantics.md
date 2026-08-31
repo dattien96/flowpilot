@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-06-24`
-- Last Updated: `2026-07-15`
+- Last Updated: `2026-08-31`
 - Parent Documents: [SD-17: Context And Regression Engine](./SD-17-Context-And-Regression-Engine.md)
 - Child Documents: [CP-35: Context And Regression Engine Rollout](../07-Coding-Plan/done/CP-35-Context-And-Regression-Engine-Rollout.md)
 - Related Documents: [SD-16: Agent Spawn And Tool-Calling Design](./SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [SS-14: Code Context And Regression Safety](../05-System-Specs/SS-14-Code-Context-And-Regression-Safety.md), [Task-155: Regression Block Decision Card (r-reg)](../08-Task/todo/Task-155-update-r-reg.md), [Task-156: Regression Oracle — Polyglot Signal And Baseline Cost](../08-Task/todo/Task-156-R-Test-Performance.md), [Task-157: Feature-Key Accuracy For History Context](../08-Task/done/Task-157-Improve-Context-Hardness.md)
@@ -85,14 +85,13 @@ runTurn:
 
 1. `ObserveGitDiffSince(cwd, baseSHA)` — committed (since turn-start HEAD) **plus** uncommitted changes, deduped by path. Untracked files are listed individually (`git status --porcelain -uall`) and treated as `Added`.
 2. `LoadBaseline(dotFP)` — load `.flowpilot/guard/test_baseline.json`. **No lazy capture here** (see §4).
-3. `RunOracle(cwd, baseline, diff)` — runs the suite, classifies regressions and tampering.
-4. Build `TurnResult{FinalMessage, GitDiff, Tests{Ran, Failed}}`.
-5. `LoadRules(settings/)` or `DefaultRules()`.
-6. `Evaluate(tr, rules)` → `[]Violation`.
-7. Append oracle tampering as a `warn` violation (`r-tamper`) if a pre-existing test file was modified.
-8. `Enforce(violations, gateMode)` → one resolved `Action` + a deduped `Message`.
-9. Emit `flow_gate_violation` (carrying `error` = message, `status` = resolved action).
-10. Route: `block` → suppress completion; `reprompt` → relaunch a turn (≤2) and suppress; `warn`/`approve` → let the turn complete.
+3. `RunOracle(cwd, baseline, diff)` — runs the suite, classifies regressions and tampering (`oracle.Tampered` = `IsTestFile` `M/D/R/C` filtered by `test_overrides.json`).
+4. Build `TurnResult{FinalMessage, GitDiff, Tests{Ran, Failed}, TamperedTestPaths: oracle.Tampered}`.
+5. `LoadRules(settings/)` or `DefaultRules()` (now includes `r-additive-tests`, Task-260).
+6. `Evaluate(tr, rules)` → `[]Violation` (including `r-additive-tests` when `TamperedTestPaths` non-empty).
+7. `Enforce(violations, gateMode)` → one resolved `Action` + a deduped `Message`.
+8. Emit `flow_gate_violation` (carrying `error` = message, `status` = resolved action).
+9. Route: `block` → suppress completion; `reprompt` → relaunch a turn (≤2) and suppress; `warn`/`approve` → let the turn complete.
 
 ## 2. The rules (exact semantics)
 
@@ -196,9 +195,19 @@ Provider stream (Claude/Codex)
 
 **Future fix — `ChangeType` explicit signal:** when the runner or step definition knows the current step maps to Task-113, it will stamp `TurnResult.ChangeType = "task"` (already checked in `evaluate.go` as `tr.ChangeType == "task"`). That makes the rule fire regardless of what the AI says, removing the message-scanning dependency entirely.
 
-### 2.8 `r-tamper` — oracle tampering (synthetic)
+### 2.8 `r-additive-tests` — pre-existing test edited (Task-260, replaces `r-tamper` warn)
 
-- Not a configured rule; appended by the gate when the oracle reports a pre-existing test file was **modified** in the same turn (`f.Status == "M"` on a test file). Emitted as `warn` so the desktop can surface possible oracle tampering without hard-blocking.
+| Field | Value |
+|---|---|
+| Trigger | `pre_existing_test_edited` |
+| Fires when | `oracle.Tampered` non-empty → `TurnResult.TamperedTestPaths` non-empty (i.e. `IsTestFile(path) && status ∈ {M,D,R,C}` filtered by `test_overrides.json` `filepath.Base(path)`). Pure `A` (new test file) never fires. No `GitDiff` fallback — `TamperedTestPaths` is authoritative; `GitDiff` `M/D/R/C` filtered by an override must not re-fire. |
+| Required output | no unapproved legacy test mutation; new tests only **or** recorded user approval (`test_overrides.json` per-file, Task-155). |
+| Action | `reprompt` (auto-remediated, ≤2 attempts), `gate_mode`-gated like `r-ca` — not `warn`, not always-`block`. |
+| `gate_mode` | enforce → reprompt; warn → downgraded to `warn` |
+
+- Replaces the synthetic `r-tamper` warn (hardcoded `warn` append in `gate_hook.go`): the signal now owns a first-class `DefaultRules` entry so the gate reprompts with a skill-citing remediation instead of completing silently.
+- Historical alias: `r-tamper` (`oracle_tamper` warn) remains documented as the pre-Task-260 name; no code emits it after Task-260.
+- Chat Plan/Code init (also Task-260): `safe-fix-contract` pointer is auto-merged into `SelectedSkills` on Chat `plan`/`code` posture turns before `promptPrep` (`injectSelectedSkills` pointer, not full content). Flow plan/coder wiring is **noted in CP-58** only.
 
 ### 2.9 `r-commit` — feature-key required (Task-157)
 

@@ -846,6 +846,11 @@ func (c *Client) SyncChatRun(ctx context.Context, runID string, req ChatSessionS
 	return out, err
 }
 
+// DeleteRun deletes a persisted chat (Task-077 Desktop parity — Task-318 TUI).
+func (c *Client) DeleteRun(ctx context.Context, runID string) error {
+	return c.methodJSON(ctx, http.MethodDelete, "/client/workflow-runs/"+neturl.PathEscape(runID), nil, nil)
+}
+
 // ListRemoteChatSessions fetches GET /client/projects/{projectId}/chat-sessions/remote.
 func (c *Client) ListRemoteChatSessions(ctx context.Context, projectID string) ([]RemoteChatSessionSummary, error) {
 	var out []RemoteChatSessionSummary

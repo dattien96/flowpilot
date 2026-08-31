@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
@@ -327,6 +328,10 @@ type AppModel struct {
 	promptHistory []string
 	promptHistIdx int
 	promptDraft   string
+	lastHistoryKeyAt time.Time
+	lastHistoryKeyType tea.KeyType
+	lastHistoryWasNav bool
+	prevHistoryKeyAt time.Time
 	// lastInputAt is the timestamp of the last KeyMsg/MouseMsg that reached
 	// Update; inputStallLogged marks a fired input-watchdog stall banner
 	// (input_watchdog.go, CA-645) so it logs once per stall episode.
@@ -353,6 +358,12 @@ type AppModel struct {
 	// key as 'O'+suffix rune records (BUG-328, tui.log pid 18400).
 	ss3               ss3FKeyState
 	viewport            viewportState
+	// wheel coalesce: burst wheel events share one View() to avoid BUG-328 hang
+	// after ~20s of continuous scroll (pid 20632: wheel-only 1000h still wedged
+	// when every notch painted the full markdown transcript).
+	lastWheelAt       time.Time
+	pendingWheelDelta int
+	lastWheelDelta    int
 	mouseSel      mouseSelect
 	mouseDrag     mouseDrag
 	rowCache      []chatRow
@@ -417,6 +428,16 @@ type AppModel struct {
 	flowBuiltins       []client.BuiltinFlowOption
 	flowWorkflows      []client.Workflow
 	chatList           []client.RunHistoryItem // last /history result for picker + /open <n>
+	// deleteSelected tracks ticked rows in the /delete picker (skill-like multi-select).
+	deleteSelected map[string]bool
+	// deletePending* arms a two-step delete confirm for /delete (Task-318).
+	// Single and batch deletes share the same y/n gate — pending may be 1..N ids.
+	deletePendingRunID string
+	deletePendingIDs   []string
+	deletePendingLabel string
+	// deleteBatch* tracks sequential batch deletes after y confirm (Enter on picker).
+	deleteBatchQueue []string
+	deleteBatchTotal int
 	// remoteChatList caches the project's Drive-backed chat index (G3 /restore).
 	// G2 /sync reconciles against it to skip runs already present on Drive.
 	remoteChatList []client.RemoteChatSessionSummary
@@ -661,6 +682,7 @@ var knownSlashCommands = []slashCommand{
 	{"/resume", "Open chat — type /resume  then ↑↓ Tab Enter"},
 	{"/history", "List/open chats — type /history  then ↑↓ Tab Enter"},
 	{"/open", "Open chat — type /open  then ↑↓ Tab Enter"},
+	{"/delete", "Delete chats — type /delete  then Tab tick · Enter del · all"},
 	{"/approve", "Approve a pending approval"},
 	{"/deny", "Deny a pending approval"},
 	{"/headless", "Print next response to stdout only"},

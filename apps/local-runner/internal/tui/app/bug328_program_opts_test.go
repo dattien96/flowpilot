@@ -4,11 +4,10 @@ import (
 	"testing"
 )
 
-// BUG-328: mouse cell-motion is removed so Windows conhost does not steal
-// keyboard focus from the host terminal.
+// Wheel-only: AltScreen+Filter, wheel enabled via 1000h in Init (no CellMotion).
 func TestBug328_TuiProgramOpts_NoMouseCellMotion(t *testing.T) {
 	opts := tuiProgramOpts()
 	if len(opts) != 2 {
-		t.Fatalf("opts must be AltScreen+Filter only, got %d", len(opts))
+		t.Fatalf("opts must be AltScreen+Filter (wheel-only), got %d", len(opts))
 	}
 }

@@ -82,6 +82,7 @@ Root persistent flags (`--workspace`, `--host`, `--port`) are inherited and not 
 | `/model` | Pick model — type `/model ` then ↑↓ · Tab · Enter |
 | `/skill` | List/toggle skills (Desktop `/s` picker) — `/skill` shows catalog; type `/skill ` then ↑↓ Tab Enter |
 | `/reasoning` | Pick effort — type `/reasoning ` then ↑↓ · Tab · Enter |
+| `/delete` | Delete a chat — type `/delete ` then ↑↓ Tab Enter · `y`/`Enter` confirm · `n`/`Esc` cancel (no `/delete all`) |
 | `/approve` | Approve pending approval |
 | `/deny` | Deny pending approval |
 

@@ -10,13 +10,11 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
-// BUG-328: mouse cell-motion is off on all platforms (Windows conhost focus
-// steal). F2/F3/F4 and the action ring are keyboard-only. CA-610 WithFilter
-// remains so any stray motion events never reach Update/View.
+// Wheel-only mouse (1000h): AltScreen+Filter, wheel via Init (no CellMotion hover).
 func TestTuiProgramOpts_WindowsNoMouse(t *testing.T) {
 	opts := tuiProgramOpts()
 	if len(opts) != 2 {
-		t.Fatalf("opts must be AltScreen+Filter only (no MouseCellMotion), got %d", len(opts))
+		t.Fatalf("opts must be AltScreen+Filter (wheel-only, no MouseCellMotion), got %d", len(opts))
 	}
 }
 

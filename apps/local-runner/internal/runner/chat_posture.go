@@ -269,3 +269,32 @@ func resolveTurnChatPosture(rs *interactiveRun, in TurnInput) string {
 	}
 	return posture
 }
+
+// Task-260: auto-inject the safe-fix-contract umbrella skill on Chat Plan/Code.
+
+const safeFixContractSkillName = "safe-fix-contract"
+
+func shouldAutoInjectSafeFixContract(posture, runKind string, flowEngineDriven bool) bool {
+	if flowEngineDriven {
+		return false
+	}
+	if runKind != "chat" {
+		return false
+	}
+	return posture == ChatPosturePlan || posture == ChatPostureCode
+}
+
+func mergeChatSafeFixContractSkills(posture, runKind string, flowEngineDriven bool, selected []SkillSelection) []SkillSelection {
+	if !shouldAutoInjectSafeFixContract(posture, runKind, flowEngineDriven) {
+		return selected
+	}
+	for _, s := range selected {
+		if strings.EqualFold(strings.TrimSpace(s.Name), safeFixContractSkillName) {
+			return selected
+		}
+	}
+	out := make([]SkillSelection, 0, len(selected)+1)
+	out = append(out, selected...)
+	out = append(out, SkillSelection{Name: safeFixContractSkillName, Source: "builtin"})
+	return out
+}

@@ -222,10 +222,10 @@ func cmdSetAutoWrap(on bool) tea.Cmd {
 }
 
 func (m *AppModel) Init() tea.Cmd {
-	tuiLog("Init() -> disable autowrap + mouse-off ANSI + cmdConnect + tickCursor")
+	tuiLog("Init() -> disable autowrap + wheel-only mouse (1000h wheel, no 1002/1003 hover) + cmdConnect + tickCursor")
 	return tea.Sequence(
 		cmdSetAutoWrap(false),
-		cmdEnsureMouseTrackingOff(),
+		cmdEnableWheelMouse(),
 		tea.Batch(m.cmdConnect(), tickCursor(), cmdInputWatchdog()),
 	)
 }
@@ -274,6 +274,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				tuiLog("Update SkillsListMsg n=%d err=%q show=%v", len(x.Skills), x.Err, x.Show)
 			case ChatOpenedMsg:
 				tuiLog("Update ChatOpenedMsg run=%s msgs=%d err=%q", x.Handle.RunID, len(x.Messages), x.Err)
+			case ChatDeletedMsg:
+				tuiLog("Update ChatDeletedMsg run=%s err=%q", x.RunID, x.Err)
 			case ProjectContextMsg:
 				tuiLog("Update ProjectContextMsg path=%q branch=%q", x.Path, x.Branch)
 			case ClipboardPasteMsg:
@@ -931,6 +933,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addMessage("system", formatChatListWithRemote(msg.Items, m.remoteChatList), "")
 		return m, nil
 
+	case ChatDeletedMsg:
+		return m.handleChatDeleted(msg)
+
 	case DriveSyncBatchMsg:
 		// G2 /sync progress: update the badge for the finished row, then either
 		// start the next upload or print the batch summary (Desktop Navigator
@@ -1553,9 +1558,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// TUI console (no CREATE_NO_WINDOW) and left conhost without keys
 		// after Alt+V text paste (pid 9288: 47s stall). Re-arm here for all
 		// ClipboardPasteMsg branches; applyClipboardSysProcAttr prevents the
-		// attach for future pastes. Only mouse-off ANSI — SetConsoleMode wedges
-		// the live coninput reader (BUG-328).
-		ensureMouseTrackingOff()
+		// attach for future pastes. Keep wheel-only (1000h) so scroll survives
+		// paste (was ensureMouseTrackingOff which killed wheel).
+		ensureWheelMouseOn()
 		// Reset any active burst state so clipboard paste and subsequent typing stay clean.
 		m.resetPasteBurst()
 		if msg.Err != "" && msg.Attachment == nil && msg.Text == "" {
@@ -1738,6 +1743,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case QuitMsg:
 		m.quitting = true
 		return m, tea.Quit
+
+	case wheelFlushMsg:
+		return m.flushPendingWheel()
 
 	case tea.KeyMsg:
 		m.markInputAlive()
@@ -2024,6 +2032,115 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.viewingChild() && !m.allowsKeyWhileViewingChild(msg) {
 		return m, nil
 	}
+	// Task-318: pending /delete confirm swallows normal input until y/n.
+	if m.deletePendingRunID != "" || len(m.deletePendingIDs) > 0 {
+		switch msg.Type {
+		case tea.KeyEnter:
+			var ids []string
+			if len(m.deletePendingIDs) > 0 {
+				ids = m.deletePendingIDs
+			} else if m.deletePendingRunID != "" {
+				ids = []string{m.deletePendingRunID}
+			}
+			if len(ids) == 0 {
+				m.deletePendingRunID = ""
+				m.deletePendingIDs = nil
+				m.deletePendingLabel = ""
+				return m, nil
+			}
+			first := ids[0]
+			remaining := ids[1:]
+			m.deleteBatchTotal = len(ids)
+			m.deleteBatchQueue = remaining
+			m.deletePendingRunID = ""
+			m.deletePendingIDs = nil
+			m.deletePendingLabel = ""
+			m.deleteSelected = nil
+			m.clearInputValue()
+			if len(ids) == 1 {
+				m.addMessage("system", fmt.Sprintf("Deleting chat %s…", shortID(first)), "")
+			} else {
+				m.addMessage("system", fmt.Sprintf("Deleting %d chats…", len(ids)), "")
+			}
+			return m, m.cmdDeleteChat(first)
+		case tea.KeyEscape:
+			m.deletePendingRunID = ""
+			m.deletePendingIDs = nil
+			m.deletePendingLabel = ""
+			m.deleteBatchQueue = nil
+			m.deleteBatchTotal = 0
+			m.addMessage("system", "Delete cancelled.", "")
+			m.clearInputValue()
+			return m, nil
+		case tea.KeyCtrlC:
+			// Allow quit even while pending — mirror top-level Ctrl+C.
+			if !m.mouseSel.empty() {
+				text := m.selectionPlainText()
+				m.mouseSel = mouseSelect{}
+				if strings.TrimSpace(text) == "" {
+					m.statusMsg = "nothing to copy"
+					return m, nil
+				}
+				return m, m.cmdCopyText(text, "selection")
+			}
+			if m.turnIsActive() {
+				return m, m.cmdStopTurn()
+			}
+			if m.inputValue != "" {
+				m.clearInputValue()
+				m.statusMsg = "prompt cleared"
+				return m, nil
+			}
+			m.quitting = true
+			return m, m.cmdShutdownAndQuit()
+		case tea.KeyRunes:
+			if len(msg.Runes) == 1 {
+				r := msg.Runes[0]
+				if r == 'y' || r == 'Y' {
+					var ids []string
+					if len(m.deletePendingIDs) > 0 {
+						ids = m.deletePendingIDs
+					} else if m.deletePendingRunID != "" {
+						ids = []string{m.deletePendingRunID}
+					}
+					if len(ids) == 0 {
+						m.deletePendingRunID = ""
+						m.deletePendingIDs = nil
+						m.deletePendingLabel = ""
+						return m, nil
+					}
+					first := ids[0]
+					remaining := ids[1:]
+					m.deleteBatchTotal = len(ids)
+					m.deleteBatchQueue = remaining
+					m.deletePendingRunID = ""
+					m.deletePendingIDs = nil
+					m.deletePendingLabel = ""
+					m.deleteSelected = nil
+					m.clearInputValue()
+					if len(ids) == 1 {
+						m.addMessage("system", fmt.Sprintf("Deleting chat %s…", shortID(first)), "")
+					} else {
+						m.addMessage("system", fmt.Sprintf("Deleting %d chats…", len(ids)), "")
+					}
+					return m, m.cmdDeleteChat(first)
+				}
+				if r == 'n' || r == 'N' {
+					m.deletePendingRunID = ""
+					m.deletePendingIDs = nil
+					m.deletePendingLabel = ""
+					m.deleteBatchQueue = nil
+					m.deleteBatchTotal = 0
+					m.addMessage("system", "Delete cancelled.", "")
+					m.clearInputValue()
+					return m, nil
+				}
+			}
+			return m, nil
+		default:
+			return m, nil
+		}
+	}
 
 	switch msg.Type {
 	case tea.KeyCtrlC:
@@ -2153,7 +2270,11 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.cmdMaybePrefetchPickers()
 		}
 		if m.inputValue != "" {
+			wasDelete := strings.HasPrefix(strings.ToLower(strings.TrimSpace(m.inputValue)), "/delete")
 			m.clearInputValue()
+			if wasDelete {
+				m.deleteSelected = nil
+			}
 			m.statusMsg = "prompt cleared"
 			return m, nil
 		}
@@ -2194,6 +2315,13 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if items := m.collectSuggestions(); len(items) > 0 {
+			it := items[(m.suggIdx-1+len(items))%len(items)]
+			if it.kind == "delete" && strings.TrimSpace(it.value) != "" {
+				m.suggIdx = (m.suggIdx - 1 + len(items)) % len(items)
+				m.toggleDeleteSelection(it.value)
+				m.retargetDeleteSuggestion(it.value)
+				return m, nil
+			}
 			// Shift-Tab cycles backwards
 			if len(items) > 0 {
 				m.suggIdx = (m.suggIdx - 1 + len(items)) % len(items)
@@ -2236,6 +2364,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.retargetSkillSuggestion(it.value)
 				return m, nil
 			}
+			if it.kind == "delete" && strings.TrimSpace(it.value) != "" {
+				// Skill-like multi-select: Tab toggles tick, picker stays open
+				m.toggleDeleteSelection(it.value)
+				m.retargetDeleteSuggestion(it.value)
+				return m, nil
+			}
 			m.applySuggestion(items)
 			return m, m.cmdMaybePrefetchPickers()
 		}
@@ -2270,9 +2404,40 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.suggIdx = (m.suggIdx - 1 + n) % n
 				return m, nil
 			}
-			// No picker open: Up/Down recall sent prompts (bash-style), never
-			// scroll the transcript — scroll is PgUp/PgDown + mouse wheel.
+			now := time.Now()
+			// Wheel on Windows with mouse off is rapid KeyUp burst (3+ in 150ms).
+			// Two rapid Ups are still history (test TestPromptHistory_UpDownRecall
+			// does 2 Ups back-to-back); three within 150ms → wheel → scroll.
+			if m.lastHistoryKeyType == tea.KeyUp && !m.lastHistoryKeyAt.IsZero() && !m.prevHistoryKeyAt.IsZero() && now.Sub(m.prevHistoryKeyAt) < 150*time.Millisecond {
+				if m.lastHistoryWasNav {
+					m.navigatePromptHistory(-1)
+				}
+				// Also undo the previous history if it was nav (second in burst)
+				// The prev was already counted, but we only did one nav so far.
+				// For 3-burst, we need to undo both previous navs if they were nav.
+				// Simpler: if we are in burst, ensure we are back to draft and scroll.
+				if m.promptHistIdx != -1 {
+					// If still browsing after undo, reset to draft
+					m.promptHistIdx = -1
+					m.inputValue = m.promptDraft
+					m.inputCursor = -1
+					if m.mirrorReady() {
+						m.syncTextareaValue()
+					}
+				}
+				m.scrollTranscript(3)
+				m.prevHistoryKeyAt = m.lastHistoryKeyAt
+				m.lastHistoryKeyAt = now
+				m.lastHistoryKeyType = tea.KeyUp
+				m.lastHistoryWasNav = false
+				m.suggIdx = 0
+				return m, nil
+			}
 			m.navigatePromptHistory(1)
+			m.prevHistoryKeyAt = m.lastHistoryKeyAt
+			m.lastHistoryKeyAt = now
+			m.lastHistoryKeyType = tea.KeyUp
+			m.lastHistoryWasNav = true
 			m.suggIdx = 0
 			return m, nil
 		}
@@ -2283,7 +2448,32 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.suggIdx = (m.suggIdx + 1) % n
 				return m, nil
 			}
+			now := time.Now()
+			if m.lastHistoryKeyType == tea.KeyDown && !m.lastHistoryKeyAt.IsZero() && !m.prevHistoryKeyAt.IsZero() && now.Sub(m.prevHistoryKeyAt) < 150*time.Millisecond {
+				if m.lastHistoryWasNav {
+					m.navigatePromptHistory(1)
+				}
+				if m.promptHistIdx != -1 {
+					m.promptHistIdx = -1
+					m.inputValue = m.promptDraft
+					m.inputCursor = -1
+					if m.mirrorReady() {
+						m.syncTextareaValue()
+					}
+				}
+				m.scrollTranscript(-3)
+				m.prevHistoryKeyAt = m.lastHistoryKeyAt
+				m.lastHistoryKeyAt = now
+				m.lastHistoryKeyType = tea.KeyDown
+				m.lastHistoryWasNav = false
+				m.suggIdx = 0
+				return m, nil
+			}
 			m.navigatePromptHistory(-1)
+			m.prevHistoryKeyAt = m.lastHistoryKeyAt
+			m.lastHistoryKeyAt = now
+			m.lastHistoryKeyType = tea.KeyDown
+			m.lastHistoryWasNav = true
 			m.suggIdx = 0
 			return m, nil
 		}
@@ -2326,6 +2516,42 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						m.statusMsg = fmt.Sprintf("skills:%d attached — prompt kept", n)
 					} else {
 						m.statusMsg = "skill picker closed"
+					}
+					return m, nil
+				}
+				if it.kind == "delete" {
+					// Enter on /delete picker: delete ticked set, or highlighted, or all
+					var ids []string
+					if len(m.deleteSelected) > 0 {
+						for _, ch := range m.chatList {
+							id := strings.TrimSpace(ch.RunID)
+							if id != "" && m.deleteSelected[id] {
+								ids = append(ids, id)
+							}
+						}
+					} else if strings.EqualFold(strings.TrimSpace(it.value), "all") {
+						for _, ch := range m.chatList {
+							id := strings.TrimSpace(ch.RunID)
+							if id != "" {
+								ids = append(ids, id)
+							}
+						}
+					} else if strings.TrimSpace(it.value) != "" {
+						ids = []string{strings.TrimSpace(it.value)}
+					}
+					if len(ids) == 0 {
+						return m, nil
+					}
+					m.deletePendingIDs = ids
+					m.deletePendingRunID = ids[0]
+					m.deletePendingLabel = ""
+					m.clearInputValue()
+					m.suggIdx = 0
+					if len(ids) == 1 {
+						label := chatLabelForRunID(m.chatList, ids[0])
+						m.addMessage("system", fmt.Sprintf("Delete %q (%s)? [y]es / [n]o  (Enter=y, Esc=n)", label, shortID(ids[0])), "")
+					} else {
+						m.addMessage("system", fmt.Sprintf("Delete %d chats? [y]es / [n]o  (Enter=y, Esc=n) — cannot undo", len(ids)), "")
 					}
 					return m, nil
 				}
@@ -2709,6 +2935,9 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if chats := filterHistorySuggestionsWithRemote(in, m.chatList, m.remoteChatList); len(chats) > 0 {
 		return chats
 	}
+	if del := filterDeleteSuggestionsWithSelected(in, m.chatList, m.remoteChatList, m.deleteSelected); len(del) > 0 {
+		return del
+	}
 	if syncSugg := filterSyncSuggestionsWithRemote(in, m.syncableChats(), m.remoteChatList); len(syncSugg) > 0 {
 		return syncSugg
 	}
@@ -2729,6 +2958,12 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 			return []suggestItem{{value: "", detail: "loading chats…", kind: "history", slash: cmd}}
 		}
 		return []suggestItem{{value: "", detail: "(no matching chats)", kind: "history", slash: cmd}}
+	}
+	if ok, _ := parseDeleteArgPrefix(in); ok {
+		if len(m.chatList) == 0 {
+			return []suggestItem{{value: "", detail: "loading chats…", kind: "delete", slash: "/delete"}}
+		}
+		return []suggestItem{{value: "", detail: "(no matching chats)", kind: "delete", slash: "/delete"}}
 	}
 	if providerSugg := filterProviderSuggestions(in, m.providers, m.providerAccounts, m.provider); len(providerSugg) > 0 {
 		return providerSugg
@@ -4166,6 +4401,49 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.addMessage("system", "Loading chat history…", "")
 		return m, m.cmdListChats()
 
+	case "/delete":
+		if len(args) == 0 {
+			if m.runHandle == nil || strings.TrimSpace(m.runHandle.RunID) == "" {
+				m.addMessage("system", "Usage: /delete <n|runId|all> — type /delete  then Tab tick · Enter del", "")
+				break
+			}
+			runID := strings.TrimSpace(m.runHandle.RunID)
+			label := chatLabelForRunID(m.chatList, runID)
+			m.deletePendingIDs = []string{runID}
+			m.deletePendingRunID = runID
+			m.deletePendingLabel = label
+			m.addMessage("system", fmt.Sprintf("Delete %q (%s)? [y]es / [n]o  (Enter=y, Esc=n)", label, shortID(runID)), "")
+			break
+		}
+		if len(args) == 1 && strings.EqualFold(strings.TrimSpace(args[0]), "all") {
+			if len(m.chatList) == 0 {
+				m.addMessage("system", "No chats to delete.", "")
+				break
+			}
+			ids := make([]string, 0, len(m.chatList))
+			for _, ch := range m.chatList {
+				if id := strings.TrimSpace(ch.RunID); id != "" {
+					ids = append(ids, id)
+				}
+			}
+			m.deletePendingIDs = ids
+			m.deletePendingRunID = ids[0]
+			m.deletePendingLabel = ""
+			m.addMessage("system", fmt.Sprintf("Delete ALL %d chats? [y]es / [n]o  (Enter=y, Esc=n) — cannot undo", len(ids)), "")
+			break
+		}
+		runID, err := resolveChatOpenTarget(args, m.chatList)
+		if err != nil {
+			m.addMessage("system", err.Error()+" — type /delete  for the picker", "error")
+			break
+		}
+		label := chatLabelForRunID(m.chatList, runID)
+		m.deletePendingIDs = []string{runID}
+		m.deletePendingRunID = runID
+		m.deletePendingLabel = label
+		m.addMessage("system", fmt.Sprintf("Delete %q (%s)? [y]es / [n]o  (Enter=y, Esc=n)", label, shortID(runID)), "")
+		break
+
 	case "/approve":
 		if m.approval != nil {
 			return m.submitPendingApproval("approve")
@@ -4464,7 +4742,7 @@ func (m *AppModel) loadingBannerText() string {
 }
 
 func suggestionVisibleLimit(sugg []suggestItem) int {
-	if len(sugg) > 0 && (sugg[0].kind == "history" || sugg[0].kind == "skill" || sugg[0].kind == "file") {
+	if len(sugg) > 0 && (sugg[0].kind == "history" || sugg[0].kind == "delete" || sugg[0].kind == "skill" || sugg[0].kind == "file") {
 		return 12
 	}
 	return 8
@@ -4479,6 +4757,8 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 			kind = "flows"
 		case "history":
 			kind = "chats"
+		case "delete":
+			kind = "delete"
 		case "model":
 			kind = "models"
 		case "reasoning":
@@ -6506,11 +6786,10 @@ func remapVTControlKeys(msg tea.KeyMsg) tea.KeyMsg {
 	return msg
 }
 
-// tuiProgramOpts returns Bubble Tea program options. Application mouse tracking
-// stays OFF on every platform (BUG-328): WithMouseCellMotion enables the host
-// mouse mode that wedges keyboard input (Windows conhost focus steal). Copy is
-// the terminal's native bôi-đen + /copy, not an in-app drag affordance. AltScreen
-// + Filter only.
+// tuiProgramOpts returns Bubble Tea program options. Wheel-only mouse:
+// AltScreen + Filter only (no CellMotion). Wheel scroll is enabled via
+// ?1000h (button+wheel) in Init/maybeRearm so Up/Down stays prompt history
+// and hover motion never enters the 64-slot conhost queue (BUG-328).
 func tuiProgramOpts() []tea.ProgramOption {
 	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithFilter(tuiMsgFilter)}
 }

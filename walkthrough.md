@@ -206,3 +206,36 @@ passing regression result.
 
 Until items 1-6 are complete, the durable-anchor redesign should not be
 accepted as closing Terra's prior `REWORK_DESIGN` verdict.
+
+---
+
+# Task-318: TUI Delete Chat History — Picker + Confirm (Desktop Parity) — v2 skill-like multi-select
+
+## Summary
+TUI had no prune path (`/clear` only on-screen). v1 wired `DELETE /client/workflow-runs/{runId}` via `/delete` + `y` gate but **Enter didn't work** (no prefetch, `kind="history"` made Tab fill instead of tick). v2 fixes Enter and upgrades to `/skill`-like multi-select: `[ ]`/`[*]` ticks, `all` row, `Tab` toggles, `Enter` deletes ticked/highlighted/`all`, batch sequential `DELETE`s.
+
+## Touched Files
+- `tui/client/client.go` — `DeleteRun` (DELETE via `methodJSON`)
+- `tui/app/model.go` — `/delete` (`Tab tick · Enter del · all`), `deleteSelected`, `deletePendingIDs/RunID/Label`, `deleteBatchQueue/Total`
+- `tui/app/helpers.go` — `parseDeleteArgPrefix`, `filterDeleteSuggestions*`/`WithSelected` (`kind="delete"`, `[ ]`/`[*]`, top `all` row, `q=="all"` bypass)
+- `tui/app/history.go` — `ChatDeletedMsg`, `cmdDeleteChat`, `handleChatDeleted` (single+batch queue, current-chat BUG-258 reset, tick clear, `Deleted N chats.`), `toggleDeleteSelection`/`retargetDeleteSuggestion` (all toggle), `chatLabelForRunID`
+- `tui/app/app.go` — `collectSuggestions` delete after history with ticks, `cmdMaybePrefetchHistory` includes `/delete`, `suggestionVisibleLimit`/`renderSuggestions` `delete`, Tab toggles `delete` (Shift+Tab too), Enter on `delete` arms batch (`tick` > `all` > highlighted), slash `/delete <n|runId|all>` + bare open-chat, pending `y`/`Enter` starts batch (`deleteBatchQueue`), `n`/`Esc` cancels, `Update` `ChatDeletedMsg`, Esc clears `deleteSelected`
+- `tui/README.md` — `/delete` row → `Tab tick · Enter del · all`
+- `tui/client/delete_run_test.go` — escaped path + error
+- `tui/app/delete_chat_test.go` — 14 cases: registered, all+tick, Tab single/all, Enter highlighted/batch/all, slash 2/all/bare, Enter arm, pending y/batch y/Enter/n/Esc/swallow, chatDeleted single/other/batch/error
+
+## Verification
+- `go vet ./internal/tui/...` — clean
+- `go test ./internal/tui/... -count=1` — PASS
+  - `tui/app` ~11s (14 new delete cases PASS, pre-existing untouched; Enter-no-op fixed)
+  - `tui/client` ~38s (DeleteRun PASS)
+  - `config/desktopboot/prefs/runnerboot` — PASS
+- Manual picker: `/delete ` shows `[ ] all` + `[ ] #N` ticks; `Tab` ticks `[*]` and stays open; `Enter` with no tick deletes highlighted, with ticks deletes batch, with `all` deletes all; `Tab` on `all` ticks/unticks all; typed `/delete all` and `/delete 2` arm pending; `y` deletes sequential, `n`/`Esc` cancels.
+
+## Acceptance
+- [x] `/delete` in `/help` and picker with `all` + ticks; prefetch fixes Enter stuck on `loading chats…`
+- [x] `Tab` multi-select like `/skill` (including `all`), `Enter` deletes ticked/highlighted/`all` (no immediate `DELETE` before `y`)
+- [x] Typed `/delete <n|runId|all>` and bare `/delete` (open chat) arm pending
+- [x] `y`/`Enter` sequential batch, `n`/`Esc` cancels, other keys swallowed while pending
+- [x] Success drops rows + ticks, current-chat reset, batch `Deleted N chats.`; failure keeps row and continues queue
+- [x] No runner/Desktop edits, additive tests only
