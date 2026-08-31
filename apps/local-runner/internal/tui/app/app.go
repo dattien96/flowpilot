@@ -222,9 +222,10 @@ func cmdSetAutoWrap(on bool) tea.Cmd {
 }
 
 func (m *AppModel) Init() tea.Cmd {
-	tuiLog("Init() -> disable autowrap + MouseCellMotion ON (wheel=scroll, Up/Down=history) + cmdConnect + tickCursor")
+	tuiLog("Init() -> disable autowrap + mouse-off ANSI + cmdConnect + tickCursor")
 	return tea.Sequence(
 		cmdSetAutoWrap(false),
+		cmdEnsureMouseTrackingOff(),
 		tea.Batch(m.cmdConnect(), tickCursor(), cmdInputWatchdog()),
 	)
 }
@@ -2269,9 +2270,40 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.suggIdx = (m.suggIdx - 1 + n) % n
 				return m, nil
 			}
-			// No picker open: Up/Down recall sent prompts (bash-style), never
-			// scroll the transcript — scroll is PgUp/PgDown + mouse wheel.
+			now := time.Now()
+			// Wheel on Windows with mouse off is rapid KeyUp burst (3+ in 150ms).
+			// Two rapid Ups are still history (test TestPromptHistory_UpDownRecall
+			// does 2 Ups back-to-back); three within 150ms → wheel → scroll.
+			if m.lastHistoryKeyType == tea.KeyUp && !m.lastHistoryKeyAt.IsZero() && !m.prevHistoryKeyAt.IsZero() && now.Sub(m.prevHistoryKeyAt) < 150*time.Millisecond {
+				if m.lastHistoryWasNav {
+					m.navigatePromptHistory(-1)
+				}
+				// Also undo the previous history if it was nav (second in burst)
+				// The prev was already counted, but we only did one nav so far.
+				// For 3-burst, we need to undo both previous navs if they were nav.
+				// Simpler: if we are in burst, ensure we are back to draft and scroll.
+				if m.promptHistIdx != -1 {
+					// If still browsing after undo, reset to draft
+					m.promptHistIdx = -1
+					m.inputValue = m.promptDraft
+					m.inputCursor = -1
+					if m.mirrorReady() {
+						m.syncTextareaValue()
+					}
+				}
+				m.scrollTranscript(3)
+				m.prevHistoryKeyAt = m.lastHistoryKeyAt
+				m.lastHistoryKeyAt = now
+				m.lastHistoryKeyType = tea.KeyUp
+				m.lastHistoryWasNav = false
+				m.suggIdx = 0
+				return m, nil
+			}
 			m.navigatePromptHistory(1)
+			m.prevHistoryKeyAt = m.lastHistoryKeyAt
+			m.lastHistoryKeyAt = now
+			m.lastHistoryKeyType = tea.KeyUp
+			m.lastHistoryWasNav = true
 			m.suggIdx = 0
 			return m, nil
 		}
@@ -2282,7 +2314,32 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.suggIdx = (m.suggIdx + 1) % n
 				return m, nil
 			}
+			now := time.Now()
+			if m.lastHistoryKeyType == tea.KeyDown && !m.lastHistoryKeyAt.IsZero() && !m.prevHistoryKeyAt.IsZero() && now.Sub(m.prevHistoryKeyAt) < 150*time.Millisecond {
+				if m.lastHistoryWasNav {
+					m.navigatePromptHistory(1)
+				}
+				if m.promptHistIdx != -1 {
+					m.promptHistIdx = -1
+					m.inputValue = m.promptDraft
+					m.inputCursor = -1
+					if m.mirrorReady() {
+						m.syncTextareaValue()
+					}
+				}
+				m.scrollTranscript(-3)
+				m.prevHistoryKeyAt = m.lastHistoryKeyAt
+				m.lastHistoryKeyAt = now
+				m.lastHistoryKeyType = tea.KeyDown
+				m.lastHistoryWasNav = false
+				m.suggIdx = 0
+				return m, nil
+			}
 			m.navigatePromptHistory(-1)
+			m.prevHistoryKeyAt = m.lastHistoryKeyAt
+			m.lastHistoryKeyAt = now
+			m.lastHistoryKeyType = tea.KeyDown
+			m.lastHistoryWasNav = true
 			m.suggIdx = 0
 			return m, nil
 		}
@@ -6505,12 +6562,13 @@ func remapVTControlKeys(msg tea.KeyMsg) tea.KeyMsg {
 	return msg
 }
 
-// tuiProgramOpts returns Bubble Tea program options. Mouse CellMotion is ON
-// so wheel scroll is MouseWheel (scrollTranscript) and does not steal Up/Down
-// prompt history. Motion is filtered via tuiMsgFilter, so the 64-slot conhost
-// queue is not wedged (BUG-328 mitigation). AltScreen + Filter + MouseCellMotion.
+// tuiProgramOpts returns Bubble Tea program options. Application mouse tracking
+// stays OFF on every platform (BUG-328): WithMouseCellMotion enables the host
+// mouse mode that wedges keyboard input (Windows conhost focus steal). Copy is
+// the terminal's native bôi-đen + /copy, not an in-app drag affordance. AltScreen
+// + Filter only.
 func tuiProgramOpts() []tea.ProgramOption {
-	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithFilter(tuiMsgFilter), tea.WithMouseCellMotion()}
+	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithFilter(tuiMsgFilter)}
 }
 
 // tuiRunProgramOpts is the live Run() option set: shared AltScreen+Filter.

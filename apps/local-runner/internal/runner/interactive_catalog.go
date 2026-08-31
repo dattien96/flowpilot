@@ -130,6 +130,10 @@ func (c *interactiveCatalog) listSkills(provider string, cwd string) []ProviderS
 	}
 
 	appendSkills(discoverProjectSkills(provider, cwd))
+	// Common flow-pack (.agents/skills) for all providers — BUG-062 F-2.
+	// discoverProjectSkills is exclusive per provider, so opencode/claude/grok
+	// would otherwise miss the common pack.
+	appendSkills(providerSkillsFromDir(filepath.Join(cwd, ".agents", "skills"), "flowpilot"))
 	appendSkills(discoverProviderHomeSkills(provider))
 
 	if len(merged) == 0 {

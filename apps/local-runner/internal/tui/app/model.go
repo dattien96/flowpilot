@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
@@ -327,6 +328,10 @@ type AppModel struct {
 	promptHistory []string
 	promptHistIdx int
 	promptDraft   string
+	lastHistoryKeyAt time.Time
+	lastHistoryKeyType tea.KeyType
+	lastHistoryWasNav bool
+	prevHistoryKeyAt time.Time
 	// lastInputAt is the timestamp of the last KeyMsg/MouseMsg that reached
 	// Update; inputStallLogged marks a fired input-watchdog stall banner
 	// (input_watchdog.go, CA-645) so it logs once per stall episode.
