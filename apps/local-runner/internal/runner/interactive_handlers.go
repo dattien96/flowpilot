@@ -1124,10 +1124,61 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 		}
 	}
 
+	out = s.stampMissingChatIdentity(out)
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
 	return out
+}
+
+// stampMissingChatIdentity fills empty ChatID/LegSeq for chat runs whose
+// session row predates CP-59 (BUG-338). The durable transcript is the SSOT:
+// legRunId → (chatId, legSeq) is derived from chats/*/transcript.ndjson.
+// This backfills the 3-leg Gate-sandbox chat (run-197929/197970/198151) that
+// currently returns chatId="" from the History API.
+func (s *InteractiveService) stampMissingChatIdentity(items []runHistoryItem) []runHistoryItem {
+	if len(items) == 0 {
+		return items
+	}
+	idx := s.transcriptLegIndex()
+	if len(idx) == 0 {
+		return items
+	}
+	for i := range items {
+		if strings.TrimSpace(items[i].ChatID) != "" {
+			continue
+		}
+		// Only stamp chat runs; workflow runs must stay ungrouped.
+		if strings.TrimSpace(items[i].WorkflowID) != "" || strings.EqualFold(strings.TrimSpace(items[i].RunKind), "workflow") {
+			continue
+		}
+		if info, ok := idx[strings.TrimSpace(items[i].RunID)]; ok {
+			items[i].ChatID = info.ChatID
+			items[i].LegSeq = info.LegSeq
+		}
+	}
+	return items
+}
+
+// transcriptLegIndex returns legRunId → ChatLegInfo from the durable transcript.
+// Local file is the Gate-sandbox path; Supabase will use workflow_chat_events
+// when implemented. Nil/empty when the transcript writer is not yet initialized.
+func (s *InteractiveService) transcriptLegIndex() map[string]ChatLegInfo {
+	w := s.ensureChatTranscriptWriter()
+	if w == nil || w.store == nil {
+		return nil
+	}
+	if lfs, ok := w.store.(*localFileChatTranscriptStore); ok {
+		m, _ := lfs.LegIndex(context.Background())
+		return m
+	}
+	if getter, ok := w.store.(interface {
+		LegIndex(context.Context) (map[string]ChatLegInfo, error)
+	}); ok {
+		m, _ := getter.LegIndex(context.Background())
+		return m
+	}
+	return nil
 }
 
 // historyStatusForLiveRun maps an in-memory run to the status the history list
