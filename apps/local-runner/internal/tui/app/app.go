@@ -4309,7 +4309,11 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 						return m, cmd
 					}
 					if m.runHandle != nil {
-						m.addMessage("system", fmt.Sprintf("Cannot switch to %s \u00b7 %s on this chat (missing chat identity) \u2014 use /new", matched.provider, matched.id), "error")
+						if isChatHandle(m.runHandle) {
+							m.addMessage("system", fmt.Sprintf("Cannot switch to %s \u00b7 %s on this chat (missing chat identity) \u2014 use /new", matched.provider, matched.id), "error")
+						} else {
+							m.addMessage("system", "Cannot change provider after a run has started. Use /new to start fresh.", "error")
+						}
 						return m, nil
 					}
 					m.provider = matched.provider
@@ -4324,7 +4328,11 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 						return m, cmd
 					}
 					if m.runHandle != nil {
-						m.addMessage("system", fmt.Sprintf("Cannot switch to %s \u00b7 %s on this chat (missing chat identity) \u2014 use /new", prov, want), "error")
+						if isChatHandle(m.runHandle) {
+							m.addMessage("system", fmt.Sprintf("Cannot switch to %s \u00b7 %s on this chat (missing chat identity) \u2014 use /new", prov, want), "error")
+						} else {
+							m.addMessage("system", "Cannot change provider after a run has started. Use /new to start fresh.", "error")
+						}
 						return m, nil
 					}
 					m.provider = prov

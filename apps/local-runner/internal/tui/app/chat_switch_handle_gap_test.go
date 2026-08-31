@@ -51,7 +51,7 @@ func TestProviderEmptyRunKindStillRoutes(t *testing.T) {
 	}
 }
 
-// Unroutable live chat (missing ChatID and RunKind) must NOT inject foreign provider.
+// Unroutable live run (missing ChatID and RunKind) must NOT inject foreign provider.
 func TestModelForeignLiveChatWithoutIdentityDoesNotInject(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
 	m.providers = []client.Provider{
@@ -60,8 +60,8 @@ func TestModelForeignLiveChatWithoutIdentityDoesNotInject(t *testing.T) {
 		{Key: "claude", Models: []client.ProviderModel{{ID: "claude-sonnet"}}},
 		{Key: "codex", Models: []client.ProviderModel{{ID: "codex-5.1"}}},
 	}
-	// Live run but neither ChatID nor RunKind — simulates a handle before the echo fix.
-	m.runHandle = &client.RunHandle{RunID: "run-1", RunKind: "", ChatID: "", ProviderKey: "opencode"}
+	// Live chat with RunKind chat but missing ChatID — the echo gap.
+	m.runHandle = &client.RunHandle{RunID: "run-1", RunKind: "chat", ChatID: "", ProviderKey: "opencode"}
 	m.provider = "opencode"
 	m.model = "opencode-go/muse-spark"
 
@@ -79,13 +79,26 @@ func TestModelForeignLiveChatWithoutIdentityDoesNotInject(t *testing.T) {
 	for _, target := range []string{"claude-sonnet", "codex-5.1"} {
 		m2 := New(config.ChatConfig{}, "http://127.0.0.1:1")
 		m2.providers = m.providers
-		m2.runHandle = &client.RunHandle{RunID: "run-1", RunKind: "", ChatID: "", ProviderKey: "opencode"}
+		m2.runHandle = &client.RunHandle{RunID: "run-1", RunKind: "chat", ChatID: "", ProviderKey: "opencode"}
 		m2.provider = "opencode"
 		m2.model = "opencode-go/muse-spark"
 		_, cmd2 := m2.handleSlashCommand("/model " + target)
 		if cmd2 != nil || m2.provider != "opencode" {
 			t.Fatalf("target %s: must not inject, cmd=%v provider=%q", target, cmd2, m2.provider)
 		}
+	}
+	// Workflow run without ChatID must also not inject, but with workflow message.
+	m3 := New(config.ChatConfig{}, "http://127.0.0.1:1")
+	m3.providers = m.providers
+	m3.runHandle = &client.RunHandle{RunID: "run-wf", RunKind: "workflow", ChatID: "", ProviderKey: "codex"}
+	m3.provider = "codex"
+	m3.model = "codex-5.1"
+	_, cmd3 := m3.handleSlashCommand("/model grok-4.6")
+	if cmd3 != nil || m3.provider != "codex" {
+		t.Fatalf("workflow must not inject, cmd=%v provider=%q", cmd3, m3.provider)
+	}
+	if !strings.Contains(m3.messages[len(m3.messages)-1].Content, "Cannot change provider") {
+		t.Fatalf("workflow must show Cannot change provider, got %q", m3.messages[len(m3.messages)-1].Content)
 	}
 }
 

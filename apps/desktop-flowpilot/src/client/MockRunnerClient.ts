@@ -784,6 +784,10 @@ export class MockRunnerClient implements RunnerClient {
     const runId = nextId("run");
     const providerSessionId = nextId("thread");
     const now = new Date().toISOString();
+    const isChat = input.chatMode === "normal_chat";
+    const chatId = isChat ? (input.chatId ?? `cht_mock_${runId}`) : undefined;
+    const legSeq = isChat ? (input.legSeq ?? 0) : undefined;
+    const runKind = isChat ? "chat" : input.workflowId || input.stepId ? "workflow" : undefined;
     this.runs.set(runId, {
       runId,
       projectId: input.projectId,
@@ -794,19 +798,36 @@ export class MockRunnerClient implements RunnerClient {
       startedAt: now,
       updatedAt: now,
       seq: 0,
-    });
+      ...(runKind ? { runKind } as never : {}),
+      ...(chatId ? { chatId, legSeq } as never : {}),
+    } as never);
     const providerKey = input.providerKey ?? "codex";
     const stepId = input.chatMode === "normal_chat" ? `chat-${runId}` : undefined;
-    return { runId, providerSessionId, providerKey, status: "running", ...(stepId ? { stepId } : {}) };
+    return {
+      runId,
+      providerSessionId,
+      providerKey,
+      status: "running",
+      ...(stepId ? { stepId } : {}),
+      ...(runKind ? { runKind } : {}),
+      ...(chatId ? { chatId, legSeq } : {}),
+    } as RunHandle;
   }
 
   async resumeRun(runId: string): Promise<RunHandle> {
     await delay(80);
-    const state = this.runs.get(runId);
+    const state = this.runs.get(runId) as never as { providerSessionId?: string; chatId?: string; legSeq?: number; runKind?: string } | undefined;
     const providerSessionId = state?.providerSessionId ?? nextId("thread");
     // Mark this run so the next sendTurn streams the full happy path (replay).
     this.replayRuns.add(runId);
-    return { runId, providerSessionId, providerKey: "codex", status: "running" };
+    return {
+      runId,
+      providerSessionId,
+      providerKey: "codex",
+      status: "running",
+      ...(state?.runKind ? { runKind: state.runKind } : {}),
+      ...(state?.chatId ? { chatId: state.chatId, legSeq: state.legSeq } : {}),
+    } as RunHandle;
   }
 
   async submitApproval(approvalId: string, decision: string, _remember?: boolean): Promise<void> {
