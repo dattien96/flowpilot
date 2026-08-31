@@ -380,13 +380,27 @@ func formatOpenChatErrDetailed(err error, chatProvider, activeAccountLabel strin
 
 func replayHistoryMessages(evs []client.ProviderEvent) []ChatMessage {
 	var out []ChatMessage
+	skipNextAssistant := false
 	for _, ev := range evs {
 		switch ev.Type {
 		case "turn_started":
 			if p := strings.TrimSpace(ev.Prompt); p != "" {
+				// CP-59 I3: handoff seed envelope (current-leg first turn after a
+				// switch) must not render as a raw user bubble — its divider
+				// comes from the E-9 chat_provider_switch record. Drop the seed
+				// prompt and its immediate assistant reply; live switches collapse
+				// via addMessage's lastSwitchStats path.
+				if strings.HasPrefix(p, client.HandoffPromptPrefix) {
+					skipNextAssistant = true
+					continue
+				}
 				out = append(out, ChatMessage{Role: "user", Content: p})
 			}
+			skipNextAssistant = false // a real prompt resets the seed skip
 		case "message_delta":
+			if skipNextAssistant {
+				continue
+			}
 			if ev.Text == "" {
 				continue
 			}
@@ -396,8 +410,16 @@ func replayHistoryMessages(evs []client.ProviderEvent) []ChatMessage {
 				out = append(out, ChatMessage{Role: "assistant", Content: ev.Text})
 			}
 		case "message_completed":
+			if skipNextAssistant {
+				skipNextAssistant = false
+				continue
+			}
 			out = applyReplayAssistantText(out, ev.Text)
 		case "turn_completed":
+			if skipNextAssistant {
+				skipNextAssistant = false
+				continue
+			}
 			out = applyReplayAssistantText(out, ev.FinalMessage)
 		}
 	}

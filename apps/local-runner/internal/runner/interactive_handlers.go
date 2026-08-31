@@ -936,6 +936,18 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 		}
 	}
 	s.seedTranscriptFromDisk(rs)
+	// BUG-339: stamp missing ChatID from durable transcript (BUG-338) so
+	// /open can backfill prior legs even when the session row predates
+	// chat_id (provider-agnostic, chatId only).
+	if strings.TrimSpace(rs.chatID) == "" && !strings.EqualFold(strings.TrimSpace(rs.runKind), "workflow") && strings.TrimSpace(rs.workflowID) == "" {
+		if idx := s.transcriptLegIndex(); idx != nil {
+			if info, ok := idx[rs.id]; ok && strings.TrimSpace(info.ChatID) != "" {
+				rs.chatID = info.ChatID
+				rs.legSeq = info.LegSeq
+				log.Printf("[chat-history-open] resume stamped chatId from transcript run_id=%q chatId=%q legSeq=%d", rs.id, info.ChatID, info.LegSeq)
+			}
+		}
+	}
 	handle := RunHandle{
 		RunID:             rs.id,
 		ProviderSessionID: s.resumeSessionID(rs),

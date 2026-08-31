@@ -426,6 +426,7 @@ func (a *opencodeAdapter) recordSession(ctx context.Context, req TurnRequest, se
 func (a *opencodeAdapter) applyOpencodeSessionConfig(ctx context.Context, sessionID, modelName, effort string) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" || a.dispatcher == nil {
+		log.Printf("[opencode] applySessionConfig skip sessionId empty model=%q", modelName)
 		return
 	}
 	modelName = strings.TrimSpace(modelName)
@@ -437,9 +438,11 @@ func (a *opencodeAdapter) applyOpencodeSessionConfig(ctx context.Context, sessio
 			defer cancel()
 			result, err := a.dispatcher.call(cfgCtx, "session/set_config_option", opencodeACPSessionSetConfigParams(sessionID, "model", modelName))
 			if err != nil {
+				log.Printf("[opencode] session/set_config_option model=%q session=%q err=%v — trying fallback set_config", modelName, sessionID, err)
 				_, _ = a.dispatcher.call(cfgCtx, "session/set_config", opencodeACPSessionSetConfigParamsAlt(sessionID, "model", modelName))
 				return
 			}
+			log.Printf("[opencode] session/set_config_option ok model=%q session=%q", modelName, sessionID)
 			// CA-689b: the response's configOptions echo the effort select for
 			// the freshly-selected model — the only live per-model variant truth.
 			if a.onVariantsCaptured != nil {
@@ -448,6 +451,8 @@ func (a *opencodeAdapter) applyOpencodeSessionConfig(ctx context.Context, sessio
 				}
 			}
 		}()
+	} else {
+		log.Printf("[opencode] applySessionConfig no model change session=%q effort=%q", sessionID, effort)
 	}
 	variant, ok := opencodeReasoningVariantID(effort)
 	if ok && variant != "" {

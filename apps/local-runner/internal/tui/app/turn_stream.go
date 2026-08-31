@@ -189,6 +189,8 @@ func (m *AppModel) openTurnStream(prompt string) tea.Cmd {
 		} else {
 			turnIn.ReasoningEffort = ""
 		}
+		// Observability for BUG-339 F4 / BUG-329: log the model actually sent.
+		tuiLog("openTurnStream sendTurn run=%s model=%q yolo=%v posture=%s step=%s", runID, model, yolo, posture, stepID)
 		evCh, errCh := cl.SendTurn(ctx, turnIn)
 		return turnStreamOpenedMsg{EvCh: evCh, ErrCh: errCh}
 	})
