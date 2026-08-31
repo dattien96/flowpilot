@@ -6,5 +6,5 @@ import "time"
 
 func (m *AppModel) maybeRearmConsoleInput(now time.Time) {
 	_ = now
-	ensureMouseTrackingOff()
+	// Keep MouseCellMotion ON for wheel scroll (scroll != history).
 }
