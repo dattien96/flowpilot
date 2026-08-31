@@ -1045,6 +1045,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.visiblePromptCount = 0
 		m.historyLoadedAfterSeq = msg.HistoryLoadedAfterSeq
 		m.historyChunkInFlight = false
+		m.chatBackfillDone = false
 		m.lastEventSeq = handle.LastEventSeq
 		// Seed the client per-run SSE cursor so a later continue turn streams
 		// from the resume snapshot instead of replaying the whole old turn
@@ -1121,6 +1122,23 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Catalog may still be loading — refresh flow list so status label can use name.
 		if kind == "flow" && len(m.flowWorkflows) == 0 && len(m.flowBuiltins) == 0 {
 			cmds = append(cmds, m.cmdPrefetchFlows())
+		}
+		// CP-59 F4 / CA-699 Task-315 slice 3: chat history via chatTimeline
+		// (provider-agnostic join — no providerKey branch, chatId only). Best
+		// effort: timeline fetch failures keep the current-leg replay intact.
+		// Fallback to HistoryMeta ChatID when ResumeRun's handle lacks it
+		// (BUG-338 session predates chat_id column — list already stamps via
+		// transcriptLegIndex, resume must not lose the chat).
+		effectiveHandle := handle
+		effectiveChatID := strings.TrimSpace(effectiveHandle.ChatID)
+		if effectiveChatID == "" {
+			effectiveChatID = strings.TrimSpace(msg.HistoryMeta.ChatID)
+			effectiveHandle.ChatID = effectiveChatID
+		}
+		if effectiveChatID != "" && isChatHandle(&effectiveHandle) {
+			if cmd := m.cmdBackfillChatTimeline(effectiveHandle); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 		return m, tea.Batch(cmds...)
 
@@ -1302,7 +1320,16 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// client-synthesized divider on success (the seed turn carries it).
 		m.applyChatSwitched(msg)
 		if msg.Err == nil && msg.Resp != nil {
-			return m, m.cmdStartOrchestrationStream()
+			cmds := []tea.Cmd{m.cmdStartOrchestrationStream()}
+			if m.chatPostureDirty {
+				m.chatPostureDirty = false
+				cmds = append(cmds, m.cmdSaveChatPosture(m.chatPostureCfg))
+			}
+			return m, tea.Batch(cmds...)
+		}
+		if m.chatPostureDirty {
+			m.chatPostureDirty = false
+			return m, m.cmdSaveChatPosture(m.chatPostureCfg)
 		}
 		return m, nil
 
@@ -1332,6 +1359,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chatTimelineBackfillMsg:
 		// CP-59 Task-315 slice 3: /open restore-by-chat — prior legs' turns
 		// render from the chat timeline; the detached flag derives from legs.
+		if msg.Err != nil {
+			m.chatDetached = msg.Detached
+			m.chatBackfillDone = true
+			m.addMessage("system", "Chat history unavailable: "+msg.Err.Error()+" — showing current leg only", "error")
+			return m, nil
+		}
 		m.chatDetached = msg.Detached
 		m.renderChatTimelineBackfill(msg)
 		return m, nil

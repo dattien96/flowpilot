@@ -33,8 +33,10 @@ const (
 
 // ChatSwitchedMsg carries the switch result back to the Update loop.
 type ChatSwitchedMsg struct {
-	Resp *client.ChatSwitchResponse
-	Err  error
+	Resp           *client.ChatSwitchResponse
+	Err            error
+	TargetProvider string
+	TargetModel    string
 }
 
 // ReattachedMsg reports a detached-chat reattach: a fresh leg was minted via
@@ -104,6 +106,11 @@ func (m *AppModel) routeProviderSwitch(targetProvider, model string) tea.Cmd {
 	if strings.EqualFold(targetProvider, m.provider) {
 		return nil // same-provider continuity stays in-place (CP-59 P-7)
 	}
+	// C2: cannot switch while a turn/question/approval is pending (runner 409 handoff_run_busy)
+	if m.question != nil || len(m.questions) > 0 || m.approval != nil || len(m.approvals) > 0 || m.turnStream != nil || m.turnSendPending {
+		m.addMessage("system", "Cannot switch provider/model while a question or approval is pending — please answer it first", "error")
+		return func() tea.Msg { return detachedNoticeMsg{} }
+	}
 	return m.cmdSwitchChatProvider(targetProvider, model)
 }
 
@@ -129,7 +136,7 @@ func (m *AppModel) cmdSwitchChatProvider(targetProvider, model string) tea.Cmd {
 			Model:             model,
 			ReasoningEffort:   m.reasoningEffort,
 		})
-		return ChatSwitchedMsg{Resp: &resp, Err: err}
+		return ChatSwitchedMsg{Resp: &resp, Err: err, TargetProvider: targetProvider, TargetModel: model}
 	}
 }
 
@@ -163,6 +170,64 @@ func (m *AppModel) routePostureSwitch(cfg client.ChatPostureConfig, name string)
 	if strings.EqualFold(pinned, m.provider) {
 		return nil
 	}
+	// Detached chat (restored, no active leg — SD26 §10): Tab posture
+	// applies locally and rides the next prompt's reattach; no switch endpoint
+	// call. Parity with routeProviderSwitch F3 (screenshot 398551).
+	if m.chatDetached && isChatHandle(m.runHandle) && strings.TrimSpace(m.runHandle.ChatID) != "" {
+		// Bare-model pin derive-once still applies locally.
+		if strings.TrimSpace(prof.Provider) == "" {
+			prof.Provider = pinned
+			cfg.Profiles[name] = prof
+			m.chatPostureCfg = cfg
+			m.chatPostureDirty = true
+			m.addMessage("system", fmt.Sprintf("Posture %s pin had no provider — derived %q from model %q (persisting)", name, pinned, prof.Model), "")
+			m.provider = pinned
+			m.model = prof.Model
+			m.bindActiveAccountForProvider()
+			m.skillsCatalog = nil
+			m.refreshSessionPanel()
+			m.addMessage("system", fmt.Sprintf("%s %s will apply when the chat reattaches on your next prompt", pinned, orDash(prof.Model)), "")
+			return tea.Batch(func() tea.Msg { return detachedNoticeMsg{} }, m.cmdSaveChatPosture(cfg))
+		}
+		// Full profile apply even while detached — provider/model/reasoning/yolo
+		// must land locally so the reattached leg starts with the right pins.
+		// No switch endpoint call; the active still PUTs so a quit before the
+		// next prompt survives restart (CA-564).
+		m.chatPosture = name
+		if pinProvider := m.posturePinProvider(prof); pinProvider != "" {
+			m.setPostureProvider(pinProvider)
+		} else {
+			m.provider = pinned
+			m.bindActiveAccountForProvider()
+			m.skillsCatalog = nil
+		}
+		if prof.Model != "" {
+			m.model = prof.Model
+			m.modelContextWin = contextWindowForModel(m.providers, m.provider, m.model)
+		}
+		if prof.ReasoningEffort != "" {
+			m.reasoningEffort = prof.ReasoningEffort
+		}
+		m.clampReasoningForCurrentModel()
+		if prof.Yolo != nil {
+			m.yolo = *prof.Yolo
+			if pinned == "grok" {
+				m.postureGrokSync = *prof.Yolo
+				m.postureGrokSyncSet = true
+			}
+		}
+		m.chatPostureCfg = cfg
+		m.chatPostureCfg.Active = name
+		m.chatPostureDirty = true
+		m.refreshSessionPanel()
+		m.addMessage("system", fmt.Sprintf("%s %s will apply when the chat reattaches on your next prompt", pinned, orDash(prof.Model)), "")
+		return tea.Batch(func() tea.Msg { return detachedNoticeMsg{} }, m.cmdSaveChatPosture(m.chatPostureCfg))
+	}
+	// C2: cannot switch while a turn/question/approval is pending (runner 409 handoff_run_busy)
+	if m.question != nil || len(m.questions) > 0 || m.approval != nil || len(m.approvals) > 0 || m.turnStream != nil || m.turnSendPending {
+		m.addMessage("system", "Cannot switch provider/model while a question or approval is pending — please answer it first", "error")
+		return func() tea.Msg { return detachedNoticeMsg{} }
+	}
 	cmd := m.cmdSwitchChatProvider(pinned, prof.Model)
 	if cmd == nil {
 		return nil
@@ -189,6 +254,49 @@ func (m *AppModel) routePostureSwitch(cfg client.ChatPostureConfig, name string)
 func (m *AppModel) applyChatSwitched(msg ChatSwitchedMsg) {
 	m.chatSwitchInFlight = false
 	if msg.Err != nil || msg.Resp == nil {
+		// Detached race: switch endpoint returns 409 chat_no_active_leg when
+		// the chat was reopened but legs not yet marked detached (F3). Treat
+		// as detached and defer to reattach instead of an error line.
+		errStr := ""
+		if msg.Err != nil {
+			errStr = msg.Err.Error()
+		}
+		if strings.Contains(errStr, "chat_no_active_leg") {
+			m.chatDetached = true
+			if msg.TargetProvider != "" {
+				m.provider = msg.TargetProvider
+				if msg.TargetModel != "" {
+					m.model = msg.TargetModel
+				}
+				m.bindActiveAccountForProvider()
+				m.skillsCatalog = nil
+				m.refreshSessionPanel()
+			}
+			// Posture Tab that raced into detached: persist the new active so a
+			// quit before the reattach prompt still restores the right mode
+			// (CA-564). The full profile (reasoning/yolo) also lands now.
+			if queued := m.chatSwitchQueuedPosture; queued != "" && validPosture(queued) {
+				m.chatPosture = queued
+				m.chatPostureCfg.Active = queued
+				m.chatPostureDirty = true
+				if prof, ok := m.chatPostureCfg.Profiles[queued]; ok {
+					if prof.ReasoningEffort != "" {
+						m.reasoningEffort = prof.ReasoningEffort
+					}
+					m.clampReasoningForCurrentModel()
+					if prof.Yolo != nil {
+						m.yolo = *prof.Yolo
+						if strings.EqualFold(m.provider, "grok") {
+							m.postureGrokSync = *prof.Yolo
+							m.postureGrokSyncSet = true
+						}
+					}
+				}
+				m.chatSwitchQueuedPosture = ""
+			}
+			m.addMessage("system", fmt.Sprintf("%s %s will apply when the chat reattaches on your next prompt", msg.TargetProvider, orDash(msg.TargetModel)), "")
+			return
+		}
 		m.addMessage("system", "Provider switch failed: "+msg.Err.Error()+" — chat continues on "+m.provider, "error")
 		return
 	}
@@ -213,8 +321,11 @@ func (m *AppModel) applyChatSwitched(msg ChatSwitchedMsg) {
 		if validPosture(queued) {
 			// Full profile re-application on the new leg (CA-685 semantics):
 			// reasoning/yolo/posture pins land here; the model pin matches the
-			// switched-to model by construction.
+			// switched-to model by construction. Persist the new active so a
+			// quit immediately after the switch survives restart (CA-564).
 			m.applyChatPostureProfile(m.chatPostureCfg, queued)
+			m.chatPostureCfg.Active = queued
+			m.chatPostureDirty = true
 		}
 	}
 	// Carry the handoff stats for the seed-envelope divider (D-7): the seed
@@ -278,7 +389,15 @@ func (m *AppModel) cmdBackfillChatTimeline(handle client.RunHandle) tea.Cmd {
 		detached := true
 		for _, leg := range resp.Legs {
 			if leg.LegState == "active" {
+				// A leg marked active but whose run status is terminal (completed/
+				// failed/cancelled) is not locally turnable after a restart —
+				// treat the chat as detached so Tab defers to reattach (F3).
+				st := strings.ToLower(strings.TrimSpace(leg.Status))
+				if st == "completed" || st == "failed" || st == "cancelled" {
+					continue
+				}
 				detached = false
+				break
 			}
 		}
 		return chatTimelineBackfillMsg{Records: resp.Records, Current: handle.RunID, Err: nil, Detached: detached}
@@ -288,16 +407,19 @@ func (m *AppModel) cmdBackfillChatTimeline(handle client.RunHandle) tea.Cmd {
 // renderChatTimelineBackfill maps prior legs' records into the transcript:
 // user/assistant text turns oldest-first plus one divider per provider switch
 // (stats from the E-9 payload). The current leg's own records are skipped —
-// its history renders from the run replay. Idempotent per chat: a guard flag
-// prevents double backfill when /open fires twice.
+// its history renders from the run replay — except provider-switch dividers
+// which live on the destination leg (appendChatSwitchRecord LegRunID = to.id,
+// SD-26 E-9). Idempotent per chat: a guard flag prevents double backfill.
 func (m *AppModel) renderChatTimelineBackfill(msg chatTimelineBackfillMsg) {
 	if m.chatBackfillDone {
 		return
 	}
 	m.chatBackfillDone = true
+	m.chatDetached = msg.Detached
+	var prior []ChatMessage
 	for _, rec := range msg.Records {
-		if rec.LegRunID == msg.Current {
-			continue // current leg renders from the run replay
+		if rec.LegRunID == msg.Current && rec.Type != tuiRecProviderSwitch {
+			continue // current leg renders from the run replay; keep its switch divider
 		}
 		switch rec.Type {
 		case tuiRecTurnStarted:
@@ -305,14 +427,17 @@ func (m *AppModel) renderChatTimelineBackfill(msg chatTimelineBackfillMsg) {
 				Prompt string `json:"prompt"`
 			}
 			if json.Unmarshal(rec.Payload, &p) == nil && strings.TrimSpace(p.Prompt) != "" {
-				m.addMessage("user", p.Prompt, "")
+				if strings.HasPrefix(strings.TrimSpace(p.Prompt), client.HandoffPromptPrefix) {
+					continue // seed envelope already represented by the E-9 divider
+				}
+				prior = append(prior, ChatMessage{Role: "user", Content: p.Prompt})
 			}
 		case tuiRecMessageCompleted:
 			var p struct {
 				Text string `json:"text"`
 			}
 			if json.Unmarshal(rec.Payload, &p) == nil && strings.TrimSpace(p.Text) != "" {
-				m.addMessage("assistant", p.Text, "")
+				prior = append(prior, ChatMessage{Role: "assistant", Content: p.Text})
 			}
 		case tuiRecProviderSwitch:
 			var p struct {
@@ -328,8 +453,15 @@ func (m *AppModel) renderChatTimelineBackfill(msg chatTimelineBackfillMsg) {
 				if p.Truncated && p.OmittedTurnCount > 0 {
 					carried = fmt.Sprintf("%d of %d turns", p.IncludedTurnCount, p.IncludedTurnCount+p.OmittedTurnCount)
 				}
-				m.addMessage("system", fmt.Sprintf("⇄ switched to %s · %s — carried %s (%s)", p.ToProvider, p.ToModel, carried, p.HandoffMode), "")
+				prior = append(prior, ChatMessage{Role: "system", Content: fmt.Sprintf("⇄ switched to %s · %s — carried %s (%s)", p.ToProvider, p.ToModel, carried, p.HandoffMode)})
 			}
 		}
+	}
+	if len(prior) > 0 {
+		messages := make([]ChatMessage, 0, len(prior)+len(m.messages))
+		messages = append(messages, prior...)
+		messages = append(messages, m.messages...)
+		m.messages = messages
+		m.syncVisiblePromptCount()
 	}
 }
