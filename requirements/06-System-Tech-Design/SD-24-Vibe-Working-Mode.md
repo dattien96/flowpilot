@@ -20,10 +20,10 @@
 
 ### Summary
 
-- Implement `SS-18` without a second orchestrator: one enum `working_mode` (`dev` | `vibe`), one new hard-gate rule `r-requirement`, and three FlowDefinitions (`vibe-ingest`, `vibe-sprint`, `vibe-owner-debate`) plus one `owner` agent on the existing SS-16/SD-19 generic engine.
+- Implement `SS-18` without a second orchestrator: one enum `working_mode` (`dev` | `vibe`), one new hard-gate rule `r-requirement`, and three FlowDefinitions (`vibe-ingest`, `vibe-sprint`, `vibe-owner-debate`) plus one `owner` agent on the existing SS-16/SD-19 generic engine. **Vibe lives only in Desktop app + TUI** (`cli-tui`); **not in Admin Web**.
 - In Vibe, the gate resolver still evaluates every rule (`flowgate.Evaluate` produces one `EnforceResult`), but the **resolver** mapping splits: `dev` → Dev card/modal, `vibe` → Owner debate cohort (exactly 2 isolated owners, cap 5, configurable provider/model) except `r-requirement` which is always user-only and never Owner-auto-resolved.
-- Per-sprint ordering is encoded in `vibe-sprint` as `preflight_contract_plan → preflight_contract_freeze → tdd → coder → owners → synthesis` with a hub `r-requirement` check that maps to `done` / `continue` (Owner retry) / `escalate` (user). The generic `flow_control` tool is the single engine handler.
-- Ingest handles either a pre-sliced file or a vague idea by converting raw requirement text to `SS-13`/`FORMAT-REFERENCE-SS` SS artifacts that freeze into the sprint's canonical head.
+- UX order is **SS ingest → SS Preview & Lock (user, Desktop/TUI) → AI auto task/sprint slice → per-sprint** `preflight_contract_plan → preflight_contract_freeze → tdd → coder → owners → synthesis` with a hub `r-requirement` check that maps to `done` / `continue` (Owner retry) / `escalate` (user). `Task` slicing is automatic and never a user gate.
+- Ingest handles either a pre-sliced file or a vague idea by converting raw requirement text to `SS-13`/`FORMAT-REFERENCE-SS` SS artifacts that freeze into the sprint's canonical head after the user locks them.
 - Rollout is additive and Kill-Review-safe: Dev mode paths are unchanged and covered by a dedicated non-regression probe; new YAMLs sit beside the existing pack and do not execute until the Go `working_mode` + `r-requirement` work lands.
 
 ### Current Ask
@@ -47,7 +47,7 @@
 ### Open Questions
 
 - `Q-1` Dedicated `behavior: vibe.requirement_check` identifier vs. reusing `hub.inline` + an inline prompt for the `r-requirement` node.
-- `Q-2` Per-sprint `working_mode` override (sprint 2 in Dev, sprint 3 in Vibe) or project-level enum only.
+- `Q-2` Per-sprint `working_mode` override (sprint 2 in Dev, sprint 3 in Vibe) or project-level enum only. Resolved in scope: Vibe is Desktop/TUI only, not Admin Web.
 
 ### Source Refs
 
@@ -111,7 +111,7 @@ Provide a tech design that makes `SS-18` implementable as a thin policy layer ov
   The hub `synthesis` owns the 1:1 signature↔SS check after a green suite: if signatures still map, it emits `flow_control(status: done)`; if they don't but can be re-synthesized by Owners without changing the SS, it emits `continue`; if `r-requirement` holds (green but drifted, or fix would need to change SS), it emits `escalate` → `ask_user`. Weaken-a-test-to-go-green is routed to `r-requirement` by construction, never to `continue` (`SS-14 AC-6`, `SS-18 BR-4`).
   - *Identifier open question* (`Q-1`): whether the requirement-check is a separate `vibe.requirement_check` behavior alias or a prompt inside `hub.inline` does not change the graph; `Q-1` is settled in the CP.
 
-- `D-6` **`vibe-ingest` and `vibe-owner-debate` as companion flows.** `vibe-ingest` is a writer-free ingest: `ingest_reader → ss_converter → ss_validator → done`, no `agent.code`, so `ValidateFlowSafetyTopology` passes unconditionally and no acceptance declaration is needed. It runs first when the raw input is present, producing `SS-13`/`FORMAT-REFERENCE-SS` SS artifacts whose freeze seeds `vibe-sprint`. `vibe-owner-debate` is the extracted Owner loop used when a non-sprint gate (e.g. a generic chat gate) needs Owners:
+- `D-6` **`vibe-ingest` and `vibe-owner-debate` as companion flows.** `vibe-ingest` is a writer-free ingest: `ingest_reader → ss_converter → ss_validator → done`, no `agent.code`, so `ValidateFlowSafetyTopology` passes unconditionally and no acceptance declaration is needed. It runs first when the raw input is present, producing `SS-13`/`FORMAT-REFERENCE-SS` SS artifacts whose freeze seeds `vibe-sprint`. In the Desktop/TUI UX the `ss_validator` renders as the **`SS Preview & Lock` card** (`SS-18 BR-2`, `AC-2`): the run **must** pause at `WAITING_USER_APPROVAL` for the user to lock the SS list before any `vibe-sprint` starts. `vibe-owner-debate` is the extracted Owner loop used when a non-sprint gate (e.g. a generic chat gate) needs Owners:
   ```
   nodes: debate_trigger (hub.inline, reinvoke) → owner_1/owner_2 (spawn, join: all) → debate_synthesis (hub.inline, reinvoke)
   edges: trigger → owners (done/forward), owners → synthesis (done/forward),
@@ -120,7 +120,7 @@ Provide a tech design that makes `SS-18` implementable as a thin policy layer ov
   ```
   It shares the same `owner` agent and settlement semantics (`D-4`); `vibe-sprint`'s owner cohort is the outer sprint's instantiation of the same policy.
 
-- `D-7` **Ingest branching: follow vs. slice.** The ingest FlowDefinition produces a single `sprint_plan` typed artifact (persists the chosen branch). If the input file contains an explicit task/sprint segmentation, the resolver emits that list verbatim (`SS-18 AC-2`, `BR-2`) and `vibe-sprint` iterates it. If the input is vague, the ingest's `ss_converter` synthesizes a sliced sprint plan (persisted as the same artifact shape) that later sprints iterate. Both branches return the same artifact type so downstream binding (`SD-23` typed artifacts) is uniform.
+- `D-7` **Ingest branching: follow vs. auto-slice (task is AI-auto, SS is user-gated).** The ingest FlowDefinition produces a single `sprint_plan` typed artifact (persists the chosen branch). If the input file contains an explicit task/sprint segmentation, the resolver emits that list verbatim (`SS-18 AC-2`, `BR-2`) and `vibe-sprint` iterates it. If the input is vague, the ingest's `ss_converter` **auto-slices** a sprint plan after the SS lock (no user card) and persists it as the same artifact shape. Both branches return the same artifact type so downstream binding (`SD-23` typed artifacts) is uniform. Task breakdown inside a sprint is likewise AI-auto and never blocks the run.
 
 Why chosen: every decision stays declarative (FlowDefinition + agent + pack), the engine stays domain-free (`SD-19 D-1`), the bridge `agent_flow as one Workflow step` is untouched, and Dev's mutation surface is exactly one new rule that also preserves Dev's existing modal.
 
@@ -130,10 +130,10 @@ Why chosen: every decision stays declarative (FlowDefinition + agent + pack), th
   - `apps/local-runner/internal/agentpack` (`pack.go`, `flow_safety_topology.go`, `pack_test.go`): parsed `working_mode`-agnostic; new `owner` agent + three flows.
   - `apps/local-runner/internal/agentpack/flow-pack/manifest.yaml`: registers `agents/owner.md` + `flows/vibe-*.yaml`.
   - `apps/local-runner/internal/flowgate` (`rules.go`, `evaluate.go`, `enforce.go`): add `r-requirement` rule, carry the requirement-check hub's signal into `TurnResult` (same injection pattern as `ScopeHighSeverity`).
-  - `apps/local-runner/internal/runner` (`interactive_service.go`/`gate_hook.go`, `localFileSessionStore`/supabase run store): store `working_mode` on the run, dispatch to the correct resolver branch per `SS-18 BR-1`.
-  - `apps/desktop-flowpilot` (or TUI `cli-tui`): new Vibe entry (file-path import or command) plus run list / timeline rendering for `r-requirement` (`ask_user` with `BlockReason: requirement`).
+  - `apps/local-runner/internal/runner` (`interactive_service.go`/`gate_hook.go`, `localFileSessionStore`/supabase run store): store `working_mode` on the run, dispatch to the correct resolver branch per `SS-18 BR-1`. Gate that the SS lock (`vibe-ingest` `ss_validator`) happens before any `vibe-sprint`.
+  - `apps/desktop-flowpilot` + `cli-tui` (TUI `flowpilot chat`): new Vibe entry (Desktop file picker / TUI ` /vibe <path|prompt>` or `/vibe-file`), `SS Preview & Lock` card + `r-requirement` (`ask_user` with `BlockReason: requirement`) rendering on the run timeline. **Admin Web is not in scope for Vibe** (`SS-18` scope).
 - **New modules:** `agents/owner.md`, `flows/vibe-ingest.yaml`, `flows/vibe-sprint.yaml`, `flows/vibe-owner-debate.yaml`, `tools/vibe-requirement-outcome.yaml` (control-tool face for `vibe.requirement_check`).
-- **Unchanged modules:** `ProviderRuntimeAdapter` / SSE transport (additive only), linear `Workflow`/`Steps` engine table migration beyond a `working_mode` enum/column (see §5), published provider CLIs themselves.
+- **Unchanged modules:** `Admin Web` (no Vibe entry), `ProviderRuntimeAdapter` / SSE transport (additive only), linear `Workflow`/`Steps` engine table migration beyond a `working_mode` enum/column (see §5), published provider CLIs themselves.
 
 ## 5. Data Model
 
@@ -200,10 +200,10 @@ Why chosen: every decision stays declarative (FlowDefinition + agent + pack), th
 
 ## 7. Execution Flow
 
-- **Vibe ingest (once per run, if raw requirement file is present):**
-  1. Desktop/TUI entry resolves the requirement file path or pasted idea prompt (TUI/UI desktop command or text file input) and starts a run with `working_mode=vibe`.
-  2. `vibe-ingest` `ingest_reader` reads the raw Markdown/text; `ss_converter` is prompted to emit proper `SS` shape per `FORMAT-REFERENCE-SS` + `SS-13 §5.1/§5.2` (metadata block + AI Quick View + numbered sections), seeded with `feature_key: vibe-mode` where suitable (`SS-13` optional field); `ss_validator` checks required `SS-13` sections and that `AC-*` are present and testable.
-  3. If the input already lists `features/tasks/sprints`, the emitted `sprint_plan` artifact equals that list verbatim. Otherwise the converter emits a synthesized sprint plan persisted as the same typed artifact (uniform downstream).
+- **Vibe ingest (once per run, if raw requirement file is present) — Desktop/TUI only:**
+  1. Desktop file picker or TUI command (`/vibe <path|prompt>` / `/vibe-file`) resolves the requirement file path or pasted idea prompt and starts a run with `working_mode=vibe`. Admin Web has no Vibe entry.
+  2. `vibe-ingest` `ingest_reader` reads the raw Markdown/text; `ss_converter` is prompted to emit proper `SS` shape per `FORMAT-REFERENCE-SS` + `SS-13 §5.1/§5.2` (metadata block + AI Quick View + numbered sections), seeded with `feature_key: vibe-mode` where suitable (`SS-13` optional field); `ss_validator` checks required `SS-13` sections and that `AC-*` are present and testable, then **renders as an `SS Preview & Lock` card and pauses at `WAITING_USER_APPROVAL`** — the user must lock the SS list before any sprint runs (`SS-18 BR-2`, `AC-2`).
+  3. After the SS lock, the runner auto-slices the sprint/task plan (no user card): if the input already lists `features/tasks/sprints`, the emitted `sprint_plan` artifact equals that list verbatim; otherwise the converter synthesizes the plan and persists it as the same typed artifact (uniform downstream). Task breakdown per sprint is likewise AI-auto.
   4. On `done`, the plan artifact is persisted beside the run (`FlowContextBinding` typed artifact) and the runner iteratively starts `vibe-sprint` for each sprint slice.
 
 - **Per sprint (`vibe-sprint`, bounded retry):**

@@ -21,7 +21,8 @@
 
 ### Summary
 
-- Introduce a second `working_mode` beside the existing Dev-controlled mode: **Vibe** for non-tech users who supply a single requirement file (detailed game spec or raw idea) and want FlowPilot to run **auto sprint-by-sprint** to completion.
+- Introduce a second `working_mode` beside the existing Dev-controlled mode: **Vibe** for non-tech users who supply a single requirement file (detailed game spec or raw idea) and want FlowPilot to run **auto sprint-by-sprint** to completion. Vibe lives only in **Desktop app + TUI** (`cli-tui`); **not in Admin Web**.
+- `SS` must be **locked first** before any sprint runs. The ingested SS list is the standard; `Task` slicing is fully automatic afterwards — AI self-organizes sprints/tasks, no user lock required.
 - In Vibe, every gate except one stays evaluated but is **auto-resolved by two isolated Owner agents** (`Owner_1` ∥ `Owner_2` → Main synthesis) debating through the Main hub, not by showing Dev cards `1/2/3`. Only two cases surface to the non-tech user.
 - TDD is mandatory and ordered: SS is produced first, test signatures are written from that SS, code is written to make those tests green, and after green a 1:1 signature↔requirement check runs under AI.
 - Add a single new user-only gate `r-requirement` (`g-requirement`): tests are green but the test signatures no longer adapt to the SS acceptance criteria, or a fix would need to change the SS. That gate — and a 5-round Owner debate with no consensus — are the only user asks in Vibe.
@@ -45,8 +46,8 @@
 
 ### Open Questions
 
-- `Q-1` Should `vibe-ingest` auto-commit the SS conversion to `requirements/05-System-Specs/` or only produce draft artifacts for explicit user confirm?
-- `Q-2` Should a single requirement file that already lists 50+ features be split into 50 sprints or chunked into fewer slices (cost vs. granularity)?
+- `Q-1` Resolved — `vibe-ingest` produces draft SS artifacts and the Desktop/TUI shows an `SS Preview & Lock` step. The user must lock the SS list before any `vibe-sprint` runs (no auto-commit).
+- `Q-2` Should a single requirement file that already lists 50+ features be split into 50 sprints or chunked into fewer slices (cost vs. granularity)? `Task` slicing is AI-auto and not user-gated; chunking is an internal ingest decision.
 
 ### Source Refs
 
@@ -69,12 +70,12 @@ What is missing is a deterministic Vibe policy: same Workflow/Session/Gate subst
 ## 3. Scope
 
 - **In scope:**
-  - A `working_mode` discriminant (`dev` | `vibe`) that selects which resolver handles a gate violation. `dev` = current Dev cards; `vibe` = Owner debate. `YOLO` is not altered.
+  - A `working_mode` discriminant (`dev` | `vibe`) that selects which resolver handles a gate violation. `dev` = current Dev cards; `vibe` = Owner debate. `YOLO` is not altered. **Vibe entry exists only in Desktop app + TUI** (`cli-tui`); **not in Admin Web**.
   - Two intake shapes for Vibe:
     1. **Pre-sliced input:** the file already lists features/tasks/sprints — follow that list exactly, no AI re-slicing.
-    2. **Vague idea:** the user has only a high-level idea — let the AI organize/slice into sprints and persist that slice list as the plan artifact before coding.
-  - A desktop/TUI entry plus a plain file-input entry (`TUI/UI desktop command` or a text file path) that the runner hands to the provider with a prompt requesting conversion to proper `SS-13`/`FORMAT-REFERENCE-SS` style. That SS list is the standard for the whole run.
-  - A strict TDD-then-code ordering **per sprint**: produce SS slice → write test signatures from that SS → code → green → `r-requirement` signature↔SS check.
+    2. **Vague idea:** the user has only a high-level idea — let the AI organize/slice into sprints and persist that slice list as the plan artifact before coding. **Task/sprint slicing is AI-auto and never user-gated.**
+  - A **Desktop app / TUI** entry (TUI command or file picker, or a plain text file path/pasted idea) that the runner hands to the provider with a prompt requesting conversion to proper `SS-13`/`FORMAT-REFERENCE-SS` style. That SS list is the standard for the whole run and **must be locked by the user before any sprint runs**.
+  - A strict ordering **once**: `SS ingest → SS Lock (user)` → **per sprint**: `TDD from locked SS slice → code → green → r-requirement signature↔SS check`. `Task` breakdown inside each sprint is AI-auto and never blocks the run.
   - One new gate `r-requirement` (`g-requirement` in user-facing prose): tests are green but the test signatures no longer map 1:1 to the SS acceptance criteria, or owning the fix would require changing the SS. Resolved by **user action only**.
   - An Owner debate cohort: exactly 2 isolated Owner sub-agents (`Owner_1` ∥ `Owner_2`), any provider/model (user-configurable, same model / different model / different provider all valid), debating through Main. At most 5 rounds; no consensus within 5 → escalate to user.
   - The closed user-ask set in Vibe: only `r-requirement` and 5-round no-consensus. Goal artifact: one detailed game requirement file drives **auto, sprint-by-sprint** execution.
@@ -101,10 +102,10 @@ What is missing is a deterministic Vibe policy: same Workflow/Session/Gate subst
 
 ## 6. Acceptance Criteria
 
-- `AC-1` A single Vibe entry (desktop/TUI command or file path) that accepts either a pre-sliced requirement file or a vague idea prompt is available, and the runner's ingested SS conversion is produced in `SS-13`/`FORMAT-REFERENCE-SS` shape from the raw input.
-- `AC-2` When the input is pre-sliced, the run's sprint list equals that list exactly and the per-sprint backlog is not re-sliced by AI. When the input is vague, the run persists a sliced sprint plan as its first artifact and subsequent sprints iterate that list.
+- `AC-1` A single Vibe entry **in Desktop app and TUI only** (`cli-tui`; not Admin Web) that accepts either a pre-sliced requirement file or a vague idea prompt is available, and the runner's ingested SS conversion is produced in `SS-13`/`FORMAT-REFERENCE-SS` shape from the raw input.
+- `AC-2` The ingested SS list is shown in a **Desktop/TUI `SS Preview & Lock` step and must be locked by the user before any `vibe-sprint` starts**. Task/sprint slicing afterwards is AI-auto and never user-gated: when the input is pre-sliced, the sprint list equals that list exactly; when vague, AI auto-slices and persists the plan as the first artifact without a user lock.
 - `AC-3` Per sprint, a TDD node writes **signature-only** tests (`SS-04 §3.5.8`) derived from the sprint's SS acceptance criteria, and a coder `agent.code` node follows only after that TDD artifact exists.
-- `AC-4` The sequence per sprint is strictly **SS slice → TDD signatures → code → tests green → `r-requirement` signature↔SS check**. If `r-requirement` fires after green, the sprint does not quietly `done`; it escalates to `ask_user` for the non-tech user.
+- `AC-4` The global sequence is strictly **SS ingest → SS Lock (user, Desktop/TUI) → per sprint: TDD signatures from locked SS slice → code → tests green → `r-requirement` signature↔SS check**. `Task` auto-slicing happens between the lock and the first sprint. If `r-requirement` fires after green, the sprint does not quietly `done`; it escalates to `ask_user` for the non-tech user.
 - `AC-5` Every `r-*`/`permission_required`/`user_question` other than `r-requirement` is **not** surfaced as a Dev `1/2/3` card in Vibe. Instead, the gate resolver spawns exactly 2 isolated Owner agents (`Owner_1`, `Owner_2`) with user-configurable provider/model, running in parallel (cohort `vibe_owner` / `owner_debate`) and debating only through Main (hub-only, `SS-15 BR-1` / `SS-16 BR-5`).
 - `AC-6` An Owner debate is bounded to **at most 5 rounds** (`cap: 5`, `onCap: escalate`). If the two Owners reach consensus within the cap, that remediation is applied automatically without a user card (retry/reprompt/re-scope the sprint). If they do not agree within 5 rounds, the flow escalates to `ask_user` and no further automatic retry occurs until the user resolves.
 - `AC-7` Only two cases ever produce a user ask in Vibe: `r-requirement` (requirement drift, `BR-4`) or 5-round no-consensus (`AC-6`). Every other gate path terminates `done` or auto-retries under the Owner cap, never as a user card.
@@ -115,7 +116,7 @@ What is missing is a deterministic Vibe policy: same Workflow/Session/Gate subst
 ## 7. Business Rules
 
 - `BR-1` **`working_mode` controls only the resolver.** `dev` → Dev card; `vibe` → Owner debate. It does not change `SS-08` YOLO SSOT, the `workflow_steps` state machine, or the set of rules evaluated (`SD-20` `D-2`/`D-3`). A live provider session is never migrated across providers (`SS-11` §5.1).
-- `BR-2` **SS list is the standard.** The ingest FlowDefinition produces SS-shaped artifacts (`FORMAT-REFERENCE-SS`, `SS-13`). Every later TDD/code node derives from that frozen SS slice; the SS is the oracle for `r-requirement`.
+- `BR-2` **SS list is the standard and must be locked first.** The ingest FlowDefinition (`vibe-ingest`) produces SS-shaped artifacts (`FORMAT-REFERENCE-SS`, `SS-13`) shown in the Desktop/TUI `SS Preview & Lock` card. No `vibe-sprint` may start until the user locks that list. Every later TDD/code node derives from that frozen SS slice; the SS is the oracle for `r-requirement`. `Task` breakdown is AI-auto after the lock and never requires a user lock.
 - `BR-3` **TDD guards coding.** A sprint's TDD signatures must cover all use/edge/error cases from the business requirement (`SS-04 §3.5.8`). If the coding plan or architecture does not match the TDD guard, the plan/architecture is changed, not the tests.
 - `BR-4` **`r-requirement` is user-only and never Owner-auto-resolved.** It fires exactly when: tests are green but the passing test signatures no longer map 1:1 to the SS acceptance criteria, or a violation can only be fixed by changing the SS. Its action is `block → ask_user`. No Owner remediation may rewrite or weaken a test to satisfy the SS (`SS-14 AC-6`), and weakening a test to go green is **always** `r-requirement`, never an Owner-approved fix.
 - `BR-5` **Two Owners, isolated, hub-only.** `Owner_1` and `Owner_2` are two isolated sub-agents running in parallel on the same job (cohort `vibe_owner`/`owner_debate`, `join: all`), each with its own provider/session (`SS-11` §4). They share only final results upward through Main; they never see each other's transcripts (`SS-15 BR-2`, `SS-16 BR-5`). Provider/model is configurable per node (same model, different model, or different provider all valid).
@@ -143,10 +144,10 @@ What is missing is a deterministic Vibe policy: same Workflow/Session/Gate subst
 
 ## 10. Open Questions
 
-- `Q-1` See §AI Quick View `Q-1` (ingest commit behavior).
-- `Q-2` See §AI Quick View `Q-2` (sprint granularity).
+- `Q-1` Resolved — SS must be locked in Desktop/TUI before sprints; see `BR-2`.
+- `Q-2` See §AI Quick View `Q-2` (sprint granularity); task slicing is AI-auto, SS is the only user-gated artifact.
 - `Q-3` Should the per-sprint `r-requirement` check reuse an existing `synthesizer` inline node or warrant a dedicated `behavior: vibe.requirement_check` identifier?
-- `Q-4` Should the desktop TUI entry for Vibe be a first-class `vibe_mode` toggle in project settings, or only a per-run flag at `POST /client/workflow-runs` / `POST /client/flows/run`?
+- `Q-4` Should the Desktop/TUI Vibe entry be a first-class `working_mode` toggle in project settings, or only a per-run flag at `POST /client/workflow-runs` / `POST /client/flows/run`? (Admin Web has no Vibe entry.)
 
 ## 11. Definition of Done
 
