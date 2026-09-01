@@ -334,15 +334,54 @@ func opencodeToolDisplayName(update map[string]any, fallbackTitle string) string
 }
 
 func opencodeTextContent(v any) string {
+	if v == nil {
+		return ""
+	}
+	// Direct string.
+	if s, ok := v.(string); ok {
+		return s
+	}
+	// Array of content parts (some opencode versions send [{type:"text",text}, ...]).
+	if arr, ok := v.([]any); ok {
+		var sb strings.Builder
+		for _, item := range arr {
+			if m, ok := item.(map[string]any); ok {
+				if t, _ := m["text"].(string); t != "" {
+					sb.WriteString(t)
+					continue
+				}
+				if t, _ := m["content"].(string); t != "" {
+					sb.WriteString(t)
+					continue
+				}
+			} else if s, ok := item.(string); ok {
+				sb.WriteString(s)
+			}
+		}
+		return sb.String()
+	}
 	content, _ := v.(map[string]any)
 	if content == nil {
 		return ""
 	}
-	if contentType, _ := content["type"].(string); contentType != "text" {
+	// Accept text/output_text/empty type (some builds use output_text).
+	if typ, _ := content["type"].(string); typ != "" && typ != "text" && typ != "output_text" && typ != "content" {
+		// Still try to extract text field as fallback for unknown types.
+		if t, _ := content["text"].(string); t != "" {
+			return t
+		}
+		if t, _ := content["content"].(string); t != "" {
+			return t
+		}
 		return ""
 	}
-	text, _ := content["text"].(string)
-	return text
+	if t, _ := content["text"].(string); t != "" {
+		return t
+	}
+	if t, _ := content["content"].(string); t != "" {
+		return t
+	}
+	return ""
 }
 
 func opencodeUsageUpdateToSnapshot(update map[string]any) *TokenUsageSnapshot {
