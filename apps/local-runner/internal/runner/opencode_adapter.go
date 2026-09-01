@@ -46,7 +46,26 @@ type opencodeAdapter struct {
 	runSessions        *opencodeRunSessionIndex
 	allowReviewOutcome map[string]bool
 	yoloModes          map[string]bool
+	permissionDenied   map[string]bool
 }
+
+// Post-result text-wait knobs. opencodeEmptyTextWait mirrors the CA-707 8s
+// wait-for-first-text; opencodeDeniedEmptyTextWait shortens it for turns where
+// a permission request was DENIED (CA-712): live wire captures show opencode
+// 1.18.x never streams the answer after a denial, so the generic 8s is pure
+// latency — the session/load replay recovery takes over after this grace.
+var opencodeEmptyTextWait = 8 * time.Second
+
+var opencodeDeniedEmptyTextWait = 1500 * time.Millisecond
+
+// Replay recovery knobs (CA-712): the session/load RPC itself, the quiet window
+// that ends collection once the replay burst stops, and a hard cap so a huge
+// history cannot stall the turn.
+var (
+	opencodeReplayLoadTimeout = 4 * time.Second
+	opencodeReplayQuietWindow = 400 * time.Millisecond
+	opencodeReplayHardCap     = 8 * time.Second
+)
 
 func newOpencodeAdapter(dispatcher *opencodeDispatcher, cwd string) *opencodeAdapter {
 	a := &opencodeAdapter{
@@ -282,6 +301,10 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 	a.bridges[sessionID] = bridge
 	a.allowReviewOutcome[sessionID] = req.OfferReviewOutcomeTool
 	a.yoloModes[sessionID] = req.YoloMode && !req.ForceShellBridge && !IsReadOnlyChatPosture(req.ChatPosture)
+	if a.permissionDenied == nil {
+		a.permissionDenied = map[string]bool{}
+	}
+	a.permissionDenied[sessionID] = false
 	// Reference OpencodePermissionMode to keep YOLO SSOT in sync (future session/new permission wiring)
 	_ = resolveYoloPosture(req.YoloMode).OpencodePermissionMode
 	a.mu.Unlock()
@@ -290,6 +313,7 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 		delete(a.bridges, sessionID)
 		delete(a.allowReviewOutcome, sessionID)
 		delete(a.yoloModes, sessionID)
+		delete(a.permissionDenied, sessionID)
 		a.mu.Unlock()
 	}()
 
@@ -322,13 +346,18 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 			// (tool burst + generation). The 600ms wait was too short for a
 			// 2–5s generation. If we already have text, just wait for the burst
 			// to finish (150ms quiet); if still empty, wait up to 8s for the
-			// first chunk.
+			// first chunk. A denied-permission turn gets a short grace instead
+			// (CA-712: the answer never streams in that shape) and is recovered
+			// from the session/load replay below.
+			denied := a.permissionDeniedFor(sessionID)
 			start := time.Now()
 			if lastText == "" {
 				if resultText, _ := outcome.result["text"].(string); strings.TrimSpace(resultText) != "" {
 					lastText = strings.TrimSpace(resultText)
+				} else if denied {
+					lastText = a.drainOpencodeNotificationsBlocking(ctx, sessionID, notif, bridge, lastText, opencodeDeniedEmptyTextWait)
 				} else {
-					lastText = a.drainOpencodeNotificationsBlocking(ctx, sessionID, notif, bridge, lastText, 8*time.Second)
+					lastText = a.drainOpencodeNotificationsBlocking(ctx, sessionID, notif, bridge, lastText, opencodeEmptyTextWait)
 				}
 			} else {
 				lastText = a.drainOpencodeNotificationsBlocking(ctx, sessionID, notif, bridge, lastText, 150*time.Millisecond)
@@ -336,6 +365,7 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 			if waited := time.Since(start); waited > 200*time.Millisecond {
 				log.Printf("[opencode] post-result wait lastText_len=%d waited=%s session=%s", len(lastText), waited.Truncate(time.Millisecond), sessionID)
 			}
+			lastText = a.recoverOpencodeEmptyAnswer(ctx, req, sessionID, notif, bridge, outcome.result, lastText, cwd, mcpServers, denied)
 			return a.emitTerminal(ctx, req, bridge, sessionID, outcome.result, lastText)
 		case n, ok := <-notif:
 			if !ok {
@@ -438,6 +468,115 @@ func opencodeNotificationKindAndContent(n opencodeNotification) (string, string)
 		content = string(raw)
 	}
 	return kind, content
+}
+
+// permissionDeniedFor reports whether any permission request was DENIED during
+// the current turn on this session (CA-712 recovery trigger).
+func (a *opencodeAdapter) permissionDeniedFor(sessionID string) bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.permissionDenied[sessionID]
+}
+
+func (a *opencodeAdapter) markOpencodePermissionDenied(sessionID string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	if a.permissionDenied == nil {
+		a.permissionDenied = map[string]bool{}
+	}
+	a.permissionDenied[sessionID] = true
+	a.mu.Unlock()
+}
+
+// recoverOpencodeEmptyAnswer is the CA-712 root-cause fix for BUG-341: when a
+// permission request was DENIED during the turn, opencode 1.18.x completes
+// session/prompt with stopReason end_turn but never emits the assistant's reply
+// as agent_message_chunk — not before the result, not in any drain window
+// (live-proven on 9 denied turns in cli-runner.log). The reply only exists in
+// opencode's session store; a session/load on the SAME process replays history
+// including this turn's prompt, so recover the answer from the replay instead
+// of leaving the turn blank until the next turn's replay.
+func (a *opencodeAdapter) recoverOpencodeEmptyAnswer(ctx context.Context, req TurnRequest, sessionID string, notif <-chan opencodeNotification, bridge TurnBridge, result map[string]any, lastText, cwd string, mcpServers []interface{}, denied bool) string {
+	if a == nil || a.dispatcher == nil {
+		return lastText
+	}
+	if strings.TrimSpace(lastText) != "" || !denied || result == nil {
+		return lastText
+	}
+	stopReason, _ := result["stopReason"].(string)
+	if opencodeStopReasonToEvent(stopReason) != EventTurnCompleted {
+		return lastText
+	}
+	log.Printf("[opencode] permission denied this turn and no text streamed — attempting session/load replay recovery run=%s session=%s stopReason=%q", req.RunID, sessionID, stopReason)
+	recovered := strings.TrimSpace(a.recoverOpencodeMissingAnswer(ctx, sessionID, notif, cwd, mcpServers))
+	if recovered == "" {
+		return lastText
+	}
+	bridge.Emit(ProviderEvent{Type: EventMessageDelta, Text: recovered})
+	log.Printf("[opencode] replay recovery captured answer len=%d run=%s session=%s", len(recovered), req.RunID, sessionID)
+	return recovered
+}
+
+// recoverOpencodeMissingAnswer issues session/load (same process — BUG-329
+// keeps sessions process-local) and returns the current turn's assistant text
+// from the replay. Replay frames are consumed locally: tool/thought/usage
+// frames are NOT re-emitted to the bridge, so history never duplicates in the
+// live transcript.
+func (a *opencodeAdapter) recoverOpencodeMissingAnswer(ctx context.Context, sessionID string, notif <-chan opencodeNotification, cwd string, mcpServers []interface{}) string {
+	loadCtx, cancel := context.WithTimeout(ctx, opencodeReplayLoadTimeout)
+	defer cancel()
+	if _, err := a.dispatcher.call(loadCtx, "session/load", opencodeACPSessionLoadParams(sessionID, cwd, mcpServers)); err != nil {
+		log.Printf("[opencode] replay recovery session/load failed session=%s err=%v", sessionID, err)
+		return ""
+	}
+	return collectOpencodeReplayAnswer(ctx, notif)
+}
+
+// collectOpencodeReplayAnswer consumes replay frames until the burst goes quiet
+// (or the hard cap / ctx fires) and returns the assistant text of the CURRENT
+// turn. Live replay shape (1.18.25): history streams chronologically and every
+// message — including the just-finished prompt — appears as a
+// user_message_chunk; the answer is the agent_message_chunk text that follows
+// the LAST user frame. Resetting on every user frame keeps exactly that tail
+// and drops every older answer.
+func collectOpencodeReplayAnswer(ctx context.Context, notif <-chan opencodeNotification) string {
+	timer := time.NewTimer(opencodeReplayQuietWindow)
+	defer timer.Stop()
+	hardCap := time.NewTimer(opencodeReplayHardCap)
+	defer hardCap.Stop()
+	var text string
+	for {
+		select {
+		case <-ctx.Done():
+			return text
+		case <-hardCap.C:
+			return text
+		case <-timer.C:
+			return text
+		case n, ok := <-notif:
+			if !ok {
+				return text
+			}
+			resetOpencodeTimer(timer, opencodeReplayQuietWindow)
+			update, _ := n.Params["update"].(map[string]any)
+			if update == nil {
+				continue
+			}
+			switch kind, _ := update["sessionUpdate"].(string); kind {
+			case "user_message_chunk":
+				// A newer prompt boundary: anything collected before it belongs
+				// to an older turn (or is the pre-answer frame order) — drop it.
+				text = ""
+			case "agent_message_chunk":
+				text += opencodeTextContent(update["content"])
+			}
+		}
+	}
 }
 
 func (a *opencodeAdapter) ensureSession(ctx context.Context, req TurnRequest, cwd string, mcpServers []interface{}) (string, error) {
@@ -585,10 +724,10 @@ func (a *opencodeAdapter) emitTerminal(ctx context.Context, req TurnRequest, bri
 	if strings.TrimSpace(finalText) == "" {
 		// Diagnostic for the BUG-341 class (blank first turn after tools): a
 		// non-empty FinalMessage is the only thing that lets TUI/Desktop paint
-		// the reply. If this fires after the 8s wait + array-text mapper fix,
-		// the model did not emit agent_message_chunk before session/prompt
-		// returned — capture the wire frames next time.
-		log.Printf("[opencode] WARN turn_completed with EMPTY finalMessage run=%s session=%s stopReason=%q lastText_len=%d", req.RunID, sessionID, stopReason, len(lastText))
+		// the reply. If this fires after the 8s wait + array-text mapper +
+		// CA-712 replay recovery, the model produced no message part at all —
+		// permissionDenied tells whether opencode's denied-turn shape applied.
+		log.Printf("[opencode] WARN turn_completed with EMPTY finalMessage run=%s session=%s stopReason=%q lastText_len=%d permissionDenied=%t", req.RunID, sessionID, stopReason, len(lastText), a.permissionDeniedFor(sessionID))
 	}
 	bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: finalText})
 	return nil
@@ -614,6 +753,7 @@ func (a *opencodeAdapter) handleInbound(req opencodeInboundRequest) {
 
 	options, _ := req.Params["options"].([]any)
 	if bridge == nil {
+		a.markOpencodePermissionDenied(sessionID)
 		_ = a.dispatcher.reply(req.ID, map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": opencodeEncodePermissionDecision(options, false)}})
 		return
 	}
@@ -630,10 +770,16 @@ func (a *opencodeAdapter) handleInbound(req opencodeInboundRequest) {
 
 	decision, err := bridge.RequestApproval(details)
 	if err != nil {
+		a.markOpencodePermissionDenied(sessionID)
 		_ = a.dispatcher.reply(req.ID, map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": opencodeEncodePermissionDecision(options, false)}})
 		return
 	}
 	approve := decision == "approve" || decision == "approved" || decision == "approve_for_session"
+	if !approve {
+		// CA-712: a denied permission is what trips opencode's missing-answer
+		// bug — remember it so the post-result recovery can fire.
+		a.markOpencodePermissionDenied(sessionID)
+	}
 	_ = a.dispatcher.reply(req.ID, map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": opencodeEncodePermissionDecision(options, approve)}})
 }
 
