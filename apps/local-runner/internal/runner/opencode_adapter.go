@@ -493,14 +493,16 @@ func (a *opencodeAdapter) markOpencodePermissionDenied(sessionID string) {
 	a.mu.Unlock()
 }
 
-// recoverOpencodeEmptyAnswer is the CA-712 root-cause fix for BUG-341: when a
-// permission request was DENIED during the turn, opencode 1.18.x completes
-// session/prompt with stopReason end_turn but never emits the assistant's reply
-// as agent_message_chunk — not before the result, not in any drain window
-// (live-proven on 9 denied turns in cli-runner.log). The reply only exists in
-// opencode's session store; a session/load on the SAME process replays history
-// including this turn's prompt, so recover the answer from the replay instead
-// of leaving the turn blank until the next turn's replay.
+// recoverOpencodeEmptyAnswer is the CA-712/CA-713 root-cause fix for BUG-341:
+// when a permission request was DENIED during the turn, opencode 1.18.x aborts
+// the agent loop — the last assistant step ends at the errored tool call with
+// NO text part (live-proven in opencode.db: session ses_fa244db73… and all six
+// BUG-341 blanks), so nothing streams live and the session/load replay carries
+// no answer either. Two layers:
+//  1. session/load replay recovery — picks up the answer if a future opencode
+//     build lets the model reply after a denial (or it lands post-result).
+//  2. otherwise emit an honest no-reply notice so the turn is not blank — the
+//     user sees WHY there is no answer and what to do (switch posture/approve).
 func (a *opencodeAdapter) recoverOpencodeEmptyAnswer(ctx context.Context, req TurnRequest, sessionID string, notif <-chan opencodeNotification, bridge TurnBridge, result map[string]any, lastText, cwd string, mcpServers []interface{}, denied bool) string {
 	if a == nil || a.dispatcher == nil {
 		return lastText
@@ -514,12 +516,18 @@ func (a *opencodeAdapter) recoverOpencodeEmptyAnswer(ctx context.Context, req Tu
 	}
 	log.Printf("[opencode] permission denied this turn and no text streamed — attempting session/load replay recovery run=%s session=%s stopReason=%q", req.RunID, sessionID, stopReason)
 	recovered := strings.TrimSpace(a.recoverOpencodeMissingAnswer(ctx, sessionID, notif, cwd, mcpServers))
-	if recovered == "" {
-		return lastText
+	if recovered != "" {
+		bridge.Emit(ProviderEvent{Type: EventMessageDelta, Text: recovered})
+		log.Printf("[opencode] replay recovery captured answer len=%d run=%s session=%s", len(recovered), req.RunID, sessionID)
+		return recovered
 	}
-	bridge.Emit(ProviderEvent{Type: EventMessageDelta, Text: recovered})
-	log.Printf("[opencode] replay recovery captured answer len=%d run=%s session=%s", len(recovered), req.RunID, sessionID)
-	return recovered
+	// Nothing to recover: opencode aborted the loop at the denied tool call and
+	// the model never wrote a final message (CA-713 ground truth). A blank
+	// terminal is indistinguishable from a broken turn — surface the reason.
+	notice := "[no reply text] opencode aborted the turn right after a tool permission was denied — the read/search steps above still ran, but the model was never given another round, so no answer exists. Switch posture (plan/code) or approve the tool to continue."
+	bridge.Emit(ProviderEvent{Type: EventMessageDelta, Text: notice})
+	log.Printf("[opencode] emitted no-reply notice after denied permission run=%s session=%s", req.RunID, sessionID)
+	return notice
 }
 
 // recoverOpencodeMissingAnswer issues session/load (same process — BUG-329

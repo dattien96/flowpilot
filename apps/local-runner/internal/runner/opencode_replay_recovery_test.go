@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -202,5 +203,69 @@ func TestOpencodeReplayRecoverySkippedWithoutDenial(t *testing.T) {
 		if ev.Type == EventTurnCompleted && ev.FinalMessage != "" {
 			t.Fatalf("unexpected FinalMessage %q on a no-answer turn", ev.FinalMessage)
 		}
+	}
+}
+
+// CA-713 ground truth: after a denied permission opencode aborts the agent loop
+// — no answer exists in the replay either. The turn must then end with the
+// honest no-reply notice, never a blank FinalMessage.
+func TestOpencodeNoReplyNoticeWhenRecoveryEmpty(t *testing.T) {
+	origWait := opencodeDeniedEmptyTextWait
+	origQuiet := opencodeReplayQuietWindow
+	opencodeDeniedEmptyTextWait = 150 * time.Millisecond
+	opencodeReplayQuietWindow = 80 * time.Millisecond
+	t.Cleanup(func() {
+		opencodeDeniedEmptyTextWait = origWait
+		opencodeReplayQuietWindow = origQuiet
+	})
+
+	d, fg := startFakeOpencode(t, nil)
+	a := newOpencodeAdapter(d, "/tmp")
+	bridge := &fakeOpencodeDenyBridge{}
+
+	var loadCalls int32
+	fg.serve(func(fg *fakeOpencode, m map[string]any) {
+		switch m["method"] {
+		case "session/new":
+			fg.reply(m["id"], map[string]any{"sessionId": "ses_notice"})
+		case "session/prompt":
+			go func() {
+				fg.send(map[string]any{"jsonrpc": "2.0", "id": "perm-2", "method": "session/request_permission", "params": map[string]any{
+					"sessionId": "ses_notice",
+					"options": []any{
+						map[string]any{"optionId": "once", "kind": "allow_once", "name": "Allow once"},
+						map[string]any{"optionId": "reject", "kind": "reject_once", "name": "Reject"},
+					},
+					"toolCall": map[string]any{"kind": "execute", "title": "bash", "rawInput": map[string]any{"command": "go test"}},
+				}})
+				time.Sleep(20 * time.Millisecond)
+				fg.reply(m["id"], map[string]any{"stopReason": "end_turn", "usage": map[string]any{"outputTokens": float64(118)}})
+			}()
+		case "session/load":
+			// opencode 1.18.25 reality: the replay carries history but the
+			// aborted turn produced no assistant text part — nothing to collect.
+			atomic.AddInt32(&loadCalls, 1)
+			fg.reply(m["id"], map[string]any{"sessionId": "ses_notice"})
+		}
+	})
+
+	req := TurnRequest{RunID: "run-rec3", Prompt: "test B4 in-place, toi la Nam", Cwd: "/tmp"}
+	if err := a.SendTurn(context.Background(), req, bridge); err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	if got := atomic.LoadInt32(&loadCalls); got != 1 {
+		t.Fatalf("session/load recovery calls = %d, want 1", got)
+	}
+	var final *ProviderEvent
+	for i := range bridge.events {
+		if bridge.events[i].Type == EventTurnCompleted {
+			final = &bridge.events[i]
+		}
+	}
+	if final == nil {
+		t.Fatalf("no turn_completed event, events=%+v", bridge.events)
+	}
+	if !strings.HasPrefix(final.FinalMessage, "[no reply text]") {
+		t.Fatalf("FinalMessage = %q, want the no-reply notice", final.FinalMessage)
 	}
 }
