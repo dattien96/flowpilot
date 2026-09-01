@@ -26,7 +26,7 @@ func TestLoadBuiltinPack(t *testing.T) {
 		t.Fatalf("expected 6 built-in flows, got %d", len(pack.Flows))
 	}
 	names := SortedAgentNames(pack.Agents)
-	for _, want := range []string{"coder", "reviewer", "synthesizer", "tester"} {
+	for _, want := range []string{"coder", "reviewer", "synthesizer", "tester", "owner", "vibe-intake"} {
 		found := false
 		for _, got := range names {
 			if got == want {
@@ -36,6 +36,15 @@ func TestLoadBuiltinPack(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("missing built-in agent %q in %v", want, names)
+		}
+	}
+	flowIDs := make(map[string]struct{}, len(pack.Flows))
+	for _, f := range pack.Flows {
+		flowIDs[f.ID] = struct{}{}
+	}
+	for _, want := range []string{"vibe-ingest", "vibe-sprint", "vibe-owner-debate"} {
+		if _, ok := flowIDs[want]; !ok {
+			t.Fatalf("missing vibe flow %q in pack", want)
 		}
 	}
 }

@@ -1,12 +1,11 @@
 id: vibe-sprint
 version: "1"
-description: Vibe per-sprint template — TDD from frozen SS slice, then coded, then requirement-aligned. Non-requirement gates are Owner-debated; r-requirement escalates to the user.
+description: Vibe per-sprint template — TDD from frozen SS slice, then coded, then requirement check. Owners are NOT graph nodes here; non-requirement gate fails are auto-resolved by the resolver invoking vibe-owner-debate (cap 5, vibe-only).
 mode: flow
 builtin:
   editable: false
-  selectableIn:
-    - flow
-  cloneable: true
+  selectableIn: []
+  cloneable: false
   mirror:
     required: true
     source: builtin
@@ -41,24 +40,6 @@ nodes:
     behavior: agent.code
     agent: agents/coder.md
     join: all
-  - id: owner_1
-    run: delegate
-    lifecycle: spawn
-    behavior: agent.delegate
-    agent: agents/owner.md
-    dependsOn:
-      - coder
-    cohort: vibe_owner
-    join: all
-  - id: owner_2
-    run: delegate
-    lifecycle: spawn
-    behavior: agent.delegate
-    agent: agents/owner.md
-    dependsOn:
-      - coder
-    cohort: vibe_owner
-    join: all
   - id: synthesis
     run: inline
     lifecycle: reinvoke
@@ -79,18 +60,6 @@ edges:
     when: done
     kind: forward
   - from: coder
-    to: owner_1
-    when: done
-    kind: forward
-  - from: coder
-    to: owner_2
-    when: done
-    kind: forward
-  - from: owner_1
-    to: synthesis
-    when: done
-    kind: forward
-  - from: owner_2
     to: synthesis
     when: done
     kind: forward
