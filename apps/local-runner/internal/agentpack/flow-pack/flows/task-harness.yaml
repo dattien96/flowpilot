@@ -68,6 +68,19 @@ nodes:
     behavior: agent.delegate
     agent: agents/coder.md
     promptTemplate: prompts/plan-task.md
+    artifactBindings:
+      # CP-58 Task-307: the plan md is a typed file_artifact OUTPUT slot. The
+      # pathTemplate is resolved by the writer at authoring time ({{idx}} =
+      # next free Task number, {{slug}} = short slug); it is prompt-contract
+      # only and deliberately NOT part of the flowgate exact-path check.
+      - direction: output
+        slotName: plan_md
+        artifactInstanceId: plan_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/08-Task/todo/Task-{{idx}}-{{slug}}.md
   - id: plan_reviewer
     run: delegate
     lifecycle: spawn
@@ -78,6 +91,15 @@ nodes:
       - plan_writer
     cohort: plan
     join: all
+    artifactBindings:
+      - direction: input
+        slotName: plan_md
+        artifactInstanceId: plan_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/08-Task/todo/Task-{{idx}}-{{slug}}.md
   - id: plan_synthesis
     run: inline
     lifecycle: reinvoke
