@@ -20,8 +20,10 @@ func TestLoadBuiltinPack(t *testing.T) {
 	// CP-45/SD-23 Task-205 adds a third built-in flow
 	// (context-coding-review-synthesis.yaml) proving cross-step typed
 	// artifact I/O.
-	if len(pack.Flows) != 3 {
-		t.Fatalf("expected 3 built-in flows, got %d", len(pack.Flows))
+	// SS-18/SD-24 add three Vibe flows (vibe-ingest, vibe-sprint,
+	// vibe-owner-debate) + owner agent.
+	if len(pack.Flows) != 6 {
+		t.Fatalf("expected 6 built-in flows, got %d", len(pack.Flows))
 	}
 	names := SortedAgentNames(pack.Agents)
 	for _, want := range []string{"coder", "reviewer", "synthesizer", "tester"} {

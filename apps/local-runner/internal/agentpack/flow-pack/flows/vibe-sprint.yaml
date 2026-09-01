@@ -1,0 +1,108 @@
+id: vibe-sprint
+version: "1"
+description: Vibe per-sprint template — TDD from frozen SS slice, then coded, then requirement-aligned. Non-requirement gates are Owner-debated; r-requirement escalates to the user.
+mode: flow
+builtin:
+  editable: false
+  selectableIn:
+    - flow
+  cloneable: true
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 3
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+tools:
+  - tools/vibe-requirement-outcome.yaml
+acceptance_nodes:
+  - synthesis
+nodes:
+  - id: preflight_contract_plan
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/contract-planner.md
+  - id: preflight_contract_freeze
+    run: inline
+    lifecycle: once
+    behavior: contract.freeze
+  - id: tdd
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.delegate
+    agent: agents/tester.md
+    join: all
+  - id: coder
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.code
+    agent: agents/coder.md
+    join: all
+  - id: owner_1
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/owner.md
+    dependsOn:
+      - coder
+    cohort: vibe_owner
+    join: all
+  - id: owner_2
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/owner.md
+    dependsOn:
+      - coder
+    cohort: vibe_owner
+    join: all
+  - id: synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+edges:
+  - from: preflight_contract_plan
+    to: preflight_contract_freeze
+    when: done
+    kind: forward
+  - from: preflight_contract_freeze
+    to: tdd
+    when: done
+    kind: forward
+  - from: tdd
+    to: coder
+    when: done
+    kind: forward
+  - from: coder
+    to: owner_1
+    when: done
+    kind: forward
+  - from: coder
+    to: owner_2
+    when: done
+    kind: forward
+  - from: owner_1
+    to: synthesis
+    when: done
+    kind: forward
+  - from: owner_2
+    to: synthesis
+    when: done
+    kind: forward
+  - from: synthesis
+    to: coder
+    when: continue
+    kind: back
+  - from: synthesis
+    to: done
+    when: done
+    kind: forward
+  - from: synthesis
+    to: ask_user
+    when: escalate
+    kind: forward

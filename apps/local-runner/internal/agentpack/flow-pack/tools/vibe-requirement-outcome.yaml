@@ -1,0 +1,18 @@
+id: vibe-requirement-outcome
+kind: flow_control
+version: "1"
+description: Vibe requirement gate verdict that maps to the generic flow_control handler.
+exposesTool: true
+mapsTo: flow.control
+input:
+  verdict:
+    type: string
+    enum: [aligned, drift_fixable, requirement_change]
+  summary:
+    type: string
+statusMap:
+  aligned: done
+  drift_fixable: continue
+  requirement_change: escalate
+payloadMap:
+  summary: summary

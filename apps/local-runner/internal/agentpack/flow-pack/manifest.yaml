@@ -8,6 +8,7 @@ agents:
   - agents/tester.md
   - agents/synthesizer.md
   - agents/contract-planner.md
+  - agents/owner.md
 flows:
   - path: flows/review-loop.yaml
     visibility: builtin
@@ -31,8 +32,27 @@ flows:
     selectableIn:
       - flow
     cloneable: true
+  - path: flows/vibe-ingest.yaml
+    visibility: builtin
+    editable: false
+    selectableIn:
+      - flow
+    cloneable: true
+  - path: flows/vibe-sprint.yaml
+    visibility: builtin
+    editable: false
+    selectableIn:
+      - flow
+    cloneable: true
+  - path: flows/vibe-owner-debate.yaml
+    visibility: builtin
+    editable: false
+    selectableIn:
+      - flow
+    cloneable: false
 tools:
   - tools/submit-review-outcome.yaml
+  - tools/vibe-requirement-outcome.yaml
 contexts:
   - contexts/flow-context-package.yaml
 prompts:

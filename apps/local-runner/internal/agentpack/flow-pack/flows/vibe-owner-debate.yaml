@@ -1,0 +1,80 @@
+id: vibe-owner-debate
+version: "1"
+description: Vibe gate Owner debate — two isolated owners decide the next remediation; cap 5, then escalate to user.
+mode: flow
+builtin:
+  editable: false
+  selectableIn:
+    - flow
+  cloneable: false
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 5
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+tools:
+  - tools/vibe-requirement-outcome.yaml
+acceptance_nodes: []
+nodes:
+  - id: debate_trigger
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+  - id: owner_1
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/owner.md
+    dependsOn:
+      - debate_trigger
+    cohort: owner_debate
+    join: all
+  - id: owner_2
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/owner.md
+    dependsOn:
+      - debate_trigger
+    cohort: owner_debate
+    join: all
+  - id: debate_synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+edges:
+  - from: debate_trigger
+    to: owner_1
+    when: done
+    kind: forward
+  - from: debate_trigger
+    to: owner_2
+    when: done
+    kind: forward
+  - from: owner_1
+    to: debate_synthesis
+    when: done
+    kind: forward
+  - from: owner_2
+    to: debate_synthesis
+    when: done
+    kind: forward
+  - from: debate_synthesis
+    to: debate_trigger
+    when: continue
+    kind: back
+  - from: debate_synthesis
+    to: done
+    when: done
+    kind: forward
+  - from: debate_synthesis
+    to: ask_user
+    when: escalate
+    kind: forward

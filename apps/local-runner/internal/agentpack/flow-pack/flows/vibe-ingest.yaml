@@ -1,0 +1,56 @@
+id: vibe-ingest
+version: "1"
+description: Vibe ingest — convert a raw requirement file or vague idea into SS-13/FORMAT-REFERENCE-SS system specs and a persisted sprint plan.
+mode: flow
+builtin:
+  editable: false
+  selectableIn:
+    - flow
+  cloneable: true
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 3
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+tools:
+  - tools/vibe-requirement-outcome.yaml
+acceptance_nodes: []
+nodes:
+  - id: ingest_reader
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/coder.md
+    join: all
+  - id: ss_converter
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/coder.md
+    join: all
+  - id: ss_validator
+    run: inline
+    lifecycle: once
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+edges:
+  - from: ingest_reader
+    to: ss_converter
+    when: done
+    kind: forward
+  - from: ss_converter
+    to: ss_validator
+    when: done
+    kind: forward
+  - from: ss_validator
+    to: done
+    when: done
+    kind: forward
+  - from: ss_validator
+    to: ask_user
+    when: escalate
+    kind: forward
