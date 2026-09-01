@@ -316,12 +316,25 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 				return outcome.err
 			}
 			lastText = a.drainOpencodeNotifications(sessionID, notif, bridge, lastText)
-			// BUG-341: 421135 blank — opencode's agent_message_chunk for the
-			// final answer can arrive just after session/prompt's result (tool
-			// burst + 3 deltas). The non-blocking drain missed it, leaving
-			// lastText empty and turn_completed blank until the next prompt's
-			// replay. Wait briefly for late chunks.
-			lastText = a.drainOpencodeNotificationsBlocking(ctx, sessionID, notif, bridge, lastText, 600*time.Millisecond)
+			// BUG-341: 421135/424302 blank — opencode's agent_message_chunk for
+			// the final answer can arrive well after session/prompt's result
+			// (tool burst + generation). The 600ms wait was too short for a
+			// 2–5s generation. If we already have text, just wait for the burst
+			// to finish (150ms quiet); if still empty, wait up to 8s for the
+			// first chunk.
+			start := time.Now()
+			if lastText == "" {
+				if resultText, _ := outcome.result["text"].(string); strings.TrimSpace(resultText) != "" {
+					lastText = strings.TrimSpace(resultText)
+				} else {
+					lastText = a.drainOpencodeNotificationsBlocking(ctx, sessionID, notif, bridge, lastText, 8*time.Second)
+				}
+			} else {
+				lastText = a.drainOpencodeNotificationsBlocking(ctx, sessionID, notif, bridge, lastText, 150*time.Millisecond)
+			}
+			if waited := time.Since(start); waited > 200*time.Millisecond {
+				log.Printf("[opencode] post-result wait lastText_len=%d waited=%s session=%s", len(lastText), waited.Truncate(time.Millisecond), sessionID)
+			}
 			return a.emitTerminal(ctx, req, bridge, sessionID, outcome.result, lastText)
 		case n, ok := <-notif:
 			if !ok {

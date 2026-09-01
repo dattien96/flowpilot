@@ -25,7 +25,7 @@ func (b *testBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, 
 	return FlowControlResult{}, nil
 }
 
-// 421135 blank: late agent_message_chunk missed by non-blocking drain.
+// 421135/424302 blank: late agent_message_chunk missed by non-blocking drain.
 func TestOpencodeLateChunkIsCaptured(t *testing.T) {
 	ch := make(chan opencodeNotification, 2)
 	ch <- opencodeNotification{
@@ -74,5 +74,59 @@ func TestOpencodeLateChunkIsCaptured(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("bridge missing late delta, events=%+v", bridge.events)
+	}
+}
+
+// 424302 repro: late chunk 2s after result must still be captured when
+// lastText is empty (the 600ms helper was too short). The new post-result
+// path waits up to 8s.
+func TestOpencodeLateChunkAfter2sIsCaptured(t *testing.T) {
+	ch := make(chan opencodeNotification, 1)
+	go func() {
+		time.Sleep(2 * time.Second)
+		ch <- opencodeNotification{
+			Method: "session/update",
+			Params: map[string]any{
+				"update": map[string]any{
+					"sessionUpdate": "agent_message_chunk",
+					"content": map[string]any{
+						"type": "text",
+						"text": "Xin chao sau 2s",
+					},
+				},
+			},
+		}
+	}()
+	a := &opencodeAdapter{}
+	bridge := &testBridge{}
+	ctx := context.Background()
+	start := time.Now()
+	got := a.drainOpencodeNotificationsBlocking(ctx, "ses_late2", ch, bridge, "", 8*time.Second)
+	if got != "Xin chao sau 2s" {
+		t.Fatalf("2s late chunk not captured, got %q", got)
+	}
+	if time.Since(start) < 1900*time.Millisecond || time.Since(start) > 3500*time.Millisecond {
+		t.Fatalf("wait time unexpected: %s", time.Since(start))
+	}
+}
+
+// When text is already present before the result, the post-result wait
+// should be short (150ms quiet), not 8s — no tax on normal turns.
+func TestOpencodeNoWaitWhenTextAlreadyPresent(t *testing.T) {
+	ch := make(chan opencodeNotification, 1)
+	// No late chunk will arrive.
+	a := &opencodeAdapter{}
+	bridge := &testBridge{}
+	ctx := context.Background()
+	start := time.Now()
+	got := a.drainOpencodeNotificationsBlocking(ctx, "ses_hastext", ch, bridge, "already has text", 150*time.Millisecond)
+	if got != "already has text" {
+		t.Fatalf("should keep existing text, got %q", got)
+	}
+	if elapsed := time.Since(start); elapsed < 100*time.Millisecond || elapsed > 400*time.Millisecond {
+		t.Fatalf("short wait expected ~150ms, got %s", elapsed)
+	}
+	if len(bridge.events) != 0 {
+		t.Fatalf("should not have emitted new events, got %+v", bridge.events)
 	}
 }
