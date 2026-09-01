@@ -22,8 +22,10 @@ func TestLoadBuiltinPack(t *testing.T) {
 	// artifact I/O.
 	// SS-18/SD-24 add three Vibe flows (vibe-ingest, vibe-sprint,
 	// vibe-owner-debate) + owner agent.
-	if len(pack.Flows) != 6 {
-		t.Fatalf("expected 6 built-in flows, got %d", len(pack.Flows))
+	// CP-58 Task-305/306 add the three harness flows (task-harness,
+	// cp-harness, cp-harness-smoke) for the Bug/Task/CP tier family.
+	if len(pack.Flows) != 9 {
+		t.Fatalf("expected 9 built-in flows, got %d", len(pack.Flows))
 	}
 	names := SortedAgentNames(pack.Agents)
 	for _, want := range []string{"coder", "reviewer", "synthesizer", "tester", "owner", "vibe-intake"} {
@@ -42,9 +44,9 @@ func TestLoadBuiltinPack(t *testing.T) {
 	for _, f := range pack.Flows {
 		flowIDs[f.ID] = struct{}{}
 	}
-	for _, want := range []string{"vibe-ingest", "vibe-sprint", "vibe-owner-debate"} {
+	for _, want := range []string{"vibe-ingest", "vibe-sprint", "vibe-owner-debate", "task-harness", "cp-harness", "cp-harness-smoke"} {
 		if _, ok := flowIDs[want]; !ok {
-			t.Fatalf("missing vibe flow %q in pack", want)
+			t.Fatalf("missing built-in flow %q in pack", want)
 		}
 	}
 }

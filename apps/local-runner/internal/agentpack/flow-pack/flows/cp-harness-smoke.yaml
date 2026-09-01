@@ -1,0 +1,226 @@
+# cp-harness-smoke: CP-58 Task-306 opt-in variant (13 nodes) that chains the
+# FIRST sliced Task's coding after task_splitter — freeze -> test_signatures
+# -> implement -> validate -> reviewer -> synthesis -> audit. The default
+# cp-harness stays slice-only; this variant exists to smoke the full plan ->
+# slice -> code path in one flow. Not exposed in the /flow picker by default
+# (selectableIn is empty) — opt in by cloning it.
+id: cp-harness-smoke
+version: 1
+description: Coding Plan + first-Task smoke coding - CP Plan + Review + Split + freeze + TDD + Code Review.
+mode: flow
+builtin:
+  editable: false
+  selectableIn: []
+  cloneable: true
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 3
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+contexts:
+  main_context:
+    ref: contexts/flow-context-package.yaml
+    sources:
+      - canonical.head
+      - feature.history
+      - change.contract
+      - source.dependence
+      - chat.summary
+      - source.excerpt
+tools:
+  - tools/submit-review-outcome.yaml
+acceptance_nodes:
+  - cp_synthesis
+  - validate
+  - synthesis
+  - audit
+nodes:
+  # --- Identical to cp-harness: Scout + draft context + CP plan loop ---
+  - id: preflight_contract_plan
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/contract-planner.md
+    promptTemplate: prompts/plan-safe-fix-contract.md
+  - id: context
+    run: inline
+    lifecycle: once
+    behavior: context.produce
+  - id: cp_plan_writer
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.delegate
+    agent: agents/coder.md
+    promptTemplate: prompts/plan-cp.md
+    artifactBindings:
+      - direction: output
+        slotName: cp_md
+        artifactInstanceId: cp_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/07-Coding-Plan/todo/CP-{{cpID}}-{{slug}}.md
+  - id: cp_reviewer
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/reviewer.md
+    promptTemplate: prompts/review-cp.md
+    dependsOn:
+      - cp_plan_writer
+    cohort: plan
+    join: all
+    artifactBindings:
+      - direction: input
+        slotName: cp_md
+        artifactInstanceId: cp_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/07-Coding-Plan/todo/CP-{{cpID}}-{{slug}}.md
+  - id: cp_synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+  - id: task_splitter
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/coder.md
+    promptTemplate: prompts/task-splitter.md
+    artifactBindings:
+      - direction: input
+        slotName: cp_md
+        artifactInstanceId: cp_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/07-Coding-Plan/todo/CP-{{cpID}}-{{slug}}.md
+      - direction: output
+        slotName: task_md
+        artifactInstanceId: task_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 1
+        config:
+          pathTemplate: requirements/08-Task/todo/Task-{{idx}}-{{slug}}.md
+  # --- First-Task coding chain (freeze scope from the approved CP slice) ---
+  - id: preflight_contract_freeze
+    run: inline
+    lifecycle: once
+    behavior: contract.freeze
+  - id: test_signatures
+    run: delegate
+    lifecycle: once
+    behavior: agent.code
+    agent: agents/tester.md
+    promptTemplate: prompts/test-signatures.md
+  - id: implement
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.code
+    agent: agents/coder.md
+    promptTemplate: prompts/implement-complete-tests.md
+  - id: validate
+    run: inline
+    lifecycle: once
+    behavior: command.validate
+  - id: reviewer
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/reviewer.md
+    promptTemplate: prompts/review-safe-fix-contract.md
+    dependsOn:
+      - validate
+    cohort: review
+    join: all
+  - id: synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+  - id: audit
+    run: inline
+    lifecycle: once
+    behavior: artifact.audit_draft
+edges:
+  # --- Same Scout + CP plan loop edges as cp-harness ---
+  - from: preflight_contract_plan
+    to: context
+    when: done
+    kind: forward
+  - from: context
+    to: cp_plan_writer
+    when: done
+    kind: forward
+  - from: cp_plan_writer
+    to: cp_reviewer
+    when: done
+    kind: forward
+  - from: cp_reviewer
+    to: cp_synthesis
+    when: done
+    kind: forward
+  - from: cp_synthesis
+    to: cp_plan_writer
+    when: continue
+    kind: back
+  # --- Slice -> Freeze scope -> First-Task coding chain ---
+  - from: cp_synthesis
+    to: task_splitter
+    when: done
+    kind: forward
+  - from: task_splitter
+    to: preflight_contract_freeze
+    when: done
+    kind: forward
+  - from: preflight_contract_freeze
+    to: test_signatures
+    when: done
+    kind: forward
+  - from: test_signatures
+    to: implement
+    when: done
+    kind: forward
+  - from: implement
+    to: validate
+    when: done
+    kind: forward
+  - from: validate
+    to: implement
+    when: continue
+    kind: back
+  - from: validate
+    to: reviewer
+    when: done
+    kind: forward
+  - from: validate
+    to: ask_user
+    when: escalate
+    kind: forward
+  - from: reviewer
+    to: synthesis
+    when: done
+    kind: forward
+  - from: synthesis
+    to: audit
+    when: done
+    kind: forward
+  - from: synthesis
+    to: ask_user
+    when: escalate
+    kind: forward
+  - from: audit
+    to: done
+    when: done
+    kind: forward
