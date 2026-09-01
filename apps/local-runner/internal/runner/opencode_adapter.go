@@ -384,14 +384,22 @@ func (a *opencodeAdapter) drainOpencodeNotificationsBlocking(ctx context.Context
 			if !ok {
 				return lastText
 			}
+			before := lastText
 			lastText = a.applyOpencodeNotification(sessionID, n, bridge, lastText)
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
+			// Only extend the wait when the final answer actually grows.
+			// Non-text frames (usage_update, tool_call_update,
+			// agent_thought_chunk, available_commands_update) must not
+			// collapse the wait-for-text budget — that was the 421135/
+			// 424302/430742 blank (usage_update reset 8s → 150ms).
+			if lastText != before {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
+				timer.Reset(150 * time.Millisecond)
 			}
-			timer.Reset(150 * time.Millisecond)
 		case <-timer.C:
 			return lastText
 		}
