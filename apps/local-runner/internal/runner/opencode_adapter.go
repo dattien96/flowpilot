@@ -316,6 +316,12 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 				return outcome.err
 			}
 			lastText = a.drainOpencodeNotifications(sessionID, notif, bridge, lastText)
+			// BUG-341: 421135 blank — opencode's agent_message_chunk for the
+			// final answer can arrive just after session/prompt's result (tool
+			// burst + 3 deltas). The non-blocking drain missed it, leaving
+			// lastText empty and turn_completed blank until the next prompt's
+			// replay. Wait briefly for late chunks.
+			lastText = a.drainOpencodeNotificationsBlocking(ctx, sessionID, notif, bridge, lastText, 600*time.Millisecond)
 			return a.emitTerminal(ctx, req, bridge, sessionID, outcome.result, lastText)
 		case n, ok := <-notif:
 			if !ok {
@@ -349,6 +355,31 @@ func (a *opencodeAdapter) drainOpencodeNotifications(sessionID string, notif <-c
 			}
 			lastText = a.applyOpencodeNotification(sessionID, n, bridge, lastText)
 		default:
+			return lastText
+		}
+	}
+}
+
+func (a *opencodeAdapter) drainOpencodeNotificationsBlocking(ctx context.Context, sessionID string, notif <-chan opencodeNotification, bridge TurnBridge, lastText string, timeout time.Duration) string {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return lastText
+		case n, ok := <-notif:
+			if !ok {
+				return lastText
+			}
+			lastText = a.applyOpencodeNotification(sessionID, n, bridge, lastText)
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(150 * time.Millisecond)
+		case <-timer.C:
 			return lastText
 		}
 	}
