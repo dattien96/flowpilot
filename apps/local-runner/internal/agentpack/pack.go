@@ -836,13 +836,15 @@ func ValidateFlowDefinition(def FlowDefinition) error {
 		"done":     {},
 		"ask_user": {},
 	}
-	// BUG-NOTE-CP42 #25: the live back-edge resolution path
-	// (resolveContinueBackEdgeTarget) can only ever pick the first declared
-	// match when more than one (kind=back, when=continue) edge exists —
-	// nothing disambiguates by which node emitted the signal. A pack-level
-	// duplicate here would silently route "continue" to the wrong node
-	// instead of failing fast at load time.
-	backEdgeSources := make(map[string]string, len(def.Edges)) // when -> first-seen from
+	// BUG-NOTE-CP42 #25 / CP-58 Task-304: the live back-edge resolution path
+	// (resolveContinueBackEdgeTarget) is source-aware, so a flow may declare
+	// ONE back-edge per (from, when) pair — task-harness needs two
+	// when:continue kind:back edges (plan_synthesis -> plan_writer and
+	// validate -> implement) to run a plan review loop and a code loop in the
+	// same flow. A true duplicate — same From AND same when — would still be
+	// ambiguous at resolve time, so it fails fast here instead of silently
+	// routing "continue" to whichever target sorts first.
+	backEdgeSources := make(map[string]string, len(def.Edges)) // "from\x00when" -> from
 	for _, edge := range def.Edges {
 		if edge.From == "" || edge.To == "" {
 			return fmt.Errorf("flow %q has edge with empty endpoint", def.ID)
@@ -864,10 +866,11 @@ func ValidateFlowDefinition(def FlowDefinition) error {
 			}
 		}
 		if kind == "back" {
-			if prev, exists := backEdgeSources[edge.When]; exists {
-				return fmt.Errorf("flow %q has duplicate back-edge for status %q (from %q and %q)", def.ID, edge.When, prev, edge.From)
+			dedup := edge.From + "\x00" + edge.When
+			if prev, exists := backEdgeSources[dedup]; exists {
+				return fmt.Errorf("flow %q has duplicate back-edge for status %q from %q (already declared once)", def.ID, edge.When, prev)
 			}
-			backEdgeSources[edge.When] = edge.From
+			backEdgeSources[dedup] = edge.From
 		}
 	}
 	// CP-55 P-1: wired at the same definition-resolution boundary as the

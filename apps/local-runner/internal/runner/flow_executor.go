@@ -903,19 +903,96 @@ func (s *InteractiveService) workspaceCwdFor(runID string) string {
 
 // resolveContinueBackEdgeTarget finds the back-edge a "continue" flow_control
 // signal should follow (Task-180: prefer edge data over role-name matching
-// for runs started from a resolved flowRef). review-loop.yaml declares
-// exactly one such edge (synthesis -> coder); a flow with more than one
-// matching edge returns the first declared, since nothing in the current
-// live path disambiguates by which node emitted the signal.
-func resolveContinueBackEdgeTarget(edges []agentpack.FlowEdge) (string, bool) {
-	for _, edge := range edges {
-		if strings.EqualFold(strings.TrimSpace(edge.Kind), "back") && strings.EqualFold(strings.TrimSpace(edge.When), "continue") {
-			if edge.To != "" {
+// for runs started from a resolved flowRef). CP-58 Task-304 made it
+// source-aware so a dual-loop harness (task-harness/cp-harness-smoke) can
+// declare two when:continue kind:back edges — the plan loop's
+// (plan_synthesis -> plan_writer) and the code loop's (validate ->
+// implement) — and each hub's continue still re-enters its own writer.
+//
+// Resolution order when the optional from id is supplied:
+//   - (a) exact: the back-edge declared FROM this node (a hub.inline node
+//     that owns its loop's back-edge directly, e.g. review-loop's synthesis).
+//   - (b) hub-aware: from is a hub-driven node whose loop's back-edge is
+//     anchored at an upstream non-hub node (task-harness's code hub
+//     "synthesis" rides the validate -> implement edge). Among the matching
+//     back-edges whose From can reach from via FORWARD edges only, the one
+//     with the shortest forward distance wins — the anchor feeding the cohort
+//     that joins into this hub, not a farther upstream loop anchor (e.g.
+//     plan_synthesis's done-chain also reaches synthesis).
+//   - (c) first-match fallback, which reproduces the pre-Task-304 behavior
+//     exactly when from is omitted (every pre-existing call site and every
+//     single-loop built-in flow).
+func resolveContinueBackEdgeTarget(edges []agentpack.FlowEdge, from ...string) (string, bool) {
+	fromID := ""
+	if len(from) > 0 {
+		fromID = strings.TrimSpace(from[0])
+	}
+	if fromID != "" {
+		for _, edge := range edges {
+			if isContinueBackEdge(edge) && edge.To != "" && strings.TrimSpace(edge.From) == fromID {
 				return edge.To, true
 			}
 		}
+		bestTarget, bestDist := "", -1
+		for _, edge := range edges {
+			if !isContinueBackEdge(edge) || edge.To == "" || strings.TrimSpace(edge.From) == fromID {
+				continue
+			}
+			if dist := forwardDistance(edges, strings.TrimSpace(edge.From), fromID); dist >= 0 && (bestDist < 0 || dist < bestDist) {
+				bestTarget, bestDist = edge.To, dist
+			}
+		}
+		if bestDist >= 0 {
+			return bestTarget, true
+		}
+	}
+	for _, edge := range edges {
+		if isContinueBackEdge(edge) && edge.To != "" {
+			return edge.To, true
+		}
 	}
 	return "", false
+}
+
+// isContinueBackEdge reports whether e is the "continue" back-edge kind the
+// review-loop re-entry paths resolve against.
+func isContinueBackEdge(e agentpack.FlowEdge) bool {
+	return strings.EqualFold(strings.TrimSpace(e.Kind), "back") &&
+		strings.EqualFold(strings.TrimSpace(e.When), "continue")
+}
+
+// forwardDistance returns the number of forward edges on the shortest
+// forward-only path from -> to, or -1 when to is not reachable from from.
+// Mirrors forwardReachableNodeIDs' traversal rules (forward edges only, no
+// terminal pseudo-nodes) but stops at the first hit.
+func forwardDistance(edges []agentpack.FlowEdge, from, to string) int {
+	if from == "" || to == "" {
+		return -1
+	}
+	dist := map[string]int{from: 0}
+	queue := []string{from}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, e := range edges {
+			if !strings.EqualFold(strings.TrimSpace(e.Kind), "forward") || strings.TrimSpace(e.From) != cur {
+				continue
+			}
+			next := strings.TrimSpace(e.To)
+			if next == "" || next == "done" || next == "ask_user" {
+				continue
+			}
+			if _, seen := dist[next]; seen {
+				continue
+			}
+			dist[next] = dist[cur] + 1
+			if next == to {
+				return dist[next]
+			}
+			queue = append(queue, next)
+		}
+	}
+	return -1
 }
 
 // forwardReachableNodeIDs (BUG-286) returns every node id reachable from

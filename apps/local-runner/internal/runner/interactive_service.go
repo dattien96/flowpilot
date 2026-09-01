@@ -1523,7 +1523,16 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			if s.isFlowEngineDriven(parentRunID) {
 				nodes := s.activeFlowNodesFor(parentRunID)
 				edges := s.activeFlowEdgesFor(parentRunID)
-				reentryID, ok := resolveContinueBackEdgeTarget(edges)
+				// CP-58 Task-304: the emitter id comes from run state
+				// (FlowControlInput carries no node id) so a dual-loop harness
+				// routes the hub's continue to ITS loop's writer —
+				// plan_synthesis -> plan_writer vs synthesis -> implement —
+				// while single-hub flows keep resolving exactly as before.
+				hubFrom := s.activeHubNodeIDFor(parentRunID)
+				if hubFrom == "" {
+					hubFrom = hubInlineNodeID(nodes)
+				}
+				reentryID, ok := resolveContinueBackEdgeTarget(edges, hubFrom)
 				if !ok {
 					// Defensive fallback for a looping result with no declared
 					// continue back-edge (shouldn't occur for any flow that can
@@ -2475,6 +2484,19 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 				if hubNodeID == "" {
 					hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
 				}
+				// CP-58 Task-304: a failed member can be the join that completes
+				// a dual-hub flow's cohort — stamp the hub the cohort feeds
+				// into, not first-match hub.inline (single-hub flows unchanged).
+				joined := make([]string, 0, len(entries))
+				for _, e := range entries {
+					if e.Label != "" {
+						joined = append(joined, e.Label)
+					}
+				}
+				if resolved, dual := hubNodeIDForCohortJoin(parent.activeFlowNodes, parent.activeFlowEdges, joined); dual && resolved != "" {
+					hubNodeID = resolved
+					parent.activeHubNodeID = resolved
+				}
 				if hubNodeID != "" && s.loopIsAdvancing(parentRunID) {
 					s.setFlowStepStatusLocked(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
 				}
@@ -2916,7 +2938,14 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 	var hasTargetNode bool
 	var flowDriven bool
 	if parent := s.runs[parentRunID]; parent != nil {
-		targetNodeID, _ = resolveContinueBackEdgeTarget(parent.activeFlowEdges)
+		// CP-58 Task-304: source-aware re-entry — activeHubNodeID names the
+		// hub-driven node whose continue this is (fallback first-match hub for
+		// single-hub flows keeps pre-CP-58 behavior).
+		hubFrom := parent.activeHubNodeID
+		if hubFrom == "" {
+			hubFrom = hubInlineNodeID(parent.activeFlowNodes)
+		}
+		targetNodeID, _ = resolveContinueBackEdgeTarget(parent.activeFlowEdges, hubFrom)
 		if targetNodeID != "" {
 			targetNode, hasTargetNode = findFlowNode(parent.activeFlowNodes, targetNodeID)
 		}
@@ -4737,6 +4766,15 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 					}
 				}
 				hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
+				// CP-58 Task-304: dual-hub harnesses must stamp (and track) the
+				// hub the joined reviewers actually feed into — plan_synthesis
+				// vs synthesis — so the hub's own continue/done resolves against
+				// ITS loop instead of first-match hub.inline. Single-hub flows
+				// keep Task-235's tracking untouched.
+				if resolved, dual := hubNodeIDForCohortJoin(parent.activeFlowNodes, parent.activeFlowEdges, reviewerNodeIDs); dual && resolved != "" {
+					hubNodeID = resolved
+					parent.activeHubNodeID = resolved
+				}
 			}
 			// Capture the cohort note to embed directly in the synthesis prompt.
 			// This fixes BUG-synthesis-hang: Codex agents on resumed threads do not
@@ -5091,6 +5129,13 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 						hubNodeID := parent.activeHubNodeID
 						if hubNodeID == "" {
 							hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
+						}
+						// CP-58 Task-304: a failed member completing the cohort
+						// must still activate ITS hub on dual-hub flows (the
+						// member's forward edge names it), not first-match.
+						if resolved, dual := hubNodeIDForCohortJoin(parent.activeFlowNodes, parent.activeFlowEdges, []string{rs.label}); dual && resolved != "" {
+							hubNodeID = resolved
+							parent.activeHubNodeID = resolved
 						}
 						if hubNodeID != "" && s.loopIsAdvancing(rs.parentRunID) {
 							s.setFlowStepStatusLocked(context.Background(), rs.parentRunID, hubNodeID, StepStatusRunning)

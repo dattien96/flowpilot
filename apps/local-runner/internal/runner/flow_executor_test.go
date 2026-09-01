@@ -2109,3 +2109,71 @@ func TestStartResolvedFlowAppliesConfiguredCapAndExtendBy(t *testing.T) {
 		t.Fatalf("extendCap raised Cap to %d, want 7 (2 + the flow's own ExtendBy=5, not the old hardcoded +2=4)", extendResult.Cap)
 	}
 }
+
+// TestResolveContinueBackEdgeIsSourceAware (CP-58 Task-304 T-2/T-7) pins the
+// source-aware resolver on the task-harness dual-loop shape: each hub's
+// continue re-enters its own writer, while omitting from keeps the
+// pre-Task-304 first-match fallback (every pre-existing call site).
+func TestResolveContinueBackEdgeIsSourceAware(t *testing.T) {
+	edges := []agentpack.FlowEdge{
+		{From: "preflight_contract_plan", To: "context", When: "done", Kind: "forward"},
+		{From: "context", To: "plan_writer", When: "done", Kind: "forward"},
+		{From: "plan_writer", To: "plan_reviewer", When: "done", Kind: "forward"},
+		{From: "plan_reviewer", To: "plan_synthesis", When: "done", Kind: "forward"},
+		{From: "plan_synthesis", To: "plan_writer", When: "continue", Kind: "back"},
+		{From: "plan_synthesis", To: "preflight_contract_freeze", When: "done", Kind: "forward"},
+		{From: "preflight_contract_freeze", To: "test_signatures", When: "done", Kind: "forward"},
+		{From: "test_signatures", To: "implement", When: "done", Kind: "forward"},
+		{From: "implement", To: "validate", When: "done", Kind: "forward"},
+		{From: "validate", To: "implement", When: "continue", Kind: "back"},
+		{From: "validate", To: "reviewer", When: "done", Kind: "forward"},
+		{From: "reviewer", To: "synthesis", When: "done", Kind: "forward"},
+		{From: "synthesis", To: "audit", When: "done", Kind: "forward"},
+		{From: "audit", To: "done", When: "done", Kind: "forward"},
+	}
+	cases := []struct {
+		name   string
+		from   []string
+		want   string
+		wantOK bool
+	}{
+		{name: "plan hub continue re-enters plan_writer", from: []string{"plan_synthesis"}, want: "plan_writer", wantOK: true},
+		{name: "plan hub anchor edge wins over hub-aware scan", from: []string{"plan_synthesis", "plan_synthesis"}, want: "plan_writer", wantOK: true},
+		{name: "code loop anchor validate re-enters implement", from: []string{"validate"}, want: "implement", wantOK: true},
+		{name: "code hub synthesis re-enters implement via nearest anchor", from: []string{"synthesis"}, want: "implement", wantOK: true},
+		{name: "empty from falls back to first declared back-edge", from: nil, want: "plan_writer", wantOK: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			target, ok := resolveContinueBackEdgeTarget(edges, tc.from...)
+			if ok != tc.wantOK || target != tc.want {
+				t.Fatalf("resolveContinueBackEdgeTarget(from=%v) = (%q, %v), want (%q, %v)", tc.from, target, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+// TestResolveContinueBackEdgeSingleLoopFromUnchanged (CP-58 Task-304 R-1
+// guard) proves passing a single-hub flow's own hub id into the resolver
+// still resolves the sole back-edge exactly as the no-argument form does —
+// rag-harness (validate -> implement) and review-loop (synthesis -> coder)
+// keep their live routing with the hub tracker now feeding `from`.
+func TestResolveContinueBackEdgeSingleLoopFromUnchanged(t *testing.T) {
+	ragEdges := []agentpack.FlowEdge{
+		{From: "validate", To: "implement", When: "continue", Kind: "back"},
+		{From: "validate", To: "reviewer", When: "done", Kind: "forward"},
+		{From: "reviewer", To: "synthesis", When: "done", Kind: "forward"},
+	}
+	if target, ok := resolveContinueBackEdgeTarget(ragEdges, "synthesis"); !ok || target != "implement" {
+		t.Fatalf("rag-harness with from=synthesis = (%q, %v), want (implement, true)", target, ok)
+	}
+	if target, ok := resolveContinueBackEdgeTarget(ragEdges); !ok || target != "implement" {
+		t.Fatalf("rag-harness without from = (%q, %v), want (implement, true)", target, ok)
+	}
+	reviewLoopEdges := []agentpack.FlowEdge{
+		{From: "synthesis", To: "coder", When: "continue", Kind: "back"},
+	}
+	if target, ok := resolveContinueBackEdgeTarget(reviewLoopEdges, "synthesis"); !ok || target != "coder" {
+		t.Fatalf("review-loop with from=synthesis = (%q, %v), want (coder, true)", target, ok)
+	}
+}

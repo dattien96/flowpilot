@@ -5927,3 +5927,122 @@ func TestReconstructRunBackfillsRecordlessApprovalAsReadOnlyAfterRestart(t *test
 		t.Fatal("record-less approval must be backfilled read-only (Decision set), got interactive (empty Decision)")
 	}
 }
+
+// dualLoopHarnessFixture carries the task-harness (CP-58 Task-305) node and
+// edge shape the hub-routing test needs: two hub.inline nodes (plan_synthesis
+// drives the plan loop, synthesis the code loop) with one continue back-edge
+// each, anchored at plan_synthesis and validate. New fixture — no pre-existing
+// test is modified.
+func dualLoopHarnessFixture() ([]agentpack.FlowEdge, []agentpack.FlowNode) {
+	edges := []agentpack.FlowEdge{
+		{From: "preflight_contract_plan", To: "context", When: "done", Kind: "forward"},
+		{From: "context", To: "plan_writer", When: "done", Kind: "forward"},
+		{From: "plan_writer", To: "plan_reviewer", When: "done", Kind: "forward"},
+		{From: "plan_reviewer", To: "plan_synthesis", When: "done", Kind: "forward"},
+		{From: "plan_synthesis", To: "plan_writer", When: "continue", Kind: "back"},
+		{From: "plan_synthesis", To: "preflight_contract_freeze", When: "done", Kind: "forward"},
+		{From: "preflight_contract_freeze", To: "test_signatures", When: "done", Kind: "forward"},
+		{From: "test_signatures", To: "implement", When: "done", Kind: "forward"},
+		{From: "implement", To: "validate", When: "done", Kind: "forward"},
+		{From: "validate", To: "implement", When: "continue", Kind: "back"},
+		{From: "validate", To: "reviewer", When: "done", Kind: "forward"},
+		{From: "reviewer", To: "synthesis", When: "done", Kind: "forward"},
+		{From: "synthesis", To: "audit", When: "done", Kind: "forward"},
+		{From: "audit", To: "done", When: "done", Kind: "forward"},
+	}
+	nodes := []agentpack.FlowNode{
+		{ID: "preflight_contract_plan", Behavior: "agent.delegate", Agent: "agents/contract-planner.md", Lifecycle: "once"},
+		{ID: "context", Behavior: "context.produce", Lifecycle: "once"},
+		{ID: "plan_writer", Behavior: "agent.code", Agent: "agents/coder.md", Lifecycle: "reinvoke"},
+		{ID: "plan_reviewer", Behavior: "agent.delegate", Agent: "agents/reviewer.md", Lifecycle: "spawn", Cohort: "plan", Join: "all"},
+		{ID: "plan_synthesis", Behavior: "hub.inline", Agent: "agents/synthesizer.md", Lifecycle: "reinvoke", Join: "all"},
+		{ID: "preflight_contract_freeze", Behavior: "contract.freeze", Lifecycle: "once"},
+		{ID: "test_signatures", Behavior: "agent.code", Agent: "agents/tester.md", Lifecycle: "once"},
+		{ID: "implement", Behavior: "agent.code", Agent: "agents/coder.md", Lifecycle: "reinvoke"},
+		{ID: "validate", Behavior: "command.validate", Lifecycle: "once"},
+		{ID: "reviewer", Behavior: "agent.delegate", Agent: "agents/reviewer.md", Lifecycle: "spawn", Cohort: "review", Join: "all"},
+		{ID: "synthesis", Behavior: "hub.inline", Agent: "agents/synthesizer.md", Lifecycle: "reinvoke", Join: "all"},
+		{ID: "audit", Behavior: "artifact.audit_draft", Lifecycle: "once"},
+	}
+	return edges, nodes
+}
+
+// TestApplyFlowControlContinueHubRouting (CP-58 Task-304 T-8) proves a
+// dual-hub harness routes each hub's flow_control("continue") to ITS OWN
+// loop's writer via the run's activeHubNodeID tracker: plan_synthesis's
+// continue re-enters plan_writer and resets only forward-reachable plan-loop
+// nodes (context keeps its DONE), while the code hub synthesis's continue
+// re-enters implement and leaves every plan-loop node DONE (BUG-286 scoping
+// on the dual-loop shape).
+func TestApplyFlowControlContinueHubRouting(t *testing.T) {
+	svc, runID := newFlowTestRun(t)
+	edges, nodes := dualLoopHarnessFixture()
+	svc.mu.Lock()
+	if rs := svc.runs[runID]; rs != nil {
+		rs.activeFlowEdges = edges
+		rs.activeFlowNodes = nodes
+		rs.flowEngineDriven = true
+		rs.autoOrchestrate = true
+	}
+	svc.mu.Unlock()
+	svc.markFlowEngineDriven(runID)
+	svc.reseedFlowStepRuntime(runID, nodes)
+
+	ctx := context.Background()
+	// Plan loop has run one full round: context DONE, plan writers/reviewers DONE.
+	for _, id := range []string{"context", "plan_writer", "plan_reviewer", "plan_synthesis"} {
+		svc.setFlowStepStatus(ctx, runID, id, StepStatusDone)
+	}
+	svc.mu.Lock()
+	svc.runs[runID].activeHubNodeID = "plan_synthesis"
+	svc.mu.Unlock()
+
+	// Case 1: plan_synthesis emits continue (plan reviewer requested changes).
+	fc, err := svc.applyFlowControl(runID, FlowControlInput{Status: "continue", Summary: "plan missing DeclaredPaths"})
+	if err != nil {
+		t.Fatalf("applyFlowControl(plan continue): %v", err)
+	}
+	if fc.NextAction != "looping" {
+		t.Fatalf("plan continue NextAction = %q, want looping", fc.NextAction)
+	}
+	if got := flowStepStatus(t, svc, runID, "plan_writer"); got != StepStatusRunning {
+		t.Fatalf("plan_writer step = %v, want RUNNING (plan-loop re-entry)", got)
+	}
+	if got := flowStepStatus(t, svc, runID, "plan_reviewer"); got != StepStatusPending {
+		t.Fatalf("plan_reviewer step = %v, want PENDING (reset for new plan round)", got)
+	}
+	if got := flowStepStatus(t, svc, runID, "context"); got != StepStatusDone {
+		t.Fatalf("context step = %v, want DONE (upstream once-only node must not reset)", got)
+	}
+
+	// Plan loop then approves and the code loop runs its first round.
+	for _, id := range []string{"plan_writer", "plan_reviewer", "plan_synthesis", "preflight_contract_freeze"} {
+		svc.setFlowStepStatus(ctx, runID, id, StepStatusDone)
+	}
+	for _, id := range []string{"implement", "validate", "reviewer", "synthesis"} {
+		svc.setFlowStepStatus(ctx, runID, id, StepStatusDone)
+	}
+	svc.mu.Lock()
+	svc.runs[runID].activeHubNodeID = "synthesis"
+	svc.mu.Unlock()
+
+	// Case 2: code hub synthesis emits continue (code review requested changes).
+	fc, err = svc.applyFlowControl(runID, FlowControlInput{Status: "continue", Summary: "missing restart test"})
+	if err != nil {
+		t.Fatalf("applyFlowControl(code continue): %v", err)
+	}
+	if fc.NextAction != "looping" {
+		t.Fatalf("code continue NextAction = %q, want looping", fc.NextAction)
+	}
+	if got := flowStepStatus(t, svc, runID, "implement"); got != StepStatusRunning {
+		t.Fatalf("implement step = %v, want RUNNING (code-loop re-entry)", got)
+	}
+	if got := flowStepStatus(t, svc, runID, "validate"); got != StepStatusPending {
+		t.Fatalf("validate step = %v, want PENDING (reset for new code round)", got)
+	}
+	for _, id := range []string{"context", "plan_writer", "plan_reviewer", "plan_synthesis", "preflight_contract_freeze"} {
+		if got := flowStepStatus(t, svc, runID, id); got != StepStatusDone {
+			t.Fatalf("%s step = %v, want DONE (plan loop must survive code-loop continue)", id, got)
+		}
+	}
+}
