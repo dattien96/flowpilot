@@ -548,6 +548,11 @@ type AppModel struct {
 	// stats so the seed-envelope collapse renders the carried-count divider.
 	lastSwitchStats  *client.ChatSwitchHandoffStats
 	lastSwitchTarget string
+	// turnLive tracks a user turn from local send until turn_completed/failed,
+	// surviving stream switches (turnStream → orchStream). It prevents premature
+	// "done" and C2 Tab races where TUI thought idle but runner was still
+	// busy (BUG-341/B-4: 417944 first turn blank, Tab 409 + in-place leak).
+	turnLive bool
 
 	// Supabase auth (Desktop LoginScreen parity via POST /supabase-auth/login)
 	authPhase     AuthPhase

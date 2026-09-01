@@ -1408,6 +1408,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turnStream = nil
 		m.turnSendPending = false
 		if msg.Err != nil {
+			m.turnLive = false
 			// BUG-231 (run-189839 parity): a freeform turn against a blocked flow
 			// answers 409 flow_awaiting_user. That is a deliberate parked state,
 			// not a failure — park the flow (keep the handle) so the user can
@@ -1439,6 +1440,28 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.runHandle = nil
 			m.clearThinkingPlaceholder()
 			return m, nil
+		}
+		// BUG-341: 417944 first turn ended on tool-only output with a blank
+		// assistant until the next prompt's replay. If the turn is still live
+		// (turn_completed not yet seen via any stream), keep it busy and let
+		// the orch stream deliver the terminal event — do not settle to "done"
+		// prematurely and do not clear the thinking placeholder yet.
+		if m.turnLive {
+			if m.connStatus == ConnRunning {
+				// keep "turn running…" / "thinking…" — do not flip to done
+			} else if m.thinkingIndex() >= 0 {
+				m.connStatus = ConnRunning
+				m.statusMsg = "thinking…"
+			} else {
+				m.connStatus = ConnRunning
+				m.statusMsg = "turn running…"
+			}
+			cmds := []tea.Cmd{m.cmdRefreshStepsRuntime()}
+			if m.runHandle != nil && m.orchStream == nil {
+				cmds = append(cmds, m.cmdStartOrchestrationStream())
+			}
+			cmds = append(cmds, m.cmdHydratePendingFromSnapshot())
+			return m, tea.Batch(cmds...)
 		}
 		if m.connStatus == ConnRunning {
 			m.connStatus = ConnIdle
@@ -1772,6 +1795,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.cmdHydrateDispatchAttention(m.runHandle.RunID)
 
 	case TurnDoneMsg:
+		m.turnLive = false
 		m.connStatus = ConnIdle
 		m.statusMsg = "done"
 		// A completed turn means the flow moved on — a still-armed gate is stale
@@ -1787,6 +1811,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case turnFinishedMsg:
+		m.turnLive = false
 		m.connStatus = ConnIdle
 		m.statusMsg = "done"
 		// A completed turn means the flow moved on — a still-armed gate is stale
@@ -1808,6 +1833,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case TurnFailedMsg:
+		m.turnLive = false
 		m.connStatus = ConnError
 		m.statusMsg = "turn failed: " + msg.Reason
 		m.addMessage("system", "Turn failed: "+msg.Reason, "error")
@@ -1859,6 +1885,7 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		// A completed turn means the flow moved on — a still-armed gate is stale
 		// (CA-536). It must not keep swallowing input.
 		m.gate = nil
+		m.turnLive = false
 		// Prefer already-streamed assistant text; ignore step-complete stubs.
 		// run-92955: a prior turn's assistant text made hasAssistantContent()
 		// true, so thinking… on a follow-up was never replaced when tools
@@ -1885,6 +1912,7 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg { return TurnDoneMsg{FinalMsg: final} }
 
 	case "turn_failed":
+		m.turnLive = false
 		m.connStatus = ConnError
 		m.statusMsg = "turn failed: " + ev.Error
 		if strings.TrimSpace(ev.Error) != "" {
@@ -3699,6 +3727,7 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	// the status line + F2 RUNNING step instead (workIsLive starts the ticker).
 	m.statusMsg = "thinking…"
 	m.connStatus = ConnRunning
+	m.turnLive = true
 
 	// First message: start run, then send turn (desktop sendPrompt parity).
 	if m.runHandle == nil {

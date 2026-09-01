@@ -107,7 +107,7 @@ func (m *AppModel) routeProviderSwitch(targetProvider, model string) tea.Cmd {
 		return nil // same-provider continuity stays in-place (CP-59 P-7)
 	}
 	// C2: cannot switch while a turn/question/approval is pending (runner 409 handoff_run_busy)
-	if m.question != nil || len(m.questions) > 0 || m.approval != nil || len(m.approvals) > 0 || m.turnStream != nil || m.turnSendPending {
+	if m.turnLive || m.question != nil || len(m.questions) > 0 || m.approval != nil || len(m.approvals) > 0 || m.turnStream != nil || m.turnSendPending {
 		m.addMessage("system", "Cannot switch provider/model while a question or approval is pending — please answer it first", "error")
 		return func() tea.Msg { return detachedNoticeMsg{} }
 	}
@@ -224,7 +224,7 @@ func (m *AppModel) routePostureSwitch(cfg client.ChatPostureConfig, name string)
 		return tea.Batch(func() tea.Msg { return detachedNoticeMsg{} }, m.cmdSaveChatPosture(m.chatPostureCfg))
 	}
 	// C2: cannot switch while a turn/question/approval is pending (runner 409 handoff_run_busy)
-	if m.question != nil || len(m.questions) > 0 || m.approval != nil || len(m.approvals) > 0 || m.turnStream != nil || m.turnSendPending {
+	if m.turnLive || m.question != nil || len(m.questions) > 0 || m.approval != nil || len(m.approvals) > 0 || m.turnStream != nil || m.turnSendPending {
 		m.addMessage("system", "Cannot switch provider/model while a question or approval is pending — please answer it first", "error")
 		return func() tea.Msg { return detachedNoticeMsg{} }
 	}

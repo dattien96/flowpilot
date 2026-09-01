@@ -117,6 +117,15 @@ func (m *AppModel) chatPostureCmdFromPending(cfg client.ChatPostureConfig) tea.C
 			if cmd := m.routePostureSwitch(cfg, name); cmd != nil {
 				return cmd
 			}
+			// Tab while a switch or turn is still in flight must not fall
+			// through to an in-place apply — that leaked a grok provider onto
+			// an opencode leg after a 409 and needed a double-Tab to reach
+			// code (B-4: 417944→417970). Treat it as C2-busy like the switch
+			// path so the next Tab can reach code cleanly.
+			if m.chatSwitchInFlight || m.turnLive || m.turnStream != nil || m.turnSendPending || m.question != nil || len(m.questions) > 0 || m.approval != nil || len(m.approvals) > 0 {
+				m.addMessage("system", "Cannot switch provider/model while a question or approval is pending — please answer it first", "error")
+				return func() tea.Msg { return detachedNoticeMsg{} }
+			}
 			// CA-685: the active posture's full profile (reasoning included)
 			// re-applies; /new is a refresh, not an override (supersedes the
 			// CA-641 reasoning-keep carve-out).
