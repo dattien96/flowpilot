@@ -148,3 +148,171 @@ func TestEnsureBuiltinArtifactBindingsWithStoreNoopsOnUnsupportedStore(t *testin
 		t.Fatalf("expected nil store to no-op, got %v", err)
 	}
 }
+
+// harnessFlowRecordFixture loads a CP-58 harness flow from the real builtin
+// pack so the seed test exercises the same bindings the FS loader parses.
+func harnessFlowRecordFixture(t *testing.T, flowID string) FlowDefinitionRecord {
+	t.Helper()
+	pack, err := agentpack.LoadBuiltinPack()
+	if err != nil {
+		t.Fatalf("LoadBuiltinPack: %v", err)
+	}
+	for _, def := range pack.Flows {
+		if def.ID == flowID {
+			return FlowDefinitionRecord{
+				FlowRef:     canonicalFlowRef("flowpilot-core-flow-pack", flowID),
+				PackID:      "flowpilot-core-flow-pack",
+				PackFlowID:  flowID,
+				PackVersion: "0.1.0",
+				Definition:  def,
+			}
+		}
+	}
+	t.Fatalf("%s missing from builtin pack", flowID)
+	return FlowDefinitionRecord{}
+}
+
+// TestSeedBuiltinHarnessArtifactBindingsSeedsTaskHarnessSlots (CP-58 Task-307)
+// verifies the harness seed maps the task-harness YAML bindings to the
+// well-known instance UUIDs with the right direction/required per node.
+func TestSeedBuiltinHarnessArtifactBindingsSeedsTaskHarnessSlots(t *testing.T) {
+	original := httpRequestFn
+	defer func() { httpRequestFn = original }()
+
+	type gotRow struct {
+		StepDefinitionID   string `json:"step_definition_id"`
+		Direction          string `json:"direction"`
+		SlotName           string `json:"slot_name"`
+		ArtifactInstanceID string `json:"artifact_instance_id"`
+		Required           bool   `json:"required"`
+	}
+	var gotRows []gotRow
+	httpRequestFn = func(_ context.Context, method, endpoint string, headers map[string]string, body []byte) (int, []byte, error) {
+		if method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", method)
+		}
+		if !strings.Contains(endpoint, "on_conflict=step_definition_id,direction,artifact_instance_id") {
+			t.Fatalf("expected idempotent upsert endpoint, got %q", endpoint)
+		}
+		if err := json.Unmarshal(body, &gotRows); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		return 201, []byte("[]"), nil
+	}
+
+	store := NewSupabaseWorkflowFlowStore(SupabaseWorkspaceConfig{APIURL: "https://example.supabase.co"}, "test-key")
+	if err := store.SeedBuiltinHarnessArtifactBindings(context.Background(), harnessFlowRecordFixture(t, "task-harness")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(gotRows) != 2 {
+		t.Fatalf("expected 2 binding rows (plan_writer output + plan_reviewer input), got %d: %+v", len(gotRows), gotRows)
+	}
+	// plan_writer's OUTPUT and plan_reviewer's INPUT share the plan_md slot
+	// name; disambiguate by the step id suffix instead of the slot.
+	var out, in *gotRow
+	for i := range gotRows {
+		switch {
+		case strings.HasSuffix(gotRows[i].StepDefinitionID, "_plan_writer"):
+			out = &gotRows[i]
+		case strings.HasSuffix(gotRows[i].StepDefinitionID, "_plan_reviewer"):
+			in = &gotRows[i]
+		}
+	}
+	if out == nil || in == nil {
+		t.Fatalf("expected one row per plan_writer/plan_reviewer step, got %+v", gotRows)
+	}
+	if out.Direction != "output" || !out.Required || out.ArtifactInstanceID != builtinHarnessPlanMdInstanceID {
+		t.Fatalf("plan_writer binding = %+v, want required output to %s", out, builtinHarnessPlanMdInstanceID)
+	}
+	if in.Direction != "input" || !in.Required || in.ArtifactInstanceID != builtinHarnessPlanMdInstanceID {
+		t.Fatalf("plan_reviewer binding = %+v, want required input to %s", in, builtinHarnessPlanMdInstanceID)
+	}
+}
+
+// TestSeedBuiltinHarnessArtifactBindingsSeedsCpHarnessSplitterSlots verifies
+// the cp-harness seed: cp_plan_writer OUTPUT cp_md, cp_reviewer INPUT cp_md,
+// and task_splitter INPUT cp_md + OUTPUT task_md (4 rows).
+func TestSeedBuiltinHarnessArtifactBindingsSeedsCpHarnessSplitterSlots(t *testing.T) {
+	original := httpRequestFn
+	defer func() { httpRequestFn = original }()
+
+	type gotRow struct {
+		StepDefinitionID   string `json:"step_definition_id"`
+		Direction          string `json:"direction"`
+		SlotName           string `json:"slot_name"`
+		ArtifactInstanceID string `json:"artifact_instance_id"`
+	}
+	var gotRows []gotRow
+	httpRequestFn = func(_ context.Context, _ string, _ string, _ map[string]string, body []byte) (int, []byte, error) {
+		if err := json.Unmarshal(body, &gotRows); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		return 201, []byte("[]"), nil
+	}
+
+	store := NewSupabaseWorkflowFlowStore(SupabaseWorkspaceConfig{APIURL: "https://example.supabase.co"}, "test-key")
+	if err := store.SeedBuiltinHarnessArtifactBindings(context.Background(), harnessFlowRecordFixture(t, "cp-harness")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(gotRows) != 4 {
+		t.Fatalf("expected 4 binding rows, got %d: %+v", len(gotRows), gotRows)
+	}
+	cpMdUUID := builtinHarnessCpMdInstanceID
+	taskMdUUID := builtinHarnessTaskMdInstanceID
+	checks := map[string]int{}
+	for _, row := range gotRows {
+		checks[row.Direction+"/"+row.SlotName]++
+		switch {
+		case row.SlotName == "cp_md" && row.Direction == "output":
+			if row.ArtifactInstanceID != cpMdUUID {
+				t.Fatalf("cp_md output bound to %q, want %q", row.ArtifactInstanceID, cpMdUUID)
+			}
+			if !strings.HasSuffix(row.StepDefinitionID, "_cp_plan_writer") {
+				t.Fatalf("cp_md output step = %q, want _cp_plan_writer suffix", row.StepDefinitionID)
+			}
+		case row.SlotName == "task_md" && row.Direction == "output":
+			if row.ArtifactInstanceID != taskMdUUID {
+				t.Fatalf("task_md output bound to %q, want %q", row.ArtifactInstanceID, taskMdUUID)
+			}
+			if !strings.HasSuffix(row.StepDefinitionID, "_task_splitter") {
+				t.Fatalf("task_md output step = %q, want _task_splitter suffix", row.StepDefinitionID)
+			}
+		}
+	}
+	if checks["output/cp_md"] != 1 || checks["input/cp_md"] != 2 || checks["output/task_md"] != 1 {
+		t.Fatalf("unexpected binding shape: %+v", checks)
+	}
+}
+
+// TestEnsureBuiltinArtifactBindingsWithStoreSeedsHarnessFlows verifies the
+// CP-58 extension of the ensure loop: the three harness flows each get one
+// harness seed POST, rag-harness/review-loop still get none, and the context
+// flow still gets exactly its Task-205 POST.
+func TestEnsureBuiltinArtifactBindingsWithStoreSeedsHarnessFlows(t *testing.T) {
+	original := httpRequestFn
+	defer func() { httpRequestFn = original }()
+
+	var endpoints []string
+	httpRequestFn = func(_ context.Context, _ string, endpoint string, _ map[string]string, _ []byte) (int, []byte, error) {
+		endpoints = append(endpoints, endpoint)
+		return 201, []byte("[]"), nil
+	}
+
+	store := NewSupabaseWorkflowFlowStore(SupabaseWorkspaceConfig{APIURL: "https://example.supabase.co"}, "test-key")
+	synced := []FlowDefinitionRecord{
+		{PackFlowID: "review-loop", Definition: agentpack.FlowDefinition{Nodes: []agentpack.FlowNode{{ID: "coder"}}}},
+		{PackFlowID: "rag-harness", Definition: agentpack.FlowDefinition{Nodes: []agentpack.FlowNode{{ID: "context"}}}},
+		builtinContextFlowRecordFixture(),
+		harnessFlowRecordFixture(t, "task-harness"),
+		harnessFlowRecordFixture(t, "cp-harness"),
+		harnessFlowRecordFixture(t, "cp-harness-smoke"),
+	}
+	if err := EnsureBuiltinArtifactBindingsWithStore(context.Background(), store, synced); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(endpoints) != 4 {
+		t.Fatalf("expected 4 seed POSTs (1 context + 3 harness), got %d", len(endpoints))
+	}
+}
