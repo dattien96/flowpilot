@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -376,6 +377,7 @@ func (a *opencodeAdapter) drainOpencodeNotifications(sessionID string, notif <-c
 func (a *opencodeAdapter) drainOpencodeNotificationsBlocking(ctx context.Context, sessionID string, notif <-chan opencodeNotification, bridge TurnBridge, lastText string, timeout time.Duration) string {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	hasText := strings.TrimSpace(lastText) != ""
 	for {
 		select {
 		case <-ctx.Done():
@@ -386,24 +388,56 @@ func (a *opencodeAdapter) drainOpencodeNotificationsBlocking(ctx context.Context
 			}
 			before := lastText
 			lastText = a.applyOpencodeNotification(sessionID, n, bridge, lastText)
-			// Only extend the wait when the final answer actually grows.
-			// Non-text frames (usage_update, tool_call_update,
-			// agent_thought_chunk, available_commands_update) must not
-			// collapse the wait-for-text budget — that was the 421135/
-			// 424302/430742 blank (usage_update reset 8s → 150ms).
 			if lastText != before {
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
+				// Text grew: the answer is streaming — a short quiet window
+				// (150ms) then return.
+				resetOpencodeTimer(timer, 150*time.Millisecond)
+				hasText = true
+			} else if !hasText {
+				// Still no text: the model may be generating after tools and
+				// emitting only usage_update/tool frames (run-437116: 8s of
+				// silence between usage updates, then the answer). Keep the
+				// wait-for-text budget alive on ANY session activity so a
+				// long generation is not cut off by a fixed 8s cap — but cap
+				// at 15s so a genuinely textless turn still settles.
+				resetOpencodeTimer(timer, 15*time.Second)
+				if kind, content := opencodeNotificationKindAndContent(n); kind == "agent_message_chunk" {
+					log.Printf("[opencode] DEBUG agent_message_chunk yielded no text session=%s content=%.400s", sessionID, content)
 				}
-				timer.Reset(150 * time.Millisecond)
+			} else {
+				// Text already present: stay in quiet mode even on non-text.
+				resetOpencodeTimer(timer, 150*time.Millisecond)
 			}
 		case <-timer.C:
 			return lastText
 		}
 	}
+}
+
+// resetOpencodeTimer safely re-arms t (which may have already fired).
+func resetOpencodeTimer(t *time.Timer, d time.Duration) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+	t.Reset(d)
+}
+
+// opencodeNotificationKindAndContent extracts the sessionUpdate kind and a
+// compact content preview for diagnostics (empty-text agent_message_chunk).
+func opencodeNotificationKindAndContent(n opencodeNotification) (string, string) {
+	update, _ := n.Params["update"].(map[string]any)
+	if update == nil {
+		return "", ""
+	}
+	kind, _ := update["sessionUpdate"].(string)
+	content := ""
+	if raw, err := json.Marshal(update["content"]); err == nil {
+		content = string(raw)
+	}
+	return kind, content
 }
 
 func (a *opencodeAdapter) ensureSession(ctx context.Context, req TurnRequest, cwd string, mcpServers []interface{}) (string, error) {
