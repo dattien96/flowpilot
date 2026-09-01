@@ -33,6 +33,12 @@ flows:
     selectableIn:
       - flow
     cloneable: true
+  - path: flows/task-harness.yaml
+    visibility: builtin
+    editable: false
+    selectableIn:
+      - flow
+    cloneable: true
   - path: flows/vibe-ingest.yaml
     visibility: builtin
     editable: false
@@ -62,6 +68,8 @@ prompts:
   - prompts/test-signatures.md
   - prompts/implement-complete-tests.md
   - prompts/review-safe-fix-contract.md
+  - prompts/plan-task.md
+  - prompts/review-plan.md
 compatibility:
   minRunnerVersion: TBD
   fallbackToGoBuiltins: true
