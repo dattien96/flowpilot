@@ -5,11 +5,11 @@
 - Document ID: `Task-306`
 - Title: `CP-Harness 12-Step With CP Plan And Task Splitter`
 - Phase: `task`
-- Status: `draft`
+- Status: `inprogress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-27`
-- Last Updated: `2026-08-27`
+- Last Updated: `2026-09-01`
 - Parent Documents: [CP-58: Bug / Task / CP Harness With Plan Artifact And Dual Review Loops](../../07-Coding-Plan/todo/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md)
 - Child Documents: `None`
 - Related Documents: [CP-55: Flow-First Preflight Contract](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [Task-293: Rag-Harness TDD + Review Loop](../../08-Task/done/Task-293-RagHarness-TDD-Test-Signatures-And-Review-Until-Clean-Loop.md), [Task-305: Task-Harness 11-Step](../todo/Task-305-Task-Harness-11-Step-With-Plan-Writer-And-Plan-Review-Loop.md)
@@ -488,6 +488,8 @@ func TestCpHarnessSmokeVariant(t *testing.T) {
 
 ## 8. Completion Notes
 
-- result:
-- follow-ups:
+- result: implemented (commit 9dcf5541). cp-harness 7-node slice-only + cp-harness-smoke 13-node opt-in ship in the pack; entry spawn resolves to exactly [preflight_contract_plan]; plan loop live-proven (cp_synthesis continue reuses cp_plan_writer session).
+- documented deviation: cp_plan_writer/task_splitter are agent.delegate (same CP-55 writer/freeze rationale as Task-305; slice-only has no freeze at all). task_splitter stays an LLM writer with prompts/task-splitter.md (Q-1's deterministic context.produce variant left as follow-up).
+- tests added: TestCpHarnessPackTopology, TestCpHarnessSmokePackTopology, TestCpHarnessSelectableAndCloneable (cp_harness_pack_test.go); TestCpHarnessEntrySpawnIsScoutOnly, TestCpHarnessPlanLoopContinueReusesCpPlanWriter (cp_harness_test.go).
+- follow-ups: live /flow cp-harness slice round + artifact panel check of cp_md/task_md (DOD-5 manual); EnsureBuiltinFlowMirrorsWithStore sync against a live Supabase.
 - upstream docs updated: `CP-58` `P-4`, §3.1

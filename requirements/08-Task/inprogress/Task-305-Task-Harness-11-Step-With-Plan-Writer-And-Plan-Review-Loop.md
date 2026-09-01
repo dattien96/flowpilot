@@ -5,11 +5,11 @@
 - Document ID: `Task-305`
 - Title: `Task-Harness 11-Step With Plan Writer And Plan Review Loop`
 - Phase: `task`
-- Status: `draft`
+- Status: `inprogress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-27`
-- Last Updated: `2026-08-27`
+- Last Updated: `2026-09-01`
 - Parent Documents: [CP-58: Bug / Task / CP Harness With Plan Artifact And Dual Review Loops](../../07-Coding-Plan/todo/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md)
 - Child Documents: `None`
 - Related Documents: [CP-55: Flow-First Preflight Contract](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [Task-293: Rag-Harness TDD + Review Loop](../../08-Task/done/Task-293-RagHarness-TDD-Test-Signatures-And-Review-Until-Clean-Loop.md), [rag-harness.yaml](../../../apps/local-runner/internal/agentpack/flow-pack/flows/rag-harness.yaml), [Task-304: Dual Back-Edge](../todo/Task-304-Dual-Back-Edge-Validator-And-Edge-Driven-Re-entry.md)
@@ -408,6 +408,8 @@ func TestTaskHarnessDualLoopReinvoke(t *testing.T) {
 
 ## 8. Completion Notes
 
-- result:
-- follow-ups:
+- result: implemented (commit e54801fa). 12-node task-harness loads through full ValidateFlowDefinition with two anchored continue/back loops; plan loop live-proven in fake-provider runner tests: plan_synthesis continue reuses the plan_writer session, code hub continue routes validate->implement and never enters the plan loop.
+- documented deviation: plan_writer is agent.delegate + reinvoke, NOT agent.code as T-1 sketched: CP-55 ValidateFlowSafetyTopology requires every agent.code writer dominated by contract.freeze, and plan_writer must run BEFORE freeze. agent.code shares the delegate handler verbatim and artifact write contracts key on artifactBindings, so runtime semantics are unchanged while real code writers (test_signatures, implement) stay agent.code under the CP-55 contract.
+- tests added: TestTaskHarnessPackTopology, TestTaskHarnessValidateFlowDefinition (task_harness_pack_test.go); TestTaskHarnessPlanLoopContinueReusesPlanWriter, TestTaskHarnessCodeLoopContinueStaysOutOfPlanLoop (task_harness_dual_loop_test.go).
+- follow-ups: live plan-review reject->revise->approve->freeze->code round (DOD-4 manual); per-node model tiering (Scout cheap vs Architect high-reasoning) is prompt/model config, not yet wired.
 - upstream docs updated: `CP-58` `P-2`, `P-3`, §3.1

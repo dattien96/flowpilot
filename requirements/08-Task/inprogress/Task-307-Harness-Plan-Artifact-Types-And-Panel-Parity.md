@@ -5,11 +5,11 @@
 - Document ID: `Task-307`
 - Title: `Harness Plan Artifact Types And Panel Parity`
 - Phase: `task`
-- Status: `draft`
+- Status: `inprogress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-27`
-- Last Updated: `2026-08-27`
+- Last Updated: `2026-09-01`
 - Parent Documents: [CP-58: Bug / Task / CP Harness With Plan Artifact And Dual Review Loops](../../07-Coding-Plan/todo/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md)
 - Child Documents: `None`
 - Related Documents: [SD-23: Generic Artifact Framework](../../06-System-Tech-Design/SD-23-Generic-Artifact-Framework.md), [CP-45: Generic Artifact Types And Instances](../../07-Coding-Plan/done/CP-45-Generic-Artifact-Types-And-Instances.md), [CP-55: Flow-First Preflight Contract](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md)
@@ -398,6 +398,7 @@ func findBinding(bindings []agentpack.FlowArtifactBinding, dir, slot string) *ag
 
 ## 8. Completion Notes
 
-- result:
-- follow-ups:
+- result: implemented (commit a5626cd7). LoadFlowFS now parses node artifactBindings (the FS loader silently dropped them before — only the Supabase mirror populated the field); ValidateFlowDefinition fails closed on malformed OUTPUT bindings and restricts file_artifact OUTPUT paths to requirements/; templated (pathTemplate) write contracts are prompt-level and excluded from the flowgate exact-path check; migration 20260831090000 seeds plan_md/cp_md/task_md instances.
+- tests added: TestValidateArtifactOutputPath, TestValidateFlowDefinitionRejectsBadOutputBinding, TestTaskHarnessPlanArtifactBindings (agentpack); TestHarnessTemplatedPlanOutputPromptContract, TestHarnessTemplatedInputMentionForPlanReviewer (runner).
+- follow-ups: artifact panel rendering on a live run (T-7 labels optional — skipped as data-driven via selectableIn); step_artifact_bindings seeding for the new instances beyond the Task-201 context path; Q-1/Q-2 pathTemplate-vs-declared_paths decision stays as recorded in the CP.
 - upstream docs updated: `CP-58` `P-4`, `P-6`
