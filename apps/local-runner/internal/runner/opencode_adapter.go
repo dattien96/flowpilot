@@ -548,6 +548,14 @@ func (a *opencodeAdapter) emitTerminal(ctx context.Context, req TurnRequest, bri
 		bridge.Emit(ProviderEvent{Type: EventTurnFailed, Error: fmt.Sprintf("opencode turn ended: %s", stopReason), Recoverable: false})
 		return nil
 	}
+	if strings.TrimSpace(finalText) == "" {
+		// Diagnostic for the BUG-341 class (blank first turn after tools): a
+		// non-empty FinalMessage is the only thing that lets TUI/Desktop paint
+		// the reply. If this fires after the 8s wait + array-text mapper fix,
+		// the model did not emit agent_message_chunk before session/prompt
+		// returned — capture the wire frames next time.
+		log.Printf("[opencode] WARN turn_completed with EMPTY finalMessage run=%s session=%s stopReason=%q lastText_len=%d", req.RunID, sessionID, stopReason, len(lastText))
+	}
 	bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: finalText})
 	return nil
 }
