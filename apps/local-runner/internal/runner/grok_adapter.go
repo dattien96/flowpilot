@@ -66,6 +66,14 @@ type grokAdapter struct {
 	// always-approve toggle) — mirrors the Claude BUG-069/CA-079 fix: the
 	// runner's own YOLO toggle is the only source of truth.
 	yoloModes map[string]bool
+	// permissionDenied records, per sessionId, the tool/command excerpt of a
+	// permission that was DENIED during this turn (BUG-342). Grok aborts the
+	// whole prompt on a denied permission (stopReason=cancelled,
+	// PermissionRejected, agentResult:null) with no answer text — emitTerminal
+	// uses this to surface an honest no-reply notice instead of a blank bubble
+	// (mirrors opencode CA-713). Presence = denied this turn; value = blocked
+	// tool/command excerpt for the notice.
+	permissionDenied map[string]string
 }
 
 func newGrokAdapter(dispatcher *grokDispatcher, cwd string) *grokAdapter {
@@ -75,6 +83,7 @@ func newGrokAdapter(dispatcher *grokDispatcher, cwd string) *grokAdapter {
 		bridges:            map[string]TurnBridge{},
 		allowReviewOutcome: map[string]bool{},
 		yoloModes:          map[string]bool{},
+		permissionDenied:   map[string]string{},
 	}
 	dispatcher.setInbound(a.handleInbound)
 	return a
@@ -317,12 +326,15 @@ func (a *grokAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Turn
 	// so they clear the yoloModes auto-approve flag regardless of the profile's
 	// YOLO flag.
 	a.yoloModes[sessionID] = req.YoloMode && !req.ForceShellBridge && !IsReadOnlyChatPosture(req.ChatPosture)
+	// BUG-342: permission-deny tracking resets per new prompt/turn.
+	delete(a.permissionDenied, sessionID)
 	a.mu.Unlock()
 	defer func() {
 		a.mu.Lock()
 		delete(a.bridges, sessionID)
 		delete(a.allowReviewOutcome, sessionID)
 		delete(a.yoloModes, sessionID)
+		delete(a.permissionDenied, sessionID)
 		a.mu.Unlock()
 	}()
 
@@ -566,6 +578,27 @@ func (a *grokAdapter) emitTerminal(ctx context.Context, req TurnRequest, bridge 
 		bridge.Emit(ProviderEvent{Type: EventTurnFailed, Error: fmt.Sprintf("grok turn ended: %s", stopReason), Recoverable: false})
 		return nil
 	}
+	// BUG-342 (run-464841): a FlowPilot-denied permission makes Grok abort the
+	// whole prompt — session/prompt_complete arrives with agentResult:null,
+	// stopReason=cancelled, cancellationCategory=PermissionRejected and NO
+	// answer text anywhere. Without this, TUI/Desktop render a blank bubble
+	// that is indistinguishable from a broken turn (the exact opencode BUG-341
+	// shape fixed by CA-713). Surface an honest notice instead. A user-initiated
+	// cancel (no FlowPilot deny) and a deny that still streamed text keep
+	// today's behavior.
+	if strings.EqualFold(stopReason, "cancelled") && strings.TrimSpace(finalText) == "" {
+		if denied, deniedTool := a.grokPermissionDeniedFor(sessionID); denied {
+			notice := "[no reply text] Grok aborted the turn because a tool permission was denied"
+			if deniedTool != "" {
+				notice += " (" + deniedTool + ")"
+			}
+			notice += ". Switch posture (plan/code) or approve the tool to continue."
+			log.Printf("[grok-acp] WARN turn_completed with EMPTY finalMessage run=%s session=%s stopReason=%q permissionDenied=true", req.RunID, sessionID, stopReason)
+			bridge.Emit(ProviderEvent{Type: EventMessageDelta, Text: notice})
+			bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: notice})
+			return nil
+		}
+	}
 	bridge.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: finalText})
 	return nil
 }
@@ -672,12 +705,12 @@ func (a *grokAdapter) handleInbound(req grokInboundRequest) {
 	a.mu.Unlock()
 
 	options, _ := req.Params["options"].([]any)
+	details := grokApprovalDetailsFromRequest(req.Params)
 	if bridge == nil {
+		a.markGrokPermissionDenied(sessionID, grokDeniedToolExcerpt(details))
 		_ = a.dispatcher.reply(req.ID, grokPermissionOutcomeResponse(grokEncodePermissionDecision(options, false)))
 		return
 	}
-
-	details := grokApprovalDetailsFromRequest(req.Params)
 
 	// YOLO=true: still process the request through this same channel (never
 	// disable it) but auto-answer with the runner's own auto-approve decision
@@ -693,9 +726,15 @@ func (a *grokAdapter) handleInbound(req grokInboundRequest) {
 	decision, err := bridge.RequestApproval(details)
 	if err != nil {
 		// expiry/interrupt while pending -> deny so Grok never hangs.
+		a.markGrokPermissionDenied(sessionID, grokDeniedToolExcerpt(details))
 		_ = a.dispatcher.reply(req.ID, grokPermissionOutcomeResponse(grokEncodePermissionDecision(options, false)))
 		return
 	}
 	approve := decision == "approve" || decision == "approved" || decision == "approve_for_session"
+	if !approve {
+		// BUG-342: a denied permission makes Grok cancel the whole prompt with
+		// no answer — remember it so emitTerminal can emit a no-reply notice.
+		a.markGrokPermissionDenied(sessionID, grokDeniedToolExcerpt(details))
+	}
 	_ = a.dispatcher.reply(req.ID, grokPermissionOutcomeResponse(grokEncodePermissionDecision(options, approve)))
 }
