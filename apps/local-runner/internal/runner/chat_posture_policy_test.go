@@ -108,6 +108,54 @@ func TestReadOnlyApprovalDecision_GitDualFormSubcommandsOnlyWhenRead(t *testing.
 	}
 }
 
+func TestReadOnlyApprovalDecision_AskUserApproved(t *testing.T) {
+	// BUG-xxx: the FlowPilot ask_user question tool must pass the scan/plan
+	// posture gate — approving the gate only renders the AskQuestion card, it
+	// never auto-answers. Covers the live Grok shape (run-477800 / run-464841)
+	// plus the shared MCP/tool-name shapes for provider parity.
+	cases := []struct {
+		name    string
+		details ApprovalDetails
+	}{
+		{"grok use_tool ask_user", ApprovalDetails{Kind: "other", Command: "flowpilot__ask_user", Reason: "use_tool"}},
+		{"grok use_tool ask_user bare", ApprovalDetails{Kind: "other", Command: "ask_user", Reason: "use_tool"}},
+		{"mcp ask_user", ApprovalDetails{Kind: "mcp", Command: "mcp__flowpilot__ask_user"}},
+		{"tool-name ask_user", ApprovalDetails{Kind: "file", Reason: "ask_user"}},
+		{"command ask_user reason use_tool", ApprovalDetails{Kind: "other", Command: "mcp__flowpilot__ask_user", Reason: "use_tool"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := readOnlyApprovalDecision(tc.details); got != "approve" {
+				t.Fatalf("readOnlyApprovalDecision(%+v) = %q, want approve", tc.details, got)
+			}
+		})
+	}
+}
+
+func TestReadOnlyApprovalDecision_AskUserNeverAutoAnswersOtherTools(t *testing.T) {
+	// Approving ask_user must not leak into other tools: spawn_agent (can
+	// write), the native Grok ask_user_question (steered away), and generic
+	// MCP/other still fail closed.
+	cases := []struct {
+		name    string
+		details ApprovalDetails
+	}{
+		{"grok use_tool spawn_agent", ApprovalDetails{Kind: "other", Command: "flowpilot__spawn_agent", Reason: "use_tool"}},
+		{"native ask_user_question", ApprovalDetails{Kind: "other", Command: "ask_user_question", Reason: "use_tool"}},
+		{"generic mcp", ApprovalDetails{Kind: "mcp", Command: "mcp_thing"}},
+		{"generic other", ApprovalDetails{Kind: "other", Command: "anything"}},
+		{"ask_user in a write exec", ApprovalDetails{Kind: "exec", Command: "echo x > ask_user.txt"}},
+		{"reason use_tool unknown command", ApprovalDetails{Kind: "other", Command: "some_random_mcp", Reason: "use_tool"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := readOnlyApprovalDecision(tc.details); got != "deny" {
+				t.Fatalf("readOnlyApprovalDecision(%+v) = %q, want deny", tc.details, got)
+			}
+		})
+	}
+}
+
 func TestIsReadOnlyToolName_EmptyOrUnknownDenies(t *testing.T) {
 	if isReadOnlyToolName("") {
 		t.Fatal("empty tool name must not be read-only")

@@ -28,7 +28,17 @@ import "strings"
 // readOnlyApprovalDecision returns "approve" or "deny" for an ApprovalDetails
 // under a read-only posture. Conservative: only confidently-read operations are
 // approved; exec commands and unknown tools default to deny.
+//
+// ask_user is a deliberate exception: it is a QUESTION, not a write. Approving
+// its tool-call gate only lets the FlowPilot MCP AskQuestion card render — the
+// bridge still blocks for the user's answer, so approving never auto-answers.
+// Live run-477800 / run-464841: Grok routes the MCP `ask_user` as a gated
+// `use_tool` request (Kind "other", Command "flowpilot__ask_user") and the
+// fail-close deny aborted B4-inplace with a blank/question-less turn.
 func readOnlyApprovalDecision(details ApprovalDetails) string {
+	if isAskUserTool(details) {
+		return "approve"
+	}
 	switch details.Kind {
 	case "exec":
 		if isReadOnlyCommand(details.Command) {
@@ -52,6 +62,23 @@ func readOnlyApprovalDecision(details ApprovalDetails) string {
 	default:
 		return "deny"
 	}
+}
+
+// isAskUserTool reports whether the gated tool is FlowPilot's structured
+// question tool `ask_user`. Grok wraps it as `use_tool` with Command carrying
+// the MCP name (`flowpilot__ask_user`); Claude/Codex surface it as an MCP /
+// tool-name call (`mcp__flowpilot__ask_user`, bare `ask_user`). The native
+// Grok `ask_user_question` is deliberately NOT matched — the reinforcement
+// steers onto the FlowPilot MCP tool, and the native one must keep being
+// denied in scan.
+func isAskUserTool(details ApprovalDetails) bool {
+	for _, s := range []string{details.Command, details.Reason} {
+		r := strings.ToLower(strings.TrimSpace(s))
+		if r == "ask_user" || strings.HasSuffix(r, "__ask_user") || strings.Contains(r, "mcp__flowpilot__ask_user") {
+			return true
+		}
+	}
+	return false
 }
 
 // isReadOnlyToolName reports whether a tool name/kind marker is a read-only
