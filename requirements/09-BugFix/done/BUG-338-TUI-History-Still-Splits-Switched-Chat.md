@@ -5,11 +5,11 @@
 - Document ID: `BUG-338`
 - Title: `TUI history still splits switched chat into separate rows`
 - Phase: `bugfix`
-- Status: `draft`
+- Status: `done`
 - Owner: `codex`
 - Reviewers: `codex`
 - Created: `2026-08-31`
-- Last Updated: `2026-08-31`
+- Last Updated: `2026-09-02`
 - Parent Documents: `CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat`, `SD-26-Chat-Continuity-Ssot`, `SS-05-Workflow-Ai-Provider`
 - Child Documents: ``
 - Related Documents: `CP-59-Test-Steps`, `CA-693..CA-701`, `fcd70d5`
