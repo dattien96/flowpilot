@@ -5,11 +5,11 @@
 - Document ID: `BUG-329`
 - Title: `Opencode mid-chat model switch fails — session/load returns no sessionId on a fresh acp process`
 - Phase: `bugfix`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-29`
-- Last Updated: `2026-08-29`
+- Last Updated: `2026-09-02`
 - Feature Keys: `ai-providers`
 - Parent Documents: [CP-57: Opencode Provider Integration](../../07-Coding-Plan/inprogress/CP-57-Opencode-Provider-Integration.md), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md), [SS-05: Workflow AI Provider](../../05-System-Specs/SS-05-Workflow-Ai-Provider.md)
 - Child Documents: `none`
