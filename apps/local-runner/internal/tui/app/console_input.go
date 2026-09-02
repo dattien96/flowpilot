@@ -11,10 +11,11 @@ import (
 // Terminal / Cursor can keep delivering mouse records that starve KeyMsg.
 const mouseTrackingOffANSI = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
 
-// wheelMouseOnANSI enables button+wheel tracking only (1000h+1006h) so wheel
-// scroll reaches handleMouse as MouseWheel without the hover flood of 1002/1003
-// (BUG-328). Chip clicks remain keyboard-only so no click handling is needed.
-const wheelMouseOnANSI = "\x1b[?1002l\x1b[?1003l\x1b[?1000h\x1b[?1006h"
+// wheelMouseOnANSI enables wheel scroll (1000h) PLUS drag-only motion (1002h)
+// so a held-button drag paints the in-app bôi-đen highlight live as the cursor
+// moves (BUG-345 follow-up). 1003 (hover) stays OFF — hover flood is the
+// BUG-328 wedge class. 1006h makes coords SGR absolute.
+const wheelMouseOnANSI = "\x1b[?1003l\x1b[?1000h\x1b[?1002h\x1b[?1006h"
 
 func isStdoutTerminal() bool {
 	fi, err := os.Stdout.Stat()

@@ -62,8 +62,19 @@ New file `bug345_wheel_drag_copy_test.go` (additive):
 - `TestWheelOnly_PressReleaseDifferentCellCopiesWithoutMotion` — press(4,y)→release(40,y), không motion → `CopiedMsg`, selection armed, span đúng.
 - `TestWheelOnly_SameCellClickDoesNotCopy` — press+release cùng cell → không arm, không copy.
 - `TestWheelOnly_ShiftReleaseWithoutMotionCopiesLine` — Shift+click không motion vẫn copy cả dòng (CA-515 path giữ).
+- `TestWheelMouseANSI_DragMotionOnHoverOff` — ANSI có `?1000h`+`?1002h`+`?1003l`, không `?1003h`.
+- `TestWheelOnly_DragMotionPaintsLiveHighlight` — motion khi đang giữ → selection update live + paint reverse-video (CA-721).
 
 ## 5. Verification
 
 - `go test ./internal/tui/app/ -count=1 -run 'TestWheelOnly_|TestDrag|TestShiftDrag|TestPlainDrag'` → PASS.
 - `go test ./internal/tui/... -count=1` → toàn bộ suite green (không sửa test cũ nào).
+
+## 6. Follow-up (CA-721 — live highlight khi kéo)
+
+Operator: "copy được rồi nhưng không show bôi đen, khó quan sát kéo tới đâu".
+
+`wheelMouseOnANSI` thêm `?1002h` (drag-only motion): khi đang giữ nút, terminal
+gửi motion → `handlePlainLeftMouse` motion case update `mouseSel` live →
+`applyMouseSelection` paint reverse-video ngay trong lúc kéo (không chờ release).
+Hover `?1003h` vẫn tắt (BUG-328 wedge class).
