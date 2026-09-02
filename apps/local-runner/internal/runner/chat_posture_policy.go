@@ -18,11 +18,12 @@ import "strings"
 //
 // BUG-344 composition invariant: an exec command is read-only iff every
 // top-level segment (`;`, `|`, `&&`, `||`) is a known-safe read, no segment
-// can redirect to a real file (only `2>/dev/null` is allowed, stripped
-// before classification), and nothing can substitute/execute hidden code
-// (no backtick, `$(` or `${`). Fail closed on any parse doubt. `find` is
-// allowlisted only for its pure-search forms (delete/exec/write primaries
-// denied).
+// can redirect to a real file (only `2>/dev/null` and `2>&1` are allowed,
+// stripped before classification), and nothing can substitute/execute hidden
+// code (no backtick, `$(` or `${`). Fail closed on any parse doubt. `find` is
+// allowlisted only for its pure-search forms; `go` only for its report
+// subcommands (test/list/env/doc/version/help); `curl` only for stdout fetches
+// (no -o/-O/-d/-F/-T/-X).
 
 // readOnlyApprovalDecision returns "approve" or "deny" for an ApprovalDetails
 // under a read-only posture. Conservative: only confidently-read operations are
@@ -143,9 +144,10 @@ func isReadOnlyCommand(command string) bool {
 //   - backtick, `$(`, `${` substitution denied (active inside double quotes,
 //     matching shell semantics; literal inside single quotes);
 //   - single/double quotes must balance; parentheses must balance;
-//   - the ONLY allowed redirect is the exact stderr-to-null `2>/dev/null`
-//     (also `2> /dev/null`), which is stripped from the returned string;
-//     every other `>` shape (>, >>, 2>file, 1>, &>, <>, 2>&1, >) denies.
+//   - the ONLY allowed redirects are stderr-to-null `2>/dev/null` (also
+//     `2> /dev/null`) and stderr-to-stdout `2>&1` (no file is written by
+//     either), both stripped from the returned string; every other `>` shape
+//     (>, >>, 2>file, 1>, &>, <>) denies.
 //
 // ok=false fails the whole command closed.
 func scanShellCommandSyntax(s string) (string, bool) {
@@ -205,30 +207,39 @@ func scanShellCommandSyntax(s string) (string, bool) {
 			buf = append(buf, c)
 			i++
 		case '>':
-			// Allowed only as the exact `2>/dev/null` / `2> /dev/null` at top
-			// level (single-quote/double-quote redirects are literal already).
+			// Allowed only as `2>/dev/null`, `2> /dev/null`, or `2>&1` at top
+			// level (single/double-quoted redirects are literal already).
 			if i == 0 || s[i-1] != '2' {
 				return "", false
 			}
 			j := i + 1
-			if j < len(s) && s[j] == '>' {
+			var after int
+			switch {
+			case j < len(s) && s[j] == '>':
 				return "", false // 2>>
+			case j < len(s) && s[j] == '&':
+				// stderr-to-stdout dup: exactly `2>&1`.
+				if j+1 >= len(s) || s[j+1] != '1' {
+					return "", false
+				}
+				after = j + 2
+			default:
+				k := j
+				for k < len(s) && s[k] == ' ' {
+					k++
+				}
+				if !strings.HasPrefix(s[k:], "/dev/null") {
+					return "", false
+				}
+				after = k + len("/dev/null")
 			}
-			k := j
-			for k < len(s) && s[k] == ' ' {
-				k++
-			}
-			if !strings.HasPrefix(s[k:], "/dev/null") {
-				return "", false
-			}
-			after := k + len("/dev/null")
 			if after < len(s) {
 				n := s[after]
 				if n != ' ' && n != ';' && n != '|' && n != '&' && n != ')' {
 					return "", false
 				}
 			}
-			// strip the whole `2>/dev/null` (drop the '2' already buffered)
+			// strip the whole redirect (drop the '2' already buffered)
 			if len(buf) > 0 && buf[len(buf)-1] == '2' {
 				buf = buf[:len(buf)-1]
 			}
@@ -332,6 +343,14 @@ func isReadOnlyCommandSegment(seg string) bool {
 		// BUG-344 D-4: find has write/exec action primaries; only pure search
 		// forms pass.
 		return isReadOnlyFind(tokens[1:])
+	case "go":
+		// BUG-344 follow-up: only go's read/report subcommands are safe —
+		// build/run/get/install/generate/mod/vet write, download, or execute.
+		return isReadOnlyGo(tokens[1:])
+	case "curl":
+		// Network fetch to stdout only: any output-file or data-sending flag
+		// denies (curl -o/-O/-d/-F/-T/-X …).
+		return isReadOnlyCurl(tokens[1:])
 	default:
 		return false
 	}
@@ -348,6 +367,47 @@ func isReadOnlyFind(args []string) bool {
 		switch strings.ToLower(strings.TrimSpace(a)) {
 		case "-delete", "-exec", "-execdir", "-ok", "-okdir",
 			"-fls", "-fprint", "-fprint0", "-fprintf":
+			return false
+		}
+	}
+	return true
+}
+
+// isReadOnlyGo reports whether a `go` invocation is read-only (BUG-344
+// follow-up): test/list/env/doc/version/help report; a bare `go` prints help.
+// Anything that builds, installs, downloads, or executes source
+// (build/run/get/install/generate/mod/vet/…) denies. `go test` runs package
+// tests (test code may write, accepted for scan) but must never compile a
+// binary to disk: `-c`/`-o` deny.
+func isReadOnlyGo(args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	switch args[0] {
+	case "list", "env", "doc", "version", "help":
+		return true
+	case "test":
+		for _, a := range args[1:] {
+			if a == "-c" || a == "-o" {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// isReadOnlyCurl reports whether a `curl` invocation only fetches to stdout
+// (BUG-344 follow-up): output-file flags (-o/-O/--output/--output-document)
+// and data-sending flags (-d/-F/-T/--upload-file/-X/--request …) deny — a
+// read-only posture must not download to disk or mutate a remote.
+func isReadOnlyCurl(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "-o", "-O", "--output", "--output-document",
+			"-d", "--data", "--data-binary", "--data-urlencode",
+			"-F", "--form", "-T", "--upload-file", "-X", "--request":
 			return false
 		}
 	}
