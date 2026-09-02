@@ -5,7 +5,7 @@
 - Document ID: `BUG-344`
 - Title: `Scan/Plan read-only policy denies compound read-only bash (ls | head; rg … 2>/dev/null) — Grok's run_terminal_command always hits the metachar gate, making SCAN unusable`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-02`

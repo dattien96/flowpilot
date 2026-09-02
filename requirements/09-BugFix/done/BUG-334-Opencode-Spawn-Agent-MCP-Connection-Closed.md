@@ -5,11 +5,11 @@
 - Document ID: `BUG-334`
 - Title: `opencode spawn_agent fails MCP -32000 Connection closed — child session/new resets the shared process's MCP client`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-30`
-- Last Updated: `2026-08-30`
+- Last Updated: `2026-09-02`
 - Feature Keys: `ai-providers`
 - Parent Documents: [CP-57-Test-Steps](../../07-Coding-Plan/done/CP-57-Test-Steps.md) (section F), [BUG-329](../todo/BUG-329-Opencode-Midchat-Model-Switch-Session-Load-No-SessionId.md) (shared-process reuse it builds on), [CA-690](../../../change-audit/CA-690-opencode-always-ask-permission-overlay.md)
 - Child Documents: `none`

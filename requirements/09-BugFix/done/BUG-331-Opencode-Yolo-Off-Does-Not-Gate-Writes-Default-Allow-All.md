@@ -5,11 +5,11 @@
 - Document ID: `BUG-331`
 - Title: `Opencode YOLO-off does not gate writes — acp default allow-all never emits session/request_permission`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-30`
-- Last Updated: `2026-08-30`
+- Last Updated: `2026-09-02`
 - Feature Keys: `ai-providers`
 - Parent Documents: [CP-57: Opencode Provider Integration](../../07-Coding-Plan/done/CP-57-Opencode-Provider-Integration.md), [CP-57-Test-Steps](../../07-Coding-Plan/done/CP-57-Test-Steps.md) (section E), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md)
 - Child Documents: `none`

@@ -5,7 +5,7 @@
 - Document ID: `BUG-343`
 - Title: `Grok scan posture does not gate exec — bash runs via self-resolved pending_interaction; --always-approve forces the same bypass under YOLO`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-02`

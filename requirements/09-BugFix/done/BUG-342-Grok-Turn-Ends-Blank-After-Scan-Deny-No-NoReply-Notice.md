@@ -5,7 +5,7 @@
 - Document ID: `BUG-342`
 - Title: `Grok chat turn ends blank after scan/plan read-only deny — no no-reply notice (opencode already fixed by BUG-341/CA-713)`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-02`
