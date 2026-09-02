@@ -5,11 +5,11 @@
 - Document ID: `BUG-332`
 - Title: `/mode-setup modal clipped to header+tabs — fields/buttons pushed past terminal bottom`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-30`
-- Last Updated: `2026-08-30`
+- Last Updated: `2026-09-02`
 - Feature Keys: `cli-tui`
 - Parent Documents: [CP-57-Test-Steps](../../07-Coding-Plan/done/CP-57-Test-Steps.md) (section H re-test), [CA-685 posture NON mode]
 - Child Documents: `none`

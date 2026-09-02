@@ -5,11 +5,11 @@
 - Document ID: `BUG-336`
 - Title: `Sidebar agents section flickered and re-ordered continuously`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-30`
-- Last Updated: `2026-08-30`
+- Last Updated: `2026-09-02`
 - Feature Keys: `cli-tui`
 - Parent Documents: [CP-57-Test-Steps](../../07-Coding-Plan/done/CP-57-Test-Steps.md) (section F/K UX follow-up)
 - Child Documents: `none`

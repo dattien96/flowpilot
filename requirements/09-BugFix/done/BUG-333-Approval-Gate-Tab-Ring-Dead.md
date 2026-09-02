@@ -5,11 +5,11 @@
 - Document ID: `BUG-333`
 - Title: `Approval gate mounted but Tab/arrows did not move the ring selection`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-30`
-- Last Updated: `2026-08-30`
+- Last Updated: `2026-09-02`
 - Feature Keys: `cli-tui`
 - Parent Documents: [CP-57-Test-Steps](../../07-Coding-Plan/done/CP-57-Test-Steps.md) (section E re-test), [BUG-331](BUG-331-Opencode-Yolo-Off-Does-Not-Gate-Writes-Default-Allow-All.md), BUG-328 (action ring)
 - Child Documents: `none`

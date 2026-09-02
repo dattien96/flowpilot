@@ -5,11 +5,11 @@
 - Document ID: `BUG-337`
 - Title: `TUI image send — You-box has no attach chip; Grok vision turn drops SSE so the answer never paints`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-30`
-- Last Updated: `2026-08-30`
+- Last Updated: `2026-09-02`
 - Feature Keys: `cli-tui`
 - Parent Documents: [CP-56: Terminal TUI Chat And Flow Client](../../07-Coding-Plan/done/CP-56-Terminal-TUI-Chat-And-Flow-Client.md) (P-3b/D-10), [Task-319: Opencode Per-Model Image Capability](../../08-Task/done/Task-319-Opencode-Per-Model-Image-Capability.md), [CA-693: Opencode per-model image unlock](../../../change-audit/CA-693-opencode-per-model-image-unlock.md)
 - Child Documents: `none`

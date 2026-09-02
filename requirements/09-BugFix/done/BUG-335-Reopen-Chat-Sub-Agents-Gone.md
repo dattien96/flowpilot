@@ -5,11 +5,11 @@
 - Document ID: `BUG-335`
 - Title: `Reopening a chat shows no sub-agents — agent hydrate only ran for flow opens`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-30`
-- Last Updated: `2026-08-30`
+- Last Updated: `2026-09-02`
 - Feature Keys: `cli-tui`
 - Parent Documents: [CP-57-Test-Steps](../../07-Coding-Plan/done/CP-57-Test-Steps.md) (section F follow-up), [BUG-334](BUG-334-Opencode-Spawn-Agent-MCP-Connection-Closed.md)
 - Child Documents: `none`
