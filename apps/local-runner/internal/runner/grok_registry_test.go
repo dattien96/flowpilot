@@ -212,10 +212,17 @@ func TestEnsureGrokProcessOmitsEmptyModelAndReasoningEffortFlags(t *testing.T) {
 }
 
 // TestEnsureGrokProcessPassesAlwaysApproveFlagWhenRequested is a regression
-// test for Task-218: YOLO=true must actually reach the spawned process as
-// --always-approve, not rely solely on the runner-side bridge auto-answering
-// session/request_permission (which only helps if Grok happens to ask at
-// all -- see Task-208 Open Question Q-1).
+// test for Task-218, AMENDED by BUG-343 (2026-09-02, live-probed grok 1.0.13):
+// the old assertion expected `--always-approve` on the launch args, but that
+// flag makes Grok self-resolve its exec `pending_interaction` channel with
+// zero permission round-trip — so scan/plan read-only postures and the
+// YOLO-off approval card could never gate bash. Grok now always launches with
+// GROK_DEFAULT_PERMISSION_MODE=ask (grokProcessEnv) and no --always-approve:
+// Grok emits a standard session/request_permission for exec and handleInbound
+// decides (YOLO-on auto-approve / read-only deny / YOLO-off card). This
+// resolves Task-208 Open Question Q-1 — the runner-side bridge IS the
+// decision point. handle.alwaysApprove stays on the handle/key so the
+// flip-respawn behavior is unchanged.
 func TestEnsureGrokProcessPassesAlwaysApproveFlagWhenRequested(t *testing.T) {
 	var args []string
 	defer mockGrokInitProcessCapturingArgs(t, &args)()
@@ -227,7 +234,7 @@ func TestEnsureGrokProcessPassesAlwaysApproveFlagWhenRequested(t *testing.T) {
 	}
 	defer h.close()
 
-	want := []string{"agent", "--always-approve", "stdio"}
+	want := []string{"agent", "stdio"}
 	if len(args) != len(want) {
 		t.Fatalf("launch args = %v, want %v", args, want)
 	}

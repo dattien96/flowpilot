@@ -513,7 +513,10 @@ func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, ex
 	// value genuinely bypasses, so a config that is already default/absent/other
 	// is never touched. No-op-safe (setGrokConfigPermissionMode returns
 	// changed=false when the value already matches). YOLO=true never touches the
-	// file — --always-approve below covers bypass regardless of the file.
+	// file — since BUG-343 the GROK_DEFAULT_PERMISSION_MODE=ask env in
+	// grokProcessEnv covers a config.toml always-approve bypass regardless of
+	// the file (env > config, live-probed grok 1.0.13); YOLO-on auto-approve is
+	// then runner-side (handleInbound replies allow) and needs no flag.
 	if grokHome := strings.TrimSpace(extraEnv["GROK_HOME"]); grokHome != "" && !alwaysApprove {
 		if mode, bypasses := grokConfigPermissionModeBypassesGating(grokHome); bypasses {
 			if changed, werr := setGrokConfigPermissionMode(grokHome, "default"); werr != nil {
@@ -535,9 +538,18 @@ func (r *Runner) ensureGrokProcess(ctx context.Context, scopeKey, cwd string, ex
 	if e := strings.TrimSpace(reasoningEffort); e != "" {
 		args = append(args, "--reasoning-effort", e)
 	}
-	if alwaysApprove {
-		args = append(args, "--always-approve")
-	}
+	// BUG-343: --always-approve is NEVER passed, even for YOLO handles.
+	// Live-verified (probe /tmp/grok_perm_probe*.py, grok 1.0.13): the flag
+	// makes Grok self-resolve its exec `pending_interaction` channel — the
+	// tool runs with zero permission round-trip, so scan/plan read-only
+	// postures and the YOLO-off approval card can never gate bash. With the
+	// GROK_DEFAULT_PERMISSION_MODE=ask env (grokProcessEnv) Grok instead
+	// emits a standard session/request_permission for exec and blocks until
+	// the runner answers; handleInbound then applies the same decision layer
+	// as every other tool: YOLO-on auto-approves, read-only postures deny
+	// writes/exec, YOLO-off shows the card (BUG-331 "always-ask + runner
+	// decides" discipline). Env also beats a user config.toml
+	// permission_mode="always-approve" bypass (live-probed).
 	args = append(args, "stdio")
 	cmd := commandContextFn(ctx, grokBinaryName(), args...)
 	cmd.Env = grokProcessEnv(extraEnv)
@@ -602,6 +614,21 @@ func grokProcessEnv(extraEnv map[string]string) []string {
 		}
 		env = append(env, fmt.Sprintf("%s=%s", key, value))
 	}
+	// BUG-343: force Grok to always ask before executing tools. With the
+	// default permission mode, exec tools (`run_terminal_command`) resolve
+	// their `pending_interaction` internally and run with zero permission
+	// round-trip, which made scan/plan read-only postures and the YOLO-off
+	// approval card unreachable for bash (live-probed grok 1.0.13). "ask"
+	// makes Grok emit a standard session/request_permission and block until
+	// the runner answers, routing every tool through handleInbound's decision
+	// layer. The env also overrides a user config.toml
+	// permission_mode="always-approve" bypass (env > config, live-probed).
+	//
+	// Appended LAST so the ask gate wins over BOTH a host os.Environ() value
+	// and an account.ExtraEnv entry carrying this key (exec env is
+	// last-occurrence-wins) — the same overlay discipline BUG-331 installed
+	// for opencode, so no account configuration can silently ungate a spawn.
+	env = append(env, "GROK_DEFAULT_PERMISSION_MODE=ask")
 	return env
 }
 
@@ -769,9 +796,10 @@ func setGrokConfigPermissionMode(grokHome, desiredMode string) (changed bool, er
 // config to "default" whenever it spawns under YOLO=false, so gating holds even
 // if the user never touches this toggle. This endpoint just makes it instant.
 //
-// yolo=true never touches config.toml: --always-approve (passed by
-// ensureGrokProcess whenever grokDesiredAlwaysApprove is true) bypasses
-// regardless of whatever the file says, so there's nothing to gain from also
+// yolo=true never touches config.toml: since BUG-343 the always-ask env
+// (GROK_DEFAULT_PERMISSION_MODE=ask, grokProcessEnv) wins over whatever the
+// file says (env > config, live-probed) and YOLO-on auto-approval happens
+// runner-side on handleInbound — so there's nothing to gain from also
 // rewriting it, and every unnecessary write is one more chance to race a
 // concurrently open grok TUI for no benefit.
 //
