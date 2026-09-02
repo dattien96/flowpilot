@@ -5,11 +5,11 @@
 - Document ID: `BUG-328`
 - Title: `TUI input dies under Windows mouse tracking; replace click chips with a keyboard action ring`
 - Phase: `bugfix`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-28`
-- Last Updated: `2026-08-28`
+- Last Updated: `2026-09-02`
 - Feature Keys: `cli-tui`
 - Parent Documents: [CP-56: Terminal TUI Chat And Flow Client](../../07-Coding-Plan/done/CP-56-Terminal-TUI-Chat-And-Flow-Client.md)
 - Child Documents: `none`
