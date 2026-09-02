@@ -133,7 +133,7 @@ func TestRenderChatTimelineBackfill_PrependsPriorBeforeCurrent(t *testing.T) {
 	}
 }
 
-func TestRenderChatTimelineBackfill_SkipsSeedPromptKeepsDivider(t *testing.T) {
+func TestRenderChatTimelineBackfill_DropsSeedPromptReplyKeepsDivider(t *testing.T) {
 	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
 	payload := func(v map[string]any) json.RawMessage { b, _ := json.Marshal(v); return b }
 	seed := client.HandoffPromptPrefix + "\n\n<previous_conversation>blob</previous_conversation>"
@@ -147,10 +147,12 @@ func TestRenderChatTimelineBackfill_SkipsSeedPromptKeepsDivider(t *testing.T) {
 	}
 	m2, _ := m.Update(msg)
 	am := m2.(*AppModel)
-	if len(am.messages) != 2 {
-		t.Fatalf("seed prompt should be dropped, divider kept: %+v", am.messages)
+	// BUG-347: the seed prompt AND its envelope reply are both dropped — only
+	// the E-9 divider represents the switch (D-7 single source).
+	if len(am.messages) != 1 {
+		t.Fatalf("seed prompt+reply should be dropped, divider kept: %+v", am.messages)
 	}
-	if !strings.Contains(am.messages[1].Content, "switched to grok") {
+	if !strings.Contains(am.messages[0].Content, "switched to grok") {
 		t.Fatalf("divider missing: %+v", am.messages)
 	}
 }

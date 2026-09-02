@@ -73,16 +73,23 @@ func TestAdoptKeepsTranscriptAndResetsStreamState(t *testing.T) {
 		ChatID: "cht_a", LegSeq: 1, Model: "grok-4.5",
 		Handoff: client.ChatSwitchHandoffStats{HandoffMode: "raw", IncludedTurnCount: 1},
 	}})
-	// Success keeps the transcript byte-identical: no client-synthesized
-	// divider (SD-26 D-7 single-source — the seed turn carries it).
-	if len(m.messages) != before {
-		t.Fatalf("success added a client divider: %d → %d", before, len(m.messages))
+	// Success keeps the transcript and appends exactly ONE client divider —
+	// the switch divider renders synchronously (BUG-347/D-7) and the seed
+	// turn's envelope reply is suppressed, never a raw bubble.
+	if len(m.messages) != before+1 {
+		t.Fatalf("success must append exactly one divider: %d → %d", before, len(m.messages))
+	}
+	if m.messages[len(m.messages)-1].Role != "system" || !strings.Contains(m.messages[len(m.messages)-1].Content, "switched to grok") {
+		t.Fatalf("success divider missing: %+v", m.messages[len(m.messages)-1])
 	}
 	if m.runHandle.RunID != "run-2" || m.provider != "grok" || m.model != "grok-4.5" {
 		t.Fatalf("adopt state = run=%s provider=%s model=%s", m.runHandle.RunID, m.provider, m.model)
 	}
 	if m.chatSwitchInFlight {
 		t.Fatal("in-flight guard not cleared")
+	}
+	if !m.seedTurnActive {
+		t.Fatal("seed guard must be armed after a successful switch")
 	}
 
 	// Failure keeps the chat on the source leg and appends one error line.

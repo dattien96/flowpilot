@@ -1868,6 +1868,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 	switch ev.Type {
 	case "message_delta":
+		// BUG-347: the post-switch seed turn's reply is noise — the divider
+		// already rendered on switch commit; drop the seed's assistant output.
+		if m.seedTurnActive {
+			return m, nil
+		}
 		m.appendAssistantDelta(ev.Text)
 		// Flow chrome is quiet (CA-511): progress lives on F2 steps + status line,
 		// so a delta must not overwrite "step: X"/"flow running…" with "streaming…"
@@ -1879,9 +1884,16 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		}
 
 	case "message_completed":
+		if m.seedTurnActive {
+			return m, nil
+		}
 		m.appendAssistantDelta(ev.Text)
 
 	case "turn_completed":
+		// BUG-347: the seed turn ended — its FinalMessage repeats the envelope
+		// reply that was already dropped, so never re-append it here.
+		wasSeed := m.seedTurnActive
+		m.seedTurnActive = false
 		// A completed turn means the flow moved on — a still-armed gate is stale
 		// (CA-536). It must not keep swallowing input.
 		m.gate = nil
@@ -1896,7 +1908,7 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 				fill = strings.TrimSpace(m.lastAssistantText())
 			}
 			m.ensureAssistantMessage(fill)
-		} else if ev.FinalMessage != "" && !m.hasAssistantContent() && !isStepCompleteStub(ev.FinalMessage) {
+		} else if ev.FinalMessage != "" && !m.hasAssistantContent() && !isStepCompleteStub(ev.FinalMessage) && !wasSeed {
 			m.ensureAssistantMessage(ev.FinalMessage)
 		}
 		// run-107774: once the loop is done, a completed follow-up turn must not
@@ -1912,6 +1924,7 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg { return TurnDoneMsg{FinalMsg: final} }
 
 	case "turn_failed":
+		m.seedTurnActive = false
 		m.turnLive = false
 		m.connStatus = ConnError
 		m.statusMsg = "turn failed: " + ev.Error
@@ -1924,6 +1937,11 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		}
 
 	case "turn_started":
+		// BUG-347: a real user turn (non-empty, non-envelope prompt) on the
+		// new leg disarms the seed guard even if turn_completed was missed.
+		if m.seedTurnActive && ev.Prompt != "" && !strings.HasPrefix(ev.Prompt, client.HandoffPromptPrefix) {
+			m.seedTurnActive = false
+		}
 		m.connStatus = ConnRunning
 		if m.isFlowChrome() {
 			if m.flowStepsActive != "" {
@@ -6007,12 +6025,7 @@ func (m *AppModel) addMessage(role, content, hint string) {
 	if role == "user" && strings.HasPrefix(content, client.HandoffPromptPrefix) {
 		role = "system"
 		if m.lastSwitchStats != nil {
-			st := m.lastSwitchStats
-			carried := fmt.Sprintf("%d turns", st.IncludedTurnCount)
-			if st.Truncated && st.OmittedTurnCount > 0 {
-				carried = fmt.Sprintf("%d of %d turns", st.IncludedTurnCount, st.IncludedTurnCount+st.OmittedTurnCount)
-			}
-			content = fmt.Sprintf("⇄ switched to %s — carried %s (%s)", m.lastSwitchTarget, carried, st.HandoffMode)
+			content = m.switchDividerContent()
 			m.lastSwitchStats = nil
 		} else {
 			content = "⇄ provider switched — prior conversation carried below"
@@ -6030,6 +6043,21 @@ func (m *AppModel) addMessage(role, content, hint string) {
 	if hint == "thinking" {
 		m.thinkingFrame = 0
 	}
+}
+
+// switchDividerContent formats the just-committed switch divider from
+// lastSwitchStats/lastSwitchTarget (BUG-347: shared by the synchronous
+// post-switch divider and the user-envelope conversion in addMessage).
+func (m *AppModel) switchDividerContent() string {
+	if m.lastSwitchStats != nil {
+		st := m.lastSwitchStats
+		carried := fmt.Sprintf("%d turns", st.IncludedTurnCount)
+		if st.Truncated && st.OmittedTurnCount > 0 {
+			carried = fmt.Sprintf("%d of %d turns", st.IncludedTurnCount, st.IncludedTurnCount+st.OmittedTurnCount)
+		}
+		return fmt.Sprintf("⇄ switched to %s — carried %s (%s)", m.lastSwitchTarget, carried, st.HandoffMode)
+	}
+	return "⇄ provider switched — prior conversation carried below"
 }
 
 func (m *AppModel) appendAssistantDelta(text string) {

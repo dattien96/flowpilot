@@ -333,6 +333,13 @@ func (m *AppModel) applyChatSwitched(msg ChatSwitchedMsg) {
 	st := msg.Resp.Handoff
 	m.lastSwitchStats = &st
 	m.lastSwitchTarget = strings.TrimSpace(m.provider + " · " + m.model)
+	// BUG-347: render the switch divider NOW (synchronously) and drop the
+	// seed turn's envelope reply — the seed streams fire-and-return on the
+	// attached stream and its model reply is an orphan assistant bubble with
+	// no You-box (cht_e4975cb1f769 seq 5-8). seedTurnActive suppresses it.
+	m.seedTurnActive = true
+	m.addMessage("system", m.switchDividerContent(), "")
+	m.lastSwitchStats = nil
 }
 
 // cmdReattachChat mints a fresh local leg for a detached chat via startRun
@@ -417,6 +424,10 @@ func (m *AppModel) renderChatTimelineBackfill(msg chatTimelineBackfillMsg) {
 	m.chatBackfillDone = true
 	m.chatDetached = msg.Detached
 	var prior []ChatMessage
+	// BUG-347: seed turns (empty or envelope prompts) record their envelope
+	// reply as an orphan assistant bubble on the destination leg; skip that
+	// leg's assistant records until a real turn_started lands on it.
+	skipLeg := ""
 	for _, rec := range msg.Records {
 		if rec.LegRunID == msg.Current && rec.Type != tuiRecProviderSwitch {
 			continue // current leg renders from the run replay; keep its switch divider
@@ -426,13 +437,19 @@ func (m *AppModel) renderChatTimelineBackfill(msg chatTimelineBackfillMsg) {
 			var p struct {
 				Prompt string `json:"prompt"`
 			}
-			if json.Unmarshal(rec.Payload, &p) == nil && strings.TrimSpace(p.Prompt) != "" {
-				if strings.HasPrefix(strings.TrimSpace(p.Prompt), client.HandoffPromptPrefix) {
-					continue // seed envelope already represented by the E-9 divider
+			if json.Unmarshal(rec.Payload, &p) == nil {
+				tp := strings.TrimSpace(p.Prompt)
+				if tp == "" || strings.HasPrefix(tp, client.HandoffPromptPrefix) {
+					skipLeg = rec.LegRunID // seed envelope — represented by the E-9 divider
+					continue
 				}
-				prior = append(prior, ChatMessage{Role: "user", Content: p.Prompt})
+				skipLeg = ""
+				prior = append(prior, ChatMessage{Role: "user", Content: tp})
 			}
 		case tuiRecMessageCompleted:
+			if rec.LegRunID == skipLeg {
+				continue // seed envelope reply — the divider already rendered
+			}
 			var p struct {
 				Text string `json:"text"`
 			}

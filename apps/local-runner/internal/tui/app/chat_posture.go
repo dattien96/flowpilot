@@ -123,7 +123,14 @@ func (m *AppModel) chatPostureCmdFromPending(cfg client.ChatPostureConfig) tea.C
 			// code (B-4: 417944→417970). Treat it as C2-busy like the switch
 			// path so the next Tab can reach code cleanly.
 			if m.chatSwitchInFlight || m.turnLive || m.turnStream != nil || m.turnSendPending || m.question != nil || len(m.questions) > 0 || m.approval != nil || len(m.approvals) > 0 {
-				m.addMessage("system", "Cannot switch provider/model while a question or approval is pending — please answer it first", "error")
+				if m.chatSwitchInFlight {
+					// BUG-347: a Tab during an in-flight provider switch is not
+					// a question/approval block — say so (operator saw the
+					// question message with no question mounted).
+					m.addMessage("system", "Provider switch in progress — wait for it to finish, then Tab again", "error")
+				} else {
+					m.addMessage("system", "Cannot switch provider/model while a question or approval is pending — please answer it first", "error")
+				}
 				return func() tea.Msg { return detachedNoticeMsg{} }
 			}
 			// CA-685: the active posture's full profile (reasoning included)

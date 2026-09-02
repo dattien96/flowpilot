@@ -395,8 +395,14 @@ func replayHistoryMessages(evs []client.ProviderEvent) []ChatMessage {
 					continue
 				}
 				out = append(out, ChatMessage{Role: "user", Content: p})
+				skipNextAssistant = false // a real prompt resets the seed skip
+			} else {
+				// BUG-347: the switch seed's turn_started records with an empty
+				// prompt (the envelope attaches asynchronously) — treat it as a
+				// seed and drop its envelope reply too.
+				skipNextAssistant = true
+				continue
 			}
-			skipNextAssistant = false // a real prompt resets the seed skip
 		case "message_delta":
 			if skipNextAssistant {
 				continue

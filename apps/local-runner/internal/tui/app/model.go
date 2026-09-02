@@ -548,6 +548,11 @@ type AppModel struct {
 	// stats so the seed-envelope collapse renders the carried-count divider.
 	lastSwitchStats  *client.ChatSwitchHandoffStats
 	lastSwitchTarget string
+	// seedTurnActive (BUG-347): while the post-switch seed turn is streaming,
+	// its envelope reply is noise (an orphan assistant bubble with no You-box)
+	// — the divider renders synchronously on switch commit and all seed
+	// assistant output is dropped until the seed turn completes.
+	seedTurnActive bool
 	// turnLive tracks a user turn from local send until turn_completed/failed,
 	// surviving stream switches (turnStream → orchStream). It prevents premature
 	// "done" and C2 Tab races where TUI thought idle but runner was still

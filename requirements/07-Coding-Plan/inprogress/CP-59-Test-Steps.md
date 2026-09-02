@@ -7,7 +7,7 @@
 - Status: `approved`
 - Scope: Full — Task-312 (SD-26), Task-313 (chatId/timeline/backfill), Task-314 (switch endpoint/envelope), Task-315 (TUI `/provider` `/model` posture Tab + detached reattach + `/open`), Task-316 (Desktop chips/grouping), Task-317 (Drive sync/restore transcript-first detached). P-9 stretch (recall tool, chat-total token line, gemini source) vẫn deferred.
 - Created: `2026-08-30`
-- Last Updated: `2026-08-31` (expanded to Task-316/317 + reattach; S + A marked PASS on cht_a8d253c2fe6f/cht_3810173c6b36)
+- Last Updated: `2026-09-02` (B1-B5 posture Tab PASS — B5 verified trên `cht_e4975cb1f769`; guide B5 giữ lại làm tham chiếu)
 
 ## 0. Chuẩn bị (bắt buộc)
 
@@ -40,15 +40,38 @@ Pass = 5/5. Fail S3/S5 → mở bug `feature_key: chat-history`, prior CA-693..7
 | A4 | Footer/session panel sau switch | Provider/model hiển thị = provider/model ĐÚNG của leg mới (không footer dối) | ✅ `run-198151` footer `opencode-go/muse-spark-1.2-contributor` truthful; session `opencode` (ảnh `198151` lúc longcat→muse-spark) |
 | A5 | `/model` cùng provider (ví dụ opencode→opencode scan→code) | **In-place** `session/set_config_option`, không leg mới, không divider (Task-314 `handoff_same_provider` 409, TUI fallback) | ✅ `198151 longcat-2.0 → muse-spark` `Model set to … (next prompt uses this model)` không leg mới (vẫn `198151` leg 2), `ban la model nao` → `Muse Spark 1.2 do Meta` |
 
-## B. Posture Tab (BUG-330 repro chính thức) — Task-315 slice2
+## B. Posture Tab (BUG-330 repro chính thức) — Task-315 slice2 — ✅ PASS 2026-09-02 (B1-B5, operator)
 
-| # | Bước | Kết quả mong đợi |
-|---|------|------------------|
-| B1 | Chat opencode, Tab/mode sang `plan` (pin grok-4.5 bare) | Switch sang **leg grok thật**; divider `⇄ switched to grok · grok-4.5 — carried 3 turns (raw)` hiện; reply identity = Grok |
-| B2 | Prompt tiếp theo → trả lời bằng Grok; log runner | 0 occurrences `model not found`; opencode adapter KHÔNG nhận turn `model=grok-4.5` |
-| B3 | Lần đầu derive pin bare-model (nếu pin chưa có provider) | 1 cảnh báo system "derived provider grok persisting"; `/mode` hiển thị pin đã có provider (persisted — không derive lại lần 2) |
-| B4 | Tab về mode cùng provider (opencode→opencode) | **In-place**: không leg mới, tiếp tục cùng session như BUG-329 (CA-680) |
-| B5 | Rapid double-Tab (Tab liên tiếp trong lúc switch) | Chỉ **1** leg mới (guard `chatSwitchInFlight`); message không nhân bản; queued posture apply sau `ChatSwitchedMsg` |
+| # | Bước | Kết quả mong đợi | Kết quả thực tế |
+|---|------|------------------|-----------------|
+| B1 | Chat opencode, Tab/mode sang `plan` (pin grok-4.5 bare) | Switch sang **leg grok thật**; divider `⇄ switched to grok · grok-4.5 — carried 3 turns (raw)` hiện; reply identity = Grok | ✅ PASS — switch sang leg grok thật, divider carried turns hiện, reply identity Grok |
+| B2 | Prompt tiếp theo → trả lời bằng Grok; log runner | 0 occurrences `model not found`; opencode adapter KHÔNG nhận turn `model=grok-4.5` | ✅ PASS — 0 `model not found`; opencode adapter không nhận `model=grok-4.5` |
+| B3 | Lần đầu derive pin bare-model (nếu pin chưa có provider) | 1 cảnh báo system "derived provider grok persisting"; `/mode` hiển thị pin đã có provider (persisted — không derive lại lần 2) | ✅ PASS — derive đúng 1 lần, cảnh báo persist hiện; `/mode` không derive lại lần 2 |
+| B4 | Tab về mode cùng provider (opencode→opencode) | **In-place**: không leg mới, tiếp tục cùng session như BUG-329 (CA-680) | ✅ PASS — in-place, không leg mới, session tiếp tục (model đổi trong cùng leg) |
+| B5 | Rapid double-Tab (Tab liên tiếp trong lúc switch) | Chỉ **1** leg mới (guard `chatSwitchInFlight`); message không nhân bản; queued posture apply sau `ChatSwitchedMsg` | ✅ PASS 2026-09-02 — `cht_e4975cb1f769` `run-494554→run-494566` `legSeq:1` `raw included 1`; đúng 1 `chat_provider_switch` (seq 6), 0 duplicate `chatSeq` 1..13; Grok identity sau switch; Tab 2 không mint leg code |
+
+### B5 — Guide test rapid double-Tab (Task-315 slice2, guard `chatSwitchInFlight`)
+
+**Cơ chế trong code** (đã đọc: `chat_switch.go` `routePostureSwitch`/`cmdSwitchChatProvider`/`applyChatSwitched` + `chat_posture.go` apply:):
+
+1. Tab lần 1 (cross-provider, ví dụ `code` → `plan`): `routePostureSwitch` set `chatSwitchQueuedPosture="plan"` rồi gọi `cmdSwitchChatProvider` → `chatSwitchInFlight=true`, **1** HTTP `POST .../switch-provider`.
+2. Tab lần 2 trong lúc in-flight: `routePostureSwitch` guard trả nil (không gọi endpoint lần 2); `apply:` rơi vào busy-check → notice **"Provider switch in progress — wait for it to finish, then Tab again"** (BUG-347; trước đây nhầm message question/approval) — không leak in-place, không mint leg.
+3. `ChatSwitchedMsg` về: `applyChatSwitched` consume `chatSwitchQueuedPosture` → re-apply **full profile** (reasoning/yolo/model pin) trên leg mới (CA-685) → guard reset `inFlight=false`. Tab tiếp theo route bình thường.
+
+**Các bước test:**
+
+| # | Bước | Cách kiểm |
+|---|------|-----------|
+| 1 | Chat opencode ≥3 turns, posture pins theo P5 (`plan=grok-4.5`) | `just chat-dev`; statusline `opencode` |
+| 2 | Tab sang `plan` → **ngay lập tức** Tab lần 2 (double-tap nhanh, trong ~1-2s khi switch chưa xong) | Mắt thường: lần 2 không mint leg mới, có notice busy; statusline vẫn chờ switch lần 1 |
+| 3 | Đợi switch lần 1 xong (`ChatSwitchedMsg`) | Statusline = `grok · grok-4.5` (không nhảy lệch sang posture khác) |
+| 4 | Verify timeline: đúng **1** leg mới + **1** `chat_provider_switch` mới | `curl -s http://localhost:17812/client/chats/<chatId>/timeline \| jq '[.legs[] \| select(.legSeq>0)] \| length, [.records[] \| select(.type=="chat_provider_switch")] \| length'` |
+| 5 | Verify message không nhân bản | `chatSeq` monotonic, không duplicate `(chatId,chatSeq)`; đếm dòng transcript khớp số turn thật |
+| 6 | Verify guard trong log runner | Chỉ **1** dòng `switch-provider` HTTP call; Tab 2 không tạo request; sau `ChatSwitchedMsg` không còn `chatSwitchInFlight` |
+| 7 | Tab lần 3 (sau khi in-flight đã clear) | Route bình thường — không kẹt, không cần double-Tab như lỗi cũ B-4 (417944→417970) |
+| 8 | Gửi prompt → identity đúng provider của posture đã chọn ở Tab 3 | Hỏi "ban la model gi" → model của posture đó trả lời |
+
+Fail (leg nhân bản / message trùng / Tab kẹt phải bấm 2 lần) → mở bug `feature_key: chat-history`, prior CA-693..701, không sửa test cũ (oracle-rule).
 
 ## C. Guards + trạng thái đặc biệt — Task-314
 
@@ -149,7 +172,7 @@ Dev branch `cp59-chat-ssot` đã bỏ flag — luôn ON, không còn path flag-o
 |-----|---------|----------|---------|
 | S Smoke | ✅ 5/5 | `cht_3810173c6b36` `197689→197698`, `cht_a8d253c2fe6f` | Cross-provider switch mint leg mới, Grok identity, continuity 3 câu |
 | A Switch `/model` | ✅ 5/5 | `cht_a8d253c2fe6f` legs 0,1,2 `197929→197970→198151` | `raw included 5/6`, footer truthful, same-provider `longcat→muse-spark` in-place `198151` |
-| B Posture Tab | ⏳ chưa test | — | Cần Tab `plan` bare-model `grok-4.5` |
+| B Posture Tab | ✅ B1-B5 PASS 2026-09-02 | `cht_e4975cb1f769` `run-494554→494566` | Divider carried turns, derive-once persist, in-place same-provider, rapid double-Tab 1 leg |
 | C Guards | ⏳ | — | |
 | D Timeline | ⏳ | — | |
 | E Desktop | ⏳ | — | |
