@@ -5653,28 +5653,26 @@ func renderQuestionBar(left, mid string, q *QuestionState, width int, highlightI
 		chips = append(chips, "  ")
 		chips = append(chips, renderActionRingChip("[Submit]", highlightIdx == chipIdx))
 	} else {
-		// Single select: "1)" num chip + " " + label chip per option.
+		// Single select: ONE chip per option — "1) Label" — so highlightIdx
+		// matches actionRingItems (one qopt item per option, BUG-346). The old
+		// split "1)" + "Label" chips made Tab drift: idx 3 painted option 2's
+		// label ("2) An") while Enter chose option 4.
 		overhead := prefixW + hintW
 		if n > 1 {
 			overhead += (n - 1) * 2
 		}
-		overhead += n * (2 + 1 + 2 + 2) // num text + space + num chip pad + label chip pad
+		overhead += n * 2 // chip padding
 		budget := 3
 		if n > 0 {
 			budget = (width - overhead) / n
 		}
-		chipIdx := 0
 		for i, o := range q.Options {
 			if i > 0 {
 				chips = append(chips, "  ")
 			}
-			hiNum := highlightIdx == chipIdx
-			chipIdx++
-			hiLabel := highlightIdx == chipIdx
-			chipIdx++
-			chips = append(chips, renderActionRingChip(strconv.Itoa(i+1)+")", hiNum))
-			chips = append(chips, " ")
-			chips = append(chips, renderActionRingChip(fit(questionOptionLabel(o), budget), hiLabel))
+			num := strconv.Itoa(i+1) + ") "
+			label := num + fit(questionOptionLabel(o), budget-lipgloss.Width(num))
+			chips = append(chips, renderActionRingChip(label, highlightIdx == i))
 		}
 	}
 	line := prefixStyled + strings.Join(chips, "") + hintStyled
