@@ -7,7 +7,7 @@
 - Status: `approved`
 - Scope: Full — Task-312 (SD-26), Task-313 (chatId/timeline/backfill), Task-314 (switch endpoint/envelope), Task-315 (TUI `/provider` `/model` posture Tab + detached reattach + `/open`), Task-316 (Desktop chips/grouping), Task-317 (Drive sync/restore transcript-first detached). P-9 stretch (recall tool, chat-total token line, gemini source) vẫn deferred.
 - Created: `2026-08-30`
-- Last Updated: `2026-09-02` (B1-B5 posture Tab PASS — B5 verified trên `cht_e4975cb1f769`; guide B5 giữ lại làm tham chiếu)
+- Last Updated: `2026-09-02` (B1-B5 posture Tab PASS — B5 đóng với re-run `cht_1e5b706a8201` sau BUG-347; guide B5 giữ làm tham chiếu)
 
 ## 0. Chuẩn bị (bắt buộc)
 
@@ -48,7 +48,7 @@ Pass = 5/5. Fail S3/S5 → mở bug `feature_key: chat-history`, prior CA-693..7
 | B2 | Prompt tiếp theo → trả lời bằng Grok; log runner | 0 occurrences `model not found`; opencode adapter KHÔNG nhận turn `model=grok-4.5` | ✅ PASS — 0 `model not found`; opencode adapter không nhận `model=grok-4.5` |
 | B3 | Lần đầu derive pin bare-model (nếu pin chưa có provider) | 1 cảnh báo system "derived provider grok persisting"; `/mode` hiển thị pin đã có provider (persisted — không derive lại lần 2) | ✅ PASS — derive đúng 1 lần, cảnh báo persist hiện; `/mode` không derive lại lần 2 |
 | B4 | Tab về mode cùng provider (opencode→opencode) | **In-place**: không leg mới, tiếp tục cùng session như BUG-329 (CA-680) | ✅ PASS — in-place, không leg mới, session tiếp tục (model đổi trong cùng leg) |
-| B5 | Rapid double-Tab (Tab liên tiếp trong lúc switch) | Chỉ **1** leg mới (guard `chatSwitchInFlight`); message không nhân bản; queued posture apply sau `ChatSwitchedMsg` | ✅ PASS 2026-09-02 — `cht_e4975cb1f769` `run-494554→run-494566` `legSeq:1` `raw included 1`; đúng 1 `chat_provider_switch` (seq 6), 0 duplicate `chatSeq` 1..13; Grok identity sau switch; Tab 2 không mint leg code |
+| B5 | Rapid double-Tab (Tab liên tiếp trong lúc switch) | Chỉ **1** leg mới (guard `chatSwitchInFlight`); message không nhân bản; queued posture apply sau `ChatSwitchedMsg` | ✅ PASS 2026-09-02 — `cht_e4975cb1f769` `run-494554→run-494566` `legSeq:1` `raw included 1`; đúng 1 `chat_provider_switch` (seq 6), 0 duplicate `chatSeq` 1..13; Grok identity sau switch; Tab 2 không mint leg code. Re-run xác nhận sau BUG-347: `cht_1e5b706a8201` `run-500159→run-500181` — divider `⇄ switched to grok · grok-4.5 — carried 1 turns (raw)` hiện live, seed reply bị drop (không còn bubble chào mồ côi), Tab in-flight báo "switch in progress" (CA-722) |
 
 ### B5 — Guide test rapid double-Tab (Task-315 slice2, guard `chatSwitchInFlight`)
 
@@ -172,7 +172,7 @@ Dev branch `cp59-chat-ssot` đã bỏ flag — luôn ON, không còn path flag-o
 |-----|---------|----------|---------|
 | S Smoke | ✅ 5/5 | `cht_3810173c6b36` `197689→197698`, `cht_a8d253c2fe6f` | Cross-provider switch mint leg mới, Grok identity, continuity 3 câu |
 | A Switch `/model` | ✅ 5/5 | `cht_a8d253c2fe6f` legs 0,1,2 `197929→197970→198151` | `raw included 5/6`, footer truthful, same-provider `longcat→muse-spark` in-place `198151` |
-| B Posture Tab | ✅ B1-B5 PASS 2026-09-02 | `cht_e4975cb1f769` `run-494554→494566` | Divider carried turns, derive-once persist, in-place same-provider, rapid double-Tab 1 leg |
+| B Posture Tab | ✅ B1-B5 PASS 2026-09-02 | `cht_e4975cb1f769` `run-494554→494566`, `cht_1e5b706a8201` `run-500159→500181` | Divider carried turns, derive-once persist, in-place same-provider, rapid double-Tab 1 leg; BUG-347 (seed reply drop + sync divider + busy message) verified |
 | C Guards | ⏳ | — | |
 | D Timeline | ⏳ | — | |
 | E Desktop | ⏳ | — | |
