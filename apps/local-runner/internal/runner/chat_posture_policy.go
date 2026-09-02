@@ -15,6 +15,14 @@ import "strings"
 // Command, and Reason which Claude/Grok carry the tool name in) and only
 // approves operations that are unambiguously read-only. Everything else is a
 // silent deny — a read-only posture must never let a write through.
+//
+// BUG-344 composition invariant: an exec command is read-only iff every
+// top-level segment (`;`, `|`, `&&`, `||`) is a known-safe read, no segment
+// can redirect to a real file (only `2>/dev/null` is allowed, stripped
+// before classification), and nothing can substitute/execute hidden code
+// (no backtick, `$(` or `${`). Fail closed on any parse doubt. `find` is
+// allowlisted only for its pure-search forms (delete/exec/write primaries
+// denied).
 
 // readOnlyApprovalDecision returns "approve" or "deny" for an ApprovalDetails
 // under a read-only posture. Conservative: only confidently-read operations are
@@ -102,27 +110,204 @@ func isReadOnlyToolName(reason string) bool {
 	return false
 }
 
-// isReadOnlyCommand reports whether a shell command is read-only. Approved only
-// when the command is a known-safe read (optionally with read-only flags) and
-// contains no shell metacharacters that could redirect/chain a write.
+// isReadOnlyCommand reports whether a shell command is read-only (BUG-344).
+// Compositional: a compound command (`; | && ||`) is read-only iff EVERY
+// segment is a known-safe read, no segment can redirect to a real file, and
+// nothing can substitute/execute hidden code. Fail-closed on any doubt.
+//
+// The scanner is quote-aware so shell metacharacters inside quotes are literal
+// (e.g. `rg -n "B4|inplace"` keeps its pipe — it is a pattern, not a pipe).
 func isReadOnlyCommand(command string) bool {
 	cmd := strings.TrimSpace(command)
 	if cmd == "" {
 		return false
 	}
-	// Reject any command that contains a write/chain/redirect metacharacter —
-	// even a read binary is unsafe when piped/redirected.
-	if strings.ContainsAny(cmd, ">|;&`$") {
+	cleaned, ok := scanShellCommandSyntax(cmd)
+	if !ok {
 		return false
 	}
-	first := strings.Fields(cmd)
-	if len(first) == 0 {
+	segments := splitReadOnlySegments(cleaned)
+	if len(segments) == 0 {
+		return false
+	}
+	for _, seg := range segments {
+		if !isReadOnlyCommandSegment(seg) {
+			return false
+		}
+	}
+	return true
+}
+
+// scanShellCommandSyntax enforces the BUG-344 composition guards (D-2/D-5)
+// quote-aware:
+//   - backtick, `$(`, `${` substitution denied (active inside double quotes,
+//     matching shell semantics; literal inside single quotes);
+//   - single/double quotes must balance; parentheses must balance;
+//   - the ONLY allowed redirect is the exact stderr-to-null `2>/dev/null`
+//     (also `2> /dev/null`), which is stripped from the returned string;
+//     every other `>` shape (>, >>, 2>file, 1>, &>, <>, 2>&1, >) denies.
+//
+// ok=false fails the whole command closed.
+func scanShellCommandSyntax(s string) (string, bool) {
+	var buf []byte
+	var q byte // 0, '\'', '"'
+	depth := 0
+	for i := 0; i < len(s); {
+		c := s[i]
+		if q == '\'' {
+			buf = append(buf, c)
+			if c == '\'' {
+				q = 0
+			}
+			i++
+			continue
+		}
+		if q == '"' {
+			if c == '"' {
+				q = 0
+				buf = append(buf, c)
+				i++
+				continue
+			}
+			// substitution still active inside double quotes
+			if c == '`' {
+				return "", false
+			}
+			if c == '$' && i+1 < len(s) && (s[i+1] == '(' || s[i+1] == '{') {
+				return "", false
+			}
+			buf = append(buf, c)
+			i++
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			q = c
+			buf = append(buf, c)
+			i++
+		case '`':
+			return "", false
+		case '$':
+			if i+1 < len(s) && (s[i+1] == '(' || s[i+1] == '{') {
+				return "", false
+			}
+			buf = append(buf, c)
+			i++
+		case '(':
+			depth++
+			buf = append(buf, c)
+			i++
+		case ')':
+			depth--
+			if depth < 0 {
+				return "", false
+			}
+			buf = append(buf, c)
+			i++
+		case '>':
+			// Allowed only as the exact `2>/dev/null` / `2> /dev/null` at top
+			// level (single-quote/double-quote redirects are literal already).
+			if i == 0 || s[i-1] != '2' {
+				return "", false
+			}
+			j := i + 1
+			if j < len(s) && s[j] == '>' {
+				return "", false // 2>>
+			}
+			k := j
+			for k < len(s) && s[k] == ' ' {
+				k++
+			}
+			if !strings.HasPrefix(s[k:], "/dev/null") {
+				return "", false
+			}
+			after := k + len("/dev/null")
+			if after < len(s) {
+				n := s[after]
+				if n != ' ' && n != ';' && n != '|' && n != '&' && n != ')' {
+					return "", false
+				}
+			}
+			// strip the whole `2>/dev/null` (drop the '2' already buffered)
+			if len(buf) > 0 && buf[len(buf)-1] == '2' {
+				buf = buf[:len(buf)-1]
+			}
+			i = after
+		default:
+			buf = append(buf, c)
+			i++
+		}
+	}
+	if q != 0 || depth != 0 {
+		return "", false
+	}
+	return string(buf), true
+}
+
+// splitReadOnlySegments splits a scanned command on the approved top-level
+// separators `;`, `|`, `&&`, `||` (quote-aware: separators inside quotes are
+// literal). Returns nil when a top-level single `&` (backgrounding) appears —
+// not an approved separator, fail closed. Empty segments are kept and denied
+// by isReadOnlyCommandSegment.
+func splitReadOnlySegments(s string) []string {
+	var segs []string
+	var cur strings.Builder
+	var q byte
+	for i := 0; i < len(s); {
+		c := s[i]
+		if q != 0 {
+			cur.WriteByte(c)
+			if c == q {
+				q = 0
+			}
+			i++
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			q = c
+			cur.WriteByte(c)
+			i++
+		case ';':
+			segs = append(segs, strings.TrimSpace(cur.String()))
+			cur.Reset()
+			i++
+		case '|':
+			if i+1 < len(s) && s[i+1] == '|' {
+				i++
+			}
+			segs = append(segs, strings.TrimSpace(cur.String()))
+			cur.Reset()
+			i++
+		case '&':
+			if i+1 < len(s) && s[i+1] == '&' {
+				i++
+				segs = append(segs, strings.TrimSpace(cur.String()))
+				cur.Reset()
+				i++
+				continue
+			}
+			return nil // single & backgrounding — not approved
+		default:
+			cur.WriteByte(c)
+			i++
+		}
+	}
+	segs = append(segs, strings.TrimSpace(cur.String()))
+	return segs
+}
+
+// isReadOnlyCommandSegment classifies one top-level segment: it must start
+// with an allowlisted read binary (after optional `sudo`) and its args must be
+// read-only (`isReadOnlyGit`, `isReadOnlyFind`). Metacharacter safety is
+// handled by the caller (scan + split), so no per-segment gate is needed.
+func isReadOnlyCommandSegment(seg string) bool {
+	tokens := strings.Fields(strings.TrimSpace(seg))
+	if len(tokens) == 0 {
 		return false
 	}
 	// `sudo <read>` is still read-only; skip the sudo token to classify the
-	// actual binary. (Rejected earlier if the command also carried a
-	// redirect/chain metachar.)
-	tokens := first
+	// actual binary.
 	if strings.EqualFold(tokens[0], "sudo") {
 		tokens = tokens[1:]
 		if len(tokens) == 0 {
@@ -137,15 +322,36 @@ func isReadOnlyCommand(command string) bool {
 		bin = bin[i+1:]
 	}
 	switch bin {
-	case "ls", "cat", "find", "grep", "rg", "head", "tail", "wc",
+	case "ls", "cat", "grep", "rg", "head", "tail", "wc",
 		"pwd", "echo", "printf", "whoami", "hostname", "uname", "env",
 		"printenv", "date", "stat", "file", "which", "type", "tree",
 		"git":
 		// git is only read-only for its non-mutating subcommands.
 		return bin != "git" || isReadOnlyGit(tokens[1:])
+	case "find":
+		// BUG-344 D-4: find has write/exec action primaries; only pure search
+		// forms pass.
+		return isReadOnlyFind(tokens[1:])
 	default:
 		return false
 	}
+}
+
+// isReadOnlyFind reports whether a `find` invocation cannot mutate (BUG-344
+// D-4). It scans the argument list for find's delete/exec/file-writing action
+// primaries; any match denies the whole command. Pure search/print predicates
+// (`-name`, `-iname`, `-type`, `-mtime`, `-print`, `-quit`, …) pass.
+// Conservative false-negative: a filename pattern that is literally `-delete`
+// (`find . -name '-delete'`) is denied too — acceptable for a read-only gate.
+func isReadOnlyFind(args []string) bool {
+	for _, a := range args {
+		switch strings.ToLower(strings.TrimSpace(a)) {
+		case "-delete", "-exec", "-execdir", "-ok", "-okdir",
+			"-fls", "-fprint", "-fprint0", "-fprintf":
+			return false
+		}
+	}
+	return true
 }
 
 // isReadOnlyGit reports whether a git invocation is unambiguously read-only.

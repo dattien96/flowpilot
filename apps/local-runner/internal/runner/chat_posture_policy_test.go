@@ -25,6 +25,7 @@ func TestReadOnlyApprovalDecision_ReadsApprove(t *testing.T) {
 		{"sudo read", ApprovalDetails{Kind: "exec", Command: "sudo cat /etc/hosts"}},
 		{"find exec", ApprovalDetails{Kind: "exec", Command: "find . -name '*.go'"}},
 		{"echo read", ApprovalDetails{Kind: "exec", Command: "echo hi"}},
+		{"pipe read", ApprovalDetails{Kind: "exec", Command: "ls | grep foo"}}, // BUG-344: both segments read-only
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -50,7 +51,7 @@ func TestReadOnlyApprovalDecision_WritesDeny(t *testing.T) {
 		{"rm exec", ApprovalDetails{Kind: "exec", Command: "rm foo.txt"}},
 		{"redirect write", ApprovalDetails{Kind: "exec", Command: "echo hi > out.txt"}},
 		{"chained write", ApprovalDetails{Kind: "exec", Command: "ls; rm foo"}},
-		{"pipe to write", ApprovalDetails{Kind: "exec", Command: "ls | grep foo"}},
+		{"pipe to tee", ApprovalDetails{Kind: "exec", Command: "ls | tee out"}}, // BUG-344: tee is not an allowlisted read binary
 		{"git commit", ApprovalDetails{Kind: "exec", Command: "git commit -m x"}},
 		{"git push", ApprovalDetails{Kind: "exec", Command: "git push"}},
 		{"git branch create", ApprovalDetails{Kind: "exec", Command: "git branch feature/x"}},
