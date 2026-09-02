@@ -5,11 +5,11 @@
 - Document ID: `BUG-339`
 - Title: `TUI posture Active not persisted after cross-provider Tab`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `codex`
 - Reviewers: `codex`
 - Created: `2026-08-31`
-- Last Updated: `2026-08-31`
+- Last Updated: `2026-09-02`
 - Parent Documents: `CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat`, `SD-26-Chat-Continuity-Ssot`, `CP-56-Posture-Scan-Plan-Code`
 - Child Documents: ``
 - Related Documents: `CA-564-chat-posture-restart-restore`, `CA-697-tui-posture-tab-routing-task315-slice2`, `CA-685-posture-non-mode`

@@ -5,11 +5,11 @@
 - Document ID: `BUG-340`
 - Title: `Desktop detached reattach, 409 defer, and question-pending guard parity with TUI`
 - Phase: `bugfix`
-- Status: `in_progress`
+- Status: `done`
 - Owner: `codex`
 - Reviewers: `codex`
 - Created: `2026-08-31`
-- Last Updated: `2026-08-31`
+- Last Updated: `2026-09-02`
 - Parent Documents: `CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat`, `SD-26-Chat-Continuity-Ssot`
 - Child Documents: ``
 - Related Documents: `CA-699-tui-detached-reattach-restore-by-chat-task315-slice3`, `CA-700-desktop-chat-switch-surface-task316`, `BUG-339-TUI-Posture-Active-Not-Persisted-After-Cross-Provider-Tab`
