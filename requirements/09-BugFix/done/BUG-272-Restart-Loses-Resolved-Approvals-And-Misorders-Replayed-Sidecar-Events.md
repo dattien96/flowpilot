@@ -5,11 +5,11 @@
 - Document ID: `BUG-272`
 - Title: `Restart Loses Resolved Approvals And Mis-Orders Replayed Sidecar Events`
 - Phase: `bugfix`
-- Status: `in_progress` — code + automated tests complete 2026-07-10; live UI re-verification against a real server restart still pending (mirrors BUG-271's own land-then-live-reverify trajectory).
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-07-10`
-- Last Updated: `2026-07-10`
+- Last Updated: `2026-09-02`
 - Parent Documents: [BUG-271: Resolved Question Vanishes Or Reappears Interactive After Server Restart](../done/BUG-271-Resolved-Question-Vanishes-Or-Reappears-Interactive-After-Server-Restart.md)
 - Child Documents: `none`
 - Related Documents: [Task-212: Grok Parity Hardening And Live DOD](../../08-Task/done/Task-212-Grok-Parity-Hardening-And-Live-DOD.md) (the sibling Grok transcript-replay gap, DOD-5/DOD-9, closed in the same session)
