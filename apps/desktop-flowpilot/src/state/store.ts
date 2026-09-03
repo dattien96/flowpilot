@@ -57,6 +57,11 @@ function buildPriorChatTimeline(
 ): TimelineItem[] {
   // CP-59 F4 / CA-699: provider-agnostic join (chatId only, no providerKey branch).
   const out: TimelineItem[] = [];
+  // BUG-350 (TUI renderChatTimelineBackfill parity): a seed turn (empty or
+  // envelope prompt) records its envelope reply as an orphan assistant bubble
+  // on the destination leg — skip that leg's assistant records until a real
+  // turn_started lands on it. The switch divider already represents the seed.
+  let skipLeg = "";
   for (const rec of records) {
     if (rec.legRunId === currentRunId && rec.type !== "chat_provider_switch") {
       continue;
@@ -64,12 +69,16 @@ function buildPriorChatTimeline(
     switch (rec.type) {
       case "turn_started": {
         const prompt = (rec.payload as { prompt?: unknown })?.prompt;
-        if (typeof prompt !== "string" || !prompt.trim()) break;
-        if (prompt.trim().startsWith(HANDOFF_PROMPT_PREFIX)) break;
+        if (typeof prompt !== "string" || !prompt.trim() || prompt.trim().startsWith(HANDOFF_PROMPT_PREFIX)) {
+          skipLeg = rec.legRunId;
+          break;
+        }
+        skipLeg = "";
         out.push({ kind: "prompt", id: `chat-${rec.chatSeq}-${rec.legRunId}`, text: prompt });
         break;
       }
       case "message_completed": {
+        if (rec.legRunId === skipLeg) break;
         const text = (rec.payload as { text?: unknown })?.text;
         if (typeof text !== "string" || !text.trim()) break;
         out.push({ kind: "assistant", id: `chat-${rec.chatSeq}-${rec.legRunId}`, text, finalized: true });
