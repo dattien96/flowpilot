@@ -180,6 +180,20 @@ function approvalState(extras = {}) {
     ], "both approvals should be tracked");
     strict_1.default.equal(next.status, "waiting_approval");
 });
+(0, node_test_1.default)("BUG-ApprovalReplay-Restart: replay of an already-resolved approval renders read-only and does not re-enter pendingApprovals", () => {
+    // Server-side (reconstructRun) now stamps `decision` onto a replayed
+    // permission_required event for an approval that was already resolved, so
+    // it survives a full server restart. The client must render the approval
+    // card read-only (decision !== undefined) and must not treat it as a fresh
+    // pending approval or flip run status to waiting_approval — the approval-side
+    // twin of the resolved-question replay above.
+    const state = approvalState({ status: "completed" });
+    const next = (0, timelineReducer_1.applyTimelineEvent)(state, baseEvent({ type: "permission_required", approvalId: "appr-1", provider: "claude", details: approvalDetails, decision: "approve" }));
+    const card = next.timeline?.find((it) => it.kind === "approval");
+    strict_1.default.equal(card?.decision, "approve", "replayed approval card should carry the recorded decision");
+    strict_1.default.deepEqual(next.pendingApprovals, [], "an already-resolved replayed approval must not become pending again");
+    strict_1.default.equal(next.status, "completed", "replaying a resolved approval must not flip a settled run back to waiting_approval");
+});
 // Question stale detection tests
 const questionOptions = [
     { label: "Python", value: "Python" },
@@ -193,6 +207,25 @@ const questionOptions = [
     strict_1.default.equal(card.answer, undefined);
     strict_1.default.deepEqual(next.pendingQuestions, [{ questionId: "q-1", prompt: "Pick one", options: questionOptions, multiSelect: undefined }]);
     strict_1.default.equal(next.status, "waiting_question");
+});
+(0, node_test_1.default)("BUG-StaleQuestion: reconnect replay of an already-resolved question renders read-only and does not re-enter pendingQuestions", () => {
+    // Server-side (subscribe()) now stamps `answer` onto a replayed
+    // user_question_required event for a question that was already resolved,
+    // instead of dropping the event entirely. The client must render it via
+    // QuestionCard's read-only path (answer !== undefined) and must not treat
+    // it as a fresh pending question or flip run status to waiting_question.
+    const state = approvalState({ status: "completed" });
+    const next = (0, timelineReducer_1.applyTimelineEvent)(state, baseEvent({
+        type: "user_question_required",
+        questionId: "q-1",
+        prompt: "Use Drive?",
+        options: questionOptions,
+        answer: ["__skip__"],
+    }));
+    const card = next.timeline?.find((it) => it.kind === "question");
+    strict_1.default.deepEqual(card?.answer, ["__skip__"], "replayed question card should carry the resolved answer");
+    strict_1.default.deepEqual(next.pendingQuestions, [], "an already-resolved replayed question must not become pending again");
+    strict_1.default.equal(next.status, "completed", "replaying a resolved question must not flip a settled run back to waiting_question");
 });
 (0, node_test_1.default)("history replay: follow-up event after user_question_required stamps card as answered and clears pendingQuestions", () => {
     const state = approvalState({
@@ -447,4 +480,60 @@ const SPAWN_TURN = [
     ]);
     // prev was "completed" from turn_completed; reprompt keeps it (the follow-up turn_started flips to running).
     strict_1.default.equal(state.status, "completed");
+});
+(0, node_test_1.default)("a ready flow_audit_draft renders an info card with the commit message (BUG-243 F-3)", () => {
+    const state = foldEvents([
+        baseEvent({ id: "evt-tc", seq: 1, type: "turn_completed", finalMessage: "done" }),
+        baseEvent({
+            id: "evt-audit",
+            seq: 2,
+            type: "flow_audit_draft",
+            flowAuditDraft: {
+                workflowRunId: "run-1",
+                featureKey: "calc-core",
+                validationResult: "passed",
+                whatChanged: "Fixed Add to return a + b.",
+                commitMessage: "[BugFix][calc-core] fix Add returning wrong result",
+                changeLedgerBlock: "```flowpilot:change-ledger\nfeature_key: calc-core\n```",
+                status: "ready",
+            },
+        }),
+    ]);
+    const card = state.timeline.find((it) => it.kind === "system" && it.id === "evt-audit");
+    strict_1.default.ok(card, "the audit draft card is rendered");
+    strict_1.default.equal(card.tone, "info");
+    const text = card.text;
+    strict_1.default.match(text, /calc-core/);
+    strict_1.default.match(text, /fix Add returning wrong result/);
+});
+(0, node_test_1.default)("a blocked flow_audit_draft renders a warn card, not info (BUG-243 F-3)", () => {
+    const state = foldEvents([
+        baseEvent({
+            id: "evt-audit-blocked",
+            seq: 1,
+            type: "flow_audit_draft",
+            flowAuditDraft: {
+                workflowRunId: "run-1",
+                featureKey: "",
+                validationResult: "failed_validation_max_retries",
+                status: "blocked_validation_failed",
+            },
+        }),
+    ]);
+    const card = state.timeline.find((it) => it.kind === "system" && it.id === "evt-audit-blocked");
+    strict_1.default.ok(card, "the blocked audit draft card is still rendered (inspectable, not silently dropped)");
+    strict_1.default.equal(card.tone, "warn");
+});
+(0, node_test_1.default)("re-applying the same flow_audit_draft does not duplicate the card (BUG-243 F-3)", () => {
+    const events = [
+        baseEvent({
+            id: "evt-audit",
+            seq: 1,
+            type: "flow_audit_draft",
+            flowAuditDraft: { workflowRunId: "run-1", featureKey: "calc-core", validationResult: "passed", status: "ready" },
+        }),
+    ];
+    const twice = foldEvents([...events, ...events]);
+    const cards = twice.timeline.filter((it) => it.kind === "system" && it.id === "evt-audit");
+    strict_1.default.equal(cards.length, 1, "re-streamed flow_audit_draft must not duplicate the card");
 });

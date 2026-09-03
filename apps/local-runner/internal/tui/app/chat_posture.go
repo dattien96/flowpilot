@@ -110,6 +110,28 @@ func (m *AppModel) chatPostureCmdFromPending(cfg client.ChatPostureConfig) tea.C
 	case strings.HasPrefix(pending, "apply:"):
 		name := strings.TrimPrefix(pending, "apply:")
 		if validPosture(name) {
+			// CP-59 Task-315 (BUG-330): a cross-provider posture pin on a live
+			// chat routes through the switch endpoint instead of swapping the
+			// model inside the old provider; the full profile re-applies on the
+			// new leg via the queued-posture path (applyChatSwitched).
+			if cmd := m.routePostureSwitch(cfg, name); cmd != nil {
+				return cmd
+			}
+			// Tab while a switch or turn is still in flight must not fall
+			// through to an in-place apply — that leaked a grok provider onto
+			// an opencode leg after a 409 and needed a double-Tab to reach
+			// code (B-4: 417944→417970). Treat it as C2-busy like the switch
+			// path so the next Tab can reach code cleanly.
+			if m.chatSwitchInFlight || m.turnLive || m.turnStream != nil || m.turnSendPending || m.question != nil || len(m.questions) > 0 || m.approval != nil || len(m.approvals) > 0 {
+				if m.chatSwitchInFlight {
+					// BUG-347: a Tab during an in-flight provider switch is not
+					// a question/approval block — say so (operator saw the
+					// question message with no question mounted).
+					m.addMessage("system", "Provider switch in progress — wait for it to finish, then Tab again", "error")
+					return func() tea.Msg { return detachedNoticeMsg{} }
+				}
+				return m.busySwitchNotice()
+			}
 			// CA-685: the active posture's full profile (reasoning included)
 			// re-applies; /new is a refresh, not an override (supersedes the
 			// CA-641 reasoning-keep carve-out).

@@ -11,6 +11,12 @@ class FakeDirectoryRepository {
     constructor(results) {
         this.results = results;
     }
+    // The phase1 light-weight fake never drives the real directory picker
+    // dialog; keeping the signature aligned with the interface (Task-316
+    // phase1 runner debt follow-up) without a DOM dependency.
+    async pickDirectory() {
+        throw new Error("pickDirectory not used in this fixture");
+    }
     async validatePath(path) {
         const result = this.results[path];
         if (!result) {

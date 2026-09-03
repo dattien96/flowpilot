@@ -20,11 +20,13 @@ func TestLoadBuiltinPack(t *testing.T) {
 	// CP-45/SD-23 Task-205 adds a third built-in flow
 	// (context-coding-review-synthesis.yaml) proving cross-step typed
 	// artifact I/O.
-	if len(pack.Flows) != 3 {
-		t.Fatalf("expected 3 built-in flows, got %d", len(pack.Flows))
+	// SS-18/SD-24 add three Vibe flows (vibe-ingest, vibe-sprint,
+	// vibe-owner-debate) + owner agent.
+	if len(pack.Flows) != 6 {
+		t.Fatalf("expected 6 built-in flows, got %d", len(pack.Flows))
 	}
 	names := SortedAgentNames(pack.Agents)
-	for _, want := range []string{"coder", "reviewer", "synthesizer", "tester"} {
+	for _, want := range []string{"coder", "reviewer", "synthesizer", "tester", "owner", "vibe-intake"} {
 		found := false
 		for _, got := range names {
 			if got == want {
@@ -34,6 +36,15 @@ func TestLoadBuiltinPack(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("missing built-in agent %q in %v", want, names)
+		}
+	}
+	flowIDs := make(map[string]struct{}, len(pack.Flows))
+	for _, f := range pack.Flows {
+		flowIDs[f.ID] = struct{}{}
+	}
+	for _, want := range []string{"vibe-ingest", "vibe-sprint", "vibe-owner-debate"} {
+		if _, ok := flowIDs[want]; !ok {
+			t.Fatalf("missing vibe flow %q in pack", want)
 		}
 	}
 }

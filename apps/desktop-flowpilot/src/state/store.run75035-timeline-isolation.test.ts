@@ -20,7 +20,7 @@ const PROVIDERS = ["codex", "claude", "grok"] as const satisfies readonly Provid
 const BASE_EVENT = {
   id: "evt",
   workflowRunId: "main-run",
-  seq: 0,
+  seq: 0,  providerSessionId: "ses-fix",  occurredAt: "2026-01-01T00:00:00Z",
   ts: "2026-07-23T21:00:00Z",
   providerKey: "codex" as ProviderKey,
 };
@@ -37,6 +37,10 @@ function deferred<T>() {
 
 function makeClient(overrides: Partial<RunnerClient> = {}): RunnerClient {
   const base: RunnerClient = {
+    switchChatProvider: async () => {
+      throw new Error("switchChatProvider not implemented in this fixture");
+    },
+    chatTimeline: async () => ({ chatId: "", legs: [], records: [], nextSeq: 0, truncated: false, degraded: false }),
     listProjects: async () => [],
     listWorkflows: async () => [],
     listSteps: async () => [],
@@ -213,7 +217,7 @@ for (const provider of PROVIDERS) {
             id: "hub-delta",
             providerKey: provider,
             workflowRunId: "main-run",
-            seq: 10,
+            seq: 10,            providerSessionId: "ses-fix",            occurredAt: "2026-01-01T00:00:00Z",
             type: "message_delta",
             text: "Đúng, đã xong rồi",
           };
@@ -222,7 +226,7 @@ for (const provider of PROVIDERS) {
             id: "hub-done",
             providerKey: provider,
             workflowRunId: "main-run",
-            seq: 11,
+            seq: 11,            providerSessionId: "ses-fix",            occurredAt: "2026-01-01T00:00:00Z",
             type: "turn_completed",
             finalMessage: "Đúng, đã xong rồi",
           };
@@ -260,7 +264,7 @@ for (const provider of PROVIDERS) {
             id: "hub-delta",
             providerKey: provider,
             workflowRunId: "main-run",
-            seq: 10,
+            seq: 10,            providerSessionId: "ses-fix",            occurredAt: "2026-01-01T00:00:00Z",
             type: "message_delta",
             text: "Đúng, đã xong rồi",
           };
@@ -271,7 +275,7 @@ for (const provider of PROVIDERS) {
             id: "child-1",
             providerKey: provider,
             workflowRunId: "child-coder",
-            seq: 1,
+            seq: 1,            providerSessionId: "ses-fix",            occurredAt: "2026-01-01T00:00:00Z",
             type: "message_delta",
             text: "CHILD_OWN_ONLY",
           };
@@ -305,6 +309,7 @@ for (const provider of PROVIDERS) {
           pendingApprovals: [],
           pendingQuestions: [],
           lastEventSeq: 0,
+          recoverable: false,
         },
       },
     });
@@ -351,7 +356,7 @@ for (const provider of PROVIDERS) {
             ...BASE_EVENT,
             providerKey: provider,
             workflowRunId: "main-run",
-            seq: 1,
+            seq: 1,            providerSessionId: "ses-fix",            occurredAt: "2026-01-01T00:00:00Z",
             type: "message_delta",
             text: "Đúng, đã xong rồi",
           };
@@ -359,7 +364,7 @@ for (const provider of PROVIDERS) {
             ...BASE_EVENT,
             providerKey: provider,
             workflowRunId: "child-coder",
-            seq: 2,
+            seq: 2,            providerSessionId: "ses-fix",            occurredAt: "2026-01-01T00:00:00Z",
             type: "message_delta",
             text: "CHILD_OWN_ONLY",
           };
@@ -399,7 +404,7 @@ test("run75035: backToMainRun restores hub snapshot without child-only assistant
         yield {
           ...BASE_EVENT,
           workflowRunId: "child-coder",
-          seq: 1,
+          seq: 1,          providerSessionId: "ses-fix",          occurredAt: "2026-01-01T00:00:00Z",
           type: "message_delta",
           text: "CHILD_OWN_ONLY",
         };

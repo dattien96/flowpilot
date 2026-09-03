@@ -1,0 +1,80 @@
+id: vibe-ingest
+version: "1"
+description: Vibe ingest — convert raw requirement into SS-13 drafts, pause for Desktop/TUI SS Preview & Lock, then auto-slice sprint plan.
+mode: flow
+builtin:
+  editable: false
+  selectableIn: []
+  cloneable: false
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 3
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+acceptance_nodes: []
+nodes:
+  - id: ingest_reader
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/vibe-intake.md
+    join: all
+  - id: ss_converter
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/vibe-intake.md
+    join: all
+  - id: ss_validator
+    run: inline
+    lifecycle: once
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+  - id: ss_lock
+    run: inline
+    lifecycle: once
+    behavior: user.confirm
+    join: all
+  - id: sprint_slicer
+    run: inline
+    lifecycle: once
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+edges:
+  - from: ingest_reader
+    to: ss_converter
+    when: done
+    kind: forward
+  - from: ss_converter
+    to: ss_validator
+    when: done
+    kind: forward
+  - from: ss_validator
+    to: ss_lock
+    when: done
+    kind: forward
+  - from: ss_lock
+    to: sprint_slicer
+    when: done
+    kind: forward
+  - from: ss_lock
+    to: ss_converter
+    when: continue
+    kind: back
+  - from: ss_lock
+    to: ask_user
+    when: escalate
+    kind: forward
+  - from: sprint_slicer
+    to: done
+    when: done
+    kind: forward
+  - from: sprint_slicer
+    to: ask_user
+    when: escalate
+    kind: forward

@@ -2,6 +2,49 @@ package runner
 
 import "strings"
 
+// grokDeniedToolExcerpt builds the blocked-tool/command excerpt used in the
+// BUG-342 no-reply notice. Prefers the shell command, falls back to the tool
+// name/kind marker (ApprovalDetails.Reason), truncated.
+func grokDeniedToolExcerpt(details ApprovalDetails) string {
+	excerpt := strings.TrimSpace(details.Command)
+	if excerpt == "" {
+		excerpt = strings.TrimSpace(details.Reason)
+	}
+	if len(excerpt) > 60 {
+		excerpt = excerpt[:60] + "…"
+	}
+	return excerpt
+}
+
+// grokPermissionDeniedFor reports whether any permission was DENIED during the
+// current turn on this session and returns the blocked tool/command excerpt
+// (BUG-342: Grok cancels the whole prompt on a denial, so emitTerminal uses
+// this to emit an honest no-reply notice instead of a blank turn).
+func (a *grokAdapter) grokPermissionDeniedFor(sessionID string) (bool, string) {
+	if a == nil {
+		return false, ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	tool, ok := a.permissionDenied[sessionID]
+	return ok, tool
+}
+
+// markGrokPermissionDenied records that a permission was denied this turn on
+// this session (BUG-342). Only called on deny outcomes — YOLO auto-approve and
+// user approvals never mark.
+func (a *grokAdapter) markGrokPermissionDenied(sessionID, tool string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	if a.permissionDenied == nil {
+		a.permissionDenied = map[string]string{}
+	}
+	a.permissionDenied[sessionID] = tool
+	a.mu.Unlock()
+}
+
 // Task-208 (CP-46 P-5/P-6/P-9): the Grok permission decision-vocabulary mapper.
 // Reuses the Codex INBOUND-REQUEST pattern (handleInbound, codex_adapter.go) —
 // NOT Claude's HTTP-MCP --permission-prompt-tool server — because Grok's

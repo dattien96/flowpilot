@@ -6,8 +6,9 @@ import "time"
 
 const consoleRearmInterval = 2 * time.Second
 
-// maybeRearmConsoleInput keeps wheel-only mouse (1000h) alive so wheel scroll
-// stays MouseWheel rather than degrading to KeyUp burst. No hover (1002/1003).
+// maybeRearmConsoleInput keeps wheel (1000h) + drag-motion (1002h) mouse alive
+// so wheel scroll stays MouseWheel and drags paint live highlight. No hover
+// (1003) — the BUG-328 wedge class stays off.
 // Skipped during active wheel burst so the ANSI burst does not wedge the
 // 64-slot queue alongside continuous View() (pid 20632 hang after 20s scroll).
 func (m *AppModel) maybeRearmConsoleInput(now time.Time) {

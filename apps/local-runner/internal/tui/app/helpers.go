@@ -1504,14 +1504,19 @@ func filterHistorySuggestions(input string, items []client.RunHistoryItem) []sug
 // filterHistorySuggestionsWithRemote is filterHistorySuggestions plus Drive-index
 // reconciliation (CA-552). The badge is placed right after the #N index (CA-553)
 // so it stays visible even when the detail line is truncated to chatWidth.
+// Grouped chats (CP-59 Q-4): one row per logical chat (Desktop parity). The
+// haystack includes every leg's runId and the chatId so filtering by an older
+// leg or chatId still surfaces the chat. Detail shows "N legs" when grouped.
 func filterHistorySuggestionsWithRemote(input string, items []client.RunHistoryItem, remote []client.RemoteChatSessionSummary) []suggestItem {
 	cmd, query, ok := parseChatOpenArgPrefix(input)
 	if !ok {
 		return nil
 	}
 	q := strings.ToLower(query)
-	out := make([]suggestItem, 0, len(items))
-	for i, it := range items {
+	rows := groupRunsByChatId(items)
+	out := make([]suggestItem, 0, len(rows))
+	for i, row := range rows {
+		it := row.item
 		id := strings.TrimSpace(it.RunID)
 		if id == "" {
 			continue
@@ -1523,9 +1528,31 @@ func filterHistorySuggestionsWithRemote(input string, items []client.RunHistoryI
 		if title == "" {
 			title = "(no prompt)"
 		}
-		hay := strings.ToLower(id + " " + title + " " + it.Status + " " + it.ProviderKey + " " + it.RunKind + " " + it.SyncStatus)
+		// Haystack spans head + all legs (older leg runId / chatId lookup).
+		hayBase := id + " " + title + " " + it.Status + " " + it.ProviderKey + " " + it.RunKind + " " + it.SyncStatus + " " + it.ChatID
+		if row.group != nil {
+			for _, leg := range row.group.legs {
+				hayBase += " " + leg.RunID + " " + leg.ChatID + " " + leg.ProviderKey
+			}
+		}
+		hay := strings.ToLower(hayBase)
 		if q != "" && !strings.Contains(hay, q) && !strings.Contains(strings.ToLower(shortID(id)), q) {
-			continue
+			// Also allow chatId / leg short id direct match
+			matched := false
+			if row.group != nil {
+				for _, leg := range row.group.legs {
+					if strings.Contains(strings.ToLower(leg.RunID), q) || strings.Contains(strings.ToLower(shortID(leg.RunID)), q) || strings.Contains(strings.ToLower(leg.ChatID), q) {
+						matched = true
+						break
+					}
+				}
+				if strings.Contains(strings.ToLower(it.ChatID), q) {
+					matched = true
+				}
+			}
+			if !matched {
+				continue
+			}
 		}
 		kind := it.RunKind
 		if kind == "" {
@@ -1545,6 +1572,9 @@ func filterHistorySuggestionsWithRemote(input string, items []client.RunHistoryI
 			when = "—"
 		}
 		detail := fmt.Sprintf("#%d", i+1)
+		if row.group != nil && len(row.group.legs) > 1 {
+			detail += fmt.Sprintf(" · %d legs", len(row.group.legs))
+		}
 		if badge := syncBadgeWithRemote(it, remote); badge != "" {
 			detail += " · " + badge
 		}

@@ -222,7 +222,7 @@ func cmdSetAutoWrap(on bool) tea.Cmd {
 }
 
 func (m *AppModel) Init() tea.Cmd {
-	tuiLog("Init() -> disable autowrap + wheel-only mouse (1000h wheel, no 1002/1003 hover) + cmdConnect + tickCursor")
+	tuiLog("Init() -> disable autowrap + wheel/drag mouse (1000h wheel + 1002h drag motion, no 1003 hover) + cmdConnect + tickCursor")
 	return tea.Sequence(
 		cmdSetAutoWrap(false),
 		cmdEnableWheelMouse(),
@@ -1045,6 +1045,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.visiblePromptCount = 0
 		m.historyLoadedAfterSeq = msg.HistoryLoadedAfterSeq
 		m.historyChunkInFlight = false
+		m.chatBackfillDone = false
 		m.lastEventSeq = handle.LastEventSeq
 		// Seed the client per-run SSE cursor so a later continue turn streams
 		// from the resume snapshot instead of replaying the whole old turn
@@ -1121,6 +1122,23 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Catalog may still be loading — refresh flow list so status label can use name.
 		if kind == "flow" && len(m.flowWorkflows) == 0 && len(m.flowBuiltins) == 0 {
 			cmds = append(cmds, m.cmdPrefetchFlows())
+		}
+		// CP-59 F4 / CA-699 Task-315 slice 3: chat history via chatTimeline
+		// (provider-agnostic join — no providerKey branch, chatId only). Best
+		// effort: timeline fetch failures keep the current-leg replay intact.
+		// Fallback to HistoryMeta ChatID when ResumeRun's handle lacks it
+		// (BUG-338 session predates chat_id column — list already stamps via
+		// transcriptLegIndex, resume must not lose the chat).
+		effectiveHandle := handle
+		effectiveChatID := strings.TrimSpace(effectiveHandle.ChatID)
+		if effectiveChatID == "" {
+			effectiveChatID = strings.TrimSpace(msg.HistoryMeta.ChatID)
+			effectiveHandle.ChatID = effectiveChatID
+		}
+		if effectiveChatID != "" && isChatHandle(&effectiveHandle) {
+			if cmd := m.cmdBackfillChatTimeline(effectiveHandle); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 		return m, tea.Batch(cmds...)
 
@@ -1297,6 +1315,63 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case ChatSwitchedMsg:
+		// CP-59 Task-315 (SD-26 D-7): adopt in place — transcript kept, no
+		// client-synthesized divider on success (the seed turn carries it).
+		m.applyChatSwitched(msg)
+		if msg.Err == nil && msg.Resp != nil {
+			cmds := []tea.Cmd{m.cmdStartOrchestrationStream()}
+			if m.chatPostureDirty {
+				m.chatPostureDirty = false
+				cmds = append(cmds, m.cmdSaveChatPosture(m.chatPostureCfg))
+			}
+			return m, tea.Batch(cmds...)
+		}
+		if m.chatPostureDirty {
+			m.chatPostureDirty = false
+			return m, m.cmdSaveChatPosture(m.chatPostureCfg)
+		}
+		return m, nil
+
+	case ReattachedMsg:
+		// CP-59 Task-315 slice 3: a detached chat reattached — a fresh local
+		// leg exists; the queued prompt sends on it via the normal path.
+		m.chatDetached = false
+		m.chatBackfillDone = false
+		if msg.Err != nil {
+			m.addMessage("system", "Reattach failed: "+msg.Err.Error()+" — the prompt was not sent; try again or /new", "error")
+			return m, nil
+		}
+		h := msg.Handle
+		m.runHandle = &h
+		if h.ProviderKey != "" {
+			m.provider = string(h.ProviderKey)
+		}
+		m.lastEventSeq = h.LastEventSeq
+		m.client.NoteLastSeq(h.RunID, h.LastEventSeq)
+		m.refreshSessionPanel()
+		if prompt := m.pendingPrompt; prompt != "" {
+			m.pendingPrompt = ""
+			return m, m.cmdSendTurn(prompt)
+		}
+		return m, nil
+
+	case chatTimelineBackfillMsg:
+		// CP-59 Task-315 slice 3: /open restore-by-chat — prior legs' turns
+		// render from the chat timeline; the detached flag derives from legs.
+		if msg.Err != nil {
+			m.chatDetached = msg.Detached
+			m.chatBackfillDone = true
+			m.addMessage("system", "Chat history unavailable: "+msg.Err.Error()+" — showing current leg only", "error")
+			return m, nil
+		}
+		m.chatDetached = msg.Detached
+		m.renderChatTimelineBackfill(msg)
+		return m, nil
+
+	case detachedNoticeMsg:
+		return m, nil
+
 	case turnStreamOpenedMsg:
 		m.turnStream = &turnStreamState{evCh: msg.EvCh, errCh: msg.ErrCh}
 		m.turnSendPending = false
@@ -1333,6 +1408,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turnStream = nil
 		m.turnSendPending = false
 		if msg.Err != nil {
+			m.turnLive = false
 			// BUG-231 (run-189839 parity): a freeform turn against a blocked flow
 			// answers 409 flow_awaiting_user. That is a deliberate parked state,
 			// not a failure — park the flow (keep the handle) so the user can
@@ -1364,6 +1440,28 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.runHandle = nil
 			m.clearThinkingPlaceholder()
 			return m, nil
+		}
+		// BUG-341: 417944 first turn ended on tool-only output with a blank
+		// assistant until the next prompt's replay. If the turn is still live
+		// (turn_completed not yet seen via any stream), keep it busy and let
+		// the orch stream deliver the terminal event — do not settle to "done"
+		// prematurely and do not clear the thinking placeholder yet.
+		if m.turnLive {
+			if m.connStatus == ConnRunning {
+				// keep "turn running…" / "thinking…" — do not flip to done
+			} else if m.thinkingIndex() >= 0 {
+				m.connStatus = ConnRunning
+				m.statusMsg = "thinking…"
+			} else {
+				m.connStatus = ConnRunning
+				m.statusMsg = "turn running…"
+			}
+			cmds := []tea.Cmd{m.cmdRefreshStepsRuntime()}
+			if m.runHandle != nil && m.orchStream == nil {
+				cmds = append(cmds, m.cmdStartOrchestrationStream())
+			}
+			cmds = append(cmds, m.cmdHydratePendingFromSnapshot())
+			return m, tea.Batch(cmds...)
 		}
 		if m.connStatus == ConnRunning {
 			m.connStatus = ConnIdle
@@ -1618,7 +1716,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.connStatus = ConnRunning
 		m.addMessage("system", fmt.Sprintf("Resumed run %s", shortID(handle.RunID)), "")
-		return m, m.cmdStreamRun(handle.RunID, handle.LastEventSeq)
+		// CP-59 Task-315 slice 3: restore-by-chat — prior legs' turns backfill
+		// from the chat timeline; best effort (silent on transport errors).
+		return m, tea.Batch(m.cmdStreamRun(handle.RunID, handle.LastEventSeq), m.cmdBackfillChatTimeline(handle))
 
 	case EventMsg:
 		return m.handleEvent(msg.Ev)
@@ -1695,6 +1795,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.cmdHydrateDispatchAttention(m.runHandle.RunID)
 
 	case TurnDoneMsg:
+		m.turnLive = false
 		m.connStatus = ConnIdle
 		m.statusMsg = "done"
 		// A completed turn means the flow moved on — a still-armed gate is stale
@@ -1710,6 +1811,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case turnFinishedMsg:
+		m.turnLive = false
 		m.connStatus = ConnIdle
 		m.statusMsg = "done"
 		// A completed turn means the flow moved on — a still-armed gate is stale
@@ -1731,6 +1833,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case TurnFailedMsg:
+		m.turnLive = false
 		m.connStatus = ConnError
 		m.statusMsg = "turn failed: " + msg.Reason
 		m.addMessage("system", "Turn failed: "+msg.Reason, "error")
@@ -1765,6 +1868,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 	switch ev.Type {
 	case "message_delta":
+		// BUG-347: the post-switch seed turn's reply is noise — the divider
+		// already rendered on switch commit; drop the seed's assistant output.
+		if m.seedTurnActive {
+			return m, nil
+		}
 		m.appendAssistantDelta(ev.Text)
 		// Flow chrome is quiet (CA-511): progress lives on F2 steps + status line,
 		// so a delta must not overwrite "step: X"/"flow running…" with "streaming…"
@@ -1776,12 +1884,20 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		}
 
 	case "message_completed":
+		if m.seedTurnActive {
+			return m, nil
+		}
 		m.appendAssistantDelta(ev.Text)
 
 	case "turn_completed":
+		// BUG-347: the seed turn ended — its FinalMessage repeats the envelope
+		// reply that was already dropped, so never re-append it here.
+		wasSeed := m.seedTurnActive
+		m.seedTurnActive = false
 		// A completed turn means the flow moved on — a still-armed gate is stale
 		// (CA-536). It must not keep swallowing input.
 		m.gate = nil
+		m.turnLive = false
 		// Prefer already-streamed assistant text; ignore step-complete stubs.
 		// run-92955: a prior turn's assistant text made hasAssistantContent()
 		// true, so thinking… on a follow-up was never replaced when tools
@@ -1792,7 +1908,7 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 				fill = strings.TrimSpace(m.lastAssistantText())
 			}
 			m.ensureAssistantMessage(fill)
-		} else if ev.FinalMessage != "" && !m.hasAssistantContent() && !isStepCompleteStub(ev.FinalMessage) {
+		} else if ev.FinalMessage != "" && !m.hasAssistantContent() && !isStepCompleteStub(ev.FinalMessage) && !wasSeed {
 			m.ensureAssistantMessage(ev.FinalMessage)
 		}
 		// run-107774: once the loop is done, a completed follow-up turn must not
@@ -1808,6 +1924,8 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg { return TurnDoneMsg{FinalMsg: final} }
 
 	case "turn_failed":
+		m.seedTurnActive = false
+		m.turnLive = false
 		m.connStatus = ConnError
 		m.statusMsg = "turn failed: " + ev.Error
 		if strings.TrimSpace(ev.Error) != "" {
@@ -1819,6 +1937,11 @@ func (m *AppModel) handleEvent(ev client.ProviderEvent) (tea.Model, tea.Cmd) {
 		}
 
 	case "turn_started":
+		// BUG-347: a real user turn (non-empty, non-envelope prompt) on the
+		// new leg disarms the seed guard even if turn_completed was missed.
+		if m.seedTurnActive && ev.Prompt != "" && !strings.HasPrefix(ev.Prompt, client.HandoffPromptPrefix) {
+			m.seedTurnActive = false
+		}
 		m.connStatus = ConnRunning
 		if m.isFlowChrome() {
 			if m.flowStepsActive != "" {
@@ -3622,6 +3745,7 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 	// the status line + F2 RUNNING step instead (workIsLive starts the ticker).
 	m.statusMsg = "thinking…"
 	m.connStatus = ConnRunning
+	m.turnLive = true
 
 	// First message: start run, then send turn (desktop sendPrompt parity).
 	if m.runHandle == nil {
@@ -4171,6 +4295,11 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			}
 			m.addMessage("system", sb.String(), "")
 		} else if m.runHandle != nil {
+			// CP-59 Task-315: a chat run routes provider changes through the
+			// runner switch endpoint (in-place adoption, transcript kept).
+			if cmd := m.routeProviderSwitch(strings.ToLower(args[0]), ""); cmd != nil {
+				return m, cmd
+			}
 			m.addMessage("system", "Cannot change provider after a run has started. Use /new to start fresh.", "error")
 		} else {
 			want := strings.ToLower(args[0])
@@ -4253,6 +4382,20 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			providerSwitched := false
 			if matched != nil {
 				if matched.provider != "" && !strings.EqualFold(matched.provider, m.provider) {
+					// CP-59 Task-315: a foreign-provider model on a live chat
+					// routes through the switch endpoint instead of swapping
+					// m.model inside the old provider (BUG-330 class).
+					if cmd := m.routeProviderSwitch(matched.provider, matched.id); cmd != nil {
+						return m, cmd
+					}
+					if m.runHandle != nil {
+						if isChatHandle(m.runHandle) {
+							m.addMessage("system", fmt.Sprintf("Cannot switch to %s \u00b7 %s on this chat (missing chat identity) \u2014 use /new", matched.provider, matched.id), "error")
+						} else {
+							m.addMessage("system", "Cannot change provider after a run has started. Use /new to start fresh.", "error")
+						}
+						return m, nil
+					}
 					m.provider = matched.provider
 					m.bindActiveAccountForProvider()
 					m.skillsCatalog = nil
@@ -4261,6 +4404,17 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.model = matched.id
 			} else {
 				if prov := providerForModel(m.providers, want); prov != "" && !strings.EqualFold(prov, m.provider) {
+					if cmd := m.routeProviderSwitch(prov, want); cmd != nil {
+						return m, cmd
+					}
+					if m.runHandle != nil {
+						if isChatHandle(m.runHandle) {
+							m.addMessage("system", fmt.Sprintf("Cannot switch to %s \u00b7 %s on this chat (missing chat identity) \u2014 use /new", prov, want), "error")
+						} else {
+							m.addMessage("system", "Cannot change provider after a run has started. Use /new to start fresh.", "error")
+						}
+						return m, nil
+					}
 					m.provider = prov
 					m.bindActiveAccountForProvider()
 					m.skillsCatalog = nil
@@ -5517,28 +5671,26 @@ func renderQuestionBar(left, mid string, q *QuestionState, width int, highlightI
 		chips = append(chips, "  ")
 		chips = append(chips, renderActionRingChip("[Submit]", highlightIdx == chipIdx))
 	} else {
-		// Single select: "1)" num chip + " " + label chip per option.
+		// Single select: ONE chip per option — "1) Label" — so highlightIdx
+		// matches actionRingItems (one qopt item per option, BUG-346). The old
+		// split "1)" + "Label" chips made Tab drift: idx 3 painted option 2's
+		// label ("2) An") while Enter chose option 4.
 		overhead := prefixW + hintW
 		if n > 1 {
 			overhead += (n - 1) * 2
 		}
-		overhead += n * (2 + 1 + 2 + 2) // num text + space + num chip pad + label chip pad
+		overhead += n * 2 // chip padding
 		budget := 3
 		if n > 0 {
 			budget = (width - overhead) / n
 		}
-		chipIdx := 0
 		for i, o := range q.Options {
 			if i > 0 {
 				chips = append(chips, "  ")
 			}
-			hiNum := highlightIdx == chipIdx
-			chipIdx++
-			hiLabel := highlightIdx == chipIdx
-			chipIdx++
-			chips = append(chips, renderActionRingChip(strconv.Itoa(i+1)+")", hiNum))
-			chips = append(chips, " ")
-			chips = append(chips, renderActionRingChip(fit(questionOptionLabel(o), budget), hiLabel))
+			num := strconv.Itoa(i+1) + ") "
+			label := num + fit(questionOptionLabel(o), budget-lipgloss.Width(num))
+			chips = append(chips, renderActionRingChip(label, highlightIdx == i))
 		}
 	}
 	line := prefixStyled + strings.Join(chips, "") + hintStyled
@@ -5867,6 +6019,18 @@ func (m *AppModel) renderBottomNotice(w int) string {
 // ---- Helpers ----------------------------------------------------------------
 
 func (m *AppModel) addMessage(role, content, hint string) {
+	// CP-59 Task-315 (SD-26 D-7): the handoff seed envelope renders as a
+	// one-line divider, never as a raw user bubble (live stream + replay).
+	// The just-committed switch's stats format the carried count when present.
+	if role == "user" && strings.HasPrefix(content, client.HandoffPromptPrefix) {
+		role = "system"
+		if m.lastSwitchStats != nil {
+			content = m.switchDividerContent()
+			m.lastSwitchStats = nil
+		} else {
+			content = "⇄ provider switched — prior conversation carried below"
+		}
+	}
 	m.messages = append(m.messages, ChatMessage{
 		Role:       role,
 		Content:    content,
@@ -5879,6 +6043,21 @@ func (m *AppModel) addMessage(role, content, hint string) {
 	if hint == "thinking" {
 		m.thinkingFrame = 0
 	}
+}
+
+// switchDividerContent formats the just-committed switch divider from
+// lastSwitchStats/lastSwitchTarget (BUG-347: shared by the synchronous
+// post-switch divider and the user-envelope conversion in addMessage).
+func (m *AppModel) switchDividerContent() string {
+	if m.lastSwitchStats != nil {
+		st := m.lastSwitchStats
+		carried := fmt.Sprintf("%d turns", st.IncludedTurnCount)
+		if st.Truncated && st.OmittedTurnCount > 0 {
+			carried = fmt.Sprintf("%d of %d turns", st.IncludedTurnCount, st.IncludedTurnCount+st.OmittedTurnCount)
+		}
+		return fmt.Sprintf("⇄ switched to %s — carried %s (%s)", m.lastSwitchTarget, carried, st.HandoffMode)
+	}
+	return "⇄ provider switched — prior conversation carried below"
 }
 
 func (m *AppModel) appendAssistantDelta(text string) {
@@ -6786,10 +6965,11 @@ func remapVTControlKeys(msg tea.KeyMsg) tea.KeyMsg {
 	return msg
 }
 
-// tuiProgramOpts returns Bubble Tea program options. Wheel-only mouse:
-// AltScreen + Filter only (no CellMotion). Wheel scroll is enabled via
-// ?1000h (button+wheel) in Init/maybeRearm so Up/Down stays prompt history
-// and hover motion never enters the 64-slot conhost queue (BUG-328).
+// tuiProgramOpts returns Bubble Tea program options. Wheel + drag-only mouse:
+// AltScreen + Filter only (no CellMotion/1003). Wheel scroll is enabled via
+// ?1000h and drag motion via ?1002h in Init/maybeRearm — 1002 delivers motion
+// ONLY while a button is held (live bôi-đen highlight, BUG-345), hover never
+// enters the 64-slot conhost queue (BUG-328).
 func tuiProgramOpts() []tea.ProgramOption {
 	return []tea.ProgramOption{tea.WithAltScreen(), tea.WithFilter(tuiMsgFilter)}
 }

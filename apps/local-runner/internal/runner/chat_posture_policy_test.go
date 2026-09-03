@@ -25,6 +25,7 @@ func TestReadOnlyApprovalDecision_ReadsApprove(t *testing.T) {
 		{"sudo read", ApprovalDetails{Kind: "exec", Command: "sudo cat /etc/hosts"}},
 		{"find exec", ApprovalDetails{Kind: "exec", Command: "find . -name '*.go'"}},
 		{"echo read", ApprovalDetails{Kind: "exec", Command: "echo hi"}},
+		{"pipe read", ApprovalDetails{Kind: "exec", Command: "ls | grep foo"}}, // BUG-344: both segments read-only
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -50,7 +51,7 @@ func TestReadOnlyApprovalDecision_WritesDeny(t *testing.T) {
 		{"rm exec", ApprovalDetails{Kind: "exec", Command: "rm foo.txt"}},
 		{"redirect write", ApprovalDetails{Kind: "exec", Command: "echo hi > out.txt"}},
 		{"chained write", ApprovalDetails{Kind: "exec", Command: "ls; rm foo"}},
-		{"pipe to write", ApprovalDetails{Kind: "exec", Command: "ls | grep foo"}},
+		{"pipe to tee", ApprovalDetails{Kind: "exec", Command: "ls | tee out"}}, // BUG-344: tee is not an allowlisted read binary
 		{"git commit", ApprovalDetails{Kind: "exec", Command: "git commit -m x"}},
 		{"git push", ApprovalDetails{Kind: "exec", Command: "git push"}},
 		{"git branch create", ApprovalDetails{Kind: "exec", Command: "git branch feature/x"}},
@@ -104,6 +105,54 @@ func TestReadOnlyApprovalDecision_GitDualFormSubcommandsOnlyWhenRead(t *testing.
 		if got := readOnlyApprovalDecision(ApprovalDetails{Kind: "exec", Command: cmd}); got != "deny" {
 			t.Fatalf("isReadOnlyCommand(%q) = %q, want deny", cmd, got)
 		}
+	}
+}
+
+func TestReadOnlyApprovalDecision_AskUserApproved(t *testing.T) {
+	// BUG-xxx: the FlowPilot ask_user question tool must pass the scan/plan
+	// posture gate — approving the gate only renders the AskQuestion card, it
+	// never auto-answers. Covers the live Grok shape (run-477800 / run-464841)
+	// plus the shared MCP/tool-name shapes for provider parity.
+	cases := []struct {
+		name    string
+		details ApprovalDetails
+	}{
+		{"grok use_tool ask_user", ApprovalDetails{Kind: "other", Command: "flowpilot__ask_user", Reason: "use_tool"}},
+		{"grok use_tool ask_user bare", ApprovalDetails{Kind: "other", Command: "ask_user", Reason: "use_tool"}},
+		{"mcp ask_user", ApprovalDetails{Kind: "mcp", Command: "mcp__flowpilot__ask_user"}},
+		{"tool-name ask_user", ApprovalDetails{Kind: "file", Reason: "ask_user"}},
+		{"command ask_user reason use_tool", ApprovalDetails{Kind: "other", Command: "mcp__flowpilot__ask_user", Reason: "use_tool"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := readOnlyApprovalDecision(tc.details); got != "approve" {
+				t.Fatalf("readOnlyApprovalDecision(%+v) = %q, want approve", tc.details, got)
+			}
+		})
+	}
+}
+
+func TestReadOnlyApprovalDecision_AskUserNeverAutoAnswersOtherTools(t *testing.T) {
+	// Approving ask_user must not leak into other tools: spawn_agent (can
+	// write), the native Grok ask_user_question (steered away), and generic
+	// MCP/other still fail closed.
+	cases := []struct {
+		name    string
+		details ApprovalDetails
+	}{
+		{"grok use_tool spawn_agent", ApprovalDetails{Kind: "other", Command: "flowpilot__spawn_agent", Reason: "use_tool"}},
+		{"native ask_user_question", ApprovalDetails{Kind: "other", Command: "ask_user_question", Reason: "use_tool"}},
+		{"generic mcp", ApprovalDetails{Kind: "mcp", Command: "mcp_thing"}},
+		{"generic other", ApprovalDetails{Kind: "other", Command: "anything"}},
+		{"ask_user in a write exec", ApprovalDetails{Kind: "exec", Command: "echo x > ask_user.txt"}},
+		{"reason use_tool unknown command", ApprovalDetails{Kind: "other", Command: "some_random_mcp", Reason: "use_tool"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := readOnlyApprovalDecision(tc.details); got != "deny" {
+				t.Fatalf("readOnlyApprovalDecision(%+v) = %q, want deny", tc.details, got)
+			}
+		})
 	}
 }
 

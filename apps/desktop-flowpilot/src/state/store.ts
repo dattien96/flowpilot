@@ -49,7 +49,66 @@ import {
 
 export type { TimelineItem } from "./timelineReducer";
 
+const HANDOFF_PROMPT_PREFIX = "[FlowPilot cross-provider chat handoff]";
+
+function buildPriorChatTimeline(
+  records: import("@/types/contract").ChatTranscriptRecord[],
+  currentRunId: string,
+): TimelineItem[] {
+  // CP-59 F4 / CA-699: provider-agnostic join (chatId only, no providerKey branch).
+  const out: TimelineItem[] = [];
+  for (const rec of records) {
+    if (rec.legRunId === currentRunId && rec.type !== "chat_provider_switch") {
+      continue;
+    }
+    switch (rec.type) {
+      case "turn_started": {
+        const prompt = (rec.payload as { prompt?: unknown })?.prompt;
+        if (typeof prompt !== "string" || !prompt.trim()) break;
+        if (prompt.trim().startsWith(HANDOFF_PROMPT_PREFIX)) break;
+        out.push({ kind: "prompt", id: `chat-${rec.chatSeq}-${rec.legRunId}`, text: prompt });
+        break;
+      }
+      case "message_completed": {
+        const text = (rec.payload as { text?: unknown })?.text;
+        if (typeof text !== "string" || !text.trim()) break;
+        out.push({ kind: "assistant", id: `chat-${rec.chatSeq}-${rec.legRunId}`, text, finalized: true });
+        break;
+      }
+      case "chat_provider_switch": {
+        const p = rec.payload as {
+          toProvider?: string;
+          toModel?: string;
+          handoffMode?: string;
+          includedTurnCount?: number;
+          omittedTurnCount?: number;
+          truncated?: boolean;
+        };
+        const included = typeof p?.includedTurnCount === "number" ? p.includedTurnCount : 0;
+        const omitted = typeof p?.omittedTurnCount === "number" ? p.omittedTurnCount : 0;
+        const truncated = Boolean(p?.truncated);
+        const carried =
+          truncated && omitted > 0 ? `${included} of ${included + omitted} turns` : `${included} turns`;
+        const toProv = (p?.toProvider as string) ?? "?";
+        const toModel = (p?.toModel as string) ?? "?";
+        const mode = (p?.handoffMode as string) ?? "raw";
+        out.push({
+          kind: "system",
+          id: `seed-divider-${rec.legRunId}-${rec.chatSeq}`,
+          text: `⇄ switched to ${toProv} · ${toModel} — carried ${carried} (${mode})`,
+          tone: "info",
+        });
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return out;
+}
+
 const LAST_PROJECT_KEY = "fp:lastProjectId";
+const LAST_CHAT_MODE_KEY = "fp:lastChatMode";
 
 let loadProjectsInFlight: Promise<void> | null = null;
 let activeHistoryReplayController: AbortController | undefined;
@@ -302,6 +361,10 @@ interface AppState {
 
   // run
   runId?: string;
+  /** CP-59 chat SSOT: the logical chat the current run belongs to. */
+  chatId?: string;
+  /** CP-59 F2/F3: detached chats (restored, no active leg) reattach on next prompt. */
+  chatDetached?: boolean;
   mainRunId?: string;
   activeAgentRunId?: string;
   workspaceMainView: WorkspaceMainView;
@@ -638,6 +701,17 @@ export const useStore = create<AppState>((set, get) => ({
         // eslint-disable-next-line no-console
         console.error("[FlowPilot] listProviderAccounts failed:", err);
       }
+      // Restore last Chat vs Workflow surface (Desktop parity with TUI tui-session.json Mode)
+      try {
+        if (!get().runId) {
+          const savedMode = localStorage.getItem(LAST_CHAT_MODE_KEY) as ChatMode | null;
+          if (savedMode === "normal_chat" || savedMode === "workflow_step_auto") {
+            if (get().chatMode !== savedMode) {
+              set({ chatMode: savedMode });
+            }
+          }
+        }
+      } catch {}
       // CP-56 restart restore: resume the runner-persisted active posture
       // (scan/plan/code) and its pinned profile after Desktop reopen — mirrors
       // the TUI SessionDefaultsMsg restore. Uses the same withRetry so the
@@ -961,6 +1035,9 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setChatMode(mode) {
+    try {
+      localStorage.setItem(LAST_CHAT_MODE_KEY, mode);
+    } catch {}
     set({ chatMode: mode });
     get().resetRun();
   },
@@ -1034,9 +1111,107 @@ export const useStore = create<AppState>((set, get) => ({
     const targetProviderKey = pending.targetProviderKey;
     const targetModel = pending.targetModel ?? pickDefaultModel(targetProviderKey, state.supportedModels);
     const cwd = selectedProjectPath(state);
+    // C2: cannot switch while a question or approval is pending (runner 409 handoff_run_busy)
+    if (state.pendingQuestions.length > 0 || state.pendingApprovals.length > 0) {
+      set((s) => ({
+        providerSwitchLoading: false,
+        timeline: [
+          ...s.timeline,
+          {
+            kind: "system" as const,
+            id: `handoff-busy-${s.timeline.length}`,
+            text: "Cannot switch provider/model while a question or approval is pending — please answer it first",
+            tone: "error" as const,
+          },
+        ],
+      }));
+      return;
+    }
+    // F3: detached chat defers provider changes to next prompt's reattach (no endpoint call)
+    if (state.chatDetached && state.chatId) {
+      set({
+        selectedProvider: targetProviderKey,
+        selectedModel: targetModel,
+        pendingProviderSwitch: undefined,
+        providerSwitchLoading: false,
+        timeline: [
+          ...state.timeline,
+          {
+            kind: "system" as const,
+            id: `detached-defer-${state.timeline.length}`,
+            text: `${targetProviderKey} ${targetModel ?? ""} will apply when the chat reattaches on your next prompt`,
+            tone: "info" as const,
+          },
+        ],
+      });
+      void get().loadSkills(targetProviderKey);
+      return;
+    }
     set({ providerSwitchLoading: true });
 
     try {
+      // CP-59 Task-316: chat-scoped switch when the chat SSOT knows the chat
+      // (runner mints the leg and seeds the envelope server-side). The
+      // timeline is KEPT — one divider, transcript continuous (no `timeline: []`).
+      const chatId = get().chatId;
+      if (chatId) {
+        const resp = await state.client.switchChatProvider(chatId, {
+          targetProviderKey,
+          model: targetModel,
+          reasoningEffort: state.reasoningEffort,
+          yoloMode: state.yoloMode,
+        });
+        const carried = resp.handoff.truncated && resp.handoff.omittedTurnCount > 0
+          ? `${resp.handoff.includedTurnCount} of ${resp.handoff.includedTurnCount + resp.handoff.omittedTurnCount} turns`
+          : `${resp.handoff.includedTurnCount} turns`;
+        set({
+          selectedProvider: targetProviderKey,
+          selectedModel: targetModel,
+          runId: resp.handle.runId,
+          chatId: resp.handle.chatId ?? chatId,
+          chatDetached: false,
+          mainRunId: resp.handle.runId,
+          activeAgentRunId: undefined,
+          activeStepId: resp.handle.stepId,
+          status: resp.handle.status,
+          pendingApprovals: [],
+          pendingQuestions: [],
+          gateBlock: undefined,
+          latestTokenUsage: undefined,
+          lastTurnInput: undefined,
+          recoverable: false,
+          pendingAccountSwitch: undefined,
+          accountSwitchLoading: false,
+          pendingProviderSwitch: undefined,
+          providerSwitchLoading: false,
+          _accountSwitchTriedIds: [],
+          _streamingAssistantId: undefined,
+          agentRuns: [],
+          agentGraphSnapshot: undefined,
+          agentBusMessages: [],
+          workflowStepRuntime: [],
+          workflowStepRuntimeMeta: {},
+          agentSpawnGuideOpen: false,
+          agentSpawnGuideAgentName: undefined,
+          _runReplaySeq: {},
+          _runSnapshots: {},
+          _historyReplaying: false,
+          _streamRunSeq: state._streamRunSeq + 1,
+          timeline: [
+            ...state.timeline,
+            {
+              kind: "system" as const,
+              id: `seed-divider-${resp.handle.runId}`,
+              text: `⇄ switched to ${providerLabel(targetProviderKey)} · ${targetModel} — carried ${carried} (${resp.handoff.handoffMode})`,
+              tone: "info" as const,
+            },
+          ],
+        });
+        void get().loadSkills(targetProviderKey);
+        void get().loadRunHistory();
+        return;
+      }
+      // Legacy Task-078 path (pre-CP-59 runner / flag off): summary + new chat.
       const handoff = await state.client.handoffContext(pending.sourceRunId, { targetProviderKey });
       const handle = await state.client.startRun({
         projectId: state.selectedProjectId,
@@ -1051,6 +1226,8 @@ export const useStore = create<AppState>((set, get) => ({
         selectedProvider: targetProviderKey,
         selectedModel: targetModel,
         runId: handle.runId,
+        chatId: handle.chatId,
+        chatDetached: false,
         mainRunId: handle.runId,
         activeAgentRunId: undefined,
         activeStepId: handle.stepId,
@@ -1098,6 +1275,28 @@ export const useStore = create<AppState>((set, get) => ({
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[FlowPilot] provider handoff failed:", err);
+      const code = (err as { code?: string })?.code ?? "";
+      const msg = String(err);
+      if (code === "chat_no_active_leg" || msg.includes("chat_no_active_leg")) {
+        set({
+          chatDetached: true,
+          selectedProvider: targetProviderKey,
+          selectedModel: targetModel,
+          pendingProviderSwitch: undefined,
+          providerSwitchLoading: false,
+          timeline: [
+            ...get().timeline,
+            {
+              kind: "system" as const,
+              id: `detached-defer-${get().timeline.length}`,
+              text: `${targetProviderKey} ${targetModel ?? ""} will apply when the chat reattaches on your next prompt`,
+              tone: "info" as const,
+            },
+          ],
+        });
+        void get().loadSkills(targetProviderKey);
+        return;
+      }
       set((s) => ({
         providerSwitchLoading: false,
         timeline: [
@@ -1273,6 +1472,21 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   async setChatPosture(posture) {
+    // C2 parity with TUI routePostureSwitch: block posture Tab while question/approval pending
+    if (get().pendingQuestions.length > 0 || get().pendingApprovals.length > 0) {
+      set((s) => ({
+        timeline: [
+          ...s.timeline,
+          {
+            kind: "system" as const,
+            id: `posture-busy-${s.timeline.length}`,
+            text: "Cannot switch posture while a question or approval is pending — please answer it first",
+            tone: "error" as const,
+          },
+        ],
+      }));
+      return;
+    }
     const { client, chatPostureConfig } = get();
     let config = chatPostureConfig;
     if (client.getChatPosture) {
@@ -1463,9 +1677,34 @@ export const useStore = create<AppState>((set, get) => ({
     }));
 
     let runId = get().runId;
-    const isFirstChatTurn = chatMode === "normal_chat" && !runId;
+    const existingChatId = get().chatId;
+    const isDetachedReattach =
+      chatMode === "normal_chat" && Boolean(existingChatId) && Boolean(runId) && Boolean(get().chatDetached);
+    const isFirstChatTurn = chatMode === "normal_chat" && !runId && !isDetachedReattach;
     try {
-      if (!runId) {
+      if (isDetachedReattach) {
+        const handle = await client.startRun({
+          projectId: selectedProjectId!,
+          providerKey: selectedProvider,
+          model: selectedModel,
+          reasoningEffort,
+          yoloMode,
+          chatMode: "normal_chat",
+          cwd,
+          chatId: existingChatId!,
+          switchFromRunId: runId!,
+        });
+        runId = handle.runId;
+        if (handle.stepId) {
+          turnStepId = handle.stepId;
+        }
+        set({
+          mainRunId: handle.runId,
+          chatId: handle.chatId ?? existingChatId,
+          chatDetached: false,
+          activeAgentRunId: undefined,
+        });
+      } else if (!runId) {
         const handle = await client.startRun(
           chatMode === "normal_chat"
             ? {
@@ -1491,6 +1730,8 @@ export const useStore = create<AppState>((set, get) => ({
         }
         set({
           mainRunId: handle.runId,
+          chatId: handle.chatId,
+          chatDetached: false,
           activeAgentRunId: undefined,
         });
       }
@@ -2083,6 +2324,19 @@ export const useStore = create<AppState>((set, get) => ({
       status: handle.status,
       stepId: handle.stepId,
     });
+    // CP-59 F4 / CA-699: hydrate prior legs from chatTimeline (provider-agnostic,
+    // chatId only). Best effort: timeline fetch failures keep current-leg replay.
+    // Fallback to historyItem.chatId when ResumeRun's handle lacks it (BUG-338).
+    let priorTimeline: TimelineItem[] = [];
+    const effectiveChatId = (handle.chatId as string) || (historyItem?.chatId as string) || "";
+    if (effectiveChatId && historyItem?.runKind !== "workflow" && (handle as { runKind?: string }).runKind !== "workflow") {
+      try {
+        const tl = await client.chatTimeline(effectiveChatId);
+        priorTimeline = buildPriorChatTimeline(tl.records ?? [], handle.runId);
+      } catch (e) {
+        console.warn("[FlowPilot][history-open] chatTimeline failed, falling back to single-leg replay", e);
+      }
+    }
     // BUG-170: restore the mode this run actually was, not whatever the UI happened to be
     // in before the user clicked a history item. Without this, reopening a workflow/flow-
     // mode run left chatMode stuck (often "normal_chat"), so the reopened run rendered
@@ -2098,8 +2352,14 @@ export const useStore = create<AppState>((set, get) => ({
     // (and locked) even though the run itself was correctly resumed as a
     // flow-engine-driven Review Loop run underneath.
     const chatStartMode: ChatStartMode = historyItem?.subMode === "bug" ? "bugfix" : "normal";
+    const isDetached =
+      !isWorkflowHistoryItem &&
+      Boolean(effectiveChatId) &&
+      ["completed", "failed", "cancelled"].includes(String((handle as { status?: string }).status ?? "").toLowerCase());
     set({
       runId: handle.runId,
+      chatId: handle.chatId,
+      chatDetached: isDetached,
       mainRunId: handle.runId,
       activeAgentRunId: undefined,
       status: handle.status,
@@ -2110,7 +2370,7 @@ export const useStore = create<AppState>((set, get) => ({
         : {}),
       chatStartMode,
       flowRef: chatStartMode === "bugfix" ? historyItem?.flowRef : undefined,
-      timeline: [],
+      timeline: priorTimeline,
       artifacts: [],
       pendingApprovals: [],
       pendingQuestions: [],
@@ -2194,6 +2454,8 @@ export const useStore = create<AppState>((set, get) => ({
     cancelAgentFocusStream();
     set({
       runId: undefined,
+      chatId: undefined,
+      chatDetached: false,
       mainRunId: undefined,
       activeAgentRunId: undefined,
       activeStepId: undefined,

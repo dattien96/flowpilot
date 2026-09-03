@@ -1,10 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.shouldShowAgentTimelineHeader = shouldShowAgentTimelineHeader;
+exports.isFocusedChildLive = isFocusedChildLive;
+exports.liveAgentRunsWithoutVisibleCard = liveAgentRunsWithoutVisibleCard;
 exports.Timeline = Timeline;
 const jsx_runtime_1 = require("react/jsx-runtime");
 const react_1 = require("react");
 const store_1 = require("@/state/store");
+const MentionText_1 = require("@/components/MentionText");
 const HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"];
 function renderInline(text, keyPrefix) {
     const parts = [];
@@ -171,6 +174,28 @@ const timelineGrouping_1 = require("./timelineGrouping");
 function shouldShowAgentTimelineHeader(activeAgentRunId, mainRunId, agentRunCount) {
     return Boolean(activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId) || agentRunCount > 0;
 }
+/**
+ * Whether the "back to main agent" crumb should show the green pulsing "live
+ * child run" badge. Mirrors AgentsPanel's own active/closed split (status !==
+ * completed/failed/cancelled) so the crumb never disagrees with the sidebar's
+ * own static "done" card for the same run — before this, the crumb pulsed
+ * green forever regardless of the focused child's actual status.
+ */
+function isFocusedChildLive(focusedRun) {
+    return !focusedRun || (focusedRun.status !== "completed" && focusedRun.status !== "failed" && focusedRun.status !== "cancelled");
+}
+/**
+ * A child with a persisted lifecycle card is already represented in the visible
+ * timeline. Keep the live banner for children whose card is paged out, but do
+ * not render the same live child twice in the current view.
+ */
+function liveAgentRunsWithoutVisibleCard(agentRuns, visibleTimeline) {
+    const representedRunIDs = new Set(visibleTimeline
+        .filter((item) => item.kind === "agent")
+        .map((item) => item.childRunId));
+    return agentRuns.filter((run) => (run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question") &&
+        !representedRunIDs.has(run.runId));
+}
 function previewValue(value) {
     if (value === undefined || value === null)
         return undefined;
@@ -214,6 +239,31 @@ function CopyBubble({ text, className, children, }) {
         }
     };
     return ((0, jsx_runtime_1.jsxs)("div", { className: `${className} copyable-bubble`, children: [(0, jsx_runtime_1.jsx)("button", { type: "button", className: "bubble-copy", onClick: copy, "aria-label": copied ? "Copied" : "Copy message", title: copied ? "Copied" : "Copy", children: copied ? "✓" : "⧉" }), children] }));
+}
+const PROMPT_MAX_LINES = 4;
+const PROMPT_ELLIPSIS = "....";
+function PromptCard({ it }) {
+    const [expanded, setExpanded] = (0, react_1.useState)(false);
+    const [truncated, setTruncated] = (0, react_1.useState)(false);
+    const textRef = (0, react_1.useRef)(null);
+    (0, react_1.useEffect)(() => {
+        const el = textRef.current;
+        if (!el)
+            return;
+        const check = () => setTruncated(el.scrollHeight > el.clientHeight + 1);
+        check();
+        const ro = new ResizeObserver(check);
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, [it.text]);
+    const toggle = (event) => {
+        const target = event.target;
+        if (target.closest(".bubble-copy") || target.closest(".prompt-skills-summary"))
+            return;
+        setExpanded((value) => !value);
+    };
+    const clamped = truncated && !expanded;
+    return ((0, jsx_runtime_1.jsxs)("div", { className: `prompt-stack ${truncated ? "prompt-truncatable" : ""} ${expanded ? "prompt-expanded" : ""}`, onClick: toggle, children: [it.attachments && it.attachments.length > 0 && ((0, jsx_runtime_1.jsx)("div", { className: "prompt-attachments", "aria-label": `${it.attachments.length} image attachment(s)`, children: it.attachments.map((att) => att.previewUrl ? ((0, jsx_runtime_1.jsx)("img", { className: "prompt-attachment-thumb", src: att.previewUrl, alt: att.originalName, title: att.originalName }, att.id)) : ((0, jsx_runtime_1.jsxs)("span", { className: "prompt-attachment-chip", title: att.originalName, children: ["\uD83D\uDDBC ", att.originalName] }, att.id))) })), (0, jsx_runtime_1.jsxs)(CopyBubble, { text: it.text, className: "bubble prompt", children: [(0, jsx_runtime_1.jsx)("div", { ref: textRef, className: `prompt-text ${clamped ? "prompt-text-clamped" : ""}`, style: clamped ? { WebkitLineClamp: PROMPT_MAX_LINES } : undefined, children: (0, jsx_runtime_1.jsx)(MentionText_1.MentionText, { text: it.text, skillNames: it.selectedSkills }) }), clamped && (0, jsx_runtime_1.jsx)("span", { className: "prompt-ellipsis", children: PROMPT_ELLIPSIS })] }), it.selectedSkills && it.selectedSkills.length > 0 && ((0, jsx_runtime_1.jsx)(PromptSkillsSummary, { skills: it.selectedSkills }))] }));
 }
 function PromptSkillsSummary({ skills }) {
     const [open, setOpen] = (0, react_1.useState)(false);
@@ -265,7 +315,8 @@ function ApprovalGroup({ items }) {
             }
         }
     };
-    return ((0, jsx_runtime_1.jsxs)("div", { className: "card-group approval-group", children: [(0, jsx_runtime_1.jsxs)("div", { className: "card-group-head", children: [(0, jsx_runtime_1.jsxs)("button", { type: "button", className: `card-group-summary ${open ? "card-group-summary-open" : ""}`, "aria-expanded": open, "aria-label": label, title: label, onClick: () => setOpen((value) => !value), children: [(0, jsx_runtime_1.jsx)("span", { className: "card-group-caret", children: open ? "▾" : "▸" }), (0, jsx_runtime_1.jsx)("span", { className: "badge badge-warn", children: label })] }), unresolved.length > 0 && ((0, jsx_runtime_1.jsxs)("div", { className: "card-group-bulk-actions", children: [(0, jsx_runtime_1.jsx)("button", { type: "button", className: "btn btn-primary", onClick: () => bulkDecide("approve"), children: "Approve all" }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "btn btn-danger", onClick: () => bulkDecide("deny"), children: "Deny all" })] }))] }), open && ((0, jsx_runtime_1.jsx)("div", { className: "card-group-body", children: items.map((item) => ((0, jsx_runtime_1.jsx)(ApprovalCard_1.ApprovalCard, { approvalId: item.approvalId, details: item.details, decision: item.decision }, item.approvalId))) }))] }));
+    const resolved = unresolved.length === 0;
+    return ((0, jsx_runtime_1.jsxs)("div", { className: `card-group approval-group ${resolved ? "approval-group-resolved" : "approval-group-pending"}`, children: [(0, jsx_runtime_1.jsxs)("div", { className: "card-group-head", children: [(0, jsx_runtime_1.jsxs)("button", { type: "button", className: `card-group-summary approval-group-summary ${open ? "card-group-summary-open" : ""}`, "aria-expanded": open, "aria-label": label, title: label, onClick: () => setOpen((value) => !value), children: [(0, jsx_runtime_1.jsx)("span", { className: "card-group-caret", "aria-hidden": "true", children: open ? "▾" : "▸" }), (0, jsx_runtime_1.jsx)("span", { className: `approval-group-label ${resolved ? "is-resolved" : "is-pending"}`, children: label })] }), unresolved.length > 0 && ((0, jsx_runtime_1.jsxs)("div", { className: "card-group-bulk-actions", children: [(0, jsx_runtime_1.jsx)("button", { type: "button", className: "btn btn-primary", onClick: () => bulkDecide("approve"), children: "Approve all" }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "btn btn-danger", onClick: () => bulkDecide("deny"), children: "Deny all" })] }))] }), open && ((0, jsx_runtime_1.jsx)("div", { className: "card-group-body", children: items.map((item) => ((0, jsx_runtime_1.jsx)(ApprovalCard_1.ApprovalCard, { approvalId: item.approvalId, details: item.details, decision: item.decision }, item.approvalId))) }))] }));
 }
 // Grouped ask UI for questions. Options can differ per question (arbitrary choice
 // sets), so — unlike approvals — there is no generic single-click bulk action; the
@@ -279,12 +330,27 @@ function FileRow({ it }) {
     const openInIde = (0, store_1.useStore)((s) => s.openInIde);
     return ((0, jsx_runtime_1.jsxs)("button", { className: "row file-row", title: it.path, onClick: () => openInIde(it.path), children: [(0, jsx_runtime_1.jsx)("span", { className: "row-icon", children: FILE_ICON[it.changeType ?? "modified"] ?? "✎" }), (0, jsx_runtime_1.jsxs)("span", { className: "row-main", children: [(0, jsx_runtime_1.jsx)("span", { className: "file-name", children: shortName(it.path) }), (0, jsx_runtime_1.jsx)("span", { className: "file-change", children: it.changeType ?? "modified" })] }), (0, jsx_runtime_1.jsx)("span", { className: "row-hint", children: "open in IDE \u2197" })] }));
 }
+function AgentTimelineCard({ it }) {
+    const agentRuns = (0, store_1.useStore)((s) => s.agentRuns);
+    const focusAgentRun = (0, store_1.useStore)((s) => s.focusAgentRun);
+    const run = agentRuns.find((candidate) => candidate.runId === it.childRunId);
+    // Prefer finalMessage for *this activation's* card: reinvoke reuses childRunId so
+    // agentRuns.status flips back to running on round 2, but the round-1 card must
+    // stay "completed" (run-9034 multi-activation cards share one run summary).
+    const status = it.finalMessage
+        ? "completed"
+        : (run?.status ?? "running");
+    const lowerName = it.agentName.toLowerCase();
+    const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";
+    const provider = (0, store_1.providerLabel)(run?.providerKey ?? "");
+    return ((0, jsx_runtime_1.jsxs)("div", { className: `abanner ${roleClass} agent-timeline-card`, children: [(0, jsx_runtime_1.jsx)("span", { className: `pulse ${status === "completed" ? "done" : ""}` }), (0, jsx_runtime_1.jsxs)("span", { children: [(0, jsx_runtime_1.jsx)("b", { children: run?.label ?? it.agentName }), " \u00B7 ", provider, " \u00B7 ", status, run?.modelName && (0, jsx_runtime_1.jsxs)("span", { style: { color: "var(--text-dim)" }, children: [" \u00B7 ", run.modelName] }), it.finalMessage && (0, jsx_runtime_1.jsx)("span", { className: "agent-timeline-result", children: " \u2014 completed" })] }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "abanner-open-btn", onClick: () => void focusAgentRun(it.childRunId), children: "Open \u2197" })] }));
+}
 function Item({ it }) {
     switch (it.kind) {
         case "assistant":
             return ((0, jsx_runtime_1.jsxs)(CopyBubble, { text: it.text, className: `bubble assistant ${it.finalized ? "final" : "streaming"}`, children: [(0, jsx_runtime_1.jsx)(MarkdownContent, { text: it.text }), !it.finalized && (0, jsx_runtime_1.jsx)("span", { className: "caret", children: "\u258C" })] }));
         case "prompt":
-            return ((0, jsx_runtime_1.jsxs)("div", { className: "prompt-stack", children: [it.attachments && it.attachments.length > 0 && ((0, jsx_runtime_1.jsx)("div", { className: "prompt-attachments", "aria-label": `${it.attachments.length} image attachment(s)`, children: it.attachments.map((att) => att.previewUrl ? ((0, jsx_runtime_1.jsx)("img", { className: "prompt-attachment-thumb", src: att.previewUrl, alt: att.originalName, title: att.originalName }, att.id)) : ((0, jsx_runtime_1.jsxs)("span", { className: "prompt-attachment-chip", title: att.originalName, children: ["\uD83D\uDDBC ", att.originalName] }, att.id))) })), (0, jsx_runtime_1.jsx)(CopyBubble, { text: it.text, className: "bubble prompt", children: it.text }), it.selectedSkills && it.selectedSkills.length > 0 && ((0, jsx_runtime_1.jsx)(PromptSkillsSummary, { skills: it.selectedSkills }))] }));
+            return (0, jsx_runtime_1.jsx)(PromptCard, { it: it });
         case "thinking":
             return (0, jsx_runtime_1.jsx)("div", { className: "system-line thinking", children: it.text });
         case "tool":
@@ -297,6 +363,8 @@ function Item({ it }) {
             return (0, jsx_runtime_1.jsx)(QuestionGroup, { items: it.items });
         case "file":
             return (0, jsx_runtime_1.jsx)(FileRow, { it: it });
+        case "agent":
+            return (0, jsx_runtime_1.jsx)(AgentTimelineCard, { it: it });
         case "approval":
             return (0, jsx_runtime_1.jsx)(ApprovalCard_1.ApprovalCard, { approvalId: it.approvalId, details: it.details, decision: it.decision });
         case "question":
@@ -329,7 +397,7 @@ function Timeline() {
     const hiddenPromptCount = Math.max(totalPromptCount - visiblePromptCount, 0);
     const visibleTimeline = sliceTimelineFromPrompt(timeline, visiblePromptCount);
     const timelineGroups = (0, timelineGrouping_1.buildTimelineGroups)(visibleTimeline);
-    const runningAgentCount = agentRuns.filter((run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question").length;
+    const liveAgentRuns = liveAgentRunsWithoutVisibleCard(agentRuns, visibleTimeline);
     const showAgentHeader = shouldShowAgentTimelineHeader(activeAgentRunId, mainRunId, agentRuns.length);
     (0, react_1.useEffect)(() => {
         // Defer scroll one rAF so any layout shift from pagination (e.g. "Load earlier"
@@ -340,9 +408,14 @@ function Timeline() {
         });
         return () => cancelAnimationFrame(id);
     }, [timeline]);
-    return ((0, jsx_runtime_1.jsxs)("div", { ref: timelineRef, className: `timeline ${activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? "timeline-agent-focused" : ""}`, children: [(0, jsx_runtime_1.jsx)(TranslatePopup_1.TranslatePopup, { containerRef: timelineRef }), activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? ((0, jsx_runtime_1.jsxs)("div", { className: "crumb ring", children: [(0, jsx_runtime_1.jsx)("button", { type: "button", className: "crumb-backbtn", onClick: backToMainRun, children: "\u2190 Back to main agent" }), (0, jsx_runtime_1.jsxs)("span", { className: "crumb-path", children: [(0, jsx_runtime_1.jsx)("b", { children: "main" }), " ", (0, jsx_runtime_1.jsx)("span", { style: { opacity: 0.5 }, children: "\u203A" }), " ", (0, jsx_runtime_1.jsx)("span", { className: "here", children: agentRuns.find(r => r.runId === activeAgentRunId)?.agentName ?? activeAgentRunId })] }), (0, jsx_runtime_1.jsxs)("span", { className: "crumb-path", style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "6px" }, children: [(0, jsx_runtime_1.jsx)("span", { className: "pulse" }), " live child run"] })] })) : null, timeline.length === 0 && (0, jsx_runtime_1.jsx)("div", { className: "empty", children: "Select a project, choose your chat controls, and send a prompt to begin." }), hiddenPromptCount > 0 && ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: "load-earlier-btn", onClick: () => setVisiblePromptCount((current) => Math.min(totalPromptCount, current + TIMELINE_PAGE_SIZE)), children: ["\u2191 Load earlier prompts (", hiddenPromptCount, ")"] })), timelineGroups.map((it) => ((0, jsx_runtime_1.jsx)(Item, { it: it }, it.id))), (!activeAgentRunId || activeAgentRunId === mainRunId) &&
-                agentRuns
-                    .filter((run) => run.status === "running" || run.status === "waiting_approval" || run.status === "waiting_question")
+    return ((0, jsx_runtime_1.jsxs)("div", { ref: timelineRef, className: `timeline ${activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? "timeline-agent-focused" : ""}`, children: [(0, jsx_runtime_1.jsx)(TranslatePopup_1.TranslatePopup, { containerRef: timelineRef }), activeAgentRunId && mainRunId && activeAgentRunId !== mainRunId ? ((0, jsx_runtime_1.jsxs)("div", { className: "crumb ring", children: [(0, jsx_runtime_1.jsx)("button", { type: "button", className: "crumb-backbtn", onClick: backToMainRun, children: "\u2190 Back to main agent" }), (0, jsx_runtime_1.jsxs)("span", { className: "crumb-path", children: [(0, jsx_runtime_1.jsx)("b", { children: "main" }), " ", (0, jsx_runtime_1.jsx)("span", { style: { opacity: 0.5 }, children: "\u203A" }), " ", (0, jsx_runtime_1.jsx)("span", { className: "here", children: agentRuns.find(r => r.runId === activeAgentRunId)?.agentName ?? activeAgentRunId })] }), (0, jsx_runtime_1.jsx)("span", { className: "crumb-path", style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "6px" }, children: (() => {
+                            const focusedRun = agentRuns.find((r) => r.runId === activeAgentRunId);
+                            if (isFocusedChildLive(focusedRun)) {
+                                return ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("span", { className: "pulse" }), " live child run"] }));
+                            }
+                            return ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("span", { className: `sd ${focusedRun.status === "failed" ? "fail" : "closed"}` }), " ", focusedRun.status] }));
+                        })() })] })) : null, timeline.length === 0 && (0, jsx_runtime_1.jsx)("div", { className: "empty", children: "Select a project, choose your chat controls, and send a prompt to begin." }), hiddenPromptCount > 0 && ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: "load-earlier-btn", onClick: () => setVisiblePromptCount((current) => Math.min(totalPromptCount, current + TIMELINE_PAGE_SIZE)), children: ["\u2191 Load earlier prompts (", hiddenPromptCount, ")"] })), timelineGroups.map((it) => ((0, jsx_runtime_1.jsx)(Item, { it: it }, it.id))), (!activeAgentRunId || activeAgentRunId === mainRunId) &&
+                liveAgentRuns
                     .map((run) => {
                     const lowerName = run.agentName.toLowerCase();
                     const roleClass = lowerName.includes("coder") ? "coder" : lowerName.includes("review") ? "reviewer" : lowerName.includes("test") ? "tester" : "";

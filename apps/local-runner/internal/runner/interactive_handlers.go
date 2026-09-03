@@ -27,6 +27,10 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/workflows/{workflowId}/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/chat/builtin-orchestration-options", s.handleListBuiltinOrchestrationOptions)
 	mux.HandleFunc("GET /client/projects/{projectId}/workflow-runs", s.handleListProjectRunHistory)
+	// CP-59 chat SSOT timeline (Task-313) — always ON.
+	mux.HandleFunc("GET /client/chats/{chatId}/timeline", s.handleChatTimeline)
+	// CP-59 chat provider switch (Task-314) — always ON.
+	mux.HandleFunc("POST /client/chats/{chatId}/switch-provider", s.handleChatSwitchProvider)
 	mux.HandleFunc("GET /client/projects/{projectId}/chat-sessions/remote", s.handleListRemoteChatSessions)
 	mux.HandleFunc("GET /client/engine/tooling/status", s.handleGetGlobalEngineToolingStatus)
 	mux.HandleFunc("POST /client/engine/tooling/install/libretranslate", s.handleInstallLibreTranslate)
@@ -794,6 +798,15 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 	// since it may read the provider-accounts store.
 	stampAccount := s.activeAccountForProvider(providerKey)
 
+	// CP-59 chat SSOT (SD-26 §5.1): resolve chat identity before the lock —
+	// adoption reads resident runs (same resolve-before-lock pattern as
+	// stampAccount above). Always ON for chat runs on dev branch.
+	chatID, legSeq, switchFrom := "", 0, ""
+	if runKind == "chat" {
+		chatID, legSeq, switchFrom = s.resolveChatIdentity(in)
+		s.ensureChatTranscriptWriter()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	runID := s.nextID("run")
@@ -834,6 +847,13 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		subs:              map[int64]chan ProviderEvent{},
 		idempotency:       map[string]string{},
 	}
+	if chatID != "" {
+		rs.chatID = chatID
+		rs.legSeq = legSeq
+		rs.legState = LegStateActive
+		rs.switchFromRunID = switchFrom
+		s.chatRuns.register(runID, chatID)
+	}
 	s.runs[runID] = rs
 	if seeder, ok := s.workflowStore.(workflowRunSeeder); ok {
 		seeder.seed(runID, seedSteps)
@@ -850,12 +870,16 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		StartedAt:         now,
 		UpdatedAt:         now,
 		RunKind:           runKind,
+		ChatID:            chatID,
+		LegSeq:            legSeq,
+		LegState:          rs.legState,
+		SwitchFromRunID:   switchFrom,
 		Yolo:              resolvedYolo,
 	}); err != nil {
 		delete(s.runs, runID)
 		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
 	}
-	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID}, nil
+	return RunHandle{RunID: runID, ProviderSessionID: sessionID, ProviderKey: providerKey, Status: rs.status, StepID: stepID, RunKind: runKind, ChatID: chatID, LegSeq: legSeq}, nil
 }
 
 // skipsResumeSessionValidation reports whether resumeRun should skip the
@@ -912,6 +936,18 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 		}
 	}
 	s.seedTranscriptFromDisk(rs)
+	// BUG-339: stamp missing ChatID from durable transcript (BUG-338) so
+	// /open can backfill prior legs even when the session row predates
+	// chat_id (provider-agnostic, chatId only).
+	if strings.TrimSpace(rs.chatID) == "" && !strings.EqualFold(strings.TrimSpace(rs.runKind), "workflow") && strings.TrimSpace(rs.workflowID) == "" {
+		if idx := s.transcriptLegIndex(); idx != nil {
+			if info, ok := idx[rs.id]; ok && strings.TrimSpace(info.ChatID) != "" {
+				rs.chatID = info.ChatID
+				rs.legSeq = info.LegSeq
+				log.Printf("[chat-history-open] resume stamped chatId from transcript run_id=%q chatId=%q legSeq=%d", rs.id, info.ChatID, info.LegSeq)
+			}
+		}
+	}
 	handle := RunHandle{
 		RunID:             rs.id,
 		ProviderSessionID: s.resumeSessionID(rs),
@@ -920,6 +956,8 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 		RunKind:           rs.runKind,
 		WorkflowID:        rs.workflowID,
 		FlowRef:           rs.chatFlowRef,
+		ChatID:            rs.chatID,
+		LegSeq:            rs.legSeq,
 	}
 	// Surface the synthetic chat step so the desktop can continue a resumed normal_chat
 	// run; its turns need a stepId and the chat step id is deterministic (T-7). Workflow
@@ -974,6 +1012,9 @@ type runHistoryItem struct {
 	// RunKind distinguishes normal chat runs from workflow runs so chat runs
 	// are excluded from workflow catalogs and labeled correctly in history (T-7).
 	RunKind         string `json:"runKind,omitempty"`
+	// Chat SSOT (CP-59 / SD-26 §5.1): chat grouping for the navigator.
+	ChatID          string `json:"chatId,omitempty"`
+	LegSeq          int    `json:"legSeq,omitempty"`
 	SourceMachineID string `json:"sourceMachineId,omitempty"`
 	SourceRunID     string `json:"sourceRunId,omitempty"`
 	SyncStatus      string `json:"syncStatus,omitempty"`
@@ -1029,6 +1070,8 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 			LastPrompt:  rs.lastPrompt,
 			LastMessage: rs.lastMessage,
 			RunKind:     rs.runKind,
+				ChatID:          rs.chatID,
+				LegSeq:          rs.legSeq,
 			ParentRunID: rs.parentRunID,
 			AgentName:   rs.agentName,
 			Role:        rs.role,
@@ -1077,6 +1120,8 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 					LastPrompt:      sess.LastPrompt,
 					LastMessage:     sess.LastMessage,
 					RunKind:         sess.RunKind,
+					ChatID:          sess.ChatID,
+					LegSeq:          sess.LegSeq,
 					SourceMachineID: sess.SourceMachineID,
 					SourceRunID:     sess.SourceRunID,
 					SyncStatus:      sess.SyncStatus,
@@ -1091,10 +1136,61 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 		}
 	}
 
+	out = s.stampMissingChatIdentity(out)
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].UpdatedAt > out[j].UpdatedAt
 	})
 	return out
+}
+
+// stampMissingChatIdentity fills empty ChatID/LegSeq for chat runs whose
+// session row predates CP-59 (BUG-338). The durable transcript is the SSOT:
+// legRunId → (chatId, legSeq) is derived from chats/*/transcript.ndjson.
+// This backfills the 3-leg Gate-sandbox chat (run-197929/197970/198151) that
+// currently returns chatId="" from the History API.
+func (s *InteractiveService) stampMissingChatIdentity(items []runHistoryItem) []runHistoryItem {
+	if len(items) == 0 {
+		return items
+	}
+	idx := s.transcriptLegIndex()
+	if len(idx) == 0 {
+		return items
+	}
+	for i := range items {
+		if strings.TrimSpace(items[i].ChatID) != "" {
+			continue
+		}
+		// Only stamp chat runs; workflow runs must stay ungrouped.
+		if strings.TrimSpace(items[i].WorkflowID) != "" || strings.EqualFold(strings.TrimSpace(items[i].RunKind), "workflow") {
+			continue
+		}
+		if info, ok := idx[strings.TrimSpace(items[i].RunID)]; ok {
+			items[i].ChatID = info.ChatID
+			items[i].LegSeq = info.LegSeq
+		}
+	}
+	return items
+}
+
+// transcriptLegIndex returns legRunId → ChatLegInfo from the durable transcript.
+// Local file is the Gate-sandbox path; Supabase will use workflow_chat_events
+// when implemented. Nil/empty when the transcript writer is not yet initialized.
+func (s *InteractiveService) transcriptLegIndex() map[string]ChatLegInfo {
+	w := s.ensureChatTranscriptWriter()
+	if w == nil || w.store == nil {
+		return nil
+	}
+	if lfs, ok := w.store.(*localFileChatTranscriptStore); ok {
+		m, _ := lfs.LegIndex(context.Background())
+		return m
+	}
+	if getter, ok := w.store.(interface {
+		LegIndex(context.Context) (map[string]ChatLegInfo, error)
+	}); ok {
+		m, _ := getter.LegIndex(context.Background())
+		return m
+	}
+	return nil
 }
 
 // historyStatusForLiveRun maps an in-memory run to the status the history list

@@ -35,6 +35,10 @@ function loopSnapshot(status: string, extra: Partial<AgentGraphSnapshot["loopSta
 
 function makeClient(overrides: Partial<RunnerClient> = {}): RunnerClient {
   const base: RunnerClient = {
+        switchChatProvider: async () => {
+      throw new Error("switchChatProvider not implemented in this fixture");
+    },
+    chatTimeline: async () => ({ chatId: "", legs: [], records: [], nextSeq: 0, truncated: false, degraded: false }),
     listProjects: async () => [],
     listWorkflows: async () => [],
     listSteps: async () => [],

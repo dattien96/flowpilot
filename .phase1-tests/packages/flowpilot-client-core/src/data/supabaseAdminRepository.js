@@ -12,9 +12,6 @@ const workflowStepInsertOrderOffset = 1_000_000;
 function isRecord(value) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
-function stringRecord(value) {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, String(item ?? "")]));
-}
 function mapProject(row) {
     return {
         id: String(row.id),
@@ -71,7 +68,7 @@ function mapMember(row) {
 function mapIntegration(row) {
     return {
         id: String(row.id),
-        projectId: String(row.project_id),
+        projectId: row.project_id ? String(row.project_id) : null,
         type: row.type,
         label: String(row.label ?? ""),
         mcpTypeEnabled: Boolean(row.mcp_type_enabled ?? false),
@@ -95,6 +92,12 @@ function mapSupportedModel(row) {
         detectionMethod: row.detection_method ? String(row.detection_method) : null,
         detectedCliVersion: row.detected_cli_version ? String(row.detected_cli_version) : null,
         lastDetectedAt: row.last_detected_at ? String(row.last_detected_at) : null,
+        supportedReasoningEfforts: Array.isArray(row.supported_reasoning_efforts)
+            ? row.supported_reasoning_efforts.map(String)
+            : null,
+        defaultReasoningEffort: row.default_reasoning_effort ? String(row.default_reasoning_effort) : null,
+        contextWindowTokens: row.context_window_tokens == null ? null : Number(row.context_window_tokens),
+        maxContextWindowTokens: row.max_context_window_tokens == null ? null : Number(row.max_context_window_tokens),
         createdAt: String(row.created_at ?? ""),
         updatedAt: String(row.updated_at ?? ""),
     };
@@ -135,6 +138,11 @@ function mapWorkflow(row) {
                 kind: String(edge.kind ?? ""),
             }))
             : [],
+        // CP-55 P-1 (Task-263/CA-424 pass 3): read acceptance_nodes_json so this
+        // direct-to-Supabase path (used by the desktop Settings UI) no longer
+        // silently drops a flow's declared acceptance boundary the way it did
+        // before this field existed on the Workflow model at all.
+        acceptanceNodes: Array.isArray(row.acceptance_nodes_json) ? row.acceptance_nodes_json.map(String) : [],
     };
 }
 function mapWorkflowStep(row) {
@@ -160,7 +168,7 @@ function mapStepDefinition(row) {
         requiredSkills: Array.isArray(row.required_skills) ? row.required_skills.map(String) : [],
         teamRole: row.team_role ? String(row.team_role) : null,
         subagent: row.subagent ? String(row.subagent) : null,
-        model: String(row.model ?? "gpt-5.4"),
+        model: row.model != null ? String(row.model) : null,
         reasoningEffort: row.reasoning_effort ? String(row.reasoning_effort) : null,
         yoloMode: Boolean(row.yolo_mode ?? false),
         agentType: row.agent_type === "autonomous" ? "autonomous" : "standard",
@@ -168,27 +176,52 @@ function mapStepDefinition(row) {
         behaviorId: row.behavior_id ? String(row.behavior_id) : null,
         agentRef: row.agent_ref ? String(row.agent_ref) : null,
         nodeLifecycle: row.node_lifecycle ? String(row.node_lifecycle) : null,
-        dependsOn: Array.isArray(row.depends_on_json) ? row.depends_on_json.map(String) : [],
         joinMode: row.join_mode ? String(row.join_mode) : null,
         cohort: row.cohort ? String(row.cohort) : null,
         promptTemplateRef: row.prompt_template_ref ? String(row.prompt_template_ref) : null,
         contextRef: row.context_ref ? String(row.context_ref) : null,
-        inputs: isRecord(row.inputs_json) ? stringRecord(row.inputs_json) : {},
-        outputs: isRecord(row.outputs_json) ? stringRecord(row.outputs_json) : {},
-        inputArtifactDefinitions: Array.isArray(row.input_artifact_definitions) ? row.input_artifact_definitions.map(String) : [],
-        outputArtifactDefinitions: Array.isArray(row.output_artifact_definitions) ? row.output_artifact_definitions.map(String) : [],
+        contextSources: Array.isArray(row.context_sources) ? row.context_sources.map(String) : [],
+        artifactBindings: Array.isArray(row.artifact_bindings) ? row.artifact_bindings.map(mapStepArtifactBinding) : [],
         createdAt: String(row.created_at ?? ""),
         updatedAt: String(row.updated_at ?? ""),
     };
 }
-function mapArtifactDefinition(row) {
+function mapStepArtifactBinding(row) {
     return {
-        key: String(row.key ?? ""),
+        id: String(row.id ?? ""),
+        direction: row.direction === "output" ? "output" : "input",
+        slotName: String(row.slot_name ?? ""),
+        artifactInstanceId: String(row.artifact_instance_id ?? ""),
+        required: Boolean(row.required ?? true),
+        position: Number(row.position ?? 0),
+        createdAt: String(row.created_at ?? ""),
+    };
+}
+function mapArtifactType(row) {
+    return {
+        id: String(row.id ?? ""),
+        version: Number(row.version ?? 1),
+        category: String(row.category ?? ""),
+        producerBehavior: String(row.producer_behavior ?? ""),
+        consumerHints: isRecord(row.consumer_hints) ? row.consumer_hints : {},
+        configSchema: isRecord(row.config_schema) ? row.config_schema : {},
+        renderTemplate: String(row.render_template ?? ""),
+        systemOwned: Boolean(row.system_owned ?? true),
+        status: String(row.status ?? "active"),
+        createdAt: String(row.created_at ?? ""),
+        updatedAt: String(row.updated_at ?? ""),
+    };
+}
+function mapArtifactInstance(row) {
+    return {
+        id: String(row.id ?? ""),
+        projectId: row.project_id ? String(row.project_id) : null,
+        artifactTypeId: String(row.artifact_type_id ?? ""),
         name: String(row.name ?? ""),
         description: String(row.description ?? ""),
-        localPathTemplate: String(row.local_path_template ?? ""),
-        remotePathTemplate: String(row.remote_path_template ?? ""),
-        defaultFileName: String(row.default_file_name ?? ""),
+        configJson: isRecord(row.config_json) ? row.config_json : {},
+        isBuiltin: Boolean(row.is_builtin ?? false),
+        status: String(row.status ?? "active"),
         createdAt: String(row.created_at ?? ""),
         updatedAt: String(row.updated_at ?? ""),
     };
@@ -450,6 +483,10 @@ class SupabaseAdminRepository {
         assertNoError(error, "Unable to update integration.");
         return mapIntegration(data);
     }
+    async deleteIntegration(id) {
+        const { error } = await this.supabase.from("integrations").delete().eq("id", id);
+        assertNoError(error, "Unable to delete integration.");
+    }
     async listLinkedIntegrations(projectId) {
         const { data, error } = await this.supabase.from("project_mcp_links").select("integration_id, integrations(*)").eq("project_id", projectId);
         assertNoError(error, "Unable to list linked integrations.");
@@ -520,6 +557,14 @@ class SupabaseAdminRepository {
             policy_extend_by: workflow.policyExtendBy ?? null,
             policy_extend_max: workflow.policyExtendMax ?? null,
             edges_json: workflow.edges ?? [],
+            // CP-55 P-1 (Task-263/CA-424 pass 3): sent unconditionally, matching
+            // edges_json/policy_* above — this repository always overwrites every
+            // column it lists on save, so the caller (WorkflowsSettings'
+            // WorkflowDraft, via mapWorkflowToDraft) is the one responsible for
+            // always carrying the previously-loaded value forward. A save must
+            // never silently erase a declared acceptance boundary just because
+            // this field has no editor yet.
+            acceptance_nodes_json: workflow.acceptanceNodes ?? [],
             updated_at: now(),
         };
         const { data, error } = await this.supabase.from("workflows").upsert(payload).select("*").single();
@@ -608,6 +653,13 @@ class SupabaseAdminRepository {
             policy_extend_by: source.policyExtendBy,
             policy_extend_max: source.policyExtendMax,
             edges_json: source.edges,
+            // CP-55 P-1 (Task-263/CA-424 pass 3): a plain INSERT with this column
+            // omitted falls back to the migration's `default '[]'::jsonb`,
+            // regardless of what the source workflow actually declared — the
+            // "loses the mandatory safety boundary" bug this pass fixes. Cloning
+            // must deep-copy the declared acceptance boundary exactly like it
+            // already deep-copies edges_json.
+            acceptance_nodes_json: source.acceptanceNodes ?? [],
             updated_at: now(),
         };
         const { data: cloned, error: cloneError } = await this.supabase
@@ -618,9 +670,81 @@ class SupabaseAdminRepository {
         assertNoError(cloneError, "Unable to clone workflow.");
         const clonedWorkflow = mapWorkflow(cloned);
         if (sourceSteps.length > 0) {
-            const { error: insertStepsError } = await this.supabase.from("workflow_steps").insert(sourceSteps.map((step) => ({
+            // BUG-262: step_definitions is a de-duplicated catalog keyed by
+            // step_type (BUG-164 — "a step type has exactly one configured
+            // model"), not a per-workflow table. Reusing the source's step_type
+            // here (the pre-fix behavior) meant the clone's workflow_steps row
+            // pointed at the SAME step_definitions row as the source, including a
+            // built-in's — so editing the clone could silently mutate the source's
+            // shared fields (model, prompt_base, ...). Cloning must instead give
+            // every cloned step its own fresh, workflow-scoped step_type and an
+            // independent step_definitions row, so the clone is genuinely isolated
+            // as the "Clone Workflow" dialog's own copy promises ("Creates an
+            // editable copy... The original stays unchanged").
+            // BUG-282: flow topology (`dependsOn`) is no longer stored on
+            // step_definitions at all — it lives only on workflows.edges_json, which
+            // cloneWorkflow already deep-copies onto the clone's own row — so there
+            // is nothing edge-derived left to cross-write here.
+            const stepTypes = sourceSteps.map((step) => step.stepType);
+            const { data: definitionRows, error: definitionsError } = await this.supabase
+                .from("step_definitions")
+                .select("*")
+                .in("step_type", stepTypes);
+            assertNoError(definitionsError, "Unable to load step definitions to clone.");
+            const definitionByStepType = new Map((definitionRows ?? []).map((row) => [
+                String(row.step_type),
+                mapStepDefinition(row),
+            ]));
+            const stepTypeRemap = new Map();
+            const newDefinitionRows = [];
+            for (const step of sourceSteps) {
+                const definition = definitionByStepType.get(step.stepType);
+                if (!definition)
+                    continue; // BUG-236: a dangling stepType has nothing to clone
+                const newStepType = `${clonedWorkflow.id}__${step.stepType}`;
+                stepTypeRemap.set(step.stepType, newStepType);
+                newDefinitionRows.push({
+                    step_type: newStepType,
+                    name: definition.name,
+                    description: definition.description,
+                    prompt_base: definition.promptBase,
+                    required_mcps: definition.requiredMcps,
+                    mcp_access_mode: definition.mcpAccessMode,
+                    required_skills: definition.requiredSkills,
+                    team_role: definition.teamRole,
+                    subagent: definition.subagent,
+                    model: definition.model,
+                    reasoning_effort: definition.reasoningEffort,
+                    yolo_mode: definition.yoloMode,
+                    agent_type: definition.agentType,
+                    // node_id (the flow-graph identity edges reference) is preserved
+                    // as-is: it only needs to be unique within the clone's own edge
+                    // graph, which it already is since it was copied from a valid
+                    // source graph. Only step_type (the storage row's own key) needs
+                    // to become workflow-scoped.
+                    node_id: definition.nodeId,
+                    behavior_id: definition.behaviorId,
+                    agent_ref: definition.agentRef,
+                    node_lifecycle: definition.nodeLifecycle,
+                    join_mode: definition.joinMode,
+                    cohort: definition.cohort,
+                    prompt_template_ref: definition.promptTemplateRef,
+                    context_ref: definition.contextRef,
+                    context_sources: definition.contextSources,
+                    updated_at: now(),
+                });
+            }
+            if (newDefinitionRows.length > 0) {
+                const { error: insertDefinitionsError } = await this.supabase
+                    .from("step_definitions")
+                    .insert(newDefinitionRows);
+                assertNoError(insertDefinitionsError, "Unable to clone step definitions.");
+            }
+            const { error: insertStepsError } = await this.supabase.from("workflow_steps").insert(sourceSteps
+                .filter((step) => stepTypeRemap.has(step.stepType))
+                .map((step) => ({
                 workflow_id: clonedWorkflow.id,
-                step_type: step.stepType,
+                step_type: stepTypeRemap.get(step.stepType),
                 order_index: step.orderIndex,
                 is_enabled: step.isEnabled,
                 requires_approval: step.requiresApproval,
@@ -638,39 +762,39 @@ class SupabaseAdminRepository {
         assertNoError(error, "Unable to list workflow steps.");
         return (data ?? []).map(mapWorkflowStep);
     }
+    async listWorkflowsUsingSteps(stepTypes) {
+        if (stepTypes.length === 0)
+            return [];
+        const { data, error } = await this.supabase
+            .from("workflow_steps")
+            .select("workflow_id, step_type")
+            .in("step_type", stepTypes);
+        assertNoError(error, "Unable to list workflows using these step types.");
+        return (data ?? []).map((row) => ({
+            workflowId: String(row.workflow_id),
+            stepType: String(row.step_type),
+        }));
+    }
     async listStepDefinitions() {
-        const [definitionsResult, inputBindingsResult, outputBindingsResult] = await Promise.all([
+        const [definitionsResult, artifactBindingsResult] = await Promise.all([
             this.supabase.from("step_definitions").select("*").order("name", { ascending: true }),
             this.supabase
-                .from("step_input_artifact_definitions")
-                .select("step_type, artifact_definition_key, order_index")
-                .order("order_index", { ascending: true }),
-            this.supabase
-                .from("step_output_artifact_definitions")
-                .select("step_type, artifact_definition_key, order_index")
-                .order("order_index", { ascending: true }),
+                .from("step_artifact_bindings")
+                .select("*")
+                .order("position", { ascending: true }),
         ]);
         assertNoError(definitionsResult.error, "Unable to list step definitions.");
-        assertNoError(inputBindingsResult.error, "Unable to list step input artifact bindings.");
-        assertNoError(outputBindingsResult.error, "Unable to list step output artifact bindings.");
-        const inputBindings = new Map();
-        for (const row of inputBindingsResult.data ?? []) {
-            const stepType = String(row.step_type);
-            const current = inputBindings.get(stepType) ?? [];
-            current[Number(row.order_index ?? current.length)] = String(row.artifact_definition_key);
-            inputBindings.set(stepType, current.filter(Boolean));
-        }
-        const outputBindings = new Map();
-        for (const row of outputBindingsResult.data ?? []) {
-            const stepType = String(row.step_type);
-            const current = outputBindings.get(stepType) ?? [];
-            current[Number(row.order_index ?? current.length)] = String(row.artifact_definition_key);
-            outputBindings.set(stepType, current.filter(Boolean));
+        assertNoError(artifactBindingsResult.error, "Unable to list step artifact bindings.");
+        const artifactBindings = new Map();
+        for (const row of artifactBindingsResult.data ?? []) {
+            const stepType = String(row.step_definition_id);
+            const current = artifactBindings.get(stepType) ?? [];
+            current.push(row);
+            artifactBindings.set(stepType, current);
         }
         return (definitionsResult.data ?? []).map((row) => mapStepDefinition({
             ...row,
-            input_artifact_definitions: inputBindings.get(String(row.step_type)) ?? [],
-            output_artifact_definitions: outputBindings.get(String(row.step_type)) ?? [],
+            artifact_bindings: artifactBindings.get(String(row.step_type)) ?? [],
         }));
     }
     async saveStepDefinition(step) {
@@ -692,65 +816,106 @@ class SupabaseAdminRepository {
             behavior_id: step.behaviorId ?? null,
             agent_ref: step.agentRef ?? null,
             node_lifecycle: step.nodeLifecycle ?? null,
-            depends_on_json: step.dependsOn ?? [],
             join_mode: step.joinMode ?? null,
             cohort: step.cohort ?? null,
             prompt_template_ref: step.promptTemplateRef ?? null,
             context_ref: step.contextRef ?? null,
-            inputs_json: step.inputs ?? {},
-            outputs_json: step.outputs ?? {},
+            context_sources: step.contextSources ?? [],
             updated_at: now(),
         }, { onConflict: "step_type" }).select("*").single();
         assertNoError(error, "Unable to save step definition.");
-        const { error: deleteInputError } = await this.supabase
-            .from("step_input_artifact_definitions")
+        const { error: deleteArtifactBindingsError } = await this.supabase
+            .from("step_artifact_bindings")
             .delete()
-            .eq("step_type", step.stepType);
-        assertNoError(deleteInputError, "Unable to reset step input artifact bindings.");
-        const { error: deleteOutputError } = await this.supabase
-            .from("step_output_artifact_definitions")
-            .delete()
-            .eq("step_type", step.stepType);
-        assertNoError(deleteOutputError, "Unable to reset step output artifact bindings.");
-        if (step.inputArtifactDefinitions.length > 0) {
-            const { error: inputError } = await this.supabase
-                .from("step_input_artifact_definitions")
-                .insert(step.inputArtifactDefinitions.map((artifactDefinitionKey, orderIndex) => ({
-                step_type: step.stepType,
-                artifact_definition_key: artifactDefinitionKey,
-                order_index: orderIndex,
+            .eq("step_definition_id", step.stepType);
+        assertNoError(deleteArtifactBindingsError, "Unable to reset step artifact bindings.");
+        if (step.artifactBindings.length > 0) {
+            const { error: artifactBindingsError } = await this.supabase
+                .from("step_artifact_bindings")
+                .insert(step.artifactBindings.map((binding, index) => ({
+                step_definition_id: step.stepType,
+                direction: binding.direction,
+                slot_name: binding.slotName,
+                artifact_instance_id: binding.artifactInstanceId,
+                required: binding.required,
+                position: binding.position ?? index,
             })));
-            assertNoError(inputError, "Unable to save step input artifact bindings.");
-        }
-        if (step.outputArtifactDefinitions.length > 0) {
-            const { error: outputError } = await this.supabase
-                .from("step_output_artifact_definitions")
-                .insert(step.outputArtifactDefinitions.map((artifactDefinitionKey, orderIndex) => ({
-                step_type: step.stepType,
-                artifact_definition_key: artifactDefinitionKey,
-                order_index: orderIndex,
-            })));
-            assertNoError(outputError, "Unable to save step output artifact bindings.");
+            assertNoError(artifactBindingsError, "Unable to save step artifact bindings.");
         }
         return mapStepDefinition({
             ...data,
-            input_artifact_definitions: step.inputArtifactDefinitions,
-            output_artifact_definitions: step.outputArtifactDefinitions,
+            artifact_bindings: step.artifactBindings.map((binding) => ({
+                id: binding.id,
+                direction: binding.direction,
+                slot_name: binding.slotName,
+                artifact_instance_id: binding.artifactInstanceId,
+                required: binding.required,
+                position: binding.position,
+                created_at: binding.createdAt,
+            })),
         });
     }
     async deleteStepDefinition(stepType) {
-        const { error: deleteInputError } = await this.supabase
-            .from("step_input_artifact_definitions")
+        const { error: deleteArtifactBindingsError } = await this.supabase
+            .from("step_artifact_bindings")
             .delete()
-            .eq("step_type", stepType);
-        assertNoError(deleteInputError, "Unable to delete step input artifact bindings.");
-        const { error: deleteOutputError } = await this.supabase
-            .from("step_output_artifact_definitions")
-            .delete()
-            .eq("step_type", stepType);
-        assertNoError(deleteOutputError, "Unable to delete step output artifact bindings.");
+            .eq("step_definition_id", stepType);
+        assertNoError(deleteArtifactBindingsError, "Unable to delete step artifact bindings.");
         const { error } = await this.supabase.from("step_definitions").delete().eq("step_type", stepType);
         assertNoError(error, "Unable to delete step definition.");
+    }
+    async listArtifactTypes() {
+        const { data, error } = await this.supabase.from("artifact_types").select("*").order("id", { ascending: true });
+        assertNoError(error, "Unable to list artifact types.");
+        return (data ?? []).map(mapArtifactType);
+    }
+    async listArtifactInstances() {
+        const { data, error } = await this.supabase
+            .from("artifact_instances")
+            .select("*")
+            .order("is_builtin", { ascending: false })
+            .order("name", { ascending: true });
+        assertNoError(error, "Unable to list artifact instances.");
+        return (data ?? []).map(mapArtifactInstance);
+    }
+    async saveArtifactInstance(instance) {
+        if (instance.isBuiltin) {
+            throw new Error("Built-in artifact instances cannot be created or edited from Settings.");
+        }
+        const { data, error } = await this.supabase
+            .from("artifact_instances")
+            .upsert({
+            ...(instance.id ? { id: instance.id } : {}),
+            project_id: instance.projectId ?? null,
+            artifact_type_id: instance.artifactTypeId,
+            name: instance.name,
+            description: instance.description ?? "",
+            config_json: instance.configJson ?? {},
+            is_builtin: false,
+            status: instance.status ?? "active",
+            updated_at: now(),
+        }, instance.id ? { onConflict: "id" } : undefined)
+            .select("*")
+            .single();
+        assertNoError(error, "Unable to save artifact instance.");
+        return mapArtifactInstance(data);
+    }
+    async deleteArtifactInstance(instanceId) {
+        const { data: bound, error: boundError } = await this.supabase
+            .from("step_artifact_bindings")
+            .select("id")
+            .eq("artifact_instance_id", instanceId)
+            .limit(1);
+        assertNoError(boundError, "Unable to check artifact instance bindings.");
+        if ((bound ?? []).length > 0) {
+            throw new Error("This artifact instance is still bound to a step and cannot be deleted.");
+        }
+        const { error } = await this.supabase
+            .from("artifact_instances")
+            .delete()
+            .eq("id", instanceId)
+            .eq("is_builtin", false);
+        assertNoError(error, "Unable to delete artifact instance.");
     }
     async listWorkflowRuns(projectId) {
         let query = this.supabase.from("workflow_runs").select("*").order("started_at", { ascending: false });
@@ -759,24 +924,6 @@ class SupabaseAdminRepository {
         const { data, error } = await query;
         assertNoError(error, "Unable to list workflow runs.");
         return (data ?? []).map(mapWorkflowRun);
-    }
-    async listDefinitions() {
-        const { data, error } = await this.supabase.from("artifact_definitions").select("*").order("updated_at", { ascending: false });
-        assertNoError(error, "Unable to list artifact definitions.");
-        return (data ?? []).map(mapArtifactDefinition);
-    }
-    async saveDefinition(definition) {
-        const { data, error } = await this.supabase.from("artifact_definitions").upsert({
-            key: definition.key,
-            name: definition.name,
-            description: definition.description,
-            local_path_template: definition.localPathTemplate,
-            remote_path_template: definition.remotePathTemplate,
-            default_file_name: definition.defaultFileName,
-            updated_at: now(),
-        }).select("*").single();
-        assertNoError(error, "Unable to save artifact definition.");
-        return mapArtifactDefinition(data);
     }
     async listRuns(projectId) {
         let query = this.supabase.from("artifact_runs").select("*").order("updated_at", { ascending: false });
@@ -802,6 +949,10 @@ class SupabaseAdminRepository {
             detection_method: model.detectionMethod,
             detected_cli_version: model.detectedCliVersion,
             last_detected_at: model.lastDetectedAt,
+            supported_reasoning_efforts: model.supportedReasoningEfforts,
+            default_reasoning_effort: model.defaultReasoningEffort,
+            context_window_tokens: model.contextWindowTokens,
+            max_context_window_tokens: model.maxContextWindowTokens,
         }).select("*").single();
         assertNoError(error, "Unable to create supported model.");
         return mapSupportedModel(data);
@@ -816,6 +967,18 @@ class SupabaseAdminRepository {
             payload.is_enabled = patch.isEnabled;
         if (patch.sortOrder !== undefined)
             payload.sort_order = patch.sortOrder;
+        // Task-215: re-detect refreshes reasoning/context-window provenance on an
+        // already-registered row (unlike model rows themselves, which are
+        // insert-only per Task-213 T-3) — these are capability facts about the
+        // model, not user-editable state.
+        if (patch.supportedReasoningEfforts !== undefined)
+            payload.supported_reasoning_efforts = patch.supportedReasoningEfforts;
+        if (patch.defaultReasoningEffort !== undefined)
+            payload.default_reasoning_effort = patch.defaultReasoningEffort;
+        if (patch.contextWindowTokens !== undefined)
+            payload.context_window_tokens = patch.contextWindowTokens;
+        if (patch.maxContextWindowTokens !== undefined)
+            payload.max_context_window_tokens = patch.maxContextWindowTokens;
         const { data, error } = await this.supabase.from("ai_supported_models").update(payload).eq("id", id).select("*").single();
         assertNoError(error, "Unable to update supported model.");
         return mapSupportedModel(data);

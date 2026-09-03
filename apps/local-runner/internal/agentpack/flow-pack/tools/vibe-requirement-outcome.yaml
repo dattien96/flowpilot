@@ -1,0 +1,25 @@
+id: vibe-requirement-outcome
+kind: declared_face
+version: 1
+description: Vibe sprint requirement-gate face for the generic flow_control primitive (vibe-only).
+exposesTool: true
+mapsTo: flow.control
+input:
+  type: object
+  required:
+    - verdict
+  properties:
+    verdict:
+      type: string
+      enum:
+        - aligned
+        - drift_fixable
+        - requirement_change
+    summary:
+      type: string
+statusMap:
+  aligned: done
+  drift_fixable: continue
+  requirement_change: escalate
+payloadMap:
+  summary: summary

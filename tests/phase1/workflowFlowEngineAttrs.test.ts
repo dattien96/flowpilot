@@ -132,9 +132,9 @@ test("saveWorkflow limits built-in workflow saves to override fields only", asyn
       error: null,
     },
   });
-  let updatePayload: Record<string, unknown> | null = null;
+  const captured: { updatePayload: (Record<string, unknown> & { updated_at?: unknown }) | null } = { updatePayload: null };
   (workflowsTable as any).update = function (payload: Record<string, unknown>) {
-    updatePayload = payload;
+    captured.updatePayload = payload;
     return this;
   };
   supabase.register(
@@ -151,11 +151,11 @@ test("saveWorkflow limits built-in workflow saves to override fields only", asyn
     yoloMode: true,
   });
 
-  assert.deepEqual(updatePayload, {
+  assert.deepEqual(captured.updatePayload, {
     model_override: "gpt-5.4",
     reasoning_effort_override: "high",
     yolo_mode: true,
-    updated_at: updatePayload?.updated_at,
+    updated_at: captured.updatePayload?.updated_at,
   });
   assert.equal(saved.name, "Review Loop");
   assert.equal(saved.modelOverride, "gpt-5.4");

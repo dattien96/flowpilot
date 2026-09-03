@@ -32,6 +32,14 @@ type InteractiveService struct {
 	// catalog serves projects/workflows/steps — the fake interactiveCatalog when
 	// Supabase is not configured, SupabaseCatalogStore when it is (04-08 A1).
 	catalog CatalogStore
+	// Chat SSOT capture stack (CP-59 / SD-26). Always ON on dev branch; lazily
+	// initialized by ensureChatTranscriptWriter. Zero values valid before init.
+	chatOnce        sync.Once
+	chatRuns        *chatRunRegistry
+	chatTranscripts *chatTranscriptWriter
+	// chatSwitchInFlight guards one in-flight provider switch per chat
+	// (SD26-S-2); guarded by s.mu, lazily initialized.
+	chatSwitchInFlight map[string]bool
 	// skillsCatalog serves the local provider-skill list (not from Supabase).
 	skillsCatalog *interactiveCatalog
 	// agentCatalog serves the loadable sub-agent definitions (CP-19 / Task-081):
@@ -159,6 +167,15 @@ type interactiveRun struct {
 	turnCount   int
 	// runKind is "chat" for normal-chat runs, "" / "workflow" for workflow runs (T-7).
 	runKind string
+
+	// Chat SSOT leg fields (CP-59 / SD-26 §5.1). Zero-valued for workflow runs
+	// and for legacy chat runs until ensureChatTagging self-tags them.
+	// switchFromRunID is the durable switch intent (SD26-S-2 phase A).
+	chatID          string
+	legSeq          int
+	legState        string
+	legClosedReason string
+	switchFromRunID string
 
 	// Agent identity (CP-19 / Task-081). All fields are additive and zero-valued
 	// for an ordinary parentless "main" run, so existing behavior is unchanged.
@@ -3665,6 +3682,11 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		StartedAt:                       rs.createdAt,
 		UpdatedAt:                       rs.updatedAt,
 		RunKind:                         rs.runKind,
+		ChatID:                          rs.chatID,
+		LegSeq:                          rs.legSeq,
+		LegState:                        rs.legState,
+		LegClosedReason:                 rs.legClosedReason,
+		SwitchFromRunID:                 rs.switchFromRunID,
 		SourceMachineID:                 rs.sourceMachineID,
 		SourceRunID:                     rs.sourceRunID,
 		RestoredFrom:                    rs.restoredFrom,
@@ -3945,6 +3967,10 @@ func (s *InteractiveService) persistQuestion(record ProviderQuestionState) error
 }
 
 func (s *InteractiveService) persistEvent(event ProviderEvent) error {
+	// CP-59 chat SSOT capture (SD-26 §5.3): mirrors this function's delta-skip
+	// policy, flag-gated, never fails the turn. Kept beside persistEvent so the
+	// two writers share one call graph.
+	s.recordChatTranscript(event)
 	store := s.persistenceStore()
 	if store == nil || event.Type == EventMessageDelta {
 		return nil
@@ -6359,6 +6385,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	model, effort := resolveTurnModelAndEffort(rs, in)
 	yolo := resolveTurnYolo(rs, in)
 	posture := resolveTurnChatPosture(rs, in)
+	log.Printf("[turn] run_id=%q model_override=%v resolved_model=%q effort=%q run_default=%q provider=%q turn_id=%q", rs.id, in.Model, model, effort, rs.modelName, rs.providerKey, turnID)
 	// Fold any pending UI-spawn context into the provider prompt (NOT the displayed prompt,
 	// which was already emitted via turn_started with in.Prompt). This is how the parent
 	// agent learns about children started from the UI. Cleared once consumed; the cleared
@@ -6442,7 +6469,47 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	if len(capturedCtx) > 0 {
 		providerPrompt = composeAgentContextBlock(capturedCtx) + "\n\n" + in.Prompt
 	}
+	// Capture reattach state for envelope (first turn on reattached leg must carry
+	// prior chat history — same envelope as live switch; TUI reattach via
+	// createRun with ChatID+SwitchFromRunID does not fire a separate seed turn).
+	reattachChatID := ""
+	reattachSwitchFrom := ""
+	reattachTurnCount := 0
+	reattachLegSeq := 0
+	reattachProviderKey := ProviderKey("")
+	reattachModel := ""
+	// At this point turnCount is already 1 for the first turn (incremented in
+	// startTurn before runTurn), so check for 1, not 0. Observed in
+	// TestReattachFirstTurnIncludesPriorHistory: first turn had turnCount=1.
+	if rs.switchFromRunID != "" && rs.turnCount == 1 && rs.legSeq > 0 && !isHandoffPrompt(in.Prompt) && !isHandoffPrompt(providerPrompt) {
+		reattachChatID = rs.chatID
+		reattachSwitchFrom = rs.switchFromRunID
+		reattachTurnCount = rs.turnCount
+		reattachLegSeq = rs.legSeq
+		reattachProviderKey = rs.providerKey
+		reattachModel = rs.modelName
+		log.Printf("[reattach] captured chatId=%q legSeq=%d switchFrom=%q", reattachChatID, reattachLegSeq, reattachSwitchFrom)
+	}
 	s.mu.Unlock()
+	// Reattach envelope: prepend handoff history on first turn of reattached leg
+	if reattachChatID != "" {
+		log.Printf("[reattach] building envelope chatId=%q", reattachChatID)
+		fakeSrc := &interactiveRun{providerKey: reattachProviderKey, id: reattachSwitchFrom, chatID: reattachChatID}
+		req := chatSwitchRequest{TargetProviderKey: reattachProviderKey, Model: reattachModel, ReasoningEffort: effort}
+		env := s.buildChatHandoffContext(ctx, reattachChatID, fakeSrc, req)
+		if env.Prompt != "" && !isHandoffPrompt(providerPrompt) {
+			providerPrompt = env.Prompt + "\n\n" + providerPrompt
+			log.Printf("[reattach] envelope prepended chatId=%q legSeq=%d switchFrom=%q included=%d mode=%s prompt_len=%d", reattachChatID, reattachLegSeq, reattachSwitchFrom, env.Stats.IncludedTurnCount, env.Stats.Mode, len(providerPrompt))
+		}
+		s.mu.Lock()
+		if rs.switchFromRunID == reattachSwitchFrom {
+			rs.switchFromRunID = ""
+		}
+		s.mu.Unlock()
+		// Use turnCount captured before unlock to avoid race
+		_ = reattachTurnCount
+		_ = reattachLegSeq
+	}
 	// Live ledger refresh (CP-35): pick up commits made during this session so the
 	// oracle always sees the current change history, not just what existed at bind time.
 	s.rebuildLedgerIfDirty(rs.workspaceCwd)

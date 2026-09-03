@@ -291,6 +291,10 @@ type RunHandle struct {
 	RunKind    string `json:"runKind,omitempty"`
 	WorkflowID string `json:"workflowId,omitempty"`
 	FlowRef    string `json:"flowRef,omitempty"`
+	// Chat SSOT (CP-59 / SD-26 §5.1): the logical chat this run belongs to and
+	// its leg ordinal. Omitted for workflow runs and when the flag is off.
+	ChatID string `json:"chatId,omitempty"`
+	LegSeq int    `json:"legSeq,omitempty"`
 }
 
 type StartRunInput struct {
@@ -314,6 +318,12 @@ type StartRunInput struct {
 	// Cwd is the active workspace directory for this run (04-06 multi-workspace).
 	// Per-run/per-thread cwd is authoritative; Runner.workspace is only a default.
 	Cwd string `json:"cwd,omitempty"`
+	// Chat SSOT (CP-59 / SD-26 §5.1): attach this run to an existing chat
+	// (Task-314 switch legs, Task-317 reattach) or mint a new one. Empty → a
+	// fresh chat mints for normal_chat. Additive — old clients omit all three.
+	ChatID          string `json:"chatId,omitempty"`
+	SwitchFromRunID string `json:"switchFromRunId,omitempty"`
+	LegSeq          int    `json:"legSeq,omitempty"`
 }
 
 type SkillSelection struct {

@@ -7,7 +7,15 @@ const node_test_1 = __importDefault(require("node:test"));
 const strict_1 = __importDefault(require("node:assert/strict"));
 const node_fs_1 = __importDefault(require("node:fs"));
 const node_path_1 = __importDefault(require("node:path"));
-const timelinePath = node_path_1.default.join(process.cwd(), "apps/desktop-flowpilot/src/components/Timeline.tsx");
+function repoRoot() {
+    const candidates = [process.cwd(), node_path_1.default.resolve(process.cwd(), "../.."), node_path_1.default.resolve(__dirname, "../../..")];
+    for (const c of candidates) {
+        if (node_fs_1.default.existsSync(node_path_1.default.join(c, "apps/desktop-flowpilot/src/components/Timeline.tsx")))
+            return c;
+    }
+    return process.cwd();
+}
+const timelinePath = node_path_1.default.join(repoRoot(), "apps/desktop-flowpilot/src/components/Timeline.tsx");
 const timelineSource = node_fs_1.default.readFileSync(timelinePath, "utf8");
 (0, node_test_1.default)("Timeline keeps prompt skill summary collapsed to the first two selections", () => {
     strict_1.default.match(timelineSource, /const preview = skills\.slice\(0,\s*2\)\.map\(\(name\) => `\/\$\{name\}`\)\.join\(", "\);/);

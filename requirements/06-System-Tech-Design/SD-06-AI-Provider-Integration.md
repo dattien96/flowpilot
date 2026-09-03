@@ -236,6 +236,8 @@ Reasoning Effort has no equivalent step-type-level tier today (`step_definitions
 
 ### 6.2.1 Per-Node Override Within A Running Flow (BUG-228)
 
+> **Pointer Task-314 DOD-12 (CP-59 / SD-26):** chat-level provider switches are **not** per-node overrides — they are a chat-leg operation on `chatId` (always ON on dev branch; flag removed). For `normal_chat` legs the switch contract lives in `SD-26 §5..§7`; this section stays the authority for `workflow`/`flow` runs only (`runKind != "chat"`).
+
 The chain above resolves one baseline model/provider **for the run**, once, at start. Within that same run, the flow executor (`flow_executor.go`) additionally lets an individual flow-graph node override that baseline at spawn time, depending on the node's kind:
 
 - **Agent node** (`run: delegate`, `behavior: agent.delegate`): every `spawnChildRun` call site in the flow executor resolves the node's own model via `resolveFlowNodeModel` before spawning — it maps the node's `agent:` reference to its bare role name (`agents/reviewer.md` → `reviewer`, the same derivation `flowNodeAgentName` already used for agent-catalog lookup) and looks up the purpose-named `step_definitions` row `flow-agent-delegate-<role>` (the manual workflow builder's "Flow: Coder" / "Flow: Reviewer" catalog entries, **BUG-161**). If that row exists and has a model, `spawnChildRun` uses it — as the top-priority tier, above the (intentionally model-free) agent definition and above inheriting the parent run's model — and derives the child's provider from it the same "model is authoritative" way `createRun` does for the run's own provider (**BUG-171**). If the row doesn't exist or has no model, the node falls back to the pre-existing inherit-from-parent behavior unchanged. Both cohort siblings sharing one agent role (e.g. `reviewer_correctness` and `reviewer_security`, both `agents/reviewer.md`) resolve to the same row — this is a per-role override, not a per-graph-node one.
@@ -317,6 +319,16 @@ runProvider = providerFrom(runModel)
 - Reject step execution if the resolved step-level model is not supported.
 - Reject run start if no model/reasoning combination can be resolved after applying the fallback chain.
 - Reject step execution or run start if the resolved reasoning effort level is invalid (not low, medium, high, or xhigh).
+
+### 6.5 Chat Continuity SSOT — ChatId / Legs / Switch (CP-59 / SD-26)
+
+> **Amendment Task-314 DOD-12 (CP-59).** This section is owned by `SD-26`; it is summarized here so `SD-06` call sites route to the correct contract.
+
+- **Chat identity:** `chatId` `cht_<12-hex>` minted on first `normal_chat` `createRun`; `legSeq`/`legState`/`legClosedReason`/`switchFromRunId` are additive fields on `interactiveRun` and `workflow_provider_sessions` (`SD-26 §5.1`, `CP-59 P-2`). Legacy chat runs self-tag `chatId=runId, legSeq=0` on first touch.
+- **Transcript SSOT:** `ChatTranscriptStore` (`SD-26 D-1`) — local `~/.flowpilot/chat-transcripts/chats/<chatId>/transcript.ndjson` (O_APPEND, 1 MiB reader) + Supabase `workflow_chat_events(chat_id, chat_seq, leg_run_id, type, payload)` unique `(chat_id, chat_seq)`, idempotent append; `chatSeq` monotonic per chat under `s.mu`. Capture beside `persistEvent` (`interactive_service.go:3947`) with identical `EventMessageDelta` skip; failure → `chat_store_degraded` never fails the turn (`SD-26 X-6`).
+- **Timeline:** `GET /client/chats/{chatId}/timeline?afterSeq=&limit=` joins legs by `legSeq` + records by `chatSeq`, tail budgets mirror `chat_history_replay.go:6`; chat-kind gate absolute (`runKind=="chat"` — `SD-26 X-1`).
+- **Switch:** `POST /client/chats/{chatId}/switch-provider` is the **only** cross-provider path for chat runs (`SD-26 S-2` three-phase: A `s.mu` guards+intent persisted, B no lock `createRun`+envelope+seed fire-and-return, C `s.mu` close+`E-9`). Errors: `handoff_run_busy` 409, `handoff_same_provider` 409 (callers fall back to in-place `set_config`/`set_model` — `CP-59 P-5/P-7`, `BUG-329`), `provider_unavailable` 422. Budget = `ContextWindowTokens ×3 chars` capped 512 KiB floor 64 KiB; envelope = `<previous_conversation>` (`packConversationTurns`) + optional `<actions_summary>` (tool/file/approval digest). Divider single-source: live = seed `isHandoffSeed`, replay = `E-9` deduped by `toRunId` (`SD-26 D-7`).
+- **Restore reattach:** A restored chat is **detached** (`all legs closed(restored)` — `SD-26 D-8`); next turn/pick reattaches via direct `createRun(chatId, switchFromRunID=latestLeg)` (not the switch endpoint which 409s `chat_no_active_leg`). Missing sidecars → `session_unavailable`, missing provider → `provider_unavailable` — chat always opens with full text.
 
 ---
 

@@ -534,6 +534,31 @@ type AppModel struct {
 	stepID           string // synthetic chat step from StartRun / Resume
 	pendingPrompt    string // first prompt waiting for StartRun to finish
 
+	// Chat switch surface (CP-59 Task-315): one in-flight switch at a time;
+	// a posture picked mid-switch queues for the new leg.
+	chatSwitchInFlight      bool
+	chatSwitchQueuedPosture string
+	// chatDetached marks a restored chat with no locally-active leg (SD26 §10):
+	// the next prompt reattaches via startRun carrying the chat identity.
+	chatDetached bool
+	// chatBackfillDone guards /open restore-by-chat rendering (idempotent per
+	// opened chat).
+	chatBackfillDone bool
+	// lastSwitchStats/lastSwitchTarget carry the just-committed switch's handoff
+	// stats so the seed-envelope collapse renders the carried-count divider.
+	lastSwitchStats  *client.ChatSwitchHandoffStats
+	lastSwitchTarget string
+	// seedTurnActive (BUG-347): while the post-switch seed turn is streaming,
+	// its envelope reply is noise (an orphan assistant bubble with no You-box)
+	// — the divider renders synchronously on switch commit and all seed
+	// assistant output is dropped until the seed turn completes.
+	seedTurnActive bool
+	// turnLive tracks a user turn from local send until turn_completed/failed,
+	// surviving stream switches (turnStream → orchStream). It prevents premature
+	// "done" and C2 Tab races where TUI thought idle but runner was still
+	// busy (BUG-341/B-4: 417944 first turn blank, Tab 409 + in-place leak).
+	turnLive bool
+
 	// Supabase auth (Desktop LoginScreen parity via POST /supabase-auth/login)
 	authPhase     AuthPhase
 	authEmail     string

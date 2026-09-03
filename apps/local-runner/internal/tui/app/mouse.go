@@ -258,6 +258,22 @@ func (m *AppModel) handlePlainLeftMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.MouseActionRelease:
 		dragged := m.mouseDrag.moved
+		// BUG-345: wheel-only mouse (?1000h, no 1002/1003) delivers press and
+		// release but NO motion events, so a drag never set moved — releasing
+		// after a real drag just cleared the highlight and copied nothing.
+		// Press→release over different cells is a drag-select: arm the
+		// highlight and auto-copy (CA-515 affordance, selection stays armed
+		// for Ctrl+C fallback).
+		if m.mouseDrag.down && !dragged {
+			if msg.X != m.mouseDrag.x0 || msg.Y != m.mouseDrag.y0 {
+				dragged = true
+				m.mouseSel = mouseSelect{
+					armed: true,
+					x0:    m.mouseDrag.x0, y0: m.mouseDrag.y0,
+					x1: msg.X, y1: msg.Y,
+				}
+			}
+		}
 		m.mouseDrag = mouseDrag{}
 		if dragged {
 			// Drag-select just ended: copy on release (Terminal.app swallows

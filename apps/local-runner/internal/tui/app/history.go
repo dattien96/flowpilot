@@ -168,13 +168,15 @@ func formatChatListWithRemote(items []client.RunHistoryItem, remote []client.Rem
 		sb.WriteString("Usage: /history|/open|/resume  (then ↑↓ Tab Enter)")
 		return sb.String()
 	}
+	rows := groupRunsByChatId(items)
 	// Dump stays short; the live picker (command + space) scrolls through ALL items.
 	limit := 20
-	if len(items) < limit {
-		limit = len(items)
+	if len(rows) < limit {
+		limit = len(rows)
 	}
 	for i := 0; i < limit; i++ {
-		it := items[i]
+		row := rows[i]
+		it := row.item
 		title := strings.TrimSpace(it.LastPrompt)
 		if title == "" {
 			title = strings.TrimSpace(it.LastMessage)
@@ -200,15 +202,22 @@ func formatChatListWithRemote(items []client.RunHistoryItem, remote []client.Rem
 			when = "—"
 		}
 		line := fmt.Sprintf("  %2d  %s  [%s] %s", i+1, shortID(it.RunID), kind, it.Status)
+		if row.group != nil && len(row.group.legs) > 1 {
+			line += fmt.Sprintf(" · %d legs", len(row.group.legs))
+		}
 		if badge := syncBadgeWithRemote(it, remote); badge != "" {
 			line += " (" + badge + ")"
 		}
 		line += "  " + when + " · " + title
 		sb.WriteString(line + "\n")
-		sb.WriteString(fmt.Sprintf("      id %s  %s\n", it.RunID, it.ProviderKey))
+		if row.group != nil && len(row.group.legs) > 1 && strings.TrimSpace(it.ChatID) != "" {
+			sb.WriteString(fmt.Sprintf("      id %s  %s  chat %s\n", it.RunID, it.ProviderKey, it.ChatID))
+		} else {
+			sb.WriteString(fmt.Sprintf("      id %s  %s\n", it.RunID, it.ProviderKey))
+		}
 	}
-	if len(items) > limit {
-		sb.WriteString(fmt.Sprintf("  … %d more in dump — type /history  and ↑↓ to reach every chat (%d total)\n", len(items)-limit, len(items)))
+	if len(rows) > limit {
+		sb.WriteString(fmt.Sprintf("  … %d more in dump — type /history  and ↑↓ to reach every chat (%d total)\n", len(rows)-limit, len(rows)))
 	}
 	sb.WriteString("Pick: /history|/open|/resume  then ↑↓ · Tab · Enter (picker scrolls past this dump)")
 	return sb.String()
@@ -296,16 +305,42 @@ func mergeChatListSyncStatus(cached, fresh []client.RunHistoryItem) []client.Run
 }
 
 // resolveChatOpenTarget maps /history|/open|/resume args to a run id using the last list.
+// Grouped chats (CP-59 Q-4): numeric index refers to the grouped chat row
+// (latest leg is the face), and a chatId or any leg's runId resolves to the
+// head runId so the reopen always lands on the latest leg.
 func resolveChatOpenTarget(args []string, listed []client.RunHistoryItem) (string, error) {
 	if len(args) == 0 {
 		return "", fmt.Errorf("usage: /history|/open|/resume <n|runId> — type the command + space for the picker")
 	}
 	token := strings.TrimSpace(args[0])
+	rows := groupRunsByChatId(listed)
 	if n, err := strconv.Atoi(token); err == nil {
-		if n < 1 || n > len(listed) {
-			return "", fmt.Errorf("chat index %d out of range (1-%d) — type /history  for the picker", n, len(listed))
+		if n < 1 || n > len(rows) {
+			return "", fmt.Errorf("chat index %d out of range (1-%d) — type /history  for the picker", n, len(rows))
 		}
-		return listed[n-1].RunID, nil
+		return rows[n-1].item.RunID, nil
+	}
+	lower := strings.ToLower(token)
+	for _, row := range rows {
+		headID := strings.TrimSpace(row.item.RunID)
+		if strings.EqualFold(headID, token) || strings.EqualFold(strings.TrimSpace(row.item.ChatID), token) {
+			return headID, nil
+		}
+		if row.group != nil {
+			// ChatId match already checked on head; also allow any leg's runId
+			// to resolve to the head (stable reopen-by-chat).
+			for _, leg := range row.group.legs {
+				if strings.EqualFold(strings.TrimSpace(leg.RunID), token) {
+					return headID, nil
+				}
+			}
+			// Also allow chatId match via lower (already head) but keep for legs
+			// chatId is same across legs.
+			if strings.TrimSpace(row.item.ChatID) != "" && strings.ToLower(strings.TrimSpace(row.item.ChatID)) == lower {
+				return headID, nil
+			}
+		}
+		// Legacy: direct runId match for ungrouped rows already handled via head check.
 	}
 	return token, nil
 }
@@ -345,13 +380,33 @@ func formatOpenChatErrDetailed(err error, chatProvider, activeAccountLabel strin
 
 func replayHistoryMessages(evs []client.ProviderEvent) []ChatMessage {
 	var out []ChatMessage
+	skipNextAssistant := false
 	for _, ev := range evs {
 		switch ev.Type {
 		case "turn_started":
 			if p := strings.TrimSpace(ev.Prompt); p != "" {
+				// CP-59 I3: handoff seed envelope (current-leg first turn after a
+				// switch) must not render as a raw user bubble — its divider
+				// comes from the E-9 chat_provider_switch record. Drop the seed
+				// prompt and its immediate assistant reply; live switches collapse
+				// via addMessage's lastSwitchStats path.
+				if strings.HasPrefix(p, client.HandoffPromptPrefix) {
+					skipNextAssistant = true
+					continue
+				}
 				out = append(out, ChatMessage{Role: "user", Content: p})
+				skipNextAssistant = false // a real prompt resets the seed skip
+			} else {
+				// BUG-347: the switch seed's turn_started records with an empty
+				// prompt (the envelope attaches asynchronously) — treat it as a
+				// seed and drop its envelope reply too.
+				skipNextAssistant = true
+				continue
 			}
 		case "message_delta":
+			if skipNextAssistant {
+				continue
+			}
 			if ev.Text == "" {
 				continue
 			}
@@ -361,8 +416,16 @@ func replayHistoryMessages(evs []client.ProviderEvent) []ChatMessage {
 				out = append(out, ChatMessage{Role: "assistant", Content: ev.Text})
 			}
 		case "message_completed":
+			if skipNextAssistant {
+				skipNextAssistant = false
+				continue
+			}
 			out = applyReplayAssistantText(out, ev.Text)
 		case "turn_completed":
+			if skipNextAssistant {
+				skipNextAssistant = false
+				continue
+			}
 			out = applyReplayAssistantText(out, ev.FinalMessage)
 		}
 	}

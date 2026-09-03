@@ -59,7 +59,9 @@ func idempotencyKeysOrEmpty(m map[string]string) map[string]string {
 
 // providerSessionSelectRecovery is the PostgREST select list for full session
 // recovery (stall-retry, gate settle, idempotency, runtime blob) — BUG-288 R17/R18.
-const providerSessionSelectRecovery = "workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,parent_run_id,agent_name,agent_role,agent_status,pending_restart_run_id,pending_restart_prompt,pending_restart_gen,flow_context_injected,idempotency_keys,session_runtime,workflow_runs(project_id,workflow_id)"
+// CP-59 chat SSOT (chat_id/leg_*) additive: grouped history relies on persisted
+// legs, so recovery must select them.
+const providerSessionSelectRecovery = "workflow_run_id,provider_key,provider_session_id,provider_account_id,working_directory,status,last_prompt,last_message,started_at,updated_at,run_kind,chat_id,leg_seq,leg_state,leg_closed_reason,switch_from_run_id,parent_run_id,agent_name,agent_role,agent_status,pending_restart_run_id,pending_restart_prompt,pending_restart_gen,flow_context_injected,idempotency_keys,session_runtime,workflow_runs(project_id,workflow_id)"
 
 // sessionRuntimeBlob holds flow-recovery fields that are not first-class
 // Supabase columns (BUG-288 R18-3). Packed into session_runtime jsonb.
@@ -449,6 +451,30 @@ func nilIfEmpty(s string) any {
 	return s
 }
 
+// nilIfZeroInt maps a zero int to SQL NULL so pre-migration rows never gain a
+// zero leg_seq (additive helper for the CP-59 chat SSOT columns).
+func nilIfZeroInt(v int) any {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
+
+// derefString maps a nullable text column to the ""-sentinel.
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func derefInt(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
 // buildStepPatchBody renders a WorkflowStepPatch to a PostgREST PATCH body. Only
 // fields the patch sets are included; a non-nil pointer to "" becomes JSON null.
 func buildStepPatchBody(p WorkflowStepPatch) map[string]any {
@@ -587,6 +613,13 @@ func (s *SupabaseWorkflowStore) UpsertProviderSession(ctx context.Context, sessi
 		"started_at":          nilIfEmpty(session.StartedAt),
 		"updated_at":          nilIfEmpty(session.UpdatedAt),
 		"run_kind":            nilIfEmpty(session.RunKind),
+		// CP-59 chat SSOT (SD-26 §5.1): keys are null when empty so legacy
+		// rows / deployments without the migration stay untouched.
+		"chat_id":             nilIfEmpty(session.ChatID),
+		"leg_seq":             nilIfZeroInt(session.LegSeq),
+		"leg_state":           nilIfEmpty(session.LegState),
+		"leg_closed_reason":   nilIfEmpty(session.LegClosedReason),
+		"switch_from_run_id":  nilIfEmpty(session.SwitchFromRunID),
 		"parent_run_id":       nilIfEmpty(session.ParentRunID),
 		"agent_name":          nilIfEmpty(session.AgentName),
 		"agent_role":          nilIfEmpty(session.Role),
@@ -654,6 +687,11 @@ type dbProviderSessionRow struct {
 	StartedAt         string  `json:"started_at"`
 	UpdatedAt         string  `json:"updated_at"`
 	RunKind           string  `json:"run_kind"`
+	ChatID            *string `json:"chat_id"`
+	LegSeq            *int    `json:"leg_seq"`
+	LegState          *string `json:"leg_state"`
+	LegClosedReason   *string `json:"leg_closed_reason"`
+	SwitchFromRunID   *string `json:"switch_from_run_id"`
 	ParentRunID       string  `json:"parent_run_id"`
 	AgentName         string  `json:"agent_name"`
 	AgentRole         string  `json:"agent_role"`
@@ -737,6 +775,11 @@ func providerSessionFromDBRow(r dbProviderSessionRow) ProviderSessionState {
 		StartedAt:        r.StartedAt,
 		UpdatedAt:        r.UpdatedAt,
 		RunKind:          r.RunKind,
+		ChatID:           derefString(r.ChatID),
+		LegSeq:           derefInt(r.LegSeq),
+		LegState:         derefString(r.LegState),
+		LegClosedReason:  derefString(r.LegClosedReason),
+		SwitchFromRunID:  derefString(r.SwitchFromRunID),
 		ParentRunID:      r.ParentRunID,
 		AgentName:        r.AgentName,
 		Role:             r.AgentRole,

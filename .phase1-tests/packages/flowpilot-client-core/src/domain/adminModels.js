@@ -5,6 +5,11 @@ exports.validateFlowGraph = validateFlowGraph;
 exports.FLOW_BEHAVIOR_OPTIONS = [
     { id: "agent.delegate", label: "Agent delegate — spawn an agent", requiresAgent: true },
     { id: "hub.inline", label: "Hub inline — synthesis / orchestration turn", requiresAgent: false },
+    // Task-238: renamed for clarity after a user picked telegram.notify expecting
+    // an AI-composed message — the two labels must read as opposites at a glance,
+    // not as near-synonyms differing only in "(no agent)" vs "(no child agent)".
+    { id: "telegram.notify", label: "Telegram notify — STATIC message, no AI (fixed text / template sent verbatim)", requiresAgent: false },
+    { id: "hub.notify", label: "Telegram notify — AI-COMPOSED message (main agent's own turn, no child agent)", requiresAgent: false },
     { id: "context.produce", label: "Context produce — build a context package", requiresAgent: false },
     { id: "context.render", label: "Context render — render a context package into a prompt", requiresAgent: false },
     { id: "command.validate", label: "Command validate — run a validation command", requiresAgent: false },
@@ -53,7 +58,6 @@ function validateFlowGraph(steps, stepDefinitions, edges) {
     const knownBehaviorIds = new Set(exports.FLOW_BEHAVIOR_OPTIONS.map((option) => option.id));
     const behaviorsRequiringAgent = new Set(exports.FLOW_BEHAVIOR_OPTIONS.filter((option) => option.requiresAgent).map((option) => option.id));
     const nodeIds = new Set();
-    let hasEntryNode = false;
     for (const step of enabledSteps) {
         const definition = defsByType.get(step.stepType);
         if (!definition) {
@@ -62,9 +66,6 @@ function validateFlowGraph(steps, stepDefinitions, edges) {
         }
         if (definition.nodeId) {
             nodeIds.add(definition.nodeId);
-        }
-        if (!definition.dependsOn || definition.dependsOn.length === 0) {
-            hasEntryNode = true;
         }
         if (definition.behaviorId) {
             if (!knownBehaviorIds.has(definition.behaviorId)) {
@@ -75,8 +76,20 @@ function validateFlowGraph(steps, stepDefinitions, edges) {
             }
         }
     }
+    // BUG-282 (was a 2026-07-06 owner finding): a step's flow dependency is NOT
+    // stored on the step definition — topology lives only on the flow's own
+    // `edges` (workflows.edges_json), so a step reused across flows resolves
+    // against each flow's edges instead of dragging in another flow's node ids.
+    // Entry-node detection therefore reads the edges directly: a node is an
+    // entry node iff no *forward* edge targets it (a back edge, e.g. a
+    // synthesis->coder loop re-entry, must not disqualify the true entry node).
+    const nodesWithIncomingForwardEdge = new Set(edges.filter((edge) => edge.kind === "forward").map((edge) => edge.to));
+    const hasEntryNode = enabledSteps.some((step) => {
+        const definition = defsByType.get(step.stepType);
+        return Boolean(definition?.nodeId) && !nodesWithIncomingForwardEdge.has(definition.nodeId);
+    });
     if (!hasEntryNode) {
-        issues.push("No entry node found — at least one enabled step must have no dependencies (empty Depends on) so the flow has somewhere to start.");
+        issues.push("No entry node found — at least one enabled step's node must have no incoming forward edge, so the flow has somewhere to start.");
     }
     const validTargets = new Set([...nodeIds, ...exports.FLOW_EDGE_TERMINALS]);
     edges.forEach((edge, index) => {

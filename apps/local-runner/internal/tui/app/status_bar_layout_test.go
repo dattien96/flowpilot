@@ -14,6 +14,11 @@ import (
 // context rows moved into the reactive sidebar.
 
 func TestStatusBar_SingleLineAndSidebarDetails(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("FLOWPILOT_TUI_SESSION_FILE", dir+"/tui-session.json")
+	t.Setenv("APPDATA", dir)
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 	seven := 99
 	reset := "2026-08-20T06:46:00Z"
 	m := New(config.ChatConfig{Provider: "grok", Model: "grok-4.6"}, "http://127.0.0.1:4317")
