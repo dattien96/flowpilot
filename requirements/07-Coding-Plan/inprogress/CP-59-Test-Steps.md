@@ -77,7 +77,7 @@ Fail (leg nhân bản / message trùng / Tab kẹt phải bấm 2 lần) → m�
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
-| C1 | `/provider codex` ngay khi turn đang stream | `handoff_run_busy` 409 — dòng lỗi, chat vẫn dùng leg cũ, không leg mồ côi |
+| C1 | `/provider codex` ngay khi turn đang stream | `handoff_run_busy` 409 — dòng lỗi, chat vẫn dùng leg cũ, không leg mồ côi | ✅ PASS 2026-09-02 — `cht_b97b54d05a27` `run-511323`: notice "A turn is in progress — wait for it to finish, then switch provider/model" (CA-723), 0 `chat_provider_switch`, 0 leg mới, turn stream tiếp tục |
 | C2 | Switch khi đang pending approval / question | 409 `handoff_run_busy`, card vẫn hiện, không leg mới |
 | C3 | Switch sang provider CHƯA cài (ví dụ gỡ gemini, hoặc target `gemini` khi chưa installed) | `provider_unavailable` 422 + install hint; **zero mutation** (leg cũ nguyên, `switchFromRunID` rỗng) |
 | C4 | Chat mới tạo, chưa gửi turn nào → switch ngay | `fresh_start` — leg mới không envelope (`handoffMode=fresh_start`, `Prompt=""`), không lỗi |
@@ -212,7 +212,7 @@ Dev branch `cp59-chat-ssot` đã bỏ flag — luôn ON, không còn path flag-o
 | S Smoke | ✅ 5/5 | `cht_3810173c6b36` `197689→197698`, `cht_a8d253c2fe6f` | Cross-provider switch mint leg mới, Grok identity, continuity 3 câu |
 | A Switch `/model` | ✅ 5/5 | `cht_a8d253c2fe6f` legs 0,1,2 `197929→197970→198151` | `raw included 5/6`, footer truthful, same-provider `longcat→muse-spark` in-place `198151` |
 | B Posture Tab | ✅ B1-B5 PASS 2026-09-02 | `cht_e4975cb1f769` `run-494554→494566`, `cht_1e5b706a8201` `run-500159→500181` | Divider carried turns, derive-once persist, in-place same-provider, rapid double-Tab 1 leg; BUG-347 (seed reply drop + sync divider + busy message) verified |
-| C Guards | ⏳ | — | |
+| C Guards | ✅ C1 PASS 2026-09-02 · C2-C5 ⏳ | `cht_b97b54d05a27` `run-511323` | Busy turn notice + 0 leg mới; còn C2-C5 |
 | D Timeline | ⏳ | — | |
 | E Desktop | ⏳ | — | |
 | F Detached | ⏳ | — | |
