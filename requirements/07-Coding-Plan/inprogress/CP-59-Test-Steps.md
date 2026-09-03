@@ -155,10 +155,10 @@ Prereq: runner đã bật (luôn ON trên dev branch), Desktop `store.chatSwitch
 
 ## F. Detached reattach + `/open` restore-by-chat — Task-315 slice3
 
-| # | Bước | Kết quả mong đợi |
-|---|------|------------------|
-| F1 | Restore chat trên máy mới (xem G) → chat ở trạng thái **detached** (all legs `closed(restored)`, zero active) | `GET /client/chats/{chatId}/timeline` trả full transcript; TUI/Desktop mở chat hiện full history với dividers |
-| F2 | Detached → gửi prompt đầu tiên (TUI) | TUI `cmdSendTurn` intercept detached → `cmdReattachChat` → `startRun(chatId, switchFromRunID=latestLeg)` (không gọi `POST .../switch-provider` → tránh 409 `chat_no_active_leg`); prompt gửi trên leg mới, envelope seed đầy đủ |
+| # | Bước | Kết quả mong đợi | Kết quả thực tế |
+|---|------|------------------|-----------------|
+| F1 | Restore chat trên máy mới (xem G) → chat ở trạng thái **detached** (all legs `closed(restored)`, zero active) | `GET /client/chats/{chatId}/timeline` trả full transcript; TUI/Desktop mở chat hiện full history với dividers | ✅ PASS (partial-local) 2026-09-02 — `cht_29a3ffbeb576` `/open`: backfill 77 records full history leg run-488622 (turns + tools + `question_asked` + replies) với `Detached=true` (tui.log `chatTimelineBackfillMsg`); UI hiện đủ 3 turns + markdown demo. Lưu ý: detached chuẩn `closed(restored)` chỉ có qua Drive restore (G) — ở đây leg0 stale-`active` nhưng runner không còn run sống nên TUI vẫn đi reattach path |
+| F2 | Detached → gửi prompt đầu tiên (TUI) | TUI `cmdSendTurn` intercept detached → `cmdReattachChat` → `startRun(chatId, switchFromRunID=latestLeg)` (không gọi `POST .../switch-provider` → tránh 409 `chat_no_active_leg`); prompt gửi trên leg mới, envelope seed đầy đủ | ✅ PASS 2026-09-02 — `cht_29a3ffbeb576`: prompt đầu "sho cho toi 1 list cac demo ve markdoun" → tui.log `ReattachedMsg run-494480 legSeq 1` + `sendTurn … switchFrom=run-488622` (latestLeg, không gọi switch endpoint); reply giữ context leg cũ ("Soc") = envelope seed đầy đủ; 0 E-9 (đúng reattach path) |
 | F3 | Detached → `/provider` hoặc `/model` | Apply locally, defer notice "will reattach on next turn", không gọi switch endpoint; reattach xảy ra ở turn tiếp theo |
 | F4 | TUI `/open` trên switched chat | Fetch `GetChatTimeline`, backfill prior legs' turns + `E-9` dividers (idempotent `chatBackfillDone`, current leg skip), seed envelope collapse thành divider `carried N[ of M] turns (mode)` |
 | F5 | `resolveChatIdentity` explicit chatId không seq | Leg mới lấy `legSeq = maxPersistedLegSeq+1` (không reuse), `TestResolveChatIdentityUsesPersistedLegSeq` |
@@ -215,7 +215,7 @@ Dev branch `cp59-chat-ssot` đã bỏ flag — luôn ON, không còn path flag-o
 | C Guards | ✅ C1, C2, C4, C5 PASS · C3 done-skip | `cht_b97b54d05a27` `run-511323`, `cht_9f956dc8f850` `run-511461`, `run-511474` | Busy turn + approval busy + fresh_start + workflow block OK; C3 skip (422 covered bởi automated test) |
 | D Timeline | ✅ D1, D2, D4 PASS · D3, D5 done-skip | `cht_1e5b706a8201` | Transcript + pagination + 404 gate OK; D3 skip (disruptive), D5 automated |
 | E Desktop | ⏳ | — | |
-| F Detached | ⏳ | — | |
+| F Detached | ✅ F1, F2 PASS · F3-F5 ⏳ | `cht_29a3ffbeb576` `run-488622→494480` | Backfill 77 recs detached + reattach legSeq 1 + envelope context |
 | G Drive | ⏳ | — | |
 | H Matrix | ⏳ (auto `TestSwitchMatrix` PASS) | — | Manual live 12-pair còn lại |
 | I Cross-surface | ⏳ | — | |
