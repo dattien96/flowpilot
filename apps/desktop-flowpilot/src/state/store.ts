@@ -2343,7 +2343,13 @@ export const useStore = create<AppState>((set, get) => ({
     // without its Flow Mode surfaces (step-timeline sidebar, agents panel gating) even
     // though the runner resumed it correctly. runKind is "chat" for normal_chat runs and
     // "workflow" (or, for older persisted rows, undefined) for everything else.
-    const isWorkflowHistoryItem = historyItem?.runKind !== "chat";
+    // BUG-340 follow-up: when the history row is missing entirely (restored/terminal
+    // chat resumed without a row), fall back to the handle's runKind so a terminal chat
+    // with a chatId still marks detached — a workflow handle never carries a chatId.
+    const handleRunKind = (handle as { runKind?: string }).runKind;
+    const isWorkflowHistoryItem = historyItem === undefined
+      ? handleRunKind === "workflow"
+      : historyItem.runKind !== "chat";
     // BUG-263: same "restore the mode this run actually was" gap as BUG-170
     // above, but for the Chat-Mode orchestration picker (Bug tab / Built-in
     // orchestration select) instead of chatMode/launchMode. Without this,

@@ -18,7 +18,10 @@ test("openHistoryRun marks detached when handle is terminal", async () => {
     client: client as unknown as ReturnType<typeof useStore.getState>["client"],
     chatMode: "normal_chat",
   });
-  await useStore.getState().openHistoryRun("run-old", { runId: "run-old", runKind: "chat", chatId: "cht_a" } as never);
+  // Signature is openHistoryRun(runId) — the runKind/chatId come from the
+  // resumeRun handle + history row; the store falls back to the handle when
+  // no history row exists (BUG-340 detached parity).
+  await useStore.getState().openHistoryRun("run-old");
   assert.equal(useStore.getState().chatDetached, true, "terminal chat must be detached");
   assert.equal(useStore.getState().chatId, "cht_a");
 });
@@ -36,14 +39,9 @@ test("sendPrompt on detached reattaches via startRun with chatId+switchFromRunId
       chatId: "cht_a",
     } as never;
   };
-  client.sendTurn = async () => ({}) as never;
-  // Mock stream to avoid hanging
-  const origConsume = (globalThis as unknown as { consumeStream?: unknown }).consumeStream;
-  // We stub client.streamRun via sendTurn path - actually sendPrompt uses consumeStream internally
-  // For this test, we just need startRun to be called with correct args; sendTurn can be a no-op
-  // Mock the internal consumeStream by stubbing client.sendTurn to not require streaming
-  // The store's sendPrompt will call consumeStream(runId, client.sendTurn(...))
-  // We can mock client.sendTurn to return an async iterable that immediately completes
+  // Mock stream to avoid hanging: sendPrompt consumes an async iterable, so
+  // stub sendTurn with an immediately-completing generator (replaces the
+  // obsolete promise-typed no-op below — must satisfy AsyncIterable).
   client.sendTurn = (() => {
     async function* gen() {}
     return gen();
@@ -169,6 +167,10 @@ test("confirmProviderSwitch handles 409 chat_no_active_leg as detached defer", a
     selectedProjectId: "proj-1",
     chatId: "cht_a",
     chatDetached: false,
+    // Isolation: earlier tests leave a pending question/approval in the shared
+    // store — the C2 guard would block the switch before the 409 path runs.
+    pendingQuestions: [],
+    pendingApprovals: [],
     pendingProviderSwitch: {
       sourceRunId: "run-1",
       sourceProviderKey: "codex",
