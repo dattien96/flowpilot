@@ -150,7 +150,7 @@ Prereq: runner đã bật (luôn ON trên dev branch), Desktop `store.chatSwitch
 | E3 | Cùng-provider chip (ví dụ claude→claude chỉ đổi model) | Không modal, model đổi in-place, không gọi switch endpoint (`TestSameProviderChipInPlaceNoModal`) | ✅ PASS 2026-09-02 — operator-confirmed (không modal, model đổi in-place; chatId bổ sung sau để verify transcript) |
 | E4 | Navigator history | 3-leg chat `cht_x` (opencode→grok→codex) hiển thị **1 row** `cht_x` với chip `3 legs`; expand → 3 legs `legSeq` order, divider giữa legs | ✅ PASS 2026-09-02 — operator-confirmed UI (3 legs chung 1 chat) + timeline verify: `cht_1e5b706a8201` = 1 chatId / 3 legs `[{0 run-500159 opencode closed},{1 run-500181 grok},{2 run-511492 grok}]`; Desktop grouping covered bởi automated "run history groups legs under one chat" (green) |
 | E5 | Flag off / legacy runner (không chatId) | Confirm đi path Task-078 cũ verbatim: `handoffContext` + `startRun`, timeline reset như cũ (`TestProviderSwitchLegacyFallbackPathUnchanged`) | ⏭️ DONE — không có workflow run cũ để test live (operator skip); covered bởi automated `TestProviderSwitchLegacyFallbackPathUnchanged` trong `store.chatSwitch.test.js` (green 2026-09-02, batch 6/6) |
-| E6 | Divider single-source | Seed turn `isHandoffSeed` render thành divider card, không thành user bubble; reload page không duplicate divider (dedupe by `toRunId`) |
+| E6 | Divider single-source | Seed turn `isHandoffSeed` render thành divider card, không thành user bubble; reload page không duplicate divider (dedupe by `toRunId`) | ✅ PASS 2026-09-02 — operator-confirmed (không có nút reload → test tương đương: New run rồi mở lại `cht_fa3abeab9659` từ history, divider vẫn đúng 1, không bubble handoff thô) |
 | E7 | Posture Tab Desktop (Settings → Chat Posture) | Bare-model pin derive + persist 1 lần, cross-provider Tab gọi `switchChatProvider` (`TestPostureTabCrossProviderUsesSwitch`) |
 
 ## F. Detached reattach + `/open` restore-by-chat — Task-315 slice3
@@ -220,7 +220,7 @@ Dev branch `cp59-chat-ssot` đã bỏ flag — luôn ON, không còn path flag-o
 | B Posture Tab | ✅ B1-B5 PASS 2026-09-02 | `cht_e4975cb1f769` `run-494554→494566`, `cht_1e5b706a8201` `run-500159→500181` | Divider carried turns, derive-once persist, in-place same-provider, rapid double-Tab 1 leg; BUG-347 (seed reply drop + sync divider + busy message) verified |
 | C Guards | ✅ C1, C2, C4, C5 PASS · C3 done-skip | `cht_b97b54d05a27` `run-511323`, `cht_9f956dc8f850` `run-511461`, `run-511474` | Busy turn + approval busy + fresh_start + workflow block OK; C3 skip (422 covered bởi automated test) |
 | D Timeline | ✅ D1, D2, D4 PASS · D3, D5 done-skip | `cht_1e5b706a8201` | Transcript + pagination + 404 gate OK; D3 skip (disruptive), D5 automated |
-| E Desktop | ✅ E1-E5 PASS (E2, E5 auto) · E6, E7 ⏳ | `cht_fa3abeab9659`, `cht_1e5b706a8201` | Chip switch + in-place + grouping + legacy path; còn E6, E7 |
+| E Desktop | ✅ E1-E6 PASS (E2, E5 auto) · E7 ⏳ | `cht_fa3abeab9659`, `cht_1e5b706a8201` | Chip switch + in-place + grouping + legacy + divider; còn E7 |
 | F Detached | ✅ F1-F5 PASS | `cht_29a3ffbeb576` `run-488622→494480`, `cht_1e5b706a8201` legs 0-2 | Backfill + reattach + defer + idempotent open + legSeq max+1 |
 | G Drive | ⏳ | — | |
 | H Matrix | ✅ DONE scoped — live opencode↔grok 2 chiều + in-place; chain + truncation auto green | `cht_a8d253c2fe6f`, `cht_1e5b706a8201`, `cht_e4975cb1f769` | codex/claude live blocked (no acc); matrix-test claim cũ không tồn tại trong code |
