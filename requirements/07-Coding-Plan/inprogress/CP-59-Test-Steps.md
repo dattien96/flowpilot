@@ -201,11 +201,11 @@ Prereq: runner đã bật (luôn ON trên dev branch), Desktop `store.chatSwitch
 
 ## I. Cross-surface parity
 
-| # | Bước | Kết quả mong đợi |
-|---|------|------------------|
-| I1 | Cùng `chatId` mở TUI `just chat-dev` và Desktop `store.chatTimeline` | Timeline identical (cùng `GET /client/chats/{chatId}/timeline`), dividers cùng vị trí, số record bằng nhau |
-| I2 | Restart runner giữa multi-leg chat → reopen TUI `/open` + Desktop reload | Replay identical (stable `chatSeq`, `E-9` id), current leg resume via `seedTranscriptFromDisk` (engine) nhưng display từ chat store |
-| I3 | Envelope collapse | `handoffPromptPrefix`/`isHandoffSeed` render thành divider ở cả TUI live stream, TUI replay, Desktop timeline — không bao giờ thành user bubble thô (`TestHandoffSeedRendersAsDivider*`) |
+| # | Bước | Kết quả mong đợi | Kết quả thực tế |
+|---|------|------------------|-----------------|
+| I1 | Cùng `chatId` mở TUI `just chat-dev` và Desktop `store.chatTimeline` | Timeline identical (cùng `GET /client/chats/{chatId}/timeline`), dividers cùng vị trí, số record bằng nhau | ⏳ PENDING live — code parity đã verify: Desktop `HttpWsRunnerClient.chatTimeline` gọi **đúng** endpoint `/client/chats/{chatId}/timeline?afterSeq&limit` (giống TUI); divider format 2 bên giống nhau (`⇄ switched to … — carried …`). Chưa mở Desktop đối chiếu trực quan vì node_modules hỏng (không có tsc, `tsc --version` fail) + dev server chưa chạy — cần `npm install` rồi `just web-dev`, mở cùng `cht_1e5b706a8201`, so record count/dividers |
+| I2 | Restart runner giữa multi-leg chat → reopen TUI `/open` + Desktop reload | Replay identical (stable `chatSeq`, `E-9` id), current leg resume via `seedTranscriptFromDisk` (engine) nhưng display từ chat store | ⏭️ SKIP — disruptive restart (cùng class D3 đã skip); phía TUI đã chứng minh reopen/replay qua F1/F2/F4; phía Desktop covered bởi store tests trong source (không execute được ở env này) |
+| I3 | Envelope collapse | `handoffPromptPrefix`/`isHandoffSeed` render thành divider ở cả TUI live stream, TUI replay, Desktop timeline — không bao giờ thành user bubble thô (`TestHandoffSeedRendersAsDivider*`) | ✅ DONE scoped 2026-09-02 — TUI: `TestHandoffPromptPrefixParity` + `TestAddMessageCollapsesHandoffEnvelope` + backfill tests + bug347 tests vừa chạy green; Desktop: `store.chatOpenTimeline.test.ts` có đủ 3 case (3-leg order, seed-skip giữ divider, current-leg skip) + cùng divider format + `HANDOFF_PROMPT_PREFIX` parity trong code. ⚠️ Đính chính: 2 test Go tên `TestHandoffSeedRendersAsDividerLive/OnReplay` **không tồn tại** (giống case matrix test) — behavior đã covered bởi các test trên. Desktop suite không execute được (node_modules hỏng) |
 
 ## J. Flag off regression (đã bỏ trên dev branch)
 
@@ -224,7 +224,7 @@ Dev branch `cp59-chat-ssot` đã bỏ flag — luôn ON, không còn path flag-o
 | F Detached | ✅ F1-F5 PASS | `cht_29a3ffbeb576` `run-488622→494480`, `cht_1e5b706a8201` legs 0-2 | Backfill + reattach + defer + idempotent open + legSeq max+1 |
 | G Drive | ⏳ | — | |
 | H Matrix | ✅ DONE scoped — live opencode↔grok 2 chiều + in-place; chain + truncation auto green | `cht_a8d253c2fe6f`, `cht_1e5b706a8201`, `cht_e4975cb1f769` | codex/claude live blocked (no acc); matrix-test claim cũ không tồn tại trong code |
-| I Cross-surface | ⏳ | — | |
+| I Cross-surface | ✅ I3 done · I1 pending live · I2 skip | — | Cùng endpoint proven; envelope collapse 2 bên có test; Desktop live + restart còn lại |
 | J Flag off | ✅ removed | dev branch always ON | |
 
 ## Kết luận phiên
