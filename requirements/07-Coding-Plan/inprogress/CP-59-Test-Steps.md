@@ -81,7 +81,7 @@ Fail (leg nhân bản / message trùng / Tab kẹt phải bấm 2 lần) → m�
 | C2 | Switch khi đang pending approval / question | 409 `handoff_run_busy`, card vẫn hiện, không leg mới | ✅ PASS 2026-09-02 — `cht_9f956dc8f850` `run-511461`: transcript có `approval_requested` exec, 0 switch, 1 leg; UI hiện notice "Cannot switch…", card Approve vẫn show |
 | C3 | Switch sang provider CHƯA cài (ví dụ gỡ gemini, hoặc target `gemini` khi chưa installed) | `provider_unavailable` 422 + install hint; **zero mutation** (leg cũ nguyên, `switchFromRunID` rỗng) | ⏭️ DONE-SKIP theo quyết định operator (không có provider chưa cài để test live; contract 422 đã covered bởi automated `chat_switch_test.go` provider_unavailable case) |
 | C4 | Chat mới tạo, chưa gửi turn nào → switch ngay | `fresh_start` — leg mới không envelope (`handoffMode=fresh_start`, `Prompt=""`), không lỗi | ✅ PASS 2026-09-02 — operator-confirmed (run-id bổ sung sau) |
-| C5 | Switch trên workflow run (`runKind != chat`) | 409 `handoff_run_kind_unsupported`, block text giữ nguyên |
+| C5 | Switch trên workflow run (`runKind != chat`) | 409 `handoff_run_kind_unsupported`, block text giữ nguyên | ✅ PASS 2026-09-02 — `run-511474` (Rag Harness / preflight_contract_plan): block text `Cannot change provider after a run has started. Use /new to start fresh.` hiện, không mint switch; không có chat transcript (workflow run không phải chat-kind — đúng D4) |
 | C6 | Flag off → `/provider` cross-provider | Block text cũ `Cannot change provider after a run has started. Use /new...` byte-identical, không gọi endpoint |
 
 ### C — Guide test từng ô (operator, 2026-09-02)
@@ -212,7 +212,7 @@ Dev branch `cp59-chat-ssot` đã bỏ flag — luôn ON, không còn path flag-o
 | S Smoke | ✅ 5/5 | `cht_3810173c6b36` `197689→197698`, `cht_a8d253c2fe6f` | Cross-provider switch mint leg mới, Grok identity, continuity 3 câu |
 | A Switch `/model` | ✅ 5/5 | `cht_a8d253c2fe6f` legs 0,1,2 `197929→197970→198151` | `raw included 5/6`, footer truthful, same-provider `longcat→muse-spark` in-place `198151` |
 | B Posture Tab | ✅ B1-B5 PASS 2026-09-02 | `cht_e4975cb1f769` `run-494554→494566`, `cht_1e5b706a8201` `run-500159→500181` | Divider carried turns, derive-once persist, in-place same-provider, rapid double-Tab 1 leg; BUG-347 (seed reply drop + sync divider + busy message) verified |
-| C Guards | ✅ C1, C2, C4 PASS · C3 done-skip · C5 ⏳ | `cht_b97b54d05a27` `run-511323`, `cht_9f956dc8f850` `run-511461` | Busy turn + approval busy + fresh_start OK, 0 leg mới sai; C3 skip (422 covered bởi automated test) |
+| C Guards | ✅ C1, C2, C4, C5 PASS · C3 done-skip | `cht_b97b54d05a27` `run-511323`, `cht_9f956dc8f850` `run-511461`, `run-511474` | Busy turn + approval busy + fresh_start + workflow block OK; C3 skip (422 covered bởi automated test) |
 | D Timeline | ⏳ | — | |
 | E Desktop | ⏳ | — | |
 | F Detached | ⏳ | — | |
