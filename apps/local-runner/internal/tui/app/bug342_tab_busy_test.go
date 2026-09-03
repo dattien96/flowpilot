@@ -48,7 +48,7 @@ func TestTabWhileTurnLiveBlocked(t *testing.T) {
 	}
 	found := false
 	for _, mm := range m.messages {
-		if strings.Contains(mm.Content, "Cannot switch provider/model while a question or approval is pending") {
+		if strings.Contains(mm.Content, "A turn is in progress — wait for it to finish, then switch provider/model") {
 			found = true
 		}
 	}

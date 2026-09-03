@@ -84,6 +84,45 @@ Fail (leg nhân bản / message trùng / Tab kẹt phải bấm 2 lần) → m�
 | C5 | Switch trên workflow run (`runKind != chat`) | 409 `handoff_run_kind_unsupported`, block text giữ nguyên |
 | C6 | Flag off → `/provider` cross-provider | Block text cũ `Cannot change provider after a run has started. Use /new...` byte-identical, không gọi endpoint |
 
+### C — Guide test từng ô (operator, 2026-09-02)
+
+> Cách verify nhanh cho MỌI ô: đếm leg/switch record không tăng =
+> không mint leg:
+> ```bash
+> F=~/.flowpilot/chat-transcripts/chats/<chatId>/transcript.ndjson
+> jq -r '.type' "$F" | sort | uniq -c          # đếm chat_provider_switch
+> jq -r '.legRunId' "$F" | sort -u             # danh sách leg
+> ```
+
+**C1 — `/provider` khi turn đang stream**
+1. Chat opencode, gõ prompt dài (vd "viết 1 bài essay 1000 từ về Go") → Enter → đang stream.
+2. Ngay lúc stream, gõ `/provider grok` Enter. **Chú ý: phải dùng `/provider`, KHÔNG dùng `/model <model cùng provider>`** — `/model` cùng provider là in-place theo thiết kế (footer đổi, không lỗi, áp từ turn sau — không phải lỗi; test `run-505761` xác nhận 0 leg mới).
+3. Pass nếu: TUI hiện dòng lỗi `A turn is in progress — wait for it to finish, then switch provider/model` (CA-723; trước đây nhầm "question or approval"); footer vẫn opencode; turn stream tiếp tục bình thường; **không** có dòng chào Grok/không mint leg.
+4. Gửi mình: runId + chatId.
+
+**C2 — switch khi pending approval/question**
+1. Mở flow có gate (hoặc chat với YOLO off để model xin quyền chạy lệnh) → để card Approve/Question hiện.
+2. Gõ `/provider grok` Enter.
+3. Pass nếu: notice busy (`handoff_run_busy`), card **vẫn hiện**, trả lời/approve xong vẫn dùng leg cũ, không leg mới.
+4. Gửi mình: runId + chatId.
+
+**C3 — switch sang provider chưa cài**
+1. `/provider gemini` (nếu gemini chưa install) hoặc 1 provider không tồn tại.
+2. Pass nếu: dòng lỗi chứa `provider_unavailable` + hint cài đặt; runId trong statusline **không đổi**; transcript không có `chat_provider_switch` mới.
+3. Gửi mình: runId + chatId.
+
+**C4 — switch trên chat mới chưa có turn**
+1. `/new` (chat mới, chưa gửi gì) → ngay lập tức `/provider grok` Enter.
+2. Pass nếu: switch thành công, divider hiện `fresh_start` / carried 0 (không envelope, không có khối `<previous_conversation>`); transcript có đúng 1 `chat_provider_switch` với `handoffMode=fresh_start` và `includedTurnCount=0`.
+3. Gửi mình: runId + chatId.
+
+**C5 — switch trên workflow run**
+1. `/mode flow` (hoặc chạy workflow) → trong lúc flow đang chạy gõ `/provider grok` Enter.
+2. Pass nếu: block text cũ `Cannot change provider after a run has started. Use /new to start fresh.` hiện; không có request switch; flow tiếp tục.
+3. Gửi mình: runId.
+
+**C6 — bỏ** (dev branch luôn ON, không còn path flag-off).
+
 ## D. Timeline / transcript (FlowPilot SSOT) — Task-313
 
 | # | Bước | Kết quả mong đợi |

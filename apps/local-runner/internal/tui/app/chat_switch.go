@@ -76,6 +76,19 @@ func isChatHandle(h *client.RunHandle) bool {
 	return strings.TrimSpace(h.ChatID) != ""
 }
 
+// busySwitchNotice adds the correct busy notice when a switch is blocked by a
+// live turn or a pending question/approval (BUG-347 class: the old message
+// always said "question or approval" even when only a turn was streaming —
+// operator hit it in C1). Returns the detached-notice cmd both callers return.
+func (m *AppModel) busySwitchNotice() tea.Cmd {
+	if m.question != nil || len(m.questions) > 0 || m.approval != nil || len(m.approvals) > 0 {
+		m.addMessage("system", "Cannot switch provider/model while a question or approval is pending — please answer it first", "error")
+	} else {
+		m.addMessage("system", "A turn is in progress — wait for it to finish, then switch provider/model", "error")
+	}
+	return func() tea.Msg { return detachedNoticeMsg{} }
+}
+
 // routeProviderSwitch decides whether a provider change on a live chat goes
 // through the switch endpoint (Task-315 T-3 routing rule). Returns a command
 // when routed; nil when the caller must fall back to the legacy path (no chat
@@ -108,8 +121,7 @@ func (m *AppModel) routeProviderSwitch(targetProvider, model string) tea.Cmd {
 	}
 	// C2: cannot switch while a turn/question/approval is pending (runner 409 handoff_run_busy)
 	if m.turnLive || m.question != nil || len(m.questions) > 0 || m.approval != nil || len(m.approvals) > 0 || m.turnStream != nil || m.turnSendPending {
-		m.addMessage("system", "Cannot switch provider/model while a question or approval is pending — please answer it first", "error")
-		return func() tea.Msg { return detachedNoticeMsg{} }
+		return m.busySwitchNotice()
 	}
 	return m.cmdSwitchChatProvider(targetProvider, model)
 }
@@ -225,8 +237,7 @@ func (m *AppModel) routePostureSwitch(cfg client.ChatPostureConfig, name string)
 	}
 	// C2: cannot switch while a turn/question/approval is pending (runner 409 handoff_run_busy)
 	if m.turnLive || m.question != nil || len(m.questions) > 0 || m.approval != nil || len(m.approvals) > 0 || m.turnStream != nil || m.turnSendPending {
-		m.addMessage("system", "Cannot switch provider/model while a question or approval is pending — please answer it first", "error")
-		return func() tea.Msg { return detachedNoticeMsg{} }
+		return m.busySwitchNotice()
 	}
 	cmd := m.cmdSwitchChatProvider(pinned, prof.Model)
 	if cmd == nil {

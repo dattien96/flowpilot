@@ -125,6 +125,36 @@ func TestTabDuringSwitchInFlight_BusyMessageIsSwitchNotQuestion(t *testing.T) {
 	}
 }
 
+// BUG-347 follow-up (C1): a /provider or /model cross-provider while a turn is
+// streaming must say "turn in progress", not "question or approval" — and must
+// never change the footer provider/model.
+func TestBusySwitchDuringLiveTurn_MessageIsTurnNotQuestionAndFooterStays(t *testing.T) {
+	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
+	m.runHandle = &client.RunHandle{RunID: "run-1", RunKind: "chat", ChatID: "cht_a"}
+	m.provider = "opencode"
+	m.model = "opencode-go/muse-spark"
+	m.turnLive = true
+	cmd := m.routeProviderSwitch("grok", "grok-4.5")
+	if cmd == nil {
+		t.Fatal("busy switch must return the notice cmd")
+	}
+	if msg := cmd(); msg != nil {
+		if _, ok := msg.(detachedNoticeMsg); !ok {
+			t.Fatalf("busy cmd must be detachedNoticeMsg, got %T", msg)
+		}
+	}
+	if m.provider != "opencode" || m.model != "opencode-go/muse-spark" {
+		t.Fatalf("busy switch must not change footer provider/model, got %s/%s", m.provider, m.model)
+	}
+	last := m.messages[len(m.messages)-1]
+	if strings.Contains(last.Content, "question or approval") {
+		t.Fatalf("live-turn busy must not say question/approval, got %q", last.Content)
+	}
+	if !strings.Contains(last.Content, "A turn is in progress") {
+		t.Fatalf("live-turn busy must say turn in progress, got %q", last.Content)
+	}
+}
+
 // BUG-347 (replay): replayHistoryMessages must drop the seed envelope reply
 // when the seed turn_started recorded with an empty prompt.
 func TestReplayHistory_DropsEmptyPromptSeedReply(t *testing.T) {

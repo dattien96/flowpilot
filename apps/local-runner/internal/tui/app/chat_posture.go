@@ -128,10 +128,9 @@ func (m *AppModel) chatPostureCmdFromPending(cfg client.ChatPostureConfig) tea.C
 					// a question/approval block — say so (operator saw the
 					// question message with no question mounted).
 					m.addMessage("system", "Provider switch in progress — wait for it to finish, then Tab again", "error")
-				} else {
-					m.addMessage("system", "Cannot switch provider/model while a question or approval is pending — please answer it first", "error")
+					return func() tea.Msg { return detachedNoticeMsg{} }
 				}
-				return func() tea.Msg { return detachedNoticeMsg{} }
+				return m.busySwitchNotice()
 			}
 			// CA-685: the active posture's full profile (reasoning included)
 			// re-applies; /new is a refresh, not an override (supersedes the
