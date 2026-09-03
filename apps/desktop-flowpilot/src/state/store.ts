@@ -1503,24 +1503,75 @@ export const useStore = create<AppState>((set, get) => ({
     // never stamps an opencode session.
     const pinnedProvider =
       profile.provider ?? providerKeyForPinnedModel(profile.model) ?? undefined;
+    const prevProvider = get().selectedProvider;
+    // BUG-349 (TUI routePostureSwitch parity, E7 derive-once): a pinned model
+    // without an explicit provider derives once, persists the derived
+    // provider, and notifies — the next Tab finds the provider set, so the
+    // notice fires exactly once.
+    const derivedProvider = profile.model && !profile.provider && pinnedProvider ? pinnedProvider : undefined;
+    const effectiveProfile = derivedProvider ? { ...profile, provider: derivedProvider } : profile;
+    const effectiveConfig = derivedProvider
+      ? { ...config, profiles: { ...config.profiles, [posture]: effectiveProfile } }
+      : config;
     set((state) => ({
       chatPosture: posture,
-      chatPostureConfig: { ...config, active: posture },
+      chatPostureConfig: { ...effectiveConfig, active: posture },
       // Apply the posture's pinned profile fields when set; empty inherits the
       // current session selection (mirrors the TUI's /mode apply). The "non"
       // posture has no profile — nothing is applied.
       ...(pinnedProvider ? { selectedProvider: pinnedProvider as ProviderKey } : {}),
-      ...(profile.model ? { selectedModel: profile.model } : {}),
-      ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}),
-      ...(typeof profile.yolo === "boolean" ? { yoloMode: profile.yolo } : {}),
+      ...(effectiveProfile.model ? { selectedModel: effectiveProfile.model } : {}),
+      ...(effectiveProfile.reasoningEffort ? { reasoningEffort: effectiveProfile.reasoningEffort } : {}),
+      ...(typeof effectiveProfile.yolo === "boolean" ? { yoloMode: effectiveProfile.yolo } : {}),
+      ...(derivedProvider
+        ? {
+            timeline: [
+              ...state.timeline,
+              {
+                kind: "system" as const,
+                id: `posture-derive-${state.timeline.length}`,
+                text: `Posture ${posture} pin had no provider — derived "${derivedProvider}" from model "${effectiveProfile.model}" (persisting)`,
+                tone: "info" as const,
+              },
+            ],
+          }
+        : {}),
     }));
     if (client.setChatPosture) {
       try {
-        await client.setChatPosture({ ...config, active: posture });
+        await client.setChatPosture({ ...effectiveConfig, active: posture });
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[FlowPilot] setChatPosture failed:", err);
       }
+    }
+    // BUG-349 (TUI routePostureSwitch parity): a cross-provider posture Tab on
+    // a live chat routes to the switch endpoint (new leg + divider, timeline
+    // kept). In-place only when there is no live chat, the pin resolves to the
+    // current provider, the chat is detached, or a switch is already in flight.
+    const st = get();
+    if (
+      pinnedProvider &&
+      prevProvider &&
+      pinnedProvider.toLowerCase() !== prevProvider.toLowerCase() &&
+      st.chatMode === "normal_chat" &&
+      st.chatId &&
+      st.runId &&
+      !st.chatDetached &&
+      !st.providerSwitchLoading &&
+      st.pendingQuestions.length === 0 &&
+      st.pendingApprovals.length === 0
+    ) {
+      set({
+        pendingProviderSwitch: {
+          sourceRunId: st.runId,
+          sourceProviderKey: prevProvider as ProviderKey,
+          sourceRunStatus: st.status,
+          targetProviderKey: pinnedProvider as ProviderKey,
+          targetModel: effectiveProfile.model,
+        },
+      });
+      await get().confirmProviderSwitch();
     }
     const provider = get().selectedProvider;
     if (get().chatMode === "normal_chat" && provider) {
