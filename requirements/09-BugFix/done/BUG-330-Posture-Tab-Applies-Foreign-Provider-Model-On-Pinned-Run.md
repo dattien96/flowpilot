@@ -12,7 +12,7 @@
 - Last Updated: `2026-08-29` (closed — resolution follows CP-59; this doc stays as the forensic record)
 - Parent Documents: [CP-57: Opencode Provider Integration](../../07-Coding-Plan/inprogress/CP-57-Opencode-Provider-Integration.md), [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md), [SS-05: Workflow AI Provider](../../05-System-Specs/SS-05-Workflow-Ai-Provider.md), [Task-078: Cross-Provider Chat Handoff](../../08-Task/done/Task-078-Cross-Provider-Chat-Handoff.md)
 - Child Documents: `none`
-- Related Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/inprogress/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md) (resolution — Task-314/315), [BUG-329](BUG-329-Opencode-Midchat-Model-Switch-Session-Load-No-SessionId.md) (same provider, different class), [CA-679](../../../change-audit/CA-679-opencode-config-file-env-and-tui-model-restore.md), [CA-659](../../../change-audit/CA-659-opencode-local-share-auth-discovery.md), run-314536 (`~/Library/Application Support/FlowPilot/logs/runner.log` + `~/.flowpilot/tui.log`), run-307050, `handoff_context.go`, `providerKeyFromModel`, `chat_posture.go`
+- Related Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/done/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md) (resolution — Task-314/315), [BUG-329](BUG-329-Opencode-Midchat-Model-Switch-Session-Load-No-SessionId.md) (same provider, different class), [CA-679](../../../change-audit/CA-679-opencode-config-file-env-and-tui-model-restore.md), [CA-659](../../../change-audit/CA-659-opencode-local-share-auth-discovery.md), run-314536 (`~/Library/Application Support/FlowPilot/logs/runner.log` + `~/.flowpilot/tui.log`), run-307050, `handoff_context.go`, `providerKeyFromModel`, `chat_posture.go`
 - Replaces: `none`
 - Tags: `tui, chat-posture, scan-plan-code, provider-switch, cross-provider, severity-high`
 
@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- **CLOSED 2026-08-29 — resolution follows [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/inprogress/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md).** The cross-provider posture Tab becomes a chat-level provider switch: Task-314 (runner switch endpoint + chat envelope) removes the foreign-model-injection path this bug describes, Task-315 wires the TUI surface. Repro is locked as `TestBug330SwitchMintsRealGrokLeg` (Task-314 DOD-10) plus the TUI walk (Task-315 DOD-1); the bare-model pin hole closes via Task-315 `T-2` (derive provider once + persist).
+- **CLOSED 2026-08-29 — resolution follows [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/done/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md).** The cross-provider posture Tab becomes a chat-level provider switch: Task-314 (runner switch endpoint + chat envelope) removes the foreign-model-injection path this bug describes, Task-315 wires the TUI surface. Repro is locked as `TestBug330SwitchMintsRealGrokLeg` (Task-314 DOD-10) plus the TUI walk (Task-315 DOD-1); the bare-model pin hole closes via Task-315 `T-2` (derive provider once + persist).
 - This doc remains the forensic record (run-314536). Its `F-3`/`D-3`/`D-4` Task-078 two-step handoff wording is superseded by CP-59's chat-level switch — Task-314 `T-8` owns re-pointing those decisions when the endpoint lands.
 
 ### Key Decisions

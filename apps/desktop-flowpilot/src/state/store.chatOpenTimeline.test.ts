@@ -9,18 +9,24 @@ const HANDOFF_PROMPT_PREFIX = "[FlowPilot cross-provider chat handoff]";
 
 function buildPriorChatTimeline(records: ChatTranscriptRecord[], currentRunId: string): TimelineItem[] {
   const out: TimelineItem[] = [];
+  // BUG-350 mirror of the TUI skipLeg rule — keep in sync with store.ts.
+  let skipLeg = "";
   for (const rec of records) {
     if (rec.legRunId === currentRunId && rec.type !== "chat_provider_switch") continue;
     switch (rec.type) {
       case "turn_started": {
         const prompt = (rec.payload as { prompt?: unknown })?.prompt;
-        if (typeof prompt !== "string" || !prompt.trim()) break;
-        if (prompt.trim().startsWith(HANDOFF_PROMPT_PREFIX)) break;
+        if (typeof prompt !== "string" || !prompt.trim() || prompt.trim().startsWith(HANDOFF_PROMPT_PREFIX)) {
+          skipLeg = rec.legRunId;
+          break;
+        }
+        skipLeg = "";
         out.push({ kind: "prompt", id: `chat-${rec.chatSeq}-${rec.legRunId}`, text: prompt });
         break;
       }
       case "message_completed": {
         const text = (rec.payload as { text?: unknown })?.text;
+        if (rec.legRunId === skipLeg) break;
         if (typeof text !== "string" || !text.trim()) break;
         out.push({ kind: "assistant", id: `chat-${rec.chatSeq}-${rec.legRunId}`, text, finalized: true });
         break;
@@ -71,9 +77,33 @@ test("buildPriorChatTimeline skips handoff seed prompt but keeps its divider", (
     { chatId: "cht_a", chatSeq: 3, legRunId: "run-2", type: "chat_provider_switch", payload: { toProvider: "grok", toModel: "grok-4.5", handoffMode: "raw", includedTurnCount: 1 } as unknown },
   ];
   const out = buildPriorChatTimeline(records, "run-2");
-  assert.equal(out.length, 2);
-  assert.equal((out[0] as { text: string }).text, "prior reply");
-  assert.ok((out[1] as { text: string }).text.includes("switched to grok"));
+  // BUG-350 (operator-approved TUI parity): a message on the seed leg before
+  // any real turn is the seed envelope's reply — skipped, divider kept.
+  assert.equal(out.length, 1);
+  assert.ok((out[0] as { text: string }).text.includes("switched to grok"));
+});
+
+// BUG-350: live cht_1e5b706a8201 shape — empty-prompt seed turn + seed reply
+// must not render as an orphan assistant bubble (TUI renders 5 items here).
+test("buildPriorChatTimeline skips empty-prompt seed reply like the TUI backfill", () => {
+  const records: ChatTranscriptRecord[] = [
+    { chatId: "cht_x", chatSeq: 1, legRunId: "run-1", type: "turn_started", payload: { prompt: "ban la model gi" } as unknown },
+    { chatId: "cht_x", chatSeq: 2, legRunId: "run-1", type: "message_completed", payload: { text: "toi la longcat" } as unknown },
+    { chatId: "cht_x", chatSeq: 3, legRunId: "run-2", type: "turn_started", payload: { prompt: "" } as unknown },
+    { chatId: "cht_x", chatSeq: 4, legRunId: "run-2", type: "chat_provider_switch", payload: { toProvider: "grok", toModel: "grok-4.5", handoffMode: "raw", includedTurnCount: 1 } as unknown },
+    { chatId: "cht_x", chatSeq: 5, legRunId: "run-2", type: "message_completed", payload: { text: "Toi la Grok 4.5" } as unknown },
+    { chatId: "cht_x", chatSeq: 6, legRunId: "run-2", type: "turn_started", payload: { prompt: "hello ban la model gi" } as unknown },
+    { chatId: "cht_x", chatSeq: 7, legRunId: "run-2", type: "message_completed", payload: { text: "real reply" } as unknown },
+  ];
+  const out = buildPriorChatTimeline(records, "run-3");
+  const texts = out.map((t) => (t as { text: string }).text);
+  assert.deepEqual(texts, [
+    "ban la model gi",
+    "toi la longcat",
+    "⇄ switched to grok · grok-4.5 — carried 1 turns (raw)",
+    "hello ban la model gi",
+    "real reply",
+  ]);
 });
 
 test("buildPriorChatTimeline skips current leg turns but keeps its switch divider", () => {

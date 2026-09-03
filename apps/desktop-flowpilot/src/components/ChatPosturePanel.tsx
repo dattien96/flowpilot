@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useStore } from "@/state/store";
 import { CHAT_POSTURES, type ChatPosture, type ChatPostureConfig, type ChatPostureProfile } from "@/types/contract";
+import {
+  applyPostureModelPick,
+  buildPostureModelGroups,
+  DEFAULT_POSTURE_REASONING_OPTIONS,
+  postureReasoningOptions,
+} from "./postureModelPicker";
 
 // ChatPosturePanel (Task-xxx/CA-xxx): OpenCode-style Scan/Plan/Code mode
 // switching. A tab strip (mirroring ChatStartIntentPanel's chat-start-mode-tab)
@@ -120,6 +126,7 @@ function ChatPostureSetupModal({ posture, onClose }: { posture: ChatPosture; onC
   const config = useStore((s) => s.chatPostureConfig);
   const saveChatPostureConfig = useStore((s) => s.saveChatPostureConfig);
   const localProviders = useStore((s) => s.localProviders);
+  const supportedModels = useStore((s) => s.supportedModels);
   const [modalTab, setModalTab] = useState<ChatPosture>(posture);
   const [draft, setDraft] = useState<ChatPostureConfig>(() => ({
     active: config.active,
@@ -131,11 +138,6 @@ function ChatPostureSetupModal({ posture, onClose }: { posture: ChatPosture; onC
   }));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const providerKeys = useMemo(
-    () => localProviders.map((p) => p.key).filter((k): k is string => Boolean(k)),
-    [localProviders],
-  );
 
   const updateProfile = (key: ChatPosture, patch: Partial<ChatPostureProfile>) => {
     setDraft((prev) => ({
@@ -162,16 +164,42 @@ function ChatPostureSetupModal({ posture, onClose }: { posture: ChatPosture; onC
 
   const activeProf = draft.profiles[modalTab] ?? {};
   const pinActive = Boolean(activeProf.provider || activeProf.model || activeProf.reasoningEffort || typeof activeProf.yolo === "boolean");
+  // BUG-348: no provider picker (TUI parity) — the provider is always
+  // auto-inferred from the picked model. The list is preloaded from the
+  // supported registry + runner-detected models, grouped by provider.
+  const modelGroups = useMemo(
+    () => buildPostureModelGroups(supportedModels, localProviders, activeProf.model, activeProf.provider),
+    [supportedModels, localProviders, activeProf.model, activeProf.provider],
+  );
+  const reasoningOpts = postureReasoningOptions(supportedModels, activeProf.model ?? "");
+  const reasoningLabels: Record<string, string> = {
+    minimal: "Minimal",
+    low: "Low",
+    medium: "Medium",
+    high: "High",
+    xhigh: "Extra High",
+    max: "Max",
+  };
+
+  const onModelChange = (value: string) => {
+    const pick = applyPostureModelPick(supportedModels, localProviders, value);
+    updateProfile(modalTab, {
+      model: pick.modelId || undefined,
+      provider: pick.provider,
+      reasoningEffort: pick.reasoningEffort,
+    });
+  };
 
   return (
     <div className="account-switch-overlay" role="dialog" aria-modal="true" aria-label="Configure chat postures" onClick={onClose}>
       <div className="account-switch-modal chat-posture-modal" onClick={(e) => e.stopPropagation()}>
         <p className="account-switch-reason">Configure posture profiles</p>
         <p className="chat-posture-modal-hint">
-          Each posture can pin a provider/model/reasoning/YOLO. Empty fields inherit the
+          Each posture can pin a model/reasoning/YOLO (the provider
+          auto-derives from the picked model). Empty fields inherit the
           current session selection. Scan/Plan are read-only (reads auto-approve, writes auto-deny).
         </p>
-        <div className="tab-list tab-list-three chat-posture-modal-tabs" role="tablist" aria-label="Posture profiles">
+        <div className="tab-list tab-list-four chat-posture-modal-tabs" role="tablist" aria-label="Posture profiles">
           {CHAT_POSTURES.map((item) => (
             <button
               key={item.key}
@@ -187,35 +215,40 @@ function ChatPostureSetupModal({ posture, onClose }: { posture: ChatPosture; onC
           ))}
         </div>
         <div className={`chat-posture-modal-profile is-${modalTab}`}>
-          <label className="settings-field"><span>Provider</span>
+          <label className="settings-field"><span>Model</span>
             <select
-              value={activeProf.provider ?? ""}
-              onChange={(e) => updateProfile(modalTab, { provider: e.target.value || undefined })}
+              value={activeProf.model ?? ""}
+              onChange={(e) => onModelChange(e.target.value)}
             >
               <option value="">(inherit)</option>
-              {providerKeys.map((k) => (
-                <option key={k} value={k}>{k}</option>
+              {modelGroups.map((g) => (
+                <optgroup key={g.providerKey} label={g.providerKey}>
+                  {g.options.map((o) => (
+                    <option key={`${o.providerKey}/${o.modelId}`} value={o.modelId}>
+                      {o.displayName}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           </label>
-          <label className="settings-field"><span>Model</span>
-            <input
-              value={activeProf.model ?? ""}
-              placeholder="(inherit)"
-              onChange={(e) => updateProfile(modalTab, { model: e.target.value || undefined })}
-            />
-          </label>
+          <p className="chat-posture-modal-provider-note">
+            Provider auto: {activeProf.provider ? activeProf.provider : "(inherit)"}
+          </p>
           <label className="settings-field"><span>Reasoning</span>
             <select
               value={activeProf.reasoningEffort ?? ""}
+              disabled={reasoningOpts === null}
+              title={reasoningOpts === null ? "Pick a model first" : undefined}
               onChange={(e) => updateProfile(modalTab, { reasoningEffort: e.target.value || undefined })}
             >
               <option value="">(inherit)</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-              <option value="xhigh">Extra High</option>
-              <option value="max">Max</option>
+              {(reasoningOpts ?? [...DEFAULT_POSTURE_REASONING_OPTIONS]).map((opt) => (
+                <option key={opt} value={opt}>{reasoningLabels[opt] ?? opt}</option>
+              ))}
+              {activeProf.reasoningEffort && !(reasoningOpts ?? [...DEFAULT_POSTURE_REASONING_OPTIONS]).includes(activeProf.reasoningEffort) ? (
+                <option value={activeProf.reasoningEffort}>{activeProf.reasoningEffort}</option>
+              ) : null}
             </select>
           </label>
           <label className="settings-field"><span>YOLO</span>

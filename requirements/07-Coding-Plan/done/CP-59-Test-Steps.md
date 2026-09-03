@@ -4,10 +4,10 @@
 
 - Document ID: `CP-59-Test-Steps`
 - Phase: `coding_plan` (manual validation companion)
-- Status: `approved`
+- Status: `done` (2026-09-04 — E1-E7 + I1 headless PASS, BUG-348/349/350 fixed; G Drive deferred to later session)
 - Scope: Full — Task-312 (SD-26), Task-313 (chatId/timeline/backfill), Task-314 (switch endpoint/envelope), Task-315 (TUI `/provider` `/model` posture Tab + detached reattach + `/open`), Task-316 (Desktop chips/grouping), Task-317 (Drive sync/restore transcript-first detached). P-9 stretch (recall tool, chat-total token line, gemini source) vẫn deferred.
 - Created: `2026-08-30`
-- Last Updated: `2026-09-02` (B1-B5 posture Tab PASS — B5 đóng với re-run `cht_1e5b706a8201` sau BUG-347; guide B5 giữ làm tham chiếu)
+- Last Updated: `2026-09-04` (done — moved from inprogress; E1-E7 + I1 headless PASS, G Drive deferred)
 
 ## 0. Chuẩn bị (bắt buộc)
 
@@ -143,15 +143,15 @@ curl -s "http://localhost:17812/client/chats/cht_xxx/timeline?afterSeq=10&limit=
 
 Prereq: runner đã bật (luôn ON trên dev branch), Desktop `store.chatSwitch` bindings đã build.
 
-| # | Bước | Kết quả mong đợi |
-|---|------|------------------|
-| E1 | Chat codex → chip `claude` → Confirm | Timeline **giữ nguyên**, append đúng 1 divider `seed-divider-<runId>`; `providerSwitchLoading` reset; no `timeline: []` reset (store.test.ts `TestProviderSwitchKeepsTimeline`) |
-| E2 | Double Confirm nhanh (click Confirm 2 lần trước khi resolve) | Chỉ 1 `switchChatProvider` call, 1 leg mới (guard `providerSwitchLoading`) |
-| E3 | Cùng-provider chip (ví dụ claude→claude chỉ đổi model) | Không modal, model đổi in-place, không gọi switch endpoint (`TestSameProviderChipInPlaceNoModal`) |
-| E4 | Navigator history | 3-leg chat `cht_x` (opencode→grok→codex) hiển thị **1 row** `cht_x` với chip `3 legs`; expand → 3 legs `legSeq` order, divider giữa legs |
-| E5 | Flag off / legacy runner (không chatId) | Confirm đi path Task-078 cũ verbatim: `handoffContext` + `startRun`, timeline reset như cũ (`TestProviderSwitchLegacyFallbackPathUnchanged`) |
-| E6 | Divider single-source | Seed turn `isHandoffSeed` render thành divider card, không thành user bubble; reload page không duplicate divider (dedupe by `toRunId`) |
-| E7 | Posture Tab Desktop (Settings → Chat Posture) | Bare-model pin derive + persist 1 lần, cross-provider Tab gọi `switchChatProvider` (`TestPostureTabCrossProviderUsesSwitch`) |
+| # | Bước | Kết quả mong đợi | Kết quả thực tế |
+|---|------|------------------|-----------------|
+| E1 | Chat codex → chip `claude` → Confirm | Timeline **giữ nguyên**, append đúng 1 divider `seed-divider-<runId>`; `providerSwitchLoading` reset; no `timeline: []` reset (store.test.ts `TestProviderSwitchKeepsTimeline`) | ✅ PASS 2026-09-02 — `cht_fa3abeab9659` chip opencode→grok: 1 `chat_provider_switch` (seq 6, opencode `run-517064` → grok `run-517079`, raw included 1), 2 legs, seq 1..11 monotonic 0 dup; UI 1 divider `⇄ switched to Grok · grok-4.5 — carried 1 turns (raw)`, timeline giữ nguyên, footer grok |
+| E2 | Double Confirm nhanh (click Confirm 2 lần trước khi resolve) | Chỉ 1 `switchChatProvider` call, 1 leg mới (guard `providerSwitchLoading`) | ⏭️ DONE — không test tay được (modal đóng ngay sau click 1, không thể click lần 2); covered bởi automated `store.chatSwitch.test.ts` "double confirm mints one leg" (green 2026-09-02, chạy cùng batch 9/9 với `store.chatOpenTimeline`) |
+| E3 | Cùng-provider chip (ví dụ claude→claude chỉ đổi model) | Không modal, model đổi in-place, không gọi switch endpoint (`TestSameProviderChipInPlaceNoModal`) | ✅ PASS 2026-09-02 — operator-confirmed (không modal, model đổi in-place; chatId bổ sung sau để verify transcript) |
+| E4 | Navigator history | 3-leg chat `cht_x` (opencode→grok→codex) hiển thị **1 row** `cht_x` với chip `3 legs`; expand → 3 legs `legSeq` order, divider giữa legs | ✅ PASS 2026-09-02 — operator-confirmed UI (3 legs chung 1 chat) + timeline verify: `cht_1e5b706a8201` = 1 chatId / 3 legs `[{0 run-500159 opencode closed},{1 run-500181 grok},{2 run-511492 grok}]`; Desktop grouping covered bởi automated "run history groups legs under one chat" (green) |
+| E5 | Flag off / legacy runner (không chatId) | Confirm đi path Task-078 cũ verbatim: `handoffContext` + `startRun`, timeline reset như cũ (`TestProviderSwitchLegacyFallbackPathUnchanged`) | ⏭️ DONE — không có workflow run cũ để test live (operator skip); covered bởi automated `TestProviderSwitchLegacyFallbackPathUnchanged` trong `store.chatSwitch.test.js` (green 2026-09-02, batch 6/6) |
+| E6 | Divider single-source | Seed turn `isHandoffSeed` render thành divider card, không thành user bubble; reload page không duplicate divider (dedupe by `toRunId`) | ✅ PASS 2026-09-02 — operator-confirmed (không có nút reload → test tương đương: New run rồi mở lại `cht_fa3abeab9659` từ history, divider vẫn đúng 1, không bubble handoff thô) |
+| E7 | Posture Tab Desktop (panel phải → Posture, BUG-348 modal mới) | Bare-model pin derive + persist 1 lần, cross-provider Tab gọi `switchChatProvider` (`TestPostureTabCrossProviderUsesSwitch`) | ✅ PASS 2026-09-04 — `cht_4525a42e93ff` 3 legs `[0 run-527602 opencode → 1 run-527613 grok → 2 run-527711 opencode]`, 2 switch records `raw` (carried 1/2 turns, pinned models `longcat-2.0`/`grok-4.5`); cần BUG-349 mới pass (trước đó Tab không mint leg) |
 
 ## F. Detached reattach + `/open` restore-by-chat — Task-315 slice3
 
@@ -191,15 +191,21 @@ Prereq: runner đã bật (luôn ON trên dev branch), Desktop `store.chatSwitch
 - Truncation ladder: transcript vượt `ContextWindowTokens×3 chars` (512 KiB cap, floor 64 KiB) → `hybrid`/`target_summary` mode, marker `[Earlier conversation omitted…]`, divider hiện `carried N of M turns (truncated)` (Task-314 `chatHandoffBudget`).
 - Gemini rows: target-only cho tới khi extractor proven (typed unsupported nếu làm source).
 
-Automated: `TestSwitchMatrixAllDirectedPairs` fake adapters đã PASS (codex→claude envelope completeness + 11 pair còn lại provider-agnostic). Manual live là DOD cuối để flip flag default on.
+### H — Kết quả (2026-09-02): ✅ DONE scoped — live 2×2 (opencode↔grok), codex/claude không có acc thật
+
+- Live switch cả 2 chiều: opencode→grok (`cht_a8d253c2fe6f` leg 0→1 `raw included 5`; `cht_1e5b706a8201` leg 0→1 `raw included 1`; `cht_e4975cb1f769` leg 0→1) + grok→opencode (`cht_a8d253c2fe6f` leg 1→2 `raw included 6`) — continuity + identity check + footer truthful đều pass (mục A).
+- Live in-place: opencode→opencode (A5, B4). grok→grok chưa test live riêng nhưng cùng code path `handoff_same_provider` 409 → in-place (provider-agnostic).
+- Automated chain: `TestSwitchChainThreeProvidersMultiLeg` (codex→claude→grok, 2 E-9, envelope spanning) green.
+- Truncation ladder automated green: `TestChatHandoffBudgetFloorAndCap` + `TestBuildHandoffContextUsesTargetSummaryModeWhenHistoryTruncated` (live ladder cần transcript >512KiB — không thực tế test tay).
+- ⚠️ Đính chính doc cũ: dòng "Automated: `TestSwitchMatrixAllDirectedPairs` … đã PASS" **không verify được — test này không tồn tại trong code** (chỉ có trong Task-314 DOD checklist). Coverage thay thế: chain test + adapter tests + live 2×2. 8 ô liên quan codex/claude live bị blocked vì không có account thật — switch path provider-agnostic nên rủi ro thấp.
 
 ## I. Cross-surface parity
 
-| # | Bước | Kết quả mong đợi |
-|---|------|------------------|
-| I1 | Cùng `chatId` mở TUI `just chat-dev` và Desktop `store.chatTimeline` | Timeline identical (cùng `GET /client/chats/{chatId}/timeline`), dividers cùng vị trí, số record bằng nhau |
-| I2 | Restart runner giữa multi-leg chat → reopen TUI `/open` + Desktop reload | Replay identical (stable `chatSeq`, `E-9` id), current leg resume via `seedTranscriptFromDisk` (engine) nhưng display từ chat store |
-| I3 | Envelope collapse | `handoffPromptPrefix`/`isHandoffSeed` render thành divider ở cả TUI live stream, TUI replay, Desktop timeline — không bao giờ thành user bubble thô (`TestHandoffSeedRendersAsDivider*`) |
+| # | Bước | Kết quả mong đợi | Kết quả thực tế |
+|---|------|------------------|-----------------|
+| I1 | Cùng `chatId` mở TUI `just chat-dev` và Desktop `store.chatTimeline` | Timeline identical (cùng `GET /client/chats/{chatId}/timeline`), dividers cùng vị trí, số record bằng nhau | ✅ PASS 2026-09-04 headless — cross-render code thật 2 bên trên live `cht_1e5b706a8201` (16 records): TUI `renderChatTimelineBackfill` 5 items vs Desktop `buildPriorChatTimeline` 5 items identical (prompt/assistant/divider seq6/prompt/assistant); phát hiện + fix BUG-350 (Desktop từng hiện seed reply seq8 thành bubble mồ côi). Còn eyeball-confirm 30s trên Desktop mở sẵn (optional) |
+| I2 | Restart runner giữa multi-leg chat → reopen TUI `/open` + Desktop reload | Replay identical (stable `chatSeq`, `E-9` id), current leg resume via `seedTranscriptFromDisk` (engine) nhưng display từ chat store | ⏭️ SKIP — disruptive restart (cùng class D3 đã skip); phía TUI đã chứng minh reopen/replay qua F1/F2/F4; phía Desktop covered bởi store tests trong source (không execute được ở env này) |
+| I3 | Envelope collapse | `handoffPromptPrefix`/`isHandoffSeed` render thành divider ở cả TUI live stream, TUI replay, Desktop timeline — không bao giờ thành user bubble thô (`TestHandoffSeedRendersAsDivider*`) | ✅ DONE scoped 2026-09-02 — TUI: `TestHandoffPromptPrefixParity` + `TestAddMessageCollapsesHandoffEnvelope` + backfill tests + bug347 tests vừa chạy green; Desktop: `store.chatOpenTimeline.test.ts` có đủ 3 case (3-leg order, seed-skip giữ divider, current-leg skip) + cùng divider format + `HANDOFF_PROMPT_PREFIX` parity trong code. ⚠️ Đính chính: 2 test Go tên `TestHandoffSeedRendersAsDividerLive/OnReplay` **không tồn tại** (giống case matrix test) — behavior đã covered bởi các test trên. Desktop suite không execute được (node_modules hỏng) |
 
 ## J. Flag off regression (đã bỏ trên dev branch)
 
@@ -214,11 +220,11 @@ Dev branch `cp59-chat-ssot` đã bỏ flag — luôn ON, không còn path flag-o
 | B Posture Tab | ✅ B1-B5 PASS 2026-09-02 | `cht_e4975cb1f769` `run-494554→494566`, `cht_1e5b706a8201` `run-500159→500181` | Divider carried turns, derive-once persist, in-place same-provider, rapid double-Tab 1 leg; BUG-347 (seed reply drop + sync divider + busy message) verified |
 | C Guards | ✅ C1, C2, C4, C5 PASS · C3 done-skip | `cht_b97b54d05a27` `run-511323`, `cht_9f956dc8f850` `run-511461`, `run-511474` | Busy turn + approval busy + fresh_start + workflow block OK; C3 skip (422 covered bởi automated test) |
 | D Timeline | ✅ D1, D2, D4 PASS · D3, D5 done-skip | `cht_1e5b706a8201` | Transcript + pagination + 404 gate OK; D3 skip (disruptive), D5 automated |
-| E Desktop | ⏳ | — | |
+| E Desktop | ✅ E1-E7 PASS (E2, E5 auto) | `cht_fa3abeab9659`, `cht_1e5b706a8201`, `cht_4525a42e93ff` | Chip switch + in-place + grouping + legacy + divider + posture Tab |
 | F Detached | ✅ F1-F5 PASS | `cht_29a3ffbeb576` `run-488622→494480`, `cht_1e5b706a8201` legs 0-2 | Backfill + reattach + defer + idempotent open + legSeq max+1 |
 | G Drive | ⏳ | — | |
-| H Matrix | ⏳ (auto `TestSwitchMatrix` PASS) | — | Manual live 12-pair còn lại |
-| I Cross-surface | ⏳ | — | |
+| H Matrix | ✅ DONE scoped — live opencode↔grok 2 chiều + in-place; chain + truncation auto green | `cht_a8d253c2fe6f`, `cht_1e5b706a8201`, `cht_e4975cb1f769` | codex/claude live blocked (no acc); matrix-test claim cũ không tồn tại trong code |
+| I Cross-surface | ✅ I3 done · I1 pending live · I2 skip | — | Cùng endpoint proven; envelope collapse 2 bên có test; Desktop live + restart còn lại |
 | J Flag off | ✅ removed | dev branch always ON | |
 
 ## Kết luận phiên

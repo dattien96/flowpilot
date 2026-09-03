@@ -57,6 +57,11 @@ function buildPriorChatTimeline(
 ): TimelineItem[] {
   // CP-59 F4 / CA-699: provider-agnostic join (chatId only, no providerKey branch).
   const out: TimelineItem[] = [];
+  // BUG-350 (TUI renderChatTimelineBackfill parity): a seed turn (empty or
+  // envelope prompt) records its envelope reply as an orphan assistant bubble
+  // on the destination leg — skip that leg's assistant records until a real
+  // turn_started lands on it. The switch divider already represents the seed.
+  let skipLeg = "";
   for (const rec of records) {
     if (rec.legRunId === currentRunId && rec.type !== "chat_provider_switch") {
       continue;
@@ -64,12 +69,16 @@ function buildPriorChatTimeline(
     switch (rec.type) {
       case "turn_started": {
         const prompt = (rec.payload as { prompt?: unknown })?.prompt;
-        if (typeof prompt !== "string" || !prompt.trim()) break;
-        if (prompt.trim().startsWith(HANDOFF_PROMPT_PREFIX)) break;
+        if (typeof prompt !== "string" || !prompt.trim() || prompt.trim().startsWith(HANDOFF_PROMPT_PREFIX)) {
+          skipLeg = rec.legRunId;
+          break;
+        }
+        skipLeg = "";
         out.push({ kind: "prompt", id: `chat-${rec.chatSeq}-${rec.legRunId}`, text: prompt });
         break;
       }
       case "message_completed": {
+        if (rec.legRunId === skipLeg) break;
         const text = (rec.payload as { text?: unknown })?.text;
         if (typeof text !== "string" || !text.trim()) break;
         out.push({ kind: "assistant", id: `chat-${rec.chatSeq}-${rec.legRunId}`, text, finalized: true });
@@ -1503,24 +1512,75 @@ export const useStore = create<AppState>((set, get) => ({
     // never stamps an opencode session.
     const pinnedProvider =
       profile.provider ?? providerKeyForPinnedModel(profile.model) ?? undefined;
+    const prevProvider = get().selectedProvider;
+    // BUG-349 (TUI routePostureSwitch parity, E7 derive-once): a pinned model
+    // without an explicit provider derives once, persists the derived
+    // provider, and notifies — the next Tab finds the provider set, so the
+    // notice fires exactly once.
+    const derivedProvider = profile.model && !profile.provider && pinnedProvider ? pinnedProvider : undefined;
+    const effectiveProfile = derivedProvider ? { ...profile, provider: derivedProvider } : profile;
+    const effectiveConfig = derivedProvider
+      ? { ...config, profiles: { ...config.profiles, [posture]: effectiveProfile } }
+      : config;
     set((state) => ({
       chatPosture: posture,
-      chatPostureConfig: { ...config, active: posture },
+      chatPostureConfig: { ...effectiveConfig, active: posture },
       // Apply the posture's pinned profile fields when set; empty inherits the
       // current session selection (mirrors the TUI's /mode apply). The "non"
       // posture has no profile — nothing is applied.
       ...(pinnedProvider ? { selectedProvider: pinnedProvider as ProviderKey } : {}),
-      ...(profile.model ? { selectedModel: profile.model } : {}),
-      ...(profile.reasoningEffort ? { reasoningEffort: profile.reasoningEffort } : {}),
-      ...(typeof profile.yolo === "boolean" ? { yoloMode: profile.yolo } : {}),
+      ...(effectiveProfile.model ? { selectedModel: effectiveProfile.model } : {}),
+      ...(effectiveProfile.reasoningEffort ? { reasoningEffort: effectiveProfile.reasoningEffort } : {}),
+      ...(typeof effectiveProfile.yolo === "boolean" ? { yoloMode: effectiveProfile.yolo } : {}),
+      ...(derivedProvider
+        ? {
+            timeline: [
+              ...state.timeline,
+              {
+                kind: "system" as const,
+                id: `posture-derive-${state.timeline.length}`,
+                text: `Posture ${posture} pin had no provider — derived "${derivedProvider}" from model "${effectiveProfile.model}" (persisting)`,
+                tone: "info" as const,
+              },
+            ],
+          }
+        : {}),
     }));
     if (client.setChatPosture) {
       try {
-        await client.setChatPosture({ ...config, active: posture });
+        await client.setChatPosture({ ...effectiveConfig, active: posture });
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[FlowPilot] setChatPosture failed:", err);
       }
+    }
+    // BUG-349 (TUI routePostureSwitch parity): a cross-provider posture Tab on
+    // a live chat routes to the switch endpoint (new leg + divider, timeline
+    // kept). In-place only when there is no live chat, the pin resolves to the
+    // current provider, the chat is detached, or a switch is already in flight.
+    const st = get();
+    if (
+      pinnedProvider &&
+      prevProvider &&
+      pinnedProvider.toLowerCase() !== prevProvider.toLowerCase() &&
+      st.chatMode === "normal_chat" &&
+      st.chatId &&
+      st.runId &&
+      !st.chatDetached &&
+      !st.providerSwitchLoading &&
+      st.pendingQuestions.length === 0 &&
+      st.pendingApprovals.length === 0
+    ) {
+      set({
+        pendingProviderSwitch: {
+          sourceRunId: st.runId,
+          sourceProviderKey: prevProvider as ProviderKey,
+          sourceRunStatus: st.status,
+          targetProviderKey: pinnedProvider as ProviderKey,
+          targetModel: effectiveProfile.model,
+        },
+      });
+      await get().confirmProviderSwitch();
     }
     const provider = get().selectedProvider;
     if (get().chatMode === "normal_chat" && provider) {
@@ -2343,7 +2403,13 @@ export const useStore = create<AppState>((set, get) => ({
     // without its Flow Mode surfaces (step-timeline sidebar, agents panel gating) even
     // though the runner resumed it correctly. runKind is "chat" for normal_chat runs and
     // "workflow" (or, for older persisted rows, undefined) for everything else.
-    const isWorkflowHistoryItem = historyItem?.runKind !== "chat";
+    // BUG-340 follow-up: when the history row is missing entirely (restored/terminal
+    // chat resumed without a row), fall back to the handle's runKind so a terminal chat
+    // with a chatId still marks detached — a workflow handle never carries a chatId.
+    const handleRunKind = (handle as { runKind?: string }).runKind;
+    const isWorkflowHistoryItem = historyItem === undefined
+      ? handleRunKind === "workflow"
+      : historyItem.runKind !== "chat";
     // BUG-263: same "restore the mode this run actually was" gap as BUG-170
     // above, but for the Chat-Mode orchestration picker (Bug tab / Built-in
     // orchestration select) instead of chatMode/launchMode. Without this,
