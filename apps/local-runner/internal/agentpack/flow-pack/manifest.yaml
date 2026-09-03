@@ -27,6 +27,12 @@ flows:
     selectableIn:
       - flow
     cloneable: true
+  - path: flows/bug-harness.yaml
+    visibility: builtin
+    editable: false
+    selectableIn:
+      - flow
+    cloneable: true
   - path: flows/context-coding-review-synthesis.yaml
     visibility: builtin
     editable: false

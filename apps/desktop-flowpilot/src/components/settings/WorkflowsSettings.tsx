@@ -32,12 +32,17 @@ type Tab = "workflows" | "steps" | "artifacts";
 
 // CP-58 Task-307 T-7: display labels for the Bug/Task/CP harness tier family.
 // Purely cosmetic — the /flow picker itself is data-driven via selectableIn.
-// rag-harness carries the Bug tier (no byte-identical bug-harness clone was
-// added; see CA-712), cp-harness-smoke is the opt-in variant.
+// bug-harness carries the Bug tier (Task-305 T-5 option (a), clone of
+// rag-harness); rag-harness keeps its chatBaseline role. cp-harness-smoke is
+// the opt-in variant.
 const HARNESS_LABELS: Record<string, { label: string; description: string }> = {
-  "rag-harness": {
+  "bug-harness": {
     label: "Bug / Hotfix",
     description: "9-step: TDD + Code Review (fast, no plan overhead)",
+  },
+  "rag-harness": {
+    label: "Bug / Hotfix (chat baseline)",
+    description: "9-step: TDD + Code Review — Chat Mode baseline flow",
   },
   "task-harness": {
     label: "Task / Feature",
