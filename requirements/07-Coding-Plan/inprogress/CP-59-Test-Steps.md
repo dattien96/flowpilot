@@ -125,9 +125,9 @@ Fail (leg nhân bản / message trùng / Tab kẹt phải bấm 2 lần) → m�
 
 ## D. Timeline / transcript (FlowPilot SSOT) — Task-313
 
-| # | Bước | Kết quả mong đợi |
-|---|------|------------------|
-| D1 | Sau switch, mở file transcript | `~/.flowpilot/chat-transcripts/chats/<chatId>/transcript.ndjson` (local) hoặc Supabase `workflow_chat_events` — có `turn_started`/`message_completed`/`tool_*`/`file_changed`/`approval_resolved`/`question_answered`/`token_usage` + **1** `chat_provider_switch` ; `chatSeq` monotonic |
+| # | Bước | Kết quả mong đợi | Kết quả thực tế |
+|---|------|------------------|-----------------|
+| D1 | Sau switch, mở file transcript | `~/.flowpilot/chat-transcripts/chats/<chatId>/transcript.ndjson` (local) hoặc Supabase `workflow_chat_events` — có `turn_started`/`message_completed`/`tool_*`/`file_changed`/`approval_resolved`/`question_answered`/`token_usage` + **1** `chat_provider_switch` ; `chatSeq` monotonic | ✅ PASS 2026-09-02 — `cht_1e5b706a8201`: 3 turn_started, 3 message_completed, tool_started/completed, 4 token_usage + đúng 1 `chat_provider_switch` (seq 6, opencode run-500159 → grok run-500181, raw included 1); chatSeq 1..13 monotonic, 0 dup (file_changed/approval/question records vắng vì chat này không có event đó — đúng per-event vocabulary) |
 | D2 | `GET /client/chats/{chatId}/timeline?afterSeq=N&limit=M` (curl) | Phân trang đúng, `truncated`/`nextSeq` đúng; `legs` sorted `legSeq` 0..N-1 ; `degraded:true` chỉ khi store fail |
 | D3 | Kill runner giữa chat → mở lại `just chat-dev` | Chat cũ legacy (pre-flag) đọc timeline → backfill raw đúng 1 lần (thử đọc 2 lần, số dòng không tăng, marker `chat_backfilled` tồn tại) |
 | D4 | Workflow run | `GET /client/chats/<runId-workflow>/timeline` → 404 `chat_not_found` (chat-kind gate) |
@@ -213,7 +213,7 @@ Dev branch `cp59-chat-ssot` đã bỏ flag — luôn ON, không còn path flag-o
 | A Switch `/model` | ✅ 5/5 | `cht_a8d253c2fe6f` legs 0,1,2 `197929→197970→198151` | `raw included 5/6`, footer truthful, same-provider `longcat→muse-spark` in-place `198151` |
 | B Posture Tab | ✅ B1-B5 PASS 2026-09-02 | `cht_e4975cb1f769` `run-494554→494566`, `cht_1e5b706a8201` `run-500159→500181` | Divider carried turns, derive-once persist, in-place same-provider, rapid double-Tab 1 leg; BUG-347 (seed reply drop + sync divider + busy message) verified |
 | C Guards | ✅ C1, C2, C4, C5 PASS · C3 done-skip | `cht_b97b54d05a27` `run-511323`, `cht_9f956dc8f850` `run-511461`, `run-511474` | Busy turn + approval busy + fresh_start + workflow block OK; C3 skip (422 covered bởi automated test) |
-| D Timeline | ⏳ | — | |
+| D Timeline | ✅ D1 PASS · D2-D5 ⏳ | `cht_1e5b706a8201` | Transcript vocabulary + 1 switch + seq monotonic OK |
 | E Desktop | ⏳ | — | |
 | F Detached | ⏳ | — | |
 | G Drive | ⏳ | — | |
