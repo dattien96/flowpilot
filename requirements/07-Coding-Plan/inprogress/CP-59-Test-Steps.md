@@ -143,9 +143,9 @@ curl -s "http://localhost:17812/client/chats/cht_xxx/timeline?afterSeq=10&limit=
 
 Prereq: runner đã bật (luôn ON trên dev branch), Desktop `store.chatSwitch` bindings đã build.
 
-| # | Bước | Kết quả mong đợi |
-|---|------|------------------|
-| E1 | Chat codex → chip `claude` → Confirm | Timeline **giữ nguyên**, append đúng 1 divider `seed-divider-<runId>`; `providerSwitchLoading` reset; no `timeline: []` reset (store.test.ts `TestProviderSwitchKeepsTimeline`) |
+| # | Bước | Kết quả mong đợi | Kết quả thực tế |
+|---|------|------------------|-----------------|
+| E1 | Chat codex → chip `claude` → Confirm | Timeline **giữ nguyên**, append đúng 1 divider `seed-divider-<runId>`; `providerSwitchLoading` reset; no `timeline: []` reset (store.test.ts `TestProviderSwitchKeepsTimeline`) | ✅ PASS 2026-09-02 — `cht_fa3abeab9659` chip opencode→grok: 1 `chat_provider_switch` (seq 6, opencode `run-517064` → grok `run-517079`, raw included 1), 2 legs, seq 1..11 monotonic 0 dup; UI 1 divider `⇄ switched to Grok · grok-4.5 — carried 1 turns (raw)`, timeline giữ nguyên, footer grok |
 | E2 | Double Confirm nhanh (click Confirm 2 lần trước khi resolve) | Chỉ 1 `switchChatProvider` call, 1 leg mới (guard `providerSwitchLoading`) |
 | E3 | Cùng-provider chip (ví dụ claude→claude chỉ đổi model) | Không modal, model đổi in-place, không gọi switch endpoint (`TestSameProviderChipInPlaceNoModal`) |
 | E4 | Navigator history | 3-leg chat `cht_x` (opencode→grok→codex) hiển thị **1 row** `cht_x` với chip `3 legs`; expand → 3 legs `legSeq` order, divider giữa legs |
@@ -220,7 +220,7 @@ Dev branch `cp59-chat-ssot` đã bỏ flag — luôn ON, không còn path flag-o
 | B Posture Tab | ✅ B1-B5 PASS 2026-09-02 | `cht_e4975cb1f769` `run-494554→494566`, `cht_1e5b706a8201` `run-500159→500181` | Divider carried turns, derive-once persist, in-place same-provider, rapid double-Tab 1 leg; BUG-347 (seed reply drop + sync divider + busy message) verified |
 | C Guards | ✅ C1, C2, C4, C5 PASS · C3 done-skip | `cht_b97b54d05a27` `run-511323`, `cht_9f956dc8f850` `run-511461`, `run-511474` | Busy turn + approval busy + fresh_start + workflow block OK; C3 skip (422 covered bởi automated test) |
 | D Timeline | ✅ D1, D2, D4 PASS · D3, D5 done-skip | `cht_1e5b706a8201` | Transcript + pagination + 404 gate OK; D3 skip (disruptive), D5 automated |
-| E Desktop | ⏳ | — | |
+| E Desktop | ✅ E1 PASS · E2-E7 ⏳ | `cht_fa3abeab9659` `run-517064→517079` | Chip switch giữ timeline + 1 divider; còn E2-E7 |
 | F Detached | ✅ F1-F5 PASS | `cht_29a3ffbeb576` `run-488622→494480`, `cht_1e5b706a8201` legs 0-2 | Backfill + reattach + defer + idempotent open + legSeq max+1 |
 | G Drive | ⏳ | — | |
 | H Matrix | ✅ DONE scoped — live opencode↔grok 2 chiều + in-place; chain + truncation auto green | `cht_a8d253c2fe6f`, `cht_1e5b706a8201`, `cht_e4975cb1f769` | codex/claude live blocked (no acc); matrix-test claim cũ không tồn tại trong code |
