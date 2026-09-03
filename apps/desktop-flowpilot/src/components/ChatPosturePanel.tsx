@@ -195,10 +195,11 @@ function ChatPostureSetupModal({ posture, onClose }: { posture: ChatPosture; onC
       <div className="account-switch-modal chat-posture-modal" onClick={(e) => e.stopPropagation()}>
         <p className="account-switch-reason">Configure posture profiles</p>
         <p className="chat-posture-modal-hint">
-          Each posture can pin a provider/model/reasoning/YOLO. Empty fields inherit the
+          Each posture can pin a model/reasoning/YOLO (the provider
+          auto-derives from the picked model). Empty fields inherit the
           current session selection. Scan/Plan are read-only (reads auto-approve, writes auto-deny).
         </p>
-        <div className="tab-list tab-list-three chat-posture-modal-tabs" role="tablist" aria-label="Posture profiles">
+        <div className="tab-list tab-list-four chat-posture-modal-tabs" role="tablist" aria-label="Posture profiles">
           {CHAT_POSTURES.map((item) => (
             <button
               key={item.key}

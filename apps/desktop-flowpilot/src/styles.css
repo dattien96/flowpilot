@@ -6727,6 +6727,43 @@ body.is-resizing-sidebar {
 }
 .chat-posture-modal-profile {
   padding: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.chat-posture-modal-provider-note {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+/* BUG-348 follow-up: gear + clear-pins buttons match the app's gray
+   button family instead of falling back to the white browser default. */
+.chat-posture-gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.chat-posture-gear:hover {
+  border-color: var(--accent);
+}
+.chat-posture-clear {
+  align-self: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-3);
+  color: var(--text);
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.chat-posture-clear:hover {
+  border-color: var(--accent);
 }
 
 /* CP-59 Task-316: leg-count chip on grouped chat rows (one chat = N legs). */
