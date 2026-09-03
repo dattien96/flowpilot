@@ -191,7 +191,13 @@ Prereq: runner đã bật (luôn ON trên dev branch), Desktop `store.chatSwitch
 - Truncation ladder: transcript vượt `ContextWindowTokens×3 chars` (512 KiB cap, floor 64 KiB) → `hybrid`/`target_summary` mode, marker `[Earlier conversation omitted…]`, divider hiện `carried N of M turns (truncated)` (Task-314 `chatHandoffBudget`).
 - Gemini rows: target-only cho tới khi extractor proven (typed unsupported nếu làm source).
 
-Automated: `TestSwitchMatrixAllDirectedPairs` fake adapters đã PASS (codex→claude envelope completeness + 11 pair còn lại provider-agnostic). Manual live là DOD cuối để flip flag default on.
+### H — Kết quả (2026-09-02): ✅ DONE scoped — live 2×2 (opencode↔grok), codex/claude không có acc thật
+
+- Live switch cả 2 chiều: opencode→grok (`cht_a8d253c2fe6f` leg 0→1 `raw included 5`; `cht_1e5b706a8201` leg 0→1 `raw included 1`; `cht_e4975cb1f769` leg 0→1) + grok→opencode (`cht_a8d253c2fe6f` leg 1→2 `raw included 6`) — continuity + identity check + footer truthful đều pass (mục A).
+- Live in-place: opencode→opencode (A5, B4). grok→grok chưa test live riêng nhưng cùng code path `handoff_same_provider` 409 → in-place (provider-agnostic).
+- Automated chain: `TestSwitchChainThreeProvidersMultiLeg` (codex→claude→grok, 2 E-9, envelope spanning) green.
+- Truncation ladder automated green: `TestChatHandoffBudgetFloorAndCap` + `TestBuildHandoffContextUsesTargetSummaryModeWhenHistoryTruncated` (live ladder cần transcript >512KiB — không thực tế test tay).
+- ⚠️ Đính chính doc cũ: dòng "Automated: `TestSwitchMatrixAllDirectedPairs` … đã PASS" **không verify được — test này không tồn tại trong code** (chỉ có trong Task-314 DOD checklist). Coverage thay thế: chain test + adapter tests + live 2×2. 8 ô liên quan codex/claude live bị blocked vì không có account thật — switch path provider-agnostic nên rủi ro thấp.
 
 ## I. Cross-surface parity
 
@@ -217,7 +223,7 @@ Dev branch `cp59-chat-ssot` đã bỏ flag — luôn ON, không còn path flag-o
 | E Desktop | ⏳ | — | |
 | F Detached | ✅ F1-F5 PASS | `cht_29a3ffbeb576` `run-488622→494480`, `cht_1e5b706a8201` legs 0-2 | Backfill + reattach + defer + idempotent open + legSeq max+1 |
 | G Drive | ⏳ | — | |
-| H Matrix | ⏳ (auto `TestSwitchMatrix` PASS) | — | Manual live 12-pair còn lại |
+| H Matrix | ✅ DONE scoped — live opencode↔grok 2 chiều + in-place; chain + truncation auto green | `cht_a8d253c2fe6f`, `cht_1e5b706a8201`, `cht_e4975cb1f769` | codex/claude live blocked (no acc); matrix-test claim cũ không tồn tại trong code |
 | I Cross-surface | ⏳ | — | |
 | J Flag off | ✅ removed | dev branch always ON | |
 
