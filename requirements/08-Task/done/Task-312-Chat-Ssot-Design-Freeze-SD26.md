@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-08-29`
 - Last Updated: `2026-08-31` (done — SD-26 approved, all §4 T-2 sections + §11 register closed, crash matrix 0 TBD, E-1..E-9 frozen, verified against Task-313..317 code; doc-only commit)
-- Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/inprogress/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md)
+- Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/done/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md)
 - Child Documents: `None`
 - Related Documents: [SD-06: AI Provider Integration](../../06-System-Tech-Design/SD-06-AI-Provider-Integration.md), [SS-05: Workflow AI Provider](../../05-System-Specs/SS-05-Workflow-Ai-Provider.md), [Task-078: Cross-Provider Chat Handoff](../done/Task-078-Cross-Provider-Chat-Handoff.md)
 - Replaces: `None`

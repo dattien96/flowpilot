@@ -11,7 +11,7 @@
 - Created: `2026-09-02`
 - Last Updated: `2026-09-02`
 - Feature Keys: `cli-tui`
-- Parent Documents: [CP-59: Chat SSOT](../../07-Coding-Plan/inprogress/CP-59-Test-Steps.md)
+- Parent Documents: [CP-59: Chat SSOT](../../07-Coding-Plan/done/CP-59-Test-Steps.md)
 - Child Documents: `none`
 - Related Documents: [SD-26](../../06-System-Tech-Design/SD-26-Chat-Continuity-Ssot.md), [CA-721](../../../change-audit/CA-721-tui-live-drag-highlight-1002h.md)
 - Replaces: `none`

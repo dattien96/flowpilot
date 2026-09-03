@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-08-29`
 - Last Updated: `2026-08-30` (done — CA-695; 13 switch tests green; R1 runner suite identical to 13-failure baseline; envelope budget context-derivation deferred to Task-315/316 metadata wiring — floor 64KiB active, honest gap in CA-695)
-- Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/inprogress/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-313: ChatId Data Model, Transcript Store, Timeline](./Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md)
+- Parent Documents: [CP-59: Chat SSOT — Continuous Cross-Provider Chat](../../07-Coding-Plan/done/CP-59-Chat-Ssot-Continuous-Cross-Provider-Chat.md), [Task-313: ChatId Data Model, Transcript Store, Timeline](./Task-313-ChatId-Data-Model-Transcript-Store-Timeline.md)
 - Child Documents: `None`
 - Related Documents: [Task-078: Cross-Provider Chat Handoff](../done/Task-078-Cross-Provider-Chat-Handoff.md), [Task-312: Chat SSOT Design Freeze (SD-26)](./Task-312-Chat-Ssot-Design-Freeze-SD26.md), [BUG-330](../../09-BugFix/done/BUG-330-Posture-Tab-Applies-Foreign-Provider-Model-On-Pinned-Run.md)
 - Replaces: `None`

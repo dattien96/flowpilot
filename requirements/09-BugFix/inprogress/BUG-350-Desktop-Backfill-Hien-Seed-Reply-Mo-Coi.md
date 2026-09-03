@@ -11,7 +11,7 @@
 - Created: `2026-09-04`
 - Last Updated: `2026-09-04`
 - Feature Keys: `chat-history`
-- Parent Documents: [CP-59: Chat SSOT](../../07-Coding-Plan/inprogress/CP-59-Test-Steps.md)
+- Parent Documents: [CP-59: Chat SSOT](../../07-Coding-Plan/done/CP-59-Test-Steps.md)
 - Child Documents: `none`
 - Related Documents: [SD-26](../../06-System-Tech-Design/SD-26-Chat-Continuity-Ssot.md), [CA-726](../../../change-audit/CA-726-desktop-backfill-seed-skip.md), [BUG-347](./BUG-347-TUI-Seed-Turn-Lo-Reply-Va-Busy-Message-Sai.md)
 - Replaces: `none`

@@ -4,10 +4,10 @@
 
 - Document ID: `CP-59-Test-Steps`
 - Phase: `coding_plan` (manual validation companion)
-- Status: `approved`
+- Status: `done` (2026-09-04 — E1-E7 + I1 headless PASS, BUG-348/349/350 fixed; G Drive deferred to later session)
 - Scope: Full — Task-312 (SD-26), Task-313 (chatId/timeline/backfill), Task-314 (switch endpoint/envelope), Task-315 (TUI `/provider` `/model` posture Tab + detached reattach + `/open`), Task-316 (Desktop chips/grouping), Task-317 (Drive sync/restore transcript-first detached). P-9 stretch (recall tool, chat-total token line, gemini source) vẫn deferred.
 - Created: `2026-08-30`
-- Last Updated: `2026-09-02` (B1-B5 posture Tab PASS — B5 đóng với re-run `cht_1e5b706a8201` sau BUG-347; guide B5 giữ làm tham chiếu)
+- Last Updated: `2026-09-04` (done — moved from inprogress; E1-E7 + I1 headless PASS, G Drive deferred)
 
 ## 0. Chuẩn bị (bắt buộc)
 
