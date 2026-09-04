@@ -7,7 +7,7 @@
 - Status: `draft`
 - Scope: Tasks 304-307 — dual `continue/back` engine (Task-304), `task-harness` plan review loop (Task-305), harness plan `file_artifact` bindings + mirror seeding (Task-307), `cp-harness` slice-only + smoke variant (Task-306).
 - Created: `2026-09-02`
-- Last Updated: `2026-09-02`
+- Last Updated: `2026-09-04`
 
 ## 0. Chuẩn bị (bắt buộc)
 
@@ -91,9 +91,9 @@
 | Mục | Kết quả | Run/Chat | Ghi chú |
 |-----|---------|----------|---------|
 | P Chuẩn bị (P1-P6) | ✅ | | P1 đúng branch `cp58-harness-dual-loop` (+Task-320, +BUG-351 fix); P2 build PASS; P3 3 instances `...0002/3/4` có rows; P4 mirror đủ task/bug/cp-harness (+smoke); P5 10 binding rows sau reseed tay B2 (seed-miss do flows mirror từ boot cũ trước P3 — xem BUG ghi chú dưới); P6 đã đọc CA-712 + CA-728 |
-| S Smoke | ⏳ | | |
-| A Plan loop | ⏳ | | |
-| B Code loop | ⏳ | | |
+| S Smoke | ✅ | run-533004 | opencode-go/longcat-2.0, GCD prompt `calc-core`: S1 picker start OK; S2 scout→context→plan_writer advance PASS (CA-732 live); S4 `Task-910-calc-core-gcd.md` PASS; S5 `plan_reviewer` + hub `submit_review_outcome` APPROVED PASS; S6 approve lần 1 → freeze + `test_signatures` PASS. S3: sidebar `plan_writer · doc-writer` OK (CA-734) nhưng prompt "Templated file outputs" chưa xác nhận trực tiếp — cần 1 screenshot prompt để tick trọn. Fix CA-741 verify cùng run: audit escalate thiếu CA → park `interrupted by flow park (awaiting user decision)`, parent KHÔNG terminal, audit WAITING_USER_APPROVAL, Retry → implement (CA-740 writer) → APPROVED → Flow done, không hub_stalled |
+| A Plan loop | ⏳ | | Chưa ép plan reject (plan approved lần 1) |
+| B Code loop | ⏳ | run-533004 | B1 PASS: code hub `changes_requested` (API contract mismatch) → re-enter `implement` cùng session, validate/reviewer re-run, round 1 re-work → APPROVED. B2–B4 pending (B2 cần kiểm plan nodes giữ DONE NGAY LÚC code-continue, không chỉ ở snapshot cuối) |
 | C cp-harness | ⏳ | | |
 | D Smoke variant | ⏳ | | |
 | E Artifacts | ⏳ | | |
