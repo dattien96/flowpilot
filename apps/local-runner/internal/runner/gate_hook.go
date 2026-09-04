@@ -90,6 +90,30 @@ func (s *InteractiveService) withGateEpochDurable(runID string, epoch int64, fn 
 	return s.gateEpochStillValidLocked(runID, epoch)
 }
 
+// flowHubGateRules drops the dev-doc/scope family (r-ca, r-fk, r-bug, r-task,
+// r-contract, r-scope) when run is a Flow-engine hub (run-200816): the hub
+// only synthesizes cohort results and never writes source or docs in that
+// turn. Those rules are enforced on the flow's coding children
+// (runChildArtifactOutputGate → DocScopeRuleIDs) and on Normal-chat roots
+// (BUG-152); evaluating them here reprompts the hub during the plan phase —
+// e.g. r-task fires because the hub's prose names Task-NNN while the Task doc
+// still sits in requirements/08-Task/todo/ (the gate checks the done/-shaped
+// path and the plan is not the development phase). Normal chat (flowHub
+// false) keeps the full set.
+func flowHubGateRules(rules []flowgate.Rule, flowHub bool) []flowgate.Rule {
+	if !flowHub {
+		return rules
+	}
+	out := make([]flowgate.Rule, 0, len(rules))
+	for _, r := range rules {
+		if flowgate.IsDocScopeRule(r.ID) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 // runFlowGate is the post-turn enforcement hook (CP-35 P-4/P-5). It is called
 // after turnInFlight=false and before finalizer.Finalize on a clean completion.
 //
@@ -282,6 +306,10 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	if loaded, err := flowgate.LoadRules(filepath.Join(dotFP, "settings")); err == nil {
 		rules = loaded
 	}
+	// run-200816: a Flow-engine hub turn (plan_synthesis/synthesis) must not run
+	// the dev-doc/scope gates — the plan phase is not the development phase, and
+	// the flow's coding children own those rules (see flowHubGateRules).
+	rules = flowHubGateRules(rules, rs.parentRunID == "" && rs.flowEngineDriven)
 
 	// 8. Evaluate rule set.
 	violations := flowgate.Evaluate(tr, rules)

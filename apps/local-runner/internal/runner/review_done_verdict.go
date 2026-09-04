@@ -85,6 +85,54 @@ func (s *InteractiveService) snapshotReviewCohortVerdictsLocked(parentRunID stri
 	parent.lastReviewCohortVerdicts = verdicts
 }
 
+// hubProseVerdictDerivesFlowStatus reports the flow transition a prose-only hub
+// synthesis turn (no submit_review_outcome call) should drive, derived from the
+// machine verdicts the just-joined cohort recorded (run-200816):
+//
+//   - "done"     — every verdict is approved        → advance (plan approve → freeze)
+//   - "continue" — any verdict is changes_requested → re-enter the writer loop
+//   - ""         — verdicts empty / blocked / mixed → caller keeps BUG-226 escalate
+func (s *InteractiveService) hubProseVerdictDerivesFlowStatus(parentRunID string) string {
+	s.mu.Lock()
+	parent := s.runs[parentRunID]
+	var verdicts map[string]string
+	if parent != nil {
+		verdicts = parent.lastReviewCohortVerdicts
+	}
+	s.mu.Unlock()
+	if len(verdicts) == 0 {
+		return ""
+	}
+	anyChanges := false
+	for _, v := range verdicts {
+		switch v {
+		case "approved":
+		case "changes_requested":
+			anyChanges = true
+		default:
+			return "" // blocked / unknown → keep escalate
+		}
+	}
+	if anyChanges {
+		return "continue"
+	}
+	return "done"
+}
+
+// advanceHubFromCohortMachineVerdicts drives the flow transition derived from
+// the last joined cohort's machine verdicts when the hub finished in prose.
+// Returns true when a transition was applied (done/continue) so the caller
+// skips BUG-226's escalate — mirrors what the hub's own submit_review_outcome
+// call would have done.
+func (s *InteractiveService) advanceHubFromCohortMachineVerdicts(parentRunID string) bool {
+	status := s.hubProseVerdictDerivesFlowStatus(parentRunID)
+	if status != "done" && status != "continue" {
+		return false
+	}
+	_, err := s.applyFlowControl(parentRunID, FlowControlInput{Status: status})
+	return err == nil
+}
+
 // synthesisDoneVerdictError describes why hub approved→done was rejected.
 func (s *InteractiveService) synthesisDoneVerdictError(parentRunID string) error {
 	s.mu.Lock()
