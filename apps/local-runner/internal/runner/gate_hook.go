@@ -832,6 +832,14 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 				changecontract.IsPendingCanonicalStoreBookkeepingPath(p) ||
 				changecontract.IsRunnerLedgerBookkeepingPath(p) ||
 				changecontract.IsChangeAuditPath(p) ||
+				// Runner-owned stores the gate's own diff can observe: the
+				// Canonical Head file (SaveHead on gate passes) and the legacy
+				// contracts.ndjson (commitChangeContract for non-frozen
+				// writers) — never the current frozen writer's drift. Exact
+				// paths only, per CA-427 Finding 2 (no .flowpilot/**-wide
+				// exemption: flow-rules.json / forged siblings still drift).
+				changecontract.IsCanonicalHeadStorePath(p) ||
+				changecontract.IsLegacyContractsStorePath(p) ||
 				// CA-648: tool/skill-pack owned scaffold surfaces
 				// (.claude/** .agents/** .grok/** AGENTS.md CLAUDE.md
 				// .gitignore) are installed mid-flow by skillpack/desktop
