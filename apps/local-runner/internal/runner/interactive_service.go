@@ -2967,20 +2967,35 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 		prompt = composeFlowNodeAgentPrompt(cwd, prompt, composeNode)
 		prompt = appendChangeContractIfAnyWithSecret(cwd, parentRunID, prompt, s.markerSecret)
 	}
-	if composeOK && !reuseChild {
+	spawnContinueChild := func() {
 		agentName := flowNodeAgentName(composeNode)
 		if agentName == "" {
 			return
 		}
+		// run-198699 review (CA-732 finding 4): the continue spawn must carry
+		// the same rendered FlowContextPackage + FCP provenance as the
+		// forward-entry spawn (runContextProduceNode / startInlineEntryChain),
+		// otherwise a Retry-continue onto a never-spawned plan_writer starts
+		// the writer without the context package the S2 handoff expects.
+		p := prompt
+		fcpProvenanceRunID := ""
+		if pkg, ok := s.loadPlanContextPackage(context.Background(), parentRunID); ok {
+			p = renderFlowContextPromptWithSecret(context.Background(), pkg, p, s.markerSecret)
+			fcpProvenanceRunID = pkg.WorkflowRunID
+			if fcpProvenanceRunID == "" {
+				fcpProvenanceRunID = pkg.PackageID
+			}
+		}
 		agentDef, _ := resolvePackAgentDefinition(agentName)
 		if _, err := s.spawnChildRun(context.Background(), parentRunID, SpawnAgentInput{
-			Agent:            agentName,
-			Prompt:           prompt,
-			Wait:             false,
-			Label:            composeNode.ID,
-			AutoOrchestrate:  true,
-			AgentDefOverride: agentDef,
-			Model:            s.delegateSpawnModel(context.Background(), parentRunID, composeNode),
+			Agent:                    agentName,
+			Prompt:                   p,
+			Wait:                     false,
+			Label:                    composeNode.ID,
+			AutoOrchestrate:          true,
+			AgentDefOverride:         agentDef,
+			Model:                    s.delegateSpawnModel(context.Background(), parentRunID, composeNode),
+			FCPMarkerProvenanceRunID: fcpProvenanceRunID,
 		}); err != nil {
 			log.Printf("[flow-executor] continue: spawn node %q (agent %q) failed: %v", composeNode.ID, agentName, err)
 			return
@@ -2989,7 +3004,30 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 			s.setFlowStepStatus(context.Background(), parentRunID, composeNode.ID, StepStatusRunning)
 			s.stampFlowNodePosture(context.Background(), parentRunID, composeNode)
 		}
+	}
+	if composeOK && !reuseChild {
+		spawnContinueChild()
 		return
+	}
+	// run-198699: a continue landing on a reinvoke-lifecycle agent.delegate with
+	// no prior child (hub_stalled parked the flow before the writer ever ran —
+	// task-harness plan_writer) used to silently no-op and hub_stalled again.
+	// Spawn a fresh child so the back-edge actually fires. Scoped to
+	// agent.delegate: agent.code writers go through the frozen-contract path and
+	// their fixture tests must not gain a cascade here.
+	if composeOK && reuseChild {
+		if canonical, ok := agentpack.NormalizeBehaviorID(composeNode.Behavior); ok && canonical == "agent.delegate" {
+			if s.reinvokeMatchingFlowChild(parentRunID, prompt, func(child *interactiveRun) bool {
+				if targetNodeID != "" {
+					return child.label == targetNodeID
+				}
+				return isCoderRun(child)
+			}) {
+				return
+			}
+			spawnContinueChild()
+			return
+		}
 	}
 	// BUG-242: delegate to the single reinvoke implementation instead of a
 	// second, older inline copy that never got the BUG-Rnd2 activationSeq/

@@ -213,9 +213,18 @@ func (m *AppModel) applyAgentGraph(g *client.AgentGraphSnapshot) {
 func (m *AppModel) showBlockedBanner(ls client.AgentLoopState) {
 	reason := strings.TrimSpace(ls.BlockReason)
 	gate := strings.TrimSpace(ls.GateReason)
-	base := "Flow is waiting for you (blocked) — click Retry / Stop / Allow above, or /continue or /stop"
+	// Task-309: list only the chips actually rendered above the composer.
+	// Allow appears only for frozen-contract scope drift (and not cap /
+	// member_stalled), so a hub_stalled/cap park must not advertise it.
+	chips := "Retry / Stop"
+	if !strings.EqualFold(reason, "cap") && !strings.EqualFold(reason, "member_stalled") {
+		if len(parseDriftedPaths(gate)) > 0 {
+			chips += " / Allow"
+		}
+	}
+	base := fmt.Sprintf("Flow is waiting for you (blocked) — click %s above, or /continue or /stop", chips)
 	if reason != "" {
-		base = fmt.Sprintf("Flow is waiting for you (blocked: %s) — click Retry / Stop / Allow above, or /continue or /stop", reason)
+		base = fmt.Sprintf("Flow is waiting for you (blocked: %s) — click %s above, or /continue or /stop", reason, chips)
 	}
 	line := base + "."
 	// CA-617 surfaced gate for delegate_failed; CA-619 extends to escalate/cap
