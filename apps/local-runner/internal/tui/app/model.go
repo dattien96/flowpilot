@@ -403,6 +403,10 @@ type AppModel struct {
 	modeSetupModalPickerOpen bool
 	modeSetupModalPickerKind string
 	modeSetupModalPickerIdx  int
+	// modeSetupModalPickerFilter is the type-to-filter query for the modal's
+	// model picker (same UX as the /model input picker): typing narrows the
+	// list, Backspace deletes, Esc closes. Empty = unfiltered.
+	modeSetupModalPickerFilter string
 	// chatPosturePending remembers what to do after the runner config loads:
 	// "" = nothing; "apply:<posture>" = apply that posture's profile; "show" =
 	// just display the config; "setup:<posture>:<field>:<value>" = apply a

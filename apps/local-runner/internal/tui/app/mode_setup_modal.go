@@ -48,6 +48,7 @@ func (m *AppModel) openModeSetupModal(cfg client.ChatPostureConfig, tab string) 
 	m.modeSetupModalPickerOpen = false
 	m.modeSetupModalPickerIdx = 0
 	m.modeSetupModalPickerKind = ""
+	m.modeSetupModalPickerFilter = ""
 	m.clearInputValue()
 }
 
@@ -61,6 +62,7 @@ func (m *AppModel) closeModeSetupModal(save bool) tea.Cmd {
 	m.modeSetupModalPickerOpen = false
 	m.modeSetupModalPickerKind = ""
 	m.modeSetupModalPickerIdx = 0
+	m.modeSetupModalPickerFilter = ""
 	m.modeSetupModalFocus = 0
 	if !save || draft == nil {
 		m.modeSetupModalDraft = nil
@@ -146,6 +148,24 @@ func (m *AppModel) handleModeSetupModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		case tea.KeyEsc:
 			m.modeSetupModalPickerOpen = false
 			m.modeSetupModalPickerKind = ""
+			m.modeSetupModalPickerFilter = ""
+			return m, nil
+		case tea.KeyBackspace:
+			// Type-to-filter (model picker only): Backspace deletes the last
+			// query rune and resets the cursor to the top of the narrowed list.
+			if m.modeSetupModalPickerKind == "model" && m.modeSetupModalPickerFilter != "" {
+				r := []rune(m.modeSetupModalPickerFilter)
+				m.modeSetupModalPickerFilter = string(r[:len(r)-1])
+				m.modeSetupModalPickerIdx = 0
+			}
+			return m, nil
+		case tea.KeySpace, tea.KeyRunes:
+			// Type-to-filter (model picker only, same UX as /model): typed
+			// runes narrow the list; other picker kinds keep their old behavior.
+			if m.modeSetupModalPickerKind == "model" {
+				m.modeSetupModalPickerFilter += string(msg.Runes)
+				m.modeSetupModalPickerIdx = 0
+			}
 			return m, nil
 		case tea.KeyUp:
 			if m.modeSetupModalPickerIdx > 0 {
@@ -153,21 +173,23 @@ func (m *AppModel) handleModeSetupModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			}
 			return m, nil
 		case tea.KeyDown:
-			opts := m.modalPickerOptions()
+			opts := m.modalPickerVisibleOptions()
 			if m.modeSetupModalPickerIdx < len(opts)-1 {
 				m.modeSetupModalPickerIdx++
 			}
 			return m, nil
 		case tea.KeyEnter:
-			opts := m.modalPickerOptions()
+			opts := m.modalPickerVisibleOptions()
 			if len(opts) == 0 {
 				m.modeSetupModalPickerOpen = false
+				m.modeSetupModalPickerFilter = ""
 				return m, nil
 			}
 			sel := opts[m.modeSetupModalPickerIdx%len(opts)]
 			m.applyModalPickerSelection(sel)
 			m.modeSetupModalPickerOpen = false
 			m.modeSetupModalPickerKind = ""
+			m.modeSetupModalPickerFilter = ""
 			return m, nil
 		case tea.KeyTab, tea.KeyShiftTab:
 			return m, nil
@@ -265,6 +287,7 @@ func (m *AppModel) handleModeSetupModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			m.modeSetupModalPickerKind = "model"
 			m.modeSetupModalPickerOpen = true
 			m.modeSetupModalPickerIdx = 0
+			m.modeSetupModalPickerFilter = ""
 			prof := m.modeSetupModalDraft.Profiles[m.modeSetupModalTab]
 			opts := m.modalPickerOptions()
 			for i, o := range opts {
@@ -375,6 +398,33 @@ func (m *AppModel) modalPickerOptions() []string {
 	default:
 		return nil
 	}
+}
+
+// modalPickerVisibleOptions applies the picker's type-to-filter query (model
+// picker only — the same UX as the /model input picker): case-insensitive
+// substring match on the model id. An active filter targets a specific
+// model, so "(inherit)" is hidden while filtering (a no-match query then
+// reads as "(no matching models)", exactly like /model). An empty filter
+// returns the full option list.
+func (m *AppModel) modalPickerVisibleOptions() []string {
+	opts := m.modalPickerOptions()
+	if m.modeSetupModalPickerKind != "model" {
+		return opts
+	}
+	q := strings.ToLower(strings.TrimSpace(m.modeSetupModalPickerFilter))
+	if q == "" {
+		return opts
+	}
+	out := make([]string, 0, len(opts))
+	for _, o := range opts {
+		if o == "(inherit)" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(o), q) {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 func (m *AppModel) applyModalPickerSelection(sel string) {
@@ -522,7 +572,29 @@ func (m *AppModel) renderModeSetupModal(width int) string {
 	sb.WriteString(border.Render(" │") + "\n")
 	if m.modeSetupModalPickerOpen {
 		sb.WriteString(border.Render("├" + strings.Repeat("─", width-2) + "┤") + "\n")
-		opts := m.modalPickerOptions()
+		opts := m.modalPickerVisibleOptions()
+		if m.modeSetupModalPickerKind == "model" {
+			// Type-to-filter search row (same UX as /model): the live query is
+			// echoed with a caret so typing feedback is visible.
+			searchLine := "  Search: " + m.modeSetupModalPickerFilter + "▏"
+			searchHint := " (type to filter · Backspace · Esc)"
+			if lipgloss.Width(searchLine+searchHint) > innerW-2 {
+				if lipgloss.Width(searchLine) > innerW-2 {
+					r := []rune(searchLine)
+					searchLine = string(r[:innerW-5]) + "…"
+					searchHint = ""
+				} else {
+					searchHint = ""
+				}
+			}
+			sb.WriteString(border.Render("│ "))
+			sb.WriteString(hintStyle.Render(searchLine + searchHint))
+			rem := innerW - 2 - lipgloss.Width(searchLine+searchHint)
+			if rem > 0 {
+				sb.WriteString(strings.Repeat(" ", rem))
+			}
+			sb.WriteString(border.Render(" │") + "\n")
+		}
 		limit := 6
 		start, end := 0, len(opts)
 		if len(opts) > limit {
@@ -557,9 +629,13 @@ func (m *AppModel) renderModeSetupModal(width int) string {
 			sb.WriteString(border.Render(" │") + "\n")
 		}
 		if len(opts) == 0 {
+			empty := "  (no options)"
+			if m.modeSetupModalPickerKind == "model" && strings.TrimSpace(m.modeSetupModalPickerFilter) != "" {
+				empty = "  (no matching models)"
+			}
 			sb.WriteString(border.Render("│ "))
-			sb.WriteString(hintStyle.Render("  (no options)"))
-			sb.WriteString(strings.Repeat(" ", innerW-2-lipgloss.Width("  (no options)")))
+			sb.WriteString(hintStyle.Render(empty))
+			sb.WriteString(strings.Repeat(" ", innerW-2-lipgloss.Width(empty)))
 			sb.WriteString(border.Render(" │") + "\n")
 		}
 	}
