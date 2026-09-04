@@ -1723,6 +1723,52 @@ func (s *InteractiveService) extendCap(parentRunID string) (FlowControlResult, e
 	return result, nil
 }
 
+// isMissingChangeAuditNoteReason reports whether a gate reason is the audit
+// tier-3 / r-ca missing change-audit-note block (run-202550): "code changed
+// but no change-audit note found".
+func isMissingChangeAuditNoteReason(reason string) bool {
+	return strings.Contains(strings.ToLower(reason), "no change-audit note")
+}
+
+// upstreamCodeWriterForNode walks forward edges backwards from nodeID and
+// returns the nearest upstream agent.code writer (run-202550: task-harness
+// audit <- synthesis <- reviewer <- validate <- implement). Only forward
+// edges are followed so continue back-edges cannot loop; "" when none.
+func upstreamCodeWriterForNode(edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, nodeID string) string {
+	start := strings.TrimSpace(nodeID)
+	if start == "" {
+		return ""
+	}
+	visited := map[string]bool{start: true}
+	frontier := []string{start}
+	for len(frontier) > 0 {
+		var next []string
+		for _, cur := range frontier {
+			for _, e := range edges {
+				if !strings.EqualFold(strings.TrimSpace(e.Kind), "forward") {
+					continue
+				}
+				if !strings.EqualFold(strings.TrimSpace(e.To), cur) {
+					continue
+				}
+				from := strings.TrimSpace(e.From)
+				if from == "" || visited[from] {
+					continue
+				}
+				visited[from] = true
+				if node, ok := findFlowNode(nodes, from); ok {
+					if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.code" {
+						return from
+					}
+				}
+				next = append(next, from)
+			}
+		}
+		frontier = next
+	}
+	return ""
+}
+
 // resumeFlowWithFeedback is the BUG-231 "Continue" action: it answers the
 // hub's escalate/cap-reached pause and lets the hub re-decide, rather than
 // hard-routing anywhere itself (D-5). It:
@@ -1750,7 +1796,6 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	wasBlocked := false
 	prevBlockReason := s.agentOrchestrator.loopStateFor(parentRunID).BlockReason
 	prevGateReason := s.agentOrchestrator.loopStateFor(parentRunID).GateReason
-	_ = prevGateReason
 	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		if st.Status != "blocked" {
 			return st
@@ -1887,6 +1932,35 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	}
 	if hubInline == "" && escalatedNodeID == "" && failedDelegateNodeID == "" {
 		// Still no hub and no remembered node — fall through to generic reinvoke.
+	}
+	// run-202550: an audit escalate for a missing change-audit note must NOT
+	// re-run the audit (the note is still missing → immediate re-escalate
+	// "no progress since last continue") and must NOT reinvoke the plan hub.
+	// Retry re-enters the nearest upstream agent.code writer with an explicit
+	// "write the missing CA note" prompt; the flow then continues through
+	// validate → reviewer → synthesis → audit on its own edges.
+	if escalatedNodeID != "" && isMissingChangeAuditNoteReason(prevGateReason) {
+		if node, ok := findFlowNode(nodes, escalatedNodeID); ok {
+			if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "artifact.audit_draft" {
+				if writerID := upstreamCodeWriterForNode(edges, nodes, escalatedNodeID); writerID != "" {
+					if wnode, ok := findFlowNode(nodes, writerID); ok {
+						resumePrompt := "[flow-engine] The audit gate is blocked: code changed but no change-audit note found. Write the missing change-audit note (change-audit/CA-*.md) covering the code you changed this turn, then continue."
+						if strings.TrimSpace(feedback) != "" {
+							resumePrompt = strings.TrimSpace(feedback) + "\n\n---\n\n" + resumePrompt
+						}
+						resumePrompt = composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), resumePrompt, wnode)
+						if s.reinvokeMatchingFlowChild(parentRunID, resumePrompt, func(child *interactiveRun) bool {
+							return child.label == writerID
+						}) {
+							s.setFlowStepStatus(context.Background(), parentRunID, writerID, StepStatusRunning)
+							return snap, nil
+						}
+					}
+				}
+			}
+		}
+		// No writer resolved or no matching child — fall through to the
+		// existing audit re-dispatch below rather than stranding the resume.
 	}
 	// Run-144900: writer parks (agent.code / agent.delegate) must retry the
 	// delegate child even on live rag-harness which has hub.inline=synthesis.

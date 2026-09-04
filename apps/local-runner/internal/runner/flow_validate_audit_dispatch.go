@@ -1118,13 +1118,21 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 					if auditCtxCancelled(ctx, parentRunID, node.ID, "tier3_before_escalate") {
 						return false
 					}
-					log.Printf("[flow-executor] audit tier-3 gate: %s (tier-1 should have caught earlier)", result.Message)
-					s.flowDiagLog(parentRunID, "flow_audit_tier3_block", "audit aggregate gate blocked done",
-						"node_id", node.ID, "message", result.Message,
-					)
-					if s.isFlowEngineDriven(parentRunID) {
-						s.setFlowStepAwaitingUser(ctx, parentRunID)
-					}
+				log.Printf("[flow-executor] audit tier-3 gate: %s (tier-1 should have caught earlier)", result.Message)
+				s.flowDiagLog(parentRunID, "flow_audit_tier3_block", "audit aggregate gate blocked done",
+					"node_id", node.ID, "message", result.Message,
+				)
+				// run-202550: stamp the audit node (not the plan hub) as the
+				// escalated node — without this, applyFlowControl's escalate
+				// settles plan_synthesis WAITING via setFlowStepAwaitingUser's
+				// first-hub fallback, and Retry reinvokes the plan hub instead
+				// of remediating the audit block (e.g. a missing CA note).
+				// Settle audit WAITING directly (freeze-escalate shape) so the
+				// plan hub is left alone — exactly one WAITING node.
+				s.stampLastEscalatedInlineNode(parentRunID, node.ID)
+				if s.isFlowEngineDriven(parentRunID) {
+					s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusWaitingUserApr)
+				}
 					if auditCtxCancelled(ctx, parentRunID, node.ID, "tier3_immediate_before_escalate") {
 						return false
 					}

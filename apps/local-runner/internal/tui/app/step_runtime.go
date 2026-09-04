@@ -273,6 +273,14 @@ func parseDriftedPaths(gate string) []string {
 	return out
 }
 
+// isMissingChangeAuditNoteGate reports whether a gate reason is the audit
+// tier-3 / r-ca missing change-audit-note block (run-202550). Retry on that
+// park continues by re-running the writer to write the note — not "old
+// scope" — so the chip copy must say so.
+func isMissingChangeAuditNoteGate(gate string) bool {
+	return strings.Contains(strings.ToLower(gate), "no change-audit note")
+}
+
 // renderBlockedBar renders the awaiting-user action chips above the composer
 // (Desktop FlowAwaitingUserCard parity, BUG-231) when the flow loop is parked
 // on the user's Continue/Stop decision. Mirrors the Approve/Deny + attention
@@ -280,6 +288,8 @@ func parseDriftedPaths(gate string) []string {
 // agent-loop/continue (run again with old scope), [Stop] ends the parked loop,
 // and when the gate is a frozen-contract scope drift, [Allow] widens the freeze
 // via agent-loop/amend (continue with new scope match code changed) per Task-309.
+// run-202550: on a missing change-audit-note park, [Retry] instead continues by
+// re-running the writer to write the note, and the copy says exactly that.
 func (m *AppModel) renderBlockedBar() string {
 	if !m.flowLoopBlocked() {
 		return ""
@@ -320,7 +330,15 @@ func (m *AppModel) renderBlockedBar() string {
 	var options []string
 	retryHi := m.actionRingHighlighted("blocked", 0)
 	stopHi := m.actionRingHighlighted("blocked", 1)
-	options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Retry]", retryHi)+styleSystem.Render(" - run again with old scope"))
+	// run-202550: a missing change-audit-note park continues by re-running
+	// the writer to write the note — say so instead of "old scope". Every
+	// other park keeps the established copy (pinned by
+	// TestBlockedBar_RetryStopAlways_AllowOnlyOnDrift).
+	retryDesc := " - run again with old scope"
+	if isMissingChangeAuditNoteGate(m.blockedDecisionReason()) {
+		retryDesc = " - continue: re-run the writer to write the missing change-audit note"
+	}
+	options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Retry]", retryHi)+styleSystem.Render(retryDesc))
 	options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Stop]", stopHi)+styleSystem.Render(" - end flow"))
 	if showAllow {
 		allowHi := m.actionRingHighlighted("blocked", 2)
