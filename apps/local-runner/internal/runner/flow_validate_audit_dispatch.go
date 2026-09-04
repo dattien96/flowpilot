@@ -1505,6 +1505,16 @@ func isFlowPlannerExcludedPath(path string) bool {
 		p == ".gitnexus" || strings.HasPrefix(p, ".gitnexus/") {
 		return true
 	}
+	// run-201704: task-harness freezes AFTER plan_writer, so the plan phase's
+	// own Task md (requirements/08-Task/todo/Task-*.md) lands between the
+	// flow-start baseline and the freeze check — a legitimate plan artifact,
+	// never the read-only planner touching code. Doc/audit surfaces
+	// (requirements/**, change-audit/**, *.md) are never planner mutations;
+	// the gate scope path already treats them the same way
+	// (flowgate.IsDocOrAuditFile). A planner-written *.go still blocks.
+	if flowgate.IsDocOrAuditFile(p) {
+		return true
+	}
 	return changecontract.IsToolOwnedScaffoldPath(p)
 }
 
