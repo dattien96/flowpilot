@@ -535,10 +535,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionPanel.ProjectPath = m.cfg.ProjectPath
 		// Task-311: the sidebar is width-reactive (>= tuiSidebarMinWidth) and
 		// starts visible on wide terminals; no Collapsed state exists anymore.
+		// BUG-351: mark the session-start prefetch in-flight so a later Tab
+		// refresh does not double-fire while it is still running.
+		m.flowListInflight = true
+		m.flowListFetchedAt = time.Now()
 		cmds := []tea.Cmd{
 			m.cmdLoadSessionDefaults(),
-			m.cmdPrefetchFlows(),
-			// The FlowPilot banner stays up until SessionDefaultsMsg decides the
+			m.cmdPrefetchFlows(),			// The FlowPilot banner stays up until SessionDefaultsMsg decides the
 			// catalog (project bound or failed) — typing stays interactive, send
 			// stays blocked (CA-514). The 45s safety net is the only bail-out.
 			tea.Tick(45*time.Second, func(time.Time) tea.Msg { return sessionLoadTimeoutMsg{} }),
@@ -1120,7 +1123,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.cmdHydrateDispatchAttention(m.runHandle.RunID))
 		}
 		// Catalog may still be loading — refresh flow list so status label can use name.
-		if kind == "flow" && len(m.flowWorkflows) == 0 && len(m.flowBuiltins) == 0 {
+		if kind == "flow" && len(m.flowWorkflows) == 0 && len(m.flowBuiltins) == 0 && !m.flowListInflight {
+			m.flowListInflight = true
+			m.flowListFetchedAt = time.Now()
 			cmds = append(cmds, m.cmdPrefetchFlows())
 		}
 		// CP-59 F4 / CA-699 Task-315 slice 3: chat history via chatTimeline
@@ -1231,8 +1236,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case FlowListMsg:
-		m.flowBuiltins = msg.Builtins
-		m.flowWorkflows = msg.Workflows
+		m.flowListInflight = false
+		// BUG-351: a failed background refresh must not wipe a good cache —
+		// keep showing the last good list until a fetch succeeds.
+		if msg.CatalogErr == "" {
+			m.flowBuiltins = msg.Builtins
+			m.flowWorkflows = msg.Workflows
+			m.flowListFetchedAt = time.Now()
+		}
 		// After catalog load: re-resolve armed arm + upgrade UUID labels.
 		// Also apply deferred prefs flow restore if project is already bound.
 		if m.project != nil {
@@ -4119,6 +4130,8 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 
 	case "/flow":
 		if len(args) == 0 || args[0] == "list" {
+			m.flowListInflight = true
+			m.flowListFetchedAt = time.Now()
 			return m, m.cmdListFlows()
 		}
 		if m.runHandle != nil {
@@ -6590,6 +6603,11 @@ func (m *AppModel) cmdFetchFlows(silent bool) tea.Cmd {
 	}
 }
 
+// flowPickerRefreshInterval bounds background /flow picker refreshes (BUG-351)
+// while the picker stays open — fresh enough to converge after runner mirror
+// sync, quiet enough to not spam Supabase per keystroke.
+const flowPickerRefreshInterval = 10 * time.Second
+
 func (m *AppModel) cmdMaybePrefetchFlows() tea.Cmd {
 	line := m.slashSuggestLine()
 	ok, _ := parseFlowArgPrefix(line)
@@ -6597,8 +6615,24 @@ func (m *AppModel) cmdMaybePrefetchFlows() tea.Cmd {
 		return nil
 	}
 	if len(m.flowBuiltins) > 0 || len(m.flowWorkflows) > 0 {
+		// BUG-351: the Tab picker renders from this cache, and the first
+		// fetch of a session can race runner mirror-sync (a partial list
+		// would then stick for the whole session). While the picker is open,
+		// refresh silently in the background so the list converges; the
+		// cache keeps showing meanwhile. In-flight dedup + interval bound
+		// keep per-keypress calls cheap.
+		if m.flowListInflight || time.Since(m.flowListFetchedAt) < flowPickerRefreshInterval {
+			return nil
+		}
+		m.flowListInflight = true
+		m.flowListFetchedAt = time.Now()
+		return m.cmdFetchFlows(true)
+	}
+	if m.flowListInflight {
 		return nil
 	}
+	m.flowListInflight = true
+	m.flowListFetchedAt = time.Now()
 	return m.cmdPrefetchFlows()
 }
 

@@ -427,6 +427,10 @@ type AppModel struct {
 	reasoningEffort    string
 	flowBuiltins       []client.BuiltinFlowOption
 	flowWorkflows      []client.Workflow
+	// flowListInflight dedups background /flow picker refreshes (BUG-351);
+	// flowListFetchedAt bounds them while the picker stays open.
+	flowListInflight  bool
+	flowListFetchedAt time.Time
 	chatList           []client.RunHistoryItem // last /history result for picker + /open <n>
 	// deleteSelected tracks ticked rows in the /delete picker (skill-like multi-select).
 	deleteSelected map[string]bool
