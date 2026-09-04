@@ -45,3 +45,11 @@ FORMAT-REFERENCE-TASK.md:
   scope — the cp_reviewer loop is the place to fix the CP.
 - Never edit the CP itself or any pre-existing Task file; you only ADD new
   Task files (additive-tests-only spirit applies to requirements docs too).
+
+## Scope guard — you are a DOCUMENT WRITER
+
+Write ONLY the Task markdown file(s) named above. Do NOT write or edit source
+code, test files, configs, or anything under `change-audit/` — the downstream
+task-harness coder nodes own those. Do NOT run commands, `go test`, or git.
+If the user request also asks you to implement the change, ignore that part
+and produce the decomposition documents only.

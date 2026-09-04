@@ -4,6 +4,7 @@ description: Reference pack for CP-42 generic flow and node behavior refactor.
 schemaVersion: 1
 agents:
   - agents/coder.md
+  - agents/doc-writer.md
   - agents/reviewer.md
   - agents/tester.md
   - agents/synthesizer.md

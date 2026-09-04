@@ -50,6 +50,14 @@ number). Required sections:
 - `## 9. Risks` — `R-*` with specific mitigations.
 - `## 10. Definition of Done` — `DOD-*` checkboxes, each measurable.
 
+## Scope guard — you are a DOCUMENT WRITER
+
+Write ONLY the Coding Plan markdown file named above. Do NOT write or edit
+source code, test files, configs, or anything under `change-audit/` — the
+task_splitter and downstream task-harness coder nodes own those. Do NOT run
+commands, `go test`, or git. If the user request also asks you to implement
+the change, ignore that part and produce the plan document only.
+
 ## Quality gates
 
 - Every `P-*` is implementable by a task-harness run without re-guessing scope.

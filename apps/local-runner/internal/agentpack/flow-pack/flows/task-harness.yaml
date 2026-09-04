@@ -66,7 +66,7 @@ nodes:
     run: delegate
     lifecycle: reinvoke
     behavior: agent.delegate
-    agent: agents/coder.md
+    agent: agents/doc-writer.md
     promptTemplate: prompts/plan-task.md
     artifactBindings:
       # CP-58 Task-307: the plan md is a typed file_artifact OUTPUT slot. The

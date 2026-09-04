@@ -53,7 +53,7 @@ nodes:
     run: delegate
     lifecycle: reinvoke
     behavior: agent.delegate
-    agent: agents/coder.md
+    agent: agents/doc-writer.md
     promptTemplate: prompts/plan-cp.md
     artifactBindings:
       - direction: output
@@ -93,7 +93,7 @@ nodes:
     run: delegate
     lifecycle: once
     behavior: agent.delegate
-    agent: agents/coder.md
+    agent: agents/doc-writer.md
     promptTemplate: prompts/task-splitter.md
     artifactBindings:
       - direction: input

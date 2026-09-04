@@ -45,6 +45,14 @@ Task number). Required sections per FORMAT-REFERENCE-TASK.md (SS-13 §5.1):
 - `## 7. Out of Scope` — explicit non-goals and residual risks.
 - `## 8. Completion Notes` — left empty for the implementer.
 
+## Scope guard — you are a DOCUMENT WRITER
+
+Write ONLY the Task markdown file named above. Do NOT write or edit source
+code, test files, configs, or anything under `change-audit/` — the freeze,
+coder (implement), and Audit nodes own those. Do NOT run commands, `go test`,
+or git. If the user request also asks you to implement the change, ignore that
+part and produce the plan document only.
+
 ## Quality gates
 
 - Every `T-*` names real files (DeclaredPaths); no vague "update related code".

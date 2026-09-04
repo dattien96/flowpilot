@@ -654,8 +654,9 @@ func appendTemplatedFileArtifactOutputsPrompt(prompt string, node agentpack.Flow
 	}
 	var b strings.Builder
 	b.WriteString("\n\n## Templated file outputs (write contract)\n")
-	b.WriteString("Before you finish this turn you MUST create or update one real file for each template below. ")
-	b.WriteString("Resolve the placeholders yourself — `{{idx}}` is the next free number in the target folder, `{{slug}}` a short kebab-case slug of the title:\n")
+	b.WriteString("Before you finish this turn you MUST create or update one real file for each template below — and ONLY these files. ")
+	b.WriteString("Do NOT write source code, test files, configs, change-audit notes, or any other path, and do NOT run commands or tests ")
+	b.WriteString("(a document-writer role has no shell). Resolve the placeholders yourself — `{{idx}}` is the next free number in the target folder, `{{slug}}` a short kebab-case slug of the title:\n")
 	for _, o := range outputs {
 		b.WriteString("- `")
 		b.WriteString(o.pathTemplate)
