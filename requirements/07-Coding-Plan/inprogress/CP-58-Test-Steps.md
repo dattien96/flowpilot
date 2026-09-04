@@ -24,12 +24,12 @@
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
-| S1 | Mở picker `/flow` | `task-harness` hiện trong danh sách (selectableIn flow); description "Plan Writer + Plan Review Loop + TDD + Code Review" |
-| S2 | Prompt: yêu cầu một task nhỏ rõ ràng (vd: "add a /ping slash command logging latency to the statusline, feature_key: cli-tui"). Prompt cụ thể cho target `D:\working\gate-sandbox` (đã chạy 2026-09-04): `Add integer GCD to the calc package, feature_key: calc-core` — scope `calc.go` (hàm GCD mới) + `calc_test.go` (chỉ thêm tests mới); AC: `GCD(48,18)=18`, `GCD(0,5)=5`, `GCD(5,0)=5`, `GCD(-48,18)=18`, `GCD(0,0)=0` (documented, no panic), `go test ./...` green | Flow start: `preflight_contract_plan` (Scout) chạy trước, rồi `context`, rồi `plan_writer` |
-| S3 | Quan sát step timeline khi `plan_writer` chạy | Prompt của writer có mục **"Templated file outputs (write contract)"** liệt kê `requirements/08-Task/todo/Task-{{idx}}-{{slug}}.md` |
-| S4 | `plan_writer` hoàn thành | File `Task-<n>-*.md` xuất hiện trong `requirements/08-Task/todo/` với đủ section Metadata/AI Quick View/§1-§8; final message nêu đúng path đã viết |
-| S5 | `plan_reviewer` chạy | Reviewer prompt có **"Bound input artifacts (locate and read)"** + template; reviewer gọi `submit_review_outcome`, KHÔNG gọi `flow_control` |
-| S6 | `plan_synthesis` duyệt lần đầu | Nếu approved → đi tiếp `preflight_contract_freeze`; nếu changes_requested → quay lại S7 |
+| S1 | Mở picker `/flow` | `task-harness` hiện trong danh sách (selectableIn flow); description "Plan Writer + Plan Review Loop + TDD + Code Review" — ✅ PASS run-533004 |
+| S2 | Prompt: yêu cầu một task nhỏ rõ ràng (vd: "add a /ping slash command logging latency to the statusline, feature_key: cli-tui"). Prompt cụ thể cho target `D:\working\gate-sandbox` (đã chạy 2026-09-04): `Add integer GCD to the calc package, feature_key: calc-core` — scope `calc.go` (hàm GCD mới) + `calc_test.go` (chỉ thêm tests mới); AC: `GCD(48,18)=18`, `GCD(0,5)=5`, `GCD(5,0)=5`, `GCD(-48,18)=18`, `GCD(0,0)=0` (documented, no panic), `go test ./...` green | Flow start: `preflight_contract_plan` (Scout) chạy trước, rồi `context`, rồi `plan_writer` — ✅ PASS run-533004 (scout→context→plan_writer advance đúng, CA-732 live) |
+| S3 | Quan sát step timeline khi `plan_writer` chạy | Prompt của writer có mục **"Templated file outputs (write contract)"** liệt kê `requirements/08-Task/todo/Task-{{idx}}-{{slug}}.md` — ⏳ CHƯA XÁC NHẬN (sidebar `plan_writer · doc-writer` OK per CA-734; cần screenshot prompt để tick) |
+| S4 | `plan_writer` hoàn thành | File `Task-<n>-*.md` xuất hiện trong `requirements/08-Task/todo/` với đủ section Metadata/AI Quick View/§1-§8; final message nêu đúng path đã viết — ✅ PASS run-533004 (`Task-910-calc-core-gcd.md`) |
+| S5 | `plan_reviewer` chạy | Reviewer prompt có **"Bound input artifacts (locate and read)"** + template; reviewer gọi `submit_review_outcome`, KHÔNG gọi `flow_control` — ✅ PASS run-533004 (review outcome APPROVED 8 gate criteria; reviewer prompt "Bound input artifacts" chưa đọc trực tiếp) |
+| S6 | `plan_synthesis` duyệt lần đầu | Nếu approved → đi tiếp `preflight_contract_freeze`; nếu changes_requested → quay lại S7 — ✅ PASS run-533004 (approved lần 1 → freeze + `test_signatures`) |
 
 ## A. Plan review loop (loop 1 — Task-304/305)
 
@@ -45,7 +45,7 @@
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
-| B1 | Ép code review reject (như dùng rag-harness bình thường) | `synthesis` (code hub) phát `continue` → re-enter `implement` trên **cùng session**; `validate`/`reviewer`/`synthesis` reset PENDING |
+| B1 | Ép code review reject (như dùng rag-harness bình thường) | `synthesis` (code hub) phát `continue` → re-enter `implement` trên **cùng session**; `validate`/`reviewer`/`synthesis` reset PENDING — ✅ PASS run-533004 (`changes_requested` API contract mismatch → implement re-work round 1 → APPROVED) |
 | B2 | Quan trọng: plan loop nodes sau code-continue | `plan_writer`/`plan_reviewer`/`plan_synthesis`/`context`/`freeze` vẫn DONE — code loop KHÔNG đụng plan loop |
 | B3 | Đếm child sau cả 2 loop | `plan_writer` = 1 child (reuse), `implement` = 1 child (reuse), `plan_reviewer`/`reviewer` = số child bằng số round (spawn lifecycle) |
 | B4 | Cap | Hai loop dùng chung `policy.cap:3` — sau 3 round tổng sẽ blocked/escalate; thông báo cap đọc được trên TUI |
