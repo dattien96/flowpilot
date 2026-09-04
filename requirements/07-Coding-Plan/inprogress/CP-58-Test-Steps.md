@@ -25,7 +25,7 @@
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
 | S1 | Mở picker `/flow` | `task-harness` hiện trong danh sách (selectableIn flow); description "Plan Writer + Plan Review Loop + TDD + Code Review" |
-| S2 | Prompt: yêu cầu một task nhỏ rõ ràng (vd: "add a /ping slash command logging latency to the statusline, feature_key: cli-tui") | Flow start: `preflight_contract_plan` (Scout) chạy trước, rồi `context`, rồi `plan_writer` |
+| S2 | Prompt: yêu cầu một task nhỏ rõ ràng (vd: "add a /ping slash command logging latency to the statusline, feature_key: cli-tui"). Prompt cụ thể cho target `D:\working\gate-sandbox` (đã chạy 2026-09-04): `Add integer GCD to the calc package, feature_key: calc-core` — scope `calc.go` (hàm GCD mới) + `calc_test.go` (chỉ thêm tests mới); AC: `GCD(48,18)=18`, `GCD(0,5)=5`, `GCD(5,0)=5`, `GCD(-48,18)=18`, `GCD(0,0)=0` (documented, no panic), `go test ./...` green | Flow start: `preflight_contract_plan` (Scout) chạy trước, rồi `context`, rồi `plan_writer` |
 | S3 | Quan sát step timeline khi `plan_writer` chạy | Prompt của writer có mục **"Templated file outputs (write contract)"** liệt kê `requirements/08-Task/todo/Task-{{idx}}-{{slug}}.md` |
 | S4 | `plan_writer` hoàn thành | File `Task-<n>-*.md` xuất hiện trong `requirements/08-Task/todo/` với đủ section Metadata/AI Quick View/§1-§8; final message nêu đúng path đã viết |
 | S5 | `plan_reviewer` chạy | Reviewer prompt có **"Bound input artifacts (locate and read)"** + template; reviewer gọi `submit_review_outcome`, KHÔNG gọi `flow_control` |
@@ -90,6 +90,7 @@
 
 | Mục | Kết quả | Run/Chat | Ghi chú |
 |-----|---------|----------|---------|
+| P Chuẩn bị (P1-P6) | ✅ | | P1 đúng branch `cp58-harness-dual-loop` (+Task-320, +BUG-351 fix); P2 build PASS; P3 3 instances `...0002/3/4` có rows; P4 mirror đủ task/bug/cp-harness (+smoke); P5 10 binding rows sau reseed tay B2 (seed-miss do flows mirror từ boot cũ trước P3 — xem BUG ghi chú dưới); P6 đã đọc CA-712 + CA-728 |
 | S Smoke | ⏳ | | |
 | A Plan loop | ⏳ | | |
 | B Code loop | ⏳ | | |
