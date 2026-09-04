@@ -6803,9 +6803,26 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// (gate reprompt / BugFix doc) can complete without the review tool; escalating
 	// then parkFlowForAwaitingUser cancels the brand-new reviewer cohort and shows
 	// a form with the STALE round-0 lastCohortNote ("Reviewers reported: …").
-	if completed && offerReviewOutcomeTool && rs.parentRunID == "" && rs.flowEngineDriven && !s.flowControlSubmittedForTurn(rs.id, turnID) {
+	//
+	// run-199617 (hub_stalled 2m): a flow-engine hub stays status=running while the
+	// loop is live, so `completed` (status Completed || pendingFlowGateSettle) is
+	// false even after the provider turn itself finished via EventTurnCompleted —
+	// the hub prose-answered without submit_review_outcome and the watchdog parked
+	// hub_stalled after 2m instead of this fallback surfacing an actionable card.
+	// Treat a terminal provider event as "the turn finished" for this fallback;
+	// the tool-submitted / open-cohort / sealed-loop guards below still apply.
+	hubTurnFinished := completed || rs.lastEventType == EventTurnCompleted
+	if hubTurnFinished && offerReviewOutcomeTool && rs.parentRunID == "" && rs.flowEngineDriven && !s.flowControlSubmittedForTurn(rs.id, turnID) {
 		if s.hubShouldSkipProseEscalate(rs.id) {
 			log.Printf("[flow-step] hub turn %q completed without submit_review_outcome, but children/cohort still active — skip BUG-226 escalate", turnID)
+		} else if s.advanceHubFromCohortMachineVerdicts(rs.id) {
+			// run-200816: the reviewers already recorded machine verdicts via
+			// submit_review_outcome, but the hub finished in prose. Drive the
+			// transition from those verdicts (all approved → done/freeze, any
+			// changes_requested → continue) instead of forcing the operator to
+			// Retry an already-decided plan. Empty/blocked verdicts fall
+			// through to the BUG-226 escalate below (CA-735 preserved).
+			log.Printf("[flow-step] hub turn %q completed without submit_review_outcome; cohort machine verdicts derived the flow transition", turnID)
 		} else {
 			log.Printf("[flow-step] hub synthesis turn %q completed without submit_review_outcome, escalating", turnID)
 			// BUG-233: the awaiting-user card renders this Summary verbatim as
