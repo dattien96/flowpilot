@@ -5708,15 +5708,38 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 	// are Go-inline); a terminal reached at the end still calls applyFlowControl,
 	// so the loop settles for real by the time this returns.
 	s.advanceToNextInlineOrDelegate(context.Background(), targetRunID, edges, nodes, hubID, "done", in.Summary)
+	// BUG-353 (run-198468): the hub.notify branch stamps the one-decision guard
+	// (BUG-289), but this generic-successor branch never did — so a hub whose
+	// submit_review_outcome(approved) routed through a real successor edge
+	// (plan_synthesis --done--> preflight_contract_freeze) still read as
+	// "completed without submit_review_outcome", and BUG-226 escalated the hub
+	// to WAITING_USER_APPROVAL even though the tool succeeded (reproduced 3x
+	// incl. a Retry). Stamp here exactly like the hub.notify branch so the
+	// completed turn counts as its flow-control decision.
+	s.mu.Lock()
+	if rs := s.runs[targetRunID]; rs != nil && rs.currentTurnID != "" {
+		rs.lastFlowControlTurnID = rs.currentTurnID
+	}
+	s.mu.Unlock()
 	st := s.agentOrchestrator.loopStateFor(targetRunID)
 	nextAction := "looping"
+	status := st.Status
 	switch st.Status {
 	case "done":
 		nextAction = "done"
 	case "blocked":
 		nextAction = "awaiting_user"
+	case "running":
+		// BUG-284 follow-up, extended from the hub.notify branch: report the
+		// caller's verdict as accepted. "continue"/"looping" reads to the model
+		// as "your done call was rejected, keep looping" (observed live: a
+		// synthesizer called escalate() in the same turn after getting
+		// "continue"). The engine is still advancing internally, but the model
+		// must not retry the decision.
+		status = "done"
+		nextAction = "advancing"
 	}
-	return FlowControlResult{Status: st.Status, Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: nextAction}, true
+	return FlowControlResult{Status: status, Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: nextAction}, true
 }
 
 // dispatchHubNotifyNode (Task-235) is the single entry point for reaching a
