@@ -1087,6 +1087,18 @@ func formatAccountPathLabel(homePath string) string {
 	return filepath.Base(path)
 }
 
+// providerImmediateAction reports provider subcommands that EXECUTE on Enter
+// instead of expanding a next picker: /provider refresh re-fetches the
+// provider catalog + models without a restart (CA-687); reload is its alias.
+// connect/install/account/config still expand the next picker.
+func providerImmediateAction(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "refresh", "reload":
+		return true
+	}
+	return false
+}
+
 // filterProviderSuggestions returns providers matching `/provider ` / connect / install / account.
 // In select mode, action rows are listed first so they are always discoverable.
 func filterProviderSuggestions(input string, providers []client.Provider, accounts []client.ProviderAccountSummary, current string) []suggestItem {
@@ -1102,6 +1114,7 @@ func filterProviderSuggestions(input string, providers []client.Provider, accoun
 			{"connect", "Connect new account (Desktop Settings parity)"},
 			{"install", "Install provider CLI (runner /providers/install)"},
 			{"config", "Alias for connect"},
+			{"refresh", "Re-detect providers/models without restart (/provider reload alias)"},
 		} {
 			if q == "" || strings.HasPrefix(act.value, q) || strings.Contains(act.value, q) {
 				out = append(out, suggestItem{value: act.value, detail: act.detail, kind: "provider-action"})

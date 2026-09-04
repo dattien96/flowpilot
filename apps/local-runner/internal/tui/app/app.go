@@ -2804,8 +2804,10 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					// Fallback to old immediate PUT if parsing failed
 				}
 				if cmd := suggestionAcceptValue(it); cmd != "" {
-					// Action rows only expand the next picker (provider connect, /image open|rm, mode-setup steps).
-					if it.kind == "provider-action" || it.kind == "image-sub-next" || it.kind == "mode-setup-posture" || (it.kind == "mode-setup-field" && !strings.HasSuffix(strings.ToLower(strings.TrimSpace(it.value)), " clear")) {
+					// Action rows only expand the next picker (provider connect, /image open|rm, mode-setup steps) —
+					// except immediate-execution actions like /provider refresh|reload (CA-687), which run right away.
+					expandsPicker := it.kind == "provider-action" || it.kind == "image-sub-next" || it.kind == "mode-setup-posture" || (it.kind == "mode-setup-field" && !strings.HasSuffix(strings.ToLower(strings.TrimSpace(it.value)), " clear"))
+					if expandsPicker && !(it.kind == "provider-action" && providerImmediateAction(it.value)) {
 						m.setInputPreservingDraftPrefix(cmd)
 						m.suggIdx = 0
 						return m, m.cmdMaybePrefetchPickers()
