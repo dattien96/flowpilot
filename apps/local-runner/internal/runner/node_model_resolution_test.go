@@ -108,6 +108,39 @@ func TestResolveFlowNodeModelPlannerHonorsYamlIgnoresRow(t *testing.T) {
 	}
 }
 
+// TestRecordFromWorkflowRowDropsNonDelegateStaleModel pins BUG-352: a legacy
+// model sitting on a non-delegate step row (e.g. gpt-5.4 on the
+// context.produce/context node) must stay ignored exactly like pre-Task-320
+// runtime did — carrying it would trip ValidateFlowDefinition's fail-closed
+// delegate-only rule and fail the whole flow load (422 invalid_flow_definition
+// on task-harness). Delegate rows still carry (see
+// TestRecordFromWorkflowRowCarriesNodeModel).
+func TestRecordFromWorkflowRowDropsNonDelegateStaleModel(t *testing.T) {
+	nodeID, behavior, agent, model := "context", "context.produce", "", "gpt-5.4"
+	row := dbWorkflowRow{
+		ID: "wf-clone-1", Name: "cloned task-harness",
+		WorkflowSteps: []dbWorkflowStepRow{
+			{
+				StepType:   "clone__context",
+				OrderIndex: 0,
+				StepDefinition: dbStepDefinitionRow{
+					StepType: "clone__context", NodeID: &nodeID,
+					BehaviorID: &behavior, AgentRef: &agent, Model: &model,
+				},
+			},
+		},
+	}
+	rec := recordFromWorkflowRow(row)
+	if len(rec.Definition.Nodes) != 1 {
+		t.Fatalf("node count = %d, want 1", len(rec.Definition.Nodes))
+	}
+	if got := rec.Definition.Nodes[0].Model; got != "" {
+		t.Fatalf("node.Model = %q, want empty (non-delegate stale model must be dropped)", got)
+	}
+	if err := agentpack.ValidateFlowDefinition(rec.Definition); err != nil {
+		t.Fatalf("ValidateFlowDefinition = %v, want nil (dropped model must not trip T-3)", err)
+	}
+}
 // TestRecordFromWorkflowRowCarriesNodeModel pins Task-320 T-6: a DB-backed
 // (cloned) flow's admin-set step model lands on FlowNode.Model so resolution
 // treats it exactly like a pack-YAML default.
