@@ -566,6 +566,11 @@ type interactiveRun struct {
 	// postTurnGateCancel cancels an in-flight post-turn oracle/gate after Stop
 	// (BUG-288 #10). Distinct from turnCancel which finishTurn clears first.
 	postTurnGateCancel context.CancelFunc
+	// postTurnGateStartedAt stamps when postTurnGateCancel was armed (BUG-354
+	// run-540927): a gate that never returns must stop counting as hub/child
+	// busy after postTurnGateBusyBound so the watchdog can surface hub_stalled
+	// instead of pinning the flow RUNNING forever.
+	postTurnGateStartedAt time.Time
 	// flowInlineCtx/Cancel covers in-process inline nodes (validate/audit) that
 	// run without a hub turn. stopAgentLoop cancels this so suites abort.
 	flowInlineCtx    context.Context
@@ -4494,6 +4499,7 @@ func (s *InteractiveService) resumePendingFlowGate(runID string) {
 		return
 	}
 	rs.postTurnGateCancel = cancel
+	rs.postTurnGateStartedAt = time.Now().UTC()
 	s.mu.Unlock()
 	var blocked bool
 	if isRoot {
@@ -7173,6 +7179,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			s.mu.Lock()
 			gateEpoch := rs.gateEpoch
 			rs.postTurnGateCancel = gateCancel
+			rs.postTurnGateStartedAt = time.Now().UTC()
 			s.mu.Unlock()
 			defer func() {
 				s.mu.Lock()

@@ -52,6 +52,26 @@ func (s *InteractiveService) touchParentHubProgressFromChildLocked(child *intera
 	touchHubProgressLocked(parent)
 }
 
+// postTurnGateBusyBound bounds how long a live postTurnGateCancel counts as
+// busy for the hub watchdog (BUG-354 run-540927). It must exceed the oracle's
+// own 5-minute deadline (flowgate.executeSuite) plus kill/grace slack so a
+// healthy long suite never trips it, while a gate that never returns stops
+// shielding the flow from hub_stalled.
+const postTurnGateBusyBound = 6 * time.Minute
+
+// gateCancelLive reports whether a post-turn gate is still within its bounded
+// busy window. cancel==nil → not busy. A zero startedAt (armed before BUG-354
+// stamping, e.g. reconstructed state) keeps the legacy unbounded-busy behavior.
+func gateCancelLive(startedAt time.Time, cancel context.CancelFunc) bool {
+	if cancel == nil {
+		return false
+	}
+	if startedAt.IsZero() {
+		return true
+	}
+	return time.Since(startedAt) < postTurnGateBusyBound
+}
+
 // hasActiveFlowChild reports whether a child/sub-agent is still doing or
 // awaiting work for this parent. The hub watchdog must not convert that state
 // into hub_stalled; child/member stall handling owns those cases.
@@ -72,16 +92,38 @@ func (s *InteractiveService) hasActiveFlowChild(parentRunID string) bool {
 			s.mu.Unlock()
 			continue
 		}
-		active := child.turnInFlight ||
+		gateLive := gateCancelLive(child.postTurnGateStartedAt, child.postTurnGateCancel)
+		// BUG-354 F1 (review round on run-540927): while the post-turn gate is
+		// armed, gateCancelLive owns the busy decision — V9-03 holds
+		// turnInFlight true for the ENTIRE gate window, so turnInFlight with a
+		// stale gate cancel must not stay busy past the bound (that is the
+		// live hang shape). turnInFlight with NO gate cancel stays busy
+		// unconditionally (CA-361: a live provider turn is real activity).
+		turnBusy := child.turnInFlight && child.postTurnGateCancel == nil
+		// BUG-354 (run-540927): a child whose provider turn is over, whose
+		// gate-cancel has aged out of the busy bound, and which holds no
+		// pending work cannot progress by itself — it is a ghost, not active
+		// activity. Without this the child's lingering Running status shields
+		// the hub from hub_stalled forever. Stale settle mirrors the hub-level
+		// H-C contract (run-1618): pendingFlowGateSettle only counts busy when
+		// the gate cancel is still live (gateLive).
+		ghost := child.status == RunStatusRunning &&
+			!turnBusy &&
+			child.pendingTurnPrompt == "" &&
+			child.pendingApprovalID == "" &&
+			child.pendingQuestionID == "" &&
+			!gateLive
+		active := turnBusy ||
 			child.pendingTurnPrompt != "" ||
 			child.pendingApprovalID != "" ||
 			child.pendingQuestionID != "" ||
-			child.postTurnGateCancel != nil ||
-			child.pendingFlowGateSettle ||
+			gateLive ||
 			child.status == RunStatusStarting ||
-			child.status == RunStatusRunning ||
 			child.status == RunStatusWaitingApproval ||
 			child.status == RunStatusWaitingQuestion
+		if !ghost {
+			active = active || child.status == RunStatusRunning
+		}
 		s.mu.Unlock()
 		if active {
 			return true
@@ -324,9 +366,16 @@ func (s *InteractiveService) checkAndBlockStalledHub(runID string) bool {
 	// with no gate running; counting settle alone as busy made F-0 re-arm
 	// forever and never surface hub_stalled. A real post-turn gate always
 	// arms postTurnGateCancel for the evaluate window.
-	busy := rs.turnInFlight || rs.reinvokeInFlight ||
+	// BUG-354 F1 (review round on run-540927): the same bound applies to the
+	// hub's own turn — V9-03 keeps turnInFlight true while the post-turn gate
+	// runs, so an armed gate must own the busy signal instead of letting
+	// turnInFlight stay busy forever. turnInFlight without an armed gate stays
+	// busy (a live provider turn is real activity); startTurn already rejects
+	// new turns while the gate is settling (gate_in_progress), so no race.
+	hubTurnBusy := rs.turnInFlight && rs.postTurnGateCancel == nil
+	busy := hubTurnBusy || rs.reinvokeInFlight ||
 		rs.pendingApprovalID != "" || rs.pendingQuestionID != "" ||
-		rs.postTurnGateCancel != nil ||
+		gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel) ||
 		strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" ||
 		strings.TrimSpace(rs.pendingResumePrompt) != ""
 	last := rs.hubLastProgressAt

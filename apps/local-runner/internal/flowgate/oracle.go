@@ -3,6 +3,7 @@ package flowgate
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"log"
 	"os/exec"
 	"path/filepath"
@@ -192,6 +193,12 @@ func (t *tailCapWriter) String() string {
 // envError is non-empty when the command cannot start (not found / permission / empty)
 // OR when the turn/timeout context cancelled the suite (not a test failure).
 // combinedOutput is capped via streaming tail writers (not post-hoc CombinedOutput).
+// suiteGraceAfterCancel bounds how long executeSuite waits for cmd.Wait after
+// the suite was killed on ctx cancel/timeout (BUG-354 run-540927): a process
+// tree that still holds the output pipes must not pin the post-turn gate
+// forever — after the grace the suite is abandoned with an EnvError.
+const suiteGraceAfterCancel = 2 * time.Second
+
 func executeSuite(ctx context.Context, repoDir, testCmd, testDir string) (suitePassed bool, passed []string, failed []string, envError string, combinedOutput string) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -206,12 +213,39 @@ func executeSuite(ctx context.Context, repoDir, testCmd, testDir string) (suiteP
 	}
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	cmd.Dir = filepath.Join(repoDir, filepath.FromSlash(testDir))
+	// BUG-354 (run-540927): own process group so cancel can kill the whole
+	// tree — a grandchild holding the output pipes used to keep cmd.Wait
+	// blocked past the 5-minute deadline with no log and no watchdog escape.
+	setSuiteProcessGroup(cmd)
 	// Stream into a shared tail buffer so peak RAM is O(maxSuiteOutputBytes).
 	outCap := &tailCapWriter{max: maxSuiteOutputBytes}
 	cmd.Stdout = outCap
 	cmd.Stderr = outCap
-	err := cmd.Run()
+	start := time.Now()
+	log.Printf("[gate] suite start cmd=%q dir=%q", testCmd, cmd.Dir)
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- cmd.Run() }()
+	var err error
+	aborted := false
+WaitLoop:
+	for {
+		select {
+		case err = <-waitErr:
+			break WaitLoop
+		case <-ctx.Done():
+			aborted = true
+			killSuiteProcessGroup(cmd)
+			select {
+			case err = <-waitErr:
+			case <-time.After(suiteGraceAfterCancel):
+				err = fmt.Errorf("suite wait stuck after kill (run-540927 guard): %w", ctx.Err())
+			}
+			break WaitLoop
+		}
+	}
 	combinedOutput = outCap.String()
+	log.Printf("[gate] suite end cmd=%q duration=%s aborted=%v err=%v outputBytes=%d",
+		testCmd, time.Since(start).Round(time.Millisecond), aborted, err, len(combinedOutput))
 
 	// CommandContext kill on cancel/timeout often surfaces as *exec.ExitError
 	// (signal). Prefer ctx.Err() so cancellation is never a suite regression.
