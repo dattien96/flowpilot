@@ -42,6 +42,7 @@
   - **Phase 1 (Scout):** `preflight_contract_plan` runs with a Fast/Cheap model (e.g. `flash`/`mini`) supplied with **Broad Context** (`FEATURE-KEYS.md`, recent `CA-*` history, `chat.summary`, git branch context) to scan the codebase quickly and propose initial scope without burning expensive reasoning tokens.
   - **Phase 2 (Architect & Gate):** `plan_writer` / `cp_plan_writer` and `plan_reviewer` run with the **Highest Reasoning model** (e.g. `claude-3.7-sonnet`, `o3`, `grok-4.5 high`) to author and review the detailed HLD/LLD plan artifact (`Task-*.md` / `CP-*.md`).
   - **Phase 3 (Deep Code Context):** `context.produce` packages `change.contract` and `source.excerpt` for `tester` and `coder` once the plan is frozen.
+  - **Mechanism shipped (Task-320, 2026-09-04):** pack YAML `model:` on any `agent.delegate` node (`FlowNode.Model`, validated fail-closed against `agentpack.ModelProviderKey`); runner precedence DB step row (admin override, non-planner only) > YAML `node.Model` (pack default; DB-carried for cloned flows) > agent frontmatter > inherit; planner nodes YAML > inherit with DB rows skipped (CA-616). No concrete models pinned in builtin YAMLs — tiering is per-installation (step rows) or downstream pack forks (provider-agnostic constraint).
 
 ### Constraints
 

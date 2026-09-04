@@ -1557,18 +1557,18 @@ func agentNameFromRef(agentRef string) string {
 }
 
 // delegateSpawnModel returns the model to actually pass into spawnChildRun
-// for node. For the preflight contract-planner it returns "" so the child
-// inherits the hub's own provider/model (grok-4.5 / claude-sonnet etc.),
-// even when a seeded step_definitions row carries the legacy gpt-5.4. Other
-// delegate nodes (coder/reviewer) keep CA-230/239/241 behavior — their own
-// node-specific model when one exists.
+// for node. For the preflight contract-planner it returns the node's pack/YAML
+// model tier when one is declared (Task-320), else "" so the child inherits
+// the hub's own provider/model (grok-4.5 / claude-sonnet etc.).
+// DB step rows stay skipped for the planner even when a seeded row carries a
+// model — that is the CA-616 guard (run-135037 Codex+ChatGPT has no gpt-5.4;
+// a stale seeded row must never pin the planner to an unavailable model).
+// Other delegate nodes (coder/reviewer) keep CA-230/239/241 behavior — their
+// own node-specific model when one exists.
 //
-// CA-616: run-135037 Codex+ChatGPT has no gpt-5.4; planner must follow parent.
+// CA-616: run-135037 Codex+ChatGPT has no gpt-5.4; planner must follow parent
+// unless the pack explicitly tiers it.
 func (s *InteractiveService) delegateSpawnModel(ctx context.Context, parentRunID string, node agentpack.FlowNode) string {
-	if strings.EqualFold(strings.TrimSpace(flowNodeAgentName(node)), "contract-planner") ||
-		strings.EqualFold(strings.TrimSpace(node.ID), "preflight_contract_plan") {
-		return ""
-	}
 	return s.resolveFlowNodeModel(ctx, parentRunID, node)
 }
 
@@ -1584,11 +1584,27 @@ func (s *InteractiveService) delegateSpawnModel(ctx context.Context, parentRunID
 // Returns "" when no scoped/role row has a model, so callers pass empty
 // SpawnAgentInput.Model and spawnChildRun falls back to inherit-from-parent.
 // hub.inline never reaches this path.
+//
+// Task-320 precedence for agent.delegate nodes:
+//  1. planner nodes (contract-planner agent / preflight_contract_plan id):
+//     pack/YAML node.Model only, else "" (inherit). DB step rows are NEVER
+//     consulted here — the CA-616 guard against stale seeded rows.
+//  2. other delegate nodes: flow-scoped/role step_definitions row (admin
+//     per-installation override) wins, else pack/YAML node.Model (pack
+//     default; DB-carried for cloned flows via recordFromWorkflowRow),
+//     else "" (agent frontmatter / inherit handled downstream).
 func (s *InteractiveService) resolveFlowNodeModel(ctx context.Context, parentRunID string, node agentpack.FlowNode) string {
 	if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical != "agent.delegate" {
 		return ""
 	}
-	return s.resolveConfiguredModelForAgent(ctx, node.ID, flowNodeAgentName(node), s.flowRefForRun(parentRunID))
+	if strings.EqualFold(strings.TrimSpace(flowNodeAgentName(node)), "contract-planner") ||
+		strings.EqualFold(strings.TrimSpace(node.ID), "preflight_contract_plan") {
+		return strings.TrimSpace(node.Model)
+	}
+	if hit := s.resolveConfiguredModelForAgent(ctx, node.ID, flowNodeAgentName(node), s.flowRefForRun(parentRunID)); hit != "" {
+		return hit
+	}
+	return strings.TrimSpace(node.Model)
 }
 
 // flowRefForRun returns the active built-in/chat flowRef for model scoping.

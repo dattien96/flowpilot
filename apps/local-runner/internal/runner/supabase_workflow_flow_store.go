@@ -75,6 +75,11 @@ type dbStepDefinitionRow struct {
 	JoinMode          *string                    `json:"join_mode"`
 	Cohort            *string                    `json:"cohort"`
 	PromptTemplateRef *string                    `json:"prompt_template_ref"`
+	// Model carries the admin-set per-node model tier (Task-320) into
+	// recordFromWorkflowRow's FlowNode so cloned/DB-backed flows resolve it
+	// exactly like pack-YAML node.Model (read-only here; mirror sync never
+	// writes it, so re-sync cannot clobber admin values).
+	Model             *string                    `json:"model"`
 	ContextRef        *string                    `json:"context_ref"`
 	ContextSources    []string                   `json:"context_sources"`
 	ArtifactBindings  []dbStepArtifactBindingRow `json:"step_artifact_bindings"`
@@ -133,7 +138,7 @@ type dbWorkflowRow struct {
 	WorkflowSteps       []dbWorkflowStepRow         `json:"workflow_steps"`
 }
 
-const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,join_mode,cohort,prompt_template_ref,context_ref,context_sources,step_artifact_bindings(id,direction,slot_name,required,position,artifact_instance_id,artifact_instances(artifact_type_id,config_json,status))))"
+const workflowSelect = "*,workflow_steps(step_type,order_index,step_definitions(step_type,node_id,node_lifecycle,behavior_id,agent_ref,join_mode,cohort,prompt_template_ref,model,context_ref,context_sources,step_artifact_bindings(id,direction,slot_name,required,position,artifact_instance_id,artifact_instances(artifact_type_id,config_json,status))))"
 
 func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 	rec := FlowDefinitionRecord{
@@ -244,6 +249,13 @@ func recordFromWorkflowRow(row dbWorkflowRow) FlowDefinitionRecord {
 		}
 		if defn.PromptTemplateRef != nil {
 			node.PromptTemplate = *defn.PromptTemplateRef
+		}
+		// Task-320: carry the admin-set per-node model tier onto the node so
+		// resolveFlowNodeModel treats DB-backed (cloned) flows exactly like
+		// pack-YAML node.Model — including planner nodes, whose DB-row lookup
+		// stays skipped (CA-616) but whose carried Model is honored.
+		if defn.Model != nil {
+			node.Model = *defn.Model
 		}
 		if len(defn.ContextSources) > 0 {
 			node.ContextSources = defn.ContextSources

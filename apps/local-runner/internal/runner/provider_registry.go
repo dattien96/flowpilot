@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"flowpilot-runner/internal/agentpack"
 )
 
 // UnsupportedProviderRuntimeError is returned when a provider runtime is requested
@@ -212,21 +214,13 @@ func (r *ProviderRegistry) DefaultProviderKey() (ProviderKey, bool) {
 // auto-select the provider for a workflow/step run from its configured model. Mirrors the
 // prefix logic in resolvePromptExecutionAdapter (gpt-→codex, claude-→claude,
 // gemini-/auto-gemini-→gemini). Returns ("", false) for an unrecognized model.
+//
+// Task-320: delegates to agentpack.ModelProviderKey, the single source of truth
+// shared with pack-load validation — behavior is byte-identical to the previous
+// inline switch (parity pinned by TestProviderKeyFromModelMatchesPackTable).
 func providerKeyFromModel(model string) (ProviderKey, bool) {
-	m := strings.ToLower(strings.TrimSpace(model))
-	switch {
-	case strings.HasPrefix(m, "gpt-"):
-		return ProviderKeyCodex, true
-	case strings.HasPrefix(m, "gemini-"), strings.HasPrefix(m, "auto-gemini-"):
-		return ProviderKeyGemini, true
-	case strings.HasPrefix(m, "claude-"):
-		return ProviderKeyClaude, true
-	case strings.HasPrefix(m, "grok-"), m == "grok-build":
-		// Appended last (CP-46 P-0): existing prefix cases above are unchanged.
-		return ProviderKeyGrok, true
-	case strings.HasPrefix(m, "opencode/"), strings.HasPrefix(m, "opencode-go/"):
-		// Appended last (CP-57 P-0): existing prefix cases above are unchanged.
-		return ProviderKeyOpencode, true
+	if key, ok := agentpack.ModelProviderKey(model); ok {
+		return ProviderKey(key), true
 	}
 	return "", false
 }

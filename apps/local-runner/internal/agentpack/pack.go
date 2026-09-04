@@ -124,6 +124,10 @@ type FlowNode struct {
 	Cohort         string
 	DependsOn      []string
 	PromptTemplate string
+	// Model is this node's pack-declared model tier override (Task-320).
+	// Only agent.delegate nodes consume it (resolveFlowNodeModel); empty
+	// means "no pack default — resolve via step row / agent / inherit".
+	Model          string
 	// ContextSources is this node's own enabled context-source ids (CP-44 P-7
 	// / Task-196), the step-definition-level equivalent of
 	// FlowContextBinding.Sources. Empty means "fall back to the flow-level
@@ -261,6 +265,32 @@ func NormalizeBehaviorID(id string) (string, bool) {
 	}
 	canonical, ok := behaviorAliases[key]
 	return canonical, ok
+}
+
+// ModelProviderKey maps a model name to its provider key string — the single
+// source of truth for the model→provider prefix table (Task-320). The
+// runner's providerKeyFromModel delegates to this function so pack-load
+// validation and runtime resolution can never drift apart. Mirrors the prefix
+// logic in resolvePromptExecutionAdapter (gpt-→codex, claude-→claude,
+// gemini-/auto-gemini-→gemini, grok-→grok, opencode-→opencode).
+// Returns ("", false) for an unrecognized model.
+func ModelProviderKey(model string) (string, bool) {
+	m := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.HasPrefix(m, "gpt-"):
+		return "codex", true
+	case strings.HasPrefix(m, "gemini-"), strings.HasPrefix(m, "auto-gemini-"):
+		return "gemini", true
+	case strings.HasPrefix(m, "claude-"):
+		return "claude", true
+	case strings.HasPrefix(m, "grok-"), m == "grok-build":
+		// Appended last (CP-46 P-0): existing prefix cases above are unchanged.
+		return "grok", true
+	case strings.HasPrefix(m, "opencode/"), strings.HasPrefix(m, "opencode-go/"):
+		// Appended last (CP-57 P-0): existing prefix cases above are unchanged.
+		return "opencode", true
+	}
+	return "", false
 }
 
 // LoadBuiltinPack returns the embedded FlowPilot reference pack.
@@ -738,6 +768,7 @@ func flowNodeFromMap(m map[string]any) (FlowNode, error) {
 		Join:           stringField(m, "join"),
 		Cohort:         stringField(m, "cohort"),
 		PromptTemplate: stringField(m, "promptTemplate"),
+		Model:          strings.TrimSpace(stringField(m, "model")),
 		DependsOn:      stringSliceField(m, "dependsOn"),
 		ContextSources: stringSliceField(m, "contextSources"),
 	}
@@ -914,6 +945,20 @@ func ValidateFlowDefinition(def FlowDefinition) error {
 			case "once", "reinvoke", "spawn":
 			default:
 				return fmt.Errorf("flow %q node %q has invalid lifecycle %q", def.ID, node.ID, node.Lifecycle)
+			}
+		}
+		// Task-320: pack-declared per-node model tier. Only agent.delegate
+		// nodes consume a model at runtime (resolveFlowNodeModel) — a model on
+		// any other behavior would be silently ignored, so it fails fast here.
+		// A delegate model that maps to no known provider is a typo that would
+		// otherwise inherit-and-confuse, so it fails fast too.
+		if strings.TrimSpace(node.Model) != "" {
+			canonical, ok := NormalizeBehaviorID(node.Behavior)
+			if !ok || canonical != "agent.delegate" {
+				return fmt.Errorf("flow %q node %q declares model %q but behavior %q never consumes a model (only agent.delegate does)", def.ID, node.ID, node.Model, node.Behavior)
+			}
+			if _, ok := ModelProviderKey(node.Model); !ok {
+				return fmt.Errorf("flow %q node %q declares unknown model %q (no provider prefix match)", def.ID, node.ID, node.Model)
 			}
 		}
 	}
