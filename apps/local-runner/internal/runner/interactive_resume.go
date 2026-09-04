@@ -1785,7 +1785,10 @@ func (s *InteractiveService) notifyTurnIdle(runID string) {
 		return
 	}
 	// Only when no turn/gate is active.
-	busy := rs.turnInFlight || rs.pendingFlowGateSettle || rs.postTurnGateCancel != nil
+	// BUG-354 P2: bounded gate signal — a dead gate cancel (past
+	// postTurnGateBusyBound) must not block the reinvoke drain forever.
+	busy := rs.turnInFlight || rs.pendingFlowGateSettle ||
+		gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel)
 	hasIntent := strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" ||
 		strings.TrimSpace(rs.pendingResumePrompt) != ""
 	// Hub reinvoke drain (mirror runTurn :5280-5301) when idle.

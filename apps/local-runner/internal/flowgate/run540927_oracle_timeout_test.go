@@ -8,7 +8,9 @@ package flowgate
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +88,50 @@ func Test540927OracleSigtermIgnoringSuiteBounded(t *testing.T) {
 	}
 	if result.HasRegression {
 		t.Fatalf("timeout must not be a regression; got %#v", result)
+	}
+}
+
+// Test540927OracleGraceAbandonWhenKillMissesPipeHolder (review F6): a suite
+// child that calls setsid escapes the killed process group while still holding
+// the output pipes — cmd.Wait would block ~30s after the kill. The executor
+// must abandon it via the 2s grace and return EnvError anyway.
+func Test540927OracleGraceAbandonWhenKillMissesPipeHolder(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("setsid escape is unix-only")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available for setsid pipe-holder")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "setsid_escape_suite.sh")
+	// The setsid'd python holds stdout/stderr open for 30s in a NEW process
+	// group — the group kill cannot reach it; only the grace bound unblocks.
+	if err := os.WriteFile(script, []byte(
+		"#!/bin/sh\n"+python+" -c \"import os,sys,time; os.setsid(); print('escaped', flush=True); time.sleep(30)\" &\nwait\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bl := &Baseline{
+		CapturedAt:  time.Now().UTC().Format(time.RFC3339),
+		TestCmd:     script,
+		SuitePassed: true,
+		GreenTests:  []string{"TestFoo"},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	result := RunOracleContext(ctx, dir, bl, nil, nil)
+	elapsed := time.Since(started)
+	if elapsed > 15*time.Second {
+		t.Fatalf("grace abandon failed: oracle returned after %s (BUG-354)", elapsed)
+	}
+	if elapsed < 300*time.Millisecond {
+		// Must have waited at least the deadline; a fast return would mean the
+		// pipe-holder never actually held the pipes.
+		t.Logf("note: returned after %s", elapsed)
+	}
+	if result.EnvError == "" || result.HasRegression || result.SuitePassed {
+		t.Fatalf("abandoned suite must be EnvError/non-pass, got %#v", result)
 	}
 }
 

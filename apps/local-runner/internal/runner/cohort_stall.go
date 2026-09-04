@@ -180,8 +180,11 @@ func (s *InteractiveService) checkAndBlockStalledMembers(parentRunID string) boo
 		s.mu.Lock()
 		// Gate visible → wait forever (T-11(a)); do not stall.
 		// BUG-288 R13-06: post-turn gate in progress is also a "gate" — not stalled.
+		// BUG-354 P2 (run-540927): the gate signal is bounded — a gate cancel
+		// past postTurnGateBusyBound is a DEAD gate and must stop shielding the
+		// member from the stall watchdog, same contract as the hub watchdog.
 		hasGate := child.pendingApprovalID != "" || child.pendingQuestionID != "" ||
-			child.postTurnGateCancel != nil || child.pendingFlowGateSettle
+			gateCancelLive(child.postTurnGateStartedAt, child.postTurnGateCancel) || child.pendingFlowGateSettle
 		last := child.lastProviderEventAt
 		label := child.label
 		status := child.status
@@ -405,7 +408,11 @@ func (s *InteractiveService) handleMemberAction(parentRunID string, action Membe
 			}
 			inFlight := child.turnInFlight
 			cancel := child.turnCancel
-			gateBusy := child.postTurnGateCancel != nil || child.pendingFlowGateSettle
+			// BUG-354 P2: bounded gate signal — a dead gate cancel (past
+			// postTurnGateBusyBound) must not park the restart intent forever.
+			// Settle without a live gate keeps parking (R13-07 protective
+			// intent: startTurn still rejects on settle).
+			gateBusy := gateCancelLive(child.postTurnGateStartedAt, child.postTurnGateCancel) || child.pendingFlowGateSettle
 			// BUG-288 R13-07: post-turn gate window (inFlight + cancel==nil) must
 			// park restart intent instead of force-clearing inFlight and startTurn
 			// which fails with gate_in_progress and loses the retry.

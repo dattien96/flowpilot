@@ -5645,6 +5645,22 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 }
 
 func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiSelect bool) ([]string, error) {
+	return b.askQuestion(nil, prompt, options, multiSelect)
+}
+
+// AskQuestionCtx is AskQuestion with one extra abandonment signal: when the
+// caller-supplied context dies (BUG-354 C2 run-540927 — the MCP HTTP client
+// disconnected, e.g. opencode's ~60s client timeout, while the runner-side
+// question TTL is 10 minutes) the pending question is EXPIRED instead of
+// staying answerable forever. A late AnswerQuestion then gets 409
+// question_expired instead of stamping a ghost RUNNING on a turn that already
+// ended. Implemented as a separate method (not a TurnBridge interface change)
+// so the test fakes that implement the interface keep compiling (R1).
+func (b *turnBridge) AskQuestionCtx(ctx context.Context, prompt string, options []QuestionOption, multiSelect bool) ([]string, error) {
+	return b.askQuestion(ctx, prompt, options, multiSelect)
+}
+
+func (b *turnBridge) askQuestion(extraCtx context.Context, prompt string, options []QuestionOption, multiSelect bool) ([]string, error) {
 	s := b.svc
 	s.mu.Lock()
 	expiresAt := time.Now().UTC().Add(s.questionTTL).Format(time.RFC3339Nano)
@@ -5701,6 +5717,12 @@ func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiS
 	}
 	s.mu.Unlock()
 
+	// BUG-354 C2: a nil extra channel blocks forever, so a nil extraCtx keeps
+	// the legacy AskQuestion behavior exactly.
+	var extraDone <-chan struct{}
+	if extraCtx != nil {
+		extraDone = extraCtx.Done()
+	}
 	timer := time.NewTimer(s.questionTTL)
 	defer timer.Stop()
 	select {
@@ -5717,6 +5739,9 @@ func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiS
 	case <-b.ctx.Done():
 		s.clearPendingQuestion(rec.id)
 		return nil, b.ctx.Err()
+	case <-extraDone:
+		s.expireQuestion(rec.id)
+		return nil, fmt.Errorf("ask_user aborted (client disconnected): %w", extraCtx.Err())
 	}
 }
 

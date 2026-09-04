@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -189,6 +190,40 @@ func handleClaudeAskUser(args map[string]any, bridge TurnBridge) map[string]any 
 		return claudeMcpTextResult("No answer was provided.")
 	}
 	return claudeMcpTextResult(strings.Join(choice, ", "))
+}
+
+// askUserCtxBridge is the optional capability interface for bridges that can
+// abandon their pending question when the MCP HTTP request dies (BUG-354 C2
+// run-540927: the model's MCP client times out (~60s opencode) while the
+// runner-side question TTL is 10 minutes — the card must not stay answerable
+// after the model already gave up; a late answer must get question_expired,
+// not a ghost RUNNING). Optional so the TurnBridge fakes in pre-existing tests
+// keep compiling unchanged (R1): without the capability we fall back to the
+// legacy unbounded AskQuestion.
+type askUserCtxBridge interface {
+	AskQuestionCtx(ctx context.Context, prompt string, options []QuestionOption, multiSelect bool) ([]string, error)
+}
+
+// handleClaudeAskUserCtx maps an ask_user tool call to the bridge's structured
+// question, bound to the HTTP request's lifetime. When the client disconnects
+// the question is expired and an error tool-result is returned so the provider
+// never hangs on it.
+func handleClaudeAskUserCtx(ctx context.Context, args map[string]any, bridge TurnBridge) map[string]any {
+	if ab, ok := bridge.(askUserCtxBridge); ok {
+		prompt, options, multi := claudeAskUserParams(args)
+		choice, err := ab.AskQuestionCtx(ctx, prompt, options, multi)
+		if err != nil {
+			// Abandonment (client disconnect / TTL / interrupt) → error
+			// tool-result so the provider never hangs on the call; the pending
+			// question is already expired bridge-side.
+			return claudeMcpTextResult("ask_user aborted: " + err.Error())
+		}
+		if len(choice) == 0 {
+			return claudeMcpTextResult("No answer was provided.")
+		}
+		return claudeMcpTextResult(strings.Join(choice, ", "))
+	}
+	return handleClaudeAskUser(args, bridge)
 }
 
 // handleClaudeSubmitReviewOutcome maps a submit_review_outcome tool call to bridge.SubmitFlowControl

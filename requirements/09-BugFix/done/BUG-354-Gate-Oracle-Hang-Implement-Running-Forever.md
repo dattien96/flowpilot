@@ -23,7 +23,7 @@
 - Live `run-540927` (gate-sandbox, opencode `omen-alpha`, task-harness, CP-58 Phiên 1 GCD prompt): the implement (coder) child finished its retry turn at 22:58:45 UTC; the post-turn child gate started `go test -v ./calc/...` and **never returned** — no result, no log line, no watchdog escape. The TUI pinned `implement RUNNING` with no card for 10+ minutes; the operator had to `/stop` manually.
 - Forensics: `[gate] scoped oracle run` logged at 22:58:45, then silence. The oracle's own 5-minute deadline (`context.WithTimeout` in `executeSuite`) never yielded a result: `cmd.Run()` blocks inside `cmd.Wait()` until the suite's inherited stdout/stderr pipes close — a grandchild holding the pipes pins the wait past the deadline, so `CommandContext`'s kill never converts into a return.
 - Watchdog blind spot (second layer): the hub stall watchdog (`checkAndBlockStalledHub`) treats a live `postTurnGateCancel` as busy, and `hasActiveFlowChild` treats the child's lingering `RunStatusRunning` + `pendingFlowGateSettle` as active — a **dead gate shields the flow from hub_stalled forever** (CA-361/CA-616 conservative fields), exactly the hang shape.
-- Near-miss (same run): the model's `flowpilot_ask_user` question timed out on the MCP client side (~72s) while the runner-side question TTL is 10 minutes — the card stayed answerable after the model already escalated and ended its turn; answering late stamped the run `RUNNING` again (ghost). Tracked as BUG-354 C2 (P1 batch, follow-up).
+- Near-miss (same run): the model's `flowpilot_ask_user` question timed out on the MCP client side (~72s) while the runner-side question TTL is 10 minutes — the card stayed answerable after the model already escalated and ended its turn; answering late stamped the run `RUNNING` again (ghost). **Fixed by CA-743 (P1)**: the shared MCP dispatch now carries `r.Context()`; client disconnect expires the question (late answer → 409, no ghost). The dead-gate busy shield on the cohort/resume consumers is also bounded (CA-743 P2), and the 2s grace abandon has its own probe (P3).
 
 ### Current Ask
 
@@ -49,8 +49,8 @@
 ### Open Questions
 
 - `Q-1` What exactly held the pipes in run-540927 (the suite failed in ~1s on the first gate)? Forensics could not capture a goroutine dump before the operator stopped the run; the fix bounds every shape, so the specific culprit is no longer load-bearing. A repro with `SIGQUIT` dump would answer it.
-- `Q-2` Should the cohort member watchdog (`cohort_stall.go`) get the same gate-age bound? Likely yes (same hang shape for reviewer children); deferred to keep this fix's blast radius tight.
-- `Q-3` P1/C2 (ask_user card outlives the MCP client + ghost RUNNING on late answer) — planned as a follow-up batch under the same BUG-354 (optional-interface `AskQuestionCtx`, no old-test compile break).
+- `Q-2` Cohort member watchdog same gate-age bound — DONE in P2 (same session): `cohort_stall.go` gate shield + restart park bounded via `gateCancelLive`; `interactive_resume.go` reinvoke drain bounded.
+- `Q-3` P1/C2 ask_user card lifecycle — DONE in P1 (same session): `AskQuestionCtx` + `dispatchCtx(r.Context())`; MCP client disconnect expires the question (late answer → 409 `question_expired`, no ghost RUNNING). Optional-interface design, zero old-test compile break.
 
 ### Source Refs
 
@@ -85,6 +85,7 @@
 
 ## Residual Risks
 
-- `interactive_resume.go:1788` and `cohort_stall.go:184/408` still treat `postTurnGateCancel != nil` as unbounded busy — a dead gate in a cohort member or a resume path can pin those flows the same way (Q-2 follow-up).
-- P1/C2: the `ask_user` card still outlives the MCP client timeout; a late answer stamps ghost `RUNNING` (open follow-up under this BUG).
+- `startTurn` (~`interactive_service.go:8035`) still rejects new turns while `postTurnGateCancel != nil` unbounded — deliberately kept: `gateEpoch` is bumped only by Stop, so racing a leaked gate goroutine could apply stale side effects. Escape = watchdog `hub_stalled` card → Stop. Narrowed by P0 to the rare post-oracle wedged case.
 - A suite legitimately running longer than 6 minutes (post-turn gate window) could trip the watchdog while the oracle is still inside its own 5m deadline — not reachable today (oracle deadline 5m < bound 6m) but the invariant is deadline < bound and must be kept if either constant changes.
+- Review F2/F3/F7 (deadline-race EnvError classification, leaked `cmd.Wait` goroutine after grace abandon, `cmd.Process` nil race) — bounded, conservative, documented in CA-742; no code change.
+- `ask_user` on the Claude stdio control_request path (`claude_adapter.handleInbound`) keeps its turn-ctx cancellation; the HTTP MCP path (all three providers' model ask_user) is the ctx-bound one fixed in P1.
