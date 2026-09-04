@@ -223,6 +223,23 @@ type interactiveRun struct {
 	// stalledRetrySuppressCohort is set only around the emitLocked call for a
 	// stall-retry cancel so EventTurnFailed does not buffer/join the cohort.
 	stalledRetrySuppressCohort bool
+	// parkCancelCause (CP-58 run-203966) marks that this run's in-flight turn
+	// is being cancelled by parkFlowForAwaitingUser(Locked) itself — the flow
+	// is parking awaiting a user decision, NOT the user interrupting the
+	// turn. finishTurn must not map this to the generic "interrupted by
+	// user" Cancelled stamp: a terminal parent makes flowRunTerminalLocked
+	// true, silently skipping every later advance ("run terminal/stopped")
+	// until the watchdog parks hub_stalled. One-shot, same shape as
+	// stalledRetryCause: cleared at finishTurn entry for any non-
+	// context.Canceled error, consumed in the park branch, and cleared when
+	// Stop already sealed the loop (Stop wins).
+	parkCancelCause bool
+	// parkCancelSuppress (CP-58 run-203966) is set at park time (before
+	// turnCancel) so an adapter that emits EventTurnFailed mid-cancel keeps
+	// the run non-terminal and skips the root-flow failure side effects
+	// (canonical-head abandon, signalChild), and again around finishTurn's
+	// own park-cancel emitLocked.
+	parkCancelSuppress bool
 	// skipNextTurnIdleNotify (BUG-288 R13-05) suppresses one notifyTurnIdle at
 	// runTurn tail when block/reprompt persist failed (or already notified).
 	skipNextTurnIdleNotify bool
@@ -1836,6 +1853,21 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	activeHubNodeID := ""
 	if rs := s.runs[parentRunID]; rs != nil {
 		activeHubNodeID = rs.activeHubNodeID
+		// CP-58 run-203966 self-heal: an earlier park cancel may have stamped
+		// this parent Cancelled (pre-fix runs, or a restart replaying the
+		// poisoned snapshot) while the loop is only PARKED awaiting this very
+		// decision. A blocked loop being resumed owns liveness — restore
+		// non-terminal so flowRunTerminalLocked does not silently skip every
+		// later advance ("run terminal/stopped"). Only Cancelled heals — a
+		// Failed root is a real failure, not park poison. Every parked reason
+		// goes through parkFlowForAwaitingUser, so any non-empty blocked
+		// reason qualifies; a genuinely stopped loop never reaches here
+		// (stopAgentLoop seals the loop "stopped", wasBlocked=false).
+		if wasBlocked && strings.TrimSpace(prevBlockReason) != "" &&
+			rs.status == RunStatusCancelled {
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+		}
 		// CP-51 A1 live: hub can retain a stale pendingFlowGateSettle from the
 		// entry turn (or a prior incomplete settle) while the real gate lives on
 		// the child. User Continue after escalate must not hit startTurn's
@@ -2237,6 +2269,14 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 			parent.currentTurnID != "" &&
 			parent.currentTurnID == opt.preserveParentTurnID
 		if parent.turnInFlight && parent.turnCancel != nil && !preserveParent {
+			// CP-58 run-203966: this is the ENGINE parking, not a user
+			// interrupt — the cancelled turn must not terminalize the run (see
+			// parkCancelCause / finishTurn's context.Canceled branch).
+			// parkCancelSuppress is armed together so an adapter that emits
+			// EventTurnFailed mid-cancel does not abandon canonical heads or
+			// signalChild before finishTurn even runs.
+			parent.parkCancelCause = true
+			parent.parkCancelSuppress = true
 			parent.turnCancel()
 		}
 		if parent.postTurnGateCancel != nil {
@@ -2325,6 +2365,10 @@ func (s *InteractiveService) parkFlowForAwaitingUserLocked(parentRunID string) {
 		parent.pendingFlowGateTurnID = ""
 		parent.pendingGateChangedFiles = nil
 		if parent.turnInFlight && parent.turnCancel != nil {
+			// CP-58 run-203966: same park-cancel contract as
+			// parkFlowForAwaitingUser (cause + suppress armed together).
+			parent.parkCancelCause = true
+			parent.parkCancelSuppress = true
 			parent.turnCancel()
 		}
 		if parent.postTurnGateCancel != nil {
@@ -5157,6 +5201,15 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			rs.agentStatus = string(RunStatusRunning)
 			break
 		}
+		// CP-58 run-203966: the flow park's own turn cancel (from the adapter
+		// mid-cancel or from finishTurn itself) is not a real failure either —
+		// keep the run non-terminal and skip the root-flow failure side
+		// effects (canonical-head abandon, signalChild).
+		if rs.parkCancelSuppress {
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+			break
+		}
 		rs.status = RunStatusFailed
 		rs.agentStatus = string(RunStatusFailed)
 		s.agentOrchestrator.signalChild(rs.id, "", true, ev.Error, RunStatusFailed)
@@ -7573,6 +7626,16 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 	s.mu.Lock()
 	rs.turnCancel = nil
 	rs.currentTurnID = ""
+	// CP-58 run-203966: park-cancel flags are one-shot for the context.Canceled
+	// branch below. Any other error (adapter returned nil, approval expiry, a
+	// real failure) must not keep them armed — a stale parkCancelCause would
+	// misclassify the NEXT real user interrupt as a park cancel, and a stale
+	// parkCancelSuppress would swallow a real failure (before the switch, so
+	// this branch's own emitLocked is not suppressed either).
+	if !errors.Is(err, context.Canceled) {
+		rs.parkCancelCause = false
+		rs.parkCancelSuppress = false
+	}
 	// lastTurnID used by resumePendingFlowGate after restart.
 	if turnID != "" {
 		rs.lastTurnID = turnID
@@ -7628,6 +7691,10 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 		// cancellation reaches finishTurn.
 		if rs.stalledSkipCause {
 			rs.stalledSkipCause = false
+			// CP-58 run-203966: the Skip contract stamps the run terminal
+			// Failed here — a stale park-cancel flag must not survive it.
+			rs.parkCancelCause = false
+			rs.parkCancelSuppress = false
 			s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "skipped by user (stalled)", Recoverable: false})
 			dispatchOutcome = "failed"
 			dispatchErrMsg = "skipped by user (stalled)"
@@ -7638,6 +7705,10 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 		// cohort-append + node-FAILED; keep Running for the pending restart.
 		if rs.stalledRetryCause {
 			rs.stalledRetryCause = false
+			// CP-58 run-203966: the retry cancel must not leave a stale
+			// park-cancel flag armed for the NEXT interrupt.
+			rs.parkCancelCause = false
+			rs.parkCancelSuppress = false
 			rs.status = RunStatusRunning
 			rs.agentStatus = string(RunStatusRunning)
 			rs.stalledRetrySuppressCohort = true
@@ -7649,6 +7720,47 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 			// intent on a new startTurn. Leave dispatch for recovery if needed.
 			break
 		}
+		// CP-58 run-203966: the flow park's own parent-turn cancel lands here.
+		// It is the engine parking awaiting a user decision, NOT a user
+		// interrupt — the generic "interrupted by user" Cancelled stamp below
+		// would make the parent terminal, so flowRunTerminalLocked silently
+		// skipped every later advance ("run terminal/stopped") and the
+		// watchdog parked hub_stalled. Keep the run non-terminal; the parked
+		// loop owns liveness. Stop still wins: when stopAgentLoop already
+		// sealed the loop "stopped" and stamped the run Cancelled before this
+		// cancel propagated, fall through to the generic interrupt branch
+		// instead of reviving the run (BUG-248 stop contract intact).
+		if rs.parkCancelCause &&
+			s.agentOrchestrator.loopStateFor(rs.id).Status != "stopped" &&
+			rs.status != RunStatusCancelled {
+			rs.parkCancelCause = false
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+			rs.parkCancelSuppress = true
+			s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "interrupted by flow park (awaiting user decision)", Recoverable: true})
+			rs.parkCancelSuppress = false
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+			// Patch the summary cache emitLocked just stamped (same shape as the
+			// stalledRetry branch above / the Cancelled branch below).
+			if parentID := strings.TrimSpace(rs.parentRunID); parentID != "" {
+				if summary, ok := s.agentOrchestrator.currentSummary(parentID, rs.id); ok {
+					summary.Status = RunStatusRunning
+					summary.AgentStatus = string(RunStatusRunning)
+					s.agentOrchestrator.upsertSummary(parentID, summary)
+				}
+			}
+			// The TURN is durably over (parked); settle its dispatch record like
+			// the user-cancel path, without the run-level terminal stamp.
+			dispatchOutcome = "cancelled"
+			dispatchErrMsg = "interrupted by flow park"
+			break
+		}
+		// Real user interrupt (or a Stop-guard fallthrough): the park-cancel
+		// flags must not leak into the generic "interrupted by user" branch —
+		// a Cancelled stamp here is genuine, not park poison.
+		rs.parkCancelCause = false
+		rs.parkCancelSuppress = false
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "interrupted by user", Recoverable: true})
 		// Task-240 T-5 / BUG-248: emitLocked maps TurnFailed → Failed in the
 		// summary cache before we override the run status. Patch summary + parent
