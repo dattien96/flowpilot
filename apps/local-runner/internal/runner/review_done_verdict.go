@@ -129,6 +129,16 @@ func (s *InteractiveService) advanceHubFromCohortMachineVerdicts(parentRunID str
 	if status != "done" && status != "continue" {
 		return false
 	}
+	if status == "done" {
+		// run-200816/run-201295: a prose-approved plan must advance through the
+		// hub's own done-successor edge (plan_synthesis -> preflight_contract_freeze)
+		// exactly like the hub's submit_review_outcome call would — NOT settle the
+		// whole flow via applyFlowControl("done"), which skips the freeze node and
+		// left the next step PENDING with no successor running.
+		if _, handled := s.advanceHubDoneThroughEdge(parentRunID, FlowControlInput{Status: "done", Summary: "Approved by cohort machine verdicts"}); handled {
+			return true
+		}
+	}
 	_, err := s.applyFlowControl(parentRunID, FlowControlInput{Status: status})
 	return err == nil
 }

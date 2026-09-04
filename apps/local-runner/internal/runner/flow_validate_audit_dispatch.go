@@ -972,6 +972,18 @@ func (s *InteractiveService) advanceToNextInlineOrDelegate(ctx context.Context, 
 		}
 		return true
 	default:
+		// run-201295: this switch had drifted from tryAdvanceFlowThroughInline —
+		// contract.freeze / context.produce were dispatchable there (CA-732) but
+		// silently returned false here, so a hub's approved "done" successor
+		// (plan_synthesis -> preflight_contract_freeze) never ran: the flow idled
+		// RUNNING for 2 minutes and parked hub_stalled (plan_synthesis
+		// WAITING_USER_APPROVAL, no freeze, no card). Route through the shared
+		// inline dispatcher; BUG-327's lock-step guard (flowNodeInlineDispatchable)
+		// keeps the behavior lists in sync.
+		if s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, nextNode, resultMessage) {
+			markSourceDone()
+			return true
+		}
 		return false
 	}
 }

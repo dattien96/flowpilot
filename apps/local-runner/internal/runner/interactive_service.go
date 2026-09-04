@@ -5742,10 +5742,35 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 			return FlowControlResult{Status: "done", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "advancing"}, true
 		}
 	}
-	// Dispatch the successor chain synchronously (telegram.notify / audit / etc.
-	// are Go-inline); a terminal reached at the end still calls applyFlowControl,
-	// so the loop settles for real by the time this returns.
-	s.advanceToNextInlineOrDelegate(context.Background(), targetRunID, edges, nodes, hubID, "done", in.Summary)
+	// Dispatch the successor chain synchronously (telegram.notify / audit /
+	// contract.freeze / etc. are Go-inline); a terminal reached at the end still
+	// calls applyFlowControl, so the loop settles for real by the time this returns.
+	ok = s.advanceToNextInlineOrDelegate(context.Background(), targetRunID, edges, nodes, hubID, "done", in.Summary)
+	if !ok {
+		// run-201295: the done successor (e.g. contract.freeze) could not be
+		// dispatched. CA-731 stamped the one-decision guard and reported
+		// "advancing" anyway, so BUG-226's escalate was gated off and the flow
+		// idled RUNNING until the 2m watchdog parked hub_stalled (plan_synthesis
+		// WAITING_USER_APPROVAL with no successor and no actionable card). Fail
+		// closed instead: escalate THIS turn so the operator gets a Retry/Stop
+		// card immediately. applyFlowControl stamps the one-decision guard
+		// itself; only stamp manually if the escalate path rejected it.
+		res, escErr := s.applyFlowControl(targetRunID, FlowControlInput{
+			Status:  "escalate",
+			Summary: fmt.Sprintf("Flow done successor %q could not be dispatched; escalating for review", target),
+		})
+		if escErr != nil {
+			s.mu.Lock()
+			if rs := s.runs[targetRunID]; rs != nil && rs.currentTurnID != "" {
+				rs.lastFlowControlTurnID = rs.currentTurnID
+			}
+			s.mu.Unlock()
+			log.Printf("[flow-executor] escalate after undispatchable done successor: %v", escErr)
+			st := s.agentOrchestrator.loopStateFor(targetRunID)
+			return FlowControlResult{Status: "blocked", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "awaiting_user"}, true
+		}
+		return res, true
+	}
 	// BUG-353 (run-198468): the hub.notify branch stamps the one-decision guard
 	// (BUG-289), but this generic-successor branch never did — so a hub whose
 	// submit_review_outcome(approved) routed through a real successor edge
