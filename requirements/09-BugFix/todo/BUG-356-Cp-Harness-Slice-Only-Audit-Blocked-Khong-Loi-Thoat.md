@@ -5,7 +5,7 @@
 - Document ID: `BUG-356`
 - Title: `cp-harness slice-only audit kẹt blocked_validation_failed không lối thoát`
 - Phase: `bugfix`
-- Status: `open`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-05`
@@ -28,8 +28,8 @@
 
 ### Current Ask
 
-- Quyết thiết kế: slice-only audit đi đường nào — (a) docs-only fast path (waive/khác chuẩn verify khi aggregate diff chỉ là docs), (b) inline validation nhẹ cho splitter output (file tồn tại + traceability, không `go test`), hay (c) operator override tường minh kiểu SS-17 (yếu fail-closed, cần thiết kế cẩn thận).
-- Capture-only ở bước này: chưa sửa code, chưa thêm test.
+- ~~Quyết thiết kế~~ — DONE option (b), approved by operator 2026-09-05.
+- Live-verify pending: rerun cp-harness tới `done` (C5/C6).
 
 ### Key Decisions
 
@@ -64,9 +64,13 @@
 
 Thiết kế (Task-306: slice-only không validate) xung đột với gate (audit đòi validation passed). Không bên nào sai một mình — thiếu quyết định "slice-only verify bằng gì". Fail-closed làm đúng việc của nó (không finalize bừa); sai là không có đường verify hợp lệ cho flow docs-only.
 
-## Fix direction (proposed, NOT implemented)
+## Fix (2026-09-05, done — code + unit, live-verify pending rerun)
 
-- Ưu tiên (b): inline validation nhẹ sau splitter (tồn tại file + traceability Parent→CP/P-* + additive check) rồi set validation passed cho audit — vừa giữ fail-closed vừa cho slice-only lối thoát.
-- (a) docs-only waive: nhanh nhưng định nghĩa "docs-only" phải chặt (aggregate diff toàn `.md` trong `requirements/`?).
-- (c) operator override: cuối cùng mới đụng (yếu gate).
-- Validation khi fix: unit mới (slice-only audit path) + rerun live run-556588-kiểu tới `done`.
+**Option (b) — inline docs-only verification (`runner/bug356_slice_audit.go` mới):**
+- `flowHasValidateNode(nodes)`: flow có `command.validate` mới sản sinh được validation state; slice-only không có theo thiết kế.
+- `verifySliceOnlyOutputs(changedFiles)` (pure, không I/O): mọi path phải docs-scope (`requirements/` + `change-audit/CA-*.md` + đúng exemption set của drift gate CA-427 — KHÔNG registry, KHÔNG flow-rules) và ≥1 harness artifact (`requirements/07-Coding-Plan/todo/CP-*.md` hoặc `requirements/08-Task/todo/Task-*.md`).
+- Nối vào `runAuditNode` (`flow_validate_audit_dispatch.go`): khi `state.Status == ""` (chưa từng validate) + flow không validate node + diff verify docs-only → ghi `passed` + command `slice-outputs-check (docs-only)`, persist retry state, diag log. Tier-3 doc-rules vẫn chạy sau đó (defense-in-depth giữ nguyên).
+- Fail-closed giữ nguyên cho mọi flow CÓ validate node (điều kiện `!flowHasValidateNode` loại trừ), và cho diff dính code/registry/rules (verify refuse → block cũ).
+
+**Verification:** 6 tests mới (`bug356_slice_audit_test.go`: pure gates + `runAuditNode` end-to-end matrix 3 providers pass + code-touch vẫn block); suites lân cận audit/validate/frozen/contract green trừ 3 `TestRun147126_*` đã baseline-fail đối xứng (3-vs-3 stash-diff); `go vet` sạch; gofmt lines mới sạch. Không sửa pre-existing tests.
+- Live-verify pending: rerun cp-harness (run mới) phải đi `task_splitter → audit → done` → đóng C5/C6.
