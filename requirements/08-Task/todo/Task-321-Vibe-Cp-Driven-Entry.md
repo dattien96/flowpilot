@@ -21,7 +21,7 @@
 
 ### Summary
 
-- Slice `CP-60 P-6` only: new skeleton `vibe-cp-ingest` + `CP Preview & Lock` card + `task_slicer` reusing `CP-58` splitter, then sequential `vibe-sprint` per Task tới done.
+- Slice `CP-60 P-6` only: new skeleton `vibe-cp-ingest` + `CP Preview & Lock` card + `task_slicer` reusing `CP-58` splitter, then sequential `vibe-sprint` v2 per Task tới done (v2 topology itself is `Task-323`/`P-7`; this task consumes it, not re-spec it).
 - Reuses Branch V resolver/sprint loop verbatim (`r-requirement` + 2-Owner debate, cap 5); explicitly not `task-harness`, no Dev cards, no engine change.
 - Entry auto-detects CP vs raw requirement (fallback explicit `/vibe-cp`); Desktop/TUI only, Admin Web rejected.
 
@@ -33,7 +33,7 @@
 
 - `T-1` Separate flow `vibe-cp-ingest`, not a branch inside `vibe-ingest` (YAML has no conditional edges; keeps `ValidateFlowDefinition` single-`continue` rule clean).
 - `T-2` `task_slicer` reuses `CP-58` `prompts/task-splitter.md` + `cp_md INPUT → task_md[] OUTPUT` bindings verbatim; no new artifact type.
-- `T-3` Per-Task coding is `vibe-sprint`, never `task-harness` (preserves vibe resolver semantics).
+- `T-3` Per-Task coding is `vibe-sprint` v2, never `task-harness` (preserves vibe resolver semantics; v2 adds auto `context`/`validate`/`audit`, never a plan-review loop or reviewer cohort).
 
 ### Constraints
 
@@ -70,7 +70,7 @@ A user points Desktop/TUI at one existing `CP-*.md`, locks it once in an editabl
 - `T-2` Register flow in `manifest.yaml` + mirror sync; update `pack_test.go` count `6 → 7 flows` (agents stay `7`); `ValidateFlowDefinition` + `ValidateFlowSafetyTopology` green for both ingests.
 - `T-3` Runner: entry routing (auto-detect CP by path/frontmatter, explicit `/vibe-cp <path>` override; non-CP file to `/vibe-cp` rejected deterministically); persist `working_mode=vibe` + `vibe.locked_cp` + `vibe.task_plan` in `localFileSessionStore` (`sessions.ndjson`); guard `vibe-sprint` refuses start while `cp_lock` is `WAITING_USER_APPROVAL`; on `task_slicer done`, render `task_plan` read-only on the timeline and sequentially start `vibe-sprint` per Task slice with Task-index replay on restart (same sink as Branch V); enforce total-sprint budget cap per run (stop with `BlockReason: budget`, no silent continuation).
 - `T-4` Desktop/TUI: `CP Preview & Lock` card for `cp_lock` (editable, write-back to CP draft + re-validate `SS-13` CP §§1–10 incl. `P-*`; `Lock → task_slicer`, `Continue → cp_reader`, `Escalate → ask_user`); `r-requirement` card shows plain-language mapping (which SS `AC-*` ↔ which test signature drifted + what SS edit fixes it); no Admin Web surface (reject `vibe` from admin client as `P-1`).
-- `T-5` Validation: additive `agentpack` topology test (`cp_lock=user.confirm`, single back-edge, artifact bindings) + runner tests (auto-detect, `cp_lock` gates sprint, restart replays Task index) + manual `/vibe-cp CP-*.md` demo (lock → slice → N× `vibe-sprint` to done; generic gate → Owner debate, `r-requirement` → requirement card only).
+- `T-5` Validation: additive `agentpack` topology test (`cp_lock=user.confirm`, single back-edge, artifact bindings) + runner tests (auto-detect, `cp_lock` gates sprint, restart replays Task index) + manual `/vibe-cp CP-*.md` demo (lock → slice → N× `vibe-sprint` v2 to done incl. `validate` green + `audit` ledger; generic gate → Owner debate, `r-requirement` → requirement card only).
 
 ## 5. Touched Areas
 
@@ -82,7 +82,7 @@ A user points Desktop/TUI at one existing `CP-*.md`, locks it once in an editabl
 ## 6. Acceptance Check
 
 - `LoadBuiltinPack` green with `7 flows` / `7 agents`; `ValidateFlowDefinition` + `ValidateFlowSafetyTopology` pass for `vibe-cp-ingest`.
-- `/vibe-cp <CP-*.md>`: CP card editable, Lock persists + re-validates, slicer emits `Task-*.md` list (visible read-only), sequential `vibe-sprint` per Task reaches done; non-CP input rejected with deterministic error; budget cap exceeded stops with `BlockReason: budget`.
+- `/vibe-cp <CP-*.md>`: CP card editable, Lock persists + re-validates, slicer emits `Task-*.md` list (visible read-only), sequential `vibe-sprint` v2 per Task reaches done (`context` packaged, `validate` green, `audit` ledger present); non-CP input rejected with deterministic error; budget cap exceeded stops with `BlockReason: budget`.
 - Post-lock asks are only `r-requirement` / Owner-cap; `r-requirement` card is non-tech readable; no Dev `1/2/3` cards in `vibe`; `dev` regression unchanged; `go test ./internal/agentpack ./internal/flowgate ./internal/runner` + `go vet` green.
 
 ## 7. Out of Scope
