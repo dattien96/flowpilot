@@ -35,20 +35,20 @@
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
-| A1 | Ép reviewer reject: trong prompt thêm "plan phải kèm benchmark plan" để lần 1 thiếu | `plan_synthesis` phát `continue` → `plan_writer` chạy LẠI trên **cùng 1 session** (child count = 1, không spawn mới); timeline: `plan_reviewer` + `plan_synthesis` reset PENDING, `context` giữ DONE |
-| A2 | Log runner khi plan-continue | Không có lỗi routing; re-entry prompt chứa "Feedback received" + findings của reviewer |
-| A3 | Lần 2 plan sửa xong, reviewer approve | `plan_synthesis` phát `done` → `preflight_contract_freeze` chạy (change contract lock) → `test_signatures` → `implement` |
-| A4 | Sau freeze, `implement` chạy | Prompt coder có **"## Required file outputs (write contract)"** nếu node có binding cụ thể; freeze scope đúng theo plan đã duyệt |
-| A5 | Kiểm tra `context`/`preflight_contract_plan` trên timeline | Vẫn DONE — không bị reset khi plan loop quay lại (BUG-286 scoping trên dual-loop) |
+| A1 | Ép reviewer reject: trong prompt thêm "plan phải kèm benchmark plan" để lần 1 thiếu | `plan_synthesis` phát `continue` → `plan_writer` chạy LẠI trên **cùng 1 session** (child count = 1, không spawn mới); timeline: `plan_reviewer` + `plan_synthesis` reset PENDING, `context` giữ DONE — ✅ PASS run-548341 (`doc-writer` spawn 1 lần `run-548436`, re-entry cùng session, reviewer+synthesis PENDING) |
+| A2 | Log runner khi plan-continue | Không có lỗi routing; re-entry prompt chứa "Feedback received" + findings của reviewer — ✅ PASS run-548341 (`[flow-engine] Feedback received… verdict: changes_requested. Blocking: feature_key…`) |
+| A3 | Lần 2 plan sửa xong, reviewer approve | `plan_synthesis` phát `done` → `preflight_contract_freeze` chạy (change contract lock) → `test_signatures` → `implement` — ✅ PASS run-548341 (round 2 approve 8 gate checks → freeze → test_signatures → implement) |
+| A4 | Sau freeze, `implement` chạy | Prompt coder có **"## Required file outputs (write contract)"** nếu node có binding cụ thể; freeze scope đúng theo plan đã duyệt — ✅ PASS run-548341 (implement chạy post-freeze đúng declared paths; flowgate block 2 lần viết lố ngoài scope = freeze enforcement live) |
+| A5 | Kiểm tra `context`/`preflight_contract_plan` trên timeline | Vẫn DONE — không bị reset khi plan loop quay lại (BUG-286 scoping trên dual-loop) — ✅ PASS run-548341 (screenshot lúc re-enter: cả 2 vẫn DONE) |
 
 ## B. Code review loop (loop 2) + tách biệt 2 loop
 
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
 | B1 | Ép code review reject (như dùng rag-harness bình thường) | `synthesis` (code hub) phát `continue` → re-enter `implement` trên **cùng session**; `validate`/`reviewer`/`synthesis` reset PENDING — ✅ PASS run-533004 (`changes_requested` API contract mismatch → implement re-work round 1 → APPROVED) |
-| B2 | Quan trọng: plan loop nodes sau code-continue | `plan_writer`/`plan_reviewer`/`plan_synthesis`/`context`/`freeze` vẫn DONE — code loop KHÔNG đụng plan loop |
-| B3 | Đếm child sau cả 2 loop | `plan_writer` = 1 child (reuse), `implement` = 1 child (reuse), `plan_reviewer`/`reviewer` = số child bằng số round (spawn lifecycle) |
-| B4 | Cap | Hai loop dùng chung `policy.cap:3` — sau 3 round tổng sẽ blocked/escalate; thông báo cap đọc được trên TUI |
+| B2 | Quan trọng: plan loop nodes sau code-continue | `plan_writer`/`plan_reviewer`/`plan_synthesis`/`context`/`freeze` vẫn DONE — code loop KHÔNG đụng plan loop — ✅ PASS run-548341 (screenshot giữa code-loop + transcript: steps 1–7 không re-run sau freeze) |
+| B3 | Đếm child sau cả 2 loop | `plan_writer` = 1 child (reuse), `implement` = 1 child (reuse), `plan_reviewer`/`reviewer` = số child bằng số round (spawn lifecycle) — ✅ PASS run-548341 (writer=1 `run-548436`, implement=1 `run-549304`, plan reviewer=2, code reviewer=2) |
+| B4 | Cap | Hai loop dùng chung `policy.cap:3` — sau 3 round tổng sẽ blocked/escalate; thông báo cap đọc được trên TUI — ⏳ CHƯA TEST (run-548341 xong ở round 2, không chạm cap) |
 
 ## C. cp-harness slice-only (Task-306)
 
