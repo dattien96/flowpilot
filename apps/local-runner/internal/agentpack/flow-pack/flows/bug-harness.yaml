@@ -1,0 +1,151 @@
+# bug-harness: Bug / Hotfix tier of the CP-58 harness family (Task-305 T-5,
+# operator option (a) 2026-09-04). Byte-identical clone of rag-harness.yaml
+# except id/description/label — the 9-step plan->freeze->context->TDD->
+# implement->validate->review->synthesis->audit chain with 1 code-review loop.
+# rag-harness keeps its chatBaseline role; this flow is the /flow picker entry.
+id: bug-harness
+version: 1
+description: Bug / Hotfix tier — 9-step TDD + Code Review with no plan overhead (clone of rag-harness).
+mode: flow
+builtin:
+  editable: false
+  selectableIn:
+    - flow
+  cloneable: true
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 3
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+contexts:
+  main_context:
+    ref: contexts/flow-context-package.yaml
+    # CP-44 P-4/Task-194: explicit enabled-source declaration. CP-55 P-8 added
+    # change.contract/canonical.head (spec 3.15) and Task-259 added
+    # source.dependence; together these six ids reproduce defaultContextSourceIDs
+    # (see context_sources_builtin.go) so flow renders match the runner's default
+    # set even though this flow-level list is now retired for Collect (it still
+    # validates via ValidateFlowContextSources).
+    sources:
+      - canonical.head
+      - feature.history
+      - change.contract
+      - source.dependence
+      - chat.summary
+      - source.excerpt
+tools:
+  - tools/submit-review-outcome.yaml
+acceptance_nodes:
+  - validate
+  - synthesis
+  - audit
+nodes:
+  - id: preflight_contract_plan
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/contract-planner.md
+    promptTemplate: prompts/plan-safe-fix-contract.md
+  - id: preflight_contract_freeze
+    run: inline
+    lifecycle: once
+    behavior: contract.freeze
+  - id: context
+    run: inline
+    lifecycle: once
+    behavior: context.produce
+  - id: test_signatures
+    run: delegate
+    lifecycle: once
+    behavior: agent.code
+    agent: agents/tester.md
+    promptTemplate: prompts/test-signatures.md
+  - id: implement
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.code
+    agent: agents/coder.md
+    promptTemplate: prompts/implement-complete-tests.md
+  - id: validate
+    run: inline
+    lifecycle: once
+    behavior: command.validate
+  - id: reviewer
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/reviewer.md
+    promptTemplate: prompts/review-safe-fix-contract.md
+    dependsOn:
+      - validate
+    cohort: review
+    join: all
+  - id: synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+  - id: audit
+    run: inline
+    lifecycle: once
+    behavior: artifact.audit_draft
+edges:
+  - from: preflight_contract_plan
+    to: preflight_contract_freeze
+    when: done
+    kind: forward
+  - from: preflight_contract_freeze
+    to: context
+    when: done
+    kind: forward
+  - from: context
+    to: test_signatures
+    when: done
+    kind: forward
+  - from: test_signatures
+    to: implement
+    when: done
+    kind: forward
+  - from: implement
+    to: validate
+    when: done
+    kind: forward
+  - from: validate
+    to: implement
+    when: continue
+    kind: back
+  - from: validate
+    to: reviewer
+    when: done
+    kind: forward
+  - from: validate
+    to: ask_user
+    when: escalate
+    kind: forward
+  - from: reviewer
+    to: synthesis
+    when: done
+    kind: forward
+  # NOTE: the flow declares exactly ONE "continue" back-edge (validate ->
+  # implement). The pack validator rejects duplicate back-edges for the same
+  # status, and the hub synthesis's changes_requested (continue) resolves the
+  # SAME edge via resolveContinueBackEdgeTarget — so review findings re-enter
+  # at implement (reset covering implement -> validate -> reviewer ->
+  # synthesis), while validate's own retry path reuses the identical edge
+  # (edgeTargetFrom validate/continue/back) for validation-failure re-entries.
+  - from: synthesis
+    to: audit
+    when: done
+    kind: forward
+  - from: synthesis
+    to: ask_user
+    when: escalate
+    kind: forward
+  - from: audit
+    to: done
+    when: done
+    kind: forward

@@ -51,12 +51,15 @@ type ReattachedMsg struct {
 type detachedNoticeMsg struct{}
 
 // chatTimelineBackfillMsg carries the prior legs' transcript records for /open
-// restore-by-chat rendering.
+// restore-by-chat rendering. RunScoped marks the BUG-355 F2 run-scoped fetch:
+// the records ARE the opened run's own transcript (no live replay renders
+// them), so the current-leg skip in the renderer does not apply.
 type chatTimelineBackfillMsg struct {
-	Records  []client.ChatTranscriptRecord
-	Current  string
-	Err      error
-	Detached bool
+	Records   []client.ChatTranscriptRecord
+	Current   string
+	Err       error
+	Detached  bool
+	RunScoped bool
 }
 
 // isChatHandle reports whether a handle is a chat leg. Runner now echoes
@@ -422,6 +425,40 @@ func (m *AppModel) cmdBackfillChatTimeline(handle client.RunHandle) tea.Cmd {
 	}
 }
 
+// cmdBackfillRunTimeline fetches the run-scoped timeline for /open of a
+// chat-less workflow run (BUG-355 F2). Deliberately separate from
+// cmdBackfillChatTimeline: BUG-338 pins the chat backfill to stay nil without
+// a chat id, so the run path needs its own cmd.
+func (m *AppModel) cmdBackfillRunTimeline(handle client.RunHandle) tea.Cmd {
+	if strings.TrimSpace(handle.RunID) == "" || strings.TrimSpace(handle.ChatID) != "" {
+		return nil
+	}
+	cl := m.client
+	runID := handle.RunID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		resp, err := cl.GetRunTimeline(ctx, runID, 0, 0)
+		if err != nil {
+			return chatTimelineBackfillMsg{Current: runID, Err: err, RunScoped: true}
+		}
+		detached := true
+		for _, leg := range resp.Legs {
+			if leg.LegState == "active" {
+				// Same terminal-leg rule as the chat backfill: a leg marked
+				// active whose run already ended is not locally turnable.
+				st := strings.ToLower(strings.TrimSpace(leg.Status))
+				if st == "completed" || st == "failed" || st == "cancelled" {
+					continue
+				}
+				detached = false
+				break
+			}
+		}
+		return chatTimelineBackfillMsg{Records: resp.Records, Current: runID, Err: nil, Detached: detached, RunScoped: true}
+	}
+}
+
 // renderChatTimelineBackfill maps prior legs' records into the transcript:
 // user/assistant text turns oldest-first plus one divider per provider switch
 // (stats from the E-9 payload). The current leg's own records are skipped —
@@ -440,7 +477,10 @@ func (m *AppModel) renderChatTimelineBackfill(msg chatTimelineBackfillMsg) {
 	// leg's assistant records until a real turn_started lands on it.
 	skipLeg := ""
 	for _, rec := range msg.Records {
-		if rec.LegRunID == msg.Current && rec.Type != tuiRecProviderSwitch {
+		// BUG-355 F2: run-scoped records ARE the opened run's own transcript
+		// (no live replay renders them), so the current-leg skip below does
+		// not apply — every record renders.
+		if !msg.RunScoped && rec.LegRunID == msg.Current && rec.Type != tuiRecProviderSwitch {
 			continue // current leg renders from the run replay; keep its switch divider
 		}
 		switch rec.Type {
@@ -491,5 +531,10 @@ func (m *AppModel) renderChatTimelineBackfill(msg chatTimelineBackfillMsg) {
 		messages = append(messages, m.messages...)
 		m.messages = messages
 		m.syncVisiblePromptCount()
+	} else if msg.RunScoped {
+		// BUG-355 F2: the run persisted no transcript (e.g. it ran before
+		// run-scoped capture landed) — say so instead of leaving the
+		// transcript silently empty, which reads as lost data.
+		m.addMessage("system", "No saved transcript for this run yet — the steps panel still shows the run timeline", "")
 	}
 }

@@ -223,6 +223,23 @@ type interactiveRun struct {
 	// stalledRetrySuppressCohort is set only around the emitLocked call for a
 	// stall-retry cancel so EventTurnFailed does not buffer/join the cohort.
 	stalledRetrySuppressCohort bool
+	// parkCancelCause (CP-58 run-203966) marks that this run's in-flight turn
+	// is being cancelled by parkFlowForAwaitingUser(Locked) itself — the flow
+	// is parking awaiting a user decision, NOT the user interrupting the
+	// turn. finishTurn must not map this to the generic "interrupted by
+	// user" Cancelled stamp: a terminal parent makes flowRunTerminalLocked
+	// true, silently skipping every later advance ("run terminal/stopped")
+	// until the watchdog parks hub_stalled. One-shot, same shape as
+	// stalledRetryCause: cleared at finishTurn entry for any non-
+	// context.Canceled error, consumed in the park branch, and cleared when
+	// Stop already sealed the loop (Stop wins).
+	parkCancelCause bool
+	// parkCancelSuppress (CP-58 run-203966) is set at park time (before
+	// turnCancel) so an adapter that emits EventTurnFailed mid-cancel keeps
+	// the run non-terminal and skips the root-flow failure side effects
+	// (canonical-head abandon, signalChild), and again around finishTurn's
+	// own park-cancel emitLocked.
+	parkCancelSuppress bool
 	// skipNextTurnIdleNotify (BUG-288 R13-05) suppresses one notifyTurnIdle at
 	// runTurn tail when block/reprompt persist failed (or already notified).
 	skipNextTurnIdleNotify bool
@@ -549,6 +566,11 @@ type interactiveRun struct {
 	// postTurnGateCancel cancels an in-flight post-turn oracle/gate after Stop
 	// (BUG-288 #10). Distinct from turnCancel which finishTurn clears first.
 	postTurnGateCancel context.CancelFunc
+	// postTurnGateStartedAt stamps when postTurnGateCancel was armed (BUG-354
+	// run-540927): a gate that never returns must stop counting as hub/child
+	// busy after postTurnGateBusyBound so the watchdog can surface hub_stalled
+	// instead of pinning the flow RUNNING forever.
+	postTurnGateStartedAt time.Time
 	// flowInlineCtx/Cancel covers in-process inline nodes (validate/audit) that
 	// run without a hub turn. stopAgentLoop cancels this so suites abort.
 	flowInlineCtx    context.Context
@@ -1523,7 +1545,16 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			if s.isFlowEngineDriven(parentRunID) {
 				nodes := s.activeFlowNodesFor(parentRunID)
 				edges := s.activeFlowEdgesFor(parentRunID)
-				reentryID, ok := resolveContinueBackEdgeTarget(edges)
+				// CP-58 Task-304: the emitter id comes from run state
+				// (FlowControlInput carries no node id) so a dual-loop harness
+				// routes the hub's continue to ITS loop's writer —
+				// plan_synthesis -> plan_writer vs synthesis -> implement —
+				// while single-hub flows keep resolving exactly as before.
+				hubFrom := s.activeHubNodeIDFor(parentRunID)
+				if hubFrom == "" {
+					hubFrom = hubInlineNodeID(nodes)
+				}
+				reentryID, ok := resolveContinueBackEdgeTarget(edges, hubFrom)
 				if !ok {
 					// Defensive fallback for a looping result with no declared
 					// continue back-edge (shouldn't occur for any flow that can
@@ -1714,6 +1745,52 @@ func (s *InteractiveService) extendCap(parentRunID string) (FlowControlResult, e
 	return result, nil
 }
 
+// isMissingChangeAuditNoteReason reports whether a gate reason is the audit
+// tier-3 / r-ca missing change-audit-note block (run-202550): "code changed
+// but no change-audit note found".
+func isMissingChangeAuditNoteReason(reason string) bool {
+	return strings.Contains(strings.ToLower(reason), "no change-audit note")
+}
+
+// upstreamCodeWriterForNode walks forward edges backwards from nodeID and
+// returns the nearest upstream agent.code writer (run-202550: task-harness
+// audit <- synthesis <- reviewer <- validate <- implement). Only forward
+// edges are followed so continue back-edges cannot loop; "" when none.
+func upstreamCodeWriterForNode(edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, nodeID string) string {
+	start := strings.TrimSpace(nodeID)
+	if start == "" {
+		return ""
+	}
+	visited := map[string]bool{start: true}
+	frontier := []string{start}
+	for len(frontier) > 0 {
+		var next []string
+		for _, cur := range frontier {
+			for _, e := range edges {
+				if !strings.EqualFold(strings.TrimSpace(e.Kind), "forward") {
+					continue
+				}
+				if !strings.EqualFold(strings.TrimSpace(e.To), cur) {
+					continue
+				}
+				from := strings.TrimSpace(e.From)
+				if from == "" || visited[from] {
+					continue
+				}
+				visited[from] = true
+				if node, ok := findFlowNode(nodes, from); ok {
+					if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.code" {
+						return from
+					}
+				}
+				next = append(next, from)
+			}
+		}
+		frontier = next
+	}
+	return ""
+}
+
 // resumeFlowWithFeedback is the BUG-231 "Continue" action: it answers the
 // hub's escalate/cap-reached pause and lets the hub re-decide, rather than
 // hard-routing anywhere itself (D-5). It:
@@ -1741,7 +1818,6 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	wasBlocked := false
 	prevBlockReason := s.agentOrchestrator.loopStateFor(parentRunID).BlockReason
 	prevGateReason := s.agentOrchestrator.loopStateFor(parentRunID).GateReason
-	_ = prevGateReason
 	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		if st.Status != "blocked" {
 			return st
@@ -1782,6 +1858,21 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	activeHubNodeID := ""
 	if rs := s.runs[parentRunID]; rs != nil {
 		activeHubNodeID = rs.activeHubNodeID
+		// CP-58 run-203966 self-heal: an earlier park cancel may have stamped
+		// this parent Cancelled (pre-fix runs, or a restart replaying the
+		// poisoned snapshot) while the loop is only PARKED awaiting this very
+		// decision. A blocked loop being resumed owns liveness — restore
+		// non-terminal so flowRunTerminalLocked does not silently skip every
+		// later advance ("run terminal/stopped"). Only Cancelled heals — a
+		// Failed root is a real failure, not park poison. Every parked reason
+		// goes through parkFlowForAwaitingUser, so any non-empty blocked
+		// reason qualifies; a genuinely stopped loop never reaches here
+		// (stopAgentLoop seals the loop "stopped", wasBlocked=false).
+		if wasBlocked && strings.TrimSpace(prevBlockReason) != "" &&
+			rs.status == RunStatusCancelled {
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+		}
 		// CP-51 A1 live: hub can retain a stale pendingFlowGateSettle from the
 		// entry turn (or a prior incomplete settle) while the real gate lives on
 		// the child. User Continue after escalate must not hit startTurn's
@@ -1878,6 +1969,35 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	}
 	if hubInline == "" && escalatedNodeID == "" && failedDelegateNodeID == "" {
 		// Still no hub and no remembered node — fall through to generic reinvoke.
+	}
+	// run-202550: an audit escalate for a missing change-audit note must NOT
+	// re-run the audit (the note is still missing → immediate re-escalate
+	// "no progress since last continue") and must NOT reinvoke the plan hub.
+	// Retry re-enters the nearest upstream agent.code writer with an explicit
+	// "write the missing CA note" prompt; the flow then continues through
+	// validate → reviewer → synthesis → audit on its own edges.
+	if escalatedNodeID != "" && isMissingChangeAuditNoteReason(prevGateReason) {
+		if node, ok := findFlowNode(nodes, escalatedNodeID); ok {
+			if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "artifact.audit_draft" {
+				if writerID := upstreamCodeWriterForNode(edges, nodes, escalatedNodeID); writerID != "" {
+					if wnode, ok := findFlowNode(nodes, writerID); ok {
+						resumePrompt := "[flow-engine] The audit gate is blocked: code changed but no change-audit note found. Write the missing change-audit note (change-audit/CA-*.md) covering the code you changed this turn, then continue."
+						if strings.TrimSpace(feedback) != "" {
+							resumePrompt = strings.TrimSpace(feedback) + "\n\n---\n\n" + resumePrompt
+						}
+						resumePrompt = composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), resumePrompt, wnode)
+						if s.reinvokeMatchingFlowChild(parentRunID, resumePrompt, func(child *interactiveRun) bool {
+							return child.label == writerID
+						}) {
+							s.setFlowStepStatus(context.Background(), parentRunID, writerID, StepStatusRunning)
+							return snap, nil
+						}
+					}
+				}
+			}
+		}
+		// No writer resolved or no matching child — fall through to the
+		// existing audit re-dispatch below rather than stranding the resume.
 	}
 	// Run-144900: writer parks (agent.code / agent.delegate) must retry the
 	// delegate child even on live rag-harness which has hub.inline=synthesis.
@@ -2154,6 +2274,14 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 			parent.currentTurnID != "" &&
 			parent.currentTurnID == opt.preserveParentTurnID
 		if parent.turnInFlight && parent.turnCancel != nil && !preserveParent {
+			// CP-58 run-203966: this is the ENGINE parking, not a user
+			// interrupt — the cancelled turn must not terminalize the run (see
+			// parkCancelCause / finishTurn's context.Canceled branch).
+			// parkCancelSuppress is armed together so an adapter that emits
+			// EventTurnFailed mid-cancel does not abandon canonical heads or
+			// signalChild before finishTurn even runs.
+			parent.parkCancelCause = true
+			parent.parkCancelSuppress = true
 			parent.turnCancel()
 		}
 		if parent.postTurnGateCancel != nil {
@@ -2242,6 +2370,10 @@ func (s *InteractiveService) parkFlowForAwaitingUserLocked(parentRunID string) {
 		parent.pendingFlowGateTurnID = ""
 		parent.pendingGateChangedFiles = nil
 		if parent.turnInFlight && parent.turnCancel != nil {
+			// CP-58 run-203966: same park-cancel contract as
+			// parkFlowForAwaitingUser (cause + suppress armed together).
+			parent.parkCancelCause = true
+			parent.parkCancelSuppress = true
 			parent.turnCancel()
 		}
 		if parent.postTurnGateCancel != nil {
@@ -2474,6 +2606,19 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 				hubNodeID := parent.activeHubNodeID
 				if hubNodeID == "" {
 					hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
+				}
+				// CP-58 Task-304: a failed member can be the join that completes
+				// a dual-hub flow's cohort — stamp the hub the cohort feeds
+				// into, not first-match hub.inline (single-hub flows unchanged).
+				joined := make([]string, 0, len(entries))
+				for _, e := range entries {
+					if e.Label != "" {
+						joined = append(joined, e.Label)
+					}
+				}
+				if resolved, dual := hubNodeIDForCohortJoin(parent.activeFlowNodes, parent.activeFlowEdges, joined); dual && resolved != "" {
+					hubNodeID = resolved
+					parent.activeHubNodeID = resolved
 				}
 				if hubNodeID != "" && s.loopIsAdvancing(parentRunID) {
 					s.setFlowStepStatusLocked(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
@@ -2916,7 +3061,14 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 	var hasTargetNode bool
 	var flowDriven bool
 	if parent := s.runs[parentRunID]; parent != nil {
-		targetNodeID, _ = resolveContinueBackEdgeTarget(parent.activeFlowEdges)
+		// CP-58 Task-304: source-aware re-entry — activeHubNodeID names the
+		// hub-driven node whose continue this is (fallback first-match hub for
+		// single-hub flows keeps pre-CP-58 behavior).
+		hubFrom := parent.activeHubNodeID
+		if hubFrom == "" {
+			hubFrom = hubInlineNodeID(parent.activeFlowNodes)
+		}
+		targetNodeID, _ = resolveContinueBackEdgeTarget(parent.activeFlowEdges, hubFrom)
 		if targetNodeID != "" {
 			targetNode, hasTargetNode = findFlowNode(parent.activeFlowNodes, targetNodeID)
 		}
@@ -2938,20 +3090,35 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 		prompt = composeFlowNodeAgentPrompt(cwd, prompt, composeNode)
 		prompt = appendChangeContractIfAnyWithSecret(cwd, parentRunID, prompt, s.markerSecret)
 	}
-	if composeOK && !reuseChild {
+	spawnContinueChild := func() {
 		agentName := flowNodeAgentName(composeNode)
 		if agentName == "" {
 			return
 		}
+		// run-198699 review (CA-732 finding 4): the continue spawn must carry
+		// the same rendered FlowContextPackage + FCP provenance as the
+		// forward-entry spawn (runContextProduceNode / startInlineEntryChain),
+		// otherwise a Retry-continue onto a never-spawned plan_writer starts
+		// the writer without the context package the S2 handoff expects.
+		p := prompt
+		fcpProvenanceRunID := ""
+		if pkg, ok := s.loadPlanContextPackage(context.Background(), parentRunID); ok {
+			p = renderFlowContextPromptWithSecret(context.Background(), pkg, p, s.markerSecret)
+			fcpProvenanceRunID = pkg.WorkflowRunID
+			if fcpProvenanceRunID == "" {
+				fcpProvenanceRunID = pkg.PackageID
+			}
+		}
 		agentDef, _ := resolvePackAgentDefinition(agentName)
 		if _, err := s.spawnChildRun(context.Background(), parentRunID, SpawnAgentInput{
-			Agent:            agentName,
-			Prompt:           prompt,
-			Wait:             false,
-			Label:            composeNode.ID,
-			AutoOrchestrate:  true,
-			AgentDefOverride: agentDef,
-			Model:            s.delegateSpawnModel(context.Background(), parentRunID, composeNode),
+			Agent:                    agentName,
+			Prompt:                   p,
+			Wait:                     false,
+			Label:                    composeNode.ID,
+			AutoOrchestrate:          true,
+			AgentDefOverride:         agentDef,
+			Model:                    s.delegateSpawnModel(context.Background(), parentRunID, composeNode),
+			FCPMarkerProvenanceRunID: fcpProvenanceRunID,
 		}); err != nil {
 			log.Printf("[flow-executor] continue: spawn node %q (agent %q) failed: %v", composeNode.ID, agentName, err)
 			return
@@ -2960,7 +3127,30 @@ func (s *InteractiveService) maybeReinvokeCoderForContinue(parentRunID, prompt s
 			s.setFlowStepStatus(context.Background(), parentRunID, composeNode.ID, StepStatusRunning)
 			s.stampFlowNodePosture(context.Background(), parentRunID, composeNode)
 		}
+	}
+	if composeOK && !reuseChild {
+		spawnContinueChild()
 		return
+	}
+	// run-198699: a continue landing on a reinvoke-lifecycle agent.delegate with
+	// no prior child (hub_stalled parked the flow before the writer ever ran —
+	// task-harness plan_writer) used to silently no-op and hub_stalled again.
+	// Spawn a fresh child so the back-edge actually fires. Scoped to
+	// agent.delegate: agent.code writers go through the frozen-contract path and
+	// their fixture tests must not gain a cascade here.
+	if composeOK && reuseChild {
+		if canonical, ok := agentpack.NormalizeBehaviorID(composeNode.Behavior); ok && canonical == "agent.delegate" {
+			if s.reinvokeMatchingFlowChild(parentRunID, prompt, func(child *interactiveRun) bool {
+				if targetNodeID != "" {
+					return child.label == targetNodeID
+				}
+				return isCoderRun(child)
+			}) {
+				return
+			}
+			spawnContinueChild()
+			return
+		}
 	}
 	// BUG-242: delegate to the single reinvoke implementation instead of a
 	// second, older inline copy that never got the BUG-Rnd2 activationSeq/
@@ -4309,6 +4499,7 @@ func (s *InteractiveService) resumePendingFlowGate(runID string) {
 		return
 	}
 	rs.postTurnGateCancel = cancel
+	rs.postTurnGateStartedAt = time.Now().UTC()
 	s.mu.Unlock()
 	var blocked bool
 	if isRoot {
@@ -4737,6 +4928,15 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 					}
 				}
 				hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
+				// CP-58 Task-304: dual-hub harnesses must stamp (and track) the
+				// hub the joined reviewers actually feed into — plan_synthesis
+				// vs synthesis — so the hub's own continue/done resolves against
+				// ITS loop instead of first-match hub.inline. Single-hub flows
+				// keep Task-235's tracking untouched.
+				if resolved, dual := hubNodeIDForCohortJoin(parent.activeFlowNodes, parent.activeFlowEdges, reviewerNodeIDs); dual && resolved != "" {
+					hubNodeID = resolved
+					parent.activeHubNodeID = resolved
+				}
 			}
 			// Capture the cohort note to embed directly in the synthesis prompt.
 			// This fixes BUG-synthesis-hang: Codex agents on resumed threads do not
@@ -5007,6 +5207,15 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			rs.agentStatus = string(RunStatusRunning)
 			break
 		}
+		// CP-58 run-203966: the flow park's own turn cancel (from the adapter
+		// mid-cancel or from finishTurn itself) is not a real failure either —
+		// keep the run non-terminal and skip the root-flow failure side
+		// effects (canonical-head abandon, signalChild).
+		if rs.parkCancelSuppress {
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+			break
+		}
 		rs.status = RunStatusFailed
 		rs.agentStatus = string(RunStatusFailed)
 		s.agentOrchestrator.signalChild(rs.id, "", true, ev.Error, RunStatusFailed)
@@ -5091,6 +5300,13 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 						hubNodeID := parent.activeHubNodeID
 						if hubNodeID == "" {
 							hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
+						}
+						// CP-58 Task-304: a failed member completing the cohort
+						// must still activate ITS hub on dual-hub flows (the
+						// member's forward edge names it), not first-match.
+						if resolved, dual := hubNodeIDForCohortJoin(parent.activeFlowNodes, parent.activeFlowEdges, []string{rs.label}); dual && resolved != "" {
+							hubNodeID = resolved
+							parent.activeHubNodeID = resolved
 						}
 						if hubNodeID != "" && s.loopIsAdvancing(rs.parentRunID) {
 							s.setFlowStepStatusLocked(context.Background(), rs.parentRunID, hubNodeID, StepStatusRunning)
@@ -5429,6 +5645,22 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 }
 
 func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiSelect bool) ([]string, error) {
+	return b.askQuestion(nil, prompt, options, multiSelect)
+}
+
+// AskQuestionCtx is AskQuestion with one extra abandonment signal: when the
+// caller-supplied context dies (BUG-354 C2 run-540927 — the MCP HTTP client
+// disconnected, e.g. opencode's ~60s client timeout, while the runner-side
+// question TTL is 10 minutes) the pending question is EXPIRED instead of
+// staying answerable forever. A late AnswerQuestion then gets 409
+// question_expired instead of stamping a ghost RUNNING on a turn that already
+// ended. Implemented as a separate method (not a TurnBridge interface change)
+// so the test fakes that implement the interface keep compiling (R1).
+func (b *turnBridge) AskQuestionCtx(ctx context.Context, prompt string, options []QuestionOption, multiSelect bool) ([]string, error) {
+	return b.askQuestion(ctx, prompt, options, multiSelect)
+}
+
+func (b *turnBridge) askQuestion(extraCtx context.Context, prompt string, options []QuestionOption, multiSelect bool) ([]string, error) {
 	s := b.svc
 	s.mu.Lock()
 	expiresAt := time.Now().UTC().Add(s.questionTTL).Format(time.RFC3339Nano)
@@ -5485,6 +5717,12 @@ func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiS
 	}
 	s.mu.Unlock()
 
+	// BUG-354 C2: a nil extra channel blocks forever, so a nil extraCtx keeps
+	// the legacy AskQuestion behavior exactly.
+	var extraDone <-chan struct{}
+	if extraCtx != nil {
+		extraDone = extraCtx.Done()
+	}
 	timer := time.NewTimer(s.questionTTL)
 	defer timer.Stop()
 	select {
@@ -5501,6 +5739,9 @@ func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiS
 	case <-b.ctx.Done():
 		s.clearPendingQuestion(rec.id)
 		return nil, b.ctx.Err()
+	case <-extraDone:
+		s.expireQuestion(rec.id)
+		return nil, fmt.Errorf("ask_user aborted (client disconnected): %w", extraCtx.Err())
 	}
 }
 
@@ -5659,19 +5900,67 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 			return FlowControlResult{Status: "done", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "advancing"}, true
 		}
 	}
-	// Dispatch the successor chain synchronously (telegram.notify / audit / etc.
-	// are Go-inline); a terminal reached at the end still calls applyFlowControl,
-	// so the loop settles for real by the time this returns.
-	s.advanceToNextInlineOrDelegate(context.Background(), targetRunID, edges, nodes, hubID, "done", in.Summary)
+	// Dispatch the successor chain synchronously (telegram.notify / audit /
+	// contract.freeze / etc. are Go-inline); a terminal reached at the end still
+	// calls applyFlowControl, so the loop settles for real by the time this returns.
+	ok = s.advanceToNextInlineOrDelegate(context.Background(), targetRunID, edges, nodes, hubID, "done", in.Summary)
+	if !ok {
+		// run-201295: the done successor (e.g. contract.freeze) could not be
+		// dispatched. CA-731 stamped the one-decision guard and reported
+		// "advancing" anyway, so BUG-226's escalate was gated off and the flow
+		// idled RUNNING until the 2m watchdog parked hub_stalled (plan_synthesis
+		// WAITING_USER_APPROVAL with no successor and no actionable card). Fail
+		// closed instead: escalate THIS turn so the operator gets a Retry/Stop
+		// card immediately. applyFlowControl stamps the one-decision guard
+		// itself; only stamp manually if the escalate path rejected it.
+		res, escErr := s.applyFlowControl(targetRunID, FlowControlInput{
+			Status:  "escalate",
+			Summary: fmt.Sprintf("Flow done successor %q could not be dispatched; escalating for review", target),
+		})
+		if escErr != nil {
+			s.mu.Lock()
+			if rs := s.runs[targetRunID]; rs != nil && rs.currentTurnID != "" {
+				rs.lastFlowControlTurnID = rs.currentTurnID
+			}
+			s.mu.Unlock()
+			log.Printf("[flow-executor] escalate after undispatchable done successor: %v", escErr)
+			st := s.agentOrchestrator.loopStateFor(targetRunID)
+			return FlowControlResult{Status: "blocked", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "awaiting_user"}, true
+		}
+		return res, true
+	}
+	// BUG-353 (run-198468): the hub.notify branch stamps the one-decision guard
+	// (BUG-289), but this generic-successor branch never did — so a hub whose
+	// submit_review_outcome(approved) routed through a real successor edge
+	// (plan_synthesis --done--> preflight_contract_freeze) still read as
+	// "completed without submit_review_outcome", and BUG-226 escalated the hub
+	// to WAITING_USER_APPROVAL even though the tool succeeded (reproduced 3x
+	// incl. a Retry). Stamp here exactly like the hub.notify branch so the
+	// completed turn counts as its flow-control decision.
+	s.mu.Lock()
+	if rs := s.runs[targetRunID]; rs != nil && rs.currentTurnID != "" {
+		rs.lastFlowControlTurnID = rs.currentTurnID
+	}
+	s.mu.Unlock()
 	st := s.agentOrchestrator.loopStateFor(targetRunID)
 	nextAction := "looping"
+	status := st.Status
 	switch st.Status {
 	case "done":
 		nextAction = "done"
 	case "blocked":
 		nextAction = "awaiting_user"
+	case "running":
+		// BUG-284 follow-up, extended from the hub.notify branch: report the
+		// caller's verdict as accepted. "continue"/"looping" reads to the model
+		// as "your done call was rejected, keep looping" (observed live: a
+		// synthesizer called escalate() in the same turn after getting
+		// "continue"). The engine is still advancing internally, but the model
+		// must not retry the decision.
+		status = "done"
+		nextAction = "advancing"
 	}
-	return FlowControlResult{Status: st.Status, Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: nextAction}, true
+	return FlowControlResult{Status: status, Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: nextAction}, true
 }
 
 // dispatchHubNotifyNode (Task-235) is the single entry point for reaching a
@@ -6697,9 +6986,26 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// (gate reprompt / BugFix doc) can complete without the review tool; escalating
 	// then parkFlowForAwaitingUser cancels the brand-new reviewer cohort and shows
 	// a form with the STALE round-0 lastCohortNote ("Reviewers reported: …").
-	if completed && offerReviewOutcomeTool && rs.parentRunID == "" && rs.flowEngineDriven && !s.flowControlSubmittedForTurn(rs.id, turnID) {
+	//
+	// run-199617 (hub_stalled 2m): a flow-engine hub stays status=running while the
+	// loop is live, so `completed` (status Completed || pendingFlowGateSettle) is
+	// false even after the provider turn itself finished via EventTurnCompleted —
+	// the hub prose-answered without submit_review_outcome and the watchdog parked
+	// hub_stalled after 2m instead of this fallback surfacing an actionable card.
+	// Treat a terminal provider event as "the turn finished" for this fallback;
+	// the tool-submitted / open-cohort / sealed-loop guards below still apply.
+	hubTurnFinished := completed || rs.lastEventType == EventTurnCompleted
+	if hubTurnFinished && offerReviewOutcomeTool && rs.parentRunID == "" && rs.flowEngineDriven && !s.flowControlSubmittedForTurn(rs.id, turnID) {
 		if s.hubShouldSkipProseEscalate(rs.id) {
 			log.Printf("[flow-step] hub turn %q completed without submit_review_outcome, but children/cohort still active — skip BUG-226 escalate", turnID)
+		} else if s.advanceHubFromCohortMachineVerdicts(rs.id) {
+			// run-200816: the reviewers already recorded machine verdicts via
+			// submit_review_outcome, but the hub finished in prose. Drive the
+			// transition from those verdicts (all approved → done/freeze, any
+			// changes_requested → continue) instead of forcing the operator to
+			// Retry an already-decided plan. Empty/blocked verdicts fall
+			// through to the BUG-226 escalate below (CA-735 preserved).
+			log.Printf("[flow-step] hub turn %q completed without submit_review_outcome; cohort machine verdicts derived the flow transition", turnID)
 		} else {
 			log.Printf("[flow-step] hub synthesis turn %q completed without submit_review_outcome, escalating", turnID)
 			// BUG-233: the awaiting-user card renders this Summary verbatim as
@@ -6898,6 +7204,7 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			s.mu.Lock()
 			gateEpoch := rs.gateEpoch
 			rs.postTurnGateCancel = gateCancel
+			rs.postTurnGateStartedAt = time.Now().UTC()
 			s.mu.Unlock()
 			defer func() {
 				s.mu.Lock()
@@ -7351,6 +7658,16 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 	s.mu.Lock()
 	rs.turnCancel = nil
 	rs.currentTurnID = ""
+	// CP-58 run-203966: park-cancel flags are one-shot for the context.Canceled
+	// branch below. Any other error (adapter returned nil, approval expiry, a
+	// real failure) must not keep them armed — a stale parkCancelCause would
+	// misclassify the NEXT real user interrupt as a park cancel, and a stale
+	// parkCancelSuppress would swallow a real failure (before the switch, so
+	// this branch's own emitLocked is not suppressed either).
+	if !errors.Is(err, context.Canceled) {
+		rs.parkCancelCause = false
+		rs.parkCancelSuppress = false
+	}
 	// lastTurnID used by resumePendingFlowGate after restart.
 	if turnID != "" {
 		rs.lastTurnID = turnID
@@ -7406,6 +7723,10 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 		// cancellation reaches finishTurn.
 		if rs.stalledSkipCause {
 			rs.stalledSkipCause = false
+			// CP-58 run-203966: the Skip contract stamps the run terminal
+			// Failed here — a stale park-cancel flag must not survive it.
+			rs.parkCancelCause = false
+			rs.parkCancelSuppress = false
 			s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "skipped by user (stalled)", Recoverable: false})
 			dispatchOutcome = "failed"
 			dispatchErrMsg = "skipped by user (stalled)"
@@ -7416,6 +7737,10 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 		// cohort-append + node-FAILED; keep Running for the pending restart.
 		if rs.stalledRetryCause {
 			rs.stalledRetryCause = false
+			// CP-58 run-203966: the retry cancel must not leave a stale
+			// park-cancel flag armed for the NEXT interrupt.
+			rs.parkCancelCause = false
+			rs.parkCancelSuppress = false
 			rs.status = RunStatusRunning
 			rs.agentStatus = string(RunStatusRunning)
 			rs.stalledRetrySuppressCohort = true
@@ -7427,6 +7752,47 @@ func (s *InteractiveService) finishTurn(rs *interactiveRun, turnID string, err e
 			// intent on a new startTurn. Leave dispatch for recovery if needed.
 			break
 		}
+		// CP-58 run-203966: the flow park's own parent-turn cancel lands here.
+		// It is the engine parking awaiting a user decision, NOT a user
+		// interrupt — the generic "interrupted by user" Cancelled stamp below
+		// would make the parent terminal, so flowRunTerminalLocked silently
+		// skipped every later advance ("run terminal/stopped") and the
+		// watchdog parked hub_stalled. Keep the run non-terminal; the parked
+		// loop owns liveness. Stop still wins: when stopAgentLoop already
+		// sealed the loop "stopped" and stamped the run Cancelled before this
+		// cancel propagated, fall through to the generic interrupt branch
+		// instead of reviving the run (BUG-248 stop contract intact).
+		if rs.parkCancelCause &&
+			s.agentOrchestrator.loopStateFor(rs.id).Status != "stopped" &&
+			rs.status != RunStatusCancelled {
+			rs.parkCancelCause = false
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+			rs.parkCancelSuppress = true
+			s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "interrupted by flow park (awaiting user decision)", Recoverable: true})
+			rs.parkCancelSuppress = false
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+			// Patch the summary cache emitLocked just stamped (same shape as the
+			// stalledRetry branch above / the Cancelled branch below).
+			if parentID := strings.TrimSpace(rs.parentRunID); parentID != "" {
+				if summary, ok := s.agentOrchestrator.currentSummary(parentID, rs.id); ok {
+					summary.Status = RunStatusRunning
+					summary.AgentStatus = string(RunStatusRunning)
+					s.agentOrchestrator.upsertSummary(parentID, summary)
+				}
+			}
+			// The TURN is durably over (parked); settle its dispatch record like
+			// the user-cancel path, without the run-level terminal stamp.
+			dispatchOutcome = "cancelled"
+			dispatchErrMsg = "interrupted by flow park"
+			break
+		}
+		// Real user interrupt (or a Stop-guard fallthrough): the park-cancel
+		// flags must not leak into the generic "interrupted by user" branch —
+		// a Cancelled stamp here is genuine, not park poison.
+		rs.parkCancelCause = false
+		rs.parkCancelSuppress = false
 		s.emitLocked(rs, ProviderEvent{Type: EventTurnFailed, ProviderTurnID: turnID, Error: "interrupted by user", Recoverable: true})
 		// Task-240 T-5 / BUG-248: emitLocked maps TurnFailed → Failed in the
 		// summary cache before we override the run status. Patch summary + parent

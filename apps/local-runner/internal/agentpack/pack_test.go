@@ -22,8 +22,12 @@ func TestLoadBuiltinPack(t *testing.T) {
 	// artifact I/O.
 	// SS-18/SD-24 add three Vibe flows (vibe-ingest, vibe-sprint,
 	// vibe-owner-debate) + owner agent.
-	if len(pack.Flows) != 6 {
-		t.Fatalf("expected 6 built-in flows, got %d", len(pack.Flows))
+	// CP-58 Task-305/306 add the three harness flows (task-harness,
+	// cp-harness, cp-harness-smoke) for the Bug/Task/CP tier family.
+	// Task-305 T-5 follow-up (operator option (a) 2026-09-04) adds bug-harness
+	// as the byte-identical Bug-tier clone of rag-harness.
+	if len(pack.Flows) != 10 {
+		t.Fatalf("expected 10 built-in flows, got %d", len(pack.Flows))
 	}
 	names := SortedAgentNames(pack.Agents)
 	for _, want := range []string{"coder", "reviewer", "synthesizer", "tester", "owner", "vibe-intake"} {
@@ -42,9 +46,9 @@ func TestLoadBuiltinPack(t *testing.T) {
 	for _, f := range pack.Flows {
 		flowIDs[f.ID] = struct{}{}
 	}
-	for _, want := range []string{"vibe-ingest", "vibe-sprint", "vibe-owner-debate"} {
+	for _, want := range []string{"vibe-ingest", "vibe-sprint", "vibe-owner-debate", "task-harness", "cp-harness", "cp-harness-smoke", "bug-harness"} {
 		if _, ok := flowIDs[want]; !ok {
-			t.Fatalf("missing vibe flow %q in pack", want)
+			t.Fatalf("missing built-in flow %q in pack", want)
 		}
 	}
 }
@@ -499,5 +503,62 @@ func TestCoderAgentPromptForbidsUnapprovedCommitsAndOutOfScopeFileChanges(t *tes
 	}
 	if strings.Contains(spec.SystemPrompt, "Do not create or edit") {
 		t.Fatal("coder.md must not forbid writing its own change-audit note — that conflicts with r-ca (SD-20 §2.1)")
+	}
+}
+
+// TestValidateFlowAllowsTwoContinueBackEdgesWithDifferentFrom (CP-58
+// Task-304 T-1) locks the dual-loop validator widening: a flow may declare
+// two when:continue kind:back edges as long as they anchor at different
+// nodes — task-harness's plan loop (plan_synthesis -> plan_writer) and code
+// loop (validate -> implement) — while the true duplicate (same From AND
+// same when) keeps failing fast (see the pre-existing duplicate test above,
+// whose two edges share one hub).
+func TestValidateFlowAllowsTwoContinueBackEdgesWithDifferentFrom(t *testing.T) {
+	def := FlowDefinition{
+		ID: "dual-loop",
+		Nodes: []FlowNode{
+			{ID: "plan_writer", Behavior: "agent.delegate", Agent: "agents/coder.md"},
+			{ID: "plan_synthesis", Behavior: "hub.inline"},
+			{ID: "implement", Behavior: "agent.delegate", Agent: "agents/coder.md"},
+			{ID: "validate", Behavior: "command.validate"},
+			{ID: "synthesis", Behavior: "hub.inline"},
+		},
+		Edges: []FlowEdge{
+			{From: "plan_synthesis", To: "plan_writer", When: "continue", Kind: "back"},
+			{From: "validate", To: "implement", When: "continue", Kind: "back"},
+			{From: "plan_writer", To: "plan_synthesis", When: "done", Kind: "forward"},
+			{From: "implement", To: "validate", When: "done", Kind: "forward"},
+			{From: "validate", To: "synthesis", When: "done", Kind: "forward"},
+			{From: "synthesis", To: "done", When: "done", Kind: "forward"},
+		},
+	}
+	if err := ValidateFlowDefinition(def); err != nil {
+		t.Fatalf("ValidateFlowDefinition(dual-loop) = %v, want nil (two continue/back edges with different From)", err)
+	}
+}
+
+// TestValidateFlowRejectsDuplicateFromWhen (CP-58 Task-304 T-1) pins the
+// fail-closed half of the widening: two back-edges with the SAME From and
+// when remain a genuine duplicate — the resolver could never disambiguate
+// them — so validation must still reject.
+func TestValidateFlowRejectsDuplicateFromWhen(t *testing.T) {
+	def := FlowDefinition{
+		ID: "dup-from-when",
+		Nodes: []FlowNode{
+			{ID: "validate", Behavior: "command.validate"},
+			{ID: "implement", Behavior: "agent.delegate", Agent: "agents/coder.md"},
+			{ID: "coder", Behavior: "agent.delegate", Agent: "agents/coder.md"},
+		},
+		Edges: []FlowEdge{
+			{From: "validate", To: "implement", When: "continue", Kind: "back"},
+			{From: "validate", To: "coder", When: "continue", Kind: "back"},
+		},
+	}
+	err := ValidateFlowDefinition(def)
+	if err == nil {
+		t.Fatal("expected an error for duplicate back-edge with same From and when")
+	}
+	if !strings.Contains(err.Error(), "duplicate back-edge") {
+		t.Fatalf("error = %v, want it to mention duplicate back-edge", err)
 	}
 }

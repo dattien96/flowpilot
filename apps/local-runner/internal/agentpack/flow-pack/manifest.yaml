@@ -4,6 +4,7 @@ description: Reference pack for CP-42 generic flow and node behavior refactor.
 schemaVersion: 1
 agents:
   - agents/coder.md
+  - agents/doc-writer.md
   - agents/reviewer.md
   - agents/tester.md
   - agents/synthesizer.md
@@ -27,11 +28,34 @@ flows:
     selectableIn:
       - flow
     cloneable: true
+  - path: flows/bug-harness.yaml
+    visibility: builtin
+    editable: false
+    selectableIn:
+      - flow
+    cloneable: true
   - path: flows/context-coding-review-synthesis.yaml
     visibility: builtin
     editable: false
     selectableIn:
       - flow
+    cloneable: true
+  - path: flows/task-harness.yaml
+    visibility: builtin
+    editable: false
+    selectableIn:
+      - flow
+    cloneable: true
+  - path: flows/cp-harness.yaml
+    visibility: builtin
+    editable: false
+    selectableIn:
+      - flow
+    cloneable: true
+  - path: flows/cp-harness-smoke.yaml
+    visibility: builtin
+    editable: false
+    selectableIn: []
     cloneable: true
   - path: flows/vibe-ingest.yaml
     visibility: builtin
@@ -62,6 +86,11 @@ prompts:
   - prompts/test-signatures.md
   - prompts/implement-complete-tests.md
   - prompts/review-safe-fix-contract.md
+  - prompts/plan-task.md
+  - prompts/review-plan.md
+  - prompts/plan-cp.md
+  - prompts/review-cp.md
+  - prompts/task-splitter.md
 compatibility:
   minRunnerVersion: TBD
   fallbackToGoBuiltins: true

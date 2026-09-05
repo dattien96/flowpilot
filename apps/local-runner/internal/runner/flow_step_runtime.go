@@ -72,6 +72,20 @@ func (s *InteractiveService) activeFlowEdgesFor(parentRunID string) []agentpack.
 	return nil
 }
 
+// activeHubNodeIDFor returns the run's tracked active hub-driven node id
+// (Task-235 / CP-58 Task-304), or "" when none is tracked. Dual-hub harness
+// flows rely on this being set (cohort-join persist) so a hub's
+// flow_control("continue") resolves against ITS loop's back-edge, not
+// first-match.
+func (s *InteractiveService) activeHubNodeIDFor(parentRunID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rs := s.runs[parentRunID]; rs != nil {
+		return rs.activeHubNodeID
+	}
+	return ""
+}
+
 // reseedFlowStepRuntime replaces parentRunID's step list with one row per flow
 // node so the timeline reflects the flow's real topology (coder → reviewers →
 // synthesis) with correct node identities, instead of the generic catalog
@@ -581,6 +595,50 @@ func hubInlineNodeID(nodes []agentpack.FlowNode) string {
 		}
 	}
 	return ""
+}
+
+// countHubInlineNodes reports how many hub.inline nodes the flow declares.
+// Every pre-CP-58 built-in flow has at most one, where the first-match
+// hubInlineNodeID fallback is unambiguous; dual-hub harnesses
+// (task-harness/cp-harness-smoke, CP-58 Task-304) have two and must drive the
+// run's activeHubNodeID from cohort joins instead.
+func countHubInlineNodes(nodes []agentpack.FlowNode) int {
+	count := 0
+	for _, n := range nodes {
+		if canonical, ok := agentpack.NormalizeBehaviorID(n.Behavior); ok && canonical == "hub.inline" {
+			count++
+		}
+	}
+	return count
+}
+
+// hubNodeIDForCohortJoin returns the hub.inline node a just-joined delegate
+// cohort feeds into, resolved from the joined members' own forward edges, and
+// ok=true only for dual-hub flows (CP-58 Task-304). Single-hub flows return
+// ok=false so every caller keeps Task-235's activeHubNodeID-then-first-match
+// tracking byte-identical; a dual-hub flow whose joined members don't name a
+// hub.inline successor (e.g. the code-loop anchor validate failed) also
+// returns ok=false and keeps the previously tracked hub.
+func hubNodeIDForCohortJoin(nodes []agentpack.FlowNode, edges []agentpack.FlowEdge, joinedNodeIDs []string) (string, bool) {
+	if countHubInlineNodes(nodes) <= 1 {
+		return "", false
+	}
+	for _, id := range joinedNodeIDs {
+		if id == "" {
+			continue
+		}
+		for _, e := range edges {
+			if !strings.EqualFold(strings.TrimSpace(e.Kind), "forward") || strings.TrimSpace(e.From) != id {
+				continue
+			}
+			if node, ok := findFlowNode(nodes, strings.TrimSpace(e.To)); ok {
+				if canonical, ok2 := agentpack.NormalizeBehaviorID(node.Behavior); ok2 && canonical == "hub.inline" {
+					return node.ID, true
+				}
+			}
+		}
+	}
+	return "", false
 }
 
 // flowEntryNodeID returns the id of the flow's entry delegate node (review-

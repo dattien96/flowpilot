@@ -96,9 +96,10 @@ func TestFilterProviderSuggestions_FiltersAsYouType(t *testing.T) {
 		{ProviderKey: "codex", AuthStatus: "connected", IsActive: true, DisplayLabel: "codex-1"},
 	}
 	all := filterProviderSuggestions("/provider ", providers, accounts, "codex")
-	// account + connect + install + config actions + 3 providers
-	if len(all) != 7 {
-		t.Fatalf("expected 7 (4 actions + 3 providers), got %d: %+v", len(all), all)
+	// account + connect + install + config + refresh actions + 3 providers
+	// (refresh row added by user request — CA-687 picker parity)
+	if len(all) != 8 {
+		t.Fatalf("expected 8 (5 actions + 3 providers), got %d: %+v", len(all), all)
 	}
 	if all[0].value != "account" || all[0].kind != "provider-action" {
 		t.Fatalf("first row should be account action, got %+v", all[0])

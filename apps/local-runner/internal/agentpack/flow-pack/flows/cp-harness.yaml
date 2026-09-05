@@ -1,0 +1,169 @@
+# cp-harness: CP-58 Task-306 Tier-3 harness for a big feature / epic.
+# SLICE-ONLY default (7 nodes): plan review loop over the CP architecture doc,
+# then task_splitter decomposes the approved CP-*.md into Task-*.md files, and
+# audit closes the flow. NO freeze / test_signatures / coding here — each
+# sliced Task is executed by its own task-harness run. The coding chain MUST
+# NOT be declared in this file: an unreferenced delegate node would be an
+# entry node spawned at flow start, and any incoming forward edge would
+# auto-advance into coding (Task-306 T-1). The opt-in smoke variant with the
+# first-Task coding chain is flows/cp-harness-smoke.yaml.
+#
+# NOTE (Task-306 deviation, same as Task-305's): cp_plan_writer and
+# task_splitter are agent.delegate, not agent.code. CP-55 P-1
+# ValidateFlowSafetyTopology requires every agent.code writer to be dominated
+# by a contract.freeze node, and the slice-only flow has none (a CP writes
+# requirement documents, not code). agent.code shares the delegate handler
+# verbatim, and the file_artifact write contract keys on the node's
+# artifactBindings, so the delegate behavior keeps the runtime semantics.
+id: cp-harness
+version: 1
+description: Coding Plan (big feature / epic) - CP Plan Writer + CP Review Loop + Task Splitter (slice-only).
+mode: flow
+builtin:
+  editable: false
+  selectableIn:
+    - flow
+  cloneable: true
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 3
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+contexts:
+  main_context:
+    ref: contexts/flow-context-package.yaml
+    sources:
+      - canonical.head
+      - feature.history
+      - change.contract
+      - source.dependence
+      - chat.summary
+      - source.excerpt
+tools:
+  - tools/submit-review-outcome.yaml
+acceptance_nodes:
+  - cp_synthesis
+  - audit
+nodes:
+  # --- Scout (fast/cheap model tier, broad context) ---
+  - id: preflight_contract_plan
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/contract-planner.md
+    promptTemplate: prompts/plan-safe-fix-contract.md
+  # --- Draft context (broad repo architecture excerpts) ---
+  - id: context
+    run: inline
+    lifecycle: once
+    behavior: context.produce
+  # --- CP plan phase (high-reasoning model, 3-layer defense) ---
+  - id: cp_plan_writer
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.delegate
+    agent: agents/doc-writer.md
+    promptTemplate: prompts/plan-cp.md
+    artifactBindings:
+      # CP-58 Task-307: the CP md is a typed file_artifact OUTPUT slot; the
+      # writer resolves {{cpID}}/{{slug}} at authoring time.
+      - direction: output
+        slotName: cp_md
+        artifactInstanceId: cp_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/07-Coding-Plan/todo/CP-{{cpID}}-{{slug}}.md
+  - id: cp_reviewer
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/reviewer.md
+    promptTemplate: prompts/review-cp.md
+    dependsOn:
+      - cp_plan_writer
+    cohort: plan
+    join: all
+    artifactBindings:
+      - direction: input
+        slotName: cp_md
+        artifactInstanceId: cp_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/07-Coding-Plan/todo/CP-{{cpID}}-{{slug}}.md
+  - id: cp_synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+  # --- Task splitter (CP -> Task-*.md decomposition) ---
+  - id: task_splitter
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/doc-writer.md
+    promptTemplate: prompts/task-splitter.md
+    artifactBindings:
+      - direction: input
+        slotName: cp_md
+        artifactInstanceId: cp_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/07-Coding-Plan/todo/CP-{{cpID}}-{{slug}}.md
+      - direction: output
+        slotName: task_md
+        artifactInstanceId: task_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 1
+        config:
+          pathTemplate: requirements/08-Task/todo/Task-{{idx}}-{{slug}}.md
+  - id: audit
+    run: inline
+    lifecycle: once
+    behavior: artifact.audit_draft
+edges:
+  # --- Scout -> Draft Context -> CP plan loop ---
+  - from: preflight_contract_plan
+    to: context
+    when: done
+    kind: forward
+  - from: context
+    to: cp_plan_writer
+    when: done
+    kind: forward
+  - from: cp_plan_writer
+    to: cp_reviewer
+    when: done
+    kind: forward
+  - from: cp_reviewer
+    to: cp_synthesis
+    when: done
+    kind: forward
+  # LOOP back-edge: CP review changes_requested re-enters cp_plan_writer.
+  - from: cp_synthesis
+    to: cp_plan_writer
+    when: continue
+    kind: back
+  # --- Plan approved -> Slice -> Audit (NO coding chain) ---
+  - from: cp_synthesis
+    to: task_splitter
+    when: done
+    kind: forward
+  - from: task_splitter
+    to: audit
+    when: done
+    kind: forward
+  - from: audit
+    to: done
+    when: done
+    kind: forward

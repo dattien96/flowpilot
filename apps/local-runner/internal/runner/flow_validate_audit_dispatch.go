@@ -28,18 +28,18 @@ import (
 // the live dispatch path that was missing.
 
 // flowNodeInlineDispatchable reports whether a node's behavior can be dispatched
-// in-process by tryAdvanceFlowThroughInline (validate/audit/notify/freeze). A
-// writer/delegate node (agent.code/agent.delegate) is NOT — Continue must retry
-// that node's child run instead of a no-op inline dispatch (BUG-327, run-221516
-// scope-drift park on implement). Kept in lock-step with tryAdvanceFlowThroughInline's
-// own switch so the two cannot drift apart.
+// in-process by tryAdvanceFlowThroughInline (validate/audit/notify/freeze/
+// context.produce). A writer/delegate node (agent.code/agent.delegate) is NOT —
+// Continue must retry that node's child run instead of a no-op inline dispatch
+// (BUG-327, run-221516 scope-drift park on implement). Kept in lock-step with
+// tryAdvanceFlowThroughInline's own switch so the two cannot drift apart.
 func flowNodeInlineDispatchable(node agentpack.FlowNode) bool {
 	canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior)
 	if !ok {
 		return false
 	}
 	switch canonical {
-	case "command.validate", "artifact.audit_draft", "telegram.notify", "hub.notify", "contract.freeze":
+	case "command.validate", "artifact.audit_draft", "telegram.notify", "hub.notify", "contract.freeze", "context.produce":
 		return true
 	}
 	return false
@@ -67,11 +67,11 @@ func edgeTargetFrom(edges []agentpack.FlowEdge, from, when, kind string) (string
 // startInlineEntryChain's shape but for a node reached mid-flow instead of
 // at flow entry. Returns false for any inline behavior other than
 // command.validate/artifact.audit_draft/telegram.notify/hub.notify/
-// contract.freeze (context.produce/context.render still have no dedicated
-// entry here on their own — CP-55 P-3's contract.freeze case is the one path
-// that dispatches context.produce, as an intermediate hop in its own bounded
-// chain, not through this switch) so an unrecognized shape falls back to the
-// pre-existing note+reinvoke-hub behavior unchanged.
+// contract.freeze/context.produce (CA-732 added context.produce so a
+// task-harness scout -> context -> plan_writer hop dispatches in-process
+// instead of falling back to note+reinvoke-hub; context.render still has no
+// entry here) so an unrecognized shape falls back to the pre-existing
+// note+reinvoke-hub behavior unchanged.
 func (s *InteractiveService) tryAdvanceFlowThroughInline(parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, node agentpack.FlowNode, resultMessage string) bool {
 	canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior)
 	if !ok {
@@ -117,9 +117,165 @@ func (s *InteractiveService) tryAdvanceFlowThroughInline(parentRunID string, edg
 		// CP-55 P-3: freeze the read-only planner's proposal, then advance the
 		// bounded freeze -> [context.produce ...] -> writer chain.
 		return s.runContractFreezeNode(ctx, parentRunID, edges, nodes, node, resultMessage)
+	case "context.produce":
+		// run-198699: task-harness's scout -> context -> plan_writer hop. The
+		// scout completes with a forward "done" edge into this inline node;
+		// dispatch it in-process (like the freeze-chain context hops) and then
+		// spawn its single forward target so the flow never falls back to the
+		// note+reinvoke-hub path (whose prose turn then hub_stalled forever).
+		return s.runContextProduceNode(ctx, parentRunID, edges, nodes, node, resultMessage)
 	default:
 		return false
 	}
+}
+
+// runContextProduceNode dispatches a mid-flow context.produce node reached as
+// the forward "done" target of a completed delegate (task-harness:
+// preflight_contract_plan -> context -> plan_writer). It builds + stores the
+// FlowContextPackage (mirroring advanceFlowThroughFreezeChain's
+// buildAndStorePackage), stamps the context node DONE, then advances to the
+// node's single forward target — an agent.delegate spawned with the rendered
+// package in its prompt (like startInlineEntryChain), or an agent.code spawned
+// as a frozen-contract writer. Any other shape returns false so the caller
+// falls back to the pre-existing note+reinvoke-hub behavior unchanged.
+//
+// run-198699: without this the scout's completion reinvoked the hub, which
+// prose-answered without submit_review_outcome and parked hub_stalled after
+// 2m; Retry continue then no-op'd on a never-spawned plan_writer and stalled
+// again (the S2 retry loop).
+func (s *InteractiveService) runContextProduceNode(ctx context.Context, parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, node agentpack.FlowNode, resultMessage string) bool {
+	// Match runContractFreezeNode's guard shape: a terminal run is claimed as
+	// handled (never fall back to the note+reinvoke-hub path after Stop); a
+	// loop that is not advancing is not ours to advance this tick.
+	if s.flowRunTerminalLocked(parentRunID) {
+		return true
+	}
+	if !s.loopIsAdvancing(parentRunID) {
+		s.flowDiagLog(parentRunID, "flow_advance_context_skipped_loop_blocked", "skipping context.produce because loop is not advancing", "node_id", node.ID)
+		return false
+	}
+	// Any produce/spawn/shape failure escalates to the operator (Retry/Stop
+	// card) instead of returning false into the note+reinvoke-hub fallback —
+	// that fallback is the original run-198699 hub_stalled class (the hub
+	// prose-answers without submit_review_outcome and parks after 2m).
+	escalate := func(reason string) bool {
+		s.flowDiagLog(parentRunID, "flow_advance_context_blocked", reason, "node_id", node.ID)
+		if s.isFlowEngineDriven(parentRunID) {
+			s.stampLastEscalatedInlineNode(parentRunID, node.ID)
+			s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusWaitingUserApr)
+		}
+		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
+			Status:  "escalate",
+			Summary: "Context production blocked: " + reason,
+		}); err != nil {
+			log.Printf("[flow-executor] context.produce escalate failed: %v", err)
+		}
+		return true
+	}
+
+	workspace := s.workspaceCwdFor(parentRunID)
+	hints := FlowContextHints{
+		WorkflowRunID: parentRunID,
+		PlanStepRunID: node.ID,
+		UserPrompt:    resultMessage,
+	}
+	if workspace != "" {
+		hints.ExplicitSourcePaths = extractPromptSourcePaths(resultMessage)
+		hints.ChangedPaths = uncommittedChangedPaths(workspace)
+	}
+	built, err := BuildFlowContextPackageWithSources(ctx, workspace, hints, node.ContextSources)
+	if err != nil {
+		return escalate("context production failed: " + err.Error())
+	}
+	pkg := &built
+	// Stash + emit + persist exactly like advanceFlowThroughFreezeChain /
+	// startInlineEntryChain so later nodes (validate/audit/retry prompts) can
+	// read the package back.
+	s.mu.Lock()
+	if rs := s.runs[parentRunID]; rs != nil {
+		rs.planContextPackage = pkg
+		s.emitLocked(rs, ProviderEvent{
+			Type:               EventFlowContextPackage,
+			WorkflowRunID:      parentRunID,
+			WorkflowStepRunID:  node.ID,
+			FlowContextPackage: pkg,
+		})
+	}
+	s.mu.Unlock()
+	if store := s.persistenceStore(); store != nil {
+		if err := PersistFlowContextPackage(ctx, store, *pkg); err != nil {
+			s.flowDiagLog(parentRunID, "flow_advance_context_persist_failed", "persist context package failed mid-flow",
+				"node_id", node.ID, "error", err.Error(),
+			)
+		}
+	}
+
+	targets := forwardDoneTargets(edges, node.ID)
+	if len(targets) != 1 {
+		return escalate(fmt.Sprintf("context node must have exactly one forward done target, got %d", len(targets)))
+	}
+	target, ok := findFlowNode(nodes, targets[0])
+	if !ok {
+		return escalate("forward target " + targets[0] + " missing from flow nodes")
+	}
+	canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior)
+	if !ok || (canonical != "agent.delegate" && canonical != "agent.code") {
+		return escalate("forward target " + target.ID + " is not a spawnable delegate/writer (behavior " + target.Behavior + ")")
+	}
+	agentName := flowNodeAgentName(target)
+	if agentName == "" {
+		return escalate("forward target " + target.ID + " has no resolvable agent")
+	}
+	if canonical == "agent.code" {
+		store, storeErr := changecontract.NewFrozenStore(workspace)
+		if storeErr != nil {
+			return escalate("writer " + target.ID + " frozen store: " + storeErr.Error())
+		}
+		rec, frozenOK, _ := store.GetFrozenForStep(parentRunID, target.ID)
+		if !frozenOK {
+			return escalate("writer " + target.ID + " has no frozen contract")
+		}
+		if err := s.spawnFrozenWriterChild(ctx, parentRunID, target, rec); err != nil {
+			return escalate("writer " + target.ID + " spawn failed: " + err.Error())
+		}
+	} else {
+		prompt := renderFlowContextPromptWithSecret(ctx, *pkg, resultMessage, s.markerSecret)
+		prompt = composeFlowNodeAgentPrompt(workspace, prompt, target)
+		prompt = appendChangeContractIfAnyWithSecret(workspace, parentRunID, prompt, s.markerSecret)
+		fcpProvenanceRunID := pkg.WorkflowRunID
+		if fcpProvenanceRunID == "" {
+			fcpProvenanceRunID = pkg.PackageID
+		}
+		agentDef, _ := resolvePackAgentDefinition(agentName)
+		if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
+			Agent:                    agentName,
+			Prompt:                   prompt,
+			Wait:                     false,
+			Label:                    target.ID,
+			AutoOrchestrate:          true,
+			AgentDefOverride:         agentDef,
+			Model:                    s.delegateSpawnModel(ctx, parentRunID, target),
+			FCPMarkerProvenanceRunID: fcpProvenanceRunID,
+		}); err != nil {
+			return escalate("target " + target.ID + " spawn failed: " + err.Error())
+		}
+	}
+	// V9-11: stamp the source DONE only after the spawn succeeded, so a spawn
+	// failure escalates and Retry can re-dispatch context.produce instead of
+	// leaving context DONE with nothing behind it. spawnFrozenWriterChild
+	// already stamped the agent.code target RUNNING; stamp the delegate target
+	// here.
+	if s.isFlowEngineDriven(parentRunID) {
+		s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusDone)
+		if canonical != "agent.code" {
+			s.setFlowStepStatus(ctx, parentRunID, target.ID, StepStatusRunning)
+			s.stampFlowNodePosture(ctx, parentRunID, target)
+		}
+	}
+	s.flowDiagLog(parentRunID, "flow_advance_context_spawned", "auto-advanced context target node spawned",
+		"node_id", node.ID, "target_node_id", target.ID, "agent_name", agentName,
+	)
+	return true
 }
 
 // flowRunTerminalLocked reports whether parentRunID's run is missing or has
@@ -816,6 +972,18 @@ func (s *InteractiveService) advanceToNextInlineOrDelegate(ctx context.Context, 
 		}
 		return true
 	default:
+		// run-201295: this switch had drifted from tryAdvanceFlowThroughInline —
+		// contract.freeze / context.produce were dispatchable there (CA-732) but
+		// silently returned false here, so a hub's approved "done" successor
+		// (plan_synthesis -> preflight_contract_freeze) never ran: the flow idled
+		// RUNNING for 2 minutes and parked hub_stalled (plan_synthesis
+		// WAITING_USER_APPROVAL, no freeze, no card). Route through the shared
+		// inline dispatcher; BUG-327's lock-step guard (flowNodeInlineDispatchable)
+		// keeps the behavior lists in sync.
+		if s.tryAdvanceFlowThroughInline(parentRunID, edges, nodes, nextNode, resultMessage) {
+			markSourceDone()
+			return true
+		}
 		return false
 	}
 }
@@ -950,13 +1118,21 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 					if auditCtxCancelled(ctx, parentRunID, node.ID, "tier3_before_escalate") {
 						return false
 					}
-					log.Printf("[flow-executor] audit tier-3 gate: %s (tier-1 should have caught earlier)", result.Message)
-					s.flowDiagLog(parentRunID, "flow_audit_tier3_block", "audit aggregate gate blocked done",
-						"node_id", node.ID, "message", result.Message,
-					)
-					if s.isFlowEngineDriven(parentRunID) {
-						s.setFlowStepAwaitingUser(ctx, parentRunID)
-					}
+				log.Printf("[flow-executor] audit tier-3 gate: %s (tier-1 should have caught earlier)", result.Message)
+				s.flowDiagLog(parentRunID, "flow_audit_tier3_block", "audit aggregate gate blocked done",
+					"node_id", node.ID, "message", result.Message,
+				)
+				// run-202550: stamp the audit node (not the plan hub) as the
+				// escalated node — without this, applyFlowControl's escalate
+				// settles plan_synthesis WAITING via setFlowStepAwaitingUser's
+				// first-hub fallback, and Retry reinvokes the plan hub instead
+				// of remediating the audit block (e.g. a missing CA note).
+				// Settle audit WAITING directly (freeze-escalate shape) so the
+				// plan hub is left alone — exactly one WAITING node.
+				s.stampLastEscalatedInlineNode(parentRunID, node.ID)
+				if s.isFlowEngineDriven(parentRunID) {
+					s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusWaitingUserApr)
+				}
 					if auditCtxCancelled(ctx, parentRunID, node.ID, "tier3_immediate_before_escalate") {
 						return false
 					}
@@ -1335,6 +1511,16 @@ func isFlowPlannerExcludedPath(path string) bool {
 	p := filepath.ToSlash(strings.TrimSpace(path))
 	if p == ".flowpilot" || strings.HasPrefix(p, ".flowpilot/") ||
 		p == ".gitnexus" || strings.HasPrefix(p, ".gitnexus/") {
+		return true
+	}
+	// run-201704: task-harness freezes AFTER plan_writer, so the plan phase's
+	// own Task md (requirements/08-Task/todo/Task-*.md) lands between the
+	// flow-start baseline and the freeze check — a legitimate plan artifact,
+	// never the read-only planner touching code. Doc/audit surfaces
+	// (requirements/**, change-audit/**, *.md) are never planner mutations;
+	// the gate scope path already treats them the same way
+	// (flowgate.IsDocOrAuditFile). A planner-written *.go still blocks.
+	if flowgate.IsDocOrAuditFile(p) {
 		return true
 	}
 	return changecontract.IsToolOwnedScaffoldPath(p)

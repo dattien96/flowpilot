@@ -202,7 +202,12 @@ func (s *InteractiveService) recordChatTranscript(event ProviderEvent) {
 	runID := event.WorkflowRunID
 	chatID := s.chatRuns.chatIDFor(runID)
 	if chatID == "" {
-		return
+		// BUG-355 F2: workflow runs carry no chat id, but their transcript
+		// must still persist so /open can restore it (run-scoped timeline).
+		// Persist under the run id: run ids survive sanitizeChatID
+		// unchanged, ChatSeq is namespaced per store key, and LegIndex scans
+		// every key dir so legRunId lookups keep working.
+		chatID = runID
 	}
 	recs := chatRecordsFromProviderEvent(chatID, event)
 	if len(recs) == 0 {

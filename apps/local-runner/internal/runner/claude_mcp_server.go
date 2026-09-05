@@ -180,7 +180,7 @@ func (s *claudeMCPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	method, _ := msg["method"].(string)
-	result, rpcErr := s.dispatch(method, msg, r.URL.Query().Get("token"))
+	result, rpcErr := s.dispatchCtx(r.Context(), method, msg, r.URL.Query().Get("token"))
 
 	resp := map[string]any{"jsonrpc": "2.0", "id": id}
 	if rpcErr != nil {
@@ -229,7 +229,16 @@ func (s *claudeMCPServer) serveSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// dispatch is the legacy entry (context.Background) — kept so pre-existing
+// callers (tests included) compile unchanged (R1).
 func (s *claudeMCPServer) dispatch(method string, msg map[string]any, token string) (any, map[string]any) {
+	return s.dispatchCtx(context.Background(), method, msg, token)
+}
+
+// dispatchCtx carries the HTTP request's lifetime into the tool handlers
+// (BUG-354 C2 run-540927): when the MCP client disconnects mid-ask_user, the
+// pending question must expire instead of blocking until the 10-minute TTL.
+func (s *claudeMCPServer) dispatchCtx(ctx context.Context, method string, msg map[string]any, token string) (any, map[string]any) {
 	params, _ := msg["params"].(map[string]any)
 	switch method {
 	case "initialize":
@@ -266,7 +275,7 @@ func (s *claudeMCPServer) dispatch(method string, msg map[string]any, token stri
 		case "approve":
 			return handleClaudeApprove(args, bridge), nil
 		case "ask_user":
-			return handleClaudeAskUser(args, bridge), nil
+			return handleClaudeAskUserCtx(ctx, args, bridge), nil
 		case "spawn_agent":
 			return handleClaudeSpawnAgent(args, bridge), nil
 		case "submit_review_outcome":

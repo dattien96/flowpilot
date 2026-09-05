@@ -403,6 +403,10 @@ type AppModel struct {
 	modeSetupModalPickerOpen bool
 	modeSetupModalPickerKind string
 	modeSetupModalPickerIdx  int
+	// modeSetupModalPickerFilter is the type-to-filter query for the modal's
+	// model picker (same UX as the /model input picker): typing narrows the
+	// list, Backspace deletes, Esc closes. Empty = unfiltered.
+	modeSetupModalPickerFilter string
 	// chatPosturePending remembers what to do after the runner config loads:
 	// "" = nothing; "apply:<posture>" = apply that posture's profile; "show" =
 	// just display the config; "setup:<posture>:<field>:<value>" = apply a
@@ -427,7 +431,15 @@ type AppModel struct {
 	reasoningEffort    string
 	flowBuiltins       []client.BuiltinFlowOption
 	flowWorkflows      []client.Workflow
-	chatList           []client.RunHistoryItem // last /history result for picker + /open <n>
+	// flowListInflight dedups background /flow picker refreshes (BUG-351);
+	// flowListFetchedAt bounds them while the picker stays open.
+	flowListInflight  bool
+	flowListFetchedAt time.Time
+	chatList          []client.RunHistoryItem // last /history result for picker + /open <n>
+	// chatListInflight dedups background history-picker refreshes (BUG-355 F1);
+	// chatListFetchedAt bounds them while the picker stays open.
+	chatListInflight  bool
+	chatListFetchedAt time.Time
 	// deleteSelected tracks ticked rows in the /delete picker (skill-like multi-select).
 	deleteSelected map[string]bool
 	// deletePending* arms a two-step delete confirm for /delete (Task-318).

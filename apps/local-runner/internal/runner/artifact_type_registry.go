@@ -611,9 +611,107 @@ func changeContractTrustedMarkerWith(secret []byte, parentRunID string) string {
 	return "<!-- flowpilot-cc:" + parentRunID + ":" + runMarkerMACWith(secret, "cc", parentRunID) + " -->"
 }
 
+// templatedFileArtifactOutput is one required OUTPUT file_artifact binding
+// that declares a pathTemplate (CP-58 Task-307) instead of a concrete paths
+// list. The writer resolves the template at authoring time ({{idx}} = next
+// free number in the target folder, {{slug}} = short kebab-case slug), so the
+// contract is prompt-level: the flowgate exact-path check cannot verify a
+// pattern and must NOT reprompt on it (requiredFileArtifactOutputPaths only
+// ever sees concrete paths).
+type templatedFileArtifactOutput struct {
+	slotName     string
+	pathTemplate string
+}
+
+func templatedFileArtifactOutputsForNode(node agentpack.FlowNode) []templatedFileArtifactOutput {
+	var out []templatedFileArtifactOutput
+	for _, b := range node.ArtifactBindings {
+		if b.Direction != "output" || !b.Required || b.ArtifactTypeID != ArtifactTypeFile {
+			continue
+		}
+		// Concrete-paths bindings stay on the gated Task-223 contract.
+		if len(fileArtifactPathsFromConfig(b.ConfigJSON)) > 0 {
+			continue
+		}
+		raw, ok := b.ConfigJSON["pathTemplate"].(string)
+		tmpl := strings.TrimSpace(raw)
+		if !ok || tmpl == "" {
+			continue
+		}
+		out = append(out, templatedFileArtifactOutput{slotName: b.SlotName, pathTemplate: tmpl})
+	}
+	return out
+}
+
+// appendTemplatedFileArtifactOutputsPrompt appends the CP-58 Task-307
+// templated write contract: the writer must create one file per templated
+// OUTPUT slot, resolving {{idx}}/{{slug}} placeholders itself, and report the
+// concrete path it wrote in its final message.
+func appendTemplatedFileArtifactOutputsPrompt(prompt string, node agentpack.FlowNode) string {
+	outputs := templatedFileArtifactOutputsForNode(node)
+	if len(outputs) == 0 {
+		return prompt
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## Templated file outputs (write contract)\n")
+	b.WriteString("Before you finish this turn you MUST create or update one real file for each template below — and ONLY these files. ")
+	b.WriteString("Do NOT write source code, test files, configs, change-audit notes, or any other path, and do NOT run commands or tests ")
+	b.WriteString("(a document-writer role has no shell). Resolve the placeholders yourself — `{{idx}}` is the next free number in the target folder, `{{slug}}` a short kebab-case slug of the title:\n")
+	for _, o := range outputs {
+		b.WriteString("- `")
+		b.WriteString(o.pathTemplate)
+		b.WriteString("`\n")
+	}
+	b.WriteString("Do not only describe the content in chat — write the file(s) with your tools, and name the exact path(s) you wrote in your final message.\n")
+	return prompt + b.String()
+}
+
+// appendTemplatedInputArtifactMention tells a node (e.g. plan_reviewer or
+// task_splitter) where its templated INPUT artifacts land. A template cannot
+// be read up front like a concrete path (BUG-276 keeps INPUT mention-only
+// anyway), so the node is told to find and read the newest matching file with
+// its own tools before proceeding.
+func appendTemplatedInputArtifactMention(prompt string, node agentpack.FlowNode) string {
+	var templates []string
+	seen := make(map[string]bool)
+	for _, b := range node.ArtifactBindings {
+		if b.Direction != "input" || b.ArtifactTypeID != ArtifactTypeFile {
+			continue
+		}
+		raw, ok := b.ConfigJSON["pathTemplate"].(string)
+		tmpl := strings.TrimSpace(raw)
+		if !ok || tmpl == "" || seen[tmpl] {
+			continue
+		}
+		seen[tmpl] = true
+		templates = append(templates, tmpl)
+	}
+	if len(templates) == 0 {
+		return prompt
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## Bound input artifacts (locate and read)\n")
+	b.WriteString("The upstream node wrote its output under a naming template. Find the newest matching file in the workspace with your tools and read it before proceeding:\n")
+	for _, t := range templates {
+		b.WriteString("- `")
+		b.WriteString(t)
+		b.WriteString("`\n")
+	}
+	return prompt + b.String()
+}
+
+// composeFlowNodeAgentPrompt applies Task-223 INPUT read inject, OUTPUT
+// write-contract inject, and Task-233's Telegram OUTPUT write-contract to a
+// base agent prompt for a flow node. CP-58 Task-307 adds the templated
+// (pathTemplate) file_artifact OUTPUT write contract and INPUT mention:
+// harness plan outputs resolve their concrete file name at authoring time,
+// so those contracts are prompt-level and deliberately NOT part of the
+// flowgate exact-path check.
 func composeFlowNodeAgentPrompt(workspaceCwd, prompt string, node agentpack.FlowNode) string {
 	prompt = appendInputArtifactPrompt(workspaceCwd, prompt, node)
+	prompt = appendTemplatedInputArtifactMention(prompt, node)
 	prompt = appendRequiredOutputArtifactPrompt(prompt, node)
+	prompt = appendTemplatedFileArtifactOutputsPrompt(prompt, node)
 	prompt = appendTelegramOutputPrompt(prompt, node)
 	// Task-293: a node's declared static promptTemplate (e.g. safe-fix-contract
 	// instructions on the plan/review nodes, test-signatures/implement rules on

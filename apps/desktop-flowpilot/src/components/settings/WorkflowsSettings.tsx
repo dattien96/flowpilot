@@ -29,6 +29,39 @@ import { stepDefinitionListSubtitle, stepDefinitionRequiresModel } from "@/compo
 export { stepDefinitionRequiresModel };
 
 type Tab = "workflows" | "steps" | "artifacts";
+
+// CP-58 Task-307 T-7: display labels for the Bug/Task/CP harness tier family.
+// Purely cosmetic — the /flow picker itself is data-driven via selectableIn.
+// bug-harness carries the Bug tier (Task-305 T-5 option (a), clone of
+// rag-harness); rag-harness keeps its chatBaseline role. cp-harness-smoke is
+// the opt-in variant.
+const HARNESS_LABELS: Record<string, { label: string; description: string }> = {
+  "bug-harness": {
+    label: "Bug / Hotfix",
+    description: "9-step: TDD + Code Review (fast, no plan overhead)",
+  },
+  "rag-harness": {
+    label: "Bug / Hotfix (chat baseline)",
+    description: "9-step: TDD + Code Review — Chat Mode baseline flow",
+  },
+  "task-harness": {
+    label: "Task / Feature",
+    description: "12-node: Plan Writer + Plan Review + freeze + TDD + Code Review",
+  },
+  "cp-harness": {
+    label: "Coding Plan",
+    description: "7-node slice-only: CP Plan + Review + Task Splitter",
+  },
+  "cp-harness-smoke": {
+    label: "Coding Plan (smoke)",
+    description: "13-node opt-in: CP Plan + Review + Split + first-Task coding",
+  },
+};
+
+function harnessLabelFor(packFlowId: string | null | undefined): string | null {
+  if (!packFlowId) return null;
+  return HARNESS_LABELS[packFlowId]?.label ?? null;
+}
 type ViewMode = "list" | "create";
 type DeleteTarget =
   | { kind: "workflow"; ids: string[]; labels: string[] }
@@ -2965,6 +2998,9 @@ export function WorkflowsSettings(): React.ReactElement {
                             <span className="settings-list-item-meta">
                               {workflow.packId ?? "unknown pack"}
                               {workflow.packVersion ? ` v${workflow.packVersion}` : ""}
+                              {harnessLabelFor(workflow.packFlowId)
+                                ? ` · ${harnessLabelFor(workflow.packFlowId)}`
+                                : ""}
                               {workflow.selectableIn.length > 0
                                 ? ` · selectable in: ${workflow.selectableIn.join(", ")}`
                                 : ""}
@@ -2989,6 +3025,15 @@ export function WorkflowsSettings(): React.ReactElement {
                           {selectedWorkflow?.isBuiltin ? <span className="settings-badge">Built-in</span> : null}
                         </div>
                         <h3>{workflowDraft.name || "Untitled Workflow"}</h3>
+                        {(() => {
+                          const harnessLabel = harnessLabelFor(selectedWorkflow?.packFlowId);
+                          if (!harnessLabel) return null;
+                          return (
+                            <p className="project-muted-copy">
+                              {harnessLabel} — {HARNESS_LABELS[selectedWorkflow?.packFlowId ?? ""]?.description}
+                            </p>
+                          );
+                        })()}
                         <p className="project-muted-copy">
                           {selectedWorkflow?.editable === false
                             ? "This is a built-in template and cannot be edited directly. Clone it to make changes."

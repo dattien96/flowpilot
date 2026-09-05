@@ -139,6 +139,43 @@ func IsPendingCanonicalStoreBookkeepingPath(p string) bool {
 	return false
 }
 
+// IsCanonicalHeadStorePath reports whether p is a Canonical Head file written
+// by FlowPilot's own head store (.flowpilot/canonical/<feature_key>.json):
+// exactly one level under .flowpilot/canonical/ with a .json suffix.
+// Runner-owned bookkeeping (SaveHead on gate passes), never something a flow
+// writer authors — so a frozen writer's own gate pass must never attribute it
+// to the writer as scope drift. Deliberately narrow per CA-427 Finding 2: only
+// this exact one-level *.json shape is exempt — nested paths, non-.json
+// files, and every other .flowpilot/** path (notably
+// .flowpilot/settings/flow-rules.json) stay fully subject to enforcement.
+func IsCanonicalHeadStorePath(p string) bool {
+	np := normalizeScopePath(p)
+	dir, file := path.Split(np)
+	if dir != ".flowpilot/canonical/" {
+		return false
+	}
+	if file == "" || strings.Contains(file, "/") {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(file), ".json")
+}
+
+// LegacyContractsStorePath is the exact legacy change-contract store file
+// (Store, contract.go) FlowPilot itself writes on gate passes for non-frozen
+// writers. A frozen writer's gate diff can still observe it (written by an
+// earlier turn's commitChangeContract into the same workspace), and it is
+// runner-owned bookkeeping — never the current writer's drift.
+func LegacyContractsStorePath() string {
+	return path.Join(".flowpilot", "contracts", "contracts.ndjson")
+}
+
+// IsLegacyContractsStorePath reports whether p is exactly
+// LegacyContractsStorePath (after normalization). Only that one file — a
+// sibling like forged.ndjson still drifts (CA-427 Finding 2).
+func IsLegacyContractsStorePath(p string) bool {
+	return normalizeScopePath(p) == LegacyContractsStorePath()
+}
+
 // ToolOwnedScaffoldPaths returns the repo-relative path prefixes and exact
 // root files owned by tool/skill-pack installers (CA-645/CA-648), NOT by the
 // flow writer: `.claude/**`, `.agents/**`, `.grok/**` agent skill dirs plus

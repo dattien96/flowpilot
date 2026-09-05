@@ -5,11 +5,11 @@
 - Document ID: `Task-304`
 - Title: `Dual Back-Edge Validator And Edge-Driven Re-entry`
 - Phase: `task`
-- Status: `draft`
+- Status: `inprogress`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-27`
-- Last Updated: `2026-08-27`
+- Last Updated: `2026-09-01`
 - Parent Documents: [CP-58: Bug / Task / CP Harness With Plan Artifact And Dual Review Loops](../../07-Coding-Plan/todo/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md)
 - Child Documents: `None`
 - Related Documents: [CP-55: Flow-First Preflight Contract](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [rag-harness.yaml](../../../apps/local-runner/internal/agentpack/flow-pack/flows/rag-harness.yaml), [pack.go](../../../apps/local-runner/internal/agentpack/pack.go), [flow_executor.go](../../../apps/local-runner/internal/runner/flow_executor.go)
@@ -308,6 +308,7 @@ func TestApplyFlowControlContinueHubRouting(t *testing.T) {
 
 ## 8. Completion Notes
 
-- result:
-- follow-ups:
+- result: implemented on branch cp58-harness-dual-loop (commit 32bd3581). Validator keys back-edge dedup on (from,when); resolveContinueBackEdgeTarget is variadic source-aware (exact anchor / nearest forward ancestor for hub emitters / first-match fallback); both continue call sites pass activeHubNodeID; cohort-join persists the hub a joined cohort feeds into on dual-hub flows (single-hub byte-identical).
+- tests added: TestValidateFlowAllowsTwoContinueBackEdgesWithDifferentFrom, TestValidateFlowRejectsDuplicateFromWhen (pack_test.go); TestResolveContinueBackEdgeIsSourceAware, TestResolveContinueBackEdgeSingleLoopFromUnchanged (flow_executor_test.go); TestApplyFlowControlContinueHubRouting (interactive_service_test.go).
+- follow-ups: live /flow task-harness + cp-harness rounds on real providers (DOD-2 manual half); activeHubNodeID stays unpersisted across restart (pre-existing Task-235 limitation).
 - upstream docs updated: `CP-58` `P-1`

@@ -660,28 +660,37 @@ func isMainAgentRun(r client.AgentRunSummary) bool {
 // the step keys: live graph + list hydrate polls replace agentRuns and can
 // reorder same-named live/historical runs, which would otherwise flip the step's
 // [open]/[back] chip under a stable focus (CA-529).
+//
+// Matching is step-identity-first, agent-name-last (task-harness S3 BUG-XXX):
+// spawnChildRun sets Label = node.ID, so a step whose child exists is pinned by
+// its own node id — two nodes that share ONE catalog agent (task-harness
+// plan_writer + implement both spawn from "coder", plan_reviewer + reviewer
+// both from "reviewer") must NOT map both rows to the same child. The catalog
+// agent name is only a fallback for unlabeled runs (e.g. rag-harness nodes
+// whose id equals the agent name), and never overrides a step-identity match.
 func (m *AppModel) childRunForStep(s client.WorkflowStepRuntime) (client.AgentRunSummary, bool) {
-	keys := []string{
-		strings.TrimSpace(s.AgentRef),
-		strings.TrimSpace(s.NodeID),
-		strings.TrimSpace(s.StepType),
-	}
+	agentRef := strings.TrimSpace(s.AgentRef)
+	nodeID := strings.TrimSpace(s.NodeID)
+	stepType := strings.TrimSpace(s.StepType)
 	mainID := m.mainRunID()
 	matches := func(r client.AgentRunSummary) bool {
 		if r.RunID == "" || r.RunID == mainID || isMainAgentRun(r) {
 			return false
 		}
-		for _, k := range keys {
-			if k == "" {
-				continue
-			}
-			if strings.EqualFold(r.RunID, k) ||
-				strings.EqualFold(r.AgentName, k) ||
-				strings.EqualFold(r.Label, k) {
-				return true
-			}
+		label := strings.TrimSpace(r.Label)
+		if label != "" {
+			// A labeled child is pinned to its own node id/step type only.
+			return strings.EqualFold(label, nodeID) || strings.EqualFold(label, stepType)
 		}
-		return false
+		// Unlabeled child: fall back to run id / agent name against the step's
+		// own node identity, then the shared catalog name as a last resort.
+		if strings.EqualFold(r.RunID, nodeID) || strings.EqualFold(r.RunID, stepType) {
+			return true
+		}
+		if strings.EqualFold(r.AgentName, nodeID) || strings.EqualFold(r.AgentName, stepType) {
+			return true
+		}
+		return agentRef != "" && strings.EqualFold(r.AgentName, agentRef)
 	}
 	if m.viewingChild() {
 		for _, r := range m.agentRuns {

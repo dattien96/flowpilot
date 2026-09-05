@@ -415,6 +415,7 @@ They are writing guides that show the exact section order and minimum expected c
 - downstream files can trace back to upstream documents without reading whole folders
 - `Task` and `BugFix` files are treated as deltas, not silent replacements for upstream documents
 - AI agents can load the top of a file and determine scope, authority, and next required reads quickly
+- harness-authored documents follow this contract mechanically, not by convention (CP-58 Task-305/306): the `task-harness` plan_writer prompt (`prompts/plan-task.md`) and the `cp-harness` plan/splitter prompts (`prompts/plan-cp.md`, `prompts/task-splitter.md`) encode the required sections of `FORMAT-REFERENCE-TASK.md` and the CP §1-§10 shape as the writer's output contract, and the plan reviewers (`prompts/review-plan.md`, `prompts/review-cp.md`) gate on section completeness, runnable acceptance commands, `P-*` traceability, `DeclaredPaths` coverage, and CA-contradiction checks before a plan is approved and frozen. A harness run must never produce a phase document a human would have to reformat afterwards.
 
 ## 13. Machine-Readable Change-Ledger Block (change-audit notes)
 

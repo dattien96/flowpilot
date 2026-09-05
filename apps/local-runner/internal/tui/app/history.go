@@ -510,6 +510,12 @@ func (m *AppModel) cmdFetchChats(silent bool) tea.Cmd {
 	}
 }
 
+// chatPickerRefreshInterval bounds background history-picker refreshes
+// (BUG-355 F1) while the picker stays open — same 10s budget as the BUG-351
+// /flow picker refresh: fresh enough to pick up runs started after the first
+// fetch, quiet enough to not spam the runner per keystroke.
+const chatPickerRefreshInterval = 10 * time.Second
+
 func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
 	line := m.slashSuggestLine()
 	trimmed := strings.TrimSpace(line)
@@ -538,6 +544,18 @@ func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
 		// First open of any history/sync/restore picker: fetch both the local
 		// chat list and the remote index (CA-552 reconcile needs the remote list).
 		cmds = append(cmds, m.cmdPrefetchChats(), m.cmdPrefetchRemoteChats())
+	} else if argOK || bare {
+		// BUG-355 F1: the history picker renders from m.chatList, and the
+		// first fetch of a session sticks for the whole session — runs
+		// started afterwards never appear. While the picker is open,
+		// refresh silently in the background so the list converges; the
+		// cache keeps showing meanwhile. In-flight dedup + interval bound
+		// keep per-keypress calls cheap (same pattern as BUG-351).
+		if !m.chatListInflight && time.Since(m.chatListFetchedAt) >= chatPickerRefreshInterval {
+			m.chatListInflight = true
+			m.chatListFetchedAt = time.Now()
+			cmds = append(cmds, m.cmdFetchChats(true))
+		}
 	} else if (restoreBare || restoreArg) && len(m.remoteChatList) == 0 {
 		// CA-554: the /restore picker lists Drive-backed chats one at a time, so
 		// the remote index must prefetch for a restore command even when the local

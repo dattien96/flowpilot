@@ -124,6 +124,10 @@ type FlowNode struct {
 	Cohort         string
 	DependsOn      []string
 	PromptTemplate string
+	// Model is this node's pack-declared model tier override (Task-320).
+	// Only agent.delegate nodes consume it (resolveFlowNodeModel); empty
+	// means "no pack default — resolve via step row / agent / inherit".
+	Model          string
 	// ContextSources is this node's own enabled context-source ids (CP-44 P-7
 	// / Task-196), the step-definition-level equivalent of
 	// FlowContextBinding.Sources. Empty means "fall back to the flow-level
@@ -261,6 +265,32 @@ func NormalizeBehaviorID(id string) (string, bool) {
 	}
 	canonical, ok := behaviorAliases[key]
 	return canonical, ok
+}
+
+// ModelProviderKey maps a model name to its provider key string — the single
+// source of truth for the model→provider prefix table (Task-320). The
+// runner's providerKeyFromModel delegates to this function so pack-load
+// validation and runtime resolution can never drift apart. Mirrors the prefix
+// logic in resolvePromptExecutionAdapter (gpt-→codex, claude-→claude,
+// gemini-/auto-gemini-→gemini, grok-→grok, opencode-→opencode).
+// Returns ("", false) for an unrecognized model.
+func ModelProviderKey(model string) (string, bool) {
+	m := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.HasPrefix(m, "gpt-"):
+		return "codex", true
+	case strings.HasPrefix(m, "gemini-"), strings.HasPrefix(m, "auto-gemini-"):
+		return "gemini", true
+	case strings.HasPrefix(m, "claude-"):
+		return "claude", true
+	case strings.HasPrefix(m, "grok-"), m == "grok-build":
+		// Appended last (CP-46 P-0): existing prefix cases above are unchanged.
+		return "grok", true
+	case strings.HasPrefix(m, "opencode/"), strings.HasPrefix(m, "opencode-go/"):
+		// Appended last (CP-57 P-0): existing prefix cases above are unchanged.
+		return "opencode", true
+	}
+	return "", false
 }
 
 // LoadBuiltinPack returns the embedded FlowPilot reference pack.
@@ -699,7 +729,11 @@ func flowFromMap(m map[string]any) (FlowDefinition, error) {
 			if !ok {
 				return FlowDefinition{}, errors.New("flow nodes must be maps")
 			}
-			def.Nodes = append(def.Nodes, flowNodeFromMap(itemMap))
+			node, err := flowNodeFromMap(itemMap)
+			if err != nil {
+				return FlowDefinition{}, err
+			}
+			def.Nodes = append(def.Nodes, node)
 		}
 	}
 	edgesRaw, ok := sliceField(m, "edges")
@@ -724,7 +758,7 @@ func flowFromMap(m map[string]any) (FlowDefinition, error) {
 	return def, nil
 }
 
-func flowNodeFromMap(m map[string]any) FlowNode {
+func flowNodeFromMap(m map[string]any) (FlowNode, error) {
 	node := FlowNode{
 		ID:             stringField(m, "id"),
 		Run:            stringField(m, "run"),
@@ -734,10 +768,38 @@ func flowNodeFromMap(m map[string]any) FlowNode {
 		Join:           stringField(m, "join"),
 		Cohort:         stringField(m, "cohort"),
 		PromptTemplate: stringField(m, "promptTemplate"),
+		Model:          strings.TrimSpace(stringField(m, "model")),
 		DependsOn:      stringSliceField(m, "dependsOn"),
 		ContextSources: stringSliceField(m, "contextSources"),
 	}
-	return node
+	// CP-58 Task-307: pack-level typed artifact bindings. The FS loader never
+	// parsed these before (only the Supabase mirror path populated them via
+	// step_artifact_bindings), so a YAML-declared binding silently vanished —
+	// harness plan outputs (plan_md/cp_md/task_md) are declared in pack YAML
+	// and must survive LoadFlowFS. Malformed entries fail the flow load
+	// instead of being skipped (fail-closed, SD-23 D-11).
+	if rawBindings, ok := sliceField(m, "artifactBindings"); ok {
+		node.ArtifactBindings = make([]FlowArtifactBinding, 0, len(rawBindings))
+		for _, item := range rawBindings {
+			itemMap, isMap := item.(map[string]any)
+			if !isMap {
+				return FlowNode{}, fmt.Errorf("flow node %q: artifactBindings entries must be maps", node.ID)
+			}
+			binding := FlowArtifactBinding{
+				Direction:          stringField(itemMap, "direction"),
+				SlotName:           stringField(itemMap, "slotName"),
+				ArtifactInstanceID: stringField(itemMap, "artifactInstanceId"),
+				ArtifactTypeID:     stringField(itemMap, "artifactTypeId"),
+				Required:           boolField(itemMap, "required"),
+				Position:           intField(itemMap, "position"),
+			}
+			if config, ok := mapField(itemMap, "config"); ok {
+				binding.ConfigJSON = config
+			}
+			node.ArtifactBindings = append(node.ArtifactBindings, binding)
+		}
+	}
+	return node, nil
 }
 
 // stringSetEqual reports whether a and b contain the same elements,
@@ -759,6 +821,71 @@ func stringSetEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// artifactOutputRequirementsPrefix is the only workspace-relative directory a
+// file_artifact OUTPUT binding may target (CP-58 Task-307): harness plan
+// outputs are requirements documents, so a binding pointing outside
+// requirements/ (or escaping the workspace entirely) is a load-time error,
+// not a mid-run surprise.
+const artifactOutputRequirementsPrefix = "requirements/"
+
+// validateArtifactOutputPath checks one file_artifact OUTPUT path or
+// pathTemplate: workspace-relative, no traversal, no Windows drive/separator,
+// and always under requirements/. Task-307's deterministic fail — an
+// OUTPUT path escaping requirements/ must fail validation, never the run.
+func validateArtifactOutputPath(pathTemplate string) error {
+	trimmed := strings.TrimSpace(pathTemplate)
+	if trimmed == "" {
+		return fmt.Errorf("file_artifact OUTPUT path is empty")
+	}
+	if strings.Contains(trimmed, "\\") || strings.Contains(trimmed, ":") {
+		return fmt.Errorf("file_artifact OUTPUT path %q must be a workspace-relative path under requirements/", pathTemplate)
+	}
+	normalized := path.Clean(filepath.ToSlash(trimmed))
+	if normalized == "." || normalized == ".." || strings.HasPrefix(normalized, "/") || strings.HasPrefix(normalized, "../") {
+		return fmt.Errorf("file_artifact OUTPUT path %q must be a workspace-relative path under requirements/", pathTemplate)
+	}
+	if !strings.HasPrefix(normalized, artifactOutputRequirementsPrefix) {
+		return fmt.Errorf("file_artifact OUTPUT path %q must be under requirements/", pathTemplate)
+	}
+	return nil
+}
+
+// artifactOutputPathCandidates lists the concrete paths and/or pathTemplate a
+// binding's config declares (either form alone is acceptable; a template is
+// resolved by the writer at authoring time, concrete paths are gate-checked).
+func artifactOutputPathCandidates(config map[string]any) []string {
+	var out []string
+	if config != nil {
+		if raw, ok := config["paths"].([]any); ok {
+			for _, item := range raw {
+				if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+					out = append(out, s)
+				}
+			}
+		}
+		if s, ok := config["pathTemplate"].(string); ok && strings.TrimSpace(s) != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// validateArtifactOutputBindingPaths runs validateArtifactOutputPath over
+// every path a file_artifact OUTPUT binding declares. A binding with neither
+// form fails: an OUTPUT slot with no writable target is a malformed contract.
+func validateArtifactOutputBindingPaths(b FlowArtifactBinding) error {
+	candidates := artifactOutputPathCandidates(b.ConfigJSON)
+	if len(candidates) == 0 {
+		return fmt.Errorf("file_artifact OUTPUT binding %q declares neither a paths list nor a pathTemplate", b.SlotName)
+	}
+	for _, candidate := range candidates {
+		if err := validateArtifactOutputPath(candidate); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // validateManifestFlowMatchesDefinition rejects a pack where a manifest flow
@@ -820,6 +947,20 @@ func ValidateFlowDefinition(def FlowDefinition) error {
 				return fmt.Errorf("flow %q node %q has invalid lifecycle %q", def.ID, node.ID, node.Lifecycle)
 			}
 		}
+		// Task-320: pack-declared per-node model tier. Only agent.delegate
+		// nodes consume a model at runtime (resolveFlowNodeModel) — a model on
+		// any other behavior would be silently ignored, so it fails fast here.
+		// A delegate model that maps to no known provider is a typo that would
+		// otherwise inherit-and-confuse, so it fails fast too.
+		if strings.TrimSpace(node.Model) != "" {
+			canonical, ok := NormalizeBehaviorID(node.Behavior)
+			if !ok || canonical != "agent.delegate" {
+				return fmt.Errorf("flow %q node %q declares model %q but behavior %q never consumes a model (only agent.delegate does)", def.ID, node.ID, node.Model, node.Behavior)
+			}
+			if _, ok := ModelProviderKey(node.Model); !ok {
+				return fmt.Errorf("flow %q node %q declares unknown model %q (no provider prefix match)", def.ID, node.ID, node.Model)
+			}
+		}
 	}
 	// BUG-NOTE-CP42 #33: dependsOn references another node's id within the same
 	// flow (per the add_flow_engine_attrs_to_workflows migration's own comment),
@@ -832,17 +973,42 @@ func ValidateFlowDefinition(def FlowDefinition) error {
 			}
 		}
 	}
+	// CP-58 Task-307: fail closed on malformed artifact bindings at flow-load
+	// time — SD-23 D-11 requires deterministic binding validation, and a
+	// file_artifact OUTPUT slot is the harness plan outputs' write contract, so
+	// an unusable path template must break the load, not surface later as an
+	// opaque provider or gate failure mid-run.
+	for _, node := range def.Nodes {
+		for _, b := range node.ArtifactBindings {
+			direction := strings.ToLower(strings.TrimSpace(b.Direction))
+			switch direction {
+			case "input", "output":
+			default:
+				return fmt.Errorf("flow %q node %q artifact binding %q has invalid direction %q", def.ID, node.ID, b.SlotName, b.Direction)
+			}
+			if strings.TrimSpace(b.ArtifactInstanceID) == "" {
+				return fmt.Errorf("flow %q node %q artifact binding %q is missing artifactInstanceId", def.ID, node.ID, b.SlotName)
+			}
+			if direction == "output" && strings.HasPrefix(strings.TrimSpace(b.ArtifactTypeID), "file_artifact") {
+				if err := validateArtifactOutputBindingPaths(b); err != nil {
+					return fmt.Errorf("flow %q node %q: %w", def.ID, node.ID, err)
+				}
+			}
+		}
+	}
 	terminalIDs := map[string]struct{}{
 		"done":     {},
 		"ask_user": {},
 	}
-	// BUG-NOTE-CP42 #25: the live back-edge resolution path
-	// (resolveContinueBackEdgeTarget) can only ever pick the first declared
-	// match when more than one (kind=back, when=continue) edge exists —
-	// nothing disambiguates by which node emitted the signal. A pack-level
-	// duplicate here would silently route "continue" to the wrong node
-	// instead of failing fast at load time.
-	backEdgeSources := make(map[string]string, len(def.Edges)) // when -> first-seen from
+	// BUG-NOTE-CP42 #25 / CP-58 Task-304: the live back-edge resolution path
+	// (resolveContinueBackEdgeTarget) is source-aware, so a flow may declare
+	// ONE back-edge per (from, when) pair — task-harness needs two
+	// when:continue kind:back edges (plan_synthesis -> plan_writer and
+	// validate -> implement) to run a plan review loop and a code loop in the
+	// same flow. A true duplicate — same From AND same when — would still be
+	// ambiguous at resolve time, so it fails fast here instead of silently
+	// routing "continue" to whichever target sorts first.
+	backEdgeSources := make(map[string]string, len(def.Edges)) // "from\x00when" -> from
 	for _, edge := range def.Edges {
 		if edge.From == "" || edge.To == "" {
 			return fmt.Errorf("flow %q has edge with empty endpoint", def.ID)
@@ -864,10 +1030,11 @@ func ValidateFlowDefinition(def FlowDefinition) error {
 			}
 		}
 		if kind == "back" {
-			if prev, exists := backEdgeSources[edge.When]; exists {
-				return fmt.Errorf("flow %q has duplicate back-edge for status %q (from %q and %q)", def.ID, edge.When, prev, edge.From)
+			dedup := edge.From + "\x00" + edge.When
+			if prev, exists := backEdgeSources[dedup]; exists {
+				return fmt.Errorf("flow %q has duplicate back-edge for status %q from %q (already declared once)", def.ID, edge.When, prev)
 			}
-			backEdgeSources[edge.When] = edge.From
+			backEdgeSources[dedup] = edge.From
 		}
 	}
 	// CP-55 P-1: wired at the same definition-resolution boundary as the
