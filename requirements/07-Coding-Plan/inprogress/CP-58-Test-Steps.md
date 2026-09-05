@@ -7,7 +7,7 @@
 - Status: `draft`
 - Scope: Tasks 304-307 — dual `continue/back` engine (Task-304), `task-harness` plan review loop (Task-305), harness plan `file_artifact` bindings + mirror seeding (Task-307), `cp-harness` slice-only + smoke variant (Task-306).
 - Created: `2026-09-02`
-- Last Updated: `2026-09-04`
+- Last Updated: `2026-09-05`
 
 ## 0. Chuẩn bị (bắt buộc)
 
@@ -25,7 +25,7 @@
 | # | Bước | Kết quả mong đợi |
 |---|------|------------------|
 | S1 | Mở picker `/flow` | `task-harness` hiện trong danh sách (selectableIn flow); description "Plan Writer + Plan Review Loop + TDD + Code Review" — ✅ PASS run-533004 |
-| S2 | Prompt: yêu cầu một task nhỏ rõ ràng (vd: "add a /ping slash command logging latency to the statusline, feature_key: cli-tui"). Prompt cụ thể cho target `D:\working\gate-sandbox` (đã chạy 2026-09-04): `Add integer GCD to the calc package, feature_key: calc-core` — scope `calc.go` (hàm GCD mới) + `calc_test.go` (chỉ thêm tests mới); AC: `GCD(48,18)=18`, `GCD(0,5)=5`, `GCD(5,0)=5`, `GCD(-48,18)=18`, `GCD(0,0)=0` (documented, no panic), `go test ./...` green | Flow start: `preflight_contract_plan` (Scout) chạy trước, rồi `context`, rồi `plan_writer` — ✅ PASS run-533004 (scout→context→plan_writer advance đúng, CA-732 live) |
+| S2 | Prompt: yêu cầu một task nhỏ rõ ràng (vd: "add a /ping slash command logging latency to the statusline, feature_key: cli-tui"). Prompt cụ thể cho target `D:\working\gate-sandbox` (đã chạy 2026-09-04): `Add integer GCD to the calc package, feature_key: calc-core` — scope `calc.go` (hàm GCD mới) + `calc_test.go` (chỉ thêm tests mới); AC: `GCD(48,18)=6`, `GCD(0,5)=5`, `GCD(5,0)=5`, `GCD(-48,18)=6`, `GCD(0,0)=0` (documented, no panic), `go test ./...` green. LƯU Ý 2026-09-05: các prompt run-533004/547025 đã ghi nhầm `GCD(48,18)=18` (sai toán học — 18 không chia hết 48); coder vẫn implement GCD đúng (verify `calc_gcd_test.go` trong gate-sandbox: `(12,18)→6`, `go test ./...` green) nên kết quả PASS giữ nguyên, nhưng prompt rerun sau này phải dùng `=6` | Flow start: `preflight_contract_plan` (Scout) chạy trước, rồi `context`, rồi `plan_writer` — ✅ PASS run-533004 (scout→context→plan_writer advance đúng, CA-732 live) |
 | S3 | Quan sát step timeline khi `plan_writer` chạy | Prompt của writer có mục **"Templated file outputs (write contract)"** liệt kê `requirements/08-Task/todo/Task-{{idx}}-{{slug}}.md` — ⏳ CHƯA XÁC NHẬN (sidebar `plan_writer · doc-writer` OK per CA-734; cần screenshot prompt để tick) |
 | S4 | `plan_writer` hoàn thành | File `Task-<n>-*.md` xuất hiện trong `requirements/08-Task/todo/` với đủ section Metadata/AI Quick View/§1-§8; final message nêu đúng path đã viết — ✅ PASS run-533004 (`Task-910-calc-core-gcd.md`) |
 | S5 | `plan_reviewer` chạy | Reviewer prompt có **"Bound input artifacts (locate and read)"** + template; reviewer gọi `submit_review_outcome`, KHÔNG gọi `flow_control` — ✅ PASS run-533004 (review outcome APPROVED 8 gate criteria; reviewer prompt "Bound input artifacts" chưa đọc trực tiếp) |
@@ -91,7 +91,7 @@
 | Mục | Kết quả | Run/Chat | Ghi chú |
 |-----|---------|----------|---------|
 | P Chuẩn bị (P1-P6) | ✅ | | P1 đúng branch `cp58-harness-dual-loop` (+Task-320, +BUG-351 fix); P2 build PASS; P3 3 instances `...0002/3/4` có rows; P4 mirror đủ task/bug/cp-harness (+smoke); P5 10 binding rows sau reseed tay B2 (seed-miss do flows mirror từ boot cũ trước P3 — xem BUG ghi chú dưới); P6 đã đọc CA-712 + CA-728 |
-| S Smoke | ✅ | run-533004 | opencode-go/longcat-2.0, GCD prompt `calc-core`: S1 picker start OK; S2 scout→context→plan_writer advance PASS (CA-732 live); S4 `Task-910-calc-core-gcd.md` PASS; S5 `plan_reviewer` + hub `submit_review_outcome` APPROVED PASS; S6 approve lần 1 → freeze + `test_signatures` PASS. S3: sidebar `plan_writer · doc-writer` OK (CA-734) nhưng prompt "Templated file outputs" chưa xác nhận trực tiếp — cần 1 screenshot prompt để tick trọn. Fix CA-741 verify cùng run: audit escalate thiếu CA → park `interrupted by flow park (awaiting user decision)`, parent KHÔNG terminal, audit WAITING_USER_APPROVAL, Retry → implement (CA-740 writer) → APPROVED → Flow done, không hub_stalled |
+| S Smoke | ✅ (2 runs) | run-533004, run-547025 | run-533004: S1/S2/S4/S5/S6 PASS như cũ. run-547025 (opencode-go/omen-alpha, GCD prompt `calc-core`): happy-path full-loop lần 2 — plan approve lần 1 → freeze → test_signatures → implement → validate → reviewer APPROVED → synthesis → audit, không reprompt (E2 outcome-level OK). S3 vẫn mở: chưa có screenshot prompt `plan_writer` ("Templated file outputs"). Caveat đã verify: prompt 2 run ghi nhầm AC `GCD(48,18)=18`; coder implement GCD đúng (`calc_gcd_test.go` green) nên PASS giữ nguyên — rerun sau dùng `=6` (S2 đã sửa). Fix CA-741 verify cùng run-533004 như cũ |
 | A Plan loop | ⏳ | | Chưa ép plan reject (plan approved lần 1) |
 | B Code loop | ⏳ | run-533004 | B1 PASS: code hub `changes_requested` (API contract mismatch) → re-enter `implement` cùng session, validate/reviewer re-run, round 1 re-work → APPROVED. B2–B4 pending (B2 cần kiểm plan nodes giữ DONE NGAY LÚC code-continue, không chỉ ở snapshot cuối) |
 | C cp-harness | ⏳ | | |
