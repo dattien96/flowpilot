@@ -1841,7 +1841,6 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	if !wasBlocked {
 		return snap, nil
 	}
-	_ = prevBlockReason
 
 	// BUG-284: a hub.notify reinvoke that was blocked (re-armed in
 	// maybeAutoReinvokeHubWithPrompt) takes priority over the generic
@@ -1914,6 +1913,17 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	if pendingPrompt != "" {
 		go s.maybeAutoReinvokeHubWithPrompt(parentRunID, pendingPrompt)
 		return snap, nil
+	}
+
+	// Task-325: plan_approval resume branches before generic handling. Stock
+	// resume would retry the writer even on Approve — but this park is a
+	// gate, not a failure: empty feedback advances forward to freeze, human
+	// feedback re-enters plan_writer. Falls through on dispatch failure so
+	// generic resume (hub re-decides done → re-parks on still-churned plan).
+	if prevBlockReason == planApprovalBlockReason {
+		if handledSnap, handled := s.resumePlanApproval(parentRunID, feedback, snap); handled {
+			return handledSnap, nil
+		}
 	}
 
 	// BUG-289 A5/F-9: hub-less flows (rag-harness) escalate from inline
@@ -5914,6 +5924,17 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 	// Dispatch the successor chain synchronously (telegram.notify / audit /
 	// contract.freeze / etc. are Go-inline); a terminal reached at the end still
 	// calls applyFlowControl, so the loop settles for real by the time this returns.
+	// Task-325: conditional plan-approval park — hubID/target already resolved
+	// above, so this matches ONLY the plan loop's done-edge
+	// (plan_synthesis --done--> preflight_contract_freeze); the code-loop hub
+	// (synthesis) and plan-less flows can never hit it. A churned plan
+	// (writer re-entered >= 1) parks for human read + approve BEFORE anything
+	// freezes; clean first-pass plans fall through unattended.
+	if hubID == planSynthesisNodeID && target == planFreezeNodeID {
+		if churned, rounds := s.planLoopChurned(targetRunID); churned {
+			return s.parkPlanForApproval(targetRunID, rounds)
+		}
+	}
 	ok = s.advanceToNextInlineOrDelegate(context.Background(), targetRunID, edges, nodes, hubID, "done", in.Summary)
 	if !ok {
 		// run-201295: the done successor (e.g. contract.freeze) could not be
