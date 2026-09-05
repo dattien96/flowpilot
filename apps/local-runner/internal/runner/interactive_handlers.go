@@ -56,6 +56,8 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/providers/opencode-variants", s.handleGetOpencodeModelVariants)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}", s.handleGetRun)
 	mux.HandleFunc("GET /client/workflow-runs/{runId}/steps-runtime", s.handleGetWorkflowStepsRuntime)
+	// BUG-355 F2: run-scoped transcript for chat-less workflow runs.
+	mux.HandleFunc("GET /client/workflow-runs/{runId}/timeline", s.handleGetRunTimeline)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/resume", s.handleResumeRun)
 	mux.HandleFunc("DELETE /client/workflow-runs/{runId}", s.handleDeleteRun)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/sync-chat", s.handleSyncChatRun)

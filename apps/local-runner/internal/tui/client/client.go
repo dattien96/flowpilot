@@ -864,6 +864,19 @@ type ChatTranscriptRecord struct {
 	Payload  json.RawMessage `json:"payload"`
 }
 
+// GetRunTimeline fetches the run-scoped transcript timeline for a chat-less
+// workflow run (BUG-355 F2): GET /client/workflow-runs/{runId}/timeline.
+// Same record shape as the chat timeline.
+func (c *Client) GetRunTimeline(ctx context.Context, runID string, afterSeq int64, limit int) (ChatTimelineResponse, error) {
+	var out ChatTimelineResponse
+	path := "/client/workflow-runs/" + neturl.PathEscape(runID) + "/timeline"
+	if afterSeq > 0 || limit > 0 {
+		path += fmt.Sprintf("?afterSeq=%d&limit=%d", afterSeq, limit)
+	}
+	err := c.getJSON(ctx, path, &out)
+	return out, err
+}
+
 // SwitchChatProvider POSTs /client/chats/{chatId}/switch-provider (CP-59
 // Task-314). Refusals surface as typed errors (handoff_run_busy,
 // handoff_same_provider, provider_unavailable, chat_no_active_leg, ...).

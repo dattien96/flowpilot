@@ -922,9 +922,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case ChatListMsg:
+		// BUG-355 F1: always clear the background-refresh in-flight flag;
+		// stamp the fetch time only on success so a failed refresh retries
+		// on the next picker keypress instead of sticking the error for the
+		// whole interval (same policy as the BUG-351 flow picker).
+		m.chatListInflight = false
 		if msg.Silent {
 			if msg.Err == "" {
 				m.chatList = mergeChatListSyncStatus(m.chatList, msg.Items)
+				m.chatListFetchedAt = time.Now()
 			}
 			return m, nil
 		}
@@ -933,6 +939,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.chatList = mergeChatListSyncStatus(m.chatList, msg.Items)
+		m.chatListFetchedAt = time.Now()
 		m.addMessage("system", formatChatListWithRemote(msg.Items, m.remoteChatList), "")
 		return m, nil
 
@@ -1142,6 +1149,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if effectiveChatID != "" && isChatHandle(&effectiveHandle) {
 			if cmd := m.cmdBackfillChatTimeline(effectiveHandle); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		} else if strings.TrimSpace(effectiveHandle.ChatID) == "" && effectiveHandle.RunKind == "workflow" {
+			// BUG-355 F2: chat-less workflow runs restore their transcript
+			// from the run-scoped timeline (persisted under the run id).
+			// Separate cmd — BUG-338 pins the chat backfill to stay nil here.
+			if cmd := m.cmdBackfillRunTimeline(effectiveHandle); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
 		}
@@ -1373,7 +1387,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.chatDetached = msg.Detached
 			m.chatBackfillDone = true
-			m.addMessage("system", "Chat history unavailable: "+msg.Err.Error()+" — showing current leg only", "error")
+			note := "Chat history unavailable: " + msg.Err.Error() + " — showing current leg only"
+			if msg.RunScoped {
+				note = "Run transcript unavailable: " + msg.Err.Error() + " — steps panel still shows the run timeline"
+			}
+			m.addMessage("system", note, "error")
 			return m, nil
 		}
 		m.chatDetached = msg.Detached

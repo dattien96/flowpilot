@@ -435,7 +435,11 @@ type AppModel struct {
 	// flowListFetchedAt bounds them while the picker stays open.
 	flowListInflight  bool
 	flowListFetchedAt time.Time
-	chatList           []client.RunHistoryItem // last /history result for picker + /open <n>
+	chatList          []client.RunHistoryItem // last /history result for picker + /open <n>
+	// chatListInflight dedups background history-picker refreshes (BUG-355 F1);
+	// chatListFetchedAt bounds them while the picker stays open.
+	chatListInflight  bool
+	chatListFetchedAt time.Time
 	// deleteSelected tracks ticked rows in the /delete picker (skill-like multi-select).
 	deleteSelected map[string]bool
 	// deletePending* arms a two-step delete confirm for /delete (Task-318).
