@@ -62,6 +62,14 @@ const HARNESS_LABELS: Record<string, { label: string; description: string }> = {
   },
 };
 
+// Task-324 follow-up (operator 2026-09-06): opt-in-only builtin flows stay
+// usable by direct flowRef but are hidden from the settings sidebar list.
+const HIDDEN_BUILTIN_PACK_FLOWS: ReadonlySet<string> = new Set(["cp-harness-smoke"]);
+
+function isHiddenBuiltinPackFlow(workflow: { isBuiltin?: boolean; packFlowId?: string | null }): boolean {
+  return workflow.isBuiltin === true && HIDDEN_BUILTIN_PACK_FLOWS.has(workflow.packFlowId ?? "");
+}
+
 function harnessLabelFor(packFlowId: string | null | undefined): string | null {
   if (!packFlowId) return null;
   return HARNESS_LABELS[packFlowId]?.label ?? null;
@@ -2942,7 +2950,7 @@ export function WorkflowsSettings(): React.ReactElement {
                 {workflows.length === 0 ? (
                   <div className="settings-empty">No workflows found. Use the + button to create one.</div>
                 ) : (
-                  workflows.map((workflow) => {
+                  workflows.filter((workflow) => !isHiddenBuiltinPackFlow(workflow)).map((workflow) => {
                     const bulkModeActive = bulkSelect?.kind === "workflow";
                     const isBulkSelected = bulkModeActive && bulkSelect.ids.has(workflow.id);
                     // Built-ins can't be deleted (Delete is disabled for them
