@@ -5,7 +5,7 @@
 - Document ID: `BUG-357`
 - Title: `flow doc-writer không ghi artifact instance/run — Artifact panel trống`
 - Phase: `bugfix`
-- Status: `open`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-05`
@@ -69,3 +69,12 @@ Thiếu khâu "ghi instance lúc writer xong" trong thiết kế Task-307: bindi
 - Khi node có file_artifact OUTPUT binding hoàn thành (doc-writer/coder/splitter): ghi 1 run artifact record (path đã resolve + runId + nodeId + timestamp) vào finalizer artifacts (local, hiện ngay ở per-run API) và/hoặc Supabase `artifact_runs` (sync).
 - Panel hiện path thật (đã resolve placeholders `{{idx}}/{{slug}}` — cũng là regression guard cho E2 nếu writer viết sai path).
 - Validation: unit mới (writer completion ghi instance; API trả về; panel mapping) + live rerun task-harness → panel hiện `plan_md` → E1 PASS.
+
+## Completion Notes (implemented 2026-09-05, CA-745)
+
+- Q-1 decided: ghi local per-run (`runArtifactStore` in-memory, finalizer-adjacent), serve merged-first ở `GET /client/workflow-runs/{runId}/artifacts`. Supabase `artifact_runs` sync deferred (separate cut-over, cần project/auth context) — panel per-run hiện ngay không cần sync.
+- Q-2: `fakeArtifacts` stub giữ nguyên (chỉ là pre-first-finalize fallback).
+- Hook: `settleFlowChildTurnCompletedLocked` snapshot bound OUTPUT paths sync dưới `s.mu` (`snapshotFlowChildArtifactPathsLocked` + `flowNodeForRunLocked` — wrapper locking sẽ deadlock) rồi `go recordFlowChildArtifacts`; existence filter = `flowgate.MissingRequiredFileArtifactOutputs` (gate-identical, workspace-escape-safe); chỉ ghi file thật sự tồn tại (E2 regression guard); upsert by deterministic ID `run:artifact:node:N` (không trùng final `run:turn:kind` / fake `run-final`).
+- `Artifact` += `path` + `nodeId` (omitempty — Desktop contract backward-compatible).
+- Tests (6, new file `bug357_run_artifacts_test.go`): builder fields/IDs/dedupe, store upsert+copy, only-existing-files (TempDir, escape dropped), snapshot resolves node outputs (plain+structured, skip optional/input), handler merge recorded-first + 4 finalizer rows. Full `tui/...`, `flowgate`, `agentpack` green; runner suite failure set == clean-tree baseline (stash-proven symmetric, gồm `TestFinalizerHookSurfacesArtifacts` pluralization + env-flaky families) — zero new failures, zero old-test edits.
+- Live-verify pending (operator): rerun task-harness → per-run API + panel hiện `plan_md` với path thật → E1 PASS.

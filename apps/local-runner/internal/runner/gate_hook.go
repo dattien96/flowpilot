@@ -1747,6 +1747,15 @@ func flowNodeForRun(s *InteractiveService, rs *interactiveRun) (agentpack.FlowNo
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return flowNodeForRunLocked(s, rs)
+}
+
+// flowNodeForRunLocked is flowNodeForRun for callers already holding s.mu
+// (BUG-357 artifact snapshot inside settleFlowChildTurnCompletedLocked).
+func flowNodeForRunLocked(s *InteractiveService, rs *interactiveRun) (agentpack.FlowNode, bool) {
+	if s == nil || rs == nil {
+		return agentpack.FlowNode{}, false
+	}
 	label := strings.TrimSpace(rs.label)
 	if label == "" {
 		return agentpack.FlowNode{}, false

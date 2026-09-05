@@ -419,4 +419,11 @@ type Artifact struct {
 	Name      string `json:"name"`
 	Preview   string `json:"preview,omitempty"`
 	CreatedAt string `json:"createdAt"`
+	// Path is the workspace-relative resolved path for file_artifact OUTPUT
+	// instances recorded at flow-child completion (BUG-357). Empty for the
+	// legacy finalizer/fake artifacts.
+	Path string `json:"path,omitempty"`
+	// NodeID is the flow node that produced this artifact (BUG-357). Empty
+	// for legacy finalizer/fake artifacts.
+	NodeID string `json:"nodeId,omitempty"`
 }
