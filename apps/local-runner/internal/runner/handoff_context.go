@@ -40,6 +40,12 @@ type handoffContextResponse struct {
 type transcriptTurn struct {
 	User      string
 	Assistant string
+	// StartSeq/EndSeq carry the event seq range of the turn (BUG-355 F2):
+	// the run-timeline legacy synthesis stamps them as record eseq so the
+	// TUI can skip turns the open replay already rendered. Handoff packing
+	// ignores them.
+	StartSeq int64
+	EndSeq   int64
 }
 
 func (s *InteractiveService) handleHandoffContext(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +183,7 @@ func transcriptTurnsFromRun(rs *interactiveRun) []transcriptTurn {
 				continue
 			}
 			flush()
-			current = &transcriptTurn{User: ev.Prompt}
+			current = &transcriptTurn{User: ev.Prompt, StartSeq: ev.Seq, EndSeq: ev.Seq}
 		case EventMessageCompleted:
 			if current == nil {
 				continue
@@ -186,6 +192,7 @@ func transcriptTurnsFromRun(rs *interactiveRun) []transcriptTurn {
 			if text == "" {
 				continue
 			}
+			current.EndSeq = ev.Seq
 			current.Assistant = appendTranscriptLine(current.Assistant, text)
 		case EventTurnCompleted:
 			if current == nil {
@@ -195,6 +202,7 @@ func transcriptTurnsFromRun(rs *interactiveRun) []transcriptTurn {
 			if text == "" {
 				continue
 			}
+			current.EndSeq = ev.Seq
 			current.Assistant = appendTranscriptLine(current.Assistant, text)
 		case EventTurnFailed:
 			flush()

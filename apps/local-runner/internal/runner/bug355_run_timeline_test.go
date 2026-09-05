@@ -33,6 +33,31 @@ func TestRunTimelinePersistsWorkflowRunWithoutChat(t *testing.T) {
 	}
 }
 
+// TestRunTimelineCaptureStampsEventSeq pins the BUG-355 F2 overlap join key:
+// turn/message records carry the source event seq so the TUI can skip turns
+// the open replay already rendered.
+func TestRunTimelineCaptureStampsEventSeq(t *testing.T) {
+	svc, writer := newCaptureTestService(t)
+	svc.recordChatTranscript(ProviderEvent{Type: EventTurnStarted, WorkflowRunID: "run-wf", Prompt: "hi", Seq: 7})
+	svc.recordChatTranscript(ProviderEvent{Type: EventMessageCompleted, WorkflowRunID: "run-wf", Text: "yo", Seq: 9})
+	got, err := writer.store.ReadChatRecords(context.Background(), "run-wf", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("records = %d, want 2", len(got))
+	}
+	for i, want := range []int64{7, 9} {
+		var p map[string]any
+		if err := json.Unmarshal(got[i].Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if seq, ok := p["eseq"].(float64); !ok || int64(seq) != want {
+			t.Fatalf("record %d eseq = %v, want %d", i, p["eseq"], want)
+		}
+	}
+}
+
 // TestRunTimelineEndpointServesRunRecords drives the F2 read path end to end:
 // resident workflow run + persisted records → 200 with one leg + records.
 func TestRunTimelineEndpointServesRunRecords(t *testing.T) {

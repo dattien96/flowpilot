@@ -62,7 +62,33 @@ func TestCmdBackfillRunTimeline_SkipsChatHandles(t *testing.T) {
 	}
 }
 
-// TestRenderRunScopedBackfill_EmptyShowsNote pins the honest-empty rule: a
+// TestRenderRunScopedBackfill_SkipsReplayCoveredTurns pins the BUG-355 F2
+// overlap guard: records whose eseq sits above the open replay cursor were
+// already rendered from the tail replay — backfill covers only the rest, so
+// the last turn never doubles.
+func TestRenderRunScopedBackfill_SkipsReplayCoveredTurns(t *testing.T) {
+	payload := func(v map[string]any) json.RawMessage { b, _ := json.Marshal(v); return b }
+	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
+	m.historyLoadedAfterSeq = 2 // open replay rendered events above seq 2
+	m2, _ := m.Update(chatTimelineBackfillMsg{
+		Current: "run-wf", RunScoped: true,
+		Records: []client.ChatTranscriptRecord{
+			{ChatID: "run-wf", ChatSeq: 1, LegRunID: "run-wf", Type: tuiRecTurnStarted, Payload: payload(map[string]any{"prompt": "old turn", "eseq": 1})},
+			{ChatID: "run-wf", ChatSeq: 2, LegRunID: "run-wf", Type: tuiRecMessageCompleted, Payload: payload(map[string]any{"text": "old reply", "eseq": 2})},
+			{ChatID: "run-wf", ChatSeq: 3, LegRunID: "run-wf", Type: tuiRecTurnStarted, Payload: payload(map[string]any{"prompt": "new turn", "eseq": 3})},
+			{ChatID: "run-wf", ChatSeq: 4, LegRunID: "run-wf", Type: tuiRecMessageCompleted, Payload: payload(map[string]any{"text": "new reply", "eseq": 4})},
+		},
+	})
+	am := m2.(*AppModel)
+	if len(am.messages) != 2 || am.messages[0].Content != "old turn" || am.messages[1].Content != "old reply" {
+		t.Fatalf("only pre-cursor turns must render: %+v", am.messages)
+	}
+	// Records rendered → Load-earlier cursor drops (nothing older left to page).
+	if am.historyLoadedAfterSeq != 0 {
+		t.Fatalf("cursor must reset after full backfill, got %d", am.historyLoadedAfterSeq)
+	}
+}
+
 // run with no persisted transcript (e.g. ran before run-scoped capture)
 // gets an explicit note instead of a silently blank transcript.
 func TestRenderRunScopedBackfill_EmptyShowsNote(t *testing.T) {

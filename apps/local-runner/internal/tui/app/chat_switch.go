@@ -459,6 +459,19 @@ func (m *AppModel) cmdBackfillRunTimeline(handle client.RunHandle) tea.Cmd {
 	}
 }
 
+// recordEseq joins a transcript record back to the event stream (BUG-355
+// F2): capture stamps turn/message payloads with the event seq. 0 means
+// unknown (switch dividers, legacy fixtures) — always rendered.
+func recordEseq(raw json.RawMessage) int64 {
+	var p struct {
+		Eseq int64 `json:"eseq"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return 0
+	}
+	return p.Eseq
+}
+
 // renderChatTimelineBackfill maps prior legs' records into the transcript:
 // user/assistant text turns oldest-first plus one divider per provider switch
 // (stats from the E-9 payload). The current leg's own records are skipped —
@@ -482,6 +495,13 @@ func (m *AppModel) renderChatTimelineBackfill(msg chatTimelineBackfillMsg) {
 		// not apply — every record renders.
 		if !msg.RunScoped && rec.LegRunID == msg.Current && rec.Type != tuiRecProviderSwitch {
 			continue // current leg renders from the run replay; keep its switch divider
+		}
+		if msg.RunScoped && rec.Type != tuiRecProviderSwitch && recordEseq(rec.Payload) > m.historyLoadedAfterSeq {
+			// BUG-355 F2 overlap guard: the open replay already rendered the
+			// tail window (events above the load cursor), so backfill covers
+			// only the rest. Exact complement — replay renders seqs above the
+			// cursor (trim-aware), backfill renders at/below it.
+			continue
 		}
 		switch rec.Type {
 		case tuiRecTurnStarted:
@@ -531,10 +551,19 @@ func (m *AppModel) renderChatTimelineBackfill(msg chatTimelineBackfillMsg) {
 		messages = append(messages, m.messages...)
 		m.messages = messages
 		m.syncVisiblePromptCount()
-	} else if msg.RunScoped {
+		if msg.RunScoped && len(msg.Records) > 0 {
+			// BUG-355 F2: run records already cover the whole persisted
+			// history, so there is nothing older left to page in — drop the
+			// Load-earlier cursor or it would re-render the same turns from
+			// the event stream on top of the backfill.
+			m.historyLoadedAfterSeq = 0
+			m.mainHistoryLoadedAfterSeq = 0
+		}
+	} else if msg.RunScoped && len(msg.Records) == 0 {
 		// BUG-355 F2: the run persisted no transcript (e.g. it ran before
 		// run-scoped capture landed) — say so instead of leaving the
-		// transcript silently empty, which reads as lost data.
+		// transcript silently empty, which reads as lost data. (A fully
+		// replay-covered run skips every record but has Records — no note.)
 		m.addMessage("system", "No saved transcript for this run yet — the steps panel still shows the run timeline", "")
 	}
 }
