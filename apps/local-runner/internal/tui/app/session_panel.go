@@ -129,6 +129,21 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 		}
 		line := fmt.Sprintf("[%s] %s%s", glyph, name, suffix)
 		agentChip := ""
+		provChip := ""
+		// Task-322 (Desktop parity): per-step provider/model, falling back to
+		// the run posture — dim, never status/agent hues. Absent entirely →
+		// no chip, row renders exactly as before.
+		prov := strings.TrimSpace(s.Provider)
+		if prov == "" {
+			prov = m.flowStepsProvider
+		}
+		mod := strings.TrimSpace(s.Model)
+		if mod == "" {
+			mod = m.flowStepsModel
+		}
+		if chip := formatStepProviderChip(prov, mod); chip != "" {
+			provChip = styleSystem.Render(chip)
+		}
 		action := ""
 		if child, ok := m.childRunForStep(s); ok {
 			// BUG-336 UX: flow mode has no agents sidebar section (steps ARE
@@ -157,7 +172,7 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 				lineStyle = styleStepSelected
 			}
 		}
-		out = append(out, lineStyle.Render(line)+agentChip+action)
+		out = append(out, lineStyle.Render(line)+agentChip+provChip+action)
 		if st == "FAILED" {
 			if note := strings.TrimSpace(s.RejectionNote); note != "" {
 				out = append(out, lineStyle.Render("  "+note))
@@ -173,11 +188,46 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 	return out
 }
 
+// formatStepProviderChip renders the dim " · provider/model" suffix for a step
+// row (Task-322, Desktop parity). Empty when both are blank so the row stays
+// byte-identical to the pre-Task-322 rendering.
+func formatStepProviderChip(provider, model string) string {
+	p := strings.TrimSpace(provider)
+	mo := strings.TrimSpace(model)
+	switch {
+	case p != "" && mo != "":
+		return " · " + p + "/" + mo
+	case p != "":
+		return " · " + p
+	case mo != "":
+		return " · " + mo
+	default:
+		return ""
+	}
+}
+
+// loopRoundChip renders the "  round R/C" header suffix (Task-322). Empty when
+// the cap is unknown (roundCap <= 0) so the header stays exactly "steps".
+func loopRoundChip(round, roundCap int) string {
+	if roundCap <= 0 {
+		return ""
+	}
+	if round < 0 {
+		round = 0
+	}
+	return fmt.Sprintf("  round %d/%d", round, roundCap)
+}
+
 // stepsSectionTitle renders the "steps" section header for the sidebar and the
 // overlay. The focused child has no [back] chip (switching is keyboard-only via
 // /agents + Esc, per user request) — it is highlighted in the step row instead.
 func (m *AppModel) stepsSectionTitle() string {
-	return styleGate.Render("steps")
+	title := styleGate.Render("steps")
+	// Task-322: loop round/cap chip from the latest agent-graph snapshot.
+	if chip := loopRoundChip(m.flowLoopRound, m.flowLoopCap); chip != "" {
+		title += styleSystem.Render(chip)
+	}
+	return title
 }
 
 // bindActiveAccountForProvider sets account + accountLabel from the active

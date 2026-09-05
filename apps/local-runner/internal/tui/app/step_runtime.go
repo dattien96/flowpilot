@@ -15,7 +15,11 @@ import (
 type StepsRuntimeMsg struct {
 	RunID string
 	Steps []client.WorkflowStepRuntime
-	Err   string
+	// Provider/Model are the run-level posture from the snapshot body
+	// (Task-322): per-step fallback when a step has no own provider/model.
+	Provider string
+	Model    string
+	Err      string
 }
 
 const (
@@ -80,7 +84,7 @@ func (m *AppModel) cmdRefreshStepsRuntime() tea.Cmd {
 		if err != nil {
 			return StepsRuntimeMsg{RunID: runID, Err: err.Error()}
 		}
-		return StepsRuntimeMsg{RunID: runID, Steps: snap.Steps}
+		return StepsRuntimeMsg{RunID: runID, Steps: snap.Steps, Provider: snap.Provider, Model: snap.Model}
 	}
 }
 
@@ -189,6 +193,13 @@ func (m *AppModel) applyAgentGraph(g *client.AgentGraphSnapshot) {
 	m.flowLoopStatus = g.LoopState.Status
 	m.flowBlockReason = g.LoopState.BlockReason
 	m.flowGateReason = strings.TrimSpace(g.LoopState.GateReason)
+	// Task-322: persist round/cap for the steps header "round R/C" chip.
+	// Display uses Cap with RoundCap fallback (client.AgentLoopState contract).
+	m.flowLoopRound = g.LoopState.Round
+	m.flowLoopCap = g.LoopState.Cap
+	if m.flowLoopCap == 0 {
+		m.flowLoopCap = g.LoopState.RoundCap
+	}
 	m.agentRuns = g.Runs
 	m.afterAgentRunsAdopted()
 	if m.hasChildAgentRuns() {

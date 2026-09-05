@@ -5,7 +5,7 @@
 - Document ID: `Task-322`
 - Title: `TUI Steps Panel Shows Provider + Model Per Step And Loop Round/Cap (Desktop Parity)`
 - Phase: `task`
-- Status: `todo`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-05`
@@ -86,4 +86,8 @@ Opening any flow run in the TUI shows, per step row, the provider + model that r
 
 ## 8. Completion Notes
 
-- Empty (implementer fills).
+- Implemented 2026-09-05 (CA-746), TUI-only, zero backend/Desktop changes.
+- T-1: `flowStepsPanelLinesMax` appends dim ` · provider/model` chip per row (per-step fields, fallback to run posture `flowStepsProvider/Model` carried in `StepsRuntimeMsg`; absent → row byte-identical, no "unknown" noise). Run-posture threading is TUI-internal (`cmdRefreshStepsRuntime` keeps `snap.Provider/Model`) — needed because built-in nodes inherit posture server-side (per-step often empty).
+- T-2: `stepsSectionTitle` appends dim `  round R/C` chip when cap known (`flowLoopRound/Cap` persisted in `applyAgentGraph`, `Cap` wins over `RoundCap`); unknown cap → plain `steps`. Both reset with steps on `/new` + `/open`.
+- T-3: 7 tests in `task322_steps_provider_round_test.go` (row both/halves/posture-wins/absent-identical, header chip/Cap-precedence/hidden, msg-carries-posture) — all PASS; full `go test ./internal/tui/...` PASS, zero old-test edits.
+- Manual verify pending (operator): open run-548341 in TUI → rows match Desktop screenshot (plan_writer opencode, reviewer grok-4.5), header `round 2/3`.

@@ -56,6 +56,10 @@ func (m *AppModel) applyOpenedRunFlowChrome(handle client.RunHandle, meta client
 		m.launch = LaunchArm{}
 		m.flowSteps = nil
 		m.flowStepsActive = ""
+		m.flowStepsProvider = ""
+		m.flowStepsModel = ""
+		m.flowLoopRound = 0
+		m.flowLoopCap = 0
 		m.agentRuns = nil
 		m.focusedAgentIdx = 0
 		return
@@ -74,6 +78,10 @@ func (m *AppModel) applyOpenedRunFlowChrome(handle client.RunHandle, meta client
 	// Steps / agents refilled after open (cmdRefreshStepsRuntime + cmdHydrateAgentRuns).
 	m.flowSteps = nil
 	m.flowStepsActive = ""
+	m.flowStepsProvider = ""
+	m.flowStepsModel = ""
+	m.flowLoopRound = 0
+	m.flowLoopCap = 0
 	m.agentRuns = nil
 	m.focusedAgentIdx = 0
 	// Do not persist here — /open is run chrome for this session only.
