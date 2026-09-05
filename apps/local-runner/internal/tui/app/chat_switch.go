@@ -472,6 +472,24 @@ func recordEseq(raw json.RawMessage) int64 {
 	return p.Eseq
 }
 
+// renderRunRecord reports whether a run-scoped backfill record may render
+// given the open replay cursor (BUG-355 F2 overlap guard). Switch dividers
+// always render (the replay never draws them). Turn/message records render
+// only when the replay did not cover them: cursor==0 means the replay showed
+// the whole run (short tail), so every turn/message record skips; otherwise
+// records at/below the cursor render (the cursor already accounts for the
+// replay's trim). eseq==0 (legacy/divider-shaped) renders whenever the cursor
+// is non-zero — production capture always stamps eseq>=1.
+func renderRunRecord(rec client.ChatTranscriptRecord, cursor int64) bool {
+	if rec.Type == tuiRecProviderSwitch {
+		return true
+	}
+	if cursor == 0 {
+		return false
+	}
+	return recordEseq(rec.Payload) <= cursor
+}
+
 // renderChatTimelineBackfill maps prior legs' records into the transcript:
 // user/assistant text turns oldest-first plus one divider per provider switch
 // (stats from the E-9 payload). The current leg's own records are skipped —
@@ -496,11 +514,12 @@ func (m *AppModel) renderChatTimelineBackfill(msg chatTimelineBackfillMsg) {
 		if !msg.RunScoped && rec.LegRunID == msg.Current && rec.Type != tuiRecProviderSwitch {
 			continue // current leg renders from the run replay; keep its switch divider
 		}
-		if msg.RunScoped && rec.Type != tuiRecProviderSwitch && recordEseq(rec.Payload) > m.historyLoadedAfterSeq {
+		if msg.RunScoped && rec.Type != tuiRecProviderSwitch && !renderRunRecord(rec, m.historyLoadedAfterSeq) {
 			// BUG-355 F2 overlap guard: the open replay already rendered the
-			// tail window (events above the load cursor), so backfill covers
-			// only the rest. Exact complement — replay renders seqs above the
-			// cursor (trim-aware), backfill renders at/below it.
+			// tail window, so backfill covers only the rest (exact complement
+			// — the cursor is trim-aware). cursor==0 means the replay showed
+			// everything: all turn/message records skip, dividers still render
+			// (the replay never draws those).
 			continue
 		}
 		switch rec.Type {
