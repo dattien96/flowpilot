@@ -66,8 +66,8 @@ func TestYouBoxClamp_ChangeContractCollapsedExpanded(t *testing.T) {
 				last = idx
 			}
 			// Second click collapses again.
-			m3, _ := m2.(*AppModel).Update(clickLeft(x, y))
-			view3 := stripANSI(m3.(*AppModel).View())
+			m3 := clickLeftFull(m2.(*AppModel), x, y)
+			view3 := stripANSI(m3.View())
 			if strings.Contains(view3, "symbols: Subtract") {
 				t.Fatalf("[%s w=%d] second click must collapse:\n%s", pk, w, view3)
 			}

@@ -137,8 +137,8 @@ func TestRegression_YouBoxTrueColorViewAllLines(t *testing.T) {
 			}
 			checkBars("expanded", rr)
 			// Second click collapses again.
-			m3, _ := am.Update(clickLeft(x, y))
-			view3 := stripANSI(m3.(*AppModel).View())
+			m3 := clickLeftFull(am, x, y)
+			view3 := stripANSI(m3.View())
 			if !strings.Contains(view3, "files: calc.go, calc_test.go....") {
 				t.Fatalf("[%s h=%d] second click must collapse:\n%s", pk, h, view3)
 			}

@@ -258,6 +258,7 @@ func (m *AppModel) handlePlainLeftMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.MouseActionRelease:
 		dragged := m.mouseDrag.moved
+		expandKey := m.mouseDrag.expandKey
 		// BUG-345: wheel-only mouse (?1000h, no 1002/1003) delivers press and
 		// release but NO motion events, so a drag never set moved — releasing
 		// after a real drag just cleared the highlight and copied nothing.
@@ -278,7 +279,15 @@ func (m *AppModel) handlePlainLeftMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if dragged {
 			// Drag-select just ended: copy on release (Terminal.app swallows
 			// Cmd+C, so the drag release is the reliable copy affordance, CA-515).
+			// An expandKey press never toggles here — selecting expanded
+			// prompt text must not collapse the box (BUG-359).
 			return m, m.autoCopySelectionOnDragEnd()
+		}
+		// Release over the same expanded prompt box that armed the press is a
+		// real click → collapse it now (toggle deferred from press, BUG-359).
+		if expandKey != "" && m.clickTargetAt(msg.X, msg.Y) == "user-prompt-expand:"+expandKey {
+			m.toggleUserPrompt(expandKey)
+			return m, pulse
 		}
 		// Click-release with no motion: same as before (clear leftover highlight).
 		m.mouseSel = mouseSelect{}
@@ -294,6 +303,20 @@ func (m *AppModel) handlePlainLeftMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.mouseDrag = mouseDrag{}
 		if msg.Action == tea.MouseActionPress && m.clickTargetAt(msg.X, msg.Y) == "" {
 			m.mouseDrag = mouseDrag{down: true, x0: msg.X, y0: msg.Y}
+		}
+		// BUG-359: a press on an already-EXPANDED user prompt box must not
+		// toggle on press-down — that collapses the box before a drag-select
+		// can start, making long prompts uncopyable. Arm the drag instead;
+		// the toggle fires on same-cell release (see Release branch). A
+		// collapsed box keeps the immediate whole-box expand. Windows
+		// zero-action events keep the old immediate behavior (no release
+		// pairing exists there).
+		if msg.Action == tea.MouseActionPress {
+			if ek := m.armedExpandedPromptKey(msg.X, msg.Y); ek != "" {
+				m.mouseDrag = mouseDrag{down: true, x0: msg.X, y0: msg.Y, expandKey: ek}
+				m.mouseSel = mouseSelect{}
+				return m, pulse
+			}
 		}
 		m.mouseSel = mouseSelect{}
 		if msg.Action == tea.MouseActionRelease {
@@ -928,6 +951,21 @@ func hitCopyChrome(m *AppModel, c tuiChrome, x, y int) string {
 		return "copyfence:" + strconv.Itoa(rows[rel].MsgIdx) + ":" + strconv.Itoa(rows[rel].FenceIdx)
 	}
 	return "copy:" + strconv.Itoa(rows[rel].MsgIdx)
+}
+
+// armedExpandedPromptKey returns the prompt content key when (x,y) sits on an
+// already-EXPANDED user prompt box (BUG-359). Collapsed boxes return "" so
+// the press keeps its immediate whole-box expand.
+func (m *AppModel) armedExpandedPromptKey(x, y int) string {
+	target := m.clickTargetAt(x, y)
+	if !strings.HasPrefix(target, "user-prompt-expand:") {
+		return ""
+	}
+	content := strings.TrimPrefix(target, "user-prompt-expand:")
+	if content == "" || !m.userPromptExpanded(content) {
+		return ""
+	}
+	return content
 }
 
 // hitUserPromptChrome maps a click on any row of a user prompt bubble that

@@ -664,6 +664,13 @@ type mouseDrag struct {
 	down   bool
 	moved  bool
 	x0, y0 int
+	// expandKey arms a press that started on an already-EXPANDED user prompt
+	// box (BUG-359): the toggle must not fire on press-down (that would
+	// collapse the box before a drag-select even starts). The toggle fires
+	// on release only when released on the same box (= real click); a
+	// press→release over different cells is a drag-select that copies and
+	// never toggles. Empty for ordinary presses.
+	expandKey string
 }
 
 func (s mouseSelect) empty() bool {
