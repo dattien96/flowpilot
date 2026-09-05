@@ -473,6 +473,16 @@ type AppModel struct {
 	// parked Continue/Stop decision (escalate/cap/delegate_failed). Surfaced on
 	// the blocked bar so a chip is never shown without its reason (run-142155).
 	flowGateReason string
+	// flowLoopRound/flowLoopCap mirror LoopState.Round + Cap (fallback RoundCap)
+	// from the latest agent-graph snapshot (Task-322): rendered as the
+	// "round R/C" chip on the steps header. Zero cap = unknown → chip hidden.
+	flowLoopRound int
+	flowLoopCap   int
+	// flowStepsProvider/flowStepsModel carry the run-level provider/model posture
+	// from the latest steps-runtime snapshot (Task-322): per-step fallback when
+	// a step row has no own provider/model (built-in nodes inherit run posture).
+	flowStepsProvider string
+	flowStepsModel    string
 	// CA-633: composeCellBuf cache. composeCellBuf(chat,side,...) is a pure
 	// function of its inputs, so when the chat/side pane strings and geometry
 	// are byte-identical to the last call the ~300ms cellbuf merge (126×50,

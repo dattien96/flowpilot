@@ -205,10 +205,19 @@ func (s *InteractiveService) handleListAgents(w http.ResponseWriter, r *http.Req
 
 func (s *InteractiveService) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("runId")
-	// Prefer real finalizer artifacts once a turn has finalized (04-04); fall back
-	// to the fake catalog before the first finalize.
+	// BUG-357: per-run file_artifact OUTPUT instances recorded at flow-child
+	// completion come first (the E1 surface); then real finalizer artifacts
+	// once a turn has finalized (04-04). Fall back to the fake catalog only
+	// when both are absent.
+	var out []Artifact
+	if recs, ok := s.runArtifacts.forRun(runID); ok {
+		out = append(out, recs...)
+	}
 	if arts, ok := s.finalizer.artifactsForRun(runID); ok {
-		writeInteractiveJSON(w, http.StatusOK, arts)
+		out = append(out, arts...)
+	}
+	if len(out) > 0 {
+		writeInteractiveJSON(w, http.StatusOK, out)
 		return
 	}
 	writeInteractiveJSON(w, http.StatusOK, fakeArtifacts(runID))

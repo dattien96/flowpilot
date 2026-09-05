@@ -216,11 +216,11 @@ func (s *InteractiveService) backfillLegacyChatTranscript(ctx context.Context, c
 	recs := make([]ChatTranscriptRecord, 0, len(turns)*2+1)
 	for _, turn := range turns {
 		if turn.User != "" {
-			payload, _ := json.Marshal(map[string]any{"prompt": turn.User, "backfill": true})
+			payload, _ := json.Marshal(map[string]any{"prompt": turn.User, "backfill": true, "eseq": turn.StartSeq})
 			recs = append(recs, ChatTranscriptRecord{ChatID: chatID, LegRunID: rs.id, Type: EventTypeChatTurnStarted, Payload: payload})
 		}
 		if turn.Assistant != "" {
-			payload, _ := json.Marshal(map[string]any{"text": turn.Assistant, "backfill": true})
+			payload, _ := json.Marshal(map[string]any{"text": turn.Assistant, "backfill": true, "eseq": turn.EndSeq})
 			recs = append(recs, ChatTranscriptRecord{ChatID: chatID, LegRunID: rs.id, Type: EventTypeChatMessageCompleted, Payload: payload})
 		}
 	}

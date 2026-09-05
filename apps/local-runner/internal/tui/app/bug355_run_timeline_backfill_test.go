@@ -43,10 +43,61 @@ func TestCmdBackfillRunTimeline_FetchesRunTimeline(t *testing.T) {
 	if gotPath != "/client/workflow-runs/run-wf/timeline" {
 		t.Fatalf("path=%q want /client/workflow-runs/run-wf/timeline", gotPath)
 	}
+	// Partial replay (cursor>0): eseq-less fixture records count as
+	// pre-cursor history and render.
+	m.historyLoadedAfterSeq = 99
 	m2, _ := m.Update(bm)
 	am := m2.(*AppModel)
 	if len(am.messages) != 2 || am.messages[0].Content != "do the thing" || am.messages[1].Content != "did the thing" {
 		t.Fatalf("run records must render as the transcript: %+v", am.messages)
+	}
+}
+
+// TestRenderRunScopedBackfill_PartialReplayRendersOlderTurns pins the normal
+// long-run case: the open replay covered only the tail (cursor>0), so older
+// backfill turns (eseq<=cursor, incl. legacy eseq==0) render once.
+func TestRenderRunScopedBackfill_PartialReplayRendersOlderTurns(t *testing.T) {
+	payload := func(v map[string]any) json.RawMessage { b, _ := json.Marshal(v); return b }
+	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
+	m.historyLoadedAfterSeq = 50 // replay rendered events above seq 50
+	m2, _ := m.Update(chatTimelineBackfillMsg{
+		Current: "run-wf", RunScoped: true,
+		Records: []client.ChatTranscriptRecord{
+			{ChatID: "run-wf", ChatSeq: 1, LegRunID: "run-wf", Type: tuiRecTurnStarted, Payload: payload(map[string]any{"prompt": "legacy turn"})},
+			{ChatID: "run-wf", ChatSeq: 2, LegRunID: "run-wf", Type: tuiRecMessageCompleted, Payload: payload(map[string]any{"text": "legacy reply"})},
+		},
+	})
+	am := m2.(*AppModel)
+	if len(am.messages) != 2 || am.messages[0].Content != "legacy turn" {
+		t.Fatalf("pre-cursor legacy records must render: %+v", am.messages)
+	}
+	_ = am
+}
+
+// TestRenderRunScopedBackfill_FullyReplayedRendersNothing pins the BUG-355
+// live case (run-548341): a short run whose open replay covered everything
+// (cursor==0) must not re-render from backfill — no duplication — and must
+// not show the no-transcript note either (records exist).
+func TestRenderRunScopedBackfill_FullyReplayedRendersNothing(t *testing.T) {
+	payload := func(v map[string]any) json.RawMessage { b, _ := json.Marshal(v); return b }
+	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
+	m.historyLoadedAfterSeq = 0 // short run: replay showed the whole tail
+	m.messages = []ChatMessage{{Role: "user", Content: "do the thing"}, {Role: "assistant", Content: "did the thing"}}
+	m2, _ := m.Update(chatTimelineBackfillMsg{
+		Current: "run-wf", RunScoped: true,
+		Records: []client.ChatTranscriptRecord{
+			{ChatID: "run-wf", ChatSeq: 1, LegRunID: "run-wf", Type: tuiRecTurnStarted, Payload: payload(map[string]any{"prompt": "do the thing", "eseq": 1})},
+			{ChatID: "run-wf", ChatSeq: 2, LegRunID: "run-wf", Type: tuiRecMessageCompleted, Payload: payload(map[string]any{"text": "did the thing", "eseq": 2})},
+		},
+	})
+	am := m2.(*AppModel)
+	if len(am.messages) != 2 {
+		t.Fatalf("fully replayed run must not double: %+v", am.messages)
+	}
+	for _, mm := range am.messages {
+		if strings.Contains(mm.Content, "No saved transcript") {
+			t.Fatalf("note must not show when records exist: %+v", am.messages)
+		}
 	}
 }
 
@@ -62,7 +113,33 @@ func TestCmdBackfillRunTimeline_SkipsChatHandles(t *testing.T) {
 	}
 }
 
-// TestRenderRunScopedBackfill_EmptyShowsNote pins the honest-empty rule: a
+// TestRenderRunScopedBackfill_SkipsReplayCoveredTurns pins the BUG-355 F2
+// overlap guard: records whose eseq sits above the open replay cursor were
+// already rendered from the tail replay — backfill covers only the rest, so
+// the last turn never doubles.
+func TestRenderRunScopedBackfill_SkipsReplayCoveredTurns(t *testing.T) {
+	payload := func(v map[string]any) json.RawMessage { b, _ := json.Marshal(v); return b }
+	m := New(config.ChatConfig{}, "http://127.0.0.1:1")
+	m.historyLoadedAfterSeq = 2 // open replay rendered events above seq 2
+	m2, _ := m.Update(chatTimelineBackfillMsg{
+		Current: "run-wf", RunScoped: true,
+		Records: []client.ChatTranscriptRecord{
+			{ChatID: "run-wf", ChatSeq: 1, LegRunID: "run-wf", Type: tuiRecTurnStarted, Payload: payload(map[string]any{"prompt": "old turn", "eseq": 1})},
+			{ChatID: "run-wf", ChatSeq: 2, LegRunID: "run-wf", Type: tuiRecMessageCompleted, Payload: payload(map[string]any{"text": "old reply", "eseq": 2})},
+			{ChatID: "run-wf", ChatSeq: 3, LegRunID: "run-wf", Type: tuiRecTurnStarted, Payload: payload(map[string]any{"prompt": "new turn", "eseq": 3})},
+			{ChatID: "run-wf", ChatSeq: 4, LegRunID: "run-wf", Type: tuiRecMessageCompleted, Payload: payload(map[string]any{"text": "new reply", "eseq": 4})},
+		},
+	})
+	am := m2.(*AppModel)
+	if len(am.messages) != 2 || am.messages[0].Content != "old turn" || am.messages[1].Content != "old reply" {
+		t.Fatalf("only pre-cursor turns must render: %+v", am.messages)
+	}
+	// Records rendered → Load-earlier cursor drops (nothing older left to page).
+	if am.historyLoadedAfterSeq != 0 {
+		t.Fatalf("cursor must reset after full backfill, got %d", am.historyLoadedAfterSeq)
+	}
+}
+
 // run with no persisted transcript (e.g. ran before run-scoped capture)
 // gets an explicit note instead of a silently blank transcript.
 func TestRenderRunScopedBackfill_EmptyShowsNote(t *testing.T) {

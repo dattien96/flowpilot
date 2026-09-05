@@ -129,17 +129,15 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 		}
 		line := fmt.Sprintf("[%s] %s%s", glyph, name, suffix)
 		agentChip := ""
+		agentName := ""
 		action := ""
 		if child, ok := m.childRunForStep(s); ok {
 			// BUG-336 UX: flow mode has no agents sidebar section (steps ARE
-			// the view) — a step executed by a spawned agent names it inline,
-			// in the agent hue so it reads as a label, not step status.
-			agentName := strings.TrimSpace(child.AgentName)
+			// the view) — a step executed by a spawned agent names it in the
+			// agent hue so it reads as a label, not step status.
+			agentName = strings.TrimSpace(child.AgentName)
 			if agentName == "" {
 				agentName = strings.TrimSpace(child.Label)
-			}
-			if agentName != "" {
-				agentChip = styleStatusAgent.Render(" · agent: " + agentName)
 			}
 			if m.viewingChild() && strings.EqualFold(strings.TrimSpace(child.RunID), strings.TrimSpace(m.focusRunID)) {
 				// Highlight the agent currently being viewed with the SAME
@@ -148,6 +146,7 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 				// background. The old teal text (styleStatusAgent) did not
 				// stand out against the dim unselected rows. No [open]/[back]
 				// — switching is keyboard-only via /agents (user request).
+				// The fill applies to the step-name line ONLY (Task-322).
 				marker := "▸"
 				if m.asciiMode {
 					marker = ">"
@@ -157,7 +156,33 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 				lineStyle = styleStepSelected
 			}
 		}
-		out = append(out, lineStyle.Render(line)+agentChip+action)
+		// Task-322 (Desktop parity): provider/model on its own indented line
+		// below the row — never squeezed into the row where the width clamp
+		// would cut it to "…". Terminals have no smaller font; dim reads as
+		// secondary. The agent name drops to a third line with it (full
+		// width, same reason); without a provider line the agent stays
+		// inline exactly as before. Absent entirely → single-line row (same
+		// shape as the FAILED note sub-line below).
+		prov := strings.TrimSpace(s.Provider)
+		if prov == "" {
+			prov = m.flowStepsProvider
+		}
+		mod := strings.TrimSpace(s.Model)
+		if mod == "" {
+			mod = m.flowStepsModel
+		}
+		if provLine := styledStepProviderSubline(prov, mod); provLine != "" {
+			out = append(out, lineStyle.Render(line)+action)
+			out = append(out, provLine)
+			if agentName != "" {
+				out = append(out, styleStatusAgent.Render("    agent: "+agentName+" "))
+			}
+		} else {
+			if agentName != "" {
+				agentChip = styleStatusAgent.Render(" · agent: " + agentName)
+			}
+			out = append(out, lineStyle.Render(line)+agentChip+action)
+		}
 		if st == "FAILED" {
 			if note := strings.TrimSpace(s.RejectionNote); note != "" {
 				out = append(out, lineStyle.Render("  "+note))
@@ -173,11 +198,79 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 	return out
 }
 
+// stepProviderColors maps provider keys to brand hues (Desktop parity: the
+// provider token is colored per provider so runs are scannable at a glance).
+// The model token always stays dim — only the provider is colored.
+var stepProviderColors = map[string]string{
+	"claude":      "#D97757", // Claude orange
+	"codex":       "#3FB950", // OpenAI green
+	"grok":        "#79C0FF", // xAI light blue
+	"opencode":    "#A371F7", // opencode purple
+	"opencode-go": "#A371F7",
+}
+
+// stepProviderStyle returns the brand-hue style for a provider key
+// (case-insensitive). False for unknown providers → dim fallback.
+func stepProviderStyle(provider string) (lipgloss.Style, bool) {
+	hex, ok := stepProviderColors[strings.ToLower(strings.TrimSpace(provider))]
+	if !ok {
+		return lipgloss.Style{}, false
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(hex)), true
+}
+
+// styledStepProviderSubline renders the indented provider/model second line
+// for a step row (Task-322, Desktop parity): "    provider/model" with the
+// provider in its brand hue and "/model" dim. Returns "" when both are blank
+// so no sub-line is emitted. Trailing space pads a selected fill, mirroring
+// the selected row format.
+func styledStepProviderSubline(provider, model string) string {
+	p := strings.TrimSpace(provider)
+	mo := strings.TrimSpace(model)
+	if p == "" && mo == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("    ")
+	if p != "" {
+		if st, ok := stepProviderStyle(p); ok {
+			b.WriteString(st.Render(p))
+		} else {
+			b.WriteString(styleSystem.Render(p))
+		}
+	}
+	if mo != "" {
+		if p != "" {
+			b.WriteString(styleSystem.Render("/"))
+		}
+		b.WriteString(styleSystem.Render(mo))
+	}
+	b.WriteString(" ")
+	return b.String()
+}
+
+// loopRoundChip renders the "  round R/C" header suffix (Task-322). Empty when
+// the cap is unknown (roundCap <= 0) so the header stays exactly "steps".
+func loopRoundChip(round, roundCap int) string {
+	if roundCap <= 0 {
+		return ""
+	}
+	if round < 0 {
+		round = 0
+	}
+	return fmt.Sprintf("  round %d/%d", round, roundCap)
+}
+
 // stepsSectionTitle renders the "steps" section header for the sidebar and the
 // overlay. The focused child has no [back] chip (switching is keyboard-only via
 // /agents + Esc, per user request) — it is highlighted in the step row instead.
 func (m *AppModel) stepsSectionTitle() string {
-	return styleGate.Render("steps")
+	title := styleGate.Render("steps")
+	// Task-322: loop round/cap chip from the latest agent-graph snapshot.
+	if chip := loopRoundChip(m.flowLoopRound, m.flowLoopCap); chip != "" {
+		title += styleSystem.Render(chip)
+	}
+	return title
 }
 
 // bindActiveAccountForProvider sets account + accountLabel from the active

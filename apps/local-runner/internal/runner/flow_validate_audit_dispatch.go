@@ -999,7 +999,7 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	if auditCtxCancelled(ctx, parentRunID, node.ID, "entry") {
 		return false
 	}
-	pkg, _ := s.loadPlanContextPackage(ctx, parentRunID)
+	pkg, hasPkg := s.loadPlanContextPackage(ctx, parentRunID)
 
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
@@ -1053,6 +1053,36 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 			log.Printf("[flow-executor] audit observe-fail escalate failed: %v", err)
 		}
 		return true
+	}
+
+	// BUG-356: slice-only docs flows (cp-harness) declare no command.validate
+	// node by design, so no validation state can ever exist — without this,
+	// audit parks blocked_validation_failed with no forward path (Retry
+	// re-runs the same empty state). When the flow by design cannot validate
+	// AND the aggregate diff verifies docs-only, record a passed
+	// slice-outputs verification instead of blocking forever. Flows WITH a
+	// validate node keep the existing fail-closed behavior untouched, and the
+	// tier-3 doc-rule pass below still runs as defense-in-depth.
+	if state.Status == "" && !flowHasValidateNode(nodes) && len(changedFiles) > 0 && verifySliceOnlyOutputs(changedFiles) {
+		planPackageID := ""
+		if hasPkg {
+			planPackageID = pkg.PackageID
+		}
+		state = NewFlowValidationRetryState(planPackageID, sliceOutputsCheckCommand)
+		state.Status = "passed"
+		s.mu.Lock()
+		if rs := s.runs[parentRunID]; rs != nil {
+			rs.flowValidationRetryState = &state
+		}
+		s.mu.Unlock()
+		if store := s.persistenceStore(); store != nil {
+			if err := PersistRetryState(ctx, store, parentRunID, node.ID, state); err != nil {
+				log.Printf("[flow-executor] audit: persist slice-outputs state failed: %v", err)
+			}
+		}
+		s.flowDiagLog(parentRunID, "flow_audit_slice_outputs_verified", "docs-only slice verified; validation passed",
+			"node_id", node.ID, "artifacts", len(changedFiles),
+		)
 	}
 
 	// Task-242 tier-3: re-evaluate doc-family rules on the aggregate flow diff

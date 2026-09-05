@@ -5,14 +5,14 @@
 - Document ID: `Task-306`
 - Title: `CP-Harness 12-Step With CP Plan And Task Splitter`
 - Phase: `task`
-- Status: `inprogress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-27`
-- Last Updated: `2026-09-01`
-- Parent Documents: [CP-58: Bug / Task / CP Harness With Plan Artifact And Dual Review Loops](../../07-Coding-Plan/todo/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md)
+- Last Updated: `2026-09-05`
+- Parent Documents: [CP-58: Bug / Task / CP Harness With Plan Artifact And Dual Review Loops](../../07-Coding-Plan/done/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md)
 - Child Documents: `None`
-- Related Documents: [CP-55: Flow-First Preflight Contract](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [Task-293: Rag-Harness TDD + Review Loop](../../08-Task/done/Task-293-RagHarness-TDD-Test-Signatures-And-Review-Until-Clean-Loop.md), [Task-305: Task-Harness 11-Step](../todo/Task-305-Task-Harness-11-Step-With-Plan-Writer-And-Plan-Review-Loop.md)
+- Related Documents: [CP-55: Flow-First Preflight Contract](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [Task-293: Rag-Harness TDD + Review Loop](../../08-Task/done/Task-293-RagHarness-TDD-Test-Signatures-And-Review-Until-Clean-Loop.md), [Task-305: Task-Harness 11-Step](../done/Task-305-Task-Harness-11-Step-With-Plan-Writer-And-Plan-Review-Loop.md)
 - Replaces: `None`
 - Tags: `flow, harness, cp, splitter, plan-artifact, agent-flow-engine`
 

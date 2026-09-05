@@ -3,8 +3,8 @@
 ## Metadata
 
 - Document ID: `CP-58-Test-Steps`
-- Phase: `coding_plan` (manual validation companion)
-- Status: `draft`
+- Phase: `coding_plan` (manual validation companion — complete, see CA-744)
+- Status: `done`
 - Scope: Tasks 304-307 — dual `continue/back` engine (Task-304), `task-harness` plan review loop (Task-305), harness plan `file_artifact` bindings + mirror seeding (Task-307), `cp-harness` slice-only + smoke variant (Task-306).
 - Created: `2026-09-02`
 - Last Updated: `2026-09-05`
@@ -48,7 +48,7 @@
 | B1 | Ép code review reject (như dùng rag-harness bình thường) | `synthesis` (code hub) phát `continue` → re-enter `implement` trên **cùng session**; `validate`/`reviewer`/`synthesis` reset PENDING — ✅ PASS run-533004 (`changes_requested` API contract mismatch → implement re-work round 1 → APPROVED) |
 | B2 | Quan trọng: plan loop nodes sau code-continue | `plan_writer`/`plan_reviewer`/`plan_synthesis`/`context`/`freeze` vẫn DONE — code loop KHÔNG đụng plan loop — ✅ PASS run-548341 (screenshot giữa code-loop + transcript: steps 1–7 không re-run sau freeze) |
 | B3 | Đếm child sau cả 2 loop | `plan_writer` = 1 child (reuse), `implement` = 1 child (reuse), `plan_reviewer`/`reviewer` = số child bằng số round (spawn lifecycle) — ✅ PASS run-548341 (writer=1 `run-548436`, implement=1 `run-549304`, plan reviewer=2, code reviewer=2) |
-| B4 | Cap | Hai loop dùng chung `policy.cap:3` — sau 3 round tổng sẽ blocked/escalate; thông báo cap đọc được trên TUI — ⏳ CHƯA TEST (run-548341 xong ở round 2, không chạm cap) |
+| B4 | Cap | Hai loop dùng chung `policy.cap:3` — sau 3 round tổng sẽ blocked/escalate; thông báo cap đọc được trên TUI — ⚠️ PARTIAL (không ép nổ live được): run-564781 (mồi mâu thuẫn early-return/if-else) chỉ đạt 1 continue rồi converge — coder `ask_user` xin chốt style, operator chọn 1) Early-return → reviewer approve → done. Bằng chứng thay thế: (1) counter dùng chung quan sát live (plan round 1/3 → code round 2/3 ở run-548341); (2) logic cap có unit cover (`agent_orchestrator_test.go:142` assert stopped + "round cap reached", `task-harness.yaml:29-33` cap:3/onCap:escalate). Ép 3 rejects live bất khả thi thực tế vì writer/coder luôn fix được findings (kể cả hỏi user để gỡ mâu thuẫn) — đây là tín hiệu tốt cho product, cap là lưới an toàn cuối cùng đã có unit giữ. |
 
 ## C. cp-harness slice-only (Task-306)
 
@@ -94,10 +94,10 @@
 | S Smoke | ✅ (2 runs, S1–S6 đủ) | run-533004, run-547025 | run-533004: S1/S2/S4/S5/S6 PASS như cũ. run-547025 (opencode-go/omen-alpha, GCD prompt `calc-core`): happy-path full-loop lần 2 — plan approve lần 1 → freeze → test_signatures → implement → validate → reviewer APPROVED → synthesis → audit, không reprompt (E2 outcome-level OK). S3 PASS 2026-09-05 (unit assert + live no-reprompt; chi tiết ở dòng S3). S4 cho run-547025: writer output `requirements/08-Task/todo/Task-1-add-integer-gcd.md` (todo folder trống, đúng scope 2 T-items + additive-only). Caveat đã verify: prompt 2 run ghi nhầm AC `GCD(48,18)=18`; coder implement GCD đúng (`calc_gcd_test.go` green) nên PASS giữ nguyên — rerun sau dùng `=6` (S2 đã sửa). Fix CA-741 verify cùng run-533004 như cũ |
 | A Plan loop | ✅ A1–A5 đủ | run-548341 | A1/A2/A5 như trước. A3 PASS: round 2 approve (8 gate checks, feature_key override về `calc-core` + absInt ownership fixed) → `done` → `preflight_contract_freeze` → `test_signatures` → `implement` chạy. A4 PASS + bonus freeze-enforcement live: coder viết lố `change-audit/2026-09-05-calc-lcm.md` ngoài declared paths → flowgate block `flow scope drift` → escalate xin Retry/Stop/Allow (operator xóa file lố + Retry → implement DONE đúng scope). Coder không được viết CA note (Audit sở hữu) — gate bắt đúng. |
 | B Code loop | ✅ B1–B3; ⏳ B4 | run-533004, run-548341 | B1 PASS ×2 (chi tiết cũ). run-548341 Flow done 13:38:40 (`flow_control_done`, audit DONE, loop round 2/3, open_issues 0). B2 PASS: screenshot giữa code-loop (implement WAITING_USER_APPROVAL ở gate drift) cho thấy `plan_writer`/`plan_reviewer`/`plan_synthesis`/`context`/`freeze` vẫn DONE trong khi `validate`/`reviewer`/`synthesis` PENDING — code loop không đụng plan loop; transcript cũng cho thấy steps 1–7 không bao giờ re-run sau freeze. B3 PASS đúng expect: `plan_writer`=1 child (`run-548436` reuse), `implement`=1 (`run-549304` reuse qua 3 turns), `plan_reviewer`=2 = số round, code `reviewer`=2 = số round (`run-549536`, `run-550691`, chạy grok-4.5). B4 (cap 3) chưa test — loop xong ở round 2 nên không chạm cap. Kết quả cuối: `calc.go` + `calc_lcm_test.go` đúng scope, `CA-922-calc-core-lcm.md` do Audit viết, `go test ./...` green. Vận hành: audit từng block `blocked_missing_feature_key` vì prompt dùng key `calc-core-lcm` chưa đăng ký — operator đăng ký vào `FEATURE-KEYS.md` + `POST agent-loop/continue` (TUI input stall, xem ghi chú) → audit ready → done. Ghi chú: TUI báo "Input stalled" (terminal ngừng giao keys) nhưng runner + flow sống (server-side) — unblock qua API trực tiếp, không mất run. |
-| C cp-harness | ⏳ | | |
+| C cp-harness | ✅ C1–C6 đủ | run-556588, run-562663 | run-556588: C1 (1 spawn), C2 (CP-38 đủ §+P-1..P-3), C4 (3 Tasks ↔ P-*, additive); C5 FAIL lúc đó (BUG-356 chưa fix) → Stop. run-562663 (binary đã fix): C3 PASS — reviewer reject (MinInt64 + bits.OnesCount findings thật) → writer re-enter round 1/3, doc-writer 1 child reuse, context/preflight DONE; round 2 approve (CP mở rộng P-1..P-5) → splitter sinh đúng 5 Tasks 910–914 ↔ P-1..P-5, Parent→CP-1, zero file cũ sửa (C4). C5/C6 PASS: `flow_audit_slice_outputs_verified` → `flow_control_done` 21:23:37, timeline `...→task_splitter→audit→done` không implement/validate. BUG-356 live-verify PASS. |
 | D Smoke variant | ⏳ | | |
-| E Artifacts | ⏳ | | |
-| F Regression | ⏳ | | |
+| E Artifacts | ❌ E1 (BUG-357); E2 OK | run-548341 | E1 FAIL: Desktop Artifacts panel trống ("No local artifacts yet" / "No artifact runs yet") sau run done; per-run artifacts API chỉ có 2 generic stub (final-response + changes.diff), zero `plan_md` — writer không ghi instance (xem BUG-357). E2 OK (writer không bị reprompt; 3 runs đều viết đúng lần đầu). E3 unit-level, không cần manual. |
+| F Regression | ✅ | | F3 PASS 2026-09-05: `go test ./internal/agentpack/ ./internal/flowgate/ ./internal/changecontract/ -count=1` PASS; `go test ./internal/runner/ -run 'TestRAGHarness|TestReviewLoop|TestContextCoding|TestApplyFlowControl' -count=1` PASS. F1/F2 (manual rag/review-loop flows) chưa chạy — flow cũ ít đụng, ưu tiên sau C |
 
 ## Kết luận phiên
 

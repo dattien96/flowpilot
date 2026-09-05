@@ -1605,6 +1605,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prevActive := m.flowStepsActive
 		m.flowSteps = msg.Steps
 		m.flowStepsActive = activeStepName(msg.Steps)
+		// Task-322: run-level provider/model posture (per-step fallback).
+		m.flowStepsProvider = strings.TrimSpace(msg.Provider)
+		m.flowStepsModel = strings.TrimSpace(msg.Model)
 		m.refreshSessionPanel()
 		if m.flowStepsActive != "" && (m.connStatus == ConnRunning || m.connStatus == ConnWaiting) {
 			m.statusMsg = "step: " + m.flowStepsActive
@@ -4515,6 +4518,11 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.clearPendingDecisions()
 		m.flowSteps = nil
 		m.flowStepsActive = ""
+		// Task-322: drop run posture + loop round with the steps.
+		m.flowStepsProvider = ""
+		m.flowStepsModel = ""
+		m.flowLoopRound = 0
+		m.flowLoopCap = 0
 		m.lastEventSeq = 0
 		m.lastTurnError = ""
 		m.lastTokens = nil

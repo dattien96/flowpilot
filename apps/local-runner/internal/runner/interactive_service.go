@@ -55,6 +55,9 @@ type InteractiveService struct {
 	policy *ApprovalPolicyEngine
 	// finalizer runs the post-turn hook on turn_completed (04-04), idempotent.
 	finalizer *finalizer
+	// runArtifacts stores per-run file_artifact OUTPUT instances recorded at
+	// flow-child completion (BUG-357) — the E1 panel/API surface.
+	runArtifacts *runArtifactStore
 	// workflowStore/orchestrator are the Phase 8 cut-over bridge: the interactive
 	// path seeds and progresses workflow steps through the shared orchestration
 	// boundary instead of remaining fully ad hoc/in-memory.
@@ -815,6 +818,7 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 		registry:                  registry,
 		policy:                    DefaultApprovalPolicyEngine(),
 		finalizer:                 newFinalizer(),
+		runArtifacts:              newRunArtifactStore(),
 		workflowStore:             workflowStore,
 		orchestrator:              NewWorkflowOrchestrator(workflowStore),
 		runs:                      map[string]*interactiveRun{},
@@ -4847,6 +4851,13 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 	// this runs under s.mu and maybeScheduleHubStallCheck acquires s.mu.
 	if rs.parentRunID != "" {
 		go s.maybeScheduleHubStallCheck(rs.parentRunID)
+	}
+	// BUG-357: record per-run file_artifact OUTPUT instances so the artifacts
+	// panel/API surfaces what flow writers actually wrote. Snapshot bound
+	// paths synchronously under s.mu (Locked lookup — the locking wrapper
+	// would deadlock here); the disk existence filter + store write run async.
+	if artRunID, artNodeID, artCwd, artPaths := s.snapshotFlowChildArtifactPathsLocked(rs); len(artPaths) > 0 && artCwd != "" && artRunID != "" {
+		go s.recordFlowChildArtifacts(artRunID, artNodeID, artCwd, artPaths)
 	}
 	if rs.flowCohortId != "" {
 		machineVerdict := ""

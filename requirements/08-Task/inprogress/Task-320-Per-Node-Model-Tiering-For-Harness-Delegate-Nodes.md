@@ -10,9 +10,9 @@
 - Reviewers: `TBD`
 - Created: `2026-09-04`
 - Last Updated: `2026-09-04`
-- Parent Documents: [CP-58: Bug / Task / CP Harness](../../07-Coding-Plan/inprogress/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md)
+- Parent Documents: [CP-58: Bug / Task / CP Harness](../../07-Coding-Plan/done/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md)
 - Child Documents: `none`
-- Related Documents: [Task-305](../../08-Task/inprogress/Task-305-Task-Harness-11-Step-With-Plan-Writer-And-Plan-Review-Loop.md), [CA-616](../../../change-audit/CA-616-run135037-hubless-planner-fail-waiting.md), [CA-358](../../../change-audit/CA-358-flow-scoped-step-model-lookup.md), [CA-228](../../../change-audit/CA-228-single-step-model-resolution-step-only.md)
+- Related Documents: [Task-305](../../08-Task/done/Task-305-Task-Harness-11-Step-With-Plan-Writer-And-Plan-Review-Loop.md), [CA-616](../../../change-audit/CA-616-run135037-hubless-planner-fail-waiting.md), [CA-358](../../../change-audit/CA-358-flow-scoped-step-model-lookup.md), [CA-228](../../../change-audit/CA-228-single-step-model-resolution-step-only.md)
 - Replaces: `none`
 - Tags: `agent-flow-engine, harness, model-tiering, pack-schema`
 - Feature Keys: `agent-flow-engine`

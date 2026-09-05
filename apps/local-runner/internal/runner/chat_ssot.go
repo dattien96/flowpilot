@@ -239,14 +239,16 @@ func chatRecordsFromProviderEvent(chatID string, event ProviderEvent) []ChatTran
 	}
 	switch event.Type {
 	case EventTurnStarted:
-		return []ChatTranscriptRecord{mk(EventTypeChatTurnStarted, map[string]any{"prompt": event.Prompt})}
+		// eseq joins records back to the event stream (BUG-355 F2): the TUI
+		// skips run-timeline records the open replay already rendered.
+		return []ChatTranscriptRecord{mk(EventTypeChatTurnStarted, map[string]any{"prompt": event.Prompt, "eseq": event.Seq})}
 	case EventMessageCompleted:
-		return []ChatTranscriptRecord{mk(EventTypeChatMessageCompleted, map[string]any{"text": event.Text})}
+		return []ChatTranscriptRecord{mk(EventTypeChatMessageCompleted, map[string]any{"text": event.Text, "eseq": event.Seq})}
 	case EventTurnCompleted:
 		if strings.TrimSpace(event.FinalMessage) == "" {
 			return nil
 		}
-		return []ChatTranscriptRecord{mk(EventTypeChatMessageCompleted, map[string]any{"text": event.FinalMessage})}
+		return []ChatTranscriptRecord{mk(EventTypeChatMessageCompleted, map[string]any{"text": event.FinalMessage, "eseq": event.Seq})}
 	case EventToolStarted:
 		return []ChatTranscriptRecord{mk(EventTypeChatToolStarted, map[string]any{"tool": event.ToolName})}
 	case EventToolCompleted:
