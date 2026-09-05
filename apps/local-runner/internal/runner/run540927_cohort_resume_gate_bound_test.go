@@ -151,3 +151,155 @@ func Test540927NotifyTurnIdleDrainsReinvokePastStaleGate(t *testing.T) {
 		t.Fatal("fresh gate cancel must keep deferring the reinvoke drain")
 	}
 }
+
+// P2-R2 review probes (F1/F3): the LIVE run-540927 / V9-03 shape —
+// pendingFlowGateSettle AND turnInFlight stay true for the whole gate window,
+// so the member holds both while the gate's oracle never returns. A stale gate
+// stamp must own the gate-visible decision and let member_stalled fire.
+func Test540927CohortMemberV9ShapeStaleGateStalls(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parentID := "run-540927-v9-cohort-parent"
+	memberID := "run-540927-v9-cohort-member"
+	_, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	svc.mu.Lock()
+	svc.runs[parentID] = &interactiveRun{
+		id:               parentID,
+		flowEngineDriven: true,
+		status:           RunStatusRunning,
+		stallTimeout:     time.Second,
+		subs:             map[int64]chan ProviderEvent{},
+	}
+	svc.runs[memberID] = &interactiveRun{
+		id:                    memberID,
+		parentRunID:           parentID,
+		label:                 "reviewer_c",
+		flowCohortId:          "run-540927-v9-cohort",
+		status:                RunStatusRunning,
+		agentStatus:           string(RunStatusRunning),
+		turnInFlight:          true, // V9-03: held for the whole gate window
+		pendingFlowGateSettle: true, // stamped by the flow child turn path
+		lastProviderEventAt:   time.Now().UTC().Add(-10 * time.Minute),
+		postTurnGateCancel:    cancel,
+		postTurnGateStartedAt: time.Now().UTC().Add(-10 * time.Minute), // stale
+		subs:                  map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Unlock()
+	svc.agentOrchestrator.registerChild(parentID, memberID)
+	svc.agentOrchestrator.preRegisterCohort(parentID, "run-540927-v9-cohort", 1)
+	svc.agentOrchestrator.setLoop(parentID, AgentLoopState{Status: "running", Cap: 3})
+
+	if !svc.checkAndBlockStalledMembers(parentID) {
+		t.Fatal("expected member_stalled: V9-03 settle+turnInFlight must age out with the stale gate")
+	}
+	st := svc.agentOrchestrator.loopStateFor(parentID)
+	if st.Status != "blocked" || st.BlockReason != "member_stalled" {
+		t.Fatalf("loop = %+v, want blocked/member_stalled", st)
+	}
+}
+
+// Near-miss: same V9-03 shape, fresh gate — the member stays shielded.
+func Test540927CohortMemberV9ShapeFreshGateShielded(t *testing.T) {
+	svc, _ := newTestServer(t)
+	parentID := "run-540927-v9-cohort-fresh-parent"
+	memberID := "run-540927-v9-cohort-fresh-member"
+	_, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	svc.mu.Lock()
+	svc.runs[parentID] = &interactiveRun{
+		id:               parentID,
+		flowEngineDriven: true,
+		status:           RunStatusRunning,
+		stallTimeout:     time.Second,
+		subs:             map[int64]chan ProviderEvent{},
+	}
+	svc.runs[memberID] = &interactiveRun{
+		id:                    memberID,
+		parentRunID:           parentID,
+		label:                 "reviewer_d",
+		flowCohortId:          "run-540927-v9-cohort-fresh",
+		status:                RunStatusRunning,
+		agentStatus:           string(RunStatusRunning),
+		turnInFlight:          true,
+		pendingFlowGateSettle: true,
+		lastProviderEventAt:   time.Now().UTC().Add(-10 * time.Minute),
+		postTurnGateCancel:    cancel,
+		postTurnGateStartedAt: time.Now().UTC().Add(-30 * time.Second), // fresh
+		subs:                  map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Unlock()
+	svc.agentOrchestrator.registerChild(parentID, memberID)
+	svc.agentOrchestrator.preRegisterCohort(parentID, "run-540927-v9-cohort-fresh", 1)
+	svc.agentOrchestrator.setLoop(parentID, AgentLoopState{Status: "running", Cap: 3})
+
+	if svc.checkAndBlockStalledMembers(parentID) {
+		t.Fatal("V9-03 shape with a live gate must stay shielded")
+	}
+}
+
+// P2-R2 review probes (F2/F3): notifyTurnIdle under the V9-03 shape —
+// turnInFlight held by the gate window + settle stamped. A stale gate must let
+// the reinvoke drain; a live gate must keep deferring it.
+func Test540927NotifyTurnIdleV9ShapeDrainsPastStaleGate(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := "run-540927-v9-drain-stale"
+	_, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	svc.mu.Lock()
+	svc.runs[runID] = &interactiveRun{
+		id:                       runID,
+		flowEngineDriven:         true,
+		parentRunID:              "",
+		status:                   RunStatusRunning,
+		turnInFlight:             true, // V9-03: held during the gate window
+		pendingFlowGateSettle:    true,
+		pendingHubReinvoke:       true,
+		pendingHubReinvokePrompt: "hub.notify retry",
+		postTurnGateCancel:       cancel,
+		postTurnGateStartedAt:    time.Now().UTC().Add(-10 * time.Minute), // stale
+		subs:                     map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Unlock()
+
+	svc.notifyTurnIdle(runID)
+
+	svc.mu.Lock()
+	drained := !svc.runs[runID].pendingHubReinvoke
+	svc.mu.Unlock()
+	if !drained {
+		t.Fatal("V9-03 shape + stale gate must drain the pending hub reinvoke")
+	}
+}
+
+func Test540927NotifyTurnIdleV9ShapeFreshGateDefers(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := "run-540927-v9-drain-fresh"
+	_, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	svc.mu.Lock()
+	svc.runs[runID] = &interactiveRun{
+		id:                       runID,
+		flowEngineDriven:         true,
+		parentRunID:              "",
+		status:                   RunStatusRunning,
+		turnInFlight:             true,
+		pendingFlowGateSettle:    true,
+		pendingHubReinvoke:       true,
+		pendingHubReinvokePrompt: "hub.notify retry",
+		postTurnGateCancel:       cancel,
+		postTurnGateStartedAt:    time.Now().UTC().Add(-30 * time.Second), // fresh
+		subs:                     map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Unlock()
+
+	svc.notifyTurnIdle(runID)
+
+	svc.mu.Lock()
+	kept := svc.runs[runID].pendingHubReinvoke
+	svc.mu.Unlock()
+	if !kept {
+		t.Fatal("V9-03 shape with a live gate must keep deferring the drain")
+	}
+}

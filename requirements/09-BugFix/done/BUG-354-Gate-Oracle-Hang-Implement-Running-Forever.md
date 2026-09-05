@@ -49,7 +49,7 @@
 ### Open Questions
 
 - `Q-1` What exactly held the pipes in run-540927 (the suite failed in ~1s on the first gate)? Forensics could not capture a goroutine dump before the operator stopped the run; the fix bounds every shape, so the specific culprit is no longer load-bearing. A repro with `SIGQUIT` dump would answer it.
-- `Q-2` Cohort member watchdog same gate-age bound — DONE in P2 (same session): `cohort_stall.go` gate shield + restart park bounded via `gateCancelLive`; `interactive_resume.go` reinvoke drain bounded.
+- `Q-2` Cohort member watchdog same gate-age bound — DONE in P2 (same session): `cohort_stall.go` gate shield + restart park bounded via `gateCancelLive`; `interactive_resume.go` reinvoke drain bounded. **P2-R2 review round**: the first cut missed the V9-03 shape (settle + turnInFlight held for the whole gate window); `hasGate`/`notifyTurnIdle` now follow the CA-742 F1 ownership rule — a stale gate owns busy and stops shielding (V9-03 probes added).
 - `Q-3` P1/C2 ask_user card lifecycle — DONE in P1 (same session): `AskQuestionCtx` + `dispatchCtx(r.Context())`; MCP client disconnect expires the question (late answer → 409 `question_expired`, no ghost RUNNING). Optional-interface design, zero old-test compile break.
 
 ### Source Refs

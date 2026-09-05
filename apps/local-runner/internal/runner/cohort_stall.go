@@ -180,11 +180,15 @@ func (s *InteractiveService) checkAndBlockStalledMembers(parentRunID string) boo
 		s.mu.Lock()
 		// Gate visible → wait forever (T-11(a)); do not stall.
 		// BUG-288 R13-06: post-turn gate in progress is also a "gate" — not stalled.
-		// BUG-354 P2 (run-540927): the gate signal is bounded — a gate cancel
-		// past postTurnGateBusyBound is a DEAD gate and must stop shielding the
-		// member from the stall watchdog, same contract as the hub watchdog.
-		hasGate := child.pendingApprovalID != "" || child.pendingQuestionID != "" ||
-			gateCancelLive(child.postTurnGateStartedAt, child.postTurnGateCancel) || child.pendingFlowGateSettle
+		// BUG-354 P2-R2 (sub-agent review F1, run-540927): while the post-turn
+		// gate is armed, gateCancelLive owns the gate-visible decision — V9-03
+		// holds turnInFlight AND pendingFlowGateSettle for the ENTIRE gate
+		// window, so a stale (>postTurnGateBusyBound) gate stamp must stop
+		// shielding the member (mirror the hub-level H-C contract: stale settle
+		// without a live gate is not busy). Approval/question cards still wait
+		// forever — those are real user-visible forms (T-11(a)).
+		gateLive := gateCancelLive(child.postTurnGateStartedAt, child.postTurnGateCancel)
+		hasGate := child.pendingApprovalID != "" || child.pendingQuestionID != "" || gateLive
 		last := child.lastProviderEventAt
 		label := child.label
 		status := child.status

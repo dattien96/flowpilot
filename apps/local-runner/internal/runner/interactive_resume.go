@@ -1785,10 +1785,15 @@ func (s *InteractiveService) notifyTurnIdle(runID string) {
 		return
 	}
 	// Only when no turn/gate is active.
-	// BUG-354 P2: bounded gate signal — a dead gate cancel (past
-	// postTurnGateBusyBound) must not block the reinvoke drain forever.
-	busy := rs.turnInFlight || rs.pendingFlowGateSettle ||
-		gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel)
+	// BUG-354 P2-R2 (sub-agent review F2, run-540927): the same ownership rule
+	// as the hub watchdog (CA-742 F1) — V9-03 holds turnInFlight true for the
+	// ENTIRE post-turn gate window, so an armed gate owns the busy signal and a
+	// stale (>postTurnGateBusyBound) gate must not keep the pending hub
+	// reinvoke stranded forever. turnInFlight without an armed gate stays busy
+	// (a live provider turn is real activity); stale settle without a live gate
+	// is not busy (hub-level H-C contract, run-1618).
+	gateLive := gateCancelLive(rs.postTurnGateStartedAt, rs.postTurnGateCancel)
+	busy := (rs.turnInFlight && rs.postTurnGateCancel == nil) || gateLive
 	hasIntent := strings.TrimSpace(rs.pendingGateRepromptPrompt) != "" ||
 		strings.TrimSpace(rs.pendingResumePrompt) != ""
 	// Hub reinvoke drain (mirror runTurn :5280-5301) when idle.

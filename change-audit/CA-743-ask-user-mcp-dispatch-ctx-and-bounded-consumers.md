@@ -44,6 +44,15 @@ Live run-540927: the coder's `flowpilot_ask_user` (3 options, contract conflict)
 - `go vet` clean on both packages; `go build` clean.
 - Full runner package delta vs the CA-742 baseline flaky set: no new attributable failures (candidates `TestMultiWorkspaceRunsIndependent`, `TestFlowCodingPromptSpawnWrappedDoesNotDuplicateHistory`, `TestTryAdvanceSpawnsAgentCodeWriterWithWriterPrompt` reproduce at baseline under `-count=3`).
 
+## P2-R2 — review round: the V9-03 shape actually closed (sub-agent REQUEST CHANGES → fixed)
+
+The first P2 cut only swapped `postTurnGateCancel != nil` for `gateCancelLive` — the sub-agent review showed the production hang shape still dominated all three consumers, because V9-03 holds `turnInFlight` AND `pendingFlowGateSettle` true for the ENTIRE gate window:
+
+- `cohort_stall.go` `hasGate`: settle was an unconditional shield term → after 6m the member stayed shielded via stale settle. Fixed: `hasGate = approvalID || questionID || gateCancelLive(...)` — stale settle is not gate-visible (mirror of the hub-level H-C contract); approval/question cards still wait forever (T-11(a)); the member-restart park (`gateBusy`) keeps settle parking per the review warning (startTurn still rejects on settle; unparking without epoch-safety would 409 the retry).
+- `interactive_resume.go` `notifyTurnIdle`: `busy := turnInFlight || settle || gateCancelLive` → V9-03's turnInFlight kept the reinvoke stranded even with a stale gate. Fixed: `busy = (turnInFlight && postTurnGateCancel == nil) || gateCancelLive(...)` — the exact ownership rule CA-742 F1 applied to the hub watchdog; turnInFlight without an armed gate stays busy (CA-361); stale settle without a live gate is not busy.
+- Tests upgraded to the V9-03 shape (the first probes omitted turnInFlight/settle and would have stayed green either way — review F3): `Test540927CohortMemberV9Shape{StaleGateStalls,FreshGateShielded}`, `Test540927NotifyTurnIdleV9Shape{DrainsPastStaleGate,FreshGateDefers}`.
+- P1 test hardened per review F4: late `AnswerQuestion` asserts the exact `code == "question_expired"` (409), not just any error.
+
 ## Residual risks
 
 - `startTurn`'s `gate_in_progress` reject (`pendingFlowGateSettle || postTurnGateCancel != nil`) is still unbounded — after the watchdog parks a dead-gate flow, a child Retry could be rejected until restart. Left out deliberately: letting a new turn start over a possibly-still-running gate goroutine requires a gateEpoch bump at startTurn; needs its own review round.

@@ -105,9 +105,12 @@ func Test540927AskUserMCPDisconnectExpiresQuestion(t *testing.T) {
 		t.Fatalf("pendingQuestionID not cleared: %q", pending)
 	}
 
-	// Late human answer after the model gave up → 409, no ghost RUNNING.
+	// Late human answer after the model gave up → 409 question_expired, no
+	// ghost RUNNING (assert the exact code, review F4).
 	if apiE := svc.AnswerQuestion(qid, []string{"Fix to 6"}); apiE == nil {
 		t.Fatal("late AnswerQuestion must be rejected after MCP disconnect")
+	} else if apiE.code != "question_expired" {
+		t.Fatalf("late AnswerQuestion err = %v, want code=question_expired", apiE)
 	}
 }
 
