@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-05`
 - Last Updated: `2026-09-05`
-- Parent Documents: [CP-58-Test-Steps](../../07-Coding-Plan/inprogress/CP-58-Test-Steps.md)
+- Parent Documents: [CP-58-Test-Steps](../../07-Coding-Plan/done/CP-58-Test-Steps.md)
 - Child Documents: `none`
 - Related Documents: [BUG-355](../../09-BugFix/todo/BUG-355-TUI-History-Picker-Stale-Va-Workflow-Open-Mat-Transcript.md) (found during the same live session; TUI surface gaps)
 - Replaces: `none`

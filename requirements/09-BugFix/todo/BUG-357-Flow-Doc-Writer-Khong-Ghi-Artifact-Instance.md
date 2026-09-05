@@ -11,7 +11,7 @@
 - Created: `2026-09-05`
 - Last Updated: `2026-09-05`
 - Feature Keys: `artifacts, agent-flow-engine`
-- Parent Documents: [CP-58-Test-Steps](../../07-Coding-Plan/inprogress/CP-58-Test-Steps.md), [Task-307](../../08-Task/inprogress/Task-307-Harness-Plan-Artifact-Types-And-Panel-Parity.md)
+- Parent Documents: [CP-58-Test-Steps](../../07-Coding-Plan/done/CP-58-Test-Steps.md), [Task-307](../../08-Task/done/Task-307-Harness-Plan-Artifact-Types-And-Panel-Parity.md)
 - Child Documents: `none`
 - Related Documents: `none`
 - Replaces: `none`

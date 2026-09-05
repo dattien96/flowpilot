@@ -11,7 +11,7 @@
 - Created: `2026-09-05`
 - Last Updated: `2026-09-05`
 - Feature Keys: `cli-tui, chat-history`
-- Parent Documents: [CP-58-Test-Steps](../../07-Coding-Plan/inprogress/CP-58-Test-Steps.md)
+- Parent Documents: [CP-58-Test-Steps](../../07-Coding-Plan/done/CP-58-Test-Steps.md)
 - Child Documents: `none`
 - Related Documents: [BUG-351](../../09-BugFix/todo/BUG-351-TUI-Flow-Picker-Tab-Ket-Cache-Cu.md) (same stale-cache pattern, `/flow` picker — fixed with background-refresh-on-open), [BUG-328](../done/BUG-328-TUI-Input-Dies-With-Zero-Key-Events-And-Cannot-Self-Recover.md) (same live session hit "Input stalled")
 - Replaces: `none`

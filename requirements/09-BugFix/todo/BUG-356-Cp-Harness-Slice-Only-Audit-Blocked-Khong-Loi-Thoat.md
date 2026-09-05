@@ -11,7 +11,7 @@
 - Created: `2026-09-05`
 - Last Updated: `2026-09-05`
 - Feature Keys: `agent-flow-engine`
-- Parent Documents: [CP-58-Test-Steps](../../07-Coding-Plan/inprogress/CP-58-Test-Steps.md), [Task-306](../../08-Task/inprogress/Task-306-Cp-Harness-12-Step-With-Cp-Plan-And-Task-Splitter.md)
+- Parent Documents: [CP-58-Test-Steps](../../07-Coding-Plan/done/CP-58-Test-Steps.md), [Task-306](../../08-Task/done/Task-306-Cp-Harness-12-Step-With-Cp-Plan-And-Task-Splitter.md)
 - Child Documents: `none`
 - Related Documents: [BUG-354](../done/BUG-354-Gate-Oracle-Hang-Implement-Running-Forever.md) (cùng session CP-58 live)
 - Replaces: `none`
@@ -51,7 +51,7 @@
 - `apps/local-runner/internal/runner/flow_audit_draft.go:98-117` — `ValidationResult != "passed"` → block; `featureKeyRegistered` sau đó.
 - `apps/local-runner/internal/runner/flow_validate_audit_dispatch.go:998-1021` — `runAuditNode` đọc `rs.flowValidationRetryState` (nil khi không validate node).
 - `apps/local-runner/internal/runner/flow_validate_audit_dispatch.go:604-645` — state chỉ sinh ở validate node.
-- `requirements/08-Task/inprogress/Task-306-Cp-Harness-12-Step-With-Cp-Plan-And-Task-Splitter.md:23,33` (T-2 slice-only), `:75` (T-1 cấm coding chain).
+- `requirements/08-Task/done/Task-306-Cp-Harness-12-Step-With-Cp-Plan-And-Task-Splitter.md:23,33` (T-2 slice-only), `:75` (T-1 cấm coding chain).
 - Live: run-556588 `task_splitter` DONE → audit park; splitter đã sinh đúng 3 Tasks (910/911/912 ↔ P-1/P-2/P-3, Parent Documents trỏ CP-38, additive hoàn toàn).
 
 ## Evidence

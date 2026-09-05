@@ -5,12 +5,12 @@
 - Document ID: `Task-304`
 - Title: `Dual Back-Edge Validator And Edge-Driven Re-entry`
 - Phase: `task`
-- Status: `inprogress`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-08-27`
-- Last Updated: `2026-09-01`
-- Parent Documents: [CP-58: Bug / Task / CP Harness With Plan Artifact And Dual Review Loops](../../07-Coding-Plan/todo/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md)
+- Last Updated: `2026-09-05`
+- Parent Documents: [CP-58: Bug / Task / CP Harness With Plan Artifact And Dual Review Loops](../../07-Coding-Plan/done/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md)
 - Child Documents: `None`
 - Related Documents: [CP-55: Flow-First Preflight Contract](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md), [rag-harness.yaml](../../../apps/local-runner/internal/agentpack/flow-pack/flows/rag-harness.yaml), [pack.go](../../../apps/local-runner/internal/agentpack/pack.go), [flow_executor.go](../../../apps/local-runner/internal/runner/flow_executor.go)
 - Replaces: `None`

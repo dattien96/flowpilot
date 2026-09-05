@@ -11,9 +11,9 @@
 - Created: `2026-09-04`
 - Last Updated: `2026-09-04`
 - Feature Keys: `agent-flow-engine`
-- Parent Documents: [CP-58-Test-Steps](../../07-Coding-Plan/inprogress/CP-58-Test-Steps.md)
+- Parent Documents: [CP-58-Test-Steps](../../07-Coding-Plan/done/CP-58-Test-Steps.md)
 - Child Documents: `none`
-- Related Documents: [Task-305](../../08-Task/inprogress/Task-305-Task-Harness-11-Step-With-Plan-Writer-And-Plan-Review-Loop.md)
+- Related Documents: [Task-305](../../08-Task/done/Task-305-Task-Harness-11-Step-With-Plan-Writer-And-Plan-Review-Loop.md)
 - Replaces: `none`
 - Tags: `agent-flow-engine, task-harness, plan-review-loop, hub-inline, tool-call, escalate`
 

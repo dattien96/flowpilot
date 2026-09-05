@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-04`
 - Last Updated: `2026-09-04`
-- Parent Documents: [CP-58: Task/BUG/CP Harness Dual Review Loops](../../07-Coding-Plan/inprogress/CP-58-Test-Steps.md)
+- Parent Documents: [CP-58: Task/BUG/CP Harness Dual Review Loops](../../07-Coding-Plan/done/CP-58-Test-Steps.md)
 - Child Documents: `none`
 - Related Documents: [CA-742](../../../change-audit/CA-742-gate-oracle-cannot-hang.md), [CA-741](../../../change-audit/CA-741-audit-park-cancel-nonterminal.md) (same run family, CP-58 S2), [CA-361](../../../change-audit/CA-361-run333-hub-stall-respects-active-child.md), [CA-355](../../../change-audit/CA-355-run1618-entry-fail-hub-hang.md) (H-C stale-settle contract), run-540927 (`.flowpilot/cli-runner.log`, 2026-09-04 22:55–23:10 UTC), `flowgate/oracle.go`, `runner/hub_stall.go`
 - Replaces: `none`

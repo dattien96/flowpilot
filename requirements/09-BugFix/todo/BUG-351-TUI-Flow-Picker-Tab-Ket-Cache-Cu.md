@@ -11,7 +11,7 @@
 - Created: `2026-09-04`
 - Last Updated: `2026-09-04`
 - Feature Keys: `agent-flow-engine`
-- Parent Documents: [CP-58-Test-Steps](../../07-Coding-Plan/inprogress/CP-58-Test-Steps.md)
+- Parent Documents: [CP-58-Test-Steps](../../07-Coding-Plan/done/CP-58-Test-Steps.md)
 - Child Documents: `none`
 - Related Documents: [Task-320](../../08-Task/inprogress/Task-320-Per-Node-Model-Tiering-For-Harness-Delegate-Nodes.md)
 - Replaces: `none`

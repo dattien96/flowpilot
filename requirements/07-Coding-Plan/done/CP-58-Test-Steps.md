@@ -3,8 +3,8 @@
 ## Metadata
 
 - Document ID: `CP-58-Test-Steps`
-- Phase: `coding_plan` (manual validation companion)
-- Status: `draft`
+- Phase: `coding_plan` (manual validation companion — complete, see CA-744)
+- Status: `done`
 - Scope: Tasks 304-307 — dual `continue/back` engine (Task-304), `task-harness` plan review loop (Task-305), harness plan `file_artifact` bindings + mirror seeding (Task-307), `cp-harness` slice-only + smoke variant (Task-306).
 - Created: `2026-09-02`
 - Last Updated: `2026-09-05`
