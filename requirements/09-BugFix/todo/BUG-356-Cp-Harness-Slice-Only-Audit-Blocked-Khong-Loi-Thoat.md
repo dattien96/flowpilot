@@ -29,7 +29,7 @@
 ### Current Ask
 
 - ~~Quyết thiết kế~~ — DONE option (b), approved by operator 2026-09-05.
-- Live-verify pending: rerun cp-harness tới `done` (C5/C6).
+- ~~Live-verify~~ — PASS run-562663 21:23:37 (chi tiết ở Verification).
 
 ### Key Decisions
 
@@ -73,4 +73,4 @@ Thiết kế (Task-306: slice-only không validate) xung đột với gate (audi
 - Fail-closed giữ nguyên cho mọi flow CÓ validate node (điều kiện `!flowHasValidateNode` loại trừ), và cho diff dính code/registry/rules (verify refuse → block cũ).
 
 **Verification:** 6 tests mới (`bug356_slice_audit_test.go`: pure gates + `runAuditNode` end-to-end matrix 3 providers pass + code-touch vẫn block); suites lân cận audit/validate/frozen/contract green trừ 3 `TestRun147126_*` đã baseline-fail đối xứng (3-vs-3 stash-diff); `go vet` sạch; gofmt lines mới sạch. Không sửa pre-existing tests.
-- Live-verify pending: rerun cp-harness (run mới) phải đi `task_splitter → audit → done` → đóng C5/C6.
+- Live-verify: PASS 2026-09-05 21:23:37 run-562663 — `flow_audit_slice_outputs_verified` ("docs-only slice verified; validation passed") → `flow_control_done`; timeline `...→task_splitter→audit→done`, 5 Tasks đúng scope, zero file cũ sửa.
