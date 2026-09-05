@@ -129,21 +129,7 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 		}
 		line := fmt.Sprintf("[%s] %s%s", glyph, name, suffix)
 		agentChip := ""
-		provChip := ""
-		// Task-322 (Desktop parity): per-step provider/model, falling back to
-		// the run posture — dim, never status/agent hues. Absent entirely →
-		// no chip, row renders exactly as before.
-		prov := strings.TrimSpace(s.Provider)
-		if prov == "" {
-			prov = m.flowStepsProvider
-		}
-		mod := strings.TrimSpace(s.Model)
-		if mod == "" {
-			mod = m.flowStepsModel
-		}
-		if chip := formatStepProviderChip(prov, mod); chip != "" {
-			provChip = styleSystem.Render(chip)
-		}
+		selected := false
 		action := ""
 		if child, ok := m.childRunForStep(s); ok {
 			// BUG-336 UX: flow mode has no agents sidebar section (steps ARE
@@ -170,9 +156,31 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 				// Chip padding inside the fill, like renderActionRingChip.
 				line = " " + fmt.Sprintf("[%s] %s %s%s", glyph, marker, name, suffix) + " "
 				lineStyle = styleStepSelected
+				selected = true
 			}
 		}
-		out = append(out, lineStyle.Render(line)+agentChip+provChip+action)
+		out = append(out, lineStyle.Render(line)+agentChip+action)
+		// Task-322 (Desktop parity): provider/model on its own indented line
+		// below the row — never squeezed into the row where the width clamp
+		// would cut it to "…". Terminals have no smaller font; dim reads as
+		// secondary. The focused row keeps the selected fill on the sub-line
+		// so the selection block stays continuous. Absent entirely → no
+		// sub-line (same shape as the FAILED note sub-line below).
+		prov := strings.TrimSpace(s.Provider)
+		if prov == "" {
+			prov = m.flowStepsProvider
+		}
+		mod := strings.TrimSpace(s.Model)
+		if mod == "" {
+			mod = m.flowStepsModel
+		}
+		if sub := formatStepProviderSubline(prov, mod); sub != "" {
+			if selected {
+				out = append(out, styleStepSelected.Render(sub))
+			} else {
+				out = append(out, styleSystem.Render(sub))
+			}
+		}
 		if st == "FAILED" {
 			if note := strings.TrimSpace(s.RejectionNote); note != "" {
 				out = append(out, lineStyle.Render("  "+note))
@@ -188,19 +196,20 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 	return out
 }
 
-// formatStepProviderChip renders the dim " · provider/model" suffix for a step
-// row (Task-322, Desktop parity). Empty when both are blank so the row stays
-// byte-identical to the pre-Task-322 rendering.
-func formatStepProviderChip(provider, model string) string {
+// formatStepProviderSubline renders the indented provider/model second line
+// for a step row (Task-322, Desktop parity). Empty when both are blank so no
+// sub-line is emitted. Trailing space keeps chip padding inside the selected
+// fill, mirroring the selected row format above.
+func formatStepProviderSubline(provider, model string) string {
 	p := strings.TrimSpace(provider)
 	mo := strings.TrimSpace(model)
 	switch {
 	case p != "" && mo != "":
-		return " · " + p + "/" + mo
+		return "    " + p + "/" + mo + " "
 	case p != "":
-		return " · " + p
+		return "    " + p + " "
 	case mo != "":
-		return " · " + mo
+		return "    " + mo + " "
 	default:
 		return ""
 	}

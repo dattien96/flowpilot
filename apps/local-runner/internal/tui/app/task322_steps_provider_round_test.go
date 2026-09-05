@@ -8,8 +8,11 @@ import (
 	"flowpilot-runner/internal/tui/config"
 )
 
-// Task-322: TUI steps panel shows provider+model per step row (T-1) and a
-// loop round/cap chip in the steps header (T-2) — Desktop parity, render-only.
+// Task-322: TUI steps panel shows provider+model per step (T-1) and a loop
+// round/cap chip in the steps header (T-2) — Desktop parity, render-only.
+// Provider/model renders as an indented dim SECOND line under the row (never
+// squeezed into the row where the width clamp would cut it to "…"); the
+// focused row keeps the selected fill on the sub-line.
 
 func task322Model() *AppModel {
 	m := New(config.ChatConfig{Provider: "claude"}, "http://127.0.0.1:4317")
@@ -25,7 +28,7 @@ func stripPanelLines(m *AppModel) string {
 	return stripANSI(strings.Join(m.flowStepsPanelLines(), "\n"))
 }
 
-// T-1: per-step provider+model renders on the row.
+// T-1: per-step provider+model renders on the second line, row 1 untouched.
 func TestStepsRow_ShowsProviderAndModel(t *testing.T) {
 	for _, pk := range []string{"claude", "codex", "grok"} {
 		t.Run(pk, func(t *testing.T) {
@@ -35,29 +38,33 @@ func TestStepsRow_ShowsProviderAndModel(t *testing.T) {
 				{StepID: "s2", NodeID: "reviewer", Status: "DONE", Provider: "grok", Model: "grok-4.5"},
 			}
 			rows := stripPanelLines(m)
-			if !strings.Contains(rows, "[+] plan_writer · opencode-go/omen-alpha") {
-				t.Fatalf("%s: writer row missing provider/model chip:\n%s", pk, rows)
+			if !strings.Contains(rows, "[+] plan_writer\n    opencode-go/omen-alpha") {
+				t.Fatalf("%s: writer sub-line missing:\n%s", pk, rows)
 			}
-			if !strings.Contains(rows, "[+] reviewer · grok/grok-4.5") {
-				t.Fatalf("%s: reviewer row missing provider/model chip:\n%s", pk, rows)
+			if !strings.Contains(rows, "[+] reviewer\n    grok/grok-4.5") {
+				t.Fatalf("%s: reviewer sub-line missing:\n%s", pk, rows)
+			}
+			// Row 1 must not carry the provider inline (no width-clamp cut).
+			if strings.Contains(rows, "plan_writer ·") || strings.Contains(rows, "reviewer ·") {
+				t.Fatalf("%s: provider must not render inline on row 1:\n%s", pk, rows)
 			}
 		})
 	}
 }
 
 // T-1: provider-only and model-only rows render the half available.
-func TestStepsRow_ShowsHalfProviderChip(t *testing.T) {
+func TestStepsRow_ShowsHalfProviderSubline(t *testing.T) {
 	m := task322Model()
 	m.flowSteps = []client.WorkflowStepRuntime{
 		{StepID: "s1", NodeID: "plan_writer", Status: "DONE", Provider: "opencode-go"},
 		{StepID: "s2", NodeID: "reviewer", Status: "DONE", Model: "omen-alpha"},
 	}
 	rows := stripPanelLines(m)
-	if !strings.Contains(rows, "[+] plan_writer · opencode-go") {
-		t.Fatalf("provider-only chip missing:\n%s", rows)
+	if !strings.Contains(rows, "[+] plan_writer\n    opencode-go") {
+		t.Fatalf("provider-only sub-line missing:\n%s", rows)
 	}
-	if !strings.Contains(rows, "[+] reviewer · omen-alpha") {
-		t.Fatalf("model-only chip missing:\n%s", rows)
+	if !strings.Contains(rows, "[+] reviewer\n    omen-alpha") {
+		t.Fatalf("model-only sub-line missing:\n%s", rows)
 	}
 }
 
@@ -80,17 +87,16 @@ func TestStepsRow_FallsBackToRunPosture(t *testing.T) {
 		t.Fatalf("run posture not stored: %q/%q", am.flowStepsProvider, am.flowStepsModel)
 	}
 	rows := stripANSI(strings.Join(am.flowStepsPanelLines(), "\n"))
-	if !strings.Contains(rows, "[+] plan_writer · opencode-go/omen-alpha") {
-		t.Fatalf("posture fallback missing on writer row:\n%s", rows)
+	if !strings.Contains(rows, "[+] plan_writer\n    opencode-go/omen-alpha") {
+		t.Fatalf("posture fallback missing on writer sub-line:\n%s", rows)
 	}
 	// Per-step values win over the posture fallback.
-	if !strings.Contains(rows, "[+] reviewer · grok/grok-4.5") {
+	if !strings.Contains(rows, "[+] reviewer\n    grok/grok-4.5") {
 		t.Fatalf("per-step values must win over posture:\n%s", rows)
 	}
 }
 
-// T-1: no provider/model anywhere → row renders exactly as before (no chip,
-// no "unknown" noise).
+// T-1: no provider/model anywhere → single line, exactly as before.
 func TestStepsRow_NoProviderRendersAsBefore(t *testing.T) {
 	m := task322Model()
 	m.flowSteps = []client.WorkflowStepRuntime{
@@ -98,7 +104,49 @@ func TestStepsRow_NoProviderRendersAsBefore(t *testing.T) {
 	}
 	rows := stripPanelLines(m)
 	if rows != "[+] plan_writer" {
-		t.Fatalf("row must stay byte-identical without provider/model, got %q", rows)
+		t.Fatalf("row must stay single-line without provider/model, got %q", rows)
+	}
+}
+
+// T-1: the focused row keeps the selected fill AND gets the sub-line in the
+// same fill (selection block stays continuous — no broken select state).
+func TestStepsRow_SelectedKeepsFillOnSubline(t *testing.T) {
+	for _, pk := range []string{"claude", "codex", "grok"} {
+		t.Run(pk, func(t *testing.T) {
+			m := New(config.ChatConfig{Provider: pk}, "http://127.0.0.1:4317")
+			m.width, m.height = 120, 36
+			m.asciiMode = true
+			m.mode = ModeFlow
+			m.sessionPanel.RunnerURL = "http://127.0.0.1:4317"
+			enableSidebarForTest(m)
+			m.runHandle = &client.RunHandle{RunID: "run-main", Status: "running"}
+			m.agentRuns = []client.AgentRunSummary{
+				{RunID: "run-main", AgentName: "main", Role: "main", Status: "running"},
+				{RunID: "run-rev", AgentName: "my-reviewer", Status: "running"},
+			}
+			m.flowSteps = []client.WorkflowStepRuntime{
+				{StepID: "s1", NodeID: "coder", Status: "DONE", Provider: "opencode-go", Model: "omen-alpha"},
+				{StepID: "s2", NodeID: "my-reviewer", AgentRef: "my-reviewer", Status: "RUNNING", Provider: "grok", Model: "grok-4.5"},
+			}
+			m.flowStepsActive = "my-reviewer"
+			m.focusRunID = "run-rev"
+
+			rows := m.flowStepsPanelLines()
+			blob := strings.Join(rows, "\n")
+			// Row 1 of the focused step keeps the exact pre-Task-322 selected shape.
+			glyph := thinkingSpinner(m.thinkingFrame, m.asciiMode)
+			if want := styleStepSelected.Render(" [" + glyph + "] > my-reviewer RUNNING "); !strings.Contains(blob, want) {
+				t.Fatalf("%s: focused row 1 lost selected fill:\nwant: %q\ngot:\n%s", pk, want, blob)
+			}
+			// Sub-line carries the same fill (continuous selection block).
+			if want := styleStepSelected.Render("    grok/grok-4.5 "); !strings.Contains(blob, want) {
+				t.Fatalf("%s: focused sub-line must use selected fill:\nwant: %q\ngot:\n%s", pk, want, blob)
+			}
+			// Unfocused row: plain row 1 + dim sub-line.
+			if want := styleSystem.Render("    opencode-go/omen-alpha "); !strings.Contains(blob, want) {
+				t.Fatalf("%s: unfocused sub-line must be dim:\nwant: %q\ngot:\n%s", pk, want, blob)
+			}
+		})
 	}
 }
 
