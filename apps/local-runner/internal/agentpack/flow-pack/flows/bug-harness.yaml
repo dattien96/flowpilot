@@ -5,7 +5,7 @@
 # rag-harness keeps its chatBaseline role; this flow is the /flow picker entry.
 id: bug-harness
 version: 1
-description: Bug / Hotfix tier — 9-step TDD + Code Review with no plan overhead (clone of rag-harness).
+description: Bug / Hotfix tier — clear bug, no plan needed. 9-step TDD + Code Review (clone of rag-harness).
 mode: flow
 builtin:
   editable: false

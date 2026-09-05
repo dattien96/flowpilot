@@ -48,6 +48,10 @@ const HARNESS_LABELS: Record<string, { label: string; description: string }> = {
     label: "Task / Feature",
     description: "12-node: Plan Writer + Plan Review + freeze + TDD + Code Review",
   },
+  "bug-plan-harness": {
+    label: "Bug + Plan",
+    description: "12-node: Investigate + BUG Plan + Review + freeze + TDD + Code Review",
+  },
   "cp-harness": {
     label: "Coding Plan",
     description: "7-node slice-only: CP Plan + Review + Task Splitter",

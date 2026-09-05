@@ -14,6 +14,16 @@ coder implements only what it declares.
   for the candidate keys.
 - Your read/grep tools for anything the draft context is missing.
 
+## Investigation pre-work (optional, Task-324)
+
+When the cause is unclear (not a clear-cut task), investigate BEFORE
+planning: restate the symptom verifiably, reproduce or observe it with
+read/grep, and trace the root cause to file:line pointers. Record Symptom /
+Repro / Root-cause hypothesis under `## AI Quick View` so the plan_reviewer
+can tell a finding from a guess. Skip this entirely for well-understood work
+— for bug reports needing full investigation, bug-plan-harness
+(`prompts/plan-bug.md`) is the dedicated flow.
+
 ## 3-layer defense — feature_key override contract
 
 1. Scout only proposes `candidate_feature_keys`. You MUST verify them against
