@@ -97,7 +97,7 @@
 | C cp-harness | ⏳ | | |
 | D Smoke variant | ⏳ | | |
 | E Artifacts | ⏳ | | |
-| F Regression | ⏳ | | |
+| F Regression | ✅ | | F3 PASS 2026-09-05: `go test ./internal/agentpack/ ./internal/flowgate/ ./internal/changecontract/ -count=1` PASS; `go test ./internal/runner/ -run 'TestRAGHarness|TestReviewLoop|TestContextCoding|TestApplyFlowControl' -count=1` PASS. F1/F2 (manual rag/review-loop flows) chưa chạy — flow cũ ít đụng, ưu tiên sau C |
 
 ## Kết luận phiên
 
