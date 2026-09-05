@@ -241,7 +241,11 @@ func Test540927CohortMemberV9ShapeFreshGateShielded(t *testing.T) {
 
 // P2-R2 review probes (F2/F3): notifyTurnIdle under the V9-03 shape —
 // turnInFlight held by the gate window + settle stamped. A stale gate must let
-// the reinvoke drain; a live gate must keep deferring it.
+// the reinvoke drain; a live gate must keep deferring it. Fidelity note
+// (round-3 nit N-2): with autoOrchestrate=false the assertion covers flag
+// consumption only — the launched reinvoke goroutine cannot re-arm; with
+// autoOrchestrate=true the M7 guard re-stashes flag+prompt and forward
+// progress completes via the hub watchdog recovery / gate settle.
 func Test540927NotifyTurnIdleV9ShapeDrainsPastStaleGate(t *testing.T) {
 	svc, _ := newTestServer(t)
 	runID := "run-540927-v9-drain-stale"
