@@ -43,7 +43,7 @@
 - additive-tests-only: new tests only (`run540927_*_test.go`, `suite_proc_*.go`); zero pre-existing test edits (verified by stash-diff baseline comparison).
 - oracle-rule: baseline-failing/flaky old tests were proven pre-existing (stash run) — not "fixed" by editing.
 - The oracle's 5-minute deadline and regression semantics are untouched: a cancelled suite still returns `EnvError`, never a fake regression (old `TestRunOracleContextCanceledIsNotRegression` stays green).
-- `interactive_resume.go` / `cohort_stall.go` consume `postTurnGateCancel` for their own busy checks — out of scope here (residual risk below); hub watchdog + active-child are the claim surface.
+- `interactive_resume.go` / `cohort_stall.go` gate-cancel busy terms — **bounded by CA-743 P2/P2-R2** (same `gateCancelLive` bound + V9-03 ownership rule; see Q-2). Hub watchdog + active-child remain the primary claim surface.
 - Cross-provider: watchdog + oracle take no `providerKey` (grep evidence in CA-742) — provider-agnostic (R2 Case 1).
 
 ### Open Questions
@@ -79,13 +79,15 @@
 
 - New tests (all green):
   - `flowgate/run540927_oracle_timeout_test.go`: pipe-holding grandchild + deadline → returns <10s with `EnvError`, no regression; TERM-trapping stubborn suite bounded; clean green suite unaffected (happy path).
-  - `runner/run540927_gate_hang_watchdog_test.go`: stale gate cancel (10m) → `hub_stalled` fires (repro); fresh gate cancel (30s) → still busy (near-miss); stale **child** gate → hub fires despite ghost child; child `turnInFlight` → CA-361 intact, no cancel.
+  - `runner/run540927_gate_hang_watchdog_test.go`: stale gate cancel (10m) → `hub_stalled` fires (repro); fresh gate cancel (30s) → still busy (near-miss); stale **child** gate → hub fires despite ghost child; child `turnInFlight` → CA-361 intact, no cancel; + F1 V9-03 probes (turn held by the gate window: stale → fires, fresh → busy, hub-self → fires) — see CA-742.
+- `runner/run540927_ask_user_mcp_cancel_test.go` + `runner/run540927_cohort_resume_gate_bound_test.go` (CA-743 P1/P2/P2-R2): disconnect → expired + 409; answered-before-disconnect resolves; legacy fallback; cohort stale/fresh; notify drain/defer; V9-03 member/drain stale/fresh — 21 `Test540927*` green total.
 - Old suites: `go test ./internal/flowgate/ -count=1` ok; hub-stall family (`TestHubStall*`, `TestRun333*`, `TestRun1618*`, `TestBug289*`, `TestRun2047*`, `TestRun43831*`) all green; CA-741 + CA-642 tests green; `go vet` clean.
 - Full-package stash-diff: the runner package's baseline flaky set (18 tests incl. `TestRun144900/147126` family, `TestDetectProviders*`, `TestTryAdvance*`, `TestFlowCodingPrompt*`) is identical with and without this change — zero new failures attributable to the fix (both candidate tests reproduce at baseline under `-count=3`).
 
 ## Residual Risks
 
-- `startTurn` (~`interactive_service.go:8035`) still rejects new turns while `postTurnGateCancel != nil` unbounded — deliberately kept: `gateEpoch` is bumped only by Stop, so racing a leaked gate goroutine could apply stale side effects. Escape = watchdog `hub_stalled` card → Stop. Narrowed by P0 to the rare post-oracle wedged case.
+- `startTurn` (`interactive_service.go` ~:8060) still rejects new turns while `postTurnGateCancel != nil` unbounded — deliberately kept: `gateEpoch` is bumped only by Stop, so racing a leaked gate goroutine could apply stale side effects. Escape = watchdog `hub_stalled` card → Stop. Narrowed by P0 to the rare post-oracle wedged case.
+- `hubShouldSkipProseEscalate` BUG-226 prose-escalate skip reads `postTurnGateCancel != nil` unbounded (pre-existing, found by round-4 review, no hang: the hub `hub_stalled` watchdog still fires independently) — deferred; needs its own probe harness, not silently fixed inside this chain.
 - A suite legitimately running longer than 6 minutes (post-turn gate window) could trip the watchdog while the oracle is still inside its own 5m deadline — not reachable today (oracle deadline 5m < bound 6m) but the invariant is deadline < bound and must be kept if either constant changes.
 - Review F2/F3/F7 (deadline-race EnvError classification, leaked `cmd.Wait` goroutine after grace abandon, `cmd.Process` nil race) — bounded, conservative, documented in CA-742; no code change.
 - `ask_user` on the Claude stdio control_request path (`claude_adapter.handleInbound`) keeps its turn-ctx cancellation; the HTTP MCP path (all three providers' model ask_user) is the ctx-bound one fixed in P1.

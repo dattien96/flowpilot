@@ -40,7 +40,7 @@ Live run-540927: the coder's `flowpilot_ask_user` (3 options, contract conflict)
 
 ## Verification
 
-- `go test ./internal/flowgate/ ./internal/runner/ -count=1 -run 'Test540927|TestHubStall|TestRun333|TestRun1618|TestRun43831|TestBug289|TestRun2047|TestRun203966|TestChildAskQuestion|AskUser|Question|WorkflowDriven'` → 71 pass / 0 fail.
+- `go test ./internal/flowgate/ ./internal/runner/ -count=1 -run 'Test540927|TestHubStall|TestRun333|TestRun1618|TestRun43831|TestBug289|TestRun2047|TestRun203966|TestChildAskQuestion|AskUser|Question|WorkflowDriven'` → 75 pass / 0 fail (round-4 recount; 21 `Test540927*`: 4 flowgate + 7 watchdog + 3 ask_user + 7 cohort/resume).
 - `go vet` clean on both packages; `go build` clean.
 - Full runner package delta vs the CA-742 baseline flaky set: no new attributable failures (candidates `TestMultiWorkspaceRunsIndependent`, `TestFlowCodingPromptSpawnWrappedDoesNotDuplicateHistory`, `TestTryAdvanceSpawnsAgentCodeWriterWithWriterPrompt` reproduce at baseline under `-count=3`).
 

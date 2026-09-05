@@ -21,7 +21,7 @@ Second layer: even with the oracle dead, `checkAndBlockStalledHub` could not fir
 
 - `apps/local-runner/internal/flowgate/oracle.go` — `executeSuite`: suite runs in its own process group; `cmd.Run()` moved to a goroutine; on ctx cancel/timeout the group is SIGKILLed and the executor waits ≤ `suiteGraceAfterCancel` (2s) before returning `EnvError` regardless. Added `[gate] suite start/end` logs (duration, aborted, outputBytes) so future hangs are visible.
 - `apps/local-runner/internal/flowgate/suite_proc_unix.go` (new) — Setpgid + group SIGKILL (`//go:build !windows`).
-- `internal/flowgate/suite_proc_windows.go` (new) — `taskkill /T /F /PID` equivalent (`//go:build windows`), fire-and-forget (review F4: a hung taskkill must not block executeSuite past the grace).
+- `apps/local-runner/internal/flowgate/suite_proc_windows.go` (new) — `taskkill /T /F /PID` equivalent (`//go:build windows`), fire-and-forget (review F4: a hung taskkill must not block executeSuite past the grace).
 - `apps/local-runner/internal/runner/interactive_service.go` — `interactiveRun.postTurnGateStartedAt`; stamped at both production arm sites (resumePendingFlowGate + post-turn gate in runTurn) alongside `postTurnGateCancel`.
 - `apps/local-runner/internal/runner/hub_stall.go` — `postTurnGateBusyBound = 6m` (oracle 5m deadline + slack) + `gateCancelLive(startedAt, cancel)` (zero stamp = legacy unbounded busy); consumed by the parent busy check AND `hasActiveFlowChild`; child-ghost rule: `status==Running` no longer counts active when the turn is over, the gate cancel aged out, and nothing is pending; stale `pendingFlowGateSettle` without a live gate mirrors the hub-level H-C contract (run-1618).
 - **F1 (sub-agent review round):** the first cut left `turnInFlight` unbounded busy — but V9-03 (`interactive_service.go` finishTurn) holds `turnInFlight=true` for the ENTIRE post-turn gate window, so the live run-540927 shape (turn held by a never-returning gate) would have kept both parent `busy` and `hasActiveFlowChild` true forever regardless of the cancel bound. Fix: while `postTurnGateCancel != nil`, `gateCancelLive` owns the busy decision (`turnBusy = turnInFlight && postTurnGateCancel == nil` on both parent and child paths); `turnInFlight` without an armed gate stays busy unconditionally (CA-361 intact). Safety: `startTurn` already rejects overlapping turns while the gate is settling (`gate_in_progress`), so a stale gate cannot race a new turn.
@@ -44,6 +44,7 @@ Provider-agnostic (Case 1): `executeSuite`, `RunOracleContext`, `checkAndBlockSt
 - `internal/flowgate/run540927_oracle_timeout_test.go`:
   - `Test540927OracleGroupKillReturnsDespitePipeHoldingChild` — repro shape: grandchild holds the pipes; deadline → returns <10s, `EnvError`, no regression.
   - `Test540927OracleSigtermIgnoringSuiteBounded` — TERM-trapping suite cannot pin the executor past deadline + grace.
+  - `Test540927OracleGraceAbandonWhenKillMissesPipeHolder` — setsid-escaped pipe-holder cannot pin the executor past the 2s grace (P3, documented in CA-743).
   - `Test540927OracleCleanSuiteStillPasses` — group-kill plumbing leaves the happy path intact.
 - `internal/runner/run540927_gate_hang_watchdog_test.go`:
   - `Test540927HubStallFiresWhenGateCancelStale` — stale gate (10m) → `hub_stalled` (repro).
@@ -64,6 +65,6 @@ Provider-agnostic (Case 1): `executeSuite`, `RunOracleContext`, `checkAndBlockSt
 
 ## Residual risks / out of scope
 
-- `interactive_resume.go:1788` + `cohort_stall.go:184/408` still treat `postTurnGateCancel != nil` as unbounded busy (same hang shape for cohort/resume paths) — follow-up candidate.
-- BUG-354 C2: `ask_user` card outlives the MCP client timeout; late answer stamps ghost `RUNNING` — P1 batch, optional-interface `AskQuestionCtx` design (no old-test compile break), next commit under the same BUG.
+- ~~`interactive_resume.go` + `cohort_stall.go` unbounded gate-busy~~ — SUPERSEDED by CA-743 P2/P2-R2: those three consumers now use the same `gateCancelLive` bound (+ V9-03 ownership rule). Remaining unbounded on purpose: `startTurn` `gate_in_progress` reject (needs `gateEpoch` bump at startTurn — own review round; escape = `hub_stalled` card → Stop) and `hubShouldSkipProseEscalate` BUG-226 prose-escalate skip (pre-existing, no hang — hub_stalled still fires; own probe harness needed, deferred per round-4 review).
+- ~~BUG-354 C2 ask_user ghost RUNNING~~ — SUPERSEDED by CA-743 P1: `AskQuestionCtx` + `dispatchCtx(r.Context())`, late answer → 409 `question_expired`.
 - Invariant to keep: oracle deadline (5m) < `postTurnGateBusyBound` (6m); both constants must move together.
