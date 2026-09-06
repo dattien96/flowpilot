@@ -307,7 +307,13 @@ func (m *AppModel) actionRingEnterActivates() bool {
 		return strings.TrimSpace(m.inputValue) == ""
 	}
 	if m.flowLoopBlocked() {
-		return m.actionRingFocus || strings.TrimSpace(m.inputValue) == ""
+		// Live-found run-584646: Tab→Revise→Enter arms the composer, but
+		// ring focus stays on — a second Enter with typed text re-fired
+		// Revise (wiping the note + re-toasting) instead of submitting it.
+		// Non-empty input always submits (parked plain text IS the feedback);
+		// empty input keeps Enter-as-default-action. Mirrors the approval
+		// pattern above.
+		return strings.TrimSpace(m.inputValue) == ""
 	}
 	return false
 }

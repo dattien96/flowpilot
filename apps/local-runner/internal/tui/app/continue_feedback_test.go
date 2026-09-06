@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
 )
@@ -101,6 +103,61 @@ func TestContinueBareKeepsLegacyBody(t *testing.T) {
 	}
 	if body["feedback"] != "continue" {
 		t.Fatalf("bare /continue feedback = %q, want legacy \"continue\"", body["feedback"])
+	}
+}
+
+// Live-found run-584646: Tab→Revise→Enter arms the composer, but ring focus
+// stayed on — a second Enter with typed text re-fired Revise (wiping the
+// note + re-toasting) instead of submitting it. Non-empty input must always
+// submit while parked; empty input keeps Enter-as-default-action.
+func TestParkedEnterWithTextSubmitsDespiteRingFocus(t *testing.T) {
+	for _, pk := range []string{"claude", "codex", "grok"} {
+		t.Run(pk, func(t *testing.T) {
+			var hit bool
+			var body map[string]string
+			srv := continueFeedbackTestServer(t, &hit, &body)
+			defer srv.Close()
+
+			m := continueBlockedModel(pk, srv.URL)
+			m.actionRingFocus = true
+			m.actionRingIdx = 2 // sitting on [Revise]
+			m.inputValue = "switch the tie rule to (a, nil)"
+			m2, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			_ = m2
+			if cmd == nil {
+				t.Fatalf("%s: Enter with text must submit, not ring-activate", pk)
+			}
+			if msg, ok := cmd().(AgentGraphHydratedMsg); !ok {
+				t.Fatalf("%s: cmd returned %T, want AgentGraphHydratedMsg", pk, msg)
+			}
+			if !hit || body["feedback"] != "switch the tie rule to (a, nil)" {
+				t.Fatalf("%s: feedback = %q hit=%v, want the typed note", pk, body["feedback"], hit)
+			}
+		})
+	}
+}
+
+// Empty input + ring focus keeps Enter-as-default-action (Retry).
+func TestParkedEnterEmptyStillActivatesRing(t *testing.T) {
+	var hit bool
+	var body map[string]string
+	srv := continueFeedbackTestServer(t, &hit, &body)
+	defer srv.Close()
+
+	m := continueBlockedModel("codex", srv.URL)
+	m.actionRingFocus = true
+	m.actionRingIdx = 0 // [Retry]
+	m.inputValue = ""
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("empty Enter must activate the highlighted ring action")
+	}
+	msg := cmd()
+	if _, ok := msg.(AgentGraphHydratedMsg); !ok {
+		t.Fatalf("cmd returned %T, want AgentGraphHydratedMsg", msg)
+	}
+	if body["feedback"] != "continue" {
+		t.Fatalf("Retry feedback = %q, want legacy \"continue\"", body["feedback"])
 	}
 }
 
