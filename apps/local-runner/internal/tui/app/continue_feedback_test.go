@@ -103,3 +103,36 @@ func TestContinueBareKeepsLegacyBody(t *testing.T) {
 		t.Fatalf("bare /continue feedback = %q, want legacy \"continue\"", body["feedback"])
 	}
 }
+
+// Plain text while parked IS the feedback — no /continue prefix needed
+// (live request run-577686; a chat turn would just 409 server-side).
+func TestParkedPlainTextSendsFeedback(t *testing.T) {
+	for _, pk := range []string{"claude", "codex", "grok"} {
+		t.Run(pk, func(t *testing.T) {
+			var hit bool
+			var body map[string]string
+			srv := continueFeedbackTestServer(t, &hit, &body)
+			defer srv.Close()
+
+			m := continueBlockedModel(pk, srv.URL)
+			_, cmd := m.processInput("switch the tie rule to (a, nil)")
+			if cmd == nil {
+				t.Fatalf("%s: parked plain text must return a cmd", pk)
+			}
+			if msg, ok := cmd().(AgentGraphHydratedMsg); !ok {
+				t.Fatalf("%s: cmd returned %T, want AgentGraphHydratedMsg", pk, msg)
+			}
+			if !hit {
+				t.Fatalf("%s: did not POST continue", pk)
+			}
+			if body["feedback"] != "switch the tie rule to (a, nil)" {
+				t.Fatalf("%s: feedback = %q", pk, body["feedback"])
+			}
+			// Echoed as a user message like any send.
+			last := m.messages[len(m.messages)-1]
+			if last.Content != "switch the tie rule to (a, nil)" {
+				t.Fatalf("%s: feedback not echoed in transcript: %q", pk, last.Content)
+			}
+		})
+	}
+}

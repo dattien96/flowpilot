@@ -3707,6 +3707,22 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Task-325 UX (live request run-577686): plain text typed while a flow is
+	// parked IS the feedback — no "/continue" prefix needed. (A chat turn
+	// would just 409 flow_awaiting_user server-side, so plain chat is useless
+	// while parked.) Slash lines keep their commands (handled above);
+	// approval/question/gate cards keep precedence (handled above).
+	if m.flowLoopBlocked() && m.runHandle != nil && !strings.HasPrefix(strings.TrimSpace(input), "/") {
+		feedback := strings.TrimSpace(input)
+		if feedback == "" {
+			return m, nil
+		}
+		m.viewport.offset = 0
+		m.addMessage("user", input, "")
+		m.recordPromptHistory(input)
+		return m, m.cmdContinueFlowWithFeedback(m.runHandle.RunID, feedback)
+	}
+
 	if m.sendBlocked() {
 		msg := "A turn is already in progress — wait for it to finish (draft kept in the input)."
 		if m.pendingPrompt != "" {

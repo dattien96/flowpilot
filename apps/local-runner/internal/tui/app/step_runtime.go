@@ -370,7 +370,7 @@ func (m *AppModel) renderBlockedBar() string {
 	reviseHi := m.actionRingHighlighted("blocked", reviseIdx)
 	options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Revise]", reviseHi)+styleSystem.Render(" - type feedback note, revise (fills /continue )"))
 	bar += strings.Join(options, "\n")
-	bar += "\n" + styleSystem.Render("  ← → select · Enter · /continue /stop")
+	bar += "\n" + styleSystem.Render("  ← → select · Enter · type note + Enter to revise · /stop")
 	return bar
 }
 
