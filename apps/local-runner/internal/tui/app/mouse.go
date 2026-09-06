@@ -727,6 +727,10 @@ func (m *AppModel) hitBlockedChrome(c tuiChrome, x, y int) string {
 		if hitToken(stripped, "[Stop]", x) {
 			return "stop"
 		}
+		// Task-325 UX: [Revise] prefills the composer, never continues.
+		if hitToken(stripped, "[Revise]", x) {
+			return "revise"
+		}
 		// Alias for old tests / muscle memory.
 		if hitToken(stripped, "[Continue]", x) {
 			return "retry"

@@ -141,6 +141,9 @@ func (m *AppModel) actionRingItems() []actionRingItem {
 		if showAllow {
 			items = append(items, actionRingItem{target: "allow", label: "[Allow]"})
 		}
+		// Task-325 UX: [Revise] prefills "/continue " so feedback is
+		// discoverable (appended last — Retry/Stop/Allow indices unchanged).
+		items = append(items, actionRingItem{target: "revise", label: "[Revise]"})
 		return items
 	}
 	return nil
@@ -334,6 +337,16 @@ func (m *AppModel) activateClickTarget(target string) (tea.Model, tea.Cmd) {
 	case target == "retry", target == "continue":
 		if m.flowLoopBlocked() && m.runHandle != nil {
 			return m, m.cmdContinueFlow(m.runHandle.RunID)
+		}
+	case target == "revise":
+		// Task-325 UX (live-found run-594636): nobody knew feedback rides
+		// "/continue <note>". Prefill the composer — the user types the note
+		// and hits Enter; nothing is sent by the chip itself.
+		if m.flowLoopBlocked() {
+			m.inputValue = "/continue "
+			m.setInputCaret(len([]rune(m.inputValue)))
+			m.mouseSel = mouseSelect{}
+			return m, nil
 		}
 	case target == "allow":
 		if m.flowLoopBlocked() && m.runHandle != nil {

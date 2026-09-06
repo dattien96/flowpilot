@@ -355,6 +355,12 @@ func (m *AppModel) renderBlockedBar() string {
 		allowHi := m.actionRingHighlighted("blocked", 2)
 		options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Allow]", allowHi)+styleSystem.Render(" - continue with new scope (match code changed)"))
 	}
+	// Task-325 UX (live-found run-594636): operators didn't know human
+	// feedback rides "/continue <note>" — approve/retry paths need no text,
+	// so the affordance was invisible. [Revise] prefills the composer with
+	// "/continue " (type the note + Enter); it never continues by itself.
+	reviseHi := m.actionRingHighlighted("blocked", 3)
+	options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Revise]", reviseHi)+styleSystem.Render(" - type feedback note, revise (fills /continue )"))
 	bar += strings.Join(options, "\n")
 	bar += "\n" + styleSystem.Render("  ← → select · Enter · /continue /stop")
 	return bar
