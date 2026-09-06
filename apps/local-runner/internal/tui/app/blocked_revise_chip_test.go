@@ -36,8 +36,8 @@ func TestBlockedBar_RendersReviseChip(t *testing.T) {
 			if !strings.Contains(view, "[Revise]") {
 				t.Fatalf("%s: blocked view must render [Revise] chip:\n%s", pk, view)
 			}
-			if !strings.Contains(view, "/continue") {
-				t.Fatalf("%s: [Revise] must advertise the /continue affordance:\n%s", pk, view)
+			if !strings.Contains(view, "feedback") {
+				t.Fatalf("%s: [Revise] must advertise the feedback affordance:\n%s", pk, view)
 			}
 			// Existing chips untouched.
 			for _, want := range []string{"[Retry]", "[Stop]"} {
@@ -60,26 +60,25 @@ func TestBlockedBar_NoReviseWhenNotBlocked(t *testing.T) {
 	}
 }
 
-// Activating [Revise] (mouse or keyboard ring) prefills "/continue " and
-// sends nothing — the loop stays blocked until the user hits Enter.
+// Activating [Revise] (mouse or keyboard ring) clears the composer for a
+// plain-text note and sends nothing — parked plain text IS the feedback, so
+// no "/continue" prefix is needed. The loop stays blocked until Enter.
 func TestReviseChip_PrefillsComposer(t *testing.T) {
 	for _, pk := range []string{"claude", "codex", "grok"} {
 		t.Run(pk, func(t *testing.T) {
 			m := reviseBlockedModel(pk)
+			m.inputValue = "stale draft"
 			x, y, ok := findClickTarget(m, "revise")
 			if !ok {
 				t.Fatalf("%s: [Revise] must be clickable", pk)
 			}
-			m2, cmd := m.dispatchMouseClick(x, y)
+			m2, _ := m.dispatchMouseClick(x, y)
 			am := m2.(*AppModel)
-			if cmd != nil {
-				t.Fatalf("%s: [Revise] must not issue a cmd (prefill only)", pk)
+			if am.inputValue != "" {
+				t.Fatalf("%s: composer = %q, want cleared for the note", pk, am.inputValue)
 			}
-			if am.inputValue != "/continue " {
-				t.Fatalf("%s: composer = %q, want prefilled %q", pk, am.inputValue, "/continue ")
-			}
-			if am.inputCaretIndex() != len([]rune("/continue ")) {
-				t.Fatalf("%s: caret must sit at end of prefill", pk)
+			if am.inputCaretIndex() != 0 {
+				t.Fatalf("%s: caret must sit at start", pk)
 			}
 			if am.flowLoopStatus != "blocked" {
 				t.Fatalf("%s: loop must stay blocked after prefill", pk)

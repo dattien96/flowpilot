@@ -339,14 +339,14 @@ func (m *AppModel) activateClickTarget(target string) (tea.Model, tea.Cmd) {
 			return m, m.cmdContinueFlow(m.runHandle.RunID)
 		}
 	case target == "revise":
-		// Task-325 UX (live-found run-594636): nobody knew feedback rides
-		// "/continue <note>". Prefill the composer — the user types the note
-		// and hits Enter; nothing is sent by the chip itself.
+		// Task-325 UX: parked plain text IS the feedback (no "/continue"
+		// prefix needed), so [Revise] just clears the composer for the note
+		// instead of prefilling a prefix — Tab here, type, Enter.
 		if m.flowLoopBlocked() {
-			m.inputValue = "/continue "
-			m.setInputCaret(len([]rune(m.inputValue)))
+			m.inputValue = ""
+			m.setInputCaret(0)
 			m.mouseSel = mouseSelect{}
-			return m, nil
+			return m, m.showFlashToast("type feedback note + Enter to revise the plan")
 		}
 	case target == "allow":
 		if m.flowLoopBlocked() && m.runHandle != nil {
