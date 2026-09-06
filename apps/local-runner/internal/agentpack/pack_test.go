@@ -77,8 +77,8 @@ func TestLoadBuiltinReviewLoopFlow(t *testing.T) {
 	if review.Builtin.Mirror.Source != "builtin" || !review.Builtin.Mirror.Required {
 		t.Fatalf("mirror metadata not parsed: %+v", review.Builtin.Mirror)
 	}
-	if review.Builtin.ChatUI.Placement != "sub_mode_option" {
-		t.Fatalf("chatUI placement = %q", review.Builtin.ChatUI.Placement)
+	if review.Builtin.ChatUI.Placement != "" {
+		t.Fatalf("chatUI placement = %q, want empty (review-loop is hidden from pickers, no picker face)", review.Builtin.ChatUI.Placement)
 	}
 	behaviors := map[string]string{}
 	lifecycles := map[string]string{}

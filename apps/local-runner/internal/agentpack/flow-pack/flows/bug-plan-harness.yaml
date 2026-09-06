@@ -24,7 +24,9 @@ builtin:
     required: true
     source: builtin
 policy:
-  cap: 3
+  # Same dual-loop budget as task-harness (plan review + code review share
+  # one Round budget, reset when the plan approves): cap 5 per phase.
+  cap: 5
   onCap: escalate
   extendBy: 2
   extendMax: 2

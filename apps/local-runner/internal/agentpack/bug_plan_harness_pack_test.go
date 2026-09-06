@@ -7,7 +7,8 @@ import (
 
 // TestBugPlanHarnessPack (Task-324) pins the Bug+Plan tier picker entry:
 // bug-plan-harness loads, validates, is selectable in /flow, cloneable,
-// cap:3, and mirrors task-harness structurally — except the plan loop, which
+// cap:5 (dual-loop per-phase budget, same as task-harness), and mirrors
+// task-harness structurally — except the plan loop, which
 // writes BUG docs (prompts/plan-bug.md + review-bug-plan.md, pathTemplates
 // routed to 09-BugFix) instead of Task docs.
 func TestBugPlanHarnessPack(t *testing.T) {
@@ -40,8 +41,8 @@ func TestBugPlanHarnessPack(t *testing.T) {
 	if !bug.Builtin.Cloneable {
 		t.Fatal("bug-plan-harness must be cloneable:true (Task-324)")
 	}
-	if bug.Policy.Cap != 3 {
-		t.Fatalf("bug-plan-harness policy.cap = %d, want 3 (same cost envelope as task-harness)", bug.Policy.Cap)
+	if bug.Policy.Cap != 5 {
+		t.Fatalf("bug-plan-harness policy.cap = %d, want 5 (same dual-loop per-phase budget as task-harness)", bug.Policy.Cap)
 	}
 	if bug.Builtin.ChatBaseline {
 		t.Fatal("bug-plan-harness must not be chatBaseline")

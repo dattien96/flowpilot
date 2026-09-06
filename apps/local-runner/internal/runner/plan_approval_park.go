@@ -147,6 +147,22 @@ func (s *InteractiveService) parkPlanForApproval(parentRunID string, writerRound
 	return FlowControlResult{Status: "blocked", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "awaiting_user"}, true
 }
 
+// resetPlanPhaseRound gives the code phase a fresh loop budget after the plan
+// phase approves (plan_synthesis --done--> preflight_contract_freeze, on both
+// the direct hub-done path and the Task-325 resume-approve path). Dual-loop
+// flows (task-harness, bug-plan-harness) share one LoopState.Round across the
+// plan loop and the code loop, so without a reset a contested plan (N
+// continues) would starve the code review loop of its cap. Only the plan->
+// freeze transition resets; code-loop hubs (synthesis --done--> audit) and
+// parks / continues / terminal dones never touch Round here.
+func (s *InteractiveService) resetPlanPhaseRound(parentRunID string) {
+	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		st.Round = 0
+		return st
+	})
+	s.flowDiagLog(parentRunID, "plan_phase_round_reset", "plan approved; code phase starts with a fresh round budget")
+}
+
 // resumePlanApproval handles Continue off a plan_approval park. Approve
 // (empty feedback, or the legacy "continue" token both TUI surfaces send
 // for bare /continue and the Retry chip) advances FORWARD to freeze — stock
@@ -167,7 +183,9 @@ func (s *InteractiveService) resumePlanApproval(parentRunID, feedback string, sn
 	if fb := strings.TrimSpace(feedback); fb == "" || strings.EqualFold(fb, "continue") {
 		// Approve: drive the resolved done-edge directly. Never reinvoke the
 		// hub to re-decide — its done would hit the still-churned park again.
-		s.advanceToNextInlineOrDelegate(context.Background(), parentRunID, edges, nodes, planSynthesisNodeID, "done", "")
+		if s.advanceToNextInlineOrDelegate(context.Background(), parentRunID, edges, nodes, planSynthesisNodeID, "done", "") {
+			s.resetPlanPhaseRound(parentRunID)
+		}
 		s.emitAgentGraph(parentRunID, snap)
 		s.flowDiagLog(parentRunID, "plan_approval_approve", "human approved churned plan, advancing to freeze")
 		return snap, true

@@ -5991,6 +5991,16 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 		rs.lastFlowControlTurnID = rs.currentTurnID
 	}
 	s.mu.Unlock()
+	// Dual-loop flows (task-harness / bug-plan-harness): the plan loop and
+	// the code loop share one LoopState.Round budget, so a contested plan
+	// would starve the code review loop of its cap. A successfully dispatched
+	// plan_synthesis --done--> preflight_contract_freeze starts the code
+	// phase with a fresh budget. Nothing else resets here: parks return
+	// earlier, continues never reach this branch, and synthesis --done-->
+	// audit (code-loop hub) must keep counting toward cap.
+	if hubID == planSynthesisNodeID && target == planFreezeNodeID {
+		s.resetPlanPhaseRound(targetRunID)
+	}
 	st := s.agentOrchestrator.loopStateFor(targetRunID)
 	nextAction := "looping"
 	status := st.Status

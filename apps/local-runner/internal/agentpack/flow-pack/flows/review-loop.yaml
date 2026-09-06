@@ -4,15 +4,11 @@ description: Chat-mode review-until-clean template over the generic flow executo
 mode: chat
 builtin:
   editable: false
-  selectableIn:
-    - chat
-    - flow
-  chatSubModes:
-    - bug
-  chatUI:
-    placement: sub_mode_option
-    showWhen:
-      subMode: bug
+  # Hidden from the /flow picker and the Chat Bug orchestration picker
+  # (rag-harness pattern): the review-until-clean loop now lives inside the
+  # harness flows (task/bug-plan/cp), so this template stays as a cloneable
+  # reference only.
+  selectableIn: []
   cloneable: true
   mirror:
     required: true

@@ -15,11 +15,7 @@ flows:
   - path: flows/review-loop.yaml
     visibility: builtin
     editable: false
-    selectableIn:
-      - chat
-      - flow
-    chatSubModes:
-      - bug
+    selectableIn: []
     cloneable: true
   - path: flows/rag-harness.yaml
     visibility: builtin
