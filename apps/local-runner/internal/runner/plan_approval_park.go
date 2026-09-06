@@ -36,19 +36,30 @@ const (
 // run while the child turn result is still alive in-session (BUG-360).
 // Post-restart the transient scout child is gone and freeze would otherwise
 // strict-parse prose and escalate in a dead-end loop. Parse-gated with the
-// same call freeze uses, so prose never overwrites a good draft (last
-// parseable wins — the scout runs once per flow). Caller must hold s.mu.
-func (s *InteractiveService) cachePreflightDraftLocked(rs *interactiveRun, finalMsg string) {
+// same call freeze uses. Last parseable wins; a scout-labeled completion
+// with unparseable output clears a stale stash so a re-run scout failure
+// fails closed (escalate) instead of freezing on outdated scope. Returns
+// true when the cache was written. Caller must hold s.mu.
+func (s *InteractiveService) cachePreflightDraftLocked(rs *interactiveRun, finalMsg string) bool {
 	if s == nil || rs == nil || strings.TrimSpace(rs.parentRunID) == "" {
-		return
+		return false
 	}
-	if msg := strings.TrimSpace(finalMsg); msg != "" {
-		if _, err := changecontract.ParsePreflightDraft(msg); err == nil {
-			if parent := s.runs[rs.parentRunID]; parent != nil {
-				parent.preflightDraftResult = msg
-			}
-		}
+	parent := s.runs[rs.parentRunID]
+	if parent == nil {
+		return false
 	}
+	msg := strings.TrimSpace(finalMsg)
+	if msg == "" {
+		return false
+	}
+	if _, err := changecontract.ParsePreflightDraft(msg); err == nil {
+		parent.preflightDraftResult = msg
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(rs.label), "preflight_contract_plan") {
+		parent.preflightDraftResult = ""
+	}
+	return false
 }
 
 // planLoopChurned reports whether the plan_writer child of parentRunID was

@@ -22,6 +22,15 @@ summary: scout preflight draft cached on parent at child settle and persisted vi
 
 ## Verification (R3 + R1 + R2)
 
-- 5 new tests (`bug360_preflight_draft_durable_test.go`), race-clean: capture parse-gating table (incl. nil/orphan safety), fallback order live > stash > "", e2e freeze-from-stash with dead scout child (the reported shape), fail-closed without any draft, restart round-trip (snapshot → local file store → reconstruct + blob leg).
+- 7 new tests (`bug360_preflight_draft_durable_test.go`), race-clean: capture parse-gating table (incl. nil/orphan safety), scout-prose clears + settle-driven wiring, fallback order live > stash > "", e2e freeze-from-stash with dead scout child (the reported shape), fail-closed without any draft, restart round-trip (snapshot → local file store → disk reload → reconstruct + blob leg).
 - R1: related suites (freeze/contract, run201295/198699/63960/202550/45103/203966, continue/resume, session-runtime) green except stash-proven `TestResumeFlowWithFeedbackAfterEscalate` (identical message on clean tree); full suite 19 ≅ baseline 19 with membership churn both ways (`TestRun12613` flakes full-suite-only, passes isolated on both trees and together with new tests); zero old-test edits.
 - agentpack + flowgate green; `go vet` clean; gofmt clean on new lines (4 flagged files pre-existing churn).
+
+## Review round (sub-agent FAIL → fixed, same session)
+
+Independent review caught 1 Critical + 3 Important, all fixed before merge:
+- C1: local-file NDJSON disk leg dropped the field (restart test only hit the memory map) — added record field + both mappings + disk-reload leg (`NewLocalFileSessionStore` on the same dir).
+- I1: crash window between settle-cache and next parent persist — `go persistParentSession` on cache write (goroutine; settle holds `s.mu`).
+- I2: stale stash on scout re-run failure — scout-labeled prose clears (fail-closed escalate over stale-scope freeze); non-scout prose never clears.
+- I3: tests masked C1 and didn't prove settle wiring — added disk-reload leg + settle-driven e2e + prose-clear tests.
+- M2/M3 (trimmed store, json tag) applied; M1 (any-child caching mirrors the existing fallback loop) deliberately kept; M4 doc sentences corrected.

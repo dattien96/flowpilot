@@ -267,7 +267,7 @@ type ProviderSessionState struct {
 	// draft JSON on the parent session so a post-restart freeze can parse it
 	// after the transient scout child is gone. Local file store carries the
 	// full struct; Supabase rides the session_runtime blob (no migration).
-	PreflightDraftResult string
+	PreflightDraftResult string `json:"preflight_draft_result,omitempty"`
 	// DispatchProtocolVersion is a derived mirror of the dispatch-store
 	// activation (SD-24 D-1/D-10). Authority is GetRunProtocolVersion — never
 	// this field alone. NEVER store DispatchRecord slices here (two-sources-of-truth).

@@ -173,6 +173,8 @@ type ndjsonSessionRecord struct {
 	Yolo bool `json:"yolo,omitempty"`
 	LastFailedDelegateNodeID  string `json:"last_failed_delegate_node_id,omitempty"`
 	LastEscalatedInlineNodeID string `json:"last_escalated_inline_node_id,omitempty"`
+	// BUG-360: cached scout preflight draft (additive on legacy rows).
+	PreflightDraftResult string `json:"preflight_draft_result,omitempty"`
 }
 
 // loadFromDisk reads the NDJSON file, applies last-wins dedup per run_id, and
@@ -484,6 +486,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		Yolo:                               r.Yolo,
 		LastFailedDelegateNodeID:           r.LastFailedDelegateNodeID,
 		LastEscalatedInlineNodeID:          r.LastEscalatedInlineNodeID,
+		PreflightDraftResult:               r.PreflightDraftResult,
 	}
 }
 
@@ -940,6 +943,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		Yolo:                               s.Yolo,
 		LastFailedDelegateNodeID:           s.LastFailedDelegateNodeID,
 		LastEscalatedInlineNodeID:          s.LastEscalatedInlineNodeID,
+		PreflightDraftResult:               s.PreflightDraftResult,
 	}
 }
 

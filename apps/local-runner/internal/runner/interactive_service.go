@@ -4848,7 +4848,13 @@ func (s *InteractiveService) markPendingFlowGateSettleLocked(rs *interactiveRun,
 // completes and (for flow-engine children) the post-turn gate has passed.
 // Caller holds s.mu. Task-242: must not run until runChildArtifactOutputGate allows.
 func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveRun, finalMsg string, ev ProviderEvent) {
-	s.cachePreflightDraftLocked(rs, finalMsg)
+	// BUG-360: cache the scout draft while the child result is alive, then
+	// persist the parent at once — a crash between settle and the next
+	// unrelated parent persist would otherwise lose it (same window class as
+	// BUG-288 P1-18). Goroutine: settle holds s.mu and persist acquires it.
+	if s.cachePreflightDraftLocked(rs, finalMsg) && rs != nil {
+		go s.persistParentSession(rs.parentRunID)
+	}
 	// Close the parent's agent card for this child. Flow auto-spawn uses wait:false,
 	// so the Wait=true path in spawnAgent never emits agent_result_injected — without
 	// this the live main-chat card stays open forever and reinvoke of the same
