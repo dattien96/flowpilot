@@ -37,9 +37,12 @@ const (
 // Post-restart the transient scout child is gone and freeze would otherwise
 // strict-parse prose and escalate in a dead-end loop. Parse-gated with the
 // same call freeze uses. Last parseable wins; a scout-labeled completion
-// with unparseable output clears a stale stash so a re-run scout failure
-// fails closed (escalate) instead of freezing on outdated scope. Returns
-// true when the cache was written. Caller must hold s.mu.
+// with unparseable output (prose or empty) clears a stale stash so a re-run
+// scout failure fails closed (escalate) instead of freezing on outdated
+// scope. Returns true when the stash was mutated (write or scout-labeled
+// clear) so the caller persists it — a RAM-only clear would be resurrected
+// from disk on restart (review turn-2). Pure no-ops return false.
+// Caller must hold s.mu.
 func (s *InteractiveService) cachePreflightDraftLocked(rs *interactiveRun, finalMsg string) bool {
 	if s == nil || rs == nil || strings.TrimSpace(rs.parentRunID) == "" {
 		return false
@@ -49,17 +52,25 @@ func (s *InteractiveService) cachePreflightDraftLocked(rs *interactiveRun, final
 		return false
 	}
 	msg := strings.TrimSpace(finalMsg)
+	isScout := strings.EqualFold(strings.TrimSpace(rs.label), "preflight_contract_plan")
 	if msg == "" {
-		return false
+		// An empty scout completion is still a failed scout re-run — clear a
+		// stale stash the same as prose. Non-scout empties stay no-ops.
+		if !isScout || parent.preflightDraftResult == "" {
+			return false
+		}
+		parent.preflightDraftResult = ""
+		return true
 	}
 	if _, err := changecontract.ParsePreflightDraft(msg); err == nil {
 		parent.preflightDraftResult = msg
 		return true
 	}
-	if strings.EqualFold(strings.TrimSpace(rs.label), "preflight_contract_plan") {
-		parent.preflightDraftResult = ""
+	if !isScout || parent.preflightDraftResult == "" {
+		return false
 	}
-	return false
+	parent.preflightDraftResult = ""
+	return true
 }
 
 // planLoopChurned reports whether the plan_writer child of parentRunID was

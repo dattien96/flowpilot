@@ -181,25 +181,113 @@ func TestBug360DraftSurvivesRestartRoundTrip(t *testing.T) {
 	if apiErr != nil {
 		t.Fatalf("reconstruct after disk reload: %s", apiErr.msg)
 	}
-	_ = rec2
+	if rec2.preflightDraftResult != validPlannerDraft {
+		t.Fatalf("reconstructed run lost the draft: %q", rec2.preflightDraftResult)
+	}
 }
 
 // A scout-labeled completion with unparseable output clears a stale stash so
 // a re-run scout failure fails closed (escalate) instead of freezing on
-// outdated scope. Non-scout prose never clears.
+// outdated scope. Non-scout prose never clears. Clear is dirty (returns true)
+// so settle persists it — a RAM-only clear would be resurrected from disk on
+// restart (review turn-2). Empty scout output clears the same as prose.
 func TestCachePreflightDraftLocked_ScoutProseClears(t *testing.T) {
 	svc := &InteractiveService{runs: map[string]*interactiveRun{}}
 	svc.runs["parent"] = &interactiveRun{id: "parent", preflightDraftResult: validPlannerDraft}
 	scout := &interactiveRun{id: "scout", parentRunID: "parent", label: "preflight_contract_plan"}
 	other := &interactiveRun{id: "other", parentRunID: "parent", label: "implement"}
 
-	svc.cachePreflightDraftLocked(other, "prose from coder")
+	if svc.cachePreflightDraftLocked(other, "prose from coder") {
+		t.Fatal("non-scout prose must be a no-op (false)")
+	}
 	if got := svc.runs["parent"].preflightDraftResult; got != validPlannerDraft {
 		t.Fatalf("non-scout prose must not clear: %q", got)
 	}
-	svc.cachePreflightDraftLocked(scout, "prose, scout failed")
+	if !svc.cachePreflightDraftLocked(scout, "prose, scout failed") {
+		t.Fatal("scout prose clear must be dirty (true) so settle persists it")
+	}
 	if got := svc.runs["parent"].preflightDraftResult; got != "" {
 		t.Fatalf("failed scout re-run must clear stale stash, got %q", got)
+	}
+	// Clearing an already-empty stash is a no-op.
+	if svc.cachePreflightDraftLocked(scout, "more prose") {
+		t.Fatal("clear on empty stash must be a no-op (false)")
+	}
+	// Empty scout output clears like prose.
+	svc.runs["parent"].preflightDraftResult = validPlannerDraft
+	if !svc.cachePreflightDraftLocked(scout, "   ") {
+		t.Fatal("empty scout output must clear (true)")
+	}
+	if got := svc.runs["parent"].preflightDraftResult; got != "" {
+		t.Fatalf("empty scout output must clear stale stash, got %q", got)
+	}
+	// Non-scout empty output stays a no-op.
+	svc.runs["parent"].preflightDraftResult = validPlannerDraft
+	if svc.cachePreflightDraftLocked(other, "") {
+		t.Fatal("non-scout empty must be a no-op (false)")
+	}
+	if got := svc.runs["parent"].preflightDraftResult; got != validPlannerDraft {
+		t.Fatalf("non-scout empty must not clear: %q", got)
+	}
+}
+
+// The turn-2 hole, closed: draft on disk → scout fails → clear persisted →
+// fresh store reloads empty, so post-restart freeze escalates (fail-closed)
+// instead of freezing on the outdated scope.
+func TestBug360ScoutClearSurvivesRestart(t *testing.T) {
+	svc := NewInteractiveService()
+	svc.mu.Lock()
+	svc.runs["run-360c"] = &interactiveRun{id: "run-360c", projectID: "proj", preflightDraftResult: validPlannerDraft}
+	parent := svc.runs["run-360c"]
+	scout := &interactiveRun{id: "scout-360c", parentRunID: "run-360c", label: "preflight_contract_plan"}
+	svc.mu.Unlock()
+
+	root := t.TempDir()
+	chats := filepath.Join(root, ".flowpilot", "chats")
+	store, err := NewLocalFileSessionStore(chats)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	// Draft persisted (the pre-restart settle write).
+	svc.mu.Lock()
+	st := sessionStateOf(parent)
+	svc.mu.Unlock()
+	st.WorkingDirectory = root
+	st.ProviderKey = ProviderKeyCodex
+	if err := store.UpsertProviderSession(context.Background(), st); err != nil {
+		t.Fatalf("upsert draft: %v", err)
+	}
+	// Scout re-run fails with prose → helper reports dirty → settle would
+	// persist; simulate that persist synchronously.
+	if !svc.cachePreflightDraftLocked(scout, "prose, scout failed") {
+		t.Fatal("scout clear must be dirty (true)")
+	}
+	svc.mu.Lock()
+	cleared := sessionStateOf(parent)
+	svc.mu.Unlock()
+	cleared.WorkingDirectory = root
+	cleared.ProviderKey = ProviderKeyCodex
+	if err := store.UpsertProviderSession(context.Background(), cleared); err != nil {
+		t.Fatalf("upsert clear: %v", err)
+	}
+	// Fresh store (post-restart): the clear must win last-wins, not resurrect.
+	store2, err := NewLocalFileSessionStore(chats)
+	if err != nil {
+		t.Fatalf("second store: %v", err)
+	}
+	loaded2, ok, getErr := store2.GetProviderSession(context.Background(), st.RunID)
+	if getErr != nil || !ok {
+		t.Fatalf("disk get: ok=%v err=%v", ok, getErr)
+	}
+	if loaded2.PreflightDraftResult != "" {
+		t.Fatalf("disk reload resurrected stale draft: %q", loaded2.PreflightDraftResult)
+	}
+	rec2, apiErr := NewInteractiveService().reconstructRun(loaded2)
+	if apiErr != nil {
+		t.Fatalf("reconstruct after disk reload: %s", apiErr.msg)
+	}
+	if rec2.preflightDraftResult != "" {
+		t.Fatalf("reconstructed run resurrected stale draft: %q", rec2.preflightDraftResult)
 	}
 }
 

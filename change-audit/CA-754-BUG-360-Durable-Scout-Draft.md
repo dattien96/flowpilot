@@ -26,7 +26,15 @@ summary: scout preflight draft cached on parent at child settle and persisted vi
 - R1: related suites (freeze/contract, run201295/198699/63960/202550/45103/203966, continue/resume, session-runtime) green except stash-proven `TestResumeFlowWithFeedbackAfterEscalate` (identical message on clean tree); full suite 19 ≅ baseline 19 with membership churn both ways (`TestRun12613` flakes full-suite-only, passes isolated on both trees and together with new tests); zero old-test edits.
 - agentpack + flowgate green; `go vet` clean; gofmt clean on new lines (4 flagged files pre-existing churn).
 
-## Review round (sub-agent FAIL → fixed, same session)
+## Review round 2 (sub-agent FAIL → fixed, same session)
+
+Turn-2 review caught 1 Important the turn-1 fix left open:
+- I2-clear-not-durable: the scout-prose clear returned `false`, so settle never scheduled `persistParentSession` — a RAM-only clear the next restart resurrected from disk (freeze on outdated scope). Empty scout output didn't even clear RAM (early `msg == ""` return before the label check).
+- Fix: `cachePreflightDraftLocked` returns `true` on any stash mutation (parseable write, scout prose clear, **empty** scout clear); no-op clears (already empty, non-scout) stay `false`. The settle hook needed no change — `true` now schedules the persist.
+- Tests: extended `ScoutProseClears` (dirty/no-op returns, empty scout, non-scout empty); new `TestBug360ScoutClearSurvivesRestart` (draft on disk → scout prose → clear persisted → fresh store reloads `""` → reconstruct `""`); asserted the previously discarded `rec2.preflightDraftResult`.
+- R1: 8/8 new tests race-clean; full suite 19 = 18 baseline envelope + `TestFlowCodingPromptSpawnWrappedDoesNotDuplicateHistory`, stash-proven flake on the clean tree too (fails 2/3 `-count=3` without my changes).
+
+## Review round 1 (sub-agent FAIL → fixed, same session)
 
 Independent review caught 1 Critical + 3 Important, all fixed before merge:
 - C1: local-file NDJSON disk leg dropped the field (restart test only hit the memory map) — added record field + both mappings + disk-reload leg (`NewLocalFileSessionStore` on the same dir).
