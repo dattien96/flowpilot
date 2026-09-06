@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -268,32 +269,39 @@ func TestPlanApprovalPark_CodeHubDoneDoesNotPark(t *testing.T) {
 	}
 }
 
-// Approve (empty feedback) advances FORWARD to freeze — never retries writer.
+// Approve advances FORWARD to freeze — never retries writer. Approved forms:
+// empty feedback (curl/Desktop approve) and the legacy "continue" token both
+// TUI surfaces send for bare /continue and the Retry chip (live-found:
+// approve was unreachable from TUI until "continue" counted as approve).
 func TestPlanApprovalPark_ApproveAdvancesToFreeze(t *testing.T) {
-	svc, runID := task325PlanService(t, ProviderKeyCodex)
-	task325SeedWriter(t, svc, runID, ProviderKeyCodex, 1)
-	if _, handled := svc.advanceHubDoneThroughEdge(runID, FlowControlInput{Status: "done", Summary: validPlannerDraft}); !handled {
-		t.Fatal("must park first")
+	for _, fb := range []string{"", "continue", "  Continue  "} {
+		t.Run("feedback="+fmt.Sprintf("%q", fb), func(t *testing.T) {
+			svc, runID := task325PlanService(t, ProviderKeyCodex)
+			task325SeedWriter(t, svc, runID, ProviderKeyCodex, 1)
+			if _, handled := svc.advanceHubDoneThroughEdge(runID, FlowControlInput{Status: "done", Summary: validPlannerDraft}); !handled {
+				t.Fatal("must park first")
+			}
+			snap, err := svc.resumeFlowWithFeedback(runID, fb)
+			if err != nil {
+				t.Fatalf("approve resume: %v", err)
+			}
+			if snap.LoopState.Status == "blocked" {
+				t.Fatalf("approve must unblock the loop: %+v", snap.LoopState)
+			}
+			if got := flowStepStatus(t, svc, runID, "preflight_contract_freeze"); got != StepStatusDone {
+				t.Fatalf("freeze = %v, want DONE after approve", got)
+			}
+			if got := flowStepStatus(t, svc, runID, "plan_synthesis"); got != StepStatusDone {
+				t.Fatalf("plan_synthesis = %v, want DONE after approve", got)
+			}
+			if seq := task325WriterSeq(t, svc, runID); seq != 1 {
+				t.Fatalf("approve must not touch the writer (seq=%d, want 1)", seq)
+			}
+			waitLoop(t, "writer spawned after approved freeze", 3*time.Second, func() bool {
+				return countChildrenWithLabel(svc, runID, "test_signatures") == 1
+			})
+		})
 	}
-	snap, err := svc.resumeFlowWithFeedback(runID, "")
-	if err != nil {
-		t.Fatalf("approve resume: %v", err)
-	}
-	if snap.LoopState.Status == "blocked" {
-		t.Fatalf("approve must unblock the loop: %+v", snap.LoopState)
-	}
-	if got := flowStepStatus(t, svc, runID, "preflight_contract_freeze"); got != StepStatusDone {
-		t.Fatalf("freeze = %v, want DONE after approve", got)
-	}
-	if got := flowStepStatus(t, svc, runID, "plan_synthesis"); got != StepStatusDone {
-		t.Fatalf("plan_synthesis = %v, want DONE after approve", got)
-	}
-	if seq := task325WriterSeq(t, svc, runID); seq != 1 {
-		t.Fatalf("approve must not touch the writer (seq=%d, want 1)", seq)
-	}
-	waitLoop(t, "writer spawned after approved freeze", 3*time.Second, func() bool {
-		return countChildrenWithLabel(svc, runID, "test_signatures") == 1
-	})
 }
 
 // Feedback re-enters the SAME writer with the human note (no second child).

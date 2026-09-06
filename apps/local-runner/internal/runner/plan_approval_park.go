@@ -105,13 +105,13 @@ func (s *InteractiveService) parkPlanForApproval(parentRunID string, writerRound
 	return FlowControlResult{Status: "blocked", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "awaiting_user"}, true
 }
 
-// resumePlanApproval handles Continue off a plan_approval park. Empty
-// feedback (Approve) advances FORWARD to freeze — stock resume would retry
-// the writer, which is wrong here: the park is a gate, not a failure.
-// Non-empty feedback re-enters plan_writer with the human note (same
-// re-entry shape as reviewer changes_requested). Returns handled=false only
-// when the writer re-entry cannot dispatch, letting generic resume proceed
-// (which re-parks via the hub re-deciding done on a still-churned plan).
+// resumePlanApproval handles Continue off a plan_approval park. Approve
+// (empty feedback, or the legacy "continue" token both TUI surfaces send
+// for bare /continue and the Retry chip) advances FORWARD to freeze — stock
+// resume would retry the writer, which is wrong here: the park is a gate,
+// not a failure. Genuine human feedback re-enters plan_writer with the note.
+// A literal human "continue" revision note is indistinguishable from the
+// legacy token and intentionally counts as approve (recoverable either way).
 func (s *InteractiveService) resumePlanApproval(parentRunID, feedback string, snap AgentGraphSnapshot) (AgentGraphSnapshot, bool) {
 	s.mu.Lock()
 	var edges []agentpack.FlowEdge
@@ -122,7 +122,7 @@ func (s *InteractiveService) resumePlanApproval(parentRunID, feedback string, sn
 	}
 	s.mu.Unlock()
 
-	if strings.TrimSpace(feedback) == "" {
+	if fb := strings.TrimSpace(feedback); fb == "" || strings.EqualFold(fb, "continue") {
 		// Approve: drive the resolved done-edge directly. Never reinvoke the
 		// hub to re-decide — its done would hit the still-churned park again.
 		s.advanceToNextInlineOrDelegate(context.Background(), parentRunID, edges, nodes, planSynthesisNodeID, "done", "")
