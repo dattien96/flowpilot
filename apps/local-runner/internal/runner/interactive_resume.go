@@ -966,6 +966,9 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		pendingGateRepromptProvenanceRunID: st.PendingGateRepromptProvenanceRunID,
 		// BUG-299 residual: restore durable YOLO when present; flow force applied below.
 		yolo: st.Yolo,
+		// BUG-360: restore the cached scout draft so post-restart freeze can
+		// parse it after the transient scout child is gone.
+		preflightDraftResult:      st.PreflightDraftResult,
 		lastFailedDelegateNodeID:  st.LastFailedDelegateNodeID,
 		lastEscalatedInlineNodeID: st.LastEscalatedInlineNodeID,
 	}

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/changecontract"
 )
 
 // Task-325: conditional plan-approval park.
@@ -30,6 +31,25 @@ const (
 	planWriterNodeID        = "plan_writer"
 	planFreezeNodeID        = "preflight_contract_freeze"
 )
+
+// cachePreflightDraftLocked caches a parseable preflight draft on the parent
+// run while the child turn result is still alive in-session (BUG-360).
+// Post-restart the transient scout child is gone and freeze would otherwise
+// strict-parse prose and escalate in a dead-end loop. Parse-gated with the
+// same call freeze uses, so prose never overwrites a good draft (last
+// parseable wins — the scout runs once per flow). Caller must hold s.mu.
+func (s *InteractiveService) cachePreflightDraftLocked(rs *interactiveRun, finalMsg string) {
+	if s == nil || rs == nil || strings.TrimSpace(rs.parentRunID) == "" {
+		return
+	}
+	if msg := strings.TrimSpace(finalMsg); msg != "" {
+		if _, err := changecontract.ParsePreflightDraft(msg); err == nil {
+			if parent := s.runs[rs.parentRunID]; parent != nil {
+				parent.preflightDraftResult = msg
+			}
+		}
+	}
+}
 
 // planLoopChurned reports whether the plan_writer child of parentRunID was
 // re-entered at least once, plus its max activationSeq (re-entry count).

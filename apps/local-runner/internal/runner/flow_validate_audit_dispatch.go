@@ -1674,6 +1674,17 @@ func (s *InteractiveService) findPlannerResultForFreeze(parentRunID string, edge
 			}
 		}
 	}
+	// BUG-360: post-restart the transient scout child is gone — fall back to
+	// the draft cached on the parent at scout completion (durable via session
+	// snapshot + runtime blob). Parse-gated like every other source here, so
+	// a stale/corrupt cache can never satisfy the freeze.
+	if rs := s.runs[parentRunID]; rs != nil {
+		if cached := strings.TrimSpace(rs.preflightDraftResult); cached != "" {
+			if _, err := changecontract.ParsePreflightDraft(cached); err == nil {
+				return cached
+			}
+		}
+	}
 	return ""
 }
 

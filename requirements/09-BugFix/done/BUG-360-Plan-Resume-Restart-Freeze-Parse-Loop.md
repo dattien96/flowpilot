@@ -5,7 +5,7 @@
 - Document ID: `BUG-360`
 - Title: `plan-phase resume after restart dies in freeze strict-parse loop`
 - Phase: `bugfix`
-- Status: `open`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-06`
@@ -41,7 +41,7 @@
 
 ### Open Questions
 
-- Q-1: Preferred fix — (a) persist the planner draft JSON durably at plan time (session snapshot/file), (b) freeze falls back to deriving the draft from the plan DOC on disk (the durable `plan_md` artifact — philosophically the right source), or (c) detect-and-advise (actionable Stop guidance instead of infinite no-progress loop)? (b) is recommended: the doc outlives every restart by design.
+- Q-1: RESOLVED against (b)-as-specced — the frozen input is the preflight (scout) JSON, not the plan doc, so doc-derivation would change the contract source. Implemented instead: durable scout-draft cache (capture at settle → parent session → jsonb blob → reconstruct → fallback read). Same durability property, correct layer.
 - Q-2: Same amnesia class may affect other child-turn-result consumers post-restart (audit?). Scope check during fix.
 
 ### Source Refs
@@ -62,3 +62,11 @@ Planner draft = transient child-turn result; restart amnesia leaves freeze with 
 
 - Prefer (b): freeze derives draft from the on-disk plan doc (`plan_md` binding path, resolved via BUG-357-style lookup) when the child result is absent; keep strictness when a draft IS present.
 - Tests: approve-after-restart with dead planner child → freeze proceeds from doc (new file); existing freeze/restart suites green.
+
+## Completion Notes (implemented 2026-09-06, CA-754)
+
+- Implemented as scout-draft CACHE, not plan-doc derivation: the frozen input is the preflight (scout) JSON draft, not the Task/BUG doc — deriving from the doc would change the contract source. Cache written at child settle (parse-gated, same `ParsePreflightDraft` freeze uses), carried on the parent via session snapshot + `session_runtime` jsonb (no migration), restored on reconstruct, read as last fallback in `findPlannerResultForFreeze` (live children first).
+- Files: `interactiveRun.preflightDraftResult` + `cachePreflightDraftLocked` hook in `settleFlowChildTurnCompletedLocked` (now in `plan_approval_park.go`); `ProviderSessionState.PreflightDraftResult` + `sessionStateOf` + blob `preflight_draft_result` + `applySessionRuntimeBlob` + reconstruct mapping; stash fallback in `findPlannerResultForFreeze`.
+- Tests (5, `bug360_preflight_draft_durable_test.go`, race-clean): parse-gated capture table, fallback order (live > stash > ""), e2e freeze-from-stash without scout child, fail-closed without any draft, restart round-trip (snapshot → local file store → reconstruct + blob leg).
+- R1: full runner suite failure set == baseline churn (19≅19; `TestRun12613` full-suite-only flake passes isolated ×2 on both trees + together with new tests; `TestGrokSpawn…` appeared on a baseline run instead) — zero consistent new failures, zero old-test edits. agentpack/flowgate green; vet clean; gofmt new-lines clean (4 flagged files are pre-existing churn).
+- R2: orchestrator/persist path, zero adapter branches → provider-agnostic (no provider switch in touched code; freeze fixtures already matrix across providers in run201295).

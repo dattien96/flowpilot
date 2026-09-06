@@ -428,6 +428,13 @@ type interactiveRun struct {
 	// (preflight_contract_plan) failed so Continue can retry that same node
 	// via reinvokeMatchingFlowChild instead of a generic hub reinvoke.
 	lastFailedDelegateNodeID string
+	// preflightDraftResult (BUG-360) caches the scout's parseable preflight
+	// draft JSON on the PARENT run when a child turn completes with one.
+	// Child runs are transient (never persisted), so without this cache a
+	// post-restart freeze has no draft to parse and escalates in a dead-end
+	// loop. Only ever overwritten by another parseable draft — prose never
+	// clobbers it. Persisted via ProviderSessionState + session_runtime blob.
+	preflightDraftResult string
 	// lastProviderEventAt is stamped on every emitLocked for stall detection
 	// (Task-241 T-11). Zero means no event yet (member just spawned).
 	lastProviderEventAt time.Time
@@ -3966,6 +3973,9 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		// BUG-299 residual: round-trip YOLO so chat restart keeps the toggle and
 		// flow rehydrate has a durable value to force against when missing.
 		Yolo:                      rs.yolo,
+		// BUG-360: round-trip the cached scout draft so post-restart freeze
+		// can parse it after the transient scout child is gone.
+		PreflightDraftResult:      rs.preflightDraftResult,
 		LastFailedDelegateNodeID:  rs.lastFailedDelegateNodeID,
 		LastEscalatedInlineNodeID: rs.lastEscalatedInlineNodeID,
 	}
@@ -4838,6 +4848,7 @@ func (s *InteractiveService) markPendingFlowGateSettleLocked(rs *interactiveRun,
 // completes and (for flow-engine children) the post-turn gate has passed.
 // Caller holds s.mu. Task-242: must not run until runChildArtifactOutputGate allows.
 func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveRun, finalMsg string, ev ProviderEvent) {
+	s.cachePreflightDraftLocked(rs, finalMsg)
 	// Close the parent's agent card for this child. Flow auto-spawn uses wait:false,
 	// so the Wait=true path in spawnAgent never emits agent_result_injected — without
 	// this the live main-chat card stays open forever and reinvoke of the same

@@ -263,6 +263,11 @@ type ProviderSessionState struct {
 	// get feature-history / FCP re-injected after process restart (MAC secret is
 	// per-process; the durable flag is the double-injection guard).
 	FlowContextInjected bool
+	// PreflightDraftResult (BUG-360) carries the scout's parseable preflight
+	// draft JSON on the parent session so a post-restart freeze can parse it
+	// after the transient scout child is gone. Local file store carries the
+	// full struct; Supabase rides the session_runtime blob (no migration).
+	PreflightDraftResult string
 	// DispatchProtocolVersion is a derived mirror of the dispatch-store
 	// activation (SD-24 D-1/D-10). Authority is GetRunProtocolVersion — never
 	// this field alone. NEVER store DispatchRecord slices here (two-sources-of-truth).
