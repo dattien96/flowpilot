@@ -23,4 +23,5 @@ Same-child re-entry (no second writer), loop back to running. The feedback path 
 
 ## Verification
 
-- 4 new tests PASS; full `tui/...` green (old blocked-bar suites use Contains-style assertions — unbroken); zero old-test edits; gofmt clean.
+- 5 new tests PASS (chip render/matrix, hidden when unblocked, prefill without cmd, ring order + Tab highlight at idx 2/3 with/without Allow); full `tui/...` green (old blocked-bar suites use Contains-style assertions — unbroken); zero old-test edits; gofmt clean.
+- Follow-up fix 2026-09-06 (same commit): Revise highlight index is dynamic (2, or 3 with Allow) — hardcoded 3 left Revise unhighlightable without drift, so Tab appeared to die on [Stop] (live-found run-584646).

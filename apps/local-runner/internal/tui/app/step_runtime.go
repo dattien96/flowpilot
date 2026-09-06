@@ -359,7 +359,15 @@ func (m *AppModel) renderBlockedBar() string {
 	// feedback rides "/continue <note>" — approve/retry paths need no text,
 	// so the affordance was invisible. [Revise] prefills the composer with
 	// "/continue " (type the note + Enter); it never continues by itself.
-	reviseHi := m.actionRingHighlighted("blocked", 3)
+	// Highlight index tracks the ring order [Retry Stop (Allow) Revise]:
+	// Revise sits at 2, or 3 when Allow is shown (live-found run-584646
+	// follow-up: hardcoded 3 left Revise unhighlightable without drift,
+	// so Tab appeared to die on [Stop]).
+	reviseIdx := 2
+	if showAllow {
+		reviseIdx = 3
+	}
+	reviseHi := m.actionRingHighlighted("blocked", reviseIdx)
 	options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Revise]", reviseHi)+styleSystem.Render(" - type feedback note, revise (fills /continue )"))
 	bar += strings.Join(options, "\n")
 	bar += "\n" + styleSystem.Render("  ← → select · Enter · /continue /stop")

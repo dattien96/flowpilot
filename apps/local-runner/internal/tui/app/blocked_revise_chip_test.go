@@ -88,20 +88,27 @@ func TestReviseChip_PrefillsComposer(t *testing.T) {
 	}
 }
 
-// Keyboard ring exposes revise without disturbing Retry/Stop/Allow order.
-func TestReviseChip_ActionRingOrder(t *testing.T) {
+// Tab cycling reaches [Revise] with a visible highlight — without drift it
+// sits at ring index 2 (live-found: hardcoded 3 made Tab appear dead on
+// [Stop]); with drift (Allow shown) it shifts to 3.
+func TestReviseChip_TabHighlightFollowsRingOrder(t *testing.T) {
 	m := reviseBlockedModel("codex")
-	var targets []string
-	for _, it := range m.actionRingItems() {
-		targets = append(targets, it.target)
+	m.actionRingFocus = true
+	m.actionRingIdx = 2
+	bar := stripANSI(m.renderBlockedBar())
+	if !strings.Contains(bar, " [Revise] ") {
+		t.Fatalf("Revise must highlight at ring idx 2 without Allow:\n%s", bar)
 	}
-	want := []string{"retry", "stop", "revise"}
-	if len(targets) != len(want) {
-		t.Fatalf("ring = %v, want %v (appended last, indices stable)", targets, want)
+
+	drift := reviseBlockedModel("codex")
+	drift.flowGateReason = "flow scope drift: wrote outside the frozen contract's declared paths: calc_test.go"
+	drift.actionRingFocus = true
+	drift.actionRingIdx = 3
+	bar = stripANSI(drift.renderBlockedBar())
+	if !strings.Contains(bar, "[Allow]") {
+		t.Fatalf("drift reason must show Allow:\n%s", bar)
 	}
-	for i := range want {
-		if targets[i] != want[i] {
-			t.Fatalf("ring = %v, want %v", targets, want)
-		}
+	if !strings.Contains(bar, " [Revise] ") {
+		t.Fatalf("Revise must highlight at ring idx 3 with Allow:\n%s", bar)
 	}
 }
