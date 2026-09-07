@@ -220,7 +220,7 @@ Companion: [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.m
 - [ ] **P-3 / Task-275:** `scripts/gate-check` từ chối commit regression test xanh trước đó, qua git pre-commit **và** Claude `Stop` hook (Linux/CI chứng minh; Windows documented).
 - [ ] **P-4 / Task-276:** Override accept → waiver ledger (lý do + hạn); hết hạn → re-arm `r-reg`.
 - [ ] **P-5 / Task-277:** Task đổi production code không có test mới → reprompt `r-newtest` (chỉ yêu cầu ADD test).
-- [ ] Verification guide [CP-53-Test-Steps](../inprogress/CP-53-Test-Steps.md) tick được (automated + manual) cho mọi phase.
+- [ ] Verification guide [CP-53-Test-Steps](./CP-53-Test-Steps.md) tick được (automated + manual) cho mọi phase.
 - [ ] Mỗi Task có `CA-*` + không undo BUG-288/289 always-block contracts.
 
 ### 11.2 Safe-fix DoD (per Task, all required)

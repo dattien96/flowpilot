@@ -12,7 +12,7 @@
 - Last Updated: `2026-09-07`
 - Parent Documents: [CP-53](../../07-Coding-Plan/done/CP-53-Review-Loop.md)
 - Child Documents: `<none>`
-- Related Documents: [CP-53-Test-Steps](../../07-Coding-Plan/inprogress/CP-53-Test-Steps.md), [CP-61](../../07-Coding-Plan/inprogress/CP-61-Harness-Done-Verdict-Gate.md) (harness leftover), `tools/submit-review-outcome.yaml`, review-loop.yaml, CP-55 Task-270 (flow migration), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
+- Related Documents: [CP-53-Test-Steps](../../07-Coding-Plan/done/CP-53-Test-Steps.md), [CP-61](../../07-Coding-Plan/inprogress/CP-61-Harness-Done-Verdict-Gate.md) (harness leftover), `tools/submit-review-outcome.yaml`, review-loop.yaml, CP-55 Task-270 (flow migration), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `<none>`
 - Tags: `agent-flow-engine, review-loop, submit-review-outcome, cp-53, p-2`
 
