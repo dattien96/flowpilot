@@ -1493,10 +1493,6 @@ export function WorkflowsSettings(): React.ReactElement {
   const saveStepDefinition = async () => {
     if (!stepDraft) return;
     const requiresModel = stepDefinitionRequiresModel(stepDraft.behaviorId);
-    if (requiresModel && !stepDraft.model) {
-      setMessage("Model is required.");
-      return;
-    }
     const agentRefIssue = stepDefinitionAgentRefIssue(stepDraft.behaviorId, stepDraft.agentRef);
     if (agentRefIssue) {
       setMessage(agentRefIssue);
@@ -1512,7 +1508,7 @@ export function WorkflowsSettings(): React.ReactElement {
         // silently persist a stale value left over from before the user
         // switched Behavior ID — the fields are hidden in the form, so there
         // is no UI left to clear them manually.
-        model: requiresModel ? stepDraft.model : null,
+        model: requiresModel ? stepDraft.model?.trim() || null : null,
         reasoningEffort: requiresModel ? stepDraft.reasoningEffort : null,
         promptBase:
           stepDraft.promptBase?.trim() ||
@@ -1537,10 +1533,6 @@ export function WorkflowsSettings(): React.ReactElement {
       return;
     }
     const requiresModel = stepDefinitionRequiresModel(createStepDraft.behaviorId);
-    if (requiresModel && !createStepDraft.model) {
-      setMessage("Model is required.");
-      return;
-    }
     const agentRefIssue = stepDefinitionAgentRefIssue(createStepDraft.behaviorId, createStepDraft.agentRef);
     if (agentRefIssue) {
       setMessage(agentRefIssue);
@@ -1555,7 +1547,7 @@ export function WorkflowsSettings(): React.ReactElement {
         stepType: createStepDraft.stepType.trim(),
         name: createStepDraft.name.trim() || createStepDraft.stepType.trim(),
         description: createStepDraft.description.trim(),
-        model: requiresModel ? createStepDraft.model : null,
+        model: requiresModel ? createStepDraft.model?.trim() || null : null,
         reasoningEffort: requiresModel ? createStepDraft.reasoningEffort : null,
         promptBase:
           createStepDraft.promptBase?.trim() ||
@@ -2236,7 +2228,7 @@ export function WorkflowsSettings(): React.ReactElement {
                 onChange={(event) => onChange({ ...draft, model: event.target.value || null })}
                 value={draft.model ?? ""}
               >
-                <option value="">Select a model...</option>
+                <option value="">(inherit)</option>
                 {modelOptions.map((model) => (
                   <option key={model.value} value={model.value}>
                     {model.label}

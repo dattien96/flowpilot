@@ -2018,11 +2018,13 @@ func (s *InteractiveService) spawnFrozenWriterChild(ctx context.Context, parentR
 		Wait:             false,
 		Label:            writerNode.ID,
 		AgentDefOverride: agentDef,
+		Model:            s.delegateSpawnModel(ctx, parentRunID, writerNode),
 	}); err != nil {
 		return fmt.Errorf("failed to spawn writer node %q (agent %q): %w", writerNode.ID, agentName, err)
 	}
 	if s.isFlowEngineDriven(parentRunID) {
 		s.setFlowStepStatus(ctx, parentRunID, writerNode.ID, StepStatusRunning)
+		s.stampFlowNodePosture(ctx, parentRunID, writerNode)
 	}
 	s.flowDiagLog(parentRunID, "flow_contract_freeze_writer_spawned", "spawned frozen-contract writer",
 		"node_id", writerNode.ID, "agent_name", agentName, "contract_id", rec.ContractID,
