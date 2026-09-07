@@ -24,14 +24,18 @@ func flowRequiresSynthesisMachineVerdict(rs *interactiveRun) bool {
 	return false
 }
 
-// reviewCohortNodeLabels returns flow node ids for cohort=review members.
-func reviewCohortNodeLabels(nodes []agentpack.FlowNode) []string {
+// cohortNodeLabels returns flow node ids for members of the given cohort.
+func cohortNodeLabels(nodes []agentpack.FlowNode, cohort string) []string {
 	if len(nodes) == 0 {
+		return nil
+	}
+	cohort = strings.TrimSpace(cohort)
+	if cohort == "" {
 		return nil
 	}
 	out := make([]string, 0, 2)
 	for _, n := range nodes {
-		if strings.TrimSpace(n.Cohort) != "review" {
+		if strings.TrimSpace(n.Cohort) != cohort {
 			continue
 		}
 		if id := strings.TrimSpace(n.ID); id != "" {
@@ -39,6 +43,39 @@ func reviewCohortNodeLabels(nodes []agentpack.FlowNode) []string {
 		}
 	}
 	return out
+}
+
+// reviewCohortNodeLabels returns flow node ids for cohort=review members.
+func reviewCohortNodeLabels(nodes []agentpack.FlowNode) []string {
+	return cohortNodeLabels(nodes, "review")
+}
+
+// hubInboundCohortName maps a harness hub to the cohort whose machine verdicts
+// must PASS before its done-successor may dispatch (CP-61 P-1). Unknown hubs
+// return "" and stay ungated, same as today.
+func hubInboundCohortName(hubID string) string {
+	switch strings.TrimSpace(hubID) {
+	case "plan_synthesis", "cp_synthesis":
+		return "plan"
+	case "synthesis":
+		return "review"
+	default:
+		return ""
+	}
+}
+
+// flowRequiresHubMachineVerdict reports whether the given hub's done edge is
+// gated on inbound-cohort machine verdicts: the hub is a known harness hub
+// and the flow declares inbound cohort nodes for it.
+func flowRequiresHubMachineVerdict(rs *interactiveRun, hubID string) bool {
+	if rs == nil {
+		return false
+	}
+	cohort := hubInboundCohortName(hubID)
+	if cohort == "" {
+		return false
+	}
+	return len(cohortNodeLabels(rs.activeFlowNodes, cohort)) > 0
 }
 
 func (s *InteractiveService) recordReviewCohortMemberVerdict(parentRunID, label, domainStatus string) {
@@ -176,4 +213,68 @@ func (s *InteractiveService) synthesisDoneVerdictError(parentRunID string) error
 		return fmt.Errorf("applyFlowControl: synthesis done blocked — reviewer verdict not approved: %s", strings.Join(notApproved, ", "))
 	}
 	return nil
+}
+
+// hubDoneVerdictError describes why a harness hub's approved→done was
+// rejected (CP-61 P-1). Expected labels come from the hub's inbound cohort
+// (plan_synthesis/cp_synthesis → plan, synthesis → review), not from every
+// cohort:review node on the graph.
+func (s *InteractiveService) hubDoneVerdictError(parentRunID, hubID string) error {
+	hubID = strings.TrimSpace(hubID)
+	cohort := hubInboundCohortName(hubID)
+	if cohort == "" {
+		return fmt.Errorf("advanceHubDoneThroughEdge: %s done blocked — unknown hub %q", hubID, hubID)
+	}
+	s.mu.Lock()
+	parent := s.runs[parentRunID]
+	var expected []string
+	var verdicts map[string]string
+	if parent != nil {
+		expected = cohortNodeLabels(parent.activeFlowNodes, cohort)
+		verdicts = parent.lastReviewCohortVerdicts
+	}
+	s.mu.Unlock()
+
+	if len(expected) == 0 {
+		return fmt.Errorf("advanceHubDoneThroughEdge: %s done requires %s reviewer machine verdicts but no %s cohort nodes are configured", hubID, cohort, cohort)
+	}
+	var missing, notApproved []string
+	for _, label := range expected {
+		v, ok := verdicts[label]
+		if !ok || v == "" {
+			missing = append(missing, label)
+			continue
+		}
+		if v != "approved" {
+			notApproved = append(notApproved, label+"="+v)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("advanceHubDoneThroughEdge: %s done blocked — missing machine verdict from %s reviewer(s): %s", hubID, cohort, strings.Join(missing, ", "))
+	}
+	if len(notApproved) > 0 {
+		return fmt.Errorf("advanceHubDoneThroughEdge: %s done blocked — reviewer verdict not approved: %s", hubID, strings.Join(notApproved, ", "))
+	}
+	return nil
+}
+
+// hubDoneCohortHasChangesRequested reports whether any expected inbound-cohort
+// verdict for the hub is changes_requested (CP-61 P-1 continue-vs-escalate split).
+func (s *InteractiveService) hubDoneCohortHasChangesRequested(parentRunID, hubID string) bool {
+	cohort := hubInboundCohortName(hubID)
+	if cohort == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	parent := s.runs[parentRunID]
+	if parent == nil {
+		return false
+	}
+	for _, label := range cohortNodeLabels(parent.activeFlowNodes, cohort) {
+		if parent.lastReviewCohortVerdicts[label] == "changes_requested" {
+			return true
+		}
+	}
+	return false
 }

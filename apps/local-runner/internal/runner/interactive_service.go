@@ -5824,10 +5824,13 @@ func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, 
 					"Report your findings (approve or request changes, with specifics) in your final message; " +
 					"the hub will synthesize the full cohort and finalize the flow after every reviewer has finished")
 		}
-		b.svc.mu.Lock()
-		parent := b.svc.runs[targetParentID]
-		requireVerdict := parent != nil && flowRequiresSynthesisMachineVerdict(parent)
-		b.svc.mu.Unlock()
+	b.svc.mu.Lock()
+	parent := b.svc.runs[targetParentID]
+	requireVerdict := parent != nil && (flowRequiresSynthesisMachineVerdict(parent) ||
+		flowRequiresHubMachineVerdict(parent, "plan_synthesis") ||
+		flowRequiresHubMachineVerdict(parent, "synthesis") ||
+		flowRequiresHubMachineVerdict(parent, "cp_synthesis"))
+	b.svc.mu.Unlock()
 		if requireVerdict {
 			if !in.viaReviewOutcome {
 				return FlowControlResult{}, fmt.Errorf(
@@ -5859,6 +5862,26 @@ func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, 
 		return res, nil
 	}
 	return b.svc.applyFlowControl(targetRunID, in)
+}
+
+// applyHubDoneVerdictTransition applies continue/escalate after a FAIL
+// reviewer snapshot (CP-61 P-1). If applyFlowControl errors (missing run /
+// one-decision already stamped), fail-closed like the undispatchable-successor
+// branch: do not dispatch freeze/audit/splitter; report awaiting_user so the
+// hub does not treat an empty result as an accepted done.
+func (s *InteractiveService) applyHubDoneVerdictTransition(targetRunID, status, summary string) (FlowControlResult, bool) {
+	res, applyErr := s.applyFlowControl(targetRunID, FlowControlInput{Status: status, Summary: summary})
+	if applyErr != nil {
+		log.Printf("[flow-control] %s after hub review verdict: %v", status, applyErr)
+		s.mu.Lock()
+		if rs := s.runs[targetRunID]; rs != nil && rs.currentTurnID != "" {
+			rs.lastFlowControlTurnID = rs.currentTurnID
+		}
+		s.mu.Unlock()
+		st := s.agentOrchestrator.loopStateFor(targetRunID)
+		return FlowControlResult{Status: "blocked", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "awaiting_user"}, true
+	}
+	return res, true
 }
 
 // advanceHubDoneThroughEdge generalizes flow completion so a hub/synthesis node
@@ -5910,6 +5933,29 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 		}
 		s.mu.Unlock()
 		return FlowControlResult{}, false
+	}
+	// CP-61 P-1: harness hubs with a real done-successor (freeze / audit /
+	// task_splitter) cannot dispatch it on a self-grade alone. The inbound
+	// reviewer cohort must have recorded approved via submit_review_outcome.
+	// Runs before park (Task-325) and before any dispatch so a FAIL never
+	// parks, resets Round, or freezes.
+	if cohort := hubInboundCohortName(hubID); cohort != "" && len(cohortNodeLabels(nodes, cohort)) > 0 {
+		if verdictErr := s.hubDoneVerdictError(targetRunID, hubID); verdictErr != nil {
+			if s.hubDoneCohortHasChangesRequested(targetRunID, hubID) {
+				s.flowDiagLog(targetRunID, "flow_control_hub_done_continue_on_review_verdict",
+					"hub done blocked: reviewer requested changes, routing continue",
+					"hub", hubID,
+					"error", verdictErr.Error(),
+				)
+				return s.applyHubDoneVerdictTransition(targetRunID, "continue", verdictErr.Error())
+			}
+			s.flowDiagLog(targetRunID, "flow_control_rejected_missing_review_verdict",
+				"hub done blocked: reviewer machine verdict missing or not approved",
+				"hub", hubID,
+				"error", verdictErr.Error(),
+			)
+			return s.applyHubDoneVerdictTransition(targetRunID, "escalate", verdictErr.Error())
+		}
 	}
 	if targetNode, ok := findFlowNode(nodes, target); ok {
 		if canonical, ok := agentpack.NormalizeBehaviorID(targetNode.Behavior); ok && canonical == "hub.notify" {
@@ -6774,8 +6820,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	offerReviewOutcomeTool := rs.autoOrchestrate && rs.parentRunID == "" && rs.turnCount > 1 && !loopAlreadySealedAtTurnStart
 	// CP-53 P-2: reviewer cohort members on synthesis-acceptance flows record
 	// machine verdicts via submit_review_outcome (record-only — no flow advance).
+	// CP-61 P-1: same for harness hubs whose done-successor is a real node
+	// (plan/cp_synthesis→freeze/splitter); this unblocks cp-harness where the
+	// old synthesis-acceptance check is false and cp_reviewer could not record.
 	if !offerReviewOutcomeTool && rs.flowCohortId != "" && rs.parentRunID != "" {
-		if parent := s.runs[rs.parentRunID]; parent != nil && flowRequiresSynthesisMachineVerdict(parent) {
+		if parent := s.runs[rs.parentRunID]; parent != nil && (flowRequiresSynthesisMachineVerdict(parent) ||
+			flowRequiresHubMachineVerdict(parent, "plan_synthesis") ||
+			flowRequiresHubMachineVerdict(parent, "synthesis") ||
+			flowRequiresHubMachineVerdict(parent, "cp_synthesis")) {
 			offerReviewOutcomeTool = true
 		}
 	}
