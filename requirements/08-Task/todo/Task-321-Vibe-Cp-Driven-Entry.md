@@ -5,14 +5,14 @@
 - Document ID: `Task-321`
 - Title: `Vibe CP-driven entry — vibe-cp-ingest, CP Preview & Lock, per-Task vibe-sprint to done`
 - Phase: `task`
-- Status: `draft`
+- Status: `draft` (**parked** 2026-09-08 — blocked on CP-60 `P-1`..`P-5`; do not implement)
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-05`
-- Last Updated: `2026-09-05`
+- Last Updated: `2026-09-08`
 - Parent Documents: [CP-60: Vibe Working Mode](../../07-Coding-Plan/inprogress/CP-60-Vibe-Working-Mode.md), [SD-24: Vibe Working Mode](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md), [SS-18: Vibe Working Mode](../../05-System-Specs/SS-18-Vibe-Working-Mode.md)
 - Child Documents: `None`
-- Related Documents: [CP-58: Bug / Task / CP Harness](../../07-Coding-Plan/inprogress/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md)
+- Related Documents: [CP-58: Bug / Task / CP Harness](../../07-Coding-Plan/done/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md)
 - Replaces: `None`
 - Tags: `vibe-mode, cp-driven, coding-plan, desktop, tui, flow-gate, TDD`
 - Feature Keys: `vibe-mode`
@@ -27,7 +27,7 @@
 
 ### Current Ask
 
-- Land `vibe-cp-ingest.yaml` (inert skeleton first), wire `cp_lock` gate + per-Task sprint loop + entry routing, prove with `/vibe-cp CP-*.md` demo and additive tests.
+- **BLOCKED.** Do not land `vibe-cp-ingest` yet. `P-6` consumes `working_mode`, `r-requirement`, resolver, lock-card plumbing from `P-1`..`P-5` — none of those Tasks exist and none of that Go is in the runner. Unblock only after `P-1`..`P-4` (and Branch V `P-5` demo) are green.
 
 ### Key Decisions
 
@@ -37,9 +37,10 @@
 
 ### Constraints
 
-- Additive only; no `P-1`..`P-5` behavior change; no engine/adapter change; no Supabase migration; `selectableIn: []` for `vibe-cp-ingest`.
-- No pre-existing test edited; `dev` byte-for-byte.
-- Vibe lives only in Desktop + TUI.
+- Additive only; no `P-1`..`P-5` behavior change **and no re-implementation of those slices**.
+- Sequencing: `P-3` → `P-1`+`P-2`; `P-6` → `P-1`..`P-4` + CP-58 splitter (already in `done/`). Pack inventory is **11 flows / 8 agents today**, not the stale `6 → 7` count in older AC text — rebase `LoadBuiltinPack` assert to `11 → 12` when this Task unblocks.
+- No engine/adapter change; no Supabase migration; `selectableIn: []` for `vibe-cp-ingest`.
+- No pre-existing test edited; `dev` byte-for-byte. Vibe lives only in Desktop + TUI.
 
 ### Open Questions
 

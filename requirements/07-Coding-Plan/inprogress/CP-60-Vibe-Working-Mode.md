@@ -10,10 +10,10 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-01`
-- Last Updated: `2026-09-05`
+- Last Updated: `2026-09-08`
 - Parent Documents: [SS-18: Vibe Working Mode](../../05-System-Specs/SS-18-Vibe-Working-Mode.md), [SD-24: Vibe Working Mode](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md)
-- Child Documents: [Task-321: Vibe CP-Driven Entry](../../08-Task/todo/Task-321-Vibe-Cp-Driven-Entry.md) (implements `P-6`), [Task-323: Vibe-Sprint v2 Parity](../../08-Task/todo/Task-323-Vibe-Sprint-V2-Parity.md) (implements `P-7`; `T-1`..`T-5` for `P-1`..`P-5` to be created)
-- Related Documents: [SS-16: Agent Flow Engine](../../05-System-Specs/SS-16-Agent-Flow-Engine.md), [SS-15: Agent Review Loop](../../05-System-Specs/SS-15-Agent-Review-Loop-Until-Clean.md), [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [CP-36: Agent Review Loop And Main-Hub Orchestration](../done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [CP-42: Flow Pack And Generic Node Behavior Refactor](../done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md), [CP-45: Generic Artifact Types And Instances](../done/CP-45-Generic-Artifact-Types-And-Instances.md), [CP-58: Bug / Task / CP Harness](./CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md)
+- Child Documents: [Task-321: Vibe CP-Driven Entry](../../08-Task/todo/Task-321-Vibe-Cp-Driven-Entry.md) (`P-6`, **parked** — blocked on `P-1`..`P-5`), [Task-323: Vibe-Sprint v2 Parity](../../08-Task/todo/Task-323-Vibe-Sprint-V2-Parity.md) (`P-7`, **parked** — blocked on `P-1`..`P-5` + `P-2` face). Next executable: Task for `P-1` (`working_mode` SSOT) — not yet cut.
+- Related Documents: [SS-16: Agent Flow Engine](../../05-System-Specs/SS-16-Agent-Flow-Engine.md), [SS-15: Agent Review Loop](../../05-System-Specs/SS-15-Agent-Review-Loop-Until-Clean.md), [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [CP-36: Agent Review Loop And Main-Hub Orchestration](../done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [CP-42: Flow Pack And Generic Node Behavior Refactor](../done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md), [CP-45: Generic Artifact Types And Instances](../done/CP-45-Generic-Artifact-Types-And-Instances.md), [CP-58: Bug / Task / CP Harness](../done/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md)
 - Replaces: `None`
 - Tags: `vibe-mode, coding-plan, desktop, tui, flow-gate, agent-flow, TDD, cp-driven`
 
@@ -30,7 +30,7 @@
 
 ### Current Ask
 
-- Provide a task-sliced plan to make Branch V (`vibe-ingest` → locked SS → auto-sliced `sprint_plan` → sequential `vibe-sprint`) and Branch C (`vibe-cp-ingest` → locked CP → auto-sliced `task_plan` → sequential `vibe-sprint` per Task, i.e. `CP → Task → code tới done`) runnable end-to-end in Desktop + TUI, with zero Admin Web scope and Dev parity.
+- **Next executable slice is `P-1`, not Task-321/323.** Cut a Task for `working_mode` SSOT (`dev`|`vibe`, local run record, Admin `vibe` → 403). Task-321 (`P-6`) and Task-323 (`P-7`) stay parked until `P-1`→`P-5` land. Do not start Branch C or v2 sprint rewrite while Go wiring is absent.
 
 ### Key Decisions
 
@@ -71,7 +71,7 @@ Pack skeletons for Branch V are already landed (`89fe174a`, 6 flows total, `sele
 - [SD-24: Vibe Working Mode](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md) — `D-1`..`D-7`, data model `WorkingMode` (local only), `TurnResult.RequirementDrift`, resolver walking `Violations`, topology `preflight_contract_plan → freeze → context → tdd → coder → validate → synthesis → audit` (`P-7` v2; was `freeze → tdd → coder → synthesis`) and `vibe-ingest` `ss_lock=user.confirm → sprint_slicer`.
 - [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md) + [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md) + [SS-16: Agent Flow Engine](../../05-System-Specs/SS-16-Agent-Flow-Engine.md) — generic engine substrate, `D-5` bridge, gate hook contract (`isAlwaysBlock`, child→parent escalate).
 - [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md) + `FORMAT-REFERENCE-SS` / `FORMAT-REFERENCE-CP` + `SS-14`/`SS-04`/`SS-08`/`SS-11`.
-- [CP-58: Bug / Task / CP Harness](./CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md) — `P-3`/`P-4` `task_splitter` (`cp_md` INPUT → `task_md[]` OUTPUT) + `prompts/task-splitter.md` reused by `P-6` `task_slicer`; slice-only default vs per-Task coding contrast for Branch C.
+- [CP-58: Bug / Task / CP Harness](../done/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md) — `P-3`/`P-4` `task_splitter` (`cp_md` INPUT → `task_md[]` OUTPUT) + `prompts/task-splitter.md` reused by `P-6` `task_slicer`; slice-only default vs per-Task coding contrast for Branch C.
 
 ## 3. Implementation Strategy
 

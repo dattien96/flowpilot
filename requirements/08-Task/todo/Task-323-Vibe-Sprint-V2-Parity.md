@@ -5,14 +5,14 @@
 - Document ID: `Task-323`
 - Title: `Vibe-sprint v2 — copy task-harness auto nodes for harness-grade accuracy`
 - Phase: `task`
-- Status: `draft`
+- Status: `draft` (**parked** 2026-09-08 — blocked on CP-60 `P-1`..`P-5` + `P-2` requirement face; do not implement)
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-05`
-- Last Updated: `2026-09-05`
+- Last Updated: `2026-09-08`
 - Parent Documents: [CP-60: Vibe Working Mode](../../07-Coding-Plan/inprogress/CP-60-Vibe-Working-Mode.md), [SD-24: Vibe Working Mode](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md), [SS-18: Vibe Working Mode](../../05-System-Specs/SS-18-Vibe-Working-Mode.md)
 - Child Documents: `None`
-- Related Documents: [CP-58: Bug / Task / CP Harness](../../07-Coding-Plan/inprogress/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md), [Task-321: Vibe CP-Driven Entry](./Task-321-Vibe-Cp-Driven-Entry.md)
+- Related Documents: [CP-58: Bug / Task / CP Harness](../../07-Coding-Plan/done/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md), [Task-321: Vibe CP-Driven Entry](./Task-321-Vibe-Cp-Driven-Entry.md)
 - Replaces: `None`
 - Tags: `vibe-mode, accuracy-parity, desktop, tui, flow-gate, TDD`
 - Feature Keys: `vibe-mode`
@@ -27,7 +27,7 @@
 
 ### Current Ask
 
-- Land the v2 skeleton + topology tests + one Branch V and one Branch C sprint re-demo proving `context`/`validate`/`audit` all fire with no new user gate.
+- **BLOCKED.** Do not rewrite `vibe-sprint.yaml` to v2 yet. v2 `synthesis` + `vibe-requirement-outcome` assume `P-2` (`r-requirement` + TurnResult advisory) and `P-1` (`working_mode`). Unblock after `P-2` lands; Branch C re-demo waits on Task-321.
 
 ### Key Decisions
 
@@ -38,6 +38,7 @@
 ### Constraints
 
 - Additive only; no `P-1`..`P-6` behavior change except the v2 node insertions; no engine/adapter change; no Supabase migration.
+- Sequencing: `P-7` → `P-2` (requirement face on sprint) and reuses CP-58 node semantics. Current `vibe-sprint.yaml` is still v1 (`plan → freeze → tdd → coder → synthesis`). Pack inventory today is **11 flows**, not `7`.
 - No pre-existing test edited; `dev` byte-for-byte; `selectableIn: []` unchanged.
 
 ### Open Questions
