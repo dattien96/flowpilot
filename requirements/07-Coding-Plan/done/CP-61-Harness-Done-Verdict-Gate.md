@@ -5,14 +5,14 @@
 - Document ID: `CP-61`
 - Title: `Harness Done-Verdict Gate — bịt lỗ H-3 trên các harness hub`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done` (2026-09-08 — P-1 CA-757 + P-3 Test-Steps closed; P-2 reviewer asymmetry deferred)
 - Owner: `FlowPilot`
 - Reviewers: `<chờ phân công>`
 - Created: `2026-09-07`
 - Last Updated: `2026-09-08`
-- Parent Documents: [CP-53](../done/CP-53-Review-Loop.md) (H-3, S-2, D-2), [Task-274](../../08-Task/done/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) (review-loop landed CA-439; harness leftover is this CP)
-- Child Documents: [CP-61-Test-Steps](../done/CP-61-Test-Steps.md)
-- Related Documents: [CA-755](../../../change-audit/CA-755-Slice-A-Hide-Review-Loop-Dual-Cap-Reset.md) (Slice A — deliberately excludes this gate), [CP-61-Test-Steps](../done/CP-61-Test-Steps.md), [CP-53-Test-Steps](../done/CP-53-Test-Steps.md) (review-loop P-2 only), `tools/submit-review-outcome.yaml`, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
+- Parent Documents: [CP-53](./CP-53-Review-Loop.md) (H-3, S-2, D-2), [Task-274](../../08-Task/done/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) (review-loop landed CA-439; harness leftover is this CP)
+- Child Documents: [CP-61-Test-Steps](./CP-61-Test-Steps.md)
+- Related Documents: [CA-755](../../../change-audit/CA-755-Slice-A-Hide-Review-Loop-Dual-Cap-Reset.md) (Slice A — deliberately excludes this gate), [CA-757](../../../change-audit/CA-757-CP-61-P1-Harness-Done-Verdict-Gate.md) (P-1 landed), [CP-61-Test-Steps](./CP-61-Test-Steps.md), [CP-53-Test-Steps](./CP-53-Test-Steps.md) (review-loop P-2 only), `tools/submit-review-outcome.yaml`, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `<none>` (takes over CP-53 P-2 harness leftover; review-loop gate stays Task-274 / CA-439)
 - Tags: `agent-flow-engine, harness, review-verdict, fail-closed`
 
@@ -27,8 +27,8 @@
 
 ### Current Ask
 
-- Review draft này; sau approve: tách Task con (mỗi P một Task), implement theo thứ tự P-1→P-2→P-3, tuân `safe-fix-contract` (additive tests only; **matrix Claude+Codex+Grok** bắt buộc vì shared flow runtime).
-- Outcome: không harness hub nào tới `done` nếu chưa có verdict PASS đã ghi nhận.
+- **Closed 2026-09-08:** P-1 landed [CA-757](../../../change-audit/CA-757-CP-61-P1-Harness-Done-Verdict-Gate.md); P-3 [CP-61-Test-Steps](./CP-61-Test-Steps.md) automated + live M/C ticked. Outcome: không harness hub nào tới `done` nếu chưa có verdict PASS đã ghi nhận.
+- Residual: `P-2` reviewer model/effort asymmetry (Q-B) deferred — not a new CP unless re-opened. Product DoD is the fail-closed 3-hub gate, not maker/checker cost tuning.
 
 ### Key Decisions
 
@@ -46,9 +46,9 @@
 
 ### Open Questions
 
-- `Q-B` (kế thừa Task-274): default model/effort cụ thể cho reviewer — chốt trong Task, tune sau khi có cost metrics.
-- Verdict store theo phạm vi nào: per-hub-activation hay per-run? (đề xuất mặc định: per-hub-activation, reset cùng Round khi plan approve — quyết trong Task).
-- Thứ tự với Task-325 park: verdict check chạy trước hay sau park? (đề xuất: park trước — con người đọc plan trước khi máy verdict, tránh đốt reviewer cost cho plan sẽ bị bounce).
+- `Q-B` (kế thừa Task-274): default model/effort cụ thể cho reviewer — **deferred with P-2**; tune sau khi có cost metrics. Not blocking this closeout.
+- Verdict store scope: P-1 shipped per-hub-activation (CA-757); reset cùng Round khi plan approve.
+- Thứ tự với Task-325 park: P-1 chạy verdict **trước** park — missing verdict never parks; churned PASS still parks (CA-757).
 
 ### Source Refs
 
@@ -60,7 +60,7 @@ Biến "done" trên các harness hub thành một quyết định đã kiểm ch
 
 ## 2. Input Documents
 
-- [CP-53](../done/CP-53-Review-Loop.md) (§3.3 H-3, §5.2 P-2, D-2, F-2).
+- [CP-53](./CP-53-Review-Loop.md) (§3.3 H-3, §5.2 P-2, D-2, F-2).
 - [Task-274](../../08-Task/done/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) (T-1…T-4 review-loop landed CA-439; harness 3-hub = this CP P-1 / CA-757).
 - [CA-755](../../../change-audit/CA-755-Slice-A-Hide-Review-Loop-Dual-Cap-Reset.md) (ranh giới scope: Slice A không đụng gate này).
 
@@ -72,9 +72,9 @@ Biến "done" trên các harness hub thành một quyết định đã kiểm ch
 
 ## 4. Work Breakdown
 
-- `P-1` **Gate verdict trước `advanceHubDoneThroughEdge`.** Yêu cầu verdict PASS đã ghi nhận cho `plan_synthesis→done`, `synthesis→done`, `cp_synthesis→done`; missing/FAIL/escalate → continue/escalate/ask_user theo edge hiện có. Files: `runner/flow_*.go`, hub notify paths, (nếu cần) `agentpack/flow-pack/flows/*.yaml` + synthesizer agent md.
-- `P-2` **Reviewer model/effort asymmetry + defaults.** Cấu hình bất đối xứng maker/checker theo CP-53 D-2; chốt Q-B defaults trong Task.
-- `P-3` **[CP-61-Test-Steps](../done/CP-61-Test-Steps.md)** — automated + gate-sandbox manual guide for 3 hubs (replaces “update CP-53-Test-Steps §P-2”).
+- `P-1` **Gate verdict trước `advanceHubDoneThroughEdge`.** Landed CA-757. Yêu cầu verdict PASS đã ghi nhận cho `plan_synthesis→done`, `synthesis→done`, `cp_synthesis→done`; missing/FAIL/escalate → continue/escalate/ask_user theo edge hiện có.
+- `P-2` **Reviewer model/effort asymmetry + defaults.** Deferred (Q-B). Cấu hình bất đối xứng maker/checker theo CP-53 D-2; không block P-1 DoD.
+- `P-3` **[CP-61-Test-Steps](./CP-61-Test-Steps.md)** — automated + gate-sandbox manual guide for 3 hubs. Closed 2026-09-08.
 
 ## 5. Touched Areas
 
@@ -109,9 +109,10 @@ Biến "done" trên các harness hub thành một quyết định đã kiểm ch
 
 ## 10. Definition of Done
 
-- [ ] Không harness hub nào (`plan_synthesis` / `synthesis` / `cp_synthesis`) tới `done` khi chưa có verdict PASS đã ghi nhận (automated, matrix 3 provider).
-- [ ] Verdict missing / FAIL / escalate → continue / escalate / ask_user theo edge hiện có, không stall, không silent pass.
-- [ ] Normal chat / non-harness flows byte-for-byte behavior.
-- [ ] Old tests untouched + green; `CA-*` ghi provider classification + matrix evidence.
-- [ ] [CP-61-Test-Steps](../done/CP-61-Test-Steps.md) automated P-1 ticked; manual M/C on `gate-sandbox` ticked on at least one live run.
-- [ ] Không claim DoD Task-272…277 (thuộc CP-53, đã đóng — xem closure note trong CP-53).
+- [x] Không harness hub nào (`plan_synthesis` / `synthesis` / `cp_synthesis`) tới `done` khi chưa có verdict PASS đã ghi nhận (automated, matrix 3 provider). CA-757 `TestCP61HubDone`.
+- [x] Verdict missing / FAIL / escalate → continue / escalate / ask_user theo edge hiện có, không stall, không silent pass.
+- [x] Normal chat / non-harness flows byte-for-byte behavior.
+- [x] Old tests untouched + green; `CA-757` ghi provider classification + matrix evidence.
+- [x] [CP-61-Test-Steps](./CP-61-Test-Steps.md) automated P-1 ticked; manual M/C on `gate-sandbox` ticked on at least one live run (`run-621371`, `run-623294`).
+- [x] Không claim DoD Task-272…277 (thuộc CP-53, đã đóng — xem closure note trong CP-53).
+- [ ] Residual `P-2` reviewer asymmetry — deferred, not claimed.

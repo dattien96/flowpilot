@@ -50,7 +50,7 @@ Kết quả targeted run: **tất cả PASS** (matrix 3 provider xanh).
 - [x] Chạy `go test ./internal/agentpack/ ./internal/flowgate/ ./internal/changecontract/` (agentpack + changecontract xanh; flowgate 2 env-fail pre-existing).
 - [x] `gofmt -l` trên các file Go đã chạm → noise CRLF repo-wide, `git diff --check` sạch.
 - [x] Viết `change-audit/CA-755-*` (kế tiếp sau CA-754): `feature_key: agent-flow-engine`, source_doc_id, R1/R2 evidence (agnostic grep + matrix), will-not-undo (CA-712/731/749/403), liệt kê test cũ đã sửa theo allow-list.
-- [x] Slice B docs: draft **CP-61** (`requirements/07-Coding-Plan/inprogress/CP-61-Harness-Done-Verdict-Gate.md`) + note **đóng CP-53** (§12 closure note, Status closed, Related trỏ CP-61).
+- [x] Slice B docs: draft **CP-61** (`requirements/07-Coding-Plan/done/CP-61-Harness-Done-Verdict-Gate.md`, closed 2026-09-08 P-1+P-3) + note **đóng CP-53** (§12 closure note, Status closed, Related trỏ CP-61).
 - [ ] Commit (xem ghi chú sync bên dưới).
 
 ## Ghi chú sync 2026-09-07 (quyết định operator đã chốt ở trên giữ nguyên)
