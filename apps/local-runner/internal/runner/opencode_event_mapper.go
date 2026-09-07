@@ -457,9 +457,34 @@ func opencodeStopReasonToEvent(stopReason string) ProviderEventType {
 	case "error", "failed", "aborted":
 		return EventTurnFailed
 	default:
+		// BUG-361: quota/billing stopReasons must fail, not blank-complete.
+		if opencodeIsQuotaStopReason(stopReason) {
+			return EventTurnFailed
+		}
 		if strings.TrimSpace(stopReason) == "" {
 			return EventTurnCompleted
 		}
 		return EventTurnCompleted
 	}
+}
+
+// opencodeIsQuotaStopReason reports whether an ACP stopReason unambiguously
+// signals quota/billing exhaustion (BUG-361). Unknown reasons stay Completed
+// — only tokens that cannot mean anything else are listed.
+func opencodeIsQuotaStopReason(stopReason string) bool {
+	s := strings.ToLower(strings.TrimSpace(stopReason))
+	if s == "" {
+		return false
+	}
+	for _, tok := range []string{
+		"rate_limit", "rate-limit", "rate_limited",
+		"quota", "billing", "payment",
+		"insufficient_credit", "insufficient credit",
+		"usage_limit", "usage-limit",
+	} {
+		if strings.Contains(s, tok) {
+			return true
+		}
+	}
+	return false
 }

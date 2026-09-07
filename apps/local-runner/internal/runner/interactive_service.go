@@ -7775,6 +7775,31 @@ func isProviderUsageLimitError(err error) bool {
 		strings.Contains(message, "out_of_credits") ||
 		strings.Contains(message, "quota reset") ||
 		strings.Contains(message, "rate limit") ||
+		// BUG-361: OpenCode ACP quota/billing shapes. Underscore/dash
+		// variants ("rate_limited", "quota_exceeded") never matched the
+		// space-separated tokens above, so a returned quota error looked
+		// recoverable and retried instead of failing fast. All tokens are
+		// unambiguously billing/quota; healthy errors never contain them.
+		strings.Contains(message, "rate_limit") ||
+		strings.Contains(message, "rate-limit") ||
+		strings.Contains(message, "rate_limited") ||
+		strings.Contains(message, "quota exceeded") ||
+		strings.Contains(message, "quota_exceeded") ||
+		strings.Contains(message, "insufficient credit") ||
+		strings.Contains(message, "insufficient_credit") ||
+		// BUG-361 follow-up review: the ACP layer already treats usage_limit /
+		// usage-limit as quota stopReasons — the RPC-error layer must agree,
+		// or a "usage_limit exceeded" RPC error still classifies recoverable.
+		strings.Contains(message, "usage_limit") ||
+		strings.Contains(message, "usage-limit") ||
+		strings.Contains(message, "payment required") ||
+		strings.Contains(message, "payment_required") ||
+		// Live ACP probe 2026-09-07 (opencode 1.18.29, gpt-5.4-nano):
+		// session/prompt JSON-RPC -32603
+		// "Internal error: No payment method. Add a payment method here: …/billing"
+		// "payment required" does not match this copy.
+		strings.Contains(message, "no payment method") ||
+		strings.Contains(message, "add a payment method") ||
 		// Grok Build (CP-46/Task-210, GR-19): live-observed 402 signature during
 		// CP-46 authoring. Appended additively; other providers' classification
 		// above is unchanged.
