@@ -130,17 +130,26 @@ func (m *AppModel) actionRingItems() []actionRingItem {
 		return items
 	}
 	if m.flowLoopBlocked() {
-		isCap := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "cap")
-		isStalled := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "member_stalled")
-		drifted := parseDriftedPaths(m.blockedDecisionReason())
-		showAllow := !isCap && !isStalled && len(drifted) > 0
+		showAllow := m.blockedCardAllowShown()
+		isPlanApproval := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "plan_approval")
+		retryLabel := "[Retry]"
+		if isPlanApproval {
+			// Live-tested run-206538: on a plan_approval park [Retry] misreads
+			// as "run again" while it really approves the plan and forwards
+			// freeze. [Approve] states the decision; target stays "retry" so
+			// dispatch and ring indices never shift.
+			retryLabel = "[Approve]"
+		}
 		items := []actionRingItem{
-			{target: "retry", label: "[Retry]"},
+			{target: "retry", label: retryLabel},
 			{target: "stop", label: "[Stop]"},
 		}
 		if showAllow {
 			items = append(items, actionRingItem{target: "allow", label: "[Allow]"})
 		}
+		// Task-325 UX: [Revise] prefills "/continue " so feedback is
+		// discoverable (appended last — Approve/Retry/Stop/Allow indices unchanged).
+		items = append(items, actionRingItem{target: "revise", label: "[Revise]"})
 		return items
 	}
 	return nil
@@ -174,6 +183,12 @@ func (m *AppModel) syncActionRingCard() {
 	}
 	m.actionRingCardSig = sig
 	m.actionRingIdx = 0
+	// BUG-362: a validate-exhausted Retry re-runs old scope, which cannot
+	// fix a spec/test conflict — default Enter to Revise while the fresh
+	// card is up (arrows still move; reset only fires on card change).
+	if m.flowLoopBlocked() && isValidateExhaustedGate(m.blockedDecisionReason()) {
+		m.actionRingIdx = m.blockedReviseRingIndex()
+	}
 	m.actionRingFocus = m.approval != nil || m.question != nil || m.gate != nil || m.hasUnresolvedAttention()
 }
 
@@ -304,7 +319,13 @@ func (m *AppModel) actionRingEnterActivates() bool {
 		return strings.TrimSpace(m.inputValue) == ""
 	}
 	if m.flowLoopBlocked() {
-		return m.actionRingFocus || strings.TrimSpace(m.inputValue) == ""
+		// Live-found run-584646: Tab→Revise→Enter arms the composer, but
+		// ring focus stays on — a second Enter with typed text re-fired
+		// Revise (wiping the note + re-toasting) instead of submitting it.
+		// Non-empty input always submits (parked plain text IS the feedback);
+		// empty input keeps Enter-as-default-action. Mirrors the approval
+		// pattern above.
+		return strings.TrimSpace(m.inputValue) == ""
 	}
 	return false
 }
@@ -334,6 +355,16 @@ func (m *AppModel) activateClickTarget(target string) (tea.Model, tea.Cmd) {
 	case target == "retry", target == "continue":
 		if m.flowLoopBlocked() && m.runHandle != nil {
 			return m, m.cmdContinueFlow(m.runHandle.RunID)
+		}
+	case target == "revise":
+		// Task-325 UX: parked plain text IS the feedback (no "/continue"
+		// prefix needed), so [Revise] just clears the composer for the note
+		// instead of prefilling a prefix — Tab here, type, Enter.
+		if m.flowLoopBlocked() {
+			m.inputValue = ""
+			m.setInputCaret(0)
+			m.mouseSel = mouseSelect{}
+			return m, m.showFlashToast("type feedback note + Enter to revise the plan")
 		}
 	case target == "allow":
 		if m.flowLoopBlocked() && m.runHandle != nil {

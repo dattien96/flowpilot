@@ -21,8 +21,11 @@ func TestHandleListBuiltinOrchestrationOptionsBugMode(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &opts); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(opts) != 1 || opts[0].FlowRef != "flowpilot-core-flow-pack/review-loop" {
-		t.Fatalf("unexpected options: %#v", opts)
+	// review-loop is hidden (selectableIn []) — Bug mode offers nothing.
+	for _, opt := range opts {
+		if opt.FlowRef == "flowpilot-core-flow-pack/review-loop" {
+			t.Fatalf("review-loop must stay hidden, got %#v", opts)
+		}
 	}
 }
 

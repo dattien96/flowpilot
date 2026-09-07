@@ -5,12 +5,12 @@
 - Document ID: `CP-53-TEST-STEPS`
 - Title: `CP-53 Verification Steps By Phase`
 - Phase: `verification`
-- Status: `active`
+- Status: `done`
 - Owner: `FlowPilot`
 - Created: `2026-08-11`
-- Last Updated: `2026-08-11`
+- Last Updated: `2026-09-08`
 - Parent Documents: [CP-53: Review Loop — Bịt các lỗ rò của Verifier Gate](./CP-53-Review-Loop.md)
-- Related Documents: [Task-272](../../08-Task/todo/Task-272-CP53-Gate-Observability-Metrics.md) … [Task-277](../../08-Task/todo/Task-277-CP53-R-Newtest-Reprompt-Rule.md), BUG-288, BUG-289, Task-155, Task-156, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
+- Related Documents: [Task-272](../../08-Task/done/Task-272-CP53-Gate-Observability-Metrics.md) … [Task-277](../../08-Task/done/Task-277-CP53-R-Newtest-Reprompt-Rule.md), BUG-288, BUG-289, Task-155, Task-156, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Tags: `flowgate, review-loop, verification, test-steps, cp-53`
 
 ## AI Quick View

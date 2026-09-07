@@ -58,15 +58,15 @@ function agentRefLabel(agentRef: string): string {
 }
 
 /**
- * BUG-290: only an agent.delegate node ever spawns a provider turn
- * (BehaviorScopeInline, flow_executor.go) — every other behavior (e.g.
- * context.produce) has no model of its own, so the step-timeline must not
- * show the run's inherited model as if it belonged to that step. A step with
+ * Only spawnable (non-inline) nodes consume a provider model:
+ * agent.delegate and agent.code (BehaviorScopeDelegate). Inline/control
+ * behaviors never spawn a provider turn, so the timeline must not render
+ * the run's inherited model as if it belonged to that step. A step with
  * no behaviorId predates node_id (BUG-155) and is itself an agent.delegate
  * node, so it still shows its model.
  */
 export function flowStepShowsModel(behaviorId: string | undefined): boolean {
-  return !behaviorId || behaviorId === "agent.delegate";
+  return !behaviorId || behaviorId === "agent.delegate" || behaviorId === "agent.code";
 }
 
 function stepName(step: WorkflowStepRuntimeDTO): string {

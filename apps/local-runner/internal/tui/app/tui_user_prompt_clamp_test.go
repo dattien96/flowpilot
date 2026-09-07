@@ -81,8 +81,8 @@ func TestUserPrompt_ExpandCollapseClick(t *testing.T) {
 			if strings.Contains(view, "....") {
 				t.Fatalf("%s: expanded prompt must not show '....':\n%s", pk, view)
 			}
-			m3, _ := am.Update(clickLeft(x, y))
-			view = stripANSI(m3.(*AppModel).View())
+			m3 := clickLeftFull(am, x, y)
+			view = stripANSI(m3.View())
 			if strings.Contains(view, "TAIL") {
 				t.Fatalf("%s: second click must collapse the prompt:\n%s", pk, view)
 			}

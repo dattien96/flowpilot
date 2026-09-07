@@ -1155,22 +1155,14 @@ func TestStartTurnWithFlowRefSpawnsEntryNodeAsynchronously(t *testing.T) {
 	t.Fatal("no coder child appeared within 2s of starting the turn with flowRef set")
 }
 
-// TestChatModeHandleStartTurnMarksRunFlowEngineDriven is the regression test
-// for the Chat Mode Review Loop gap: every other startResolvedFlow/startTurn
-// test in this file calls svc.startTurn(...) directly, bypassing
-// handleStartTurn (the actual HTTP handler a real desktop "bug" sub-mode
-// chat turn hits, per apps/desktop-flowpilot/src/state/store.ts's
-// subMode/flowRef payload). That let a real defect through unnoticed:
-// handleStartTurn only called markFlowEngineDriven on its own
-// resolveWorkflowFlowRef branch (the Flow-Mode workflow-picker path), never
-// on the explicit chat flowRef path — so a Chat Mode review-loop run spawned
-// its entry node correctly but silently never got flagged flow-engine-driven,
-// disabling every isFlowEngineDriven-gated behavior (BUG-174's legacy-planner
-// suppression, BUG-226's no-tool-call escalation, BUG-234's step settlement)
-// for Chat Mode only. Fixed by setting flowEngineDriven inline in startTurn
-// itself, covering both paths by construction. This test drives the real
-// HTTP route so a future regression in either handleStartTurn or startTurn
-// is caught here, not just in a lower-level unit test.
+// TestChatModeHandleStartTurnMarksRunFlowEngineDriven covered the Chat Mode
+// Review Loop gap via the real HTTP route — until review-loop was hidden
+// (selectableIn []): the Bug sub-mode picker now offers nothing, so the old
+// explicit flowRef is rejected with 400 invalid_flow_ref before startTurn
+// ever runs. This test now locks that rejection contract: a hidden flow must
+// never start (and never get flagged flow-engine-driven) through the chat
+// picker. The flowEngineDriven marking itself is still covered by the
+// Flow-Mode startResolvedFlow tests in this file.
 func TestChatModeHandleStartTurnMarksRunFlowEngineDriven(t *testing.T) {
 	svc, srv := newTestServer(t)
 
@@ -1196,28 +1188,27 @@ func TestChatModeHandleStartTurnMarksRunFlowEngineDriven(t *testing.T) {
 		"subMode": "bug",
 		"flowRef": "flowpilot-core-flow-pack/review-loop",
 	}, nil)
-	if status != http.StatusOK {
-		t.Fatalf("send chat turn status=%d body=%s", status, body)
+	// review-loop is hidden: the stale picker ref must be rejected, never
+	// started.
+	if status != http.StatusBadRequest {
+		t.Fatalf("send chat turn status=%d body=%s, want 400 for the hidden review-loop ref", status, body)
+	}
+	if !strings.Contains(string(body), "invalid_flow_ref") {
+		t.Fatalf("send chat turn body=%s, want the invalid_flow_ref error code", body)
 	}
 
-	waitLoop(t, "coder entry node spawned via the real HTTP handleStartTurn route", 3*time.Second, func() bool {
-		return countChildrenWithLabel(svc, handle.RunID, "coder") == 1
-	})
-
-	if !svc.isFlowEngineDriven(handle.RunID) {
-		t.Fatal("run started via Chat Mode's explicit flowRef (the \"bug\" sub-mode picker) must be flagged " +
-			"flow-engine-driven, exactly like a Flow-Mode workflow-picker launch — otherwise the legacy bulk " +
-			"step planner, the BUG-226 escalation safety net, and BUG-234's step settlement are all silently " +
-			"disabled for Chat Mode")
+	if svc.isFlowEngineDriven(handle.RunID) {
+		t.Fatal("a run whose hidden flowRef was rejected must not be flagged flow-engine-driven")
 	}
 }
 
-// TestChatModeRunHistoryExposesOrchestrationPickerSelection is the
-// regression test for BUG-263: a run started via Chat Mode's explicit
-// flowRef picker must expose its subMode/flowRef in the run-history API
-// response, so the desktop can restore the Chat Intent panel's Bug tab /
-// Built-in orchestration selection after reopening the run (e.g. following a
-// runner restart) instead of silently falling back to "Normal".
+// TestChatModeRunHistoryExposesOrchestrationPickerSelection was the
+// regression test for BUG-263 — until review-loop was hidden
+// (selectableIn []): no chat-selectable flow remains, so the stale Bug-picker
+// ref is rejected with 400 and nothing is recorded in history. This test now
+// locks that negative contract: a rejected hidden ref must leave no
+// orchestration selection behind (no SubMode/FlowRef restored as if a flow
+// had started).
 func TestChatModeRunHistoryExposesOrchestrationPickerSelection(t *testing.T) {
 	svc, srv := newTestServer(t)
 
@@ -1240,47 +1231,29 @@ func TestChatModeRunHistoryExposesOrchestrationPickerSelection(t *testing.T) {
 		"subMode": "bug",
 		"flowRef": "flowpilot-core-flow-pack/review-loop",
 	}, nil)
-	if status != http.StatusOK {
-		t.Fatalf("send chat turn status=%d body=%s", status, body)
+	if status != http.StatusBadRequest {
+		t.Fatalf("send chat turn status=%d body=%s, want 400 for the hidden review-loop ref", status, body)
 	}
-
-	waitLoop(t, "coder entry node spawned", 3*time.Second, func() bool {
-		return countChildrenWithLabel(svc, handle.RunID, "coder") == 1
-	})
+	if !strings.Contains(string(body), "invalid_flow_ref") {
+		t.Fatalf("send chat turn body=%s, want the invalid_flow_ref error code", body)
+	}
 
 	history := svc.projectRunHistory("proj")
-	var item *runHistoryItem
 	for i := range history {
-		if history[i].RunID == handle.RunID {
-			item = &history[i]
-			break
+		if history[i].RunID == handle.RunID && history[i].FlowRef == "flowpilot-core-flow-pack/review-loop" {
+			t.Fatalf("rejected hidden flowRef must not be recorded in run history: %#v", history[i])
 		}
-	}
-	if item == nil {
-		t.Fatalf("run %q not found in project run history", handle.RunID)
-	}
-	if item.SubMode != "bug" {
-		t.Fatalf("runHistoryItem.SubMode = %q, want %q", item.SubMode, "bug")
-	}
-	if item.FlowRef != "flowpilot-core-flow-pack/review-loop" {
-		t.Fatalf("runHistoryItem.FlowRef = %q, want %q", item.FlowRef, "flowpilot-core-flow-pack/review-loop")
 	}
 }
 
-// TestChatModeExplicitFlowRefResolveFailureFallsBackToNormalTurn is the
-// regression test for BUG-261. It reproduces the exact live failure mode: an
-// explicit chat flowRef (Bug sub-mode picker) whose stored mirror definition
-// is corrupted/invalid (a node's dependsOn references a node id that doesn't
-// exist — the same shape as the live "claude-review-fake-model" corruption)
-// still passes validateChatOrchestrationSelection's option check (it only
-// checks the flowRef string is a known option, not that the stored
-// definition resolves), so it used to reach startTurn, which unconditionally
-// suppressed the hub's own turn (flowStartOnly=true) before
-// startResolvedFlow's async resolve ever ran and failed. With nothing ever
-// spawned to reinvoke the hub, the run got stuck forever at "completed" with
-// no assistant reply. The fix resolves the flowRef synchronously in
-// handleStartTurn and clears it on failure, so the turn falls through to a
-// normal provider call instead.
+// TestChatModeExplicitFlowRefResolveFailureFallsBackToNormalTurn was the
+// regression test for BUG-261 — until review-loop was hidden
+// (selectableIn []): the stale Bug-picker ref is now rejected by
+// validateChatOrchestrationSelection (400 invalid_flow_ref) BEFORE the
+// resolver ever runs, so the resolve-failure fallback is unreachable via
+// chat while no flow is offered. The corrupted-mirror seed + resolver
+// sanity check below stay as unit coverage that the fixture really is
+// unresolvable; the HTTP turn now locks the validation-first contract.
 func TestChatModeExplicitFlowRefResolveFailureFallsBackToNormalTurn(t *testing.T) {
 	store := newFakeFlowDefinitionStore()
 	if _, err := NewFlowMirrorSyncService(store).SyncBuiltins(context.Background()); err != nil {
@@ -1330,41 +1303,32 @@ func TestChatModeExplicitFlowRefResolveFailureFallsBackToNormalTurn(t *testing.T
 		"subMode": "bug",
 		"flowRef": "flowpilot-core-flow-pack/review-loop",
 	}, nil)
-	if status != http.StatusOK {
-		t.Fatalf("send chat turn status=%d body=%s", status, body)
+	// Hidden ref: validation rejects before the (corrupted) resolver runs.
+	if status != http.StatusBadRequest {
+		t.Fatalf("send chat turn status=%d body=%s, want 400 for the hidden review-loop ref", status, body)
 	}
-
-	waitLoop(t, "turn settles via a real provider call, not the flow-handoff short-circuit", 2*time.Second, func() bool {
-		svc.mu.Lock()
-		defer svc.mu.Unlock()
-		rs := svc.runs[handle.RunID]
-		return rs != nil && !rs.turnInFlight && rs.lastEventType == EventTurnCompleted
-	})
+	if !strings.Contains(string(body), "invalid_flow_ref") {
+		t.Fatalf("send chat turn body=%s, want the invalid_flow_ref error code", body)
+	}
 
 	if countChildrenWithLabel(svc, handle.RunID, "coder") != 0 {
 		t.Fatal("no child should ever spawn when the flowRef fails to resolve")
 	}
 	if svc.isFlowEngineDriven(handle.RunID) {
-		t.Fatal("a run whose flowRef failed to resolve must not be flagged flow-engine-driven — nothing ever started")
+		t.Fatal("a run whose hidden flowRef was rejected must not be flagged flow-engine-driven — nothing ever started")
 	}
 
+	// Rejected before any turn ran: no assistant reply exists (the old
+	// fallback-turn assertions below only applied when validation passed and
+	// the resolver failed later).
 	svc.mu.Lock()
 	rs := svc.runs[handle.RunID]
 	events := append([]ProviderEvent(nil), rs.events...)
 	svc.mu.Unlock()
-
-	var gotReply bool
 	for _, ev := range events {
 		if ev.Type == EventMessageCompleted && strings.TrimSpace(ev.Text) != "" {
-			gotReply = true
+			t.Fatalf("rejected hidden flowRef must not produce an assistant reply, got %#v", events)
 		}
-	}
-	if !gotReply {
-		t.Fatalf("expected a real assistant reply (EventMessageCompleted with text) once the turn fell back to normal chat; events=%#v", events)
-	}
-	last := events[len(events)-1]
-	if last.Type != EventTurnCompleted || strings.TrimSpace(last.FinalMessage) == "" {
-		t.Fatalf("expected a non-empty terminal EventTurnCompleted (the pre-fix bug produced an empty synthetic one), got %#v", last)
 	}
 }
 

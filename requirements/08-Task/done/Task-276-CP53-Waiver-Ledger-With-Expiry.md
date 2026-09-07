@@ -5,14 +5,14 @@
 - Document ID: `Task-276`
 - Title: `CP-53 P-4 — test-override waiver ledger with reason + expiry re-arm`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `<chờ phân công>`
 - Created: `2026-08-11`
-- Last Updated: `2026-08-11`
-- Parent Documents: [CP-53](../../07-Coding-Plan/inprogress/CP-53-Review-Loop.md)
+- Last Updated: `2026-09-07`
+- Parent Documents: [CP-53](../../07-Coding-Plan/done/CP-53-Review-Loop.md)
 - Child Documents: `<none>`
-- Related Documents: [CP-53-Test-Steps](../../07-Coding-Plan/inprogress/CP-53-Test-Steps.md), Task-155 (decision card / overrides), BUG-289, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
+- Related Documents: [CP-53-Test-Steps](../../07-Coding-Plan/done/CP-53-Test-Steps.md), Task-155 (decision card / overrides), BUG-289, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `<none>`
 - Tags: `flowgate, waiver, override, cp-53, p-4`
 
@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Persist waiver ledger; wire accept path; re-arm on expiry; additive tests for expire/re-arm matrix.
+- Closed 2026-09-07 — CA-441. See §8.
 
 ### Key Decisions
 
@@ -81,10 +81,10 @@ One UI click can waive `r-reg` forever under pressure; soft skills cannot see UI
 
 ## 6. Acceptance Check
 
-- [ ] Accept with reason creates ledger entry with expiry.
-- [ ] After expiry, same failing test blocks again via `r-reg`.
-- [ ] Green before expiry still clears override (prior contract).
-- [ ] Old tests untouched + green; CA written; provider-agnostic.
+- [x] Accept with reason creates ledger entry with expiry.
+- [x] After expiry, same failing test blocks again via `r-reg`.
+- [x] Green before expiry still clears override (prior contract).
+- [x] Old tests untouched + green; CA written; provider-agnostic.
 
 ## 7. Out of Scope
 
@@ -94,6 +94,6 @@ One UI click can waive `r-reg` forever under pressure; soft skills cannot see UI
 
 ## 8. Completion Notes
 
-- result: `<pending>`
-- follow-ups: optional change-audit cross-link per waiver
-- upstream docs updated: `<pending>`
+- result: landed CA-441 (`56a9997`): `flowgate/waiver_ledger.go` (`.flowpilot/settings/waiver_ledger.json`, 14-day TTL), `SaveOverrideWithReason`, empty reason rejected, expired re-arm on load. Tests in `cp53_waiver_newtest_test.go`.
+- follow-ups: desktop client must send `reason` on gate-agreement; open-waiver dashboard deferred.
+- upstream docs updated: [CA-441](../../../change-audit/CA-441-cp53-p4-waiver-ledger-expiry.md); parent [CP-53](../../07-Coding-Plan/done/CP-53-Review-Loop.md) filed `done`.

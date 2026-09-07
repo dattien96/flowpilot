@@ -826,7 +826,11 @@ func (s *InteractiveService) runValidateNode(ctx context.Context, parentRunID st
 			summary += " Last failure:\n" + strings.Join(state.FailureSummary.FailureLines, "\n")
 		}
 		// BUG-288 R13-18: always return true (handled) even if escalate fails.
-		s.setFlowStepAwaitingUser(ctx, parentRunID)
+		// BUG-362: stamp THIS node WAITING, not setFlowStepAwaitingUser's
+		// first-hub fallback — on dual-hub flows that stamps plan_synthesis
+		// (run-210188: dead plan hub beside live validate). applyFlowControl
+		// below re-stamps this same node via lastEscalated; idempotent.
+		s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusWaitingUserApr)
 		s.stampLastEscalatedInlineNode(parentRunID, node.ID)
 		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{Status: "escalate", Summary: summary}); err != nil {
 			log.Printf("[flow-executor] validate: escalate after max retries failed: %v", err)
@@ -1674,6 +1678,17 @@ func (s *InteractiveService) findPlannerResultForFreeze(parentRunID string, edge
 			}
 		}
 	}
+	// BUG-360: post-restart the transient scout child is gone — fall back to
+	// the draft cached on the parent at scout completion (durable via session
+	// snapshot + runtime blob). Parse-gated like every other source here, so
+	// a stale/corrupt cache can never satisfy the freeze.
+	if rs := s.runs[parentRunID]; rs != nil {
+		if cached := strings.TrimSpace(rs.preflightDraftResult); cached != "" {
+			if _, err := changecontract.ParsePreflightDraft(cached); err == nil {
+				return cached
+			}
+		}
+	}
 	return ""
 }
 
@@ -1845,6 +1860,10 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 	if s.isFlowEngineDriven(parentRunID) {
 		s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusDone)
 	}
+	// BUG-362: freeze DONE closes the plan phase — settle a stale
+	// plan_synthesis WAITING (consumed CA-749 park) so the step timeline
+	// tracks the code phase. No-op unless freeze reads DONE.
+	s.settlePlanSynthesisAfterFreezeDone(parentRunID)
 	s.flowDiagLog(parentRunID, "flow_contract_frozen", "froze preflight contract before writer dispatch",
 		"node_id", node.ID, "coder_node_id", writerNode.ID, "contract_id", rec.ContractID, "version", rec.Version,
 	)
@@ -1999,11 +2018,13 @@ func (s *InteractiveService) spawnFrozenWriterChild(ctx context.Context, parentR
 		Wait:             false,
 		Label:            writerNode.ID,
 		AgentDefOverride: agentDef,
+		Model:            s.delegateSpawnModel(ctx, parentRunID, writerNode),
 	}); err != nil {
 		return fmt.Errorf("failed to spawn writer node %q (agent %q): %w", writerNode.ID, agentName, err)
 	}
 	if s.isFlowEngineDriven(parentRunID) {
 		s.setFlowStepStatus(ctx, parentRunID, writerNode.ID, StepStatusRunning)
+		s.stampFlowNodePosture(ctx, parentRunID, writerNode)
 	}
 	s.flowDiagLog(parentRunID, "flow_contract_freeze_writer_spawned", "spawned frozen-contract writer",
 		"node_id", writerNode.ID, "agent_name", agentName, "contract_id", rec.ContractID,

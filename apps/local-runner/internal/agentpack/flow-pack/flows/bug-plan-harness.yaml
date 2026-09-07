@@ -1,0 +1,221 @@
+# bug-plan-harness: CP-58 family Bug+Plan tier (Task-324). task-harness clone
+# whose plan loop writes requirements/09-BugFix/todo/BUG-*.md instead of
+# 08-Task/todo/Task-*.md: investigate-first plan_writer (prompts/plan-bug.md)
+# -> plan_reviewer (prompts/review-bug-plan.md) -> plan_synthesis, scope
+# freeze ONLY after the plan is approved, then the identical TDD + code
+# review chain. Two continue back-edges (same Task-304 keying as
+# task-harness). For bugs needing investigation + plan; clear hotfixes stay
+# on bug-harness (9-step, no plan overhead).
+#
+# NOTE (same Task-305 deviation as task-harness): plan_writer is
+# agent.delegate + lifecycle:reinvoke, not agent.code — CP-55 P-1
+# ValidateFlowSafetyTopology requires every agent.code writer to be dominated
+# by a contract.freeze node, and plan_writer must run BEFORE freeze.
+id: bug-plan-harness
+version: 1
+description: Bug + Plan tier - Investigate + BUG Plan + Review Loop + scope freeze + TDD + Code Review (task-harness clone writing BUG.md).
+mode: flow
+builtin:
+  editable: false
+  selectableIn:
+    - flow
+  cloneable: true
+  mirror:
+    required: true
+    source: builtin
+policy:
+  # Same dual-loop budget as task-harness (plan review + code review share
+  # one Round budget, reset when the plan approves): cap 5 per phase.
+  cap: 5
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+contexts:
+  main_context:
+    ref: contexts/flow-context-package.yaml
+    sources:
+      - canonical.head
+      - feature.history
+      - change.contract
+      - source.dependence
+      - chat.summary
+      - source.excerpt
+tools:
+  - tools/submit-review-outcome.yaml
+acceptance_nodes:
+  - plan_synthesis
+  - validate
+  - synthesis
+  - audit
+nodes:
+  # --- Scout (fast/cheap model tier, broad context) ---
+  - id: preflight_contract_plan
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/contract-planner.md
+    promptTemplate: prompts/plan-safe-fix-contract.md
+  # --- Draft context (code excerpts feed plan_writer) ---
+  - id: context
+    run: inline
+    lifecycle: once
+    behavior: context.produce
+  # --- Plan phase (high-reasoning model, investigate-first, 3-layer defense) ---
+  - id: plan_writer
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.delegate
+    agent: agents/doc-writer.md
+    promptTemplate: prompts/plan-bug.md
+    artifactBindings:
+      # Task-324: the BUG md is a typed file_artifact OUTPUT slot (same shape
+      # as task-harness plan_md, routed to 09-BugFix). The pathTemplate is
+      # resolved by the writer at authoring time ({{idx}} = next free BUG
+      # number, {{slug}} = short slug); prompt-contract only, deliberately
+      # NOT part of the flowgate exact-path check.
+      - direction: output
+        slotName: plan_md
+        artifactInstanceId: plan_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/09-BugFix/todo/BUG-{{idx}}-{{slug}}.md
+  - id: plan_reviewer
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/reviewer.md
+    promptTemplate: prompts/review-bug-plan.md
+    dependsOn:
+      - plan_writer
+    cohort: plan
+    join: all
+    artifactBindings:
+      - direction: input
+        slotName: plan_md
+        artifactInstanceId: plan_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/09-BugFix/todo/BUG-{{idx}}-{{slug}}.md
+  - id: plan_synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+  # --- Scope lock (runs ONLY after plan_synthesis approves) ---
+  - id: preflight_contract_freeze
+    run: inline
+    lifecycle: once
+    behavior: contract.freeze
+  # --- Code phase (identical shape to rag-harness) ---
+  - id: test_signatures
+    run: delegate
+    lifecycle: once
+    behavior: agent.code
+    agent: agents/tester.md
+    promptTemplate: prompts/test-signatures.md
+  - id: implement
+    run: delegate
+    lifecycle: reinvoke
+    behavior: agent.code
+    agent: agents/coder.md
+    promptTemplate: prompts/implement-complete-tests.md
+  - id: validate
+    run: inline
+    lifecycle: once
+    behavior: command.validate
+  - id: reviewer
+    run: delegate
+    lifecycle: spawn
+    behavior: agent.delegate
+    agent: agents/reviewer.md
+    promptTemplate: prompts/review-safe-fix-contract.md
+    dependsOn:
+      - validate
+    cohort: review
+    join: all
+  - id: synthesis
+    run: inline
+    lifecycle: reinvoke
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    join: all
+  - id: audit
+    run: inline
+    lifecycle: once
+    behavior: artifact.audit_draft
+edges:
+  # --- Scout -> Draft Context -> Plan loop ---
+  - from: preflight_contract_plan
+    to: context
+    when: done
+    kind: forward
+  - from: context
+    to: plan_writer
+    when: done
+    kind: forward
+  - from: plan_writer
+    to: plan_reviewer
+    when: done
+    kind: forward
+  - from: plan_reviewer
+    to: plan_synthesis
+    when: done
+    kind: forward
+  # LOOP 1 back-edge: plan review changes_requested re-enters plan_writer.
+  - from: plan_synthesis
+    to: plan_writer
+    when: continue
+    kind: back
+  # --- Plan approved -> Freeze scope -> Code ---
+  - from: plan_synthesis
+    to: preflight_contract_freeze
+    when: done
+    kind: forward
+  - from: preflight_contract_freeze
+    to: test_signatures
+    when: done
+    kind: forward
+  - from: test_signatures
+    to: implement
+    when: done
+    kind: forward
+  # --- Code loop (identical edges to rag-harness) ---
+  - from: implement
+    to: validate
+    when: done
+    kind: forward
+  # LOOP 2 back-edge: validate retries and the synthesis hub's
+  # changes_requested share this edge (rag-harness semantics).
+  - from: validate
+    to: implement
+    when: continue
+    kind: back
+  - from: validate
+    to: reviewer
+    when: done
+    kind: forward
+  - from: validate
+    to: ask_user
+    when: escalate
+    kind: forward
+  - from: reviewer
+    to: synthesis
+    when: done
+    kind: forward
+  - from: synthesis
+    to: audit
+    when: done
+    kind: forward
+  - from: synthesis
+    to: ask_user
+    when: escalate
+    kind: forward
+  - from: audit
+    to: done
+    when: done
+    kind: forward

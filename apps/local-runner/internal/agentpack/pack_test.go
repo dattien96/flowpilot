@@ -26,8 +26,9 @@ func TestLoadBuiltinPack(t *testing.T) {
 	// cp-harness, cp-harness-smoke) for the Bug/Task/CP tier family.
 	// Task-305 T-5 follow-up (operator option (a) 2026-09-04) adds bug-harness
 	// as the byte-identical Bug-tier clone of rag-harness.
-	if len(pack.Flows) != 10 {
-		t.Fatalf("expected 10 built-in flows, got %d", len(pack.Flows))
+	// Task-324 adds bug-plan-harness (task-harness clone writing BUG.md).
+	if len(pack.Flows) != 11 {
+		t.Fatalf("expected 11 built-in flows, got %d", len(pack.Flows))
 	}
 	names := SortedAgentNames(pack.Agents)
 	for _, want := range []string{"coder", "reviewer", "synthesizer", "tester", "owner", "vibe-intake"} {
@@ -46,7 +47,7 @@ func TestLoadBuiltinPack(t *testing.T) {
 	for _, f := range pack.Flows {
 		flowIDs[f.ID] = struct{}{}
 	}
-	for _, want := range []string{"vibe-ingest", "vibe-sprint", "vibe-owner-debate", "task-harness", "cp-harness", "cp-harness-smoke", "bug-harness"} {
+	for _, want := range []string{"vibe-ingest", "vibe-sprint", "vibe-owner-debate", "task-harness", "cp-harness", "cp-harness-smoke", "bug-harness", "bug-plan-harness"} {
 		if _, ok := flowIDs[want]; !ok {
 			t.Fatalf("missing built-in flow %q in pack", want)
 		}
@@ -76,8 +77,8 @@ func TestLoadBuiltinReviewLoopFlow(t *testing.T) {
 	if review.Builtin.Mirror.Source != "builtin" || !review.Builtin.Mirror.Required {
 		t.Fatalf("mirror metadata not parsed: %+v", review.Builtin.Mirror)
 	}
-	if review.Builtin.ChatUI.Placement != "sub_mode_option" {
-		t.Fatalf("chatUI placement = %q", review.Builtin.ChatUI.Placement)
+	if review.Builtin.ChatUI.Placement != "" {
+		t.Fatalf("chatUI placement = %q, want empty (review-loop is hidden from pickers, no picker face)", review.Builtin.ChatUI.Placement)
 	}
 	behaviors := map[string]string{}
 	lifecycles := map[string]string{}

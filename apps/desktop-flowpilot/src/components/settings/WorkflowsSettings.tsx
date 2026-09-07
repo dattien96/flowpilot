@@ -48,6 +48,10 @@ const HARNESS_LABELS: Record<string, { label: string; description: string }> = {
     label: "Task / Feature",
     description: "12-node: Plan Writer + Plan Review + freeze + TDD + Code Review",
   },
+  "bug-plan-harness": {
+    label: "Bug + Plan",
+    description: "12-node: Investigate + BUG Plan + Review + freeze + TDD + Code Review",
+  },
   "cp-harness": {
     label: "Coding Plan",
     description: "7-node slice-only: CP Plan + Review + Task Splitter",
@@ -57,6 +61,14 @@ const HARNESS_LABELS: Record<string, { label: string; description: string }> = {
     description: "13-node opt-in: CP Plan + Review + Split + first-Task coding",
   },
 };
+
+// Task-324 follow-up (operator 2026-09-06): opt-in-only builtin flows stay
+// usable by direct flowRef but are hidden from the settings sidebar list.
+const HIDDEN_BUILTIN_PACK_FLOWS: ReadonlySet<string> = new Set(["cp-harness-smoke"]);
+
+function isHiddenBuiltinPackFlow(workflow: { isBuiltin?: boolean; packFlowId?: string | null }): boolean {
+  return workflow.isBuiltin === true && HIDDEN_BUILTIN_PACK_FLOWS.has(workflow.packFlowId ?? "");
+}
 
 function harnessLabelFor(packFlowId: string | null | undefined): string | null {
   if (!packFlowId) return null;
@@ -1481,10 +1493,6 @@ export function WorkflowsSettings(): React.ReactElement {
   const saveStepDefinition = async () => {
     if (!stepDraft) return;
     const requiresModel = stepDefinitionRequiresModel(stepDraft.behaviorId);
-    if (requiresModel && !stepDraft.model) {
-      setMessage("Model is required.");
-      return;
-    }
     const agentRefIssue = stepDefinitionAgentRefIssue(stepDraft.behaviorId, stepDraft.agentRef);
     if (agentRefIssue) {
       setMessage(agentRefIssue);
@@ -1500,7 +1508,7 @@ export function WorkflowsSettings(): React.ReactElement {
         // silently persist a stale value left over from before the user
         // switched Behavior ID — the fields are hidden in the form, so there
         // is no UI left to clear them manually.
-        model: requiresModel ? stepDraft.model : null,
+        model: requiresModel ? stepDraft.model?.trim() || null : null,
         reasoningEffort: requiresModel ? stepDraft.reasoningEffort : null,
         promptBase:
           stepDraft.promptBase?.trim() ||
@@ -1525,10 +1533,6 @@ export function WorkflowsSettings(): React.ReactElement {
       return;
     }
     const requiresModel = stepDefinitionRequiresModel(createStepDraft.behaviorId);
-    if (requiresModel && !createStepDraft.model) {
-      setMessage("Model is required.");
-      return;
-    }
     const agentRefIssue = stepDefinitionAgentRefIssue(createStepDraft.behaviorId, createStepDraft.agentRef);
     if (agentRefIssue) {
       setMessage(agentRefIssue);
@@ -1543,7 +1547,7 @@ export function WorkflowsSettings(): React.ReactElement {
         stepType: createStepDraft.stepType.trim(),
         name: createStepDraft.name.trim() || createStepDraft.stepType.trim(),
         description: createStepDraft.description.trim(),
-        model: requiresModel ? createStepDraft.model : null,
+        model: requiresModel ? createStepDraft.model?.trim() || null : null,
         reasoningEffort: requiresModel ? createStepDraft.reasoningEffort : null,
         promptBase:
           createStepDraft.promptBase?.trim() ||
@@ -2224,7 +2228,7 @@ export function WorkflowsSettings(): React.ReactElement {
                 onChange={(event) => onChange({ ...draft, model: event.target.value || null })}
                 value={draft.model ?? ""}
               >
-                <option value="">Select a model...</option>
+                <option value="">(inherit)</option>
                 {modelOptions.map((model) => (
                   <option key={model.value} value={model.value}>
                     {model.label}
@@ -2938,7 +2942,7 @@ export function WorkflowsSettings(): React.ReactElement {
                 {workflows.length === 0 ? (
                   <div className="settings-empty">No workflows found. Use the + button to create one.</div>
                 ) : (
-                  workflows.map((workflow) => {
+                  workflows.filter((workflow) => !isHiddenBuiltinPackFlow(workflow)).map((workflow) => {
                     const bulkModeActive = bulkSelect?.kind === "workflow";
                     const isBulkSelected = bulkModeActive && bulkSelect.ids.has(workflow.id);
                     // Built-ins can't be deleted (Delete is disabled for them

@@ -9,8 +9,9 @@ mode: flow
 builtin:
   editable: false
   chatBaseline: true
-  selectableIn:
-    - flow
+  # Task-324 T-C: no longer in the /flow picker — bug-harness is the single
+  # 9-step picker entry. chatBaseline role unchanged.
+  selectableIn: []
   cloneable: true
   mirror:
     required: true

@@ -3707,6 +3707,22 @@ func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Task-325 UX (live request run-577686): plain text typed while a flow is
+	// parked IS the feedback — no "/continue" prefix needed. (A chat turn
+	// would just 409 flow_awaiting_user server-side, so plain chat is useless
+	// while parked.) Slash lines keep their commands (handled above);
+	// approval/question/gate cards keep precedence (handled above).
+	if m.flowLoopBlocked() && m.runHandle != nil && !strings.HasPrefix(strings.TrimSpace(input), "/") {
+		feedback := strings.TrimSpace(input)
+		if feedback == "" {
+			return m, nil
+		}
+		m.viewport.offset = 0
+		m.addMessage("user", input, "")
+		m.recordPromptHistory(input)
+		return m, m.cmdContinueFlowWithFeedback(m.runHandle.RunID, feedback)
+	}
+
 	if m.sendBlocked() {
 		msg := "A turn is already in progress — wait for it to finish (draft kept in the input)."
 		if m.pendingPrompt != "" {
@@ -4695,6 +4711,8 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 
 	case "/continue":
 		// Desktop continueFlow parity (BUG-231): unblock a parked blocked flow.
+		// Trailing text rides as human feedback (Task-325: plan_approval
+		// feedback re-enters the writer; bare /continue keeps legacy body).
 		if !m.flowLoopBlocked() {
 			m.addMessage("system", "No parked (blocked) flow to continue.", "")
 			break
@@ -4702,6 +4720,9 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		if m.runHandle == nil {
 			m.addMessage("system", "No run to continue.", "")
 			break
+		}
+		if feedback := continueFeedbackFromArgs(args); feedback != "" {
+			return m, m.cmdContinueFlowWithFeedback(m.runHandle.RunID, feedback)
 		}
 		return m, m.cmdContinueFlow(m.runHandle.RunID)
 
@@ -6852,14 +6873,33 @@ func (m *AppModel) cmdStopTurn() tea.Cmd {
 	}
 }
 
+// continueFeedbackFromArgs joins trailing /continue text as human feedback.
+// Empty (bare /continue) means a plain approve and keeps the legacy path.
+func continueFeedbackFromArgs(args []string) string {
+	var parts []string
+	for _, a := range args {
+		if s := strings.TrimSpace(a); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
 func (m *AppModel) cmdContinueFlow(runID string) tea.Cmd {
+	return m.cmdContinueFlowWithFeedback(runID, "continue")
+}
+
+// cmdContinueFlowWithFeedback resumes a parked flow carrying human feedback
+// text (Task-325: trailing text on /continue re-enters the writer; empty
+// means a plain approve). The bare path keeps the legacy "continue" body.
+func (m *AppModel) cmdContinueFlowWithFeedback(runID, feedback string) tea.Cmd {
 	runnerURL := m.runnerURL
 	parentID := runID
 	return func() tea.Msg {
 		cl := client.New(runnerURL)
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		g, err := cl.ContinueFlow(ctx, parentID)
+		g, err := cl.ContinueFlowWithFeedback(ctx, parentID, feedback)
 		if err != nil {
 			return ErrMsg{Err: err}
 		}

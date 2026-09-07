@@ -338,6 +338,14 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 			return ctx.Err()
 		case outcome := <-done:
 			if outcome.err != nil {
+				if isProviderUsageLimitError(outcome.err) {
+					msg := strings.TrimSpace(outcome.err.Error())
+					if runes := []rune(msg); len(runes) > 300 {
+						msg = string(runes[:300]) + "…"
+					}
+					bridge.Emit(ProviderEvent{Type: EventTurnFailed, Error: "OpenCode usage limit reached: " + msg, Recoverable: false})
+					return nil
+				}
 				return outcome.err
 			}
 			lastText = a.drainOpencodeNotifications(sessionID, notif, bridge, lastText)
@@ -726,7 +734,13 @@ func (a *opencodeAdapter) emitTerminal(ctx context.Context, req TurnRequest, bri
 	}
 	evType := opencodeStopReasonToEvent(stopReason)
 	if evType == EventTurnFailed {
-		bridge.Emit(ProviderEvent{Type: EventTurnFailed, Error: fmt.Sprintf("opencode turn ended: %s", stopReason), Recoverable: false})
+		errMsg := fmt.Sprintf("opencode turn ended: %s", stopReason)
+		// BUG-361: quota stopReasons carry usage-limit copy so the card and
+		// any downstream classifier name the cause instead of a bare reason.
+		if opencodeIsQuotaStopReason(stopReason) {
+			errMsg = fmt.Sprintf("OpenCode usage limit reached (stopReason=%s)", strings.TrimSpace(stopReason))
+		}
+		bridge.Emit(ProviderEvent{Type: EventTurnFailed, Error: errMsg, Recoverable: false})
 		return nil
 	}
 	if strings.TrimSpace(finalText) == "" {

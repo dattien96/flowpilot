@@ -3,18 +3,17 @@ package runner
 import "testing"
 
 func TestBuiltinOrchestrationOptionsBugModeOffersReviewLoop(t *testing.T) {
+	// review-loop is hidden (selectableIn []) — the review-until-clean loop
+	// lives inside the harness flows now. The Bug sub-mode offers nothing
+	// until a harness opts into the chat picker.
 	opts, err := BuiltinOrchestrationOptions("bug")
 	if err != nil {
 		t.Fatalf("BuiltinOrchestrationOptions: %v", err)
 	}
-	if len(opts) != 1 {
-		t.Fatalf("expected exactly one option for bug sub-mode, got %d: %#v", len(opts), opts)
-	}
-	if opts[0].FlowRef != "flowpilot-core-flow-pack/review-loop" {
-		t.Errorf("flowRef = %q, want flowpilot-core-flow-pack/review-loop", opts[0].FlowRef)
-	}
-	if opts[0].Label != "Review Loop" {
-		t.Errorf("label = %q, want Review Loop", opts[0].Label)
+	for _, opt := range opts {
+		if opt.FlowRef == "flowpilot-core-flow-pack/review-loop" {
+			t.Fatalf("review-loop must stay hidden, got %#v", opts)
+		}
 	}
 }
 
@@ -74,8 +73,9 @@ func TestValidateChatOrchestrationSelectionAllowsEmptyFlowRef(t *testing.T) {
 }
 
 func TestValidateChatOrchestrationSelectionAcceptsReviewLoopInBugMode(t *testing.T) {
-	if err := validateChatOrchestrationSelection("bug", "flowpilot-core-flow-pack/review-loop"); err != nil {
-		t.Errorf("review-loop must be valid for bug sub-mode, got: %v", err)
+	// review-loop is hidden: the old Bug-mode ref must now be rejected.
+	if err := validateChatOrchestrationSelection("bug", "flowpilot-core-flow-pack/review-loop"); err == nil {
+		t.Error("expected error selecting the hidden review-loop under bug sub-mode")
 	}
 }
 

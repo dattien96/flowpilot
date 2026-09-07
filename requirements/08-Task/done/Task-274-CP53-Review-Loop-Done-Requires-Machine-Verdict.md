@@ -5,14 +5,14 @@
 - Document ID: `Task-274`
 - Title: `CP-53 P-2 — synthesis→done requires submit-review-outcome PASS`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `<chờ phân công>`
 - Created: `2026-08-11`
-- Last Updated: `2026-08-11`
-- Parent Documents: [CP-53](../../07-Coding-Plan/inprogress/CP-53-Review-Loop.md)
+- Last Updated: `2026-09-07`
+- Parent Documents: [CP-53](../../07-Coding-Plan/done/CP-53-Review-Loop.md)
 - Child Documents: `<none>`
-- Related Documents: [CP-53-Test-Steps](../../07-Coding-Plan/inprogress/CP-53-Test-Steps.md), `tools/submit-review-outcome.yaml`, review-loop.yaml, CP-55 Task-270 (flow migration), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
+- Related Documents: [CP-53-Test-Steps](../../07-Coding-Plan/done/CP-53-Test-Steps.md), [CP-61](../../07-Coding-Plan/inprogress/CP-61-Harness-Done-Verdict-Gate.md) (harness leftover), `tools/submit-review-outcome.yaml`, review-loop.yaml, CP-55 Task-270 (flow migration), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `<none>`
 - Tags: `agent-flow-engine, review-loop, submit-review-outcome, cp-53, p-2`
 
@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Enforce verdict gate in hub/synthesizer path; additive **Claude+Codex+Grok** matrix tests with fake adapters.
+- Closed 2026-09-07 — CA-439 (review-loop `synthesis→done`). Harness 3-hub leftover → CP-61. See §8.
 
 ### Key Decisions
 
@@ -87,11 +87,11 @@ Coverage gap: new behavior with no failing test + synthesizer saying done = sile
 
 ## 6. Acceptance Check
 
-- [ ] review-loop cannot reach terminal done without PASS verdict (automated).
-- [ ] Claude + Codex + Grok matrix green (fake adapters).
-- [ ] Normal chat / non-review-loop flows unchanged.
-- [ ] Old tests untouched + green.
-- [ ] CA notes provider classification + matrix evidence.
+- [x] review-loop cannot reach terminal done without PASS verdict (automated).
+- [x] Claude + Codex + Grok matrix green (fake adapters).
+- [x] Normal chat / non-review-loop flows unchanged.
+- [x] Old tests untouched + green.
+- [x] CA notes provider classification + matrix evidence.
 
 ## 7. Out of Scope
 
@@ -101,6 +101,6 @@ Coverage gap: new behavior with no failing test + synthesizer saying done = sile
 
 ## 8. Completion Notes
 
-- result: `<pending>`
-- follow-ups: Q-B model tuning after cost metrics
-- upstream docs updated: `<pending>`
+- result: landed CA-439 (`84fb557`): `runner/review_done_verdict.go`, `cp53_review_done_verdict_test.go`. Hub `approved→done` on `acceptance_nodes` including synthesis requires recorded `submit_review_outcome` PASS. Matrix claude/codex/grok.
+- follow-ups: T-3 reviewer asymmetry (Q-B) → [CP-61](../../07-Coding-Plan/inprogress/CP-61-Harness-Done-Verdict-Gate.md) P-2. Harness hubs `plan_synthesis` / `synthesis` / `cp_synthesis` → CP-61 P-1 (landed CA-757). Test-Steps §P-2 → CP-61 P-3.
+- upstream docs updated: [CA-439](../../../change-audit/CA-439-cp53-p2-synthesis-done-requires-machine-verdict.md); parent [CP-53](../../07-Coding-Plan/done/CP-53-Review-Loop.md) filed `done`; leftover owned by [CP-61](../../07-Coding-Plan/inprogress/CP-61-Harness-Done-Verdict-Gate.md).

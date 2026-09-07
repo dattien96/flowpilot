@@ -1572,7 +1572,7 @@ func (s *InteractiveService) delegateSpawnModel(ctx context.Context, parentRunID
 	return s.resolveFlowNodeModel(ctx, parentRunID, node)
 }
 
-// resolveFlowNodeModel resolves an agent.delegate flow node's OWN configured
+// resolveFlowNodeModel resolves a spawnable flow node's OWN configured
 // model, so it can run on a different model/provider than the flow's own
 // resolved model instead of always inheriting it (BUG-228). After BUG-236,
 // built-in mirror sync creates one node-specific step_definitions row per
@@ -1583,22 +1583,28 @@ func (s *InteractiveService) delegateSpawnModel(ctx context.Context, parentRunID
 //
 // Returns "" when no scoped/role row has a model, so callers pass empty
 // SpawnAgentInput.Model and spawnChildRun falls back to inherit-from-parent.
-// hub.inline never reaches this path.
+// Inline/control behaviors never reach a provider turn — empty.
 //
-// Task-320 precedence for agent.delegate nodes:
+// Spawnable (non-inline) nodes: agent.delegate AND agent.code. Settings >
+// Step Definitions writes step_definitions.model; a non-empty catalog row
+// wins inherit. Pack YAML model: remains Task-320 (delegate-only at load).
+//
+// Precedence for spawnable nodes:
 //  1. planner nodes (contract-planner agent / preflight_contract_plan id):
 //     pack/YAML node.Model only, else "" (inherit). DB step rows are NEVER
 //     consulted here — the CA-616 guard against stale seeded rows.
-//  2. other delegate nodes: flow-scoped/role step_definitions row (admin
-//     per-installation override) wins, else pack/YAML node.Model (pack
-//     default; DB-carried for cloned flows via recordFromWorkflowRow),
-//     else "" (agent frontmatter / inherit handled downstream).
+//  2. other spawnable nodes: flow-scoped/role step_definitions row (admin
+//     per-installation override) wins, else node.Model (pack YAML on
+//     agent.delegate only; cloned-flow DB-carry also delegate-only —
+//     recordFromWorkflowRow will not stamp agent.code because
+//     ValidateFlowDefinition still rejects non-delegate model).
+//     Empty → inherit downstream.
 func (s *InteractiveService) resolveFlowNodeModel(ctx context.Context, parentRunID string, node agentpack.FlowNode) string {
-	if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical != "agent.delegate" {
+	if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical != "agent.delegate" && canonical != "agent.code" {
 		return ""
 	}
 	if strings.EqualFold(strings.TrimSpace(flowNodeAgentName(node)), "contract-planner") ||
-		strings.EqualFold(strings.TrimSpace(node.ID), "preflight_contract_plan") {
+		strings.EqualFold(strings.TrimSpace(node.ID), scoutNodeID) {
 		return strings.TrimSpace(node.Model)
 	}
 	if hit := s.resolveConfiguredModelForAgent(ctx, node.ID, flowNodeAgentName(node), s.flowRefForRun(parentRunID)); hit != "" {
@@ -1750,7 +1756,7 @@ func isGenericFlowDispatchStepType(stepType string) bool {
 func (s *InteractiveService) resolveFlowNodeProviderModel(ctx context.Context, parentRunID string, node agentpack.FlowNode) (provider, model string) {
 	// CA-616: planner always shows/inherits hub posture (grok-4.5 etc.).
 	if strings.EqualFold(strings.TrimSpace(flowNodeAgentName(node)), "contract-planner") ||
-		strings.EqualFold(strings.TrimSpace(node.ID), "preflight_contract_plan") {
+		strings.EqualFold(strings.TrimSpace(node.ID), scoutNodeID) {
 		s.mu.Lock()
 		if parent := s.runs[parentRunID]; parent != nil {
 			provider = string(parent.providerKey)

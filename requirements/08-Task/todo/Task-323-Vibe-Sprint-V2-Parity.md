@@ -66,7 +66,7 @@ Every `vibe-sprint` — whether reached from Branch V (`sprint_plan`) or Branch 
 ## 4. Exact Change
 
 - `T-1` Rewrite `apps/local-runner/internal/agentpack/flow-pack/flows/vibe-sprint.yaml` to v2: nodes `preflight_contract_plan (delegate, once) → preflight_contract_freeze (inline, once) → context (inline, once, context.produce) → tdd (delegate, reinvoke, agents/tester.md) → coder (delegate, reinvoke, agent.code, agents/coder.md) → validate (inline, once, command.validate) → synthesis (hub.inline, reinvoke, agents/synthesizer.md) → audit (inline, once, artifact.audit_draft) → done`; forward edges linear on `done`; single `continue/back synthesis → coder`; `escalate → ask_user`; `policy: {cap:3, onCap: escalate}`; `acceptance_nodes: [validate, synthesis, audit]`; `tools: [tools/vibe-requirement-outcome.yaml]` unchanged.
-- `T-2` `pack_test.go` topology assertions for v2 (node set/order, single back-edge, acceptance set, freeze-dominates-writers, `done` paths cross acceptance); `ValidateFlowSafetyTopology` green.
+- `T-2` `pack_test.go` topology assertions for v2 (node set/order, single back-edge, acceptance set, freeze-dominates-writers, `done` paths cross acceptance; `tdd` = `agents/tester.md` + signature-only contract, edge `tdd → coder` with no bypass, `synthesis` checks signature↔`AC-*` coverage); `ValidateFlowSafetyTopology` green.
 - `T-3` Runner parity probe: code-loop `continue` reuses `coder` session and keeps `context`/`freeze` `DONE` (scoped reset, `forwardReachableNodeIDs` rule); `synthesis` 1:1 check runs after `validate` green; `audit` emits ledger per sprint.
 - `T-4` Re-demo: one Branch V sprint + one Branch C sprint on v2 showing `context` packaged → `validate` green → `synthesis done` → `audit` ledger, with zero new user gates (only pre-existing `r-requirement`/cap asks).
 
@@ -80,7 +80,7 @@ Every `vibe-sprint` — whether reached from Branch V (`sprint_plan`) or Branch 
 ## 6. Acceptance Check
 
 - `LoadBuiltinPack` green (`7 flows` / `7 agents`); v2 topology test green; `go test ./internal/agentpack ./internal/runner` + `go vet` green.
-- Manual: both demo sprints show `context DONE` → `validate DONE (green)` → `synthesis done` → `audit DONE` with ledger; a forced `validate` red re-enters `coder` only; no reviewer-cohort nodes spawn; no Dev cards in `vibe`.
+- Manual: both demo sprints show `tdd` signature artifact (use/edge/error per `SS-04 §3.5.8`, written before any `coder` run) → `context DONE` → `validate DONE (green)` → `synthesis done` → `audit DONE` with ledger; a forced `validate` red re-enters `coder` only; missing edge/error cases are caught at `synthesis` as `continue`; no reviewer-cohort nodes spawn; no Dev cards in `vibe`.
 - Accuracy claim: same fixture run through `task-harness` vs v2 `vibe-sprint` shows no missing `context`/`validate`/`audit` stage on the vibe side.
 
 ## 7. Out of Scope

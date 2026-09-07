@@ -1061,8 +1061,15 @@ func (c *Client) GetAgentGraph(ctx context.Context, runID string) (*AgentGraphSn
 // /agent-loop/continue and returns the refreshed graph (Desktop continueFlow
 // parity, BUG-231).
 func (c *Client) ContinueFlow(ctx context.Context, runID string) (*AgentGraphSnapshot, error) {
+	return c.ContinueFlowWithFeedback(ctx, runID, "continue")
+}
+
+// ContinueFlowWithFeedback resumes a parked flow carrying human feedback text
+// (Task-325: plan_approval feedback re-enters the writer; empty text means a
+// plain approve). The runner exposes feedback on POST .../agent-loop/continue.
+func (c *Client) ContinueFlowWithFeedback(ctx context.Context, runID, feedback string) (*AgentGraphSnapshot, error) {
 	var snap AgentGraphSnapshot
-	if err := c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/agent-loop/continue", map[string]string{"feedback": "continue"}, &snap); err != nil {
+	if err := c.postJSON(ctx, "/client/workflow-runs/"+neturl.PathEscape(runID)+"/agent-loop/continue", map[string]string{"feedback": feedback}, &snap); err != nil {
 		return nil, err
 	}
 	return &snap, nil

@@ -195,7 +195,7 @@ func handleClaudeAskUser(args map[string]any, bridge TurnBridge) map[string]any 
 // askUserCtxBridge is the optional capability interface for bridges that can
 // abandon their pending question when the MCP HTTP request dies (BUG-354 C2
 // run-540927: the model's MCP client times out (~60s opencode) while the
-// runner-side question TTL is 10 minutes — the card must not stay answerable
+// runner-side question TTL is 30 minutes — the card must not stay answerable
 // after the model already gave up; a late answer must get question_expired,
 // not a ghost RUNNING). Optional so the TurnBridge fakes in pre-existing tests
 // keep compiling unchanged (R1): without the capability we fall back to the

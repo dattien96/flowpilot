@@ -5,14 +5,14 @@
 - Document ID: `Task-272`
 - Title: `CP-53 P-6 — Gate observability metrics spike (block / override / cost-per-accepted-change)`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `<chờ phân công>`
 - Created: `2026-08-11`
-- Last Updated: `2026-08-11`
-- Parent Documents: [CP-53](../../07-Coding-Plan/inprogress/CP-53-Review-Loop.md)
+- Last Updated: `2026-09-07`
+- Parent Documents: [CP-53](../../07-Coding-Plan/done/CP-53-Review-Loop.md)
 - Child Documents: `<none>`
-- Related Documents: [CP-53-Test-Steps](../../07-Coding-Plan/inprogress/CP-53-Test-Steps.md), Task-155, Task-242, BUG-288, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
+- Related Documents: [CP-53-Test-Steps](../../07-Coding-Plan/done/CP-53-Test-Steps.md), Task-155, Task-242, BUG-288, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `<none>`
 - Tags: `flowgate, observability, cp-53, p-6`
 
@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Implement metric emit path in `gate_hook` / settle path; additive tests; document how to inspect.
+- Closed 2026-09-07 — CA-437. See §8.
 
 ### Key Decisions
 
@@ -80,11 +80,11 @@ CP-53 plan-cut 2026-08-11 — observability must land before or with first hard 
 
 ## 6. Acceptance Check
 
-- [ ] Metrics appear for block and override paths in unit/integration tests (new file).
-- [ ] Missing cost fields do not panic; fallback documented.
-- [ ] Old `flowgate` / `gate_hook` tests untouched and green.
-- [ ] Provider class: agnostic — evidence in CA.
-- [ ] CA note written; CP-53-Test-Steps P-6 steps runnable.
+- [x] Metrics appear for block and override paths in unit/integration tests (new file).
+- [x] Missing cost fields do not panic; fallback documented.
+- [x] Old `flowgate` / `gate_hook` tests untouched and green.
+- [x] Provider class: agnostic — evidence in CA.
+- [ ] CA note written; CP-53-Test-Steps P-6 steps runnable. (CA-437 written; Test-Steps P-6 still scaffold)
 
 ## 7. Out of Scope
 
@@ -94,6 +94,6 @@ CP-53 plan-cut 2026-08-11 — observability must land before or with first hard 
 
 ## 8. Completion Notes
 
-- result: `<pending>`
-- follow-ups: feed Q-A answer into Task-273/274 priority if data contradicts plan order
-- upstream docs updated: `<pending>`
+- result: landed CA-437 (`c8adfb7`): `runner/gate_metrics.go` + `cp53_gate_metrics_test.go`. Observe-only NDJSON `.flowpilot/gate-metrics.ndjson` + `[gate-metric]` logs on block/override/escalate/accept.
+- follow-ups: no dashboard (out of scope); cost fallback = turn count when provider omits usage; Test-Steps §P-6 still scaffold.
+- upstream docs updated: [CA-437](../../../change-audit/CA-437-cp53-p6-gate-observability-metrics.md); parent [CP-53](../../07-Coding-Plan/done/CP-53-Review-Loop.md) filed `done`.

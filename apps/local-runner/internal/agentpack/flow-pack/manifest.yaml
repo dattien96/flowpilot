@@ -15,18 +15,13 @@ flows:
   - path: flows/review-loop.yaml
     visibility: builtin
     editable: false
-    selectableIn:
-      - chat
-      - flow
-    chatSubModes:
-      - bug
+    selectableIn: []
     cloneable: true
   - path: flows/rag-harness.yaml
     visibility: builtin
     editable: false
     chatBaseline: true
-    selectableIn:
-      - flow
+    selectableIn: []
     cloneable: true
   - path: flows/bug-harness.yaml
     visibility: builtin
@@ -41,6 +36,12 @@ flows:
       - flow
     cloneable: true
   - path: flows/task-harness.yaml
+    visibility: builtin
+    editable: false
+    selectableIn:
+      - flow
+    cloneable: true
+  - path: flows/bug-plan-harness.yaml
     visibility: builtin
     editable: false
     selectableIn:
@@ -88,6 +89,8 @@ prompts:
   - prompts/review-safe-fix-contract.md
   - prompts/plan-task.md
   - prompts/review-plan.md
+  - prompts/plan-bug.md
+  - prompts/review-bug-plan.md
   - prompts/plan-cp.md
   - prompts/review-cp.md
   - prompts/task-splitter.md

@@ -5,14 +5,14 @@
 - Document ID: `Task-275`
 - Title: `CP-53 P-3 — scripts/gate-check dogfood via pre-commit + Claude Stop hook`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `<chờ phân công>`
 - Created: `2026-08-11`
-- Last Updated: `2026-08-11`
-- Parent Documents: [CP-53](../../07-Coding-Plan/inprogress/CP-53-Review-Loop.md)
+- Last Updated: `2026-09-07`
+- Parent Documents: [CP-53](../../07-Coding-Plan/done/CP-53-Review-Loop.md)
 - Child Documents: `<none>`
-- Related Documents: [CP-53-Test-Steps](../../07-Coding-Plan/inprogress/CP-53-Test-Steps.md), Task-273, D-3/D-6, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
+- Related Documents: [CP-53-Test-Steps](../../07-Coding-Plan/done/CP-53-Test-Steps.md), Task-273, D-3/D-6, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `<none>`
 - Tags: `dogfood, gate-check, pre-commit, cp-53, p-3`
 
@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Implement script + bootstrap + hooks; prove intentional regression is rejected on Linux/CI.
+- Closed 2026-09-07 — CA-440. See §8.
 
 ### Key Decisions
 
@@ -81,11 +81,11 @@ Dev harness uses soft skills + bypassPermissions; mechanical gate does not run o
 
 ## 6. Acceptance Check
 
-- [ ] Intentional Go regression → `gate-check` non-zero; pre-commit refuses.
-- [ ] Stop hook invokes same check (manual).
-- [ ] TS missing/unhealthy baseline does not disable Go gate (D-6).
-- [ ] Documented uninstall/fallback.
-- [ ] CA written; provider-agnostic.
+- [x] Intentional Go regression → `gate-check` non-zero; pre-commit refuses.
+- [ ] Stop hook invokes same check (manual). (script shipped; live Linux/CI proof not in CA-440)
+- [x] TS missing/unhealthy baseline does not disable Go gate (D-6).
+- [x] Documented uninstall/fallback.
+- [x] CA written; provider-agnostic.
 
 ## 7. Out of Scope
 
@@ -95,6 +95,6 @@ Dev harness uses soft skills + bypassPermissions; mechanical gate does not run o
 
 ## 8. Completion Notes
 
-- result: `<pending>`
-- follow-ups: harden TS baseline to hard-block once green
-- upstream docs updated: `<pending>`
+- result: landed CA-440 (`2746fd3`): `apps/local-runner/cmd/gate-check/main.go`, `flowgate/dogfood_check.go`, `scripts/gate-check`, `scripts/install-gate-hooks.sh`, `scripts/hooks/pre-commit`, `cp53_dogfood_check_test.go`. Go missing baseline hard-blocks; TS missing warn-only.
+- follow-ups: live Linux/CI pre-commit proof not recorded in CA-440; harden TS baseline to hard-block once green; Windows = Git Bash/WSL only.
+- upstream docs updated: [CA-440](../../../change-audit/CA-440-cp53-p3-dogfood-gate-check-hooks.md); parent [CP-53](../../07-Coding-Plan/done/CP-53-Review-Loop.md) filed `done`.

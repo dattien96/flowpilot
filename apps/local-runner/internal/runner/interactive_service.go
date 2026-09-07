@@ -428,6 +428,13 @@ type interactiveRun struct {
 	// (preflight_contract_plan) failed so Continue can retry that same node
 	// via reinvokeMatchingFlowChild instead of a generic hub reinvoke.
 	lastFailedDelegateNodeID string
+	// preflightDraftResult (BUG-360) caches the scout's parseable preflight
+	// draft JSON on the PARENT run when a child turn completes with one.
+	// Child runs are transient (never persisted), so without this cache a
+	// post-restart freeze has no draft to parse and escalates in a dead-end
+	// loop. Only ever overwritten by another parseable draft — prose never
+	// clobbers it. Persisted via ProviderSessionState + session_runtime blob.
+	preflightDraftResult string
 	// lastProviderEventAt is stamped on every emitLocked for stall detection
 	// (Task-241 T-11). Zero means no event yet (member just spawned).
 	lastProviderEventAt time.Time
@@ -826,7 +833,7 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 		questions:                 map[string]*questionRecord{},
 		activeAccountID:           "default",
 		approvalTTL:               10 * time.Minute,
-		questionTTL:               10 * time.Minute,
+		questionTTL:               30 * time.Minute,
 		maxTurnAttempts:           3,
 		summaryTimers:             map[string]*time.Timer{},
 		markerSecret:              markerSec,
@@ -1841,7 +1848,6 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	if !wasBlocked {
 		return snap, nil
 	}
-	_ = prevBlockReason
 
 	// BUG-284: a hub.notify reinvoke that was blocked (re-armed in
 	// maybeAutoReinvokeHubWithPrompt) takes priority over the generic
@@ -1916,6 +1922,17 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		return snap, nil
 	}
 
+	// Task-325: plan_approval resume branches before generic handling. Stock
+	// resume would retry the writer even on Approve — but this park is a
+	// gate, not a failure: empty feedback advances forward to freeze, human
+	// feedback re-enters plan_writer. Falls through on dispatch failure so
+	// generic resume (hub re-decides done → re-parks on still-churned plan).
+	if prevBlockReason == planApprovalBlockReason {
+		if handledSnap, handled := s.resumePlanApproval(parentRunID, feedback, snap); handled {
+			return handledSnap, nil
+		}
+	}
+
 	// BUG-289 A5/F-9: hub-less flows (rag-harness) escalate from inline
 	// validate/audit with no hub.inline — Continue must re-enter that node,
 	// not reinvoke a nonexistent hub.
@@ -1947,7 +1964,7 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	if failedDelegateNodeID == "" && hubInline == "" && prevBlockReason == "delegate_failed" {
 		if steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID); err == nil {
 			for _, st := range steps {
-				if st.Status == StepStatusFailed && strings.EqualFold(strings.TrimSpace(st.ID), "preflight_contract_plan") {
+				if st.Status == StepStatusFailed && strings.EqualFold(strings.TrimSpace(st.ID), scoutNodeID) {
 					failedDelegateNodeID = st.ID
 					break
 				}
@@ -3956,6 +3973,9 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		// BUG-299 residual: round-trip YOLO so chat restart keeps the toggle and
 		// flow rehydrate has a durable value to force against when missing.
 		Yolo:                      rs.yolo,
+		// BUG-360: round-trip the cached scout draft so post-restart freeze
+		// can parse it after the transient scout child is gone.
+		PreflightDraftResult:      rs.preflightDraftResult,
 		LastFailedDelegateNodeID:  rs.lastFailedDelegateNodeID,
 		LastEscalatedInlineNodeID: rs.lastEscalatedInlineNodeID,
 	}
@@ -4828,6 +4848,13 @@ func (s *InteractiveService) markPendingFlowGateSettleLocked(rs *interactiveRun,
 // completes and (for flow-engine children) the post-turn gate has passed.
 // Caller holds s.mu. Task-242: must not run until runChildArtifactOutputGate allows.
 func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveRun, finalMsg string, ev ProviderEvent) {
+	// BUG-360: cache the scout draft while the child result is alive, then
+	// persist the parent at once — a crash between settle and the next
+	// unrelated parent persist would otherwise lose it (same window class as
+	// BUG-288 P1-18). Goroutine: settle holds s.mu and persist acquires it.
+	if s.cachePreflightDraftLocked(rs, finalMsg) && rs != nil {
+		go s.persistParentSession(rs.parentRunID)
+	}
 	// Close the parent's agent card for this child. Flow auto-spawn uses wait:false,
 	// so the Wait=true path in spawnAgent never emits agent_result_injected — without
 	// this the live main-chat card stays open forever and reinvoke of the same
@@ -5662,7 +5689,7 @@ func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiS
 // AskQuestionCtx is AskQuestion with one extra abandonment signal: when the
 // caller-supplied context dies (BUG-354 C2 run-540927 — the MCP HTTP client
 // disconnected, e.g. opencode's ~60s client timeout, while the runner-side
-// question TTL is 10 minutes) the pending question is EXPIRED instead of
+// question TTL is 30 minutes) the pending question is EXPIRED instead of
 // staying answerable forever. A late AnswerQuestion then gets 409
 // question_expired instead of stamping a ghost RUNNING on a turn that already
 // ended. Implemented as a separate method (not a TurnBridge interface change)
@@ -5797,10 +5824,13 @@ func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, 
 					"Report your findings (approve or request changes, with specifics) in your final message; " +
 					"the hub will synthesize the full cohort and finalize the flow after every reviewer has finished")
 		}
-		b.svc.mu.Lock()
-		parent := b.svc.runs[targetParentID]
-		requireVerdict := parent != nil && flowRequiresSynthesisMachineVerdict(parent)
-		b.svc.mu.Unlock()
+	b.svc.mu.Lock()
+	parent := b.svc.runs[targetParentID]
+	requireVerdict := parent != nil && (flowRequiresSynthesisMachineVerdict(parent) ||
+		flowRequiresHubMachineVerdict(parent, "plan_synthesis") ||
+		flowRequiresHubMachineVerdict(parent, "synthesis") ||
+		flowRequiresHubMachineVerdict(parent, "cp_synthesis"))
+	b.svc.mu.Unlock()
 		if requireVerdict {
 			if !in.viaReviewOutcome {
 				return FlowControlResult{}, fmt.Errorf(
@@ -5832,6 +5862,26 @@ func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, 
 		return res, nil
 	}
 	return b.svc.applyFlowControl(targetRunID, in)
+}
+
+// applyHubDoneVerdictTransition applies continue/escalate after a FAIL
+// reviewer snapshot (CP-61 P-1). If applyFlowControl errors (missing run /
+// one-decision already stamped), fail-closed like the undispatchable-successor
+// branch: do not dispatch freeze/audit/splitter; report awaiting_user so the
+// hub does not treat an empty result as an accepted done.
+func (s *InteractiveService) applyHubDoneVerdictTransition(targetRunID, status, summary string) (FlowControlResult, bool) {
+	res, applyErr := s.applyFlowControl(targetRunID, FlowControlInput{Status: status, Summary: summary})
+	if applyErr != nil {
+		log.Printf("[flow-control] %s after hub review verdict: %v", status, applyErr)
+		s.mu.Lock()
+		if rs := s.runs[targetRunID]; rs != nil && rs.currentTurnID != "" {
+			rs.lastFlowControlTurnID = rs.currentTurnID
+		}
+		s.mu.Unlock()
+		st := s.agentOrchestrator.loopStateFor(targetRunID)
+		return FlowControlResult{Status: "blocked", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "awaiting_user"}, true
+	}
+	return res, true
 }
 
 // advanceHubDoneThroughEdge generalizes flow completion so a hub/synthesis node
@@ -5884,6 +5934,29 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 		s.mu.Unlock()
 		return FlowControlResult{}, false
 	}
+	// CP-61 P-1: harness hubs with a real done-successor (freeze / audit /
+	// task_splitter) cannot dispatch it on a self-grade alone. The inbound
+	// reviewer cohort must have recorded approved via submit_review_outcome.
+	// Runs before park (Task-325) and before any dispatch so a FAIL never
+	// parks, resets Round, or freezes.
+	if cohort := hubInboundCohortName(hubID); cohort != "" && len(cohortNodeLabels(nodes, cohort)) > 0 {
+		if verdictErr := s.hubDoneVerdictError(targetRunID, hubID); verdictErr != nil {
+			if s.hubDoneCohortHasChangesRequested(targetRunID, hubID) {
+				s.flowDiagLog(targetRunID, "flow_control_hub_done_continue_on_review_verdict",
+					"hub done blocked: reviewer requested changes, routing continue",
+					"hub", hubID,
+					"error", verdictErr.Error(),
+				)
+				return s.applyHubDoneVerdictTransition(targetRunID, "continue", verdictErr.Error())
+			}
+			s.flowDiagLog(targetRunID, "flow_control_rejected_missing_review_verdict",
+				"hub done blocked: reviewer machine verdict missing or not approved",
+				"hub", hubID,
+				"error", verdictErr.Error(),
+			)
+			return s.applyHubDoneVerdictTransition(targetRunID, "escalate", verdictErr.Error())
+		}
+	}
 	if targetNode, ok := findFlowNode(nodes, target); ok {
 		if canonical, ok := agentpack.NormalizeBehaviorID(targetNode.Behavior); ok && canonical == "hub.notify" {
 			// hub.notify runs as another turn of the SAME hub session (Task-235),
@@ -5914,6 +5987,43 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 	// Dispatch the successor chain synchronously (telegram.notify / audit /
 	// contract.freeze / etc. are Go-inline); a terminal reached at the end still
 	// calls applyFlowControl, so the loop settles for real by the time this returns.
+	// Task-325: conditional plan-approval park — hubID/target already resolved
+	// above, so this matches ONLY the plan loop's done-edge
+	// (plan_synthesis --done--> preflight_contract_freeze); the code-loop hub
+	// (synthesis) and plan-less flows can never hit it. A churned plan
+	// (writer re-entered >= 1) parks for human read + approve BEFORE anything
+	// freezes; clean first-pass plans fall through unattended.
+	if hubID == planSynthesisNodeID && target == planFreezeNodeID {
+		if churned, rounds := s.planLoopChurned(targetRunID); churned {
+			// run-207435: freeze already DONE means the plan phase closed
+			// (approve+freeze+Round reset). A stale plan_synthesis done after
+			// that (hub_stalled resume reinvoking the hub while
+			// activeHubNodeID still points at plan_synthesis) must never
+			// re-park plan_approval with the stale "writer round N" reason —
+			// the code phase is already running. Claim the turn (stamp the
+			// one-decision guard like every other branch here) and report
+			// advancing without mutating loop or steps.
+			if s.flowFreezeStepDone(targetRunID) {
+				s.flowDiagLog(targetRunID, "plan_approval_repark_skipped_freeze_done",
+					"stale plan_synthesis done after freeze DONE; skipping re-park",
+					"hub", hubID,
+					"writer_rounds", rounds,
+				)
+				// BUG-362: the consumed CA-749 park may still read WAITING on the
+				// plan hub beside this DONE freeze — settle it so the step
+				// timeline tracks the live code phase, not the dead plan phase.
+				s.settlePlanSynthesisAfterFreezeDone(targetRunID)
+				s.mu.Lock()
+				if rs := s.runs[targetRunID]; rs != nil && rs.currentTurnID != "" {
+					rs.lastFlowControlTurnID = rs.currentTurnID
+				}
+				s.mu.Unlock()
+				st := s.agentOrchestrator.loopStateFor(targetRunID)
+				return FlowControlResult{Status: "done", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "advancing"}, true
+			}
+			return s.parkPlanForApproval(targetRunID, rounds)
+		}
+	}
 	ok = s.advanceToNextInlineOrDelegate(context.Background(), targetRunID, edges, nodes, hubID, "done", in.Summary)
 	if !ok {
 		// run-201295: the done successor (e.g. contract.freeze) could not be
@@ -5953,6 +6063,16 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 		rs.lastFlowControlTurnID = rs.currentTurnID
 	}
 	s.mu.Unlock()
+	// Dual-loop flows (task-harness / bug-plan-harness): the plan loop and
+	// the code loop share one LoopState.Round budget, so a contested plan
+	// would starve the code review loop of its cap. A successfully dispatched
+	// plan_synthesis --done--> preflight_contract_freeze starts the code
+	// phase with a fresh budget. Nothing else resets here: parks return
+	// earlier, continues never reach this branch, and synthesis --done-->
+	// audit (code-loop hub) must keep counting toward cap.
+	if hubID == planSynthesisNodeID && target == planFreezeNodeID {
+		s.resetPlanPhaseRound(targetRunID)
+	}
 	st := s.agentOrchestrator.loopStateFor(targetRunID)
 	nextAction := "looping"
 	status := st.Status
@@ -6726,8 +6846,14 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	offerReviewOutcomeTool := rs.autoOrchestrate && rs.parentRunID == "" && rs.turnCount > 1 && !loopAlreadySealedAtTurnStart
 	// CP-53 P-2: reviewer cohort members on synthesis-acceptance flows record
 	// machine verdicts via submit_review_outcome (record-only — no flow advance).
+	// CP-61 P-1: same for harness hubs whose done-successor is a real node
+	// (plan/cp_synthesis→freeze/splitter); this unblocks cp-harness where the
+	// old synthesis-acceptance check is false and cp_reviewer could not record.
 	if !offerReviewOutcomeTool && rs.flowCohortId != "" && rs.parentRunID != "" {
-		if parent := s.runs[rs.parentRunID]; parent != nil && flowRequiresSynthesisMachineVerdict(parent) {
+		if parent := s.runs[rs.parentRunID]; parent != nil && (flowRequiresSynthesisMachineVerdict(parent) ||
+			flowRequiresHubMachineVerdict(parent, "plan_synthesis") ||
+			flowRequiresHubMachineVerdict(parent, "synthesis") ||
+			flowRequiresHubMachineVerdict(parent, "cp_synthesis")) {
 			offerReviewOutcomeTool = true
 		}
 	}
@@ -7653,6 +7779,31 @@ func isProviderUsageLimitError(err error) bool {
 		strings.Contains(message, "out_of_credits") ||
 		strings.Contains(message, "quota reset") ||
 		strings.Contains(message, "rate limit") ||
+		// BUG-361: OpenCode ACP quota/billing shapes. Underscore/dash
+		// variants ("rate_limited", "quota_exceeded") never matched the
+		// space-separated tokens above, so a returned quota error looked
+		// recoverable and retried instead of failing fast. All tokens are
+		// unambiguously billing/quota; healthy errors never contain them.
+		strings.Contains(message, "rate_limit") ||
+		strings.Contains(message, "rate-limit") ||
+		strings.Contains(message, "rate_limited") ||
+		strings.Contains(message, "quota exceeded") ||
+		strings.Contains(message, "quota_exceeded") ||
+		strings.Contains(message, "insufficient credit") ||
+		strings.Contains(message, "insufficient_credit") ||
+		// BUG-361 follow-up review: the ACP layer already treats usage_limit /
+		// usage-limit as quota stopReasons — the RPC-error layer must agree,
+		// or a "usage_limit exceeded" RPC error still classifies recoverable.
+		strings.Contains(message, "usage_limit") ||
+		strings.Contains(message, "usage-limit") ||
+		strings.Contains(message, "payment required") ||
+		strings.Contains(message, "payment_required") ||
+		// Live ACP probe 2026-09-07 (opencode 1.18.29, gpt-5.4-nano):
+		// session/prompt JSON-RPC -32603
+		// "Internal error: No payment method. Add a payment method here: …/billing"
+		// "payment required" does not match this copy.
+		strings.Contains(message, "no payment method") ||
+		strings.Contains(message, "add a payment method") ||
 		// Grok Build (CP-46/Task-210, GR-19): live-observed 402 signature during
 		// CP-46 authoring. Appended additively; other providers' classification
 		// above is unchanged.

@@ -82,7 +82,7 @@ A user points Desktop/TUI at one existing `CP-*.md`, locks it once in an editabl
 ## 6. Acceptance Check
 
 - `LoadBuiltinPack` green with `7 flows` / `7 agents`; `ValidateFlowDefinition` + `ValidateFlowSafetyTopology` pass for `vibe-cp-ingest`.
-- `/vibe-cp <CP-*.md>`: CP card editable, Lock persists + re-validates, slicer emits `Task-*.md` list (visible read-only), sequential `vibe-sprint` v2 per Task reaches done (`context` packaged, `validate` green, `audit` ledger present); non-CP input rejected with deterministic error; budget cap exceeded stops with `BlockReason: budget`.
+- `/vibe-cp <CP-*.md>`: CP card editable, Lock persists + re-validates, slicer emits `Task-*.md` list (visible read-only), sequential `vibe-sprint` v2 per Task reaches done (per-Task `tdd` signature artifact with use/edge/error + `context` packaged, `validate` green, `audit` ledger present); non-CP input rejected with deterministic error; budget cap exceeded stops with `BlockReason: budget`.
 - Post-lock asks are only `r-requirement` / Owner-cap; `r-requirement` card is non-tech readable; no Dev `1/2/3` cards in `vibe`; `dev` regression unchanged; `go test ./internal/agentpack ./internal/flowgate ./internal/runner` + `go vet` green.
 
 ## 7. Out of Scope
