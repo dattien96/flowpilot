@@ -10,9 +10,9 @@
 - Reviewers: `<chờ phân công>`
 - Created: `2026-09-08`
 - Last Updated: `2026-09-08`
-- Parent Documents: [CP-61](./CP-61-Harness-Done-Verdict-Gate.md)
+- Parent Documents: [CP-61](../inprogress/CP-61-Harness-Done-Verdict-Gate.md)
 - Child Documents: `<none>`
-- Related Documents: [CA-757](../../../change-audit/CA-757-CP-61-P1-Harness-Done-Verdict-Gate.md) (P-1 landed), [CA-755](../../../change-audit/CA-755-Slice-A-Hide-Review-Loop-Dual-Cap-Reset.md), [CP-53-Test-Steps](../done/CP-53-Test-Steps.md) (review-loop only), [CP-58-Test-Steps](../done/CP-58-Test-Steps.md) (harness family smoke), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
+- Related Documents: [CA-757](../../../change-audit/CA-757-CP-61-P1-Harness-Done-Verdict-Gate.md) (P-1 landed), [CA-755](../../../change-audit/CA-755-Slice-A-Hide-Review-Loop-Dual-Cap-Reset.md), [CP-53-Test-Steps](./CP-53-Test-Steps.md) (review-loop only), [CP-58-Test-Steps](./CP-58-Test-Steps.md) (harness family smoke), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: CP-53-Test-Steps §2 for **harness hubs** only (review-loop §2 stays on CP-53-Test-Steps)
 - Tags: `agent-flow-engine, harness, review-verdict, verification, test-steps, cp-61`
 - Feature Keys: `agent-flow-engine`
@@ -51,7 +51,7 @@
 
 ## 1. Goal
 
-Prove harness hub `done` is a machine-checked PASS, not a synthesizer self-grade. Review-loop `synthesis→done` stays on [CP-53-Test-Steps §2](../done/CP-53-Test-Steps.md).
+Prove harness hub `done` is a machine-checked PASS, not a synthesizer self-grade. Review-loop `synthesis→done` stays on [CP-53-Test-Steps §2](./CP-53-Test-Steps.md).
 
 ## 2. Automated (P-1 / CA-757) — run first
 

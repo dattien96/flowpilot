@@ -11,8 +11,8 @@
 - Created: `2026-09-07`
 - Last Updated: `2026-09-08`
 - Parent Documents: [CP-53](../done/CP-53-Review-Loop.md) (H-3, S-2, D-2), [Task-274](../../08-Task/done/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) (review-loop landed CA-439; harness leftover is this CP)
-- Child Documents: [CP-61-Test-Steps](./CP-61-Test-Steps.md)
-- Related Documents: [CA-755](../../../change-audit/CA-755-Slice-A-Hide-Review-Loop-Dual-Cap-Reset.md) (Slice A — deliberately excludes this gate), [CP-61-Test-Steps](./CP-61-Test-Steps.md), [CP-53-Test-Steps](../done/CP-53-Test-Steps.md) (review-loop P-2 only), `tools/submit-review-outcome.yaml`, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
+- Child Documents: [CP-61-Test-Steps](../done/CP-61-Test-Steps.md)
+- Related Documents: [CA-755](../../../change-audit/CA-755-Slice-A-Hide-Review-Loop-Dual-Cap-Reset.md) (Slice A — deliberately excludes this gate), [CP-61-Test-Steps](../done/CP-61-Test-Steps.md), [CP-53-Test-Steps](../done/CP-53-Test-Steps.md) (review-loop P-2 only), `tools/submit-review-outcome.yaml`, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `<none>` (takes over CP-53 P-2 harness leftover; review-loop gate stays Task-274 / CA-439)
 - Tags: `agent-flow-engine, harness, review-verdict, fail-closed`
 
@@ -74,7 +74,7 @@ Biến "done" trên các harness hub thành một quyết định đã kiểm ch
 
 - `P-1` **Gate verdict trước `advanceHubDoneThroughEdge`.** Yêu cầu verdict PASS đã ghi nhận cho `plan_synthesis→done`, `synthesis→done`, `cp_synthesis→done`; missing/FAIL/escalate → continue/escalate/ask_user theo edge hiện có. Files: `runner/flow_*.go`, hub notify paths, (nếu cần) `agentpack/flow-pack/flows/*.yaml` + synthesizer agent md.
 - `P-2` **Reviewer model/effort asymmetry + defaults.** Cấu hình bất đối xứng maker/checker theo CP-53 D-2; chốt Q-B defaults trong Task.
-- `P-3` **[CP-61-Test-Steps](./CP-61-Test-Steps.md)** — automated + gate-sandbox manual guide for 3 hubs (replaces “update CP-53-Test-Steps §P-2”).
+- `P-3` **[CP-61-Test-Steps](../done/CP-61-Test-Steps.md)** — automated + gate-sandbox manual guide for 3 hubs (replaces “update CP-53-Test-Steps §P-2”).
 
 ## 5. Touched Areas
 
@@ -113,5 +113,5 @@ Biến "done" trên các harness hub thành một quyết định đã kiểm ch
 - [ ] Verdict missing / FAIL / escalate → continue / escalate / ask_user theo edge hiện có, không stall, không silent pass.
 - [ ] Normal chat / non-harness flows byte-for-byte behavior.
 - [ ] Old tests untouched + green; `CA-*` ghi provider classification + matrix evidence.
-- [ ] [CP-61-Test-Steps](./CP-61-Test-Steps.md) automated P-1 ticked; manual M/C on `gate-sandbox` ticked on at least one live run.
+- [ ] [CP-61-Test-Steps](../done/CP-61-Test-Steps.md) automated P-1 ticked; manual M/C on `gate-sandbox` ticked on at least one live run.
 - [ ] Không claim DoD Task-272…277 (thuộc CP-53, đã đóng — xem closure note trong CP-53).
