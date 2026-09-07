@@ -5,12 +5,12 @@
 - Document ID: `Task-277`
 - Title: `CP-53 P-5 — r-newtest rule: production code change requires new additive test`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `<chờ phân công>`
 - Created: `2026-08-11`
-- Last Updated: `2026-08-11`
-- Parent Documents: [CP-53](../../07-Coding-Plan/inprogress/CP-53-Review-Loop.md)
+- Last Updated: `2026-09-07`
+- Parent Documents: [CP-53](../../07-Coding-Plan/done/CP-53-Review-Loop.md)
 - Child Documents: `<none>`
 - Related Documents: [CP-53-Test-Steps](../../07-Coding-Plan/inprogress/CP-53-Test-Steps.md), oracle-rule, additive-tests-only, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `<none>`
@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Add `r-newtest` rule + defaults + remediation prompt; additive tests for trigger/non-trigger matrix.
+- Closed 2026-09-07 — CA-442. See §8.
 
 ### Key Decisions
 
@@ -84,12 +84,12 @@ Oracle only sees regressions of previously green tests; brand-new untested behav
 
 ## 6. Acceptance Check
 
-- [ ] Production-only diff without new tests → `r-newtest` reprompt.
-- [ ] Same + new `*_test.go` → no `r-newtest`.
-- [ ] Docs/CA-only → no fire.
-- [ ] Rule disable via config works (fallback).
-- [ ] Old tests untouched + green; CA written; provider-agnostic.
-- [ ] Remediation text forbids editing old tests.
+- [x] Production-only diff without new tests → `r-newtest` reprompt.
+- [x] Same + new `*_test.go` → no `r-newtest`.
+- [x] Docs/CA-only → no fire.
+- [x] Rule disable via config works (fallback).
+- [x] Old tests untouched + green; CA written; provider-agnostic.
+- [x] Remediation text forbids editing old tests.
 
 ## 7. Out of Scope
 
@@ -99,6 +99,6 @@ Oracle only sees regressions of previously green tests; brand-new untested behav
 
 ## 8. Completion Notes
 
-- result: `<pending>`
-- follow-ups: consider promote to block after false-positive rate measured (Task-272)
-- upstream docs updated: `<pending>`
+- result: landed CA-442 (`98701f6`): `r-newtest` in `flowgate/rules.go` (reprompt, `production_change_no_new_test`); `HasNewTestFileAdded()` only git-added `*_test.go` / `*.test.ts`. Old-test edit does not satisfy. Tests in `cp53_waiver_newtest_test.go`.
+- follow-ups: vendor/generated production-path allowlist if false positives; disable via `flow-rules.json`; promote to block after false-positive rate (Task-272 metrics).
+- upstream docs updated: [CA-442](../../../change-audit/CA-442-cp53-p5-r-newtest-reprompt-rule.md); parent [CP-53](../../07-Coding-Plan/done/CP-53-Review-Loop.md) filed `done`.

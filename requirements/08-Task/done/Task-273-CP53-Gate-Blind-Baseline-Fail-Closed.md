@@ -5,12 +5,12 @@
 - Document ID: `Task-273`
 - Title: `CP-53 P-1 — gate_blind for missing baseline / EnvError / red-at-capture`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `<chờ phân công>`
 - Created: `2026-08-11`
-- Last Updated: `2026-08-11`
-- Parent Documents: [CP-53](../../07-Coding-Plan/inprogress/CP-53-Review-Loop.md)
+- Last Updated: `2026-09-07`
+- Parent Documents: [CP-53](../../07-Coding-Plan/done/CP-53-Review-Loop.md)
 - Child Documents: `<none>`
 - Related Documents: [CP-53-Test-Steps](../../07-Coding-Plan/inprogress/CP-53-Test-Steps.md), Task-156, Task-242, BUG-288, BUG-289, Task-272, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: `<none>`
@@ -26,7 +26,7 @@
 
 ### Current Ask
 
-- Implement `gate_blind` classification + enforce block; additive matrix tests; flaky quarantine file schema.
+- Closed 2026-09-07 — CA-438. See §8.
 
 ### Key Decisions
 
@@ -83,11 +83,11 @@ As-is: missing baseline disables `r-reg`/`r-tests` silently (`gate_hook` + `Ran=
 
 ## 6. Acceptance Check
 
-- [ ] Delete baseline + edit production file → enforce mode emits `gate_blind` block (manual + test).
-- [ ] Corrupt baseline still fails closed (existing BUG-288 behavior preserved — re-run related old tests, do not edit them).
-- [ ] EnvError surfaces blind, not silent pass.
-- [ ] Red-at-capture with quarantine entry does not falsely claim suite-green.
-- [ ] Old suite untouched + green; CA written; provider-agnostic evidence.
+- [x] Delete baseline + edit production file → enforce mode emits `gate_blind` block (manual + test).
+- [x] Corrupt baseline still fails closed (existing BUG-288 behavior preserved — re-run related old tests, do not edit them).
+- [x] EnvError surfaces blind, not silent pass.
+- [ ] Red-at-capture with quarantine entry does not falsely claim suite-green. (red-at-capture classified; flaky-quarantine UX deferred)
+- [x] Old suite untouched + green; CA written; provider-agnostic evidence.
 
 ## 7. Out of Scope
 
@@ -98,6 +98,6 @@ As-is: missing baseline disables `r-reg`/`r-tests` silently (`gate_hook` + `Ran=
 
 ## 8. Completion Notes
 
-- result: `<pending>`
-- follow-ups: TS baseline independence finalized in Task-275
-- upstream docs updated: `<pending>`
+- result: landed CA-438 (`8593aa9`): `flowgate/gate_blind.go`, `runner/gate_blind_hook.go`, `cp53_gate_blind_test.go`, `cp53_gate_blind_hook_test.go`. Missing baseline / EnvError / red-at-capture = `gate_blind`; docs-only exempt; BUG-288 corrupt path intact.
+- follow-ups: flaky-quarantine UX deferred (CA-438 residual); TS baseline independence landed in Task-275.
+- upstream docs updated: [CA-438](../../../change-audit/CA-438-cp53-p1-gate-blind-fail-closed.md); parent [CP-53](../../07-Coding-Plan/done/CP-53-Review-Loop.md) filed `done`.
