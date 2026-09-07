@@ -104,6 +104,32 @@ func (s *InteractiveService) planLoopChurned(parentRunID string) (bool, int) {
 	return true, maxSeq
 }
 
+// flowFreezeStepDone reports whether the plan freeze step already reached DONE
+// (run-207435). After approve+freeze, a stale plan_synthesis done must never
+// re-park plan_approval: the churn latch (planLoopChurned) is permanent, the
+// verdict snapshot still reads approved, and activeHubNodeID may still point
+// at plan_synthesis when a hub_stalled resume reinvokes the hub. Load error
+// returns false so the first park (freeze not yet DONE) keeps CA-749 behavior.
+func (s *InteractiveService) flowFreezeStepDone(parentRunID string) bool {
+	if s == nil || strings.TrimSpace(parentRunID) == "" {
+		return false
+	}
+	steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID)
+	if err != nil {
+		s.flowDiagLog(parentRunID, "plan_approval_freeze_check_failed",
+			"could not load freeze step status; failing open to first-park behavior",
+			"error", err.Error(),
+		)
+		return false
+	}
+	for _, st := range steps {
+		if strings.TrimSpace(st.ID) == planFreezeNodeID && st.Status == StepStatusDone {
+			return true
+		}
+	}
+	return false
+}
+
 // parkPlanForApproval parks parentRunID after an approved-but-churned plan.
 // Caller resolved hubID/target already; insertion sits between edge
 // resolution and successor dispatch so freezing never starts (Task-325 D-2).

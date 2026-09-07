@@ -5995,6 +5995,28 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 	// freezes; clean first-pass plans fall through unattended.
 	if hubID == planSynthesisNodeID && target == planFreezeNodeID {
 		if churned, rounds := s.planLoopChurned(targetRunID); churned {
+			// run-207435: freeze already DONE means the plan phase closed
+			// (approve+freeze+Round reset). A stale plan_synthesis done after
+			// that (hub_stalled resume reinvoking the hub while
+			// activeHubNodeID still points at plan_synthesis) must never
+			// re-park plan_approval with the stale "writer round N" reason —
+			// the code phase is already running. Claim the turn (stamp the
+			// one-decision guard like every other branch here) and report
+			// advancing without mutating loop or steps.
+			if s.flowFreezeStepDone(targetRunID) {
+				s.flowDiagLog(targetRunID, "plan_approval_repark_skipped_freeze_done",
+					"stale plan_synthesis done after freeze DONE; skipping re-park",
+					"hub", hubID,
+					"writer_rounds", rounds,
+				)
+				s.mu.Lock()
+				if rs := s.runs[targetRunID]; rs != nil && rs.currentTurnID != "" {
+					rs.lastFlowControlTurnID = rs.currentTurnID
+				}
+				s.mu.Unlock()
+				st := s.agentOrchestrator.loopStateFor(targetRunID)
+				return FlowControlResult{Status: "done", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "advancing"}, true
+			}
 			return s.parkPlanForApproval(targetRunID, rounds)
 		}
 	}
