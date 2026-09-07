@@ -6009,6 +6009,10 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 					"hub", hubID,
 					"writer_rounds", rounds,
 				)
+				// BUG-362: the consumed CA-749 park may still read WAITING on the
+				// plan hub beside this DONE freeze — settle it so the step
+				// timeline tracks the live code phase, not the dead plan phase.
+				s.settlePlanSynthesisAfterFreezeDone(targetRunID)
 				s.mu.Lock()
 				if rs := s.runs[targetRunID]; rs != nil && rs.currentTurnID != "" {
 					rs.lastFlowControlTurnID = rs.currentTurnID

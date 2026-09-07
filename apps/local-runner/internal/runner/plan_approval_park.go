@@ -130,6 +130,35 @@ func (s *InteractiveService) flowFreezeStepDone(parentRunID string) bool {
 	return false
 }
 
+// settlePlanSynthesisAfterFreezeDone clears a stale plan_synthesis
+// WAITING_USER_APPROVAL once the freeze step reads DONE (BUG-362). The
+// CA-749 park stamps WAITING; approve consumes the park but late stamps —
+// validate-escalate's first-hub fallback, a hub_stalled reinvoke — can leave
+// the dead plan hub WAITING beside a DONE freeze, so TUI Now: points at the
+// plan phase while the live gate is validate. Only WAITING becomes DONE;
+// RUNNING/PENDING/DONE are never touched, and a pending freeze is a no-op.
+func (s *InteractiveService) settlePlanSynthesisAfterFreezeDone(parentRunID string) {
+	if s == nil || strings.TrimSpace(parentRunID) == "" {
+		return
+	}
+	if !s.flowFreezeStepDone(parentRunID) {
+		return
+	}
+	steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID)
+	if err != nil {
+		return
+	}
+	for _, st := range steps {
+		if strings.TrimSpace(st.ID) == planSynthesisNodeID && st.Status == StepStatusWaitingUserApr {
+			s.setFlowStepStatus(context.Background(), parentRunID, planSynthesisNodeID, StepStatusDone)
+			s.flowDiagLog(parentRunID, "plan_synthesis_settled_after_freeze_done",
+				"freeze DONE with a stale plan_synthesis WAITING; settling the hub DONE",
+			)
+			return
+		}
+	}
+}
+
 // parkPlanForApproval parks parentRunID after an approved-but-churned plan.
 // Caller resolved hubID/target already; insertion sits between edge
 // resolution and successor dispatch so freezing never starts (Task-325 D-2).

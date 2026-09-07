@@ -292,6 +292,33 @@ func isMissingChangeAuditNoteGate(gate string) bool {
 	return strings.Contains(strings.ToLower(gate), "no change-audit note")
 }
 
+// isValidateExhaustedGate reports a validate-exhausted escalate
+// ("Validation failed after the maximum number of retries"). Retry on this
+// park re-runs old scope, which cannot fix a spec/test conflict — the bar
+// must say so and default to Revise (BUG-362, run-210188 looped the card).
+func isValidateExhaustedGate(gate string) bool {
+	return strings.Contains(strings.ToLower(gate), "maximum number of retries")
+}
+
+// blockedCardAllowShown reports whether the blocked card shows [Allow]: a
+// frozen-contract drift gate that is neither cap nor member_stalled. Single
+// choke point for the bar, the ring items, and the Revise index below.
+func (m *AppModel) blockedCardAllowShown() bool {
+	isCap := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "cap")
+	isStalled := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "member_stalled")
+	return !isCap && !isStalled && len(parseDriftedPaths(m.blockedDecisionReason())) > 0
+}
+
+// blockedReviseRingIndex is the ring position of [Revise] on a blocked card
+// ([Retry Stop (Allow) Revise]). Shared by the bar highlight and the card
+// default so Enter always activates the highlighted chip.
+func (m *AppModel) blockedReviseRingIndex() int {
+	if m.blockedCardAllowShown() {
+		return 3
+	}
+	return 2
+}
+
 // renderBlockedBar renders the awaiting-user action chips above the composer
 // (Desktop FlowAwaitingUserCard parity, BUG-231) when the flow loop is parked
 // on the user's Continue/Stop decision. Mirrors the Approve/Deny + attention
@@ -336,11 +363,8 @@ func (m *AppModel) renderBlockedBar() string {
 			bar += styleSystem.Render(prefix+wline) + "\n"
 		}
 	}
-	isCap := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "cap")
-	isStalled := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "member_stalled")
 	isPlanApproval := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "plan_approval")
-	drifted := parseDriftedPaths(m.blockedDecisionReason())
-	showAllow := !isCap && !isStalled && len(drifted) > 0
+	showAllow := m.blockedCardAllowShown()
 	// plan_approval decision highlight (live-tested run-206538): the plan
 	// already failed review once, so the bar must say so and name the only
 	// exit — revise to rewrite, approve to freeze and continue. The flow
@@ -361,6 +385,12 @@ func (m *AppModel) renderBlockedBar() string {
 	if isMissingChangeAuditNoteGate(m.blockedDecisionReason()) {
 		retryDesc = " - continue: re-run the writer to write the missing change-audit note"
 	}
+	// BUG-362: a validate-exhausted Retry re-runs old scope, which cannot
+	// fix a spec/test conflict (run-210188 looped the same card) — say so.
+	// The chip stays for genuine flakes; only the copy changes.
+	if isValidateExhaustedGate(m.blockedDecisionReason()) {
+		retryDesc = " - re-run unchanged (spec/test conflict fails again)"
+	}
 	if isPlanApproval {
 		// Same retry target, honest copy: this approves the revised plan
 		// and forwards freeze, it does not "run again" anything.
@@ -380,11 +410,9 @@ func (m *AppModel) renderBlockedBar() string {
 	// Highlight index tracks the ring order [Retry Stop (Allow) Revise]:
 	// Revise sits at 2, or 3 when Allow is shown (live-found run-584646
 	// follow-up: hardcoded 3 left Revise unhighlightable without drift,
-	// so Tab appeared to die on [Stop]).
-	reviseIdx := 2
-	if showAllow {
-		reviseIdx = 3
-	}
+	// so Tab appeared to die on [Stop]). Shared helper so highlight and
+	// Enter always agree (BUG-362 default).
+	reviseIdx := m.blockedReviseRingIndex()
 	reviseHi := m.actionRingHighlighted("blocked", reviseIdx)
 	options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Revise]", reviseHi)+styleSystem.Render(" - type feedback note, revise"))
 	bar += strings.Join(options, "\n")
@@ -439,13 +467,22 @@ func (m *AppModel) settleFlowIfDone() {
 }
 
 func activeStepName(steps []client.WorkflowStepRuntime) string {
+	var lastRunning, lastWaiting string
 	for _, s := range steps {
-		st := strings.ToUpper(strings.TrimSpace(s.Status))
-		if st == "RUNNING" || st == "WAITING_USER_APPROVAL" {
-			return stepDisplayName(s)
+		switch strings.ToUpper(strings.TrimSpace(s.Status)) {
+		case "RUNNING":
+			lastRunning = stepDisplayName(s)
+		case "WAITING_USER_APPROVAL":
+			lastWaiting = stepDisplayName(s)
 		}
 	}
-	return ""
+	// BUG-362: a stale hub WAITING (consumed plan park) must not shadow the
+	// live code step — the later node wins (run-210188: plan_synthesis
+	// WAITING beside validate WAITING showed Now: plan_synthesis).
+	if lastRunning != "" {
+		return lastRunning
+	}
+	return lastWaiting
 }
 
 func stepDisplayName(s client.WorkflowStepRuntime) string {

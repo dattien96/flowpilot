@@ -130,10 +130,7 @@ func (m *AppModel) actionRingItems() []actionRingItem {
 		return items
 	}
 	if m.flowLoopBlocked() {
-		isCap := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "cap")
-		isStalled := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "member_stalled")
-		drifted := parseDriftedPaths(m.blockedDecisionReason())
-		showAllow := !isCap && !isStalled && len(drifted) > 0
+		showAllow := m.blockedCardAllowShown()
 		isPlanApproval := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "plan_approval")
 		retryLabel := "[Retry]"
 		if isPlanApproval {
@@ -186,6 +183,12 @@ func (m *AppModel) syncActionRingCard() {
 	}
 	m.actionRingCardSig = sig
 	m.actionRingIdx = 0
+	// BUG-362: a validate-exhausted Retry re-runs old scope, which cannot
+	// fix a spec/test conflict — default Enter to Revise while the fresh
+	// card is up (arrows still move; reset only fires on card change).
+	if m.flowLoopBlocked() && isValidateExhaustedGate(m.blockedDecisionReason()) {
+		m.actionRingIdx = m.blockedReviseRingIndex()
+	}
 	m.actionRingFocus = m.approval != nil || m.question != nil || m.gate != nil || m.hasUnresolvedAttention()
 }
 
