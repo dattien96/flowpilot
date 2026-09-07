@@ -5,14 +5,14 @@
 - Document ID: `CP-53`
 - Title: `Review Loop — Bịt các lỗ rò của Verifier Gate trong Flow-Coding`
 - Phase: `coding_plan`
-- Status: `closed (2026-09-07 — P-2 leftover moved to CP-61; Tasks 272…277 stay draft, no DoD claimed)`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `<chờ phân công>`
 - Created: `2026-07-22`
 - Last Updated: `2026-09-07`
-- Parent Documents: [CP-35 (nguồn gốc flow gate, P-4/P-5)](../), [CP-51 (durable turn dispatch)](../done/CP-51-PhaseAB-Timeline-And-Verification-Log.md), [CP-50 / CP-43 (context sources)](../)
-- Child Documents: [Task-272](../../08-Task/todo/Task-272-CP53-Gate-Observability-Metrics.md) (P-6), [Task-273](../../08-Task/todo/Task-273-CP53-Gate-Blind-Baseline-Fail-Closed.md) (P-1), [Task-274](../../08-Task/todo/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) (P-2), [Task-275](../../08-Task/todo/Task-275-CP53-Dogfood-Gate-Check-Hooks.md) (P-3), [Task-276](../../08-Task/todo/Task-276-CP53-Waiver-Ledger-With-Expiry.md) (P-4), [Task-277](../../08-Task/todo/Task-277-CP53-R-Newtest-Reprompt-Rule.md) (P-5), [CP-53-Test-Steps](./CP-53-Test-Steps.md)
-- Related Documents: `Task-155 (r-reg decision card), Task-156 (baseline), Task-223/225/242/247 (artifact + tier gates), BUG-288, BUG-289, SD-21 (change contract)`, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md), [CP-43-52-53-54-note](./CP-43-52-53-54-note.md), [CP-61](./CP-61-Harness-Done-Verdict-Gate.md) (takes over P-2)
+- Parent Documents: [CP-35 (nguồn gốc flow gate, P-4/P-5)](../), [CP-51 (durable turn dispatch)](./CP-51-PhaseAB-Timeline-And-Verification-Log.md), [CP-50 / CP-43 (context sources)](../)
+- Child Documents: [Task-272](../../08-Task/done/Task-272-CP53-Gate-Observability-Metrics.md) (P-6), [Task-273](../../08-Task/done/Task-273-CP53-Gate-Blind-Baseline-Fail-Closed.md) (P-1), [Task-274](../../08-Task/done/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) (P-2), [Task-275](../../08-Task/done/Task-275-CP53-Dogfood-Gate-Check-Hooks.md) (P-3), [Task-276](../../08-Task/done/Task-276-CP53-Waiver-Ledger-With-Expiry.md) (P-4), [Task-277](../../08-Task/done/Task-277-CP53-R-Newtest-Reprompt-Rule.md) (P-5), [CP-53-Test-Steps](../inprogress/CP-53-Test-Steps.md)
+- Related Documents: `Task-155 (r-reg decision card), Task-156 (baseline), Task-223/225/242/247 (artifact + tier gates), BUG-288, BUG-289, SD-21 (change contract)`, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md), [CP-43-52-53-54-note](../note/CP-43-52-53-54-note.md), [CP-61](../inprogress/CP-61-Harness-Done-Verdict-Gate.md) (takes over P-2)
 - Replaces: `<không>`
 - Tags: `flow-gate, review-loop, verifier, regression, flowgate, quality`
 
@@ -29,7 +29,7 @@
 
 ### Current Ask
 
-- **Plan-cut đang review (2026-08-11):** duyệt Task-272…277 + [CP-53-Test-Steps](./CP-53-Test-Steps.md) trước khi code. Sau approve: implement theo thứ tự P-6→P-1→P-2→P-3→P-4→P-5, tuân `safe-fix-contract` (additive tests only; stop on old fail; Claude+Codex+Grok khi đụng provider/shared flow).
+- **Closed 2026-09-07:** Task-272…277 filed `done` (CA-437…442). Harness leftover of P-2 → [CP-61](../inprogress/CP-61-Harness-Done-Verdict-Gate.md). See §12.
 - Outcome cuối: flow-coding loop **fail closed** — regression hoặc "done" không kiểm chứng được phải **dừng turn**; repo FlowPilot tự dogfood oracle.
 
 ### Key Decisions
@@ -136,12 +136,12 @@ Map solution ↔ lỗ rò:
 
 | Order | Phase | Task | Hole | `feature_key` | Provider class (safe-fix R2) |
 |------:|-------|------|------|---------------|--------------------------------|
-| 1 | **P-6** Observability spike | [Task-272](../../08-Task/todo/Task-272-CP53-Gate-Observability-Metrics.md) | Q-A | `context-regression-engine` | Agnostic (Go emit/log only) |
-| 2 | **P-1** Baseline fail-closed / `gate_blind` | [Task-273](../../08-Task/todo/Task-273-CP53-Gate-Blind-Baseline-Fail-Closed.md) | H-1, H-2 | `context-regression-engine` | Agnostic (post-turn `gate_hook`, all modes) |
-| 3 | **P-2** Done requires machine verdict | [Task-274](../../08-Task/todo/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) | H-3 | `agent-flow-engine` | Shared flow runtime — **matrix Claude+Codex+Grok** (fake adapters OK) |
-| 4 | **P-3** Dogfood `gate-check` + hooks | [Task-275](../../08-Task/todo/Task-275-CP53-Dogfood-Gate-Check-Hooks.md) | H-5 | `context-regression-engine` | Agnostic (scripts/hooks; Linux primary; Windows path noted) |
-| 5 | **P-4** Waiver ledger + expiry | [Task-276](../../08-Task/todo/Task-276-CP53-Waiver-Ledger-With-Expiry.md) | H-4 | `context-regression-engine` | Agnostic (override path shared) |
-| 6 | **P-5** `r-newtest` reprompt | [Task-277](../../08-Task/todo/Task-277-CP53-R-Newtest-Reprompt-Rule.md) | H-3 (coverage) | `context-regression-engine` | Agnostic (`flowgate` rule) |
+| 1 | **P-6** Observability spike | [Task-272](../../08-Task/done/Task-272-CP53-Gate-Observability-Metrics.md) | Q-A | `context-regression-engine` | Agnostic (Go emit/log only) |
+| 2 | **P-1** Baseline fail-closed / `gate_blind` | [Task-273](../../08-Task/done/Task-273-CP53-Gate-Blind-Baseline-Fail-Closed.md) | H-1, H-2 | `context-regression-engine` | Agnostic (post-turn `gate_hook`, all modes) |
+| 3 | **P-2** Done requires machine verdict | [Task-274](../../08-Task/done/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) | H-3 | `agent-flow-engine` | Shared flow runtime — **matrix Claude+Codex+Grok** (fake adapters OK) |
+| 4 | **P-3** Dogfood `gate-check` + hooks | [Task-275](../../08-Task/done/Task-275-CP53-Dogfood-Gate-Check-Hooks.md) | H-5 | `context-regression-engine` | Agnostic (scripts/hooks; Linux primary; Windows path noted) |
+| 5 | **P-4** Waiver ledger + expiry | [Task-276](../../08-Task/done/Task-276-CP53-Waiver-Ledger-With-Expiry.md) | H-4 | `context-regression-engine` | Agnostic (override path shared) |
+| 6 | **P-5** `r-newtest` reprompt | [Task-277](../../08-Task/done/Task-277-CP53-R-Newtest-Reprompt-Rule.md) | H-3 (coverage) | `context-regression-engine` | Agnostic (`flowgate` rule) |
 
 ### 5.2 Phase detail (unchanged intent)
 
@@ -220,7 +220,7 @@ Companion: [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.m
 - [ ] **P-3 / Task-275:** `scripts/gate-check` từ chối commit regression test xanh trước đó, qua git pre-commit **và** Claude `Stop` hook (Linux/CI chứng minh; Windows documented).
 - [ ] **P-4 / Task-276:** Override accept → waiver ledger (lý do + hạn); hết hạn → re-arm `r-reg`.
 - [ ] **P-5 / Task-277:** Task đổi production code không có test mới → reprompt `r-newtest` (chỉ yêu cầu ADD test).
-- [ ] Verification guide [CP-53-Test-Steps](./CP-53-Test-Steps.md) tick được (automated + manual) cho mọi phase.
+- [ ] Verification guide [CP-53-Test-Steps](../inprogress/CP-53-Test-Steps.md) tick được (automated + manual) cho mọi phase.
 - [ ] Mỗi Task có `CA-*` + không undo BUG-288/289 always-block contracts.
 
 ### 11.2 Safe-fix DoD (per Task, all required)
@@ -240,6 +240,6 @@ Companion: [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.m
 
 ## 12. Closure note (2026-09-07)
 
-- CP này đóng mà **không claim** bất kỳ DoD nào của Task-272…277 — các Task đó ở lại `draft`, không có code nào trong slice này đụng đường gate của chúng.
-- Leftover duy nhất có chủ: **P-2 (machine verdict, H-3)** → chuyển sang [CP-61](./CP-61-Harness-Done-Verdict-Gate.md) (draft), mở rộng phạm vi từ review-loop `synthesis` sang 3 harness hub (`plan_synthesis` / `synthesis` / `cp_synthesis`), vì review-loop đã ẩn khỏi picker (CA-755) và loop thật sống trong harness.
+- Task-272…277 filed `done` 2026-09-07 (CA-437…442). Review-loop `synthesis→done` = Task-274 / CA-439.
+- Harness leftover of P-2 (3 hubs + reviewer asymmetry + test-steps §P-2) → [CP-61](../inprogress/CP-61-Harness-Done-Verdict-Gate.md). P-1 landed CA-757 (`plan_synthesis` / `synthesis` / `cp_synthesis`).
 - Mọi contract fail-closed của CP này (BUG-288/289 always-block, corrupt-baseline block) giữ nguyên hiệu lực và được liệt kê trong will-not-undo của các CA tiếp theo.

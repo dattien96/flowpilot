@@ -10,10 +10,10 @@
 - Reviewers: `<chờ phân công>`
 - Created: `2026-09-07`
 - Last Updated: `2026-09-07`
-- Parent Documents: [CP-53](../inprogress/CP-53-Review-Loop.md) (H-3, S-2, D-2), [Task-274](../../08-Task/todo/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) (moved here unimplemented)
+- Parent Documents: [CP-53](../done/CP-53-Review-Loop.md) (H-3, S-2, D-2), [Task-274](../../08-Task/done/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) (review-loop landed CA-439; harness leftover is this CP)
 - Child Documents: `<none yet>`
 - Related Documents: [CA-755](../../../change-audit/CA-755-Slice-A-Hide-Review-Loop-Dual-Cap-Reset.md) (Slice A — deliberately excludes this gate), [CP-53-Test-Steps](./CP-53-Test-Steps.md) (§P-2 to be updated), `tools/submit-review-outcome.yaml`, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
-- Replaces: `<none>` (takes over CP-53 P-2 only; CP-53 closes separately)
+- Replaces: `<none>` (takes over CP-53 P-2 harness leftover; review-loop gate stays Task-274 / CA-439)
 - Tags: `agent-flow-engine, harness, review-verdict, fail-closed`
 
 ## AI Quick View
@@ -60,8 +60,8 @@ Biến "done" trên các harness hub thành một quyết định đã kiểm ch
 
 ## 2. Input Documents
 
-- [CP-53](./CP-53-Review-Loop.md) (§3.3 H-3, §5.2 P-2, D-2, F-2).
-- [Task-274](../../08-Task/todo/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) (toàn bộ T-1…T-4, carry-over nguyên vẹn).
+- [CP-53](../done/CP-53-Review-Loop.md) (§3.3 H-3, §5.2 P-2, D-2, F-2).
+- [Task-274](../../08-Task/done/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) (T-1…T-4 review-loop landed CA-439; harness 3-hub = this CP P-1 / CA-757).
 - [CA-755](../../../change-audit/CA-755-Slice-A-Hide-Review-Loop-Dual-Cap-Reset.md) (ranh giới scope: Slice A không đụng gate này).
 
 ## 3. Implementation Strategy
