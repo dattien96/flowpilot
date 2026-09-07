@@ -833,7 +833,7 @@ func newInteractiveService(registry *ProviderRegistry, catalog CatalogStore, wor
 		questions:                 map[string]*questionRecord{},
 		activeAccountID:           "default",
 		approvalTTL:               10 * time.Minute,
-		questionTTL:               10 * time.Minute,
+		questionTTL:               30 * time.Minute,
 		maxTurnAttempts:           3,
 		summaryTimers:             map[string]*time.Timer{},
 		markerSecret:              markerSec,
@@ -5689,7 +5689,7 @@ func (b *turnBridge) AskQuestion(prompt string, options []QuestionOption, multiS
 // AskQuestionCtx is AskQuestion with one extra abandonment signal: when the
 // caller-supplied context dies (BUG-354 C2 run-540927 — the MCP HTTP client
 // disconnected, e.g. opencode's ~60s client timeout, while the runner-side
-// question TTL is 10 minutes) the pending question is EXPIRED instead of
+// question TTL is 30 minutes) the pending question is EXPIRED instead of
 // staying answerable forever. A late AnswerQuestion then gets 409
 // question_expired instead of stamping a ghost RUNNING on a turn that already
 // ended. Implemented as a separate method (not a TurnBridge interface change)
