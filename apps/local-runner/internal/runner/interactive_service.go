@@ -1964,7 +1964,7 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	if failedDelegateNodeID == "" && hubInline == "" && prevBlockReason == "delegate_failed" {
 		if steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID); err == nil {
 			for _, st := range steps {
-				if st.Status == StepStatusFailed && strings.EqualFold(strings.TrimSpace(st.ID), "preflight_contract_plan") {
+				if st.Status == StepStatusFailed && strings.EqualFold(strings.TrimSpace(st.ID), scoutNodeID) {
 					failedDelegateNodeID = st.ID
 					break
 				}

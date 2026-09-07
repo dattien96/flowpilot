@@ -1598,7 +1598,7 @@ func (s *InteractiveService) resolveFlowNodeModel(ctx context.Context, parentRun
 		return ""
 	}
 	if strings.EqualFold(strings.TrimSpace(flowNodeAgentName(node)), "contract-planner") ||
-		strings.EqualFold(strings.TrimSpace(node.ID), "preflight_contract_plan") {
+		strings.EqualFold(strings.TrimSpace(node.ID), scoutNodeID) {
 		return strings.TrimSpace(node.Model)
 	}
 	if hit := s.resolveConfiguredModelForAgent(ctx, node.ID, flowNodeAgentName(node), s.flowRefForRun(parentRunID)); hit != "" {
@@ -1750,7 +1750,7 @@ func isGenericFlowDispatchStepType(stepType string) bool {
 func (s *InteractiveService) resolveFlowNodeProviderModel(ctx context.Context, parentRunID string, node agentpack.FlowNode) (provider, model string) {
 	// CA-616: planner always shows/inherits hub posture (grok-4.5 etc.).
 	if strings.EqualFold(strings.TrimSpace(flowNodeAgentName(node)), "contract-planner") ||
-		strings.EqualFold(strings.TrimSpace(node.ID), "preflight_contract_plan") {
+		strings.EqualFold(strings.TrimSpace(node.ID), scoutNodeID) {
 		s.mu.Lock()
 		if parent := s.runs[parentRunID]; parent != nil {
 			provider = string(parent.providerKey)

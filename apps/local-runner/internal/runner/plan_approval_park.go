@@ -30,6 +30,10 @@ const (
 	planSynthesisNodeID     = "plan_synthesis"
 	planWriterNodeID        = "plan_writer"
 	planFreezeNodeID        = "preflight_contract_freeze"
+	// scoutNodeID is the preflight scout delegate shared by all harness
+	// flows (BUG-360 cache key, CA-616 planner guards). Single source of
+	// truth — never hardcode the literal elsewhere.
+	scoutNodeID = "preflight_contract_plan"
 )
 
 // cachePreflightDraftLocked caches a parseable preflight draft on the parent
@@ -52,7 +56,7 @@ func (s *InteractiveService) cachePreflightDraftLocked(rs *interactiveRun, final
 		return false
 	}
 	msg := strings.TrimSpace(finalMsg)
-	isScout := strings.EqualFold(strings.TrimSpace(rs.label), "preflight_contract_plan")
+	isScout := strings.EqualFold(strings.TrimSpace(rs.label), scoutNodeID)
 	if msg == "" {
 		// An empty scout completion is still a failed scout re-run — clear a
 		// stale stash the same as prose. Non-scout empties stay no-ops.
