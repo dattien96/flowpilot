@@ -134,15 +134,24 @@ func (m *AppModel) actionRingItems() []actionRingItem {
 		isStalled := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "member_stalled")
 		drifted := parseDriftedPaths(m.blockedDecisionReason())
 		showAllow := !isCap && !isStalled && len(drifted) > 0
+		isPlanApproval := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "plan_approval")
+		retryLabel := "[Retry]"
+		if isPlanApproval {
+			// Live-tested run-206538: on a plan_approval park [Retry] misreads
+			// as "run again" while it really approves the plan and forwards
+			// freeze. [Approve] states the decision; target stays "retry" so
+			// dispatch and ring indices never shift.
+			retryLabel = "[Approve]"
+		}
 		items := []actionRingItem{
-			{target: "retry", label: "[Retry]"},
+			{target: "retry", label: retryLabel},
 			{target: "stop", label: "[Stop]"},
 		}
 		if showAllow {
 			items = append(items, actionRingItem{target: "allow", label: "[Allow]"})
 		}
 		// Task-325 UX: [Revise] prefills "/continue " so feedback is
-		// discoverable (appended last — Retry/Stop/Allow indices unchanged).
+		// discoverable (appended last — Approve/Retry/Stop/Allow indices unchanged).
 		items = append(items, actionRingItem{target: "revise", label: "[Revise]"})
 		return items
 	}

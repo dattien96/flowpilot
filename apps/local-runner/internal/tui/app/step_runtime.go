@@ -299,6 +299,9 @@ func isMissingChangeAuditNoteGate(gate string) bool {
 // agent-loop/continue (run again with old scope), [Stop] ends the parked loop,
 // and when the gate is a frozen-contract scope drift, [Allow] widens the freeze
 // via agent-loop/amend (continue with new scope match code changed) per Task-309.
+// On a plan_approval park the first chip renders [Approve] instead (same retry
+// target): it approves the revised plan and forwards freeze — "run again" copy
+// would mislead after a failed review (live-tested run-206538).
 // run-202550: on a missing change-audit-note park, [Retry] instead continues by
 // re-running the writer to write the note, and the copy says exactly that.
 func (m *AppModel) renderBlockedBar() string {
@@ -335,8 +338,16 @@ func (m *AppModel) renderBlockedBar() string {
 	}
 	isCap := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "cap")
 	isStalled := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "member_stalled")
+	isPlanApproval := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "plan_approval")
 	drifted := parseDriftedPaths(m.blockedDecisionReason())
 	showAllow := !isCap && !isStalled && len(drifted) > 0
+	// plan_approval decision highlight (live-tested run-206538): the plan
+	// already failed review once, so the bar must say so and name the only
+	// exit — revise to rewrite, approve to freeze and continue. The flow
+	// never advances on its own from here.
+	if isPlanApproval {
+		bar += styleGate.Render("  decision: ") + styleSystem.Render("plan failed review — [Revise] to rewrite, [Approve] to freeze and continue") + "\n"
+	}
 
 	var options []string
 	retryHi := m.actionRingHighlighted("blocked", 0)
@@ -345,11 +356,18 @@ func (m *AppModel) renderBlockedBar() string {
 	// the writer to write the note — say so instead of "old scope". Every
 	// other park keeps the established copy (pinned by
 	// TestBlockedBar_RetryStopAlways_AllowOnlyOnDrift).
+	retryLabel := "[Retry]"
 	retryDesc := " - run again with old scope"
 	if isMissingChangeAuditNoteGate(m.blockedDecisionReason()) {
 		retryDesc = " - continue: re-run the writer to write the missing change-audit note"
 	}
-	options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Retry]", retryHi)+styleSystem.Render(retryDesc))
+	if isPlanApproval {
+		// Same retry target, honest copy: this approves the revised plan
+		// and forwards freeze, it does not "run again" anything.
+		retryLabel = "[Approve]"
+		retryDesc = " - approve plan, forward freeze"
+	}
+	options = append(options, styleSystem.Render("  ")+renderActionRingChip(retryLabel, retryHi)+styleSystem.Render(retryDesc))
 	options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Stop]", stopHi)+styleSystem.Render(" - end flow"))
 	if showAllow {
 		allowHi := m.actionRingHighlighted("blocked", 2)

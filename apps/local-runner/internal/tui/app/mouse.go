@@ -434,10 +434,16 @@ func (m *AppModel) clickTargetAt(x, y int) string {
 	if hitStatusDetailsChrome(c, x, y) {
 		return "status-details"
 	}
-	if t := m.hitApprovalChrome(c, x, y); t != "" {
+	// Blocked bar wins over the approval generic-text fallback below while
+	// parked: plan_approval renders [Approve] for the retry target and the
+	// approval matcher claims any "Approve" substring unconditionally. This
+	// only diverts cells where a blocked chip positively matches — anything
+	// else (e.g. an approval card's [Deny]) still falls through. Other parks
+	// are unaffected (their tokens never match the approval fallback).
+	if t := m.hitBlockedChrome(c, x, y); t != "" {
 		return t
 	}
-	if t := m.hitBlockedChrome(c, x, y); t != "" {
+	if t := m.hitApprovalChrome(c, x, y); t != "" {
 		return t
 	}
 	if t := hitGateChrome(m, c, x, y); t != "" {
@@ -719,6 +725,11 @@ func (m *AppModel) hitBlockedChrome(c tuiChrome, x, y int) string {
 	}
 	checkLine := func(stripped string, x int) string {
 		if hitToken(stripped, "[Retry]", x) {
+			return "retry"
+		}
+		// plan_approval park renders [Approve] for the same retry target
+		// (label-only rename; [Retry] still matches every other park).
+		if hitToken(stripped, "[Approve]", x) {
 			return "retry"
 		}
 		if hitToken(stripped, "[Allow]", x) {

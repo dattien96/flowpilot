@@ -13,6 +13,9 @@ import (
 // invisible. The blocked bar gains a [Revise] chip that prefills the
 // composer with "/continue " (type the note + Enter); the chip itself sends
 // nothing and the loop stays blocked.
+// plan_approval rename (live-tested run-206538): the first chip renders
+// [Approve] on this park — "[Retry]" copy misled operators into expecting a
+// re-run while it really approves the plan and forwards freeze.
 
 func reviseBlockedModel(pk string) *AppModel {
 	m := New(config.ChatConfig{Provider: pk}, "http://127.0.0.1:4317")
@@ -39,11 +42,14 @@ func TestBlockedBar_RendersReviseChip(t *testing.T) {
 			if !strings.Contains(view, "feedback") {
 				t.Fatalf("%s: [Revise] must advertise the feedback affordance:\n%s", pk, view)
 			}
-			// Existing chips untouched.
-			for _, want := range []string{"[Retry]", "[Stop]"} {
+			// plan_approval park: first chip is [Approve], never [Retry].
+			for _, want := range []string{"[Approve]", "[Stop]"} {
 				if !strings.Contains(view, want) {
 					t.Fatalf("%s: blocked view must keep %s:\n%s", pk, want, view)
 				}
+			}
+			if strings.Contains(view, "[Retry]") {
+				t.Fatalf("%s: plan_approval view must not render [Retry]:\n%s", pk, view)
 			}
 		})
 	}
