@@ -1,6 +1,6 @@
 # Progress — Ẩn review-loop + dual-loop cap 5 + reset Round (Slice A)
 
-Ngày: 2026-09-07. Trạng thái: **tạm dừng** — code + test mới xong, còn verify full suite và docs Slice B.
+Ngày: 2026-09-07. Trạng thái: **xong Slice A + Slice B docs** — chờ commit.
 
 ## Mục tiêu (đã chốt với operator)
 
@@ -35,19 +35,29 @@ Kết quả targeted run: **tất cả PASS** (matrix 3 provider xanh).
 
 ## R1 (so với baseline cây sạch)
 
-- Baseline stash: **20 failures** có sẵn (môi trường: provider detection, Drive/Supabase, Run144900/147126 parks, flake goroutine/TempDir…).
-- Nhánh này trước khi sửa 3 test: 22 failures = 20 cũ + 3 chat-mode do hide gây ra − 1 flake baseline (`TestProviderAdaptersReceiveEquivalentFrozenContractPayload`).
-- Sau khi sửa 3 test: targeted PASS. **Full suite re-run lần cuối bị abort giữa chừng → CHƯA có kết luận cuối.**
-- Guard `TestDomainHardcodeGuardMatchesFrozenBaseline`: production edit chỉ dùng identifier (`planSynthesisNodeID`), không thêm literal → an toàn (chưa chạy lại sau cùng, nằm trong todo).
+- Full `go test ./internal/runner/ -count=1` (2026-09-07, sau sync): **19 failures = 18 stash-proven pre-existing + 1 flake**.
+  - 16-failure subset chạy lại trên cây sạch (stash): fail **y hệt** (provider detection, Drive/Supabase, Run144900 parks, portability canary, `TestResumeFlowWithFeedbackAfterEscalate`, `TestRootFlowEngineDefersCompletedUntilGate`, `TestSpawnChildEmitsGraphAndBusEvents`, `TestFinalizerHookSurfacesArtifacts`…).
+  - 2 `TestValidatePassed*`: fail y hệt trên cây sạch (Windows không có executable `true` trong `%PATH%` — env).
+  - `TestIntentClear_NoTOCTOUResurrectionUnderConcurrentAccess`: flake full-suite-only đã biết — PASS isolated `-count=3` trên nhánh này, PASS trên baseline lần này.
+  - Không failure nào đụng đường review-loop / cap / park; 12 targeted tests xanh (re-run lần 2, lần 1 có 1 FAIL lẻ không lặp lại — flake).
+- `internal/agentpack` xanh; `internal/changecontract` xanh; `internal/flowgate` 2 failures pre-existing Windows-env (fixture `.sh`: `%1 is not a valid Win32 application`), không đụng code slice này.
+- Guard `TestDomainHardcodeGuardMatchesFrozenBaseline`: **PASS** (production edit chỉ dùng identifier `planSynthesisNodeID`/`planFreezeNodeID`, không thêm literal).
+- `git diff --check` sạch; `gofmt -l` là noise repo-wide (CRLF checkout — 534 files bị flag ngay trên cây sạch), không thêm whitespace mới.
 
 ## Todo còn lại
 
-- [ ] Re-run **full** `go test ./internal/runner/ -count=1`, diff failure set với baseline 20.
-- [ ] Chạy `go test ./internal/agentpack/ ./internal/flowgate/ ./internal/changecontract/` (agentpack đã xanh 1 lần).
-- [ ] `gofmt -l` trên các file Go đã chạm.
-- [ ] Viết `change-audit/CA-755-*` (kế tiếp sau CA-754): `feature_key: agent-flow-engine`, source_doc_id, R1/R2 evidence (agnostic grep + matrix), will-not-undo (CA-712/731/749/403), liệt kê test cũ đã sửa theo allow-list.
-- [ ] Slice B docs: draft **CP-61** (H-3 harness: gate verdict trước `advanceHubDoneThroughEdge` cho `plan_synthesis`/`synthesis`/`cp_synthesis`) + note **đóng CP-53** (leftover → CP-61, không claim DoD Task-272…277).
-- [ ] Commit (chưa commit gì cả — xem `git status`, 10 modified + 2 untracked).
+- [x] Re-run **full** `go test ./internal/runner/ -count=1`, diff failure set với baseline 20 → 19 = 18 pre-existing + 1 flake (xong 2026-09-07).
+- [x] Chạy `go test ./internal/agentpack/ ./internal/flowgate/ ./internal/changecontract/` (agentpack + changecontract xanh; flowgate 2 env-fail pre-existing).
+- [x] `gofmt -l` trên các file Go đã chạm → noise CRLF repo-wide, `git diff --check` sạch.
+- [x] Viết `change-audit/CA-755-*` (kế tiếp sau CA-754): `feature_key: agent-flow-engine`, source_doc_id, R1/R2 evidence (agnostic grep + matrix), will-not-undo (CA-712/731/749/403), liệt kê test cũ đã sửa theo allow-list.
+- [x] Slice B docs: draft **CP-61** (`requirements/07-Coding-Plan/inprogress/CP-61-Harness-Done-Verdict-Gate.md`) + note **đóng CP-53** (§12 closure note, Status closed, Related trỏ CP-61).
+- [ ] Commit (xem ghi chú sync bên dưới).
+
+## Ghi chú sync 2026-09-07 (quyết định operator đã chốt ở trên giữ nguyên)
+
+- Remote `origin/cp58-harness-dual-loop` đã có commit `694a04e "ddđ"` chứa **y hệt** 11 modified files của slice này (đã diff xác nhận, backup 3 untracked files khớp byte).
+- Local đã `reset --hard` về `694a04e` — workdir sạch, không mất gì. Commit message `"ddđ"` là của operator; **chưa amend** (cần operator quyết có force-push sửa message không).
+- Commit tiếp theo chỉ chứa: CA-755 + CP-61 + CP-53 closure note + PROGRESS update.
 
 ## Quyết định operator đã chốt (đừng đảo ngược khi resume)
 

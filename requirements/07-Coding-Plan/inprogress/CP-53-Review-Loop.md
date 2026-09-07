@@ -5,14 +5,14 @@
 - Document ID: `CP-53`
 - Title: `Review Loop — Bịt các lỗ rò của Verifier Gate trong Flow-Coding`
 - Phase: `coding_plan`
-- Status: `reviewing`
+- Status: `closed (2026-09-07 — P-2 leftover moved to CP-61; Tasks 272…277 stay draft, no DoD claimed)`
 - Owner: `FlowPilot`
 - Reviewers: `<chờ phân công>`
 - Created: `2026-07-22`
-- Last Updated: `2026-08-11`
+- Last Updated: `2026-09-07`
 - Parent Documents: [CP-35 (nguồn gốc flow gate, P-4/P-5)](../), [CP-51 (durable turn dispatch)](../done/CP-51-PhaseAB-Timeline-And-Verification-Log.md), [CP-50 / CP-43 (context sources)](../)
 - Child Documents: [Task-272](../../08-Task/todo/Task-272-CP53-Gate-Observability-Metrics.md) (P-6), [Task-273](../../08-Task/todo/Task-273-CP53-Gate-Blind-Baseline-Fail-Closed.md) (P-1), [Task-274](../../08-Task/todo/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) (P-2), [Task-275](../../08-Task/todo/Task-275-CP53-Dogfood-Gate-Check-Hooks.md) (P-3), [Task-276](../../08-Task/todo/Task-276-CP53-Waiver-Ledger-With-Expiry.md) (P-4), [Task-277](../../08-Task/todo/Task-277-CP53-R-Newtest-Reprompt-Rule.md) (P-5), [CP-53-Test-Steps](./CP-53-Test-Steps.md)
-- Related Documents: `Task-155 (r-reg decision card), Task-156 (baseline), Task-223/225/242/247 (artifact + tier gates), BUG-288, BUG-289, SD-21 (change contract)`, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md), [CP-43-52-53-54-note](./CP-43-52-53-54-note.md)
+- Related Documents: `Task-155 (r-reg decision card), Task-156 (baseline), Task-223/225/242/247 (artifact + tier gates), BUG-288, BUG-289, SD-21 (change contract)`, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md), [CP-43-52-53-54-note](./CP-43-52-53-54-note.md), [CP-61](./CP-61-Harness-Done-Verdict-Gate.md) (takes over P-2)
 - Replaces: `<không>`
 - Tags: `flow-gate, review-loop, verifier, regression, flowgate, quality`
 
@@ -237,3 +237,9 @@ Companion: [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.m
 - Không full desktop metrics dashboard.
 - Không symbol-level test attribution mới.
 - Không bắt buộc Windows native dogfood parity với Linux trong v1.
+
+## 12. Closure note (2026-09-07)
+
+- CP này đóng mà **không claim** bất kỳ DoD nào của Task-272…277 — các Task đó ở lại `draft`, không có code nào trong slice này đụng đường gate của chúng.
+- Leftover duy nhất có chủ: **P-2 (machine verdict, H-3)** → chuyển sang [CP-61](./CP-61-Harness-Done-Verdict-Gate.md) (draft), mở rộng phạm vi từ review-loop `synthesis` sang 3 harness hub (`plan_synthesis` / `synthesis` / `cp_synthesis`), vì review-loop đã ẩn khỏi picker (CA-755) và loop thật sống trong harness.
+- Mọi contract fail-closed của CP này (BUG-288/289 always-block, corrupt-baseline block) giữ nguyên hiệu lực và được liệt kê trong will-not-undo của các CA tiếp theo.
