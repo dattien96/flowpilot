@@ -11,6 +11,7 @@ import (
 
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/changecontract"
+	"flowpilot-runner/internal/workingmode"
 )
 
 // startResolvedFlow is the one place a CP-42 flowRef selection becomes a
@@ -28,6 +29,13 @@ import (
 // own first turn, which proceeds to its own provider normally regardless of
 // whether the flow's entry node could be spawned.
 func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID, flowRef, userPrompt string) {
+	if workingmode.BareFlowID(flowRef) == vibeSprintFlowID && s.vibeSprintStartBlocked(parentRunID) {
+		log.Printf("[vibe-cp] refuse vibe-sprint while cp_lock waiting run=%s", parentRunID)
+		s.flowDiagLog(parentRunID, "vibe_sprint_blocked_lock", "vibe-sprint refused; cp_lock waiting",
+			"flow_ref", flowRef,
+		)
+		return
+	}
 	s.flowDiagLog(parentRunID, "flow_start_begin", "starting resolved flow",
 		"flow_ref", flowRef,
 		"user_prompt_len", len(userPrompt),
@@ -1068,14 +1076,8 @@ func (s *InteractiveService) notifyHubFlowStarted(parentRunID string) {
 // that transition was already correctly Go-orchestrated via the existing
 // cohort-join â†’ maybeAutoReinvokeHub path. Only the coder â†’ reviewer-cohort
 // step needed a real fix.
-//
-// Returns false (a no-op) when the run has no tracked flow, the node has no
-// outgoing forward ("done") edges, or any edge target isn't a spawnable
-// agent.delegate node (e.g. a hub.inline node) â€” callers fall back to the
-// existing note+reinvoke-hub behavior in that case, so a flow shape this
-// function doesn't understand degrades to the pre-existing AI-driven
-// behavior rather than silently doing nothing.
 func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID, resultMessage string) bool {
+	s.onVibeCpNodeDone(parentRunID, completedNodeID)
 	// BUG-234: do not auto-advance once the loop has legitimately settled
 	// (blocked/awaiting-user, done, stopped, paused). A child completion that
 	// lands after the loop blocked would otherwise re-spawn the next nodes and,
@@ -1108,27 +1110,25 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		)
 		return false
 	}
+	if len(targetIDs) == 1 && strings.EqualFold(targetIDs[0], "done") {
+		s.maybeChainVibeSprint(parentRunID, completedNodeID)
+	}
 	s.flowDiagLog(parentRunID, "flow_advance_targets_resolved", "resolved forward targets for completed node",
 		"completed_node_id", completedNodeID,
 		"target_ids", strings.Join(targetIDs, ","),
 		"result_len", len(resultMessage),
 	)
 
-	// BUG-243 F-0: a single forward-done target whose behavior is a
-	// registered INLINE-scope behavior (validate/audit, not a spawnable
-	// agent.delegate) previously fell straight through to the bail below â€”
-	// the executor had no path to dispatch an inline node reached mid-flow
-	// (only the flow's own entry node, via startInlineEntryChain, was ever
-	// dispatched in-process). Handling it here, before the delegate-only
-	// validation loop, preserves every existing multi-target cohort-spawn
-	// case (e.g. coder -> [reviewer_correctness, reviewer_security])
-	// unchanged: this only fires for the single-target inline case.
 	if len(targetIDs) == 1 {
 		if target, ok := findFlowNode(nodes, targetIDs[0]); ok {
+			if canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior); ok && canonical == "user.confirm" && isVibeLockNode(target.ID) {
+				if s.isFlowEngineDriven(parentRunID) {
+					s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
+				}
+				return s.parkVibeLock(parentRunID, target.ID)
+			}
 			if canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior); ok && canonical != "agent.delegate" {
 				if spec, err := DefaultBehaviorRegistry().Resolve(canonical); err == nil && spec.Scope == BehaviorScopeInline {
-					// BUG-289 L5/F-10: mark the delegate source DONE before the
-					// early return (the multi-target path does this at :1052-1053).
 					if s.isFlowEngineDriven(parentRunID) {
 						s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
 					}
@@ -1212,6 +1212,26 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		// review delegate — spawn it through the shared frozen-writer path with
 		// its bound contract and writer prompt, never the review handoff.
 		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.code" {
+			s.mu.Lock()
+			mode := ""
+			if p := s.runs[parentRunID]; p != nil {
+				mode = p.workingMode
+			}
+			s.mu.Unlock()
+			if vibeCoderSpawnBlocked(mode, node.ID, hasVibeTddSignatures(cwd)) {
+				s.flowDiagLog(parentRunID, "vibe_tdd_missing", "coder refused; tdd artifact missing",
+					"completed_node_id", completedNodeID,
+					"target_node_id", node.ID,
+				)
+				s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+					st.Status = "blocked"
+					st.BlockReason = "requirement"
+					st.GateReason = "tdd artifact missing before coder (no bypass)"
+					return st
+				})
+				s.parkFlowForAwaitingUser(parentRunID)
+				continue
+			}
 			store, storeErr := changecontract.NewFrozenStore(cwd)
 			if storeErr != nil {
 				s.flowDiagLog(parentRunID, "flow_advance_writer_store_failed", "cannot open frozen contract store for writer spawn",
