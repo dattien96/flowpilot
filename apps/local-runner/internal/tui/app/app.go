@@ -19,6 +19,7 @@ import (
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
 	"flowpilot-runner/internal/tui/prefs"
+	"flowpilot-runner/internal/workingmode"
 )
 
 // ---- Styles -----------------------------------------------------------------
@@ -184,6 +185,7 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 		textarea:        newChatTextArea(80),
 		textareaReady:   true,
 		yolo:            yolo,
+		workingMode:     savedWorkingMode(haveSaved, skipSessionUX, savedPrefs),
 		provider:        provider,
 		model:           model,
 		reasoningEffort: reasoning,
@@ -3079,7 +3081,8 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 		projectID = m.project.ID
 	}
 	in := m.slashSuggestLine()
-	if flows := filterFlowSuggestions(in, m.flowBuiltins, m.flowWorkflows, projectID); len(flows) > 0 {
+	flowBuiltins, flowWorkflows := m.flowCatalogForWorkingMode()
+	if flows := filterFlowSuggestions(in, flowBuiltins, flowWorkflows, projectID); len(flows) > 0 {
 		return flows
 	}
 	// While `/flow ` is open but catalog still loading, show a placeholder row.
@@ -4100,6 +4103,75 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.chatPosturePending = "setup:" + posture + ":" + field + ":" + value
 		return m, m.cmdLoadChatPosture()
 
+	case "/vibe":
+		arg := ""
+		if len(args) > 0 {
+			arg = strings.ToLower(strings.TrimSpace(args[0]))
+		}
+		switch arg {
+		case "off", "normal", "dev":
+			m.setWorkingMode(workingmode.Dev)
+			m.addMessage("system", "Working mode: normal (dev)", "")
+		default:
+			m.setWorkingMode(workingmode.Vibe)
+			rest := strings.TrimSpace(strings.Join(args, " "))
+			if rest == "" || arg == "on" {
+				m.addMessage("system", "Working mode: vibe", "")
+				break
+			}
+			if m.runHandle != nil {
+				m.addMessage("system", "Cannot change flow after a run has started. Use /new first.", "error")
+				break
+			}
+			flowID, source := workingmode.DetectVibeEntry(rest)
+			if flowID == "vibe-cp-ingest" {
+				if err := workingmode.RejectNonCP(source, ""); err != nil {
+					m.addMessage("system", err.Error(), "error")
+					break
+				}
+			}
+			m.launch = LaunchArm{
+				Mode:        ModeFlow,
+				FlowRef:     flowID,
+				Label:       flowID,
+				SourceDocID: source,
+			}
+			m.mode = ModeFlow
+			m.firstTurnPending = true
+			m.persistSessionPrefs()
+			if flowID == "vibe-cp-ingest" {
+				m.addMessage("system", fmt.Sprintf("CP locked entry armed: %s. Send a prompt to start vibe-cp-ingest.", source), "")
+			} else {
+				m.addMessage("system", fmt.Sprintf("SS ingest armed: %s. Send a prompt to start vibe-ingest.", rest), "")
+			}
+		}
+
+	case "/vibe-cp":
+		if len(args) == 0 {
+			m.addMessage("system", "Usage: /vibe-cp <requirements/07-Coding-Plan/**/CP-*.md>", "error")
+			break
+		}
+		cpPath := strings.TrimSpace(args[0])
+		if err := workingmode.RejectNonCP(cpPath, ""); err != nil {
+			m.addMessage("system", err.Error(), "error")
+			break
+		}
+		if m.runHandle != nil {
+			m.addMessage("system", "Cannot change flow after a run has started. Use /new first.", "error")
+			break
+		}
+		m.setWorkingMode(workingmode.Vibe)
+		m.launch = LaunchArm{
+			Mode:        ModeFlow,
+			FlowRef:     "vibe-cp-ingest",
+			Label:       "vibe-cp-ingest",
+			SourceDocID: cpPath,
+		}
+		m.mode = ModeFlow
+		m.firstTurnPending = true
+		m.persistSessionPrefs()
+		m.addMessage("system", fmt.Sprintf("CP locked entry armed: %s. Send a prompt to start vibe-cp-ingest.", cpPath), "")
+
 	case "/yolo":
 		if m.mode != ModeChat || m.launch.IsArmed() {
 			m.addMessage("system", "YOLO is auto-on in flow mode. Switch to /chat to toggle.", "")
@@ -4181,7 +4253,15 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		if m.project != nil {
 			projectID = m.project.ID
 		}
-		arm, err := resolveFlowLaunch(m.flowBuiltins, m.flowWorkflows, projectID, strings.Join(args, " "))
+		query := strings.Join(args, " ")
+		if m.workingMode == workingmode.Dev || m.workingMode == workingmode.Vibe {
+			if err := workingmode.FlowAllowedForWorkingMode(m.workingMode, query, "user"); err != nil {
+				m.addMessage("system", err.Error(), "error")
+				break
+			}
+		}
+		flowBuiltins, flowWorkflows := m.flowCatalogForWorkingMode()
+		arm, err := resolveFlowLaunch(flowBuiltins, flowWorkflows, projectID, query)
 		if err != nil {
 			m.addMessage("system", err.Error(), "error")
 			break
@@ -5943,7 +6023,6 @@ func (m *AppModel) renderInputLine() string {
 	return frameInput(inner, w, label, footer, m.asciiMode)
 }
 
-// inputFrameFooter is the bottom-right of the chat input frame.
 // Per user request: bottom-right shows Model · reasoning · YOLO (no provider,
 // no quota/limits). The sidebar already holds session+steps only.
 func (m *AppModel) inputFrameFooter() string {
@@ -5959,7 +6038,11 @@ func (m *AppModel) inputFrameFooter() string {
 	if m.asciiMode {
 		sep = " | "
 	}
-	return fmt.Sprintf("%s%sreasoning: %s%s%s", model, sep, reasoning, sep, m.yoloStatusLabel())
+	out := fmt.Sprintf("%s%sreasoning: %s%s%s", model, sep, reasoning, sep, m.yoloStatusLabel())
+	if chip := m.workingModeChip(); chip != "" {
+		out += sep + chip
+	}
+	return out
 }
 
 // chatFrameTitle is the top-left of the chat input frame.
@@ -6697,6 +6780,7 @@ func (m *AppModel) cmdStartRun() tea.Cmd {
 	model := m.model
 	reasoning := m.reasoningEffort
 	launch := m.launch
+	workingMode := m.workingMode
 	projectID := ""
 	cwd := cfg.ProjectPath
 	if m.project != nil {
@@ -6735,6 +6819,10 @@ func (m *AppModel) cmdStartRun() tea.Cmd {
 			return ErrMsg{Err: fmt.Errorf("provider required — set /provider before chatting")}
 		}
 		input := launch.ToStartRunInput(projectID, provider, model, reasoning, cwd, yolo)
+		input.WorkingMode = workingMode
+		if launch.IsBuiltin() {
+			input.FlowRef = launch.FlowRef
+		}
 		handle, err := cl.StartRun(ctx, input)
 		if err != nil {
 			return ErrMsg{Err: fmt.Errorf("start run: %w", err)}
