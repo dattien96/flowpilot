@@ -14,6 +14,7 @@ import (
 
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/changecontract"
+	"flowpilot-runner/internal/workingmode"
 )
 
 // RegisterInteractiveRoutes wires the Phase 2 interactive + admin endpoints onto
@@ -26,6 +27,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/workflows/{workflowId}/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/chat/builtin-orchestration-options", s.handleListBuiltinOrchestrationOptions)
+	mux.HandleFunc("GET /client/flow-picker-options", s.handleFlowPickerOptions)
 	mux.HandleFunc("GET /client/projects/{projectId}/workflow-runs", s.handleListProjectRunHistory)
 	// CP-59 chat SSOT timeline (Task-313) — always ON.
 	mux.HandleFunc("GET /client/chats/{chatId}/timeline", s.handleChatTimeline)
@@ -244,6 +246,7 @@ func (s *InteractiveService) handleStartRun(w http.ResponseWriter, r *http.Reque
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
 		return
 	}
+	in.Client = r.Header.Get("X-Client")
 	handle, e := s.createRun(in)
 	if e != nil {
 		writeInteractiveError(w, e)
@@ -632,6 +635,9 @@ func (s *InteractiveService) handleAdminQuestions(w http.ResponseWriter, r *http
 // ---- run creation / snapshot / fake artifacts ------------------------------
 
 func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
+	if e := s.enforceWorkingModeStart(&in); e != nil {
+		return RunHandle{}, e
+	}
 	// CA-638: ensure the target workspace is GitNexus-indexed so scope-drift
 	// HighSeverity and source.dependence can query real dependents. Runs once
 	// per process per workspace; non-blocking.
@@ -850,6 +856,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		workspaceCwd:      in.Cwd,
 		modelName:         resolvedModel,
 		yolo:              resolvedYolo,
+		workingMode:       in.WorkingMode,
 		reasoningEffort:   in.ReasoningEffort,
 		runKind:           runKind,
 		status:            RunStatusIdle,
@@ -857,6 +864,14 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		updatedAt:         now,
 		subs:              map[int64]chan ProviderEvent{},
 		idempotency:       map[string]string{},
+	}
+	if ref := strings.TrimSpace(in.FlowRef); ref != "" {
+		rs.chatFlowRef = ref
+		id := workingmode.BareFlowID(ref)
+		if id == vibeCpIngestFlowID || id == vibeIngestFlowID {
+			rs.vibeAwaitingLock = true
+			rs.vibeSprintBudget = defaultVibeSprintBudget
+		}
 	}
 	if chatID != "" {
 		rs.chatID = chatID
@@ -886,6 +901,8 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		LegState:          rs.legState,
 		SwitchFromRunID:   switchFrom,
 		Yolo:              resolvedYolo,
+		WorkingMode:       in.WorkingMode,
+		ChatFlowRef:       rs.chatFlowRef,
 	}); err != nil {
 		delete(s.runs, runID)
 		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
