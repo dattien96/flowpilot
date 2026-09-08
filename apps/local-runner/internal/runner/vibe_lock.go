@@ -15,10 +15,48 @@ func isVibeLockNode(id string) bool {
 	return id == vibeSSLockNodeID || id == vibeCpLockNodeID
 }
 
+func vibeHubSealed(rs *interactiveRun) bool {
+	if rs == nil {
+		return false
+	}
+	hub := strings.TrimSpace(rs.activeHubNodeID)
+	if hub == "" {
+		hub = hubInlineNodeID(rs.activeFlowNodes)
+	}
+	switch hub {
+	case vibeSSValidatorNodeID:
+		return rs.vibeSSSealed
+	case vibeCPValidatorNodeID:
+		return rs.vibeCPSealed
+	default:
+		return false
+	}
+}
+
+func (s *InteractiveService) sealVibeLockLocked(rs *interactiveRun, nodeID string) {
+	if rs == nil {
+		return
+	}
+	rs.pendingHubReinvoke = false
+	rs.pendingHubReinvokePrompt = ""
+	rs.activeHubNodeID = ""
+	if nodeID == vibeCpLockNodeID {
+		rs.vibeCPSealed = true
+	} else {
+		rs.vibeSSSealed = true
+	}
+}
+
 func (s *InteractiveService) parkVibeLock(parentRunID, nodeID string) bool {
 	cwd := s.workspaceCwdFor(parentRunID)
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
+	if rs != nil {
+		if (nodeID == vibeSSLockNodeID && rs.vibeSSSealed) || (nodeID == vibeCpLockNodeID && rs.vibeCPSealed) {
+			s.mu.Unlock()
+			return true
+		}
+	}
 	path := ""
 	if rs != nil {
 		path = strings.TrimSpace(rs.sourceDocID)
@@ -125,6 +163,7 @@ func (s *InteractiveService) resumeVibeLock(parentRunID, feedback string, snap A
 		} else {
 			r.vibeLockedSS = path
 		}
+		s.sealVibeLockLocked(r, nodeID)
 	}
 	s.mu.Unlock()
 	s.setFlowStepStatus(context.Background(), parentRunID, nodeID, StepStatusDone)
