@@ -17,6 +17,7 @@ import (
 
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/flowgate"
+	"flowpilot-runner/internal/workingmode"
 )
 
 // InteractiveService implements the Phase 2 (04-02) interactive + admin APIs: the
@@ -159,6 +160,17 @@ type interactiveRun struct {
 	stepID                string
 	modelName             string
 	yolo                  bool
+	// workingMode is Task-326 local SSOT ("dev"|"vibe"); empty reconstructs as dev.
+	workingMode string
+	// Task-321: CP lock + sequential vibe-sprint queue (local only).
+	vibeAwaitingLock bool
+	vibeTaskPlan     []string
+	vibeSprintIndex  int
+	vibeSprintBudget int
+	vibeLockedCP     string
+	vibeLockedSS     string
+	vibeLockNodeID   string
+	vibeLockPath     string
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
 	// chatPosture is the per-turn posture (scan/plan/code, "" = code). Persisted
@@ -1929,6 +1941,11 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	// generic resume (hub re-decides done → re-parks on still-churned plan).
 	if prevBlockReason == planApprovalBlockReason {
 		if handledSnap, handled := s.resumePlanApproval(parentRunID, feedback, snap); handled {
+			return handledSnap, nil
+		}
+	}
+	if prevBlockReason == vibeLockBlockReason {
+		if handledSnap, handled := s.resumeVibeLock(parentRunID, feedback, snap); handled {
 			return handledSnap, nil
 		}
 	}
@@ -3920,6 +3937,15 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		ActiveFlowNodes:                 append([]agentpack.FlowNode(nil), rs.activeFlowNodes...),
 		ChatSubMode:                     rs.chatSubMode,
 		ChatFlowRef:                     rs.chatFlowRef,
+		WorkingMode:                     rs.workingMode,
+		VibeAwaitingLock:                rs.vibeAwaitingLock,
+		VibeTaskPlan:                    append([]string(nil), rs.vibeTaskPlan...),
+		VibeSprintIndex:                 rs.vibeSprintIndex,
+		VibeSprintBudget:                rs.vibeSprintBudget,
+		VibeLockedCP:                    rs.vibeLockedCP,
+		VibeLockedSS:                    rs.vibeLockedSS,
+		VibeLockNodeID:                  rs.vibeLockNodeID,
+		VibeLockPath:                    rs.vibeLockPath,
 		FlowStartGitHead:                rs.flowStartGitHead,
 		PendingFlowGateSettle:           rs.pendingFlowGateSettle,
 		PendingFlowGateFinalMsg:         rs.pendingFlowGateFinalMsg,
@@ -6295,6 +6321,9 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		rs.uiInitiated = in.UIInitiated
 		rs.waitForResult = in.Wait
 		rs.flowCohortId = in.FlowCohortID
+		if parent := s.runs[parentRunID]; parent != nil {
+			rs.workingMode = parent.workingMode
+		}
 		// CP-51 Task-252: stamp the mint-time provenance for the trusted FCP marker
 		// embedded in this child's first prompt (Prompt was composed with
 		// ComposeFlowCodingPrompt(pkg, ...) by the caller, embedding pkg.WorkflowRunID
@@ -6995,22 +7024,24 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 	// Task-260: auto-mention safe-fix-contract on Chat Plan/Code (pointer only, not full content).
 	mergedSkills := mergeChatSafeFixContractSkills(posture, rs.runKind, rs.flowEngineDriven, in.SelectedSkills)
 	req := TurnRequest{
-		RunID:                  rs.id,
-		StepID:                 in.StepID,
-		ProjectID:              rs.projectID,
-		ProviderSessionID:      providerSessionID,
-		ProviderTurnID:         turnID,
-		Prompt:                 providerPrompt,
-		ModelName:              model,
-		SelectedSkills:         mergedSkills,
-		YoloMode:               yolo,
-		ForceShellBridge:       forceShellBridge,
-		ReasoningEffort:        effort,
-		ChatPosture:            posture,
-		Cwd:                    rs.workspaceCwd,
-		Scenario:               scenario,
-		Attachments:            in.Attachments,
-		OfferReviewOutcomeTool: offerReviewOutcomeTool,
+		RunID:                    rs.id,
+		StepID:                   in.StepID,
+		ProjectID:                rs.projectID,
+		ProviderSessionID:        providerSessionID,
+		ProviderAccountID:        rs.providerAccountID,
+		ProviderTurnID:           turnID,
+		Prompt:                   providerPrompt,
+		ModelName:                model,
+		SelectedSkills:           mergedSkills,
+		YoloMode:                 yolo,
+		ForceShellBridge:         forceShellBridge,
+		ReasoningEffort:          effort,
+		ChatPosture:              posture,
+		Cwd:                      rs.workspaceCwd,
+		Scenario:                 scenario,
+		Attachments:              in.Attachments,
+		OfferReviewOutcomeTool:   offerReviewOutcomeTool,
+		OfferVibeRequirementTool: offerReviewOutcomeTool && rs.workingMode == workingmode.Vibe && runHasFlowNode(rs, "synthesis"),
 	}
 	// CP-35 / Task-242: snapshot HEAD + dirty worktree fingerprints before the AI
 	// runs so the post-turn gate measures only this turn's changes (not prior
@@ -8376,6 +8407,16 @@ func (s *InteractiveService) startTurn(runID string, in TurnInput, scenario, ide
 				rs.yolo = true
 				rs.chatSubMode = strings.TrimSpace(in.SubMode)
 				rs.chatFlowRef = flowRef
+				id := workingmode.BareFlowID(flowRef)
+				if id == vibeCpIngestFlowID || id == vibeIngestFlowID {
+					rs.vibeAwaitingLock = true
+					if rs.vibeSprintBudget <= 0 {
+						rs.vibeSprintBudget = defaultVibeSprintBudget
+					}
+					if id == vibeCpIngestFlowID {
+						rs.vibeLockedCP = rs.sourceDocID
+					}
+				}
 				go s.startResolvedFlow(context.Background(), runID, flowRef, in.Prompt)
 			}
 		}
