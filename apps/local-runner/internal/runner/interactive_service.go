@@ -6010,6 +6010,19 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 			return FlowControlResult{Status: "done", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "advancing"}, true
 		}
 	}
+	if targetNode, ok := findFlowNode(nodes, target); ok {
+		if canonical, ok := agentpack.NormalizeBehaviorID(targetNode.Behavior); ok && canonical == "user.confirm" && isVibeLockNode(target) {
+			s.setFlowStepStatus(context.Background(), targetRunID, hubID, StepStatusDone)
+			s.parkVibeLock(targetRunID, target)
+			s.mu.Lock()
+			if rs := s.runs[targetRunID]; rs != nil && rs.currentTurnID != "" {
+				rs.lastFlowControlTurnID = rs.currentTurnID
+			}
+			s.mu.Unlock()
+			st := s.agentOrchestrator.loopStateFor(targetRunID)
+			return FlowControlResult{Status: "blocked", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "awaiting_user"}, true
+		}
+	}
 	// Dispatch the successor chain synchronously (telegram.notify / audit /
 	// contract.freeze / etc. are Go-inline); a terminal reached at the end still
 	// calls applyFlowControl, so the loop settles for real by the time this returns.
