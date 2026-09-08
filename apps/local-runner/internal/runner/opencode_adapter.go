@@ -268,6 +268,9 @@ func (a *opencodeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge 
 	var mcpServers []interface{}
 	if a.mcpServer != nil {
 		mcpToken = a.mcpServer.register(bridge, req.OfferReviewOutcomeTool)
+		if req.OfferVibeRequirementTool {
+			a.mcpServer.setAllowVibeRequirement(mcpToken, true)
+		}
 		defer a.mcpServer.unregister(mcpToken)
 		baseURL := ""
 		if a.mcpBaseURL != nil {
