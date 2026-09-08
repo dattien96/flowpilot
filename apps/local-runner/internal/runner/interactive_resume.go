@@ -960,6 +960,8 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		vibeLockedSS:                    st.VibeLockedSS,
 		vibeLockNodeID:                  st.VibeLockNodeID,
 		vibeLockPath:                    st.VibeLockPath,
+		vibeCheckpointNode:              st.VibeCheckpointNode,
+		vibeCheckpointArtifacts:         append([]string(nil), st.VibeCheckpointArtifacts...),
 		flowStartGitHead:                st.FlowStartGitHead,
 		pendingRestartRunID:             st.PendingRestartRunID,
 		pendingRestartPrompt:            st.PendingRestartPrompt,
@@ -989,6 +991,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	if len(rs.activeFlowNodes) > 0 {
 		rs.flowEngineDriven = true
 	}
+	applyVibeCheckpointFromDisk(rs)
 	// BUG-299 residual (run-35329): sessionStateOf historically omitted yolo, so
 	// rehydrate always left rs.yolo=false. Force Flow/Workflow/flow-engine runs
 	// back to true independent of the stored zero value; chat keeps st.Yolo.

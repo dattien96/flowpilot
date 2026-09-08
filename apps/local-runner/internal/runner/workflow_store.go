@@ -158,8 +158,10 @@ type ProviderSessionState struct {
 	VibeSprintBudget int
 	VibeLockedCP     string
 	VibeLockedSS     string
-	VibeLockNodeID   string
-	VibeLockPath     string
+	VibeLockNodeID string
+	VibeLockPath   string
+	VibeCheckpointNode      string
+	VibeCheckpointArtifacts []string
 	// PendingFlowGateSettle is durable gate-pending state (V10 P0): after
 	// restart, reconstructRun re-queues post-turn gate instead of treating
 	// the child/root as completed.

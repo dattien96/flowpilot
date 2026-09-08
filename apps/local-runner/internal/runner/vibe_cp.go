@@ -324,4 +324,5 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 		}
 		s.maybeStartNextVibeSprint(parentRunID)
 	}
+	s.tryCommitVibeCheckpoint(parentRunID, completedNodeID)
 }

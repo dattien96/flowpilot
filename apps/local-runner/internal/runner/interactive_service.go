@@ -171,6 +171,8 @@ type interactiveRun struct {
 	vibeLockedSS     string
 	vibeLockNodeID   string
 	vibeLockPath     string
+	vibeCheckpointNode      string
+	vibeCheckpointArtifacts []string
 	vibeSSSealed     bool
 	vibeCPSealed     bool
 	vibeParkedNodes       []agentpack.FlowNode
@@ -3973,6 +3975,8 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		VibeLockedSS:                    rs.vibeLockedSS,
 		VibeLockNodeID:                  rs.vibeLockNodeID,
 		VibeLockPath:                    rs.vibeLockPath,
+		VibeCheckpointNode:              rs.vibeCheckpointNode,
+		VibeCheckpointArtifacts:         append([]string(nil), rs.vibeCheckpointArtifacts...),
 		FlowStartGitHead:                rs.flowStartGitHead,
 		PendingFlowGateSettle:           rs.pendingFlowGateSettle,
 		PendingFlowGateFinalMsg:         rs.pendingFlowGateFinalMsg,

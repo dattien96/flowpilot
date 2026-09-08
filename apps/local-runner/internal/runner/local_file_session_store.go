@@ -112,8 +112,10 @@ type ndjsonSessionRecord struct {
 	VibeSprintBudget int      `json:"vibe_sprint_budget,omitempty"`
 	VibeLockedCP     string   `json:"vibe_locked_cp,omitempty"`
 	VibeLockedSS     string   `json:"vibe_locked_ss,omitempty"`
-	VibeLockNodeID   string   `json:"vibe_lock_node_id,omitempty"`
-	VibeLockPath     string   `json:"vibe_lock_path,omitempty"`
+	VibeLockNodeID string `json:"vibe_lock_node_id,omitempty"`
+	VibeLockPath   string `json:"vibe_lock_path,omitempty"`
+	VibeCheckpointNode      string   `json:"vibe_checkpoint_node,omitempty"`
+	VibeCheckpointArtifacts []string `json:"vibe_checkpoint_artifacts,omitempty"`
 	// FlowStartGitHead persists Task-242 tier-3 audit aggregate base (Codex review Important #3).
 	FlowStartGitHead string `json:"flow_start_git_head,omitempty"`
 	// V10 P0 / V10R: durable post-turn gate pending across restart + turn snapshot.
@@ -449,6 +451,8 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		VibeLockedSS:                       r.VibeLockedSS,
 		VibeLockNodeID:                     r.VibeLockNodeID,
 		VibeLockPath:                       r.VibeLockPath,
+		VibeCheckpointNode:                 r.VibeCheckpointNode,
+		VibeCheckpointArtifacts:            append([]string(nil), r.VibeCheckpointArtifacts...),
 		FlowStartGitHead:                   r.FlowStartGitHead,
 		PendingFlowGateSettle:              r.PendingFlowGateSettle,
 		PendingFlowGateFinalMsg:            r.PendingFlowGateFinalMsg,
@@ -915,6 +919,8 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		VibeLockedSS:                       s.VibeLockedSS,
 		VibeLockNodeID:                     s.VibeLockNodeID,
 		VibeLockPath:                       s.VibeLockPath,
+		VibeCheckpointNode:                 s.VibeCheckpointNode,
+		VibeCheckpointArtifacts:            append([]string(nil), s.VibeCheckpointArtifacts...),
 		FlowStartGitHead:                   s.FlowStartGitHead,
 		PendingFlowGateSettle:              s.PendingFlowGateSettle,
 		PendingFlowGateFinalMsg:            s.PendingFlowGateFinalMsg,
