@@ -720,7 +720,6 @@ var knownSlashCommands = []slashCommand{
 	{"/scan", "Switch to scan posture — read-only (like /mode scan)"},
 	{"/yolo", "Toggle YOLO in chat mode (flow mode is auto-on)"},
 	{"/vibe", "Switch working mode — /vibe [on|off] or /vibe <requirement>"},
-	{"/vibe-cp", "Arm CP-driven vibe ingest — /vibe-cp <CP-*.md>"},
 	{"/mode", "Switch chat posture — /mode scan|plan|code"},
 	{"/mode-setup", "Configure posture profiles (provider/model/reasoning/yolo)"},
 	{"/agents", "List/cycle sub-agents (Tab while focused)"},

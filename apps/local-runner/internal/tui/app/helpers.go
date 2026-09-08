@@ -825,7 +825,7 @@ func filterSlashSuggestions(input string) []slashCommand {
 }
 
 // filterVibeArgSuggestions is the /vibe Tab picker: exact `/vibe` (or `/vibe <q>`)
-// offers on/off. `/vibe-cp` stays a separate command reached by typing the hyphen.
+// offers on/off. CP entry is `/flow vibe-cp-ingest`, not a hyphen command.
 func filterVibeArgSuggestions(input string) []suggestItem {
 	s := strings.TrimLeft(input, " \t")
 	lower := strings.ToLower(s)

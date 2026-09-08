@@ -71,16 +71,12 @@ func TestSlashTabOnVibeFillsOnNotVibeCp(t *testing.T) {
 
 func TestSlashSuggestions_VibeHyphenStillListsCp(t *testing.T) {
 	sugg := filterSlashSuggestions("/vibe-")
-	found := false
 	for _, sc := range sugg {
 		if sc.name == "/vibe-cp" {
-			found = true
+			t.Fatalf("/vibe-cp must not be a slash command: %+v", sugg)
 		}
 		if sc.name == "/vibe" {
 			t.Fatal("/vibe must not match /vibe- prefix")
 		}
-	}
-	if !found {
-		t.Fatalf("want /vibe-cp in %+v", sugg)
 	}
 }
