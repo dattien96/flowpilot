@@ -39,7 +39,7 @@ func flowNodeInlineDispatchable(node agentpack.FlowNode) bool {
 		return false
 	}
 	switch canonical {
-	case "command.validate", "artifact.audit_draft", "telegram.notify", "hub.notify", "contract.freeze", "context.produce":
+	case "command.validate", "artifact.audit_draft", "telegram.notify", "hub.notify", "hub.inline", "contract.freeze", "context.produce":
 		return true
 	}
 	return false
@@ -111,6 +111,9 @@ func (s *InteractiveService) tryAdvanceFlowThroughInline(parentRunID string, edg
 	case "telegram.notify":
 		return s.runTelegramNotifyNode(ctx, parentRunID, edges, nodes, node, resultMessage)
 	case "hub.notify":
+		s.dispatchHubNotifyNode(parentRunID, node)
+		return true
+	case "hub.inline":
 		s.dispatchHubNotifyNode(parentRunID, node)
 		return true
 	case "contract.freeze":

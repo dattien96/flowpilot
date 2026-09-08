@@ -135,6 +135,6 @@ func (s *InteractiveService) resumeVibeLock(parentRunID, feedback string, snap A
 		return st
 	})
 	s.emitAgentGraph(parentRunID, cleared)
-	go s.tryAdvanceFlowFromNode(parentRunID, nodeID, "locked")
+	s.tryAdvanceFlowFromNode(parentRunID, nodeID, "")
 	return cleared, true
 }
