@@ -101,6 +101,8 @@ prompts:
   - prompts/task-splitter.md
   - prompts/vibe-ss-ingest.md
   - prompts/vibe-ss-validate.md
+  - prompts/vibe-cp-from-ss.md
+  - prompts/vibe-cp-validate.md
 compatibility:
   minRunnerVersion: TBD
   fallbackToGoBuiltins: true

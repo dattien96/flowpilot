@@ -27,6 +27,7 @@ nodes:
     lifecycle: once
     behavior: hub.inline
     agent: agents/synthesizer.md
+    promptTemplate: prompts/vibe-cp-validate.md
     join: all
   - id: cp_lock
     run: inline
