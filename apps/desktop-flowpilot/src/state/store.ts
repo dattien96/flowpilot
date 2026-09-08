@@ -1395,7 +1395,13 @@ export const useStore = create<AppState>((set, get) => ({
   setWorkingMode(mode) {
     const wired = mode === "vibe" ? "vibe" : "dev";
     persistWorkingMode(wired);
-    set({ workingMode: wired });
+    set({
+      workingMode: wired,
+      chatStartMode: "normal",
+      chatSourceDocId: "",
+      flowRef: undefined,
+      builtinOrchestrationOptions: [],
+    });
   },
 
   async toggleYoloForActiveProvider(next) {
