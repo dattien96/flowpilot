@@ -171,6 +171,8 @@ type interactiveRun struct {
 	vibeLockedSS     string
 	vibeLockNodeID   string
 	vibeLockPath     string
+	vibeSSSealed     bool
+	vibeCPSealed     bool
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
 	// chatPosture is the per-turn posture (scan/plan/code, "" = code). Persisted
@@ -1601,6 +1603,9 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 						if n.ID == reentryID {
 							continue
 						}
+						if isVibeLockNode(n.ID) {
+							continue
+						}
 						if len(edges) == 0 || resetIDs[n.ID] {
 							s.setFlowStepStatus(context.Background(), parentRunID, n.ID, StepStatusPending)
 						}
@@ -2579,6 +2584,14 @@ func (s *InteractiveService) notifyHubOfFlowChildFailureLocked(child *interactiv
 		)
 		return
 	}
+	if vibeLinearWriterNode(child.label) || vibeHubSealed(parent) {
+		s.flowDiagLog(child.parentRunID, "writer_fail_skips_validator_hub",
+			"post-lock writer failure must not reinvoke ss/cp validator",
+			"child_run_id", child.id,
+			"label", child.label,
+		)
+		return
+	}
 	s.setFlowStepStatusLocked(context.Background(), child.parentRunID, hubNodeID, StepStatusRunning)
 	parentRunID := child.parentRunID
 	capturedFailNote := failNote
@@ -2780,6 +2793,16 @@ func (s *InteractiveService) maybeAutoReinvokeHub(parentRunID string) {
 func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNote string) {
 	s.mu.Lock()
 	parent := s.runs[parentRunID]
+	if parent != nil && vibeHubSealed(parent) {
+		parent.pendingHubReinvoke = false
+		parent.pendingHubReinvokePrompt = ""
+		s.mu.Unlock()
+		s.flowDiagLog(parentRunID, "hub_reinvoke_skipped_vibe_lock_sealed",
+			"ss/cp lock already sealed; validator hub must not reinvoke",
+			"cohort_note_len", len(strings.TrimSpace(cohortNote)),
+		)
+		return
+	}
 	if parent == nil || !parent.autoOrchestrate || parent.reinvokeInFlight || parent.turnInFlight {
 		if parent != nil && parent.autoOrchestrate && strings.TrimSpace(cohortNote) != "" &&
 			!s.loopSealedForReinvoke(parentRunID) {
@@ -5015,6 +5038,17 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 			// subsequent agent_graph_updated event fires — otherwise the desktop's
 			// step-runtime refresh could race ahead of these writes and render the
 			// prior round's stale "all done"/RUNNING snapshot.
+			writerJoin := vibeLinearWriterCohort(entries)
+			writerLabel, writerMsg := "", ""
+			if writerJoin {
+				for _, e := range entries {
+					if e.Status == "completed" && vibeLinearWriterNode(e.Label) {
+						writerLabel = e.Label
+						writerMsg = e.FinalMessage
+						break
+					}
+				}
+			}
 			if flowDriven {
 				for _, id := range reviewerNodeIDs {
 					// Caller holds s.mu (settleFlowChildTurnCompletedLocked).
@@ -5027,13 +5061,20 @@ func (s *InteractiveService) settleFlowChildTurnCompletedLocked(rs *interactiveR
 				// is what left the synthesis step spinning forever after an escalate.
 				// maybeAutoReinvokeHubWithNote is itself gated on loop status, but the
 				// hub-RUNNING write below is not, so guard it here too.
-				if hubNodeID != "" && s.loopIsAdvancing(parentRunID) {
+				// run-216140: cp_writer is not a reviewer; joining it must not
+				// revive ss_validator (changes_requested → second ss_lock).
+				if !writerJoin && hubNodeID != "" && s.loopIsAdvancing(parentRunID) {
 					s.setFlowStepStatusLocked(context.Background(), parentRunID, hubNodeID, StepStatusRunning)
 				}
 			}
-			cohortDiagLog("scheduling hub reinvoke parent=%q flowDriven=%t loopAdvancing=%t reviewerNodeIDs=%v noteLen=%d",
-				parentRunID, flowDriven, s.loopIsAdvancing(parentRunID), reviewerNodeIDs, len(capturedCohortNote))
-			go s.maybeAutoReinvokeHubWithNote(parentRunID, capturedCohortNote)
+			if writerJoin {
+				cohortDiagLog("vibe linear writer join advances instead of hub reinvoke parent=%q label=%q", parentRunID, writerLabel)
+				go s.advanceOrNotifyHub(parentRunID, writerLabel, writerLabel, writerMsg)
+			} else {
+				cohortDiagLog("scheduling hub reinvoke parent=%q flowDriven=%t loopAdvancing=%t reviewerNodeIDs=%v noteLen=%d",
+					parentRunID, flowDriven, s.loopIsAdvancing(parentRunID), reviewerNodeIDs, len(capturedCohortNote))
+				go s.maybeAutoReinvokeHubWithNote(parentRunID, capturedCohortNote)
+			}
 		}
 	} else if s.agentOrchestrator.loopMode(rs.parentRunID) == "explicit" && (isCoderRun(rs) || parentHasTrackedFlow(s, rs.parentRunID)) {
 		// In explicit mode the hub drives all transitions. When a node completes
@@ -5357,28 +5398,29 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 					if !s.loopSealedForReinvoke(rs.parentRunID) {
 						s.appendPendingAgentContextLocked(rs.parentRunID, note)
 					}
+					skipWriterHub := vibeLinearWriterNode(rs.label)
 					if parent := s.runs[rs.parentRunID]; parent != nil {
 						parent.lastCohortNote = note // BUG-233: retained for the CA-226 fallback GateReason
-						// BUG-289 L4/F-10: stamp hub RUNNING on failed-member join
-						// (completed-join already does this at :3587-3589).
-						hubNodeID := parent.activeHubNodeID
-						if hubNodeID == "" {
-							hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
-						}
-						// CP-58 Task-304: a failed member completing the cohort
-						// must still activate ITS hub on dual-hub flows (the
-						// member's forward edge names it), not first-match.
-						if resolved, dual := hubNodeIDForCohortJoin(parent.activeFlowNodes, parent.activeFlowEdges, []string{rs.label}); dual && resolved != "" {
-							hubNodeID = resolved
-							parent.activeHubNodeID = resolved
-						}
-						if hubNodeID != "" && s.loopIsAdvancing(rs.parentRunID) {
-							s.setFlowStepStatusLocked(context.Background(), rs.parentRunID, hubNodeID, StepStatusRunning)
+						if !skipWriterHub {
+							// BUG-289 L4/F-10: stamp hub RUNNING on failed-member join
+							hubNodeID := parent.activeHubNodeID
+							if hubNodeID == "" {
+								hubNodeID = hubInlineNodeID(parent.activeFlowNodes)
+							}
+							if resolved, dual := hubNodeIDForCohortJoin(parent.activeFlowNodes, parent.activeFlowEdges, []string{rs.label}); dual && resolved != "" {
+								hubNodeID = resolved
+								parent.activeHubNodeID = resolved
+							}
+							if hubNodeID != "" && s.loopIsAdvancing(rs.parentRunID) {
+								s.setFlowStepStatusLocked(context.Background(), rs.parentRunID, hubNodeID, StepStatusRunning)
+							}
 						}
 					}
 					parentRunID := rs.parentRunID
-					capturedCohortNote := note // embed note directly in synthesis prompt (BUG-synthesis-hang)
-					go s.maybeAutoReinvokeHubWithNote(parentRunID, capturedCohortNote)
+					capturedCohortNote := note
+					if !skipWriterHub {
+						go s.maybeAutoReinvokeHubWithNote(parentRunID, capturedCohortNote)
+					}
 				}
 			} else {
 				// Non-cohort child failure (run-1618 / CA-355 + H-A residual).
@@ -5958,6 +6000,17 @@ func (s *InteractiveService) advanceHubDoneThroughEdge(targetRunID string, in Fl
 			rs.activeHubNodeID = ""
 		}
 		s.mu.Unlock()
+		if hubID == vibeSprintSlicerNodeID || hubID == vibeTaskSlicerNodeID {
+			s.setFlowStepStatus(context.Background(), targetRunID, hubID, StepStatusDone)
+			s.onVibeCpNodeDone(targetRunID, hubID)
+			s.mu.Lock()
+			if rs := s.runs[targetRunID]; rs != nil && rs.currentTurnID != "" {
+				rs.lastFlowControlTurnID = rs.currentTurnID
+			}
+			s.mu.Unlock()
+			st := s.agentOrchestrator.loopStateFor(targetRunID)
+			return FlowControlResult{Status: "done", Round: st.Round, Cap: effectiveCap(st), OpenIssues: st.OpenIssues, NextAction: "advancing"}, true
+		}
 		return FlowControlResult{}, false
 	}
 	// CP-61 P-1: harness hubs with a real done-successor (freeze / audit /
