@@ -403,6 +403,9 @@ type StartRunInput struct {
 	// ChatMode is "normal_chat" for provider-chat mode (CP-56 §3.2).
 	ChatMode string `json:"chatMode,omitempty"`
 	Cwd      string `json:"cwd,omitempty"`
+	// WorkingMode is Task-326 wire enum "dev"|"vibe". Empty → runner defaults to dev.
+	WorkingMode string `json:"workingMode,omitempty"`
+	FlowRef     string `json:"flowRef,omitempty"`
 	// Chat SSOT (CP-59 / SD-26 §5.1): attach to an existing chat (switch legs /
 	// reattach) or mint a new one. Additive — the TUI omits all three until
 	// Task-315 routes the reattach path.
@@ -418,6 +421,7 @@ type TurnInput struct {
 	StepID          string             `json:"stepId,omitempty"`
 	Prompt          string             `json:"prompt"`
 	ChangeType      string             `json:"changeType,omitempty"`
+	SourceDocID     string             `json:"sourceDocId,omitempty"`
 	SelectedSkills  []SkillSelection   `json:"selectedSkills,omitempty"`
 	Attachments     []PromptAttachment `json:"attachments,omitempty"`
 	ReasoningEffort string             `json:"reasoningEffort,omitempty"`
@@ -1496,6 +1500,7 @@ func (c *Client) methodJSON(ctx context.Context, method, path string, in, out an
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Client", "tui")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
