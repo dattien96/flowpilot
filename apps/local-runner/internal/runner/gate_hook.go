@@ -310,6 +310,8 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	// the dev-doc/scope gates — the plan phase is not the development phase, and
 	// the flow's coding children own those rules (see flowHubGateRules).
 	rules = flowHubGateRules(rules, rs.parentRunID == "" && rs.flowEngineDriven)
+	rules = prepareWorkingModeRules(rs.workingMode, rules, &tr)
+	s.injectVibeSSDrift(rs, &tr)
 
 	// 8. Evaluate rule set.
 	violations := flowgate.Evaluate(tr, rules)
@@ -373,10 +375,12 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		return false
 	}
 
-	// 10. Enforce — read gate_mode from .flowpilot/settings/gate-config.json; default enforce (see readGateMode).
 	gateMode := loadGateMode(dotFP)
 	result := flowgate.Enforce(violations, gateMode)
 	s.recordGateEnforceMetric(dotFP, rs, turnID, gateMode, result)
+	if s.applyVibeGateResolver(runID, rs.parentRunID, turnID, rs, result) {
+		return true
+	}
 
 	// 11. Extract r-reg options for the decision card (Task-155).
 	var gateOptions []string
@@ -1088,7 +1092,11 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			Failed:    failedTests,
 			Regressed: regressedTests,
 		}
+		tr.TamperedTestPaths = append([]string(nil), oracle.Tampered...)
 	}
+	only = prepareWorkingModeRules(rs.workingMode, only, &tr)
+	s.injectVibeSSDrift(rs, &tr)
+
 
 	// V10 P0: Gemini (and any adapter without RequestApproval) may still create
 	// commits under YOLO. Detect new commits since turn base and block coding
@@ -1179,6 +1187,9 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		return false
 	}
 	result := flowgate.Enforce(violations, loadGateMode(filepath.Join(cwd, ".flowpilot")))
+	if s.applyVibeGateResolver(runID, parentID, turnID, rs, result) {
+		return true
+	}
 	if !s.gateEpochStillValid(runID, epoch) {
 		return true
 	}
