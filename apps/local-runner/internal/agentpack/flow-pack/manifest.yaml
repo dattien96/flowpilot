@@ -73,6 +73,11 @@ flows:
     editable: false
     selectableIn: []
     cloneable: false
+  - path: flows/vibe-cp-ingest.yaml
+    visibility: builtin
+    editable: false
+    selectableIn: []
+    cloneable: false
 tools:
   - tools/submit-review-outcome.yaml
   - tools/vibe-requirement-outcome.yaml
