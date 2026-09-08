@@ -315,9 +315,11 @@ export interface StartRunInput {
   providerKey?: ProviderKey;
   /** Workflow/step model; the runner derives the provider from it when `providerKey` is empty. */
   model?: string;
-  /** YOLO is the single source of truth for approval posture (see 04-04). */
   yoloMode?: boolean;
   reasoningEffort?: string;
+  /** Task-326 wire enum. "dev" | "vibe". Never "normal". Empty → runner defaults to dev. */
+  workingMode?: "dev" | "vibe";
+  flowRef?: string;
   /** "normal_chat" signals provider-chat mode; the runner tags the run as chat and mints a synthetic step. */
   chatMode?: string;
   /** Active project binding path used as the provider working directory. */

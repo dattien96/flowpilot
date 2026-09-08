@@ -130,7 +130,7 @@ export class HttpWsRunnerClient implements RunnerClient {
   private async postJSON<T>(path: string, body?: unknown, headers?: Record<string, string>): Promise<T> {
     const resp = await fetch(this.base + path, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json", ...(headers ?? {}) },
+      headers: { "Content-Type": "application/json", Accept: "application/json", "X-Client": "desktop", ...(headers ?? {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     return this.parse<T>(resp);
