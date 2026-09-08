@@ -149,6 +149,17 @@ type ProviderSessionState struct {
 	// launch (which has its own WorkflowID/launchMode restore path already).
 	ChatSubMode string
 	ChatFlowRef string
+	// WorkingMode is Task-326 local-only ("dev"|"vibe"). Empty loads as dev. Not a Supabase column.
+	WorkingMode string
+	// Task-321: vibe lock + sequential sprint queue (sessions.ndjson only).
+	VibeAwaitingLock bool
+	VibeTaskPlan     []string
+	VibeSprintIndex  int
+	VibeSprintBudget int
+	VibeLockedCP     string
+	VibeLockedSS     string
+	VibeLockNodeID   string
+	VibeLockPath     string
 	// PendingFlowGateSettle is durable gate-pending state (V10 P0): after
 	// restart, reconstructRun re-queues post-turn gate instead of treating
 	// the child/root as completed.

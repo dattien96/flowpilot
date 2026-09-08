@@ -105,6 +105,15 @@ type ndjsonSessionRecord struct {
 	// selection a run was started with (BUG-263); see ProviderSessionState.
 	ChatSubMode string `json:"chat_sub_mode,omitempty"`
 	ChatFlowRef string `json:"chat_flow_ref,omitempty"`
+	WorkingMode string `json:"working_mode,omitempty"`
+	VibeAwaitingLock bool     `json:"vibe_awaiting_lock,omitempty"`
+	VibeTaskPlan     []string `json:"vibe_task_plan,omitempty"`
+	VibeSprintIndex  int      `json:"vibe_sprint_index,omitempty"`
+	VibeSprintBudget int      `json:"vibe_sprint_budget,omitempty"`
+	VibeLockedCP     string   `json:"vibe_locked_cp,omitempty"`
+	VibeLockedSS     string   `json:"vibe_locked_ss,omitempty"`
+	VibeLockNodeID   string   `json:"vibe_lock_node_id,omitempty"`
+	VibeLockPath     string   `json:"vibe_lock_path,omitempty"`
 	// FlowStartGitHead persists Task-242 tier-3 audit aggregate base (Codex review Important #3).
 	FlowStartGitHead string `json:"flow_start_git_head,omitempty"`
 	// V10 P0 / V10R: durable post-turn gate pending across restart + turn snapshot.
@@ -431,6 +440,15 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		ActiveFlowNodes:                    append([]agentpack.FlowNode(nil), r.ActiveFlowNodes...),
 		ChatSubMode:                        r.ChatSubMode,
 		ChatFlowRef:                        r.ChatFlowRef,
+		WorkingMode:                        r.WorkingMode,
+		VibeAwaitingLock:                   r.VibeAwaitingLock,
+		VibeTaskPlan:                       append([]string(nil), r.VibeTaskPlan...),
+		VibeSprintIndex:                    r.VibeSprintIndex,
+		VibeSprintBudget:                   r.VibeSprintBudget,
+		VibeLockedCP:                       r.VibeLockedCP,
+		VibeLockedSS:                       r.VibeLockedSS,
+		VibeLockNodeID:                     r.VibeLockNodeID,
+		VibeLockPath:                       r.VibeLockPath,
 		FlowStartGitHead:                   r.FlowStartGitHead,
 		PendingFlowGateSettle:              r.PendingFlowGateSettle,
 		PendingFlowGateFinalMsg:            r.PendingFlowGateFinalMsg,
@@ -888,6 +906,15 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		ActiveFlowNodes:                    append([]agentpack.FlowNode(nil), s.ActiveFlowNodes...),
 		ChatSubMode:                        s.ChatSubMode,
 		ChatFlowRef:                        s.ChatFlowRef,
+		WorkingMode:                        s.WorkingMode,
+		VibeAwaitingLock:                   s.VibeAwaitingLock,
+		VibeTaskPlan:                       append([]string(nil), s.VibeTaskPlan...),
+		VibeSprintIndex:                    s.VibeSprintIndex,
+		VibeSprintBudget:                   s.VibeSprintBudget,
+		VibeLockedCP:                       s.VibeLockedCP,
+		VibeLockedSS:                       s.VibeLockedSS,
+		VibeLockNodeID:                     s.VibeLockNodeID,
+		VibeLockPath:                       s.VibeLockPath,
 		FlowStartGitHead:                   s.FlowStartGitHead,
 		PendingFlowGateSettle:              s.PendingFlowGateSettle,
 		PendingFlowGateFinalMsg:            s.PendingFlowGateFinalMsg,

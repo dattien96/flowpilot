@@ -315,6 +315,14 @@ type StartRunInput struct {
 	// workflow/step selection). The runner mints a synthetic chat step and tags the run
 	// with RunKind="chat" so it is excluded from workflow catalogs (T-7).
 	ChatMode string `json:"chatMode,omitempty"`
+	// WorkingMode is Task-326 SSOT: "dev" | "vibe". Empty → dev. Never "normal".
+	WorkingMode string `json:"workingMode,omitempty"`
+	// FlowRef is an optional pack flow id gated at start (bare or pack-prefixed).
+	FlowRef string `json:"flowRef,omitempty"`
+	// RunID on start is rejected (409 working_mode_pinned); live mode is immutable.
+	RunID string `json:"runId,omitempty"`
+	// Client is copied from X-Client by handleStartRun; not a JSON field.
+	Client string `json:"-"`
 	// Cwd is the active workspace directory for this run (04-06 multi-workspace).
 	// Per-run/per-thread cwd is authoritative; Runner.workspace is only a default.
 	Cwd string `json:"cwd,omitempty"`
