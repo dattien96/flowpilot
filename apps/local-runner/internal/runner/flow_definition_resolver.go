@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"flowpilot-runner/internal/agentpack"
+	"flowpilot-runner/internal/workingmode"
 )
 
 // FlowDefinitionRecord is the normalized runtime shape a resolved flow ref
@@ -148,7 +149,8 @@ func (r *FlowDefinitionResolver) ResolveFlowRef(ctx context.Context, flowRef str
 	}
 	packID, flowID, ok := splitFlowRef(flowRef)
 	if !ok {
-		return FlowDefinitionRecord{}, fmt.Errorf("flow definition resolver: %q not found and is not a resolvable pack/flow ref", flowRef)
+		// TUI /flow sends bare pack flow ids (vibe-ingest, task-harness).
+		return r.ResolveBuiltin(ctx, strings.TrimSuffix(workingmode.PackPrefix, "/"), flowRef)
 	}
 	return r.ResolveBuiltin(ctx, packID, flowID)
 }

@@ -13,6 +13,7 @@ import (
 
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/prefs"
+	"flowpilot-runner/internal/workingmode"
 )
 
 // persistTUISessionPrefs writes latest provider/model/yolo/mode/flow so new TUI sessions keep them.
@@ -89,8 +90,10 @@ func applySavedModeAndFlow(m *AppModel, saved prefs.Session) {
 		Label:      label,
 	}
 	if arm.IsBuiltin() {
-		arm.SubMode = "bug"
-		arm.ChangeType = "bugfix"
+		if !workingmode.LooksLikeVibeFlow(arm.FlowRef) {
+			arm.SubMode = "bug"
+			arm.ChangeType = "bugfix"
+		}
 		m.firstTurnPending = true
 	} else {
 		m.firstTurnPending = false
