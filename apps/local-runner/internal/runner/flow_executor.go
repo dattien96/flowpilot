@@ -452,45 +452,29 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 		return false
 	}
 
-	var delegateTarget *agentpack.FlowNode
+	var delegateTargets []agentpack.FlowNode
 	for _, id := range forwardDoneTargets(def.Edges, entry.ID) {
 		node, ok := findFlowNode(def.Nodes, id)
 		if !ok {
 			continue
 		}
 		if nodeCanonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && nodeCanonical == "agent.delegate" {
-			n := node
-			delegateTarget = &n
-			break
+			delegateTargets = append(delegateTargets, node)
 		}
 	}
-	if delegateTarget == nil {
+	if len(delegateTargets) == 0 {
 		log.Printf("[flow-executor] flow %q inline entry node %q has no reachable agent.delegate target; unsupported chain shape", flowRef, entry.ID)
-		return false
-	}
-
-	agentName := flowNodeAgentName(*delegateTarget)
-	if agentName == "" {
-		log.Printf("[flow-executor] flow %q delegate target %q has no resolvable agent; skipped", flowRef, delegateTarget.ID)
 		return false
 	}
 
 	prompt := userPrompt
 	var fcpProvenanceRunID string
 	if pkg, ok := out.Payload["package"].(FlowContextPackage); ok {
-		// BUG-288 R19-4: per-service marker secret for inline FCP render.
 		prompt = renderFlowContextPromptWithSecret(ctx, pkg, userPrompt, s.markerSecret)
-		// CP-51 Task-252: this is the SAME trustID selection ComposeFlowCodingPrompt
-		// uses to mint the "flowpilot-fcp" marker embedded in prompt above — record
-		// it so the spawned child can verify against its recorded provenance rather
-		// than trusting parentRunID by topology alone.
 		fcpProvenanceRunID = pkg.WorkflowRunID
 		if fcpProvenanceRunID == "" {
 			fcpProvenanceRunID = pkg.PackageID
 		}
-		// BUG-243 F-0: stash the package on the run so a mid-flow node reached
-		// later (rag-harness's validate/audit) can read it back â€” previously
-		// it was only ever used for this one prompt render, then discarded.
 		s.mu.Lock()
 		if rs := s.runs[parentRunID]; rs != nil {
 			pkgCopy := pkg
@@ -507,47 +491,60 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 	prompt = appendJiraIssueTargetPrompt(prompt, jiraIssueTarget)
 	prompt = appendJiraSprintTargetPrompt(prompt, jiraSprintTarget)
 	prompt = appendFirebaseCrashTargetPrompt(prompt, firebaseCrashTarget)
-	// Task-202/223: INPUT file artifacts (read) + OUTPUT file write contract
-	// for the delegate target. context_artifact stays on the package path above.
-	prompt = composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), prompt, *delegateTarget)
-	prompt = appendChangeContractIfAnyWithSecret(s.workspaceCwdFor(parentRunID), parentRunID, prompt, s.markerSecret)
 
-	// Same ordering rationale as the delegate-entry path above: track the
-	// flow's topology before spawning, not after, so a fast-completing child
-	// can't race ahead of it.
 	s.mu.Lock()
 	if rs := s.runs[parentRunID]; rs != nil {
 		rs.activeFlowEdges = def.Edges
 		rs.activeFlowNodes = def.Nodes
+		rs.activeFlowAcceptanceNodes = append([]string(nil), def.AcceptanceNodes...)
 	}
 	s.mu.Unlock()
 
-	// BUG-174: same step-timeline wiring as the delegate-entry path. The inline
-	// entry node has already run synchronously above, so mark it DONE and the
-	// spawned delegate target RUNNING.
 	if s.isFlowEngineDriven(parentRunID) {
 		s.reseedFlowStepRuntime(parentRunID, def.Nodes)
 		s.setFlowStepStatus(ctx, parentRunID, entry.ID, StepStatusDone)
 	}
 
-	agentDef, _ := resolvePackAgentDefinition(agentName)
-	if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
-		Agent:                    agentName,
-		Prompt:                   prompt,
-		Wait:                     false,
-		Label:                    delegateTarget.ID,
-		AutoOrchestrate:          true,
-		AgentDefOverride:         agentDef,
-		Model:                    s.delegateSpawnModel(ctx, parentRunID, *delegateTarget),
-		FCPMarkerProvenanceRunID: fcpProvenanceRunID,
-	}); err != nil {
-		log.Printf("[flow-executor] spawn inline-chain delegate node %q (agent %q) for flow %q on run %q failed: %v",
-			delegateTarget.ID, agentName, flowRef, parentRunID, err)
-		return false
+	cohortID := ""
+	cohortSize := 0
+	if len(delegateTargets) > 1 {
+		cohortID = fmt.Sprintf("flow-auto-%s-round-0", entry.ID)
+		cohortSize = len(delegateTargets)
 	}
-	if s.isFlowEngineDriven(parentRunID) {
-		s.setFlowStepStatus(ctx, parentRunID, delegateTarget.ID, StepStatusRunning)
-		s.stampFlowNodePosture(ctx, parentRunID, *delegateTarget)
+	spawned := 0
+	for i, target := range delegateTargets {
+		agentName := flowNodeAgentName(target)
+		if agentName == "" {
+			log.Printf("[flow-executor] flow %q delegate target %q has no resolvable agent; skipped", flowRef, target.ID)
+			continue
+		}
+		nodePrompt := composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), prompt, target)
+		nodePrompt = appendChangeContractIfAnyWithSecret(s.workspaceCwdFor(parentRunID), parentRunID, nodePrompt, s.markerSecret)
+		agentDef, _ := resolvePackAgentDefinition(agentName)
+		if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
+			Agent:                    agentName,
+			Prompt:                   nodePrompt,
+			Wait:                     false,
+			Label:                    target.ID,
+			FlowCohortID:             cohortID,
+			CohortSize:               cohortSize,
+			AutoOrchestrate:          i == 0,
+			AgentDefOverride:         agentDef,
+			Model:                    s.delegateSpawnModel(ctx, parentRunID, target),
+			FCPMarkerProvenanceRunID: fcpProvenanceRunID,
+		}); err != nil {
+			log.Printf("[flow-executor] spawn inline-chain delegate node %q (agent %q) for flow %q on run %q failed: %v",
+				target.ID, agentName, flowRef, parentRunID, err)
+			continue
+		}
+		spawned++
+		if s.isFlowEngineDriven(parentRunID) {
+			s.setFlowStepStatus(ctx, parentRunID, target.ID, StepStatusRunning)
+			s.stampFlowNodePosture(ctx, parentRunID, target)
+		}
+	}
+	if spawned == 0 {
+		return false
 	}
 
 	s.notifyHubFlowStarted(parentRunID)
@@ -1132,8 +1129,8 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		// not in activeFlowNodes. Returning false here made advanceOrNotifyHub
 		// reinvoke ss_validator/cp_validator, which submit_review_outcome
 		// continue and re-park the lock (live run-214743: second ss_lock).
-		if completedNodeID == vibeCpWriterNodeID || completedNodeID == vibeTaskSlicerNodeID {
-			s.flowDiagLog(parentRunID, "flow_advance_vibe_terminal_done", "claimed vibe writer/slicer terminal done without hub reinvoke",
+		if completedNodeID == vibeCpWriterNodeID || completedNodeID == vibeTaskSlicerNodeID || completedNodeID == vibeDebateSynthesisNodeID {
+			s.flowDiagLog(parentRunID, "flow_advance_vibe_terminal_done", "claimed vibe writer/slicer/debate terminal done without hub reinvoke",
 				"completed_node_id", completedNodeID,
 			)
 			if s.isFlowEngineDriven(parentRunID) {

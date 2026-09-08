@@ -79,7 +79,8 @@ func (s *InteractiveService) applyVibeGateResolver(runID, parentID, turnID strin
 			hub = parentID
 		}
 		log.Printf("[vibe-gate] start vibe-owner-debate hub=%s child=%s", hub, runID)
-		go s.startResolvedFlow(context.Background(), hub, workingmode.PackPrefix+"vibe-owner-debate", result.Message)
+		s.stashVibeFlowForDebate(hub)
+		go s.startResolvedFlow(context.Background(), hub, workingmode.PackPrefix+vibeOwnerDebateFlowID, result.Message)
 		return true
 	default:
 		return false

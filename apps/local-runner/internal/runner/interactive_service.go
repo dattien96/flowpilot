@@ -173,6 +173,10 @@ type interactiveRun struct {
 	vibeLockPath     string
 	vibeSSSealed     bool
 	vibeCPSealed     bool
+	vibeParkedNodes       []agentpack.FlowNode
+	vibeParkedEdges       []agentpack.FlowEdge
+	vibeParkedAcceptance  []string
+	vibeParkedFlowRef     string
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
 	// chatPosture is the per-turn posture (scan/plan/code, "" = code). Persisted

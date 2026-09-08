@@ -8,21 +8,24 @@ import (
 	"strings"
 	"time"
 
+	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/workingmode"
 )
 
 const (
-	defaultVibeSprintBudget = 8
-	vibeIngestFlowID        = "vibe-ingest"
-	vibeCpIngestFlowID      = "vibe-cp-ingest"
-	vibeSprintFlowID        = "vibe-sprint"
-	vibeCpLockNodeID        = "cp_lock"
-	vibeSSLockNodeID        = "ss_lock"
-	vibeSSValidatorNodeID   = "ss_validator"
-	vibeCPValidatorNodeID   = "cp_validator"
-	vibeTaskSlicerNodeID    = "task_slicer"
-	vibeSprintSlicerNodeID  = "sprint_slicer"
-	vibeCpWriterNodeID      = "cp_writer"
+	defaultVibeSprintBudget     = 8
+	vibeIngestFlowID            = "vibe-ingest"
+	vibeCpIngestFlowID          = "vibe-cp-ingest"
+	vibeSprintFlowID            = "vibe-sprint"
+	vibeOwnerDebateFlowID       = "vibe-owner-debate"
+	vibeCpLockNodeID            = "cp_lock"
+	vibeSSLockNodeID            = "ss_lock"
+	vibeSSValidatorNodeID       = "ss_validator"
+	vibeCPValidatorNodeID       = "cp_validator"
+	vibeTaskSlicerNodeID        = "task_slicer"
+	vibeSprintSlicerNodeID      = "sprint_slicer"
+	vibeCpWriterNodeID          = "cp_writer"
+	vibeDebateSynthesisNodeID   = "debate_synthesis"
 )
 
 // vibeInheritsSessionModel is true when the node must not pick the generic
@@ -252,6 +255,44 @@ func collectVibeSprintPlan(cwd string) []string {
 	return out
 }
 
+func (s *InteractiveService) stashVibeFlowForDebate(parentRunID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rs := s.runs[parentRunID]
+	if rs == nil || len(rs.vibeParkedNodes) > 0 {
+		return
+	}
+	rs.vibeParkedNodes = append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
+	rs.vibeParkedEdges = append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...)
+	rs.vibeParkedAcceptance = append([]string(nil), rs.activeFlowAcceptanceNodes...)
+	rs.vibeParkedFlowRef = rs.chatFlowRef
+}
+
+func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || len(rs.vibeParkedNodes) == 0 {
+		s.mu.Unlock()
+		return false
+	}
+	rs.activeFlowNodes = rs.vibeParkedNodes
+	rs.activeFlowEdges = rs.vibeParkedEdges
+	rs.activeFlowAcceptanceNodes = rs.vibeParkedAcceptance
+	if rs.vibeParkedFlowRef != "" {
+		rs.chatFlowRef = rs.vibeParkedFlowRef
+	}
+	nodes := append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
+	rs.vibeParkedNodes = nil
+	rs.vibeParkedEdges = nil
+	rs.vibeParkedAcceptance = nil
+	rs.vibeParkedFlowRef = ""
+	s.mu.Unlock()
+	if s.isFlowEngineDriven(parentRunID) {
+		s.reseedFlowStepRuntime(parentRunID, nodes)
+	}
+	return true
+}
+
 func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID string) {
 	switch completedNodeID {
 	case vibeCpLockNodeID, vibeSSLockNodeID:
@@ -262,6 +303,8 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 		s.mu.Unlock()
 	case vibeCpWriterNodeID:
 		s.maybeStartVibeCpIngest(parentRunID)
+	case vibeDebateSynthesisNodeID:
+		s.restoreVibeFlowAfterDebate(parentRunID)
 	case vibeTaskSlicerNodeID, vibeSprintSlicerNodeID:
 		s.mu.Lock()
 		var plan []string
