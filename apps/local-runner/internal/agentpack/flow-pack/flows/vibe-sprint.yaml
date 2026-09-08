@@ -1,6 +1,6 @@
 id: vibe-sprint
-version: "1"
-description: Vibe per-sprint template — TDD from frozen SS slice, then coded, then requirement check. Owners are NOT graph nodes here; non-requirement gate fails are auto-resolved by the resolver invoking vibe-owner-debate (cap 5, vibe-only).
+version: "2"
+description: Vibe per-sprint v2 — freeze, context, TDD, code, validate, synthesis, audit. Owners are NOT graph nodes; non-requirement gate fails are auto-resolved by the resolver invoking vibe-owner-debate (cap 5, vibe-only).
 mode: flow
 builtin:
   editable: false
@@ -17,7 +17,9 @@ policy:
 tools:
   - tools/vibe-requirement-outcome.yaml
 acceptance_nodes:
+  - validate
   - synthesis
+  - audit
 nodes:
   - id: preflight_contract_plan
     run: delegate
@@ -28,30 +30,55 @@ nodes:
     run: inline
     lifecycle: once
     behavior: contract.freeze
+  - id: context
+    run: inline
+    lifecycle: once
+    behavior: context.produce
   - id: tdd
     run: delegate
     lifecycle: reinvoke
     behavior: agent.delegate
     agent: agents/tester.md
     join: all
+    artifactBindings:
+      - direction: output
+        slotName: tdd_signatures
+        artifactInstanceId: tdd_signatures
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/.flowpilot/vibe/tdd-signatures.md
   - id: coder
     run: delegate
     lifecycle: reinvoke
     behavior: agent.code
     agent: agents/coder.md
     join: all
+  - id: validate
+    run: inline
+    lifecycle: once
+    behavior: command.validate
   - id: synthesis
     run: inline
     lifecycle: reinvoke
     behavior: hub.inline
     agent: agents/synthesizer.md
     join: all
+  - id: audit
+    run: inline
+    lifecycle: once
+    behavior: artifact.audit_draft
 edges:
   - from: preflight_contract_plan
     to: preflight_contract_freeze
     when: done
     kind: forward
   - from: preflight_contract_freeze
+    to: context
+    when: done
+    kind: forward
+  - from: context
     to: tdd
     when: done
     kind: forward
@@ -60,18 +87,30 @@ edges:
     when: done
     kind: forward
   - from: coder
+    to: validate
+    when: done
+    kind: forward
+  - from: validate
     to: synthesis
     when: done
+    kind: forward
+  - from: validate
+    to: ask_user
+    when: escalate
     kind: forward
   - from: synthesis
     to: coder
     when: continue
     kind: back
   - from: synthesis
-    to: done
+    to: audit
     when: done
     kind: forward
   - from: synthesis
     to: ask_user
     when: escalate
+    kind: forward
+  - from: audit
+    to: done
+    when: done
     kind: forward
