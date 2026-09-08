@@ -207,7 +207,7 @@ func FlowPickerOptions(mode string) []string {
 		return nil
 	}
 	if norm == Vibe {
-		return []string{"vibe-ingest"}
+		return []string{"vibe-ingest", "vibe-cp-ingest"}
 	}
 	out := make([]string, len(DevHarnessFive))
 	copy(out, DevHarnessFive)

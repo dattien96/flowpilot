@@ -21,7 +21,7 @@ export function wireWorkingMode(labelOrMode: string | undefined): WorkingMode {
 
 export function flowPickerOptions(mode: string | undefined): string[] {
   if (wireWorkingMode(mode) === WORKING_MODE_VIBE) {
-    return ["vibe-ingest"];
+    return ["vibe-ingest", "vibe-cp-ingest"];
   }
   return [...DEV_HARNESS_FIVE];
 }

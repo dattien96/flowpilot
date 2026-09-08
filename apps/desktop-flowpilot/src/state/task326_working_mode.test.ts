@@ -10,7 +10,7 @@ import {
 
 test("chrome toggle vibe filters picker to ingest", () => {
   const ids = flowPickerOptions("vibe");
-  assert.deepEqual(ids, ["vibe-ingest"]);
+  assert.deepEqual(ids, ["vibe-ingest", "vibe-cp-ingest"]);
 });
 
 test("chrome toggle normal hides vibe-*", () => {

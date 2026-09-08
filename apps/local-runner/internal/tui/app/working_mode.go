@@ -26,15 +26,22 @@ func (m *AppModel) flowCatalogForWorkingMode() ([]client.BuiltinFlowOption, []cl
 	for _, id := range workingmode.FlowPickerOptions(m.workingMode) {
 		allow[id] = struct{}{}
 	}
+	seen := map[string]struct{}{}
 	var builtins []client.BuiltinFlowOption
 	for _, opt := range m.flowBuiltins {
-		if _, ok := allow[workingmode.BareFlowID(opt.FlowRef)]; ok {
-			builtins = append(builtins, opt)
+		id := workingmode.BareFlowID(opt.FlowRef)
+		if _, ok := allow[id]; !ok {
+			continue
 		}
+		builtins = append(builtins, opt)
+		seen[id] = struct{}{}
 	}
 	if m.workingMode == workingmode.Vibe {
-		if len(builtins) == 0 {
-			builtins = []client.BuiltinFlowOption{{FlowRef: "vibe-ingest", Label: "vibe-ingest"}}
+		for _, id := range workingmode.FlowPickerOptions(workingmode.Vibe) {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			builtins = append(builtins, client.BuiltinFlowOption{FlowRef: id, Label: id})
 		}
 		return builtins, nil
 	}
@@ -50,7 +57,16 @@ func (m *AppModel) flowCatalogForWorkingMode() ([]client.BuiltinFlowOption, []cl
 
 func (m *AppModel) setWorkingMode(mode string) {
 	m.workingMode = mode
+	if m.mode != ModeChat || m.launch.IsArmed() {
+		m.mode = ModeChat
+		m.launch = LaunchArm{}
+		m.firstTurnPending = false
+	}
 	m.persistSessionPrefs()
+}
+
+func isVibeCpIngestFlow(ref string) bool {
+	return workingmode.BareFlowID(ref) == "vibe-cp-ingest"
 }
 
 func (m *AppModel) workingModeChip() string {

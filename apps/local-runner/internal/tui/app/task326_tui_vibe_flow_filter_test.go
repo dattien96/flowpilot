@@ -44,7 +44,7 @@ func collectFlowLine(m *AppModel) []suggestItem {
 	return m.collectSuggestions()
 }
 
-// Scenario: /vibe then /flow suggestions are only vibe-ingest.
+// Scenario: /vibe then /flow suggestions are vibe-ingest and vibe-cp-ingest.
 func TestTUIFlowSuggest_VibeOnlyIngest(t *testing.T) {
 	m := tuiModelWithFlows(t)
 	m2, _ := m.handleSlashCommand("/vibe")
@@ -53,8 +53,11 @@ func TestTUIFlowSuggest_VibeOnlyIngest(t *testing.T) {
 	if _, ok := ids["vibe-ingest"]; !ok {
 		t.Fatalf("vibe /flow missing ingest: %v", ids)
 	}
-	if len(ids) != 1 {
-		t.Fatalf("vibe /flow ids=%v, want only vibe-ingest", ids)
+	if _, ok := ids["vibe-cp-ingest"]; !ok {
+		t.Fatalf("vibe /flow missing cp-ingest: %v", ids)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("vibe /flow ids=%v, want ingest+cp-ingest", ids)
 	}
 }
 

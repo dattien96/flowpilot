@@ -28,13 +28,13 @@ func requirePickerOmit(t *testing.T, set map[string]struct{}, id string) {
 	}
 }
 
-// Scenario: vibe picker is exactly vibe-ingest.
+// Scenario: vibe picker is vibe-ingest then vibe-cp-ingest.
 // Input: flowPickerOptions(vibe)
-// Expect: ids == [vibe-ingest] (count==1)
+// Expect: ids == [vibe-ingest, vibe-cp-ingest]
 func TestPicker_VibeListsOnlyIngest(t *testing.T) {
 	ids := workingmode.FlowPickerOptions("vibe")
-	if len(ids) != 1 || ids[0] != "vibe-ingest" {
-		t.Fatalf("vibe picker = %v, want [vibe-ingest]", ids)
+	if len(ids) != 2 || ids[0] != "vibe-ingest" || ids[1] != "vibe-cp-ingest" {
+		t.Fatalf("vibe picker = %v, want [vibe-ingest vibe-cp-ingest]", ids)
 	}
 }
 
@@ -80,10 +80,10 @@ func TestPicker_SprintNeverListed(t *testing.T) {
 	requirePickerOmit(t, pickerSet("vibe"), "vibe-sprint")
 }
 
-// Scenario: vibe-cp-ingest never listed.
+// Scenario: vibe-cp-ingest listed in vibe, omitted in dev.
 func TestPicker_CpIngestNeverListed(t *testing.T) {
 	requirePickerOmit(t, pickerSet("dev"), "vibe-cp-ingest")
-	requirePickerOmit(t, pickerSet("vibe"), "vibe-cp-ingest")
+	requirePickerHas(t, pickerSet("vibe"), "vibe-cp-ingest")
 }
 
 // Scenario: vibe list has none of the five harness ids.

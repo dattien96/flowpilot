@@ -2829,7 +2829,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if cmd := suggestionAcceptValue(it); cmd != "" {
 					// Action rows only expand the next picker (provider connect, /image open|rm, mode-setup steps) —
 					// except immediate-execution actions like /provider refresh|reload (CA-687), which run right away.
-					expandsPicker := it.kind == "provider-action" || it.kind == "image-sub-next" || it.kind == "mode-setup-posture" || (it.kind == "mode-setup-field" && !strings.HasSuffix(strings.ToLower(strings.TrimSpace(it.value)), " clear"))
+					expandsPicker := it.kind == "provider-action" || it.kind == "image-sub-next" || it.kind == "mode-setup-posture" || (it.kind == "mode-setup-field" && !strings.HasSuffix(strings.ToLower(strings.TrimSpace(it.value)), " clear")) || (it.kind == "flow" && isVibeCpIngestFlow(it.value))
 					if expandsPicker && !(it.kind == "provider-action" && providerImmediateAction(it.value)) {
 						m.setInputPreservingDraftPrefix(cmd)
 						m.suggIdx = 0
@@ -3327,6 +3327,9 @@ func suggestionAcceptValue(it suggestItem) string {
 	case "flow":
 		if strings.TrimSpace(it.value) == "" {
 			return ""
+		}
+		if isVibeCpIngestFlow(it.value) {
+			return "/flow vibe-cp-ingest @"
 		}
 		return "/flow " + it.value
 	case "history":
@@ -4151,31 +4154,6 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case "/vibe-cp":
-		if len(args) == 0 {
-			m.addMessage("system", "Usage: /vibe-cp <requirements/07-Coding-Plan/**/CP-*.md>", "error")
-			break
-		}
-		cpPath := strings.TrimSpace(args[0])
-		if err := workingmode.RejectNonCP(cpPath, ""); err != nil {
-			m.addMessage("system", err.Error(), "error")
-			break
-		}
-		if m.runHandle != nil {
-			m.addMessage("system", "Cannot change flow after a run has started. Use /new first.", "error")
-			break
-		}
-		m.setWorkingMode(workingmode.Vibe)
-		m.launch = LaunchArm{
-			Mode:        ModeFlow,
-			FlowRef:     "vibe-cp-ingest",
-			Label:       "vibe-cp-ingest",
-			SourceDocID: cpPath,
-		}
-		m.mode = ModeFlow
-		m.firstTurnPending = true
-		m.persistSessionPrefs()
-		m.addMessage("system", fmt.Sprintf("CP locked entry armed: %s. Send a prompt to start vibe-cp-ingest.", cpPath), "")
 
 	case "/yolo":
 		if m.mode != ModeChat || m.launch.IsArmed() {
@@ -4258,13 +4236,37 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		if m.project != nil {
 			projectID = m.project.ID
 		}
-		query := strings.Join(args, " ")
+		flowID := args[0]
 		if m.workingMode == workingmode.Dev || m.workingMode == workingmode.Vibe {
-			if err := workingmode.FlowAllowedForWorkingMode(m.workingMode, query, "user"); err != nil {
+			if err := workingmode.FlowAllowedForWorkingMode(m.workingMode, flowID, "user"); err != nil {
 				m.addMessage("system", err.Error(), "error")
 				break
 			}
 		}
+		if isVibeCpIngestFlow(flowID) {
+			rest := strings.TrimSpace(strings.Join(args[1:], " "))
+			rest = strings.TrimSpace(strings.TrimPrefix(rest, "@"))
+			if rest == "" {
+				m.setInputPreservingDraftPrefix("/flow vibe-cp-ingest @")
+				return m, m.cmdMaybePrefetchWorkspaceFiles()
+			}
+			if err := workingmode.RejectNonCP(rest, ""); err != nil {
+				m.addMessage("system", err.Error(), "error")
+				break
+			}
+			m.launch = LaunchArm{
+				Mode:        ModeFlow,
+				FlowRef:     "vibe-cp-ingest",
+				Label:       "vibe-cp-ingest",
+				SourceDocID: rest,
+			}
+			m.mode = ModeFlow
+			m.firstTurnPending = true
+			m.persistSessionPrefs()
+			m.addMessage("system", fmt.Sprintf("CP locked entry armed: %s. Send a prompt to start vibe-cp-ingest.", rest), "")
+			break
+		}
+		query := strings.Join(args, " ")
 		flowBuiltins, flowWorkflows := m.flowCatalogForWorkingMode()
 		arm, err := resolveFlowLaunch(flowBuiltins, flowWorkflows, projectID, query)
 		if err != nil {
