@@ -18,13 +18,14 @@ import (
 // persistTUISessionPrefs writes latest provider/model/yolo/mode/flow so new TUI sessions keep them.
 // yolo is the chat-mode toggle only (flow uses auto-on via effectiveYolo; we still
 // persist the underlying chat preference so /chat after restart keeps it).
-func persistTUISessionPrefs(provider, model, reasoning string, yolo bool, mode Mode, launch LaunchArm) {
+func persistTUISessionPrefs(provider, model, reasoning string, yolo bool, mode Mode, launch LaunchArm, workingMode string) {
 	yoloCopy := yolo
 	s := prefs.Session{
 		Provider:        strings.TrimSpace(provider),
 		Model:           strings.TrimSpace(model),
 		ReasoningEffort: strings.TrimSpace(reasoning),
 		Yolo:            &yoloCopy,
+		WorkingMode:     strings.TrimSpace(workingMode),
 		Mode:            mode.String(),
 	}
 	if mode == ModeFlow || mode == ModeStep {
@@ -37,7 +38,7 @@ func persistTUISessionPrefs(provider, model, reasoning string, yolo bool, mode M
 
 func (m *AppModel) persistSessionPrefs() {
 	// Always store m.yolo (chat preference), never effectiveYolo() auto-on.
-	persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort, m.yolo, m.mode, m.launch)
+	persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort, m.yolo, m.mode, m.launch, m.workingMode)
 }
 
 // bindProjectIfPossible tries to bind a project from the known catalog using
