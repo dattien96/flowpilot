@@ -102,6 +102,9 @@ type TurnResult struct {
 	// r-additive-tests (pre_existing_test_edited) so Evaluate can fire without
 	// re-deriving the IsTestFile M/D/R/C signal.
 	TamperedTestPaths []string `json:"tampered_test_paths,omitempty"`
+	// CP-60 P-2: vibe-only r-requirement advisory (signature↔locked SS).
+	RequirementDrift       bool   `json:"requirement_drift,omitempty"`
+	RequirementDriftDetail string `json:"requirement_drift_detail,omitempty"`
 }
 
 // StructuredFileArtifactOutput is a required file_artifact OUTPUT path with

@@ -225,6 +225,17 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 				Detail: "pre-existing test file(s) edited: " + strings.Join(tr.TamperedTestPaths, ", "),
 			}
 		}
+
+	case "requirement_signature_drift":
+		// CP-60 P-2: green suite but signatures drifted from locked SS, or
+		// green+tampered coerced onto RequirementDrift before Evaluate.
+		if testsGreen(tr) && tr.RequirementDrift {
+			detail := strings.TrimSpace(tr.RequirementDriftDetail)
+			if detail == "" {
+				detail = "tests green but signatures drifted from the locked SS"
+			}
+			return &Violation{Rule: rule, Detail: detail}
+		}
 	}
 	return nil
 }
