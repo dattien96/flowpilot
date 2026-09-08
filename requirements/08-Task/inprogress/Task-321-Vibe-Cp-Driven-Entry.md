@@ -5,7 +5,7 @@
 - Document ID: `Task-321`
 - Title: `Vibe CP-driven entry — vibe-cp-ingest, CP Preview & Lock, per-Task vibe-sprint to done`
 - Phase: `task`
-- Status: `draft` (**parked** 2026-09-08 — blocked on CP-60 `P-1`..`P-5`; do not implement)
+- Status: `in_progress` (CA-765 pack+queue + CA-767 auto-detect/lock/Task plan)
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-05`
@@ -68,7 +68,7 @@ A user points Desktop/TUI at one existing `CP-*.md`, locks it once in an editabl
 ## 4. Exact Change
 
 - `T-1` New skeleton `apps/local-runner/internal/agentpack/flow-pack/flows/vibe-cp-ingest.yaml` (`selectableIn: []`, `policy: {cap:3, onCap: escalate}`): nodes `cp_reader (delegate, agents/vibe-intake.md, once) → cp_validator (hub.inline, agents/synthesizer.md, once) → cp_lock (user.confirm, once) → task_slicer (delegate, agents/doc-writer.md + prompts/task-splitter.md, once) → done`; edges `cp_lock --done--> task_slicer`, single `continue/back cp_lock → cp_reader`, `cp_lock/task_slicer --escalate--> ask_user`. `cp_reader` accepts only `requirements/07-Coding-Plan/**/CP-*.md` with `Document ID: CP-*`; `task_slicer` declares `cp_md` INPUT → `task_md[]` OUTPUT (`pathTemplate: requirements/08-Task/todo/Task-{{idx}}-{{slug}}.md`), verbatim if CP pre-slices else synthesized, marked verbatim-vs-synthesized.
-- `T-2` Register flow in `manifest.yaml` + mirror sync; update `pack_test.go` count `6 → 7 flows` (agents stay `7`); `ValidateFlowDefinition` + `ValidateFlowSafetyTopology` green for both ingests.
+- `T-2` Register flow in `manifest.yaml` + mirror sync; update `pack_test.go` count **11 → 12 flows** (agents stay **8**); `ValidateFlowDefinition` + `ValidateFlowSafetyTopology` green for both ingests.
 - `T-3` Runner: entry routing (auto-detect CP by path/frontmatter, explicit `/vibe-cp <path>` override; non-CP file to `/vibe-cp` rejected deterministically); persist `working_mode=vibe` + `vibe.locked_cp` + `vibe.task_plan` in `localFileSessionStore` (`sessions.ndjson`); guard `vibe-sprint` refuses start while `cp_lock` is `WAITING_USER_APPROVAL`; on `task_slicer done`, render `task_plan` read-only on the timeline and sequentially start `vibe-sprint` per Task slice with Task-index replay on restart (same sink as Branch V); enforce total-sprint budget cap per run (stop with `BlockReason: budget`, no silent continuation).
 - `T-4` Desktop/TUI: `CP Preview & Lock` card for `cp_lock` (editable, write-back to CP draft + re-validate `SS-13` CP §§1–10 incl. `P-*`; `Lock → task_slicer`, `Continue → cp_reader`, `Escalate → ask_user`); `r-requirement` card shows plain-language mapping (which SS `AC-*` ↔ which test signature drifted + what SS edit fixes it); no Admin Web surface (reject `vibe` from admin client as `P-1`).
 - `T-5` Validation: additive `agentpack` topology test (`cp_lock=user.confirm`, single back-edge, artifact bindings) + runner tests (auto-detect, `cp_lock` gates sprint, restart replays Task index) + manual `/vibe-cp CP-*.md` demo (lock → slice → N× `vibe-sprint` v2 to done incl. `validate` green + `audit` ledger; generic gate → Owner debate, `r-requirement` → requirement card only).
@@ -82,7 +82,7 @@ A user points Desktop/TUI at one existing `CP-*.md`, locks it once in an editabl
 
 ## 6. Acceptance Check
 
-- `LoadBuiltinPack` green with `7 flows` / `7 agents`; `ValidateFlowDefinition` + `ValidateFlowSafetyTopology` pass for `vibe-cp-ingest`.
+- `LoadBuiltinPack` green with **12 flows** / **8 agents**; `ValidateFlowDefinition` + `ValidateFlowSafetyTopology` pass for `vibe-cp-ingest`.
 - `/vibe-cp <CP-*.md>`: CP card editable, Lock persists + re-validates, slicer emits `Task-*.md` list (visible read-only), sequential `vibe-sprint` v2 per Task reaches done (per-Task `tdd` signature artifact with use/edge/error + `context` packaged, `validate` green, `audit` ledger present); non-CP input rejected with deterministic error; budget cap exceeded stops with `BlockReason: budget`.
 - Post-lock asks are only `r-requirement` / Owner-cap; `r-requirement` card is non-tech readable; no Dev `1/2/3` cards in `vibe`; `dev` regression unchanged; `go test ./internal/agentpack ./internal/flowgate ./internal/runner` + `go vet` green.
 

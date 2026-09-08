@@ -5,7 +5,7 @@
 - Document ID: `Task-323`
 - Title: `Vibe-sprint v2 — copy task-harness auto nodes for harness-grade accuracy`
 - Phase: `task`
-- Status: `draft` (**parked** 2026-09-08 — blocked on CP-60 `P-1`..`P-5` + `P-2` requirement face; do not implement)
+- Status: `in_progress` (CA-764 YAML v2 + CA-767 drift inject + tdd-before-coder)
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-05`
@@ -80,7 +80,7 @@ Every `vibe-sprint` — whether reached from Branch V (`sprint_plan`) or Branch 
 
 ## 6. Acceptance Check
 
-- `LoadBuiltinPack` green (`7 flows` / `7 agents`); v2 topology test green; `go test ./internal/agentpack ./internal/runner` + `go vet` green.
+- `LoadBuiltinPack` green (**12 flows** / **8 agents**); v2 topology test green; `go test ./internal/agentpack ./internal/runner` + `go vet` green.
 - Manual: both demo sprints show `tdd` signature artifact (use/edge/error per `SS-04 §3.5.8`, written before any `coder` run) → `context DONE` → `validate DONE (green)` → `synthesis done` → `audit DONE` with ledger; a forced `validate` red re-enters `coder` only; missing edge/error cases are caught at `synthesis` as `continue`; no reviewer-cohort nodes spawn; no Dev cards in `vibe`.
 - Accuracy claim: same fixture run through `task-harness` vs v2 `vibe-sprint` shows no missing `context`/`validate`/`audit` stage on the vibe side.
 
