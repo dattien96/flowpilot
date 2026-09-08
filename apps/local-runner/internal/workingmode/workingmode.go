@@ -128,6 +128,15 @@ func isVibeFamily(id string) bool {
 	return strings.HasPrefix(id, "vibe-")
 }
 
+// LooksLikeVibeFlow is true for vibe-* ids and catalog labels like "Vibe Cp Ingest".
+func LooksLikeVibeFlow(idOrName string) bool {
+	id := BareFlowID(idOrName)
+	id = strings.ToLower(strings.TrimSpace(id))
+	id = strings.ReplaceAll(id, " ", "-")
+	id = strings.ReplaceAll(id, "_", "-")
+	return isVibeFamily(id)
+}
+
 func isTrackedFlow(id string) bool {
 	return isHidden(id) || isHarness(id) || isVibeFamily(id)
 }

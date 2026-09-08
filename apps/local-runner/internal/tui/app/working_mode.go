@@ -38,7 +38,14 @@ func (m *AppModel) flowCatalogForWorkingMode() ([]client.BuiltinFlowOption, []cl
 		}
 		return builtins, nil
 	}
-	return builtins, m.flowWorkflows
+	var workflows []client.Workflow
+	for _, wf := range m.flowWorkflows {
+		if workingmode.LooksLikeVibeFlow(wf.Name) || workingmode.LooksLikeVibeFlow(wf.ID) {
+			continue
+		}
+		workflows = append(workflows, wf)
+	}
+	return builtins, workflows
 }
 
 func (m *AppModel) setWorkingMode(mode string) {
