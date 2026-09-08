@@ -349,9 +349,11 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
 		return
 	}
-	if err := validateChatOrchestrationSelection(body.SubMode, body.FlowRef); err != nil {
-		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_flow_ref", err.Error()))
-		return
+	if !workingmode.SkipChatOrchestrationCheck(body.FlowRef) {
+		if err := validateChatOrchestrationSelection(body.SubMode, body.FlowRef); err != nil {
+			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_flow_ref", err.Error()))
+			return
+		}
 	}
 	// BUG-174: a Flow-Mode workflow-picker launch sends a workflowID but no
 	// flowRef, so the flow executor never engaged and the hub did all the work

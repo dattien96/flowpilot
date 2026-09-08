@@ -137,6 +137,13 @@ func LooksLikeVibeFlow(idOrName string) bool {
 	return isVibeFamily(id)
 }
 
+// SkipChatOrchestrationCheck is true for /flow pack builtins (harness + vibe).
+// Those are not Chat Mode subMode picker options; TUI still may send subMode=bug.
+func SkipChatOrchestrationCheck(flowRef string) bool {
+	id := BareFlowID(flowRef)
+	return isHarness(id) || isVibeFamily(id)
+}
+
 func isTrackedFlow(id string) bool {
 	return isHidden(id) || isHarness(id) || isVibeFamily(id)
 }
