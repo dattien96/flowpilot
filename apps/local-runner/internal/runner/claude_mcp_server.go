@@ -59,13 +59,15 @@ type claudeMCPServer struct {
 	// submit_review_outcome entirely when false; tools/call re-checks it as
 	// defense in depth against a model calling a tool it was never shown.
 	allowReviewOutcome map[string]bool
+	allowVibeRequirement map[string]bool
 }
 
 func newClaudeMCPServer() *claudeMCPServer {
 	return &claudeMCPServer{
-		bridges:            map[string]TurnBridge{},
-		ready:              map[string]chan struct{}{},
-		allowReviewOutcome: map[string]bool{},
+		bridges:              map[string]TurnBridge{},
+		ready:                map[string]chan struct{}{},
+		allowReviewOutcome:   map[string]bool{},
+		allowVibeRequirement: map[string]bool{},
 	}
 }
 
@@ -83,8 +85,15 @@ func (s *claudeMCPServer) register(bridge TurnBridge, allowReviewOutcome bool) s
 	s.bridges[tok] = bridge
 	s.ready[tok] = make(chan struct{})
 	s.allowReviewOutcome[tok] = allowReviewOutcome
+	s.allowVibeRequirement[tok] = false
 	s.mu.Unlock()
 	return tok
+}
+
+func (s *claudeMCPServer) setAllowVibeRequirement(tok string, on bool) {
+	s.mu.Lock()
+	s.allowVibeRequirement[tok] = on
+	s.mu.Unlock()
 }
 
 func (s *claudeMCPServer) unregister(tok string) {
@@ -92,6 +101,7 @@ func (s *claudeMCPServer) unregister(tok string) {
 	delete(s.bridges, tok)
 	delete(s.ready, tok)
 	delete(s.allowReviewOutcome, tok)
+	delete(s.allowVibeRequirement, tok)
 	s.mu.Unlock()
 }
 
@@ -254,13 +264,12 @@ func (s *claudeMCPServer) dispatchCtx(ctx context.Context, method string, msg ma
 			"serverInfo":      map[string]any{"name": claudeMCPServerName, "version": "1.0"},
 		}, nil
 	case "tools/list":
-		// The handshake reached tools/list: the per-turn server is connected and its tools
-		// are live. Unblock SendTurn so it can deliver the prompt with ask_user available.
 		s.signalReady(token)
 		s.mu.Lock()
 		allowReviewOutcome := s.allowReviewOutcome[token]
+		allowVibe := s.allowVibeRequirement[token]
 		s.mu.Unlock()
-		return map[string]any{"tools": claudeMCPToolDefs(allowReviewOutcome)}, nil
+		return map[string]any{"tools": claudeMCPToolDefsWithVibe(allowReviewOutcome, allowVibe)}, nil
 	case "tools/call":
 		name, _ := params["name"].(string)
 		args, _ := params["arguments"].(map[string]any)
@@ -279,9 +288,6 @@ func (s *claudeMCPServer) dispatchCtx(ctx context.Context, method string, msg ma
 		case "spawn_agent":
 			return handleClaudeSpawnAgent(args, bridge), nil
 		case "submit_review_outcome":
-			// BUG-NOTE-CP42 #24 defense in depth: not listed in tools/list for
-			// a non-hub turn, but re-check here too in case the model calls it
-			// anyway (e.g. from stale session context after a resume).
 			s.mu.Lock()
 			allowReviewOutcome := s.allowReviewOutcome[token]
 			s.mu.Unlock()
@@ -289,6 +295,14 @@ func (s *claudeMCPServer) dispatchCtx(ctx context.Context, method string, msg ma
 				return nil, map[string]any{"code": -32601, "message": "submit_review_outcome is not available for this run"}
 			}
 			return handleClaudeSubmitReviewOutcome(args, bridge), nil
+		case "vibe-requirement-outcome":
+			s.mu.Lock()
+			allowVibe := s.allowVibeRequirement[token]
+			s.mu.Unlock()
+			if !allowVibe {
+				return nil, map[string]any{"code": -32601, "message": "vibe-requirement-outcome is not available for this run"}
+			}
+			return handleClaudeVibeRequirement(args, bridge), nil
 		default:
 			return nil, map[string]any{"code": -32601, "message": "unknown tool: " + name}
 		}
@@ -340,6 +354,25 @@ func claudeMCPToolDefs(allowReviewOutcome bool) []any {
 			"name":        "submit_review_outcome",
 			"description": "Submit a code-review verdict. Use approved when the code is ready, changes_requested when issues were found (feedback required), or blocked when the review cannot proceed. This is the only flow-control tool — do not use flow_control directly.",
 			"inputSchema": sharedReviewOutcomeSchema(),
+		})
+	}
+	return defs
+}
+
+func claudeMCPToolDefsWithVibe(allowReviewOutcome, allowVibe bool) []any {
+	defs := claudeMCPToolDefs(allowReviewOutcome)
+	if allowVibe {
+		defs = append(defs, map[string]any{
+			"name":        "vibe-requirement-outcome",
+			"description": "Vibe sprint requirement-gate verdict after validate. aligned=done, drift_fixable=continue to coder, requirement_change=escalate to the user.",
+			"inputSchema": map[string]any{
+				"type":     "object",
+				"required": []any{"verdict"},
+				"properties": map[string]any{
+					"verdict": map[string]any{"type": "string", "enum": []any{"aligned", "drift_fixable", "requirement_change"}},
+					"summary": map[string]any{"type": "string"},
+				},
+			},
 		})
 	}
 	return defs

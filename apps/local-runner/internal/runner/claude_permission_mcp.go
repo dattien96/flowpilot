@@ -246,6 +246,24 @@ func handleClaudeSubmitReviewOutcome(args map[string]any, bridge TurnBridge) map
 	return claudeMcpTextResult(string(resultJSON))
 }
 
+
+func handleClaudeVibeRequirement(args map[string]any, bridge TurnBridge) map[string]any {
+	in, err := parseVibeRequirementInput(args)
+	if err != nil {
+		return claudeMcpTextResult("vibe-requirement-outcome: invalid arguments: " + err.Error())
+	}
+	fc, err := vibeRequirementToFlowControl(in)
+	if err != nil {
+		return claudeMcpTextResult("vibe-requirement-outcome: mapping error: " + err.Error())
+	}
+	result, err := bridge.SubmitFlowControl(fc)
+	if err != nil {
+		return claudeMcpTextResult("vibe-requirement-outcome failed: " + err.Error())
+	}
+	resultJSON, _ := json.Marshal(result)
+	return claudeMcpTextResult(string(resultJSON))
+}
+
 // handleClaudeSpawnAgent maps a spawn_agent tool call to the bridge's SpawnAgent and returns
 // the result JSON as the tool result text.
 func handleClaudeSpawnAgent(args map[string]any, bridge TurnBridge) map[string]any {
