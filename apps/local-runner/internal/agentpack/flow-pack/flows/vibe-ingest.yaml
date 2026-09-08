@@ -21,18 +21,21 @@ nodes:
     lifecycle: once
     behavior: agent.delegate
     agent: agents/vibe-intake.md
+    promptTemplate: prompts/vibe-ss-ingest.md
     join: all
   - id: ss_converter
     run: delegate
     lifecycle: once
     behavior: agent.delegate
     agent: agents/vibe-intake.md
+    promptTemplate: prompts/vibe-ss-ingest.md
     join: all
   - id: ss_validator
     run: inline
     lifecycle: once
     behavior: hub.inline
     agent: agents/synthesizer.md
+    promptTemplate: prompts/vibe-ss-validate.md
     join: all
   - id: ss_lock
     run: inline

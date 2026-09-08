@@ -99,6 +99,8 @@ prompts:
   - prompts/plan-cp.md
   - prompts/review-cp.md
   - prompts/task-splitter.md
+  - prompts/vibe-ss-ingest.md
+  - prompts/vibe-ss-validate.md
 compatibility:
   minRunnerVersion: TBD
   fallbackToGoBuiltins: true
