@@ -1765,8 +1765,7 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 	if err != nil {
 		return escalate("invalid planner proposal: " + err.Error())
 	}
-
-	writerNode, path, ok := resolveFreezeWriterTarget(edges, nodes, node.ID, flowInlineChainHopLimit)
+	writerNode, path, direct, ok := freezeWriterBinding(edges, nodes, node.ID)
 	if !ok {
 		return escalate("no reachable agent.code writer target for this contract.freeze node")
 	}
@@ -1808,7 +1807,7 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 		if err := s.bindFrozenContractToSiblingWriters(store, workspace, parentRunID, node.ID, existingDraft, nodes, writerNode.ID, existing.BaseSHA, existing.BaselineWorktree); err != nil {
 			return escalate("could not bind sibling writer contracts: " + err.Error())
 		}
-		return s.advanceFlowThroughFreezeChain(ctx, parentRunID, node, writerNode, existing, path)
+		return s.advanceAfterContractFreeze(ctx, parentRunID, edges, nodes, node, writerNode, existing, path, direct, plannerResult)
 	}
 
 	// Derive the next version from what's actually on disk (not hardcoded 1):
@@ -1871,7 +1870,7 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 		"node_id", node.ID, "coder_node_id", writerNode.ID, "contract_id", rec.ContractID, "version", rec.Version,
 	)
 
-	return s.advanceFlowThroughFreezeChain(ctx, parentRunID, node, writerNode, rec, path)
+	return s.advanceAfterContractFreeze(ctx, parentRunID, edges, nodes, node, writerNode, rec, path, direct, plannerResult)
 }
 
 // advanceFlowThroughFreezeChain dispatches each intermediate context.produce
@@ -2035,6 +2034,29 @@ func (s *InteractiveService) spawnFrozenWriterChild(ctx context.Context, parentR
 	return nil
 }
 
+// freezeWriterBinding picks the agent.code writer a contract.freeze node binds
+// to. The CP-55 direct chain (freeze → [context.produce]* → agent.code) still
+// owns writer spawn. vibe-sprint (SD-24) puts TDD as agent.delegate between
+// context and coder — that hop is not a freeze-chain skip (CA-426 C-3). Bind
+// the first agent.code in the graph and follow the freeze done-edge normally
+// so TDD still runs before coder.
+func freezeWriterBinding(edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, freezeNodeID string) (writer agentpack.FlowNode, path []agentpack.FlowNode, direct bool, ok bool) {
+	if w, p, resolved := resolveFreezeWriterTarget(edges, nodes, freezeNodeID, flowInlineChainHopLimit); resolved {
+		return w, p, true, true
+	}
+	writers := flowAgentCodeWriterNodes(nodes)
+	if len(writers) == 0 {
+		return agentpack.FlowNode{}, nil, false, false
+	}
+	return writers[0], nil, false, true
+}
+
+func (s *InteractiveService) advanceAfterContractFreeze(ctx context.Context, parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, freezeNode, writerNode agentpack.FlowNode, rec changecontract.FrozenContractRecord, path []agentpack.FlowNode, direct bool, resultMessage string) bool {
+	if direct {
+		return s.advanceFlowThroughFreezeChain(ctx, parentRunID, freezeNode, writerNode, rec, path)
+	}
+	return s.advanceToNextInlineOrDelegate(ctx, parentRunID, edges, nodes, freezeNode.ID, "done", resultMessage)
+}
 // flowAgentCodeWriterNodes returns every agent.code writer node in nodes — the
 // nodes a frozen preflight contract must be bound to (Task-293: a freeze node
 // governs the whole coding chain, e.g. rag-harness's test_signatures AND
