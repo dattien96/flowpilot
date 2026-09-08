@@ -3245,6 +3245,9 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if initSugg := filterInitSuggestions(in); len(initSugg) > 0 {
 		return initSugg
 	}
+	if vibeSugg := filterVibeArgSuggestions(in); len(vibeSugg) > 0 {
+		return vibeSugg
+	}
 	cmds := filterSlashSuggestions(in)
 	out := make([]suggestItem, 0, len(cmds))
 	for _, sc := range cmds {
@@ -3301,12 +3304,9 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 		return
 	} else if it.kind == "file" {
 		m.applyFileMention(it.value)
-	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" || it.kind == "mode-setup-posture" || it.kind == "mode-setup-field" || it.kind == "mode-setup-value" || it.kind == "mode" || it.kind == "init" {
-		// Nested pickers: only replace the active /… fragment (keep pre-slash draft).
+	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" || it.kind == "mode-setup-posture" || it.kind == "mode-setup-field" || it.kind == "mode-setup-value" || it.kind == "mode" || it.kind == "init" || it.kind == "vibe" {
 		m.setInputPreservingDraftPrefix(cmd)
 	} else {
-		// Tab fills the command token and leaves a trailing space for args.
-		// Mid-draft "abc /sk" → "abc /skill " (do not wipe the draft).
 		m.setInputPreservingDraftPrefix(it.value + " ")
 	}
 	m.suggIdx = (idx + 1) % len(items)
@@ -3450,6 +3450,11 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/mode " + strings.TrimSpace(it.value)
+	case "vibe":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/vibe " + strings.TrimSpace(it.value)
 	case "init":
 		if strings.TrimSpace(it.value) == "" {
 			return ""
@@ -5071,6 +5076,8 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 			kind = "restore"
 		case "mode":
 			kind = "postures"
+		case "vibe":
+			kind = "vibe"
 		}
 	}
 	sel := 0

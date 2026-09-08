@@ -821,6 +821,32 @@ func filterSlashSuggestions(input string) []slashCommand {
 	return out
 }
 
+// filterVibeArgSuggestions is the /vibe Tab picker: exact `/vibe` (or `/vibe <q>`)
+// offers on/off. `/vibe-cp` stays a separate command reached by typing the hyphen.
+func filterVibeArgSuggestions(input string) []suggestItem {
+	s := strings.TrimLeft(input, " \t")
+	lower := strings.ToLower(s)
+	if lower != "/vibe" && !strings.HasPrefix(lower, "/vibe ") {
+		return nil
+	}
+	q := ""
+	if strings.HasPrefix(lower, "/vibe ") {
+		q = strings.ToLower(strings.TrimSpace(s[len("/vibe"):]))
+	}
+	args := []struct{ value, detail string }{
+		{"on", "vibe mode on (next start)"},
+		{"off", "vibe mode off (normal)"},
+	}
+	out := make([]suggestItem, 0, 2)
+	for _, a := range args {
+		if q != "" && q != "on" && q != "off" && !strings.HasPrefix(a.value, q) {
+			continue
+		}
+		out = append(out, suggestItem{value: a.value, detail: a.detail, kind: "vibe"})
+	}
+	return out
+}
+
 // parseSlashArgPrefix reports whether input is `<cmd> <query…>` (space after cmd).
 func parseSlashArgPrefix(input, cmd string) (ok bool, query string) {
 	s := strings.TrimLeft(input, " \t")
