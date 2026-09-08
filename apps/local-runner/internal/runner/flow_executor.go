@@ -29,6 +29,10 @@ import (
 // own first turn, which proceeds to its own provider normally regardless of
 // whether the flow's entry node could be spawned.
 func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID, flowRef, userPrompt string) {
+	s.startResolvedFlowFromNode(ctx, parentRunID, flowRef, userPrompt, "")
+}
+
+func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, parentRunID, flowRef, userPrompt, startNodeID string) {
 	if workingmode.BareFlowID(flowRef) == vibeSprintFlowID && s.vibeSprintStartBlocked(parentRunID) {
 		log.Printf("[vibe-cp] refuse vibe-sprint while cp_lock waiting run=%s", parentRunID)
 		s.flowDiagLog(parentRunID, "vibe_sprint_blocked_lock", "vibe-sprint refused; cp_lock waiting",
@@ -103,6 +107,18 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 	})
 
 	entryNodes := entryDelegateNodes(record.Definition)
+	if startNodeID != "" {
+		node, ok := findFlowNode(record.Definition.Nodes, startNodeID)
+		if !ok {
+			log.Printf("[flow-executor] flow %q start node %q missing; nothing to start", flowRef, startNodeID)
+			s.flowDiagLog(parentRunID, "flow_start_node_missing", "requested start node not in flow",
+				"flow_ref", flowRef,
+				"start_node_id", startNodeID,
+			)
+			return
+		}
+		entryNodes = []agentpack.FlowNode{node}
+	}
 	if len(entryNodes) == 0 {
 		// BUG-NOTE-CP42 #9: a flow whose entry node is an inline behavior
 		// (e.g. rag-harness's "context" -> context.produce) has no
@@ -1112,6 +1128,19 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 	}
 	if len(targetIDs) == 1 && strings.EqualFold(targetIDs[0], "done") {
 		s.maybeChainVibeSprint(parentRunID, completedNodeID)
+		// cp_writer / task_slicer --done--> done is a terminal pseudo-node,
+		// not in activeFlowNodes. Returning false here made advanceOrNotifyHub
+		// reinvoke ss_validator/cp_validator, which submit_review_outcome
+		// continue and re-park the lock (live run-214743: second ss_lock).
+		if completedNodeID == vibeCpWriterNodeID || completedNodeID == vibeTaskSlicerNodeID {
+			s.flowDiagLog(parentRunID, "flow_advance_vibe_terminal_done", "claimed vibe writer/slicer terminal done without hub reinvoke",
+				"completed_node_id", completedNodeID,
+			)
+			if s.isFlowEngineDriven(parentRunID) {
+				s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
+			}
+			return true
+		}
 	}
 	s.flowDiagLog(parentRunID, "flow_advance_targets_resolved", "resolved forward targets for completed node",
 		"completed_node_id", completedNodeID,
@@ -1292,13 +1321,21 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 			"cohort_size", len(targetNodes),
 		)
 		agentDef, _ := resolvePackAgentDefinition(agentName)
+		flowCohortID := cohortID
+		cohortSize := len(targetNodes)
+		if vibeLinearWriterNode(node.ID) {
+			// Live run-216140: a size-1 cohort on cp_writer joined and
+			// reinvoked ss_validator (changes_requested → second ss_lock).
+			flowCohortID = ""
+			cohortSize = 0
+		}
 		if _, err := s.spawnChildRun(context.Background(), parentRunID, SpawnAgentInput{
 			Agent:            agentName,
 			Prompt:           prompt,
 			Wait:             false,
 			Label:            node.ID,
-			FlowCohortID:     cohortID,
-			CohortSize:       len(targetNodes),
+			FlowCohortID:     flowCohortID,
+			CohortSize:       cohortSize,
 			AutoOrchestrate:  i == 0,
 			AgentDefOverride: agentDef,
 			Model:            s.delegateSpawnModel(context.Background(), parentRunID, node),
@@ -1727,6 +1764,14 @@ func (s *InteractiveService) resolveConfiguredModelForAgent(ctx context.Context,
 				return strings.TrimSpace(step.Model)
 			}
 		}
+	}
+
+	// Vibe CP writer / task slicer: inherit the session model. Skip unscoped
+	// node_id (pass 2) and Flow: Doc Writer role (pass 3). A unique
+	// node_id=cp_writer row with gpt-5.4 was still winning before this.
+	// Flow-scoped Settings (pass 1) still override.
+	if vibeInheritsSessionModel(nodeID) {
+		return ""
 	}
 
 	// Pass 2: unscoped node_id — only if unique among non-generic rows.
