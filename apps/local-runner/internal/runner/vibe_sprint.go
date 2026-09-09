@@ -284,13 +284,15 @@ func (s *InteractiveService) vibeNodeHasLiveWork(parentRunID, nodeID string) boo
 
 func (s *InteractiveService) vibeSuccessorNeedsResume(parentRunID, nodeID string) bool {
 	switch s.lookupFlowStepStatus(parentRunID, nodeID) {
-	case "", StepStatusPending, StepStatusWaitingUserApr:
-		return true
+	case StepStatusDone, StepStatusSkipped:
+		return false
 	case StepStatusRunning:
 		// Ghost RUNNING after a dropped hub reinvoke (run-220036 synthesis).
 		return !s.vibeNodeHasLiveWork(parentRunID, nodeID)
 	default:
-		return false
+		// PENDING / WAITING / CANCELED / FAILED: reconstruct remaps in-flight
+		// RUNNING to CANCELED (I-17). That is unfinished, not "do not resume".
+		return true
 	}
 }
 
@@ -344,9 +346,7 @@ func (s *InteractiveService) maybeParkVibeResumeConfirm(parentRunID string) {
 		return
 	}
 	s.mu.Unlock()
-	if s.loopSealedForReinvoke(parentRunID) {
-		return
-	}
+	// Stop seals auto-reinvoke, not the reopen gate. /open must still ask.
 	from := s.pendingVibeResumeFromNode(parentRunID)
 	if from == "" {
 		return
