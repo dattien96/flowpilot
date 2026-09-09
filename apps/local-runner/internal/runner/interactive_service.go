@@ -179,6 +179,9 @@ type interactiveRun struct {
 	vibeParkedEdges       []agentpack.FlowEdge
 	vibeParkedAcceptance  []string
 	vibeParkedFlowRef     string
+	vibeOwnerFailRetries int
+	vibeOwnerSettleInFlight bool
+	vibeCoderResumeInFlight bool
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
 	// chatPosture is the per-turn posture (scan/plan/code, "" = code). Persisted
@@ -2685,6 +2688,7 @@ func (s *InteractiveService) handleChildStartTurnFailure(childRunID, parentRunID
 			go s.maybeAutoReinvokeHubWithNote(parentRunID, note)
 		} else {
 			s.maybeScheduleStallCheck(parentRunID)
+			go s.maybeSettleVibeOwnerDebate(parentRunID)
 		}
 		return
 	}
@@ -5441,6 +5445,9 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 				}
 			}
 			s.emitAgentGraphLocked(rs.parentRunID, s.agentOrchestrator.transition(rs.parentRunID, "rejected"))
+			if rs.label == "owner_1" || rs.label == "owner_2" {
+				go s.maybeSettleVibeOwnerDebate(rs.parentRunID)
+			}
 		}
 	default:
 		// agent_graph_updated / agent_bus_message are orchestration/panel relays emitted on
