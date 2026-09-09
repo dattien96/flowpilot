@@ -1,7 +1,7 @@
 # CA-807 — hold ready/send until first chat list settles
 
 # ---8<--- flowpilot:change-ledger
-feature_key: tui-chat
+feature_key: cli-tui
 source_doc_id: CP-60
 change_type: bugfix
 summary: Cold start with a bound project holds ready/send until the first chat list settles; startup chat errors surface loudly instead of sticking /open on loading
