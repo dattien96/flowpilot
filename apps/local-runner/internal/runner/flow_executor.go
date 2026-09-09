@@ -149,6 +149,9 @@ func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, pare
 		rs.activeFlowEdges = record.Definition.Edges
 		rs.activeFlowNodes = record.Definition.Nodes
 		rs.activeFlowAcceptanceNodes = append([]string(nil), record.Definition.AcceptanceNodes...)
+		if strings.TrimSpace(flowRef) != "" {
+			rs.chatFlowRef = flowRef
+		}
 	}
 	s.mu.Unlock()
 

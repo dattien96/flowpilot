@@ -28,6 +28,34 @@ const (
 	vibeDebateSynthesisNodeID   = "debate_synthesis"
 )
 
+// inferPackFlowRefFromNodes corrects a stale ChatFlowRef after overlay
+// (live run-220036: nodes are vibe-sprint, persisted ref stayed vibe-cp-ingest).
+// Unknown topologies keep fallback.
+func inferPackFlowRefFromNodes(nodes []agentpack.FlowNode, fallback string) string {
+	ids := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		if id := strings.TrimSpace(n.ID); id != "" {
+			ids[id] = true
+		}
+	}
+	pick := func(id string) string {
+		return workingmode.PackPrefix + id
+	}
+	switch {
+	case ids["owner_1"] && ids["owner_2"]:
+		return pick(vibeOwnerDebateFlowID)
+	case ids["tdd"] && ids["coder"]:
+		return pick(vibeSprintFlowID)
+	case ids[vibeTaskSlicerNodeID] || ids[vibeCpLockNodeID] || ids["cp_reader"]:
+		return pick(vibeCpIngestFlowID)
+	case ids[vibeSSLockNodeID] || ids["ingest_reader"]:
+		return pick(vibeIngestFlowID)
+	default:
+		return fallback
+	}
+}
+
+
 // vibeInheritsSessionModel is true when the node must not pick the generic
 // Flow: Doc Writer role model (gpt-5.4). Empty → spawn inherits the run's
 // session model. Per-node Settings (flow-scoped step row) still win.

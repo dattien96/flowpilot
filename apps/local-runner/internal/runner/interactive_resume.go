@@ -950,7 +950,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		activeFlowEdges:                 append([]agentpack.FlowEdge(nil), st.ActiveFlowEdges...),
 		activeFlowNodes:                 append([]agentpack.FlowNode(nil), st.ActiveFlowNodes...),
 		chatSubMode:                     st.ChatSubMode,
-		chatFlowRef:                     st.ChatFlowRef,
+		chatFlowRef:                     inferPackFlowRefFromNodes(st.ActiveFlowNodes, st.ChatFlowRef),
 		workingMode:                     st.WorkingMode,
 		vibeAwaitingLock:                st.VibeAwaitingLock,
 		vibeTaskPlan:                    append([]string(nil), st.VibeTaskPlan...),
@@ -1172,16 +1172,11 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	// runs can reach here, seeding this fake single step would blow away the seeder's real
 	// per-step list for that run (fakeWorkflowStore.seed replaces wholesale) — workflow runs
 	// keep whatever step-runtime state their store already has instead.
-	if st.RunKind == "chat" {
-		if seeder, ok := s.workflowStore.(workflowRunSeeder); ok {
-			seeder.seed(rs.id, []RuntimeWorkflowStep{{
-				ID:               "chat-" + rs.id,
-				StepType:         "chat",
-				Status:           StepStatusPending,
-				RequiresApproval: false,
-			}})
-		}
-	} else if len(rs.activeFlowNodes) > 0 {
+	// Vibe (and other chat-mode flows) keep RunKind=chat but carry
+	// activeFlowNodes. Seeding the synthetic chat-* row first used to wipe
+	// the real timeline (live run-220036: /open showed vibe-cp-ingest and
+	// "(no steps)"). Prefer persisted nodes whenever they exist.
+	if len(rs.activeFlowNodes) > 0 {
 		// BUG-178: the local runner's step-runtime store is in-memory, so a
 		// flow run's step list is empty after a server restart and its history
 		// timeline showed "No step-runtime data for this run yet". Rebuild it
@@ -1253,6 +1248,15 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 			}
 		}
 		s.seedFlowStepRuntimeRows(rs.id, rows)
+	} else if st.RunKind == "chat" {
+		if seeder, ok := s.workflowStore.(workflowRunSeeder); ok {
+			seeder.seed(rs.id, []RuntimeWorkflowStep{{
+				ID:               "chat-" + rs.id,
+				StepType:         "chat",
+				Status:           StepStatusPending,
+				RequiresApproval: false,
+			}})
+		}
 	}
 	// Restore flow-engine loop state so a restarted or Drive-synced run resumes
 	// at the correct round/cap/mode (Task-085 T-4).
