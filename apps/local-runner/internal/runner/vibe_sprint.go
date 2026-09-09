@@ -26,6 +26,22 @@ func runHasFlowNode(rs *interactiveRun, id string) bool {
 	return false
 }
 
+func (s *InteractiveService) isVibeWorkingMode(parentRunID string) bool {
+	if s == nil || strings.TrimSpace(parentRunID) == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rs := s.runs[parentRunID]
+	if rs == nil {
+		return false
+	}
+	if rs.workingMode == workingmode.Vibe {
+		return true
+	}
+	return runHasFlowNode(rs, "tdd") && runHasFlowNode(rs, "coder")
+}
+
 func vibeCoderBlocked(workingMode, fromNode, coderNodeID string, tddDone, hasTestArtifact bool) bool {
 	if workingMode != workingmode.Vibe || coderNodeID != "coder" {
 		return false

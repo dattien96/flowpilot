@@ -1329,6 +1329,26 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 		if auditCtxCancelled(ctx, parentRunID, node.ID, "draft_not_ready") {
 			return false
 		}
+		// Vibe: missing feature key is not operator-actionable (Retry re-parks
+		// forever). Auto-finalize — CP-60 non-requirement gates auto-resolve.
+		if draft.Status == "blocked_missing_feature_key" && s.isVibeWorkingMode(parentRunID) {
+			summary := "Vibe audit: feature key missing or unverified; auto-finalized (not an operator gate)."
+			s.flowDiagLog(parentRunID, "flow_audit_vibe_missing_key_auto", summary,
+				"node_id", node.ID, "status", draft.Status,
+			)
+			if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
+				Status:  "done",
+				Summary: summary,
+				Payload: map[string]any{"auditDraft": draft},
+			}); err != nil {
+				log.Printf("[flow-executor] vibe audit auto-finalize failed: %v", err)
+				return false
+			}
+			if s.isFlowEngineDriven(parentRunID) {
+				s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusDone)
+			}
+			return true
+		}
 		summary := "Audit blocked: validation was not positively verified (status=" + draft.Status + ", validation=" + draft.ValidationResult + ")."
 		if draft.Status == "blocked_missing_feature_key" {
 			summary = "Audit blocked: feature key missing or unverified; cannot finalize."
