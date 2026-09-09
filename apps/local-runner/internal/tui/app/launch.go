@@ -37,19 +37,23 @@ func (a LaunchArm) IsCatalogWorkflow() bool {
 }
 
 func (a LaunchArm) StatusLabel() string {
+	raw := ""
 	if s := strings.TrimSpace(a.Label); s != "" {
-		return s
+		raw = s
+	} else if s := strings.TrimSpace(a.FlowRef); s != "" {
+		raw = s
+	} else if s := strings.TrimSpace(a.WorkflowID); s != "" {
+		raw = s
+	} else if s := strings.TrimSpace(a.StepID); s != "" {
+		raw = s
 	}
-	if s := strings.TrimSpace(a.FlowRef); s != "" {
-		return s
+	if raw == "" {
+		return ""
 	}
-	if s := strings.TrimSpace(a.WorkflowID); s != "" {
-		return s
+	if bare := workingmode.BareFlowID(raw); bare != "" {
+		return bare
 	}
-	if s := strings.TrimSpace(a.StepID); s != "" {
-		return s
-	}
-	return ""
+	return raw
 }
 
 // ToStartRunInput maps the arm to the desktop-equivalent start payload.
