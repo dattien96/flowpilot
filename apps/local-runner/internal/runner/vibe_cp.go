@@ -334,6 +334,25 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 	case vibeDebateSynthesisNodeID:
 		s.restoreVibeFlowAfterDebate(parentRunID)
 	case vibeTaskSlicerNodeID, vibeSprintSlicerNodeID:
+		// BUG-363: fail closed when the slicer wrote nothing. With a visible
+		// workspace and zero Task files, starting a sprint from the SS-glob
+		// fallback silently runs the wrong plan (live run-635006: no CP, no
+		// Tasks, 1 sprint from SS, flow done looking healthy). Park for the
+		// operator instead. The gate runs BEFORE any plan mutation so a park
+		// leaves no stale SS-fallback in rs.vibeTaskPlan for a later retry.
+		// Empty-cwd shapes keep legacy behavior (CA-791, CA-783, Task-321/326
+		// unit shapes); the SS fallback in collectVibeSprintPlan itself is
+		// unchanged (pinned by CA-783).
+		s.mu.Lock()
+		var cwd string
+		if rs := s.runs[parentRunID]; rs != nil {
+			cwd = rs.workspaceCwd
+		}
+		s.mu.Unlock()
+		if strings.TrimSpace(cwd) != "" && len(collectVibeTaskPlan(cwd)) == 0 {
+			s.parkVibeRequirement(parentRunID, "task_slicer produced no Task files under requirements/08-Task/todo/; refusing to sprint from fallback")
+			return
+		}
 		s.mu.Lock()
 		var plan []string
 		if rs := s.runs[parentRunID]; rs != nil {
