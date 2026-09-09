@@ -1810,10 +1810,7 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 				s.mu.Unlock()
 				return nil
 			}
-			if s.loopSealedForReinvoke(runID) {
-				s.mu.Unlock()
-				return nil
-			}
+			// Operator OK unseals Stop. loopSealedForReinvoke only fences auto-reinvoke.
 			if rs.status == RunStatusCancelled {
 				rs.status = RunStatusRunning
 				rs.agentStatus = string(RunStatusRunning)
@@ -1825,6 +1822,7 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 				rs.autoOrchestrate = true
 			}
 			s.mu.Unlock()
+			s.releaseHubStopFenceForFollowUp(context.Background(), runID)
 			snap := s.agentOrchestrator.mutateLoop(runID, func(st AgentLoopState) AgentLoopState {
 				st.Status = "running"
 				st.BlockReason = ""
