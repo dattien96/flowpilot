@@ -257,6 +257,43 @@ func (s *InteractiveService) persistedCompletedChildExists(parentRunID, label st
 
 const vibeResumePausedReason = "paused"
 
+func (s *InteractiveService) vibeNodeHasLiveWork(parentRunID, nodeID string) bool {
+	if s == nil || strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(nodeID) == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rs := s.runs[parentRunID]
+	if rs == nil {
+		return false
+	}
+	if rs.turnInFlight && strings.TrimSpace(rs.activeHubNodeID) == nodeID {
+		return true
+	}
+	for _, child := range s.runs {
+		if child == nil || child.parentRunID != parentRunID || child.label != nodeID {
+			continue
+		}
+		switch child.status {
+		case RunStatusRunning, RunStatusWaitingApproval, RunStatusWaitingQuestion:
+			return true
+		}
+	}
+	return false
+}
+
+func (s *InteractiveService) vibeSuccessorNeedsResume(parentRunID, nodeID string) bool {
+	switch s.lookupFlowStepStatus(parentRunID, nodeID) {
+	case "", StepStatusPending, StepStatusWaitingUserApr:
+		return true
+	case StepStatusRunning:
+		// Ghost RUNNING after a dropped hub reinvoke (run-220036 synthesis).
+		return !s.vibeNodeHasLiveWork(parentRunID, nodeID)
+	default:
+		return false
+	}
+}
+
 func (s *InteractiveService) pendingVibeResumeFromNode(parentRunID string) string {
 	if s == nil || strings.TrimSpace(parentRunID) == "" {
 		return ""
@@ -282,8 +319,7 @@ func (s *InteractiveService) pendingVibeResumeFromNode(parentRunID string) strin
 			if e.To == "done" || e.To == "ask_user" {
 				continue
 			}
-			switch s.lookupFlowStepStatus(parentRunID, e.To) {
-			case "", StepStatusPending:
+			if s.vibeSuccessorNeedsResume(parentRunID, e.To) {
 				from = n.ID
 			}
 		}
