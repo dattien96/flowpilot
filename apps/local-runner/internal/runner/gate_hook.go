@@ -1810,7 +1810,16 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 				s.mu.Unlock()
 				return nil
 			}
-			// Operator OK unseals Stop. loopSealedForReinvoke only fences auto-reinvoke.
+			// CA-803 vs CA-812: a sealed (stopped/done) loop with no resume
+			// target is Stop-wins poison — OK must not heal, unseal, or drop
+			// the stop fence. A genuine resume gate carries
+			// vibeResumeFromNode; operator OK there is explicit resume
+			// intent, so it heals Cancelled and releases the fence below.
+			// loopSealedForReinvoke still fences auto-reinvoke everywhere.
+			if s.loopSealedForReinvoke(runID) && from == "" {
+				s.mu.Unlock()
+				return nil
+			}
 			if rs.status == RunStatusCancelled {
 				rs.status = RunStatusRunning
 				rs.agentStatus = string(RunStatusRunning)
