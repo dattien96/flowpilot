@@ -1902,14 +1902,13 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		// decision. A blocked loop being resumed owns liveness — restore
 		// non-terminal so flowRunTerminalLocked does not silently skip every
 		// later advance ("run terminal/stopped"). Only Cancelled heals — a
-		// Failed root is a real failure, not park poison. Every parked reason
-		// goes through parkFlowForAwaitingUser, so any non-empty blocked
-		// reason qualifies; a genuinely stopped loop never reaches here
-		// (stopAgentLoop seals the loop "stopped", wasBlocked=false).
 		if wasBlocked && strings.TrimSpace(prevBlockReason) != "" &&
 			rs.status == RunStatusCancelled {
 			rs.status = RunStatusRunning
 			rs.agentStatus = string(RunStatusRunning)
+		}
+		if wasBlocked && len(rs.activeFlowNodes) > 0 {
+			rs.autoOrchestrate = true
 		}
 		// CP-51 A1 live: hub can retain a stale pendingFlowGateSettle from the
 		// entry turn (or a prior incomplete settle) while the real gate lives on
@@ -2842,7 +2841,14 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithNote(parentRunID, cohortNot
 			!parent.reinvokeInFlight && len(parent.pendingAgentContext) > 0 {
 			parent.pendingHubReinvoke = true
 		}
+		rearmed := parent != nil && parent.pendingHubReinvoke
 		s.mu.Unlock()
+		// run-220036: a defer nothing re-arms on a running loop is a silent
+		// hang (no turn will drain it). Arm the watchdog so it surfaces as
+		// an actionable hub_stalled card instead of silence.
+		if !rearmed && s.loopIsAdvancing(parentRunID) {
+			s.maybeScheduleHubStallCheck(parentRunID)
+		}
 		s.flowDiagLog(parentRunID, "hub_reinvoke_deferred", "hub reinvoke was deferred or skipped by current state",
 			"has_parent", parent != nil,
 			"cohort_note_len", len(strings.TrimSpace(cohortNote)),
@@ -2934,7 +2940,11 @@ func (s *InteractiveService) maybeAutoReinvokeHubWithPrompt(parentRunID, prompt 
 				parent.pendingHubReinvokePrompt = prompt
 			}
 		}
+		rearmed := parent != nil && parent.pendingHubReinvoke
 		s.mu.Unlock()
+		if !rearmed && s.loopIsAdvancing(parentRunID) {
+			s.maybeScheduleHubStallCheck(parentRunID)
+		}
 		s.flowDiagLog(parentRunID, "hub_notify_reinvoke_deferred", "hub.notify reinvoke was deferred or skipped by current state",
 			"has_parent", parent != nil,
 		)
@@ -6240,6 +6250,12 @@ func (s *InteractiveService) dispatchHubNotifyNode(parentRunID string, node agen
 	s.mu.Lock()
 	if rs := s.runs[parentRunID]; rs != nil {
 		rs.activeHubNodeID = node.ID
+		// run-220036: restart strips autoOrchestrate while the flow topology
+		// survives — a hub dispatch IS orchestration; without the flag the
+		// reinvoke below defers+drops and synthesis never starts.
+		if rs.flowEngineDriven && len(rs.activeFlowNodes) > 0 {
+			rs.autoOrchestrate = true
+		}
 	}
 	s.mu.Unlock()
 	if s.isFlowEngineDriven(parentRunID) {

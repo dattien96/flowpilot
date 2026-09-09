@@ -1818,6 +1818,12 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 				rs.status = RunStatusRunning
 				rs.agentStatus = string(RunStatusRunning)
 			}
+			// run-220036: restart strips autoOrchestrate while flow topology
+			// survives — a flow parent IS orchestrated; without the flag the
+			// downstream hub reinvoke defers+drops and synthesis never starts.
+			if len(rs.activeFlowNodes) > 0 {
+				rs.autoOrchestrate = true
+			}
 			s.mu.Unlock()
 			snap := s.agentOrchestrator.mutateLoop(runID, func(st AgentLoopState) AgentLoopState {
 				st.Status = "running"

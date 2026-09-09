@@ -413,9 +413,14 @@ func (s *InteractiveService) maybeAdvancePendingValidateAfterCoder(parentRunID s
 		return false
 	}
 	s.mu.Lock()
-	if rs := s.runs[parentRunID]; rs != nil && rs.status == RunStatusCancelled {
-		rs.status = RunStatusRunning
-		rs.agentStatus = string(RunStatusRunning)
+	if rs := s.runs[parentRunID]; rs != nil {
+		if rs.status == RunStatusCancelled {
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+		}
+		if len(rs.activeFlowNodes) > 0 {
+			rs.autoOrchestrate = true
+		}
 	}
 	s.mu.Unlock()
 	return s.tryAdvanceFlowFromNode(parentRunID, pred, "retry after hub_stalled")
