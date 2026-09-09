@@ -37,8 +37,9 @@ nodes:
   - id: tdd
     run: delegate
     lifecycle: reinvoke
-    behavior: agent.delegate
+    behavior: agent.code
     agent: agents/tester.md
+    promptTemplate: prompts/test-signatures.md
     join: all
     artifactBindings:
       - direction: output
@@ -54,6 +55,7 @@ nodes:
     lifecycle: reinvoke
     behavior: agent.code
     agent: agents/coder.md
+    promptTemplate: prompts/implement-complete-tests.md
     join: all
   - id: validate
     run: inline
