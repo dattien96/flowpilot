@@ -1302,7 +1302,9 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	}
 	if rs.parentRunID == "" && !rs.suppressAutoGateResume {
 		go s.maybeSettleVibeOwnerDebate(rs.id)
-		go s.maybeResumeVibeCoderAfterTdd(rs.id)
+		// Sync: TUI GetRun right after resume must see PendingGate (live /open
+		// run-220036 had no card when this ran in a goroutine).
+		s.maybeParkVibeResumeConfirm(rs.id)
 	}
 	return rs, nil
 }

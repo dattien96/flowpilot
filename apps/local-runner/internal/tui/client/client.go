@@ -371,10 +371,10 @@ type RunSnapshot struct {
 	PendingQuestion *QuestionInfo `json:"pendingQuestion,omitempty"`
 }
 
-// GateInfo minimal gate state from a run snapshot.
 type GateInfo struct {
 	Options        []string `json:"gateOptions"`
 	RegressedTests []string `json:"gateRegressedTests,omitempty"`
+	ResumeFrom     string   `json:"resumeFrom,omitempty"`
 }
 
 // ApprovalInfo minimal approval state from a run snapshot.

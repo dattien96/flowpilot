@@ -299,31 +299,31 @@ func (s *InteractiveService) flowRunTerminalLocked(parentRunID string) bool {
 	case RunStatusFailed, RunStatusCancelled:
 		return true
 	case RunStatusCompleted:
-		if s.loopIsAdvancing(parentRunID) {
+		// Inline loopIsAdvancing without re-entering s.mu (already held):
+		// loopIsAdvancing only takes s.mu for blocked:paused confirm check.
+		st := s.agentOrchestrator.loopStateFor(parentRunID)
+		switch st.Status {
+		case "paused", "stopped", "done":
+			return true
+		case "blocked":
+			if st.BlockReason == vibeResumePausedReason {
+				return rs.vibeResumeConfirm
+			}
+			return true
+		default:
 			return false
 		}
-		return true
 	default:
 		return false
 	}
 }
 
-// alreadyCancelledContext returns a context.Context whose Done() is already
-// closed and Err() is context.Canceled â€” used by flowInlineContext so a late
-// inline-dispatch callback observes an unambiguously-cancelled context
-// instead of a fresh, uncancelled context.Background() (BUG-288 P1-12).
 func alreadyCancelledContext() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	return ctx
 }
 
-// flowInlineContext returns a cancelable context for in-process inline nodes
-// (validate/audit). stopAgentLoop cancels it so suites abort with the flow.
-// BUG-288 P1-12: once the run is terminal (stopped/done), this never mints a
-// fresh non-cancelled context â€” that was the bypass a late/queued inline
-// callback could exploit to keep running validate/audit/telegram/delegate
-// work after Stop cleared flowInlineCtx/flowInlineCancel.
 func (s *InteractiveService) flowInlineContext(parentRunID string) context.Context {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -335,10 +335,21 @@ func (s *InteractiveService) flowInlineContext(parentRunID string) context.Conte
 	case RunStatusFailed, RunStatusCancelled:
 		return alreadyCancelledContext()
 	case RunStatusCompleted:
-		if s.loopIsAdvancing(parentRunID) {
-			break
+		st := s.agentOrchestrator.loopStateFor(parentRunID)
+		advancing := true
+		switch st.Status {
+		case "paused", "stopped", "done":
+			advancing = false
+		case "blocked":
+			if st.BlockReason == vibeResumePausedReason {
+				advancing = !rs.vibeResumeConfirm
+			} else {
+				advancing = false
+			}
 		}
-		return alreadyCancelledContext()
+		if !advancing {
+			return alreadyCancelledContext()
+		}
 	}
 	if rs.flowInlineCtx != nil {
 		return rs.flowInlineCtx
@@ -348,6 +359,68 @@ func (s *InteractiveService) flowInlineContext(parentRunID string) context.Conte
 	rs.flowInlineCancel = cancel
 	return ctx
 }
+
+// maybeAdvancePendingValidateAfterCoder re-drives the validate predecessor
+// after a hub_stalled Retry when validate never started (run-220036).
+func (s *InteractiveService) maybeAdvancePendingValidateAfterCoder(parentRunID string) bool {
+	if s == nil || strings.TrimSpace(parentRunID) == "" {
+		return false
+	}
+	if s.loopSealedForReinvoke(parentRunID) {
+		return false
+	}
+	switch s.lookupFlowStepStatus(parentRunID, "validate") {
+	case StepStatusDone, StepStatusRunning, StepStatusWaitingUserApr:
+		return false
+	}
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil {
+		s.mu.Unlock()
+		return false
+	}
+	if rs.status == RunStatusFailed {
+		s.mu.Unlock()
+		return false
+	}
+	pred := ""
+	hasValidate := false
+	for _, n := range rs.activeFlowNodes {
+		if n.ID == "validate" {
+			hasValidate = true
+			break
+		}
+	}
+	if hasValidate {
+		for _, e := range rs.activeFlowEdges {
+			if e.To == "validate" && strings.EqualFold(e.When, "done") && strings.EqualFold(e.Kind, "forward") && e.From != "" {
+				pred = e.From
+				break
+			}
+		}
+	}
+	if pred == "" {
+		pred = "coder"
+	}
+	s.mu.Unlock()
+	if !hasValidate {
+		return false
+	}
+	if st := s.lookupFlowStepStatus(parentRunID, pred); st != StepStatusDone && !s.persistedCompletedChildExists(parentRunID, pred) {
+		return false
+	}
+	if s.flowRunTerminalLocked(parentRunID) {
+		return false
+	}
+	s.mu.Lock()
+	if rs := s.runs[parentRunID]; rs != nil && rs.status == RunStatusCancelled {
+		rs.status = RunStatusRunning
+		rs.agentStatus = string(RunStatusRunning)
+	}
+	s.mu.Unlock()
+	return s.tryAdvanceFlowFromNode(parentRunID, pred, "retry after hub_stalled")
+}
+
 
 // loadValidateCommand resolves the validate node's shell command from
 // .flowpilot/guard/test_baseline.json's test_command field (BUG-243 Q-1's

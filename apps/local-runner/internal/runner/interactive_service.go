@@ -182,6 +182,8 @@ type interactiveRun struct {
 	vibeOwnerFailRetries int
 	vibeOwnerSettleInFlight bool
 	vibeCoderResumeInFlight bool
+	vibeResumeConfirm bool
+	vibeResumeFromNode string
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
 	// chatPosture is the per-turn posture (scan/plan/code, "" = code). Persisted
@@ -2129,6 +2131,9 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 			}
 		}
 	}
+	if prevBlockReason == "hub_stalled" && s.maybeAdvancePendingValidateAfterCoder(parentRunID) {
+		return snap, nil
+	}
 
 	resumeNote := ""
 	if feedback != "" {
@@ -2137,6 +2142,7 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	}
 	go s.maybeAutoReinvokeHubWithNote(parentRunID, resumeNote)
 	return snap, nil
+
 }
 
 // buildCohortNote constructs the single consolidated pendingAgentContext note for a
@@ -3305,8 +3311,21 @@ func (s *InteractiveService) loopAllowsNextTurnLocked(parentRunID string) bool {
 // spun forever and the run never settled. maybeAutoReinvokeHub was gated, so the
 // loop STATE was correct while the STEPS/spawns ran away; this closes that gap.
 func (s *InteractiveService) loopIsAdvancing(parentRunID string) bool {
-	switch s.agentOrchestrator.loopStateFor(parentRunID).Status {
-	case "paused", "stopped", "blocked", "done":
+	st := s.agentOrchestrator.loopStateFor(parentRunID)
+	switch st.Status {
+	case "paused", "stopped", "done":
+		return false
+	case "blocked":
+		// OK already cleared vibeResumeConfirm but the loop may still say
+		// blocked:paused (live run-220036: coder DONE, validate never started,
+		// hub_stalled). Treat leftover pause as advancing.
+		if st.BlockReason == vibeResumePausedReason {
+			s.mu.Lock()
+			rs := s.runs[parentRunID]
+			confirm := rs != nil && rs.vibeResumeConfirm
+			s.mu.Unlock()
+			return !confirm
+		}
 		return false
 	default:
 		return true

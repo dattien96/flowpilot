@@ -966,6 +966,7 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 		}
 	}
 	s.seedTranscriptFromDisk(rs)
+	s.maybeParkVibeResumeConfirm(rs.id)
 	// BUG-339: stamp missing ChatID from durable transcript (BUG-338) so
 	// /open can backfill prior legs even when the session row predates
 	// chat_id (provider-agnostic, chatId only).
@@ -1020,6 +1021,11 @@ type pendingQuestionView struct {
 	MultiSelect bool             `json:"multiSelect"`
 }
 
+type pendingGateView struct {
+	GateOptions []string `json:"gateOptions"`
+	ResumeFrom  string   `json:"resumeFrom,omitempty"`
+}
+
 type runSnapshotView struct {
 	RunID             string               `json:"runId"`
 	ProviderSessionID string               `json:"providerSessionId"`
@@ -1027,6 +1033,7 @@ type runSnapshotView struct {
 	Status            RunStatus            `json:"status"`
 	PendingApproval   *pendingApprovalView `json:"pendingApproval,omitempty"`
 	PendingQuestion   *pendingQuestionView `json:"pendingQuestion,omitempty"`
+	PendingGate       *pendingGateView     `json:"pendingGate,omitempty"`
 }
 
 type runHistoryItem struct {
@@ -1293,6 +1300,10 @@ func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr
 		ProviderSessionID: rs.providerSessionID,
 		ProviderKey:       rs.providerKey,
 		Status:            rs.status,
+	}
+	if rs.vibeResumeConfirm {
+		view.Status = RunStatus("blocked")
+		view.PendingGate = &pendingGateView{GateOptions: []string{"ok", "cancel"}, ResumeFrom: rs.vibeResumeFromNode}
 	}
 	if rs.pendingApprovalID != "" {
 		if rec := s.approvals[rs.pendingApprovalID]; rec != nil {

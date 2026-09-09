@@ -1799,12 +1799,53 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 		s.mu.Unlock()
 		return newAPIErr(404, "run_not_found", "workflow run not found")
 	}
+	if rs.vibeResumeConfirm {
+		opt := strings.ToLower(strings.TrimSpace(option))
+		switch opt {
+		case "ok", "continue":
+			from := strings.TrimSpace(rs.vibeResumeFromNode)
+			rs.vibeResumeConfirm = false
+			rs.vibeResumeFromNode = ""
+			if rs.status == RunStatusFailed {
+				s.mu.Unlock()
+				return nil
+			}
+			if s.loopSealedForReinvoke(runID) {
+				s.mu.Unlock()
+				return nil
+			}
+			if rs.status == RunStatusCancelled {
+				rs.status = RunStatusRunning
+				rs.agentStatus = string(RunStatusRunning)
+			}
+			s.mu.Unlock()
+			snap := s.agentOrchestrator.mutateLoop(runID, func(st AgentLoopState) AgentLoopState {
+				st.Status = "running"
+				st.BlockReason = ""
+				st.GateReason = ""
+				return st
+			})
+			s.emitAgentGraph(runID, snap)
+			go s.persistParentSession(runID)
+			if from == "" || from == "tdd" {
+				s.maybeResumeVibeCoderAfterTdd(runID)
+			} else {
+				s.tryAdvanceFlowFromNode(runID, from, "resume from last node")
+			}
+			return nil
+		case "cancel":
+			s.mu.Unlock()
+			return nil
+		default:
+			s.mu.Unlock()
+			return newAPIErr(400, "invalid_option", "option must be ok or cancel")
+		}
+	}
 	info := rs.pendingGateBlock
 	rs.pendingGateBlock = nil
 	stepID := rs.lastTurnStepID
 	cwd := rs.workspaceCwd
 	s.mu.Unlock()
-
 	var prompt string
 	switch option {
 	case "keep-test-fix-code":

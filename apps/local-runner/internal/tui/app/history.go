@@ -639,16 +639,38 @@ func snapshotStatusWaiting(status string) bool {
 	}
 }
 
+func isOKCancelPair(opts []string) bool {
+	if len(opts) != 2 {
+		return false
+	}
+	return (opts[0] == "ok" && opts[1] == "cancel") || (opts[0] == "cancel" && opts[1] == "ok")
+}
+
 // applyPendingFromSnapshot mounts a live approval/question only when the
 // runner still reports waiting_* plus a pending card. Completed runs with
 // historical permission_required events stay read-only (CA-089).
 func (m *AppModel) applyPendingFromSnapshot(snap client.RunSnapshot) tea.Cmd {
-	if !snapshotStatusWaiting(snap.Status) {
-		return nil
-	}
 	runID := strings.TrimSpace(snap.RunID)
 	if runID == "" && m.runHandle != nil {
 		runID = m.runHandle.RunID
+	}
+	if snap.PendingGate != nil && len(snap.PendingGate.Options) > 0 {
+		from := strings.TrimSpace(snap.PendingGate.ResumeFrom)
+		m.gate = &GateState{Options: snap.PendingGate.Options, RunID: runID, ResumeFrom: from}
+		m.connStatus = ConnWaiting
+		m.statusMsg = "paused"
+		if from != "" && isOKCancelPair(snap.PendingGate.Options) {
+			m.addMessage("system", fmt.Sprintf("[GATE] Resume from %s?\n  Continue?\n  %s", from, strings.Join(optionChips(snap.PendingGate.Options), "  ")), "gate")
+		} else {
+			m.addMessage("system", buildGateMessage("block", "Run paused. Continue?", snap.PendingGate.Options, nil), "gate")
+		}
+		return nil
+	}
+	if m.gate != nil && m.gate.RunID == runID && isOKCancelPair(m.gate.Options) {
+		m.gate = nil
+	}
+	if !snapshotStatusWaiting(snap.Status) {
+		return nil
 	}
 	if snap.PendingApproval != nil && strings.TrimSpace(snap.PendingApproval.ID) != "" {
 		id := strings.TrimSpace(snap.PendingApproval.ID)

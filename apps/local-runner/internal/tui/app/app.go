@@ -1109,6 +1109,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if hydrate != nil {
 			cmds = append(cmds, hydrate)
 		}
+		if kind == "flow" && m.gate == nil {
+			cmds = append(cmds, m.cmdHydratePendingFromSnapshot())
+		}
 		if m.runHandle != nil && m.orchStream == nil {
 			cmds = append(cmds, m.cmdStartOrchestrationStream())
 		}
@@ -6295,6 +6298,10 @@ func gateOptionChip(opt string) string {
 		return "[Suggest req]"
 	case "custom":
 		return "[Custom]"
+	case "ok":
+		return "[OK]"
+	case "cancel":
+		return "[Cancel]"
 	default:
 		return "[" + opt + "]"
 	}
@@ -6317,13 +6324,18 @@ func buildGateMessage(status, errMsg string, opts []string, regressed []string) 
 	// Only a real block with a decision card keeps the legacy detailed card.
 	// Legacy tests emit GateOptions without Status — treat empty status + opts as block for view compat.
 	if hasOpts && (lowStatus == "block" || lowStatus == "") {
+		if len(opts) == 2 && ((opts[0] == "ok" && opts[1] == "cancel") || (opts[0] == "cancel" && opts[1] == "ok")) {
+			sb.WriteString("[GATE] Run paused.\n")
+			sb.WriteString("  Continue?\n")
+			sb.WriteString("  " + strings.Join(optionChips(opts), "  "))
+			return sb.String()
+		}
 		sb.WriteString("[GATE] Flow gate blocked.\n")
 		if hasRegressed {
 			sb.WriteString(fmt.Sprintf("  Regressed tests: %s\n", strings.Join(regressed, ", ")))
 		}
 		sb.WriteString("  Options: ")
 		sb.WriteString(strings.Join(opts, ", "))
-		// CA-650: clickable chips (desktop parity); number/name typing still works.
 		sb.WriteString("\n  " + strings.Join(optionChips(opts), "  "))
 		sb.WriteString("\n  (or type number / option name)")
 		return sb.String()

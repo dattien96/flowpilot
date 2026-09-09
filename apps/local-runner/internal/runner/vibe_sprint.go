@@ -2,11 +2,13 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/workingmode"
 )
 
@@ -219,11 +221,113 @@ func (s *InteractiveService) persistedLiveCoderExists(parentRunID string) bool {
 			continue
 		}
 		switch session.Status {
-		case RunStatusRunning, RunStatusCompleted, RunStatusWaitingApproval, RunStatusWaitingQuestion:
+		case RunStatusRunning, RunStatusWaitingApproval, RunStatusWaitingQuestion:
 			return true
 		}
 	}
 	return false
+}
+
+// persistedCompletedChildExists reports a durable Completed child with the
+// given label. After a restart step rows reseed as PENDING (per-step progress
+// is not persisted), so a DONE row alone cannot prove the node finished —
+// the persisted child session is the fallback evidence (turn-2 RestartLost).
+func (s *InteractiveService) persistedCompletedChildExists(parentRunID, label string) bool {
+	if s == nil || s.workflowStore == nil || strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(label) == "" {
+		return false
+	}
+	indexReader, ok := s.workflowStore.(SessionIndexReader)
+	if !ok {
+		return false
+	}
+	sessions, err := indexReader.ListAllProviderSessions(context.Background())
+	if err != nil {
+		return false
+	}
+	for _, session := range sessions {
+		if session.ParentRunID != parentRunID || strings.TrimSpace(session.Label) != strings.TrimSpace(label) {
+			continue
+		}
+		if session.Status == RunStatusCompleted {
+			return true
+		}
+	}
+	return false
+}
+
+const vibeResumePausedReason = "paused"
+
+func (s *InteractiveService) pendingVibeResumeFromNode(parentRunID string) string {
+	if s == nil || strings.TrimSpace(parentRunID) == "" {
+		return ""
+	}
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil {
+		s.mu.Unlock()
+		return ""
+	}
+	nodes := append([]agentpack.FlowNode(nil), rs.activeFlowNodes...)
+	edges := append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...)
+	s.mu.Unlock()
+	from := ""
+	for _, n := range nodes {
+		if s.lookupFlowStepStatus(parentRunID, n.ID) != StepStatusDone && !s.persistedCompletedChildExists(parentRunID, n.ID) {
+			continue
+		}
+		for _, e := range edges {
+			if e.From != n.ID || !strings.EqualFold(e.When, "done") || !strings.EqualFold(e.Kind, "forward") || e.To == "" {
+				continue
+			}
+			if e.To == "done" || e.To == "ask_user" {
+				continue
+			}
+			switch s.lookupFlowStepStatus(parentRunID, e.To) {
+			case "", StepStatusPending:
+				from = n.ID
+			}
+		}
+	}
+	return from
+}
+
+func (s *InteractiveService) maybeParkVibeResumeConfirm(parentRunID string) {
+	if s == nil || strings.TrimSpace(parentRunID) == "" {
+		return
+	}
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || rs.parentRunID != "" || rs.status == RunStatusFailed {
+		s.mu.Unlock()
+		return
+	}
+	hasTdd := runHasFlowNode(rs, "tdd")
+	hasCoder := runHasFlowNode(rs, "coder")
+	if rs.workingMode != workingmode.Vibe && !(hasTdd && hasCoder) {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	if s.loopSealedForReinvoke(parentRunID) {
+		return
+	}
+	from := s.pendingVibeResumeFromNode(parentRunID)
+	if from == "" {
+		return
+	}
+	s.mu.Lock()
+	if r := s.runs[parentRunID]; r != nil {
+		r.vibeResumeConfirm = true
+		r.vibeResumeFromNode = from
+	}
+	s.mu.Unlock()
+	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		st.Status = "blocked"
+		st.BlockReason = vibeResumePausedReason
+		st.GateReason = fmt.Sprintf("Resume from %s?", from)
+		return st
+	})
+	s.parkFlowForAwaitingUser(parentRunID)
 }
 
 func (s *InteractiveService) maybeResumeVibeCoderAfterTdd(parentRunID string) {
@@ -254,8 +358,7 @@ func (s *InteractiveService) maybeResumeVibeCoderAfterTdd(parentRunID string) {
 		}
 		s.mu.Unlock()
 	}()
-	loop := s.agentOrchestrator.loopStateFor(parentRunID)
-	if loop.Status == "blocked" || loop.Status == "stopped" || loop.Status == "done" {
+	if !s.loopIsAdvancing(parentRunID) {
 		return
 	}
 	tddDone := checkpoint == "tdd" || s.vibeTddStepDone(parentRunID)
