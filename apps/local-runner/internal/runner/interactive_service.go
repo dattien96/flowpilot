@@ -2305,8 +2305,8 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
+	var cancels []func()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if parent := s.runs[parentRunID]; parent != nil {
 		parent.reinvokeInFlight = false
 		parent.pendingHubReinvoke = false
@@ -2334,19 +2334,16 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 			// CP-58 run-203966: this is the ENGINE parking, not a user
 			// interrupt — the cancelled turn must not terminalize the run (see
 			// parkCancelCause / finishTurn's context.Canceled branch).
-			// parkCancelSuppress is armed together so an adapter that emits
-			// EventTurnFailed mid-cancel does not abandon canonical heads or
-			// signalChild before finishTurn even runs.
 			parent.parkCancelCause = true
 			parent.parkCancelSuppress = true
-			parent.turnCancel()
+			cancels = append(cancels, parent.turnCancel)
 		}
 		if parent.postTurnGateCancel != nil {
-			parent.postTurnGateCancel()
+			cancels = append(cancels, parent.postTurnGateCancel)
 			parent.postTurnGateCancel = nil
 		}
 		if parent.flowInlineCancel != nil {
-			parent.flowInlineCancel()
+			cancels = append(cancels, parent.flowInlineCancel)
 			parent.flowInlineCancel = nil
 			parent.flowInlineCtx = nil
 		}
@@ -2369,10 +2366,10 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 		child.pendingFlowGateTurnID = ""
 		child.pendingGateChangedFiles = nil
 		if child.turnInFlight && child.turnCancel != nil {
-			child.turnCancel()
+			cancels = append(cancels, child.turnCancel)
 		}
 		if child.postTurnGateCancel != nil {
-			child.postTurnGateCancel()
+			cancels = append(cancels, child.postTurnGateCancel)
 			child.postTurnGateCancel = nil
 		}
 		if child.status == RunStatusRunning {
@@ -2393,6 +2390,14 @@ func (s *InteractiveService) parkFlowForAwaitingUser(parentRunID string, opts ..
 					Label:       child.label,
 				})
 			}
+		}
+	}
+	s.mu.Unlock()
+	// CA-811: never cancel while holding s.mu — finishTurn/emitLocked need it
+	// (/open run-220036 held the mutex and hung "Opening chat…").
+	for _, cancel := range cancels {
+		if cancel != nil {
+			cancel()
 		}
 	}
 	s.flowDiagLog(parentRunID, "flow_parked_awaiting_user",

@@ -220,7 +220,7 @@ func (s *InteractiveService) ScanPersistedChatsForSummaries(ctx context.Context)
 		if live {
 			continue
 		}
-		rs, apiErr := s.loadPersistedRun(sess.RunID)
+		rs, apiErr := s.reconstructRunDeferred(sess)
 		if apiErr != nil || rs == nil {
 			continue
 		}
