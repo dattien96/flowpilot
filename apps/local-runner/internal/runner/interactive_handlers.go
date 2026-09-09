@@ -966,6 +966,7 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 		}
 	}
 	s.seedTranscriptFromDisk(rs)
+	s.healVibeFailedForReopenPark(rs.id)
 	s.maybeParkVibeResumeConfirm(rs.id)
 	// BUG-339: stamp missing ChatID from durable transcript (BUG-338) so
 	// /open can backfill prior legs even when the session row predates

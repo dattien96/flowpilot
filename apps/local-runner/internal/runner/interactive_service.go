@@ -7204,6 +7204,10 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			errMsg = "dispatch linearize failed (store/CAS error before send)"
 			rs.status = RunStatusFailed
 			rs.agentStatus = string(RunStatusFailed)
+		} else {
+			// Stop fence is not a synthesis failure — Failed made /open skip
+			// resume park and restore stale hub_stalled (run-220036).
+			rs.parkCancelSuppress = true
 		}
 		s.emitLocked(rs, ProviderEvent{
 			Type:           EventTurnFailed,
@@ -7211,6 +7215,13 @@ func (s *InteractiveService) runTurn(ctx context.Context, rs *interactiveRun, ad
 			Error:          errMsg,
 			Status:         string(RunStatusFailed),
 		})
+		if !storeErr {
+			rs.parkCancelSuppress = false
+			if rs.status == RunStatusRunning {
+				rs.status = RunStatusCancelled
+				rs.agentStatus = string(RunStatusCancelled)
+			}
+		}
 		s.mu.Unlock()
 		s.notifyTurnIdle(rs.id)
 		return

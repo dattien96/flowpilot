@@ -329,6 +329,32 @@ func (s *InteractiveService) pendingVibeResumeFromNode(parentRunID string) strin
 	return from
 }
 
+func (s *InteractiveService) healVibeFailedForReopenPark(parentRunID string) {
+	if s == nil || strings.TrimSpace(parentRunID) == "" {
+		return
+	}
+	if s.pendingVibeResumeFromNode(parentRunID) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rs := s.runs[parentRunID]
+	if rs == nil || rs.parentRunID != "" {
+		return
+	}
+	if rs.status != RunStatusFailed {
+		return
+	}
+	if rs.workingMode != workingmode.Vibe && !(runHasFlowNode(rs, "tdd") && runHasFlowNode(rs, "coder")) {
+		return
+	}
+	// Stop-fence / stall left Failed + hub_stalled on disk. /open must park
+	// Resume from last DONE, not skip park (CA-806 genuine Failed stays Failed
+	// when there is no unfinished successor).
+	rs.status = RunStatusCancelled
+	rs.agentStatus = string(RunStatusCancelled)
+}
+
 func (s *InteractiveService) maybeParkVibeResumeConfirm(parentRunID string) {
 	if s == nil || strings.TrimSpace(parentRunID) == "" {
 		return
