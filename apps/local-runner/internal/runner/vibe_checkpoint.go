@@ -88,7 +88,7 @@ func collectVibeArtifactsForNode(cwd, nodeID string, rs *interactiveRun) []strin
 		if hasVibeTddSignatures(cwd) {
 			return []string{vibeTddSignaturesRel}
 		}
-		return nil
+		return collectVibeSignatureTestRels(cwd)
 	default:
 		return nil
 	}

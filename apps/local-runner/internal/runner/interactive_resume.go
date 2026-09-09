@@ -1296,6 +1296,10 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	if !rs.suppressAutoGateResume {
 		s.flushDurableTurnIntents(rs.id)
 	}
+	if rs.parentRunID == "" && !rs.suppressAutoGateResume {
+		go s.maybeSettleVibeOwnerDebate(rs.id)
+		go s.maybeResumeVibeCoderAfterTdd(rs.id)
+	}
 	return rs, nil
 }
 

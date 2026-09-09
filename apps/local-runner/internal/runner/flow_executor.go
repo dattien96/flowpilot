@@ -158,6 +158,9 @@ func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, pare
 	// which startTurn now skips for these runs) owns every transition.
 	if s.isFlowEngineDriven(parentRunID) {
 		s.reseedFlowStepRuntime(parentRunID, record.Definition.Nodes)
+		if startNodeID != "" {
+			s.markForwardDonePredecessorsSkipped(ctx, parentRunID, record.Definition.Edges, startNodeID)
+		}
 	}
 
 	waitNotice, _, _ := loadBuiltinPromptText("prompts/flow-start-wait.md")
@@ -247,6 +250,67 @@ func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, pare
 		s.notifyHubOfFlowEntrySpawnFailure(parentRunID, flowRef, failedLabels, lastSpawnErr)
 	}
 }
+
+func flowForwardDonePredecessors(edges []agentpack.FlowEdge, startID string) []string {
+	startID = strings.TrimSpace(startID)
+	if startID == "" {
+		return nil
+	}
+	incoming := map[string][]string{}
+	for _, e := range edges {
+		if !strings.EqualFold(strings.TrimSpace(e.Kind), "forward") || !strings.EqualFold(strings.TrimSpace(e.When), "done") {
+			continue
+		}
+		from := strings.TrimSpace(e.From)
+		to := strings.TrimSpace(e.To)
+		if from == "" || to == "" {
+			continue
+		}
+		incoming[to] = append(incoming[to], from)
+	}
+	seen := map[string]bool{startID: true}
+	var out []string
+	var walk func(string)
+	walk = func(id string) {
+		for _, pred := range incoming[id] {
+			if seen[pred] {
+				continue
+			}
+			seen[pred] = true
+			out = append(out, pred)
+			walk(pred)
+		}
+	}
+	walk(startID)
+	return out
+}
+
+func (s *InteractiveService) lookupFlowStepStatus(parentRunID, nodeID string) RuntimeWorkflowStepStatus {
+	if s == nil || s.workflowStore == nil || strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(nodeID) == "" {
+		return ""
+	}
+	steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID)
+	if err != nil {
+		return ""
+	}
+	for _, st := range steps {
+		if st.ID == nodeID || st.NodeID == nodeID {
+			return st.Status
+		}
+	}
+	return ""
+}
+
+func (s *InteractiveService) markForwardDonePredecessorsSkipped(ctx context.Context, parentRunID string, edges []agentpack.FlowEdge, startID string) {
+	for _, id := range flowForwardDonePredecessors(edges, startID) {
+		st := s.lookupFlowStepStatus(parentRunID, id)
+		if st != "" && st != StepStatusPending {
+			continue
+		}
+		s.setFlowStepStatus(ctx, parentRunID, id, StepStatusSkipped)
+	}
+}
+
 
 // resolveWorkflowFlowRef bridges a Flow-Mode workflow-picker launch to the flow
 // executor (BUG-174). A workflow-picker run carries a workflowID but no flowRef
@@ -1244,18 +1308,12 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				mode = p.workingMode
 			}
 			s.mu.Unlock()
-			if vibeCoderSpawnBlocked(mode, node.ID, hasVibeTddSignatures(cwd)) {
+			if vibeCoderSpawnBlocked(mode, node.ID, hasVibeTddOutput(cwd)) {
 				s.flowDiagLog(parentRunID, "vibe_tdd_missing", "coder refused; tdd artifact missing",
 					"completed_node_id", completedNodeID,
 					"target_node_id", node.ID,
 				)
-				s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
-					st.Status = "blocked"
-					st.BlockReason = "requirement"
-					st.GateReason = "tdd artifact missing before coder (no bypass)"
-					return st
-				})
-				s.parkFlowForAwaitingUser(parentRunID)
+				s.parkVibeRequirement(parentRunID, "tdd artifact missing before coder (no bypass)")
 				continue
 			}
 			store, storeErr := changecontract.NewFrozenStore(cwd)
@@ -1263,6 +1321,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				s.flowDiagLog(parentRunID, "flow_advance_writer_store_failed", "cannot open frozen contract store for writer spawn",
 					"target_node_id", node.ID, "error", storeErr.Error(),
 				)
+				s.parkVibeRequirement(parentRunID, "cannot open frozen contract store for coder")
 				continue
 			}
 			rec, frozenOK, _ := store.GetFrozenForStep(parentRunID, node.ID)
@@ -1270,6 +1329,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				s.flowDiagLog(parentRunID, "flow_advance_writer_no_contract", "agent.code target has no frozen contract; blocking spawn",
 					"target_node_id", node.ID,
 				)
+				s.parkVibeRequirement(parentRunID, "coder has no frozen contract after tdd")
 				continue
 			}
 			if err := s.spawnFrozenWriterChild(context.Background(), parentRunID, node, rec); err != nil {
@@ -1277,6 +1337,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				s.flowDiagLog(parentRunID, "flow_advance_writer_spawn_failed", "writer spawn failed",
 					"target_node_id", node.ID, "error", err.Error(),
 				)
+				s.parkVibeRequirement(parentRunID, "coder spawn failed after tdd")
 				continue
 			}
 			spawnedAny = true
