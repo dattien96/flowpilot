@@ -564,6 +564,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Do NOT mark sessionDefaultsLoaded: a late SessionDefaultsMsg must still
 		// count as first load so it persists provider/model and restores flow.
 		if m.sessionDefaultsLoaded {
+			if m.chatWaitPending {
+				// Defaults arrived but startup chats never settled (slow
+				// endpoint, missed budget): same degraded pass as the chat timer.
+				m.passChatGateDegraded("Chat list is taking too long — continuing without it. /open retries on each keypress.")
+				return m, nil
+			}
 			tuiLog("sessionLoadTimeoutMsg ignored (defaults already loaded)")
 			return m, nil
 		}
@@ -578,6 +584,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshSessionPanel()
 		return m, nil
 
+	case chatLoadTimeoutMsg:
+		// Startup chat fetch never settled within budget: pass degraded so
+		// a slow chat endpoint cannot hold init-loading hostage; the picker
+		// retries on each keypress.
+		if !m.chatWaitPending {
+			return m, nil
+		}
+		m.passChatGateDegraded("Chat list is taking too long — continuing without it. /open retries on each keypress.")
+		return m, nil
 	case ProjectsCatalogMsg:
 		if msg.Err != "" {
 			// Soft: keep UI usable; offer one more retry path via /login or restart.
@@ -608,11 +623,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if notice := m.tryApplyPendingFlowRestore(); notice != "" {
 				m.addMessage("system", notice, "")
 			}
-			var cmds []tea.Cmd
-			if len(m.chatList) == 0 {
-				cmds = append(cmds, m.cmdPrefetchChats())
-			}
-			return m, tea.Batch(cmds...)
+		var cmds []tea.Cmd
+		if len(m.chatList) == 0 {
+			m.chatListInflight = true
+			cmds = append(cmds, m.cmdPrefetchChats())
+		}
+		return m, tea.Batch(cmds...)
 		}
 		return m, nil
 
@@ -747,6 +763,16 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		var cmds []tea.Cmd
+		if firstLoad && m.project != nil && len(m.chatList) == 0 {
+			// Cold start with a bound project: the history picker renders
+			// from m.chatList, so init-loading must not report ready before
+			// the first list settles — a slow/failed silent fetch otherwise
+			// leaves /open stuck on "loading chats…" with no error.
+			m.chatWaitPending = true
+			m.chatListInflight = true
+			m.statusMsg = "loading chats…"
+			cmds = append(cmds, m.cmdFetchChats(true), tea.Tick(chatStartupWaitTimeout, func(time.Time) tea.Msg { return chatLoadTimeoutMsg{} }))
+		}
 		// Catalog timeout ≠ runner offline: /health can pass while Supabase is slow.
 		// Only a dial-level failure is the runner being dead; a ctx deadline from
 		// the catalog budget is slow-Supabase → schedule a background retry.
@@ -929,19 +955,36 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// on the next picker keypress instead of sticking the error for the
 		// whole interval (same policy as the BUG-351 flow picker).
 		m.chatListInflight = false
+		waitedChats := m.chatWaitPending
+		m.chatWaitPending = false
 		if msg.Silent {
 			if msg.Err == "" {
 				m.chatList = mergeChatListSyncStatus(m.chatList, msg.Items)
 				m.chatListFetchedAt = time.Now()
+				if waitedChats {
+					m.passChatGate()
+				}
+			} else if waitedChats && len(m.chatList) == 0 {
+				// Startup fetch failed before any list ever arrived: the
+				// picker would otherwise sit on "loading chats…" forever.
+				// Pass degraded but loud; the picker retries per keypress.
+				m.passChatGate()
+				m.addMessage("system", "Chat list failed: "+msg.Err, "error")
 			}
 			return m, nil
 		}
 		if msg.Err != "" {
 			m.addMessage("system", "Chat list failed: "+msg.Err, "error")
+			if waitedChats {
+				m.passChatGate()
+			}
 			return m, nil
 		}
 		m.chatList = mergeChatListSyncStatus(m.chatList, msg.Items)
 		m.chatListFetchedAt = time.Now()
+		if waitedChats {
+			m.passChatGate()
+		}
 		m.addMessage("system", formatChatListWithRemote(msg.Items, m.remoteChatList), "")
 		return m, nil
 
@@ -3665,9 +3708,11 @@ func (m *AppModel) workIsLive() bool {
 }
 
 func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
-	if m.sessionLoading && !strings.HasPrefix(strings.TrimSpace(input), "/") {
+	if (m.sessionLoading || m.chatWaitPending) && !strings.HasPrefix(strings.TrimSpace(input), "/") {
 		msg := "Still loading session — chat is disabled until ready. (F2/F4 still work)"
-		if len(m.providers) == 0 {
+		if !m.sessionLoading && m.chatWaitPending {
+			msg = "Still loading chats — chat is disabled until ready. (F2/F4 still work)"
+		} else if len(m.providers) == 0 {
 			msg = "Still loading session — providers not ready yet, please wait 2-3s then retry."
 		}
 		m.addMessage("system", msg, "error")

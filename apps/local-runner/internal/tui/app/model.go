@@ -168,6 +168,11 @@ type sessionKeysUnlockMsg struct{}
 // sessionLoadTimeoutMsg fires only if SessionDefaultsMsg never arrived.
 type sessionLoadTimeoutMsg struct{}
 
+// chatLoadTimeoutMsg fires when the cold-start chat list never settles
+// within budget: init-loading passes degraded (loud) instead of holding
+// the banner forever.
+type chatLoadTimeoutMsg struct{}
+
 // ProjectsCatalogMsg is a late/retry project list after the fast session path.
 type ProjectsCatalogMsg struct {
 	Projects []client.Project
@@ -597,6 +602,11 @@ type AppModel struct {
 	sessionLoading bool
 	// sessionDefaultsLoaded is set after the first SessionDefaultsMsg (real chat gate).
 	sessionDefaultsLoaded bool
+	// chatWaitPending holds init-loading until the first chat list settles
+	// (cold start with a bound project): the history picker renders from
+	// m.chatList, so passing ready earlier leaves /open stuck on
+	// "loading chats…" when the silent first fetch fails.
+	chatWaitPending bool
 	// providersWarmRetries counts background /providers refetches while OpenCode
 	// model cache is still warming (undersized catalog).
 	providersWarmRetries int

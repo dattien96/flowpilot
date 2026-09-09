@@ -524,6 +524,29 @@ func (m *AppModel) cmdFetchChats(silent bool) tea.Cmd {
 // fetch, quiet enough to not spam the runner per keystroke.
 const chatPickerRefreshInterval = 10 * time.Second
 
+// chatStartupWaitTimeout bounds the cold-start chat gate: init-loading
+// passes degraded (loud) if the first chat list never settles.
+const chatStartupWaitTimeout = 15 * time.Second
+// passChatGate clears the chat-wait hold once the first list settles. It
+// only ever clears the status it set: the session banner (sessionLoading)
+// stays owned by the catalog gate (CA-514, pinned by old tests).
+func (m *AppModel) passChatGate() {
+	if strings.TrimSpace(m.statusMsg) == "loading chats…" {
+		m.statusMsg = "ready"
+		m.connStatus = ConnIdle
+	}
+}
+
+// passChatGateDegraded disarms a startup chat wait without a settled list:
+// the UI stays usable and the picker retries per keypress.
+func (m *AppModel) passChatGateDegraded(note string) {
+	m.chatWaitPending = false
+	m.passChatGate()
+	if note != "" {
+		m.addMessage("system", note, "error")
+	}
+}
+
 func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
 	line := m.slashSuggestLine()
 	trimmed := strings.TrimSpace(line)
@@ -551,7 +574,12 @@ func (m *AppModel) cmdMaybePrefetchHistory() tea.Cmd {
 	if len(m.chatList) == 0 {
 		// First open of any history/sync/restore picker: fetch both the local
 		// chat list and the remote index (CA-552 reconcile needs the remote list).
-		cmds = append(cmds, m.cmdPrefetchChats(), m.cmdPrefetchRemoteChats())
+		// Dedup: without the in-flight flag every keypress fires another
+		// fetch pair while the first is still running.
+		if !m.chatListInflight {
+			m.chatListInflight = true
+			cmds = append(cmds, m.cmdPrefetchChats(), m.cmdPrefetchRemoteChats())
+		}
 	} else if argOK || bare {
 		// BUG-355 F1: the history picker renders from m.chatList, and the
 		// first fetch of a session sticks for the whole session — runs
