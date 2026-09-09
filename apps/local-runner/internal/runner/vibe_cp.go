@@ -350,6 +350,14 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 		}
 		s.mu.Unlock()
 		if strings.TrimSpace(cwd) != "" && len(collectVibeTaskPlan(cwd)) == 0 {
+			// BUG-364: stamp the completed node DONE before parking.
+			// tryAdvanceFlowFromNode calls onVibeCpNodeDone BEFORE its
+			// loop-liveness gate and DONE writes (flow_executor.go:1160 vs
+			// :1166/:1203), so parking here without stamping strands the
+			// step RUNNING forever with no card and no watchdog (live
+			// run-640953). Mirrors the cohort self-settle and the :1203
+			// terminal write. Unlocked variant: s.mu is not held here.
+			s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
 			s.parkVibeRequirement(parentRunID, "task_slicer produced no Task files under requirements/08-Task/todo/; refusing to sprint from fallback")
 			return
 		}
