@@ -1304,6 +1304,10 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		go s.maybeSettleVibeOwnerDebate(rs.id)
 		s.healVibeFailedForReopenPark(rs.id)
 		s.maybeParkVibeResumeConfirm(rs.id)
+		// Sprint boundary is memory-only: re-derive it from audit DONE +
+		// remaining plan so reopening a boundary-parked run shows the
+		// Continue form again (sealed loops stay sealed).
+		s.maybeReparkVibeSprintBoundary(rs.id)
 	}
 	return rs, nil
 }

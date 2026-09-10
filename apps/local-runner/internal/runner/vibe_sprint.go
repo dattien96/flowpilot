@@ -381,6 +381,12 @@ func (s *InteractiveService) maybeParkVibeResumeConfirm(parentRunID string) {
 		s.mu.Unlock()
 		return
 	}
+	if rs.vibeSprintBoundaryPending {
+		// The boundary Continue gate owns this run's next decision;
+		// resume-confirm must not stack a second gate on top of it.
+		s.mu.Unlock()
+		return
+	}
 	hasTdd := runHasFlowNode(rs, "tdd")
 	hasCoder := runHasFlowNode(rs, "coder")
 	if rs.workingMode != workingmode.Vibe && !(hasTdd && hasCoder) {

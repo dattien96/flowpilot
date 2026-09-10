@@ -1799,6 +1799,28 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 		s.mu.Unlock()
 		return newAPIErr(404, "run_not_found", "workflow run not found")
 	}
+	if rs.vibeSprintBoundaryPending {
+		opt := strings.ToLower(strings.TrimSpace(option))
+		s.mu.Unlock()
+		switch opt {
+		case "ok", "continue":
+			s.continueVibeSprintBoundary(runID, customText)
+			return nil
+		case "cancel":
+			if s.declineVibeSprintBoundary(runID) {
+				return nil
+			}
+			s.mu.Lock()
+			stillParked := rs.vibeSprintBoundaryPending
+			s.mu.Unlock()
+			if stillParked {
+				return newAPIErr(409, "boundary_settle_deferred", "sprint boundary could not settle now; gate stays parked")
+			}
+			return nil
+		default:
+			return newAPIErr(400, "invalid_option", "option must be ok, continue, or cancel")
+		}
+	}
 	if rs.vibeResumeConfirm {
 		opt := strings.ToLower(strings.TrimSpace(option))
 		switch opt {

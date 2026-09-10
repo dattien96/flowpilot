@@ -184,6 +184,12 @@ type interactiveRun struct {
 	vibeCoderResumeInFlight bool
 	vibeResumeConfirm bool
 	vibeResumeFromNode string
+	// vibeSprintBoundaryPending is the sprint-boundary Continue gate: set when
+	// a vibe-sprint audit completes with plan tasks left (memory-only, like
+	// vibeResumeConfirm — re-derived on open from audit DONE + plan/index).
+	// vibeSprintBoundaryTask is the peeked next task (not yet consumed).
+	vibeSprintBoundaryPending bool
+	vibeSprintBoundaryTask    string
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
 	// chatPosture is the per-turn posture (scan/plan/code, "" = code). Persisted
@@ -1014,6 +1020,10 @@ func (s *InteractiveService) stopAgentLoop(parentRunID string) (AgentGraphSnapsh
 		parent.pendingRestartRunID = ""
 		parent.pendingRestartPrompt = ""
 		parent.pendingRestartGen = 0
+		// Stop ends the run: drop the sprint-boundary Continue gate so no
+		// stale ok/cancel card can reappear (Stop wins over Continue).
+		parent.vibeSprintBoundaryPending = false
+		parent.vibeSprintBoundaryTask = ""
 		parent.autoOrchestrate = false
 		parent.reinvokeInFlight = false
 		parent.pendingHubReinvoke = false
@@ -1963,6 +1973,14 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 		if handledSnap, handled := s.resumeVibeLock(parentRunID, feedback, snap); handled {
 			return handledSnap, nil
 		}
+	}
+
+	// Sprint boundary: the park is one-shot and owns the next start — empty
+	// Continue (Retry chip) and feedback Continue (Revise note) both consume
+	// it, and a second Continue after consume is a no-op, never a re-run.
+	if prevBlockReason == vibeSprintBoundaryReason {
+		s.continueVibeSprintBoundary(parentRunID, normalizeBoundaryNote(feedback))
+		return s.agentGraphSnapshot(parentRunID), nil
 	}
 
 	// BUG-289 A5/F-9: hub-less flows (rag-harness) escalate from inline

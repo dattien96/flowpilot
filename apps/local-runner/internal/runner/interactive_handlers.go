@@ -968,6 +968,7 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 	s.seedTranscriptFromDisk(rs)
 	s.healVibeFailedForReopenPark(rs.id)
 	s.maybeParkVibeResumeConfirm(rs.id)
+	s.maybeReparkVibeSprintBoundary(rs.id)
 	// BUG-339: stamp missing ChatID from durable transcript (BUG-338) so
 	// /open can backfill prior legs even when the session row predates
 	// chat_id (provider-agnostic, chatId only).
@@ -1302,7 +1303,12 @@ func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr
 		ProviderKey:       rs.providerKey,
 		Status:            rs.status,
 	}
-	if rs.vibeResumeConfirm {
+	// Sprint boundary wins over resume-confirm when both are somehow set
+	// (same order as SubmitGateDecision): one gate on screen, one router.
+	if rs.vibeSprintBoundaryPending {
+		view.Status = RunStatus("blocked")
+		view.PendingGate = &pendingGateView{GateOptions: []string{"ok", "cancel"}, ResumeFrom: vibeSprintBoundaryResumeLabel(rs.vibeTaskPlan, rs.vibeSprintIndex, rs.vibeSprintBoundaryTask)}
+	} else if rs.vibeResumeConfirm {
 		view.Status = RunStatus("blocked")
 		view.PendingGate = &pendingGateView{GateOptions: []string{"ok", "cancel"}, ResumeFrom: rs.vibeResumeFromNode}
 	}

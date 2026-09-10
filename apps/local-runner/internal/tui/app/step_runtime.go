@@ -365,12 +365,16 @@ func (m *AppModel) renderBlockedBar() string {
 	}
 	isPlanApproval := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "plan_approval")
 	isVibeLock := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "vibe_lock")
+	isSprintBoundary := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "vibe_sprint_boundary")
 	showAllow := m.blockedCardAllowShown()
 	if isPlanApproval {
 		bar += styleGate.Render("  decision: ") + styleSystem.Render("plan failed review — [Revise] to rewrite, [Approve] to freeze and continue") + "\n"
 	}
 	if isVibeLock {
 		bar += styleGate.Render("  decision: ") + styleSystem.Render("[Lock] freezes the SS/CP draft; [Revise] to paste edits") + "\n"
+	}
+	if isSprintBoundary {
+		bar += styleGate.Render("  decision: ") + styleSystem.Render("sprint done — [Continue] starts the next sprint, [Stop] ends the run") + "\n"
 	}
 
 	var options []string
@@ -391,6 +395,10 @@ func (m *AppModel) renderBlockedBar() string {
 	if isVibeLock {
 		retryLabel = "[Lock]"
 		retryDesc = " - lock current draft and continue slicer"
+	}
+	if isSprintBoundary {
+		retryLabel = "[Continue]"
+		retryDesc = " - start the next sprint"
 	}
 	options = append(options, styleSystem.Render("  ")+renderActionRingChip(retryLabel, retryHi)+styleSystem.Render(retryDesc))
 	options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Stop]", stopHi)+styleSystem.Render(" - end flow"))

@@ -133,12 +133,16 @@ func (m *AppModel) actionRingItems() []actionRingItem {
 		showAllow := m.blockedCardAllowShown()
 		isPlanApproval := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "plan_approval")
 		isVibeLock := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "vibe_lock")
+		isSprintBoundary := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "vibe_sprint_boundary")
 		retryLabel := "[Retry]"
 		if isPlanApproval {
 			retryLabel = "[Approve]"
 		}
 		if isVibeLock {
 			retryLabel = "[Lock]"
+		}
+		if isSprintBoundary {
+			retryLabel = "[Continue]"
 		}
 		items := []actionRingItem{
 			{target: "retry", label: retryLabel},

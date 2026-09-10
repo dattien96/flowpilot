@@ -228,7 +228,9 @@ func (s *InteractiveService) maybeChainVibeSprint(parentRunID, completedNodeID s
 	}
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
-	ok := rs != nil && rs.workingMode == workingmode.Vibe && len(rs.vibeTaskPlan) > 0
+	// The sprint-boundary Continue gate owns the next start once parked;
+	// a stray chain (e.g. a replayed audit advance) must not double-start.
+	ok := rs != nil && rs.workingMode == workingmode.Vibe && len(rs.vibeTaskPlan) > 0 && !rs.vibeSprintBoundaryPending
 	s.mu.Unlock()
 	if !ok {
 		return

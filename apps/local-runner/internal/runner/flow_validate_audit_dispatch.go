@@ -1336,7 +1336,12 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 			s.flowDiagLog(parentRunID, "flow_audit_vibe_missing_key_auto", summary,
 				"node_id", node.ID, "status", draft.Status,
 			)
-			if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
+			// Sprint boundary: a finished sprint with plan tasks left parks a
+			// Continue gate for the next sprint instead of settling done.
+			if s.maybeParkVibeSprintBoundary(ctx, parentRunID, node.ID) {
+				return true
+			}
+		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
 				Status:  "done",
 				Summary: summary,
 				Payload: map[string]any{"auditDraft": draft},
@@ -1391,6 +1396,11 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	}
 	if auditCtxCancelled(ctx, parentRunID, node.ID, "before_flow_done") {
 		return false
+	}
+	// Sprint boundary: a finished sprint with plan tasks left parks a
+	// Continue gate for the next sprint instead of settling done.
+	if s.maybeParkVibeSprintBoundary(ctx, parentRunID, node.ID) {
+		return true
 	}
 	if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
 		Status:  "done",
