@@ -146,6 +146,10 @@ export interface AgentLoopState {
   extendCount?: number;
   /** Why status=="blocked" (BUG-231): "cap" | "escalate" | "member_stalled" (Task-241). */
   blockReason?: string;
+  /** Vibe task progress (BUG-367). 1-based current / total. */
+  vibeTaskIndex?: number;
+  vibeTaskTotal?: number;
+  vibeTaskName?: string;
 }
 
 export interface AgentGraphSnapshot {

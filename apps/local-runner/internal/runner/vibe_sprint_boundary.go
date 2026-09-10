@@ -125,8 +125,13 @@ func (s *InteractiveService) maybeParkVibeSprintBoundary(ctx context.Context, pa
 	if budget <= 0 {
 		budget = defaultVibeSprintBudget
 	}
+	cwd := rs.workspaceCwd
+	planPeek := append([]string(nil), rs.vibeTaskPlan...)
+	started := rs.vibeSprintIndex
 	if rs.vibeSprintIndex >= budget || rs.vibeSprintIndex >= len(rs.vibeTaskPlan) {
 		s.mu.Unlock()
+		// Last sprint (or budget): tick that Task's DoD, never status=done.
+		stampCompletedVibeTask(cwd, planPeek, started)
 		return false
 	}
 	if rs.vibeSprintStartInFlight {
@@ -140,6 +145,7 @@ func (s *InteractiveService) maybeParkVibeSprintBoundary(ctx context.Context, pa
 	rs.vibeSprintBoundaryPending = true
 	rs.vibeSprintBoundaryTask = plan[index]
 	s.mu.Unlock()
+	stampCompletedVibeTask(cwd, plan, index)
 
 	if s.isFlowEngineDriven(parentRunID) {
 		s.setFlowStepStatus(ctx, parentRunID, auditNodeID, StepStatusDone)
@@ -513,7 +519,9 @@ func (s *InteractiveService) startTakenVibeSprint(parentRunID, prompt, takenTask
 		s.mu.Unlock()
 		return
 	}
+	cwd := rs.workspaceCwd
 	s.mu.Unlock()
+	stampVibeTaskInProgress(cwd, takenTask)
 	before := make(map[string]struct{})
 	for _, cid := range s.agentOrchestrator.listChildren(parentRunID) {
 		before[cid] = struct{}{}

@@ -155,41 +155,41 @@ type interactiveRun struct {
 	lastGrokTurnSessionID string
 	// lastOpencodeTurnSessionID is the Opencode twin (CP-57).
 	lastOpencodeTurnSessionID string
-	providerAccountID     string
-	workspaceCwd          string
-	stepID                string
-	modelName             string
-	yolo                  bool
+	providerAccountID         string
+	workspaceCwd              string
+	stepID                    string
+	modelName                 string
+	yolo                      bool
 	// workingMode is Task-326 local SSOT ("dev"|"vibe"); empty reconstructs as dev.
 	workingMode string
 	// Task-321: CP lock + sequential vibe-sprint queue (local only).
-	vibeAwaitingLock bool
-	vibeTaskPlan     []string
-	vibeSprintIndex  int
-	vibeSprintBudget int
-	vibeLockedCP     string
-	vibeLockedSS     string
-	vibeLockNodeID   string
-	vibeLockPath     string
+	vibeAwaitingLock        bool
+	vibeTaskPlan            []string
+	vibeSprintIndex         int
+	vibeSprintBudget        int
+	vibeLockedCP            string
+	vibeLockedSS            string
+	vibeLockNodeID          string
+	vibeLockPath            string
 	vibeCheckpointNode      string
 	vibeCheckpointArtifacts []string
-	vibeSSSealed     bool
-	vibeCPSealed     bool
-	vibeParkedNodes       []agentpack.FlowNode
-	vibeParkedEdges       []agentpack.FlowEdge
-	vibeParkedAcceptance  []string
-	vibeParkedFlowRef     string
-	vibeOwnerFailRetries int
+	vibeSSSealed            bool
+	vibeCPSealed            bool
+	vibeParkedNodes         []agentpack.FlowNode
+	vibeParkedEdges         []agentpack.FlowEdge
+	vibeParkedAcceptance    []string
+	vibeParkedFlowRef       string
+	vibeOwnerFailRetries    int
 	vibeOwnerSettleInFlight bool
 	vibeCoderResumeInFlight bool
-	vibeResumeConfirm bool
-	vibeResumeFromNode string
+	vibeResumeConfirm       bool
+	vibeResumeFromNode      string
 	// vibeSprintBoundaryPending is the sprint-boundary Continue gate: set when
 	// a vibe-sprint audit completes with plan tasks left (memory-only, like
 	// vibeResumeConfirm — re-derived on open from audit DONE + plan/index).
 	// vibeSprintBoundaryTask is the peeked next task (not yet consumed).
 	vibeSprintBoundaryPending bool
-	vibeSprintBoundaryTask  string
+	vibeSprintBoundaryTask    string
 	// vibeSprintBoundaryDeclined records an explicit operator decline of the
 	// boundary gate (durable, unlike the pending flag): reopening must NOT
 	// re-offer Continue for a declined run — only for silently-settled ones
@@ -949,7 +949,17 @@ func numericIDSuffix(id string) int64 {
 }
 
 func (s *InteractiveService) agentGraphSnapshot(parentRunID string) AgentGraphSnapshot {
-	return s.agentOrchestrator.graphSnapshot(parentRunID)
+	s.mu.Lock()
+	var plan []string
+	idx := 0
+	if rs := s.runs[parentRunID]; rs != nil {
+		plan = append([]string(nil), rs.vibeTaskPlan...)
+		idx = rs.vibeSprintIndex
+	}
+	s.mu.Unlock()
+	snap := s.agentOrchestrator.graphSnapshot(parentRunID)
+	snap.LoopState = attachVibeTaskProgressLocked(&interactiveRun{vibeTaskPlan: plan, vibeSprintIndex: idx}, snap.LoopState)
+	return snap
 }
 
 func (s *InteractiveService) agentBusHistory(parentRunID string) []AgentBusMessage {
@@ -3747,6 +3757,7 @@ func (s *InteractiveService) emitAgentGraph(parentRunID string, snap AgentGraphS
 
 func (s *InteractiveService) emitAgentGraphLocked(parentRunID string, snap AgentGraphSnapshot) {
 	if rs := s.runs[parentRunID]; rs != nil {
+		snap.LoopState = attachVibeTaskProgressLocked(rs, snap.LoopState)
 		if cohortDiagEnabled() {
 			runs := make([]string, len(snap.Runs))
 			for i, r := range snap.Runs {
@@ -4126,7 +4137,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		PendingGateRepromptProvenanceRunID: rs.pendingGateRepromptProvenanceRunID,
 		// BUG-299 residual: round-trip YOLO so chat restart keeps the toggle and
 		// flow rehydrate has a durable value to force against when missing.
-		Yolo:                      rs.yolo,
+		Yolo: rs.yolo,
 		// BUG-360: round-trip the cached scout draft so post-restart freeze
 		// can parse it after the transient scout child is gone.
 		PreflightDraftResult:      rs.preflightDraftResult,
@@ -6000,13 +6011,13 @@ func (b *turnBridge) SubmitFlowControl(in FlowControlInput) (FlowControlResult, 
 					"Report your findings (approve or request changes, with specifics) in your final message; " +
 					"the hub will synthesize the full cohort and finalize the flow after every reviewer has finished")
 		}
-	b.svc.mu.Lock()
-	parent := b.svc.runs[targetParentID]
-	requireVerdict := parent != nil && (flowRequiresSynthesisMachineVerdict(parent) ||
-		flowRequiresHubMachineVerdict(parent, "plan_synthesis") ||
-		flowRequiresHubMachineVerdict(parent, "synthesis") ||
-		flowRequiresHubMachineVerdict(parent, "cp_synthesis"))
-	b.svc.mu.Unlock()
+		b.svc.mu.Lock()
+		parent := b.svc.runs[targetParentID]
+		requireVerdict := parent != nil && (flowRequiresSynthesisMachineVerdict(parent) ||
+			flowRequiresHubMachineVerdict(parent, "plan_synthesis") ||
+			flowRequiresHubMachineVerdict(parent, "synthesis") ||
+			flowRequiresHubMachineVerdict(parent, "cp_synthesis"))
+		b.svc.mu.Unlock()
 		if requireVerdict {
 			if !in.viaReviewOutcome {
 				return FlowControlResult{}, fmt.Errorf(

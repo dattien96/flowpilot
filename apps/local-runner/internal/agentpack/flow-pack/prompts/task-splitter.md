@@ -31,7 +31,9 @@ FORMAT-REFERENCE-TASK.md:
   possible, expanded with concrete T-* items and DeclaredPaths.
 - `## 5. Touched Areas` — this P-*'s slice of the CP's §5.
 - `## 6. Acceptance Check` — the runnable verifications this P-* contributes
-  to the CP's §7/§10 (test files to add, commands, manual steps).
+  to the CP's §7/§10, each as a markdown checkbox (`- [ ] …`) so the engine
+  can tick them when the sprint finishes. Never set Task `status: done`
+  (stay `draft` until the sprint starts; the engine stamps `in_progress`).
 - `## 7. Out of Scope` — the sibling P-*s, explicitly.
 - `## 8. Completion Notes` — left empty for the implementer.
 

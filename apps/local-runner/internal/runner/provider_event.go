@@ -235,6 +235,11 @@ type AgentLoopState struct {
 	// "escalate" block does not need to. Cleared ("") whenever Status leaves
 	// "blocked".
 	BlockReason string `json:"blockReason,omitempty"`
+	// Vibe task progress (BUG-367): 1-based current / total while a sprint
+	// is running. Empty/zero when no vibe task plan is loaded.
+	VibeTaskIndex int    `json:"vibeTaskIndex,omitempty"`
+	VibeTaskTotal int    `json:"vibeTaskTotal,omitempty"`
+	VibeTaskName  string `json:"vibeTaskName,omitempty"`
 }
 
 type AgentGraphSnapshot struct {

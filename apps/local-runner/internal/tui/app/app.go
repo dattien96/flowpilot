@@ -543,7 +543,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flowListFetchedAt = time.Now()
 		cmds := []tea.Cmd{
 			m.cmdLoadSessionDefaults(),
-			m.cmdPrefetchFlows(),			// The FlowPilot banner stays up until SessionDefaultsMsg decides the
+			m.cmdPrefetchFlows(), // The FlowPilot banner stays up until SessionDefaultsMsg decides the
 			// catalog (project bound or failed) — typing stays interactive, send
 			// stays blocked (CA-514). The 45s safety net is the only bail-out.
 			tea.Tick(45*time.Second, func(time.Time) tea.Msg { return sessionLoadTimeoutMsg{} }),
@@ -623,12 +623,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if notice := m.tryApplyPendingFlowRestore(); notice != "" {
 				m.addMessage("system", notice, "")
 			}
-		var cmds []tea.Cmd
-		if len(m.chatList) == 0 {
-			m.chatListInflight = true
-			cmds = append(cmds, m.cmdPrefetchChats())
-		}
-		return m, tea.Batch(cmds...)
+			var cmds []tea.Cmd
+			if len(m.chatList) == 0 {
+				m.chatListInflight = true
+				cmds = append(cmds, m.cmdPrefetchChats())
+			}
+			return m, tea.Batch(cmds...)
 		}
 		return m, nil
 
@@ -4202,7 +4202,6 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			}
 		}
 
-
 	case "/yolo":
 		if m.mode != ModeChat || m.launch.IsArmed() {
 			m.addMessage("system", "YOLO is auto-on in flow mode. Switch to /chat to toggle.", "")
@@ -4674,6 +4673,9 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.flowStepsModel = ""
 		m.flowLoopRound = 0
 		m.flowLoopCap = 0
+		m.vibeTaskIndex = 0
+		m.vibeTaskTotal = 0
+		m.vibeTaskName = ""
 		m.lastEventSeq = 0
 		m.lastTurnError = ""
 		m.lastTokens = nil
@@ -6127,6 +6129,10 @@ func (m *AppModel) chatFrameTitle() string {
 		}
 		// "Flow:" dim, value pink (styleStatusFlow) — on bar bg
 		baseStyled = chatBarBg(styleStatus).Render("Flow:") + " " + chatBarBg(styleStatusFlow).Render(label)
+		if m.vibeTaskTotal > 0 && m.vibeTaskIndex > 0 {
+			task := fmt.Sprintf("task %d/%d", m.vibeTaskIndex, m.vibeTaskTotal)
+			baseStyled += chatBarBg(styleStatus).Render(" · ") + chatBarBg(styleStatusFlow).Render(task)
+		}
 	} else {
 		posture := m.activePosture()
 		if posture == "" {

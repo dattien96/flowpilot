@@ -160,6 +160,11 @@ func (s *InteractiveService) resumeVibeLock(parentRunID, feedback string, snap A
 		// operator to fix draft drift before it will write the CP.
 		stampVibeSSApproved(cwd)
 	}
+	if nodeID == vibeCpLockNodeID {
+		// BUG-367: CP lock is approved, never done. DoD boxes are ticked later
+		// when sprints actually finish.
+		stampVibeCPApproved(cwd)
+	}
 
 	s.mu.Lock()
 	if r := s.runs[parentRunID]; r != nil {

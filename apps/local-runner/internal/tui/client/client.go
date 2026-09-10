@@ -190,6 +190,10 @@ type AgentLoopState struct {
 	BlockReason string `json:"blockReason,omitempty"`
 	// ActiveNode names the node the flow is waiting on when blocked.
 	ActiveNode string `json:"activeNode,omitempty"`
+	// Vibe task progress (BUG-367). 1-based current / total; empty when no plan.
+	VibeTaskIndex int    `json:"vibeTaskIndex,omitempty"`
+	VibeTaskTotal int    `json:"vibeTaskTotal,omitempty"`
+	VibeTaskName  string `json:"vibeTaskName,omitempty"`
 }
 
 // AgentGraphSnapshot carries the current agent graph for an agent_graph_updated event.

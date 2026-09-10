@@ -13,19 +13,19 @@ import (
 )
 
 const (
-	defaultVibeSprintBudget     = 8
-	vibeIngestFlowID            = "vibe-ingest"
-	vibeCpIngestFlowID          = "vibe-cp-ingest"
-	vibeSprintFlowID            = "vibe-sprint"
-	vibeOwnerDebateFlowID       = "vibe-owner-debate"
-	vibeCpLockNodeID            = "cp_lock"
-	vibeSSLockNodeID            = "ss_lock"
-	vibeSSValidatorNodeID       = "ss_validator"
-	vibeCPValidatorNodeID       = "cp_validator"
-	vibeTaskSlicerNodeID        = "task_slicer"
-	vibeSprintSlicerNodeID      = "sprint_slicer"
-	vibeCpWriterNodeID          = "cp_writer"
-	vibeDebateSynthesisNodeID   = "debate_synthesis"
+	defaultVibeSprintBudget   = 8
+	vibeIngestFlowID          = "vibe-ingest"
+	vibeCpIngestFlowID        = "vibe-cp-ingest"
+	vibeSprintFlowID          = "vibe-sprint"
+	vibeOwnerDebateFlowID     = "vibe-owner-debate"
+	vibeCpLockNodeID          = "cp_lock"
+	vibeSSLockNodeID          = "ss_lock"
+	vibeSSValidatorNodeID     = "ss_validator"
+	vibeCPValidatorNodeID     = "cp_validator"
+	vibeTaskSlicerNodeID      = "task_slicer"
+	vibeSprintSlicerNodeID    = "sprint_slicer"
+	vibeCpWriterNodeID        = "cp_writer"
+	vibeDebateSynthesisNodeID = "debate_synthesis"
 )
 
 // inferPackFlowRefFromNodes corrects a stale ChatFlowRef after overlay
@@ -54,7 +54,6 @@ func inferPackFlowRefFromNodes(nodes []agentpack.FlowNode, fallback string) stri
 		return fallback
 	}
 }
-
 
 // vibeInheritsSessionModel is true when the node must not pick the generic
 // Flow: Doc Writer role model (gpt-5.4). Empty → spawn inherits the run's
@@ -170,12 +169,19 @@ func (s *InteractiveService) maybeStartNextVibeSprint(parentRunID string) {
 		return
 	}
 	d := s.takeNextVibeSprintLocked(rs)
+	cwd := ""
+	if rs != nil {
+		cwd = rs.workspaceCwd
+	}
 	if d.Start {
 		// A new sprint start supersedes any earlier boundary decline: the
 		// run is active again and must stay offerable at its next boundary.
 		rs.vibeSprintBoundaryDeclined = false
 	}
 	s.mu.Unlock()
+	if d.Start {
+		stampVibeTaskInProgress(cwd, d.Task)
+	}
 	if d.Locked {
 		log.Printf("[vibe-cp] skip vibe-sprint; cp_lock still waiting run=%s", parentRunID)
 		return

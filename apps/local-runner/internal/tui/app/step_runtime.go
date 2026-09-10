@@ -200,6 +200,9 @@ func (m *AppModel) applyAgentGraph(g *client.AgentGraphSnapshot) {
 	if m.flowLoopCap == 0 {
 		m.flowLoopCap = g.LoopState.RoundCap
 	}
+	m.vibeTaskIndex = g.LoopState.VibeTaskIndex
+	m.vibeTaskTotal = g.LoopState.VibeTaskTotal
+	m.vibeTaskName = strings.TrimSpace(g.LoopState.VibeTaskName)
 	m.agentRuns = g.Runs
 	m.afterAgentRunsAdopted()
 	if m.hasChildAgentRuns() {

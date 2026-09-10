@@ -262,8 +262,25 @@ func loopRoundChip(round, roundCap int) string {
 // stepsSectionTitle renders the "steps" section header for the sidebar and the
 // overlay. The focused child has no [back] chip (switching is keyboard-only via
 // /agents + Esc, per user request) — it is highlighted in the step row instead.
+func vibeTaskChip(index, total int, name string) string {
+	if total <= 0 || index <= 0 {
+		return ""
+	}
+	label := fmt.Sprintf("  task %d/%d", index, total)
+	if n := strings.TrimSpace(name); n != "" {
+		if len([]rune(n)) > 28 {
+			n = string([]rune(n)[:25]) + "…"
+		}
+		label += " " + n
+	}
+	return label
+}
+
 func (m *AppModel) stepsSectionTitle() string {
 	title := styleGate.Render("steps")
+	if chip := vibeTaskChip(m.vibeTaskIndex, m.vibeTaskTotal, m.vibeTaskName); chip != "" {
+		title += styleSystem.Render(chip)
+	}
 	// Task-322: loop round/cap chip from the latest agent-graph snapshot.
 	if chip := loopRoundChip(m.flowLoopRound, m.flowLoopCap); chip != "" {
 		title += styleSystem.Render(chip)

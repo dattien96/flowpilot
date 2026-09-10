@@ -60,6 +60,9 @@ func (m *AppModel) applyOpenedRunFlowChrome(handle client.RunHandle, meta client
 		m.flowStepsModel = ""
 		m.flowLoopRound = 0
 		m.flowLoopCap = 0
+		m.vibeTaskIndex = 0
+		m.vibeTaskTotal = 0
+		m.vibeTaskName = ""
 		m.agentRuns = nil
 		m.focusedAgentIdx = 0
 		return
@@ -82,6 +85,9 @@ func (m *AppModel) applyOpenedRunFlowChrome(handle client.RunHandle, meta client
 	m.flowStepsModel = ""
 	m.flowLoopRound = 0
 	m.flowLoopCap = 0
+	m.vibeTaskIndex = 0
+	m.vibeTaskTotal = 0
+	m.vibeTaskName = ""
 	m.agentRuns = nil
 	m.focusedAgentIdx = 0
 	// Do not persist here — /open is run chrome for this session only.
@@ -527,6 +533,7 @@ const chatPickerRefreshInterval = 10 * time.Second
 // chatStartupWaitTimeout bounds the cold-start chat gate: init-loading
 // passes degraded (loud) if the first chat list never settles.
 const chatStartupWaitTimeout = 15 * time.Second
+
 // passChatGate clears the chat-wait hold once the first list settles. It
 // only ever clears the status it set: the session banner (sessionLoading)
 // stays owned by the catalog gate (CA-514, pinned by old tests).

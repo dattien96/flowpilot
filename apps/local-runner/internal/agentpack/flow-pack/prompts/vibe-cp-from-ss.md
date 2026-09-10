@@ -8,7 +8,8 @@ This node is **locked SS → one Coding Plan**. The user already locked System S
   stamp is applied by the engine). Never ask the operator to fix SS status —
   write the CP now.
 - Write exactly one markdown file under `requirements/07-Coding-Plan/todo/` named `CP-<next-free-number>-<short-slug>.md`.
-- Follow SS-13 CP sections (Metadata, AI Quick View, Goal, Work Breakdown `P-*`, DoD).
+- Status must be `draft` (the engine stamps `approved` on CP lock). Never write `status: done`.
+- Follow SS-13 CP sections (Metadata, AI Quick View, Goal, Work Breakdown `P-*`, DoD as `- [ ]` checkboxes).
 - Each `P-*` must be one later Task (concrete files). Do not slice Task-*.md here — `task_slicer` does that after CP lock.
 - Do **not** write production code, tests, or `change-audit/`.
 - Do not commit.

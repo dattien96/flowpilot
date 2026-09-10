@@ -11,3 +11,7 @@ test-signatures step.
    must cover the situation matrix, not only the happy path. If the change
    touches provider code, verify Claude, Codex and Grok.
 4. Run the validation command when available and report results honestly.
+5. Do **not** set Task or CP document `status: done`. Leave status
+   `in_progress` / `approved`. Tick DoD / Acceptance Check boxes (`- [ ]` →
+   `- [x]`) for work this sprint actually finished. The engine also stamps
+   those boxes when the sprint audit completes.
