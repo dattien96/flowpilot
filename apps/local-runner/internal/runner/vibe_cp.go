@@ -133,14 +133,26 @@ func (s *InteractiveService) takeNextVibeSprintLocked(rs *interactiveRun) vibeSp
 }
 
 func (s *InteractiveService) parkVibeSprintBudget(parentRunID string) {
+	// Conditional mutate: a Stop/done landing between the caller's sealed
+	// check and here must win instead of being overwritten to blocked/budget.
+	parked := false
 	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		if st.Status == "stopped" || st.Status == "done" {
+			return st
+		}
 		st.Status = "blocked"
 		st.BlockReason = "budget"
 		st.GateReason = "vibe total-sprint budget exceeded"
+		parked = true
 		return st
 	})
+	if !parked {
+		return
+	}
 	s.mu.Lock()
-	if rs := s.runs[parentRunID]; rs != nil {
+	// Re-check sealed before flipping run status: a Stop landing between the
+	// mutate and here must not be relabeled WaitingUserApr.
+	if rs := s.runs[parentRunID]; rs != nil && !s.loopSealedForReinvoke(parentRunID) {
 		rs.status = RunStatusWaitingUserApr
 		rs.agentStatus = string(RunStatusWaitingUserApr)
 	}
@@ -150,11 +162,19 @@ func (s *InteractiveService) parkVibeSprintBudget(parentRunID string) {
 func (s *InteractiveService) maybeStartNextVibeSprint(parentRunID string) {
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
-	if rs == nil {
+	// A boundary Continue that is mid-start already owns the next sprint, and
+	// a pending boundary gate owns the next decision — a stray slicer/chain
+	// completion in either window must not take a second index.
+	if rs == nil || rs.vibeSprintStartInFlight || rs.vibeSprintBoundaryPending {
 		s.mu.Unlock()
 		return
 	}
 	d := s.takeNextVibeSprintLocked(rs)
+	if d.Start {
+		// A new sprint start supersedes any earlier boundary decline: the
+		// run is active again and must stay offerable at its next boundary.
+		rs.vibeSprintBoundaryDeclined = false
+	}
 	s.mu.Unlock()
 	if d.Locked {
 		log.Printf("[vibe-cp] skip vibe-sprint; cp_lock still waiting run=%s", parentRunID)
@@ -228,9 +248,12 @@ func (s *InteractiveService) maybeChainVibeSprint(parentRunID, completedNodeID s
 	}
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
-	// The sprint-boundary Continue gate owns the next start once parked;
-	// a stray chain (e.g. a replayed audit advance) must not double-start.
-	ok := rs != nil && rs.workingMode == workingmode.Vibe && len(rs.vibeTaskPlan) > 0 && !rs.vibeSprintBoundaryPending
+	// The sprint-boundary Continue gate owns the next start once parked; a
+	// stray chain (e.g. a replayed audit advance) must not double-start, and
+	// neither a just-started sprint (start-in-flight) nor a declined run may
+	// chain into a new one.
+	ok := rs != nil && rs.workingMode == workingmode.Vibe && len(rs.vibeTaskPlan) > 0 &&
+		!rs.vibeSprintBoundaryPending && !rs.vibeSprintStartInFlight && !rs.vibeSprintBoundaryDeclined
 	s.mu.Unlock()
 	if !ok {
 		return

@@ -399,6 +399,21 @@ func (s *InteractiveService) maybeParkVibeResumeConfirm(parentRunID string) {
 		s.mu.Unlock()
 		return
 	}
+	// A run with live child work is actually advancing: never park a resume
+	// card over it. Multi-sprint runs keep the previous sprint's completed
+	// children around while the next sprint's children are live, so
+	// pendingVibeResumeFromNode can otherwise resurrect a stale "Resume from
+	// tdd?" card and cancel the running sprint on reopen.
+	for _, child := range s.runs {
+		if child == nil || child.parentRunID != parentRunID {
+			continue
+		}
+		switch child.status {
+		case RunStatusRunning, RunStatusWaitingApproval, RunStatusWaitingQuestion:
+			s.mu.Unlock()
+			return
+		}
+	}
 	s.mu.Unlock()
 	// Stop seals auto-reinvoke, not the reopen gate. /open must still ask.
 	from := s.pendingVibeResumeFromNode(parentRunID)
@@ -406,17 +421,25 @@ func (s *InteractiveService) maybeParkVibeResumeConfirm(parentRunID string) {
 		return
 	}
 	s.mu.Lock()
-	if r := s.runs[parentRunID]; r != nil {
-		r.vibeResumeConfirm = true
-		r.vibeResumeFromNode = from
+	// Re-check and stamp in the same critical section as the loop mutate: a
+	// boundary park (or a boundary-driven sprint start) landing while
+	// pendingVibeResumeFromNode computed `from` owns this run's next
+	// decision, and a decline suppresses every reopen offer. Never stack a
+	// second card, never park a just-started sprint.
+	r := s.runs[parentRunID]
+	if r == nil || r.vibeSprintBoundaryPending || r.vibeSprintBoundaryDeclined || r.vibeSprintStartInFlight {
+		s.mu.Unlock()
+		return
 	}
-	s.mu.Unlock()
+	r.vibeResumeConfirm = true
+	r.vibeResumeFromNode = from
 	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		st.Status = "blocked"
 		st.BlockReason = vibeResumePausedReason
 		st.GateReason = fmt.Sprintf("Resume from %s?", from)
 		return st
 	})
+	s.mu.Unlock()
 	s.parkFlowForAwaitingUser(parentRunID)
 }
 

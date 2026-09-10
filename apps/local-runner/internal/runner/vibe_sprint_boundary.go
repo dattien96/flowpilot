@@ -129,6 +129,12 @@ func (s *InteractiveService) maybeParkVibeSprintBoundary(ctx context.Context, pa
 		s.mu.Unlock()
 		return false
 	}
+	if rs.vibeSprintStartInFlight {
+		// A Continue already consumed the gate and is starting that sprint;
+		// a repark landing in this window must not park a second one.
+		s.mu.Unlock()
+		return false
+	}
 	plan := append([]string(nil), rs.vibeTaskPlan...)
 	index := rs.vibeSprintIndex
 	rs.vibeSprintBoundaryPending = true
@@ -139,12 +145,24 @@ func (s *InteractiveService) maybeParkVibeSprintBoundary(ctx context.Context, pa
 		s.setFlowStepStatus(ctx, parentRunID, auditNodeID, StepStatusDone)
 	}
 	reason := vibeSprintBoundaryReasonText(plan, index)
-	// Conditional mutate under the orchestrator mutex (same mutex stop()
-	// takes): a concurrent Stop/done wins the race instead of being
-	// overwritten — check-and-write is atomic, no TOCTOU. Live audits also
-	// refuse paused loops and foreign blocked cards (mirror the repark
-	// guard): only stopped/done (sealed), paused, or another gate's card
-	// can refuse the park.
+	// Ownership + conditional mutate share one critical section with the run
+	// lock (Stop takes the same lock; s.mu -> o.mu is the established order):
+	// a Continue that consumed this flag while the park was in store I/O has
+	// already advanced index / cleared pending, so this park aborts instead of
+	// re-blocking the freshly started sprint behind a cardless gate.
+	s.mu.Lock()
+	r := s.runs[parentRunID]
+	if r == nil || !r.vibeSprintBoundaryPending || r.vibeSprintBoundaryTask != plan[index] || r.vibeSprintIndex != index {
+		// A pure index move (concurrent chain take) with our own flag still
+		// set would leave a stale Continue card over a running sprint: drop
+		// only our flag (task still ours, index already advanced).
+		if r != nil && r.vibeSprintBoundaryPending && r.vibeSprintBoundaryTask == plan[index] && r.vibeSprintIndex != index {
+			r.vibeSprintBoundaryPending = false
+			r.vibeSprintBoundaryTask = ""
+		}
+		s.mu.Unlock()
+		return false
+	}
 	parked := false
 	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		if st.Status == "stopped" || (!allowSealed && st.Status == "done") {
@@ -164,12 +182,10 @@ func (s *InteractiveService) maybeParkVibeSprintBoundary(ctx context.Context, pa
 		return st
 	})
 	if !parked {
-		// Sealed (or paused / foreign card) won the race: drop the flag,
+		// Sealed (or paused / foreign card) won the race: drop our own flag,
 		// leave settle semantics alone.
-		s.mu.Lock()
 		if r := s.runs[parentRunID]; r != nil {
-			// Only clear our own flag to avoid clobbering a newer park.
-			if r.vibeSprintBoundaryTask == plan[index] {
+			if r.vibeSprintBoundaryTask == plan[index] && r.vibeSprintIndex == index {
 				r.vibeSprintBoundaryPending = false
 				r.vibeSprintBoundaryTask = ""
 			}
@@ -177,13 +193,6 @@ func (s *InteractiveService) maybeParkVibeSprintBoundary(ctx context.Context, pa
 		s.mu.Unlock()
 		return false
 	}
-	// Re-check sealed after the win: Stop may have landed between mutate
-	// and the post-mutate side effects. Never emit a stale blocked graph
-	// over a stopped loop.
-	if s.loopSealedForReinvoke(parentRunID) {
-		return true
-	}
-	s.mu.Lock()
 	if r := s.runs[parentRunID]; r != nil {
 		// Boundary wins over any stale resume-confirm underneath: one gate
 		// on screen, one router (matches runSnapshot/SubmitGateDecision).
@@ -191,9 +200,29 @@ func (s *InteractiveService) maybeParkVibeSprintBoundary(ctx context.Context, pa
 		r.vibeResumeFromNode = ""
 	}
 	s.mu.Unlock()
+	// Re-check sealed after the win: Stop may have landed between mutate
+	// and the post-mutate side effects. Never emit a stale blocked graph
+	// over a stopped loop.
+	if s.loopSealedForReinvoke(parentRunID) {
+		return true
+	}
+	// Final ownership check before side effects: if a Continue consumed the
+	// gate after the mutate's critical section, the card is already gone and
+	// parking the flow here would cancel the sprint it just started.
+	s.mu.Lock()
+	stillOwned := false
+	if r := s.runs[parentRunID]; r != nil {
+		stillOwned = r.vibeSprintBoundaryPending && r.vibeSprintBoundaryTask == plan[index] && r.vibeSprintIndex == index
+	}
+	s.mu.Unlock()
+	if !stillOwned {
+		return true
+	}
 	s.parkFlowForAwaitingUser(parentRunID)
 	s.emitAgentGraph(parentRunID, snap)
-	go s.persistParentSession(parentRunID)
+	// Persist synchronously: an async goroutine here could outlive a later
+	// decline/Stop write and append a stale snapshot after it.
+	s.persistParentSession(parentRunID)
 	s.flowDiagLog(parentRunID, "vibe_sprint_boundary_parked", "sprint done with plan tasks left; parked Continue gate",
 		"done_sprints", index,
 		"total_sprints", len(plan),
@@ -219,7 +248,8 @@ func (s *InteractiveService) maybeReparkVibeSprintBoundary(parentRunID string) {
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
 	if rs == nil || rs.parentRunID != "" || !inVibeSprintTopology(rs) ||
-		rs.vibeAwaitingLock || len(rs.vibeTaskPlan) == 0 || rs.vibeSprintBoundaryPending {
+		rs.vibeAwaitingLock || len(rs.vibeTaskPlan) == 0 || rs.vibeSprintBoundaryPending ||
+		rs.vibeSprintStartInFlight {
 		s.mu.Unlock()
 		return
 	}
@@ -241,7 +271,8 @@ func (s *InteractiveService) maybeReparkVibeSprintBoundary(parentRunID string) {
 	switch loop.Status {
 	case "stopped", "paused":
 		// Stop wins, even with tasks left. An explicit user pause is kept
-		// too — the next reopen after unpause retries the offer.
+		// too — a later reopen after unpause retries the offer (repark is
+		// only invoked on open/reopen, never on unpause itself).
 		return
 	case "done":
 		// Offer only to silently-settled runs: tasks remain AND the operator
@@ -289,17 +320,27 @@ func (s *InteractiveService) continueVibeSprintBoundary(parentRunID, note string
 	case d.Start:
 		prompt := vibeSprintPromptWithNote(d.Task, note)
 		takenTask := d.Task
+		prevDeclined := rs.vibeSprintBoundaryDeclined
 		rs.vibeSprintBoundaryPending = false
 		rs.vibeSprintBoundaryTask = ""
 		rs.vibeSprintBoundaryDeclined = false
+		rs.vibeSprintStartGen++
+		startGen := rs.vibeSprintStartGen
+		rs.vibeSprintStartInFlight = true
+		// The operator is driving the flow again: a stale resume-confirm
+		// must not pop a second card over the sprint we are starting.
+		rs.vibeResumeConfirm = false
+		rs.vibeResumeFromNode = ""
 		if len(rs.activeFlowNodes) > 0 {
 			rs.autoOrchestrate = true
 		}
 		s.mu.Unlock()
 		s.releaseHubStopFenceForFollowUp(context.Background(), parentRunID)
 		// Conditional mutate: a concurrent Stop/done between unlock and
-		// here must win — never flip sealed back to running, and roll the
-		// consumed index back so no task is skipped and the gate survives.
+		// here must win — never flip sealed back to running. The index is
+		// rolled back, the durable decline marker restored, and the gate
+		// restored only while the loop is still resumable (no ghost card on
+		// a stopped/done run).
 		started := false
 		snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 			if st.Status == "stopped" || st.Status == "done" {
@@ -314,22 +355,24 @@ func (s *InteractiveService) continueVibeSprintBoundary(parentRunID, note string
 		})
 		if !started {
 			s.mu.Lock()
-			if r := s.runs[parentRunID]; r != nil {
-				r.vibeSprintIndex--
-				r.vibeSprintBoundaryPending = true
-				r.vibeSprintBoundaryTask = takenTask
-			}
+			s.rollbackTakenVibeSprintLocked(parentRunID, takenTask, prevDeclined)
 			s.mu.Unlock()
 			return true
 		}
 		if s.loopSealedForReinvoke(parentRunID) {
 			// Sealed between mutate and emit: do not emit a stale running
-			// graph over Stop/done.
+			// graph over Stop/done, and give the consumed task back.
+			s.mu.Lock()
+			if r := s.runs[parentRunID]; r != nil {
+				r.vibeSprintIndex--
+				r.vibeSprintStartInFlight = false
+			}
+			s.mu.Unlock()
 			return true
 		}
 		s.emitAgentGraph(parentRunID, snap)
-		go s.persistParentSession(parentRunID)
-		s.startTakenVibeSprint(parentRunID, prompt)
+		s.persistParentSession(parentRunID)
+		s.startTakenVibeSprint(parentRunID, prompt, takenTask, prevDeclined, startGen)
 		return true
 	case d.Budget:
 		rs.vibeSprintBoundaryPending = false
@@ -380,6 +423,7 @@ func (s *InteractiveService) declineVibeSprintBoundaryWithSummary(parentRunID, s
 		doneNum = total
 	}
 	task := rs.vibeSprintBoundaryTask
+	prevDeclined := rs.vibeSprintBoundaryDeclined
 	rs.vibeSprintBoundaryPending = false
 	rs.vibeSprintBoundaryTask = ""
 	// Durable decline (operator cancel only — the emptied-plan auto-settle
@@ -394,12 +438,13 @@ func (s *InteractiveService) declineVibeSprintBoundaryWithSummary(parentRunID, s
 	if err != nil || (res.NextAction == "rejected_cohort_incomplete") {
 		// Settle refused (duplicate decision / terminal race) or soft-
 		// deferred on an open cohort: put the gate back instead of
-		// stranding blocked-with-no-card (and never record a decline).
+		// stranding blocked-with-no-card, and restore whatever decline
+		// marker existed before this call (never invent a decline).
 		s.mu.Lock()
 		if r := s.runs[parentRunID]; r != nil {
 			r.vibeSprintBoundaryPending = true
 			r.vibeSprintBoundaryTask = task
-			r.vibeSprintBoundaryDeclined = false
+			r.vibeSprintBoundaryDeclined = prevDeclined
 		}
 		s.mu.Unlock()
 		return false
@@ -407,9 +452,94 @@ func (s *InteractiveService) declineVibeSprintBoundaryWithSummary(parentRunID, s
 	return true
 }
 
+// rollbackTakenVibeSprintLocked undoes a consumed boundary take that could not
+// start (Stop/done won the race). The task goes back so it is never skipped,
+// the previous decline marker is restored, and the gate is re-shown only while
+// the loop is still resumable — a sealed (stopped/done) run must not get a
+// ghost actionable card back. Caller must hold s.mu (s.mu -> o.mu order).
+func (s *InteractiveService) rollbackTakenVibeSprintLocked(parentRunID, takenTask string, prevDeclined bool) {
+	r := s.runs[parentRunID]
+	if r == nil {
+		return
+	}
+	r.vibeSprintIndex--
+	r.vibeSprintBoundaryDeclined = prevDeclined
+	r.vibeSprintStartInFlight = false
+	if s.loopSealedForReinvoke(parentRunID) {
+		return
+	}
+	r.vibeSprintBoundaryPending = true
+	r.vibeSprintBoundaryTask = takenTask
+	// Re-park the loop so the restored gate really owns the next decision:
+	// a resolve-failed start would otherwise leave it running with a pending
+	// card the engine could advance past.
+	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		if st.Status == "stopped" || st.Status == "done" || st.Status == "paused" {
+			return st
+		}
+		st.Status = "blocked"
+		st.BlockReason = vibeSprintBoundaryReason
+		st.GateReason = "Sprint did not start. Continue to retry the next sprint?"
+		return st
+	})
+}
+
 // startTakenVibeSprint starts a vibe-sprint flow for an already-taken prompt
-// (the index was consumed by takeNextVibeSprintLocked under s.mu).
-func (s *InteractiveService) startTakenVibeSprint(parentRunID, prompt string) {
+// (the index was consumed by takeNextVibeSprintLocked under s.mu). The
+// start-in-flight flag (gen-stamped) is held for the whole spawn so
+// repark/chain cannot double-start, and a Stop that won after the continue
+// mutate aborts the spawn instead of orphaning a just-started child. If the
+// spawn produced nothing live (sealed abort, resolve failure, refused entry,
+// aborted child turn) the take is rolled back so a later offer cannot
+// silently skip the task.
+func (s *InteractiveService) startTakenVibeSprint(parentRunID, prompt, takenTask string, prevDeclined bool, startGen int64) {
+	defer func() {
+		s.mu.Lock()
+		if r := s.runs[parentRunID]; r != nil && r.vibeSprintStartGen == startGen {
+			r.vibeSprintStartInFlight = false
+		}
+		s.mu.Unlock()
+	}()
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || !rs.vibeSprintStartInFlight || rs.vibeSprintStartGen != startGen {
+		s.mu.Unlock()
+		return
+	}
+	if s.loopSealedForReinvoke(parentRunID) {
+		// Stop/done landed between the continue mutate and here: give the
+		// task back (no gate on a sealed loop) and spawn nothing.
+		s.rollbackTakenVibeSprintLocked(parentRunID, takenTask, prevDeclined)
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	before := make(map[string]struct{})
+	for _, cid := range s.agentOrchestrator.listChildren(parentRunID) {
+		before[cid] = struct{}{}
+	}
 	ref := workingmode.PackPrefix + vibeSprintFlowID
 	s.startResolvedFlow(context.Background(), parentRunID, ref, prompt)
+	// Only a new, non-cancelled child proves the sprint actually started: a
+	// spawn aborted by Stop registers its child and then cancels it, so a
+	// plain child count would mistake that for a start.
+	spawned := false
+	for _, cid := range s.agentOrchestrator.listChildren(parentRunID) {
+		if _, seen := before[cid]; seen {
+			continue
+		}
+		s.mu.Lock()
+		child := s.runs[cid]
+		cancelled := child == nil || child.status == RunStatusCancelled
+		s.mu.Unlock()
+		if !cancelled {
+			spawned = true
+			break
+		}
+	}
+	if !spawned {
+		s.mu.Lock()
+		s.rollbackTakenVibeSprintLocked(parentRunID, takenTask, prevDeclined)
+		s.mu.Unlock()
+	}
 }

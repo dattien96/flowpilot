@@ -195,6 +195,13 @@ type interactiveRun struct {
 	// re-offer Continue for a declined run — only for silently-settled ones
 	// (audit done + tasks left, loop done, never declined).
 	vibeSprintBoundaryDeclined bool
+	// vibeSprintStartInFlight is true only while a boundary Continue is
+	// starting the next sprint (consume -> spawn entry child). A reopen
+	// repark or a stray chain must not start/park a second sprint in that
+	// window; Stop landing inside it is re-checked at spawn. Gen stamps
+	// ownership so a deferred clear cannot release a newer start's flag.
+	vibeSprintStartInFlight bool
+	vibeSprintStartGen      int64
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
 	// chatPosture is the per-turn posture (scan/plan/code, "" = code). Persisted
@@ -1887,6 +1894,19 @@ func (s *InteractiveService) resumeFlowWithFeedback(parentRunID, feedback string
 	wasBlocked := false
 	prevBlockReason := s.agentOrchestrator.loopStateFor(parentRunID).BlockReason
 	prevGateReason := s.agentOrchestrator.loopStateFor(parentRunID).GateReason
+	// Sprint boundary: the gate owns the loop state — do NOT unblock first.
+	// Unblocking before the decision left running+pending on the Locked
+	// branch (a later ok would double-start). Route straight through the
+	// boundary consumer, which keeps the park on Locked/Budget.
+	if prevBlockReason == vibeSprintBoundaryReason {
+		s.mu.Lock()
+		boundaryPending := s.runs[parentRunID] != nil && s.runs[parentRunID].vibeSprintBoundaryPending
+		s.mu.Unlock()
+		if boundaryPending {
+			s.continueVibeSprintBoundary(parentRunID, normalizeBoundaryNote(feedback))
+			return s.agentGraphSnapshot(parentRunID), nil
+		}
+	}
 	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		if st.Status != "blocked" {
 			return st
@@ -6341,6 +6361,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 	parentReasoningEffort := ""
 	parentProviderKey := ProviderKey("")
 	parentYolo := false
+	boundaryStart := false
 	if parentRun != nil {
 		cwd = parentRun.workspaceCwd
 		projectID = parentRun.projectID
@@ -6349,6 +6370,7 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		parentReasoningEffort = parentRun.reasoningEffort
 		parentProviderKey = parentRun.providerKey
 		parentYolo = parentRun.yolo
+		boundaryStart = parentRun.vibeSprintStartInFlight
 	}
 	s.mu.Unlock()
 	if parentRun == nil {
@@ -6470,6 +6492,22 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 
 	// Stamp agent identity on the newly created child run.
 	s.mu.Lock()
+	if boundaryStart && s.loopSealedForReinvoke(parentRunID) {
+		// Stop/done won while this boundary-driven sprint start was in
+		// flight: cancel the just-minted child instead of leaving an orphan
+		// turn running after the run sealed. Same critical section as Stop's
+		// loop-stop, so one of the two always sees the other.
+		if rs := s.runs[handle.RunID]; rs != nil {
+			rs.status = RunStatusCancelled
+			rs.agentStatus = string(RunStatusCancelled)
+		}
+		s.mu.Unlock()
+		s.agentOrchestrator.stop(handle.RunID)
+		s.flowDiagLog(parentRunID, "vibe_sprint_spawn_aborted", "boundary sprint spawn aborted; parent sealed",
+			"child_run_id", handle.RunID,
+		)
+		return SpawnAgentResult{}, fmt.Errorf("parent run %q stopped during sprint start", parentRunID)
+	}
 	var childSnap ProviderSessionState
 	agentStatus := "spawned"
 	blockedStart := false
@@ -6607,6 +6645,20 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 
 	// Fire the first turn asynchronously; the child streams via its own SSE.
 	if !blockedStart {
+		if boundaryStart && s.loopSealedForReinvoke(parentRunID) {
+			// Stop landed after the child was stamped: never start its turn.
+			s.mu.Lock()
+			if rs := s.runs[handle.RunID]; rs != nil {
+				rs.status = RunStatusCancelled
+				rs.agentStatus = string(RunStatusCancelled)
+			}
+			s.mu.Unlock()
+			s.agentOrchestrator.stop(handle.RunID)
+			s.flowDiagLog(parentRunID, "vibe_sprint_spawn_aborted", "boundary sprint turn aborted; parent sealed",
+				"child_run_id", handle.RunID,
+			)
+			return SpawnAgentResult{}, fmt.Errorf("parent run %q stopped during sprint start", parentRunID)
+		}
 		go func() {
 			_, turnErr := s.startTurn(handle.RunID, TurnInput{
 				StepID: handle.StepID,
