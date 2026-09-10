@@ -956,6 +956,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		vibeTaskPlan:                    append([]string(nil), st.VibeTaskPlan...),
 		vibeSprintIndex:                 st.VibeSprintIndex,
 		vibeSprintBudget:                st.VibeSprintBudget,
+		vibeSprintBoundaryDeclined:     st.VibeSprintBoundaryDeclined,
 		vibeLockedCP:                    st.VibeLockedCP,
 		vibeLockedSS:                    st.VibeLockedSS,
 		vibeLockNodeID:                  st.VibeLockNodeID,
@@ -1303,11 +1304,16 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	if rs.parentRunID == "" && !rs.suppressAutoGateResume {
 		go s.maybeSettleVibeOwnerDebate(rs.id)
 		s.healVibeFailedForReopenPark(rs.id)
-		s.maybeParkVibeResumeConfirm(rs.id)
+		// Boundary first: it owns the next decision when a sprint just
+		// finished (resume-confirm no-ops while boundary is pending, but
+		// the reverse is not true — parking resume first would steal the
+		// card and strand the boundary offer).
 		// Sprint boundary is memory-only: re-derive it from audit DONE +
 		// remaining plan so reopening a boundary-parked run shows the
-		// Continue form again (sealed loops stay sealed).
+		// Continue form again (stopped stays stopped; silent-done re-offers
+		// unless declined; finished stays done).
 		s.maybeReparkVibeSprintBoundary(rs.id)
+		s.maybeParkVibeResumeConfirm(rs.id)
 	}
 	return rs, nil
 }

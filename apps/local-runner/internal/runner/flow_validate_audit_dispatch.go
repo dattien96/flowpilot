@@ -1338,7 +1338,8 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 			)
 			// Sprint boundary: a finished sprint with plan tasks left parks a
 			// Continue gate for the next sprint instead of settling done.
-			if s.maybeParkVibeSprintBoundary(ctx, parentRunID, node.ID) {
+			// Live audit path: never flip a concurrently sealed loop.
+			if s.maybeParkVibeSprintBoundary(ctx, parentRunID, node.ID, false) {
 				return true
 			}
 		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
@@ -1399,7 +1400,8 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	}
 	// Sprint boundary: a finished sprint with plan tasks left parks a
 	// Continue gate for the next sprint instead of settling done.
-	if s.maybeParkVibeSprintBoundary(ctx, parentRunID, node.ID) {
+	// Live audit path: never flip a concurrently sealed loop.
+	if s.maybeParkVibeSprintBoundary(ctx, parentRunID, node.ID, false) {
 		return true
 	}
 	if _, err := s.applyFlowControl(parentRunID, FlowControlInput{

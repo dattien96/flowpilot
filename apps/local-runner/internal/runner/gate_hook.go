@@ -1811,7 +1811,7 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 				return nil
 			}
 			s.mu.Lock()
-			stillParked := rs.vibeSprintBoundaryPending
+			stillParked := s.runs[runID] != nil && s.runs[runID].vibeSprintBoundaryPending
 			s.mu.Unlock()
 			if stillParked {
 				return newAPIErr(409, "boundary_settle_deferred", "sprint boundary could not settle now; gate stays parked")

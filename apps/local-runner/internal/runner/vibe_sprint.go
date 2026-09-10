@@ -387,6 +387,12 @@ func (s *InteractiveService) maybeParkVibeResumeConfirm(parentRunID string) {
 		s.mu.Unlock()
 		return
 	}
+	if rs.vibeSprintBoundaryDeclined {
+		// Explicit boundary decline suppresses every reopen offer,
+		// including node-resume: the operator said no more sprints.
+		s.mu.Unlock()
+		return
+	}
 	hasTdd := runHasFlowNode(rs, "tdd")
 	hasCoder := runHasFlowNode(rs, "coder")
 	if rs.workingMode != workingmode.Vibe && !(hasTdd && hasCoder) {

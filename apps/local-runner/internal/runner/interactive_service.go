@@ -189,7 +189,12 @@ type interactiveRun struct {
 	// vibeResumeConfirm — re-derived on open from audit DONE + plan/index).
 	// vibeSprintBoundaryTask is the peeked next task (not yet consumed).
 	vibeSprintBoundaryPending bool
-	vibeSprintBoundaryTask    string
+	vibeSprintBoundaryTask  string
+	// vibeSprintBoundaryDeclined records an explicit operator decline of the
+	// boundary gate (durable, unlike the pending flag): reopening must NOT
+	// re-offer Continue for a declined run — only for silently-settled ones
+	// (audit done + tasks left, loop done, never declined).
+	vibeSprintBoundaryDeclined bool
 	// reasoningEffort is the desktop-selected effort level passed per-turn (T-4).
 	reasoningEffort string
 	// chatPosture is the per-turn posture (scan/plan/code, "" = code). Persisted
@@ -945,12 +950,27 @@ func (s *InteractiveService) agentBusHistory(parentRunID string) []AgentBusMessa
 }
 
 func (s *InteractiveService) pauseAgentLoop(parentRunID, reason string) AgentGraphSnapshot {
+	// The boundary Continue gate owns its run's next decision: pausing over
+	// it would drop the boundary reason, and resuming would leave loop
+	// running with the gate still pending (double-start on next ok).
+	s.mu.Lock()
+	pending := s.runs[parentRunID] != nil && s.runs[parentRunID].vibeSprintBoundaryPending
+	s.mu.Unlock()
+	if pending {
+		return s.agentGraphSnapshot(parentRunID)
+	}
 	s.agentOrchestrator.pause(parentRunID, reason)
 	snap := s.agentGraphSnapshot(parentRunID)
 	s.emitAgentGraph(parentRunID, snap)
 	return snap
 }
 func (s *InteractiveService) resumeAgentLoop(parentRunID string) AgentGraphSnapshot {
+	s.mu.Lock()
+	pending := s.runs[parentRunID] != nil && s.runs[parentRunID].vibeSprintBoundaryPending
+	s.mu.Unlock()
+	if pending {
+		return s.agentGraphSnapshot(parentRunID)
+	}
 	s.agentOrchestrator.resume(parentRunID)
 	s.resumePendingLoopWork(parentRunID)
 	snap := s.agentGraphSnapshot(parentRunID)
@@ -4027,6 +4047,7 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		VibeTaskPlan:                    append([]string(nil), rs.vibeTaskPlan...),
 		VibeSprintIndex:                 rs.vibeSprintIndex,
 		VibeSprintBudget:                rs.vibeSprintBudget,
+		VibeSprintBoundaryDeclined:      rs.vibeSprintBoundaryDeclined,
 		VibeLockedCP:                    rs.vibeLockedCP,
 		VibeLockedSS:                    rs.vibeLockedSS,
 		VibeLockNodeID:                  rs.vibeLockNodeID,

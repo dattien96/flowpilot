@@ -110,6 +110,7 @@ type ndjsonSessionRecord struct {
 	VibeTaskPlan     []string `json:"vibe_task_plan,omitempty"`
 	VibeSprintIndex  int      `json:"vibe_sprint_index,omitempty"`
 	VibeSprintBudget int      `json:"vibe_sprint_budget,omitempty"`
+	VibeSprintBoundaryDeclined bool `json:"vibe_sprint_boundary_declined,omitempty"`
 	VibeLockedCP     string   `json:"vibe_locked_cp,omitempty"`
 	VibeLockedSS     string   `json:"vibe_locked_ss,omitempty"`
 	VibeLockNodeID string `json:"vibe_lock_node_id,omitempty"`
@@ -447,6 +448,7 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		VibeTaskPlan:                       append([]string(nil), r.VibeTaskPlan...),
 		VibeSprintIndex:                    r.VibeSprintIndex,
 		VibeSprintBudget:                   r.VibeSprintBudget,
+		VibeSprintBoundaryDeclined:       r.VibeSprintBoundaryDeclined,
 		VibeLockedCP:                       r.VibeLockedCP,
 		VibeLockedSS:                       r.VibeLockedSS,
 		VibeLockNodeID:                     r.VibeLockNodeID,
@@ -915,6 +917,7 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		VibeTaskPlan:                       append([]string(nil), s.VibeTaskPlan...),
 		VibeSprintIndex:                    s.VibeSprintIndex,
 		VibeSprintBudget:                   s.VibeSprintBudget,
+		VibeSprintBoundaryDeclined:       s.VibeSprintBoundaryDeclined,
 		VibeLockedCP:                       s.VibeLockedCP,
 		VibeLockedSS:                       s.VibeLockedSS,
 		VibeLockNodeID:                     s.VibeLockNodeID,
