@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-08`
-- Last Updated: `2026-09-09`
+- Last Updated: `2026-09-10`
 - Parent Documents: [CP-60: Vibe Working Mode](./CP-60-Vibe-Working-Mode.md)
 - Child Documents: `None`
 - Related Documents: [SS-18](../../05-System-Specs/SS-18-Vibe-Working-Mode.md), [SD-24](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md), [Task-326](../../08-Task/inprogress/Task-326-Vibe-Working-Mode-Switch-And-Flow-Family-Gate.md), [KR-004](../../reviews/KR-004-cp60-vibe-working-mode-impl-rev2.md), [CP-61-Test-Steps](../done/CP-61-Test-Steps.md)
@@ -29,7 +29,7 @@
 ### Current Ask
 
 - Unit §2 **done** 2026-09-09 (`TestCA793_*` + reconstruct lock green). M1–M3 done. Sandbox cleaned for a **new** Branch V run.
-- Operator next: new TUI session, **do not resume run-213752**. Tick V1–V8 + G1–G3 on the CA-791 graph, then F1 and §11 live demote. Do not claim live DoD until V5 + G1. Auto-spawn at demoted checkpoint remains residual (O-6).
+- Live run-223416 (`vibe-ingest`, CA-791 graph) **done** 2026-09-10: V1–V4 + V6 ticked (V7/V8 unexercised — no card fired on sprint1), sprint1 (grid/snake/food/collision) G1 green. Sprint2 (tick loop + WASD) + sprint3 (score/game-over/`go run`) **pending** — `go run ./snake` still `not a main package`. Do not claim live DoD until V5 (all 3 sprints) + G1 + G2.
 
 ### Key Decisions
 
@@ -153,14 +153,14 @@ New run only. Do **not** resume run-213752.
 
 | # | Làm | Pass | Tick |
 | --- | --- | --- | --- |
-| V1 | Send the prompt | Run starts `working_mode=vibe`, flow `vibe-ingest`. **Not** `task-harness`. | [ ] |
-| V2 | `ss_lock` card **SS Preview & Lock** | Timeline parks `WAITING_USER_APPROVAL`. Draft has `AC-*` for grid/food/WASD/game-over. | [ ] |
-| V3 | Edit if AC missing (paste into card), then empty **Continue** / Lock | SS written under sandbox `requirements/05-System-Specs/` (or path on the card). Sprint does **not** start before lock. | [ ] |
-| V4 | `cp_writer` then `task_slicer` (CA-791 join; **no** `cp_lock`, **no** `sprint_slicer`) | Exactly 3 `Task-*.md` under `requirements/08-Task/todo/`. Timeline shows task plan. No extra lock cards. | [ ] |
-| V5 | Each sprint | Order `context → tdd → coder → validate → synthesis → audit`. File `requirements/.flowpilot/vibe/tdd-signatures.md` exists **before** coder on that sprint. `validate` green. | [ ] |
-| V6 | User cards after lock | Only `r-requirement` (plain AC↔test language) or Owner-cap. **Zero** Dev `1/2/3`. | [ ] |
-| V7 | If `r-requirement` fires | Do **not** Approve a weaken-test. Fix SS or tests per the card, Continue. Never `done` while drifted. | [ ] |
-| V8 | If generic `r-*` (not requirement) | `vibe-owner-debate` auto (2 owners). No Dev modal. | [ ] |
+| V1 | Send the prompt | Run starts `working_mode=vibe`, flow `vibe-ingest`. **Not** `task-harness`. | [x] run-223416 `vibe-ingest` VIBE, not `task-harness` |
+| V2 | `ss_lock` card **SS Preview & Lock** | Timeline parks `WAITING_USER_APPROVAL`. Draft has `AC-*` for grid/food/WASD/game-over. | [x] run-223416 parked `ss_lock WAITING`, then DONE |
+| V3 | Edit if AC missing (paste into card), then empty **Continue** / Lock | SS written under sandbox `requirements/05-System-Specs/` (or path on the card). Sprint does **not** start before lock. | [x] `SS-13-snake-mvp.md` (9184B) on disk; no sprint before lock |
+| V4 | `cp_writer` then `task_slicer` (CA-791 join; **no** `cp_lock`, **no** `sprint_slicer`) | Exactly 3 `Task-*.md` under `requirements/08-Task/todo/`. Timeline shows task plan. No extra lock cards. | [x] `CP-snake-mvp.md` + `Task-904/905/906` (exactly 3); no `cp_lock` card |
+| V5 | Each sprint | Order `context → tdd → coder → validate → synthesis → audit`. File `requirements/.flowpilot/vibe/tdd-signatures.md` exists **before** coder on that sprint. `validate` green. | [ ] sprint1 order ok + `validate` green; sprint2/3 pending; `tdd-signatures.md` **not found on disk** 2026-09-10 — V5 stays open |
+| V6 | User cards after lock | Only `r-requirement` (plain AC↔test language) or Owner-cap. **Zero** Dev `1/2/3`. | [x] run-223416 operator-observed 2026-09-10 (2 TUI screenshots): `ss_lock` vibe_lock card + audit escalate `Retry` card only; no Dev `1/2/3` modal rendered |
+| V7 | If `r-requirement` fires | Do **not** Approve a weaken-test. Fix SS or tests per the card, Continue. Never `done` while drifted. | [ ] N/A — not exercised (no `r-requirement` fired on sprint1); re-prove on a run where it fires |
+| V8 | If generic `r-*` (not requirement) | `vibe-owner-debate` auto (2 owners). No Dev modal. | [ ] N/A — not exercised (audit missing-CA took the writer-retry path, not owner-debate); re-prove on a run where a generic gate fires |
 
 ### Game acceptance (after V5)
 
@@ -174,9 +174,9 @@ go run ./snake
 
 | # | Làm | Pass | Tick |
 | --- | --- | --- | --- |
-| G1 | `go test ./snake` | Green. Covers eat, wall, self-hit. | [ ] |
-| G2 | `go run ./snake` | Grid renders; WASD moves; eat grows + score; wall/self ends; R restarts or Q quits. | [ ] |
-| G3 | `git -C D:\working\gate-sandbox diff --stat` | `snake/` (+ tests) present. **`calc.go` / `calc_test.go` not modified.** | [ ] |
+| G1 | `go test ./snake` | Green. Covers eat, wall, self-hit. | [x] 2026-09-10 9 PASS (`TestNewGame_*`, `TestSpawnFood_*`, `TestStep_Eat/Wall/NoWrap/SelfHit/TailOverlap/FullBoardNoHang`) |
+| G2 | `go run ./snake` | Grid renders; WASD moves; eat grows + score; wall/self ends; R restarts or Q quits. | [ ] 2026-09-10 FAIL: `package gatesandbox/snake is not a main package` — only `game.go` + `game_test.go` (sprint1); sprint2/3 pending |
+| G3 | `git -C D:\working\gate-sandbox diff --stat` | `snake/` (+ tests) present. **`calc.go` / `calc_test.go` not modified.** | [x] `snake/game.go` + `snake/game_test.go` untracked present; `calc.go`/`calc_test.go` untouched (only `.flowpilot/*` modified) |
 
 V5 + G1 + G2 + G3 = live Branch V pass for this bed.
 
@@ -190,12 +190,13 @@ V5 + G1 + G2 + G3 = live Branch V pass for this bed.
 
 ## 7. Evidence to paste when ticking
 
-- TUI run id / flow id (`vibe-ingest`): **historical run-213752** (2026-09-08, old `sprint_slicer` graph). Earlier parks: run-211980 (`ss_lock` escalate), run-213333 (lock chip / slicer hang). **Do not resume.** Next live ticks need a new run id here.
+- TUI run id / flow id (`vibe-ingest`): **run-223416 done** 2026-09-10 (CA-791 graph: `ingest_reader` → `ss_converter` → `ss_validator` → `ss_lock` WAITING→DONE → `cp_writer` → `task_slicer` → sprint1 `preflight → tdd → coder → validate → synthesis → audit` WAITING missing-CA → `Retry` writer wrote `CA-950.md` → `coder → validate → synthesis` DONE → flow `done`). Gate inventory (2 screenshots): `vibe_lock` card + `escalate` audit card with `Retry` copy "re-run the writer to write the missing change-audit note"; no Dev `1/2/3` modal, no `r-requirement`, no owner-debate. Historical: run-213752 (old `sprint_slicer`), run-211980, run-213333. **Do not resume.**
 - SS lock (historical): `ss_lock` `WAITING_USER_APPROVAL` then DONE; drafts `SS-14` / `SS-15` / `SS-16` — **removed 2026-09-09** so the next ingest starts clean. Only `FORMAT-REFERENCE-SS.md` remains under `05-System-Specs/`.
 - `sprint_plan` (historical): `SPRINT-PLAN-snake-mvp.md` on run-213752. New binary expects 3 `Task-*.md` after `task_slicer`, not that file.
-- Path of `tdd-signatures.md`: not yet (V5). **CA-791:** after lock, `cp_writer` → `task_slicer` → `vibe-sprint`.
-- `go test ./snake` output: not yet (G1).
-- `git diff --stat` proving calc untouched: 2026-09-09 sandbox `git status --short` empty; `calc.go` not modified.
+- Path of `tdd-signatures.md`: **not found on disk** 2026-09-10 (`Get-ChildItem -Recurse tdd-signatures.md` empty in gate-sandbox). **CA-791:** after lock, `cp_writer` → `task_slicer` → `vibe-sprint`.
+- `go test ./snake` output: 2026-09-10 `go test ./snake -count=1 -v` → 9 PASS, `ok gatesandbox/snake` (G1).
+- `go run ./snake` output: 2026-09-10 FAIL `not a main package` (G2 open — sprint2/3 pending).
+- `git diff --stat` proving calc untouched: gate-sandbox `git diff --name-only` = only `.flowpilot/*`; `?? SS-13-snake-mvp.md, CP-snake-mvp.md, Task-904/905/906, snake/, CA-950.md`; `calc.go` not modified.
 - §2.1–2.4 (2026-09-08 Mac): `TestLoadBuiltinPack` PASS (12 flows); `TestPack_InventoryUnchanged` 12/8; `TestDefaultRules` PASS (18 ids, no `r-requirement`); vibe `-run` filter PASS. Full `./internal/runner/` hung >180s. `./internal/tui/app/` red on CA-537 spinner / You-box (not vibe; not edited).
 - §2.5–2.13 (2026-09-09 Windows `C:/working/flowpilot/apps/local-runner`): `go test ./internal/runner/ -count=1 -timeout 60s -run 'TestCA793_|TestVibeSession_ReconstructAwaitingLock'` → 9 PASS, 0.215s.
 - Sandbox clean 2026-09-09: empty `snake/` removed; no vibe SS/CP/Task files; `FEATURE-KEYS.md` has `snake-mvp`.
@@ -225,11 +226,13 @@ V5 + G1 + G2 + G3 = live Branch V pass for this bed.
 - [x] §2.1–2.4 vibe probes green (full `tui/app` chrome red, out of vibe)
 - [x] §2.5–2.13 `TestCA793_*` + reconstruct lock green (2026-09-09)
 - [x] M1–M3 ticked
-- [ ] V1–V8 ticked on a **new** CA-791 run (historical V1–V4 on run-213752 do not count)
-- [ ] G1–G3 ticked (`go test` + playable + calc clean)
+- [x] V1–V4 ticked on run-223416 (CA-791; historical run-213752 does not count)
+- [x] V6 ticked (zero Dev observed on run-223416 screenshots); V7/V8 OPEN (unexercised — no card fired on sprint1)
+- [ ] V5 ticked — sprint1 done, sprint2/3 pending + `tdd-signatures.md` missing on disk
+- [x] G1 + G3 ticked (tests green + calc clean); [ ] G2 open (`go run` not a main package)
 - [ ] F1 ticked; F2 ticked if a Dev gate was observed
 - [ ] §11 live R-* / N-* ticked (unit rows R-NF / R-EF / R-AL already covered by 2.5–2.13)
-- [x] Evidence §7 attached for unit CA-793 + sandbox clean; live run id still open
+- [x] Evidence §7 attached for run-223416 (SS-13/CP/Task-904-906/CA-950 + `go test` output); live DoD still open (V5 + G2)
 
 ## 11. Resume checkpoint — SS / CP / Task (CA-793)
 
