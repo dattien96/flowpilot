@@ -54,18 +54,29 @@ forcing exit/reopen. Vibe audits settle via `runAuditNode` direct
 
 ## Tests
 
-- `vibe_sprint_boundary_test.go` (new, additive-only): park shape + gate
-  copy + audit DONE + peek-no-consume + idempotent re-park; no-park matrix
-  (last sprint / dev / budget-isolated 8-of-10 / empty plan); ok → sprint 2
-  really starts (index + `vibe-sprint` ref + tdd/coder topology + entry
-  child spawned); ok matrix over Claude/Codex/Grok run keys; cancel → loop
-  done, index kept; empty Continue (`"continue"`, the Retry chip payload)
-  → sprint 2 with no note suffix; note Continue delivers
-  `Operator note:` into the entry child prompt (polled); double Continue
-  starts once; Stop clears the park and late ok starts nothing;
+- `vibe_sprint_boundary_test.go` (new in e521075, extended this round —
+  the prior `ReopenReparks` sealed-done half was reworked to the new
+  declined-aware contract, see file header; `allowSealed` signature churn
+  `, false` only): park shape + gate copy + audit DONE + peek-no-consume +
+  idempotent re-park; no-park matrix (last sprint / dev / budget-isolated
+  8-of-10 / empty plan); ok → sprint 2 really starts (index + `vibe-sprint`
+  ref + tdd/coder topology + entry child spawned); ok matrix over
+  Claude/Codex/Grok run keys; cancel → loop done, index kept; empty
+  Continue (`"continue"`, the Retry chip payload) → sprint 2 with no note
+  suffix; note Continue delivers `Operator note:` into the entry child
+  prompt (polled); double Continue starts once (spawn-counted); Stop
+  clears the park and late ok starts nothing (loop stays stopped, no gate);
   invalid option rejected with the park kept; pure note/prompt helpers;
   audit auto-finalize integration (reported shape: boundary, never silent
-  done); reopen re-park + sealed loop stays sealed.
+  done); reopen re-park, silent-done offer, declined/stopped/finished/
+  blocked-other/mutated-plan skips; continue Budget re-parks budget,
+  Locked stays parked, emptied-plan settles done without a decline marker;
+  cancel deferred 409 on open cohort (gate kept, no marker);
+  decline settle-refused restores the gate; gate-ok custom text reaches
+  the prompt; running-loop reopen re-derives; ActiveNode set/cleared;
+  pause/resume keep the gate; resume-confirm skips declined (+control);
+  dual-park serves boundary; skips show no gate; decline→stop→reopen
+  keeps declined.
 - `vibe_sprint_boundary_chip_test.go` (tui/app, new): `[Continue]` chip over
   3 providers + `[Stop]` kept + negative control (other reasons still
   `[Retry]`, never `[Continue]`).
@@ -98,3 +109,52 @@ points covered). CA-817/818 slicer parks + stamp-before-park. CA-791
 join/overlay + CA-783 fallback. BUG-234 advance guards. CA-793 checkpoint
 semantics (no commit added on this path). CA-801..816 resume-confirm
 semantics (separate flag, separate reason, Stop-fence intact).
+
+## Addendum 2026-09-10 — reopen offer for silently-settled runs
+
+Live reopen of run-223416 showed no Continue form. Log forensics
+(`.flowpilot/chats/sessions.ndjson`): `loop_state.status=done`,
+`vibe_sprint_index=1` of 3, audit DONE, settle summary = the vibe
+missing-key auto-finalize — the run had settled before this gate existed,
+and repark skipped sealed loops by design.
+
+Now reopening distinguishes the two done shapes via a durable
+`vibeSprintBoundaryDeclined` marker (run struct + `ProviderSessionState` +
+file-store struct/conversions + persist/restore; `ndjsonSessionRecord`
+JSON round trip plus a `sessionStateOf→record→JSON→state` chain test):
+done + audit DONE + `decideNext.Start` (tasks left + under budget) + no lock
+wait + in vibe topology + never declined + no open cohort + not pending +
+clean/own card re-offers the gate (`allowSealed=true` for the done branch,
+`false` for the default branch). Stopped stays sealed; paused defers
+(retries after unpause); an explicit decline suppresses every reopen offer
+(checked before the loop-state switch, and `maybeParkVibeResumeConfirm`
+also skips declined runs so no second card can stack); finished plans stay
+done; a loop blocked for another gate keeps its card. `continue` that
+starts the next sprint clears a stale marker; budget/lock preserve the
+marker; emptied-plan auto-settle sets `false` (stay offerable).
+`stopAgentLoop` does not touch the marker (stopped loops never re-offer
+independently — the marker's load-bearing case is decline → done →
+restart). A stale resume-confirm underneath a new boundary park is cleared
+(one gate on screen, one router).
+
+New tests: reopen-offer on silent done, skip on declined/stopped/paused/
+blocked-other/mutated-plan, decline-sets-marker, continue-clears-marker,
+JSON round trip + full conversion chain, resume-confirm skips declined
+(+control), dual-park serves boundary, skips show no gate, decline→stop→
+reopen keeps declined, pause/resume keep gate, running-loop re-derive,
+ActiveNode lifecycle, continue Budget/Locked/emptied branches, cohort-
+deferred 409 cancel, settle-refused restore, gate-ok custom text;
+reworked reopen idempotency test to the new contract.
+
+Residuals: reopening a silent-done run rewrites loop `done→blocked`
+(GateReason/ActiveNode overwritten, session persisted); the original
+auto-finalize summary is superseded, and a later decline settles `done` a
+second time with the decline summary. Repark on a clean non-done loop
+(e.g. crash with audit DONE + loop running) rewrites `running→blocked`
+the same way; only done→blocked is the live-223416 shape. A deliberate
+`done` via `flow_control` with tasks left is indistinguishable from
+silent-done and will re-offer (cancel/decline it once to silence). The
+offer reads the persisted plan/index snapshot, not live disk state. A
+sprint whose entry flow fails to resolve leaves the loop running with its
+index consumed (pre-existing take-before-start shape, now reachable via
+the offer path).
