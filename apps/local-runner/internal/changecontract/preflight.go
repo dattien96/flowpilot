@@ -51,19 +51,26 @@ type PreflightContractDraft struct {
 // never mutated after SaveFrozen persists it — an amendment is a new record
 // with Version+1 and Supersedes set to the prior ContractID.
 type FrozenContractRecord struct {
-	ContractID       string            `json:"contract_id"`
-	Version          int               `json:"version"`
-	RunID            string            `json:"run_id"`
-	PlannerStepID    string            `json:"planner_step_id,omitempty"`
-	CoderStepID      string            `json:"coder_step_id"`
-	FeatureKey       string            `json:"feature_key"`
-	Intent           string            `json:"intent"`
-	DeclaredPaths    []string          `json:"declared_paths"`
-	SourceDocID      string            `json:"source_doc_id,omitempty"`
-	BaseSHA          string            `json:"base_sha,omitempty"`
-	BaselineWorktree map[string]string `json:"baseline_worktree,omitempty"`
-	Supersedes       string            `json:"supersedes,omitempty"`
-	DeclaredAt       time.Time         `json:"declared_at"`
+	ContractID    string   `json:"contract_id"`
+	Version       int      `json:"version"`
+	RunID         string   `json:"run_id"`
+	PlannerStepID string   `json:"planner_step_id,omitempty"`
+	CoderStepID   string   `json:"coder_step_id"`
+	FeatureKey    string   `json:"feature_key"`
+	Intent        string   `json:"intent"`
+	DeclaredPaths []string `json:"declared_paths"`
+	// AllowedExtraPaths are specific files the operator explicitly Allowed
+	// on a frozen-scope drift park that are not concrete code targets
+	// (change-audit/FEATURE-KEYS.md, other *.md). They do not participate in
+	// retrieval-locus / GitNexus targeting (DeclaredPaths stays code-only)
+	// but FrozenContractScopeDrift treats them as in-scope so Allow does
+	// not 422 and the next gate pass does not re-park (BUG-366).
+	AllowedExtraPaths []string          `json:"allowed_extra_paths,omitempty"`
+	SourceDocID       string            `json:"source_doc_id,omitempty"`
+	BaseSHA           string            `json:"base_sha,omitempty"`
+	BaselineWorktree  map[string]string `json:"baseline_worktree,omitempty"`
+	Supersedes        string            `json:"supersedes,omitempty"`
+	DeclaredAt        time.Time         `json:"declared_at"`
 }
 
 // ContractStatusEvent is one append-only lifecycle transition for a frozen

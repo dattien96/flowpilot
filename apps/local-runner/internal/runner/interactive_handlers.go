@@ -1052,7 +1052,7 @@ type runHistoryItem struct {
 	LastMessage string      `json:"lastMessage,omitempty"`
 	// RunKind distinguishes normal chat runs from workflow runs so chat runs
 	// are excluded from workflow catalogs and labeled correctly in history (T-7).
-	RunKind         string `json:"runKind,omitempty"`
+	RunKind string `json:"runKind,omitempty"`
 	// Chat SSOT (CP-59 / SD-26 §5.1): chat grouping for the navigator.
 	ChatID          string `json:"chatId,omitempty"`
 	LegSeq          int    `json:"legSeq,omitempty"`
@@ -1111,8 +1111,8 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 			LastPrompt:  rs.lastPrompt,
 			LastMessage: rs.lastMessage,
 			RunKind:     rs.runKind,
-				ChatID:          rs.chatID,
-				LegSeq:          rs.legSeq,
+			ChatID:      rs.chatID,
+			LegSeq:      rs.legSeq,
 			ParentRunID: rs.parentRunID,
 			AgentName:   rs.agentName,
 			Role:        rs.role,
@@ -1657,12 +1657,15 @@ func fakeArtifacts(runID string) []Artifact {
 }
 
 // handleAmendFlow handles POST /client/workflow-runs/{runId}/agent-loop/amend.
-// Body: {"paths": ["user.go"]}. CP-55 P-4 / CP-43 F3 live trigger for
-// changecontract.AmendFrozenContract: widens every active frozen contract of
-// the run that is missing the additional paths (union semantics, mints
-// version+1 with Supersedes pointing at the prior), then resumes the parked
-// flow so the retried writer passes its scope gate. Applies only to a run
-// currently parked blocked (a scope-drift park); returns 409 otherwise.
+// Body: {"paths": ["user.go"]}. CP-55 P-4 / CP-43 F3 / Task-309 live trigger
+// for changecontract.AmendFrozenContractForAllow: widens every active frozen
+// contract of the run that is missing the additional paths (union semantics,
+// mints version+1 with Supersedes pointing at the prior). Concrete code
+// targets join DeclaredPaths; specific doc/audit files the gate reported as
+// drift (change-audit/FEATURE-KEYS.md) join AllowedExtraPaths so Allow does
+// not 422 (BUG-366). Then resumes the parked flow so the retried writer
+// passes its scope gate. Applies only to a run currently parked blocked
+// (a scope-drift park); returns 409 otherwise.
 func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("runId")
 	var body struct {
@@ -1713,7 +1716,7 @@ func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Requ
 		if err != nil || !ok {
 			continue
 		}
-		next, err := changecontract.AmendFrozenContract(store, workspace, rec, paths, time.Now().UTC())
+		next, err := changecontract.AmendFrozenContractForAllow(store, workspace, rec, paths, time.Now().UTC())
 		if err != nil {
 			writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "amend_failed", err.Error()))
 			return
