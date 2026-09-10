@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +21,10 @@ import (
 // ReopenReparks rework below is an intentional spec inversion (sealed-done
 // with tasks left changed from "never re-park" to "one Continue offer unless
 // declined"), called out in CA-819 and re-reviewed — not a silent weakening.
+// The race-hardening test commit c37fe31 also strengthened assertions inside
+// the pre-existing DoubleContinueStartsOnce / StopClearsPark and reworded two
+// failure messages in NoteReachesSprintPrompt / ContinueCarriesNoNoteForRetry
+// (strengthen-only, disclosed in CA-819 Addendum 2).
 //
 // The park/decision paths take no providerKey (Agnostic Case 1, same
 // precedent as CA-814/817/818); the ok-path is additionally matrixed over
@@ -201,14 +206,27 @@ func TestVibeSprintBoundary_OkStartsNextSprint(t *testing.T) {
 // TestVibeSprintBoundary_OkMatrixProviderKeys runs the same ok-path with a
 // run stamped per provider key. The boundary park/decision/start chain takes
 // no providerKey (verified by grep: zero providerKey references in
-// vibe_sprint_boundary.go), so all three keys must behave identically. Runs
-// are injected directly: createRun gates claude/grok on controlled runtime,
-// which the decision layer never touches.
+// vibe_sprint_boundary.go), so all three keys must behave identically. The
+// three providers are registered available so the entry child really spawns
+// (a failed spawn now rolls the take back — see StartTakenRollsBack*).
 func TestVibeSprintBoundary_OkMatrixProviderKeys(t *testing.T) {
 	providers := []ProviderKey{ProviderKeyClaude, ProviderKeyCodex, ProviderKeyGrok}
 	for _, pk := range providers {
 		t.Run(string(pk), func(t *testing.T) {
-			svc, _ := newTestServer(t)
+			reg := newProviderRegistry()
+			for _, key := range providers {
+				reg.register(ProviderRegistration{
+					Key: key, Status: ProviderStatusAvailable,
+					Capabilities: ProviderCapabilities{Streaming: true},
+					newAdapter: func() ProviderRuntimeAdapter {
+						return fakeAdapterFunc(func(_ context.Context, req TurnRequest, b TurnBridge) error {
+							b.Emit(ProviderEvent{Type: EventTurnCompleted, FinalMessage: "done"})
+							return nil
+						})
+					},
+				})
+			}
+			svc := newInteractiveService(reg, newInteractiveCatalog(), newFakeWorkflowStore())
 			runID := "run-boundary-" + string(pk)
 			nodes := []agentpack.FlowNode{
 				{ID: "validate", Behavior: "command.validate"},
@@ -701,6 +719,16 @@ func TestVibeSprintBoundary_DeclinedSurvivesFullChain(t *testing.T) {
 	if !back.VibeSprintBoundaryDeclined || back.VibeSprintIndex != 1 || len(back.VibeTaskPlan) != 3 {
 		t.Fatalf("chain lost fields: %+v", back)
 	}
+	// Final production hop: reconstructRunInternal must stamp the marker onto
+	// the revived run — the actual restart path a field drop would break.
+	svc, _ := newTestServer(t)
+	revived, apiErr := svc.reconstructRun(back)
+	if apiErr != nil {
+		t.Fatalf("reconstructRun: %v", apiErr)
+	}
+	if revived == nil || !revived.vibeSprintBoundaryDeclined || revived.vibeSprintIndex != 1 || len(revived.vibeTaskPlan) != 3 {
+		t.Fatalf("reconstruct dropped fields: %+v", revived)
+	}
 }
 
 func TestVibeSprintBoundary_ReopenSkipsBlockedOtherReason(t *testing.T) {
@@ -1128,4 +1156,503 @@ func TestVibeSprintBoundary_PauseResumeKeepGate(t *testing.T) {
 		t.Fatalf("resume must not dissolve the boundary card: %q/%q", loop.Status, loop.BlockReason)
 	}
 	mustBoundaryPending(t, svc, runID)
+}
+
+// boundaryState reads the five boundary-relevant run fields under s.mu.
+func boundaryState(t *testing.T, svc *InteractiveService, runID string) (pending bool, task string, index int, declined, inFlight bool) {
+	t.Helper()
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	rs := svc.runs[runID]
+	if rs == nil {
+		t.Fatalf("run %s missing", runID)
+	}
+	return rs.vibeSprintBoundaryPending, rs.vibeSprintBoundaryTask,
+		rs.vibeSprintIndex, rs.vibeSprintBoundaryDeclined, rs.vibeSprintStartInFlight
+}
+
+func TestVibeSprintBoundary_ParkRefusals(t *testing.T) {
+	// Race-hardening branches: a live audit park must refuse (and drop its own
+	// flag) on stopped / paused / done(allowSealed=false) / foreign blocked.
+	cases := []struct {
+		name string
+		loop AgentLoopState
+	}{
+		{"paused", AgentLoopState{Status: "paused", Cap: 3, RoundCap: 3}},
+		{"foreign blocked card", AgentLoopState{Status: "blocked", BlockReason: "plan_approval", Cap: 3, RoundCap: 3}},
+		{"stopped", AgentLoopState{Status: "stopped", Cap: 3, RoundCap: 3}},
+		{"done live (allowSealed false)", AgentLoopState{Status: "done", Cap: 3, RoundCap: 3}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _ := newTestServer(t)
+			runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+			svc.agentOrchestrator.setLoop(runID, tc.loop)
+			if svc.maybeParkVibeSprintBoundary(context.Background(), runID, "audit", false) {
+				t.Fatal("sealed/paused/foreign loop must refuse the live park")
+			}
+			pending, task, _, _, _ := boundaryState(t, svc, runID)
+			if pending || task != "" {
+				t.Fatalf("refused park must drop its own flag (pending=%t task=%q)", pending, task)
+			}
+			if loop := svc.agentOrchestrator.loopStateFor(runID); loop.Status != tc.loop.Status || loop.BlockReason != tc.loop.BlockReason {
+				t.Fatalf("loop=%q/%q want untouched %q/%q", loop.Status, loop.BlockReason, tc.loop.Status, tc.loop.BlockReason)
+			}
+		})
+	}
+}
+
+func TestVibeSprintBoundary_ParkSkipsWhileStartInFlight(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	svc.mu.Lock()
+	svc.runs[runID].vibeSprintStartInFlight = true
+	svc.mu.Unlock()
+	if svc.maybeParkVibeSprintBoundary(context.Background(), runID, "audit", false) {
+		t.Fatal("park must not race an in-flight sprint start")
+	}
+	// Reopen re-derive must skip the same window.
+	svc.maybeReparkVibeSprintBoundary(runID)
+	pending, task, _, _, inFlight := boundaryState(t, svc, runID)
+	if pending || task != "" {
+		t.Fatalf("no gate during start-in-flight (pending=%t task=%q)", pending, task)
+	}
+	if !inFlight {
+		t.Fatal("start-in-flight flag belongs to the starter, park must not clear it")
+	}
+	if loop := svc.agentOrchestrator.loopStateFor(runID); loop.Status != "running" {
+		t.Fatalf("loop=%q want running", loop.Status)
+	}
+}
+
+func TestVibeSprintBoundary_RollbackAfterSealKeepsNoGhostGate(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 2)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "stopped", Cap: 3, RoundCap: 3})
+	svc.mu.Lock()
+	svc.runs[runID].vibeSprintStartInFlight = true
+	svc.runs[runID].vibeSprintBoundaryDeclined = true
+	svc.rollbackTakenVibeSprintLocked(runID, boundaryTestPlan[1], false)
+	svc.mu.Unlock()
+	pending, task, index, declined, inFlight := boundaryState(t, svc, runID)
+	if index != 1 {
+		t.Fatalf("index=%d want 1 (consumed task given back)", index)
+	}
+	if pending || task != "" {
+		t.Fatalf("stopped run must not get a ghost gate (pending=%t task=%q)", pending, task)
+	}
+	if declined {
+		t.Fatal("rollback must restore the previous decline marker, not invent one")
+	}
+	if inFlight {
+		t.Fatal("rollback must release the start-in-flight flag")
+	}
+	if loop := svc.agentOrchestrator.loopStateFor(runID); loop.Status != "stopped" {
+		t.Fatalf("loop=%q want stopped", loop.Status)
+	}
+}
+
+func TestVibeSprintBoundary_RollbackRestoresGateWhenResumable(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 2)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "blocked", BlockReason: vibeSprintBoundaryReason, Cap: 3, RoundCap: 3})
+	svc.mu.Lock()
+	svc.runs[runID].vibeSprintStartInFlight = true
+	svc.rollbackTakenVibeSprintLocked(runID, boundaryTestPlan[1], false)
+	svc.mu.Unlock()
+	pending, task, index, _, inFlight := boundaryState(t, svc, runID)
+	if !pending || task != boundaryTestPlan[1] {
+		t.Fatalf("resumable rollback must restore the gate (pending=%t task=%q)", pending, task)
+	}
+	if index != 1 || inFlight {
+		t.Fatalf("index=%d inFlight=%t want 1/false", index, inFlight)
+	}
+}
+
+func TestVibeSprintBoundary_BudgetRefusesSealedLoop(t *testing.T) {
+	for _, sealed := range []string{"stopped", "done"} {
+		t.Run(sealed, func(t *testing.T) {
+			svc, _ := newTestServer(t)
+			runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan10, 8)
+			svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: sealed, Cap: 3, RoundCap: 3})
+			svc.parkVibeSprintBudget(runID)
+			if loop := svc.agentOrchestrator.loopStateFor(runID); loop.Status != sealed {
+				t.Fatalf("loop=%q: budget park must not overwrite %s", loop.Status, sealed)
+			}
+			svc.mu.Lock()
+			status := svc.runs[runID].status
+			svc.mu.Unlock()
+			if status == RunStatusWaitingUserApr {
+				t.Fatal("refused budget park must not flip the run to WaitingUserApr")
+			}
+		})
+	}
+}
+
+func TestVibeSprintBoundary_ChipContinueKeepsLockedPark(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	if !svc.maybeParkVibeSprintBoundary(context.Background(), runID, "audit", false) {
+		t.Fatal("must park first")
+	}
+	svc.mu.Lock()
+	svc.runs[runID].vibeAwaitingLock = true
+	svc.mu.Unlock()
+	// Blocked-chip [Retry] (resumeFlowWithFeedback) must not unblock the loop
+	// first: the Locked branch keeps the park, so running+pending must not
+	// appear (a later ok would double-start from there).
+	if _, err := svc.resumeFlowWithFeedback(runID, "continue"); err != nil {
+		t.Fatalf("chip continue: %v", err)
+	}
+	loop := svc.agentOrchestrator.loopStateFor(runID)
+	if loop.Status != "blocked" || loop.BlockReason != vibeSprintBoundaryReason {
+		t.Fatalf("loop=%q/%q want blocked/%s (locked park stays)", loop.Status, loop.BlockReason, vibeSprintBoundaryReason)
+	}
+	pending, task, index, _, _ := boundaryState(t, svc, runID)
+	if !pending || task != boundaryTestPlan[1] || index != 1 {
+		t.Fatalf("park must survive the chip (pending=%t task=%q idx=%d)", pending, task, index)
+	}
+}
+
+func TestVibeSprintBoundary_StartTakenRefusesSealed(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "stopped", Cap: 3, RoundCap: 3})
+	svc.mu.Lock()
+	svc.runs[runID].vibeSprintStartInFlight = true
+	svc.runs[runID].vibeSprintStartGen = 1
+	svc.runs[runID].vibeSprintIndex = 2 // simulate the Continue take
+	svc.mu.Unlock()
+	svc.startTakenVibeSprint(runID, boundaryTestPlan[1], boundaryTestPlan[1], false, 1)
+	_, _, index, _, inFlight := boundaryState(t, svc, runID)
+	if inFlight {
+		t.Fatal("sealed start must release the in-flight flag")
+	}
+	if index != 1 {
+		t.Fatalf("index=%d want 1 (sealed abort must give the take back)", index)
+	}
+	svc.mu.Lock()
+	ref := svc.runs[runID].chatFlowRef
+	svc.mu.Unlock()
+	if workingmode.BareFlowID(ref) == vibeSprintFlowID {
+		t.Fatalf("sealed start must not resolve the sprint flow, ref=%q", ref)
+	}
+}
+
+func TestVibeSprintBoundary_StartTakenRollsBackWhenSpawnFails(t *testing.T) {
+	// A taken sprint whose entry flow is refused (here: a lock re-armed before
+	// the spawn, the production start-blocked path) must give the task back
+	// instead of silently skipping it on the next offer.
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	svc.mu.Lock()
+	svc.runs[runID].vibeAwaitingLock = true
+	svc.runs[runID].vibeSprintStartInFlight = true
+	svc.runs[runID].vibeSprintStartGen = 1
+	svc.runs[runID].vibeSprintIndex = 2 // simulate the Continue take
+	svc.mu.Unlock()
+	svc.startTakenVibeSprint(runID, boundaryTestPlan[1], boundaryTestPlan[1], false, 1)
+	pending, task, index, _, inFlight := boundaryState(t, svc, runID)
+	if inFlight {
+		t.Fatal("failed start must release the in-flight flag")
+	}
+	if index != 1 {
+		t.Fatalf("index=%d want 1 (failed spawn must give the take back)", index)
+	}
+	if !pending || task != boundaryTestPlan[1] {
+		t.Fatalf("failed spawn must restore the gate (pending=%t task=%q)", pending, task)
+	}
+	if loop := svc.agentOrchestrator.loopStateFor(runID); loop.Status != "blocked" || loop.BlockReason != vibeSprintBoundaryReason {
+		t.Fatalf("restored gate must re-park the loop, got %q/%q", loop.Status, loop.BlockReason)
+	}
+}
+
+func TestVibeSprintBoundary_StartTakenStaleGenKeepsNewerStart(t *testing.T) {
+	// A deferred clear from an older start must never release a newer start's
+	// flag: gen mismatch means not-ours, so the stale caller no-ops entirely.
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	svc.mu.Lock()
+	svc.runs[runID].vibeSprintStartInFlight = true
+	svc.runs[runID].vibeSprintStartGen = 2 // newer start owns the flag
+	svc.runs[runID].vibeSprintIndex = 2    // and already took the sprint
+	svc.mu.Unlock()
+	kidsBefore := len(svc.agentOrchestrator.listChildren(runID))
+	svc.startTakenVibeSprint(runID, boundaryTestPlan[1], boundaryTestPlan[1], false, 1)
+	_, _, index, _, inFlight := boundaryState(t, svc, runID)
+	if !inFlight {
+		t.Fatal("stale gen must not clear the newer start's in-flight flag")
+	}
+	if index != 2 {
+		t.Fatalf("index=%d want 2 (stale start must not roll the newer take back)", index)
+	}
+	if got := len(svc.agentOrchestrator.listChildren(runID)); got != kidsBefore {
+		t.Fatalf("children=%d want %d (stale gen must not spawn a sprint)", got, kidsBefore)
+	}
+	if loop := svc.agentOrchestrator.loopStateFor(runID); loop.Status != "running" {
+		t.Fatalf("loop=%q want running (stale start must not park)", loop.Status)
+	}
+}
+
+// blockingSeedWorkflowStore pauses a start inside the step reseed so a test can
+// mutate run state while the spawn is in flight.
+type blockingSeedWorkflowStore struct {
+	WorkflowStore
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingSeedWorkflowStore) seed(runID string, rows []RuntimeWorkflowStep) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	if seeder, ok := b.WorkflowStore.(workflowRunSeeder); ok {
+		seeder.seed(runID, rows)
+	}
+}
+
+func TestVibeSprintBoundary_StartTakenDeferredClearRespectsNewerGen(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	blocking := &blockingSeedWorkflowStore{
+		WorkflowStore: svc.workflowStore,
+		entered:       make(chan struct{}),
+		release:       make(chan struct{}),
+	}
+	svc.mu.Lock()
+	svc.workflowStore = blocking
+	svc.runs[runID].vibeSprintStartInFlight = true
+	svc.runs[runID].vibeSprintStartGen = 1
+	svc.runs[runID].vibeSprintIndex = 2 // simulate the Continue take
+	svc.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		svc.startTakenVibeSprint(runID, boundaryTestPlan[1], boundaryTestPlan[1], false, 1)
+		close(done)
+	}()
+	select {
+	case <-blocking.entered:
+	case <-time.After(8 * time.Second):
+		t.Fatal("start never reached the reseed")
+	}
+	// A newer start supersedes ours while the spawn is blocked.
+	svc.mu.Lock()
+	svc.runs[runID].vibeSprintStartGen = 2
+	svc.mu.Unlock()
+	close(blocking.release)
+	select {
+	case <-done:
+	case <-time.After(8 * time.Second):
+		t.Fatal("start never returned")
+	}
+	_, _, _, _, inFlight := boundaryState(t, svc, runID)
+	if !inFlight {
+		t.Fatal("stale defer must not clear the newer start's in-flight flag")
+	}
+}
+
+func TestVibeSprintBoundary_SpawnAbortOnSealedParent(t *testing.T) {
+	// Boundary-driven spawn racing Stop: the stamp-time abort must cancel the
+	// just-minted child and surface an error instead of leaving an orphan turn.
+	svc, _ := newTestServer(t)
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+		WorkingMode: "vibe", Client: "tui",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	svc.mu.Lock()
+	svc.runs[parent.RunID].vibeSprintStartInFlight = true
+	svc.runs[parent.RunID].vibeSprintStartGen = 1
+	svc.mu.Unlock()
+	svc.agentOrchestrator.setLoop(parent.RunID, AgentLoopState{Status: "stopped", Cap: 3, RoundCap: 3})
+	_, spawnErr := svc.spawnChildRun(context.Background(), parent.RunID, SpawnAgentInput{
+		Agent: "coder", Prompt: "do it", Provider: "codex", Wait: false,
+	})
+	if spawnErr == nil {
+		t.Fatal("sealed-parent boundary spawn must abort")
+	}
+	// The minted child is cancelled and its loop stopped even though it never
+	// got registered under the parent (so listChildren is not enough here).
+	svc.mu.Lock()
+	abortedID := ""
+	for id, rs := range svc.runs {
+		if id == parent.RunID || rs == nil {
+			continue
+		}
+		if rs.status == RunStatusCancelled {
+			abortedID = id
+			break
+		}
+	}
+	svc.mu.Unlock()
+	if abortedID == "" {
+		t.Fatal("abort must cancel the minted child")
+	}
+	if loop := svc.agentOrchestrator.loopStateFor(abortedID); loop.Status != "stopped" {
+		t.Fatalf("aborted child loop=%q want stopped", loop.Status)
+	}
+}
+
+func TestVibeSprintBoundary_ChainSkipsDeclinedAndInFlight(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	svc.mu.Lock()
+	svc.runs[runID].vibeSprintBoundaryDeclined = true
+	svc.mu.Unlock()
+	svc.maybeChainVibeSprint(runID, "audit")
+	// The chain start is dispatched in a goroutine; give a reverted guard time
+	// to take the index before asserting it did not.
+	assertNoChainTake(t)
+	_, _, index, declined, _ := boundaryState(t, svc, runID)
+	if index != 1 || !declined {
+		t.Fatalf("declined run must not chain (index=%d declined=%t)", index, declined)
+	}
+
+	svc2, _ := newTestServer(t)
+	runID2 := armBoundaryRun(t, svc2, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	svc2.mu.Lock()
+	svc2.runs[runID2].vibeSprintStartInFlight = true
+	svc2.mu.Unlock()
+	svc2.maybeChainVibeSprint(runID2, "audit")
+	assertNoChainTake(t)
+	_, _, index2, _, _ := boundaryState(t, svc2, runID2)
+	if index2 != 1 {
+		t.Fatalf("in-flight start must not chain a second sprint (index=%d)", index2)
+	}
+}
+
+// assertNoChainTake waits out a maybeStartNextVibeSprint goroutine window so a
+// negative chain assertion cannot false-pass on scheduling.
+func assertNoChainTake(t *testing.T) {
+	t.Helper()
+	time.Sleep(150 * time.Millisecond)
+}
+
+func TestVibeSprintBoundary_ChainStartClearsDeclined(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	svc.mu.Lock()
+	svc.runs[runID].vibeSprintBoundaryDeclined = true
+	svc.mu.Unlock()
+	svc.maybeStartNextVibeSprint(runID)
+	_, _, index, declined, _ := boundaryState(t, svc, runID)
+	if index != 2 {
+		t.Fatalf("index=%d want 2 (direct chain start)", index)
+	}
+	if declined {
+		t.Fatal("starting a sprint must clear the stale boundary decline marker")
+	}
+}
+
+func TestVibeSprintBoundary_ResumeConfirmSkipsBoundaryPending(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := armBoundaryRun(t, svc, ProviderKeyCodex, workingmode.Vibe, boundaryTestPlan, 1)
+	if !svc.maybeParkVibeSprintBoundary(context.Background(), runID, "audit", false) {
+		t.Fatal("must park first")
+	}
+	svc.maybeParkVibeResumeConfirm(runID)
+	svc.mu.Lock()
+	confirm := svc.runs[runID].vibeResumeConfirm
+	svc.mu.Unlock()
+	if confirm {
+		t.Fatal("boundary gate must own the card; resume-confirm must not stack")
+	}
+}
+
+// armResumeConfirmRun builds a vibe run whose pendingVibeResumeFromNode
+// resolves from a DONE tdd step to a PENDING coder successor, so
+// maybeParkVibeResumeConfirm reaches its under-lock re-check.
+func armResumeConfirmRun(t *testing.T, svc *InteractiveService) string {
+	t.Helper()
+	parent, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+		WorkingMode: workingmode.Vibe, Client: "tui",
+	})
+	if err != nil {
+		t.Fatalf("createRun: %v", err)
+	}
+	runID := parent.RunID
+	nodes := []agentpack.FlowNode{
+		{ID: "tdd", Behavior: "command.validate"},
+		{ID: "coder", Behavior: "command.validate"},
+		{ID: "audit", Behavior: "artifact.audit_draft"},
+	}
+	edges := []agentpack.FlowEdge{
+		{From: "tdd", To: "coder", When: "done", Kind: "forward"},
+		{From: "coder", To: "audit", When: "done", Kind: "forward"},
+	}
+	svc.mu.Lock()
+	rs := svc.runs[runID]
+	rs.flowEngineDriven = true
+	rs.autoOrchestrate = true
+	rs.activeFlowNodes = nodes
+	rs.activeFlowEdges = edges
+	svc.mu.Unlock()
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "running", Mode: "explicit", Cap: 3, RoundCap: 3})
+	svc.reseedFlowStepRuntime(runID, nodes)
+	svc.setFlowStepStatus(context.Background(), runID, "tdd", StepStatusDone)
+	return runID
+}
+
+func TestVibeSprintBoundary_ResumeConfirmRecheckSkipsInFlightStart(t *testing.T) {
+	svc, _ := newTestServer(t)
+	runID := armResumeConfirmRun(t, svc)
+	// Positive control: with no boundary state the fixture really reaches the
+	// under-lock re-check and stamps the confirm card.
+	svc.maybeParkVibeResumeConfirm(runID)
+	svc.mu.Lock()
+	confirm := svc.runs[runID].vibeResumeConfirm
+	svc.mu.Unlock()
+	if !confirm {
+		t.Fatal("fixture must reach the resume-confirm stamp")
+	}
+	// Reset, then race a boundary start: start-in-flight must suppress the
+	// card and must not park the just-started sprint.
+	svc.mu.Lock()
+	svc.runs[runID].vibeResumeConfirm = false
+	svc.runs[runID].vibeResumeFromNode = ""
+	svc.runs[runID].vibeSprintStartInFlight = true
+	svc.mu.Unlock()
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{Status: "running", Mode: "explicit", Cap: 3, RoundCap: 3})
+	svc.maybeParkVibeResumeConfirm(runID)
+	svc.mu.Lock()
+	confirm, from := svc.runs[runID].vibeResumeConfirm, svc.runs[runID].vibeResumeFromNode
+	svc.mu.Unlock()
+	if confirm || from != "" {
+		t.Fatalf("start-in-flight must suppress resume-confirm (confirm=%t from=%q)", confirm, from)
+	}
+	if loop := svc.agentOrchestrator.loopStateFor(runID); loop.Status != "running" {
+		t.Fatalf("loop=%q must stay running (no stacked card)", loop.Status)
+	}
+}
+
+func TestVibeSprintBoundary_ResumeConfirmSkipsLiveChildren(t *testing.T) {
+	// Multi-sprint stale shape: sprint 2's steps are reseeded (tdd PENDING)
+	// but sprint 1's completed tdd child is still around, so
+	// pendingVibeResumeFromNode would resolve "tdd". A live child proves the
+	// run is advancing; reopening must not park a stale resume card over it.
+	svc, _ := newTestServer(t)
+	runID := armResumeConfirmRun(t, svc)
+	child, err := svc.createRun(StartRunInput{
+		ProjectID: "proj", ChatMode: "normal_chat", ProviderKey: ProviderKeyCodex,
+	})
+	if err != nil {
+		t.Fatalf("createRun child: %v", err)
+	}
+	svc.mu.Lock()
+	svc.runs[child.RunID].parentRunID = runID
+	svc.runs[child.RunID].status = RunStatusRunning
+	svc.mu.Unlock()
+	svc.maybeParkVibeResumeConfirm(runID)
+	svc.mu.Lock()
+	confirm := svc.runs[runID].vibeResumeConfirm
+	svc.mu.Unlock()
+	if confirm {
+		t.Fatal("a run with live child work must not get a stale resume card")
+	}
+	if loop := svc.agentOrchestrator.loopStateFor(runID); loop.Status != "running" {
+		t.Fatalf("loop=%q must stay running", loop.Status)
+	}
 }
