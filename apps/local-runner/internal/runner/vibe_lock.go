@@ -154,6 +154,13 @@ func (s *InteractiveService) resumeVibeLock(parentRunID, feedback string, snap A
 		}
 	}
 
+	if nodeID == vibeSSLockNodeID {
+		// BUG-365: the operator lock is the approval — freeze the SS list on
+		// disk so cp_writer reads `status: approved` instead of asking the
+		// operator to fix draft drift before it will write the CP.
+		stampVibeSSApproved(cwd)
+	}
+
 	s.mu.Lock()
 	if r := s.runs[parentRunID]; r != nil {
 		r.vibeAwaitingLock = false

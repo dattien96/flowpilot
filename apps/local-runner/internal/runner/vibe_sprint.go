@@ -191,13 +191,18 @@ func (s *InteractiveService) parkVibeRequirement(parentRunID, gateReason string)
 	if s == nil || s.agentOrchestrator == nil || strings.TrimSpace(parentRunID) == "" {
 		return
 	}
-	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+	snap := s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		st.Status = "blocked"
 		st.BlockReason = "requirement"
 		st.GateReason = gateReason
 		return st
 	})
 	s.parkFlowForAwaitingUser(parentRunID)
+	// BUG-365: the park must reach the client — without this graph event the
+	// TUI kept "Thinking" with no [Retry] card after the slicer parked (live
+	// run-646702). Mirrors parkVibeLock.
+	s.emitAgentGraph(parentRunID, snap)
+	go s.persistParentSession(parentRunID)
 }
 
 func (s *InteractiveService) vibeTddStepDone(parentRunID string) bool {
