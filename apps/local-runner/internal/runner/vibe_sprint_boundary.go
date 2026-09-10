@@ -521,6 +521,7 @@ func (s *InteractiveService) startTakenVibeSprint(parentRunID, prompt, takenTask
 	}
 	cwd := rs.workspaceCwd
 	s.mu.Unlock()
+	abandonActiveFrozenContractsForRun(cwd, parentRunID, "vibe-sprint next task")
 	stampVibeTaskInProgress(cwd, takenTask)
 	before := make(map[string]struct{})
 	for _, cid := range s.agentOrchestrator.listChildren(parentRunID) {

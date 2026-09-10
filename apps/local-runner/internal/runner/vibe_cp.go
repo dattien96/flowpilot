@@ -180,6 +180,7 @@ func (s *InteractiveService) maybeStartNextVibeSprint(parentRunID string) {
 	}
 	s.mu.Unlock()
 	if d.Start {
+		abandonActiveFrozenContractsForRun(cwd, parentRunID, "vibe-sprint next task")
 		stampVibeTaskInProgress(cwd, d.Task)
 	}
 	if d.Locked {

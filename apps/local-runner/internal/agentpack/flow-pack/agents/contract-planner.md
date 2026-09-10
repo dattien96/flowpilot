@@ -13,6 +13,11 @@ Read the issue/task description and only as much of the codebase as you need
 to identify the concrete files this change will touch. Do not explore broadly
 for its own sake — this step exists to bound scope, not to investigate.
 
+If the issue is (or names) a `Task-*.md` / `BUG-*.md` / `CP-*.md` path, Read
+that file first and declare **this task's** files (its DeclaredPaths / Exact
+Change). Do not copy leftover declared_paths from an earlier sprint on the
+same run.
+
 Respond with exactly one JSON object and nothing else — no prose before or
 after it, no markdown code fence around it, no explanation. The runtime parses
 your entire response as strict JSON; any extra text (including a fence) fails
