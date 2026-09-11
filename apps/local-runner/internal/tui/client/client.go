@@ -173,6 +173,10 @@ type AgentRunSummary struct {
 	// agents section sorts by spawn time so rows stop re-ordering between
 	// graph events and hydrate polls.
 	CreatedAt string `json:"createdAt,omitempty"`
+	// Vibe task this child was spawned for (BUG-369). Empty when not a sprint child.
+	VibeTaskIndex int    `json:"vibeTaskIndex,omitempty"`
+	VibeTaskTotal int    `json:"vibeTaskTotal,omitempty"`
+	VibeTaskName  string `json:"vibeTaskName,omitempty"`
 }
 
 // AgentLoopState carries loop progress metadata from the orchestrator.

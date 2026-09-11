@@ -103,53 +103,56 @@ type ndjsonSessionRecord struct {
 	ActiveFlowNodes []agentpack.FlowNode `json:"active_flow_nodes,omitempty"`
 	// ChatSubMode/ChatFlowRef persist the Chat-Mode orchestration picker
 	// selection a run was started with (BUG-263); see ProviderSessionState.
-	ChatSubMode string `json:"chat_sub_mode,omitempty"`
-	ChatFlowRef string `json:"chat_flow_ref,omitempty"`
-	WorkingMode string `json:"working_mode,omitempty"`
-	VibeAwaitingLock bool     `json:"vibe_awaiting_lock,omitempty"`
-	VibeTaskPlan     []string `json:"vibe_task_plan,omitempty"`
-	VibeSprintIndex  int      `json:"vibe_sprint_index,omitempty"`
-	VibeSprintBudget int      `json:"vibe_sprint_budget,omitempty"`
-	VibeSprintBoundaryDeclined bool `json:"vibe_sprint_boundary_declined,omitempty"`
-	VibeLockedCP     string   `json:"vibe_locked_cp,omitempty"`
-	VibeLockedSS     string   `json:"vibe_locked_ss,omitempty"`
-	VibeLockNodeID string `json:"vibe_lock_node_id,omitempty"`
-	VibeLockPath   string `json:"vibe_lock_path,omitempty"`
-	VibeCheckpointNode      string   `json:"vibe_checkpoint_node,omitempty"`
-	VibeCheckpointArtifacts []string `json:"vibe_checkpoint_artifacts,omitempty"`
+	ChatSubMode                string   `json:"chat_sub_mode,omitempty"`
+	ChatFlowRef                string   `json:"chat_flow_ref,omitempty"`
+	WorkingMode                string   `json:"working_mode,omitempty"`
+	VibeAwaitingLock           bool     `json:"vibe_awaiting_lock,omitempty"`
+	VibeTaskPlan               []string `json:"vibe_task_plan,omitempty"`
+	VibeSprintIndex            int      `json:"vibe_sprint_index,omitempty"`
+	VibeSprintBudget           int      `json:"vibe_sprint_budget,omitempty"`
+	VibeSprintBoundaryDeclined bool     `json:"vibe_sprint_boundary_declined,omitempty"`
+	VibeLockedCP               string   `json:"vibe_locked_cp,omitempty"`
+	VibeLockedSS               string   `json:"vibe_locked_ss,omitempty"`
+	VibeLockNodeID             string   `json:"vibe_lock_node_id,omitempty"`
+	VibeLockPath               string   `json:"vibe_lock_path,omitempty"`
+	VibeCheckpointNode         string   `json:"vibe_checkpoint_node,omitempty"`
+	VibeCheckpointArtifacts    []string `json:"vibe_checkpoint_artifacts,omitempty"`
+	VibeTaskIndex              int      `json:"vibe_task_index,omitempty"`
+	VibeTaskTotal              int      `json:"vibe_task_total,omitempty"`
+	VibeTaskName               string   `json:"vibe_task_name,omitempty"`
 	// FlowStartGitHead persists Task-242 tier-3 audit aggregate base (Codex review Important #3).
 	FlowStartGitHead string `json:"flow_start_git_head,omitempty"`
 	// V10 P0 / V10R: durable post-turn gate pending across restart + turn snapshot.
-	PendingFlowGateSettle           bool              `json:"pending_flow_gate_settle,omitempty"`
-	PendingFlowGateFinalMsg         string            `json:"pending_flow_gate_final_msg,omitempty"`
-	PendingFlowGateOccurredAt       string            `json:"pending_flow_gate_occurred_at,omitempty"`
-	PendingFlowGateTurnID           string            `json:"pending_flow_gate_turn_id,omitempty"`
-	TurnStartGitHead                string            `json:"turn_start_git_head,omitempty"`
-	TurnStartWorktree               map[string]string `json:"turn_start_worktree,omitempty"`
-	PendingGateChangedFiles         []string          `json:"pending_gate_changed_files,omitempty"`
-	StepID                          string            `json:"step_id,omitempty"`
-	LastTurnStepID                  string            `json:"last_turn_step_id,omitempty"`
-	PendingGateRepromptPrompt       string            `json:"pending_gate_reprompt_prompt,omitempty"`
-	PendingGateRepromptStepID       string            `json:"pending_gate_reprompt_step_id,omitempty"`
+	PendingFlowGateSettle     bool              `json:"pending_flow_gate_settle,omitempty"`
+	PendingFlowGateFinalMsg   string            `json:"pending_flow_gate_final_msg,omitempty"`
+	PendingFlowGateOccurredAt string            `json:"pending_flow_gate_occurred_at,omitempty"`
+	PendingFlowGateTurnID     string            `json:"pending_flow_gate_turn_id,omitempty"`
+	TurnStartGitHead          string            `json:"turn_start_git_head,omitempty"`
+	TurnStartWorktree         map[string]string `json:"turn_start_worktree,omitempty"`
+	PendingGateChangedFiles   []string          `json:"pending_gate_changed_files,omitempty"`
+	StepID                    string            `json:"step_id,omitempty"`
+	LastTurnStepID            string            `json:"last_turn_step_id,omitempty"`
+	PendingGateRepromptPrompt string            `json:"pending_gate_reprompt_prompt,omitempty"`
+	PendingGateRepromptStepID string            `json:"pending_gate_reprompt_step_id,omitempty"`
 	// CP-51 A1 residual: durable continue-delegate marker (see ProviderSessionState).
-	HubContinueDelegatedTurnID string   `json:"hub_continue_delegated_turn_id,omitempty"`
-	PendingGateCodePaths       []string `json:"pending_gate_code_paths,omitempty"`
-	RepromptAttempts                int               `json:"reprompt_attempts,omitempty"`
-	PendingResumePrompt             string            `json:"pending_resume_prompt,omitempty"`
-	PendingResumeStepID             string            `json:"pending_resume_step_id,omitempty"`
-	PendingResumeGen                int64             `json:"pending_resume_gen,omitempty"`
-	PendingGateRepromptGen          int64             `json:"pending_gate_reprompt_gen,omitempty"`
-	PendingResumeDeliveredGen       int64             `json:"pending_resume_delivered_gen,omitempty"`
-	PendingGateRepromptDeliveredGen int64             `json:"pending_gate_reprompt_delivered_gen,omitempty"`
-	PendingResumeAcceptedTurn       string            `json:"pending_resume_accepted_turn,omitempty"`
-	PendingGateRepromptAcceptedTurn string            `json:"pending_gate_reprompt_accepted_turn,omitempty"`
-	PendingResumeFailCount          int               `json:"pending_resume_fail_count,omitempty"`
-	PendingResumeFailGen            int64             `json:"pending_resume_fail_gen,omitempty"`
-	PendingGateRepromptFailCount    int               `json:"pending_gate_reprompt_fail_count,omitempty"`
-	PendingGateRepromptFailGen      int64             `json:"pending_gate_reprompt_fail_gen,omitempty"`
-	PendingResumeApprovalID         string            `json:"pending_resume_approval_id,omitempty"`
-	PendingResumeDecision           string            `json:"pending_resume_decision,omitempty"`
-	PendingResumeQuestionChoices    []string          `json:"pending_resume_question_choices,omitempty"`
+	HubContinueDelegatedTurnID      string   `json:"hub_continue_delegated_turn_id,omitempty"`
+	PendingGateCodePaths            []string `json:"pending_gate_code_paths,omitempty"`
+	RepromptAttempts                int      `json:"reprompt_attempts,omitempty"`
+	PendingResumePrompt             string   `json:"pending_resume_prompt,omitempty"`
+	PendingResumeStepID             string   `json:"pending_resume_step_id,omitempty"`
+	PendingResumeGen                int64    `json:"pending_resume_gen,omitempty"`
+	PendingGateRepromptGen          int64    `json:"pending_gate_reprompt_gen,omitempty"`
+	PendingResumeDeliveredGen       int64    `json:"pending_resume_delivered_gen,omitempty"`
+	PendingGateRepromptDeliveredGen int64    `json:"pending_gate_reprompt_delivered_gen,omitempty"`
+	PendingResumeAcceptedTurn       string   `json:"pending_resume_accepted_turn,omitempty"`
+	PendingGateRepromptAcceptedTurn string   `json:"pending_gate_reprompt_accepted_turn,omitempty"`
+	PendingResumeFailCount          int      `json:"pending_resume_fail_count,omitempty"`
+	PendingResumeFailGen            int64    `json:"pending_resume_fail_gen,omitempty"`
+	PendingGateRepromptFailCount    int      `json:"pending_gate_reprompt_fail_count,omitempty"`
+	PendingGateRepromptFailGen      int64    `json:"pending_gate_reprompt_fail_gen,omitempty"`
+	PendingResumeApprovalID         string   `json:"pending_resume_approval_id,omitempty"`
+	PendingResumeDecision           string   `json:"pending_resume_decision,omitempty"`
+	PendingResumeQuestionChoices    []string `json:"pending_resume_question_choices,omitempty"`
 	// BUG-288 R13-01: stall-Retry restart intent must survive LocalFileSessionStore
 	// (ProviderSessionState already had these; NDJSON record was missing them).
 	PendingRestartRunID  string `json:"pending_restart_run_id,omitempty"`
@@ -182,7 +185,7 @@ type ndjsonSessionRecord struct {
 	PendingRestartProvenanceRunID      string `json:"pending_restart_provenance_run_id,omitempty"`
 	PendingGateRepromptProvenanceRunID string `json:"pending_gate_reprompt_provenance_run_id,omitempty"`
 	// BUG-299 residual: durable YOLO posture (additive on legacy rows).
-	Yolo bool `json:"yolo,omitempty"`
+	Yolo                      bool   `json:"yolo,omitempty"`
 	LastFailedDelegateNodeID  string `json:"last_failed_delegate_node_id,omitempty"`
 	LastEscalatedInlineNodeID string `json:"last_escalated_inline_node_id,omitempty"`
 	// BUG-360: cached scout preflight draft (additive on legacy rows).
@@ -448,13 +451,16 @@ func sessionStateFromRecord(r ndjsonSessionRecord) ProviderSessionState {
 		VibeTaskPlan:                       append([]string(nil), r.VibeTaskPlan...),
 		VibeSprintIndex:                    r.VibeSprintIndex,
 		VibeSprintBudget:                   r.VibeSprintBudget,
-		VibeSprintBoundaryDeclined:       r.VibeSprintBoundaryDeclined,
+		VibeSprintBoundaryDeclined:         r.VibeSprintBoundaryDeclined,
 		VibeLockedCP:                       r.VibeLockedCP,
 		VibeLockedSS:                       r.VibeLockedSS,
 		VibeLockNodeID:                     r.VibeLockNodeID,
 		VibeLockPath:                       r.VibeLockPath,
 		VibeCheckpointNode:                 r.VibeCheckpointNode,
 		VibeCheckpointArtifacts:            append([]string(nil), r.VibeCheckpointArtifacts...),
+		VibeTaskIndex:                      r.VibeTaskIndex,
+		VibeTaskTotal:                      r.VibeTaskTotal,
+		VibeTaskName:                       r.VibeTaskName,
 		FlowStartGitHead:                   r.FlowStartGitHead,
 		PendingFlowGateSettle:              r.PendingFlowGateSettle,
 		PendingFlowGateFinalMsg:            r.PendingFlowGateFinalMsg,
@@ -917,13 +923,16 @@ func sessionRecordFrom(s ProviderSessionState) ndjsonSessionRecord {
 		VibeTaskPlan:                       append([]string(nil), s.VibeTaskPlan...),
 		VibeSprintIndex:                    s.VibeSprintIndex,
 		VibeSprintBudget:                   s.VibeSprintBudget,
-		VibeSprintBoundaryDeclined:       s.VibeSprintBoundaryDeclined,
+		VibeSprintBoundaryDeclined:         s.VibeSprintBoundaryDeclined,
 		VibeLockedCP:                       s.VibeLockedCP,
 		VibeLockedSS:                       s.VibeLockedSS,
 		VibeLockNodeID:                     s.VibeLockNodeID,
 		VibeLockPath:                       s.VibeLockPath,
 		VibeCheckpointNode:                 s.VibeCheckpointNode,
 		VibeCheckpointArtifacts:            append([]string(nil), s.VibeCheckpointArtifacts...),
+		VibeTaskIndex:                      s.VibeTaskIndex,
+		VibeTaskTotal:                      s.VibeTaskTotal,
+		VibeTaskName:                       s.VibeTaskName,
 		FlowStartGitHead:                   s.FlowStartGitHead,
 		PendingFlowGateSettle:              s.PendingFlowGateSettle,
 		PendingFlowGateFinalMsg:            s.PendingFlowGateFinalMsg,

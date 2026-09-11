@@ -617,6 +617,9 @@ func (m *AppModel) agentRunsSectionLines(maxRows int) []string {
 		if name == "" {
 			name = shortID(a.RunID)
 		}
+		if task := agentTaskDetail(a); task != "" {
+			name = name + " " + task
+		}
 		st := strings.ToUpper(strings.TrimSpace(a.Status))
 		// Same glyph language as the steps rows: spinner while running,
 		// ✓ done, x failed, - cancelled, blank pending/unknown.

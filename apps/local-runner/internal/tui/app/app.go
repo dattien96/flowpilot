@@ -4252,7 +4252,11 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			if r.RunID == m.focusRunID || (m.focusRunID == "" && (strings.EqualFold(r.Role, "main") || r.RunID == m.mainRunID())) {
 				cur = " *"
 			}
-			b.WriteString(fmt.Sprintf("  %s  %s  %s%s\n", r.AgentName, r.Status, r.RunID, cur))
+			line := fmt.Sprintf("  %s  %s  %s%s", r.AgentName, r.Status, r.RunID, cur)
+			if task := agentTaskDetail(r); task != "" {
+				line = fmt.Sprintf("  %s  %s  %s  %s%s", r.AgentName, task, r.Status, r.RunID, cur)
+			}
+			b.WriteString(line + "\n")
 		}
 		m.addMessage("system", strings.TrimRight(b.String(), "\n"), "")
 

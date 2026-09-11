@@ -173,6 +173,10 @@ type interactiveRun struct {
 	vibeLockPath            string
 	vibeCheckpointNode      string
 	vibeCheckpointArtifacts []string
+	// Stamped onto children at spawn (BUG-369); not the live parent plan index.
+	vibeTaskIndex           int
+	vibeTaskTotal           int
+	vibeTaskName            string
 	vibeSSSealed            bool
 	vibeCPSealed            bool
 	vibeParkedNodes         []agentpack.FlowNode
@@ -4085,6 +4089,9 @@ func sessionStateOf(rs *interactiveRun) ProviderSessionState {
 		VibeLockPath:                    rs.vibeLockPath,
 		VibeCheckpointNode:              rs.vibeCheckpointNode,
 		VibeCheckpointArtifacts:         append([]string(nil), rs.vibeCheckpointArtifacts...),
+		VibeTaskIndex:                   rs.vibeTaskIndex,
+		VibeTaskTotal:                   rs.vibeTaskTotal,
+		VibeTaskName:                    rs.vibeTaskName,
 		FlowStartGitHead:                rs.flowStartGitHead,
 		PendingFlowGateSettle:           rs.pendingFlowGateSettle,
 		PendingFlowGateFinalMsg:         rs.pendingFlowGateFinalMsg,
@@ -5603,6 +5610,9 @@ func (s *InteractiveService) emitLocked(rs *interactiveRun, ev ProviderEvent) Pr
 			// guard (mergeAgentRunsById), which relies on activationSeq only
 			// ever increasing to recognize a genuine reinvoke.
 			ActivationSeq: rs.activationSeq,
+			VibeTaskIndex: rs.vibeTaskIndex,
+			VibeTaskTotal: rs.vibeTaskTotal,
+			VibeTaskName:  rs.vibeTaskName,
 		})
 		shouldEmitParentGraph = shouldEmitAgentGraphForChildEvent(ev.Type)
 	}
@@ -6532,6 +6542,10 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		rs.flowCohortId = in.FlowCohortID
 		if parent := s.runs[parentRunID]; parent != nil {
 			rs.workingMode = parent.workingMode
+			idx, total, name := vibeTaskProgress(parent.vibeTaskPlan, parent.vibeSprintIndex)
+			rs.vibeTaskIndex = idx
+			rs.vibeTaskTotal = total
+			rs.vibeTaskName = name
 		}
 		// CP-51 Task-252: stamp the mint-time provenance for the trusted FCP marker
 		// embedded in this child's first prompt (Prompt was composed with
@@ -6632,6 +6646,9 @@ func (s *InteractiveService) spawnChildRun(ctx context.Context, parentRunID stri
 		ProviderKey:   string(childSnap.ProviderKey),
 		ModelName:     childModel,
 		WaitForResult: in.Wait,
+		VibeTaskIndex: childSnap.VibeTaskIndex,
+		VibeTaskTotal: childSnap.VibeTaskTotal,
+		VibeTaskName:  childSnap.VibeTaskName,
 	})
 	_ = s.agentOrchestrator.addBus(parentRunID, AgentBusMessage{ID: s.nextID("bus"), ParentRunID: parentRunID, FromRunID: parentRunID, ToRunID: handle.RunID, Kind: "handoff", Message: in.Prompt, Queued: false, OccurredAt: time.Now().UTC().Format(time.RFC3339Nano)})
 	s.emitAgentGraph(parentRunID, s.agentOrchestrator.graphSnapshot(parentRunID))

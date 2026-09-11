@@ -114,6 +114,10 @@ export interface AgentRunSummary {
    * Zero / absent for first activation and for spawn-lifecycle children (BUG-Rnd2).
    */
   activationSeq?: number;
+  /** Vibe task this child was spawned for (BUG-369). */
+  vibeTaskIndex?: number;
+  vibeTaskTotal?: number;
+  vibeTaskName?: string;
 }
 
 
