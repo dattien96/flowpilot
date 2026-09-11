@@ -29,7 +29,7 @@
 ### Current Ask
 
 - Unit §2 **done** 2026-09-09 (`TestCA793_*` + reconstruct lock green). M1–M3 done.
-- Live **run-678326** (Mac) Branch V done. Windows **run-225468** §11: R-SS-K + R-SS-D **live PASS** 2026-09-11 (Task-327: delete SS → reopen/Continue → `ingest_reader` regen SS → SS Preview & Lock with draft). F1/N-REJ PASS. Next: **R-CP-K** (Continue lock → `cp_writer` → `/exit` → reopen). F2 + R-CP-D* / R-TK-* / N-* still open. V7/V8 unexercised.
+- Live **run-678326** (Mac) Branch V done. Windows **run-225468** R-SS-K + R-SS-D live PASS (Task-327). F1/N-REJ PASS. **Task-328 / CA-828** landed for R-CP-K (Resume → task_slicer) + R-CP-D1 (CP delete → rewrite `cp_writer`, skip ss_lock) — rebuild TUI then live re-prove. F2 + R-TK-* / N-* still open. V7/V8 unexercised.
 
 ### Key Decisions
 

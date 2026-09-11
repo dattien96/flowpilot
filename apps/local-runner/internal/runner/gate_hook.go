@@ -1871,6 +1871,15 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 			if s.restartVibeIngestForMissingSS(runID) {
 				return nil
 			}
+			// Task-328: cp_writer→done has no forward successor; OK joins
+			// task_slicer when CP exists, or rewrites CP when it was deleted.
+			if from == vibeCpWriterNodeID {
+				if s.restartVibeCpWriterForMissingCP(runID) {
+					return nil
+				}
+				s.maybeStartVibeCpIngest(runID)
+				return nil
+			}
 			if from == "" || from == "tdd" {
 				s.maybeResumeVibeCoderAfterTdd(runID)
 			} else {
