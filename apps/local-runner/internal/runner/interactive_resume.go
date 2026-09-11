@@ -1317,6 +1317,9 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// unless declined; finished stays done).
 		s.maybeReparkVibeSprintBoundary(rs.id)
 		s.maybeParkVibeResumeConfirm(rs.id)
+		// Task-327 / CP-60 O-6: after demote + loop restore, missing SS while
+		// parked on ss_lock clears the zombie lock card and restarts ingest.
+		s.maybeRecoverMissingVibeSSLock(rs.id)
 	}
 	return rs, nil
 }

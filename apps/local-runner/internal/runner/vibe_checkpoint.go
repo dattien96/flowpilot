@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,4 +165,61 @@ func applyVibeCheckpointFromDisk(rs *interactiveRun) {
 	rs.vibeCheckpointNode = node
 	rs.vibeCheckpointArtifacts = arts
 
+}
+
+// vibeSSLockArtifactsPresent reports whether the workspace still has SS files
+// an ss_lock park can lock. Empty cwd is treated as present/unknown so
+// reconstruct fixtures without a sandbox keep CA-770 behavior (Task-327 T-1).
+func vibeSSLockArtifactsPresent(cwd string, rs *interactiveRun) bool {
+	if strings.TrimSpace(cwd) == "" {
+		return true
+	}
+	arts := collectVibeArtifactsForNode(cwd, vibeSSLockNodeID, rs)
+	return len(arts) > 0 && vibeAllFilesExist(cwd, arts)
+}
+
+// maybeRecoverMissingVibeSSLock closes CP-60 O-6 / R-SS-D residual (Task-327):
+// parked on ss_lock but SS artifacts deleted → clear lock park and restart
+// vibe-ingest from ingest_reader. No-op when SS still exists or cwd unknown.
+func (s *InteractiveService) maybeRecoverMissingVibeSSLock(parentRunID string) bool {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || rs.workingMode != workingmode.Vibe || !rs.vibeAwaitingLock {
+		s.mu.Unlock()
+		return false
+	}
+	nodeID := strings.TrimSpace(rs.vibeLockNodeID)
+	if nodeID != "" && nodeID != vibeSSLockNodeID {
+		s.mu.Unlock()
+		return false
+	}
+	if vibeSSLockArtifactsPresent(rs.workspaceCwd, rs) {
+		s.mu.Unlock()
+		return false
+	}
+	prompt := strings.TrimSpace(rs.lastPrompt)
+	if prompt == "" {
+		prompt = strings.TrimSpace(rs.lastFullPrompt)
+	}
+	if prompt == "" {
+		prompt = "[vibe] SS artifacts missing; restarting vibe-ingest from ingest_reader (Task-327)."
+	}
+	rs.vibeAwaitingLock = false
+	rs.vibeLockNodeID = ""
+	rs.vibeLockPath = ""
+	rs.vibeLockedSS = ""
+	rs.vibeSSSealed = false
+	s.mu.Unlock()
+
+	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		st.Status = "running"
+		st.BlockReason = ""
+		st.GateReason = ""
+		st.ActiveNode = ""
+		return st
+	})
+	s.setFlowStepStatus(context.Background(), parentRunID, vibeSSLockNodeID, StepStatusCanceled)
+	s.startResolvedFlowFromNode(context.Background(), parentRunID, workingmode.PackPrefix+vibeIngestFlowID, prompt, "ingest_reader")
+	go s.persistParentSession(parentRunID)
+	return true
 }

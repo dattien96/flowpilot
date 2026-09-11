@@ -128,6 +128,12 @@ func (s *InteractiveService) resumeVibeLock(parentRunID, feedback string, snap A
 	}
 	s.mu.Unlock()
 
+	// Task-327 / CP-60 O-6: Continue must not stamp/advance when SS is gone —
+	// recover by restarting ingest_reader instead of locking a missing draft.
+	if nodeID == vibeSSLockNodeID && s.maybeRecoverMissingVibeSSLock(parentRunID) {
+		return s.agentGraphSnapshot(parentRunID), true
+	}
+
 	fb := strings.TrimSpace(feedback)
 	if fb == "continue" || fb == "lock" {
 		fb = ""
