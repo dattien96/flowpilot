@@ -288,6 +288,9 @@ func (s *InteractiveService) restartVibeCpWriterForMissingCP(parentRunID string)
 	rs.vibeResumeConfirm = false
 	rs.vibeResumeFromNode = ""
 	rs.chatFlowRef = workingmode.PackPrefix + vibeIngestFlowID
+	// R-TK-D2 live: stale vibeSprintIndex survived CP rewrite → chip task 2/3
+	// with Task-904 still draft. Clear sprint cursor with the old plan.
+	clearVibeSprintCursor(rs)
 	s.mu.Unlock()
 
 	// Stopped/done loops must be unsealed so cp_writer can spawn again.
@@ -437,14 +440,27 @@ func (s *InteractiveService) restartVibeTaskSlicerForMissingTasks(parentRunID st
 
 	s.mu.Lock()
 	if r := s.runs[parentRunID]; r != nil {
-		r.vibeTaskPlan = nil
-		r.vibeSprintIndex = 0
+		clearVibeSprintCursor(r)
 		r.vibeResumeConfirm = false
 		r.vibeResumeFromNode = ""
 	}
 	s.mu.Unlock()
 	s.forceStartVibeTaskSlicer(parentRunID)
 	return true
+}
+
+// clearVibeSprintCursor drops plan + index + boundary so a later slicer /
+// first sprint starts at task 1/N (stale-index fix after R-TK-D2).
+func clearVibeSprintCursor(rs *interactiveRun) {
+	if rs == nil {
+		return
+	}
+	rs.vibeTaskPlan = nil
+	rs.vibeSprintIndex = 0
+	rs.vibeSprintBoundaryPending = false
+	rs.vibeSprintBoundaryTask = ""
+	rs.vibeSprintBoundaryDeclined = false
+	rs.vibeSprintStartInFlight = false
 }
 
 // forceStartVibeTaskSlicer joins/restarts task_slicer from the latest CP.
@@ -469,6 +485,7 @@ func (s *InteractiveService) forceStartVibeTaskSlicer(parentRunID string) {
 	rs.chatFlowRef = workingmode.PackPrefix + vibeCpIngestFlowID
 	rs.autoOrchestrate = true
 	rs.flowEngineDriven = true
+	clearVibeSprintCursor(rs)
 	if rs.status == RunStatusCancelled || rs.status == RunStatusFailed || rs.status == RunStatusCompleted {
 		rs.status = RunStatusRunning
 		rs.agentStatus = string(RunStatusRunning)
@@ -635,12 +652,17 @@ func (s *InteractiveService) onVibeCpNodeDone(parentRunID, completedNodeID strin
 		s.mu.Lock()
 		var plan []string
 		if rs := s.runs[parentRunID]; rs != nil {
-			if len(rs.vibeTaskPlan) == 0 {
-				if collected := collectVibeSprintPlan(rs.workspaceCwd); len(collected) > 0 {
-					rs.vibeTaskPlan = collected
-				} else {
-					rs.vibeTaskPlan = []string{"sprint-0"}
-				}
+			// Disk Tasks after slicer are authoritative. Always reload and
+			// reset cursor — keeping a non-empty stale plan skipped the
+			// reload and left vibeSprintIndex>0 (chip task 2/3, 904 draft).
+			if collected := collectVibeSprintPlan(rs.workspaceCwd); len(collected) > 0 {
+				rs.vibeTaskPlan = collected
+				rs.vibeSprintIndex = 0
+				rs.vibeSprintBoundaryPending = false
+				rs.vibeSprintBoundaryTask = ""
+				rs.vibeSprintStartInFlight = false
+			} else if len(rs.vibeTaskPlan) == 0 {
+				rs.vibeTaskPlan = []string{"sprint-0"}
 			}
 			plan = append([]string(nil), rs.vibeTaskPlan...)
 		}
