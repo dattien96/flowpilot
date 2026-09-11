@@ -236,6 +236,21 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 			}
 			return &Violation{Rule: rule, Detail: detail}
 		}
+
+	case "task_or_bug_doc_missing_dod":
+		// Task-330 (CP-47 P-2): every Task-*/BUG-*.md the AI wrote this turn
+		// must carry a Definition of Done section with at least one checkbox.
+		// Same WrittenPaths reasoning as "code_changed" above — only files the
+		// AI actually wrote trigger the check. MissingDodDocs reads each doc
+		// from disk under WorkspaceCwd (Task-223 pattern) and skips unreadable
+		// files gracefully, so a deleted/renamed doc never panics the gate.
+		missing := MissingDodDocs(tr.WorkspaceCwd, tr.WrittenPaths)
+		if len(missing) > 0 {
+			return &Violation{
+				Rule:   rule,
+				Detail: "Task/BUG document(s) without a Definition of Done checklist: " + strings.Join(missing, ", ") + " — add a '## Definition of Done' section with at least one '- [ ]' acceptance checkbox",
+			}
+		}
 	}
 	return nil
 }

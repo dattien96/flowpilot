@@ -12,7 +12,7 @@
 - Created: `2026-07-14`
 - Last Updated: `2026-09-11`
 - Parent Documents: [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md)
-- Child Documents: [Task-330: DOD Parser và Cổng r-dod-present](../../08-Task/todo/Task-330-DOD-Parser-And-Present-Gate.md), [Task-331: Cổng r-dod-complete và Tích hợp Runner](../../08-Task/todo/Task-331-DOD-Complete-Gate-And-Runner-Wiring.md)
+- Child Documents: [Task-330: DOD Parser và Cổng r-dod-present](../../08-Task/done/Task-330-DOD-Parser-And-Present-Gate.md), [Task-331: Cổng r-dod-complete và Tích hợp Runner](../../08-Task/todo/Task-331-DOD-Complete-Gate-And-Runner-Wiring.md)
 - Related Documents: [SS-13: Hợp đồng tài liệu cho AI](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [CP-43: Change Contract và Canonical Intent Signature](./CP-43-Change-Contract-And-Canonical-Intent-Signature.md)
 - Replaces: `None`
 - Tags: `context-regression-engine, flow-gate, flowgate, definition-of-done, dod, task, bugfix, r-dod`

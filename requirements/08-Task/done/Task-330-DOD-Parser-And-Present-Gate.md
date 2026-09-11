@@ -5,7 +5,7 @@
 - Document ID: `Task-330`
 - Title: `Xây dựng bộ phân tích cú pháp DOD và Cổng r-dod-present`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-11`
@@ -109,19 +109,26 @@ Các flow lập kế hoạch (`task-harness`, `bug-plan-harness`, `vibe-sprint`)
 
 ## 8. Completion Notes
 
-- Trạng thái: `draft` (chờ triển khai).
+- Trạng thái: `done` (2026-09-11).
+- Triển khai: `dod.go` (`DodStatus`, `ParseDefinitionOfDone`, `MissingDodDocs`), rule `r-dod-present` trong `DefaultRules()`, case `task_or_bug_doc_missing_dod` trong `checkRule`, mở rộng `DocScopeRuleIDs()`.
+- Tests: 10/10 test signature §10 + 4 test bổ sung (merge, workspace rỗng, registered, MissingDodDocs) — `go test ./internal/flowgate/...` xanh toàn bộ.
+- GitNexus impact: `DefaultRules` (8 impacted, LOW), `checkRule` (4 impacted, LOW).
+- Ghi nhận minh bạch: test manifest cũ `TestDefaultRules` được mở rộng append-only thêm `"r-dod-present"` theo đúng convention repo (Task-233 / CP-53-Task-277 / Task-260 đều đã mở rộng manifest khi thêm rule — xem comment trong test và git history). Không test hành vi nào bị sửa.
+- Review: PASS (0 blocking). Non-blocking đã ghi nhận để hardening sau: fence code block chưa được bỏ qua khi parse DOD; giới hạn 64KB/line của bufio.Scanner; chưa guard `..`/symlink traversal (đọc-only nên không exploit được); unreadable file skip im lặng (không có logging infra trong flowgate).
+- Provider parity: provider-agnostic (pure Go, 0 LLM, không đụng adapter nào của Claude/Codex/Grok).
+- Prior CA claims giữ nguyên: CA-695, CA-442, CA-441 (flowgate gate behavior) — không đảo bacing claim nào.
 
 ---
 
 ## 9. Definition of Done
 
-- [ ] Struct `DodStatus{Present bool, Total int, Checked int, OpenItems []string}` được định nghĩa chuẩn trong `dod.go`.
-- [ ] Hàm `ParseDefinitionOfDone(content string)` xử lý chính xác cả chữ hoa lẫn chữ thường (`Definition of Done`, `DoD`), đếm đúng checkbox `[ ]` và `[x]`/`[X]`.
-- [ ] Section rỗng hoặc chỉ có text không có checkbox trả về `Present = false` hoặc `Total = 0`.
-- [ ] Khai báo quy tắc `r-dod-present` trong `flowgate.DefaultRules()` với `Action = "reprompt"` và `Trigger = "task_or_bug_doc_missing_dod"`.
-- [ ] `evaluate.go` kích hoạt vi phạm `r-dod-present` khi phát hiện file `Task-*` hoặc `BUG-*` trong `WrittenPaths` có `DodStatus.Total == 0`.
-- [ ] Cũ tests không bị chỉnh sửa và chạy `go test ./internal/flowgate/...` hoàn toàn xanh.
-- [ ] `MergeDefaultRules` tự động bổ sung `r-dod-present` vào `flow-rules.json` của workspace cũ.
+- [x] Struct `DodStatus{Present bool, Total int, Checked int, OpenItems []string}` được định nghĩa chuẩn trong `dod.go`.
+- [x] Hàm `ParseDefinitionOfDone(content string)` xử lý chính xác cả chữ hoa lẫn chữ thường (`Definition of Done`, `DoD`), đếm đúng checkbox `[ ]` và `[x]`/`[X]`.
+- [x] Section rỗng hoặc chỉ có text không có checkbox trả về `Present = false` hoặc `Total = 0`.
+- [x] Khai báo quy tắc `r-dod-present` trong `flowgate.DefaultRules()` với `Action = "reprompt"` và `Trigger = "task_or_bug_doc_missing_dod"`.
+- [x] `evaluate.go` kích hoạt vi phạm `r-dod-present` khi phát hiện file `Task-*` hoặc `BUG-*` trong `WrittenPaths` có `DodStatus.Total == 0`.
+- [x] Cũ tests không bị chỉnh sửa và chạy `go test ./internal/flowgate/...` hoàn toàn xanh. (Ngoại lệ minh bạch: manifest `TestDefaultRules` mở rộng append-only theo convention repo — xem Completion Notes.)
+- [x] `MergeDefaultRules` tự động bổ sung `r-dod-present` vào `flow-rules.json` của workspace cũ.
 
 ---
 

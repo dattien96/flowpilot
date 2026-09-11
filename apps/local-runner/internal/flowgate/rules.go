@@ -129,8 +129,10 @@ type Violation struct {
 
 // DocScopeRuleIDs are Task-242 tier-1 rules evaluated on flow-mode coding
 // children when the turn produced a non-empty git diff (cheap pure checks).
+// CP-47 §5 extends the family with r-dod-present (Task-330): a cheap
+// deterministic markdown check over Task-*/BUG-* docs in WrittenPaths.
 func DocScopeRuleIDs() []string {
-	return []string{"r-ca", "r-fk", "r-bug", "r-task", "r-contract", "r-scope"}
+	return []string{"r-ca", "r-fk", "r-bug", "r-task", "r-contract", "r-scope", "r-dod-present"}
 }
 
 // TestRuleIDs are Task-242 tier-2 rules (expensive suite / oracle). Owned by
@@ -209,6 +211,10 @@ func DefaultRules() []Rule {
 		{ID: "r-newtest", Scope: "step", Trigger: "production_change_no_new_test", RequiredOutput: "new_additive_test_file", Action: "reprompt", Enabled: true},
 		// Task-260: pre-existing test file edited without human approval (hard enforce additive-tests-only).
 		{ID: "r-additive-tests", Scope: "step", Trigger: "pre_existing_test_edited", RequiredOutput: "additive_tests_only_or_user_approved_legacy_edit", Action: "reprompt", Enabled: true},
+		// Task-330 (CP-47 P-2): a Task-*/BUG-* document written this turn must
+		// carry a Definition of Done section with at least one checkbox (SS-13
+		// §10). Reprompt-only — nagging never hard-stops the flow.
+		{ID: "r-dod-present", Scope: "step", Trigger: "task_or_bug_doc_missing_dod", RequiredOutput: "definition_of_done_section", Action: "reprompt", Enabled: true},
 	}
 }
 

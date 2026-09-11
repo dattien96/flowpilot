@@ -12,7 +12,7 @@
 - Last Updated: `2026-09-11`
 - Parent Documents: [CP-47: Cổng kiểm duyệt Definition-of-Done (r-dod)](../../07-Coding-Plan/todo/CP-47-DOD-Gate.md)
 - Child Documents: `None`
-- Related Documents: [Task-330: DOD Parser và Cổng r-dod-present](./Task-330-DOD-Parser-And-Present-Gate.md), [SS-13: Hợp đồng tài liệu cho AI](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
+- Related Documents: [Task-330: DOD Parser và Cổng r-dod-present](../done/Task-330-DOD-Parser-And-Present-Gate.md), [SS-13: Hợp đồng tài liệu cho AI](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
 - Replaces: `None`
 - Tags: `flowgate, r-dod, r-dod-complete, runner-wiring, block-or-explained`
 
@@ -69,7 +69,7 @@ Khóa chặt tính kỷ luật khi nghiệm thu công việc: Ngăn chặn tri�
 ## 2. Parent Links
 
 - Coding Plan: [CP-47 P-3, P-4, P-5](../../07-Coding-Plan/todo/CP-47-DOD-Gate.md).
-- Sibling Task: [Task-330](./Task-330-DOD-Parser-And-Present-Gate.md).
+- Sibling Task: [Task-330](../done/Task-330-DOD-Parser-And-Present-Gate.md).
 
 ---
 
