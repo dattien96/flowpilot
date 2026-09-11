@@ -5,12 +5,12 @@
 - Document ID: `Task-336`
 - Title: `Thăng cấp bài học thành Skill và Đồng bộ Skillpack`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-11`
 - Last Updated: `2026-09-11`
-- Parent Documents: [CP-23: Bộ trí tuệ vận hành tích hợp](../../07-Coding-Plan/todo/CP-23-Auto-Learn-To-Skill.md)
+- Parent Documents: [CP-23: Bộ trí tuệ vận hành tích hợp](../../07-Coding-Plan/done/CP-23-Auto-Learn-To-Skill.md)
 - Child Documents: `None`
 - Related Documents: [Task-335: Bộ phát hiện lệch hướng Drift Detector](../done/Task-335-Drift-Wrong-Way-Detector-And-Correction-Ladder.md), [Task-334: Context Resolver và Budget Packer](../done/Task-334-Context-Resolver-And-Budget-Packer.md), `skillpack` package
 - Replaces: `None`
@@ -48,7 +48,7 @@
 
 ### Source Refs
 
-- `requirements/07-Coding-Plan/todo/CP-23-Auto-Learn-To-Skill.md` (Phase 3).
+- `requirements/07-Coding-Plan/done/CP-23-Auto-Learn-To-Skill.md` (Phase 3).
 - `apps/local-runner/internal/skillpack/install.go` (Hạ tầng cài đặt skillpack).
 - `apps/local-runner/internal/skillpack/flow-pack/` (Cây thư mục skillpack nền tảng).
 
@@ -67,7 +67,7 @@ Biến FlowPilot thành một trợ lý AI có khả năng tự tích lũy kinh 
 
 ## 2. Parent Links
 
-- Coding Plan: [CP-23 Phase 3](../../07-Coding-Plan/todo/CP-23-Auto-Learn-To-Skill.md).
+- Coding Plan: [CP-23 Phase 3](../../07-Coding-Plan/done/CP-23-Auto-Learn-To-Skill.md).
 - Upstream Tasks: [Task-334](../done/Task-334-Context-Resolver-And-Budget-Packer.md), [Task-335](../done/Task-335-Drift-Wrong-Way-Detector-And-Correction-Ladder.md).
 
 ---
@@ -115,22 +115,30 @@ Hiện tại, nếu AI mắc một lỗi đặc thù trong framework (ví dụ c
 
 ## 8. Completion Notes
 
-- Trạng thái: `draft` (chờ triển khai).
+- Trạng thái: `done` (2026-09-11).
+- Triển khai: package `internal/skilllearn/` — candidate.go (LessonCandidate/SkillExportOptions/AggregateDriftEvents: dedupe (RunID,TurnID) keep-first theo ghi nhận review CA-838, pattern key = TriggeredSignals chuẩn hoá, threshold clamp ≥2, deterministic; PromoteCandidateToSkill), promoter.go (PromoterService: List/Upsert/UpdateCandidate — Edit trước duyệt /ApproveCandidateAndExport/RejectCandidate; store JSON atomic tmp+rename tại `.flowpilot/workflow_lesson_candidates.json`; corrupt file → error không panic), exporter.go (RenderSkillMarkdownWithSlug: YAML frontmatter name+description + # Title + Core Rules/Anti-Pattern/Preferred Behavior/Example; ghi `.agents/.claude/.grok/skills/<group>/<slug>/`; core flow-pack; duplicate slug → -v2/-v3 không ghi đè; DetectCoreSkillConflict + ConflictError đến khi Force=true — file không bao giờ được ghi khi có conflict chưa force; CompactRuleCard 3-5 dòng cho Budget Packer).
+- skillpack/install.go: thêm `InstallFromRoot(targetRepoDir, platform, flowPackRoot)` (+72/−0 thuần additive) — tái dùng platformGroups/installRoots của Install, không bao giờ ghi đè skill đích có sẵn; là đường gọi thật cho test discoverability (embedded go:embed Install không thấy temp root).
+- T-1 được enforced: không có đường đi nào export mà không qua Approve/Force; transition candidate→approved→promoted; export fail giữ `approved` (không mất dữ liệu); rejected/promoted là trạng thái kết thúc.
+- Tests: 9/9 test signature §10 + 9 test bổ sung + TestSkillPromotion_EndToEnd_CandidateToSkill = 18/18 pass; skillpack/driftdetect/promptpacker vẫn xanh.
+- GitNexus: Install không bị sửa (additive 72/0), callers của Install = 9 test nội bộ → LOW.
+- Review PASS, 7 non-blocking hardening cho tương lai (khi có caller thật): frontmatter slug lệch giữa các provider dir khi mixed state; Group chưa slug-validate (chống `..` traversal — local tool nên thấp); upsert key chưa gồm ProjectID (store per-workspace nên vô hại, gộp key khi có multi-project); store single-writer assumption (cần lock khi wire TUI); conflict heuristic over-warn các lesson củng cố (fail-safe cố ý); SKILL.md chưa có `version:` frontmatter (không ảnh hưởng InstallFromRoot stat-based).
+- Provider parity: provider-agnostic (deterministic Go, 0 LLM; double-call equality test pin determinism).
+- Prior CA claims giữ nguyên: CA-837 (CompactRuleCard tương thích `## Core Rules` heading mà CompactSkillCard nhận), CA-838 (dedupe note đã implement + test), CA-833..CA-836.
 
 ---
 
 ## 9. Definition of Done
 
-- [ ] Struct `LessonCandidate` lưu đầy đủ thông tin: `Title`, `Group`, `TriggerPattern`, `AntiPattern`, `PreferredBehavior`, `RepeatCount`, `Status`.
-- [ ] Logic gom nhóm phát hiện chính xác mẫu lỗi lặp lại $\ge 2$ lần để kích hoạt đề xuất candidate.
-- [ ] Người dùng có quyền: Chấp thuận (`Approve`), Chỉnh sửa nội dung (`Edit`), hoặc Từ chối (`Reject`).
-- [ ] File `SKILL.md` sinh ra tuân thủ nghiêm ngặt định dạng chuẩn: Có YAML frontmatter (`name`, `description`), tiêu đề `#`, phần quy tắc và ví dụ.
-- [ ] Hỗ trợ ghi đúng vào thư mục `.agents/skills/`, `.claude/skills/`, `.grok/skills/` của target project.
-- [ ] Hỗ trợ ghi vào kho `internal/skillpack/flow-pack/<group>/` khi chọn chế độ Core Platform.
-- [ ] Chạy `go test ./internal/skilllearn/...` pass 100%.
-- [ ] API phê duyệt (`ApproveCandidateAndExport`) và từ chối (`RejectCandidate`) hoạt động chính xác.
-- [ ] Skill sau khi xuất bản và chạy `skillpack.Install()` thực sự xuất hiện trong thư mục `.agents/skills/` của target project.
-- [ ] Kiểm tra conflict: Không cho phép tạo skill mâu thuẫn với `safe-fix-contract` hay `additive-tests-only` mà không có cảnh báo.
+- [x] Struct `LessonCandidate` lưu đầy đủ thông tin: `Title`, `Group`, `TriggerPattern`, `AntiPattern`, `PreferredBehavior`, `RepeatCount`, `Status`.
+- [x] Logic gom nhóm phát hiện chính xác mẫu lỗi lặp lại $\ge 2$ lần để kích hoạt đề xuất candidate.
+- [x] Người dùng có quyền: Chấp thuận (`Approve`), Chỉnh sửa nội dung (`Edit`), hoặc Từ chối (`Reject`).
+- [x] File `SKILL.md` sinh ra tuân thủ nghiêm ngặt định dạng chuẩn: Có YAML frontmatter (`name`, `description`), tiêu đề `#`, phần quy tắc và ví dụ.
+- [x] Hỗ trợ ghi đúng vào thư mục `.agents/skills/`, `.claude/skills/`, `.grok/skills/` của target project.
+- [x] Hỗ trợ ghi vào kho `internal/skillpack/flow-pack/<group>/` khi chọn chế độ Core Platform.
+- [x] Chạy `go test ./internal/skilllearn/...` pass 100%. (18/18.)
+- [x] API phê duyệt (`ApproveCandidateAndExport`) và từ chối (`RejectCandidate`) hoạt động chính xác.
+- [x] Skill sau khi xuất bản và chạy `skillpack.Install()` thực sự xuất hiện trong thư mục `.agents/skills/` của target project. (Qua `InstallFromRoot` — đường gọi thật, không mock; embedded Install không đọc được flow-pack root ngoài build.)
+- [x] Kiểm tra conflict: Không cho phép tạo skill mâu thuẫn với `safe-fix-contract` hay `additive-tests-only` mà không có cảnh báo. (DetectCoreSkillConflict + ConflictError đến khi Force.)
 
 ---
 

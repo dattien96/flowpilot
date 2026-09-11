@@ -6,13 +6,13 @@
 - Title: `Bộ trí tuệ vận hành tích hợp (Kiểm soát Context, Bắt lệch hướng và Tự học Skill)`
 - Feature Keys: `runtime-intelligence, context-budget, drift-detector, auto-skill`
 - Phase: `coding_plan`
-- Status: `approved`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-07-10`
 - Last Updated: `2026-09-11`
 - Parent Documents: [SS-09: Context Management](../../05-System-Specs/SS-09-Context-Management.md), [SD-10: Memory and Prompt Architecture](../../06-System-Tech-Design/SD-10-Memory-And-Prompt-Architecture.md)
-- Child Documents: [Task-334: Context Resolver và Bộ đóng gói Budget Packer](../../08-Task/todo/Task-334-Context-Resolver-And-Budget-Packer.md), [Task-335: Bộ phát hiện lệch hướng Drift Detector và Thang ứng phó](../../08-Task/todo/Task-335-Drift-Wrong-Way-Detector-And-Correction-Ladder.md), [Task-336: Thăng cấp bài học thành Skill và Đồng bộ Skillpack](../../08-Task/todo/Task-336-Mistake-To-Skill-Promotion-And-Skillpack-Sync.md)
+- Child Documents: [Task-334: Context Resolver và Bộ đóng gói Budget Packer](../../08-Task/done/Task-334-Context-Resolver-And-Budget-Packer.md), [Task-335: Bộ phát hiện lệch hướng Drift Detector và Thang ứng phó](../../08-Task/done/Task-335-Drift-Wrong-Way-Detector-And-Correction-Ladder.md), [Task-336: Thăng cấp bài học thành Skill và Đồng bộ Skillpack](../../08-Task/done/Task-336-Mistake-To-Skill-Promotion-And-Skillpack-Sync.md)
 - Related Documents: [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [CP-60: Vibe Working Mode](../done/CP-60-Vibe-Working-Mode.md)
 - Supersedes: `CP-24` (Wrong-Way Detect), `CP-25` (Auto Size-Down Context), `CP-26` (Auto Model Reasoning), `CP-39` (Token Usage)
 - Tags: `runtime-intelligence, context-budget, drift-detector, auto-skill, skillpack`
@@ -178,9 +178,9 @@ graph TD
 
 ## 9. Tiêu chí hoàn thành tổng thể
 
-- [ ] Phase 1: Prompt đầu ra luôn nằm trong ngân sách token quy định.
-- [ ] Phase 2: Drift score phát hiện chính xác ≥ 3 loại tín hiệu lệch hướng.
-- [ ] Phase 3: Lesson Candidate sinh ra sau 2+ lỗi cùng pattern.
-- [ ] Phase 3: Skill xuất bản thành công vào cả target project và core skillpack.
-- [ ] Tất cả unit tests của 3 package mới pass.
-- [ ] Không làm gãy các flow và gate hiện có.
+- [x] Phase 1: Prompt đầu ra luôn nằm trong ngân sách token quy định.
+- [x] Phase 2: Drift score phát hiện chính xác ≥ 3 loại tín hiệu lệch hướng.
+- [x] Phase 3: Lesson Candidate sinh ra sau 2+ lỗi cùng pattern.
+- [x] Phase 3: Skill xuất bản thành công vào cả target project và core skillpack.
+- [x] Tất cả unit tests của 3 package mới pass.
+- [x] Không làm gãy các flow và gate hiện có.

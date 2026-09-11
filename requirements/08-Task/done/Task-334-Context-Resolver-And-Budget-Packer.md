@@ -10,7 +10,7 @@
 - Reviewers: `Operator`
 - Created: `2026-09-11`
 - Last Updated: `2026-09-11`
-- Parent Documents: [CP-23: Bộ trí tuệ vận hành tích hợp](../../07-Coding-Plan/todo/CP-23-Auto-Learn-To-Skill.md)
+- Parent Documents: [CP-23: Bộ trí tuệ vận hành tích hợp](../../07-Coding-Plan/done/CP-23-Auto-Learn-To-Skill.md)
 - Child Documents: `None`
 - Related Documents: [SD-10: Memory and Prompt Architecture](../../06-System-Tech-Design/SD-10-Memory-And-Prompt-Architecture.md), [Task-335: Bộ phát hiện lệch hướng Drift Detector](./Task-335-Drift-Wrong-Way-Detector-And-Correction-Ladder.md)
 - Replaces: `None`
@@ -48,7 +48,7 @@
 
 ### Source Refs
 
-- `requirements/07-Coding-Plan/todo/CP-23-Auto-Learn-To-Skill.md` (Phase 1).
+- `requirements/07-Coding-Plan/done/CP-23-Auto-Learn-To-Skill.md` (Phase 1).
 - `requirements/06-System-Tech-Design/SD-10-Memory-And-Prompt-Architecture.md`.
 
 ### Open Questions
@@ -66,7 +66,7 @@ Tối ưu hóa triệt để kích thước prompt gửi tới AI, loại bỏ t
 
 ## 2. Parent Links
 
-- Coding Plan: [CP-23 Phase 1](../../07-Coding-Plan/todo/CP-23-Auto-Learn-To-Skill.md).
+- Coding Plan: [CP-23 Phase 1](../../07-Coding-Plan/done/CP-23-Auto-Learn-To-Skill.md).
 
 ---
 
