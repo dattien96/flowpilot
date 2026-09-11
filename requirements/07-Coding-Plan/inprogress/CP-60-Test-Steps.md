@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-08`
-- Last Updated: `2026-09-11`
+- Last Updated: `2026-09-11` (R-SS-D live tick)
 - Parent Documents: [CP-60: Vibe Working Mode](./CP-60-Vibe-Working-Mode.md)
 - Child Documents: `None`
 - Related Documents: [SS-18](../../05-System-Specs/SS-18-Vibe-Working-Mode.md), [SD-24](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md), [Task-326](../../08-Task/inprogress/Task-326-Vibe-Working-Mode-Switch-And-Flow-Family-Gate.md), [KR-004](../../reviews/KR-004-cp60-vibe-working-mode-impl-rev2.md), [CP-61-Test-Steps](../done/CP-61-Test-Steps.md)
@@ -29,7 +29,7 @@
 ### Current Ask
 
 - Unit §2 **done** 2026-09-09 (`TestCA793_*` + reconstruct lock green). M1–M3 done.
-- Live **run-678326** (`vibe-ingest`, grok-4.5, Mac `/Users/tiendat/Desktop/BE/gate-sandbox`) **done** 2026-09-11: three sprints (`task 3/3`), `snake/` has `game.go` `input.go` `main.go` `ui.go` + tests, `go test ./snake` **44 PASS**, `tdd-signatures.md` on disk, `snake-mvp` in FEATURE-KEYS.md. V5 + G2 ticked from this run. V7/V8 still unexercised. F1 PASS (invalid_flow_ref). §11 R-SS-K PASS; R-SS-D demote PASS + **Task-327** closes O-6 auto-resume (unit). Re-prove R-SS-D live spawn after Task-327 binary.
+- Live **run-678326** (Mac) Branch V done. Windows **run-225468** §11: R-SS-K + R-SS-D **live PASS** 2026-09-11 (Task-327: delete SS → reopen/Continue → `ingest_reader` regen SS → SS Preview & Lock with draft). F1/N-REJ PASS. Next: **R-CP-K** (Continue lock → `cp_writer` → `/exit` → reopen). F2 + R-CP-D* / R-TK-* / N-* still open. V7/V8 unexercised.
 
 ### Key Decisions
 
@@ -190,8 +190,8 @@ V5 + G1 + G2 + G3 = live Branch V pass for this bed.
 
 ## 7. Evidence to paste when ticking
 
-- TUI run id / flow id (`vibe-ingest`): **run-678326 done** 2026-09-11 (Mac sandbox; `task 3/3`; synthesis `submit_review_outcome → approved`). Also historical **run-223416 done** 2026-09-10 (CA-791 graph: `ingest_reader` → `ss_converter` → `ss_validator` → `ss_lock` WAITING→DONE → `cp_writer` → `task_slicer` → sprint1). Gate inventory 2026-09-11: md scope-drift parks (`FEATURE-KEYS.md`, `tdd-signatures.md`) then ask_user "FlowPilot failure" — fixed BUG-370. Composer leftover `[stop]` after done — fixed BUG-371. No Dev `1/2/3` modal. Historical: run-213752 (old `sprint_slicer`), run-211980, run-213333. **Do not resume run-678326.**
-- SS lock (historical): `ss_lock` `WAITING_USER_APPROVAL` then DONE; drafts `SS-14` / `SS-15` / `SS-16` — **removed 2026-09-09** so the next ingest starts clean. Only `FORMAT-REFERENCE-SS.md` remains under `05-System-Specs/`.
+- TUI run id / flow id (`vibe-ingest`): **run-678326 done** 2026-09-11 (Mac; Branch V). Windows **run-225468** 2026-09-11: §11 R-SS-K + R-SS-D live (Task-327/CA-827 — delete SS → ingest regen → SS Preview with draft). Historical **run-223416**. Gate inventory: BUG-370/371 fixed. **Do not resume run-678326.**
+- SS lock: run-225468 after R-SS-D regen shows `SS Preview & Lock` with draft; disk `SS-01/02/03-snake-*.md` + `SPRINT-PLAN` + FORMAT. Historical drafts SS-14/15/16 removed 2026-09-09.
 - `sprint_plan` (historical): `SPRINT-PLAN-snake-mvp.md` on run-213752. New binary expects 3 `Task-*.md` after `task_slicer`, not that file.
 - Path of `tdd-signatures.md`: **present** 2026-09-11 at `requirements/.flowpilot/vibe/tdd-signatures.md` (2.2K) on Mac sandbox. 2026-09-10 was missing (sprint1-only).
 - `go test ./snake` output: 2026-09-11 `go test ./snake -count=1` → **44 PASS**. Historical 2026-09-10 9 PASS (sprint1).
@@ -231,8 +231,8 @@ V5 + G1 + G2 + G3 = live Branch V pass for this bed.
 - [x] V5 ticked on run-678326 (`task 3/3`, `tdd-signatures.md` on disk, validate/synthesis/audit DONE)
 - [x] G1 + G2 + G3 ticked (44 PASS; `main.go` playable CLI; calc clean)
 - [x] F1 ticked; [ ] F2 ticked if a Dev gate was observed
-- [x] §11 R-SS-K / R-SS-D (demote + Task-327 unit spawn); [ ] remaining live R-CP-* / R-TK-* / N-*
-- [x] Evidence §7 attached for run-678326 (snake MVP files + `go test` 44 PASS) and historical run-223416
+- [x] §11 R-SS-K + R-SS-D **live** (Task-327 O-6); [ ] R-CP-* / R-TK-* / N-* (except N-REJ)
+- [x] Evidence §7 attached for run-678326 + run-225468 R-SS-D live regen
 
 ## 11. Resume checkpoint — SS / CP / Task (CA-793)
 
@@ -249,7 +249,7 @@ Stop with `/exit` (or kill TUI). Reopen `just chat-dev <sandbox>`. Open **the sa
 | ID | Stop after | Disk after stop | Pass (demote) | Spawn next (residual) | Tick |
 | --- | --- | --- | --- | --- | --- |
 | R-SS-K | `ss_lock` | SS remains | checkpoint `ss_lock` | `cp_writer` | [x] run-225468 reopen kept `ss_lock` WAITING + lock card |
-| R-SS-D | `ss_lock` | **delete** `requirements/05-System-Specs/SS-*.md` (not FORMAT) | checkpoint **empty** | `ingest_reader` | [x] demote empty (run-225468 sessions); spawn `ingest_reader` = **Task-327 / CA-827** (unit `TestTask327_*`); re-tick live on next binary |
+| R-SS-D | `ss_lock` | **delete** `requirements/05-System-Specs/SS-*.md` (not FORMAT) | checkpoint **empty** | `ingest_reader` | [x] live run-225468 + Task-327: delete SS → reopen → ingest regen → SS Preview again (`SS-01/02/03` + draft card); unit `TestTask327_*` / CA-827 |
 | R-CP-K | `cp_writer` | CP + SS remain | checkpoint `cp_writer` | `task_slicer` | [ ] |
 | R-CP-D1 | `cp_writer` | **delete CP**, SS remains | demote `ss_lock` | `cp_writer` | [ ] |
 | R-CP-D2 | `cp_writer` | **delete CP + SS** | empty | ingest | [ ] |
