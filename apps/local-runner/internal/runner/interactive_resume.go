@@ -884,24 +884,24 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// through the lastOpencodeTurnSessionID fallback in
 		// turnResumeProviderSessionID.
 		lastOpencodeTurnSessionID: st.ProviderSessionID,
-		providerAccountID:      st.ProviderAccountID,
-		workspaceCwd:           st.WorkingDirectory,
-		runKind:                st.RunKind,
-		status:                 normalizedStatus,
-		createdAt:              st.StartedAt,
-		updatedAt:              updatedAt,
-		lastPrompt:             st.LastPrompt,
-		lastFullPrompt:         st.LastFullPrompt,
-		lastMessage:            st.LastMessage,
-		sourceMachineID:        st.SourceMachineID,
-		sourceRunID:            st.SourceRunID,
-		restoredFrom:           st.RestoredFrom,
-		syncStatus:             st.SyncStatus,
-		syncUpdatedAt:          st.SyncUpdatedAt,
-		changeType:             st.ChangeType,
-		sourceDocID:            st.SourceDocID,
-		turnCount:              st.TurnCount,
-		subs:                   map[int64]chan ProviderEvent{},
+		providerAccountID:         st.ProviderAccountID,
+		workspaceCwd:              st.WorkingDirectory,
+		runKind:                   st.RunKind,
+		status:                    normalizedStatus,
+		createdAt:                 st.StartedAt,
+		updatedAt:                 updatedAt,
+		lastPrompt:                st.LastPrompt,
+		lastFullPrompt:            st.LastFullPrompt,
+		lastMessage:               st.LastMessage,
+		sourceMachineID:           st.SourceMachineID,
+		sourceRunID:               st.SourceRunID,
+		restoredFrom:              st.RestoredFrom,
+		syncStatus:                st.SyncStatus,
+		syncUpdatedAt:             st.SyncUpdatedAt,
+		changeType:                st.ChangeType,
+		sourceDocID:               st.SourceDocID,
+		turnCount:                 st.TurnCount,
+		subs:                      map[int64]chan ProviderEvent{},
 		// BUG-288 R16-P0: restore durable idempotency keys (not empty map).
 		idempotency:                     copyStringMap(st.IdempotencyKeys),
 		resumedFromDisk:                 true,
@@ -950,7 +950,22 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		activeFlowEdges:                 append([]agentpack.FlowEdge(nil), st.ActiveFlowEdges...),
 		activeFlowNodes:                 append([]agentpack.FlowNode(nil), st.ActiveFlowNodes...),
 		chatSubMode:                     st.ChatSubMode,
-		chatFlowRef:                     st.ChatFlowRef,
+		chatFlowRef:                     inferPackFlowRefFromNodes(st.ActiveFlowNodes, st.ChatFlowRef),
+		workingMode:                     st.WorkingMode,
+		vibeAwaitingLock:                st.VibeAwaitingLock,
+		vibeTaskPlan:                    append([]string(nil), st.VibeTaskPlan...),
+		vibeSprintIndex:                 st.VibeSprintIndex,
+		vibeSprintBudget:                st.VibeSprintBudget,
+		vibeSprintBoundaryDeclined:      st.VibeSprintBoundaryDeclined,
+		vibeLockedCP:                    st.VibeLockedCP,
+		vibeLockedSS:                    st.VibeLockedSS,
+		vibeLockNodeID:                  st.VibeLockNodeID,
+		vibeLockPath:                    st.VibeLockPath,
+		vibeCheckpointNode:              st.VibeCheckpointNode,
+		vibeCheckpointArtifacts:         append([]string(nil), st.VibeCheckpointArtifacts...),
+		vibeTaskIndex:                   st.VibeTaskIndex,
+		vibeTaskTotal:                   st.VibeTaskTotal,
+		vibeTaskName:                    st.VibeTaskName,
 		flowStartGitHead:                st.FlowStartGitHead,
 		pendingRestartRunID:             st.PendingRestartRunID,
 		pendingRestartPrompt:            st.PendingRestartPrompt,
@@ -980,6 +995,7 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	if len(rs.activeFlowNodes) > 0 {
 		rs.flowEngineDriven = true
 	}
+	applyVibeCheckpointFromDisk(rs)
 	// BUG-299 residual (run-35329): sessionStateOf historically omitted yolo, so
 	// rehydrate always left rs.yolo=false. Force Flow/Workflow/flow-engine runs
 	// back to true independent of the stored zero value; chat keeps st.Yolo.
@@ -1160,16 +1176,11 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	// runs can reach here, seeding this fake single step would blow away the seeder's real
 	// per-step list for that run (fakeWorkflowStore.seed replaces wholesale) — workflow runs
 	// keep whatever step-runtime state their store already has instead.
-	if st.RunKind == "chat" {
-		if seeder, ok := s.workflowStore.(workflowRunSeeder); ok {
-			seeder.seed(rs.id, []RuntimeWorkflowStep{{
-				ID:               "chat-" + rs.id,
-				StepType:         "chat",
-				Status:           StepStatusPending,
-				RequiresApproval: false,
-			}})
-		}
-	} else if len(rs.activeFlowNodes) > 0 {
+	// Vibe (and other chat-mode flows) keep RunKind=chat but carry
+	// activeFlowNodes. Seeding the synthetic chat-* row first used to wipe
+	// the real timeline (live run-220036: /open showed vibe-cp-ingest and
+	// "(no steps)"). Prefer persisted nodes whenever they exist.
+	if len(rs.activeFlowNodes) > 0 {
 		// BUG-178: the local runner's step-runtime store is in-memory, so a
 		// flow run's step list is empty after a server restart and its history
 		// timeline showed "No step-runtime data for this run yet". Rebuild it
@@ -1241,6 +1252,15 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 			}
 		}
 		s.seedFlowStepRuntimeRows(rs.id, rows)
+	} else if st.RunKind == "chat" {
+		if seeder, ok := s.workflowStore.(workflowRunSeeder); ok {
+			seeder.seed(rs.id, []RuntimeWorkflowStep{{
+				ID:               "chat-" + rs.id,
+				StepType:         "chat",
+				Status:           StepStatusPending,
+				RequiresApproval: false,
+			}})
+		}
 	}
 	// Restore flow-engine loop state so a restarted or Drive-synced run resumes
 	// at the correct round/cap/mode (Task-085 T-4).
@@ -1283,6 +1303,52 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 	// V10R4 P1: durable gate-reprompt / approval-resume intents after restart.
 	if !rs.suppressAutoGateResume {
 		s.flushDurableTurnIntents(rs.id)
+	}
+	if rs.parentRunID == "" && !rs.suppressAutoGateResume {
+		go s.maybeSettleVibeOwnerDebate(rs.id)
+		s.healVibeFailedForReopenPark(rs.id)
+		// Boundary first: it owns the next decision when a sprint just
+		// finished (resume-confirm no-ops while boundary is pending, but
+		// the reverse is not true — parking resume first would steal the
+		// card and strand the boundary offer).
+		// Sprint boundary is memory-only: re-derive it from audit DONE +
+		// remaining plan so reopening a boundary-parked run shows the
+		// Continue form again (stopped stays stopped; silent-done re-offers
+		// unless declined; finished stays done).
+		s.maybeReparkVibeSprintBoundary(rs.id)
+		// Clamp stale sprint cursor when earlier Task files are still draft
+		// (BUG-372: reopen kept chip task 2/3 while Task-904 was draft).
+		s.mu.Lock()
+		clamped := reconcileVibeSprintCursor(rs)
+		s.mu.Unlock()
+		if clamped {
+			s.agentOrchestrator.mutateLoop(rs.id, func(st AgentLoopState) AgentLoopState {
+				s.mu.Lock()
+				r := s.runs[rs.id]
+				s.mu.Unlock()
+				return attachVibeTaskProgressLocked(r, st)
+			})
+			go s.persistParentSession(rs.id)
+		}
+
+		// Task-327/328/329 O-6 order: SS-missing → CP-missing → Task-missing
+		// → generic node resume → CP→task_slicer join (cp_writer→done has no
+		// forward successor for pendingVibeResumeFromNode).
+		// R-TK-D3: call restartVibeIngest directly (not awaiting-gated) so a
+		// vibe-sprint reopen after delete SS+CP+Task does not park Resume→tdd.
+		switch {
+		case s.restartVibeIngestForMissingSS(rs.id):
+		case s.restartVibeCpWriterForMissingCP(rs.id):
+		case s.restartVibeTaskSlicerForMissingTasks(rs.id):
+		default:
+			s.maybeParkVibeResumeConfirm(rs.id)
+			s.mu.Lock()
+			parked := s.runs[rs.id] != nil && s.runs[rs.id].vibeResumeConfirm
+			s.mu.Unlock()
+			if !parked {
+				s.maybeParkVibeCpJoinResume(rs.id)
+			}
+		}
 	}
 	return rs, nil
 }

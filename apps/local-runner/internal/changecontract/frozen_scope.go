@@ -109,6 +109,22 @@ func IsChangeAuditPath(p string) bool {
 	return strings.HasPrefix(base, "CA-") && strings.HasSuffix(base, ".md")
 }
 
+// IsMarkdownDocPath reports whether p is a markdown/docs path the frozen
+// coder-gate must ignore (BUG-370, live run-678326): any *.md (FEATURE-KEYS.md,
+// tdd-signatures.md, SS/CP/Task notes) plus anything under requirements/.
+// Deliberately NOT the rest of .flowpilot/** — CA-427 Finding 2:
+// .flowpilot/settings/flow-rules.json must still count as drift.
+func IsMarkdownDocPath(p string) bool {
+	np := normalizeScopePath(p)
+	if np == "" {
+		return false
+	}
+	if strings.HasSuffix(strings.ToLower(np), ".md") {
+		return true
+	}
+	return strings.HasPrefix(np, "requirements/")
+}
+
 // PendingCanonicalStoreBookkeepingPaths returns the exact repo-relative paths
 // PendingCanonicalStore (pending_head.go, CP-55 P-5) writes into the
 // workspace it is rooted at — the same idiom as FrozenStoreBookkeepingPaths,
@@ -212,8 +228,9 @@ func IsToolOwnedScaffoldPath(p string) bool {
 }
 
 // FrozenContractScopeDrift returns the paths in writtenPaths that are not
-// among rec.DeclaredPaths — what a Flow writer touched beyond what its
-// frozen contract authorized. Both sides are forward-slash normalized,
+// among rec.DeclaredPaths or rec.AllowedExtraPaths — what a Flow writer
+// touched beyond what its frozen contract authorized. Both sides are
+// forward-slash normalized,
 // path.Clean'd and trimmed before comparison (matching NormalizeDeclaredCodePaths'
 // own normalization, so a written path reported in a different but
 // equivalent form — "./src/calc.go" vs "src/calc.go" — does not
@@ -221,9 +238,14 @@ func IsToolOwnedScaffoldPath(p string) bool {
 // result means the writer stayed entirely within its declared scope.
 // Deduplicated and sorted for a deterministic, reproducible report.
 func FrozenContractScopeDrift(rec FrozenContractRecord, writtenPaths []string) []string {
-	declared := make(map[string]bool, len(rec.DeclaredPaths))
+	declared := make(map[string]bool, len(rec.DeclaredPaths)+len(rec.AllowedExtraPaths))
 	for _, p := range rec.DeclaredPaths {
 		declared[normalizeScopePath(p)] = true
+	}
+	for _, p := range rec.AllowedExtraPaths {
+		if np := normalizeScopePath(p); np != "" {
+			declared[np] = true
+		}
 	}
 	seen := make(map[string]bool, len(writtenPaths))
 	var drift []string
@@ -283,6 +305,7 @@ func normalizeScopePaths(paths []string) []string {
 // returns the highest-VERSION active record, so saving the successor first
 // means even a crash between the two calls still resolves correctly).
 func AmendFrozenContract(store *FrozenStore, workspace string, existing FrozenContractRecord, additionalPaths []string, now time.Time) (FrozenContractRecord, error) {
+	var concrete []string
 	for _, p := range additionalPaths {
 		trimmed := strings.TrimSpace(p)
 		if trimmed == "" {
@@ -291,16 +314,59 @@ func AmendFrozenContract(store *FrozenStore, workspace string, existing FrozenCo
 		if !IsConcreteCodeTarget(normalizeScopePath(trimmed)) {
 			return FrozenContractRecord{}, fmt.Errorf("changecontract: amendment path %q is not a concrete code target and cannot widen scope", trimmed)
 		}
+		concrete = append(concrete, trimmed)
 	}
+	return amendFrozenContractUnion(store, workspace, existing, concrete, nil, now)
+}
 
-	existingNormalized := normalizeScopePaths(existing.DeclaredPaths)
-	union := append([]string(nil), existing.DeclaredPaths...)
-	union = append(union, additionalPaths...)
-	normalized, err := NormalizeDeclaredCodePaths(workspace, union)
-	if err != nil {
-		return FrozenContractRecord{}, err
+// AmendFrozenContractForAllow is the Task-309 Allow path: widen frozen scope
+// to match files the coder actually wrote. Concrete code targets go into
+// DeclaredPaths (same as AmendFrozenContract). Specific doc/audit files the
+// gate reported as drift (change-audit/FEATURE-KEYS.md, other *.md) go into
+// AllowedExtraPaths so retrieval-locus stays code-only while the next gate
+// pass does not re-park. Globs, flags, and extension-less buckets still
+// return the CA-427 Finding 5 explicit error — they cannot be a git-diff
+// written file the operator is Allowing.
+func AmendFrozenContractForAllow(store *FrozenStore, workspace string, existing FrozenContractRecord, additionalPaths []string, now time.Time) (FrozenContractRecord, error) {
+	var concrete, extras []string
+	for _, p := range additionalPaths {
+		trimmed := strings.TrimSpace(p)
+		if trimmed == "" {
+			continue
+		}
+		np := normalizeScopePath(trimmed)
+		if IsConcreteCodeTarget(np) {
+			concrete = append(concrete, trimmed)
+			continue
+		}
+		if IsUserAllowableDriftPath(np) {
+			cleaned, err := normalizeAllowableExtraPath(workspace, trimmed)
+			if err != nil {
+				return FrozenContractRecord{}, err
+			}
+			if cleaned != "" {
+				extras = append(extras, cleaned)
+			}
+			continue
+		}
+		return FrozenContractRecord{}, fmt.Errorf("changecontract: amendment path %q is not a concrete code target and cannot widen scope", trimmed)
 	}
-	if sameStringSet(normalized, existingNormalized) {
+	return amendFrozenContractUnion(store, workspace, existing, concrete, extras, now)
+}
+
+func amendFrozenContractUnion(store *FrozenStore, workspace string, existing FrozenContractRecord, additionalConcrete, additionalExtras []string, now time.Time) (FrozenContractRecord, error) {
+	existingNormalized := uniqueNormalizedPaths(existing.DeclaredPaths)
+	newConcrete := []string(nil)
+	if len(additionalConcrete) > 0 {
+		added, err := NormalizeDeclaredCodePaths(workspace, additionalConcrete)
+		if err != nil {
+			return FrozenContractRecord{}, err
+		}
+		newConcrete = added
+	}
+	normalized := uniqueNormalizedPaths(append(append([]string(nil), existingNormalized...), newConcrete...))
+	extraUnion := uniqueNormalizedPaths(append(append([]string(nil), existing.AllowedExtraPaths...), additionalExtras...))
+	if sameStringSet(normalized, existingNormalized) && sameStringSet(extraUnion, uniqueNormalizedPaths(existing.AllowedExtraPaths)) {
 		return existing, nil
 	}
 
@@ -310,9 +376,22 @@ func AmendFrozenContract(store *FrozenStore, workspace string, existing FrozenCo
 		DeclaredPaths: normalized,
 		SourceDocID:   existing.SourceDocID,
 	}
-	amended, err := FreezeContract(workspace, existing.RunID, existing.PlannerStepID, existing.CoderStepID, draft, existing.BaseSHA, existing.BaselineWorktree, existing.ContractID, existing.Version+1, now)
-	if err != nil {
-		return FrozenContractRecord{}, err
+	id := ComputeContractID(existing.RunID, existing.CoderStepID, existing.Version+1, draft, existing.BaseSHA, existing.BaselineWorktree)
+	amended := FrozenContractRecord{
+		ContractID:        id,
+		Version:           existing.Version + 1,
+		RunID:             existing.RunID,
+		PlannerStepID:     existing.PlannerStepID,
+		CoderStepID:       existing.CoderStepID,
+		FeatureKey:        draft.FeatureKey,
+		Intent:            draft.Intent,
+		DeclaredPaths:     normalized,
+		AllowedExtraPaths: extraUnion,
+		SourceDocID:       draft.SourceDocID,
+		BaseSHA:           existing.BaseSHA,
+		BaselineWorktree:  existing.BaselineWorktree,
+		Supersedes:        existing.ContractID,
+		DeclaredAt:        now,
 	}
 	if err := store.SaveFrozen(amended); err != nil {
 		return FrozenContractRecord{}, err
@@ -321,6 +400,52 @@ func AmendFrozenContract(store *FrozenStore, workspace string, existing FrozenCo
 		return FrozenContractRecord{}, err
 	}
 	return amended, nil
+}
+
+func uniqueNormalizedPaths(paths []string) []string {
+	seen := make(map[string]bool, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		np := normalizeScopePath(p)
+		if np == "" || seen[np] {
+			continue
+		}
+		seen[np] = true
+		out = append(out, np)
+	}
+	sort.Strings(out)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeAllowableExtraPath(workspace, raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	forward := strings.ReplaceAll(trimmed, `\`, `/`)
+	native := filepath.Clean(filepath.FromSlash(forward))
+	if filepath.IsAbs(native) {
+		if strings.TrimSpace(workspace) == "" {
+			return "", fmt.Errorf("changecontract: declared path %q is absolute but no workspace was given", raw)
+		}
+		absWorkspace, err := filepath.Abs(workspace)
+		if err != nil {
+			return "", fmt.Errorf("changecontract: resolve workspace %q: %w", workspace, err)
+		}
+		rel, err := filepath.Rel(absWorkspace, native)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("changecontract: amendment path %q escapes workspace %q", raw, workspace)
+		}
+		native = rel
+	}
+	p := path.Clean(filepath.ToSlash(native))
+	if p == "" || p == "." {
+		return "", nil
+	}
+	if p == ".." || strings.HasPrefix(p, "../") {
+		return "", fmt.Errorf("changecontract: amendment path %q escapes workspace", raw)
+	}
+	return p, nil
 }
 
 func sameStringSet(a, b []string) bool {

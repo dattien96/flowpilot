@@ -307,6 +307,8 @@ export function ChatInput(): React.ReactElement {
   const selectedModel = useStore((s) => s.selectedModel);
   const reasoningEffort = useStore((s) => s.reasoningEffort);
   const yoloMode = useStore((s) => s.yoloMode);
+  const workingMode = useStore((s) => s.workingMode);
+  const setWorkingMode = useStore((s) => s.setWorkingMode);
   const grokYoloPostureLoading = useStore((s) => s.grokYoloPostureLoading);
   const loadSkills = useStore((s) => s.loadSkills);
   const client = useStore((s) => s.client);
@@ -1011,6 +1013,24 @@ export function ChatInput(): React.ReactElement {
                       </span>
                       <span className="yolo-toggle-label">
                         {grokYoloPostureLoading ? "…" : yoloMode ? "On" : "Off"}
+                      </span>
+                    </button>
+                  </div>
+                  <div className="chat-controller-switch chat-controller-switch-top">
+                    <span className="chat-controller-label">Mode</span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={workingMode === "vibe"}
+                      className={`yolo-toggle ${workingMode === "vibe" ? "active" : ""}`}
+                      onClick={() => setWorkingMode(workingMode === "vibe" ? "dev" : "vibe")}
+                      disabled={blocked}
+                    >
+                      <span className="yolo-toggle-track" aria-hidden="true">
+                        <span className="yolo-toggle-thumb" />
+                      </span>
+                      <span className="yolo-toggle-label">
+                        {workingMode === "vibe" ? "Vibe" : "Normal"}
                       </span>
                     </button>
                   </div>

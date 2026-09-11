@@ -12,7 +12,7 @@
 - Last Updated: `2026-09-07`
 - Parent Documents: [CP-35 (nguồn gốc flow gate, P-4/P-5)](../), [CP-51 (durable turn dispatch)](./CP-51-PhaseAB-Timeline-And-Verification-Log.md), [CP-50 / CP-43 (context sources)](../)
 - Child Documents: [Task-272](../../08-Task/done/Task-272-CP53-Gate-Observability-Metrics.md) (P-6), [Task-273](../../08-Task/done/Task-273-CP53-Gate-Blind-Baseline-Fail-Closed.md) (P-1), [Task-274](../../08-Task/done/Task-274-CP53-Review-Loop-Done-Requires-Machine-Verdict.md) (P-2), [Task-275](../../08-Task/done/Task-275-CP53-Dogfood-Gate-Check-Hooks.md) (P-3), [Task-276](../../08-Task/done/Task-276-CP53-Waiver-Ledger-With-Expiry.md) (P-4), [Task-277](../../08-Task/done/Task-277-CP53-R-Newtest-Reprompt-Rule.md) (P-5), [CP-53-Test-Steps](../inprogress/CP-53-Test-Steps.md)
-- Related Documents: `Task-155 (r-reg decision card), Task-156 (baseline), Task-223/225/242/247 (artifact + tier gates), BUG-288, BUG-289, SD-21 (change contract)`, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md), [CP-43-52-53-54-note](../note/CP-43-52-53-54-note.md), [CP-61](../inprogress/CP-61-Harness-Done-Verdict-Gate.md) (takes over P-2)
+- Related Documents: `Task-155 (r-reg decision card), Task-156 (baseline), Task-223/225/242/247 (artifact + tier gates), BUG-288, BUG-289, SD-21 (change contract)`, [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md), [CP-43-52-53-54-note](../note/CP-43-52-53-54-note.md), [CP-61](./CP-61-Harness-Done-Verdict-Gate.md) (takes over P-2)
 - Replaces: `<không>`
 - Tags: `flow-gate, review-loop, verifier, regression, flowgate, quality`
 
@@ -29,7 +29,7 @@
 
 ### Current Ask
 
-- **Closed 2026-09-07:** Task-272…277 filed `done` (CA-437…442). Harness leftover of P-2 → [CP-61](../inprogress/CP-61-Harness-Done-Verdict-Gate.md). See §12.
+- **Closed 2026-09-07:** Task-272…277 filed `done` (CA-437…442). Harness leftover of P-2 → [CP-61](./CP-61-Harness-Done-Verdict-Gate.md) (`done` 2026-09-08, P-1 CA-757; P-2 asymmetry deferred). See §12.
 - Outcome cuối: flow-coding loop **fail closed** — regression hoặc "done" không kiểm chứng được phải **dừng turn**; repo FlowPilot tự dogfood oracle.
 
 ### Key Decisions
@@ -241,5 +241,5 @@ Companion: [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.m
 ## 12. Closure note (2026-09-07)
 
 - Task-272…277 filed `done` 2026-09-07 (CA-437…442). Review-loop `synthesis→done` = Task-274 / CA-439.
-- Harness leftover of P-2 (3 hubs + reviewer asymmetry + test-steps §P-2) → [CP-61](../inprogress/CP-61-Harness-Done-Verdict-Gate.md). P-1 landed CA-757 (`plan_synthesis` / `synthesis` / `cp_synthesis`).
+- Harness leftover of P-2 (3 hubs + reviewer asymmetry + test-steps §P-2) → [CP-61](./CP-61-Harness-Done-Verdict-Gate.md) (`done` 2026-09-08). P-1 landed CA-757 (`plan_synthesis` / `synthesis` / `cp_synthesis`); P-2 asymmetry deferred.
 - Mọi contract fail-closed của CP này (BUG-288/289 always-block, corrupt-baseline block) giữ nguyên hiệu lực và được liệt kê trong will-not-undo của các CA tiếp theo.

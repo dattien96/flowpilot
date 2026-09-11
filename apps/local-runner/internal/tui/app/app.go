@@ -19,6 +19,7 @@ import (
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/config"
 	"flowpilot-runner/internal/tui/prefs"
+	"flowpilot-runner/internal/workingmode"
 )
 
 // ---- Styles -----------------------------------------------------------------
@@ -184,6 +185,7 @@ func New(cfg config.ChatConfig, runnerURL string) *AppModel {
 		textarea:        newChatTextArea(80),
 		textareaReady:   true,
 		yolo:            yolo,
+		workingMode:     savedWorkingMode(haveSaved, skipSessionUX, savedPrefs),
 		provider:        provider,
 		model:           model,
 		reasoningEffort: reasoning,
@@ -541,7 +543,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flowListFetchedAt = time.Now()
 		cmds := []tea.Cmd{
 			m.cmdLoadSessionDefaults(),
-			m.cmdPrefetchFlows(),			// The FlowPilot banner stays up until SessionDefaultsMsg decides the
+			m.cmdPrefetchFlows(), // The FlowPilot banner stays up until SessionDefaultsMsg decides the
 			// catalog (project bound or failed) — typing stays interactive, send
 			// stays blocked (CA-514). The 45s safety net is the only bail-out.
 			tea.Tick(45*time.Second, func(time.Time) tea.Msg { return sessionLoadTimeoutMsg{} }),
@@ -562,6 +564,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Do NOT mark sessionDefaultsLoaded: a late SessionDefaultsMsg must still
 		// count as first load so it persists provider/model and restores flow.
 		if m.sessionDefaultsLoaded {
+			if m.chatWaitPending {
+				// Defaults arrived but startup chats never settled (slow
+				// endpoint, missed budget): same degraded pass as the chat timer.
+				m.passChatGateDegraded("Chat list is taking too long — continuing without it. /open retries on each keypress.")
+				return m, nil
+			}
 			tuiLog("sessionLoadTimeoutMsg ignored (defaults already loaded)")
 			return m, nil
 		}
@@ -576,6 +584,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshSessionPanel()
 		return m, nil
 
+	case chatLoadTimeoutMsg:
+		// Startup chat fetch never settled within budget: pass degraded so
+		// a slow chat endpoint cannot hold init-loading hostage; the picker
+		// retries on each keypress.
+		if !m.chatWaitPending {
+			return m, nil
+		}
+		m.passChatGateDegraded("Chat list is taking too long — continuing without it. /open retries on each keypress.")
+		return m, nil
 	case ProjectsCatalogMsg:
 		if msg.Err != "" {
 			// Soft: keep UI usable; offer one more retry path via /login or restart.
@@ -608,6 +625,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			var cmds []tea.Cmd
 			if len(m.chatList) == 0 {
+				m.chatListInflight = true
 				cmds = append(cmds, m.cmdPrefetchChats())
 			}
 			return m, tea.Batch(cmds...)
@@ -745,6 +763,16 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		var cmds []tea.Cmd
+		if firstLoad && m.project != nil && len(m.chatList) == 0 {
+			// Cold start with a bound project: the history picker renders
+			// from m.chatList, so init-loading must not report ready before
+			// the first list settles — a slow/failed silent fetch otherwise
+			// leaves /open stuck on "loading chats…" with no error.
+			m.chatWaitPending = true
+			m.chatListInflight = true
+			m.statusMsg = "loading chats…"
+			cmds = append(cmds, m.cmdFetchChats(true), tea.Tick(chatStartupWaitTimeout, func(time.Time) tea.Msg { return chatLoadTimeoutMsg{} }))
+		}
 		// Catalog timeout ≠ runner offline: /health can pass while Supabase is slow.
 		// Only a dial-level failure is the runner being dead; a ctx deadline from
 		// the catalog budget is slow-Supabase → schedule a background retry.
@@ -927,19 +955,36 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// on the next picker keypress instead of sticking the error for the
 		// whole interval (same policy as the BUG-351 flow picker).
 		m.chatListInflight = false
+		waitedChats := m.chatWaitPending
+		m.chatWaitPending = false
 		if msg.Silent {
 			if msg.Err == "" {
 				m.chatList = mergeChatListSyncStatus(m.chatList, msg.Items)
 				m.chatListFetchedAt = time.Now()
+				if waitedChats {
+					m.passChatGate()
+				}
+			} else if waitedChats && len(m.chatList) == 0 {
+				// Startup fetch failed before any list ever arrived: the
+				// picker would otherwise sit on "loading chats…" forever.
+				// Pass degraded but loud; the picker retries per keypress.
+				m.passChatGate()
+				m.addMessage("system", "Chat list failed: "+msg.Err, "error")
 			}
 			return m, nil
 		}
 		if msg.Err != "" {
 			m.addMessage("system", "Chat list failed: "+msg.Err, "error")
+			if waitedChats {
+				m.passChatGate()
+			}
 			return m, nil
 		}
 		m.chatList = mergeChatListSyncStatus(m.chatList, msg.Items)
 		m.chatListFetchedAt = time.Now()
+		if waitedChats {
+			m.passChatGate()
+		}
 		m.addMessage("system", formatChatListWithRemote(msg.Items, m.remoteChatList), "")
 		return m, nil
 
@@ -1106,6 +1151,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmds []tea.Cmd
 		if hydrate != nil {
 			cmds = append(cmds, hydrate)
+		}
+		if kind == "flow" && m.gate == nil {
+			cmds = append(cmds, m.cmdHydratePendingFromSnapshot())
 		}
 		if m.runHandle != nil && m.orchStream == nil {
 			cmds = append(cmds, m.cmdStartOrchestrationStream())
@@ -2827,7 +2875,7 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if cmd := suggestionAcceptValue(it); cmd != "" {
 					// Action rows only expand the next picker (provider connect, /image open|rm, mode-setup steps) —
 					// except immediate-execution actions like /provider refresh|reload (CA-687), which run right away.
-					expandsPicker := it.kind == "provider-action" || it.kind == "image-sub-next" || it.kind == "mode-setup-posture" || (it.kind == "mode-setup-field" && !strings.HasSuffix(strings.ToLower(strings.TrimSpace(it.value)), " clear"))
+					expandsPicker := it.kind == "provider-action" || it.kind == "image-sub-next" || it.kind == "mode-setup-posture" || (it.kind == "mode-setup-field" && !strings.HasSuffix(strings.ToLower(strings.TrimSpace(it.value)), " clear")) || (it.kind == "flow" && isVibeCpIngestFlow(it.value))
 					if expandsPicker && !(it.kind == "provider-action" && providerImmediateAction(it.value)) {
 						m.setInputPreservingDraftPrefix(cmd)
 						m.suggIdx = 0
@@ -3079,7 +3127,8 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 		projectID = m.project.ID
 	}
 	in := m.slashSuggestLine()
-	if flows := filterFlowSuggestions(in, m.flowBuiltins, m.flowWorkflows, projectID); len(flows) > 0 {
+	flowBuiltins, flowWorkflows := m.flowCatalogForWorkingMode()
+	if flows := filterFlowSuggestions(in, flowBuiltins, flowWorkflows, projectID); len(flows) > 0 {
 		return flows
 	}
 	// While `/flow ` is open but catalog still loading, show a placeholder row.
@@ -3242,6 +3291,9 @@ func (m *AppModel) collectSuggestions() []suggestItem {
 	if initSugg := filterInitSuggestions(in); len(initSugg) > 0 {
 		return initSugg
 	}
+	if vibeSugg := filterVibeArgSuggestions(in); len(vibeSugg) > 0 {
+		return vibeSugg
+	}
 	cmds := filterSlashSuggestions(in)
 	out := make([]suggestItem, 0, len(cmds))
 	for _, sc := range cmds {
@@ -3298,12 +3350,9 @@ func (m *AppModel) applySuggestion(items []suggestItem) {
 		return
 	} else if it.kind == "file" {
 		m.applyFileMention(it.value)
-	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" || it.kind == "mode-setup-posture" || it.kind == "mode-setup-field" || it.kind == "mode-setup-value" || it.kind == "mode" || it.kind == "init" {
-		// Nested pickers: only replace the active /… fragment (keep pre-slash draft).
+	} else if it.kind == "flow" || it.kind == "history" || it.kind == "model" || it.kind == "reasoning" || it.kind == "provider" || it.kind == "provider-connect" || it.kind == "provider-action" || it.kind == "provider-install" || it.kind == "provider-account" || it.kind == "skill" || it.kind == "agent" || it.kind == "image-sub" || it.kind == "image-sub-next" || it.kind == "image-open" || it.kind == "image-rm" || it.kind == "mode-setup-posture" || it.kind == "mode-setup-field" || it.kind == "mode-setup-value" || it.kind == "mode" || it.kind == "init" || it.kind == "vibe" {
 		m.setInputPreservingDraftPrefix(cmd)
 	} else {
-		// Tab fills the command token and leaves a trailing space for args.
-		// Mid-draft "abc /sk" → "abc /skill " (do not wipe the draft).
 		m.setInputPreservingDraftPrefix(it.value + " ")
 	}
 	m.suggIdx = (idx + 1) % len(items)
@@ -3324,6 +3373,9 @@ func suggestionAcceptValue(it suggestItem) string {
 	case "flow":
 		if strings.TrimSpace(it.value) == "" {
 			return ""
+		}
+		if isVibeCpIngestFlow(it.value) {
+			return "/flow vibe-cp-ingest @"
 		}
 		return "/flow " + it.value
 	case "history":
@@ -3447,6 +3499,11 @@ func suggestionAcceptValue(it suggestItem) string {
 			return ""
 		}
 		return "/mode " + strings.TrimSpace(it.value)
+	case "vibe":
+		if strings.TrimSpace(it.value) == "" {
+			return ""
+		}
+		return "/vibe " + strings.TrimSpace(it.value)
 	case "init":
 		if strings.TrimSpace(it.value) == "" {
 			return ""
@@ -3564,6 +3621,16 @@ func runStatusIsTerminal(status string) bool {
 }
 
 func (m *AppModel) turnIsActive() bool {
+	// Composer [stop] is live-work only. A loop that reports done with no
+	// RUNNING child (screenshot: "done" + leftover [stop], possibly with a
+	// stale flowStepsActive) is not a turn the operator should Stop
+	// (BUG-371). A done loop with a still-RUNNING child still arms [stop].
+	if strings.EqualFold(strings.TrimSpace(m.flowLoopStatus), "done") && !m.hasLiveWorkingChild() {
+		return false
+	}
+	if m.question != nil || m.approval != nil || m.gate != nil {
+		return false
+	}
 	if m.pendingPrompt != "" {
 		return true
 	}
@@ -3651,9 +3718,11 @@ func (m *AppModel) workIsLive() bool {
 }
 
 func (m *AppModel) processInput(input string) (tea.Model, tea.Cmd) {
-	if m.sessionLoading && !strings.HasPrefix(strings.TrimSpace(input), "/") {
+	if (m.sessionLoading || m.chatWaitPending) && !strings.HasPrefix(strings.TrimSpace(input), "/") {
 		msg := "Still loading session — chat is disabled until ready. (F2/F4 still work)"
-		if len(m.providers) == 0 {
+		if !m.sessionLoading && m.chatWaitPending {
+			msg = "Still loading chats — chat is disabled until ready. (F2/F4 still work)"
+		} else if len(m.providers) == 0 {
 			msg = "Still loading session — providers not ready yet, please wait 2-3s then retry."
 		}
 		m.addMessage("system", msg, "error")
@@ -4100,6 +4169,49 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.chatPosturePending = "setup:" + posture + ":" + field + ":" + value
 		return m, m.cmdLoadChatPosture()
 
+	case "/vibe":
+		arg := ""
+		if len(args) > 0 {
+			arg = strings.ToLower(strings.TrimSpace(args[0]))
+		}
+		switch arg {
+		case "off", "normal", "dev":
+			m.setWorkingMode(workingmode.Dev)
+			m.addMessage("system", "Working mode: normal (dev)", "")
+		default:
+			m.setWorkingMode(workingmode.Vibe)
+			rest := strings.TrimSpace(strings.Join(args, " "))
+			if rest == "" || arg == "on" {
+				m.addMessage("system", "Working mode: vibe", "")
+				break
+			}
+			if m.runHandle != nil {
+				m.addMessage("system", "Cannot change flow after a run has started. Use /new first.", "error")
+				break
+			}
+			flowID, source := workingmode.DetectVibeEntry(rest)
+			if flowID == "vibe-cp-ingest" {
+				if err := workingmode.RejectNonCP(source, ""); err != nil {
+					m.addMessage("system", err.Error(), "error")
+					break
+				}
+			}
+			m.launch = LaunchArm{
+				Mode:        ModeFlow,
+				FlowRef:     flowID,
+				Label:       flowID,
+				SourceDocID: source,
+			}
+			m.mode = ModeFlow
+			m.firstTurnPending = true
+			m.persistSessionPrefs()
+			if flowID == "vibe-cp-ingest" {
+				m.addMessage("system", fmt.Sprintf("CP locked entry armed: %s. Send a prompt to start vibe-cp-ingest.", source), "")
+			} else {
+				m.addMessage("system", fmt.Sprintf("SS ingest armed: %s. Send a prompt to start vibe-ingest.", rest), "")
+			}
+		}
+
 	case "/yolo":
 		if m.mode != ModeChat || m.launch.IsArmed() {
 			m.addMessage("system", "YOLO is auto-on in flow mode. Switch to /chat to toggle.", "")
@@ -4150,7 +4262,11 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			if r.RunID == m.focusRunID || (m.focusRunID == "" && (strings.EqualFold(r.Role, "main") || r.RunID == m.mainRunID())) {
 				cur = " *"
 			}
-			b.WriteString(fmt.Sprintf("  %s  %s  %s%s\n", r.AgentName, r.Status, r.RunID, cur))
+			line := fmt.Sprintf("  %s  %s  %s%s", r.AgentName, r.Status, r.RunID, cur)
+			if task := agentTaskDetail(r); task != "" {
+				line = fmt.Sprintf("  %s  %s  %s  %s%s", r.AgentName, task, r.Status, r.RunID, cur)
+			}
+			b.WriteString(line + "\n")
 		}
 		m.addMessage("system", strings.TrimRight(b.String(), "\n"), "")
 
@@ -4181,7 +4297,39 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		if m.project != nil {
 			projectID = m.project.ID
 		}
-		arm, err := resolveFlowLaunch(m.flowBuiltins, m.flowWorkflows, projectID, strings.Join(args, " "))
+		flowID := args[0]
+		if m.workingMode == workingmode.Dev || m.workingMode == workingmode.Vibe {
+			if err := workingmode.FlowAllowedForWorkingMode(m.workingMode, flowID, "user"); err != nil {
+				m.addMessage("system", err.Error(), "error")
+				break
+			}
+		}
+		if isVibeCpIngestFlow(flowID) {
+			rest := strings.TrimSpace(strings.Join(args[1:], " "))
+			rest = strings.TrimSpace(strings.TrimPrefix(rest, "@"))
+			if rest == "" {
+				m.setInputPreservingDraftPrefix("/flow vibe-cp-ingest @")
+				return m, m.cmdMaybePrefetchWorkspaceFiles()
+			}
+			if err := workingmode.RejectNonCP(rest, ""); err != nil {
+				m.addMessage("system", err.Error(), "error")
+				break
+			}
+			m.launch = LaunchArm{
+				Mode:        ModeFlow,
+				FlowRef:     "vibe-cp-ingest",
+				Label:       "vibe-cp-ingest",
+				SourceDocID: rest,
+			}
+			m.mode = ModeFlow
+			m.firstTurnPending = true
+			m.persistSessionPrefs()
+			m.addMessage("system", fmt.Sprintf("CP locked entry armed: %s. Send a prompt to start vibe-cp-ingest.", rest), "")
+			break
+		}
+		query := strings.Join(args, " ")
+		flowBuiltins, flowWorkflows := m.flowCatalogForWorkingMode()
+		arm, err := resolveFlowLaunch(flowBuiltins, flowWorkflows, projectID, query)
 		if err != nil {
 			m.addMessage("system", err.Error(), "error")
 			break
@@ -4539,6 +4687,9 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.flowStepsModel = ""
 		m.flowLoopRound = 0
 		m.flowLoopCap = 0
+		m.vibeTaskIndex = 0
+		m.vibeTaskTotal = 0
+		m.vibeTaskName = ""
 		m.lastEventSeq = 0
 		m.lastTurnError = ""
 		m.lastTokens = nil
@@ -4991,6 +5142,8 @@ func (m *AppModel) renderSuggestions(sugg []suggestItem) string {
 			kind = "restore"
 		case "mode":
 			kind = "postures"
+		case "vibe":
+			kind = "vibe"
 		}
 	}
 	sel := 0
@@ -5943,7 +6096,6 @@ func (m *AppModel) renderInputLine() string {
 	return frameInput(inner, w, label, footer, m.asciiMode)
 }
 
-// inputFrameFooter is the bottom-right of the chat input frame.
 // Per user request: bottom-right shows Model · reasoning · YOLO (no provider,
 // no quota/limits). The sidebar already holds session+steps only.
 func (m *AppModel) inputFrameFooter() string {
@@ -5959,7 +6111,11 @@ func (m *AppModel) inputFrameFooter() string {
 	if m.asciiMode {
 		sep = " | "
 	}
-	return fmt.Sprintf("%s%sreasoning: %s%s%s", model, sep, reasoning, sep, m.yoloStatusLabel())
+	out := fmt.Sprintf("%s%sreasoning: %s%s%s", model, sep, reasoning, sep, m.yoloStatusLabel())
+	if chip := m.workingModeChip(); chip != "" {
+		out += sep + chip
+	}
+	return out
 }
 
 // chatFrameTitle is the top-left of the chat input frame.
@@ -5987,6 +6143,10 @@ func (m *AppModel) chatFrameTitle() string {
 		}
 		// "Flow:" dim, value pink (styleStatusFlow) — on bar bg
 		baseStyled = chatBarBg(styleStatus).Render("Flow:") + " " + chatBarBg(styleStatusFlow).Render(label)
+		if m.vibeTaskTotal > 0 && m.vibeTaskIndex > 0 {
+			task := fmt.Sprintf("task %d/%d", m.vibeTaskIndex, m.vibeTaskTotal)
+			baseStyled += chatBarBg(styleStatus).Render(" · ") + chatBarBg(styleStatusFlow).Render(task)
+		}
 	} else {
 		posture := m.activePosture()
 		if posture == "" {
@@ -6203,6 +6363,10 @@ func gateOptionChip(opt string) string {
 		return "[Suggest req]"
 	case "custom":
 		return "[Custom]"
+	case "ok":
+		return "[OK]"
+	case "cancel":
+		return "[Cancel]"
 	default:
 		return "[" + opt + "]"
 	}
@@ -6225,13 +6389,18 @@ func buildGateMessage(status, errMsg string, opts []string, regressed []string) 
 	// Only a real block with a decision card keeps the legacy detailed card.
 	// Legacy tests emit GateOptions without Status — treat empty status + opts as block for view compat.
 	if hasOpts && (lowStatus == "block" || lowStatus == "") {
+		if len(opts) == 2 && ((opts[0] == "ok" && opts[1] == "cancel") || (opts[0] == "cancel" && opts[1] == "ok")) {
+			sb.WriteString("[GATE] Run paused.\n")
+			sb.WriteString("  Continue?\n")
+			sb.WriteString("  " + strings.Join(optionChips(opts), "  "))
+			return sb.String()
+		}
 		sb.WriteString("[GATE] Flow gate blocked.\n")
 		if hasRegressed {
 			sb.WriteString(fmt.Sprintf("  Regressed tests: %s\n", strings.Join(regressed, ", ")))
 		}
 		sb.WriteString("  Options: ")
 		sb.WriteString(strings.Join(opts, ", "))
-		// CA-650: clickable chips (desktop parity); number/name typing still works.
 		sb.WriteString("\n  " + strings.Join(optionChips(opts), "  "))
 		sb.WriteString("\n  (or type number / option name)")
 		return sb.String()
@@ -6697,6 +6866,7 @@ func (m *AppModel) cmdStartRun() tea.Cmd {
 	model := m.model
 	reasoning := m.reasoningEffort
 	launch := m.launch
+	workingMode := m.workingMode
 	projectID := ""
 	cwd := cfg.ProjectPath
 	if m.project != nil {
@@ -6735,6 +6905,10 @@ func (m *AppModel) cmdStartRun() tea.Cmd {
 			return ErrMsg{Err: fmt.Errorf("provider required — set /provider before chatting")}
 		}
 		input := launch.ToStartRunInput(projectID, provider, model, reasoning, cwd, yolo)
+		input.WorkingMode = workingMode
+		if launch.IsBuiltin() {
+			input.FlowRef = launch.FlowRef
+		}
 		handle, err := cl.StartRun(ctx, input)
 		if err != nil {
 			return ErrMsg{Err: fmt.Errorf("start run: %w", err)}

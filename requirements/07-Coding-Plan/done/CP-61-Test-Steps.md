@@ -10,7 +10,7 @@
 - Reviewers: `<chờ phân công>`
 - Created: `2026-09-08`
 - Last Updated: `2026-09-08`
-- Parent Documents: [CP-61](../inprogress/CP-61-Harness-Done-Verdict-Gate.md)
+- Parent Documents: [CP-61](./CP-61-Harness-Done-Verdict-Gate.md)
 - Child Documents: `<none>`
 - Related Documents: [CA-757](../../../change-audit/CA-757-CP-61-P1-Harness-Done-Verdict-Gate.md) (P-1 landed), [CA-755](../../../change-audit/CA-755-Slice-A-Hide-Review-Loop-Dual-Cap-Reset.md), [CP-53-Test-Steps](./CP-53-Test-Steps.md) (review-loop only), [CP-58-Test-Steps](./CP-58-Test-Steps.md) (harness family smoke), [safe-fix-contract](../../../.agents/skills/safe-fix-contract/SKILL.md)
 - Replaces: CP-53-Test-Steps §2 for **harness hubs** only (review-loop §2 stays on CP-53-Test-Steps)
@@ -27,7 +27,7 @@
 
 ### Current Ask
 
-- P-1 live checklist **closed** 2026-09-08. Residuals M.3/M.4/C.2 (live reject-then-PASS) deferred — unit `TestCP61HubDone` covers those legs. Do not claim CP-61 DoD (P-2 still open).
+- P-1 live checklist **closed** 2026-09-08. Residuals M.3/M.4/C.2 (live reject-then-PASS) deferred — unit `TestCP61HubDone` covers those legs. CP-61 P-1/P-3 DoD closed; P-2 asymmetry still open and **not** claimed here.
 
 ### Key Decisions
 

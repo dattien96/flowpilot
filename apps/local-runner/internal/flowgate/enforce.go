@@ -24,7 +24,7 @@ var actionSeverity = map[string]int{
 }
 
 func isAlwaysBlock(trigger string) bool {
-	return trigger == "regression_test_broke" || trigger == "tests_failed"
+	return trigger == "regression_test_broke" || trigger == "tests_failed" || trigger == "requirement_signature_drift"
 }
 
 func Enforce(violations []Violation, gateMode string) EnforceResult {

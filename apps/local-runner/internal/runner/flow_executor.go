@@ -11,6 +11,7 @@ import (
 
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/changecontract"
+	"flowpilot-runner/internal/workingmode"
 )
 
 // startResolvedFlow is the one place a CP-42 flowRef selection becomes a
@@ -28,6 +29,17 @@ import (
 // own first turn, which proceeds to its own provider normally regardless of
 // whether the flow's entry node could be spawned.
 func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID, flowRef, userPrompt string) {
+	s.startResolvedFlowFromNode(ctx, parentRunID, flowRef, userPrompt, "")
+}
+
+func (s *InteractiveService) startResolvedFlowFromNode(ctx context.Context, parentRunID, flowRef, userPrompt, startNodeID string) {
+	if workingmode.BareFlowID(flowRef) == vibeSprintFlowID && s.vibeSprintStartBlocked(parentRunID) {
+		log.Printf("[vibe-cp] refuse vibe-sprint while cp_lock waiting run=%s", parentRunID)
+		s.flowDiagLog(parentRunID, "vibe_sprint_blocked_lock", "vibe-sprint refused; cp_lock waiting",
+			"flow_ref", flowRef,
+		)
+		return
+	}
 	s.flowDiagLog(parentRunID, "flow_start_begin", "starting resolved flow",
 		"flow_ref", flowRef,
 		"user_prompt_len", len(userPrompt),
@@ -95,6 +107,18 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 	})
 
 	entryNodes := entryDelegateNodes(record.Definition)
+	if startNodeID != "" {
+		node, ok := findFlowNode(record.Definition.Nodes, startNodeID)
+		if !ok {
+			log.Printf("[flow-executor] flow %q start node %q missing; nothing to start", flowRef, startNodeID)
+			s.flowDiagLog(parentRunID, "flow_start_node_missing", "requested start node not in flow",
+				"flow_ref", flowRef,
+				"start_node_id", startNodeID,
+			)
+			return
+		}
+		entryNodes = []agentpack.FlowNode{node}
+	}
 	if len(entryNodes) == 0 {
 		// BUG-NOTE-CP42 #9: a flow whose entry node is an inline behavior
 		// (e.g. rag-harness's "context" -> context.produce) has no
@@ -125,6 +149,9 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 		rs.activeFlowEdges = record.Definition.Edges
 		rs.activeFlowNodes = record.Definition.Nodes
 		rs.activeFlowAcceptanceNodes = append([]string(nil), record.Definition.AcceptanceNodes...)
+		if strings.TrimSpace(flowRef) != "" {
+			rs.chatFlowRef = flowRef
+		}
 	}
 	s.mu.Unlock()
 
@@ -134,6 +161,9 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 	// which startTurn now skips for these runs) owns every transition.
 	if s.isFlowEngineDriven(parentRunID) {
 		s.reseedFlowStepRuntime(parentRunID, record.Definition.Nodes)
+		if startNodeID != "" {
+			s.markForwardDonePredecessorsSkipped(ctx, parentRunID, record.Definition.Edges, startNodeID)
+		}
 	}
 
 	waitNotice, _, _ := loadBuiltinPromptText("prompts/flow-start-wait.md")
@@ -223,6 +253,67 @@ func (s *InteractiveService) startResolvedFlow(ctx context.Context, parentRunID,
 		s.notifyHubOfFlowEntrySpawnFailure(parentRunID, flowRef, failedLabels, lastSpawnErr)
 	}
 }
+
+func flowForwardDonePredecessors(edges []agentpack.FlowEdge, startID string) []string {
+	startID = strings.TrimSpace(startID)
+	if startID == "" {
+		return nil
+	}
+	incoming := map[string][]string{}
+	for _, e := range edges {
+		if !strings.EqualFold(strings.TrimSpace(e.Kind), "forward") || !strings.EqualFold(strings.TrimSpace(e.When), "done") {
+			continue
+		}
+		from := strings.TrimSpace(e.From)
+		to := strings.TrimSpace(e.To)
+		if from == "" || to == "" {
+			continue
+		}
+		incoming[to] = append(incoming[to], from)
+	}
+	seen := map[string]bool{startID: true}
+	var out []string
+	var walk func(string)
+	walk = func(id string) {
+		for _, pred := range incoming[id] {
+			if seen[pred] {
+				continue
+			}
+			seen[pred] = true
+			out = append(out, pred)
+			walk(pred)
+		}
+	}
+	walk(startID)
+	return out
+}
+
+func (s *InteractiveService) lookupFlowStepStatus(parentRunID, nodeID string) RuntimeWorkflowStepStatus {
+	if s == nil || s.workflowStore == nil || strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(nodeID) == "" {
+		return ""
+	}
+	steps, err := s.workflowStore.LoadRunSteps(context.Background(), parentRunID)
+	if err != nil {
+		return ""
+	}
+	for _, st := range steps {
+		if st.ID == nodeID || st.NodeID == nodeID {
+			return st.Status
+		}
+	}
+	return ""
+}
+
+func (s *InteractiveService) markForwardDonePredecessorsSkipped(ctx context.Context, parentRunID string, edges []agentpack.FlowEdge, startID string) {
+	for _, id := range flowForwardDonePredecessors(edges, startID) {
+		st := s.lookupFlowStepStatus(parentRunID, id)
+		if st != "" && st != StepStatusPending {
+			continue
+		}
+		s.setFlowStepStatus(ctx, parentRunID, id, StepStatusSkipped)
+	}
+}
+
 
 // resolveWorkflowFlowRef bridges a Flow-Mode workflow-picker launch to the flow
 // executor (BUG-174). A workflow-picker run carries a workflowID but no flowRef
@@ -428,45 +519,29 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 		return false
 	}
 
-	var delegateTarget *agentpack.FlowNode
+	var delegateTargets []agentpack.FlowNode
 	for _, id := range forwardDoneTargets(def.Edges, entry.ID) {
 		node, ok := findFlowNode(def.Nodes, id)
 		if !ok {
 			continue
 		}
 		if nodeCanonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && nodeCanonical == "agent.delegate" {
-			n := node
-			delegateTarget = &n
-			break
+			delegateTargets = append(delegateTargets, node)
 		}
 	}
-	if delegateTarget == nil {
+	if len(delegateTargets) == 0 {
 		log.Printf("[flow-executor] flow %q inline entry node %q has no reachable agent.delegate target; unsupported chain shape", flowRef, entry.ID)
-		return false
-	}
-
-	agentName := flowNodeAgentName(*delegateTarget)
-	if agentName == "" {
-		log.Printf("[flow-executor] flow %q delegate target %q has no resolvable agent; skipped", flowRef, delegateTarget.ID)
 		return false
 	}
 
 	prompt := userPrompt
 	var fcpProvenanceRunID string
 	if pkg, ok := out.Payload["package"].(FlowContextPackage); ok {
-		// BUG-288 R19-4: per-service marker secret for inline FCP render.
 		prompt = renderFlowContextPromptWithSecret(ctx, pkg, userPrompt, s.markerSecret)
-		// CP-51 Task-252: this is the SAME trustID selection ComposeFlowCodingPrompt
-		// uses to mint the "flowpilot-fcp" marker embedded in prompt above — record
-		// it so the spawned child can verify against its recorded provenance rather
-		// than trusting parentRunID by topology alone.
 		fcpProvenanceRunID = pkg.WorkflowRunID
 		if fcpProvenanceRunID == "" {
 			fcpProvenanceRunID = pkg.PackageID
 		}
-		// BUG-243 F-0: stash the package on the run so a mid-flow node reached
-		// later (rag-harness's validate/audit) can read it back â€” previously
-		// it was only ever used for this one prompt render, then discarded.
 		s.mu.Lock()
 		if rs := s.runs[parentRunID]; rs != nil {
 			pkgCopy := pkg
@@ -483,47 +558,60 @@ func (s *InteractiveService) startInlineEntryChain(ctx context.Context, parentRu
 	prompt = appendJiraIssueTargetPrompt(prompt, jiraIssueTarget)
 	prompt = appendJiraSprintTargetPrompt(prompt, jiraSprintTarget)
 	prompt = appendFirebaseCrashTargetPrompt(prompt, firebaseCrashTarget)
-	// Task-202/223: INPUT file artifacts (read) + OUTPUT file write contract
-	// for the delegate target. context_artifact stays on the package path above.
-	prompt = composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), prompt, *delegateTarget)
-	prompt = appendChangeContractIfAnyWithSecret(s.workspaceCwdFor(parentRunID), parentRunID, prompt, s.markerSecret)
 
-	// Same ordering rationale as the delegate-entry path above: track the
-	// flow's topology before spawning, not after, so a fast-completing child
-	// can't race ahead of it.
 	s.mu.Lock()
 	if rs := s.runs[parentRunID]; rs != nil {
 		rs.activeFlowEdges = def.Edges
 		rs.activeFlowNodes = def.Nodes
+		rs.activeFlowAcceptanceNodes = append([]string(nil), def.AcceptanceNodes...)
 	}
 	s.mu.Unlock()
 
-	// BUG-174: same step-timeline wiring as the delegate-entry path. The inline
-	// entry node has already run synchronously above, so mark it DONE and the
-	// spawned delegate target RUNNING.
 	if s.isFlowEngineDriven(parentRunID) {
 		s.reseedFlowStepRuntime(parentRunID, def.Nodes)
 		s.setFlowStepStatus(ctx, parentRunID, entry.ID, StepStatusDone)
 	}
 
-	agentDef, _ := resolvePackAgentDefinition(agentName)
-	if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
-		Agent:                    agentName,
-		Prompt:                   prompt,
-		Wait:                     false,
-		Label:                    delegateTarget.ID,
-		AutoOrchestrate:          true,
-		AgentDefOverride:         agentDef,
-		Model:                    s.delegateSpawnModel(ctx, parentRunID, *delegateTarget),
-		FCPMarkerProvenanceRunID: fcpProvenanceRunID,
-	}); err != nil {
-		log.Printf("[flow-executor] spawn inline-chain delegate node %q (agent %q) for flow %q on run %q failed: %v",
-			delegateTarget.ID, agentName, flowRef, parentRunID, err)
-		return false
+	cohortID := ""
+	cohortSize := 0
+	if len(delegateTargets) > 1 {
+		cohortID = fmt.Sprintf("flow-auto-%s-round-0", entry.ID)
+		cohortSize = len(delegateTargets)
 	}
-	if s.isFlowEngineDriven(parentRunID) {
-		s.setFlowStepStatus(ctx, parentRunID, delegateTarget.ID, StepStatusRunning)
-		s.stampFlowNodePosture(ctx, parentRunID, *delegateTarget)
+	spawned := 0
+	for i, target := range delegateTargets {
+		agentName := flowNodeAgentName(target)
+		if agentName == "" {
+			log.Printf("[flow-executor] flow %q delegate target %q has no resolvable agent; skipped", flowRef, target.ID)
+			continue
+		}
+		nodePrompt := composeFlowNodeAgentPrompt(s.workspaceCwdFor(parentRunID), prompt, target)
+		nodePrompt = appendChangeContractIfAnyWithSecret(s.workspaceCwdFor(parentRunID), parentRunID, nodePrompt, s.markerSecret)
+		agentDef, _ := resolvePackAgentDefinition(agentName)
+		if _, err := s.spawnChildRun(ctx, parentRunID, SpawnAgentInput{
+			Agent:                    agentName,
+			Prompt:                   nodePrompt,
+			Wait:                     false,
+			Label:                    target.ID,
+			FlowCohortID:             cohortID,
+			CohortSize:               cohortSize,
+			AutoOrchestrate:          i == 0,
+			AgentDefOverride:         agentDef,
+			Model:                    s.delegateSpawnModel(ctx, parentRunID, target),
+			FCPMarkerProvenanceRunID: fcpProvenanceRunID,
+		}); err != nil {
+			log.Printf("[flow-executor] spawn inline-chain delegate node %q (agent %q) for flow %q on run %q failed: %v",
+				target.ID, agentName, flowRef, parentRunID, err)
+			continue
+		}
+		spawned++
+		if s.isFlowEngineDriven(parentRunID) {
+			s.setFlowStepStatus(ctx, parentRunID, target.ID, StepStatusRunning)
+			s.stampFlowNodePosture(ctx, parentRunID, target)
+		}
+	}
+	if spawned == 0 {
+		return false
 	}
 
 	s.notifyHubFlowStarted(parentRunID)
@@ -1068,14 +1156,8 @@ func (s *InteractiveService) notifyHubFlowStarted(parentRunID string) {
 // that transition was already correctly Go-orchestrated via the existing
 // cohort-join â†’ maybeAutoReinvokeHub path. Only the coder â†’ reviewer-cohort
 // step needed a real fix.
-//
-// Returns false (a no-op) when the run has no tracked flow, the node has no
-// outgoing forward ("done") edges, or any edge target isn't a spawnable
-// agent.delegate node (e.g. a hub.inline node) â€” callers fall back to the
-// existing note+reinvoke-hub behavior in that case, so a flow shape this
-// function doesn't understand degrades to the pre-existing AI-driven
-// behavior rather than silently doing nothing.
 func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID, resultMessage string) bool {
+	s.onVibeCpNodeDone(parentRunID, completedNodeID)
 	// BUG-234: do not auto-advance once the loop has legitimately settled
 	// (blocked/awaiting-user, done, stopped, paused). A child completion that
 	// lands after the loop blocked would otherwise re-spawn the next nodes and,
@@ -1108,27 +1190,38 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		)
 		return false
 	}
+	if len(targetIDs) == 1 && strings.EqualFold(targetIDs[0], "done") {
+		s.maybeChainVibeSprint(parentRunID, completedNodeID)
+		// cp_writer / task_slicer --done--> done is a terminal pseudo-node,
+		// not in activeFlowNodes. Returning false here made advanceOrNotifyHub
+		// reinvoke ss_validator/cp_validator, which submit_review_outcome
+		// continue and re-park the lock (live run-214743: second ss_lock).
+		if completedNodeID == vibeCpWriterNodeID || completedNodeID == vibeTaskSlicerNodeID || completedNodeID == vibeDebateSynthesisNodeID {
+			s.flowDiagLog(parentRunID, "flow_advance_vibe_terminal_done", "claimed vibe writer/slicer/debate terminal done without hub reinvoke",
+				"completed_node_id", completedNodeID,
+			)
+			if s.isFlowEngineDriven(parentRunID) {
+				s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
+			}
+			return true
+		}
+	}
 	s.flowDiagLog(parentRunID, "flow_advance_targets_resolved", "resolved forward targets for completed node",
 		"completed_node_id", completedNodeID,
 		"target_ids", strings.Join(targetIDs, ","),
 		"result_len", len(resultMessage),
 	)
 
-	// BUG-243 F-0: a single forward-done target whose behavior is a
-	// registered INLINE-scope behavior (validate/audit, not a spawnable
-	// agent.delegate) previously fell straight through to the bail below â€”
-	// the executor had no path to dispatch an inline node reached mid-flow
-	// (only the flow's own entry node, via startInlineEntryChain, was ever
-	// dispatched in-process). Handling it here, before the delegate-only
-	// validation loop, preserves every existing multi-target cohort-spawn
-	// case (e.g. coder -> [reviewer_correctness, reviewer_security])
-	// unchanged: this only fires for the single-target inline case.
 	if len(targetIDs) == 1 {
 		if target, ok := findFlowNode(nodes, targetIDs[0]); ok {
+			if canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior); ok && canonical == "user.confirm" && isVibeLockNode(target.ID) {
+				if s.isFlowEngineDriven(parentRunID) {
+					s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
+				}
+				return s.parkVibeLock(parentRunID, target.ID)
+			}
 			if canonical, ok := agentpack.NormalizeBehaviorID(target.Behavior); ok && canonical != "agent.delegate" {
 				if spec, err := DefaultBehaviorRegistry().Resolve(canonical); err == nil && spec.Scope == BehaviorScopeInline {
-					// BUG-289 L5/F-10: mark the delegate source DONE before the
-					// early return (the multi-target path does this at :1052-1053).
 					if s.isFlowEngineDriven(parentRunID) {
 						s.setFlowStepStatus(context.Background(), parentRunID, completedNodeID, StepStatusDone)
 					}
@@ -1212,11 +1305,26 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 		// review delegate — spawn it through the shared frozen-writer path with
 		// its bound contract and writer prompt, never the review handoff.
 		if canonical, ok := agentpack.NormalizeBehaviorID(node.Behavior); ok && canonical == "agent.code" {
+			s.mu.Lock()
+			mode := ""
+			if p := s.runs[parentRunID]; p != nil {
+				mode = p.workingMode
+			}
+			s.mu.Unlock()
+			if vibeCoderSpawnBlocked(mode, node.ID, hasVibeTddOutput(cwd)) {
+				s.flowDiagLog(parentRunID, "vibe_tdd_missing", "coder refused; tdd artifact missing",
+					"completed_node_id", completedNodeID,
+					"target_node_id", node.ID,
+				)
+				s.parkVibeRequirement(parentRunID, "tdd artifact missing before coder (no bypass)")
+				continue
+			}
 			store, storeErr := changecontract.NewFrozenStore(cwd)
 			if storeErr != nil {
 				s.flowDiagLog(parentRunID, "flow_advance_writer_store_failed", "cannot open frozen contract store for writer spawn",
 					"target_node_id", node.ID, "error", storeErr.Error(),
 				)
+				s.parkVibeRequirement(parentRunID, "cannot open frozen contract store for coder")
 				continue
 			}
 			rec, frozenOK, _ := store.GetFrozenForStep(parentRunID, node.ID)
@@ -1224,6 +1332,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				s.flowDiagLog(parentRunID, "flow_advance_writer_no_contract", "agent.code target has no frozen contract; blocking spawn",
 					"target_node_id", node.ID,
 				)
+				s.parkVibeRequirement(parentRunID, "coder has no frozen contract after tdd")
 				continue
 			}
 			if err := s.spawnFrozenWriterChild(context.Background(), parentRunID, node, rec); err != nil {
@@ -1231,6 +1340,7 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 				s.flowDiagLog(parentRunID, "flow_advance_writer_spawn_failed", "writer spawn failed",
 					"target_node_id", node.ID, "error", err.Error(),
 				)
+				s.parkVibeRequirement(parentRunID, "coder spawn failed after tdd")
 				continue
 			}
 			spawnedAny = true
@@ -1272,13 +1382,21 @@ func (s *InteractiveService) tryAdvanceFlowFromNode(parentRunID, completedNodeID
 			"cohort_size", len(targetNodes),
 		)
 		agentDef, _ := resolvePackAgentDefinition(agentName)
+		flowCohortID := cohortID
+		cohortSize := len(targetNodes)
+		if vibeLinearWriterNode(node.ID) {
+			// Live run-216140: a size-1 cohort on cp_writer joined and
+			// reinvoked ss_validator (changes_requested → second ss_lock).
+			flowCohortID = ""
+			cohortSize = 0
+		}
 		if _, err := s.spawnChildRun(context.Background(), parentRunID, SpawnAgentInput{
 			Agent:            agentName,
 			Prompt:           prompt,
 			Wait:             false,
 			Label:            node.ID,
-			FlowCohortID:     cohortID,
-			CohortSize:       len(targetNodes),
+			FlowCohortID:     flowCohortID,
+			CohortSize:       cohortSize,
 			AutoOrchestrate:  i == 0,
 			AgentDefOverride: agentDef,
 			Model:            s.delegateSpawnModel(context.Background(), parentRunID, node),
@@ -1707,6 +1825,14 @@ func (s *InteractiveService) resolveConfiguredModelForAgent(ctx context.Context,
 				return strings.TrimSpace(step.Model)
 			}
 		}
+	}
+
+	// Vibe CP writer / task slicer: inherit the session model. Skip unscoped
+	// node_id (pass 2) and Flow: Doc Writer role (pass 3). A unique
+	// node_id=cp_writer row with gpt-5.4 was still winning before this.
+	// Flow-scoped Settings (pass 1) still override.
+	if vibeInheritsSessionModel(nodeID) {
+		return ""
 	}
 
 	// Pass 2: unscoped node_id — only if unique among non-generic rows.

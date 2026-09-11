@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"flowpilot-runner/internal/tui/client"
+	"flowpilot-runner/internal/workingmode"
 )
 
 // LaunchArm is the armed launch target for /flow or /step (Task-283).
@@ -36,19 +37,23 @@ func (a LaunchArm) IsCatalogWorkflow() bool {
 }
 
 func (a LaunchArm) StatusLabel() string {
+	raw := ""
 	if s := strings.TrimSpace(a.Label); s != "" {
-		return s
+		raw = s
+	} else if s := strings.TrimSpace(a.FlowRef); s != "" {
+		raw = s
+	} else if s := strings.TrimSpace(a.WorkflowID); s != "" {
+		raw = s
+	} else if s := strings.TrimSpace(a.StepID); s != "" {
+		raw = s
 	}
-	if s := strings.TrimSpace(a.FlowRef); s != "" {
-		return s
+	if raw == "" {
+		return ""
 	}
-	if s := strings.TrimSpace(a.WorkflowID); s != "" {
-		return s
+	if bare := workingmode.BareFlowID(raw); bare != "" {
+		return bare
 	}
-	if s := strings.TrimSpace(a.StepID); s != "" {
-		return s
-	}
-	return ""
+	return raw
 }
 
 // ToStartRunInput maps the arm to the desktop-equivalent start payload.
@@ -128,13 +133,16 @@ func builtinArm(opt client.BuiltinFlowOption) LaunchArm {
 	if label == "" {
 		label = opt.FlowRef
 	}
-	return LaunchArm{
-		Mode:       ModeFlow,
-		FlowRef:    opt.FlowRef,
-		SubMode:    "bug",
-		ChangeType: "bugfix",
-		Label:      label,
+	arm := LaunchArm{
+		Mode:    ModeFlow,
+		FlowRef: opt.FlowRef,
+		Label:   label,
 	}
+	if !workingmode.LooksLikeVibeFlow(opt.FlowRef) {
+		arm.SubMode = "bug"
+		arm.ChangeType = "bugfix"
+	}
+	return arm
 }
 
 func catalogArm(wf client.Workflow) LaunchArm {

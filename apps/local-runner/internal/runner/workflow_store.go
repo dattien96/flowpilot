@@ -149,6 +149,24 @@ type ProviderSessionState struct {
 	// launch (which has its own WorkflowID/launchMode restore path already).
 	ChatSubMode string
 	ChatFlowRef string
+	// WorkingMode is Task-326 local-only ("dev"|"vibe"). Empty loads as dev. Not a Supabase column.
+	WorkingMode string
+	// Task-321: vibe lock + sequential sprint queue (sessions.ndjson only).
+	VibeAwaitingLock           bool
+	VibeTaskPlan               []string
+	VibeSprintIndex            int
+	VibeSprintBudget           int
+	VibeSprintBoundaryDeclined bool
+	VibeLockedCP               string
+	VibeLockedSS               string
+	VibeLockNodeID             string
+	VibeLockPath               string
+	VibeCheckpointNode         string
+	VibeCheckpointArtifacts    []string
+	// Child-only snapshot of which vibe task spawned this agent (BUG-369).
+	VibeTaskIndex int
+	VibeTaskTotal int
+	VibeTaskName  string
 	// PendingFlowGateSettle is durable gate-pending state (V10 P0): after
 	// restart, reconstructRun re-queues post-turn gate instead of treating
 	// the child/root as completed.
@@ -194,10 +212,10 @@ type ProviderSessionState struct {
 	// Pending*DeliveredGen + AcceptedTurn are set ONLY after startTurn accepts
 	// a turn for that generation (V10R4 P0-02). Never write DeliveredGen before
 	// the provider call — that created a permanent intent-loss window.
-	PendingResumeDeliveredGen         int64
-	PendingGateRepromptDeliveredGen   int64
-	PendingResumeAcceptedTurn         string
-	PendingGateRepromptAcceptedTurn   string
+	PendingResumeDeliveredGen       int64
+	PendingGateRepromptDeliveredGen int64
+	PendingResumeAcceptedTurn       string
+	PendingGateRepromptAcceptedTurn string
 	// Durable fail budget keyed by generation (survives process restart).
 	PendingResumeFailCount       int
 	PendingResumeFailGen         int64
@@ -247,7 +265,7 @@ type ProviderSessionState struct {
 	// in-flight turn) and finishTurn actually re-starting the turn silently
 	// dropped the retry with no trace. Persisting it here mirrors the
 	// existing PendingResume*/PendingGateReprompt* durable-intent pattern.
-	PendingRestartRunID string
+	PendingRestartRunID  string
 	PendingRestartPrompt string
 	// PendingRestartGen is the durable delivery generation for stall-retry
 	// (BUG-288 R15-P0): claim + idempotency key "durable-{child}-restart-{gen}"

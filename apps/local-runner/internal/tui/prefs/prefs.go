@@ -17,6 +17,8 @@ type Session struct {
 	// Yolo is the chat-mode YOLO toggle (nil = never set). Flow mode is always
 	// auto-on and does not rewrite this preference.
 	Yolo *bool `json:"yolo,omitempty"`
+	// WorkingMode is Task-326 next-start default: "dev" | "vibe".
+	WorkingMode string `json:"workingMode,omitempty"`
 	// Mode is chat | flow | step (Mode.String()).
 	Mode string `json:"mode,omitempty"`
 	// Flow identity when Mode is flow/step (empty in chat mode).

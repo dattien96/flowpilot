@@ -433,9 +433,9 @@ func TestBUG327_ScopeDriftEscalateStampsLastEscalatedNodeID(t *testing.T) {
 	}
 }
 
-// FEATURE-KEYS.md (the feature registry) must NOT be treated as a coder's own
-// change-audit note — writing it is real scope drift and must still block
-// (BUG-278 allowed CA-* notes only).
+// FEATURE-KEYS.md is markdown (BUG-370): the frozen coder-gate ignores *.md
+// so vibe FEATURE-KEYS / tdd-signatures writes do not park. BUG-278 still
+// applies to CA-* vs forging gate rules; extra.go still drifts (see BUG-370).
 func TestBUG327_FeatureKeysWriteStillBlocks(t *testing.T) {
 	dir, head := newContractFreezeTestRepo(t)
 	svc, parentID := newP4CodeWriterFixture(t, dir)
@@ -450,12 +450,9 @@ func TestBUG327_FeatureKeysWriteStillBlocks(t *testing.T) {
 		ChangedFiles: []string{"src/calc.go", "change-audit/FEATURE-KEYS.md"},
 	}, 0)
 
-	if !blocked {
-		t.Fatal("expected block: change-audit/FEATURE-KEYS.md is not exempt")
-	}
-	snap := svc.agentGraphSnapshot(parentID)
-	if !strings.Contains(snap.LoopState.GateReason, "change-audit/FEATURE-KEYS.md") {
-		t.Fatalf("expected gate reason to name FEATURE-KEYS.md, got %q", snap.LoopState.GateReason)
+	if blocked {
+		snap := svc.agentGraphSnapshot(parentID)
+		t.Fatalf("BUG-370: FEATURE-KEYS.md is markdown and must not park, gate=%q", snap.LoopState.GateReason)
 	}
 }
 

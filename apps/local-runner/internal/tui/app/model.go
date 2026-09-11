@@ -52,6 +52,7 @@ type GateState struct {
 	Options        []string
 	RegressedTests []string
 	RunID          string
+	ResumeFrom     string
 	// AwaitingCustom is set after the operator clicked the [Custom] chip
 	// (CA-650): the next Enter submits the typed input as the custom gate
 	// decision. The runner rejects option=custom without customText.
@@ -166,6 +167,11 @@ type sessionKeysUnlockMsg struct{}
 
 // sessionLoadTimeoutMsg fires only if SessionDefaultsMsg never arrived.
 type sessionLoadTimeoutMsg struct{}
+
+// chatLoadTimeoutMsg fires when the cold-start chat list never settles
+// within budget: init-loading passes degraded (loud) instead of holding
+// the banner forever.
+type chatLoadTimeoutMsg struct{}
 
 // ProjectsCatalogMsg is a late/retry project list after the fast session path.
 type ProjectsCatalogMsg struct {
@@ -325,13 +331,13 @@ type AppModel struct {
 	pasteHijacked bool
 	// promptHistory is the sent-prompts ring for Up/Down recall (bash-style).
 	// promptHistIdx points into it while browsing; -1 means "show live draft".
-	promptHistory []string
-	promptHistIdx int
-	promptDraft   string
-	lastHistoryKeyAt time.Time
+	promptHistory      []string
+	promptHistIdx      int
+	promptDraft        string
+	lastHistoryKeyAt   time.Time
 	lastHistoryKeyType tea.KeyType
-	lastHistoryWasNav bool
-	prevHistoryKeyAt time.Time
+	lastHistoryWasNav  bool
+	prevHistoryKeyAt   time.Time
 	// lastInputAt is the timestamp of the last KeyMsg/MouseMsg that reached
 	// Update; inputStallLogged marks a fired input-watchdog stall banner
 	// (input_watchdog.go, CA-645) so it logs once per stall episode.
@@ -339,11 +345,11 @@ type AppModel struct {
 	inputStallLogged bool
 	inputHadRealKey  bool // true after the first real KeyMsg/MouseMsg (BUG-328 watchdog)
 	// actionRingIdx highlights one chip in the must-answer action ring (BUG-328).
-	actionRingIdx      int
-	actionRingFocus    bool
-	actionRingCardSig  string
-	f2StepPickIdx      int
-	attachPanelSel     int // 0-based row while attach panel is open
+	actionRingIdx     int
+	actionRingFocus   bool
+	actionRingCardSig string
+	f2StepPickIdx     int
+	attachPanelSel    int // 0-based row while attach panel is open
 	// lastMotionAt is stamped by hover-motion events at the tuiMsgFilter level
 	// (they never reach Update). It proves the console input pipe is still
 	// delivering events during an input stall, separating "keys dropped
@@ -356,19 +362,19 @@ type AppModel struct {
 	inputExpectedSince time.Time
 	// ss3 holds a bare 'O' rune while Windows ConPTY delivers an SS3 function
 	// key as 'O'+suffix rune records (BUG-328, tui.log pid 18400).
-	ss3               ss3FKeyState
-	viewport            viewportState
+	ss3      ss3FKeyState
+	viewport viewportState
 	// wheel coalesce: burst wheel events share one View() to avoid BUG-328 hang
 	// after ~20s of continuous scroll (pid 20632: wheel-only 1000h still wedged
 	// when every notch painted the full markdown transcript).
 	lastWheelAt       time.Time
 	pendingWheelDelta int
 	lastWheelDelta    int
-	mouseSel      mouseSelect
-	mouseDrag     mouseDrag
-	rowCache      []chatRow
-	rowCacheSig   uint64
-	runHandle     *client.RunHandle
+	mouseSel          mouseSelect
+	mouseDrag         mouseDrag
+	rowCache          []chatRow
+	rowCacheSig       uint64
+	runHandle         *client.RunHandle
 	// expandedToolGroups tracks which multi-tool-call runs (CA-525) are expanded.
 	// Keyed by the joined tool names of the run (content-derived, stable across
 	// thinking-placeholder reordering that shifts message indices).
@@ -379,14 +385,15 @@ type AppModel struct {
 	expandedUserPrompts map[string]bool
 
 	// Per-turn settings
-	yolo                bool
-	agentsFocus         bool
+	yolo        bool
+	workingMode string // Task-326: ""=unfiltered cache, "dev"|"vibe" after /vibe
+	agentsFocus bool
 	// chatPosture is the active Scan/Plan/Code posture ("" = code). Scan/Plan are
 	// read-only: the runner auto-approves reads and auto-denies writes without
 	// asking. Set via /mode or the Tab cycle; resend on every chat turn.
-	chatPosture         string
-	chatPostureCfg      client.ChatPostureConfig // cached runner document (/mode-setup reads it)
-	chatPostureDirty    bool                     // local profile edit pending a PUT
+	chatPosture      string
+	chatPostureCfg   client.ChatPostureConfig // cached runner document (/mode-setup reads it)
+	chatPostureDirty bool                     // local profile edit pending a PUT
 	// chatPostureSaving tracks a /mode-setup edit that is awaiting PUT completion
 	// so the "saving…" banner can be replaced with "saved" instead of hanging.
 	chatPostureSaving        bool
@@ -396,10 +403,10 @@ type AppModel struct {
 	modeSetupDraft      *client.ChatPostureConfig
 	modeSetupDraftDirty bool
 	// modeSetupModal is the 3-tab overlay that replaces the wizard's tmp steps.
-	modeSetupModalOpen      bool
-	modeSetupModalTab       string
-	modeSetupModalDraft     *client.ChatPostureConfig
-	modeSetupModalFocus     int
+	modeSetupModalOpen       bool
+	modeSetupModalTab        string
+	modeSetupModalDraft      *client.ChatPostureConfig
+	modeSetupModalFocus      int
 	modeSetupModalPickerOpen bool
 	modeSetupModalPickerKind string
 	modeSetupModalPickerIdx  int
@@ -414,9 +421,9 @@ type AppModel struct {
 	chatPosturePending string
 	// postureGrokSync / postureGrokSyncSet mirror a Grok YOLO posture sync
 	// requested by a scan/plan profile pin (applied via cmdGrokYoloPosture).
-	postureGrokSync    bool
-	postureGrokSyncSet bool
-	selectedSkills     []client.SkillSelection
+	postureGrokSync     bool
+	postureGrokSyncSet  bool
+	selectedSkills      []client.SkillSelection
 	skillsCatalog       []client.ProviderSkill // Desktop ChatInput skills list
 	workspaceFiles      []string               // last @file picker fetch (nil = not loaded)
 	workspaceFilesQuery string                 // query that produced workspaceFiles
@@ -478,6 +485,10 @@ type AppModel struct {
 	// "round R/C" chip on the steps header. Zero cap = unknown → chip hidden.
 	flowLoopRound int
 	flowLoopCap   int
+	// vibeTaskIndex/Total/Name mirror LoopState vibe progress (BUG-367).
+	vibeTaskIndex int
+	vibeTaskTotal int
+	vibeTaskName  string
 	// flowStepsProvider/flowStepsModel carry the run-level provider/model posture
 	// from the latest steps-runtime snapshot (Task-322): per-step fallback when
 	// a step row has no own provider/model (built-in nodes inherit run posture).
@@ -588,17 +599,22 @@ type AppModel struct {
 	signedInEmail string
 
 	// Input focus / slash suggestion selection
-	cursorOn               bool
-	suggIdx                int
+	cursorOn bool
+	suggIdx  int
 
 	// sessionLoading locks chat while provider/project catalogs load after connect.
 	sessionLoading bool
 	// sessionDefaultsLoaded is set after the first SessionDefaultsMsg (real chat gate).
 	sessionDefaultsLoaded bool
+	// chatWaitPending holds init-loading until the first chat list settles
+	// (cold start with a bound project): the history picker renders from
+	// m.chatList, so passing ready earlier leaves /open stuck on
+	// "loading chats…" when the silent first fetch fails.
+	chatWaitPending bool
 	// providersWarmRetries counts background /providers refetches while OpenCode
 	// model cache is still warming (undersized catalog).
 	providersWarmRetries int
-	loadingFrame          int
+	loadingFrame         int
 
 	// thinkingFrame drives the animated "Thinking" placeholder (spinner /
 	// shimmer / elapsed). Advanced by thinkingTickMsg while a thinking row is
@@ -718,6 +734,7 @@ var knownSlashCommands = []slashCommand{
 	{"/quit", "Exit the TUI"},
 	{"/scan", "Switch to scan posture — read-only (like /mode scan)"},
 	{"/yolo", "Toggle YOLO in chat mode (flow mode is auto-on)"},
+	{"/vibe", "Switch working mode — /vibe [on|off] or /vibe <requirement>"},
 	{"/mode", "Switch chat posture — /mode scan|plan|code"},
 	{"/mode-setup", "Configure posture profiles (provider/model/reasoning/yolo)"},
 	{"/agents", "List/cycle sub-agents (Tab while focused)"},

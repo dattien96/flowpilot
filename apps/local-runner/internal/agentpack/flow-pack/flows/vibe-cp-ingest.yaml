@@ -1,0 +1,89 @@
+id: vibe-cp-ingest
+version: "1"
+description: Vibe CP-driven ingest — read a CP-*.md, pause for Desktop/TUI CP Preview & Lock, then slice Tasks via the CP-58 splitter.
+mode: flow
+builtin:
+  editable: false
+  selectableIn: []
+  cloneable: false
+  mirror:
+    required: true
+    source: builtin
+policy:
+  cap: 3
+  onCap: escalate
+  extendBy: 2
+  extendMax: 2
+acceptance_nodes: []
+nodes:
+  - id: cp_reader
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/vibe-intake.md
+    join: all
+  - id: cp_validator
+    run: inline
+    lifecycle: once
+    behavior: hub.inline
+    agent: agents/synthesizer.md
+    promptTemplate: prompts/vibe-cp-validate.md
+    join: all
+  - id: cp_lock
+    run: inline
+    lifecycle: once
+    behavior: user.confirm
+    join: all
+  - id: task_slicer
+    run: delegate
+    lifecycle: once
+    behavior: agent.delegate
+    agent: agents/doc-writer.md
+    promptTemplate: prompts/task-splitter.md
+    join: all
+    artifactBindings:
+      - direction: input
+        slotName: cp_md
+        artifactInstanceId: cp_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/07-Coding-Plan/todo/CP-{{cpID}}-{{slug}}.md
+      - direction: output
+        slotName: task_md
+        artifactInstanceId: task_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 1
+        config:
+          pathTemplate: requirements/08-Task/todo/Task-{{idx}}-{{slug}}.md
+edges:
+  - from: cp_reader
+    to: cp_validator
+    when: done
+    kind: forward
+  - from: cp_validator
+    to: cp_lock
+    when: done
+    kind: forward
+  - from: cp_lock
+    to: task_slicer
+    when: done
+    kind: forward
+  - from: cp_lock
+    to: cp_reader
+    when: continue
+    kind: back
+  - from: cp_lock
+    to: ask_user
+    when: escalate
+    kind: forward
+  - from: task_slicer
+    to: done
+    when: done
+    kind: forward
+  - from: task_slicer
+    to: ask_user
+    when: escalate
+    kind: forward

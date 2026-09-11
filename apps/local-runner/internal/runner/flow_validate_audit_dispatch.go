@@ -39,7 +39,7 @@ func flowNodeInlineDispatchable(node agentpack.FlowNode) bool {
 		return false
 	}
 	switch canonical {
-	case "command.validate", "artifact.audit_draft", "telegram.notify", "hub.notify", "contract.freeze", "context.produce":
+	case "command.validate", "artifact.audit_draft", "telegram.notify", "hub.notify", "hub.inline", "contract.freeze", "context.produce":
 		return true
 	}
 	return false
@@ -111,6 +111,9 @@ func (s *InteractiveService) tryAdvanceFlowThroughInline(parentRunID string, edg
 	case "telegram.notify":
 		return s.runTelegramNotifyNode(ctx, parentRunID, edges, nodes, node, resultMessage)
 	case "hub.notify":
+		s.dispatchHubNotifyNode(parentRunID, node)
+		return true
+	case "hub.inline":
 		s.dispatchHubNotifyNode(parentRunID, node)
 		return true
 	case "contract.freeze":
@@ -296,31 +299,31 @@ func (s *InteractiveService) flowRunTerminalLocked(parentRunID string) bool {
 	case RunStatusFailed, RunStatusCancelled:
 		return true
 	case RunStatusCompleted:
-		if s.loopIsAdvancing(parentRunID) {
+		// Inline loopIsAdvancing without re-entering s.mu (already held):
+		// loopIsAdvancing only takes s.mu for blocked:paused confirm check.
+		st := s.agentOrchestrator.loopStateFor(parentRunID)
+		switch st.Status {
+		case "paused", "stopped", "done":
+			return true
+		case "blocked":
+			if st.BlockReason == vibeResumePausedReason {
+				return rs.vibeResumeConfirm
+			}
+			return true
+		default:
 			return false
 		}
-		return true
 	default:
 		return false
 	}
 }
 
-// alreadyCancelledContext returns a context.Context whose Done() is already
-// closed and Err() is context.Canceled â€” used by flowInlineContext so a late
-// inline-dispatch callback observes an unambiguously-cancelled context
-// instead of a fresh, uncancelled context.Background() (BUG-288 P1-12).
 func alreadyCancelledContext() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	return ctx
 }
 
-// flowInlineContext returns a cancelable context for in-process inline nodes
-// (validate/audit). stopAgentLoop cancels it so suites abort with the flow.
-// BUG-288 P1-12: once the run is terminal (stopped/done), this never mints a
-// fresh non-cancelled context â€” that was the bypass a late/queued inline
-// callback could exploit to keep running validate/audit/telegram/delegate
-// work after Stop cleared flowInlineCtx/flowInlineCancel.
 func (s *InteractiveService) flowInlineContext(parentRunID string) context.Context {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -332,10 +335,21 @@ func (s *InteractiveService) flowInlineContext(parentRunID string) context.Conte
 	case RunStatusFailed, RunStatusCancelled:
 		return alreadyCancelledContext()
 	case RunStatusCompleted:
-		if s.loopIsAdvancing(parentRunID) {
-			break
+		st := s.agentOrchestrator.loopStateFor(parentRunID)
+		advancing := true
+		switch st.Status {
+		case "paused", "stopped", "done":
+			advancing = false
+		case "blocked":
+			if st.BlockReason == vibeResumePausedReason {
+				advancing = !rs.vibeResumeConfirm
+			} else {
+				advancing = false
+			}
 		}
-		return alreadyCancelledContext()
+		if !advancing {
+			return alreadyCancelledContext()
+		}
 	}
 	if rs.flowInlineCtx != nil {
 		return rs.flowInlineCtx
@@ -345,6 +359,73 @@ func (s *InteractiveService) flowInlineContext(parentRunID string) context.Conte
 	rs.flowInlineCancel = cancel
 	return ctx
 }
+
+// maybeAdvancePendingValidateAfterCoder re-drives the validate predecessor
+// after a hub_stalled Retry when validate never started (run-220036).
+func (s *InteractiveService) maybeAdvancePendingValidateAfterCoder(parentRunID string) bool {
+	if s == nil || strings.TrimSpace(parentRunID) == "" {
+		return false
+	}
+	if s.loopSealedForReinvoke(parentRunID) {
+		return false
+	}
+	switch s.lookupFlowStepStatus(parentRunID, "validate") {
+	case StepStatusDone, StepStatusRunning, StepStatusWaitingUserApr:
+		return false
+	}
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil {
+		s.mu.Unlock()
+		return false
+	}
+	if rs.status == RunStatusFailed {
+		s.mu.Unlock()
+		return false
+	}
+	pred := ""
+	hasValidate := false
+	for _, n := range rs.activeFlowNodes {
+		if n.ID == "validate" {
+			hasValidate = true
+			break
+		}
+	}
+	if hasValidate {
+		for _, e := range rs.activeFlowEdges {
+			if e.To == "validate" && strings.EqualFold(e.When, "done") && strings.EqualFold(e.Kind, "forward") && e.From != "" {
+				pred = e.From
+				break
+			}
+		}
+	}
+	if pred == "" {
+		pred = "coder"
+	}
+	s.mu.Unlock()
+	if !hasValidate {
+		return false
+	}
+	if st := s.lookupFlowStepStatus(parentRunID, pred); st != StepStatusDone && !s.persistedCompletedChildExists(parentRunID, pred) {
+		return false
+	}
+	if s.flowRunTerminalLocked(parentRunID) {
+		return false
+	}
+	s.mu.Lock()
+	if rs := s.runs[parentRunID]; rs != nil {
+		if rs.status == RunStatusCancelled {
+			rs.status = RunStatusRunning
+			rs.agentStatus = string(RunStatusRunning)
+		}
+		if len(rs.activeFlowNodes) > 0 {
+			rs.autoOrchestrate = true
+		}
+	}
+	s.mu.Unlock()
+	return s.tryAdvanceFlowFromNode(parentRunID, pred, "retry after hub_stalled")
+}
+
 
 // loadValidateCommand resolves the validate node's shell command from
 // .flowpilot/guard/test_baseline.json's test_command field (BUG-243 Q-1's
@@ -1248,6 +1329,32 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 		if auditCtxCancelled(ctx, parentRunID, node.ID, "draft_not_ready") {
 			return false
 		}
+		// Vibe: missing feature key is not operator-actionable (Retry re-parks
+		// forever). Auto-finalize — CP-60 non-requirement gates auto-resolve.
+		if draft.Status == "blocked_missing_feature_key" && s.isVibeWorkingMode(parentRunID) {
+			summary := "Vibe audit: feature key missing or unverified; auto-finalized (not an operator gate)."
+			s.flowDiagLog(parentRunID, "flow_audit_vibe_missing_key_auto", summary,
+				"node_id", node.ID, "status", draft.Status,
+			)
+			// Sprint boundary: a finished sprint with plan tasks left parks a
+			// Continue gate for the next sprint instead of settling done.
+			// Live audit path: never flip a concurrently sealed loop.
+			if s.maybeParkVibeSprintBoundary(ctx, parentRunID, node.ID, false) {
+				return true
+			}
+		if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
+				Status:  "done",
+				Summary: summary,
+				Payload: map[string]any{"auditDraft": draft},
+			}); err != nil {
+				log.Printf("[flow-executor] vibe audit auto-finalize failed: %v", err)
+				return false
+			}
+			if s.isFlowEngineDriven(parentRunID) {
+				s.setFlowStepStatus(ctx, parentRunID, node.ID, StepStatusDone)
+			}
+			return true
+		}
 		summary := "Audit blocked: validation was not positively verified (status=" + draft.Status + ", validation=" + draft.ValidationResult + ")."
 		if draft.Status == "blocked_missing_feature_key" {
 			summary = "Audit blocked: feature key missing or unverified; cannot finalize."
@@ -1290,6 +1397,12 @@ func (s *InteractiveService) runAuditNode(ctx context.Context, parentRunID strin
 	}
 	if auditCtxCancelled(ctx, parentRunID, node.ID, "before_flow_done") {
 		return false
+	}
+	// Sprint boundary: a finished sprint with plan tasks left parks a
+	// Continue gate for the next sprint instead of settling done.
+	// Live audit path: never flip a concurrently sealed loop.
+	if s.maybeParkVibeSprintBoundary(ctx, parentRunID, node.ID, false) {
+		return true
 	}
 	if _, err := s.applyFlowControl(parentRunID, FlowControlInput{
 		Status:  "done",
@@ -1762,8 +1875,7 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 	if err != nil {
 		return escalate("invalid planner proposal: " + err.Error())
 	}
-
-	writerNode, path, ok := resolveFreezeWriterTarget(edges, nodes, node.ID, flowInlineChainHopLimit)
+	writerNode, path, direct, ok := freezeWriterBinding(edges, nodes, node.ID)
 	if !ok {
 		return escalate("no reachable agent.code writer target for this contract.freeze node")
 	}
@@ -1805,7 +1917,7 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 		if err := s.bindFrozenContractToSiblingWriters(store, workspace, parentRunID, node.ID, existingDraft, nodes, writerNode.ID, existing.BaseSHA, existing.BaselineWorktree); err != nil {
 			return escalate("could not bind sibling writer contracts: " + err.Error())
 		}
-		return s.advanceFlowThroughFreezeChain(ctx, parentRunID, node, writerNode, existing, path)
+		return s.advanceAfterContractFreeze(ctx, parentRunID, edges, nodes, node, writerNode, existing, path, direct, plannerResult)
 	}
 
 	// Derive the next version from what's actually on disk (not hardcoded 1):
@@ -1868,7 +1980,7 @@ func (s *InteractiveService) runContractFreezeNode(ctx context.Context, parentRu
 		"node_id", node.ID, "coder_node_id", writerNode.ID, "contract_id", rec.ContractID, "version", rec.Version,
 	)
 
-	return s.advanceFlowThroughFreezeChain(ctx, parentRunID, node, writerNode, rec, path)
+	return s.advanceAfterContractFreeze(ctx, parentRunID, edges, nodes, node, writerNode, rec, path, direct, plannerResult)
 }
 
 // advanceFlowThroughFreezeChain dispatches each intermediate context.produce
@@ -2032,6 +2144,29 @@ func (s *InteractiveService) spawnFrozenWriterChild(ctx context.Context, parentR
 	return nil
 }
 
+// freezeWriterBinding picks the agent.code writer a contract.freeze node binds
+// to. The CP-55 direct chain (freeze → [context.produce]* → agent.code) still
+// owns writer spawn. vibe-sprint (SD-24) puts TDD as agent.delegate between
+// context and coder — that hop is not a freeze-chain skip (CA-426 C-3). Bind
+// the first agent.code in the graph and follow the freeze done-edge normally
+// so TDD still runs before coder.
+func freezeWriterBinding(edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, freezeNodeID string) (writer agentpack.FlowNode, path []agentpack.FlowNode, direct bool, ok bool) {
+	if w, p, resolved := resolveFreezeWriterTarget(edges, nodes, freezeNodeID, flowInlineChainHopLimit); resolved {
+		return w, p, true, true
+	}
+	writers := flowAgentCodeWriterNodes(nodes)
+	if len(writers) == 0 {
+		return agentpack.FlowNode{}, nil, false, false
+	}
+	return writers[0], nil, false, true
+}
+
+func (s *InteractiveService) advanceAfterContractFreeze(ctx context.Context, parentRunID string, edges []agentpack.FlowEdge, nodes []agentpack.FlowNode, freezeNode, writerNode agentpack.FlowNode, rec changecontract.FrozenContractRecord, path []agentpack.FlowNode, direct bool, resultMessage string) bool {
+	if direct {
+		return s.advanceFlowThroughFreezeChain(ctx, parentRunID, freezeNode, writerNode, rec, path)
+	}
+	return s.advanceToNextInlineOrDelegate(ctx, parentRunID, edges, nodes, freezeNode.ID, "done", resultMessage)
+}
 // flowAgentCodeWriterNodes returns every agent.code writer node in nodes — the
 // nodes a frozen preflight contract must be bound to (Task-293: a freeze node
 // governs the whole coding chain, e.g. rag-harness's test_signatures AND

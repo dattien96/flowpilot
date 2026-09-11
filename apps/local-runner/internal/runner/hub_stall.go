@@ -432,6 +432,10 @@ func (s *InteractiveService) checkAndBlockStalledHub(runID string) bool {
 		s.maybeScheduleHubStallCheck(runID)
 		return false
 	}
+	if s.maybeSettleVibeOwnerDebate(runID) {
+		s.maybeScheduleHubStallCheck(runID)
+		return false
+	}
 
 	reason := fmt.Sprintf("hub has made no progress for %s (no turn, gate, or reinvoke in flight)", timeout)
 	s.setFlowStepAwaitingUser(context.Background(), runID)

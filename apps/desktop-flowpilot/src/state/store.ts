@@ -30,6 +30,7 @@ import type { SupportedModel } from "@flowpilot/client-core";
 import type { LocalRunnerProvider } from "@flowpilot/client-core";
 import { createRunnerClient } from "@/client/createRunnerClient";
 import { RunnerApiError } from "@/client/HttpWsRunnerClient";
+import { detectVibeEntry, loadWorkingMode, persistWorkingMode } from "./workingMode";
 import type { ScenarioName } from "@/client/mockData";
 import { ideBridge } from "@/client/ideBridge";
 import { getAdminUseCases } from "@/clientCore";
@@ -340,6 +341,9 @@ interface AppState {
   selectedModel?: string;
   reasoningEffort?: string;
   yoloMode: boolean;
+  /** Task-326 session default: wire enum "dev"|"vibe". UI label Normal = dev. */
+  workingMode: "dev" | "vibe";
+  setWorkingMode(mode: "dev" | "vibe"): void;
   /** True while toggleYoloForActiveProvider's Grok-only async path is applying
    *  the new posture on the backend (config.toml rewrite + process respawn,
    *  Task-218) — Claude/Codex/Gemini never set this, their YOLO toggle stays
@@ -600,6 +604,7 @@ export const useStore = create<AppState>((set, get) => ({
   chatMode: "normal_chat",
   selectedProvider: "codex",
   yoloMode: false,
+  workingMode: loadWorkingMode(),
   grokYoloPostureLoading: false,
   summaryGenerating: false,
   chatStartMode: "normal",
@@ -1387,6 +1392,18 @@ export const useStore = create<AppState>((set, get) => ({
     set({ yoloMode: yolo });
   },
 
+  setWorkingMode(mode) {
+    const wired = mode === "vibe" ? "vibe" : "dev";
+    persistWorkingMode(wired);
+    set({
+      workingMode: wired,
+      chatStartMode: "normal",
+      chatSourceDocId: "",
+      flowRef: undefined,
+      builtinOrchestrationOptions: [],
+    });
+  },
+
   async toggleYoloForActiveProvider(next) {
     const { client, selectedProvider } = get();
     if (selectedProvider !== "grok") {
@@ -1741,6 +1758,10 @@ export const useStore = create<AppState>((set, get) => ({
     const isDetachedReattach =
       chatMode === "normal_chat" && Boolean(existingChatId) && Boolean(runId) && Boolean(get().chatDetached);
     const isFirstChatTurn = chatMode === "normal_chat" && !runId && !isDetachedReattach;
+    const workingMode = get().workingMode === "vibe" ? "vibe" as const : "dev" as const;
+    const vibeEntry = workingMode === "vibe" && isFirstChatTurn
+      ? detectVibeEntry(chatSourceDocId.trim() || prompt)
+      : null;
     try {
       if (isDetachedReattach) {
         const handle = await client.startRun({
@@ -1749,6 +1770,7 @@ export const useStore = create<AppState>((set, get) => ({
           model: selectedModel,
           reasoningEffort,
           yoloMode,
+          workingMode,
           chatMode: "normal_chat",
           cwd,
           chatId: existingChatId!,
@@ -1773,6 +1795,8 @@ export const useStore = create<AppState>((set, get) => ({
                 model: selectedModel,
                 reasoningEffort,
                 yoloMode,
+                workingMode,
+                flowRef: vibeEntry?.flowRef,
                 chatMode: "normal_chat",
                 cwd,
               }
@@ -1781,6 +1805,7 @@ export const useStore = create<AppState>((set, get) => ({
                 workflowId: launchMode === "workflow" ? selectedWorkflowId : undefined,
                 stepId: launchTargetId || undefined,
                 providerKey: selectedProvider,
+                workingMode,
                 cwd,
               },
         );
@@ -1801,8 +1826,9 @@ export const useStore = create<AppState>((set, get) => ({
         stepId: turnStepId,
         prompt,
         changeType: isFirstChatTurn && chatStartMode !== "normal" ? chatStartMode : undefined,
-        sourceDocId:
-          isFirstChatTurn && chatStartMode !== "normal" && chatSourceDocId.trim().length > 0
+        sourceDocId: isFirstChatTurn && vibeEntry?.sourceDocId
+          ? vibeEntry.sourceDocId
+          : isFirstChatTurn && chatStartMode !== "normal" && chatSourceDocId.trim().length > 0
             ? chatSourceDocId.trim()
             : undefined,
         selectedSkills:
@@ -1836,7 +1862,11 @@ export const useStore = create<AppState>((set, get) => ({
         // picked a flow. chatStartMode's runner-facing sub-mode key is "bug",
         // distinct from the UI's "bugfix" tab value.
         subMode: isFirstChatTurn && chatStartMode === "bugfix" && flowRef ? "bug" : undefined,
-        flowRef: isFirstChatTurn && chatStartMode === "bugfix" ? flowRef : undefined,
+        flowRef: isFirstChatTurn && vibeEntry?.flowRef
+          ? vibeEntry.flowRef
+          : isFirstChatTurn && chatStartMode === "bugfix"
+            ? flowRef
+            : undefined,
       };
       set({ runId, lastTurnInput: turnInput, activeStepId: turnStepId, _streamRunSeq: get()._streamRunSeq + 1 });
       cancelHistoryReplayStream();

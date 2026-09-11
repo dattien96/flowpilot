@@ -132,13 +132,17 @@ func (m *AppModel) actionRingItems() []actionRingItem {
 	if m.flowLoopBlocked() {
 		showAllow := m.blockedCardAllowShown()
 		isPlanApproval := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "plan_approval")
+		isVibeLock := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "vibe_lock")
+		isSprintBoundary := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "vibe_sprint_boundary")
 		retryLabel := "[Retry]"
 		if isPlanApproval {
-			// Live-tested run-206538: on a plan_approval park [Retry] misreads
-			// as "run again" while it really approves the plan and forwards
-			// freeze. [Approve] states the decision; target stays "retry" so
-			// dispatch and ring indices never shift.
 			retryLabel = "[Approve]"
+		}
+		if isVibeLock {
+			retryLabel = "[Lock]"
+		}
+		if isSprintBoundary {
+			retryLabel = "[Continue]"
 		}
 		items := []actionRingItem{
 			{target: "retry", label: retryLabel},

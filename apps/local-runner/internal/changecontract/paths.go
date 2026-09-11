@@ -38,6 +38,27 @@ func IsConcreteCodeTarget(p string) bool {
 	return true
 }
 
+// IsUserAllowableDriftPath reports whether p may be added to frozen scope
+// when the operator clicks Allow on a scope-drift park (Task-309 / BUG-366).
+// Concrete code targets are allowed; so are specific doc/audit files the
+// coder-gate itself reports as drift (change-audit/FEATURE-KEYS.md, other
+// *.md, requirements/**). Globs, flags, and extension-less buckets
+// (Makefile, "apps") stay rejected so CA-427 Finding 5's explicit error is
+// unchanged for those shapes.
+func IsUserAllowableDriftPath(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "" || strings.HasPrefix(p, "-") || strings.ContainsAny(p, "*?[") {
+		return false
+	}
+	if IsConcreteCodeTarget(p) {
+		return true
+	}
+	if filepath.Ext(p) == "" {
+		return false
+	}
+	return flowgate.IsDocOrAuditFile(p)
+}
+
 // NormalizeDeclaredCodePaths validates and normalizes a frozen-contract
 // declared-path list (CP-55 P-2 §3.4).
 //

@@ -14,6 +14,7 @@ import (
 
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/changecontract"
+	"flowpilot-runner/internal/workingmode"
 )
 
 // RegisterInteractiveRoutes wires the Phase 2 interactive + admin endpoints onto
@@ -26,6 +27,7 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /client/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/workflows/{workflowId}/steps", s.handleListSteps)
 	mux.HandleFunc("GET /client/chat/builtin-orchestration-options", s.handleListBuiltinOrchestrationOptions)
+	mux.HandleFunc("GET /client/flow-picker-options", s.handleFlowPickerOptions)
 	mux.HandleFunc("GET /client/projects/{projectId}/workflow-runs", s.handleListProjectRunHistory)
 	// CP-59 chat SSOT timeline (Task-313) — always ON.
 	mux.HandleFunc("GET /client/chats/{chatId}/timeline", s.handleChatTimeline)
@@ -244,6 +246,7 @@ func (s *InteractiveService) handleStartRun(w http.ResponseWriter, r *http.Reque
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
 		return
 	}
+	in.Client = r.Header.Get("X-Client")
 	handle, e := s.createRun(in)
 	if e != nil {
 		writeInteractiveError(w, e)
@@ -346,9 +349,11 @@ func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Requ
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))
 		return
 	}
-	if err := validateChatOrchestrationSelection(body.SubMode, body.FlowRef); err != nil {
-		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_flow_ref", err.Error()))
-		return
+	if !workingmode.SkipChatOrchestrationCheck(body.FlowRef) {
+		if err := validateChatOrchestrationSelection(body.SubMode, body.FlowRef); err != nil {
+			writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_flow_ref", err.Error()))
+			return
+		}
 	}
 	// BUG-174: a Flow-Mode workflow-picker launch sends a workflowID but no
 	// flowRef, so the flow executor never engaged and the hub did all the work
@@ -632,6 +637,9 @@ func (s *InteractiveService) handleAdminQuestions(w http.ResponseWriter, r *http
 // ---- run creation / snapshot / fake artifacts ------------------------------
 
 func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
+	if e := s.enforceWorkingModeStart(&in); e != nil {
+		return RunHandle{}, e
+	}
 	// CA-638: ensure the target workspace is GitNexus-indexed so scope-drift
 	// HighSeverity and source.dependence can query real dependents. Runs once
 	// per process per workspace; non-blocking.
@@ -850,6 +858,7 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		workspaceCwd:      in.Cwd,
 		modelName:         resolvedModel,
 		yolo:              resolvedYolo,
+		workingMode:       in.WorkingMode,
 		reasoningEffort:   in.ReasoningEffort,
 		runKind:           runKind,
 		status:            RunStatusIdle,
@@ -857,6 +866,14 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		updatedAt:         now,
 		subs:              map[int64]chan ProviderEvent{},
 		idempotency:       map[string]string{},
+	}
+	if ref := strings.TrimSpace(in.FlowRef); ref != "" {
+		rs.chatFlowRef = ref
+		id := workingmode.BareFlowID(ref)
+		if id == vibeCpIngestFlowID || id == vibeIngestFlowID {
+			rs.vibeAwaitingLock = true
+			rs.vibeSprintBudget = defaultVibeSprintBudget
+		}
 	}
 	if chatID != "" {
 		rs.chatID = chatID
@@ -886,6 +903,8 @@ func (s *InteractiveService) createRun(in StartRunInput) (RunHandle, *apiErr) {
 		LegState:          rs.legState,
 		SwitchFromRunID:   switchFrom,
 		Yolo:              resolvedYolo,
+		WorkingMode:       in.WorkingMode,
+		ChatFlowRef:       rs.chatFlowRef,
 	}); err != nil {
 		delete(s.runs, runID)
 		return RunHandle{}, newAPIErr(http.StatusBadGateway, "workflow_state_unavailable", err.Error())
@@ -947,6 +966,11 @@ func (s *InteractiveService) resumeRun(runID string) (RunHandle, *apiErr) {
 		}
 	}
 	s.seedTranscriptFromDisk(rs)
+	s.healVibeFailedForReopenPark(rs.id)
+	// Boundary first (same order as reconstruct): resume-confirm no-ops
+	// while boundary is pending, but not vice versa.
+	s.maybeReparkVibeSprintBoundary(rs.id)
+	s.maybeParkVibeResumeConfirm(rs.id)
 	// BUG-339: stamp missing ChatID from durable transcript (BUG-338) so
 	// /open can backfill prior legs even when the session row predates
 	// chat_id (provider-agnostic, chatId only).
@@ -1001,6 +1025,11 @@ type pendingQuestionView struct {
 	MultiSelect bool             `json:"multiSelect"`
 }
 
+type pendingGateView struct {
+	GateOptions []string `json:"gateOptions"`
+	ResumeFrom  string   `json:"resumeFrom,omitempty"`
+}
+
 type runSnapshotView struct {
 	RunID             string               `json:"runId"`
 	ProviderSessionID string               `json:"providerSessionId"`
@@ -1008,6 +1037,7 @@ type runSnapshotView struct {
 	Status            RunStatus            `json:"status"`
 	PendingApproval   *pendingApprovalView `json:"pendingApproval,omitempty"`
 	PendingQuestion   *pendingQuestionView `json:"pendingQuestion,omitempty"`
+	PendingGate       *pendingGateView     `json:"pendingGate,omitempty"`
 }
 
 type runHistoryItem struct {
@@ -1022,7 +1052,7 @@ type runHistoryItem struct {
 	LastMessage string      `json:"lastMessage,omitempty"`
 	// RunKind distinguishes normal chat runs from workflow runs so chat runs
 	// are excluded from workflow catalogs and labeled correctly in history (T-7).
-	RunKind         string `json:"runKind,omitempty"`
+	RunKind string `json:"runKind,omitempty"`
 	// Chat SSOT (CP-59 / SD-26 §5.1): chat grouping for the navigator.
 	ChatID          string `json:"chatId,omitempty"`
 	LegSeq          int    `json:"legSeq,omitempty"`
@@ -1081,8 +1111,8 @@ func (s *InteractiveService) projectRunHistory(projectID string) []runHistoryIte
 			LastPrompt:  rs.lastPrompt,
 			LastMessage: rs.lastMessage,
 			RunKind:     rs.runKind,
-				ChatID:          rs.chatID,
-				LegSeq:          rs.legSeq,
+			ChatID:      rs.chatID,
+			LegSeq:      rs.legSeq,
 			ParentRunID: rs.parentRunID,
 			AgentName:   rs.agentName,
 			Role:        rs.role,
@@ -1274,6 +1304,15 @@ func (s *InteractiveService) runSnapshot(runID string) (runSnapshotView, *apiErr
 		ProviderSessionID: rs.providerSessionID,
 		ProviderKey:       rs.providerKey,
 		Status:            rs.status,
+	}
+	// Sprint boundary wins over resume-confirm when both are somehow set
+	// (same order as SubmitGateDecision): one gate on screen, one router.
+	if rs.vibeSprintBoundaryPending {
+		view.Status = RunStatus("blocked")
+		view.PendingGate = &pendingGateView{GateOptions: []string{"ok", "cancel"}, ResumeFrom: vibeSprintBoundaryResumeLabel(rs.vibeTaskPlan, rs.vibeSprintIndex, rs.vibeSprintBoundaryTask)}
+	} else if rs.vibeResumeConfirm {
+		view.Status = RunStatus("blocked")
+		view.PendingGate = &pendingGateView{GateOptions: []string{"ok", "cancel"}, ResumeFrom: rs.vibeResumeFromNode}
 	}
 	if rs.pendingApprovalID != "" {
 		if rec := s.approvals[rs.pendingApprovalID]; rec != nil {
@@ -1618,12 +1657,15 @@ func fakeArtifacts(runID string) []Artifact {
 }
 
 // handleAmendFlow handles POST /client/workflow-runs/{runId}/agent-loop/amend.
-// Body: {"paths": ["user.go"]}. CP-55 P-4 / CP-43 F3 live trigger for
-// changecontract.AmendFrozenContract: widens every active frozen contract of
-// the run that is missing the additional paths (union semantics, mints
-// version+1 with Supersedes pointing at the prior), then resumes the parked
-// flow so the retried writer passes its scope gate. Applies only to a run
-// currently parked blocked (a scope-drift park); returns 409 otherwise.
+// Body: {"paths": ["user.go"]}. CP-55 P-4 / CP-43 F3 / Task-309 live trigger
+// for changecontract.AmendFrozenContractForAllow: widens every active frozen
+// contract of the run that is missing the additional paths (union semantics,
+// mints version+1 with Supersedes pointing at the prior). Concrete code
+// targets join DeclaredPaths; specific doc/audit files the gate reported as
+// drift (change-audit/FEATURE-KEYS.md) join AllowedExtraPaths so Allow does
+// not 422 (BUG-366). Then resumes the parked flow so the retried writer
+// passes its scope gate. Applies only to a run currently parked blocked
+// (a scope-drift park); returns 409 otherwise.
 func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("runId")
 	var body struct {
@@ -1674,7 +1716,7 @@ func (s *InteractiveService) handleAmendFlow(w http.ResponseWriter, r *http.Requ
 		if err != nil || !ok {
 			continue
 		}
-		next, err := changecontract.AmendFrozenContract(store, workspace, rec, paths, time.Now().UTC())
+		next, err := changecontract.AmendFrozenContractForAllow(store, workspace, rec, paths, time.Now().UTC())
 		if err != nil {
 			writeInteractiveError(w, newAPIErr(http.StatusUnprocessableEntity, "amend_failed", err.Error()))
 			return

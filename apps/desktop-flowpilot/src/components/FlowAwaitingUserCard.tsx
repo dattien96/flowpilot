@@ -35,19 +35,24 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
   if (gateBlock) return null;
 
   const { stalled, isCap, driftedPaths, isDrift, retryIsPrimary } = awaitingUserDriftState(loopState);
+  const isVibeLock = loopState.blockReason === "vibe_lock";
   const reasonLabel =
-    isCap
-      ? "Round limit reached"
-      : stalled
-        ? "Member stalled"
-        : "Needs your decision";
+    isVibeLock
+      ? "Preview & Lock"
+      : isCap
+        ? "Round limit reached"
+        : stalled
+          ? "Member stalled"
+          : "Needs your decision";
   const detail =
     loopState.gateReason ||
-    (isCap
-      ? "The review loop reached its round limit."
-      : stalled
-        ? "A cohort member stopped producing events. Retry it, skip it (mark failed and join), or stop the flow."
-        : "The flow paused and is waiting for your input.");
+    (isVibeLock
+      ? "Lock the SS/CP draft to start slicing, or paste edits then Lock."
+      : isCap
+        ? "The review loop reached its round limit."
+        : stalled
+          ? "A cohort member stopped producing events. Retry it, skip it (mark failed and join), or stop the flow."
+          : "The flow paused and is waiting for your input.");
 
   const handleRetry = async () => {
     if (submitting) return;
@@ -130,12 +135,12 @@ export function FlowAwaitingUserCard(): React.ReactElement | null {
           <>
             <button
               type="button"
-              className={`btn ${retryIsPrimary ? "btn-primary" : "btn-ghost"}`}
+              className={`btn ${retryIsPrimary || isVibeLock ? "btn-primary" : "btn-ghost"}`}
               onClick={() => void handleRetry()}
               disabled={submitting}
-              title="run again with old scope"
+              title={isVibeLock ? "lock draft and continue" : "run again with old scope"}
             >
-              Retry <span className="btn-desc">run again with old scope</span>
+              {isVibeLock ? "Lock" : "Retry"} <span className="btn-desc">{isVibeLock ? "write-back if edited, then slice" : "run again with old scope"}</span>
             </button>
             {isDrift && (
               <button

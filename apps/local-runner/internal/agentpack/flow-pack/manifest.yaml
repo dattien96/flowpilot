@@ -73,6 +73,11 @@ flows:
     editable: false
     selectableIn: []
     cloneable: false
+  - path: flows/vibe-cp-ingest.yaml
+    visibility: builtin
+    editable: false
+    selectableIn: []
+    cloneable: false
 tools:
   - tools/submit-review-outcome.yaml
   - tools/vibe-requirement-outcome.yaml
@@ -94,6 +99,10 @@ prompts:
   - prompts/plan-cp.md
   - prompts/review-cp.md
   - prompts/task-splitter.md
+  - prompts/vibe-ss-ingest.md
+  - prompts/vibe-ss-validate.md
+  - prompts/vibe-cp-from-ss.md
+  - prompts/vibe-cp-validate.md
 compatibility:
   minRunnerVersion: TBD
   fallbackToGoBuiltins: true

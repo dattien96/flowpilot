@@ -186,13 +186,18 @@ func (s *InteractiveService) synthesisDoneVerdictError(parentRunID string) error
 	parent := s.runs[parentRunID]
 	var expected []string
 	var verdicts map[string]string
+	hasOwnerDebate := false
 	if parent != nil {
 		expected = reviewCohortNodeLabels(parent.activeFlowNodes)
 		verdicts = parent.lastReviewCohortVerdicts
+		hasOwnerDebate = len(cohortNodeLabels(parent.activeFlowNodes, "owner_debate")) > 0
 	}
 	s.mu.Unlock()
 
 	if len(expected) == 0 {
+		if hasOwnerDebate {
+			return nil
+		}
 		return fmt.Errorf("applyFlowControl: synthesis done requires reviewer machine verdicts but no review cohort nodes are configured")
 	}
 	var missing, notApproved []string

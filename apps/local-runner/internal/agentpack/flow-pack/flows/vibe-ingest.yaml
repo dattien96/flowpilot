@@ -1,6 +1,6 @@
 id: vibe-ingest
 version: "1"
-description: Vibe ingest — convert raw requirement into SS-13 drafts, pause for Desktop/TUI SS Preview & Lock, then auto-slice sprint plan.
+description: Vibe ingest — raw idea to SS lock, write one CP, then join vibe-cp-ingest at task_slicer (skip CP read/lock).
 mode: flow
 builtin:
   editable: false
@@ -21,30 +21,43 @@ nodes:
     lifecycle: once
     behavior: agent.delegate
     agent: agents/vibe-intake.md
+    promptTemplate: prompts/vibe-ss-ingest.md
     join: all
   - id: ss_converter
     run: delegate
     lifecycle: once
     behavior: agent.delegate
     agent: agents/vibe-intake.md
+    promptTemplate: prompts/vibe-ss-ingest.md
     join: all
   - id: ss_validator
     run: inline
     lifecycle: once
     behavior: hub.inline
     agent: agents/synthesizer.md
+    promptTemplate: prompts/vibe-ss-validate.md
     join: all
   - id: ss_lock
     run: inline
     lifecycle: once
     behavior: user.confirm
     join: all
-  - id: sprint_slicer
-    run: inline
+  - id: cp_writer
+    run: delegate
     lifecycle: once
-    behavior: hub.inline
-    agent: agents/synthesizer.md
+    behavior: agent.delegate
+    agent: agents/doc-writer.md
+    promptTemplate: prompts/vibe-cp-from-ss.md
     join: all
+    artifactBindings:
+      - direction: output
+        slotName: cp_md
+        artifactInstanceId: cp_md
+        artifactTypeId: file_artifact.v1
+        required: true
+        position: 0
+        config:
+          pathTemplate: requirements/07-Coding-Plan/todo/CP-{{cpID}}-{{slug}}.md
 edges:
   - from: ingest_reader
     to: ss_converter
@@ -58,23 +71,23 @@ edges:
     to: ss_lock
     when: done
     kind: forward
-  - from: ss_lock
-    to: sprint_slicer
-    when: done
-    kind: forward
-  - from: ss_lock
+  - from: ss_validator
     to: ss_converter
     when: continue
     kind: back
   - from: ss_lock
+    to: cp_writer
+    when: done
+    kind: forward
+  - from: ss_lock
     to: ask_user
     when: escalate
     kind: forward
-  - from: sprint_slicer
+  - from: cp_writer
     to: done
     when: done
     kind: forward
-  - from: sprint_slicer
+  - from: cp_writer
     to: ask_user
     when: escalate
     kind: forward

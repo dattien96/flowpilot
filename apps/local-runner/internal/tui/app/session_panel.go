@@ -77,18 +77,16 @@ func (m *AppModel) flowStepsPanelLines() []string {
 // overflow maxRows — rag-harness has 9 nodes, so a 50-row sidebar now shows
 // the full list including audit instead of truncating at 8 (run-142155).
 func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
-	if len(m.flowSteps) == 0 {
+	steps := visibleFlowSteps(m.flowSteps)
+	if len(steps) == 0 {
 		return nil
 	}
 	if maxRows < 1 {
 		maxRows = 1
 	}
 	var out []string
-	// Steps are listed without a count header — the sidebar/overlay render a
-	// "steps" section title (CA-542). Sub-agent [open] on the step row only;
-	// the focused child gets no chip because [back] lives on the steps header.
-	for i := 0; i < len(m.flowSteps) && i < maxRows; i++ {
-		s := m.flowSteps[i]
+	for i := 0; i < len(steps) && i < maxRows; i++ {
+		s := steps[i]
 		name := strings.TrimSpace(s.NodeID)
 		if name == "" {
 			name = strings.TrimSpace(s.StepType)
@@ -189,8 +187,8 @@ func (m *AppModel) flowStepsPanelLinesMax(maxRows int) []string {
 			}
 		}
 	}
-	if len(m.flowSteps) > maxRows {
-		out = append(out, fmt.Sprintf("… +%d more", len(m.flowSteps)-maxRows))
+	if len(steps) > maxRows {
+		out = append(out, fmt.Sprintf("… +%d more", len(steps)-maxRows))
 	}
 	if m.flowStepsActive != "" {
 		out = append(out, styleStepRunning.Render("Now: "+m.flowStepsActive))
@@ -264,8 +262,25 @@ func loopRoundChip(round, roundCap int) string {
 // stepsSectionTitle renders the "steps" section header for the sidebar and the
 // overlay. The focused child has no [back] chip (switching is keyboard-only via
 // /agents + Esc, per user request) — it is highlighted in the step row instead.
+func vibeTaskChip(index, total int, name string) string {
+	if total <= 0 || index <= 0 {
+		return ""
+	}
+	label := fmt.Sprintf("  task %d/%d", index, total)
+	if n := strings.TrimSpace(name); n != "" {
+		if len([]rune(n)) > 28 {
+			n = string([]rune(n)[:25]) + "…"
+		}
+		label += " " + n
+	}
+	return label
+}
+
 func (m *AppModel) stepsSectionTitle() string {
 	title := styleGate.Render("steps")
+	if chip := vibeTaskChip(m.vibeTaskIndex, m.vibeTaskTotal, m.vibeTaskName); chip != "" {
+		title += styleSystem.Render(chip)
+	}
 	// Task-322: loop round/cap chip from the latest agent-graph snapshot.
 	if chip := loopRoundChip(m.flowLoopRound, m.flowLoopCap); chip != "" {
 		title += styleSystem.Render(chip)
@@ -601,6 +616,9 @@ func (m *AppModel) agentRunsSectionLines(maxRows int) []string {
 		}
 		if name == "" {
 			name = shortID(a.RunID)
+		}
+		if task := agentTaskDetail(a); task != "" {
+			name = name + " " + task
 		}
 		st := strings.ToUpper(strings.TrimSpace(a.Status))
 		// Same glyph language as the steps rows: spinner while running,

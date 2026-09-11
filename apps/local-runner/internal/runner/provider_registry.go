@@ -83,6 +83,8 @@ type TurnRequest struct {
 	// state (applyFlowControl only checks the run exists, not that it's
 	// actually a flow hub).
 	OfferReviewOutcomeTool bool
+	// OfferVibeRequirementTool gates vibe-requirement-outcome (vibe-sprint synthesis only).
+	OfferVibeRequirementTool bool
 }
 
 // ProviderRuntimeAdapter is the provider-neutral adapter contract (03/04). The

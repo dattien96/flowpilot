@@ -13,18 +13,20 @@ import (
 
 	"flowpilot-runner/internal/tui/client"
 	"flowpilot-runner/internal/tui/prefs"
+	"flowpilot-runner/internal/workingmode"
 )
 
 // persistTUISessionPrefs writes latest provider/model/yolo/mode/flow so new TUI sessions keep them.
 // yolo is the chat-mode toggle only (flow uses auto-on via effectiveYolo; we still
 // persist the underlying chat preference so /chat after restart keeps it).
-func persistTUISessionPrefs(provider, model, reasoning string, yolo bool, mode Mode, launch LaunchArm) {
+func persistTUISessionPrefs(provider, model, reasoning string, yolo bool, mode Mode, launch LaunchArm, workingMode string) {
 	yoloCopy := yolo
 	s := prefs.Session{
 		Provider:        strings.TrimSpace(provider),
 		Model:           strings.TrimSpace(model),
 		ReasoningEffort: strings.TrimSpace(reasoning),
 		Yolo:            &yoloCopy,
+		WorkingMode:     strings.TrimSpace(workingMode),
 		Mode:            mode.String(),
 	}
 	if mode == ModeFlow || mode == ModeStep {
@@ -37,7 +39,7 @@ func persistTUISessionPrefs(provider, model, reasoning string, yolo bool, mode M
 
 func (m *AppModel) persistSessionPrefs() {
 	// Always store m.yolo (chat preference), never effectiveYolo() auto-on.
-	persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort, m.yolo, m.mode, m.launch)
+	persistTUISessionPrefs(m.provider, m.model, m.reasoningEffort, m.yolo, m.mode, m.launch, m.workingMode)
 }
 
 // bindProjectIfPossible tries to bind a project from the known catalog using
@@ -88,8 +90,10 @@ func applySavedModeAndFlow(m *AppModel, saved prefs.Session) {
 		Label:      label,
 	}
 	if arm.IsBuiltin() {
-		arm.SubMode = "bug"
-		arm.ChangeType = "bugfix"
+		if !workingmode.LooksLikeVibeFlow(arm.FlowRef) {
+			arm.SubMode = "bug"
+			arm.ChangeType = "bugfix"
+		}
 		m.firstTurnPending = true
 	} else {
 		m.firstTurnPending = false
@@ -816,6 +820,32 @@ func filterSlashSuggestions(input string) []slashCommand {
 		if strings.HasPrefix(sc.name, in) {
 			out = append(out, sc)
 		}
+	}
+	return out
+}
+
+// filterVibeArgSuggestions is the /vibe Tab picker: exact `/vibe` (or `/vibe <q>`)
+// offers on/off. CP entry is `/flow vibe-cp-ingest`, not a hyphen command.
+func filterVibeArgSuggestions(input string) []suggestItem {
+	s := strings.TrimLeft(input, " \t")
+	lower := strings.ToLower(s)
+	if lower != "/vibe" && !strings.HasPrefix(lower, "/vibe ") {
+		return nil
+	}
+	q := ""
+	if strings.HasPrefix(lower, "/vibe ") {
+		q = strings.ToLower(strings.TrimSpace(s[len("/vibe"):]))
+	}
+	args := []struct{ value, detail string }{
+		{"on", "vibe mode on (next start)"},
+		{"off", "vibe mode off (normal)"},
+	}
+	out := make([]suggestItem, 0, 2)
+	for _, a := range args {
+		if q != "" && q != "on" && q != "off" && !strings.HasPrefix(a.value, q) {
+			continue
+		}
+		out = append(out, suggestItem{value: a.value, detail: a.detail, kind: "vibe"})
 	}
 	return out
 }

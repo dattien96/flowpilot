@@ -330,6 +330,11 @@ type AgentRunSummary struct {
 	// a stale HTTP snapshot that BUG-235's terminal-status guard would otherwise block.
 	// Zero for the first activation; omitted from JSON when zero.
 	ActivationSeq int `json:"activationSeq,omitempty"`
+	// Vibe task this child was spawned for (BUG-369). Stamped at spawn so
+	// /agents can tell three "coder" rows apart as task 1/3 vs 2/3 vs 3/3.
+	VibeTaskIndex int    `json:"vibeTaskIndex,omitempty"`
+	VibeTaskTotal int    `json:"vibeTaskTotal,omitempty"`
+	VibeTaskName  string `json:"vibeTaskName,omitempty"`
 }
 
 // setHistoricalChildren stores agent summaries from a restored sync manifest so that
@@ -361,6 +366,13 @@ func (o *AgentOrchestrator) upsertSummary(parentRunID string, summary AgentRunSu
 	defer o.mu.Unlock()
 	if o.summaries[parentRunID] == nil {
 		o.summaries[parentRunID] = make(map[string]AgentRunSummary)
+	}
+	if existing, ok := o.summaries[parentRunID][summary.RunID]; ok {
+		if summary.VibeTaskIndex == 0 {
+			summary.VibeTaskIndex = existing.VibeTaskIndex
+			summary.VibeTaskTotal = existing.VibeTaskTotal
+			summary.VibeTaskName = existing.VibeTaskName
+		}
 	}
 	o.summaries[parentRunID][summary.RunID] = summary
 }
@@ -600,8 +612,8 @@ type FlowControlInput struct {
 	Payload map[string]any `json:"payload,omitempty"`
 	// viaReviewOutcome marks inputs mapped from submit_review_outcome (not raw
 	// flow_control status). Used by CP-53 P-2 to gate synthesis→done.
-	viaReviewOutcome      bool
-	reviewOutcomeStatus   string // approved|changes_requested|blocked before statusMap
+	viaReviewOutcome    bool
+	reviewOutcomeStatus string // approved|changes_requested|blocked before statusMap
 }
 
 // FlowControlResult is the engine's reply after processing a FlowControlInput.

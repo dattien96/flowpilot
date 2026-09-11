@@ -530,6 +530,19 @@ func agentDisplayName(r client.AgentRunSummary) string {
 	return shortID(r.RunID)
 }
 
+// agentTaskDetail is the /agents picker description for vibe-sprint children
+// (BUG-369): "task 2/3 Task-911-….md". Empty when the child was not stamped.
+func agentTaskDetail(r client.AgentRunSummary) string {
+	if r.VibeTaskTotal <= 0 || r.VibeTaskIndex <= 0 {
+		return ""
+	}
+	s := fmt.Sprintf("task %d/%d", r.VibeTaskIndex, r.VibeTaskTotal)
+	if n := strings.TrimSpace(r.VibeTaskName); n != "" {
+		s += " " + n
+	}
+	return s
+}
+
 func (m *AppModel) resolveAgentFocusTarget(raw string) (runID, name string, ok bool) {
 	want := strings.TrimSpace(raw)
 	if want == "" || strings.EqualFold(want, "main") {
@@ -745,6 +758,13 @@ func filterAgentSuggestions(input string, runs []client.AgentRunSummary) []sugge
 			continue
 		}
 		detail := strings.TrimSpace(r.Status)
+		if task := agentTaskDetail(r); task != "" {
+			if detail != "" {
+				detail = task + " · " + detail
+			} else {
+				detail = task
+			}
+		}
 		if agent != "" && !strings.EqualFold(agent, name) {
 			if detail != "" {
 				detail += " · "

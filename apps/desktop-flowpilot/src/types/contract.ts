@@ -114,6 +114,10 @@ export interface AgentRunSummary {
    * Zero / absent for first activation and for spawn-lifecycle children (BUG-Rnd2).
    */
   activationSeq?: number;
+  /** Vibe task this child was spawned for (BUG-369). */
+  vibeTaskIndex?: number;
+  vibeTaskTotal?: number;
+  vibeTaskName?: string;
 }
 
 
@@ -146,6 +150,10 @@ export interface AgentLoopState {
   extendCount?: number;
   /** Why status=="blocked" (BUG-231): "cap" | "escalate" | "member_stalled" (Task-241). */
   blockReason?: string;
+  /** Vibe task progress (BUG-367). 1-based current / total. */
+  vibeTaskIndex?: number;
+  vibeTaskTotal?: number;
+  vibeTaskName?: string;
 }
 
 export interface AgentGraphSnapshot {
@@ -315,9 +323,11 @@ export interface StartRunInput {
   providerKey?: ProviderKey;
   /** Workflow/step model; the runner derives the provider from it when `providerKey` is empty. */
   model?: string;
-  /** YOLO is the single source of truth for approval posture (see 04-04). */
   yoloMode?: boolean;
   reasoningEffort?: string;
+  /** Task-326 wire enum. "dev" | "vibe". Never "normal". Empty → runner defaults to dev. */
+  workingMode?: "dev" | "vibe";
+  flowRef?: string;
   /** "normal_chat" signals provider-chat mode; the runner tags the run as chat and mints a synthetic step. */
   chatMode?: string;
   /** Active project binding path used as the provider working directory. */

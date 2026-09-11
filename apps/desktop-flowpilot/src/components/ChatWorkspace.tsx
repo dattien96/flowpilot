@@ -177,6 +177,7 @@ function ChatStartIntentPanel(): React.ReactElement | null {
   const chatMode = useStore((s) => s.chatMode);
   const chatStartMode = useStore((s) => s.chatStartMode);
   const chatSourceDocId = useStore((s) => s.chatSourceDocId);
+  const workingMode = useStore((s) => s.workingMode);
   const runStatus = useStore((s) => s.status);
   const runId = useStore((s) => s.runId);
   const setChatStartMode = useStore((s) => s.setChatStartMode);
@@ -250,7 +251,46 @@ function ChatStartIntentPanel(): React.ReactElement | null {
           </button>
         ))}
       </div>
-      {chatStartMode !== "normal" ? (
+      {workingMode === "vibe" ? (
+        <div className="nav-group">
+          <label>SS or CP path (optional)</label>
+          <input
+            value={chatSourceDocId}
+            disabled={isRunning}
+            placeholder="requirements/07-Coding-Plan/**/CP-*.md or paste the idea"
+            onChange={(event) => setChatSourceDocId(event.target.value)}
+          />
+          <input
+            type="file"
+            accept=".md,text/markdown"
+            hidden
+            aria-label="Browse SS or CP markdown"
+            onChange={(event) => {
+              const file = event.target.files?.[0]
+              if (!file) return
+              const withPath = file as File & { path?: string }
+              const raw = (withPath.path || file.name).replace(/\\/g, "/")
+              setChatSourceDocId(raw)
+              event.target.value = ""
+            }}
+          />
+          <button
+            type="button"
+            className="secondary-btn"
+            disabled={isRunning}
+            onClick={(event) => {
+              const input = (event.currentTarget.previousElementSibling as HTMLInputElement | null)
+              input?.click()
+            }}
+          >
+            Browse…
+          </button>
+          <p className="chat-start-mode-hint">
+            CP path starts vibe-cp-ingest. Anything else starts vibe-ingest. First prompt also auto-detects.
+          </p>
+        </div>
+      ) : null}
+      {chatStartMode !== "normal" && workingMode !== "vibe" ? (
         <div className="nav-group">
           <label>{chatStartMode === "task" ? "Task ID (optional)" : "Bug ID (optional)"}</label>
           <input

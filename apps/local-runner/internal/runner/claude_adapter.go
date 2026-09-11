@@ -132,6 +132,9 @@ func (a *claudeAdapter) SendTurn(ctx context.Context, req TurnRequest, bridge Tu
 				extra = a.extraMCPServers(req.YoloMode)
 			}
 			token := a.mcpServer.register(bridge, req.OfferReviewOutcomeTool)
+			if req.OfferVibeRequirementTool {
+				a.mcpServer.setAllowVibeRequirement(token, true)
+			}
 			defer a.mcpServer.unregister(token)
 			path, cleanup, err := writeClaudeMCPConfig(base, token, extra)
 			if err != nil {

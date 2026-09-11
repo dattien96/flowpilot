@@ -727,9 +727,10 @@ func (m *AppModel) hitBlockedChrome(c tuiChrome, x, y int) string {
 		if hitToken(stripped, "[Retry]", x) {
 			return "retry"
 		}
-		// plan_approval park renders [Approve] for the same retry target
-		// (label-only rename; [Retry] still matches every other park).
 		if hitToken(stripped, "[Approve]", x) {
+			return "retry"
+		}
+		if hitToken(stripped, "[Lock]", x) {
 			return "retry"
 		}
 		if hitToken(stripped, "[Allow]", x) {

@@ -200,6 +200,9 @@ func (m *AppModel) applyAgentGraph(g *client.AgentGraphSnapshot) {
 	if m.flowLoopCap == 0 {
 		m.flowLoopCap = g.LoopState.RoundCap
 	}
+	m.vibeTaskIndex = g.LoopState.VibeTaskIndex
+	m.vibeTaskTotal = g.LoopState.VibeTaskTotal
+	m.vibeTaskName = strings.TrimSpace(g.LoopState.VibeTaskName)
 	m.agentRuns = g.Runs
 	m.afterAgentRunsAdopted()
 	if m.hasChildAgentRuns() {
@@ -364,38 +367,41 @@ func (m *AppModel) renderBlockedBar() string {
 		}
 	}
 	isPlanApproval := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "plan_approval")
+	isVibeLock := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "vibe_lock")
+	isSprintBoundary := strings.EqualFold(strings.TrimSpace(m.flowBlockReason), "vibe_sprint_boundary")
 	showAllow := m.blockedCardAllowShown()
-	// plan_approval decision highlight (live-tested run-206538): the plan
-	// already failed review once, so the bar must say so and name the only
-	// exit — revise to rewrite, approve to freeze and continue. The flow
-	// never advances on its own from here.
 	if isPlanApproval {
 		bar += styleGate.Render("  decision: ") + styleSystem.Render("plan failed review — [Revise] to rewrite, [Approve] to freeze and continue") + "\n"
+	}
+	if isVibeLock {
+		bar += styleGate.Render("  decision: ") + styleSystem.Render("[Lock] freezes the SS/CP draft; [Revise] to paste edits") + "\n"
+	}
+	if isSprintBoundary {
+		bar += styleGate.Render("  decision: ") + styleSystem.Render("sprint done — [Continue] starts the next sprint, [Stop] ends the run") + "\n"
 	}
 
 	var options []string
 	retryHi := m.actionRingHighlighted("blocked", 0)
 	stopHi := m.actionRingHighlighted("blocked", 1)
-	// run-202550: a missing change-audit-note park continues by re-running
-	// the writer to write the note — say so instead of "old scope". Every
-	// other park keeps the established copy (pinned by
-	// TestBlockedBar_RetryStopAlways_AllowOnlyOnDrift).
 	retryLabel := "[Retry]"
 	retryDesc := " - run again with old scope"
 	if isMissingChangeAuditNoteGate(m.blockedDecisionReason()) {
 		retryDesc = " - continue: re-run the writer to write the missing change-audit note"
 	}
-	// BUG-362: a validate-exhausted Retry re-runs old scope, which cannot
-	// fix a spec/test conflict (run-210188 looped the same card) — say so.
-	// The chip stays for genuine flakes; only the copy changes.
 	if isValidateExhaustedGate(m.blockedDecisionReason()) {
 		retryDesc = " - re-run unchanged (spec/test conflict fails again)"
 	}
 	if isPlanApproval {
-		// Same retry target, honest copy: this approves the revised plan
-		// and forwards freeze, it does not "run again" anything.
 		retryLabel = "[Approve]"
 		retryDesc = " - approve plan, forward freeze"
+	}
+	if isVibeLock {
+		retryLabel = "[Lock]"
+		retryDesc = " - lock current draft and continue slicer"
+	}
+	if isSprintBoundary {
+		retryLabel = "[Continue]"
+		retryDesc = " - start the next sprint"
 	}
 	options = append(options, styleSystem.Render("  ")+renderActionRingChip(retryLabel, retryHi)+styleSystem.Render(retryDesc))
 	options = append(options, styleSystem.Render("  ")+renderActionRingChip("[Stop]", stopHi)+styleSystem.Render(" - end flow"))
@@ -466,9 +472,30 @@ func (m *AppModel) settleFlowIfDone() {
 	}
 }
 
+func isSyntheticChatStep(s client.WorkflowStepRuntime) bool {
+	if strings.EqualFold(strings.TrimSpace(s.StepType), "chat") {
+		return true
+	}
+	return strings.HasPrefix(strings.TrimSpace(s.StepID), "chat-")
+}
+
+func visibleFlowSteps(steps []client.WorkflowStepRuntime) []client.WorkflowStepRuntime {
+	out := make([]client.WorkflowStepRuntime, 0, len(steps))
+	for _, s := range steps {
+		if isSyntheticChatStep(s) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 func activeStepName(steps []client.WorkflowStepRuntime) string {
 	var lastRunning, lastWaiting string
 	for _, s := range steps {
+		if isSyntheticChatStep(s) {
+			continue
+		}
 		switch strings.ToUpper(strings.TrimSpace(s.Status)) {
 		case "RUNNING":
 			lastRunning = stepDisplayName(s)
@@ -541,6 +568,9 @@ func formatStepChatNotices(prev, next []client.WorkflowStepRuntime, prevActive, 
 	var out []string
 	// Terminal transitions for steps that left RUNNING/WAITING (e.g. FAILED).
 	for i, s := range next {
+		if isSyntheticChatStep(s) {
+			continue
+		}
 		st := strings.ToUpper(strings.TrimSpace(s.Status))
 		if st != "FAILED" && st != "DONE" && st != "SKIPPED" && st != "CANCELED" {
 			continue
@@ -615,9 +645,11 @@ func formatStepChatNotices(prev, next []client.WorkflowStepRuntime, prevActive, 
 		}
 	}
 
-	// New current RUNNING/WAITING step.
 	if nextActive != "" && nextActive != prevActive {
 		for i, s := range next {
+			if isSyntheticChatStep(s) {
+				continue
+			}
 			st := strings.ToUpper(strings.TrimSpace(s.Status))
 			if (st == "RUNNING" || st == "WAITING_USER_APPROVAL") && stepDisplayName(s) == nextActive {
 				out = append(out, formatStepChatLine(i, s, ""))

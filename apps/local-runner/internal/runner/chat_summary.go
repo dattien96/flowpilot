@@ -220,7 +220,13 @@ func (s *InteractiveService) ScanPersistedChatsForSummaries(ctx context.Context)
 		if live {
 			continue
 		}
-		rs, apiErr := s.loadPersistedRun(sess.RunID)
+		// Reconstructing every persisted flow at boot holds s.mu through
+		// rehydrate I/O; GET /workflow-runs then exceeds the TUI list timeout
+		// (run-220036 Chat list failed: context deadline exceeded).
+		if len(sess.ActiveFlowNodes) > 0 {
+			continue
+		}
+		rs, apiErr := s.reconstructRunDeferred(sess)
 		if apiErr != nil || rs == nil {
 			continue
 		}

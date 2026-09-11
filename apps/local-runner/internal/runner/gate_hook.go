@@ -310,6 +310,8 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	// the dev-doc/scope gates — the plan phase is not the development phase, and
 	// the flow's coding children own those rules (see flowHubGateRules).
 	rules = flowHubGateRules(rules, rs.parentRunID == "" && rs.flowEngineDriven)
+	rules = prepareWorkingModeRules(rs.workingMode, rules, &tr)
+	s.injectVibeSSDrift(rs, &tr)
 
 	// 8. Evaluate rule set.
 	violations := flowgate.Evaluate(tr, rules)
@@ -373,10 +375,12 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		return false
 	}
 
-	// 10. Enforce — read gate_mode from .flowpilot/settings/gate-config.json; default enforce (see readGateMode).
 	gateMode := loadGateMode(dotFP)
 	result := flowgate.Enforce(violations, gateMode)
 	s.recordGateEnforceMetric(dotFP, rs, turnID, gateMode, result)
+	if s.applyVibeGateResolver(runID, rs.parentRunID, turnID, rs, result) {
+		return true
+	}
 
 	// 11. Extract r-reg options for the decision card (Task-155).
 	var gateOptions []string
@@ -847,7 +851,12 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 				// freeze planner guard got in CA-645. Deliberately NOT
 				// .flowpilot/** (CA-427: a writer rewriting its own gate
 				// rules must still drift).
-				changecontract.IsToolOwnedScaffoldPath(p) {
+				changecontract.IsToolOwnedScaffoldPath(p) ||
+				// BUG-370: markdown/docs are not product code. Live vibe
+				// parks on FEATURE-KEYS.md and tdd-signatures.md made the
+				// coder ask_user-loop ("what is the FlowPilot failure?").
+				// flow-rules.json is not .md and still drifts (CA-427).
+				changecontract.IsMarkdownDocPath(p) {
 				continue
 			}
 			codeOnlyWritten = append(codeOnlyWritten, p)
@@ -1088,7 +1097,10 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 			Failed:    failedTests,
 			Regressed: regressedTests,
 		}
+		tr.TamperedTestPaths = append([]string(nil), oracle.Tampered...)
 	}
+	only = prepareWorkingModeRules(rs.workingMode, only, &tr)
+	s.injectVibeSSDrift(rs, &tr)
 
 	// V10 P0: Gemini (and any adapter without RequestApproval) may still create
 	// commits under YOLO. Detect new commits since turn base and block coding
@@ -1179,6 +1191,9 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		return false
 	}
 	result := flowgate.Enforce(violations, loadGateMode(filepath.Join(cwd, ".flowpilot")))
+	if s.applyVibeGateResolver(runID, parentID, turnID, rs, result) {
+		return true
+	}
 	if !s.gateEpochStillValid(runID, epoch) {
 		return true
 	}
@@ -1788,12 +1803,106 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 		s.mu.Unlock()
 		return newAPIErr(404, "run_not_found", "workflow run not found")
 	}
+	if rs.vibeSprintBoundaryPending {
+		opt := strings.ToLower(strings.TrimSpace(option))
+		s.mu.Unlock()
+		switch opt {
+		case "ok", "continue":
+			s.continueVibeSprintBoundary(runID, customText)
+			return nil
+		case "cancel":
+			if s.declineVibeSprintBoundary(runID) {
+				return nil
+			}
+			s.mu.Lock()
+			stillParked := s.runs[runID] != nil && s.runs[runID].vibeSprintBoundaryPending
+			s.mu.Unlock()
+			if stillParked {
+				return newAPIErr(409, "boundary_settle_deferred", "sprint boundary could not settle now; gate stays parked")
+			}
+			return nil
+		default:
+			return newAPIErr(400, "invalid_option", "option must be ok, continue, or cancel")
+		}
+	}
+	if rs.vibeResumeConfirm {
+		opt := strings.ToLower(strings.TrimSpace(option))
+		switch opt {
+		case "ok", "continue":
+			from := strings.TrimSpace(rs.vibeResumeFromNode)
+			rs.vibeResumeConfirm = false
+			rs.vibeResumeFromNode = ""
+			if rs.status == RunStatusFailed {
+				s.mu.Unlock()
+				return nil
+			}
+			// CA-803 vs CA-812: a sealed (stopped/done) loop with no resume
+			// target is Stop-wins poison — OK must not heal, unseal, or drop
+			// the stop fence. A genuine resume gate carries
+			// vibeResumeFromNode; operator OK there is explicit resume
+			// intent, so it heals Cancelled and releases the fence below.
+			// loopSealedForReinvoke still fences auto-reinvoke everywhere.
+			if s.loopSealedForReinvoke(runID) && from == "" {
+				s.mu.Unlock()
+				return nil
+			}
+			if rs.status == RunStatusCancelled {
+				rs.status = RunStatusRunning
+				rs.agentStatus = string(RunStatusRunning)
+			}
+			// run-220036: restart strips autoOrchestrate while flow topology
+			// survives — a flow parent IS orchestrated; without the flag the
+			// downstream hub reinvoke defers+drops and synthesis never starts.
+			if len(rs.activeFlowNodes) > 0 {
+				rs.autoOrchestrate = true
+			}
+			s.mu.Unlock()
+			s.releaseHubStopFenceForFollowUp(context.Background(), runID)
+			snap := s.agentOrchestrator.mutateLoop(runID, func(st AgentLoopState) AgentLoopState {
+				st.Status = "running"
+				st.BlockReason = ""
+				st.GateReason = ""
+				return st
+			})
+			s.emitAgentGraph(runID, snap)
+			go s.persistParentSession(runID)
+			// Task-327/328/329: artifact-missing recover before any tryAdvance.
+			if s.restartVibeIngestForMissingSS(runID) {
+				return nil
+			}
+			if s.restartVibeCpWriterForMissingCP(runID) {
+				return nil
+			}
+			if s.restartVibeTaskSlicerForMissingTasks(runID) {
+				return nil
+			}
+			// Task-328: cp_writer→done has no forward successor; OK joins
+			// task_slicer when CP exists. forceStart: already vibe-cp-ingest
+			// would no-op maybeStart → hang (run-225468).
+			if from == vibeCpWriterNodeID {
+				s.forceStartVibeTaskSlicer(runID)
+				return nil
+			}
+			if from == "" || from == "tdd" {
+				// R-TK-K: start tdd when no signatures yet; else advance coder.
+				s.resumeVibeAfterTddGate(runID)
+			} else {
+				s.tryAdvanceFlowFromNode(runID, from, "resume from last node")
+			}
+			return nil
+		case "cancel":
+			s.mu.Unlock()
+			return nil
+		default:
+			s.mu.Unlock()
+			return newAPIErr(400, "invalid_option", "option must be ok or cancel")
+		}
+	}
 	info := rs.pendingGateBlock
 	rs.pendingGateBlock = nil
 	stepID := rs.lastTurnStepID
 	cwd := rs.workspaceCwd
 	s.mu.Unlock()
-
 	var prompt string
 	switch option {
 	case "keep-test-fix-code":

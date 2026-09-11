@@ -136,15 +136,17 @@ func (m *AppModel) openTurnStream(prompt string) tea.Cmd {
 	grokSyncYolo := m.postureGrokSync
 	m.postureGrokSyncSet = false
 	var (
-		turnSubMode    string
-		turnFlowRef    string
-		turnChangeType string
+		turnSubMode     string
+		turnFlowRef     string
+		turnChangeType  string
+		turnSourceDocID string
 	)
 	if m.firstTurnPending {
-		if sub, fr, ct, _, ok := m.launch.FirstTurnExtras(); ok {
+		if sub, fr, ct, src, ok := m.launch.FirstTurnExtras(); ok {
 			turnSubMode = sub
 			turnFlowRef = fr
 			turnChangeType = ct
+			turnSourceDocID = src
 		}
 		m.firstTurnPending = false
 	}
@@ -179,6 +181,7 @@ func (m *AppModel) openTurnStream(prompt string) tea.Cmd {
 			SubMode:         turnSubMode,
 			FlowRef:         turnFlowRef,
 			ChangeType:      turnChangeType,
+			SourceDocID:     turnSourceDocID,
 			ChatPosture:     posture,
 		}
 		if !catalogWorkflow {

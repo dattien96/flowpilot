@@ -173,6 +173,10 @@ type AgentRunSummary struct {
 	// agents section sorts by spawn time so rows stop re-ordering between
 	// graph events and hydrate polls.
 	CreatedAt string `json:"createdAt,omitempty"`
+	// Vibe task this child was spawned for (BUG-369). Empty when not a sprint child.
+	VibeTaskIndex int    `json:"vibeTaskIndex,omitempty"`
+	VibeTaskTotal int    `json:"vibeTaskTotal,omitempty"`
+	VibeTaskName  string `json:"vibeTaskName,omitempty"`
 }
 
 // AgentLoopState carries loop progress metadata from the orchestrator.
@@ -190,6 +194,10 @@ type AgentLoopState struct {
 	BlockReason string `json:"blockReason,omitempty"`
 	// ActiveNode names the node the flow is waiting on when blocked.
 	ActiveNode string `json:"activeNode,omitempty"`
+	// Vibe task progress (BUG-367). 1-based current / total; empty when no plan.
+	VibeTaskIndex int    `json:"vibeTaskIndex,omitempty"`
+	VibeTaskTotal int    `json:"vibeTaskTotal,omitempty"`
+	VibeTaskName  string `json:"vibeTaskName,omitempty"`
 }
 
 // AgentGraphSnapshot carries the current agent graph for an agent_graph_updated event.
@@ -371,10 +379,10 @@ type RunSnapshot struct {
 	PendingQuestion *QuestionInfo `json:"pendingQuestion,omitempty"`
 }
 
-// GateInfo minimal gate state from a run snapshot.
 type GateInfo struct {
 	Options        []string `json:"gateOptions"`
 	RegressedTests []string `json:"gateRegressedTests,omitempty"`
+	ResumeFrom     string   `json:"resumeFrom,omitempty"`
 }
 
 // ApprovalInfo minimal approval state from a run snapshot.
@@ -403,6 +411,9 @@ type StartRunInput struct {
 	// ChatMode is "normal_chat" for provider-chat mode (CP-56 §3.2).
 	ChatMode string `json:"chatMode,omitempty"`
 	Cwd      string `json:"cwd,omitempty"`
+	// WorkingMode is Task-326 wire enum "dev"|"vibe". Empty → runner defaults to dev.
+	WorkingMode string `json:"workingMode,omitempty"`
+	FlowRef     string `json:"flowRef,omitempty"`
 	// Chat SSOT (CP-59 / SD-26 §5.1): attach to an existing chat (switch legs /
 	// reattach) or mint a new one. Additive — the TUI omits all three until
 	// Task-315 routes the reattach path.
@@ -418,6 +429,7 @@ type TurnInput struct {
 	StepID          string             `json:"stepId,omitempty"`
 	Prompt          string             `json:"prompt"`
 	ChangeType      string             `json:"changeType,omitempty"`
+	SourceDocID     string             `json:"sourceDocId,omitempty"`
 	SelectedSkills  []SkillSelection   `json:"selectedSkills,omitempty"`
 	Attachments     []PromptAttachment `json:"attachments,omitempty"`
 	ReasoningEffort string             `json:"reasoningEffort,omitempty"`
@@ -1496,6 +1508,7 @@ func (c *Client) methodJSON(ctx context.Context, method, path string, in, out an
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Client", "tui")
 
 	resp, err := c.http.Do(req)
 	if err != nil {

@@ -10,7 +10,7 @@
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-01`
-- Last Updated: `2026-09-01`
+- Last Updated: `2026-09-08`
 - Parent Documents: `Product Vision`, `SP-01 Human In Loop`, `SS-04 Workflow`, `SS-08 Approve Gate`, `SS-11 Workflow With Session`, `SS-13 AI-Followable Document Contract`, `SS-14 Code Context And Regression Safety`, `SS-16 Agent Flow Engine`
 - Child Documents: [SD-24: Vibe Working Mode](../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md)
 - Related Documents: [SS-15: Agent Review Loop](./SS-15-Agent-Review-Loop-Until-Clean.md), [SD-19: Agent Flow Engine](../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SS-06: Workflow Skill Agent](./SS-06-Workflow-Skill-Agent.md), [SD-20: Flow Gate Rule Semantics](../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md)
@@ -147,7 +147,7 @@ What is missing is a deterministic Vibe policy: same Workflow/Session/Gate subst
 - `Q-1` Resolved — SS must be locked in Desktop/TUI before sprints; see `BR-2`.
 - `Q-2` See §AI Quick View `Q-2` (sprint granularity); task slicing is AI-auto, SS is the only user-gated artifact.
 - `Q-3` Should the per-sprint `r-requirement` check reuse an existing `synthesizer` inline node or warrant a dedicated `behavior: vibe.requirement_check` identifier?
-- `Q-4` Should the Desktop/TUI Vibe entry be a first-class `working_mode` toggle in project settings, or only a per-run flag at `POST /client/workflow-runs` / `POST /client/flows/run`? (Admin Web has no Vibe entry.)
+- `Q-4` Resolved 2026-09-08 — first-class Desktop/TUI **session toggle** (`vibe` | `normal`/`dev`), not project Settings and not API-only. Mode stamps the next `StartRun`; Admin Web has no Vibe entry. See [Task-326](../08-Task/done/Task-326-Vibe-Working-Mode-Switch-And-Flow-Family-Gate.md).
 
 ## 11. Definition of Done
 
