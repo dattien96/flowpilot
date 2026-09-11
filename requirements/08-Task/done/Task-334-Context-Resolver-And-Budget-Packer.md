@@ -5,7 +5,7 @@
 - Document ID: `Task-334`
 - Title: `Xây dựng Context Resolver và Bộ đóng gói Budget Packer`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-11`
@@ -112,20 +112,28 @@ Khi chạy Vibe Mode hoặc chuỗi task liên tục, kích thước prompt tăn
 
 ## 8. Completion Notes
 
-- Trạng thái: `draft` (chờ triển khai).
+- Trạng thái: `done` (2026-09-11).
+- Triển khai: package `internal/promptpacker/` (packer.go: SectionKind/PromptSection/SectionBudget/PackerOptions/PromptAuditReport/PackPrompt/EstimateTokens; dedup.go: sliding-window fingerprint fence-aware, giữ bản Priority cao hơn; audit.go: WriteAuditLog JSONL + CompactSkillCard nhận cả `## Always Do`/`## Core Rules` với fallback 3-5 bullet, <200 tokens).
+- Tích hợp: seam `applyBudgetPackerIfEnabled` trong `runTurn` (sau `injectFlowContextIfCoding` + `injectFeatureHistoryPromptCtx`, trước `logComposedPrompt`), opt-in qua env flag `FLOWPILOT_ENABLE_BUDGET_PACKER` (pattern `FLOWPILOT_DISPATCH_V2` của repo), mặc định OFF → byte-identical. Flag ON: budget mặc định 8000/1600/2400/800 qua `promptpacker.DefaultPackerOptions()`; audit JSONL ghi vào `.flowpilot/runs/<project>/<run>/prompt-context-audit-<turn>.jsonl`; lỗi pack → fallback prompt gốc.
+- Demo thực tế (test log): 369,398 → 6,872 bytes, dropped_tokens=90663, giữ nguyên current task + canonical head (CP-23 R-1).
+- Tests: 8/8 test signature §10 + TestDefaultPackerOptions + 4 runner integration tests (flag-off byte-identity, flag-on prune+audit, phân loại section, fence atomicity) — all pass.
+- GitNexus impact: `runTurn` LOW (0 impacted).
+- Non-blocking từ review (hardening sau): classifier mặc định block không nhận diện → memory_summary (cần gate theo flow-context prefix); per-kind cap áp theo section không phải aggregate; EstimateTokens đếm byte (Vietnamese/CJK bị x3 — conservative direction); nil-rs defensive nit.
+- Provider parity: provider-agnostic (stdlib-only, heuristic 4 chars/token, 0 LLM; flag-OFF passthrough byte-identical cho mọi provider).
+- Prior CA claims giữ nguyên: CA-833..CA-836, CA-695, CA-442, CA-441.
 
 ---
 
 ## 9. Definition of Done
 
-- [ ] Struct `SectionBudget` và `PackerOptions` được định nghĩa chuẩn, cho phép cấu hình giới hạn token theo từng section.
-- [ ] Hàm `PackPrompt(sections []PromptSection, budget SectionBudget)` thực hiện gom và cắt tỉa đúng theo thứ tự ưu tiên quy định trong CP-23.
-- [ ] Cơ chế `DeduplicateContext` loại bỏ thành công các đoạn văn bản trùng lặp.
-- [ ] Hỗ trợ chuyển đổi Skill dạng Markdown đầy đủ thành Compact Skill Card gọn nhẹ.
-- [ ] Xuất bản bản ghi `PromptContextAudit` chi tiết cho mỗi lượt đóng gói.
-- [ ] Chạy `go test ./internal/promptpacker/...` pass 100%.
-- [ ] Tích hợp `PackPrompt` vào `interactive_service.go` trước khi gọi model.
-- [ ] Compact Skill Card trích xuất chính xác phần Core Rule từ SKILL.md đầy đủ.
+- [x] Struct `SectionBudget` và `PackerOptions` được định nghĩa chuẩn, cho phép cấu hình giới hạn token theo từng section.
+- [x] Hàm `PackPrompt(sections []PromptSection, budget SectionBudget)` thực hiện gom và cắt tỉa đúng theo thứ tự ưu tiên quy định trong CP-23.
+- [x] Cơ chế `DeduplicateContext` loại bỏ thành công các đoạn văn bản trùng lặp.
+- [x] Hỗ trợ chuyển đổi Skill dạng Markdown đầy đủ thành Compact Skill Card gọn nhẹ.
+- [x] Xuất bản bản ghi `PromptContextAudit` chi tiết cho mỗi lượt đóng gói.
+- [x] Chạy `go test ./internal/promptpacker/...` pass 100%.
+- [x] Tích hợp `PackPrompt` vào `interactive_service.go` trước khi gọi model. (Opt-in qua `FLOWPILOT_ENABLE_BUDGET_PACKER`, mặc định OFF byte-identical — đúng constraint "không đổi kết quả prompt hiện tại".)
+- [x] Compact Skill Card trích xuất chính xác phần Core Rule từ SKILL.md đầy đủ.
 
 ---
 

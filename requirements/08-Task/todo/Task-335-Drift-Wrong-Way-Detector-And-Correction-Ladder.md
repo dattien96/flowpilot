@@ -12,7 +12,7 @@
 - Last Updated: `2026-09-11`
 - Parent Documents: [CP-23: Bộ trí tuệ vận hành tích hợp](../../07-Coding-Plan/todo/CP-23-Auto-Learn-To-Skill.md)
 - Child Documents: `None`
-- Related Documents: [Task-334: Context Resolver và Budget Packer](./Task-334-Context-Resolver-And-Budget-Packer.md), [Task-336: Thăng cấp bài học thành Skill](./Task-336-Mistake-To-Skill-Promotion-And-Skillpack-Sync.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md)
+- Related Documents: [Task-334: Context Resolver và Budget Packer](../done/Task-334-Context-Resolver-And-Budget-Packer.md), [Task-336: Thăng cấp bài học thành Skill](./Task-336-Mistake-To-Skill-Promotion-And-Skillpack-Sync.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md)
 - Replaces: `None`
 - Tags: `runtime-intelligence, drift-detector, wrong-way, correction-ladder, r-scope-reuse`
 
