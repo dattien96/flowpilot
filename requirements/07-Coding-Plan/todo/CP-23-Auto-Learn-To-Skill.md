@@ -1,466 +1,186 @@
-# CP-23: Context Control, Wrong-Way Detection, and Mistake-to-Skill Learning
+# CP-23: Bộ trí tuệ vận hành tích hợp (Kiểm soát Context, Bắt lệch hướng và Tự học Skill)
+
+## Metadata
+
+- Document ID: `CP-23`
+- Title: `Bộ trí tuệ vận hành tích hợp (Kiểm soát Context, Bắt lệch hướng và Tự học Skill)`
+- Feature Keys: `runtime-intelligence, context-budget, drift-detector, auto-skill`
+- Phase: `coding_plan`
+- Status: `approved`
+- Owner: `FlowPilot`
+- Reviewers: `Operator`
+- Created: `2026-07-10`
+- Last Updated: `2026-09-11`
+- Parent Documents: [SS-09: Context Management](../../05-System-Specs/SS-09-Context-Management.md), [SD-10: Memory and Prompt Architecture](../../06-System-Tech-Design/SD-10-Memory-And-Prompt-Architecture.md)
+- Child Documents: [Task-334: Context Resolver và Bộ đóng gói Budget Packer](../../08-Task/todo/Task-334-Context-Resolver-And-Budget-Packer.md), [Task-335: Bộ phát hiện lệch hướng Drift Detector và Thang ứng phó](../../08-Task/todo/Task-335-Drift-Wrong-Way-Detector-And-Correction-Ladder.md), [Task-336: Thăng cấp bài học thành Skill và Đồng bộ Skillpack](../../08-Task/todo/Task-336-Mistake-To-Skill-Promotion-And-Skillpack-Sync.md)
+- Related Documents: [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md), [CP-60: Vibe Working Mode](../done/CP-60-Vibe-Working-Mode.md)
+- Supersedes: `CP-24` (Wrong-Way Detect), `CP-25` (Auto Size-Down Context), `CP-26` (Auto Model Reasoning), `CP-39` (Token Usage)
+- Tags: `runtime-intelligence, context-budget, drift-detector, auto-skill, skillpack`
+
+## AI Quick View
+
+### Summary
+
+- Hợp nhất 3 bài toán sống còn trong runtime của AI thành một **kế hoạch trí tuệ vận hành (Runtime Intelligence)** thống nhất thay vì các tính năng phân mảnh rời rạc:
+  - **Phase 1: Auto Size-Down Context (Budget Packer)**: Đặt hạn mức token cố định theo từng section, ưu tiên tóm tắt (`artifact_memories`) thay vì chèn mã nguồn thô, lọc trùng lặp và lưu vết audit prompt.
+  - **Phase 2: Drift & Wrong-Way Detection**: Phát hiện agent sa vào vòng lặp xin lỗi vô nghĩa, lặp lại lỗi test fail $\ge 2$ lần, không sinh delta code, hoặc sửa file ngoài scope. **Tái sử dụng 100% tín hiệu từ `r-scope` và contract gate hiện có** làm đầu vào tính điểm `drift_score`, sau đó kích hoạt nấc thang ứng phó (Correction Ladder).
+  - **Phase 3: Mistake-to-Skill Promotion**: Tự động chuyển các lỗi lặp đi lặp lại thành thẻ bài học (Lesson Candidate), và khi có người duyệt sẽ đúc kết thành **Skill mới**. Phân biệt rõ giữa lưu cục bộ vào `.agents/skills/` của target project và đóng góp ngược lại vào `internal/skillpack/flow-pack/<group>/` của FlowPilot.
+
+### Current Ask
+
+- Thực thi trọn vẹn 3 Phase thông qua 3 task chuyên biệt: `Task-334` (Phase 1), `Task-335` (Phase 2), và `Task-336` (Phase 3).
+
+### Key Decisions
+
+- `D-1` **Nguyên tắc phân tầng phụ thuộc**: Bắt buộc làm Phase 1 (Size-down context) trước Phase 2 (Drift detect) và Phase 3 (Auto-skill). Nếu prompt quá dài và nhiễu loạn, việc phát hiện sai hướng sẽ thiếu chính xác; và nếu không phân biệt được lỗi hệ thống với lỗi ngẫu nhiên thì việc tự sinh skill sẽ tạo ra rác tri thức.
+- `D-2` **Tái sử dụng các Gate hiện có cho Phase 2**: Không viết lại logic kiểm tra diff hay scope. Phase 2 chỉ đóng vai trò là một **Telemetry Aggregator**: Thu nạp trực tiếp tín hiệu vi phạm từ `r-scope` (`ScopeOutOfScopePaths`) để cộng điểm vào `drift_score`.
+- `D-3` **Cơ chế phát hiện 2 tầng (2-Tier Detector)**: Tầng 1 hoàn toàn bằng quy tắc xác định (0 token cost). Chỉ khi tầng 1 cảnh báo mới gọi classifier siêu nhẹ ở Tầng 2 để đánh giá.
+- `D-4` **Thang thăng cấp bài học (Promotion Ladder)**: Không bao giờ tự động tạo file `.md` vĩnh viễn từ một lỗi đơn lẻ. Lỗi $\rightarrow$ Event $\rightarrow$ Candidate $\rightarrow$ Compact Rule Card $\rightarrow$ Project/Core Skill (sau khi con người duyệt).
+- `D-5` **Tương thích hoàn toàn với kiến trúc `skillpack`**: Tích hợp trực tiếp vào hệ thống phân nhóm nền tảng hiện có (`common/`, `android/`, `golang/`, `kmm/`, `reactjs/`,...) và cơ chế cài đặt `install.go` khi khởi tạo dự án.
+
+### Constraints
+
+- Luôn ưu tiên tóm tắt hơn là nhồi toàn bộ lịch sử thô vào prompt.
+- Tuyệt đối không auto-rollback thô bạo khi phát hiện drift; chỉ dùng thang ứng phó (nhắc nhở $\rightarrow$ thu hẹp ngữ cảnh $\rightarrow$ dừng hỏi người dùng).
+- Mọi quyết định cắt giảm context và ứng phó drift đều phải được ghi log phục vụ kiểm toán (`prompt_context_audit`).
+
+### Open Questions
+
+- Đã giải quyết: Phase 2 tái sử dụng 100% tín hiệu từ `r-scope`, không viết lại logic kiểm tra.
+- Đã giải quyết: Skill mới phải tương thích với kiến trúc phân nhóm skillpack hiện có.
+- Đã giải quyết: Quá trình copy skill vào target project khi init được xử lý bởi `install.go`.
+
+---
+
+## 1. Kiến trúc tổng thể 3 Phase
+
+```mermaid
+graph TD
+    subgraph Phase1["Phase 1: Context Control & Budget Packer"]
+        CR["Context Resolver"] --> BP["Budget Packer (Chia hạn mức section)"]
+        BP --> DEDUP["Deduplicator (Lọc trùng lặp)"]
+        DEDUP --> PROMPT["Assembled Prompt + Audit Log"]
+    end
+
+    subgraph Phase2["Phase 2: Drift & Wrong-Way Detection"]
+        PROMPT --> EXEC["Thực thi lượt chạy AI (Turn Execution)"]
+        EXEC --> SIG1["Tín hiệu Heuristic (Lặp lỗi test, xin lỗi lặp lại, no delta)"]
+        EXEC --> SIG2["Tín hiệu Scope (Reused r-scope: ScopeOutOfScopePaths)"]
+        SIG1 & SIG2 --> DS["Bộ tính Drift Score (0-100)"]
+        DS --> CL["Thang ứng phó (System note -> Thu hẹp scope -> Dừng hỏi User)"]
+    end
+
+    subgraph Phase3["Phase 3: Mistake-to-Skill Promotion"]
+        DS -->|"Lỗi lặp lại >= 2 lần"| LC["Tạo Lesson Candidate"]
+        LC --> USER_APP{{"Con người phê duyệt"}}
+        USER_APP -->|"Duyệt"| RC["Compact Rule Card (Nạp ngay vào Budget Packer)"]
+        USER_APP -->|"Xuất bản"| EXPORT["Tạo Skill chuẩn: Target Project hoặc skillpack/flow-pack"]
+    end
+```
+
+---
+
+## 2. Chi tiết từng giai đoạn
+
+### Phase 1: Auto Size-Down Context & Budget Packer (Task-334)
+- **Mục tiêu**: Làm cho prompt gửi tới AI nhỏ gọn nhất có thể mà vẫn bảo đảm đầy đủ ngữ cảnh cần thiết, tiết kiệm token tối đa.
+- **Thứ tự ưu tiên phân bổ ngân sách (Token Budget Allocation)**:
+  1. Hợp đồng hệ sinh thái và chỉ dẫn thực thi cốt lõi (Cố định).
+  2. Yêu cầu của task hiện tại / prompt của người dùng (Ưu tiên cao nhất).
+  3. Ngữ cảnh luồng bắt buộc (Canonical Head, Change Contract).
+  4. Bộ nhớ làm việc dạng tóm tắt (`artifact_memories` - thay vì chèn raw file).
+  5. Đoạn trích dẫn mã nguồn thô (Raw excerpts - chỉ chèn khi tóm tắt không đủ).
+  6. Compact Skill Cards (thay vì chèn cả file markdown dài).
+- **Lưu vết kiểm toán**: Tạo bản ghi `prompt_context_audit` ghi rõ: context nào được chọn, context nào bị drop, lý do drop và số token tiêu thụ.
+
+### Phase 2: Drift & Wrong-Way Detection (Task-335)
+- **Mục tiêu**: Phát hiện sớm khi AI có dấu hiệu đi chệch hướng, sa lầy vào vòng lặp hoặc tiêu tốn token vô ích.
+- **Tập tín hiệu Drift Heuristics (Tầng 1 - 0 token)**:
+  - Cụm từ xin lỗi lặp lại ("Tôi rất xin lỗi...", "Bạn hoàn toàn đúng...").
+  - Chạy đi chạy lại cùng một test fail mà không đổi chiến thuật $\ge 2$ lần.
+  - Tiêu tốn nhiều token nhưng không tạo ra bất kỳ delta thay đổi nào trên file code/artifact.
+  - Sửa file ngoài phạm vi declared scope (Tái sử dụng trực tiếp tín hiệu `ScopeOutOfScopePaths` của cổng `r-scope`).
+- **Thang điểm `drift_score`**:
+  - `0 - 29`: Bình thường / Khỏe mạnh.
+  - `30 - 59`: Cảnh báo nhẹ $\rightarrow$ Bơm system note nhắc nhở đổi chiến lược.
+  - `60 - 79`: Lệch hướng $\rightarrow$ Tự động thu hẹp context pack cho lượt tiếp theo.
+  - `80+`: Nghiêm trọng $\rightarrow$ Tạm dừng và yêu cầu con người can thiệp (Pause for human approval).
 
-**Maps from:** Product Vision, SP-02, SP-03, SS-09, SD-05, SD-10, CP-10, CP-11, CP-21
-**Phase:** Cross-cutting runtime intelligence
-**Depends on:** CP-10, CP-11, CP-21
-**Supersedes:** CP-24, CP-25, CP-39 (token/prompt optimize one-liner)
+### Phase 3: Mistake-to-Skill Promotion & Skillpack Sync (Task-336)
+- **Mục tiêu**: Đúc kết các sai lầm lặp lại thành tri thức kỹ thuật có thể tái sử dụng cho các phiên làm việc sau.
+- **Thang thăng cấp (Promotion Ladder)**:
+  - Sự cố đơn lẻ $\rightarrow$ Lưu `workflow_drift_events`.
+  - Sự cố lặp lại $\ge 2$ lần $\rightarrow$ Tạo `workflow_lesson_candidates` (chứa trigger pattern, anti-pattern, và hành vi chuẩn).
+  - Khi được người dùng duyệt $\rightarrow$ Sinh ra **Compact Rule Card** để Budget Packer tự động kích hoạt khi gặp ngữ cảnh tương tự.
+- **Đồng bộ vào Skillpack**:
+  - **Cấp độ Dự án (Project-level)**: Ghi trực tiếp vào thư mục `.agents/skills/<group>/<skill-name>/SKILL.md` của target project.
+  - **Cấp độ Nền tảng (Platform Core)**: Tùy chọn xuất vào `apps/local-runner/internal/skillpack/flow-pack/<group>/` để mọi project mới sau này khi chạy `skillpack.Install` đều được trang bị.
 
-## 1. Core Concept
+---
 
-These three topics should be delivered as one runtime intelligence plan, not as three unrelated features:
+## 3. Phân chia công việc (Work Breakdown & Task Mapping)
 
-1. Context control keeps prompts small and relevant.
-2. Wrong-way detection monitors whether the agent is making progress or drifting.
-3. Mistake-to-skill learning turns repeated failures into reusable guidance.
+- `Task-334` (Triển khai Phase 1):
+  - Xây dựng `ContextResolver` và `BudgetPacker` trong `internal/prompt/`.
+  - Hỗ trợ Compact Skill Card và cơ chế deduplicate context.
+  - Ghi log `prompt_context_audit`.
+- `Task-335` (Triển khai Phase 2):
+  - Xây dựng bộ tổng hợp telemetry `DriftDetector` trong `internal/runner/`.
+  - Đọc tín hiệu `r-scope` và test failure history để tính `drift_score`.
+  - Kích hoạt nấc thang ứng phó (Correction Ladder).
+- `Task-336` (Triển khai Phase 3):
+  - Quản lý `workflow_lesson_candidates`.
+  - Giao diện xem xét và phê duyệt bài học thành Skill trên TUI/Desktop.
+  - Kết nối lưu trữ vào `.agents/skills/` và bộ nguồn `internal/skillpack/flow-pack/`.
 
-The dependency order matters:
+---
 
-- Wrong-way detection is noisy if context quality is poor.
-- Auto-learning is dangerous if the system cannot distinguish a real repeated mistake from a one-off failure.
-- Therefore the system must first control context, then detect drift, then promote repeated lessons into reusable skill rules.
+## 4. Các vùng bị ảnh hưởng (Touched Areas)
 
-## 2. Why This Must Be One CP
+- `apps/local-runner/internal/promptpacker/` (Mới: Package đóng gói prompt thông minh — Phase 1).
+- `apps/local-runner/internal/driftdetect/` (Mới: Package phát hiện lệch hướng — Phase 2).
+- `apps/local-runner/internal/skilllearn/` (Mới: Package tự học skill — Phase 3).
+- `apps/local-runner/internal/runner/interactive_service.go` (Tích hợp Budget Packer trước khi gọi model).
+- `apps/local-runner/internal/runner/gate_hook.go` (Ghi nhận drift event sau mỗi turn).
+- `apps/local-runner/internal/skillpack/install.go` (Hỗ trợ xuất bản skill mới).
 
-Keeping CP-23, CP-24, and CP-25 separate creates three problems:
+---
 
-- it hides the fact that all three depend on the same prompt assembly and session telemetry
-- it encourages duplicate schema and logging work
-- it makes rollout order unclear
+## 5. Dữ liệu và Di chuyển
 
-This umbrella CP keeps one shared architecture, one set of audit tables, one telemetry model, and one rollout plan with three phases.
+- Không có schema migration.
+- Drift events và Lesson candidates lưu trữ dạng JSON trong workspace (`workflow_drift_events.json`, `workflow_lesson_candidates.json`).
 
-## 3. Problem Statement
+---
 
-Today the workflow runtime still has these gaps:
+## 6. Kế hoạch kiểm thử và nghiệm thu
 
-- prompt assembly is mostly additive, so context can grow larger than needed
-- skill injection can become expensive because full markdown skill files are appended at runtime
-- follow-up sessions can continue for too long without a clear notion of "progress"
-- repeated model mistakes are visible to the user but are not turned into durable project guidance
+- **Unit tests**: Mỗi Phase có bộ test riêng trong package tương ứng.
+- **Tích hợp**: Chạy chuỗi task dài trong Vibe Mode, xác nhận Budget Packer giữ prompt dưới ngưỡng, Drift Detector cảnh báo đúng khi lặp lỗi, Skill Promotion tạo candidate khi lỗi lặp.
+- **Regression**: Đảm bảo prompt mới vẫn sinh kết quả tương đương với prompt cũ trên các flow hiện có.
 
-This makes FlowPilot weaker at its core promise:
+---
 
-- reliable workflow execution
-- explicit context
-- cross-session engineering memory
-- reduced token waste
-- self-correcting autonomy with human-safe controls
+## 7. Triển khai và Dự phòng
 
-## 4. Shared Architecture
+- **Thứ tự triển khai bắt buộc**: Phase 1 → Phase 2 → Phase 3 (theo nguyên tắc phân tầng phụ thuộc D-1).
+- **Dự phòng**: Mỗi Phase có thể tắt độc lập qua config flag (`enable_budget_packer`, `enable_drift_detector`, `enable_skill_learner`).
 
-The solution is one runtime loop with three layers:
+---
 
-1. `Context Resolver + Budget Packer`
-2. `Drift / Wrong-Way Detector`
-3. `Lesson Candidate -> Skill Promotion`
+## 8. Rủi ro
 
-### 4.1 Runtime loop
+- `R-1` **Budget Packer cắt quá mạnh**: Prompt quá ngắn dẫn đến AI thiếu context và sinh code sai. Giảm thiểu: Luôn giữ nguyên System Contract và Current Task (ưu tiên 1-2), chỉ cắt Raw Excerpts và Compact Skills.
+- `R-2` **Drift Detector false positive**: Một số turn AI tốn token để suy nghĩ (reasoning) mà không tạo delta file cũng bị gắn cờ drift. Giảm thiểu: Chỉ cộng điểm `zero_delta` khi token > ngưỡng tối thiểu (ví dụ > 2000 tokens).
+- `R-3` **Skill rác từ lỗi ngẫu nhiên**: Lỗi xảy ra 2 lần do trùng hợp ngẫu nhiên có thể sinh candidate vô nghĩa. Giảm thiểu: Con người luôn là người duyệt cuối cùng (D-4).
 
-For every workflow step or follow-up message:
+---
 
-1. Resolve mandatory context.
-2. Retrieve relevant working memory.
-3. Pack prompt sections into a fixed token budget.
-4. Execute provider step.
-5. Record telemetry about prompt size, outputs, retries, and progress.
-6. Run wrong-way detection on the result.
-7. If drift is detected, choose a correction action.
-8. If repeated drift patterns accumulate, create or update a lesson candidate.
-9. Promote only approved or repeated high-confidence lessons into runtime skill rules.
+## 9. Tiêu chí hoàn thành tổng thể
 
-### 4.2 Shared principles
-
-- Default to summaries, not raw history.
-- Favor deterministic rules before LLM judgement.
-- Use LLM judgement only as a secondary classifier when heuristics fire.
-- Never auto-create a permanent skill from one bad run.
-- Every selected context item and every correction action must be auditable.
-
-## 5. Phase 1 - Auto Size-Down Context
-
-### 5.1 Goal
-
-Make the final prompt as small as possible while preserving the minimum context required for the current step.
-
-### 5.2 Scope
-
-Build a proper `Context Resolver + Budget Packer` instead of a simple truncation step.
-
-### 5.3 Required behavior
-
-- resolve context by step policy, not by blind concatenation
-- reserve budget per prompt section
-- prefer `artifact_memories` summaries over raw artifacts
-- include raw excerpts only when the summary is insufficient
-- deduplicate overlapping context items
-- record exactly which context items were selected
-- persist the final assembled prompt after skill/context injection for auditability
-
-### 5.4 Packing order
-
-Suggested priority from highest to lowest:
-
-1. system and execution contract
-2. current task / follow-up request
-3. mandatory workflow context
-4. pinned or required context sources
-5. selected working memory summaries
-6. raw artifact excerpts
-7. optional skill guidance
-
-### 5.5 Shared data model
-
-Use the architecture already planned in CP-10 and SD-10:
-
-- `artifact_memories`
-- `step_context_slots`
-- `workflow_prompt_context_items`
-
-Add runtime metrics if missing:
-
-- `prompt_token_estimate`
-- `selected_context_token_estimate`
-- `dropped_context_count`
-- `packed_context_strategy`
-
-### 5.6 Runner changes
-
-- move away from full-file skill injection as the only strategy
-- support compact runtime skill cards for prompt packing
-- keep the current full markdown skill file as fallback for explicitly required skills
-- persist the final packed prompt, not only the raw user prompt
-
-### 5.7 Output
-
-Each step should produce a prompt context audit that answers:
-
-- what context was eligible
-- what context was selected
-- what context was dropped
-- why it was dropped
-- what token budget was used
-
-## 6. Phase 2 - Wrong-Way Detection
-
-### 6.1 Goal
-
-Detect when the workflow is drifting, looping, wasting tokens, or editing in the wrong direction, then trigger a safe correction path.
-
-### 6.2 Detection model
-
-Use a hybrid detector:
-
-- primary: deterministic heuristics
-- secondary: lightweight classifier / judge model only when heuristics trigger
-
-This avoids paying LLM cost on every turn while still handling nuanced cases.
-
-### 6.3 Drift signals
-
-Minimum signals for MVP:
-
-- repeated agreement filler such as "you are absolutely right"
-- repeated apologies or circular explanations
-- same failed command or test executed multiple times without a new approach
-- no artifact delta after several turns
-- output shape does not match the current step contract
-- edits outside the declared scope
-- token spend grows while useful progress stays flat
-- repeated retries against the same failure root cause
-
-### 6.4 Detection score
-
-Each signal contributes to a `drift_score`.
-
-Suggested severity bands:
-
-- `0-29`: healthy
-- `30-59`: warning
-- `60-79`: drifted
-- `80+`: blocked or unsafe
-
-### 6.5 Correction ladder
-
-The runtime should not jump directly to rollback. Use an escalating ladder:
-
-1. add a corrective system note with the detected issue
-2. narrow the active scope and re-run with a smaller context pack
-3. switch to isolated reviewer/subagent session
-4. pause and require human approval
-
-### 6.6 Safety rule
-
-Do not implement auto-rollback in MVP. Rollback is too risky before the system has strong causality and change ownership logic.
-
-### 6.7 Logging and observability
-
-For each detection event, record:
-
-- `drift_score`
-- triggered rules
-- evidence snippets
-- chosen correction action
-- whether the correction succeeded
-
-This should live alongside the existing session and AI output logs.
-
-## 7. Phase 3 - Auto Learn To Skill
-
-### 7.1 Goal
-
-Convert repeated, verified failure patterns into reusable project guidance without polluting prompt context or overfitting to one bad run.
-
-### 7.2 Learning model
-
-Do not write permanent `.md` skills directly from a single runtime event.
-
-Use this promotion ladder:
-
-1. mistake event
-2. lesson candidate
-3. approved runtime rule
-4. durable project skill
-
-### 7.3 Lesson candidate shape
-
-Each candidate should store:
-
-- title
-- scope
-- trigger pattern
-- anti-pattern
-- preferred corrective behavior
-- confidence
-- repeat count
-- supporting run IDs
-- supporting step IDs
-- status: `candidate`, `approved`, `rejected`, `promoted`
-
-### 7.4 Promotion rules
-
-- one event creates a candidate only
-- repeated confirmed events can auto-approve into a runtime rule
-- permanent skill generation requires human approval in MVP
-- approved skills should be small, rule-focused, and easy to inject selectively
-
-### 7.5 Output forms
-
-There are two valid outputs:
-
-- compact runtime rule card used by the budget packer
-- durable markdown skill file synced with project skills
-
-The compact rule card is the default runtime artifact. The markdown skill file is the long-term knowledge form.
-
-### 7.6 Guardrails
-
-- never promote from low-confidence evidence
-- never promote if the issue was caused by missing context only
-- never promote style preference as if it were engineering law
-- allow users to reject a bad lesson and suppress future promotion for that pattern
-
-## 8. Shared Schema Additions
-
-If not already covered elsewhere, add runtime intelligence tables or equivalent models for:
-
-- `workflow_drift_events`
-- `workflow_lesson_candidates`
-- `workflow_skill_rules`
-
-Suggested fields:
-
-### 8.1 `workflow_drift_events`
-
-- id
-- workflow_run_id
-- workflow_run_step_id
-- provider
-- model
-- drift_score
-- triggered_signals jsonb
-- evidence_summary
-- correction_action
-- correction_status
-- created_at
-
-### 8.2 `workflow_lesson_candidates`
-
-- id
-- project_id
-- source_drift_event_id
-- title
-- scope
-- trigger_pattern
-- anti_pattern
-- preferred_behavior
-- confidence
-- repeat_count
-- supporting_run_ids jsonb
-- status
-- created_at
-- updated_at
-
-### 8.3 `workflow_skill_rules`
-
-- id
-- project_id
-- lesson_candidate_id
-- title
-- rule_text
-- applies_to_step_types jsonb
-- applies_to_provider_keys jsonb
-- priority
-- is_active
-- created_at
-- updated_at
-
-## 9. Runner and Prompt Assembly Changes
-
-### 9.1 Prompt assembly
-
-Prompt assembly should evolve from "append everything" into "pack only what is justified."
-
-Required changes:
-
-- support per-section budget allocation
-- pack compact skill rules ahead of full skill markdown
-- support context deduplication before final assembly
-- persist assembled prompt text after all runtime injection
-
-### 9.2 Session awareness
-
-Leverage the session telemetry work from CP-21:
-
-- retry counts
-- checkpoints
-- session reuse
-- session death / resume events
-
-These signals are useful inputs to wrong-way detection.
-
-### 9.3 Artifact awareness
-
-Use artifact deltas and output versions as evidence of progress:
-
-- if tokens grow but artifact output does not materially change, the session may be drifting
-- if a corrective prompt produces a real artifact delta, mark the correction as successful
-
-## 10. Admin Web and Visibility
-
-### 10.1 Prompt Context drawer
-
-Show:
-
-- packed sections
-- selected context items
-- dropped items
-- budget used per section
-
-### 10.2 Drift diagnostics
-
-Show:
-
-- drift score timeline
-- triggered signals
-- correction actions
-- before/after result
-
-### 10.3 Lesson review
-
-Show:
-
-- candidate lessons
-- evidence runs
-- approve / reject / suppress actions
-- promoted skill rules
-
-## 11. Delivery Plan
-
-### Step 1 - Context control
-
-- finalize prompt budget model
-- implement context packing and audit rows
-- persist fully assembled prompts
-- add Prompt Context drawer visibility
-
-### Step 2 - Wrong-way detection
-
-- add drift telemetry schema
-- implement heuristics
-- add optional judge model path
-- implement correction ladder and UI diagnostics
-
-### Step 3 - Mistake-to-skill learning
-
-- add lesson candidate schema
-- aggregate repeated drift patterns
-- add human review flow
-- generate compact runtime rules and optional markdown skills
-
-## 12. Risks
-
-### Risk 1 - Over-compression
-
-Too much context shrinking can remove critical information.
-
-Mitigation:
-
-- mandatory context slots
-- pinned context
-- explicit audit trail for dropped items
-
-### Risk 2 - False positives in drift detection
-
-The system may classify slow but correct work as drift.
-
-Mitigation:
-
-- heuristic thresholding
-- evidence-based scoring
-- lightweight judge only after heuristic trigger
-
-### Risk 3 - Bad lessons become permanent rules
-
-Poor promotion logic can teach the system the wrong habits.
-
-Mitigation:
-
-- candidate-first promotion ladder
-- confidence thresholds
-- human approval before durable skill creation
-
-## 13. Definition of Done
-
-### Phase 1 - Context control
-
-- final prompt size is measurably smaller for equivalent runs
-- prompt packing uses selected memory, not full history by default
-- `workflow_prompt_context_items` or equivalent audit rows are written
-- assembled prompts are persisted after runtime injection
-- Admin Web can inspect selected and dropped context
-
-### Phase 2 - Wrong-way detection
-
-- drift score is recorded for workflow steps and follow-ups
-- repeated loop patterns are detected with deterministic rules
-- corrective actions can be applied without manual DB intervention
-- Admin Web shows evidence and correction history
-
-### Phase 3 - Auto-learning
-
-- repeated mistakes create lesson candidates
-- lesson candidates can be reviewed and promoted
-- promoted rules are injected selectively at runtime
-- permanent skill creation requires approval in MVP
-
-### Shared
-
-- context, drift, and lesson data remain auditable
-- token usage is reduced without losing required context
-- the system improves future runs without silently mutating project behavior
-
-## 14. Notes
-
-- CP-24, CP-25, and CP-39 are **closed redirect stubs** under `07-Coding-Plan/done/` (2026-09-11 doc cleanup).
-- Empty `CP-26-Auto-Model-Reasoning` stub is **withdrawn** in `done/` — do not confuse with `done/CP-26-Env-Liked-Proxy-System.md`.
-- This CP is the single source of truth for runtime context control, drift correction, and mistake-to-skill learning.
+- [ ] Phase 1: Prompt đầu ra luôn nằm trong ngân sách token quy định.
+- [ ] Phase 2: Drift score phát hiện chính xác ≥ 3 loại tín hiệu lệch hướng.
+- [ ] Phase 3: Lesson Candidate sinh ra sau 2+ lỗi cùng pattern.
+- [ ] Phase 3: Skill xuất bản thành công vào cả target project và core skillpack.
+- [ ] Tất cả unit tests của 3 package mới pass.
+- [ ] Không làm gãy các flow và gate hiện có.
