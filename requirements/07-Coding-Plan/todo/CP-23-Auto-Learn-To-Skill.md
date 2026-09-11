@@ -3,7 +3,7 @@
 **Maps from:** Product Vision, SP-02, SP-03, SS-09, SD-05, SD-10, CP-10, CP-11, CP-21
 **Phase:** Cross-cutting runtime intelligence
 **Depends on:** CP-10, CP-11, CP-21
-**Supersedes:** CP-24, CP-25
+**Supersedes:** CP-24, CP-25, CP-39 (token/prompt optimize one-liner)
 
 ## 1. Core Concept
 
@@ -461,5 +461,6 @@ Mitigation:
 
 ## 14. Notes
 
-- CP-24 and CP-25 are intentionally reduced to redirect stubs after this merge.
-- This CP should be treated as the single source of truth for runtime context control, drift correction, and mistake-to-skill learning.
+- CP-24, CP-25, and CP-39 are **closed redirect stubs** under `07-Coding-Plan/done/` (2026-09-11 doc cleanup).
+- Empty `CP-26-Auto-Model-Reasoning` stub is **withdrawn** in `done/` — do not confuse with `done/CP-26-Env-Liked-Proxy-System.md`.
+- This CP is the single source of truth for runtime context control, drift correction, and mistake-to-skill learning.
