@@ -1866,19 +1866,20 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 			})
 			s.emitAgentGraph(runID, snap)
 			go s.persistParentSession(runID)
-			// Task-327: Resume OK must not tryAdvance into empty ss_lock park when
-			// SS drafts were deleted — restart ingest_reader instead.
+			// Task-327/328/329: artifact-missing recover before any tryAdvance.
 			if s.restartVibeIngestForMissingSS(runID) {
 				return nil
 			}
+			if s.restartVibeCpWriterForMissingCP(runID) {
+				return nil
+			}
+			if s.restartVibeTaskSlicerForMissingTasks(runID) {
+				return nil
+			}
 			// Task-328: cp_writer→done has no forward successor; OK joins
-			// task_slicer when CP exists, or rewrites CP when it was deleted.
-			// Use forceStart (not maybeStart): after stop, ref is often already
-			// vibe-cp-ingest and maybeStart would no-op → UI hang (run-225468).
+			// task_slicer when CP exists. forceStart: already vibe-cp-ingest
+			// would no-op maybeStart → hang (run-225468).
 			if from == vibeCpWriterNodeID {
-				if s.restartVibeCpWriterForMissingCP(runID) {
-					return nil
-				}
 				s.forceStartVibeTaskSlicer(runID)
 				return nil
 			}

@@ -29,7 +29,7 @@
 ### Current Ask
 
 - Unit §2 **done** 2026-09-09 (`TestCA793_*` + reconstruct lock green). M1–M3 done.
-- Live **run-678326** (Mac) Branch V done. Windows **run-225468** R-SS-K + R-SS-D live PASS (Task-327). F1/N-REJ PASS. **Task-328 / CA-828** landed for R-CP-K (Resume → task_slicer) + R-CP-D1 (CP delete → rewrite `cp_writer`, skip ss_lock) — rebuild TUI then live re-prove. F2 + R-TK-* / N-* still open. V7/V8 unexercised.
+- Live **run-678326** (Mac) Branch V done. Windows **run-225468**: R-SS-* + **R-CP-K/D1 live PASS** (Task-327/328). R-TK-D1 live RED: delete Task-904/905/906 → reopen parked Resume→tdd (stale plan) instead of re-run `task_slicer` — fixing Task-329. F2 / R-TK-K / N-* / V7/V8 still open.
 
 ### Key Decisions
 
@@ -231,7 +231,7 @@ V5 + G1 + G2 + G3 = live Branch V pass for this bed.
 - [x] V5 ticked on run-678326 (`task 3/3`, `tdd-signatures.md` on disk, validate/synthesis/audit DONE)
 - [x] G1 + G2 + G3 ticked (44 PASS; `main.go` playable CLI; calc clean)
 - [x] F1 ticked; [ ] F2 ticked if a Dev gate was observed
-- [x] §11 R-SS-K + R-SS-D **live** (Task-327 O-6); [ ] R-CP-* / R-TK-* / N-* (except N-REJ)
+- [x] §11 R-SS-* + R-CP-K/D1 **live**; [ ] R-TK-* / R-CP-D2 / N-* (except N-REJ)
 - [x] Evidence §7 attached for run-678326 + run-225468 R-SS-D live regen
 
 ## 11. Resume checkpoint — SS / CP / Task (CA-793)
@@ -250,8 +250,8 @@ Stop with `/exit` (or kill TUI). Reopen `just chat-dev <sandbox>`. Open **the sa
 | --- | --- | --- | --- | --- | --- |
 | R-SS-K | `ss_lock` | SS remains | checkpoint `ss_lock` | `cp_writer` | [x] run-225468 reopen kept `ss_lock` WAITING + lock card |
 | R-SS-D | `ss_lock` | **delete** `requirements/05-System-Specs/SS-*.md` (not FORMAT) | checkpoint **empty** | `ingest_reader` | [x] live run-225468 + Task-327: delete SS → reopen → ingest regen → SS Preview again (`SS-01/02/03` + draft card); unit `TestTask327_*` / CA-827 |
-| R-CP-K | `cp_writer` | CP + SS remain | checkpoint `cp_writer` | `task_slicer` | [ ] |
-| R-CP-D1 | `cp_writer` | **delete CP**, SS remains | demote `ss_lock` | `cp_writer` | [ ] |
+| R-CP-K | `cp_writer` | CP + SS remain | checkpoint `cp_writer` | `task_slicer` | [x] run-225468 Resume → Continue → `task_slicer` (Task-328/CA-828; force-slicer hang fixed `f9b07bb`) |
+| R-CP-D1 | `cp_writer` | **delete CP**, SS remains | demote `ss_lock` | `cp_writer` | [x] run-225468 live: delete CP → reopen auto `cp_writer` rewrite (Task-328) |
 | R-CP-D2 | `cp_writer` | **delete CP + SS** | empty | ingest | [ ] |
 | R-TK-K | `task_slicer` | Task + CP + SS remain | checkpoint `task_slicer` | `vibe-sprint` | [ ] |
 | R-TK-D1 | `task_slicer` | **delete Task-*.md**, CP remains | demote `cp_writer` | `task_slicer` | [ ] |

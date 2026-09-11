@@ -385,6 +385,68 @@ func (s *InteractiveService) maybeStartVibeCpIngest(parentRunID string) {
 	s.forceStartVibeTaskSlicer(parentRunID)
 }
 
+// vibeTaskPlanExpectsFiles reports plan entries that name Task artifacts
+// (not placeholders like "sprint-0" from older fixtures / CA-770).
+func vibeTaskPlanExpectsFiles(plan []string) bool {
+	for _, p := range plan {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.Contains(p, "Task-") || strings.Contains(filepath.ToSlash(p), "08-Task/") {
+			return true
+		}
+	}
+	return false
+}
+
+// restartVibeTaskSlicerForMissingTasks implements R-TK-D1 (Task-329): Task
+// files deleted but CP remains → re-run task_slicer. Must run BEFORE
+// maybeParkVibeResumeConfirm; otherwise stale vibeTaskPlan + vibe-sprint
+// parks "Resume from tdd?" (live run-225468 after deleting Task-904/905/906).
+func (s *InteractiveService) restartVibeTaskSlicerForMissingTasks(parentRunID string) bool {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || rs.workingMode != workingmode.Vibe {
+		s.mu.Unlock()
+		return false
+	}
+	cwd := rs.workspaceCwd
+	bare := workingmode.BareFlowID(rs.chatFlowRef)
+	plan := append([]string(nil), rs.vibeTaskPlan...)
+	cpNode := rs.vibeCheckpointNode
+	s.mu.Unlock()
+
+	// Empty cwd = unknown (Task-327 T-1 / CA-770 reconstruct fixtures).
+	if strings.TrimSpace(cwd) == "" {
+		return false
+	}
+	if !vibeCPArtifactsPresent(cwd) {
+		return false
+	}
+	if len(collectVibeTaskPlan(cwd)) > 0 {
+		return false
+	}
+	// Require evidence we already passed slicer / entered sprint — not mere
+	// vibe-cp-ingest without Tasks (that is R-CP-K Resume join).
+	expected := vibeTaskPlanExpectsFiles(plan) || bare == vibeSprintFlowID ||
+		cpNode == "tdd" || cpNode == vibeTaskSlicerNodeID
+	if !expected {
+		return false
+	}
+
+	s.mu.Lock()
+	if r := s.runs[parentRunID]; r != nil {
+		r.vibeTaskPlan = nil
+		r.vibeSprintIndex = 0
+		r.vibeResumeConfirm = false
+		r.vibeResumeFromNode = ""
+	}
+	s.mu.Unlock()
+	s.forceStartVibeTaskSlicer(parentRunID)
+	return true
+}
+
 // forceStartVibeTaskSlicer joins/restarts task_slicer from the latest CP.
 // Unlike maybeStartVibeCpIngest, this still runs when chatFlowRef is already
 // vibe-cp-ingest (live hang: Resume Continue after stop cancelled slicer —

@@ -33,3 +33,5 @@ CA-827 / Task-327 SS recover. CA-791 join. CA-793 demote. CA-770 lock restore.
 ## Addendum (live run-225468)
 
 Reopen after CP delete stayed idle: session `chat_flow_ref=vibe-cp-ingest`, `vibe_locked_ss` empty, loop `stopped`. First gate required `vibe-ingest` + lockedSS. Relaxed: SS on disk + CP missing + ingest/cp-ingest/checkpoint history → rewrite `cp_writer`; release stop fence; retarget `vibe-ingest`.
+
+Resume Continue no-op hang when already `vibe-cp-ingest`: `forceStartVibeTaskSlicer` (`f9b07bb`).

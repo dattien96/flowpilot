@@ -1316,12 +1316,13 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// Continue form again (stopped stays stopped; silent-done re-offers
 		// unless declined; finished stays done).
 		s.maybeReparkVibeSprintBoundary(rs.id)
-		// Task-327 / Task-328 O-6 order: SS-missing ingest → CP-missing rewrite
-		// → generic node resume → CP→task_slicer join resume (cp_writer→done has
-		// no forward successor for pendingVibeResumeFromNode).
+		// Task-327/328/329 O-6 order: SS-missing → CP-missing → Task-missing
+		// → generic node resume → CP→task_slicer join (cp_writer→done has no
+		// forward successor for pendingVibeResumeFromNode).
 		switch {
 		case s.maybeRecoverMissingVibeSSLock(rs.id):
 		case s.restartVibeCpWriterForMissingCP(rs.id):
+		case s.restartVibeTaskSlicerForMissingTasks(rs.id):
 		default:
 			s.maybeParkVibeResumeConfirm(rs.id)
 			s.mu.Lock()
