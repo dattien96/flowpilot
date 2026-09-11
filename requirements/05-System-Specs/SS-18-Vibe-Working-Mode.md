@@ -147,7 +147,7 @@ What is missing is a deterministic Vibe policy: same Workflow/Session/Gate subst
 - `Q-1` Resolved — SS must be locked in Desktop/TUI before sprints; see `BR-2`.
 - `Q-2` See §AI Quick View `Q-2` (sprint granularity); task slicing is AI-auto, SS is the only user-gated artifact.
 - `Q-3` Should the per-sprint `r-requirement` check reuse an existing `synthesizer` inline node or warrant a dedicated `behavior: vibe.requirement_check` identifier?
-- `Q-4` Resolved 2026-09-08 — first-class Desktop/TUI **session toggle** (`vibe` | `normal`/`dev`), not project Settings and not API-only. Mode stamps the next `StartRun`; Admin Web has no Vibe entry. See [Task-326](../08-Task/todo/Task-326-Vibe-Working-Mode-Switch-And-Flow-Family-Gate.md).
+- `Q-4` Resolved 2026-09-08 — first-class Desktop/TUI **session toggle** (`vibe` | `normal`/`dev`), not project Settings and not API-only. Mode stamps the next `StartRun`; Admin Web has no Vibe entry. See [Task-326](../08-Task/done/Task-326-Vibe-Working-Mode-Switch-And-Flow-Family-Gate.md).
 
 ## 11. Definition of Done
 
