@@ -12,7 +12,7 @@
 - Last Updated: `2026-09-11`
 - Parent Documents: [CP-23: Bộ trí tuệ vận hành tích hợp](../../07-Coding-Plan/todo/CP-23-Auto-Learn-To-Skill.md)
 - Child Documents: `None`
-- Related Documents: [Task-335: Bộ phát hiện lệch hướng Drift Detector](./Task-335-Drift-Wrong-Way-Detector-And-Correction-Ladder.md), [Task-334: Context Resolver và Budget Packer](./Task-334-Context-Resolver-And-Budget-Packer.md), `skillpack` package
+- Related Documents: [Task-335: Bộ phát hiện lệch hướng Drift Detector](../done/Task-335-Drift-Wrong-Way-Detector-And-Correction-Ladder.md), [Task-334: Context Resolver và Budget Packer](../done/Task-334-Context-Resolver-And-Budget-Packer.md), `skillpack` package
 - Replaces: `None`
 - Tags: `runtime-intelligence, auto-skill, lesson-candidates, skillpack, target-project-sync`
 
@@ -22,7 +22,7 @@
 
 - Hiện thực hóa **Phase 3 của CP-23**: Xây dựng cơ chế tự học động giúp chuyển đổi các sai lầm lặp lại trong quá trình vận hành thành tri thức kỹ thuật lâu dài dưới dạng **Skill**.
 - **Thang thăng cấp bài học (Promotion Ladder)**:
-  - Sự cố đơn lẻ $\rightarrow$ Lưu bản ghi `DriftEvent` (từ [Task-335](./Task-335-Drift-Wrong-Way-Detector-And-Correction-Ladder.md)).
+  - Sự cố đơn lẻ $\rightarrow$ Lưu bản ghi `DriftEvent` (từ [Task-335](../done/Task-335-Drift-Wrong-Way-Detector-And-Correction-Ladder.md)).
   - Lỗi có cùng mẫu hình (pattern) lặp lại $\ge 2$ lần $\rightarrow$ Tự động đúc kết thành **Lesson Candidate** (gồm: Title, Trigger pattern, Anti-pattern, Preferred behavior).
   - Người dùng xem xét và phê duyệt $\rightarrow$ Xuất bản thành **Skill** chính thức.
 - **Phân tách lưu trữ và đồng bộ thông minh**:
@@ -38,7 +38,7 @@
 - `T-1` **Không bao giờ tự động tạo file Skill mà không có con người duyệt**: Tránh tình trạng sinh ra các rule rác hoặc overfit vào một lỗi ngẫu nhiên. Mọi bài học đề xuất đều dừng lại ở trạng thái `candidate` chờ duyệt.
 - `T-2` **Tương thích 100% với kiến trúc `skillpack` hiện có**: Tuân thủ cấu trúc phân nhóm nền tảng đã có trong FlowPilot (`common`, `android`, `golang`, `reactjs`, `flutter`, `ios`, `kmm`,...).
 - `T-3` **Định dạng 2 đầu ra**:
-  - *Dạng thẻ rút gọn (Compact Rule Card)*: Nạp ngay vào bộ `BudgetPacker` của [Task-334](./Task-334-Context-Resolver-And-Budget-Packer.md) để tiết kiệm token.
+  - *Dạng thẻ rút gọn (Compact Rule Card)*: Nạp ngay vào bộ `BudgetPacker` của [Task-334](../done/Task-334-Context-Resolver-And-Budget-Packer.md) để tiết kiệm token.
   - *Dạng tài liệu hoàn chỉnh (Markdown Skill File)*: Lưu theo format chuẩn `SKILL.md` kèm YAML frontmatter để các AI tool khác đọc được.
 
 ### Constraints
@@ -68,7 +68,7 @@ Biến FlowPilot thành một trợ lý AI có khả năng tự tích lũy kinh 
 ## 2. Parent Links
 
 - Coding Plan: [CP-23 Phase 3](../../07-Coding-Plan/todo/CP-23-Auto-Learn-To-Skill.md).
-- Upstream Tasks: [Task-334](./Task-334-Context-Resolver-And-Budget-Packer.md), [Task-335](./Task-335-Drift-Wrong-Way-Detector-And-Correction-Ladder.md).
+- Upstream Tasks: [Task-334](../done/Task-334-Context-Resolver-And-Budget-Packer.md), [Task-335](../done/Task-335-Drift-Wrong-Way-Detector-And-Correction-Ladder.md).
 
 ---
 

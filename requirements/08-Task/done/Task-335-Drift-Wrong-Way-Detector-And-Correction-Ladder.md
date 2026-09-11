@@ -5,7 +5,7 @@
 - Document ID: `Task-335`
 - Title: `Xây dựng Bộ phát hiện lệch hướng Drift Detector và Thang ứng phó`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-11`
@@ -116,20 +116,27 @@ Trong các phiên làm việc dài hoặc khi gặp một bug khó, model thư�
 
 ## 8. Completion Notes
 
-- Trạng thái: `draft` (chờ triển khai).
+- Trạng thái: `done` (2026-09-11).
+- Triển khai: package `internal/driftdetect/` (detector.go: EvaluateTurnDrift với trọng số 35/30/25/20, cap 100, decay model replay nửa chu kỳ — turn sạch + có delta file giảm điểm một nửa, test 65→32→16; signals.go: apology history-aware ≥2 lượt liên tiếp, same-test-name loop, zero-delta >2000 tokens; ladder.go: đúng ngưỡng 30/60/80, GenerateSystemNote deterministic).
+- Tích hợp (flag `FLOWPILOT_ENABLE_DRIFT_DETECTOR`, mặc định OFF byte-identical): `recordDriftTelemetry` ở cả root + child gate sau `applyDodSignals`; JSONL `workflow_drift_events.json` dưới `.flowpilot/` workspace (artifact chuyển giao Phase 3); inject_system_note + narrow_context (halve caps, floor >0) tiêu thụ one-shot tại seam `applyBudgetPackerIfEnabled` của Task-334; narrow hoạt động cả khi budget-packer flag OFF.
+- Pause-for-human wiring deferred (reviewer xác nhận đúng quyết định an toàn): `EventUserConfirmRequired` bị binding chặt vào ss-lock confirm backend — emit không có gate sẽ treo client vào endpoint không trả lời được. Action được ghi trên event + log `[drift]`; wiring drift-specific pause cần gate registry + route + modal riêng (follow-up).
+- GitNexus impact: runFlowGateAtEpoch LOW, runChildArtifactOutputGateAtEpoch LOW (7 impacted).
+- Review PASS, 7 non-blocking đã ghi nhận: JSONL có thể nhân bản event khi gate resume (Phase 3 cần dedupe theo run_id+turn_id); `apology_loop` là bằng chứng yếu nhất cho lesson-miner ("you're right"/"bạn nói đúng" là spec-mandated nhưng dễ false positive); pattern tiếng Việt cần đúng dấu; pending note bị drop nếu prompt rỗng; `StepID` đã bổ sung theo DOD §9 (Code Guide §11 thiếu — caller fill từ TurnResult) kèm boundary test 29/30/59/60/79/80.
+- Provider parity: provider-agnostic (deterministic Go, 0 LLM; token usage đọc từ EventTokenUsageUpdated mà mọi adapter emit).
+- Prior CA claims giữ nguyên: CA-837 (Task-334 seam — mở rộng additive, byte-identity được test của 334 bảo vệ lại), CA-833..CA-836.
 
 ---
 
 ## 9. Definition of Done
 
-- [ ] Struct `DriftEvent` lưu trữ đầy đủ: `RunID`, `StepID`, `DriftScore`, `TriggeredSignals`, `CorrectionAction`.
-- [ ] Heuristic phát hiện chính xác vòng lặp xin lỗi / filler phrases mà không bắt nhầm câu trả lời thông thường.
-- [ ] Tích hợp trích xuất tín hiệu từ `r-scope` mà không tạo ra code kiểm tra diff trùng lặp.
-- [ ] Thang ứng phó hoạt động theo đúng ngưỡng: `30-59` bơm system note, `60-79` thu hẹp context, `80+` dừng hỏi người dùng.
-- [ ] Chạy `go test ./internal/driftdetect/...` pass 100%.
-- [ ] Lưu trữ lịch sử `DriftEvent` dạng JSON phục vụ chuyển giao sang Phase 3 (`Task-336`).
-- [ ] Tích hợp ghi nhận drift event trong `gate_hook.go` sau mỗi turn hoàn thành.
-- [ ] Điểm drift giảm dần (decay) khi AI sửa chữa thành công, không cộng dồn vô hạn.
+- [x] Struct `DriftEvent` lưu trữ đầy đủ: `RunID`, `StepID`, `DriftScore`, `TriggeredSignals`, `CorrectionAction`. (StepID do caller fill từ TurnResult — Code Guide §11 không có, bổ sung theo đúng DOD.)
+- [x] Heuristic phát hiện chính xác vòng lặp xin lỗi / filler phrases mà không bắt nhầm câu trả lời thông thường. (≥2 lượt liên tiếp; 1 lần đơn lẻ = bình thường — test assert.)
+- [x] Tích hợp trích xuất tín hiệu từ `r-scope` mà không tạo ra code kiểm tra diff trùng lặp. (Đọc thẳng `tr.ScopeOutOfScopePaths`.)
+- [x] Thang ứng phó hoạt động theo đúng ngưỡng: `30-59` bơm system note, `60-79` thu hẹp context, `80+` dừng hỏi người dùng. (Ladder đúng ngưỡng + boundary test; runtime pause wiring deferred có lý do an toàn — xem Completion Notes.)
+- [x] Chạy `go test ./internal/driftdetect/...` pass 100%. (12/12.)
+- [x] Lưu trữ lịch sử `DriftEvent` dạng JSON phục vụ chuyển giao sang Phase 3 (`Task-336`). (JSONL `.flowpilot/workflow_drift_events.json`.)
+- [x] Tích hợp ghi nhận drift event trong `gate_hook.go` sau mỗi turn hoàn thành. (Root + child paths.)
+- [x] Điểm drift giảm dần (decay) khi AI sửa chữa thành công, không cộng dồn vô hạn. (Half-life replay; cap 100 tại mọi bước cộng.)
 
 ---
 

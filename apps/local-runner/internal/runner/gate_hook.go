@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,8 +20,10 @@ import (
 	"flowpilot-runner/internal/agentpack"
 	"flowpilot-runner/internal/changecontract"
 	"flowpilot-runner/internal/changeledger"
+	"flowpilot-runner/internal/driftdetect"
 	"flowpilot-runner/internal/featurecatalog"
 	"flowpilot-runner/internal/flowgate"
+	"flowpilot-runner/internal/promptpacker"
 	"flowpilot-runner/internal/structure"
 	"flowpilot-runner/internal/tooling"
 )
@@ -302,6 +305,12 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	// Task-331 (CP-47 P-3): DOD completion signals from Task-*/BUG-* docs
 	// written this turn, BEFORE Evaluate runs so r-dod-complete can fire.
 	applyDodSignals(&tr)
+
+	// Task-335 (CP-23 Phase 2): drift telemetry — recorded after the turn
+	// completed and every TurnResult signal (r-scope ScopeOutOfScopePaths,
+	// test oracle failures) is populated. No-op unless
+	// FLOWPILOT_ENABLE_DRIFT_DETECTOR is set (behavior-neutral default OFF).
+	s.recordDriftTelemetry(rs, turnID, &tr)
 
 	// 7. Load rules; fall back to defaults when flow-rules.json is absent.
 	// LoadRules already merges missing DefaultRules by ID (Task-223).
@@ -1127,6 +1136,11 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		}
 		tr.TamperedTestPaths = append([]string(nil), oracle.Tampered...)
 	}
+	// Task-335 (CP-23 Phase 2): drift telemetry on the child path — placed
+	// AFTER the optional oracle block so tr.Tests is populated (mirrors the
+	// root hook above and the applyDodSignals placement). No-op unless the
+	// FLOWPILOT_ENABLE_DRIFT_DETECTOR flag is set.
+	s.recordDriftTelemetry(rs, turnID, &tr)
 	only = prepareWorkingModeRules(rs.workingMode, only, &tr)
 	s.injectVibeSSDrift(rs, &tr)
 
@@ -2766,4 +2780,275 @@ func (s *InteractiveService) ensureBaselineReadyContext(ctx context.Context, cwd
 	delete(baselineInflight, cwd)
 	close(ch)
 	baselineMu.Unlock()
+}
+
+// --- Task-335 (CP-23 Phase 2): Drift Detector --------------------------------
+//
+// Post-turn telemetry hook (DOD item 7): after each completed turn (root gate
+// runFlowGateAtEpoch + child gate runChildArtifactOutputGateAtEpoch, the same
+// sites that run applyDodSignals) the runner aggregates the turn's
+// ALREADY-COMPUTED gate signals (CP-23 D-2 — no new diff/test logic here):
+// r-scope's ScopeOutOfScopePaths, the test oracle's failed test names, the
+// turn's written/changed files, the final message and the last observed
+// per-response token usage. driftdetect.EvaluateTurnDrift scores the turn,
+// the event is persisted for the Task-336 (Phase 3) handoff, and the
+// Correction Ladder action is stashed for the NEXT prompt assembly
+// (inject_system_note → system note, narrow_context → halved Budget Packer
+// caps, both consumed by applyBudgetPackerIfEnabled — the Task-334 seam).
+//
+// Behavior neutrality: everything here is behind FLOWPILOT_ENABLE_DRIFT_DETECTOR
+// (CP-23 §7 enable_drift_detector), default OFF — with the flag unset the hook
+// returns before any observation, no state is kept, no file is written, and
+// the composed prompt is byte-identical to pre-Task-335.
+//
+// Ladder safety: the ladder is soft (note → narrow → pause). Code is NEVER
+// rolled back automatically (CP-23 hard constraint).
+
+// driftDetectorEnvFlag is the independent rollout flag for the Drift Detector
+// (CP-23 §7: enable_drift_detector). Default OFF. Opt in with
+// FLOWPILOT_ENABLE_DRIFT_DETECTOR=1|true|yes|on (Task-334 env-flag pattern).
+const driftDetectorEnvFlag = "FLOWPILOT_ENABLE_DRIFT_DETECTOR"
+
+// driftDetectorEnabled reports whether the Task-335 drift hook should record
+// telemetry. Default OFF (behavior-neutral rollout).
+func driftDetectorEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(driftDetectorEnvFlag))) {
+	case "1", "true", "yes", "on", "enable", "enabled":
+		return true
+	default:
+		return false
+	}
+}
+
+// driftEventsFileName is the CP-23 §5 workspace artifact: drift events are
+// appended as JSON lines to <workspace>/.flowpilot/workflow_drift_events.json
+// — the durable Phase-3 (Task-336) handoff input. Stored under the TARGET
+// project workspace (rs.workspaceCwd), where the flow gates already persist
+// their own .flowpilot state (baseline, overrides, rules) and where Task-336's
+// skill promotion operates.
+const driftEventsFileName = "workflow_drift_events.json"
+
+// driftHistoryRingCap bounds the in-memory per-run turn history fed to
+// EvaluateTurnDrift (20 turns is ample for loop detection; the JSONL file is
+// the durable record).
+const driftHistoryRingCap = 20
+
+// driftRunKey scopes the drift state per (service, run) so concurrent
+// services (tests, embedders) never collide (ssLockGates pattern).
+type driftRunKey struct {
+	svc   *InteractiveService
+	runID string
+}
+
+// driftRunState is the per-run drift memory: the rolling TurnSummary history
+// and the pending one-shot Correction Ladder actions waiting for the next
+// prompt assembly.
+type driftRunState struct {
+	mu sync.Mutex
+
+	// history is the ring of the last driftHistoryRingCap completed turns
+	// (oldest first), excluding the turn currently being evaluated.
+	history []driftdetect.TurnSummary
+
+	// pendingNote is the inject_system_note prompt text to append at the next
+	// prompt assembly (one-shot; overwritten by a fresher note if several
+	// gates fire before the next assembly).
+	pendingNote string
+
+	// pendingNarrow marks a narrow_context action: the next prompt assembly
+	// packs with halved Budget Packer caps (sticky until consumed).
+	pendingNarrow bool
+}
+
+// driftStates holds the drift state per (service, run). Entries are tiny and
+// bounded per run by driftHistoryRingCap.
+var driftStates = struct {
+	sync.Mutex
+	m map[driftRunKey]*driftRunState
+}{m: map[driftRunKey]*driftRunState{}}
+
+func driftStateFor(s *InteractiveService, runID string) *driftRunState {
+	key := driftRunKey{svc: s, runID: runID}
+	driftStates.Lock()
+	defer driftStates.Unlock()
+	st := driftStates.m[key]
+	if st == nil {
+		st = &driftRunState{}
+		driftStates.m[key] = st
+	}
+	return st
+}
+
+// lastTurnTokensConsumed returns the best-effort per-turn token consumption:
+// the TotalTokens of the LAST token-usage event observed on the run (every
+// provider adapter emits EventTokenUsageUpdated with a per-response
+// breakdown, so this is provider-agnostic). 0 when unknown — the zero-delta
+// signal then stays silent (deterministic degradation, never a false flag).
+func (s *InteractiveService) lastTurnTokensConsumed(rs *interactiveRun) int {
+	if s == nil || rs == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(rs.events) - 1; i >= 0; i-- {
+		ev := rs.events[i]
+		if ev.Type == EventTokenUsageUpdated && ev.TokenUsage != nil && ev.TokenUsage.Last != nil {
+			if ev.TokenUsage.Last.TotalTokens > 0 {
+				return int(ev.TokenUsage.Last.TotalTokens)
+			}
+			return 0
+		}
+	}
+	return 0
+}
+
+// turnSummaryFromTurnResult derives the driftdetect.TurnSummary from the
+// gate's own TurnResult — pure aggregation of already-computed signals
+// (CP-23 D-2: 100% reuse of r-scope + oracle observations).
+func turnSummaryFromTurnResult(turnID string, tr *flowgate.TurnResult, tokensConsumed int) driftdetect.TurnSummary {
+	summary := driftdetect.TurnSummary{
+		TurnID:               turnID,
+		FinalMessage:         tr.FinalMessage,
+		TokensConsumed:       tokensConsumed,
+		ScopeOutOfScopePaths: append([]string(nil), tr.ScopeOutOfScopePaths...),
+	}
+	// FilesChanged: AI tool-call writes (WrittenPaths) plus the observed
+	// turn-scoped diff paths; TestResults: ordinary failures + regressions.
+	summary.FilesChanged = appendUniqueStrings(append([]string(nil), tr.WrittenPaths...), tr.ChangedPaths...)
+	summary.TestResults = appendUniqueStrings(append([]string(nil), tr.Tests.Failed...), tr.Tests.Regressed...)
+	return summary
+}
+
+// recordDriftTelemetry is the Task-335 post-turn drift hook. Called after
+// each completed turn from BOTH the root gate and the child gate. Flag OFF
+// (default): immediate no-op.
+func (s *InteractiveService) recordDriftTelemetry(rs *interactiveRun, turnID string, tr *flowgate.TurnResult) {
+	if s == nil || rs == nil || tr == nil || !driftDetectorEnabled() {
+		return
+	}
+	summary := turnSummaryFromTurnResult(turnID, tr, s.lastTurnTokensConsumed(rs))
+
+	st := driftStateFor(s, rs.id)
+	st.mu.Lock()
+	history := append([]driftdetect.TurnSummary(nil), st.history...)
+	st.mu.Unlock()
+
+	// Evaluate against the history EXCLUDING the current turn, then record.
+	event := driftdetect.EvaluateTurnDrift(history, summary)
+	event.RunID = rs.id
+	event.StepID = tr.StepID
+
+	st.mu.Lock()
+	if n := len(st.history); n > 0 && st.history[n-1].TurnID == summary.TurnID {
+		// Gate re-evaluation of the same completed turn (resume-after-restart
+		// path): replace the entry instead of double-counting the turn.
+		st.history[n-1] = summary
+	} else {
+		st.history = append(st.history, summary)
+		if len(st.history) > driftHistoryRingCap {
+			st.history = st.history[len(st.history)-driftHistoryRingCap:]
+		}
+	}
+	// Ladder actions are stashed for the NEXT prompt assembly
+	// (applyBudgetPackerIfEnabled consumes them one-shot).
+	switch event.CorrectionAction {
+	case driftdetect.ActionInjectSystemNote:
+		st.pendingNote = event.SystemNotePrompt
+	case driftdetect.ActionNarrowContext:
+		st.pendingNarrow = true
+	case driftdetect.ActionPauseForHuman:
+		// Deferred wiring (Task-335): the CP-60-style user-confirm pause
+		// event (EventUserConfirmRequired) is bound to the ss-lock confirm
+		// backend — emitting it without a registered ssLockGate would strand
+		// the client modal on an unanswerable confirm endpoint. The action
+		// stays recorded on the persisted event
+		// (correction_action=pause_for_human) and in the run log; wiring it
+		// to a dedicated non-bypassable confirm flow is the follow-up
+		// integration (noted in the Task-335 completion report).
+	}
+	st.mu.Unlock()
+
+	log.Printf("[drift] run=%s turn=%s score=%d signals=%v action=%s",
+		rs.id, event.TurnID, event.DriftScore, event.TriggeredSignals, event.CorrectionAction)
+	if event.DriftScore > 0 || len(event.TriggeredSignals) > 0 {
+		persistDriftEvent(rs.workspaceCwd, event)
+	}
+}
+
+// persistDriftEvent appends one DriftEvent JSON line to the CP-23 §5
+// workspace artifact workflow_drift_events.json (Task-336 handoff).
+// Best-effort: a telemetry write failure is logged and never fails the gate.
+func persistDriftEvent(workspaceCwd string, event driftdetect.DriftEvent) {
+	if strings.TrimSpace(workspaceCwd) == "" {
+		return
+	}
+	dir := filepath.Join(workspaceCwd, ".flowpilot")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[drift] persist: mkdir %s failed: %v", dir, err)
+		return
+	}
+	line, err := json.Marshal(event)
+	if err != nil {
+		log.Printf("[drift] persist: marshal failed: %v", err)
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, driftEventsFileName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("[drift] persist: open failed: %v", err)
+		return
+	}
+	defer f.Close()
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		log.Printf("[drift] persist: write failed: %v", err)
+	}
+}
+
+// driftLadderActions are the one-shot Correction Ladder actions waiting for
+// the next prompt assembly (both zero-valued when the drift flag is OFF or
+// nothing is pending).
+type driftLadderActions struct {
+	systemNote    string
+	narrowContext bool
+}
+
+// pullDriftLadderActions consumes (reads + clears) the pending ladder actions
+// for the run. Returns the zero value when the drift detector flag is OFF or
+// rs is nil, so the Task-334 seam stays byte-identical by default.
+func (s *InteractiveService) pullDriftLadderActions(rs *interactiveRun) driftLadderActions {
+	if s == nil || rs == nil || !driftDetectorEnabled() {
+		return driftLadderActions{}
+	}
+	st := driftStateFor(s, rs.id)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	acts := driftLadderActions{systemNote: st.pendingNote, narrowContext: st.pendingNarrow}
+	st.pendingNote = ""
+	st.pendingNarrow = false
+	return acts
+}
+
+// narrowContextBudget tightens the Task-334 Budget Packer budget for the
+// drift ladder's narrow_context step (60-79): every cap is HALVED (floor 1 —
+// a per-kind cap of 0 would mean "uncapped" to SectionBudget; the total is
+// floored at 1 so PackPrompt never rejects the budget).
+func narrowContextBudget(b promptpacker.SectionBudget) promptpacker.SectionBudget {
+	half := func(n int) int {
+		if n <= 0 {
+			return 0 // keeps the "uncapped" semantics for unset per-kind caps
+		}
+		if n/2 < 1 {
+			return 1
+		}
+		return n / 2
+	}
+	out := promptpacker.SectionBudget{
+		TotalMaxTokens:   half(b.TotalMaxTokens),
+		MaxExcerptTokens: half(b.MaxExcerptTokens),
+		MaxMemoryTokens:  half(b.MaxMemoryTokens),
+		MaxSkillTokens:   half(b.MaxSkillTokens),
+	}
+	if out.TotalMaxTokens < 1 {
+		out.TotalMaxTokens = 1
+	}
+	return out
 }
