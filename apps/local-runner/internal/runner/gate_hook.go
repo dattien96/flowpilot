@@ -1884,7 +1884,8 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 				return nil
 			}
 			if from == "" || from == "tdd" {
-				s.maybeResumeVibeCoderAfterTdd(runID)
+				// R-TK-K: start tdd when no signatures yet; else advance coder.
+				s.resumeVibeAfterTddGate(runID)
 			} else {
 				s.tryAdvanceFlowFromNode(runID, from, "resume from last node")
 			}

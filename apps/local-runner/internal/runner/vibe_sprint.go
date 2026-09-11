@@ -448,6 +448,78 @@ func (s *InteractiveService) maybeParkVibeResumeConfirm(parentRunID string) {
 	s.parkFlowForAwaitingUser(parentRunID)
 }
 
+// forceStartVibeSprintAtTdd starts (or restarts) vibe-sprint at tdd.
+// Live R-TK-K hang (run-225468): Resume from tdd → maybeResumeVibeCoderAfterTdd
+// no-op'd when tdd was PENDING / no tdd-signatures yet → UI idle.
+func (s *InteractiveService) forceStartVibeSprintAtTdd(parentRunID string) bool {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || rs.workingMode != workingmode.Vibe {
+		s.mu.Unlock()
+		return false
+	}
+	cwd := rs.workspaceCwd
+	prompt := ""
+	if idx := rs.vibeSprintIndex; idx >= 0 && idx < len(rs.vibeTaskPlan) {
+		prompt = strings.TrimSpace(rs.vibeTaskPlan[idx])
+	}
+	if prompt == "" && len(rs.vibeTaskPlan) > 0 {
+		prompt = strings.TrimSpace(rs.vibeTaskPlan[0])
+	}
+	rs.vibeResumeConfirm = false
+	rs.vibeResumeFromNode = ""
+	rs.chatFlowRef = workingmode.PackPrefix + vibeSprintFlowID
+	rs.autoOrchestrate = true
+	rs.flowEngineDriven = true
+	if rs.status == RunStatusCancelled || rs.status == RunStatusFailed || rs.status == RunStatusCompleted {
+		rs.status = RunStatusRunning
+		rs.agentStatus = string(RunStatusRunning)
+	}
+	s.mu.Unlock()
+	if prompt == "" {
+		if tasks := collectVibeTaskPlan(cwd); len(tasks) > 0 {
+			prompt = tasks[0]
+		}
+	}
+	if prompt == "" {
+		prompt = "[vibe] resume vibe-sprint at tdd (Task-330)."
+	}
+	s.releaseHubStopFenceForFollowUp(context.Background(), parentRunID)
+	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		st.Status = "running"
+		st.BlockReason = ""
+		st.GateReason = ""
+		st.ActiveNode = ""
+		return st
+	})
+	abandonActiveFrozenContractsForRun(cwd, parentRunID, "vibe-sprint resume at tdd")
+	stampVibeTaskInProgress(cwd, prompt)
+	s.setFlowStepStatus(context.Background(), parentRunID, "tdd", StepStatusPending)
+	s.startResolvedFlowFromNode(context.Background(), parentRunID, workingmode.PackPrefix+vibeSprintFlowID, prompt, "tdd")
+	go s.persistParentSession(parentRunID)
+	return true
+}
+
+// resumeVibeAfterTddGate handles Resume OK when from=tdd (R-TK-K).
+// Prefers coder advance when tdd artifacts exist; otherwise starts tdd.
+func (s *InteractiveService) resumeVibeAfterTddGate(parentRunID string) {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	cwd := ""
+	checkpoint := ""
+	if rs != nil {
+		cwd = rs.workspaceCwd
+		checkpoint = rs.vibeCheckpointNode
+	}
+	s.mu.Unlock()
+	tddDone := checkpoint == "tdd" || s.vibeTddStepDone(parentRunID)
+	if hasVibeTddOutput(cwd) && tddDone {
+		s.maybeResumeVibeCoderAfterTdd(parentRunID)
+		return
+	}
+	s.forceStartVibeSprintAtTdd(parentRunID)
+}
+
 func (s *InteractiveService) maybeResumeVibeCoderAfterTdd(parentRunID string) {
 	if s == nil || strings.TrimSpace(parentRunID) == "" {
 		return

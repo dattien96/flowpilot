@@ -29,7 +29,7 @@
 ### Current Ask
 
 - Unit §2 **done** 2026-09-09 (`TestCA793_*` + reconstruct lock green). M1–M3 done.
-- Live **run-678326** (Mac) Branch V done. Windows **run-225468**: R-SS-* + R-CP-K/D1 + **R-TK-D1 live PASS** (Task-329: delete Tasks → reopen re-runs `task_slicer`, not Resume→tdd). Next: **R-TK-K** (keep Tasks, `/exit`, reopen → Resume→sprint/tdd). F2 / R-TK-D2/D3 / R-CP-D2 / N-* / V7/V8 still open.
+- Live **run-678326** (Mac) Branch V done. Windows **run-225468**: R-SS-* + R-CP-* + R-TK-D1 live PASS. R-TK-K park PASS; Continue hung (Resume→tdd no-op) — **CA-830** force-start sprint at tdd. Rebuild then re-prove Continue spawns tdd. F2 / R-TK-D2/D3 / N-* still open.
 
 ### Key Decisions
 
