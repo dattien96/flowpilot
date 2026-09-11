@@ -29,7 +29,7 @@
 ### Current Ask
 
 - Unit §2 **done** 2026-09-09 (`TestCA793_*` + reconstruct lock green). M1–M3 done.
-- Live **run-678326** (Mac) Branch V done. Windows **run-225468**: R-SS-* + R-CP-K/D1 + R-TK-K/D1 + **R-TK-D2 live PASS** (delete Task+CP, SS remains → `cp_writer`). Next: **R-TK-D3** (delete Task+CP+SS → ingest) or F2 / N-*. V7/V8 still unexercised.
+- Live **run-678326** (Mac) Branch V done. Windows **run-225468**: §11 R-SS-* + R-CP-K/D1 + **R-TK-K/D1/D2/D3 live PASS** (R-TK-D3 via BUG-373/CA-832). Next: **R-CP-D2** (optional overlap) or **F2** / **N-***. V7/V8 still unexercised.
 
 ### Key Decisions
 
@@ -231,7 +231,7 @@ V5 + G1 + G2 + G3 = live Branch V pass for this bed.
 - [x] V5 ticked on run-678326 (`task 3/3`, `tdd-signatures.md` on disk, validate/synthesis/audit DONE)
 - [x] G1 + G2 + G3 ticked (44 PASS; `main.go` playable CLI; calc clean)
 - [x] F1 ticked; [ ] F2 ticked if a Dev gate was observed
-- [x] §11 R-SS-* + R-CP-K/D1 + R-TK-K/D1/D2 **live**; [ ] R-TK-D3 / R-CP-D2 / N-* (except N-REJ) / F2
+- [x] §11 R-SS-* + R-CP-K/D1 + R-TK-K/D1/D2/D3 **live**; [ ] R-CP-D2 (optional) / N-* (except N-REJ) / F2
 - [x] Evidence §7 attached for run-678326 + run-225468 R-SS-D live regen
 
 ## 11. Resume checkpoint — SS / CP / Task (CA-793)
@@ -256,7 +256,7 @@ Stop with `/exit` (or kill TUI). Reopen `just chat-dev <sandbox>`. Open **the sa
 | R-TK-K | `task_slicer` | Task + CP + SS remain | checkpoint `task_slicer` | `vibe-sprint` | [x] run-225468: keep Tasks → reopen Resume from tdd → Continue starts `tdd` (CA-830) |
 | R-TK-D1 | `task_slicer` | **delete Task-*.md**, CP remains | demote `cp_writer` | `task_slicer` | [x] run-225468 live + Task-329/CA-829: delete 904/905/906 → reopen re-runs `task_slicer` (not Resume→tdd) |
 | R-TK-D2 | `task_slicer` | **delete Task + CP**, SS remains | demote `ss_lock` | `cp_writer` | [x] run-225468 live: delete Task+CP, SS remains → reopen runs `cp_writer` |
-| R-TK-D3 | `task_slicer` | **delete Task + CP + SS** | empty | ingest | [ ] |
+| R-TK-D3 | `task_slicer` | **delete Task + CP + SS** | empty | ingest | [x] run-225468 live + BUG-373/CA-832: delete all → reopen runs `ingest_reader` (not Resume→tdd) |
 | R-NF | node done, artifact **never written** | no file | checkpoint **unchanged** (no commit) | previous layer | [x] unit 2.5 |
 | R-EF | write 0-byte CP then done | empty file | no commit | previous layer | [x] unit 2.6 |
 | R-AL | stored alias `sprint_slicer` / `cp_lock` | delete Task or CP as above | same demote as canonical layer | same | [x] unit 2.11–2.13 |
