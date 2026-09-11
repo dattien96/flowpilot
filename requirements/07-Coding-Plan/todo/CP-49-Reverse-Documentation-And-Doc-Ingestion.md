@@ -1,130 +1,167 @@
-# CP-49: Reverse-Documentation From Code And Loose-Doc Ingestion
+# CP-49: Trích xuất tài liệu từ mã nguồn và nạp tài liệu tự do (Reverse-Documentation)
 
 ## Metadata
 
 - Document ID: `CP-49`
-- Title: `Reverse-Documentation From Code And Loose-Doc Ingestion`
-- Feature Keys: `context-regression-engine`
+- Title: `Trích xuất tài liệu từ mã nguồn và nạp tài liệu tự do (Reverse-Documentation)`
+- Feature Keys: `context-regression-engine, reverse-documentation`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `approved`
 - Owner: `FlowPilot`
-- Reviewers: `TBD`
+- Reviewers: `Operator`
 - Created: `2026-07-13`
-- Last Updated: `2026-07-13`
-- Parent Documents: [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
-- Child Documents: `None`
-- Related Documents: [CP-48: Standardize Existing Requirements Docs](./CP-48-Standardize-Doc.md) (consumes CP-49's output), [Task-097 Feature Catalog](../../08-Task/done/Task-097-Feature-Catalog-And-Resolver.md); `reqscaffold` package; GitNexus code-intelligence (symbols / relationships / execution flows / wiki); skill `phase-document-authoring`
+- Last Updated: `2026-09-11`
+- Parent Documents: [SS-13: Hợp đồng tài liệu cho AI](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
+- Child Documents: [Task-333: Lệnh Standardize và Trích xuất tài liệu kèm cổng SS-Lock](../../08-Task/todo/Task-333-Standardize-Command-And-Reverse-Doc-With-SS-Lock.md)
+- Related Documents: [CP-48: Bộ máy kiểm định và chuẩn hóa tài liệu](./CP-48-Standardize-Doc.md), [CP-60: Vibe Working Mode](../done/CP-60-Vibe-Working-Mode.md), `reqscaffold` package, GitNexus Code Intelligence
 - Replaces: `None`
-- Tags: `context-regression-engine, reverse-documentation, doc-ingestion, gitnexus, brownfield`
+- Tags: `context-regression-engine, reverse-documentation, doc-ingestion, gitnexus, brownfield, ss-lock`
 
 ## AI Quick View
 
 ### Summary
 
-- For a legacy project with **no requirements docs** (or only loose README/ad-hoc specs), bootstrap the SS/SD/CP taxonomy by (a) **ingesting** existing loose docs and (b) **reverse-documenting from code**.
-- **Hard ceiling, designed-in**: code tells you *what* it does, not *why*. So generate strong **as-built SD** + partial **CP/Task/BugFix** from real evidence, but **SS (intent/acceptance criteria) is a skeleton + `TODO` only — never fabricated**.
-- **Anti-hallucination rule**: every generated statement cites evidence (a GitNexus symbol/flow, a commit/changeledger entry, or a source line) or is marked `TODO: human intent needed`. Nothing becomes "truth" without human accept.
-- Output is **draft** docs; [CP-48](./CP-48-Standardize-Doc.md) then normalizes + validates them against the contract. Clean seam: CP-49 generates, CP-48 conforms.
+- Dành cho các dự án legacy/brownfield chưa có tài liệu theo chuẩn hoặc chỉ có tài liệu tự do (README, ghi chú rời rạc): khởi tạo hệ thống phân loại tài liệu chuẩn `SS/SD/CP/Task` bằng cách **(a) nạp các tài liệu tự do có sẵn** và **(b) trích xuất tài liệu ngược từ mã nguồn thực tế (Reverse-Documentation)**.
+- Tích hợp thông qua một lệnh giao diện duy nhất **`/standardize [scope]`** (hoặc nút bấm trên Desktop/TUI):
+  - Khi người dùng muốn chuẩn hóa một feature hoặc module (ví dụ: `/standardize feature/device`), nếu hệ thống quét thấy chưa có bộ tài liệu nào liên quan, quy trình CP-49 sẽ được kích hoạt.
+- **Nguyên tắc ranh giới bất di bất dịch (Hard Ceiling Rule)**:
+  - Mã nguồn chỉ phản ánh *LÀM CÁI GÌ (What)*, không thể tự phản ánh *TẠI SAO (Why - Ý đồ nghiệp vụ)*.
+  - Do đó, AI được phép tự sinh bản thảo thiết kế kiến trúc thực tế (**SD - System Tech Design**) và kế hoạch kỹ thuật (**CP/Task**) dựa trên bằng chứng có thật.
+  - Đối với đặc tả hệ thống (**SS - System Specs / Business Intent**): **AI TUYỆT ĐỐI KHÔNG ĐƯỢC TỰ BỊA ĐẶT**. AI chỉ dựng khung sườn kèm đánh dấu `TODO: human intent needed`.
+- **Cổng khóa người dùng (SS-Lock Gate - AI KHÔNG BAO GIỜ ĐƯỢC BYPASS)**:
+  - Tương tự như cơ chế `ss_lock` đã thành công tại CP-60 (Vibe Mode), quy trình sẽ tạm dừng để hiển thị giao diện cho người dùng nhập feedback, điều chỉnh các tiêu chí nghiệm thu và xác nhận khóa SS. Chỉ khi con người phê duyệt, tài liệu mới được chính thức ban hành và bàn giao cho [CP-48](./CP-48-Standardize-Doc.md) chuẩn hóa định dạng.
 
 ### Current Ask
 
-- Deliver an **evidence-collection layer** (P-1), **loose-doc ingestion** (P-2), and **code→as-built draft generation** (P-3), all gated by **human review + accept** (P-4).
+- Xây dựng tầng thu thập bằng chứng từ GitNexus & Git history (P-1), sinh bản thảo kiến trúc SD từ mã nguồn (P-2), tạo khung sườn SS kèm cổng chặn bắt buộc `SS-Lock` (P-3), tích hợp vào lệnh `/standardize` qua `Task-333`.
 
 ### Key Decisions
 
-- `P-1` Ground truth comes from **evidence**, not raw code fed to an LLM: GitNexus graph (structure/flows/clusters) + git history/changeledger + loose docs. Degrade gracefully when GitNexus is absent (lighter static/file scan, everything flagged lower-confidence).
-- `P-3` **SS is skeleton + `TODO`, not fabricated** — code cannot recover business intent. Only SD/CP/Task/BugFix are generated from evidence, each statement provenance-linked + confidence-labeled.
-- `P-4` Generated docs are **draft**; a human accepts before they are authoritative, then [CP-48](./CP-48-Standardize-Doc.md) conforms/validates them. No auto-publish.
+- `P-1` **Bằng chứng xác thực (Ground Truth) là nền tảng**: Trích xuất dữ liệu dựa trên GitNexus graph (symbols, call relationships, execution flows) và lịch sử git commit/changeledger. Không "nhồi" mã nguồn thô vô tội vạ vào prompt của LLM.
+- `P-2` **Chống ảo giác (Anti-hallucination)**: Mọi nhận định trong bản thảo SD được sinh ra phải có dẫn chứng (symbol nào, hàm nào, commit nào). Không có bằng chứng $\rightarrow$ gắn cờ `TODO`.
+- `P-3` **Cổng chặn SS-Lock bắt buộc (Non-bypassable Gate)**: SS là quyết định của người dùng. AI chỉ đóng vai trò trợ lý gợi ý; runner dừng lại bắt buộc người dùng xác nhận (`user.confirm`) trước khi sinh tiếp CP/Task.
+- `P-4` **Bàn giao liền mạch cho CP-48**: Các bản thảo sau khi được con người duyệt sẽ được tự động chuyển cho bộ máy CP-48 để kiểm định và chuẩn hóa format theo đúng chuẩn `SS-13`.
 
 ### Constraints
 
-- Non-fabrication is absolute: no evidence → `TODO`, never invented prose.
-- Read-only on source code; writes only draft docs under `requirements/` (or a staging area) pending human accept.
-- Reuse GitNexus + `reqscaffold` + `phase-document-authoring`; do not build a second code-intelligence layer.
-
-### Open Questions
-
-- Staging: do generated drafts land directly in `requirements/**/todo/` (marked `draft` + low-confidence) or in a separate `requirements/_generated/` review area until accepted?
-- Granularity: one SD per GitNexus **cluster** (functional area) vs one per top-level module — which yields the most reviewable drafts?
-- Does this warrant its own `feature_key` (`doc-generation`) split from `context-regression-engine`?
+- Không bịa đặt ý đồ nghiệp vụ: Không bao giờ tự suy diễn lý do kinh doanh nếu mã nguồn không thể hiện.
+- Chế độ chỉ đọc đối với mã nguồn: Chỉ đọc code để phân tích, không sửa đổi source code trong quá trình reverse-doc; chỉ ghi các file nháp dưới `requirements/` chờ duyệt.
+- Tận dụng tối đa GitNexus + `reqscaffold`, không viết lại bộ phân tích cú pháp AST mới.
 
 ### Source Refs
 
-- `SS-13` (target doc contract); `FORMAT-REFERENCE-*` (phase structure); GitNexus resources (clusters, processes, execution flows, wiki); `changeledger` (commit history + feature keys); CP-48 (downstream conformance).
+- `requirements/05-System-Specs/SS-13-AI-Followable-Document-Contract.md` (Hợp đồng tài liệu mục tiêu).
+- `requirements/07-Coding-Plan/todo/CP-48-Standardize-Doc.md` (Bộ máy kiểm định và định dạng tiếp nhận đầu ra).
+- `requirements/07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md` (Mẫu cổng khóa `ss_lock` bắt buộc có người duyệt).
+- GitNexus Code Intelligence (AST, symbol graph, execution traces).
 
-## 1. Goal
+### Open Questions
 
-Let a brownfield project with poor or no documentation reach a *reviewed, evidence-grounded* first draft of its SS/SD/CP set — SD/CP reverse-documented from real code and history, SS scaffolded for humans to fill — without fabricating intent, then hand off to CP-48 for conformance.
+- Đã giải quyết: Cổng SS-Lock tái sử dụng hoàn toàn cơ chế `user.confirm` từ CP-60.
+- Đã giải quyết: GitNexus được gọi qua `exec.Command` (CLI) hoặc MCP client tùy môi trường.
 
-## 2. Input Documents
+---
 
-- system spec: `SS-13` (the target structure to generate into).
-- design source: `FORMAT-REFERENCE-{SS,SD,CP,TASK,BUGFIX}.md`; GitNexus code-intelligence output (the evidence graph).
-- downstream: `CP-48` (validates/normalizes generated drafts).
-- prior art: `reqscaffold` (structure), `phase-document-authoring` skill (writing conforming docs), `changeledger`/`featurecatalog` (history + feature keys).
+## 1. Mục tiêu
 
-## 3. Implementation Strategy
+Cho phép một dự án brownfield/legacy nhanh chóng xây dựng được bộ tài liệu `SS/SD/CP` có căn cứ xác thực từ mã nguồn — trong đó kiến trúc kỹ thuật (SD) được trích xuất từ code thật, còn đặc tả nghiệp vụ (SS) được tạo khung và hoàn thiện dưới sự kiểm soát tối cao của con người thông qua cổng `SS-Lock`.
 
-- overall approach: an **evidence → draft → human-accept** pipeline. Collect structured evidence deterministically; feed only that evidence (not raw code dumps) to a per-phase drafting agent that must cite it; label confidence; require human accept; emit `draft` docs for CP-48 to conform.
-- sequencing logic: P-1 (evidence) is prerequisite. P-2 (ingest loose docs) and P-3 (code→draft) both consume P-1 and can proceed in parallel. P-4 (review/accept) gates all writes.
-- dependencies: GitNexus for the richest evidence (degrade if absent); `reqscaffold` guarantees the folder targets exist; CP-48 must exist to validate output (soft dependency — CP-49 can emit drafts before CP-48 ships).
+---
 
-## 4. Work Breakdown
+## 2. Luồng thực thi chi tiết của lệnh `/standardize [scope]`
 
-- `P-1` **Evidence collection layer (deterministic).** Aggregate: GitNexus clusters/processes/execution-flows/relationships; `changeledger` commit history + feature keys; discovered loose docs (globs beyond `requirements/` — README, `docs/**`, `*.md`); repo file/module structure. Produce a structured **evidence corpus** (per functional area → symbols, flows, commits, doc excerpts). No LLM. Degrade to file/AST-lite scan when GitNexus is unavailable, marking those areas lower-confidence.
-- `P-2` **Loose-doc ingestion.** Classify each loose-doc section by phase intent (WHAT/why → SS, HOW/architecture → SD, plan/work → CP/Task, bug → BugFix). Restructure into the phase template **preserving the original text as evidence**; leave template sections the source never covers empty (`TODO`), never invented. Dedupe against any existing `requirements/` docs. Output: draft docs + an "unclassifiable" residue list (honest, not force-fit).
-- `P-3` **Code→as-built draft generation (evidence-cited, per phase).** Using the P-1 corpus via `phase-document-authoring`:
-  - **SD (as-built):** one draft per functional cluster/flow — modules, responsibilities, dependencies, execution flow — each claim linked to a GitNexus symbol/flow. High confidence.
-  - **CP/Task:** derive "what work exists" from `changeledger`/commit clusters per feature key.
-  - **BugFix:** from revert-type / bug-labeled commits.
-  - **SS:** **skeleton only** — headings + empty acceptance-criteria placeholders + any intent hints found in loose docs/commit messages, all flagged `TODO / low-confidence`. Never a fabricated spec.
-  Every generated doc carries a provenance/confidence header.
-- `P-4` **Human review & accept → hand off.** Present each draft with its evidence + confidence; human edits/accepts/rejects; accepted drafts are written as `draft`-status docs and passed to CP-48 for conformance + `Feature Keys` linkage. Nothing is auto-published.
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Người dùng (Desktop / TUI)
+    participant Cmd as Runner (/standardize)
+    participant Scanner as CP-48 Scanner
+    participant RevDoc as CP-49 Reverse Engine
+    participant Nexus as GitNexus / Git Graph
+    participant SSLock as Cổng chặn SS-Lock (Modal)
 
-## 5. Touched Areas
+    User->>Cmd: Gõ /standardize [scope] (ví dụ: device)
+    Cmd->>Scanner: Kiểm tra tài liệu hiện có trong scope
+    alt Đã có tài liệu SS / SD / CP liên quan
+        Scanner-->>Cmd: Phát hiện tài liệu đã tồn tại
+        Cmd->>Scanner: Chạy bộ đối soát chuẩn SS-13 (CP-48)
+        Scanner-->>User: Báo cáo vi phạm & thực hiện Auto-Fix
+    else Chưa có tài liệu (Brownfield)
+        Cmd->>RevDoc: Kích hoạt trích xuất tài liệu (CP-49)
+        RevDoc->>Nexus: Thu thập Symbol, Call Graph, Execution Flow
+        Nexus-->>RevDoc: Trả về bằng chứng mã nguồn (Evidence)
+        RevDoc->>RevDoc: Sinh Draft SD (Kiến trúc As-Built)
+        RevDoc->>RevDoc: Dựng Khung Draft SS + gắn cờ TODO
+        RevDoc->>SSLock: Tạm dừng và kích hoạt Cổng SS-Lock
+        SSLock-->>User: Hiển thị Modal: Đọc Draft SS & Nhập Feedback
+        User->>SSLock: Tinh chỉnh Acceptance Criteria & Bấm Phê Duyệt
+        SSLock-->>Cmd: Đã khóa SS chính thức (Human-Approved)
+        Cmd->>Scanner: Bàn giao toàn bộ bộ tài liệu cho CP-48 chuẩn hóa
+        Scanner-->>User: Bộ tài liệu chuẩn SS-13 sẵn sàng!
+    end
+```
 
-- files: new evidence-collection + generation modules (e.g. `apps/local-runner/internal/docgen/`); a generation flow definition + review surface; reuse `reqscaffold`, `changeledger`, `featurecatalog`, GitNexus client.
-- modules: `docgen` (new), `changeledger`, `featurecatalog`, `reqscaffold`, GitNexus integration; `phase-document-authoring` skill.
-- database: none (markdown output; evidence read from GitNexus + git).
-- external systems: GitNexus (code-intelligence); the existing agent runtime for drafting.
+---
 
-## 6. Data or Migration Steps
+## 3. Phân chia công việc (Work Breakdown & Task Mapping)
 
-- schema: none.
-- data backfill: on a legacy repo, produces the first SS/SD/CP draft set; on this repo, a way to regression-check generation quality against known-good hand-written docs.
-- config updates: none required.
+- `P-1` **Tầng thu thập bằng chứng mã nguồn (Evidence Collection)** $\rightarrow$ Nằm trong `Task-333`:
+  - Kết nối GitNexus tool / API để trích xuất danh sách symbols, execution flow chính, các tệp phụ thuộc trong scope chỉ định.
+  - Đọc log git commit gần nhất để xác định các thay đổi quan trọng và ngữ cảnh tính năng.
+- `P-2` **Sinh bản thảo kiến trúc thực tế (Draft SD Generator)** $\rightarrow$ Nằm trong `Task-333`:
+  - Từ bằng chứng thu thập được, AI tổng hợp cấu trúc module, luồng dữ liệu, các interface chính thành file `requirements/06-System-Tech-Design/todo/SD-*.md` với đầy đủ trích dẫn nguồn.
+- `P-3` **Dựng khung đặc tả và Cổng chặn `SS-Lock`** $\rightarrow$ Nằm trong `Task-333`:
+  - AI chỉ dựng khung sườn `requirements/05-System-Specs/todo/SS-*.md`: Các phần mục đích kinh doanh và tiêu chí nghiệm thu được đánh dấu `TODO: human intent needed`.
+  - Runner kích hoạt trạng thái dừng tương tác (tương tự node `user.confirm` trong Vibe Mode).
+  - TUI / Desktop app hiển thị cửa sổ xem trước SS và cho phép người dùng sửa đổi, bổ sung và bấm nút "Khóa & Phê duyệt SS".
+- `P-4` **Kết nối luồng chuyển tiếp sang CP-48** $\rightarrow$ Nằm trong `Task-333`:
+  - Sau khi người dùng phê duyệt SS, runner gọi trình quét và auto-fixer của CP-48 để chuẩn hóa cấu trúc cuối cùng.
 
-## 7. Validation Plan
+---
 
-- tests to add: evidence-corpus builder unit tests (deterministic, GitNexus-present and -absent); classifier tests for loose-doc → phase mapping (incl. "unclassifiable" path); a provenance test asserting every generated non-`TODO` statement carries an evidence link; a "no-fabricated-SS" guard (generated SS acceptance-criteria are `TODO` unless evidence exists).
-- manual checks: run on a small legacy repo → review SD accuracy against actual code; confirm SS came out as skeleton, not invented; confirm accepted drafts pass CP-48 conformance.
-- failure cases: GitNexus stale/absent → degrade + flag, never fail hard; loose doc with no mappable content → listed as unclassifiable, not force-fit; human rejects a draft → nothing written.
+## 4. Các vùng bị ảnh hưởng (Touched Areas)
 
-## 8. Rollout and Fallback
+- `apps/local-runner/internal/runner/standardize_cmd.go` (Xử lý lệnh `/standardize`, phân luồng kiểm tra tài liệu).
+- `apps/local-runner/internal/runner/reverse_doc.go` (Tầng thu thập evidence và sinh draft doc).
+- `apps/local-runner/internal/runner/ss_lock_modal.go` (Xử lý trạng thái dừng cổng `SS-Lock` cho TUI và Desktop).
+- `apps/desktop-flowpilot/src/components/SSLockModal.tsx` (Giao diện xem trước và phê duyệt SS trên Desktop).
 
-- rollout order: P-1 (evidence corpus, read-only) → P-2 (ingestion drafts) / P-3 (code drafts) → P-4 (review/accept). Everything read-only or staged until human accept.
-- fallback path: drafts live in a staging area / `draft` status; rejecting or ignoring them leaves the repo unchanged; git-revertible.
-- monitoring: share of generated statements with evidence links (should be ~100% for non-`TODO`); human accept/reject ratio as a quality signal.
+---
 
-## 9. Risks
+## 5. Kế hoạch kiểm thử & nghiệm thu
 
-- `R-1` **Fabricated specs that look authoritative** (worst risk). Mitigation: evidence-or-`TODO` rule; SS skeleton-only; confidence labels; mandatory human accept; provenance test in CI.
-- `R-2` GitNexus unavailable/stale → weak evidence. Mitigation: degrade to static/file scan, flag lower-confidence, never hard-fail.
-- `R-3` Loose-doc misclassification into the wrong phase. Mitigation: human review; preserve original text; "unclassifiable" bucket instead of force-fit.
-- `R-4` Reverse-doc treated as final truth. Mitigation: always `draft` + confidence header; CP-48 validation + human accept before authoritative; `Feature Keys` still human-confirmed (BUG-280 rule).
-- `R-5` Scope creep into "understand product intent from code". Mitigation: hard line — SS intent is never generated, only scaffolded.
+- **Kiểm thử logic**:
+  - Chạy `/standardize` trên một thư mục code mẫu chưa có doc: Xác nhận AI không tự ý bịa đặt nội dung SS mà sinh ra khung có đánh dấu `TODO`.
+  - Kiểm tra cổng `SS-Lock`: Đảm bảo quy trình bắt buộc phải dừng lại chờ tín hiệu phê duyệt của người dùng; không có cách nào AI tự vượt qua cổng này.
+  - Sau khi phê duyệt: Xác nhận tài liệu được chuyển cho CP-48 và ghi vào thư mục `requirements/` với đầy đủ format hợp lệ.
 
-## 10. Definition of Done
+---
 
-- [ ] `P-1` Deterministic evidence corpus builds from GitNexus + git/changeledger + loose docs; degrades (flagged) without GitNexus; no LLM; no panic on a bare repo.
-- [ ] `P-2` Loose docs are classified + restructured into phase drafts preserving original text; uncovered sections are `TODO`; unmappable content is listed, not force-fit.
-- [ ] `P-3` SD/CP/Task/BugFix drafts are generated with per-statement provenance + confidence; **SS is skeleton + `TODO` only**; a test proves no non-`TODO` statement lacks evidence.
-- [ ] `P-4` Every write is human-accepted; accepted drafts are `draft`-status and pass into CP-48 conformance; rejecting writes nothing.
-- [ ] Demonstrated on a legacy repo: reviewed SD matches real code; SS came out as a fill-in skeleton, not a fabricated spec.
+## 6. Dữ liệu và Di chuyển
 
-## 11. Out of Scope
+- Không có schema migration.
+- Các file doc mới được ghi vào thư mục `requirements/` dưới dạng draft (`todo/`).
 
-- Fabricating SS business intent / acceptance criteria from code (hard-excluded by design).
-- The conformance/normalization engine itself (that is [CP-48](./CP-48-Standardize-Doc.md); CP-49 only *produces* drafts for it).
-- Changing the doc contract (`SS-13`).
-- Building a new code-intelligence layer (reuse GitNexus).
+---
+
+## 7. Triển khai và Dự phòng
+
+- **Thứ tự triển khai**: Evidence collection (P-1) → SD generator (P-2) → SS-Lock gate (P-3) → CP-48 handoff (P-4).
+- **Dự phòng**: Nếu GitNexus không khả dụng, hệ thống suy thoái mềm (graceful degradation) sử dụng static directory scan + basic Go AST.
+
+---
+
+## 8. Rủi ro
+
+- `R-1` **AI bịa đặt nội dung SS**: AI có thể suy diễn business intent từ tên biến/hàm. Giảm thiểu: SS-Lock gate bắt buộc con người duyệt, AI chỉ ghi `TODO` cho các trường intent.
+- `R-2` **GitNexus index lỗi thời**: Nếu index chưa được cập nhật, evidence sẽ thiếu symbol mới. Giảm thiểu: Tự động chạy `npx gitnexus analyze` nếu phát hiện index stale.
+
+---
+
+## 9. Tiêu chí hoàn thành tổng thể
+
+- [ ] Evidence thu thập được có trích dẫn symbol/hàm cụ thể.
+- [ ] SD draft sinh ra có dẫn chứng xác thực.
+- [ ] SS draft chỉ chứa khung sườn với nhãn `TODO: human intent needed`.
+- [ ] Cổng SS-Lock không thể bypass bởi AI.
+- [ ] Sau khi người dùng phê duyệt, tài liệu chuyển sang CP-48 chuẩn hóa thành công.
