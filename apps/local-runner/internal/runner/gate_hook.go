@@ -851,7 +851,12 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 				// freeze planner guard got in CA-645. Deliberately NOT
 				// .flowpilot/** (CA-427: a writer rewriting its own gate
 				// rules must still drift).
-				changecontract.IsToolOwnedScaffoldPath(p) {
+				changecontract.IsToolOwnedScaffoldPath(p) ||
+				// BUG-370: markdown/docs are not product code. Live vibe
+				// parks on FEATURE-KEYS.md and tdd-signatures.md made the
+				// coder ask_user-loop ("what is the FlowPilot failure?").
+				// flow-rules.json is not .md and still drifts (CA-427).
+				changecontract.IsMarkdownDocPath(p) {
 				continue
 			}
 			codeOnlyWritten = append(codeOnlyWritten, p)
@@ -1096,7 +1101,6 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 	}
 	only = prepareWorkingModeRules(rs.workingMode, only, &tr)
 	s.injectVibeSSDrift(rs, &tr)
-
 
 	// V10 P0: Gemini (and any adapter without RequestApproval) may still create
 	// commits under YOLO. Detect new commits since turn base and block coding

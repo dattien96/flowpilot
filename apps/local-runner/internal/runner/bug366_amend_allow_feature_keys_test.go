@@ -97,8 +97,8 @@ func TestBUG366_FeatureKeysAllowDoesNotRepark(t *testing.T) {
 		FinalMessage: "done",
 		ChangedFiles: []string{"src/calc.go", "change-audit/FEATURE-KEYS.md"},
 	}, 0)
-	if !blocked {
-		t.Fatal("first write of FEATURE-KEYS.md must still park (BUG-278 / BUG-327)")
+	if blocked {
+		t.Fatal("BUG-370: FEATURE-KEYS.md is markdown and must not park")
 	}
 
 	store, err := changecontract.NewFrozenStore(dir)

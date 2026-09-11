@@ -109,6 +109,22 @@ func IsChangeAuditPath(p string) bool {
 	return strings.HasPrefix(base, "CA-") && strings.HasSuffix(base, ".md")
 }
 
+// IsMarkdownDocPath reports whether p is a markdown/docs path the frozen
+// coder-gate must ignore (BUG-370, live run-678326): any *.md (FEATURE-KEYS.md,
+// tdd-signatures.md, SS/CP/Task notes) plus anything under requirements/.
+// Deliberately NOT the rest of .flowpilot/** — CA-427 Finding 2:
+// .flowpilot/settings/flow-rules.json must still count as drift.
+func IsMarkdownDocPath(p string) bool {
+	np := normalizeScopePath(p)
+	if np == "" {
+		return false
+	}
+	if strings.HasSuffix(strings.ToLower(np), ".md") {
+		return true
+	}
+	return strings.HasPrefix(np, "requirements/")
+}
+
 // PendingCanonicalStoreBookkeepingPaths returns the exact repo-relative paths
 // PendingCanonicalStore (pending_head.go, CP-55 P-5) writes into the
 // workspace it is rooted at — the same idiom as FrozenStoreBookkeepingPaths,
