@@ -179,7 +179,22 @@ func vibeSSLockArtifactsPresent(cwd string, rs *interactiveRun) bool {
 }
 
 func vibeIngestHasSSLockTopology(rs *interactiveRun) bool {
-	return rs != nil && (runHasFlowNode(rs, "ingest_reader") || runHasFlowNode(rs, vibeSSLockNodeID))
+	if rs == nil {
+		return false
+	}
+	if runHasFlowNode(rs, "ingest_reader") || runHasFlowNode(rs, vibeSSLockNodeID) {
+		return true
+	}
+	// R-TK-D3: after delete SS+CP+Task the active graph is often vibe-sprint
+	// (tdd/coder) — still must restart ingest, not park Resume from tdd.
+	switch workingmode.BareFlowID(rs.chatFlowRef) {
+	case vibeIngestFlowID, vibeCpIngestFlowID, vibeSprintFlowID:
+		return true
+	}
+	if rs.vibeSSSealed || strings.TrimSpace(rs.vibeLockedSS) != "" || strings.TrimSpace(rs.vibeCheckpointNode) != "" {
+		return true
+	}
+	return len(rs.vibeTaskPlan) > 0
 }
 
 // restartVibeIngestForMissingSS clears ss_lock + resume-confirm parks and
@@ -211,8 +226,17 @@ func (s *InteractiveService) restartVibeIngestForMissingSS(parentRunID string) b
 	rs.vibeSSSealed = false
 	rs.vibeResumeConfirm = false
 	rs.vibeResumeFromNode = ""
+	rs.chatFlowRef = workingmode.PackPrefix + vibeIngestFlowID
+	clearVibeSprintCursor(rs)
+	if rs.status == RunStatusCancelled || rs.status == RunStatusFailed || rs.status == RunStatusCompleted {
+		rs.status = RunStatusRunning
+		rs.agentStatus = string(RunStatusRunning)
+	}
+	rs.autoOrchestrate = true
+	rs.flowEngineDriven = true
 	s.mu.Unlock()
 
+	s.releaseHubStopFenceForFollowUp(context.Background(), parentRunID)
 	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		st.Status = "running"
 		st.BlockReason = ""
@@ -230,22 +254,5 @@ func (s *InteractiveService) restartVibeIngestForMissingSS(parentRunID string) b
 // parked on ss_lock (or resume-confirm stacked on that park) with SS deleted →
 // restart ingest_reader. No-op when SS still exists or cwd unknown.
 func (s *InteractiveService) maybeRecoverMissingVibeSSLock(parentRunID string) bool {
-	s.mu.Lock()
-	rs := s.runs[parentRunID]
-	if rs == nil || rs.workingMode != workingmode.Vibe {
-		s.mu.Unlock()
-		return false
-	}
-	awaitingSS := rs.vibeAwaitingLock && (rs.vibeLockNodeID == "" || rs.vibeLockNodeID == vibeSSLockNodeID)
-	stackedResume := rs.vibeResumeConfirm
-	if !awaitingSS && !stackedResume {
-		s.mu.Unlock()
-		return false
-	}
-	if rs.vibeAwaitingLock && rs.vibeLockNodeID != "" && rs.vibeLockNodeID != vibeSSLockNodeID {
-		s.mu.Unlock()
-		return false
-	}
-	s.mu.Unlock()
 	return s.restartVibeIngestForMissingSS(parentRunID)
 }

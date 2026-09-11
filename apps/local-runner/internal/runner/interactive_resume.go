@@ -1334,8 +1334,10 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// Task-327/328/329 O-6 order: SS-missing → CP-missing → Task-missing
 		// → generic node resume → CP→task_slicer join (cp_writer→done has no
 		// forward successor for pendingVibeResumeFromNode).
+		// R-TK-D3: call restartVibeIngest directly (not awaiting-gated) so a
+		// vibe-sprint reopen after delete SS+CP+Task does not park Resume→tdd.
 		switch {
-		case s.maybeRecoverMissingVibeSSLock(rs.id):
+		case s.restartVibeIngestForMissingSS(rs.id):
 		case s.restartVibeCpWriterForMissingCP(rs.id):
 		case s.restartVibeTaskSlicerForMissingTasks(rs.id):
 		default:
