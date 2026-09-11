@@ -12,7 +12,7 @@
 - Created: `2026-09-01`
 - Last Updated: `2026-09-08`
 - Parent Documents: [SS-18: Vibe Working Mode](../05-System-Specs/SS-18-Vibe-Working-Mode.md)
-- Child Documents: [CP-60: Vibe Working Mode](../07-Coding-Plan/inprogress/CP-60-Vibe-Working-Mode.md)
+- Child Documents: [CP-60: Vibe Working Mode](../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md)
 - Related Documents: [SD-19: Agent Flow Engine](./SD-19-Agent-Flow-Engine.md), [SD-20: Flow Gate Rule Semantics](./SD-20-Flow-Gate-Rule-Semantics.md), [SD-16: Agent Spawn And Tool-Calling Design](./SD-16-Agent-Spawn-And-Tool-Calling-Design.md), [SS-13: AI-Followable Document Contract](../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [SS-08: Approve Gate](../05-System-Specs/SS-08-Approve-Gate.md)
 - Replaces: `None`
 - Tags: `vibe-mode, working-mode, flow-gate, agent-flow, TDD`

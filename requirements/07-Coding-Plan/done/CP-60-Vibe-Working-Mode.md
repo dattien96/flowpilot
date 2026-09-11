@@ -6,13 +6,13 @@
 - Title: `Vibe Working Mode — Desktop/TUI SS-Lock / CP-Lock, TDD-First Sprint, Owner Debate, r-requirement`
 - Feature Keys: `vibe-mode`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-01`
 - Last Updated: `2026-09-08`
 - Parent Documents: [SS-18: Vibe Working Mode](../../05-System-Specs/SS-18-Vibe-Working-Mode.md), [SD-24: Vibe Working Mode](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md), [SD-19: Agent Flow Engine](../../06-System-Tech-Design/SD-19-Agent-Flow-Engine.md), [SD-20: Flow Gate Rule Semantics](../../06-System-Tech-Design/SD-20-Flow-Gate-Rule-Semantics.md)
-- Child Documents: [Task-326: Vibe Working-Mode Switch And Flow-Family Gate](../../08-Task/todo/Task-326-Vibe-Working-Mode-Switch-And-Flow-Family-Gate.md) (implements `P-1`), [Task-321: Vibe CP-Driven Entry](../../08-Task/todo/Task-321-Vibe-Cp-Driven-Entry.md) (`P-6`, **parked**), [Task-323: Vibe-Sprint v2 Parity](../../08-Task/todo/Task-323-Vibe-Sprint-V2-Parity.md) (`P-7`, **parked**)
+- Child Documents: [Task-326: Vibe Working-Mode Switch And Flow-Family Gate](../../08-Task/done/Task-326-Vibe-Working-Mode-Switch-And-Flow-Family-Gate.md) (implements `P-1`), [Task-321: Vibe CP-Driven Entry](../../08-Task/done/Task-321-Vibe-Cp-Driven-Entry.md) (`P-6`), [Task-323: Vibe-Sprint v2 Parity](../../08-Task/done/Task-323-Vibe-Sprint-V2-Parity.md) (`P-7`), [Task-327](../../08-Task/done/Task-327-Vibe-Missing-SS-Auto-Resume-Ingest.md), [Task-328](../../08-Task/done/Task-328-Vibe-CP-Resume-And-Missing-CP-Rewrite.md), [Task-329](../../08-Task/done/Task-329-Vibe-Missing-Task-Restart-Slicer.md)
 - Related Documents: [SS-16: Agent Flow Engine](../../05-System-Specs/SS-16-Agent-Flow-Engine.md), [SS-15: Agent Review Loop](../../05-System-Specs/SS-15-Agent-Review-Loop-Until-Clean.md), [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [CP-36: Agent Review Loop And Main-Hub Orchestration](../done/CP-36-Agent-Review-Loop-And-Main-Hub-Orchestration.md), [CP-42: Flow Pack And Generic Node Behavior Refactor](../done/CP-42-Flow-Pack-And-Generic-Node-Behavior-Refactor.md), [CP-45: Generic Artifact Types And Instances](../done/CP-45-Generic-Artifact-Types-And-Instances.md), [CP-58: Bug / Task / CP Harness](../done/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md), [CP-60-Test-Steps](./CP-60-Test-Steps.md)
 - Replaces: `None`
 - Tags: `vibe-mode, coding-plan, desktop, tui, flow-gate, agent-flow, TDD, cp-driven`
@@ -30,7 +30,7 @@
 
 ### Current Ask
 
-- Implement [Task-326](../../08-Task/todo/Task-326-Vibe-Working-Mode-Switch-And-Flow-Family-Gate.md) (`P-1`): vibe|normal switch + fail-closed flow-family gate + `/flow` filter. Task-321 (`P-6`) and Task-323 (`P-7`) stay parked.
+- **Moved to `done/`** 2026-09-11 with child Tasks 321/323/326/327/328/329. Live §11 bed on run-225468 complete; residual optional F2/N-*/V7/V8.
 
 ### Key Decisions
 
@@ -88,7 +88,7 @@ Pack skeletons for Branch V are already landed (`89fe174a`, `selectableIn: []` f
 
 ## 4. Work Breakdown
 
-- `P-1` **Run `working_mode` SSOT (`dev`=normal | `vibe`, default `dev`, local only) + session toggle + flow-family gate.** `WorkingMode` on the local run record only (`sessions.ndjson`). No `workflow_runs.working_mode` column. Accept `working_mode` at `POST /client/workflow-runs` only when `X-Client: desktop|tui` (there is no `POST /client/flows/run`). Admin / missing client + `vibe` → `403`. Desktop/TUI toggle sets the next-start default; live run mode is immutable. User-start allowlist: `dev` → five harness ids; `vibe` → `vibe-ingest` only. Always reject user-start of `vibe-sprint` and `vibe-owner-debate`. List SSOT is `flowPickerOptions(workingMode)`. Implemented by [Task-326](../../08-Task/todo/Task-326-Vibe-Working-Mode-Switch-And-Flow-Family-Gate.md).
+- `P-1` **Run `working_mode` SSOT (`dev`=normal | `vibe`, default `dev`, local only) + session toggle + flow-family gate.** `WorkingMode` on the local run record only (`sessions.ndjson`). No `workflow_runs.working_mode` column. Accept `working_mode` at `POST /client/workflow-runs` only when `X-Client: desktop|tui` (there is no `POST /client/flows/run`). Admin / missing client + `vibe` → `403`. Desktop/TUI toggle sets the next-start default; live run mode is immutable. User-start allowlist: `dev` → five harness ids; `vibe` → `vibe-ingest` only. Always reject user-start of `vibe-sprint` and `vibe-owner-debate`. List SSOT is `flowPickerOptions(workingMode)`. Implemented by [Task-326](../../08-Task/done/Task-326-Vibe-Working-Mode-Switch-And-Flow-Family-Gate.md).
 
 - `P-2` **`r-requirement` gate + `vibe-requirement-outcome` tool face (vibe-only, always-block).** Do **not** append to `DefaultRules()` (oracle `TestDefaultRules` stays **18** ids). Register `flowgate.RequirementRule` and inject only via `EnabledRulesFor(working_mode=vibe)`:
   ```go
@@ -142,7 +142,7 @@ Pack skeletons for Branch V are already landed (`89fe174a`, `selectableIn: []` f
 - **Manual checks (Desktop/TUI, real sample game file + real CP):**
   - `/vibe sample-game.md` (pre-sliced) — SS Preview card editable, `Lock` persists edit + auto-slices verbatim `sprint_plan`, 3 sprints run `context → tdd → coder → validate → synthesis → audit`; generic gate → `vibe-owner-debate` auto, only `r-requirement` produces requirement card.
   - `/vibe "vague idea: 2D roguelike..."` — AI-sliced sprint_plan (inspect), no SS beyond the lock; edits in SS lock survive slicing.
-  - `/vibe-cp requirements/07-Coding-Plan/inprogress/CP-60-Vibe-Working-Mode.md` (or any `CP-*.md`) — CP Preview card editable, `Lock` persists edit + re-validates CP contract, `task_slicer` emits `Task-*.md` list (verbatim if CP pre-slices, else synthesized), then sequential `vibe-sprint` v2 per Task runs to done with the same `r-requirement`/Owner-debate behavior as Branch V.
+  - `/vibe-cp requirements/07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md` (or any `CP-*.md`) — CP Preview card editable, `Lock` persists edit + re-validates CP contract, `task_slicer` emits `Task-*.md` list (verbatim if CP pre-slices, else synthesized), then sequential `vibe-sprint` v2 per Task runs to done with the same `r-requirement`/Owner-debate behavior as Branch V.
   - Demo fixtures & evidence (both branches): fixture `sample-game.md` (pre-sliced, 3 sprints) + vague prompt (`2D roguelike`) + fixture `CP-*.md` (≥2 Tasks); provider matrix same-model + cross-provider Owner pairs; per-sprint evidence = `tdd` signature artifact (use/edge/error per `SS-04 §3.5.8`) + suite/TTR (`validate` green) + `synthesis` verdict + `audit` ledger; timeline shows zero per-sprint/per-task user cards.
 - **Failure cases:** Single-owner fallback degraded warning; mixed pre-sliced+vague input; runner restart mid-`ss_lock`/`cp_lock` and mid-Owner round 3; non-CP file passed to `/vibe-cp` rejected deterministically (frontmatter check); coder attempted without a `tdd` artifact is refused (no bypass path); `tdd` signatures missing edge/error cases are caught at `synthesis` as `continue`, never `done`; total-sprint budget exceeded stops with `BlockReason: budget` (no silent continuation); `r-requirement` card renders plain-language `AC-*`↔signature mapping for a non-tech reader; tighten that weakening a test to go green always becomes `r-requirement`, never `continue` via Owners.
 

@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-10`
 - Last Updated: `2026-09-10`
-- Parent Documents: [CP-60](../../07-Coding-Plan/inprogress/CP-60-Vibe-Working-Mode.md), [BUG-367](./BUG-367-Vibe-Task-Status-DoD-And-Progress-Chip.md)
+- Parent Documents: [CP-60](../../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md), [BUG-367](./BUG-367-Vibe-Task-Status-DoD-And-Progress-Chip.md)
 - Child Documents: `None`
 - Related Documents: [CA-822](../../../change-audit/CA-822-Vibe-Task-DoD-And-Progress-Chip.md)
 - Replaces: `None`

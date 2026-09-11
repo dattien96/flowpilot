@@ -5,12 +5,12 @@
 - Document ID: `Task-323`
 - Title: `Vibe-sprint v2 — copy task-harness auto nodes for harness-grade accuracy`
 - Phase: `task`
-- Status: `in_progress` (CA-764 YAML v2 + CA-767 drift inject + tdd-before-coder)
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-05`
 - Last Updated: `2026-09-08`
-- Parent Documents: [CP-60: Vibe Working Mode](../../07-Coding-Plan/inprogress/CP-60-Vibe-Working-Mode.md), [SD-24: Vibe Working Mode](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md), [SS-18: Vibe Working Mode](../../05-System-Specs/SS-18-Vibe-Working-Mode.md)
+- Parent Documents: [CP-60: Vibe Working Mode](../../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md), [SD-24: Vibe Working Mode](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md), [SS-18: Vibe Working Mode](../../05-System-Specs/SS-18-Vibe-Working-Mode.md)
 - Child Documents: `None`
 - Related Documents: [CP-58: Bug / Task / CP Harness](../../07-Coding-Plan/done/CP-58-Bug-Task-Cp-Harness-Plan-Review-Loop.md), [Task-321: Vibe CP-Driven Entry](./Task-321-Vibe-Cp-Driven-Entry.md)
 - Replaces: `None`

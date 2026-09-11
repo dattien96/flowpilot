@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-11`
 - Last Updated: `2026-09-11`
-- Parent Documents: [CP-60-Test-Steps](../../07-Coding-Plan/inprogress/CP-60-Test-Steps.md), [Task-327](./Task-327-Vibe-Missing-SS-Auto-Resume-Ingest.md), [CA-793](../../../change-audit/CA-793-Vibe-Checkpoint-File-Exist.md), [CA-791](../../../change-audit/CA-791-Ingest-Joins-Task-Slicer.md)
+- Parent Documents: [CP-60-Test-Steps](../../07-Coding-Plan/done/CP-60-Test-Steps.md), [Task-327](./Task-327-Vibe-Missing-SS-Auto-Resume-Ingest.md), [CA-793](../../../change-audit/CA-793-Vibe-Checkpoint-File-Exist.md), [CA-791](../../../change-audit/CA-791-Ingest-Joins-Task-Slicer.md)
 - Child Documents: `None`
 - Related Documents: [CA-827](../../../change-audit/CA-827-Vibe-Missing-SS-Auto-Resume.md)
 - Replaces: `None`

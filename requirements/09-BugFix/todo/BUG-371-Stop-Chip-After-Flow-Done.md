@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-11`
 - Last Updated: `2026-09-11`
-- Parent Documents: [CP-60](../../07-Coding-Plan/inprogress/CP-60-Vibe-Working-Mode.md)
+- Parent Documents: [CP-60](../../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md)
 - Child Documents: `None`
 - Related Documents: [CA-537](../../../change-audit/), run-189839 settle chrome
 - Replaces: `None`

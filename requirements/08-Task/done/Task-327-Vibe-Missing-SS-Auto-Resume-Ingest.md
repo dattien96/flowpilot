@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-11`
 - Last Updated: `2026-09-11`
-- Parent Documents: [CP-60: Vibe Working Mode](../../07-Coding-Plan/inprogress/CP-60-Vibe-Working-Mode.md), [CP-60-Test-Steps](../../07-Coding-Plan/inprogress/CP-60-Test-Steps.md), [SD-24: Vibe Working Mode](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md), [SS-18: Vibe Working Mode](../../05-System-Specs/SS-18-Vibe-Working-Mode.md)
+- Parent Documents: [CP-60: Vibe Working Mode](../../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md), [CP-60-Test-Steps](../../07-Coding-Plan/done/CP-60-Test-Steps.md), [SD-24: Vibe Working Mode](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md), [SS-18: Vibe Working Mode](../../05-System-Specs/SS-18-Vibe-Working-Mode.md)
 - Child Documents: `None`
 - Related Documents: [CA-793](../../../change-audit/CA-793-Vibe-Checkpoint-File-Exist.md), [CA-770](../../../change-audit/CA-770-Turn2-R3.md)
 - Replaces: `None`
@@ -74,7 +74,7 @@ Live R-SS-D on `D:/working/gate-sandbox` (run-225468): SS deleted, reopen restor
 
 ## 5. Touched Areas
 
-- files: `apps/local-runner/internal/runner/vibe_checkpoint.go` (or small sibling), `interactive_resume.go`, `vibe_lock.go`, new `task327_*_test.go`, `change-audit/CA-827-*.md`, `requirements/08-Task/todo/Task-327-*.md`, `CP-60-Test-Steps.md`
+- files: `apps/local-runner/internal/runner/vibe_checkpoint.go` (or small sibling), `interactive_resume.go`, `vibe_lock.go`, new `task327_*_test.go`, `change-audit/CA-827-*.md`, `requirements/08-Task/done/Task-327-*.md`, `CP-60-Test-Steps.md`
 - modules: `runner` vibe checkpoint / lock / reconstruct
 - routes: none
 - tables: none

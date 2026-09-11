@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-11`
 - Last Updated: `2026-09-11`
-- Parent Documents: [CP-60](../../07-Coding-Plan/inprogress/CP-60-Vibe-Working-Mode.md), [CP-55](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md)
+- Parent Documents: [CP-60](../../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md), [CP-55](../../07-Coding-Plan/done/CP-55-Flow-First-Preflight-Contract-Context-Retrieval-And-Canonical-Acceptance.md)
 - Child Documents: `None`
 - Related Documents: [BUG-366](./BUG-366-Allow-Doc-Drift-Amend-422.md), [BUG-327](../done/), [CA-427](../../../change-audit/CA-427-enforce-frozen-scope-at-coder-gate-and-amendments.md)
 - Replaces: `None`

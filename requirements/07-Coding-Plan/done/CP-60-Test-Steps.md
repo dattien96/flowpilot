@@ -5,14 +5,14 @@
 - Document ID: `CP-60-TEST-STEPS`
 - Title: `CP-60 TUI verification — vibe-ingest a Go snake MVP on gate-sandbox`
 - Phase: `verification`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `TBD`
 - Created: `2026-09-08`
 - Last Updated: `2026-09-11` (R-SS-D live tick)
 - Parent Documents: [CP-60: Vibe Working Mode](./CP-60-Vibe-Working-Mode.md)
 - Child Documents: `None`
-- Related Documents: [SS-18](../../05-System-Specs/SS-18-Vibe-Working-Mode.md), [SD-24](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md), [Task-326](../../08-Task/inprogress/Task-326-Vibe-Working-Mode-Switch-And-Flow-Family-Gate.md), [KR-004](../../reviews/KR-004-cp60-vibe-working-mode-impl-rev2.md), [CP-61-Test-Steps](../done/CP-61-Test-Steps.md)
+- Related Documents: [SS-18](../../05-System-Specs/SS-18-Vibe-Working-Mode.md), [SD-24](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md), [Task-326](../../08-Task/done/Task-326-Vibe-Working-Mode-Switch-And-Flow-Family-Gate.md), [KR-004](../../reviews/KR-004-cp60-vibe-working-mode-impl-rev2.md), [CP-61-Test-Steps](./CP-61-Test-Steps.md)
 - Replaces: `None`
 - Tags: `vibe-mode, verification, test-steps, tui, cp-60, gate-sandbox`
 - Feature Keys: `vibe-mode`
@@ -28,8 +28,7 @@
 
 ### Current Ask
 
-- Unit §2 **done** 2026-09-09 (`TestCA793_*` + reconstruct lock green). M1–M3 done.
-- Live **run-678326** (Mac) Branch V done. Windows **run-225468**: §11 R-SS-* + R-CP-K/D1 + **R-TK-K/D1/D2/D3 live PASS** (R-TK-D3 via BUG-373/CA-832). Next: **R-CP-D2** (optional overlap) or **F2** / **N-***. V7/V8 still unexercised.
+- **Moved to `done/`** 2026-09-11. §11 same-run matrix live PASS on run-225468 (R-SS/R-CP/R-TK). Residual optional: F2, N-*, V7/V8, R-CP-D2.
 
 ### Key Decisions
 

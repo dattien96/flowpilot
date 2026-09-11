@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-11`
 - Last Updated: `2026-09-11`
-- Parent Documents: [CP-60-Test-Steps](../../07-Coding-Plan/inprogress/CP-60-Test-Steps.md), [Task-328](./Task-328-Vibe-CP-Resume-And-Missing-CP-Rewrite.md), [CA-793](../../../change-audit/CA-793-Vibe-Checkpoint-File-Exist.md)
+- Parent Documents: [CP-60-Test-Steps](../../07-Coding-Plan/done/CP-60-Test-Steps.md), [Task-328](./Task-328-Vibe-CP-Resume-And-Missing-CP-Rewrite.md), [CA-793](../../../change-audit/CA-793-Vibe-Checkpoint-File-Exist.md)
 - Tags: `vibe-mode, resume, task_slicer, R-TK-D1, O-6`
 - Feature Keys: `vibe-mode`
 

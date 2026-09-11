@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-10`
 - Last Updated: `2026-09-10`
-- Parent Documents: [CP-60: Vibe Working Mode](../../07-Coding-Plan/inprogress/CP-60-Vibe-Working-Mode.md)
+- Parent Documents: [CP-60: Vibe Working Mode](../../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md)
 - Child Documents: `None`
 - Related Documents: [BUG-363](./BUG-363-Vibe-Ingest-Writer-Output-Unverified.md), [BUG-364](./BUG-364-Slicer-Park-Skips-Step-Done.md), [SS-18](../../05-System-Specs/SS-18-Vibe-Working-Mode.md), [SD-24](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md)
 - Replaces: `None`

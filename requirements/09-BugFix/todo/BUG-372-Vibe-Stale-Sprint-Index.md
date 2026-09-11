@@ -9,7 +9,7 @@
 - Owner: `FlowPilot`
 - Created: `2026-09-11`
 - Last Updated: `2026-09-11`
-- Parent Documents: [CP-60-Test-Steps](../../07-Coding-Plan/inprogress/CP-60-Test-Steps.md), [CA-831](../../../change-audit/CA-831-Vibe-Stale-Sprint-Index-Reset.md)
+- Parent Documents: [CP-60-Test-Steps](../../07-Coding-Plan/done/CP-60-Test-Steps.md), [CA-831](../../../change-audit/CA-831-Vibe-Stale-Sprint-Index-Reset.md)
 - Feature Keys: `vibe-mode`
 
 ## AI Quick View

@@ -10,7 +10,7 @@
 - Reviewers: `TBD`
 - Created: `2026-09-10`
 - Last Updated: `2026-09-10`
-- Parent Documents: [CP-60: Vibe Working Mode](../../07-Coding-Plan/inprogress/CP-60-Vibe-Working-Mode.md), [SS-18](../../05-System-Specs/SS-18-Vibe-Working-Mode.md), [SD-24](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md)
+- Parent Documents: [CP-60: Vibe Working Mode](../../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md), [SS-18](../../05-System-Specs/SS-18-Vibe-Working-Mode.md), [SD-24](../../06-System-Tech-Design/SD-24-Vibe-Working-Mode.md)
 - Child Documents: `None`
 - Related Documents: [BUG-365](./BUG-365-Vibe-Lock-No-SS-Stamp-And-Silent-Park.md), [CA-817](../../../change-audit/CA-817-Vibe-Sprint-Boundary-Continue-Gate.md)
 - Replaces: `None`
