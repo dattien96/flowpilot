@@ -127,6 +127,52 @@ func TestTask328_ResumeOKJoinsTaskSlicerWhenCpPresent(t *testing.T) {
 	}
 }
 
+// Live hang: already on vibe-cp-ingest after cancelled task_slicer — Resume OK
+// must force-start slicer (maybeStartVibeCpIngest alone no-ops).
+func TestTask328_ResumeOKForcesSlicerWhenAlreadyCpIngest(t *testing.T) {
+	svc, _ := newTestServer(t)
+	cwd := t.TempDir()
+	task328Write(t, cwd, "requirements/05-System-Specs/SS-01-snake.md", "# SS\n")
+	task328Write(t, cwd, "requirements/07-Coding-Plan/todo/CP-01-snake.md", "# CP\n")
+	runID := task328ArmAfterCpWriter(t, svc, cwd)
+	svc.mu.Lock()
+	rs := svc.runs[runID]
+	rs.chatFlowRef = workingmode.PackPrefix + vibeCpIngestFlowID
+	rs.status = RunStatusCancelled
+	rs.vibeResumeConfirm = true
+	rs.vibeResumeFromNode = vibeCpWriterNodeID
+	svc.mu.Unlock()
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{
+		Status: "stopped", BlockReason: "stopped", Cap: 3, RoundCap: 3,
+	})
+
+	// maybeStart alone must no-op (preserves user-start cp_lock path).
+	svc.maybeStartVibeCpIngest(runID)
+	svc.mu.Lock()
+	if svc.runs[runID].status != RunStatusCancelled {
+		svc.mu.Unlock()
+		t.Fatal("maybeStart must no-op when already vibe-cp-ingest")
+	}
+	svc.mu.Unlock()
+
+	if e := svc.SubmitGateDecision(runID, "ok", ""); e != nil {
+		t.Fatalf("ok: %v", e)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	rs = svc.runs[runID]
+	if rs.vibeResumeConfirm {
+		t.Fatal("confirm must clear")
+	}
+	if rs.status == RunStatusCancelled {
+		t.Fatal("forceStart must unseal cancelled parent")
+	}
+	loop := svc.agentOrchestrator.loopStateFor(runID)
+	if loop.Status == "stopped" {
+		t.Fatal("forceStart must unseal stopped loop")
+	}
+}
+
 // Live residual: chatFlowRef already vibe-cp-ingest + empty vibeLockedSS after
 // CP delete must still rewrite cp_writer (run-225468).
 func TestTask328_CpMissingOnCpIngestRefRestartsWriter(t *testing.T) {

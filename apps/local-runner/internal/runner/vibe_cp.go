@@ -381,15 +381,49 @@ func (s *InteractiveService) maybeStartVibeCpIngest(parentRunID string) {
 		s.mu.Unlock()
 		return
 	}
-	cwd := rs.workspaceCwd
-	rs.vibeAwaitingLock = false
-	rs.chatFlowRef = workingmode.PackPrefix + vibeCpIngestFlowID
 	s.mu.Unlock()
+	s.forceStartVibeTaskSlicer(parentRunID)
+}
+
+// forceStartVibeTaskSlicer joins/restarts task_slicer from the latest CP.
+// Unlike maybeStartVibeCpIngest, this still runs when chatFlowRef is already
+// vibe-cp-ingest (live hang: Resume Continue after stop cancelled slicer —
+// maybeStartVibeCpIngest no-op'd and the UI sat idle).
+func (s *InteractiveService) forceStartVibeTaskSlicer(parentRunID string) {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || rs.workingMode != workingmode.Vibe {
+		s.mu.Unlock()
+		return
+	}
+	cwd := rs.workspaceCwd
 	prompt := collectLatestVibeCP(cwd)
 	if prompt == "" {
 		prompt = "requirements/07-Coding-Plan/todo/"
 	}
+	rs.vibeAwaitingLock = false
+	rs.vibeResumeConfirm = false
+	rs.vibeResumeFromNode = ""
+	rs.chatFlowRef = workingmode.PackPrefix + vibeCpIngestFlowID
+	rs.autoOrchestrate = true
+	rs.flowEngineDriven = true
+	if rs.status == RunStatusCancelled || rs.status == RunStatusFailed || rs.status == RunStatusCompleted {
+		rs.status = RunStatusRunning
+		rs.agentStatus = string(RunStatusRunning)
+	}
+	s.mu.Unlock()
+
+	s.releaseHubStopFenceForFollowUp(context.Background(), parentRunID)
+	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
+		st.Status = "running"
+		st.BlockReason = ""
+		st.GateReason = ""
+		st.ActiveNode = ""
+		return st
+	})
+	s.setFlowStepStatus(context.Background(), parentRunID, vibeTaskSlicerNodeID, StepStatusPending)
 	s.startResolvedFlowFromNode(context.Background(), parentRunID, workingmode.PackPrefix+vibeCpIngestFlowID, prompt, vibeTaskSlicerNodeID)
+	go s.persistParentSession(parentRunID)
 }
 
 func (s *InteractiveService) maybeChainVibeSprint(parentRunID, completedNodeID string) {
