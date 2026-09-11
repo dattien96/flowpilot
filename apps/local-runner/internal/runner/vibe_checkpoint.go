@@ -178,18 +178,18 @@ func vibeSSLockArtifactsPresent(cwd string, rs *interactiveRun) bool {
 	return len(arts) > 0 && vibeAllFilesExist(cwd, arts)
 }
 
-// maybeRecoverMissingVibeSSLock closes CP-60 O-6 / R-SS-D residual (Task-327):
-// parked on ss_lock but SS artifacts deleted → clear lock park and restart
-// vibe-ingest from ingest_reader. No-op when SS still exists or cwd unknown.
-func (s *InteractiveService) maybeRecoverMissingVibeSSLock(parentRunID string) bool {
+func vibeIngestHasSSLockTopology(rs *interactiveRun) bool {
+	return rs != nil && (runHasFlowNode(rs, "ingest_reader") || runHasFlowNode(rs, vibeSSLockNodeID))
+}
+
+// restartVibeIngestForMissingSS clears ss_lock + resume-confirm parks and
+// restarts vibe-ingest from ingest_reader when SS files are gone (Task-327).
+// Does not require vibeAwaitingLock — Resume-confirm OK used to tryAdvance
+// into parkVibeLock with an empty draft (live: "no agent" / empty lock card).
+func (s *InteractiveService) restartVibeIngestForMissingSS(parentRunID string) bool {
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
-	if rs == nil || rs.workingMode != workingmode.Vibe || !rs.vibeAwaitingLock {
-		s.mu.Unlock()
-		return false
-	}
-	nodeID := strings.TrimSpace(rs.vibeLockNodeID)
-	if nodeID != "" && nodeID != vibeSSLockNodeID {
+	if rs == nil || rs.workingMode != workingmode.Vibe || !vibeIngestHasSSLockTopology(rs) {
 		s.mu.Unlock()
 		return false
 	}
@@ -209,6 +209,8 @@ func (s *InteractiveService) maybeRecoverMissingVibeSSLock(parentRunID string) b
 	rs.vibeLockPath = ""
 	rs.vibeLockedSS = ""
 	rs.vibeSSSealed = false
+	rs.vibeResumeConfirm = false
+	rs.vibeResumeFromNode = ""
 	s.mu.Unlock()
 
 	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
@@ -222,4 +224,28 @@ func (s *InteractiveService) maybeRecoverMissingVibeSSLock(parentRunID string) b
 	s.startResolvedFlowFromNode(context.Background(), parentRunID, workingmode.PackPrefix+vibeIngestFlowID, prompt, "ingest_reader")
 	go s.persistParentSession(parentRunID)
 	return true
+}
+
+// maybeRecoverMissingVibeSSLock closes CP-60 O-6 / R-SS-D residual (Task-327):
+// parked on ss_lock (or resume-confirm stacked on that park) with SS deleted →
+// restart ingest_reader. No-op when SS still exists or cwd unknown.
+func (s *InteractiveService) maybeRecoverMissingVibeSSLock(parentRunID string) bool {
+	s.mu.Lock()
+	rs := s.runs[parentRunID]
+	if rs == nil || rs.workingMode != workingmode.Vibe {
+		s.mu.Unlock()
+		return false
+	}
+	awaitingSS := rs.vibeAwaitingLock && (rs.vibeLockNodeID == "" || rs.vibeLockNodeID == vibeSSLockNodeID)
+	stackedResume := rs.vibeResumeConfirm
+	if !awaitingSS && !stackedResume {
+		s.mu.Unlock()
+		return false
+	}
+	if rs.vibeAwaitingLock && rs.vibeLockNodeID != "" && rs.vibeLockNodeID != vibeSSLockNodeID {
+		s.mu.Unlock()
+		return false
+	}
+	s.mu.Unlock()
+	return s.restartVibeIngestForMissingSS(parentRunID)
 }

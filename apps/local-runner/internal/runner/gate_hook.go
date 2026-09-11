@@ -1866,6 +1866,11 @@ func (s *InteractiveService) SubmitGateDecision(runID, option, customText string
 			})
 			s.emitAgentGraph(runID, snap)
 			go s.persistParentSession(runID)
+			// Task-327: Resume OK must not tryAdvance into empty ss_lock park when
+			// SS drafts were deleted — restart ingest_reader instead.
+			if s.restartVibeIngestForMissingSS(runID) {
+				return nil
+			}
 			if from == "" || from == "tdd" {
 				s.maybeResumeVibeCoderAfterTdd(runID)
 			} else {

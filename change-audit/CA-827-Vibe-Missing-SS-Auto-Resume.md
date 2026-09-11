@@ -16,8 +16,11 @@ CA-793 Replay already noted: demote on reconstruct **without** auto-`startResolv
 ## Change
 
 - `vibeSSLockArtifactsPresent` — empty cwd = unknown/present (keeps CA-770)
-- `maybeRecoverMissingVibeSSLock` — clear awaiting-lock fields + loop block; `startResolvedFlowFromNode(..., ingest_reader)`
-- Wire after reconstruct (`interactive_resume`) and at start of `resumeVibeLock` before stamp/advance
+- `restartVibeIngestForMissingSS` — clear lock **and resume-confirm**; start `ingest_reader`
+- `maybeRecoverMissingVibeSSLock` — awaiting ss_lock **or** stacked resume-confirm + missing SS
+- Reconstruct: recover **before** `maybeParkVibeResumeConfirm`
+- `parkVibeLock(ss_lock)`: if SS missing → restart ingest (no empty Preview card)
+- `SubmitGateDecision` Resume OK: restart ingest when SS missing (do not `tryAdvance` → empty lock)
 
 ## Tests
 
@@ -26,10 +29,16 @@ New `task327_missing_ss_auto_resume_test.go` only:
 - reconstruct missing SS clears park
 - reconstruct with SS keeps park
 - Continue missing SS recovers (no seal / no cp_writer)
+- Resume-confirm OK + missing SS restarts ingest (no empty lock)
+- parkVibeLock + missing SS restarts ingest
 - empty cwd unknown
 - Claude/Codex/Grok seeded runs (Case 1 agnostic)
 
-Untouched and green: `TestVibeSession_ReconstructAwaitingLockAndIdempotent`, `TestCA793_*`, `TestBUG365_SSLockStampsApprovedOnDisk`.
+Untouched and green: `TestVibeSession_ReconstructAwaitingLockAndIdempotent`, `TestCA793_*`, `TestBUG365_SSLockStampsApprovedOnDisk`, `TestCA801_GateOKClearsConfirm`.
+
+## Addendum (live residual)
+
+After first land: reopen showed Resume confirmation; OK ran ingest but also `tryAdvance` → `parkVibeLock` with no SS (empty lock + ss_lock failure). Fixed above.
 
 ## Providers
 

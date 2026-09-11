@@ -49,6 +49,17 @@ func (s *InteractiveService) sealVibeLockLocked(rs *interactiveRun, nodeID strin
 
 func (s *InteractiveService) parkVibeLock(parentRunID, nodeID string) bool {
 	cwd := s.workspaceCwdFor(parentRunID)
+	// Task-327: never show an empty SS Preview & Lock when drafts were deleted —
+	// restart ingest_reader instead of parking a zombie card (live after Resume OK).
+	if nodeID == vibeSSLockNodeID {
+		s.mu.Lock()
+		rs := s.runs[parentRunID]
+		missing := rs != nil && !vibeSSLockArtifactsPresent(cwd, rs)
+		s.mu.Unlock()
+		if missing && s.restartVibeIngestForMissingSS(parentRunID) {
+			return true
+		}
+	}
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
 	if rs != nil {

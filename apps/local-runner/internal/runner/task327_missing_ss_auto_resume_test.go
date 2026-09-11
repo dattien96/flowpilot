@@ -3,6 +3,7 @@ package runner
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"flowpilot-runner/internal/agentpack"
@@ -156,6 +157,67 @@ func TestTask327_EmptyCwdDoesNotTreatSSAsMissing(t *testing.T) {
 	}
 }
 
+// Live residual after Task-327 v1: Resume confirmation OK tryAdvanced into
+// parkVibeLock with no SS → empty lock card. Must restart ingest instead.
+func TestTask327_ResumeConfirmOKRestartsIngestWhenSSMissing(t *testing.T) {
+	svc, _ := newTestServer(t)
+	cwd := t.TempDir()
+	runID := task327ArmSSLockPark(t, svc, cwd, "requirements/05-System-Specs/SS-01-snake.md")
+	svc.mu.Lock()
+	rs := svc.runs[runID]
+	rs.vibeAwaitingLock = false // recover already cleared lock; resume card remains
+	rs.vibeLockNodeID = ""
+	rs.vibeResumeConfirm = true
+	rs.vibeResumeFromNode = "ss_validator"
+	svc.mu.Unlock()
+	svc.agentOrchestrator.setLoop(runID, AgentLoopState{
+		Status: "blocked", BlockReason: vibeResumePausedReason, Cap: 3, RoundCap: 3,
+	})
+
+	if e := svc.SubmitGateDecision(runID, "ok", ""); e != nil {
+		t.Fatalf("ok: %v", e)
+	}
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	rs = svc.runs[runID]
+	if rs.vibeResumeConfirm {
+		t.Fatal("resume confirm must clear")
+	}
+	if rs.vibeAwaitingLock || rs.vibeLockNodeID == vibeSSLockNodeID {
+		t.Fatalf("must not park empty ss_lock: awaiting=%v node=%q", rs.vibeAwaitingLock, rs.vibeLockNodeID)
+	}
+	loop := svc.agentOrchestrator.loopStateFor(runID)
+	if loop.BlockReason == vibeLockBlockReason {
+		t.Fatal("must not show SS Preview & Lock when SS missing")
+	}
+}
+
+// parkVibeLock with missing SS must not emit empty Preview & Lock card.
+func TestTask327_ParkVibeLockMissingSSRestartsIngest(t *testing.T) {
+	svc, _ := newTestServer(t)
+	cwd := t.TempDir()
+	runID := task327ArmSSLockPark(t, svc, cwd, "requirements/05-System-Specs/SS-01-snake.md")
+	svc.mu.Lock()
+	svc.runs[runID].vibeAwaitingLock = false
+	svc.runs[runID].vibeLockNodeID = ""
+	svc.mu.Unlock()
+
+	if !svc.parkVibeLock(runID, vibeSSLockNodeID) {
+		t.Fatal("parkVibeLock should handle missing-SS recover")
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	rs := svc.runs[runID]
+	if rs.vibeAwaitingLock {
+		t.Fatal("empty SS must not leave awaiting lock park")
+	}
+	loop := svc.agentOrchestrator.loopStateFor(runID)
+	if strings.Contains(loop.GateReason, "SS Preview & Lock") {
+		t.Fatalf("zombie lock gate: %q", loop.GateReason)
+	}
+}
+
 func TestTask327_ProvidersAgnosticHelper(t *testing.T) {
 	// Case 1 (cross-provider-parity): maybeRecoverMissingVibeSSLock /
 	// vibeSSLockArtifactsPresent take no providerKey and never branch on one.
@@ -167,15 +229,19 @@ func TestTask327_ProvidersAgnosticHelper(t *testing.T) {
 			runID := "run-" + string(pk)
 			svc.mu.Lock()
 			svc.runs[runID] = &interactiveRun{
-				id:              runID,
-				providerKey:     pk,
-				workingMode:     workingmode.Vibe,
-				workspaceCwd:    cwd,
+				id:               runID,
+				providerKey:      pk,
+				workingMode:      workingmode.Vibe,
+				workspaceCwd:     cwd,
 				vibeAwaitingLock: true,
-				vibeLockNodeID:  vibeSSLockNodeID,
-				vibeLockedSS:    "requirements/05-System-Specs/SS-missing.md",
-				lastPrompt:      "idea",
-				subs:            map[int64]chan ProviderEvent{},
+				vibeLockNodeID:   vibeSSLockNodeID,
+				vibeLockedSS:     "requirements/05-System-Specs/SS-missing.md",
+				lastPrompt:       "idea",
+				subs:             map[int64]chan ProviderEvent{},
+				activeFlowNodes: []agentpack.FlowNode{
+					{ID: "ingest_reader", Behavior: "agent.delegate"},
+					{ID: vibeSSLockNodeID, Behavior: "user.confirm"},
+				},
 			}
 			svc.mu.Unlock()
 			if !svc.maybeRecoverMissingVibeSSLock(runID) {
