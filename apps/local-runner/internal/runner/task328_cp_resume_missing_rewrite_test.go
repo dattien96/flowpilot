@@ -127,6 +127,39 @@ func TestTask328_ResumeOKJoinsTaskSlicerWhenCpPresent(t *testing.T) {
 	}
 }
 
+// Live residual: chatFlowRef already vibe-cp-ingest + empty vibeLockedSS after
+// CP delete must still rewrite cp_writer (run-225468).
+func TestTask328_CpMissingOnCpIngestRefRestartsWriter(t *testing.T) {
+	svc, _ := newTestServer(t)
+	cwd := t.TempDir()
+	task328Write(t, cwd, "requirements/05-System-Specs/SS-01-snake.md", "# SS\n")
+	runID := "run-task328-cp-ingest-ref"
+	svc.mu.Lock()
+	svc.runs[runID] = &interactiveRun{
+		id:                 runID,
+		providerKey:        ProviderKeyCodex,
+		workingMode:        workingmode.Vibe,
+		workspaceCwd:       cwd,
+		chatFlowRef:        workingmode.PackPrefix + vibeCpIngestFlowID,
+		vibeCheckpointNode: vibeCpWriterNodeID,
+		lastPrompt:         "snake",
+		// vibeLockedSS intentionally empty — live session often omits it
+		activeFlowNodes: []agentpack.FlowNode{
+			{ID: vibeTaskSlicerNodeID, Behavior: "agent.delegate"},
+		},
+		subs: map[int64]chan ProviderEvent{},
+	}
+	svc.mu.Unlock()
+	if !svc.restartVibeCpWriterForMissingCP(runID) {
+		t.Fatal("vibe-cp-ingest ref + missing CP + SS on disk must restart cp_writer")
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if workingmode.BareFlowID(svc.runs[runID].chatFlowRef) != vibeIngestFlowID {
+		t.Fatalf("must retarget vibe-ingest, got %q", svc.runs[runID].chatFlowRef)
+	}
+}
+
 func TestTask328_ProvidersAgnostic(t *testing.T) {
 	// Case 1: helpers take no providerKey. Assert decision flags without
 	// requiring Claude/Grok createRun adapters (spawn may be unavailable).

@@ -236,6 +236,9 @@ func vibeCPArtifactsPresent(cwd string) bool {
 
 // restartVibeCpWriterForMissingCP implements R-CP-D1 (Task-328): SS remains,
 // CP deleted → restart vibe-ingest at cp_writer only (no ss_lock card).
+//
+// Live run-225468: after cp_writer, chatFlowRef may already be vibe-cp-ingest
+// (CA-791 join) while vibe_locked_ss was never persisted — still rewrite CP.
 func (s *InteractiveService) restartVibeCpWriterForMissingCP(parentRunID string) bool {
 	s.mu.Lock()
 	rs := s.runs[parentRunID]
@@ -249,26 +252,20 @@ func (s *InteractiveService) restartVibeCpWriterForMissingCP(parentRunID string)
 		s.mu.Unlock()
 		return false
 	}
-	if !runHasFlowNode(rs, vibeCpWriterNodeID) && workingmode.BareFlowID(rs.chatFlowRef) != vibeIngestFlowID {
+	bare := workingmode.BareFlowID(rs.chatFlowRef)
+	okFlow := bare == vibeIngestFlowID || bare == vibeCpIngestFlowID ||
+		runHasFlowNode(rs, vibeCpWriterNodeID) || runHasFlowNode(rs, "ingest_reader") ||
+		rs.vibeCheckpointNode == vibeCpWriterNodeID || rs.vibeCheckpointNode == vibeSSLockNodeID
+	if !okFlow {
 		s.mu.Unlock()
 		return false
 	}
 	cwd := rs.workspaceCwd
-	// vibeLockedSS is stamped only after operator Continue on ss_lock (not
-	// while still awaiting). Combined with !vibeAwaitingLock above, this means
-	// SS lock already completed.
-	pastSSLock := rs.vibeSSSealed || strings.TrimSpace(rs.vibeLockedSS) != ""
-	cpNode := rs.vibeCheckpointNode
 	s.mu.Unlock()
 	if !vibeSSLockArtifactsPresent(cwd, rs) {
 		return false
 	}
 	if vibeCPArtifactsPresent(cwd) {
-		return false
-	}
-	ssLockDone := s.lookupFlowStepStatus(parentRunID, vibeSSLockNodeID) == StepStatusDone
-	cpWriterDone := s.lookupFlowStepStatus(parentRunID, vibeCpWriterNodeID) == StepStatusDone
-	if !pastSSLock && !ssLockDone && !cpWriterDone && cpNode != vibeSSLockNodeID && cpNode != vibeCpWriterNodeID {
 		return false
 	}
 
@@ -293,6 +290,8 @@ func (s *InteractiveService) restartVibeCpWriterForMissingCP(parentRunID string)
 	rs.chatFlowRef = workingmode.PackPrefix + vibeIngestFlowID
 	s.mu.Unlock()
 
+	// Stopped/done loops must be unsealed so cp_writer can spawn again.
+	s.releaseHubStopFenceForFollowUp(context.Background(), parentRunID)
 	s.agentOrchestrator.mutateLoop(parentRunID, func(st AgentLoopState) AgentLoopState {
 		st.Status = "running"
 		st.BlockReason = ""
@@ -300,6 +299,16 @@ func (s *InteractiveService) restartVibeCpWriterForMissingCP(parentRunID string)
 		st.ActiveNode = ""
 		return st
 	})
+	s.mu.Lock()
+	if r := s.runs[parentRunID]; r != nil {
+		if r.status == RunStatusCancelled || r.status == RunStatusFailed || r.status == RunStatusCompleted {
+			r.status = RunStatusRunning
+			r.agentStatus = string(RunStatusRunning)
+		}
+		r.autoOrchestrate = true
+		r.flowEngineDriven = true
+	}
+	s.mu.Unlock()
 	s.setFlowStepStatus(context.Background(), parentRunID, vibeCpWriterNodeID, StepStatusPending)
 	s.startResolvedFlowFromNode(context.Background(), parentRunID, workingmode.PackPrefix+vibeIngestFlowID, prompt, vibeCpWriterNodeID)
 	go s.persistParentSession(parentRunID)
@@ -323,17 +332,19 @@ func (s *InteractiveService) maybeParkVibeCpJoinResume(parentRunID string) bool 
 		s.mu.Unlock()
 		return false
 	}
-	if workingmode.BareFlowID(rs.chatFlowRef) == vibeCpIngestFlowID {
-		s.mu.Unlock()
-		return false
-	}
+	// Already joined cp-ingest with Tasks → nothing to park here.
 	cwd := rs.workspaceCwd
+	bare := workingmode.BareFlowID(rs.chatFlowRef)
 	s.mu.Unlock()
 
 	if !vibeCPArtifactsPresent(cwd) || !vibeSSLockArtifactsPresent(cwd, rs) {
 		return false
 	}
 	if len(collectVibeTaskPlan(cwd)) > 0 {
+		return false
+	}
+	// vibe-cp-ingest without Tasks yet: still need Resume → task_slicer.
+	if bare != vibeIngestFlowID && bare != vibeCpIngestFlowID && bare != "" {
 		return false
 	}
 
