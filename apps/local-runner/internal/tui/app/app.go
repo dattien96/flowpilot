@@ -3621,6 +3621,16 @@ func runStatusIsTerminal(status string) bool {
 }
 
 func (m *AppModel) turnIsActive() bool {
+	// Composer [stop] is live-work only. A loop that reports done with no
+	// RUNNING child (screenshot: "done" + leftover [stop], possibly with a
+	// stale flowStepsActive) is not a turn the operator should Stop
+	// (BUG-371). A done loop with a still-RUNNING child still arms [stop].
+	if strings.EqualFold(strings.TrimSpace(m.flowLoopStatus), "done") && !m.hasLiveWorkingChild() {
+		return false
+	}
+	if m.question != nil || m.approval != nil || m.gate != nil {
+		return false
+	}
 	if m.pendingPrompt != "" {
 		return true
 	}
