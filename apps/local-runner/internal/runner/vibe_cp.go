@@ -463,6 +463,47 @@ func clearVibeSprintCursor(rs *interactiveRun) {
 	rs.vibeSprintStartInFlight = false
 }
 
+// vibeSprintCurrentPlanIndex maps vibeSprintIndex (started-count / chip N in
+// task N/M) to the 0-based plan slot for the active sprint.
+func vibeSprintCurrentPlanIndex(index, planLen int) int {
+	if planLen <= 0 {
+		return 0
+	}
+	cur := index - 1
+	if cur < 0 {
+		cur = 0
+	}
+	if cur >= planLen {
+		cur = planLen - 1
+	}
+	return cur
+}
+
+// reconcileVibeSprintCursor clamps vibeSprintIndex when an earlier plan slot
+// is still `draft` (never started). Live: index=2 while Task-904 draft → chip
+// task 2/3. Returns true when the cursor was moved.
+func reconcileVibeSprintCursor(rs *interactiveRun) bool {
+	if rs == nil || strings.TrimSpace(rs.workspaceCwd) == "" || len(rs.vibeTaskPlan) == 0 {
+		return false
+	}
+	if rs.vibeSprintIndex <= 0 {
+		return false
+	}
+	for i := 0; i < len(rs.vibeTaskPlan) && i < rs.vibeSprintIndex; i++ {
+		if readVibeDocStatus(rs.workspaceCwd, rs.vibeTaskPlan[i]) != "draft" {
+			continue
+		}
+		// Chip / started-count for this unstarted task should be i+1.
+		want := i + 1
+		if rs.vibeSprintIndex > want {
+			rs.vibeSprintIndex = want
+			return true
+		}
+		return false
+	}
+	return false
+}
+
 // forceStartVibeTaskSlicer joins/restarts task_slicer from the latest CP.
 // Unlike maybeStartVibeCpIngest, this still runs when chatFlowRef is already
 // vibe-cp-ingest (live hang: Resume Continue after stop cancelled slicer —

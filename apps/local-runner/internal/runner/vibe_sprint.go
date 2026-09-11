@@ -460,11 +460,11 @@ func (s *InteractiveService) forceStartVibeSprintAtTdd(parentRunID string) bool 
 	}
 	cwd := rs.workspaceCwd
 	prompt := ""
-	if idx := rs.vibeSprintIndex; idx >= 0 && idx < len(rs.vibeTaskPlan) {
-		prompt = strings.TrimSpace(rs.vibeTaskPlan[idx])
-	}
-	if prompt == "" && len(rs.vibeTaskPlan) > 0 {
-		prompt = strings.TrimSpace(rs.vibeTaskPlan[0])
+	// vibeSprintIndex is started-count (chip task N/M), NOT a 0-based plan
+	// index. Using it as plan[idx] started Task-905 while chip said 2/3 and
+	// Task-904 was still draft (BUG-372 follow-up).
+	if len(rs.vibeTaskPlan) > 0 {
+		prompt = strings.TrimSpace(rs.vibeTaskPlan[vibeSprintCurrentPlanIndex(rs.vibeSprintIndex, len(rs.vibeTaskPlan))])
 	}
 	rs.vibeResumeConfirm = false
 	rs.vibeResumeFromNode = ""

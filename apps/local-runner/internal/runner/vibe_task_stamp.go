@@ -49,6 +49,27 @@ func resolveVibeWorkspacePath(cwd, rel string) string {
 	return filepath.Join(cwd, filepath.FromSlash(rel))
 }
 
+// readVibeDocStatus returns draft|in_progress|approved|done from a Task/CP
+// frontmatter or Metadata Status line (empty if unread/unknown).
+func readVibeDocStatus(cwd, rel string) string {
+	abs := resolveVibeWorkspacePath(cwd, rel)
+	if abs == "" {
+		return ""
+	}
+	b, err := os.ReadFile(abs)
+	if err != nil {
+		return ""
+	}
+	src := string(b)
+	if m := vibeDocFrontmatterStatus.FindStringSubmatch(src); len(m) == 2 {
+		return strings.ToLower(strings.TrimSpace(m[1]))
+	}
+	if m := vibeDocMetadataStatus.FindStringSubmatch(src); len(m) == 2 {
+		return strings.ToLower(strings.TrimSpace(m[1]))
+	}
+	return ""
+}
+
 // stampVibeTaskInProgress sets a Task file to `in_progress` (never `done`).
 func stampVibeTaskInProgress(cwd, taskPath string) {
 	abs := resolveVibeWorkspacePath(cwd, taskPath)

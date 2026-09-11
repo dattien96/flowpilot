@@ -28,3 +28,7 @@ Case 1 agnostic.
 ## Will not undo
 
 CA-829/828 recover paths; chip formula BUG-367 (index after takeNext still 1-based display for first sprint).
+
+## Addendum (still 2/3 after rebuild)
+
+Same run continued without CP rewrite/slicer: `forceStartVibeSprintAtTdd` used `vibeSprintIndex` as 0-based plan index (1 → Task-905). Fixed: `vibeSprintCurrentPlanIndex` (started-count → plan slot) + `reconcileVibeSprintCursor` on reconstruct when earlier Task is still `draft`.

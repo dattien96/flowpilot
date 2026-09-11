@@ -87,6 +87,43 @@ func TestBUG372_SlicerDoneReloadsPlanAndResetsIndex(t *testing.T) {
 	}
 }
 
+func TestBUG372_ReconcileClampsWhenEarlierTaskStillDraft(t *testing.T) {
+	cwd := t.TempDir()
+	task328Write(t, cwd, "requirements/08-Task/todo/Task-904-snake-core.md", "status: draft\n- Status: `draft`\n")
+	task328Write(t, cwd, "requirements/08-Task/todo/Task-905-snake-tick-wasd.md", "status: in_progress\n- Status: `in_progress`\n")
+	rs := &interactiveRun{
+		workspaceCwd: cwd,
+		vibeTaskPlan: []string{
+			"requirements/08-Task/todo/Task-904-snake-core.md",
+			"requirements/08-Task/todo/Task-905-snake-tick-wasd.md",
+			"requirements/08-Task/todo/Task-906-snake-score-run.md",
+		},
+		vibeSprintIndex: 2,
+	}
+	if !reconcileVibeSprintCursor(rs) {
+		t.Fatal("expected clamp")
+	}
+	if rs.vibeSprintIndex != 1 {
+		t.Fatalf("index=%d want 1 (chip task 1/3 for draft Task-904)", rs.vibeSprintIndex)
+	}
+	if vibeSprintCurrentPlanIndex(rs.vibeSprintIndex, len(rs.vibeTaskPlan)) != 0 {
+		t.Fatal("current plan slot must be Task-904")
+	}
+}
+
+func TestBUG372_ForceStartUsesStartedCountNotPlanIndex(t *testing.T) {
+	// index=1 means first sprint started → plan[0], not plan[1].
+	if got := vibeSprintCurrentPlanIndex(1, 3); got != 0 {
+		t.Fatalf("index 1 → plan slot %d want 0", got)
+	}
+	if got := vibeSprintCurrentPlanIndex(2, 3); got != 1 {
+		t.Fatalf("index 2 → plan slot %d want 1", got)
+	}
+	if got := vibeSprintCurrentPlanIndex(0, 3); got != 0 {
+		t.Fatalf("index 0 → plan slot %d want 0", got)
+	}
+}
+
 func TestBUG372_ProvidersAgnostic(t *testing.T) {
 	for _, pk := range []ProviderKey{ProviderKeyClaude, ProviderKeyCodex, ProviderKeyGrok} {
 		t.Run(string(pk), func(t *testing.T) {

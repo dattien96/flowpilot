@@ -1316,6 +1316,21 @@ func (s *InteractiveService) reconstructRunInternal(st ProviderSessionState, def
 		// Continue form again (stopped stays stopped; silent-done re-offers
 		// unless declined; finished stays done).
 		s.maybeReparkVibeSprintBoundary(rs.id)
+		// Clamp stale sprint cursor when earlier Task files are still draft
+		// (BUG-372: reopen kept chip task 2/3 while Task-904 was draft).
+		s.mu.Lock()
+		clamped := reconcileVibeSprintCursor(rs)
+		s.mu.Unlock()
+		if clamped {
+			s.agentOrchestrator.mutateLoop(rs.id, func(st AgentLoopState) AgentLoopState {
+				s.mu.Lock()
+				r := s.runs[rs.id]
+				s.mu.Unlock()
+				return attachVibeTaskProgressLocked(r, st)
+			})
+			go s.persistParentSession(rs.id)
+		}
+
 		// Task-327/328/329 O-6 order: SS-missing → CP-missing → Task-missing
 		// → generic node resume → CP→task_slicer join (cp_writer→done has no
 		// forward successor for pendingVibeResumeFromNode).
