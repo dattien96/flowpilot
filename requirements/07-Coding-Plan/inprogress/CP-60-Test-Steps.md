@@ -29,7 +29,7 @@
 ### Current Ask
 
 - Unit §2 **done** 2026-09-09 (`TestCA793_*` + reconstruct lock green). M1–M3 done.
-- Live **run-678326** (`vibe-ingest`, grok-4.5, Mac `/Users/tiendat/Desktop/BE/gate-sandbox`) **done** 2026-09-11: three sprints (`task 3/3`), `snake/` has `game.go` `input.go` `main.go` `ui.go` + tests, `go test ./snake` **44 PASS**, `tdd-signatures.md` on disk, `snake-mvp` in FEATURE-KEYS.md. V5 + G2 ticked from this run. V7/V8 still unexercised. F1/F2/§11 live rows still open.
+- Live **run-678326** (`vibe-ingest`, grok-4.5, Mac `/Users/tiendat/Desktop/BE/gate-sandbox`) **done** 2026-09-11: three sprints (`task 3/3`), `snake/` has `game.go` `input.go` `main.go` `ui.go` + tests, `go test ./snake` **44 PASS**, `tdd-signatures.md` on disk, `snake-mvp` in FEATURE-KEYS.md. V5 + G2 ticked from this run. V7/V8 still unexercised. F1 PASS (invalid_flow_ref). §11 R-SS-K PASS; R-SS-D demote PASS + **Task-327** closes O-6 auto-resume (unit). Re-prove R-SS-D live spawn after Task-327 binary.
 
 ### Key Decisions
 
@@ -184,7 +184,7 @@ V5 + G1 + G2 + G3 = live Branch V pass for this bed.
 
 | # | Làm | Pass | Tick |
 | --- | --- | --- | --- |
-| F1 | `/flow vibe-cp-ingest README.md` (non-CP; `/vibe-cp` removed CA-782) | Deterministic reject. No CP lock card. | [ ] |
+| F1 | `/flow vibe-cp-ingest README.md` (non-CP; `/vibe-cp` removed CA-782) | Deterministic reject. No CP lock card. | [x] |
 | F2 | `/vibe off`, start a harness (`/flow` + `task-harness` or chat as usual) | Dev `1/2/3` path if a gate fires. **No** `vibe-owner-debate`. | [ ] |
 | F3 | Optional: `/exit` mid SS-lock, `just chat-dev D:/working/gate-sandbox`, reopen the run | Lock card still there; mode still `vibe`. | [ ] |
 
@@ -219,7 +219,7 @@ V5 + G1 + G2 + G3 = live Branch V pass for this bed.
 | O-3 | Branch C `/vibe-cp CP-*.md` N× sprint — later add-on |
 | O-4 | Provider matrix 3× same snake (Claude+Grok+Codex) — optional rerun of §5 |
 | O-5 | Pretty graphics / audio / high score file |
-| O-6 | Auto `startResolvedFlowFromNode` at demoted checkpoint — residual. §11 Pass column: **demote** is required now; **spawn next node** is residual unless noted. |
+| O-6 | Auto `startResolvedFlowFromNode` at demoted checkpoint — **SS-delete @ ss_lock closed by Task-327 / CA-827** (reconstruct + Continue). Other layers (missing CP/Task auto-spawn) still residual. |
 
 ## 10. Definition of Done (this bed)
 
@@ -230,8 +230,8 @@ V5 + G1 + G2 + G3 = live Branch V pass for this bed.
 - [x] V6 ticked (zero Dev observed on run-223416 and run-678326 screenshots); V7/V8 OPEN (unexercised — no `r-requirement` / owner-debate card)
 - [x] V5 ticked on run-678326 (`task 3/3`, `tdd-signatures.md` on disk, validate/synthesis/audit DONE)
 - [x] G1 + G2 + G3 ticked (44 PASS; `main.go` playable CLI; calc clean)
-- [ ] F1 ticked; F2 ticked if a Dev gate was observed
-- [ ] §11 live R-* / N-* ticked (unit rows R-NF / R-EF / R-AL already covered by 2.5–2.13)
+- [x] F1 ticked; [ ] F2 ticked if a Dev gate was observed
+- [x] §11 R-SS-K / R-SS-D (demote + Task-327 unit spawn); [ ] remaining live R-CP-* / R-TK-* / N-*
 - [x] Evidence §7 attached for run-678326 (snake MVP files + `go test` 44 PASS) and historical run-223416
 
 ## 11. Resume checkpoint — SS / CP / Task (CA-793)
@@ -248,8 +248,8 @@ Stop with `/exit` (or kill TUI). Reopen `just chat-dev <sandbox>`. Open **the sa
 
 | ID | Stop after | Disk after stop | Pass (demote) | Spawn next (residual) | Tick |
 | --- | --- | --- | --- | --- | --- |
-| R-SS-K | `ss_lock` | SS remains | checkpoint `ss_lock` | `cp_writer` | [ ] |
-| R-SS-D | `ss_lock` | **delete** `requirements/05-System-Specs/SS-*.md` (not FORMAT) | checkpoint **empty** | `ingest_reader` | [ ] |
+| R-SS-K | `ss_lock` | SS remains | checkpoint `ss_lock` | `cp_writer` | [x] run-225468 reopen kept `ss_lock` WAITING + lock card |
+| R-SS-D | `ss_lock` | **delete** `requirements/05-System-Specs/SS-*.md` (not FORMAT) | checkpoint **empty** | `ingest_reader` | [x] demote empty (run-225468 sessions); spawn `ingest_reader` = **Task-327 / CA-827** (unit `TestTask327_*`); re-tick live on next binary |
 | R-CP-K | `cp_writer` | CP + SS remain | checkpoint `cp_writer` | `task_slicer` | [ ] |
 | R-CP-D1 | `cp_writer` | **delete CP**, SS remains | demote `ss_lock` | `cp_writer` | [ ] |
 | R-CP-D2 | `cp_writer` | **delete CP + SS** | empty | ingest | [ ] |
@@ -271,7 +271,7 @@ Delete demo: `rm` only the named glob under sandbox. Do **not** delete `calc.go`
 | N-SS | SS exists, no CP | `/vibe` + idea prompt | **today** may re-ingest SS (residual; should skip to `cp_writer`) | [ ] |
 | N-TK | Task files exist | new vibe run | **today** slicer may add Tasks (residual; should skip to sprint) | [ ] |
 | N-DEL | delete SS+CP+Task then new `/vibe` + idea | ingest from idea | no stale checkpoint from the old run | [ ] |
-| N-REJ | `/flow vibe-cp-ingest README.md` | reject, no lock card | same as F1 | [ ] |
+| N-REJ | `/flow vibe-cp-ingest README.md` | reject, no lock card | same as F1 | [x] same as F1 |
 
 Old-run checkpoint **must not** attach to a new `createRun`.
 
