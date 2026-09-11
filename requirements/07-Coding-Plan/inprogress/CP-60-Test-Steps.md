@@ -29,7 +29,7 @@
 ### Current Ask
 
 - Unit §2 **done** 2026-09-09 (`TestCA793_*` + reconstruct lock green). M1–M3 done.
-- Live **run-678326** (Mac) Branch V done. Windows **run-225468**: R-SS-* + **R-CP-K/D1 live PASS** (Task-327/328). R-TK-D1 live RED: delete Task-904/905/906 → reopen parked Resume→tdd (stale plan) instead of re-run `task_slicer` — fixing Task-329. F2 / R-TK-K / N-* / V7/V8 still open.
+- Live **run-678326** (Mac) Branch V done. Windows **run-225468**: R-SS-* + R-CP-K/D1 + **R-TK-D1 live PASS** (Task-329: delete Tasks → reopen re-runs `task_slicer`, not Resume→tdd). Next: **R-TK-K** (keep Tasks, `/exit`, reopen → Resume→sprint/tdd). F2 / R-TK-D2/D3 / R-CP-D2 / N-* / V7/V8 still open.
 
 ### Key Decisions
 
@@ -231,7 +231,7 @@ V5 + G1 + G2 + G3 = live Branch V pass for this bed.
 - [x] V5 ticked on run-678326 (`task 3/3`, `tdd-signatures.md` on disk, validate/synthesis/audit DONE)
 - [x] G1 + G2 + G3 ticked (44 PASS; `main.go` playable CLI; calc clean)
 - [x] F1 ticked; [ ] F2 ticked if a Dev gate was observed
-- [x] §11 R-SS-* + R-CP-K/D1 **live**; [ ] R-TK-* / R-CP-D2 / N-* (except N-REJ)
+- [x] §11 R-SS-* + R-CP-K/D1 + R-TK-D1 **live**; [ ] R-TK-K / R-TK-D2/D3 / R-CP-D2 / N-* (except N-REJ)
 - [x] Evidence §7 attached for run-678326 + run-225468 R-SS-D live regen
 
 ## 11. Resume checkpoint — SS / CP / Task (CA-793)
@@ -254,7 +254,7 @@ Stop with `/exit` (or kill TUI). Reopen `just chat-dev <sandbox>`. Open **the sa
 | R-CP-D1 | `cp_writer` | **delete CP**, SS remains | demote `ss_lock` | `cp_writer` | [x] run-225468 live: delete CP → reopen auto `cp_writer` rewrite (Task-328) |
 | R-CP-D2 | `cp_writer` | **delete CP + SS** | empty | ingest | [ ] |
 | R-TK-K | `task_slicer` | Task + CP + SS remain | checkpoint `task_slicer` | `vibe-sprint` | [ ] |
-| R-TK-D1 | `task_slicer` | **delete Task-*.md**, CP remains | demote `cp_writer` | `task_slicer` | [ ] |
+| R-TK-D1 | `task_slicer` | **delete Task-*.md**, CP remains | demote `cp_writer` | `task_slicer` | [x] run-225468 live + Task-329/CA-829: delete 904/905/906 → reopen re-runs `task_slicer` (not Resume→tdd) |
 | R-TK-D2 | `task_slicer` | **delete Task + CP**, SS remains | demote `ss_lock` | `cp_writer` | [ ] |
 | R-TK-D3 | `task_slicer` | **delete Task + CP + SS** | empty | ingest | [ ] |
 | R-NF | node done, artifact **never written** | no file | checkpoint **unchanged** (no commit) | previous layer | [x] unit 2.5 |
