@@ -10,12 +10,12 @@ import (
 func TestDefaultRules(t *testing.T) {
 	rules := DefaultRules()
 	// Task-233: r-artifact-telegram-sent; CP-53/Task-277: r-newtest; Task-260: r-additive-tests;
-	// CP-47/Task-330: r-dod-present.
+	// CP-47/Task-330: r-dod-present; CP-47/Task-331: r-dod-complete.
 	ids := []string{
 		"r-ca", "r-fk", "r-bug", "r-task", "r-tests", "r-reg", "r-dep",
 		"r-artifact-output", "r-artifact-output-structure", "r-artifact-telegram-sent",
 		"r-contract", "r-scope", "r-spec-drift", "r-code-drift", "r-attach-spec", "r-retire",
-		"r-newtest", "r-additive-tests", "r-dod-present",
+		"r-newtest", "r-additive-tests", "r-dod-present", "r-dod-complete",
 	}
 	if len(rules) != len(ids) {
 		t.Fatalf("expected %d rules, got %d", len(ids), len(rules))

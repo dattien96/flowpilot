@@ -299,6 +299,9 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 		HeadRetirePending:           detectRetirePending(cwd, knownFeatureKeys),
 		TamperedTestPaths:           append([]string(nil), oracle.Tampered...),
 	}
+	// Task-331 (CP-47 P-3): DOD completion signals from Task-*/BUG-* docs
+	// written this turn, BEFORE Evaluate runs so r-dod-complete can fire.
+	applyDodSignals(&tr)
 
 	// 7. Load rules; fall back to defaults when flow-rules.json is absent.
 	// LoadRules already merges missing DefaultRules by ID (Task-223).
@@ -484,6 +487,27 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 	}
 	s.recordGateAcceptedMetric(dotFP, rs, turnID, gateMode)
 	return false
+}
+
+// applyDodSignals computes the Task-331 (CP-47 P-3) DOD completion signals for
+// a turn: when WrittenPaths contains a Task-*/BUG-*.md that transitioned to
+// done, sets DodTransitionedToDone + DodStatus so flowgate.Evaluate can run
+// r-dod-complete. Done detection per CP-47 D-2: metadata `Status: done` in
+// the on-disk doc takes priority; a `done/` path segment is the backup
+// signal; commit messages are NEVER consulted. Unreadable docs contribute no
+// signal (graceful degradation — the gate never blocks or panics on I/O
+// errors) and turns that never touch a Task/BUG doc are a cheap no-op
+// (CP-47 D-5 bypass safety). Shared by the root gate and the child gate.
+func applyDodSignals(tr *flowgate.TurnResult) {
+	if tr == nil || tr.WorkspaceCwd == "" || len(tr.WrittenPaths) == 0 {
+		return
+	}
+	status, ok := flowgate.DodDoneTransition(tr.WorkspaceCwd, tr.WrittenPaths)
+	if !ok {
+		return
+	}
+	tr.DodTransitionedToDone = true
+	tr.DodStatus = status
 }
 
 // runChildArtifactOutputGate enforces Task-223 file_artifact OUTPUT write
@@ -1018,6 +1042,10 @@ func (s *InteractiveService) runChildArtifactOutputGateAtEpoch(
 		HeadCodeDrifted:                       headCodeDrifted,
 		HeadAttachSpecPending:                 headAttachSpecPending,
 	}
+	// Task-331 (CP-47 P-3): DOD completion signals from Task-*/BUG-* docs
+	// written this turn, BEFORE Evaluate runs so r-dod-complete can fire on
+	// flow coding children too (tier-1 doc family).
+	applyDodSignals(&tr)
 	// Optional oracle for tier-2b when test rules are in `only`.
 	needsOracle := false
 	for _, r := range only {

@@ -5,12 +5,12 @@
 - Document ID: `Task-331`
 - Title: `Xây dựng Cổng r-dod-complete và Tích hợp Runner`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-11`
 - Last Updated: `2026-09-11`
-- Parent Documents: [CP-47: Cổng kiểm duyệt Definition-of-Done (r-dod)](../../07-Coding-Plan/todo/CP-47-DOD-Gate.md)
+- Parent Documents: [CP-47: Cổng kiểm duyệt Definition-of-Done (r-dod)](../../07-Coding-Plan/done/CP-47-DOD-Gate.md)
 - Child Documents: `None`
 - Related Documents: [Task-330: DOD Parser và Cổng r-dod-present](../done/Task-330-DOD-Parser-And-Present-Gate.md), [SS-13: Hợp đồng tài liệu cho AI](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
 - Replaces: `None`
@@ -49,7 +49,7 @@
 
 ### Source Refs
 
-- `requirements/07-Coding-Plan/todo/CP-47-DOD-Gate.md` (P-3, P-4, P-5).
+- `requirements/07-Coding-Plan/done/CP-47-DOD-Gate.md` (P-3, P-4, P-5).
 - `apps/local-runner/internal/runner/gate_hook.go` (Hạ tầng gate hook của runner).
 - `apps/local-runner/internal/flowgate/evaluate.go` (Bộ đánh giá rule).
 
@@ -68,7 +68,7 @@ Khóa chặt tính kỷ luật khi nghiệm thu công việc: Ngăn chặn tri�
 
 ## 2. Parent Links
 
-- Coding Plan: [CP-47 P-3, P-4, P-5](../../07-Coding-Plan/todo/CP-47-DOD-Gate.md).
+- Coding Plan: [CP-47 P-3, P-4, P-5](../../07-Coding-Plan/done/CP-47-DOD-Gate.md).
 - Sibling Task: [Task-330](../done/Task-330-DOD-Parser-And-Present-Gate.md).
 
 ---
@@ -116,21 +116,29 @@ Hiện tại, AI có thể tự ý di chuyển file Task vào thư mục `done/`
 
 ## 8. Completion Notes
 
-- Trạng thái: `draft` (chờ triển khai).
+- Trạng thái: `done` (2026-09-11).
+- Triển khai: `TurnResult` += `DodTransitionedToDone`/`DodStatus`; rule `r-dod-complete` (block-or-explained); case `marked_done_with_open_dod` + `hasValidDodExplanation` (3 tầng: section `## Deferred`/`## Open Items`, cụm từ cạnh checkbox mở, `FinalMessage`); `DodDoneTransition` (ưu tiên metadata `Status: done`, backup path `done/`, không bao giờ đọc commit message); `applyDodSignals` gọi ở cả root gate (`runFlowGateAtEpoch`) lẫn child gate (`runChildArtifactOutputGateAtEpoch`) trước `flowgate.Evaluate`.
+- `DocScopeRuleIDs` mở rộng thêm `r-dod-complete` (reviewer verify cả 3 consumer: flow hub bỏ qua, coding-child tier-1 áp dụng, audit tier-3 no-op an toàn do không tính Dod* signals).
+- P-5 UI: vi phạm đi qua emit `EventFlowGateViolation` hiện có (Decision Card) — 0 code UI mới; runner test assert event emit kèm danh sách checkbox mở.
+- Tests: 10/10 test signature §10 + 8 test bổ sung; `go test ./internal/flowgate/...` xanh toàn bộ. Runner suite có ~24 failure pre-existing (deadlock `TestBUG327` do commit 162c7b02 + env-dependent) — reviewer xác nhận 0 failure liên quan đến r-dod-complete; verify bằng overlay HEAD-equivalence.
+- GitNexus impact: TurnResult 0/LOW, checkRule 4/LOW, DefaultRules 8/LOW, runFlowGateAtEpoch 7/LOW, runChildArtifactOutputGateAtEpoch 7/LOW.
+- Ghi nhận minh bạch: `TestDefaultRules` manifest mở rộng append-only thêm `"r-dod-complete"` (cùng convention Task-233/277/260/330).
+- Provider parity: provider-agnostic (deterministic Go, 0 LLM, chỉ đọc doc trên đĩa + FinalMessage).
+- Prior CA claims giữ nguyên: CA-833, CA-834, CA-695, CA-442, CA-441.
 
 ---
 
 ## 9. Definition of Done
 
-- [ ] Trường `DodTransitionedToDone` và `DodStatus` được bổ sung vào `TurnResult`.
-- [ ] Khai báo `r-dod-complete` trong `flowgate.DefaultRules()` với `Action = "block"` và `Trigger = "marked_done_with_open_dod"`.
-- [ ] `checkRule` trong `evaluate.go` chặn (`block`) khi có checkbox chưa tick và không có giải trình.
-- [ ] `checkRule` hạ cấp thành cảnh báo (`warn`) khi có checkbox chưa tick nhưng có đoạn giải trình lý do trong tài liệu hoặc trong `FinalMessage`.
-- [ ] Runner (`gate_hook.go`) trích xuất đúng tín hiệu khi file Task/Bug chuyển sang `done` và kích hoạt kiểm tra cổng.
-- [ ] Các flow không đụng đến file Task/Bug tự động bypass cổng `r-dod-complete`.
-- [ ] Toàn bộ unit tests mới pass và không làm gãy các unit tests hiện có.
-- [ ] `MergeDefaultRules` tự động bổ sung `r-dod-complete` vào `flow-rules.json` của workspace cũ.
-- [ ] Thông báo vi phạm hiển thị đầy đủ trên UI Decision Card của runner.
+- [x] Trường `DodTransitionedToDone` và `DodStatus` được bổ sung vào `TurnResult`.
+- [x] Khai báo `r-dod-complete` trong `flowgate.DefaultRules()` với `Action = "block"` và `Trigger = "marked_done_with_open_dod"`.
+- [x] `checkRule` trong `evaluate.go` chặn (`block`) khi có checkbox chưa tick và không có giải trình.
+- [x] `checkRule` hạ cấp thành cảnh báo (`warn`) khi có checkbox chưa tick nhưng có đoạn giải trình lý do trong tài liệu hoặc trong `FinalMessage`.
+- [x] Runner (`gate_hook.go`) trích xuất đúng tín hiệu khi file Task/Bug chuyển sang `done` và kích hoạt kiểm tra cổng.
+- [x] Các flow không đụng đến file Task/Bug tự động bypass cổng `r-dod-complete`.
+- [x] Toàn bộ unit tests mới pass và không làm gãy các unit tests hiện có. (Runner suite có ~24 failure pre-existing đã xác minh tại HEAD — 0 liên quan đến thay đổi này.)
+- [x] `MergeDefaultRules` tự động bổ sung `r-dod-complete` vào `flow-rules.json` của workspace cũ.
+- [x] Thông báo vi phạm hiển thị đầy đủ trên UI Decision Card của runner.
 
 ---
 

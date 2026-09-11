@@ -10,7 +10,7 @@
 - Reviewers: `Operator`
 - Created: `2026-09-11`
 - Last Updated: `2026-09-11`
-- Parent Documents: [CP-47: Cổng kiểm duyệt Definition-of-Done (r-dod)](../../07-Coding-Plan/todo/CP-47-DOD-Gate.md)
+- Parent Documents: [CP-47: Cổng kiểm duyệt Definition-of-Done (r-dod)](../../07-Coding-Plan/done/CP-47-DOD-Gate.md)
 - Child Documents: `None`
 - Related Documents: [SS-13: Hợp đồng tài liệu cho AI](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [Task-331: Cổng r-dod-complete và Tích hợp Runner](./Task-331-DOD-Complete-Gate-And-Runner-Wiring.md)
 - Replaces: `None`
@@ -43,7 +43,7 @@
 
 ### Source Refs
 
-- `requirements/07-Coding-Plan/todo/CP-47-DOD-Gate.md` (Kế hoạch cha P-1, P-2).
+- `requirements/07-Coding-Plan/done/CP-47-DOD-Gate.md` (Kế hoạch cha P-1, P-2).
 - `apps/local-runner/internal/flowgate/rules.go` (Hệ thống đăng ký quy tắc).
 - `apps/local-runner/internal/flowgate/evaluate.go` (Luồng đánh giá).
 
@@ -62,7 +62,7 @@ Cung cấp khả năng phân tích cú pháp Definition of Done tự động tro
 
 ## 2. Parent Links
 
-- Coding Plan: [CP-47 P-1 & P-2](../../07-Coding-Plan/todo/CP-47-DOD-Gate.md).
+- Coding Plan: [CP-47 P-1 & P-2](../../07-Coding-Plan/done/CP-47-DOD-Gate.md).
 - System Spec: [SS-13 §10](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md).
 
 ---

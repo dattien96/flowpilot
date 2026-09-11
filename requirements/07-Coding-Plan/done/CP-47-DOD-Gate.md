@@ -6,13 +6,13 @@
 - Title: `Cổng kiểm duyệt Definition-of-Done (r-dod)`
 - Feature Keys: `context-regression-engine, flowgate`
 - Phase: `coding_plan`
-- Status: `approved`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-07-14`
 - Last Updated: `2026-09-11`
 - Parent Documents: [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md)
-- Child Documents: [Task-330: DOD Parser và Cổng r-dod-present](../../08-Task/done/Task-330-DOD-Parser-And-Present-Gate.md), [Task-331: Cổng r-dod-complete và Tích hợp Runner](../../08-Task/todo/Task-331-DOD-Complete-Gate-And-Runner-Wiring.md)
+- Child Documents: [Task-330: DOD Parser và Cổng r-dod-present](../../08-Task/done/Task-330-DOD-Parser-And-Present-Gate.md), [Task-331: Cổng r-dod-complete và Tích hợp Runner](../../08-Task/done/Task-331-DOD-Complete-Gate-And-Runner-Wiring.md)
 - Related Documents: [SS-13: Hợp đồng tài liệu cho AI](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [CP-43: Change Contract và Canonical Intent Signature](./CP-43-Change-Contract-And-Canonical-Intent-Signature.md)
 - Replaces: `None`
 - Tags: `context-regression-engine, flow-gate, flowgate, definition-of-done, dod, task, bugfix, r-dod`
@@ -146,10 +146,10 @@ Biến "công việc đã hoàn thành" thành **sự thật được cổng ki�
 
 ## 9. Tiêu chí hoàn thành tổng thể (Definition of Done)
 
-- [ ] Parser `dod.go` xử lý chính xác tất cả biến thể heading DOD.
-- [ ] Hai quy tắc `r-dod-present` và `r-dod-complete` được đăng ký trong `DefaultRules()`.
-- [ ] `MergeDefaultRules` tự động bổ sung 2 rule mới vào `flow-rules.json` cũ.
-- [ ] Cổng `r-dod-present` nhắc nhở (reprompt) khi Task/Bug thiếu DOD.
-- [ ] Cổng `r-dod-complete` chặn (block) khi done mà còn checkbox mở không giải trình.
-- [ ] Tất cả unit tests mới pass, không làm gãy tests hiện có.
-- [ ] Kiểm tra E2E trên `task-harness` xác nhận gate hoạt động đúng.
+- [x] Parser `dod.go` xử lý chính xác tất cả biến thể heading DOD.
+- [x] Hai quy tắc `r-dod-present` và `r-dod-complete` được đăng ký trong `DefaultRules()`.
+- [x] `MergeDefaultRules` tự động bổ sung 2 rule mới vào `flow-rules.json` cũ.
+- [x] Cổng `r-dod-present` nhắc nhở (reprompt) khi Task/Bug thiếu DOD.
+- [x] Cổng `r-dod-complete` chặn (block) khi done mà còn checkbox mở không giải trình.
+- [x] Tất cả unit tests mới pass, không làm gãy tests hiện có. (Runner suite có ~24 failure pre-existing tại HEAD đã xác minh — 0 liên quan.)
+- [x] Kiểm tra E2E trên `task-harness` xác nhận gate hoạt động đúng. (TestTaskHarness* pass với 2 gate mới đăng ký; block/reprompt/bypass paths verify qua gate-hook integration tests.)

@@ -105,6 +105,20 @@ type TurnResult struct {
 	// CP-60 P-2: vibe-only r-requirement advisory (signature↔locked SS).
 	RequirementDrift       bool   `json:"requirement_drift,omitempty"`
 	RequirementDriftDetail string `json:"requirement_drift_detail,omitempty"`
+	// Task-331 (CP-47 P-3): DOD completion signals, computed by the runner's
+	// gate hook from the Task-*/BUG-* docs written this turn BEFORE Evaluate
+	// runs (same caller-computed contract as the Task-185 scope fields —
+	// flowgate cannot own the done-detection I/O without duplicating it).
+	// DodTransitionedToDone is true when at least one written Task-*/BUG-*.md
+	// transitioned to done this turn: metadata `Status: done` in the on-disk
+	// doc takes priority, a `done/` path segment is the backup signal — never
+	// inferred from commit messages (CP-47 D-2).
+	DodTransitionedToDone bool `json:"dod_transitioned_to_done,omitempty"`
+	// DodStatus is the parsed Definition of Done checklist (ParseDefinitionOfDone)
+	// of the transitioned doc. Zero value when no doc transitioned or the doc
+	// could not be read — Total == 0 makes r-dod-complete no-op (it delegates
+	// the missing-DOD contract to r-dod-present).
+	DodStatus DodStatus `json:"dod_status,omitempty"`
 }
 
 // StructuredFileArtifactOutput is a required file_artifact OUTPUT path with
@@ -129,10 +143,16 @@ type Violation struct {
 
 // DocScopeRuleIDs are Task-242 tier-1 rules evaluated on flow-mode coding
 // children when the turn produced a non-empty git diff (cheap pure checks).
-// CP-47 §5 extends the family with r-dod-present (Task-330): a cheap
-// deterministic markdown check over Task-*/BUG-* docs in WrittenPaths.
+// CP-47 §5 extends the family with r-dod-present (Task-330) and
+// r-dod-complete (Task-331): cheap deterministic checks over Task-*/BUG-*
+// docs in WrittenPaths. r-dod-complete carries a block action but stays in
+// the family — tier-1 membership is about evaluation cost, not severity (the
+// child gate already runs block rules through the shared Evaluate/Enforce
+// path), and the Dod* signal fields it reads are zero-valued for callers
+// that never computed them (flow hubs via flowHubGateRules, audit tier-3),
+// where the rule safely no-ops.
 func DocScopeRuleIDs() []string {
-	return []string{"r-ca", "r-fk", "r-bug", "r-task", "r-contract", "r-scope", "r-dod-present"}
+	return []string{"r-ca", "r-fk", "r-bug", "r-task", "r-contract", "r-scope", "r-dod-present", "r-dod-complete"}
 }
 
 // TestRuleIDs are Task-242 tier-2 rules (expensive suite / oracle). Owned by
@@ -215,6 +235,12 @@ func DefaultRules() []Rule {
 		// carry a Definition of Done section with at least one checkbox (SS-13
 		// §10). Reprompt-only — nagging never hard-stops the flow.
 		{ID: "r-dod-present", Scope: "step", Trigger: "task_or_bug_doc_missing_dod", RequiredOutput: "definition_of_done_section", Action: "reprompt", Enabled: true},
+		// Task-331 (CP-47 P-4): a Task-*/BUG-* document that just transitioned
+		// to done must have every DOD checkbox ticked, or the turn must carry a
+		// valid explanation (block-or-explained, mirroring r-tests). checkRule
+		// downgrades to warn when an explanation exists (CP-47 R-2: prefer
+		// downgrade-to-warn over false blocks).
+		{ID: "r-dod-complete", Scope: "step", Trigger: "marked_done_with_open_dod", RequiredOutput: "dod_all_checked_or_explained", Action: "block", Enabled: true},
 	}
 }
 
