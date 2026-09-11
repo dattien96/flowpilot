@@ -1,19 +1,19 @@
-# CP-47: Definition-of-Done Flow Gate (`r-dod`)
+# CP-47: Cổng kiểm duyệt Definition-of-Done (`r-dod`)
 
 ## Metadata
 
 - Document ID: `CP-47`
-- Title: `Definition-of-Done Flow Gate (r-dod)`
-- Feature Keys: `context-regression-engine`
+- Title: `Cổng kiểm duyệt Definition-of-Done (r-dod)`
+- Feature Keys: `context-regression-engine, flowgate`
 - Phase: `coding_plan`
-- Status: `draft`
+- Status: `approved`
 - Owner: `FlowPilot`
-- Reviewers: `TBD`
+- Reviewers: `Operator`
 - Created: `2026-07-14`
-- Last Updated: `2026-07-14`
+- Last Updated: `2026-09-11`
 - Parent Documents: [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md)
-- Child Documents: `None`
-- Related Documents: [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md) (defines the `Definition of Done` section this gate reads), [CP-43: Change Contract And Canonical Intent Signature](./CP-43-Change-Contract-And-Canonical-Intent-Signature.md) (sibling gates `r-scope`/`r-spec-drift`), [Task-223: File-Artifact Output Contract](../../08-Task/done/Task-223-File-Artifact-Output-Contract-And-Review-Input-Chain.md) (prior art: required-output gate `r-artifact-output`); `flowgate` rule registry (`apps/local-runner/internal/flowgate/rules.go`), skills `add-new-task`, `add-new-bug`, `phase-document-compliance`
+- Child Documents: [Task-330: DOD Parser và Cổng r-dod-present](../../08-Task/todo/Task-330-DOD-Parser-And-Present-Gate.md), [Task-331: Cổng r-dod-complete và Tích hợp Runner](../../08-Task/todo/Task-331-DOD-Complete-Gate-And-Runner-Wiring.md)
+- Related Documents: [SS-13: Hợp đồng tài liệu cho AI](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [CP-43: Change Contract và Canonical Intent Signature](./CP-43-Change-Contract-And-Canonical-Intent-Signature.md)
 - Replaces: `None`
 - Tags: `context-regression-engine, flow-gate, flowgate, definition-of-done, dod, task, bugfix, r-dod`
 
@@ -21,110 +21,135 @@
 
 ### Summary
 
-- Add a **flow-gate rule family `r-dod`** to the existing `flowgate` registry so that task/bug work is anchored to a checkable Definition of Done, not just prose.
-- Two enforcement moments (mirrors the `r-artifact-output` / `r-artifact-output-structure` split):
-  - **`r-dod-present`** — when a turn creates or edits a `Task-*`/`BUG-*` doc for the work being done, that doc must contain a `## Definition of Done` section with at least one checkbox item (`- [ ]`). Nag (reprompt) until it does.
-  - **`r-dod-complete`** — when the work is marked **done** (doc `Status: done` / moved to `done/`), every DOD checkbox must be `[x]`. If any remain `[ ]`, the turn must **explain** which items are unfinished and why (an "or-explained" escape, exactly like `r-tests`), otherwise **block** the done transition.
-- Deterministic markdown parse of the DOD checkboxes — zero LLM cost, reuses the checkbox convention every phase doc already uses (`SS-13`, this file's own §10).
+- Bổ sung họ quy tắc cổng kiểm duyệt **`r-dod`** vào hệ thống đăng ký `flowgate` hiện có trong Go runner để bảo đảm mọi công việc Task/BugFix được neo vào Definition of Done có thể kiểm tra tự động, không dựa vào cam kết lời văn suông.
+- Hai thời điểm thực thi độc lập (kế thừa pattern phân tách của `r-artifact-output` / `r-artifact-output-structure`):
+  - **`r-dod-present`**: Khi một turn tạo mới hoặc chỉnh sửa tài liệu `Task-*` hoặc `BUG-*`, tài liệu đó bắt buộc phải chứa section `## Definition of Done` với ít nhất 1 checkbox (`- [ ]`). Nếu thiếu hoặc rỗng -> Nhắc nhở (`reprompt`) bắt bổ sung trước khi tiếp tục.
+  - **`r-dod-complete`**: Khi tài liệu chuyển trạng thái sang `done` (`Status: done` trong metadata hoặc file được dời vào thư mục `done/`), tất cả các checkbox trong DOD phải được tích `[x]`. Nếu còn checkbox `[ ]` chưa tích, turn phải giải trình lý do rõ ràng (cơ chế "or-explained" giống `r-tests`), nếu không có giải trình -> Chặn (`block`) không cho phép hoàn thành.
+- Cơ chế kích hoạt dựa trên **Tín hiệu thực tế (Trigger trên `WrittenPaths`)**:
+  - Áp dụng cho mọi flow (`task-harness`, `bug-plan-harness`, `vibe-sprint`).
+  - Đối với `bug-harness` (hotfix nhanh): Nếu turn có ghi file `BUG-*` thì gate sẽ kiểm tra; nếu là hotfix siêu tốc chỉ tạo `change-audit` note mà không đụng đến file `BUG-*` thì gate tự động bỏ qua (bypass), không gây nghẽn luồng làm việc.
+- Trình phân tích markdown hoàn toàn xác định (deterministic), chạy offline với **0 chi phí token/LLM**, phân tích cú pháp checkbox theo chuẩn `SS-13`.
 
 ### Current Ask
 
-- Land `r-dod-present` + `r-dod-complete` in `flowgate.DefaultRules()` with detectors, a DOD-section parser, evaluate wiring, and the reprompt/block/explain UX — behind the same enable/merge machinery as the existing rules.
+- Triển khai `r-dod-present` + `r-dod-complete` trong `flowgate.DefaultRules()`, bộ phân tích cú pháp `dod.go`, kết nối đánh giá trong `evaluate.go` và tích hợp vào `runner/gate_hook.go` qua hai task `Task-330` và `Task-331`.
 
 ### Key Decisions
 
-- `D-1` **Reuse `flowgate`, do not build a parallel gate.** `r-dod` is two more `Rule{ID,Scope,Trigger,RequiredOutput,Action,Enabled}` entries in `DefaultRules()`, evaluated by the same `Evaluate`/`checkRule` path as `r-ca`/`r-tests`/`r-artifact-output`. `MergeDefaultRules` back-fills them into older `flow-rules.json` so they are never silently off.
-- `D-2` **"Done" signal = the doc's own status, not a guess.** `r-dod-complete` fires when this turn transitions a governing `Task-*`/`BUG-*` doc to done: `Status: done` in its metadata block **or** the file moved into a `.../done/` folder (both already meaningful in the repo layout). No completion heuristic on commit messages.
-- `D-3` **`present` nags, `complete` blocks-or-explains.** `r-dod-present.Action = reprompt` (like `r-bug`/`r-task`: get the DOD written, never hard-stop). `r-dod-complete.Action = block` with `RequiredOutput = dod_all_checked_or_explained` (like `r-tests` `tests_green_or_explained`): all boxes checked → pass; unchecked boxes **with** an explanation this turn → pass with warning; unchecked boxes **without** explanation → block the done transition.
-- `D-4` **DOD parse is deterministic and shared.** One `parseDefinitionOfDone(md)` helper returns `{present bool, total int, checked int, openItems []string}` by reading the `## Definition of Done` heading and its `- [ ]`/`- [x]` list — used by both rules and by `phase-document-compliance`. `[x]` and `[X]` both count as done; nested/indented boxes count.
+- `D-1` **Tái sử dụng hạ tầng `flowgate` hiện có**: `r-dod` là 2 quy tắc mới `Rule{ID, Scope, Trigger, RequiredOutput, Action, Enabled}` trong `DefaultRules()`, được đánh giá qua hàm `Evaluate`/`checkRule` cùng đường dẫn với `r-ca`, `r-tests`, `r-scope`. `MergeDefaultRules` tự động nạp vào `flow-rules.json` của các workspace cũ.
+- `D-2` **Tín hiệu "Done" đọc trực tiếp từ trạng thái doc**: `r-dod-complete` kích hoạt khi tài liệu `Task-*`/`BUG-*` được ghi nhận chuyển sang `Status: done` hoặc file chuyển đường dẫn vào `.../done/`. Tuyệt đối không đoán trạng thái qua commit message.
+- `D-3` **`present` nhắc nhở (`reprompt`), `complete` chặn hoặc giải trình (`block-or-explained`)**: `r-dod-present.Action = reprompt`. `r-dod-complete.Action = block` với `RequiredOutput = dod_all_checked_or_explained`: Tích hết `[x]` -> Pass; còn checkbox trống kèm giải trình hợp lệ trong turn -> Pass with warning; còn checkbox trống không giải trình -> Block.
+- `D-4` **Trình phân tích DOD dùng chung và không phụ thuộc LLM**: Hàm `parseDefinitionOfDone(md)` trả về `{Present bool, Total int, Checked int, OpenItems []string}` bằng cách đọc tiêu đề `## Definition of Done` và danh sách checkbox. Cả `[x]` và `[X]` đều tính là hoàn thành.
+- `D-5` **Kích hoạt theo phạm vi file được ghi (`WrittenPaths`)**: Gate chỉ chạy kiểm tra khi trong lượt này AI có ghi/sửa file `Task-*` hoặc `BUG-*`. Giúp hỗ trợ trơn tru cả flow có plan lẫn flow hotfix nhanh.
 
 ### Constraints
 
-- Deterministic + offline: the detector never calls an LLM (it is a gate that runs every turn).
-- Non-invasive to existing rules: additive entries only; no change to `r-ca`/`r-tests`/`r-reg` semantics or ordering.
-- Respect the doc contract: `r-dod` reads the `## Definition of Done` section exactly as `SS-13` defines it; it does not invent a new location or syntax.
-- Never auto-check a box for the user — the gate only reads DOD state and reprompts/blocks/explains; marking done stays the agent's/human's explicit act.
-
-### Open Questions
-
-- Scope of `r-dod-present`: only `Task-*`/`BUG-*` docs, or any governing doc (SS/SD/CP) that has a DOD/acceptance section? (Leaning: Task/BugFix first — that is the "làm task/bug" case; CP acceptance is a later extension.)
-- What counts as a valid "explanation" for `r-dod-complete`? A per-item note beside the unchecked box, a dedicated `Open items` subsection in the doc, or a statement in the turn's final message — or any of the three? (Leaning: any of the three, matching how `r-tests` accepts an explanation in the final message.)
-- Should marking a doc done with **zero** DOD items (section present but empty) be a `present` failure or a `complete` failure? (Leaning: `present` — an empty DOD is really a missing one.)
+- Xác định và ngoại tuyến: Bộ phát hiện không bao giờ gọi LLM (chạy sau mỗi turn hoàn thành).
+- Không phá vỡ quy tắc cũ: Bổ sung thuần túy vào danh sách quy tắc, không làm thay đổi thứ tự hay ngữ nghĩa của `r-ca`, `r-tests`, `r-scope`.
+- Tuân thủ hợp đồng tài liệu: Đọc section `## Definition of Done` đúng chuẩn cú pháp `SS-13`.
+- Tuyệt đối không tự động tích checkbox hộ người dùng: Việc đánh dấu `[x]` phải là hành động rõ ràng của AI/con người.
 
 ### Source Refs
 
-- `flowgate/rules.go` `DefaultRules()` (the registry `r-dod` is added to; `r-tests` = the "or-explained" template; `r-artifact-output` = the "required output present" template).
-- `flowgate/evaluate.go` `Evaluate`/`checkRule` (how a `Trigger` maps to a `Violation` and an `Action`).
-- `SS-13` `Definition of Done` section definition + the `- [ ]`/`- [x]` checkbox convention.
-- Skills `add-new-task`/`add-new-bug` (which already create the `Task-*`/`BUG-*` doc this gate expects a DOD in).
+- `apps/local-runner/internal/flowgate/rules.go` (Đăng ký quy tắc `DefaultRules()`).
+- `apps/local-runner/internal/flowgate/evaluate.go` (Đánh giá vi phạm và hành động).
+- `apps/local-runner/internal/runner/gate_hook.go` (Kết nối cổng sau mỗi lượt chạy của root và child flow).
+- `requirements/05-System-Specs/SS-13-AI-Followable-Document-Contract.md` (Định dạng chuẩn của section `Definition of Done`).
 
-## 1. Goal
+### Open Questions
 
-Make "the work is done" a **checked, gate-enforced fact** rather than an unverified claim: every task/bug carries a Definition of Done in its doc, and the flow cannot mark that work done while DOD items are still open unless it explicitly explains why — reusing the existing `flowgate` engine so the rule is configurable, mergeable, and evaluated on the same path as `r-ca`/`r-tests`.
+- Đã giải quyết: Phạm vi `r-dod-present` chỉ áp dụng cho file có tiền tố `Task-` hoặc `BUG-` trong `WrittenPaths`.
+- Đã giải quyết: Section DOD có heading nhưng không có checkbox nào được tính là thiếu (`Total = 0`).
+- Đã giải quyết: `[x]` và `[X]` đều được chấp nhận là đã hoàn thành.
 
-## 2. Input Documents
+---
 
-- design source: `SD-17` (context + regression engine — the flow gate this rule joins).
-- contract: `SS-13` (defines the `## Definition of Done` section + checkbox syntax the detector parses).
-- prior art: `flowgate` rules `r-tests` (block-or-explained), `r-bug`/`r-task` (required doc present), `r-artifact-output`/`r-artifact-output-structure` (required output present + shape) — `r-dod` is the same pattern applied to a doc's own DOD checkboxes.
+## 1. Mục tiêu
 
-## 3. Implementation Strategy
+Biến "công việc đã hoàn thành" thành **sự thật được cổng kiểm duyệt xác minh tự động**, thay vì một lời tuyên bố không được kiểm chứng: mọi task/bug đều phải có Definition of Done rõ ràng ngay từ khi lập kế hoạch, và không một flow nào có thể đánh dấu hoàn thành khi các tiêu chí DOD vẫn còn bỏ ngỏ trừ khi có giải trình hợp lệ.
 
-- overall approach: add `r-dod-present` and `r-dod-complete` to `flowgate.DefaultRules()`. Add a shared `parseDefinitionOfDone` markdown helper. In the caller that builds a `TurnResult`, compute two new signals — `DodPresent`/`DodItemTotal`/`DodItemChecked` for the governing doc(s) touched this turn, and `DodTransitionedToDone` (a `Task-*`/`BUG-*` doc whose `Status` became `done` or which moved into `done/`) — then let `Evaluate` fire the rules.
-- sequencing logic: ship the parser + `r-dod-present` (reprompt) first — low-risk, purely additive nagging. Then `r-dod-complete` (block-or-explained) once the "done transition" signal and the explanation-detection are proven, since that one can stop a flow.
-- dependencies: the `flowgate` `Rule`/`TurnResult`/`Evaluate` machinery already exists; `MergeDefaultRules` already back-fills new default rules into stored `flow-rules.json`. The DOD checkbox convention is already universal across `requirements/`.
+---
 
-## 4. Work Breakdown
+## 2. Tài liệu đầu vào
 
-- `P-1` **DOD parser (deterministic).** `parseDefinitionOfDone(md string) DodStatus{Present bool; Total int; Checked int; OpenItems []string}`: locate the `## Definition of Done` heading (case-insensitive, tolerate `Definition of Done`/`DoD`), read its bullet list until the next heading, count `- [ ]` vs `- [x]`/`- [X]` (including indented), collect open-item label text. Unit-tested against real repo docs as fixtures.
-- `P-2` **`r-dod-present` rule (reprompt).** Registry entry `{ID:"r-dod-present", Scope:"step", Trigger:"task_or_bug_doc_missing_dod", RequiredOutput:"definition_of_done_section", Action:"reprompt", Enabled:true}`. Trigger computed when this turn wrote a `Task-*`/`BUG-*` doc (reuse `WrittenPaths`, not `GitDiff`) whose `parseDefinitionOfDone().Present == false` (or `Total == 0`). Violation detail names the doc + how to add the section.
-- `P-3` **"done" transition signal.** In the `TurnResult` builder: set `DodTransitionedToDone` + attach the doc's `DodStatus` when a written `Task-*`/`BUG-*` doc's metadata `Status` became `done` this turn, or the file moved into a `.../done/` path. Deterministic; no commit-message parsing (D-2).
-- `P-4` **`r-dod-complete` rule (block-or-explained).** Registry entry `{ID:"r-dod-complete", Scope:"step", Trigger:"marked_done_with_open_dod", RequiredOutput:"dod_all_checked_or_explained", Action:"block", Enabled:true}`. `checkRule`: if `DodTransitionedToDone` and `Checked < Total` → block, **unless** an explanation for the open items is present (per-item note, an `Open items`/`Deferred` subsection, or the turn's final message references the unfinished items) → downgrade to warn. Violation lists the specific `OpenItems`.
-- `P-5` **UX surfacing.** Reprompt/decision text for both rules routed through the same gate-hook/decision-card path the other rules use (e.g. the "Flow gate: …" surface). `r-dod-complete` block presents the open-item list and the two ways forward: check the remaining items, or explain why they are deferred.
+- Thiết kế kiến trúc: [SD-17: Context And Regression Engine](../../06-System-Tech-Design/SD-17-Context-And-Regression-Engine.md).
+- Hợp đồng tài liệu: [SS-13: AI-Followable Document Contract](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md).
+- Tiền đề triển khai: `flowgate` rules `r-tests` (mẫu chặn có giải trình), `r-bug`/`r-task` (mẫu bắt buộc có doc), `r-artifact-output` (mẫu bắt buộc có artifact).
 
-## 5. Touched Areas
+---
 
-- files: `apps/local-runner/internal/flowgate/rules.go` (2 new `DefaultRules` entries), `apps/local-runner/internal/flowgate/evaluate.go` (`checkRule` cases + `TurnResult` fields), a new `dod.go` (parser) + `dod_test.go`, and the `TurnResult` builder in `apps/local-runner/internal/runner/` (compute the DOD signals from written docs).
-- modules: `flowgate` (rule registry + evaluate), `runner` (signal computation), optionally `phase-document-compliance` skill (reuse the same DOD-completeness check when auditing a doc).
-- database: none (operates on markdown docs + turn signals).
-- external systems: none.
+## 3. Chiến lược triển khai
 
-## 6. Data or Migration Steps
+- **Cách tiếp cận tổng thể**:
+  1. Xây dựng package hỗ trợ `dod.go` trong `flowgate` để phân tích markdown section DOD.
+  2. Bổ sung `r-dod-present` và `r-dod-complete` vào `DefaultRules()`.
+  3. Bổ sung trường tín hiệu `DodPresent`, `DodTotal`, `DodChecked`, `DodOpenItems`, `DodTransitionedToDone` vào `TurnResult`.
+  4. Cập nhật `runner/gate_hook.go` tính toán tín hiệu từ các file trong `WrittenPaths` và gọi `flowgate.Evaluate`.
+- **Thứ tự thực hiện**:
+  - Giai đoạn 1 (`Task-330`): Triển khai parser `dod.go` + quy tắc nhắc nhở `r-dod-present` (chỉ reprompt, an toàn tuyệt đối).
+  - Giai đoạn 2 (`Task-331`): Triển khai tín hiệu chuyển trạng thái done + quy tắc chặn `r-dod-complete` (block-or-explained) và bề mặt hiển thị lỗi trên UI.
 
-- schema: none.
-- data backfill: none required — `MergeDefaultRules` injects `r-dod-present`/`r-dod-complete` into any existing `flow-rules.json` on load, so older workspaces gain the rules without a migration.
-- config updates: none; the rules ship enabled by default and can be disabled per-workspace via `flow-rules.json` like any other rule.
+---
 
-## 7. Validation Plan
+## 4. Phân chia công việc (Work Breakdown & Task Mapping)
 
-- tests to add: `parseDefinitionOfDone` table tests (present/absent, empty section, all-checked, some-open, `[X]` vs `[x]`, indented boxes, DOD followed by another heading); `r-dod-present` fires only for a Task/BUG doc lacking a non-empty DOD; `r-dod-complete` blocks a done transition with open boxes and no explanation, passes (warn) with an explanation, passes clean when all checked; `MergeDefaultRules` includes both new IDs.
-- manual checks: run a task via `add-new-task` without a DOD → expect the `r-dod-present` reprompt; add DOD, leave one box open, mark the doc `Status: done` → expect the `r-dod-complete` block listing the open item; add an `Open items` note explaining it → expect it to pass with a warning.
-- failure cases: a doc with no DOD heading at all (present=false, not a parse panic); a DOD section with prose but no checkboxes (Total=0 → treated as missing per Open Questions); a done transition on a doc that never had a DOD (present-rule already nagged; complete-rule treats absent DOD as an open explanation requirement, not a silent pass).
+- `P-1` **Bộ phân tích cú pháp DOD (`dod.go`)** $\rightarrow$ Nằm trong `Task-330`:
+  - Hàm `parseDefinitionOfDone(md string) DodStatus`: Tìm tiêu đề `## Definition of Done` (không phân biệt hoa thường), duyệt các dòng checklist `- [ ]` vs `- [x]`/`- [X]`, đếm tổng số, số lượng đã tick và danh sách các mục còn mở.
+- `P-2` **Quy tắc `r-dod-present`** $\rightarrow$ Nằm trong `Task-330`:
+  - Khai báo quy tắc: `{ID: "r-dod-present", Scope: "step", Trigger: "task_or_bug_doc_missing_dod", RequiredOutput: "definition_of_done_section", Action: "reprompt", Enabled: true}`.
+  - Kích hoạt khi turn có ghi file `Task-*` hoặc `BUG-*` nhưng `DodStatus.Present == false` hoặc `Total == 0`.
+- `P-3` **Tín hiệu chuyển trạng thái Done** $\rightarrow$ Nằm trong `Task-331`:
+  - Trong bộ dựng `TurnResult`: Kiểm tra file `Task-*`/`BUG-*` trong `WrittenPaths`. Nếu metadata chuyển sang `Status: done` hoặc đường dẫn file nằm trong thư mục con `done/`, thiết lập `DodTransitionedToDone = true` kèm `DodStatus`.
+- `P-4` **Quy tắc `r-dod-complete`** $\rightarrow$ Nằm trong `Task-331`:
+  - Khai báo quy tắc: `{ID: "r-dod-complete", Scope: "step", Trigger: "marked_done_with_open_dod", RequiredOutput: "dod_all_checked_or_explained", Action: "block", Enabled: true}`.
+  - Kiểm tra nếu `DodTransitionedToDone == true` và `Checked < Total`: Nếu không tìm thấy đoạn giải trình hợp lệ (trong ghi chú doc hoặc trong `FinalMessage`) -> Block; nếu có giải trình -> Hạ cấp cảnh báo `warn`.
+- `P-5` **Tích hợp Runner và UI Decision Card** $\rightarrow$ Nằm trong `Task-331`:
+  - Định tuyến thông báo vi phạm qua luồng xử lý gate event chuẩn của runner.
 
-## 8. Rollout and Fallback
+---
 
-- rollout order: `P-1`+`P-2` (parser + reprompt-only `r-dod-present`) first — additive, cannot stop a flow. Then `P-3`+`P-4`+`P-5` (`r-dod-complete`, which can block).
-- fallback path: either rule can be disabled in `flow-rules.json` (`"enabled": false`) without a code change; disabling reverts to today's behavior exactly.
-- monitoring: gate violations already surface in the flow transcript; a spike in `r-dod-complete` blocks signals work being marked done with open DODs (the exact behavior this gate exists to catch).
+## 5. Các vùng bị ảnh hưởng (Touched Areas)
 
-## 9. Risks
+- `apps/local-runner/internal/flowgate/dod.go` (Mới: Trình phân tích cú pháp markdown).
+- `apps/local-runner/internal/flowgate/dod_test.go` (Mới: Bộ kiểm thử đơn vị cho parser).
+- `apps/local-runner/internal/flowgate/rules.go` (Thêm 2 quy tắc vào `DefaultRules()`, mở rộng `DocScopeRuleIDs`).
+- `apps/local-runner/internal/flowgate/evaluate.go` (Thêm các case xử lý `task_or_bug_doc_missing_dod` và `marked_done_with_open_dod`).
+- `apps/local-runner/internal/runner/gate_hook.go` (Thu thập tín hiệu DOD từ file được ghi và nạp vào `TurnResult`).
 
-- `R-1` False "done" detection stops a flow spuriously. Mitigation: the done signal is strictly the doc's own `Status: done`/`done/`-folder move (D-2), not a heuristic; `Action:block` is escapable via explanation.
-- `R-2` DOD parser mis-reads an unusual DOD layout and under/over-counts. Mitigation: parser is spec-pinned to `SS-13`'s checkbox convention + table tests over real repo docs; tolerant heading match.
-- `R-3` "Explanation" acceptance is too loose (any text passes) or too strict (blocks a legitimate defer). Mitigation: settle the Open Question on what counts; start by matching `r-tests`' proven final-message-explanation acceptance and tighten only if abused.
-- `R-4` Nag fatigue from `r-dod-present` on docs that legitimately have no DOD yet. Mitigation: it is a reprompt (never a block) and only fires on `Task-*`/`BUG-*` docs the turn actually wrote.
+---
 
-## 10. Definition of Done
+## 6. Kế hoạch kiểm thử & nghiệm thu
 
-- [ ] `P-1` `parseDefinitionOfDone` returns `{Present,Total,Checked,OpenItems}` deterministically for the `## Definition of Done` checkbox convention; table-tested (present/absent/empty/all-checked/some-open/`[X]`/indented); never panics on malformed input.
-- [ ] `P-2` `r-dod-present` is in `DefaultRules()`, fires (reprompt) only when this turn wrote a `Task-*`/`BUG-*` doc with no non-empty DOD, and names the doc + fix in its detail.
-- [ ] `P-3` The `TurnResult` builder computes a deterministic `DodTransitionedToDone` + `DodStatus` from `Status: done`/`done/`-folder moves of written Task/BUG docs — no commit-message heuristic.
-- [ ] `P-4` `r-dod-complete` is in `DefaultRules()`, blocks a done transition with open DOD items and no explanation, downgrades to warn when the open items are explained, and passes clean when all boxes are `[x]`; violation lists the specific open items.
-- [ ] `MergeDefaultRules` injects both new rule IDs into an older `flow-rules.json`; both are disable-able via config with no code change.
-- [ ] Manual walkthrough (§7) passes: no-DOD task nags; done-with-open-box blocks; explained-open-box warns; all-checked passes.
+- **Unit tests**:
+  - Test bảng cho `parseDefinitionOfDone`: Section có/không tồn tại, section rỗng, tick một phần, tick toàn bộ, thụt đầu dòng (indentation), chữ hoa/thường `[x]` vs `[X]`.
+  - Test kích hoạt `r-dod-present`: Chỉ kích hoạt khi ghi file Task/Bug thiếu DOD.
+  - Test kích hoạt `r-dod-complete`: Chặn khi done mà còn checkbox mở; cho qua khi đã tick hết; cho qua dạng warning khi có giải trình hợp lệ.
+  - Test merge: Đảm bảo `MergeDefaultRules` tự động bổ sung 2 rule mới vào `flow-rules.json`.
+- **E2E & Harness Verification**:
+  - Chạy `task-harness` hoặc `vibe-sprint`: Đảm bảo `plan_writer`/`task_slicer` sinh doc có DOD thì pass mượt mà; cố tình xóa DOD sẽ bị reprompt ngay lập tức.
 
-## 11. Out of Scope
+---
 
-- Extending `r-dod` to SS/SD/CP acceptance/DOD sections (governing-doc completeness) — a later extension once the Task/BUG case is proven (Open Questions).
-- Auto-checking DOD boxes or auto-writing the DOD section — the gate only reads, reprompts, and blocks/explains; authoring the DOD stays with the agent/human (`add-new-task`/`add-new-bug`).
-- Cross-doc DOD rollups (e.g. a CP done only when all its child Tasks' DODs are done) — a separate aggregation concern, not this per-turn gate.
+## 7. Triển khai và Dự phòng (Rollout and Fallback)
+
+- **Thứ tự triển khai**: Giai đoạn 1 (`Task-330`: Parser + `r-dod-present`) trước; giai đoạn 2 (`Task-331`: `r-dod-complete` + Runner wiring) sau.
+- **Dự phòng**: Nếu phát sinh false positive, operator có thể tắt rule qua `flow-rules.json` (`"r-dod-present": {"enabled": false}`) mà không cần sửa code.
+
+---
+
+## 8. Rủi ro
+
+- `R-1` **False positive trên tài liệu không chuẩn**: Các doc cũ viết DOD dưới dạng đoạn văn thay vì checkbox sẽ bị coi là thiếu. Giảm thiểu: Chạy scan và autofix (CP-48) trước khi bật gate.
+- `R-2` **Giải trình bị từ chối nhầm**: Heuristic `hasValidDodExplanation` có thể bỏ sót giải trình viết theo format không chuẩn. Giảm thiểu: Hạ cấp `block` thành `warn` khi có bất kỳ đoạn giải trình nào.
+
+---
+
+## 9. Tiêu chí hoàn thành tổng thể (Definition of Done)
+
+- [ ] Parser `dod.go` xử lý chính xác tất cả biến thể heading DOD.
+- [ ] Hai quy tắc `r-dod-present` và `r-dod-complete` được đăng ký trong `DefaultRules()`.
+- [ ] `MergeDefaultRules` tự động bổ sung 2 rule mới vào `flow-rules.json` cũ.
+- [ ] Cổng `r-dod-present` nhắc nhở (reprompt) khi Task/Bug thiếu DOD.
+- [ ] Cổng `r-dod-complete` chặn (block) khi done mà còn checkbox mở không giải trình.
+- [ ] Tất cả unit tests mới pass, không làm gãy tests hiện có.
+- [ ] Kiểm tra E2E trên `task-harness` xác nhận gate hoạt động đúng.
