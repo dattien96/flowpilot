@@ -5,7 +5,7 @@
 - Document ID: `Task-332`
 - Title: `Bộ máy quét và tự động sửa định dạng tài liệu (Doc Conformance)`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-11`
@@ -111,21 +111,28 @@ Mỗi khi chuẩn tài liệu được mở rộng thêm trường mới (như `
 
 ## 8. Completion Notes
 
-- Trạng thái: `draft` (chờ triển khai).
+- Trạng thái: `done` (2026-09-11).
+- Triển khai: package `internal/docscan/` — `scanner.go` (DetectPhase, ScanDocument, ScanDirectory, parser nhận biết fenced code block), `rules.go` (9 conformance rules + bảng canonical section/metadata/AIQ theo 5 file FORMAT-REFERENCE), `autofix.go` (codemod non-destructive: chèn metadata, sắp xếp section, skeleton TODO).
+- Tests: 8/8 test signature §10 + 15 test bổ sung (sync FORMAT-REFERENCE, perf 120 files ~12ms, CRLF, round-trip) — 23/23 pass, gofmt/vet sạch. Package chỉ import stdlib (offline, 0 LLM).
+- Hiệu năng thực tế: quét 768 file governed của `requirements/` trong ~0.14s (< 500ms budget).
+- Deviation đã duyệt trong review: (1) `missing_feature_keys` bỏ qua các file `FORMAT-REFERENCE-*` theo SS-13 §11 (writing guides, không phải business truth); (2) thêm 2 rule phụ `missing_ai_quick_view_subsection` + `missing_required_section`; (3) doc legacy tiêu đề tiếng Việt cố ý không match tên section tiếng Anh — ghi chú deferral trong code (scanner.go + rules.go), chính sách chuyển đổi thuộc Task-333; (4) `ScanDocument` trả error cho phase không nhận diện được / non-UTF-8.
+- Review: PASS sau khi bổ sung comment deferral (blocking duy nhất đã fix). Non-blocking đã ghi nhận: chưa có test fence trong suite (đã verify bằng probe), shared slice trong `DefaultConformanceRules`, unnumbered heading được chuyển xuống cuối khi rebuild, off-by-one numbering được chấp nhận.
+- Provider parity: provider-agnostic (pure Go offline scanner, không LLM, không adapter).
+- Prior CA claims giữ nguyên: CA-695, CA-442, CA-441 — package lá mới, không có caller, không đụng shared symbol.
 
 ---
 
 ## 9. Definition of Done
 
-- [ ] Struct `ScanReport` và `ScanIssue` được định nghĩa rõ ràng với mức độ nghiêm trọng (`Critical`, `Important`, `Minor`).
-- [ ] `ScanDocument` kiểm tra đầy đủ các thành phần bắt buộc của `SS-13`: Metadata block, `AI Quick View` (đủ 6 mục), thứ tự section được đánh số theo từng phase.
-- [ ] `AutoFixDocument` có thể tự động chèn trường `Feature Keys: None` khi bị thiếu mà không làm thay đổi các trường khác.
-- [ ] `AutoFixDocument` sắp xếp lại đúng thứ tự các section số (`## 1. Goal`, `## 2. Parent Links`,...).
-- [ ] Quá trình quét và sửa không làm mất bất kỳ ký tự nội dung văn bản nào của tài liệu gốc.
-- [ ] Chạy `go test ./internal/docscan/...` pass 100% không cảnh báo.
-- [ ] `ScanDirectory` quét toàn bộ thư mục `requirements/` trong < 500ms cho 100+ file.
-- [ ] Tests kiểm tra đồng bộ với `FORMAT-REFERENCE-*.md` đảm bảo rules luôn khớp mẫu chuẩn.
-- [ ] Trường `Feature Keys` chỉ bị gắn cờ thiếu trên doc quản trị (SS/SD/CP), không trên Task/BUG.
+- [x] Struct `ScanReport` và `ScanIssue` được định nghĩa rõ ràng với mức độ nghiêm trọng (`Critical`, `Important`, `Minor`).
+- [x] `ScanDocument` kiểm tra đầy đủ các thành phần bắt buộc của `SS-13`: Metadata block, `AI Quick View` (đủ 6 mục), thứ tự section được đánh số theo từng phase.
+- [x] `AutoFixDocument` có thể tự động chèn trường `Feature Keys: None` khi bị thiếu mà không làm thay đổi các trường khác.
+- [x] `AutoFixDocument` sắp xếp lại đúng thứ tự các section số (`## 1. Goal`, `## 2. Parent Links`,...).
+- [x] Quá trình quét và sửa không làm mất bất kỳ ký tự nội dung văn bản nào của tài liệu gốc.
+- [x] Chạy `go test ./internal/docscan/...` pass 100% không cảnh báo.
+- [x] `ScanDirectory` quét toàn bộ thư mục `requirements/` trong < 500ms cho 100+ file.
+- [x] Tests kiểm tra đồng bộ với `FORMAT-REFERENCE-*.md` đảm bảo rules luôn khớp mẫu chuẩn.
+- [x] Trường `Feature Keys` chỉ bị gắn cờ thiếu trên doc quản trị (SS/SD/CP), không trên Task/BUG.
 
 ---
 

@@ -12,7 +12,7 @@
 - Last Updated: `2026-09-11`
 - Parent Documents: [CP-49: Trích xuất tài liệu từ mã nguồn và nạp tài liệu tự do](../../07-Coding-Plan/todo/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)
 - Child Documents: `None`
-- Related Documents: [CP-48: Bộ máy kiểm định và chuẩn hóa tài liệu](../../07-Coding-Plan/todo/CP-48-Standardize-Doc.md), [Task-332: Bộ máy quét và tự động sửa](./Task-332-Doc-Conformance-Scanner-And-AutoFixer.md), [CP-60: Vibe Working Mode](../../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md)
+- Related Documents: [CP-48: Bộ máy kiểm định và chuẩn hóa tài liệu](../../07-Coding-Plan/done/CP-48-Standardize-Doc.md), [Task-332: Bộ máy quét và tự động sửa](../done/Task-332-Doc-Conformance-Scanner-And-AutoFixer.md), [CP-60: Vibe Working Mode](../../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md)
 - Replaces: `None`
 - Tags: `standardize, reverse-doc, ss-lock, gitnexus, brownfield, user-confirm`
 
@@ -21,7 +21,7 @@
 ### Summary
 
 - Hiện thực hóa lệnh **`/standardize [scope]`** trên cả hai giao diện TUI và Desktop của FlowPilot:
-  - Nếu scope đã có sẵn tài liệu $\rightarrow$ Tự động gọi [Task-332](./Task-332-Doc-Conformance-Scanner-And-AutoFixer.md) để quét đối soát và tự động sửa format theo chuẩn `SS-13`.
+  - Nếu scope đã có sẵn tài liệu $\rightarrow$ Tự động gọi [Task-332](../done/Task-332-Doc-Conformance-Scanner-And-AutoFixer.md) để quét đối soát và tự động sửa format theo chuẩn `SS-13`.
   - Nếu scope chưa có tài liệu (dự án legacy/brownfield) $\rightarrow$ Kích hoạt quy trình trích xuất ngược từ mã nguồn (**Reverse-Documentation**).
 - Thu thập bằng chứng mã nguồn (Evidence) từ AST, call graph và execution flow của GitNexus kết hợp lịch sử commit Git.
 - AI sinh bản thảo thiết kế kỹ thuật thực tế (**SD draft**) từ bằng chứng code.
@@ -49,7 +49,7 @@
 ### Source Refs
 
 - `requirements/07-Coding-Plan/todo/CP-49-Reverse-Documentation-And-Doc-Ingestion.md`.
-- `requirements/07-Coding-Plan/todo/CP-48-Standardize-Doc.md`.
+- `requirements/07-Coding-Plan/done/CP-48-Standardize-Doc.md`.
 - `requirements/07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md` (Mẫu cổng `ss_lock`).
 
 ### Open Questions
@@ -68,7 +68,7 @@ Xây dựng lệnh `/standardize` tiện ích giúp tự động hóa toàn bộ
 ## 2. Parent Links
 
 - Coding Plan: [CP-49 P-1, P-2, P-3, P-4](../../07-Coding-Plan/todo/CP-49-Reverse-Documentation-And-Doc-Ingestion.md).
-- Related Task: [Task-332](./Task-332-Doc-Conformance-Scanner-And-AutoFixer.md).
+- Related Task: [Task-332](../done/Task-332-Doc-Conformance-Scanner-And-AutoFixer.md).
 
 ---
 
@@ -84,7 +84,7 @@ Khi lập trình viên tiếp nhận một kho code legacy chưa có tài liệu
 - `T-2` Triển khai `internal/runner/reverse_doc.go`: Tích hợp GitNexus query để lấy danh sách symbols, endpoints, public interfaces trong scope.
 - `T-3` Triển khai sinh bản thảo `SD-*.md` và khung sườn `SS-*.md` (với section `## Acceptance Criteria` chứa các mục `TODO`).
 - `T-4` Triển khai trạng thái `ss_lock` tạm dừng workflow, emit event yêu cầu người dùng phản hồi.
-- `T-5` Kết nối bàn giao bộ tài liệu sau khi người dùng phê duyệt cho bộ máy [Task-332](./Task-332-Doc-Conformance-Scanner-And-AutoFixer.md) hoàn thiện format.
+- `T-5` Kết nối bàn giao bộ tài liệu sau khi người dùng phê duyệt cho bộ máy [Task-332](../done/Task-332-Doc-Conformance-Scanner-And-AutoFixer.md) hoàn thiện format.
 
 ---
 

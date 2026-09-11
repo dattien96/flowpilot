@@ -13,7 +13,7 @@
 - Last Updated: `2026-09-11`
 - Parent Documents: [SS-13: Hợp đồng tài liệu cho AI](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
 - Child Documents: [Task-333: Lệnh Standardize và Trích xuất tài liệu kèm cổng SS-Lock](../../08-Task/todo/Task-333-Standardize-Command-And-Reverse-Doc-With-SS-Lock.md)
-- Related Documents: [CP-48: Bộ máy kiểm định và chuẩn hóa tài liệu](./CP-48-Standardize-Doc.md), [CP-60: Vibe Working Mode](../done/CP-60-Vibe-Working-Mode.md), `reqscaffold` package, GitNexus Code Intelligence
+- Related Documents: [CP-48: Bộ máy kiểm định và chuẩn hóa tài liệu](../done/CP-48-Standardize-Doc.md), [CP-60: Vibe Working Mode](../done/CP-60-Vibe-Working-Mode.md), `reqscaffold` package, GitNexus Code Intelligence
 - Replaces: `None`
 - Tags: `context-regression-engine, reverse-documentation, doc-ingestion, gitnexus, brownfield, ss-lock`
 

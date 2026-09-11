@@ -6,7 +6,7 @@
 - Title: `Bộ máy kiểm định và chuẩn hóa tài liệu theo hợp đồng giai đoạn (SS-13)`
 - Feature Keys: `context-regression-engine, doc-standardization`
 - Phase: `coding_plan`
-- Status: `approved`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-07-13`
@@ -140,7 +140,7 @@ Chuyển đổi bản hợp đồng tài liệu dạng văn bản (`SS-13` + `FO
 
 ## 10. Tiêu chí hoàn thành tổng thể
 
-- [ ] Bộ quét trả về 0 lỗi khi chạy trên doc chuẩn FORMAT-REFERENCE.
-- [ ] Auto-Fixer sửa section sai thứ tự mà không mất nội dung.
-- [ ] Quét toàn bộ `requirements/` của FlowPilot chạy xong trong < 500ms.
-- [ ] P-3 Assisted-Fixer được ghi chú rõ là deferred.
+- [x] Bộ quét trả về 0 lỗi khi chạy trên doc chuẩn FORMAT-REFERENCE.
+- [x] Auto-Fixer sửa section sai thứ tự mà không mất nội dung.
+- [x] Quét toàn bộ `requirements/` của FlowPilot chạy xong trong < 500ms.
+- [x] P-3 Assisted-Fixer được ghi chú rõ là deferred.
