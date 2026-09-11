@@ -93,6 +93,11 @@ func (s *InteractiveService) RegisterInteractiveRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/agent-loop/amend", s.handleAmendFlow)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-decision", s.handleGateDecision)
 	mux.HandleFunc("POST /client/workflow-runs/{runId}/gate-agreement", s.handleGateAgreement)
+	// Task-333 (CP-49): /standardize command API + SS-Lock gate surface. The
+	// confirm endpoint is the ONLY human resume path past the SS-Lock gate.
+	mux.HandleFunc("POST /client/standardize", s.handleStandardize)
+	mux.HandleFunc("POST /client/workflow-runs/{runId}/confirm", s.handleSSLockConfirm)
+	mux.HandleFunc("GET /client/workflow-runs/{runId}/ss-lock", s.handleGetSSLock)
 
 	// CP-51 Task-256: SS-17 operator resolution surface (attention / resolve / repair / audit).
 	s.RegisterDispatchOperatorRoutes(mux)
@@ -344,6 +349,14 @@ type turnBody struct {
 }
 
 func (s *InteractiveService) handleStartTurn(w http.ResponseWriter, r *http.Request) {
+	// Task-333 SS-Lock (CP-49 P-3): while a run is parked at the
+	// non-bypassable SS-Lock gate, no new AI/provider turn may start. The
+	// only continuation path is the human-driven confirm endpoint
+	// (HandleSSLockConfirm via POST /client/workflow-runs/{id}/confirm).
+	if e := s.ssLockTurnFence(r.PathValue("runId")); e != nil {
+		writeInteractiveError(w, e)
+		return
+	}
 	var body turnBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeInteractiveError(w, newAPIErr(http.StatusBadRequest, "invalid_request", "invalid request body"))

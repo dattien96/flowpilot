@@ -6,13 +6,13 @@
 - Title: `Trích xuất tài liệu từ mã nguồn và nạp tài liệu tự do (Reverse-Documentation)`
 - Feature Keys: `context-regression-engine, reverse-documentation`
 - Phase: `coding_plan`
-- Status: `approved`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-07-13`
 - Last Updated: `2026-09-11`
 - Parent Documents: [SS-13: Hợp đồng tài liệu cho AI](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
-- Child Documents: [Task-333: Lệnh Standardize và Trích xuất tài liệu kèm cổng SS-Lock](../../08-Task/todo/Task-333-Standardize-Command-And-Reverse-Doc-With-SS-Lock.md)
+- Child Documents: [Task-333: Lệnh Standardize và Trích xuất tài liệu kèm cổng SS-Lock](../../08-Task/done/Task-333-Standardize-Command-And-Reverse-Doc-With-SS-Lock.md)
 - Related Documents: [CP-48: Bộ máy kiểm định và chuẩn hóa tài liệu](../done/CP-48-Standardize-Doc.md), [CP-60: Vibe Working Mode](../done/CP-60-Vibe-Working-Mode.md), `reqscaffold` package, GitNexus Code Intelligence
 - Replaces: `None`
 - Tags: `context-regression-engine, reverse-documentation, doc-ingestion, gitnexus, brownfield, ss-lock`
@@ -160,8 +160,8 @@ sequenceDiagram
 
 ## 9. Tiêu chí hoàn thành tổng thể
 
-- [ ] Evidence thu thập được có trích dẫn symbol/hàm cụ thể.
-- [ ] SD draft sinh ra có dẫn chứng xác thực.
-- [ ] SS draft chỉ chứa khung sườn với nhãn `TODO: human intent needed`.
-- [ ] Cổng SS-Lock không thể bypass bởi AI.
-- [ ] Sau khi người dùng phê duyệt, tài liệu chuyển sang CP-48 chuẩn hóa thành công.
+- [x] Evidence thu thập được có trích dẫn symbol/hàm cụ thể.
+- [x] SD draft sinh ra có dẫn chứng xác thực.
+- [x] SS draft chỉ chứa khung sườn với nhãn `TODO: human intent needed`.
+- [x] Cổng SS-Lock không thể bypass bởi AI.
+- [x] Sau khi người dùng phê duyệt, tài liệu chuyển sang CP-48 chuẩn hóa thành công.

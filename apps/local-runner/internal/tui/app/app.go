@@ -4101,6 +4101,11 @@ func (m *AppModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.chatPosturePending = "apply:scan"
 		return m, m.cmdLoadChatPosture()
 
+	case "/standardize":
+		// Task-333 (CP-49): delegate to the runner's /standardize API; logic
+		// lives in standardize.go (conformance scan / reverse-doc + SS-Lock).
+		return m.cmdStandardize(args)
+
 	case "/mode":
 		if m.mode != ModeChat {
 			m.addMessage("system", "Scan/Plan/Code postures apply to chat mode only.", "")

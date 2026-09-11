@@ -12,7 +12,7 @@
 - Last Updated: `2026-09-11`
 - Parent Documents: [CP-48: Bộ máy kiểm định và chuẩn hóa tài liệu (SS-13)](../../07-Coding-Plan/todo/CP-48-Standardize-Doc.md)
 - Child Documents: `None`
-- Related Documents: [SS-13: Hợp đồng tài liệu cho AI](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [CP-49: Trích xuất tài liệu từ code](../../07-Coding-Plan/todo/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)
+- Related Documents: [SS-13: Hợp đồng tài liệu cho AI](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [CP-49: Trích xuất tài liệu từ code](../../07-Coding-Plan/done/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)
 - Replaces: `None`
 - Tags: `docscan, conformance, autofix, codemod, ss-13`
 

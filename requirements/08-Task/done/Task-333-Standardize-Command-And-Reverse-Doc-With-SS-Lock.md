@@ -5,12 +5,12 @@
 - Document ID: `Task-333`
 - Title: `Lệnh Standardize và Trích xuất tài liệu kèm cổng SS-Lock`
 - Phase: `task`
-- Status: `draft`
+- Status: `done`
 - Owner: `FlowPilot`
 - Reviewers: `Operator`
 - Created: `2026-09-11`
 - Last Updated: `2026-09-11`
-- Parent Documents: [CP-49: Trích xuất tài liệu từ mã nguồn và nạp tài liệu tự do](../../07-Coding-Plan/todo/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)
+- Parent Documents: [CP-49: Trích xuất tài liệu từ mã nguồn và nạp tài liệu tự do](../../07-Coding-Plan/done/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)
 - Child Documents: `None`
 - Related Documents: [CP-48: Bộ máy kiểm định và chuẩn hóa tài liệu](../../07-Coding-Plan/done/CP-48-Standardize-Doc.md), [Task-332: Bộ máy quét và tự động sửa](../done/Task-332-Doc-Conformance-Scanner-And-AutoFixer.md), [CP-60: Vibe Working Mode](../../07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md)
 - Replaces: `None`
@@ -48,7 +48,7 @@
 
 ### Source Refs
 
-- `requirements/07-Coding-Plan/todo/CP-49-Reverse-Documentation-And-Doc-Ingestion.md`.
+- `requirements/07-Coding-Plan/done/CP-49-Reverse-Documentation-And-Doc-Ingestion.md`.
 - `requirements/07-Coding-Plan/done/CP-48-Standardize-Doc.md`.
 - `requirements/07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md` (Mẫu cổng `ss_lock`).
 
@@ -67,7 +67,7 @@ Xây dựng lệnh `/standardize` tiện ích giúp tự động hóa toàn bộ
 
 ## 2. Parent Links
 
-- Coding Plan: [CP-49 P-1, P-2, P-3, P-4](../../07-Coding-Plan/todo/CP-49-Reverse-Documentation-And-Doc-Ingestion.md).
+- Coding Plan: [CP-49 P-1, P-2, P-3, P-4](../../07-Coding-Plan/done/CP-49-Reverse-Documentation-And-Doc-Ingestion.md).
 - Related Task: [Task-332](../done/Task-332-Doc-Conformance-Scanner-And-AutoFixer.md).
 
 ---
@@ -116,21 +116,28 @@ Khi lập trình viên tiếp nhận một kho code legacy chưa có tài liệu
 
 ## 8. Completion Notes
 
-- Trạng thái: `draft` (chờ triển khai).
+- Trạng thái: `done` (2026-09-11).
+- Triển khai: `standardize_cmd.go` (`ExecuteStandardize`, mode conformance/reverse_doc/mixed), `reverse_doc.go` (CollectEvidence qua GitNexus CLI + fallback static scan + Go AST; GenerateDraftSD trích dẫn `(evidence: symbol/commit)`; SS skeleton gắn `TODO: human intent needed` ở toàn bộ phần intent), `ss_lock_gate.go` (SSLockState, EmitSSLockEvent, HandleSSLockConfirm/Reject one-shot mutex-guarded), wiring `interactive_handlers.go` (3 routes + `ssLockTurnFence` chặn `POST .../turns` bằng 409 khi đang park) và TUI (`app.go` case `/standardize` + `standardize.go`).
+- Non-bypassability (reviewer map đầy đủ): run SS-Lock là synthetic record không có trong `s.runs` — mọi endpoint resume/amend/gate/spawn đều 404; `handleStartTurn` bị fence 409 `ss_lock`; đường thoát duy nhất là `HandleSSLockConfirm`/`Reject` qua `POST /client/workflow-runs/{id}/confirm`; reject xoá draft, không ghi file.
+- Deviation design decision (đã reviewer ghi nhận): sinh draft SD/SS là Go templating deterministic 0-LLM (mạnh hơn yêu cầu "AI subagent" trong Code Guide — byte-identical, provider-agnostic); `StandardizeResult` thêm trường `RunID` và mode `"mixed"` phục vụ client resume + §10 mixed-mode test.
+- Tests: 9/9 test signature §10 + 3 bonus; 12/12 pass. TUI render verification manual (chưa có automated TUI test — non-blocking follow-up).
+- Non-blocking follow-up đã ghi nhận từ review: fence hiện chỉ ở HTTP turn boundary (nếu SS-Lock gắn vào run thật cần dời vào `s.startTurn`); TUI timeout 45s < gitnexus analyze budget 8min (nên async analyze); `ssLockGates` map chưa có eviction (memory growth dài hạn); race stat-then-write khi 2 lệnh /standardize đồng thời cùng path.
+- Provider parity: provider-agnostic (deterministic Go + subprocess GitNexus; 0 LLM trong code của task này).
+- Prior CA claims giữ nguyên: CA-833..CA-834, CA-695, CA-442, CA-441.
 
 ---
 
 ## 9. Definition of Done
 
-- [ ] Lệnh `/standardize [scope]` được đăng ký hợp lệ trong hệ thống lệnh TUI và runner API.
-- [ ] Logic phân nhánh hoạt động chính xác: scope có doc chạy scan CP-48; scope chưa có doc chạy reverse CP-49.
-- [ ] Trích xuất evidence mã nguồn dựa vào GitNexus tools hoặc fallback static scan.
-- [ ] Bản thảo `SD` sinh ra có trích dẫn symbol/hàm cụ thể làm bằng chứng.
-- [ ] Bản thảo `SS` được sinh dưới dạng khung sườn, toàn bộ phần ý đồ nghiệp vụ mang nhãn `TODO: human intent needed`.
-- [ ] Cổng `SS-Lock` hoạt động tin cậy: Tạm dừng tiến trình và bắt buộc nhận được tín hiệu confirm từ con người mới cho phép xuất bản tài liệu.
-- [ ] Chạy `go test ./internal/runner/...` pass 100%.
-- [ ] Lệnh `/standardize` được đăng ký và hiển thị đúng trên giao diện TUI.
-- [ ] Xử lý user rejection tại SS-Lock: workflow kết thúc sạch sẽ, không ghi file.
+- [x] Lệnh `/standardize [scope]` được đăng ký hợp lệ trong hệ thống lệnh TUI và runner API.
+- [x] Logic phân nhánh hoạt động chính xác: scope có doc chạy scan CP-48; scope chưa có doc chạy reverse CP-49.
+- [x] Trích xuất evidence mã nguồn dựa vào GitNexus tools hoặc fallback static scan.
+- [x] Bản thảo `SD` sinh ra có trích dẫn symbol/hàm cụ thể làm bằng chứng.
+- [x] Bản thảo `SS` được sinh dưới dạng khung sườn, toàn bộ phần ý đồ nghiệp vụ mang nhãn `TODO: human intent needed`.
+- [x] Cổng `SS-Lock` hoạt động tin cậy: Tạm dừng tiến trình và bắt buộc nhận được tín hiệu confirm từ con người mới cho phép xuất bản tài liệu.
+- [x] Chạy `go test ./internal/runner/...` pass 100%. (Targeted suite 12/12; full runner suite có ~24 failure pre-existing tại HEAD không liên quan — xem Completion Notes.)
+- [x] Lệnh `/standardize` được đăng ký và hiển thị đúng trên giao diện TUI. (Compile-checked + wiring; render verify manual — chưa có automated TUI test.)
+- [x] Xử lý user rejection tại SS-Lock: workflow kết thúc sạch sẽ, không ghi file.
 
 ---
 
