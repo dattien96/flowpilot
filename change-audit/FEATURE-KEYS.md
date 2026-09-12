@@ -38,3 +38,4 @@ Source of truth for stable `feature_key` values used by:
 - vibe-mode — Vibe working mode: SS ingest from raw requirement, TDD-first per-sprint loop, r-requirement user-only gate + 2-owner debate cohort (cap 5) (SS-18/SD-24)
 - runtime-intelligence — context budget packer, wrong-way drift detection, mistake-to-skill learning (CP-23)
 
+- zcode-parity — CP-62 harness hardening from ZCode lessons: gate precedence, verdict schema, structured escalation card, node isolation posture, context profiles, sprint handoff, conventions source

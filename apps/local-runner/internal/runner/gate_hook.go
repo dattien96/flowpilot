@@ -26,6 +26,7 @@ import (
 	"flowpilot-runner/internal/promptpacker"
 	"flowpilot-runner/internal/structure"
 	"flowpilot-runner/internal/tooling"
+	"flowpilot-runner/internal/workingmode"
 )
 
 const maxFlowGateReprompts = 2
@@ -382,6 +383,12 @@ func (s *InteractiveService) runFlowGateAtEpoch(
 					log.Printf("[gate] escalate after commitChangeContract failure: %v", err)
 				}
 			}
+			return true
+		}
+		// CP-62 P-1 (Task-337): a clean-gate vibe turn at drift >= 80 still
+		// escalates through the vibe resolver (owner debate), never the
+		// deferred pause path. Dev mode passthrough unchanged.
+		if s.applyVibeDriftOnlyResolver(runID, rs.parentRunID, rs) {
 			return true
 		}
 		return false
@@ -2859,6 +2866,12 @@ type driftRunState struct {
 	// packs with halved Budget Packer caps (sticky until consumed).
 	pendingNarrow bool
 
+	// lastScore is the drift score of the most recent evaluated turn (CP-62
+	// P-1, Task-337): read by the vibe resolver (latestVibeDriftScore) to
+	// route threshold drift through the owner-debate flow. 0 until the first
+	// scored turn; inert while the detector flag is OFF.
+	lastScore int
+
 	// lastSeenUnixNano is stamped by driftStateFor under driftStates.Lock so
 	// idle entries can be evicted (housekeeping, no extra synchronization).
 	lastSeenUnixNano int64
@@ -3005,12 +3018,24 @@ func (s *InteractiveService) recordDriftTelemetry(rs *interactiveRun, turnID str
 		}
 	}
 	// Ladder actions are stashed for the NEXT prompt assembly
-	// (applyBudgetPackerIfEnabled consumes them one-shot).
+	// (applyBudgetPackerIfEnabled consumes them one-shot). CP-62 P-1 T-3:
+	// while the run is inside a vibe owner-debate flow the correction ladder
+	// must NOT shrink the debate context — the debate itself is the
+	// correction; actions stay recorded on the event + persisted JSONL but
+	// are not stashed for prompt assembly.
+	s.mu.Lock()
+	inVibeDebate := rs.workingMode == workingmode.Vibe && workingmode.BareFlowID(rs.chatFlowRef) == vibeOwnerDebateFlowID
+	s.mu.Unlock()
+	st.lastScore = event.DriftScore
 	switch event.CorrectionAction {
 	case driftdetect.ActionInjectSystemNote:
-		st.pendingNote = event.SystemNotePrompt
+		if !inVibeDebate {
+			st.pendingNote = event.SystemNotePrompt
+		}
 	case driftdetect.ActionNarrowContext:
-		st.pendingNarrow = true
+		if !inVibeDebate {
+			st.pendingNarrow = true
+		}
 	case driftdetect.ActionPauseForHuman:
 		// Deferred wiring (Task-335): the CP-60-style user-confirm pause
 		// event (EventUserConfirmRequired) is bound to the ss-lock confirm

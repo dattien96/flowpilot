@@ -623,6 +623,15 @@ func (s *InteractiveService) stashVibeFlowForDebate(parentRunID string) {
 	rs.vibeParkedEdges = append([]agentpack.FlowEdge(nil), rs.activeFlowEdges...)
 	rs.vibeParkedAcceptance = append([]string(nil), rs.activeFlowAcceptanceNodes...)
 	rs.vibeParkedFlowRef = rs.chatFlowRef
+	// CP-62 P-1 T-3 (Task-337): the debate turn must assemble with the full
+	// violation context — drop any pending drift-ladder context reduction
+	// (note/narrow) before the debate prompt is packed.
+	if st := driftStateFor(s, parentRunID); st != nil {
+		st.mu.Lock()
+		st.pendingNote = ""
+		st.pendingNarrow = false
+		st.mu.Unlock()
+	}
 }
 
 func (s *InteractiveService) restoreVibeFlowAfterDebate(parentRunID string) bool {

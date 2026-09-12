@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -10,6 +11,11 @@ import (
 	"flowpilot-runner/internal/flowgate"
 	"flowpilot-runner/internal/workingmode"
 )
+
+// vibeDriftDebateThreshold mirrors flowgate.VibeDriftDebateThreshold (CP-62
+// P-1): a vibe run whose drift score reaches it escalates through the
+// owner-debate resolver instead of the dev ladder's deferred pause path.
+const vibeDriftDebateThreshold = flowgate.VibeDriftDebateThreshold
 
 type vibeGateKind int
 
@@ -20,13 +26,27 @@ const (
 )
 
 func classifyVibeGate(mode string, result flowgate.EnforceResult) vibeGateKind {
+	// Pre-CP-62 signature kept byte-stable for the legacy pins
+	// (vibe_gate_test.go): drift score 0 reproduces the old behavior.
+	return classifyVibeGateWithDrift(mode, result, 0)
+}
+
+// classifyVibeGateWithDrift is the CP-62 P-1 drift-aware classifier.
+// mode != vibe is passthrough (the Task-335 ladder owns dev). In vibe:
+// requirement-class wins first (user-only, SS-18 BR-4); drift >= 80 escalates
+// to the owner debate even on a clean gate; other block/reprompt violations
+// keep today's owner-debate semantics; warn-only results pass through.
+func classifyVibeGateWithDrift(mode string, result flowgate.EnforceResult, driftScore int) vibeGateKind {
 	if mode != workingmode.Vibe {
 		return vibeGatePassthrough
 	}
 	for _, v := range result.Violations {
-		if v.Rule.ID == flowgate.RequirementRuleID {
+		if flowgate.IsRequirementViolation(v) {
 			return vibeGateRequirement
 		}
+	}
+	if driftScore >= vibeDriftDebateThreshold {
+		return vibeGateOwnerDebate
 	}
 	if result.Action == "block" || result.Action == "reprompt" {
 		return vibeGateOwnerDebate
@@ -49,7 +69,11 @@ func (s *InteractiveService) applyVibeGateResolver(runID, parentID, turnID strin
 	if rs == nil {
 		return false
 	}
-	switch classifyVibeGate(rs.workingMode, result) {
+	// CP-62 P-1 (Task-337): the classifier is drift-aware — a vibe run whose
+	// latest turn reached the debate threshold escalates even when the gate
+	// itself is clean (DriftRouted), never into the dev card / deferred pause.
+	driftScore := s.latestVibeDriftScore(rs)
+	switch classifyVibeGateWithDrift(rs.workingMode, result, driftScore) {
 	case vibeGateRequirement:
 		detail := requirementDetail(result)
 		if s.agentOrchestrator != nil {
@@ -78,13 +102,61 @@ func (s *InteractiveService) applyVibeGateResolver(runID, parentID, turnID strin
 		if parentID != "" {
 			hub = parentID
 		}
-		log.Printf("[vibe-gate] start vibe-owner-debate hub=%s child=%s", hub, runID)
-		s.stashVibeFlowForDebate(hub)
-		go s.startResolvedFlow(context.Background(), hub, workingmode.PackPrefix+vibeOwnerDebateFlowID, result.Message)
+		message := result.Message
+		if message == "" {
+			message = fmt.Sprintf("vibe drift score %d (>= %d): owner debate to choose remediation",
+				driftScore, vibeDriftDebateThreshold)
+		}
+		log.Printf("[vibe-gate] start vibe-owner-debate hub=%s child=%s drift=%d", hub, runID, driftScore)
+		s.startVibeOwnerDebate(hub, message)
 		return true
 	default:
 		return false
 	}
+}
+
+// startVibeOwnerDebate stashes the parked flow and starts the debate flow
+// (CP-62 P-1). The stash also drops any pending drift-ladder context
+// reduction so the debate turn assembles with the full violation context (T-3).
+func (s *InteractiveService) startVibeOwnerDebate(hub, message string) {
+	s.stashVibeFlowForDebate(hub)
+	go s.startResolvedFlow(context.Background(), hub, workingmode.PackPrefix+vibeOwnerDebateFlowID, message)
+}
+
+// latestVibeDriftScore reads the drift score of the most recent evaluated
+// turn for the run. 0 when the drift detector flag is OFF (Task-335 default:
+// behavior-neutral), so the CP-62 drift routing stays inert by default.
+func (s *InteractiveService) latestVibeDriftScore(rs *interactiveRun) int {
+	if s == nil || rs == nil || !driftDetectorEnabled() {
+		return 0
+	}
+	st := driftStateFor(s, rs.id)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.lastScore
+}
+
+// applyVibeDriftOnlyResolver routes a clean-gate vibe turn whose drift score
+// reached the debate threshold (CP-62 P-1 rule 2: never the deferred pause
+// path, never a raw dev card). Called from the gate's no-violations branch
+// before the passthrough return; dev mode is untouched.
+func (s *InteractiveService) applyVibeDriftOnlyResolver(runID, parentID string, rs *interactiveRun) bool {
+	if s == nil || rs == nil || rs.workingMode != workingmode.Vibe || !driftDetectorEnabled() {
+		return false
+	}
+	driftScore := s.latestVibeDriftScore(rs)
+	if driftScore < vibeDriftDebateThreshold {
+		return false
+	}
+	hub := runID
+	if parentID != "" {
+		hub = parentID
+	}
+	log.Printf("[vibe-gate] drift-only escalation run=%s score=%d -> owner debate", hub, driftScore)
+	s.startVibeOwnerDebate(hub, fmt.Sprintf(
+		"vibe drift score %d (>= %d) on a clean gate: owner debate to choose remediation",
+		driftScore, vibeDriftDebateThreshold))
+	return true
 }
 
 func prepareWorkingModeRules(mode string, rules []flowgate.Rule, tr *flowgate.TurnResult) []flowgate.Rule {
