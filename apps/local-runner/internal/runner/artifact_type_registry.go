@@ -17,6 +17,9 @@ const (
 	ArtifactTypeContext  = "context_artifact.v1"
 	ArtifactTypeFile     = "file_artifact.v1"
 	ArtifactTypeTelegram = "telegram.v1"
+	// ArtifactTypeSprintHandoff is the CP-62 P-6 (Task-342) handoff artifact
+	// written by the vibe-sprint audit hub from verified run state only.
+	ArtifactTypeSprintHandoff = "sprint_handoff.v1"
 )
 
 // resolveArtifactBoundContextSources implements SD-23 D-5/D-6's highest
