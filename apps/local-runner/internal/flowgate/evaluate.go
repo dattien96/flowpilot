@@ -295,9 +295,12 @@ func checkRule(rule Rule, tr TurnResult) *Violation {
 
 // dodDoneMetadataRegex matches the SS-13 metadata bullet declaring the
 // document done ("- Status: done"), case-insensitive, allowing an optional
-// leading dash and trailing period/whitespace. "draft"/"todo"/"in-progress"
-// never match (\b after done).
-var dodDoneMetadataRegex = regexp.MustCompile(`(?i)^\s*-?\s*status\s*:\s*done\b\.?\s*$`)
+// leading dash and trailing period/whitespace. Hardening (review CA-835
+// follow-up): the value may be wrapped in backticks ("- Status: `done`") —
+// the form this repo's own FORMAT-REFERENCE-TASK and done docs use — mirroring
+// the optional backticks vibeDocMetadataStatus already accepts. "draft"/
+// "todo"/"in-progress" never match (\b after done).
+var dodDoneMetadataRegex = regexp.MustCompile("(?i)^\\s*-?\\s*status\\s*:\\s*`?done\\b`?\\.?\\s*$")
 
 // dodExplanationPhraseRegex matches the Task-331 T-2 explanation phrases
 // ("Hoãn", "Deferred", "Loại bỏ", "Bỏ qua vì"), case-insensitive. Kept

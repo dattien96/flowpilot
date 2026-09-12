@@ -1,6 +1,7 @@
 package flowgate
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -124,5 +125,39 @@ func TestParseDefinitionOfDone_MissingSection(t *testing.T) {
 	}
 	if len(got.OpenItems) != 0 {
 		t.Fatalf("OpenItems = %v, want empty", got.OpenItems)
+	}
+}
+
+// Scenario: Hardening — fenced code blocks never open or feed the DOD section
+// Input: doc A quotes a fake "## Definition of Done" + checkbox inside ``` fences and has no real DOD;
+//
+//	doc B has a real DOD section containing a fenced block with a fake checkbox
+//
+// Expect: A: Present=false, Total=0 (no gaming vector). B: only the real checkbox counts.
+func TestParseDefinitionOfDone_FencedBlocksIgnored(t *testing.T) {
+	gamedDoc := "# Task\n\nExample:\n\n```md\n## Definition of Done\n- [x] fake\n```\n\nDone.\n"
+	if got := ParseDefinitionOfDone(gamedDoc); got.Present || got.Total != 0 {
+		t.Fatalf("fenced fake DOD must not count, got %+v", got)
+	}
+	realWithFencedFake := "## Definition of Done\n\n- [x] real criterion\n\n```md\n- [x] fake inside fence\n- [ ] another fake\n```\n\n## Notes\n"
+	got := ParseDefinitionOfDone(realWithFencedFake)
+	if got.Total != 1 || got.Checked != 1 || len(got.OpenItems) != 0 {
+		t.Fatalf("fenced checkboxes must not count, got %+v", got)
+	}
+	unclosed := "## Definition of Done\n\n- [x] real\n\n```md\n- [ ] never counted\n"
+	if got := ParseDefinitionOfDone(unclosed); got.Total != 1 || got.Checked != 1 {
+		t.Fatalf("unclosed fence must not leak fake items, got %+v", got)
+	}
+}
+
+// Scenario: Hardening — very long lines no longer truncate parsing
+// Input: a 200KB single line before the DOD section, then a valid checklist
+// Expect: Present=true, Total=2 (bufio.Scanner's 64KB limit previously cut this silently)
+func TestParseDefinitionOfDone_LongLines_NoTruncation(t *testing.T) {
+	huge := strings.Repeat("x", 200*1024)
+	doc := "prose " + huge + "\n\n## Definition of Done\n\n- [x] a\n- [ ] b\n"
+	got := ParseDefinitionOfDone(doc)
+	if !got.Present || got.Total != 2 || got.Checked != 1 || len(got.OpenItems) != 1 {
+		t.Fatalf("long line must not break parsing, got %+v", got)
 	}
 }

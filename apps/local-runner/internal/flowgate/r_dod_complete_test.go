@@ -460,3 +460,28 @@ func TestHasValidDodExplanation_OpenItemPhrase(t *testing.T) {
 		t.Fatalf("Action = %q, want warn (checkbox-adjacent explanation)", v.Rule.Action)
 	}
 }
+
+// Scenario: Hardening — backticked done metadata counts as the done signal
+// Input: doc in a todo/ dir whose metadata line is "- Status: `done`" (the form
+//
+//	FORMAT-REFERENCE-TASK and this repo's closed docs use), DOD unchecked
+//
+// Expect: DodDoneTransition=true (backtick form must not escape the gate; the
+//
+//	done/ path backup alone previously masked this fail-open)
+func TestDodDoneTransition_MetadataStatusDoneBackticked(t *testing.T) {
+	dir := t.TempDir()
+	docDir := filepath.Join(dir, "requirements", "08-Task", "todo")
+	if err := os.MkdirAll(docDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := filepath.Join(docDir, "Task-900.md")
+	content := "---\n\n- Status: `done`\n\n---\n\n## Definition of Done\n\n- [ ] open item\n"
+	if err := os.WriteFile(doc, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rel := "requirements/08-Task/todo/Task-900.md"
+	if _, transitioned := DodDoneTransition(dir, []string{rel}); !transitioned {
+		t.Fatalf("backticked done metadata must trigger the done transition")
+	}
+}
