@@ -190,6 +190,11 @@ type interactiveRun struct {
 	vibeCoderResumeInFlight bool
 	vibeResumeConfirm       bool
 	vibeResumeFromNode      string
+	// decisionCard is the CP-62 P-3 (Task-339) structured escalation card
+	// captured from a request_user_decision payload on an escalate flow
+	// control — additive to the prose GateReason (Q-1 wrap-around: the prose
+	// card stays the fallback; this only enriches the client render).
+	decisionCard *UserDecisionCard
 	// vibeSprintBoundaryPending is the sprint-boundary Continue gate: set when
 	// a vibe-sprint audit completes with plan tasks left (memory-only, like
 	// vibeResumeConfirm — re-derived on open from audit DONE + plan/index).
@@ -1375,6 +1380,28 @@ func (s *InteractiveService) applyFlowControl(parentRunID string, in FlowControl
 			"status", in.Status,
 		)
 		return FlowControlResult{}, fmt.Errorf("applyFlowControl: run %q not found", parentRunID)
+	}
+	// CP-62 P-3 (Task-339): an escalate decision may carry a schema'd
+	// request_user_decision payload — emit the structured card additively
+	// (Q-1 wrap-around: the prose GateReason path is untouched; a malformed
+	// payload is logged and dropped so the prose card remains the fallback).
+	if strings.TrimSpace(in.Status) == "escalate" {
+		if raw, ok := in.Payload["decision_card"]; ok {
+			if m, ok := raw.(map[string]any); ok {
+				if card, cardErr := parseUserDecisionCard(m); cardErr == nil {
+					rs.decisionCard = &card
+					s.emitLocked(rs, ProviderEvent{
+						Type:           EventUserDecisionCardRequested,
+						ProviderTurnID: rs.currentTurnID,
+						Input:          card,
+					})
+				} else {
+					s.flowDiagLog(parentRunID, "decision_card_invalid", "decision_card payload rejected; prose card stays",
+						"error", cardErr.Error(),
+					)
+				}
+			}
+		}
 	}
 	// BUG-288 #26: validate status enum BEFORE stamping one-decision. An
 	// unknown status (typo) must not burn the turn's decision slot, or a later

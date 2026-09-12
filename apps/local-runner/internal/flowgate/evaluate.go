@@ -420,6 +420,11 @@ func DodDoneTransition(workspaceCwd string, writtenPaths []string) (DodStatus, b
 // warn (CP-47 R-2). Doc reads that fail are skipped gracefully (never panic —
 // mirrors MissingDodDocs); an empty WorkspaceCwd skips the doc-side check.
 func hasValidDodExplanation(tr TurnResult) bool {
+	// CP-62 P-3 (Task-339): the structured explanation field wins — a
+	// schema'd explanation is deterministic, no phrase matching required.
+	if tr.DodExplanation != nil && strings.TrimSpace(tr.DodExplanation.Explanation) != "" {
+		return true
+	}
 	if dodExplanationPhraseRegex.MatchString(tr.FinalMessage) {
 		return true
 	}

@@ -1,0 +1,49 @@
+id: request_user_decision
+kind: declared_face
+version: 1
+description: Structured escalation card — ask the user to choose between options with stated consequences (CP-62 P-3). The runner parks the run and emits a user_decision_card_requested event; without a valid payload the legacy prose card stays the fallback (Q-1 wrap-around).
+exposesTool: true
+mapsTo: user.decision
+input:
+  type: object
+  required:
+    - question
+    - options
+  properties:
+    question:
+      type: string
+    options:
+      type: array
+      minItems: 1
+      items:
+        type: object
+        required:
+          - id
+          - label
+          - consequence
+        properties:
+          id:
+            type: string
+          label:
+            type: string
+          consequence:
+            type: string
+    recommended:
+      type: string
+      description: Must reference one of the declared option ids.
+    evidence:
+      type: array
+      items:
+        type: object
+        required:
+          - path
+        properties:
+          path:
+            type: string
+          line:
+            type: integer
+          excerpt:
+            type: string
+    detail:
+      type: string
+      description: Free-text escape hatch for nuance the schema fields cannot carry.

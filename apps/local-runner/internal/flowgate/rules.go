@@ -119,6 +119,20 @@ type TurnResult struct {
 	// could not be read — Total == 0 makes r-dod-complete no-op (it delegates
 	// the missing-DOD contract to r-dod-present).
 	DodStatus DodStatus `json:"dod_status,omitempty"`
+	// DodExplanation is the CP-62 P-3 (Task-339) structured or-explained
+	// field: the turn's schema'd explanation for open DOD items, replacing
+	// prose text-matching as the primary explanation channel. The legacy
+	// phrase/section heuristics stay as the backward-compatible fallback
+	// during the transition (hasValidDodExplanation).
+	DodExplanation *DodExplanation `json:"dod_explanation,omitempty"`
+}
+
+// DodExplanation is the schema'd or-explained payload for r-dod-complete
+// (CP-62 P-3, Task-339): a non-empty Explanation downgrades the block to a
+// warn; ReferencingAC names the open criterion the explanation defers.
+type DodExplanation struct {
+	Explanation   string `json:"explanation"`
+	ReferencingAC string `json:"referencing_ac,omitempty"`
 }
 
 // StructuredFileArtifactOutput is a required file_artifact OUTPUT path with
