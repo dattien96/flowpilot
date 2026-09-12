@@ -20,13 +20,13 @@ tools:
 # dependence; the previous sprint's handoff (P-6) rides the pack when present.
 contextProfiles:
   scout:
-    candidateSources: [canonical.head, feature.history]
+    candidateSources: [conventions, canonical.head, feature.history]
     maxTokens: 6000
   coder:
-    candidateSources: [canonical.head, change.contract, source.dependence, source.excerpt]
+    candidateSources: [conventions, canonical.head, change.contract, source.dependence, source.excerpt]
     maxTokens: 24000
   tdd:
-    candidateSources: [canonical.head, change.contract, source.excerpt]
+    candidateSources: [conventions, canonical.head, change.contract, source.excerpt]
     maxTokens: 12000
 acceptance_nodes:
   - validate
