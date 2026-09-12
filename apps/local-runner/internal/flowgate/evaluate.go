@@ -314,9 +314,26 @@ var dodExplanationPhraseRegex = regexp.MustCompile(`(?i)(hoãn|deferred|loại b
 var dodExplanationSectionRegex = regexp.MustCompile(`(?i)^#{1,6}\s+(deferred|open items)\b`)
 
 // hasDoneMetadata reports whether markdown content declares the document
-// done via a metadata line (SS-13 `- Status: done` form).
+// done via a metadata line (SS-13 `- Status: done` form, including the
+// backticked variant). Fence-aware (review round 2 hardening): a
+// `- Status: done` line quoted inside a fenced code block is documentation,
+// not a done declaration — mirrors ParseDefinitionOfDone's fence skipping.
 func hasDoneMetadata(content string) bool {
+	var fenceMarker string
 	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			marker := trimmed[:3]
+			if fenceMarker == "" {
+				fenceMarker = marker
+			} else if strings.HasPrefix(marker, fenceMarker) {
+				fenceMarker = ""
+			}
+			continue
+		}
+		if fenceMarker != "" {
+			continue
+		}
 		if dodDoneMetadataRegex.MatchString(line) {
 			return true
 		}

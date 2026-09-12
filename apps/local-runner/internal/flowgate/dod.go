@@ -20,8 +20,18 @@ type DodStatus struct {
 }
 
 var (
-	dodHeadingRegex   = regexp.MustCompile(`(?i)^##\s+(definition\s+of\s+done|dod)\b`)
-	anyHeadingRegex   = regexp.MustCompile(`^##+\s+`)
+	// dodHeadingRegex recognizes the DOD heading in BOTH forms the repo uses:
+	// the unnumbered "## Definition of Done" / "## DoD" AND the numbered
+	// "## 9. Definition of Done" form mandated by the phase-doc convention —
+	// every real Task-*/BUG-* document in this repo carries the numbered form
+	// (review round 2 blocking finding: the unnumbered-only regex recognized
+	// 0 of 100+ real docs and would false-reprompt every conformant write).
+	dodHeadingRegex   = regexp.MustCompile("(?i)^##\\s+(?:\\d+\\.\\s*)?(definition\\s+of\\s+done|dod)\\b")
+	// anyHeadingRegex closes the DOD section: only level-1/level-2 headings
+	// end it. Real repo DOD sections legitimately contain ### sub-headings
+	// between checklist items (review round 2, real-repo scan) — those must
+	// NOT terminate the section.
+	anyHeadingRegex   = regexp.MustCompile(`^#{1,2}\s+`)
 	checkboxItemRegex = regexp.MustCompile(`^\s*-\s*\[([ xX])\]\s*(.+)$`)
 )
 

@@ -500,7 +500,7 @@ func draftMetadata(docID, title, phase, parentDoc, tags string) string {
 - Last Updated: `+"`%s`"+`
 - Parent Documents: %s
 - Child Documents: `+"`None`"+`
-- Related Documents: [CP-49: Reverse-Documentation](../../../07-Coding-Plan/todo/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)
+- Related Documents: [CP-49: Reverse-Documentation](../../../07-Coding-Plan/done/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)
 - Replaces: `+"`None`"+`
 - Feature Keys: `+"`reverse-documentation`"+`
 - Tags: `+"`%s`"+`
@@ -539,7 +539,7 @@ func draftAIV(evidence *Evidence, scope StandardizeScope, intentTODO bool) strin
 		"\n### Open Questions\n\n" +
 		"- " + ssLockTODO + "\n" +
 		"\n### Source Refs\n\n" +
-		"- [CP-49: Reverse-Documentation](../../../07-Coding-Plan/todo/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)\n" +
+		"- [CP-49: Reverse-Documentation](../../../07-Coding-Plan/done/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)\n" +
 		"- [SS-13: AI-Followable Document Contract](../../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)\n")
 	return sb.String()
 }
@@ -679,7 +679,7 @@ func GenerateDraftSS(ctx context.Context, evidence *Evidence, scope StandardizeS
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# %s: %s\n\n", docID, fullTitle))
 	sb.WriteString(draftMetadata(docID, fullTitle, "ss",
-		"[CP-49: Reverse-Documentation](../../../07-Coding-Plan/todo/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)",
+		"[CP-49: Reverse-Documentation](../../../07-Coding-Plan/done/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)",
 		"reverse-doc, draft, ss-lock"))
 	sb.WriteString("\n" + draftAIV(evidence, scope, true) + "\n")
 

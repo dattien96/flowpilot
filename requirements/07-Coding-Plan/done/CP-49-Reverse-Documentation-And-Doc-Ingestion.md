@@ -51,7 +51,7 @@
 ### Source Refs
 
 - `requirements/05-System-Specs/SS-13-AI-Followable-Document-Contract.md` (Hợp đồng tài liệu mục tiêu).
-- `requirements/07-Coding-Plan/todo/CP-48-Standardize-Doc.md` (Bộ máy kiểm định và định dạng tiếp nhận đầu ra).
+- `requirements/07-Coding-Plan/done/CP-48-Standardize-Doc.md` (Bộ máy kiểm định và định dạng tiếp nhận đầu ra).
 - `requirements/07-Coding-Plan/done/CP-60-Vibe-Working-Mode.md` (Mẫu cổng khóa `ss_lock` bắt buộc có người duyệt).
 - GitNexus Code Intelligence (AST, symbol graph, execution traces).
 

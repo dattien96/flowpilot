@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // sectionBody builds a section content of exactly totalChars bytes whose
@@ -350,5 +351,22 @@ func TestDefaultPackerOptions_CPSliceBudget(t *testing.T) {
 	}
 	if _, _, err := PackPrompt(nil, b); err != nil {
 		t.Fatalf("default budget must be valid, got error: %v", err)
+	}
+}
+
+// Review round-2 hardening: a hard clip crossing a multi-byte UTF-8 rune must
+// stay valid UTF-8 and within the token budget (Vietnamese-heavy prompts).
+func TestTruncateToTokens_MultibyteRuneSafe(t *testing.T) {
+	content := "Tiếng Việt có dấu: " + strings.Repeat("đ", 100)
+	out := truncateToTokens(content, 5) // 20-byte cap lands mid-rune
+	if !utf8.ValidString(out) {
+		t.Fatalf("clipped output must stay valid UTF-8, got %q", out)
+	}
+	if EstimateTokens(out) > 5 {
+		t.Fatalf("clipped output must stay within the token budget, got %d tokens", EstimateTokens(out))
+	}
+	exact := truncateToTokens("abcdefghij", 2) // 10 bytes vs 8-byte cap
+	if exact != "abcdefgh" {
+		t.Fatalf("ascii boundary clip must be exact, got %q", exact)
 	}
 }

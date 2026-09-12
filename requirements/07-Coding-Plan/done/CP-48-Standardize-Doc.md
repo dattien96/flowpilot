@@ -12,7 +12,7 @@
 - Created: `2026-07-13`
 - Last Updated: `2026-09-11`
 - Parent Documents: [SS-13: Hợp đồng tài liệu cho AI](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md)
-- Child Documents: [Task-332: Bộ máy quét và tự động sửa định dạng tài liệu](../../08-Task/todo/Task-332-Doc-Conformance-Scanner-And-AutoFixer.md)
+- Child Documents: [Task-332: Bộ máy quét và tự động sửa định dạng tài liệu](../../08-Task/done/Task-332-Doc-Conformance-Scanner-And-AutoFixer.md)
 - Related Documents: [CP-49: Trích xuất tài liệu từ code và nạp tài liệu tự do](./CP-49-Reverse-Documentation-And-Doc-Ingestion.md), [BUG-280](../../09-BugFix/done/BUG-280-Features-Never-Link-To-Governing-Docs-So-Canonical-Head-Stays-Spec-Less.md), `reqscaffold` package, skills `phase-document-authoring`, `phase-document-compliance`
 - Replaces: `None`
 - Tags: `context-regression-engine, doc-standardization, reqscaffold, phase-contract, conformance`

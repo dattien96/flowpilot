@@ -10,7 +10,7 @@
 - Reviewers: `Operator`
 - Created: `2026-09-11`
 - Last Updated: `2026-09-11`
-- Parent Documents: [CP-48: Bộ máy kiểm định và chuẩn hóa tài liệu (SS-13)](../../07-Coding-Plan/todo/CP-48-Standardize-Doc.md)
+- Parent Documents: [CP-48: Bộ máy kiểm định và chuẩn hóa tài liệu (SS-13)](../../07-Coding-Plan/done/CP-48-Standardize-Doc.md)
 - Child Documents: `None`
 - Related Documents: [SS-13: Hợp đồng tài liệu cho AI](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md), [CP-49: Trích xuất tài liệu từ code](../../07-Coding-Plan/done/CP-49-Reverse-Documentation-And-Doc-Ingestion.md)
 - Replaces: `None`
@@ -46,7 +46,7 @@
 
 ### Source Refs
 
-- `requirements/07-Coding-Plan/todo/CP-48-Standardize-Doc.md` (P-1, P-2).
+- `requirements/07-Coding-Plan/done/CP-48-Standardize-Doc.md` (P-1, P-2).
 - `requirements/05-System-Specs/SS-13-AI-Followable-Document-Contract.md`.
 - `requirements/*/FORMAT-REFERENCE-*.md`.
 
@@ -65,7 +65,7 @@ Xây dựng công cụ kiểm định và tự động sửa lỗi định dạn
 
 ## 2. Parent Links
 
-- Coding Plan: [CP-48 P-1 & P-2](../../07-Coding-Plan/todo/CP-48-Standardize-Doc.md).
+- Coding Plan: [CP-48 P-1 & P-2](../../07-Coding-Plan/done/CP-48-Standardize-Doc.md).
 - System Spec: [SS-13](../../05-System-Specs/SS-13-AI-Followable-Document-Contract.md).
 
 ---

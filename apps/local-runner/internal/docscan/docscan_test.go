@@ -992,6 +992,12 @@ func TestAutoFixDocument_PreRegionSection_NoDuplicateSkeleton(t *testing.T) {
 		t.Fatalf("read FORMAT-REFERENCE-TASK: %v", err)
 	}
 	doc := hoistFirstSectionBeforeMetadata(string(raw))
+	if strings.Index(doc, "## 1. Goal") > strings.Index(doc, "## Metadata") {
+		t.Fatal("hoist must place the Goal block BEFORE Metadata; a no-op makes this test vacuous")
+	}
+	if doc == string(raw) {
+		t.Fatal("hoist must have modified the sample; a no-op makes this test vacuous")
+	}
 	if issues, err := ScanDocument("Task-000.md", doc); err != nil || len(issues) != 0 {
 		t.Fatalf("hoisted sample must stay scanner-clean, got %v (%v)", issues, err)
 	}
@@ -1019,7 +1025,13 @@ func hoistFirstSectionBeforeMetadata(doc string) string {
 			firstIdx = i
 		}
 	}
-	if metaIdx == -1 || firstIdx == -1 || firstIdx > metaIdx {
+	// Hoist is only meaningful when the first numbered section currently sits
+	// AFTER the Metadata block (round-2 review: the previous guard had the
+	// comparison flipped, which made this whole test vacuous — it exercised
+	// the plain no-op path because FORMAT-REFERENCE-TASK's Metadata comes
+	// first, and the suite stayed green even with the autofix hardening
+	// reverted).
+	if metaIdx == -1 || firstIdx == -1 || firstIdx < metaIdx {
 		return doc
 	}
 	// The first block runs from its heading to the next heading line.

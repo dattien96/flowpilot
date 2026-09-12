@@ -1,6 +1,11 @@
 package flowgate
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -160,4 +165,128 @@ func TestParseDefinitionOfDone_LongLines_NoTruncation(t *testing.T) {
 	if !got.Present || got.Total != 2 || got.Checked != 1 || len(got.OpenItems) != 1 {
 		t.Fatalf("long line must not break parsing, got %+v", got)
 	}
+}
+
+// Scenario: Round-2 blocking regression — the NUMBERED DOD heading form that
+// every real Task-*/BUG-* document uses ("## 9. Definition of Done",
+// "## 11. Definition of Done") must be recognized, not just the unnumbered
+// form; non-DOD numbered headings and lookalike words stay rejected.
+// Input: numbered DOD headings with checklists; "## 9. Definition of Doneness"
+// Expect: numbered DODs counted (Present=true, correct totals); lookalikes not
+func TestParseDefinitionOfDone_NumberedHeadingForms(t *testing.T) {
+	taskDoc := "## 8. Completion Notes\n\n- done\n\n## 9. Definition of Done\n\n- [x] parser hardened\n- [ ] suite green\n"
+	if got := ParseDefinitionOfDone(taskDoc); got.Total != 2 || got.Checked != 1 || len(got.OpenItems) != 1 {
+		t.Fatalf("numbered Task heading must be recognized, got %+v", got)
+	}
+	bugDoc := "## 10. Regression Guard\n\n- n/a\n\n## 11. Definition of Done\n\n- [X] fixed\n"
+	if got := ParseDefinitionOfDone(bugDoc); got.Total != 1 || got.Checked != 1 {
+		t.Fatalf("numbered BUG heading must be recognized, got %+v", got)
+	}
+	if got := ParseDefinitionOfDone("## 9. Definition of Doneness\n\n- [x] lookalike\n"); got.Present {
+		t.Fatalf("lookalike word after 'done' must not open a DOD section, got %+v", got)
+	}
+	if got := ParseDefinitionOfDone("## 9. Trigger\n\n- [x] not dod\n"); got.Present {
+		t.Fatalf("non-DOD numbered heading must not count, got %+v", got)
+	}
+	if got := ParseDefinitionOfDone("## Definition of Done\n\n- [x] unnumbered still works\n"); got.Total != 1 {
+		t.Fatalf("unnumbered form must keep working, got %+v", got)
+	}
+}
+
+// Review round-2 acceptance (locked): the parser must recognize the DOD
+// section in the repo's REAL Task-*/BUG-* documents, which use the NUMBERED
+// heading form ("## 9. Definition of Done" / "## 11. Definition of Done").
+// Every done/ document that carries a DOD heading (numbered or not) must be
+// parsed as Present. Skips gracefully when the requirements tree is absent.
+func TestParseDefinitionOfDone_RecognizesRealRepoDocs(t *testing.T) {
+	dir := flowgateRepoRoot()
+	if dir == "" {
+		t.Skip("repository requirements/ tree not found above the package dir")
+	}
+	looseDODHeading := regexp.MustCompile(`(?im)^##\s+(?:\d+\.\s*)?definition of done\b`)
+	contractCheckbox := regexp.MustCompile(`^\s*-\s*\[([ xX])\]`)
+	closeHeading := regexp.MustCompile(`^#{1,2}\s+`)
+	checked, legacy := 0, 0
+	var missed []string
+	roots := []string{
+		filepath.Join(dir, "requirements", "08-Task", "done"),
+		filepath.Join(dir, "requirements", "09-BugFix", "done"),
+	}
+	for _, root := range roots {
+		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+				return nil
+			}
+			base := filepath.Base(path)
+			if !strings.HasPrefix(base, "Task-") && !strings.HasPrefix(base, "BUG-") {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil
+			}
+			lines := strings.Split(string(data), "\n")
+			// Ground truth, independent of the parser: a DOD heading followed
+			// (before the next h1/h2) by at least one SS-13 contract-form
+			// checkbox. Legacy styles (prose bullets, backticked markers) are
+			// counted separately — the gate NagGING them is by design (CP-47
+			// R-1: run CP-48 autofix before enabling the gate).
+			inDOD, hasCheckbox := false, false
+			for _, line := range lines {
+				if looseDODHeading.MatchString(line) {
+					inDOD = true
+					continue
+				}
+				if inDOD {
+					if closeHeading.MatchString(line) {
+						break
+					}
+					if contractCheckbox.MatchString(line) {
+						hasCheckbox = true
+						break
+					}
+				}
+			}
+			if !inDOD {
+				return nil
+			}
+			if !hasCheckbox {
+				legacy++
+				return nil
+			}
+			checked++
+			if !ParseDefinitionOfDone(string(data)).Present {
+				missed = append(missed, base)
+			}
+			return nil
+		})
+	}
+	if checked == 0 {
+		t.Skip("no done/ Task-BUG docs with a contract-form DOD checklist found")
+	}
+	if len(missed) > 0 {
+		t.Fatalf("parser missed contract-form DOD checklists in %d/%d real docs: %v", len(missed), checked, missed)
+	}
+	t.Logf("recognized %d contract-form DOD docs; %d legacy-style docs intentionally stay non-conforming", checked, legacy)
+}
+
+// flowgateRepoRoot walks up from this file looking for the repository root
+// (identified by the requirements/05-System-Specs directory); "" when absent.
+func flowgateRepoRoot() string {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		return ""
+	}
+	dir := filepath.Dir(thisFile)
+	for i := 0; i < 8; i++ {
+		if info, err := os.Stat(filepath.Join(dir, "requirements", "05-System-Specs")); err == nil && info.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
 }

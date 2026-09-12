@@ -485,3 +485,20 @@ func TestDodDoneTransition_MetadataStatusDoneBackticked(t *testing.T) {
 		t.Fatalf("backticked done metadata must trigger the done transition")
 	}
 }
+
+// Scenario: Round-2 hardening — a `- Status: done` line quoted inside a fenced
+// code block is documentation, not a done declaration.
+// Input: draft doc (metadata Status: draft) whose body fences an example of a
+//
+//	done metadata block
+//
+// Expect: hasDoneMetadata=false (the doc must not be treated as done)
+func TestHasDoneMetadata_FencedExample_Ignored(t *testing.T) {
+	doc := "---\n\n- Status: draft\n\n---\n\nUsage example:\n\n```md\n- Status: done\n```\n"
+	if hasDoneMetadata(doc) {
+		t.Fatalf("fenced done-metadata example must not count as a done signal")
+	}
+	if !hasDoneMetadata("- Status: `done`\n") {
+		t.Fatalf("backticked done metadata must still count outside fences")
+	}
+}

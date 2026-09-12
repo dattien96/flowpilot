@@ -287,3 +287,40 @@ func TestTask335_DriftStateMap_BoundedEviction(t *testing.T) {
 		t.Fatalf("drift state map must stay bounded, got %d entries (cap %d)", len(driftStates.m), driftStateMaxEntries)
 	}
 }
+
+// Review round-2 hardening: an assembly with an EMPTY prompt consumes the
+// pulled ladder actions but must re-stash them — the pending drift note still
+// reaches the next NON-empty prompt instead of being silently dropped.
+func TestTask335_LadderNoteRestashedOnEmptyPrompt(t *testing.T) {
+	t.Setenv(driftDetectorEnvFlag, "1")
+	cwd := t.TempDir()
+	s := &InteractiveService{}
+	rs := &interactiveRun{id: "run-335-restash", workspaceCwd: cwd}
+
+	// turn-1: first apology with a file delta and no token event yet (score 0,
+	// carried 0) so turn-2's apology loop + zero-delta lands on the 30-59
+	// inject_system_note rung instead of narrow_context.
+	apology := "Tôi rất xin lỗi, tôi sẽ thử lại cách khác."
+	s.recordDriftTelemetry(rs, "turn-1", &flowgate.TurnResult{
+		FinalMessage: apology,
+		ChangedPaths: []string{"internal/calc/calc.go"},
+		WorkspaceCwd: cwd,
+	})
+	rs.events = append(rs.events, ProviderEvent{
+		Type:       EventTokenUsageUpdated,
+		TokenUsage: &TokenUsageSnapshot{Last: &TokenUsageBreakdown{TotalTokens: 3000}},
+	})
+	s.recordDriftTelemetry(rs, "turn-2", &flowgate.TurnResult{FinalMessage: apology, WorkspaceCwd: cwd})
+
+	if got := s.applyBudgetPackerIfEnabled(rs, "", "turn-3"); got != "" {
+		t.Fatalf("empty prompt must stay empty, got %q", got)
+	}
+	prompt := "---\n\nFix the pagination bug."
+	got := s.applyBudgetPackerIfEnabled(rs, prompt, "turn-4")
+	if !strings.Contains(got, "FlowPilot Drift Detector") {
+		t.Fatalf("re-stashed note must reach the next non-empty prompt, got %q", got)
+	}
+	if got2 := s.applyBudgetPackerIfEnabled(rs, prompt, "turn-5"); got2 != prompt {
+		t.Fatalf("re-stashed note must still be one-shot, got %q", got2)
+	}
+}
