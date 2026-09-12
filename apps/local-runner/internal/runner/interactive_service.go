@@ -10015,6 +10015,10 @@ func (s *InteractiveService) applyBudgetPackerIfEnabled(rs *interactiveRun, prov
 		return providerPrompt
 	}
 	if strings.TrimSpace(providerPrompt) == "" {
+		// Nothing to pack or annotate this assembly — put the one-shot ladder
+		// actions back so the next non-empty prompt still receives them
+		// (review hardening: don't silently drop a pending drift note).
+		s.restoreDriftLadderActions(rs, drift)
 		return providerPrompt
 	}
 	packed := providerPrompt

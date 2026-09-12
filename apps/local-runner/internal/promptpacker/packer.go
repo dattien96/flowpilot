@@ -4,7 +4,10 @@
 // records a prompt context audit for every pack.
 //
 // Provider-agnostic by construction: pure Go, heuristic token estimate
-// (~4 chars = 1 token), 0 LLM — identical behavior for every provider.
+// (~4 bytes = 1 token), 0 LLM — identical behavior for every provider. The
+// estimator counts BYTES, so Vietnamese/CJK text is overestimated ~1.5-2x:
+// the conservative direction (packs prune earlier; the true token count never
+// exceeds the budget) — review hardening note, Task-334 §8.
 package promptpacker
 
 import (
@@ -12,6 +15,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // SectionKind classifies a prompt section (Task-334 §11 Code Guide).
@@ -106,6 +110,21 @@ func EstimateTokens(content string) int {
 		return 0
 	}
 	return (n + 3) / 4
+}
+
+// clipRunes clips s to at most maxBytes bytes without splitting a multi-byte
+// UTF-8 rune (review hardening: a raw byte slice clip produced invalid UTF-8
+// when a single line exceeded the whole cap). Budget accounting stays
+// byte-based, so the result only ever shrinks.
+func clipRunes(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // PackPrompt assembles sections under the token budget (Task-334 §11):
@@ -300,12 +319,12 @@ func truncateToTokens(content string, maxTokens int) string {
 	}
 	out := sb.String()
 	// Hard guarantee: a single line longer than the cap is hard-clipped so the
-	// result never exceeds the token budget.
+	// result never exceeds the token budget (rune-safe — never splits UTF-8).
 	if len(out) > maxChars {
-		out = out[:maxChars]
+		out = clipRunes(out, maxChars)
 	}
-	if out == "" {
-		out = content[:maxChars]
+	if out == "" && content != "" {
+		out = clipRunes(content, maxChars)
 	}
 	return out
 }

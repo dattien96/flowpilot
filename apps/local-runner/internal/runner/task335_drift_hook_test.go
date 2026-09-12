@@ -3,6 +3,7 @@ package runner
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,4 +232,58 @@ func hasDriftSignal(signals []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// Review-hardening regression (Task-335 §8 follow-up): gate re-evaluation of
+// the SAME completed turn (resume path) must not compare the turn against
+// itself — the stored history entry with the same TurnID is dropped before
+// evaluating, so re-running the gate cannot inflate the score (a lone
+// scope-violation turn stays at 35 instead of self-firing
+// repeated_test_failure and jumping to the narrow_context rung).
+func TestTask335_DriftHookResumeSameTurn_DoesNotSelfCompare(t *testing.T) {
+	t.Setenv(driftDetectorEnvFlag, "1")
+	cwd := t.TempDir()
+	s := &InteractiveService{}
+	rs := &interactiveRun{id: "run-335-resume", workspaceCwd: cwd}
+
+	tr := &flowgate.TurnResult{
+		FinalMessage:         "Đang sửa lỗi test.",
+		ChangedPaths:         []string{"internal/calc/calc.go"},
+		ScopeOutOfScopePaths: []string{"config/secret.go"},
+		Tests:                flowgate.TestOutcome{Failed: []string{"TestCalc_Add_Fails"}},
+	}
+	s.recordDriftTelemetry(rs, "turn-1", tr)
+	events := readDriftEvents(t, driftEventsPath(cwd))
+	if len(events) != 1 || events[0].DriftScore != 35 {
+		t.Fatalf("first evaluation must score exactly 35, got %+v", events)
+	}
+
+	// Resume path: the gate re-runs for the SAME turn (JSONL keeps one line
+	// per evaluation — documented; Phase 3 dedupes by run_id+turn_id).
+	s.recordDriftTelemetry(rs, "turn-1", tr)
+	events = readDriftEvents(t, driftEventsPath(cwd))
+	if len(events) != 2 {
+		t.Fatalf("resume persists exactly one more event line, got %d", len(events))
+	}
+	if events[1].DriftScore != 35 {
+		t.Fatalf("same-turn re-evaluation must not self-compare (no score inflation), got %d", events[1].DriftScore)
+	}
+	if events[1].CorrectionAction != driftdetect.ActionInjectSystemNote {
+		t.Fatalf("re-evaluation must stay on the inject_system_note rung, got %q", events[1].CorrectionAction)
+	}
+}
+
+// Review-hardening regression: the process-wide drift state map is bounded —
+// entries for finished runs are evicted instead of accumulating forever.
+func TestTask335_DriftStateMap_BoundedEviction(t *testing.T) {
+	t.Setenv(driftDetectorEnvFlag, "1")
+	s := &InteractiveService{}
+	for i := 0; i < driftStateMaxEntries+10; i++ {
+		driftStateFor(s, fmt.Sprintf("run-335-evict-%d", i))
+	}
+	driftStates.Lock()
+	defer driftStates.Unlock()
+	if len(driftStates.m) > driftStateMaxEntries {
+		t.Fatalf("drift state map must stay bounded, got %d entries (cap %d)", len(driftStates.m), driftStateMaxEntries)
+	}
 }

@@ -2858,10 +2858,26 @@ type driftRunState struct {
 	// pendingNarrow marks a narrow_context action: the next prompt assembly
 	// packs with halved Budget Packer caps (sticky until consumed).
 	pendingNarrow bool
+
+	// lastSeenUnixNano is stamped by driftStateFor under driftStates.Lock so
+	// idle entries can be evicted (housekeeping, no extra synchronization).
+	lastSeenUnixNano int64
 }
 
+const (
+	// driftStateMaxEntries bounds the process-wide drift state map so a
+	// long-lived service does not accumulate finished runs (review hardening:
+	// entries hold up to driftHistoryRingCap full turn summaries each).
+	driftStateMaxEntries = 128
+
+	// driftStateIdleTTL is how long an untouched entry survives once the map
+	// runs out of room.
+	driftStateIdleTTL = time.Hour
+)
+
 // driftStates holds the drift state per (service, run). Entries are tiny and
-// bounded per run by driftHistoryRingCap.
+// bounded per run by driftHistoryRingCap; the map itself is bounded by
+// driftStateMaxEntries with idle eviction.
 var driftStates = struct {
 	sync.Mutex
 	m map[driftRunKey]*driftRunState
@@ -2871,12 +2887,42 @@ func driftStateFor(s *InteractiveService, runID string) *driftRunState {
 	key := driftRunKey{svc: s, runID: runID}
 	driftStates.Lock()
 	defer driftStates.Unlock()
+	now := time.Now().UnixNano()
+	if len(driftStates.m) >= driftStateMaxEntries {
+		driftEvictIdleLocked(now)
+		if len(driftStates.m) >= driftStateMaxEntries {
+			// Everything is hot: drop the stalest entry so the map stays
+			// bounded. A live caller keeps its pointer; the next turn simply
+			// rebuilds state (worst case: a shortened history window).
+			var oldestKey driftRunKey
+			oldest := now
+			for k, v := range driftStates.m {
+				if v.lastSeenUnixNano < oldest {
+					oldest = v.lastSeenUnixNano
+					oldestKey = k
+				}
+			}
+			delete(driftStates.m, oldestKey)
+		}
+	}
 	st := driftStates.m[key]
 	if st == nil {
 		st = &driftRunState{}
 		driftStates.m[key] = st
 	}
+	st.lastSeenUnixNano = now
 	return st
+}
+
+// driftEvictIdleLocked deletes entries untouched for longer than
+// driftStateIdleTTL. Caller holds driftStates.Lock.
+func driftEvictIdleLocked(nowUnixNano int64) {
+	cutoff := nowUnixNano - int64(driftStateIdleTTL)
+	for k, v := range driftStates.m {
+		if v.lastSeenUnixNano < cutoff {
+			delete(driftStates.m, k)
+		}
+	}
 }
 
 // lastTurnTokensConsumed returns the best-effort per-turn token consumption:
@@ -2931,6 +2977,15 @@ func (s *InteractiveService) recordDriftTelemetry(rs *interactiveRun, turnID str
 	st := driftStateFor(s, rs.id)
 	st.mu.Lock()
 	history := append([]driftdetect.TurnSummary(nil), st.history...)
+	// Gate re-evaluation of the same completed turn (resume-after-restart
+	// path): the stored history may already END with this turn. Drop it before
+	// evaluating so the turn never compares against itself — otherwise a
+	// single scope-violation turn re-fires repeated_test_failure/apology_loop
+	// against its own summary and the carried score double-counts (review
+	// hardening: score inflation on the resume path).
+	for n := len(history); n > 0 && history[n-1].TurnID == summary.TurnID; n-- {
+		history = history[:n-1]
+	}
 	st.mu.Unlock()
 
 	// Evaluate against the history EXCLUDING the current turn, then record.
@@ -3025,6 +3080,28 @@ func (s *InteractiveService) pullDriftLadderActions(rs *interactiveRun) driftLad
 	st.pendingNote = ""
 	st.pendingNarrow = false
 	return acts
+}
+
+// restoreDriftLadderActions puts one-shot ladder actions back after an
+// assembly that could not use them (review hardening: applyBudgetPackerIfEnabled
+// pulls before checking for an empty prompt — a pending drift note must not be
+// silently dropped on that path; the next non-empty prompt still receives it).
+func (s *InteractiveService) restoreDriftLadderActions(rs *interactiveRun, acts driftLadderActions) {
+	if s == nil || rs == nil || !driftDetectorEnabled() {
+		return
+	}
+	if acts.systemNote == "" && !acts.narrowContext {
+		return
+	}
+	st := driftStateFor(s, rs.id)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.pendingNote == "" {
+		st.pendingNote = acts.systemNote
+	}
+	if acts.narrowContext {
+		st.pendingNarrow = true
+	}
 }
 
 // narrowContextBudget tightens the Task-334 Budget Packer budget for the
