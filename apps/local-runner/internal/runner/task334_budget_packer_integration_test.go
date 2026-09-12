@@ -90,7 +90,7 @@ func TestTask334_BudgetPackerEnabled_PrunesOversizedContextAndWritesAudit(t *tes
 }
 
 // Task-334 integration helper coverage: the Context Resolver maps composed
-// blocks to the right PromptSection kinds, and packTurnPrompt's packing prunes
+// blocks to the right PromptSection kinds, and applyBudgetPackerIfEnabled's packing prunes
 // only the raw excerpt when over budget while keeping the current task.
 func TestTask334_PackTurnPrompt_SplitsSectionsAndPrunesUnderBudget(t *testing.T) {
 	prompt := task334ComposedPrompt(10)

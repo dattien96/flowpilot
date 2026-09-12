@@ -354,16 +354,22 @@ func TestDefaultPackerOptions_CPSliceBudget(t *testing.T) {
 	}
 }
 
-// Review round-2 hardening: a hard clip crossing a multi-byte UTF-8 rune must
-// stay valid UTF-8 and within the token budget (Vietnamese-heavy prompts).
+// Review round-3 hardening (discriminating input chosen per review: the
+// previous "Tiếng Việt có dấu: ..." input cut on a rune LEADING byte, so the
+// old byte-slice code passed it too). 7×"ế" is 21 bytes with a 20-byte cap —
+// the cut lands INSIDE the final rune, where the old content[:maxChars]
+// produced invalid UTF-8 ("ếếếếếế\xe1\xba"); clipRunes must drop the partial rune.
 func TestTruncateToTokens_MultibyteRuneSafe(t *testing.T) {
-	content := "Tiếng Việt có dấu: " + strings.Repeat("đ", 100)
-	out := truncateToTokens(content, 5) // 20-byte cap lands mid-rune
+	content := strings.Repeat("ế", 7) // 21 bytes; cap 20 bytes cuts mid-rune
+	out := truncateToTokens(content, 5)
 	if !utf8.ValidString(out) {
 		t.Fatalf("clipped output must stay valid UTF-8, got %q", out)
 	}
 	if EstimateTokens(out) > 5 {
 		t.Fatalf("clipped output must stay within the token budget, got %d tokens", EstimateTokens(out))
+	}
+	if out != strings.Repeat("ế", 6) {
+		t.Fatalf("clip must keep exactly the whole runes that fit, got %q", out)
 	}
 	exact := truncateToTokens("abcdefghij", 2) // 10 bytes vs 8-byte cap
 	if exact != "abcdefgh" {

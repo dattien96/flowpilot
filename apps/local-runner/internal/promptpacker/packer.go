@@ -103,7 +103,8 @@ func sectionCaps(budget SectionBudget) map[SectionKind]int {
 }
 
 // EstimateTokens is the heuristic token estimator required by CP-23
-// Constraints: fast, ~4 characters = 1 token, 0 LLM.
+// Constraints: fast, ~4 bytes = 1 token (byte-based — conservative for
+// Vietnamese/CJK text, see the package doc), 0 LLM.
 func EstimateTokens(content string) int {
 	n := len(content)
 	if n == 0 {
@@ -289,7 +290,7 @@ func assemblePrompt(sections []PromptSection) string {
 	return sb.String()
 }
 
-// truncateToTokens cuts content to at most maxTokens tokens (~4 chars/token),
+// truncateToTokens cuts content to at most maxTokens tokens (~4 bytes/token),
 // preferring a whole-line boundary. Never returns more than maxTokens tokens
 // worth of content; empty when maxTokens <= 0.
 func truncateToTokens(content string, maxTokens int) string {
@@ -318,11 +319,9 @@ func truncateToTokens(content string, maxTokens int) string {
 		used += cost
 	}
 	out := sb.String()
-	// Hard guarantee: a single line longer than the cap is hard-clipped so the
-	// result never exceeds the token budget (rune-safe — never splits UTF-8).
-	if len(out) > maxChars {
-		out = clipRunes(out, maxChars)
-	}
+	// A line longer than the whole cap does not fit the loop above; the
+	// fallback below hard-clips (rune-safe — never splits UTF-8) so the result
+	// never exceeds the token budget.
 	if out == "" && content != "" {
 		out = clipRunes(content, maxChars)
 	}
