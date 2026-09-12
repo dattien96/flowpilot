@@ -5802,6 +5802,29 @@ func (b *turnBridge) RequestApproval(details ApprovalDetails) (string, error) {
 		return "deny", nil
 	}
 
+	// CP-62 P-4 (Task-340): flow-node posture enforcement. A node declared
+	// read_only/verdict_only in its FlowDefinition is structurally gated at
+	// this shared bridge — every provider's approval funnel passes here, so
+	// the posture wins BEFORE YOLO (same ordering rationale as the chat
+	// read-only posture below: the posture's discipline must not be bypassed
+	// by an auto-approve). Standard/undeclared nodes fall through untouched.
+	if decision, reason, handled := s.decideFlowNodePosture(b.rs, details); handled {
+		s.recordAutoApproval(b.rs, details, decision, reason)
+		if decision == "deny" {
+			b.Emit(ProviderEvent{
+				Type:     EventNodeIsolationWriteDenied,
+				ToolName: details.Reason,
+				Status:   "deny",
+				Input: map[string]string{
+					"posture": reason,
+					"command": details.Command,
+					"kind":    details.Kind,
+				},
+			})
+		}
+		return decision, nil
+	}
+
 	// Read-only posture (Scan/Plan): auto-decide WITHOUT asking the human. Reads
 	// are approved, writes and anything unclassified are denied, and the reply is
 	// recorded like every auto-decision so the adapter never hangs. Checked BEFORE

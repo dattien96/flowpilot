@@ -48,6 +48,8 @@ nodes:
     lifecycle: once
     behavior: agent.delegate
     agent: agents/contract-planner.md
+    # CP-62 P-4 (Task-340): scout is read-only (BUG-344 classifier).
+    posture: read_only
     promptTemplate: prompts/plan-safe-fix-contract.md
   - id: preflight_contract_freeze
     run: inline
@@ -79,6 +81,8 @@ nodes:
     behavior: agent.delegate
     agent: agents/reviewer.md
     promptTemplate: prompts/review-safe-fix-contract.md
+    # CP-62 P-4 (Task-340): read-only reviewer.
+    posture: read_only
     dependsOn:
       - validate
     cohort: review

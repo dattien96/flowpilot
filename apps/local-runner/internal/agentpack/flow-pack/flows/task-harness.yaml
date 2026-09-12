@@ -59,6 +59,9 @@ nodes:
     behavior: agent.delegate
     agent: agents/contract-planner.md
     promptTemplate: prompts/plan-safe-fix-contract.md
+    # CP-62 P-4 (Task-340): the scout only reads and plans — structurally
+    # gated read-only at the approval bridge (BUG-344 classifier).
+    posture: read_only
   # --- Draft context (code excerpts feed plan_writer) ---
   - id: context
     run: inline
@@ -90,6 +93,9 @@ nodes:
     behavior: agent.delegate
     agent: agents/reviewer.md
     promptTemplate: prompts/review-plan.md
+    # CP-62 P-4 (Task-340): reviewers are read-only + verdict face — the
+    # oracle rule (SS-14 AC-6) becomes structural, not prompted.
+    posture: read_only
     dependsOn:
       - plan_writer
     cohort: plan
@@ -137,6 +143,9 @@ nodes:
     behavior: agent.delegate
     agent: agents/reviewer.md
     promptTemplate: prompts/review-safe-fix-contract.md
+    # CP-62 P-4 (Task-340): read-only reviewer — no write path to weaken a
+    # test (SS-14 AC-6 enforced by the approval bridge, not the prompt).
+    posture: read_only
     dependsOn:
       - validate
     cohort: review

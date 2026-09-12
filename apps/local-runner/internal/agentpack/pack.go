@@ -127,7 +127,15 @@ type FlowNode struct {
 	// Model is this node's pack-declared model tier override (Task-320).
 	// Only agent.delegate nodes consume it (resolveFlowNodeModel); empty
 	// means "no pack default — resolve via step row / agent / inherit".
-	Model          string
+	Model string
+	// Posture is the CP-62 P-4 (Task-340) execution posture for the node:
+	// "read_only" (silent-deny writes; Bash classified per-command via the
+	// BUG-344 invariant), "verdict_only" (reads + the verdict tool only — no
+	// Bash), or "" / "standard" (unchanged behavior). Declared in flow YAML;
+	// enforced at the shared approval bridge (turnBridge.RequestApproval) so
+	// every provider is gated identically. Engine stays domain-free (SD-19
+	// BR-1): no role strings, just the declared posture value.
+	Posture         string
 	// ContextSources is this node's own enabled context-source ids (CP-44 P-7
 	// / Task-196), the step-definition-level equivalent of
 	// FlowContextBinding.Sources. Empty means "fall back to the flow-level
@@ -769,6 +777,7 @@ func flowNodeFromMap(m map[string]any) (FlowNode, error) {
 		Cohort:         stringField(m, "cohort"),
 		PromptTemplate: stringField(m, "promptTemplate"),
 		Model:          strings.TrimSpace(stringField(m, "model")),
+		Posture:        strings.TrimSpace(stringField(m, "posture")),
 		DependsOn:      stringSliceField(m, "dependsOn"),
 		ContextSources: stringSliceField(m, "contextSources"),
 	}

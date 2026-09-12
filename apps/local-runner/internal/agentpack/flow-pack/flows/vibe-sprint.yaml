@@ -26,6 +26,8 @@ nodes:
     lifecycle: once
     behavior: agent.delegate
     agent: agents/contract-planner.md
+    # CP-62 P-4 (Task-340): scout is read-only (BUG-344 classifier).
+    posture: read_only
   - id: preflight_contract_freeze
     run: inline
     lifecycle: once
