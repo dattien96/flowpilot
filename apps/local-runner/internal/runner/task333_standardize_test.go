@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -728,3 +729,45 @@ func TestStandardize_StrandedDraftsInTodo_ReofferReverseDoc(t *testing.T) {
 		t.Fatalf("the SS-Lock approval flow must be re-offered, got Status = %q", res.Status)
 	}
 }
+
+// Review round-3 blocking regression: every relative parent-link a generated
+// draft carries must resolve from the draft's own directory INTO the
+// requirements tree (requirements/<phase>/todo/ needs exactly two ../ to
+// reach requirements/ — the 42326c6a fix corrected todo→done but kept a
+// three-up depth that overshot to the workspace root). Brownfield targets
+// legitimately lack the referenced governing docs yet, so the invariant is
+// the resolved DEPTH (inside requirements/), not file existence.
+func TestReverseDoc_DraftLinksResolveFromDraftDir(t *testing.T) {
+	svc, root := newStandardizeTestService(t, gitnexusFixtureJSON, nil)
+	writeSandboxFile(t, root, "features/device/camera.go", "package device\n")
+
+	res, err := svc.ExecuteStandardize(context.Background(), StandardizeScope{Path: "features/device"})
+	if err != nil {
+		t.Fatalf("ExecuteStandardize: %v", err)
+	}
+	drafts := []string{res.DraftSSPath, res.DraftSDPath}
+	for _, draft := range drafts {
+		if draft == "" {
+			continue
+		}
+		data, err := os.ReadFile(draft)
+		if err != nil {
+			t.Fatalf("read draft %s: %v", draft, err)
+		}
+		draftDir := filepath.Dir(draft)
+		for _, m := range linkPattern.FindAllStringSubmatch(string(data), -1) {
+			target := m[1]
+			if !strings.HasPrefix(target, "../") && !strings.HasPrefix(target, "..\\") {
+				continue // only relative parent links are under test
+			}
+			resolved := filepath.Clean(filepath.Join(draftDir, target))
+			requirementsRoot := filepath.Join(root, "requirements")
+			if !strings.HasPrefix(resolved, requirementsRoot+string(os.PathSeparator)) && resolved != requirementsRoot {
+				t.Errorf("draft %s link %q overshoots requirements/ (resolves to %s)", filepath.Base(draft), target, resolved)
+			}
+		}
+	}
+}
+
+// linkPattern extracts markdown link targets [text](target).
+var linkPattern = regexp.MustCompile(`\[[^\]]*\]\(([^)]+)\)`)
