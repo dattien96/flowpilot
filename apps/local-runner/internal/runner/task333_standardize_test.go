@@ -706,3 +706,25 @@ func countMarkdownFilesOutsideTodo(t *testing.T, root string) int {
 	}
 	return n
 }
+
+// Review-hardening regression (Task-333 §8 follow-up): un-approved SS-Lock
+// drafts stranded under a todo/ segment (e.g. after a runner restart lost the
+// in-memory gate) are NOT published docs — a re-run must re-offer the
+// brownfield reverse-doc flow (a fresh SS-Lock pause) instead of reporting
+// conformance/mixed against the stranded drafts.
+func TestStandardize_StrandedDraftsInTodo_ReofferReverseDoc(t *testing.T) {
+	svc, root := newStandardizeTestService(t, "", nil)
+	writeSandboxFile(t, root, "requirements/05-System-Specs/todo/SS-01-Device.md", sampleSSDoc)
+	writeSandboxFile(t, root, "features/device/camera.go", "package device\n")
+
+	res, err := svc.ExecuteStandardize(context.Background(), StandardizeScope{Path: "features/device"})
+	if err != nil {
+		t.Fatalf("ExecuteStandardize: %v", err)
+	}
+	if res.Mode != StandardizeModeReverseDoc {
+		t.Fatalf("stranded todo/ drafts must not count as existing docs; Mode = %q, want %q", res.Mode, StandardizeModeReverseDoc)
+	}
+	if res.Status != StandardizeStatusWaitingSSLock {
+		t.Fatalf("the SS-Lock approval flow must be re-offered, got Status = %q", res.Status)
+	}
+}

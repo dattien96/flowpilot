@@ -78,6 +78,11 @@ var runGitNexusCLI = func(ctx context.Context, dir string, args ...string) ([]by
 		return nil, fmt.Errorf("gitnexus CLI not available (no gitnexus/npx on PATH)")
 	}
 	cmd.Dir = dir
+	// Review hardening: exec.CommandContext kills only the direct child — via
+	// the npx path a hung grandchild holding the output pipe can block the
+	// synchronous caller past the context deadline. WaitDelay force-exits the
+	// wait after the context is done so the caller degrades instead of hanging.
+	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return out, fmt.Errorf("gitnexus %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))

@@ -368,7 +368,17 @@ func matchPhaseDocs(dir, prefix, token string) ([]string, error) {
 		if err != nil {
 			return nil // missing phase dir or unreadable subtree — skip
 		}
-		if d.IsDir() || !strings.EqualFold(filepath.Ext(path), ".md") {
+		// Un-approved drafts live under a todo/ segment (SS-Lock pending).
+		// They are NOT published docs — counting them here would make a
+		// post-restart /standardize re-run report conformance/mixed and never
+		// re-offer the approval modal (review hardening). Skip the subtree.
+		if d.IsDir() {
+			if strings.EqualFold(d.Name(), "todo") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.EqualFold(filepath.Ext(path), ".md") {
 			return nil
 		}
 		base := filepath.Base(path)
