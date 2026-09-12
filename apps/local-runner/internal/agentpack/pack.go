@@ -114,6 +114,16 @@ type FlowContextBinding struct {
 	Sources []string
 }
 
+// ContextProfile is one CP-62 P-5 (Task-341) per-node context profile:
+// the candidate source set + the token budget the Budget Packer enforces
+// when packing that node's prompt. Declared under a flow's `contextProfiles:`
+// map; nodes reference profiles by name (`contextProfile:`).
+type ContextProfile struct {
+	Name             string
+	CandidateSources []string
+	MaxTokens        int
+}
+
 type FlowNode struct {
 	ID             string
 	Run            string
@@ -151,6 +161,10 @@ type FlowNode struct {
 	// `artifact_instances`; empty for a node with no bindings (CP-44 fallback
 	// path stays unaffected — SD-23 D-6).
 	ArtifactBindings []FlowArtifactBinding
+	// ContextProfile is the CP-62 P-5 (Task-341) profile name this node
+	// resolves its context candidate set + token budget from. Empty means
+	// "no profile — the pre-Task-341 source precedence applies unchanged".
+	ContextProfile string
 }
 
 // FlowArtifactBinding is one resolved typed-artifact binding for a
@@ -196,6 +210,11 @@ type FlowDefinition struct {
 	// declare one must set this to at least one valid id (see
 	// ValidateFlowSafetyTopology).
 	AcceptanceNodes []string
+	// ContextProfiles is the CP-62 P-5 (Task-341) per-node context profile
+	// map (root YAML key `contextProfiles`). Nodes reference entries by name
+	// via FlowNode.ContextProfile; validation (runner.ValidateFlowContextSources)
+	// fails flow load on an unknown profile ref or unknown profile source.
+	ContextProfiles map[string]ContextProfile
 }
 
 // ToolFace describes a declared tool face.
@@ -729,6 +748,23 @@ func flowFromMap(m map[string]any) (FlowDefinition, error) {
 			def.Contexts[name] = binding
 		}
 	}
+	// CP-62 P-5 (Task-341): per-node context profiles. Fail-closed on a
+	// malformed entry — a profile that parses to nothing must not silently
+	// disable a node's context.
+	if profiles, ok := mapField(m, "contextProfiles"); ok {
+		def.ContextProfiles = make(map[string]ContextProfile, len(profiles))
+		for name, raw := range profiles {
+			pm, isMap := raw.(map[string]any)
+			if !isMap {
+				return FlowDefinition{}, fmt.Errorf("flow %q contextProfiles.%q must be a map", def.ID, name)
+			}
+			def.ContextProfiles[name] = ContextProfile{
+				Name:             name,
+				CandidateSources: stringSliceField(pm, "candidateSources"),
+				MaxTokens:        intField(pm, "maxTokens"),
+			}
+		}
+	}
 	nodesRaw, ok := sliceField(m, "nodes")
 	if ok {
 		def.Nodes = make([]FlowNode, 0, len(nodesRaw))
@@ -778,6 +814,7 @@ func flowNodeFromMap(m map[string]any) (FlowNode, error) {
 		PromptTemplate: stringField(m, "promptTemplate"),
 		Model:          strings.TrimSpace(stringField(m, "model")),
 		Posture:        strings.TrimSpace(stringField(m, "posture")),
+		ContextProfile: strings.TrimSpace(stringField(m, "contextProfile")),
 		DependsOn:      stringSliceField(m, "dependsOn"),
 		ContextSources: stringSliceField(m, "contextSources"),
 	}

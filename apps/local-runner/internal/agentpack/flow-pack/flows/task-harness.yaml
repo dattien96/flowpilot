@@ -44,6 +44,22 @@ contexts:
       - source.dependence
       - chat.summary
       - source.excerpt
+# CP-62 P-5 (Task-341): per-node context profiles — candidate source set +
+# token budget, layered ON TOP of the Budget Packer (CP-23). Nodes reference
+# these by name; a node without a profile falls back to main_context.
+contextProfiles:
+  scout:
+    candidateSources: [canonical.head, feature.history]
+    maxTokens: 6000
+  plan_writer:
+    candidateSources: [canonical.head, feature.history, change.contract, source.excerpt]
+    maxTokens: 16000
+  reviewer:
+    candidateSources: [change.contract, source.excerpt]
+    maxTokens: 12000
+  coder:
+    candidateSources: [canonical.head, change.contract, source.dependence, source.excerpt]
+    maxTokens: 24000
 tools:
   - tools/submit-review-outcome.yaml
 acceptance_nodes:
@@ -62,6 +78,8 @@ nodes:
     # CP-62 P-4 (Task-340): the scout only reads and plans — structurally
     # gated read-only at the approval bridge (BUG-344 classifier).
     posture: read_only
+    # CP-62 P-5 (Task-341): broad-and-cheap context (CP-23 budget profile).
+    contextProfile: scout
   # --- Draft context (code excerpts feed plan_writer) ---
   - id: context
     run: inline
@@ -74,6 +92,8 @@ nodes:
     behavior: agent.delegate
     agent: agents/doc-writer.md
     promptTemplate: prompts/plan-task.md
+    # CP-62 P-5 (Task-341): plan writer needs excerpts to plan from.
+    contextProfile: plan_writer
     artifactBindings:
       # CP-58 Task-307: the plan md is a typed file_artifact OUTPUT slot. The
       # pathTemplate is resolved by the writer at authoring time ({{idx}} =
@@ -96,6 +116,8 @@ nodes:
     # CP-62 P-4 (Task-340): reviewers are read-only + verdict face — the
     # oracle rule (SS-14 AC-6) becomes structural, not prompted.
     posture: read_only
+    # CP-62 P-5 (Task-341): reviewer sees contract + excerpts, not dependence.
+    contextProfile: reviewer
     dependsOn:
       - plan_writer
     cohort: plan
@@ -133,6 +155,8 @@ nodes:
     behavior: agent.code
     agent: agents/coder.md
     promptTemplate: prompts/implement-complete-tests.md
+    # CP-62 P-5 (Task-341): coder needs the full dependence chain.
+    contextProfile: coder
   - id: validate
     run: inline
     lifecycle: once
@@ -146,6 +170,8 @@ nodes:
     # CP-62 P-4 (Task-340): read-only reviewer — no write path to weaken a
     # test (SS-14 AC-6 enforced by the approval bridge, not the prompt).
     posture: read_only
+    # CP-62 P-5 (Task-341): reviewer profile.
+    contextProfile: reviewer
     dependsOn:
       - validate
     cohort: review

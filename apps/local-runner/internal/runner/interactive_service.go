@@ -10074,6 +10074,14 @@ func (s *InteractiveService) applyBudgetPackerIfEnabled(rs *interactiveRun, prov
 	packed := providerPrompt
 	if pack {
 		budget := defaultBudgetPackerBudget()
+		// CP-62 P-5 (Task-341): a node's context profile caps the pack total
+		// when packing is active (narrower wins; drift narrow may halve
+		// further). A profile never turns the packer on by itself — the
+		// flag-gated default stays byte-identical.
+		if profileBudget := s.flowNodeProfileBudgetFor(rs); profileBudget > 0 && profileBudget < budget.TotalMaxTokens {
+			budget.TotalMaxTokens = profileBudget
+			log.Printf("[prompt-pack] profile budget run=%s turn=%s total=%d", rs.id, turnID, profileBudget)
+		}
 		if drift.narrowContext {
 			// Task-335 ladder 60-79: tighten the context pack for this turn.
 			budget = narrowContextBudget(budget)
@@ -10085,6 +10093,12 @@ func (s *InteractiveService) applyBudgetPackerIfEnabled(rs *interactiveRun, prov
 			log.Printf("[prompt-pack] pack failed, keeping original prompt run=%s turn=%s err=%v", rs.id, turnID, err)
 		} else {
 			packed = p
+			// CP-62 P-5 catalog tier: one line per pruned section, so the
+			// model keeps a cheap index of WHAT exists (metadata always,
+			// body on demand).
+			if catalog := buildCatalogSummary(report.DroppedItems); catalog != "" {
+				packed = packed + "\n\n" + catalog
+			}
 			toolWorkspace := ""
 			if s != nil && s.runner != nil {
 				toolWorkspace = s.runner.workspace
