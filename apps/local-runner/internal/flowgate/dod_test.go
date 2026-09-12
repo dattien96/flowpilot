@@ -203,7 +203,10 @@ func TestParseDefinitionOfDone_RecognizesRealRepoDocs(t *testing.T) {
 	if dir == "" {
 		t.Skip("repository requirements/ tree not found above the package dir")
 	}
-	looseDODHeading := regexp.MustCompile(`(?im)^##\s+(?:\d+\.\s*)?definition of done\b`)
+	// Ground truth widened in round 3 (the round-2 ground truth was h2-biased
+	// and structurally could not see the h3 DOD-heading population): any-level
+	// ATX heading (h2/h3), multi-part numbering, and parenthesized variants.
+	looseDODHeading := regexp.MustCompile(`(?im)^#{2,3}\s+(?:\d+(?:\.\d+)*[.)]?\s*)?definition of done\b|^#{2,3}\s+.*\(definition of done\)`)
 	contractCheckbox := regexp.MustCompile(`^\s*-\s*\[([ xX])\]`)
 	closeHeading := regexp.MustCompile(`^#{1,2}\s+`)
 	checked, legacy := 0, 0
@@ -289,4 +292,31 @@ func flowgateRepoRoot() string {
 		dir = parent
 	}
 	return ""
+}
+
+// Scenario: Round-3 blocking regression — h3-level DOD headings with
+// multi-part numbering and parenthesized variants, used by 60+ real docs.
+// Input: "### 6.1 Definition of Done (DOD)", "### 6.2 Definition of Done",
+//
+//	"## 6. Acceptance Check (Definition of Done)" with checklists
+//
+// Expect: all recognized (Present=true, checkboxes counted); non-DOD h3
+//
+//	headings stay rejected
+func TestParseDefinitionOfDone_H3AndParenHeadingForms(t *testing.T) {
+	h3Numbered := "### 6.1 Definition of Done (DOD)\n\n- [x] a\n- [ ] b\n\n### 6.3 Notes\n\n- plain\n"
+	if got := ParseDefinitionOfDone(h3Numbered); got.Total != 2 || got.Checked != 1 {
+		t.Fatalf("h3 multi-part DOD heading must be recognized, got %+v", got)
+	}
+	h3Plain := "### 6.2 Definition of Done\n\n- [x] only\n"
+	if got := ParseDefinitionOfDone(h3Plain); got.Total != 1 || got.Checked != 1 {
+		t.Fatalf("h3 plain DOD heading must be recognized, got %+v", got)
+	}
+	paren := "## 6. Acceptance Check (Definition of Done)\n\n- [x] gate\n- [ ] ui\n\n## 7. Next\n"
+	if got := ParseDefinitionOfDone(paren); got.Total != 2 || got.Checked != 1 {
+		t.Fatalf("parenthesized DOD heading must be recognized, got %+v", got)
+	}
+	if got := ParseDefinitionOfDone("### 6.3 Notes\n\n- [x] not a dod\n"); got.Present {
+		t.Fatalf("non-DOD h3 heading must not open a DOD section, got %+v", got)
+	}
 }

@@ -20,13 +20,15 @@ type DodStatus struct {
 }
 
 var (
-	// dodHeadingRegex recognizes the DOD heading in BOTH forms the repo uses:
-	// the unnumbered "## Definition of Done" / "## DoD" AND the numbered
-	// "## 9. Definition of Done" form mandated by the phase-doc convention —
-	// every real Task-*/BUG-* document in this repo carries the numbered form
-	// (review round 2 blocking finding: the unnumbered-only regex recognized
-	// 0 of 100+ real docs and would false-reprompt every conformant write).
-	dodHeadingRegex   = regexp.MustCompile("(?i)^##\\s+(?:\\d+\\.\\s*)?(definition\\s+of\\s+done|dod)\\b")
+	// dodHeadingRegex recognizes the DOD heading variants real Task-*/BUG-*
+	// documents use (review rounds 2-3, real-repo scans): unnumbered h2
+	// ("## Definition of Done" / "## DoD"), numbered h2 ("## 9. Definition of
+	// Done"), and h3 sub-section form with multi-part numbering
+	// ("### 6.1 Definition of Done (DOD)", "### 6.2 Definition of Done").
+	dodHeadingRegex = regexp.MustCompile("(?i)^#{2,3}\\s+(?:\\d+(?:\\.\\d+)*[.)]?\\s*)?(definition\\s+of\\s+done|dod)\\b")
+	// dodParenRegex additionally accepts h2/h3 headings that carry the DOD
+	// phrase parenthesized ("## 6. Acceptance Check (Definition of Done)").
+	dodParenRegex = regexp.MustCompile("(?i)^#{2,3}\\s+.*\\(definition\\s+of\\s+done\\)")
 	// anyHeadingRegex closes the DOD section: only level-1/level-2 headings
 	// end it. Real repo DOD sections legitimately contain ### sub-headings
 	// between checklist items (review round 2, real-repo scan) — those must
@@ -65,7 +67,7 @@ func ParseDefinitionOfDone(content string) DodStatus {
 		if fenceMarker != "" {
 			continue // dòng trong fenced code block: bỏ qua hoàn toàn
 		}
-		if dodHeadingRegex.MatchString(line) {
+		if dodHeadingRegex.MatchString(line) || dodParenRegex.MatchString(line) {
 			inSection = true
 			continue
 		}
