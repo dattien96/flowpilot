@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // SkillExporter renders a LessonCandidate as a standard SKILL.md (YAML
@@ -133,7 +134,7 @@ func exportBaseDirs(opts SkillExportOptions) ([]string, error) {
 // directory. Returns the reserved slug (with any -vN suffix so the rendered
 // frontmatter name matches the directory).
 func reserveSkillDir(baseDir, group, title string) (string, string, error) {
-	groupDir := filepath.Join(baseDir, filepath.Clean(group))
+	groupDir := filepath.Join(baseDir, GroupDirName(group))
 	slug := Slugify(title)
 	for version := 1; ; version++ {
 		candidateSlug := slug
@@ -288,12 +289,41 @@ func Slugify(title string) string {
 	}
 	slug = strings.Trim(slug, "-")
 	if len(slug) > maxSlugLen {
-		slug = strings.TrimRight(slug[:maxSlugLen], "-")
+		slug = trimTrailingPartialRune(strings.TrimRight(slug[:maxSlugLen], "-"))
 	}
 	if slug == "" {
 		slug = "lesson"
 	}
 	return slug
+}
+
+// trimTrailingPartialRune removes trailing bytes when a byte-truncation split
+// a multi-byte UTF-8 rune (review hardening: generated directory names must
+// stay valid UTF-8).
+func trimTrailingPartialRune(s string) string {
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+// GroupDirName renders the candidate's group as a single safe path segment
+// (review hardening: a `../..`-style Group must not escape the skills dir).
+// Groups already in [a-z0-9_-] pass through unchanged ("golang" stays
+// "golang"); anything containing separators, dots, or other characters —
+// Group is user-editable — collapses to a plain safe slug.
+func GroupDirName(group string) string {
+	g := strings.ToLower(strings.TrimSpace(group))
+	if g == "" {
+		return "common"
+	}
+	for _, r := range g {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return Slugify(g + " group")
+	}
+	return g
 }
 
 // protectedCoreSkillSlugs are the safe-fix-contract core skills a promoted

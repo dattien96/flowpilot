@@ -892,3 +892,52 @@ func TestSkillPromotion_EndToEnd_CandidateToSkill(t *testing.T) {
 		}
 	}
 }
+
+// Review-hardening regression (Task-336 §8 follow-up): a hostile Group value
+// must never escape the skills directory — separators and dot-dot segments
+// collapse to a safe slug, while ordinary groups pass through unchanged.
+func TestGroupDirName_PathSafety(t *testing.T) {
+	cases := map[string]string{
+		"golang":    "golang", // ordinary groups are untouched
+		"common":    "common",
+		"kmm":       "kmm",
+		"":          "common",    // empty → default group
+		"../..":     "group",     // traversal collapses away
+		"a/b":       "a-b-group", // separators collapse
+		"..":        "group",
+		"android x": "android-x-group",
+	}
+	for in, want := range cases {
+		if got := GroupDirName(in); got != want {
+			t.Fatalf("GroupDirName(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := GroupDirName("../.."); strings.Contains(got, "..") || strings.ContainsRune(got, '/') {
+		t.Fatalf("hostile group must not survive, got %q", got)
+	}
+}
+
+// Review-hardening regression: an end-to-end export with a hostile Group
+// writes INSIDE the skills root only.
+func TestSkillExporter_HostileGroup_StaysInsideSkillsRoot(t *testing.T) {
+	root := t.TempDir()
+	cand := goroutineCandidate()
+	cand.Group = "../.."
+	exp := SkillExporter{}
+	written, err := exp.Export(cand, SkillExportOptions{WorkspaceRoot: root})
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	if len(written) == 0 {
+		t.Fatalf("expected at least one written skill file")
+	}
+	escaped := false
+	for _, p := range written {
+		if !strings.HasPrefix(filepath.Clean(p), filepath.Clean(root)) {
+			escaped = true
+		}
+	}
+	if escaped {
+		t.Fatalf("export escaped the workspace root: %v", written)
+	}
+}
