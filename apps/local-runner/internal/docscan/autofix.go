@@ -115,8 +115,9 @@ func AutoFixDocument(content string, phase string) (string, error) {
 			regionStart = i + 1
 		}
 	}
-	if sectionFixNeeded(fbs[regionStart:], ph) {
-		fbs = rebuildSectionRegion(fbs, regionStart, ph)
+	preRegion := preRegionCanonicalRanks(fbs, regionStart)
+	if sectionFixNeeded(fbs[regionStart:], ph, preRegion) {
+		fbs = rebuildSectionRegion(fbs, regionStart, ph, preRegion)
 		changed = true
 	}
 
@@ -322,10 +323,27 @@ func appendToBody(body []string, newLines []string) []string {
 	return out
 }
 
+// preRegionCanonicalRanks collects the canonical ranks of numbered section
+// blocks that appear BEFORE the section region (e.g. a `## 1. Goal` heading
+// placed before the Metadata block). Those sections already exist in the
+// document, so the fixer must neither flag them as missing nor synthesize a
+// duplicate skeleton for them (review hardening: an AutoFix on a
+// scanner-CLEAN document stays byte-for-byte identical).
+func preRegionCanonicalRanks(fbs []*fixBlock, regionStart int) map[int]bool {
+	ranks := map[int]bool{}
+	for _, b := range fbs[:regionStart] {
+		if b.kind == blockSection && b.rank >= 0 {
+			ranks[b.rank] = true
+		}
+	}
+	return ranks
+}
+
 // sectionFixNeeded reports whether the section region requires a rebuild:
 // numbers not strictly ascending, canonical names out of order, or canonical
-// sections missing.
-func sectionFixNeeded(region []*fixBlock, phase string) bool {
+// sections missing from BOTH the region and the pre-region area
+// (preExisting — see preRegionCanonicalRanks).
+func sectionFixNeeded(region []*fixBlock, phase string, preExisting map[int]bool) bool {
 	rank := map[string]int{}
 	for i, name := range canonicalSections(phase) {
 		rank[normalizeName(name)] = i
@@ -349,7 +367,7 @@ func sectionFixNeeded(region []*fixBlock, phase string) bool {
 		prevNum = b.number
 	}
 	for i := range canonicalSections(phase) {
-		if !present[i] {
+		if !present[i] && !preExisting[i] {
 			return true
 		}
 	}
@@ -360,8 +378,11 @@ func sectionFixNeeded(region []*fixBlock, phase string) bool {
 // canonical order, inserts skeletons for missing canonical sections, and
 // renumbers known sections 1..N followed by unknown numbered sections N+1...
 // Non-numbered blocks in the region are kept (in original relative order)
-// after the numbered sections. No body text is removed.
-func rebuildSectionRegion(fbs []*fixBlock, regionStart int, phase string) []*fixBlock {
+// after the numbered sections. No body text is removed. Canonical ranks in
+// preExisting (already present before the region — see
+// preRegionCanonicalRanks) get their number slot reserved but never a
+// duplicate skeleton.
+func rebuildSectionRegion(fbs []*fixBlock, regionStart int, phase string, preExisting map[int]bool) []*fixBlock {
 	canonical := canonicalSections(phase)
 	byRank := map[int]*fixBlock{}
 	var unknowns, others []*fixBlock
@@ -386,6 +407,10 @@ func rebuildSectionRegion(fbs []*fixBlock, regionStart int, phase string) []*fix
 			b.heading = renumberHeading(b.heading, next)
 			b.number = next
 			region = append(region, b)
+		} else if preExisting[i] {
+			// Section already exists before the region — reserve the number
+			// slot to keep canonical numbering consistent, but never emit a
+			// duplicate skeleton.
 		} else {
 			region = append(region, &fixBlock{
 				kind:    blockSection,

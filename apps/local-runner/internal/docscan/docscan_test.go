@@ -978,3 +978,76 @@ func TestNormalizePhase(t *testing.T) {
 		}
 	}
 }
+
+// Review-hardening regression (Task-332 §8 follow-up): a scanner-CLEAN doc
+// whose `## 1. Goal` block sits before `## Metadata` must survive AutoFix
+// byte-for-byte — the section already exists, so neither sectionFixNeeded nor
+// rebuildSectionRegion may synthesize a duplicate skeleton for it. Built from
+// the real FORMAT-REFERENCE-TASK sample with its Goal block hoisted above the
+// Metadata block.
+func TestAutoFixDocument_PreRegionSection_NoDuplicateSkeleton(t *testing.T) {
+	root := findRepoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "requirements", "08-Task", "FORMAT-REFERENCE-TASK.md"))
+	if err != nil {
+		t.Fatalf("read FORMAT-REFERENCE-TASK: %v", err)
+	}
+	doc := hoistFirstSectionBeforeMetadata(string(raw))
+	if issues, err := ScanDocument("Task-000.md", doc); err != nil || len(issues) != 0 {
+		t.Fatalf("hoisted sample must stay scanner-clean, got %v (%v)", issues, err)
+	}
+	fixed, err := AutoFixDocument(doc, PhaseTask)
+	if err != nil {
+		t.Fatalf("autofix: %v", err)
+	}
+	if fixed != doc {
+		t.Fatalf("scanner-clean doc with a pre-region Goal must stay byte-identical\n--- got ---\n%s", fixed)
+	}
+}
+
+// hoistFirstSectionBeforeMetadata moves the first numbered-section block of a
+// FORMAT-REFERENCE document above the `## Metadata` heading (fence- and
+// blank-line preserving), producing a scanner-clean doc with a pre-region
+// canonical section.
+func hoistFirstSectionBeforeMetadata(doc string) string {
+	lines := strings.Split(doc, "\n")
+	metaIdx, firstIdx := -1, -1
+	for i, line := range lines {
+		if metaIdx == -1 && strings.TrimRight(line, "\r") == "## Metadata" {
+			metaIdx = i
+		}
+		if firstIdx == -1 && sectionHeadingRe.MatchString(line) {
+			firstIdx = i
+		}
+	}
+	if metaIdx == -1 || firstIdx == -1 || firstIdx > metaIdx {
+		return doc
+	}
+	// The first block runs from its heading to the next heading line.
+	end := len(lines)
+	for i := firstIdx + 1; i < len(lines); i++ {
+		if headingLineRe.MatchString(lines[i]) {
+			end = i
+			break
+		}
+	}
+	block := append([]string{}, lines[firstIdx:end]...)
+	rest := append([]string{}, lines[:firstIdx]...)
+	rest = append(rest, lines[end:]...)
+	out := []string{}
+	out = append(out, block...)
+	out = append(out, rest...)
+	return strings.Join(out, "\n")
+}
+
+// Review-hardening regression: DefaultConformanceRules must hand every rule
+// its own Phases slice — mutating one rule must not alias the others.
+func TestDefaultConformanceRules_NoSharedPhaseSlice(t *testing.T) {
+	rules := DefaultConformanceRules()
+	for i := range rules {
+		for j := i + 1; j < len(rules); j++ {
+			if len(rules[i].Phases) > 0 && len(rules[j].Phases) > 0 && &rules[i].Phases[0] == &rules[j].Phases[0] {
+				t.Fatalf("rules %q and %q share a Phases backing array", rules[i].ID, rules[j].ID)
+			}
+		}
+	}
+}

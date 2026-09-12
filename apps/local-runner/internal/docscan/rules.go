@@ -242,39 +242,41 @@ var phaseAliases = map[string]string{
 // DefaultConformanceRules returns the rule table the scanner checks documents
 // against. It contains at least the rules mandated by Task-332 §10.
 func DefaultConformanceRules() []ConformanceRule {
-	all := append([]string{}, allPhases...)
+	// freshPhases returns a new copy per rule so a mutating caller can never
+	// alias the shared backing array across rules (review hardening).
+	freshPhases := func() []string { return append([]string{}, allPhases...) }
 	return []ConformanceRule{
 		{
 			ID:          ruleMissingMetadataBlock,
-			Phases:      all,
+			Phases:      freshPhases(),
 			Severity:    SeverityCritical,
 			Description: "Document is missing the required '## Metadata' block (SS-13 §5.1).",
 			CanAutoFix:  true,
 		},
 		{
 			ID:          ruleMissingAIQuickView,
-			Phases:      all,
+			Phases:      freshPhases(),
 			Severity:    SeverityImportant,
 			Description: "Document is missing the required '## AI Quick View' block (SS-13 §5.2).",
 			CanAutoFix:  true,
 		},
 		{
 			ID:          ruleMissingAIVSubsection,
-			Phases:      all,
+			Phases:      freshPhases(),
 			Severity:    SeverityImportant,
 			Description: "'## AI Quick View' is missing one of its required sub-sections (Summary, Current Ask, Key Decisions, Constraints, Source Refs) per the FORMAT-REFERENCE samples.",
 			CanAutoFix:  true,
 		},
 		{
 			ID:          ruleMissingOpenQuestions,
-			Phases:      all,
+			Phases:      freshPhases(),
 			Severity:    SeverityMinor,
 			Description: "'## AI Quick View' is missing the 'Open Questions' sub-section (SS-13 §5.2).",
 			CanAutoFix:  true,
 		},
 		{
 			ID:          ruleMissingRequiredField,
-			Phases:      all,
+			Phases:      freshPhases(),
 			Severity:    SeverityImportant,
 			Description: "Metadata block is missing a required field for the phase (SS-13 §5.1); the field list is field-specific and comes from the FORMAT-REFERENCE samples.",
 			CanAutoFix:  true,
@@ -288,21 +290,21 @@ func DefaultConformanceRules() []ConformanceRule {
 		},
 		{
 			ID:          ruleSectionOutOfOrder,
-			Phases:      all,
+			Phases:      freshPhases(),
 			Severity:    SeverityMinor,
 			Description: "Numbered '## N.' sections are not in the phase's canonical order defined by the FORMAT-REFERENCE sample.",
 			CanAutoFix:  true,
 		},
 		{
 			ID:          ruleMissingRequiredSection,
-			Phases:      all,
+			Phases:      freshPhases(),
 			Severity:    SeverityImportant,
 			Description: "Document is missing one of the phase's canonical numbered sections (SS-13 §6 minimum sections).",
 			CanAutoFix:  true,
 		},
 		{
 			ID:          ruleEmptyDocument,
-			Phases:      all,
+			Phases:      freshPhases(),
 			Severity:    SeverityCritical,
 			Description: "Document content is empty (or whitespace only).",
 			CanAutoFix:  false,
